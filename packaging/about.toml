@@ -1,0 +1,36 @@
+# cargo-about 配置：生成发布物附带的第三方许可证清单（THIRD-PARTY-LICENSES.txt）。
+#
+#   cargo fetch --locked
+#   cargo about generate packaging/about.hbs -c packaging/about.toml -m crates/cli/Cargo.toml --frozen --fail
+#
+# 一律 `--frozen`（离线）：许可证原文只从 crate 源码包里读，不去 crate 的 git 仓库抓，结果可复现，也不依赖 GitHub。
+# 所以先 `cargo fetch`（cargo-about 要读整个依赖图的 Cargo.toml）。`--target` 要一个一个写（`--target a --target b`）。
+#
+# 用在三处：`anycon` 的发布压缩包（.github/workflows/release.yml）、hub 镜像（docker/hub.Dockerfile 的 licenses 阶段）、
+# `@anycon/protocol` 的 wasm（packages/protocol/tools/prepack.sh）。
+# 依赖引入了这里没有的许可证时 cargo-about 会报错退出：确认它允许以二进制形式分发后再加进 `accepted`。
+
+accepted = [
+  "Apache-2.0",
+  "MIT",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CDLA-Permissive-2.0",
+  "MPL-2.0",
+  "CC0-1.0",
+  "0BSD",
+]
+
+# 只算发布的四个平台；hub 镜像和 wasm 在命令行用 `--target` 覆盖。
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
+
+# build / dev 依赖不进最终产物。
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

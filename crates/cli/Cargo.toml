@@ -1,0 +1,41 @@
+[package]
+name = "anycon-cli"
+description = "anycon 二进制：daemon + CLI 合一"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "anycon"
+path = "src/main.rs"
+
+[dependencies]
+anycon-daemon.workspace = true
+anycon-crypto.workspace = true
+anycon-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+clap = { version = "4.6.7", features = ["derive", "env"] }
+clap_complete = "4.6.11"
+qrcode = "0.14.1"
+libc = "0.2.190"
+hex.workspace = true
+uuid.workspace = true
+rand.workspace = true
+futures.workspace = true
+tokio-tungstenite = "0.30"
+unicode-general-category = "1.1.0"
+zeroize = "1.9.1"
+sha2 = "0.11.0"
+base64.workspace = true
+rmp-serde.workspace = true
+
+[dev-dependencies]
+anycon-daemon = { path = "../daemon", features = ["testing"] }
+anycon-hub = { path = "../hub" }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+tempfile = "3.27.0"

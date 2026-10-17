@@ -1,0 +1,562 @@
+[
+  {
+    "ciphertext_len": 0,
+    "frames": [
+      {
+        "body_hex": "00",
+        "data_len": 0,
+        "header_hex": "00"
+      }
+    ],
+    "kind": "encode",
+    "msg_id": 1,
+    "name": "encode_whole_empty",
+    "pattern": "i%251"
+  },
+  {
+    "ciphertext_len": 100,
+    "frames": [
+      {
+        "body_hex": "00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
+        "data_len": 100,
+        "header_hex": "00"
+      }
+    ],
+    "kind": "encode",
+    "msg_id": 1,
+    "name": "encode_whole_small",
+    "pattern": "i%251"
+  },
+  {
+    "ciphertext_len": 204800,
+    "frames": [
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "00"
+      }
+    ],
+    "kind": "encode",
+    "msg_id": 7,
+    "name": "encode_whole_exact_max_fragment",
+    "pattern": "i%251"
+  },
+  {
+    "ciphertext_len": 204801,
+    "frames": [
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "010102030400000002"
+      },
+      {
+        "body_hex": "010102030400010002eb",
+        "data_len": 1,
+        "header_hex": "010102030400010002"
+      }
+    ],
+    "kind": "encode",
+    "msg_id": 16909060,
+    "name": "encode_two_fragments_min",
+    "pattern": "i%251"
+  },
+  {
+    "ciphertext_len": 409610,
+    "frames": [
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "010000002a00000003"
+      },
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "010000002a00010003"
+      },
+      {
+        "body_hex": "010000002a00020003dbdcdddedfe0e1e2e3e4",
+        "data_len": 10,
+        "header_hex": "010000002a00020003"
+      }
+    ],
+    "kind": "encode",
+    "msg_id": 42,
+    "name": "encode_three_fragments",
+    "pattern": "i%251"
+  },
+  {
+    "ciphertext_len": 409600,
+    "frames": [
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "01ffffffff00000002"
+      },
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "01ffffffff00010002"
+      }
+    ],
+    "kind": "encode",
+    "msg_id": 4294967295,
+    "name": "encode_exact_two_fragments",
+    "pattern": "i%251"
+  },
+  {
+    "ciphertext_len": 1048576,
+    "frames": [
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "010000000900000006"
+      },
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "010000000900010006"
+      },
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "010000000900020006"
+      },
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "010000000900030006"
+      },
+      {
+        "body_hex": null,
+        "data_len": 204800,
+        "header_hex": "010000000900040006"
+      },
+      {
+        "body_hex": null,
+        "data_len": 24576,
+        "header_hex": "010000000900050006"
+      }
+    ],
+    "kind": "encode",
+    "msg_id": 9,
+    "name": "encode_one_mebibyte",
+    "pattern": "i%251"
+  },
+  {
+    "body_hex": "02",
+    "kind": "reset_body",
+    "name": "reset_body"
+  },
+  {
+    "body_hex": "",
+    "kind": "decode",
+    "name": "decode_empty",
+    "outcome": {
+      "err": "empty"
+    }
+  },
+  {
+    "body_hex": "00",
+    "kind": "decode",
+    "name": "decode_whole_empty_payload",
+    "outcome": {
+      "data_hex": "",
+      "ok": "whole"
+    }
+  },
+  {
+    "body_hex": "00010203",
+    "kind": "decode",
+    "name": "decode_whole",
+    "outcome": {
+      "data_hex": "010203",
+      "ok": "whole"
+    }
+  },
+  {
+    "body_hex": "02",
+    "kind": "decode",
+    "name": "decode_reset",
+    "outcome": {
+      "ok": "reset"
+    }
+  },
+  {
+    "body_hex": "020909",
+    "kind": "decode",
+    "name": "decode_reset_with_trailing",
+    "outcome": {
+      "ok": "reset"
+    }
+  },
+  {
+    "body_hex": "0301",
+    "kind": "decode",
+    "name": "decode_unknown_flags_3",
+    "outcome": {
+      "err": "unknown_flags"
+    }
+  },
+  {
+    "body_hex": "ff",
+    "kind": "decode",
+    "name": "decode_unknown_flags_ff",
+    "outcome": {
+      "err": "unknown_flags"
+    }
+  },
+  {
+    "body_hex": "01",
+    "kind": "decode",
+    "name": "decode_fragment_truncated_0",
+    "outcome": {
+      "err": "truncated"
+    }
+  },
+  {
+    "body_hex": "0100000001000000",
+    "kind": "decode",
+    "name": "decode_fragment_truncated_7",
+    "outcome": {
+      "err": "truncated"
+    }
+  },
+  {
+    "body_hex": "010000000500000002",
+    "kind": "decode",
+    "name": "decode_fragment_header_only",
+    "outcome": {
+      "count": 2,
+      "data_hex": "",
+      "index": 0,
+      "msg_id": 5,
+      "ok": "fragment"
+    }
+  },
+  {
+    "body_hex": "01ffffffffffffffffaa",
+    "kind": "decode",
+    "name": "decode_fragment_max_fields",
+    "outcome": {
+      "count": 65535,
+      "data_hex": "aa",
+      "index": 65535,
+      "msg_id": 4294967295,
+      "ok": "fragment"
+    }
+  },
+  {
+    "body_hex": "01000000050000000001",
+    "kind": "decode",
+    "name": "decode_fragment_count_zero",
+    "outcome": {
+      "count": 0,
+      "data_hex": "01",
+      "index": 0,
+      "msg_id": 5,
+      "ok": "fragment"
+    }
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_whole",
+    "steps": [
+      {
+        "body_hex": "00010203",
+        "out_hex": "010203"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_in_order",
+    "steps": [
+      {
+        "body_hex": "0100000001000000030102",
+        "out": null
+      },
+      {
+        "body_hex": "01000000010001000303",
+        "out": null
+      },
+      {
+        "body_hex": "010000000100020003040506",
+        "out_hex": "010203040506"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_single_fragment",
+    "steps": [
+      {
+        "body_hex": "0100000008000000010707",
+        "out_hex": "0707"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_out_of_order_first",
+    "steps": [
+      {
+        "body_hex": "01000000010001000201",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_out_of_order_skip",
+    "steps": [
+      {
+        "body_hex": "01000000010000000301",
+        "out": null
+      },
+      {
+        "body_hex": "01000000010002000303",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_error_clears_state",
+    "steps": [
+      {
+        "body_hex": "01000000010000000301",
+        "out": null
+      },
+      {
+        "body_hex": "01000000010002000303",
+        "err": "out_of_order"
+      },
+      {
+        "body_hex": "01000000010001000302",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_new_msg_id_restarts",
+    "steps": [
+      {
+        "body_hex": "01000000010000000201",
+        "out": null
+      },
+      {
+        "body_hex": "01000000020000000209",
+        "out": null
+      },
+      {
+        "body_hex": "01000000020001000208",
+        "out_hex": "0908"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_new_msg_id_mid_message",
+    "steps": [
+      {
+        "body_hex": "01000000010000000301",
+        "out": null
+      },
+      {
+        "body_hex": "01000000020001000309",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_whole_drops_pending",
+    "steps": [
+      {
+        "body_hex": "01000000010000000201",
+        "out": null
+      },
+      {
+        "body_hex": "0005",
+        "out_hex": "05"
+      },
+      {
+        "body_hex": "01000000010001000202",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_reset_drops_pending",
+    "steps": [
+      {
+        "body_hex": "01000000010000000201",
+        "out": null
+      },
+      {
+        "body_hex": "02",
+        "out": null
+      },
+      {
+        "body_hex": "01000000010001000202",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_count_zero",
+    "steps": [
+      {
+        "body_hex": "01000000010000000001",
+        "err": "count_mismatch"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_count_changes_midway",
+    "steps": [
+      {
+        "body_hex": "01000000010000000301",
+        "out": null
+      },
+      {
+        "body_hex": "01000000010001000202",
+        "err": "count_mismatch"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_back_to_back_messages",
+    "steps": [
+      {
+        "body_hex": "01000000010000000201",
+        "out": null
+      },
+      {
+        "body_hex": "01000000010001000202",
+        "out_hex": "0102"
+      },
+      {
+        "body_hex": "01000000020000000203",
+        "out": null
+      },
+      {
+        "body_hex": "01000000020001000204",
+        "out_hex": "0304"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_index_equals_count",
+    "steps": [
+      {
+        "body_hex": "01000000010002000201",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_index_u16_max",
+    "steps": [
+      {
+        "body_hex": "0100000001ffff000201",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_index_ge_count_mid_message",
+    "steps": [
+      {
+        "body_hex": "01000000010000000301",
+        "out": null
+      },
+      {
+        "body_hex": "01000000010003000302",
+        "err": "out_of_order"
+      },
+      {
+        "body_hex": "01000000010001000303",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_count_grows_midway",
+    "steps": [
+      {
+        "body_hex": "01000000070000000301",
+        "out": null
+      },
+      {
+        "body_hex": "01000000070001000402",
+        "err": "count_mismatch"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_count_change_clears_state",
+    "steps": [
+      {
+        "body_hex": "01000000070000000301",
+        "out": null
+      },
+      {
+        "body_hex": "01000000070001000402",
+        "err": "count_mismatch"
+      },
+      {
+        "body_hex": "01000000070001000303",
+        "err": "out_of_order"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_count_u16_max_single",
+    "steps": [
+      {
+        "body_hex": "01000000090000ffff01",
+        "out": null
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_count_one_twice",
+    "steps": [
+      {
+        "body_hex": "01000000030000000101",
+        "out_hex": "01"
+      },
+      {
+        "body_hex": "01000000030000000102",
+        "out_hex": "02"
+      }
+    ]
+  },
+  {
+    "kind": "reassemble",
+    "name": "reassemble_same_msg_id_after_complete",
+    "steps": [
+      {
+        "body_hex": "01000000030000000101",
+        "out_hex": "01"
+      },
+      {
+        "body_hex": "01000000030001000202",
+        "err": "out_of_order"
+      }
+    ]
+  }
+]

@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""A fake `codex` CLI for the adapter tests (no network, no model).
+
+Modes
+  fake-codex --version                 prints a version line
+  fake-codex login status              answers like `codex login status` (text on stderr)
+  fake-codex app-server                a JSON-RPC server on stdio (newline-delimited, no "jsonrpc" header)
+
+The app-server answers `initialize`, `model/list`, `config/read`, `thread/start`, `thread/resume`, `turn/start`,
+`turn/steer`, `turn/interrupt` and `thread/inject_items` the way a real 0.157.1 server does (the shapes come from
+recordings, see tests/fixtures/codex). `turn/start` replays the next "turn" of a fixture: the lines up to and including
+the next `turn/completed` notification. A line `{"_hold": true}` keeps the turn open until the client interrupts it. A line with an `id` and a `method` is a server request: the fake sends it with a
+fresh id and waits for the client's answer before going on. `FIXTURE_THREAD` / `FIXTURE_TURN[_n]` in the fixture are
+replaced by the real thread / turn id.
+
+Environment (all optional)
+  FAKE_CODEX_SCRIPT           fixture (JSONL) to replay, one turn per `turn/start`
+  FAKE_CODEX_LOG              append JSON lines: argv/env at start, every message received on stdin, exit
+  FAKE_CODEX_DELAY_MS         pause between replayed lines
+  FAKE_CODEX_VERSION_TEXT     override the --version output;  FAKE_CODEX_VERSION_EXIT  its exit code
+  FAKE_CODEX_AUTH             in (default) | apikey | out | error | hang    for `login status`
+  FAKE_CODEX_MODELS           model/list result file (default: fixtures/codex/model_list.json)
+  FAKE_CODEX_MODEL_PAGES      split the model list into N pages (cursor "page-<i>")
+  FAKE_CODEX_MODEL_LIST       error | hang   for `model/list`
+  FAKE_CODEX_CONFIG           config/read result file (default: fixtures/codex/config_read_empty.json)
+  FAKE_CODEX_CONFIG_ERROR=1   `config/read` fails
+  FAKE_CODEX_ACCOUNT          chatgpt | apikey | out | custom | error | hang   for `account/read`
+                              (default follows FAKE_CODEX_AUTH: in -> chatgpt, apikey -> apikey, out -> out, else chatgpt)
+  FAKE_CODEX_INIT             fail (exit 1 with a message on stderr) | hang
+  FAKE_CODEX_THREAD_ID        fixed thread id for thread/start
+  FAKE_CODEX_RESUME_FAIL      `none` ("no rollout found") | `notfound` ("thread not found") | other (some other error)  for thread/resume
+  FAKE_CODEX_STEER_REJECT=1   `turn/steer` always answers "no active turn to steer" (the turn ended a moment ago)
+  FAKE_CODEX_TURN_START_ERROR message: `turn/start` fails with it
+  FAKE_CODEX_INJECT_FAIL=1    `thread/inject_items` fails
+  FAKE_CODEX_IGNORE_INTERRUPT=1  answer `turn/interrupt` but keep going
+  FAKE_CODEX_STUBBORN=1       ignore SIGINT and stdin EOF (forces SIGKILL)
+  FAKE_CODEX_CRASH_AFTER=N    exit(3) with a message on stderr after N lines written
+  FAKE_CODEX_BIG_LINE         write one stdout line of this many bytes (not valid JSON) right after start
+  FAKE_CODEX_BG_PID_FILE      spawn a background `sleep` in our process group and write its pid to this file
+"""
+import json
+import os
+import queue
+import re
+import signal
+import sys
+import threading
+import time
+
+args = sys.argv[1:]
+env = os.environ
+FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "codex")
+
+
+def log(obj):
+    path = env.get("FAKE_CODEX_LOG")
+    if path:
+        with open(path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+
+
+def fixture(name_or_path):
+    p = name_or_path if os.path.isabs(name_or_path) else os.path.join(FIX, name_or_path)
+    with open(p) as f:
+        return json.load(f)
+
+
+if "--version" in args:
+    print(env.get("FAKE_CODEX_VERSION_TEXT", "codex-cli 0.157.1"))
+    sys.exit(int(env.get("FAKE_CODEX_VERSION_EXIT", "0")))
+
+if "login" in args and "status" in args:
+    mode = env.get("FAKE_CODEX_AUTH", "in")
+    if mode == "in":
+        sys.stderr.write("Logged in using ChatGPT\n")
+        sys.exit(0)
+    if mode == "apikey":
+        sys.stderr.write("Logged in using an API key - sk-test-***l-key\n")
+        sys.exit(0)
+    if mode == "out":
+        sys.stderr.write("Not logged in\n")
+        sys.exit(1)
+    if mode == "hang":
+        time.sleep(60)
+        sys.exit(0)
+    sys.stderr.write("Error checking login status: expected ident at line 1 column 2\n")
+    sys.exit(1)
+
+if "app-server" not in args:
+    sys.stderr.write("error: unrecognized fake-codex invocation: %r\n" % (args,))
+    sys.exit(2)
+
+# ---- app-server ----
+stubborn = env.get("FAKE_CODEX_STUBBORN") == "1"
+if stubborn:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+else:
+    signal.signal(signal.SIGINT, lambda *_: os._exit(0))
+
+log({"kind": "argv", "args": args, "cwd": os.getcwd(), "pid": os.getpid(),
+     "env": {k: env.get(k) for k in ("CODEX_HOME", "ANYCON_TEST_VAR", "HOME") if k in env}})
+
+if env.get("FAKE_CODEX_INIT") == "fail":
+    sys.stderr.write("fatal: cannot open the state database\n")
+    sys.stderr.flush()
+    sys.exit(1)
+
+if env.get("FAKE_CODEX_BG_PID_FILE"):
+    import subprocess
+    bg = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(env["FAKE_CODEX_BG_PID_FILE"], "w") as f:
+        f.write(str(bg.pid))
+
+if env.get("FAKE_CODEX_BIG_LINE"):
+    sys.stdout.write("x" * int(env["FAKE_CODEX_BIG_LINE"]) + "\n")
+    sys.stdout.flush()
+
+delay = int(env.get("FAKE_CODEX_DELAY_MS", "0")) / 1000.0
+crash_after = int(env.get("FAKE_CODEX_CRASH_AFTER", "0"))
+
+turn_chunks = []
+script = env.get("FAKE_CODEX_SCRIPT")
+if script:
+    cur = []
+    for line in open(script if os.path.isabs(script) else os.path.join(FIX, script)).read().split("\n"):
+        if line == "":
+            continue
+        cur.append(line)
+        if '"method":"turn/completed"' in line:
+            turn_chunks.append(cur)
+            cur = []
+    if cur:
+        turn_chunks.append(cur)
+
+q = queue.Queue()
+
+
+def reader():
+    for line in sys.stdin:
+        q.put(line)
+    q.put(None)
+
+
+threading.Thread(target=reader, daemon=True).start()
+
+state = {
+    "threads": {}, "thread_seq": 0, "turn_seq": 0, "active_turn": None, "abort": False,
+    "to_run": [], "chunk_index": 0, "emitted": 0, "responses": {}, "next_req": 100, "last_req": None,
+    "waiting_on": None,
+}
+
+
+def emit(obj):
+    sys.stdout.write((obj if isinstance(obj, str) else json.dumps(obj)) + "\n")
+    sys.stdout.flush()
+    state["emitted"] += 1
+    if crash_after and state["emitted"] >= crash_after:
+        sys.stderr.write("fatal: simulated crash\n")
+        sys.stderr.flush()
+        os._exit(3)
+
+
+def ok(rid, result):
+    emit({"id": rid, "result": result})
+
+
+def err(rid, message, code=-32600):
+    emit({"id": rid, "error": {"code": code, "message": message}})
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def thread_object(tid, cwd):
+    t = json.loads(json.dumps(fixture("thread_start_response.json")["thread"]).replace("FIXTURE_THREAD", tid))
+    t["cwd"] = cwd
+    return t
+
+
+def thread_response(template, tid, params):
+    r = json.loads(json.dumps(fixture(template)).replace("FIXTURE_THREAD", tid))
+    cwd = params.get("cwd") or r.get("cwd")
+    r["cwd"] = cwd
+    r["thread"]["cwd"] = cwd
+    for k_resp, k_req in (("model", "model"), ("approvalPolicy", "approvalPolicy"), ("approvalsReviewer", "approvalsReviewer")):
+        if params.get(k_req):
+            r[k_resp] = params[k_req]
+    if params.get("model"):
+        r["thread"]["model"] = params["model"]
+    if "serviceTier" in params:
+        r["serviceTier"] = params["serviceTier"]
+    return r
+
+
+def handle_request(msg):
+    rid, method, params = msg["id"], msg["method"], msg.get("params") or {}
+    if method == "initialize":
+        if env.get("FAKE_CODEX_INIT") == "hang":
+            return
+        ok(rid, fixture("initialize_response.json"))
+    elif method == "model/list":
+        mode = env.get("FAKE_CODEX_MODEL_LIST")
+        if mode == "hang":
+            return
+        if mode == "error":
+            return err(rid, "model catalog unavailable", -32603)
+        result = fixture(env.get("FAKE_CODEX_MODELS", "model_list.json"))
+        pages = int(env.get("FAKE_CODEX_MODEL_PAGES", "1"))
+        if pages > 1:
+            data = result["data"]
+            size = max(1, -(-len(data) // pages))
+            cursor = params.get("cursor")
+            i = int(cursor.split("-")[1]) if cursor else 0
+            nxt = "page-%d" % (i + 1) if (i + 1) * size < len(data) else None
+            result = {"data": data[i * size:(i + 1) * size], "nextCursor": nxt}
+        ok(rid, result)
+    elif method == "config/read":
+        if env.get("FAKE_CODEX_CONFIG_ERROR") == "1":
+            return err(rid, "config unavailable", -32603)
+        ok(rid, fixture(env.get("FAKE_CODEX_CONFIG", "config_read_empty.json")))
+    elif method == "account/read":
+        mode = env.get("FAKE_CODEX_ACCOUNT") or {"in": "chatgpt", "apikey": "apikey", "out": "out"}.get(env.get("FAKE_CODEX_AUTH", "in"), "chatgpt")
+        if mode == "hang":
+            return
+        if mode == "error":
+            return err(rid, "account state unavailable", -32603)
+        ok(rid, fixture("account_read_%s.json" % mode))
+    elif method == "thread/start":
+        state["thread_seq"] += 1
+        tid = env.get("FAKE_CODEX_THREAD_ID") or ("thr-%04d" % state["thread_seq"])
+        state["threads"][tid] = {"cwd": params.get("cwd")}
+        ok(rid, thread_response("thread_start_response.json", tid, params))
+        emit({"method": "thread/started", "params": {"thread": thread_object(tid, params.get("cwd") or "/work/proj")}, "emittedAtMs": now_ms()})
+    elif method == "thread/resume":
+        tid = params.get("threadId")
+        mode = env.get("FAKE_CODEX_RESUME_FAIL")
+        if mode == "none":
+            return err(rid, "no rollout found for thread id %s" % tid)
+        if mode == "notfound":
+            return err(rid, "thread not found: %s" % tid)
+        if mode:
+            return err(rid, "the rollout is corrupt", -32603)
+        state["threads"][tid] = {"cwd": params.get("cwd")}
+        ok(rid, thread_response("thread_resume_response.json", tid, params))
+        # the real server replays the last known token usage right after a resume (outside any turn)
+        b = {"totalTokens": 900, "inputTokens": 800, "cachedInputTokens": 100, "cacheWriteInputTokens": 0, "outputTokens": 100, "reasoningOutputTokens": 10}
+        emit({"method": "thread/tokenUsage/updated", "params": {"threadId": tid, "turnId": "turn-from-before", "tokenUsage": {"total": b, "last": b, "modelContextWindow": 258400}}, "emittedAtMs": now_ms()})
+    elif method == "turn/start":
+        tid = params.get("threadId")
+        if tid not in state["threads"]:
+            return err(rid, "thread not found: %s" % tid)
+        if env.get("FAKE_CODEX_TURN_START_ERROR"):
+            return err(rid, env["FAKE_CODEX_TURN_START_ERROR"])
+        if state["active_turn"]:
+            # like the real server: a turn/start during a turn steers it
+            return ok(rid, {"turn": {"id": state["active_turn"], "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": None, "startedAt": None, "completedAt": None, "durationMs": None}})
+        state["turn_seq"] += 1
+        turn_id = "turn-%04d" % state["turn_seq"]
+        state["active_turn"] = turn_id
+        ok(rid, {"turn": {"id": turn_id, "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": None, "startedAt": None, "completedAt": None, "durationMs": None}})
+        state["to_run"].append((tid, turn_id))
+    elif method == "turn/steer":
+        if env.get("FAKE_CODEX_STEER_REJECT") == "1":
+            return err(rid, "no active turn to steer")
+        if not state["active_turn"]:
+            return err(rid, "no active turn to steer")
+        if params.get("expectedTurnId") != state["active_turn"]:
+            return err(rid, "expected active turn id `%s` but found `%s`" % (params.get("expectedTurnId"), state["active_turn"]))
+        ok(rid, {"turnId": state["active_turn"]})
+    elif method == "turn/interrupt":
+        if not state["active_turn"]:
+            return err(rid, "no active turn to interrupt")
+        ok(rid, {})
+        if env.get("FAKE_CODEX_IGNORE_INTERRUPT") != "1":
+            state["abort"] = True
+    elif method == "thread/inject_items":
+        if env.get("FAKE_CODEX_INJECT_FAIL") == "1":
+            return err(rid, "cannot inject into this thread", -32603)
+        ok(rid, {})
+    else:
+        err(rid, "method not found: %s" % method, -32601)
+
+
+def process(item):
+    if item is None:
+        if stubborn:
+            return
+        log({"kind": "exit", "reason": "stdin_eof"})
+        os._exit(0)
+    item = item.strip()
+    if not item:
+        return
+    try:
+        msg = json.loads(item)
+    except Exception:
+        return
+    log({"kind": "stdin", "msg": msg})
+    if "method" in msg and "id" in msg:
+        handle_request(msg)
+    elif "id" in msg:
+        state["responses"][msg["id"]] = msg
+
+
+def poll():
+    while True:
+        try:
+            item = q.get_nowait()
+        except queue.Empty:
+            return
+        process(item)
+
+
+def wait_for_response(rid, timeout=20.0):
+    end = time.time() + timeout
+    state["waiting_on"] = rid
+    try:
+        while time.time() < end:
+            if rid in state["responses"]:
+                return state["responses"][rid]
+            if state["abort"]:
+                return None
+            try:
+                item = q.get(timeout=0.02)
+            except queue.Empty:
+                continue
+            process(item)
+    finally:
+        state["waiting_on"] = None
+    return None
+
+
+def finish_interrupted(thread_id, turn_id):
+    if state["waiting_on"] is not None:
+        emit({"method": "serverRequest/resolved", "params": {"threadId": thread_id, "requestId": state["waiting_on"]}, "emittedAtMs": now_ms()})
+    emit({"method": "thread/status/changed", "params": {"threadId": thread_id, "status": {"type": "idle"}}, "emittedAtMs": now_ms()})
+    emit({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "items": [], "itemsView": "notLoaded", "status": "interrupted", "error": None, "startedAt": 1791790000, "completedAt": 1791790001, "durationMs": 25}}, "emittedAtMs": now_ms()})
+
+
+def run_turn(thread_id, turn_id):
+    state["abort"] = False
+    if state["chunk_index"] < len(turn_chunks):
+        lines = turn_chunks[state["chunk_index"]]
+        state["chunk_index"] += 1
+    else:
+        lines = [json.dumps({"method": "turn/started", "params": {"threadId": "FIXTURE_THREAD", "turn": {"id": "FIXTURE_TURN", "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": None, "startedAt": 1791790000, "completedAt": None, "durationMs": None}}}),
+                 json.dumps({"method": "turn/completed", "params": {"threadId": "FIXTURE_THREAD", "turn": {"id": "FIXTURE_TURN", "items": [], "itemsView": "notLoaded", "status": "completed", "error": None, "startedAt": 1791790000, "completedAt": 1791790001, "durationMs": 5}}})]
+    for line in lines:
+        poll()
+        if state["abort"]:
+            finish_interrupted(thread_id, turn_id)
+            state["active_turn"] = None
+            return
+        if delay:
+            time.sleep(delay)
+        text = line.replace("FIXTURE_THREAD", thread_id)
+        text = re.sub(r"FIXTURE_TURN(_\d+)?", turn_id, text)
+        obj = json.loads(text)
+        if obj.get("_hold"):
+            # keep the turn open until the client interrupts it
+            end = time.time() + 60
+            while not state["abort"] and time.time() < end:
+                poll()
+                time.sleep(0.01)
+            finish_interrupted(thread_id, turn_id)
+            state["active_turn"] = None
+            return
+        if "id" in obj and "method" in obj:
+            rid = state["next_req"]
+            state["next_req"] += 1
+            state["last_req"] = rid
+            obj["id"] = rid
+            log({"kind": "server_request", "id": rid, "method": obj["method"]})
+            emit(obj)
+            wait_for_response(rid)
+            if state["abort"]:
+                finish_interrupted(thread_id, turn_id)
+                state["active_turn"] = None
+                return
+            continue
+        if obj.get("method") == "serverRequest/resolved" and state["last_req"] is not None:
+            obj["params"]["requestId"] = state["last_req"]
+        emit(obj)
+    state["active_turn"] = None
+
+
+while True:
+    process(q.get())
+    poll()
+    while state["to_run"]:
+        thread_id, turn_id = state["to_run"].pop(0)
+        run_turn(thread_id, turn_id)
+        poll()

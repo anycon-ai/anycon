@@ -1,0 +1,507 @@
+# 发布：推 `v*` 标签时构建并发布（README、docs/deploy.md 的安装说明以这里的产物为准）：
+#   1. hub 镜像 ghcr.io/anycon-ai/hub：linux/amd64、linux/arm64 各在原生 runner 上构建（Rust 在 QEMU 下太慢），
+#      按 digest 推送，再合成一个多架构清单，打 `<版本>`、`<主>.<次>`、`latest` 标签（预发布版只打 `<版本>`）
+#   2. `anycon` 二进制：macOS arm64 / x64、Linux x64 / arm64（glibc ≥ 2.35），连同 install.sh 挂到 GitHub Release
+#   3. npm 包 @anycon/protocol、@anycon/sdk：bun 打包（prepack 重新构建 dist 和 wasm，把 workspace:* 换成实际版本），
+#      npm 发布这两个 tarball（带 provenance），protocol 先于 sdk
+#   4. Homebrew formula：在 macOS 上从刚建好的 Release 装一遍、跑 `brew test`，再推到 anycon-ai/homebrew-tap
+# 每个产物都带第三方许可证清单（cargo-about，packaging/about.toml）。
+#
+# 先构建、后发布：镜像、二进制、npm 包全部构建并自检通过之后，才打镜像标签、建 Release、发 npm。
+# 手动触发（workflow_dispatch）只构建和自检、不发布，产物在 run 的 artifacts 里，用来在打标签之前把整条流水线试跑一遍。
+# 首次发布前要手动准备的东西（GHCR 包可见性、tap 仓库、NPM_TOKEN、HOMEBREW_TAP_TOKEN）见 CONTRIBUTING.md「发布」。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  IMAGE: ghcr.io/anycon-ai/hub
+  # 与 docker/hub.Dockerfile 的 about-tools 阶段保持一致
+  CARGO_ABOUT_VERSION: 0.9.2
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 版本号：标签、Cargo.toml、package.json、CHANGELOG 一致
+        id: version
+        run: |
+          version=$(awk -F '"' '/^version = /{ print $2; exit }' Cargo.toml)
+          test -n "$version"
+          for p in packages/protocol packages/sdk; do
+            v=$(jq -r .version "$p/package.json")
+            if [ "$v" != "$version" ]; then
+              echo "::error::$p/package.json is $v, Cargo.toml is $version"
+              exit 1
+            fi
+          done
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          if grep -q "^## \[$version\] - Unreleased" CHANGELOG.md; then
+            echo "::warning::CHANGELOG.md still marks $version as Unreleased"
+          fi
+          # 只有推标签才发布；手动触发（哪怕选的是标签）一律只构建
+          publish=false
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+              exit 1
+            fi
+            publish=true
+          fi
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          {
+            echo "version=$version"
+            echo "publish=$publish"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version publish=$publish prerelease=$prerelease"
+
+  # ---------- 构建 ----------
+
+  image:
+    name: image (${{ matrix.platform }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    env:
+      PUBLISH: ${{ needs.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 平台名
+        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+      - name: OCI 标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.title=anycon-hub
+            org.opencontainers.image.description=Anycon hub: routes end-to-end encrypted sessions between your machines and clients, and serves the Web UI
+      - uses: docker/setup-buildx-action@v3
+      - name: 登录 GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # 发布时只按 digest 推送（不打标签），两个平台都成功后由 image-manifest 合成清单再打标签；试跑时载入本地 docker。
+      - name: 构建
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/hub.Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: ${{ env.PUBLISH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) || 'type=docker,name=anycon-hub:release-test' }}
+          # main 上 CI 的 docker job 写的缓存（amd64）；标签 ref 能读默认分支的缓存，写回去没有意义
+          cache-from: type=gha
+      - name: 容器起得来，/healthz 200，许可证文件在
+        env:
+          REF: ${{ env.PUBLISH == 'true' && format('{0}@{1}', env.IMAGE, steps.build.outputs.digest) || 'anycon-hub:release-test' }}
+        run: |
+          docker run -d --name hub -p 127.0.0.1:8080:8080 -e ANYCON_PUBLIC_URL=http://127.0.0.1:8080 "$REF"
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          echo
+          # Web UI 里 npm 包的许可证随 Web UI 一起由 hub 下发（先存文件：管道里 grep -q 提前退出会让 curl 在 pipefail 下失败）
+          curl -fsS -o web-licenses.txt http://127.0.0.1:8080/THIRD-PARTY-LICENSES.txt
+          grep -q 'THIRD-PARTY SOFTWARE NOTICES' web-licenses.txt
+          docker cp hub:/usr/share/doc/anycon-hub ./doc
+          ls -l doc
+          for f in LICENSE THIRD-PARTY-LICENSES.txt THIRD-PARTY-LICENSES-wasm.txt THIRD-PARTY-LICENSES-web.txt; do
+            test -s "doc/$f"
+          done
+          docker rm -f hub
+      - name: 记下 digest
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: env.PUBLISH == 'true'
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  binaries:
+    name: anycon (${{ matrix.target }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          # Intel 版在 arm64 runner 上交叉编译：Apple 的 clang / ld 本身支持两种架构，aws-lc-sys、ring 的 C 代码直接能编
+          - target: x86_64-apple-darwin
+            runner: macos-15
+          # Linux 都用原生 runner（不交叉编译，不需要额外的 C 工具链和 cmake）；在 22.04 上构建，二进制要求 glibc ≥ 2.35
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: 构建
+        run: cargo build --release --locked -p anycon-cli --target "$TARGET"
+      - name: 二进制能跑（交叉编译的只检查架构）
+        run: |
+          bin="target/$TARGET/release/anycon"
+          file "$bin"
+          if [ "$TARGET" = x86_64-apple-darwin ]; then
+            lipo -archs "$bin" | grep -qx x86_64
+          else
+            "$bin" --version
+            "$bin" --version | grep -qx "anycon $VERSION"
+          fi
+      - name: 安装 cargo-about
+        run: cargo install cargo-about --locked --features cli --version "$CARGO_ABOUT_VERSION"
+      - name: 第三方许可证
+        run: |
+          cargo fetch --locked
+          cargo about generate packaging/about.hbs -c packaging/about.toml -m crates/cli/Cargo.toml --frozen --fail \
+            --target "$TARGET" -o THIRD-PARTY-LICENSES.txt
+      - name: 打包
+        run: |
+          name="anycon-$TARGET"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/anycon" LICENSE README.md CHANGELOG.md THIRD-PARTY-LICENSES.txt "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          cat "dist/$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  npm:
+    name: npm packages
+    needs: plan
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,wasm-pack
+      - name: 安装 cargo-about
+        run: cargo install cargo-about --locked --features cli --version "$CARGO_ABOUT_VERSION"
+      - run: bun install --frozen-lockfile
+      # prepack（packages/protocol/tools/prepack.sh、sdk 的 prepack）重新构建 wasm、dist 和 wasm 的许可证清单
+      - name: 打包
+        run: |
+          mkdir -p npm
+          (cd packages/protocol && bun pm pack --destination ../../npm)
+          (cd packages/sdk && bun pm pack --destination ../../npm)
+          ls -l npm
+      - name: tarball 内容
+        run: |
+          tar tzf "npm/anycon-protocol-$VERSION.tgz" | sort > protocol.txt
+          for f in LICENSE README.md dist/index.js dist/index.d.ts wasm/anycon_crypto.js wasm/anycon_crypto_bg.wasm wasm/THIRD-PARTY-LICENSES.txt; do
+            if ! grep -qx "package/$f" protocol.txt; then
+              echo "::error::@anycon/protocol tarball is missing $f"
+              exit 1
+            fi
+          done
+          tar tzf "npm/anycon-sdk-$VERSION.tgz" > sdk.txt
+          grep -qx package/dist/index.js sdk.txt
+          # workspace:* 已被换成实际版本
+          tar xzf "npm/anycon-sdk-$VERSION.tgz" -O package/package.json \
+            | jq -e --arg v "$VERSION" '.dependencies["@anycon/protocol"] == $v'
+      - name: 装进一个空项目，Node 下能加载 Noise wasm
+        run: |
+          # 在工作区外面装，确保用的是 tarball 而不是 workspace 里的源码
+          npm_dir=$PWD/npm
+          mkdir "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          echo '{"name":"consumer","private":true,"type":"module"}' > package.json
+          npm install --no-audit --no-fund "$npm_dir/anycon-protocol-$VERSION.tgz" "$npm_dir/anycon-sdk-$VERSION.tgz"
+          node --input-type=module -e "
+            import { loadCrypto } from '@anycon/protocol'
+            import { connect, pair } from '@anycon/sdk'
+            const noise = await loadCrypto()
+            noise.generateKeypair()
+            if (typeof connect !== 'function' || typeof pair !== 'function') throw new Error('sdk exports missing')
+            console.log('ok')
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: npm/*.tgz
+          if-no-files-found: error
+
+  # ---------- 发布（只在推标签时） ----------
+
+  image-manifest:
+    name: image (tags)
+    needs: [plan, image, binaries, npm]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      # 清单（index）上也写 OCI 注解：GHCR 的包页面读 index 上的 source / description
+      - name: 标签与注解
+        id: meta
+        uses: docker/metadata-action@v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.plan.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.plan.outputs.prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.title=anycon-hub
+            org.opencontainers.image.description=Anycon hub: routes end-to-end encrypted sessions between your machines and clients, and serves the Web UI
+          annotations: |
+            org.opencontainers.image.title=anycon-hub
+            org.opencontainers.image.description=Anycon hub: routes end-to-end encrypted sessions between your machines and clients, and serves the Web UI
+      - name: 合成多架构清单并打标签
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          args=()
+          while IFS= read -r tag; do args+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          while IFS= read -r a; do args+=(--annotation "$a"); done < <(jq -r '.annotations[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for digest in *; do args+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${args[@]}"
+      - name: 检查
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"
+
+  github-release:
+    name: GitHub Release
+    needs: [plan, image, binaries, npm]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: bin-*
+          merge-multiple: true
+      - name: install.sh（默认装这一版）和 SHA256SUMS
+        run: |
+          sed "s/^DEFAULT_VERSION=\"\"$/DEFAULT_VERSION=\"$VERSION\"/" packaging/install.sh > dist/install.sh
+          grep -qx "DEFAULT_VERSION=\"$VERSION\"" dist/install.sh
+          (cd dist && sha256sum ./*.tar.gz install.sh | sed 's| \./| |' > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: 构建来源证明（gh attestation verify）
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/install.sh
+      - name: Release notes（CHANGELOG 里这一版的段落 + 安装方式）
+        run: |
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on && /^\[[^]]+\]: / { next }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          cat >> notes.md <<EOF
+
+          ## Install
+
+          Hub image (linux/amd64, linux/arm64):
+
+          \`\`\`bash
+          docker pull ghcr.io/anycon-ai/hub:$VERSION
+          \`\`\`
+
+          \`anycon\` CLI and daemon (macOS arm64 / x64, Linux x64 / arm64 with glibc 2.35+):
+
+          \`\`\`bash
+          brew install anycon-ai/tap/anycon
+          # or
+          curl -fsSL https://github.com/anycon-ai/anycon/releases/download/v$VERSION/install.sh | sh
+          \`\`\`
+
+          npm: [\`@anycon/protocol@$VERSION\`](https://www.npmjs.com/package/@anycon/protocol/v/$VERSION), [\`@anycon/sdk@$VERSION\`](https://www.npmjs.com/package/@anycon/sdk/v/$VERSION).
+
+          Each archive contains \`THIRD-PARTY-LICENSES.txt\`. Verify an archive with \`sha256sum -c SHA256SUMS\` or \`gh attestation verify <file> --repo anycon-ai/anycon\`.
+          EOF
+          cat notes.md
+      - name: 建 Release 并上传（重跑时覆盖已有的同名文件）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            gh release upload "v$VERSION" dist/* --clobber
+          else
+            flags=(--latest)
+            if [ "$PRERELEASE" = true ]; then flags=(--prerelease --latest=false); fi
+            gh release create "v$VERSION" dist/* --verify-tag --title "v$VERSION" --notes-file notes.md "${flags[@]}"
+          fi
+
+  npm-publish:
+    name: npm publish
+    needs: [plan, image, binaries, npm]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: npm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: 发布（protocol 先于 sdk；已发布的版本跳过，方便重跑）
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DIST_TAG: ${{ needs.plan.outputs.prerelease == 'true' && 'next' || 'latest' }}
+        run: |
+          for pkg in protocol sdk; do
+            # 以输出为准：查到同一个版本号才跳过（查询失败、包或版本不存在都照常发布）
+            if [ "$(npm view "@anycon/$pkg@$VERSION" version 2> /dev/null)" = "$VERSION" ]; then
+              echo "@anycon/$pkg@$VERSION is already on npm, skipping"
+              continue
+            fi
+            npm publish "npm/anycon-$pkg-$VERSION.tgz" --access public --provenance --tag "$DIST_TAG"
+          done
+
+  homebrew:
+    name: Homebrew tap
+    needs: [plan, github-release]
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.prerelease == 'false'
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: bin-*
+          merge-multiple: true
+      - name: 生成 formula
+        run: |
+          packaging/homebrew-formula.sh "$VERSION" dist > anycon.rb
+          ruby -c anycon.rb
+          cat anycon.rb
+      # 从刚建好的 Release 真的下载、安装一遍（验证 url、sha256、补全生成和 `brew test`），再推到 tap
+      - name: 本地 tap 里装一遍
+        run: |
+          brew tap-new --no-git anycon-ai/release-check
+          cp anycon.rb "$(brew --repository anycon-ai/release-check)/Formula/anycon.rb"
+          brew install --formula anycon-ai/release-check/anycon
+          brew test anycon-ai/release-check/anycon
+          anycon --version
+      - name: 推到 anycon-ai/homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set"
+            exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/anycon-ai/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp anycon.rb tap/Formula/anycon.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/anycon.rb
+          if git diff --cached --quiet; then
+            echo "Formula/anycon.rb is already up to date"
+            exit 0
+          fi
+          git commit -m "anycon $VERSION"
+          git push origin HEAD

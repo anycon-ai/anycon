@@ -1,0 +1,10 @@
+{"method":"thread/status/changed","params":{"threadId":"FIXTURE_THREAD","status":{"type":"active","activeFlags":[]}},"emittedAtMs":1791790001134}
+{"method":"turn/started","params":{"threadId":"FIXTURE_THREAD","turn":{"id":"FIXTURE_TURN","items":[],"itemsView":"notLoaded","status":"inProgress","error":null,"startedAt":1791790000,"completedAt":null,"durationMs":null}},"emittedAtMs":1791790001141}
+{"method":"future/unheardOf","params":{"x":1},"emittedAtMs":1791790001148}
+{"method":"item/started","params":{"item":{"type":"holographicProjection","id":"h1","beam":"wide"},"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","startedAtMs":1791790001155},"emittedAtMs":1791790001162}
+{"method":"item/completed","params":{"item":{"type":"holographicProjection","id":"h1","beam":"wide"},"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","completedAtMs":1791790001169},"emittedAtMs":1791790001176}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"Fine ","newField":{"nested":true}},"emittedAtMs":1791790001183}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"anyway."},"emittedAtMs":1791790001190}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_1","text":"Fine anyway.","phase":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","completedAtMs":1791790001197},"emittedAtMs":1791790001204}
+{"method":"thread/status/changed","params":{"threadId":"FIXTURE_THREAD","status":{"type":"idle"}},"emittedAtMs":1791790001211}
+{"method":"turn/completed","params":{"threadId":"FIXTURE_THREAD","turn":{"id":"FIXTURE_TURN","items":[{"type":"agentMessage","id":"msg_1","text":"Fine anyway.","phase":null,"memoryCitation":null,"delivery":null,"questions":null}],"itemsView":"summary","status":"completed","error":null,"startedAt":1791790000,"completedAt":1791790001,"durationMs":120}},"emittedAtMs":1791790001218}

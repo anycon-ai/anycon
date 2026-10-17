@@ -1,0 +1,434 @@
+[
+  {
+    "direction": "notification",
+    "name": "pair.ack",
+    "params": "PairAck",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "node.info",
+    "params": null,
+    "result": "NodeInfo"
+  },
+  {
+    "direction": "request",
+    "name": "node.devices",
+    "params": null,
+    "result": "NodeDevicesResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.revoke_device",
+    "params": "NodeRevokeDeviceParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "node.pair_begin",
+    "params": "NodePairBeginParams",
+    "result": "NodePairBeginResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.stats",
+    "params": null,
+    "result": "NodeStats"
+  },
+  {
+    "direction": "request",
+    "name": "node.doctor",
+    "params": null,
+    "result": "NodeDoctorResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.audit",
+    "params": "NodeAuditParams",
+    "result": "NodeAuditResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.set_agent_defaults",
+    "params": "NodeSetAgentDefaultsParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "node.enroll_list",
+    "params": null,
+    "result": "NodeEnrollListResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.enroll_approve",
+    "params": "NodeEnrollApproveParams",
+    "result": "NodeEnrollApproveResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.enroll_deny",
+    "params": "NodeEnrollIdParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "node.enroll_code",
+    "params": null,
+    "result": "NodeEnrollCodeResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.enroll_status",
+    "params": null,
+    "result": "NodeEnrollStatusResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.set_enroll_password",
+    "params": "NodeSetEnrollPasswordParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "node.set_enroll_enabled",
+    "params": "NodeSetEnrollEnabledParams",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "node.enroll_requested",
+    "params": "EnrollInfo",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "node.enroll_resolved",
+    "params": "NodeEnrollResolved",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "node.security_event",
+    "params": "NodeSecurityEvent",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "agent.list",
+    "params": "AgentListParams",
+    "result": "AgentListResult"
+  },
+  {
+    "direction": "request",
+    "name": "agent.diagnose",
+    "params": "AgentDiagnoseParams",
+    "result": "AgentDiagnoseResult"
+  },
+  {
+    "direction": "notification",
+    "name": "agent.changed",
+    "params": "AgentListResult",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "workspace.list",
+    "params": null,
+    "result": "WorkspaceListResult"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.create",
+    "params": "WorkspaceCreateParams",
+    "result": "Project"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.clone",
+    "params": "WorkspaceCloneParams",
+    "result": "JobStarted"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.rename",
+    "params": "WorkspaceRenameParams",
+    "result": "RenamedProject"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.trash",
+    "params": "WorkspaceNameParams",
+    "result": "TrashEntry"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.trash_list",
+    "params": null,
+    "result": "WorkspaceTrashListResult"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.restore",
+    "params": "WorkspaceTrashIdParams",
+    "result": "Project"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.purge",
+    "params": "WorkspaceTrashIdParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "workspace.link",
+    "params": "WorkspaceLinkParams",
+    "result": "Project"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.unlink",
+    "params": "WorkspaceNameParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "workspace.browse",
+    "params": "WorkspaceBrowseParams",
+    "result": "WorkspaceBrowseResult"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.branches",
+    "params": "WorkspaceBranchesParams",
+    "result": "WorkspaceBranchesResult"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.worktrees",
+    "params": "WorkspaceWorktreesParams",
+    "result": "WorkspaceWorktreesResult"
+  },
+  {
+    "direction": "request",
+    "name": "workspace.remove_worktree",
+    "params": "WorkspaceRemoveWorktreeParams",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "workspace.changed",
+    "params": "WorkspaceChanged",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "job.progress",
+    "params": "JobProgress",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "job.done",
+    "params": "JobDone",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "job.cancel",
+    "params": "JobCancelParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "fs.list",
+    "params": "FsListParams",
+    "result": "FsListResult"
+  },
+  {
+    "direction": "request",
+    "name": "fs.read",
+    "params": "FsReadParams",
+    "result": "FsReadResult"
+  },
+  {
+    "direction": "request",
+    "name": "session.list",
+    "params": "SessionListParams",
+    "result": "SessionListResult"
+  },
+  {
+    "direction": "request",
+    "name": "session.get",
+    "params": "SessionIdParams",
+    "result": "SessionSummary"
+  },
+  {
+    "direction": "request",
+    "name": "session.create",
+    "params": "SessionCreateParams",
+    "result": "SessionSummary"
+  },
+  {
+    "direction": "request",
+    "name": "session.send",
+    "params": "SessionSendParams",
+    "result": "SessionSendResult"
+  },
+  {
+    "direction": "request",
+    "name": "session.cancel",
+    "params": "SessionIdParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.set_settings",
+    "params": "SessionSetSettingsParams",
+    "result": "SessionSetSettingsResult"
+  },
+  {
+    "direction": "request",
+    "name": "session.watch",
+    "params": "SessionIdParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.unwatch",
+    "params": "SessionIdParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.history",
+    "params": "SessionHistoryParams",
+    "result": "SessionHistoryResult"
+  },
+  {
+    "direction": "notification",
+    "name": "session.event",
+    "params": "SessionEvent",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "session.changed",
+    "params": "SessionChanged",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.rename",
+    "params": "SessionRenameParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.archive",
+    "params": "SessionArchiveParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.unarchive",
+    "params": "SessionIdParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.delete",
+    "params": "SessionDeleteParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.restart",
+    "params": "SessionIdParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.search",
+    "params": "SessionSearchParams",
+    "result": "SessionSearchResult"
+  },
+  {
+    "direction": "request",
+    "name": "session.promote",
+    "params": "SessionPromoteParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.git_status",
+    "params": "SessionGitStatusParams",
+    "result": "SessionGitStatus"
+  },
+  {
+    "direction": "request",
+    "name": "session.diff",
+    "params": "SessionDiffParams",
+    "result": "SessionDiffResult"
+  },
+  {
+    "direction": "request",
+    "name": "session.sync_base",
+    "params": "SessionSyncBaseParams",
+    "result": "SessionSyncBaseResult"
+  },
+  {
+    "direction": "request",
+    "name": "blob.put_begin",
+    "params": "BlobPutBeginParams",
+    "result": "BlobPutBeginResult"
+  },
+  {
+    "direction": "request",
+    "name": "blob.put_chunk",
+    "params": "BlobPutChunkParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "blob.put_end",
+    "params": "BlobIdParams",
+    "result": "AttachmentRef"
+  },
+  {
+    "direction": "request",
+    "name": "blob.get",
+    "params": "BlobGetParams",
+    "result": "BlobGetResult"
+  },
+  {
+    "direction": "request",
+    "name": "blob.discard",
+    "params": "BlobIdParams",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "permission.request",
+    "params": "PermissionRequest",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "permission.respond",
+    "params": "PermissionRespondParams",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "permission.resolved",
+    "params": "PermissionResolved",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "permission.list",
+    "params": "PermissionListParams",
+    "result": "PermissionListResult"
+  }
+]

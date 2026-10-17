@@ -1,0 +1,471 @@
+[
+  {
+    "name": "control_auth_fail",
+    "type": "control",
+    "value": {
+      "reason": "revoked",
+      "type": "auth_fail"
+    }
+  },
+  {
+    "name": "control_auth_no_token",
+    "type": "control",
+    "value": {
+      "client": {
+        "kind": "sdk",
+        "name": "ci-runner",
+        "platform": "linux-x86_64",
+        "version": "0.1.0"
+      },
+      "protocol_version": 1,
+      "type": "auth"
+    }
+  },
+  {
+    "name": "control_auth_ok",
+    "type": "control",
+    "value": {
+      "device_id": "0123456789abcdef0123456789abcdef",
+      "peers_online": [
+        "fedcba9876543210fedcba9876543210",
+        "00112233445566778899aabbccddeeff"
+      ],
+      "server_time_ms": 1760000000000,
+      "type": "auth_ok"
+    }
+  },
+  {
+    "name": "control_auth_ok_quota_empty_peers",
+    "type": "control",
+    "value": {
+      "device_id": "0123456789abcdef0123456789abcdef",
+      "peers_online": [],
+      "quota": {
+        "connections": 300,
+        "connections_max": 70000,
+        "daemons": 1,
+        "daemons_max": null,
+        "devices": 2,
+        "devices_max": 10
+      },
+      "server_time_ms": 42,
+      "type": "auth_ok"
+    }
+  },
+  {
+    "name": "control_auth_with_token_web",
+    "type": "control",
+    "value": {
+      "client": {
+        "kind": "web",
+        "name": "Chrome · macOS · hub.example.com",
+        "origin": "https://hub.example.com",
+        "platform": "browser",
+        "version": "0.1.0"
+      },
+      "device_token": "tok_7f3a9c1e5b2d4f60",
+      "protocol_version": 1,
+      "type": "auth"
+    }
+  },
+  {
+    "name": "control_backpressure",
+    "type": "control",
+    "value": {
+      "seq": 256,
+      "to": "fedcba9876543210fedcba9876543210",
+      "type": "backpressure"
+    }
+  },
+  {
+    "name": "control_dropped_not_paired",
+    "type": "control",
+    "value": {
+      "reason": "not_paired",
+      "seq": 3,
+      "type": "dropped"
+    }
+  },
+  {
+    "name": "control_dropped_rate_limited",
+    "type": "control",
+    "value": {
+      "reason": "rate_limited",
+      "seq": 300,
+      "type": "dropped"
+    }
+  },
+  {
+    "name": "control_dropped_too_large",
+    "type": "control",
+    "value": {
+      "reason": "too_large",
+      "seq": 70000,
+      "type": "dropped"
+    }
+  },
+  {
+    "name": "control_enroll_begin",
+    "type": "control",
+    "value": {
+      "node": "fedcba9876543210fedcba9876543210",
+      "type": "enroll_begin"
+    }
+  },
+  {
+    "name": "control_enroll_cancel",
+    "type": "control",
+    "value": {
+      "enroll_id": "00112233445566778899aabbccddeeff",
+      "type": "enroll_cancel"
+    }
+  },
+  {
+    "name": "control_enroll_failed",
+    "type": "control",
+    "value": {
+      "enroll_id": "00112233445566778899aabbccddeeff",
+      "reason": "offline",
+      "type": "enroll_failed"
+    }
+  },
+  {
+    "name": "control_enroll_failed_no_id",
+    "type": "control",
+    "value": {
+      "reason": "forbidden",
+      "type": "enroll_failed"
+    }
+  },
+  {
+    "name": "control_enroll_request",
+    "type": "control",
+    "value": {
+      "enroll_id": "00112233445566778899aabbccddeeff",
+      "expires_at_ms": 1700000300000,
+      "peer": "0123456789abcdef0123456789abcdef",
+      "type": "enroll_request"
+    }
+  },
+  {
+    "name": "control_enroll_started",
+    "type": "control",
+    "value": {
+      "enroll_id": "00112233445566778899aabbccddeeff",
+      "expires_at_ms": 1700000300000,
+      "node": "fedcba9876543210fedcba9876543210",
+      "type": "enroll_started"
+    }
+  },
+  {
+    "name": "control_pair_begin",
+    "type": "control",
+    "value": {
+      "match_id": "0123456789abcdef",
+      "type": "pair_begin"
+    }
+  },
+  {
+    "name": "control_pair_confirm",
+    "type": "control",
+    "value": {
+      "peer": "fedcba9876543210fedcba9876543210",
+      "type": "pair_confirm"
+    }
+  },
+  {
+    "name": "control_pair_done_host",
+    "type": "control",
+    "value": {
+      "peer": "0123456789abcdef0123456789abcdef",
+      "type": "pair_done"
+    }
+  },
+  {
+    "name": "control_pair_done_joiner",
+    "type": "control",
+    "value": {
+      "device_id": "0123456789abcdef0123456789abcdef",
+      "device_token": "tok_0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "peer": "fedcba9876543210fedcba9876543210",
+      "type": "pair_done"
+    }
+  },
+  {
+    "name": "control_pair_failed",
+    "type": "control",
+    "value": {
+      "reason": "timeout",
+      "type": "pair_failed"
+    }
+  },
+  {
+    "name": "control_pair_join",
+    "type": "control",
+    "value": {
+      "match_id": "0123456789abcdef",
+      "type": "pair_join"
+    }
+  },
+  {
+    "name": "control_pair_matched",
+    "type": "control",
+    "value": {
+      "peer": "fedcba9876543210fedcba9876543210",
+      "role": "joiner",
+      "type": "pair_matched"
+    }
+  },
+  {
+    "name": "control_pair_registered",
+    "type": "control",
+    "value": {
+      "expires_at_ms": 1760000300000,
+      "type": "pair_registered"
+    }
+  },
+  {
+    "name": "control_peer_offline",
+    "type": "control",
+    "value": {
+      "device": "fedcba9876543210fedcba9876543210",
+      "type": "peer_offline"
+    }
+  },
+  {
+    "name": "control_peer_online",
+    "type": "control",
+    "value": {
+      "device": "fedcba9876543210fedcba9876543210",
+      "type": "peer_online"
+    }
+  },
+  {
+    "name": "control_queue_drop",
+    "type": "control",
+    "value": {
+      "seq": 9,
+      "type": "queue_drop"
+    }
+  },
+  {
+    "name": "control_queue_overflow",
+    "type": "control",
+    "value": {
+      "dropped_seqs": [
+        3,
+        4,
+        300,
+        70000
+      ],
+      "to": "fedcba9876543210fedcba9876543210",
+      "type": "queue_overflow"
+    }
+  },
+  {
+    "name": "control_quota_update",
+    "type": "control",
+    "value": {
+      "quota": {
+        "connections": 300,
+        "connections_max": 70000,
+        "daemons": 1,
+        "daemons_max": null,
+        "devices": 2,
+        "devices_max": 10
+      },
+      "type": "quota_update"
+    }
+  },
+  {
+    "name": "control_rate_limited",
+    "type": "control",
+    "value": {
+      "retry_after_ms": 1500,
+      "type": "rate_limited"
+    }
+  },
+  {
+    "name": "control_revoke",
+    "type": "control",
+    "value": {
+      "device": "fedcba9876543210fedcba9876543210",
+      "type": "revoke"
+    }
+  },
+  {
+    "name": "control_rotate_token",
+    "type": "control",
+    "value": {
+      "type": "rotate_token"
+    }
+  },
+  {
+    "name": "control_token_rotated",
+    "type": "control",
+    "value": {
+      "device_token": "tok_new",
+      "type": "token_rotated"
+    }
+  },
+  {
+    "name": "control_undeliverable",
+    "type": "control",
+    "value": {
+      "seq": 17,
+      "to": "fedcba9876543210fedcba9876543210",
+      "type": "undeliverable"
+    }
+  },
+  {
+    "name": "envelope_control_auth",
+    "type": "envelope",
+    "value": {
+      "body_hex": "83a474797065a461757468b070726f746f636f6c5f76657273696f6e01a6636c69656e7484a46e616d65a963692d72756e6e6572a46b696e64a373646ba8706c6174666f726dac6c696e75782d7838365f3634a776657273696f6ea5302e312e30",
+      "from": "",
+      "kind": "control",
+      "seq": 1,
+      "to": "",
+      "v": 1
+    }
+  },
+  {
+    "name": "envelope_data_bin16_min",
+    "type": "envelope",
+    "value": {
+      "body_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fa0001020304",
+      "from": "fedcba9876543210fedcba9876543210",
+      "kind": "data",
+      "seq": 70000,
+      "to": "0123456789abcdef0123456789abcdef",
+      "v": 1
+    }
+  },
+  {
+    "name": "envelope_data_bin8_max",
+    "type": "envelope",
+    "value": {
+      "body_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fa00010203",
+      "from": "0123456789abcdef0123456789abcdef",
+      "kind": "data",
+      "seq": 300,
+      "to": "fedcba9876543210fedcba9876543210",
+      "v": 1
+    }
+  },
+  {
+    "name": "envelope_data_seq_u64",
+    "type": "envelope",
+    "value": {
+      "body_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627",
+      "from": "0123456789abcdef0123456789abcdef",
+      "kind": "data",
+      "seq": 4294967296,
+      "to": "fedcba9876543210fedcba9876543210",
+      "v": 1
+    }
+  },
+  {
+    "name": "envelope_handshake_small",
+    "type": "envelope",
+    "value": {
+      "body_hex": "00010203",
+      "from": "0123456789abcdef0123456789abcdef",
+      "kind": "handshake",
+      "seq": 1,
+      "to": "fedcba9876543210fedcba9876543210",
+      "v": 1
+    }
+  },
+  {
+    "name": "envelope_notify_empty_body",
+    "type": "envelope",
+    "value": {
+      "body_hex": "",
+      "from": "0123456789abcdef0123456789abcdef",
+      "kind": "notify",
+      "seq": 0,
+      "to": "fedcba9876543210fedcba9876543210",
+      "v": 1
+    }
+  },
+  {
+    "name": "rpc_notification",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "session.watch",
+      "params": {
+        "session_id": "sess_abc"
+      }
+    }
+  },
+  {
+    "name": "rpc_request_num_id",
+    "type": "rpc",
+    "value": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "method": "node.info",
+      "params": {}
+    }
+  },
+  {
+    "name": "rpc_request_str_id",
+    "type": "rpc",
+    "value": {
+      "id": "c3b1",
+      "jsonrpc": "2.0",
+      "method": "session.send",
+      "params": {
+        "content": "跑一下测试 ✅",
+        "message_id": "m-1",
+        "session_id": "sess_abc"
+      }
+    }
+  },
+  {
+    "name": "rpc_response_error_not_found",
+    "type": "rpc",
+    "value": {
+      "error": {
+        "code": -32007,
+        "data": {
+          "code": "not_found"
+        },
+        "message": "no such session"
+      },
+      "id": "x",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "name": "rpc_response_error_settings",
+    "type": "rpc",
+    "value": {
+      "error": {
+        "code": -32001,
+        "data": {
+          "code": "invalid_settings",
+          "field": "thinking",
+          "reason": "not supported by model"
+        },
+        "message": "invalid settings"
+      },
+      "id": 8,
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "name": "rpc_response_result",
+    "type": "rpc",
+    "value": {
+      "id": 7,
+      "jsonrpc": "2.0",
+      "result": {
+        "queued": false,
+        "turn_id": 3
+      }
+    }
+  }
+]

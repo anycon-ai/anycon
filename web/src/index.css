@@ -1,0 +1,343 @@
+@import 'tailwindcss';
+@import 'react-diff-view/style/index.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---- 设计 token（说明见 web/DESIGN.md）---- */
+:root {
+  --bg: #ffffff;
+  --bg-subtle: #f7f7f9;
+  --bg-muted: #efeff3;
+  --bg-hover: #f1f1f5;
+  --surface: #ffffff;
+  --border: #e4e4ea;
+  --border-strong: #cfcfd9;
+  --fg: #17171c;
+  --fg-muted: #565662;
+  --fg-subtle: #858592;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-fg: #ffffff;
+  --accent-text: #4f46e5;
+  --accent-subtle: #eef0ff;
+  --success: #15803d;
+  --success-subtle: #e7f6ec;
+  --warning: #a16207;
+  --warning-subtle: #fef6d8;
+  --danger: #dc2626;
+  --danger-subtle: #fdecec;
+  --info: #1d4ed8;
+  --info-subtle: #e8f0fe;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 4px 16px rgb(0 0 0 / 0.06);
+  --msg-gap: 1.25rem;
+  color-scheme: light;
+}
+/* 深色：取自 VS Code「2026 Dark」主题（extensions/theme-defaults/themes/2026-dark.json） */
+.dark {
+  --bg: #121314; /* editor.background */
+  --bg-subtle: #191a1b; /* sideBar.background */
+  --bg-muted: #242526; /* textCodeBlock.background */
+  --bg-hover: #2b2c2d; /* list.hoverBackground（#ffffff14）叠在侧栏底上的实色 */
+  --surface: #202122; /* editorWidget / menu.background */
+  --border: #2a2b2c; /* sideBar.border / widget.border */
+  --border-strong: #333536; /* input.border */
+  --fg: #bfbfbf; /* foreground */
+  --fg-muted: #8c8c8c; /* descriptionForeground */
+  --fg-subtle: #777879; /* disabledForeground #555 对比度不够，提亮一档 */
+  --accent: #297aa0; /* button.background */
+  --accent-hover: #2b7da3; /* button.hoverBackground */
+  --accent-fg: #ffffff; /* button.foreground */
+  --accent-text: #48a0c7; /* textLink.foreground：深底上的强调色文字 / 图标 */
+  --accent-subtle: #1f323b; /* menu.selectionBackground（#3994bc26）的实色 */
+  --success: #73c991; /* gitDecoration.addedResourceForeground */
+  --success-subtle: #1d2b21;
+  --warning: #e5ba7d; /* gitDecoration.modifiedResourceForeground */
+  --warning-subtle: #352a05; /* inputValidation.warningBackground */
+  --danger: #f48771; /* errorForeground */
+  --danger-subtle: #3a1d1d; /* inputValidation.errorBackground */
+  --info: #57a3f8; /* charts.blue */
+  --info-subtle: #1e3a47; /* inputValidation.infoBackground */
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+  color-scheme: dark;
+}
+html[data-compact='1'] {
+  --msg-gap: 0.625rem;
+}
+/* 字号三档：整个界面用 rem，改根字号即可 */
+html {
+  font-size: 16px;
+}
+html[data-font='sm'] {
+  font-size: 14px;
+}
+html[data-font='lg'] {
+  font-size: 18px;
+}
+
+@theme inline {
+  --breakpoint-xl: 75rem; /* 1200px：三栏布局的断点 */
+  --color-bg: var(--bg);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-bg-muted: var(--bg-muted);
+  --color-bg-hover: var(--bg-hover);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-text: var(--accent-text);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-success: var(--success);
+  --color-success-subtle: var(--success-subtle);
+  --color-warning: var(--warning);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-danger: var(--danger);
+  --color-danger-subtle: var(--danger-subtle);
+  --color-info: var(--info);
+  --color-info-subtle: var(--info-subtle);
+  --shadow-pop: var(--shadow);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  code,
+  kbd,
+  pre {
+    font-family: var(--font-mono);
+  }
+}
+
+/* 整页高度：手机上用 dvh，键盘弹起时输入区跟随 */
+.h-screen-dvh {
+  height: 100vh;
+  height: 100dvh;
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* 细滚动条 */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* ---- Markdown ---- */
+.md {
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md table,
+.md pre {
+  margin: 0.6em 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.1em 0 0.4em;
+}
+.md h1 {
+  font-size: 1.25rem;
+}
+.md h2 {
+  font-size: 1.125rem;
+}
+.md h3,
+.md h4 {
+  font-size: 1rem;
+}
+.md ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+.md ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+.md li {
+  margin: 0.15em 0;
+}
+.md a {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 0.9em;
+  color: var(--fg-muted);
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1em 0;
+}
+.md :not(pre) > code {
+  background: var(--bg-muted);
+  border-radius: 0.3rem;
+  padding: 0.1em 0.35em;
+  font-size: 0.875em;
+}
+.md table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 0.3em 0.7em;
+}
+.md th {
+  background: var(--bg-subtle);
+  font-weight: 600;
+}
+
+/* ---- shiki 双主题：用 CSS 变量切换 ---- */
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  background-color: transparent;
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}
+.code-pre {
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.code-pre pre {
+  margin: 0;
+  background: transparent !important;
+  white-space: pre;
+}
+
+/* ---- react-diff-view 配色对齐 token ---- */
+.diff {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  width: 100%;
+  color: var(--fg);
+}
+.diff-gutter,
+.diff-gutter-insert,
+.diff-gutter-delete,
+.diff-gutter-normal,
+.diff-line {
+  color: var(--fg-subtle);
+}
+.diff-gutter-insert,
+.diff-code-insert {
+  background-color: color-mix(in srgb, var(--success) 14%, transparent);
+}
+.diff-gutter-delete,
+.diff-code-delete {
+  background-color: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+.diff-code-insert .diff-code-edit,
+.diff-code-delete .diff-code-edit {
+  background-color: transparent;
+}
+.diff-hunk,
+.diff-decoration-content {
+  background: var(--bg-muted);
+  color: var(--fg-muted);
+}
+.diff-code {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---- 动画 ---- */
+@keyframes anycon-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+.animate-pulse-soft {
+  animation: anycon-pulse 1.4s ease-in-out infinite;
+}
+@keyframes anycon-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+.stream-caret::after {
+  content: '▍';
+  margin-left: 1px;
+  animation: anycon-caret 1s step-end infinite;
+  color: var(--accent-text);
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-soft,
+  .stream-caret::after,
+  .animate-spin {
+    animation: none !important;
+  }
+}

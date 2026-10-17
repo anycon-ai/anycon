@@ -1,0 +1,17 @@
+{"method":"thread/status/changed","params":{"threadId":"FIXTURE_THREAD","status":{"type":"active","activeFlags":[]}},"emittedAtMs":1791790000392}
+{"method":"turn/started","params":{"threadId":"FIXTURE_THREAD","turn":{"id":"FIXTURE_TURN","items":[],"itemsView":"notLoaded","status":"inProgress","error":null,"startedAt":1791790000,"completedAt":null,"durationMs":null}},"emittedAtMs":1791790000399}
+{"method":"mcpServer/elicitation/request","id":0,"params":{"serverName":"docs","threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","mode":"form","message":"Which workspace?","requestedSchema":{"type":"object","properties":{"workspace":{"type":"string","title":"Workspace"}},"required":["workspace"]}}}
+{"method":"serverRequest/resolved","params":{"threadId":"FIXTURE_THREAD","requestId":0},"emittedAtMs":1791790000406}
+{"method":"item/tool/call","id":1,"params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","callId":"dyn_1","tool":"lookup_ticket","arguments":{"id":7}}}
+{"method":"serverRequest/resolved","params":{"threadId":"FIXTURE_THREAD","requestId":1},"emittedAtMs":1791790000413}
+{"method":"execCommandApproval","id":2,"params":{"conversationId":"FIXTURE_THREAD","callId":"legacy_1","command":["ls","-la"],"cwd":"/work/proj","parsedCmd":[{"type":"unknown","cmd":"ls -la"}],"reason":null}}
+{"method":"serverRequest/resolved","params":{"threadId":"FIXTURE_THREAD","requestId":2},"emittedAtMs":1791790000420}
+{"method":"account/chatgptAuthTokens/refresh","id":3,"params":{"reason":"unauthorized","previousAccountId":null}}
+{"method":"serverRequest/resolved","params":{"threadId":"FIXTURE_THREAD","requestId":3},"emittedAtMs":1791790000427}
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"msg_1","text":"","phase":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","startedAtMs":1791790000434},"emittedAtMs":1791790000441}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"Carried on "},"emittedAtMs":1791790000448}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"without them."},"emittedAtMs":1791790000455}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_1","text":"Carried on without them.","phase":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","completedAtMs":1791790000462},"emittedAtMs":1791790000469}
+{"method":"thread/tokenUsage/updated","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","tokenUsage":{"total":{"totalTokens":68,"inputTokens":60,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":8,"reasoningOutputTokens":0},"last":{"totalTokens":68,"inputTokens":60,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":8,"reasoningOutputTokens":0},"modelContextWindow":258400}},"emittedAtMs":1791790000476}
+{"method":"thread/status/changed","params":{"threadId":"FIXTURE_THREAD","status":{"type":"idle"}},"emittedAtMs":1791790000483}
+{"method":"turn/completed","params":{"threadId":"FIXTURE_THREAD","turn":{"id":"FIXTURE_TURN","items":[{"type":"agentMessage","id":"msg_1","text":"Carried on without them.","phase":null,"memoryCitation":null,"delivery":null,"questions":null}],"itemsView":"summary","status":"completed","error":null,"startedAt":1791790000,"completedAt":1791790001,"durationMs":120}},"emittedAtMs":1791790000490}

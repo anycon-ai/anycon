@@ -1,0 +1,30 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /packages/protocol/tools/gen-vectors
+    schedule:
+      interval: weekly
+    groups:
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+
+  # bun workspace：一个 bun.lock 管所有包，只从根目录扫一次（按目录分开会出重复的 PR，npm 生态也不会更新 bun.lock）
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # typescript-eslint 8.x 的 peer 范围是 typescript <6.1，装上 TS 7 时直接抛错，web 的 lint 跑不起来。
+      # 等 typescript-eslint 支持新大版本后删掉这条，手动升级。
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,0 +1,423 @@
+//! 存储抽象。hub 的其余部分只依赖 [`Store`] trait，v0.1 的实现是 [`SqliteStore`]（Postgres 以后再加）。
+//!
+//! 表结构见 `migrations/sqlite/` 和 docs/spec/hub.md § 8：全是元数据，没有任何会话内容。
+//! 所有 token / 邀请码 / cookie 值都只以哈希形式出现在这里（见 [`crate::util::hash_token`]）。
+
+use anycon_protocol::{DeviceKind, NotifyCategory};
+use async_trait::async_trait;
+use serde::Serialize;
+
+mod sqlite;
+
+pub use sqlite::SqliteStore;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("storage backend error: {0}")]
+    Backend(String),
+    #[error("migration error: {0}")]
+    Migrate(String),
+    #[error("invalid stored value: {0}")]
+    Corrupt(String),
+}
+
+pub type StoreResult<T> = Result<T, StoreError>;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Account {
+    pub id: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub is_admin: bool,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountToken {
+    pub id: String,
+    pub label: String,
+    pub created_at_ms: u64,
+    pub last_used_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebSession {
+    pub id: String,
+    pub account_id: String,
+    pub user_agent: String,
+    pub ip_prefix: String,
+    pub created_at_ms: u64,
+    pub last_seen_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Invite {
+    pub id: String,
+    pub created_by: String,
+    pub note: Option<String>,
+    pub created_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub used_by: Option<String>,
+    pub used_at_ms: Option<u64>,
+}
+
+/// 兑换邀请的结果。
+#[derive(Debug)]
+pub enum RedeemOutcome {
+    Redeemed(Account),
+    NotFound,
+    Expired,
+    Used,
+}
+
+#[derive(Debug, Clone)]
+pub struct Device {
+    pub id: String,
+    pub account_id: String,
+    pub kind: DeviceKind,
+    pub name: String,
+    pub platform: String,
+    pub origin: Option<String>,
+    pub created_at_ms: u64,
+    pub last_seen_ms: Option<u64>,
+    pub revoked_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewDevice {
+    pub id: String,
+    pub account_id: String,
+    pub kind: DeviceKind,
+    pub name: String,
+    pub platform: String,
+    pub origin: Option<String>,
+    pub token_hash: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NewAudit {
+    pub event: &'static str,
+    pub account_id: Option<String>,
+    pub device_id: Option<String>,
+    pub ip_prefix: Option<String>,
+    pub user_agent: Option<String>,
+    /// 只放元数据（方式、对端设备 id……），绝不放任何内容或秘密。
+    pub detail: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub ts_ms: u64,
+    pub event: String,
+    pub account_id: Option<String>,
+    pub device_id: Option<String>,
+    pub ip_prefix: Option<String>,
+    pub user_agent: Option<String>,
+    pub detail: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StoreStats {
+    pub accounts: u64,
+    pub devices: u64,
+    pub db_size_bytes: u64,
+}
+
+/// 邮箱验证码的用途：`Login` 用来登录，`Bind` 用来给已登录账号绑定 / 换绑邮箱。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmailPurpose {
+    Login,
+    Bind,
+}
+
+impl EmailPurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EmailPurpose::Login => "login",
+            EmailPurpose::Bind => "bind",
+        }
+    }
+}
+
+/// 库里的一条验证码（只有哈希）。`Debug` 不输出邮箱和哈希。
+///
+/// 同一组（邮箱，用途，账号）里可以同时有几条有效的码（[`Store::put_email_code`]）：登录码一组 = 一个邮箱，
+/// 绑定码一组 = （发起绑定的账号，邮箱）。
+#[derive(Clone)]
+pub struct EmailCode {
+    /// 规范化后的邮箱。
+    pub email: String,
+    pub purpose: EmailPurpose,
+    /// `Bind` 时是发起绑定的账号；`Login` 时为 `None`。
+    pub account_id: Option<String>,
+    pub code_hash: String,
+    pub expires_at_ms: u64,
+    /// 这一条码已经被尝试了几次。
+    pub attempts: u32,
+    pub created_at_ms: u64,
+}
+
+impl std::fmt::Debug for EmailCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailCode")
+            .field("purpose", &self.purpose)
+            .field("attempts", &self.attempts)
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish_non_exhaustive()
+    }
+}
+
+/// [`Store::attempt_email_codes`] 交回来的一条码：刚被计过一次尝试的那一行。`id` 用来认领（[`Store::take_email_code`]）。
+/// `Debug` 不输出哈希。
+#[derive(Clone)]
+pub struct CodeCandidate {
+    pub id: i64,
+    pub code_hash: String,
+    /// 算上这一次提交，这条码已经被尝试了几次。
+    pub attempts: u32,
+}
+
+impl std::fmt::Debug for CodeCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodeCandidate").field("id", &self.id).field("attempts", &self.attempts).finish_non_exhaustive()
+    }
+}
+
+/// 给账号设邮箱的结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetEmailOutcome {
+    Done,
+    /// 邮箱已经属于别的账号（唯一约束）。
+    Taken,
+}
+
+/// 一条 Web Push 订阅（按设备存，一台设备一条）。`Debug` 不输出 endpoint 和密钥。
+#[derive(Clone)]
+pub struct PushSubscription {
+    pub id: String,
+    pub device_id: String,
+    pub endpoint: String,
+    pub p256dh: String,
+    pub auth: String,
+    pub created_at_ms: u64,
+}
+
+impl std::fmt::Debug for PushSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushSubscription")
+            .field("id", &self.id)
+            .field("device_id", &self.device_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// 账号订阅列表里的一行：订阅 + 设备名。`Debug` 不输出 endpoint。
+#[derive(Clone)]
+pub struct PushSubscriptionRow {
+    pub id: String,
+    pub device_id: String,
+    pub device_name: String,
+    /// 只给 `Url` 解析出主机名用，不要整个打日志。
+    pub endpoint: String,
+    pub created_at_ms: u64,
+}
+
+impl std::fmt::Debug for PushSubscriptionRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushSubscriptionRow")
+            .field("id", &self.id)
+            .field("device_id", &self.device_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// 通知偏好里的一行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotificationPref {
+    pub category: NotifyCategory,
+    pub push: bool,
+    pub email: bool,
+}
+
+pub fn category_to_str(c: NotifyCategory) -> &'static str {
+    match c {
+        NotifyCategory::PermissionRequested => "permission_requested",
+        NotifyCategory::TurnFinished => "turn_finished",
+        NotifyCategory::Error => "error",
+        NotifyCategory::SessionIdle => "session_idle",
+        NotifyCategory::EnrollRequested => "enroll_requested",
+        NotifyCategory::Security => "security",
+    }
+}
+
+pub fn category_from_str(s: &str) -> Option<NotifyCategory> {
+    Some(match s {
+        "permission_requested" => NotifyCategory::PermissionRequested,
+        "turn_finished" => NotifyCategory::TurnFinished,
+        "error" => NotifyCategory::Error,
+        "session_idle" => NotifyCategory::SessionIdle,
+        "enroll_requested" => NotifyCategory::EnrollRequested,
+        "security" => NotifyCategory::Security,
+        _ => return None,
+    })
+}
+
+pub fn kind_to_str(kind: DeviceKind) -> &'static str {
+    match kind {
+        DeviceKind::Daemon => "daemon",
+        DeviceKind::Web => "web",
+        DeviceKind::Cli => "cli",
+        DeviceKind::Sdk => "sdk",
+    }
+}
+
+pub fn kind_from_str(s: &str) -> StoreResult<DeviceKind> {
+    Ok(match s {
+        "daemon" => DeviceKind::Daemon,
+        "web" => DeviceKind::Web,
+        "cli" => DeviceKind::Cli,
+        "sdk" => DeviceKind::Sdk,
+        other => return Err(StoreError::Corrupt(format!("unknown device kind {other:?}"))),
+    })
+}
+
+#[async_trait]
+pub trait Store: Send + Sync + 'static {
+    /// `/readyz`：数据库可用。
+    async fn ping(&self) -> StoreResult<()>;
+    async fn stats(&self) -> StoreResult<StoreStats>;
+
+    // ---- 账号 ----
+    async fn create_account(&self, display_name: &str, is_admin: bool, now_ms: u64) -> StoreResult<Account>;
+    async fn get_account(&self, id: &str) -> StoreResult<Option<Account>>;
+    /// single 模式的管理员账号（最早创建的 `is_admin`）。
+    async fn first_admin(&self) -> StoreResult<Option<Account>>;
+    async fn update_display_name(&self, id: &str, display_name: &str) -> StoreResult<()>;
+    /// 最早创建的在前（`created_at_ms, id`）。`after` 是上一页最后一项的 `(created_at_ms, id)`，从它之后继续。
+    async fn list_accounts(&self, limit: u32, after: Option<(u64, String)>) -> StoreResult<Vec<Account>>;
+
+    // ---- 邮箱（ADR-37） ----
+    /// 按规范化后的邮箱找账号。
+    async fn find_account_by_email(&self, email: &str) -> StoreResult<Option<Account>>;
+    /// 设置（`Some`）或清除（`None`）账号的邮箱。邮箱已被别的账号占用返回 [`SetEmailOutcome::Taken`]。
+    async fn set_account_email(&self, account_id: &str, email: Option<&str>) -> StoreResult<SetEmailOutcome>;
+    /// 登记一条验证码。同一组（邮箱，用途，账号）里最多留 `keep` 条：先清掉这一组里已经过期的，再把最旧的顶掉。
+    /// 新码**不会**让还没过期的旧码作废——别人请求新码顶不掉你手里那个。
+    async fn put_email_code(&self, code: EmailCode, keep: u32) -> StoreResult<()>;
+    /// 这个（邮箱，用途）下所有账号的码，最旧的在前（诊断和测试用，验证走 [`Store::attempt_email_codes`]）。
+    async fn list_email_codes(&self, email: &str, purpose: EmailPurpose) -> StoreResult<Vec<EmailCode>>;
+    /// 一次验证提交：**一条语句**里给这一组（邮箱，用途，账号）所有没过期、还没用完 `max_attempts` 次的码各计一次尝试，
+    /// 并把刚被计过数的这几行交回来（没有可猜的码就是空）。计数和取码是同一个原子操作，所以并发的猜测一共也只有
+    /// `max_attempts` 次比较的机会；调用方拿交回来的哈希比较，不会再碰到「比较的是旧行、次数记在新行上」。
+    /// 顺手清掉这一组里过期的；次数用完的由调用方比较失败之后按 `id` 删（`attempts` 随行交回）。
+    async fn attempt_email_codes(
+        &self,
+        email: &str,
+        purpose: EmailPurpose,
+        account_id: Option<&str>,
+        now_ms: u64,
+        max_attempts: u32,
+    ) -> StoreResult<Vec<CodeCandidate>>;
+    /// 按 id 删除一条验证码，返回它是否还在。比对成功时用它「认领」：并发的两个验证请求只有一个能拿到 `true`。
+    async fn take_email_code(&self, id: i64) -> StoreResult<bool>;
+    async fn purge_expired_email_codes(&self, now_ms: u64) -> StoreResult<u64>;
+
+    // ---- Web Push 订阅 ----
+    /// 一台设备只留一条：已有的被顶掉（换新 id）。
+    async fn upsert_push_subscription(
+        &self,
+        device_id: &str,
+        endpoint: &str,
+        p256dh: &str,
+        auth: &str,
+        now_ms: u64,
+    ) -> StoreResult<PushSubscription>;
+    /// 账号名下（未吊销设备）的全部订阅，带设备名。
+    async fn list_push_subscriptions(&self, account_id: &str) -> StoreResult<Vec<PushSubscriptionRow>>;
+    async fn get_push_subscription_of_device(&self, device_id: &str) -> StoreResult<Option<PushSubscription>>;
+    /// 删账号名下的一条订阅。
+    async fn delete_push_subscription(&self, account_id: &str, id: &str) -> StoreResult<bool>;
+    /// 按订阅 id 删（推送服务回 404 / 410 时）。用 id 而不是设备 id：这期间设备可能已经换了新订阅，不能误删。
+    async fn delete_push_subscription_by_id(&self, id: &str) -> StoreResult<bool>;
+
+    // ---- 通知偏好 ----
+    /// 库里存着的行（没有行的类别用默认值，由调用方补）。
+    async fn get_notification_prefs(&self, account_id: &str) -> StoreResult<Vec<NotificationPref>>;
+    async fn set_notification_prefs(&self, account_id: &str, prefs: &[NotificationPref]) -> StoreResult<()>;
+
+    // ---- 登录 token ----
+    async fn create_account_token(
+        &self,
+        account_id: &str,
+        label: &str,
+        token_hash: &str,
+        now_ms: u64,
+    ) -> StoreResult<AccountToken>;
+    async fn list_account_tokens(&self, account_id: &str) -> StoreResult<Vec<AccountToken>>;
+    async fn delete_account_token(&self, account_id: &str, id: &str) -> StoreResult<bool>;
+    /// 按哈希找账号，并刷新 `last_used_ms`。
+    async fn find_account_by_token_hash(&self, token_hash: &str, now_ms: u64) -> StoreResult<Option<Account>>;
+
+    // ---- 浏览器会话 ----
+    async fn create_web_session(
+        &self,
+        account_id: &str,
+        token_hash: &str,
+        user_agent: &str,
+        ip_prefix: &str,
+        now_ms: u64,
+        expires_at_ms: u64,
+    ) -> StoreResult<WebSession>;
+    /// 只返回未过期的会话及其账号。
+    async fn find_web_session(&self, token_hash: &str, now_ms: u64) -> StoreResult<Option<(WebSession, Account)>>;
+    async fn touch_web_session(&self, id: &str, now_ms: u64, expires_at_ms: u64) -> StoreResult<()>;
+    async fn list_web_sessions(&self, account_id: &str, now_ms: u64) -> StoreResult<Vec<WebSession>>;
+    async fn delete_web_session(&self, account_id: &str, id: &str) -> StoreResult<bool>;
+    async fn delete_web_session_by_hash(&self, token_hash: &str) -> StoreResult<bool>;
+    async fn delete_web_sessions_of_account(&self, account_id: &str) -> StoreResult<u64>;
+    async fn purge_expired_web_sessions(&self, now_ms: u64) -> StoreResult<u64>;
+
+    // ---- 邀请 ----
+    async fn create_invite(
+        &self,
+        created_by: &str,
+        code_hash: &str,
+        note: Option<&str>,
+        now_ms: u64,
+        expires_at_ms: u64,
+    ) -> StoreResult<Invite>;
+    /// 最新的在前（`created_at_ms DESC, id DESC`）。`after` 是上一页最后一项的 `(created_at_ms, id)`，从它之后继续。
+    async fn list_invites(&self, limit: u32, after: Option<(u64, String)>) -> StoreResult<Vec<Invite>>;
+    async fn delete_invite(&self, id: &str) -> StoreResult<bool>;
+    /// 原子地「校验邀请 + 建账号 + 标记已用」。
+    async fn redeem_invite(&self, code_hash: &str, display_name: &str, now_ms: u64) -> StoreResult<RedeemOutcome>;
+
+    // ---- 设备 ----
+    async fn create_device(&self, device: NewDevice, now_ms: u64) -> StoreResult<Device>;
+    async fn get_device(&self, id: &str) -> StoreResult<Option<Device>>;
+    async fn find_device_by_token_hash(&self, token_hash: &str) -> StoreResult<Option<Device>>;
+    /// 账号下未吊销的设备。
+    async fn list_devices(&self, account_id: &str) -> StoreResult<Vec<Device>>;
+    async fn rename_device(&self, id: &str, name: &str) -> StoreResult<()>;
+    async fn touch_device_seen(&self, id: &str, now_ms: u64) -> StoreResult<()>;
+    /// 置 `revoked_at_ms` 并删除其全部配对，返回被删配对的另一端。设备不存在或已吊销返回空。
+    async fn revoke_device(&self, id: &str, now_ms: u64) -> StoreResult<Vec<String>>;
+
+    // ---- 配对 ----
+    async fn insert_pairing(&self, a: &str, b: &str, now_ms: u64) -> StoreResult<()>;
+    async fn peers_of(&self, device_id: &str) -> StoreResult<Vec<String>>;
+    async fn is_paired(&self, a: &str, b: &str) -> StoreResult<bool>;
+    /// 账号下所有配对（归一化顺序的两端）。
+    async fn list_pairings_of_account(&self, account_id: &str) -> StoreResult<Vec<(String, String)>>;
+
+    // ---- 审计 ----
+    async fn insert_audit(&self, entry: NewAudit, now_ms: u64) -> StoreResult<()>;
+    async fn list_audit(&self, limit: u32, before_id: Option<i64>) -> StoreResult<Vec<AuditEntry>>;
+    async fn purge_audit_before(&self, ts_ms: u64) -> StoreResult<u64>;
+
+    // ---- kv ----
+    async fn kv_get(&self, key: &str) -> StoreResult<Option<String>>;
+    async fn kv_set(&self, key: &str, value: &str) -> StoreResult<()>;
+}

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><defs>
+<linearGradient id="master-base" x1="35" y1="225" x2="170" y2="53" gradientUnits="userSpaceOnUse"><stop stop-color="#294CEB"/><stop offset=".48" stop-color="#426BFF"/><stop offset="1" stop-color="#6258F5"/></linearGradient>
+<linearGradient id="master-fold" x1="135" y1="55" x2="232" y2="226" gradientUnits="userSpaceOnUse"><stop stop-color="#9C8AFF"/><stop offset=".4" stop-color="#6655EF"/><stop offset=".72" stop-color="#4935CC"/><stop offset="1" stop-color="#B19AFF"/></linearGradient>
+<linearGradient id="master-light" x1="46" y1="214" x2="130" y2="43" gradientUnits="userSpaceOnUse"><stop stop-color="#43C7FA"/><stop offset=".65" stop-color="#557FFF"/><stop offset="1" stop-color="#BBB8FF"/></linearGradient>
+<clipPath id="master-clip"><path fill-rule="evenodd" clip-rule="evenodd" d="M119 38 C125 25 137 25 143 39 L211 190 C218 205 227 216 238 222 C219 231 198 226 187 211 L164 175 H94 L74 218 C69 228 59 232 48 230 L23 225 C37 218 47 208 53 194 Z M156.870058 99.129942 A38 38 0 1 0 156.870058 152.870058 A8 8 0 0 0 145.556349 141.556349 A22 22 0 1 1 145.556349 110.443651 A8 8 0 0 0 156.870058 99.129942 Z"/></clipPath>
+</defs><g clip-path="url(#master-clip)">
+<path d="M119 38 C125 25 137 25 143 39 L211 190 C218 205 227 216 238 222 C219 231 198 226 187 211 L164 175 H94 L74 218 C69 228 59 232 48 230 L23 225 C37 218 47 208 53 194 Z" fill="url(#master-base)"/>
+<path d="M131 28 C127 51 139 79 151 106 L185 182 C198 212 216 224 238 222 L251 245 H202 L174 208 L138 131 L112 62 Z" fill="url(#master-fold)"/>
+<path d="M119 38 C123 29 127 27 132 28 C120 43 113 63 105 84 L58 204 C54 216 41 224 23 225 C37 218 47 208 53 194 Z" fill="url(#master-light)"/>
+</g></svg>

@@ -1,0 +1,27 @@
+{
+  "name": "anycon-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "web",
+    "e2e"
+  ],
+  "scripts": {
+    "gen": "just gen",
+    "test": "bun run --filter '*' --filter '!@anycon/e2e' test",
+    "lint": "bun run --filter '*' lint",
+    "typecheck": "bun run --filter '*' typecheck",
+    "build": "bun run --filter '*' --filter '!@anycon/e2e' build",
+    "fmt": "bun run --filter '*' fmt",
+    "fmt:check": "oxfmt --check -c .oxfmtrc.json packages e2e",
+    "e2e": "bun run --cwd e2e test"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

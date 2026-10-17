@@ -1,0 +1,25 @@
+# hub.Dockerfile 专用的构建上下文过滤（BuildKit 会自动使用与 Dockerfile 同名的 .dockerignore）。
+# 注意：不能忽略 web/dist，它是要嵌进二进制的 Web UI。
+**/target
+**/node_modules
+**/.turbo
+**/__pycache__
+**/.venv
+.git
+.github
+.anycon-dev
+# daemon 在项目里建的 worktree（整份工作区副本，可能带着复制进去的 .env）
+.anycon
+**/.env
+**/.env.*
+data
+anycon-data
+*.db
+*.db-wal
+*.db-shm
+e2e/test-results
+e2e/playwright-report
+packages/protocol/wasm
+# Web UI 在镜像里重新构建，宿主机上的构建产物不需要进上下文。
+web/dist
+packages/*/dist

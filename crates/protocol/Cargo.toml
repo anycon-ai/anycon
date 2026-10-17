@@ -1,0 +1,18 @@
+[package]
+name = "anycon-protocol"
+description = "anycon 协议类型：外层信封、控制消息、内层 JSON-RPC 方法与会话事件。唯一真源，导出 JSON Schema。"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+schemars.workspace = true
+serde_bytes = "0.11"
+thiserror.workspace = true
+
+[[bin]]
+name = "anycon-gen-schema"
+path = "src/bin/gen_schema.rs"

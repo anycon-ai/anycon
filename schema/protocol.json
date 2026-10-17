@@ -1,0 +1,7023 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentCapabilities": {
+      "properties": {
+        "attachments": {
+          "default": [],
+          "description": "可接受的附件 mime，如 `image/png`。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "env": {
+          "description": "支持每会话 env。",
+          "type": "boolean"
+        },
+        "interject": {
+          "description": "turn 进行中能否插话。",
+          "type": "boolean"
+        },
+        "interrupt": {
+          "type": "boolean"
+        },
+        "resume": {
+          "description": "进程退出后能否续接。",
+          "type": "boolean"
+        },
+        "rewind": {
+          "type": "boolean"
+        },
+        "structured_output": {
+          "type": "boolean"
+        },
+        "thinking_stream": {
+          "description": "会不会发 `thinking_delta`。",
+          "type": "boolean"
+        },
+        "usage": {
+          "description": "`turn_done` 带不带 usage。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "resume",
+        "interrupt",
+        "interject",
+        "thinking_stream",
+        "usage",
+        "structured_output",
+        "env",
+        "rewind"
+      ],
+      "type": "object"
+    },
+    "AgentDiagnoseParams": {
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "AgentDiagnoseResult": {
+      "properties": {
+        "fields": {
+          "description": "结构化：命令来源、daemon PATH、shell、which -a、解析路径、版本、认证、模型数、状态。",
+          "items": {
+            "$ref": "#/definitions/DiagnosticField"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "description": "人类可读全文（`anycon doctor` 直接打印）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "fields"
+      ],
+      "type": "object"
+    },
+    "AgentInfo": {
+      "properties": {
+        "allow_custom_model": {
+          "default": false,
+          "type": "boolean"
+        },
+        "capabilities": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentCapabilities"
+            }
+          ],
+          "default": {
+            "attachments": [],
+            "env": false,
+            "interject": false,
+            "interrupt": false,
+            "resume": false,
+            "rewind": false,
+            "structured_output": false,
+            "thinking_stream": false,
+            "usage": false
+          }
+        },
+        "driver": {
+          "description": "`claude-stream-json` | `codex-app-server` | `acp` | `sdk` | `mock`",
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "description": "adapter id：`claude-code`、`codex`、`mock`、ACP agent 用自己的名字。",
+          "type": "string"
+        },
+        "issue": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentIssue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "models": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ModelInfo"
+          },
+          "type": "array"
+        },
+        "modes": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ModeInfo"
+          },
+          "type": "array"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ConfigOption"
+          },
+          "type": "array"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "probed_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/definitions/AgentStatus"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "driver",
+        "enabled",
+        "status",
+        "probed_at_ms"
+      ],
+      "type": "object"
+    },
+    "AgentIssue": {
+      "properties": {
+        "code": {
+          "description": "稳定码，如 `binary_not_found`、`login_required`、`version_too_old`、`probe_timeout`。",
+          "type": "string"
+        },
+        "hint": {
+          "description": "修复建议，通常是一条可复制的命令。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "AgentListParams": {
+      "properties": {
+        "if_none_match": {
+          "description": "等于当前 etag 时返回 `not_modified = true` 且 `agents` 为空。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refresh": {
+          "default": false,
+          "description": "强制重探（含模型列表那一步）。",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "AgentListResult": {
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/definitions/AgentInfo"
+          },
+          "type": "array"
+        },
+        "etag": {
+          "type": "string"
+        },
+        "not_modified": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "agents",
+        "etag"
+      ],
+      "type": "object"
+    },
+    "AgentStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "ready",
+            "disabled",
+            "not_installed",
+            "not_authenticated",
+            "unsupported_version",
+            "error"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "loading",
+          "description": "首次探测还没跑完。",
+          "type": "string"
+        }
+      ]
+    },
+    "AttachmentRef": {
+      "description": "消息里的一个附件（ADR-35）：指向 daemon 上已经传完的 blob。客户端从 `blob.put_end` 拿到它、原样放进\n`session.send` / `session.create`；daemon 以自己记录的元数据为准写进 `user_message` 事件。",
+      "properties": {
+        "blob_id": {
+          "type": "string"
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mime": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "width": {
+          "description": "图片像素宽高（daemon 读文件头得出；读不出来时省略）。客户端用来在下载前占好位置。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "blob_id",
+        "name",
+        "mime",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "AuditEntry": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "detail": {
+          "default": null,
+          "tsType": "unknown"
+        },
+        "device_id": {
+          "type": "string"
+        },
+        "device_name": {
+          "type": "string"
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ts_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ts_ms",
+        "device_id",
+        "device_name",
+        "action"
+      ],
+      "type": "object"
+    },
+    "AuthFailReason": {
+      "oneOf": [
+        {
+          "const": "invalid",
+          "description": "token 不存在或已轮换。",
+          "type": "string"
+        },
+        {
+          "const": "revoked",
+          "description": "设备已被吊销。",
+          "type": "string"
+        },
+        {
+          "const": "version",
+          "description": "协议版本不兼容。",
+          "type": "string"
+        },
+        {
+          "const": "quota",
+          "description": "账号配额（仅 multi）。",
+          "type": "string"
+        },
+        {
+          "const": "protocol",
+          "description": "第一帧不是 auth 或超时。",
+          "type": "string"
+        }
+      ]
+    },
+    "BlobGetParams": {
+      "description": "`blob.get`：按偏移读一段。",
+      "properties": {
+        "blob_id": {
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "缺省和上限都是 512 KiB。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blob_id"
+      ],
+      "type": "object"
+    },
+    "BlobGetResult": {
+      "properties": {
+        "blob": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AttachmentRef"
+            }
+          ],
+          "description": "daemon 记录的元数据（和 `user_message.attachments` 里的一致）。"
+        },
+        "data": {
+          "description": "标准 base64（带 padding）。",
+          "type": "string"
+        },
+        "eof": {
+          "description": "这一段读到了文件末尾。",
+          "type": "boolean"
+        },
+        "offset": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blob",
+        "offset",
+        "data",
+        "eof"
+      ],
+      "type": "object"
+    },
+    "BlobIdParams": {
+      "properties": {
+        "blob_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "blob_id"
+      ],
+      "type": "object"
+    },
+    "BlobPutBeginParams": {
+      "description": "`blob.put_begin`：开始一次上传。",
+      "properties": {
+        "mime": {
+          "description": "只接受 `image/png` `image/jpeg` `image/gif` `image/webp`，其它 → `unsupported`。",
+          "type": "string"
+        },
+        "name": {
+          "description": "展示用的文件名（1–255 字节，不能含 `/` `\\` 和控制字符）。daemon 不用它拼路径。",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "整个文件的 SHA-256，64 位小写 hex；`put_end` 校验。",
+          "type": "string"
+        },
+        "size": {
+          "description": "总字节数，`1 ..= sessions.max_attachment_bytes`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "mime",
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "BlobPutBeginResult": {
+      "properties": {
+        "blob_id": {
+          "description": "32 位小写 hex。",
+          "type": "string"
+        },
+        "chunk_size": {
+          "description": "分块字节数（目前 512 KiB）。除最后一块外每块恰好这么大；块数 = `ceil(size / chunk_size)`。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "expires_at_ms": {
+          "description": "这次上传在此之前没有 `put_end` 就作废（已收的分块丢弃）。每收到一块顺延。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blob_id",
+        "chunk_size",
+        "expires_at_ms"
+      ],
+      "type": "object"
+    },
+    "BlobPutChunkParams": {
+      "description": "`blob.put_chunk`：一块数据。偏移 = `index * chunk_size`。同一块重发是幂等的。",
+      "properties": {
+        "blob_id": {
+          "type": "string"
+        },
+        "data": {
+          "description": "标准 base64（带 padding）。解码后的长度必须正好是这一块应有的长度。",
+          "type": "string"
+        },
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blob_id",
+        "index",
+        "data"
+      ],
+      "type": "object"
+    },
+    "BrowseEntry": {
+      "properties": {
+        "blocked": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LinkBlock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "不能关联的原因（已经是项目时为空，看 `project`）。"
+        },
+        "git": {
+          "description": "目录下有 `.git`。",
+          "type": "boolean"
+        },
+        "linkable": {
+          "description": "能不能关联：不是项目，并且 `blocked` 为空。",
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "description": "绝对路径，可以直接传给 `workspace.browse` / `workspace.link`。",
+          "type": "string"
+        },
+        "project": {
+          "description": "已经是项目（根目录下的或已关联的）时给出项目名。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "linkable"
+      ],
+      "type": "object"
+    },
+    "Choice": {
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "ClearableSetting": {
+      "description": "`session.set_settings` 里可以被「清除」的字段。`SessionSettings` 的 `Option` 字段在线路上\n缺省和 `null` 等价、都表示「保持不变」，所以要清掉一个值得在 `clear` 里点名；`options` 不在\n这里：它的键值为 `null` 就是删键。",
+      "oneOf": [
+        {
+          "enum": [
+            "thinking",
+            "mode",
+            "system_prompt_append",
+            "max_turns",
+            "max_budget_usd"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "model",
+          "description": "回到 agent 默认模型（thinking 随之按新模型回落）。",
+          "type": "string"
+        },
+        {
+          "const": "env",
+          "description": "清空整个 `env`。",
+          "type": "string"
+        }
+      ]
+    },
+    "ClientInfo": {
+      "description": "设备自报信息。配对和每次 `auth` 都带。",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/DeviceKind"
+        },
+        "name": {
+          "description": "显示名，如 \"mac-mini\"、\"Chrome · macOS · hub.example.com\"。",
+          "type": "string"
+        },
+        "origin": {
+          "description": "仅 web：访问 hub 的 origin，用于区分局域网 / 公网两份设备。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform": {
+          "description": "如 \"macos-aarch64\"、\"linux-x86_64\"、\"browser\"。",
+          "type": "string"
+        },
+        "version": {
+          "description": "客户端版本。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "platform",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ConfigOption": {
+      "description": "agent 特定的其他选项（Codex fast mode、ACP 自定义 configOptions…）。客户端用通用控件渲染。",
+      "properties": {
+        "choices": {
+          "items": {
+            "$ref": "#/definitions/Choice"
+          },
+          "type": "array"
+        },
+        "default": {
+          "default": null,
+          "tsType": "unknown"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ConfigOptionKind"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ConfigOptionKind": {
+      "enum": [
+        "bool",
+        "select",
+        "text"
+      ],
+      "type": "string"
+    },
+    "Control": {
+      "description": "控制消息集合。方向见注释：D = 设备，H = hub。",
+      "oneOf": [
+        {
+          "description": "D→H 连接后第一帧。`device_token` 为空表示「还没有身份的临时连接」：hub 分配临时 device id，\n只允许 `pair_join`、`pair_confirm`、`enroll_begin`（升级请求要带账号登录态）、`enroll_cancel` 和撮合后的握手帧；`client.kind = daemon` 的临时连接还可以发\n`pair_begin`（daemon 首次启动靠这个拿到身份）。`pair_done` 后同一条连接升级为正式设备。",
+          "properties": {
+            "client": {
+              "$ref": "#/definitions/ClientInfo"
+            },
+            "device_token": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "protocol_version": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "auth",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "protocol_version",
+            "client"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D",
+          "properties": {
+            "device_id": {
+              "type": "string"
+            },
+            "peers_online": {
+              "description": "已配对且当前在线的对端。",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "quota": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/Quota"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "server_time_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "auth_ok",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "device_id",
+            "server_time_ms",
+            "peers_online"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D，随后 hub 关闭连接。",
+          "properties": {
+            "reason": {
+              "$ref": "#/definitions/AuthFailReason"
+            },
+            "type": {
+              "const": "auth_fail",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→H：发起一次配对。**短码由 host 本地生成，不发给 hub**；这里只发 `match_id`（`derive_pair_secrets(code)`\n的前 8 字节 hex，Argon2id），hub 用它撮合。正式设备都可以发（已配对客户端是替 daemon 发）；没有 token 的临时连接\n只有 `kind = daemon` 的可以发，用于 daemon 首次获取身份。hub 不记录 match_id（它是短码的函数，拿到就能离线穷举）。",
+          "properties": {
+            "match_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pair_begin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "match_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：已登记，5 分钟内有效。短码和链接由 host 自己持有 / 生成（`NodePairBeginResult`）。",
+          "properties": {
+            "expires_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "pair_registered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "expires_at_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→H：新设备输入短码后，发 `derive_match_id(code)`。",
+          "properties": {
+            "match_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pair_join",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "match_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：双方都收到，之后开始互发 `handshake` 信封（`to` 填 `peer`）。",
+          "properties": {
+            "peer": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/definitions/PairRole"
+            },
+            "type": {
+              "const": "pair_matched",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "peer",
+            "role"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→H：Noise 握手成功后双方各发一次。账号内接入的收尾也用它（`peer` 是接入会话里的对端）。",
+          "properties": {
+            "peer": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pair_confirm",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "peer"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：两边都确认后发给双方。`peer` 是对方的**正式** id。之前没有身份的一方（临时连接的 joiner，\n或首次配对的 daemon host）收到 `device_id` + `device_token`，同一条连接原地升级为正式设备，\n之后的信封 `from` 必须换成新 id；已是正式设备的一方这两个字段为空。紧接着双方各收到一条对方的 `peer_online`。\n**joiner 此时还不能落盘**：要等 daemon 通过刚建立的 Noise 传输发来 `pair.ack`（见 `methods::PAIR_ACK`），\n校验其中的 id 与 `PairDone` 一致后才记录节点。hub 伪造 `PairDone` 无法伪造 `pair.ack`。",
+          "properties": {
+            "device_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "device_token": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "peer": {
+              "type": "string"
+            },
+            "type": {
+              "const": "pair_done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "peer"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D",
+          "properties": {
+            "reason": {
+              "$ref": "#/definitions/PairFailReason"
+            },
+            "type": {
+              "const": "pair_failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→H：账号内接入（ADR-36）。请求接入本账号的 daemon `node`。本账号的正式设备，或升级请求带本账号 web 登录态\n（cookie）的临时连接才能发；`kind = daemon` 的连接不能发。",
+          "properties": {
+            "node": {
+              "type": "string"
+            },
+            "type": {
+              "const": "enroll_begin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D（发起方）：接入会话已建立，之后双方的 `handshake` 信封（body 是 `EnrollFrame`）按它放行。5 分钟有效。",
+          "properties": {
+            "enroll_id": {
+              "type": "string"
+            },
+            "expires_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "node": {
+              "type": "string"
+            },
+            "type": {
+              "const": "enroll_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "enroll_id",
+            "node",
+            "expires_at_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D（daemon）：有设备请求接入。`peer` 是发起方的设备 id（临时连接是临时 id），`handshake` 信封的 `to` 填它。",
+          "properties": {
+            "enroll_id": {
+              "type": "string"
+            },
+            "expires_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "peer": {
+              "type": "string"
+            },
+            "type": {
+              "const": "enroll_request",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "enroll_id",
+            "peer",
+            "expires_at_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→H：任一方结束接入会话，hub 给另一方发 `enroll_failed { cancelled }`。",
+          "properties": {
+            "enroll_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "enroll_cancel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "enroll_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D",
+          "properties": {
+            "enroll_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "$ref": "#/definitions/EnrollFailReason"
+            },
+            "type": {
+              "const": "enroll_failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→H：删除某设备的路由与配对（需与之配对）。daemon 侧的公钥删除另走 `node.revoke_device`。",
+          "properties": {
+            "device": {
+              "type": "string"
+            },
+            "type": {
+              "const": "revoke",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D",
+          "properties": {
+            "device": {
+              "type": "string"
+            },
+            "type": {
+              "const": "peer_online",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D",
+          "properties": {
+            "device": {
+              "type": "string"
+            },
+            "type": {
+              "const": "peer_offline",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：对端离线且队列未开启，`seq` 那封已丢弃。",
+          "properties": {
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "to": {
+              "type": "string"
+            },
+            "type": {
+              "const": "undeliverable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "to",
+            "seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：队列开启时超限丢弃。",
+          "properties": {
+            "dropped_seqs": {
+              "items": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "to": {
+              "type": "string"
+            },
+            "type": {
+              "const": "queue_overflow",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "to",
+            "dropped_seqs"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→H：撤回自己排队中的信封。",
+          "properties": {
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "queue_drop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：`seq` 那封被退回（目标连接的发送缓冲满，或发送方超过速率预算）。`data` / `notify` 的退回会进这对设备\n的「被退回 seq 有序集合」，hub 之后只放行其中最小的；发送方暂停后把所有被退回的 `seq` 按升序原样重发。\n`handshake` 被退回不进集合，发送方按 `retry_after_ms` 延后再握手（protocol.md § 3.1）。",
+          "properties": {
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "to": {
+              "type": "string"
+            },
+            "type": {
+              "const": "backpressure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "to",
+            "seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：`seq` 那封被 hub 丢弃（不是因为对端离线）。`too_large` 时发送方应改为分片（见 `envelope::frame`）。",
+          "properties": {
+            "reason": {
+              "$ref": "#/definitions/DropReason"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "dropped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "seq",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：发送方超过每连接速率预算，整条连接暂停 `retry_after_ms`（100 ms–30 s）再继续；伴随 `backpressure`\n出现，信封本身没有丢。每连接每秒至多一条。",
+          "properties": {
+            "retry_after_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "rate_limited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "retry_after_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D：配额用量（连接时和变化时）。",
+          "properties": {
+            "quota": {
+              "$ref": "#/definitions/Quota"
+            },
+            "type": {
+              "const": "quota_update",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "quota"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→H：轮换设备 token（v0.2）。",
+          "properties": {
+            "type": {
+              "const": "rotate_token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "H→D",
+          "properties": {
+            "device_token": {
+              "type": "string"
+            },
+            "type": {
+              "const": "token_rotated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "device_token"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DeviceKind": {
+      "enum": [
+        "daemon",
+        "web",
+        "cli",
+        "sdk"
+      ],
+      "type": "string"
+    },
+    "DiagnosticField": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "DiffAgainst": {
+      "description": "`session.diff` 比较的起点。",
+      "oneOf": [
+        {
+          "const": "base",
+          "description": "worktree 会话：从 base 和本分支的 merge-base 到工作区（已提交 + 未提交 + 未跟踪）。\n在项目目录里工作的会话不支持（`invalid`）。",
+          "type": "string"
+        },
+        {
+          "const": "uncommitted",
+          "description": "从 HEAD 到工作区：未提交的改动（含未跟踪的文件）。",
+          "type": "string"
+        }
+      ]
+    },
+    "DiffFile": {
+      "properties": {
+        "additions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "binary": {
+          "default": false,
+          "type": "boolean"
+        },
+        "deletions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_path": {
+          "description": "改名前的路径（`status = renamed`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "patch": {
+          "description": "只在请求带 `path` 时给：这个文件的 unified diff（含 `diff --git` 头），最多 256 KiB。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "patch_truncated": {
+          "default": false,
+          "description": "`patch` 被截断了。",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "仓库内的相对路径（`/` 分隔）。",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/DiffFileStatus"
+        },
+        "untracked": {
+          "default": false,
+          "description": "未跟踪的新文件（`status = added`）。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "status",
+        "additions",
+        "deletions"
+      ],
+      "type": "object"
+    },
+    "DiffFileStatus": {
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed"
+      ],
+      "type": "string"
+    },
+    "DoctorCheck": {
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "fix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "ok",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "DropReason": {
+      "oneOf": [
+        {
+          "const": "too_large",
+          "description": "超过 `ANYCON_MAX_ENVELOPE_BYTES`。",
+          "type": "string"
+        },
+        {
+          "const": "not_paired",
+          "description": "`(from, to)` 未配对。",
+          "type": "string"
+        },
+        {
+          "const": "rate_limited",
+          "description": "每连接限速。",
+          "type": "string"
+        }
+      ]
+    },
+    "EditKind": {
+      "enum": [
+        "edit",
+        "write",
+        "delete",
+        "move"
+      ],
+      "type": "string"
+    },
+    "Empty": {
+      "description": "空参数 / 空结果。",
+      "type": "object"
+    },
+    "EnrollFailReason": {
+      "description": "`enroll_failed.reason`（ADR-36，protocol.md § 4.4）。",
+      "oneOf": [
+        {
+          "const": "forbidden",
+          "description": "发起方没有账号（既不是正式设备，升级请求也没带登录态）。",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "`node` 不是本账号未吊销的 daemon（不区分「不存在」和「不是你的」），或 `enroll_id` 不存在。",
+          "type": "string"
+        },
+        {
+          "const": "offline",
+          "description": "目标 daemon 不在线。",
+          "type": "string"
+        },
+        {
+          "const": "rate_limited",
+          "description": "频率限制。",
+          "type": "string"
+        },
+        {
+          "const": "quota",
+          "description": "每日配对与接入配额（仅 multi）。",
+          "type": "string"
+        },
+        {
+          "const": "busy",
+          "description": "这台 daemon 进行中的接入已满（3 个），或这条连接已有一个接入在进行。",
+          "type": "string"
+        },
+        {
+          "const": "timeout",
+          "description": "5 分钟内没走到 `pair_done`。",
+          "type": "string"
+        },
+        {
+          "const": "peer_gone",
+          "description": "对端断开。",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "对端 `enroll_cancel`。",
+          "type": "string"
+        }
+      ]
+    },
+    "EnrollFrame": {
+      "description": "接入期间 `handshake` 信封的 body。N = 新设备（initiator），D = daemon（responder）。",
+      "oneOf": [
+        {
+          "description": "N→D：选择方法。`code` 同一会话里可以重发再试（每次一轮新的 CPace）。",
+          "properties": {
+            "approval": {
+              "default": false,
+              "description": "仅 `code`：`true` = 请求已配对设备批准；`false` = 用「添加设备」主动生成的码。",
+              "type": "boolean"
+            },
+            "hint": {
+              "$ref": "#/definitions/EnrollHint"
+            },
+            "method": {
+              "$ref": "#/definitions/EnrollMethod"
+            },
+            "nonce": {
+              "description": "16 字节随机数，hex。CPace 的 sid = N 的 nonce ‖ D 的 nonce。",
+              "type": "string"
+            },
+            "type": {
+              "const": "hello",
+              "type": "string"
+            },
+            "v": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "method",
+            "nonce",
+            "hint"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "D→N",
+          "properties": {
+            "attempts_left": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cpace": {
+              "description": "`code` / `password`：D 的 CPace 份额（32 字节，hex）。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "nonce": {
+              "description": "D 的 16 字节随机数，hex。每条 `ready` 都带（和 N 本轮 `hello` 的 nonce 组成 sid）。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnrollRejectReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "retry_after_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "salt": {
+              "description": "仅 `password`：节点盐（16 字节，hex）。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/EnrollReplyStatus"
+            },
+            "type": {
+              "const": "reply",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "N→D：N 的 CPace 份额（32 字节，hex）。紧接着 N 发第一条 `noise`。",
+          "properties": {
+            "share": {
+              "type": "string"
+            },
+            "type": {
+              "const": "cpace",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "share"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "双向：一条 `Noise_XXpsk3` 握手消息（hex）。N 是 initiator。",
+          "properties": {
+            "msg": {
+              "type": "string"
+            },
+            "type": {
+              "const": "noise",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "msg"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnrollHint": {
+      "description": "新设备自报的提示信息。**未经认证**（hub 能改），只用于批准界面；认证过的 `ClientInfo` 以 XXpsk3 第 3 条为准。",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/DeviceKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "platform"
+      ],
+      "type": "object"
+    },
+    "EnrollInfo": {
+      "description": "一条进行中的接入（`node.enroll_list` 的元素、`node.enroll_requested` 的参数）。",
+      "properties": {
+        "approval": {
+          "default": false,
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enroll_id": {
+          "type": "string"
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hint": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EnrollHint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "新设备自报，未经认证。还没收到 `hello` 时为空。"
+        },
+        "method": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EnrollMethod"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "还没收到 `hello` 时为空。"
+        },
+        "status": {
+          "$ref": "#/definitions/EnrollSessionStatus"
+        }
+      },
+      "required": [
+        "enroll_id",
+        "status",
+        "created_at_ms",
+        "expires_at_ms"
+      ],
+      "type": "object"
+    },
+    "EnrollMethod": {
+      "description": "接入方法。",
+      "oneOf": [
+        {
+          "const": "scan",
+          "description": "已配对设备扫新设备上的二维码，把二维码里的 32 字节密钥交给 daemon。",
+          "type": "string"
+        },
+        {
+          "const": "code",
+          "description": "6 位接入码（批准请求时生成，或「添加设备」主动生成），走 CPace。",
+          "type": "string"
+        },
+        {
+          "const": "password",
+          "description": "节点口令，走 CPace。",
+          "type": "string"
+        }
+      ]
+    },
+    "EnrollPasswordState": {
+      "description": "节点口令解锁的状态。",
+      "oneOf": [
+        {
+          "enum": [
+            "enabled"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "disabled",
+          "description": "`enroll.password = false`。",
+          "type": "string"
+        },
+        {
+          "const": "locked",
+          "description": "连续 10 次失败。",
+          "type": "string"
+        }
+      ]
+    },
+    "EnrollPasswordStatus": {
+      "properties": {
+        "failures": {
+          "description": "连续失败次数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retry_after_ms": {
+          "description": "退避中：还要等多久才接受下一次尝试。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "set": {
+          "description": "是否设了口令。",
+          "type": "boolean"
+        },
+        "set_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "set_by": {
+          "description": "设置者：设备 id，本机 CLI 设置的是 `\"local\"`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/EnrollPasswordState"
+        }
+      },
+      "required": [
+        "set",
+        "state",
+        "failures"
+      ],
+      "type": "object"
+    },
+    "EnrollRejectReason": {
+      "description": "`EnrollReply.reason`（`status = rejected` 时）。",
+      "oneOf": [
+        {
+          "const": "method_disabled",
+          "description": "`[enroll]` 配置关掉了这种方式。",
+          "type": "string"
+        },
+        {
+          "const": "password_not_set",
+          "description": "没设节点口令。",
+          "type": "string"
+        },
+        {
+          "const": "backoff",
+          "description": "口令连续失败后的退避期，带 `retry_after_ms`。",
+          "type": "string"
+        },
+        {
+          "const": "locked",
+          "description": "口令解锁已锁定（连续 10 次失败），要在本机或已配对设备上重新启用。",
+          "type": "string"
+        },
+        {
+          "const": "no_code",
+          "description": "`code` 且 `approval = false`，但节点上没有有效的主动接入码。",
+          "type": "string"
+        },
+        {
+          "const": "busy",
+          "description": "进行中的接入已满（每节点 3 个），或已有一个口令尝试在进行。",
+          "type": "string"
+        },
+        {
+          "const": "denied",
+          "description": "已配对设备拒绝了请求。",
+          "type": "string"
+        },
+        {
+          "const": "wrong_secret",
+          "description": "XXpsk3 第 3 条校验失败：码 / 口令不对（或有中间人）。码还有剩余次数时带 `attempts_left`。",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "请求或接入码过期 / 次数用完。",
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "帧格式或顺序不对。",
+          "type": "string"
+        }
+      ]
+    },
+    "EnrollReplyStatus": {
+      "description": "`EnrollReply.status`。",
+      "oneOf": [
+        {
+          "const": "wait_approval",
+          "description": "等已配对设备批准（`scan`、`code` 且 `approval = true`）。批准后 daemon 再发一条 `ready`。",
+          "type": "string"
+        },
+        {
+          "const": "ready",
+          "description": "可以继续：`code` / `password` 带 daemon 的 CPace 份额（`password` 另带盐），`scan` 什么都不带。",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "拒绝，原因在 `reason`。",
+          "type": "string"
+        }
+      ]
+    },
+    "EnrollResult": {
+      "description": "`node.enroll_resolved.result`。",
+      "enum": [
+        "approved",
+        "denied",
+        "completed",
+        "failed",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "EnrollSessionStatus": {
+      "description": "进行中的接入会话的状态（daemon 视角）。",
+      "oneOf": [
+        {
+          "const": "waiting_hello",
+          "description": "收到 `enroll_request`，还没收到 `hello`。",
+          "type": "string"
+        },
+        {
+          "const": "wait_approval",
+          "description": "等已配对设备批准。",
+          "type": "string"
+        },
+        {
+          "const": "ready",
+          "description": "已经可以握手（或正在握手）。",
+          "type": "string"
+        }
+      ]
+    },
+    "ErrorCode": {
+      "oneOf": [
+        {
+          "enum": [
+            "exists",
+            "not_found",
+            "internal"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "参数不合法（通用）。",
+          "type": "string"
+        },
+        {
+          "const": "invalid_settings",
+          "description": "会话设置不被 agent 接受，`data.field` 指出字段。",
+          "type": "string"
+        },
+        {
+          "const": "agent_unavailable",
+          "description": "agent 未安装 / 未登录 / 被禁用，`data.reason` 是 AgentStatus。",
+          "type": "string"
+        },
+        {
+          "const": "node_busy",
+          "description": "并发上限且未排队。",
+          "type": "string"
+        },
+        {
+          "const": "busy",
+          "description": "turn 进行中不能做这个操作。",
+          "type": "string"
+        },
+        {
+          "const": "already_resolved",
+          "description": "权限请求已被答复。",
+          "type": "string"
+        },
+        {
+          "const": "forbidden",
+          "description": "被配置禁止（如危险模式）或越过 workspace 边界。",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "adapter 不支持该能力。",
+          "type": "string"
+        },
+        {
+          "const": "protocol_mismatch",
+          "description": "协议版本不兼容。",
+          "type": "string"
+        }
+      ]
+    },
+    "Event": {
+      "description": "会话事件。adapter 把各 agent 的原生事件翻译成这个集合（docs/spec/daemon.md § 8）。",
+      "oneOf": [
+        {
+          "description": "用户消息也进事件流，历史回放才完整。",
+          "properties": {
+            "attachments": {
+              "items": {
+                "$ref": "#/definitions/AttachmentRef"
+              },
+              "type": "array"
+            },
+            "by_device": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "message_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "user_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "content",
+            "by_device"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "turn_start",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "turn_id",
+            "message_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text_delta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "text_done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`text` 可为空串（模型只给「正在思考」不给内容）。",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "thinking_delta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "duration_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "thinking_done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "duration_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "category": {
+              "$ref": "#/definitions/ToolCategory"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ToolCallDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "input": {
+              "default": null,
+              "tsType": "unknown"
+            },
+            "name": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "category",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_output_delta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ToolResultDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "is_error": {
+              "default": false,
+              "type": "boolean"
+            },
+            "output": {
+              "default": null,
+              "tsType": "unknown"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "$ref": "#/definitions/FileChangeKind"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "file_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "entries": {
+              "items": {
+                "$ref": "#/definitions/PlanEntry"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "plan",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entries"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "同时也以 `permission.request` 通知发给所有在线客户端。",
+          "properties": {
+            "detail": {
+              "$ref": "#/definitions/PermissionDetail"
+            },
+            "expires_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/definitions/PermissionKind"
+            },
+            "options": {
+              "items": {
+                "$ref": "#/definitions/PermissionOption"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "permission",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "kind",
+            "title",
+            "detail",
+            "options"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "by_device": {
+              "type": "string"
+            },
+            "option_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "permission_resolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "by_device"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "$ref": "#/definitions/TurnDoneReason"
+            },
+            "turn_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "turn_done",
+              "type": "string"
+            },
+            "usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/Usage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "turn_id",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "position": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "queued_messages": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/definitions/SessionStatus"
+            },
+            "type": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "settings": {
+              "$ref": "#/definitions/SessionSettings"
+            },
+            "type": {
+              "const": "settings_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "settings"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "title_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "daemon 自己做的 git 操作（不是 agent 做的）：worktree 建好 / 删掉 / 保留 / 重建 / 不见了，同步 base 的结果。\n客户端渲染成一条居中的系统提示，并刷新 `session.git_status`。",
+          "properties": {
+            "action": {
+              "$ref": "#/definitions/GitAction"
+            },
+            "base": {
+              "description": "`sync_*` 和 `worktree_created` 时给 base。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "description": "会话 worktree 的分支。",
+              "type": "string"
+            },
+            "count": {
+              "description": "`sync_merged`：合进来的提交数；`worktree_created` / `worktree_restored`：从 `.worktreeinclude` 复制的文件数。",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "files": {
+              "description": "`sync_conflicts`：冲突的文件（最多 50 个）。",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "note": {
+              "description": "`worktree_removed` 时是稳定取值：`branch_deleted`（分支一起删了，或者本来就不在了）/ `branch_kept`。\n其他动作是补充说明（英文，调试用；比如 `worktree_failed` 的原因、`.worktreeinclude` 超过上限没复制完）。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "git",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "action",
+            "branch"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "recoverable": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message",
+            "recoverable"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "FileChangeKind": {
+      "enum": [
+        "created",
+        "modified",
+        "deleted"
+      ],
+      "type": "string"
+    },
+    "FsEntry": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "is_dir": {
+          "type": "boolean"
+        },
+        "modified_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "is_dir",
+        "bytes",
+        "modified_at_ms"
+      ],
+      "type": "object"
+    },
+    "FsListParams": {
+      "properties": {
+        "path": {
+          "description": "`<项目名>/<项目内的相对路径>`，如 `my-app/src`。第一段是关联项目的名字时，其余部分相对那个目录解析，\n并且不能走出它；否则相对 workspace 根解析（`\"\"` 列根目录本身，不含关联项目）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FsListResult": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/FsEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "FsReadParams": {
+      "properties": {
+        "max_bytes": {
+          "description": "默认 1 MiB，上限 10 MiB。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "解析规则同 `FsListParams.path`。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FsReadResult": {
+      "properties": {
+        "binary": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "description": "UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。",
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text",
+        "binary",
+        "truncated",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "GitAction": {
+      "description": "`Event::Git` 的动作。",
+      "oneOf": [
+        {
+          "enum": [
+            "sync_up_to_date",
+            "sync_merged",
+            "sync_conflicts",
+            "sync_aborted"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "worktree_created",
+          "description": "worktree 建好了，agent 将在里面工作。",
+          "type": "string"
+        },
+        {
+          "const": "worktree_failed",
+          "description": "worktree 创建失败（随后有 `error` 事件）。",
+          "type": "string"
+        },
+        {
+          "const": "worktree_removed",
+          "description": "归档 / 删除时 worktree 被删掉（`note` 说明分支是否一起删了）。",
+          "type": "string"
+        },
+        {
+          "const": "worktree_kept",
+          "description": "归档时因为有未提交的改动，worktree 被保留。",
+          "type": "string"
+        },
+        {
+          "const": "worktree_restored",
+          "description": "取消归档时按分支重建了 worktree。",
+          "type": "string"
+        },
+        {
+          "const": "worktree_missing",
+          "description": "worktree 目录不见了或被换掉，会话暂停。",
+          "type": "string"
+        }
+      ]
+    },
+    "GitMeta": {
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree_ready": {
+          "description": "能给这个项目的会话开 worktree：项目目录就是仓库顶层（不是仓库里的子目录），并且至少有一个提交\n（ADR-34）。为 false 时客户端不提供「新 worktree」。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dirty"
+      ],
+      "type": "object"
+    },
+    "JobCancelParams": {
+      "properties": {
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "JobDone": {
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "job_id",
+        "ok"
+      ],
+      "type": "object"
+    },
+    "JobProgress": {
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "log_line": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "percent": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "stage": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "stage"
+      ],
+      "type": "object"
+    },
+    "JobStarted": {
+      "properties": {
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "Kind": {
+      "description": "信封种类。hub 对每种的处理见 docs/protocol.md § 3。",
+      "oneOf": [
+        {
+          "const": "handshake",
+          "description": "Noise 握手消息。hub 转发；配对期间按短码撮合。",
+          "type": "string"
+        },
+        {
+          "const": "data",
+          "description": "Noise 密文。hub 转发；目标离线回 `undeliverable`。",
+          "type": "string"
+        },
+        {
+          "const": "notify",
+          "description": "`NotifyBody`（明文类别 + 可选密文详情）。hub 转发并触发 Web Push。",
+          "type": "string"
+        },
+        {
+          "const": "control",
+          "description": "hub ↔ 设备的控制消息，body 是 msgpack 的 [`crate::Control`]。hub 自己处理，不转发。",
+          "type": "string"
+        }
+      ]
+    },
+    "LinkBlock": {
+      "description": "一个目录为什么不能关联为项目（ADR-33 修订，daemon.md § 10）。",
+      "oneOf": [
+        {
+          "const": "hidden",
+          "description": "从它所在的 link root 往下，路径里有以 `.` 开头的一段（`~/.x`、`~/work/.y`）。\n运维把那个目录（或它的上级隐藏目录）显式写进 `workspace.link_roots` 才放行。",
+          "type": "string"
+        },
+        {
+          "const": "sensitive",
+          "description": "内置拒绝表里的系统 / 凭证 / 自启动目录（`~/Library`、`~/.ssh`、`/etc`…），在它们里面，或包含它们。\n只有 `link_roots` 的某一项本身就在那个目录里面时，那一项之下才放行。",
+          "type": "string"
+        },
+        {
+          "const": "workspace",
+          "description": "在 workspace 根目录里（它已经是项目，或在 `.trash` / `.scratch` 里），或包含 workspace 根目录。",
+          "type": "string"
+        },
+        {
+          "const": "data_dir",
+          "description": "是 anycon 数据目录（`ANYCON_HOME`）、在它里面，或包含它。不能放行。",
+          "type": "string"
+        },
+        {
+          "const": "filesystem_root",
+          "description": "文件系统根。",
+          "type": "string"
+        }
+      ]
+    },
+    "ModeInfo": {
+      "description": "权限模式。id 是 agent 自己的（Claude Code 的 `acceptEdits`、Codex 的 `workspace`…），不翻译不归一。",
+      "properties": {
+        "default": {
+          "default": false,
+          "type": "boolean"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "risk": {
+          "$ref": "#/definitions/ModeRisk"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "risk"
+      ],
+      "type": "object"
+    },
+    "ModeRisk": {
+      "oneOf": [
+        {
+          "enum": [
+            "normal"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "safe",
+          "description": "只读 / 只规划。",
+          "type": "string"
+        },
+        {
+          "const": "dangerous",
+          "description": "全部放行。需 `permissions.allow_dangerous_modes`，UI 要确认。",
+          "type": "string"
+        }
+      ]
+    },
+    "ModelInfo": {
+      "properties": {
+        "default": {
+          "default": false,
+          "type": "boolean"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "原样传给 agent 的字符串。",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tags": {
+          "description": "如 `1m`。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThinkingOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "NodeAuditParams": {
+      "properties": {
+        "device_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "since_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "NodeAuditResult": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/AuditEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "NodeCapabilities": {
+      "properties": {
+        "audit": {
+          "type": "boolean"
+        },
+        "blobs": {
+          "type": "boolean"
+        },
+        "fs": {
+          "type": "boolean"
+        },
+        "search": {
+          "type": "boolean"
+        },
+        "workspace": {
+          "description": "有 workspace（文件夹即项目）。SDK 节点可能没有。",
+          "type": "boolean"
+        },
+        "worktree": {
+          "default": false,
+          "description": "支持每会话 worktree、`session.git_status` / `diff` / `sync_base`（ADR-34）。daemon 找不到 `git` 时为 false。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "workspace",
+        "fs",
+        "search",
+        "blobs",
+        "audit"
+      ],
+      "type": "object"
+    },
+    "NodeDevicesResult": {
+      "properties": {
+        "devices": {
+          "items": {
+            "$ref": "#/definitions/PeerDevice"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "devices"
+      ],
+      "type": "object"
+    },
+    "NodeDoctorResult": {
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/definitions/DoctorCheck"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "checks"
+      ],
+      "type": "object"
+    },
+    "NodeEnrollApproveParams": {
+      "description": "`node.enroll_approve` 参数。",
+      "properties": {
+        "enroll_id": {
+          "type": "string"
+        },
+        "secret": {
+          "description": "`scan` 必填：二维码里的 32 字节密钥（hex）。`code` 不带。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enroll_id"
+      ],
+      "type": "object"
+    },
+    "NodeEnrollApproveResult": {
+      "description": "`node.enroll_approve` 结果。`code` 请求返回 6 位码（只给批准的这一台）；`scan` 两个字段都为空。",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "NodeEnrollCodeResult": {
+      "description": "`node.enroll_code` 结果：主动生成的 6 位接入码。",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "code",
+        "expires_at_ms"
+      ],
+      "type": "object"
+    },
+    "NodeEnrollIdParams": {
+      "description": "`node.enroll_deny` 参数。",
+      "properties": {
+        "enroll_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enroll_id"
+      ],
+      "type": "object"
+    },
+    "NodeEnrollListResult": {
+      "description": "`node.enroll_list` 结果。",
+      "properties": {
+        "enrolls": {
+          "items": {
+            "$ref": "#/definitions/EnrollInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "enrolls"
+      ],
+      "type": "object"
+    },
+    "NodeEnrollResolved": {
+      "description": "D→C notification `node.enroll_resolved`：发给所有在线的已配对设备，让别的设备收起批准卡片。",
+      "properties": {
+        "by_device": {
+          "description": "批准 / 拒绝的设备；daemon 自己判定的（过期、失败、完成）为空。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enroll_id": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/EnrollResult"
+        }
+      },
+      "required": [
+        "enroll_id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "NodeEnrollStatusResult": {
+      "description": "`node.enroll_status` 结果。",
+      "properties": {
+        "approval": {
+          "description": "`enroll.approval`：是否接受扫码批准和接入码。",
+          "type": "boolean"
+        },
+        "password": {
+          "$ref": "#/definitions/EnrollPasswordStatus"
+        }
+      },
+      "required": [
+        "approval",
+        "password"
+      ],
+      "type": "object"
+    },
+    "NodeInfo": {
+      "description": "`node.info` 结果。",
+      "properties": {
+        "capabilities": {
+          "$ref": "#/definitions/NodeCapabilities"
+        },
+        "name": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "protocol_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "started_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        },
+        "workspace_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NodeWorktreeSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`capabilities.worktree` 为 true 时给出。"
+        }
+      },
+      "required": [
+        "node_id",
+        "name",
+        "version",
+        "protocol_version",
+        "platform",
+        "capabilities",
+        "started_at_ms"
+      ],
+      "type": "object"
+    },
+    "NodePairBeginParams": {
+      "properties": {
+        "long": {
+          "default": true,
+          "description": "`true`（缺省）= 16 位短码（约 79 bit；链接、二维码、默认都是它）；`false` = 8 位（约 40 bit），\n只适合在自建 hub 上手输（ADR-29 修订：拿到 match_id 的恶意 hub 可以离线穷举 8 位短码）。",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "NodePairBeginResult": {
+      "description": "`node.pair_begin` 结果。短码由 daemon 本地生成，hub 只拿到 match id。",
+      "properties": {
+        "code": {
+          "description": "`XXXX-XXXX` 或 `XXXX-XXXX-XXXX-XXXX`。",
+          "type": "string"
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "link": {
+          "description": "`${hub_public_url}/pair#code=XXXX-XXXX`。短码放在 URL fragment 里，浏览器不会把它发给 hub。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "expires_at_ms",
+        "link"
+      ],
+      "type": "object"
+    },
+    "NodeRevokeDeviceParams": {
+      "properties": {
+        "device_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id"
+      ],
+      "type": "object"
+    },
+    "NodeSecurityEvent": {
+      "description": "D→C notification `node.security_event`（同时发 `notify { category: security }`）。",
+      "properties": {
+        "by_device": {
+          "description": "触发的已配对设备（改口令、改设置）；本机 CLI 为 `\"local\"`；接入、失败为空。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_id": {
+          "description": "`device_enrolled`：新设备（认证过的）名称和 id。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failures": {
+          "description": "`password_failures` / `password_locked`：当时的连续失败次数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/SecurityEventKind"
+        },
+        "method": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EnrollMethod"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "password_set": {
+          "description": "`password_changed`：`true` = 设置 / 修改，`false` = 清除。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ts_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "ts_ms"
+      ],
+      "type": "object"
+    },
+    "NodeSetAgentDefaultsParams": {
+      "description": "`node.set_agent_defaults`：写 `config.agents.<id>.default_*`。",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "additionalProperties": {
+            "tsType": "unknown"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "thinking": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "NodeSetEnrollEnabledParams": {
+      "description": "`node.set_enroll_enabled` 参数：写 `[enroll]` 配置。`password: true` 同时解除锁定、失败计数清零。",
+      "properties": {
+        "approval": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "password": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "NodeSetEnrollPasswordParams": {
+      "description": "`node.set_enroll_password` 参数。`password` 省略 = 清除。至少 8 个字符（按 Unicode 字符计，NFC 之后）。",
+      "properties": {
+        "password": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "NodeStats": {
+      "properties": {
+        "agent_processes": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "db_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "disk_free_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hub_connected": {
+          "type": "boolean"
+        },
+        "peers_online": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessions": {
+          "$ref": "#/definitions/SessionCounts"
+        },
+        "uptime_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uptime_ms",
+        "hub_connected",
+        "peers_online",
+        "sessions",
+        "agent_processes",
+        "db_bytes",
+        "disk_free_bytes"
+      ],
+      "type": "object"
+    },
+    "NodeWorktreeSettings": {
+      "description": "节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。",
+      "properties": {
+        "branch_prefix": {
+          "description": "新分支名的前缀（`anycon` → `anycon/<slug>`）；空串 = 不加前缀。",
+          "type": "string"
+        },
+        "default_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionWorkspaceMode"
+            }
+          ],
+          "description": "git 项目里新会话默认在哪里工作。"
+        }
+      },
+      "required": [
+        "default_mode",
+        "branch_prefix"
+      ],
+      "type": "object"
+    },
+    "NotifyBody": {
+      "description": "`kind = notify` 的 body（msgpack）。`category` 是外层唯一有语义的明文字段。",
+      "properties": {
+        "category": {
+          "$ref": "#/definitions/NotifyCategory"
+        },
+        "detail": {
+          "description": "Noise 密文详情，base64。客户端解密后得到 [`crate::NotifyDetail`]。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "description": "会话 id，明文。随机不透明串，只用于客户端点开通知后直达。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "category"
+      ],
+      "type": "object"
+    },
+    "NotifyCategory": {
+      "oneOf": [
+        {
+          "enum": [
+            "permission_requested",
+            "turn_finished",
+            "error",
+            "session_idle"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "enroll_requested",
+          "description": "有设备请求批准接入（ADR-36）。没有 `session_id`。",
+          "type": "string"
+        },
+        {
+          "const": "security",
+          "description": "接入相关的安全事件：新设备经接入加入、口令连续失败 / 锁定、口令或 `[enroll]` 被改。没有 `session_id`。",
+          "type": "string"
+        }
+      ]
+    },
+    "NotifyDetail": {
+      "description": "通知的密文详情（JSON，解密后）。",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "title",
+        "body"
+      ],
+      "type": "object"
+    },
+    "PairAck": {
+      "description": "`pair.ack`：握手完成且 `PairDone` 之后，daemon 经新建立的 Noise 传输发给 joiner 的第一条通知。\njoiner 校验 `peer_id == 自己的正式 id`、`node_id == PairDone.peer` 后才落盘节点。",
+      "properties": {
+        "fingerprint": {
+          "description": "daemon 静态公钥指纹（joiner 可与握手得到的对比）。",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "node_id": {
+          "description": "daemon 的正式 device id。",
+          "type": "string"
+        },
+        "peer_id": {
+          "description": "hub 告诉 daemon 的 joiner 正式 id。",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "peer_id",
+        "name",
+        "version",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "PairFailReason": {
+      "oneOf": [
+        {
+          "const": "not_found",
+          "description": "短码不存在、过期或已被用掉。",
+          "type": "string"
+        },
+        {
+          "const": "timeout",
+          "description": "60 秒内双方未确认。",
+          "type": "string"
+        },
+        {
+          "const": "peer_gone",
+          "description": "对端在握手期间断开。",
+          "type": "string"
+        },
+        {
+          "const": "rate_limited",
+          "description": "频率限制。",
+          "type": "string"
+        },
+        {
+          "const": "quota",
+          "description": "配额。",
+          "type": "string"
+        },
+        {
+          "const": "forbidden",
+          "description": "账号不匹配。",
+          "type": "string"
+        }
+      ]
+    },
+    "PairRole": {
+      "description": "配对中的角色：daemon（或已配对设备代发）是 `host`，新设备是 `joiner`。\nNoise XXpsk3 由 **joiner 发起**（initiator），host 是 responder。",
+      "enum": [
+        "host",
+        "joiner"
+      ],
+      "type": "string"
+    },
+    "PeerDevice": {
+      "description": "已配对的客户端设备（daemon 视角）。",
+      "properties": {
+        "device_id": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "description": "Noise 静态公钥的指纹（短 hex）。",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/DeviceKind"
+        },
+        "last_seen_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "online": {
+          "type": "boolean"
+        },
+        "paired_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device_id",
+        "name",
+        "kind",
+        "fingerprint",
+        "paired_at_ms",
+        "online"
+      ],
+      "type": "object"
+    },
+    "PermissionDetail": {
+      "properties": {
+        "mode": {
+          "description": "kind = mode_change：目标模式 id。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "questions": {
+          "description": "kind = question",
+          "items": {
+            "$ref": "#/definitions/Question"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "kind = plan：计划全文（Markdown）。kind = other：说明。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ToolPermissionDetail"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "kind = tool"
+        }
+      },
+      "type": "object"
+    },
+    "PermissionKind": {
+      "enum": [
+        "tool",
+        "plan",
+        "question",
+        "mode_change",
+        "other"
+      ],
+      "type": "string"
+    },
+    "PermissionListParams": {
+      "properties": {
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PermissionListResult": {
+      "properties": {
+        "requests": {
+          "items": {
+            "$ref": "#/definitions/PermissionRequest"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "requests"
+      ],
+      "type": "object"
+    },
+    "PermissionOption": {
+      "properties": {
+        "id": {
+          "description": "adapter 定义；Claude Code 固定 `allow` / `allow_session` / `deny`，ACP 透传 optionId。",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/PermissionOptionKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "needs_message": {
+          "default": false,
+          "description": "可附一句话给 agent（通常 reject 类）。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "PermissionOptionKind": {
+      "description": "借用 ACP 的枚举，客户端据此选图标和颜色。",
+      "enum": [
+        "allow_once",
+        "allow_always",
+        "reject_once",
+        "reject_always"
+      ],
+      "type": "string"
+    },
+    "PermissionRequest": {
+      "description": "`permission.request` 通知 / `permission.list` 的元素。",
+      "properties": {
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "detail": {
+          "$ref": "#/definitions/PermissionDetail"
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/PermissionKind"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/definitions/PermissionOption"
+          },
+          "type": "array"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "kind",
+        "title",
+        "detail",
+        "options",
+        "created_at_ms"
+      ],
+      "type": "object"
+    },
+    "PermissionResolved": {
+      "properties": {
+        "by_device": {
+          "type": "string"
+        },
+        "option_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "by_device"
+      ],
+      "type": "object"
+    },
+    "PermissionRespondParams": {
+      "properties": {
+        "answers": {
+          "additionalProperties": {
+            "tsType": "unknown"
+          },
+          "description": "kind = question：`{ [question_id]: value }`，value 是字符串或字符串数组。",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "option_id": {
+          "description": "kind = question 时可空。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "type": "object"
+    },
+    "PlanEntry": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/PlanStatus"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ],
+      "type": "object"
+    },
+    "PlanStatus": {
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed"
+      ],
+      "type": "string"
+    },
+    "Project": {
+      "description": "一个项目 = workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。\n元数据全部推导；只有「关联了哪些目录」存在 daemon 的库里。",
+      "properties": {
+        "active_sessions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "git": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GitMeta"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "git_pending": {
+          "description": "git 元数据还在算（daemon 冷缓存时前台等待超时）：这时 `git` 为空，**不代表不是 git 项目**。\n算完之后 daemon 发 `workspace.changed { updated }`，客户端重新 `workspace.list`。",
+          "type": "boolean"
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProjectKind"
+            }
+          ],
+          "default": "folder",
+          "description": "缺省 `folder`。"
+        },
+        "missing": {
+          "description": "关联的目录已经不在了（被移走、删除，或外接盘没挂上）。只有 `linked` 会是 true；\n这时 `git` 为空、`modified_at_ms` 为 0，不能在里面新建会话，客户端应提供「解除关联」。",
+          "type": "boolean"
+        },
+        "modified_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "项目名。根目录下的项目和关联的项目共用一个命名空间，客户端的所有操作都用它。",
+          "type": "string"
+        },
+        "path": {
+          "description": "绝对路径，仅展示用。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "modified_at_ms",
+        "active_sessions"
+      ],
+      "type": "object"
+    },
+    "ProjectKind": {
+      "description": "项目从哪来。",
+      "oneOf": [
+        {
+          "const": "folder",
+          "description": "workspace 根目录下的一级子文件夹（文件夹即项目，不需要注册）。",
+          "type": "string"
+        },
+        {
+          "const": "linked",
+          "description": "用 `workspace.link` 关联的本机已有目录（在根目录之外）。解除关联不动目录里的任何文件。",
+          "type": "string"
+        }
+      ]
+    },
+    "PullRequestInfo": {
+      "description": "`gh pr view` 的摘要。",
+      "properties": {
+        "base_branch": {
+          "description": "PR 的目标分支。",
+          "type": "string"
+        },
+        "checks_failed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "checks_passed": {
+          "description": "CI 检查：通过 / 失败 / 进行中的数量。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "checks_pending": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "number": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/definitions/PullRequestState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "url",
+        "title",
+        "state",
+        "base_branch",
+        "checks_passed",
+        "checks_failed",
+        "checks_pending"
+      ],
+      "type": "object"
+    },
+    "PullRequestState": {
+      "enum": [
+        "open",
+        "draft",
+        "merged",
+        "closed"
+      ],
+      "type": "string"
+    },
+    "Question": {
+      "properties": {
+        "choices": {
+          "items": {
+            "$ref": "#/definitions/QuestionChoice"
+          },
+          "type": "array"
+        },
+        "free_text": {
+          "default": false,
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "multi": {
+          "default": false,
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "QuestionChoice": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "Quota": {
+      "properties": {
+        "connections": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connections_max": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "daemons": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "daemons_max": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "devices": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "devices_max": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "devices",
+        "daemons",
+        "connections"
+      ],
+      "type": "object"
+    },
+    "RenamedProject": {
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "RpcError": {
+      "properties": {
+        "code": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RpcErrorData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RpcErrorData": {
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/ErrorCode"
+        },
+        "field": {
+          "description": "`invalid_settings` 时的字段名等补充信息。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry_after_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "RpcId": {
+      "anyOf": [
+        {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "RpcMessage": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RpcRequest"
+        },
+        {
+          "$ref": "#/definitions/RpcNotification"
+        },
+        {
+          "$ref": "#/definitions/RpcResponse"
+        }
+      ],
+      "description": "一条内层消息。解码时按字段判别：有 `method` 且有 `id` 是请求，有 `method` 无 `id` 是通知，否则是响应。"
+    },
+    "RpcNotification": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "default": null,
+          "tsType": "unknown"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method"
+      ],
+      "type": "object"
+    },
+    "RpcRequest": {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RpcId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "default": null,
+          "tsType": "unknown"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ],
+      "type": "object"
+    },
+    "RpcResponse": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RpcError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/definitions/RpcId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "tsType": "unknown"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id"
+      ],
+      "type": "object"
+    },
+    "SearchHit": {
+      "properties": {
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "snippet": {
+          "description": "带 `<mark>` 的片段。",
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "ts_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq",
+        "title",
+        "snippet",
+        "ts_ms"
+      ],
+      "type": "object"
+    },
+    "SecurityEventKind": {
+      "description": "`node.security_event.kind`。",
+      "oneOf": [
+        {
+          "const": "device_enrolled",
+          "description": "新设备经接入加入。",
+          "type": "string"
+        },
+        {
+          "const": "password_failures",
+          "description": "节点口令连续失败满 3 次。",
+          "type": "string"
+        },
+        {
+          "const": "password_locked",
+          "description": "口令解锁被锁定。",
+          "type": "string"
+        },
+        {
+          "const": "password_changed",
+          "description": "口令被设置 / 修改 / 清除。",
+          "type": "string"
+        },
+        {
+          "const": "settings_changed",
+          "description": "`[enroll]` 被修改（含重新启用）。",
+          "type": "string"
+        }
+      ]
+    },
+    "SessionArchiveParams": {
+      "description": "`session.archive`。没有 worktree 的会话只看 `session_id`。",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "worktree": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorktreeDisposal"
+            }
+          ],
+          "default": "auto"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionChanged": {
+      "description": "`session.changed` 通知：列表级变化，发给所有在线客户端。",
+      "properties": {
+        "archived": {
+          "default": false,
+          "type": "boolean"
+        },
+        "deleted": {
+          "default": false,
+          "description": "会话被删除。",
+          "type": "boolean"
+        },
+        "last_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pending_permissions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionWorktree"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "worktree 的当前状态（会话有 worktree 时）。"
+        }
+      },
+      "required": [
+        "session_id",
+        "title",
+        "status",
+        "pending_permissions",
+        "updated_at_ms",
+        "last_seq"
+      ],
+      "type": "object"
+    },
+    "SessionCounts": {
+      "properties": {
+        "ended": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idle": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "queued": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "running": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "waiting_permission": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "queued",
+        "running",
+        "waiting_permission",
+        "idle",
+        "ended",
+        "error"
+      ],
+      "type": "object"
+    },
+    "SessionCreateParams": {
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "attachments": {
+          "description": "第一条消息的附件（`blob.put_end` 的结果）。agent 的 `capabilities.attachments` 不含其 mime → `unsupported`。",
+          "items": {
+            "$ref": "#/definitions/AttachmentRef"
+          },
+          "type": "array"
+        },
+        "message_id": {
+          "description": "第一条消息的客户端 id（幂等），有 `prompt` 或 `attachments` 时必填。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "空 = scratch。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "description": "有则创建后立即发送第一条消息（`prompt` 为空但带了 `attachments` 时也发，内容为空串）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "settings": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionSettings"
+            }
+          ],
+          "default": {}
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionWorkspace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "在哪里工作；缺省 = `local`（ADR-34）。"
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "SessionDeleteParams": {
+      "description": "`session.delete`。",
+      "properties": {
+        "delete_branch": {
+          "default": false,
+          "description": "同时删掉 worktree 的分支（`git branch -D`），分支上没合并的提交会丢。只有 worktree 也被删掉时才生效。",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "worktree": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorktreeDisposal"
+            }
+          ],
+          "default": "auto"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionDiffParams": {
+      "description": "`session.diff`：只读。不带 `path` 时只给文件列表和行数；带 `path` 时只给那一个文件，附 unified diff。",
+      "properties": {
+        "against": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DiffAgainst"
+            }
+          ],
+          "default": "base"
+        },
+        "path": {
+          "description": "仓库内的相对路径（`DiffFile.path`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionDiffResult": {
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/definitions/DiffFile"
+          },
+          "type": "array"
+        },
+        "from_sha": {
+          "description": "比较的起点提交（merge-base 或 HEAD）。",
+          "type": "string"
+        },
+        "truncated": {
+          "default": false,
+          "description": "改动的文件超过 1000 个时只给前 1000 个。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "from_sha",
+        "files"
+      ],
+      "type": "object"
+    },
+    "SessionEvent": {
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/Event"
+        },
+        "seq": {
+          "description": "会话内单调递增，持久化，用于增量拉取。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "ts_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turn_id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "seq",
+        "ts_ms",
+        "event"
+      ],
+      "type": "object"
+    },
+    "SessionGitStatus": {
+      "description": "会话工作目录的 git 状态。worktree 会话相对 base；在项目目录里工作的会话没有 base 相关字段。",
+      "properties": {
+        "ahead": {
+          "description": "本分支有、base 没有的提交数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "base": {
+          "description": "worktree 会话的 base（同 `SessionWorktree.base`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_sha": {
+          "description": "base 现在解析到的提交；base 已经不存在时退回创建时的提交。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "behind": {
+          "description": "base 有、本分支还没有的提交数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "branch": {
+          "description": "当前分支；detached 时为空。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conflicts": {
+          "description": "有冲突、还没解决的文件数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "merging": {
+          "default": false,
+          "description": "正在合并（`MERGE_HEAD` 存在）。",
+          "type": "boolean"
+        },
+        "pr": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PullRequestInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pr_error": {
+          "description": "要了 PR 但拿不到时的原因：`gh_not_installed` / `gh_not_authenticated` / `no_remote` / `no_pr` / `error`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uncommitted": {
+          "description": "未提交的文件数（已暂存 + 未暂存 + 未跟踪）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unpushed": {
+          "description": "有上游时，本地还没推送的提交数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "upstream": {
+          "description": "上游分支（`origin/anycon/fix-login`）；没推送过为空。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "head_sha",
+        "uncommitted",
+        "conflicts"
+      ],
+      "type": "object"
+    },
+    "SessionGitStatusParams": {
+      "description": "`session.git_status`。",
+      "properties": {
+        "include_pr": {
+          "default": false,
+          "description": "同时用 `gh` 查这条分支的 PR（要联网，约 1–3 秒）。没装 / 没登录 `gh`、没有远端时 `pr` 为空、`pr_error` 说明原因。",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionHistoryParams": {
+      "properties": {
+        "after_seq": {
+          "default": 0,
+          "description": "返回 seq > after_seq 的事件。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "before_seq": {
+          "description": "为 true 时返回 seq < before_seq 的最近 limit 条（向上翻页）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "默认 200，上限 1000。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionHistoryResult": {
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/definitions/SessionEvent"
+          },
+          "type": "array"
+        },
+        "has_more": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "events",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "SessionIdParams": {
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionListParams": {
+      "properties": {
+        "include_archived": {
+          "default": false,
+          "type": "boolean"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SessionListResult": {
+      "properties": {
+        "sessions": {
+          "items": {
+            "$ref": "#/definitions/SessionSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sessions"
+      ],
+      "type": "object"
+    },
+    "SessionPromoteParams": {
+      "properties": {
+        "name": {
+          "description": "新项目名。",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "SessionRenameParams": {
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "title"
+      ],
+      "type": "object"
+    },
+    "SessionSearchParams": {
+      "properties": {
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "SessionSearchResult": {
+      "properties": {
+        "hits": {
+          "items": {
+            "$ref": "#/definitions/SearchHit"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "hits"
+      ],
+      "type": "object"
+    },
+    "SessionSendParams": {
+      "properties": {
+        "attachments": {
+          "description": "`blob.put_end` 的结果，每条至多 20 个。agent 的 `capabilities.attachments` 不含其 mime → `unsupported`。",
+          "items": {
+            "$ref": "#/definitions/AttachmentRef"
+          },
+          "type": "array"
+        },
+        "content": {
+          "description": "带了附件时可以为空串。",
+          "type": "string"
+        },
+        "message_id": {
+          "description": "客户端生成（uuid），重发不重复。",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_id",
+        "content"
+      ],
+      "type": "object"
+    },
+    "SessionSendResult": {
+      "properties": {
+        "duplicate": {
+          "default": false,
+          "description": "幂等命中：这条 message_id 之前已收到。",
+          "type": "boolean"
+        },
+        "queued": {
+          "type": "boolean"
+        },
+        "turn_id": {
+          "description": "立即开始的 turn id；进入队列（turn 进行中且 agent 不支持插话）时为空。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "queued"
+      ],
+      "type": "object"
+    },
+    "SessionSetSettingsParams": {
+      "properties": {
+        "clear": {
+          "description": "要清除（恢复为未设置）的字段，在 `settings` 合并之后生效；两边都出现时以 `clear` 为准。",
+          "items": {
+            "$ref": "#/definitions/ClearableSetting"
+          },
+          "type": "array"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "settings": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionSettings"
+            }
+          ],
+          "description": "增量：只带要改的字段；缺省 / `null` 表示保持（`options` 里值为 `null` 表示删键）。"
+        }
+      },
+      "required": [
+        "session_id",
+        "settings"
+      ],
+      "type": "object"
+    },
+    "SessionSetSettingsResult": {
+      "properties": {
+        "settings": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionSettings"
+            }
+          ],
+          "description": "实际生效的完整设置（thinking 可能已按新模型回落）。"
+        }
+      },
+      "required": [
+        "settings"
+      ],
+      "type": "object"
+    },
+    "SessionSettings": {
+      "description": "会话设置。`session.create` 和 `session.set_settings` 都收它；值来自 `AgentInfo`。",
+      "properties": {
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "max_budget_usd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_turns": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "`AgentInfo.modes[].id`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "additionalProperties": {
+            "tsType": "unknown"
+          },
+          "description": "`AgentInfo.options[]` 里的，按 id。",
+          "type": "object"
+        },
+        "system_prompt_append": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking": {
+          "description": "所选模型的 `thinking.options[].id`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SessionStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "starting",
+            "running",
+            "waiting_permission",
+            "idle",
+            "ended",
+            "error"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "queued",
+          "description": "并发满，排队中。",
+          "type": "string"
+        },
+        {
+          "const": "interrupted",
+          "description": "daemon 重启时发现的孤儿会话；下次 send 走 resume。",
+          "type": "string"
+        }
+      ]
+    },
+    "SessionSummary": {
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "agent_session_id": {
+          "description": "agent 自己的会话 id（Claude Code session_id 等），诊断用。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "archived": {
+          "default": false,
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "last_seq": {
+          "description": "最后一个事件的 seq；客户端据此决定要不要拉增量。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pending_permissions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "preview": {
+          "description": "最后一条消息摘要（列表展示）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "空 = scratch 会话。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queue_position": {
+          "description": "排队位置（status = queued 时）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "settings": {
+          "$ref": "#/definitions/SessionSettings"
+        },
+        "status": {
+          "$ref": "#/definitions/SessionStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usage": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UsageTotals"
+            }
+          ],
+          "default": {
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "turns": 0
+          }
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionWorktree"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "会话在 anycon 建的 worktree 里工作时给出（ADR-34）；在项目目录本身工作时为空。"
+        }
+      },
+      "required": [
+        "id",
+        "agent",
+        "title",
+        "status",
+        "settings",
+        "created_at_ms",
+        "updated_at_ms",
+        "last_seq",
+        "pending_permissions"
+      ],
+      "type": "object"
+    },
+    "SessionSyncBaseParams": {
+      "description": "`session.sync_base`：把 base 的最新提交合并进 worktree 的分支（base 是远端跟踪分支时先 fetch）。",
+      "properties": {
+        "abort": {
+          "default": false,
+          "description": "放弃一次有冲突的合并（`git merge --abort`）。",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionSyncBaseResult": {
+      "properties": {
+        "commits": {
+          "description": "合进来的 base 提交数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "conflicts": {
+          "description": "冲突的文件（最多 200 个）。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outcome": {
+          "$ref": "#/definitions/SyncOutcome"
+        }
+      },
+      "required": [
+        "outcome",
+        "commits"
+      ],
+      "type": "object"
+    },
+    "SessionWorkspace": {
+      "description": "会话在哪里工作。`session.create` 不带时是 `local`（线路上不猜默认值；客户端按节点的\n`worktree.default` 和用户上次的选择决定要不要带 `worktree`）。",
+      "oneOf": [
+        {
+          "description": "直接在项目目录里工作。",
+          "properties": {
+            "mode": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "daemon 从项目新建一个 git worktree 和一条新分支，agent 在 worktree 里工作。\n只有 `Project.git.worktree_ready` 的项目可以；scratch 会话不行。",
+          "properties": {
+            "base": {
+              "description": "从哪个 ref 开分支：本地分支名、`origin/main` 这样的远端跟踪分支、标签，或提交 SHA。daemon 把分支 / 标签写法\n规范成完整引用名记下（`refs/heads/main`、`refs/remotes/origin/main`、`refs/tags/v1.0`；展示时去掉前缀），其他能解析成提交的\n写法（`HEAD`、`HEAD~1`…）只记解析出的提交，不再按名字重新解析。缺省 = `workspace.branches` 的 `default_base`。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "description": "新分支的完整名字，必须是还不存在的分支。缺省 = `<worktree.branch_prefix>/<slug>`，\nslug 由 daemon 从第一条消息里的英文单词生成，取不到就随机两个词。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "const": "worktree",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SessionWorkspaceMode": {
+      "description": "节点配置 `worktree.default` 的取值，也是 `SessionWorkspace` 的两种模式。",
+      "enum": [
+        "local",
+        "worktree"
+      ],
+      "type": "string"
+    },
+    "SessionWorktree": {
+      "description": "会话所在的 worktree。",
+      "properties": {
+        "base": {
+          "description": "base 的展示名：分支 / 远端跟踪分支 / 标签写法是短名字（`main`、`origin/main`、`v1.0`），\n其他写法（`HEAD`、`HEAD~1`…）是解析出的提交的前 12 位。daemon 内部按规范化的引用名或完整 SHA 计算。",
+          "type": "string"
+        },
+        "base_sha": {
+          "description": "创建时 base 解析到的提交。",
+          "type": "string"
+        },
+        "branch": {
+          "description": "如 `anycon/fix-login`。",
+          "type": "string"
+        },
+        "id": {
+          "description": "`WorktreeInfo.id`。",
+          "type": "string"
+        },
+        "path": {
+          "description": "相对项目目录的路径，如 `.anycon/worktrees/fix-login`。",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/WorktreeState"
+        }
+      },
+      "required": [
+        "id",
+        "branch",
+        "base",
+        "base_sha",
+        "path",
+        "state"
+      ],
+      "type": "object"
+    },
+    "SyncOutcome": {
+      "oneOf": [
+        {
+          "const": "up_to_date",
+          "description": "base 没有新提交。",
+          "type": "string"
+        },
+        {
+          "const": "merged",
+          "description": "合并完成（快进或合并提交）。",
+          "type": "string"
+        },
+        {
+          "const": "conflicts",
+          "description": "有冲突：合并停在中途，冲突文件里有标记。让 agent 解决，或者 `abort`。",
+          "type": "string"
+        },
+        {
+          "const": "aborted",
+          "description": "`abort` 成功。",
+          "type": "string"
+        }
+      ]
+    },
+    "ThinkingOptions": {
+      "description": "某个模型支持的思考等级。**挂在模型上**，不同模型不同。",
+      "properties": {
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "items": {
+            "$ref": "#/definitions/Choice"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "options"
+      ],
+      "type": "object"
+    },
+    "ToolCallDetail": {
+      "description": "按 category 归一化的渲染字段。全部可选；`input` 仍原样保留。",
+      "properties": {
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "edit_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EditKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ToolCategory": {
+      "enum": [
+        "shell",
+        "file_edit",
+        "file_read",
+        "search",
+        "web",
+        "subagent",
+        "mcp",
+        "other"
+      ],
+      "type": "string"
+    },
+    "ToolPermissionDetail": {
+      "description": "`kind = tool` 的详情：和 `tool_call` 同一套字段。",
+      "properties": {
+        "category": {
+          "$ref": "#/definitions/ToolCategory"
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ToolCallDetail"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input": {
+          "default": null,
+          "tsType": "unknown"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "category"
+      ],
+      "type": "object"
+    },
+    "ToolResultDetail": {
+      "properties": {
+        "exit_code": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "live_output_truncated": {
+          "description": "这次调用的流式 `tool_output_delta` 累计超过上限、后续 delta 没有转发；最终 `output` 仍是\n头尾截断的完整输出。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "match_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_truncated_bytes": {
+          "description": "daemon 对 `output` 做头尾截断时丢掉的字节数（spec/daemon.md § 12）；没截断就缺省。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unified_diff": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TrashEntry": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "`.trash/` 下的目录名，如 `my-app-20261011T120000Z`。",
+          "type": "string"
+        },
+        "original_name": {
+          "type": "string"
+        },
+        "trashed_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "original_name",
+        "trashed_at_ms",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "TurnDoneReason": {
+      "enum": [
+        "completed",
+        "cancelled",
+        "error",
+        "max_turns",
+        "budget"
+      ],
+      "type": "string"
+    },
+    "Usage": {
+      "properties": {
+        "cache_read_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_write_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cost_usd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "duration_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "duration_ms"
+      ],
+      "type": "object"
+    },
+    "UsageTotals": {
+      "properties": {
+        "cache_read_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cache_write_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cost_usd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turns": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "turns"
+      ],
+      "type": "object"
+    },
+    "WorkspaceBranchesParams": {
+      "description": "`workspace.branches`：给新建会话的「基于哪个分支」下拉框列分支。",
+      "properties": {
+        "project": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project"
+      ],
+      "type": "object"
+    },
+    "WorkspaceBranchesResult": {
+      "properties": {
+        "current": {
+          "description": "项目目录当前检出的分支；HEAD 是 detached 时为空。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_base": {
+          "description": "新会话默认的 base：当前分支有上游（`origin/main`）时是上游，否则是当前分支；detached 时是 HEAD 的提交。",
+          "type": "string"
+        },
+        "local": {
+          "description": "本地分支，按最近提交时间倒序，最多 200 个。不含 anycon 自己建的 worktree 分支（`<branch_prefix>/…`）。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "remote": {
+          "description": "远端跟踪分支（`origin/main`），同样排序和上限，不含 `*/HEAD`。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "description": "任何一组被截断时为 true。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "default_base",
+        "local",
+        "remote"
+      ],
+      "type": "object"
+    },
+    "WorkspaceBrowseParams": {
+      "description": "`workspace.browse`：给「关联已有目录」的选择器列本机目录。只列目录，只在 `workspace.link_roots` 之内。",
+      "properties": {
+        "path": {
+          "description": "要列的目录（绝对路径或 `~/…`）。缺省 = `roots` 的第一项。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "show_hidden": {
+          "default": false,
+          "description": "也列出以 `.` 开头的目录。默认 false。",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "WorkspaceBrowseResult": {
+      "properties": {
+        "blocked": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LinkBlock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`path` 本身不能关联、又不是因为已经是项目时，给出原因（规则同 `BrowseEntry.blocked`）。"
+        },
+        "entries": {
+          "description": "子目录，按名字排序。跟随符号链接；解析后落在 `roots` 之外的不列。",
+          "items": {
+            "$ref": "#/definitions/BrowseEntry"
+          },
+          "type": "array"
+        },
+        "linkable": {
+          "description": "`path` 本身能不能直接关联（规则同 `BrowseEntry.linkable`）。",
+          "type": "boolean"
+        },
+        "parent": {
+          "description": "上一级的绝对路径；`path` 已经是某个 root 时为空（不能再往上）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "canonicalize 之后的绝对路径。",
+          "type": "string"
+        },
+        "project": {
+          "description": "`path` 本身已经是项目时给出项目名。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "roots": {
+          "description": "可浏览、可关联的范围：`workspace.link_roots` 展开并 canonicalize 后的绝对路径。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "description": "子目录超过 1000 个时只给前 1000 个。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "roots",
+        "linkable",
+        "entries"
+      ],
+      "type": "object"
+    },
+    "WorkspaceChanged": {
+      "description": "`workspace.changed` 通知。",
+      "properties": {
+        "added": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "removed": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "renamed": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/RenamedProject"
+          },
+          "type": "array"
+        },
+        "updated": {
+          "description": "这些项目推导出来的元数据（`git`）有了或变了——比如 daemon 重启后冷缓存里第一次算完（ADR-34）。\n客户端重新 `workspace.list`。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "WorkspaceCloneParams": {
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "只允许 `https://`、`ssh://`、`git@host:path` 三种形式。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "WorkspaceCreateParams": {
+      "properties": {
+        "git_init": {
+          "default": false,
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "WorkspaceLinkParams": {
+      "description": "`workspace.link`：把本机一个已有目录关联为项目。",
+      "properties": {
+        "name": {
+          "description": "项目名；缺省取目录名。规则同 `workspace.create`，不能和已有项目（根目录下的或关联的）重名。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "本机绝对路径；`~` / `~/…` 按 daemon 用户的 HOME 展开。必须是已存在的目录，\ncanonicalize 之后要在 `workspace.link_roots` 之内。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "WorkspaceListResult": {
+      "properties": {
+        "projects": {
+          "items": {
+            "$ref": "#/definitions/Project"
+          },
+          "type": "array"
+        },
+        "root": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "projects"
+      ],
+      "type": "object"
+    },
+    "WorkspaceNameParams": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRemoveWorktreeParams": {
+      "description": "`workspace.remove_worktree`：删掉一个已保留或没有会话的 worktree。会话还没归档时返回 `busy`。",
+      "properties": {
+        "delete_branch": {
+          "default": false,
+          "description": "同时删掉分支（`git branch -D`）。分支上有没合并的提交也会丢。",
+          "type": "boolean"
+        },
+        "force": {
+          "default": false,
+          "description": "有未提交的改动也删（丢弃这些改动）。为 false 而有改动时返回 `invalid`，`data.reason = \"uncommitted_changes\"`。",
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRenameParams": {
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "WorkspaceTrashIdParams": {
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "WorkspaceTrashListResult": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/TrashEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "WorkspaceWorktreesParams": {
+      "description": "`workspace.worktrees`。",
+      "properties": {
+        "project": {
+          "description": "只列这个项目的；缺省 = 全部项目。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "WorkspaceWorktreesResult": {
+      "properties": {
+        "worktrees": {
+          "items": {
+            "$ref": "#/definitions/WorktreeInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "worktrees"
+      ],
+      "type": "object"
+    },
+    "WorktreeDisposal": {
+      "description": "归档 / 删除会话时怎么处理它的 worktree。",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "没有未提交的改动就删掉 worktree（分支上没有自己的提交时连分支一起删），有就保留。",
+          "type": "string"
+        },
+        {
+          "const": "keep",
+          "description": "保留 worktree。",
+          "type": "string"
+        },
+        {
+          "const": "remove",
+          "description": "删掉 worktree，丢弃未提交的改动。分支保留（除非 `delete_branch`）。",
+          "type": "string"
+        }
+      ]
+    },
+    "WorktreeInfo": {
+      "description": "一个由 anycon 建的 worktree。",
+      "properties": {
+        "ahead": {
+          "description": "分支上 base 之后自己的提交数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "base": {
+          "description": "base 的展示名，规则同 `SessionWorktree.base`（短引用名，或提交的前 12 位）。",
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "bytes": {
+          "description": "磁盘占用；统计超过时间预算时为空。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "daemon 生成的 id（`wt_` + 22 位 base62）。",
+          "type": "string"
+        },
+        "path": {
+          "description": "相对项目目录的路径，如 `.anycon/worktrees/fix-login`。",
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "session_id": {
+          "description": "所属会话；会话删掉之后为空（「没有会话的 worktree」）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/WorktreeState"
+        },
+        "uncommitted": {
+          "description": "未提交的文件数（含未跟踪的）；目录不在时为 0。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "project",
+        "path",
+        "branch",
+        "base",
+        "state",
+        "uncommitted",
+        "ahead",
+        "created_at_ms"
+      ],
+      "type": "object"
+    },
+    "WorktreeState": {
+      "description": "anycon 建的 worktree 现在的状态。",
+      "oneOf": [
+        {
+          "const": "creating",
+          "description": "会话刚创建，daemon 正在 `git worktree add` / 复制 `.worktreeinclude` 列出的文件。",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "目录在，会话可以在里面工作。",
+          "type": "string"
+        },
+        {
+          "const": "kept",
+          "description": "会话已归档，但 worktree 里有未提交的改动，所以留在了磁盘上。",
+          "type": "string"
+        },
+        {
+          "const": "removed",
+          "description": "worktree 目录已经删掉（分支还在，除非它没有自己的提交）。取消归档时按分支重建。",
+          "type": "string"
+        },
+        {
+          "const": "missing",
+          "description": "目录不见了，或者被换成了别的目录 / 符号链接。会话不能继续，直到按分支重建。",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "创建失败（会话同时进入 `error`）。磁盘上没有留下半成品。",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "仅用于导出 schema，不在线上传输。字段名即 TS / Python 的类型名。",
+  "properties": {
+    "agent_diagnose_params": {
+      "$ref": "#/definitions/AgentDiagnoseParams"
+    },
+    "agent_diagnose_result": {
+      "$ref": "#/definitions/AgentDiagnoseResult"
+    },
+    "agent_info": {
+      "$ref": "#/definitions/AgentInfo"
+    },
+    "agent_list_params": {
+      "$ref": "#/definitions/AgentListParams"
+    },
+    "agent_list_result": {
+      "$ref": "#/definitions/AgentListResult"
+    },
+    "attachment_ref": {
+      "$ref": "#/definitions/AttachmentRef"
+    },
+    "blob_get_params": {
+      "$ref": "#/definitions/BlobGetParams"
+    },
+    "blob_get_result": {
+      "$ref": "#/definitions/BlobGetResult"
+    },
+    "blob_id_params": {
+      "$ref": "#/definitions/BlobIdParams"
+    },
+    "blob_put_begin_params": {
+      "$ref": "#/definitions/BlobPutBeginParams"
+    },
+    "blob_put_begin_result": {
+      "$ref": "#/definitions/BlobPutBeginResult"
+    },
+    "blob_put_chunk_params": {
+      "$ref": "#/definitions/BlobPutChunkParams"
+    },
+    "browse_entry": {
+      "$ref": "#/definitions/BrowseEntry"
+    },
+    "client_info": {
+      "$ref": "#/definitions/ClientInfo"
+    },
+    "control": {
+      "$ref": "#/definitions/Control"
+    },
+    "diff_against": {
+      "$ref": "#/definitions/DiffAgainst"
+    },
+    "diff_file": {
+      "$ref": "#/definitions/DiffFile"
+    },
+    "diff_file_status": {
+      "$ref": "#/definitions/DiffFileStatus"
+    },
+    "empty": {
+      "$ref": "#/definitions/Empty"
+    },
+    "enroll_fail_reason": {
+      "$ref": "#/definitions/EnrollFailReason"
+    },
+    "enroll_frame": {
+      "$ref": "#/definitions/EnrollFrame"
+    },
+    "enroll_hint": {
+      "$ref": "#/definitions/EnrollHint"
+    },
+    "enroll_info": {
+      "$ref": "#/definitions/EnrollInfo"
+    },
+    "enroll_method": {
+      "$ref": "#/definitions/EnrollMethod"
+    },
+    "enroll_password_state": {
+      "$ref": "#/definitions/EnrollPasswordState"
+    },
+    "enroll_password_status": {
+      "$ref": "#/definitions/EnrollPasswordStatus"
+    },
+    "enroll_reject_reason": {
+      "$ref": "#/definitions/EnrollRejectReason"
+    },
+    "enroll_reply_status": {
+      "$ref": "#/definitions/EnrollReplyStatus"
+    },
+    "enroll_result": {
+      "$ref": "#/definitions/EnrollResult"
+    },
+    "enroll_session_status": {
+      "$ref": "#/definitions/EnrollSessionStatus"
+    },
+    "error_code": {
+      "$ref": "#/definitions/ErrorCode"
+    },
+    "event": {
+      "$ref": "#/definitions/Event"
+    },
+    "fs_list_params": {
+      "$ref": "#/definitions/FsListParams"
+    },
+    "fs_list_result": {
+      "$ref": "#/definitions/FsListResult"
+    },
+    "fs_read_params": {
+      "$ref": "#/definitions/FsReadParams"
+    },
+    "fs_read_result": {
+      "$ref": "#/definitions/FsReadResult"
+    },
+    "git_action": {
+      "$ref": "#/definitions/GitAction"
+    },
+    "job_cancel_params": {
+      "$ref": "#/definitions/JobCancelParams"
+    },
+    "job_done": {
+      "$ref": "#/definitions/JobDone"
+    },
+    "job_progress": {
+      "$ref": "#/definitions/JobProgress"
+    },
+    "job_started": {
+      "$ref": "#/definitions/JobStarted"
+    },
+    "kind": {
+      "$ref": "#/definitions/Kind"
+    },
+    "link_block": {
+      "$ref": "#/definitions/LinkBlock"
+    },
+    "node_audit_params": {
+      "$ref": "#/definitions/NodeAuditParams"
+    },
+    "node_audit_result": {
+      "$ref": "#/definitions/NodeAuditResult"
+    },
+    "node_devices_result": {
+      "$ref": "#/definitions/NodeDevicesResult"
+    },
+    "node_doctor_result": {
+      "$ref": "#/definitions/NodeDoctorResult"
+    },
+    "node_enroll_approve_params": {
+      "$ref": "#/definitions/NodeEnrollApproveParams"
+    },
+    "node_enroll_approve_result": {
+      "$ref": "#/definitions/NodeEnrollApproveResult"
+    },
+    "node_enroll_code_result": {
+      "$ref": "#/definitions/NodeEnrollCodeResult"
+    },
+    "node_enroll_id_params": {
+      "$ref": "#/definitions/NodeEnrollIdParams"
+    },
+    "node_enroll_list_result": {
+      "$ref": "#/definitions/NodeEnrollListResult"
+    },
+    "node_enroll_resolved": {
+      "$ref": "#/definitions/NodeEnrollResolved"
+    },
+    "node_enroll_status_result": {
+      "$ref": "#/definitions/NodeEnrollStatusResult"
+    },
+    "node_info": {
+      "$ref": "#/definitions/NodeInfo"
+    },
+    "node_pair_begin_params": {
+      "$ref": "#/definitions/NodePairBeginParams"
+    },
+    "node_pair_begin_result": {
+      "$ref": "#/definitions/NodePairBeginResult"
+    },
+    "node_revoke_device_params": {
+      "$ref": "#/definitions/NodeRevokeDeviceParams"
+    },
+    "node_security_event": {
+      "$ref": "#/definitions/NodeSecurityEvent"
+    },
+    "node_set_agent_defaults_params": {
+      "$ref": "#/definitions/NodeSetAgentDefaultsParams"
+    },
+    "node_set_enroll_enabled_params": {
+      "$ref": "#/definitions/NodeSetEnrollEnabledParams"
+    },
+    "node_set_enroll_password_params": {
+      "$ref": "#/definitions/NodeSetEnrollPasswordParams"
+    },
+    "node_stats": {
+      "$ref": "#/definitions/NodeStats"
+    },
+    "node_worktree_settings": {
+      "$ref": "#/definitions/NodeWorktreeSettings"
+    },
+    "notify_body": {
+      "$ref": "#/definitions/NotifyBody"
+    },
+    "notify_detail": {
+      "$ref": "#/definitions/NotifyDetail"
+    },
+    "pair_ack": {
+      "$ref": "#/definitions/PairAck"
+    },
+    "permission_list_params": {
+      "$ref": "#/definitions/PermissionListParams"
+    },
+    "permission_list_result": {
+      "$ref": "#/definitions/PermissionListResult"
+    },
+    "permission_request": {
+      "$ref": "#/definitions/PermissionRequest"
+    },
+    "permission_resolved": {
+      "$ref": "#/definitions/PermissionResolved"
+    },
+    "permission_respond_params": {
+      "$ref": "#/definitions/PermissionRespondParams"
+    },
+    "project": {
+      "$ref": "#/definitions/Project"
+    },
+    "project_kind": {
+      "$ref": "#/definitions/ProjectKind"
+    },
+    "pull_request_info": {
+      "$ref": "#/definitions/PullRequestInfo"
+    },
+    "pull_request_state": {
+      "$ref": "#/definitions/PullRequestState"
+    },
+    "quota": {
+      "$ref": "#/definitions/Quota"
+    },
+    "rpc_error": {
+      "$ref": "#/definitions/RpcError"
+    },
+    "rpc_message": {
+      "$ref": "#/definitions/RpcMessage"
+    },
+    "security_event_kind": {
+      "$ref": "#/definitions/SecurityEventKind"
+    },
+    "session_archive_params": {
+      "$ref": "#/definitions/SessionArchiveParams"
+    },
+    "session_changed": {
+      "$ref": "#/definitions/SessionChanged"
+    },
+    "session_create_params": {
+      "$ref": "#/definitions/SessionCreateParams"
+    },
+    "session_delete_params": {
+      "$ref": "#/definitions/SessionDeleteParams"
+    },
+    "session_diff_params": {
+      "$ref": "#/definitions/SessionDiffParams"
+    },
+    "session_diff_result": {
+      "$ref": "#/definitions/SessionDiffResult"
+    },
+    "session_event": {
+      "$ref": "#/definitions/SessionEvent"
+    },
+    "session_git_status": {
+      "$ref": "#/definitions/SessionGitStatus"
+    },
+    "session_git_status_params": {
+      "$ref": "#/definitions/SessionGitStatusParams"
+    },
+    "session_history_params": {
+      "$ref": "#/definitions/SessionHistoryParams"
+    },
+    "session_history_result": {
+      "$ref": "#/definitions/SessionHistoryResult"
+    },
+    "session_id_params": {
+      "$ref": "#/definitions/SessionIdParams"
+    },
+    "session_list_params": {
+      "$ref": "#/definitions/SessionListParams"
+    },
+    "session_list_result": {
+      "$ref": "#/definitions/SessionListResult"
+    },
+    "session_promote_params": {
+      "$ref": "#/definitions/SessionPromoteParams"
+    },
+    "session_rename_params": {
+      "$ref": "#/definitions/SessionRenameParams"
+    },
+    "session_search_params": {
+      "$ref": "#/definitions/SessionSearchParams"
+    },
+    "session_search_result": {
+      "$ref": "#/definitions/SessionSearchResult"
+    },
+    "session_send_params": {
+      "$ref": "#/definitions/SessionSendParams"
+    },
+    "session_send_result": {
+      "$ref": "#/definitions/SessionSendResult"
+    },
+    "session_set_settings_params": {
+      "$ref": "#/definitions/SessionSetSettingsParams"
+    },
+    "session_set_settings_result": {
+      "$ref": "#/definitions/SessionSetSettingsResult"
+    },
+    "session_settings": {
+      "$ref": "#/definitions/SessionSettings"
+    },
+    "session_summary": {
+      "$ref": "#/definitions/SessionSummary"
+    },
+    "session_sync_base_params": {
+      "$ref": "#/definitions/SessionSyncBaseParams"
+    },
+    "session_sync_base_result": {
+      "$ref": "#/definitions/SessionSyncBaseResult"
+    },
+    "session_workspace": {
+      "$ref": "#/definitions/SessionWorkspace"
+    },
+    "session_workspace_mode": {
+      "$ref": "#/definitions/SessionWorkspaceMode"
+    },
+    "session_worktree": {
+      "$ref": "#/definitions/SessionWorktree"
+    },
+    "sync_outcome": {
+      "$ref": "#/definitions/SyncOutcome"
+    },
+    "trash_entry": {
+      "$ref": "#/definitions/TrashEntry"
+    },
+    "workspace_branches_params": {
+      "$ref": "#/definitions/WorkspaceBranchesParams"
+    },
+    "workspace_branches_result": {
+      "$ref": "#/definitions/WorkspaceBranchesResult"
+    },
+    "workspace_browse_params": {
+      "$ref": "#/definitions/WorkspaceBrowseParams"
+    },
+    "workspace_browse_result": {
+      "$ref": "#/definitions/WorkspaceBrowseResult"
+    },
+    "workspace_changed": {
+      "$ref": "#/definitions/WorkspaceChanged"
+    },
+    "workspace_clone_params": {
+      "$ref": "#/definitions/WorkspaceCloneParams"
+    },
+    "workspace_create_params": {
+      "$ref": "#/definitions/WorkspaceCreateParams"
+    },
+    "workspace_link_params": {
+      "$ref": "#/definitions/WorkspaceLinkParams"
+    },
+    "workspace_list_result": {
+      "$ref": "#/definitions/WorkspaceListResult"
+    },
+    "workspace_name_params": {
+      "$ref": "#/definitions/WorkspaceNameParams"
+    },
+    "workspace_remove_worktree_params": {
+      "$ref": "#/definitions/WorkspaceRemoveWorktreeParams"
+    },
+    "workspace_rename_params": {
+      "$ref": "#/definitions/WorkspaceRenameParams"
+    },
+    "workspace_trash_id_params": {
+      "$ref": "#/definitions/WorkspaceTrashIdParams"
+    },
+    "workspace_trash_list_result": {
+      "$ref": "#/definitions/WorkspaceTrashListResult"
+    },
+    "workspace_worktrees_params": {
+      "$ref": "#/definitions/WorkspaceWorktreesParams"
+    },
+    "workspace_worktrees_result": {
+      "$ref": "#/definitions/WorkspaceWorktreesResult"
+    },
+    "worktree_disposal": {
+      "$ref": "#/definitions/WorktreeDisposal"
+    },
+    "worktree_info": {
+      "$ref": "#/definitions/WorktreeInfo"
+    },
+    "worktree_state": {
+      "$ref": "#/definitions/WorktreeState"
+    }
+  },
+  "required": [
+    "kind",
+    "notify_body",
+    "notify_detail",
+    "control",
+    "client_info",
+    "quota",
+    "rpc_message",
+    "rpc_error",
+    "error_code",
+    "empty",
+    "node_info",
+    "node_devices_result",
+    "node_revoke_device_params",
+    "node_pair_begin_params",
+    "node_pair_begin_result",
+    "pair_ack",
+    "project",
+    "trash_entry",
+    "node_stats",
+    "node_doctor_result",
+    "node_audit_params",
+    "node_audit_result",
+    "node_set_agent_defaults_params",
+    "enroll_frame",
+    "enroll_method",
+    "enroll_hint",
+    "enroll_reply_status",
+    "enroll_reject_reason",
+    "enroll_fail_reason",
+    "enroll_session_status",
+    "enroll_info",
+    "node_enroll_list_result",
+    "node_enroll_approve_params",
+    "node_enroll_approve_result",
+    "node_enroll_id_params",
+    "enroll_result",
+    "node_enroll_resolved",
+    "node_enroll_code_result",
+    "enroll_password_state",
+    "enroll_password_status",
+    "node_enroll_status_result",
+    "node_set_enroll_password_params",
+    "node_set_enroll_enabled_params",
+    "security_event_kind",
+    "node_security_event",
+    "agent_info",
+    "agent_list_params",
+    "agent_list_result",
+    "agent_diagnose_params",
+    "agent_diagnose_result",
+    "workspace_list_result",
+    "workspace_create_params",
+    "workspace_clone_params",
+    "workspace_rename_params",
+    "workspace_name_params",
+    "workspace_trash_list_result",
+    "workspace_trash_id_params",
+    "workspace_changed",
+    "project_kind",
+    "workspace_link_params",
+    "workspace_browse_params",
+    "workspace_browse_result",
+    "browse_entry",
+    "link_block",
+    "job_started",
+    "job_progress",
+    "job_done",
+    "job_cancel_params",
+    "fs_list_params",
+    "fs_list_result",
+    "fs_read_params",
+    "fs_read_result",
+    "workspace_branches_params",
+    "workspace_branches_result",
+    "worktree_state",
+    "worktree_info",
+    "workspace_worktrees_params",
+    "workspace_worktrees_result",
+    "workspace_remove_worktree_params",
+    "node_worktree_settings",
+    "session_workspace",
+    "session_workspace_mode",
+    "session_worktree",
+    "worktree_disposal",
+    "session_archive_params",
+    "session_delete_params",
+    "session_git_status_params",
+    "session_git_status",
+    "pull_request_state",
+    "pull_request_info",
+    "diff_against",
+    "session_diff_params",
+    "diff_file_status",
+    "diff_file",
+    "session_diff_result",
+    "session_sync_base_params",
+    "sync_outcome",
+    "session_sync_base_result",
+    "git_action",
+    "session_settings",
+    "session_summary",
+    "session_list_params",
+    "session_list_result",
+    "session_id_params",
+    "session_create_params",
+    "session_send_params",
+    "session_send_result",
+    "session_set_settings_params",
+    "session_set_settings_result",
+    "session_history_params",
+    "session_history_result",
+    "session_rename_params",
+    "session_search_params",
+    "session_search_result",
+    "session_promote_params",
+    "session_changed",
+    "session_event",
+    "event",
+    "attachment_ref",
+    "blob_put_begin_params",
+    "blob_put_begin_result",
+    "blob_put_chunk_params",
+    "blob_id_params",
+    "blob_get_params",
+    "blob_get_result",
+    "permission_request",
+    "permission_respond_params",
+    "permission_resolved",
+    "permission_list_params",
+    "permission_list_result"
+  ],
+  "title": "ProtocolSchema",
+  "type": "object",
+  "x-anycon-methods": [
+    {
+      "direction": "notification",
+      "name": "pair.ack",
+      "params": "PairAck",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "node.info",
+      "params": null,
+      "result": "NodeInfo"
+    },
+    {
+      "direction": "request",
+      "name": "node.devices",
+      "params": null,
+      "result": "NodeDevicesResult"
+    },
+    {
+      "direction": "request",
+      "name": "node.revoke_device",
+      "params": "NodeRevokeDeviceParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "node.pair_begin",
+      "params": "NodePairBeginParams",
+      "result": "NodePairBeginResult"
+    },
+    {
+      "direction": "request",
+      "name": "node.stats",
+      "params": null,
+      "result": "NodeStats"
+    },
+    {
+      "direction": "request",
+      "name": "node.doctor",
+      "params": null,
+      "result": "NodeDoctorResult"
+    },
+    {
+      "direction": "request",
+      "name": "node.audit",
+      "params": "NodeAuditParams",
+      "result": "NodeAuditResult"
+    },
+    {
+      "direction": "request",
+      "name": "node.set_agent_defaults",
+      "params": "NodeSetAgentDefaultsParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "node.enroll_list",
+      "params": null,
+      "result": "NodeEnrollListResult"
+    },
+    {
+      "direction": "request",
+      "name": "node.enroll_approve",
+      "params": "NodeEnrollApproveParams",
+      "result": "NodeEnrollApproveResult"
+    },
+    {
+      "direction": "request",
+      "name": "node.enroll_deny",
+      "params": "NodeEnrollIdParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "node.enroll_code",
+      "params": null,
+      "result": "NodeEnrollCodeResult"
+    },
+    {
+      "direction": "request",
+      "name": "node.enroll_status",
+      "params": null,
+      "result": "NodeEnrollStatusResult"
+    },
+    {
+      "direction": "request",
+      "name": "node.set_enroll_password",
+      "params": "NodeSetEnrollPasswordParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "node.set_enroll_enabled",
+      "params": "NodeSetEnrollEnabledParams",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "node.enroll_requested",
+      "params": "EnrollInfo",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "node.enroll_resolved",
+      "params": "NodeEnrollResolved",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "node.security_event",
+      "params": "NodeSecurityEvent",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "agent.list",
+      "params": "AgentListParams",
+      "result": "AgentListResult"
+    },
+    {
+      "direction": "request",
+      "name": "agent.diagnose",
+      "params": "AgentDiagnoseParams",
+      "result": "AgentDiagnoseResult"
+    },
+    {
+      "direction": "notification",
+      "name": "agent.changed",
+      "params": "AgentListResult",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "workspace.list",
+      "params": null,
+      "result": "WorkspaceListResult"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.create",
+      "params": "WorkspaceCreateParams",
+      "result": "Project"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.clone",
+      "params": "WorkspaceCloneParams",
+      "result": "JobStarted"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.rename",
+      "params": "WorkspaceRenameParams",
+      "result": "RenamedProject"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.trash",
+      "params": "WorkspaceNameParams",
+      "result": "TrashEntry"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.trash_list",
+      "params": null,
+      "result": "WorkspaceTrashListResult"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.restore",
+      "params": "WorkspaceTrashIdParams",
+      "result": "Project"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.purge",
+      "params": "WorkspaceTrashIdParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "workspace.link",
+      "params": "WorkspaceLinkParams",
+      "result": "Project"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.unlink",
+      "params": "WorkspaceNameParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "workspace.browse",
+      "params": "WorkspaceBrowseParams",
+      "result": "WorkspaceBrowseResult"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.branches",
+      "params": "WorkspaceBranchesParams",
+      "result": "WorkspaceBranchesResult"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.worktrees",
+      "params": "WorkspaceWorktreesParams",
+      "result": "WorkspaceWorktreesResult"
+    },
+    {
+      "direction": "request",
+      "name": "workspace.remove_worktree",
+      "params": "WorkspaceRemoveWorktreeParams",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "workspace.changed",
+      "params": "WorkspaceChanged",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "job.progress",
+      "params": "JobProgress",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "job.done",
+      "params": "JobDone",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "job.cancel",
+      "params": "JobCancelParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "fs.list",
+      "params": "FsListParams",
+      "result": "FsListResult"
+    },
+    {
+      "direction": "request",
+      "name": "fs.read",
+      "params": "FsReadParams",
+      "result": "FsReadResult"
+    },
+    {
+      "direction": "request",
+      "name": "session.list",
+      "params": "SessionListParams",
+      "result": "SessionListResult"
+    },
+    {
+      "direction": "request",
+      "name": "session.get",
+      "params": "SessionIdParams",
+      "result": "SessionSummary"
+    },
+    {
+      "direction": "request",
+      "name": "session.create",
+      "params": "SessionCreateParams",
+      "result": "SessionSummary"
+    },
+    {
+      "direction": "request",
+      "name": "session.send",
+      "params": "SessionSendParams",
+      "result": "SessionSendResult"
+    },
+    {
+      "direction": "request",
+      "name": "session.cancel",
+      "params": "SessionIdParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.set_settings",
+      "params": "SessionSetSettingsParams",
+      "result": "SessionSetSettingsResult"
+    },
+    {
+      "direction": "request",
+      "name": "session.watch",
+      "params": "SessionIdParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.unwatch",
+      "params": "SessionIdParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.history",
+      "params": "SessionHistoryParams",
+      "result": "SessionHistoryResult"
+    },
+    {
+      "direction": "notification",
+      "name": "session.event",
+      "params": "SessionEvent",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "session.changed",
+      "params": "SessionChanged",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.rename",
+      "params": "SessionRenameParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.archive",
+      "params": "SessionArchiveParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.unarchive",
+      "params": "SessionIdParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.delete",
+      "params": "SessionDeleteParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.restart",
+      "params": "SessionIdParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.search",
+      "params": "SessionSearchParams",
+      "result": "SessionSearchResult"
+    },
+    {
+      "direction": "request",
+      "name": "session.promote",
+      "params": "SessionPromoteParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.git_status",
+      "params": "SessionGitStatusParams",
+      "result": "SessionGitStatus"
+    },
+    {
+      "direction": "request",
+      "name": "session.diff",
+      "params": "SessionDiffParams",
+      "result": "SessionDiffResult"
+    },
+    {
+      "direction": "request",
+      "name": "session.sync_base",
+      "params": "SessionSyncBaseParams",
+      "result": "SessionSyncBaseResult"
+    },
+    {
+      "direction": "request",
+      "name": "blob.put_begin",
+      "params": "BlobPutBeginParams",
+      "result": "BlobPutBeginResult"
+    },
+    {
+      "direction": "request",
+      "name": "blob.put_chunk",
+      "params": "BlobPutChunkParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "blob.put_end",
+      "params": "BlobIdParams",
+      "result": "AttachmentRef"
+    },
+    {
+      "direction": "request",
+      "name": "blob.get",
+      "params": "BlobGetParams",
+      "result": "BlobGetResult"
+    },
+    {
+      "direction": "request",
+      "name": "blob.discard",
+      "params": "BlobIdParams",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "permission.request",
+      "params": "PermissionRequest",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "permission.respond",
+      "params": "PermissionRespondParams",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "permission.resolved",
+      "params": "PermissionResolved",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "permission.list",
+      "params": "PermissionListParams",
+      "result": "PermissionListResult"
+    }
+  ],
+  "x-anycon-protocol-version": 1
+}

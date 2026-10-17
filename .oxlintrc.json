@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "off",
+    "typescript/consistent-type-imports": "error",
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "eqeqeq": ["error", "always"],
+    "no-console": "off",
+    "unicorn/no-null": "off",
+    "unicorn/prefer-node-protocol": "error",
+    "unicorn/prefer-add-event-listener": "off"
+  },
+  "env": {
+    "builtin": true,
+    "es2022": true
+  },
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/wasm/**",
+    "**/generated.ts",
+    "**/test-results/**",
+    "**/playwright-report/**"
+  ]
+}

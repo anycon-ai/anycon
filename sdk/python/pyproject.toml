@@ -1,0 +1,20 @@
+# 占位：Python SDK 推迟到 v0.1.x，当前没有任何代码，也不能构建。
+# 保留这个文件是为了固定包名、Python 版本下限和状态说明，让 `docs/spec/sdk.md` 与仓库实际一致。
+# 真正实现时再补 [build-system]（预期 hatchling）、依赖 anycon-crypto（maturin abi3 wheel）和 pydantic。
+
+[project]
+name = "anycon"
+version = "0.0.0"
+description = "anycon Python SDK (placeholder — deferred to v0.1.x, no code yet)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+classifiers = ["Development Status :: 1 - Planning"]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/anycon-ai/anycon"
+
+[tool.anycon]
+status = "deferred"
+see = "docs/spec/sdk.md"

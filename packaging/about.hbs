@@ -1,0 +1,24 @@
+{{!-- cargo-about 模板：配置见 packaging/about.toml。输出纯文本，文本字段都用三重括号，避免被 HTML 转义。 --}}
+THIRD-PARTY SOFTWARE NOTICES
+============================
+
+This program is built from the Rust crates listed below. Each section names a
+license, the crates distributed under it, and the full license text.
+
+Overview:
+{{#each overview}}
+  {{{name}}} ({{count}})
+{{/each}}
+
+{{#each licenses}}
+--------------------------------------------------------------------------------
+{{{name}}} ({{id}})
+
+Used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}{{#if crate.repository}} <{{{crate.repository}}}>{{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

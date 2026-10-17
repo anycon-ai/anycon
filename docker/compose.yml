@@ -1,0 +1,56 @@
+# anycon-hub 的 docker compose 示例。
+#
+#   docker compose -f docker/compose.yml up -d
+#   docker compose -f docker/compose.yml logs hub     # 首次启动会打印管理员 token
+#
+# 默认用发布的镜像（ghcr.io/anycon-ai/hub，linux/amd64 + linux/arm64）。生产环境把 `latest` 换成具体版本（如 `0.1.0`）。
+# 想从源码构建（比如改了前端）：取消下面 `build:` 段的注释，`docker compose -f docker/compose.yml up -d --build`。
+# 源码构建是自包含的：Noise wasm、Web UI、hub 都在镜像构建里完成，宿主机不需要装 Rust / bun；
+# 冷构建几分钟（编译 wasm-bindgen-cli、cargo-about 和 hub），之后改动只重建受影响的阶段。
+# TLS 由你自己的反向代理负责（Caddy / nginx / Traefik / Cloudflare Tunnel，见 docs/deploy.md § 4），
+# 反代必须支持 WebSocket 升级。
+
+services:
+  hub:
+    image: ghcr.io/anycon-ai/hub:latest
+    # build:
+    #   context: ..
+    #   dockerfile: docker/hub.Dockerfile
+    #   # Docker Hub / npm 访问不稳时换源（可选；默认值见 docker/hub.Dockerfile，基础镜像默认钉了 digest）：
+    #   # args:
+    #   #   RUST_IMAGE: <镜像源>/library/rust:1-bookworm
+    #   #   BUN_IMAGE: <镜像源>/oven/bun:1.4
+    #   #   NPM_REGISTRY: <npm 镜像源 URL>
+    container_name: anycon-hub
+    restart: unless-stopped
+    ports:
+      # 只绑回环，对外由反向代理暴露。
+      - "127.0.0.1:8080:8080"
+    environment:
+      # 必填：公网地址（邀请链接、Origin 校验、cookie 属性用它；配对链接不用——那是 daemon 按自己配置的 hub.url 生成的）。
+      ANYCON_PUBLIC_URL: https://hub.example.com
+      # 可选：固定管理员登录 token（不设则首次启动生成并写入 /data/admin-token）。
+      # ANYCON_ADMIN_TOKEN: change-me-to-a-long-random-string
+      # 反向代理的来源网段（决定是否信任 X-Forwarded-For / X-Forwarded-Proto；限速靠真实 IP，IPv6 按 /64 计）。
+      # 默认是 Docker 默认网段 172.16.0.0/12——只在 hub 和代理都在 Docker 默认网络里时合适；
+      # 代理在别处（宿主机 nginx 经 127.0.0.1 / 网关地址访问等）就改成它的地址，否则所有访问者共用代理的限速桶；
+      # 不放心就设成空串（谁都不信），但这样反代后的限速是按代理 IP 计的。
+      # 客户端本身落在受信网段里时，它能伪造这两个头，所以不要把受信范围放得比代理实际所在的网段更大。
+      # ANYCON_TRUSTED_PROXIES: 172.16.0.0/12
+      # ANYCON_LOG: info
+      # 单个转发信封的大小上限（含信封头，默认 262144）。不能小于 205824（201 KiB，一个满片的分片信封），否则 hub 拒绝启动：
+      # 客户端把每条消息切成 200 KiB 的片，更小的上限会把每个满片都丢掉。
+      # ANYCON_MAX_ENVELOPE_BYTES: 262144
+      # 每条连接每分钟的入站字节预算（最小 205824）。客户端连接（web / cli / sdk，以及还没有 device token 的临时连接）默认 10 MiB，
+      # daemon 连接默认 100 MiB——daemon 是它所有客户端的汇聚点，几台设备同时 watch、重连补历史都算在它这一条连接上。
+      # 超过的信封不会被丢：hub 退回 `backpressure` 并每秒至多发一条 `rate_limited { retry_after_ms }`，发送方暂停后按序重发；
+      # 只有持续被退回 10 秒以上、一封都过不去的连接才会被断开（close code 1008）。
+      # ANYCON_RATE_CLIENT_BYTES_PER_MIN: 10485760
+      # ANYCON_RATE_DAEMON_BYTES_PER_MIN: 104857600
+    volumes:
+      # 命名卷：开箱即用（镜像里 /data 属主是 uid 65532）。
+      # 要用宿主机目录的话，先 `chown -R 65532:65532 ./anycon-data`。
+      - anycon-data:/data
+
+volumes:
+  anycon-data:

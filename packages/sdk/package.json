@@ -57,7 +57,7 @@
     "@types/ws": "^8.18.1",
     "fake-indexeddb": "^6.2.5",
     "tsx": "^4.23.15",
-    "typescript": "~5.9.3"
+    "typescript": "~7.0.2"
   },
   "engines": {
     "node": ">=20"

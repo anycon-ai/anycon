@@ -19,7 +19,7 @@
   "devDependencies": {
     "oxfmt": "^0.72.0",
     "oxlint": "^1.87.0",
-    "typescript": "~5.9.3"
+    "typescript": "~7.0.2"
   },
   "engines": {
     "node": ">=20"

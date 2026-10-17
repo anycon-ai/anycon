@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>anycon hub</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 36rem; margin: 4rem auto; padding: 0 1rem; color: #222; }
+  code { background: #eee; padding: 0.1rem 0.3rem; border-radius: 3px; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #ddd; } code { background: #222; } }
+</style>
+</head>
+<body>
+<h1>anycon hub</h1>
+<p>The hub is running, but this build does not include the web UI.</p>
+<p>Build the web app (<code>bun run --cwd web build</code>) and rebuild the hub so that <code>web/dist</code> is embedded. See the Development section of <code>README.md</code>.</p>
+<p>Health: <a href="/healthz"><code>/healthz</code></a> · <a href="/readyz"><code>/readyz</code></a> · <a href="/api/config"><code>/api/config</code></a></p>
+</body>
+</html>

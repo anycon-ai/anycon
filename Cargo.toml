@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/protocol",
+  "crates/agent-api",
+  "crates/crypto",
+  "crates/hub",
+  "crates/daemon",
+  "crates/adapters",
+  "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/anycon-ai/anycon"
+rust-version = "1.85"
+
+# 只放多个 crate 共用的依赖。各 crate 自己的依赖写在自己的 Cargo.toml（用 `cargo add -p <crate>`），不要改这里。
+[workspace.dependencies]
+anycon-protocol  = { path = "crates/protocol" }
+anycon-agent-api = { path = "crates/agent-api" }
+anycon-crypto    = { path = "crates/crypto" }
+anycon-adapters  = { path = "crates/adapters" }
+anycon-daemon    = { path = "crates/daemon" }
+
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+rmp-serde   = "1"
+schemars    = { version = "1", features = ["derive"] }
+thiserror   = "2"
+anyhow      = "1"
+tokio       = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures     = "0.3"
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid        = { version = "1", features = ["v4"] }
+hex         = "0.4"
+base64      = "0.22"
+rand        = "0.8"
+
+[profile.dev]
+opt-level = 0
+debug = 1          # 行号够用，省磁盘
+
+# 配对 KDF 是 Argon2id（64 MiB × 3 轮，ADR-29）。debug 下不优化要跑十几秒，拖慢每一个配对测试和 `just dev`；
+# 只给这两个包开优化，其余保持 opt-level 0。
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package."blake2@0.11.0"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

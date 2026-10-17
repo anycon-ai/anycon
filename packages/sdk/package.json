@@ -1,0 +1,65 @@
+{
+  "name": "@anycon/sdk",
+  "version": "0.1.0",
+  "description": "Anycon TypeScript SDK (client side): pairing, connecting to nodes, sessions, and permissions. Works in Node and the browser.",
+  "homepage": "https://github.com/anycon-ai/anycon/tree/main/packages/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/anycon-ai/anycon/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anycon-ai/anycon.git",
+    "directory": "packages/sdk"
+  },
+  "files": [
+    "dist",
+    "!dist/.tsbuildinfo",
+    "src",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "browser": {
+    "ws": false
+  },
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bun run --cwd ../protocol build && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "test:node": "node --import tsx --conditions source --test \"tests/**/*.test.ts\"",
+    "lint": "oxlint -c ../../.oxlintrc.json src tests",
+    "fmt": "oxfmt --config ../../.oxfmtrc.json src tests",
+    "prepack": "rm -rf dist && bun run build"
+  },
+  "dependencies": {
+    "@anycon/protocol": "workspace:*",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "fake-indexeddb": "^6.2.5",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

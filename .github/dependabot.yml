@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /packages/protocol/tools/gen-vectors
+    schedule:
+      interval: weekly
+    groups:
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+
+  # bun workspace：一个 bun.lock 管所有包，只从根目录扫一次（按目录分开会出重复的 PR，npm 生态也不会更新 bun.lock）
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

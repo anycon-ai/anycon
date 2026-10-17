@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""A fake `claude` CLI for the adapter tests (no network, no model).
+
+Modes
+  fake-claude --version                 prints a version line
+  fake-claude auth status               answers like `claude auth status`
+  fake-claude -p ... (stream-json)      replays a fixture, one "turn" per user message
+
+Environment (all optional)
+  FAKE_CLAUDE_SCRIPT        fixture (JSONL). A turn is the lines up to and including the next `"type":"result"` line.
+                            A `control_request` line makes the fake wait for a `control_response` on stdin before going on.
+  FAKE_CLAUDE_LOG           append JSON lines: argv/env at start, every message received on stdin, exit.
+  FAKE_CLAUDE_DELAY_MS      pause between replayed lines
+  FAKE_CLAUDE_IGNORE_INTERRUPT=1   do not answer / act on `interrupt` control requests
+  FAKE_CLAUDE_STUBBORN=1    ignore SIGINT and stdin EOF (forces SIGKILL)
+  FAKE_CLAUDE_CRASH_AFTER=N exit(3) with a message on stderr after N replayed lines
+  FAKE_CLAUDE_VERSION_TEXT  override the --version output;  FAKE_CLAUDE_VERSION_EXIT  its exit code
+  FAKE_CLAUDE_AUTH          in (default) | out | error | nojson | hang    for `auth status`
+  FAKE_CLAUDE_REJECT_MODE   a permission mode that `set_permission_mode` refuses (error_code=invalid_mode)
+  FAKE_CLAUDE_BIG_LINE      write one stdout line of this many bytes (not valid JSON) right after start
+  FAKE_CLAUDE_BG_PID_FILE   spawn a background `sleep` in our process group and write its pid to this file
+A fixture line `__HOLD__` keeps the turn open until the client interrupts it.
+
+Like the real CLI (commander), value options are accepted as `--flag=value` as well as `--flag value`.
+"""
+import json
+import os
+import queue
+import signal
+import sys
+import threading
+import time
+
+args = sys.argv[1:]
+env = os.environ
+
+
+def flag_value(name):
+    """Value of a `--name=value` / `--name value` option, or None."""
+    for i, a in enumerate(args):
+        if a == name:
+            return args[i + 1] if i + 1 < len(args) else None
+        if a.startswith(name + "="):
+            return a[len(name) + 1:]
+    return None
+
+
+def log(obj):
+    path = env.get("FAKE_CLAUDE_LOG")
+    if path:
+        with open(path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+
+
+if "--version" in args:
+    print(env.get("FAKE_CLAUDE_VERSION_TEXT", "2.1.293 (Claude Code)"))
+    sys.exit(int(env.get("FAKE_CLAUDE_VERSION_EXIT", "0")))
+
+if args[:2] == ["auth", "status"]:
+    mode = env.get("FAKE_CLAUDE_AUTH", "in")
+    if mode == "in":
+        print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "test@example.com"}))
+        sys.exit(0)
+    if mode == "out":
+        print(json.dumps({"loggedIn": False}))
+        sys.exit(1)
+    if mode == "nojson":
+        print("Logged in as test@example.com")
+        sys.exit(0)
+    if mode == "hang":
+        time.sleep(60)
+        sys.exit(0)
+    sys.stderr.write("unexpected failure\n")
+    sys.exit(2)
+
+# ---- stream-json mode ----
+stubborn = env.get("FAKE_CLAUDE_STUBBORN") == "1"
+if stubborn:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+else:
+    signal.signal(signal.SIGINT, lambda *_: os._exit(130))
+
+log({"kind": "argv", "args": args, "cwd": os.getcwd(), "pid": os.getpid(),
+     "env": {k: env.get(k) for k in ("MAX_THINKING_TOKENS", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "ANYCON_TEST_VAR") if k in env}})
+
+if flag_value("--resume") is not None and env.get("FAKE_CLAUDE_RESUME_FAIL") == "1":
+    sid = flag_value("--resume")
+    sys.stderr.write(f"No conversation found with session ID: {sid}\n")
+    sys.stderr.flush()
+    print(json.dumps({"type": "result", "subtype": "error_during_execution", "duration_ms": 0, "is_error": True,
+                      "num_turns": 0, "session_id": sid, "total_cost_usd": 0, "usage": {}}), flush=True)
+    sys.exit(1)
+
+if env.get("FAKE_CLAUDE_BG_PID_FILE"):
+    import subprocess
+    bg = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(env["FAKE_CLAUDE_BG_PID_FILE"], "w") as f:
+        f.write(str(bg.pid))
+
+if env.get("FAKE_CLAUDE_BIG_LINE"):
+    sys.stdout.write("x" * int(env["FAKE_CLAUDE_BIG_LINE"]) + "\n")
+    sys.stdout.flush()
+
+delay = int(env.get("FAKE_CLAUDE_DELAY_MS", "0")) / 1000.0
+crash_after = int(env.get("FAKE_CLAUDE_CRASH_AFTER", "0"))
+ignore_interrupt = env.get("FAKE_CLAUDE_IGNORE_INTERRUPT") == "1"
+
+turns = []
+script = env.get("FAKE_CLAUDE_SCRIPT")
+if script:
+    cur = []
+    for line in open(script).read().split("\n"):
+        if line == "":
+            continue
+        cur.append(line)
+        if '"type":"result"' in line:
+            turns.append(cur)
+            cur = []
+    if cur:
+        turns.append(cur)
+
+q = queue.Queue()
+
+
+def reader():
+    for line in sys.stdin:
+        q.put(line)
+    q.put(None)
+
+
+threading.Thread(target=reader, daemon=True).start()
+
+FIXTURE_SID = "11111111-2222-3333-4444-555555555555"
+state = {"pending_turns": 0, "abort": False, "emitted": 0, "session_id": FIXTURE_SID, "control_responses": 0}
+# like the real CLI, echo the session id we were launched with
+for flag in ("--session-id", "--resume"):
+    if flag_value(flag):
+        state["session_id"] = flag_value(flag)
+turn_index = 0
+
+
+def emit(line):
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+    state["emitted"] += 1
+    if crash_after and state["emitted"] >= crash_after:
+        sys.stderr.write("fatal: simulated crash\n")
+        sys.stderr.flush()
+        os._exit(3)
+
+
+def ack(request_id, response=None, error=None, error_code=None):
+    if error is None:
+        body = {"subtype": "success", "request_id": request_id}
+        if response is not None:
+            body["response"] = response
+    else:
+        body = {"subtype": "error", "request_id": request_id, "error": error}
+        if error_code:
+            body["error_code"] = error_code
+    emit(json.dumps({"type": "control_response", "response": body}))
+
+
+def handle_control_request(msg):
+    rid = msg.get("request_id")
+    req = msg.get("request", {})
+    sub = req.get("subtype")
+    if sub == "interrupt":
+        if ignore_interrupt:
+            return
+        ack(rid, {"still_queued": []})
+        state["abort"] = True
+    elif sub == "set_model":
+        if "bogus" in (req.get("model") or ""):
+            ack(rid, error="Model '%s' not found" % req.get("model"), error_code="catalog_unknown")
+        else:
+            ack(rid)
+    elif sub == "set_permission_mode":
+        if env.get("FAKE_CLAUDE_REJECT_MODE") and req.get("mode") == env.get("FAKE_CLAUDE_REJECT_MODE"):
+            ack(rid, error="Permission mode '%s' is not available" % req.get("mode"), error_code="invalid_mode")
+        elif req.get("mode") == "bypassPermissions" and "--dangerously-skip-permissions" not in args:
+            ack(rid, error="Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions", error_code="bypass_not_launched")
+        else:
+            ack(rid, {"mode": req.get("mode")})
+    elif sub == "initialize":
+        ack(rid, {"commands": [], "models": [{"value": "opus", "displayName": "Opus"}], "account": {"email": "test@example.com"}, "pid": os.getpid()})
+    else:
+        ack(rid, {})
+
+
+def process(item):
+    if item is None:
+        if stubborn:
+            return
+        log({"kind": "exit", "reason": "stdin_eof"})
+        os._exit(0)
+    item = item.strip()
+    if not item:
+        return
+    try:
+        msg = json.loads(item)
+    except Exception:
+        return
+    log({"kind": "stdin", "msg": msg})
+    t = msg.get("type")
+    if t == "user":
+        state["pending_turns"] += 1
+    elif t == "control_request":
+        handle_control_request(msg)
+    elif t == "control_response":
+        state["control_responses"] += 1
+
+
+def poll():
+    while True:
+        try:
+            item = q.get_nowait()
+        except queue.Empty:
+            return
+        process(item)
+
+
+def wait_for_control_response(timeout=15.0):
+    target = state["control_responses"] + 1
+    end = time.time() + timeout
+    while time.time() < end and state["control_responses"] < target:
+        try:
+            item = q.get(timeout=0.05)
+        except queue.Empty:
+            continue
+        process(item)
+
+
+def replay(lines):
+    state["abort"] = False
+    for line in lines:
+        poll()
+        if state["abort"]:
+            emit(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True, "duration_ms": 5,
+                             "num_turns": 1, "session_id": state["session_id"], "total_cost_usd": 0, "usage": {},
+                             "errors": ["Request was aborted"], "terminal_reason": "aborted_streaming"}))
+            return
+        if line == "__HOLD__":
+            # keep the turn open until the client interrupts it
+            end = time.time() + 60
+            while not state["abort"] and time.time() < end:
+                poll()
+                time.sleep(0.01)
+            emit(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True, "duration_ms": 5,
+                             "num_turns": 1, "session_id": state["session_id"], "total_cost_usd": 0, "usage": {},
+                             "errors": ["Request was aborted"], "terminal_reason": "aborted_streaming"}))
+            return
+        if delay:
+            time.sleep(delay)
+        emit(line.replace(FIXTURE_SID, state["session_id"]))
+        if line.startswith("{") and '"type":"control_request"' in line:
+            wait_for_control_response()
+
+
+while True:
+    process(q.get())
+    poll()
+    while state["pending_turns"] > 0:
+        state["pending_turns"] -= 1
+        if turn_index < len(turns):
+            lines = turns[turn_index]
+            turn_index += 1
+        else:
+            lines = []
+        replay(lines)
+        poll()

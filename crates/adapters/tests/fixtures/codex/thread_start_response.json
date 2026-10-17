@@ -1,0 +1,67 @@
+{
+ "thread": {
+  "id": "FIXTURE_THREAD",
+  "environments": [
+   {
+    "environmentId": "local",
+    "cwd": "/work/proj",
+    "runtimeWorkspaceRoots": [
+     "/work/proj"
+    ]
+   }
+  ],
+  "extra": null,
+  "sessionId": "FIXTURE_THREAD",
+  "forkedFromId": null,
+  "parentThreadId": null,
+  "preview": "",
+  "ephemeral": false,
+  "section": null,
+  "sectionEnteredAt": null,
+  "projectId": null,
+  "historyMode": "paginated",
+  "modelProvider": "openai",
+  "model": "fixture-model",
+  "reasoningEffort": null,
+  "createdAt": 1791789264,
+  "updatedAt": 1791789264,
+  "recencyAt": 1791789264,
+  "status": {
+   "type": "idle"
+  },
+  "path": "/home/user/.codex/sessions/2026/10/12/rollout-2026-10-12T03-14-24-FIXTURE_THREAD.jsonl",
+  "cwd": "/work/proj",
+  "cliVersion": "0.157.1",
+  "originator": "anycon",
+  "source": "vscode",
+  "canAcceptDirectInput": true,
+  "threadSource": null,
+  "agentNickname": null,
+  "agentRole": null,
+  "gitInfo": null,
+  "name": null,
+  "daybreakEnabled": null,
+  "turns": []
+ },
+ "model": "fixture-model",
+ "modelProvider": "openai",
+ "serviceTier": null,
+ "disabledPluginIds": [],
+ "cwd": "/work/proj",
+ "runtimeWorkspaceRoots": [
+  "/work/proj"
+ ],
+ "instructionSources": [],
+ "approvalPolicy": "on-request",
+ "approvalsReviewer": "user",
+ "sandbox": {
+  "type": "workspaceWrite",
+  "writableRoots": [],
+  "networkAccess": false,
+  "excludeTmpdirEnvVar": false,
+  "excludeSlashTmp": false
+ },
+ "activePermissionProfile": null,
+ "reasoningEffort": null,
+ "multiAgentMode": "explicitRequestOnly"
+}

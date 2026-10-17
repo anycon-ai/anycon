@@ -1,0 +1,53 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / bun
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/
+
+# wasm / maturin 产物
+pkg/
+*.whl
+/packages/protocol/wasm
+/web/public/wasm
+
+# 测试与本地开发
+/e2e/test-results
+/e2e/playwright-report
+/.anycon-dev
+# daemon 在项目里建的 worktree（daemon 也会写进 .git/info/exclude）
+/.anycon/
+
+# 本地数据
+/data/
+/anycon-data/
+*.db
+*.db-wal
+*.db-shm
+identity.key
+peers.json
+
+# 环境
+.env
+.env.*
+!.env.example
+
+# 个人的 agent 约定（Claude Code 会自动读取）
+CLAUDE.local.md
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp

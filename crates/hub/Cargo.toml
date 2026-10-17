@@ -1,0 +1,51 @@
+[package]
+name = "anycon-hub"
+description = "anycon-hub 二进制：账号、设备路由、配对撮合、通知转发、嵌入的 Web UI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "anycon-hub"
+path = "src/main.rs"
+
+[dependencies]
+anycon-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+axum = { version = "0.8.9", features = ["ws"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+figment = { version = "0.10.19", features = ["env"] }
+rust-embed = { version = "8.13.0", features = ["interpolate-folder-path", "mime-guess"] }
+rmp-serde.workspace = true
+blake2 = "0.11.0"
+ipnet = "2.12.2"
+url = "2.5.8"
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+futures.workspace = true
+async-trait.workspace = true
+rand.workspace = true
+hex.workspace = true
+tokio-util = "0.7.20"
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "rustls", "ring", "webpki-roots"] }
+p256 = { version = "0.14.0", features = ["ecdsa", "ecdh"] }
+aes-gcm = "0.11.1"
+hkdf = "0.13.0"
+sha2 = "0.11.0"
+base64.workspace = true
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1.0.9"
+percent-encoding = "2.3.2"
+hyper = { version = "1.12.0", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1.5"
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "ring", "tls12"] }
+
+[dev-dependencies]
+anycon-crypto.workspace = true
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+tempfile = "3.27.0"
+tokio-tungstenite = "0.30.0"

@@ -1,0 +1,1094 @@
+//! 配置：`ANYCON_*` 环境变量（docs/deploy.md § 3），用 figment 装载。
+//!
+//! 环境变量的值一律按**原始字符串**取（自定义 provider），不让 figment 去猜类型——
+//! 否则全数字的 admin token 会被当成整数、前导零丢失。类型转换和校验都在 [`Config::from_vars`]。
+//!
+//! 测试直接构造 [`Config`]（[`Config::new`] + 字段覆盖），不经过环境变量。
+
+use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anycon_protocol::envelope::frame;
+use figment::value::{Dict, Map, Value};
+use figment::{Figment, Metadata, Profile, Provider};
+use ipnet::IpNet;
+use serde::Deserialize;
+use url::Url;
+
+use crate::mail::Mailer;
+
+/// 运行模式。v0.1 只有 `single`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Single,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Single => "single",
+        }
+    }
+}
+
+/// 默认的客户端连接入站预算：10 MiB / 分钟。
+pub const DEFAULT_CLIENT_BYTES_PER_MIN: u64 = 10 * 1024 * 1024;
+/// 默认的 daemon 连接入站预算：100 MiB / 分钟（它是所有客户端的汇聚点）。
+pub const DEFAULT_DAEMON_BYTES_PER_MIN: u64 = 100 * 1024 * 1024;
+
+/// 按 IP / 按连接的限速参数。默认值见 docs/spec/hub.md § 3.4、§ 7.2。
+#[derive(Debug, Clone)]
+pub struct Limits {
+    pub auth_token_per_min: u32,
+    pub ws_upgrade_per_min: u32,
+    pub pair_join_per_min: u32,
+    pub invite_per_min: u32,
+    /// 每条连接每秒最多处理的信封数。
+    pub conn_envelopes_per_sec: u32,
+    /// 客户端连接（web / cli / sdk，以及还没有 device token 的临时连接）每分钟的入站字节预算
+    /// （`ANYCON_RATE_CLIENT_BYTES_PER_MIN`）。超过的 `data` / `notify` 不丢，退回 `backpressure`。
+    pub client_bytes_per_min: u64,
+    /// daemon 连接每分钟的入站字节预算（`ANYCON_RATE_DAEMON_BYTES_PER_MIN`）。
+    pub daemon_bytes_per_min: u64,
+    /// 没有 device token 的临时连接一生最多发几次 `PairBegin`（docs/spec/hub.md § 4）。
+    pub temp_pair_begins_per_conn: u32,
+    /// `enroll_begin`：每个真实 IP 每分钟（docs/spec/hub.md § 7.2）。
+    pub enroll_begin_per_min_per_ip: u32,
+    /// `enroll_begin`：每个账号每小时。
+    pub enroll_begin_per_hour_per_account: u32,
+    /// 每账号每日配对与接入次数（`enroll_begin` 计入，超过 `enroll_failed { quota }`）。
+    /// `None` = 不限：`single` 模式没有配额，v0.1 也没有对应的环境变量，`multi` 实现时由 `ANYCON_QUOTA_*` 设置。
+    pub daily_pairings_per_account: Option<u32>,
+    /// 每台 daemon 同时进行的接入会话上限，多出来的 `busy`。
+    pub enrolls_per_daemon: u32,
+    /// `POST /auth/email/send`、`POST /api/me/email`：每个真实 IP 每小时（各自一个桶，docs/spec/hub.md § 7.2）。
+    pub email_send_per_hour_per_ip: u32,
+    /// 同一个邮箱（同一用途）两次发码之间至少隔多久。
+    pub email_resend_interval: Duration,
+    /// `POST /auth/email/verify`、`POST /api/me/email/verify`：每个真实 IP 每分钟（各自一个桶）。
+    pub email_verify_per_min_per_ip: u32,
+    /// 一个验证码最多被尝试几次（每次验证提交对每条有效的码各计一次），用完作废。
+    pub email_code_max_attempts: u32,
+    /// 同一组（邮箱，用途，账号）里最多同时有几条有效的码：新码不让旧码作废，超出时顶掉最旧的
+    /// （别人请求新码顶不掉你手里那个，docs/spec/hub.md § 8）。
+    pub email_codes_active: u32,
+    /// 每个邮箱每天最多发几个码，登录和绑定分开计，不管请求来自哪个 IP（docs/spec/hub.md § 7.2）。
+    pub email_codes_per_day: u32,
+    /// 每个邮箱每天累计验证失败几次之后，当天不再接受这个邮箱的码（登录和绑定分开计，不管请求来自哪个 IP）。
+    pub email_failures_per_day: u32,
+    /// `POST /api/push/subscriptions`、`POST /api/push/test`：每个账号每分钟。
+    pub push_api_per_min_per_account: u32,
+    /// 每台收件设备每分钟最多触发几条推送 / 邮件通知判定（防止配对设备狂发 `notify` 把推送服务和邮件刷爆）。
+    pub notify_per_min_per_device: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            auth_token_per_min: 10,
+            ws_upgrade_per_min: 30,
+            pair_join_per_min: 10,
+            invite_per_min: 10,
+            conn_envelopes_per_sec: 500,
+            client_bytes_per_min: DEFAULT_CLIENT_BYTES_PER_MIN,
+            daemon_bytes_per_min: DEFAULT_DAEMON_BYTES_PER_MIN,
+            temp_pair_begins_per_conn: 3,
+            enroll_begin_per_min_per_ip: 10,
+            enroll_begin_per_hour_per_account: 30,
+            daily_pairings_per_account: None,
+            enrolls_per_daemon: 3,
+            email_send_per_hour_per_ip: 5,
+            email_resend_interval: Duration::from_secs(60),
+            email_verify_per_min_per_ip: 20,
+            email_code_max_attempts: 5,
+            email_codes_active: 3,
+            email_codes_per_day: 10,
+            email_failures_per_day: 30,
+            push_api_per_min_per_account: 30,
+            notify_per_min_per_device: 30,
+        }
+    }
+}
+
+/// 各种超时。不对应环境变量，只给测试缩短用。
+#[derive(Debug, Clone)]
+pub struct Timing {
+    /// WS 升级后第一帧（auth）的期限。
+    pub auth_timeout: Duration,
+    pub ping_interval: Duration,
+    /// 超过这么久没收到任何入站帧（含 pong）就断开。
+    pub pong_timeout: Duration,
+    /// `PairBegin` 登记的有效期。
+    pub pair_ttl: Duration,
+    /// matched 之后，这么久没有任何动静（握手帧 / confirm）就作废。
+    pub pair_confirm_timeout: Duration,
+    /// 账号内接入会话的有效期：从 `enroll_begin` 起算，到点没走到 `pair_done` 就作废（`enroll_failed { timeout }`）。
+    pub enroll_ttl: Duration,
+    /// 发送缓冲持续满这么久就以 4003 断开。
+    pub slow_consumer_timeout: Duration,
+    /// 优雅关停时等待连接收尾的上限。
+    pub shutdown_grace: Duration,
+    /// 浏览器登录会话有效期（滑动续期）。
+    pub session_ttl: Duration,
+    /// 没有 device token 的临时连接最长存活时间，到点以 4005 关闭（配对用的连接不需要挂这么久）。
+    pub temp_conn_ttl: Duration,
+    /// 发送方在 hub 明确叫它暂停（`rate_limited`）之后仍然持续发送，超过这么久就以 1008 断开。
+    pub rate_violation_close_after: Duration,
+    /// 邮箱验证码的有效期。
+    pub email_code_ttl: Duration,
+    /// 邮箱验证码**验证失败**的响应，至少在请求开始之后这么久才发出（成功不等）：把「这个邮箱有没有待验证的码」
+    /// 这点库操作的耗时差埋在固定的延迟里（docs/spec/hub.md § 2.2）。
+    pub email_verify_failure_delay: Duration,
+    /// 同一账号同一类别的邮件通知最短间隔（docs/spec/hub.md § 6.2）。
+    pub notify_email_dedupe: Duration,
+    /// 单个 Web Push 请求的超时（docs/spec/hub.md § 6.1：10 秒）。
+    pub push_timeout: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            auth_timeout: Duration::from_secs(5),
+            ping_interval: Duration::from_secs(30),
+            pong_timeout: Duration::from_secs(90),
+            pair_ttl: Duration::from_secs(5 * 60),
+            pair_confirm_timeout: Duration::from_secs(60),
+            enroll_ttl: Duration::from_secs(5 * 60),
+            slow_consumer_timeout: Duration::from_secs(30),
+            shutdown_grace: Duration::from_secs(5),
+            session_ttl: Duration::from_secs(30 * 24 * 3600),
+            temp_conn_ttl: Duration::from_secs(10 * 60),
+            rate_violation_close_after: Duration::from_secs(10),
+            email_code_ttl: Duration::from_secs(10 * 60),
+            email_verify_failure_delay: Duration::from_millis(250),
+            notify_email_dedupe: Duration::from_secs(10 * 60),
+            push_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+/// SMTP 连接方式（`ANYCON_SMTP_URL` 的 scheme）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpSecurity {
+    /// `smtp://`：明文连上之后升级到 STARTTLS，**必须成功**（服务器不支持就发不出去，不会退回明文）。
+    StartTls,
+    /// `smtps://`：隐式 TLS（连上就是 TLS，通常 465）。
+    Tls,
+    /// `smtp+plain://`：不加密。只发往本机 / 内网（本机中继、Mailpit、测试）：IP 字面量启动时检查，主机名每次发信前解析、
+    /// 所有地址都必须是本机 / 内网（[`check_plain_host`]）。
+    Plain,
+}
+
+/// 解析后的 `ANYCON_SMTP_URL`。`Debug` 不输出用户名和密码。
+#[derive(Clone, PartialEq, Eq)]
+pub struct SmtpConfig {
+    pub security: SmtpSecurity,
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl std::fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpConfig")
+            .field("security", &self.security)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username.as_ref().map(|_| "<redacted>"))
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// 解析后的 `ANYCON_EMAIL_FROM`。
+#[derive(Debug, Clone)]
+pub struct EmailFrom {
+    pub mailbox: lettre::message::Mailbox,
+    /// 只有地址部分（`noreply@example.com`），VAPID 的 `mailto:` 兜底用它。
+    pub address: String,
+}
+
+/// hub 的完整运行配置。`Debug` 输出里 `admin_token`、SMTP 的用户名密码会被遮掉，免得误打日志时泄露。
+#[derive(Clone)]
+pub struct Config {
+    /// `ANYCON_PUBLIC_URL`，不带末尾 `/`。
+    pub public_url: Url,
+    pub listen: SocketAddr,
+    pub mode: Mode,
+    pub admin_token: Option<String>,
+    pub data_dir: PathBuf,
+    /// `None` = `sqlite://<data_dir>/hub.db`。
+    pub database_url: Option<String>,
+    pub trusted_proxies: Vec<IpNet>,
+    /// tracing 过滤表达式（`ANYCON_LOG`）。
+    pub log: String,
+    pub max_envelope_bytes: usize,
+    /// 每条连接的发送缓冲上限（字节）。
+    pub outbound_buffer_bytes: usize,
+    pub limits: Limits,
+    pub timing: Timing,
+    /// 已识别但 v0.1 没实现的 `ANYCON_*` 变量名（启动时警告）。
+    pub unimplemented_vars: Vec<String>,
+    /// 完全不认识的 `ANYCON_*` 变量名（debug 级提示；daemon 的变量也会落在这里）。
+    pub unknown_vars: Vec<String>,
+    /// `ANYCON_SMTP_URL`（ADR-37）。配了才有邮箱验证码登录和邮件通知。
+    pub smtp: Option<SmtpConfig>,
+    /// `ANYCON_EMAIL_FROM`。配了 SMTP 就必填（[`Config::from_vars`] 检查）。
+    pub email_from: Option<EmailFrom>,
+    /// `ANYCON_VAPID_SUBJECT`；没设时见 [`Config::vapid_subject`]。
+    pub vapid_subject: Option<String>,
+    /// **只给测试用，不对应任何环境变量**：额外放行的推送 endpoint 主机（精确匹配主机名，允许 http 和任意端口），
+    /// 让测试能把推送发到本机的假推送服务。生产里为 `None`，只认内置的推送服务白名单（docs/spec/hub.md § 6.1）。
+    pub push_allow_hosts: Option<Vec<String>>,
+    /// **只给测试用**：用这个发信实现代替 SMTP（`Some` 时即使没配 `smtp` 也算「邮件可用」）。
+    pub mailer_override: Option<Arc<dyn Mailer>>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("public_url", &self.public_url.as_str())
+            .field("listen", &self.listen)
+            .field("mode", &self.mode)
+            .field("admin_token", &self.admin_token.as_ref().map(|_| "<redacted>"))
+            .field("data_dir", &self.data_dir)
+            .field("database_url", &self.database_url.as_ref().map(|_| "<redacted>"))
+            .field("trusted_proxies", &self.trusted_proxies)
+            .field("log", &self.log)
+            .field("max_envelope_bytes", &self.max_envelope_bytes)
+            .field("outbound_buffer_bytes", &self.outbound_buffer_bytes)
+            .field("limits", &self.limits)
+            .field("timing", &self.timing)
+            .field("smtp", &self.smtp)
+            .field("email_from", &self.email_from.as_ref().map(|f| f.address.as_str()))
+            .field("vapid_subject", &self.vapid_subject)
+            .field("push_allow_hosts", &self.push_allow_hosts)
+            .field("mailer_override", &self.mailer_override.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("ANYCON_PUBLIC_URL is required (e.g. https://hub.example.com)")]
+    MissingPublicUrl,
+    #[error("invalid {var}: {reason}")]
+    Invalid { var: &'static str, reason: String },
+    #[error("ANYCON_MODE=multi is not implemented in v0.1 (only `single` is supported)")]
+    MultiNotImplemented,
+    #[error("failed to read environment: {0}")]
+    Env(String),
+}
+
+fn invalid(var: &'static str, reason: impl Into<String>) -> ConfigError {
+    ConfigError::Invalid { var, reason: reason.into() }
+}
+
+/// 分片信封里除密文以外的 `data` body 框架头：flags(1) + msg_id(4) + index(2) + count(2)。
+const FRAGMENT_FRAME_HEADER: usize = 1 + 4 + 2 + 2;
+
+/// 外层 `Envelope` 的 msgpack 头开销的上界：`v` / `from` / `to` / `kind` / `seq` 五个字段名和值，加 `body` 的 bin32 头。
+/// 实际约 120 字节（32 位 hex 的设备 id，`seq` 用满 u64）；这里留够，设备 id 长到 64 个字符也放得下。
+const ENVELOPE_HEADER_ALLOWANCE: usize = 512;
+
+/// `ANYCON_MAX_ENVELOPE_BYTES` 的下限：一个满片的分片信封（`MAX_FRAGMENT` 密文 + 分片框架头 + 外层信封头），取整到 KiB，
+/// 即 201 KiB。更小的话，发送方按协议切出来的每个满片都会被 `too_large` 丢掉，大消息永远传不过去。
+pub const MIN_ENVELOPE_BYTES: usize =
+    (frame::MAX_FRAGMENT + FRAGMENT_FRAME_HEADER + ENVELOPE_HEADER_ALLOWANCE).next_multiple_of(1024);
+
+/// 默认的受信代理：Docker 默认桥接网段（`172.16.0.0/12`）。
+///
+/// 来自这些网段的直连对端发来的 `X-Forwarded-For` / `X-Forwarded-Proto` 会被相信（限速按其中的真实 IP 计，
+/// cookie 是否 `Secure` 也参考它）。**不在 Docker 里部署、而客户端本身就在这个网段时，客户端能伪造这两个头**——
+/// 这时请显式设置 `ANYCON_TRUSTED_PROXIES`（空串 = 谁都不信）。
+pub const DEFAULT_TRUSTED_PROXIES: &str = "172.16.0.0/12";
+
+/// deploy.md § 3 里列出、但 v0.1 不实现的变量（小写、去前缀）。
+const UNIMPLEMENTED: &[&str] = &[
+    "queue_enabled",
+    "queue_max_count",
+    "queue_max_bytes",
+    "queue_ttl",
+    "oauth_github_client_id",
+    "oauth_github_client_secret",
+    "oauth_google_client_id",
+    "oauth_google_client_secret",
+    "admin_emails",
+];
+
+impl Config {
+    /// 带默认值的配置，测试用它再覆盖字段。
+    pub fn new(public_url: &str, data_dir: impl Into<PathBuf>) -> Result<Self, ConfigError> {
+        let public_url = parse_public_url(public_url)?;
+        Ok(Self {
+            public_url,
+            listen: "0.0.0.0:8080".parse().expect("static addr"),
+            mode: Mode::Single,
+            admin_token: None,
+            data_dir: data_dir.into(),
+            database_url: None,
+            trusted_proxies: parse_trusted_proxies(DEFAULT_TRUSTED_PROXIES)?,
+            log: "info".into(),
+            max_envelope_bytes: 262_144,
+            outbound_buffer_bytes: 4 * 1024 * 1024,
+            limits: Limits::default(),
+            timing: Timing::default(),
+            unimplemented_vars: Vec::new(),
+            unknown_vars: Vec::new(),
+            smtp: None,
+            email_from: None,
+            vapid_subject: None,
+            push_allow_hosts: None,
+            mailer_override: None,
+        })
+    }
+
+    /// 从进程环境变量读取。
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let vars = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .collect::<Vec<_>>();
+        Self::from_vars(vars)
+    }
+
+    /// 从 `(名字, 值)` 列表读取（名字带 `ANYCON_` 前缀，其余忽略）。
+    pub fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Result<Self, ConfigError> {
+        let provider = RawEnv { vars: vars.into_iter().collect() };
+        let raw: RawConfig = Figment::from(provider).extract().map_err(|e| ConfigError::Env(e.to_string()))?;
+
+        let public_url =
+            raw.public_url.as_deref().filter(|s| !s.trim().is_empty()).ok_or(ConfigError::MissingPublicUrl)?;
+        let mut cfg = Config::new(public_url, raw.data_dir.clone().unwrap_or_else(|| "/data".into()))?;
+
+        if let Some(s) = raw.listen.as_deref() {
+            cfg.listen = s.trim().parse().map_err(|e| invalid("ANYCON_LISTEN", format!("{s:?}: {e}")))?;
+        }
+        if let Some(s) = raw.mode.as_deref() {
+            match s.trim().to_ascii_lowercase().as_str() {
+                "single" | "" => {}
+                "multi" => return Err(ConfigError::MultiNotImplemented),
+                other => return Err(invalid("ANYCON_MODE", format!("{other:?} (expected `single`)"))),
+            }
+        }
+        cfg.admin_token = raw.admin_token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        cfg.database_url = raw.database_url.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        if let Some(s) = raw.trusted_proxies.as_deref() {
+            cfg.trusted_proxies = parse_trusted_proxies(s)?;
+        }
+        if let Some(s) = raw.log.filter(|s| !s.trim().is_empty()) {
+            cfg.log = s;
+        }
+        if let Some(s) = raw.max_envelope_bytes.as_deref() {
+            let n: usize = s.trim().parse().map_err(|e| invalid("ANYCON_MAX_ENVELOPE_BYTES", format!("{s:?}: {e}")))?;
+            if n < MIN_ENVELOPE_BYTES {
+                return Err(invalid(
+                    "ANYCON_MAX_ENVELOPE_BYTES",
+                    format!(
+                        "{n} is too small: it must be at least {MIN_ENVELOPE_BYTES} ({} KiB), the size of one full \
+                         {}-KiB fragment envelope. Clients split every message into fragments of that size, so with a \
+                         smaller limit every full fragment would be dropped as too_large and large messages could never \
+                         get through",
+                        MIN_ENVELOPE_BYTES / 1024,
+                        frame::MAX_FRAGMENT / 1024
+                    ),
+                ));
+            }
+            cfg.max_envelope_bytes = n;
+        }
+        if let Some(s) = raw.rate_client_bytes_per_min.as_deref() {
+            cfg.limits.client_bytes_per_min = parse_rate("ANYCON_RATE_CLIENT_BYTES_PER_MIN", s)?;
+        }
+        if let Some(s) = raw.rate_daemon_bytes_per_min.as_deref() {
+            cfg.limits.daemon_bytes_per_min = parse_rate("ANYCON_RATE_DAEMON_BYTES_PER_MIN", s)?;
+        }
+        if let Some(s) = raw.smtp_url.as_deref().filter(|s| !s.trim().is_empty()) {
+            cfg.smtp = Some(parse_smtp_url(s)?);
+        }
+        if let Some(s) = raw.email_from.as_deref().filter(|s| !s.trim().is_empty()) {
+            cfg.email_from = Some(parse_email_from(s)?);
+        }
+        if cfg.smtp.is_some() && cfg.email_from.is_none() {
+            return Err(invalid(
+                "ANYCON_EMAIL_FROM",
+                "required when ANYCON_SMTP_URL is set (e.g. `Anycon <noreply@example.com>`)",
+            ));
+        }
+        if let Some(s) = raw.vapid_subject.as_deref().filter(|s| !s.trim().is_empty()) {
+            cfg.vapid_subject = Some(parse_vapid_subject(s)?);
+        }
+        for name in raw.other.keys() {
+            if UNIMPLEMENTED.contains(&name.as_str()) || name.starts_with("quota_") {
+                cfg.unimplemented_vars.push(format!("ANYCON_{}", name.to_ascii_uppercase()));
+            } else {
+                cfg.unknown_vars.push(format!("ANYCON_{}", name.to_ascii_uppercase()));
+            }
+        }
+        Ok(cfg)
+    }
+
+    /// 启动前的最后检查（环境变量路径在 [`Config::from_vars`] 里已经检查过；程序化构造的配置也要过这一关）：
+    /// 配了 SMTP 必须有发件人，`smtp+plain` 的主机写法要过 [`check_plain_host`]（IP 字面量必须是本机 / 内网）。
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(smtp) = &self.smtp {
+            if self.email_from.is_none() {
+                return Err(invalid("ANYCON_EMAIL_FROM", "required when ANYCON_SMTP_URL is set"));
+            }
+            if smtp.security == SmtpSecurity::Plain {
+                check_plain_host(&smtp.host)
+                    .map_err(|why| invalid("ANYCON_SMTP_URL", plain_host_message(&smtp.host, why)))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `ANYCON_PUBLIC_URL` 的字符串形式，不带末尾 `/`。
+    pub fn public_url_str(&self) -> String {
+        self.public_url.as_str().trim_end_matches('/').to_string()
+    }
+
+    /// Web Push 的 VAPID `sub`（RFC 8292）：`ANYCON_VAPID_SUBJECT`；没设时 `ANYCON_PUBLIC_URL` 是 https 就用它，
+    /// 否则 `mailto:` + 发件人地址；连发件人都没有（没配邮件、公网地址也不是 https）就用 `mailto:noreply@<主机名>`。
+    pub fn vapid_subject(&self) -> String {
+        if let Some(s) = &self.vapid_subject {
+            return s.clone();
+        }
+        if self.public_url.scheme() == "https" {
+            return self.public_url_str();
+        }
+        if let Some(f) = &self.email_from {
+            return format!("mailto:{}", f.address);
+        }
+        format!("mailto:noreply@{}", self.public_url.host_str().unwrap_or("localhost"))
+    }
+}
+
+/// 解析 `ANYCON_SMTP_URL`：`smtp://`（STARTTLS）、`smtps://`（隐式 TLS）、`smtp+plain://`（不加密，只限本机 / 私有网段）。
+/// 用户名密码写在 URL 里（百分号编码）。**错误信息里不带原始 URL**（它含密码）。
+pub fn parse_smtp_url(s: &str) -> Result<SmtpConfig, ConfigError> {
+    const VAR: &str = "ANYCON_SMTP_URL";
+    let url = Url::parse(s.trim()).map_err(|e| invalid(VAR, format!("not a valid URL ({e})")))?;
+    let (security, default_port) = match url.scheme() {
+        "smtp" => (SmtpSecurity::StartTls, 587),
+        "smtps" => (SmtpSecurity::Tls, 465),
+        "smtp+plain" => (SmtpSecurity::Plain, 25),
+        other => {
+            return Err(invalid(
+                VAR,
+                format!("unsupported scheme `{other}` (expected smtp://, smtps:// or smtp+plain://)"),
+            ))
+        }
+    };
+    let host = match url.host() {
+        Some(url::Host::Domain(d)) => d.to_ascii_lowercase(),
+        Some(url::Host::Ipv4(ip)) => ip.to_string(),
+        Some(url::Host::Ipv6(ip)) => ip.to_string(),
+        None => return Err(invalid(VAR, "missing host")),
+    };
+    if !matches!(url.path(), "" | "/") || url.query().is_some() || url.fragment().is_some() {
+        return Err(invalid(VAR, "must not contain a path, query or fragment"));
+    }
+    let decode = |raw: &str, what: &str| {
+        percent_encoding::percent_decode_str(raw)
+            .decode_utf8()
+            .map(|c| c.into_owned())
+            .map_err(|_| invalid(VAR, format!("the {what} is not valid UTF-8 after percent-decoding")))
+    };
+    let username = Some(url.username()).filter(|u| !u.is_empty()).map(|u| decode(u, "username")).transpose()?;
+    let password = url.password().map(|p| decode(p, "password")).transpose()?;
+    if password.is_some() && username.is_none() {
+        return Err(invalid(VAR, "a password needs a username"));
+    }
+    if security == SmtpSecurity::Plain {
+        check_plain_host(&host).map_err(|why| invalid(VAR, plain_host_message(&host, why)))?;
+    }
+    Ok(SmtpConfig { security, host, port: url.port().unwrap_or(default_port), username, password })
+}
+
+/// `smtp+plain://` 的主机为什么不能接受（见 [`check_plain_host`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlainHostError {
+    /// IP 字面量不是本机 / 内网地址。
+    PublicAddress,
+    /// 不是合法的主机名（含 `%` 一类的字符），或者是 libc 会当 IP 解析的纯数字写法（`134744072`、`0x7f.1`、`127.1`）。
+    BadName,
+}
+
+fn plain_host_message(host: &str, why: PlainHostError) -> String {
+    match why {
+        PlainHostError::PublicAddress => format!(
+            "smtp+plain:// sends mail and credentials unencrypted, so it is only allowed for localhost and private \
+             networks (address `{host}` is not); use smtp:// (STARTTLS) or smtps:// for a remote server"
+        ),
+        PlainHostError::BadName => format!(
+            "smtp+plain:// host `{host}` is not a valid host name (write an IP address as a plain dotted or IPv6 literal)"
+        ),
+    }
+}
+
+/// `smtp+plain://`（不加密）的主机在**启动时**能不能接受。
+///
+/// - **IP 字面量**：必须是回环 / 私有 / 链路本地 / 100.64.0.0/10 / IPv6 `fc00::/7` `fe80::/10`，否则启动报错。
+/// - **主机名**（`localhost`、`*.localhost`、compose 里的服务名 `mailpit`……）：启动时不判断它指向哪里——服务名启动时往往
+///   还解析不了，DNS 也会变。判断挪到**每次发信前**：[`crate::mail::SmtpMailer`] 自己解析主机名，所有解析结果都必须是本机 / 内网，
+///   然后把解析出的 IP 交给 lettre，不让它再解析一次（不会被 DNS 搜索域、改解析骗到公网）。所以以前那条「不带点的名字 =
+///   内网服务名」的规则没有了（`ai.`、会被搜索域补全的 `mail` 都不成立）。这里只拒写法本身有问题的：非法字符（`%` ……），
+///   以及最后一段是数字的名字——libc 会把 `134744072`（= 8.8.8.8）、`0x08080808`、`127.1` 当 IP 解析，别让它们混成「主机名」。
+///
+/// `host` 可以带 IPv6 的方括号和末尾的点。
+pub fn check_plain_host(host: &str) -> Result<(), PlainHostError> {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    // `smtp+plain` 不是 special scheme，`url` 不会把 `127.0.0.1` 解析成 IPv4，所以这里统一自己认 IP。
+    if let Ok(ip) = h.parse::<IpAddr>() {
+        return if is_private_ip(ip) { Ok(()) } else { Err(PlainHostError::PublicAddress) };
+    }
+    let name = h.trim_end_matches('.');
+    let label_ok = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    let numeric = |l: &str| {
+        l.bytes().all(|b| b.is_ascii_digit())
+            || l.strip_prefix("0x").is_some_and(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    let last = name.rsplit('.').next().unwrap_or("");
+    if name.is_empty() || name.len() > 253 || !name.split('.').all(label_ok) || numeric(last) {
+        return Err(PlainHostError::BadName);
+    }
+    Ok(())
+}
+
+/// 是不是本机 / 内网地址：回环、私有（RFC 1918）、链路本地、100.64.0.0/10（运营商级 NAT / Tailscale），
+/// IPv6 的 `::1`、`fc00::/7`、`fe80::/10`；`::ffff:a.b.c.d` 按 IPv4 判断。
+pub fn is_private_ip(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                // 100.64.0.0/10：运营商级 NAT / Tailscale 一类的共享地址段，不在公网上路由
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            let seg0 = v6.segments()[0];
+            v6.is_loopback() || (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// 解析 `ANYCON_EMAIL_FROM`：`Anycon <noreply@example.com>` 或裸地址。
+pub fn parse_email_from(s: &str) -> Result<EmailFrom, ConfigError> {
+    let mailbox: lettre::message::Mailbox = s.trim().parse().map_err(|e| {
+        invalid("ANYCON_EMAIL_FROM", format!("{s:?}: {e} (expected `Name <addr@example.com>` or `addr@example.com`)"))
+    })?;
+    let address = mailbox.email.to_string();
+    Ok(EmailFrom { mailbox, address })
+}
+
+/// 解析 `ANYCON_VAPID_SUBJECT`：`mailto:you@example.com` 或 https 地址（RFC 8292 § 2.1）。
+pub fn parse_vapid_subject(s: &str) -> Result<String, ConfigError> {
+    let s = s.trim();
+    let ok = if let Some(rest) = s.strip_prefix("mailto:") {
+        rest.contains('@') && !rest.starts_with('@') && !rest.ends_with('@') && !rest.chars().any(char::is_whitespace)
+    } else if s.starts_with("https://") {
+        Url::parse(s).is_ok_and(|u| u.host_str().is_some())
+    } else {
+        false
+    };
+    if !ok {
+        return Err(invalid(
+            "ANYCON_VAPID_SUBJECT",
+            format!("{s:?}: expected `mailto:you@example.com` or an https:// URL"),
+        ));
+    }
+    Ok(s.to_string())
+}
+
+/// 解析 `ANYCON_RATE_*_BYTES_PER_MIN`：正整数字节数，不小于 [`MIN_ENVELOPE_BYTES`]——
+/// 预算小于一个满片信封的话，发送方永远凑不够额度把它送出去。
+fn parse_rate(var: &'static str, s: &str) -> Result<u64, ConfigError> {
+    let n: u64 = s.trim().parse().map_err(|e| invalid(var, format!("{s:?}: {e}")))?;
+    if n < MIN_ENVELOPE_BYTES as u64 {
+        return Err(invalid(
+            var,
+            format!("{n} is too small: it must be at least {MIN_ENVELOPE_BYTES} bytes (one full fragment envelope)"),
+        ));
+    }
+    Ok(n)
+}
+
+/// 解析并校验 `ANYCON_PUBLIC_URL`：必须是 http(s) URL，有主机名，不带路径 / query / fragment。
+pub fn parse_public_url(s: &str) -> Result<Url, ConfigError> {
+    let s = s.trim();
+    let url = Url::parse(s).map_err(|e| invalid("ANYCON_PUBLIC_URL", format!("{s:?}: {e}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(invalid("ANYCON_PUBLIC_URL", format!("{s:?}: scheme must be http or https")));
+    }
+    if url.host_str().is_none() {
+        return Err(invalid("ANYCON_PUBLIC_URL", format!("{s:?}: missing host")));
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return Err(invalid("ANYCON_PUBLIC_URL", format!("{s:?}: must not contain a path, query or fragment")));
+    }
+    Ok(url)
+}
+
+/// 逗号分隔的 CIDR / IP 列表。空串 = 不信任任何代理。
+pub fn parse_trusted_proxies(s: &str) -> Result<Vec<IpNet>, ConfigError> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            p.parse::<IpNet>()
+                .or_else(|_| p.parse::<std::net::IpAddr>().map(IpNet::from))
+                .map_err(|e| invalid("ANYCON_TRUSTED_PROXIES", format!("{p:?}: {e}")))
+        })
+        .collect()
+}
+
+/// 原始字符串的 `ANYCON_*` 环境变量，作为 figment provider。
+struct RawEnv {
+    vars: Vec<(String, String)>,
+}
+
+impl Provider for RawEnv {
+    fn metadata(&self) -> Metadata {
+        Metadata::named("ANYCON_* environment variables")
+    }
+
+    fn data(&self) -> Result<Map<Profile, Dict>, figment::Error> {
+        let mut dict = Dict::new();
+        for (k, v) in &self.vars {
+            if let Some(rest) = k.strip_prefix("ANYCON_") {
+                dict.insert(rest.to_ascii_lowercase(), Value::from(v.clone()));
+            }
+        }
+        Ok(Profile::Default.collect(dict))
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawConfig {
+    public_url: Option<String>,
+    listen: Option<String>,
+    mode: Option<String>,
+    admin_token: Option<String>,
+    data_dir: Option<String>,
+    database_url: Option<String>,
+    trusted_proxies: Option<String>,
+    log: Option<String>,
+    max_envelope_bytes: Option<String>,
+    rate_client_bytes_per_min: Option<String>,
+    rate_daemon_bytes_per_min: Option<String>,
+    smtp_url: Option<String>,
+    email_from: Option<String>,
+    vapid_subject: Option<String>,
+    #[serde(flatten)]
+    other: BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn defaults() {
+        let c = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "https://hub.example.com")])).unwrap();
+        assert_eq!(c.public_url_str(), "https://hub.example.com");
+        assert_eq!(c.listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(c.data_dir, PathBuf::from("/data"));
+        assert_eq!(c.max_envelope_bytes, 262_144);
+        assert_eq!(c.trusted_proxies.len(), 1);
+        assert!(c.admin_token.is_none());
+    }
+
+    #[test]
+    fn public_url_required_and_validated() {
+        assert!(matches!(Config::from_vars(vars(&[])), Err(ConfigError::MissingPublicUrl)));
+        assert!(Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "ftp://x")])).is_err());
+        assert!(Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "hub.example.com")])).is_err());
+        assert!(Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "https://x.com/sub")])).is_err());
+        assert!(Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://127.0.0.1:8080/")])).is_ok());
+    }
+
+    #[test]
+    fn debug_output_redacts_the_admin_token() {
+        let c = Config::from_vars(vars(&[
+            ("ANYCON_PUBLIC_URL", "http://x.test"),
+            ("ANYCON_ADMIN_TOKEN", "super-secret-token-value"),
+        ]))
+        .unwrap();
+        assert!(!format!("{c:?}").contains("super-secret"));
+    }
+
+    #[test]
+    fn multi_mode_rejected() {
+        let r = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://x.test"), ("ANYCON_MODE", "multi")]));
+        assert!(matches!(r, Err(ConfigError::MultiNotImplemented)));
+        assert!(r.unwrap_err().to_string().contains("not implemented in v0.1"));
+    }
+
+    #[test]
+    fn numeric_looking_token_stays_a_string() {
+        let c = Config::from_vars(vars(&[
+            ("ANYCON_PUBLIC_URL", "http://x.test"),
+            ("ANYCON_ADMIN_TOKEN", "0012345678901234567890"),
+        ]))
+        .unwrap();
+        assert_eq!(c.admin_token.as_deref(), Some("0012345678901234567890"));
+    }
+
+    #[test]
+    fn proxies_and_limits() {
+        let c = Config::from_vars(vars(&[
+            ("ANYCON_PUBLIC_URL", "http://x.test"),
+            ("ANYCON_TRUSTED_PROXIES", "10.0.0.0/8, 127.0.0.1 ,::1"),
+            ("ANYCON_MAX_ENVELOPE_BYTES", "300000"),
+            ("ANYCON_LISTEN", "127.0.0.1:9000"),
+        ]))
+        .unwrap();
+        assert_eq!(c.trusted_proxies.len(), 3);
+        assert_eq!(c.max_envelope_bytes, 300_000);
+        assert_eq!(c.listen.port(), 9000);
+        assert!(Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://x.test"), ("ANYCON_TRUSTED_PROXIES", "nope")]))
+            .is_err());
+        let none =
+            Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://x.test"), ("ANYCON_TRUSTED_PROXIES", "")])).unwrap();
+        assert!(none.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn unimplemented_and_unknown_vars_are_collected() {
+        let c = Config::from_vars(vars(&[
+            ("ANYCON_PUBLIC_URL", "http://x.test"),
+            ("ANYCON_OAUTH_GITHUB_CLIENT_ID", "x"),
+            ("ANYCON_QUOTA_DEVICES", "3"),
+            ("ANYCON_HOME", "/tmp/x"),
+            ("OTHER", "1"),
+        ]))
+        .unwrap();
+        assert_eq!(c.unimplemented_vars, vec!["ANYCON_OAUTH_GITHUB_CLIENT_ID", "ANYCON_QUOTA_DEVICES"]);
+        assert_eq!(c.unknown_vars, vec!["ANYCON_HOME"]);
+    }
+
+    #[test]
+    fn min_envelope_is_201_kib_and_fits_a_worst_case_full_fragment() {
+        use anycon_protocol::{Envelope, Kind};
+        assert_eq!(MIN_ENVELOPE_BYTES, 201 * 1024);
+        // 真的编码一个满片的 data 信封：最长的设备 id（64 个字符）、用满的 seq，也不超过下限。
+        let id = "f".repeat(64);
+        let ciphertext = vec![0xAB; frame::MAX_FRAGMENT + 1];
+        let bodies = frame::encode(&ciphertext, u32::MAX);
+        assert_eq!(bodies.len(), 2);
+        let full = bodies.into_iter().next().unwrap();
+        assert_eq!(full.len(), frame::MAX_FRAGMENT + FRAGMENT_FRAME_HEADER);
+        let bytes = Envelope::new(id.clone(), id, Kind::Handshake, u64::MAX, full).encode().unwrap();
+        assert!(bytes.len() <= MIN_ENVELOPE_BYTES, "{} > {MIN_ENVELOPE_BYTES}", bytes.len());
+        // 且头开销确实在预留的范围内、没有被预留吞掉整个 KiB 的余量
+        assert!(bytes.len() - frame::MAX_FRAGMENT - FRAGMENT_FRAME_HEADER <= ENVELOPE_HEADER_ALLOWANCE);
+    }
+
+    #[test]
+    fn max_envelope_bytes_below_a_full_fragment_refuses_to_start() {
+        let base = ("ANYCON_PUBLIC_URL", "http://x.test");
+        // 正好等于下限：可以
+        let ok = Config::from_vars(vars(&[base, ("ANYCON_MAX_ENVELOPE_BYTES", &MIN_ENVELOPE_BYTES.to_string())]));
+        assert_eq!(ok.unwrap().max_envelope_bytes, MIN_ENVELOPE_BYTES);
+        // 默认值本身必须高于下限
+        assert!(Config::new("http://x.test", "/tmp").unwrap().max_envelope_bytes >= MIN_ENVELOPE_BYTES);
+        // 少一个字节、以及旧的最小值 1024：拒绝，错误信息说清楚原因
+        for bad in [MIN_ENVELOPE_BYTES - 1, 205_000, 4096, 1024] {
+            let err = Config::from_vars(vars(&[base, ("ANYCON_MAX_ENVELOPE_BYTES", &bad.to_string())])).unwrap_err();
+            let msg = err.to_string();
+            assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_MAX_ENVELOPE_BYTES", .. }), "{msg}");
+            assert!(msg.contains(&MIN_ENVELOPE_BYTES.to_string()), "{msg}");
+            assert!(msg.contains("201 KiB") || msg.contains("201 "), "{msg}");
+            assert!(msg.contains("fragment") && msg.contains("too_large"), "{msg}");
+        }
+        assert!(Config::from_vars(vars(&[base, ("ANYCON_MAX_ENVELOPE_BYTES", "lots")])).is_err());
+    }
+
+    #[test]
+    fn rate_budgets_default_per_connection_kind_and_are_configurable() {
+        let c = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://x.test")])).unwrap();
+        assert_eq!(c.limits.client_bytes_per_min, 10 * 1024 * 1024);
+        assert_eq!(c.limits.daemon_bytes_per_min, 100 * 1024 * 1024);
+        let c = Config::from_vars(vars(&[
+            ("ANYCON_PUBLIC_URL", "http://x.test"),
+            ("ANYCON_RATE_CLIENT_BYTES_PER_MIN", "20971520"),
+            ("ANYCON_RATE_DAEMON_BYTES_PER_MIN", "1073741824"),
+        ]))
+        .unwrap();
+        assert_eq!(c.limits.client_bytes_per_min, 20 * 1024 * 1024);
+        assert_eq!(c.limits.daemon_bytes_per_min, 1024 * 1024 * 1024);
+        // 这两个变量是已识别的，不会出现在「未知变量」里
+        assert!(c.unknown_vars.is_empty() && c.unimplemented_vars.is_empty());
+        // 只设一个，另一个保持默认
+        let c = Config::from_vars(vars(&[
+            ("ANYCON_PUBLIC_URL", "http://x.test"),
+            ("ANYCON_RATE_DAEMON_BYTES_PER_MIN", "52428800"),
+        ]))
+        .unwrap();
+        assert_eq!(c.limits.client_bytes_per_min, DEFAULT_CLIENT_BYTES_PER_MIN);
+        assert_eq!(c.limits.daemon_bytes_per_min, 50 * 1024 * 1024);
+        // 不是数字 / 小到连一个满片都送不出去：拒绝
+        for (var, bad) in [
+            ("ANYCON_RATE_CLIENT_BYTES_PER_MIN", "10MiB"),
+            ("ANYCON_RATE_CLIENT_BYTES_PER_MIN", "0"),
+            ("ANYCON_RATE_DAEMON_BYTES_PER_MIN", "-1"),
+            ("ANYCON_RATE_DAEMON_BYTES_PER_MIN", "1000"),
+        ] {
+            let err = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://x.test"), (var, bad)])).unwrap_err();
+            assert!(err.to_string().contains(var), "{err}");
+        }
+    }
+
+    // ---- ADR-37：SMTP / 发件人 / VAPID subject ----
+
+    fn with(extra: &[(&str, &str)]) -> Result<Config, ConfigError> {
+        let mut v = vec![("ANYCON_PUBLIC_URL", "https://hub.example.com")];
+        v.extend_from_slice(extra);
+        Config::from_vars(vars(&v))
+    }
+
+    #[test]
+    fn email_is_off_by_default() {
+        let c = with(&[]).unwrap();
+        assert!(c.smtp.is_none() && c.email_from.is_none() && c.vapid_subject.is_none());
+        assert!(c.push_allow_hosts.is_none() && c.mailer_override.is_none());
+        assert!(c.unimplemented_vars.is_empty() && c.unknown_vars.is_empty());
+    }
+
+    #[test]
+    fn smtp_url_schemes_ports_and_credentials() {
+        let c = with(&[
+            ("ANYCON_SMTP_URL", "smtp://bot%40example.com:p%40ss%3Aword%2F@smtp.example.com"),
+            ("ANYCON_EMAIL_FROM", "Anycon <noreply@example.com>"),
+        ])
+        .unwrap();
+        let smtp = c.smtp.unwrap();
+        assert_eq!((smtp.security, smtp.host.as_str(), smtp.port), (SmtpSecurity::StartTls, "smtp.example.com", 587));
+        assert_eq!(smtp.username.as_deref(), Some("bot@example.com"), "username is percent-decoded");
+        assert_eq!(smtp.password.as_deref(), Some("p@ss:word/"), "password is percent-decoded");
+        assert_eq!(c.email_from.unwrap().address, "noreply@example.com");
+
+        let c =
+            with(&[("ANYCON_SMTP_URL", "smtps://u:p@mail.example.com:2465"), ("ANYCON_EMAIL_FROM", "n@example.com")])
+                .unwrap();
+        let smtp = c.smtp.unwrap();
+        assert_eq!((smtp.security, smtp.port), (SmtpSecurity::Tls, 2465));
+        let c =
+            with(&[("ANYCON_SMTP_URL", "smtps://mail.example.com"), ("ANYCON_EMAIL_FROM", "n@example.com")]).unwrap();
+        assert_eq!(c.smtp.unwrap().port, 465, "smtps defaults to 465");
+        let c = with(&[("ANYCON_SMTP_URL", "smtp+plain://127.0.0.1"), ("ANYCON_EMAIL_FROM", "n@example.com")]).unwrap();
+        let smtp = c.smtp.unwrap();
+        assert_eq!((smtp.security, smtp.port, smtp.username), (SmtpSecurity::Plain, 25, None));
+    }
+
+    #[test]
+    fn smtp_url_errors_never_echo_the_url_or_the_password() {
+        for bad in [
+            "http://u:hunter2@mail.example.com",
+            "smtp://u:hunter2@",
+            "smtp://:hunter2@mail.example.com",
+            "smtp://u:hunter2@mail.example.com/path",
+            "smtp://u:hunter2@mail.example.com?x=1",
+            "smtp+plain://u:hunter2@8.8.8.8:25",
+            "smtp+plain://u:hunter2@[2001:4860:4860::8888]",
+            "smtp+plain://u:hunter2@127%2E0%2E0%2E1:25",
+            "smtp://u:%ff@mail.example.com",
+            "not a url hunter2",
+        ] {
+            let err = with(&[("ANYCON_SMTP_URL", bad), ("ANYCON_EMAIL_FROM", "n@example.com")]).unwrap_err();
+            let msg = err.to_string();
+            assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_SMTP_URL", .. }), "{bad}: {msg}");
+            assert!(!msg.contains("hunter2") && !msg.contains(bad), "{bad}: error leaks the URL: {msg}");
+        }
+    }
+
+    #[test]
+    fn smtp_plain_accepts_local_ip_literals_and_host_names_but_never_a_public_ip_literal() {
+        let ok = |host: &str| {
+            with(&[("ANYCON_SMTP_URL", &format!("smtp+plain://{host}:25")), ("ANYCON_EMAIL_FROM", "n@example.com")])
+                .is_ok()
+        };
+        // IP 字面量：本机 / 内网才行（启动校验）
+        for host in [
+            "127.0.0.1",
+            "127.1.2.3",
+            "[::1]",
+            "10.0.0.5",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.10",
+            "169.254.1.1",
+            "100.64.0.1",
+            "[fd00::1]",
+            "[fe80::1]",
+            "[::ffff:127.0.0.1]",
+        ] {
+            assert!(ok(host), "{host} should be allowed");
+        }
+        for host in [
+            "8.8.8.8",
+            "172.32.0.1",
+            "172.15.0.1",
+            "192.169.0.1",
+            "100.128.0.1",
+            "1.1.1.1",
+            "[2001:4860:4860::8888]",
+            "[2606:4700::1111]",
+            "[::ffff:8.8.8.8]",
+        ] {
+            assert!(!ok(host), "{host} must be rejected");
+        }
+        // 主机名：启动时不判断它指向哪里（服务名启动时往往解析不了，DNS 也会变）；每次发信前解析，见 mail.rs。
+        // 以前「不带点 = 内网服务名」的规则没有了：带点的、不带点的一视同仁。
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            "mail.localhost",
+            "mailpit",
+            "postfix",
+            "smtp.example.com",
+            "mail.example.com.",
+            "evil.localhost.example.com",
+            "ai.",
+            "my_mail-relay.internal",
+        ] {
+            assert!(ok(host), "{host} is a plausible host name, checked when mail is sent");
+        }
+        // 写法本身有问题的：libc 会当 IP 解析的纯数字写法、非法字符
+        for host in [
+            "134744072",
+            "0x08080808",
+            "127.1",
+            "0x7f.0.0.1",
+            "1.2.3",
+            "127%2E0%2E0%2E1",
+            "mail%2Eexample.com",
+            "ma il",
+            "-",
+            "a..b",
+        ] {
+            assert!(!ok(host), "{host} must be rejected");
+        }
+    }
+
+    #[test]
+    fn check_plain_host_says_why() {
+        assert_eq!(check_plain_host("8.8.8.8"), Err(PlainHostError::PublicAddress));
+        assert_eq!(check_plain_host("[2001:4860:4860::8888]"), Err(PlainHostError::PublicAddress));
+        assert_eq!(check_plain_host("134744072"), Err(PlainHostError::BadName));
+        assert_eq!(check_plain_host("127.1"), Err(PlainHostError::BadName));
+        assert_eq!(check_plain_host(""), Err(PlainHostError::BadName));
+        assert_eq!(check_plain_host("[::1]"), Ok(()));
+        assert_eq!(check_plain_host("Mailpit"), Ok(()));
+        assert_eq!(check_plain_host("smtp.example.com"), Ok(()));
+        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ip("::ffff:8.8.8.8".parse().unwrap()));
+        assert!(is_private_ip("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("100.64.0.1".parse().unwrap()) && !is_private_ip("100.128.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn programmatic_configs_get_the_same_startup_check() {
+        let mut c = Config::new("https://hub.test", std::path::Path::new("/nonexistent")).unwrap();
+        c.email_from = Some(parse_email_from("n@example.com").unwrap());
+        let plain = |host: &str| SmtpConfig {
+            security: SmtpSecurity::Plain,
+            host: host.into(),
+            port: 25,
+            username: Some("u".into()),
+            password: Some("hunter2".into()),
+        };
+        c.smtp = Some(plain("8.8.8.8"));
+        let err = c.validate().unwrap_err().to_string();
+        assert!(err.contains("smtp+plain") && !err.contains("hunter2"), "{err}");
+        c.smtp = Some(plain("smtp.example.com"));
+        assert!(c.validate().is_ok(), "a host name is checked per mail, not at startup");
+        c.smtp = Some(plain("134744072"));
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn email_limits_and_delays_have_the_documented_defaults() {
+        // docs/spec/hub.md § 7.2 / § 8、ADR-37
+        let l = Limits::default();
+        assert_eq!(
+            (l.email_send_per_hour_per_ip, l.email_verify_per_min_per_ip, l.email_code_max_attempts),
+            (5, 20, 5)
+        );
+        assert_eq!((l.email_codes_active, l.email_codes_per_day, l.email_failures_per_day), (3, 10, 30));
+        assert_eq!(l.email_resend_interval, Duration::from_secs(60));
+        let t = Timing::default();
+        assert_eq!(t.email_verify_failure_delay, Duration::from_millis(250));
+        assert_eq!(t.email_code_ttl, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn smtp_without_a_sender_refuses_to_start() {
+        let err = with(&[("ANYCON_SMTP_URL", "smtps://mail.example.com")]).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_EMAIL_FROM", .. }), "{err}");
+        // 没配 SMTP 时发件人可有可无；但写了就要合法
+        assert!(with(&[("ANYCON_EMAIL_FROM", "noreply@example.com")]).is_ok());
+        for bad in ["not an address", "Anycon <>", "a@@b"] {
+            let err = with(&[("ANYCON_SMTP_URL", "smtps://mail.example.com"), ("ANYCON_EMAIL_FROM", bad)]).unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_EMAIL_FROM", .. }), "{bad}: {err}");
+        }
+        let c = with(&[("ANYCON_SMTP_URL", "smtps://mail.example.com"), ("ANYCON_EMAIL_FROM", "bare@example.com")])
+            .unwrap();
+        assert_eq!(c.email_from.unwrap().address, "bare@example.com");
+    }
+
+    #[test]
+    fn debug_output_redacts_smtp_credentials() {
+        let c = with(&[
+            ("ANYCON_SMTP_URL", "smtps://mailuser:hunter2-smtp-password@mail.example.com"),
+            ("ANYCON_EMAIL_FROM", "n@example.com"),
+        ])
+        .unwrap();
+        let dump = format!("{c:?}");
+        assert!(!dump.contains("hunter2") && !dump.contains("mailuser"), "{dump}");
+        assert!(dump.contains("mail.example.com") && dump.contains("<redacted>"), "{dump}");
+        let smtp_dump = format!("{:?}", c.smtp.unwrap());
+        assert!(!smtp_dump.contains("hunter2") && !smtp_dump.contains("mailuser"), "{smtp_dump}");
+    }
+
+    #[test]
+    fn vapid_subject_is_validated_and_has_sensible_defaults() {
+        // 显式设置优先
+        let c = with(&[("ANYCON_VAPID_SUBJECT", "mailto:admin@example.com")]).unwrap();
+        assert_eq!(c.vapid_subject(), "mailto:admin@example.com");
+        let c = with(&[("ANYCON_VAPID_SUBJECT", " https://example.org/contact ")]).unwrap();
+        assert_eq!(c.vapid_subject(), "https://example.org/contact");
+        for bad in ["admin@example.com", "mailto:", "mailto:nobody", "http://example.com", "ftp://x", "mailto:a b@c"] {
+            let err = with(&[("ANYCON_VAPID_SUBJECT", bad)]).unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_VAPID_SUBJECT", .. }), "{bad}: {err}");
+        }
+        // 没设：public_url 是 https 就用它
+        assert_eq!(with(&[]).unwrap().vapid_subject(), "https://hub.example.com");
+        // 不是 https：mailto: + 发件人地址
+        let c = Config::from_vars(vars(&[
+            ("ANYCON_PUBLIC_URL", "http://192.168.1.5:8080"),
+            ("ANYCON_SMTP_URL", "smtps://mail.example.com"),
+            ("ANYCON_EMAIL_FROM", "Anycon <noreply@example.com>"),
+        ]))
+        .unwrap();
+        assert_eq!(c.vapid_subject(), "mailto:noreply@example.com");
+        // 什么都没有：用主机名兜底，仍然是合法的 mailto:
+        let c = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://192.168.1.5:8080")])).unwrap();
+        assert_eq!(c.vapid_subject(), "mailto:noreply@192.168.1.5");
+    }
+}

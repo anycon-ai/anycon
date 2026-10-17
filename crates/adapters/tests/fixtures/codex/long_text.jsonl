@@ -1,0 +1,67 @@
+{"method":"thread/status/changed","params":{"threadId":"FIXTURE_THREAD","status":{"type":"active","activeFlags":[]}},"emittedAtMs":1791790000497}
+{"method":"turn/started","params":{"threadId":"FIXTURE_THREAD","turn":{"id":"FIXTURE_TURN","items":[],"itemsView":"notLoaded","status":"inProgress","error":null,"startedAt":1791790000,"completedAt":null,"durationMs":null}},"emittedAtMs":1791790000504}
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"msg_1","text":"","phase":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","startedAtMs":1791790000511},"emittedAtMs":1791790000518}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word0 "},"emittedAtMs":1791790000525}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word1 "},"emittedAtMs":1791790000532}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word2 "},"emittedAtMs":1791790000539}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word3 "},"emittedAtMs":1791790000546}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word4 "},"emittedAtMs":1791790000553}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word5 "},"emittedAtMs":1791790000560}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word6 "},"emittedAtMs":1791790000567}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word7 "},"emittedAtMs":1791790000574}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word8 "},"emittedAtMs":1791790000581}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word9 "},"emittedAtMs":1791790000588}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word10 "},"emittedAtMs":1791790000595}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word11 "},"emittedAtMs":1791790000602}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word12 "},"emittedAtMs":1791790000609}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word13 "},"emittedAtMs":1791790000616}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word14 "},"emittedAtMs":1791790000623}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word15 "},"emittedAtMs":1791790000630}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word16 "},"emittedAtMs":1791790000637}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word17 "},"emittedAtMs":1791790000644}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word18 "},"emittedAtMs":1791790000651}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word19 "},"emittedAtMs":1791790000658}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word20 "},"emittedAtMs":1791790000665}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word21 "},"emittedAtMs":1791790000672}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word22 "},"emittedAtMs":1791790000679}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word23 "},"emittedAtMs":1791790000686}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word24 "},"emittedAtMs":1791790000693}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word25 "},"emittedAtMs":1791790000700}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word26 "},"emittedAtMs":1791790000707}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word27 "},"emittedAtMs":1791790000714}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word28 "},"emittedAtMs":1791790000721}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word29 "},"emittedAtMs":1791790000728}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word30 "},"emittedAtMs":1791790000735}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word31 "},"emittedAtMs":1791790000742}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word32 "},"emittedAtMs":1791790000749}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word33 "},"emittedAtMs":1791790000756}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word34 "},"emittedAtMs":1791790000763}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word35 "},"emittedAtMs":1791790000770}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word36 "},"emittedAtMs":1791790000777}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word37 "},"emittedAtMs":1791790000784}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word38 "},"emittedAtMs":1791790000791}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word39 "},"emittedAtMs":1791790000798}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word40 "},"emittedAtMs":1791790000805}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word41 "},"emittedAtMs":1791790000812}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word42 "},"emittedAtMs":1791790000819}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word43 "},"emittedAtMs":1791790000826}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word44 "},"emittedAtMs":1791790000833}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word45 "},"emittedAtMs":1791790000840}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word46 "},"emittedAtMs":1791790000847}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word47 "},"emittedAtMs":1791790000854}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word48 "},"emittedAtMs":1791790000861}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word49 "},"emittedAtMs":1791790000868}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word50 "},"emittedAtMs":1791790000875}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word51 "},"emittedAtMs":1791790000882}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word52 "},"emittedAtMs":1791790000889}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word53 "},"emittedAtMs":1791790000896}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word54 "},"emittedAtMs":1791790000903}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word55 "},"emittedAtMs":1791790000910}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word56 "},"emittedAtMs":1791790000917}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word57 "},"emittedAtMs":1791790000924}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word58 "},"emittedAtMs":1791790000931}
+{"method":"item/agentMessage/delta","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","itemId":"msg_1","delta":"word59 "},"emittedAtMs":1791790000938}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_1","text":"word0 word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28 word29 word30 word31 word32 word33 word34 word35 word36 word37 word38 word39 word40 word41 word42 word43 word44 word45 word46 word47 word48 word49 word50 word51 word52 word53 word54 word55 word56 word57 word58 word59","phase":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","completedAtMs":1791790000945},"emittedAtMs":1791790000952}
+{"method":"thread/tokenUsage/updated","params":{"threadId":"FIXTURE_THREAD","turnId":"FIXTURE_TURN","tokenUsage":{"total":{"totalTokens":160,"inputTokens":100,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":60,"reasoningOutputTokens":0},"last":{"totalTokens":160,"inputTokens":100,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":60,"reasoningOutputTokens":0},"modelContextWindow":258400}},"emittedAtMs":1791790000959}
+{"method":"thread/status/changed","params":{"threadId":"FIXTURE_THREAD","status":{"type":"idle"}},"emittedAtMs":1791790000966}
+{"method":"turn/completed","params":{"threadId":"FIXTURE_THREAD","turn":{"id":"FIXTURE_TURN","items":[{"type":"agentMessage","id":"msg_1","text":"word0 word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28 word29 word30 word31 word32 word33 word34 word35 word36 word37 word38 word39 word40 word41 word42 word43 word44 word45 word46 word47 word48 word49 word50 word51 word52 word53 word54 word55 word56 word57 word58 word59","phase":null,"memoryCitation":null,"delivery":null,"questions":null}],"itemsView":"summary","status":"completed","error":null,"startedAt":1791790000,"completedAt":1791790001,"durationMs":6000}},"emittedAtMs":1791790000973}

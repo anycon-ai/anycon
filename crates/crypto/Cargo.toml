@@ -1,0 +1,41 @@
+[package]
+name = "anycon-crypto"
+description = "Noise XXpsk3 配对握手、IK 重连握手、传输加密。一份实现，编译为 Rust crate / wasm / Python wheel。"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+thiserror.workspace = true
+# 只开 anycon 用到的原语（X25519 / ChaChaPoly / BLAKE2s），不带 aes-gcm / sha2 / getrandom 0.3。
+# RNG 由本 crate 通过自定义 resolver 提供（rand 0.8 的 OsRng → getrandom 0.2，wasm 下走 `js`）。
+snow = { version = "0.10.0", default-features = false, features = ["default-resolver", "use-chacha20poly1305", "use-blake2", "use-curve25519"] }
+blake2 = "0.11.0"
+rand = { version = "0.8", default-features = false, features = ["getrandom"] }
+zeroize = "1.9.1"
+# 仅 `wasm` feature：
+wasm-bindgen = { version = "0.2", optional = true }
+getrandom = { version = "0.2", features = ["js"], optional = true }
+# 仅 `python` feature（骨架，不构建 wheel）：
+pyo3 = { version = "0.29", optional = true, features = ["extension-module"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+curve25519-dalek = { version = "4.1", default-features = false, features = ["alloc", "zeroize"] }
+sha2 = { version = "0.10", default-features = false }
+unicode-normalization = "0.1"
+
+[features]
+default = []
+wasm = ["dep:wasm-bindgen", "dep:getrandom"]
+python = ["dep:pyo3"]
+
+# wasm-pack 默认会去 GitHub 下载 binaryen 跑 wasm-opt；关掉让构建不依赖网络（150 KB 左右，体积可以接受）。
+# 需要再压体积时用 scripts/build-wasm.sh（PATH 里有 wasm-opt 就会用）。
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dev-dependencies]
+anycon-protocol.workspace = true
+serde_json.workspace = true

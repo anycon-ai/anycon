@@ -1,0 +1,78 @@
+{
+ "thread": {
+  "id": "FIXTURE_THREAD",
+  "environments": [
+   {
+    "environmentId": "local",
+    "cwd": "/work/proj",
+    "runtimeWorkspaceRoots": [
+     "/work/proj"
+    ]
+   }
+  ],
+  "extra": null,
+  "sessionId": "FIXTURE_THREAD",
+  "forkedFromId": null,
+  "parentThreadId": null,
+  "preview": "say hi",
+  "ephemeral": false,
+  "section": null,
+  "sectionEnteredAt": null,
+  "projectId": null,
+  "historyMode": "paginated",
+  "modelProvider": "openai",
+  "model": "fixture-model",
+  "reasoningEffort": null,
+  "createdAt": 1791789543,
+  "updatedAt": 1791789545,
+  "recencyAt": 1791789543,
+  "status": {
+   "type": "idle"
+  },
+  "path": "/home/user/.codex/sessions/2026/10/12/rollout-2026-10-12T03-19-03-FIXTURE_THREAD.jsonl",
+  "cwd": "/work/proj",
+  "cliVersion": "0.157.1",
+  "originator": "anycon",
+  "source": "vscode",
+  "canAcceptDirectInput": true,
+  "threadSource": null,
+  "agentNickname": null,
+  "agentRole": null,
+  "gitInfo": null,
+  "name": null,
+  "daybreakEnabled": null,
+  "turns": []
+ },
+ "model": "fixture-model",
+ "modelProvider": "openai",
+ "serviceTier": null,
+ "disabledPluginIds": [],
+ "cwd": "/work/proj",
+ "runtimeWorkspaceRoots": [
+  "/work/proj"
+ ],
+ "instructionSources": [],
+ "approvalPolicy": "on-request",
+ "approvalsReviewer": "user",
+ "sandbox": {
+  "type": "workspaceWrite",
+  "writableRoots": [],
+  "networkAccess": false,
+  "excludeTmpdirEnvVar": false,
+  "excludeSlashTmp": false
+ },
+ "activePermissionProfile": null,
+ "reasoningEffort": null,
+ "collaborationMode": {
+  "mode": "default",
+  "settings": {
+   "model": "fake-model",
+   "reasoning_effort": null,
+   "developer_instructions": null
+  }
+ },
+ "multiAgentMode": "explicitRequestOnly",
+ "initialTurnsPage": null,
+ "turnsBackwardsCursor": "{\"requestedThreadId\":\"FIXTURE_THREAD\",\"rolloutOrdinal\":1,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}",
+ "itemsBackwardsCursor": "{\"requestedThreadId\":\"FIXTURE_THREAD\",\"rolloutOrdinal\":8,\"includeAnchor\":true,\"scope\":{\"kind\":\"itemsByCreatedAtOrdinal\"}}"
+}

@@ -18,6 +18,11 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # typescript-eslint 8.x 的 peer 范围是 typescript <6.1，装上 TS 7 时直接抛错，web 的 lint 跑不起来。
+      # 等 typescript-eslint 支持新大版本后删掉这条，手动升级。
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /

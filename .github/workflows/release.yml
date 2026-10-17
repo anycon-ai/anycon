@@ -157,7 +157,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/digests"
           touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: env.PUBLISH == 'true'
         with:
           name: digests-${{ env.PLATFORM_PAIR }}
@@ -219,7 +219,7 @@ jobs:
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
           cat "dist/$name.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bin-${{ matrix.target }}
           path: |
@@ -287,7 +287,7 @@ jobs:
             if (typeof connect !== 'function' || typeof pair !== 'function') throw new Error('sdk exports missing')
             console.log('ok')
           "
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-packages
           path: npm/*.tgz

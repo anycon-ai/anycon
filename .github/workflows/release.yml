@@ -104,7 +104,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
       - name: OCI 标签
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           labels: |
@@ -320,7 +320,7 @@ jobs:
       # 清单（index）上也写 OCI 注解：GHCR 的包页面读 index 上的 source / description
       - name: 标签与注解
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:

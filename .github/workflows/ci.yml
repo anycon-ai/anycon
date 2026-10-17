@@ -204,7 +204,7 @@ jobs:
       # docker/hub.Dockerfile 是自包含的：wasm（wasm-bindgen-cli）→ Web UI（bun + vite）→ hub（嵌入 Web UI）→ distroless。
       # 用默认基础镜像；Docker Hub 连不上的机器本地换源见 `just docker-hub` 的注释。
       - name: 构建（不推送）
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/hub.Dockerfile

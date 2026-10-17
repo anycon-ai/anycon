@@ -121,7 +121,7 @@ jobs:
       # 发布时只按 digest 推送（不打标签），两个平台都成功后由 image-manifest 合成清单再打标签；试跑时载入本地 docker。
       - name: 构建
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/hub.Dockerfile

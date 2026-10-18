@@ -139,8 +139,10 @@ LABEL org.opencontainers.image.title="anycon-hub" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=builder /anycon-hub /usr/local/bin/anycon-hub
-COPY --chmod=0644 LICENSE /usr/share/doc/anycon-hub/LICENSE
+# 顺序不能反：目录要先由不带 --chmod 的 COPY 建出来（0755）。BuildKit 会把 --chmod 也套到它隐式创建的父目录上，
+# 0644 的目录没有执行位，nonroot 进不去，`docker cp` 出来也写不进文件。
 COPY --from=licenses /licenses/ /usr/share/doc/anycon-hub/
+COPY --chmod=0644 LICENSE /usr/share/doc/anycon-hub/LICENSE
 COPY --from=web /src/web/dist/THIRD-PARTY-LICENSES.txt /usr/share/doc/anycon-hub/THIRD-PARTY-LICENSES-web.txt
 # distroless 里没有 shell 可以 mkdir/chown，所以在这里把 /data 建好并交给 nonroot（65532）。
 # 之后 `VOLUME` 让新建的命名卷继承这个属主。

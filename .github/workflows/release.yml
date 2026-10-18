@@ -9,7 +9,7 @@
 #
 # 先构建、后发布：镜像、二进制、npm 包全部构建并自检通过之后，才打镜像标签、建 Release、发 npm。
 # 手动触发（workflow_dispatch）只构建和自检、不发布，产物在 run 的 artifacts 里，用来在打标签之前把整条流水线试跑一遍。
-# 首次发布前要手动准备的东西（GHCR 包可见性、tap 仓库、NPM_TOKEN、HOMEBREW_TAP_TOKEN）见 CONTRIBUTING.md「发布」。
+# 首次发布前要手动准备的东西（GHCR 包可见性、npm trusted publisher、tap 仓库、HOMEBREW_TAP_TOKEN）见 CONTRIBUTING.md「发布」。
 name: Release
 
 on:
@@ -441,9 +441,16 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      # 认证走 npm 的 trusted publishing：npm 用这个 job 的 OIDC 身份（id-token: write）换一个一次性的发布凭据，
+      # 不需要也不使用任何 npm token。要求 npm ≥ 11.5.1，并且两个包在 npmjs.com 上都把这个仓库的 release.yml 配成了 trusted publisher。
+      - name: npm ≥ 11.5.1（trusted publishing 需要）
+        run: |
+          if ! node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); process.exit(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))) ? 0 : 1)' "$(npm --version)"; then
+            npm install -g npm@11
+          fi
+          npm --version
       - name: 发布（protocol 先于 sdk；已发布的版本跳过，方便重跑）
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ needs.plan.outputs.prerelease == 'true' && 'next' || 'latest' }}
         run: |
           for pkg in protocol sdk; do

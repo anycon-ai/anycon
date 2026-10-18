@@ -683,6 +683,6 @@ ADR-1 拆成两层来看：
 - Linux 二进制要求 glibc ≥ 2.35（Ubuntu 22.04、Debian 12 及更新）；更老的发行版和 musl 从源码构建
 - macOS 二进制没有开发者签名和公证：curl / Homebrew 下载不受 Gatekeeper 拦截，浏览器下载的要手动放行
 - `ubuntu-22.04` runner 下线时要换成更老 glibc 的构建环境（比如容器），否则 glibc 下限会跟着升高
-- 首次发布前要手动准备 GHCR 包的可见性、npm 账号 `anycon`（`@anycon` scope）的发布 token、tap 仓库和两个 secret（[CONTRIBUTING.md「发布」](../CONTRIBUTING.md#发布)）
+- 首次发布前要手动准备 GHCR 包的可见性、npm 包的 trusted publisher（`@anycon` scope 属于 npm 账号 `anycon`）、tap 仓库和它的 token（[CONTRIBUTING.md「发布」](../CONTRIBUTING.md#发布)）
 
 **取代**：[tech-stack.md](tech-stack.md) 里「Rust 跨平台 release 用 cargo-dist」的计划。

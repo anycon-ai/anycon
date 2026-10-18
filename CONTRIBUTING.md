@@ -72,7 +72,7 @@ hub 只嵌入它**编译时**看到的 `web/dist`：先编了 hub、后构建 we
 第一次发布前要手动准备（之后不用再做）：
 
 - **仓库公开**：npm provenance、公开的 GHCR 镜像、Homebrew 和安装脚本下载 Release 文件都要求仓库是公开的
-- **npm**：`@anycon` scope 属于 npm 账号 `anycon`（个人账号自带同名 scope，不需要另建组织；以后要多人维护可以把它转成组织）；用这个账号生成一个能发布 `@anycon/*` 的 granular access token（账号开了 2FA 的话要允许它绕过 2FA），存成仓库 secret `NPM_TOKEN`。granular token 有有效期，过期前换掉；也可以在包发布过一次之后，在 npm 的包设置里给 `anycon-ai/anycon` 的 `release.yml` 配 trusted publishing，之后不需要 token
+- **npm**：`@anycon` scope 属于 npm 账号 `anycon`（个人账号自带同名 scope，不需要另建组织；以后要多人维护可以把它转成组织）。发布走 **trusted publishing**，不用 token：在 npmjs.com 上每个包的 Settings → Trusted Publisher 里选 GitHub Actions，填 `anycon-ai` / `anycon` / `release.yml`，Environment 留空。trusted publisher 只能配在已经存在的包上，所以以后新增的包要先手动发一个版本再配。配好之后在 Publishing access 里选「Require two-factor authentication and disallow tokens」
 - **Homebrew**：在 `anycon-ai` 下建公开仓库 `homebrew-tap`，建的时候勾上「添加 README」（要有默认分支；流水线往里写 `Formula/anycon.rb`）；建一个只对这个仓库有 Contents 读写权限的 fine-grained token，存成 secret `HOMEBREW_TAP_TOKEN`
 - **GHCR**：组织设置里允许公开的 package。第一次发布推上去的 `ghcr.io/anycon-ai/hub` 默认是私有的：到组织的 Packages → `hub` → Package settings 改成 Public，确认它关联到了 `anycon` 仓库（镜像的 `org.opencontainers.image.source` 会自动关联）。改之前 `docker pull` 要登录
 

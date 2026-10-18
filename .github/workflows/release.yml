@@ -452,7 +452,8 @@ jobs:
               echo "@anycon/$pkg@$VERSION is already on npm, skipping"
               continue
             fi
-            npm publish "npm/anycon-$pkg-$VERSION.tgz" --access public --provenance --tag "$DIST_TAG"
+            # 路径必须以 ./ 开头：不带的话 npm 把 `npm/<文件>` 当成 GitHub 的「用户/仓库」简写，去 git ls-remote
+            npm publish "./npm/anycon-$pkg-$VERSION.tgz" --access public --provenance --tag "$DIST_TAG"
           done
 
   homebrew:

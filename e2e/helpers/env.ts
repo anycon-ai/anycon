@@ -14,6 +14,7 @@
  *   E2E_SKIP_DAEMON   1 = 不启动 daemon（只测 hub + web，比如 smoke）
  *   E2E_REQUIRE_DAEMON  0 = daemon 起不来只警告（默认是整体失败，happy path 依赖它）
  *   E2E_KEEP_TMP      1 = 结束后保留临时目录，方便看 hub / daemon 日志
+ *   E2E_TMP_DIR_FILE  设了就把临时目录的路径写进这个文件（CI 失败时据此收集 hub.log / daemon.log）
  *   E2E_BUILD         1 = 先构建 web、触碰 crates/hub/build.rs、cargo build hub + cli（hub 编译时嵌入 web/dist）
  *   E2E_ALLOW_STALE_WEB  1 = hub 服务的 index.html 与 web/dist 不一致也照跑（默认报错：占位页 / 旧的嵌入）
  */

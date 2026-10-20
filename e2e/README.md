@@ -24,6 +24,7 @@ just e2e                                     # = bun install + playwright instal
 - `E2E_SKIP_DAEMON=1` 只起 hub + web（smoke 够用；happy path 会被跳过）
 - `E2E_REQUIRE_DAEMON=0` daemon 起不来只警告（默认是整体失败，happy path 依赖它）
 - `E2E_KEEP_TMP=1` 结束后保留临时目录（`hub.log` / `daemon.log` 在里面）
+- `E2E_TMP_DIR_FILE=<文件>` 把临时目录的路径写进这个文件（CI 用它在失败时把 `hub.log` / `daemon.log` 收进产物）
 - `E2E_BUILD=1` 先构建 web、触碰 `crates/hub/build.rs`、`cargo build -p anycon-hub -p anycon-cli` 再跑（hub 编译时要选中 `web/dist`；debug 构建读磁盘，所以之后只重建 web 也行）。没设时，hub 服务的 `index.html` 和当前 `web/dist/index.html` 不一致（占位页 / 旧的嵌入）会直接报错（`E2E_ALLOW_STALE_WEB=1` 忽略）
 
 ## 用例

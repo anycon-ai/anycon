@@ -338,8 +338,8 @@ struct OutboxInner {
 
 /// 发往 hub 的出站通道。`seq` 在这里统一编号；没连上时发送返回 `None` / `false`。
 ///
-/// **发送方规则（docs/protocol.md § 3.1，状态机在 [`crate::flow`]）**：`data` / `notify` 信封按目标对端各自保留原文
-/// （[`RETAIN_BYTES`]）。hub 退回一封（`backpressure`）之后：暂停向该对端发送（新的信封只入保留缓冲、排队），等一会儿
+/// **发送方规则（docs/protocol.md § 3.1，状态机在 [`crate::flow`]）**：`data` / `notify` / `handshake` 信封按目标对端各自保留原文
+/// （[`RETAIN_BYTES`]；`handshake` 不受暂停约束，发出时不排队）。hub 退回一封（`backpressure`）之后：暂停向该对端发送（新的信封只入保留缓冲、排队），等一会儿
 /// （`rate_limited` 给的 `retry_after_ms`，没有就 100–300 ms 加抖动），把所有被退回的 seq **按升序原样**重发，再继续发新的；
 /// 重发期间又被退回就再等一轮。`rate_limited` 暂停整条连接的出站。
 pub struct HubOutbox {
@@ -466,8 +466,8 @@ impl HubOutbox {
         i.group
     }
 
-    /// 发一封信封，返回它的 seq（`None` = 没连上 hub）。`data` / `notify` 会被保留，并受发送方规则约束：
-    /// 目标对端被退回过 / 被限速时，信封只入保留缓冲，等重发时一起按序发出。
+    /// 发一封信封，返回它的 seq（`None` = 没连上 hub）。原文都会被保留；`data` / `notify` 还受发送方规则约束：
+    /// 目标对端被退回过 / 被限速时，信封只入保留缓冲，等重发时一起按序发出。`handshake` 总是立刻发出，被退回时同样原样重发。
     pub fn send_envelope(&self, to: &str, kind: Kind, body: Vec<u8>) -> Option<u64> {
         self.send_in_group(to, kind, body, None)
     }
@@ -479,11 +479,6 @@ impl HubOutbox {
         i.seq += 1;
         let seq = i.seq;
         let from = i.device_id.clone().unwrap_or_default();
-        if !matches!(kind, Kind::Data | Kind::Notify) {
-            // 握手信封不受粘住规则管
-            let bytes = Envelope::new(from, to, kind, seq, body).encode().ok()?;
-            return self.push_tx(&tx, bytes).then_some(seq);
-        }
         let now = Instant::now();
         let group = group.unwrap_or_else(|| {
             i.group += 1;
@@ -491,7 +486,9 @@ impl HubOutbox {
         });
         let (rate, guard) = (i.rate, i.guard);
         let slot = i.flows.entry(to.to_string()).or_insert_with(|| Slot::new(guard));
-        let blocked = slot.flow.blocked(now, &rate);
+        // 握手信封不受粘住和暂停管，总是立刻发出；但和 data 一样保留原文：hub 退回它（目标缓冲满或超速）时要原样重发。
+        // 响应方没有别的补救——配对的 XXpsk3 第二条丢了，浏览器只能等到配对超时
+        let blocked = matches!(kind, Kind::Data | Kind::Notify) && slot.flow.blocked(now, &rate);
         let bytes = if blocked { None } else { Some(Envelope::new(from, to, kind, seq, body.clone()).encode().ok()?) };
         slot.flow.retain(Retained { seq, kind, body, group });
         match bytes {
@@ -1164,6 +1161,31 @@ mod tests {
         ob.on_rate_limited(10_000);
         let h = ob.send_envelope("p", Kind::Handshake, vec![1]).unwrap();
         assert_eq!(next(&mut rx).await.seq, h);
+    }
+
+    #[tokio::test]
+    async fn a_bounced_handshake_is_resent_byte_for_byte_and_data_after_it_waits_behind_it() {
+        let (ob, mut rx) = attached();
+        // 配对的 XXpsk3 第二条：发出去之后 hub 退回（浏览器连接的缓冲满，或我们超了速率预算）
+        let h = ob.send_envelope("p", Kind::Handshake, b"xx-msg2".to_vec()).unwrap();
+        let original = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(Envelope::decode(&original).unwrap().kind, Kind::Handshake);
+        let t = Instant::now();
+        assert_eq!(ob.on_backpressure("p", h), Bounce::Scheduled, "a handshake is retained, not lost");
+        assert_eq!(ob.lost_count(), 0);
+        // 退回之后的 data 不能抢在握手前面
+        let d = ob.send_envelope("p", Kind::Data, vec![7]).unwrap();
+        assert!(rx.try_recv().is_err(), "nothing leaves while paused");
+        let resent = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+        assert!(t.elapsed() >= Duration::from_millis(90), "default pause is 100-300 ms: {:?}", t.elapsed());
+        assert_eq!(resent, original, "the same envelope goes out again, byte for byte");
+        assert_eq!(next(&mut rx).await.seq, d);
+        assert!(!ob.is_blocked("p"));
+        // 再被退回也照样重发（不会变成 RESET）
+        ob.on_backpressure("p", h);
+        let again = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(again, original);
+        assert_eq!(ob.lost_count(), 0);
     }
 
     #[test]

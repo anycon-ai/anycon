@@ -49,7 +49,7 @@ pub const RATE_RETRY_MAX: Duration = Duration::from_secs(60);
 /// 空闲的对端不应该一直占着最多 8 MiB 的内存。
 pub const RETAIN_MAX_AGE: Duration = Duration::from_secs(60);
 
-/// 一封已发出的 `data` / `notify` 信封的原文。
+/// 一封已发出的 `data` / `notify` / `handshake` 信封的原文（`handshake` 被退回时也要原样重发）。
 #[derive(Debug, Clone)]
 pub struct Retained {
     pub seq: u64,

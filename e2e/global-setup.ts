@@ -134,6 +134,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   if (process.env.E2E_BUILD === '1') buildEverything()
   const started: Spawned[] = []
   const tmpDir = mkdtempSync(join(tmpdir(), 'anycon-e2e-'))
+  // CI 失败时要把 hub.log / daemon.log 收进产物：临时目录的路径写到调用方指定的文件里（配合 E2E_KEEP_TMP=1）
+  if (process.env.E2E_TMP_DIR_FILE) writeFileSync(process.env.E2E_TMP_DIR_FILE, `${tmpDir}\n`)
   const hubDataDir = join(tmpDir, 'hub')
   const daemonHome = join(tmpDir, 'daemon')
   const workspaceDir = join(tmpDir, 'workspace')

@@ -2,6 +2,8 @@
 
 > 镜像 `ghcr.io/anycon-ai/hub` 由发布流水线（`.github/workflows/release.yml`）在每个版本标签上构建，`linux/amd64` 和 `linux/arm64` 两种架构，标签是 `<版本>`（如 `0.1.0`）、`<主>.<次>`（`0.1`，跟着最新的补丁版）和 `latest`（预发布版只有 `<版本>`）。镜像里的 `/usr/share/doc/anycon-hub/` 是许可证和第三方许可证清单。
 >
+> 另有跟着 main 的 `edge` 和 `sha-<7 位提交>` 标签：main 上 CI 全部通过后推送，只有 `linux/amd64`，不是正式版本。用它的话 daemon 也从同一个提交的源码装（`cargo install --path crates/cli --locked`），两边对齐到同一个提交（钉 `sha-…` 比 `edge` 稳）：main 上的协议和迁移随时会变，迁移只前进，换回正式版镜像前要用备份的数据。
+>
 > 想自己构建（比如改了前端），在仓库根目录构建同名镜像，下面的命令照用：
 >
 > ```bash

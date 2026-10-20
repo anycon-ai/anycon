@@ -1,4 +1,4 @@
-# CI：Rust、TS、生成产物检查、E2E（Playwright + SDK 对真实 hub/daemon）、Docker 构建（自包含 Dockerfile）。
+# CI：Rust、TS、生成产物检查、E2E（Playwright + SDK 对真实 hub/daemon）、Docker 构建（自包含 Dockerfile）；main 上全部通过后推 edge 镜像。
 # 本地等价命令：`just lint`、`just test`、`just gen-check`、`just e2e`、`just test-sdk-real`、`just docker-hub`。
 name: CI
 
@@ -243,3 +243,47 @@ jobs:
           done
           docker logs hub
           exit 1
+
+  # main 上全部检查通过后推 ghcr.io/anycon-ai/hub:edge 和 :sha-<短 sha>，给要跟着 main 跑的自建 hub 用（docs/deploy.md 开头）。
+  # 只有 amd64：arm64 要原生 runner 从头编 Rust，跟 main 的场景不值得；正式版的多架构镜像由 release.yml 出。
+  # docker job 刚用同一个 Dockerfile 写了 gha 缓存，这里基本全部命中，不重新编译。
+  edge:
+    name: docker (edge image)
+    needs: [rust, ts, gen-check, e2e, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/anycon-ai/hub
+          flavor: |
+            latest=false
+          tags: |
+            type=edge,branch=main
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=anycon-hub
+            org.opencontainers.image.description=Anycon hub (edge, built from main; not a release)
+      - uses: docker/setup-buildx-action@v3
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/hub.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

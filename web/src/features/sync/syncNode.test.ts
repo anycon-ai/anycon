@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it } from 'vitest'
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { resetDb } from '@/db'
 import { FakeRpc } from '@/test/fakeRpc'
 import { mockAgent, summary } from '@/test/factories'
@@ -45,7 +45,7 @@ describe('protocolCompatible', () => {
 })
 
 describe('syncNode', () => {
-  it('runs node.info → agent.list → workspace.list → session.list → permission.list → node.devices → node.enroll_list and fills the stores', async () => {
+  it('runs node.info, then agent.list / workspace.list / session.list / permission.list / node.devices / node.enroll_list, and fills the stores', async () => {
     const agents = [mockAgent()]
     rpc.handlers['node.info'] = () => info()
     rpc.handlers['agent.list'] = () => ({ agents, etag: 'e1' })
@@ -64,6 +64,53 @@ describe('syncNode', () => {
     expect(useSessions.getState().list.s1).toMatchObject({ node_id: NODE, last_seq: 4 })
     expect(Object.keys(useSessions.getState().pending)).toEqual(['r1'])
     expect(rpc.calls.find((c) => c.method === 'session.list')!.params).toMatchObject({ include_archived: true })
+  })
+
+  it('sends everything after node.info at once instead of waiting for each reply', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const held = (v: unknown) => async () => {
+      await gate
+      return v
+    }
+    rpc.handlers['node.info'] = () => info()
+    rpc.handlers['agent.list'] = held({ agents: [], etag: 'e' })
+    rpc.handlers['workspace.list'] = held({ root: '/w', projects: [] })
+    rpc.handlers['session.list'] = held({ sessions: [] })
+    rpc.handlers['permission.list'] = held({ requests: [] })
+    rpc.handlers['node.devices'] = held({ devices: [] })
+    rpc.handlers['node.enroll_list'] = held({ enrolls: [] })
+    const syncing = syncNode(NODE)
+    // 没有任何一个回复之前，六个请求都已经发出
+    await vi.waitFor(() => expect(rpc.methods()).toHaveLength(7))
+    expect(useNodes.getState().byId[NODE]!.synced).toBeFalsy()
+    release()
+    await syncing
+    expect(useNodes.getState().byId[NODE]!.synced).toBe(true)
+  })
+
+  it('syncs the open session after the session list is compared, sending watch and history together', async () => {
+    useSessions.getState().upsertSummaries(NODE, [summary({ id: 's1', last_seq: 0 })])
+    useSessions.getState().openStart(NODE, 's1', [], null)
+    let releaseWatch!: () => void
+    const watchGate = new Promise<void>((r) => (releaseWatch = r))
+    rpc.handlers['node.info'] = () => info()
+    rpc.handlers['agent.list'] = () => ({ agents: [], etag: 'e' })
+    rpc.handlers['session.list'] = () => ({ sessions: [summary({ id: 's1', last_seq: 2 })] })
+    rpc.handlers['session.watch'] = async () => {
+      await watchGate
+      return {}
+    }
+    rpc.handlers['session.history'] = () => ({ events: [], has_more: false })
+    await syncNode(NODE)
+    // history 没等 watch 的回复就发出去了
+    await vi.waitFor(() => expect(rpc.methods()).toContain('session.history'))
+    const m = rpc.methods()
+    expect(m.indexOf('session.list')).toBeLessThan(m.indexOf('session.watch'))
+    expect(m.indexOf('session.watch')).toBeLessThan(m.indexOf('session.history'))
+    expect(useSessions.getState().open.s1).toMatchObject({ catchingUp: true, watching: false })
+    releaseWatch()
+    await vi.waitFor(() => expect(useSessions.getState().open.s1).toMatchObject({ phase: 'ready', watching: true, catchingUp: false }))
   })
 
   it('asks agent.list with the cached etag and keeps the cache on not_modified', async () => {

@@ -21,6 +21,7 @@ import * as db from '@/db'
 import type { SettingsUpdate } from '@/features/settings/resolve'
 import { isRecord } from '@/lib/guards'
 import { uuid } from '@/lib/ids'
+import { mark, shortId, timed } from '@/lib/timing'
 import { warnOnError, storageFailed } from '@/lib/log'
 import { rpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
@@ -65,7 +66,8 @@ function eventsOf(res: SessionHistoryResult): SessionEvent[] {
 
 /**
  * 当前打开的会话：先 watch（之后的实时事件进 held 缓冲），再拉历史补齐，最后把缓冲接上。
- * 顺序保证 watch 与历史之间不会漏事件。
+ * watch 和第一次 history 一起发、不等 watch 的响应：daemon 对同一客户端的请求按到达顺序处理（protocol.md § 7.3），
+ * watch 仍在 history 之前生效，watch 与历史之间不会漏事件，又省一次往返。
  */
 export async function syncOpenSession(nodeId: string, sessionId: string): Promise<void> {
   const st = useSessions.getState()
@@ -73,14 +75,17 @@ export async function syncOpenSession(nodeId: string, sessionId: string): Promis
   if (!o || o.catchingUp) return
   st.openPatch(sessionId, { catchingUp: true })
   try {
-    await rpc()
-      .request(nodeId, 'session.watch', { session_id: sessionId })
+    const watch = timed('rpc session.watch', () => rpc().request(nodeId, 'session.watch', { session_id: sessionId }))
       .then(() => useSessions.getState().openPatch(sessionId, { watching: true }))
       .catch((e: unknown) => {
         if (e instanceof RpcCallError && e.kind === 'rpc' && e.code === 'not_found') throw e
         // 观察失败（比如超过 5 个 watcher）不阻止查看历史
       })
-    await pullHistory(nodeId, sessionId)
+    // 两个都等完再看结果：watch 的 not_found（会话已不存在）优先于 history 的错误
+    const [w, h] = await Promise.allSettled([watch, timed('rpc session.history', () => pullHistory(nodeId, sessionId))])
+    if (w.status === 'rejected') throw w.reason
+    if (h.status === 'rejected') throw h.reason
+    mark(`session.ready ${shortId(sessionId)}`)
     useSessions.getState().openPatch(sessionId, { phase: 'ready', error: undefined })
   } catch (e) {
     const cur = useSessions.getState().open[sessionId]

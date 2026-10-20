@@ -4,13 +4,14 @@ import { ApiError } from '@/api/client'
 import { fetchMe, keys } from '@/api/queries'
 import { AppGate } from '@/components/AppGate'
 import { loginRedirectTarget } from '@/lib/loginRedirect'
+import { timed } from '@/lib/timing'
 import { Button } from '@/ui/Button'
 import { Logo } from '@/components/Logo'
 
 export const Route = createFileRoute('/_app')({
   beforeLoad: async ({ context, location }) => {
     try {
-      const me = await context.queryClient.ensureQueryData({ queryKey: keys.me, queryFn: fetchMe, staleTime: 60_000 })
+      const me = await context.queryClient.ensureQueryData({ queryKey: keys.me, queryFn: () => timed('http /api/me', fetchMe), staleTime: 60_000 })
       return { me }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {

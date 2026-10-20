@@ -3,6 +3,7 @@
 // `handshake` 信封承载 Noise 握手消息。
 import { DUPLICATE_PEER_ONLINE_MS, HANDSHAKE_TIMEOUT_MS, RPC_TIMEOUT_MS } from '@/lib/constants'
 import { bytesEqual } from '@/lib/bytes'
+import { mark, shortId } from '@/lib/timing'
 import { initialNode, nodeReduce, type NodeEvent, type NodeMachine } from './connection'
 import type { Crypto, Handshake, Keypair, Transport } from './crypto'
 import { RpcClient } from './rpcClient'
@@ -170,6 +171,7 @@ export class NodeLink {
 
   /** 发（或重发）在途握手的第一条消息，并从现在起计握手超时。发不出去（hub 不可写）就放弃这一轮。 */
   private sendHandshakeMessage(msg: Uint8Array): void {
+    mark(`node.handshake_sent ${shortId(this.nodeId)}`)
     this.hsStartedAt = Date.now()
     if (this.hsTimer) clearTimeout(this.hsTimer)
     this.hsTimer = setTimeout(() => this.onHandshakeTimeout(), HANDSHAKE_TIMEOUT_MS)

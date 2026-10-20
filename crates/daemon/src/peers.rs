@@ -899,10 +899,15 @@ impl Peers {
         sess.start_seq.store(start_seq, Ordering::SeqCst);
         tokio::spawn(sess.clone().writer(self.outbox.clone()));
         let mut row = rec;
-        row.last_seen_ms = Some(now_ms());
-        if let Err(e) = self.store.touch_peer(from, now_ms()).await {
-            tracing::warn!(peer = %from, error = %e, "cannot record the last-seen time");
-        }
+        let seen = now_ms();
+        row.last_seen_ms = Some(seen);
+        // 写库放到后台：hub 的帧是逐条处理的，在这里等它会把紧跟握手的第一批请求挡在后面（内存里的记录已经更新）
+        let (store, peer) = (self.store.clone(), from.to_string());
+        tokio::spawn(async move {
+            if let Err(e) = store.touch_peer(&peer, seen).await {
+                tracing::warn!(peer = %peer, error = %e, "cannot record the last-seen time");
+            }
+        });
         self.records.lock().unwrap().insert(from.to_string(), row);
         tracing::info!(peer = %from, "peer session established");
     }

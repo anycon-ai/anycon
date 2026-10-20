@@ -6,6 +6,7 @@ import { bytesEqual } from '@/lib/bytes'
 import { isValidPairCode } from '@/lib/code'
 import { isRecord } from '@/lib/guards'
 import { defaultDeviceName } from '@/lib/device'
+import { mark, shortId } from '@/lib/timing'
 import * as db from '@/db'
 import {
   hubReduce,
@@ -264,7 +265,9 @@ export class AnyconClient {
     if (this.started) return { nodes: this.loadedNodes }
     this.started = true
     this.suspended = false
+    mark('transport.start')
     this.crypto = await this.deps.crypto()
+    mark('transport.crypto_ready')
     let id = await this.deps.storage.loadIdentity()
     if (id && id.account_id && id.account_id !== accountId) {
       await this.deps.storage.wipe()
@@ -282,6 +285,7 @@ export class AnyconClient {
     this.keypair = { public: id.static_keypair.public, secret: id.static_keypair.secret }
     this.deviceId = id.device_id ?? null
     const nodes = await this.deps.storage.loadNodes()
+    mark('transport.storage_loaded')
     this.loadedNodes = nodes
     this.sink.nodesLoaded?.(nodes)
     for (const n of nodes) this.attachNode(n)
@@ -362,6 +366,7 @@ export class AnyconClient {
       handshakeHeld: (id) => this.sender.isHandshakeHeld(id),
       onChange: (id) => this.publishNode(id),
       onReady: (id) => {
+        mark(`node.ready ${shortId(id)}`)
         this.sender.handshakeDone(id)
         this.publishNode(id)
         this.sink.nodeReady(id)
@@ -423,6 +428,7 @@ export class AnyconClient {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
     this.dispatchHub({ type: 'connect' })
+    mark('hub.connect')
     let ws: WebSocketLike
     try {
       ws = this.deps.wsFactory(this.deps.wsUrl())
@@ -434,6 +440,7 @@ export class AnyconClient {
     this.ws = ws
     ws.onopen = () => {
       if (this.ws !== ws) return
+      mark('hub.ws_open')
       this.sendAuth()
       this.authTimer = setTimeout(() => ws.close(4005, 'auth timeout'), 10_000)
     }
@@ -689,6 +696,7 @@ export class AnyconClient {
   private onControl(msg: Control): void {
     switch (msg.type) {
       case 'auth_ok': {
+        mark('hub.auth_ok')
         if (this.authTimer) clearTimeout(this.authTimer)
         this.authTimer = null
         this.deviceId = msg.device_id

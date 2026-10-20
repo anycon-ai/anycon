@@ -418,10 +418,14 @@ blobs       { blob_id, bytes, mime, last_used_ms }       图片缓存（ADR-35�
 
 每次和某个节点建立 Noise 会话后：
 
-1. `node.info` → 校验协议版本，更新能力；`agent.list { if_none_match }` 刷新 agent 缓存
-2. `session.list` → 和本地比对：新会话插入；`last_seq` 更大的标记需要增量；本地有而远端没有的标记已删除；`permission.list` 拉未决请求
-3. 当前打开的会话立即 `session.history(after_seq)`；其他会话在打开时再拉
-4. `session.watch` 当前打开的会话；离开页面 `unwatch`。列表级变化（标题、状态、待审批数）通过 `session.changed` 推给所有在线客户端，不需要 watch
+1. `node.info` → 校验协议版本，更新能力。版本不兼容就停在这里
+2. 其余几步**同时发出**，不互相等待：每个请求都要经过一次 浏览器 → hub → daemon 的往返，串行发会多花好几个往返时间；daemon 对同一客户端仍按到达顺序处理（protocol.md § 7.3）。某一步出错只影响它自己那块数据，链路断了整轮作废、重连后再来
+   - `agent.list { if_none_match }` 刷新 agent 缓存；`workspace.list`（有 `workspace` 能力时）；`permission.list` 拉未决请求；`node.devices`；`node.enroll_list`
+   - `session.list` → 和本地比对：新会话插入；`last_seq` 更大的标记需要增量；本地有而远端没有的标记已删除。比对完之后处理当前打开的会话（下一步要用比对结果判断缓存是否作废）
+3. 当前打开的会话：`session.watch` 和 `session.history(after_seq)` 一起发（按到达顺序处理，watch 先生效，不会漏事件）；其他会话在打开时再拉。离开页面 `unwatch`。列表级变化（标题、状态、待审批数）通过 `session.changed` 推给所有在线客户端，不需要 watch
+4. 全部完成后重发未发送的消息
+
+连接各阶段（加载、连 hub、`auth_ok`、握手、就绪、每个同步请求、打开的会话就绪）用 `performance.mark` / `measure` 记录，名字带 `anycon:` 前缀，DevTools 的 Performance 面板可见；`localStorage['anycon.debug.timing'] = '1'` 时在控制台打印耗时表，控制台里 `anyconTiming()` 随时打印全部记录。只记阶段名、方法名和 id 前缀。
 
 ### 6.4 连接状态机（每个节点）
 

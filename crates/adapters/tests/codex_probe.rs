@@ -158,7 +158,10 @@ async fn config_model_missing_from_the_list_is_appended_as_the_default() {
     assert_eq!(info.models.len(), 8);
     let last = info.models.last().unwrap();
     assert_eq!((last.id.as_str(), last.default), ("my-private-model", true));
-    assert!(last.thinking.is_none());
+    // 自定义提供方的模型：取列表模型共有的等级，默认用配置的
+    let t = last.thinking.as_ref().unwrap();
+    assert_eq!(t.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), vec!["low", "medium", "high", "xhigh"]);
+    assert_eq!(t.default.as_deref(), Some("high"));
     assert_eq!(info.models.iter().filter(|m| m.default).count(), 1);
 }
 

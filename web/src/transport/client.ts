@@ -358,7 +358,7 @@ export class AnyconClient {
     const link = new NodeLink(rec.node_id, rec.public_key, {
       crypto: this.crypto!,
       keypair: this.keypair!,
-      canSend: () => this.canSend(),
+      canSend: () => this.canLinkSend(rec.node_id),
       sendData: (to, bytes) => this.sendEnvelope(to, 'data', bytes),
       sendHandshake: (to, bytes) => this.sendEnvelope(to, 'handshake', bytes),
       // 传输作废（重置 / 重新握手 / 对端下线）：旧传输上排队的和被退回的信封都不能再发
@@ -375,8 +375,19 @@ export class AnyconClient {
     })
     this.links.set(rec.node_id, link)
     this.publishNode(rec.node_id)
-    if (this.onlinePeers.has(rec.node_id) && this.canSend()) link.peerOnline()
+    if (this.onlinePeers.has(rec.node_id) && this.canLinkSend(rec.node_id)) link.peerOnline()
     return link
+  }
+
+  /**
+   * 节点链路（IK 握手和 Noise 传输）能不能往这个节点发。除了 hub 可写，还要求：
+   * - 连接是正式设备的：吊销后 token 已清掉，重新配对走临时连接，hub 不会把它的信封转发给任何已配对节点；
+   * - 不是正在跟这个节点做配对握手：撮合之后 hub 放行临时连接发给 host 的所有 `handshake` 帧，daemon 把它们都当配对握手读，
+   *   旧链路的 IK 混进来会让这次配对解密失败、被作废。`pair_done` 之后 daemon 就在等 IK 了，不受这条限制。
+   */
+  private canLinkSend(nodeId: string): boolean {
+    if (!this.canSend() || !this.identity?.device_token) return false
+    return !(this.pairing && this.pairDonePeer === null && this.pairPeer === nodeId)
   }
 
   knownNodeIds(): string[] {
@@ -972,7 +983,8 @@ export class AnyconClient {
     // hub 会紧接着发 PeerOnline（每次 PeerOnline 都意味着重新握手）；旧版本 hub 不发的话，1.5 秒后自己发起 IK 握手。
     setTimeout(() => {
       const l = this.links.get(nodeId)
-      if (l && !l.machine.peerOnline && this.canSend()) l.peerOnline()
+      // 这 1.5 秒里设备可能已被吊销、正以临时连接重新配对：那时发 IK 会混进配对握手
+      if (l && !l.machine.peerOnline && this.canLinkSend(nodeId)) l.peerOnline()
     }, 1500)
     return { nodeId, publicKey: remote }
   }

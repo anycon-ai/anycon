@@ -108,6 +108,10 @@ export class FakeHub {
   peerOnlineAfterPair = true
   /** PairMatched 里给 joiner 的 peer：默认就是 daemon 正式 id；设成别的值模拟「daemon 还没有正式身份，用临时 id 配对」。 */
   matchedPeer = DAEMON_ID
+  /** 配对握手消息 2 的延迟（毫秒）；0 = 马上。拉长「撮合之后、握手完成之前」这一段，看这期间有没有别的 handshake 帧混进来。 */
+  pairReplyDelayMs = 0
+  /** 配对握手里读不懂的 handshake 帧数（真 daemon 遇到就作废这次配对，这里也一样）。 */
+  pairHandshakeFailures = 0
   private daemonTransport: Transport | null = null
   private daemonHs: Handshake | null = null
   private pairHs: Handshake | null = null
@@ -447,7 +451,9 @@ export class FakeHub {
       if (hs.isMyTurn()) {
         // 消息 2 的 payload：daemon 的自我介绍
         const hello = new TextEncoder().encode(JSON.stringify({ name: this.daemonName, version: '9.9.9' }))
-        sock.deliver(makeEnvelope(this.matchedPeer, TEMP_ID, 'handshake', ++this.daemonSeq, hs.write(hello)))
+        const reply = makeEnvelope(this.matchedPeer, TEMP_ID, 'handshake', ++this.daemonSeq, hs.write(hello))
+        if (this.pairReplyDelayMs > 0) setTimeout(() => sock.deliver(reply), this.pairReplyDelayMs)
+        else sock.deliver(reply)
       }
       if (hs.isFinished()) {
         if (got.length > 0) this.joinerInfo = JSON.parse(new TextDecoder().decode(got))
@@ -455,6 +461,7 @@ export class FakeHub {
         this.pairHs = null
       }
     } catch {
+      this.pairHandshakeFailures += 1
       this.pairHs = null
     }
   }

@@ -429,6 +429,43 @@ describe('AnyconClient — pairing (joiner, XXpsk3 initiator)', () => {
     t.client.stop()
   })
 
+  it('re-pairing right after a revoke: the old link sends no IK into the pairing handshake (temporary connection)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const hub = new FakeHub({ rpc: { 'node.info': () => ({ name: 'n' }) } })
+    hub.pairCodeOk = 'ABCD2345'
+    const t = setup({ paired: false, knowsNode: false, hub })
+    await t.client.start('acct1')
+    await vi.advanceTimersByTimeAsync(0)
+    // 第一次配对：完成后留下「1.5 秒内没有 PeerOnline 就自己发 IK」的兜底定时器
+    const first = t.client.pair('ABCD-2345', t.storage.identity!.device_name)
+    await vi.advanceTimersByTimeAsync(10)
+    await first
+    await vi.advanceTimersByTimeAsync(10)
+    expect(t.client.isReady(DAEMON_ID)).toBe(true)
+
+    // 吊销：hub 以 4004 断开，token 被清掉
+    FakeSocket.instances.at(-1)!.serverClose(4004)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(t.client.snapshot.halt).toBe('revoked')
+
+    // 马上以临时连接重新配对；daemon 的消息 2 晚到，兜底定时器正好落在配对握手中间
+    hub.pairReplyDelayMs = 3000
+    const ikBefore = hub.ikHandshakes
+    const second = t.client.pair('ABCD-2345', t.storage.identity!.device_name).then(
+      () => null,
+      (e: unknown) => e,
+    )
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(hub.pairHandshakeFailures).toBe(0)
+    expect(await second).toBeNull()
+    expect(t.storage.identity?.device_token).toBe('tok-new')
+    // 只有 pair_done 之后那一条 IK
+    await vi.advanceTimersByTimeAsync(10)
+    expect(hub.ikHandshakes - ikBefore).toBe(1)
+    expect(t.client.isReady(DAEMON_ID)).toBe(true)
+    t.client.stop()
+  })
+
   it('falls back to a short id label when the daemon sends no hello payload', async () => {
     const { parseNodeHello } = await import('./client')
     expect(parseNodeHello(new Uint8Array(0))).toEqual({})

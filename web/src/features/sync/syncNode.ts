@@ -1,6 +1,8 @@
 // 与某个节点建立 Noise 会话后的同步（spec/web.md § 6.3）：
-//   node.info → agent.list{if_none_match} → workspace.list → session.list 比对 → permission.list
-//   → 当前打开的会话 session.history + session.watch → 重发未发送消息
+//   node.info（版本检查）→ 并发：agent.list{if_none_match} / workspace.list / session.list 比对（→ 当前打开的会话
+//   session.watch + session.history）/ permission.list / node.devices / node.enroll_list → 重发未发送消息
+// 每一步都经过一次 浏览器 → hub → daemon 的往返，串行发要多花好几个 RTT；它们之间没有先后依赖，所以一起发。
+// daemon 对同一客户端的请求仍按到达顺序处理（protocol.md § 7.3），并发只省掉网络上的等待。
 import type { AgentListResult, NodeDevicesResult, NodeEnrollListResult, NodeInfo, PermissionListResult, SessionListResult, SessionSummary, WorkspaceListResult } from '@/protocol'
 import * as db from '@/db'
 import { PROTOCOL_VERSION } from '@/lib/constants'
@@ -12,6 +14,7 @@ import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import { describeError } from '@/lib/errors'
+import { timed } from '@/lib/timing'
 import i18n from '@/i18n'
 import { flushUnsent, syncOpenSession } from '@/features/session/actions'
 import { planSessionSync } from './plan'
@@ -23,7 +26,7 @@ export function protocolCompatible(remote: number, local: number = PROTOCOL_VERS
 
 async function step<T>(what: string, f: () => Promise<T>): Promise<T | undefined> {
   try {
-    return await f()
+    return await timed(`rpc ${what}`, f)
   } catch (e) {
     // 链路断了没必要继续往下走；其它错误（not_found / unsupported 等）只影响这一步
     if (e instanceof RpcCallError && (e.kind === 'offline' || e.kind === 'closed' || e.kind === 'undeliverable')) throw e
@@ -46,7 +49,7 @@ export async function syncNode(nodeId: string): Promise<void> {
   if (!nodes.byId[nodeId]) return
   nodes.patch(nodeId, { syncing: true })
   try {
-    const info = await rpc().request<NodeInfo>(nodeId, 'node.info', {})
+    const info = await timed('rpc node.info', () => rpc().request<NodeInfo>(nodeId, 'node.info', {}))
     useNodes.getState().setInfo(nodeId, info)
     if (!protocolCompatible(info.protocol_version)) {
       useNodes.getState().patch(nodeId, { versionMismatch: true, syncing: false })
@@ -55,31 +58,34 @@ export async function syncNode(nodeId: string): Promise<void> {
     useNodes.getState().patch(nodeId, { versionMismatch: false })
 
     const cachedEtag = useNodes.getState().byId[nodeId]?.agentsEtag
-    const agents = await step('agent.list', () => rpc().request<AgentListResult>(nodeId, 'agent.list', cachedEtag ? { if_none_match: cachedEtag } : {}))
-    if (agents && !agents.not_modified) useNodes.getState().setAgents(nodeId, agents.agents, agents.etag)
-
-    if (info.capabilities.workspace) {
-      const ws = await step('workspace.list', () => rpc().request<WorkspaceListResult>(nodeId, 'workspace.list', {}))
-      if (ws) useNodes.getState().setProjects(nodeId, ws.root, ws.projects)
-    }
-
-    const list = await step('session.list', () => rpc().request<SessionListResult>(nodeId, 'session.list', { include_archived: true }))
-    if (list) await applySessionList(nodeId, list.sessions)
-
-    const perms = await step('permission.list', () => rpc().request<PermissionListResult>(nodeId, 'permission.list', {}))
-    if (perms) useSessions.getState().setPending(nodeId, perms.requests)
-
-    const devices = await step('node.devices', () => rpc().request<NodeDevicesResult>(nodeId, 'node.devices', {}))
-    if (devices) useNodes.getState().setDevices(nodeId, devices.devices)
-
-    // 还在等批准的接入请求（打开页面 / 重连后补齐；之后靠 node.enroll_requested / enroll_resolved 增量）
-    const enrolls = await step('node.enroll_list', () => rpc().request<NodeEnrollListResult>(nodeId, 'node.enroll_list', {}))
-    if (enrolls) useEnroll.getState().replaceNode(nodeId, enrolls.enrolls.map(parseEnrollInfo).filter((i) => i !== null))
-
-    // 当前打开的会话：立刻追历史 + watch
-    for (const o of Object.values(useSessions.getState().open)) {
-      if (o.nodeId === nodeId) void syncOpenSession(nodeId, o.sessionId)
-    }
+    // 链路断了任何一步都会抛出（见 step），Promise.all 随之失败；其余各步自己吞掉错误、只影响自己那一块
+    await Promise.all([
+      step('agent.list', () => rpc().request<AgentListResult>(nodeId, 'agent.list', cachedEtag ? { if_none_match: cachedEtag } : {})).then((agents) => {
+        if (agents && !agents.not_modified) useNodes.getState().setAgents(nodeId, agents.agents, agents.etag)
+      }),
+      info.capabilities.workspace
+        ? step('workspace.list', () => rpc().request<WorkspaceListResult>(nodeId, 'workspace.list', {})).then((ws) => {
+            if (ws) useNodes.getState().setProjects(nodeId, ws.root, ws.projects)
+          })
+        : undefined,
+      step('session.list', () => rpc().request<SessionListResult>(nodeId, 'session.list', { include_archived: true })).then(async (list) => {
+        if (list) await applySessionList(nodeId, list.sessions)
+        // 当前打开的会话：立刻追历史 + watch。要等会话列表比对完：追历史靠它给的 last_seq 判断缓存是否作废 / 落后太多
+        for (const o of Object.values(useSessions.getState().open)) {
+          if (o.nodeId === nodeId) void syncOpenSession(nodeId, o.sessionId)
+        }
+      }),
+      step('permission.list', () => rpc().request<PermissionListResult>(nodeId, 'permission.list', {})).then((perms) => {
+        if (perms) useSessions.getState().setPending(nodeId, perms.requests)
+      }),
+      step('node.devices', () => rpc().request<NodeDevicesResult>(nodeId, 'node.devices', {})).then((devices) => {
+        if (devices) useNodes.getState().setDevices(nodeId, devices.devices)
+      }),
+      // 还在等批准的接入请求（打开页面 / 重连后补齐；之后靠 node.enroll_requested / enroll_resolved 增量）
+      step('node.enroll_list', () => rpc().request<NodeEnrollListResult>(nodeId, 'node.enroll_list', {})).then((enrolls) => {
+        if (enrolls) useEnroll.getState().replaceNode(nodeId, enrolls.enrolls.map(parseEnrollInfo).filter((i) => i !== null))
+      }),
+    ])
     await flushUnsent(nodeId)
     useNodes.getState().patch(nodeId, { synced: true, syncing: false })
   } catch (e) {

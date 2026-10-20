@@ -62,9 +62,14 @@ impl Rpc {
     }
 
     /// 处理一个请求，产出对应的响应消息。
+    /// 每个请求的处理耗时记一条 debug 日志（只有方法名和毫秒数，分析连接慢时用 `ANYCON_LOG=anycon_daemon=debug` 打开）。
     pub async fn handle_request(&self, client: &Arc<ClientHandle>, req: RpcRequest) -> RpcMessage {
         let id: RpcId = req.id.clone();
-        match self.dispatch(client, &req.method, req.params).await {
+        let started = std::time::Instant::now();
+        let res = self.dispatch(client, &req.method, req.params).await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        tracing::debug!(method = %req.method, elapsed_ms, ok = res.is_ok(), "rpc handled");
+        match res {
             Ok(v) => RpcMessage::result(id, v),
             Err(e) => {
                 if e.stable_code() == Some(ErrorCode::Internal) {

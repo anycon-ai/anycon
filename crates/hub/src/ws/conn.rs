@@ -140,7 +140,10 @@ async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket) -> Option<A
 }
 
 pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: UpgradeCtx) {
+    // 连接建立各阶段的耗时（等 auth 消息 + 查设备、查配对关系），记在下面的 "device connected" 日志里，分析连接慢时用
+    let upgraded = Instant::now();
     let Some(authed) = authenticate(&state, &mut socket).await else { return };
+    let auth_ms = upgraded.elapsed().as_millis() as u64;
     let timing = state.config.timing.clone();
 
     let (device_id, account_id, permanent, peers) = match &authed.device {
@@ -155,6 +158,7 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
         },
         None => (new_id(), ctx.cookie_account.clone(), false, HashSet::new()),
     };
+    let peers_ms = upgraded.elapsed().as_millis() as u64 - auth_ms;
 
     let (out, out_rx) = OutQueue::new(state.config.outbound_buffer_bytes);
     let conn = Arc::new(Conn::new(ConnInit {
@@ -188,10 +192,21 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
         }
     }
     if permanent {
-        if let Err(e) = state.store.touch_device_seen(&device_id, now_ms()).await {
-            tracing::warn!(error = %e, "failed to update last_seen");
-        }
-        tracing::info!(device = %device_id, kind = ?conn.client.kind, peers_online = reg.peers_online.len(), "device connected");
+        // 写库放到后台：AuthOk 已经发出，对端马上会发握手，在这里等写库会让读循环晚开始
+        let (st, id) = (state.clone(), device_id.clone());
+        tokio::spawn(async move {
+            if let Err(e) = st.store.touch_device_seen(&id, now_ms()).await {
+                tracing::warn!(error = %e, "failed to update last_seen");
+            }
+        });
+        tracing::info!(
+            device = %device_id,
+            kind = ?conn.client.kind,
+            peers_online = reg.peers_online.len(),
+            auth_ms,
+            peers_ms,
+            "device connected"
+        );
     } else {
         tracing::debug!(temp_id = %device_id, "temporary connection");
     }

@@ -23,6 +23,15 @@ export function detectOS(ua: string = navigator.userAgent): string {
   return data?.platform ?? 'Unknown'
 }
 
+/** iPhone / iPad。iPadOS 13+ 的 Safari 自称 Mac，靠触点数分辨。 */
+export function isIos(): boolean {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+}
+
+export function isAndroid(): boolean {
+  return /Android/.test(navigator.userAgent)
+}
+
 /** 默认设备名：`浏览器 · 系统 · origin 主机名`（spec/web.md § 4.3）。 */
 export function defaultDeviceName(): string {
   return `${detectBrowser()} · ${detectOS()} · ${location.hostname}`

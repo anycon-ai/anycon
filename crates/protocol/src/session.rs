@@ -595,6 +595,10 @@ pub struct ToolResultDetail {
     /// 头尾截断的完整输出。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_output_truncated: Option<bool>,
+    /// 调用已经返回，但它启动的工作还在后台跑（后台子 agent）。结束时同一个 `id` 会再来一条
+    /// `tool_result`（不带这个标记），取代这一条。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -674,6 +678,10 @@ pub enum Event {
         input: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<ToolCallDetail>,
+        /// 子 agent 内部的调用：启动这个子 agent 的那次调用（`category = subagent`）的 `id`。
+        /// 子 agent 再启动子 agent 时一层层指上去；主 agent 自己的调用不带。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_id: Option<String>,
     },
     ToolOutputDelta {
         id: String,

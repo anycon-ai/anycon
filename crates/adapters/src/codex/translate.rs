@@ -620,6 +620,7 @@ impl Translator {
                     title: parts.title.clone(),
                     input: parts.input.clone(),
                     detail: parts.detail.clone(),
+                    parent_id: None,
                 },
             );
             self.tool_order.push(id.clone());
@@ -816,6 +817,7 @@ impl Translator {
                     title: parts.title.clone(),
                     input: parts.input.clone(),
                     detail: parts.detail.clone(),
+                    parent_id: None,
                 },
             );
             self.tool_order.push(id.to_string());
@@ -1544,7 +1546,7 @@ mod tests {
         let limit = 8 * 1024 * 1024;
         let started = t.feed_oversize("item/started", &prefix("started", ""), 11_329_324, limit);
         match &events(&started)[0] {
-            Event::ToolCall { id, name, category, title, input, detail } => {
+            Event::ToolCall { id, name, category, title, input, detail, .. } => {
                 assert_eq!((id.as_str(), name.as_str(), *category), ("f9", "fileChange", ToolCategory::FileEdit));
                 assert_eq!(title, "Create big.txt (details too large to show)");
                 assert!(input["omitted"].as_str().unwrap().contains("11329324 bytes"), "{input}");

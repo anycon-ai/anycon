@@ -388,6 +388,8 @@
     "noOutput": "没有输出",
     "showMore": "再显示 {{count}} 行",
     "failed": "失败",
+    "subagentCalls_other": "{{count}} 次调用",
+    "background": "后台运行中",
     "exitCode": "退出码 {{code}}",
     "read": "读取 {{path}}",
     "search": "搜索「{{query}}」",

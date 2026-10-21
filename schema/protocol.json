@@ -2084,6 +2084,13 @@
             "name": {
               "type": "string"
             },
+            "parent_id": {
+              "description": "子 agent 内部的调用：启动这个子 agent 的那次调用（`category = subagent`）的 `id`。\n子 agent 再启动子 agent 时一层层指上去；主 agent 自己的调用不带。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "title": {
               "type": "string"
             },
@@ -5409,6 +5416,13 @@
     },
     "ToolResultDetail": {
       "properties": {
+        "background": {
+          "description": "调用已经返回，但它启动的工作还在后台跑（后台子 agent）。结束时同一个 `id` 会再来一条\n`tool_result`（不带这个标记），取代这一条。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "exit_code": {
           "format": "int32",
           "type": [

@@ -354,6 +354,7 @@ mod tests {
             title: "write".into(),
             input: serde_json::json!({ "file_path": "/a/b.rs", "content": content, "flags": { "force": true } }),
             detail: None,
+            parent_id: None,
         };
         assert!(limit_event(&mut ev));
         let Event::ToolCall { input, .. } = &ev else { unreachable!() };

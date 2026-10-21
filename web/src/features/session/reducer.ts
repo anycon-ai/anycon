@@ -70,6 +70,8 @@ export interface ToolBlock extends BlockBase {
   title: string
   input: unknown
   detail?: ToolCallDetail | null
+  /** 子 agent 内部的调用：启动它的那次调用的 `toolId`（`tool_call.parent_id`）。 */
+  parentId?: string
   /** tool_output_delta 累积出的流式输出。 */
   streamed: string
   result?: ToolResult
@@ -359,7 +361,7 @@ function applyOne(w: Work, se: SessionEvent): void {
       if (existing !== undefined) {
         const b = w.blocks[existing]
         if (b?.type === 'tool') {
-          w.blocks[existing] = { ...b, name: ev.name, category: ev.category, title: ev.title, input: ev.input, detail: ev.detail }
+          w.blocks[existing] = { ...b, name: ev.name, category: ev.category, title: ev.title, input: ev.input, detail: ev.detail, parentId: ev.parent_id ?? undefined }
           return
         }
       }
@@ -373,6 +375,7 @@ function applyOne(w: Work, se: SessionEvent): void {
         title: ev.title,
         input: ev.input,
         detail: ev.detail,
+        parentId: ev.parent_id ?? undefined,
         streamed: '',
       })
       return

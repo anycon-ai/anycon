@@ -638,6 +638,7 @@ async fn big_output(t: &mut Turn) -> std::result::Result<(), Stop> {
         title: "cat big.log".into(),
         input: json!({ "command": "cat big.log" }),
         detail: Some(ToolCallDetail { command: Some("cat big.log".into()), cwd: Some(cwd), ..Default::default() }),
+        parent_id: None,
     })
     .await?;
     t.emit(Event::ToolResult {
@@ -660,6 +661,7 @@ async fn run_tool(t: &mut Turn) -> std::result::Result<(), Stop> {
         title: "echo hi".into(),
         input: json!({ "command": "echo hi" }),
         detail: Some(ToolCallDetail { command: Some("echo hi".into()), cwd: Some(cwd), ..Default::default() }),
+        parent_id: None,
     })
     .await?;
     t.emit(Event::ToolOutputDelta { id: id.clone(), text: "hi\n".into() }).await?;
@@ -798,6 +800,7 @@ async fn write_file(t: &mut Turn) -> std::result::Result<(), Stop> {
             edit_kind: Some(EditKind::Write),
             ..Default::default()
         }),
+        parent_id: None,
     })
     .await?;
     let cwd = t.shared.cwd.clone();

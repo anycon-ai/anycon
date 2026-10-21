@@ -527,7 +527,6 @@
     "dangerForbidden": "Not allowed by this node's settings",
     "offlineLocked": "The node is offline.",
     "queuedChange": "Change will apply when this turn ends.",
-    "runningHint": "Options are locked while the agent is working; changes apply after the turn.",
     "dangerousDefaultSkipped": "The default permission mode “{{mode}}” is dangerous, so it was not preselected. Choose it yourself if you really want it.",
     "risk": {
       "dangerous": "dangerous",

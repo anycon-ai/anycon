@@ -364,7 +364,7 @@ options: [ { id: "fast_mode", kind: "bool", label: "Fast mode", default: false }
 
 - **新建会话时**：composer 选项栏全部可改
 - **会话空闲时**：全部可改（`session.set_settings`），从下一个 turn 生效，消息流出现「模型已切换为 …」。adapter 内部是热改还是重启进程续接，UI 不关心（[daemon.md § 6.4](daemon.md#64-会话中修改)）
-- **运行中的 turn**：所有选项锁定，等本轮结束；提供「结束后应用」的排队改动
+- **运行中的 turn**：选项仍可改，但改动排队，本轮结束后才 `session.set_settings`。排队中、还没生效的那几格文字换成浅色，悬停说明「本轮结束后生效」；不在选项栏下面另加提示行（运行状态切换时布局不跳动）
 
 ### 5.4 默认值
 

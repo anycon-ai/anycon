@@ -2,11 +2,11 @@ import { useState } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import { resolveDefaults, type Selection } from '@/features/settings/resolve'
+import { resolveDefaults, type Selection, type SettingsField } from '@/features/settings/resolve'
 import { mockAgent } from '@/test/factories'
 import { SettingsControls } from './SettingsControls'
 
-function Harness({ onChange, initial, ...rest }: { onChange?: (s: Selection) => void; initial?: Partial<Selection>; dangerousForbidden?: boolean; disabled?: boolean }) {
+function Harness({ onChange, initial, ...rest }: { onChange?: (s: Selection) => void; initial?: Partial<Selection>; dangerousForbidden?: boolean; disabled?: boolean; pending?: ReadonlySet<SettingsField> }) {
   const agent = mockAgent()
   const [sel, setSel] = useState<Selection>({ ...resolveDefaults(agent, []), ...initial })
   return (
@@ -25,6 +25,20 @@ function Harness({ onChange, initial, ...rest }: { onChange?: (s: Selection) => 
 }
 
 describe('SettingsControls', () => {
+  it('marks queued (not yet applied) controls in a subtler color with a tooltip, without adding any line', () => {
+    const { container } = render(<Harness pending={new Set<SettingsField>(['model'])} />)
+    const model = screen.getByTestId('option-model')
+    expect(model).toHaveAttribute('data-pending', 'true')
+    expect(model).toHaveClass('text-fg-subtle')
+    expect(model).toHaveAttribute('title', 'Change will apply when this turn ends.')
+    expect(screen.getByTestId('option-thinking')).not.toHaveAttribute('data-pending')
+    expect(screen.getByTestId('option-thinking')).not.toHaveClass('text-fg-subtle')
+    expect(container.querySelector('p')).toBeNull()
+  })
+  it('the offline reason wins over the queued hint', () => {
+    render(<Harness disabled pending={new Set<SettingsField>(['model'])} />)
+    expect(screen.getByTestId('option-model')).not.toHaveAttribute('data-pending')
+  })
   it('shows model, thinking (for the selected model), mode and more-options, all driven by AgentInfo', async () => {
     const user = userEvent.setup()
     render(<Harness />)

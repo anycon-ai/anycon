@@ -104,6 +104,8 @@
   },
   "sidebar": {
     "menu": "Menu",
+    "resize": "Resize sidebar",
+    "resizeHint": "Drag to resize. Double-click to reset.",
     "newSession": "New session",
     "search": "Search (Ctrl+K)",
     "sessions": "Sessions",

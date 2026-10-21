@@ -123,6 +123,12 @@ html[data-font='lg'] {
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior: none;
   }
+  /* 拖动左栏宽度时：整页都是调整光标，不选中文字 */
+  html[data-resizing],
+  html[data-resizing] * {
+    cursor: col-resize !important;
+    user-select: none;
+  }
   button,
   [role='button'] {
     cursor: pointer;

@@ -12,6 +12,17 @@ export type ThinkingDisplay = 'collapsed' | 'expanded' | 'hidden'
 export type EnterBehavior = 'auto' | 'send' | 'newline'
 export type ProjectView = 'cards' | 'list'
 
+/** 宽屏左栏宽度（px）的范围和默认值。 */
+export const SIDEBAR_MIN = 200
+export const SIDEBAR_MAX = 480
+export const SIDEBAR_DEFAULT = 260
+
+/** 夹到允许的范围；localStorage 里的坏值（非数字）回到默认。 */
+export function clampSidebarWidth(w: number): number {
+  if (!Number.isFinite(w)) return SIDEBAR_DEFAULT
+  return Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w)))
+}
+
 export interface PrefsState {
   theme: ThemePref
   language: LanguagePref
@@ -23,6 +34,8 @@ export interface PrefsState {
   infoPanelOpen: boolean
   /** 宽屏左栏是否展开（手机上左栏是抽屉，不受影响）。 */
   sidebarOpen: boolean
+  /** 宽屏左栏宽度（px），拖动左栏右缘调整。 */
+  sidebarWidth: number
   lastNode: string | null
   notifyBannerDismissed: boolean
   /** key = `${nodeId}:${agentId}` */
@@ -71,6 +84,7 @@ export const usePrefs = create<PrefsState>()(
       projectView: 'cards',
       infoPanelOpen: true,
       sidebarOpen: true,
+      sidebarWidth: SIDEBAR_DEFAULT,
       lastNode: null,
       notifyBannerDismissed: false,
       lastUsed: {},
@@ -100,6 +114,7 @@ export const usePrefs = create<PrefsState>()(
         projectView: s.projectView,
         infoPanelOpen: s.infoPanelOpen,
         sidebarOpen: s.sidebarOpen,
+        sidebarWidth: s.sidebarWidth,
         lastNode: s.lastNode,
         notifyBannerDismissed: s.notifyBannerDismissed,
         lastUsed: s.lastUsed,

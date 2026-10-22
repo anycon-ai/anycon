@@ -197,6 +197,30 @@ describe('PermissionCard', () => {
     expect(onRespond).toHaveBeenCalledWith({ request_id: 'r1', answers: { q1: 'sqlite', q2: ['a', 'b'], q3: 'no' } })
   })
 
+  it('uses the adapter’s allow option as the only submit button and sends the answers with it', async () => {
+    const onRespond = vi.fn()
+    const user = userEvent.setup()
+    const q: PermissionBlock = {
+      ...base,
+      kind: 'question',
+      title: 'Agent has a question',
+      detail: { questions: [{ id: 'q1', text: 'Keep it?', choices: [{ id: 'keep', label: 'Keep' }, { id: 'drop', label: 'Drop' }], free_text: true }] },
+      options: [
+        { id: 'answer', label: 'Submit answers', kind: 'allow_once' },
+        { id: 'deny', label: 'Skip', kind: 'reject_once', needs_message: true },
+      ],
+    }
+    render(<PermissionCard block={q} deviceLabel={label} onRespond={onRespond} />)
+    expect(screen.queryByTestId('permission-submit-answers')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Submit answers' })).toHaveLength(1)
+    const submit = screen.getByTestId('permission-option-answer')
+    expect(submit).toBeDisabled()
+    expect(screen.getByTestId('permission-option-deny')).toBeEnabled()
+    await user.click(screen.getByLabelText('Keep'))
+    await user.click(submit)
+    expect(onRespond).toHaveBeenCalledWith({ request_id: 'r1', option_id: 'answer', answers: { q1: 'keep' } })
+  })
+
   describe('mode_change', () => {
     const modeChange = (mode: string): PermissionBlock => ({
       ...base,

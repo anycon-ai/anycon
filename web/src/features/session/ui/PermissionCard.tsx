@@ -102,8 +102,17 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
     )
   }
 
+  const isQuestion = block.kind === 'question'
+  // 问答卡片上 allow 类选项（adapter 给的「Submit answers」）就是提交按钮：带上 answers，答完才能点
+  const submitsAnswers = (opt: PermissionOption): boolean => isQuestion && optionTone(opt.kind) === 'allow'
+
   const respond = (opt: PermissionOption): void => {
-    onRespond({ request_id: block.requestId, option_id: opt.id, message: opt.needs_message && note.trim() ? note.trim() : undefined })
+    onRespond({
+      request_id: block.requestId,
+      option_id: opt.id,
+      message: opt.needs_message && note.trim() ? note.trim() : undefined,
+      answers: submitsAnswers(opt) ? answers : undefined,
+    })
   }
 
   const questions = block.detail.questions ?? []
@@ -111,6 +120,8 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
     const a = answers[q.id]
     return Array.isArray(a) ? a.length > 0 : !!a?.trim()
   })
+  // adapter 没给 allow 类选项时才用自带的提交按钮，否则会出现两个「Submit answers」
+  const ownSubmit = isQuestion && !block.options.some(submitsAnswers)
 
   const danger = block.kind === 'mode_change' && !!targetMode?.dangerous
   // 补丁内容未知（Codex 的审批请求先于对应的 item 到达）：看不到它会改什么，批准要格外小心
@@ -198,7 +209,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
         {needsNote ? <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder={t('permission.notePlaceholder')} aria-label={t('permission.note')} data-testid="permission-note" /> : null}
 
         <div className="flex flex-wrap gap-2">
-          {block.kind === 'question' ? (
+          {ownSubmit ? (
             <Button variant="primary" size="sm" disabled={busy || !complete} onClick={() => onRespond({ request_id: block.requestId, answers })} data-testid="permission-submit-answers">
               {t('permission.submitAnswers')}
             </Button>
@@ -208,7 +219,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
               key={o.id}
               size="sm"
               variant={caution && optionTone(o.kind) === 'allow' ? 'danger' : optionVariant(o.kind)}
-              disabled={busy}
+              disabled={busy || (submitsAnswers(o) && !complete)}
               onClick={() => respond(o)}
               data-testid={`permission-option-${o.id}`}
               data-kind={o.kind}

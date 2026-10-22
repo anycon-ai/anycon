@@ -624,7 +624,7 @@ impl AgentHandle for FakeHandle {
                     d = drx => {
                         let allowed = d.ok().map(|d| d.option_id.as_deref().is_some_and(|o| o.starts_with("allow") || o == "implement") || d.answers.is_some()).unwrap_or(false);
                         if allowed {
-                            let _ = tx.send(ev(Event::ToolCall { id: "t1".into(), name: "Bash".into(), category: ToolCategory::Shell, title: "echo hi".into(), input: serde_json::json!({}), detail: None })).await;
+                            let _ = tx.send(ev(Event::ToolCall { id: "t1".into(), name: "Bash".into(), category: ToolCategory::Shell, title: "echo hi".into(), input: serde_json::json!({}), detail: None, parent_id: None })).await;
                             let _ = tx.send(ev(Event::ToolOutputDelta { id: "t1".into(), text: "hi\n".into() })).await;
                             let _ = tx.send(ev(Event::ToolResult { id: "t1".into(), output: serde_json::json!("hi"), is_error: false, detail: None })).await;
                         } else {
@@ -642,6 +642,7 @@ impl AgentHandle for FakeHandle {
                         title: "cat big.log".into(),
                         input: serde_json::json!({ "command": "cat big.log" }),
                         detail: None,
+                        parent_id: None,
                     }))
                     .await;
                 let big = format!("BIGSTART{}BIGEND", "line of output\n".repeat(20_000));
@@ -662,6 +663,7 @@ impl AgentHandle for FakeHandle {
                         title: "make".into(),
                         input: serde_json::json!({}),
                         detail: None,
+                        parent_id: None,
                     }))
                     .await;
                 for i in 0..20 {

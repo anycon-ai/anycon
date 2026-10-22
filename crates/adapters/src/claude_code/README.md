@@ -131,7 +131,8 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 - **思考内容是空的**：较新的 CLI 里 `thinking_delta.thinking` 是 `""`（只有 `estimated_tokens`，另有 `system/thinking_tokens`）。每个思考块发一条空的 `ThinkingDelta` 作「正在思考」标记，块结束发 `ThinkingDone`。`--effort low` 的简单问题往往根本没有思考块。
 - `tool_call` 在 `assistant` 消息里发（那里有完整 `input`）；`user` 消息里的 `tool_result` → `ToolResult`（`is_error` 取自块；Bash 失败时从 `Exit code N` 取退出码；Edit/Write 从 `tool_use_result.structuredPatch` / `create` 生成 unified diff；Glob/Grep 取 `numFiles` 作 `match_count`），成功的 file_edit 再发 `FileChanged`（`tool_use_result.type == "create"` → created，否则 modified）。工具输出文本超过 256 KiB 截断并加标记。
 - `TodoWrite` → `Plan`（不发 tool_call / tool_result）；`ExitPlanMode`、`AskUserQuestion` 由权限请求表达，也不发 tool_call / tool_result。
-- 子 agent（`parent_tool_use_id` 非空）的文本 / 思考不混进主流，它们内部的工具调用照常发。
+- 子 agent（`parent_tool_use_id` 非空）的文本 / 思考不混进主流，它们内部的工具调用照常发，带 `parent_id = parent_tool_use_id`，客户端据此把它们收进子 agent 的块里。
+- 后台子 agent（`Agent` 的 `run_in_background`）：调用马上返回，`tool_use_result.status = "async_launched"`，结果标 `detail.background`；它结束时 CLI 发 `system/task_notification { tool_use_id, status: completed | failed | stopped, summary }`，翻译器给同一个调用补一条 `ToolResult`（`output` = `summary`，只有 `failed` 算错误）。前台子 agent 和后台 shell 也会发这个通知，它们不是 background 的，忽略。
 - `result`：**`usage` 与 `duration_ms` 是本 turn 的，`total_cost_usd` 是进程内累计值**（实测第二个 turn 的 `total_cost_usd` 大于第一个、`modelUsage` 也是累计的）——翻译器把费用换成相邻两次的差值，所以 daemon 直接把各 turn 的 `cost_usd` 相加即可。`success` → completed；`error_max_turns` → max_turns；`error_max_budget_usd` → budget；其它 → error（先发 `Error` 事件：`api_error_status` 401/403 → `auth_failed`（不可恢复），429 → `rate_limited`，其它 `agent_error`）。我们刚发过 interrupt 的那个 turn，非 success 的 result 一律算 `cancelled`（不发 Error）。没有进行中的 turn 时的 error result（比如 `--resume` 不存在的会话）只发 `Error`，不发 `TurnDone`。
 - `TurnDone.turn_id` 是 adapter 进程内的计数（从 1 递增）；daemon 自己发 `turn_start`，应该用自己的 turn id 覆盖它。
 

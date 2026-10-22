@@ -28,6 +28,46 @@ function props(over: Partial<MessageListProps> = {}): MessageListProps {
 }
 
 describe('MessageList', () => {
+  it('three agents running in parallel each get their own block; their calls are not interleaved in the main stream', async () => {
+    const user = userEvent.setup()
+    const agent = (id: string, description: string) => ({ type: 'tool_call', id, name: 'Agent', category: 'subagent', title: description, input: { description }, detail: { description } }) as const
+    const bash = (id: string, parent_id: string, command: string) => ({ type: 'tool_call', id, name: 'Bash', category: 'shell', title: command, input: { command }, detail: { command }, parent_id }) as const
+    const view = buildView(
+      evs([
+        { type: 'turn_start', turn_id: 1, message_id: 'm1' },
+        agent('a2', 'Backend API'),
+        agent('a3', 'Status sync'),
+        { type: 'tool_result', id: 'a2', output: 'launched', is_error: false, detail: { background: true } },
+        { type: 'tool_result', id: 'a3', output: 'launched', is_error: false, detail: { background: true } },
+        bash('c1', 'a2', 'sed -n 1,10p a.ts'),
+        bash('c2', 'a3', 'grep -n ship b.ts'),
+        bash('c3', 'a2', 'cat c.ts'),
+        { type: 'tool_result', id: 'c1', output: '', is_error: false },
+        { type: 'tool_result', id: 'a3', output: 'Status sync **done**', is_error: false },
+      ]),
+    )
+    render(<MessageList {...props({ blocks: view.blocks })} />)
+    // 主流里只有两个子 agent 块，子调用不单独成行
+    const blocks = [...screen.getByTestId('message-list').querySelectorAll(':scope > div > div > [data-testid="tool-block"]')] as HTMLElement[]
+    expect(blocks.map((b) => b.dataset.category)).toEqual(['subagent', 'subagent'])
+
+    const [backend, status] = blocks as [HTMLElement, HTMLElement]
+    expect(backend).toHaveAttribute('data-state', 'background')
+    expect(within(backend).getByTestId('subagent-calls')).toHaveTextContent('2 tool calls')
+    // 收起且还在跑：只露出最近的一次调用
+    expect(within(backend).getByTestId('subagent-latest')).toHaveTextContent('cat c.ts')
+    expect(within(backend).queryByText(/sed -n/)).toBeNull()
+
+    expect(status).toHaveAttribute('data-state', 'done')
+    expect(within(status).queryByTestId('subagent-latest')).toBeNull()
+    await user.click(within(status).getByRole('button', { name: /Status sync/ }))
+    expect(within(status).getByTestId('subagent-children')).toHaveTextContent('grep -n ship b.ts')
+    expect(within(status).getByTestId('subagent-result')).toHaveTextContent('Status sync done')
+
+    await user.click(within(backend).getByRole('button', { name: /Backend API/ }))
+    const kids = within(backend).getAllByTestId('tool-block')
+    expect(kids.map((k) => k.textContent)).toEqual([expect.stringContaining('sed -n 1,10p a.ts'), expect.stringContaining('cat c.ts')])
+  })
   it('each finished turn has a “copy” that takes all of that turn’s reply text (not the tools, not the previous turn)', async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()

@@ -98,6 +98,41 @@ describe('collapsing the wide-screen sidebar', () => {
   })
 })
 
+describe('empty sidebar', () => {
+  const NODE_B = 'b'.repeat(32)
+
+  it('offers “New project” (to the node home, which has the create / clone / open options) and closes the drawer on click', async () => {
+    const user = userEvent.setup()
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, projects: [] }) }, order: [NODE], loaded: true })
+    useSessions.setState({ list: {}, pending: {}, open: {} })
+    const onNavigate = vi.fn()
+    wrap(<Sidebar nodeId={NODE} onNavigate={onNavigate} />)
+    const link = screen.getByTestId('sidebar-new-project')
+    expect(link).toHaveTextContent('New project')
+    expect(link).toHaveAttribute('href', '/n/nnnnnnnn')
+    link.addEventListener('click', (e) => e.preventDefault()) // jsdom 不做真正的跳转
+    await user.click(link)
+    expect(onNavigate).toHaveBeenCalled()
+  })
+
+  it('points at the node the page is on when several nodes are ticked, and is absent once there is anything to show', () => {
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE }), [NODE_B]: nodeEntry({ id: NODE_B }) }, order: [NODE, NODE_B], loaded: true })
+    useSessions.setState({ list: {}, pending: {}, open: {} })
+    const { unmount } = wrap(<Sidebar nodeId={NODE_B} />)
+    expect(screen.getByTestId('sidebar-new-project')).toHaveAttribute('href', '/n/bbbbbbbb')
+    unmount()
+    // 页面所在的节点没被勾选：用第一个勾选的
+    usePrefs.setState({ sidebarNodes: [NODE] })
+    const second = wrap(<Sidebar nodeId={NODE_B} />)
+    expect(screen.getByTestId('sidebar-new-project')).toHaveAttribute('href', '/n/nnnnnnnn')
+    second.unmount()
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, projects: [project({ name: 'app' })] }) }, order: [NODE], loaded: true })
+    wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.queryByTestId('sidebar-empty')).toBeNull()
+    expect(screen.queryByTestId('sidebar-new-project')).toBeNull()
+  })
+})
+
 describe('node filter — which nodes’ projects the sidebar shows', () => {
   const NODE_B = 'b'.repeat(32)
   beforeEach(() => {

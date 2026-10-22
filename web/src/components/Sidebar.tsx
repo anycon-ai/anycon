@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, ChevronRight, FolderGit2, Lock, LogOut, PanelLeftClose, Plus, ScanLine, Search, Server, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, FolderGit2, FolderPlus, Lock, LogOut, PanelLeftClose, Plus, ScanLine, Search, Server, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices, useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
@@ -60,6 +60,8 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
   const list = useSessions((s) => s.list)
   const params = useParams({ strict: false }) as { node?: string; session?: string; project?: string }
   const { selected } = useNodeFilter()
+  // 空状态里「新建项目」去哪个节点：页面当前所在的节点（在勾选里的话），否则第一个勾选的
+  const emptyTarget = nodeId && selected.includes(nodeId) ? nodeId : selected[0]
   const paramOf = (id: string): string => shortNodeId(id, order)
   // 勾了多个节点时，项目行和置顶行要标出各自属于哪个节点
   const nodeLabel = (id: string): string | undefined => (selected.length > 1 ? nodes[id]?.name : undefined)
@@ -141,7 +143,18 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
                 ))}
               </div>
             ) : null}
-            {grouped.projects.length === 0 && grouped.scratch.length === 0 ? <p className="px-2 py-6 text-center text-sm text-fg-subtle">{t('sidebar.empty')}</p> : null}
+            {grouped.projects.length === 0 && grouped.scratch.length === 0 ? (
+              <div className="px-2 py-6 text-center text-sm text-fg-subtle" data-testid="sidebar-empty">
+                <p>{t('sidebar.empty')}</p>
+                {/* 左栏没有单独的「新会话」按钮，没有项目就没有「＋」可点：给一个去建项目的入口（节点首页的空状态里有新建 / 克隆 / 打开已有目录） */}
+                {emptyTarget ? (
+                  <Link to="/n/$node" params={{ node: paramOf(emptyTarget) }} onClick={onNavigate} className="mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium text-accent-text hover:bg-bg-hover" data-testid="sidebar-new-project">
+                    <FolderPlus className="size-4" />
+                    {t('project.new')}
+                  </Link>
+                ) : null}
+              </div>
+            ) : null}
           </>
         ) : (
           <p className="px-2 py-6 text-center text-sm text-fg-subtle">{t('sidebar.noNode')}</p>

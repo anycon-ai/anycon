@@ -52,7 +52,7 @@ scratch_retention_days = 7            # 已结束且未转项目的 scratch 会�
 
 [sessions]
 max_concurrent = 3                    # 同时运行的 agent 进程数；超出进入 queued
-idle_timeout = "40m"                  # turn 结束（且后台任务都结束）后 agent 进程保活多久；"0" = 常驻不退出（省去 resume 但吃内存），§ 7.3
+idle_timeout = "20m"                  # turn 结束（且后台任务都结束）后 agent 进程保活多久；"0" = 常驻不退出（省去 resume 但吃内存），§ 7.3
 max_attachment_bytes = "10MiB"        # 单个附件（blob）的上限，§ 7.10
 history_retention = "forever"         # 或 "90d"
 

@@ -1,19 +1,25 @@
 import { useState, type ReactNode } from 'react'
-import { Archive, ArchiveRestore, Bot, CalendarClock, Download, FileDiff, Folder, GitBranch, Pencil, RotateCw, Trash2, type LucideIcon } from 'lucide-react'
+import { Archive, ArchiveRestore, Bot, CalendarClock, Download, Folder, GitBranch, Pencil, RotateCw, Trash2, type LucideIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { FileChangeKind, SessionGitStatus, SessionWorktree, WorktreeDisposal } from '@/protocol'
+import type { SessionGitStatus, SessionStatus, SessionWorktree, WorktreeDisposal } from '@/protocol'
+import { SessionStatusChip } from '@/components/SessionListItem'
 import { ArchiveWorktreeDialog, effectiveChoice, WorktreeDisposePicker, type DisposeChoice, type DisposeInfo } from '@/features/worktree/DisposeDialog'
 import { compactNumber, formatCost, formatDateTime } from '@/lib/format'
 import type { PendingPermission } from '@/stores/sessions'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Overlay'
 import { cn } from '@/ui/cn'
-import { Chip } from '@/ui/Misc'
+import { Chip, type Tone } from '@/ui/Misc'
 import type { UsageSum } from '../reducer'
+import { isActive, isTurnActive, type SubagentActivity, type SubagentRow } from '../subagents'
+import { toolLabel } from '../text'
 
 export interface InfoPanelProps {
   agentLabel: string
-  settingsControls: ReactNode
+  /** 会话（主 agent）的状态。 */
+  status: SessionStatus
+  /** 已加载的事件里的子 agent（`subagentRows`）。 */
+  subagents: SubagentRow[]
   workDir?: string
   project?: string | null
   createdAt: number
@@ -22,7 +28,6 @@ export interface InfoPanelProps {
   usageTotals?: { turns: number; input_tokens: number; output_tokens: number; cost_usd?: number | null }
   pending: Array<Pick<PendingPermission, 'request_id' | 'title'>>
   onFocusPending: (requestId: string) => void
-  changedFiles: Record<string, FileChangeKind>
   archived: boolean
   /** 会话在运行或等审批：daemon 会拒绝归档（`busy`），按钮禁用并说明「先停止或答复」。取消归档不受影响。 */
   archiveBlocked?: boolean
@@ -40,14 +45,17 @@ export interface InfoPanelProps {
   onRestart: () => void
 }
 
-const KIND_TONE: Record<FileChangeKind, 'success' | 'warning' | 'danger'> = { created: 'success', modified: 'warning', deleted: 'danger' }
+const SUBAGENT_TONE: Record<SubagentActivity, Tone> = { running: 'accent', background: 'info', done: 'neutral', error: 'danger', stopped: 'neutral' }
+/** 子 agent 多于这个数时，只列还在跑的和最近的这么多个，其余收起。 */
+const SUBAGENT_LIMIT = 6
+const INDENT = ['', 'pl-4', 'pl-8', 'pl-12']
 
 export function InfoPanel(p: InfoPanelProps) {
   const { t, i18n } = useTranslation()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmArchive, setConfirmArchive] = useState(false)
   const [choice, setChoice] = useState<DisposeChoice>({ worktree: 'auto', deleteBranch: false })
-  const files = Object.entries(p.changedFiles)
+  const [allSubagents, setAllSubagents] = useState(false)
   const archiveBlocked = !!p.archiveBlocked && !p.archived
   // 目录已经没有了（removed）或根本没建成（failed）的 worktree 没什么可处理的：照旧
   const wt = p.worktree && p.worktree.state !== 'removed' && p.worktree.state !== 'failed' ? p.worktree : null
@@ -74,10 +82,16 @@ export function InfoPanel(p: InfoPanelProps) {
   const cost =
     p.usageTotals?.cost_usd == null && p.usage.costUsd == null ? null : Math.max(p.usageTotals?.cost_usd ?? 0, p.usage.costUsd ?? 0)
 
+  // 正在干活的：主 agent 在跑一个 turn（含等审批），加上还没结束的子 agent
+  const working = (isTurnActive(p.status) ? 1 : 0) + p.subagents.filter((r) => isActive(r.state)).length
+  // 收起时保留还在跑的和最近的几个，顺序不变（子 agent 仍跟在父后面）
+  const recent = p.subagents.length - SUBAGENT_LIMIT
+  const shownSubagents = allSubagents ? p.subagents : p.subagents.filter((r, i) => i >= recent || isActive(r.state))
+  const hiddenSubagents = p.subagents.length - shownSubagents.length
+
   const overview = (
     <div className="flex flex-col gap-3" data-testid="info-overview">
       <Card title={t('info.session')}>
-        <IconRow icon={Bot}>{p.agentLabel}</IconRow>
         <IconRow icon={Folder} title={p.workDir}>
           {p.project ? (
             <>
@@ -103,18 +117,35 @@ export function InfoPanel(p: InfoPanelProps) {
         </IconRow>
       </Card>
 
-      <Card>
-        <ValueRow label={t('info.turns')}>{turns}</ValueRow>
-        {input + output > 0 ? (
-          <ValueRow label={t('info.tokens')}>
-            {t('usage.input', { n: compactNumber(input) })} / {t('usage.output', { n: compactNumber(output) })}
-          </ValueRow>
+      <Card title={t('info.agents')} titleAside={working > 0 ? t('info.working', { count: working }) : undefined} testId="info-agents">
+        <AgentRow
+          icon={Bot}
+          label={p.agentLabel}
+          meta={input + output > 0 ? `${t('usage.input', { n: compactNumber(input) })} / ${t('usage.output', { n: compactNumber(output) })}` : undefined}
+          aside={<SessionStatusChip status={p.status} />}
+          testId="info-agent-main"
+        />
+        {hiddenSubagents > 0 ? (
+          <button type="button" className="py-1 pl-4 text-xs text-fg-subtle hover:text-fg-muted" onClick={() => setAllSubagents(true)} data-testid="info-subagents-more">
+            {t('info.showEarlierAgents', { count: hiddenSubagents })}
+          </button>
         ) : null}
-        {cost != null ? <ValueRow label={t('info.cost')}>{formatCost(cost)}</ValueRow> : null}
+        {shownSubagents.map((r) => (
+          <AgentRow
+            key={r.block.key}
+            depth={r.depth + 1}
+            label={toolLabel(r.block)}
+            meta={[r.tokens != null ? t('info.agentTokens', { n: compactNumber(r.tokens) }) : null, r.calls > 0 ? t('tool.subagentCalls', { count: r.calls }) : null].filter(Boolean).join(' · ') || undefined}
+            aside={<Chip tone={SUBAGENT_TONE[r.state]}>{t(`info.subagentState.${r.state}`)}</Chip>}
+            testId="info-subagent"
+            state={r.state}
+          />
+        ))}
       </Card>
 
-      <Card title={t('info.options')}>
-        <div className="pt-1">{p.settingsControls}</div>
+      <Card>
+        <ValueRow label={t('info.turns')}>{turns}</ValueRow>
+        {cost != null ? <ValueRow label={t('info.cost')}>{formatCost(cost)}</ValueRow> : null}
       </Card>
 
       {p.pending.length > 0 ? (
@@ -130,24 +161,6 @@ export function InfoPanel(p: InfoPanelProps) {
           </ul>
         </Card>
       ) : null}
-
-      <Card title={t('info.changedFiles')} titleAside={files.length > 0 ? String(files.length) : undefined} testId="info-files">
-        {files.length === 0 ? (
-          <p className="py-1 text-sm text-fg-subtle">{t('info.noFiles')}</p>
-        ) : (
-          <ul className="space-y-0.5 pt-1">
-            {files.map(([path, kind]) => (
-              <li key={path} className="flex items-center gap-2.5 py-1 text-sm" data-testid="changed-file">
-                <FileDiff className="size-4 shrink-0 text-fg-muted" aria-hidden />
-                <span className="min-w-0 flex-1 truncate font-mono text-xs" title={path}>
-                  {path}
-                </span>
-                <Chip tone={KIND_TONE[kind]}>{t(`info.file.${kind}`)}</Chip>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
 
       <div className="px-1 pt-1">
         <div className="flex flex-wrap gap-1.5">
@@ -251,6 +264,22 @@ function IconRow({ icon: Icon, title, aside, testId, children }: { icon: LucideI
         {children}
       </span>
       {aside ? <span className="max-w-[45%] shrink-0 truncate text-fg-subtle" title={aside}>{aside}</span> : null}
+    </div>
+  )
+}
+
+/** 一个 agent：名称（单行截断）和下面一行弱化的用量，右侧是状态。子 agent 按嵌套层数缩进、用 └ 引出。 */
+function AgentRow({ icon: Icon, depth = 0, label, meta, aside, testId, state }: { icon?: LucideIcon; depth?: number; label: string; meta?: string; aside: ReactNode; testId?: string; state?: string }) {
+  return (
+    <div className={cn('flex min-w-0 items-start gap-2.5 py-1.5 text-sm', INDENT[Math.min(depth, INDENT.length - 1)])} data-testid={testId} data-state={state}>
+      {Icon ? <Icon className="mt-0.5 size-4 shrink-0 text-fg-muted" aria-hidden /> : <span className="shrink-0 text-fg-subtle" aria-hidden>└</span>}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate" title={label}>
+          {label}
+        </span>
+        {meta ? <span className="block truncate text-xs text-fg-subtle">{meta}</span> : null}
+      </span>
+      <span className="shrink-0">{aside}</span>
     </div>
   )
 }

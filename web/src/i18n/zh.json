@@ -544,17 +544,19 @@
     "scratch": "临时工作区",
     "created": "创建于",
     "turns": "轮数",
-    "tokens": "Token",
     "cost": "费用",
-    "options": "选项",
-    "pending": "待审批（{{count}}）",
-    "changedFiles": "改动的文件",
-    "noFiles": "还没有文件改动。",
-    "file": {
-      "created": "新增",
-      "modified": "修改",
-      "deleted": "删除"
+    "agents": "Agent",
+    "working_other": "{{count}} 个在工作",
+    "agentTokens": "{{n}} token",
+    "showEarlierAgents_other": "显示更早的 {{count}} 个子 agent",
+    "subagentState": {
+      "running": "运行中",
+      "background": "后台运行",
+      "done": "已完成",
+      "error": "失败",
+      "stopped": "已停止"
     },
+    "pending": "待审批（{{count}}）",
     "actions": "操作",
     "rename": "重命名",
     "renameTitle": "重命名会话",

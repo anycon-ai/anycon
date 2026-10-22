@@ -995,6 +995,11 @@ export interface ToolResultDetail {
    * daemon 对 `output` 做头尾截断时丢掉的字节数（spec/daemon.md § 12）；没截断就缺省。
    */
   output_truncated_bytes?: number | null;
+  /**
+   * 子 agent 结束时 agent 报的它一共用掉的 token（`category = subagent`；agent 不报就缺省）。
+   * 主 agent 的 `turn_done.usage` 不含这部分。
+   */
+  total_tokens?: number | null;
   unified_diff?: string | null;
 }
 export interface PlanEntry {

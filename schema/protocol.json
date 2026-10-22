@@ -5454,6 +5454,15 @@
             "null"
           ]
         },
+        "total_tokens": {
+          "description": "子 agent 结束时 agent 报的它一共用掉的 token（`category = subagent`；agent 不报就缺省）。\n主 agent 的 `turn_done.usage` 不含这部分。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "unified_diff": {
           "type": [
             "string",

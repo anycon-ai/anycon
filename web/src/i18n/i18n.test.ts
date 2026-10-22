@@ -3,8 +3,9 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { EXPLAINED_ERROR_CODES } from '@/features/session/errors'
-import type { AgentStatus, DiffFileStatus, EnrollMethod, ErrorCode, EnrollResult, FileChangeKind, GitAction, LinkBlock, NotifyCategory, PullRequestState, SecurityEventKind, SessionStatus, SyncOutcome, TurnDoneReason, WorktreeState } from '@/protocol'
+import type { AgentStatus, DiffFileStatus, EnrollMethod, ErrorCode, EnrollResult, GitAction, LinkBlock, NotifyCategory, PullRequestState, SecurityEventKind, SessionStatus, SyncOutcome, TurnDoneReason, WorktreeState } from '@/protocol'
 import type { PushErrorCode } from '@/features/push/actions'
+import type { SubagentActivity } from '@/features/session/subagents'
 import type { UnsupportedReason } from '@/features/push/browser'
 import type { PushStatus } from '@/features/push/usePush'
 import { unlockErrorKeys } from '@/features/unlock/errors'
@@ -59,7 +60,7 @@ describe('i18n', () => {
     const agentStatus: Record<AgentStatus, true> = { ready: true, loading: true, disabled: true, not_installed: true, not_authenticated: true, unsupported_version: true, error: true }
     const sessionStatus: Record<SessionStatus | 'offline', true> = { queued: true, starting: true, running: true, waiting_permission: true, idle: true, ended: true, error: true, interrupted: true, offline: true }
     const nodeConn: Record<NodeConnState, true> = { hub_disconnected: true, hub_connecting: true, hub_authed: true, peer_offline: true, noise_handshaking: true, ready: true, noise_failed: true }
-    const fileKind: Record<FileChangeKind, true> = { created: true, modified: true, deleted: true }
+    const subagentActivity: Record<SubagentActivity, true> = { running: true, background: true, done: true, error: true, stopped: true }
     const errCode: Record<ErrorCode, true> = { invalid: true, invalid_settings: true, agent_unavailable: true, node_busy: true, busy: true, already_resolved: true, exists: true, not_found: true, forbidden: true, unsupported: true, protocol_mismatch: true, internal: true }
     const turnReason: Record<TurnDoneReason, true> = { completed: true, cancelled: true, error: true, max_turns: true, budget: true }
     const pairErr: Record<PairErrorCode | 'retry' | 'generic', true> = {
@@ -114,7 +115,7 @@ describe('i18n', () => {
       ...Object.keys(agentStatus).map((k) => `agent.status.${k}`),
       ...Object.keys(sessionStatus).map((k) => `status.session.${k}`),
       ...Object.keys(nodeConn).map((k) => `status.node.${k}`),
-      ...Object.keys(fileKind).map((k) => `info.file.${k}`),
+      ...Object.keys(subagentActivity).map((k) => `info.subagentState.${k}`),
       ...Object.keys(errCode).map((k) => `errors.rpc.${k}`),
       ...Object.keys(turnReason).map((k) => `turn.reason.${k}`),
       ...Object.keys(pairErr).map((k) => `pair.errors.${k}`),

@@ -43,16 +43,16 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 ┌──────────┬──────────────────────────────────────┬────────────┐
 │ 节点切换  │ 面包屑  节点 / 项目 / 会话标题  状态   │ 会话信息    │
 │──────────│──────────────────────────────────────│            │
-│ 搜索 ⌘K  │                                      │ agent      │
-│ + 新会话  │                                      │ 模型       │
-│          │           消息流                      │ 思考       │
-│ 项目 A ＋│                                      │ 权限模式   │
-│  · 会话1 │                                      │ 用量 / 费用 │
-│  · 会话2 │                                      │────────────│
-│ 项目 B ＋│  ╭────────────────────────────────╮  │ 待审批 (1) │
-│ 临时会话  │  │ ＋ 输入框               ⏹  发送 │  │ 改动的文件  │
-│          │  ╰────────────────────────────────╯  │  src/a.ts  │
-│──────────│  [权限▾][更多]        [模型▾][思考▾] │  …         │
+│ 搜索 ⌘K  │                                      │ 工作目录   │
+│ + 新会话  │                                      │ Agent  2 个│
+│          │           消息流                      │ 主 agent ● │
+│ 项目 A ＋│                                      │ └子 agent ●│
+│  · 会话1 │                                      │ └子 agent ✓│
+│  · 会话2 │                                      │ 轮数 / 费用│
+│ 项目 B ＋│  ╭────────────────────────────────╮  │────────────│
+│ 临时会话  │  │ ＋ 输入框               ⏹  发送 │  │ 待审批 (1) │
+│          │  ╰────────────────────────────────╯  │ 操作       │
+│──────────│  [权限▾][更多]        [模型▾][思考▾] │            │
 │ ● 在线   │                                      │            │
 │ 账号 ▾   │                                      │            │
 └──────────┴──────────────────────────────────────┴────────────┘
@@ -234,7 +234,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `turn_done` | 一行：「复制」图标（复制这一轮 agent 的全部文字，Markdown，不含工具输出）+ 灰字：模型、用时、token 数、费用（agent 报了才显示） |
 | `error` | 红色块，`recoverable` 时带「重试」 |
 | `status` | 不单独渲染，驱动头部 chip 和 composer 状态 |
-| `file_changed` | 不单独渲染，汇总到信息面板的「改动的文件」 |
+| `file_changed` | 不单独渲染（改了哪些文件看「改动」视图）；git 会话里触发一次 git 状态刷新（见下） |
 | `settings_changed` | 一行灰字：「模型已切换为 …」 |
 | `git` | 一行灰字（失败是红字，冲突 / worktree 被保留是黄字），按 `action`：「已在 worktree `anycon/x` 中开始（基于 main，复制了 2 个文件）」「worktree 创建失败：…」「已删除 worktree（分支保留 / 分支已删除）」「worktree 有未提交的改动，已保留」「已按分支重建 worktree」「worktree 目录不见了」「main 没有新提交」「已合并 main 的 3 个提交」「合并 main 时 2 个文件有冲突：a.rs、b.rs」+ 按钮「让 agent 解决」「放弃合并」「已放弃合并」。同时触发 git 状态刷新 |
 
@@ -285,10 +285,10 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 **概览**标签：
 
-- agent、模型、思考等级、权限模式（都可点开修改，规则见 § 5.3）
-- 工作目录、创建时间、turn 数、累计 token 和费用
+- 工作目录、分支、创建时间
+- 「Agent」卡片（`info-agents`）：标题右边是正在工作的个数（主 agent 在跑一个 turn 或等审批算一个，加上还没结束的子 agent），没有就不显示。第一行是主 agent：名称、累计 token（输入 / 输出）、会话状态 chip。下面是已加载的事件里的子 agent（`category = subagent` 的调用），父在前、子按嵌套层数缩进：说明、agent 报的 token（`tool_result.detail.total_tokens`，结束后才有）和它调了几次工具、状态 chip（运行中 / 后台运行 / 已完成 / 失败 / 已停止）。没有结果的子 agent 在主 agent 的 turn 结束后（或启动它的子 agent 结束后）算「已停止」，后台子 agent 在 agent 进程退出（`ended` / `error` / `interrupted`）后同样算「已停止」。子 agent 超过 6 个时只列还在跑的和最近的 6 个，上面一行「显示更早的 N 个子 agent」展开全部
+- turn 数、累计费用（主 agent 的 token 不含子 agent 的，费用是 agent 报的总数）
 - 待审批请求列表（和消息流里的卡片联动）
-- 「本会话改动的文件」：从 `file_changed` 事件汇总，点击在文件浏览（v0.2）打开，v0.1 只列路径
 - 操作：重命名、归档、删除（二次确认，说明会删 daemon 上的历史）、导出 Markdown
 - **有 worktree 的会话**：「归档」先弹确认框：说明 worktree 的处理（`auto`：没有未提交的改动就删掉 worktree——分支上有自己的提交就保留分支，没有就一起删；有未提交的改动就保留 worktree），选项「自动 / 保留 worktree / 删除 worktree（丢弃 N 个未提交的改动）」，N 来自 `git_status.uncommitted`。「删除」确认框多两项：worktree 同样三选一；「同时删除分支 anycon/x」复选框，分支上有自己的提交（`ahead > 0`）或没推送的提交时在旁边警告「N 个提交会丢失」。没有 worktree 的会话、worktree 已经 `removed` / `failed` 的会话行为不变（归档不弹框）
 
@@ -382,7 +382,7 @@ options: [ { id: "fast_mode", kind: "bool", label: "Fast mode", default: false }
 
 ### 5.6 用量与费用
 
-`turn_done.usage` 有什么就显示什么：token 数、费用、用时。agent 不报的字段不显示占位。会话累计显示在信息面板，节点首页不汇总（daemon 不做记账，这是 agent 的事）。
+`turn_done.usage` 有什么就显示什么：token 数、费用、用时。agent 不报的字段不显示占位。会话累计显示在信息面板，子 agent 各自的 token（`tool_result.detail.total_tokens`）显示在它那一行；节点首页不汇总（daemon 不做记账，这是 agent 的事）。
 
 ## 6. 状态层与缓存
 

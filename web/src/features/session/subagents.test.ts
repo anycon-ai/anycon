@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { evs, resetSeq } from '@/test/factories'
 import { buildView, type ToolBlock } from './reducer'
-import { countCalls, subagentState, toolTree } from './subagents'
+import { countCalls, subagentRows, subagentState, toolTree } from './subagents'
 
 beforeEach(() => resetSeq())
 
@@ -42,5 +42,49 @@ describe('subagentState', () => {
     )
     expect(subagentState(finished.blocks[0] as ToolBlock)).toBe('error')
     expect(subagentState(buildView(evs([call('a', undefined, 'subagent')])).blocks[0] as ToolBlock)).toBe('running')
+  })
+})
+
+describe('subagentRows', () => {
+  const result = (id: string, detail?: { background?: boolean; total_tokens?: number }, is_error = false) => ({ type: 'tool_result', id, output: 'x', is_error, ...(detail ? { detail } : {}) }) as const
+  const rows = (status: Parameters<typeof subagentRows>[1], events: Parameters<typeof evs>[0]) =>
+    subagentRows(buildView(evs(events)).blocks, status).map((r) => [r.block.toolId, r.state, r.depth, r.calls, r.tokens ?? null])
+
+  it('lists agents parent-first with depth, nested calls and reported tokens', () => {
+    const events = [
+      call('a', undefined, 'subagent'),
+      call('b', undefined, 'subagent'),
+      call('a1', 'a'),
+      call('a2', 'a', 'subagent'),
+      call('a2x', 'a2'),
+      result('a2', { total_tokens: 900 }),
+      result('a', { total_tokens: 4200 }),
+      call('top'),
+    ] as const
+    expect(rows('running', [...events])).toEqual([
+      ['a', 'done', 0, 3, 4200],
+      ['a2', 'done', 1, 1, 900],
+      ['b', 'running', 0, 0, null],
+    ])
+  })
+
+  it('an agent without a result is stopped once its turn or its parent agent is over', () => {
+    const events = [call('a', undefined, 'subagent'), call('b', undefined, 'subagent'), call('b1', 'b', 'subagent'), result('b', { background: true }), call('c', undefined, 'subagent'), call('c1', 'c', 'subagent'), result('c')] as const
+    // turn 结束：a 不会再有结果；b 在后台、它启动的 b1 跟着还在跑；c 结束了，它下面没结果的 c1 也停了
+    expect(rows('idle', [...events]).map(([id, state]) => [id, state])).toEqual([
+      ['a', 'stopped'],
+      ['b', 'background'],
+      ['b1', 'running'],
+      ['c', 'done'],
+      ['c1', 'stopped'],
+    ])
+    // 进程没了：后台的也停了
+    expect(rows('ended', [...events]).map(([id, state]) => [id, state])).toEqual([
+      ['a', 'stopped'],
+      ['b', 'stopped'],
+      ['b1', 'stopped'],
+      ['c', 'done'],
+      ['c1', 'stopped'],
+    ])
   })
 })

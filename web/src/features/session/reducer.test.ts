@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { ev, evs, resetSeq } from '@/test/factories'
-import { applyEvents, buildView, diffSettings, emptyView, latestSyncBlock, pendingPermissions, planIngest, type AssistantBlock, type GitSystemBlock, type PermissionBlock, type ToolBlock } from './reducer'
+import { applyEvents, buildView, diffSettings, emptyView, latestSyncBlock, pendingPermissions, planIngest, type AssistantBlock, type GitSystemBlock, type PermissionBlock, type ToolBlock, type TurnStartBlock } from './reducer'
 
 beforeEach(() => resetSeq())
 
@@ -247,5 +247,37 @@ describe('git events (ADR-34)', () => {
     const v2 = applyEvents(v, [ev({ type: 'git', action: 'sync_aborted', branch: 'b', base: 'main' })])
     expect(latestSyncBlock(v2.blocks)?.action).toBe('sync_aborted')
     expect(latestSyncBlock([])).toBeNull()
+  })
+})
+
+describe('turn_start from the agent itself', () => {
+  const turnStarts = (blocks: readonly { type: string }[]): TurnStartBlock[] => blocks.filter((b): b is TurnStartBlock => b.type === 'turn_start')
+
+  it('marks a turn whose message_id is empty as started by the agent; a turn for a user message is not', () => {
+    const v = buildView(
+      evs([
+        { type: 'user_message', message_id: 'm1', content: 'go', by_device: 'me' },
+        { type: 'turn_start', turn_id: 1, message_id: 'm1' },
+        { type: 'turn_done', turn_id: 1, reason: 'completed' },
+        // 后台任务结束后 CLI 自己再跑的一轮：没有对应的用户消息
+        { type: 'turn_start', turn_id: 2, message_id: '' },
+        { type: 'text_delta', text: 'The background task finished.' },
+        { type: 'turn_done', turn_id: 2, reason: 'completed' },
+      ]),
+    )
+    expect(turnStarts(v.blocks).map((b) => [b.turnId, b.agentStarted])).toEqual([
+      [1, false],
+      [2, true],
+    ])
+    // 其余块照常：这一轮的回复和 turn_done 都挂在 turn 2 上，没有凭空多出用户气泡
+    expect(v.blocks.filter((b) => b.type === 'user')).toHaveLength(1)
+    expect(v.blocks.filter((b) => b.type === 'assistant' && b.turnId === 2)).toHaveLength(1)
+    expect(v.usage.turns).toBe(2)
+  })
+
+  it('applies incrementally the same way: an empty message_id arriving later still produces the marker', () => {
+    const v1 = buildView(evs([{ type: 'turn_start', turn_id: 1, message_id: 'm1' }, { type: 'turn_done', turn_id: 1, reason: 'completed' }]))
+    const v2 = applyEvents(v1, [ev({ type: 'turn_start', turn_id: 2, message_id: '' })])
+    expect(turnStarts(v2.blocks).map((b) => b.agentStarted)).toEqual([false, true])
   })
 })

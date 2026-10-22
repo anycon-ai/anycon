@@ -1310,3 +1310,44 @@ async fn interjecting_is_unsupported() {
     assert!(fx.stdin_messages().iter().all(|m| m["type"] != "user"));
     h.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_message_sent_during_the_clis_own_turn_is_written_after_that_turn_ends() {
+    // 第一个 turn 派出后台任务后结束；任务结束时 fake 自己开始一轮（`__AUTO__`，中间停 600 ms）
+    let fx = Harness::new().script("agent_turn_defer.jsonl");
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    let _ = next_event(&mut h).await; // Started
+    h.send(input("go")).await.unwrap();
+    let e1 = collect_until(&mut h, is_turn_done).await;
+    assert!(names(&e1).contains(&"BACKGROUND:1".to_string()), "{:?}", names(&e1));
+
+    let e2 = collect_until(&mut h, |e| matches!(e, AgentEvent::TurnStarted)).await;
+    assert!(names(&e2).contains(&"BACKGROUND:0".to_string()), "{:?}", names(&e2));
+    assert!(h.is_busy(), "the CLI's own turn counts as busy (cancel can interrupt it)");
+    // 这一轮进行中发消息：被接受，但先不写进 stdin
+    h.send(input("next")).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!fx.stdin_messages().iter().any(|m| m["message"]["content"] == "next"), "held back during the CLI's turn");
+
+    // 这一轮结束后才写进去，两轮合成一个 turn 交给上层：中间没有 TurnDone
+    let e3 = collect_until(&mut h, is_turn_done).await;
+    assert_eq!(text_of(&e3), "worker donereply");
+    assert_eq!(e3.iter().filter(|e| is_turn_done(e)).count(), 1);
+    let usage = e3.iter().find_map(|e| match e {
+        AgentEvent::Event(Event::TurnDone { usage, .. }) => usage.clone(),
+        _ => None,
+    });
+    assert_eq!(usage.and_then(|u| u.input_tokens), Some(11), "both rounds' usage");
+    let order: Vec<String> = fx
+        .log_entries()
+        .into_iter()
+        .filter_map(|e| match e["kind"].as_str() {
+            Some("stdin") => e["msg"]["message"]["content"].as_str().map(|c| format!("stdin:{c}")),
+            Some("result") => Some("result".into()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, ["stdin:go", "result", "result", "stdin:next", "result"]);
+    assert!(!h.is_busy());
+    h.shutdown().await.unwrap();
+}

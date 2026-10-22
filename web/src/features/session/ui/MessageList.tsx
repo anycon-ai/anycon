@@ -81,7 +81,7 @@ function buildRows(p: MessageListProps): Row[] {
         break
       case 'turn_start':
         turnText = []
-        rows.push({ key: b.key, node: <TurnDivider turnId={b.turnId} ts={b.ts} /> })
+        rows.push({ key: b.key, node: <TurnDivider turnId={b.turnId} ts={b.ts} agentStarted={b.agentStarted} /> })
         break
       case 'thinking':
         rows.push({ key: b.key, node: <ThinkingView block={b} />, line: true })

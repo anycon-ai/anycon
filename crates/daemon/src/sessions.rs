@@ -68,6 +68,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(60);
 const CANCEL_GRACE: Duration = Duration::from_secs(10);
 /// `release_project` 最多等被取消的 turn 收尾多久。
 const RELEASE_DEADLINE: Duration = Duration::from_secs(20);
+/// 后台任务都结束后，等 agent 自己接着跑一轮等多久；没等到就补发推迟的 `turn_finished`（daemon.md § 14）。
+/// Claude Code 实测在最后一个任务结束后几十毫秒内就开始那一轮。
+const FINISH_NOTIFY_GRACE: Duration = Duration::from_secs(15);
 const SWEEP_INTERVAL: Duration = Duration::from_millis(500);
 /// 每扫描这么多次做一次「turn 进行中的关联项目复核」：500 ms × 4 = 2 秒。
 const PROJECT_RECHECK_EVERY: u32 = 4;
@@ -141,6 +144,8 @@ struct TurnRt {
     cancel_requested_at: Option<Instant>,
     /// 正在为这个 turn 建 / 重建 worktree（拉起 agent 之前）：`starting` 的 60 秒超时先不算，建好之后重新计时（daemon.md § 10.1）。
     preparing: bool,
+    /// agent 自己开始的 turn（adapter 的 `TurnStarted`，没有用户消息，daemon.md § 7.5）。
+    by_agent: bool,
 }
 
 struct PendingPerm {
@@ -172,6 +177,13 @@ struct St {
     ended_since: Option<Instant>,
     idle_notified: bool,
     watched_during_idle: bool,
+    /// agent 进程里还在跑的后台任务数（adapter 的 `Background`）。大于 0 时不按 `idle_timeout` 回收进程，
+    /// 也不为改设置重启进程——那样会连同后台任务一起杀掉（daemon.md § 7.3）。进程摘掉时清零。
+    background_tasks: u32,
+    /// 后台任务数最近一次降到 0 的时刻（推迟的 `turn_finished` 通知按它兜底补发）。
+    background_drained_at: Option<Instant>,
+    /// turn 结束时后台任务还在跑：`turn_finished` 推迟到它们都结束之后的那个 turn 结束时再发（daemon.md § 14）。
+    finish_notify_pending: bool,
     text_buf: String,
     text_buf_seq: u64,
     last_position: Option<u32>,
@@ -228,6 +240,9 @@ impl St {
             ended_since: None,
             idle_notified: false,
             watched_during_idle: false,
+            background_tasks: 0,
+            background_drained_at: None,
+            finish_notify_pending: false,
             text_buf: String::new(),
             text_buf_seq: 0,
             last_position: None,
@@ -341,6 +356,8 @@ pub struct Sessions {
     create_lock: AsyncMutex<()>,
     /// `starting` 超时（毫秒）；默认 [`START_TIMEOUT`]，测试里可以缩短。
     start_timeout_ms: std::sync::atomic::AtomicU64,
+    /// 推迟的 `turn_finished` 兜底补发前等多久（毫秒）；默认 [`FINISH_NOTIFY_GRACE`]，测试里可以缩短。
+    finish_notify_grace_ms: std::sync::atomic::AtomicU64,
     /// 周期复核每隔多少次扫描做一次（默认 [`PROJECT_RECHECK_EVERY`]；测试里可以调大来「关掉」它）。
     recheck_every: std::sync::atomic::AtomicU32,
     /// 每个会话上次查 PR 的时刻（`worktree.auto_archive_on_pr_close` 每轮挑最久没查的 20 个）。
@@ -400,6 +417,7 @@ impl Sessions {
             throttle: Mutex::new(HashMap::new()),
             create_lock: AsyncMutex::new(()),
             start_timeout_ms: std::sync::atomic::AtomicU64::new(START_TIMEOUT.as_millis() as u64),
+            finish_notify_grace_ms: std::sync::atomic::AtomicU64::new(FINISH_NOTIFY_GRACE.as_millis() as u64),
             recheck_every: std::sync::atomic::AtomicU32::new(PROJECT_RECHECK_EVERY),
             pr_checked: Mutex::new(HashMap::new()),
             pr_round_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -533,6 +551,7 @@ impl Sessions {
             status: st.row.status,
             archived: st.row.archived,
             pending_permissions: st.perms.len() as u32,
+            background_tasks: st.background_tasks,
             updated_at_ms: st.row.updated_ms,
             last_seq: st.row.last_seq,
             deleted: false,
@@ -800,6 +819,7 @@ impl Sessions {
             updated_at_ms: st.row.updated_ms,
             last_seq: st.row.last_seq,
             pending_permissions: st.perms.len() as u32,
+            background_tasks: st.background_tasks,
             queue_position: if st.row.status == SessionStatus::Queued {
                 self.sched.lock().unwrap().position(&st.row.id)
             } else {
@@ -1094,6 +1114,8 @@ impl Sessions {
         let first_msg = st.backlog.first().map(|b| b.message_id.clone()).unwrap_or_default();
         st.saw_exit_error = false;
         st.delta_budgets.clear();
+        // 用户又发消息了：之前推迟的「turn 完成」通知不再补发，这个 turn 结束时按当时的后台任务重新判断
+        st.finish_notify_pending = false;
         // worktree 还没建好 / 不见了的会话：拉起流程里先建（重建）它，期间 `starting` 的超时不算
         let wt_ready = st.wt.as_ref().is_none_or(|w| w.state == WorktreeState::Active);
         st.turn = Some(TurnRt {
@@ -1103,6 +1125,7 @@ impl Sessions {
             first_event: false,
             cancel_requested_at: None,
             preparing: !wt_ready,
+            by_agent: false,
         });
         self.set_status(st, SessionStatus::Starting, None).await;
         self.emit(st, Event::TurnStart { turn_id, message_id: first_msg.clone() }).await;
@@ -1112,7 +1135,13 @@ impl Sessions {
             self.fail_turn_with(st, &stable_code_str(&e), e.message.clone(), true).await;
             return;
         }
-        if st.driver.is_some() && !st.needs_restart && wt_ready {
+        // 后台任务在跑时不为改设置重启进程（重启会连同后台任务一起杀掉）：沿用当前进程，需要重启才生效的设置
+        // 推迟到后台任务都结束之后的 turn（`needs_restart` 留着）
+        let restart = st.needs_restart && st.background_tasks == 0;
+        if st.needs_restart && !restart {
+            tracing::info!(session = %st.row.id, background_tasks = st.background_tasks, "deferring the agent restart for new settings until its background tasks finish");
+        }
+        if st.driver.is_some() && !restart && wt_ready {
             // ADR-33 第 5 条：复用活着的进程之前也复核项目目录——空闲进程上的会话不能在目录被换掉之后照样收消息
             if let Some(e) = self.recheck_live_project(st) {
                 let project = st.row.project.clone();
@@ -1259,6 +1288,10 @@ impl Sessions {
         st.driver_gen += 1;
         st.interjecting = 0;
         st.spawn_dir = None;
+        // 后台任务和进程同生死；摘掉进程之后也不会再有推迟的「turn 完成」可补（进程是被 daemon 收掉或出错了）
+        st.background_tasks = 0;
+        st.background_drained_at = None;
+        st.finish_notify_pending = false;
         st.driver.take()
     }
 
@@ -1576,6 +1609,7 @@ impl Sessions {
     ) {
         let Some(turn) = st.turn.as_ref() else { return };
         let turn_id = turn.turn_id;
+        let by_agent = turn.by_agent;
         self.deny_all_inner(st, "turn ended", false).await;
         self.flush_text(st).await;
         self.emit(st, Event::TurnDone { turn_id, reason, usage: usage.clone() }).await;
@@ -1621,7 +1655,14 @@ impl Sessions {
         }
         if reason == TurnDoneReason::Completed || reason == TurnDoneReason::MaxTurns || reason == TurnDoneReason::Budget
         {
-            self.d.notifier.turn_finished(&st.row.id);
+            // 后台任务还在跑：活还没干完，「完成」推迟到它们都结束之后的那个 turn（daemon.md § 14）。agent 自己开的 turn
+            // 只在有推迟的通知时才发——没有的话这个 turn 是已经通知过的 turn 的后续，不再打扰一次
+            if st.background_tasks > 0 {
+                st.finish_notify_pending = true;
+            } else if !by_agent || st.finish_notify_pending {
+                st.finish_notify_pending = false;
+                self.d.notifier.turn_finished(&st.row.id);
+            }
         }
         self.persist(st).await;
     }
@@ -1743,10 +1784,68 @@ impl Sessions {
                 self.mark_first_event(&mut st).await;
                 self.on_event(&mut st, e).await;
             }
+            AgentEvent::TurnStarted => {
+                self.begin_agent_turn(&mut st).await;
+            }
+            AgentEvent::Background { tasks } => {
+                self.on_background(&mut st, tasks).await;
+            }
             AgentEvent::Exited { code, error } => {
                 self.on_exited(&mut st, code, error).await;
             }
         }
+    }
+
+    /// agent 自己开始了一个 turn（Claude Code 的后台任务结束后 CLI 自己跑一轮处理结果，daemon.md § 7.5）：开一个没有
+    /// 用户消息的 turn，`turn_start.message_id` 为空串，结束照常是 adapter 的 `TurnDone`。已经有 turn 时忽略——那是
+    /// `send` 撞上了这一轮，adapter 把它并进了用户的 turn。不占并发名额：进程已经在跑，daemon 拦不住它（和后台任务一样）。
+    /// 已归档的会话不跑 turn（§ 7.1）：不开，这一轮的事件照旧记在 turn 之外。
+    async fn begin_agent_turn(self: &Arc<Self>, st: &mut St) {
+        if st.turn.is_some() || st.driver.is_none() || st.row.archived {
+            return;
+        }
+        let turn_id = st.row.next_turn_id;
+        st.row.next_turn_id += 1;
+        st.saw_exit_error = false;
+        st.delta_budgets.clear();
+        st.turn = Some(TurnRt {
+            turn_id,
+            dispatched: true,
+            started_at: Instant::now(),
+            first_event: true,
+            cancel_requested_at: None,
+            preparing: false,
+            by_agent: true,
+        });
+        self.set_status(st, SessionStatus::Running, None).await;
+        self.emit(st, Event::TurnStart { turn_id, message_id: String::new() }).await;
+        warn_err("record turn start", self.d.store.turn_start(&st.row.id, turn_id, "", now_ms()).await);
+        self.persist(st).await;
+    }
+
+    /// adapter 报告进程里还在跑的后台任务数（daemon.md § 7.3）。降到 0 时会话才算真正空闲：空闲的会话从这时起
+    /// 重新计 `idle_timeout` 和 `session_idle`，`ended` 的同理。
+    async fn on_background(self: &Arc<Self>, st: &mut St, tasks: u32) {
+        if st.background_tasks == tasks {
+            return;
+        }
+        st.background_tasks = tasks;
+        if tasks == 0 {
+            let now = Instant::now();
+            st.background_drained_at = Some(now);
+            match st.row.status {
+                SessionStatus::Idle => {
+                    st.idle_since = Some(now);
+                    st.idle_notified = false;
+                    st.watched_during_idle = self.d.clients.has_watchers(&st.row.id);
+                }
+                SessionStatus::Ended => st.ended_since = Some(now),
+                _ => {}
+            }
+        } else {
+            st.background_drained_at = None;
+        }
+        self.notify_changed(st);
     }
 
     /// dispatch 之后的第一个 agent 事件：starting → running。
@@ -2513,6 +2612,7 @@ impl Sessions {
                 status: SessionStatus::Ended,
                 archived: false,
                 pending_permissions: 0,
+                background_tasks: 0,
                 updated_at_ms: now_ms(),
                 last_seq: 0,
                 deleted: true,
@@ -2881,6 +2981,12 @@ impl Sessions {
         let idle_timeout = cfg.idle_timeout();
         let idle_after = cfg.session_idle_after();
         let start_timeout = Duration::from_millis(self.start_timeout_ms.load(std::sync::atomic::Ordering::Relaxed));
+        // 不能晚于 idle 回收：回收会摘掉进程、清掉推迟的通知（同一次扫描里补发在回收之前）
+        let mut finish_grace =
+            Duration::from_millis(self.finish_notify_grace_ms.load(std::sync::atomic::Ordering::Relaxed));
+        if !idle_timeout.is_zero() {
+            finish_grace = finish_grace.min(idle_timeout);
+        }
         let mut to_shutdown: Vec<(Arc<Session>, ClosingFut)> = Vec::new();
         for sess in self.all() {
             let Ok(mut st) = sess.st.try_lock() else { continue };
@@ -2933,9 +3039,19 @@ impl Sessions {
                     continue;
                 }
             }
+            // 推迟的「turn 完成」：后台任务都结束了，CLI 却没有接着自己跑一轮（那一轮结束时会发）——过一会儿兜底补发
+            if st.finish_notify_pending
+                && st.turn.is_none()
+                && st.background_tasks == 0
+                && st.background_drained_at.is_some_and(|t| t.elapsed() >= finish_grace)
+            {
+                st.finish_notify_pending = false;
+                self.d.notifier.turn_finished(&st.row.id);
+            }
             // ended（回合数 / 预算用完）但进程还活着：和 idle 一样按 `idle_timeout` 回收，别让它一直占着进程
             if st.row.status == SessionStatus::Ended
                 && st.driver.is_some()
+                && st.background_tasks == 0
                 && !idle_timeout.is_zero()
                 && st.ended_since.is_some_and(|t| t.elapsed() >= idle_timeout)
                 && self.d.agents.info(&st.row.agent).is_some_and(|i| i.capabilities.resume)
@@ -2948,7 +3064,12 @@ impl Sessions {
             // idle：超时关进程；通知 session_idle（已归档的会话不提醒）
             if st.row.status == SessionStatus::Idle {
                 if let Some(since) = st.idle_since {
-                    if !idle_timeout.is_zero() && st.driver.is_some() && since.elapsed() >= idle_timeout {
+                    // 后台任务还在跑（后台 subagent、后台命令）：关进程会连同它们一起杀掉，不回收
+                    if !idle_timeout.is_zero()
+                        && st.driver.is_some()
+                        && st.background_tasks == 0
+                        && since.elapsed() >= idle_timeout
+                    {
                         let can_resume = self.d.agents.info(&st.row.agent).is_some_and(|i| i.capabilities.resume);
                         if can_resume {
                             if let Some(d) = self.detach(&mut st) {
@@ -2962,6 +3083,7 @@ impl Sessions {
                         st.watched_during_idle = true;
                     }
                     if !st.row.archived
+                        && st.background_tasks == 0
                         && !st.idle_notified
                         && !st.watched_during_idle
                         && !idle_after.is_zero()
@@ -3123,6 +3245,12 @@ impl Sessions {
     #[cfg(any(test, feature = "testing"))]
     pub fn set_start_timeout(&self, d: Duration) {
         self.start_timeout_ms.store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 测试用：缩短推迟的 `turn_finished` 兜底补发前的等待。
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_finish_notify_grace(&self, d: Duration) {
+        self.finish_notify_grace_ms.store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

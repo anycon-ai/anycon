@@ -1975,6 +1975,7 @@
           "type": "object"
         },
         {
+          "description": "`message_id` 是这个 turn 发出的第一条用户消息；**空串**表示 turn 是 agent 自己开始的，没有对应的用户消息\n（Claude Code 的后台任务结束后，CLI 会自己再跑一轮处理结果，见 docs/spec/daemon.md § 7.5）。",
           "properties": {
             "message_id": {
               "type": "string"
@@ -4269,6 +4270,13 @@
           "default": false,
           "type": "boolean"
         },
+        "background_tasks": {
+          "default": 0,
+          "description": "同 [`SessionSummary::background_tasks`]。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
         "deleted": {
           "default": false,
           "description": "会话被删除。",
@@ -5021,6 +5029,13 @@
         "archived": {
           "default": false,
           "type": "boolean"
+        },
+        "background_tasks": {
+          "default": 0,
+          "description": "agent 进程里还在跑的后台任务数（Claude Code 的后台 subagent、后台命令）。主 turn 结束后它们可能还在干活，\n期间 daemon 不按 `idle_timeout` 回收进程（docs/spec/daemon.md § 7.3）。只反映 daemon 内存里的当前状态，不进事件流。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "created_at_ms": {
           "format": "uint64",

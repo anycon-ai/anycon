@@ -92,6 +92,8 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const view = open?.view
   const status = (open?.watching ? view?.status ?? summary?.status : summary?.status ?? view?.status) ?? 'idle'
   const running = isRunning(status)
+  // 主 turn 结束后 agent 进程里还在跑的后台任务（后台 subagent、后台命令）。旧 daemon 不发这个字段，按 0 处理
+  const backgroundTasks = summary?.background_tasks ?? 0
   const offline = entry?.conn !== 'ready'
   // 已归档的会话不能 `send`（daemon 回 `invalid` / `archived`）：输入框换成「已归档 · 取消归档」，也不再给「重试这一轮」
   const archived = !!summary?.archived
@@ -421,6 +423,14 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
                 setTimeout(() => setScrollTo(allPending[0]!.request_id), 0)
               }}
             />
+          ) : null}
+
+          {backgroundTasks > 0 && !running ? (
+            // 低调的一行：会话已经 idle，但后台任务还在干活，结束后 agent 会自己再跑一轮。运行中不显示（状态本身已经有提示）
+            <div className="mx-auto flex w-full max-w-3xl shrink-0 items-center gap-2 px-3 pt-2 text-xs text-fg-muted md:px-4" role="status" data-testid="background-tasks-hint" data-count={backgroundTasks}>
+              <Spinner className="size-3.5 shrink-0" />
+              <span className="min-w-0 [overflow-wrap:anywhere]">{t('session.backgroundTasks', { count: backgroundTasks })}</span>
+            </div>
           ) : null}
 
           <div className="sr-only" aria-live="polite" role="status">

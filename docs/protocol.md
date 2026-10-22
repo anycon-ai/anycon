@@ -241,7 +241,7 @@ daemon                      hub                        新客户端
 | `session.watch` / `session.unwatch` | C→D | 订阅 / 退订该会话的 `session.event`。未 watch 的会话只收列表级 `session.changed` |
 | `session.history` | C→D | `{ session_id, after_seq?, limit?, before_seq? }` → `{ events, has_more }`。`after_seq` 拉增量；`before_seq` 向上翻页（返回 seq 小于它的最近 `limit` 条）；`limit` 默认 200、上限 1000。**一页还受字节上限约束**：编码后超过 192 KiB 就在这里截断并置 `has_more = true`（单个事件本身超限也单独成页），客户端按返回的最后一个 seq 继续拉 |
 | `session.event` | D→C notification | 会话事件流，见 §6。只发给 watcher |
-| `session.changed` | D→C notification | `{ session_id, title, status, archived, pending_permissions, updated_at_ms, last_seq, deleted, worktree? }`，发给所有在线客户端；`deleted = true` 表示会话已被删除；`worktree` 带 worktree 的当前状态 |
+| `session.changed` | D→C notification | `{ session_id, title, status, archived, pending_permissions, background_tasks, updated_at_ms, last_seq, deleted, worktree? }`，发给所有在线客户端；`deleted = true` 表示会话已被删除；`worktree` 带 worktree 的当前状态；`background_tasks` 是 agent 进程里还在跑的后台任务数（缺省 = 0，和 `SessionSummary` 的同名字段一样只反映 daemon 内存里的当前状态，见 [daemon.md § 7.3](spec/daemon.md#73-进程保活与-idle_timeout)） |
 | `session.rename` / `archive` / `unarchive` / `delete` / `restart` | C→D | 见 [spec/daemon.md § 7.8](spec/daemon.md#78-归档删除重启)。`archive` 的参数是 `{ session_id, worktree? }`（会话 queued / starting / running / waiting_permission 时返回 `busy`），`delete` 是 `{ session_id, worktree?, delete_branch? }`；`worktree` 取 `auto`（缺省）/ `keep` / `remove`，只带 `session_id` 的旧请求照旧合法 |
 | `session.git_status` | C→D | `{ session_id, include_pr? }` → `SessionGitStatus`：分支、HEAD、（worktree 会话）base / ahead / behind、未提交和冲突的文件数、是否在合并、上游和未推送数；`include_pr` 时用 `gh pr view` 查 PR（拿不到时 `pr_error`）。会话不在 git 仓库里 → `invalid`（`data.reason = "not_git"`） |
 | `session.diff` | C→D | `{ session_id, against?, path? }` → `{ from_sha, files, truncated }`：只读。`against = base`（缺省，只有 worktree 会话）从 merge-base 到工作区，`uncommitted` 从 HEAD 到工作区；都含未跟踪的文件。不带 `path` 只给文件列表和行数（≤ 1000 个文件），带 `path` 只给那一个文件和它的 unified diff（≤ 256 KiB） |
@@ -291,7 +291,7 @@ SessionEvent {
 
 Event =
   | { type: "user_message",     message_id, content, by_device, attachments? }   // 用户消息也进事件流，历史回放才完整；attachments 是 [AttachmentRef]（§ 5.6），以 daemon 的记录为准
-  | { type: "turn_start",       turn_id, message_id }
+  | { type: "turn_start",       turn_id, message_id }         // message_id 为空串 = agent 自己开始的 turn（后台任务结束后），没有用户消息（daemon.md § 7.5）
   | { type: "text_delta",       text }                        // 流式文本
   | { type: "text_done" }
   | { type: "thinking_delta",   text }                        // text 可为空串

@@ -359,6 +359,17 @@ export class FakeDaemon {
     })
   }
 
+  /**
+   * 改某个会话的后台任务数并发 `session.changed`。真 daemon 的通知里总带这个字段；
+   * 传 `undefined` 模拟旧 daemon（通知里没有该字段）。
+   */
+  setBackgroundTasks(sessionId: string, count: number | undefined): void {
+    const rec = this.#session(sessionId)
+    const { background_tasks: _previous, ...rest } = rec.summary
+    rec.summary = count === undefined ? rest : { ...rest, background_tasks: count }
+    this.#notifyChanged(rec)
+  }
+
   /** 非正常断线（模拟 daemon 崩溃 / 网络断）。 */
   dropConnection(): void {
     this.#ws?.terminate()
@@ -1231,6 +1242,7 @@ export class FakeDaemon {
       status: s.status,
       archived: s.archived ?? false,
       pending_permissions: s.pending_permissions,
+      ...(s.background_tasks !== undefined ? { background_tasks: s.background_tasks } : {}),
       updated_at_ms: Date.now(),
       last_seq: s.last_seq,
       ...(s.worktree ? { worktree: s.worktree } : {}),

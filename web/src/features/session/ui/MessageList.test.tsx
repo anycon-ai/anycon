@@ -266,4 +266,29 @@ describe('shell command block', () => {
     expect(screen.getByTestId('tool-command')).toHaveTextContent('$ ls -la')
     expect(screen.getByTestId('tool-output')).toHaveTextContent('a b')
   })
+
+  it('adds a centred system line where the agent started a turn by itself (a background task finished); a turn for a user message gets none', () => {
+    const view = buildView(
+      evs([
+        { type: 'user_message', message_id: 'm1', content: 'start the build', by_device: 'me' },
+        { type: 'turn_start', turn_id: 1, message_id: 'm1' },
+        { type: 'text_delta', text: 'Started in the background.' },
+        { type: 'text_done' },
+        { type: 'turn_done', turn_id: 1, reason: 'completed' },
+        { type: 'turn_start', turn_id: 2, message_id: '' },
+        { type: 'text_delta', text: 'The build finished.' },
+        { type: 'text_done' },
+        { type: 'turn_done', turn_id: 2, reason: 'completed' },
+      ]),
+    )
+    render(<MessageList {...props({ blocks: view.blocks })} />)
+    // 只有 agent 自己开的那一轮有提示，且它在这一轮的回复前面；普通 turn 的分隔线不变（没有文字）
+    const line = screen.getByTestId('agent-turn-start')
+    expect(line).toHaveTextContent('Background task finished — the agent continued')
+    expect(screen.getAllByTestId('agent-turn-start')).toHaveLength(1)
+    const reply = screen.getByText('The build finished.')
+    expect(line.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getAllByTestId('message-user')).toHaveLength(1)
+    expect(screen.getByText('Started in the background.')).toBeInTheDocument()
+  })
 })

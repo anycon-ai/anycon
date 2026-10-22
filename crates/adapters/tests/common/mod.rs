@@ -190,6 +190,8 @@ pub fn names(evs: &[AgentEvent]) -> Vec<String> {
             AgentEvent::Permission(_) => "PERMISSION".into(),
             AgentEvent::Started { .. } => "STARTED".into(),
             AgentEvent::Title(_) => "TITLE".into(),
+            AgentEvent::TurnStarted => "TURN_STARTED".into(),
+            AgentEvent::Background { tasks } => format!("BACKGROUND:{tasks}"),
             AgentEvent::Exited { .. } => "EXITED".into(),
         })
         .collect()

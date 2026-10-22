@@ -357,6 +357,7 @@
     "loadOlder": "加载更早的消息",
     "newMessages": "新消息",
     "turnFinished": "agent 已回复完毕。",
+    "backgroundTasks_other": "后台还有 {{count}} 个任务在运行，结束后 agent 会继续处理",
     "goneTitle": "找不到这个会话",
     "goneBody": "它可能已被另一台设备删除。",
     "goneBack": "回到节点",
@@ -421,7 +422,8 @@
     "thinking": "思考等级已改为 {{value}}",
     "current": "当前设置：{{value}}",
     "mode": "权限模式已切换为 {{value}}",
-    "option": "{{id}} 已设为 {{value}}"
+    "option": "{{id}} 已设为 {{value}}",
+    "agentTurn": "后台任务结束，agent 继续处理"
   },
   "code": {
     "text": "文本"

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use anycon_adapters::claude_code::permissions::{self, NativePending};
-use anycon_adapters::claude_code::translate::{Out, Translator};
+use anycon_adapters::claude_code::translate::{Out, Translator, UserTurn};
 use anycon_agent_api::{AgentEvent, PendingPermission, PermissionDecision};
 use anycon_protocol::{
     EditKind, Event, FileChangeKind, PermissionKind, PlanStatus, ToolCategory, TurnDoneReason, Usage,
@@ -865,4 +865,166 @@ fn tool_result_images_are_replaced_by_a_placeholder_in_the_event() {
     }
     let all = serde_json::to_string(&r.events()).unwrap();
     assert!(!all.contains("iVBOR"), "image base64 leaked into the events: {all}");
+}
+
+/// 事件序列（含 `TurnStarted` / `Background`），工具调用带上名字，便于对照时间线。
+fn timeline(outs: &[Out]) -> Vec<String> {
+    outs.iter()
+        .filter_map(|o| match o {
+            Out::Event(AgentEvent::TurnStarted) => Some("TURN_STARTED".to_string()),
+            Out::Event(AgentEvent::Background { tasks }) => Some(format!("BACKGROUND:{tasks}")),
+            Out::Event(AgentEvent::Started { .. }) => Some("STARTED".to_string()),
+            Out::Event(AgentEvent::Event(Event::ToolCall { name, .. })) => Some(format!("tool_call:{name}")),
+            Out::Event(AgentEvent::Event(ev)) => {
+                Some(serde_json::to_value(ev).unwrap()["type"].as_str().unwrap().into())
+            }
+            Out::Write(_) => Some("WRITE".to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn feed_all(t: &mut Translator, lines: &[String]) -> Vec<Out> {
+    lines.iter().flat_map(|l| t.feed_line(l)).collect()
+}
+
+#[test]
+fn background_tasks_and_the_turns_the_cli_starts_on_its_own() {
+    // 用户的一个 turn 派出后台 subagent 和后台命令后结束；之后每个任务结束，CLI 都自己再跑一轮（没有 `send`）
+    let mut t = Translator::new(CWD, json!({}), None);
+    t.begin_turn();
+    let outs = feed_all(&mut t, &fixture("background_tasks.jsonl"));
+    assert_eq!(
+        timeline(&outs),
+        [
+            "STARTED",
+            "tool_call:Agent",
+            "BACKGROUND:1",
+            "tool_result",
+            "tool_call:Bash",
+            "BACKGROUND:2",
+            "tool_result",
+            "text_delta",
+            "text_done",
+            "turn_done",
+            // 主 turn 结束之后 subagent 还在干活
+            "tool_call:Edit",
+            "BACKGROUND:1",
+            // 后台命令结束：CLI 自己开始一轮
+            "TURN_STARTED",
+            "text_delta",
+            "text_done",
+            // subagent 的 Edit 跨了 turn：结果在这一轮到，工具信息还在，照样有 diff 和 file_changed
+            "tool_result",
+            "file_changed",
+            "turn_done",
+            "BACKGROUND:0",
+            "TURN_STARTED",
+            "text_delta",
+            "text_done",
+            "turn_done",
+        ]
+    );
+    let r = Replay { outs };
+    let dones = r.turn_dones();
+    assert_eq!(
+        dones.iter().map(|d| (d.0, d.1)).collect::<Vec<_>>(),
+        [(1, TurnDoneReason::Completed), (2, TurnDoneReason::Completed), (3, TurnDoneReason::Completed)]
+    );
+    // 费用照旧是累计值的差：自己开的那几轮也分到自己的份
+    approx(dones[0].2.as_ref().unwrap().cost_usd, 0.01);
+    approx(dones[1].2.as_ref().unwrap().cost_usd, 0.005);
+    approx(dones[2].2.as_ref().unwrap().cost_usd, 0.005);
+    let edit = r.events().into_iter().find_map(|e| match e {
+        Event::ToolResult { id, detail, .. } if id == "toolu_sub_edit" => Some(detail.clone()),
+        _ => None,
+    });
+    assert!(edit.flatten().and_then(|d| d.unified_diff).is_some_and(|d| d.contains("+b")));
+    assert!(!t.is_busy());
+}
+
+#[test]
+fn background_count_falls_back_to_task_lifecycle_messages() {
+    // 没有 `background_tasks_changed` 的 CLI：按 `task_started`（后台的）/ `task_notification` / `task_updated` 计数
+    let mut t = Translator::new(CWD, json!({}), Some("s".into()));
+    let lines = [
+        json!({"type":"system","subtype":"task_started","task_id":"fg","is_backgrounded":false}),
+        json!({"type":"system","subtype":"task_started","task_id":"a","is_backgrounded":true}),
+        json!({"type":"system","subtype":"task_started","task_id":"b","is_backgrounded":true}),
+        json!({"type":"system","subtype":"task_updated","task_id":"a","patch":{"status":"running"}}),
+        json!({"type":"system","subtype":"task_updated","task_id":"a","patch":{"status":"failed"}}),
+        json!({"type":"system","subtype":"task_notification","task_id":"a","status":"failed"}),
+        json!({"type":"system","subtype":"task_notification","task_id":"b","status":"completed"}),
+    ];
+    let outs: Vec<Out> = lines.iter().flat_map(|l| t.feed(l)).collect();
+    assert_eq!(timeline(&outs), ["BACKGROUND:1", "BACKGROUND:2", "BACKGROUND:1", "BACKGROUND:0"]);
+}
+
+fn line(v: Value) -> String {
+    v.to_string()
+}
+
+fn init() -> String {
+    line(json!({"type":"system","subtype":"init","session_id":"s","model":"m"}))
+}
+
+fn result(total: f64, input: u64) -> String {
+    line(
+        json!({"type":"result","subtype":"success","is_error":false,"duration_ms":10,"total_cost_usd":total,"usage":{"input_tokens":input}}),
+    )
+}
+
+#[test]
+fn a_user_message_during_the_clis_own_turn_waits_for_it_and_takes_it_over() {
+    let mut t = Translator::new(CWD, json!({}), Some("s".into()));
+    // CLI 自己开始了一轮
+    assert_eq!(timeline(&t.feed_line(&init())), ["TURN_STARTED"]);
+    assert!(t.is_busy());
+    // 这时到的用户消息暂存（写进去的话，这一轮的 result 会被当成用户 turn 的结束）；第二条照旧是「忙」
+    assert!(!t.would_refuse_user_message());
+    assert_eq!(t.submit_user_message(json!({"m": 1})), UserTurn::Deferred);
+    assert!(t.would_refuse_user_message());
+    assert_eq!(t.submit_user_message(json!({"m": 2})), UserTurn::Busy);
+    // 这一轮结束：不发 TurnDone，把暂存的消息交出来写进 stdin
+    let outs = t.feed_line(&result(0.01, 5));
+    assert_eq!(timeline(&outs), ["WRITE"]);
+    assert!(matches!(&outs[0], Out::Write(v) if *v == json!({"m": 1})));
+    assert!(t.is_busy(), "the user's turn is now running");
+    // 用户的 turn：init 不再算 CLI 自己开的；结束时报两轮合起来的用量
+    assert!(timeline(&t.feed_line(&init())).is_empty());
+    let r = Replay { outs: t.feed_line(&result(0.03, 7)) };
+    let dones = r.turn_dones();
+    assert_eq!(dones.len(), 1);
+    assert_eq!(dones[0].1, TurnDoneReason::Completed);
+    let u = dones[0].2.clone().unwrap();
+    assert_eq!(u.input_tokens, Some(12));
+    assert_eq!(u.duration_ms, 20);
+    approx(u.cost_usd, 0.03);
+    assert!(!t.is_busy());
+    // 之后再来的 init 又是 CLI 自己开的一轮
+    assert_eq!(timeline(&t.feed_line(&init())), ["TURN_STARTED"]);
+}
+
+#[test]
+fn cancelling_while_the_message_waits_drops_it() {
+    let mut t = Translator::new(CWD, json!({}), Some("s".into()));
+    t.feed_line(&init());
+    assert_eq!(t.submit_user_message(json!({"m": 1})), UserTurn::Deferred);
+    // 取消发出之后这一轮自己正常结束了：消息还没送出去，不再写，按取消收尾
+    t.mark_cancel_requested();
+    let r = Replay { outs: t.feed_line(&result(0.01, 5)) };
+    assert!(!r.outs.iter().any(|o| matches!(o, Out::Write(_))));
+    assert_eq!(r.turn_dones().iter().map(|d| d.1).collect::<Vec<_>>(), [TurnDoneReason::Cancelled]);
+    assert!(!t.is_busy());
+}
+
+#[test]
+fn the_process_dying_during_the_clis_own_turn_is_a_death_mid_turn() {
+    let mut t = Translator::new(CWD, json!({}), Some("s".into()));
+    t.feed_line(&line(json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"a"}]})));
+    t.feed_line(&init());
+    assert_eq!(t.submit_user_message(json!({"m": 1})), UserTurn::Deferred);
+    let fin = t.finish();
+    assert!(fin.died_mid_turn);
+    assert!(!fin.out.iter().any(|o| matches!(o, Out::Write(_))), "the waiting message is dropped");
 }

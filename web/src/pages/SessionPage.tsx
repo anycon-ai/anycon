@@ -114,7 +114,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   }, [running, prevRunning, t])
 
   const baseSettings = view?.settings ?? summary?.settings
-  const { selection, onChange, queued } = useSessionSettings({ nodeId: nodeId ?? '', sessionId, agent, running, baseSettings, offline })
+  const { selection, onChange, pending: pendingSettings } = useSessionSettings({ nodeId: nodeId ?? '', sessionId, agent, running, baseSettings, offline })
 
   const seen = useMemo(() => new Set(view?.blocks.filter((b) => b.type === 'user').map((b) => (b.type === 'user' ? b.messageId : '')) ?? []), [view?.blocks])
   const pending = useMemo(() => pendingMessages(draft, inflight, sessionId, seen), [draft, inflight, sessionId, seen])
@@ -201,7 +201,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   // 图片附件（ADR-35）：节点支持 blob、agent 收图片才显示回形针；节点不在线时禁用并说明
   const attachMimes = attachmentMimes(entry.info, agent)
 
-  // 分支 chip 放在输入框下面选项行的最左边（和新建会话的「工作位置」同一个位置），点了切到「改动」
+  // 分支 chip 宽屏放在输入框上方靠右，窄屏和其他选项一起在「⚙」底部弹层里；点了切到「改动」
   const branchChip = (layout: 'inline' | 'stacked') => (gitAvailable ? <BranchChip className={layout === 'inline' ? 'min-h-0' : undefined} worktree={worktree} status={gitStatus} onOpen={openChanges} /> : null)
   const uncommitted = gitStatus?.uncommitted ?? 0
 
@@ -209,18 +209,18 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
     agent && selection ? (
       <div>
         <SettingsControls
-          left={branchChip(layout)}
+          left={layout === 'stacked' ? branchChip(layout) : undefined}
           agent={agent}
           value={selection}
           onChange={onChange}
           disabled={offline}
           disabledReason={t('options.offlineLocked')}
+          pending={pendingSettings}
           dangerousForbidden={entry.dangerousForbidden}
           customKey={`${nodeId}:${agent.id}`}
           idPrefix="option"
           layout={layout}
         />
-        {running ? <p className="mt-1.5 text-xs text-fg-subtle">{queued ? t('options.queuedChange') : t('options.runningHint')}</p> : null}
       </div>
     ) : null
 
@@ -449,6 +449,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
               running={running}
               queueNotice={!agent?.capabilities?.interject}
               blockedReason={blockedReason}
+              aside={branchChip('inline')}
               options={agent ? options : undefined}
               attachments={attachMimes ? { nodeId, accept: attachMimes, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
               focusToken={focusToken}

@@ -530,7 +530,6 @@
     "dangerForbidden": "Not allowed by this node's settings",
     "offlineLocked": "The node is offline.",
     "queuedChange": "Change will apply when this turn ends.",
-    "runningHint": "Options are locked while the agent is working; changes apply after the turn.",
     "dangerousDefaultSkipped": "The default permission mode “{{mode}}” is dangerous, so it was not preselected. Choose it yourself if you really want it.",
     "risk": {
       "dangerous": "dangerous",
@@ -720,6 +719,9 @@
     "large": "Large",
     "compact": "Compact mode",
     "compactHint": "Tighter spacing between messages.",
+    "blockZoom": "Block page zoom",
+    "blockZoomHintIos": "Tapping a text box no longer zooms the page in. Pinch and double-tap zoom are blocked too.",
+    "blockZoomHintAndroid": "Blocks pinch and double-tap zoom. Android's \"Force enable zoom\" accessibility setting still overrides this.",
     "thinking": "Thinking blocks",
     "thinkingHint": "How the agent's reasoning is shown.",
     "collapsed": "Collapsed",

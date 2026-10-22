@@ -526,7 +526,6 @@
     "dangerForbidden": "这个节点的设置不允许",
     "offlineLocked": "节点离线。",
     "queuedChange": "改动会在本轮结束后生效。",
-    "runningHint": "agent 工作时选项被锁定；改动会在本轮结束后生效。",
     "dangerousDefaultSkipped": "默认权限模式“{{mode}}”是危险模式，没有自动选中。确实需要的话请自己选择。",
     "risk": {
       "dangerous": "危险",
@@ -714,6 +713,9 @@
     "large": "大",
     "compact": "紧凑模式",
     "compactHint": "缩小消息之间的间距。",
+    "blockZoom": "禁止页面缩放",
+    "blockZoomHintIos": "点输入框时页面不再自动放大，双指和双击缩放也一并禁止。",
+    "blockZoomHintAndroid": "禁止双指和双击缩放。系统无障碍里的「强制启用缩放」仍会生效。",
     "thinking": "思考过程",
     "thinkingHint": "如何显示 agent 的推理过程。",
     "collapsed": "折叠",

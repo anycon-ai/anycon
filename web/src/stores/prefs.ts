@@ -17,6 +17,8 @@ export interface PrefsState {
   language: LanguagePref
   fontSize: FontSize
   compact: boolean
+  /** 禁止页面缩放（只在 iOS / Android 上起作用，见 lib/zoom.ts）。默认关，保持系统行为。 */
+  blockZoom: boolean
   thinkingDisplay: ThinkingDisplay
   enterBehavior: EnterBehavior
   projectView: ProjectView
@@ -66,6 +68,7 @@ export const usePrefs = create<PrefsState>()(
       language: 'auto',
       fontSize: 'md',
       compact: false,
+      blockZoom: false,
       thinkingDisplay: 'collapsed',
       enterBehavior: 'auto',
       projectView: 'cards',
@@ -95,6 +98,7 @@ export const usePrefs = create<PrefsState>()(
         language: s.language,
         fontSize: s.fontSize,
         compact: s.compact,
+        blockZoom: s.blockZoom,
         thinkingDisplay: s.thinkingDisplay,
         enterBehavior: s.enterBehavior,
         projectView: s.projectView,

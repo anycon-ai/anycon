@@ -1,13 +1,15 @@
 import { useEffect } from 'react'
 import { applyLanguagePref } from '@/i18n'
+import { applyZoomLock } from '@/lib/zoom'
 import { syncSwLanguage } from '@/sw/directory'
 import { usePrefs } from '@/stores/prefs'
 
-/** 把外观偏好落到 <html>：主题 class、字号档、紧凑模式、语言。 */
+/** 把外观偏好落到 <html>：主题 class、字号档、紧凑模式、禁止缩放、语言。 */
 export function ThemeEffects() {
   const theme = usePrefs((s) => s.theme)
   const fontSize = usePrefs((s) => s.fontSize)
   const compact = usePrefs((s) => s.compact)
+  const blockZoom = usePrefs((s) => s.blockZoom)
   const language = usePrefs((s) => s.language)
 
   useEffect(() => {
@@ -28,6 +30,8 @@ export function ThemeEffects() {
     if (compact) document.documentElement.dataset.compact = '1'
     else delete document.documentElement.dataset.compact
   }, [compact])
+
+  useEffect(() => applyZoomLock(blockZoom), [blockZoom])
 
   useEffect(() => {
     applyLanguagePref(language)

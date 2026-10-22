@@ -524,7 +524,6 @@
     "dangerForbidden": "这个节点的设置不允许",
     "offlineLocked": "节点离线。",
     "queuedChange": "改动会在本轮结束后生效。",
-    "runningHint": "agent 工作时选项被锁定；改动会在本轮结束后生效。",
     "dangerousDefaultSkipped": "默认权限模式“{{mode}}”是危险模式，没有自动选中。确实需要的话请自己选择。",
     "risk": {
       "dangerous": "危险",

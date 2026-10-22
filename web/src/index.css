@@ -123,6 +123,12 @@ html[data-font='lg'] {
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior: none;
   }
+  /* 拖动左栏宽度时：整页都是调整光标，不选中文字 */
+  html[data-resizing],
+  html[data-resizing] * {
+    cursor: col-resize !important;
+    user-select: none;
+  }
   /* 外观设置「禁止页面缩放」在 iOS 上：关掉双击缩放（双指缩放由 lib/zoom.ts 拦截）。放在 base 层，组件自己的 touch-* 工具类仍然优先 */
   html[data-zoom-lock],
   html[data-zoom-lock] * {

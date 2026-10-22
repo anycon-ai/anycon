@@ -103,6 +103,8 @@
   },
   "sidebar": {
     "menu": "菜单",
+    "resize": "调整侧栏宽度",
+    "resizeHint": "拖动调整宽度，双击恢复默认。",
     "newSession": "新会话",
     "search": "搜索（Ctrl+K）",
     "sessions": "会话",

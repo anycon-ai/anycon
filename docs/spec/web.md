@@ -43,23 +43,23 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 ┌──────────┬──────────────────────────────────────┬────────────┐
 │ 节点切换  │ 面包屑  节点 / 项目 / 会话标题  状态   │ 会话信息    │
 │──────────│──────────────────────────────────────│            │
-│ 搜索 ⌘K  │                                      │ agent      │
-│ + 新会话  │                                      │ 模型       │
-│          │           消息流                      │ 思考       │
-│ 项目 A ＋│                                      │ 权限模式   │
-│  · 会话1 │                                      │ 用量 / 费用 │
-│  · 会话2 │                                      │────────────│
-│ 项目 B ＋│  ╭────────────────────────────────╮  │ 待审批 (1) │
-│ 临时会话  │  │ ＋ 输入框               ⏹  发送 │  │ 改动的文件  │
-│          │  ╰────────────────────────────────╯  │  src/a.ts  │
-│──────────│  [权限▾][更多]        [模型▾][思考▾] │  …         │
+│ 搜索 ⌘K  │                                      │ 工作目录   │
+│ + 新会话  │                                      │ Agent  2 个│
+│          │           消息流                      │ 主 agent ● │
+│ 项目 A ＋│                                      │ └子 agent ●│
+│  · 会话1 │                                      │ └子 agent ✓│
+│  · 会话2 │                                      │ 轮数 / 费用│
+│ 项目 B ＋│  ╭────────────────────────────────╮  │────────────│
+│ 临时会话  │  │ ＋ 输入框               ⏹  发送 │  │ 待审批 (1) │
+│          │  ╰────────────────────────────────╯  │ 操作       │
+│──────────│  [权限▾][更多]        [模型▾][思考▾] │            │
 │ ● 在线   │                                      │            │
 │ 账号 ▾   │                                      │            │
 └──────────┴──────────────────────────────────────┴────────────┘
    260px 可收起           自适应                    320px 可收起
 ```
 
-- 左栏：节点切换器（顶部，下拉；多节点时显示在线状态点；账号下这个浏览器还没解锁的节点列在下拉底部，带锁图标，点了去 `/unlock/:node`）、搜索、新建按钮、按项目分组的会话树（最近活跃的项目在前，每个项目默认展开最近 5 个会话；项目行右边一个「＋」，在这个项目里新建会话）、临时会话分组、底部连接状态和账号菜单。左栏可收起（Logo 旁的按钮或 `⌘B`，收起后页面头部最左边出现展开按钮），收起状态记在 localStorage
+- 左栏：节点切换器（顶部，下拉；多节点时显示在线状态点；账号下这个浏览器还没解锁的节点列在下拉底部，带锁图标，点了去 `/unlock/:node`）、搜索、新建按钮、按项目分组的会话树（最近活跃的项目在前，每个项目默认展开最近 5 个会话；项目行右边一个「＋」，在这个项目里新建会话）、临时会话分组、底部连接状态和账号菜单。左栏可收起（Logo 旁的按钮或 `⌘B`，收起后页面头部最左边出现展开按钮），收起状态记在 localStorage。宽屏时拖动左栏右缘调整宽度（默认 260px，200–480px，最宽不超过半个窗口），双击右缘恢复默认，键盘聚焦后 ← / → 调整；宽度也记在 localStorage
 - 中栏：会话。只有一行顶栏：面包屑可点，最后一级是会话标题、点击编辑；右侧依次是「聊天 / 改动」开关（带图标，「改动」后面是未提交文件数）、危险模式 chip、状态 chip（运行中 / 等待审批 / 空闲 / 已结束 / 节点离线）、节点状态、「ⓘ」
 - 右栏：会话信息面板，可收起，收起状态记在 localStorage
 
@@ -224,7 +224,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `turn_start` | 一条细分隔线，hover 显示 turn 编号和时间 |
 | `thinking_delta` | 「思考中…」一行灰字（不画卡片），流式时显示最近两行，结束后折叠成一行「思考了 12 秒」。可展开。设置里可改为始终展开或隐藏 |
 | `text_delta` | Markdown 流式渲染（react-markdown + shiki），代码块有复制按钮和语言标签。**远程图片（`http(s)://`）不会自动加载**：被提示注入的 agent 可以借图片 URL 把数据带出去，所以只显示成带主机名的占位按钮，点了才请求；hub 的 CSP（`img-src 'self' data: blob:`）本来就不允许页面加载第三方图片，点了之后会退成一条链接「从 <主机> 打开」。`data:image/*`（非 SVG）、`blob:` 直接渲染；同源只放行已知静态资源路径（`/assets/<名字>`、`/icons/<名字>` 和几个固定的根文件：只有一层路径，名字限 `[A-Za-z0-9._-]`、≤ 128 字符，不能带 `?`、百分号编码或 userinfo），其他同源路径（比如 `/x?d=…`，能不点击就把内容送到 hub）同样走占位按钮。`javascript:` 等协议的链接被拦；**不开 `skipHtml`**——没有 rehype-raw，react-markdown 默认就把 HTML 当文本转义（开了会把 `Vec<String>` 里的 `<String>` 当标签吞掉） |
-| `tool_call` 按 `category` | 收起时是一行灰字（图标 + 摘要 + ›，失败的是红字，不画卡片），展开的内容放在下面的框里；连着的思考 / 工具行之间只留很小的间距。`shell`：终端样式块，命令 + 输出，**默认收起**：一行摘要，agent 给了命令说明（Claude Code Bash 的 `input.description`）就显示说明，否则显示 `$ 命令`，放不下截断、悬停看全文；展开后先是折行显示的完整命令（右上角复制按钮，复制不带 `$ `），再是输出，输出超过 20 行再折叠；`file_edit`：文件路径 + diff 视图（react-diff-view），默认折叠显示 +N −M；`file_read` / `search`：一行摘要（「读取 src/a.ts」「搜索 "foo" → 3 个结果」），可展开；`web`：URL 一行；`mcp` / `subagent` / `other`：工具名 + 可展开的 JSON |
+| `tool_call` 按 `category` | 收起时是一行灰字（图标 + 摘要 + ›，失败的是红字，不画卡片），展开的内容放在下面的框里；连着的思考 / 工具行之间只留很小的间距。`shell`：终端样式块，命令 + 输出，**默认收起**：一行摘要，agent 给了命令说明（Claude Code Bash 的 `input.description`）就显示说明，否则显示 `$ 命令`，放不下截断、悬停看全文；展开后先是折行显示的完整命令（右上角复制按钮，复制不带 `$ `），再是输出，输出超过 20 行再折叠；`file_edit`：文件路径 + diff 视图（react-diff-view），默认折叠显示 +N −M；`file_read` / `search`：一行摘要（「读取 src/a.ts」「搜索 "foo" → 3 个结果」），可展开；`web`：URL 一行；`mcp` / `other`：工具名 + 可展开的 JSON；`subagent`：一行标题（子 agent 的说明、它一共调了几次工具、运行中 / 后台运行中 / 失败），带 `parent_id` 指向它的调用都收在这个块里、不在主流里单独成行（几个子 agent 并行时各自一块，不再交错），展开后缩进一级按顺序列出、最后是子 agent 的结果（Markdown）；收起且还在跑时下面露出它最近的一次调用。父调用不在已加载的历史里时子调用照常平铺 |
 | `tool_output_delta` | 追加进对应 `shell` 块，边跑边显示 |
 | `tool_result` | 合并进对应 `tool_call` 块，`is_error` 时块变红 |
 | `plan` | 一张可折叠的待办卡片，随后续 `plan` 事件在**同一 turn 内**原地更新，不新增卡片；下一个 turn 另起一张（跨 turn 的话那张卡离当前太远） |
@@ -234,7 +234,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `turn_done` | 一行：「复制」图标（复制这一轮 agent 的全部文字，Markdown，不含工具输出）+ 灰字：模型、用时、token 数、费用（agent 报了才显示） |
 | `error` | 红色块，`recoverable` 时带「重试」 |
 | `status` | 不单独渲染，驱动头部 chip 和 composer 状态 |
-| `file_changed` | 不单独渲染，汇总到信息面板的「改动的文件」 |
+| `file_changed` | 不单独渲染（改了哪些文件看「改动」视图）；git 会话里触发一次 git 状态刷新（见下） |
 | `settings_changed` | 一行灰字：「模型已切换为 …」 |
 | `git` | 一行灰字（失败是红字，冲突 / worktree 被保留是黄字），按 `action`：「已在 worktree `anycon/x` 中开始（基于 main，复制了 2 个文件）」「worktree 创建失败：…」「已删除 worktree（分支保留 / 分支已删除）」「worktree 有未提交的改动，已保留」「已按分支重建 worktree」「worktree 目录不见了」「main 没有新提交」「已合并 main 的 3 个提交」「合并 main 时 2 个文件有冲突：a.rs、b.rs」+ 按钮「让 agent 解决」「放弃合并」「已放弃合并」。同时触发 git 状态刷新 |
 
@@ -264,9 +264,9 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 - **显示**：自己刚传的图直接用本地数据（同时写进 IndexedDB 的 `blobs` 缓存，键是 `blob_id`）；历史里的图先查缓存，没有再懒加载（`blob.get` 分段拉、同一节点同时最多 2 张），拉完写缓存，用 `blob:` URL 显示（CSP 已允许 `img-src blob:`）。点开是一个对话框看大图，带文件名、尺寸和下载
 - 导出 Markdown 时附件写成 `[图片：<文件名>]`
 
-#### 底部的分支 chip（ADR-34）
+#### 分支 chip（ADR-34）
 
-有 worktree 的会话在输入框下面选项行的最左边显示 `⑂ anycon/fix-login ← main  ↑3 ↓1  · 5 个未提交`（`data-testid="session-branch"`；没有的部分不显示）。数据来自 `SessionSummary.worktree` 和 `session.git_status`：进入会话页、`turn_done`、`file_changed`（防抖 2 秒）、`git` 事件、手动刷新时拉一次，不轮询。`state = creating` 显示转圈和「正在创建 worktree…」，`missing` 显示警告色「worktree 不见了」，`kept` / `removed`（已归档）显示中性色。点击切到主区的「改动」视图（见下）。「改动」视图没有输入框时它在底部单独一行；已归档的会话在「已归档」条的最前面；手机（< 768px）上它和其他选项一起在「⚙」底部弹层里。在项目目录本身工作的 git 会话只显示分支名（`git_status.branch`）和未提交数，不显示 base。
+有 worktree 的会话在输入框上方靠右显示 `⑂ anycon/fix-login ← main  ↑3 ↓1  · 5 个未提交`（`data-testid="session-branch"`；没有的部分不显示）。数据来自 `SessionSummary.worktree` 和 `session.git_status`：进入会话页、`turn_done`、`file_changed`（防抖 2 秒）、`git` 事件、手动刷新时拉一次，不轮询。`state = creating` 显示转圈和「正在创建 worktree…」，`missing` 显示警告色「worktree 不见了」，`kept` / `removed`（已归档）显示中性色。点击切到主区的「改动」视图（见下）。不放在输入框下面的选项行里：分支名常常很长，挤在那一行会把模型 / 思考挤到第二行。「改动」视图没有输入框时它在底部单独一行；已归档的会话在「已归档」条的最前面；手机（< 768px）上它和其他选项一起在「⚙」底部弹层里。在项目目录本身工作的 git 会话只显示分支名（`git_status.branch`）和未提交数，不显示 base。
 
 #### 信息面板
 
@@ -285,10 +285,10 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 **概览**标签：
 
-- agent、模型、思考等级、权限模式（都可点开修改，规则见 § 5.3）
-- 工作目录、创建时间、turn 数、累计 token 和费用
+- 工作目录、分支、创建时间
+- 「Agent」卡片（`info-agents`）：标题右边是正在工作的个数（主 agent 在跑一个 turn 或等审批算一个，加上还没结束的子 agent），没有就不显示。第一行是主 agent：名称、累计 token（输入 / 输出）、会话状态 chip。下面是已加载的事件里的子 agent（`category = subagent` 的调用），父在前、子按嵌套层数缩进：说明、agent 报的 token（`tool_result.detail.total_tokens`，结束后才有）和它调了几次工具、状态 chip（运行中 / 后台运行 / 已完成 / 失败 / 已停止）。没有结果的子 agent 在主 agent 的 turn 结束后（或启动它的子 agent 结束后）算「已停止」，后台子 agent 在 agent 进程退出（`ended` / `error` / `interrupted`）后同样算「已停止」。子 agent 超过 6 个时只列还在跑的和最近的 6 个，上面一行「显示更早的 N 个子 agent」展开全部
+- turn 数、累计费用（主 agent 的 token 不含子 agent 的，费用是 agent 报的总数）
 - 待审批请求列表（和消息流里的卡片联动）
-- 「本会话改动的文件」：从 `file_changed` 事件汇总，点击在文件浏览（v0.2）打开，v0.1 只列路径
 - 操作：重命名、归档、删除（二次确认，说明会删 daemon 上的历史）、导出 Markdown
 - **有 worktree 的会话**：「归档」先弹确认框：说明 worktree 的处理（`auto`：没有未提交的改动就删掉 worktree——分支上有自己的提交就保留分支，没有就一起删；有未提交的改动就保留 worktree），选项「自动 / 保留 worktree / 删除 worktree（丢弃 N 个未提交的改动）」，N 来自 `git_status.uncommitted`。「删除」确认框多两项：worktree 同样三选一；「同时删除分支 anycon/x」复选框，分支上有自己的提交（`ahead > 0`）或没推送的提交时在旁边警告「N 个提交会丢失」。没有 worktree 的会话、worktree 已经 `removed` / `failed` 的会话行为不变（归档不弹框）
 
@@ -316,7 +316,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `/settings/sessions` | 浏览器登录会话，可踢出 |
 | `/settings/devices` | 本账号全部设备（含当前浏览器，标「这台」），按节点分组显示配对关系，吊销 |
 | `/settings/notifications` | **本浏览器的推送**：状态（未开启 / 已开启 / 被浏览器拒绝 / 不支持——不是安全上下文、没有 `PushManager`、iOS 没加到主屏）；「开启推送」→ `Notification.requestPermission()` → `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })` → `POST /api/push/subscriptions`（带本浏览器的 web 设备 id；还没配对过任何节点的浏览器没有设备 id，提示先配对或解锁一台节点）；「关闭」退订并 `DELETE`；「发送测试推送」→ `POST /api/push/test`。订阅过期 / 被换掉（`pushsubscriptionchange`）时 service worker 重新订阅并上报。**每个类别**一行 push / email 两个开关（`GET` / `PUT /api/me/notifications`；`email_available = false` 时邮件那一列禁用并说明原因：hub 没配 SMTP，或账号没绑定邮箱）。**本账号的其他推送订阅**列表（hub 给的 `device_name`、推送服务主机名），可删除。测试推送的结果按 `{ result, status? }` 显示（`error` 时带上推送服务回的状态码） |
-| `/settings/appearance` | 主题（跟随系统 / 浅 / 深）、语言、字号、紧凑模式、思考过程显示（折叠 / 展开 / 隐藏）、Enter 行为 |
+| `/settings/appearance` | 主题（跟随系统 / 浅 / 深）、语言、字号、紧凑模式、禁止页面缩放（只在 iOS / Android 上显示）、思考过程显示（折叠 / 展开 / 隐藏）、Enter 行为 |
 | `/settings/data` | 本地缓存大小、清空缓存、导出本浏览器的设备密钥（否——不提供，见 ADR-23）|
 | `/settings/quota` | 仅 `multi`：配额用量 |
 | `/settings/security` | 安全活动（hub 审计里本账号的部分） |
@@ -364,7 +364,7 @@ options: [ { id: "fast_mode", kind: "bool", label: "Fast mode", default: false }
 
 - **新建会话时**：composer 选项栏全部可改
 - **会话空闲时**：全部可改（`session.set_settings`），从下一个 turn 生效，消息流出现「模型已切换为 …」。adapter 内部是热改还是重启进程续接，UI 不关心（[daemon.md § 6.4](daemon.md#64-会话中修改)）
-- **运行中的 turn**：所有选项锁定，等本轮结束；提供「结束后应用」的排队改动
+- **运行中的 turn**：选项仍可改，但改动排队，本轮结束后才 `session.set_settings`。排队中、还没生效的那几格文字换成浅色，悬停说明「本轮结束后生效」；不在选项栏下面另加提示行（运行状态切换时布局不跳动）
 
 ### 5.4 默认值
 
@@ -382,7 +382,7 @@ options: [ { id: "fast_mode", kind: "bool", label: "Fast mode", default: false }
 
 ### 5.6 用量与费用
 
-`turn_done.usage` 有什么就显示什么：token 数、费用、用时。agent 不报的字段不显示占位。会话累计显示在信息面板，节点首页不汇总（daemon 不做记账，这是 agent 的事）。
+`turn_done.usage` 有什么就显示什么：token 数、费用、用时。agent 不报的字段不显示占位。会话累计显示在信息面板，子 agent 各自的 token（`tool_result.detail.total_tokens`）显示在它那一行；节点首页不汇总（daemon 不做记账，这是 agent 的事）。
 
 ## 6. 状态层与缓存
 
@@ -483,6 +483,7 @@ Noise 的 wasm 在主线程跑：单条消息加解密是微秒级，开 Worker 
 - 主题 token 在 `web/DESIGN.md`：浅 / 深两套，跟随系统；代码高亮用 shiki 的双主题输出
 - 所有交互组件基于 Radix Primitives，保证焦点管理和键盘可达；流式输出区域 `aria-live="polite"`，但 token 级增量不播报，只在 turn 结束时播报一句
 - 字号三档，紧凑模式减小气泡间距
+- 禁止页面缩放：默认关，保持系统的缩放行为。打开后，iOS 用 viewport 的 `maximum-scale=1` 止住聚焦输入框时的自动放大（Safari 为了无障碍不理 `user-scalable=no`），双指缩放靠拦 `gesturestart` / `gesturechange`，双击缩放靠 `touch-action: manipulation`；Android 用 `maximum-scale=1, user-scalable=no`（系统无障碍的「强制启用缩放」仍可覆盖）。桌面不显示这个开关
 
 ## 11. 空状态与错误
 

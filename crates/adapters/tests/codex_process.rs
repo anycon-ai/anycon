@@ -1279,7 +1279,7 @@ async fn oversize_notifications_are_dropped_not_fatal() {
     assert!(error_codes(&evs).is_empty(), "{:?}", error_codes(&evs));
     // 补丁的调用和结果还是出现了：路径从前缀里抠出来，内容标注「太大没显示」
     match events.iter().find(|e| matches!(e, Event::ToolCall { .. })).expect("a tool_call") {
-        Event::ToolCall { id, name, category, title, input, detail } => {
+        Event::ToolCall { id, name, category, title, input, detail, .. } => {
             assert_eq!((id.as_str(), name.as_str(), *category), ("big_1", "fileChange", ToolCategory::FileEdit));
             assert!(title.contains("/work/proj/big.txt") && title.contains("too large"), "{title}");
             assert!(input["omitted"].as_str().unwrap().contains("over the"), "{input}");

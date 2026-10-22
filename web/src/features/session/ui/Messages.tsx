@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
-import { AlertTriangle, Check, ChevronRight, CircleDashed, Clock, Copy, ListChecks, Loader2, Pencil, RefreshCw, RotateCw, Trash2 } from 'lucide-react'
+import { AlertTriangle, Bot, Check, ChevronRight, CircleDashed, Clock, Copy, ListChecks, Loader2, Pencil, RefreshCw, RotateCw, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ToolResultDetail } from '@/protocol'
 import { Markdown } from '@/components/Markdown'
@@ -16,6 +16,7 @@ import { gitEventText } from '@/features/worktree/eventText'
 import { describeAttachmentFailure } from '@/features/attachments/errors'
 import { MessageAttachments } from '@/features/attachments/ui/MessageAttachments'
 import type { AssistantBlock, ErrorBlock, GitSystemBlock, PlanBlock, SystemBlock, ThinkingBlock, ToolBlock, TurnDoneBlock, UserBlock } from '../reducer'
+import { countCalls, subagentState, type ToolTree } from '../subagents'
 import { diffStats, splitLines, syntheticDiff, toolCommand, toolDescription, toolFileChanges, toolLabel, toolOutputText, toolPath, toolQuery, toolUrl } from '../text'
 
 const DiffView = lazy(() => import('./DiffView').then((m) => ({ default: m.DiffView })))
@@ -311,6 +312,62 @@ export function ToolView({ block }: { block: ToolBlock }) {
         </ToolFrame>
       )
   }
+}
+
+/** 一次工具调用：启动子 agent 的（或下面挂着子调用的）画成子 agent 块，其余照常。 */
+export function ToolNode({ block, tree }: { block: ToolBlock; tree: ToolTree }) {
+  return block.category === 'subagent' || tree.children.has(block.toolId) ? <SubagentView block={block} tree={tree} /> : <ToolView block={block} />
+}
+
+/**
+ * 子 agent：一行标题（说明、调用次数、状态），展开后是它内部的调用（缩进一级）和最后的结果。
+ * 收起且还在跑时，下面带一行它最近的那次调用，几个并行的子 agent 各自的进度一眼能看到。
+ */
+export function SubagentView({ block, tree }: { block: ToolBlock; tree: ToolTree }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const kids = tree.children.get(block.toolId) ?? []
+  const state = subagentState(block)
+  const active = state === 'running' || state === 'background'
+  const calls = countCalls(block.toolId, tree)
+  // 后台子 agent 的第一条结果只是「已在后台启动」，结束时补的那条才是它的总结
+  const output = state === 'done' || state === 'error' ? toolOutputText(block) : ''
+  const last = kids.at(-1)
+  return (
+    <div className="text-sm" data-testid="tool-block" data-category="subagent" data-state={state}>
+      <button type="button" className={cn('flex max-w-full items-center gap-1.5 py-0.5 text-left', state === 'error' ? 'text-danger' : 'text-fg-subtle hover:text-fg-muted')} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <Bot className="size-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 truncate font-medium" title={toolLabel(block)}>
+          {toolLabel(block)}
+        </span>
+        {calls > 0 ? (
+          <span className="shrink-0 text-xs" data-testid="subagent-calls">
+            {t('tool.subagentCalls', { count: calls })}
+          </span>
+        ) : null}
+        {state === 'background' ? <span className="shrink-0 text-xs">{t('tool.background')}</span> : null}
+        {state === 'error' ? <span className="shrink-0 text-xs">{t('tool.failed')}</span> : null}
+        {active ? <Loader2 className="size-3.5 shrink-0 animate-spin" aria-label={t('status.session.running')} /> : null}
+        <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')} aria-hidden />
+      </button>
+      {open ? (
+        <div className="ml-1.5 mt-1 space-y-1 border-l-2 border-border pl-3" data-testid="subagent-children">
+          {kids.map((k) => (
+            <ToolNode key={k.key} block={k} tree={tree} />
+          ))}
+          {output ? (
+            <div className={cn('scroll-thin max-h-96 overflow-auto rounded-lg border px-3 py-2 text-fg-muted', state === 'error' ? 'border-danger/60' : 'border-border')} data-testid="subagent-result">
+              <Markdown text={output} />
+            </div>
+          ) : null}
+        </div>
+      ) : active && last ? (
+        <div className="ml-1.5 border-l-2 border-border pl-3" data-testid="subagent-latest">
+          <ToolNode block={last} tree={tree} />
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function safeJson(v: unknown): string {

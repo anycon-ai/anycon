@@ -296,7 +296,7 @@ Event =
   | { type: "text_done" }
   | { type: "thinking_delta",   text }                        // text 可为空串
   | { type: "thinking_done",    duration_ms }
-  | { type: "tool_call",        id, name, category, title, input, detail? }   // detail 按 category 归一化
+  | { type: "tool_call",        id, name, category, title, input, detail?, parent_id? }   // detail 按 category 归一化；parent_id 见下
   | { type: "tool_output_delta", id, text }                  // 命令输出流式，agent 支持才有
   | { type: "tool_result",      id, output, is_error, detail? }   // output 超过 64 KiB 时被截断，见 spec/daemon.md § 8.2
   | { type: "plan",             entries: [ { content, status } ] }
@@ -313,6 +313,8 @@ Event =
 ```
 
 `tool_call.category` 取 `shell | file_edit | file_read | search | web | subagent | mcp | other`，各 agent 工具名到 category 的映射见 [spec/daemon.md § 8](spec/daemon.md#8-事件翻译)。adapter 的职责就是把各 agent 的原生事件翻译成这个集合。
+
+子 agent 内部的调用带 `tool_call.parent_id`：启动这个子 agent 的那次调用（`category = subagent`）的 `id`，子 agent 再启动子 agent 时一层层指上去；主 agent 自己的调用不带。后台启动的子 agent，调用会马上返回，这条 `tool_result` 带 `detail.background = true`；子 agent 结束时同一个 `id` 再来一条 `tool_result`（不带这个标记），取代前一条。子 agent 结束的那条 `tool_result` 可以带 `detail.total_tokens`：agent 报的这个子 agent 一共用掉的 token，`turn_done.usage` 不含这部分。
 
 错误响应统一为 JSON-RPC error，`data` 里带稳定的 `code`（snake_case）供客户端 i18n：`invalid`、`invalid_settings`（`data.field` 指出字段，如 `mode`、`env.BASH_ENV`）、`agent_unavailable`（`data.reason`）、`node_busy`、`busy`、`already_resolved`、`exists`、`not_found`、`forbidden`、`unsupported`、`protocol_mismatch`、`internal`。完整枚举见 `crates/protocol/src/error.rs`。
 

@@ -714,7 +714,7 @@ async fn write_keyword_creates_then_appends() {
     let wev = events_of(&evs);
     match (&wev[7], &wev[8], &wev[9]) {
         (
-            Event::ToolCall { id: call_id, name, category, title, input, detail },
+            Event::ToolCall { id: call_id, name, category, title, input, detail, .. },
             Event::ToolResult { id: result_id, output, is_error, detail: rdetail },
             Event::FileChanged { path, kind },
         ) => {

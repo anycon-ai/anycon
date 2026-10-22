@@ -7,8 +7,10 @@ import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
-import { applyUpdate, buildSettingsUpdate, isEmptyUpdate, mergeUpdates, selectionFromSettings, selectionKey, type SettingsUpdate, type Selection } from '@/features/settings/resolve'
+import { applyUpdate, buildSettingsUpdate, isEmptyUpdate, mergeUpdates, pendingFields, selectionFromSettings, selectionKey, type SettingsField, type SettingsUpdate, type Selection } from '@/features/settings/resolve'
 import { setSessionSettings } from './actions'
+
+const NO_PENDING: ReadonlySet<SettingsField> = new Set()
 
 export const RUNNING_STATES: readonly SessionStatus[] = ['running', 'starting', 'waiting_permission', 'queued']
 export const isRunning = (s: SessionStatus | null | undefined): boolean => !!s && RUNNING_STATES.includes(s)
@@ -44,6 +46,8 @@ export function useSessionSettings(opts: { nodeId: string; sessionId: string; ag
 
   const current = useMemo<Selection | null>(() => (agent ? selectionFromSettings(agent, baseSettings) : null), [agent, baseSettings])
   const shown = useMemo<Selection | null>(() => (current && queued ? applyUpdate(current, queued) : current), [current, queued])
+  // 排队中、和会话实际设置不同的那几格：控件上换成浅色，表示还没生效
+  const pending = useMemo(() => (current && shown && queued ? pendingFields(current, shown) : NO_PENDING), [current, shown, queued])
 
   const apply = useCallback(
     async (update: SettingsUpdate): Promise<void> => {
@@ -89,7 +93,7 @@ export function useSessionSettings(opts: { nodeId: string; sessionId: string; ag
     [agent, shown, nodeId, running, offline, apply, setLastUsed, t],
   )
 
-  return { selection: shown, onChange, queued: queued !== null }
+  return { selection: shown, onChange, queued: queued !== null, pending }
 }
 
 /** 订阅某个会话的摘要 + 打开状态。 */

@@ -12,6 +12,7 @@ import {
   buildSettingsUpdate,
   diffSettings,
   mergeUpdates,
+  pendingFields,
   thinkingChoices,
   toSessionSettings,
 } from './resolve'
@@ -159,6 +160,13 @@ describe('settings conversion', () => {
   })
   it('restores a selection from session settings', () => {
     expect(selectionFromSettings(agent, { model: 'mock-small', mode: 'plan' })).toMatchObject({ model: 'mock-small', thinking: null, mode: 'plan' })
+  })
+  it('pendingFields names the controls whose shown value differs from the session; other settings count as "more"', () => {
+    const a = resolveDefaults(agent, [])
+    expect([...pendingFields(a, a)]).toEqual([])
+    expect(new Set(pendingFields(a, { ...a, mode: 'plan', options: { verbose: true } }))).toEqual(new Set(['mode', 'more']))
+    // 改了又改回来：不算待生效
+    expect([...pendingFields(a, { ...a })]).toEqual([])
   })
 })
 

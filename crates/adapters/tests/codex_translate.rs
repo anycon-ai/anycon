@@ -213,7 +213,7 @@ fn command_with_approval_accepted() {
     );
     let evs = events(&outs);
     match &evs[2] {
-        Event::ToolCall { id, name, category, title, input, detail } => {
+        Event::ToolCall { id, name, category, title, input, detail, .. } => {
             assert_eq!((id.as_str(), name.as_str(), *category), ("call_0_1", "commandExecution", ToolCategory::Shell));
             // 壳 `/bin/zsh -lc '…'` 被拆掉；input 保留原样
             assert_eq!(title, "echo hello > out.txt && cat out.txt");

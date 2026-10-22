@@ -196,11 +196,13 @@ fn bash_tool_call_and_result() {
     );
     let call = r.events().into_iter().find(|e| matches!(e, Event::ToolCall { .. })).unwrap();
     match call {
-        Event::ToolCall { id, name, category, title, input, detail } => {
+        Event::ToolCall { id, name, category, title, input, detail, parent_id } => {
             assert_eq!(
                 (id.as_str(), name.as_str(), *category, title.as_str()),
                 ("toolu_bash1", "Bash", ToolCategory::Shell, "echo hi")
             );
+            // 主 agent 自己的调用不带 parent_id
+            assert_eq!(parent_id, &None);
             assert_eq!(input, &json!({"command": "echo hi", "description": "Print hi"}));
             let d = detail.as_ref().unwrap();
             assert_eq!((d.command.as_deref(), d.cwd.as_deref()), (Some("echo hi"), Some(CWD)));
@@ -571,7 +573,118 @@ fn mcp_and_subagent() {
     }
     // 子 agent 的文本不混进主文本流
     assert!(!r.text().contains("SUBAGENT TEXT"));
+    // 子 agent 内部的调用指向启动它的那次 Task 调用；主 agent 自己的调用不带
+    let parents: Vec<(&str, Option<&str>)> = evs
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolCall { id, parent_id, .. } => Some((id.as_str(), parent_id.as_deref())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(parents, vec![("toolu_mcp1", None), ("toolu_task1", None), ("toolu_inner1", Some("toolu_task1"))]);
     assert!(r.types().iter().filter(|t| *t == "tool_result").count() == 3);
+}
+
+#[test]
+fn background_subagent_gets_its_final_result_from_the_task_notification() {
+    let mut t = Translator::new(CWD, json!({}), None);
+    t.begin_turn();
+    let mut feed = |v: Value| Replay { outs: t.feed_line(&v.to_string()) };
+    let call = |id: &str, desc: &str| {
+        json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s", "message": {"id": format!("m-{id}"), "role": "assistant",
+            "content": [{"type": "tool_use", "id": id, "name": "Agent", "input": {"description": desc, "prompt": "p", "run_in_background": true}}]}})
+    };
+    feed(call("toolu_bg", "backend API"));
+    feed(call("toolu_fg", "quick look"));
+
+    // 后台启动：马上返回 async_launched，结果标 background
+    let r = feed(json!({"type": "user", "parent_tool_use_id": null, "session_id": "s",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_bg", "content": "Async agent launched successfully."}]},
+        "tool_use_result": {"status": "async_launched", "agentId": "a1", "description": "backend API"}}));
+    match r.events()[..] {
+        [Event::ToolResult { id, is_error, detail, .. }] => {
+            assert_eq!((id.as_str(), *is_error), ("toolu_bg", false));
+            assert_eq!(detail.as_ref().and_then(|d| d.background), Some(true));
+        }
+        ref other => panic!("{other:?}"),
+    }
+    // 前台子 agent 正常返回，不标 background；它的 task_notification 不再补结果
+    let r = feed(json!({"type": "user", "parent_tool_use_id": null, "session_id": "s",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fg", "content": "done"}]},
+        "tool_use_result": {"status": "completed", "agentId": "a2"}}));
+    assert!(matches!(r.events()[..], [Event::ToolResult { detail: None, .. }]));
+    let r = feed(
+        json!({"type": "system", "subtype": "task_notification", "task_id": "a2", "tool_use_id": "toolu_fg", "status": "completed", "summary": "x", "session_id": "s"}),
+    );
+    assert!(r.events().is_empty());
+
+    // 后台子 agent 还在跑：它的调用带 parent_id
+    let r = feed(
+        json!({"type": "assistant", "parent_tool_use_id": "toolu_bg", "session_id": "s", "message": {"id": "m-in", "role": "assistant",
+        "content": [{"type": "tool_use", "id": "toolu_in", "name": "Bash", "input": {"command": "ls"}}]}}),
+    );
+    assert!(matches!(r.events()[..], [Event::ToolCall { parent_id: Some(p), .. }] if p == "toolu_bg"));
+
+    // 结束：同一个 id 再来一条结果（总结），不带 background；只补一次
+    let done = json!({"type": "system", "subtype": "task_notification", "task_id": "a1", "tool_use_id": "toolu_bg", "status": "completed", "summary": "API done", "session_id": "s"});
+    let r = feed(done.clone());
+    match r.events()[..] {
+        [Event::ToolResult { id, output, is_error, detail }] => {
+            assert_eq!((id.as_str(), output, *is_error, detail), ("toolu_bg", &json!("API done"), false, &None));
+        }
+        ref other => panic!("{other:?}"),
+    }
+    assert!(feed(done).events().is_empty());
+}
+
+#[test]
+fn subagent_token_totals_come_from_the_result_or_the_task_notification() {
+    // 形状取自 Claude Code 2.1.293 的实际输出
+    let mut t = Translator::new(CWD, json!({}), None);
+    t.begin_turn();
+    let mut feed = |v: Value| Replay { outs: t.feed_line(&v.to_string()) };
+    for (id, bg) in [("toolu_fg", false), ("toolu_bg", true)] {
+        feed(
+            json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s", "message": {"id": format!("m-{id}"), "role": "assistant",
+            "content": [{"type": "tool_use", "id": id, "name": "Agent", "input": {"description": id, "prompt": "p", "run_in_background": bg}}]}}),
+        );
+    }
+    let tokens = |r: &Replay| match r.events()[..] {
+        [Event::ToolResult { detail, .. }] => detail.as_ref().and_then(|d| d.total_tokens),
+        ref other => panic!("{other:?}"),
+    };
+
+    // 前台：tool_use_result.totalTokens
+    let r = feed(json!({"type": "user", "parent_tool_use_id": null, "session_id": "s",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fg", "content": [{"type": "text", "text": "ALPHA"}]}]},
+        "tool_use_result": {"status": "completed", "agentId": "a1", "totalDurationMs": 1669, "totalTokens": 14275, "totalToolUseCount": 0}}));
+    assert_eq!(tokens(&r), Some(14275));
+
+    // 后台：启动时还没有用量，结束时取 task_notification.usage.total_tokens
+    let r = feed(json!({"type": "user", "parent_tool_use_id": null, "session_id": "s",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_bg", "content": "launched"}]},
+        "tool_use_result": {"isAsync": true, "status": "async_launched", "agentId": "a2"}}));
+    assert_eq!(tokens(&r), None);
+    let r = feed(
+        json!({"type": "system", "subtype": "task_notification", "task_id": "a2", "tool_use_id": "toolu_bg", "status": "completed",
+        "summary": "BETA", "usage": {"total_tokens": 13009, "tool_uses": 0, "duration_ms": 1589}, "session_id": "s"}),
+    );
+    assert_eq!(tokens(&r), Some(13009));
+}
+
+#[test]
+fn failed_background_subagent_is_an_error_but_a_stopped_one_is_not() {
+    for (status, is_err) in [("failed", true), ("stopped", false)] {
+        let mut t = Translator::new(CWD, json!({}), None);
+        t.begin_turn();
+        t.feed_line(&json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s", "message": {"id": "m", "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_bg", "name": "Agent", "input": {"description": "d", "prompt": "p"}}]}}).to_string());
+        t.feed_line(&json!({"type": "user", "parent_tool_use_id": null, "session_id": "s",
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_bg", "content": "launched"}]},
+            "tool_use_result": {"status": "async_launched"}}).to_string());
+        let r = Replay { outs: t.feed_line(&json!({"type": "system", "subtype": "task_notification", "tool_use_id": "toolu_bg", "status": status, "summary": ""}).to_string()) };
+        assert!(matches!(r.events()[..], [Event::ToolResult { is_error, .. }] if *is_error == is_err), "{status}");
+    }
 }
 
 #[test]
@@ -918,7 +1031,9 @@ fn background_tasks_and_the_turns_the_cli_starts_on_its_own() {
             "tool_result",
             "file_changed",
             "turn_done",
+            // subagent 结束：`task_updated { completed }` 先到，后台任务数归零；`task_notification` 再给它的调用补上最终结果
             "BACKGROUND:0",
+            "tool_result",
             "TURN_STARTED",
             "text_delta",
             "text_done",
@@ -940,6 +1055,20 @@ fn background_tasks_and_the_turns_the_cli_starts_on_its_own() {
         _ => None,
     });
     assert!(edit.flatten().and_then(|d| d.unified_diff).is_some_and(|d| d.contains("+b")));
+    let agent_results: Vec<_> = r
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::ToolResult { id, output, detail, .. } if id == "toolu_agent" => {
+                Some((output.clone(), detail.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(agent_results.len(), 2, "launched, then the final result");
+    assert_eq!(agent_results[0].1.as_ref().and_then(|d| d.background), Some(true));
+    assert_eq!(agent_results[1].0, json!("Tests fixed."));
+    assert_eq!(agent_results[1].1.as_ref().and_then(|d| d.total_tokens), Some(4200));
     assert!(!t.is_busy());
 }
 

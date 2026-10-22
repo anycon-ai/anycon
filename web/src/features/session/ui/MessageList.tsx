@@ -8,7 +8,8 @@ import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { errorSeverity } from '../errors'
 import { latestSyncBlock, type Block } from '../reducer'
-import { AssistantMessage, ErrorView, PendingBubble, PlanCard, SystemLine, ThinkingView, ToolView, TurnDivider, TurnUsage, UserBubble, type ConflictActions } from './Messages'
+import { toolTree } from '../subagents'
+import { AssistantMessage, ErrorView, PendingBubble, PlanCard, SystemLine, ThinkingView, ToolNode, TurnDivider, TurnUsage, UserBubble, type ConflictActions } from './Messages'
 import { PermissionCard, type SettledReason } from './PermissionCard'
 
 /** 超过这个行数才启用虚拟化；更短的会话全部渲染（更稳，E2E 也更好查）。 */
@@ -71,6 +72,8 @@ function buildRows(p: MessageListProps): Row[] {
   const rows: Row[] = []
   const retryKey = p.onRetryTurn ? retryableErrorKey(p.blocks) : null
   const latestSync = p.git ? latestSyncBlock(p.blocks) : null
+  // 子 agent 内部的调用收进它的块里，不单独成行（几个子 agent 并行时不再交错成一串）
+  const tree = toolTree(p.blocks)
   // 这一轮 agent 说的全部文字：turn_done 那一行的「复制」用
   let turnText: string[] = []
   for (const b of p.blocks) {
@@ -91,7 +94,8 @@ function buildRows(p: MessageListProps): Row[] {
         rows.push({ key: b.key, node: <AssistantMessage block={b} /> })
         break
       case 'tool':
-        rows.push({ key: b.key, node: <ToolView block={b} />, line: true })
+        if (tree.nested.has(b.key)) break
+        rows.push({ key: b.key, node: <ToolNode block={b} tree={tree} />, line: true })
         break
       case 'plan':
         rows.push({ key: b.key, node: <PlanCard block={b} /> })

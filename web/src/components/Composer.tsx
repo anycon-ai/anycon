@@ -37,6 +37,8 @@ export interface ComposerProps {
   blockedReason?: string
   /** 宽屏贴在输入框顶上的上下文栏（新建会话的项目 / 工作位置）。窄屏不显示，调用方把它们放进 `options('stacked')`。 */
   context?: ReactNode
+  /** 宽屏输入框上方靠右的一小块（会话页的分支 chip）。窄屏不显示，调用方把它放进 `options('stacked')`。 */
+  aside?: ReactNode
   /** 选项栏（SettingsControls）。宽屏是输入框下面的一行，窄屏收进「⚙」底部弹层（堆叠布局）。 */
   options?: (layout: 'inline' | 'stacked') => ReactNode
   /** 输入框上方的额外提示（新建会话的「危险模式没被选中」等）。 */
@@ -54,10 +56,10 @@ const MAX_ROWS = 10
 const NO_ITEMS: AttachmentItem[] = []
 
 /**
- * 输入区：圆角框里是缩略图、「＋」菜单、输入框、停止 / 发送；框上面可以贴一条上下文栏，框下面一行是选项。
+ * 输入区：圆角框里是缩略图、「＋」菜单、输入框、停止 / 发送；框上面可以贴一条上下文栏、右侧可以放一小块，框下面一行是选项。
  * 自动增高（最多 10 行）、Enter 规则、草稿持久化、运行中排队、停止。
  */
-export function Composer({ draftKey, onSend, attachments: attach, onStop, running, blockedReason, context, options, notice, queueNotice, placeholder, autoFocus, focusToken, sending }: ComposerProps) {
+export function Composer({ draftKey, onSend, attachments: attach, onStop, running, blockedReason, context, aside, options, notice, queueNotice, placeholder, autoFocus, focusToken, sending }: ComposerProps) {
   const { t } = useTranslation()
   const ref = useRef<HTMLTextAreaElement>(null)
   const text = useDrafts((s) => s.byKey[draftKey]?.text ?? '')
@@ -220,6 +222,11 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
           <p className="mb-1 px-1 text-xs text-warning" data-testid="composer-blocked">
             {blockedReason}
           </p>
+        ) : null}
+        {wide && aside ? (
+          <div className="mb-1 flex min-w-0 justify-end px-1" data-testid="composer-aside">
+            {aside}
+          </div>
         ) : null}
         {wide && context ? (
           // 托盘比输入框窄一点、垫在它后面：输入框的圆角压住托盘的下沿

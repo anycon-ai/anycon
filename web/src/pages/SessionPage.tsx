@@ -15,6 +15,7 @@ import { archiveSession, cancelTurn, closeSession, deleteSession, loadOlder, nee
 import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
 import { latestSyncBlock, pendingPermissions } from '@/features/session/reducer'
+import { subagentRows } from '@/features/session/subagents'
 import { ApprovalBanner } from '@/components/ApprovalBanner'
 import { ArchivedBar } from '@/features/session/ui/ArchivedBar'
 import { InfoPanel } from '@/features/session/ui/InfoPanel'
@@ -115,10 +116,11 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   }, [running, prevRunning, t])
 
   const baseSettings = view?.settings ?? summary?.settings
-  const { selection, onChange, queued } = useSessionSettings({ nodeId: nodeId ?? '', sessionId, agent, running, baseSettings, offline })
+  const { selection, onChange, pending: pendingSettings } = useSessionSettings({ nodeId: nodeId ?? '', sessionId, agent, running, baseSettings, offline })
 
   const seen = useMemo(() => new Set(view?.blocks.filter((b) => b.type === 'user').map((b) => (b.type === 'user' ? b.messageId : '')) ?? []), [view?.blocks])
   const pending = useMemo(() => pendingMessages(draft, inflight, sessionId, seen), [draft, inflight, sessionId, seen])
+  const subagents = useMemo(() => subagentRows(view?.blocks ?? [], status), [view?.blocks, status])
 
   const modelLabel = useCallback((id: string) => agent?.models?.find((m) => m.id === id)?.label ?? id, [agent])
   const modeLabel = useCallback((id: string) => agent?.modes?.find((m) => m.id === id)?.label ?? id, [agent])
@@ -201,7 +203,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   // 图片附件（ADR-35）：节点支持 blob、agent 收图片才显示回形针；节点不在线时禁用并说明
   const attachMimes = attachmentMimes(entry.info, agent)
 
-  // 分支 chip 放在输入框下面选项行的最左边（和新建会话的「工作位置」同一个位置），点了切到「改动」
+  // 分支 chip 宽屏放在输入框上方靠右，窄屏和其他选项一起在「⚙」底部弹层里；点了切到「改动」
   const branchChip = (layout: 'inline' | 'stacked') => (gitAvailable ? <BranchChip className={layout === 'inline' ? 'min-h-0' : undefined} worktree={worktree} status={gitStatus} onOpen={openChanges} /> : null)
   const uncommitted = gitStatus?.uncommitted ?? 0
 
@@ -209,32 +211,26 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
     agent && selection ? (
       <div>
         <SettingsControls
-          left={branchChip(layout)}
+          left={layout === 'stacked' ? branchChip(layout) : undefined}
           agent={agent}
           value={selection}
           onChange={onChange}
           disabled={offline}
           disabledReason={t('options.offlineLocked')}
+          pending={pendingSettings}
           dangerousForbidden={entry.dangerousForbidden}
           customKey={`${nodeId}:${agent.id}`}
           idPrefix="option"
           layout={layout}
         />
-        {running ? <p className="mt-1.5 text-xs text-fg-subtle">{queued ? t('options.queuedChange') : t('options.runningHint')}</p> : null}
       </div>
     ) : null
-
-  const panelControls =
-    agent && selection ? (
-      <SettingsControls agent={agent} value={selection} onChange={onChange} disabled={offline} disabledReason={t('options.offlineLocked')} dangerousForbidden={entry.dangerousForbidden} customKey={`${nodeId}:${agent.id}`} idPrefix="info" layout="stacked" />
-    ) : (
-      <p className="text-sm text-fg-subtle">{summary?.agent}</p>
-    )
 
   const panel = (
     <InfoPanel
       agentLabel={agent?.label ?? summary?.agent ?? ''}
-      settingsControls={panelControls}
+      status={status}
+      subagents={subagents}
       workDir={workDir}
       project={project}
       createdAt={summary?.created_at_ms ?? 0}
@@ -246,7 +242,6 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
         setTimeout(() => setScrollTo(id), 0)
         setRightDrawer(false)
       }}
-      changedFiles={view?.changedFiles ?? {}}
       archived={archived}
       archiveBlocked={running}
       disabled={offline}
@@ -464,6 +459,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
               running={running}
               queueNotice={!agent?.capabilities?.interject}
               blockedReason={blockedReason}
+              aside={branchChip('inline')}
               options={agent ? options : undefined}
               attachments={attachMimes ? { nodeId, accept: attachMimes, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
               focusToken={focusToken}

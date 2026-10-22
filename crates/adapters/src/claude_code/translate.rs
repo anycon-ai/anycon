@@ -13,6 +13,9 @@
 //! - 后台任务（后台 subagent、后台命令）以 `system/background_tasks_changed` 为准，`task_started` / `task_notification` /
 //!   `task_updated` 兜底；数目变化时发 `Background`
 //! - `TodoWrite` → `Plan`；`ExitPlanMode` / `AskUserQuestion` 由权限请求表达，不再发 tool_call / tool_result
+//! - 子 agent 内部的调用（`parent_tool_use_id` 非空）带 `parent_id`；后台启动的子 agent（`tool_use_result.status =
+//!   async_launched`）的结果标 `background`，等 `system/task_notification` 再给同一个 id 补最终结果
+//! - 子 agent 用掉的 token：前台的取 `tool_use_result.totalTokens`，后台的取 `task_notification.usage.total_tokens`
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -134,6 +137,8 @@ pub struct Translator {
     seen_tool_use: HashSet<String>,
     tools: HashMap<String, ToolMeta>,
     suppressed: HashSet<String>,
+    /// 已返回 `async_launched`、还在后台跑的子 agent 调用：等 `task_notification` 补最终结果。
+    backgrounded: HashSet<String>,
 }
 
 fn clip_text(s: &str) -> String {
@@ -275,6 +280,7 @@ impl Translator {
             seen_tool_use: HashSet::new(),
             tools: HashMap::new(),
             suppressed: HashSet::new(),
+            backgrounded: HashSet::new(),
         }
     }
 
@@ -434,6 +440,8 @@ impl Translator {
                 }
             }
             Some("task_notification") => {
+                // 后台子 agent 的最终结果先补上，再报任务数的变化
+                self.on_task_notification(v, out);
                 if let Some(id) = v["task_id"].as_str() {
                     self.bg_tasks.remove(id);
                     self.report_background(out);
@@ -480,6 +488,26 @@ impl Translator {
                 }));
             }
         }
+    }
+
+    /// 后台任务结束（`completed` / `failed` / `stopped`）。只认我们标过 `background` 的子 agent 调用：
+    /// 前台子 agent 和后台 shell 也会发这个通知，它们的结果已经发过了。
+    fn on_task_notification(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let Some(id) = v.get("tool_use_id").and_then(Value::as_str) else { return };
+        if !self.backgrounded.remove(id) {
+            return;
+        }
+        let summary = v["summary"].as_str().unwrap_or("");
+        let total_tokens = u64_of(&v["usage"], "total_tokens");
+        Self::push(
+            out,
+            Event::ToolResult {
+                id: id.to_string(),
+                output: json!(clip_text(summary)),
+                is_error: v["status"].as_str() == Some("failed"),
+                detail: total_tokens.map(|n| ToolResultDetail { total_tokens: Some(n), ..Default::default() }),
+            },
+        );
     }
 
     // ---------- stream_event ----------
@@ -554,7 +582,8 @@ impl Translator {
     // ---------- assistant ----------
 
     fn on_assistant(&mut self, v: &Value, out: &mut Vec<Out>) {
-        let top = v.get("parent_tool_use_id").map(Value::is_null).unwrap_or(true);
+        let parent = v.get("parent_tool_use_id").and_then(Value::as_str).map(str::to_string);
+        let top = parent.is_none();
         let msg = &v["message"];
         let mid = msg["id"].as_str().unwrap_or("").to_string();
         let Some(blocks) = msg["content"].as_array() else { return };
@@ -580,13 +609,13 @@ impl Translator {
                         Self::push(out, Event::ThinkingDone { duration_ms: 0 });
                     }
                 }
-                Some("tool_use") => self.on_tool_use(block, out),
+                Some("tool_use") => self.on_tool_use(block, parent.clone(), out),
                 _ => {}
             }
         }
     }
 
-    fn on_tool_use(&mut self, block: &Value, out: &mut Vec<Out>) {
+    fn on_tool_use(&mut self, block: &Value, parent_id: Option<String>, out: &mut Vec<Out>) {
         let id = block["id"].as_str().unwrap_or("").to_string();
         let name = block["name"].as_str().unwrap_or("").to_string();
         if id.is_empty() || !self.seen_tool_use.insert(id.clone()) {
@@ -626,6 +655,7 @@ impl Translator {
                         category,
                         name,
                         input,
+                        parent_id,
                     },
                 );
             }
@@ -671,6 +701,11 @@ impl Translator {
                 ToolCategory::FileRead | ToolCategory::Search if !is_error && (name == "Glob" || name == "Grep") => {
                     detail.match_count = u64_of(tur, "numFiles").map(|n| n as u32);
                 }
+                ToolCategory::Subagent if !is_error && tur["status"].as_str() == Some("async_launched") => {
+                    detail.background = Some(true);
+                    self.backgrounded.insert(id.clone());
+                }
+                ToolCategory::Subagent => detail.total_tokens = u64_of(tur, "totalTokens"),
                 _ => {}
             }
             let detail = if detail == ToolResultDetail::default() { None } else { Some(detail) };

@@ -3,7 +3,7 @@ import { Popover } from 'radix-ui'
 import { Brain, ChevronDown, Cpu, ShieldAlert, ShieldCheck, ShieldHalf, SlidersHorizontal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { AgentInfo, ConfigOption, ModeInfo } from '@/protocol'
-import { findModel, selectModel, thinkingChoices, type Selection } from '@/features/settings/resolve'
+import { findModel, selectModel, thinkingChoices, type Selection, type SettingsField } from '@/features/settings/resolve'
 import { usePrefs } from '@/stores/prefs'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
@@ -18,9 +18,11 @@ export interface SettingsControlsProps {
   agent: AgentInfo
   value: Selection
   onChange: (next: Selection, info?: { thinkingAdjusted?: boolean }) => void
-  /** 整体禁用（离线 / 运行中锁定）。 */
+  /** 整体禁用（离线）。 */
   disabled?: boolean
   disabledReason?: string
+  /** 运行中改了、本轮结束才生效的格子：文字换成浅色，悬停说明。不另加提示行，免得布局跳动。 */
+  pending?: ReadonlySet<SettingsField>
   /** daemon 拒绝过危险模式：这些项禁用并说明。 */
   dangerousForbidden?: boolean
   /** 记「输入过的自定义模型」的 key：`${nodeId}:${agentId}`。 */
@@ -37,18 +39,22 @@ export interface SettingsControlsProps {
 /**
  * 选项按钮的样式：内联（输入框下面那一行）是无边框的文字按钮，堆叠（底部弹层、信息面板）是撑满一行的带边框按钮。
  * 新建会话的项目 / 工作位置 / agent 按钮也用它，好和模型、思考、权限排成一样的一行。
+ * `pending`：改动排队中、还没生效，文字用浅色。
  */
-export function optionTrigger(stacked: boolean): string {
+export function optionTrigger(stacked: boolean, pending = false): string {
   return stacked
-    ? 'inline-flex w-full max-w-full items-center justify-between gap-1.5 rounded-md border border-border-strong bg-bg px-2.5 py-1.5 text-[0.8125rem] font-medium hover:bg-bg-hover disabled:opacity-50'
-    : 'inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-[0.8125rem] font-medium text-fg-muted hover:bg-bg-hover hover:text-fg disabled:opacity-50 data-[state=open]:bg-bg-hover data-[state=open]:text-fg'
+    ? cn('inline-flex w-full max-w-full items-center justify-between gap-1.5 rounded-md border border-border-strong bg-bg px-2.5 py-1.5 text-[0.8125rem] font-medium hover:bg-bg-hover disabled:opacity-50', pending && 'text-fg-subtle')
+    : cn(
+        'inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-[0.8125rem] font-medium hover:bg-bg-hover disabled:opacity-50 data-[state=open]:bg-bg-hover',
+        pending ? 'text-fg-subtle' : 'text-fg-muted hover:text-fg data-[state=open]:text-fg',
+      )
 }
 
 /**
  * 模型 / 思考 / 权限模式 / 更多选项。全部由 AgentInfo 驱动，不内置 agent 知识（spec/web.md § 5）。
  * 内联布局：左组 `[left][权限][更多]`，右组 `[right][模型][思考]` 靠右；堆叠布局从上到下排。
  */
-export function SettingsControls({ agent, value, onChange, disabled, disabledReason, dangerousForbidden, customKey, idPrefix, layout = 'inline', left, right }: SettingsControlsProps) {
+export function SettingsControls({ agent, value, onChange, disabled, disabledReason, pending, dangerousForbidden, customKey, idPrefix, layout = 'inline', left, right }: SettingsControlsProps) {
   const { t } = useTranslation()
   const [pendingDanger, setPendingDanger] = useState<ModeInfo | null>(null)
   const [customOpen, setCustomOpen] = useState(false)
@@ -78,8 +84,10 @@ export function SettingsControls({ agent, value, onChange, disabled, disabledRea
     else onChange({ ...value, mode: id })
   }
 
-  const trigger = optionTrigger(stacked)
-  const title = disabled ? disabledReason : undefined
+  const isPending = (field: SettingsField): boolean => !disabled && !!pending?.has(field)
+  const trigger = (field: SettingsField): string => optionTrigger(stacked, isPending(field))
+  // 离线说明优先；其次是「排队中，本轮结束后生效」
+  const titleFor = (field: SettingsField): string | undefined => (disabled ? disabledReason : isPending(field) ? t('options.queuedChange') : undefined)
   // 右组的菜单从右边对齐（贴着输入框右缘），堆叠时从左边
   const rightAlign = stacked ? 'start' : 'end'
 
@@ -90,7 +98,7 @@ export function SettingsControls({ agent, value, onChange, disabled, disabledRea
         {stacked ? <p className="text-xs font-medium text-fg-subtle">{t('options.model')}</p> : null}
         <Menu>
           <MenuTrigger asChild>
-            <button type="button" disabled={disabled} title={title} className={trigger} data-testid={`${idPrefix}-model`} data-value={value.model} aria-label={t('options.model')}>
+            <button type="button" disabled={disabled} title={titleFor('model')} className={trigger('model')} data-testid={`${idPrefix}-model`} data-value={value.model} data-pending={isPending('model') || undefined} aria-label={t('options.model')}>
               {stacked ? <Cpu className="size-3.5 shrink-0 text-fg-subtle" aria-hidden /> : null}
               <span className="truncate">{model?.label ?? (value.model || t('options.modelAgentDefault'))}</span>
               {model?.tags?.map((tag) => (
@@ -140,7 +148,7 @@ export function SettingsControls({ agent, value, onChange, disabled, disabledRea
         {stacked ? <p className="text-xs font-medium text-fg-subtle">{t('options.thinking')}</p> : null}
         <Menu>
           <MenuTrigger asChild>
-            <button type="button" disabled={disabled} title={title ?? thinking?.description ?? undefined} className={trigger} data-testid={`${idPrefix}-thinking`} data-value={value.thinking ?? ''} aria-label={t('options.thinking')}>
+            <button type="button" disabled={disabled} title={titleFor('thinking') ?? thinking?.description ?? undefined} className={trigger('thinking')} data-testid={`${idPrefix}-thinking`} data-value={value.thinking ?? ''} data-pending={isPending('thinking') || undefined} aria-label={t('options.thinking')}>
               <Brain className="size-3.5 shrink-0 text-fg-subtle" aria-hidden />
               <span className="truncate">{thinking ? thinking.label || thinking.id : (value.thinking ?? t('options.thinking'))}</span>
               <ChevronDown className="size-3.5 shrink-0 opacity-60" aria-hidden />
@@ -170,15 +178,19 @@ export function SettingsControls({ agent, value, onChange, disabled, disabledRea
             <button
               type="button"
               disabled={disabled}
-              title={title}
+              title={titleFor('mode')}
               className={cn(
-                trigger,
-                mode?.risk === 'dangerous' && (stacked ? 'border-danger bg-danger-subtle text-danger hover:bg-danger-subtle' : 'bg-danger-subtle text-danger hover:bg-danger-subtle hover:text-danger'),
-                mode?.risk === 'safe' && (stacked ? 'border-success/60 text-success' : 'text-success hover:text-success'),
+                trigger('mode'),
+                // 排队中时文字统一用浅色，风险只靠背景 / 边框和图标表达
+                mode?.risk === 'dangerous' && (stacked ? 'border-danger bg-danger-subtle hover:bg-danger-subtle' : 'bg-danger-subtle hover:bg-danger-subtle'),
+                mode?.risk === 'dangerous' && !isPending('mode') && (stacked ? 'text-danger' : 'text-danger hover:text-danger'),
+                mode?.risk === 'safe' && stacked && 'border-success/60',
+                mode?.risk === 'safe' && !isPending('mode') && (stacked ? 'text-success' : 'text-success hover:text-success'),
               )}
               data-testid={`${idPrefix}-mode`}
               data-value={value.mode ?? ''}
               data-risk={mode?.risk}
+              data-pending={isPending('mode') || undefined}
               aria-label={t('options.mode')}
             >
               <RiskIcon risk={mode?.risk} />
@@ -213,7 +225,7 @@ export function SettingsControls({ agent, value, onChange, disabled, disabledRea
     extra.length > 0 ? (
       <Popover.Root>
         <Popover.Trigger asChild>
-          <button type="button" disabled={disabled} title={title} className={trigger} data-testid={`${idPrefix}-more`} aria-label={t('options.more')}>
+          <button type="button" disabled={disabled} title={titleFor('more')} className={trigger('more')} data-testid={`${idPrefix}-more`} data-pending={isPending('more') || undefined} aria-label={t('options.more')}>
             <SlidersHorizontal className="size-3.5 text-fg-subtle" aria-hidden />
             {t('options.more')}
           </button>

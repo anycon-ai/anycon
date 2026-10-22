@@ -5,7 +5,7 @@ import { shortNodeId } from '@/lib/ids'
 import { useCurrentNode } from '@/lib/nav'
 import { useSessions } from '@/stores/sessions'
 import { useNodes } from '@/stores/nodes'
-import { usePrefs } from '@/stores/prefs'
+import { clampSidebarWidth, usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
 import { Drawer } from '@/ui/Overlay'
 import { EnrollApprovalDialog } from '@/features/approve/EnrollApprovalDialog'
@@ -13,11 +13,12 @@ import { ScanApproveDialog } from '@/features/approve/ScanApproveDialog'
 import { ApprovalBanner } from './ApprovalBanner'
 import { CommandPalette } from './CommandPalette'
 import { Sidebar } from './Sidebar'
+import { SidebarResizeHandle } from './SidebarResizeHandle'
 import { StatusBanner } from './StatusBanner'
 import { useShortcuts } from './useShortcuts'
 import { cn } from '@/ui/cn'
 
-/** 已登录页面的外壳：左栏（≥768px 常驻、可收起，手机是抽屉）+ 状态横幅 + 页面。 */
+/** 已登录页面的外壳：左栏（≥768px 常驻、可收起、可拖动调宽，手机是抽屉）+ 状态横幅 + 页面。 */
 export function AppShell() {
   const { t } = useTranslation()
   const { nodeId } = useCurrentNode()
@@ -26,6 +27,10 @@ export function AppShell() {
   const lastNode = usePrefs((s) => s.lastNode)
   const setPrefs = usePrefs((s) => s.set)
   const sidebarOpen = usePrefs((s) => s.sidebarOpen)
+  const savedWidth = usePrefs((s) => s.sidebarWidth)
+  // 拖动中的宽度只放在本地 state，松手才写进偏好
+  const [dragWidth, setDragWidth] = useState<number | null>(null)
+  const sidebarWidth = dragWidth ?? clampSidebarWidth(savedWidth)
   const open = useUi((s) => s.leftDrawerOpen)
   const setOpen = useUi((s) => s.setLeftDrawer)
   const [palette, setPalette] = useState(false)
@@ -51,8 +56,17 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen-dvh overflow-hidden bg-bg">
-      <aside className={cn('hidden w-[260px] shrink-0 border-r border-border', sidebarOpen && 'md:block')} data-testid="sidebar-aside">
+      {/* 最宽不超过半个窗口，窄窗口里中栏不会被挤没 */}
+      <aside className={cn('relative hidden max-w-[50vw] shrink-0 border-r border-border', sidebarOpen && 'md:block')} style={{ width: sidebarWidth }} data-testid="sidebar-aside">
         <Sidebar nodeId={activeNode} onSearch={() => setPalette(true)} onCollapse={() => setPrefs({ sidebarOpen: false })} />
+        <SidebarResizeHandle
+          width={sidebarWidth}
+          onResize={setDragWidth}
+          onCommit={(w) => {
+            setDragWidth(null)
+            setPrefs({ sidebarWidth: w })
+          }}
+        />
       </aside>
       <Drawer side="left" open={open} onOpenChange={setOpen} title={t('sidebar.menu')} closeLabel={t('common.close')}>
         <Sidebar nodeId={activeNode} onNavigate={() => setOpen(false)} onSearch={() => { setOpen(false); setPalette(true) }} />

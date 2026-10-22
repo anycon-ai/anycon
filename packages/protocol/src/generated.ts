@@ -286,6 +286,11 @@ export type Event =
       id: string;
       input?: unknown;
       name: string;
+      /**
+       * 子 agent 内部的调用：启动这个子 agent 的那次调用（`category = subagent`）的 `id`。
+       * 子 agent 再启动子 agent 时一层层指上去；主 agent 自己的调用不带。
+       */
+      parent_id?: string | null;
       title: string;
       type: "tool_call";
     }
@@ -974,6 +979,11 @@ export interface ToolCallDetail {
   url?: string | null;
 }
 export interface ToolResultDetail {
+  /**
+   * 调用已经返回，但它启动的工作还在后台跑（后台子 agent）。结束时同一个 `id` 会再来一条
+   * `tool_result`（不带这个标记），取代这一条。
+   */
+  background?: boolean | null;
   exit_code?: number | null;
   /**
    * 这次调用的流式 `tool_output_delta` 累计超过上限、后续 delta 没有转发；最终 `output` 仍是
@@ -985,6 +995,11 @@ export interface ToolResultDetail {
    * daemon 对 `output` 做头尾截断时丢掉的字节数（spec/daemon.md § 12）；没截断就缺省。
    */
   output_truncated_bytes?: number | null;
+  /**
+   * 子 agent 结束时 agent 报的它一共用掉的 token（`category = subagent`；agent 不报就缺省）。
+   * 主 agent 的 `turn_done.usage` 不含这部分。
+   */
+  total_tokens?: number | null;
   unified_diff?: string | null;
 }
 export interface PlanEntry {

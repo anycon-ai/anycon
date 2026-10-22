@@ -264,9 +264,9 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 - **显示**：自己刚传的图直接用本地数据（同时写进 IndexedDB 的 `blobs` 缓存，键是 `blob_id`）；历史里的图先查缓存，没有再懒加载（`blob.get` 分段拉、同一节点同时最多 2 张），拉完写缓存，用 `blob:` URL 显示（CSP 已允许 `img-src blob:`）。点开是一个对话框看大图，带文件名、尺寸和下载
 - 导出 Markdown 时附件写成 `[图片：<文件名>]`
 
-#### 底部的分支 chip（ADR-34）
+#### 分支 chip（ADR-34）
 
-有 worktree 的会话在输入框下面选项行的最左边显示 `⑂ anycon/fix-login ← main  ↑3 ↓1  · 5 个未提交`（`data-testid="session-branch"`；没有的部分不显示）。数据来自 `SessionSummary.worktree` 和 `session.git_status`：进入会话页、`turn_done`、`file_changed`（防抖 2 秒）、`git` 事件、手动刷新时拉一次，不轮询。`state = creating` 显示转圈和「正在创建 worktree…」，`missing` 显示警告色「worktree 不见了」，`kept` / `removed`（已归档）显示中性色。点击切到主区的「改动」视图（见下）。「改动」视图没有输入框时它在底部单独一行；已归档的会话在「已归档」条的最前面；手机（< 768px）上它和其他选项一起在「⚙」底部弹层里。在项目目录本身工作的 git 会话只显示分支名（`git_status.branch`）和未提交数，不显示 base。
+有 worktree 的会话在输入框上方靠右显示 `⑂ anycon/fix-login ← main  ↑3 ↓1  · 5 个未提交`（`data-testid="session-branch"`；没有的部分不显示）。数据来自 `SessionSummary.worktree` 和 `session.git_status`：进入会话页、`turn_done`、`file_changed`（防抖 2 秒）、`git` 事件、手动刷新时拉一次，不轮询。`state = creating` 显示转圈和「正在创建 worktree…」，`missing` 显示警告色「worktree 不见了」，`kept` / `removed`（已归档）显示中性色。点击切到主区的「改动」视图（见下）。不放在输入框下面的选项行里：分支名常常很长，挤在那一行会把模型 / 思考挤到第二行。「改动」视图没有输入框时它在底部单独一行；已归档的会话在「已归档」条的最前面；手机（< 768px）上它和其他选项一起在「⚙」底部弹层里。在项目目录本身工作的 git 会话只显示分支名（`git_status.branch`）和未提交数，不显示 base。
 
 #### 信息面板
 

@@ -73,7 +73,7 @@ beforeEach(() => {
 afterEach(() => setRpc(null))
 
 describe('SessionPage: the branch chip', () => {
-  it('shows ⑂ branch ← base with ahead / behind / uncommitted once the status is in, at the start of the options row under the input', async () => {
+  it('shows ⑂ branch ← base with ahead / behind / uncommitted once the status is in, above the input on the right', async () => {
     seed({ summary: { worktree: worktree() }, status: gitStatus({ ahead: 3, behind: 1, uncommitted: 5 }) })
     render(<SessionPage sessionId={SID} />)
     const chip = await screen.findByTestId('session-branch')
@@ -84,11 +84,26 @@ describe('SessionPage: the branch chip', () => {
     expect(within(chip).getByTestId('session-branch-behind')).toHaveTextContent('↓1')
     expect(within(chip).getByTestId('session-branch-uncommitted')).toHaveTextContent('5 uncommitted')
     expect(chip).toHaveAccessibleName(/anycon\/fix-login based on main 3 ahead 1 behind 5 uncommitted/)
-    // 在输入框下面的选项行里，排在权限模式之前；顶栏只剩状态 chip
-    const controls = screen.getByTestId('option-controls')
-    expect(controls).toContainElement(chip)
-    expect(chip.compareDocumentPosition(within(controls).getByTestId('option-mode')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(screen.getByTestId('composer')).toContainElement(chip)
+    // 宽屏在输入框上方靠右，不在下面的选项行里；顶栏只剩状态 chip
+    expect(screen.getByTestId('composer-aside')).toContainElement(chip)
+    expect(screen.getByTestId('option-controls')).not.toContainElement(chip)
+    expect(chip.compareDocumentPosition(screen.getByTestId('composer-box')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('on a narrow screen the chip sits with the other options in the ⚙ sheet', async () => {
+    const mm = vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) => ({ matches: false, media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false }) as unknown as MediaQueryList,
+    )
+    try {
+      seed({ summary: { worktree: worktree() }, status: gitStatus() })
+      const user = userEvent.setup()
+      render(<SessionPage sessionId={SID} />)
+      await user.click(await screen.findByTestId('composer-options-button'))
+      expect(await screen.findByTestId('options-sheet')).toContainElement(await screen.findByTestId('session-branch'))
+      expect(screen.queryByTestId('composer-aside')).toBeNull()
+    } finally {
+      mm.mockRestore()
+    }
   })
 
   it('the top bar has Chat / Changes with icons, and Changes shows how many files are uncommitted', async () => {

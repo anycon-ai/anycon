@@ -94,7 +94,7 @@
 - **目录选择器** `FolderPicker`（新建项目 →「已有目录」）：路径框 +「前往」、上一级按钮、面包屑（不能走出 root，多个 root 时多一个切换下拉）、当前目录一行（可选时有「选择当前目录」）、「显示隐藏目录」开关、子目录列表（`max-h-64` 自己滚动）。每行 ≥ 44px：点目录名进入，右侧「选择」才是选中；已是项目的行灰掉并标项目名，`linkable = false` 的标「不能关联」且没有「选择」。它常被放在 `<form>` 里，自己不用 `<form>`（回车在路径框里单独处理）。
 - **分段控件** `Segmented`：`fill` 让它撑满一行、各项等宽、窄屏文字换行（新建项目的三种方式用它，手机上不横向滚动）。
 - **状态 chip** `Chip`：圆角胶囊，底色用 `*-subtle`、文字用对应状态色。会话状态：运行中 accent、等待审批 warning、出错 danger、其余中性。
-- **分支 chip** `BranchChip`（会话页底部：输入框下面选项行的最左边，ADR-34）：`⑂ 分支 ← base ↑N ↓N · N 个未提交`，胶囊保持 chip 大小、外面的按钮 ≥ 36px；`creating` 转圈 + 文字、`missing` / `failed` 警告图标 + 文字、`kept` / `removed` 中性并带状态词，状态不只靠颜色。手机（< 768px）在「⚙」底部弹层里。
+- **分支 chip** `BranchChip`（会话页底部：输入框上方靠右，ADR-34）：`⑂ 分支 ← base ↑N ↓N · N 个未提交`，胶囊保持 chip 大小、外面的按钮 ≥ 36px；`creating` 转圈 + 文字、`missing` / `failed` 警告图标 + 文字、`kept` / `removed` 中性并带状态词，状态不只靠颜色。手机（< 768px）在「⚙」底部弹层里。
 - **单选 / 复选** `RadioChoices` / `CheckboxField`（`ui/Choice.tsx`，Radix RadioGroup / Checkbox）：每项是一整行可点的标签（≥ 36px），可带一行小字说明；归档 / 删除 worktree 的确认框和节点设置的 worktree 删除框用它。
 - **卡片**：1px `border` + `surface` 底；需要强调时换 `border-warning/50`（待审批）或 `border-danger/50`。
 - **覆盖层**：居中对话框（`Dialog`）、侧边抽屉（`Drawer`，手机上的左栏、窄屏的右栏）、底部弹层（`Sheet`，手机上的选项面板）。都基于 Radix Dialog，焦点困住、Esc 关闭。

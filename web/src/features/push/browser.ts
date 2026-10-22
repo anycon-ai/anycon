@@ -2,17 +2,12 @@
 // 都在调用时才读全局对象（jsdom 里没有这些，测试用 stub 换进去）。
 import { base64UrlToBytes } from '@/lib/base64'
 import { bytesEqual } from '@/lib/bytes'
+import { isIos } from '@/lib/device'
 import type { ApiPushSubscribe } from '@/api/types'
 
 /** 为什么这个浏览器收不了推送。 */
 export type UnsupportedReason = 'insecure' | 'no_service_worker' | 'no_push' | 'ios_install'
 export type PushSupport = { ok: true } | { ok: false; reason: UnsupportedReason }
-
-function isIos(): boolean {
-  const ua = navigator.userAgent
-  // iPadOS 13+ 的 Safari 自称 Mac，靠触点数分辨
-  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-}
 
 function isStandalone(): boolean {
   return (navigator as Navigator & { standalone?: boolean }).standalone === true || window.matchMedia?.('(display-mode: standalone)').matches === true

@@ -638,6 +638,41 @@ fn background_subagent_gets_its_final_result_from_the_task_notification() {
 }
 
 #[test]
+fn subagent_token_totals_come_from_the_result_or_the_task_notification() {
+    // 形状取自 Claude Code 2.1.293 的实际输出
+    let mut t = Translator::new(CWD, json!({}), None);
+    t.begin_turn();
+    let mut feed = |v: Value| Replay { outs: t.feed_line(&v.to_string()) };
+    for (id, bg) in [("toolu_fg", false), ("toolu_bg", true)] {
+        feed(
+            json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s", "message": {"id": format!("m-{id}"), "role": "assistant",
+            "content": [{"type": "tool_use", "id": id, "name": "Agent", "input": {"description": id, "prompt": "p", "run_in_background": bg}}]}}),
+        );
+    }
+    let tokens = |r: &Replay| match r.events()[..] {
+        [Event::ToolResult { detail, .. }] => detail.as_ref().and_then(|d| d.total_tokens),
+        ref other => panic!("{other:?}"),
+    };
+
+    // 前台：tool_use_result.totalTokens
+    let r = feed(json!({"type": "user", "parent_tool_use_id": null, "session_id": "s",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fg", "content": [{"type": "text", "text": "ALPHA"}]}]},
+        "tool_use_result": {"status": "completed", "agentId": "a1", "totalDurationMs": 1669, "totalTokens": 14275, "totalToolUseCount": 0}}));
+    assert_eq!(tokens(&r), Some(14275));
+
+    // 后台：启动时还没有用量，结束时取 task_notification.usage.total_tokens
+    let r = feed(json!({"type": "user", "parent_tool_use_id": null, "session_id": "s",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_bg", "content": "launched"}]},
+        "tool_use_result": {"isAsync": true, "status": "async_launched", "agentId": "a2"}}));
+    assert_eq!(tokens(&r), None);
+    let r = feed(
+        json!({"type": "system", "subtype": "task_notification", "task_id": "a2", "tool_use_id": "toolu_bg", "status": "completed",
+        "summary": "BETA", "usage": {"total_tokens": 13009, "tool_uses": 0, "duration_ms": 1589}, "session_id": "s"}),
+    );
+    assert_eq!(tokens(&r), Some(13009));
+}
+
+#[test]
 fn failed_background_subagent_is_an_error_but_a_stopped_one_is_not() {
     for (status, is_err) in [("failed", true), ("stopped", false)] {
         let mut t = Translator::new(CWD, json!({}), None);

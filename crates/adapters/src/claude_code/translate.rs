@@ -11,6 +11,7 @@
 //! - `TodoWrite` → `Plan`；`ExitPlanMode` / `AskUserQuestion` 由权限请求表达，不再发 tool_call / tool_result
 //! - 子 agent 内部的调用（`parent_tool_use_id` 非空）带 `parent_id`；后台启动的子 agent（`tool_use_result.status =
 //!   async_launched`）的结果标 `background`，等 `system/task_notification` 再给同一个 id 补最终结果
+//! - 子 agent 用掉的 token：前台的取 `tool_use_result.totalTokens`，后台的取 `task_notification.usage.total_tokens`
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -356,13 +357,14 @@ impl Translator {
             return;
         }
         let summary = v["summary"].as_str().unwrap_or("");
+        let total_tokens = u64_of(&v["usage"], "total_tokens");
         Self::push(
             out,
             Event::ToolResult {
                 id: id.to_string(),
                 output: json!(clip_text(summary)),
                 is_error: v["status"].as_str() == Some("failed"),
-                detail: None,
+                detail: total_tokens.map(|n| ToolResultDetail { total_tokens: Some(n), ..Default::default() }),
             },
         );
     }
@@ -562,6 +564,7 @@ impl Translator {
                     detail.background = Some(true);
                     self.backgrounded.insert(id.clone());
                 }
+                ToolCategory::Subagent => detail.total_tokens = u64_of(tur, "totalTokens"),
                 _ => {}
             }
             let detail = if detail == ToolResultDetail::default() { None } else { Some(detail) };

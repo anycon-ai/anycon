@@ -599,6 +599,10 @@ pub struct ToolResultDetail {
     /// `tool_result`（不带这个标记），取代这一条。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<bool>,
+    /// 子 agent 结束时 agent 报的它一共用掉的 token（`category = subagent`；agent 不报就缺省）。
+    /// 主 agent 的 `turn_done.usage` 不含这部分。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]

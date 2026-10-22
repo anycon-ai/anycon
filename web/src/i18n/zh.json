@@ -114,6 +114,8 @@
     "noNode": "还没有配对节点。",
     "chooseNode": "选择节点",
     "nodes": "节点",
+    "allNodes": "全部节点",
+    "nodesSelected": "{{count}} / {{total}} 个节点",
     "nodeSettings": "节点设置",
     "addNode": "配对另一个节点",
     "collapse": "折叠",

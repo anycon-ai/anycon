@@ -1,14 +1,14 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, Check, ChevronDown, ChevronRight, FolderGit2, Lock, LogOut, PanelLeftClose, Plus, ScanLine, Search, Server, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, FolderGit2, Lock, LogOut, PanelLeftClose, Plus, ScanLine, Search, Server, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices, useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
 import { resetClientState, signOut as signOutOfHub } from '@/app/session'
 import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { accountNodes, lockedNodes, unlockParam } from '@/features/unlock/nodes'
-import { groupSessions } from '@/features/session/group'
+import { groupNodeSessions, type NodeProjectGroup } from '@/features/session/group'
 import { useEnroll } from '@/stores/enroll'
 import { cleanHintText } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
@@ -16,11 +16,12 @@ import { connectionTone } from './useConnectionLabel'
 import { SessionDot } from './StatusDot'
 import { useHub } from '@/stores/hub'
 import { useNodes } from '@/stores/nodes'
+import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
-import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/ui/Menu'
+import { Menu, MenuCheckboxItem, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/ui/Menu'
 import { Chip, Dot } from '@/ui/Misc'
 import { Logo } from './Logo'
 import { RemoveDeviceDialog } from './RemoveDeviceDialog'
@@ -28,32 +29,57 @@ import { SignOutDialog } from './SignOutDialog'
 
 const RECENT_PER_PROJECT = 5
 
-/** `onCollapse`：宽屏常驻的左栏才传，Logo 旁边多一个收起按钮（手机抽屉自己有关闭按钮）。 */
+/**
+ * 左栏显示哪些节点：偏好里存的是用户勾选的节点（null = 全部）。勾选里已经没有存在的节点（节点被移除）时退回全部，
+ * 免得左栏一片空白；至少留一个，取消最后一个勾选不生效。
+ */
+function useNodeFilter(): { selected: string[]; toggle: (id: string, on: boolean) => void } {
+  const order = useNodes((s) => s.order)
+  const saved = usePrefs((s) => s.sidebarNodes)
+  const setPrefs = usePrefs((s) => s.set)
+  const selected = useMemo(() => {
+    const picked = saved ? order.filter((id) => saved.includes(id)) : order
+    return picked.length > 0 ? picked : order
+  }, [saved, order])
+  const toggle = (id: string, on: boolean): void => {
+    const next = order.filter((x) => (x === id ? on : selected.includes(x)))
+    if (next.length === 0) return
+    setPrefs({ sidebarNodes: next.length === order.length ? null : next })
+  }
+  return { selected, toggle }
+}
+
+/**
+ * `nodeId`：页面当前所在的节点，只用于下拉里的「节点设置」；左栏显示哪些节点由下拉里的勾选决定。
+ * `onCollapse`：宽屏常驻的左栏才传，Logo 旁边多一个收起按钮（手机抽屉自己有关闭按钮）。
+ */
 export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void; onCollapse?: () => void }) {
   const { t } = useTranslation()
   const nodes = useNodes((s) => s.byId)
   const order = useNodes((s) => s.order)
   const list = useSessions((s) => s.list)
-  const params = useParams({ strict: false }) as { session?: string; project?: string }
-  const navigate = useNavigate()
-  const entry = nodeId ? nodes[nodeId] : undefined
-  const param = nodeId ? shortNodeId(nodeId, order) : ''
+  const params = useParams({ strict: false }) as { node?: string; session?: string; project?: string }
+  const { selected } = useNodeFilter()
+  const paramOf = (id: string): string => shortNodeId(id, order)
+  // 勾了多个节点时，项目行和置顶行要标出各自属于哪个节点
+  const nodeLabel = (id: string): string | undefined => (selected.length > 1 ? nodes[id]?.name : undefined)
 
-  const grouped = useMemo(() => {
-    if (!nodeId) return { projects: [], scratch: [] }
-    return groupSessions(
-      Object.values(list).filter((s) => s.node_id === nodeId),
-      entry?.projects ?? [],
-    )
-  }, [list, nodeId, entry?.projects])
+  const grouped = useMemo(
+    () =>
+      groupNodeSessions(
+        selected.map((id) => ({ id, projects: nodes[id]?.projects ?? [] })),
+        Object.values(list),
+      ),
+    [list, selected, nodes],
+  )
 
   // 待审批的会话在左栏置顶（spec/web.md § 7）
   const waiting = useMemo(
     () =>
       Object.values(list)
-        .filter((x) => x.node_id === nodeId && !x.archived && (x.pending_permissions > 0 || x.status === 'waiting_permission'))
+        .filter((x) => selected.includes(x.node_id) && !x.archived && (x.pending_permissions > 0 || x.status === 'waiting_permission'))
         .sort((a, b) => b.updated_at_ms - a.updated_at_ms),
-    [list, nodeId],
+    [list, selected],
   )
 
   return (
@@ -69,48 +95,41 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
         ) : null}
       </div>
 
-      <div className="px-3 pb-2">
-        <NodeSwitcher nodeId={nodeId} onNavigate={onNavigate} />
+      <div className="flex items-stretch gap-2 px-3 pb-2">
+        <div className="min-w-0 flex-1">
+          <NodeSwitcher nodeId={nodeId} onNavigate={onNavigate} />
+        </div>
+        {onSearch && order.length > 0 ? (
+          <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('sidebar.search')} onClick={onSearch}>
+            <Search className="size-4" />
+          </Button>
+        ) : null}
       </div>
 
-      {nodeId ? (
-        <div className="flex gap-2 px-3 pb-2">
-          <Button
-            variant="primary"
-            size="sm"
-            className="flex-1"
-            icon={<Plus className="size-4" />}
-            onClick={() => {
-              onNavigate?.()
-              void navigate({ to: '/n/$node/new', params: { node: param }, search: { project: params.project } })
-            }}
-            data-testid="sidebar-new-session"
-          >
-            {t('sidebar.newSession')}
-          </Button>
-          {onSearch ? (
-            <Button variant="outline" size="icon" className="!h-8 !w-8" aria-label={t('sidebar.search')} onClick={onSearch}>
-              <Search className="size-4" />
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-
       <nav className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label={t('sidebar.sessions')}>
-        {nodeId ? (
+        {selected.length > 0 ? (
           <>
             {waiting.length > 0 ? (
               <div className="mb-2" data-testid="sidebar-waiting">
                 <p className="px-2 py-1 text-xs font-semibold tracking-wide text-warning uppercase">{t('sidebar.waiting')}</p>
                 {waiting.map((s) => (
-                  <SessionRow key={s.id} nodeParam={param} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
+                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
                 ))}
               </div>
             ) : null}
             {grouped.projects.length > 0 ? (
               <div className="flex flex-col gap-2">
                 {grouped.projects.map((g) => (
-                  <ProjectBranch key={g.name} nodeParam={param} name={g.name} group={g} activeSession={params.session} activeProject={params.project} onNavigate={onNavigate} />
+                  <ProjectBranch
+                    key={`${g.nodeId}:${g.name}`}
+                    nodeParam={paramOf(g.nodeId)}
+                    nodeName={nodeLabel(g.nodeId)}
+                    group={g}
+                    activeNode={params.node}
+                    activeSession={params.session}
+                    activeProject={params.project}
+                    onNavigate={onNavigate}
+                  />
                 ))}
               </div>
             ) : null}
@@ -118,7 +137,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
               <div className="mt-2">
                 <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.scratch')}</p>
                 {grouped.scratch.map((s) => (
-                  <SessionRow key={s.id} nodeParam={param} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
+                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
                 ))}
               </div>
             ) : null}
@@ -129,25 +148,27 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
         )}
       </nav>
 
-      <AccountFooter nodeParam={param || undefined} onNavigate={onNavigate} />
+      <AccountFooter onNavigate={onNavigate} />
     </div>
   )
 }
 
-function ProjectBranch({ nodeParam, name, group, activeSession, activeProject, onNavigate }: { nodeParam: string; name: string; group: ReturnType<typeof groupSessions>['projects'][number]; activeSession?: string; activeProject?: string; onNavigate?: () => void }) {
+function ProjectBranch({ nodeParam, nodeName, group, activeNode, activeSession, activeProject, onNavigate }: { nodeParam: string; nodeName?: string; group: NodeProjectGroup; activeNode?: string; activeSession?: string; activeProject?: string; onNavigate?: () => void }) {
   const { t } = useTranslation()
+  const { name } = group
   const [open, setOpen] = useState(true)
   const [all, setAll] = useState(false)
   const shown = all ? group.sessions : group.sessions.slice(0, RECENT_PER_PROJECT)
   return (
     <div>
-      <div className={cn('group flex items-center rounded-md', activeProject === name && !activeSession && 'bg-bg-hover')}>
+      <div className={cn('group flex items-center rounded-md', activeNode === nodeParam && activeProject === name && !activeSession && 'bg-bg-hover')}>
         <button type="button" aria-label={open ? t('sidebar.collapse') : t('sidebar.expand')} aria-expanded={open} className="rounded p-1 text-fg-subtle hover:text-fg" onClick={() => setOpen((v) => !v)}>
           {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
         </button>
         <Link to="/n/$node/p/$project" params={{ node: nodeParam, project: name }} onClick={onNavigate} className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-2 text-sm font-medium">
           <FolderGit2 className="size-3.5 shrink-0 text-fg-subtle" />
           <span className="truncate">{name}</span>
+          {nodeName ? <span className="max-w-[45%] shrink-0 truncate text-xs font-normal text-fg-subtle">{nodeName}</span> : null}
           {group.pending > 0 ? <Chip tone="warning">{group.pending}</Chip> : null}
         </Link>
         <Link
@@ -165,7 +186,7 @@ function ProjectBranch({ nodeParam, name, group, activeSession, activeProject, o
         </Link>
       </div>
       {open ? (
-        <div className="ml-3 border-l border-border pl-1">
+        <div className="ml-3 pl-1">
           {shown.map((s) => (
             <SessionRow key={s.id} nodeParam={nodeParam} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={activeSession === s.id} onNavigate={onNavigate} />
           ))}
@@ -180,7 +201,7 @@ function ProjectBranch({ nodeParam, name, group, activeSession, activeProject, o
   )
 }
 
-function SessionRow({ nodeParam, id, title, status, pending, branch, active, onNavigate }: { nodeParam: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; onNavigate?: () => void }) {
+function SessionRow({ nodeParam, nodeName, id, title, status, pending, branch, active, onNavigate }: { nodeParam: string; nodeName?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; onNavigate?: () => void }) {
   return (
     <Link
       // 分支名放在悬停提示里（左栏窄，不占位置）
@@ -194,28 +215,32 @@ function SessionRow({ nodeParam, id, title, status, pending, branch, active, onN
     >
       <SessionDot status={status} />
       <span className="min-w-0 flex-1 truncate">{title || id}</span>
+      {nodeName ? <span className="max-w-[40%] shrink-0 truncate text-xs text-fg-subtle">{nodeName}</span> : null}
       {pending > 0 ? <Chip tone="warning">{pending}</Chip> : null}
     </Link>
   )
 }
 
+/** 节点过滤：勾选哪些节点，左栏就显示这些节点上的所有项目；多选，点一下只切换勾选，菜单不关。 */
 function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNavigate?: () => void }) {
   const { t } = useTranslation()
   const nodes = useNodes((s) => s.byId)
   const order = useNodes((s) => s.order)
   const navigate = useNavigate()
-  const current = nodeId ? nodes[nodeId] : undefined
+  const { selected, toggle } = useNodeFilter()
   // 账号下、这个浏览器还没解锁的节点（ADR-36）：列在下拉底部，带锁图标，点了去 /unlock/:node
   const devices = useDevices()
   const account = accountNodes(devices.data)
   const locked = lockedNodes(devices.data, order)
+  const only = selected.length === 1 ? nodes[selected[0]!] : undefined
+  const label = only ? only.name : selected.length === order.length && selected.length > 0 ? t('sidebar.allNodes') : selected.length > 0 ? t('sidebar.nodesSelected', { count: selected.length, total: order.length }) : t('sidebar.chooseNode')
   return (
     <Menu>
       <MenuTrigger asChild>
         <button type="button" data-testid="node-switcher" className="flex w-full items-center gap-2 rounded-md border border-border-strong bg-bg px-2.5 py-2 text-left text-sm hover:bg-bg-hover">
           <Server className="size-4 shrink-0 text-fg-subtle" />
-          <span className="min-w-0 flex-1 truncate font-medium">{current?.name ?? t('sidebar.chooseNode')}</span>
-          {current ? <Dot tone={connectionTone(current.conn)} /> : null}
+          <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+          {only ? <Dot tone={connectionTone(only.conn)} /> : null}
           <ChevronDown className="size-4 shrink-0 text-fg-subtle" />
         </button>
       </MenuTrigger>
@@ -225,19 +250,9 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
           const n = nodes[id]
           if (!n) return null
           return (
-            <MenuItem
-              key={id}
-              onSelect={() => {
-                onNavigate?.()
-                void navigate({ to: '/n/$node', params: { node: shortNodeId(id, order) } })
-              }}
-              icon={<Dot tone={connectionTone(n.conn)} className="mt-1.5" />}
-            >
-              <span className="flex items-center gap-1">
-                <span className="truncate">{n.name}</span>
-                {id === nodeId ? <Check className="size-3.5 text-accent-text" /> : null}
-              </span>
-            </MenuItem>
+            <MenuCheckboxItem key={id} testId="node-filter-item" checked={selected.includes(id)} onCheckedChange={(on) => toggle(id, on)} icon={<Dot tone={connectionTone(n.conn)} className="mt-1.5" />}>
+              <span className="truncate">{n.name}</span>
+            </MenuCheckboxItem>
           )
         })}
         {locked.length > 0 ? (
@@ -264,6 +279,8 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
         {nodeId ? (
           <MenuItem
             icon={<Settings className="size-4" />}
+            // 设置属于某一个节点：勾了几个节点时写明是哪个（页面当前所在的那个）
+            hint={order.length > 1 ? nodes[nodeId]?.name : undefined}
             onSelect={() => {
               onNavigate?.()
               void navigate({ to: '/n/$node/settings', params: { node: shortNodeId(nodeId, order) } })
@@ -287,7 +304,7 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
   )
 }
 
-function AccountFooter({ nodeParam, onNavigate }: { nodeParam?: string; onNavigate?: () => void }) {
+function AccountFooter({ onNavigate }: { onNavigate?: () => void }) {
   const { t } = useTranslation()
   const me = useMe()
   const navigate = useNavigate()
@@ -298,7 +315,6 @@ function AccountFooter({ nodeParam, onNavigate }: { nodeParam?: string; onNaviga
   const camera = useCameraAvailable()
   const [removeOpen, setRemoveOpen] = useState(false)
   const [signOutOpen, setSignOutOpen] = useState(false)
-  void nodeParam
 
   // 普通退出：结束服务器会话、清内存、退订本浏览器的推送。设备 token、私钥、会话缓存都留在这个浏览器里（所以菜单里写明，退出后再提示一次）。
   const signOut = async (): Promise<void> => {

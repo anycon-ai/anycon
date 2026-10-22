@@ -584,6 +584,8 @@ export class Node extends Emitter<NodeEvents> {
       status: change.status,
       archived: change.archived ?? session.summary.archived ?? false,
       pending_permissions: change.pending_permissions,
+      // 通知是后台任务数的完整快照；旧 daemon 不发这个字段，按 0 处理。
+      background_tasks: change.background_tasks ?? 0,
       updated_at_ms: change.updated_at_ms,
       last_seq: Math.max(change.last_seq, session.summary.last_seq),
       // worktree 的状态变化（creating → active / kept / removed …）；通知里没带就保持原值。

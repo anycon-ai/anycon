@@ -72,6 +72,10 @@ pub struct SessionSummary {
     /// 最后一个事件的 seq；客户端据此决定要不要拉增量。
     pub last_seq: u64,
     pub pending_permissions: u32,
+    /// agent 进程里还在跑的后台任务数（Claude Code 的后台 subagent、后台命令）。主 turn 结束后它们可能还在干活，
+    /// 期间 daemon 不按 `idle_timeout` 回收进程（docs/spec/daemon.md § 7.3）。只反映 daemon 内存里的当前状态，不进事件流。
+    #[serde(default)]
+    pub background_tasks: u32,
     /// 排队位置（status = queued 时）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_position: Option<u32>,
@@ -515,6 +519,9 @@ pub struct SessionChanged {
     #[serde(default)]
     pub archived: bool,
     pub pending_permissions: u32,
+    /// 同 [`SessionSummary::background_tasks`]。
+    #[serde(default)]
+    pub background_tasks: u32,
     pub updated_at_ms: TimestampMs,
     pub last_seq: u64,
     /// 会话被删除。
@@ -658,6 +665,8 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<AttachmentRef>,
     },
+    /// `message_id` 是这个 turn 发出的第一条用户消息；**空串**表示 turn 是 agent 自己开始的，没有对应的用户消息
+    /// （Claude Code 的后台任务结束后，CLI 会自己再跑一轮处理结果，见 docs/spec/daemon.md § 7.5）。
     TurnStart {
         turn_id: u64,
         message_id: String,

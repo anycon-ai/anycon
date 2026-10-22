@@ -360,6 +360,8 @@
     "loadOlder": "Load earlier messages",
     "newMessages": "New messages",
     "turnFinished": "The agent finished replying.",
+    "backgroundTasks_one": "{{count}} background task is still running — the agent will pick up its result",
+    "backgroundTasks_other": "{{count}} background tasks are still running — the agent will pick up their results",
     "goneTitle": "Session not found",
     "goneBody": "It may have been deleted from another device.",
     "goneBack": "Back to node",
@@ -428,7 +430,8 @@
     "thinking": "Thinking level changed to {{value}}",
     "current": "Settings: {{value}}",
     "mode": "Permission mode changed to {{value}}",
-    "option": "{{id}} set to {{value}}"
+    "option": "{{id}} set to {{value}}",
+    "agentTurn": "Background task finished — the agent continued"
   },
   "code": {
     "text": "text"

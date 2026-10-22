@@ -20,6 +20,10 @@ Environment (all optional)
   FAKE_CLAUDE_BIG_LINE      write one stdout line of this many bytes (not valid JSON) right after start
   FAKE_CLAUDE_BG_PID_FILE   spawn a background `sleep` in our process group and write its pid to this file
 A fixture line `__HOLD__` keeps the turn open until the client interrupts it.
+A fixture line `__PAUSE__ <ms>` pauses the turn for that long (stdin is still read and logged meanwhile).
+A turn whose first line is `__AUTO__` is started by the fake itself right after the previous turn ends, without a user
+message (like the real CLI does after a background task finishes).
+Every emitted `result` line is logged as {"kind": "result"}, so tests can order stdin messages against turn ends.
 
 Like the real CLI (commander), value options are accepted as `--flag=value` as well as `--flag value`.
 """
@@ -142,6 +146,8 @@ turn_index = 0
 def emit(line):
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
+    if '"type":"result"' in line or '"type": "result"' in line:
+        log({"kind": "result"})
     state["emitted"] += 1
     if crash_after and state["emitted"] >= crash_after:
         sys.stderr.write("fatal: simulated crash\n")
@@ -240,6 +246,12 @@ def replay(lines):
                              "num_turns": 1, "session_id": state["session_id"], "total_cost_usd": 0, "usage": {},
                              "errors": ["Request was aborted"], "terminal_reason": "aborted_streaming"}))
             return
+        if line.startswith("__PAUSE__"):
+            end = time.time() + int(line.split()[1]) / 1000.0
+            while time.time() < end:
+                poll()
+                time.sleep(0.01)
+            continue
         if line == "__HOLD__":
             # keep the turn open until the client interrupts it
             end = time.time() + 60
@@ -257,6 +269,16 @@ def replay(lines):
             wait_for_control_response()
 
 
+def replay_auto_turns():
+    """Turns marked `__AUTO__` follow the previous turn on their own."""
+    global turn_index
+    while turn_index < len(turns) and turns[turn_index] and turns[turn_index][0] == "__AUTO__":
+        lines = turns[turn_index][1:]
+        turn_index += 1
+        replay(lines)
+        poll()
+
+
 while True:
     process(q.get())
     poll()
@@ -269,3 +291,4 @@ while True:
             lines = []
         replay(lines)
         poll()
+        replay_auto_turns()

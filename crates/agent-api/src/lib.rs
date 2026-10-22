@@ -135,6 +135,15 @@ pub enum AgentEvent {
     Permission(PendingPermission),
     /// agent 自己给会话起的标题（ACP `session_info_update`）。
     Title(String),
+    /// agent **自己**开始了一个 turn，不是 [`AgentHandle::send`] 触发的：Claude Code 的后台任务（后台 subagent、
+    /// 后台命令）结束后，CLI 会自己再跑一轮处理结果。daemon 据此开一个没有用户消息的 turn，结束照常是
+    /// `Event::TurnDone`。adapter 只在**没有**进行中的 turn 时发；`send` 恰好撞上这样一轮时，adapter 负责把
+    /// 两者理顺（Claude Code：等这一轮结束再把消息写进去，见 `crates/adapters/src/claude_code/README.md`），
+    /// daemon 已经有 turn 时收到它直接忽略。
+    TurnStarted,
+    /// 进程里还在跑的后台任务数（变化时发，含降到 0）。大于 0 时 daemon 不按 `idle_timeout` 回收进程——
+    /// 回收会连同这些任务一起杀掉（docs/spec/daemon.md § 7.3）。进程退出后 daemon 自己清零，adapter 不用补发。
+    Background { tasks: u32 },
     /// 进程退出。`error` 为空表示正常退出（如 idle 超时后 daemon 主动关的）。
     Exited { code: Option<i32>, error: Option<String> },
 }

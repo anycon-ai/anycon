@@ -97,7 +97,9 @@ export const useSessions = create<SessionsState>()((set, get) => ({
       const list = { ...s.list }
       for (const r of recs) {
         if (r.node_id !== nodeId || list[r.session_id]) continue
-        list[r.session_id] = { ...r.summary, node_id: nodeId, cached_seq: r.low_seq > 0 ? r.last_seq : 0 }
+        // 后台任务数只反映 daemon 内存里的当前状态，缓存里的旧值不能当现状：等 session.list / session.changed 带来新值
+        const { background_tasks: _stale, ...rest } = r.summary
+        list[r.session_id] = { ...rest, node_id: nodeId, cached_seq: r.low_seq > 0 ? r.last_seq : 0 }
       }
       return { list }
     }),
@@ -156,6 +158,8 @@ export const useSessions = create<SessionsState>()((set, get) => ({
         archived: ch.archived ?? prev.archived,
         last_seq: ch.last_seq,
         pending_permissions: ch.pending_permissions,
+        // 通知是后台任务数的完整快照；旧 daemon 不发这个字段，按 0 处理
+        background_tasks: ch.background_tasks ?? 0,
         updated_at_ms: ch.updated_at_ms,
         // worktree 只会变状态、不会消失；通知里没带就保持原样
         worktree: ch.worktree ?? prev.worktree,

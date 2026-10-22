@@ -1564,6 +1564,10 @@ export interface SessionArchiveParams {
 export interface SessionChanged {
   archived?: boolean;
   /**
+   * 同 [`SessionSummary::background_tasks`]。
+   */
+  background_tasks?: number;
+  /**
    * 会话被删除。
    */
   deleted?: boolean;
@@ -1770,6 +1774,11 @@ export interface SessionSummary {
    */
   agent_session_id?: string | null;
   archived?: boolean;
+  /**
+   * agent 进程里还在跑的后台任务数（Claude Code 的后台 subagent、后台命令）。主 turn 结束后它们可能还在干活，
+   * 期间 daemon 不按 `idle_timeout` 回收进程（docs/spec/daemon.md § 7.3）。只反映 daemon 内存里的当前状态，不进事件流。
+   */
+  background_tasks?: number;
   created_at_ms: number;
   id: string;
   /**

@@ -20,6 +20,8 @@
 //! | `bigdelta` | 一个 `Bash` 工具调用，先流式发 200 KB 的 `tool_output_delta`，再发一个很小的结果 |
 //! | `bigtext` | 回显之外再发一个 150 KB 的 `text_delta` |
 //! | `modechange yolo` | `modechange` 的目标模式是 `yolo`（默认是 `plan`） |
+//!
+//! 关键词之外，测试可以用 [`HandleLog::inject`] 直接往事件通道里塞事件（比如后台任务数、agent 自己开的 turn）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -61,6 +63,8 @@ pub struct HandleLog {
     release: Notify,
     cancel_gen: AtomicUsize,
     cancel_notify: Notify,
+    /// 弱引用：不能因为测试能注入就让通道关不掉（`closechannel` 依赖 handle 放掉发送端后通道关闭）。
+    injector: Mutex<Option<mpsc::WeakSender<AgentEvent>>>,
 }
 
 impl HandleLog {
@@ -86,6 +90,12 @@ impl HandleLog {
     }
     pub fn input_texts(&self) -> Vec<String> {
         self.inputs.lock().unwrap().iter().map(|i| i.content.clone()).collect()
+    }
+    /// 像 adapter 自己发出的一样，往这个 handle 的事件通道里塞一个事件（agent 不经 `send` 主动做的事：
+    /// 后台任务数变化、agent 自己开的 turn 及其事件）。
+    pub async fn inject(&self, ev: AgentEvent) {
+        let tx = self.injector.lock().unwrap().as_ref().and_then(mpsc::WeakSender::upgrade);
+        tx.expect("event channel is open").send(ev).await.expect("event channel is open");
     }
 }
 
@@ -353,6 +363,7 @@ impl Adapter for FakeAdapter {
         });
         let resume = ResumeHandle { agent_session_id, launch_args };
         let _ = tx.try_send(AgentEvent::Started { resume: resume.clone() });
+        *log.injector.lock().unwrap() = Some(tx.downgrade());
         Ok(Box::new(FakeHandle {
             rx,
             tx: Arc::new(Mutex::new(Some(tx))),

@@ -8,6 +8,10 @@
 //! - 思考内容在较新的 CLI 里是空串（只有 `estimated_tokens`）：每个思考块只发一条空的 `ThinkingDelta`
 //! - `result.total_cost_usd` 是**进程内累计值**，`usage` / `duration_ms` 是**本 turn 的**；这里把费用换成增量
 //! - `system/init` 每个 turn 都会再发一次；只在 `session_id` 变化时再发 `Started`
+//! - 没有 turn 在跑时出现的 `system/init` = CLI **自己**开始了一轮（后台任务结束后处理结果）：发 `TurnStarted`，
+//!   这一轮照常以 `result` → `TurnDone` 结束。这一轮进行中到达的用户消息先暂存，`result` 之后以 [`Out::Write`] 交还
+//! - 后台任务（后台 subagent、后台命令）以 `system/background_tasks_changed` 为准，`task_started` / `task_notification` /
+//!   `task_updated` 兜底；数目变化时发 `Background`
 //! - `TodoWrite` → `Plan`；`ExitPlanMode` / `AskUserQuestion` 由权限请求表达，不再发 tool_call / tool_result
 //! - 子 agent 内部的调用（`parent_tool_use_id` 非空）带 `parent_id`；后台启动的子 agent（`tool_use_result.status =
 //!   async_launched`）的结果标 `background`，等 `system/task_notification` 再给同一个 id 补最终结果
@@ -57,7 +61,24 @@ pub enum Out {
         request_id: String,
         subtype: String,
     },
+    /// 要写进 stdin 的一行：agent 自己的一轮进行中暂存的用户消息，这一轮结束了，现在写进去（[`Translator::submit_user_message`]）。
+    Write(Value),
 }
+
+/// [`Translator::submit_user_message`] 的结果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum UserTurn {
+    /// 已经开始新 turn：调用方现在把这条消息写进 stdin。
+    Write(Value),
+    /// CLI 自己开的一轮正在跑：消息暂存，这一轮的 `result` 之后由 `feed` 以 [`Out::Write`] 交还，
+    /// 用户的 turn 接着这一轮算（这一轮的事件、用量都归它）。
+    Deferred,
+    /// 用户的 turn 正在跑，或者已经有一条暂存的消息。
+    Busy,
+}
+
+/// `task_updated.patch.status` 里表示任务还没结束的取值；其它取值都当作结束。
+const TASK_LIVE_STATUSES: &[&str] = &["running", "pending"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockKind {
@@ -96,6 +117,16 @@ pub struct Translator {
     model: Option<String>,
     turn_counter: u64,
     busy: bool,
+    /// 当前的 turn 是 CLI 自己开始的（没有 turn 时收到了 `system/init`），不是 `send` 触发的。
+    agent_turn: bool,
+    /// agent 自己的一轮进行中收到的用户消息，等这一轮的 `result` 之后写进 stdin。
+    deferred: Option<Value>,
+    /// 被并进用户 turn 的那一轮的用量，加到用户 turn 的 `TurnDone` 上。
+    carry: Option<Usage>,
+    /// 还在跑的后台任务的 task_id。
+    bg_tasks: HashSet<String>,
+    /// 上次通过 `Background` 报告的数目。
+    bg_reported: u32,
     cancel_requested: bool,
     prev_total_cost: f64,
     cur_msg_id: String,
@@ -123,6 +154,25 @@ fn clip_text(s: &str) -> String {
 
 fn u64_of(v: &Value, key: &str) -> Option<u64> {
     v.get(key).and_then(Value::as_u64)
+}
+
+/// 两轮的用量相加（并进用户 turn 的那一轮 + 用户 turn 本身）。模型取后一轮的。
+fn merge_usage(a: Usage, b: Usage) -> Usage {
+    fn add<T: std::ops::Add<Output = T>>(x: Option<T>, y: Option<T>) -> Option<T> {
+        match (x, y) {
+            (Some(x), Some(y)) => Some(x + y),
+            (x, y) => x.or(y),
+        }
+    }
+    Usage {
+        input_tokens: add(a.input_tokens, b.input_tokens),
+        output_tokens: add(a.output_tokens, b.output_tokens),
+        cache_read_tokens: add(a.cache_read_tokens, b.cache_read_tokens),
+        cache_write_tokens: add(a.cache_write_tokens, b.cache_write_tokens),
+        cost_usd: add(a.cost_usd, b.cost_usd),
+        duration_ms: a.duration_ms + b.duration_ms,
+        model: b.model.or(a.model),
+    }
 }
 
 fn parse_exit_code(text: &str) -> Option<i32> {
@@ -215,6 +265,11 @@ impl Translator {
             model: None,
             turn_counter: 0,
             busy: false,
+            agent_turn: false,
+            deferred: None,
+            carry: None,
+            bg_tasks: HashSet::new(),
+            bg_reported: 0,
             cancel_requested: false,
             prev_total_cost: 0.0,
             cur_msg_id: String::new(),
@@ -239,15 +294,43 @@ impl Translator {
     pub fn begin_turn(&mut self) {
         self.turn_counter += 1;
         self.busy = true;
+        self.agent_turn = false;
         self.cancel_requested = false;
-        // 消息 / 工具调用不会跨 turn，清掉各种去重表，长期保活的会话里不会无限增长。
+        self.reset_turn_tables();
+    }
+
+    /// 用户消息要开 turn（`send`）：没有 turn 在跑就开新 turn，返回 [`UserTurn::Write`]；CLI 自己开的一轮正在跑就暂存
+    /// （[`UserTurn::Deferred`]）——这时写进 stdin 的话，CLI 会把它排到这一轮之后，先到的是这一轮的 `result`，会被当成
+    /// 用户这个 turn 的结束；其它情况 [`UserTurn::Busy`]。
+    pub fn submit_user_message(&mut self, msg: Value) -> UserTurn {
+        if !self.busy {
+            self.begin_turn();
+            return UserTurn::Write(msg);
+        }
+        if self.agent_turn && self.deferred.is_none() {
+            self.deferred = Some(msg);
+            return UserTurn::Deferred;
+        }
+        UserTurn::Busy
+    }
+
+    /// [`Translator::submit_user_message`] 会不会返回 [`UserTurn::Busy`]（读附件之前先问，忙的时候不读文件）。
+    pub fn would_refuse_user_message(&self) -> bool {
+        self.busy && !(self.agent_turn && self.deferred.is_none())
+    }
+
+    /// 新 turn 开始时清掉按消息去重的表，长期保活的会话里不会无限增长。工具调用的表只在没有后台任务时清：
+    /// 后台 subagent 的工具调用会跨 turn（调用在上一轮，结果在这一轮），清掉就丢了结果要用的工具名和路径。
+    fn reset_turn_tables(&mut self) {
         self.blocks.clear();
         self.text_streamed.clear();
         self.thinking_streamed.clear();
         self.fallback_done.clear();
-        self.seen_tool_use.clear();
-        self.tools.clear();
-        self.suppressed.clear();
+        if self.bg_tasks.is_empty() {
+            self.seen_tool_use.clear();
+            self.tools.clear();
+            self.suppressed.clear();
+        }
     }
 
     /// 我们发出了 interrupt（或要关闭进程）：此后 `result` 按 cancelled 算。
@@ -308,6 +391,11 @@ impl Translator {
         let mut out = Vec::new();
         let mut died = false;
         let cancelled = self.cancel_requested;
+        // 暂存的用户消息不会再有机会写进去了；后台任务随进程一起没了（daemon 在进程退出时自己清零）
+        self.deferred = None;
+        self.carry = None;
+        self.agent_turn = false;
+        self.bg_tasks.clear();
         if self.busy {
             if self.cancel_requested {
                 self.busy = false;
@@ -332,9 +420,62 @@ impl Translator {
 
     fn on_system(&mut self, v: &Value, out: &mut Vec<Out>) {
         match v.get("subtype").and_then(Value::as_str) {
-            Some("init") => {}
-            Some("task_notification") => return self.on_task_notification(v, out),
-            _ => return,
+            Some("init") => self.on_init(v, out),
+            // 全量列表，以它为准
+            Some("background_tasks_changed") => {
+                self.bg_tasks = v["tasks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t["task_id"].as_str().map(str::to_string))
+                    .collect();
+                self.report_background(out);
+            }
+            Some("task_started") => {
+                if v["is_backgrounded"].as_bool() == Some(true) {
+                    if let Some(id) = v["task_id"].as_str() {
+                        self.bg_tasks.insert(id.to_string());
+                        self.report_background(out);
+                    }
+                }
+            }
+            Some("task_notification") => {
+                // 后台子 agent 的最终结果先补上，再报任务数的变化
+                self.on_task_notification(v, out);
+                if let Some(id) = v["task_id"].as_str() {
+                    self.bg_tasks.remove(id);
+                    self.report_background(out);
+                }
+            }
+            Some("task_updated") => {
+                let ended = v["patch"]["status"].as_str().is_some_and(|s| !TASK_LIVE_STATUSES.contains(&s));
+                if let (true, Some(id)) = (ended, v["task_id"].as_str()) {
+                    self.bg_tasks.remove(id);
+                    self.report_background(out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn report_background(&mut self, out: &mut Vec<Out>) {
+        let n = u32::try_from(self.bg_tasks.len()).unwrap_or(u32::MAX);
+        if n != self.bg_reported {
+            self.bg_reported = n;
+            out.push(Out::Event(AgentEvent::Background { tasks: n }));
+        }
+    }
+
+    fn on_init(&mut self, v: &Value, out: &mut Vec<Out>) {
+        // `init` 只在 CLI 开始处理一轮时发（第一条用户消息之前不发）。没有 turn 在跑却来了 init：CLI 自己开始了一轮
+        // （后台任务结束后处理结果），它同样以 `result` 结束
+        if !self.busy {
+            self.turn_counter += 1;
+            self.busy = true;
+            self.agent_turn = true;
+            self.cancel_requested = false;
+            self.reset_turn_tables();
+            out.push(Out::Event(AgentEvent::TurnStarted));
         }
         if let Some(m) = v.get("model").and_then(Value::as_str) {
             self.model = Some(m.to_string());
@@ -647,7 +788,25 @@ impl Translator {
             duration_ms: u64_of(v, "duration_ms").unwrap_or(0),
             model: self.model.clone(),
         };
+        let usage = match self.carry.take() {
+            Some(c) => merge_usage(c, usage),
+            None => usage,
+        };
+        // CLI 自己的一轮结束了，有用户消息在等它：上层眼里这一轮已经是用户的 turn（`send` 已经返回），所以不发 `TurnDone`，
+        // 把消息写进去、用量留到用户 turn 结束时一起报。用户在这期间要求了取消的（这一轮自己正常结束了也一样），
+        // 消息不再写，按取消收尾——用户的消息还没送出去
+        if let Some(msg) = self.deferred.take() {
+            self.agent_turn = false;
+            if !self.cancel_requested {
+                self.carry = Some(usage);
+                self.reset_turn_tables();
+                out.push(Out::Write(msg));
+                return;
+            }
+            reason = TurnDoneReason::Cancelled;
+        }
         self.busy = false;
+        self.agent_turn = false;
         self.cancel_requested = false;
         Self::push(out, Event::TurnDone { turn_id: self.turn_counter, reason, usage: Some(usage) });
     }

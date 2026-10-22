@@ -130,7 +130,7 @@ impl Default for SessionsConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 3,
-            idle_timeout: "10m".into(),
+            idle_timeout: "20m".into(),
             max_attachment_bytes: "10MiB".into(),
             history_retention: "forever".into(),
         }
@@ -447,7 +447,7 @@ impl Config {
         expand_tilde(&self.workspace.root)
     }
     pub fn idle_timeout(&self) -> Duration {
-        parse_duration(&self.sessions.idle_timeout).unwrap_or(Duration::from_secs(600))
+        parse_duration(&self.sessions.idle_timeout).unwrap_or(Duration::from_secs(1200))
     }
     /// `None` = 不超时。
     pub fn request_timeout(&self) -> Option<Duration> {
@@ -748,7 +748,7 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("# 要关联它们，把那个目录显式写进这个列表（例如 \"~/.config/nvim\"）。关联后 agent 按所选权限模式在里面工作，文件读取不经审批\n");
     s.push_str("link_roots = [\"~\"]\n");
     s.push_str("trash_retention_days = 30\nscratch_retention_days = 7\n");
-    s.push_str("\n[sessions]\nmax_concurrent = 3\nidle_timeout = \"10m\"\n");
+    s.push_str("\n[sessions]\nmax_concurrent = 3\nidle_timeout = \"20m\"\n");
     s.push_str("# 单个图片附件的上限；一条消息的附件合计另有 20 MiB 的上限（固定，不可配置）\n");
     s.push_str("max_attachment_bytes = \"10MiB\"\nhistory_retention = \"forever\"\n");
     s.push_str("\n[permissions]\nallow_dangerous_modes = true\nrequest_timeout = \"0\"\nallow_session_env = false\n");
@@ -869,7 +869,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let cfg = Config::load(&Paths::new(d.path())).unwrap();
         assert_eq!(cfg.sessions.max_concurrent, 3);
-        assert_eq!(cfg.idle_timeout(), Duration::from_secs(600));
+        assert_eq!(cfg.idle_timeout(), Duration::from_secs(1200));
         assert!(cfg.request_timeout().is_none());
     }
 

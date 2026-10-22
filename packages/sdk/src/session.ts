@@ -6,6 +6,8 @@
  *   都结束后 `session.unwatch`（一个客户端最多 watch 5 个会话）。
  * - 消息要带客户端生成的 `message_id`（幂等）。事件流从「我的 user_message 之后的第一个 turn_start」开始，
  *   这样排在前一个 turn 后面的消息不会误收到前一个 turn 的尾巴，合并 turn 也能对上。
+ *   agent 自己开始的 turn（`turn_start.message_id` 为空串，后台任务结束后 CLI 自己跑的一轮）不属于任何一次 `send()`，
+ *   认领时跳过。
  * - 掉线重连后（重新握手）自动重新 watch，并用 `session.history(after_seq)` 补齐错过的事件，按 seq 去重。
  */
 import type {
@@ -226,6 +228,8 @@ export class Session {
    * 发送一条消息，返回事件流。**立即发送**（不是惰性的），迭代到本 turn 的 `turn_done` 结束；
    * 中途 `break` 不取消 turn，只是不再消费（事件仍由 daemon 持久化，之后可 `history()`）。
    * 不可恢复的 `error` 事件、会话 `ended` / `error` 状态也会结束迭代。
+   * 流里只有我的 turn：agent 自己开始的 turn（`turn_start.message_id` 为空串，后台任务结束后 CLI 自己跑的一轮）
+   * 不会混进来，也不会让流提前结束；想看它们用 `events()`。
    */
   send(content: string, options: SendOptions = {}): TurnStream {
     const messageId = options.messageId ?? randomId()
@@ -600,6 +604,10 @@ export class Session {
     if (queue.closed || se.seq <= state.fedSeq) return
     state.fedSeq = se.seq
     const ev = se.event
+    // agent 自己开始的 turn（`message_id` 为空串：后台任务结束后 CLI 自己跑的一轮）没有对应的用户消息，
+    // 不属于任何一次 `send()`。认领我的 turn 之前一律跳过，免得被「user_message 之后的第一个 turn_start」
+    // 这条兜底误认；它的 `turn_done` 本来就不是 turn_start，会在下面被丢掉。
+    if (state.phase !== 'streaming' && ev.type === 'turn_start' && ev.message_id === '') return
     if (state.phase === 'user') {
       if (ev.type === 'user_message' && ev.message_id === messageId) {
         state.userEvent = this.#toStream(se)

@@ -137,6 +137,29 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 - `result`：**`usage` 与 `duration_ms` 是本 turn 的，`total_cost_usd` 是进程内累计值**（实测第二个 turn 的 `total_cost_usd` 大于第一个、`modelUsage` 也是累计的）——翻译器把费用换成相邻两次的差值，所以 daemon 直接把各 turn 的 `cost_usd` 相加即可。`success` → completed；`error_max_turns` → max_turns；`error_max_budget_usd` → budget；其它 → error（先发 `Error` 事件：`api_error_status` 401/403 → `auth_failed`（不可恢复），429 → `rate_limited`，其它 `agent_error`）。我们刚发过 interrupt 的那个 turn，非 success 的 result 一律算 `cancelled`（不发 Error）。没有进行中的 turn 时的 error result（比如 `--resume` 不存在的会话）只发 `Error`，不发 `TurnDone`。
 - `TurnDone.turn_id` 是 adapter 进程内的计数（从 1 递增）；daemon 自己发 `turn_start`，应该用自己的 turn id 覆盖它。
 
+### 后台任务与 CLI 自己开的 turn
+
+实测（2.1.293，haiku 5.5，2026-10-21）：subagent 默认在后台跑（`Agent` 工具的 `run_in_background`），Bash 也可以 `run_in_background`。
+主 agent 派出后台任务后就输出 `result`，主 turn 结束；任务在同一个进程里继续，subagent 的 `assistant` / `user` 消息照常出现在 stdout 上（`parent_tool_use_id` 非空）。
+每个任务结束时 CLI 先发 `task_updated { patch.status: completed }`、`task_notification`、`background_tasks_changed`，然后**不等用户消息**自己再跑一轮：
+`system/init` → `system/status requesting` → assistant → `result`。stdout 上的后台任务相关消息：
+
+| 消息 | 内容 |
+|---|---|
+| `system/background_tasks_changed` | `tasks: [{ task_id, run_id, task_type: local_agent / local_bash, description, … }]`，**当前还在跑的全量列表**，空数组 = 没有了 |
+| `system/task_started` | `task_id`、`tool_use_id`、`is_backgrounded`、`task_type`、`description`、`prompt` |
+| `system/task_progress` | subagent 的进度（`usage.total_tokens`、`last_tool_name`） |
+| `system/task_updated` | `patch.status`（`completed` …） |
+| `system/task_notification` | `status`、`summary`、`output_file`（任务结束，也是 CLI 接着自己跑一轮的触发） |
+
+翻译：
+
+- 后台任务数以 `background_tasks_changed` 为准；没有它的 CLI 按 `task_started`（`is_backgrounded: true`）加、`task_notification` / 结束状态的 `task_updated` 减。数目变化时发 `AgentEvent::Background { tasks }`，daemon 据此在任务跑完之前不按 `idle_timeout` 收进程（规格 § 7.3）。
+- **没有 turn 在跑时出现 `system/init` = CLI 自己开始了一轮**：发 `AgentEvent::TurnStarted`，`busy` 置上（`cancel` 能打断它），这一轮的 `result` 照常变成 `TurnDone`。只认 `init`，不认 assistant 消息：中断之后迟到的消息不能开出一个永远等不到 `result` 的 turn。
+- 这一轮进行中 `send` 的消息**暂存**（`Translator::submit_user_message` → `Deferred`），不写 stdin：写进去的话 CLI 会把它排到这一轮之后，先到的 `result` 会被当成用户 turn 的结束。这一轮的 `result` 到了，不发 `TurnDone`，以 `Out::Write` 把消息交给读任务写进去，用量记下来加到用户 turn 的 `TurnDone` 上（两轮合成一个 turn）。暂存期间 `cancel` 了的，消息丢掉，按 `cancelled` 收尾；进程在这期间退出，按「turn 中途退出」报。
+- 新 turn 开始时清空按 turn 去重的表；工具调用的表（`tools` / `seen_tool_use` / `suppressed`）只在没有后台任务时清——subagent 的工具调用会跨 turn（`tool_use` 在上一轮，`tool_result` 在这一轮），清掉就丢了 diff / `file_changed` 要用的工具名和路径。
+- 用例：`claude_translate.rs` 的 `background_tasks_and_the_turns_the_cli_starts_on_its_own`（手写的 `fixtures/claude/background_tasks.jsonl`，形状照录制）、`background_count_falls_back_to_task_lifecycle_messages`、`a_user_message_during_the_clis_own_turn_waits_for_it_and_takes_it_over`、`cancelling_while_the_message_waits_drops_it`；进程级 `claude_process.rs::a_message_sent_during_the_clis_own_turn_is_written_after_that_turn_ends`（fake-claude 的 `__AUTO__` 自己开一轮、`__PAUSE__` 停一下，日志里核对 stdin 消息排在这一轮的 `result` 之后）。
+
 ## 权限
 
 CLI 发 `control_request { request_id (uuid), request: { subtype: can_use_tool, tool_name, display_name, input, description?, permission_suggestions?, tool_use_id, requires_user_interaction? } }`。
@@ -173,7 +196,7 @@ CLI 发 `control_request { request_id (uuid), request: { subtype: can_use_tool, 
   所以读任务只管读、分类、处理回执，事件进一个**不限长的内部队列**，由另一个任务往有界的 `events()` 通道（256）里送。旧实现读任务自己 `send().await` 有界通道，
   输出密集时通道一满就读不到回执，`set_settings` 要等到 15 秒超时（`cancel` 不等回执，不受影响）。用例：`claude_process.rs::control_requests_are_not_blocked_by_thousands_of_unread_events`、
   `cancel_under_a_flood_still_ends_with_a_cancelled_turn`（fake 输出 5000 条 delta、测试不读事件）。
-- **插话**：`capabilities.interject = false`，`UserInput.interject = true` 一律 `Unsupported`（也绝不借此开新 turn）；turn 进行中收到 `interject = false` 的消息同样 `Unsupported`（daemon 自己排队）。
+- **插话**：`capabilities.interject = false`，`UserInput.interject = true` 一律 `Unsupported`（也绝不借此开新 turn）；turn 进行中收到 `interject = false` 的消息同样 `Unsupported`（daemon 自己排队），只有 CLI 自己开的那一轮例外：消息暂存到这一轮结束（见「后台任务与 CLI 自己开的 turn」）。
 - `shutdown`：关 stdin → 等 300 ms → SIGINT → 5 秒 → SIGKILL（进程组）；claude 退出后残留在进程组里的进程也会被清掉。实测关 stdin 后有时 100 ms 内就退出，有时 1.5 秒还没退，所以需要后面两步。进行中的 turn 会先补 `TurnDone(cancelled)`。`Exited.error` 只在非预期退出时有值，带 stderr 末尾；预期内（我们要求关闭 / 取消）为空。turn 中途非预期退出会在 `Exited` 之前发一个 `Error { code: agent_exited, recoverable: true }`。
 - 句柄不经 `shutdown` 被丢弃时（`Drop`）会关 stdin 并对整个进程组 SIGKILL，不留孤儿。
 - `--resume` 一个不存在的会话：stderr `No conversation found with session ID: …`，stdout 一条 `error_during_execution` 的 `result`，退出码 1；对应 `Error` + `Exited{code: 1, error: …stderr…}`。

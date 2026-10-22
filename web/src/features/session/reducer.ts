@@ -45,6 +45,8 @@ export interface UserBlock extends BlockBase {
 }
 export interface TurnStartBlock extends BlockBase {
   type: 'turn_start'
+  /** agent 自己开始的 turn（`message_id` 为空串：后台任务结束后 CLI 自己再跑的一轮），没有对应的用户消息。 */
+  agentStarted: boolean
 }
 export interface ThinkingBlock extends BlockBase {
   type: 'thinking'
@@ -309,7 +311,7 @@ function applyOne(w: Work, se: SessionEvent): void {
     case 'turn_start': {
       w.closeOpen()
       w.currentTurn = ev.turn_id
-      w.push({ ...base, turnId: ev.turn_id, key: `t-${se.seq}`, type: 'turn_start' })
+      w.push({ ...base, turnId: ev.turn_id, key: `t-${se.seq}`, type: 'turn_start', agentStarted: ev.message_id === '' })
       return
     }
     case 'text_delta': {

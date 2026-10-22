@@ -983,7 +983,7 @@ async fn a_not_found_from_permission_respond_says_why_only_when_the_directory_ch
 }
 
 /// turn 之间目录被换掉，空闲但进程还活着的会话也要收进程（周期检查，约 2 秒一次）。
-/// 以前周期检查只看有 turn 在跑的会话，空闲进程要等下一条消息、`workspace.list` 或 10 分钟的 `idle_timeout`；
+/// 以前周期检查只看有 turn 在跑的会话，空闲进程要等下一条消息、`workspace.list` 或 `idle_timeout`（默认 20 分钟）；
 /// agent 在 turn 结束后仍在跑的后台任务会继续在被换掉的目录里执行。
 #[tokio::test]
 async fn the_periodic_check_also_closes_an_idle_agent_process_in_a_swapped_directory() {

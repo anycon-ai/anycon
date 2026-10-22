@@ -36,7 +36,7 @@ use crate::common::{JsonlChild, ShutdownTimings, SpawnSpec, DEFAULT_MAX_LINE_BYT
 use super::input;
 use super::permissions::{self, NativePending};
 use super::process::{self, LaunchOptions};
-use super::translate::{ControlAck, Out, Translator};
+use super::translate::{ControlAck, Out, Translator, UserTurn};
 
 /// 各种等待时间。生产用默认值；测试里缩短。
 #[derive(Debug, Clone, Copy)]
@@ -267,6 +267,10 @@ fn dispatch(shared: &Shared, child: &JsonlChild, tx: &mpsc::UnboundedSender<Agen
                     shared.pending.lock().expect("pending lock").clear();
                     shared.busy.send_replace(false);
                 }
+                // CLI 自己开始了一轮：和 `send` 开的 turn 一样算忙（`cancel` 要能打断它）
+                AgentEvent::TurnStarted => {
+                    shared.busy.send_replace(true);
+                }
                 AgentEvent::Started { resume } => *shared.resume.lock().expect("resume lock") = resume.clone(),
                 _ => {}
             }
@@ -289,6 +293,11 @@ fn dispatch(shared: &Shared, child: &JsonlChild, tx: &mpsc::UnboundedSender<Agen
         }
         Out::ControlCancel { request_id } => {
             shared.pending.lock().expect("pending lock").remove(&request_id);
+        }
+        // CLI 自己的一轮结束了，暂存的用户消息现在写进去（这一轮的未决权限请求随它一起作废）
+        Out::Write(msg) => {
+            shared.pending.lock().expect("pending lock").clear();
+            child.send_json(&msg);
         }
         Out::Unsupported { request_id, subtype } => {
             tracing::debug!(%subtype, "claude: replying with an error to an unsupported control_request");
@@ -379,19 +388,29 @@ impl AgentHandle for ClaudeHandle {
         if self.child.has_exited() {
             return Err(AdapterError::Exited("claude is not running".into()));
         }
-        if self.busy() {
+        // 用户的 turn 在跑：不读附件就拒绝。CLI 自己开的一轮在跑不算——消息暂存到这一轮结束（`submit_user_message`）
+        if self.shared.translator.lock().expect("translator lock").would_refuse_user_message() {
             return Err(AdapterError::Unsupported("Claude Code cannot take input during a turn".into()));
         }
         // 附件的校验和读文件都在改任何状态之前：失败时没有半截的 turn
         let images = input::load_images(&input).await?;
-        self.shared.translator.lock().expect("translator lock").begin_turn();
-        self.shared.busy.send_replace(true);
         let msg = input::user_message(&input.content, images);
-        if !self.child.send_json(&msg) {
-            self.shared.busy.send_replace(false);
-            return Err(AdapterError::Exited("claude is not running".into()));
+        let turn = self.shared.translator.lock().expect("translator lock").submit_user_message(msg);
+        match turn {
+            UserTurn::Busy => Err(AdapterError::Unsupported("Claude Code cannot take input during a turn".into())),
+            UserTurn::Deferred => {
+                self.shared.busy.send_replace(true);
+                Ok(())
+            }
+            UserTurn::Write(msg) => {
+                self.shared.busy.send_replace(true);
+                if !self.child.send_json(&msg) {
+                    self.shared.busy.send_replace(false);
+                    return Err(AdapterError::Exited("claude is not running".into()));
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     async fn respond_permission(&mut self, request_id: &str, decision: PermissionDecision) -> Result<()> {

@@ -542,10 +542,24 @@ export function SystemLine({ block, modelLabel, modeLabel, conflict }: { block: 
   )
 }
 
-export function TurnDivider({ turnId, ts }: { turnId?: number; ts: number }) {
-  const { i18n } = useTranslation()
+/**
+ * turn 之间的分隔线。agent 自己开始的 turn（后台任务结束后 CLI 自己再跑的一轮，没有用户消息）
+ * 在线中间加一行系统提示，让人知道这段回复不是对上一条消息的答复。
+ */
+export function TurnDivider({ turnId, ts, agentStarted }: { turnId?: number; ts: number; agentStarted?: boolean }) {
+  const { t, i18n } = useTranslation()
+  const title = `#${turnId ?? ''} · ${new Date(ts).toLocaleTimeString(i18n.language)}`
+  if (agentStarted) {
+    return (
+      <div className="flex items-center gap-3 py-0.5 text-sm text-fg-subtle" title={title} data-testid="agent-turn-start">
+        <span aria-hidden className="h-px flex-1 bg-border" />
+        <span className="min-w-0 max-w-[80%] text-center [overflow-wrap:anywhere]">{t('system.agentTurn')}</span>
+        <span aria-hidden className="h-px flex-1 bg-border" />
+      </div>
+    )
+  }
   return (
-    <div className="flex items-center gap-3 text-[0.6875rem] text-fg-subtle" title={`#${turnId ?? ''} · ${new Date(ts).toLocaleTimeString(i18n.language)}`} aria-hidden>
+    <div className="flex items-center gap-3 text-[0.6875rem] text-fg-subtle" title={title} aria-hidden>
       <span className="h-px flex-1 bg-border" />
     </div>
   )

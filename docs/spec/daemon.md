@@ -52,7 +52,7 @@ scratch_retention_days = 7            # 已结束且未转项目的 scratch 会�
 
 [sessions]
 max_concurrent = 3                    # 同时运行的 agent 进程数；超出进入 queued
-idle_timeout = "10m"                  # turn 结束后 agent 进程保活多久；"0" = 常驻不退出（省去 resume 但吃内存）
+idle_timeout = "20m"                  # turn 结束（且后台任务都结束）后 agent 进程保活多久；"0" = 常驻不退出（省去 resume 但吃内存），§ 7.3
 max_attachment_bytes = "10MiB"        # 单个附件（blob）的上限，§ 7.10
 history_retention = "forever"         # 或 "90d"
 
@@ -318,7 +318,8 @@ ConfigOption {
                  ▼                                      │
 create ──► starting ──► running ──► idle ◄──────────────┘
                           │  ▲        │
-                          │  │        └── idle_timeout → 进程退出，状态仍是 idle（可 resume）
+                          │  │        ├── idle_timeout → 进程退出，状态仍是 idle（可 resume）；后台任务在跑时不回收（§ 7.3）
+                          │  │        └── 后台任务结束，agent 自己跑一轮 → running（§ 7.5）
                           │  └── send
                           ├── permission.request ──► waiting_permission ──► running
                           ├── cancel ──► idle
@@ -333,13 +334,19 @@ create ──► starting ──► running ──► idle ◄──────
 
 ### 7.2 并发
 
-`max_concurrent` 限制的是**正在运行 turn** 的会话数，不是 idle 的。满了时 `session.create` / `send` 进入 `queued`，按 FIFO 启动，事件 `status { state: queued, position }`。客户端可以取消排队。
+`max_concurrent` 限制的是**正在运行 turn** 的会话数，不是 idle 的（agent 自己开的 turn 不占名额，§ 7.5）。满了时 `session.create` / `send` 进入 `queued`，按 FIFO 启动，事件 `status { state: queued, position }`。客户端可以取消排队。
 
 ### 7.3 进程保活与 idle_timeout
 
 - Claude Code：stream-json 双向模式，turn 结束后保持 stdin 打开，进程保活到 `idle_timeout`；之后 SIGINT 退出。下次 `send` 用 `--resume <agent_session_id>` 重新拉起，用户无感
 - Codex：v0.1 每个会话一个 `codex app-server` 进程、一个 thread（ADR-26 修订），和 Claude Code 一样 turn 结束后保活到 `idle_timeout` 再退出；下次 `send` 重新拉起 app-server，`initialize` 之后 `thread/resume { threadId: agent_session_id }`
 - ACP：一个 agent 进程服务该 agent 的所有会话。agent 声明 `sessionCapabilities.resume` 或 `loadSession` 的，和 Claude Code 一样按 `idle_timeout` 退出、下次 `session/resume`（不重放）或 `session/load`（重放，daemon 吞掉重放事件只取最后状态）；两者都没有的，进程保活到所有会话 `ended`
+- **后台任务**：Claude Code 的 subagent（默认在后台跑）和 `run_in_background` 的命令在主 turn 结束之后还在同一个进程里干活。adapter 从 stream-json 的 `system/background_tasks_changed`（全量列表；`task_started` / `task_notification` / `task_updated` 兜底）得到还在跑的任务数，变化时发 `AgentEvent::Background { tasks }`。daemon 记在会话上（`SessionSummary.background_tasks`、`session.changed` 带出，不进事件流，进程摘掉时清零），大于 0 时：
+  - 不按 `idle_timeout` 回收进程（`idle` 和回合数 / 预算用完的 `ended` 都一样）——回收会关掉整个进程组，连同后台任务一起杀掉。任务都结束时重新开始计 `idle_timeout`，而不是从上一个 turn 结束算起；
+  - 不发 `session_idle`；
+  - 改了需要重启进程才生效的设置（§ 6.4），下一个 turn 沿用当前进程，重启推迟到后台任务都结束之后的 turn。进程里的环境、系统提示追加等在这期间还是旧的；
+  - 删除、归档、`session.restart`、目录被换掉、取消宽限超时这些本来就要收进程的操作照旧收，后台任务随之结束。
+  - 后台任务没有上限：一直不结束的（比如让 agent 在后台起的 dev server）会让进程一直保活，直到上面这些操作收掉它
 
 ### 7.4 Resume
 
@@ -352,6 +359,8 @@ Codex：一个**从来没有记录过用户消息**的 thread 没有 rollout（�
 ### 7.5 Turn 与消息合并
 
 - 每次 `send` 开一个 turn，`turn_id` 单调递增，事件 `turn_start { turn_id, message_id }`
+- **agent 自己开的 turn**：Claude Code 的后台任务结束后，CLI 不等用户消息、自己再跑一轮处理结果（没有 turn 时出现的 `system/init`）。adapter 发 `AgentEvent::TurnStarted`，daemon 开一个 `turn_start { turn_id, message_id: "" }` 的 turn（空串 = 没有对应的用户消息），状态 `running`，照常以 adapter 的 `turn_done` 结束、计入用量；它不占并发名额（§ 7.2，进程已经在跑，daemon 拦不住）。期间到达的消息和普通 turn 一样入队，这一轮结束后作为下一个 turn 发出；可以 `session.cancel`。daemon 已经有 turn 时收到 `TurnStarted` 直接忽略；已归档的会话（归档不一定收进程，后台任务可能还在跑）也不开，这一轮的事件记在 turn 之外
+- 竞态：daemon 发出 `send` 时 CLI 恰好自己开始了一轮（`TurnStarted` 还在通道里没被读到）。这时写进 stdin 的话，CLI 会把消息排到这一轮之后，先到的是这一轮的 `result`，会被当成用户 turn 的结束。所以 adapter 把消息**暂存**，这一轮的 `result` 之后再写进去，不为这一轮发 `turn_done`，两轮合成一个用户 turn（事件、用量都归它）。暂存期间取消的，消息不再写，以 `cancelled` 收尾
 - 积压消息合并规则见 [protocol.md § 7.3](../protocol.md#73-daemon-侧突发消息合并)
 - 带附件的积压合并时按顺序收消息，附件累计超过 20 个或 20 MiB 就停（第一条总是收），剩下的留在队列里，本 turn 结束后作为下一个 turn 发出，并立刻发 `status { queued_messages }`（§ 7.10）
 - turn 进行中收到的 `send`：`capabilities.interject` 为 true 的 agent 直接送入（`UserInput.interject = true`）；否则入队，turn 结束后作为下一 turn 发出，事件 `status { state: running, queued_messages: n }` 让客户端显示「1 条待发送」
@@ -708,11 +717,11 @@ SQLite（WAL）。全部表：
 | category | 触发 |
 |---|---|
 | `permission_requested` | 每次 `permission` 事件，立即 |
-| `turn_finished` | `turn_done` 且按 `notify.turn_finished`：`when_unwatched` 时只在该会话没有 watcher 时发 |
+| `turn_finished` | `turn_done` 且按 `notify.turn_finished`：`when_unwatched` 时只在该会话没有 watcher 时发。turn 结束时后台任务还在跑（§ 7.3）的，推迟到它们都结束之后、agent 自己跑的那一轮结束时再发；那一轮没来（任务都结束 15 秒后还没有 turn；`idle_timeout` 更短时按它，赶在回收之前）就兜底补发。agent 自己开的 turn 只在有推迟的通知时才发，不然它是已经通知过的 turn 的后续。用户又发了消息的，推迟的通知作废 |
 | `error` | `error` 事件且 `recoverable = false`，或会话进入 `error` |
 | `enroll_requested` | 一个请求批准的接入（§ 15.1，`code` 且 `approval = true`）到达，立即；每个请求一次。`scan` 不发（用户就在扫码）；批准之后同一会话里的重试也不再发 |
 | `security` | 新设备经接入加入；节点口令连续失败满 3 次；口令接入被锁定；口令被设置 / 修改 / 清除；`[enroll]` 被修改 |
-| `session_idle` | 会话 `idle` 超过 `session_idle_after` 且期间没有任何客户端 watch 过（提醒「结果还没看」）。daemon 重启不触发（重启后不给已经 idle 的会话重新计时）；已归档的会话不提醒；一直在 watch 的客户端也算「看过」（idle 开始时和每次扫描都检查当前有没有 watcher）|
+| `session_idle` | 会话 `idle` 超过 `session_idle_after` 且期间没有任何客户端 watch 过（提醒「结果还没看」）；后台任务在跑时不算 idle，任务都结束时重新计时。daemon 重启不触发（重启后不给已经 idle 的会话重新计时）；已归档的会话不提醒；一直在 watch 的客户端也算「看过」（idle 开始时和每次扫描都检查当前有没有 watcher）|
 
 同一会话同一 category 60 秒内只发一次；`security` 没有会话，按节点算，60 秒内的多条合并成一次（详情经 `node.security_event` 逐条发给在线客户端）；`enroll_requested` 不合并。
 

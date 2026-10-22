@@ -1,6 +1,6 @@
 {
   "name": "@anycon/protocol",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript side of the Anycon protocol: generated types, envelope msgpack codec, JSON-RPC, and the Noise wasm wrapper.",
   "homepage": "https://github.com/anycon-ai/anycon/tree/main/packages/protocol#readme",
   "bugs": {

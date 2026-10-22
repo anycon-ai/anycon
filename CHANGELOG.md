@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
+## [0.1.1] - 2026-10-22
+
+### Added
+
+- Subagent tool calls are grouped under the subagent that made them, with its description, call count, state, and result. Claude Code only for now.
+- The session panel shows an Agents card: the main agent and every subagent in the loaded history, with state, tokens, and tool-call count. It replaces the Options card (the same controls sit under the input) and the Files changed card (the Changes view covers it).
+- Protocol: `tool_call.parent_id`, `tool_result.detail.background`, `tool_result.detail.total_tokens`, and `background_tasks` on `SessionSummary` / `SessionChanged`. All are optional, so older clients and daemons keep working.
+- Web UI: drag the desktop sidebar's right edge to resize it (double-click resets it).
+- Web UI: a "Block page zoom" switch under Settings → Appearance on iOS and Android. It is off by default.
+
+### Changed
+
+- The default `sessions.idle_timeout` is now 20m (was 10m). A `config.toml` written by 0.1.0 has `idle_timeout = "10m"` in it and keeps that value until you edit it.
+- A turn the agent starts by itself (Claude Code processing finished background tasks) arrives as `turn_start` with an empty `message_id`. The Web UI marks it with a divider line.
+- Web UI: on wide screens the branch chip sits above the input, on the right.
+- Web UI: an option changed while a turn is running is shown in a muted color until the turn ends, instead of a hint line that shifted the layout.
+- Faster connect: the Web UI sends its initial sync requests concurrently, and the hub and daemon record last-seen times off the handshake path.
+
+### Fixed
+
+- Claude Code background subagents and commands are no longer killed when `idle_timeout` reclaims the agent process. Reclaim, `session_idle`, and the `turn_finished` notification wait until they finish.
+- Re-pairing a revoked device no longer fails with "the code is wrong or has expired". The browser no longer sends the old node link's IK into the new pairing handshake.
+- Pairing no longer stalls when the hub bounces a handshake envelope under backpressure. The daemon now resends it.
+- Codex: the model set in `~/.codex/config.toml` shows up as an option even when `model/list` omits it (common with a custom `model_provider`).
+- Question cards show a single submit button, and it sends the collected answers.
+- The SDK no longer matches an agent-started turn to a `send()`.
+
 ## [0.1.0] - 2026-10-18
 
 First public release.
@@ -42,4 +69,5 @@ First public release.
 - `@anycon/protocol` and `@anycon/sdk` on npm, published with provenance.
 - Every artifact ships its third-party license notices.
 
+[0.1.1]: https://github.com/anycon-ai/anycon/releases/tag/v0.1.1
 [0.1.0]: https://github.com/anycon-ai/anycon/releases/tag/v0.1.0

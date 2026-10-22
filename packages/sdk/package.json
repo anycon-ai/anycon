@@ -1,6 +1,6 @@
 {
   "name": "@anycon/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Anycon TypeScript SDK (client side): pairing, connecting to nodes, sessions, and permissions. Works in Node and the browser.",
   "homepage": "https://github.com/anycon-ai/anycon/tree/main/packages/sdk#readme",
   "bugs": {

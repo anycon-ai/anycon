@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { zoomPlatform } from '@/lib/zoom'
 import { usePrefs, type EnterBehavior, type FontSize, type LanguagePref, type ThemePref, type ThinkingDisplay } from '@/stores/prefs'
 import { Card, Segmented, Switch } from '@/ui/Misc'
 
@@ -17,6 +18,8 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 export function AppearancePage() {
   const { t } = useTranslation()
   const p = usePrefs()
+  // 只有手机系统有「页面缩放」这回事，桌面上不显示
+  const zoom = zoomPlatform()
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t('settings.appearance')}</h1>
@@ -60,6 +63,11 @@ export function AppearancePage() {
         <Row label={t('appearance.compact')} hint={t('appearance.compactHint')}>
           <Switch label={t('appearance.compact')} checked={p.compact} onCheckedChange={(v) => p.set({ compact: v })} />
         </Row>
+        {zoom ? (
+          <Row label={t('appearance.blockZoom')} hint={t(zoom === 'ios' ? 'appearance.blockZoomHintIos' : 'appearance.blockZoomHintAndroid')}>
+            <Switch label={t('appearance.blockZoom')} checked={p.blockZoom} onCheckedChange={(v) => p.set({ blockZoom: v })} testId="block-zoom" />
+          </Row>
+        ) : null}
         <Row label={t('appearance.thinking')} hint={t('appearance.thinkingHint')}>
           <Segmented<ThinkingDisplay>
             ariaLabel={t('appearance.thinking')}

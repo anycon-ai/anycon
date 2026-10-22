@@ -316,7 +316,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `/settings/sessions` | 浏览器登录会话，可踢出 |
 | `/settings/devices` | 本账号全部设备（含当前浏览器，标「这台」），按节点分组显示配对关系，吊销 |
 | `/settings/notifications` | **本浏览器的推送**：状态（未开启 / 已开启 / 被浏览器拒绝 / 不支持——不是安全上下文、没有 `PushManager`、iOS 没加到主屏）；「开启推送」→ `Notification.requestPermission()` → `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })` → `POST /api/push/subscriptions`（带本浏览器的 web 设备 id；还没配对过任何节点的浏览器没有设备 id，提示先配对或解锁一台节点）；「关闭」退订并 `DELETE`；「发送测试推送」→ `POST /api/push/test`。订阅过期 / 被换掉（`pushsubscriptionchange`）时 service worker 重新订阅并上报。**每个类别**一行 push / email 两个开关（`GET` / `PUT /api/me/notifications`；`email_available = false` 时邮件那一列禁用并说明原因：hub 没配 SMTP，或账号没绑定邮箱）。**本账号的其他推送订阅**列表（hub 给的 `device_name`、推送服务主机名），可删除。测试推送的结果按 `{ result, status? }` 显示（`error` 时带上推送服务回的状态码） |
-| `/settings/appearance` | 主题（跟随系统 / 浅 / 深）、语言、字号、紧凑模式、思考过程显示（折叠 / 展开 / 隐藏）、Enter 行为 |
+| `/settings/appearance` | 主题（跟随系统 / 浅 / 深）、语言、字号、紧凑模式、禁止页面缩放（只在 iOS / Android 上显示）、思考过程显示（折叠 / 展开 / 隐藏）、Enter 行为 |
 | `/settings/data` | 本地缓存大小、清空缓存、导出本浏览器的设备密钥（否——不提供，见 ADR-23）|
 | `/settings/quota` | 仅 `multi`：配额用量 |
 | `/settings/security` | 安全活动（hub 审计里本账号的部分） |
@@ -364,7 +364,7 @@ options: [ { id: "fast_mode", kind: "bool", label: "Fast mode", default: false }
 
 - **新建会话时**：composer 选项栏全部可改
 - **会话空闲时**：全部可改（`session.set_settings`），从下一个 turn 生效，消息流出现「模型已切换为 …」。adapter 内部是热改还是重启进程续接，UI 不关心（[daemon.md § 6.4](daemon.md#64-会话中修改)）
-- **运行中的 turn**：所有选项锁定，等本轮结束；提供「结束后应用」的排队改动
+- **运行中的 turn**：选项仍可改，但改动排队，本轮结束后才 `session.set_settings`。排队中、还没生效的那几格文字换成浅色，悬停说明「本轮结束后生效」；不在选项栏下面另加提示行（运行状态切换时布局不跳动）
 
 ### 5.4 默认值
 
@@ -483,6 +483,7 @@ Noise 的 wasm 在主线程跑：单条消息加解密是微秒级，开 Worker 
 - 主题 token 在 `web/DESIGN.md`：浅 / 深两套，跟随系统；代码高亮用 shiki 的双主题输出
 - 所有交互组件基于 Radix Primitives，保证焦点管理和键盘可达；流式输出区域 `aria-live="polite"`，但 token 级增量不播报，只在 turn 结束时播报一句
 - 字号三档，紧凑模式减小气泡间距
+- 禁止页面缩放：默认关，保持系统的缩放行为。打开后，iOS 用 viewport 的 `maximum-scale=1` 止住聚焦输入框时的自动放大（Safari 为了无障碍不理 `user-scalable=no`），双指缩放靠拦 `gesturestart` / `gesturechange`，双击缩放靠 `touch-action: manipulation`；Android 用 `maximum-scale=1, user-scalable=no`（系统无障碍的「强制启用缩放」仍可覆盖）。桌面不显示这个开关
 
 ## 11. 空状态与错误
 

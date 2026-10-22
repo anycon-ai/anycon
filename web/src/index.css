@@ -129,6 +129,11 @@ html[data-font='lg'] {
     cursor: col-resize !important;
     user-select: none;
   }
+  /* 外观设置「禁止页面缩放」在 iOS 上：关掉双击缩放（双指缩放由 lib/zoom.ts 拦截）。放在 base 层，组件自己的 touch-* 工具类仍然优先 */
+  html[data-zoom-lock],
+  html[data-zoom-lock] * {
+    touch-action: manipulation;
+  }
   button,
   [role='button'] {
     cursor: pointer;

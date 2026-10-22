@@ -113,7 +113,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   }, [running, prevRunning, t])
 
   const baseSettings = view?.settings ?? summary?.settings
-  const { selection, onChange, queued } = useSessionSettings({ nodeId: nodeId ?? '', sessionId, agent, running, baseSettings, offline })
+  const { selection, onChange, pending: pendingSettings } = useSessionSettings({ nodeId: nodeId ?? '', sessionId, agent, running, baseSettings, offline })
 
   const seen = useMemo(() => new Set(view?.blocks.filter((b) => b.type === 'user').map((b) => (b.type === 'user' ? b.messageId : '')) ?? []), [view?.blocks])
   const pending = useMemo(() => pendingMessages(draft, inflight, sessionId, seen), [draft, inflight, sessionId, seen])
@@ -213,18 +213,18 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
           onChange={onChange}
           disabled={offline}
           disabledReason={t('options.offlineLocked')}
+          pending={pendingSettings}
           dangerousForbidden={entry.dangerousForbidden}
           customKey={`${nodeId}:${agent.id}`}
           idPrefix="option"
           layout={layout}
         />
-        {running ? <p className="mt-1.5 text-xs text-fg-subtle">{queued ? t('options.queuedChange') : t('options.runningHint')}</p> : null}
       </div>
     ) : null
 
   const panelControls =
     agent && selection ? (
-      <SettingsControls agent={agent} value={selection} onChange={onChange} disabled={offline} disabledReason={t('options.offlineLocked')} dangerousForbidden={entry.dangerousForbidden} customKey={`${nodeId}:${agent.id}`} idPrefix="info" layout="stacked" />
+      <SettingsControls agent={agent} value={selection} onChange={onChange} disabled={offline} disabledReason={t('options.offlineLocked')} pending={pendingSettings} dangerousForbidden={entry.dangerousForbidden} customKey={`${nodeId}:${agent.id}`} idPrefix="info" layout="stacked" />
     ) : (
       <p className="text-sm text-fg-subtle">{summary?.agent}</p>
     )

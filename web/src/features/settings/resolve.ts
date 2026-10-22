@@ -287,3 +287,14 @@ export function applyUpdate(sel: Selection, u: SettingsUpdate): Selection {
 export function selectionKey(nodeId: string, agentId: string): string {
   return `${nodeId}:${agentId}`
 }
+
+/** 选项控件上的一格：模型 / 思考 / 权限模式，其余设置都算在「更多」里。 */
+export type SettingsField = 'model' | 'thinking' | 'mode' | 'more'
+
+/** 界面上显示的选择里，还没生效（和会话实际设置不同）的那几格。 */
+export function pendingFields(current: Selection, shown: Selection): ReadonlySet<SettingsField> {
+  const d = buildSettingsUpdate(current, shown)
+  const out = new Set<SettingsField>()
+  for (const k of [...Object.keys(d.settings), ...d.clear]) out.add(k === 'model' || k === 'thinking' || k === 'mode' ? k : 'more')
+  return out
+}

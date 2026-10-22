@@ -39,6 +39,33 @@ export function groupSessions(sessions: readonly SessionItem[], projects: readon
   return { projects: groups, scratch }
 }
 
+/** 多个节点合并后的项目组：同名项目在不同节点上是两个组，所以带上所属节点。 */
+export interface NodeProjectGroup extends ProjectGroup {
+  nodeId: string
+}
+
+export interface NodeGroupedSessions {
+  projects: NodeProjectGroup[]
+  scratch: SessionItem[]
+}
+
+/** 左栏按节点过滤后的会话树：每个节点各自分组，再合并成一个列表（项目组按最近活动排，临时会话按更新时间排）。 */
+export function groupNodeSessions(nodes: readonly { id: string; projects: readonly Project[] }[], sessions: readonly SessionItem[]): NodeGroupedSessions {
+  const projects: NodeProjectGroup[] = []
+  const scratch: SessionItem[] = []
+  for (const n of nodes) {
+    const g = groupSessions(
+      sessions.filter((s) => s.node_id === n.id),
+      n.projects,
+    )
+    for (const p of g.projects) projects.push({ ...p, nodeId: n.id })
+    scratch.push(...g.scratch)
+  }
+  projects.sort((a, b) => b.activity - a.activity || a.name.localeCompare(b.name) || a.nodeId.localeCompare(b.nodeId))
+  scratch.sort((a, b) => b.updated_at_ms - a.updated_at_ms)
+  return { projects, scratch }
+}
+
 export function isActiveStatus(s: SessionItem['status']): boolean {
   return s === 'running' || s === 'starting' || s === 'waiting_permission' || s === 'queued'
 }

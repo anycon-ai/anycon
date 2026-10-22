@@ -56,3 +56,16 @@ export function MenuRadioItem({ value, children, disabled, testId }: { value: st
     </DropdownMenu.RadioItem>
   )
 }
+
+/** 多选项：点一下只切换勾选，菜单不关（要一次勾几个）。 */
+export function MenuCheckboxItem({ checked, onCheckedChange, children, icon, testId }: { checked: boolean; onCheckedChange: (checked: boolean) => void; children: ReactNode; icon?: ReactNode; testId?: string }) {
+  return (
+    <DropdownMenu.CheckboxItem checked={checked} onCheckedChange={onCheckedChange} onSelect={(e) => e.preventDefault()} data-testid={testId} className={cn(itemCls, 'pl-8')}>
+      <DropdownMenu.ItemIndicator className="absolute left-2.5 top-2.5">
+        <Check className="size-4 text-accent-text" />
+      </DropdownMenu.ItemIndicator>
+      {icon}
+      <span className="min-w-0 flex-1">{children}</span>
+    </DropdownMenu.CheckboxItem>
+  )
+}

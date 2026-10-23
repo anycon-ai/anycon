@@ -116,7 +116,9 @@ html[data-font='lg'] {
   width: 100%;
   max-width: 87rem;
   margin-inline: auto;
-  padding-inline: calc(clamp(1rem, 25% - 7.5rem, 5rem) + clamp(0rem, (100% - 50rem) * 0.17857, 2.5rem));
+  /* 绝对定位的子元素（虚拟滚动的行）不吃 padding，要用同一个值做 left / right；栏宽 ≤ 87rem 时它的包含块宽度和父容器相同，百分比算出来一致 */
+  --chat-pad: calc(clamp(1rem, 25% - 7.5rem, 5rem) + clamp(0rem, (100% - 50rem) * 0.17857, 2.5rem));
+  padding-inline: var(--chat-pad);
 }
 
 @layer base {

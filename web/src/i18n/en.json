@@ -115,6 +115,8 @@
     "noNode": "No node paired yet.",
     "chooseNode": "Choose a node",
     "nodes": "Nodes",
+    "allNodes": "All nodes",
+    "nodesSelected": "{{count}} of {{total}} nodes",
     "nodeSettings": "Node settings",
     "addNode": "Pair another node",
     "collapse": "Collapse",

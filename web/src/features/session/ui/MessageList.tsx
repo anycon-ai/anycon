@@ -231,9 +231,9 @@ export function MessageList(props: MessageListProps) {
             ? virtualizer.getVirtualItems().map((v) => {
                 const row = rows[v.index]
                 if (!row) return null
-                // 绝对定位不吃父级 padding，左右偏移要和外层 px-3 / md:px-4 一致，否则窄屏时内容贴边
+                // 绝对定位不吃父级 padding，左右偏移用 chat-column 同一个 --chat-pad，否则内容会贴边、也对不上输入框
                 return (
-                  <div key={row.key} data-index={v.index} ref={virtualizer.measureElement} className={cn('absolute left-3 right-3 top-0 md:left-4 md:right-4', rowGap(rows, v.index))} style={{ transform: `translateY(${v.start}px)` }}>
+                  <div key={row.key} data-index={v.index} ref={virtualizer.measureElement} className={cn('absolute left-[var(--chat-pad)] right-[var(--chat-pad)] top-0', rowGap(rows, v.index))} style={{ transform: `translateY(${v.start}px)` }}>
                     {row.node}
                   </div>
                 )

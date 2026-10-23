@@ -38,6 +38,8 @@ export interface PrefsState {
   sidebarOpen: boolean
   /** 宽屏左栏宽度（px），拖动左栏右缘调整。 */
   sidebarWidth: number
+  /** 左栏显示哪些节点上的项目（节点 id）；null = 全部节点（之后配对的新节点也在内）。 */
+  sidebarNodes: string[] | null
   lastNode: string | null
   notifyBannerDismissed: boolean
   /** key = `${nodeId}:${agentId}` */
@@ -88,6 +90,7 @@ export const usePrefs = create<PrefsState>()(
       infoPanelOpen: true,
       sidebarOpen: true,
       sidebarWidth: SIDEBAR_DEFAULT,
+      sidebarNodes: null,
       lastNode: null,
       notifyBannerDismissed: false,
       lastUsed: {},
@@ -119,6 +122,7 @@ export const usePrefs = create<PrefsState>()(
         infoPanelOpen: s.infoPanelOpen,
         sidebarOpen: s.sidebarOpen,
         sidebarWidth: s.sidebarWidth,
+        sidebarNodes: s.sidebarNodes,
         lastNode: s.lastNode,
         notifyBannerDismissed: s.notifyBannerDismissed,
         lastUsed: s.lastUsed,

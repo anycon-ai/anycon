@@ -426,7 +426,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
 
           {backgroundTasks > 0 && !running ? (
             // 低调的一行：会话已经 idle，但后台任务还在干活，结束后 agent 会自己再跑一轮。运行中不显示（状态本身已经有提示）
-            <div className="mx-auto flex w-full max-w-3xl shrink-0 items-center gap-2 px-3 pt-2 text-xs text-fg-muted md:px-4" role="status" data-testid="background-tasks-hint" data-count={backgroundTasks}>
+            <div className="chat-column flex shrink-0 items-center gap-2 pt-2 text-xs text-fg-muted" role="status" data-testid="background-tasks-hint" data-count={backgroundTasks}>
               <Spinner className="size-3.5 shrink-0" />
               <span className="min-w-0 [overflow-wrap:anywhere]">{t('session.backgroundTasks', { count: backgroundTasks })}</span>
             </div>

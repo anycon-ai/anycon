@@ -218,7 +218,7 @@ export function MessageList(props: MessageListProps) {
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={onScroll} className="scroll-thin h-full overflow-y-auto" data-testid="message-list">
-        <div className="mx-auto w-full max-w-3xl px-3 py-4 md:px-4" style={virtual ? { height: virtualizer.getTotalSize(), position: 'relative' } : undefined}>
+        <div className="chat-column py-4" style={virtual ? { height: virtualizer.getTotalSize(), position: 'relative' } : undefined}>
           {props.hasMoreOlder ? (
             <div className="flex justify-center pb-3">
               <Button variant="ghost" size="sm" onClick={props.onLoadOlder} disabled={props.loadingOlder} data-testid="load-older">

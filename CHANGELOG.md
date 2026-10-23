@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
+## [Unreleased]
+
+### Changed
+
+- Web UI: the message list and the input share one column. Its text width follows the center pane, up to 72rem, with side margins that grow from 16px to 120px as the pane widens. User message bubbles are allowed up to 56rem.
+- Web UI: on wide screens, the "will be sent after this turn" notice sits on the same row as the branch chip, on the left.
+
+### Fixed
+
+- Web UI: the session info drawer no longer pops up by itself when the window is widened past 1200px and narrowed again.
+
 ## [0.1.1] - 2026-10-22
 
 ### Added

@@ -27,7 +27,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -49,11 +49,11 @@ jobs:
     name: ts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
       # wasm 产物（packages/protocol/wasm）让 protocol / sdk 的测试跑真实 Noise 而不只是 mock，也是 web 构建的输入。
@@ -65,7 +65,7 @@ jobs:
         with:
           tool: just,wasm-pack
       - name: bun 安装缓存
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -104,7 +104,7 @@ jobs:
     name: gen-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
@@ -114,7 +114,7 @@ jobs:
         with:
           tool: just
       - name: bun 安装缓存
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -136,7 +136,7 @@ jobs:
       # daemon 默认启动时要跑 `$SHELL -ilc` 解析登录环境；CI 里没有用户 rc，关掉省几秒（测试夹具也各自设了一遍）。
       ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL: "false"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
@@ -148,7 +148,7 @@ jobs:
         with:
           tool: just,wasm-pack
       - name: bun 安装缓存
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -168,7 +168,7 @@ jobs:
         run: just test-sdk-real
       - name: Playwright 浏览器缓存
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -206,7 +206,7 @@ jobs:
           ls -la e2e/ci-logs
       - name: 上传报告
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: e2e-report
           path: |
@@ -220,12 +220,12 @@ jobs:
     name: docker (hub image)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
       # docker/hub.Dockerfile 是自包含的：wasm（wasm-bindgen-cli）→ Web UI（bun + vite）→ hub（嵌入 Web UI）→ distroless。
       # 用默认基础镜像；Docker Hub 连不上的机器本地换源见 `just docker-hub` 的注释。
       - name: 构建（不推送）
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/hub.Dockerfile
@@ -277,10 +277,10 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 标签
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/anycon-ai/hub
           flavor: |
@@ -291,15 +291,15 @@ jobs:
           labels: |
             org.opencontainers.image.title=anycon-hub
             org.opencontainers.image.description=Anycon hub (edge, built from main; not a release)
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: 登录 GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建并推送
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/hub.Dockerfile

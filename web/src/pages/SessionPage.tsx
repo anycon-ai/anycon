@@ -61,6 +61,10 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const setPrefs = usePrefs((s) => s.set)
   const rightDrawer = useUi((s) => s.rightDrawerOpen)
   const setRightDrawer = useUi((s) => s.setRightDrawer)
+  // 宽屏时右侧面板内联显示、抽屉被卸载；不清掉状态的话，窗口再拖窄抽屉会自己弹出来
+  useEffect(() => {
+    if (xl) setRightDrawer(false)
+  }, [xl, setRightDrawer])
   const draft = useDrafts((s) => s.byKey[sessionId])
   const inflight = useDrafts((s) => s.inflight)
   const loadDraft = useDrafts((s) => s.load)

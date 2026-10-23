@@ -3,7 +3,7 @@
 // 这份文件随 Web UI 一起嵌进 hub、由 hub 下发（浏览器拿到的是这些包的代码，许可证也应该能拿到），
 // hub 镜像里另存一份（docker/hub.Dockerfile）。Rust 侧的清单由 cargo-about 生成（packaging/about.toml）。
 //
-// 包的来源：主构建里真正进了 chunk 的模块（rollup 的 `chunk.modules`），加上 `extra` 列出的、不在主构建模块图里的包
+// 包的来源：主构建里真正进了 chunk 的模块（打包器输出的 `chunk.modules`，Vite 8 起是 Rolldown），加上 `extra` 列出的、不在主构建模块图里的包
 // （service worker 是 vite-plugin-pwa 单独构建的；CSS 里有 Tailwind 的 preflight），连同它们的运行时依赖。
 // workspace 包（@anycon/protocol 等）不在 node_modules 里，不计入。
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'

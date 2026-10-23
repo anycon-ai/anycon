@@ -60,6 +60,16 @@ describe('Composer', () => {
     expect(screen.getByTestId('composer-queue-notice')).toHaveTextContent(/after this turn/i)
   })
 
+  it('puts the queued notice on the left of the same row as the aside (branch chip) on the right', async () => {
+    const user = userEvent.setup()
+    render(<Composer draftKey="s1" onSend={() => {}} onStop={() => {}} running queueNotice aside={<span data-testid="chip">branch</span>} />)
+    await user.type(screen.getByTestId('composer-input'), 'follow-up')
+    const notice = screen.getByTestId('composer-queue-notice')
+    const aside = screen.getByTestId('composer-aside')
+    expect(notice.parentElement).toBe(aside.parentElement)
+    expect(notice.compareDocumentPosition(aside) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('Esc while running arms the Stop button, a second Esc stops', async () => {
     const onStop = vi.fn()
     const user = userEvent.setup()

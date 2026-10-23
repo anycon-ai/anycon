@@ -218,7 +218,7 @@ export function MessageList(props: MessageListProps) {
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={onScroll} className="scroll-thin h-full overflow-y-auto" data-testid="message-list">
-        <div className="w-full px-3 py-4 md:px-6" style={virtual ? { height: virtualizer.getTotalSize(), position: 'relative' } : undefined}>
+        <div className="chat-column py-4" style={virtual ? { height: virtualizer.getTotalSize(), position: 'relative' } : undefined}>
           {props.hasMoreOlder ? (
             <div className="flex justify-center pb-3">
               <Button variant="ghost" size="sm" onClick={props.onLoadOlder} disabled={props.loadingOlder} data-testid="load-older">
@@ -231,9 +231,9 @@ export function MessageList(props: MessageListProps) {
             ? virtualizer.getVirtualItems().map((v) => {
                 const row = rows[v.index]
                 if (!row) return null
-                // 绝对定位不吃父级 padding，左右偏移要和外层 px-3 / md:px-6 一致，否则窄屏时内容贴边
+                // 绝对定位不吃父级 padding，左右偏移用 chat-column 同一个 --chat-pad，否则内容会贴边、也对不上输入框
                 return (
-                  <div key={row.key} data-index={v.index} ref={virtualizer.measureElement} className={cn('absolute left-3 right-3 top-0 md:left-6 md:right-6', rowGap(rows, v.index))} style={{ transform: `translateY(${v.start}px)` }}>
+                  <div key={row.key} data-index={v.index} ref={virtualizer.measureElement} className={cn('absolute left-[var(--chat-pad)] right-[var(--chat-pad)] top-0', rowGap(rows, v.index))} style={{ transform: `translateY(${v.start}px)` }}>
                     {row.node}
                   </div>
                 )

@@ -107,7 +107,7 @@ async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket) -> Option<A
         .flatten()
         .filter(|e| e.kind == Kind::Control && e.v == ENVELOPE_VERSION)
         .and_then(|e| e.control_body().ok());
-    let Some(Control::Auth { device_token, protocol_version, client }) = parsed else {
+    let Some(Control::Auth { device_token, protocol_version, client, .. }) = parsed else {
         reject(socket, AuthFailReason::Protocol).await;
         return None;
     };
@@ -384,7 +384,7 @@ impl ConnState {
     /// 再告诉发送方这次要停多久（`rate_limited`，每秒至多一条）。
     fn on_over_limit(&mut self, conn: &Conn, now: Instant, retry_after_ms: u64, timing: &Timing) {
         self.note_limited(now, timing);
-        self.receipt(conn, Control::RateLimited { retry_after_ms });
+        self.receipt(conn, Control::RateLimited { retry_after_ms, to: None });
     }
 
     /// 一个帧因为发送方自己超速而被退回（或者丢弃，控制消息）：「持续超限」的计时。

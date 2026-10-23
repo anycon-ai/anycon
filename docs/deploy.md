@@ -71,6 +71,9 @@ hub 跑在家里、家里走局域网 IP 的部署方式见 § 4「家里跑 hub
 | `ANYCON_SMTP_URL` | （空 = 不发邮件） | 邮箱验证码登录和邮件通知（[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）。`smtps://user:pass@smtp.example.com:465`（隐式 TLS）或 `smtp://user:pass@smtp.example.com:587`（STARTTLS，必须成功）；用户名密码里的特殊字符要百分号编码（`@` → `%40`）。`smtp+plain://host:25` 不加密，只允许本机和内网：`localhost`、`*.localhost`、回环 / 私有（RFC 1918）/ 链路本地 / `100.64.0.0/10`、IPv6 的 `::1` / `fc00::/7` / `fe80::/10`，写主机名也行（docker compose 里可以直接写服务名，`smtp+plain://mailpit:1025`）：hub 每次发信前自己解析它，解析出的地址必须**全部**是本机 / 内网，然后直接连这个 IP（不会被 DNS 搜索域或改解析骗到公网）。IP 字面量不在这些范围、或主机名解析出公网地址：IP 字面量启动就报错，主机名在发信时失败并记 warn（错误信息不带 URL，它含密码）——所以写错成公网主机名时，启动不会报错，要看第一封信的日志。配了它，登录页才出现「邮箱」，账号设置里才能绑定邮箱 |
 | `ANYCON_EMAIL_FROM` | （配了 SMTP 就必填） | 发件人，`Anycon <noreply@example.com>` 或裸地址。要是 SMTP 服务商允许的发件地址 |
 | `ANYCON_VAPID_SUBJECT` | `ANYCON_PUBLIC_URL`（https 时），否则 `mailto:` + 发件人，再没有就 `mailto:noreply@<PUBLIC_URL 的主机名>` | Web Push 的 VAPID `sub`：推送服务出问题时联系你的方式，`mailto:you@example.com` 或 https 地址。VAPID 密钥本身首次启动自动生成，存 `<DATA_DIR>/vapid.json`，**备份 `/data` 时一起备份**（丢了所有浏览器要重新开启推送） |
+| `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | dev server 预览的 origin 模板（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)），如 `https://*.preview-example.net`：`*` 是最左边的一整段，代表每个预览的 label。**预览域名必须和 `ANYCON_PUBLIC_URL` 不在同一个可注册域名下**（`hub.example.com` 配 `*.preview.example.com` 会启动报错），要单独的域名和泛域名证书，见 § 4「dev server 预览」。只有本机开发可以用 http：`http://*.preview.localhost:8080` |
+| `ANYCON_PREVIEW_BYTES_PER_MIN` | `536870912`（512 MiB），最小 `205824` | 每个账号预览流量（两个方向合计）每分钟的预算。超了只暂停预览，不影响会话 |
+| `ANYCON_PREVIEW_MAX_CONNECTIONS` | `16` | 每个账号同时在线的预览连接数（一个预览域名的所有标签页共用一条） |
 
 **已识别、但 v0.1 没有实现**的变量：设置了不会报错，hub 启动时在日志里警告「ignored」。这些是后续版本的设计目标：
 
@@ -168,6 +171,46 @@ hub 和 daemon 跑在同一台 Mac mini 上是常见配置：家里用 `http://1
 - 局域网是明文 HTTP：同网段能看到登录态，看不到会话内容，内层是 Noise 密文。介意的话家里也走公网域名
 
 推荐把公网域名作为唯一入口，局域网 IP 留给没有公网域名、断网和首次设置的场景。原理见 [architecture.md § 3.3](architecture.md#33-局域网与公网两个-origin)。
+
+### dev server 预览：第二个域名
+
+预览跑在单独的泛域名上（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)、[spec/hub.md § 13](spec/hub.md#13-预览)）：每个预览是 `https://<label>.<预览域名>`，hub 用同一个端口、按 `Host` 区分。要准备三样：
+
+1. **一个单独的可注册域名**。不能是 hub 域名的子域：同站的子域能往父域写 cookie，预览里跑的是 agent 写的代码。公共 hub 用 `aiplace.app`
+2. **泛域名 DNS**：`*.<预览域名>` 指向 hub（和 hub 主域名同一台机器）
+3. **泛域名证书**：`*.<预览域名>`，Let's Encrypt 要用 DNS-01 验证（Caddy 要带对应 DNS 服务商插件的构建，或者用下面的 Cloudflare 方案）
+
+然后设 `ANYCON_PREVIEW_URL=https://*.<预览域名>`，重启 hub。反代要把原始 `Host` 传过去、支持 WebSocket，和主域名一样。nginx：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name *.preview-example.net;
+    # ssl_certificate：*.preview-example.net 的泛域名证书
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+    }
+}
+```
+
+**用 Cloudflare 时**（公共 hub 的做法）：
+
+- 域名托管在 Cloudflare，加一条**橙云（代理）**的泛域名记录 `*` → hub 服务器。免费的 Universal SSL 覆盖一级泛域名 `*.<预览域名>`，所以 label 直接放在一级（`<label>.aiplace.app`，不要 `<label>.preview.aiplace.app`——二级泛域名要付费的证书）
+- 源站证书用 Cloudflare Origin CA 签一张 `*.<预览域名>` 的，SSL 模式 Full (strict)
+- WebSocket 默认就开着。**关掉会往页面里注入脚本或改写内容的功能**（Rocket Loader、Email Obfuscation、自动压缩 HTML 一类）：它们会被 CSP 拦掉，还会破坏 service worker 的引导
+- 缓存保持「遵循源站头」（Respect Existing Headers）：hub 给 `sw.js`、引导页发的是 `no-cache` / `no-store`
+- Cloudflare 终止 TLS，看得到外层信封和预览运行时的代码，看不到隧道里的内容；它在预览运行时的信任链上，和 Web UI 一样（下面「反代也是信任链的一环」）
+- 用 Cloudflare Tunnel 时，ingress 里加一条 `hostname: "*.<预览域名>"`，DNS 加一条泛域名 CNAME 指向隧道
+
+公共 hub 的预览流量全部经过它，`ANYCON_PREVIEW_BYTES_PER_MIN` 按机器带宽设。
 
 ### hub 下发的响应头和 `index.html`
 
@@ -295,6 +338,8 @@ Mac 睡眠后 daemon 会自动重连，但如果 Mac mini 要 7×24 可用，系
 达到设备数或连接数上限时，新的配对或连接会被拒绝并提示，不影响已有的。客户端通过 `control.quota` 消息能看到当前用量。
 
 公共 hub 不开启离线队列，因此不暂存任何数据：节点离线时消息留在你的客户端本地，节点上线后自动重发。
+
+dev server 预览用 `aiplace.app`（`https://<label>.aiplace.app`），每个账号的预览流量另有限速；预览内容经 Noise 隧道，公共 hub 只转发密文。
 
 登录方式：邮箱验证码、GitHub、Google；登录后可在设置里绑定 passkey 作为日常免密登录。不提供 token 登录，没有密码。hub 数据库里关于你的只有邮箱、OAuth 身份 ID、passkey 公钥和设备列表。
 

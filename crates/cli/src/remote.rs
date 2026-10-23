@@ -313,6 +313,7 @@ impl HubWs {
             device_token: token,
             protocol_version: PROTOCOL_VERSION,
             client: client_info(name),
+            preview_token: None,
         })
         .await
         .map_err(ConnectFail::Other)?;
@@ -884,7 +885,7 @@ impl Driver {
                                         if let Err(e) = self.on_backpressure(seq) { break e; }
                                     }
                                     // 超过了速率预算：整条连接的出站暂停 retry_after_ms（被退回的信封之后按序重发）
-                                    Ok(Control::RateLimited { retry_after_ms }) => {
+                                    Ok(Control::RateLimited { retry_after_ms, .. }) => {
                                         self.rate.limited(StdInstant::now(), Duration::from_millis(retry_after_ms));
                                     }
                                     // hub 丢了我们的某一封（不是退回）：加密通道已经少了一条，只能重来
@@ -1284,7 +1285,7 @@ mod tests {
                             if let (Some(ms), false) = (rate_limit_first, told_rate) {
                                 told_rate = true;
                                 ctl_seq += 1;
-                                let c = Control::RateLimited { retry_after_ms: ms };
+                                let c = Control::RateLimited { retry_after_ms: ms, to: None };
                                 ws.send(Message::Binary(Envelope::control("", ctl_seq, &c).unwrap().encode().unwrap().into())).await.unwrap();
                             }
                         }

@@ -237,6 +237,12 @@ pub trait AgentHandle: Send {
 
     /// 当前是否有 turn 在跑（daemon 以自己的状态机为准，这个只用于一致性检查）。
     fn is_busy(&self) -> bool;
+
+    /// agent 主进程的 pid（它也是进程组 id：adapter 用 `process_group(0)` 拉起）。daemon 据此判断某个监听端口
+    /// 是不是这个会话起的（dev server 预览，ADR-39）。没有本地进程的 adapter（远程、mock）返回 `None`。
+    fn pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// 按 `AgentInfo` 做通用校验。

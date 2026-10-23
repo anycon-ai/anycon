@@ -5,6 +5,7 @@
 //! - 内层 [`rpc`]：客户端 ↔ daemon 的 JSON-RPC 2.0，Noise 密文里。方法名常量在 [`methods`]，
 //!   每个方法的 params / result 类型按域分布在 [`node`]、[`agent`]、[`workspace`]、[`session`]、[`permission`]、[`blob`]、[`enroll`]。
 //! - 账号内接入（ADR-36）期间 `handshake` 信封的 body 是 [`enroll::EnrollFrame`]。
+//! - dev server 预览（ADR-39）走单独的 Noise 隧道，不是 JSON-RPC：格式在 [`preview::tunnel`]。
 //!
 //! 所有类型都派生 `serde` 和 `schemars::JsonSchema`；`anycon-gen-schema` 导出到 `schema/protocol.json`，
 //! 再生成 TS 和 pydantic。改了这里要跑 `just gen` 并提交生成产物。
@@ -18,6 +19,7 @@ pub mod error;
 pub mod methods;
 pub mod node;
 pub mod permission;
+pub mod preview;
 pub mod rpc;
 pub mod schema;
 pub mod session;
@@ -31,6 +33,7 @@ pub use envelope::*;
 pub use error::*;
 pub use node::*;
 pub use permission::*;
+pub use preview::*;
 pub use rpc::*;
 pub use session::*;
 pub use workspace::*;

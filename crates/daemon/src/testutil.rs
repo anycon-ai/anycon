@@ -1505,6 +1505,7 @@ impl FakeWeb {
                 version: "test".into(),
                 origin: None,
             },
+            preview_token: None,
         })
         .await;
         match w.recv_control().await {

@@ -148,6 +148,27 @@ pub struct ProtocolSchema {
     pub permission_resolved: PermissionResolved,
     pub permission_list_params: PermissionListParams,
     pub permission_list_result: PermissionListResult,
+    // dev server 预览（ADR-39）
+    pub preview_open_params: PreviewOpenParams,
+    pub preview_open_result: PreviewOpenResult,
+    pub preview_close_params: PreviewCloseParams,
+    pub preview_info: PreviewInfo,
+    pub preview_list_result: PreviewListResult,
+    pub preview_ports_params: PreviewPortsParams,
+    pub preview_port_source: PreviewPortSource,
+    pub preview_port: PreviewPort,
+    pub preview_detection: PreviewDetection,
+    pub preview_ports_result: PreviewPortsResult,
+    pub preview_hello: PreviewHello,
+    pub preview_launch: PreviewLaunch,
+    pub preview_request_head: PreviewRequestHead,
+    pub preview_body_encoding: PreviewBodyEncoding,
+    pub preview_response_head: PreviewResponseHead,
+    pub preview_reset_code: PreviewResetCode,
+    pub preview_reset: PreviewReset,
+    pub preview_goaway_code: PreviewGoawayCode,
+    pub preview_goaway: PreviewGoaway,
+    pub preview_reject_reason: PreviewRejectReason,
 }
 
 /// 生成 draft-07 schema（json-schema-to-typescript 和 datamodel-codegen 都吃这个）。

@@ -149,6 +149,16 @@ export const METHODS = {
   /** D→C notification，params = PermissionResolved */
   PERMISSION_RESOLVED: 'permission.resolved',
   PERMISSION_LIST: 'permission.list',
+
+  // dev server 预览（ADR-39）。隧道本身不走 JSON-RPC，见 `preview.ts`。
+  /** 为本机端口签发预览票据（params = PreviewOpenParams → PreviewOpenResult）。 */
+  PREVIEW_OPEN: 'preview.open',
+  /** 作废一个 label 的全部票据并断开隧道（params = PreviewCloseParams）。 */
+  PREVIEW_CLOSE: 'preview.close',
+  /** 未过期的票据（→ PreviewListResult）。 */
+  PREVIEW_LIST: 'preview.list',
+  /** 可以预览的本机端口（params = PreviewPortsParams → PreviewPortsResult）。 */
+  PREVIEW_PORTS: 'preview.ports',
 } as const
 
 export type MethodName = (typeof METHODS)[keyof typeof METHODS]

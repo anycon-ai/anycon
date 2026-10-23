@@ -46,7 +46,7 @@ The trade-offs, stated plainly:
 - **Your machine has to stay on**, and keeping it online and backed up is up to you.
 - **The model API still sees your context.** The Claude Code on your machine still sends prompts to its provider. Anycon doesn't change that.
 
-**Not in scope:** terminals and remote shells, editors, previewing local dev servers through the hub, issue tracking, team collaboration.
+**Not in scope:** terminals and remote shells, editors, issue tracking, team collaboration. Dev server previews are tunneled end to end, never proxied through the hub in plaintext (see the privacy model).
 
 ## Quick start
 
@@ -123,6 +123,7 @@ Installed agents are picked up automatically. Use `anycon config set agents.<id>
 - **The Web UI's code is served by the hub.** A malicious or compromised hub could serve modified JavaScript and read keys and plaintext in your browser. Using the Web UI therefore means trusting the operator of that hub. For sensitive use, **self-host the hub**, or use the **CLI / SDK**, whose code you install yourself.
 - Pairing codes are generated on the daemon and never sent to the hub. Both sides derive the pre-shared key from the code with Argon2id. The default 16-character code holds up against offline guessing even by a malicious hub. Use the 8-character `anycon pair --short` only with a hub you run yourself.
 - Browser keys and caches are stored unencrypted in IndexedDB. On a shared computer, use *Sign out and remove this device*, not just *Sign out*.
+- **Dev server previews** run on a separate domain (on the public hub, `*.aiplace.app`) and travel through their own Noise tunnel to the daemon. The hub sees that a preview is open and how much traffic it carries, not the pages. The preview loader is also served by the hub, so the same trust caveat as the Web UI applies. By default the daemon only forwards to ports opened by an agent session.
 - Anycon is not a sandbox (see the trade-offs above).
 
 The full threat model is in [docs/architecture.md § 5.6](docs/architecture.md#56-威胁模型) and [SECURITY.md](SECURITY.md).

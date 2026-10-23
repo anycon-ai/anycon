@@ -260,6 +260,7 @@ impl FakeDevice {
             device_token: token.map(str::to_string),
             protocol_version: PROTOCOL_VERSION,
             client: client_info(kind, name),
+            preview_token: None,
         })
         .await;
     }

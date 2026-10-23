@@ -3,6 +3,7 @@
 //! - 一个 `manifest.json`：向量名、类型（envelope / control / rpc）、逻辑值（供 TS 解码后比对）；
 //! - 一个 `frames.json`：`data` 信封 body 框架（`envelope::frame`，ADR-30）的编码 / 解码 / 重组向量。
 //!   大消息的密文不落盘：约定 `ciphertext = (i % 251) as u8` 的确定性图样，只存各片的头和长度，TS 侧用同样的图样还原。
+//! - 一个 `preview.json`：预览隧道（`preview::tunnel`，ADR-39）的消息、帧载荷、头部、握手 body、prologue、label 向量。
 //!
 //! 用法（在仓库根）：
 //!   CARGO_TARGET_DIR=$PWD/target cargo run -q --manifest-path packages/protocol/tools/gen-vectors/Cargo.toml
@@ -87,6 +88,7 @@ fn main() {
         device_token: None,
         protocol_version: PROTOCOL_VERSION,
         client: sdk_client.clone(),
+        preview_token: None,
     })
     .expect("auth body");
 
@@ -99,10 +101,38 @@ fn main() {
         envelope("notify_empty_body", DEVICE_A, DEVICE_B, Kind::Notify, 0, vec![]),
         envelope("control_auth", "", "", Kind::Control, 1, auth_body),
         // ----- 控制消息：全部 22 个变体，可选字段有 / 无各覆盖 -----
-        control("auth_no_token", Control::Auth { device_token: None, protocol_version: PROTOCOL_VERSION, client: sdk_client }),
+        control(
+            "auth_no_token",
+            Control::Auth {
+                device_token: None,
+                protocol_version: PROTOCOL_VERSION,
+                client: sdk_client,
+                preview_token: None,
+            },
+        ),
         control(
             "auth_with_token_web",
-            Control::Auth { device_token: Some("tok_7f3a9c1e5b2d4f60".into()), protocol_version: PROTOCOL_VERSION, client: web_client },
+            Control::Auth {
+                device_token: Some("tok_7f3a9c1e5b2d4f60".into()),
+                protocol_version: PROTOCOL_VERSION,
+                client: web_client,
+                preview_token: None,
+            },
+        ),
+        control(
+            "auth_preview",
+            Control::Auth {
+                device_token: None,
+                protocol_version: PROTOCOL_VERSION,
+                client: ClientInfo {
+                    name: "preview".into(),
+                    kind: DeviceKind::Web,
+                    platform: "browser".into(),
+                    version: "0.1.1".into(),
+                    origin: Some("https://abcdefghijklmnopqrstuvwxyz.aiplace.app".into()),
+                },
+                preview_token: Some("pvt_0f1e2d3c4b5a6978".into()),
+            },
         ),
         control(
             "auth_ok",
@@ -115,7 +145,12 @@ fn main() {
         ),
         control(
             "auth_ok_quota_empty_peers",
-            Control::AuthOk { device_id: DEVICE_A.into(), server_time_ms: 42, peers_online: vec![], quota: Some(quota.clone()) },
+            Control::AuthOk {
+                device_id: DEVICE_A.into(),
+                server_time_ms: 42,
+                peers_online: vec![],
+                quota: Some(quota.clone()),
+            },
         ),
         control("auth_fail", Control::AuthFail { reason: AuthFailReason::Revoked }),
         control("pair_begin", Control::PairBegin { match_id: "0123456789abcdef".into() }),
@@ -163,13 +198,21 @@ fn main() {
         control("peer_online", Control::PeerOnline { device: DEVICE_B.into() }),
         control("peer_offline", Control::PeerOffline { device: DEVICE_B.into() }),
         control("undeliverable", Control::Undeliverable { to: DEVICE_B.into(), seq: 17 }),
-        control("queue_overflow", Control::QueueOverflow { to: DEVICE_B.into(), dropped_seqs: vec![3, 4, 300, 70_000] }),
+        control(
+            "queue_overflow",
+            Control::QueueOverflow { to: DEVICE_B.into(), dropped_seqs: vec![3, 4, 300, 70_000] },
+        ),
         control("queue_drop", Control::QueueDrop { seq: 9 }),
         control("backpressure", Control::Backpressure { to: DEVICE_B.into(), seq: 256 }),
         control("dropped_too_large", Control::Dropped { seq: 70_000, reason: DropReason::TooLarge }),
         control("dropped_not_paired", Control::Dropped { seq: 3, reason: DropReason::NotPaired }),
         control("dropped_rate_limited", Control::Dropped { seq: 300, reason: DropReason::RateLimited }),
-        control("rate_limited", Control::RateLimited { retry_after_ms: 1500 }),
+        control("rate_limited", Control::RateLimited { retry_after_ms: 1500, to: None }),
+        control("rate_limited_to", Control::RateLimited { retry_after_ms: 200, to: Some(DEVICE_B.into()) }),
+        control(
+            "preview_peer",
+            Control::PreviewPeer { peer: DEVICE_B.into(), label: "abcdefghijklmnopqrstuvwxyz".into() },
+        ),
         control("quota_update", Control::QuotaUpdate { quota }),
         control("rotate_token", Control::RotateToken {}),
         control("token_rotated", Control::TokenRotated { device_token: "tok_new".into() }),
@@ -189,7 +232,10 @@ fn main() {
             "response_error_settings",
             RpcMessage::error(RpcId::Num(8), RpcError::invalid_settings("thinking", "not supported by model")),
         ),
-        rpc("response_error_not_found", RpcMessage::error(RpcId::Str("x".into()), RpcError::new(ErrorCode::NotFound, "no such session"))),
+        rpc(
+            "response_error_not_found",
+            RpcMessage::error(RpcId::Str("x".into()), RpcError::new(ErrorCode::NotFound, "no such session")),
+        ),
     ];
 
     v.sort_by(|a, b| a.name.cmp(&b.name));
@@ -216,6 +262,11 @@ fn main() {
     let text = serde_json::to_string_pretty(&frames).expect("frames") + "\n";
     fs::write(out.join("frames.json"), text).expect("write frames");
     eprintln!("wrote {} frame vectors", frames.as_array().map_or(0, Vec::len));
+
+    let preview = preview_vectors();
+    let text = serde_json::to_string_pretty(&preview).expect("preview") + "\n";
+    fs::write(out.join("preview.json"), text).expect("write preview");
+    eprintln!("wrote {} preview vectors", preview.as_array().map_or(0, Vec::len));
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +319,11 @@ fn frame_vectors() -> Value {
             .map(|b| {
                 let header_len = if b[0] == frame::FRAGMENT { 9 } else { 1 };
                 let data_len = b.len() - header_len;
-                assert_eq!(&b[header_len..], &ct[offset..offset + data_len], "body payload must be a contiguous slice of the ciphertext");
+                assert_eq!(
+                    &b[header_len..],
+                    &ct[offset..offset + data_len],
+                    "body payload must be a contiguous slice of the ciphertext"
+                );
                 let entry = json!({
                     "header_hex": hex::encode(&b[..header_len]),
                     "data_len": data_len,
@@ -293,7 +348,9 @@ fn frame_vectors() -> Value {
 
     // ----- decode：各种坏 / 好的 body -----
     let mut decode_case = |name: &str, body: Vec<u8>| {
-        out.push(json!({ "kind": "decode", "name": name, "body_hex": hex::encode(&body), "outcome": decode_outcome(&body) }));
+        out.push(
+            json!({ "kind": "decode", "name": name, "body_hex": hex::encode(&body), "outcome": decode_outcome(&body) }),
+        );
     };
     decode_case("decode_empty", vec![]);
     decode_case("decode_whole_empty_payload", vec![0x00]);
@@ -325,28 +382,246 @@ fn frame_vectors() -> Value {
         out.push(json!({ "kind": "reassemble", "name": name, "steps": steps }));
     };
     scenario("reassemble_whole", vec![vec![0x00, 1, 2, 3]]);
-    scenario("reassemble_in_order", vec![fragment_body(1, 0, 3, &[1, 2]), fragment_body(1, 1, 3, &[3]), fragment_body(1, 2, 3, &[4, 5, 6])]);
+    scenario(
+        "reassemble_in_order",
+        vec![fragment_body(1, 0, 3, &[1, 2]), fragment_body(1, 1, 3, &[3]), fragment_body(1, 2, 3, &[4, 5, 6])],
+    );
     scenario("reassemble_single_fragment", vec![fragment_body(8, 0, 1, &[7, 7])]);
     scenario("reassemble_out_of_order_first", vec![fragment_body(1, 1, 2, &[1])]);
     scenario("reassemble_out_of_order_skip", vec![fragment_body(1, 0, 3, &[1]), fragment_body(1, 2, 3, &[3])]);
-    scenario("reassemble_error_clears_state", vec![fragment_body(1, 0, 3, &[1]), fragment_body(1, 2, 3, &[3]), fragment_body(1, 1, 3, &[2])]);
-    scenario("reassemble_new_msg_id_restarts", vec![fragment_body(1, 0, 2, &[1]), fragment_body(2, 0, 2, &[9]), fragment_body(2, 1, 2, &[8])]);
+    scenario(
+        "reassemble_error_clears_state",
+        vec![fragment_body(1, 0, 3, &[1]), fragment_body(1, 2, 3, &[3]), fragment_body(1, 1, 3, &[2])],
+    );
+    scenario(
+        "reassemble_new_msg_id_restarts",
+        vec![fragment_body(1, 0, 2, &[1]), fragment_body(2, 0, 2, &[9]), fragment_body(2, 1, 2, &[8])],
+    );
     scenario("reassemble_new_msg_id_mid_message", vec![fragment_body(1, 0, 3, &[1]), fragment_body(2, 1, 3, &[9])]);
-    scenario("reassemble_whole_drops_pending", vec![fragment_body(1, 0, 2, &[1]), vec![0x00, 5], fragment_body(1, 1, 2, &[2])]);
-    scenario("reassemble_reset_drops_pending", vec![fragment_body(1, 0, 2, &[1]), vec![0x02], fragment_body(1, 1, 2, &[2])]);
+    scenario(
+        "reassemble_whole_drops_pending",
+        vec![fragment_body(1, 0, 2, &[1]), vec![0x00, 5], fragment_body(1, 1, 2, &[2])],
+    );
+    scenario(
+        "reassemble_reset_drops_pending",
+        vec![fragment_body(1, 0, 2, &[1]), vec![0x02], fragment_body(1, 1, 2, &[2])],
+    );
     scenario("reassemble_count_zero", vec![fragment_body(1, 0, 0, &[1])]);
     scenario("reassemble_count_changes_midway", vec![fragment_body(1, 0, 3, &[1]), fragment_body(1, 1, 2, &[2])]);
-    scenario("reassemble_back_to_back_messages", vec![fragment_body(1, 0, 2, &[1]), fragment_body(1, 1, 2, &[2]), fragment_body(2, 0, 2, &[3]), fragment_body(2, 1, 2, &[4])]);
+    scenario(
+        "reassemble_back_to_back_messages",
+        vec![
+            fragment_body(1, 0, 2, &[1]),
+            fragment_body(1, 1, 2, &[2]),
+            fragment_body(2, 0, 2, &[3]),
+            fragment_body(2, 1, 2, &[4]),
+        ],
+    );
     // 恶意头部：index >= count、index = u16::MAX、count 中途变化（变大 / 变小）、出错后状态被清空、
     // count = 1 的单片 FRAGMENT、完成后同一 msg_id 再来要从 0 开始。
     scenario("reassemble_index_equals_count", vec![fragment_body(1, 2, 2, &[1])]);
     scenario("reassemble_index_u16_max", vec![fragment_body(1, 0xffff, 2, &[1])]);
-    scenario("reassemble_index_ge_count_mid_message", vec![fragment_body(1, 0, 3, &[1]), fragment_body(1, 3, 3, &[2]), fragment_body(1, 1, 3, &[3])]);
+    scenario(
+        "reassemble_index_ge_count_mid_message",
+        vec![fragment_body(1, 0, 3, &[1]), fragment_body(1, 3, 3, &[2]), fragment_body(1, 1, 3, &[3])],
+    );
     scenario("reassemble_count_grows_midway", vec![fragment_body(7, 0, 3, &[1]), fragment_body(7, 1, 4, &[2])]);
-    scenario("reassemble_count_change_clears_state", vec![fragment_body(7, 0, 3, &[1]), fragment_body(7, 1, 4, &[2]), fragment_body(7, 1, 3, &[3])]);
+    scenario(
+        "reassemble_count_change_clears_state",
+        vec![fragment_body(7, 0, 3, &[1]), fragment_body(7, 1, 4, &[2]), fragment_body(7, 1, 3, &[3])],
+    );
     scenario("reassemble_count_u16_max_single", vec![fragment_body(9, 0, 0xffff, &[1])]);
     scenario("reassemble_count_one_twice", vec![fragment_body(3, 0, 1, &[1]), fragment_body(3, 0, 1, &[2])]);
     scenario("reassemble_same_msg_id_after_complete", vec![fragment_body(3, 0, 1, &[1]), fragment_body(3, 1, 2, &[2])]);
+
+    Value::Array(out)
+}
+
+// ---------------------------------------------------------------------------
+// 预览隧道（preview::tunnel，ADR-39）
+// ---------------------------------------------------------------------------
+
+fn frame_type_name(t: tunnel::FrameType) -> &'static str {
+    use tunnel::FrameType::*;
+    match t {
+        Request => "request",
+        Response => "response",
+        Data => "data",
+        End => "end",
+        Reset => "reset",
+        Window => "window",
+        WsMessage => "ws_message",
+        WsClose => "ws_close",
+        Goaway => "goaway",
+    }
+}
+
+fn tunnel_error_name(e: &tunnel::TunnelError) -> &'static str {
+    match e {
+        tunnel::TunnelError::Truncated => "truncated",
+        tunnel::TunnelError::TooLarge => "too_large",
+        tunnel::TunnelError::Version(_) => "version",
+        tunnel::TunnelError::Malformed(_) => "malformed",
+    }
+}
+
+fn frames_json(frames: &[tunnel::Frame]) -> Value {
+    Value::Array(
+        frames
+            .iter()
+            .map(|f| json!({ "type": frame_type_name(f.ty), "type_byte": f.ty as u8, "stream": f.stream, "payload_hex": hex::encode(&f.payload) }))
+            .collect(),
+    )
+}
+
+/// 头部向量：msgpack 字节 + 逻辑值。写成宏是为了不给这个小工具加 serde 依赖。
+macro_rules! head {
+    ($kind:expr, $name:expr, $h:expr) => {{
+        let h = $h;
+        let bytes = tunnel::encode_head(&h).expect("head");
+        json!({ "kind": $kind, "name": $name, "bytes_hex": hex::encode(bytes), "value": serde_json::to_value(&h).expect("json") })
+    }};
+}
+
+fn preview_vectors() -> Value {
+    use tunnel::{Frame, FrameType};
+    let mut out: Vec<Value> = Vec::new();
+
+    // ----- 消息：编码（含纯回执、多帧、ack 的 u64 大端） -----
+    let mut message = |name: &str, ack: u64, frames: Vec<Frame>| {
+        let bytes = tunnel::encode_message(ack, &frames).expect("message");
+        assert_eq!(tunnel::decode_message(&bytes).expect("decode").frames, frames);
+        out.push(json!({ "kind": "message", "name": name, "ack": ack, "frames": frames_json(&frames), "bytes_hex": hex::encode(bytes) }));
+    };
+    message("message_ack_only", 0, vec![]);
+    message("message_ack_u64", 0x0102_0304_0506_0708, vec![]);
+    message(
+        "message_get_request",
+        3,
+        vec![
+            Frame::new(
+                FrameType::Request,
+                1,
+                tunnel::encode_head(&PreviewRequestHead {
+                    method: "GET".into(),
+                    path: "/@vite/client".into(),
+                    headers: vec![("accept".into(), "*/*".into())],
+                    websocket: false,
+                })
+                .expect("head"),
+            ),
+            Frame::new(FrameType::End, 1, vec![]),
+        ],
+    );
+    message(
+        "message_all_small_frames",
+        u64::from(u32::MAX) + 1,
+        vec![
+            Frame::new(FrameType::Data, 0xffff_ffff, vec![0xde, 0xad]),
+            Frame::new(FrameType::Window, 5, tunnel::window(tunnel::STREAM_WINDOW)),
+            Frame::new(FrameType::WsMessage, 7, tunnel::ws_message(tunnel::WS_FIN, b"{\"type\":\"connected\"}")),
+            Frame::new(FrameType::WsClose, 7, tunnel::ws_close(1001, "going away")),
+            Frame::new(
+                FrameType::Reset,
+                9,
+                tunnel::encode_head(&PreviewReset { code: PreviewResetCode::Refused, message: None }).expect("reset"),
+            ),
+            Frame::new(
+                FrameType::Goaway,
+                0,
+                tunnel::encode_head(&PreviewGoaway {
+                    code: PreviewGoawayCode::Expired,
+                    message: Some("ticket expired".into()),
+                })
+                .expect("goaway"),
+            ),
+        ],
+    );
+
+    // ----- 消息：解码（未知帧跳过、各种截断） -----
+    let mut decode = |name: &str, bytes: Vec<u8>| {
+        let outcome = match tunnel::decode_message(&bytes) {
+            Ok(m) => json!({ "ok": true, "ack": m.ack, "frames": frames_json(&m.frames) }),
+            Err(e) => json!({ "err": tunnel_error_name(&e) }),
+        };
+        out.push(json!({ "kind": "decode", "name": name, "bytes_hex": hex::encode(&bytes), "outcome": outcome }));
+    };
+    let mut unknown = 9u64.to_be_bytes().to_vec();
+    unknown.extend_from_slice(&[0x7f, 0, 0, 0, 1, 0, 0, 0, 2, 0xaa, 0xbb]);
+    unknown.extend_from_slice(&[0x04, 0, 0, 0, 3, 0, 0, 0, 0]);
+    decode("decode_unknown_frame_skipped", unknown);
+    decode("decode_empty", vec![]);
+    decode("decode_short_ack", vec![0, 0, 0, 0, 0, 0, 1]);
+    let mut short_header = 0u64.to_be_bytes().to_vec();
+    short_header.extend_from_slice(&[0x03, 0, 0, 0]);
+    decode("decode_truncated_frame_header", short_header);
+    let mut short_payload = 0u64.to_be_bytes().to_vec();
+    short_payload.extend_from_slice(&[0x03, 0, 0, 0, 1, 0, 0, 0, 4, 1, 2, 3]);
+    decode("decode_truncated_payload", short_payload);
+    decode("decode_too_large", vec![0; tunnel::MAX_MESSAGE + 1]);
+
+    // ----- 头部（msgpack，字段名为键） -----
+    out.push(head!(
+        "request_head",
+        "request_websocket",
+        &PreviewRequestHead {
+            method: "GET".into(),
+            path: "/?token=abc".into(),
+            headers: vec![
+                ("sec-websocket-protocol".into(), "vite-hmr".into()),
+                ("origin".into(), "https://abcdefghijklmnopqrstuvwxyz.aiplace.app".into())
+            ],
+            websocket: true,
+        }
+    ));
+    out.push(head!(
+        "response_head",
+        "response_identity",
+        &PreviewResponseHead {
+            status: 200,
+            headers: vec![("content-type".into(), "text/html".into()), ("set-cookie".into(), "a=1; Path=/".into())],
+            encoding: PreviewBodyEncoding::Identity,
+        }
+    ));
+    out.push(head!(
+        "response_head",
+        "response_gzip_101",
+        &PreviewResponseHead {
+            status: 101,
+            headers: vec![("sec-websocket-protocol".into(), "vite-hmr".into())],
+            encoding: PreviewBodyEncoding::Gzip,
+        }
+    ));
+    out.push(head!(
+        "reset",
+        "reset_flow_control",
+        &PreviewReset { code: PreviewResetCode::FlowControl, message: Some("window exceeded".into()) }
+    ));
+    out.push(head!(
+        "goaway",
+        "goaway_port_not_allowed",
+        &PreviewGoaway { code: PreviewGoawayCode::PortNotAllowed, message: None }
+    ));
+
+    // ----- 帧载荷 -----
+    out.push(json!({ "kind": "window", "name": "window_max", "increment": u32::MAX, "bytes_hex": hex::encode(tunnel::window(u32::MAX)) }));
+    out.push(json!({ "kind": "ws_message", "name": "ws_binary_partial", "flags": tunnel::WS_BINARY, "data_hex": "000102", "bytes_hex": hex::encode(tunnel::ws_message(tunnel::WS_BINARY, &[0, 1, 2])) }));
+    let long_reason = "关".repeat(50); // 150 字节，截到 123 以内的字符边界
+    let close = tunnel::ws_close(4000, &long_reason);
+    let (_, kept) = tunnel::parse_ws_close(&close).expect("close");
+    out.push(json!({ "kind": "ws_close", "name": "ws_close_truncated", "code": 4000, "reason": long_reason, "kept_reason": kept, "bytes_hex": hex::encode(&close) }));
+
+    // ----- 握手 body / prologue / label -----
+    let ticket: [u8; tunnel::TICKET_ID_LEN] = core::array::from_fn(|i| i as u8);
+    out.push(json!({ "kind": "handshake_init", "name": "handshake_init", "ticket_id_hex": hex::encode(ticket), "noise_hex": "aabbcc", "bytes_hex": hex::encode(tunnel::handshake_init(&ticket, &[0xaa, 0xbb, 0xcc])) }));
+    out.push(json!({ "kind": "handshake_reply", "name": "handshake_accept", "accept": true, "noise_hex": "0102", "bytes_hex": hex::encode(tunnel::handshake_accept(&[1, 2])) }));
+    out.push(json!({ "kind": "handshake_reply", "name": "handshake_reject", "accept": false, "reason": "port_not_allowed", "bytes_hex": hex::encode(tunnel::handshake_reject(PreviewRejectReason::PortNotAllowed)) }));
+    out.push(json!({ "kind": "prologue", "name": "prologue", "label": "abcdefghijklmnopqrstuvwxyz", "ticket_id_hex": hex::encode(ticket), "bytes_hex": hex::encode(tunnel::prologue("abcdefghijklmnopqrstuvwxyz", &ticket)) }));
+    for (name, bytes) in [("label_zero", [0u8; 16]), ("label_ff", [0xff; 16]), ("label_counting", ticket)] {
+        let label = tunnel::label_from_bytes(&bytes);
+        assert!(tunnel::is_valid_label(&label));
+        out.push(json!({ "kind": "label", "name": name, "bytes_hex": hex::encode(bytes), "label": label }));
+    }
 
     Value::Array(out)
 }

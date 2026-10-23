@@ -88,6 +88,7 @@
 - `anycon export` / 导入，支持从公共 hub 搬到自建
 - 隐私页、服务条款、账号删除
 - anycon.ai 公共 hub 上线，成本与捐赠公开
+- dev server 预览：Noise 隧道 + 独立的预览域名（公共 hub 用 `aiplace.app`），会话页内嵌或新标签页打开（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）
 - 英文文档：之后英文为主、中文同步
 
 ## v0.3 — 体验
@@ -102,7 +103,8 @@
 
 ## 之后再说
 
-- 可选 P2P 直连（WebRTC/ICE），同一局域网或打洞成功时绕过 hub
+- 可选 P2P 直连（WebRTC/ICE），同一局域网或打洞成功时绕过 hub；dev server 预览的流量最受益（ADR-39 的隧道协议和传输无关）
+- CLI 端口转发（`anycon forward <节点> <端口>`，类似 `ssh -L`），复用预览隧道
 - 移动原生 App（先看 PWA 够不够）
 - 只读分享会话
 - 同步 passkey 接入（ADR-36「后续」）：已配对设备把 passkey 公钥登记到 daemon，新设备对 daemon 的挑战签名，防钓鱼、不用输入；依赖 passkey 登录
@@ -111,4 +113,4 @@
 
 ## 明确不做
 
-多 agent 编排、IDE / 终端 / 远程 shell、经 hub 预览 dev server、issue 看板、E2E 之外的任何加密选项。
+多 agent 编排、IDE / 终端 / 远程 shell、经 hub 明文反代 dev server（预览走 Noise 隧道，[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）、issue 看板、E2E 之外的任何加密选项。

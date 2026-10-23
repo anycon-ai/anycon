@@ -569,6 +569,7 @@ impl Rpc {
                 blobs: true,
                 audit: true,
                 worktree: c.worktrees.available(),
+                preview: false,
             },
             started_at_ms: c.started_at_ms,
             // 每次现读配置（`[worktree]` 整段热加载）

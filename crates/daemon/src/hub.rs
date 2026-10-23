@@ -878,6 +878,7 @@ impl HubLink {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 origin: None,
             },
+            preview_token: None,
         };
         let first = match Envelope::control("", 0, &auth).and_then(|e| e.encode()) {
             Ok(b) => b,
@@ -1003,7 +1004,7 @@ impl HubLink {
             Control::Undeliverable { to, .. } => self.peers.on_undeliverable(&to),
             Control::Backpressure { to, seq } => self.peers.on_backpressure(&to, seq),
             Control::Dropped { seq, reason } => self.peers.on_dropped(seq, reason),
-            Control::RateLimited { retry_after_ms } => {
+            Control::RateLimited { retry_after_ms, .. } => {
                 // 真的暂停整条连接的出站（不只是记一条日志）：被退回的信封随后按序重发
                 tracing::warn!(retry_after_ms, "hub rate limit hit; pausing outbound envelopes");
                 self.outbox.on_rate_limited(retry_after_ms);

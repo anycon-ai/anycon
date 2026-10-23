@@ -430,5 +430,29 @@
     "name": "permission.list",
     "params": "PermissionListParams",
     "result": "PermissionListResult"
+  },
+  {
+    "direction": "request",
+    "name": "preview.open",
+    "params": "PreviewOpenParams",
+    "result": "PreviewOpenResult"
+  },
+  {
+    "direction": "request",
+    "name": "preview.close",
+    "params": "PreviewCloseParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "preview.list",
+    "params": null,
+    "result": "PreviewListResult"
+  },
+  {
+    "direction": "request",
+    "name": "preview.ports",
+    "params": "PreviewPortsParams",
+    "result": "PreviewPortsResult"
   }
 ]

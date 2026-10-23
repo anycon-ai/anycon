@@ -117,7 +117,7 @@ impl Sender {
                 self.stats.backpressure += 1;
                 self.returned.insert(seq);
             }
-            Control::RateLimited { retry_after_ms } => {
+            Control::RateLimited { retry_after_ms, .. } => {
                 let now = Instant::now();
                 self.stats.rate_limited.push((now, retry_after_ms));
                 self.resume_at = self.resume_at.max(now + Duration::from_millis(retry_after_ms));

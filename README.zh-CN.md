@@ -46,7 +46,7 @@ Anycon 把跑 AI agent 的那台机器（家里的 Mac mini、工作站、服务
 - **机器要常开**，联网、备份都是你的事
 - **模型 API 照样看得到上下文**。你机器上的 Claude Code 依然把提示发给它的模型提供方，Anycon 不改变这一点
 
-**不做**：终端和远程 shell、编辑器、经 hub 预览本地 dev server、issue 跟踪、团队协作。
+**不做**：终端和远程 shell、编辑器、issue 跟踪、团队协作。dev server 预览走端到端加密的隧道，不经 hub 明文反代（见隐私模型）。
 
 ## 快速开始
 
@@ -123,6 +123,7 @@ for await (const ev of session.send('跑一下测试，把失败的修了')) {
 - **Web UI 的代码由 hub 下发**。一个恶意或被入侵的 hub 可以下发改过的 JavaScript，读走浏览器里的密钥和明文。所以用 Web UI 就是信任那个 hub 的运营者。隐私敏感的场景请**自建 hub**，或者用 **CLI / SDK**（代码是你自己装的）
 - 配对短码在 daemon 本地生成，不发给 hub；两端用 Argon2id 从短码派生预共享密钥。默认的 16 位短码即使面对恶意 hub 也扛得住离线穷举；8 位的 `anycon pair --short` 只在自建 hub 上用
 - 浏览器里的密钥和缓存以明文存在 IndexedDB。公用电脑上请用「退出并移除本设备」，不要只点「退出登录」
+- **dev server 预览**跑在单独的域名上（公共 hub 是 `*.aiplace.app`），经自己的 Noise 隧道到 daemon。hub 看得到有一个预览开着、流量多大，看不到页面内容。预览的加载代码同样由 hub 下发，信任前提和 Web UI 一样。daemon 默认只转发 agent 会话自己起的服务所监听的端口
 - Anycon 不是沙箱（见上面的「代价」）
 
 完整的威胁模型见 [docs/architecture.md § 5.6](docs/architecture.md#56-威胁模型) 和 [SECURITY.md](SECURITY.md)。

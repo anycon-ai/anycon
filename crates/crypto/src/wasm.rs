@@ -82,6 +82,15 @@ impl WasmHandshake {
         Ok(WasmHandshake { inner })
     }
 
+    /// 预览隧道握手（NKpsk0，ADR-39）的 initiator：预览页没有静态密钥，钉住 daemon 静态公钥；`psk` 是票据密钥，
+    /// `prologue` 见 `anycon_protocol::tunnel::prologue`。daemon 一侧（responder）不在浏览器里跑，不导出。
+    #[wasm_bindgen(js_name = previewInitiator)]
+    #[allow(non_snake_case)]
+    pub fn preview_initiator(daemonPublic: &[u8], psk: &[u8], prologue: &[u8]) -> Result<WasmHandshake, JsError> {
+        let inner = Handshake::preview_initiator(&key32(daemonPublic)?, &key32(psk)?, prologue).map_err(js_err)?;
+        Ok(WasmHandshake { inner })
+    }
+
     #[wasm_bindgen(js_name = isMyTurn)]
     pub fn is_my_turn(&self) -> bool {
         self.inner.is_my_turn()

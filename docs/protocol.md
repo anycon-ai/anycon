@@ -18,7 +18,7 @@
 ```
 
 - **外层**：hub 路由、排队、计数所需的最少信息
-- **内层**：客户端和 daemon 之间的实际协议，JSON-RPC 2.0
+- **内层**：客户端和 daemon 之间的实际协议，JSON-RPC 2.0。dev server 预览走另一条 Noise 传输，内层是二进制的隧道帧（§ 11）
 
 两层解耦的好处：内层协议随便改，hub 不需要发版；hub 代码里没有任何业务概念。
 
@@ -44,7 +44,7 @@ Envelope {
 
 | kind | body | hub 行为 |
 |---|---|---|
-| `handshake` | Noise 握手消息（接入时还有接入的前置消息和 CPace 份额，§ 4.4） | 转发；配对期间按 `match_id` 撮合（hub 不知道短码），接入期间按 `enroll_id` |
+| `handshake` | Noise 握手消息（接入时还有接入的前置消息和 CPace 份额，§ 4.4；预览隧道带版本和票据 id，§ 11.2） | 转发；配对期间按 `match_id` 撮合（hub 不知道短码），接入期间按 `enroll_id` |
 | `data` | 带 1 字节框架头的 Noise 密文：`0x00` 整条、`0x01` 分片（`msg_id / index / count`）、`0x02` 重置。单条 RPC 超过约 200 KiB 时分片，hub 只看到若干 `data` 信封；任何一片丢失即传输失步，接收方按重置处理、重新握手 | 转发；目标离线则回 `undeliverable`（或入队，若开启了队列）；超过 `ANYCON_MAX_ENVELOPE_BYTES` 回 `dropped { too_large }` |
 | `notify` | `{ category: enum, session_id? }` 明文 + 可选密文详情 | 转发 + 按 category 触发 Web Push（收件设备离线时，[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)；daemon 只发 `category` + `session_id`，`detail` 为空——Transport 是有状态计数器，带外的密文详情会打乱数据流，要等有单独的封装密钥再做） |
 | `control` | hub ↔ 设备的控制消息（见 §8） | hub 自己处理，不转发 |
@@ -276,6 +276,19 @@ daemon                      hub                        新客户端
 
 分块在内层，hub 看到的只是若干个 `data` 信封。
 
+### 5.7 预览（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）
+
+`node.info.capabilities.preview = true` 表示 daemon 支持这一组方法且节点开着预览（`preview.enabled`）。隧道本身不走 JSON-RPC，见 § 11；端口策略见 [spec/daemon.md § 19](spec/daemon.md#19-预览)。
+
+| 方法 | 方向 | 说明 |
+|---|---|---|
+| `preview.open` | C→D | `{ port, session_id? }` → `{ label, port, ticket_id, psk, expires_at_ms, session_id? }`。为本机端口签发一张票据：`label` 是这个端口固定的预览 label（26 位小写 base32），`ticket_id` 32 位 hex，`psk` 64 位 hex（票据密钥，只交给预览页）。同一设备对同一端口已有一张剩余有效期超过一半的票据时返回它。端口不允许 → `forbidden`（`data.reason = "port_not_allowed"`）；预览关着 → `forbidden`（`disabled`）；`port` 为 0 → `invalid`；`session_id` 不存在 → `not_found` |
+| `preview.close` | C→D | `{ label }` → `{}`。作废这个 label 的全部票据，对用它们的隧道发 `GOAWAY { closed }`。不存在也返回成功 |
+| `preview.list` | C→D | → `{ previews: [{ label, port, ticket_id, session_id?, created_by, created_by_name, created_at_ms, expires_at_ms, tunnels }] }`：全部未过期的票据 |
+| `preview.ports` | C→D | `{ session_id? }` → `{ ports: [{ port, source, session_id?, pid?, process? }], detection }`。`source`：`session`（监听进程在会话的 agent 进程树 / 进程组里）、`workspace`（监听进程的工作目录在会话的工作目录里）、`config`（`preview.allow_ports`）。带 `session_id` 只列这个会话的（外加 `config` 的）。`detection = unavailable`：这台机器上没有可用的探测手段，只列 `config` 的 |
+
+票据密钥、令牌和预览 URL 都不写日志；`preview.open` / `preview.close` 记本地审计（不含密钥）。
+
 ## 6. 会话事件
 
 `session.event` 的 payload：
@@ -361,17 +374,18 @@ hub 管理员可开启（`ANYCON_QUEUE_ENABLED=true`）。开启后：
 
 | 消息 | 方向 | 说明 |
 |---|---|---|
-| `auth` | 设备→hub | 连接后第一帧：`{ device_token?, protocol_version, client }`，`device_token` 为空 = 还没有身份的临时连接 |
+| `auth` | 设备→hub | 连接后第一帧：`{ device_token?, protocol_version, client, preview_token? }`，`device_token` 为空 = 还没有身份的临时连接；带 `preview_token` 的是预览连接（§ 11.1，只在预览域名上接受） |
 | `auth_ok` | hub→设备 | `{ device_id, server_time_ms, peers_online, quota? }` |
 | `auth_fail` | hub→设备 | `{ reason: invalid \| revoked \| version \| quota \| protocol }`，随后 hub 关闭连接 |
 | `pair_begin { match_id }` / `pair_registered { expires_at_ms }` / `pair_join { match_id }` / `pair_matched { peer, role }` / `pair_confirm { peer }` / `pair_done { peer, device_id?, device_token? }` / `pair_failed { reason }` | 见 §4.1 | `pair_failed.reason`：`not_found \| timeout \| peer_gone \| rate_limited \| quota \| forbidden` |
 | `enroll_begin { node }` / `enroll_started { enroll_id, node, expires_at_ms }` / `enroll_request { enroll_id, peer, expires_at_ms }` / `enroll_cancel { enroll_id }` / `enroll_failed { enroll_id?, reason }` | 见 §4.4 | 账号内接入。`enroll_begin` 只能由本账号的正式设备或带账号登录态的临时连接发；`enroll_request` 是 hub 发给 daemon 的；收尾复用 `pair_confirm` / `pair_done`，收尾失败发 `enroll_failed`（不是 `pair_failed`）；`enroll_cancel` 一个不存在的会话得到 `not_found`（这条回执走每秒一条的共享预算，可能被丢）。客户端发 `enroll_begin` 后要有自己的超时（回执限频时同一秒的第二条会被丢）。`enroll_failed.reason`：`forbidden \| not_found \| offline \| rate_limited \| quota \| busy \| timeout \| peer_gone \| cancelled` |
 | `revoke { device }` | 设备→hub | 删除某设备路由（需已配对关系） |
-| `peer_online { device }` / `peer_offline { device }` | hub→设备 | 对端上下线 |
+| `peer_online { device }` / `peer_offline { device }` | hub→设备 | 对端上下线（预览连接断开时 daemon 也收到 `peer_offline`） |
+| `preview_peer { peer, label }` | hub→daemon | 本节点有一条预览连接接上来了（§ 11.1）。`peer` 是它的临时 id，`label` 是令牌绑定的 label；daemon 重连后对每条还在的预览连接再发一次 |
 | `undeliverable { to, seq }` | hub→设备 | 对端离线且队列未开启，该信封已丢弃 |
 | `dropped { seq, reason }` | hub→设备 | `reason: too_large \| not_paired \| rate_limited`。信封被 hub 丢弃；`too_large` 说明发送方没分片（bug），`not_paired` 说明 `(from, to)` 没有配对关系。`rate_limited` 在协议里有定义但 hub 不发（速率超限走 `backpressure` + `rate_limited`，不丢）。只发给已认证的发送方（含临时连接），限频，每连接每秒最多一条；收到它不要重发，重置该对端的传输 |
 | `backpressure { to, seq }` | hub→设备 | `seq` 那封没有转发（目标发送缓冲满，或发送方超过速率预算）。`data` / `notify`：hub 把 `seq` 加进这对设备的被退回集合，之后只放行集合里最小的 `seq`，其余一律退回（§ 3.1 粘住规则）；发送方暂停、然后按升序原样重发所有被退回的 `seq`。`handshake` 被退回时不进集合，发送方按 `retry_after_ms` 延后再重新发起握手。不限频，每封被退回的信都有一条；这条回执本身发不出去（发送方不读 socket）时 hub 立即以 `4003` 断开它 |
-| `rate_limited { retry_after_ms }` | hub→设备 | 发送方超过每连接速率预算；伴随 `backpressure` 出现，告诉它**整条连接**暂停多久（取值 100 ms–30 s，默认预算下一般 1–2 秒）。回执本身限频（每秒至多一条）。「一直被限速退回、期间没有任何信封被转发」持续 10 秒会被以 `1008` 断开，老实按提示暂停再重发的发送方只会被匀速限流（[spec/hub.md § 3.4](spec/hub.md#34-速率)） |
+| `rate_limited { retry_after_ms, to? }` | hub→设备 | 发送方超过速率预算；伴随 `backpressure` 出现。`to` 为空：每连接预算，**整条连接**暂停多久（取值 100 ms–30 s，默认预算下一般 1–2 秒）；`to` 有值：预览流量的账号预算（§ 11.5），只暂停发往这个对端的信封。回执本身限频（每秒至多一条）。「一直被限速退回、期间没有任何信封被转发」持续 10 秒会被以 `1008` 断开，老实按提示暂停再重发的发送方只会被匀速限流（[spec/hub.md § 3.4](spec/hub.md#34-速率)） |
 | `queue_overflow { to, dropped_seqs }` | hub→设备 | 队列开启时，超限丢弃 |
 | `queue_drop { seq }` | 设备→hub | 队列开启时，撤回自己排队中的信封 |
 | `quota_update { quota }` | hub→设备 | 当前配额使用量，客户端可展示（`multi`，v0.2） |
@@ -397,3 +411,73 @@ crates/protocol (Rust, schemars)
 ```
 
 生成产物提交进仓库，CI 有一步 `just gen && git diff --exit-code`。
+
+## 11. 预览隧道
+
+[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。浏览器预览 origin（`<label>.<预览域名>`）里的 service worker（下称 P）和 daemon（D）之间的一条独立 Noise 传输，把 P 拦下的 HTTP 请求和 WebSocket 转给 D 本机的 `127.0.0.1:<端口>`。格式的真源是 `anycon_protocol::preview::tunnel`（TS：`packages/protocol/src/preview.ts`，字节级一致由 `tests/vectors/preview.json` 保证）。
+
+```
+预览页 P（service worker）          hub                              daemon D
+  │─ wss://<label>.<预览域名>/v1/ws ─►│                                  │
+  │─ control.auth { preview_token } ─►│ 令牌 → (账号, 节点 D, label)       │
+  │◄─ control.auth_ok { device_id: P, peers_online: [D] }               │
+  │                                  │── control.preview_peer { P, label } ─►│
+  │══ handshake: 01 ‖ ticket_id ‖ NKpsk0 第一条 ═══════════════════════════►│ 查票据、核对 label 和端口
+  │◄═ handshake: 00 ‖ NKpsk0 第二条（payload = PreviewHello）══════════════│
+  │══ data: 隧道消息（ack ‖ 帧 …）══════════════════════════════════════►│ → 127.0.0.1:<端口>
+  │◄═ data: 隧道消息 ══════════════════════════════════════════════════│
+```
+
+### 11.1 连接与身份
+
+- 预览连接只在预览域名上接受：`wss://<label>.<预览域名>/v1/ws`，`Origin` 必须正好是这个预览 origin。第一帧 `auth { preview_token, protocol_version, client }`（不带 `device_token`，`client.kind = web`）。令牌不存在、过期、或绑定的不是这个主机名里的 label → `auth_fail { invalid }`；账号的预览连接数满 → `auth_fail { quota }`
+- hub 给它一个临时 id P（和设备 id 同样格式），`auth_ok.peers_online` 里有 D（D 在线时）。之后它只能和 D 互发 `handshake` / `data`，别的一律不转发（控制消息忽略，发给别人的信封回 `dropped { not_paired }`）。D 上下线时它收到 `peer_online` / `peer_offline`
+- hub 给 D 发 `preview_peer { peer: P, label }`；D 重连后，hub 对每条还在的预览连接再发一次。P 断开时 D 收到 `peer_offline { device: P }`
+- 同一个预览 origin 的所有标签页共用一个 service worker，也就共用一条预览连接
+
+### 11.2 握手
+
+- 模式 `Noise_NKpsk0_25519_ChaChaPoly_BLAKE2s`。P 是 initiator：没有静态密钥，钉住 D 的静态公钥（`PreviewLaunch.node_public`）。D 是 responder。PSK = 票据密钥（32 字节），在第一条消息就混入。prologue = `"anycon-preview-v1"` ‖ `0x00` ‖ label ‖ `0x00` ‖ ticket_id（16 字节）：P 的 label 取自己的主机名，D 的取 `preview_peer.label`，hub 说谎只会让握手失败
+- P → D 的 `handshake` 信封 body：`0x01`（版本）‖ ticket_id（16 字节）‖ Noise 第一条（payload 为空）
+- D → P 的回复 body：`0x00` ‖ Noise 第二条，payload 是 JSON `PreviewHello { port, expires_at_ms, session_id? }`；或者 `0x01` ‖ 原因（UTF-8）：`unknown_ticket` `expired` `label_mismatch` `port_not_allowed` `disabled` `busy` `malformed`。拒绝回复不受 Noise 保护，只当提示用
+- D 只处理已经收到 `preview_peer` 的 P 发来的握手；没收到就忽略（不回复）
+- P 任何时候都可以重新发第一条消息。D 收到后丢掉 P 的旧传输和上面的全部 stream，重新开始
+- 传输失步（解密失败、收到 `FRAGMENT` 帧体）：收方丢掉传输，发 `RESET` 帧体（`0x02`，§ 3）；P 收到或自己发现失步就重新握手
+
+### 11.3 消息与帧
+
+- `data` 信封 body = `0x00` ‖ 密文（§ 3 的 `WHOLE`）。一条隧道消息的明文上限 128 KiB，加密后仍小于一片，所以预览隧道**从不分片**
+- 明文 = `ack`（u64 大端）‖ 帧\*。`ack` 是发送方此刻已经从对端收到并解密的传输消息条数（这条传输建立以来累计，不含握手）。只有 `ack`、没有帧的是**纯回执消息**
+- 帧 = 类型（u8）‖ stream（u32 大端）‖ 载荷长度（u32 大端）‖ 载荷。一条消息里可以有多个帧，帧不跨消息。不认识的类型跳过
+
+| 类型 | 名字 | 方向 | 载荷 |
+|---|---|---|---|
+| `0x01` | `REQUEST` | P→D | msgpack `PreviewRequestHead { method, path, headers: [[名, 值]…], websocket }`，打开一个 stream。`path` 以 `/` 开头、可带查询串；头名小写 |
+| `0x02` | `RESPONSE` | D→P | msgpack `PreviewResponseHead { status, headers, encoding }`。`encoding = gzip` 时后面的 `DATA` 拼起来是 gzip 流，`headers` 里已经去掉 `content-encoding` / `content-length` |
+| `0x03` | `DATA` | 双向 | 消息体的一段，≤ 64 KiB。占 stream 窗口 |
+| `0x04` | `END` | 双向 | 空：这个方向的消息体结束 |
+| `0x05` | `RESET` | 双向 | msgpack `PreviewReset { code, message? }`。`code`：`refused` `timeout` `too_large` `cancelled` `flow_control` `protocol` `limit` `internal`。立即终止 stream 的两个方向 |
+| `0x06` | `WINDOW` | 双向 | u32 大端：给对端这个 stream 增加的窗口字节 |
+| `0x07` | `WS_MESSAGE` | 双向 | 标志（u8：`0x01` 二进制、`0x02` 最后一段）‖ 数据。一条 WebSocket 消息可以拆成多段，最后一段带 `0x02`；拼起来 ≤ 16 MiB。数据字节占 stream 窗口 |
+| `0x08` | `WS_CLOSE` | 双向 | 关闭码（u16 大端）‖ 原因（UTF-8，≤ 123 字节） |
+| `0x09` | `GOAWAY` | D→P | stream 0，msgpack `PreviewGoaway { code, message? }`。`code`：`expired` `closed` `revoked` `disabled` `port_not_allowed` `shutdown`。D 随后丢掉这条传输 |
+
+### 11.4 Stream
+
+- stream id 由 P 分配：非零，严格递增。D 遇到不递增的 id → `RESET { protocol }`；同时打开的 stream 至多 256 个，超出 `RESET { limit }`
+- **HTTP**：P 发 `REQUEST`、`DATA`\*（请求体）、`END`（没有请求体也要发，可以和 `REQUEST` 放同一条消息）。D 回 `RESPONSE`、`DATA`\*、`END`。两个方向都 `END` 了 stream 就结束
+- **WebSocket**：P 发 `REQUEST { websocket: true }`（不发 `END`）。上游接受升级时 D 回 `RESPONSE { status: 101 }`，之后双方互发 `WS_MESSAGE`；一方发 `WS_CLOSE`，另一方回 `WS_CLOSE` 后结束。上游拒绝升级时 D 回普通的 `RESPONSE` + `DATA`\* + `END`
+- `RESET` 之后到达的同一 stream 的帧一律忽略（包括 `WINDOW`）
+- 头部 msgpack 编码后 ≤ 64 KiB，超了 `RESET { too_large }`
+
+### 11.5 流控与回执
+
+- **stream 窗口**：每个 stream 每个方向初始 256 KiB。`DATA` 和 `WS_MESSAGE` 的数据字节（不含标志字节）占窗口，收方消费后用 `WINDOW` 归还。超出窗口 → `RESET { flow_control }`
+- **在途窗口（端到端回执）**：发送方给自己的每条传输消息从 0 编号，保留它的信封原文（含 `seq`），直到对端发来的 `ack` 大于这个编号才释放。未被回执的密文上限：D → P 8 MiB，P → D 2 MiB；满了就等回执，纯回执消息不受这个限制。这样在途窗口按往返时间周转，不受 § 3.1「保留 10 秒」的限制
+- **何时回执**：每条发出去的消息都带当前的 `ack`。手里没有别的要发时：收到 ≥ 256 KiB 或 ≥ 32 条还没回执过的消息，立即发一条纯回执；否则最迟 50 ms 后发。收到纯回执本身不触发回执（避免来回）
+- **和 hub 的背压**：照 § 3.1 的发送方规则——被退回的 `seq` 按升序原样重发，`rate_limited` 时暂停。`rate_limited.to` 有值（预览流量的账号预算）时只暂停发往这个对端的信封，别的对端照常。已经被回执的消息一定被 hub 转发过；被退回的 `seq` 原文已经不在了 → 重置传输（D 发 `RESET` 帧体，P 重新握手）
+- `undeliverable { to: P }`：P 已经断开，D 丢掉它的传输
+
+### 11.6 hub 看到什么
+
+预览连接什么时候建立、断开，属于哪个账号、哪个节点、哪个 label，信封的大小和时间。看不到端口、路径、请求和响应的任何内容；令牌只存哈希。

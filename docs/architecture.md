@@ -46,8 +46,9 @@
 | 配对撮合 | 按 `match_id`（短码的哈希；hub 看不到短码本身）把两个待配对的连接接到一起，之后只转发 |
 | 接入撮合 | 已登录账号的设备请求接入本账号的某台 daemon 时，确认归属后把两条连接接到一起，之后只转发；能不能接入由 daemon 验证（§ 5.2.1） |
 | 通知 | 把 `notify` 信封的类别转成 Web Push |
-| 配额 | 按信封元数据计数：设备数、连接数。不限流量 |
+| 配额 | 按信封元数据计数：设备数、连接数。不限会话流量；预览流量按账号限速 |
 | 静态文件 | 嵌入的 Web UI。**浏览器运行的就是 hub 下发的这份代码**，见 § 5.6 |
+| 预览 | 配了预览域名时：在 `<label>.<预览域名>` 上提供预览运行时（另一份嵌入的前端），签发预览令牌，把预览连接的密文转给对应的 daemon（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)） |
 
 hub **不**做：解析消息内容、存会话历史、存附件、搜索、运行 agent。
 
@@ -65,11 +66,13 @@ hub **不**做：解析消息内容、存会话历史、存附件、搜索、运
 | 会话管理 | 创建、恢复、取消、并发上限 |
 | adapter | 拉起 agent 进程，把 agent 的事件流翻译成协议事件，把用户输入和权限答复送回去 |
 | 审计 | 本地记录谁通过哪个设备做了什么 |
+| 预览 | 给已配对设备签发预览票据；接受预览页的 Noise 隧道，把里面的 HTTP / WebSocket 转给本机允许的端口（[spec/daemon.md § 19](spec/daemon.md#19-预览)） |
 | 服务 | `anycon service install` 注册 launchd / systemd |
 
 ### 2.3 客户端
 
 - **Web UI**：React SPA，嵌在 hub 里，由 hub 下发给浏览器。自己管理 WebSocket 和状态层，只和 `packages/protocol` 共享类型与编解码，不依赖 `@anycon/sdk`。因为代码来自 hub，它的信任基础是「你信任这个 hub 的运营者」，CLI / SDK 没有这个前提（§ 5.6）
+- **预览运行时**：预览 origin（`<label>.<预览域名>`）上的引导页、service worker 和 shim，同样由 hub 下发，但和 Web UI 分开构建、跑在另一个可注册域名下：预览的是 agent 写的任意代码，不能和 Web UI 同 origin（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）
 - **CLI**：`anycon send`、`anycon ls`、`anycon attach` 等，走和 Web 同一套协议
 - **TS SDK / Python SDK**：两个方向——作为客户端调用节点，或把自定义 agent 注册为节点。v0.1 只有 TS SDK 的客户端方向（[roadmap](roadmap.md)）
 
@@ -174,6 +177,7 @@ hub 这边：
 | 节点口令（只存 Argon2id 派生值）、接入失败计数 | ❌ | ✅ | ❌ 不保存 |
 | 明文内容 | ❌ 不接触（前提见 § 5.6：客户端代码未被 hub 篡改） | ✅ | ✅ |
 | Web 客户端代码（JS / wasm） | ✅ 下发 | — | 浏览器执行；能读到该 origin 下的私钥和明文缓存 |
+| 预览（ADR-39） | label → 节点、令牌哈希 | label → 端口、票据（含密钥） | 预览 origin 的 IndexedDB 里存着令牌和票据；dev server 的内容只在隧道两端 |
 
 **推论：**
 
@@ -184,7 +188,7 @@ hub 这边：
 
 **hub 对 payload 的纪律**：外层信封之外的所有字节都是不透明 blob。不解析、不索引、不写日志。这条纪律是整个隐私承诺的基础。
 
-**hub 能看到的元数据**（说「hub 看不到内容」时，指的是这张清单之外的东西）：账号标识（v0.1 是管理员 / 受邀者的显示名；之后的邮箱、OAuth 身份）、每台设备的 id / 名称 / 类型 / 平台 / 版本 / origin、谁和谁配对、什么时候在线、来自哪个 IP；每个信封的 `from` / `to` / `kind` / `seq` / 大小 / 时间；`notify` 信封明文的 `category` 和不透明的 `session_id`；账号绑定的邮箱、每台浏览器的推送订阅（推送服务的 endpoint 和加密公钥）、通知偏好（[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）。配对时 hub 只见到 `match_id`，且不记录。接入时 hub 见到谁在什么时候对哪台节点发起、有没有完成，见不到接入码、节点口令和二维码里的密钥。流量大小和时间模式本身也是信息，anycon 不做流量混淆。
+**hub 能看到的元数据**（说「hub 看不到内容」时，指的是这张清单之外的东西）：账号标识（v0.1 是管理员 / 受邀者的显示名；之后的邮箱、OAuth 身份）、每台设备的 id / 名称 / 类型 / 平台 / 版本 / origin、谁和谁配对、什么时候在线、来自哪个 IP；每个信封的 `from` / `to` / `kind` / `seq` / 大小 / 时间；`notify` 信封明文的 `category` 和不透明的 `session_id`；账号绑定的邮箱、每台浏览器的推送订阅（推送服务的 endpoint 和加密公钥）、通知偏好（[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）；预览（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）：每台节点有哪些预览 label（不知道对应哪个端口）、谁什么时候申请了预览令牌、预览连接什么时候连上断开以及它们的流量。配对时 hub 只见到 `match_id`，且不记录。接入时 hub 见到谁在什么时候对哪台节点发起、有没有完成，见不到接入码、节点口令和二维码里的密钥。流量大小和时间模式本身也是信息，anycon 不做流量混淆。
 
 ## 5. 加密模型
 
@@ -278,6 +282,8 @@ hub 这边：
 | daemon 机器被入侵 | 不在范围内——它本来就是跑 agent 的机器 |
 | 已配对设备滥用权限 | 已配对设备能让 agent 在 daemon 机器上干活，权限就是 agent 的权限，只受审批和 workspace 边界约束，不受 OS 沙箱约束。危险权限模式受 `permissions.allow_dangerous_modes` 约束，会话重启 / resume 时重新检查；会话级 `env` 默认被拒（`permissions.allow_session_env = false`，[ADR-31](decisions.md#adr-31-会话-env-默认关闭)），开启后仍有黑名单；`set_agent_defaults` 走同样的校验 |
 | 提示注入的 agent 借浏览器外泄数据 | Markdown 里的远程图片默认不加载（点击才加载）；hub 给 Web UI 加 CSP（`connect-src 'self'`、`img-src 'self' data: blob:`、`frame-ancestors 'none'`），页面不能向第三方发请求。agent 自己的网络请求走权限审批 |
+| 预览页里的 dev app 攻击 Web UI | dev app 是 agent 写的任意代码。它跑在独立的预览 origin 上（另一个可注册域名，hub 启动时检查），读不到 Web UI 的 IndexedDB 和 cookie；预览运行时和 Web UI 分开构建、分开嵌入，Web UI 的 origin 上注册不了预览的 service worker；内嵌预览的 iframe 不给 `allow-top-navigation`，Web UI 不处理来自它的消息（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)） |
+| 经预览访问 daemon 机器上的其他服务 | daemon 只转发到回环地址，默认只放行会话自己起的服务监听的端口，其余端口要在那台机器上写进 `preview.allow_ports`；本机 hub 的端口永远不行。票据由 daemon 签发、用 Noise PSK 校验，hub 伪造不了；hub 的预览令牌另外保证只有和这台节点配对过的设备能申请。残余：预览 origin 里的令牌和票据对 dev app 的 JS 可见，拿到它们的人在过期前能访问这个端口 |
 | 账号被盗 | 盗号者能看元数据、能发起接入请求，但成为设备需要短码（只能从已配对设备或 daemon 机器获得）、已配对设备的批准，或节点口令，三样都不经 hub（§ 5.2.1）。他能做的坏事：用接入请求反复推送骚扰你、把节点口令接入试到锁死；已配对设备不受影响，每次都有通知 |
 | 邮箱或 GitHub / Google 账号被盗 | 等同账号被盗，权限同样小 |
 | 局域网明文 HTTP 下 token 或 cookie 被嗅探 | 同网段攻击者能拿到登录态，权限同账号被盗；会话内容仍是 Noise 密文。介意就家里也走 https 公网域名（§ 3.3） |

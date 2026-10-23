@@ -8,6 +8,8 @@ const dist = resolve(dirname(fileURLToPath(import.meta.url)), '../../dist') + '/
 
 describe.skipIf(!existsSync(`${dist}sw.js`))('built service worker (dist/sw.js)', () => {
   const sw = existsSync(`${dist}sw.js`) ? readFileSync(`${dist}sw.js`, 'utf8') : ''
+  // 压缩器可能把字符串写成双引号、单引号或反引号，断言时都认
+  const hasString = (text: string): boolean => ['"', "'", '`'].some((q) => sw.includes(`${q}${text}${q}`))
 
   it('has the precache manifest injected, with the app shell in it', () => {
     expect(sw).not.toContain('self.__WB_MANIFEST')
@@ -22,7 +24,7 @@ describe.skipIf(!existsSync(`${dist}sw.js`))('built service worker (dist/sw.js)'
   })
 
   it('handles push, notificationclick, pushsubscriptionchange and the page’s SKIP_WAITING', () => {
-    for (const e of ['"push"', '"notificationclick"', '"pushsubscriptionchange"', 'SKIP_WAITING']) expect(sw).toContain(e)
+    for (const e of ['push', 'notificationclick', 'pushsubscriptionchange', 'SKIP_WAITING']) expect(hasString(e), e).toBe(true)
   })
 
   it('does not take over on its own: the only skipWaiting is the answer to the page’s message, and there is no clients.claim', () => {
@@ -35,7 +37,7 @@ describe.skipIf(!existsSync(`${dist}sw.js`))('built service worker (dist/sw.js)'
   })
 
   it('keeps the navigation fallback to index.html and its deny list', () => {
-    expect(sw).toContain('"/index.html"')
+    expect(hasString('/index.html')).toBe(true)
     expect(sw).toContain('[/^\\/api\\//,/^\\/auth\\//,/^\\/v1\\//,/^\\/healthz/,/^\\/readyz/]')
     expect(sw).toMatch(/denylist:/)
   })

@@ -321,12 +321,12 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
               </Chip>
             ) : null}
             {offline ? (
-              <Chip tone="neutral" testId="session-status" className="shrink-0">
+              <Chip tone="neutral" testId="session-status" dotOnMobile title={t('status.session.offline')} className="shrink-0">
                 <span data-status="offline">{t('status.session.offline')}</span>
               </Chip>
             ) : (
               <span className="shrink-0" data-testid="session-status" data-status={status}>
-                <SessionStatusChip status={status} />
+                <SessionStatusChip status={status} dotOnMobile />
               </span>
             )}
           </>

@@ -28,10 +28,14 @@ function count(file: string, text: string): number {
   return readLog(file).split(text).length - 1
 }
 
-/** 起一个新节点：`anycon init` 之后启动 `anycon daemon`，等它连上 hub。 */
+/**
+ * 起一个新节点：`anycon init` 之后启动 `anycon daemon`，等它连上 hub。
+ * 默认连共享的 hub；`options.hubUrl` 指向测试自己起的 hub（`helpers/multi-hub.ts`）。
+ */
 export async function startExtraDaemon(
   state: Pick<E2EState, 'tmpDir' | 'gitConfig'>,
   name: string,
+  options: { hubUrl?: string } = {},
 ): Promise<ExtraDaemon> {
   // 目录名要短：本机 socket 在 `<home>/daemon.sock`，unix socket 路径有长度上限（macOS 104 字节，临时目录本身已经很长）
   const root = join(state.tmpDir, `n${randomBytes(3).toString('hex')}`)
@@ -51,7 +55,16 @@ export async function startExtraDaemon(
   }
   execFileSync(
     cliBin,
-    ['init', '--hub', hubUrl, '--workspace', workspaceDir, '--name', name, '--yes'],
+    [
+      'init',
+      '--hub',
+      options.hubUrl ?? hubUrl,
+      '--workspace',
+      workspaceDir,
+      '--name',
+      name,
+      '--yes',
+    ],
     { env, stdio: 'pipe', timeout: 30_000 },
   )
   // 本机装了真的 agent 时它会成为默认 agent；E2E 只用 mock

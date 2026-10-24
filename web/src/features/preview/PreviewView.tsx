@@ -11,7 +11,7 @@ import { Input, Select } from '@/ui/Field'
 import { Card, EmptyState, Spinner } from '@/ui/Misc'
 import { Dialog } from '@/ui/Overlay'
 import { describePreviewError } from './errors'
-import { closePreview, ensureTicket, knownTicket, launchUrl, normalizePreviewPath, usableTicket } from './ticket'
+import { closePreview, ensureTicket, knownTicket, launchUrl, normalizePreviewPath, refreshTicket, usableTicket } from './ticket'
 import { usePreviewPorts } from './usePreviewPorts'
 
 /** iframe 的 sandbox（web.md § 13.1）。**不给** `allow-top-navigation`：预览页不能把 Anycon 自己导航走。 */
@@ -91,14 +91,18 @@ export function PreviewView({ nodeId, sessionId, template, offline }: PreviewVie
     [],
   )
 
-  /** 取票据并把 iframe 指向 `toPath`；后发起的请求让先发起的作废（连续切端口）。 */
+  /**
+   * 取票据并把 iframe 指向 `toPath`；后发起的请求让先发起的作废（连续切端口）。`fresh`：不用缓存的票据，重新向 daemon 要
+   * （「刷新」：这个预览可能已经在别的设备上被停止，缓存里的票据 daemon 已经不认了）。
+   */
   const open = useCallback(
-    async (port: number, toPath: string): Promise<void> => {
+    async (port: number, toPath: string, fresh = false): Promise<void> => {
       const mine = ++attempt.current
       setPhase('opening')
       setError(null)
       try {
-        const ticket = await ensureTicket({ nodeId, port, sessionId, template })
+        const args = { nodeId, port, sessionId, template }
+        const ticket = await (fresh ? refreshTicket(args) : ensureTicket(args))
         if (mine !== attempt.current) return
         frameSeq.current += 1
         setFrame({ key: frameSeq.current, port, url: launchUrl(ticket, toPath) })
@@ -168,7 +172,7 @@ export function PreviewView({ nodeId, sessionId, template, offline }: PreviewVie
   const reload = (): void => {
     if (selected === null) return
     ports.refresh()
-    void open(selected, path)
+    void open(selected, path, true)
   }
 
   /** 缓存里的票据够新就同步地 `window.open`（保住点击带来的用户激活，弹窗不被拦）；否则先取票据。 */

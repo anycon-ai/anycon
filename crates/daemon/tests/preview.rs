@@ -587,10 +587,19 @@ async fn the_daemon_stops_at_the_stream_window_until_it_is_returned() {
     pv.auto_window = false;
     let n = MIB;
     let id = pv.start_request("GET", &format!("/big?n={n}"), &[], None).await;
-    pv.settle(Duration::from_millis(500)).await;
+    // 等到它不再前进（机器忙的时候一个固定的等待时间不够）
+    let mut last = 0;
+    loop {
+        pv.settle(Duration::from_millis(400)).await;
+        let now = pv.body_len(id);
+        if now == last && now > 0 {
+            break;
+        }
+        last = now;
+    }
     let first = pv.body_len(id);
     assert!((256 * 1024 - 62 * 1024..=256 * 1024).contains(&first), "the 256 KiB window is the limit: {first}");
-    pv.settle(Duration::from_millis(300)).await;
+    pv.settle(Duration::from_millis(400)).await;
     assert_eq!(pv.body_len(id), first, "nothing moves without a WINDOW");
     assert!(!pv.response(id).ended);
     // 归还窗口，它继续；每次都停在新的窗口上
@@ -1227,29 +1236,102 @@ async fn a_server_running_in_the_sessions_directory_is_attributed_by_working_dir
     assert_eq!(reason(&e).as_deref(), Some("port_not_allowed"));
 }
 
-/// 脚本化的命令执行器：`listening` 为真时 `lsof` 报告 pid 4242 在 `port` 上监听、工作目录是 `workdir`。
+/// 脚本化的命令执行器：`listening` 为真时 `lsof` 报告 pid 4242 在 `port` 上监听、工作目录是 `workdir`；
+/// `intruder` 为真时另有 pid 4343 也在同一个端口上监听（IPv6 地址），工作目录在别处。
 struct ScriptedRunner {
     listening: std::sync::atomic::AtomicBool,
+    intruder: std::sync::atomic::AtomicBool,
     runs: std::sync::atomic::AtomicUsize,
     port: u16,
     workdir: std::path::PathBuf,
+}
+
+impl ScriptedRunner {
+    fn new(port: u16, workdir: std::path::PathBuf) -> Arc<ScriptedRunner> {
+        Arc::new(ScriptedRunner {
+            listening: std::sync::atomic::AtomicBool::new(false),
+            intruder: std::sync::atomic::AtomicBool::new(false),
+            runs: std::sync::atomic::AtomicUsize::new(0),
+            port,
+            workdir,
+        })
+    }
 }
 
 #[async_trait::async_trait]
 impl anycon_daemon::preview::ports::CommandRunner for ScriptedRunner {
     async fn run(&self, program: &str, args: &[String]) -> Result<String, String> {
         use std::sync::atomic::Ordering::SeqCst;
-        let on = self.listening.load(SeqCst);
+        let (on, intruder) = (self.listening.load(SeqCst), self.intruder.load(SeqCst));
         match (program, args.iter().any(|a| a == "cwd")) {
             ("lsof", false) => {
                 self.runs.fetch_add(1, SeqCst);
-                Ok(if on { format!("p4242\ncnode\nn127.0.0.1:{}\n", self.port) } else { String::new() })
+                let mut out = String::new();
+                if on {
+                    out += &format!("p4242\ncnode\nn127.0.0.1:{}\n", self.port);
+                }
+                if intruder {
+                    out += &format!("p4343\ncother\nn[::1]:{}\n", self.port);
+                }
+                Ok(out)
             }
-            ("lsof", true) => Ok(format!("p4242\nfcwd\nn{}\n", self.workdir.display())),
-            ("ps", _) => Ok("4242 1 4242 /usr/local/bin/node\n".into()),
+            ("lsof", true) => {
+                let mut out = String::new();
+                if on {
+                    out += &format!("p4242\nfcwd\nn{}\n", self.workdir.display());
+                }
+                if intruder {
+                    out += "p4343\nfcwd\nn/somewhere/else\n";
+                }
+                Ok(out)
+            }
+            ("ps", _) => Ok("4242 1 4242 /usr/local/bin/node\n4343 1 4343 /usr/bin/other\n".into()),
             _ => Err(format!("{program} is not installed")),
         }
     }
+}
+
+#[tokio::test]
+async fn a_port_shared_with_a_process_that_is_not_the_sessions_is_neither_allowed_nor_listed() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let td = TestDaemon::start().await;
+    let mut c = td.client("a");
+    let _: Value = c.call(&td, methods::WORKSPACE_CREATE, json!({ "name": "web" })).await.unwrap();
+    let s: SessionSummary =
+        c.call(&td, methods::SESSION_CREATE, json!({ "agent": "fake", "project": "web" })).await.unwrap();
+    let port = free_port();
+    let runner = ScriptedRunner::new(port, std::fs::canonicalize(td.workspace.join("web")).unwrap());
+    td.ctx.preview.detector().set_runner(runner.clone());
+    // 只有会话的服务（127.0.0.1）在监听：允许、列出
+    runner.listening.store(true, SeqCst);
+    let t: PreviewOpenResult = c.call(&td, methods::PREVIEW_OPEN, json!({ "port": port })).await.unwrap();
+    assert_eq!(t.port, port);
+    td.ctx.preview.detector().invalidate().await;
+    let listed = c.call::<PreviewPortsResult>(&td, methods::PREVIEW_PORTS, json!({})).await.unwrap();
+    let p = listed.ports.iter().find(|p| p.port == port).expect("listed");
+    assert_eq!((p.source, p.session_id.as_deref()), (PreviewPortSource::Workspace, Some(s.id.as_str())));
+    // 别的进程在 [::1] 上也监听了同一个端口：daemon 先连 127.0.0.1，另一个进程也可能被连到——不允许、不列出
+    runner.intruder.store(true, SeqCst);
+    td.ctx.preview.detector().invalidate().await;
+    let e = c.call::<PreviewOpenResult>(&td, methods::PREVIEW_OPEN, json!({ "port": port })).await.unwrap_err();
+    assert_eq!(reason(&e).as_deref(), Some("port_not_allowed"));
+    let listed = c.call::<PreviewPortsResult>(&td, methods::PREVIEW_PORTS, json!({})).await.unwrap();
+    assert!(listed.ports.iter().all(|p| p.port != port), "{listed:?}");
+    // 隧道握手同样不放行
+    let hub = LocalPreviewHub::attach(&td);
+    let wire = hub.connect(&t.label).await;
+    assert_eq!(
+        FakePreview::connect(wire, td.ctx.identity.public(), &t).await.err(),
+        Some(HandshakeError::Rejected("port_not_allowed".into()))
+    );
+    // 写进 allow_ports 就照旧放行
+    anycon_daemon::config::set_value(&td.paths, "preview.allow_ports", &format!("[{port}]")).unwrap();
+    td.ctx.config.reload().unwrap();
+    let again: PreviewOpenResult = c.call(&td, methods::PREVIEW_OPEN, json!({ "port": port })).await.unwrap();
+    assert_eq!(again.port, port);
+    let listed = c.call::<PreviewPortsResult>(&td, methods::PREVIEW_PORTS, json!({})).await.unwrap();
+    let p = listed.ports.iter().find(|p| p.port == port).unwrap();
+    assert_eq!(p.source, PreviewPortSource::Config);
 }
 
 #[tokio::test]
@@ -1262,12 +1344,7 @@ async fn a_denial_based_on_a_stale_snapshot_is_checked_again_once() {
         c.call(&td, methods::SESSION_CREATE, json!({ "agent": "fake", "project": "web" })).await.unwrap();
     let port = free_port();
     let workdir = std::fs::canonicalize(td.workspace.join("web")).unwrap();
-    let runner = Arc::new(ScriptedRunner {
-        listening: std::sync::atomic::AtomicBool::new(false),
-        runs: std::sync::atomic::AtomicUsize::new(0),
-        port,
-        workdir,
-    });
+    let runner = ScriptedRunner::new(port, workdir);
     td.ctx.preview.detector().set_runner(runner.clone());
     // 还没有人监听：拒绝
     let e = c.call::<PreviewOpenResult>(&td, methods::PREVIEW_OPEN, json!({ "port": port })).await.unwrap_err();

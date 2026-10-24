@@ -815,7 +815,7 @@ v0.2：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-se
 - **票据**：`preview.open` 签发。`ticket_id` 16 字节、`psk` 32 字节，都来自系统随机数；有效期 `preview.ticket_ttl`。存库（daemon 重启后预览页能直接重连），密钥和其他密钥一样只在 daemon 的数据目录里
 - **复用**：同一设备对同一端口已有一张剩余有效期超过一半的票据时直接返回它（`reused`），避免每次点「预览」都签一张新的
 - **上限**：每个设备至多 64 张未过期的票据，超了删最旧的（并断开用它的隧道）；daemon 同时至多 64 条隧道，超了握手回 `busy`
-- **作废**：过期（每分钟清一次，用它的隧道收到 `GOAWAY { expired }`）；`preview.close { label }`（`GOAWAY { closed }`）；吊销签发它的设备（`node.revoke_device`，`GOAWAY { revoked }`，在吊销流程里和删公钥一起做）
+- **作废**：过期（每分钟清一次，用它的隧道收到 `GOAWAY { expired }`）；`preview.close { label }`（`GOAWAY { closed }`）；吊销签发它的设备（`node.revoke_device`，`GOAWAY { revoked }`，在吊销流程里和删公钥一起做）。吊销时先等这个设备的隧道把 `GOAWAY { revoked }` 交给出站队列（最多 0.5 秒），再把 `revoke` 发给 hub：hub 收到后会以 `4004` 关掉预览连接，顺序反过来预览页就看不到原因
 
 ### 19.3 端口策略
 
@@ -827,7 +827,7 @@ v0.2：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-se
 
 永远不允许：本机 hub 的端口（`hub.url` 的主机是 `localhost` / 回环地址时）、端口 0。只看绑定在回环地址或通配地址（`0.0.0.0` / `::`）上的监听 socket——只绑在某个局域网地址上的服务从 `127.0.0.1` 连不上。
 
-一个端口上可能有不止一个监听者（IPv4 / IPv6 各一个、`SO_REUSEPORT`）：**每一个**都要符合上面的规则才放行，否则 daemon 先连的 `127.0.0.1` 可能落到别的进程上。
+一个端口上可能有不止一个监听者（IPv4 / IPv6 各一个、`SO_REUSEPORT`）：**每一个**都要符合上面的规则才放行，否则 daemon 先连的 `127.0.0.1` 可能落到别的进程上。这样「混合归属」的端口 `preview.ports` 不列出，`preview.open` 和隧道握手按 `port_not_allowed` 拒绝；写在 `allow_ports` 里的照样列出（`source = config`）。带 `session_id` 过滤时更严：端口上有任何一个监听者不属于这个会话就不列。
 
 判断用的探测结果如果已经超过 0.5 秒，拒绝之前先重新探测一次（agent 刚拉起 dev server 就点「预览」时不会被缓存误拒）。
 

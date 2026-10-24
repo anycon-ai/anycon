@@ -289,15 +289,30 @@ describe('PreviewView: opening', () => {
     expect(api.callsTo('POST /api/preview/tokens')).toHaveLength(1)
   })
 
-  it('reload mounts a fresh iframe at the address-bar path, with the same cached ticket', async () => {
+  it('reload mounts a fresh iframe at the address-bar path; it asks the node again but keeps a fresh hub token', async () => {
     serve()
     const user = userEvent.setup()
     render(view())
     const first = await screen.findByTestId('preview-frame')
     await user.click(screen.getByTestId('preview-reload'))
     await waitFor(() => expect(screen.getByTestId('preview-frame')).not.toBe(first))
+    // daemon 在票据还有效时返回同一张，所以地址不变
     expect(screen.getByTestId('preview-frame').getAttribute('src')).toBe(first.getAttribute('src'))
-    expect(openCalls()).toHaveLength(1)
+    expect(openCalls()).toHaveLength(2)
+    expect(api.callsTo('POST /api/preview/tokens')).toHaveLength(1)
+  })
+
+  it('reload after the preview was stopped elsewhere picks up the new ticket the node hands out', async () => {
+    serve()
+    const user = userEvent.setup()
+    render(view())
+    await screen.findByTestId('preview-frame')
+    // 别的设备停止了预览：daemon 下次签的是一张新票据
+    rpc.handlers['preview.open'] = (p) => openResult({ port: (p as PreviewOpenParams).port, ticket_id: 'b'.repeat(32) })
+    await user.click(screen.getByTestId('preview-reload'))
+    await waitFor(() => expect(launchOf(screen.getByTestId('preview-frame')).ticket_id).toBe('b'.repeat(32)))
+    expect(launchOf(screen.getByTestId('preview-frame')).token).toBe('hub-token')
+    expect(api.callsTo('POST /api/preview/tokens')).toHaveLength(1)
   })
 
   it('a ticket with less than 10 minutes left is replaced when the preview is reloaded', async () => {

@@ -534,7 +534,7 @@ v0.1 另含 [ADR-36](../decisions.md#adr-36-账号内接入账号负责路由dae
   2. `POST /api/preview/tokens { node, label }`，带本浏览器的设备 token（`Authorization: Bearer`）→ `{ token, origin, expires_at_ms }`
   3. 拼 `PreviewLaunch`（`v: 1`，`node_public` 取本地存的节点静态公钥，`expires_at_ms` 取两者较早的，`path` 取地址栏），JSON → base64url（无填充），URL 是 `<origin>/__anycon/enter#<…>`
   4. 内嵌：`<iframe src=… sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads" referrerpolicy="no-referrer">`，**不给** `allow-top-navigation`。新标签页：`window.open(url, '_blank', 'noopener,noreferrer')`
-- 拿到的 `PreviewLaunch` 只在内存里按（节点，端口）缓存，剩余有效期不到 10 分钟就重新走一遍；不写 IndexedDB。URL 里的 fragment 带着密钥，不写日志、不进路由状态、不复制到剪贴板（「复制链接」只复制 origin + 路径）
+- 拿到的 `PreviewLaunch` 只在内存里按（节点，端口）缓存，剩余有效期不到 10 分钟就重新走一遍；不写 IndexedDB。「刷新」总是重新调 `preview.open`（这个预览可能已经在别的设备上被停止，缓存的票据 daemon 不认了；票据还有效时 daemon 返回同一张），hub 令牌剩 10 分钟以上就沿用——每次刷新都换令牌会占满每设备 64 个的上限、挤掉这台设备上别的预览。URL 里的 fragment 带着密钥，不写日志、不进路由状态、不复制到剪贴板（「复制链接」只复制 origin + 路径）
 - Web UI **不监听**来自预览 iframe 的 `message` 事件，也不往里发
 - 手机上同样是主视图；工具条收成一行，「在新标签页打开」放在最显眼的位置（手机浏览器对第三方 iframe 里的 service worker 支持参差）
 - 文案走 i18n（en / zh）

@@ -6,6 +6,12 @@
 # 数据都在 .anycon-dev/（hub 的数据目录、daemon 的 ANYCON_HOME、workspace、日志），删掉这个目录就是重置。
 # 可调：HUB_PORT（默认 8080）、DEV_NO_WEB=1（不起 vite，用 hub 嵌入的 web/dist）、DEV_REAL_CLAUDE=1 / DEV_REAL_CODEX=1（启用真实 Claude Code / Codex，和 mock 一起可选）。
 # vite dev server 固定 :5173，监听 localhost（只有 IPv6 ::1 也可能），浏览器请用 http://localhost:5173。
+#
+# dev server 预览（ADR-39）：hub 带 ANYCON_PREVIEW_URL=http://*.preview.localhost:<HUB_PORT>（Chromium 自己把 *.localhost 解析到回环地址，
+# 它们也是安全上下文，service worker 能用；Safari / Firefox 不一定，那时用 Chromium 系浏览器）。预览运行时（web/dist-preview）
+# 在 hub 编译之前用 `vite build -c vite.preview.config.ts` 构建（不需要把 Web UI 也构建一遍）。
+# 已知限制：Web UI 走 vite（http://localhost:5173）时，hub 下发给预览页的 frame-ancestors 只允许 hub 自己的 origin（${HUB_URL}），
+# 预览在页面里内嵌不了，「在新标签页打开」可以；DEV_NO_WEB=1（用 hub 嵌入的 Web UI，要先 `bun run --cwd web build` 再重编 hub）时内嵌也可以。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -66,6 +72,30 @@ if [ ! -f "$ROOT/packages/protocol/wasm/anycon_crypto.js" ]; then
   echo "[dev] warning: packages/protocol/wasm is missing, the web UI cannot pair; run \`just gen-wasm\` first" >&2
 fi
 
+# ---------------------------------------------------------------- 预览运行时
+# hub 在编译时选定要嵌入的 web/dist-preview（目录不存在就嵌占位页）。第一次构建出它之后要让 hub 重新选一次目录：
+# 触碰 crates/hub/build.rs。debug 构建下 hub 直接读磁盘，之后只重建预览运行时不用重编 hub。
+PREVIEW_DIST="$ROOT/web/dist-preview"
+PREVIEW_STAMP="$PREVIEW_DIST/index.html"
+if command -v bun >/dev/null 2>&1 && [ -f "$ROOT/web/vite.preview.config.ts" ]; then
+  if [ ! -d "$ROOT/node_modules" ]; then
+    echo "[dev] bun install..."
+    bun install
+  fi
+  if [ ! -f "$PREVIEW_STAMP" ] || [ -n "$(find "$ROOT/web/preview" "$ROOT/web/vite.preview.config.ts" "$ROOT/packages/protocol/src" "$ROOT/packages/protocol/wasm" -type f -newer "$PREVIEW_STAMP" -print -quit 2>/dev/null)" ]; then
+    echo "[dev] building the preview runtime (vite build -c vite.preview.config.ts)..."
+    preview_was_missing=0
+    [ -f "$PREVIEW_STAMP" ] || preview_was_missing=1
+    if (cd "$ROOT/web" && bunx vite build -c vite.preview.config.ts >"$LOGS/preview-build.log" 2>&1); then
+      [ "$preview_was_missing" = 1 ] && touch "$ROOT/crates/hub/build.rs"
+    else
+      echo "[dev] warning: the preview runtime build failed (see $LOGS/preview-build.log); the hub will serve a placeholder page on preview origins" >&2
+    fi
+  fi
+else
+  echo "[dev] warning: bun or web/vite.preview.config.ts is missing, the preview runtime is not built; preview origins show a placeholder page" >&2
+fi
+
 echo "[dev] building hub and anycon (cargo build -p anycon-hub -p anycon-cli)..."
 cargo build -p anycon-hub -p anycon-cli
 
@@ -78,6 +108,7 @@ ANYCON_DATA_DIR="$DEV/hub" \
 ANYCON_PUBLIC_URL="$HUB_URL" \
 ANYCON_LISTEN="127.0.0.1:${HUB_PORT}" \
 ANYCON_LOG="${ANYCON_LOG:-info}" \
+ANYCON_PREVIEW_URL="http://*.preview.localhost:${HUB_PORT}" \
   "$HUB_BIN" >"$LOGS/hub.log" 2>&1 &
 PIDS+=("$!")
 
@@ -170,6 +201,14 @@ cat <<MSG
 
  Talk to it from the terminal:
    ANYCON_HOME=$DAEMON_HOME $ANYCON_BIN new --agent mock "run permission"
+
+ Dev server preview (session page -> "Preview"):
+   preview origins are http://<label>.preview.localhost:${HUB_PORT} (use a Chromium-based browser: it resolves *.localhost itself).
+   A port is previewable when the session's agent started the server, or when it is listed in preview.allow_ports:
+   ANYCON_HOME=$DAEMON_HOME $ANYCON_BIN config set preview.allow_ports '[3000]'
+   Known limit: with the web UI on http://localhost:5173 the preview can't be embedded in the page (the preview page only allows the
+   hub's own origin, $HUB_URL, as its frame-ancestors); "Open in new tab" works. Use DEV_NO_WEB=1 to get the hub's embedded web UI,
+   where the embedded preview works too.
 
  Real agents (Claude Code / Codex):
    ANYCON_HOME=$DAEMON_HOME $ANYCON_BIN config set agents.claude-code.enabled true

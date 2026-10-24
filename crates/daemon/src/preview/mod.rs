@@ -286,17 +286,28 @@ impl Preview {
     }
 
     /// 吊销设备：它签发的票据全部作废，用这些票据的隧道收到 `GOAWAY { revoked }`。
+    ///
+    /// 会等这些隧道把 `GOAWAY` 交给出站通道（最多 0.5 秒）再返回：吊销流程随后马上给 hub 发 `revoke`，hub 会以 `4004`
+    /// 关掉这个设备签发的令牌对应的预览连接；`GOAWAY` 不先排进出站通道的话，预览页只会看到连接被关，不知道为什么。
     pub async fn on_device_revoked(&self, device_id: &str) {
         match self.d.store.preview_tickets_delete_device(device_id).await {
             Ok(ids) if !ids.is_empty() => {
-                let n = self.goaway_where(PreviewGoawayCode::Revoked, |i| i.device_id == device_id);
-                tracing::debug!(tickets = ids.len(), tunnels = n, "preview tickets of a revoked device removed");
+                tracing::debug!(tickets = ids.len(), "preview tickets of a revoked device removed");
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "cannot remove the preview tickets of a revoked device"),
         }
-        // 兜底：库里没有票据（读写出错）时，内存里的隧道也要断
-        self.goaway_where(PreviewGoawayCode::Revoked, |i| i.device_id == device_id);
+        // 库里没有票据（读写出错）时，内存里的隧道也要断
+        let n = self.goaway_where(PreviewGoawayCode::Revoked, |i| i.device_id == device_id);
+        if n > 0 {
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            while self.tunnels.lock().unwrap().values().any(|i| i.device_id == device_id)
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            tracing::debug!(tunnels = n, "tunnels of a revoked device closed");
+        }
     }
 
     // ------------------------------------------------------------ 后台任务

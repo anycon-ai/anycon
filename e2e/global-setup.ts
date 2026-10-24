@@ -2,6 +2,9 @@
  * 起一套真实环境：hub（临时数据目录）+ daemon（mock agent，临时 ANYCON_HOME）+ web。
  * 不编译任何东西：二进制要先 `cargo build -p anycon-hub -p anycon-cli`，web 要先 `bun run --cwd web build`
  * （默认由 hub 嵌入的 dist 提供；`E2E_WEB_MODE=preview` 用 `vite preview`；`E2E_WEB_URL` 指向已有的服务）。
+ * 预览（ADR-39）：hub 配 `ANYCON_PREVIEW_URL=http://*.preview.localhost:<hub 端口>`（Chromium 把 `*.localhost` 解析到回环地址，
+ * 它们也是安全上下文，service worker 能用），预览运行时是 `web/dist-preview`（和 `web/dist` 由同一条 `bun run --cwd web build` 产出）；
+ * 本进程里另起一个上游（`helpers/upstream.ts`），daemon 的 `preview.allow_ports` 放行它的端口。
  * 返回的函数是 teardown：停进程、删临时目录。
  */
 import {
@@ -26,6 +29,7 @@ import {
   hubBin,
   hubPort,
   hubUrl,
+  previewTemplate,
   repoRoot,
   stateFile,
   webMode,
@@ -33,7 +37,9 @@ import {
   webUrl,
   type E2EState,
 } from './helpers/env.js'
+import { fetchPreviewHost } from './helpers/preview.js'
 import { startSmtp, type SmtpServer } from './helpers/smtp.js'
+import { startUpstream, type UpstreamServer } from './helpers/upstream.js'
 import {
   httpOk,
   spawnLogged,
@@ -99,7 +105,9 @@ function run(cmd: string, args: string[], cwd: string): void {
 
 /**
  * `E2E_BUILD=1`：先把被测的东西都构建一遍（web → 触碰 hub 的 build.rs → cargo build）。
- * hub 在**编译时**嵌入 web/dist，所以只重建 web 不够，还得重编 hub，否则测的是旧 UI。
+ * `bun run --cwd web build` 同时产出 `web/dist`（Web UI）和 `web/dist-preview`（预览运行时）。
+ * hub 在**编译时**选定要嵌入的这两个目录（目录不存在就退到占位页），所以只重建 web 不够，还得重编 hub，否则测的是旧 UI
+ * （第一次编译时 `web/dist-preview` 不存在的话尤其如此：触碰 build.rs 才会重新选目录）。
  */
 function buildEverything(): void {
   run('bun', ['run', '--cwd', 'web', 'build'], repoRoot)
@@ -124,6 +132,31 @@ async function assertHubServesCurrentWeb(): Promise<void> {
   if (served !== readFileSync(dist, 'utf8')) {
     throw new Error(
       'the hub serves a different index.html than web/dist (a placeholder page, or an older embedded build). ' +
+        'Run: bun run --cwd web build && touch crates/hub/build.rs && cargo build -p anycon-hub -p anycon-cli ' +
+        '(or set E2E_BUILD=1 to do all of that, or E2E_ALLOW_STALE_WEB=1 to ignore this check).',
+    )
+  }
+}
+
+/**
+ * 预览域名上服务的引导页必须就是 `web/dist-preview/index.html`。不一致说明 hub 编译时 `web/dist-preview` 还不存在
+ * （嵌入了占位页：「The preview runtime is not built into this hub」），预览用例会在 service worker 注册那一步莫名失败，
+ * 这里直接说清楚。debug 构建读磁盘，所以只重建预览运行时不用重编 hub，前提是编译时目录已经存在。
+ */
+async function assertHubServesCurrentPreviewRuntime(): Promise<void> {
+  if (process.env.E2E_ALLOW_STALE_WEB === '1') return
+  const dist = join(repoRoot, 'web', 'dist-preview', 'index.html')
+  if (!existsSync(dist)) {
+    console.warn(
+      '[e2e] web/dist-preview not found: the preview runtime is missing, tests/preview.spec.ts will fail. Run: bun run --cwd web build',
+    )
+    return
+  }
+  const served = await fetchPreviewHost('/__anycon/enter')
+  if (served.status !== 200 || served.body !== readFileSync(dist, 'utf8')) {
+    throw new Error(
+      'the hub serves a different preview bootstrap page than web/dist-preview/index.html ' +
+        `(status ${served.status}; a placeholder page means web/dist-preview did not exist when the hub was compiled). ` +
         'Run: bun run --cwd web build && touch crates/hub/build.rs && cargo build -p anycon-hub -p anycon-cli ' +
         '(or set E2E_BUILD=1 to do all of that, or E2E_ALLOW_STALE_WEB=1 to ignore this check).',
     )
@@ -170,9 +203,12 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
 
   // 假 SMTP 服务（hub 的邮箱验证码 / 通知邮件发到这里，收到的信落成文件，用例读）：先于 hub 起，它的端口要写进 hub 的环境
   let smtp: SmtpServer | undefined
+  // 预览用例的上游（dev server 替身）：先于 daemon 起，端口要写进 daemon 的 preview.allow_ports
+  let upstream: UpstreamServer | undefined
   const teardown = async () => {
     for (const proc of started.toReversed()) await proc.stop()
     await smtp?.close()
+    await upstream?.close()
     rmSync(stateFile, { force: true })
     if (process.env.E2E_KEEP_TMP === '1') console.log(`[e2e] keeping ${tmpDir}`)
     else rmSync(tmpDir, { recursive: true, force: true })
@@ -188,6 +224,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     // 固定一个管理员 token（≥16 字符），不依赖读 <data>/admin-token，结果更确定。
     const adminToken = process.env.E2E_ADMIN_TOKEN ?? `e2e-${randomBytes(16).toString('hex')}`
     smtp = await startSmtp(join(tmpDir, 'smtp'))
+    upstream = await startUpstream()
     const hub = spawnLogged('hub', hubBin, [], {
       logFile: join(tmpDir, 'hub.log'),
       env: {
@@ -199,6 +236,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
         // 配了 SMTP：登录页多了邮箱验证码登录（token 表单折叠到「使用 token」后面），账号设置里能绑定邮箱（ADR-37）
         ANYCON_SMTP_URL: `smtp+plain://127.0.0.1:${smtp.port}`,
         ANYCON_EMAIL_FROM: 'Anycon <noreply@example.test>',
+        // dev server 预览（ADR-39）：预览 origin 是 http://<label>.preview.localhost:<hub 端口>。ANYCON_PUBLIC_URL 是 IP，
+        // 不做「同一个可注册域名」检查；预览域名在 `.localhost` 下，所以允许 http
+        ANYCON_PREVIEW_URL: previewTemplate,
         // hub 自己的模块开 debug：用例要断言 hub 的日志里没有短码 / match_id（docs/spec/hub.md § 10）。
         ANYCON_LOG: process.env.ANYCON_LOG ?? 'info,anycon_hub=debug',
       },
@@ -214,6 +254,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       throw new Error(`${String(err)}\n--- hub.log ---\n${tailLog(join(tmpDir, 'hub.log'))}`)
     })
     await assertHubServesCurrentWeb()
+    await assertHubServesCurrentPreviewRuntime()
     // ---- daemon（mock agent）----
     let daemonStarted = false
     if (process.env.E2E_SKIP_DAEMON !== '1') {
@@ -224,6 +265,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
           workspaceDir,
           gitConfig,
           gitShimDir,
+          upstreamPort: upstream.port,
         })
       } catch (err) {
         if (requireDaemon) throw err
@@ -271,6 +313,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       slowGitDir,
       smtpPort: smtp.port,
       smtpDir: smtp.dir,
+      previewTemplate,
+      upstreamPort: upstream.port,
     }
     writeFileSync(stateFile, JSON.stringify(state, null, 2), { mode: 0o600 })
     process.env.E2E_STATE_FILE = stateFile
@@ -293,6 +337,7 @@ async function startDaemon(
     workspaceDir: string
     gitConfig: string
     gitShimDir: string
+    upstreamPort: number
   },
 ): Promise<boolean> {
   if (!existsSync(cliBin)) {
@@ -336,6 +381,12 @@ async function startDaemon(
       'workspace.link_roots',
       JSON.stringify([realpathSync(join(dirs.tmpDir, 'external'))]),
     ],
+    { env, stdio: 'pipe', timeout: 30_000 },
+  )
+  // 预览上游的端口不属于任何会话，靠配置放行（docs/spec/daemon.md § 19.3）；`[preview]` 整段热加载，但这里在 daemon 启动之前写
+  execFileSync(
+    cliBin,
+    ['config', 'set', 'preview.allow_ports', JSON.stringify([dirs.upstreamPort])],
     { env, stdio: 'pipe', timeout: 30_000 },
   )
   const daemon = spawnLogged('daemon', cliBin, ['daemon'], {

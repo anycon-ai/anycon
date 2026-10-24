@@ -387,8 +387,10 @@ impl PeerTask {
     /// `GOAWAY`：告诉预览页这条隧道要关了，随后丢掉传输。消息排在已经加密的消息之后（nonce 顺序），不受在途窗口限制。
     fn goaway(&mut self, code: PreviewGoawayCode) {
         let Some(mut t) = self.tunnel.take() else { return };
-        self.pv.unregister_tunnel(&self.peer);
         let sent = Self::encrypt_and_send(&self.pv, &self.peer, &mut t.transport, &mut t.ledger, &[goaway_frame(code)]);
+        // 先交给出站通道、再撤销登记：撤销登记的人（吊销设备时等隧道走光，见 `Preview::on_device_revoked`）可以确信 GOAWAY
+        // 已经排在出站通道里了，随后的控制消息（`revoke`）不会跑到它前面
+        self.pv.unregister_tunnel(&self.peer);
         tracing::debug!(label = %self.label, ?code, sent, "preview tunnel closed by the daemon");
         // 上游任务随 `t` 丢弃；出站原文留一会儿，GOAWAY 万一被 hub 退回还能重发
         self.forget_at = Some(Instant::now() + GOAWAY_LINGER);

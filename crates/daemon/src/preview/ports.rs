@@ -289,21 +289,42 @@ pub fn check_port(
     if !snap.available {
         return Verdict::NotAllowed;
     }
-    let mut any = false;
-    for l in snap.listeners_on(port) {
-        any = true;
-        if attribute(l, snap, sessions).is_some() {
-            return Verdict::Allowed;
-        }
+    // 一个端口上可能有不止一个监听者（IPv4 / IPv6 各一个、`SO_REUSEPORT` 的多个进程）：每一个都要有归属才放行，
+    // 否则 daemon 先连的 `127.0.0.1` 可能落到别的进程上
+    let listeners: Vec<&Listener> = snap.listeners_on(port).collect();
+    if listeners.is_empty() {
+        return if lenient { Verdict::Allowed } else { Verdict::NotAllowed };
     }
-    if !any && lenient {
+    if listeners.iter().all(|l| attribute(l, snap, sessions).is_some()) {
         Verdict::Allowed
     } else {
         Verdict::NotAllowed
     }
 }
 
+/// 一个端口上的全部监听者都有归属时，挑一个代表（规则 1 优先于规则 2，再取 session id 最小的 / 第一个监听者）；
+/// 只要有一个监听者没有归属（别的进程、别的会话），这个端口就没有「主人」，返回 `None`。
+fn port_owner<'a>(
+    listeners: &[&'a Listener],
+    snap: &Snapshot,
+    sessions: &[SessionTarget],
+) -> Option<(Attribution, &'a Listener)> {
+    let mut best: Option<(Attribution, &'a Listener)> = None;
+    for &l in listeners {
+        let a = attribute(l, snap, sessions)?;
+        let better = best.as_ref().is_none_or(|(old, _)| {
+            (a.source == PreviewPortSource::Session && old.source == PreviewPortSource::Workspace)
+                || (a.source == old.source && a.session_id < old.session_id)
+        });
+        if better {
+            best = Some((a, l));
+        }
+    }
+    best
+}
+
 /// `preview.ports` 的结果。`only_session`：只列这个会话的（外加 `allow_ports` 里的）。
+/// 端口上有任何一个监听者不属于会话（混合归属）就不列出——它不能预览（[`check_port`]），除非写进 `allow_ports`。
 pub fn list_ports(
     policy: &Policy<'_>,
     snap: &Snapshot,
@@ -316,27 +337,26 @@ pub fn list_ports(
         None => sessions.to_vec(),
     };
     if snap.available {
-        for l in &snap.listeners {
-            if l.port == 0 || policy.hub_port == Some(l.port) {
+        let mut ports: Vec<u16> = snap.listeners.iter().map(|l| l.port).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        for port in ports {
+            if port == 0 || policy.hub_port == Some(port) {
                 continue;
             }
-            let Some(a) = attribute(l, snap, &scoped) else { continue };
-            // 同一个端口多个监听进程（IPv4 / IPv6 各一个）时，规则 1 优先
-            let better = by_port
-                .get(&l.port)
-                .is_none_or(|old| old.source == PreviewPortSource::Workspace && a.source == PreviewPortSource::Session);
-            if better {
-                by_port.insert(
-                    l.port,
-                    PreviewPort {
-                        port: l.port,
-                        source: a.source,
-                        session_id: Some(a.session_id),
-                        pid: Some(l.pid),
-                        process: Some(snap.process_name(l)).filter(|n| !n.is_empty()),
-                    },
-                );
-            }
+            // 混合归属的端口（有的监听者不是会话的）不列出：它不能预览，除非写进 `allow_ports`（下面按 config 列）
+            let listeners: Vec<&Listener> = snap.listeners_on(port).collect();
+            let Some((a, l)) = port_owner(&listeners, snap, &scoped) else { continue };
+            by_port.insert(
+                port,
+                PreviewPort {
+                    port,
+                    source: a.source,
+                    session_id: Some(a.session_id),
+                    pid: Some(l.pid),
+                    process: Some(snap.process_name(l)).filter(|n| !n.is_empty()),
+                },
+            );
         }
     }
     for &port in policy.allow_ports {
@@ -767,6 +787,55 @@ mod tests {
         let none = Snapshot::unavailable();
         assert_eq!(check_port(3000, &pol, &none, &sessions, true), Verdict::NotAllowed);
         assert_eq!(check_port(9000, &pol, &none, &sessions, true), Verdict::Allowed);
+    }
+
+    #[test]
+    fn every_listener_on_a_port_must_belong_to_a_session() {
+        // 会话在 [::1]:3000（进程 300），别的进程 600 在 127.0.0.1:3000：daemon 先连 127.0.0.1 会落到 600 上
+        let p = procs(&[(100, 1, 100), (300, 100, 100), (600, 1, 600), (601, 1, 601)]);
+        let sessions = vec![target("s1", Some(100), None)];
+        let pol = policy(true, &[], None);
+        let mixed = snap(&[(300, 3000), (600, 3000), (300, 4000), (601, 5000), (600, 5000)], p.clone(), &[]);
+        assert_eq!(check_port(3000, &pol, &mixed, &sessions, false), Verdict::NotAllowed);
+        assert_eq!(check_port(3000, &pol, &mixed, &sessions, true), Verdict::NotAllowed, "also at handshake time");
+        // 只有会话的监听者：允许
+        assert_eq!(check_port(4000, &pol, &mixed, &sessions, false), Verdict::Allowed);
+        // 全是别人的：不允许
+        assert_eq!(check_port(5000, &pol, &mixed, &sessions, false), Verdict::NotAllowed);
+        // SO_REUSEPORT：两个进程都在会话的进程树里，允许
+        let both = snap(&[(300, 3000), (301, 3000)], procs(&[(100, 1, 100), (300, 100, 100), (301, 100, 100)]), &[]);
+        assert_eq!(check_port(3000, &pol, &both, &sessions, false), Verdict::Allowed);
+        // 一个靠进程树、一个靠工作目录（两个会话各一个）也行：每一个都有归属
+        let two = vec![target("s1", Some(100), None), target("s2", None, Some("/w/b"))];
+        let split = snap(
+            &[(300, 3000), (400, 3000)],
+            procs(&[(100, 1, 100), (300, 100, 100), (400, 1, 400)]),
+            &[(400, "/w/b/web")],
+        );
+        assert_eq!(check_port(3000, &pol, &split, &two, false), Verdict::Allowed);
+        // allow_ports 照旧直接放行，不看混合
+        let cfg = policy(true, &[3000], None);
+        assert_eq!(check_port(3000, &cfg, &mixed, &sessions, false), Verdict::Allowed);
+    }
+
+    #[test]
+    fn a_port_with_mixed_ownership_is_not_listed_unless_it_is_configured() {
+        let p = procs(&[(100, 1, 100), (300, 100, 100), (600, 1, 600), (700, 1, 700)]);
+        let s = snap(&[(300, 3000), (600, 3000), (300, 4000), (700, 4000)], p, &[(700, "/w/other")]);
+        let sessions = vec![target("s1", Some(100), None), target("s2", None, Some("/w/other"))];
+        let pol = policy(true, &[], None);
+        let ports = |only: Option<&str>, pol: &Policy<'_>| -> Vec<(u16, Option<String>)> {
+            list_ports(pol, &s, &sessions, only).into_iter().map(|p| (p.port, p.session_id)).collect()
+        };
+        // 3000：s1 的 + 别人的 -> 不列；4000：s1 的 + s2 的，每个都有主人 -> 列出（代表取规则 1 的 s1）
+        assert_eq!(ports(None, &pol), vec![(4000, Some("s1".into()))]);
+        // 只看 s1：4000 上有 s2 的监听者，对 s1 来说是「别人的」-> 不列
+        assert_eq!(ports(Some("s1"), &pol), vec![]);
+        // 写进 allow_ports 的混合端口按 config 列出
+        let cfg = policy(true, &[3000], None);
+        let listed = list_ports(&cfg, &s, &sessions, None);
+        let c = listed.iter().find(|p| p.port == 3000).unwrap();
+        assert_eq!((c.source, c.session_id.clone()), (PreviewPortSource::Config, None));
     }
 
     #[test]

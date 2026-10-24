@@ -41,6 +41,8 @@ export interface PreviewTicket {
   origin: string
   /** 票据和令牌里较早的过期时间。 */
   expiresAtMs: number
+  /** hub 令牌自己的过期时间（刷新时决定能不能沿用令牌）。 */
+  tokenExpiresAtMs: number
   launch: Omit<PreviewLaunch, 'path'>
 }
 
@@ -94,7 +96,23 @@ export function ensureTicket(args: EnsureTicketArgs): Promise<PreviewTicket> {
   return pending
 }
 
-async function requestTicket({ nodeId, port, sessionId, template }: EnsureTicketArgs): Promise<PreviewTicket> {
+/**
+ * 「刷新」用：一定重新向 daemon 要票据（daemon 在票据还有效时返回同一张；被别的设备停止过的话签一张新的），
+ * hub 令牌还剩 10 分钟以上就沿用——每次刷新都换令牌会占满每设备 64 个的上限，挤掉这台设备上别的预览。
+ */
+export function refreshTicket(args: EnsureTicketArgs): Promise<PreviewTicket> {
+  const key = keyOf(args.nodeId, args.port)
+  const pending = requestTicket(args, tickets.get(key)).finally(() => {
+    if (inflight.get(key) === pending) inflight.delete(key)
+  })
+  inflight.set(key, pending)
+  return pending
+}
+
+async function requestTicket(
+  { nodeId, port, sessionId, template }: EnsureTicketArgs,
+  previous?: PreviewTicket,
+): Promise<PreviewTicket> {
   // 先查本地条件：缺了就别去 daemon 签一张用不上的票据
   if (!template.includes('{label}')) throw new PreviewLocalError('bad_template')
   const nodePublic = useNodes.getState().byId[nodeId]?.publicKey
@@ -110,7 +128,11 @@ async function requestTicket({ nodeId, port, sessionId, template }: EnsureTicket
   } catch {
     throw new PreviewLocalError('bad_label')
   }
-  const token = await requestPreviewToken(deviceToken, nodeId, opened.label)
+  const reuse =
+    previous !== undefined && previous.label === opened.label && previous.tokenExpiresAtMs - Date.now() >= REFRESH_MARGIN_MS
+  const token = reuse
+    ? { token: previous.launch.token, expires_at_ms: previous.tokenExpiresAtMs }
+    : await requestPreviewToken(deviceToken, nodeId, opened.label)
   const expiresAtMs = Math.min(opened.expires_at_ms, token.expires_at_ms)
   const ticket: PreviewTicket = {
     nodeId,
@@ -118,6 +140,7 @@ async function requestTicket({ nodeId, port, sessionId, template }: EnsureTicket
     label: opened.label,
     origin,
     expiresAtMs,
+    tokenExpiresAtMs: token.expires_at_ms,
     launch: {
       v: PREVIEW_LAUNCH_VERSION,
       node: nodeId,

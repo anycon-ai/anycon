@@ -54,6 +54,10 @@ pub trait PreviewWire: Send {
     }
     /// 预览连接断开（hub 给 daemon 发 `peer_offline`）。
     async fn disconnect(&mut self) {}
+    /// 连接被对端（hub）关掉时的 WebSocket close code（还开着或线路没有这个概念时是 `None`）。
+    fn close_code(&self) -> Option<u16> {
+        None
+    }
 }
 
 struct Lane {
@@ -254,6 +258,262 @@ impl PreviewWire for LocalWire {
     }
 }
 
+// ====================================================================== 连真 hub 的线路
+
+/// 经真 hub 的预览线路（docs/protocol.md § 11.1）：在预览域名上开 WebSocket（`Host` / `Origin` 是预览页自己的），
+/// 第一帧 `auth { preview_token }`，之后只和令牌绑定的那台 daemon 互发 `handshake` / `data`。
+///
+/// 作为发送方守 § 3.1 的规则：hub 退回（`backpressure`）的 `seq` 暂存的原文按升序重发；`rate_limited` 期间暂停发送；
+/// `peer_online` / `peer_offline` 记下 daemon 在不在线；`dropped` 记下来供断言。
+pub struct HubWire {
+    ws: super::Ws,
+    /// hub 给这条预览连接的临时 id。
+    pub id: String,
+    /// 令牌绑定的 daemon。
+    pub node_id: String,
+    seq: u64,
+    /// daemon 现在在线吗（认证时的 `peers_online`，之后跟着 `peer_online` / `peer_offline`）。
+    pub node_online: bool,
+    /// `node_online` 变成 true 的次数（含认证时那次）：断线重连之后会再加一。
+    pub node_online_count: u32,
+    retained: std::collections::BTreeMap<u64, Vec<u8>>,
+    bounced: BTreeSet<u64>,
+    resend_at: Option<Instant>,
+    paused_until: Option<Instant>,
+    close: Option<Option<u16>>,
+    queue: VecDeque<Delivery>,
+    /// 收到过的 `rate_limited` 和 `dropped`（断言用）。
+    pub rate_limited: Vec<(u64, Option<String>)>,
+    pub dropped: Vec<(u64, anycon_protocol::DropReason)>,
+    /// 收到过多少次 `backpressure`。
+    pub bounces: usize,
+}
+
+impl std::fmt::Debug for HubWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HubWire").field("id", &self.id).field("node_online", &self.node_online).finish_non_exhaustive()
+    }
+}
+
+/// 连接预览线路失败。
+#[derive(Debug)]
+pub enum HubWireError {
+    /// WebSocket 升级就被拒绝了（`Origin` / `Host` 不对…）。
+    Upgrade(String),
+    /// hub 回了 `auth_fail`。
+    AuthFail(anycon_protocol::AuthFailReason),
+    /// 认证期间连接被关了。
+    Closed(Option<u16>),
+}
+
+impl HubWire {
+    /// `ws_url`：`ws://127.0.0.1:PORT/v1/ws`；`host` / `origin`：预览页的（如 `<label>.preview.localhost:PORT` 和
+    /// `http://<label>.preview.localhost:PORT`）；`node_id`：令牌绑定的 daemon 的设备 id。
+    pub async fn connect(
+        ws_url: &str,
+        host: &str,
+        origin: &str,
+        token: &str,
+        node_id: &str,
+    ) -> Result<HubWire, HubWireError> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = ws_url.into_client_request().map_err(|e| HubWireError::Upgrade(e.to_string()))?;
+        req.headers_mut().insert("host", host.parse().map_err(|_| HubWireError::Upgrade("bad host".into()))?);
+        req.headers_mut().insert("origin", origin.parse().map_err(|_| HubWireError::Upgrade("bad origin".into()))?);
+        let (ws, _) = tokio_tungstenite::connect_async(req).await.map_err(|e| HubWireError::Upgrade(e.to_string()))?;
+        let mut w = HubWire {
+            ws,
+            id: String::new(),
+            node_id: node_id.to_string(),
+            seq: 0,
+            node_online: false,
+            node_online_count: 0,
+            retained: Default::default(),
+            bounced: BTreeSet::new(),
+            resend_at: None,
+            paused_until: None,
+            close: None,
+            queue: VecDeque::new(),
+            rate_limited: Vec::new(),
+            dropped: Vec::new(),
+            bounces: 0,
+        };
+        let auth = Control::Auth {
+            device_token: None,
+            protocol_version: anycon_protocol::PROTOCOL_VERSION,
+            client: anycon_protocol::ClientInfo {
+                name: "preview".into(),
+                kind: anycon_protocol::DeviceKind::Web,
+                platform: "test".into(),
+                version: "test".into(),
+                origin: None,
+            },
+            preview_token: Some(token.to_string()),
+        };
+        let bytes = Envelope::control("", 0, &auth).and_then(|e| e.encode()).expect("auth encodes");
+        w.ws.send(tokio_tungstenite::tungstenite::Message::binary(bytes))
+            .await
+            .map_err(|_| HubWireError::Closed(None))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match w.read_one(left).await {
+                None => return Err(HubWireError::Closed(None)),
+                Some(Control::AuthOk { device_id, peers_online, .. }) => {
+                    w.id = device_id;
+                    w.node_online = peers_online.contains(&w.node_id);
+                    w.node_online_count = u32::from(w.node_online);
+                    return Ok(w);
+                }
+                Some(Control::AuthFail { reason }) => return Err(HubWireError::AuthFail(reason)),
+                Some(_) => {}
+            }
+            if let Some(code) = w.close {
+                return Err(HubWireError::Closed(code));
+            }
+        }
+    }
+
+    /// 读一条 WebSocket 消息（最多等 `wait`）并处理；信封里的 `handshake` / `data` 进队列。返回读到的控制消息（如果是）。
+    /// 连接关了或没读到东西返回 `None`。
+    async fn read_one(&mut self, wait: Duration) -> Option<Control> {
+        use tokio_tungstenite::tungstenite::Message;
+        if self.close.is_some() {
+            return None;
+        }
+        match tokio::time::timeout(wait, self.ws.next()).await {
+            Err(_) => None,
+            Ok(None) | Ok(Some(Err(_))) => {
+                self.close = Some(None);
+                None
+            }
+            Ok(Some(Ok(Message::Close(f)))) => {
+                self.close = Some(f.map(|f| u16::from(f.code)));
+                None
+            }
+            Ok(Some(Ok(Message::Binary(b)))) => {
+                let env = Envelope::decode(&b).expect("a well-formed envelope from the hub");
+                match env.kind {
+                    Kind::Control => {
+                        let c = env.control_body().expect("a well-formed control message");
+                        self.on_control(&c);
+                        Some(c)
+                    }
+                    Kind::Handshake => {
+                        self.queue.push_back(Delivery::Handshake(env.body));
+                        None
+                    }
+                    Kind::Data => {
+                        self.queue.push_back(Delivery::Data(env.body));
+                        None
+                    }
+                    Kind::Notify => None,
+                }
+            }
+            Ok(Some(Ok(_))) => None,
+        }
+    }
+
+    fn on_control(&mut self, c: &Control) {
+        let now = Instant::now();
+        match c {
+            Control::PeerOnline { device } if *device == self.node_id => {
+                self.node_online = true;
+                self.node_online_count += 1;
+            }
+            Control::PeerOffline { device } if *device == self.node_id => self.node_online = false,
+            Control::Backpressure { seq, .. } => {
+                self.bounces += 1;
+                if self.retained.contains_key(seq) {
+                    self.bounced.insert(*seq);
+                    self.resend_at.get_or_insert(now + Duration::from_millis(100));
+                }
+            }
+            Control::RateLimited { retry_after_ms, to } => {
+                self.rate_limited.push((*retry_after_ms, to.clone()));
+                let until = now + Duration::from_millis((*retry_after_ms).min(30_000));
+                self.paused_until = Some(self.paused_until.map_or(until, |t| t.max(until)));
+                if !self.bounced.is_empty() {
+                    self.resend_at = Some(self.resend_at.map_or(until, |t| t.max(until)));
+                }
+            }
+            Control::Dropped { seq, reason } => self.dropped.push((*seq, *reason)),
+            _ => {}
+        }
+    }
+
+    /// 被退回的信封按升序原样重发（到点了才发，`rate_limited` 期间不发）。
+    async fn resend_due(&mut self) {
+        let now = Instant::now();
+        if self.bounced.is_empty()
+            || self.resend_at.is_some_and(|t| t > now)
+            || self.paused_until.is_some_and(|t| t > now)
+        {
+            return;
+        }
+        self.resend_at = None;
+        for seq in std::mem::take(&mut self.bounced) {
+            if let Some(bytes) = self.retained.get(&seq).cloned() {
+                if self.ws.send(tokio_tungstenite::tungstenite::Message::binary(bytes)).await.is_err() {
+                    self.close.get_or_insert(None);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl PreviewWire for HubWire {
+    async fn send(&mut self, kind: Kind, body: Vec<u8>) {
+        // 限速期间等一等（`rate_limited` 暂停的是整个发送方向）
+        while let Some(t) = self.paused_until.filter(|t| *t > Instant::now()) {
+            let left = t.saturating_duration_since(Instant::now());
+            self.read_one(left.min(Duration::from_millis(50))).await;
+            self.resend_due().await;
+        }
+        self.seq += 1;
+        let bytes =
+            Envelope::new(self.id.clone(), self.node_id.clone(), kind, self.seq, body).encode().expect("encodes");
+        // 保留最近发出的原文，hub 退回时重发
+        self.retained.insert(self.seq, bytes.clone());
+        while self.retained.len() > 8192 {
+            self.retained.pop_first();
+        }
+        if self.ws.send(tokio_tungstenite::tungstenite::Message::binary(bytes)).await.is_err() {
+            self.close.get_or_insert(None);
+        }
+    }
+
+    async fn recv(&mut self, timeout: Duration) -> Option<Delivery> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(d) = self.queue.pop_front() {
+                return Some(d);
+            }
+            self.resend_due().await;
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || self.close.is_some() {
+                return None;
+            }
+            self.read_one(left.min(Duration::from_millis(50))).await;
+        }
+    }
+
+    fn peer_id(&self) -> String {
+        self.id.clone()
+    }
+
+    async fn disconnect(&mut self) {
+        let _ = self.ws.close(None).await;
+        self.close.get_or_insert(None);
+    }
+
+    fn close_code(&self) -> Option<u16> {
+        self.close.flatten()
+    }
+}
+
 // ====================================================================== 预览页客户端
 
 /// 握手失败。
@@ -362,6 +622,8 @@ pub struct FakePreview {
     pub frame_log: Vec<(FrameType, u32)>,
     /// 握手等回复的时限（默认 10 秒）。
     pub handshake_timeout: Duration,
+    last_data_at: Option<Instant>,
+    max_gap: Duration,
 }
 
 const STEP: Duration = Duration::from_millis(50);
@@ -399,6 +661,8 @@ impl FakePreview {
             peer_ack: 0,
             frame_log: Vec::new(),
             handshake_timeout: Duration::from_secs(10),
+            last_data_at: None,
+            max_gap: Duration::ZERO,
         }
     }
 
@@ -494,6 +758,11 @@ impl FakePreview {
         self.wire.disconnect().await;
     }
 
+    /// 线路被 hub 关掉时的 close code（经真 hub 的线路才有，如令牌被撤销时的 `4004`）。
+    pub fn close_code(&self) -> Option<u16> {
+        self.wire.close_code()
+    }
+
     /// 直接发一个 `data` 信封体（协议违规测试：`FRAGMENT`、乱码…）。
     pub async fn send_raw_data(&mut self, body: Vec<u8>) {
         self.wire.send(Kind::Data, body).await;
@@ -520,7 +789,24 @@ impl FakePreview {
         }
     }
 
+    /// 从上次 [`FakePreview::reset_gap`] 以来，两封相邻的 `data` 信封到达的最大间隔。大响应传输期间它应该很小：
+    /// 间隔很大说明发送方在等什么（回执、窗口、时间）。
+    pub fn max_recv_gap(&self) -> Duration {
+        self.max_gap
+    }
+
+    /// 重新开始量 [`FakePreview::max_recv_gap`]（从下一封 `data` 信封算起）。
+    pub fn reset_gap(&mut self) {
+        self.last_data_at = None;
+        self.max_gap = Duration::ZERO;
+    }
+
     async fn on_data(&mut self, body: &[u8]) {
+        let now = Instant::now();
+        if let Some(last) = self.last_data_at {
+            self.max_gap = self.max_gap.max(now.duration_since(last));
+        }
+        self.last_data_at = Some(now);
         self.cipher_bytes += body.len();
         let ct = match frame::decode(body).expect("a well-formed data envelope") {
             frame::DataFrame::Whole(ct) => ct,

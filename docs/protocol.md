@@ -375,10 +375,10 @@ hub 管理员可开启（`ANYCON_QUEUE_ENABLED=true`）。开启后：
 | 消息 | 方向 | 说明 |
 |---|---|---|
 | `auth` | 设备→hub | 连接后第一帧：`{ device_token?, protocol_version, client, preview_token? }`，`device_token` 为空 = 还没有身份的临时连接；带 `preview_token` 的是预览连接（§ 11.1，只在预览域名上接受） |
-| `auth_ok` | hub→设备 | `{ device_id, server_time_ms, peers_online, quota? }` |
-| `auth_fail` | hub→设备 | `{ reason: invalid \| revoked \| version \| quota \| protocol }`，随后 hub 关闭连接 |
-| `pair_begin { match_id }` / `pair_registered { expires_at_ms }` / `pair_join { match_id }` / `pair_matched { peer, role }` / `pair_confirm { peer }` / `pair_done { peer, device_id?, device_token? }` / `pair_failed { reason }` | 见 §4.1 | `pair_failed.reason`：`not_found \| timeout \| peer_gone \| rate_limited \| quota \| forbidden` |
-| `enroll_begin { node }` / `enroll_started { enroll_id, node, expires_at_ms }` / `enroll_request { enroll_id, peer, expires_at_ms }` / `enroll_cancel { enroll_id }` / `enroll_failed { enroll_id?, reason }` | 见 §4.4 | 账号内接入。`enroll_begin` 只能由本账号的正式设备或带账号登录态的临时连接发；`enroll_request` 是 hub 发给 daemon 的；收尾复用 `pair_confirm` / `pair_done`，收尾失败发 `enroll_failed`（不是 `pair_failed`）；`enroll_cancel` 一个不存在的会话得到 `not_found`（这条回执走每秒一条的共享预算，可能被丢）。客户端发 `enroll_begin` 后要有自己的超时（回执限频时同一秒的第二条会被丢）。`enroll_failed.reason`：`forbidden \| not_found \| offline \| rate_limited \| quota \| busy \| timeout \| peer_gone \| cancelled` |
+| `auth_ok` | hub→设备 | `{ device_id, server_time_ms, peers_online, quota? }`。`quota` 只在 `multi` 里对永久连接带：`{ devices, devices_max, daemons, daemons_max, connections, connections_max }`，是账号此刻的设备数、daemon 数、在线连接数（含这一条）和各自的上限；`single`、临时连接和预览连接没有 |
+| `auth_fail` | hub→设备 | `{ reason: invalid \| revoked \| version \| quota \| protocol }`，随后 hub 关闭连接。`quota`：账号的在线连接数已到上限（`multi`，[spec/hub.md § 7.1](spec/hub.md#71-配额仅-multi)），关闭码 `1008`；预览连接则是账号的预览连接数到上限（§ 11.1） |
+| `pair_begin { match_id }` / `pair_registered { expires_at_ms }` / `pair_join { match_id }` / `pair_matched { peer, role }` / `pair_confirm { peer }` / `pair_done { peer, device_id?, device_token? }` / `pair_failed { reason }` | 见 §4.1 | `pair_failed.reason`：`not_found \| timeout \| peer_gone \| rate_limited \| quota \| forbidden`。`quota`（`multi`）：账号今天的配对次数用完了（`pair_begin` / `pair_join` 时），或这次配对要新建的设备会超出设备数 / daemon 数上限（两边 `pair_confirm` 之后，一台设备都不建） |
+| `enroll_begin { node }` / `enroll_started { enroll_id, node, expires_at_ms }` / `enroll_request { enroll_id, peer, expires_at_ms }` / `enroll_cancel { enroll_id }` / `enroll_failed { enroll_id?, reason }` | 见 §4.4 | 账号内接入。`enroll_begin` 只能由本账号的正式设备或带账号登录态的临时连接发；`enroll_request` 是 hub 发给 daemon 的；收尾复用 `pair_confirm` / `pair_done`，收尾失败发 `enroll_failed`（不是 `pair_failed`）；`enroll_cancel` 一个不存在的会话得到 `not_found`（这条回执走每秒一条的共享预算，可能被丢）。客户端发 `enroll_begin` 后要有自己的超时（回执限频时同一秒的第二条会被丢）。`enroll_failed.reason`：`forbidden \| not_found \| offline \| rate_limited \| quota \| busy \| timeout \| peer_gone \| cancelled`。`quota`（`multi`）同上：`enroll_begin` 时每日次数用完，或收尾时设备数 / daemon 数超限 |
 | `revoke { device }` | 设备→hub | 删除某设备路由（需已配对关系） |
 | `peer_online { device }` / `peer_offline { device }` | hub→设备 | 对端上下线（预览连接断开时 daemon 也收到 `peer_offline`） |
 | `preview_peer { peer, label }` | hub→daemon | 本节点有一条预览连接接上来了（§ 11.1）。`peer` 是它的临时 id，`label` 是令牌绑定的 label；daemon 重连后对每条还在的预览连接再发一次 |
@@ -388,7 +388,7 @@ hub 管理员可开启（`ANYCON_QUEUE_ENABLED=true`）。开启后：
 | `rate_limited { retry_after_ms, to? }` | hub→设备 | 发送方超过速率预算；伴随 `backpressure` 出现。`to` 为空：每连接预算，**整条连接**暂停多久（取值 100 ms–30 s，默认预算下一般 1–2 秒）；`to` 有值：预览流量的账号预算（§ 11.5），只暂停发往这个对端的信封。回执本身限频（每秒至多一条）。「一直被限速退回、期间没有任何信封被转发」持续 10 秒会被以 `1008` 断开，老实按提示暂停再重发的发送方只会被匀速限流（[spec/hub.md § 3.4](spec/hub.md#34-速率)） |
 | `queue_overflow { to, dropped_seqs }` | hub→设备 | 队列开启时，超限丢弃 |
 | `queue_drop { seq }` | 设备→hub | 队列开启时，撤回自己排队中的信封 |
-| `quota_update { quota }` | hub→设备 | 当前配额使用量，客户端可展示（`multi`，v0.2） |
+| `quota_update { quota }` | hub→设备 | 当前配额用量（`multi`），载荷同 `auth_ok.quota`。账号的设备被创建 / 吊销，或在线连接上线 / 下线时，发给该账号此刻在线的**其他**永久连接（刚认证的那条已在 `auth_ok` 里拿到）。每日配对次数不在里面，那一项用 HTTP 的 `GET /api/quota` 取（[spec/hub.md § 2.3](spec/hub.md#23-账号与设备-api)） |
 | `rotate_token` / `token_rotated { device_token }` | 设备→hub / hub→设备 | 轮换设备 token（v0.2） |
 
 控制消息本身也计入每连接的发送缓冲上限；一个不读 socket 的连接即使只收控制消息，也会被以 `4003 slow_consumer` 断开。

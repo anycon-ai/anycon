@@ -78,17 +78,23 @@
 
 ## v0.2 — 公共 hub 与更多 agent
 
-- `multi` 模式：开放注册、配额与限速、`control.quota`
-- 登录方式：`multi` 的邮箱注册、GitHub、Google、OAuth 身份关联、设置页管理登录方式（ADR-22）
+已完成（随下个版本发布，见 [CHANGELOG](../CHANGELOG.md#unreleased)）：
+
+- `multi` 模式：开放注册、配额与限速、`auth_ok.quota` / `quota_update`（[ADR-40](decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)）
+- 登录方式：`multi` 的邮箱注册、GitHub、Google、OAuth 身份关联、设置页管理登录方式（ADR-22、ADR-40）
+- 账号删除：自己删（要求 10 分钟内登录过）、管理员删；管理员页的账号搜索、授予 / 取消管理员
+- dev server 预览：Noise 隧道 + 独立的预览域名（公共 hub 用 `aiplace.app`），会话页内嵌或新标签页打开（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）
+
+还没做：
+
 - Store 的 Postgres 实现
 - ACP client adapter（OpenCode、Pi 等一次覆盖）
 - 非图片附件
 - 会话搜索 UI
 - 多 workspace 根
 - `anycon export` / 导入，支持从公共 hub 搬到自建
-- 隐私页、服务条款、账号删除
+- 隐私页、服务条款
 - anycon.ai 公共 hub 上线，成本与捐赠公开
-- dev server 预览：Noise 隧道 + 独立的预览域名（公共 hub 用 `aiplace.app`），会话页内嵌或新标签页打开（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）
 - 英文文档：之后英文为主、中文同步
 
 ## v0.3 — 体验

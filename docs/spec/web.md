@@ -17,8 +17,8 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | 路由 | 页面 | 需要 |
 |---|---|---|
 | `/login` | 登录 | 无 |
-| `/invite/:code` | 邀请落地：存 code 到 sessionStorage，转 `/login` | 无 |
-| `/auth/callback/:provider` | OAuth 回调由 hub 处理后 302 到 `/`，这个路由只在 hub 回错误时展示 | 无 |
+| `/invite/:code` | 邀请落地。`single`：存 code 到 sessionStorage，转 `/login`。`multi` 没有邀请：显示「注册是开放的」，按钮去 `/login`，不存 code | 无 |
+| `/auth/callback/:provider` | 不是 Web UI 的路由：OAuth 回调由 hub 处理并 302，成功回 `next` 或 `/settings/login?linked=<p>`，失败回 `/login?oauth_error=<code>&provider=<p>` 或 `/settings/login?...`（§ 4.1、§ 4.9） | — |
 | `/` | 重定向：这个浏览器有已配对的节点 → 上次打开的 `/n/:node`；没有，但账号下有节点 → `/unlock`；账号下也没有 → `/setup` | 登录 |
 | `/setup` | 首次向导：安装 daemon → 配对 | 登录 |
 | `/pair` | 输入短码配对新节点；支持配对链接 `/pair#code=<短码>`（短码在 URL fragment，不是 query） | 登录 |
@@ -31,7 +31,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `/n/:node/files/*` | 只读文件浏览（v0.2） | 同上 |
 | `/n/:node/settings` | 节点设置：agent、设备、接入、workspace、限制、关于。`?tab=<agent\|devices\|enroll\|workspace\|limits\|about>` 直达某个标签；推送和安全提醒点进来用 `?tab=enroll`，`enroll_requested` 另带 `review=1`，自动弹出待批准请求的对话框 | 同上 |
 | `/settings` | 账号设置，子路由见 § 4.9 | 登录 |
-| `/admin` | 管理：邀请、账号、hub 状态 | 管理员 |
+| `/admin` | 管理：账号（搜索、授予 / 取消管理员、删除）、邀请（仅 `single`）、hub 状态 | 管理员 |
 
 本账号的节点、只是这个浏览器还没配对 → 跳到 `/unlock/:node`（从通知、书签、另一台设备发来的链接进来时常见）；不是本账号的节点、已吊销的节点 → 404 页带「返回」；节点离线不是 404，正常进入页面并显示离线状态。这个浏览器配对过、但账号下已经没有的节点（在别的设备上被移除了，§ 4.8）→ 整页说明「这台节点已从账号移除」，带「忘记这个节点」和「配对另一个节点」。判断用左栏已经拉过的 `GET /api/devices`（已配对的节点不为此专门去问 hub）；列表的拉取时间早于这个节点的配对时间时不算（刚配对的节点可能还不在缓存的列表里），列表没拉到时也不算。只提示、不自动删。
 
@@ -86,7 +86,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 在头部下方，按优先级只显示一条：
 
-1. 和 hub 断开，正在重连（红）
+1. 和 hub 断开，正在重连（红）。hub 终止这条连接、不再自动重连时换成对应的横幅：被另一个实例顶掉、设备被吊销、协议版本不兼容，以及（`multi`）账号的在线连接数到上限（`auth_fail { quota }`，红，带「查看用量」→ `/settings/quota`）
 2. 节点离线，消息会留在本地（黄）
 3. 有设备请求接入某台节点（蓝，带「查看」，打开批准对话框，§ 4.3.2；请求结束就消失）
 4. 有 N 条未发送消息（黄，带「现在重发」）
@@ -97,12 +97,16 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 ### 4.1 登录 `/login`
 
-- 从 `GET /api/config` 拿启用的登录方式，没启用的不显示
-- 布局顺序：passkey（如果浏览器支持且 https）→ GitHub / Google 按钮 → 邮箱 → token（折叠在「使用 token」链接后，只在 `single`）
-- 局域网 http 访问时，passkey 和 OAuth 按钮显示但禁用，hover 说明「需要通过 https 域名访问」
-- 邮箱两步（`/api/config.login_methods` 里有 `email` 才显示，这时 token 表单折叠在「使用 token」后面；只有 token 时直接显示 token 表单。[ADR-37](../decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）：输入邮箱 → `POST /auth/email/send` → 输入 6 位码（`inputmode=numeric`、`autocomplete="one-time-code"`，输满自动提交）→ `POST /auth/email/verify`。发码后显示「如果这个邮箱绑定了账号，验证码已经发出」（hub 不告诉你邮箱有没有绑定），按 hub 回的 `resend_after_secs`（缺省 60 秒）倒计时后才能重发；码不对显示「验证码不对或已过期」。一句提示：「邮箱要先在账号设置里绑定才能用来登录」
-- 邀请：从 sessionStorage 读 `invite`，用 `/auth/invite` 兑换（邮箱不能注册账号）
-- passkey 使用 conditional UI：页面加载即发起 `navigator.credentials.get({ mediation: 'conditional' })`，有 passkey 的用户点一下自动填充就进去
+- 从 `GET /api/config` 拿 `mode` 和启用的登录方式（`login_methods`），没启用的不显示
+- 布局顺序：GitHub / Google 按钮 → 邮箱 → token（折叠在「使用 token」链接后，只在 `single`；只开了 token 时直接显示表单）。passkey 登录还没实现（[roadmap](../roadmap.md)），实现后排在最前面
+- **GitHub / Google**（`login_methods` 里有 `github` / `google` 才显示）：按钮是整页导航（`<a href>`）到 hub 的 `/auth/oauth/<p>/start?next=<登录后回到的路径>`，不是 fetch，授权码流程在 hub 里走完（[hub.md § 2.2.1](hub.md#221-oauth-登录)）。回调只回得到 `public_url`：当前页面的 origin 不是 `config.public_url` 的 origin（局域网 http、IP 直连）时按钮显示但禁用，悬停和按钮下面一行字说明「只能在 `<public_url>` 上使用」
+- **OAuth 失败**：hub 重定向回来带 `?oauth_error=<code>&provider=<p>`，在表单上方显示一条错误（每个码一句话，认不出的码给一句通用的）：`cancelled`、`provider_error`、`server_error`、`invalid_state`、`registration_closed`（「这个 hub 仅限受邀注册，而且没有账号对应这个 GitHub 账号。请向管理员要一个邀请链接」）、`invite_invalid` / `invite_expired` / `invite_used`、`identity_taken`、`already_linked`、`not_signed_in`
+- 邮箱两步（`/api/config.login_methods` 里有 `email` 才显示。[ADR-37](../decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）：输入邮箱 → `POST /auth/email/send` → 输入 6 位码（`inputmode=numeric`、`autocomplete="one-time-code"`，输满自动提交）→ `POST /auth/email/verify`。按 hub 回的 `resend_after_secs`（缺省 60 秒）倒计时后才能重发；码不对显示「验证码不对或已过期」。文案按模式不同：
+  - `single`：发码后显示「如果这个邮箱绑定了账号，验证码已经发出」（hub 不告诉你邮箱有没有绑定）；一句提示「邮箱要先在账号设置里绑定才能用来登录」
+  - `multi`：页面副标题是「登录；还没有账号的话，登录时会自动为你创建一个」；提示「我们会给这个邮箱发一个 6 位验证码。如果这个邮箱还没有账号，输入验证码后会自动创建」；发码后显示「如果邮箱地址没错，6 位验证码已经发出……输入后即可登录；如果你是新用户，会同时创建账号」，按钮是「继续」（`multi` 里没有「先绑定」的说法，任何邮箱都能收到码）
+- 邀请（仅 `single`；`multi` 忽略暂存的码）：`/invite/:code` 把 code 暂存在 sessionStorage，登录页读到就显示「接受邀请」卡片，点了用 `/auth/invite` 兑换；有 OAuth 时卡片下提示「也可以用下面的第三方账号来创建账号」，GitHub / Google 按钮的 URL 带上 `invite=<code>`，由 hub 在 OAuth 登录时兑换。没有邀请的 `single` hub 上，邮箱码只给已绑定邮箱的账号用，OAuth 新用户会得到 `registration_closed`
+- 删账号之后整页跳到 `/login` 时，显示一次「账号已删除」的提示（§ 4.9）
+- passkey 使用 conditional UI（实现后）：页面加载即发起 `navigator.credentials.get({ mediation: 'conditional' })`，有 passkey 的用户点一下自动填充就进去
 
 ### 4.2 首次向导 `/setup`
 
@@ -312,14 +316,14 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 | 子路由 | 内容 |
 |---|---|
-| `/settings` | 显示名；**邮箱**（配了 SMTP 才显示这一块）：没绑定时「绑定邮箱」→ 输入邮箱 → 发码 → 输入 6 位码 → 生效；已绑定时显示地址，可「更换」（同一流程）和「解绑」（确认；是最后一种登录方式时按钮禁用并说明）。`409 email_taken` 显示「这个邮箱已经被别的账号绑定了」。绑定成功后提示「以后可以在任何设备上用这个邮箱登录」 |
-| `/settings/login` | 登录方式：token 列表（新建只显示一次）、passkey 列表（添加 / 改名 / 删除）、已关联的 GitHub / Google（关联 / 解除）。最后一种不能删，按钮禁用并说明 |
+| `/settings` | 显示名；**邮箱**（配了 SMTP 才显示这一块）：没绑定时「绑定邮箱」→ 输入邮箱 → 发码 → 输入 6 位码 → 生效；已绑定时显示地址，可「更换」（同一流程）和「解绑」（确认；是最后一种登录方式时按钮禁用并说明）。`409 email_taken` 显示「这个邮箱已经被别的账号绑定了」。绑定成功后提示「以后可以在任何设备上用这个邮箱登录」。最下面是「危险操作」：**删除账号**（两种模式都有；`single` 的 bootstrap 管理员也显示按钮，点了会得到 `bootstrap_admin` 的说明）。确认框列出后果：账号、设备、配对、登录方式和通知设置从 hub 删除，已连接的设备被断开；会话历史在你的节点上，不会被删除；要在别的账号或 hub 上用节点得重新配对；这个浏览器保存的设备密钥和缓存会被清掉。`DELETE /api/me` 回 `403 reauth_required`（当前会话是 10 分钟之前登录的）时，框里解释原因并给「重新登录」：普通退出（保留本浏览器的设备密钥），去 `/login?redirect=/settings`，登录后回到本页再点一次；`409 bootstrap_admin` 只说明「这是 hub 初始化时建的管理员账号，不能在这里删」。成功：不再走「退出并移除本设备」里撤销节点 / 设备的那几步（账号已经没了），只清本地数据（停传输，删整个 IndexedDB，清 localStorage / sessionStorage），整页跳到 `/login` 并提示「账号已删除」 |
+| `/settings/login` | 登录方式。**已关联的账号**（hub 配了 GitHub / Google 才有这一节）：每个配了的提供方一行，已关联的显示关联时间和「解除关联」（`DELETE /api/me/identities/<p>`），没关联的显示「关联」，它是整页导航到 `/auth/oauth/<p>/start?link=1`（和登录页一样，不在 `public_url` 上时禁用并说明）；hub 重定向回来时 `?linked=<p>` 弹一个成功提示、`?oauth_error=<code>&provider=<p>` 显示一条错误，处理完把查询串去掉。**token 列表**（仅 `single`；新建只显示一次）。passkey 列表（添加 / 改名 / 删除）随 passkey 一起做。账号的登录方式（`GET /api/me` 的 `login_methods`）只剩这一项时，它的「解除关联」/ 删除按钮禁用并说明，hub 对应地回 `409 last_login_method`；`multi` 且没配 OAuth 时这一页只有一句指向个人资料（邮箱）的说明 |
 | `/settings/sessions` | 浏览器登录会话，可踢出 |
 | `/settings/devices` | 本账号全部设备（含当前浏览器，标「这台」），按节点分组显示配对关系，吊销。吊销节点（daemon）和节点设置里的「移除这台节点」一样：只有 hub 那一步，成功后这个浏览器也忘记它，确认框用同样的说明 |
 | `/settings/notifications` | **本浏览器的推送**：状态（未开启 / 已开启 / 被浏览器拒绝 / 不支持——不是安全上下文、没有 `PushManager`、iOS 没加到主屏）；「开启推送」→ `Notification.requestPermission()` → `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })` → `POST /api/push/subscriptions`（带本浏览器的 web 设备 id；还没配对过任何节点的浏览器没有设备 id，提示先配对或解锁一台节点）；「关闭」退订并 `DELETE`；「发送测试推送」→ `POST /api/push/test`。订阅过期 / 被换掉（`pushsubscriptionchange`）时 service worker 重新订阅并上报。**每个类别**一行 push / email 两个开关（`GET` / `PUT /api/me/notifications`；`email_available = false` 时邮件那一列禁用并说明原因：hub 没配 SMTP，或账号没绑定邮箱）。**本账号的其他推送订阅**列表（hub 给的 `device_name`、推送服务主机名），可删除。测试推送的结果按 `{ result, status? }` 显示（`error` 时带上推送服务回的状态码） |
 | `/settings/appearance` | 主题（跟随系统 / 浅 / 深）、语言、字号、紧凑模式、禁止页面缩放（只在 iOS / Android 上显示）、思考过程显示（折叠 / 展开 / 隐藏）、Enter 行为 |
 | `/settings/data` | 本地缓存大小、清空缓存、导出本浏览器的设备密钥（否——不提供，见 ADR-23）|
-| `/settings/quota` | 仅 `multi`：配额用量 |
+| `/settings/quota` | 仅 `multi`（导航里也只在 `multi` 出现）：`GET /api/quota` 的四项——设备、节点（daemon）、同时在线的连接、滚动 24 小时内的配对与接入次数。每行「已用 / 上限」和进度条，上限为 `null` 显示「不限」；用到 80% 标「快满了」，满了标「已满」。hub 通过 `quota_update` 推来的用量（存在 `hub` store 的 `quota`）一变，页面就重新拉一次 `/api/quota`（推送里没有每日配对次数）。页面上有去「设备」页的链接，移除不用的设备释放名额。配额类失败都指到这里：全局横幅（`auth_fail { quota }`，§ 3.4）、配对 / 接入 / 解锁出错时（`pair_failed` / `enroll_failed` 的 `quota`）错误文字后面的「查看用量」链接 |
 | `/settings/security` | 安全活动（hub 审计里本账号的部分） |
 
 **退出**有两种，账号菜单里分开放：
@@ -329,7 +333,11 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 ### 4.10 管理 `/admin`
 
-`single` 模式管理员：邀请链接（生成、复制、撤销）、账号列表、hub 状态（§ hub.md 2.4）。`multi` 模式管理员多一个账号搜索和删除。
+有效管理员（`GET /api/me` 的 `is_admin`，[hub.md § 2.4](hub.md#24-管理-apiadmin)）才看得到，别人看到「只有管理员能看」。两种模式下内容大体一样：
+
+- **账号**：列表（按创建时间，显示名、邮箱或「没有邮箱」、加入时间）；搜索框（显示名 / 邮箱的子串，或精确的账号 id；停止输入 300 ms 后才发请求，对应 `?q=`）；列表底部「加载更多」（游标在 `X-Next-Cursor`）。每行的标记：「你」、「管理员」，以及靠 `ANYCON_ADMIN_EMAILS` 当上的管理员的「管理员 · 由 ANYCON_ADMIN_EMAILS 指定」（`admin_by_config`，悬停说明要改 hub 配置才能取消）。每行的操作：授予 / 取消管理员、删除（确认框写明：账号连同它的设备、配对和登录方式从 hub 删除并立刻断开；会话历史在那个人的节点上，不会被删除；不可恢复）。自己那一行的授予 / 取消管理员和删除都禁用（`cannot_modify_self`）；靠配置当上的管理员的「取消」禁用（`admin_by_config`）。错误码 `cannot_modify_self`、`bootstrap_admin`、`admin_by_config`、`not_found` 各有一句文案
+- **邀请**：仅 `single`（生成、复制、撤销）。`multi` 里不显示这一节，也不请求 `/api/invites`（那里是 404）
+- **hub 状态**（`GET /api/admin/status`）
 
 ## 5. 模型、思考、权限模式
 
@@ -513,7 +521,7 @@ v0.2 含 [ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端�
 
 v0.1 另含 [ADR-36](../decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)：`/unlock`（三种解锁方式）、批准对话框、应用内扫码、「添加设备」的接入码、节点设置的「接入」标签、`/setup` 里的口令提示、接入相关的推送。
 
-**v0.2**：`multi` 模式的邮箱注册和 OAuth 登录、非图片附件、文件浏览、搜索、节点设置远程修改、`/admin` 完整版、配额页。（导出会话为 Markdown 在 v0.1 已经有，客户端本地生成。）
+**v0.2** 已有：`multi` 模式的邮箱注册、GitHub / Google 登录和关联（登录页、邀请页、设置里的「登录方式」）、配额页、账号删除、`/admin` 的账号管理（搜索、授予 / 取消管理员、删除）。**v0.2** 还没有：非图片附件、文件浏览、搜索、节点设置远程修改。（导出会话为 Markdown 在 v0.1 已经有，客户端本地生成。）
 
 **v0.3**：语音输入、命令面板的更多动作、模板创建项目、多客户端同时在线的光标 / 正在输入提示。
 

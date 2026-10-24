@@ -7,8 +7,12 @@ use anycon_protocol::{DeviceKind, NotifyCategory};
 use async_trait::async_trait;
 use serde::Serialize;
 
+mod oauth;
 mod sqlite;
 
+pub use oauth::{
+    Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthPurpose, OAuthState,
+};
 pub use sqlite::SqliteStore;
 
 #[derive(Debug, thiserror::Error)]
@@ -448,6 +452,36 @@ pub trait Store: Send + Sync + 'static {
     async fn delete_web_session_by_hash(&self, token_hash: &str) -> StoreResult<bool>;
     async fn delete_web_sessions_of_account(&self, account_id: &str) -> StoreResult<u64>;
     async fn purge_expired_web_sessions(&self, now_ms: u64) -> StoreResult<u64>;
+
+    // ---- OAuth 身份与授权 state（GitHub、Google） ----
+    /// 按（提供方，提供方的用户 id）找身份。
+    async fn find_identity(&self, provider: &str, subject: &str) -> StoreResult<Option<Identity>>;
+    /// 账号的全部身份，先绑定的在前。
+    async fn list_identities(&self, account_id: &str) -> StoreResult<Vec<Identity>>;
+    /// 把身份绑到账号上。一个账号在一个提供方最多一个身份、一个外部身份只属于一个账号，由库里的唯一约束保证，
+    /// 判断和写入是一个原子操作（见 [`LinkIdentityOutcome`]）。
+    async fn link_identity(
+        &self,
+        account_id: &str,
+        provider: &str,
+        subject: &str,
+        now_ms: u64,
+    ) -> StoreResult<LinkIdentityOutcome>;
+    /// 解绑账号在这个提供方的身份，返回原来有没有。
+    async fn unlink_identity(&self, account_id: &str, provider: &str) -> StoreResult<bool>;
+    /// 原子地「建账号 + 绑身份（+ 带邀请码时兑换邀请）」：任何一步失败都什么都不留（不会有绑不上身份的空账号，
+    /// 也不会白白用掉一个邀请）。
+    async fn create_account_with_identity(
+        &self,
+        new: NewIdentityAccount<'_>,
+        now_ms: u64,
+    ) -> StoreResult<IdentityAccountOutcome>;
+    /// 登记一次授权流程（state 的哈希、用途、PKCE verifier……）。
+    async fn put_oauth_state(&self, state: NewOAuthState, now_ms: u64) -> StoreResult<()>;
+    /// 原子地取走一次授权流程（单次使用）：行被删掉，已过期的也一样，但过期的返回 `None`。
+    async fn take_oauth_state(&self, state_hash: &str, now_ms: u64) -> StoreResult<Option<OAuthState>>;
+    /// 删掉所有过期的授权 state。
+    async fn purge_expired_oauth_states(&self, now_ms: u64) -> StoreResult<u64>;
 
     // ---- 邀请 ----
     async fn create_invite(

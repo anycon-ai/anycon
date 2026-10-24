@@ -286,6 +286,8 @@ pub struct Timing {
     pub notify_email_dedupe: Duration,
     /// 单个 Web Push 请求的超时（docs/spec/hub.md § 6.1：10 秒）。
     pub push_timeout: Duration,
+    /// OAuth 登录时每次出站调用（换 token、取用户信息、取 GitHub 邮箱）的超时（10 秒）。
+    pub oauth_timeout: Duration,
     /// 预览令牌的有效期（docs/spec/hub.md § 13.3：24 小时）。
     pub preview_token_ttl: Duration,
 }
@@ -308,6 +310,7 @@ impl Default for Timing {
             email_verify_failure_delay: Duration::from_millis(250),
             notify_email_dedupe: Duration::from_secs(10 * 60),
             push_timeout: Duration::from_secs(10),
+            oauth_timeout: Duration::from_secs(10),
             preview_token_ttl: Duration::from_secs(24 * 3600),
         }
     }

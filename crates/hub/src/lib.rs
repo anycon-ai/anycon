@@ -18,6 +18,7 @@ pub mod error;
 pub mod http;
 pub mod mail;
 pub mod notify;
+pub mod oauth;
 pub mod pairing;
 pub mod push;
 pub mod ratelimit;
@@ -246,7 +247,7 @@ fn build_mailer(config: &Config) -> Result<Option<Arc<dyn mail::Mailer>>, mail::
     Ok(Some(Arc::new(mail::SmtpMailer::new(smtp, from.mailbox.clone())?)))
 }
 
-/// 定时清理：过期的配对登记 / 撮合和接入会话（每秒）、限速桶、过期会话和过期的预览令牌（每分钟）、90 天前的审计（每小时）。
+/// 定时清理：过期的配对登记 / 撮合和接入会话（每秒）、限速桶、过期会话、过期的邮箱验证码 / 预览令牌 / OAuth state（每分钟）、90 天前的审计（每小时）。
 async fn background_tasks(state: Arc<AppState>) {
     const AUDIT_RETENTION_MS: u64 = 90 * 24 * 3600 * 1000;
     let skip = tokio::time::MissedTickBehavior::Skip;
@@ -282,6 +283,7 @@ async fn background_tasks(state: Arc<AppState>) {
                 state.account_limits.notify_email.sweep();
                 state.account_limits.preview_tokens.sweep();
                 state.preview_budget.sweep();
+                state.oauth.sweep();
                 if let Some(q) = &state.account_limits.daily_pairings {
                     q.sweep();
                 }
@@ -293,6 +295,9 @@ async fn background_tasks(state: Arc<AppState>) {
                 }
                 if let Err(e) = state.store.purge_expired_preview_tokens(now_ms()).await {
                     tracing::warn!(error = %e, "failed to purge expired preview tokens");
+                }
+                if let Err(e) = state.store.purge_expired_oauth_states(now_ms()).await {
+                    tracing::warn!(error = %e, "failed to purge expired OAuth states");
                 }
             }
             _ = every_hour.tick() => {

@@ -11,12 +11,15 @@ use sqlx::{Row, SqlitePool};
 
 use crate::util::{new_id, ordered};
 
+mod oauth;
+
 use super::{
     category_from_str, category_to_str, kind_from_str, kind_to_str, Account, AccountToken, AuditEntry, CodeCandidate,
     CreateAccountOutcome, Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken,
     NotificationPref, PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome,
     SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
 };
+use super::{Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthState};
 
 fn be(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
@@ -774,6 +777,50 @@ impl Store for SqliteStore {
             .await
             .map_err(be)?;
         Ok(r.rows_affected())
+    }
+
+    // ---- OAuth 身份与授权 state（实现在 oauth.rs） ----
+
+    async fn find_identity(&self, provider: &str, subject: &str) -> StoreResult<Option<Identity>> {
+        self.oauth_find_identity(provider, subject).await
+    }
+
+    async fn list_identities(&self, account_id: &str) -> StoreResult<Vec<Identity>> {
+        self.oauth_list_identities(account_id).await
+    }
+
+    async fn link_identity(
+        &self,
+        account_id: &str,
+        provider: &str,
+        subject: &str,
+        now_ms: u64,
+    ) -> StoreResult<LinkIdentityOutcome> {
+        self.oauth_link_identity(account_id, provider, subject, now_ms).await
+    }
+
+    async fn unlink_identity(&self, account_id: &str, provider: &str) -> StoreResult<bool> {
+        self.oauth_unlink_identity(account_id, provider).await
+    }
+
+    async fn create_account_with_identity(
+        &self,
+        new: NewIdentityAccount<'_>,
+        now_ms: u64,
+    ) -> StoreResult<IdentityAccountOutcome> {
+        self.oauth_create_account_with_identity(new, now_ms).await
+    }
+
+    async fn put_oauth_state(&self, state: NewOAuthState, now_ms: u64) -> StoreResult<()> {
+        self.oauth_put_state(state, now_ms).await
+    }
+
+    async fn take_oauth_state(&self, state_hash: &str, now_ms: u64) -> StoreResult<Option<OAuthState>> {
+        self.oauth_take_state(state_hash, now_ms).await
+    }
+
+    async fn purge_expired_oauth_states(&self, now_ms: u64) -> StoreResult<u64> {
+        self.oauth_purge_expired_states(now_ms).await
     }
 
     // ---- 邀请 ----

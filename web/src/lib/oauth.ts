@@ -53,8 +53,24 @@ export function oauthStartUrl(provider: OAuthProvider, opts: OAuthStartOptions =
 }
 
 /** hub 在 OAuth 失败的重定向里放的 `oauth_error` 码（稳定，用来做 i18n）。 */
-export const OAUTH_ERROR_CODES = ['cancelled', 'provider_error', 'invalid_state', 'registration_closed', 'invite_invalid', 'invite_expired', 'invite_used', 'identity_taken', 'already_linked', 'not_signed_in'] as const
+export const OAUTH_ERROR_CODES = ['cancelled', 'provider_error', 'invalid_state', 'registration_closed', 'invite_invalid', 'invite_expired', 'invite_used', 'identity_taken', 'already_linked', 'not_signed_in', 'server_error'] as const
 export type OAuthErrorCode = (typeof OAUTH_ERROR_CODES)[number]
+
+/** 路由 search 参数里的字符串：非空字符串原样给，别的类型、空串当没有。 */
+export function searchString(v: unknown): string | undefined {
+  return typeof v === 'string' && v !== '' ? v : undefined
+}
+
+/** hub 的 OAuth 回调失败后重定向回来的 `?oauth_error=<code>&provider=<p>`（`/login` 和 `/settings/login` 共用）。 */
+export interface OAuthErrorSearch {
+  oauth_error?: string
+  provider?: string
+}
+
+/** 路由 `validateSearch` 里取 OAuth 失败的两个参数；其余参数各路由自己取。 */
+export function oauthErrorSearch(s: Record<string, unknown>): OAuthErrorSearch {
+  return { oauth_error: searchString(s.oauth_error), provider: searchString(s.provider) }
+}
 
 export function providerLabel(t: TFunction, provider: string | undefined): string {
   return isOAuthProvider(provider) ? t(`oauth.provider.${provider}`) : t('oauth.provider.unknown')

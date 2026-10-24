@@ -43,7 +43,7 @@ export interface ApiIdentity {
 }
 /**
  * `GET /api/quota`：当前用量和上限。`*_max` 为 `null` 表示不限（`single` 恒为 `null`）。
- * `daily_pairings` 是滚动 24 小时内的 `pair_begin` / `pair_join` / `enroll_begin` 次数。
+ * `daily_pairings` 是滚动 24 小时内发起的配对与接入次数（`pair_begin` / `enroll_begin`；加入配对 `pair_join` 不计）。
  */
 export interface ApiQuota {
   devices: number

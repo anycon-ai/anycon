@@ -84,7 +84,8 @@
       "invite_used": "这个邀请已经被使用。",
       "identity_taken": "这个 {{provider}} 账号已经关联到本 hub 上的另一个账号了。",
       "already_linked": "你的账号已经关联了另一个 {{provider}} 账号。请先解除那一个。",
-      "not_signed_in": "关联 {{provider}} 账号需要先登录。请登录后再试。"
+      "not_signed_in": "关联 {{provider}} 账号需要先登录。请登录后再试。",
+      "server_error": "hub 在完成 {{provider}} 登录时出错了。请稍后重试；如果一直这样，请告诉 hub 管理员。"
     }
   },
   "invite": {

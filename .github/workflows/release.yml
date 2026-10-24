@@ -374,7 +374,7 @@ jobs:
           (cd dist && sha256sum ./*.tar.gz install.sh | sed 's| \./| |' > SHA256SUMS)
           cat dist/SHA256SUMS
       - name: 构建来源证明（gh attestation verify）
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.tar.gz

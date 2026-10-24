@@ -26,6 +26,7 @@ import { Route as AppShellSettingsAppearanceRouteImport } from './routes/_app/_s
 import { Route as AppShellSettingsDevicesRouteImport } from './routes/_app/_shell/settings.devices'
 import { Route as AppShellSettingsLoginRouteImport } from './routes/_app/_shell/settings.login'
 import { Route as AppShellSettingsNotificationsRouteImport } from './routes/_app/_shell/settings.notifications'
+import { Route as AppShellSettingsQuotaRouteImport } from './routes/_app/_shell/settings.quota'
 import { Route as AppShellSettingsSessionsRouteImport } from './routes/_app/_shell/settings.sessions'
 import { Route as AppShellNNodeIndexRouteImport } from './routes/_app/_shell/n.$node.index'
 import { Route as AppShellNNodeNewRouteImport } from './routes/_app/_shell/n.$node.new'
@@ -118,6 +119,11 @@ const AppShellSettingsNotificationsRoute =
     path: '/notifications',
     getParentRoute: () => AppShellSettingsRoute,
   } as any)
+const AppShellSettingsQuotaRoute = AppShellSettingsQuotaRouteImport.update({
+  id: '/quota',
+  path: '/quota',
+  getParentRoute: () => AppShellSettingsRoute,
+} as any)
 const AppShellSettingsSessionsRoute =
   AppShellSettingsSessionsRouteImport.update({
     id: '/sessions',
@@ -165,6 +171,7 @@ export interface FileRoutesByFullPath {
   '/settings/devices': typeof AppShellSettingsDevicesRoute
   '/settings/login': typeof AppShellSettingsLoginRoute
   '/settings/notifications': typeof AppShellSettingsNotificationsRoute
+  '/settings/quota': typeof AppShellSettingsQuotaRoute
   '/settings/sessions': typeof AppShellSettingsSessionsRoute
   '/settings/': typeof AppShellSettingsIndexRoute
   '/n/$node/new': typeof AppShellNNodeNewRoute
@@ -186,6 +193,7 @@ export interface FileRoutesByTo {
   '/settings/devices': typeof AppShellSettingsDevicesRoute
   '/settings/login': typeof AppShellSettingsLoginRoute
   '/settings/notifications': typeof AppShellSettingsNotificationsRoute
+  '/settings/quota': typeof AppShellSettingsQuotaRoute
   '/settings/sessions': typeof AppShellSettingsSessionsRoute
   '/settings': typeof AppShellSettingsIndexRoute
   '/n/$node/new': typeof AppShellNNodeNewRoute
@@ -212,6 +220,7 @@ export interface FileRoutesById {
   '/_app/_shell/settings/devices': typeof AppShellSettingsDevicesRoute
   '/_app/_shell/settings/login': typeof AppShellSettingsLoginRoute
   '/_app/_shell/settings/notifications': typeof AppShellSettingsNotificationsRoute
+  '/_app/_shell/settings/quota': typeof AppShellSettingsQuotaRoute
   '/_app/_shell/settings/sessions': typeof AppShellSettingsSessionsRoute
   '/_app/_shell/settings/': typeof AppShellSettingsIndexRoute
   '/_app/_shell/n/$node/new': typeof AppShellNNodeNewRoute
@@ -237,6 +246,7 @@ export interface FileRouteTypes {
     | '/settings/devices'
     | '/settings/login'
     | '/settings/notifications'
+    | '/settings/quota'
     | '/settings/sessions'
     | '/settings/'
     | '/n/$node/new'
@@ -258,6 +268,7 @@ export interface FileRouteTypes {
     | '/settings/devices'
     | '/settings/login'
     | '/settings/notifications'
+    | '/settings/quota'
     | '/settings/sessions'
     | '/settings'
     | '/n/$node/new'
@@ -283,6 +294,7 @@ export interface FileRouteTypes {
     | '/_app/_shell/settings/devices'
     | '/_app/_shell/settings/login'
     | '/_app/_shell/settings/notifications'
+    | '/_app/_shell/settings/quota'
     | '/_app/_shell/settings/sessions'
     | '/_app/_shell/settings/'
     | '/_app/_shell/n/$node/new'
@@ -419,6 +431,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppShellSettingsNotificationsRouteImport
       parentRoute: typeof AppShellSettingsRoute
     }
+    '/_app/_shell/settings/quota': {
+      id: '/_app/_shell/settings/quota'
+      path: '/quota'
+      fullPath: '/settings/quota'
+      preLoaderRoute: typeof AppShellSettingsQuotaRouteImport
+      parentRoute: typeof AppShellSettingsRoute
+    }
     '/_app/_shell/settings/sessions': {
       id: '/_app/_shell/settings/sessions'
       path: '/sessions'
@@ -469,6 +488,7 @@ interface AppShellSettingsRouteChildren {
   AppShellSettingsDevicesRoute: typeof AppShellSettingsDevicesRoute
   AppShellSettingsLoginRoute: typeof AppShellSettingsLoginRoute
   AppShellSettingsNotificationsRoute: typeof AppShellSettingsNotificationsRoute
+  AppShellSettingsQuotaRoute: typeof AppShellSettingsQuotaRoute
   AppShellSettingsSessionsRoute: typeof AppShellSettingsSessionsRoute
   AppShellSettingsIndexRoute: typeof AppShellSettingsIndexRoute
 }
@@ -478,6 +498,7 @@ const AppShellSettingsRouteChildren: AppShellSettingsRouteChildren = {
   AppShellSettingsDevicesRoute: AppShellSettingsDevicesRoute,
   AppShellSettingsLoginRoute: AppShellSettingsLoginRoute,
   AppShellSettingsNotificationsRoute: AppShellSettingsNotificationsRoute,
+  AppShellSettingsQuotaRoute: AppShellSettingsQuotaRoute,
   AppShellSettingsSessionsRoute: AppShellSettingsSessionsRoute,
   AppShellSettingsIndexRoute: AppShellSettingsIndexRoute,
 }

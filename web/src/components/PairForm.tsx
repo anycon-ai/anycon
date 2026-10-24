@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Check, Circle, Link2, Pencil, ShieldAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { QuotaLink } from '@/components/QuotaLink'
 import { usePairing, type PairPhase } from '@/features/pairing/usePairing'
 import { extractPairCode, formatPairCodeInput, isCompletePairCode } from '@/lib/code'
 import { useHub } from '@/stores/hub'
@@ -89,7 +90,7 @@ export function PairForm({ initialCode, fromLink, onPaired }: { initialCode?: st
 
   return (
     <form onSubmit={submit} className="space-y-4" aria-busy={busy}>
-      <Field label={t('pair.codeLabel')} htmlFor="pair-code" hint={t('pair.codeHint')} error={errKey ? t(errKey, { defaultValue: t('pair.errors.generic') }) : undefined}>
+      <Field label={t('pair.codeLabel')} htmlFor="pair-code" hint={t('pair.codeHint')} error={errKey ? <PairErrorText errKey={errKey} quota={state.error === 'quota'} /> : undefined}>
         <Input
           id="pair-code"
           data-testid="pair-code-input"
@@ -162,4 +163,20 @@ function StepIcon({ status }: { status: 'done' | 'active' | 'todo' }) {
   if (status === 'done') return <Check className="size-4 text-success" aria-hidden />
   if (status === 'active') return <Spinner className="text-accent-text" />
   return <Circle className="size-4 text-fg-subtle" aria-hidden />
+}
+
+/** 配对失败的说明；配额用完（`pair_failed { quota }`）时带一个去「配额」页的链接。 */
+function PairErrorText({ errKey, quota }: { errKey: string; quota: boolean }) {
+  const { t } = useTranslation()
+  return (
+    <>
+      {t(errKey, { defaultValue: t('pair.errors.generic') })}
+      {quota ? (
+        <>
+          {' '}
+          <QuotaLink />
+        </>
+      ) : null}
+    </>
+  )
 }

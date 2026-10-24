@@ -70,8 +70,9 @@ export function useUnbindEmail() {
   })
 }
 
-export function useTokens() {
-  return useQuery({ queryKey: keys.tokens, queryFn: () => apiFetch<ApiToken[]>('/api/me/tokens') })
+/** 登录 token 只有 `single` 模式有；`multi` 下这些接口是 404，所以调用方要在 `multi` 里传 `enabled = false`。 */
+export function useTokens(enabled = true) {
+  return useQuery({ queryKey: keys.tokens, queryFn: () => apiFetch<ApiToken[]>('/api/me/tokens'), enabled })
 }
 export function useCreateToken() {
   const qc = useQueryClient()

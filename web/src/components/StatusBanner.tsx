@@ -97,6 +97,11 @@ export function StatusBanner({ nodeId, nodeConn }: { nodeId: string | null; node
       break
     case 'hub_quota':
       text = t('banner.quota')
+      action = (
+        <Button size="sm" variant="outline" onClick={() => void navigate({ to: '/settings/quota' })} data-testid="banner-quota-view">
+          {t('banner.quotaView')}
+        </Button>
+      )
       break
     case 'node_offline':
       text = t('banner.nodeOffline')

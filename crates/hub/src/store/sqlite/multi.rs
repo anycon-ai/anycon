@@ -1,14 +1,31 @@
-//! SQLite 实现里 `multi` 模式用到的那几个操作：设备配额下的原子建设备、账号删除、管理员标记。
+//! SQLite 实现里 `multi` 模式用到的那几个操作：设备配额下的原子建设备、账号删除、管理员标记、管理页账号搜索。
 //!
 //! `Store` 里对应的方法（`// ---- multi：…` 那一节）只是转到这里；SQL 放在子模块里，是为了不和 `sqlite.rs`
 //! 里按表分节的主体交错。
 
 use sqlx::Row;
 
-use super::{be, SqliteStore};
+use super::{account_from, be, SqliteStore};
 use crate::store::{
-    kind_to_str, CreateDevicesOutcome, Device, DeviceLimit, DeviceLimits, NewAudit, NewDevice, StoreResult,
+    kind_to_str, Account, CreateDevicesOutcome, Device, DeviceLimit, DeviceLimits, NewAudit, NewDevice, StoreResult,
 };
+
+/// `LIKE` 的转义字符（SQL 里是 `ESCAPE '\'`）。
+const LIKE_ESCAPE: char = '\\';
+
+/// 把用户输入包成「包含」模式 `%…%`：`%`、`_` 和转义字符本身都转义，当字面字符匹配。
+fn like_contains(needle: &str) -> String {
+    let mut pattern = String::with_capacity(needle.len() + 2);
+    pattern.push('%');
+    for c in needle.chars() {
+        if matches!(c, '%' | '_' | LIKE_ESCAPE) {
+            pattern.push(LIKE_ESCAPE);
+        }
+        pattern.push(c);
+    }
+    pattern.push('%');
+    pattern
+}
 
 impl SqliteStore {
     pub(super) async fn count_devices_impl(&self, account_id: &str) -> StoreResult<(u32, u32)> {
@@ -94,6 +111,40 @@ impl SqliteStore {
             .await
             .map_err(be)?;
         Ok(r.rows_affected() > 0)
+    }
+
+    /// 管理页搜索：账号 id 精确相等，或显示名 / 邮箱包含 `query`（`LIKE … ESCAPE`，通配符已转义），
+    /// 和 `list_accounts` 一样按 `(created_at_ms, id)` 的 keyset 分页。过滤和分页都在 SQL 里，不把账号表读进内存。
+    ///
+    /// 不区分大小写靠 `lower()`，查询串在这边用同样的规则转小写（`to_ascii_lowercase`）。SQLite 的 `lower()` 只折叠
+    /// ASCII：邮箱本来就存小写，不受影响；非 ASCII 的显示名（`É`、`Ü`）要大小写完全一致才命中，管理员搜索可以接受。
+    pub(super) async fn search_accounts_impl(
+        &self,
+        query: &str,
+        limit: u32,
+        after: Option<(u64, String)>,
+    ) -> StoreResult<Vec<Account>> {
+        let raw = query.trim();
+        let pattern = like_contains(&raw.to_ascii_lowercase());
+        let (after_ms, after_id) = match after {
+            Some((ms, id)) => (Some(ms as i64), Some(id)),
+            None => (None, None),
+        };
+        let rows = sqlx::query(
+            "SELECT id, display_name, email, is_admin, created_at_ms FROM accounts \
+             WHERE (?1 IS NULL OR (created_at_ms, id) > (?1, ?2)) \
+               AND (id = ?3 OR lower(display_name) LIKE ?4 ESCAPE '\\' OR lower(email) LIKE ?4 ESCAPE '\\') \
+             ORDER BY created_at_ms, id LIMIT ?5",
+        )
+        .bind(after_ms)
+        .bind(after_id)
+        .bind(raw)
+        .bind(pattern)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(be)?;
+        rows.iter().map(account_from).collect()
     }
 
     pub(super) async fn delete_account_impl(
@@ -477,15 +528,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn searching_accounts_matches_names_and_emails_in_any_case_and_exact_ids_across_chunks() {
+    async fn searching_accounts_matches_names_and_emails_in_any_ascii_case_and_exact_ids_with_keyset_pages() {
         let (s, _d) = store().await;
         let t0 = now_ms();
         let mut ids = Vec::new();
-        // 1100 个账号，跨过扫描的批大小（500）；两个要找的人分别在第一批和最后一批
-        for i in 0..1100u64 {
+        for i in 0..300u64 {
             let (name, email) = match i {
                 7 => ("Émile Zola".to_string(), Some("emile@example.com".to_string())),
-                1050 => ("Someone Else".to_string(), Some("Needle.Person@Example.com".to_lowercase())),
+                250 => ("Someone Else".to_string(), Some("needle.person@example.com".to_string())),
                 _ => (format!("user-{i}"), None),
             };
             let outcome = s.create_account_with_email(&name, email.as_deref(), t0 + i).await.unwrap();
@@ -493,24 +543,49 @@ mod tests {
         }
         let names = |rows: Vec<Account>| rows.into_iter().map(|a| a.display_name).collect::<Vec<_>>();
 
-        // 非 ASCII 的显示名也不区分大小写（SQLite 的 lower() 做不到）
-        assert_eq!(names(s.search_accounts("éMILE", 10, None).await.unwrap()), ["Émile Zola"]);
+        // 显示名：ASCII 部分不区分大小写；非 ASCII 的字符要大小写一致（SQLite 的 lower() 只折叠 ASCII，管理员搜索可以接受）
+        assert_eq!(names(s.search_accounts("ZOLA", 10, None).await.unwrap()), ["Émile Zola"]);
         assert_eq!(names(s.search_accounts("  zola ", 10, None).await.unwrap()), ["Émile Zola"], "trimmed");
-        // 邮箱子串，在最后一批里
+        assert_eq!(names(s.search_accounts("Émile", 10, None).await.unwrap()), ["Émile Zola"]);
+        assert_eq!(names(s.search_accounts("éMILE", 10, None).await.unwrap()), Vec::<String>::new());
+        // 邮箱子串，不区分大小写
         assert_eq!(names(s.search_accounts("NEEDLE.person", 10, None).await.unwrap()), ["Someone Else"]);
+        assert_eq!(names(s.search_accounts("@Example.COM", 10, None).await.unwrap()), ["Émile Zola", "Someone Else"]);
         // 精确 id（子串不算）
-        assert_eq!(s.search_accounts(&ids[500], 10, None).await.unwrap()[0].id, ids[500]);
-        assert!(s.search_accounts(&ids[500][..10], 10, None).await.unwrap().is_empty());
+        assert_eq!(s.search_accounts(&ids[200], 10, None).await.unwrap()[0].id, ids[200]);
+        assert!(s.search_accounts(&ids[200][..10], 10, None).await.unwrap().is_empty());
         // 多个命中：按创建顺序，limit 截断，游标接着往后
-        let all = s.search_accounts("user-100", 100, None).await.unwrap();
-        assert_eq!(all.len(), 11, "user-100 and user-1000..user-1009");
-        let first = s.search_accounts("user-100", 5, None).await.unwrap();
+        let all = s.search_accounts("user-10", 100, None).await.unwrap();
+        assert_eq!(all.len(), 11, "user-10 and user-100..user-109");
+        let first = s.search_accounts("user-10", 5, None).await.unwrap();
         let last = first.last().unwrap();
-        let rest = s.search_accounts("user-100", 100, Some((last.created_at_ms, last.id.clone()))).await.unwrap();
+        let rest = s.search_accounts("user-10", 100, Some((last.created_at_ms, last.id.clone()))).await.unwrap();
         assert_eq!(first.len() + rest.len(), all.len());
         assert_eq!(rest.first().map(|a| &a.id), all.get(5).map(|a| &a.id));
-        // LIKE 通配符不是通配符
-        assert!(s.search_accounts("%", 10, None).await.unwrap().is_empty());
+        assert!(all.windows(2).all(|w| (w[0].created_at_ms, &w[0].id) < (w[1].created_at_ms, &w[1].id)));
         assert!(s.search_accounts("zzz-nothing", 10, None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn like_wildcards_and_the_escape_character_in_a_search_are_literal() {
+        let (s, _d) = store().await;
+        let t0 = now_ms();
+        let names_in = ["a_b", "axb", "100% sure", "1000 sure", r"back\slash", r"back\\slash", "plain"];
+        for (i, name) in names_in.iter().enumerate() {
+            s.create_account_with_email(name, None, t0 + i as u64).await.unwrap();
+        }
+        let names = |rows: Vec<Account>| rows.into_iter().map(|a| a.display_name).collect::<Vec<_>>();
+        // `_` 只匹配下划线，不是「任意一个字符」
+        assert_eq!(names(s.search_accounts("a_b", 10, None).await.unwrap()), ["a_b"]);
+        assert_eq!(names(s.search_accounts("_", 10, None).await.unwrap()), ["a_b"]);
+        // `%` 只匹配百分号，不是「任意串」
+        assert_eq!(names(s.search_accounts("100%", 10, None).await.unwrap()), ["100% sure"]);
+        assert_eq!(names(s.search_accounts("%", 10, None).await.unwrap()), ["100% sure"]);
+        // 反斜杠本身（转义字符）也是字面字符：`k\s` 只命中一个反斜杠的，`k\\s` 只命中两个的，单独的 `\` 两个都命中
+        assert_eq!(names(s.search_accounts(r"k\s", 10, None).await.unwrap()), [r"back\slash"]);
+        assert_eq!(names(s.search_accounts(r"k\\s", 10, None).await.unwrap()), [r"back\\slash"]);
+        assert_eq!(names(s.search_accounts(r"\", 10, None).await.unwrap()), [r"back\slash", r"back\\slash"]);
+        // 空查询是「全部」（HTTP 层已经把空白的 q 当作没有 q）
+        assert_eq!(s.search_accounts("  ", 100, None).await.unwrap().len(), 7);
     }
 }

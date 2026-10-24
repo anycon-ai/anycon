@@ -4,9 +4,14 @@
 //! - `GET /auth/oauth/{provider}/start`：登记一次授权流程（state 存哈希、PKCE、用途、`next`），种 `anycon_oauth` cookie，
 //!   302 去提供方。请求的 `Host` 不是 `ANYCON_PUBLIC_URL` 的主机时先 302 到公网地址上的同一路径（回调只回得到公网域名；
 //!   这里的目标只用配置的公网地址，不用 `Host` 拼链接）。每个 IP 每分钟 20 次。
+//!
+//!   这个跳转**至多一次**：目标 URL 的 query 末尾带标记 `hop=1`（[`HOP_PARAM`]），带着它的请求不再跳转，直接按
+//!   公网地址上的请求处理。否则改写 `Host` 的反向代理（到了公网地址，hub 看到的 `Host` 仍不是公网主机）会让浏览器
+//!   在 start 和公网地址之间无限重定向。标记只管跳转，处理请求时先把它从参数里去掉，不会进 state，也不会带给提供方。
 //! - `GET /auth/callback/{provider}`：校验 state（cookie 必须一致、单次使用、未过期、属于这个提供方），用授权码换用户信息，
 //!   按 [`crate::oauth::login`] 的规则登录 / 关联 / 注册，然后 302 回 Web UI。失败也是 302
 //!   （`/login?oauth_error=<code>&provider=<p>`，关联用途回 `/settings/login?...`），码见 [`OAuthErrorCode`]。
+//!   库 / 内部出错也是同样的 302（码 `server_error`）：回调是浏览器的顶层导航，回 JSON 它只会显示一屏原始文本。
 //!   **不论成败都清掉 `anycon_oauth` cookie。**
 //! - `GET /api/me/identities` · `DELETE /api/me/identities/{provider}`：账号已绑定的身份；解绑最后一种登录方式 → `409 last_login_method`。
 //!
@@ -31,7 +36,7 @@ use crate::oauth::login::{self, SignIn};
 use crate::oauth::provider;
 use crate::oauth::state::{self, COOKIE_NAME, STATE_TTL};
 use crate::oauth::OAuthErrorCode;
-use crate::store::{NewOAuthState, OAuthPurpose};
+use crate::store::{NewOAuthState, OAuthPurpose, OAuthState};
 use crate::util::{ct_eq, hash_token, new_secret, now_ms};
 
 use super::session::{cookie_secure, cookie_value, lookup_session, start_session, Authed, Client};
@@ -40,6 +45,8 @@ use super::session::{cookie_secure, cookie_value, lookup_session, start_session,
 const CODE_MAX_LEN: usize = 2048;
 /// `state` 参数的长度上限（我们发的是 64 个 hex）。
 const STATE_MAX_LEN: usize = 256;
+/// start 跳到公网地址时加在 query 末尾的标记（`hop=1`）：带着它的请求已经跳过一次了，不再跳。
+const HOP_PARAM: &str = "hop";
 
 /// 提供方名字（路径参数）→ 已配置凭据的提供方；不认识 / 没配都是 `404 not_found`。
 fn configured_provider(state: &AppState, name: &str) -> ApiResult<OAuthProvider> {
@@ -56,6 +63,13 @@ impl Params {
 
     fn get(&self, key: &str) -> Option<&str> {
         self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    /// 去掉所有叫 `key` 的参数，返回其中有没有值为 `1` 的。
+    fn take_flag(&mut self, key: &str) -> bool {
+        let set = self.0.iter().any(|(k, v)| k == key && v == "1");
+        self.0.retain(|(k, _)| k != key);
+        set
     }
 }
 
@@ -118,12 +132,22 @@ pub async fn start(
     let provider = configured_provider(&app, &provider)?;
     let p = provider.as_str();
 
+    // 标记先取下来：它只管跳转，后面的处理看不到它。
+    let mut params = Params::parse(query.as_deref());
+    let hopped = params.take_flag(HOP_PARAM);
+
     // 回调只回得到公网地址：从别的地址（局域网 IP、旧域名）来的，先去公网地址上重走一遍。
-    // 目标由配置的公网地址 + 固定的路径 + 原样的 query 组成，没有用到请求的 `Host`。
-    if let Some(host) = request_host(&headers, &uri) {
-        if !host_is_public(&app.config.public_url, &host) {
-            let query = query.as_deref().filter(|q| !q.is_empty()).map(|q| format!("?{q}")).unwrap_or_default();
-            return redirect(&format!("{}/auth/oauth/{p}/start{query}", app.config.public_url_str()), []);
+    // 目标由配置的公网地址 + 固定的路径 + 原样的 query + 跳转标记组成，没有用到请求的 `Host`。
+    // 只跳一次：带着标记的请求不管 `Host` 是什么都往下走（改写 `Host` 的反向代理后面，否则会一直跳）。
+    if !hopped {
+        if let Some(host) = request_host(&headers, &uri) {
+            if !host_is_public(&app.config.public_url, &host) {
+                let query = query.as_deref().filter(|q| !q.is_empty()).map(|q| format!("{q}&")).unwrap_or_default();
+                return redirect(
+                    &format!("{}/auth/oauth/{p}/start?{query}{HOP_PARAM}=1", app.config.public_url_str()),
+                    [],
+                );
+            }
         }
     }
 
@@ -132,7 +156,6 @@ pub async fn start(
         return Err(ApiError::rate_limited(wait));
     }
 
-    let params = Params::parse(query.as_deref());
     let next_path = params.get("next").and_then(state::sanitize_next);
     let (purpose, account_id, invite_hash) = if params.get("link") == Some("1") {
         // 关联身份必须已经登录：把账号记在 state 里，回调时 cookie 还得是这个账号。
@@ -196,6 +219,8 @@ fn failed(purpose: OAuthPurpose, code: OAuthErrorCode) -> ApiResult<Outcome> {
 }
 
 /// `GET /auth/callback/{provider}?code=&state=`（或提供方带来的 `?error=`）。
+///
+/// 不返回 `ApiError`：这是浏览器的顶层导航，任何失败（含库 / 内部错误）都要 302 回 Web UI，让它显示一句话。
 pub async fn callback(
     State(app): State<Arc<AppState>>,
     Path(provider): Path<String>,
@@ -206,13 +231,13 @@ pub async fn callback(
     let provider = configured_provider(&app, &provider)?;
     let secure = cookie_secure(&app, &client);
     let params = Params::parse(query.as_deref());
-    let result = run_callback(&app, &client, &headers, provider, &params).await;
+    let outcome = run_callback(&app, &client, &headers, provider, &params).await;
 
     // 会话 cookie 在前、清 cookie 在后：只看第一个 `Set-Cookie` 的客户端（测试、简单的脚本）拿到的是会话。
-    let mut response = match result {
-        Ok(Outcome::SignedIn { session_cookie, next }) => redirect(&state::location_value(&next), [session_cookie])?,
-        Ok(Outcome::Linked) => redirect(&format!("/settings/login?linked={}", provider.as_str()), [])?,
-        Ok(Outcome::Failed { purpose, code }) => {
+    let mut response = match outcome {
+        Outcome::SignedIn { session_cookie, next } => redirect(&state::location_value(&next), [session_cookie])?,
+        Outcome::Linked => redirect(&format!("/settings/login?linked={}", provider.as_str()), [])?,
+        Outcome::Failed { purpose, code } => {
             tracing::info!(
                 provider = provider.as_str(),
                 purpose = purpose.map_or("unknown", OAuthPurpose::as_str),
@@ -225,10 +250,22 @@ pub async fn callback(
             }
             redirect(&error_location(purpose, code, provider), [])?
         }
-        Err(e) => e.into_response(),
     };
     response.headers_mut().append(header::SET_COOKIE, state::clear_cookie_header(secure));
     Ok(response)
+}
+
+/// 库 / 内部出错的失败：细节已经在 [`ApiError::internal`] 里记过日志，这里只补上下文（提供方、用途），
+/// 日志里没有 `code`、`state`、token、`subject`、邮箱。
+fn server_error(provider: OAuthProvider, purpose: Option<OAuthPurpose>, e: &ApiError) -> Outcome {
+    tracing::warn!(
+        provider = provider.as_str(),
+        purpose = purpose.map_or("unknown", OAuthPurpose::as_str),
+        status = e.status.as_u16(),
+        error_code = e.code,
+        "oauth callback hit an internal error"
+    );
+    Outcome::Failed { purpose, code: OAuthErrorCode::ServerError }
 }
 
 async fn run_callback(
@@ -237,27 +274,53 @@ async fn run_callback(
     headers: &HeaderMap,
     provider: OAuthProvider,
     params: &Params,
+) -> Outcome {
+    let saved = match claim_state(app, headers, provider, params).await {
+        Ok(Some(saved)) => saved,
+        Ok(None) => return Outcome::Failed { purpose: None, code: OAuthErrorCode::InvalidState },
+        Err(e) => return server_error(provider, None, &e),
+    };
+    let purpose = saved.purpose;
+    match complete(app, client, headers, provider, params, &saved).await {
+        Ok(outcome) => outcome,
+        Err(e) => server_error(provider, Some(purpose), &e),
+    }
+}
+
+/// 校验并取走 state：URL 里有，cookie 里有且一致（常数时间），库里有、没过期、属于这个提供方；取走即作废（单次使用）。
+/// 任何一项不满足是 `Ok(None)`（`invalid_state`）。
+async fn claim_state(
+    app: &Arc<AppState>,
+    headers: &HeaderMap,
+    provider: OAuthProvider,
+    params: &Params,
+) -> ApiResult<Option<OAuthState>> {
+    let (Some(state_param), Some(cookie)) = (params.get("state"), cookie_value(headers, COOKIE_NAME)) else {
+        return Ok(None);
+    };
+    if state_param.is_empty() || state_param.len() > STATE_MAX_LEN || !ct_eq(&cookie, state_param) {
+        return Ok(None);
+    }
+    let Some(saved) = app.store.take_oauth_state(&hash_token(state_param), now_ms()).await? else {
+        return Ok(None);
+    };
+    Ok((saved.provider == provider.as_str()).then_some(saved))
+}
+
+/// state 通过之后的部分：提供方的错误、换 token、取用户信息、对应到账号。
+async fn complete(
+    app: &Arc<AppState>,
+    client: &Client,
+    headers: &HeaderMap,
+    provider: OAuthProvider,
+    params: &Params,
+    saved: &OAuthState,
 ) -> ApiResult<Outcome> {
     use OAuthErrorCode as E;
     let p = provider.as_str();
-
-    // 1. state：URL 里有，cookie 里有且一致（常数时间），库里有、没过期、属于这个提供方；取走即作废（单次使用）。
-    let invalid = || Ok(Outcome::Failed { purpose: None, code: E::InvalidState });
-    let (Some(state_param), Some(cookie)) = (params.get("state"), cookie_value(headers, COOKIE_NAME)) else {
-        return invalid();
-    };
-    if state_param.is_empty() || state_param.len() > STATE_MAX_LEN || !ct_eq(&cookie, state_param) {
-        return invalid();
-    }
-    let Some(saved) = app.store.take_oauth_state(&hash_token(state_param), now_ms()).await? else {
-        return invalid();
-    };
-    if saved.provider != p {
-        return invalid();
-    }
     let purpose = saved.purpose;
 
-    // 2. 提供方带回了错误：用户点了拒绝是 `cancelled`，其余都是 `provider_error`。
+    // 提供方带回了错误：用户点了拒绝是 `cancelled`，其余都是 `provider_error`。
     if let Some(error) = params.get("error") {
         let code = if error == "access_denied" { E::Cancelled } else { E::ProviderError };
         return failed(purpose, code);
@@ -275,7 +338,7 @@ async fn run_callback(
         }
     }
 
-    // 3. 换 token、取用户信息（各 10 秒超时）。失败原因只记类别和状态码。
+    // 换 token、取用户信息（各 10 秒超时）。失败原因只记类别和状态码。
     let Some(http) = app.oauth.http() else { return failed(purpose, E::ProviderError) };
     let profile = match provider::fetch_profile(http, &app.config, provider, code, &saved.pkce_verifier).await {
         Ok(profile) => profile,
@@ -285,7 +348,7 @@ async fn run_callback(
         }
     };
 
-    // 4. 对应到账号。
+    // 对应到账号。
     if purpose == OAuthPurpose::Link {
         let Some(account_id) = saved.account_id.as_deref() else { return failed(purpose, E::NotSignedIn) };
         return match login::link(app, client, account_id, provider, &profile).await? {
@@ -321,7 +384,8 @@ pub async fn list_identities(State(app): State<Arc<AppState>>, auth: Authed) -> 
     ))
 }
 
-/// `DELETE /api/me/identities/{provider}`：解绑。没绑过也是 `204`；这是账号唯一的登录方式 → `409 last_login_method`。
+/// `DELETE /api/me/identities/{provider}`：解绑。没绑过也是 `204`；这是账号唯一的登录方式 → `409 last_login_method`
+/// （和解绑邮箱、删登录 token 一起按账号串行，见 [`accounts::begin_login_method_removal`]）。
 pub async fn delete_identity(
     State(app): State<Arc<AppState>>,
     auth: Authed,
@@ -330,15 +394,15 @@ pub async fn delete_identity(
 ) -> ApiResult<Response> {
     let provider = OAuthProvider::parse(&provider).ok_or_else(ApiError::not_found)?;
     let p = provider.as_str();
-    // 「检查还剩别的登录方式」和「删除」之间不让另一次解绑插进来。
-    let _serialized = app.oauth.lock_unlink().await;
+    // 「检查还剩别的登录方式」和「删除」之间不让别的移除（解绑邮箱、另一次解绑、删 token）插进来，
+    // 判断用锁里重读的账号，不用请求开始时的快照。
+    let removal = accounts::begin_login_method_removal(&app, &auth.account.id).await?;
     let linked = app.store.list_identities(&auth.account.id).await?;
     if !linked.iter().any(|i| i.provider == p) {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
     // 只有「现在能用来登录」的才算数：提供方已经不在配置里的身份不是登录方式，删它不会让账号少一种。
-    let methods = accounts::account_login_methods(&app, &auth.account).await?;
-    if methods.contains(&p) && methods.iter().all(|m| *m == p) {
+    if removal.would_lock_out(p) {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "last_login_method",
@@ -422,6 +486,7 @@ mod tests {
             (IdentityTaken, "identity_taken"),
             (AlreadyLinked, "already_linked"),
             (NotSignedIn, "not_signed_in"),
+            (ServerError, "server_error"),
         ];
         for (code, name) in all {
             assert_eq!(code.as_str(), name);
@@ -436,5 +501,18 @@ mod tests {
         assert_eq!(p.get("invite"), Some("a b"));
         assert_eq!(p.get("missing"), None);
         assert_eq!(Params::parse(None).get("next"), None);
+    }
+
+    #[test]
+    fn the_hop_marker_is_taken_out_of_the_parameters() {
+        let mut p = Params::parse(Some("next=%2Fa&hop=1&link=1"));
+        assert!(p.take_flag(HOP_PARAM));
+        assert_eq!((p.get("hop"), p.get("next"), p.get("link")), (None, Some("/a"), Some("1")));
+        // 不是 1 的不算标记，但同样去掉；有一个 1 就算
+        let mut p = Params::parse(Some("hop=0"));
+        assert!(!p.take_flag(HOP_PARAM) && p.get("hop").is_none());
+        let mut p = Params::parse(Some("hop=0&hop=1"));
+        assert!(p.take_flag(HOP_PARAM));
+        assert!(!Params::parse(None).take_flag(HOP_PARAM));
     }
 }

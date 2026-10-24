@@ -1045,13 +1045,13 @@ async fn start_from_another_host_redirects_to_the_public_origin_without_starting
         assert_eq!(r.status, 302, "{host}");
         assert_eq!(
             r.location(),
-            "https://hub.test/auth/oauth/github/start?next=%2Fchat&invite=abc&link=1",
-            "{host}: same query on the configured public URL, built from config rather than from Host"
+            "https://hub.test/auth/oauth/github/start?next=%2Fchat&invite=abc&link=1&hop=1",
+            "{host}: same query on the configured public URL plus the once-only marker, built from config rather than from Host"
         );
         assert!(r.cookies.is_empty(), "{host}: no state, no cookie yet");
     }
     let r = env.get_as("/auth/oauth/github/start", "192.168.1.10:8080", None).await;
-    assert_eq!(r.location(), "https://hub.test/auth/oauth/github/start");
+    assert_eq!(r.location(), "https://hub.test/auth/oauth/github/start?hop=1");
     assert!(env.fake.requests().is_empty());
     // 公网主机（带不带默认端口、大小写）直接开始
     for host in ["hub.test", "HUB.test", "hub.test:443"] {
@@ -1062,6 +1062,54 @@ async fn start_from_another_host_redirects_to_the_public_origin_without_starting
             r.location
         );
     }
+}
+
+#[tokio::test]
+async fn start_redirects_to_the_public_origin_at_most_once_even_when_host_is_rewritten() {
+    let env = Env::multi(&[GITHUB]).await;
+    // 反向代理改写了 Host：到了公网地址，hub 看到的仍然不是公网主机。跳转只发生一次，不循环。
+    let rewritten = "internal-hub.svc:8080";
+    let first = env.get_as("/auth/oauth/github/start?next=%2Fchat", rewritten, None).await;
+    assert_eq!(first.status, 302);
+    let target = first.url();
+    assert_eq!((target.host_str(), target.path()), (Some("hub.test"), "/auth/oauth/github/start"));
+    let followed = env.get_as(&format!("{}?{}", target.path(), target.query().unwrap()), rewritten, None).await;
+    assert_eq!(followed.status, 302);
+    assert!(
+        followed.location().starts_with(&format!("http://{}/github/authorize?", env.fake.addr)),
+        "the second request goes on to the provider instead of redirecting again: {:?}",
+        followed.location
+    );
+    let oauth = followed.oauth_cookie().expect("the state cookie is set on this (public) origin");
+    assert!(!followed.location().contains("hop"), "the marker never reaches the provider: {:?}", followed.location);
+
+    // 标记不进 state：`next` 照常保存，往返之后落在 /chat
+    env.fake.set_user("github", gh("1"));
+    let back = env.authorize(&followed).await;
+    let done = env.get_as(&back, PUBLIC_HOST, Some(&oauth)).await;
+    assert_eq!((done.status, done.location()), (302, "/chat"));
+    assert!(done.has_session());
+
+    // 带着标记的请求不管 Host 是什么都不再跳；没有标记的才跳
+    for host in ["192.168.1.10:8080", "evil.example", "hub.test"] {
+        let r = env.get_as("/auth/oauth/github/start?hop=1", host, None).await;
+        assert!(r.location().starts_with(&format!("http://{}/github/authorize?", env.fake.addr)), "{host}");
+        assert!(r.oauth_cookie().is_some(), "{host}");
+    }
+    // 只认 hop=1：别的值不算标记，会跳一次，且目标里的标记是 1，不会因为前面的 hop=0 又跳
+    let r = env.get_as("/auth/oauth/github/start?hop=0", "evil.example", None).await;
+    assert_eq!(r.location(), "https://hub.test/auth/oauth/github/start?hop=0&hop=1");
+    let target = r.url();
+    let again = env.get_as(&format!("{}?{}", target.path(), target.query().unwrap()), "evil.example", None).await;
+    assert!(
+        again.location().starts_with(&format!("http://{}/github/authorize?", env.fake.addr)),
+        "{:?}",
+        again.location
+    );
+
+    // 关联用途也一样：跳过去之后没有登录会话，是 not_signed_in，不是再跳一次
+    let r = env.get_as("/auth/oauth/github/start?link=1&hop=1", rewritten, None).await;
+    assert_eq!((r.status, r.path(), r.error()), (302, "/login".to_string(), "not_signed_in".to_string()));
 }
 
 #[tokio::test]
@@ -1094,6 +1142,61 @@ async fn next_is_validated_and_defaults_to_the_root() {
     // 非 ASCII 的合法路径：Location 里百分号编码
     let done = env.sign_in("github", gh("1"), &format!("?next={}", enc("/chat?q=é ü")), None).await;
     assert_eq!(done.location(), "/chat?q=%C3%A9%20%C3%BC");
+}
+
+// ---------------------------------------------------------------------------
+// hub 这边出错：也是 302，不是 JSON
+// ---------------------------------------------------------------------------
+
+/// 在 hub 的库文件上另开一个连接，把一张表改名（模拟库出了故障：之后碰这张表的查询都报错）。
+async fn break_table(env: &Env, table: &str) {
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::ConnectOptions;
+    let mut conn = SqliteConnectOptions::new().filename(env.hub.dir.path().join("hub.db")).connect().await.unwrap();
+    // 表名是测试里写死的字面量
+    let sql = sqlx::AssertSqlSafe(format!("ALTER TABLE {table} RENAME TO {table}_broken"));
+    sqlx::query(sql).execute(&mut conn).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_internal_error_in_the_callback_is_a_redirect_with_server_error_not_a_json_body() {
+    // 登录用途：换完用户信息、建好账号之后，写会话失败
+    let env = Env::multi(&[GITHUB]).await;
+    env.fake.set_user("github", gh("1"));
+    let start = env.start("github", "", None).await;
+    let oauth = start.oauth_cookie().unwrap();
+    let back = env.authorize(&start).await;
+    break_table(&env, "web_sessions").await;
+    let done = env.get_as(&back, PUBLIC_HOST, Some(&oauth)).await;
+    assert_eq!(done.status, 302, "a top-level navigation must not end on a raw error body");
+    assert_eq!(done.location(), "/login?oauth_error=server_error&provider=github");
+    assert!(!done.has_session() && done.clears_oauth_cookie());
+    assert_eq!(env.audit_count("login_fail", "method", "github").await, 1, "a failed sign-in is audited as before");
+
+    // state 都读不出来（库坏了）：不知道用途，回登录页
+    let env = Env::multi(&[GITHUB]).await;
+    env.fake.set_user("github", gh("1"));
+    let start = env.start("github", "", None).await;
+    let oauth = start.oauth_cookie().unwrap();
+    let back = env.authorize(&start).await;
+    break_table(&env, "oauth_states").await;
+    let done = env.get_as(&back, PUBLIC_HOST, Some(&oauth)).await;
+    assert_eq!(done.status, 302);
+    assert_eq!(done.location(), "/login?oauth_error=server_error&provider=github");
+    assert!(done.clears_oauth_cookie());
+
+    // 关联用途：回设置页
+    let env = Env::multi(&[GITHUB]).await;
+    let session = env.sign_in_ok("github", gh("1")).await;
+    let start = env.start("github", "?link=1", Some(&session)).await;
+    let oauth = start.oauth_cookie().unwrap();
+    env.fake.set_user("github", gh("2"));
+    let back = env.authorize(&start).await;
+    break_table(&env, "identities").await;
+    let done = env.get_as(&back, PUBLIC_HOST, Some(&format!("{oauth}; {session}"))).await;
+    assert_eq!(done.status, 302);
+    assert_eq!(done.location(), "/settings/login?oauth_error=server_error&provider=github");
+    assert!(done.clears_oauth_cookie());
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,7 +1318,7 @@ async fn a_provider_that_is_no_longer_configured_is_not_a_login_method() {
     env.hub.handle.shutdown().await;
     let mut config = Config::new("https://hub.test", &dir).unwrap();
     config.listen = "127.0.0.1:0".parse().unwrap();
-    config.enable_multi(anycon_hub::config::QuotaLimits::default());
+    config.enable_multi(anycon_hub::config::QuotaLimits::default(), anycon_hub::config::DEFAULT_DAILY_PAIRINGS);
     config.mailer_override = Some(Arc::new(RecordingMailer::default()));
     config.timing.email_verify_failure_delay = Duration::ZERO;
     fake.configure(&mut config, &[GOOGLE]);

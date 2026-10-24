@@ -421,8 +421,17 @@ async fn concurrent_enrollments_never_exceed_the_device_limit() {
 // 每日配对与接入次数
 // ---------------------------------------------------------------------------
 
+async fn daily_pairings_used(hub: &TestHub, cookie: &str) -> u64 {
+    json_of(hub.get("/api/quota", cookie).await).await["daily_pairings"].as_u64().expect("daily_pairings")
+}
+
+async fn daily_pairings_and_max(hub: &TestHub, cookie: &str) -> (Option<u64>, Option<u64>) {
+    let view = json_of(hub.get("/api/quota", cookie).await).await;
+    (view["daily_pairings"].as_u64(), view["daily_pairings_max"].as_u64())
+}
+
 #[tokio::test]
-async fn pair_begin_pair_join_and_enroll_begin_share_one_daily_budget_per_known_account() {
+async fn pair_begin_and_enroll_begin_share_one_daily_budget_and_pair_join_only_checks_it() {
     let q = limits(10, 5, 10, 4);
     let hub = multi_hub(q).await;
     let (acc, cookie) = account(&hub, "alice", None).await;
@@ -433,28 +442,35 @@ async fn pair_begin_pair_join_and_enroll_begin_share_one_daily_budget_per_known_
     let ghost = anycon_hub::util::new_id();
     let never_joined = new_code().1;
 
-    // 1) pair_begin（正式设备）2) pair_join（带 cookie 的临时连接）3) enroll_begin（同一账号）
+    // pair_join 不记：额度只有 4，输错 6 次短码也都是 not_found，用量一直是 0
+    for _ in 0..6 {
+        browser.send_control(&Control::PairJoin { match_id: never_joined.clone() }).await;
+        assert_eq!(browser.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
+    }
+    assert_eq!(daily_pairings_used(&hub, &cookie).await, 0);
+
+    // 发起才记：1) pair_begin（正式设备）2) enroll_begin（带 cookie 的临时连接，同一账号）3) 4) pair_begin
     n.pair_begin(&new_code().1).await;
-    browser.send_control(&Control::PairJoin { match_id: never_joined.clone() }).await;
-    assert_eq!(browser.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
     browser.send_control(&Control::EnrollBegin { node: ghost.clone() }).await;
     assert!(matches!(
         browser.recv_control().await,
         Control::EnrollFailed { enroll_id: None, reason: EnrollFailReason::NotFound }
     ));
-    // 4) 第四次还在额度内
     n.pair_begin(&new_code().1).await;
+    n.pair_begin(&new_code().1).await;
+    assert_eq!(daily_pairings_used(&hub, &cookie).await, 4);
 
-    // 第五次起，不管是哪一种、哪条连接，都是 quota
+    // 第五次起，发起的不管是哪一种、哪条连接，都是 quota
     n.send_control(&Control::PairBegin { match_id: new_code().1 }).await;
     assert_eq!(n.recv_control().await, Control::PairFailed { reason: PairFailReason::Quota });
-    browser.send_control(&Control::PairJoin { match_id: never_joined }).await;
-    assert_eq!(browser.recv_control().await, Control::PairFailed { reason: PairFailReason::Quota });
     browser.send_control(&Control::EnrollBegin { node: ghost.clone() }).await;
     assert!(matches!(
         browser.recv_control().await,
         Control::EnrollFailed { enroll_id: None, reason: EnrollFailReason::Quota }
     ));
+    // 额度满了，加入也被拦（只检查，不记）
+    browser.send_control(&Control::PairJoin { match_id: never_joined }).await;
+    assert_eq!(browser.recv_control().await, Control::PairFailed { reason: PairFailReason::Quota });
     // 被拒绝的 pair_begin 没有登记：它的 match_id 谁也 join 不到
     let (_code, refused_id) = new_code();
     n.send_control(&Control::PairBegin { match_id: refused_id.clone() }).await;
@@ -463,15 +479,44 @@ async fn pair_begin_pair_join_and_enroll_begin_share_one_daily_budget_per_known_
     anonymous.send_control(&Control::PairJoin { match_id: refused_id }).await;
     assert_eq!(anonymous.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
 
-    // 用量
+    // 用量：被拒绝的和 pair_join 都没有再加
     let view = json_of(hub.get("/api/quota", &cookie).await).await;
     assert_eq!((view["daily_pairings"].as_u64(), view["daily_pairings_max"].as_u64()), (Some(4), Some(4)));
 
-    // 别的账号各算各的
+    // 别的账号各算各的：它 pair_join 不记，enroll_begin 记一次
     let mut theirs = temp_with_cookie(&hub, &other_cookie, DeviceKind::Web, "theirs").await;
     theirs.send_control(&Control::PairJoin { match_id: new_code().1 }).await;
     assert_eq!(theirs.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
-    assert_eq!(json_of(hub.get("/api/quota", &other_cookie).await).await["daily_pairings"], 1);
+    assert_eq!(daily_pairings_used(&hub, &other_cookie).await, 0);
+    theirs.send_control(&Control::EnrollBegin { node: ghost }).await;
+    assert!(matches!(
+        theirs.recv_control().await,
+        Control::EnrollFailed { enroll_id: None, reason: EnrollFailReason::NotFound }
+    ));
+    assert_eq!(daily_pairings_used(&hub, &other_cookie).await, 1);
+}
+
+#[tokio::test]
+async fn a_pairing_between_two_accounts_costs_the_one_who_started_it_a_single_slot() {
+    let q = limits(10, 5, 10, 2);
+    let hub = multi_hub(q).await;
+    let (alice, alice_cookie) = account(&hub, "alice", None).await;
+    let (_, bob_cookie) = account(&hub, "bob", None).await;
+    let node = hub.seed_device_in(&alice, DeviceKind::Daemon, "node").await;
+    let (mut host, _) = connect_with_quota(&hub, Some(&node.token), DeviceKind::Daemon, "node").await;
+    let mut joiner = temp_with_cookie(&hub, &bob_cookie, DeviceKind::Cli, "bobs cli").await;
+
+    // 加入方输错短码：不烧额度，次数再多也只是 not_found
+    for _ in 0..5 {
+        joiner.send_control(&Control::PairJoin { match_id: new_code().1 }).await;
+        assert_eq!(joiner.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
+    }
+    assert_eq!(daily_pairings_used(&hub, &bob_cookie).await, 0);
+
+    // 两边都有账号的一次成功撮合：发起方记 1，加入方 0（以前双方各记一次，共 2）
+    pair_matched(&mut host, &mut joiner).await;
+    assert_eq!(daily_pairings_used(&hub, &alice_cookie).await, 1);
+    assert_eq!(daily_pairings_used(&hub, &bob_cookie).await, 0);
 }
 
 #[tokio::test]
@@ -513,6 +558,12 @@ async fn get_api_quota_reports_usage_and_limits() {
     let mut joiner = temp_with_cookie(&hub, &cookie, DeviceKind::Web, "joiner").await;
     joiner.send_control(&Control::PairJoin { match_id: new_code().1 }).await;
     assert_eq!(joiner.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
+    // 加入不记每日次数；发起（这里是 enroll_begin）才记
+    joiner.send_control(&Control::EnrollBegin { node: anycon_hub::util::new_id() }).await;
+    assert!(matches!(
+        joiner.recv_control().await,
+        Control::EnrollFailed { enroll_id: None, reason: EnrollFailReason::NotFound }
+    ));
     assert_eq!(
         json_of(hub.get("/api/quota", &cookie).await).await,
         json!({
@@ -551,6 +602,31 @@ async fn get_api_quota_in_single_mode_has_real_counts_and_no_limits() {
     let (_guest, guest_cookie) = hub.invite_account(&admin).await;
     let view = json_of(hub.get("/api/quota", &guest_cookie).await).await;
     assert_eq!((view["devices"].as_u64(), view["connections"].as_u64()), (Some(0), Some(0)));
+}
+
+#[tokio::test]
+async fn the_daily_pairing_limit_has_one_source_that_the_limiter_and_the_quota_view_share() {
+    // single 里程序化设了 `limits.daily_pairings_per_account`（没有 `multi` 的 QuotaLimits）：限速器照样用它，
+    // `GET /api/quota` 报的上限和用量也来自同一个值
+    let hub = TestHub::start_with(|c| c.limits.daily_pairings_per_account = Some(2)).await;
+    let admin = hub.login_admin().await;
+    let ghost = anycon_hub::util::new_id();
+    let mut me = temp_with_cookie(&hub, &admin, DeviceKind::Web, "me").await;
+    assert_eq!(daily_pairings_and_max(&hub, &admin).await, (Some(0), Some(2)));
+    for used in 1..=2u64 {
+        me.send_control(&Control::EnrollBegin { node: ghost.clone() }).await;
+        assert!(matches!(
+            me.recv_control().await,
+            Control::EnrollFailed { enroll_id: None, reason: EnrollFailReason::NotFound }
+        ));
+        assert_eq!(daily_pairings_and_max(&hub, &admin).await, (Some(used), Some(2)));
+    }
+    me.send_control(&Control::EnrollBegin { node: ghost }).await;
+    assert!(matches!(
+        me.recv_control().await,
+        Control::EnrollFailed { enroll_id: None, reason: EnrollFailReason::Quota }
+    ));
+    assert_eq!(daily_pairings_and_max(&hub, &admin).await, (Some(2), Some(2)));
 }
 
 #[tokio::test]

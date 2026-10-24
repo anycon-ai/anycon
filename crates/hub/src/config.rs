@@ -44,7 +44,10 @@ impl Mode {
     }
 }
 
-/// `multi` 模式下每个账号的配额上限（`ANYCON_QUOTA_*`，每项 ≥ 1）。
+/// `multi` 模式下每个账号的数量类配额上限（`ANYCON_QUOTA_*`，每项 ≥ 1）。
+///
+/// 每日配对次数（`ANYCON_QUOTA_DAILY_PAIRINGS`）不在这里：它只有一份，是
+/// [`Limits::daily_pairings_per_account`]（限速器、`GET /api/quota` 都读它；`single` 程序化设置它也照样生效）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotaLimits {
     /// 未吊销的设备数（所有种类，含 daemon）。
@@ -53,25 +56,20 @@ pub struct QuotaLimits {
     pub daemons: u32,
     /// 同时在线的永久连接数。
     pub connections: u32,
-    /// 滚动 24 小时内的配对与接入次数。
-    pub daily_pairings: u32,
 }
 
 impl QuotaLimits {
     pub const DEFAULT_DEVICES: u32 = 10;
     pub const DEFAULT_DAEMONS: u32 = 3;
     pub const DEFAULT_CONNECTIONS: u32 = 10;
-    pub const DEFAULT_DAILY_PAIRINGS: u32 = 20;
 }
+
+/// `multi` 里每账号每日配对与接入次数的默认上限（`ANYCON_QUOTA_DAILY_PAIRINGS` 没设时）。
+pub const DEFAULT_DAILY_PAIRINGS: u32 = 20;
 
 impl Default for QuotaLimits {
     fn default() -> Self {
-        Self {
-            devices: Self::DEFAULT_DEVICES,
-            daemons: Self::DEFAULT_DAEMONS,
-            connections: Self::DEFAULT_CONNECTIONS,
-            daily_pairings: Self::DEFAULT_DAILY_PAIRINGS,
-        }
+        Self { devices: Self::DEFAULT_DEVICES, daemons: Self::DEFAULT_DAEMONS, connections: Self::DEFAULT_CONNECTIONS }
     }
 }
 
@@ -180,8 +178,10 @@ pub struct Limits {
     pub enroll_begin_per_min_per_ip: u32,
     /// `enroll_begin`：每个账号每小时。
     pub enroll_begin_per_hour_per_account: u32,
-    /// 每账号每日配对与接入次数（`enroll_begin` 计入，超过 `enroll_failed { quota }`）。
-    /// `None` = 不限：`single` 模式没有配额，v0.1 也没有对应的环境变量，`multi` 实现时由 `ANYCON_QUOTA_*` 设置。
+    /// 每账号每日（滚动 24 小时）配对与接入次数：`pair_begin`、`enroll_begin` 各记一次，`pair_join` 只检查不记
+    /// （超过 `pair_failed { quota }` / `enroll_failed { quota }`）。**这是唯一的一份**：限速器从它建，
+    /// `GET /api/quota` 的 `daily_pairings_max` 读它。`None` = 不限（`single` 默认）；`multi` 由
+    /// `ANYCON_QUOTA_DAILY_PAIRINGS` 经 [`Config::enable_multi`] 设置，`single` 程序化设置它也照样生效。
     pub daily_pairings_per_account: Option<u32>,
     /// 每台 daemon 同时进行的接入会话上限，多出来的 `busy`。
     pub enrolls_per_daemon: u32,
@@ -371,8 +371,8 @@ pub struct Config {
     /// `ANYCON_ADMIN_EMAILS`：规范化（[`crate::mail::normalize_email`]）、去重后的邮箱。只在 `multi` 起作用
     /// （见 [`crate::accounts::admin_by_config`]）。`Debug` 和日志里只给个数。
     pub admin_emails: Vec<String>,
-    /// `multi` 的配额上限；`single` 为 `None`（没有配额）。`daily_pairings` 同时写进
-    /// `limits.daily_pairings_per_account`，现有的接入限额检查直接读那里。程序化构造请用 [`Config::enable_multi`]。
+    /// `multi` 的数量类配额上限；`single` 为 `None`（没有配额）。每日配对次数不在这里，见
+    /// [`Limits::daily_pairings_per_account`]。程序化构造请用 [`Config::enable_multi`]。
     pub quota: Option<QuotaLimits>,
     /// `ANYCON_OAUTH_GITHUB_CLIENT_ID` / `_CLIENT_SECRET`。两种模式都可以配。
     pub oauth_github: Option<OAuthClient>,
@@ -627,12 +627,14 @@ impl Config {
         let daily_pairings = quota_value("ANYCON_QUOTA_DAILY_PAIRINGS", raw.quota_daily_pairings.as_deref())?;
         if cfg.mode.is_multi() {
             let d = QuotaLimits::default();
-            cfg.enable_multi(QuotaLimits {
-                devices: devices.unwrap_or(d.devices),
-                daemons: daemons.unwrap_or(d.daemons),
-                connections: connections.unwrap_or(d.connections),
-                daily_pairings: daily_pairings.unwrap_or(d.daily_pairings),
-            });
+            cfg.enable_multi(
+                QuotaLimits {
+                    devices: devices.unwrap_or(d.devices),
+                    daemons: daemons.unwrap_or(d.daemons),
+                    connections: connections.unwrap_or(d.connections),
+                },
+                daily_pairings.unwrap_or(DEFAULT_DAILY_PAIRINGS),
+            );
         } else {
             for (var, set) in [
                 ("ANYCON_QUOTA_DEVICES", devices.is_some()),
@@ -665,12 +667,12 @@ impl Config {
         Ok(cfg)
     }
 
-    /// 切到 `multi`：设模式和配额，并把每日配对上限写进 `limits.daily_pairings_per_account`
-    /// （接入限额检查读的是那里）。环境变量路径和测试都走它，免得两处各自记得去同步。
-    pub fn enable_multi(&mut self, quota: QuotaLimits) {
+    /// 切到 `multi`：设模式、数量类配额和每日配对上限（写进 `limits.daily_pairings_per_account`，那是它唯一的一份）。
+    /// 环境变量路径和测试都走它。
+    pub fn enable_multi(&mut self, quota: QuotaLimits, daily_pairings: u32) {
         self.mode = Mode::Multi;
         self.quota = Some(quota);
-        self.limits.daily_pairings_per_account = Some(quota.daily_pairings);
+        self.limits.daily_pairings_per_account = Some(daily_pairings);
     }
 
     /// 这个 OAuth 提供方配了应用凭据没有。
@@ -1658,9 +1660,9 @@ mod tests {
     fn multi_gets_the_default_quotas_and_single_gets_none() {
         let c = multi(&[]).unwrap();
         assert_eq!(c.mode, Mode::Multi);
-        assert_eq!(c.quota, Some(QuotaLimits { devices: 10, daemons: 3, connections: 10, daily_pairings: 20 }));
+        assert_eq!(c.quota, Some(QuotaLimits { devices: 10, daemons: 3, connections: 10 }));
         assert_eq!(c.quota, Some(QuotaLimits::default()));
-        // 每日配对上限同时写进现有的接入限额检查读的那个字段
+        // 每日配对上限只存在于 limits 里
         assert_eq!(c.limits.daily_pairings_per_account, Some(20));
         assert!(c.admin_emails.is_empty() && c.ignored_vars.is_empty() && c.unimplemented_vars.is_empty());
 
@@ -1679,7 +1681,7 @@ mod tests {
             ("ANYCON_QUOTA_DAILY_PAIRINGS", "1"),
         ])
         .unwrap();
-        assert_eq!(c.quota, Some(QuotaLimits { devices: 25, daemons: 7, connections: 40, daily_pairings: 1 }));
+        assert_eq!(c.quota, Some(QuotaLimits { devices: 25, daemons: 7, connections: 40 }));
         assert_eq!(c.limits.daily_pairings_per_account, Some(1));
         assert!(c.unimplemented_vars.is_empty() && c.unknown_vars.is_empty() && c.ignored_vars.is_empty());
         // 只设一个，别的保持默认；空白 = 没设
@@ -1833,7 +1835,7 @@ mod tests {
 
         // 程序化构造的配置在 validate() 里过同一关；测试注入的发信实现也算
         let mut c = Config::new("https://hub.test", std::path::Path::new("/nonexistent")).unwrap();
-        c.enable_multi(QuotaLimits::default());
+        c.enable_multi(QuotaLimits::default(), DEFAULT_DAILY_PAIRINGS);
         assert!(matches!(c.validate(), Err(ConfigError::MultiNoSignIn)));
         c.mailer_override = Some(Arc::new(crate::mail::RecordingMailer::default()));
         assert!(c.validate().is_ok());
@@ -1894,10 +1896,10 @@ mod tests {
     }
 
     #[test]
-    fn enable_multi_keeps_the_daily_pairing_limit_in_step_with_the_quota() {
+    fn enable_multi_sets_the_quotas_and_the_one_daily_pairing_limit() {
         let mut c = Config::new("https://hub.test", std::path::Path::new("/nonexistent")).unwrap();
         assert_eq!((c.mode, c.quota, c.limits.daily_pairings_per_account), (Mode::Single, None, None));
-        c.enable_multi(QuotaLimits { devices: 2, daemons: 1, connections: 3, daily_pairings: 4 });
+        c.enable_multi(QuotaLimits { devices: 2, daemons: 1, connections: 3 }, 4);
         assert_eq!(c.mode, Mode::Multi);
         assert_eq!(c.quota.unwrap().daemons, 1);
         assert_eq!(c.limits.daily_pairings_per_account, Some(4));

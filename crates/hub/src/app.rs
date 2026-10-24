@@ -8,6 +8,7 @@ use std::time::Duration;
 use anycon_protocol::{close_code, Control, NotifyCategory};
 use tokio_util::sync::CancellationToken;
 
+use crate::accounts::LoginMethodLocks;
 use crate::config::Config;
 use crate::enroll::Enrolls;
 use crate::mail::Mailer;
@@ -48,8 +49,9 @@ pub struct IpLimiters {
 pub struct AccountLimiters {
     /// `enroll_begin`：每账号每小时。
     pub enroll_begin: KeyedLimiter<String>,
-    /// 每日配对与接入次数（docs/spec/hub.md § 7.1）：`pair_begin` / `pair_join` / `enroll_begin` 在已知账号时各记一次，
-    /// 严格的滚动 24 小时窗口（[`crate::quota::record_pairing_attempt`]）。`None` = 不限（`single` 模式没有配额）。
+    /// 每日配对与接入次数（docs/spec/hub.md § 7.1）：`pair_begin` / `enroll_begin` 在已知账号时检查并各记一次
+    /// （[`crate::quota::record_pairing_attempt`]），`pair_join` 只检查（[`crate::quota::pairing_quota_left`]）；
+    /// 严格的滚动 24 小时窗口，上限是 `limits.daily_pairings_per_account`。`None` = 不限（`single` 默认）。
     pub daily_pairings: Option<WindowCounter<String>>,
     /// `POST /api/push/subscriptions`、`POST /api/push/test`：每账号每分钟。
     pub push_api: KeyedLimiter<String>,
@@ -128,6 +130,8 @@ pub struct AppState {
     pub mailer: Option<Arc<dyn Mailer>>,
     /// OAuth 登录（GitHub、Google）：出站 HTTP 客户端、`start` 的限速。
     pub oauth: OAuthRuntime,
+    /// 移除登录方式（解绑邮箱、解除 OAuth 绑定、删登录 token）的按账号串行化（[`crate::accounts::begin_login_method_removal`]）。
+    pub login_method_locks: LoginMethodLocks,
     pub bg: Background,
 }
 
@@ -183,6 +187,7 @@ impl AppState {
             push,
             mailer,
             oauth,
+            login_method_locks: LoginMethodLocks::default(),
             bg: Background::default(),
         })
     }

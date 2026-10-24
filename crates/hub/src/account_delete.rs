@@ -35,11 +35,6 @@ impl DeletedBy {
     }
 }
 
-/// 是不是 `single` 的 bootstrap 管理员账号（它的 token 在配置里，删了就没法再登录管理这个 hub）。`multi` 没有。
-pub fn is_bootstrap_admin(state: &AppState, account_id: &str) -> bool {
-    state.admin.as_ref().is_some_and(|admin| admin.account_id == account_id)
-}
-
 /// 删账号。账号不存在返回 `false`（比如两个请求同时删它，输的一方）。
 pub async fn delete_account(state: &AppState, account_id: &str, by: DeletedBy) -> StoreResult<bool> {
     // 库里删了就查不到设备了，要靠它们中止内存里的配对 / 接入：先记下来。

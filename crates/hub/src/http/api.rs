@@ -273,12 +273,29 @@ pub async fn create_token(
     Ok(Json(CreatedToken { id: created.id, token }))
 }
 
+/// `DELETE /api/me/tokens/{id}`（`single`）。删的是账号最后一个登录 token、而账号没有别的登录方式（邮箱、OAuth 身份，
+/// 也不是 bootstrap 管理员）→ `409 last_login_method`。和解绑邮箱、解除 OAuth 绑定一起按账号串行
+/// （[`accounts::begin_login_method_removal`]）。
 pub async fn delete_token(
     State(state): State<Arc<AppState>>,
     auth: Authed,
     client: Client,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
+    let removal = accounts::begin_login_method_removal(&state, &auth.account.id).await?;
+    let tokens = state.store.list_account_tokens(&auth.account.id).await?;
+    if !tokens.iter().any(|t| t.id == id) {
+        return Err(ApiError::not_found());
+    }
+    // bootstrap 管理员的 token 不是库里的行，删它名下的 token 行不会少一种方式（`token` 一直在清单里）。
+    let is_last_token = tokens.len() == 1 && !accounts::is_bootstrap_admin(&state, &auth.account.id);
+    if is_last_token && removal.would_lock_out("token") {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "last_login_method",
+            "this is the only way this account can sign in; add another sign-in method first",
+        ));
+    }
     if !state.store.delete_account_token(&auth.account.id, &id).await? {
         return Err(ApiError::not_found());
     }

@@ -44,6 +44,8 @@ pub enum OAuthErrorCode {
     AlreadyLinked,
     /// 关联身份需要登录态，而 cookie 没有登录 / 不是发起关联的那个账号。
     NotSignedIn,
+    /// hub 这边出错（库不可用之类）：不是用户或提供方的问题，稍后重试。
+    ServerError,
 }
 
 impl OAuthErrorCode {
@@ -59,17 +61,16 @@ impl OAuthErrorCode {
             OAuthErrorCode::IdentityTaken => "identity_taken",
             OAuthErrorCode::AlreadyLinked => "already_linked",
             OAuthErrorCode::NotSignedIn => "not_signed_in",
+            OAuthErrorCode::ServerError => "server_error",
         }
     }
 }
 
-/// [`crate::AppState`] 里 OAuth 相关的运行时状态：出站 HTTP 客户端、`start` 的限速、解绑的串行锁。
+/// [`crate::AppState`] 里 OAuth 相关的运行时状态：出站 HTTP 客户端、`start` 的限速。
 pub struct OAuthRuntime {
     /// 出站客户端。TLS 配置建不起来（实际上不会发生）时是 `None`，所有提供方调用都当 `provider_error`。
     http: Option<client::HttpClient>,
     start: RateLimiter,
-    /// 解绑身份时「检查还剩别的登录方式 → 删除」不是一条 SQL：用这把锁让并发的两次解绑不会互相指望对方还在。
-    unlink: tokio::sync::Mutex<()>,
 }
 
 impl OAuthRuntime {
@@ -82,7 +83,7 @@ impl OAuthRuntime {
                 None
             }
         };
-        Self { http, start: RateLimiter::per_minute(START_PER_MIN), unlink: tokio::sync::Mutex::new(()) }
+        Self { http, start: RateLimiter::per_minute(START_PER_MIN) }
     }
 
     pub fn http(&self) -> Option<&client::HttpClient> {
@@ -92,10 +93,6 @@ impl OAuthRuntime {
     /// 消耗 `start` 的一个令牌；超限返回需要等待的时间。
     pub fn check_start(&self, ip: std::net::IpAddr) -> Result<(), Duration> {
         self.start.check(ip)
-    }
-
-    pub async fn lock_unlink(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.unlink.lock().await
     }
 
     /// 清掉回满的限速桶（和别的限速器一起，每分钟一次）。

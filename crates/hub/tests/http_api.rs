@@ -200,6 +200,11 @@ async fn invite_flow_creates_an_account() {
     assert!(tokens[0].get("token").is_none());
     assert!(tokens[0]["last_used_ms"].as_u64().is_some());
     let tid = created["id"].as_str().unwrap();
+    // 它是 bob 唯一的登录方式（没有邮箱，也没绑 OAuth）：删不掉；再建一个之后就可以删这个
+    let res = hub.send(Method::DELETE, &format!("/api/me/tokens/{tid}"), &bob, Value::Null).await;
+    assert_eq!(res.status(), 409);
+    assert_eq!(res.json::<Value>().await.unwrap()["error"]["code"], "last_login_method");
+    assert_eq!(hub.send(Method::POST, "/api/me/tokens", &bob, json!({ "label": "phone" })).await.status(), 200);
     assert_eq!(hub.send(Method::DELETE, &format!("/api/me/tokens/{tid}"), &bob, Value::Null).await.status(), 204);
     let res = hub
         .http

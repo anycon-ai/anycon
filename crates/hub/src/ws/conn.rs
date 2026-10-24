@@ -875,7 +875,8 @@ async fn on_control(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState,
                 }
                 cs.temp_pair_begins += 1;
             }
-            // 每日配对与接入次数（`multi`）：账号已知（正式设备，或带登录 cookie 的临时连接）时记一次。
+            // 每日配对与接入次数（`multi`）：账号已知（正式设备，或带登录 cookie 的临时连接）时检查并记一次。
+            // 发起一次配对才记；加入（`pair_join`）只检查，所以一次成功的配对不会让双方各记一次。
             if let Some(account) = conn.account_id() {
                 if !quota::record_pairing_attempt(state, &account) {
                     conn.send_control(&Control::PairFailed { reason: PairFailReason::Quota });
@@ -897,8 +898,9 @@ async fn on_control(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState,
                 cs.receipt(conn, Control::PairFailed { reason: PairFailReason::RateLimited });
                 return;
             }
+            // 每日额度：只检查，不记。输错的短码不该耗掉额度，成功的配对也已经由 `pair_begin` 记过一次。
             if let Some(account) = conn.account_id() {
-                if !quota::record_pairing_attempt(state, &account) {
+                if !quota::pairing_quota_left(state, &account) {
                     conn.send_control(&Control::PairFailed { reason: PairFailReason::Quota });
                     return;
                 }

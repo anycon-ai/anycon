@@ -6,12 +6,23 @@
 //!
 //! bootstrap token 不在库里：登录时直接和它的哈希比较。token 变了（改环境变量重启）会清掉管理员账号
 //! 已有的浏览器会话——「改它重启即重置登录」。
+//!
+//! token 登录进的那个账号（bootstrap 管理员）的 id 记在 `kv.bootstrap_admin_id`，之后每次启动都认它，
+//! 不去库里找「最早的管理员」：管理员标记现在可以授予别的账号（`POST /api/admin/accounts/:id/admin`，两种模式都行），
+//! 比如 `multi` 跑过一阵再切回 `single`，最早的管理员可能是某个普通用户，token 不能登录到别人的账号里。
+//! 这个键还没有时（升级前建的库）：库里有 `admin_token_hash` 说明这是 `single` 已经启动过的库，那时最早的管理员
+//! 就是 bootstrap 账号，沿用并记下来；否则新建一个 `admin` 账号并记下来。记着的账号被删了同样新建。
 
 use std::path::Path;
 
 use crate::app::AdminAuth;
-use crate::store::{Store, StoreError};
+use crate::store::{Account, Store, StoreError};
 use crate::util::{hash_token, new_secret, now_ms};
+
+/// `kv` 里记 bootstrap 管理员账号 id 的键。
+const KV_BOOTSTRAP_ADMIN_ID: &str = "bootstrap_admin_id";
+/// `kv` 里记 bootstrap token 哈希的键（升级前的库只有它能说明 `single` 启动过）。
+const KV_ADMIN_TOKEN_HASH: &str = "admin_token_hash";
 
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
@@ -44,16 +55,47 @@ pub fn prepare_data_dir(dir: &Path) -> Result<(), BootstrapError> {
     Ok(())
 }
 
+/// bootstrap 管理员账号：记着的那个；没记过按升级规则沿用最早的管理员或新建；记着的被删了就新建。
+/// 账号在库里不是管理员了（`multi` 期间被取消）就把标记补回来：`single` 里取消不了它。
+async fn resolve_admin_account(store: &dyn Store) -> Result<Account, StoreError> {
+    let create = || async {
+        let account = store.create_account("admin", true, now_ms()).await?;
+        store.kv_set(KV_BOOTSTRAP_ADMIN_ID, &account.id).await?;
+        Ok::<_, StoreError>(account)
+    };
+    if let Some(id) = store.kv_get(KV_BOOTSTRAP_ADMIN_ID).await? {
+        return match store.get_account(&id).await? {
+            Some(mut account) => {
+                if !account.is_admin {
+                    store.set_account_admin(&account.id, true).await?;
+                    account.is_admin = true;
+                    tracing::info!("the bootstrap admin account had lost its admin flag (multi mode); restored");
+                }
+                Ok(account)
+            }
+            None => {
+                tracing::warn!("the recorded bootstrap admin account no longer exists; creating a new one");
+                create().await
+            }
+        };
+    }
+    // 还没记过。升级前启动过的 `single` 库：最早的管理员就是 bootstrap 账号。
+    if store.kv_get(KV_ADMIN_TOKEN_HASH).await?.is_some() {
+        if let Some(account) = store.first_admin().await? {
+            store.kv_set(KV_BOOTSTRAP_ADMIN_ID, &account.id).await?;
+            return Ok(account);
+        }
+    }
+    create().await
+}
+
 pub async fn bootstrap_admin(
     store: &dyn Store,
     data_dir: &Path,
     env_token: Option<&str>,
 ) -> Result<Bootstrapped, BootstrapError> {
     let token_file = data_dir.join("admin-token");
-    let admin = match store.first_admin().await? {
-        Some(a) => a,
-        None => store.create_account("admin", true, now_ms()).await?,
-    };
+    let admin = resolve_admin_account(store).await?;
 
     let mut generated = None;
     let token = match env_token {
@@ -71,13 +113,13 @@ pub async fn bootstrap_admin(
     let token_hash = hash_token(&token);
 
     // token 换了：旧 token 登出来的会话全部作废。
-    let known = store.kv_get("admin_token_hash").await?;
+    let known = store.kv_get(KV_ADMIN_TOKEN_HASH).await?;
     if known.as_deref() != Some(token_hash.as_str()) {
         if known.is_some() {
             let n = store.delete_web_sessions_of_account(&admin.id).await?;
             tracing::info!(sessions_revoked = n, "admin token changed, admin sessions reset");
         }
-        store.kv_set("admin_token_hash", &token_hash).await?;
+        store.kv_set(KV_ADMIN_TOKEN_HASH, &token_hash).await?;
     }
 
     Ok(Bootstrapped { admin: AdminAuth { token_hash, account_id: admin.id }, generated_token: generated, token_file })
@@ -155,6 +197,68 @@ mod tests {
         let b = bootstrap_admin(&store, dir.path(), Some("second-token-value")).await.unwrap();
         assert_ne!(a.admin.token_hash, b.admin.token_hash);
         assert!(store.find_web_session("h", 2).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_bootstrap_account_is_recorded_and_not_confused_with_other_admins() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(None, dir.path()).await.unwrap();
+        // 一个库在 multi 下跑过：有人被授予了管理员，没有 bootstrap 账号，也没启动过 single
+        let user = store.create_account_with_email("U", Some("u@example.com"), 1).await.unwrap();
+        let crate::store::CreateAccountOutcome::Created(user) = user else { panic!("created") };
+        store.set_account_admin(&user.id, true).await.unwrap();
+        assert_eq!(store.first_admin().await.unwrap().unwrap().id, user.id);
+
+        let boot = bootstrap_admin(&store, dir.path(), Some("a-long-enough-token")).await.unwrap();
+        assert_ne!(boot.admin.account_id, user.id, "the bootstrap token must not log into an unrelated admin");
+        assert_eq!(store.get_account(&boot.admin.account_id).await.unwrap().unwrap().display_name, "admin");
+        assert_eq!(store.kv_get(KV_BOOTSTRAP_ADMIN_ID).await.unwrap().as_deref(), Some(boot.admin.account_id.as_str()));
+        // 再来一遍，还是同一个；U 是更早的管理员也没用
+        let again = bootstrap_admin(&store, dir.path(), Some("a-long-enough-token")).await.unwrap();
+        assert_eq!(again.admin.account_id, boot.admin.account_id);
+        assert_eq!(store.list_accounts(10, None).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_database_from_before_the_record_adopts_its_first_admin() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(None, dir.path()).await.unwrap();
+        // 升级前的 single 库：bootstrap 账号最早，token 哈希在 kv 里；之后有别的账号被授予管理员
+        let old_admin = store.create_account("admin", true, 10).await.unwrap();
+        let later = store.create_account("later", true, 20).await.unwrap();
+        store.kv_set(KV_ADMIN_TOKEN_HASH, &hash_token("a-long-enough-token")).await.unwrap();
+        assert!(store.kv_get(KV_BOOTSTRAP_ADMIN_ID).await.unwrap().is_none());
+
+        let boot = bootstrap_admin(&store, dir.path(), Some("a-long-enough-token")).await.unwrap();
+        assert_eq!(boot.admin.account_id, old_admin.id);
+        assert_ne!(boot.admin.account_id, later.id);
+        assert_eq!(store.kv_get(KV_BOOTSTRAP_ADMIN_ID).await.unwrap().as_deref(), Some(old_admin.id.as_str()));
+        assert_eq!(store.list_accounts(10, None).await.unwrap().len(), 2, "nothing new was created");
+    }
+
+    #[tokio::test]
+    async fn a_recorded_account_that_was_deleted_is_replaced_and_one_that_lost_its_flag_gets_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(None, dir.path()).await.unwrap();
+        let first = bootstrap_admin(&store, dir.path(), Some("a-long-enough-token")).await.unwrap();
+        let id = first.admin.account_id.clone();
+
+        // 在 multi 下被取消了管理员：再进 single，标记补回来，还是同一个账号
+        store.set_account_admin(&id, false).await.unwrap();
+        let second = bootstrap_admin(&store, dir.path(), Some("a-long-enough-token")).await.unwrap();
+        assert_eq!(second.admin.account_id, id);
+        assert!(store.get_account(&id).await.unwrap().unwrap().is_admin);
+
+        // 被删了：新建一个并记下来
+        let tombstone = crate::store::NewAudit { event: "account_deleted", ..Default::default() };
+        assert!(store.delete_account(&id, tombstone, 5).await.unwrap());
+        let third = bootstrap_admin(&store, dir.path(), Some("a-long-enough-token")).await.unwrap();
+        assert_ne!(third.admin.account_id, id);
+        assert!(store.get_account(&third.admin.account_id).await.unwrap().unwrap().is_admin);
+        assert_eq!(
+            store.kv_get(KV_BOOTSTRAP_ADMIN_ID).await.unwrap().as_deref(),
+            Some(third.admin.account_id.as_str())
+        );
     }
 
     #[test]

@@ -314,7 +314,11 @@ async fn account_search_matches_names_and_emails_case_insensitively_and_ids_exac
     assert_eq!(ids(&search("lovelace").await), vec![ada.clone()]);
     assert_eq!(ids(&search("ADA LOVE").await), vec![ada.clone()]);
     assert_eq!(ids(&search("  ada@EXAMPLE.com ").await), vec![ada.clone()], "trimmed, email in any case");
-    assert_eq!(ids(&search("émile").await), vec![emile.clone()], "non-ASCII names are case-insensitive too");
+    // SQLite 的 lower() 只折叠 ASCII：非 ASCII 的字符要大小写一致，同一个词里的 ASCII 字母不区分大小写
+    assert_eq!(ids(&search("ÉMILE").await), vec![emile.clone()]);
+    assert_eq!(ids(&search("Émile zola").await), vec![emile.clone()]);
+    // LIKE 的通配符是字面字符
+    assert!(ids(&search("%").await).is_empty() && ids(&search("a_a").await).is_empty());
     assert_eq!(ids(&search("example.org").await), vec![grace.clone()]);
     assert_eq!(ids(&search("hopper").await), vec![grace.clone()]);
     assert_eq!(ids(&search(&grace).await), vec![grace.clone()], "exact id");

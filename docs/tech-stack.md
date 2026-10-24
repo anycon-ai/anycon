@@ -18,8 +18,8 @@
 | 静态资源嵌入 | rust-embed | Web UI 构建产物打进 hub 二进制 |
 | 文件监听 | notify | macOS FSEvents / Linux inotify 统一 |
 | Passkey | webauthn-rs | 免密登录，仅 https 域名可用。没有密码、没有 TOTP（ADR-23） |
-| OAuth | oauth2 | GitHub / Google 授权码流程 + PKCE。拿到 access token 后调 userinfo 取身份，不解析 `id_token`，省掉 JWKS / JWT 校验 |
-| HTTP 客户端 | reqwest | OAuth 换 token、调 userinfo 等出站请求 |
+| OAuth | 自己实现（hyper + hyper-rustls） | GitHub / Google 授权码流程 + PKCE（S256）。拿到 access token 后调 userinfo 取身份，不解析 `id_token`，省掉 JWKS / JWT 校验。只有几步，不引 oauth2 crate（[ADR-40](decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)） |
+| HTTP 客户端（出站） | hyper + hyper-util + hyper-rustls | OAuth 换 token、调 userinfo 和 Web Push 共用同一套（`ring` + 内置 webpki 根证书），每次调用有超时、不跟随重定向。不用 reqwest（见 [ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）；reqwest 只在 hub 的测试里用 |
 | 邮件 | lettre | 只走 SMTP。所有邮件服务商都有 SMTP 端点，不接厂商 HTTP API |
 | 会话 / 登录 token | 随机 token，库里存 blake2 哈希 | 不用 JWT：要能单独吊销设备，JWT 吊销很别扭。登录 token 是 `single` 模式的零配置登录方式 |
 | Noise 协议 | snow | 配对握手和会话加密，不自己拼 x25519 + chacha |

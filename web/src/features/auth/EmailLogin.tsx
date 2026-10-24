@@ -13,7 +13,11 @@ import { CODE_LENGTH } from './code'
 import { rateLimitedText } from './rateLimit'
 import { RESEND_SECONDS, useResendCountdown } from './useResendCountdown'
 
-export function EmailLogin({ onSignedIn, autoFocus }: { onSignedIn: () => Promise<void>; autoFocus?: boolean }) {
+/**
+ * `signUp`：`multi` 模式。发码给任何有效邮箱，验证通过后没有账号就建一个，所以文案说的是「登录或创建账号」，
+ * 不再说「邮箱要先绑定」（`single` 里只有绑定过的邮箱才收得到码）。
+ */
+export function EmailLogin({ onSignedIn, autoFocus, signUp }: { onSignedIn: () => Promise<void>; autoFocus?: boolean; signUp?: boolean }) {
   const { t } = useTranslation()
   const [email, setEmail] = useState('')
   /** 码发到了哪个邮箱（规范化后的）；null = 还在第一步。 */
@@ -87,7 +91,7 @@ export function EmailLogin({ onSignedIn, autoFocus }: { onSignedIn: () => Promis
   if (sentTo === null) {
     return (
       <form onSubmit={(e) => void send(e)} className="space-y-3" data-testid="login-email-form">
-        <Field label={t('login.emailLabel')} htmlFor="login-email" hint={t('login.emailHint')} error={error?.kind === 'email' ? error.text : null}>
+        <Field label={t('login.emailLabel')} htmlFor="login-email" hint={t(signUp ? 'login.emailHintSignUp' : 'login.emailHint')} error={error?.kind === 'email' ? error.text : null}>
           <Input
             id="login-email"
             data-testid="login-email-input"
@@ -121,14 +125,14 @@ export function EmailLogin({ onSignedIn, autoFocus }: { onSignedIn: () => Promis
       data-testid="login-code-form"
     >
       <div role="status" className="rounded-md border border-info/30 bg-info-subtle p-3 text-sm text-info" data-testid="login-email-sent">
-        <p>{t('login.emailSent')}</p>
+        <p>{t(signUp ? 'login.emailSentSignUp' : 'login.emailSent')}</p>
         <p className="mt-1 font-medium break-all">{sentTo}</p>
       </div>
       <Field label={t('login.codeLabel')} htmlFor="login-code" error={error?.kind === 'code' || error?.kind === 'email' ? error.text : null}>
         <CodeInput id="login-code" label={t('login.codeLabel')} testId="login-code-input" value={code} onChange={setCode} onComplete={(d) => void verify(d)} disabled={busy} invalid={error?.kind === 'code'} autoFocus />
       </Field>
       <Button type="submit" variant="primary" className="w-full" loading={busy} disabled={code.length !== CODE_LENGTH} data-testid="login-code-submit">
-        {t('login.emailVerify')}
+        {t(signUp ? 'login.emailVerifySignUp' : 'login.emailVerify')}
       </Button>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Button variant="ghost" size="sm" disabled={busy || left > 0} onClick={() => void send()} data-testid="login-code-resend" data-seconds={left}>

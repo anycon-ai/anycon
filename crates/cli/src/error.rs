@@ -15,11 +15,13 @@ pub struct CliError {
     /// 稳定的错误码（和协议错误码一致，或 cli 自己的：`offline`、`not_initialized`…）
     pub code: String,
     pub message: String,
+    /// daemon 错误的 `data.reason`（`busy` + `quota` 之类）：同一个错误码下的细分原因。不是 RPC 错误时为 `None`。
+    pub reason: Option<String>,
 }
 
 impl CliError {
     pub fn new(exit: u8, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { exit, code: code.into(), message: message.into() }
+        Self { exit, code: code.into(), message: message.into(), reason: None }
     }
     pub fn general(message: impl Into<String>) -> Self {
         Self::new(EXIT_ERROR, "error", message)
@@ -90,7 +92,8 @@ impl From<RpcError> for CliError {
             Some(ErrorCode::Invalid) | Some(ErrorCode::InvalidSettings) => EXIT_USAGE,
             _ => EXIT_ERROR,
         };
-        CliError { exit, code: code.map(code_str).unwrap_or("error").to_string(), message: msg }
+        let reason = e.data.as_ref().and_then(|d| d.reason.clone());
+        CliError { exit, code: code.map(code_str).unwrap_or("error").to_string(), message: msg, reason }
     }
 }
 

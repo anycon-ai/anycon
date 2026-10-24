@@ -60,6 +60,8 @@ docker run -d --name anycon-hub -p 8080:8080 -v anycon-data:/data \
 docker logs anycon-hub    # 首次启动会打印一次管理员 token
 ```
 
+想让别人自助注册（邮箱验证码或 GitHub / Google 登录，带配额）？用 `ANYCON_MODE=multi`，见 [docs/deploy.md § 9](docs/deploy.md#9-公共-hub-与-multi-模式)。
+
 镜像有 `linux/amd64` 和 `linux/arm64` 两种架构，标签是 `<版本>`（如 `0.1.0`）、`<主>.<次>`（`0.1`）和 `latest`。生产环境请钉住版本。hub 只提供明文 HTTP，TLS 和域名交给你的反向代理。[docs/deploy.md](docs/deploy.md) 有 Caddy / nginx / Traefik / Cloudflare Tunnel 的现成配置，还有一份 [compose 文件](docker/compose.yml)。
 
 **2. 在跑 agent 的机器上安装并配对 daemon**
@@ -120,6 +122,7 @@ for await (const ev of session.send('跑一下测试，把失败的修了')) {
 
 - 会话历史存在**你的机器**（daemon）上，不在 hub
 - daemon 和每个客户端之间走 **Noise 端到端加密**。hub 看得到的是元数据：哪个设备连哪个设备、什么时候、多少字节，加上设备名、账号标识这类账号层信息
+- **账号信息很少**：显示名、你绑定的邮箱（或 GitHub / Google 声明已验证的邮箱）、关联的 GitHub / Google 账号的提供方和稳定用户 ID（不存用户名、头像和 access token）、设备列表、登录等审计记录。提供方没有声明已验证的邮箱，hub 不会拿来匹配或创建账号。你可以在设置里删除账号：hub 上的这些记录（设备、配对、登录方式、审计）一并删掉，只留一条没有 IP 的删除记录；会话历史本来就在你的节点上，不受影响
 - **Web UI 的代码由 hub 下发**。一个恶意或被入侵的 hub 可以下发改过的 JavaScript，读走浏览器里的密钥和明文。所以用 Web UI 就是信任那个 hub 的运营者。隐私敏感的场景请**自建 hub**，或者用 **CLI / SDK**（代码是你自己装的）
 - 配对短码在 daemon 本地生成，不发给 hub；两端用 Argon2id 从短码派生预共享密钥。默认的 16 位短码即使面对恶意 hub 也扛得住离线穷举；8 位的 `anycon pair --short` 只在自建 hub 上用
 - 浏览器里的密钥和缓存以明文存在 IndexedDB。公用电脑上请用「退出并移除本设备」，不要只点「退出登录」

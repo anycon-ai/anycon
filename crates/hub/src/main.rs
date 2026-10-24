@@ -53,6 +53,15 @@ const ENV_HELP: &str = "ENVIRONMENT (the ones that matter for a safe deployment)
                            (512 MiB). Minimum 205824. Over budget only the previews are paused, never the sessions.
   ANYCON_PREVIEW_MAX_CONNECTIONS  preview connections one account may have open at once, default 16.
   ANYCON_ADMIN_TOKEN       fixed admin login token (default: generated on first start, see <data>/admin-token).
+                           single mode only; ignored (with a warning) in multi mode.
+  ANYCON_MODE              `single` (default: one admin, invite-only) or `multi` (open sign-up by email code or
+                           OAuth, per-account quotas, no admin token). multi needs ANYCON_SMTP_URL and/or an
+                           OAuth provider, or the hub refuses to start.
+  ANYCON_ADMIN_EMAILS      multi mode: comma-separated email addresses whose accounts are admins. Ignored in single.
+  ANYCON_QUOTA_DEVICES / _DAEMONS / _CONNECTIONS / _DAILY_PAIRINGS   multi mode: per-account limits on devices (10),
+                           daemons (3), online connections (10) and pairings per day (20). Positive integers.
+  ANYCON_OAUTH_GITHUB_CLIENT_ID / _CLIENT_SECRET, ANYCON_OAUTH_GOOGLE_CLIENT_ID / _CLIENT_SECRET   optional OAuth
+                           sign-in. Both values of a provider are required. ANYCON_PUBLIC_URL should be https.
   ANYCON_DATA_DIR / ANYCON_LISTEN / ANYCON_LOG   data directory (/data), bind address (0.0.0.0:8080), log filter (info).
 ";
 
@@ -104,12 +113,18 @@ async fn serve() -> ExitCode {
     // 启动横幅（deploy.md § 2）。admin token 明文只在首次生成时打印这一次，直接写 stdout，不进结构化日志。
     println!("anycon-hub {VERSION} listening on {}", handle.addr);
     println!("mode: {mode}");
-    if let Some(token) = &handle.generated_admin_token {
-        println!("first run — admin token (also saved to {}):", handle.admin_token_file.display());
-        println!("  {token}");
-        println!("open {public_url} and paste it to log in");
-    } else {
-        println!("admin token: see ANYCON_ADMIN_TOKEN or {}", handle.admin_token_file.display());
+    match (&handle.generated_admin_token, &handle.admin_token_file) {
+        (Some(token), Some(file)) => {
+            println!("first run — admin token (also saved to {}):", file.display());
+            println!("  {token}");
+            println!("open {public_url} and paste it to log in");
+        }
+        (None, Some(file)) => println!("admin token: see ANYCON_ADMIN_TOKEN or {}", file.display()),
+        // multi：没有 bootstrap token，管理员靠 ANYCON_ADMIN_EMAILS（只打个数，不打地址）。
+        (_, None) => println!(
+            "sign-up is open at {public_url}; admins: {} address(es) in ANYCON_ADMIN_EMAILS",
+            handle.state.config.admin_emails.len()
+        ),
     }
 
     tokio::select! {

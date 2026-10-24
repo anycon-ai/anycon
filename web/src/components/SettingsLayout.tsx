@@ -1,14 +1,19 @@
 import { Link, Outlet } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
+import { useConfig } from '@/api/queries'
+import { isMultiMode } from '@/lib/oauth'
 import { PageHeader } from './PageHeader'
 
 export function SettingsLayout() {
   const { t } = useTranslation()
+  const multi = isMultiMode(useConfig().data)
   const items = [
     { to: '/settings', label: t('settings.profile'), exact: true, id: 'profile' },
     { to: '/settings/login', label: t('settings.login'), id: 'login' },
     { to: '/settings/sessions', label: t('settings.sessions'), id: 'sessions' },
     { to: '/settings/devices', label: t('settings.devices'), id: 'devices' },
+    // 配额只有 `multi` 才有
+    ...(multi ? [{ to: '/settings/quota', label: t('settings.quota'), id: 'quota' } as const] : []),
     { to: '/settings/notifications', label: t('settings.notifications'), id: 'notifications' },
     { to: '/settings/appearance', label: t('settings.appearance'), id: 'appearance' },
   ] as const

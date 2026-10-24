@@ -992,6 +992,54 @@ async fn without_email_the_cli_asks_which_sign_in_method_to_use_when_the_hub_off
 }
 
 #[tokio::test]
+async fn github_and_google_in_login_methods_are_ignored_and_never_contacted() {
+    // multi hub with SMTP and both OAuth providers: only the email code is usable, so the CLI uses it without asking
+    let rig = Rig::new().await;
+    rig.set_password().await;
+    *rig.hub.shared.login_methods.lock().unwrap() = vec!["github".into(), "google".into(), "email".into()];
+    let ui = Arc::new(
+        ScriptedUi::default()
+            .text("Email address", "multi@example.test")
+            .text("Code from the email", GOOD_EMAIL_CODE)
+            .text("Node password", PW),
+    );
+    run(&rig, ui.clone(), email_req(None, "mac-mini")).await.unwrap();
+    assert!(!ui.asked.lock().unwrap().iter().any(|p| p.contains("[email/token]")), "{:?}", ui.asked.lock().unwrap());
+    assert_eq!(*rig.hub.shared.email_sends.lock().unwrap(), vec!["multi@example.test"]);
+    assert!(
+        !rig.hub.http_log().iter().any(|l| l.contains("/oauth/") || l.contains("/callback/")),
+        "{:?}",
+        rig.hub.http_log()
+    );
+
+    // single hub that offers everything: the usual email-or-token choice, OAuth is not part of it
+    let rig = Rig::new().await;
+    rig.set_password().await;
+    *rig.hub.shared.login_methods.lock().unwrap() =
+        vec!["github".into(), "google".into(), "email".into(), "token".into()];
+    let ui = Arc::new(
+        ScriptedUi::default()
+            .text("[email/token]", "token")
+            .text("Account token", GOOD_TOKEN)
+            .text("Node password", PW),
+    );
+    run(&rig, ui.clone(), email_req(None, "mac-mini")).await.unwrap();
+    assert!(rig.hub.shared.email_sends.lock().unwrap().is_empty());
+    assert!(ui.asked.lock().unwrap().iter().any(|p| p.contains("[email/token]")));
+
+    // a hub with only OAuth (several providers): exit 2, suggest a short code, nothing was sent anywhere
+    let rig = Rig::new().await;
+    *rig.hub.shared.login_methods.lock().unwrap() = vec!["github".into(), "google".into()];
+    let ui = Arc::new(ScriptedUi::default());
+    let e = err(run(&rig, ui.clone(), email_req(None, "mac-mini")).await);
+    assert_eq!(e.exit, EXIT_USAGE, "{}", e.message);
+    assert!(e.message.contains("--code"), "{}", e.message);
+    assert!(ui.asked.lock().unwrap().is_empty());
+    assert!(email_log(&rig).is_empty(), "no sign-in request of any kind: {:?}", email_log(&rig));
+    assert!(rig.hub.shared.email_sends.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn a_wrong_email_code_is_asked_again_and_the_third_wrong_one_is_exit_five_without_a_session() {
     let rig = Rig::new().await;
     rig.set_password().await;

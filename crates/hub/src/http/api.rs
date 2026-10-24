@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::accounts;
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::store::{Account, Device, NewAudit};
@@ -114,7 +115,7 @@ fn clean_name(raw: &str, max: usize, what: &str) -> ApiResult<String> {
 pub struct ConfigView {
     mode: &'static str,
     public_url: String,
-    /// 启用的登录方式：`token`；配了 SMTP 才有 `email`。
+    /// 启用的登录方式，顺序固定：`github`、`google`（配了凭据）、`email`（配了 SMTP）、`token`（只有 `single`）。
     login_methods: Vec<&'static str>,
     protocol_version: u32,
     version: &'static str,
@@ -128,14 +129,10 @@ pub struct ConfigView {
 }
 
 pub async fn config(State(state): State<Arc<AppState>>) -> Json<ConfigView> {
-    let mut login_methods = vec!["token"];
-    if state.email_enabled() {
-        login_methods.push("email");
-    }
     Json(ConfigView {
         mode: state.config.mode.as_str(),
         public_url: state.config.public_url_str(),
-        login_methods,
+        login_methods: accounts::config_login_methods(&state),
         protocol_version: PROTOCOL_VERSION,
         version: VERSION,
         queue_enabled: false,
@@ -156,26 +153,16 @@ pub struct MeView {
     #[serde(skip_serializing_if = "Option::is_none")]
     email: Option<String>,
     is_admin: bool,
-    /// 这个账号现在能用来登录的方式：`token`（管理员的 bootstrap token，或自己建过登录 token）、
-    /// `email`（绑定了邮箱，而且 hub 配了 SMTP）。可能是空的（邀请进来、还没建 token、没绑邮箱）。
+    /// 这个账号现在能用来登录的方式（[`accounts::account_login_methods`]）：`github` / `google`（绑了身份）、
+    /// `email`（绑定了邮箱，而且 hub 配了 SMTP）、`token`（只有 `single`：管理员的 bootstrap token，或自己建过登录 token）。
+    /// 可能是空的（邀请进来、还没建 token、没绑邮箱）。
     login_methods: Vec<&'static str>,
 }
 
-/// 账号现在能用来登录的方式（解绑邮箱时用它判断「最后一种登录方式」）。
-pub async fn login_methods(state: &AppState, a: &Account) -> ApiResult<Vec<&'static str>> {
-    let mut methods = Vec::new();
-    if a.id == state.admin.account_id || !state.store.list_account_tokens(&a.id).await?.is_empty() {
-        methods.push("token");
-    }
-    if a.email.is_some() && state.email_enabled() {
-        methods.push("email");
-    }
-    Ok(methods)
-}
-
 pub async fn me_view(state: &AppState, a: Account) -> ApiResult<MeView> {
-    let login_methods = login_methods(state, &a).await?;
-    Ok(MeView { id: a.id, display_name: a.display_name, email: a.email, is_admin: a.is_admin, login_methods })
+    let login_methods = accounts::account_login_methods(state, &a).await?;
+    let is_admin = accounts::is_effective_admin(&state.config, &a);
+    Ok(MeView { id: a.id, display_name: a.display_name, email: a.email, is_admin, login_methods })
 }
 
 pub async fn me(State(state): State<Arc<AppState>>, auth: Authed) -> ApiResult<Json<MeView>> {
@@ -286,12 +273,29 @@ pub async fn create_token(
     Ok(Json(CreatedToken { id: created.id, token }))
 }
 
+/// `DELETE /api/me/tokens/{id}`（`single`）。删的是账号最后一个登录 token、而账号没有别的登录方式（邮箱、OAuth 身份，
+/// 也不是 bootstrap 管理员）→ `409 last_login_method`。和解绑邮箱、解除 OAuth 绑定一起按账号串行
+/// （[`accounts::begin_login_method_removal`]）。
 pub async fn delete_token(
     State(state): State<Arc<AppState>>,
     auth: Authed,
     client: Client,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
+    // 登录方式和 token 列表是锁里的同一次读
+    let removal = accounts::begin_login_method_removal(&state, &auth.account.id).await?;
+    if !removal.tokens.iter().any(|t| t.id == id) {
+        return Err(ApiError::not_found());
+    }
+    // bootstrap 管理员的 token 不是库里的行，删它名下的 token 行不会少一种方式（`token` 一直在清单里）。
+    let is_last_token = removal.tokens.len() == 1 && !accounts::is_bootstrap_admin(&state, &auth.account.id);
+    if is_last_token && removal.would_lock_out("token") {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "last_login_method",
+            "this is the only way this account can sign in; add another sign-in method first",
+        ));
+    }
     if !state.store.delete_account_token(&auth.account.id, &id).await? {
         return Err(ApiError::not_found());
     }
@@ -566,18 +570,64 @@ pub async fn admin_audit(
     Ok(page_response(entries, next))
 }
 
-/// `GET /api/admin/accounts?limit=&cursor=`：账号元数据，最早创建的在前（spec § 2.4）。
+/// 管理页的账号行：账号元数据，`is_admin` 是**有效**值，`admin_by_config` 标出它是靠 `ANYCON_ADMIN_EMAILS` 当上的
+/// （这种管理员改不了库里的标记，要改配置）。
+#[derive(Serialize)]
+pub struct AdminAccountView {
+    id: String,
+    display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    is_admin: bool,
+    admin_by_config: bool,
+    created_at_ms: u64,
+}
+
+/// 管理页账号列表的搜索参数。
+#[derive(Deserialize)]
+pub struct AccountSearch {
+    /// 显示名或邮箱的子串（不区分大小写），或者正好等于账号 id。空白等于没给。
+    #[serde(default)]
+    q: Option<String>,
+}
+
+/// 搜索串最长多少个字符。
+const MAX_SEARCH_CHARS: usize = 200;
+
+/// 一个账号在管理页里的样子（`is_admin` 是有效值，`admin_by_config` 见 [`AdminAccountView`]）。
+pub fn admin_account_view(state: &AppState, a: Account) -> AdminAccountView {
+    AdminAccountView {
+        is_admin: accounts::is_effective_admin(&state.config, &a),
+        admin_by_config: accounts::admin_by_config(&state.config, &a),
+        id: a.id,
+        display_name: a.display_name,
+        email: a.email,
+        created_at_ms: a.created_at_ms,
+    }
+}
+
+/// `GET /api/admin/accounts?q=&limit=&cursor=`：账号元数据，最早创建的在前（spec § 2.4）。
+/// `q` 搜显示名和邮箱（子串，不区分大小写）或账号 id（精确）；分页同没有 `q` 时。
 pub async fn admin_accounts(
     State(state): State<Arc<AppState>>,
     auth: Authed,
     Query(q): Query<PageQuery>,
+    Query(search): Query<AccountSearch>,
 ) -> ApiResult<Response> {
     auth.require_admin()?;
     let limit = q.limit()?;
     let after = q.cursor().map(decode_cursor).transpose()?;
-    let rows = state.store.list_accounts(limit + 1, after).await?;
-    let (accounts, next) = split_page(rows, limit, |a| encode_cursor(a.created_at_ms, &a.id));
-    Ok(page_response(accounts, next))
+    let needle = search.q.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    if needle.is_some_and(|n| n.chars().count() > MAX_SEARCH_CHARS) {
+        return Err(ApiError::bad_request(format!("q must be at most {MAX_SEARCH_CHARS} characters")));
+    }
+    let rows = match needle {
+        Some(needle) => state.store.search_accounts(needle, limit + 1, after).await?,
+        None => state.store.list_accounts(limit + 1, after).await?,
+    };
+    let (rows, next) = split_page(rows, limit, |a| encode_cursor(a.created_at_ms, &a.id));
+    let views: Vec<AdminAccountView> = rows.into_iter().map(|a| admin_account_view(&state, a)).collect();
+    Ok(page_response(views, next))
 }
 
 #[cfg(test)]

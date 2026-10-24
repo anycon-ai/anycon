@@ -21,7 +21,8 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 
 use crate::app::AppState;
-use crate::store::{NewAudit, NewDevice};
+use crate::quota;
+use crate::store::{CreateDevicesOutcome, DeviceLimit, NewAudit, NewDevice};
 use crate::util::{clip, hash_token, ip_prefix, new_id, new_secret, now_ms, ordered};
 use crate::ws::registry::Conn;
 
@@ -46,6 +47,9 @@ pub enum BeginError {
 struct Registration {
     host: Arc<Conn>,
     expires: Instant,
+    /// 发起这次登记时已经记过一次每日配对额度（host 有账号，`pair_begin` 检查并记了）。没记过的话——host 是第一次启动、
+    /// 还没有账号的 daemon——撮合成功时由 joiner 的账号补上，所以每个成功的撮合恰好记一次（[`Broker::join`]）。
+    charged: bool,
 }
 
 struct Match {
@@ -124,10 +128,11 @@ impl Broker {
     }
 
     /// host 登记 `match_id`：作废它之前的登记（一 host 一个），返回新登记的过期时间（Unix 毫秒）。
+    /// `charged`：调用方已经为这次登记记过一次每日配对额度（host 有账号）。
     ///
     /// 别的 host 已用同一个 `match_id` 登记过（只可能是同一个短码的重试，比如 daemon 换了连接而旧连接还没被发现断开）：
     /// 新的顶掉旧的。能到这一步的人本来就得知道短码。
-    pub fn begin(&self, host: &Arc<Conn>, match_id: &str) -> Result<u64, BeginError> {
+    pub fn begin(&self, host: &Arc<Conn>, match_id: &str, charged: bool) -> Result<u64, BeginError> {
         let key = self.key(&normalize_match_id(match_id).ok_or(BeginError::Malformed)?);
         let host_id = host.device_id();
         let mut g = self.lock();
@@ -140,14 +145,24 @@ impl Broker {
                 g.by_host.remove(&other);
             }
         }
-        g.regs.insert(key, Registration { host: host.clone(), expires: Instant::now() + self.ttl });
+        g.regs.insert(key, Registration { host: host.clone(), expires: Instant::now() + self.ttl, charged });
         g.by_host.insert(host_id, key);
         Ok(now_ms() + self.ttl.as_millis() as u64)
     }
 
     /// joiner 发来 `match_id`，精确匹配。命中则通知双方 `PairMatched`。
-    /// 格式不对、没有这个登记、已过期、host 已断开、自己 join 自己、joiner 已在另一场撮合里，一律 `NotFound`。
-    pub fn join(&self, joiner: &Arc<Conn>, match_id: &str) -> Result<(), PairFailReason> {
+    /// 格式不对、没有这个登记、已过期、host 已断开、自己 join 自己、joiner 已在另一场撮合里，一律 `NotFound`（这些不花额度）。
+    ///
+    /// 每日配对额度：**每个成功的撮合恰好记一次**。host 的登记已经记过账（`charged`，host 有账号）就不再记；没记过，
+    /// 在撮合成立之前调用 `charge`（对 joiner 的账号检查并记一次，joiner 没有账号时它直接返回 `true`）：返回 `false`
+    /// 是额度正好在这时用完了（和别的请求竞争）→ `Quota`。`charge` 在所有校验之后、登记被取走和撮合建立之前调用，
+    /// 所以失败时什么都还没改，登记原样留着，没有要撤销的东西。
+    pub fn join(
+        &self,
+        joiner: &Arc<Conn>,
+        match_id: &str,
+        charge: impl FnOnce() -> bool,
+    ) -> Result<(), PairFailReason> {
         let key = self.key(&normalize_match_id(match_id).ok_or(PairFailReason::NotFound)?);
         let mut g = self.lock();
         let entry = g.regs.get(&key).ok_or(PairFailReason::NotFound)?;
@@ -163,6 +178,9 @@ impl Broker {
         if g.matches.values().any(|m| Arc::ptr_eq(&m.joiner, joiner)) {
             // 同一个 joiner 同时只能有一场撮合。
             return Err(PairFailReason::NotFound);
+        }
+        if !entry.charged && !charge() {
+            return Err(PairFailReason::Quota);
         }
         let entry = g.regs.remove(&key).expect("checked above");
         let host = entry.host;
@@ -380,12 +398,8 @@ struct Issued {
     token: String,
 }
 
-async fn issue_device(
-    state: &Arc<AppState>,
-    conn: &Arc<Conn>,
-    account: &str,
-    now: u64,
-) -> Result<Issued, crate::store::StoreError> {
+/// 给一条临时连接准备设备记录（还没写库）：随机 id 和 token，名字等取自连接自报的 `ClientInfo`。
+fn prepare_device(conn: &Arc<Conn>, account: &str) -> (Issued, NewDevice) {
     let id = new_id();
     let token = new_secret();
     let c = &conn.client;
@@ -398,8 +412,40 @@ async fn issue_device(
         origin: c.origin.as_deref().map(|o| clip(o, 200)),
         token_hash: hash_token(&token),
     };
-    state.store.create_device(dev, now).await?;
-    Ok(Issued { id, token })
+    (Issued { id, token }, dev)
+}
+
+/// 把这次收尾要新建的设备写库。
+///
+/// `multi`（配了配额）：设备数 / daemon 数的检查和插入在一个写事务里（[`crate::store::Store::create_devices_within_limits`]），
+/// 同一个账号并发收尾也不会冲过上限；超了就一台都不建，`quota`。`single`：没有配额，逐台建。
+async fn create_devices(state: &Arc<AppState>, devices: Vec<NewDevice>, now: u64) -> Result<(), PairFailReason> {
+    let internal = |e: crate::store::StoreError| {
+        tracing::error!(error = %e, "pairing device creation failed");
+        PairFailReason::Timeout
+    };
+    match &state.config.quota {
+        Some(limits) => {
+            match state.store.create_devices_within_limits(devices, quota::device_limits(limits), now).await {
+                Ok(CreateDevicesOutcome::Created(_)) => Ok(()),
+                Ok(CreateDevicesOutcome::Exceeded(limit)) => {
+                    let limit = match limit {
+                        DeviceLimit::Devices => "devices",
+                        DeviceLimit::Daemons => "daemons",
+                    };
+                    tracing::info!(limit, "quota exceeded");
+                    Err(PairFailReason::Quota)
+                }
+                Err(e) => Err(internal(e)),
+            }
+        }
+        None => {
+            for device in devices {
+                state.store.create_device(device, now).await.map_err(internal)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn try_finalize(
@@ -439,19 +485,18 @@ async fn try_finalize(
     // 先建设备记录；中途失败就把已建的作废，免得留下没人持有 token 的孤儿设备。
     let mut issued_host = None;
     let mut issued_joiner = None;
-    let created: Result<(), PairFailReason> = async {
-        if !host.is_permanent() {
-            let i = issue_device(state, host, &account, now).await.map_err(|e| internal("host device creation", e))?;
-            issued_host = Some(i);
-        }
-        if !joiner.is_permanent() {
-            let i =
-                issue_device(state, joiner, &account, now).await.map_err(|e| internal("joiner device creation", e))?;
-            issued_joiner = Some(i);
-        }
-        Ok(())
+    let mut new_devices = Vec::new();
+    if !host.is_permanent() {
+        let (issued, device) = prepare_device(host, &account);
+        issued_host = Some(issued);
+        new_devices.push(device);
     }
-    .await;
+    if !joiner.is_permanent() {
+        let (issued, device) = prepare_device(joiner, &account);
+        issued_joiner = Some(issued);
+        new_devices.push(device);
+    }
+    let created = if new_devices.is_empty() { Ok(()) } else { create_devices(state, new_devices, now).await };
     let host_id = issued_host.as_ref().map_or_else(|| old_host_id.clone(), |i| i.id.clone());
     let joiner_id = issued_joiner.as_ref().map_or_else(|| joiner.device_id(), |i| i.id.clone());
     let result = match created {
@@ -504,6 +549,9 @@ async fn try_finalize(
         }
     }
 
+    // 新建了设备：账号的设备数和连接数都变了（升级后的连接此刻已是永久连接），告诉它其余在线的永久连接。
+    let created_any = issued_host.is_some() || issued_joiner.is_some();
+
     // 运行时：先换身份、更新对端缓存，再发 PairDone，这样对方收到后立刻用新身份发的帧不会被丢。
     for (issued, conn) in [(&issued_host, host), (&issued_joiner, joiner)] {
         if let Some(i) = issued {
@@ -537,6 +585,9 @@ async fn try_finalize(
     // 两边此刻都在线（升级后的同一条连接）：互相发 peer_online，客户端据此直接开始 IK 握手，不用重连。
     host.send_control(&Control::PeerOnline { device: joiner_id });
     joiner.send_control(&Control::PeerOnline { device: host_id });
+    if created_any {
+        quota::broadcast(state, &account, None).await;
+    }
     Ok(())
 }
 
@@ -594,7 +645,7 @@ mod tests {
         }
         let b = broker();
         let (host, _rx) = conn(1, "host", true);
-        assert_eq!(b.begin(&host, "nope"), Err(BeginError::Malformed));
+        assert_eq!(b.begin(&host, "nope", true), Err(BeginError::Malformed));
         assert_eq!(b.counts().0, 0);
     }
 
@@ -604,13 +655,13 @@ mod tests {
         let (host, _rx) = conn(1, "host", true);
         let (joiner, _rx2) = conn(2, "tmp", false);
         let before = now_ms();
-        let expires = b.begin(&host, M1).unwrap();
+        let expires = b.begin(&host, M1, true).unwrap();
         assert!(expires >= before + 299_000 && expires <= now_ms() + 300_000);
-        b.begin(&host, M2).unwrap();
+        b.begin(&host, M2, true).unwrap();
         assert_eq!(b.counts().0, 1);
-        assert_eq!(b.join(&joiner, M1), Err(PairFailReason::NotFound));
+        assert_eq!(b.join(&joiner, M1, || true), Err(PairFailReason::NotFound));
         // 大小写不敏感
-        assert!(b.join(&joiner, &M2.to_uppercase()).is_ok());
+        assert!(b.join(&joiner, &M2.to_uppercase(), || true).is_ok());
     }
 
     #[test]
@@ -619,12 +670,12 @@ mod tests {
         let (host, _r1) = conn(1, "host", true);
         let (j1, _r2) = conn(2, "j1", false);
         let (j2, _r3) = conn(3, "j2", false);
-        b.begin(&host, M1).unwrap();
+        b.begin(&host, M1, true).unwrap();
         // 差一位也不行
-        assert_eq!(b.join(&j1, "0123456789abcdee"), Err(PairFailReason::NotFound));
-        assert_eq!(b.join(&j1, "1123456789abcdef"), Err(PairFailReason::NotFound));
-        assert!(b.join(&j1, M1).is_ok());
-        assert_eq!(b.join(&j2, M1), Err(PairFailReason::NotFound));
+        assert_eq!(b.join(&j1, "0123456789abcdee", || true), Err(PairFailReason::NotFound));
+        assert_eq!(b.join(&j1, "1123456789abcdef", || true), Err(PairFailReason::NotFound));
+        assert!(b.join(&j1, M1, || true).is_ok());
+        assert_eq!(b.join(&j2, M1, || true), Err(PairFailReason::NotFound));
         assert!(b.is_matched("host", "j1"));
         assert!(b.is_matched("j1", "host"));
         assert!(!b.is_matched("host", "j2"));
@@ -634,9 +685,9 @@ mod tests {
     fn host_cannot_join_own_registration_and_garbage_is_not_found() {
         let b = broker();
         let (host, _r1) = conn(1, "host", true);
-        b.begin(&host, M1).unwrap();
-        assert_eq!(b.join(&host, M1), Err(PairFailReason::NotFound));
-        assert_eq!(b.join(&host, "not a match id"), Err(PairFailReason::NotFound));
+        b.begin(&host, M1, true).unwrap();
+        assert_eq!(b.join(&host, M1, || true), Err(PairFailReason::NotFound));
+        assert_eq!(b.join(&host, "not a match id", || true), Err(PairFailReason::NotFound));
     }
 
     #[test]
@@ -645,14 +696,76 @@ mod tests {
         let (old, _r1) = conn(1, "old", false);
         let (new, _r2) = conn(2, "new", false);
         let (j, _r3) = conn(3, "j", false);
-        b.begin(&old, M1).unwrap();
-        b.begin(&new, M1).unwrap();
+        b.begin(&old, M1, true).unwrap();
+        b.begin(&new, M1, true).unwrap();
         assert_eq!(b.counts().0, 1);
         // 旧连接断开不能把新的登记带走
         b.conn_closed(&old);
         assert_eq!(b.counts().0, 1);
-        assert!(b.join(&j, M1).is_ok());
+        assert!(b.join(&j, M1, || true).is_ok());
         assert!(b.is_matched("new", "j"));
+    }
+
+    #[test]
+    fn a_registration_nobody_charged_is_charged_to_the_joiner_once_the_match_is_certain() {
+        use std::cell::Cell;
+        let b = broker();
+        let (host, _r1) = conn(1, "host", false);
+        let (j, _r2) = conn(2, "j", true);
+        let charges = Cell::new(0);
+        let charge = |ok: bool| {
+            let charges = &charges;
+            move || {
+                charges.set(charges.get() + 1);
+                ok
+            }
+        };
+
+        // 没有这个登记 / 格式不对 / 自己加入自己：不到记账那一步
+        b.begin(&host, M1, false).unwrap();
+        assert_eq!(b.join(&j, M2, charge(true)), Err(PairFailReason::NotFound));
+        assert_eq!(b.join(&j, "garbage", charge(true)), Err(PairFailReason::NotFound));
+        assert_eq!(b.join(&host, M1, charge(true)), Err(PairFailReason::NotFound));
+        assert_eq!(charges.get(), 0, "a join that cannot match costs nothing");
+
+        // 额度正好在这时用完：Quota，登记原样留着，没有撮合、没有悬着的 edge
+        assert_eq!(b.join(&j, M1, charge(false)), Err(PairFailReason::Quota));
+        assert_eq!(charges.get(), 1);
+        assert_eq!(b.counts(), (1, 0, 0));
+        assert!(!b.is_matched("host", "j"));
+
+        // 之后额度回来了，同一个登记照样能加入，这一次记一次
+        assert!(b.join(&j, M1, charge(true)).is_ok());
+        assert_eq!(charges.get(), 2);
+        assert_eq!(b.counts(), (0, 1, 1));
+        assert!(b.is_matched("host", "j"));
+    }
+
+    #[test]
+    fn a_registration_that_was_already_charged_is_not_charged_again_at_the_join() {
+        let b = broker();
+        let (host, _r1) = conn(1, "host", true);
+        let (j, _r2) = conn(2, "j", true);
+        b.begin(&host, M1, true).unwrap();
+        let mut charged = false;
+        assert!(b
+            .join(&j, M1, || {
+                charged = true;
+                true
+            })
+            .is_ok());
+        assert!(!charged, "the host's pair_begin already paid for this pairing");
+        // 同一个 host 再登记一次就是新的一次发起，各自带各自的 charged 标记
+        let (j2, _r3) = conn(3, "j2", true);
+        b.begin(&host, M2, false).unwrap();
+        let mut charged = false;
+        assert!(b
+            .join(&j2, M2, || {
+                charged = true;
+                true
+            })
+            .is_ok());
+        assert!(charged);
     }
 
     #[test]
@@ -660,8 +773,8 @@ mod tests {
         let b = broker();
         let (host, _r1) = conn(1, "host", true);
         let (j, _r2) = conn(2, "tmp", false);
-        b.begin(&host, M1).unwrap();
-        b.join(&j, M1).unwrap();
+        b.begin(&host, M1, true).unwrap();
+        b.join(&j, M1, || true).unwrap();
         assert!(matches!(b.confirm(&host, "wrong"), ConfirmOutcome::Unknown));
         assert!(matches!(b.confirm(&host, "tmp"), ConfirmOutcome::Waiting));
         assert!(matches!(b.confirm(&j, "host"), ConfirmOutcome::Ready { .. }));
@@ -673,12 +786,12 @@ mod tests {
         let b = broker();
         let (host, _r1) = conn(1, "host", true);
         let (j, _r2) = conn(2, "tmp", false);
-        b.begin(&host, M1).unwrap();
-        b.join(&j, M1).unwrap();
+        b.begin(&host, M1, true).unwrap();
+        b.join(&j, M1, || true).unwrap();
         b.conn_closed(&j);
         assert_eq!(b.counts(), (0, 0, 0));
         // host 断开撤销登记
-        b.begin(&host, M2).unwrap();
+        b.begin(&host, M2, true).unwrap();
         b.conn_closed(&host);
         assert_eq!(b.counts(), (0, 0, 0));
     }
@@ -688,8 +801,8 @@ mod tests {
         let b = Broker::new(Duration::from_secs(300), Duration::from_millis(0));
         let (host, _r1) = conn(1, "host", true);
         let (j, _r2) = conn(2, "tmp", false);
-        b.begin(&host, M1).unwrap();
-        b.join(&j, M1).unwrap();
+        b.begin(&host, M1, true).unwrap();
+        b.join(&j, M1, || true).unwrap();
         b.sweep();
         assert_eq!(b.counts(), (0, 0, 0));
     }
@@ -699,9 +812,9 @@ mod tests {
         let b = Broker::new(Duration::from_millis(0), Duration::from_secs(60));
         let (host, _r1) = conn(1, "host", true);
         let (j, _r2) = conn(2, "tmp", false);
-        b.begin(&host, M1).unwrap();
-        assert_eq!(b.join(&j, M1), Err(PairFailReason::NotFound));
-        b.begin(&host, M1).unwrap();
+        b.begin(&host, M1, true).unwrap();
+        assert_eq!(b.join(&j, M1, || true), Err(PairFailReason::NotFound));
+        b.begin(&host, M1, true).unwrap();
         b.sweep();
         assert_eq!(b.counts().0, 0);
     }
@@ -732,7 +845,7 @@ mod tests {
     fn broker_state_does_not_hold_the_raw_match_id() {
         let b = broker();
         let (host, _rx) = conn(1, "host", true);
-        b.begin(&host, M1).unwrap();
+        b.begin(&host, M1, true).unwrap();
         let dump = format!("{b:?}");
         assert!(!dump.contains(M1) && !dump.contains(&M1.to_uppercase()), "{dump}");
         assert!(dump.contains("registrations: 1"));

@@ -10,7 +10,19 @@ hub 的每个功能都要能回答一个问题：**这个功能需要看消息�
 
 ## 2. HTTP 表面
 
-> **实现范围**：静态与健康、`/api/config`、`POST /auth/token` · `/auth/invite` · `/auth/logout`、邮箱验证码登录（`/auth/email/*`，配了 SMTP 才有；[ADR-37](../decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）、`/api/me`（含 `sessions`、`tokens`、`email`、`notifications`）、`/api/devices`、`/api/invites`、`/api/push/*`（Web Push）、`/api/admin/status` · `/api/admin/audit` · `GET /api/admin/accounts`（只读、仅管理员、只含账号元数据）。passkey、OAuth、配额、`DELETE /api/me` 不在内（见 [roadmap](../roadmap.md)）；`/api/config` 里的 `queue_enabled` 恒为 `false`。
+> **实现范围**：静态与健康、`/api/config`、`/auth/logout`；登录：`POST /auth/token` · `/auth/invite`（仅 `single`）、邮箱验证码（`/auth/email/*`，配了 SMTP 才有；`multi` 里对没注册的邮箱也发码、验证通过就建账号；[ADR-37](../decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）、GitHub / Google（`/auth/oauth/*` · `/auth/callback/*`，配了凭据的提供方才有，两种模式都有；[ADR-40](../decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)）；账号：`/api/me`（含 `sessions`、`email`、`identities`、`notifications`、`tokens`（仅 `single`））、`DELETE /api/me`、`/api/devices`、`/api/quota`、`/api/invites`（仅 `single`）、`/api/push/*`（Web Push）；管理：`/api/admin/status` · `audit` · `accounts`（搜索、授予 / 取消管理员、删除，仅管理员，只含账号元数据）。passkey 不在内（见 [roadmap](../roadmap.md)）；`/api/config` 里的 `queue_enabled` 恒为 `false`。
+
+两种模式（`ANYCON_MODE`，[architecture.md § 3](../architecture.md#3-运行模式)）在 HTTP 表面上的差别：
+
+| | `single` | `multi` |
+|---|---|---|
+| bootstrap 管理员账号和 token | 有 | 没有（不生成、不读写 `admin-token`） |
+| `POST /auth/token`、`POST /auth/invite`、`/api/me/tokens*`、`/api/invites*` | 有 | 路由不挂：`404 not_found`，没登录也一样 |
+| 注册 | 只能凭邀请：邀请链接，或 OAuth 登录时带邀请码；邮箱验证码只给已绑定邮箱的账号 | 开放：第一次邮箱验证码或 OAuth 登录就建账号 |
+| 配额（`auth_ok.quota`、`quota_update`、§ 7.1） | 不启用 | 启用 |
+| 管理员 | bootstrap 账号，加上库里被授予的 | `ANYCON_ADMIN_EMAILS` 里的邮箱，加上库里被授予的 |
+
+已有的 `single` 数据库可以直接切到 `multi`：账号和设备原样保留，token 和邀请登录停止工作；原来的管理员账号要有邮箱（且配了 SMTP）或 OAuth 身份才登录得进来。
 
 ### 2.1 静态与健康
 
@@ -19,7 +31,7 @@ hub 的每个功能都要能回答一个问题：**这个功能需要看消息�
 | `/`、`/assets/*`、`/manifest.webmanifest`、`/sw.js`、`/THIRD-PARTY-LICENSES.txt` | 嵌入的 Web UI（最后一个是 Web UI 里 npm 包的许可证清单，构建时生成）。所有不匹配 `/api`、`/auth`、`/v1` 的路径回退到 `index.html`（SPA 路由） |
 | `GET /healthz` | 进程活着。返回版本号，不查库 |
 | `GET /readyz` | 数据库可用、migration 已跑完。反代和容器编排用这个 |
-| `GET /api/config` | 公开配置：`mode`、`public_url`、启用的登录方式（`["token"]`，配了 SMTP 时 `["token","email"]`）、是否开启队列、`vapid_public_key`（恒有值）、`push_available`（恒 `true`：VAPID 密钥缺失 hub 起不来）、协议版本、`preview_origin_template`（配了预览时如 `"https://{label}.aiplace.app"`，否则 `null`，§ 13）。登录页和客户端启动时拉一次，不需要认证 |
+| `GET /api/config` | 公开配置：`mode`、`public_url`、启用的登录方式 `login_methods`（顺序固定：`github`、`google`（配了对应的 OAuth 凭据）、`email`（配了 SMTP）、`token`（仅 `single`）；只有 `single` 且配了 SMTP 时是 `["email","token"]`）、是否开启队列、`vapid_public_key`（恒有值）、`push_available`（恒 `true`：VAPID 密钥缺失 hub 起不来）、协议版本、`preview_origin_template`（配了预览时如 `"https://{label}.aiplace.app"`，否则 `null`，§ 13）。登录页和客户端启动时拉一次，不需要认证 |
 
 **安全头**：HTML 响应（`index.html` 和 SPA 回退，含 304）带 `Content-Security-Policy`；JSON 和静态资源不带：
 
@@ -37,14 +49,37 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 
 | 路径 | 说明 |
 |---|---|
-| `POST /auth/token` | `{ token }` → 设 session cookie。仅 `single` 模式。失败按 IP 限速 |
+| `POST /auth/token` | `{ token }` → 设 session cookie。仅 `single` 模式（`multi` 里 `404 not_found`）。失败按 IP 限速 |
 | `POST /auth/passkey/register/begin` · `finish` | 已登录状态下绑定 passkey。`begin` 返回 WebAuthn 创建选项 |
 | `POST /auth/passkey/login/begin` · `finish` | 免密登录。支持 conditional UI（浏览器自动填充） |
-| `POST /auth/email/send` | `{ email }` → `200 { ok, resend_after_secs }`；邮箱格式不对 `400 invalid_email`；没配 SMTP 时这几条邮箱路由都是 `404 not_found`。**总是** 200（防枚举）：邮箱绑定了账号才发码，邮件在后台任务里发，响应时间不随邮箱是否注册变化。`single` 模式只给已绑定邮箱的账号发（ADR-37），不能用邮箱注册 |
-| `POST /auth/email/verify` | `{ email, code }`（码容忍 `123 456` / `123-456`）。成功 `204` + cookie；码不对、过期、用过、不存在、邮箱格式不对一律 `401 invalid_code`（不说是哪一种），失败的响应一律在请求开始后至少 250 ms 才发出（不让响应时间暴露邮箱是否绑定）；每个码**尝试** 5 次就作废（找码、加尝试次数、比对在一条原子的 SQL 里完成，并发猜测也只有 5 次机会）；比对成功时原子认领，并发提交同一个码只有一个成功。`multi` 的「未注册邮箱直接建号」随 `multi` 一起做 |
-| `GET /auth/oauth/:provider/start` | 跳转到 provider。query 可带 `invite`（注册）或 `link=1`（已登录时关联身份）。`state` 存服务端，10 分钟有效 |
-| `GET /auth/callback/:provider` | 回调。按 [architecture.md § 3.2](../architecture.md#32-账号与身份) 的规则匹配或创建账号，然后 302 到 `/` |
+| `POST /auth/email/send` | `{ email }` → `200 { ok, resend_after_secs }`；邮箱格式不对 `400 invalid_email`；没配 SMTP 时这几条邮箱路由都是 `404 not_found`。**总是** 200（防枚举），邮件在后台任务里发，响应时间不随邮箱是否注册变化，限速也与邮箱是否注册无关。`single` 只给已绑定邮箱的账号发码（ADR-37），不能用邮箱注册；`multi` 对任何合法邮箱都发码（开放注册） |
+| `POST /auth/email/verify` | `{ email, code }`（码容忍 `123 456` / `123-456`）。成功 `204` + cookie；码不对、过期、用过、不存在、邮箱格式不对一律 `401 invalid_code`（不说是哪一种），失败的响应一律在请求开始后至少 250 ms 才发出（不让响应时间暴露邮箱是否绑定）；每个码**尝试** 5 次就作废（找码、加尝试次数、比对在一条原子的 SQL 里完成，并发猜测也只有 5 次机会）；比对成功时原子认领，并发提交同一个码只有一个成功。码对了之后：邮箱属于某个账号 → 登录它；`multi` 里没有账号用这个邮箱 → 以这个邮箱建账号（显示名取邮箱 `@` 之前的部分，审计 `account_created { method: email }`）再登录，两个请求同时为同一个新邮箱建号时输的一方登录赢家建的那个账号；`single` 里这种情况（码发出之后邮箱被解绑）和码不对一样处理 |
+| `GET /auth/oauth/:provider/start` | 302 到 provider 的授权页。`:provider` 是 `github` 或 `google`，没配凭据或不认识 → `404 not_found`。query：`next`、`link=1`、`invite`。见 § 2.2.1 |
+| `GET /auth/callback/:provider` | provider 授权后的回调。**成功和失败都是 `302`**，见 § 2.2.1 |
 | `POST /auth/logout` | 删当前 web session |
+
+### 2.2.1 OAuth 登录
+
+两种模式都有，配了 `ANYCON_OAUTH_<P>_CLIENT_ID` / `_CLIENT_SECRET` 的提供方才存在（[deploy.md § 3.1](../deploy.md#31-登录方式的配置)）。授权码流程 + PKCE（S256）+ `state`；账号怎么匹配、关联、创建见 [architecture.md § 3.2](../architecture.md#32-账号与身份)，取舍见 [ADR-40](../decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。
+
+**`GET /auth/oauth/:provider/start`**
+
+- query：`next=<路径>`（登录后回到哪里）、`link=1`（已登录的账号关联这个身份）、`invite=<码>`（仅 `single`：新用户凭邀请码注册；`multi` 里忽略）。`next` 只收站内路径：以 `/` 开头、不以 `//` 或 `/\` 开头、没有控制字符、不超过 512 字节，否则丢掉（回 `/`）
+- 每个 IP 每分钟 20 次，超了 `429`
+- 回调只回得到公网地址（`redirect_uri` 是 `${ANYCON_PUBLIC_URL}/auth/callback/<provider>`）。请求的 `Host` 不是 `ANYCON_PUBLIC_URL` 的主机（和端口）时，先 `302` 到公网地址上的同一路径和 query，在那里重新开始。目标只由配置里的公网地址拼出，不用 `Host` 拼链接；这一跳至多一次：跳转地址的 query 末尾带标记 `hop=1`，带着它的请求不再跳转，直接按公网地址上的请求处理（所以反代改写了 `Host` 也不会循环）。标记只管跳转：处理请求之前先从参数里去掉，不进 `oauth_states`，也不会带给提供方。所以反代还是要传原始 `Host`（[deploy.md § 4](../deploy.md#4-反向代理)）
+- `link=1` 需要登录态；没有 → `302 /login?oauth_error=not_signed_in&provider=<p>`，不去 provider
+- 登记一次授权：随机 `state`（32 字节，hex）、PKCE verifier、用途（`login` / `link` / `invite`）、`next`、`link` 的账号或 `invite` 的邀请码哈希，写进 `oauth_states`（`state` 只存哈希），10 分钟有效。种 cookie `anycon_oauth=<state>`：`Path=/auth/callback; Max-Age=600; HttpOnly; SameSite=Lax`，`Secure` 的规则同 session cookie。然后 `302` 到 provider 的授权地址，scope：GitHub `read:user user:email`，Google `openid email profile`
+
+**`GET /auth/callback/:provider?code=&state=`**（失败时 provider 带的是 `?error=`）
+
+- 响应永远是 `302`，带 `Cache-Control: no-store`，并清掉 `anycon_oauth` cookie。内部出错也是 302（`server_error`），不返回 JSON
+- 校验 `state`：必须有；`anycon_oauth` cookie 必须和它一致（常数时间比较）；库里有、没过期、属于这个 provider。通过就**原子取走**（单次使用）。任何一条不满足 → `invalid_state`。cookie 把这次回调绑在发起授权的那个浏览器上：攻击者能让受害者的浏览器打开带攻击者 `state` 的回调地址，但种不下对应的 cookie
+- provider 带回 `error=access_denied`（用户点了拒绝）→ `cancelled`；其他 `error`、缺 `code`、换 token 或取用户信息失败 / 超时 → `provider_error`
+- 和 provider 的出站调用：每次（连接 + 请求 + 读完响应）10 秒超时，不跟随重定向，响应体最多 256 KiB。access token 只在内存里用来调用户信息接口，不存、不记日志。Google 调 userinfo 接口，不解析 `id_token`。GitHub 的 `/user/emails` 返回 `401` / `403` / `404`（授权里没有邮箱权限）时不算失败：照常登录，只是没有已验证邮箱；`5xx` 或超时 → `provider_error`
+- `link` 用途：当前 session cookie 必须还是发起关联的那个账号（否则 `not_signed_in`）；身份已经在本账号 → 什么都不做算成功；已经在别的账号 → `identity_taken`；本账号在这个 provider 已经有别的身份 → `already_linked`。不碰账号的邮箱。审计 `identity_linked`
+- `login` / `invite` 用途：`(provider, subject)` 已有账号 → 登录它；否则 provider **声明已验证**的邮箱等于某个账号的邮箱 → 把身份关联到那个账号并登录（审计 `identity_linked`；该账号在这个 provider 已有别的身份 → `already_linked`）；都没有 → `multi` 建新账号（邮箱 = 已验证的邮箱，没有就没邮箱；审计 `account_created { method: <provider> }`），`single` 带邀请码就兑换邀请建账号（`invite_invalid` / `invite_expired` / `invite_used`，审计 `account_created`、`invite_used`），不带 → `registration_closed`。建账号和绑身份（`single` 里还有兑换邀请）是库里的一个事务。**没有、未验证或读不到的邮箱从不用来匹配账号，也不会成为账号的邮箱**
+- 成功：登录 / 邀请用途 → 设 session cookie，`302` 到 `next`（默认 `/`），审计 `login_ok { method: <provider> }`；关联用途 → `302 /settings/login?linked=<provider>`
+- 失败：关联用途 → `302 /settings/login?oauth_error=<code>&provider=<p>`，其余 → `302 /login?oauth_error=<code>&provider=<p>`。`oauth_error` 码（稳定，Web UI 据此做 i18n）：`cancelled`、`provider_error`、`server_error`、`invalid_state`、`registration_closed`、`invite_invalid`、`invite_expired`、`invite_used`、`identity_taken`、`already_linked`、`not_signed_in`。`login` 用途在 `state` 校验通过之后的失败写审计 `login_fail { method: <provider> }`；`state` 本身就不对的请求不是一次登录尝试，不写
 
 ### 2.3 账号与设备 `/api/*`
 
@@ -52,34 +87,34 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 
 | 路径 | 说明 |
 |---|---|
-| `GET /api/me` | `{ id, display_name, email?, is_admin, login_methods }`。`login_methods` 是「现在能用来登录的方式」：`token`（管理员的 bootstrap token，或账号自己建过登录 token）、`email`（绑定了邮箱**且** hub 配了 SMTP），可以是空数组（受邀进来、没建 token、没绑邮箱）；解绑邮箱时的「最后一种登录方式」按它判断 |
+| `GET /api/me` | `{ id, display_name, email?, is_admin, login_methods }`。`is_admin` 是**有效**管理员（§ 2.4）。`login_methods` 是「现在能用来登录的方式」，顺序同 `/api/config`：`github` / `google`（账号绑了这个提供方的身份**且** hub 配了它）、`email`（绑定了邮箱**且** hub 配了 SMTP）、`token`（仅 `single`：bootstrap 管理员，或账号自己建过登录 token）。可以是空数组（受邀进来、没建 token、没绑邮箱）。解绑邮箱、解除身份、删登录 token 时的「最后一种登录方式」都按它判断 |
 | `PATCH /api/me` | 改显示名 |
-| `POST /api/me/email` · `POST /api/me/email/verify` · `DELETE /api/me/email` | 绑定 / 换绑邮箱：`{ email }` 发码（邮箱规范化为去空白 + 小写；已被别的账号占用 → `409 email_taken`；限速同 `/auth/email/send`），`{ email, code }` 生效，回更新后的 `/api/me`；错码是 **`400 invalid_code`**（不是 401：账号登录着，前端遇到 401 会当登录失效）；验证时被别人先占了 `409 email_taken`。解绑：账号没有别的登录方式时 `409 last_login_method`，没绑定过也是 `204`。审计 `email_changed`（`detail.change` = `bound` / `changed` / `removed`，不记邮箱）。配了 SMTP 才存在 |
+| `POST /api/me/email` · `POST /api/me/email/verify` · `DELETE /api/me/email` | 绑定 / 换绑邮箱：`{ email }` 发码（邮箱规范化为去空白 + 小写；已被别的账号占用 → `409 email_taken`；限速同 `/auth/email/send`），`{ email, code }` 生效，回更新后的 `/api/me`；错码是 **`400 invalid_code`**（不是 401：账号登录着，前端遇到 401 会当登录失效）；验证时被别人先占了 `409 email_taken`。解绑：账号没有别的登录方式时 `409 last_login_method`，没绑定过也是 `204`；和身份解除、登录 token 删除一起按账号串行（见下），并发的两次不会各自以为还剩一种。审计 `email_changed`（`detail.change` = `bound` / `changed` / `removed`，不记邮箱）。配了 SMTP 才存在 |
 | `GET /api/me/sessions` · `DELETE /api/me/sessions/:id` | 浏览器登录会话列表（UA、IP 前缀、最近活动），可单个踢出 |
-| `GET /api/me/tokens` · `POST` · `DELETE /:id` | 登录 token。`POST` 返回明文一次，库里存 blake2 哈希。仅 `single` |
+| `GET /api/me/tokens` · `POST` · `DELETE /:id` | 登录 token。`POST` 返回明文一次，库里存 blake2 哈希。删的是账号最后一个登录 token、而账号没有别的登录方式（绑定了邮箱且配了 SMTP、hub 配了的提供方的 OAuth 身份）→ `409 last_login_method`；`single` 的 bootstrap 管理员始终有 bootstrap token（它不是库里的行），所以删得掉自己名下的 token；`id` 不属于本账号 → `404 not_found`。和解绑邮箱、解除身份一起按账号串行（见下）。仅 `single`（`multi` 里 `404 not_found`） |
 | `GET /api/me/passkeys` · `PATCH /:id`（改名）· `DELETE /:id` | |
-| `GET /api/me/identities` · `DELETE /:provider` | OAuth 身份。最后一种登录方式不能删，返回 `409 last_login_method` |
+| `GET /api/me/identities` · `DELETE /:provider` | OAuth 身份，两种模式都有。`GET` → `[{ provider: "github" \| "google", created_at_ms }]`；库里只存 `(provider, subject, account_id, created_at_ms)`，不存也不返回用户名、邮箱、头像和 access token。`DELETE` → `204`（没绑过也是 `204`）；`:provider` 不是 `github` / `google` → `404 not_found`；这是账号唯一的登录方式 → `409 last_login_method`（只有 hub 现在配了的提供方才算登录方式）；和解绑邮箱、删登录 token 一起按账号串行（见下）。审计 `identity_unlinked`。一个账号在一个提供方最多一个身份 |
 | `GET /api/devices` | 本账号全部设备：id、名称、kind（`daemon` / `web` / `cli` / `sdk`）、平台、origin（web 设备）、创建时间、最近在线、当前是否在线、与哪些设备配对。**也接受设备 token**（`Authorization: Bearer <device token>`，只读，返回内容和 cookie 登录时一样）：CLI 已经是这个 hub 上的设备时用它列节点，不必再登录一次（[spec/cli.md § 3.3](cli.md)）。带了 `Authorization` 头就只看它（不回退到 cookie）；token 不存在、已吊销、不是 `Bearer` 都是 `401 unauthorized`。设备 token 只开放这个接口和 `POST /api/preview/tokens`（§ 13.3，只认设备 token），`PATCH` / `DELETE` 和其余 `/api/*` 仍然只认登录 cookie |
 | `PATCH /api/devices/:id` | 改名 |
 | `DELETE /api/devices/:id` | 吊销：断连接、删配对、删 push 订阅。**只是 hub 侧的一半**，daemon 侧的公钥删除由客户端通过 `node.revoke_device` 完成；UI 两步一起做 |
-| `GET /api/invites` · `POST` · `DELETE /:id` | 邀请链接。`single` 模式管理员专用；`multi` 不开放。单次使用、默认 7 天过期、可附备注 |
+| `GET /api/invites` · `POST` · `DELETE /:id` | 邀请链接。仅 `single`，管理员专用（`multi` 里 `404 not_found`，开放注册没有邀请）。单次使用、默认 7 天过期、可附备注。受邀者用链接兑换（`/auth/invite`），或者带着邀请码走 OAuth 登录（§ 2.2.1） |
 | `GET /api/push/subscriptions` · `POST` · `DELETE /:id` | Web Push 订阅，按设备（浏览器）存（§ 6.1）。`POST { device_id, endpoint, keys: { p256dh, auth } }`：`device_id` 必须是本账号未吊销的 web 设备（否则 `404 device_not_found`）；endpoint 必须是 https 且主机在白名单里（否则 `400 push_endpoint_not_allowed`）；同一设备只留一条。`POST` 回 `200` 和这一行；`GET` 的行是 `{ id, device_id, device_name, endpoint_host, created_at_ms }`（endpoint 本身和密钥不回显）|
 | `POST /api/push/test` | `{ device_id }`：给这台设备的订阅发一条测试推送（载荷 `{ "category": "test" }`），同步等推送服务的结果（最多 10 秒），回 `{ result: ok | gone | error, status? }`（`gone` 时顺手删了订阅）；设备没有订阅 `404 subscription_not_found`；`TTL: 60` |
 | `GET /api/me/notifications` · `PUT` | 通知偏好：每个 `category` 走哪些渠道（push / email），见 § 6.3。`GET` → `{ categories: [{ category, push, email }]（六个，顺序固定）, email_available（配了 SMTP 且账号绑定了邮箱）, push_available }`；`PUT { categories }` 可以只带要改的类别，回完整结果 |
-| `GET /api/quota` | 配额用量。`single` 返回全部 unlimited |
-| `DELETE /api/me` | 删账号（v0.2，`multi`）。级联删设备、配对、订阅；要求重新认证 |
+| `GET /api/quota` | 本账号的用量和上限：`{ devices, devices_max, daemons, daemons_max, connections, connections_max, daily_pairings, daily_pairings_max }`。`*_max` 为 `null` 表示不限，`single` 里恒为 `null`；计数是真的（`daily_pairings` 在 `single` 里不计，恒为 0）。怎么数、在哪里检查见 § 7.1 |
+| `DELETE /api/me` | 删自己的账号，两种模式都有。要求最近登录过：当前浏览器会话**创建**于 10 分钟之内（看创建时间，不看滑动续期后的过期时间），否则 `403 reauth_required`，客户端让用户退出再登录一次。`single` 的 bootstrap 管理员 → `409 bootstrap_admin`（先于 `reauth_required` 判断）。成功 `204` 并清 cookie。删除的内容和顺序见 § 2.6 |
 
 ### 2.4 管理 `/api/admin/*`
 
-`single` 模式下第一个账号是管理员（`accounts.is_admin`）；`multi` 模式的管理员由 `ANYCON_ADMIN_EMAILS` 指定。
+**有效管理员** = 库里的 `accounts.is_admin` 标记，**或者**（`multi` 且账号邮箱在 `ANYCON_ADMIN_EMAILS` 里）。这个判断只有一份实现，授权（所有 `/api/admin/*` 和 `single` 的邀请）和 `GET /api/me`、管理页的 `is_admin` 都用它，读取账号时现算，**不写回库里的标记**：改配置重启即生效，把邮箱从配置里去掉立刻失去权限。账号邮箱都是验证过的（邮箱验证码，或 OAuth 提供方声明已验证），所以邮箱本身证明了持有人。`single` 的 bootstrap 管理员是用 bootstrap token 登录的那个账号，它的账号 id 记在 `kv.bootstrap_admin_id` 里，每次启动都认这个 id，**不是**「库里最早的管理员」（管理员标记现在可以授予别的账号，`multi` 跑过一阵再切回 `single` 时，最早的管理员可能是个普通用户，bootstrap token 不能登录到别人的账号里）。这个键还没有时：库里有 `kv.admin_token_hash`（升级前 `single` 已经启动过，那时最早的管理员就是 bootstrap 账号）→ 沿用最早的管理员并记下来；这一步在**升级后第一次启动时就做，两种模式都做**（`multi` 不用这个账号，但管理员标记可能在 `multi` 里先被取消、被授予别人，等切回 `single` 再钉就认错了）。否则（全新的库）在 `single` 启动时新建一个 `admin` 账号，账号和记录在一个事务里写（中途崩溃不会留下没人记得的管理员账号）。记着的账号已经被删了 → 新建一个并记下来。记着的账号在库里不是管理员了（`multi` 期间被取消）→ 启动时把标记补回来（`single` 里取消不了它）。`single` 里的 `ANYCON_ADMIN_EMAILS` 被忽略（启动警告）。`multi` 里第一个管理员只能来自 `ANYCON_ADMIN_EMAILS`（除非直接改库），之后可以由管理员授予别人。取舍见 [ADR-40](../decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。
 
 | 路径 | 说明 |
 |---|---|
 | `GET /api/admin/status` | 模式、版本、启动时间、在线连接数、设备数、账号数、队列状态、数据库大小 |
-| `GET /api/admin/accounts` | 账号列表（只读元数据：`id`、`display_name`、`email`、`is_admin`、`created_at_ms`）。支持分页（§ 2.5）。v0.1 只有列表；删账号、授予管理员（下面两行）不在 v0.1 |
-| `DELETE /api/admin/accounts/:id` | 删账号 |
-| `POST /api/admin/accounts/:id/admin` · `DELETE` | 授予 / 取消管理员 |
-| `GET /api/admin/audit` | hub 侧审计：登录、设备增删、吊销、配对（只有元数据，见 § 9） |
+| `GET /api/admin/accounts` | 账号列表（只读元数据）：`{ id, display_name, email?, is_admin, admin_by_config, created_at_ms }`，按创建时间从早到晚。`is_admin` 是有效值；`admin_by_config` 为真表示这个账号是靠 `ANYCON_ADMIN_EMAILS` 当上的（要取消只能改配置）。分页见 § 2.5。`?q=`：显示名或邮箱包含它，或者**正好**等于账号 id；首尾空白去掉，空白等于没给，超过 200 个字符 `400 bad_request`；带 `q` 时分页方式不变。过滤和分页都在 SQL 里做（`LIKE … ESCAPE`，`q` 里的 `%`、`_` 当字面字符），不把账号表读进内存。**只有 ASCII 字母不区分大小写**（SQLite 的 `lower()` 只折叠 ASCII；邮箱存的本来就是小写）：显示名里的非 ASCII 字符（`É`、`ü`）要大小写完全一致才命中，管理员搜索可以接受这个限制 |
+| `POST /api/admin/accounts/:id/admin` · `DELETE` | 授予 / 取消库里的管理员标记，回更新后的账号行（`200`）。幂等：已经是（不是）管理员也 `200`。标记真的变了才写审计 `admin_granted` / `admin_revoked`（`account_id` = 目标账号，`detail.by` = 操作者的账号 id）。错误：目标是自己 `400 cannot_modify_self`；取消的是靠 `ANYCON_ADMIN_EMAILS` 当上的管理员 `409 admin_by_config`（`DELETE` 只清库里的标记，改变不了配置）；取消 `single` 的 bootstrap 管理员 `409 bootstrap_admin`；目标不存在 `404 not_found` |
+| `DELETE /api/admin/accounts/:id` | 删账号，`204`。过程同 `DELETE /api/me`（§ 2.6），审计里 `detail.by = admin`。错误：目标是自己 `400 cannot_modify_self`（自己删走 `DELETE /api/me`）；`single` 的 bootstrap 管理员 `409 bootstrap_admin`；不存在 `404 not_found` |
+| `GET /api/admin/audit` | hub 侧审计：登录、账号创建 / 删除、身份关联、管理员授予、设备增删、吊销、配对（只有元数据，见 § 9） |
 
 ### 2.5 错误格式与通用约定
 
@@ -89,8 +124,22 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 
 - `code` 是稳定的 snake_case 枚举，客户端据此做 i18n；`message` 是英文调试信息
 - 限速返回 `429` + `Retry-After`
-- 可能很长的列表支持 `?limit=&cursor=`（keyset 分页，不做 offset 分页）：v0.1 是 `/api/invites`、`/api/admin/audit`、`/api/admin/accounts`。`limit` 缺省 100，夹在 1–500（不是数字 → 400）；响应体仍是裸数组，下一页的游标（不透明字符串）在 `X-Next-Cursor` 响应头里，没有下一页就没有这个头；带着它原样传回 `?cursor=` 取下一页，格式不对的游标 → 400。`/api/devices`、`/api/me/sessions`、`/api/me/tokens` 是每账号的小集合，不分页
+- **移除登录方式要串行**：解绑邮箱、解除 OAuth 身份、删登录 token 都是「检查还剩别的登录方式 → 删」，不是一条 SQL。这三个操作共用一把按账号的锁，并且**在锁里重新读账号**、重新算 `login_methods` 再判断——不用请求开始时取的账号快照（别的请求可能刚把邮箱解绑了）。并发的两次移除不会各自以为对方还在，账号至少留一种登录方式。锁是进程内的（hub 只跑单实例）
+- 账号管理相关的错误码：`reauth_required`（403，删账号要求最近登录过）、`bootstrap_admin`（409）、`cannot_modify_self`（400）、`admin_by_config`（409）、`last_login_method`（409，解绑邮箱、解除身份或删登录 token 会让账号没有登录方式）、`email_taken`（409）。OAuth 的失败不是 JSON，是带 `oauth_error` 的重定向（§ 2.2.1）
+- 可能很长的列表支持 `?limit=&cursor=`（keyset 分页，不做 offset 分页）：`/api/invites`（仅 `single`）、`/api/admin/audit`、`/api/admin/accounts`（带 `?q=` 时也一样）。`limit` 缺省 100，夹在 1–500（不是数字 → 400）；响应体仍是裸数组，下一页的游标（不透明字符串）在 `X-Next-Cursor` 响应头里，没有下一页就没有这个头；带着它原样传回 `?cursor=` 取下一页，格式不对的游标 → 400。`/api/devices`、`/api/me/sessions`、`/api/me/tokens` 是每账号的小集合，不分页
 - 不开 CORS。Web UI 同源；SDK 不走 HTTP API，只走 WebSocket。CLI 只有一个例外：账号内接入（§ 4.1）时临时调 `/auth/email/send` · `/auth/email/verify`（`single` 模式也可以 `/auth/token`），拿到的 session cookie 只放在内存里、只用于那一次 WebSocket 升级，结束就 `/auth/logout`（[ADR-36](../decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)）。它和浏览器一样要带 `X-Anycon: 1`。CLI 已经是这个 hub 上的设备时连这次临时登录都省了：列账号里的节点（`GET /api/devices`）带设备 token 就行（§ 2.3）
+
+### 2.6 账号删除
+
+`DELETE /api/me`（自己删）和 `DELETE /api/admin/accounts/:id`（管理员删）走同一条路径，两种模式都有。能不能删的判断见 § 2.3 / § 2.4；通过之后：
+
+1. **库里，一个事务**：
+   - 外键级联删除：设备（**物理删除**，不像吊销那样保留记录）、配对、登录 token、浏览器会话、邮箱验证码（绑定码）、推送订阅、通知偏好、OAuth 身份和授权 state、预览 label 和令牌，以及它创建的邀请
+   - 显式删除级联覆盖不到的：它的审计行（`hub_audit` 里 `account_id` 是它、或 `device_id` 是它名下设备的行，审计表没有外键）；它**兑换过**的邀请（`invites.used_by` 的外键是 `SET NULL`，留着的话这张邀请会变回「未使用」，没过期就能再被用一次）；以它的邮箱发出的登录码（登录码按邮箱存、不带账号，不会级联）
+   - 最后写入唯一留下的一行审计 `account_deleted`：`account_id` 是被删的账号，`detail.by` 是 `self` 或 `admin`，没有 IP 和 UA
+2. **内存里，库提交之后**：中止这个账号设备上进行中的配对撮合和接入会话，把账号的每一条连接——永久连接、带它登录 cookie 的临时连接、预览连接——以 `4004 revoked` 关闭。先删库再关连接：关闭到删库之间想重连的设备，token 已经查不到了
+
+会话历史在节点上，hub 不碰，删账号也不影响它们；节点要接入别的账号或 hub 得重新配对。日志只记谁发起的（`self` / `admin`）和规模（设备数、连接数），不记账号 id。取舍见 [ADR-40](../decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。
 
 ## 3. WebSocket 表面 `/v1/ws`
 
@@ -101,9 +150,9 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | 阶段 | 规则 |
 |---|---|
 | 升级 | 校验 `Origin`（`ANYCON_PUBLIC_URL`、自身 Host、私有网段 http 自动放行）。失败 `403` |
-| 认证 | 第一帧必须是 `control.auth { device_token, protocol_version }`，5 秒内未收到则关闭。token 查哈希；设备被吊销则 `auth_fail { reason: revoked }` |
-| 单连接 | 一个设备同时只允许一条连接。新连接认证成功后旧连接收到 close code `4001 superseded`。手机切网时常见 |
-| 上线通知 | 认证成功后，hub 向该设备发 `auth_ok { device_id, server_time_ms, peers_online, quota? }`（`peers_online` 是此刻在线的配对设备列表），并向这些**在线的配对设备**发 `peer_online` |
+| 认证 | 第一帧必须是 `control.auth { device_token, protocol_version }`，5 秒内未收到则关闭。token 查哈希；设备被吊销则 `auth_fail { reason: revoked }`；`multi` 里账号的在线连接数已到上限则 `auth_fail { reason: quota }`（§ 7.1） |
+| 单连接 | 一个设备同时只允许一条连接。新连接认证成功后旧连接收到 close code `4001 superseded`。手机切网时常见。顶掉自己的旧连接不算新增一条在线连接（§ 7.1） |
+| 上线通知 | 认证成功后，hub 向该设备发 `auth_ok { device_id, server_time_ms, peers_online, quota? }`（`peers_online` 是此刻在线的配对设备列表；`quota` 只在 `multi` 里对永久连接带，是账号的设备数 / daemon 数 / 在线连接数和各自的上限，`single`、临时连接和预览连接没有，§ 7.1），并向这些**在线的配对设备**发 `peer_online`。`multi` 里账号的设备数、daemon 数或在线连接数变了，hub 再向该账号此刻在线的其他永久连接发 `quota_update` |
 | 心跳 | hub 每 30 秒 ping；90 秒无 pong 断开。设备侧不需要自己发心跳 |
 | 下线 | 连接关闭后向配对设备发 `peer_offline`。断线后 `last_seen` 更新 |
 | 关停 | hub 优雅关停时先发 close code `4002 restarting`，客户端据此用短退避（1–3 秒抖动）重连，而不是指数退避 |
@@ -117,7 +166,7 @@ close code 全表（`auth_fail` 总是先于 close 发出）：
 | `4003 slow_consumer` | 发送缓冲持续满 30 秒；或一条 `backpressure` 回执进不了它的控制消息队列（它不读 socket，再留着顺序就乱了） | 正常退避重连，重连后按 `seq` 补事件 |
 | `4004 revoked` | 设备已被吊销 | token 作废，停止重连，提示重新配对 |
 | `4005 auth_timeout` | 5 秒内没发 `auth`，或第一帧不是 `auth`（先收到 `auth_fail { protocol }`）；或者无身份的**临时连接**存活超过 10 分钟 | 客户端 bug / 配对没完成，不要自动重连；重新发起配对 |
-| `1008 policy` | 其余认证失败（`auth_fail { invalid \| version }`）；「一直被限速退回、期间没有任何信封被转发」持续 10 秒以上；或同一目标上被退回未放行的 `seq` 超过 4096 个（发送方不守规则） | `invalid` / `version` 是终态；限速则退避 |
+| `1008 policy` | 其余认证失败（`auth_fail { invalid \| version \| quota }`）；「一直被限速退回、期间没有任何信封被转发」持续 10 秒以上；或同一目标上被退回未放行的 `seq` 超过 4096 个（发送方不守规则） | `invalid` / `version` 是终态；`quota` 是账号的在线连接数满了（daemon 退避 60 秒再试，Web UI 停止重连并提示去看配额）；限速则退避 |
 | `1011 internal` | hub 内部错误 | 指数退避重连 |
 
 升级阶段（还没成为 WebSocket）的 HTTP 错误：`403 origin_not_allowed`、`429` + `Retry-After`（`/v1/ws` 每 IP 每分钟 30 次）、`503`（正在关停）。
@@ -165,6 +214,7 @@ close code 全表（`auth_fail` 总是先于 close 发出）：
 | `pair_done` 不是终点 | hub 发出 `pair_done` 只代表 hub 这边的配对关系已建立。新设备要等 daemon 经加密传输发来的 `pair.ack` 才落盘，所以一个伪造 `pair_done` 的 hub 骗不了客户端（[protocol.md § 4.1](../protocol.md#41-配对流程)）。hub 不参与也看不到 `pair.ack` |
 | 残余风险 | hub 不知道短码，但拿到了 `match_id`：恶意 hub 可以离线穷举短码直到 `match_id` 对上，猜中就能对这次配对做中间人。Argon2id 让每次猜测约 0.1 s + 64 MiB，8 位短码（2^40）要数年 GPU 量级，16 位（2^79）不可行；经不信任的 hub 配对不要用 `--short`。在线猜测受 `pair_join` 限速、短码一次性和 5 分钟 TTL 约束（[ADR-29](../decisions.md#adr-29-短码不经过-hub)） |
 | 确认 | 两边都发 `pair_confirm` 后 hub 才写 `pairings`、签发新设备的 device token、创建设备记录。只有一边确认视为失败 |
+| 配额（`multi`） | 配对要新建的设备（一边或两边是临时连接）在建设备记录的同一个写事务里检查设备数和 daemon 数，超限 → 双方 `pair_failed { quota }`，一台都不建、不写 `pairings`（一次配对建两台设备时整体成功或整体失败）。两台已有设备重新配对不建设备，不检查。每日配对次数：**每个成功的撮合恰好记一次**。`pair_begin` 在账号已知时检查并记一次，超限 `pair_failed { quota }` 且不登记，撮合表记住这条登记已经记过账；`pair_join` 加入前先检查（名额用完的账号不能再加入），撮合成立之前如果 host 的登记没记过账（host 是第一次启动、还没有账号的 daemon），才对加入方的账号检查并记一次——这一步和别的请求竞争到额度刚好用完时回 `pair_failed { quota }`，此时撮合还没建立、登记原样留着，没有要撤销的东西。输错的短码撮合不成，什么都不记。没有账号的临时连接自己发起时不记，名额由配对它的那个账号出（所以同一个账号不能靠不停配对新 daemon 绕过每日上限）。见 § 7.1 |
 | 配对链接 | `${hub.url}/pair#code=<短码>`，由 **daemon** 按自己配置的 `hub.url` 生成（hub 不生成）。短码在 fragment 里，浏览器不会把它发给 hub，不会出现在 hub 或反代的请求日志里。`anycon pair --qr` 和 Web 的「添加设备」把它渲染成二维码 |
 | 跨账号 | v0.1 配对双方必须属于同一账号，两边已经各属于不同账号 → `pair_failed { forbidden }`。新设备（还没有账号归属）在 `pair_join` 时携带当前 web 登录态的 cookie（Web）或空（CLI / SDK）；空的情况下新设备归入 daemon 所属的账号。这意味着 CLI / SDK 不需要登录，和 [architecture.md § 3.1](../architecture.md#31-登录方式) 一致 |
 | daemon 首次身份 | daemon 第一次连接没有 token，以 `kind = daemon` 的临时连接发 `pair_begin`（其他 kind 的临时连接不行）。配对完成时 hub 给它建设备记录、签发 token、原地升级连接，账号取自 joiner（web cookie 或已认证设备）；双方都没账号则 `pair_failed { forbidden }`，不写库 |
@@ -182,7 +232,7 @@ close code 全表（`auth_fail` 总是先于 close 发出）：
 | 有效期 | 5 分钟。到点没走到 `pair_done` → 双方 `enroll_failed { timeout }`。只在内存里，hub 重启即作废 |
 | 结束 | 任一方 `enroll_cancel` → 另一方 `enroll_failed { cancelled }`；任一方断线 → 另一方 `peer_gone` |
 | 收尾 | 和 § 4 一样：两边 `pair_confirm` 后 hub 才写 `pairings`；发起方是临时连接时，建设备记录、签发 device token、原地升级连接，账号就是它登录的那个账号；`pair_done` 之后的 `pair.ack` hub 看不到 |
-| 限速 | `enroll_begin` 10 次 / 分钟 / IP、30 次 / 小时 / 账号，计入每日配对与接入配额（§ 7）。**这些只防滥用，不是安全边界**：hub 本身可能就是攻击者，在线猜测的次数由 daemon 限（[daemon.md § 15.1](daemon.md#151-账号内接入)） |
+| 限速 | `enroll_begin` 10 次 / 分钟 / IP、30 次 / 小时 / 账号，并计入每日配对与接入配额（`multi`：检查并记一次，超限 `enroll_failed { quota }`，§ 7.1）；收尾建设备时设备数 / daemon 数超限同样 `enroll_failed { quota }`。**这些只防滥用，不是安全边界**：hub 本身可能就是攻击者，在线猜测的次数由 daemon 限（[daemon.md § 15.1](daemon.md#151-账号内接入)） |
 | 不记录 | `handshake` 体（含 `EnrollHello` 里新设备自报的提示信息），和配对一样。`enroll_id` 可以出现在 debug 日志里 |
 
 ## 5. 设备与设备 token
@@ -201,7 +251,7 @@ device
 
 - device token 是 32 字节随机数，配对确认时签发，只传一次；客户端存在自己的配置目录 / IndexedDB
 - 轮换：`control.rotate_token` → hub 返回新 token，旧 token 保留 60 秒宽限（v0.2）
-- 吊销 = `revoked_at` 置位，不物理删除，保留审计。连接立即断开，close code `4004 revoked`
+- 吊销 = `revoked_at` 置位，不物理删除，保留审计。连接立即断开，close code `4004 revoked`。吊销的设备不计入配额（§ 7.1）。删账号则是物理删除它名下的全部设备记录（§ 2.6）
 - hub **不存设备的 Noise 公钥**。配对关系只是一条 `(device_a, device_b)` 记录，用于路由判定
 
 ## 6. 通知
@@ -241,17 +291,25 @@ device
 
 ### 7.1 配额（仅 `multi`）
 
-按账号计，由 `ANYCON_QUOTA_*` 配置：
+按账号计，由 `ANYCON_QUOTA_*` 配置（[deploy.md § 3](../deploy.md#3-环境变量)，每项是 ≥ 1 的整数）。`single` 没有配额：`auth_ok.quota` 为空，`GET /api/quota` 的上限恒为 `null`。
 
-| 项 | 默认 | 超限行为 |
-|---|---|---|
-| 设备总数 | 10 | `pair_confirm` 失败 `quota_exceeded` |
-| daemon 数 | 3 | 同上 |
-| 同时在线连接 | 10 | 新连接 `auth_fail { reason: quota }` |
-| 每日配对与接入次数 | 20 | `pair_begin` / `pair_join` / `enroll_begin` 拒绝（`enroll_failed { quota }`） |
-| 队列（若开启） | 50 条 / 256 KiB / 1h | 见 protocol.md § 7.2 |
+| 项 | 默认 | 计什么 | 在哪里检查 | 超限 |
+|---|---|---|---|---|
+| 设备总数 | 10 | 账号名下未吊销的设备（所有 `kind`，含 daemon） | 配对 / 接入收尾建设备记录时 | `pair_failed { quota }` / `enroll_failed { quota }` |
+| daemon 数 | 3 | 其中 `kind = daemon` 的 | 同上 | 同上 |
+| 同时在线连接 | 10 | 账号名下此刻在线的**永久**连接（不含临时连接和预览连接） | 设备认证、登记连接时 | `auth_fail { quota }`，随后 `1008` 关闭 |
+| 每日配对与接入次数 | 20 | 滚动 24 小时内成功撮合的配对和发起的接入，每个成功的撮合恰好记一次：`pair_begin`（账号已知）、`enroll_begin`，以及 host 没有账号时撮合成立前记在 `pair_join` 的账号上 | `pair_begin`、`enroll_begin` 到达时；`pair_join` 加入前检查、撮合成立前记账 | `pair_failed { quota }` / `enroll_failed { quota }`，不登记 |
 
-**不限流量字节数**。hub 只转发，流量成本低；限制字节会让「传一个日志文件」这种合理需求变得难受。用量通过 `control.quota` 在连接时和变化时推给设备，Web 在设置页展示。
+执行细节：
+
+- **设备数 / daemon 数**：「数 + 插」是 SQLite 的一个写事务里的 `INSERT … SELECT … WHERE 数量 < 上限`（每台设备一条），同一账号的并发收尾不会一起冲过上限；一次收尾要建两台设备时整批在一个事务里，任何一台超限就一台都不建。吊销设备释放名额（吊销只置位 `revoked_at`，不计入）。重新配对两台已有的设备不建设备记录，不检查
+- **在线连接**：检查和登记是连接注册表同一把锁里的一步，并发认证的两条连接不会一起冲过上限。同一设备的新连接顶掉自己的旧连接不算新增（数的是「账号别的设备」）。临时连接不受限；`pair_done` 把临时连接原地升级成正式连接时不检查——一台设备至多一条连接，所以设备数配额仍然封住它
+- **每日配对与接入**：严格的滚动 24 小时窗口（不是按日历日清零，不会在零点附近一次放过两倍），计数在内存里，hub 重启清零。规则是**每个成功的撮合恰好记一次**。`pair_begin`、`enroll_begin` 在连接的账号已知时（正式设备，或带登录 cookie 的临时连接）检查并记一次，撮合表在这条登记上记一个「已记账」标记。`pair_join` 加入前先检查加入方的账号（用完了 → `pair_failed { quota }`）；撮合成立之前，登记已记账（host 有账号）就不再记，没记账（host 是第一次启动、没有账号的 daemon）就对加入方的账号检查并记一次——所有校验（短码对得上、没过期、不是自己加入自己、加入方没有别的撮合）都过了才记，记失败（和别的请求竞争到额度刚好用完）回 `pair_failed { quota }`，登记原样留着，撮合表里没有悬着的东西。输错的短码撮合不成，什么都不记。这样一次配对不会让双方各记一次，输错短码不烧名额，第一次启动的 daemon 的配对也不是免费的。加入方没有账号（也没有 host 的账号可记）时没有人可记，受 § 4 和 § 7.2 的 IP 限速约束
+- **日志**：超限只记 `limit = "devices" | "daemons" | "connections" | "daily_pairings"`，不记账号 id
+
+**用量**：`auth_ok.quota` 在连接时带上（`devices`、`devices_max`、`daemons`、`daemons_max`、`connections`、`connections_max`）；之后账号的设备被创建、被吊销（API 或 `control.revoke`），或在线连接上线、下线，hub 向该账号此刻在线的**其他**永久连接发 `quota_update`（刚认证的那条已经在 `auth_ok` 里拿到了）。每日配对次数不在推送里，Web 在「设置 → 配额」用 `GET /api/quota`（§ 2.3）展示全部四项。队列配额（50 条 / 256 KiB / 1h，队列开启时）见 protocol.md § 7.2，目前没有实现。
+
+**不限流量字节数**。hub 只转发，流量成本低；限制字节会让「传一个日志文件」这种合理需求变得难受。预览流量另有按账号的预算（§ 13.5）。
 
 ### 7.2 限速（两种模式都有）
 
@@ -280,13 +338,13 @@ device
 
 | 表 | 内容 |
 |---|---|
-| `accounts` | id、display_name、email（可空、唯一）、is_admin、created_at |
+| `accounts` | id、display_name、email（可空；`lower(email)` 唯一）、is_admin（库里的标记，不含 `ANYCON_ADMIN_EMAILS` 派生的管理员，§ 2.4）、created_at |
 | `account_tokens` | 登录 token 哈希、label、last_used_at |
 | `passkeys` | credential id、公钥、counter、label、transports |
-| `identities` | provider、subject、account_id；`(provider, subject)` 唯一 |
+| `identities` | provider、subject（提供方的稳定用户 id）、account_id、created_at_ms；`(provider, subject)` 主键，`(account_id, provider)` 唯一（一个账号在一个提供方最多一个身份）；随账号级联删除。**只有这四列**：不存用户名、邮箱、头像，更不存 access token |
 | `web_sessions` | 浏览器登录会话：token 哈希、ua、ip 前缀、created、last_seen、expires |
 | `email_codes` | 规范化的邮箱、用途（`login` / `bind`）、账号（`bind` 时）、码哈希、过期、尝试次数、创建时间。登录码每个邮箱最多同时有 3 个有效的（新码不让旧码作废，别人请求新码顶不掉你手里那个）；绑定码按（账号，邮箱）存，别的账号请求同一个邮箱的绑定码影响不到你；`accounts` 另有 `lower(email)` 的唯一索引兜底 |
-| `oauth_states` | state、pkce verifier、用途（login / link / invite）、过期 |
+| `oauth_states` | state 的哈希（主键）、provider、用途（`login` / `link` / `invite`）、account_id（`link` 用途）、invite_hash（`invite` 用途）、next_path、PKCE verifier、创建和过期时间。10 分钟有效，回调时原子取走（单次使用），过期的行由每分钟的清理任务删除；随账号级联删除 |
 | `invites` | code 哈希、created_by、note、expires、used_by |
 | `devices` | 见 § 5 |
 | `pairings` | device_a、device_b、created_at；无向，存归一化顺序 |
@@ -295,15 +353,17 @@ device
 | `queue` | **(密文)** 可选离线队列：to_device、seq、from_device、body、enqueued_at |
 | `hub_audit` | 见 § 9 |
 | `preview_labels` · `preview_tokens` | 预览 label 绑定的节点、预览令牌哈希（§ 13.7） |
-| `kv` | schema 版本等杂项（VAPID 密钥在 `${ANYCON_DATA_DIR}/vapid.json`，不在库里，§ 6.1） |
+| `kv` | schema 版本等杂项；`single` 的 bootstrap token 哈希（`admin_token_hash`）和 bootstrap 管理员的账号 id（`bootstrap_admin_id`，§ 2.4）（VAPID 密钥在 `${ANYCON_DATA_DIR}/vapid.json`，不在库里，§ 6.1） |
 
-进行中的配对（`match_id`、撮合状态）、进行中的接入会话和限速计数**只在内存**，不落库。
+进行中的配对（`match_id`、撮合状态）、进行中的接入会话、限速计数和每日配对次数**只在内存**，不落库。`identities` 和 `oauth_states` 在迁移 `0003_identities.sql` 里；迁移只前进。
 
 ## 9. hub 侧审计
 
 记录账号层面的安全事件，供账号设置页的「安全活动」和管理员页使用：
 
-`login_ok` / `login_fail`（方式：`token` / `invite` / `email`，IP 前缀、UA）· `email_changed`（`bound` / `changed` / `removed`，不记邮箱）· `token_created` / `token_deleted` · `passkey_added` / `removed` · `identity_linked` / `unlinked` · `device_paired` · `enroll_started`（节点、IP 前缀）/ `device_enrolled`（hub 不知道用的是哪种方法；接入只记它，不再同时记 `device_paired`）· `device_revoked` · `invite_created` / `used` · `account_deleted`
+`login_ok` / `login_fail`（`detail.method`：`token` / `invite` / `email` / `github` / `google`，IP 前缀、UA）· `account_created`（`detail.method`：`email` / `github` / `google` / `invite`，即这个账号是怎么建出来的）· `email_changed`（`bound` / `changed` / `removed`，不记邮箱）· `token_created` / `token_deleted` · `identity_linked` / `identity_unlinked`（`detail.provider`）· `admin_granted` / `admin_revoked`（`account_id` 是目标账号，`detail.by` 是操作者的账号 id）· `device_paired` · `enroll_started`（节点、IP 前缀）/ `device_enrolled`（hub 不知道用的是哪种方法；接入只记它，不再同时记 `device_paired`）· `device_revoked` · `invite_created` / `used` · `account_deleted`（`detail.by`：`self` / `admin`）。passkey 的 `passkey_added` / `removed` 随 passkey 一起做
+
+删账号（§ 2.6）会把这个账号自己的审计行（包括登录记录）一起删掉，只留一行没有 IP 和 UA 的 `account_deleted`。
 
 保留 90 天，自动清理。每次失败的登录都写一行（`login_fail` 还没有聚合），持续的分布式暴力尝试会让表变大。不记录任何信封内容、不记录 `data` 信封的收发（那是流量日志，不是审计）。
 
@@ -313,9 +373,10 @@ device
 |---|---|
 | 连接建立 / 断开，设备 id，close code | 任何 `body` 字节，包括 `notify` 的密文部分 |
 | 信封 kind、大小、是否投递 / 丢弃（debug 级） | device token、登录 token、cookie、Authorization |
-| HTTP 路径、状态码、耗时 | 邮箱地址（用哈希前 8 位代替） |
-| 限速触发、配额拒绝 | OAuth access token、验证码 |
+| HTTP 路由模板、状态码、耗时（不记实际 URI，所以回调地址里的 `code` / `state`、路径里的邀请码不会进日志） | 邮箱地址（用哈希前 8 位代替）、邀请码 |
+| 限速触发、配额拒绝（只记是哪一项，不记账号 id） | OAuth `code`、`state`、PKCE verifier、access token、client secret，验证码 |
 | 推送结果（endpoint 主机名 + 状态码）、邮件发送结果（收件人哈希前 8 位 + SMTP 状态） | 推送 endpoint 的路径、p256dh / auth、VAPID 私钥、SMTP 密码、邮件正文 |
+| OAuth：提供方名、用途（`login` / `link` / `invite`）、失败的类别和提供方返回的状态码；账号删除：谁发起的（`self` / `admin`）和规模（设备数、连接数） | OAuth 提供方给的用户 id（`subject`）和邮箱、提供方的响应内容、被删账号的 id、管理员邮箱（`ANYCON_ADMIN_EMAILS` 只记个数） |
 | | 配对的 `match_id`（短码的函数） |
 | | 预览令牌；预览域名上的请求路径和 label（请求只记 `(preview)`，连接只记临时 id 和节点） |
 
@@ -323,7 +384,12 @@ device
 
 ## 11. 生命周期与运维
 
-- **启动**：读配置 → 校验（`multi` 必须有至少一种非 token 登录方式、`ANYCON_PUBLIC_URL` 必须是 http(s) URL）→ 跑 migration → 生成 bootstrap token / VAPID（首次）→ 监听。任一步失败直接退出并打印原因
+- **启动**：读配置 → 校验 → 跑 migration → 生成 bootstrap token（仅 `single`）/ VAPID（首次）→ 监听。任一步失败直接退出并打印原因。校验：
+  - `ANYCON_MODE` 只能是 `single` 或 `multi`（不区分大小写）；`ANYCON_PUBLIC_URL` 必须是 http(s) URL
+  - `multi` 必须至少有一种登录途径（配了 SMTP，或任一 OAuth 提供方），否则退出：没有 bootstrap token，没人登录得进来
+  - 每个 OAuth 提供方的 `CLIENT_ID` / `CLIENT_SECRET` 要么都配要么都不配，值不能含空白和控制字符
+  - `ANYCON_ADMIN_EMAILS` 里每一项必须是合法邮箱，`ANYCON_QUOTA_*` 必须是 ≥ 1 的整数。**两种模式都校验**（笔误早点暴露，切换模式时不会才炸）；错误里不回显邮箱（只报第几项）和 secret。空白的值当作没设
+  - 警告而不是错误：在不用它的模式里设了（`single` 里的 `ANYCON_ADMIN_EMAILS` / `ANYCON_QUOTA_*`，`multi` 里的 `ANYCON_ADMIN_TOKEN`）→ 「ignored」；配了 OAuth 但 `ANYCON_PUBLIC_URL` 不是 https（提供方要求 https 回调，本机开发除外）；`multi` 里 `ANYCON_ADMIN_EMAILS` 为空（只有库里已有管理员标记的账号能管理这个 hub）。日志里管理员邮箱只记个数
 - **升级**：migration 只前进；跨多个 minor 升级时逐个 migration 跑。回滚靠备份
 - **备份**：`anycon-hub backup <path>` 用 SQLite online backup API 导出一致快照，容器里可 `docker exec`。Postgres 用 `pg_dump`。（**v0.1 没有 `backup` 子命令**，只有 `serve` / `healthcheck` / `version`；先停容器拷 `/data`，或在宿主机用 `sqlite3 hub.db ".backup …"`。v0.1.x 补）
 - **关停**：SIGTERM → 停止接受新连接 → 对所有连接发 `4002 restarting` → 最多等 5 秒 → 退出

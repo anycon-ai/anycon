@@ -31,7 +31,18 @@ export interface ApiOptions {
   bearer?: string
 }
 
+/** 带响应头的结果（分页接口的 `X-Next-Cursor` 在头里）。 */
+export interface ApiResult<T> {
+  data: T
+  headers: Headers
+}
+
 export async function apiFetch<T = void>(path: string, opts: ApiOptions = {}): Promise<T> {
+  return (await apiFetchRaw<T>(path, opts)).data
+}
+
+/** 和 `apiFetch` 一样，但同时返回响应头。 */
+export async function apiFetchRaw<T = void>(path: string, opts: ApiOptions = {}): Promise<ApiResult<T>> {
   const method = opts.method ?? 'GET'
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (method !== 'GET') {
@@ -72,7 +83,7 @@ export async function apiFetch<T = void>(path: string, opts: ApiOptions = {}): P
     }
     throw new ApiError(res.status, res.status === 429 ? 'rate_limited' : code, message, retry)
   }
-  if (res.status === 204) return undefined as T
+  if (res.status === 204) return { data: undefined as T, headers: res.headers }
   const text = await res.text()
-  return (text ? JSON.parse(text) : undefined) as T
+  return { data: (text ? JSON.parse(text) : undefined) as T, headers: res.headers }
 }

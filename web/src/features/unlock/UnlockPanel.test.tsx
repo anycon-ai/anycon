@@ -2,17 +2,20 @@
 // 密码学和线上序列由 transport/enroll.test.ts 守着。
 // 四个入口都由用户操作才开始（扫码入口点「显示二维码」）；页面进后台时取消扫码会话，回到前台不自动重开。
 import { StrictMode } from 'react'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiDevice } from '@/api/types'
 import { buildEnrollQr, parseEnrollQr } from '@/lib/enrollQr'
 import { FakeEnrollClient } from '@/test/fakeEnrollClient'
+import { mockRouter } from '@/test/routerMock'
 import { useNodes } from '@/stores/nodes'
 import { EnrollError } from '@/transport/enroll'
 
 const h = vi.hoisted(() => ({ client: null as unknown as FakeEnrollClient }))
 vi.mock('@/transport/instance', () => ({ getClient: () => h.client }))
+// 配额用完的说明里有一个去「配额」页的链接（`Link`）
+vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), vi.fn(), {}))
 vi.mock('@/ui/QrCode', () => ({ QrCode: ({ text }: { text: string }) => <div data-testid="qr" data-text={text} /> }))
 
 import { UnlockPanel } from './UnlockPanel'
@@ -547,6 +550,17 @@ describe('node password', () => {
     await waitFor(() => expect(client.calls.some((c) => c.req.method === 'password')).toBe(true))
     act(() => client.last.reject(new EnrollError(code)))
     expect(await screen.findByTestId('unlock-error')).toHaveTextContent(text)
+  })
+
+  it('quota (enroll_failed { quota }) names the limits and links to Settings → Quota', async () => {
+    const user = userEvent.setup()
+    view()
+    await unlock(user)
+    await waitFor(() => expect(client.calls.some((c) => c.req.method === 'password')).toBe(true))
+    act(() => client.last.reject(new EnrollError('quota')))
+    const box = await screen.findByTestId('unlock-error')
+    expect(box).toHaveTextContent(/Devices/)
+    expect(within(box).getByTestId('quota-link')).toHaveAttribute('href', '/settings/quota')
   })
 
   it('key_changed offers to forget the old node, because the key is never overwritten silently', async () => {

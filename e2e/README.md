@@ -29,8 +29,8 @@ just e2e                                     # = bun install + playwright instal
 
 - `E2E_SKIP_DAEMON=1` 只起 hub + web（smoke 够用；happy path 会被跳过）
 - `E2E_REQUIRE_DAEMON=0` daemon 起不来只警告（默认是整体失败，happy path 依赖它）
-- `E2E_KEEP_TMP=1` 结束后保留临时目录（`hub.log` / `daemon.log` 在里面）
-- `E2E_TMP_DIR_FILE=<文件>` 把临时目录的路径写进这个文件（CI 用它在失败时把 `hub.log` / `daemon.log` 收进产物）
+- `E2E_KEEP_TMP=1` 结束后保留临时目录（`hub.log` / `daemon.log` 在里面；`multi.spec.ts` 自己起的 hub 的目录 `m1` 也在里面，日志是 `m1/hub.log`）
+- `E2E_TMP_DIR_FILE=<文件>` 把临时目录的路径写进这个文件（CI 用它在失败时把 `hub.log` / `daemon.log` 和 `m<序号>/hub.log`（multi hub，在产物里叫 `multi-m1-hub.log`）收进产物）
 - `E2E_BUILD=1` 先构建 web（`web/dist` + `web/dist-preview`）、触碰 `crates/hub/build.rs`、`cargo build -p anycon-hub -p anycon-cli` 再跑（hub 编译时要选中这两个目录；debug 构建读磁盘，所以之后只重建 web 也行）。没设时，hub 服务的 `index.html` 和当前 `web/dist/index.html` 不一致（占位页 / 旧的嵌入），或预览域名上的引导页和 `web/dist-preview/index.html` 不一致，会直接报错（`E2E_ALLOW_STALE_WEB=1` 忽略）
 
 ## 用例
@@ -71,6 +71,14 @@ just e2e                                     # = bun install + playwright instal
   - 新建 scratch 会话时用 `composer-file-input` 选一张 PNG（测试里现场生成），缩略图 `composer-attachment[data-state=ready]` 后带文字发送：mock 回复里的 `Attachments: red.png (image/png, <字节数> bytes, sha256 <前 12 位>)` 和本地算的一致（证明 daemon 把原文件交给了 agent），用户气泡里有 `message-attachment` 且图片解码成功（`blob:` 地址）
   - 只发图片不带文字；粘贴一张（构造带文件的 `paste` 事件）+ 再选一张，一条消息两个附件，回显顺序不变
   - 清掉 IndexedDB 的 `blobs` 缓存后刷新、以及第二台空缓存的设备打开同一会话：历史里的 4 张图经 `blob.get` 拉回来；点开是 `attachment-viewer`；hub 日志里没有文件名
+- `tests/multi.spec.ts` — `multi` 模式（v0.2，公开 hub），串行。**这个文件自己起一个 `ANYCON_MODE=multi` 的 hub**（`helpers/multi-hub.ts` 的 `startMultiHub`：随机端口、自己的临时目录（建在主临时目录下的 `m1`，所以 CI 收得到；目录名特意取短，额外节点的 unix socket 路径在 macOS 上要不到 104 字节）和 `hub.log`、debug 日志；发信仍指向 globalSetup 的假 SMTP；`afterAll` 停掉并删目录，`E2E_KEEP_TMP=1` 保留），页面和 API 都打到它，不碰共享的 single hub。配置：`ANYCON_ADMIN_EMAILS=mx-admin@example.test`、小配额（设备 3 / 节点 1 / 同时在线 6 / 每日配对 9）、假的 GitHub client id / secret（登录页因此有 GitHub 按钮；浏览器从不真的去 github.com：Playwright 不一定对重定向的目标再走 `route`，所以用例在 hub 的 start 这一步拦住——`context.route` + `route.fetch({ maxRedirects: 0 })` 自己取 302、给浏览器一个桩页面，并断言上下文从未发过到 github.com 的请求）。发码限速是这个 hub 进程自己的（每 IP 每小时 5 次、同一邮箱 60 秒一次）：整个文件发 3 封登录码，f 里重新注册同一个邮箱会等到距离 c 里发码满 60 秒（对 hub 已知间隔的有界等待）：
+  - a. 登录页：「登录或创建账号」措辞、没有 token 表单和 `login-use-token`、只有 `oauth-github`（href 是 `/auth/oauth/github/start`，带 `?redirect=` 时带 `next`），没有 Google；从 `localhost`（不是公开地址）打开时按钮禁用并有 `oauth-origin-note`。`GET /auth/oauth/github/start`（不跟随重定向）：302 到 `https://github.com/login/oauth/authorize`，带 `client_id`、`redirect_uri=<hub>/auth/callback/github`、`state`、`code_challenge` + `S256`、`scope=read:user user:email`，`anycon_oauth` cookie（值 = state，`HttpOnly`、`Path=/auth/callback`、`SameSite=Lax`、`Max-Age=600`，公开地址是 http 所以没有 `Secure`）；没配的提供方 404；没带 state 的回调 302 到 `/login?oauth_error=invalid_state&provider=github` 并清 cookie，登录页（`oauth-error`，`data-code`）给出对应文案；state 对但没有 cookie 一样是 `invalid_state`。真的点按钮：hub 的 start 回 302 去 GitHub 授权页（在这一步被拦下），浏览器里有 `anycon_oauth`；带 `error=access_denied` 回来 → `cancelled`，state 单次有效
+  - b. `ANYCON_ADMIN_EMAILS` 里的邮箱用验证码注册 → 落在 `/setup`，`/api/me.is_admin`、`login_methods` 只有 `email`；管理页没有邀请（`admin-invites`），账号行有 `admin-by-config-<id>`「Admin via ANYCON_ADMIN_EMAILS」，取消管理员和删除自己的按钮禁用；`/api/invites`、`/api/me/tokens`、`POST /auth/token`、`POST /auth/invite` 都是 404
+  - c. 第二个用户注册 → 不是管理员（管理页「Administrators only」，`/api/admin/accounts` 403）；设置里有 `settings-nav-quota`，配额页四项的上限就是配置值、用量 0；登录方式页没有 `tokens-section`，`identity-link-github` 的 href 是 `/auth/oauth/github/start?link=1`，没有 Google；管理员的账号列表里看得到他（可「授予管理员」，没有 by-config 徽标），搜索框按名字过滤
+  - d. 配额：起一个额外节点连到 multi hub（`startExtraDaemon(…, { hubUrl })`），用 8 位短码配对第一台浏览器（节点 + 浏览器 = 2 台设备，`/api/quota`），再用同一个会话 cookie（`storageState`，没有设备密钥）开第二台浏览器配对 → 3/3，**第一台浏览器停在配额页、没有刷新，靠 `quota_update` 推送变成「3 of 3」+「Full」**；第三台被拒：`/pair` 上显示「reached a limit on devices, nodes or daily pairing attempts…Account settings → Devices」和 `quota-link`（点过去是配额页），节点那边也收到了 `pair_failed`（daemon 日志里是「pairing failed … Quota」；daemon 记下结果，`anycon pair` 不再干等短码过期，而是马上以退出码 1 退出，用例断言这一点），用量不变
+  - e. 用户在资料页（`delete-account` → `delete-account-dialog` → `delete-account-confirm`）删除自己的账号：会话是新的所以不用重新登录；落在 `/login`，有「Your account has been deleted.」；`/api/me` 对这个浏览器和另一台浏览器的 cookie 都是 401；管理员的账号列表（页面和接口）里没了；额外节点收到 4004，daemon 日志里是「this device was revoked on the hub」
+  - f. 同一个邮箱再注册：新账号（id 不同、不是管理员、配额清零），管理员列表里是新的、旧的没有回来
+  - g. hub 的 debug 日志里没有邮箱（含 `example.test`、本地部分）、6 位验证码、配对码、OAuth 的 state / PKCE challenge / client secret、会话 cookie；有「email code sent to=<8 位哈希>」（3 条）和「oauth sign-in started」
 - `tests/notifications.spec.ts` — 通知（ADR-37），串行，一个配对好的浏览器（`channel: 'chromium'` = 新 headless，只有它的 `context.grantPermissions(['notifications'])` 生效；`headless_shell` 授予不了）。Chromium 没有真的推送服务，所以只给 `PushManager.subscribe` / `getSubscription` 打桩（`addInitScript`，订阅记在 localStorage 里、刷新后还在）：返回 endpoint 在 hub 白名单里（`https://fcm.googleapis.com/fcm/send/e2e-…`）、`p256dh`（P-256 未压缩点，65 字节）/ `auth`（16 字节）合法的假订阅；权限、service worker、`POST /api/push/subscriptions`、hub 的校验和存储都是真的。**不点「发送测试推送」，也不让 daemon 给这台设备发 `notify`**（否则 hub 会真的去连 Google）；结束时订阅、邮箱、偏好都还原。1. 配对过节点、浏览器能收推送、还没订阅：`status-banner[data-kind=notifications]`，点 `banner-notifications-enable` 进 `/settings/notifications`，之后（刷新也）不再出现，localStorage 里 `notifyBannerDismissed`；2. 偏好开关：账号还没绑邮箱时邮件列禁用并说明要先绑定（`notify-email-why[data-why=bind]`）；绑定（用 `e2e-notify@example.test`，API）后改一个 push 开关和一个 email 开关，刷新后还在，hub 的 `GET /api/me/notifications` 一致，再还原；3. `push-enable`：`push-status[data-state=on]`，`GET /api/push/subscriptions` 里恰好一条属于这台设备（`endpoint_host = fcm.googleapis.com`，endpoint 本身不回显），页面订阅时用的 `applicationServerKey` 就是 `/api/config.vapid_public_key`，刷新后仍是 on 且不重复上报（行 id 不变）；4. `push-disable`：浏览器退订，hub 里没有这台设备的订阅；5. `/setup` 向导里「开启通知」；6. 普通「退出登录」（`logout` → `logout-confirm`，确认框里写着推送会关掉）也退订推送：浏览器里的订阅（桩的 localStorage 标记）没了，换一个登录的请求上下文看 hub 里这个账号没有订阅行，重新登录后是同一台设备（设备 id 不变）、推送关着。
 - `tests/preview.spec.ts` — dev server 预览（ADR-39），真实 hub（配了 `ANYCON_PREVIEW_URL`）+ daemon + 浏览器 + 上面的上游；每个用例自己配对浏览器、新建 scratch 会话、切到「预览」（`main-view-preview`）、用「其他端口」（`preview-port` 选「其他端口…」→ `preview-other-port` → `preview-other-open`）填上游端口：
   - a. iframe（`preview-frame`）里出现上游的页面（标题、正文，页面脚本看到的 `location.origin` 是预览 origin）、同源 WebSocket 经 shim 走隧道的回显、约 600 KiB 的脚本（上游 gzip，跨很多帧）完整到达；子协议原样回来；iframe 的 sandbox 不含 `allow-top-navigation`；hub 的日志里没有票据密钥、令牌、票据 id，也没有预览的内容，daemon 的日志里没有密钥和令牌
@@ -109,3 +117,18 @@ just e2e                                     # = bun install + playwright instal
 
 `bunx playwright install chromium`（`just e2e` 会做）。在需要代理的机器上设 `HTTPS_PROXY`；
 CDN 不通时可设 `PLAYWRIGHT_DOWNLOAD_HOST` 指向镜像。CI 用 `--with-deps`。
+
+下载不了 Playwright 自带的 Chromium、但本机装了 Google Chrome 时：在 `e2e/` 下放一个**不提交**的包装配置（`.gitignore` 里有 `*.local.config.ts`），用本机 Chrome 跑：
+
+```ts
+// e2e/playwright.chrome.local.config.ts
+import { devices } from '@playwright/test'
+import base from './playwright.config.js'
+
+export default {
+  ...base,
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], channel: 'chrome' } }],
+}
+```
+
+然后 `cd e2e && bunx playwright test -c playwright.chrome.local.config.ts`。

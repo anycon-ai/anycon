@@ -27,7 +27,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -49,7 +49,7 @@ jobs:
     name: ts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
@@ -104,7 +104,7 @@ jobs:
     name: gen-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
@@ -136,7 +136,7 @@ jobs:
       # daemon 默认启动时要跑 `$SHELL -ilc` 解析登录环境；CI 里没有用户 rc，关掉省几秒（测试夹具也各自设了一遍）。
       ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL: "false"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
@@ -220,7 +220,7 @@ jobs:
     name: docker (hub image)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       # docker/hub.Dockerfile 是自包含的：wasm（wasm-bindgen-cli）→ Web UI（bun + vite）→ hub（嵌入 Web UI）→ distroless。
       # 用默认基础镜像；Docker Hub 连不上的机器本地换源见 `just docker-hub` 的注释。
@@ -287,7 +287,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: 标签
         id: meta
         uses: docker/metadata-action@v6

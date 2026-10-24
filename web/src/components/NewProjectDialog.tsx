@@ -6,15 +6,16 @@ import { cancelJob, cloneProject, createProject, linkProject } from '@/features/
 import { caseInsensitiveHost, defaultProjectName, nameClash, projectNameProblem } from '@/features/workspace/paths'
 import { describeError, describeErrorIn } from '@/lib/errors'
 import { useNodeParam } from '@/lib/nav'
+import type { NewProjectMode } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
-import { Field, Input } from '@/ui/Field'
+import { Field, Input, Select } from '@/ui/Field'
 import { Dialog } from '@/ui/Overlay'
 import { Segmented } from '@/ui/Misc'
 import { FolderPicker } from './FolderPicker'
 
-export type NewProjectMode = 'empty' | 'clone' | 'existing'
+export type { NewProjectMode }
 
 /** 从仓库 URL 推导目录名（daemon 未给名字时的默认行为）。 */
 export function repoName(url: string): string {
@@ -26,11 +27,29 @@ export function repoName(url: string): string {
  * 新建项目：空项目（名称、git init）/ 从 Git 克隆（URL、名称可选，进度条走 job.progress）/
  * 已有目录（目录选择器 + 名称，提交 `workspace.link`，ADR-33）。
  * `initialMode` 决定每次打开时停在哪一项（空状态的三个按钮各开一项）。
+ * `then`：建好之后去项目页（默认），还是去新建会话页并选中这个项目。
+ * `onNodeChange` 有值且这个浏览器配对了不止一台节点时，顶上多一个节点下拉（从左栏、命令面板打开时）。
  */
-export function NewProjectDialog({ nodeId, open, onOpenChange, initialMode = 'empty' }: { nodeId: string; open: boolean; onOpenChange: (v: boolean) => void; initialMode?: NewProjectMode }) {
+export function NewProjectDialog({
+  nodeId,
+  open,
+  onOpenChange,
+  initialMode = 'empty',
+  then = 'project',
+  onNodeChange,
+}: {
+  nodeId: string
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  initialMode?: NewProjectMode
+  then?: 'project' | 'newSession'
+  onNodeChange?: (nodeId: string) => void
+}) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const nodeParam = useNodeParam(nodeId)
+  const order = useNodes((s) => s.order)
+  const byId = useNodes((s) => s.byId)
   const [mode, setMode] = useState<NewProjectMode>(initialMode)
   const [name, setName] = useState('')
   const [gitInit, setGitInit] = useState(true)
@@ -47,10 +66,22 @@ export function NewProjectDialog({ nodeId, open, onOpenChange, initialMode = 'em
   const job = useNodes((s) => (jobId ? s.byId[nodeId]?.jobs[jobId] : undefined))
   const taken = useNodes((s) => s.byId[nodeId]?.projects)
   const platform = useNodes((s) => s.byId[nodeId]?.info?.platform)
+  // 节点离线、或者它不管理 workspace（`capabilities.workspace = false`）：这里建不了项目
+  const usable = (id: string): boolean => byId[id]?.conn === 'ready' && byId[id]?.info?.capabilities.workspace !== false
+  const unusableReason = !byId[nodeId] || byId[nodeId]?.conn !== 'ready' ? t('project.nodeOffline') : !usable(nodeId) ? t('project.nodeNoWorkspace') : null
 
   useEffect(() => {
     if (open) setMode(initialMode)
   }, [open, initialMode])
+
+  // 换了节点：上一台节点上选的目录、报错都不算数了
+  useEffect(() => {
+    setPicked(null)
+    setLinkName('')
+    setLinkNameTouched(false)
+    setLinkUnavailable(false)
+    setError(null)
+  }, [nodeId])
 
   useEffect(() => {
     if (!open) {
@@ -66,6 +97,9 @@ export function NewProjectDialog({ nodeId, open, onOpenChange, initialMode = 'em
     }
   }, [open])
 
+  const goTo = (project: string): Promise<void> =>
+    then === 'newSession' ? navigate({ to: '/n/$node/new', params: { node: nodeParam }, search: { project } }) : navigate({ to: '/n/$node/p/$project', params: { node: nodeParam, project } })
+
   // 克隆完成
   useEffect(() => {
     if (!job?.done) return
@@ -73,7 +107,7 @@ export function NewProjectDialog({ nodeId, open, onOpenChange, initialMode = 'em
     if (job.ok) {
       toast.success(t('project.cloned'))
       onOpenChange(false)
-      if (cloned) void navigate({ to: '/n/$node/p/$project', params: { node: nodeParam, project: cloned } })
+      if (cloned) void goTo(cloned)
     } else {
       setError(job.error || t('project.cloneFailed'))
       setJobId(null)
@@ -117,13 +151,13 @@ export function NewProjectDialog({ nodeId, open, onOpenChange, initialMode = 'em
         await createProject(nodeId, created, gitInit)
         onOpenChange(false)
         setBusy(false)
-        await navigate({ to: '/n/$node/p/$project', params: { node: nodeParam, project: created } })
+        await goTo(created)
       } else if (mode === 'existing') {
         if (!picked) return
         const linked = await linkProject(nodeId, picked, linkName.trim())
         onOpenChange(false)
         setBusy(false)
-        await navigate({ to: '/n/$node/p/$project', params: { node: nodeParam, project: linked.name } })
+        await goTo(linked.name)
       } else {
         setCloned(name.trim() || repoName(url.trim()))
         setJobId(await cloneProject(nodeId, url.trim(), name.trim() || undefined))
@@ -135,15 +169,28 @@ export function NewProjectDialog({ nodeId, open, onOpenChange, initialMode = 'em
   }
 
   const valid =
-    mode === 'empty'
-      ? name.trim().length > 0
-      : mode === 'clone'
-        ? url.trim().length > 0
-        : picked !== null && !linkUnavailable && linkProblem === null && !linkNameExists
+    unusableReason === null &&
+    (mode === 'empty' ? name.trim().length > 0 : mode === 'clone' ? url.trim().length > 0 : picked !== null && !linkUnavailable && linkProblem === null && !linkNameExists)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title={t('project.newTitle')} closeLabel={t('common.close')} testId="project-new-dialog" size={mode === 'existing' ? 'lg' : 'md'}>
       <form onSubmit={(e) => void submit(e)} className="space-y-4">
+        {onNodeChange && order.length > 1 ? (
+          <Field label={t('project.node')} htmlFor="project-new-node">
+            <Select id="project-new-node" data-testid="project-new-node" value={nodeId} onChange={(e) => onNodeChange(e.target.value)} disabled={busy}>
+              {order.map((id) => (
+                <option key={id} value={id}>
+                  {usable(id) ? byId[id]?.name : t('project.nodeOptionUnavailable', { name: byId[id]?.name ?? id.slice(0, 8) })}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : null}
+        {unusableReason ? (
+          <p role="status" className="text-sm text-warning" data-testid="project-new-unavailable">
+            {unusableReason}
+          </p>
+        ) : null}
         <Segmented
           ariaLabel={t('project.newTitle')}
           fill
@@ -173,8 +220,8 @@ export function NewProjectDialog({ nodeId, open, onOpenChange, initialMode = 'em
         />
         {mode === 'existing' ? (
           <>
-            <FolderPicker nodeId={nodeId} selected={picked} onSelect={pick} onUnavailable={() => setLinkUnavailable(true)} />
-            {!linkUnavailable ? (
+            {unusableReason ? null : <FolderPicker key={nodeId} nodeId={nodeId} selected={picked} onSelect={pick} onUnavailable={() => setLinkUnavailable(true)} />}
+            {!linkUnavailable && !unusableReason ? (
               <>
                 <p className="text-sm" data-testid="folder-selected">
                   <span className="text-fg-subtle">{t('folderPicker.selectedFolder')}: </span>

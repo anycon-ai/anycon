@@ -134,6 +134,8 @@
     "expandSidebar": "展开侧栏（Ctrl+B）",
     "locked": "此浏览器尚未解锁",
     "lockedHint": "点击解锁",
+    "removed": "已从账号移除",
+    "removedHint": "点开可以在这个浏览器里忘记它",
     "scanApprove": "扫码批准新设备",
     "notificationSettings": "通知设置"
   },
@@ -237,7 +239,9 @@
     "repair": "重新配对",
     "forget": "忘记这个节点",
     "projectsOffline": "节点离线时看不到项目列表。",
-    "reunlock": "重新解锁"
+    "reunlock": "重新解锁",
+    "removedTitle": "这台节点已从账号移除",
+    "removedBody": "hub 上已经没有这台节点了：它在别的设备上被移除或吊销了。忘记它会删掉这个浏览器里它的配对记录和会话缓存，节点机器上的东西不会被删除。"
   },
   "project": {
     "new": "新建项目",
@@ -271,6 +275,10 @@
     "noMatch": "没有符合条件的会话。",
     "newClone": "克隆仓库",
     "openExisting": "打开已有目录",
+    "node": "节点",
+    "nodeOffline": "这台节点离线，等它在线时才能添加项目。",
+    "nodeNoWorkspace": "这台节点不管理 workspace，不能添加项目。",
+    "nodeOptionUnavailable": "{{name}}（不可用）",
     "modeExisting": "已有目录",
     "link": "关联目录",
     "linked": "已关联",
@@ -348,7 +356,8 @@
     "project": "项目",
     "scratch": "临时会话（不属于项目）",
     "headingProject": "想在 {{project}} 里做什么？",
-    "headingScratch": "想做点什么？"
+    "headingScratch": "想做点什么？",
+    "newProject": "新建项目…"
   },
   "session": {
     "view": { "label": "会话视图", "chat": "聊天", "changes": "改动", "preview": "预览" },
@@ -635,6 +644,13 @@
     "aboutDisk": "磁盘剩余",
     "checkUpdates": "检查更新",
     "updatesLater": "之后的版本提供",
+    "removeTitle": "移除这台节点",
+    "removeHint": "机器重装了或不再使用时用。把节点从账号里移除，并在这个浏览器里忘记它。节点离线也能移除。",
+    "remove": "移除节点",
+    "removeConfirmTitle": "移除「{{name}}」？",
+    "removeConfirmBody": "hub 不再为这台节点转发连接，并删掉它的所有配对；这个浏览器忘记它。那台机器上的项目和会话历史不会被删除。要再用它，在那台机器上运行 `anycon init --force` 后重新配对。",
+    "removed": "已移除 {{name}}。",
+    "removeFailed": "没能移除这台节点：{{error}}。没有做任何改动，请重试。",
     "longCode": "长码（16 位）",
     "longCodeHint": "经不是你自己运行的 hub 配对时更安全。关掉则换成更好输入的 8 位短码。",
     "tabEnroll": "接入",
@@ -655,6 +671,7 @@
     "revoke": "吊销",
     "revokeTitle": "吊销「{{name}}」？",
     "revokeBody": "该设备会立即失去访问权限，需要重新配对。",
+    "revokeNodeBody": "hub 不再为这台节点转发连接，并删掉它的所有配对；这个浏览器忘记它。那台机器上的项目和会话历史不会被删除。要再用它，在那台机器上运行 `anycon init --force` 后重新配对。",
     "revokeSelf": "这是你正在使用的浏览器，吊销后需要重新配对。",
     "revokeFailed": "没能吊销这台设备：{{error}}。它可能仍然能连接，请重试。",
     "revokedOffline": "{{count}} 个节点当时离线，仍留着这台设备的公钥。hub 不会再路由给它；等它们上线后请在设备列表里移除。"

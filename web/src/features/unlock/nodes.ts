@@ -13,6 +13,17 @@ export function lockedNodes(devices: readonly ApiDevice[] | undefined, localIds:
   return accountNodes(devices).filter((d) => !local.has(d.id))
 }
 
+/**
+ * 这个浏览器里配对过、但账号下已经没有的节点（在别的设备上被移除 / 吊销了）：给它们一个「忘记」入口。
+ * `fetchedAt` 是设备列表的拉取时间：比节点的配对时间早的列表不算数（刚配对的节点可能还不在缓存的列表里）。列表没拉到时什么都不算。
+ * 只用来提示和给入口，不自动删：hub 说了不算，删不删由用户决定。
+ */
+export function removedNodes(devices: readonly ApiDevice[] | undefined, fetchedAt: number, local: readonly { id: string; pairedAt: number }[]): string[] {
+  if (!devices) return []
+  const account = new Set(accountNodes(devices).map((d) => d.id))
+  return local.filter((n) => !account.has(n.id) && fetchedAt > n.pairedAt).map((n) => n.id)
+}
+
 /** URL 里的节点参数（前 8 位，冲突时全长）→ 账号下的节点。 */
 export function findAccountNode(param: string, nodes: readonly ApiDevice[]): ApiDevice | undefined {
   const exact = nodes.find((d) => d.id === param)

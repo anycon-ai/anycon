@@ -1,12 +1,12 @@
 import { Navigate, Outlet, useNavigate } from '@tanstack/react-router'
-import { ShieldAlert, Unplug } from 'lucide-react'
+import { ServerOff, ShieldAlert, Unplug } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices } from '@/api/queries'
-import { accountNodes, findAccountNode, unlockParam } from '@/features/unlock/nodes'
+import { forgetNode } from '@/features/devices/removeNode'
+import { accountNodes, findAccountNode, removedNodes, unlockParam } from '@/features/unlock/nodes'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { useCurrentNode } from '@/lib/nav'
 import { describeError } from '@/lib/errors'
-import { getClient } from '@/transport/instance'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes } from '@/stores/nodes'
 import { toast } from '@/stores/ui'
@@ -17,7 +17,8 @@ import { PageHeader } from './PageHeader'
 
 /**
  * `/n/:node/*` 的守卫：未知节点 → 404；协议版本不兼容 → 整页提示；
- * Noise 握手失败（daemon 不认识此设备）→ 整页提示重新配对。节点离线不拦截。
+ * Noise 握手失败（daemon 不认识此设备）→ 整页提示重新配对；账号下已经没有这台节点（在别的设备上被移除了）→ 整页提示，可以忘记它。
+ * 节点离线不拦截。
  */
 export function NodeGuard() {
   const { t } = useTranslation()
@@ -26,7 +27,14 @@ export function NodeGuard() {
   const order = useNodes((s) => s.order)
   // 本账号的节点、只是这个浏览器还没配对（通知 / 书签 / 别的设备发来的链接）→ 去解锁页（ADR-36）。只在找不到本地节点时才问 hub
   const unknown = loaded && (!nodeId || !entry)
+  // 已配对的节点不为它去问 hub，但左栏已经拉过的设备列表照样拿来用（关掉的查询也读缓存）
   const devices = useDevices({ enabled: unknown })
+  const forget = (id: string): void => {
+    forgetNode(id)
+      .then(() => void navigate({ to: '/' }))
+      // 本地库删不掉（存储被拒绝 / 库被占用）：节点还在，要告诉用户，别静默
+      .catch((e: unknown) => toast.error(describeError(e, t)))
+  }
 
   if (!loaded)
     return (
@@ -46,6 +54,31 @@ export function NodeGuard() {
     if (hit && !order.includes(hit.id)) return <Navigate to="/unlock/$node" params={{ node: unlockParam(hit, nodes) }} replace />
     return <NotFoundPage title={t('node.unknownTitle')} body={t('node.unknownBody')} />
   }
+
+  if (removedNodes(devices.data, devices.dataUpdatedAt ?? 0, [entry]).length > 0)
+    return (
+      <>
+        <PageHeader crumbs={[{ label: entry.name }]} />
+        <div className="flex flex-1 items-center justify-center" data-testid="node-removed">
+          <EmptyState
+            icon={<ServerOff className="size-10" />}
+            title={t('node.removedTitle')}
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="primary" onClick={() => forget(nodeId)} data-testid="node-removed-forget">
+                  {t('node.forget')}
+                </Button>
+                <Button variant="outline" onClick={() => void navigate({ to: '/pair' })}>
+                  {t('sidebar.addNode')}
+                </Button>
+              </div>
+            }
+          >
+            {t('node.removedBody')}
+          </EmptyState>
+        </div>
+      </>
+    )
 
   if (entry.versionMismatch)
     return (
@@ -75,19 +108,7 @@ export function NodeGuard() {
                 <Button variant="outline" onClick={() => void navigate({ to: '/pair' })} data-testid="repair">
                   {t('node.repair')}
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    getClient()
-                      .removeNode(nodeId)
-                      .then(() => {
-                        useNodes.getState().remove(nodeId)
-                        void navigate({ to: '/' })
-                      })
-                      // 本地库删不掉（存储被拒绝 / 库被占用）：节点还在，要告诉用户，别静默
-                      .catch((e: unknown) => toast.error(describeError(e, t)))
-                  }}
-                >
+                <Button variant="outline" onClick={() => forget(nodeId)}>
                   {t('node.forget')}
                 </Button>
               </div>

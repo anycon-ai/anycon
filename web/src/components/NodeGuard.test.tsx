@@ -9,7 +9,8 @@ import { useNodes } from '@/stores/nodes'
 const h = vi.hoisted(() => ({
   navigate: vi.fn(),
   params: { node: 'aaaaaaaa' } as Record<string, string>,
-  devices: { data: undefined as unknown, isPending: false, fetchStatus: 'idle', isError: false },
+  devices: { data: undefined as unknown, dataUpdatedAt: 0, isPending: false, fetchStatus: 'idle', isError: false },
+  removeNode: vi.fn(async (_id: string) => {}),
   enabled: [] as Array<boolean | undefined>,
 }))
 vi.mock('@tanstack/react-router', async (orig) => {
@@ -31,7 +32,7 @@ vi.mock('@/api/queries', () => ({
     return h.devices
   },
 }))
-vi.mock('@/transport/instance', () => ({ getClient: () => ({}) }))
+vi.mock('@/transport/instance', () => ({ getClient: () => ({ removeNode: h.removeNode }) }))
 
 import { NodeGuard } from './NodeGuard'
 
@@ -43,6 +44,8 @@ beforeEach(() => {
   h.enabled = []
   h.params = { node: 'aaaaaaaa' }
   h.devices.data = undefined
+  h.devices.dataUpdatedAt = 0
+  h.removeNode.mockClear()
   h.devices.isPending = false
   h.devices.fetchStatus = 'idle'
   useNodes.setState({ byId: {}, order: [], loaded: true })
@@ -77,6 +80,27 @@ describe('NodeGuard', () => {
     render(<NodeGuard />)
     expect(screen.queryByTestId('not-found')).toBeNull()
     expect(document.querySelector('[aria-busy="true"]')).not.toBeNull()
+  })
+
+  it('a paired node the account no longer has (removed on another device) gets a page offering to forget it', async () => {
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, pairedAt: 100 }) }, order: [A], loaded: true })
+    h.devices.data = [daemon('b'.repeat(32))]
+    h.devices.dataUpdatedAt = 200
+    render(<NodeGuard />)
+    expect(screen.getByTestId('node-removed')).toBeInTheDocument()
+    expect(screen.queryByTestId('outlet')).toBeNull()
+    screen.getByTestId('node-removed-forget').click()
+    await vi.waitFor(() => expect(h.navigate).toHaveBeenCalledWith({ to: '/' }))
+    expect(h.removeNode).toHaveBeenCalledWith(A)
+    expect(useNodes.getState().order).toEqual([])
+  })
+
+  it('a device list fetched before the pairing does not make a node look removed', () => {
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, pairedAt: 300 }) }, order: [A], loaded: true })
+    h.devices.data = []
+    h.devices.dataUpdatedAt = 200
+    render(<NodeGuard />)
+    expect(screen.getByTestId('outlet')).toBeInTheDocument()
   })
 
   it('a node the daemon no longer recognises offers "unlock again" next to "pair again"', () => {

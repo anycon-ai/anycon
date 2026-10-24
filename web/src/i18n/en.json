@@ -135,6 +135,8 @@
     "expandSidebar": "Show sidebar (Ctrl+B)",
     "locked": "Not unlocked in this browser",
     "lockedHint": "Tap to unlock",
+    "removed": "Removed from your account",
+    "removedHint": "Open it to forget it on this browser",
     "scanApprove": "Scan to approve a new device",
     "notificationSettings": "Notification settings"
   },
@@ -238,7 +240,9 @@
     "repair": "Pair again",
     "forget": "Forget this node",
     "projectsOffline": "The project list is not available while the node is offline.",
-    "reunlock": "Unlock again"
+    "reunlock": "Unlock again",
+    "removedTitle": "This node was removed from your account",
+    "removedBody": "The hub no longer knows this node: it was removed or revoked on another device. Forgetting it deletes its pairing and cached sessions from this browser. Nothing on the node's machine is deleted."
   },
   "project": {
     "new": "New project",
@@ -272,6 +276,10 @@
     "noMatch": "No sessions match.",
     "newClone": "Clone a repository",
     "openExisting": "Open an existing folder",
+    "node": "Node",
+    "nodeOffline": "This node is offline. Projects can only be added while it is online.",
+    "nodeNoWorkspace": "This node does not manage a workspace, so projects cannot be added to it.",
+    "nodeOptionUnavailable": "{{name}} (unavailable)",
     "modeExisting": "Existing folder",
     "link": "Link folder",
     "linked": "Linked",
@@ -349,7 +357,8 @@
     "project": "Project",
     "scratch": "Temporary session (no project)",
     "headingProject": "What should we do in {{project}}?",
-    "headingScratch": "What should we work on?"
+    "headingScratch": "What should we work on?",
+    "newProject": "New project…"
   },
   "session": {
     "view": { "label": "Session view", "chat": "Chat", "changes": "Changes", "preview": "Preview" },
@@ -644,6 +653,13 @@
     "aboutDisk": "Free disk space",
     "checkUpdates": "Check for updates",
     "updatesLater": "Coming in a later version",
+    "removeTitle": "Remove this node",
+    "removeHint": "For a machine that was reinstalled or is no longer used. Removes the node from your account and forgets it on this browser. Works while the node is offline.",
+    "remove": "Remove node",
+    "removeConfirmTitle": "Remove “{{name}}”?",
+    "removeConfirmBody": "The hub stops routing to this node and drops all of its pairings; this browser forgets it. Projects and session history on that machine are not deleted. To use it again, run `anycon init --force` on it and pair again.",
+    "removed": "Removed {{name}}.",
+    "removeFailed": "Could not remove the node: {{error}}. Nothing was changed; try again.",
     "longCode": "Long code (16 characters)",
     "longCodeHint": "Safer when you pair through a hub you do not run. Turn it off for a short code that is easier to type.",
     "tabEnroll": "Access",
@@ -664,6 +680,7 @@
     "revoke": "Revoke",
     "revokeTitle": "Revoke “{{name}}”?",
     "revokeBody": "The device loses access immediately and has to pair again.",
+    "revokeNodeBody": "The hub stops routing to this node and drops all of its pairings; this browser forgets it. Projects and session history on that machine are not deleted. To use it again, run `anycon init --force` on it and pair again.",
     "revokeSelf": "This is the browser you are using. You will have to pair it again.",
     "revokeFailed": "Could not revoke the device: {{error}}. It may still be able to connect — try again.",
     "revokedOffline": "{{count}} node(s) were offline and still hold this device’s key. The hub no longer routes to it; remove it from their device list once they are back."

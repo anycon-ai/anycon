@@ -8,6 +8,8 @@
 //!   （和路由表同一把锁，所以「节点上线 / 预览连接接入」互相看到一致的状态）。预览连接的对端集合只有它的节点；
 //!   节点（重新）上线时把在线的预览连接加回它的对端集合，不进 `peers_online`，而是逐条发 `preview_peer`。
 //! - 「粘住」状态（[`super::sticky`]）挂在路由表上：连接结束、设备下线 / 被顶掉 / 被吊销时在这里一并清理。
+//! - 「账号 → 在线的永久连接」索引（`multi` 的连接配额，docs/spec/hub.md § 7.1）也在同一把锁里：
+//!   [`Registry::register_counted`] 检查上限和登记是同一步，并发认证不会一起冲过上限。
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -214,12 +216,28 @@ struct Table {
     previews_by_node: HashMap<String, HashSet<String>>,
     /// 账号 id → 预览连接数（`ANYCON_PREVIEW_MAX_CONNECTIONS`）。
     previews_by_account: HashMap<String, usize>,
+    /// 账号 id → 它此刻有永久连接在线的设备 id（用集合：同一设备的新连接顶掉旧的，数量不变）。
+    /// 临时连接（哪怕带着登录 cookie）和预览连接不在里面。
+    permanent_by_account: HashMap<String, HashSet<String>>,
 }
 
 impl Table {
     fn add_preview_index(&mut self, id: &str, meta: &PreviewMeta) {
         self.previews_by_node.entry(meta.node_id.clone()).or_default().insert(id.to_string());
         *self.previews_by_account.entry(meta.account_id.clone()).or_default() += 1;
+    }
+
+    fn add_permanent_index(&mut self, account_id: &str, device_id: &str) {
+        self.permanent_by_account.entry(account_id.to_string()).or_default().insert(device_id.to_string());
+    }
+
+    fn remove_permanent_index(&mut self, account_id: &str, device_id: &str) {
+        if let Some(devices) = self.permanent_by_account.get_mut(account_id) {
+            devices.remove(device_id);
+            if devices.is_empty() {
+                self.permanent_by_account.remove(account_id);
+            }
+        }
     }
 
     fn remove_preview_index(&mut self, id: &str, meta: &PreviewMeta) {
@@ -241,6 +259,10 @@ impl Table {
 /// 账号的预览连接已经到上限。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreviewQuotaFull;
+
+/// 账号的永久连接已经到上限（`multi` 的连接配额）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectionQuotaFull;
 
 #[derive(Default)]
 pub struct Registry {
@@ -267,11 +289,40 @@ impl Registry {
     /// 节点（重新）上线时，它名下在线的预览连接一并加回它的对端集合：逐条给节点发 `preview_peer`（不进 `peers_online`，
     /// 也不发 `peer_online`），给预览连接发 `peer_online { node }`（docs/spec/hub.md § 13.4）。
     pub fn register(&self, conn: &Arc<Conn>, auth_ok: impl FnOnce(Vec<String>) -> Control) -> Registered {
+        self.register_counted(conn, None, |peers_online, _| auth_ok(peers_online))
+            .expect("registering without a connection limit cannot be refused")
+    }
+
+    /// 同 [`Registry::register`]，另外管账号的永久连接数（`multi` 的连接配额）。
+    ///
+    /// - `max_connections = Some(n)`，而且 `conn` 是有账号的永久连接：账号**别的设备**已经有 `n` 条在线就返回
+    ///   `Err`，什么都不登记、不通知。同一设备的旧连接（正被这条顶掉）不算。检查、登记、生成 `auth_ok` 在同一把锁里，
+    ///   并发认证的两条连接不会一起冲过上限。
+    /// - `auth_ok` 的第二个参数是登记之后这个账号的永久连接数（含这一条），给 `auth_ok.quota.connections` 用。
+    pub fn register_counted(
+        &self,
+        conn: &Arc<Conn>,
+        max_connections: Option<usize>,
+        auth_ok: impl FnOnce(Vec<String>, usize) -> Control,
+    ) -> Result<Registered, ConnectionQuotaFull> {
         let mut t = self.table.write().expect("registry");
         let device_id = conn.device_id();
+        let counted_account = conn.account_id().filter(|_| conn.is_permanent());
+        if let (Some(max), Some(account)) = (max_connections, &counted_account) {
+            let devices = t.permanent_by_account.get(account);
+            let others = devices.map_or(0, |d| d.len() - usize::from(d.contains(&device_id)));
+            if others >= max {
+                return Err(ConnectionQuotaFull);
+            }
+        }
         let superseded = t.conns.insert(device_id.clone(), conn.clone());
+        let mut connections = 0;
+        if let Some(account) = &counted_account {
+            t.add_permanent_index(account, &device_id);
+            connections = t.permanent_by_account.get(account).map_or(0, HashSet::len);
+        }
         let peers_online: Vec<String> = conn.peers_snapshot().into_iter().filter(|p| t.conns.contains_key(p)).collect();
-        conn.send_control(&auth_ok(peers_online.clone()));
+        conn.send_control(&auth_ok(peers_online.clone(), connections));
         let superseded = superseded.filter(|old| old.id != conn.id);
         if let Some(old) = &superseded {
             // 新连接是一条全新的传输（对端会收到 peer_online 重新握手）：旧连接留下的顺序约束作废。
@@ -287,7 +338,7 @@ impl Registry {
                 preview.send_control(&Control::PeerOnline { device: device_id.clone() });
             }
         }
-        Registered { superseded, peers_online }
+        Ok(Registered { superseded, peers_online })
     }
 
     /// 登记一条预览连接（`conn.preview` 必须是 `Some`）。账号的预览连接已经到 `max` 个返回 `Err`，什么都不登记。
@@ -336,6 +387,9 @@ impl Registry {
             Some(c) if c.id == conn_id => {
                 let conn = t.conns.remove(device_id).expect("just looked up");
                 self.sticky.forget_toward(device_id);
+                if let Some(account) = conn.account_id().filter(|_| conn.is_permanent()) {
+                    t.remove_permanent_index(&account, device_id);
+                }
                 if let Some(meta) = &conn.preview {
                     t.remove_preview_index(device_id, meta);
                     if let Some(node) = t.conns.get(&meta.node_id) {
@@ -370,6 +424,35 @@ impl Registry {
         self.table.read().expect("registry").previews_by_account.get(account_id).copied().unwrap_or(0)
     }
 
+    /// 这个账号此刻在线的永久连接数（`multi` 的连接配额；预览连接和还没有设备身份的临时连接不算）。
+    pub fn permanent_count_of(&self, account_id: &str) -> usize {
+        self.table.read().expect("registry").permanent_by_account.get(account_id).map_or(0, HashSet::len)
+    }
+
+    /// 这个账号此刻在线的永久连接（`quota_update` 的收件人）。
+    pub fn permanent_conns_of(&self, account_id: &str) -> Vec<Arc<Conn>> {
+        let t = self.table.read().expect("registry");
+        t.permanent_by_account
+            .get(account_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|device| t.conns.get(device).cloned())
+            .collect()
+    }
+
+    /// 属于这个账号的**全部**在线连接：永久连接、带着该账号登录 cookie 的临时连接、预览连接。删账号时一并关掉。
+    /// 扫整张路由表，只给低频的管理操作用。
+    pub fn conns_of_account(&self, account_id: &str) -> Vec<Arc<Conn>> {
+        self.table
+            .read()
+            .expect("registry")
+            .conns
+            .values()
+            .filter(|c| c.account_id().as_deref() == Some(account_id))
+            .cloned()
+            .collect()
+    }
+
     /// 临时连接换成正式身份。返回被顶掉的同 id 连接（正常不会有）。
     pub fn upgrade(&self, conn: &Arc<Conn>, new_id: &str, account_id: Option<String>) -> Option<Arc<Conn>> {
         let mut t = self.table.write().expect("registry");
@@ -377,8 +460,12 @@ impl Registry {
         if t.conns.get(&old_id).is_some_and(|c| c.id == conn.id) {
             t.conns.remove(&old_id);
         }
-        conn.set_identity(new_id.to_string(), account_id);
+        conn.set_identity(new_id.to_string(), account_id.clone());
         let displaced = t.conns.insert(new_id.to_string(), conn.clone()).filter(|old| old.id != conn.id);
+        // 升级后是永久连接，计入账号的连接数（被顶掉的同 id 旧连接是同一台设备，集合里本来就有）。
+        if let Some(account) = &account_id {
+            t.add_permanent_index(account, new_id);
+        }
         if let Some(old) = &displaced {
             self.sticky.forget_toward(new_id);
             self.sticky.forget_sender(old.id);
@@ -468,6 +555,34 @@ mod tests {
         (conn, rx)
     }
 
+    /// 属于指定账号的设备连接；`permanent = false` 是带登录 cookie 的临时连接。
+    fn conn_in(registry: &Registry, id: &str, account: &str, permanent: bool) -> (Arc<Conn>, OutRx) {
+        let (out, rx) = OutQueue::new(1 << 20);
+        let conn = Arc::new(Conn::new(ConnInit {
+            id: registry.next_conn_id(),
+            ip: "127.0.0.1".parse().unwrap(),
+            client: client(DeviceKind::Web),
+            out,
+            device_id: id.into(),
+            account_id: Some(account.into()),
+            permanent,
+            peers: HashSet::new(),
+            preview: None,
+        }));
+        (conn, rx)
+    }
+
+    /// 带连接数的 `auth_ok`：把登记后的账号连接数记在 `seen` 里。
+    fn counted_auth_ok<'a>(
+        id: &'a str,
+        seen: &'a std::cell::Cell<usize>,
+    ) -> impl FnOnce(Vec<String>, usize) -> Control + 'a {
+        move |peers_online, connections| {
+            seen.set(connections);
+            Control::AuthOk { device_id: id.into(), server_time_ms: 0, peers_online, quota: None }
+        }
+    }
+
     fn preview(registry: &Registry, id: &str, account: &str, node: &str, label: &str) -> (Arc<Conn>, OutRx) {
         let (out, rx) = OutQueue::new(1 << 20);
         let conn = Arc::new(Conn::new(ConnInit {
@@ -548,6 +663,85 @@ mod tests {
         // 过期的连接号（已经被别的连接顶掉）不会误删
         assert!(!r.unregister("p2", p2.id + 100));
         assert_eq!(r.preview_count("acc"), 1);
+    }
+
+    #[test]
+    fn the_connection_limit_counts_other_devices_of_the_account_and_is_checked_with_the_registration() {
+        let r = Registry::default();
+        let seen = std::cell::Cell::new(0);
+        let (a, mut a_rx) = conn_in(&r, "a", "acc", true);
+        let (b, _b_rx) = conn_in(&r, "b", "acc", true);
+        let (c, mut c_rx) = conn_in(&r, "c", "acc", true);
+        let (x, _x_rx) = conn_in(&r, "x", "other", true);
+
+        assert!(r.register_counted(&a, Some(2), counted_auth_ok("a", &seen)).is_ok());
+        assert_eq!(seen.get(), 1, "auth_ok is built after registration and sees the new count");
+        assert!(matches!(&drain(&mut a_rx)[..], [Control::AuthOk { .. }]));
+        assert!(r.register_counted(&b, Some(2), counted_auth_ok("b", &seen)).is_ok());
+        assert_eq!(seen.get(), 2);
+
+        // 满了：不登记、不生成 auth_ok、不发任何东西
+        seen.set(0);
+        assert!(matches!(r.register_counted(&c, Some(2), counted_auth_ok("c", &seen)), Err(ConnectionQuotaFull)));
+        assert_eq!(seen.get(), 0, "auth_ok is not even built");
+        assert!(!r.is_online("c") && drain(&mut c_rx).is_empty());
+        assert_eq!(r.permanent_count_of("acc"), 2);
+        // 别的账号有自己的额度，不限制（None）就不检查
+        assert!(r.register_counted(&x, Some(2), counted_auth_ok("x", &seen)).is_ok());
+        assert_eq!(r.permanent_count_of("other"), 1);
+
+        // 同一设备的新连接顶掉旧的：不算新增，满了也进得来
+        let (a2, _a2_rx) = conn_in(&r, "a", "acc", true);
+        let reg = r.register_counted(&a2, Some(2), counted_auth_ok("a", &seen)).expect("supersede is allowed");
+        assert_eq!(reg.superseded.map(|c| c.id), Some(a.id));
+        assert_eq!((seen.get(), r.permanent_count_of("acc")), (2, 2));
+        // 旧连接收尾：不是登记的那条，什么都不变
+        assert!(!r.unregister("a", a.id));
+        assert_eq!(r.permanent_count_of("acc"), 2);
+
+        // 下线一条，空出位置
+        assert!(r.unregister("b", b.id));
+        assert_eq!(r.permanent_count_of("acc"), 1);
+        assert!(r.register_counted(&c, Some(2), counted_auth_ok("c", &seen)).is_ok());
+        assert_eq!(seen.get(), 2);
+        assert_eq!(r.permanent_conns_of("acc").len(), 2);
+        assert!(r.permanent_conns_of("nobody").is_empty());
+
+        // 不传上限 = 不检查（single）
+        let (d, _d_rx) = conn_in(&r, "d", "acc", true);
+        assert!(r.register_counted(&d, None, counted_auth_ok("d", &seen)).is_ok());
+        assert_eq!(r.permanent_count_of("acc"), 3);
+    }
+
+    #[test]
+    fn temporary_and_preview_connections_are_not_counted_and_an_upgrade_is() {
+        let r = Registry::default();
+        let seen = std::cell::Cell::new(0);
+        // 带登录 cookie 的临时连接：不计数，也不受上限限制（上限为 0 都进得来）
+        let (t, _t_rx) = conn_in(&r, "temp", "acc", false);
+        assert!(r.register_counted(&t, Some(0), counted_auth_ok("temp", &seen)).is_ok());
+        assert_eq!((seen.get(), r.permanent_count_of("acc")), (0, 0));
+        // 预览连接不在永久连接的索引里
+        let (p, _p_rx) = preview(&r, "p", "acc", "node", "label");
+        r.register_preview(&p, 16, auth_ok("p")).unwrap();
+        assert_eq!(r.permanent_count_of("acc"), 0);
+        // 删账号要关的是它的全部连接
+        let mut ids: Vec<String> = r.conns_of_account("acc").iter().map(|c| c.device_id()).collect();
+        ids.sort();
+        assert_eq!(ids, ["p", "temp"]);
+        assert!(r.conns_of_account("other").is_empty());
+
+        // 配对完成：临时连接升级为正式设备，计入账号的连接数；收尾后清掉
+        assert!(r.upgrade(&t, "perm", Some("acc".into())).is_none());
+        assert_eq!(r.permanent_count_of("acc"), 1);
+        assert_eq!(r.permanent_conns_of("acc").iter().map(|c| c.device_id()).collect::<Vec<_>>(), ["perm"]);
+        assert!(r.unregister("perm", t.id));
+        assert_eq!(r.permanent_count_of("acc"), 0);
+        // 临时连接收尾不动索引
+        let (t2, _t2_rx) = conn_in(&r, "temp2", "acc", false);
+        r.register(&t2, auth_ok("temp2"));
+        assert!(r.unregister("temp2", t2.id));
+        assert_eq!(r.permanent_count_of("acc"), 0);
     }
 
     #[test]

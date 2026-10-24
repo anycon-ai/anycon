@@ -11,12 +11,15 @@ use sqlx::{Row, SqlitePool};
 
 use crate::util::{new_id, ordered};
 
+mod multi;
+
 use super::{
     category_from_str, category_to_str, kind_from_str, kind_to_str, Account, AccountToken, AuditEntry, CodeCandidate,
     CreateAccountOutcome, Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken,
     NotificationPref, PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome,
     SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
 };
+use super::{CreateDevicesOutcome, DeviceLimits};
 
 fn be(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
@@ -1237,6 +1240,29 @@ impl Store for SqliteStore {
             .await
             .map_err(be)?;
         Ok(())
+    }
+
+    // ---- multi：配额、账号删除、管理员标记（SQL 在 `multi.rs`） ----
+
+    async fn count_devices(&self, account_id: &str) -> StoreResult<(u32, u32)> {
+        self.count_devices_impl(account_id).await
+    }
+
+    async fn create_devices_within_limits(
+        &self,
+        devices: Vec<NewDevice>,
+        limits: DeviceLimits,
+        now_ms: u64,
+    ) -> StoreResult<CreateDevicesOutcome> {
+        self.create_devices_within_limits_impl(devices, limits, now_ms).await
+    }
+
+    async fn set_account_admin(&self, account_id: &str, is_admin: bool) -> StoreResult<bool> {
+        self.set_account_admin_impl(account_id, is_admin).await
+    }
+
+    async fn delete_account(&self, account_id: &str, tombstone: NewAudit, now_ms: u64) -> StoreResult<bool> {
+        self.delete_account_impl(account_id, tombstone, now_ms).await
     }
 }
 

@@ -8,6 +8,7 @@
 //!
 //! 入口：[`run`] 起一个完整的 hub（测试用它起真实服务），二进制 `anycon-hub` 只是对它的薄封装。
 
+pub mod account_delete;
 pub mod accounts;
 pub mod app;
 pub mod bootstrap;
@@ -20,6 +21,7 @@ pub mod mail;
 pub mod notify;
 pub mod pairing;
 pub mod push;
+pub mod quota;
 pub mod ratelimit;
 pub mod store;
 pub mod util;

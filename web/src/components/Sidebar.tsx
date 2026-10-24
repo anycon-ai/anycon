@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, ChevronRight, FolderGit2, FolderPlus, Lock, LogOut, PanelLeftClose, Plus, ScanLine, Search, Server, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, FolderGit2, FolderPlus, Lock, LogOut, PanelLeftClose, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices, useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
 import { resetClientState, signOut as signOutOfHub } from '@/app/session'
 import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
-import { accountNodes, lockedNodes, unlockParam } from '@/features/unlock/nodes'
+import { accountNodes, lockedNodes, removedNodes, unlockParam } from '@/features/unlock/nodes'
 import { groupNodeSessions, type NodeProjectGroup } from '@/features/session/group'
 import { useEnroll } from '@/stores/enroll'
 import { cleanHintText } from '@/lib/hint'
@@ -245,6 +245,12 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
   const devices = useDevices()
   const account = accountNodes(devices.data)
   const locked = lockedNodes(devices.data, order)
+  // 这个浏览器里有、账号下已经没有的节点（在别的设备上被移除了）：点了去它的页面，那里可以忘记它
+  const removed = removedNodes(
+    devices.data,
+    devices.dataUpdatedAt ?? 0,
+    order.map((id) => ({ id, pairedAt: nodes[id]?.pairedAt ?? Number.POSITIVE_INFINITY })),
+  )
   const only = selected.length === 1 ? nodes[selected[0]!] : undefined
   const label = only ? only.name : selected.length === order.length && selected.length > 0 ? t('sidebar.allNodes') : selected.length > 0 ? t('sidebar.nodesSelected', { count: selected.length, total: order.length }) : t('sidebar.chooseNode')
   return (
@@ -284,6 +290,26 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
                 }}
               >
                 <span className="truncate">{cleanHintText(n.name) || n.id.slice(0, 8)}</span>
+              </MenuItem>
+            ))}
+          </>
+        ) : null}
+        {removed.length > 0 ? (
+          <>
+            <MenuSeparator />
+            <MenuLabel>{t('sidebar.removed')}</MenuLabel>
+            {removed.map((id) => (
+              <MenuItem
+                key={id}
+                testId="node-removed"
+                icon={<ServerOff className="mt-0.5 size-4 text-fg-subtle" aria-hidden />}
+                hint={t('sidebar.removedHint')}
+                onSelect={() => {
+                  onNavigate?.()
+                  void navigate({ to: '/n/$node', params: { node: shortNodeId(id, order) } })
+                }}
+              >
+                <span className="truncate">{nodes[id]?.name ?? id.slice(0, 8)}</span>
               </MenuItem>
             ))}
           </>

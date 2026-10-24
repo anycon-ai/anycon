@@ -3,6 +3,7 @@ import { Laptop, Server, Terminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ApiDevice } from '@/api/types'
 import { useDevices, useRenameDevice, useRevokeDevice } from '@/api/queries'
+import { forgetNode } from '@/features/devices/removeNode'
 import { describeError } from '@/lib/errors'
 import { formatRelative } from '@/lib/format'
 import { useHub } from '@/stores/hub'
@@ -35,13 +36,14 @@ export function DevicesPage() {
   const unpaired = (devices.data ?? []).filter((d) => d.kind !== 'daemon' && !(devices.data ?? []).some((n) => n.kind === 'daemon' && d.paired_with.includes(n.id)))
 
   const doRevoke = (d: ApiDevice): void => {
-    // 先让能连上的 daemon 删公钥，再让 hub 删路由（spec/hub.md § 2.3：UI 两步一起做）。daemon 本身被吊销时只有 hub 这一步。
+    // 先让能连上的 daemon 删公钥，再让 hub 删路由（spec/hub.md § 2.3：UI 两步一起做）。daemon 本身被吊销时只有 hub 这一步，
+    // 之后这个浏览器也忘记它（和节点设置里的「移除这台节点」一样），不然它会作为一台永远离线的节点一直留在左栏
     revoke.mutate(
       { id: d.id, nodeIds: d.kind === 'daemon' ? [] : d.paired_with },
       {
         onSuccess: ({ offlineNodes }) => {
           setTarget(null)
-          if (d.kind === 'daemon') useNodes.getState().patch(d.id, { conn: 'noise_failed' })
+          if (d.kind === 'daemon' && useNodes.getState().byId[d.id]) forgetNode(d.id).catch((e: unknown) => toast.error(describeError(e, t)))
           if (offlineNodes.length > 0) toast.info(t('devices.revokedOffline', { count: offlineNodes.length }))
         },
         // 失败要说出来，对话框留着可以重试
@@ -99,7 +101,7 @@ export function DevicesPage() {
         </section>
       ) : null}
 
-      <Dialog open={!!target} onOpenChange={(o) => !o && setTarget(null)} title={t('devices.revokeTitle', { name: target?.name ?? '' })} description={target?.id === self ? t('devices.revokeSelf') : t('devices.revokeBody')} closeLabel={t('common.close')}>
+      <Dialog open={!!target} onOpenChange={(o) => !o && setTarget(null)} title={t('devices.revokeTitle', { name: target?.name ?? '' })} description={target?.id === self ? t('devices.revokeSelf') : target?.kind === 'daemon' ? t('devices.revokeNodeBody') : t('devices.revokeBody')} closeLabel={t('common.close')}>
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={() => setTarget(null)}>
             {t('common.cancel')}

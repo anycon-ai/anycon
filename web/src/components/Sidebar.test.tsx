@@ -12,7 +12,7 @@ import { useSessions } from '@/stores/sessions'
 import { useEnroll } from '@/stores/enroll'
 
 const navigate = vi.hoisted(() => vi.fn())
-const devices = vi.hoisted(() => ({ data: undefined as unknown }))
+const devices = vi.hoisted(() => ({ data: undefined as unknown, dataUpdatedAt: 0 }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn' }))
 vi.mock('@/api/queries', () => ({ useMe: () => ({ data: undefined }), useDevices: () => devices, logout: vi.fn() }))
 
@@ -35,6 +35,7 @@ beforeEach(() => {
   resetSeq()
   navigate.mockReset()
   devices.data = undefined
+  devices.dataUpdatedAt = 0
   usePrefs.setState({ sidebarOpen: true, sidebarNodes: null })
   useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, agents: [mockAgent()], projects: [project({ name: 'app' }), project({ name: 'web' })] }) }, order: [NODE], loaded: true })
   useSessions.setState({
@@ -247,6 +248,41 @@ describe('node switcher — nodes of the account this browser has not unlocked (
     await user.click(screen.getByTestId('node-switcher'))
     await screen.findByTestId('node-add')
     expect(screen.queryByTestId('node-locked')).toBeNull()
+  })
+})
+
+describe('node switcher — nodes removed from the account on another device', () => {
+  const daemon = (id: string, name: string) => ({ id, name, kind: 'daemon', platform: 'linux', created_at_ms: 1, online: true, paired_with: [] })
+  const NODE_B = 'b'.repeat(32)
+  beforeEach(() => {
+    useNodes.setState({
+      byId: { [NODE]: nodeEntry({ id: NODE, name: 'laptop', pairedAt: 100 }), [NODE_B]: nodeEntry({ id: NODE_B, name: 'old-mini', pairedAt: 100 }) },
+      order: [NODE, NODE_B],
+      loaded: true,
+    })
+  })
+
+  it('lists a paired node the account no longer has; a click goes to its page (where it can be forgotten)', async () => {
+    const user = userEvent.setup()
+    devices.data = [daemon(NODE, 'laptop')]
+    devices.dataUpdatedAt = 200
+    wrap(<Sidebar nodeId={NODE} />)
+    await user.click(screen.getByTestId('node-switcher'))
+    const removed = await screen.findAllByTestId('node-removed')
+    expect(removed).toHaveLength(1)
+    expect(removed[0]).toHaveTextContent('old-mini')
+    await user.click(removed[0]!)
+    expect(navigate).toHaveBeenCalledWith({ to: '/n/$node', params: { node: 'bbbbbbbb' } })
+  })
+
+  it('does not count a device list older than the pairing (a node paired just now may not be in it yet)', async () => {
+    const user = userEvent.setup()
+    devices.data = [daemon(NODE, 'laptop')]
+    devices.dataUpdatedAt = 50
+    wrap(<Sidebar nodeId={NODE} />)
+    await user.click(screen.getByTestId('node-switcher'))
+    await screen.findByTestId('node-add')
+    expect(screen.queryByTestId('node-removed')).toBeNull()
   })
 })
 

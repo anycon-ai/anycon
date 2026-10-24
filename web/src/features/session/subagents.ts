@@ -91,3 +91,12 @@ export function subagentRows(blocks: readonly Block[], status: SessionStatus): S
   for (const b of blocks) if (b.type === 'tool' && !tree.nested.has(b.key)) visit(b, 0, isTurnActive(status))
   return rows
 }
+
+/**
+ * 还在后台跑的命令（Claude Code 的后台 Bash 等，`tool_result.detail.background`；子 agent 在 `subagentRows` 里）。
+ * 结束时同一个调用会补一条不带 `background` 的结果；agent 进程不在了的，后台命令也跟着没了，不再算。
+ */
+export function backgroundCommands(blocks: readonly Block[], status: SessionStatus): ToolBlock[] {
+  if (PROCESS_GONE.includes(status)) return []
+  return blocks.filter((b): b is ToolBlock => b.type === 'tool' && b.category !== 'subagent' && !!b.result?.detail?.background)
+}

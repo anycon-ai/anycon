@@ -15,7 +15,7 @@ import { archiveSession, cancelTurn, closeSession, deleteSession, loadOlder, nee
 import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
 import { latestSyncBlock, pendingPermissions } from '@/features/session/reducer'
-import { subagentRows } from '@/features/session/subagents'
+import { backgroundCommands, subagentRows } from '@/features/session/subagents'
 import { ApprovalBanner } from '@/components/ApprovalBanner'
 import { ArchivedBar } from '@/features/session/ui/ArchivedBar'
 import { InfoPanel } from '@/features/session/ui/InfoPanel'
@@ -121,6 +121,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const seen = useMemo(() => new Set(view?.blocks.filter((b) => b.type === 'user').map((b) => (b.type === 'user' ? b.messageId : '')) ?? []), [view?.blocks])
   const pending = useMemo(() => pendingMessages(draft, inflight, sessionId, seen), [draft, inflight, sessionId, seen])
   const subagents = useMemo(() => subagentRows(view?.blocks ?? [], status), [view?.blocks, status])
+  const bgCommands = useMemo(() => backgroundCommands(view?.blocks ?? [], status), [view?.blocks, status])
 
   const modelLabel = useCallback((id: string) => agent?.models?.find((m) => m.id === id)?.label ?? id, [agent])
   const modeLabel = useCallback((id: string) => agent?.modes?.find((m) => m.id === id)?.label ?? id, [agent])
@@ -231,6 +232,8 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
       agentLabel={agent?.label ?? summary?.agent ?? ''}
       status={status}
       subagents={subagents}
+      backgroundCommands={bgCommands}
+      backgroundTasks={backgroundTasks}
       workDir={workDir}
       project={project}
       createdAt={summary?.created_at_ms ?? 0}

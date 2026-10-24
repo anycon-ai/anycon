@@ -325,7 +325,18 @@ export type Event =
       type: "permission";
     }
   | {
+      /**
+       * 设备答复时带的 `answers`（kind = question：`{ [question_id]: 字符串或字符串数组 }`），原样记下，
+       * 客户端据此在历史里显示问题和回答。daemon 自己答复的（超时、取消、自动拒绝）没有。
+       */
+      answers?: {
+        [k: string]: unknown;
+      } | null;
       by_device: string;
+      /**
+       * 设备答复时附的话（拒绝的理由、跳过问题时的说明）。daemon 自己答复的没有。
+       */
+      message?: string | null;
       option_id?: string | null;
       request_id: string;
       type: "permission_resolved";

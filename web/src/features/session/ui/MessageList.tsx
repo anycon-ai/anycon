@@ -113,7 +113,8 @@ function buildRows(p: MessageListProps): Row[] {
               targetMode={b.kind === 'mode_change' && b.detail.mode ? { label: p.modeLabel(b.detail.mode), dangerous: p.isDangerousMode?.(b.detail.mode) ?? false } : undefined}
             />
           ),
-          line: !!b.resolved || !!p.settledIds?.get(b.requestId),
+          // 带着问题和回答的不是一行字，和消息一样留正常间距
+          line: (!!b.resolved && !(b.kind === 'question' && b.resolved.answers)) || !!p.settledIds?.get(b.requestId),
         })
         break
       case 'turn_done':

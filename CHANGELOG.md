@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
+## [Unreleased]
+
+### Added
+
+- Answered questions stay in the conversation: each question is listed with its answer, and a note sent with a reply (a skip note or a denial reason) is shown under it. Protocol: `permission_resolved` carries the device's `answers` and `message`. Both fields are optional, and replies recorded before this change show the one-line summary as before.
+- Claude Code background commands (`run_in_background`) show "running in background" until they finish, then get their final result and exit code. The session panel's Agents card lists them while they run and counts them as working, along with any other background tasks the daemon reports.
+
 ## [0.1.1] - 2026-10-22
 
 ### Added

@@ -302,7 +302,7 @@ Event =
   | { type: "plan",             entries: [ { content, status } ] }
   | { type: "file_changed",     path, kind: created | modified | deleted }
   | { type: "permission",       request_id, kind, title, detail, options: [ { id, label, kind } ], expires_at_ms? }   // 同时也发 permission.request
-  | { type: "permission_resolved", request_id, option_id?, by_device }   // 问答类答复没有 option_id
+  | { type: "permission_resolved", request_id, option_id?, by_device, answers?, message? }   // 问答类答复可以没有 option_id；answers / message 是设备答复时带的，daemon 自己答复的没有
   | { type: "turn_done",        turn_id, reason, usage? }
   | { type: "status",           state: queued | starting | running | waiting_permission | idle | ended | error | interrupted,
                                 position?, queued_messages? }
@@ -314,7 +314,7 @@ Event =
 
 `tool_call.category` 取 `shell | file_edit | file_read | search | web | subagent | mcp | other`，各 agent 工具名到 category 的映射见 [spec/daemon.md § 8](spec/daemon.md#8-事件翻译)。adapter 的职责就是把各 agent 的原生事件翻译成这个集合。
 
-子 agent 内部的调用带 `tool_call.parent_id`：启动这个子 agent 的那次调用（`category = subagent`）的 `id`，子 agent 再启动子 agent 时一层层指上去；主 agent 自己的调用不带。后台启动的子 agent，调用会马上返回，这条 `tool_result` 带 `detail.background = true`；子 agent 结束时同一个 `id` 再来一条 `tool_result`（不带这个标记），取代前一条。子 agent 结束的那条 `tool_result` 可以带 `detail.total_tokens`：agent 报的这个子 agent 一共用掉的 token，`turn_done.usage` 不含这部分。
+子 agent 内部的调用带 `tool_call.parent_id`：启动这个子 agent 的那次调用（`category = subagent`）的 `id`，子 agent 再启动子 agent 时一层层指上去；主 agent 自己的调用不带。后台启动的子 agent 和转到后台的命令（Claude Code Bash 的 `run_in_background`），调用会马上返回，这条 `tool_result` 带 `detail.background = true`；任务结束时同一个 `id` 再来一条 `tool_result`（不带这个标记），取代前一条。后台命令结束的那条，`output` 是 agent 给的一句总结，能取到退出码时带 `detail.exit_code`，退出码非 0 算 `is_error`。子 agent 结束的那条 `tool_result` 可以带 `detail.total_tokens`：agent 报的这个子 agent 一共用掉的 token，`turn_done.usage` 不含这部分。
 
 错误响应统一为 JSON-RPC error，`data` 里带稳定的 `code`（snake_case）供客户端 i18n：`invalid`、`invalid_settings`（`data.field` 指出字段，如 `mode`、`env.BASH_ENV`）、`agent_unavailable`（`data.reason`）、`node_busy`、`busy`、`already_resolved`、`exists`、`not_found`、`forbidden`、`unsupported`、`protocol_mismatch`、`internal`。完整枚举见 `crates/protocol/src/error.rs`。
 

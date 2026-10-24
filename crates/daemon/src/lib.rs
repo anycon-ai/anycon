@@ -5,6 +5,7 @@
 //! - `hub` / `peers` / `flow`：到 hub 的连接、已配对客户端的 Noise 会话、发送方流控
 //! - `sessions` / `agents` / `workspace` / `worktree`：会话、agent 注册与探测、项目目录、每会话 worktree
 //! - `store` / `config` / `audit` / `blobs`：SQLite 存储、配置、审计、附件通道
+//! - `preview`：dev server 预览（票据、端口探测、Noise 隧道里的 HTTP / WebSocket 转发）
 
 pub mod agents;
 pub mod audit;
@@ -27,6 +28,7 @@ pub mod local;
 pub mod logging;
 pub mod notify;
 pub mod peers;
+pub mod preview;
 pub mod rpc;
 pub mod sessions;
 pub mod setup;

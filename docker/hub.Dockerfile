@@ -1,5 +1,6 @@
 # anycon-hub 镜像：自包含的多阶段构建（wasm → Web UI → hub），运行时用 distroless（无 shell、无 curl），非 root。
-# 不需要在宿主机先构建任何东西：Noise wasm、`web/dist`、hub 二进制都在镜像构建里完成，Web UI 被嵌进二进制。
+# 不需要在宿主机先构建任何东西：Noise wasm、`web/dist`、`web/dist-preview`、hub 二进制都在镜像构建里完成，
+# Web UI 和 dev server 预览的运行时（ADR-39）被分别嵌进二进制。
 #
 # 构建（在仓库根目录）：
 #   docker build -f docker/hub.Dockerfile -t anycon-hub:dev .     # 或 just docker-hub
@@ -7,8 +8,10 @@
 # 阶段：
 #   wasm-tools   rustup wasm32 target + 与 Cargo.lock 里 wasm-bindgen 版本一致的 wasm-bindgen-cli（只在版本变时重建）
 #   wasm         crates/crypto/scripts/build-wasm.sh → packages/protocol/wasm
-#   web          bun install --frozen-lockfile && vite build → web/dist（缺 wasm 时直接失败，不会产出残缺的 UI）
-#   builder      cargo build --release -p anycon-hub，ANYCON_WEB_DIST 指向上一步的 dist（crates/hub/build.rs 嵌入）
+#   web          bun install --frozen-lockfile && vite build → web/dist 和 web/dist-preview（预览运行时；缺 wasm 时直接失败，
+#                不会产出残缺的 UI）
+#   builder      cargo build --release -p anycon-hub，ANYCON_WEB_DIST / ANYCON_WEB_PREVIEW_DIST 指向上一步的两份产物
+#                （crates/hub/build.rs 分别嵌入，主域名只提供 web/dist，预览域名只提供 web/dist-preview）
 #   licenses     cargo-about 生成 hub 二进制和 Noise wasm 的 Rust 依赖许可证清单（packaging/about.toml）
 #   最终镜像      distroless/cc-debian12:nonroot；许可证在 /usr/share/doc/anycon-hub/
 #
@@ -83,11 +86,14 @@ COPY packages/protocol packages/protocol
 COPY --from=wasm /src/packages/protocol/wasm packages/protocol/wasm
 COPY web web
 # web/vite.config.ts 在 wasm 缺失时会换成运行时才报错的桩，所以这里显式确认真的 wasm 进了产物。
+# `bun run --cwd web build` 同时产出 web/dist（Web UI）和 web/dist-preview（预览运行时：引导页、service worker、shim）。
 RUN test -s packages/protocol/wasm/anycon_crypto.js \
     && bun run --cwd web build \
     && ls web/dist/assets/*.wasm \
     && test -s web/dist/index.html \
-    && test -s web/dist/THIRD-PARTY-LICENSES.txt
+    && test -s web/dist/THIRD-PARTY-LICENSES.txt \
+    && test -s web/dist-preview/index.html \
+    && test -s web/dist-preview/sw.js
 
 # ---------- hub ----------
 FROM ${RUST_IMAGE} AS builder
@@ -95,8 +101,11 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY --from=web /src/web/dist /web-dist
-# crates/hub/build.rs：ANYCON_WEB_DIST 优先于 web/dist；目录里没有 index.html 会回退到占位页，所以下面再校验一次。
-ENV ANYCON_WEB_DIST=/web-dist
+COPY --from=web /src/web/dist-preview /web-preview-dist
+# crates/hub/build.rs：ANYCON_WEB_DIST / ANYCON_WEB_PREVIEW_DIST 优先于 web/dist / web/dist-preview；
+# 目录里没有 index.html 会回退到占位页，所以下面再校验一次（两份占位页的标志文字都不能出现在二进制里）。
+ENV ANYCON_WEB_DIST=/web-dist \
+    ANYCON_WEB_PREVIEW_DIST=/web-preview-dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/src/target,id=anycon-hub-target \
@@ -104,7 +113,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     && cp target/release/anycon-hub /anycon-hub \
     && mkdir /empty-data \
     && test -s /web-dist/index.html \
-    && ! grep -qa "this build does not include the web UI" /anycon-hub
+    && test -s /web-preview-dist/index.html \
+    && ! grep -qa "this build does not include the web UI" /anycon-hub \
+    && ! grep -qa "The preview runtime is not built into this hub" /anycon-hub
 
 # ---------- 第三方许可证 ----------
 # hub 二进制和嵌进 Web UI 的 Noise wasm 各一份（Web UI 里 npm 包的清单由 vite 构建生成，见 web/scripts/third-party-licenses.ts）。

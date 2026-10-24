@@ -547,28 +547,29 @@ v0.1 另含 [ADR-36](../decisions.md#adr-36-账号内接入账号负责路由dae
 
 **引导页**（hub 对还没被 service worker 接管的页面请求都回它）：
 
-1. 在 `/__anycon/enter` 且有 fragment：解出 `PreviewLaunch`，校验 `v === 1`、`label` 等于主机名的第一段、主机名第一段是合法 label；存进本 origin 的 IndexedDB（库 `anycon-preview`），**立刻** `history.replaceState` 抹掉 fragment；注册 `/__anycon/sw.js`（`scope: '/'`），等它激活，然后 `location.replace(launch.path)`
+1. 在 `/__anycon/enter` 且有 fragment：解出 `PreviewLaunch`，校验 `v === 1`、`label` 等于主机名的第一段、主机名第一段是合法 label；存进本 origin 的 IndexedDB（库 `anycon-preview`），**立刻** `history.replaceState` 抹掉 fragment；注册 `/__anycon/sw.js`（`scope: '/'`），等它激活，然后 `location.replace(launch.path)`。`path` 在 `decodePreviewLaunch` 里已经拒绝了 `\` 和控制字符（浏览器把 `\` 当 `/`、会吃掉制表符和换行，`/\evil.example` 会变成协议相对的地址）；跳转前再按本 origin 解析一次，解析出的 origin 不是自己、或者落在 `/__anycon/` 下就改成 `/`。没有 fragment 的 `/__anycon/enter`（刷新）跳到存着的 `path`
 2. 别的路径：读 IndexedDB 里的 `PreviewLaunch`。有且没过期 → 确保 service worker 已注册、已激活，然后 `location.reload()`（用 `sessionStorage` 计数，10 秒内重载 3 次仍没被接管就停下，显示错误）；没有或过期 → 显示「这个预览要从 Anycon 打开」的说明页
-3. 浏览器不支持 service worker（或者在第三方 iframe 里不让注册）：显示说明，带一个「在新标签页打开」的按钮（链接到当前地址，`target=_blank`）
+3. 浏览器不支持 service worker（或者在第三方 iframe 里不让注册）：显示说明，带一个「在新标签页打开」的按钮。新标签页是另一个存储分区，看不到 iframe 里存的启动参数，所以按钮链接是 `/__anycon/enter#<启动参数>`（在内存里重新编码，`target=_blank`）
 4. 文案按 `navigator.language` 选中文或英文，内置在运行时里
 
 **service worker**（`sw.js`）：
 
 - `install` 时 `skipWaiting`，`activate` 时 `clients.claim`
-- **隧道**：每个 service worker 实例一条。第一次有请求时建立：从 IndexedDB 读 `PreviewLaunch`，连 `wss://<自己的主机>/v1/ws`，用 `token` 认证，等节点在线，按 [protocol.md § 11](../protocol.md#11-预览隧道) 握手。断线按 0.5 秒起、翻倍、封顶 10 秒重连；`auth_fail { invalid }`、close `4004`、`GOAWAY` 和握手被拒都是终态，记下原因，之后的请求直接返回错误页，不再重连
-- **拦截**：同 origin、路径不以 `/__anycon/` 开头的请求全部走隧道；跨 origin 的请求不拦。请求头取 `event.request.headers`（名字小写），加上 cookie jar 里匹配的 `cookie`；请求体先整个读出来（上限 16 MiB，超了回 `413`）再分段发
-- **响应**：`new Response(流, { status, headers })`。`encoding = gzip` 时先过 `DecompressionStream('gzip')`。去掉 `set-cookie`（存进 cookie jar）和 `x-frame-options`；加 `content-security-policy: frame-ancestors <hub_origin>`（`hub_origin` 来自 `/__anycon/config.json`，dev server 自己的 CSP 头保留，浏览器取交集）。`204` / `304` 等没有正文的状态码不带流
-- **注入 shim**：导航请求（`request.mode === 'navigate'`）返回 `text/html` 时，在第一个 `<head>` 标签之后（没有 `<head>` 就在最前面）插入 `<script src="/__anycon/shim.js" data-cookies="…"></script>`，`data-cookies` 是当前 cookie jar 里非 HttpOnly 的 cookie（`name=value; …`，HTML 转义）。流式处理，只缓冲到找到插入点为止（最多 64 KiB）
-- **HTTP 缓存**：浏览器不会把 service worker 合成的响应放进 HTTP 缓存，所以 service worker 自己做：`GET` 且状态 200、带 `etag` 或 `last-modified`、没有 `cache-control: no-store` 的响应存进 Cache Storage（`anycon-preview-http`，总量 200 MiB，超了按最近使用删）；下次同一 URL 的请求带上 `if-none-match` / `if-modified-since`，收到 `304` 就用缓存。`cache-control` 带 `immutable`（或 `max-age` 未过期）的直接用缓存，不走隧道。请求的 `cache` 是 `no-store` / `reload` 时绕过缓存
+- **隧道**：每个 service worker 实例一条。第一次有请求时建立：从 IndexedDB 读 `PreviewLaunch`，连 `wss://<自己的主机>/v1/ws`，用 `token` 认证，等节点在线，按 [protocol.md § 11](../protocol.md#11-预览隧道) 握手。断线按 0.5 秒起、翻倍、封顶 10 秒重连；`auth_fail { invalid | version | protocol }`、close `4004`、`GOAWAY` 和握手被拒都是终态，记下原因，之后的请求直接返回错误页，不再重连（`auth_fail { quota }` 按退避重试；读不了的握手回复重试，连续 3 次后算终态）。隧道在请求发出之前断了，这个请求重试一次；已经发出去的请求失败就失败
+- **拦截**：同 origin、路径不以 `/__anycon/` 开头的请求全部走隧道；跨 origin 的请求不拦。请求头取 `event.request.headers`（名字小写），加上 cookie jar 里匹配的 `cookie`；service worker 看到的请求头里缺了浏览器在网络层才加的那些，补上 dev server 常用到的：非 GET 请求的 `origin`、按 referrer 策略的 `referer`、`sec-fetch-dest` / `-mode` / `-site`、`user-agent`、`accept-language`、`content-length`。请求体先整个读出来（上限 16 MiB，超了回 `413`）再分段发
+- **响应**：`new Response(流, { status, headers })`。`encoding = gzip` 时先过 `DecompressionStream('gzip')`。去掉 `set-cookie`（存进 cookie jar）和 `x-frame-options`；加 `content-security-policy: frame-ancestors 'self' <hub_origin>`（`hub_origin` 来自 `/__anycon/config.json`，读不到时只有 `'self'`；`'self'` 让 dev app 自己的同源 iframe 照常工作；dev server 自己的 CSP 头保留，浏览器取交集）。`204` / `304` 等没有正文的状态码不带流
+- **注入 shim**：导航请求（`request.mode === 'navigate'`）返回 `text/html` 时，在第一个 `<head>` 标签之后插入 `<script src="/__anycon/shim.js" data-cookies="…"></script>`；没有 `<head>` 就放在 `<html>` 之后，再没有就放在 doctype 之后，都没有才放最前面（放在 doctype 前面会让页面进怪异模式）。`data-cookies` 是这个路径上 cookie jar 里非 HttpOnly 的 cookie（和 `document.cookie` 同样的格式，HTML 转义）。流式处理，只缓冲到找到插入点为止（最多 64 KiB）。UTF-16 / UTF-32 的页面不注入
+- **HTTP 缓存**：浏览器不会把 service worker 合成的响应放进 HTTP 缓存，所以 service worker 自己做：`GET` 且状态 200、带 `etag` 或 `last-modified`、没有 `cache-control: no-store` 的响应存进 Cache Storage（`anycon-preview-http`，总量 200 MiB，超了按最近使用删；导航、`Vary` 里有 `accept-encoding` / `origin` 以外的头、单个超过 16 MiB 的不缓存）；下次同一 URL 的请求带上 `if-none-match` / `if-modified-since`，收到 `304` 就用缓存。`cache-control` 带 `immutable`（或 `max-age` 未过期）的直接用缓存，不走隧道。请求的 `cache` 是 `no-store` / `reload` 时绕过缓存
 - **cookie jar**：存 IndexedDB。解析 `Set-Cookie` 的名、值、`Expires`、`Max-Age`、`Path`、`HttpOnly`；`Domain` 忽略（一律只属于本主机）、`Secure` / `SameSite` 忽略。请求时按路径匹配加 `cookie` 头。有非 HttpOnly 的 cookie 变化时 `postMessage` 给本 origin 的全部页面
-- **错误**：隧道不可用时，导航请求返回一页 HTML 说明原因（节点离线、预览已过期 / 被关闭、端口不再允许……），终态时提示「回到 Anycon 重新打开」；子资源请求返回 `502` 纯文本
+- **错误**：隧道不可用时，导航请求返回一页 HTML 说明原因（节点离线、预览已过期 / 被关闭、端口不再允许……），终态时提示「回到 Anycon 重新打开」，可恢复的（节点离线、正在连接）5 秒后自动重试（`<meta http-equiv="refresh">`，没有内联脚本）；子资源请求返回 `502` 纯文本
+- **和页面之间的消息**：页面 → service worker：`ws.open` / `ws.send` / `ws.close`、`cookie.set`、`cookies.sync`、`keepalive`；service worker → 页面：`ws.open` / `ws.message` / `ws.close` / `ws.error`、`cookies`（非 HttpOnly cookie 的快照）。只收本 origin 页面发来的
 - **保活**：页面里的 shim 每 20 秒 `postMessage({ type: 'keepalive' })`，有预览页开着时 service worker 就不会因为空闲被浏览器回收（否则经它转发的 WebSocket 会断）。被回收了也能恢复：下一个请求重新建隧道，dev app 的 WebSocket 客户端照常重连
 
 **shim**（`shim.js`，作为页面的第一个脚本执行）：
 
 - **WebSocket**：把 `window.WebSocket` 换成一个兼容的类。同 origin 的 `ws:` / `wss:` 地址经 service worker 走隧道（`navigator.serviceWorker.controller.postMessage({ type: 'ws.open', id, url, protocols })`，service worker 用 `client.postMessage` 回 `ws.open` / `ws.message` / `ws.close` / `ws.error`）；别的地址用原生的。实现 `readyState`、`protocol`、`binaryType`（`blob` / `arraybuffer`）、`bufferedAmount`、`send`（string / ArrayBuffer / TypedArray / Blob）、`close`、`on*` 和 `addEventListener`
-- **service worker**：`navigator.serviceWorker.register` 改成直接拒绝（`console.warn` 说明预览里不支持 dev app 自己的 service worker），否则会顶掉预览的 service worker
-- **cookie**：读取 `data-cookies` 写进原生的 `document.cookie`；包装 `document.cookie` 的 setter，写原生的同时 `postMessage` 给 service worker 存进 cookie jar（这样页面自己设的 cookie 也会随请求发出去）；收到 service worker 的 cookie 变化通知时同步到原生 `document.cookie`。HttpOnly 的 cookie 只在 cookie jar 里，页面看不到，和真实浏览器一样
+- **service worker**：`navigator.serviceWorker.register` 改成直接拒绝（`console.warn` 说明预览里不支持 dev app 自己的 service worker），`getRegistration` / `getRegistrations` 返回空（dev app 常见的「注销全部 service worker」清理代码删不掉预览的那个）。否则 dev app 会顶掉预览的 service worker
+- **cookie**：**不用**浏览器原生的 cookie。原生 cookie 会随 `/v1/ws` 和 `/__anycon/*` 的请求发给 hub，hub 就看到了 dev app 的 cookie。shim 在 `document` 上定义 `cookie` 访问器，背后是页面内的一份 cookie 表：初值来自 `data-cookies`，写入时同时 `postMessage` 给 service worker 存进 cookie jar（这样页面自己设的 cookie 也会随请求发出去），收到 service worker 的 `cookies` 快照时更新。HttpOnly 的 cookie 只在 cookie jar 里，页面看不到，和真实浏览器一样
 - 尽量小，不依赖任何库
 
 ### 13.3 已知限制
@@ -576,4 +577,7 @@ v0.1 另含 [ADR-36](../decisions.md#adr-36-账号内接入账号负责路由dae
 - dev app 里写死的 `http://localhost:<端口>` 绝对地址不工作；相对地址和同 origin 的绝对地址都可以
 - 硬刷新（绕过 service worker）会先回到引导页，再自动重载一次
 - 浏览器在第三方 iframe 里不允许注册 service worker 时，内嵌显示说明，要用新标签页
+- dev app 的 CSP 用 `nonce` / `strict-dynamic` 而且没有 `'self'` 时，注入的 shim 会被拦（WebSocket 不走隧道、cookie 不同步）
+- 隧道重置时已经发出去的请求失败，不重试
+- 经隧道的 WebSocket 的 `bufferedAmount` 是估算值
 - 预览 origin 的 IndexedDB 里有令牌和票据密钥，dev app 的 JS 读得到（[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)「代价」）

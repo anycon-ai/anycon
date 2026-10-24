@@ -10,14 +10,15 @@ use anycon_protocol::{
     Empty, ErrorCode, FsListParams, FsReadParams, JobCancelParams, JobStarted, NodeAuditParams, NodeAuditResult,
     NodeCapabilities, NodeDevicesResult, NodeEnrollApproveParams, NodeEnrollIdParams, NodeInfo, NodePairBeginParams,
     NodeRevokeDeviceParams, NodeSetAgentDefaultsParams, NodeSetEnrollEnabledParams, NodeSetEnrollPasswordParams,
-    NodeStats, NodeWorktreeSettings, PermissionListParams, PermissionRespondParams, RenamedProject, RpcError, RpcId,
-    RpcMessage, RpcRequest, SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams,
-    SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionPromoteParams,
-    SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams, SessionSetSettingsParams,
-    SessionSyncBaseParams, SessionWorkspaceMode, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams,
-    WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams,
-    WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult,
-    WorkspaceWorktreesParams, PROTOCOL_VERSION,
+    NodeStats, NodeWorktreeSettings, PermissionListParams, PermissionRespondParams, PreviewCloseParams,
+    PreviewOpenParams, PreviewPortsParams, RenamedProject, RpcError, RpcId, RpcMessage, RpcRequest,
+    SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams, SessionGitStatusParams,
+    SessionHistoryParams, SessionIdParams, SessionListParams, SessionPromoteParams, SessionRenameParams,
+    SessionSearchParams, SessionSearchResult, SessionSendParams, SessionSetSettingsParams, SessionSyncBaseParams,
+    SessionWorkspaceMode, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams, WorkspaceCloneParams,
+    WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams, WorkspaceRemoveWorktreeParams,
+    WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult, WorkspaceWorktreesParams,
+    PROTOCOL_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -425,6 +426,22 @@ impl Rpc {
                 ok(Empty {})
             }
 
+            // ---------------- 预览（ADR-39，daemon.md § 19）----------------
+            methods::PREVIEW_OPEN => {
+                let p: PreviewOpenParams = params(p)?;
+                ok(c.preview.open(caller, p).await?)
+            }
+            methods::PREVIEW_CLOSE => {
+                let p: PreviewCloseParams = params(p)?;
+                c.preview.close(caller, p).await?;
+                ok(Empty {})
+            }
+            methods::PREVIEW_LIST => ok(c.preview.list().await?),
+            methods::PREVIEW_PORTS => {
+                let p: PreviewPortsParams = params(p)?;
+                ok(c.preview.ports(p).await?)
+            }
+
             // ---------------- blob（附件，ADR-35；不进审计：量大、没有安全意义）----------------
             methods::BLOB_PUT_BEGIN => {
                 let p: BlobPutBeginParams = params(p)?;
@@ -569,7 +586,7 @@ impl Rpc {
                 blobs: true,
                 audit: true,
                 worktree: c.worktrees.available(),
-                preview: false,
+                preview: c.preview.enabled(),
             },
             started_at_ms: c.started_at_ms,
             // 每次现读配置（`[worktree]` 整段热加载）
@@ -607,6 +624,8 @@ impl Rpc {
 fn runs_detached(req: &RpcRequest) -> bool {
     match req.method.as_str() {
         methods::AGENT_DIAGNOSE | methods::NODE_DOCTOR => true,
+        // `lsof` / `ps` 子进程（每条最多 3 秒）：不能把同一客户端后面的请求堵住
+        methods::PREVIEW_PORTS => true,
         // git / gh 的调用可能很慢（`gh pr view` 20 秒、fetch 120 秒）：不能把同一客户端的 `permission.respond` 堵在后面。
         // 它们不依赖和别的请求的先后（`sync_base` 靠会话上的 `wt_busy` 标记和 `send` 互斥）
         methods::SESSION_GIT_STATUS

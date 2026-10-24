@@ -40,6 +40,8 @@ use anycon_protocol::{
 };
 use tokio::sync::{mpsc, oneshot, Notify};
 
+pub mod preview;
+
 /// 一次 spawn 的记录。
 #[derive(Debug, Clone)]
 pub struct SpawnRecord {
@@ -129,6 +131,8 @@ pub struct FakeAdapter {
     pub shutdown_delay: Arc<Mutex<Duration>>,
     /// `spawn:<n>` / `shutdown_done:<n>` 的发生顺序。
     pub order: Arc<Mutex<Vec<String>>>,
+    /// 新 handle 的 `AgentHandle::pid()`（预览按它判断监听端口是不是会话起的）；默认 `None`。
+    pub pid: Mutex<Option<u32>>,
 }
 
 /// 假 adapter 对**插话**（`UserInput.interject = true`）的失败方式。
@@ -176,7 +180,13 @@ impl FakeAdapter {
             cancel_delay: Mutex::new(Duration::ZERO),
             shutdown_delay: Arc::new(Mutex::new(Duration::ZERO)),
             order: Arc::new(Mutex::new(Vec::new())),
+            pid: Mutex::new(None),
         })
+    }
+
+    /// 之后拉起的 handle 报告这个 pid（测试里常用 `std::process::id()`：测试进程自己开的监听 socket 就算「会话起的」）。
+    pub fn set_pid(&self, pid: Option<u32>) {
+        *self.pid.lock().unwrap() = pid;
     }
 
     pub fn set_version(&self, v: &str) {
@@ -379,6 +389,7 @@ impl Adapter for FakeAdapter {
             n,
             order: self.order.clone(),
             shutdown_delay: self.shutdown_delay.clone(),
+            pid: *self.pid.lock().unwrap(),
         }))
     }
 }
@@ -400,6 +411,7 @@ pub struct FakeHandle {
     n: usize,
     order: Arc<Mutex<Vec<String>>>,
     shutdown_delay: Arc<Mutex<Duration>>,
+    pid: Option<u32>,
 }
 
 fn usage() -> Usage {
@@ -441,6 +453,10 @@ fn allow_deny_options() -> Vec<PermissionOption> {
 impl AgentHandle for FakeHandle {
     fn events(&mut self) -> &mut mpsc::Receiver<AgentEvent> {
         &mut self.rx
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.pid
     }
 
     async fn send(&mut self, input: UserInput) -> anycon_agent_api::Result<()> {

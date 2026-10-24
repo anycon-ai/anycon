@@ -380,6 +380,10 @@ impl AgentHandle for ClaudeHandle {
         &mut self.rx
     }
 
+    fn pid(&self) -> Option<u32> {
+        self.child.pid()
+    }
+
     async fn send(&mut self, input: UserInput) -> Result<()> {
         if input.interject {
             // stream-json 里 turn 进行中收到的用户消息会排到下一个 turn，不是真正的插话（`capabilities.interject = false`）

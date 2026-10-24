@@ -13,6 +13,8 @@ export interface ApiConfig {
   vapid_public_key?: string | null
   /** hub 能发 Web Push（有 VAPID 密钥）。 */
   push_available?: boolean
+  /** 预览 origin 的模板（如 `https://{label}.aiplace.app`，hub.md § 13.1）；没配预览是 `null`。 */
+  preview_origin_template?: string | null
 }
 export interface ApiMe {
   id: string
@@ -91,6 +93,13 @@ export interface ApiPushSubscribe {
 export interface ApiPushTestResult {
   result: 'ok' | 'gone' | 'error'
   status?: number
+}
+
+/** `POST /api/preview/tokens` 的结果（hub.md § 13.3）：预览令牌 24 小时有效，`origin` 是 `https://<label>.<预览域名>[:端口]`。 */
+export interface ApiPreviewToken {
+  token: string
+  origin: string
+  expires_at_ms: number
 }
 
 /** 通知偏好里的一个类别（hub.md § 6.3）：走不走 Web Push、走不走邮件。 */

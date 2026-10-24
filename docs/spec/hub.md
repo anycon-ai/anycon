@@ -317,7 +317,7 @@ device
 | 限速触发、配额拒绝 | OAuth access token、验证码 |
 | 推送结果（endpoint 主机名 + 状态码）、邮件发送结果（收件人哈希前 8 位 + SMTP 状态） | 推送 endpoint 的路径、p256dh / auth、VAPID 私钥、SMTP 密码、邮件正文 |
 | | 配对的 `match_id`（短码的函数） |
-| | 预览令牌；预览域名上的请求路径（只记 `(preview)`） |
+| | 预览令牌；预览域名上的请求路径和 label（请求只记 `(preview)`，连接只记临时 id 和节点） |
 
 `tracing` 字段化输出，默认 `info`。这条表格是 code review 的检查项，不是建议。
 
@@ -347,7 +347,7 @@ device
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | 预览 origin 的模板：`https://*.<预览域名>[:端口]`，`*` 只能是最左边的一整段，代表 label。必须是 https；唯一的例外是本机开发和测试：主机是 `localhost` 或以 `.localhost` 结尾时可以是 http（如 `http://*.preview.localhost:8080`）。**预览域名不能和 `ANYCON_PUBLIC_URL` 的主机在同一个可注册域名下**（按 Public Suffix List 算 eTLD+1，`localhost` 一类除外），否则启动报错：同站的子域能往父域写 cookie。公共 hub 是 `https://*.aiplace.app` |
+| `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | 预览 origin 的模板：`https://*.<预览域名>[:端口]`，`*` 只能是最左边的一整段，代表 label。必须是 https；唯一的例外是本机开发和测试：主机是 `localhost` 或以 `.localhost` 结尾时可以是 http（如 `http://*.preview.localhost:8080`）。**预览域名不能和 `ANYCON_PUBLIC_URL` 的主机在同一个可注册域名下**（按 Public Suffix List 算 eTLD+1，`localhost` 一类除外），否则启动报错：同站的子域能往父域写 cookie。也拒绝：域名本身就是公共后缀（`*.com`、`*.co.uk`）、带用户名密码、端口 0、主机是 IP。二级泛域名（`*.preview.example.net`）可以，但 Cloudflare 的免费证书不覆盖它（[deploy.md](../deploy.md)）。公共 hub 是 `https://*.aiplace.app` |
 | `ANYCON_PREVIEW_BYTES_PER_MIN` | `536870912`（512 MiB），最小 `205824` | 每个账号预览流量（两个方向合计）每分钟的字节预算，令牌桶（§ 13.5） |
 | `ANYCON_PREVIEW_MAX_CONNECTIONS` | `16` | 每个账号同时在线的预览连接数上限 |
 
@@ -355,7 +355,7 @@ device
 
 ### 13.2 预览域名上的 HTTP
 
-`Host`（经受信反代时取原始 `Host`）匹配 `<label>.<预览域名>[:端口]` 的请求走这里，其余照旧走 § 2。label 必须是 26 位小写 base32（`[a-z2-7]{26}`），不是的 → `404`（纯文本）。预览域名上**没有** Web UI、`/api`、`/auth`；Web UI 的 origin 上也**取不到**预览的任何文件——两份前端分开构建（`web/dist`、`web/dist-preview`）、分开嵌入。否则 Web UI 的 origin 上可能被注册一个隧道到别人节点的 service worker，读走 IndexedDB 里的私钥。
+`Host`（经受信反代时取原始 `Host`，不看 `X-Forwarded-Host`；HTTP/2 取 authority）匹配 `<label>.<预览域名>[:端口]` 的请求走这里，其余照旧走 § 2。匹配不区分大小写，忽略末尾的点；配置里没写端口时端口可写可不写（写也只能是默认端口），写了端口就必须一致。预览域名本身（没有 label 的那一层）不算，照旧走主站。label 必须是 26 位小写 base32（`[a-z2-7]{26}`），不是的 → `404`（纯文本）。预览域名上**没有** Web UI、`/api`、`/auth`；Web UI 的 origin 上也**取不到**预览的任何文件——两份前端分开构建（`web/dist`、`web/dist-preview`）、分开嵌入。否则 Web UI 的 origin 上可能被注册一个隧道到别人节点的 service worker，读走 IndexedDB 里的私钥。
 
 | 路径 | 说明 |
 |---|---|
@@ -363,9 +363,9 @@ device
 | `GET /__anycon/config.json` | `{ label, hub_origin, protocol_version }`（`hub_origin` 是 `ANYCON_PUBLIC_URL` 的 origin），`Cache-Control: no-store` |
 | `GET /__anycon/enter` | 引导页（`web/dist-preview/index.html`） |
 | `GET /__anycon/sw.js` | 预览的 service worker。带 `Service-Worker-Allowed: /`、`Cache-Control: no-cache` |
-| `GET /__anycon/<其他文件>` | `web/dist-preview` 里的文件；`/__anycon/assets/*` 是 immutable，其余 `no-cache`；不存在 `404` |
+| `GET /__anycon/<其他文件>` | `web/dist-preview` 里的文件（整个目录递归嵌入，`Content-Type` 按扩展名，`.wasm` 是 `application/wasm`）；`/__anycon/assets/*` 是 immutable，其余 `no-cache`；不存在 `404`。`/__anycon/` 本身回引导页 |
 | 其他 `GET` / `HEAD` | 引导页，`200`，`Cache-Control: no-store`。service worker 还没接管（第一次打开、硬刷新、被浏览器清掉）时页面请求会落到这里，引导页装好 service worker 后重新加载 |
-| 其他方法 | `405` |
+| 其他方法 | `405`（`HEAD /v1/ws` 也是） |
 
 响应头：HTML 带下面的 CSP；所有响应带 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`。**不带** `X-Frame-Options` 和 COOP（要能被 Web UI 嵌入，嵌入方由 `frame-ancestors` 限定）。
 
@@ -383,17 +383,18 @@ base-uri 'none'; form-action 'none'
 
 - 请求 `{ node, label }`。`label` 是 daemon `preview.open` 给的
 - 校验：没配预览 → `404 preview_disabled`；`label` 格式不对 → `400 invalid_label`；调用的设备不是本 hub 未吊销的正式设备 → `401 unauthorized`；`node` 不是同账号未吊销的 daemon，或调用设备没和它配对 → `404 not_found`；`label` 已经绑定到**别的**节点 → `409 label_taken`；这个节点已绑定 256 个 label → `409 too_many_labels`
-- 第一次见到的 `label` 绑定到 `node`（`preview_labels`）。签发令牌：32 字节随机数的 hex，库里只存 blake2s 哈希，24 小时有效；同一设备未过期的令牌超过 64 个时删掉最旧的
+- 第一次见到的 `label` 绑定到 `node`（`preview_labels`）。签发令牌：32 字节随机数的 hex，库里只存 blake2s 哈希，24 小时有效；同一设备未过期的令牌超过 64 个时删掉最旧的（还在用它的预览连接随之以 `4004` 关掉）
+- 限速按设备计，认证通过的请求都算（包括随后因为参数不对被拒的）
 - 回 `200 { token, origin, expires_at_ms }`，`origin` 是 `https://<label>.<预览域名>[:端口]`
 
 ### 13.4 预览连接
 
-- 升级：只在预览域名上的 `GET /v1/ws`。`Origin` 必须**正好**等于这个请求的预览 origin（scheme + 主机 + 端口），否则 `403 origin_not_allowed`。另算一个 IP 限速桶：120 次 / 分钟 / IP（service worker 被浏览器回收后会重连）
+- 升级：只在预览域名上的 `GET /v1/ws`。`Origin` 必须**正好**等于这个请求的预览 origin（scheme + 主机 + 端口），没有 `Origin` 或不一致都是 `403 origin_not_allowed`。另算一个 IP 限速桶：120 次 / 分钟 / IP（service worker 被浏览器回收后会重连）
 - 认证：第一帧 `auth { preview_token, protocol_version, client }`，不能带 `device_token`、`client.kind` 必须是 `web`，否则 `auth_fail { protocol }`。令牌不存在、过期、或绑定的 label 不是主机名里的 label → `auth_fail { invalid }`；这个账号的预览连接已满 → `auth_fail { quota }`。协议版本规则照旧
 - 身份：分配临时 id（`new_id()`），`auth_ok { device_id, peers_online }`，节点在线时 `peers_online = [node]`。它不是设备：不进 `devices`、不算「web 设备在线」（不影响推送判断）、不受临时连接 10 分钟的限制
 - 路由：预览连接的对端集合只有 `node`，节点的连接把它加进对端集合。只转发它和节点之间的 `handshake` / `data`；它发的控制消息一律忽略，`notify` 和发给别人的信封回 `dropped { not_paired }`
 - 上下线：预览连接认证成功时给节点（在线的话）发 `preview_peer { peer, label }`，**不发** `peer_online`；它断开时给节点发 `peer_offline`。节点上线（含重连）时，hub 把这个节点所有在线的预览连接重新加进它的对端集合，逐条发 `preview_peer`，并给这些预览连接发 `peer_online { node }`；节点下线时给它们发 `peer_offline { node }`
-- 结束：令牌过期、被删（设备或节点被吊销，§ 13.6）时 hub 以 `4004` 关掉用它的连接；预览页把 `4004` 当终态，不自动重连
+- 结束：令牌过期、被删（设备或节点被吊销，§ 13.6，或者被每设备 64 个的上限挤掉）时 hub 以 `4004` 关掉用它的连接；预览页把 `4004` 当终态，不自动重连。过期在内存里每秒比一次；吊销时立即关；令牌是否还在库里每 5 秒复核一次兜底
 
 ### 13.5 流量预算
 

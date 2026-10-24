@@ -40,6 +40,13 @@ serde_bytes = "0.11.19"
 tempfile = { version = "3.27.0", optional = true }
 zeroize = "1.9.1"
 unicode-normalization = "0.1.25"
+flate2 = "1.1.10"
+hyper = { version = "1.12.0", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+http-body-util = "0.1.5"
+http = "1.5.0"
+bytes = "1.12.1"
+http-body = "1.1.0"
 
 [dev-dependencies]
 anycon-hub = { path = "../hub" }

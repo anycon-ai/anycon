@@ -311,6 +311,24 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     w.call(methods::PERMISSION_RESPOND, json!({ "request_id": req["request_id"], "option_id": "allow" })).await;
     wait_idle(&mut w, &psid).await;
 
+    // ---- 预览（ADR-39）：端口写进 allow_ports（热加载），签发、列出、列端口、作废
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let preview_port = listener.local_addr().unwrap().port();
+    anycon_daemon::config::set_value(&td.paths, "preview.allow_ports", &format!("[{preview_port}]")).unwrap();
+    td.ctx.config.reload().unwrap();
+    let pt = w.call(methods::PREVIEW_OPEN, json!({ "port": preview_port, "session_id": psid })).await;
+    assert_eq!(pt["port"], json!(preview_port));
+    let pl = w.call(methods::PREVIEW_LIST, json!({})).await;
+    assert_eq!(pl["previews"][0]["label"], pt["label"]);
+    let pp = w.call(methods::PREVIEW_PORTS, json!({})).await;
+    assert!(pp["ports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["port"] == json!(preview_port) && p["source"] == json!("config")));
+    w.call(methods::PREVIEW_CLOSE, json!({ "label": pt["label"] })).await;
+    drop(listener);
+
     // ---- 每个请求方法要么调用过，要么在清单里写明了原因
     let not_called: BTreeSet<&str> = NOT_CALLED.iter().map(|(m, _)| *m).collect();
     let registry_requests: BTreeSet<&str> =

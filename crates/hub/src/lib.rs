@@ -165,6 +165,16 @@ pub async fn run(config: Config) -> Result<Handle, RunError> {
         tracing::warn!("ANYCON_ADMIN_TOKEN is shorter than 16 characters; use a long random value");
     }
 
+    match &config.preview {
+        Some(preview) => tracing::info!(
+            origin_template = %preview.origin_template(),
+            bytes_per_min = config.limits.preview_bytes_per_min,
+            max_connections = config.limits.preview_max_connections,
+            "dev server preview is enabled (ANYCON_PREVIEW_URL)"
+        ),
+        None => tracing::info!("preview disabled (ANYCON_PREVIEW_URL is not set)"),
+    }
+
     match &config.smtp {
         Some(smtp) => tracing::info!(
             host = %smtp.host,
@@ -208,7 +218,7 @@ fn build_mailer(config: &Config) -> Result<Option<Arc<dyn mail::Mailer>>, mail::
     Ok(Some(Arc::new(mail::SmtpMailer::new(smtp, from.mailbox.clone())?)))
 }
 
-/// 定时清理：过期的配对登记 / 撮合和接入会话（每秒）、限速桶与过期会话（每分钟）、90 天前的审计（每小时）。
+/// 定时清理：过期的配对登记 / 撮合和接入会话（每秒）、限速桶、过期会话和过期的预览令牌（每分钟）、90 天前的审计（每小时）。
 async fn background_tasks(state: Arc<AppState>) {
     const AUDIT_RETENTION_MS: u64 = 90 * 24 * 3600 * 1000;
     let skip = tokio::time::MissedTickBehavior::Skip;
@@ -234,6 +244,7 @@ async fn background_tasks(state: Arc<AppState>) {
                 state.limits.bind_send.sweep();
                 state.limits.email_verify.sweep();
                 state.limits.bind_verify.sweep();
+                state.limits.preview_ws_upgrade.sweep();
                 state.account_limits.enroll_begin.sweep();
                 state.account_limits.push_api.sweep();
                 state.account_limits.email_resend.sweep();
@@ -241,6 +252,8 @@ async fn background_tasks(state: Arc<AppState>) {
                 state.account_limits.email_daily_failures.sweep();
                 state.account_limits.notify_device.sweep();
                 state.account_limits.notify_email.sweep();
+                state.account_limits.preview_tokens.sweep();
+                state.preview_budget.sweep();
                 if let Some(q) = &state.account_limits.daily_pairings {
                     q.sweep();
                 }
@@ -249,6 +262,9 @@ async fn background_tasks(state: Arc<AppState>) {
                 }
                 if let Err(e) = state.store.purge_expired_email_codes(now_ms()).await {
                     tracing::warn!(error = %e, "failed to purge expired email codes");
+                }
+                if let Err(e) = state.store.purge_expired_preview_tokens(now_ms()).await {
+                    tracing::warn!(error = %e, "failed to purge expired preview tokens");
                 }
             }
             _ = every_hour.tick() => {

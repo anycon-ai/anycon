@@ -227,6 +227,28 @@ impl Default for EnrollConfig {
     }
 }
 
+/// `[preview]`：dev server 预览（ADR-39，docs/spec/daemon.md § 3 / § 19）。整段热加载。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PreviewConfig {
+    /// `false` = 不签发票据、断开全部预览隧道；`node.info.capabilities.preview` 跟着变。
+    pub enabled: bool,
+    /// 会话之外额外允许预览的本机端口（1–65535）。
+    pub allow_ports: Vec<u32>,
+    /// 预览票据的有效期，5m–7d。
+    pub ticket_ttl: String,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        Self { enabled: true, allow_ports: Vec::new(), ticket_ttl: "24h".into() }
+    }
+}
+
+/// `preview.ticket_ttl` 的下限和上限。
+pub const PREVIEW_TTL_MIN: Duration = Duration::from_secs(5 * 60);
+pub const PREVIEW_TTL_MAX: Duration = Duration::from_secs(7 * 24 * 3600);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
@@ -359,6 +381,7 @@ pub struct Config {
     pub agents: AgentsConfig,
     pub worktree: WorktreeConfig,
     pub enroll: EnrollConfig,
+    pub preview: PreviewConfig,
     pub notify: NotifyConfig,
     pub log: LogConfig,
 }
@@ -430,6 +453,15 @@ impl Config {
         if self.sessions.max_concurrent == 0 {
             return Err(bad("sessions.max_concurrent", "must be >= 1".into()));
         }
+        for p in &self.preview.allow_ports {
+            if !(1..=65535).contains(p) {
+                return Err(bad("preview.allow_ports", format!("{p} is not a port (1-65535)")));
+            }
+        }
+        let ttl = parse_duration(&self.preview.ticket_ttl).map_err(|e| bad("preview.ticket_ttl", e))?;
+        if !(PREVIEW_TTL_MIN..=PREVIEW_TTL_MAX).contains(&ttl) {
+            return Err(bad("preview.ticket_ttl", "must be between 5m and 7d".into()));
+        }
         for pat in &self.permissions.session_env_allow {
             let name = pat.strip_suffix('*').unwrap_or(pat);
             let ok = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
@@ -461,6 +493,16 @@ impl Config {
     }
     pub fn session_idle_after(&self) -> Duration {
         parse_duration(&self.notify.session_idle_after).unwrap_or(Duration::from_secs(1800))
+    }
+    /// 预览票据的有效期（已按 5m–7d 校验；解析不了时退回 24 小时）。
+    pub fn preview_ticket_ttl(&self) -> Duration {
+        parse_duration(&self.preview.ticket_ttl)
+            .map(|d| d.clamp(PREVIEW_TTL_MIN, PREVIEW_TTL_MAX))
+            .unwrap_or(Duration::from_secs(24 * 3600))
+    }
+    /// `preview.allow_ports`（校验过的 1–65535）。
+    pub fn preview_allow_ports(&self) -> Vec<u16> {
+        self.preview.allow_ports.iter().filter_map(|p| u16::try_from(*p).ok()).filter(|p| *p != 0).collect()
     }
     /// `.worktreeinclude` 复制的字节数上限。
     pub fn worktree_include_max_bytes(&self) -> u64 {
@@ -729,7 +771,7 @@ pub fn set_values(paths: &Paths, edits: &[(&str, &str)]) -> Result<(), ConfigErr
 /// 默认的 `config.toml` 文本（`anycon init` 用）。
 pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, workspace_root: &str) -> String {
     let mut s = String::new();
-    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots sessions.* permissions.* notify.* worktree.* enroll.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
+    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots sessions.* permissions.* notify.* worktree.* enroll.* preview.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
     s.push_str("[hub]\n");
     match hub_url {
         Some(u) => s.push_str(&format!("url = {}\n", toml_str(u))),
@@ -770,6 +812,13 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("approval = true\n");
     s.push_str("# password：设了节点口令时接受口令接入（口令本身用 `anycon passwd` 设，不写在这里）\n");
     s.push_str("password = true\n");
+    s.push_str("\n[preview]\n");
+    s.push_str("# dev server 预览（热加载）。enabled = false：不签发票据，并断开全部预览隧道\n");
+    s.push_str("enabled = true\n");
+    s.push_str("# 会话自己起的服务之外，额外允许预览的本机端口，如 [3000, 8000]\n");
+    s.push_str("allow_ports = []\n");
+    s.push_str("# 预览票据的有效期，5m–7d\n");
+    s.push_str("ticket_ttl = \"24h\"\n");
     s.push_str("\n[notify]\nturn_finished = \"when_unwatched\"\nsession_idle_after = \"30m\"\n");
     s.push_str("\n[log]\nlevel = \"info\"\nretention_days = 7\n");
     s
@@ -797,6 +846,7 @@ pub fn is_hot_key(key: &str) -> bool {
         || key.starts_with("notify.")
         || key.starts_with("worktree.")
         || key.starts_with("enroll.")
+        || key.starts_with("preview.")
         || key == "log.level"
     {
         return true;
@@ -1030,6 +1080,45 @@ dangerous_modes = ["yolo"]
         assert!(!Config::load(&paths).unwrap().enroll.approval);
         // 整段热加载
         assert!(is_hot_key("enroll.approval") && is_hot_key("enroll.password"));
+    }
+
+    #[test]
+    fn the_preview_section_defaults_validates_and_is_hot() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path());
+        let cfg = Config::load(&paths).unwrap();
+        assert_eq!(cfg.preview, PreviewConfig { enabled: true, allow_ports: vec![], ticket_ttl: "24h".into() });
+        assert_eq!(cfg.preview_ticket_ttl(), Duration::from_secs(24 * 3600));
+        // `anycon init` 写出的默认配置里有 [preview]，而且读得回来
+        std::fs::write(paths.config_toml(), default_config_toml(None, None, "~/anycon")).unwrap();
+        let text = std::fs::read_to_string(paths.config_toml()).unwrap();
+        assert!(
+            text.contains("[preview]") && text.contains("allow_ports = []") && text.contains("ticket_ttl = \"24h\"")
+        );
+        assert_eq!(Config::load(&paths).unwrap().preview, PreviewConfig::default());
+
+        set_value(&paths, "preview.allow_ports", "[3000, 8000]").unwrap();
+        set_value(&paths, "preview.ticket_ttl", "\"2h\"").unwrap();
+        set_value(&paths, "preview.enabled", "false").unwrap();
+        let cfg = Config::load(&paths).unwrap();
+        assert_eq!(cfg.preview_allow_ports(), vec![3000, 8000]);
+        assert_eq!(cfg.preview_ticket_ttl(), Duration::from_secs(2 * 3600));
+        assert!(!cfg.preview.enabled);
+        assert_eq!(get_value(&cfg, "preview.allow_ports"), Some(serde_json::json!([3000, 8000])));
+
+        // 端口必须是 1–65535，ttl 必须是 5m–7d；不合法的值不写盘
+        for bad in ["[0]", "[65536]", "[80, 70000]"] {
+            assert!(set_value(&paths, "preview.allow_ports", bad).is_err(), "{bad}");
+        }
+        for bad in ["\"4m\"", "\"8d\"", "\"soon\"", "\"0\""] {
+            assert!(set_value(&paths, "preview.ticket_ttl", bad).is_err(), "{bad}");
+        }
+        for ok in ["\"5m\"", "\"7d\""] {
+            set_value(&paths, "preview.ticket_ttl", ok).unwrap();
+        }
+        assert_eq!(Config::load(&paths).unwrap().preview_allow_ports(), vec![3000, 8000]);
+        // 整段热加载
+        assert!(is_hot_key("preview.enabled") && is_hot_key("preview.allow_ports") && is_hot_key("preview.ticket_ttl"));
     }
 
     #[test]

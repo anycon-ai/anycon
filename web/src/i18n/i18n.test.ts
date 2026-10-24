@@ -8,6 +8,8 @@ import type { PushErrorCode } from '@/features/push/actions'
 import type { SubagentActivity } from '@/features/session/subagents'
 import type { UnsupportedReason } from '@/features/push/browser'
 import type { PushStatus } from '@/features/push/usePush'
+import { PREVIEW_DAEMON_REASONS, PREVIEW_HUB_CODES } from '@/features/preview/errors'
+import type { PreviewLocalCode } from '@/features/preview/ticket'
 import { unlockErrorKeys } from '@/features/unlock/errors'
 import type { PairErrorCode } from '@/transport/client'
 import type { NodeConnState } from '@/transport/connection'
@@ -101,6 +103,8 @@ describe('i18n', () => {
     const passwordState: Record<'unset' | 'enabled' | 'disabled' | 'locked', true> = { unset: true, enabled: true, disabled: true, locked: true }
     const unlockEntries = ['scan', 'approve', 'code', 'password']
     const unlockSteps = ['connecting', 'starting', 'waitingScan', 'waitingApproval', 'enterCode', 'deriving', 'verifying', 'handshaking', 'confirming']
+    // 预览（ADR-39）：本地条件、hub 令牌接口的错误码、daemon 的 `forbidden` 原因都是拼 key 用的
+    const previewLocal: Record<PreviewLocalCode, true> = { no_device_token: true, no_node_key: true, bad_template: true, bad_label: true }
     const auditActions = ['requested', 'approved', 'denied', 'code', 'completed', 'failed', 'password_set', 'password_cleared', 'password_locked', 'settings']
     const want: string[] = [
       ...unlockErrorKeys(),
@@ -112,6 +116,9 @@ describe('i18n', () => {
       ...Object.keys(enrollResult).map((k) => `approve.${{ approved: 'approvedBy', denied: 'deniedBy', completed: 'completed', failed: 'failed', expired: 'expired' }[k as EnrollResult]}`),
       ...Object.keys(passwordState).map((k) => `enrollTab.state.${k}`),
       ...auditActions.map((k) => `enrollTab.audit.${k}`),
+      ...Object.keys(previewLocal).map((k) => `preview.errors.local.${k}`),
+      ...PREVIEW_HUB_CODES.map((k) => `preview.errors.hub.${k}`),
+      ...PREVIEW_DAEMON_REASONS.map((k) => `preview.errors.${k}`),
       ...Object.keys(agentStatus).map((k) => `agent.status.${k}`),
       ...Object.keys(sessionStatus).map((k) => `status.session.${k}`),
       ...Object.keys(nodeConn).map((k) => `status.node.${k}`),

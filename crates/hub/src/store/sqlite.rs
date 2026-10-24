@@ -13,8 +13,9 @@ use crate::util::{new_id, ordered};
 
 use super::{
     category_from_str, category_to_str, kind_from_str, kind_to_str, Account, AccountToken, AuditEntry, CodeCandidate,
-    Device, EmailCode, EmailPurpose, Invite, NewAudit, NewDevice, NotificationPref, PushSubscription,
-    PushSubscriptionRow, RedeemOutcome, SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
+    Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken, NotificationPref,
+    PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome, SetEmailOutcome, Store,
+    StoreError, StoreResult, StoreStats, WebSession,
 };
 
 fn be(e: impl Display) -> StoreError {
@@ -104,6 +105,27 @@ macro_rules! session_select {
             $tail
         )
     };
+}
+
+macro_rules! preview_token_select {
+    ($tail:literal) => {
+        concat!(
+            "SELECT token_hash, label, node_id, account_id, device_id, created_at_ms, expires_at_ms FROM preview_tokens ",
+            $tail
+        )
+    };
+}
+
+fn preview_token_from(row: &SqliteRow) -> StoreResult<PreviewToken> {
+    Ok(PreviewToken {
+        token_hash: s(row, "token_hash")?,
+        label: s(row, "label")?,
+        node_id: s(row, "node_id")?,
+        account_id: s(row, "account_id")?,
+        device_id: s(row, "device_id")?,
+        created_at_ms: u(row, "created_at_ms")?,
+        expires_at_ms: u(row, "expires_at_ms")?,
+    })
 }
 
 #[derive(Clone)]
@@ -934,6 +956,14 @@ impl Store for SqliteStore {
             .execute(&mut *tx)
             .await
             .map_err(be)?;
+        // 预览（ADR-39）：它签发的令牌作废；它是节点的话，全部 label 和用到这些 label 的令牌也删。
+        sqlx::query("DELETE FROM preview_tokens WHERE device_id = ? OR node_id = ?")
+            .bind(id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
+        sqlx::query("DELETE FROM preview_labels WHERE node_id = ?").bind(id).execute(&mut *tx).await.map_err(be)?;
         tx.commit().await.map_err(be)?;
         Ok(peers)
     }
@@ -1040,6 +1070,128 @@ impl Store for SqliteStore {
             .await
             .map_err(be)?;
         Ok(r.rows_affected())
+    }
+
+    // ---- 预览 ----
+
+    async fn issue_preview_token(
+        &self,
+        token: NewPreviewToken,
+        now_ms: u64,
+        limits: PreviewIssueLimits,
+    ) -> StoreResult<IssueOutcome> {
+        let mut tx = self.pool.begin().await.map_err(be)?;
+        // 第一条语句就是写：事务一开始就拿写锁，并发的两个申请不会各自读到旧快照再互相冲突。
+        // label 已存在就不动；是新的，而且节点还没绑满，才插入。
+        sqlx::query(
+            "INSERT INTO preview_labels (label, node_id, account_id, created_at_ms) \
+             SELECT ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM preview_labels WHERE node_id = ?) < ? \
+             ON CONFLICT(label) DO NOTHING",
+        )
+        .bind(&token.label)
+        .bind(&token.node_id)
+        .bind(&token.account_id)
+        .bind(now_ms as i64)
+        .bind(&token.node_id)
+        .bind(i64::from(limits.labels_per_node))
+        .execute(&mut *tx)
+        .await
+        .map_err(be)?;
+        let bound: Option<String> = sqlx::query_scalar("SELECT node_id FROM preview_labels WHERE label = ?")
+            .bind(&token.label)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(be)?;
+        match bound {
+            None => {
+                tx.rollback().await.map_err(be)?;
+                return Ok(IssueOutcome::TooManyLabels);
+            }
+            Some(node) if node != token.node_id => {
+                tx.rollback().await.map_err(be)?;
+                return Ok(IssueOutcome::LabelTaken);
+            }
+            Some(_) => {}
+        }
+        sqlx::query("DELETE FROM preview_tokens WHERE device_id = ? AND expires_at_ms <= ?")
+            .bind(&token.device_id)
+            .bind(now_ms as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
+        sqlx::query(
+            "INSERT INTO preview_tokens (token_hash, label, node_id, account_id, device_id, created_at_ms, expires_at_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&token.token_hash)
+        .bind(&token.label)
+        .bind(&token.node_id)
+        .bind(&token.account_id)
+        .bind(&token.device_id)
+        .bind(now_ms as i64)
+        .bind(token.expires_at_ms as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(be)?;
+        // 这台设备只留最新的 `tokens_per_device` 条。
+        sqlx::query(
+            "DELETE FROM preview_tokens WHERE token_hash IN ( \
+                 SELECT token_hash FROM preview_tokens WHERE device_id = ? \
+                 ORDER BY created_at_ms DESC, rowid DESC LIMIT -1 OFFSET ?)",
+        )
+        .bind(&token.device_id)
+        .bind(i64::from(limits.tokens_per_device))
+        .execute(&mut *tx)
+        .await
+        .map_err(be)?;
+        tx.commit().await.map_err(be)?;
+        Ok(IssueOutcome::Issued)
+    }
+
+    async fn find_preview_token(&self, token_hash: &str) -> StoreResult<Option<PreviewToken>> {
+        let row = sqlx::query(preview_token_select!("WHERE token_hash = ?"))
+            .bind(token_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(be)?;
+        row.as_ref().map(preview_token_from).transpose()
+    }
+
+    async fn preview_token_valid(&self, token_hash: &str, now_ms: u64) -> StoreResult<bool> {
+        let found: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM preview_tokens WHERE token_hash = ? AND expires_at_ms > ?")
+                .bind(token_hash)
+                .bind(now_ms as i64)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(be)?;
+        Ok(found.is_some())
+    }
+
+    async fn purge_expired_preview_tokens(&self, now_ms: u64) -> StoreResult<u64> {
+        let r = sqlx::query("DELETE FROM preview_tokens WHERE expires_at_ms <= ?")
+            .bind(now_ms as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(be)?;
+        Ok(r.rows_affected())
+    }
+
+    async fn list_preview_labels(&self, node_id: &str) -> StoreResult<Vec<String>> {
+        sqlx::query_scalar("SELECT label FROM preview_labels WHERE node_id = ? ORDER BY created_at_ms, rowid")
+            .bind(node_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(be)
+    }
+
+    async fn list_preview_tokens_of_device(&self, device_id: &str) -> StoreResult<Vec<PreviewToken>> {
+        let rows = sqlx::query(preview_token_select!("WHERE device_id = ? ORDER BY created_at_ms, rowid"))
+            .bind(device_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(be)?;
+        rows.iter().map(preview_token_from).collect()
     }
 
     // ---- kv ----
@@ -1543,5 +1695,188 @@ mod tests {
         assert!(s.get_push_subscription_of_device("w").await.unwrap().is_none());
         assert!(hashes(&s, "a@example.com", EmailPurpose::Bind).await.is_empty());
         assert!(s.get_notification_prefs(&acc.id).await.unwrap().is_empty());
+    }
+    // ---- 预览（ADR-39） ----
+
+    const LIMITS: PreviewIssueLimits = PreviewIssueLimits { labels_per_node: 3, tokens_per_device: 3 };
+
+    fn new_token(hash: &str, label: &str, node: &str, device: &str, account: &str, expires: u64) -> NewPreviewToken {
+        NewPreviewToken {
+            token_hash: hash.into(),
+            label: label.into(),
+            node_id: node.into(),
+            account_id: account.into(),
+            device_id: device.into(),
+            expires_at_ms: expires,
+        }
+    }
+
+    /// 一个账号：两个节点 n1 / n2，一台 web 设备 w，一台别的 web 设备 w2。
+    async fn preview_fixture(s: &SqliteStore, now: u64) -> String {
+        let acc = s.create_account("a", true, now).await.unwrap();
+        for (id, kind) in
+            [("n1", DeviceKind::Daemon), ("n2", DeviceKind::Daemon), ("w", DeviceKind::Web), ("w2", DeviceKind::Web)]
+        {
+            s.create_device(NewDevice { kind, ..new_device(&acc.id, id, &format!("tok-{id}")) }, now).await.unwrap();
+        }
+        acc.id
+    }
+
+    #[tokio::test]
+    async fn the_first_token_binds_the_label_and_a_second_node_cannot_take_it() {
+        let (s, _d) = store().await;
+        let now = now_ms();
+        let acc = preview_fixture(&s, now).await;
+        let issue = |hash: &str, label: &str, node: &str, device: &str| {
+            s.issue_preview_token(new_token(hash, label, node, device, &acc, now + 1000), now, LIMITS)
+        };
+        assert_eq!(issue("h1", "label-a", "n1", "w").await.unwrap(), IssueOutcome::Issued);
+        // 同一个节点再要一次：同一个 label，多一个令牌
+        assert_eq!(issue("h2", "label-a", "n1", "w2").await.unwrap(), IssueOutcome::Issued);
+        // 别的节点要同一个 label：被拒，而且什么都没写
+        assert_eq!(issue("h3", "label-a", "n2", "w").await.unwrap(), IssueOutcome::LabelTaken);
+        assert!(s.find_preview_token("h3").await.unwrap().is_none());
+        assert_eq!(s.list_preview_labels("n1").await.unwrap(), ["label-a"]);
+        assert!(s.list_preview_labels("n2").await.unwrap().is_empty());
+        let t = s.find_preview_token("h1").await.unwrap().unwrap();
+        assert_eq!(
+            (t.label.as_str(), t.node_id.as_str(), t.device_id.as_str(), t.account_id.as_str()),
+            ("label-a", "n1", "w", acc.as_str())
+        );
+        assert_eq!((t.created_at_ms, t.expires_at_ms), (now, now + 1000));
+        // Debug 不输出哈希
+        assert!(!format!("{t:?}").contains("h1"));
+    }
+
+    #[tokio::test]
+    async fn a_node_binds_at_most_the_configured_number_of_labels() {
+        let (s, _d) = store().await;
+        let now = now_ms();
+        let acc = preview_fixture(&s, now).await;
+        let issue = |hash: &str, label: &str, node: &str| {
+            s.issue_preview_token(new_token(hash, label, node, "w", &acc, now + 1000), now, LIMITS)
+        };
+        for (i, label) in ["l1", "l2", "l3"].iter().enumerate() {
+            assert_eq!(issue(&format!("h{i}"), label, "n1").await.unwrap(), IssueOutcome::Issued);
+        }
+        // 第 4 个新 label：被拒；已经绑定的 label 照常可以再要令牌；别的节点有自己的额度
+        assert_eq!(issue("h-over", "l4", "n1").await.unwrap(), IssueOutcome::TooManyLabels);
+        assert!(s.find_preview_token("h-over").await.unwrap().is_none());
+        assert_eq!(s.list_preview_labels("n1").await.unwrap(), ["l1", "l2", "l3"]);
+        assert_eq!(issue("h-again", "l2", "n1").await.unwrap(), IssueOutcome::Issued);
+        assert_eq!(issue("h-n2", "l4", "n2").await.unwrap(), IssueOutcome::Issued);
+    }
+
+    #[tokio::test]
+    async fn a_device_keeps_only_its_newest_tokens_and_expired_ones_do_not_count() {
+        let (s, _d) = store().await;
+        let now = now_ms();
+        let acc = preview_fixture(&s, now).await;
+        // 一个已经过期的、一个别的设备的：都不占 w 的名额
+        s.issue_preview_token(new_token("old", "l1", "n1", "w", &acc, now + 10), now - 1000, LIMITS).await.unwrap();
+        s.issue_preview_token(new_token("other", "l1", "n1", "w2", &acc, now + 10_000), now, LIMITS).await.unwrap();
+        for i in 0..5u64 {
+            // 同一毫秒签发的也有先后（rowid）
+            let t = new_token(&format!("t{i}"), "l1", "n1", "w", &acc, now + 10_000);
+            assert_eq!(s.issue_preview_token(t, now + 100, LIMITS).await.unwrap(), IssueOutcome::Issued);
+        }
+        let kept: Vec<String> =
+            s.list_preview_tokens_of_device("w").await.unwrap().into_iter().map(|t| t.token_hash).collect();
+        assert_eq!(kept, ["t2", "t3", "t4"], "the three newest; the expired one was cleaned up on the way");
+        assert!(s.find_preview_token("t0").await.unwrap().is_none());
+        assert!(s.find_preview_token("old").await.unwrap().is_none());
+        assert!(s.find_preview_token("other").await.unwrap().is_some(), "another device's tokens are untouched");
+    }
+
+    #[tokio::test]
+    async fn token_validity_and_purging_follow_the_expiry_time() {
+        let (s, _d) = store().await;
+        let now = now_ms();
+        let acc = preview_fixture(&s, now).await;
+        s.issue_preview_token(new_token("short", "l1", "n1", "w", &acc, now + 100), now, LIMITS).await.unwrap();
+        s.issue_preview_token(new_token("long", "l1", "n1", "w2", &acc, now + 10_000), now, LIMITS).await.unwrap();
+        assert!(s.preview_token_valid("short", now + 99).await.unwrap());
+        assert!(!s.preview_token_valid("short", now + 100).await.unwrap(), "expired exactly at expires_at_ms");
+        assert!(!s.preview_token_valid("nope", now).await.unwrap());
+        // find 不看过期（调用方判断）；purge 删掉过期的，label 的绑定保留
+        assert!(s.find_preview_token("short").await.unwrap().is_some());
+        assert_eq!(s.purge_expired_preview_tokens(now + 100).await.unwrap(), 1);
+        assert!(s.find_preview_token("short").await.unwrap().is_none());
+        assert!(s.find_preview_token("long").await.unwrap().is_some());
+        assert_eq!(s.list_preview_labels("n1").await.unwrap(), ["l1"]);
+        assert_eq!(s.purge_expired_preview_tokens(now + 100).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn revoking_a_device_deletes_its_tokens_and_revoking_a_node_deletes_its_labels_and_tokens() {
+        let (s, _d) = store().await;
+        let now = now_ms();
+        let acc = preview_fixture(&s, now).await;
+        let far = now + 100_000;
+        s.issue_preview_token(new_token("a", "l1", "n1", "w", &acc, far), now, LIMITS).await.unwrap();
+        s.issue_preview_token(new_token("b", "l1", "n1", "w2", &acc, far), now, LIMITS).await.unwrap();
+        s.issue_preview_token(new_token("c", "l2", "n2", "w2", &acc, far), now, LIMITS).await.unwrap();
+        // 吊销签发设备 w：只删它签发的
+        s.revoke_device("w", now + 1).await.unwrap();
+        assert!(s.find_preview_token("a").await.unwrap().is_none());
+        assert!(
+            s.find_preview_token("b").await.unwrap().is_some() && s.find_preview_token("c").await.unwrap().is_some()
+        );
+        assert_eq!(
+            s.list_preview_labels("n1").await.unwrap(),
+            ["l1"],
+            "the label stays: another device may still use it"
+        );
+        // 吊销节点 n1：它的 label 和用到这些 label 的令牌（不管谁签发的）都删
+        s.revoke_device("n1", now + 2).await.unwrap();
+        assert!(s.list_preview_labels("n1").await.unwrap().is_empty());
+        assert!(s.find_preview_token("b").await.unwrap().is_none());
+        // n2 不受影响；w2 签发的指向 n2 的令牌还在
+        assert_eq!(s.list_preview_labels("n2").await.unwrap(), ["l2"]);
+        assert!(s.find_preview_token("c").await.unwrap().is_some());
+        // 吊销 n2 之后 l2 也没了
+        s.revoke_device("n2", now + 3).await.unwrap();
+        assert!(
+            s.list_preview_labels("n2").await.unwrap().is_empty() && s.find_preview_token("c").await.unwrap().is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_rows_cascade_with_the_account() {
+        let (s, _d) = store().await;
+        let now = now_ms();
+        let acc = preview_fixture(&s, now).await;
+        s.issue_preview_token(new_token("a", "l1", "n1", "w", &acc, now + 1000), now, LIMITS).await.unwrap();
+        sqlx::query("DELETE FROM accounts WHERE id = ?").bind(&acc).execute(&s.pool).await.unwrap();
+        assert!(s.find_preview_token("a").await.unwrap().is_none());
+        assert!(s.list_preview_labels("n1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_requests_for_one_label_bind_it_to_exactly_one_node() {
+        let (s, _d) = store().await;
+        let s = std::sync::Arc::new(s);
+        let now = now_ms();
+        let acc = preview_fixture(&s, now).await;
+        let tasks: Vec<_> = (0..12)
+            .map(|i| {
+                let (s, acc) = (s.clone(), acc.clone());
+                let node = if i % 2 == 0 { "n1" } else { "n2" };
+                tokio::spawn(async move {
+                    s.issue_preview_token(new_token(&format!("h{i}"), "race", node, "w", &acc, now + 1000), now, LIMITS)
+                        .await
+                        .unwrap()
+                })
+            })
+            .collect();
+        let mut outcomes = Vec::new();
+        for t in tasks {
+            outcomes.push(t.await.unwrap());
+        }
+        let issued = outcomes.iter().filter(|o| **o == IssueOutcome::Issued).count();
+        assert_eq!(issued, 6, "only the winning node's six requests are issued: {outcomes:?}");
+        assert_eq!(outcomes.iter().filter(|o| **o == IssueOutcome::LabelTaken).count(), 6);
+        let owners = [s.list_preview_labels("n1").await.unwrap(), s.list_preview_labels("n2").await.unwrap()];
+        assert_eq!(owners.iter().filter(|l| l.as_slice() == ["race"]).count(), 1);
     }
 }

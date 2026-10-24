@@ -368,6 +368,9 @@ pub struct Sessions {
     cleanup_running: Arc<std::sync::atomic::AtomicBool>,
     /// 每扫描这么多次起一轮 PR 自动归档（默认 [`PR_ROUND_EVERY`]；测试里可以调小）。
     pr_round_every: std::sync::atomic::AtomicU32,
+    /// 每个会话当前 agent 进程的 `(driver 代号, pid)`（adapter 报告得出的才有；进程退出时清掉）。
+    /// 预览按它判断监听端口是不是会话起的（docs/spec/daemon.md § 19.3），见 [`Sessions::preview_targets`]。
+    agent_pids: Mutex<HashMap<String, (u64, u32)>>,
 }
 
 /// 「同一时刻只有一个」的标记：拿到它的人跑，drop 时放回去（任务 panic 也会放）。
@@ -423,6 +426,7 @@ impl Sessions {
             pr_round_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cleanup_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pr_round_every: std::sync::atomic::AtomicU32::new(PR_ROUND_EVERY),
+            agent_pids: Mutex::new(HashMap::new()),
         });
         this.load().await;
         this
@@ -1563,6 +1567,9 @@ impl Sessions {
             agent_info: info,
         };
         let handle = adapter.spawn(req).await?;
+        if let Some(pid) = handle.pid() {
+            self.agent_pids.lock().unwrap().insert(session_id.to_string(), (gen, pid));
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         let this = self.clone();
         let sid = session_id.to_string();
@@ -2712,6 +2719,60 @@ impl Sessions {
         m
     }
 
+    /// 清掉 driver 代号为 `gen` 的 agent 进程记下的 pid（更新的进程已经记了自己的就不动）。
+    fn forget_agent_pid(&self, session_id: &str, gen: u64) {
+        let mut m = self.agent_pids.lock().unwrap();
+        if m.get(session_id).is_some_and(|(g, _)| *g == gen) {
+            m.remove(session_id);
+        }
+    }
+
+    /// 预览用的只读视图（docs/spec/daemon.md § 19.3）：每个会话当前的 agent 主进程 pid（进程不在了就是 `None`）和工作目录
+    /// ——项目目录，worktree 会话是它的 worktree，scratch 会话是 scratch 目录。agent 进程因为空闲退出之后工作目录还在，
+    /// 它起的 dev server 靠工作目录这条规则继续算在会话头上。目录尽量取 canonical 路径（和 `lsof` 报的 cwd 同一种写法）。
+    pub async fn preview_targets(&self) -> Vec<crate::preview::ports::SessionTarget> {
+        struct Row {
+            id: String,
+            project: Option<String>,
+            rel_path: Option<String>,
+        }
+        let mut rows = Vec::new();
+        for s in self.all() {
+            let st = s.st.lock().await;
+            if st.deleted {
+                continue;
+            }
+            rows.push(Row {
+                id: st.row.id.clone(),
+                project: st.row.project.clone(),
+                rel_path: st.wt.as_ref().map(|w| w.rel_path.clone()),
+            });
+        }
+        let pids = self.agent_pids.lock().unwrap().clone();
+        let mut out: Vec<crate::preview::ports::SessionTarget> = rows
+            .into_iter()
+            .map(|r| {
+                let dir = match &r.project {
+                    Some(name) => self
+                        .d
+                        .workspace
+                        .project_path(name)
+                        .ok()
+                        .map(|d| r.rel_path.as_deref().map_or(d.clone(), |rel| d.join(rel))),
+                    None => Some(self.d.workspace.scratch_path(&r.id)),
+                };
+                let workdir = dir.map(|d| std::fs::canonicalize(&d).unwrap_or(d));
+                crate::preview::ports::SessionTarget {
+                    pid: pids.get(&r.id).map(|(_, p)| *p),
+                    session_id: r.id,
+                    workdir,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        out
+    }
+
     pub async fn counts(&self) -> (SessionCounts, u32) {
         let mut c = SessionCounts::default();
         let mut procs = 0;
@@ -3279,6 +3340,19 @@ async fn shutdown_driver(d: Driver) -> Option<ResumeHandle> {
     tokio::time::timeout(SHUTDOWN_TIMEOUT, rx).await.ok().and_then(|r| r.ok()).flatten()
 }
 
+/// driver 任务结束（正常收尾、被关闭、panic）时清掉会话记下的 agent pid。
+struct AgentPidGuard {
+    sessions: Arc<Sessions>,
+    sid: String,
+    gen: u64,
+}
+
+impl Drop for AgentPidGuard {
+    fn drop(&mut self) {
+        self.sessions.forget_agent_pid(&self.sid, self.gen);
+    }
+}
+
 /// 独占 `AgentHandle` 的任务。
 ///
 /// `Exited` 是终态：收到并交给状态机之后 driver 就收尾，不会再从已经关闭的事件通道里合成第二个 `Exited`。
@@ -3290,6 +3364,7 @@ async fn driver_loop(
     mut handle: Box<dyn AgentHandle>,
     mut cmds: mpsc::UnboundedReceiver<DriverCmd>,
 ) {
+    let _pid = AgentPidGuard { sessions: sessions.clone(), sid: sid.clone(), gen };
     loop {
         tokio::select! {
             biased;
@@ -3351,7 +3426,9 @@ async fn driver_loop(
             }
         }
     }
-    // agent 已经退出：回收残留（幂等；进程组里可能还有它派生的子进程）
+    // agent 已经退出：它的 pid 不再代表任何会话进程（预览据此判断端口归属，见 `Sessions::preview_targets`）
+    sessions.forget_agent_pid(&sid, gen);
+    // 回收残留（幂等；进程组里可能还有它派生的子进程）
     if let Err(e) = tokio::time::timeout(Duration::from_secs(5), handle.shutdown()).await.unwrap_or(Ok(())) {
         tracing::debug!(session = %sid, error = %e, "cleanup after the agent exited failed");
     }

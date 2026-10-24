@@ -237,7 +237,8 @@ jobs:
       - name: 容器起得来，/healthz 200，提供的是真正的 Web UI
         run: |
           docker run -d --name hub -p 127.0.0.1:8080:8080 -v anycon-ci-data:/data \
-            -e ANYCON_PUBLIC_URL=http://127.0.0.1:8080 anycon-hub:ci
+            -e ANYCON_PUBLIC_URL=http://127.0.0.1:8080 \
+            -e 'ANYCON_PREVIEW_URL=http://*.preview.localhost:8080' anycon-hub:ci
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
             sleep 1
@@ -257,6 +258,15 @@ jobs:
           curl -fsS -D headers.txt -o wasm.bin "http://127.0.0.1:8080/${wasm}"
           grep -qi '^content-type: application/wasm' headers.txt
           test "$(wc -c < wasm.bin)" -gt 100000
+          # 预览运行时（ADR-39）是第二份嵌入：预览域名上的引导页不是 static-placeholder-preview，
+          # sw.js 带 Service-Worker-Allowed，主域名上取不到它们。
+          preview_host='aaaaaaaaaaaaaaaaaaaaaaaaaa.preview.localhost:8080'
+          curl -fsS -H "Host: $preview_host" http://127.0.0.1:8080/__anycon/enter > enter.html
+          if grep -q 'The preview runtime is not built into this hub' enter.html; then echo "hub embeds the preview placeholder" >&2; exit 1; fi
+          grep -q '/__anycon/' enter.html
+          curl -fsS -D sw-headers.txt -o /dev/null -H "Host: $preview_host" http://127.0.0.1:8080/__anycon/sw.js
+          grep -qi '^service-worker-allowed: /' sw-headers.txt
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/__anycon/sw.js)" = 404
           # 镜像自带的 HEALTHCHECK（distroless 里没有 curl）也要变成 healthy
           for _ in $(seq 1 60); do
             if [ "$(docker inspect --format '{{.State.Health.Status}}' hub)" = healthy ]; then exit 0; fi

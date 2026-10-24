@@ -125,6 +125,60 @@ pub struct StoreStats {
     pub db_size_bytes: u64,
 }
 
+/// 一条预览令牌（只有哈希，ADR-39）。`Debug` 不输出哈希。
+#[derive(Clone)]
+pub struct PreviewToken {
+    pub token_hash: String,
+    pub label: String,
+    /// label 绑定的节点（daemon）。
+    pub node_id: String,
+    pub account_id: String,
+    /// 签发它的设备。
+    pub device_id: String,
+    pub created_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+impl std::fmt::Debug for PreviewToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreviewToken")
+            .field("node_id", &self.node_id)
+            .field("device_id", &self.device_id)
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish_non_exhaustive()
+    }
+}
+
+/// 签发一条预览令牌的参数（`created_at_ms` 由 [`Store::issue_preview_token`] 的 `now_ms` 给）。
+#[derive(Clone)]
+pub struct NewPreviewToken {
+    pub token_hash: String,
+    pub label: String,
+    pub node_id: String,
+    pub account_id: String,
+    pub device_id: String,
+    pub expires_at_ms: u64,
+}
+
+/// 签发预览令牌时的上限（docs/spec/hub.md § 13.3）。
+#[derive(Debug, Clone, Copy)]
+pub struct PreviewIssueLimits {
+    /// 一个节点最多绑定几个 label。
+    pub labels_per_node: u32,
+    /// 一台设备未过期的令牌最多几个，超过时删掉最旧的。
+    pub tokens_per_device: u32,
+}
+
+/// [`Store::issue_preview_token`] 的结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueOutcome {
+    Issued,
+    /// label 已经绑定到别的节点。
+    LabelTaken,
+    /// label 是新的，但这个节点已经绑满了。
+    TooManyLabels,
+}
+
 /// 邮箱验证码的用途：`Login` 用来登录，`Bind` 用来给已登录账号绑定 / 换绑邮箱。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmailPurpose {
@@ -402,7 +456,8 @@ pub trait Store: Send + Sync + 'static {
     async fn list_devices(&self, account_id: &str) -> StoreResult<Vec<Device>>;
     async fn rename_device(&self, id: &str, name: &str) -> StoreResult<()>;
     async fn touch_device_seen(&self, id: &str, now_ms: u64) -> StoreResult<()>;
-    /// 置 `revoked_at_ms` 并删除其全部配对，返回被删配对的另一端。设备不存在或已吊销返回空。
+    /// 置 `revoked_at_ms` 并删除其全部配对、push 订阅，以及它签发的预览令牌和（它是节点时）它的全部预览 label 与令牌；
+    /// 返回被删配对的另一端。设备不存在或已吊销返回空。
     async fn revoke_device(&self, id: &str, now_ms: u64) -> StoreResult<Vec<String>>;
 
     // ---- 配对 ----
@@ -411,6 +466,27 @@ pub trait Store: Send + Sync + 'static {
     async fn is_paired(&self, a: &str, b: &str) -> StoreResult<bool>;
     /// 账号下所有配对（归一化顺序的两端）。
     async fn list_pairings_of_account(&self, account_id: &str) -> StoreResult<Vec<(String, String)>>;
+
+    // ---- 预览（ADR-39，docs/spec/hub.md § 13） ----
+    /// 原子地「绑定 label（第一次见到时）+ 签发令牌 + 清理这台设备的旧令牌」。
+    /// label 已绑定到别的节点 → [`IssueOutcome::LabelTaken`]；label 是新的但节点已绑满 → [`IssueOutcome::TooManyLabels`]；
+    /// 这两种情况下什么都不写。成功后这台设备未过期的令牌超过 `limits.tokens_per_device` 的，从最旧的开始删。
+    async fn issue_preview_token(
+        &self,
+        token: NewPreviewToken,
+        now_ms: u64,
+        limits: PreviewIssueLimits,
+    ) -> StoreResult<IssueOutcome>;
+    /// 按哈希找令牌，**不看是否过期**（调用方比较 `expires_at_ms`）。
+    async fn find_preview_token(&self, token_hash: &str) -> StoreResult<Option<PreviewToken>>;
+    /// 令牌还在库里且没过期：已建立的预览连接用它周期性复核（令牌被删就关连接）。
+    async fn preview_token_valid(&self, token_hash: &str, now_ms: u64) -> StoreResult<bool>;
+    /// 删掉所有过期的令牌（label 的绑定保留）。返回删了几条。
+    async fn purge_expired_preview_tokens(&self, now_ms: u64) -> StoreResult<u64>;
+    /// 节点已绑定的 label，按绑定时间。
+    async fn list_preview_labels(&self, node_id: &str) -> StoreResult<Vec<String>>;
+    /// 设备签发的、库里还有的令牌（含过期未清的），按签发时间。
+    async fn list_preview_tokens_of_device(&self, device_id: &str) -> StoreResult<Vec<PreviewToken>>;
 
     // ---- 审计 ----
     async fn insert_audit(&self, entry: NewAudit, now_ms: u64) -> StoreResult<()>;

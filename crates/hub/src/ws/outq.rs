@@ -168,6 +168,12 @@ impl OutRx {
         self.rx.recv().await
     }
 
+    /// 取已经入队的下一个条目，没有就返回 `None`（不等）。同步的单元测试用。
+    #[cfg(test)]
+    pub fn try_recv(&mut self) -> Option<Item> {
+        self.rx.try_recv().ok()
+    }
+
     /// 一个条目已写出：释放配额；排空到一半以下就清除「满」标记。
     pub fn done(&self, item: &Item) {
         if item.size == 0 {

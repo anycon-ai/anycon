@@ -1,4 +1,4 @@
-//! 存储：SQLite（WAL）。表见 `migrations/0001_init.sql` 和 docs/spec/daemon.md § 11。
+//! 存储：SQLite（WAL）。表见 `migrations/` 和 docs/spec/daemon.md § 11。
 //!
 //! 只用运行时查询（不用 `query!` 宏），编译不依赖数据库。所有时间是 Unix 毫秒。
 
@@ -75,6 +75,34 @@ pub struct PeerRow {
     pub kind: DeviceKind,
     pub paired_at_ms: u64,
     pub last_seen_ms: Option<u64>,
+}
+
+/// `preview_tickets` 表的一行（预览票据，ADR-39）。`psk` 是票据密钥，不要写日志。
+#[derive(Clone, PartialEq, Eq)]
+pub struct PreviewTicketRow {
+    /// 32 位小写 hex（16 字节）。
+    pub ticket_id: String,
+    pub label: String,
+    pub port: u16,
+    /// 64 位小写 hex（32 字节）。
+    pub psk: String,
+    /// 签发它的设备。
+    pub device_id: String,
+    pub session_id: Option<String>,
+    pub created_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+impl std::fmt::Debug for PreviewTicketRow {
+    /// 不打印票据 id 和密钥，免得一不小心进了日志。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreviewTicketRow")
+            .field("label", &self.label)
+            .field("port", &self.port)
+            .field("device_id", &self.device_id)
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `enroll_password` 表的那一行（节点口令，ADR-36）。口令本身不存，只有盐和 Argon2id 的输出。
@@ -818,6 +846,155 @@ impl Store {
             .await?
             .rows_affected()
             > 0)
+    }
+
+    // ---------------- 预览（ADR-39，docs/spec/daemon.md § 19.2）----------------
+
+    /// 这个端口已有的预览 label。
+    pub async fn preview_label_get(&self, port: u16) -> Result<Option<String>> {
+        let r = sqlx::query("SELECT label FROM preview_labels WHERE port = ?")
+            .bind(port as i64)
+            .fetch_optional(&self.pool)
+            .await?;
+        r.map(|r| r.try_get::<String, _>(0)).transpose().map_err(Into::into)
+    }
+
+    /// 给端口登记 label。已有就保持原来的（两个客户端同时第一次打开同一个端口也只会有一个 label），返回生效的那个。
+    pub async fn preview_label_ensure(&self, port: u16, label: &str, now_ms: u64) -> Result<String> {
+        sqlx::query("INSERT OR IGNORE INTO preview_labels (port, label, created_at_ms) VALUES (?,?,?)")
+            .bind(port as i64)
+            .bind(label)
+            .bind(now_ms as i64)
+            .execute(&self.pool)
+            .await?;
+        // 端口没有登记上：`label` 撞了别的端口的（128 bit 随机数，实际不会发生）
+        self.preview_label_get(port)
+            .await?
+            .ok_or_else(|| StoreError::Db(sqlx::Error::Protocol("preview label collision".into())))
+    }
+
+    pub async fn preview_ticket_insert(&self, t: &PreviewTicketRow) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO preview_tickets (ticket_id, label, port, psk, device_id, session_id, created_at_ms, expires_at_ms) \
+             VALUES (?,?,?,?,?,?,?,?)",
+        )
+        .bind(&t.ticket_id)
+        .bind(&t.label)
+        .bind(t.port as i64)
+        .bind(&t.psk)
+        .bind(&t.device_id)
+        .bind(&t.session_id)
+        .bind(t.created_at_ms as i64)
+        .bind(t.expires_at_ms as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    fn ticket_row(r: &sqlx::sqlite::SqliteRow) -> Result<PreviewTicketRow> {
+        Ok(PreviewTicketRow {
+            ticket_id: r.try_get("ticket_id")?,
+            label: r.try_get("label")?,
+            port: r.try_get::<i64, _>("port")? as u16,
+            psk: r.try_get("psk")?,
+            device_id: r.try_get("device_id")?,
+            session_id: r.try_get("session_id")?,
+            created_at_ms: r.try_get::<i64, _>("created_at_ms")? as u64,
+            expires_at_ms: r.try_get::<i64, _>("expires_at_ms")? as u64,
+        })
+    }
+
+    pub async fn preview_ticket_get(&self, ticket_id: &str) -> Result<Option<PreviewTicketRow>> {
+        let r = sqlx::query("SELECT * FROM preview_tickets WHERE ticket_id = ?")
+            .bind(ticket_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        r.as_ref().map(Self::ticket_row).transpose()
+    }
+
+    /// 全部未过期的票据，最早签发的在前。
+    pub async fn preview_tickets_live(&self, now_ms: u64) -> Result<Vec<PreviewTicketRow>> {
+        let rows =
+            sqlx::query("SELECT * FROM preview_tickets WHERE expires_at_ms > ? ORDER BY created_at_ms, ticket_id")
+                .bind(now_ms as i64)
+                .fetch_all(&self.pool)
+                .await?;
+        rows.iter().map(Self::ticket_row).collect()
+    }
+
+    /// 一个设备签发的未过期票据，最早签发的在前（超过上限时从最旧的删）。
+    pub async fn preview_tickets_of_device(&self, device_id: &str, now_ms: u64) -> Result<Vec<PreviewTicketRow>> {
+        let rows = sqlx::query(
+            "SELECT * FROM preview_tickets WHERE device_id = ? AND expires_at_ms > ? ORDER BY created_at_ms, ticket_id",
+        )
+        .bind(device_id)
+        .bind(now_ms as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(Self::ticket_row).collect()
+    }
+
+    /// 同一设备对同一端口最近签发的未过期票据。
+    pub async fn preview_ticket_latest(
+        &self,
+        device_id: &str,
+        port: u16,
+        now_ms: u64,
+    ) -> Result<Option<PreviewTicketRow>> {
+        let r = sqlx::query(
+            "SELECT * FROM preview_tickets WHERE device_id = ? AND port = ? AND expires_at_ms > ? \
+             ORDER BY expires_at_ms DESC LIMIT 1",
+        )
+        .bind(device_id)
+        .bind(port as i64)
+        .bind(now_ms as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+        r.as_ref().map(Self::ticket_row).transpose()
+    }
+
+    pub async fn preview_ticket_delete(&self, ticket_id: &str) -> Result<bool> {
+        Ok(sqlx::query("DELETE FROM preview_tickets WHERE ticket_id = ?")
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0)
+    }
+
+    /// 删掉这个 label 的全部票据，返回被删的票据 id。
+    pub async fn preview_tickets_delete_label(&self, label: &str) -> Result<Vec<String>> {
+        let ids: Vec<String> = sqlx::query("SELECT ticket_id FROM preview_tickets WHERE label = ?")
+            .bind(label)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|r| r.try_get::<String, _>(0))
+            .collect::<std::result::Result<_, _>>()?;
+        sqlx::query("DELETE FROM preview_tickets WHERE label = ?").bind(label).execute(&self.pool).await?;
+        Ok(ids)
+    }
+
+    /// 删掉一个设备签发的全部票据（吊销设备），返回被删的票据 id。
+    pub async fn preview_tickets_delete_device(&self, device_id: &str) -> Result<Vec<String>> {
+        let ids: Vec<String> = sqlx::query("SELECT ticket_id FROM preview_tickets WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|r| r.try_get::<String, _>(0))
+            .collect::<std::result::Result<_, _>>()?;
+        sqlx::query("DELETE FROM preview_tickets WHERE device_id = ?").bind(device_id).execute(&self.pool).await?;
+        Ok(ids)
+    }
+
+    /// 删掉已过期的票据，返回删了几张。
+    pub async fn preview_tickets_delete_expired(&self, now_ms: u64) -> Result<u64> {
+        Ok(sqlx::query("DELETE FROM preview_tickets WHERE expires_at_ms <= ?")
+            .bind(now_ms as i64)
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
     }
 
     // ---------------- agent cache ----------------
@@ -1615,5 +1792,59 @@ mod tests {
         s.kv_set("schema", "2").await.unwrap();
         assert_eq!(s.kv_get("schema").await.unwrap().as_deref(), Some("2"));
         assert!(s.db_bytes() > 0);
+    }
+
+    fn ticket(id: &str, label: &str, port: u16, device: &str, created: u64, expires: u64) -> PreviewTicketRow {
+        PreviewTicketRow {
+            ticket_id: id.into(),
+            label: label.into(),
+            port,
+            psk: "ab".repeat(32),
+            device_id: device.into(),
+            session_id: Some("sess_1".into()),
+            created_at_ms: created,
+            expires_at_ms: expires,
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_labels_are_fixed_per_port_and_tickets_roundtrip() {
+        let (_d, s) = temp_store().await;
+        assert_eq!(s.preview_label_get(3000).await.unwrap(), None);
+        assert_eq!(s.preview_label_ensure(3000, "aaaa", 1).await.unwrap(), "aaaa");
+        // 第二次登记同一个端口：保持第一个 label
+        assert_eq!(s.preview_label_ensure(3000, "bbbb", 2).await.unwrap(), "aaaa");
+        assert_eq!(s.preview_label_get(3000).await.unwrap().as_deref(), Some("aaaa"));
+        // label 撞了别的端口的：不会悄悄返回一个没存下来的 label
+        assert!(s.preview_label_ensure(3001, "aaaa", 3).await.is_err());
+        assert_eq!(s.preview_label_get(3001).await.unwrap(), None);
+
+        s.preview_ticket_insert(&ticket("t1", "aaaa", 3000, "d1", 10, 1000)).await.unwrap();
+        s.preview_ticket_insert(&ticket("t2", "aaaa", 3000, "d2", 20, 2000)).await.unwrap();
+        s.preview_ticket_insert(&ticket("t3", "cccc", 4000, "d1", 30, 50)).await.unwrap();
+        let t1 = s.preview_ticket_get("t1").await.unwrap().unwrap();
+        assert_eq!((t1.label.as_str(), t1.port, t1.session_id.as_deref()), ("aaaa", 3000, Some("sess_1")));
+        assert_eq!(s.preview_ticket_get("nope").await.unwrap(), None);
+        // 未过期的，按签发时间
+        let live: Vec<String> = s.preview_tickets_live(100).await.unwrap().into_iter().map(|t| t.ticket_id).collect();
+        assert_eq!(live, ["t1", "t2"]);
+        let d1: Vec<String> =
+            s.preview_tickets_of_device("d1", 0).await.unwrap().into_iter().map(|t| t.ticket_id).collect();
+        assert_eq!(d1, ["t1", "t3"]);
+        assert_eq!(s.preview_ticket_latest("d1", 3000, 100).await.unwrap().unwrap().ticket_id, "t1");
+        assert_eq!(s.preview_ticket_latest("d1", 4000, 100).await.unwrap(), None, "expired");
+        // 过期的清掉
+        assert_eq!(s.preview_tickets_delete_expired(100).await.unwrap(), 1);
+        assert_eq!(s.preview_ticket_get("t3").await.unwrap(), None);
+        // 按设备 / label 删
+        assert_eq!(s.preview_tickets_delete_device("d2").await.unwrap(), ["t2"]);
+        assert_eq!(s.preview_tickets_delete_label("aaaa").await.unwrap(), ["t1"]);
+        assert!(s.preview_tickets_live(0).await.unwrap().is_empty());
+        assert!(!s.preview_ticket_delete("t1").await.unwrap());
+        // 票据没了，label 还在
+        assert_eq!(s.preview_label_get(3000).await.unwrap().as_deref(), Some("aaaa"));
+        // Debug 不带票据 id 和密钥
+        let dbg = format!("{:?}", ticket("secret-id", "aaaa", 1, "d", 0, 0));
+        assert!(!dbg.contains("secret-id") && !dbg.contains(&"ab".repeat(32)));
     }
 }

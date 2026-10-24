@@ -26,6 +26,7 @@ use crate::config::ConfigStore;
 use crate::flow::{RatePause, Retained, SendFlow};
 use crate::identity::Identity;
 use crate::peers::Peers;
+use crate::preview::Preview;
 use crate::rpc::Rpc;
 use crate::util::now_ms;
 
@@ -474,6 +475,17 @@ impl HubOutbox {
 
     /// 同 [`send_envelope`](Self::send_envelope)，但属于 [`new_group`](Self::new_group) 开的那一组。
     pub fn send_in_group(&self, to: &str, kind: Kind, body: Vec<u8>, group: Option<u64>) -> Option<u64> {
+        self.send_inner(to, kind, body, group, false)
+    }
+
+    /// 发一封预览隧道的 `data` 信封（protocol.md § 11.5）。和 [`send_envelope`](Self::send_envelope) 一样保留原文、受暂停和
+    /// 重发约束，区别是这个对端的保留按**端到端回执**释放（[`release_through`](Self::release_through)），
+    /// 不按时间和字节数逐出：在途量由调用方的回执窗口（8 MiB）约束。
+    pub fn send_acked(&self, to: &str, body: Vec<u8>) -> Option<u64> {
+        self.send_inner(to, Kind::Data, body, None, true)
+    }
+
+    fn send_inner(&self, to: &str, kind: Kind, body: Vec<u8>, group: Option<u64>, ack_released: bool) -> Option<u64> {
         let mut i = self.inner.lock().unwrap();
         let tx = i.tx.clone()?;
         i.seq += 1;
@@ -486,6 +498,9 @@ impl HubOutbox {
         });
         let (rate, guard) = (i.rate, i.guard);
         let slot = i.flows.entry(to.to_string()).or_insert_with(|| Slot::new(guard));
+        if ack_released {
+            slot.flow.set_ack_released(true);
+        }
         // 握手信封不受粘住和暂停管，总是立刻发出；但和 data 一样保留原文：hub 退回它（目标缓冲满或超速）时要原样重发。
         // 响应方没有别的补救——配对的 XXpsk3 第二条丢了，浏览器只能等到配对超时
         let blocked = matches!(kind, Kind::Data | Kind::Notify) && slot.flow.blocked(now, &rate);
@@ -574,6 +589,30 @@ impl HubOutbox {
     /// hub 说发送方超过了速率预算（`rate_limited`）：整条连接的出站暂停 `retry_after_ms`。
     pub fn on_rate_limited(&self, retry_after_ms: u64) {
         self.inner.lock().unwrap().rate.limited(Instant::now(), Duration::from_millis(retry_after_ms));
+    }
+
+    /// `rate_limited { to }`（预览流量的账号预算，ADR-39）：只暂停发往 `to` 的信封，其他对端照常。
+    pub fn on_rate_limited_to(&self, to: &str, retry_after_ms: u64) {
+        let mut i = self.inner.lock().unwrap();
+        let guard = i.guard;
+        let slot = i.flows.entry(to.to_string()).or_insert_with(|| Slot::new(guard));
+        slot.flow.pause_for(Instant::now(), Duration::from_millis(retry_after_ms));
+        self.ensure_task(&mut i, to);
+    }
+
+    /// 预览对端的回执已经越过 `seq`（含）：放掉发给 `to` 的、seq 不大于它的保留（[`send_acked`](Self::send_acked)）。
+    pub fn release_through(&self, to: &str, seq: u64) {
+        if let Some(slot) = self.inner.lock().unwrap().flows.get_mut(to) {
+            slot.flow.release_through(seq);
+        }
+    }
+
+    /// 向 `to` 的出站暂停还要多久（只算这个对端自己的暂停：被退回后的等待、`rate_limited { to }`；测试 / 诊断用）。
+    pub fn peer_pause_left(&self, to: &str) -> Duration {
+        let i = self.inner.lock().unwrap();
+        let rate = RatePause::default();
+        let now = Instant::now();
+        i.flows.get(to).and_then(|s| s.flow.unblock_at(&rate, now)).map_or(Duration::ZERO, |t| t - now)
     }
 
     /// 到目前为止收到过多少条 `backpressure`（测试 / 诊断用）。
@@ -723,6 +762,7 @@ pub struct HubLink {
     pub outbox: Arc<HubOutbox>,
     pub state: Arc<HubState>,
     pub peers: Arc<Peers>,
+    pub preview: Arc<Preview>,
     pub agents: Arc<Agents>,
     pub wake: Arc<Notify>,
 }
@@ -792,6 +832,7 @@ impl HubLink {
             let outcome = self.session(&url, &rpc, &mut shutdown).await;
             self.outbox.detach();
             self.peers.on_hub_down().await;
+            self.preview.on_hub_down();
             self.state.update(|s| s.connected = false);
             let delay = match outcome {
                 Outcome::Shutdown => return,
@@ -978,7 +1019,8 @@ impl HubLink {
         }
     }
 
-    async fn on_frame(&self, bytes: &[u8], rpc: &Arc<Rpc>) {
+    /// 处理 hub 发来的一封信封（连接循环调用；测试里用它在进程内模拟 hub）。
+    pub async fn on_frame(&self, bytes: &[u8], rpc: &Arc<Rpc>) {
         let env = match Envelope::decode(bytes) {
             Ok(e) => e,
             Err(e) => {
@@ -991,20 +1033,39 @@ impl HubLink {
                 Ok(c) => self.on_control(c).await,
                 Err(e) => tracing::debug!(error = %e, "undecodable control message"),
             },
+            // 预览连接（hub 用 `preview_peer` 告知的临时 id）的握手和数据归预览模块，其余是已配对设备
+            Kind::Handshake if self.preview.is_peer(&env.from) => self.preview.on_handshake(&env.from, &env.body),
+            Kind::Data if self.preview.is_peer(&env.from) => self.preview.on_data(&env.from, &env.body),
             Kind::Handshake => self.peers.on_handshake(&env.from, &env.body, rpc).await,
             Kind::Data => self.peers.on_data(&env.from, &env.body).await,
             Kind::Notify => {}
         }
     }
 
-    async fn on_control(&self, c: Control) {
+    /// 处理 hub 发来的一条控制消息。
+    pub async fn on_control(&self, c: Control) {
         match c {
             Control::PeerOnline { device } => self.peers.set_peer_online(&device, true),
+            Control::PeerOffline { device } if self.preview.is_peer(&device) => self.preview.on_peer_offline(&device),
             Control::PeerOffline { device } => self.peers.set_peer_online(&device, false),
+            Control::PreviewPeer { peer, label } => self.preview.on_preview_peer(peer, label),
+            Control::Undeliverable { to, .. } if self.preview.is_peer(&to) => self.preview.on_undeliverable(&to),
             Control::Undeliverable { to, .. } => self.peers.on_undeliverable(&to),
+            Control::Backpressure { to, seq } if self.preview.is_peer(&to) => self.preview.on_backpressure(&to, seq),
             Control::Backpressure { to, seq } => self.peers.on_backpressure(&to, seq),
+            Control::Dropped { seq, .. } if self.outbox.peer_of_seq(seq).is_some_and(|p| self.preview.is_peer(&p)) => {
+                if let Some(p) = self.outbox.peer_of_seq(seq) {
+                    tracing::warn!(seq, "the hub dropped a preview envelope");
+                    self.preview.on_dropped(&p);
+                }
+            }
             Control::Dropped { seq, reason } => self.peers.on_dropped(seq, reason),
-            Control::RateLimited { retry_after_ms, .. } => {
+            // 预览流量的账号预算：只暂停发往这一个预览对端的信封，别的对端照常
+            Control::RateLimited { retry_after_ms, to: Some(peer) } => {
+                tracing::debug!(retry_after_ms, "hub rate limit hit for a preview connection; pausing it");
+                self.outbox.on_rate_limited_to(&peer, retry_after_ms);
+            }
+            Control::RateLimited { retry_after_ms, to: None } => {
                 // 真的暂停整条连接的出站（不只是记一条日志）：被退回的信封随后按序重发
                 tracing::warn!(retry_after_ms, "hub rate limit hit; pausing outbound envelopes");
                 self.outbox.on_rate_limited(retry_after_ms);

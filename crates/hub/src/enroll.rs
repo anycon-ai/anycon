@@ -303,6 +303,7 @@ mod tests {
             account_id: Some("acc".into()),
             permanent,
             peers: HashSet::new(),
+            preview: None,
         });
         (Arc::new(c), rx)
     }

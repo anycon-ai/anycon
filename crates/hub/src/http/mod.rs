@@ -1,6 +1,7 @@
 //! HTTP 表面：路由装配、健康检查、中间件（CSRF 头、安全头、请求日志）。
 //!
-//! 路由清单见 docs/spec/hub.md § 2。
+//! 路由清单见 docs/spec/hub.md § 2。配了 `ANYCON_PREVIEW_URL` 时，预览域名上的请求在最外层由 [`preview`] 接走
+//! （docs/spec/hub.md § 13.2），不经过下面的路由和安全头层。
 
 pub mod api;
 mod assets;
@@ -8,6 +9,8 @@ pub mod auth;
 pub mod email;
 pub mod json;
 pub mod notifications;
+pub mod preview;
+pub mod preview_api;
 pub mod session;
 
 use std::sync::Arc;
@@ -22,6 +25,7 @@ use axum::{Json, Router};
 use serde_json::json;
 
 use crate::app::AppState;
+use crate::config::PreviewUrl;
 use crate::error::ApiError;
 use crate::ws;
 
@@ -44,6 +48,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/me/tokens/{id}", delete(api::delete_token))
         .route("/devices", get(api::list_devices))
         .route("/devices/{id}", patch(api::patch_device).delete(api::delete_device))
+        .route("/preview/tokens", post(preview_api::create_token))
         .route("/invites", get(api::list_invites).post(api::create_invite))
         .route("/invites/{id}", delete(api::delete_invite))
         .route("/admin/status", get(api::admin_status))
@@ -63,16 +68,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn(csrf))
         .layer(DefaultBodyLimit::max(API_BODY_LIMIT));
 
-    Router::new()
+    let csp = HeaderValue::from_str(&content_security_policy(state.config.preview.as_ref())).expect("CSP is ascii");
+    let router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/ws", get(ws::ws_upgrade))
         .nest("/api", api)
         .nest("/auth", auth)
         .fallback(assets::serve)
-        .layer(middleware::from_fn(security_headers))
-        .layer(middleware::from_fn(log_requests))
-        .with_state(state)
+        .layer(middleware::from_fn_with_state(csp, security_headers))
+        .layer(middleware::from_fn(log_requests));
+    // 配了预览：预览域名上的请求在最外层按 `Host` 分流，绕开上面的安全头层（预览页要能被 Web UI 嵌入）。
+    let router = match preview::PreviewSurface::new(&state) {
+        Some(surface) => router.layer(middleware::from_fn_with_state(surface, preview::dispatch)),
+        None => router,
+    };
+    router.with_state(state)
 }
 
 /// 写操作（POST / PUT / PATCH / DELETE）必须带 `X-Anycon: 1`。
@@ -97,8 +108,22 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'
 connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; \
 worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 
+/// 嵌入的 Web UI 的 CSP。配了预览（`ANYCON_PREVIEW_URL`）时在 `frame-ancestors` 前面加一段
+/// `frame-src <预览 scheme>://*.<预览域名>[:端口];`，Web UI 才能用 iframe 内嵌预览（docs/spec/hub.md § 2.1）；
+/// 没配时就是 [`CONTENT_SECURITY_POLICY`]，一个字符都不变。
+pub fn content_security_policy(preview: Option<&PreviewUrl>) -> String {
+    match preview {
+        None => CONTENT_SECURITY_POLICY.to_string(),
+        Some(p) => CONTENT_SECURITY_POLICY.replacen(
+            "frame-ancestors",
+            &format!("frame-src {}; frame-ancestors", p.frame_src()),
+            1,
+        ),
+    }
+}
+
 /// 所有响应加基础安全头；HTML 响应（嵌入的 Web UI，含 SPA 回退）另外加 CSP 和 COOP。
-async fn security_headers(req: Request, next: Next) -> Response {
+async fn security_headers(State(csp): State<HeaderValue>, req: Request, next: Next) -> Response {
     // 304 没有 Content-Type：按路径判断是不是在重新验证一个 HTML 页面（`/`、SPA 路由、`*.html`）。
     let last_segment = req.uri().path().rsplit('/').next().unwrap_or("").to_string();
     let html_path = !last_segment.contains('.') || last_segment.ends_with(".html");
@@ -116,7 +141,7 @@ async fn security_headers(req: Request, next: Next) -> Response {
         h.entry(HeaderName::from_static(name)).or_insert(HeaderValue::from_static(value));
     }
     if is_html {
-        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CONTENT_SECURITY_POLICY));
+        h.insert(header::CONTENT_SECURITY_POLICY, csp);
         h.insert(HeaderName::from_static("cross-origin-opener-policy"), HeaderValue::from_static("same-origin"));
     }
     res
@@ -150,5 +175,26 @@ async fn readyz(State(state): State<Arc<AppState>>) -> Response {
             tracing::warn!(error = %e, "readyz: database not available");
             (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "unavailable" }))).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csp_gets_a_frame_src_only_when_preview_is_configured() {
+        assert_eq!(content_security_policy(None), CONTENT_SECURITY_POLICY);
+        let p = PreviewUrl { scheme: "https", domain: "preview-example.net".into(), port: None };
+        let csp = content_security_policy(Some(&p));
+        assert!(
+            csp.contains("manifest-src 'self'; frame-src https://*.preview-example.net; frame-ancestors 'none';"),
+            "{csp}"
+        );
+        assert_eq!(csp.replace("frame-src https://*.preview-example.net; ", ""), CONTENT_SECURITY_POLICY);
+        let p = PreviewUrl { scheme: "http", domain: "preview.localhost".into(), port: Some(8080) };
+        assert!(
+            content_security_policy(Some(&p)).contains("frame-src http://*.preview.localhost:8080; frame-ancestors")
+        );
     }
 }

@@ -689,6 +689,8 @@ SQLite（WAL）。全部表：
 | `peers` | 已配对客户端：device_id、pubkey、name、kind、paired_at、last_seen |
 | `enroll_password` | 节点口令（§ 15.1）：salt（16 字节）、Argon2id 输出（32 字节）、set_at、set_by；连续失败次数、下次允许尝试的时间、是否锁定。最多一行。接入会话和接入码只在内存 |
 | `agent_cache` | agent id、AgentInfo(JSON)、diagnose 文本、probed_at |
+| `preview_labels` | 预览 label（§ 19.2）：port（主键）、label（唯一）、created_at_ms |
+| `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
@@ -825,6 +827,10 @@ v0.2：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-se
 
 永远不允许：本机 hub 的端口（`hub.url` 的主机是 `localhost` / 回环地址时）、端口 0。只看绑定在回环地址或通配地址（`0.0.0.0` / `::`）上的监听 socket——只绑在某个局域网地址上的服务从 `127.0.0.1` 连不上。
 
+一个端口上可能有不止一个监听者（IPv4 / IPv6 各一个、`SO_REUSEPORT`）：**每一个**都要符合上面的规则才放行，否则 daemon 先连的 `127.0.0.1` 可能落到别的进程上。
+
+判断用的探测结果如果已经超过 0.5 秒，拒绝之前先重新探测一次（agent 刚拉起 dev server 就点「预览」时不会被缓存误拒）。
+
 检查时机：`preview.open` 时一次；每次隧道握手时一次（此时没有进程在监听也放行，dev server 可能正在重启，请求会得到 `RESET { refused }`；有进程在监听但不符合上面三条 → 拒绝 `port_not_allowed`）；隧道存续期间有 stream 活动时每 30 秒复核一次，不通过发 `GOAWAY { port_not_allowed }`。
 
 ### 19.4 端口探测
@@ -842,8 +848,10 @@ v0.2：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-se
 - **握手**：只接受已经收到 `control.preview_peer` 的对端；按 [protocol.md § 11.2](../protocol.md#112-握手) 查票据、核对 label、过期时间和端口策略，失败按原因回拒绝。一个对端同时只有一条传输，新的第一条握手消息顶掉旧的
 - **发送**：隧道消息走 hub 出站队列，和会话传输一样保留原文、按 `seq` 重发；区别是按端到端回执释放（[protocol.md § 11.5](../protocol.md#115-流控与回执)），在途上限 8 MiB。`rate_limited { to }` 只暂停这一个对端
 - **连上游**：每个 HTTP stream 一条新的 TCP 连接，先 `127.0.0.1:<端口>` 再 `[::1]:<端口>`（Vite 在 macOS 上常常只监听 `::1`），连接超时 5 秒，连不上 `RESET { refused }`。用 HTTP/1.1；等响应头最多 120 秒（首次编译慢的框架），超时 `RESET { timeout }`
-- **改写请求头**：`host` 改成 `localhost:<端口>`；`origin` 和 `referer` 里的预览 origin 换成 `http://localhost:<端口>`；去掉逐跳头（`connection`、`keep-alive`、`proxy-*`、`te`、`trailer`、`transfer-encoding`、`upgrade`）和 `forwarded`、`x-forwarded-*`；`accept-encoding` 改成 `gzip`
-- **改写响应头**：去掉逐跳头；`location` 是指向 `localhost` / 回环地址同一端口的绝对 URL 时改成只有路径的形式；`set-cookie` 原样交给预览页（由 service worker 的 cookie jar 处理）。上游已经是 gzip 的原样转发并标 `encoding = gzip`；没压缩、`content-type` 是文本类（`text/*`、JavaScript、JSON、XML、SVG、wasm）、没有 `content-range` 且大于 1 KiB 的，daemon 边读边 gzip（快速档）。这两种情况都去掉 `content-encoding` / `content-length`
+- **改写请求头**：`host` 改成 `localhost:<端口>`；`origin` 和 `referer` 里的预览 origin 换成 `http://localhost:<端口>`；去掉逐跳头（`connection`、`keep-alive`、`proxy-*`、`te`、`trailer`、`transfer-encoding`、`upgrade`）和 `forwarded`、`x-forwarded-*`；HTTP 请求一律带 `accept-encoding: gzip`（浏览器不让 service worker 看到这个头，预览页发来的请求里通常没有它），WebSocket 握手不带
+- **改写响应头**：去掉逐跳头；`location` 是指向 `localhost` / 回环地址同一端口的绝对 URL 时改成只有路径的形式；`set-cookie` 原样交给预览页（由 service worker 的 cookie jar 处理）。上游已经是 gzip 的原样转发并标 `encoding = gzip`；没压缩、`content-type` 是文本类（`text/*`、JavaScript、JSON、XML、SVG、wasm；`text/event-stream` 除外）、没有 `content-range` 且大于 1 KiB 的，daemon 边读边 gzip（快速档，每段 sync flush，流式响应不会被攒住）。这两种情况都去掉 `content-encoding` / `content-length`。上游拒绝 WebSocket 升级时的响应原样（identity）转发
 - **WebSocket**：用上游自己的握手（daemon 生成 `sec-websocket-key`），带上改写后的头和子协议；ping / pong 两边各自应答，不进隧道；关闭码和原因原样转发
 - **上限**：每条隧道 256 个 stream；请求体和响应体不设总长，按窗口流式转发；单条 WebSocket 消息 16 MiB
+- **卡死检测**：带帧的消息 120 秒没有被回执，就丢掉传输、发 `RESET` 帧体，让预览页重新握手（纯回执消息不算：对端空闲时本来就不回执它）
+- **握手失败**：Noise 读不了第一条（PSK 不对、钉的不是这台 daemon、消息坏了）回 `malformed`
 - **日志**：隧道建立 / 断开在 debug 级记 label 和对端 id；不记路径、头、正文、票据 id 和密钥

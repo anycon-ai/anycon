@@ -889,6 +889,103 @@ async fn pair_failed_from_the_hub_removes_a_tentative_peer_that_was_waiting_for_
     td.shutdown().await;
 }
 
+// ---------------------------------------------------------------------------
+// `local.pair_outcome`：`anycon pair` 靠它知道这次配对被 hub 拒绝了
+
+/// 本机方法 `local.pair_outcome`：这次配对（`node.pair_begin` 返回的 `expires_at_ms`）的失败结果。
+async fn pair_outcome(td: &TestDaemon, local: &mut anycon_daemon::testutil::TestClient, expires_at_ms: u64) -> Value {
+    local.call(td, anycon_daemon::local_methods::PAIR_OUTCOME, json!({ "expires_at_ms": expires_at_ms })).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_pairing_the_hub_refuses_is_reported_by_local_pair_outcome_for_that_pairing_only() {
+    let hub = TestHub::start().await;
+    let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
+    wait_daemon_connected(&td).await;
+    let mut local = td.client("cli");
+    let begin: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
+    assert_eq!(pair_outcome(&td, &mut local, begin.expires_at_ms).await, json!({ "failed": null }), "nothing yet");
+
+    // hub 拒绝了这次配对的收尾（多用户模式的设备配额满了）
+    let before = anycon_daemon::util::now_ms();
+    td.ctx.peers.on_control(Control::PairFailed { reason: PairFailReason::Quota }).await;
+    let got = pair_outcome(&td, &mut local, begin.expires_at_ms).await;
+    assert_eq!(got["failed"]["reason"], "quota", "{got}");
+    assert!(got["failed"]["at_ms"].as_u64().unwrap() >= before, "{got}");
+    assert_eq!(got["failed"].as_object().unwrap().len(), 2, "reason and at_ms only: {got}");
+    // 别的配对（别的 expires_at_ms）看不到它
+    assert_eq!(pair_outcome(&td, &mut local, begin.expires_at_ms + 1).await, json!({ "failed": null }));
+
+    // 新的一次 pair_begin：旧的失败不会被当成这一次的
+    let again: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
+    assert_ne!(again.expires_at_ms, begin.expires_at_ms);
+    assert_eq!(pair_outcome(&td, &mut local, again.expires_at_ms).await, json!({ "failed": null }));
+    assert_eq!(pair_outcome(&td, &mut local, begin.expires_at_ms).await, json!({ "failed": null }));
+
+    // 参数必填
+    let missing: Result<Value, RpcError> = local.call(&td, anycon_daemon::local_methods::PAIR_OUTCOME, json!({})).await;
+    assert_eq!(missing.unwrap_err().code, ErrorCode::Invalid.rpc_code());
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failure_with_no_pairing_in_progress_is_not_recorded() {
+    let hub = TestHub::start().await;
+    let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
+    wait_daemon_connected(&td).await;
+    let mut local = td.client("cli");
+    let begin: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
+    // 第一条 pair_failed 作废了这次配对；之后再来的（别的配对的）没有对应的状态，不能覆盖已记下的结果
+    td.ctx.peers.on_control(Control::PairFailed { reason: PairFailReason::PeerGone }).await;
+    td.ctx.peers.on_control(Control::PairFailed { reason: PairFailReason::Quota }).await;
+    assert_eq!(pair_outcome(&td, &mut local, begin.expires_at_ms).await["failed"]["reason"], "peer_gone");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_joiner_that_disconnects_mid_pairing_is_reported_as_peer_gone_by_the_hub() {
+    let hub = TestHub::start().await;
+    let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
+    wait_daemon_connected(&td).await;
+    let cookie = hub.admin_cookie().await;
+    let mut local = td.client("cli");
+    let begin: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
+    let mut web = FakeWeb::connect(&hub.url(), None, Some(&cookie), "Quitter", Keypair::generate()).await;
+    let _handshake = web.pair_handshake(&begin.code).await;
+    drop(web);
+    assert!(
+        eventually(T, || async {
+            let mut c = td.client("poll");
+            pair_outcome(&td, &mut c, begin.expires_at_ms).await["failed"]["reason"] == "peer_gone"
+        })
+        .await,
+        "the hub's pair_failed reaches local.pair_outcome"
+    );
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_pairing_watchdog_reports_a_timeout_through_local_pair_outcome() {
+    let hub = TestHub::start().await;
+    let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
+    wait_daemon_connected(&td).await;
+    td.ctx.peers.set_pair_step_timeout(Duration::from_millis(400));
+    let cookie = hub.admin_cookie().await;
+    let mut local = td.client("cli");
+    let begin: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
+    let mut web = FakeWeb::connect(&hub.url(), None, Some(&cookie), "Staller", Keypair::generate()).await;
+    let _handshake = web.pair_handshake(&begin.code).await;
+    assert!(
+        eventually(T, || async {
+            let mut c = td.client("poll");
+            pair_outcome(&td, &mut c, begin.expires_at_ms).await["failed"]["reason"] == "timeout"
+        })
+        .await,
+        "a pairing that never gets confirmed ends as a timeout"
+    );
+    td.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_new_pair_begin_takes_over_a_pairing_in_confirmation_and_removes_its_tentative_peer() {
     let hub = TestHub::start().await;

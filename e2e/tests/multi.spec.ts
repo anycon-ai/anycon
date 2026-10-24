@@ -480,13 +480,20 @@ test.describe('multi 模式', () => {
         await expect(third.getByText(/Account settings → Devices/)).toBeVisible()
         await expect(third.getByTestId('quota-link')).toHaveAttribute('href', '/settings/quota')
         await expect(third).toHaveURL(/\/pair$/)
-        // 节点那边也收到了 pair_failed（原因 quota）。`anycon pair` 本身只轮询“有没有新设备”，不会因此退出，
-        // 所以看 daemon 的日志，最后 kill 掉它
+        // 节点那边也收到了 pair_failed（原因 quota）：daemon 日志里有记录，`anycon pair` 也不再干等短码过期，
+        // 而是马上以退出码 1 退出（docs/spec/cli.md：配额是一般错误）
         await waitFor(
           'the node being told that the pairing failed (quota)',
           () => /pairing failed[^\n]*Quota/.test(readLog(extra!.logFile)),
           { timeoutMs: 15_000 },
         )
+        const exit = await Promise.race([
+          refused.done,
+          new Promise<'still running'>((resolve) =>
+            setTimeout(() => resolve('still running'), 15_000),
+          ),
+        ])
+        expect(exit).toBe(1)
       } finally {
         refused.kill()
       }

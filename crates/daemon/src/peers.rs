@@ -376,6 +376,19 @@ struct PairState {
     caller: Caller,
     updated: Instant,
     generation: u64,
+    /// hub 登记这次配对时给的过期时间（`PairRegistered`）。登记之前是 `None`。它同时是这次配对对外的标识：
+    /// `node.pair_begin` 的结果里带着同一个值，`anycon pair` 用它来问「我这次配对怎么样了」（[`Peers::pair_failure`]）。
+    expires_at_ms: Option<u64>,
+}
+
+/// 一次配对失败的结果（hub 的 `pair_failed`，或配对中途的看门狗超时）。daemon 只记最近一次，由 [`Peers::pair_failure`] 按配对取。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairFailure {
+    /// 是哪次配对：它的 `expires_at_ms`（`node.pair_begin` 返回的值）。
+    pub expires_at_ms: u64,
+    pub reason: PairFailReason,
+    /// 失败的时间（毫秒时间戳）。
+    pub at_ms: u64,
 }
 
 /// 谁在等 `pair_done`：`pair_confirm` 发出去之后，hub 的 `pair_done` / `pair_failed` 里没有会话标识，
@@ -398,6 +411,9 @@ pub struct Peers {
     online: Mutex<HashSet<String>>,
     sessions: Mutex<HashMap<String, Arc<PeerSession>>>,
     pairing: Mutex<Option<PairState>>,
+    /// 最近一次配对的失败结果。`anycon pair` 等不到新设备时靠它知道 hub 拒绝了这次配对（比如设备配额满了），
+    /// 不必干等到短码过期。新的 `pair_begin` 清掉它；按 `expires_at_ms` 取，所以旧的失败不会被当成当前这次的。
+    last_pair_failure: Mutex<Option<PairFailure>>,
     /// 账号内接入引擎（ADR-36）：握手帧、`enroll_request` / `enroll_failed`、RPC 都归它；收尾借用这里的暂存 / 改键 / `pair.ack`。
     pub enroll: Arc<Enroll>,
     /// 确认槽：谁的 `pair_confirm` 在等 `pair_done`。
@@ -499,6 +515,7 @@ impl Peers {
             online: Mutex::new(HashSet::new()),
             sessions: Mutex::new(HashMap::new()),
             pairing: Mutex::new(None),
+            last_pair_failure: Mutex::new(None),
             enroll,
             confirm_owner: Mutex::new(None),
             staged: Mutex::new(HashSet::new()),
@@ -578,6 +595,18 @@ impl Peers {
     pub fn paired_ids(&self) -> Vec<String> {
         let staged = self.staged.lock().unwrap().clone();
         self.records.lock().unwrap().keys().filter(|k| !staged.contains(*k)).cloned().collect()
+    }
+
+    /// 这次配对（`node.pair_begin` 返回的 `expires_at_ms`）的失败结果；没有失败、或最近记下的失败属于别的配对，返回 `None`。
+    pub fn pair_failure(&self, expires_at_ms: u64) -> Option<PairFailure> {
+        self.last_pair_failure.lock().unwrap().filter(|f| f.expires_at_ms == expires_at_ms)
+    }
+
+    /// 记下一次配对的失败。配对还没在 hub 登记成功（没有 `expires_at_ms`）的失败由 `node.pair_begin` 自己的错误返回，不记在这里。
+    fn note_pair_failure(&self, state: &PairState, reason: PairFailReason) {
+        if let Some(expires_at_ms) = state.expires_at_ms {
+            *self.last_pair_failure.lock().unwrap() = Some(PairFailure { expires_at_ms, reason, at_ms: now_ms() });
+        }
     }
 
     /// 缩短配对每一步的看门狗（测试用）。
@@ -1022,11 +1051,13 @@ impl Peers {
             let gen = self.pair_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             // 上一次还停在确认阶段：它暂存的 peer 记录不能留着
             self.abort_pairing().await;
+            *self.last_pair_failure.lock().unwrap() = None;
             *self.pairing.lock().unwrap() = Some(PairState {
                 phase: Phase::AwaitRegistered { psk: psk.clone(), tx },
                 caller: caller.clone(),
                 updated: Instant::now(),
                 generation: gen,
+                expires_at_ms: None,
             });
             let epoch = self.outbox.epoch();
             if !self.outbox.send_control(&Control::PairBegin { match_id: match_id.clone() }) {
@@ -1121,6 +1152,7 @@ impl Peers {
                         {
                             ps.phase = Phase::AwaitMatch { psk };
                             ps.updated = Instant::now();
+                            ps.expires_at_ms = Some(expires_at_ms);
                             let _ = tx.send(Ok(expires_at_ms));
                         }
                     }
@@ -1168,6 +1200,9 @@ impl Peers {
                             None
                         }
                     };
+                    if let Some(state) = &expired {
+                        this.note_pair_failure(state, PairFailReason::Timeout);
+                    }
                     if let Some(PairState { phase: Phase::Confirming { peer, .. }, .. }) = expired {
                         this.release_confirm(&ConfirmOwner::Pairing);
                         if !peer.is_empty() {
@@ -1186,6 +1221,9 @@ impl Peers {
                 self.release_confirm(&ConfirmOwner::Pairing);
                 let state = self.pairing.lock().unwrap().take();
                 tracing::warn!(?reason, "pairing failed");
+                if let Some(state) = &state {
+                    self.note_pair_failure(state, reason);
+                }
                 match state {
                     Some(PairState { phase: Phase::AwaitRegistered { tx, .. }, .. }) => {
                         let _ = tx.send(Err(reason));

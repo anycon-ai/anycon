@@ -745,6 +745,7 @@ SQLite（WAL）。全部表：
   3. 收到 `pair_done`（`peer` = 新设备的正式 id）后，daemon 把新设备加进 peers，并**经刚建立的 Noise 传输发 `pair.ack`**：`{ node_id, peer_id, name, version, fingerprint }`——自己的正式 id、hub 告知的新设备正式 id、节点名、版本、自己静态公钥的指纹。新设备据此校验（`peer_id` 是自己、`node_id` = `pair_done.peer`、`fingerprint` = 握手得到的公钥指纹）后才落盘；hub 伪造 `pair_done` 做不出这条消息
   4. 之后 hub 发 `peer_online`，客户端用 IK 重连
   5. 握手成功到 `pair_done` 之间，新设备以临时 id 暂存在内存里：**不出现在 `node.devices` 和通知里**；看门狗超时、hub 断线、新的 `pair_begin`、`pair_failed` 都会删掉暂存记录（内存、库、`peers.json`），不会留下一个「已配对」的幽灵设备。daemon 崩溃留在库里的暂存记录目前不在启动时清理
+  6. **失败结果**：hub 在配对登记之后发来 `pair_failed { reason }`（比如收尾时 `multi` 的设备配额满了：`quota`），或看门狗把停在中途的配对作废（`timeout`），daemon 记下最近一次的 `{ reason, at_ms }`，归属于这次配对的 `expires_at_ms`（`pair_begin` 返回的值）。本机方法 `local.pair_outcome { expires_at_ms }` 返回 `{ "failed": null }` 或 `{ "failed": { "reason": "quota", "at_ms": … } }`——`reason` 是 `pair_failed.reason` 的 snake_case 名字；只有这次配对自己的失败才会出现，新的 `pair_begin` 清掉旧结果。`anycon pair` 靠它在 hub 拒绝时立刻退出（[cli.md](cli.md) `pair`）。登记之前的失败（`pair_begin` 被限速或超额）不记在这里，由 `node.pair_begin` 的错误直接返回
 - **传输失步与重置**：解密失败、分片乱序（`index` 不连续、`count` 不一致）、重组溢出，都意味着这个客户端的 Noise 传输已经和对端失步。daemon 丢弃该客户端的传输并清空重组器，发一帧 `RESET`（`data` body 的 `0x02`），等客户端重新发起 IK 握手；其他客户端不受影响。收到 `backpressure` 的那一片原样重发，不重新加密。收到 `dropped { too_large }` 说明 daemon 自己没分片，是 bug，记 error 日志
 - 发送大消息：一条 RPC 的密文超过 200 KiB 就分片，每条 RPC 一个本地递增的 `msg_id`，同一条的各片连续发送、不与其他消息交错
 

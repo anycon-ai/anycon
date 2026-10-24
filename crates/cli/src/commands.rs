@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::cli::*;
 use crate::conn::{connect_local, Conn};
-use crate::error::{CliError, Result, EXIT_ERROR, EXIT_OFFLINE};
+use crate::error::{CliError, Result, EXIT_DENIED, EXIT_ERROR, EXIT_OFFLINE};
 use crate::follow::{follow, FollowEnd, FollowOpts};
 use crate::output::{ago, short_id, table, visible, Out};
 use crate::remote::{self, HubState, NodeEntry};
@@ -296,12 +296,59 @@ pub async fn pair(app: &App, a: PairArgs) -> Result<u8> {
             }
             return Ok(0);
         }
+        // hub 拒绝了这次配对（设备配额满了、对端中途掉线……）：daemon 记下了结果，不必干等到短码过期。
+        // 老版本的 daemon 没有这个本机方法：报错就当没有，退回到只等设备出现。
+        let outcome = conn
+            .call_raw(anycon_daemon::local_methods::PAIR_OUTCOME, json!({ "expires_at_ms": r.expires_at_ms }))
+            .await
+            .ok();
+        if let Some(reason) = outcome.as_ref().and_then(|o| o["failed"]["reason"].as_str()) {
+            let err = pair_failure_error(reason);
+            if app.json() {
+                app.out.json_line(&json!({ "failed": { "reason": reason, "message": err.message } }));
+            }
+            return Err(err);
+        }
         if std::time::Instant::now() > deadline {
             return Err(CliError::general(
                 "timed out waiting for the new device to join (the code is valid for 5 minutes)",
             ));
         }
     }
+}
+
+/// daemon 报告的配对失败原因（`pair_failed.reason` 的 snake_case 名字）→ 退出码和给用户的话。
+/// 退出码按 docs/spec/cli.md § 4：配额、超时、限速、对端掉线、短码失效都是 1；账号不匹配（`forbidden`）是 5。
+/// 错误码（`error: <code>: …` 里的 `<code>`）就是原因本身。
+pub(crate) fn pair_failure_error(reason: &str) -> CliError {
+    let retry = "run `anycon pair` again for a new code";
+    let (exit, message) = match reason {
+        "quota" => (
+            EXIT_ERROR,
+            "the hub refused the pairing: device quota exceeded on the hub. The device quota for this account is full; remove a device you no longer use (Settings → Devices in the web UI), then run `anycon pair` again".to_string(),
+        ),
+        "timeout" => (EXIT_ERROR, format!("pairing timed out: the new device did not finish in time; {retry}")),
+        "peer_gone" => (EXIT_ERROR, format!("the new device disconnected during pairing; {retry}")),
+        "rate_limited" => (
+            EXIT_ERROR,
+            "the hub rate-limited this pairing (too many attempts); wait a minute, then run `anycon pair` again".to_string(),
+        ),
+        "not_found" => (
+            EXIT_ERROR,
+            format!("the hub no longer knows this pairing code (it expired or was already used); {retry}"),
+        ),
+        "forbidden" => (
+            EXIT_DENIED,
+            "the hub refused this pairing (the devices belong to different accounts, or neither has one)".to_string(),
+        ),
+        other => (EXIT_ERROR, format!("the hub refused the pairing ({other}); {retry}")),
+    };
+    let code = if reason.chars().all(|c| c.is_ascii_lowercase() || c == '_') && !reason.is_empty() {
+        reason
+    } else {
+        "pair_failed"
+    };
+    CliError::new(exit, code, message)
 }
 
 /// `--short` 配对时对 hub 地址的警告（本机 / 私网的自建 hub 不警告）。
@@ -1604,6 +1651,30 @@ pub fn completions(shell: clap_complete::Shell) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pairing_failure_reported_by_the_daemon_maps_to_an_exit_code_a_code_and_a_message() {
+        // 退出码按 docs/spec/cli.md § 4：配额 / 超时 / 限速 / 对端掉线 / 短码失效 → 1；账号不匹配 → 5
+        for (reason, exit, words) in [
+            ("quota", 1, "device quota exceeded on the hub"),
+            ("timeout", 1, "timed out"),
+            ("peer_gone", 1, "disconnected"),
+            ("rate_limited", 1, "rate-limited"),
+            ("not_found", 1, "no longer knows"),
+            ("forbidden", 5, "different accounts"),
+        ] {
+            let e = pair_failure_error(reason);
+            assert_eq!((e.exit, e.code.as_str()), (exit, reason), "{reason}");
+            assert!(e.message.contains(words), "{reason}: {}", e.message);
+        }
+        let quota = pair_failure_error("quota").message;
+        assert!(quota.contains("quota for this account is full") && quota.contains("anycon pair"), "{quota}");
+        // 以后 hub 加了新原因：退出码 1，形状规整（小写字母和下划线）的原因照用做错误码；别的字符串不照抄，退回 pair_failed
+        let e = pair_failure_error("brand_new");
+        assert_eq!((e.exit, e.code.as_str()), (1, "brand_new"));
+        let e = pair_failure_error("Weird Value!");
+        assert_eq!((e.exit, e.code.as_str()), (1, "pair_failed"));
+    }
 
     #[test]
     fn config_errors_map_to_usage_only_when_the_input_is_bad() {

@@ -34,6 +34,10 @@ pub mod local_methods {
     pub const STATUS: &str = "local.status";
     pub const RENAME_DEVICE: &str = "local.rename_device";
     pub const CONFIG_RELOAD: &str = "local.config_reload";
+    /// `anycon pair` 等新设备时问「这次配对被 hub 拒绝了吗」。参数 `{ "expires_at_ms": <node.pair_begin 返回的值> }`，
+    /// 结果 `{ "failed": null }` 或 `{ "failed": { "reason": "quota", "at_ms": <失败时间> } }`（`reason` 是
+    /// `pair_failed.reason` 的 snake_case 名字）。只有这次配对自己的失败才会出现，旧的不算。
+    pub const PAIR_OUTCOME: &str = "local.pair_outcome";
 }
 
 fn err(code: ErrorCode, msg: impl Into<String>) -> RpcError {
@@ -544,6 +548,15 @@ impl Rpc {
                     .ok_or_else(|| err(ErrorCode::NotFound, format!("device {device} is not paired")))?;
                 c.peers.rename(&id, &name).await?;
                 Ok(json!({}))
+            }
+            local_methods::PAIR_OUTCOME => {
+                let expires_at_ms = p
+                    .get("expires_at_ms")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| err(ErrorCode::Invalid, "expires_at_ms is required"))?;
+                let failed =
+                    c.peers.pair_failure(expires_at_ms).map(|f| json!({ "reason": f.reason, "at_ms": f.at_ms }));
+                Ok(json!({ "failed": failed }))
             }
             local_methods::CONFIG_RELOAD => {
                 let changed = c.config.reload().map_err(|e| err(ErrorCode::Invalid, e.to_string()))?;

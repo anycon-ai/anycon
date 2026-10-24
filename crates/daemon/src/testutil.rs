@@ -1145,15 +1145,27 @@ impl TestDaemon {
 /// 把刚写出来的包装脚本同步执行一次（`<bin>/git --version`）。macOS 上「第一次执行一个刚写出的脚本」偶尔要停顿约 3 秒
 /// （系统对新可执行文件的首次检查，和代码无关）；把这一次放在建夹具的时候，后面的测试里 git 调用才不会带着这个停顿去赶
 /// 3 秒的冷缓存预算。给 30 秒，超时就杀掉并 panic。
+///
+/// 测试并行跑，别的线程这时可能正好 fork，子进程会短暂继承刚写脚本时还没关的写 fd，exec 这个脚本就得到 ETXTBSY
+/// （「Text file busy」）；那个 fd 在子进程 exec 时就关了，所以重试几次即可。
 fn run_once(exe: &Path) {
-    let mut child = std::process::Command::new(exe)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap_or_else(|e| panic!("cannot run {}: {e}", exe.display()));
     let started = std::time::Instant::now();
+    let mut child = loop {
+        let spawned = std::process::Command::new(exe)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match spawned {
+            Ok(child) => break child,
+            // ETXTBSY
+            Err(e) if e.raw_os_error() == Some(26) && started.elapsed() < Duration::from_secs(5) => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("cannot run {}: {e}", exe.display()),
+        }
+    };
     loop {
         match child.try_wait().unwrap() {
             Some(status) => {

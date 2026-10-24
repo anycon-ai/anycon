@@ -298,6 +298,13 @@ impl Workspace {
         self.git.cold_budget_ms.store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// 测试用：算完的项目合并成一条 `workspace.changed { updated }` 的防抖时长（缺省 200 毫秒）。机器忙时几个项目算完的时刻
+    /// 会拉开，测试把它加长，才不会因为调度抖动把一批拆成两条。
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_git_updated_debounce_for_test(&self, d: Duration) {
+        self.git.updated_debounce_ms.store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// 测试用：忘掉所有项目的 git 元数据缓存（再次 `workspace.list` 就是冷缓存）。
     #[cfg(any(test, feature = "testing"))]
     pub fn clear_git_cache_for_test(&self) {
@@ -1859,6 +1866,8 @@ struct GitMetaSvc {
     inflight: Mutex<HashMap<PathBuf, Arc<Inflight>>>,
     /// 冷缓存时前台最多等多久（毫秒）；测试里可以缩短。
     cold_budget_ms: std::sync::atomic::AtomicU64,
+    /// `workspace.changed { updated }` 的防抖时长（毫秒）；测试里可以加长。
+    updated_debounce_ms: std::sync::atomic::AtomicU64,
     /// 算完了、等着合并成一条 `workspace.changed { updated }` 发出去的项目名（200 ms 防抖）。
     notify_queue: Mutex<BTreeSet<String>>,
 }
@@ -1871,6 +1880,7 @@ impl GitMetaSvc {
             clients,
             inflight: Mutex::new(HashMap::new()),
             cold_budget_ms: std::sync::atomic::AtomicU64::new(GIT_COLD_BUDGET.as_millis() as u64),
+            updated_debounce_ms: std::sync::atomic::AtomicU64::new(GIT_UPDATED_DEBOUNCE.as_millis() as u64),
             notify_queue: Mutex::new(BTreeSet::new()),
         }
     }
@@ -1889,7 +1899,10 @@ impl GitMetaSvc {
         }
         let this = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(GIT_UPDATED_DEBOUNCE).await;
+            tokio::time::sleep(Duration::from_millis(
+                this.updated_debounce_ms.load(std::sync::atomic::Ordering::Relaxed),
+            ))
+            .await;
             let updated: Vec<String> = std::mem::take(&mut *this.notify_queue.lock().unwrap()).into_iter().collect();
             if !updated.is_empty() {
                 this.clients.broadcast(methods::WORKSPACE_CHANGED, &WorkspaceChanged { updated, ..Default::default() });

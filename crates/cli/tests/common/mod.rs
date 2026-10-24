@@ -69,7 +69,10 @@ pub async fn anycon_in(
     let mut child = c.spawn().expect("spawn anycon");
     if let Some(input) = stdin {
         let mut si = child.stdin.take().unwrap();
-        si.write_all(input.as_bytes()).await.unwrap();
+        // 命令可能不读 stdin 就退出（比如要求终端的命令），这时写入得到 BrokenPipe，不算失败
+        if let Err(e) = si.write_all(input.as_bytes()).await {
+            assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "write anycon stdin");
+        }
         // 不关闭 stdin：交互式提示读到答案后进程自己结束；关闭会让「读不到答案」的场景提前 EOF
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(55)).await;

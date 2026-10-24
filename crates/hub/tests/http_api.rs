@@ -322,8 +322,16 @@ async fn devices_list_accepts_a_device_token_read_only() {
     let bearer =
         |token: &str| hub.http.get(hub.url("/api/devices")).header("authorization", format!("Bearer {token}")).send();
 
+    // hub 在 AuthOk 之后才在后台写 last_seen_ms；等它落库，两次列表之间才不会因为这个字段出现与否而不同。
+    let mut by_cookie: Value = hub.get("/api/devices", &cookie).await.json().await.unwrap();
+    for _ in 0..200 {
+        if by_cookie.as_array().unwrap().iter().any(|d| d["id"] == daemon.id && d.get("last_seen_ms").is_some()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        by_cookie = hub.get("/api/devices", &cookie).await.json().await.unwrap();
+    }
     // 和 cookie 登录时一样的列表（含 online / paired_with）。
-    let by_cookie: Value = hub.get("/api/devices", &cookie).await.json().await.unwrap();
     let res = bearer(&cli.token).await.unwrap();
     assert_eq!(res.status(), 200);
     let by_token: Value = res.json().await.unwrap();

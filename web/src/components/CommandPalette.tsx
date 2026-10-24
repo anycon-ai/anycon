@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { FolderGit2, MessageSquare, Plus, Server } from 'lucide-react'
+import { FolderGit2, FolderOpen, FolderPlus, GitFork, MessageSquare, Plus, Server } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCurrentNode } from '@/lib/nav'
 import { shortNodeId } from '@/lib/ids'
+import { useNewProject, type NewProjectMode } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
 import { Dialog } from '@/ui/Overlay'
@@ -17,7 +18,7 @@ interface Item {
   run: () => void
 }
 
-/** ⌘K：按标题搜本地已知的会话、项目、节点，或执行「新建会话」。（不是 daemon 的全文搜索。） */
+/** ⌘K：按标题搜本地已知的会话、项目、节点，或执行「新建会话」「新建项目」「克隆仓库」「关联已有目录」。（不是 daemon 的全文搜索。） */
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -37,6 +38,10 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     if (nodeId) {
       const param = shortNodeId(nodeId, order)
       out.push({ id: 'new', icon: <Plus className="size-4" />, label: t('palette.newSession'), run: go(() => void navigate({ to: '/n/$node/new', params: { node: param } })) })
+      const newProject = (mode: NewProjectMode) => go(() => useNewProject.getState().open({ nodeId, mode, then: 'project', pickNode: true }))
+      out.push({ id: 'new-project', icon: <FolderPlus className="size-4" />, label: t('project.new'), run: newProject('empty') })
+      out.push({ id: 'clone-project', icon: <GitFork className="size-4" />, label: t('project.newClone'), run: newProject('clone') })
+      out.push({ id: 'link-project', icon: <FolderOpen className="size-4" />, label: t('project.openExisting'), run: newProject('existing') })
       for (const p of nodes[nodeId]?.projects ?? [])
         out.push({ id: `p-${p.name}`, icon: <FolderGit2 className="size-4" />, label: p.name, hint: t('palette.project'), run: go(() => void navigate({ to: '/n/$node/p/$project', params: { node: param, project: p.name } })) })
     }

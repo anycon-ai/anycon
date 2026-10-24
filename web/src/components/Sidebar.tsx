@@ -15,6 +15,7 @@ import { shortNodeId } from '@/lib/ids'
 import { connectionTone } from './useConnectionLabel'
 import { SessionDot } from './StatusDot'
 import { useHub } from '@/stores/hub'
+import { useNewProject } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
@@ -60,8 +61,13 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
   const list = useSessions((s) => s.list)
   const params = useParams({ strict: false }) as { node?: string; session?: string; project?: string }
   const { selected } = useNodeFilter()
-  // 空状态里「新建项目」去哪个节点：页面当前所在的节点（在勾选里的话），否则第一个勾选的
-  const emptyTarget = nodeId && selected.includes(nodeId) ? nodeId : selected[0]
+  // 「新建项目」默认建在哪个节点：页面当前所在的节点（在勾选里的话），否则第一个勾选的；对话框里还能换
+  const projectTarget = nodeId && selected.includes(nodeId) ? nodeId : selected[0]
+  const newProject = (): void => {
+    if (!projectTarget) return
+    onNavigate?.()
+    useNewProject.getState().open({ nodeId: projectTarget, mode: 'empty', then: 'project', pickNode: true })
+  }
   const paramOf = (id: string): string => shortNodeId(id, order)
   // 勾了多个节点时，项目行和置顶行要标出各自属于哪个节点
   const nodeLabel = (id: string): string | undefined => (selected.length > 1 ? nodes[id]?.name : undefined)
@@ -101,6 +107,11 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
         <div className="min-w-0 flex-1">
           <NodeSwitcher nodeId={nodeId} onNavigate={onNavigate} />
         </div>
+        {projectTarget ? (
+          <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('project.new')} title={t('project.new')} onClick={newProject} data-testid="sidebar-new-project-button">
+            <FolderPlus className="size-4" />
+          </Button>
+        ) : null}
         {onSearch && order.length > 0 ? (
           <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('sidebar.search')} onClick={onSearch}>
             <Search className="size-4" />
@@ -146,12 +157,12 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
             {grouped.projects.length === 0 && grouped.scratch.length === 0 ? (
               <div className="px-2 py-6 text-center text-sm text-fg-subtle" data-testid="sidebar-empty">
                 <p>{t('sidebar.empty')}</p>
-                {/* 左栏没有单独的「新会话」按钮，没有项目就没有「＋」可点：给一个去建项目的入口（节点首页的空状态里有新建 / 克隆 / 打开已有目录） */}
-                {emptyTarget ? (
-                  <Link to="/n/$node" params={{ node: paramOf(emptyTarget) }} onClick={onNavigate} className="mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium text-accent-text hover:bg-bg-hover" data-testid="sidebar-new-project">
+                {/* 左栏没有单独的「新会话」按钮，没有项目就没有「＋」可点：直接在这里打开新建项目对话框 */}
+                {projectTarget ? (
+                  <button type="button" onClick={newProject} className="mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium text-accent-text hover:bg-bg-hover" data-testid="sidebar-new-project">
                     <FolderPlus className="size-4" />
                     {t('project.new')}
-                  </Link>
+                  </button>
                 ) : null}
               </div>
             ) : null}

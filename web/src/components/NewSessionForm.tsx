@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { Bot, ChevronDown, FolderGit2, MessageSquare } from 'lucide-react'
+import { Bot, ChevronDown, FolderGit2, FolderPlus, MessageSquare } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { AgentInfo, Project, SessionWorkspace, SessionWorkspaceMode } from '@/protocol'
 import { attachmentMimes } from '@/features/attachments/support'
@@ -15,11 +15,12 @@ import { resolveDefaultsDetailed, selectionKey, toSessionSettings, type Defaults
 import { isDangerousModeRejection } from '@/lib/errors'
 import { useNodeParam } from '@/lib/nav'
 import { useDrafts } from '@/stores/drafts'
+import { useNewProject } from '@/stores/newProject'
 import { readyAgents, useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { toast } from '@/stores/ui'
 import { cn } from '@/ui/cn'
-import { Menu, MenuContent, MenuRadioGroup, MenuRadioItem, MenuTrigger } from '@/ui/Menu'
+import { Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from '@/ui/Menu'
 import { Composer } from './Composer'
 import { NoAgentsNotice } from './AgentIssueCards'
 import { optionTrigger, SettingsControls } from './SettingsControls'
@@ -110,7 +111,17 @@ export function NewSessionForm({ nodeId, project, agentId, focus, onProjectChang
   const contextControls = (stacked: boolean) =>
     (onProjectChange && entry) || gitPending || showWorkspace ? (
       <div className={cn('flex', stacked ? 'flex-col items-stretch gap-2' : 'min-w-0 flex-wrap items-center gap-1')} data-testid={stacked ? undefined : 'new-session-context'}>
-        {onProjectChange && entry ? <ProjectPicker projects={entry.projects} value={project ?? undefined} onChange={onProjectChange} stacked={stacked} /> : null}
+        {onProjectChange && entry ? (
+          <ProjectPicker
+            projects={entry.projects}
+            value={project ?? undefined}
+            onChange={onProjectChange}
+            stacked={stacked}
+            // 建好之后回到这一页并选中它（spec/web.md § 4.5）
+            onNewProject={entry.info?.capabilities.workspace === false ? undefined : () => useNewProject.getState().open({ nodeId, mode: 'empty', then: 'newSession', pickNode: false })}
+            newProjectDisabled={offline}
+          />
+        ) : null}
         {gitPending ? <WorkspacePending stacked={stacked} /> : showWorkspace ? stacked ? <WorkspacePicker {...workspaceProps} /> : <WorkspaceButton {...workspaceProps} /> : null}
       </div>
     ) : undefined
@@ -195,8 +206,22 @@ function PickerLabel({ children }: { children: string }) {
   return <p className="text-xs font-medium text-fg-subtle">{children}</p>
 }
 
-/** 新会话的项目：临时会话 + 节点上的项目（目录不在了的禁用）。 */
-function ProjectPicker({ projects, value, onChange, stacked }: { projects: readonly Project[]; value: string | undefined; onChange: (project: string | undefined) => void; stacked: boolean }) {
+/** 新会话的项目：临时会话 + 节点上的项目（目录不在了的禁用），末尾「新建项目…」。 */
+function ProjectPicker({
+  projects,
+  value,
+  onChange,
+  stacked,
+  onNewProject,
+  newProjectDisabled,
+}: {
+  projects: readonly Project[]
+  value: string | undefined
+  onChange: (project: string | undefined) => void
+  stacked: boolean
+  onNewProject?: () => void
+  newProjectDisabled?: boolean
+}) {
   const { t } = useTranslation()
   return (
     <div className={cn(stacked && 'space-y-1')}>
@@ -220,6 +245,14 @@ function ProjectPicker({ projects, value, onChange, stacked }: { projects: reado
               </MenuRadioItem>
             ))}
           </MenuRadioGroup>
+          {onNewProject ? (
+            <>
+              <MenuSeparator />
+              <MenuItem icon={<FolderPlus className="size-4" />} onSelect={onNewProject} disabled={newProjectDisabled} testId="new-session-project-new">
+                {t('newSession.newProject')}
+              </MenuItem>
+            </>
+          ) : null}
         </MenuContent>
       </Menu>
     </div>

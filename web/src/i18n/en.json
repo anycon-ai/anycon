@@ -276,6 +276,10 @@
     "noMatch": "No sessions match.",
     "newClone": "Clone a repository",
     "openExisting": "Open an existing folder",
+    "node": "Node",
+    "nodeOffline": "This node is offline. Projects can only be added while it is online.",
+    "nodeNoWorkspace": "This node does not manage a workspace, so projects cannot be added to it.",
+    "nodeOptionUnavailable": "{{name}} (unavailable)",
     "modeExisting": "Existing folder",
     "link": "Link folder",
     "linked": "Linked",
@@ -353,7 +357,8 @@
     "project": "Project",
     "scratch": "Temporary session (no project)",
     "headingProject": "What should we do in {{project}}?",
-    "headingScratch": "What should we work on?"
+    "headingScratch": "What should we work on?",
+    "newProject": "New project…"
   },
   "session": {
     "view": { "label": "Session view", "chat": "Chat", "changes": "Changes", "preview": "Preview" },

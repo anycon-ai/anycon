@@ -275,6 +275,10 @@
     "noMatch": "没有符合条件的会话。",
     "newClone": "克隆仓库",
     "openExisting": "打开已有目录",
+    "node": "节点",
+    "nodeOffline": "这台节点离线，等它在线时才能添加项目。",
+    "nodeNoWorkspace": "这台节点不管理 workspace，不能添加项目。",
+    "nodeOptionUnavailable": "{{name}}（不可用）",
     "modeExisting": "已有目录",
     "link": "关联目录",
     "linked": "已关联",
@@ -352,7 +356,8 @@
     "project": "项目",
     "scratch": "临时会话（不属于项目）",
     "headingProject": "想在 {{project}} 里做什么？",
-    "headingScratch": "想做点什么？"
+    "headingScratch": "想做点什么？",
+    "newProject": "新建项目…"
   },
   "session": {
     "view": { "label": "会话视图", "chat": "聊天", "changes": "改动", "preview": "预览" },

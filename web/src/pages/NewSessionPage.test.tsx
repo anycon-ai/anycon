@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockAgent, nodeEntry, project } from '@/test/factories'
 import { mockRouter } from '@/test/routerMock'
+import { useNewProject } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
 
 const navigate = vi.hoisted(() => vi.fn())
@@ -14,6 +15,7 @@ const NODE = 'n'.repeat(32)
 
 beforeEach(() => {
   navigate.mockReset()
+  useNewProject.setState({ request: null })
   useNodes.setState({
     byId: {
       [NODE]: nodeEntry({
@@ -53,6 +55,23 @@ describe('NewSessionPage', () => {
     await user.click(screen.getByTestId('new-session-project'))
     await user.click(await screen.findByTestId('new-session-project-ok'))
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ to: '/n/$node/new', search: expect.objectContaining({ project: 'ok' }) }))
+  })
+
+  it('ends the project list with “New project…”, which opens the dialog for this node and comes back here', async () => {
+    const user = userEvent.setup()
+    render(<NewSessionPage />)
+    await user.click(screen.getByTestId('new-session-project'))
+    await user.click(await screen.findByTestId('new-session-project-new'))
+    expect(useNewProject.getState().request).toEqual({ nodeId: NODE, mode: 'empty', then: 'newSession', pickNode: false })
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('“New project…” is disabled while the node is offline', async () => {
+    const user = userEvent.setup()
+    useNodes.getState().patch(NODE, { conn: 'peer_offline' })
+    render(<NewSessionPage />)
+    await user.click(screen.getByTestId('new-session-project'))
+    expect(await screen.findByTestId('new-session-project-new')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('shows the selected project in the picker and in the heading', () => {

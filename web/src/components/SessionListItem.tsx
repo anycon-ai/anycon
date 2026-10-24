@@ -7,10 +7,10 @@ import type { SessionItem } from '@/stores/sessions'
 import { Chip } from '@/ui/Misc'
 import { SessionDot, sessionTone } from './StatusDot'
 
-export function SessionStatusChip({ status, testId }: { status: SessionItem['status']; testId?: string }) {
+export function SessionStatusChip({ status, testId, dotOnMobile }: { status: SessionItem['status']; testId?: string; dotOnMobile?: boolean }) {
   const { t } = useTranslation()
   return (
-    <Chip tone={sessionTone(status)} testId={testId}>
+    <Chip tone={sessionTone(status)} testId={testId} dotOnMobile={dotOnMobile} pulse={status === 'running' || status === 'starting'} title={t(`status.session.${status}`)}>
       {t(`status.session.${status}`)}
     </Chip>
   )

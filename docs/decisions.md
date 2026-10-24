@@ -749,7 +749,7 @@ ADR-1 拆成两层来看：
 **决定**：
 
 1. **未验证的 provider 邮箱从不使用**。provider 声明邮箱已验证才用它（GitHub：`/user/emails` 里 `primary && verified` 的那一条；Google：userinfo 的 `email_verified == true`），用途只有两个：匹配已有账号、作为新账号的邮箱。没有、未验证、读不到的邮箱（GitHub 的 `/user/emails` 返回 401 / 403 / 404 时照常登录，只是没有邮箱）一律不用来匹配，也不写进账号。想把这样的身份加到已有账号：先登录那个账号，在设置里关联（`link=1`，不碰账号的邮箱）。库里的 `identities` 只存 `(provider, subject, account_id, created_at_ms)`
-2. **有效管理员读取时计算**。有效管理员 = `accounts.is_admin` 标记，或者（`multi` 且账号邮箱在 `ANYCON_ADMIN_EMAILS` 里）。授权和管理页只通过这一个函数判断；配置派生的管理员**不写回**库里的标记。管理页给每个账号标 `admin_by_config`，这种管理员不能经 API 取消（`409 admin_by_config`）；`single` 的 bootstrap 管理员（bootstrap token 登录的那个账号）不能被取消或删除（`409 bootstrap_admin`）；管理员不能对自己操作（`400 cannot_modify_self`，授予 / 取消 / 管理员删号都是；自己删号走 `DELETE /api/me`）
+2. **有效管理员读取时计算**。有效管理员 = `accounts.is_admin` 标记，或者（`multi` 且账号邮箱在 `ANYCON_ADMIN_EMAILS` 里）。授权和管理页只通过这一个函数判断；配置派生的管理员**不写回**库里的标记。管理页给每个账号标 `admin_by_config`，这种管理员不能经 API 取消（`409 admin_by_config`）；`single` 的 bootstrap 管理员（bootstrap token 登录的那个账号，账号 id 记在 `kv.bootstrap_admin_id`，不是「最早的管理员」：管理员标记可以授予别人，库在 `multi` 和 `single` 之间切换过之后，最早的管理员不一定是它；升级前的库沿用当时最早的管理员，记着的账号被删了就新建，被取消了管理员标记就补回来）不能被取消或删除（`409 bootstrap_admin`）；管理员不能对自己操作（`400 cannot_modify_self`，授予 / 取消 / 管理员删号都是；自己删号走 `DELETE /api/me`）
 3. **配额按账号、在能原子执行的地方数**：
    - 设备数 / daemon 数：配对 / 接入收尾建设备记录时，「数 + 插」是 SQLite 一个写事务里的 `INSERT … WHERE 数量 < 上限`。一次配对建两台设备时整批在一个事务里，全成功或全失败
    - 在线连接数：永久连接认证、登记进注册表时，在注册表的同一把锁里检查。同一设备顶掉自己的旧连接不算新增；临时连接不受限，`pair_done` 原地升级也不检查（一台设备至多一条连接，设备数配额封住它）
@@ -763,10 +763,11 @@ ADR-1 拆成两层来看：
    - 自己删和管理员删是同一条路径；`single` 的 bootstrap 管理员删不掉
 5. **OAuth 的 state 绑定浏览器，回调只回公网地址**：
    - `state` 是 32 字节随机数，库里只存哈希，10 分钟、单次使用、绑定 provider；PKCE（S256）的 verifier 存在 `oauth_states` 里，换 token 时取用。同时种 cookie `anycon_oauth=<state>`（`Path=/auth/callback`，`HttpOnly; SameSite=Lax`），回调时必须和 URL 里的 `state` 一致
-   - 回调只回得到 `ANYCON_PUBLIC_URL`。`start` 收到的请求 `Host` 不是它时，302 到公网地址上的同一路径，**至多一次**（跳转地址带一个标记参数），目标只由配置的公网地址拼出
+   - 回调只回得到 `ANYCON_PUBLIC_URL`。`start` 收到的请求 `Host` 不是它时，302 到公网地址上的同一路径，**至多一次**（跳转地址的 query 末尾带 `hop=1`，带着它的请求不再跳；标记在处理请求前去掉，不进 state），目标只由配置的公网地址拼出
    - 回调的所有结果都是 302 加 `Cache-Control: no-store`，错误是 `oauth_error=<code>`，hub 内部出错也归为 `server_error` 的 302
    - 用户信息用 access token 调提供方的接口取，不解析 `id_token`（ADR-22）；access token 只在内存里用一两次；每次出站调用 10 秒超时、不跟随重定向、响应体有上限
-6. **`single` 里 OAuth 也要邀请**：配了 GitHub / Google 不等于开放注册。新用户带着邀请码走 OAuth（邀请链接先落到登录页，页面上的按钮把码放进 `start?invite=`），hub 在建账号、绑身份的同一个事务里兑换邀请；没有邀请码 → `registration_closed`。身份或已验证邮箱能匹配上已有账号时照常登录，不消耗邀请
+6. **移除登录方式按账号串行，判断用锁里重读的账号**：解绑邮箱、解除 OAuth 身份、删登录 token（`single`）共用一把按账号的进程内锁；在锁里重新读账号、重新算账号的登录方式，再决定是不是「最后一种」，不够就 `409 last_login_method`。
+7. **`single` 里 OAuth 也要邀请**：配了 GitHub / Google 不等于开放注册。新用户带着邀请码走 OAuth（邀请链接先落到登录页，页面上的按钮把码放进 `start?invite=`），hub 在建账号、绑身份的同一个事务里兑换邀请；没有邀请码 → `registration_closed`。身份或已验证邮箱能匹配上已有账号时照常登录，不消耗邀请
 
 **原因**：
 
@@ -781,7 +782,8 @@ ADR-1 拆成两层来看：
 - 先库后内存：先关连接再删库，中间的设备可以带着还有效的 token 重连，账号就删不干净；先删库，重连只会得到 `auth_fail { invalid }`
 - `single` 保持邀请制：ADR-22 把登录方式和模式解耦，自建的人加一个 GitHub 登录，不应该因此让陌生人也能注册；注册是否开放只由模式决定。邀请的兑换和建账号放在一个事务里，邀请失败不会留下没有邀请的账号
 - cookie 把回调绑在发起的浏览器上：只靠 `state`，攻击者可以自己发起一次授权，把带着攻击者 `state` 的回调地址交给受害者的浏览器（登录 CSRF / 授权码注入）；种在受害者浏览器里的 cookie 攻击者给不了。`SameSite=Lax` 够用，因为 provider 回来是顶层 GET 导航；`Path=/auth/callback` 让它不随其他请求发出
-- 跳转至多一次：回调只回公网地址，从局域网 IP 或旧域名点登录的人得被送到公网地址上重走一遍；但反代改写了 `Host`（后端看到的永远不是公网域名）时，每次都会判定「不是公网地址」，不加限制会死循环
+- 移除登录方式要串行：「检查还剩别的登录方式 → 删」是两步。只串行化其中一种（比如只串行身份解绑），另一种照旧能插进来：邮箱解绑和身份解除同时进行，各自看到对方还在，两条都成功，账号一种登录方式都不剩。判断还必须用锁里重读的账号：请求开始时取的账号快照里邮箱可能已经被另一个请求解绑；`single` 的 token 删除原来根本不检查，只有一个 token 的受邀账号能把自己锁在外面。bootstrap 管理员始终有 bootstrap token（它不是库里的行），不受影响。锁在进程内，hub 只跑单实例（[deploy.md § 1](deploy.md#1-边界)）
+- 跳转至多一次：回调只回公网地址，从局域网 IP 或旧域名点登录的人得被送到公网地址上重走一遍；但反代改写了 `Host`（后端看到的永远不是公网域名）时，每次都会判定「不是公网地址」，不加限制会死循环。标记放在跳转的 URL 里（`hop=1`），不靠 cookie：跳之前还没有 state，也还没有种 cookie
 - 回调出错也是 302：回调是浏览器的顶层导航，返回 JSON 错误页会把用户留在一个没有界面的白页上；Web UI 根据 `oauth_error` 在登录页或设置页里显示
 
 **否掉**：
@@ -803,5 +805,6 @@ ADR-1 拆成两层来看：
 - 删账号不通知节点：节点上的会话历史和配对记录不动，节点要接入别的账号或 hub 得重新配对
 - 只配了 OAuth 的 hub，CLI 的账号内接入用不了（CLI 只会邮箱验证码和 token），仍用短码配对（ADR-36）
 - 用户在 provider 那边把邮箱改了，hub 不知道：身份按 `subject` 匹配，账号邮箱不会跟着变
+- 管理页账号搜索只有 ASCII 字母不区分大小写（SQLite 的 `lower()` 只折叠 ASCII）：显示名里的非 ASCII 字符要大小写一致才命中。换来的是过滤和分页都在 SQL 里做，不把账号表读进内存
 
 **部分修订**：ADR-22（OAuth 关联规则：未验证的邮箱先走邮箱验证码再关联）、ADR-37（`multi` 的「邮箱即注册」随这一条实现：发码给任何有效邮箱，验证通过时没有账号就建一个）。

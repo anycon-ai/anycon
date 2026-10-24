@@ -66,7 +66,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 
 - query：`next=<路径>`（登录后回到哪里）、`link=1`（已登录的账号关联这个身份）、`invite=<码>`（仅 `single`：新用户凭邀请码注册；`multi` 里忽略）。`next` 只收站内路径：以 `/` 开头、不以 `//` 或 `/\` 开头、没有控制字符、不超过 512 字节，否则丢掉（回 `/`）
 - 每个 IP 每分钟 20 次，超了 `429`
-- 回调只回得到公网地址（`redirect_uri` 是 `${ANYCON_PUBLIC_URL}/auth/callback/<provider>`）。请求的 `Host` 不是 `ANYCON_PUBLIC_URL` 的主机（和端口）时，先 `302` 到公网地址上的同一路径和 query，在那里重新开始。目标只由配置里的公网地址拼出，不用 `Host` 拼链接；这一跳至多一次（跳转地址带一个标记参数），反代改写了 `Host` 也不会循环。所以反代要传原始 `Host`（[deploy.md § 4](../deploy.md#4-反向代理)）
+- 回调只回得到公网地址（`redirect_uri` 是 `${ANYCON_PUBLIC_URL}/auth/callback/<provider>`）。请求的 `Host` 不是 `ANYCON_PUBLIC_URL` 的主机（和端口）时，先 `302` 到公网地址上的同一路径和 query，在那里重新开始。目标只由配置里的公网地址拼出，不用 `Host` 拼链接；这一跳至多一次：跳转地址的 query 末尾带标记 `hop=1`，带着它的请求不再跳转，直接按公网地址上的请求处理（所以反代改写了 `Host` 也不会循环）。标记只管跳转：处理请求之前先从参数里去掉，不进 `oauth_states`，也不会带给提供方。所以反代还是要传原始 `Host`（[deploy.md § 4](../deploy.md#4-反向代理)）
 - `link=1` 需要登录态；没有 → `302 /login?oauth_error=not_signed_in&provider=<p>`，不去 provider
 - 登记一次授权：随机 `state`（32 字节，hex）、PKCE verifier、用途（`login` / `link` / `invite`）、`next`、`link` 的账号或 `invite` 的邀请码哈希，写进 `oauth_states`（`state` 只存哈希），10 分钟有效。种 cookie `anycon_oauth=<state>`：`Path=/auth/callback; Max-Age=600; HttpOnly; SameSite=Lax`，`Secure` 的规则同 session cookie。然后 `302` 到 provider 的授权地址，scope：GitHub `read:user user:email`，Google `openid email profile`
 
@@ -89,11 +89,11 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 |---|---|
 | `GET /api/me` | `{ id, display_name, email?, is_admin, login_methods }`。`is_admin` 是**有效**管理员（§ 2.4）。`login_methods` 是「现在能用来登录的方式」，顺序同 `/api/config`：`github` / `google`（账号绑了这个提供方的身份**且** hub 配了它）、`email`（绑定了邮箱**且** hub 配了 SMTP）、`token`（仅 `single`：bootstrap 管理员，或账号自己建过登录 token）。可以是空数组（受邀进来、没建 token、没绑邮箱）。解绑邮箱、解除身份、删登录 token 时的「最后一种登录方式」都按它判断 |
 | `PATCH /api/me` | 改显示名 |
-| `POST /api/me/email` · `POST /api/me/email/verify` · `DELETE /api/me/email` | 绑定 / 换绑邮箱：`{ email }` 发码（邮箱规范化为去空白 + 小写；已被别的账号占用 → `409 email_taken`；限速同 `/auth/email/send`），`{ email, code }` 生效，回更新后的 `/api/me`；错码是 **`400 invalid_code`**（不是 401：账号登录着，前端遇到 401 会当登录失效）；验证时被别人先占了 `409 email_taken`。解绑：账号没有别的登录方式时 `409 last_login_method`，没绑定过也是 `204`；和身份解除、登录 token 删除一起按账号串行，并发的两次不会各自以为还剩一种。审计 `email_changed`（`detail.change` = `bound` / `changed` / `removed`，不记邮箱）。配了 SMTP 才存在 |
+| `POST /api/me/email` · `POST /api/me/email/verify` · `DELETE /api/me/email` | 绑定 / 换绑邮箱：`{ email }` 发码（邮箱规范化为去空白 + 小写；已被别的账号占用 → `409 email_taken`；限速同 `/auth/email/send`），`{ email, code }` 生效，回更新后的 `/api/me`；错码是 **`400 invalid_code`**（不是 401：账号登录着，前端遇到 401 会当登录失效）；验证时被别人先占了 `409 email_taken`。解绑：账号没有别的登录方式时 `409 last_login_method`，没绑定过也是 `204`；和身份解除、登录 token 删除一起按账号串行（见下），并发的两次不会各自以为还剩一种。审计 `email_changed`（`detail.change` = `bound` / `changed` / `removed`，不记邮箱）。配了 SMTP 才存在 |
 | `GET /api/me/sessions` · `DELETE /api/me/sessions/:id` | 浏览器登录会话列表（UA、IP 前缀、最近活动），可单个踢出 |
-| `GET /api/me/tokens` · `POST` · `DELETE /:id` | 登录 token。`POST` 返回明文一次，库里存 blake2 哈希。删掉的是账号最后一种登录方式 → `409 last_login_method`。仅 `single`（`multi` 里 `404 not_found`） |
+| `GET /api/me/tokens` · `POST` · `DELETE /:id` | 登录 token。`POST` 返回明文一次，库里存 blake2 哈希。删的是账号最后一个登录 token、而账号没有别的登录方式（绑定了邮箱且配了 SMTP、hub 配了的提供方的 OAuth 身份）→ `409 last_login_method`；`single` 的 bootstrap 管理员始终有 bootstrap token（它不是库里的行），所以删得掉自己名下的 token；`id` 不属于本账号 → `404 not_found`。和解绑邮箱、解除身份一起按账号串行（见下）。仅 `single`（`multi` 里 `404 not_found`） |
 | `GET /api/me/passkeys` · `PATCH /:id`（改名）· `DELETE /:id` | |
-| `GET /api/me/identities` · `DELETE /:provider` | OAuth 身份，两种模式都有。`GET` → `[{ provider: "github" \| "google", created_at_ms }]`；库里只存 `(provider, subject, account_id, created_at_ms)`，不存也不返回用户名、邮箱、头像和 access token。`DELETE` → `204`（没绑过也是 `204`）；`:provider` 不是 `github` / `google` → `404 not_found`；这是账号唯一的登录方式 → `409 last_login_method`（只有 hub 现在配了的提供方才算登录方式）。审计 `identity_unlinked`。一个账号在一个提供方最多一个身份 |
+| `GET /api/me/identities` · `DELETE /:provider` | OAuth 身份，两种模式都有。`GET` → `[{ provider: "github" \| "google", created_at_ms }]`；库里只存 `(provider, subject, account_id, created_at_ms)`，不存也不返回用户名、邮箱、头像和 access token。`DELETE` → `204`（没绑过也是 `204`）；`:provider` 不是 `github` / `google` → `404 not_found`；这是账号唯一的登录方式 → `409 last_login_method`（只有 hub 现在配了的提供方才算登录方式）；和解绑邮箱、删登录 token 一起按账号串行（见下）。审计 `identity_unlinked`。一个账号在一个提供方最多一个身份 |
 | `GET /api/devices` | 本账号全部设备：id、名称、kind（`daemon` / `web` / `cli` / `sdk`）、平台、origin（web 设备）、创建时间、最近在线、当前是否在线、与哪些设备配对。**也接受设备 token**（`Authorization: Bearer <device token>`，只读，返回内容和 cookie 登录时一样）：CLI 已经是这个 hub 上的设备时用它列节点，不必再登录一次（[spec/cli.md § 3.3](cli.md)）。带了 `Authorization` 头就只看它（不回退到 cookie）；token 不存在、已吊销、不是 `Bearer` 都是 `401 unauthorized`。设备 token 只开放这个接口和 `POST /api/preview/tokens`（§ 13.3，只认设备 token），`PATCH` / `DELETE` 和其余 `/api/*` 仍然只认登录 cookie |
 | `PATCH /api/devices/:id` | 改名 |
 | `DELETE /api/devices/:id` | 吊销：断连接、删配对、删 push 订阅。**只是 hub 侧的一半**，daemon 侧的公钥删除由客户端通过 `node.revoke_device` 完成；UI 两步一起做 |
@@ -106,12 +106,12 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 
 ### 2.4 管理 `/api/admin/*`
 
-**有效管理员** = 库里的 `accounts.is_admin` 标记，**或者**（`multi` 且账号邮箱在 `ANYCON_ADMIN_EMAILS` 里）。这个判断只有一份实现，授权（所有 `/api/admin/*` 和 `single` 的邀请）和 `GET /api/me`、管理页的 `is_admin` 都用它，读取账号时现算，**不写回库里的标记**：改配置重启即生效，把邮箱从配置里去掉立刻失去权限。账号邮箱都是验证过的（邮箱验证码，或 OAuth 提供方声明已验证），所以邮箱本身证明了持有人。`single` 的 bootstrap 管理员是用 bootstrap token 登录的那个账号（账号 id 记在 `kv` 表里），`single` 里的 `ANYCON_ADMIN_EMAILS` 被忽略（启动警告）。`multi` 里第一个管理员只能来自 `ANYCON_ADMIN_EMAILS`（除非直接改库），之后可以由管理员授予别人。取舍见 [ADR-40](../decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。
+**有效管理员** = 库里的 `accounts.is_admin` 标记，**或者**（`multi` 且账号邮箱在 `ANYCON_ADMIN_EMAILS` 里）。这个判断只有一份实现，授权（所有 `/api/admin/*` 和 `single` 的邀请）和 `GET /api/me`、管理页的 `is_admin` 都用它，读取账号时现算，**不写回库里的标记**：改配置重启即生效，把邮箱从配置里去掉立刻失去权限。账号邮箱都是验证过的（邮箱验证码，或 OAuth 提供方声明已验证），所以邮箱本身证明了持有人。`single` 的 bootstrap 管理员是用 bootstrap token 登录的那个账号，它的账号 id 记在 `kv.bootstrap_admin_id` 里，每次启动都认这个 id，**不是**「库里最早的管理员」（管理员标记现在可以授予别的账号，`multi` 跑过一阵再切回 `single` 时，最早的管理员可能是个普通用户，bootstrap token 不能登录到别人的账号里）。这个键还没有时：库里有 `kv.admin_token_hash`（升级前 `single` 已经启动过，那时最早的管理员就是 bootstrap 账号）→ 沿用最早的管理员并记下来；否则新建一个 `admin` 账号并记下来。记着的账号已经被删了 → 新建一个并记下来。记着的账号在库里不是管理员了（`multi` 期间被取消）→ 启动时把标记补回来（`single` 里取消不了它）。`single` 里的 `ANYCON_ADMIN_EMAILS` 被忽略（启动警告）。`multi` 里第一个管理员只能来自 `ANYCON_ADMIN_EMAILS`（除非直接改库），之后可以由管理员授予别人。取舍见 [ADR-40](../decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。
 
 | 路径 | 说明 |
 |---|---|
 | `GET /api/admin/status` | 模式、版本、启动时间、在线连接数、设备数、账号数、队列状态、数据库大小 |
-| `GET /api/admin/accounts` | 账号列表（只读元数据）：`{ id, display_name, email?, is_admin, admin_by_config, created_at_ms }`，按创建时间从早到晚。`is_admin` 是有效值；`admin_by_config` 为真表示这个账号是靠 `ANYCON_ADMIN_EMAILS` 当上的（要取消只能改配置）。分页见 § 2.5。`?q=`：显示名或邮箱包含它（不区分大小写），或者**正好**等于账号 id；首尾空白去掉，空白等于没给，超过 200 个字符 `400 bad_request`；带 `q` 时分页方式不变 |
+| `GET /api/admin/accounts` | 账号列表（只读元数据）：`{ id, display_name, email?, is_admin, admin_by_config, created_at_ms }`，按创建时间从早到晚。`is_admin` 是有效值；`admin_by_config` 为真表示这个账号是靠 `ANYCON_ADMIN_EMAILS` 当上的（要取消只能改配置）。分页见 § 2.5。`?q=`：显示名或邮箱包含它，或者**正好**等于账号 id；首尾空白去掉，空白等于没给，超过 200 个字符 `400 bad_request`；带 `q` 时分页方式不变。过滤和分页都在 SQL 里做（`LIKE … ESCAPE`，`q` 里的 `%`、`_` 当字面字符），不把账号表读进内存。**只有 ASCII 字母不区分大小写**（SQLite 的 `lower()` 只折叠 ASCII；邮箱存的本来就是小写）：显示名里的非 ASCII 字符（`É`、`ü`）要大小写完全一致才命中，管理员搜索可以接受这个限制 |
 | `POST /api/admin/accounts/:id/admin` · `DELETE` | 授予 / 取消库里的管理员标记，回更新后的账号行（`200`）。幂等：已经是（不是）管理员也 `200`。标记真的变了才写审计 `admin_granted` / `admin_revoked`（`account_id` = 目标账号，`detail.by` = 操作者的账号 id）。错误：目标是自己 `400 cannot_modify_self`；取消的是靠 `ANYCON_ADMIN_EMAILS` 当上的管理员 `409 admin_by_config`（`DELETE` 只清库里的标记，改变不了配置）；取消 `single` 的 bootstrap 管理员 `409 bootstrap_admin`；目标不存在 `404 not_found` |
 | `DELETE /api/admin/accounts/:id` | 删账号，`204`。过程同 `DELETE /api/me`（§ 2.6），审计里 `detail.by = admin`。错误：目标是自己 `400 cannot_modify_self`（自己删走 `DELETE /api/me`）；`single` 的 bootstrap 管理员 `409 bootstrap_admin`；不存在 `404 not_found` |
 | `GET /api/admin/audit` | hub 侧审计：登录、账号创建 / 删除、身份关联、管理员授予、设备增删、吊销、配对（只有元数据，见 § 9） |
@@ -124,6 +124,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 
 - `code` 是稳定的 snake_case 枚举，客户端据此做 i18n；`message` 是英文调试信息
 - 限速返回 `429` + `Retry-After`
+- **移除登录方式要串行**：解绑邮箱、解除 OAuth 身份、删登录 token 都是「检查还剩别的登录方式 → 删」，不是一条 SQL。这三个操作共用一把按账号的锁，并且**在锁里重新读账号**、重新算 `login_methods` 再判断——不用请求开始时取的账号快照（别的请求可能刚把邮箱解绑了）。并发的两次移除不会各自以为对方还在，账号至少留一种登录方式。锁是进程内的（hub 只跑单实例）
 - 账号管理相关的错误码：`reauth_required`（403，删账号要求最近登录过）、`bootstrap_admin`（409）、`cannot_modify_self`（400）、`admin_by_config`（409）、`last_login_method`（409，解绑邮箱、解除身份或删登录 token 会让账号没有登录方式）、`email_taken`（409）。OAuth 的失败不是 JSON，是带 `oauth_error` 的重定向（§ 2.2.1）
 - 可能很长的列表支持 `?limit=&cursor=`（keyset 分页，不做 offset 分页）：`/api/invites`（仅 `single`）、`/api/admin/audit`、`/api/admin/accounts`（带 `?q=` 时也一样）。`limit` 缺省 100，夹在 1–500（不是数字 → 400）；响应体仍是裸数组，下一页的游标（不透明字符串）在 `X-Next-Cursor` 响应头里，没有下一页就没有这个头；带着它原样传回 `?cursor=` 取下一页，格式不对的游标 → 400。`/api/devices`、`/api/me/sessions`、`/api/me/tokens` 是每账号的小集合，不分页
 - 不开 CORS。Web UI 同源；SDK 不走 HTTP API，只走 WebSocket。CLI 只有一个例外：账号内接入（§ 4.1）时临时调 `/auth/email/send` · `/auth/email/verify`（`single` 模式也可以 `/auth/token`），拿到的 session cookie 只放在内存里、只用于那一次 WebSocket 升级，结束就 `/auth/logout`（[ADR-36](../decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)）。它和浏览器一样要带 `X-Anycon: 1`。CLI 已经是这个 hub 上的设备时连这次临时登录都省了：列账号里的节点（`GET /api/devices`）带设备 token 就行（§ 2.3）
@@ -352,7 +353,7 @@ device
 | `queue` | **(密文)** 可选离线队列：to_device、seq、from_device、body、enqueued_at |
 | `hub_audit` | 见 § 9 |
 | `preview_labels` · `preview_tokens` | 预览 label 绑定的节点、预览令牌哈希（§ 13.7） |
-| `kv` | schema 版本等杂项；`single` 的 bootstrap token 哈希和 bootstrap 管理员的账号 id（VAPID 密钥在 `${ANYCON_DATA_DIR}/vapid.json`，不在库里，§ 6.1） |
+| `kv` | schema 版本等杂项；`single` 的 bootstrap token 哈希（`admin_token_hash`）和 bootstrap 管理员的账号 id（`bootstrap_admin_id`，§ 2.4）（VAPID 密钥在 `${ANYCON_DATA_DIR}/vapid.json`，不在库里，§ 6.1） |
 
 进行中的配对（`match_id`、撮合状态）、进行中的接入会话、限速计数和每日配对次数**只在内存**，不落库。`identities` 和 `oauth_states` 在迁移 `0003_identities.sql` 里；迁移只前进。
 

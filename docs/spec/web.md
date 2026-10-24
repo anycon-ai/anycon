@@ -335,7 +335,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 有效管理员（`GET /api/me` 的 `is_admin`，[hub.md § 2.4](hub.md#24-管理-apiadmin)）才看得到，别人看到「只有管理员能看」。两种模式下内容大体一样：
 
-- **账号**：列表（按创建时间，显示名、邮箱或「没有邮箱」、加入时间）；搜索框（显示名 / 邮箱的子串，或精确的账号 id；停止输入 300 ms 后才发请求，对应 `?q=`）；列表底部「加载更多」（游标在 `X-Next-Cursor`）。每行的标记：「你」、「管理员」，以及靠 `ANYCON_ADMIN_EMAILS` 当上的管理员的「管理员 · 由 ANYCON_ADMIN_EMAILS 指定」（`admin_by_config`，悬停说明要改 hub 配置才能取消）。每行的操作：授予 / 取消管理员、删除（确认框写明：账号连同它的设备、配对和登录方式从 hub 删除并立刻断开；会话历史在那个人的节点上，不会被删除；不可恢复）。自己那一行的授予 / 取消管理员和删除都禁用（`cannot_modify_self`）；靠配置当上的管理员的「取消」禁用（`admin_by_config`）。错误码 `cannot_modify_self`、`bootstrap_admin`、`admin_by_config`、`not_found` 各有一句文案
+- **账号**：列表（按创建时间，显示名、邮箱或「没有邮箱」、加入时间）；搜索框（显示名 / 邮箱的子串，或精确的账号 id；ASCII 字母不区分大小写，显示名里的非 ASCII 字符要大小写一致；停止输入 300 ms 后才发请求，对应 `?q=`）；列表底部「加载更多」（游标在 `X-Next-Cursor`）。每行的标记：「你」、「管理员」，以及靠 `ANYCON_ADMIN_EMAILS` 当上的管理员的「管理员 · 由 ANYCON_ADMIN_EMAILS 指定」（`admin_by_config`，悬停说明要改 hub 配置才能取消）。每行的操作：授予 / 取消管理员、删除（确认框写明：账号连同它的设备、配对和登录方式从 hub 删除并立刻断开；会话历史在那个人的节点上，不会被删除；不可恢复）。自己那一行的授予 / 取消管理员和删除都禁用（`cannot_modify_self`）；靠配置当上的管理员的「取消」禁用（`admin_by_config`）。错误码 `cannot_modify_self`、`bootstrap_admin`、`admin_by_config`、`not_found` 各有一句文案
 - **邀请**：仅 `single`（生成、复制、撤销）。`multi` 里不显示这一节，也不请求 `/api/invites`（那里是 404）
 - **hub 状态**（`GET /api/admin/status`）
 

@@ -121,7 +121,7 @@ hub 跑在家里、家里走局域网 IP 的部署方式见 § 4「家里跑 hub
 
 **反代必须支持 WebSocket 升级**，这是最常踩的坑。
 
-**反代必须把原始 `Host` 传给 hub。** OAuth 登录的入口靠它判断请求是不是来自 `ANYCON_PUBLIC_URL` 的域名，预览域名的路由（下面「dev server 预览」）也靠它。Caddy、Traefik 默认保留；nginx 要写 `proxy_set_header Host $host`（下面的示例有）；Cloudflare Tunnel 不要用 `httpHostHeader` 改写它。反代把 `Host` 改成了内部地址时，OAuth 入口至多把请求转到公网地址一次，不会死循环，但预览会找不到域名。
+**反代必须把原始 `Host` 传给 hub。** OAuth 登录的入口靠它判断请求是不是来自 `ANYCON_PUBLIC_URL` 的域名，预览域名的路由（下面「dev server 预览」）也靠它。Caddy、Traefik 默认保留；nginx 要写 `proxy_set_header Host $host`（下面的示例有）；Cloudflare Tunnel 不要用 `httpHostHeader` 改写它。反代把 `Host` 改成了内部地址时，OAuth 入口至多把请求转到公网地址一次（跳转地址带 `hop=1`，带着它的请求不再跳），不会死循环，但预览会找不到域名。
 
 ### Caddy
 
@@ -367,7 +367,7 @@ docker run -d --name anycon-hub \
   ghcr.io/anycon-ai/hub:latest
 ```
 
-用 `ANYCON_ADMIN_EMAILS` 里的邮箱登录（第一次登录就会创建账号），就是管理员；之后在 `/admin` 里可以搜索账号、授予 / 取消管理员、删除账号。靠 `ANYCON_ADMIN_EMAILS` 当上的管理员在页面上取消不了，要改配置。已有的 `single` 数据库可以直接切到 `multi`：账号和设备原样保留，token 和邀请登录停止工作，所以原来的管理员账号要有邮箱或 OAuth 身份才进得来。
+用 `ANYCON_ADMIN_EMAILS` 里的邮箱登录（第一次登录就会创建账号），就是管理员；之后在 `/admin` 里可以搜索账号、授予 / 取消管理员、删除账号。靠 `ANYCON_ADMIN_EMAILS` 当上的管理员在页面上取消不了，要改配置。已有的 `single` 数据库可以直接切到 `multi`：账号和设备原样保留，token 和邀请登录停止工作，所以原来的管理员账号要有邮箱或 OAuth 身份才进得来。反过来切回 `single` 也行：bootstrap token 登录的账号由 `kv.bootstrap_admin_id` 记着（升级前跑过 `single` 的库沿用当时最早的管理员；记着的账号被删了就新建一个 `admin` 账号），不会因为 `multi` 里把管理员授予了别的用户就登录到那个用户的账号里。
 
 **限制**：每个账号的上限就是 `ANYCON_QUOTA_*` 的值（默认 10 台设备、其中最多 3 台 daemon、10 条同时在线的连接、滚动 24 小时内 20 次配对 / 接入）。公共 hub 用的数字以它自己的配置为准，用户在「账号设置 → 配额」里看得到。达到设备数或 daemon 数上限时，新的配对或接入被拒绝并提示；达到连接数上限时，新的连接被拒绝；都不影响已有的。客户端通过 `auth_ok.quota` 和 `quota_update` 看到当前用量（[protocol.md § 8](protocol.md#8-控制消息hub--设备)）。不限制中继流量；预览流量另有按账号的限速（`ANYCON_PREVIEW_BYTES_PER_MIN`）。
 

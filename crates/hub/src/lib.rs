@@ -135,6 +135,8 @@ pub async fn run(config: Config) -> Result<Handle, RunError> {
     )?;
     let mailer = build_mailer(&config)?;
     let store: Arc<dyn Store> = Arc::new(SqliteStore::open(config.database_url.as_deref(), &config.data_dir).await?);
+    // 升级前的 `single` 库：把 bootstrap 管理员的账号 id 钉住。两种模式都要，而且在任何东西能改管理员之前。
+    bootstrap::pin_bootstrap_admin(store.as_ref()).await?;
     // `single`：bootstrap 管理员账号和 token。`multi` 开放注册，没有 bootstrap 账号，也不生成、不读写 `admin-token`
     // （管理员来自 `ANYCON_ADMIN_EMAILS` 和库里的标记）。
     let (admin, generated_admin_token, admin_token_file) = match config.mode {

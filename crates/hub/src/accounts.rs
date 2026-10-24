@@ -22,7 +22,7 @@ use crate::app::AppState;
 use crate::config::{Config, Mode, OAuthProvider};
 use crate::error::{ApiError, ApiResult};
 use crate::http::session::Client;
-use crate::store::{Account, CreateAccountOutcome, NewAudit, StoreResult};
+use crate::store::{Account, AccountToken, CreateAccountOutcome, NewAudit, StoreResult};
 use crate::util::{clip, ip_prefix, new_id, now_ms};
 
 /// 显示名的最大长度（字符）。
@@ -75,13 +75,19 @@ pub fn config_login_methods(state: &AppState) -> Vec<&'static str> {
 ///
 /// 可能是空的（邀请进来、还没建 token、没绑邮箱）。
 pub async fn account_login_methods(state: &AppState, account: &Account) -> StoreResult<Vec<&'static str>> {
+    let has_tokens = state.config.mode == Mode::Single
+        && !is_bootstrap_admin(state, &account.id)
+        && !state.store.list_account_tokens(&account.id).await?.is_empty();
+    login_methods(state, account, has_tokens).await
+}
+
+/// [`account_login_methods`]，账号有没有登录 token 由调用方给（它已经读过了，不再读第二遍）。
+async fn login_methods(state: &AppState, account: &Account, has_tokens: bool) -> StoreResult<Vec<&'static str>> {
     let mut methods = linked_oauth_methods(state, &account.id).await?;
     if account.email.is_some() && state.email_enabled() {
         methods.push("email");
     }
-    if state.config.mode == Mode::Single
-        && (is_bootstrap_admin(state, &account.id) || !state.store.list_account_tokens(&account.id).await?.is_empty())
-    {
+    if state.config.mode == Mode::Single && (is_bootstrap_admin(state, &account.id) || has_tokens) {
         methods.push("token");
     }
     Ok(methods)
@@ -134,6 +140,9 @@ pub struct LoginMethodRemoval<'a> {
     pub account: Account,
     /// 此刻能用来登录的方式（[`account_login_methods`]）。
     pub methods: Vec<&'static str>,
+    /// 账号此刻的登录 token（只有 `single` 读，`multi` 里是空的）。和 `methods` 是同一次读：判断「是不是最后一个 token」
+    /// 的调用方（`DELETE /api/me/tokens/:id`）用它，不用再读一遍。
+    pub tokens: Vec<AccountToken>,
 }
 
 impl LoginMethodRemoval<'_> {
@@ -152,8 +161,13 @@ pub async fn begin_login_method_removal<'a>(
 ) -> ApiResult<LoginMethodRemoval<'a>> {
     let guard = state.login_method_locks.lock(account_id).await;
     let account = state.store.get_account(account_id).await?.ok_or_else(ApiError::unauthorized)?;
-    let methods = account_login_methods(state, &account).await?;
-    Ok(LoginMethodRemoval { _guard: guard, account, methods })
+    let tokens = if state.config.mode == Mode::Single {
+        state.store.list_account_tokens(&account.id).await?
+    } else {
+        Vec::new()
+    };
+    let methods = login_methods(state, &account, !tokens.is_empty()).await?;
+    Ok(LoginMethodRemoval { _guard: guard, account, methods, tokens })
 }
 
 // ---------------------------------------------------------------------------

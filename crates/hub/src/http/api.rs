@@ -282,13 +282,13 @@ pub async fn delete_token(
     client: Client,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
+    // 登录方式和 token 列表是锁里的同一次读
     let removal = accounts::begin_login_method_removal(&state, &auth.account.id).await?;
-    let tokens = state.store.list_account_tokens(&auth.account.id).await?;
-    if !tokens.iter().any(|t| t.id == id) {
+    if !removal.tokens.iter().any(|t| t.id == id) {
         return Err(ApiError::not_found());
     }
     // bootstrap 管理员的 token 不是库里的行，删它名下的 token 行不会少一种方式（`token` 一直在清单里）。
-    let is_last_token = tokens.len() == 1 && !accounts::is_bootstrap_admin(&state, &auth.account.id);
+    let is_last_token = removal.tokens.len() == 1 && !accounts::is_bootstrap_admin(&state, &auth.account.id);
     if is_last_token && removal.would_lock_out("token") {
         return Err(ApiError::new(
             StatusCode::CONFLICT,

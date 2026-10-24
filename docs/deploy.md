@@ -67,7 +67,7 @@ hub 跑在家里、家里走局域网 IP 的部署方式见 § 4「家里跑 hub
 | `ANYCON_QUOTA_DEVICES` | `10` | 仅 `multi`。每个账号最多多少台（未吊销的）设备，含 daemon。正整数，≥ 1 |
 | `ANYCON_QUOTA_DAEMONS` | `3` | 仅 `multi`。每个账号最多多少台 daemon（节点） |
 | `ANYCON_QUOTA_CONNECTIONS` | `10` | 仅 `multi`。每个账号最多同时多少条在线连接（正式设备的；临时连接和预览连接不算） |
-| `ANYCON_QUOTA_DAILY_PAIRINGS` | `20` | 仅 `multi`。每个账号滚动 24 小时内最多多少次配对和接入尝试（`pair_begin`、`enroll_begin`）。计数在内存里，hub 重启清零 |
+| `ANYCON_QUOTA_DAILY_PAIRINGS` | `20` | 仅 `multi`。每个账号滚动 24 小时内最多多少次配对和接入，每个成功的撮合记一次（节点发起时记节点的账号，第一次启动、还没有账号的节点由配对它的账号记；输错短码不记）。计数在内存里，hub 重启清零 |
 | `ANYCON_OAUTH_GITHUB_CLIENT_ID` / `ANYCON_OAUTH_GITHUB_CLIENT_SECRET` | （空） | GitHub 登录的 OAuth 应用凭据，两种模式都能用。要么两个都设，要么都不设（只设一个启动报错），值不能含空白。配了登录页才出现 GitHub 按钮；回调地址和应用的设置见 § 3.1。client secret 不进日志。`ANYCON_PUBLIC_URL` 不是 https 时启动警告（本机开发可以） |
 | `ANYCON_OAUTH_GOOGLE_CLIENT_ID` / `ANYCON_OAUTH_GOOGLE_CLIENT_SECRET` | （空） | 同上，Google 登录 |
 | `ANYCON_DATA_DIR` | `/data` | SQLite 文件、管理员 token 等 |

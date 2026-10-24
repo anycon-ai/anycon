@@ -506,8 +506,10 @@ test.describe('multi 模式', () => {
     }
     const after = await json<QuotaView>(userContext, '/api/quota')
     expect(after).toMatchObject({ devices: 3, devices_max: 3, daemons: 1, daemons_max: 1 })
-    expect(after.daily_pairings).toBeGreaterThanOrEqual(3)
-    expect(after.daily_pairings).toBeLessThanOrEqual(QUOTAS.dailyPairings)
+    // 每个成功的撮合恰好记一次：1. 第一台浏览器配对的是还没有账号的节点，名额记在加入的浏览器的账号上；
+    // 2. 第二台：节点已有账号，它的 `pair_begin` 记一次，浏览器加入不再记；3. 第三台：同样，被拒绝的这次也已经在 `pair_begin` 记过
+    expect(after.daily_pairings).toBe(3)
+    expect(after.daily_pairings_max).toBe(QUOTAS.dailyPairings)
   })
 
   test('e. 用户在资料页删除自己的账号：回到登录页带「已删除」，会话失效，管理员列表里没了，节点被断开', async () => {

@@ -49,8 +49,9 @@ pub struct IpLimiters {
 pub struct AccountLimiters {
     /// `enroll_begin`：每账号每小时。
     pub enroll_begin: KeyedLimiter<String>,
-    /// 每日配对与接入次数（docs/spec/hub.md § 7.1）：`pair_begin` / `enroll_begin` 在已知账号时检查并各记一次
-    /// （[`crate::quota::record_pairing_attempt`]），`pair_join` 只检查（[`crate::quota::pairing_quota_left`]）；
+    /// 每日配对与接入次数（docs/spec/hub.md § 7.1）：每个成功的撮合恰好记一次。`pair_begin` / `enroll_begin` 在已知账号时检查并各记一次
+    /// （[`crate::quota::record_pairing_attempt`]）；`pair_join` 先检查（[`crate::quota::pairing_quota_left`]），host 的登记没记过账
+    /// （host 没有账号）时在撮合成立之前记在加入方的账号上（[`crate::pairing::Broker::join`]）。
     /// 严格的滚动 24 小时窗口，上限是 `limits.daily_pairings_per_account`。`None` = 不限（`single` 默认）。
     pub daily_pairings: Option<WindowCounter<String>>,
     /// `POST /api/push/subscriptions`、`POST /api/push/test`：每账号每分钟。

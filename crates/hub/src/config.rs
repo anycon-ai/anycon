@@ -178,7 +178,8 @@ pub struct Limits {
     pub enroll_begin_per_min_per_ip: u32,
     /// `enroll_begin`：每个账号每小时。
     pub enroll_begin_per_hour_per_account: u32,
-    /// 每账号每日（滚动 24 小时）配对与接入次数：`pair_begin`、`enroll_begin` 各记一次，`pair_join` 只检查不记
+    /// 每账号每日（滚动 24 小时）配对与接入次数，每个成功的撮合恰好记一次：`pair_begin`、`enroll_begin` 在账号已知时记，
+    /// `pair_join` 只在 host 的登记没记过账（host 没有账号）时记在加入方的账号上
     /// （超过 `pair_failed { quota }` / `enroll_failed { quota }`）。**这是唯一的一份**：限速器从它建，
     /// `GET /api/quota` 的 `daily_pairings_max` 读它。`None` = 不限（`single` 默认）；`multi` 由
     /// `ANYCON_QUOTA_DAILY_PAIRINGS` 经 [`Config::enable_multi`] 设置，`single` 程序化设置它也照样生效。

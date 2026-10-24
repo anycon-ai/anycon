@@ -106,7 +106,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 
 ### 2.4 管理 `/api/admin/*`
 
-**有效管理员** = 库里的 `accounts.is_admin` 标记，**或者**（`multi` 且账号邮箱在 `ANYCON_ADMIN_EMAILS` 里）。这个判断只有一份实现，授权（所有 `/api/admin/*` 和 `single` 的邀请）和 `GET /api/me`、管理页的 `is_admin` 都用它，读取账号时现算，**不写回库里的标记**：改配置重启即生效，把邮箱从配置里去掉立刻失去权限。账号邮箱都是验证过的（邮箱验证码，或 OAuth 提供方声明已验证），所以邮箱本身证明了持有人。`single` 的 bootstrap 管理员是用 bootstrap token 登录的那个账号，它的账号 id 记在 `kv.bootstrap_admin_id` 里，每次启动都认这个 id，**不是**「库里最早的管理员」（管理员标记现在可以授予别的账号，`multi` 跑过一阵再切回 `single` 时，最早的管理员可能是个普通用户，bootstrap token 不能登录到别人的账号里）。这个键还没有时：库里有 `kv.admin_token_hash`（升级前 `single` 已经启动过，那时最早的管理员就是 bootstrap 账号）→ 沿用最早的管理员并记下来；否则新建一个 `admin` 账号并记下来。记着的账号已经被删了 → 新建一个并记下来。记着的账号在库里不是管理员了（`multi` 期间被取消）→ 启动时把标记补回来（`single` 里取消不了它）。`single` 里的 `ANYCON_ADMIN_EMAILS` 被忽略（启动警告）。`multi` 里第一个管理员只能来自 `ANYCON_ADMIN_EMAILS`（除非直接改库），之后可以由管理员授予别人。取舍见 [ADR-40](../decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。
+**有效管理员** = 库里的 `accounts.is_admin` 标记，**或者**（`multi` 且账号邮箱在 `ANYCON_ADMIN_EMAILS` 里）。这个判断只有一份实现，授权（所有 `/api/admin/*` 和 `single` 的邀请）和 `GET /api/me`、管理页的 `is_admin` 都用它，读取账号时现算，**不写回库里的标记**：改配置重启即生效，把邮箱从配置里去掉立刻失去权限。账号邮箱都是验证过的（邮箱验证码，或 OAuth 提供方声明已验证），所以邮箱本身证明了持有人。`single` 的 bootstrap 管理员是用 bootstrap token 登录的那个账号，它的账号 id 记在 `kv.bootstrap_admin_id` 里，每次启动都认这个 id，**不是**「库里最早的管理员」（管理员标记现在可以授予别的账号，`multi` 跑过一阵再切回 `single` 时，最早的管理员可能是个普通用户，bootstrap token 不能登录到别人的账号里）。这个键还没有时：库里有 `kv.admin_token_hash`（升级前 `single` 已经启动过，那时最早的管理员就是 bootstrap 账号）→ 沿用最早的管理员并记下来；这一步在**升级后第一次启动时就做，两种模式都做**（`multi` 不用这个账号，但管理员标记可能在 `multi` 里先被取消、被授予别人，等切回 `single` 再钉就认错了）。否则（全新的库）在 `single` 启动时新建一个 `admin` 账号，账号和记录在一个事务里写（中途崩溃不会留下没人记得的管理员账号）。记着的账号已经被删了 → 新建一个并记下来。记着的账号在库里不是管理员了（`multi` 期间被取消）→ 启动时把标记补回来（`single` 里取消不了它）。`single` 里的 `ANYCON_ADMIN_EMAILS` 被忽略（启动警告）。`multi` 里第一个管理员只能来自 `ANYCON_ADMIN_EMAILS`（除非直接改库），之后可以由管理员授予别人。取舍见 [ADR-40](../decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。
 
 | 路径 | 说明 |
 |---|---|
@@ -214,7 +214,7 @@ close code 全表（`auth_fail` 总是先于 close 发出）：
 | `pair_done` 不是终点 | hub 发出 `pair_done` 只代表 hub 这边的配对关系已建立。新设备要等 daemon 经加密传输发来的 `pair.ack` 才落盘，所以一个伪造 `pair_done` 的 hub 骗不了客户端（[protocol.md § 4.1](../protocol.md#41-配对流程)）。hub 不参与也看不到 `pair.ack` |
 | 残余风险 | hub 不知道短码，但拿到了 `match_id`：恶意 hub 可以离线穷举短码直到 `match_id` 对上，猜中就能对这次配对做中间人。Argon2id 让每次猜测约 0.1 s + 64 MiB，8 位短码（2^40）要数年 GPU 量级，16 位（2^79）不可行；经不信任的 hub 配对不要用 `--short`。在线猜测受 `pair_join` 限速、短码一次性和 5 分钟 TTL 约束（[ADR-29](../decisions.md#adr-29-短码不经过-hub)） |
 | 确认 | 两边都发 `pair_confirm` 后 hub 才写 `pairings`、签发新设备的 device token、创建设备记录。只有一边确认视为失败 |
-| 配额（`multi`） | 配对要新建的设备（一边或两边是临时连接）在建设备记录的同一个写事务里检查设备数和 daemon 数，超限 → 双方 `pair_failed { quota }`，一台都不建、不写 `pairings`（一次配对建两台设备时整体成功或整体失败）。两台已有设备重新配对不建设备，不检查。每日配对次数：`pair_begin` 检查并记一次，超限 `pair_failed { quota }` 且不登记；`pair_join` **只检查、不记**（名额用完的账号不能再加入，但输错短码不会烧名额，一次配对只花一个名额）。没有账号的临时连接（比如第一次启动的 daemon）不计，它们只受上面的 IP 限速约束。见 § 7.1 |
+| 配额（`multi`） | 配对要新建的设备（一边或两边是临时连接）在建设备记录的同一个写事务里检查设备数和 daemon 数，超限 → 双方 `pair_failed { quota }`，一台都不建、不写 `pairings`（一次配对建两台设备时整体成功或整体失败）。两台已有设备重新配对不建设备，不检查。每日配对次数：**每个成功的撮合恰好记一次**。`pair_begin` 在账号已知时检查并记一次，超限 `pair_failed { quota }` 且不登记，撮合表记住这条登记已经记过账；`pair_join` 加入前先检查（名额用完的账号不能再加入），撮合成立之前如果 host 的登记没记过账（host 是第一次启动、还没有账号的 daemon），才对加入方的账号检查并记一次——这一步和别的请求竞争到额度刚好用完时回 `pair_failed { quota }`，此时撮合还没建立、登记原样留着，没有要撤销的东西。输错的短码撮合不成，什么都不记。没有账号的临时连接自己发起时不记，名额由配对它的那个账号出（所以同一个账号不能靠不停配对新 daemon 绕过每日上限）。见 § 7.1 |
 | 配对链接 | `${hub.url}/pair#code=<短码>`，由 **daemon** 按自己配置的 `hub.url` 生成（hub 不生成）。短码在 fragment 里，浏览器不会把它发给 hub，不会出现在 hub 或反代的请求日志里。`anycon pair --qr` 和 Web 的「添加设备」把它渲染成二维码 |
 | 跨账号 | v0.1 配对双方必须属于同一账号，两边已经各属于不同账号 → `pair_failed { forbidden }`。新设备（还没有账号归属）在 `pair_join` 时携带当前 web 登录态的 cookie（Web）或空（CLI / SDK）；空的情况下新设备归入 daemon 所属的账号。这意味着 CLI / SDK 不需要登录，和 [architecture.md § 3.1](../architecture.md#31-登录方式) 一致 |
 | daemon 首次身份 | daemon 第一次连接没有 token，以 `kind = daemon` 的临时连接发 `pair_begin`（其他 kind 的临时连接不行）。配对完成时 hub 给它建设备记录、签发 token、原地升级连接，账号取自 joiner（web cookie 或已认证设备）；双方都没账号则 `pair_failed { forbidden }`，不写库 |
@@ -298,13 +298,13 @@ device
 | 设备总数 | 10 | 账号名下未吊销的设备（所有 `kind`，含 daemon） | 配对 / 接入收尾建设备记录时 | `pair_failed { quota }` / `enroll_failed { quota }` |
 | daemon 数 | 3 | 其中 `kind = daemon` 的 | 同上 | 同上 |
 | 同时在线连接 | 10 | 账号名下此刻在线的**永久**连接（不含临时连接和预览连接） | 设备认证、登记连接时 | `auth_fail { quota }`，随后 `1008` 关闭 |
-| 每日配对与接入次数 | 20 | 滚动 24 小时内的 `pair_begin` 和 `enroll_begin`（`pair_join` 不计） | 这两条消息到达时 | `pair_failed { quota }` / `enroll_failed { quota }`，不登记 |
+| 每日配对与接入次数 | 20 | 滚动 24 小时内成功撮合的配对和发起的接入，每个成功的撮合恰好记一次：`pair_begin`（账号已知）、`enroll_begin`，以及 host 没有账号时撮合成立前记在 `pair_join` 的账号上 | `pair_begin`、`enroll_begin` 到达时；`pair_join` 加入前检查、撮合成立前记账 | `pair_failed { quota }` / `enroll_failed { quota }`，不登记 |
 
 执行细节：
 
 - **设备数 / daemon 数**：「数 + 插」是 SQLite 的一个写事务里的 `INSERT … SELECT … WHERE 数量 < 上限`（每台设备一条），同一账号的并发收尾不会一起冲过上限；一次收尾要建两台设备时整批在一个事务里，任何一台超限就一台都不建。吊销设备释放名额（吊销只置位 `revoked_at`，不计入）。重新配对两台已有的设备不建设备记录，不检查
 - **在线连接**：检查和登记是连接注册表同一把锁里的一步，并发认证的两条连接不会一起冲过上限。同一设备的新连接顶掉自己的旧连接不算新增（数的是「账号别的设备」）。临时连接不受限；`pair_done` 把临时连接原地升级成正式连接时不检查——一台设备至多一条连接，所以设备数配额仍然封住它
-- **每日配对与接入**：严格的滚动 24 小时窗口（不是按日历日清零，不会在零点附近一次放过两倍），计数在内存里，hub 重启清零。`pair_begin`、`enroll_begin` 在连接的账号已知时（正式设备，或带登录 cookie 的临时连接）检查并记一次；`pair_join` 只检查、不记：一次配对涉及两端，两边都记会让一次配对吃两个名额，而 `pair_join` 里是用户手输的短码，输错了（`not_found`）不该消耗名额。账号未知的临时连接不计，它们受 § 4 和 § 7.2 的 IP 限速约束
+- **每日配对与接入**：严格的滚动 24 小时窗口（不是按日历日清零，不会在零点附近一次放过两倍），计数在内存里，hub 重启清零。规则是**每个成功的撮合恰好记一次**。`pair_begin`、`enroll_begin` 在连接的账号已知时（正式设备，或带登录 cookie 的临时连接）检查并记一次，撮合表在这条登记上记一个「已记账」标记。`pair_join` 加入前先检查加入方的账号（用完了 → `pair_failed { quota }`）；撮合成立之前，登记已记账（host 有账号）就不再记，没记账（host 是第一次启动、没有账号的 daemon）就对加入方的账号检查并记一次——所有校验（短码对得上、没过期、不是自己加入自己、加入方没有别的撮合）都过了才记，记失败（和别的请求竞争到额度刚好用完）回 `pair_failed { quota }`，登记原样留着，撮合表里没有悬着的东西。输错的短码撮合不成，什么都不记。这样一次配对不会让双方各记一次，输错短码不烧名额，第一次启动的 daemon 的配对也不是免费的。加入方没有账号（也没有 host 的账号可记）时没有人可记，受 § 4 和 § 7.2 的 IP 限速约束
 - **日志**：超限只记 `limit = "devices" | "daemons" | "connections" | "daily_pairings"`，不记账号 id
 
 **用量**：`auth_ok.quota` 在连接时带上（`devices`、`devices_max`、`daemons`、`daemons_max`、`connections`、`connections_max`）；之后账号的设备被创建、被吊销（API 或 `control.revoke`），或在线连接上线、下线，hub 向该账号此刻在线的**其他**永久连接发 `quota_update`（刚认证的那条已经在 `auth_ok` 里拿到了）。每日配对次数不在推送里，Web 在「设置 → 配额」用 `GET /api/quota`（§ 2.3）展示全部四项。队列配额（50 条 / 256 KiB / 1h，队列开启时）见 protocol.md § 7.2，目前没有实现。

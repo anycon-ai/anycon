@@ -875,16 +875,18 @@ async fn on_control(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState,
                 }
                 cs.temp_pair_begins += 1;
             }
-            // 每日配对与接入次数（`multi`）：账号已知（正式设备，或带登录 cookie 的临时连接）时检查并记一次。
-            // 发起一次配对才记；加入（`pair_join`）只检查，所以一次成功的配对不会让双方各记一次。
-            if let Some(account) = conn.account_id() {
-                if !quota::record_pairing_attempt(state, &account) {
+            // 每日配对与接入次数（`multi`）：账号已知（正式设备，或带登录 cookie 的临时连接）时检查并记一次，
+            // 并让撮合表记住这次登记已经记过账（`pair_join` 里不再重复记）。账号未知的（第一次启动的 daemon）这里不记，
+            // 由撮合成立时记在加入方的账号上，所以每个成功的撮合恰好记一次。
+            let account = conn.account_id();
+            if let Some(account) = &account {
+                if !quota::record_pairing_attempt(state, account) {
                     conn.send_control(&Control::PairFailed { reason: PairFailReason::Quota });
                     return;
                 }
             }
             // 这里和 broker 里都不要记 match_id。
-            match state.broker.begin(conn, &match_id) {
+            match state.broker.begin(conn, &match_id, account.is_some()) {
                 Ok(expires_at_ms) => conn.send_control(&Control::PairRegistered { expires_at_ms }),
                 Err(BeginError::Malformed) => {
                     tracing::debug!(device = %conn.device_id(), "pair_begin rejected: malformed match id");
@@ -898,14 +900,17 @@ async fn on_control(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState,
                 cs.receipt(conn, Control::PairFailed { reason: PairFailReason::RateLimited });
                 return;
             }
-            // 每日额度：只检查，不记。输错的短码不该耗掉额度，成功的配对也已经由 `pair_begin` 记过一次。
-            if let Some(account) = conn.account_id() {
-                if !quota::pairing_quota_left(state, &account) {
+            // 每日额度，加入前先检查（用完的账号不用去撮合）。真正记账在撮合成立之前、由 broker 调用：
+            // host 的登记已经记过账就不再记；没记过（host 没有账号）才记在加入方的账号上。输错的短码撮合不成，不花额度。
+            let account = conn.account_id();
+            if let Some(account) = &account {
+                if !quota::pairing_quota_left(state, account) {
                     conn.send_control(&Control::PairFailed { reason: PairFailReason::Quota });
                     return;
                 }
             }
-            if let Err(reason) = state.broker.join(conn, &match_id) {
+            let charge = || account.as_deref().is_none_or(|a| quota::record_pairing_attempt(state, a));
+            if let Err(reason) = state.broker.join(conn, &match_id, charge) {
                 conn.send_control(&Control::PairFailed { reason });
             }
         }

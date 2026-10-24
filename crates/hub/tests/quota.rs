@@ -431,7 +431,7 @@ async fn daily_pairings_and_max(hub: &TestHub, cookie: &str) -> (Option<u64>, Op
 }
 
 #[tokio::test]
-async fn pair_begin_and_enroll_begin_share_one_daily_budget_and_pair_join_only_checks_it() {
+async fn pair_begin_and_enroll_begin_share_one_daily_budget_and_a_join_that_matches_nothing_costs_nothing() {
     let q = limits(10, 5, 10, 4);
     let hub = multi_hub(q).await;
     let (acc, cookie) = account(&hub, "alice", None).await;
@@ -442,7 +442,7 @@ async fn pair_begin_and_enroll_begin_share_one_daily_budget_and_pair_join_only_c
     let ghost = anycon_hub::util::new_id();
     let never_joined = new_code().1;
 
-    // pair_join 不记：额度只有 4，输错 6 次短码也都是 not_found，用量一直是 0
+    // 撮合不成的 pair_join 不花名额：额度只有 4，输错 6 次短码也都是 not_found，用量一直是 0
     for _ in 0..6 {
         browser.send_control(&Control::PairJoin { match_id: never_joined.clone() }).await;
         assert_eq!(browser.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
@@ -468,7 +468,7 @@ async fn pair_begin_and_enroll_begin_share_one_daily_budget_and_pair_join_only_c
         browser.recv_control().await,
         Control::EnrollFailed { enroll_id: None, reason: EnrollFailReason::Quota }
     ));
-    // 额度满了，加入也被拦（只检查，不记）
+    // 额度满了，加入也被拦（加入前先检查）
     browser.send_control(&Control::PairJoin { match_id: never_joined }).await;
     assert_eq!(browser.recv_control().await, Control::PairFailed { reason: PairFailReason::Quota });
     // 被拒绝的 pair_begin 没有登记：它的 match_id 谁也 join 不到
@@ -520,6 +520,53 @@ async fn a_pairing_between_two_accounts_costs_the_one_who_started_it_a_single_sl
 }
 
 #[tokio::test]
+async fn a_first_time_daemon_without_an_account_is_charged_to_the_account_that_pairs_it() {
+    // 每个账号 24 小时内 2 个名额
+    let hub = multi_hub(limits(10, 5, 10, 2)).await;
+    let (_alice, cookie) = account(&hub, "alice", None).await;
+    let mut browser = temp_with_cookie(&hub, &cookie, DeviceKind::Web, "browser").await;
+
+    // 输错的短码：撮合不成，不花名额
+    for _ in 0..3 {
+        browser.send_control(&Control::PairJoin { match_id: new_code().1 }).await;
+        assert_eq!(browser.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
+    }
+    assert_eq!(daily_pairings_used(&hub, &cookie).await, 0);
+
+    // 第一次启动的 daemon（临时连接，没有账号）发起配对：pair_begin 时没人可记；撮合成立时记在加入方的账号上，恰好一次
+    let mut fresh1 = FakeDevice::connect(&hub, None, DeviceKind::Daemon, "fresh 1").await;
+    pair_matched(&mut fresh1, &mut browser).await;
+    assert_eq!(daily_pairings_used(&hub, &cookie).await, 1, "the browser's account paid for the match");
+    // 配对没走完就断开：名额不退（撮合已经成立）
+    drop(fresh1);
+    let mut browser = temp_with_cookie(&hub, &cookie, DeviceKind::Web, "browser 2").await;
+    let mut fresh2 = FakeDevice::connect(&hub, None, DeviceKind::Daemon, "fresh 2").await;
+    pair_matched(&mut fresh2, &mut browser).await;
+    assert_eq!(daily_pairings_used(&hub, &cookie).await, 2);
+
+    // 用完了：再配对新的 daemon 被拒（同一个账号不能靠一直配新 daemon 绕过每日额度）
+    let mut browser = temp_with_cookie(&hub, &cookie, DeviceKind::Web, "browser 3").await;
+    let mut fresh3 = FakeDevice::connect(&hub, None, DeviceKind::Daemon, "fresh 3").await;
+    let (_code, match_id) = new_code();
+    fresh3.pair_begin(&match_id).await;
+    browser.send_control(&Control::PairJoin { match_id }).await;
+    assert_eq!(browser.recv_control().await, Control::PairFailed { reason: PairFailReason::Quota });
+    assert_eq!(daily_pairings_used(&hub, &cookie).await, 2, "a refused join records nothing");
+}
+
+#[tokio::test]
+async fn a_daemon_that_started_the_pairing_with_an_account_is_the_only_one_charged() {
+    let hub = multi_hub(limits(10, 5, 10, 5)).await;
+    let (alice, alice_cookie) = account(&hub, "alice", None).await;
+    let node = hub.seed_device_in(&alice, DeviceKind::Daemon, "node").await;
+    let (mut host, _) = connect_with_quota(&hub, Some(&node.token), DeviceKind::Daemon, "node").await;
+    // 同一个账号的浏览器加入：host 的 pair_begin 记了一次，加入不再记
+    let mut joiner = temp_with_cookie(&hub, &alice_cookie, DeviceKind::Web, "browser").await;
+    pair_matched(&mut host, &mut joiner).await;
+    assert_eq!(daily_pairings_used(&hub, &alice_cookie).await, 1, "one completed match costs exactly one slot");
+}
+
+#[tokio::test]
 async fn connections_without_an_account_are_not_counted_toward_the_daily_budget() {
     let q = limits(10, 5, 10, 1);
     let hub = multi_hub(q).await;
@@ -558,7 +605,7 @@ async fn get_api_quota_reports_usage_and_limits() {
     let mut joiner = temp_with_cookie(&hub, &cookie, DeviceKind::Web, "joiner").await;
     joiner.send_control(&Control::PairJoin { match_id: new_code().1 }).await;
     assert_eq!(joiner.recv_control().await, Control::PairFailed { reason: PairFailReason::NotFound });
-    // 加入不记每日次数；发起（这里是 enroll_begin）才记
+    // 撮合不成的加入不记每日次数；发起（这里是 enroll_begin）才记
     joiner.send_control(&Control::EnrollBegin { node: anycon_hub::util::new_id() }).await;
     assert!(matches!(
         joiner.recv_control().await,

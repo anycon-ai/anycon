@@ -382,6 +382,15 @@ pub trait Store: Send + Sync + 'static {
 
     // ---- 账号 ----
     async fn create_account(&self, display_name: &str, is_admin: bool, now_ms: u64) -> StoreResult<Account>;
+    /// 建一个账号，并在**同一个事务**里把它的 id 写进 `kv[kv_key]`：要么账号和记录都在，要么都没有（bootstrap 管理员用它——
+    /// 两步分开写的话，中间崩溃会留下一个没人记得的管理员账号，下次启动又建一个）。
+    async fn create_account_and_record_id(
+        &self,
+        display_name: &str,
+        is_admin: bool,
+        kv_key: &str,
+        now_ms: u64,
+    ) -> StoreResult<Account>;
     /// 建一个普通账号（非管理员），可以直接带一个**已验证**的邮箱（规范化后的）：自助注册（`multi`）用它。
     /// 邮箱已被占用 → [`CreateAccountOutcome::EmailTaken`]，什么都不写——并发的两次注册靠唯一索引分出胜负。
     async fn create_account_with_email(

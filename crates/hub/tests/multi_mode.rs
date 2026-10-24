@@ -555,6 +555,51 @@ async fn switching_a_multi_database_with_a_granted_admin_to_single_gets_a_separa
     again.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_pre_record_single_database_started_in_multi_first_still_keeps_its_original_bootstrap_admin() {
+    let dir = tempfile::tempdir().unwrap();
+    let mailer = Arc::new(RecordingMailer::default());
+
+    // 升级前的 single 库：bootstrap 管理员建好、token 哈希在 kv 里，但没有 bootstrap_admin_id（这是升级前不存在的键）
+    let old = anycon_hub::run(config_in(dir.path(), &mailer, false)).await.unwrap();
+    let original = old.state.admin.as_ref().unwrap().account_id.clone();
+    old.shutdown().await;
+    {
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::ConnectOptions;
+        let mut conn = SqliteConnectOptions::new().filename(dir.path().join("hub.db")).connect().await.unwrap();
+        sqlx::query("DELETE FROM kv WHERE key = 'bootstrap_admin_id'").execute(&mut conn).await.unwrap();
+    }
+
+    // 升级后第一次启动是 multi：不跑 bootstrap，但 id 在这一步就钉住了。随后原来的管理员被取消、管理员标记授予了别人
+    let multi = anycon_hub::run(config_in(dir.path(), &mailer, true)).await.unwrap();
+    let store = multi.store();
+    assert_eq!(store.kv_get("bootstrap_admin_id").await.unwrap().as_deref(), Some(original.as_str()));
+    let anycon_hub::store::CreateAccountOutcome::Created(user) =
+        store.create_account_with_email("Ulysses", Some("u@example.com"), 1).await.unwrap()
+    else {
+        panic!("created")
+    };
+    store.set_account_admin(&original, false).await.unwrap();
+    store.set_account_admin(&user.id, true).await.unwrap();
+    assert_eq!(store.first_admin().await.unwrap().unwrap().id, user.id, "the setup: first_admin() moved");
+    multi.shutdown().await;
+
+    // 切回 single：bootstrap token 登录的还是原来的账号（管理员标记补回来），不是 U
+    let single = anycon_hub::run(config_in(dir.path(), &mailer, false)).await.unwrap();
+    assert_eq!(single.state.admin.as_ref().unwrap().account_id, original);
+    let token = std::fs::read_to_string(dir.path().join("admin-token")).unwrap().trim().to_string();
+    let hub = TestHub {
+        handle: single,
+        dir,
+        http: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap(),
+        admin_token: token.clone(),
+    };
+    let profile = me(&hub, &hub.login(&token).await).await;
+    assert_eq!((profile["id"].as_str(), &profile["is_admin"]), (Some(original.as_str()), &json!(true)));
+    assert!(hub.handle.store().get_account(&user.id).await.unwrap().unwrap().is_admin, "U keeps its own flag");
+}
+
 /// 在 `dir` 这份数据上起 hub 的配置（`multi` 或 `single`）。
 fn config_in(dir: &std::path::Path, mailer: &Arc<RecordingMailer>, multi: bool) -> Config {
     let mut c = Config::new("https://hub.test", dir).unwrap();

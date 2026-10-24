@@ -219,6 +219,33 @@ impl Store for SqliteStore {
         Ok(Account { id, display_name: display_name.into(), email: None, is_admin, created_at_ms: now_ms })
     }
 
+    async fn create_account_and_record_id(
+        &self,
+        display_name: &str,
+        is_admin: bool,
+        kv_key: &str,
+        now_ms: u64,
+    ) -> StoreResult<Account> {
+        let id = new_id();
+        let mut tx = self.pool.begin().await.map_err(be)?;
+        sqlx::query("INSERT INTO accounts (id, display_name, is_admin, created_at_ms) VALUES (?, ?, ?, ?)")
+            .bind(&id)
+            .bind(display_name)
+            .bind(i64::from(is_admin))
+            .bind(now_ms as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
+        sqlx::query("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(kv_key)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
+        tx.commit().await.map_err(be)?;
+        Ok(Account { id, display_name: display_name.into(), email: None, is_admin, created_at_ms: now_ms })
+    }
+
     async fn create_account_with_email(
         &self,
         display_name: &str,
@@ -1458,6 +1485,27 @@ mod tests {
         assert!(s.get_device("aaaa").await.unwrap().unwrap().revoked_at_ms.is_some());
         assert_eq!(s.list_devices(&acc.id).await.unwrap().len(), 2);
         assert!(s.revoke_device("aaaa", now + 2).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_account_and_its_recorded_id_are_written_in_one_transaction() {
+        let (s, _d) = store().await;
+        let a = s.create_account_and_record_id("admin", true, "bootstrap_admin_id", 5).await.unwrap();
+        assert_eq!(s.kv_get("bootstrap_admin_id").await.unwrap().as_deref(), Some(a.id.as_str()));
+        let got = s.get_account(&a.id).await.unwrap().unwrap();
+        assert!((got.display_name.as_str(), got.is_admin, got.created_at_ms) == ("admin", true, 5));
+
+        // 记录写不进去（这里用触发器模拟崩溃 / 写失败）：账号也不留下，没有没人记得的孤儿管理员
+        sqlx::query(
+            "CREATE TRIGGER no_kv BEFORE INSERT ON kv WHEN NEW.key = 'fails' BEGIN SELECT RAISE(ABORT, 'no kv'); END",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        assert!(s.create_account_and_record_id("orphan", true, "fails", 6).await.is_err());
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT display_name FROM accounts").fetch_all(&s.pool).await.unwrap();
+        assert_eq!(names, vec!["admin".to_string()], "the failed attempt left no account behind");
     }
 
     #[tokio::test]

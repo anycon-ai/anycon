@@ -68,6 +68,42 @@ describe('MessageList', () => {
     const kids = within(backend).getAllByTestId('tool-block')
     expect(kids.map((k) => k.textContent)).toEqual([expect.stringContaining('sed -n 1,10p a.ts'), expect.stringContaining('cat c.ts')])
   })
+  it('a background command says so and keeps spinning until its final result arrives', () => {
+    const cmd = { type: 'tool_call', id: 'b', name: 'Bash', category: 'shell', title: 'cargo test', input: { command: 'cargo test', run_in_background: true }, detail: { command: 'cargo test' } } as const
+    const launched = { type: 'tool_result', id: 'b', output: 'Command running in background with ID: b1.', is_error: false, detail: { background: true } } as const
+    const { rerender } = render(<MessageList {...props({ blocks: buildView(evs([cmd, launched])).blocks })} />)
+    const row = () => screen.getByTestId('tool-block')
+    expect(row()).toHaveAttribute('data-state', 'background')
+    expect(row()).toHaveTextContent('running in background')
+    expect(within(row()).getByLabelText('Running')).toBeInTheDocument()
+    const finished = { type: 'tool_result', id: 'b', output: 'Background command "cargo test" completed (exit code 101)', is_error: true, detail: { exit_code: 101 } } as const
+    rerender(<MessageList {...props({ blocks: buildView(evs([cmd, launched, finished])).blocks })} />)
+    expect(row()).toHaveAttribute('data-state', 'error')
+    expect(row()).toHaveTextContent('exit 101')
+    expect(row()).not.toHaveTextContent('running in background')
+  })
+
+  it('an answered question stays in the conversation with each question and its answer', () => {
+    const view = buildView(
+      evs([
+        {
+          type: 'permission',
+          request_id: 'r1',
+          kind: 'question',
+          title: 'Agent has a question',
+          detail: { questions: [{ id: 'q1', text: 'Which database?', choices: [{ id: 'sqlite', label: 'SQLite' }], free_text: true }] },
+          options: [{ id: 'answer', label: 'Submit answers', kind: 'allow_once' }],
+        },
+        { type: 'permission_resolved', request_id: 'r1', option_id: 'answer', by_device: 'me', answers: { q1: 'sqlite' } },
+      ]),
+    )
+    render(<MessageList {...props({ blocks: view.blocks, deviceLabel: () => 'you' })} />)
+    const card = screen.getByTestId('permission-card')
+    expect(card).toHaveAttribute('data-state', 'resolved')
+    expect(card).toHaveTextContent('Answered by you')
+    expect(within(card).getByTestId('permission-answer')).toHaveTextContent('Which database?SQLite')
+  })
+
   it('each finished turn has a “copy” that takes all of that turn’s reply text (not the tools, not the previous turn)', async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()

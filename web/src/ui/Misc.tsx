@@ -18,11 +18,13 @@ export const tones: Record<Tone, string> = {
   info: 'bg-info-subtle text-info',
 }
 
-export function Chip({ tone = 'neutral', children, className, testId, title, icon, dataState }: { tone?: Tone; children: ReactNode; className?: string; testId?: string; title?: string; icon?: ReactNode; dataState?: string }) {
+/** `dotOnMobile`：窄屏上只显示一个按语气着色的圆点（文字留给读屏），省出顶栏的空间；`pulse` 让圆点呼吸。 */
+export function Chip({ tone = 'neutral', children, className, testId, title, icon, dataState, dotOnMobile, pulse }: { tone?: Tone; children: ReactNode; className?: string; testId?: string; title?: string; icon?: ReactNode; dataState?: string; dotOnMobile?: boolean; pulse?: boolean }) {
   return (
-    <span data-testid={testId} data-state={dataState} title={title} className={cn('inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap', tones[tone], className)}>
+    <span data-testid={testId} data-state={dataState} title={title} className={cn('inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap', tones[tone], dotOnMobile && 'max-sm:bg-transparent max-sm:px-1', className)}>
+      {dotOnMobile ? <Dot tone={tone} pulse={pulse} className="sm:hidden" /> : null}
       {icon}
-      <span className="truncate">{children}</span>
+      <span className={cn('truncate', dotOnMobile && 'max-sm:sr-only')}>{children}</span>
     </span>
   )
 }

@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
+## [Unreleased]
+
+### Added
+
+- Answered questions stay in the conversation: each question is listed with its answer, and a note sent with a reply (a skip note or a denial reason) is shown under it. Protocol: `permission_resolved` carries the device's `answers` and `message`. Both fields are optional, and replies recorded before this change show the one-line summary as before.
+- Claude Code background commands (`run_in_background`) show "running in background" until they finish, then get their final result and exit code. The session panel's Agents card lists them while they run and counts them as working, along with any other background tasks the daemon reports.
+
+### Changed
+
+- Web UI: the message list and the input share one column. Its text width follows the center pane, up to 72rem, with side margins that grow from 16px to 120px as the pane widens. User message bubbles are allowed up to 56rem.
+- Web UI: on wide screens, the "will be sent after this turn" notice sits on the same row as the branch chip, on the left.
+
+### Fixed
+
+- Web UI: the session info drawer no longer pops up by itself when the window is widened past 1200px and narrowed again.
+
 ## [0.1.1] - 2026-10-22
 
 ### Added

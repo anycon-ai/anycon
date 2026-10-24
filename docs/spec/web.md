@@ -60,7 +60,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 ```
 
 - 左栏：节点过滤器（顶部，下拉，多选：勾了哪些节点，左栏就显示这些节点上的所有项目；默认全部节点，至少留一个；勾选记在 localStorage；选单个节点时按钮上显示它的名字和在线状态点，多个时显示「全部节点」或「n / m 个节点」；账号下这个浏览器还没解锁的节点列在下拉底部，带锁图标，点了去 `/unlock/:node`；下拉里还有「节点设置」，指页面当前所在的那个节点）、搜索（过滤器右边的图标按钮）、按项目分组的会话树（合并所有勾选的节点，最近活跃的项目在前，勾了多个节点时项目行上标出所属节点；每个项目默认展开最近 5 个会话，会话列表前不画竖线；项目行右边一个「＋」，在这个项目里新建会话——左栏没有单独的「新会话」按钮，新会话都从项目的「＋」、项目页或命令面板进入；没有任何项目和会话时，空状态里有一个「新建项目」链接，去节点首页）、临时会话分组、底部连接状态和账号菜单。待审批的会话置顶，同样只显示勾选的节点。左栏可收起（Logo 旁的按钮或 `⌘B`，收起后页面头部最左边出现展开按钮），收起状态记在 localStorage。宽屏时拖动左栏右缘调整宽度（默认 260px，200–480px，最宽不超过半个窗口），双击右缘恢复默认，键盘聚焦后 ← / → 调整；宽度也记在 localStorage
-- 中栏：会话。只有一行顶栏：面包屑可点，最后一级是会话标题、点击编辑；右侧依次是「聊天 / 改动」开关（带图标，「改动」后面是未提交文件数）、危险模式 chip、状态 chip（运行中 / 等待审批 / 空闲 / 已结束 / 节点离线）、节点状态、「ⓘ」
+- 中栏：会话。消息列表和输入框共用一栏：正文宽度随中栏自适应、最宽 72rem（1152px），两侧留白随中栏宽度加大（≤ 544px 时 16px，800px 时 80px，≥ 1024px 时 120px，之间线性过渡），中栏再宽就居中。只有一行顶栏：面包屑可点，最后一级是会话标题、点击编辑；右侧依次是「聊天 / 改动」开关（带图标，「改动」后面是未提交文件数）、危险模式 chip、状态 chip（运行中 / 等待审批 / 空闲 / 已结束 / 节点离线）、节点状态、「ⓘ」
 - 右栏：会话信息面板，可收起，收起状态记在 localStorage
 
 ### 3.2 平板（768–1199px）
@@ -224,13 +224,13 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `turn_start` | 一条细分隔线，hover 显示 turn 编号和时间 |
 | `thinking_delta` | 「思考中…」一行灰字（不画卡片），流式时显示最近两行，结束后折叠成一行「思考了 12 秒」。可展开。设置里可改为始终展开或隐藏 |
 | `text_delta` | Markdown 流式渲染（react-markdown + shiki），代码块有复制按钮和语言标签。**远程图片（`http(s)://`）不会自动加载**：被提示注入的 agent 可以借图片 URL 把数据带出去，所以只显示成带主机名的占位按钮，点了才请求；hub 的 CSP（`img-src 'self' data: blob:`）本来就不允许页面加载第三方图片，点了之后会退成一条链接「从 <主机> 打开」。`data:image/*`（非 SVG）、`blob:` 直接渲染；同源只放行已知静态资源路径（`/assets/<名字>`、`/icons/<名字>` 和几个固定的根文件：只有一层路径，名字限 `[A-Za-z0-9._-]`、≤ 128 字符，不能带 `?`、百分号编码或 userinfo），其他同源路径（比如 `/x?d=…`，能不点击就把内容送到 hub）同样走占位按钮。`javascript:` 等协议的链接被拦；**不开 `skipHtml`**——没有 rehype-raw，react-markdown 默认就把 HTML 当文本转义（开了会把 `Vec<String>` 里的 `<String>` 当标签吞掉） |
-| `tool_call` 按 `category` | 收起时是一行灰字（图标 + 摘要 + ›，失败的是红字，不画卡片），展开的内容放在下面的框里；连着的思考 / 工具行之间只留很小的间距。`shell`：终端样式块，命令 + 输出，**默认收起**：一行摘要，agent 给了命令说明（Claude Code Bash 的 `input.description`）就显示说明，否则显示 `$ 命令`，放不下截断、悬停看全文；展开后先是折行显示的完整命令（右上角复制按钮，复制不带 `$ `），再是输出，输出超过 20 行再折叠；`file_edit`：文件路径 + diff 视图（react-diff-view），默认折叠显示 +N −M；`file_read` / `search`：一行摘要（「读取 src/a.ts」「搜索 "foo" → 3 个结果」），可展开；`web`：URL 一行；`mcp` / `other`：工具名 + 可展开的 JSON；`subagent`：一行标题（子 agent 的说明、它一共调了几次工具、运行中 / 后台运行中 / 失败），带 `parent_id` 指向它的调用都收在这个块里、不在主流里单独成行（几个子 agent 并行时各自一块，不再交错），展开后缩进一级按顺序列出、最后是子 agent 的结果（Markdown）；收起且还在跑时下面露出它最近的一次调用。父调用不在已加载的历史里时子调用照常平铺 |
+| `tool_call` 按 `category` | 收起时是一行灰字（图标 + 摘要 + ›，失败的是红字，不画卡片），展开的内容放在下面的框里；连着的思考 / 工具行之间只留很小的间距。`shell`：终端样式块，命令 + 输出，**默认收起**：一行摘要，agent 给了命令说明（Claude Code Bash 的 `input.description`）就显示说明，否则显示 `$ 命令`，放不下截断、悬停看全文；展开后先是折行显示的完整命令（右上角复制按钮，复制不带 `$ `），再是输出，输出超过 20 行再折叠；`file_edit`：文件路径 + diff 视图（react-diff-view），默认折叠显示 +N −M；`file_read` / `search`：一行摘要（「读取 src/a.ts」「搜索 "foo" → 3 个结果」），可展开；`web`：URL 一行；`mcp` / `other`：工具名 + 可展开的 JSON；`shell` 的后台命令（`tool_result.detail.background`）在补上最终结果之前写「后台运行中」并转圈；`subagent`：一行标题（子 agent 的说明、它一共调了几次工具、运行中 / 后台运行中 / 失败），带 `parent_id` 指向它的调用都收在这个块里、不在主流里单独成行（几个子 agent 并行时各自一块，不再交错），展开后缩进一级按顺序列出、最后是子 agent 的结果（Markdown）；收起且还在跑时下面露出它最近的一次调用。父调用不在已加载的历史里时子调用照常平铺 |
 | `tool_output_delta` | 追加进对应 `shell` 块，边跑边显示 |
 | `tool_result` | 合并进对应 `tool_call` 块，`is_error` 时块变红 |
 | `plan` | 一张可折叠的待办卡片，随后续 `plan` 事件在**同一 turn 内**原地更新，不新增卡片；下一个 turn 另起一张（跨 turn 的话那张卡离当前太远） |
 | `permission` (`kind = tool`) | 内嵌卡片：工具类别图标、摘要（命令全文 / 文件路径 / diff）、详情可展开、按钮**按 `options[]` 渲染**（常见是「允许」「本会话都允许」「拒绝」，按 `kind` 着色），`reject_*` 可附一句话。答复过的收成一行灰字「标题 — 已由 iPhone 允许（选项）›」，点开看命令 / diff；`by_device = "daemon"` 显示「已被 anycon 自动允许 / 拒绝 / 处理」（超时、取消、项目目录变了都会这样）；自己答复时得到 `not_found` 且 `data.reason = "project_dir_changed"`，卡片定格成一行说明「项目目录变了，这个请求已被拒绝，turn 已中止」，不再给按钮；其它 `not_found` 显示通用的「这个请求已经不存在」 |
 | `permission` (`kind = plan`) | 计划卡片：渲染 `detail.text` 的 Markdown，按钮「开始实施」「继续规划」（可附修改意见）；按钮完全由 `options[]` 渲染，v0.1 没有「开始实施，回到之前的模式」 |
-| `permission` (`kind = question`) | 问答卡片：每个问题一组单选 / 多选 / 文本框，一次提交全部 `answers` |
+| `permission` (`kind = question`) | 问答卡片：每个问题一组单选 / 多选 / 文本框，一次提交全部 `answers`。答复过的留在对话里：一行灰字「标题 — 已由 iPhone 回答 / 跳过」，下面按题列出问题和回答（`permission_resolved.answers`：选项 id 换成显示名，多选用逗号连接，自由输入原样，没答的写「未回答」）；答复附的话（`permission_resolved.message`，跳过的说明、拒绝的理由，所有 kind 都是）跟在下面。没记回答的旧事件只有那一行 |
 | `turn_done` | 一行：「复制」图标（复制这一轮 agent 的全部文字，Markdown，不含工具输出）+ 灰字：模型、用时、token 数、费用（agent 报了才显示） |
 | `error` | 红色块，`recoverable` 时带「重试」 |
 | `status` | 不单独渲染，驱动头部 chip 和 composer 状态 |
@@ -266,7 +266,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 #### 分支 chip（ADR-34）
 
-有 worktree 的会话在输入框上方靠右显示 `⑂ anycon/fix-login ← main  ↑3 ↓1  · 5 个未提交`（`data-testid="session-branch"`；没有的部分不显示）。数据来自 `SessionSummary.worktree` 和 `session.git_status`：进入会话页、`turn_done`、`file_changed`（防抖 2 秒）、`git` 事件、手动刷新时拉一次，不轮询。`state = creating` 显示转圈和「正在创建 worktree…」，`missing` 显示警告色「worktree 不见了」，`kept` / `removed`（已归档）显示中性色。点击切到主区的「改动」视图（见下）。不放在输入框下面的选项行里：分支名常常很长，挤在那一行会把模型 / 思考挤到第二行。「改动」视图没有输入框时它在底部单独一行；已归档的会话在「已归档」条的最前面；手机（< 768px）上它和其他选项一起在「⚙」底部弹层里。在项目目录本身工作的 git 会话只显示分支名（`git_status.branch`）和未提交数，不显示 base。
+有 worktree 的会话在输入框上方靠右显示（宽屏上，「将在本轮结束后发送」的排队提示和它在同一行、靠左） `⑂ anycon/fix-login ← main  ↑3 ↓1  · 5 个未提交`（`data-testid="session-branch"`；没有的部分不显示）。数据来自 `SessionSummary.worktree` 和 `session.git_status`：进入会话页、`turn_done`、`file_changed`（防抖 2 秒）、`git` 事件、手动刷新时拉一次，不轮询。`state = creating` 显示转圈和「正在创建 worktree…」，`missing` 显示警告色「worktree 不见了」，`kept` / `removed`（已归档）显示中性色。点击切到主区的「改动」视图（见下）。不放在输入框下面的选项行里：分支名常常很长，挤在那一行会把模型 / 思考挤到第二行。「改动」视图没有输入框时它在底部单独一行；已归档的会话在「已归档」条的最前面；手机（< 768px）上它和其他选项一起在「⚙」底部弹层里。在项目目录本身工作的 git 会话只显示分支名（`git_status.branch`）和未提交数，不显示 base。
 
 #### 信息面板
 
@@ -286,7 +286,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 **概览**标签：
 
 - 工作目录、分支、创建时间
-- 「Agent」卡片（`info-agents`）：标题右边是正在工作的个数（主 agent 在跑一个 turn 或等审批算一个，加上还没结束的子 agent），没有就不显示。第一行是主 agent：名称、累计 token（输入 / 输出）、会话状态 chip。下面是已加载的事件里的子 agent（`category = subagent` 的调用），父在前、子按嵌套层数缩进：说明、agent 报的 token（`tool_result.detail.total_tokens`，结束后才有）和它调了几次工具、状态 chip（运行中 / 后台运行 / 已完成 / 失败 / 已停止）。没有结果的子 agent 在主 agent 的 turn 结束后（或启动它的子 agent 结束后）算「已停止」，后台子 agent 在 agent 进程退出（`ended` / `error` / `interrupted`）后同样算「已停止」。子 agent 超过 6 个时只列还在跑的和最近的 6 个，上面一行「显示更早的 N 个子 agent」展开全部
+- 「Agent」卡片（`info-agents`）：标题右边是正在工作的个数（主 agent 在跑一个 turn 或等审批算一个，加上还没结束的子 agent 和后台命令），没有就不显示。第一行是主 agent：名称、累计 token（输入 / 输出）、会话状态 chip。下面是已加载的事件里的子 agent（`category = subagent` 的调用），父在前、子按嵌套层数缩进：说明、agent 报的 token（`tool_result.detail.total_tokens`，结束后才有）和它调了几次工具、状态 chip（运行中 / 后台运行 / 已完成 / 失败 / 已停止）。没有结果的子 agent 在主 agent 的 turn 结束后（或启动它的子 agent 结束后）算「已停止」，后台子 agent 在 agent 进程退出（`ended` / `error` / `interrupted`）后同样算「已停止」。子 agent 超过 6 个时只列还在跑的和最近的 6 个，上面一行「显示更早的 N 个子 agent」展开全部。子 agent 下面是还在后台跑的命令（`shell` 调用的结果带 `detail.background`、还没补上最终结果；agent 进程退出后不再列）：命令说明或 `$ 命令`、「后台运行」chip，结束了就不再列。`SessionSummary.background_tasks` 比认出来的后台子 agent 和后台命令多时（事件不在已加载的历史里、daemon 旧了不标后台命令），多出来的另起一行「另外 N 个后台任务」（一个都没认出来时是「N 个后台任务」），也算进正在工作的个数
 - turn 数、累计费用（主 agent 的 token 不含子 agent 的，费用是 agent 报的总数）
 - 待审批请求列表（和消息流里的卡片联动）
 - 操作：重命名、归档、删除（二次确认，说明会删 daemon 上的历史）、导出 Markdown

@@ -111,6 +111,20 @@ describe('session event reducer', () => {
     expect((v1.blocks[0] as PermissionBlock).resolved).toBeUndefined()
   })
 
+  it('keeps the answers and the note the device sent with its reply, dropping values that are not text', () => {
+    const v = buildView(
+      evs([
+        { type: 'permission', request_id: 'r1', kind: 'question', title: 'Agent has a question', detail: { questions: [{ id: 'q1', text: 'Which?' }] }, options: [] },
+        { type: 'permission_resolved', request_id: 'r1', by_device: 'dev1', answers: { q1: 'SQLite', q2: ['Auth', 3, 'Billing'], q3: 7 }, message: '  thanks  ' },
+      ]),
+    )
+    expect((v.blocks[0] as PermissionBlock).resolved).toEqual({ optionId: null, byDevice: 'dev1', ts: expect.any(Number), answers: { q1: 'SQLite', q2: ['Auth', 'Billing'] }, message: 'thanks' })
+    // 旧事件和 daemon 自己答复的不带：没有这两项
+    const old = buildView(evs([{ type: 'permission', request_id: 'r2', kind: 'question', title: 't', detail: {}, options: [] }, { type: 'permission_resolved', request_id: 'r2', by_device: 'daemon', answers: { q1: 1 }, message: ' ' }]))
+    expect((old.blocks[0] as PermissionBlock).resolved).not.toHaveProperty('answers')
+    expect((old.blocks[0] as PermissionBlock).resolved).not.toHaveProperty('message')
+  })
+
   it('ignores resolution for an unknown request', () => {
     const v = buildView(evs([{ type: 'permission_resolved', request_id: 'nope', option_id: 'x', by_device: 'd' }]))
     expect(v.blocks).toHaveLength(0)

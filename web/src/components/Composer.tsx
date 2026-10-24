@@ -196,10 +196,18 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
     }
   }
 
+  const showQueueNotice = queueNotice && running && (text.trim() || readyRefs.length > 0)
+  const queued = (className: string) =>
+    showQueueNotice ? (
+      <p className={cn('min-w-0 text-xs text-info', className)} data-testid="composer-queue-notice">
+        {t('composer.queueNotice')}
+      </p>
+    ) : null
+
   return (
     <div className="shrink-0 bg-bg" data-testid="composer">
       <div
-        className="relative mx-auto w-full max-w-3xl px-3 pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-2 md:px-4"
+        className="chat-column relative pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-2"
         data-testid="composer-dropzone"
         data-dragging={dragging}
         onDragEnter={onDragEnter}
@@ -213,21 +221,22 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
           </div>
         ) : null}
         {notice}
-        {queueNotice && running && (text.trim() || readyRefs.length > 0) ? (
-          <p className="mb-1 px-1 text-xs text-info" data-testid="composer-queue-notice">
-            {t('composer.queueNotice')}
-          </p>
-        ) : null}
         {blockedReason ? (
           <p className="mb-1 px-1 text-xs text-warning" data-testid="composer-blocked">
             {blockedReason}
           </p>
         ) : null}
         {wide && aside ? (
-          <div className="mb-1 flex min-w-0 justify-end px-1" data-testid="composer-aside">
-            {aside}
+          // 排队提示靠左、分支 chip 靠右，放在同一行
+          <div className="mb-1 flex min-w-0 items-center justify-between gap-3 px-1">
+            {queued('')}
+            <div className="ml-auto flex min-w-0 justify-end" data-testid="composer-aside">
+              {aside}
+            </div>
           </div>
-        ) : null}
+        ) : (
+          queued('mb-1 px-1')
+        )}
         {wide && context ? (
           // 托盘比输入框窄一点、垫在它后面：输入框的圆角压住托盘的下沿
           <div className="mx-4 -mb-3 rounded-t-2xl border border-b-0 border-border bg-bg-subtle px-2 pb-3.5 pt-1" data-testid="composer-context">

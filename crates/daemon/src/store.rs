@@ -1593,6 +1593,8 @@ mod tests {
                 request_id: "r1".into(),
                 option_id: Some("allow".into()),
                 by_device: "d".into(),
+                answers: None,
+                message: None,
             },
         ))
         .await

@@ -54,6 +54,75 @@ describe('PermissionCard', () => {
     expect(onRespond).toHaveBeenLastCalledWith({ request_id: 'r1', option_id: 'deny', message: 'too risky' })
   })
 
+  describe('an answered question', () => {
+    const question: PermissionBlock = {
+      ...base,
+      kind: 'question',
+      title: 'Agent has questions',
+      detail: {
+        questions: [
+          { id: 'q1', text: 'Which database?', choices: [{ id: 'sqlite', label: 'SQLite' }, { id: 'pg', label: 'Postgres' }], free_text: true },
+          { id: 'q2', text: 'Which features?', choices: [{ id: 'auth', label: 'Auth' }, { id: 'billing', label: 'Billing' }], multi: true },
+          { id: 'q3', text: 'Anything else?', free_text: true },
+          { id: 'q4', text: 'Deploy now?', choices: [{ id: 'yes', label: 'Yes' }] },
+        ],
+      },
+      options: [
+        { id: 'answer', label: 'Submit answers', kind: 'allow_once' },
+        { id: 'deny', label: 'Skip', kind: 'reject_once', needs_message: true },
+      ],
+    }
+
+    it('keeps each question with the answer: choice labels, several choices joined, free text as typed, unanswered ones marked', () => {
+      render(<PermissionCard block={{ ...question, resolved: { optionId: 'answer', byDevice: 'me', ts: 2, answers: { q1: 'pg', q2: ['auth', 'billing'], q3: 'Keep it small\nplease' } } }} deviceLabel={label} onRespond={() => {}} />)
+      const card = screen.getByTestId('permission-card')
+      expect(card).toHaveAttribute('data-state', 'resolved')
+      expect(card).toHaveTextContent('Agent has questions — Answered by you')
+      const rows = within(card).getAllByTestId('permission-answer')
+      expect(rows.map((r) => [r.dataset.question, r.querySelector('dt')?.textContent, r.querySelector('dd')?.textContent])).toEqual([
+        ['q1', 'Which database?', 'Postgres'],
+        ['q2', 'Which features?', 'Auth, Billing'],
+        ['q3', 'Anything else?', 'Keep it small\nplease'],
+        ['q4', 'Deploy now?', 'No answer'],
+      ])
+      expect(screen.queryByRole('radio')).toBeNull()
+      expect(screen.queryByTestId('permission-option-answer')).toBeNull()
+    })
+
+    it('says a skipped question was skipped, and shows the note sent with it', () => {
+      render(<PermissionCard block={{ ...question, resolved: { optionId: 'deny', byDevice: 'iphone', ts: 2, message: 'Ask me later' } }} deviceLabel={label} onRespond={() => {}} />)
+      const card = screen.getByTestId('permission-card')
+      expect(card).toHaveTextContent('Skipped by iPhone')
+      expect(within(card).getByTestId('permission-message')).toHaveTextContent('Ask me later')
+      expect(within(card).queryByTestId('permission-answers')).toBeNull()
+    })
+
+    it('is a single line for replies recorded without answers (older history)', () => {
+      render(<PermissionCard block={{ ...question, resolved: { optionId: 'answer', byDevice: 'me', ts: 2 } }} deviceLabel={label} onRespond={() => {}} />)
+      const card = screen.getByTestId('permission-card')
+      expect(card.tagName).toBe('P')
+      expect(card).toHaveTextContent('Agent has questions — Answered by you')
+    })
+
+    it('in Chinese', async () => {
+      await i18n.changeLanguage('zh')
+      try {
+        render(<PermissionCard block={{ ...question, resolved: { optionId: 'answer', byDevice: 'me', ts: 2, answers: { q1: 'sqlite' } } }} deviceLabel={() => '你'} onRespond={() => {}} />)
+        expect(screen.getByTestId('permission-card')).toHaveTextContent('已由 你 回答')
+        expect(screen.getAllByTestId('permission-answer')[1]).toHaveTextContent('未回答')
+      } finally {
+        await i18n.changeLanguage('en')
+      }
+    })
+  })
+
+  it('shows the reason given with a denial under the line', () => {
+    render(<PermissionCard block={{ ...base, resolved: { optionId: 'deny', byDevice: 'me', ts: 2, message: 'too risky' } }} deviceLabel={label} onRespond={() => {}} />)
+    const card = screen.getByTestId('permission-card')
+    expect(card).toHaveTextContent('Denied by you (Deny)')
+    expect(within(card).getByTestId('permission-message')).toHaveTextContent('too risky')
+  })
+
   it('disables the buttons while an answer is in flight', () => {
     render(<PermissionCard block={base} deviceLabel={label} onRespond={() => {}} busy />)
     expect(screen.getByTestId('permission-option-allow')).toBeDisabled()

@@ -446,6 +446,8 @@
     "allowedBy": "已由 {{device}} 允许",
     "deniedBy": "已由 {{device}} 拒绝",
     "answeredBy": "已由 {{device}} 回答",
+    "skippedBy": "已由 {{device}} 跳过",
+    "noAnswer": "未回答",
     "resolvedBy": "已由 {{device}} 处理",
     "you": "你",
     "alreadyResolved": "另一台设备已经处理了这个请求。",
@@ -553,6 +555,8 @@
     "working_other": "{{count}} 个在工作",
     "agentTokens": "{{n}} token",
     "showEarlierAgents_other": "显示更早的 {{count}} 个子 agent",
+    "backgroundTasks_other": "{{count}} 个后台任务",
+    "moreBackgroundTasks_other": "另外 {{count}} 个后台任务",
     "subagentState": {
       "running": "运行中",
       "background": "后台运行",

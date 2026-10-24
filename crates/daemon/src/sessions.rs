@@ -494,7 +494,13 @@ impl Sessions {
                 for rid in self.d.store.unresolved_permissions(&id).await.unwrap_or_default() {
                     self.emit(
                         &mut st,
-                        Event::PermissionResolved { request_id: rid, option_id: None, by_device: "daemon".into() },
+                        Event::PermissionResolved {
+                            request_id: rid,
+                            option_id: None,
+                            by_device: "daemon".into(),
+                            answers: None,
+                            message: None,
+                        },
                     )
                     .await;
                 }
@@ -2084,6 +2090,8 @@ impl Sessions {
                     request_id: p.req.request_id.clone(),
                     option_id: opt.clone(),
                     by_device: "daemon".into(),
+                    answers: None,
+                    message: None,
                 },
             )
             .await;
@@ -2168,6 +2176,8 @@ impl Sessions {
                         request_id: p.request_id.clone(),
                         option_id: deny.clone(),
                         by_device: "daemon".into(),
+                        answers: None,
+                        message: None,
                     },
                 )
                 .await;
@@ -2238,6 +2248,8 @@ impl Sessions {
                 request_id: p.request_id.clone(),
                 option_id: p.option_id.clone(),
                 by_device: caller.device_id.clone(),
+                answers: p.answers.clone(),
+                message: p.message.clone(),
             },
         )
         .await;
@@ -3193,6 +3205,8 @@ impl Sessions {
                 request_id: request_id.to_string(),
                 option_id: opt.clone(),
                 by_device: "daemon".into(),
+                answers: None,
+                message: None,
             },
         )
         .await;

@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { Event, SessionStatus } from '@/protocol'
 import { evs, resetSeq } from '@/test/factories'
 import { buildView } from '../reducer'
-import { subagentRows } from '../subagents'
+import { backgroundCommands, subagentRows } from '../subagents'
 import { InfoPanel, type InfoPanelProps } from './InfoPanel'
 
 beforeEach(() => resetSeq())
@@ -20,6 +20,7 @@ function panel(status: SessionStatus, events: Event[], over: Partial<InfoPanelPr
     agentLabel: 'Claude Code',
     status,
     subagents: subagentRows(view.blocks, status),
+    backgroundCommands: backgroundCommands(view.blocks, status),
     createdAt: 1,
     usage: { turns: 2, inputTokens: 12_300, outputTokens: 4_500, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5 },
     pending: [],
@@ -55,6 +56,30 @@ describe('InfoPanel agents card', () => {
     expect(within(rows[2]!).getByText('Running')).toBeInTheDocument()
     expect(rows[2]).toHaveTextContent('1 tool call')
     expect(rows[2]).not.toHaveTextContent('tokens')
+  })
+
+  it('lists background commands while they run, and counts them as working even when the main agent is idle', () => {
+    const cmd = (id: string, input: Record<string, string>): Event => ({ type: 'tool_call', id, name: 'Bash', category: 'shell', title: input.command ?? id, input })
+    const launched = (id: string): Event => ({ type: 'tool_result', id, output: 'Command running in background with ID: b1.', is_error: false, detail: { background: true } })
+    panel('idle', [cmd('t', { command: 'cargo test -p anycon-daemon', description: 'Run daemon tests' }), launched('t'), cmd('w', { command: 'bun run dev' }), launched('w'), agent('a'), done('a')], { backgroundTasks: 2 })
+    expect(screen.getByTestId('info-agents')).toHaveTextContent('2 working')
+    expect(screen.getByTestId('info-agent-main')).toHaveTextContent('Idle')
+    const rows = screen.getAllByTestId('info-background-command')
+    expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining('Run daemon tests'), expect.stringContaining('$ bun run dev')])
+    for (const r of rows) expect(within(r).getByText('Background')).toBeInTheDocument()
+    // daemon 数到的不比认出来的多：没有「另外 N 个」
+    expect(screen.queryByTestId('info-background-other')).toBeNull()
+  })
+
+  it('shows the daemon’s background count for tasks it cannot match to a loaded call', () => {
+    const { unmount } = panel('idle', [], { backgroundTasks: 2 })
+    expect(screen.getByTestId('info-background-other')).toHaveTextContent('2 background tasks')
+    expect(screen.getByTestId('info-agents')).toHaveTextContent('2 working')
+    unmount()
+    // 认出来一个后台子 agent：多出来的那个写成「另外 1 个」
+    panel('idle', [agent('bg'), { type: 'tool_result', id: 'bg', output: 'launched', is_error: false, detail: { background: true } }], { backgroundTasks: 2 })
+    expect(screen.getByTestId('info-background-other')).toHaveTextContent('1 more background task')
+    expect(screen.getByTestId('info-agents')).toHaveTextContent('2 working')
   })
 
   it('has no options or changed-files cards any more', () => {

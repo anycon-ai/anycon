@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Archive, ArchiveRestore, Bot, CalendarClock, Download, Folder, GitBranch, Pencil, RotateCw, Trash2, type LucideIcon } from 'lucide-react'
+import { Archive, ArchiveRestore, Bot, CalendarClock, Download, Folder, GitBranch, Pencil, RotateCw, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { SessionGitStatus, SessionStatus, SessionWorktree, WorktreeDisposal } from '@/protocol'
 import { SessionStatusChip } from '@/components/SessionListItem'
@@ -10,9 +10,9 @@ import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Overlay'
 import { cn } from '@/ui/cn'
 import { Chip, type Tone } from '@/ui/Misc'
-import type { UsageSum } from '../reducer'
+import type { ToolBlock, UsageSum } from '../reducer'
 import { isActive, isTurnActive, type SubagentActivity, type SubagentRow } from '../subagents'
-import { toolLabel } from '../text'
+import { toolCommand, toolDescription, toolLabel } from '../text'
 
 export interface InfoPanelProps {
   agentLabel: string
@@ -20,6 +20,10 @@ export interface InfoPanelProps {
   status: SessionStatus
   /** 已加载的事件里的子 agent（`subagentRows`）。 */
   subagents: SubagentRow[]
+  /** 已加载的事件里还在后台跑的命令（`backgroundCommands`）。 */
+  backgroundCommands?: ToolBlock[]
+  /** daemon 报的后台任务数（`SessionSummary.background_tasks`，含后台子 agent 和后台命令）：比已加载的事件里看到的多时，多出来的另起一行。 */
+  backgroundTasks?: number
   workDir?: string
   project?: string | null
   createdAt: number
@@ -82,8 +86,12 @@ export function InfoPanel(p: InfoPanelProps) {
   const cost =
     p.usageTotals?.cost_usd == null && p.usage.costUsd == null ? null : Math.max(p.usageTotals?.cost_usd ?? 0, p.usage.costUsd ?? 0)
 
-  // 正在干活的：主 agent 在跑一个 turn（含等审批），加上还没结束的子 agent
-  const working = (isTurnActive(p.status) ? 1 : 0) + p.subagents.filter((r) => isActive(r.state)).length
+  const commands = p.backgroundCommands ?? []
+  // daemon 数到的后台任务比事件里认出来的多（事件不在缓存窗口里、daemon 旧了没标后台命令）：多出来的只给一个数
+  const knownBackground = p.subagents.filter((r) => r.state === 'background').length + commands.length
+  const otherBackground = Math.max(0, (p.backgroundTasks ?? 0) - knownBackground)
+  // 正在干活的：主 agent 在跑一个 turn（含等审批），加上还没结束的子 agent 和后台命令
+  const working = (isTurnActive(p.status) ? 1 : 0) + p.subagents.filter((r) => isActive(r.state)).length + commands.length + otherBackground
   // 收起时保留还在跑的和最近的几个，顺序不变（子 agent 仍跟在父后面）
   const recent = p.subagents.length - SUBAGENT_LIMIT
   const shownSubagents = allSubagents ? p.subagents : p.subagents.filter((r, i) => i >= recent || isActive(r.state))
@@ -141,6 +149,27 @@ export function InfoPanel(p: InfoPanelProps) {
             state={r.state}
           />
         ))}
+        {commands.map((b) => (
+          <AgentRow
+            key={b.key}
+            icon={SquareTerminal}
+            depth={1}
+            label={b.category === 'shell' ? (toolDescription(b) ?? `$ ${toolCommand(b)}`) : toolLabel(b)}
+            aside={<Chip tone={SUBAGENT_TONE.background}>{t('info.subagentState.background')}</Chip>}
+            testId="info-background-command"
+            state="background"
+          />
+        ))}
+        {otherBackground > 0 ? (
+          <AgentRow
+            icon={SquareTerminal}
+            depth={1}
+            label={t(knownBackground > 0 ? 'info.moreBackgroundTasks' : 'info.backgroundTasks', { count: otherBackground })}
+            aside={<Chip tone={SUBAGENT_TONE.background}>{t('info.subagentState.background')}</Chip>}
+            testId="info-background-other"
+            state="background"
+          />
+        ) : null}
       </Card>
 
       <Card>

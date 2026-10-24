@@ -15,7 +15,7 @@ import { archiveSession, cancelTurn, closeSession, deleteSession, loadOlder, nee
 import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
 import { latestSyncBlock, pendingPermissions } from '@/features/session/reducer'
-import { subagentRows } from '@/features/session/subagents'
+import { backgroundCommands, subagentRows } from '@/features/session/subagents'
 import { previewAvailable, usePreviewTemplate } from '@/features/preview/availability'
 import { PreviewView } from '@/features/preview/PreviewView'
 import { ApprovalBanner } from '@/components/ApprovalBanner'
@@ -63,6 +63,10 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const setPrefs = usePrefs((s) => s.set)
   const rightDrawer = useUi((s) => s.rightDrawerOpen)
   const setRightDrawer = useUi((s) => s.setRightDrawer)
+  // 宽屏时右侧面板内联显示、抽屉被卸载；不清掉状态的话，窗口再拖窄抽屉会自己弹出来
+  useEffect(() => {
+    if (xl) setRightDrawer(false)
+  }, [xl, setRightDrawer])
   const draft = useDrafts((s) => s.byKey[sessionId])
   const inflight = useDrafts((s) => s.inflight)
   const loadDraft = useDrafts((s) => s.load)
@@ -124,6 +128,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const seen = useMemo(() => new Set(view?.blocks.filter((b) => b.type === 'user').map((b) => (b.type === 'user' ? b.messageId : '')) ?? []), [view?.blocks])
   const pending = useMemo(() => pendingMessages(draft, inflight, sessionId, seen), [draft, inflight, sessionId, seen])
   const subagents = useMemo(() => subagentRows(view?.blocks ?? [], status), [view?.blocks, status])
+  const bgCommands = useMemo(() => backgroundCommands(view?.blocks ?? [], status), [view?.blocks, status])
 
   const modelLabel = useCallback((id: string) => agent?.models?.find((m) => m.id === id)?.label ?? id, [agent])
   const modeLabel = useCallback((id: string) => agent?.modes?.find((m) => m.id === id)?.label ?? id, [agent])
@@ -238,6 +243,8 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
       agentLabel={agent?.label ?? summary?.agent ?? ''}
       status={status}
       subagents={subagents}
+      backgroundCommands={bgCommands}
+      backgroundTasks={backgroundTasks}
       workDir={workDir}
       project={project}
       createdAt={summary?.created_at_ms ?? 0}
@@ -339,12 +346,12 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
               </Chip>
             ) : null}
             {offline ? (
-              <Chip tone="neutral" testId="session-status" className="shrink-0">
+              <Chip tone="neutral" testId="session-status" dotOnMobile title={t('status.session.offline')} className="shrink-0">
                 <span data-status="offline">{t('status.session.offline')}</span>
               </Chip>
             ) : (
               <span className="shrink-0" data-testid="session-status" data-status={status}>
-                <SessionStatusChip status={status} />
+                <SessionStatusChip status={status} dotOnMobile />
               </span>
             )}
           </>
@@ -446,7 +453,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
 
           {backgroundTasks > 0 && !running ? (
             // 低调的一行：会话已经 idle，但后台任务还在干活，结束后 agent 会自己再跑一轮。运行中不显示（状态本身已经有提示）
-            <div className="mx-auto flex w-full max-w-3xl shrink-0 items-center gap-2 px-3 pt-2 text-xs text-fg-muted md:px-4" role="status" data-testid="background-tasks-hint" data-count={backgroundTasks}>
+            <div className="chat-column flex shrink-0 items-center gap-2 pt-2 text-xs text-fg-muted" role="status" data-testid="background-tasks-hint" data-count={backgroundTasks}>
               <Spinner className="size-3.5 shrink-0" />
               <span className="min-w-0 [overflow-wrap:anywhere]">{t('session.backgroundTasks', { count: backgroundTasks })}</span>
             </div>

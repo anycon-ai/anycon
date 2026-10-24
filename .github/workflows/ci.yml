@@ -200,8 +200,8 @@ jobs:
             for f in hub.log daemon.log; do
               if [ -f "$dir/$f" ]; then cp "$dir/$f" e2e/ci-logs/; fi
             done
-            # multi 模式的用例自己起的 hub（e2e/helpers/multi-hub.ts）：目录在主临时目录下的 mh-*，日志是 mh-*/hub.log
-            for d in "$dir"/mh-*/; do
+            # multi 模式的用例自己起的 hub（e2e/helpers/multi-hub.ts）：目录在主临时目录下的 m<序号>（m1…），日志是 m<序号>/hub.log
+            for d in "$dir"/m[0-9]*/; do
               if [ -f "${d}hub.log" ]; then cp "${d}hub.log" "e2e/ci-logs/multi-$(basename "$d")-hub.log"; fi
             done
           else

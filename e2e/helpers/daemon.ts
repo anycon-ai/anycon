@@ -37,8 +37,9 @@ export async function startExtraDaemon(
   name: string,
   options: { hubUrl?: string } = {},
 ): Promise<ExtraDaemon> {
-  // 目录名要短：本机 socket 在 `<home>/daemon.sock`，unix socket 路径有长度上限（macOS 104 字节，临时目录本身已经很长）
-  const root = join(state.tmpDir, `n${randomBytes(3).toString('hex')}`)
+  // 目录名要短：本机 socket 在 `<home>/daemon.sock`，unix socket 路径有长度上限（macOS 104 字节，临时目录本身已经很长）。
+  // 4 位 hex 够用（一次运行只起几个额外节点）；multi 用例的节点在 `<tmpDir>/m1/` 下，多一层目录
+  const root = join(state.tmpDir, `n${randomBytes(2).toString('hex')}`)
   const home = join(root, 'h')
   const workspaceDir = join(root, 'w')
   const logFile = join(root, 'daemon.log')

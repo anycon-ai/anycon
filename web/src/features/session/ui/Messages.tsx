@@ -28,7 +28,7 @@ export function UserBubble({ block, nodeId }: { block: UserBlock; nodeId?: strin
     <div className="flex flex-col items-end gap-1.5" data-testid="message-user">
       <MessageAttachments nodeId={nodeId} attachments={block.attachments} />
       {block.content || block.attachments.length === 0 ? (
-        <div className="max-w-[min(85%,42rem)] rounded-2xl bg-bg-muted px-4 py-2.5 text-fg">
+        <div className="max-w-[min(85%,56rem)] rounded-2xl bg-bg-muted px-4 py-2.5 text-fg">
           <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{block.content}</p>
         </div>
       ) : null}
@@ -44,7 +44,7 @@ export function PendingBubble({ msg, nodeId, onRetry, onEdit, onDelete }: { msg:
     <div className="flex flex-col items-end gap-1" data-testid="message-user" data-state={msg.state}>
       <MessageAttachments nodeId={nodeId} attachments={msg.attachments ?? []} />
       {msg.content || !msg.attachments?.length ? (
-        <div className={cn('max-w-[min(85%,42rem)] rounded-2xl px-4 py-2.5 text-fg', unsent ? 'border border-dashed border-warning bg-warning-subtle' : 'bg-bg-muted/70')}>
+        <div className={cn('max-w-[min(85%,56rem)] rounded-2xl px-4 py-2.5 text-fg', unsent ? 'border border-dashed border-warning bg-warning-subtle' : 'bg-bg-muted/70')}>
           <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{msg.content}</p>
         </div>
       ) : null}

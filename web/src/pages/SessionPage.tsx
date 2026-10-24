@@ -61,6 +61,10 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const setPrefs = usePrefs((s) => s.set)
   const rightDrawer = useUi((s) => s.rightDrawerOpen)
   const setRightDrawer = useUi((s) => s.setRightDrawer)
+  // 宽屏时右侧面板内联显示、抽屉被卸载；不清掉状态的话，窗口再拖窄抽屉会自己弹出来
+  useEffect(() => {
+    if (xl) setRightDrawer(false)
+  }, [xl, setRightDrawer])
   const draft = useDrafts((s) => s.byKey[sessionId])
   const inflight = useDrafts((s) => s.inflight)
   const loadDraft = useDrafts((s) => s.load)
@@ -320,12 +324,12 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
               </Chip>
             ) : null}
             {offline ? (
-              <Chip tone="neutral" testId="session-status" className="shrink-0">
+              <Chip tone="neutral" testId="session-status" dotOnMobile title={t('status.session.offline')} className="shrink-0">
                 <span data-status="offline">{t('status.session.offline')}</span>
               </Chip>
             ) : (
               <span className="shrink-0" data-testid="session-status" data-status={status}>
-                <SessionStatusChip status={status} />
+                <SessionStatusChip status={status} dotOnMobile />
               </span>
             )}
           </>
@@ -425,7 +429,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
 
           {backgroundTasks > 0 && !running ? (
             // 低调的一行：会话已经 idle，但后台任务还在干活，结束后 agent 会自己再跑一轮。运行中不显示（状态本身已经有提示）
-            <div className="mx-auto flex w-full max-w-3xl shrink-0 items-center gap-2 px-3 pt-2 text-xs text-fg-muted md:px-4" role="status" data-testid="background-tasks-hint" data-count={backgroundTasks}>
+            <div className="chat-column flex shrink-0 items-center gap-2 pt-2 text-xs text-fg-muted" role="status" data-testid="background-tasks-hint" data-count={backgroundTasks}>
               <Spinner className="size-3.5 shrink-0" />
               <span className="min-w-0 [overflow-wrap:anywhere]">{t('session.backgroundTasks', { count: backgroundTasks })}</span>
             </div>

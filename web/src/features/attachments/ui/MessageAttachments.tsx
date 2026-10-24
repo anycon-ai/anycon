@@ -61,7 +61,7 @@ export function MessageAttachment({ nodeId, att }: { nodeId?: string; att: Attac
 export function MessageAttachments({ nodeId, attachments, className }: { nodeId?: string; attachments: readonly AttachmentRef[]; className?: string }) {
   if (attachments.length === 0) return null
   return (
-    <div className={cn('flex max-w-[min(85%,42rem)] flex-wrap items-start justify-end gap-2', className)} data-testid="message-attachments">
+    <div className={cn('flex max-w-[min(85%,56rem)] flex-wrap items-start justify-end gap-2', className)} data-testid="message-attachments">
       {attachments.map((a, i) => (
         <MessageAttachment key={`${a.blob_id}-${i}`} nodeId={nodeId} att={a} />
       ))}

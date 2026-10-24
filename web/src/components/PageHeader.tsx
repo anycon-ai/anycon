@@ -64,7 +64,7 @@ export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBac
       </nav>
       {meta}
       {showNodeStatus && entry ? (
-        <Chip tone={connectionTone(entry.conn)} testId="node-status" dataState={entry.conn} title={connectionLabel(entry.conn, t)} className="shrink-0">
+        <Chip tone={connectionTone(entry.conn)} testId="node-status" dataState={entry.conn} title={connectionLabel(entry.conn, t)} dotOnMobile className="shrink-0">
           {connectionLabel(entry.conn, t)}
         </Chip>
       ) : null}

@@ -4,13 +4,14 @@
  * 共享的那个 hub 属于 global-setup，是 `single` 模式（管理员 token、邀请），整套用例共用；`multi` 的行为（没有 token / 邀请、
  * 开放注册、配额、删账号）只能在另一个进程里测。这个 hub 有自己的随机端口、临时目录（数据库、日志）和环境，
  * 但发信指向 global-setup 的假 SMTP 服务（`helpers/smtp.ts`，用例照常读 `readState().smtpDir`）。
+ * 它的临时目录建在 global-setup 的临时目录下（`<tmpDir>/mh-XXXXXX`）：CI 失败时只要收那一个目录，
+ * `hub.log` 和 `mh-XXXXXX/hub.log` 就都在里面（.github/workflows/ci.yml 的「收集 hub / daemon 日志」）。
  * 生命周期完全在用例里：`startMultiHub()` 放在 `beforeAll`，`stop()` 放在 `afterAll`。
  *
  * OAuth 的凭据是假的（语法上合法就行）：hub 只在用户点按钮时才会把浏览器 302 到提供方的授权页，用例从不让浏览器真的去那里。
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { hubBin, type E2EState } from './env.js'
@@ -29,7 +30,7 @@ export interface MultiHub {
   /** `http://127.0.0.1:<port>`，也是它的 `ANYCON_PUBLIC_URL`（所以浏览器从这个地址打开时 OAuth 按钮可点）。 */
   url: string
   port: number
-  /** 临时根目录：`hub.log`、数据库，以及测试起的额外 daemon 的目录都在里面。 */
+  /** 临时根目录（global-setup 临时目录下的 `mh-XXXXXX`）：`hub.log`、数据库，以及测试起的额外 daemon 的目录都在里面。 */
   tmpDir: string
   /** hub 的日志（debug 级，hub 自己的模块）：`<tmpDir>/hub.log`，所以 `hubLogLeaks(hub, …)` 可以直接用。 */
   logFile: string
@@ -51,7 +52,7 @@ async function freePort(): Promise<number> {
 }
 
 export async function startMultiHub(
-  state: Pick<E2EState, 'smtpPort'>,
+  state: Pick<E2EState, 'smtpPort' | 'tmpDir'>,
   options: MultiHubOptions,
 ): Promise<MultiHub> {
   if (!existsSync(hubBin)) {
@@ -59,8 +60,10 @@ export async function startMultiHub(
       `hub binary not found at ${hubBin}. Run: cargo build -p anycon-hub -p anycon-cli`,
     )
   }
-  // 目录名要短：测试起的 daemon 的本机 socket 在这个目录下（unix socket 路径有长度上限，macOS 104 字节）
-  const tmpDir = mkdtempSync(join(tmpdir(), 'anycon-mh-'))
+  // 建在 global-setup 的临时目录下，CI 才收得到它的 hub.log。目录名要短：测试起的 daemon 的本机 socket 在
+  // `<这个目录>/nXXXXXX/h/daemon.sock`（unix socket 路径有长度上限，macOS 104 字节；典型的 `$TMPDIR` 加上
+  // `anycon-e2e-XXXXXX/mh-XXXXXX/nXXXXXX/h/daemon.sock` 约 98 字节）
+  const tmpDir = mkdtempSync(join(state.tmpDir, 'mh-'))
   const dataDir = join(tmpDir, 'hub')
   mkdirSync(dataDir, { recursive: true })
   const logFile = join(tmpDir, 'hub.log')

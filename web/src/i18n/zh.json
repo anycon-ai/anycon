@@ -655,6 +655,11 @@
     "addDevice": "添加设备",
     "addDeviceTitle": "添加设备",
     "addDeviceBody": "在新设备上打开配对页面，输入这个短码，或扫描二维码。",
+    "beginRefused": {
+      "quota": "配对次数暂时用完了。上限按最近 24 小时滚动计算，每一次配对满 24 小时后会空出一个名额。",
+      "rate_limited": "尝试次数过多，请等一分钟再试。",
+      "forbidden": "hub 不允许这个节点发起配对。"
+    },
     "qr": "配对二维码",
     "expiresIn": "{{time}} 后过期",
     "expired": "这个短码已过期。",

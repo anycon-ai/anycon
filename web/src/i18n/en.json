@@ -664,6 +664,11 @@
     "addDevice": "Add device",
     "addDeviceTitle": "Add a device",
     "addDeviceBody": "On the new device open the pairing page and enter this code, or scan the QR code.",
+    "beginRefused": {
+      "quota": "You have used all of your pairing attempts for now. The limit counts the last 24 hours, so a slot frees up as each attempt passes 24 hours old.",
+      "rate_limited": "Too many attempts. Wait a minute and try again.",
+      "forbidden": "The hub did not allow this node to start a pairing."
+    },
     "qr": "Pairing QR code",
     "expiresIn": "Expires in {{time}}",
     "expired": "This code has expired.",

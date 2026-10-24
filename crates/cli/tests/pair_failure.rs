@@ -111,7 +111,9 @@ async fn a_full_device_quota_stops_anycon_pair_at_once_with_the_reason() {
     assert_eq!(exit, 1, "stderr: {stderr}");
     assert!(rest.iter().all(|l| !l.contains("Paired with")), "{rest:?}");
     assert!(
-        stderr.contains("limit on devices, nodes or daily pairing attempts") && stderr.contains("anycon pair"),
+        stderr.contains("limit on devices or nodes")
+            && stderr.contains("Settings → Devices")
+            && stderr.contains("anycon pair"),
         "the message says what to do: {stderr}"
     );
 
@@ -131,18 +133,18 @@ async fn a_full_device_quota_stops_anycon_pair_at_once_with_the_reason() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_pair_begin_is_reported_as_the_hub_refusing_not_as_the_node_being_offline() {
     let dir = tempfile::tempdir().unwrap();
-    // 每个账号 24 小时内只能发起 1 次配对
-    let hub = MultiHub::start(10, 1).await;
+    // 每个账号 24 小时内 2 个名额
+    let hub = MultiHub::start(10, 2).await;
     let cookie = hub.account_cookie().await;
     let (home, daemon) = start_node(&hub, dir.path()).await;
 
-    // 第一次配对走的是临时连接（还没有账号），不计数
+    // 第一次配对：daemon 在临时连接上（还没有账号），名额记在加入的浏览器的账号上（1/2）
     let first = PairProc::begin(&home).await;
     let mut web = FakeWeb::connect(&hub.url(), None, Some(&cookie), "First Browser", Keypair::generate()).await;
     web.pair(&first.code).await;
     assert_eq!(first.finish().await["paired"]["name"], "First Browser");
 
-    // 现在 daemon 是正式设备：这一次用掉唯一的名额
+    // 现在 daemon 是正式设备：这一次用掉最后一个名额（2/2）
     let r = anycon(&home, &["pair", "--no-wait", "--json"], None, &[]).await;
     assert_eq!(r.code, 0, "{}", r.stderr);
 
@@ -160,7 +162,45 @@ async fn a_refused_pair_begin_is_reported_as_the_hub_refusing_not_as_the_node_be
     let r = anycon(&home, &["pair", "--no-wait"], None, &[]).await;
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(r.stdout.is_empty(), "{}", r.stdout);
-    assert!(r.stderr.contains("limit on devices, nodes or daily pairing attempts"), "{}", r.stderr);
+    // 登记时的 quota 只可能是每日配对次数：不叫用户去移除设备，名额随 24 小时滚动窗口回来
+    assert!(r.stderr.contains("used up its daily pairing attempts") && r.stderr.contains("24 hours"), "{}", r.stderr);
+    assert!(r.stderr.contains("Settings → Quota"), "{}", r.stderr);
+    assert!(!r.stderr.contains("remove a device") && !r.stderr.contains("Settings → Devices"), "{}", r.stderr);
+
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_newer_pairing_stops_the_anycon_pair_that_was_waiting_on_the_replaced_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = MultiHub::start(10, 20).await;
+    let (home, daemon) = start_node(&hub, dir.path()).await;
+
+    // 一个 `anycon pair` 在等它的短码……
+    let waiting = PairProc::begin(&home).await;
+    // ……这时别的客户端（网页的「添加设备」、另一个 `anycon pair`）又开了一次配对，把它顶掉了
+    let r = anycon(&home, &["pair", "--no-wait", "--json"], None, &[]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let newest = r.json()["code"].as_str().unwrap().to_string();
+    assert_ne!(newest, waiting.code);
+
+    // 等着的那个马上退出（退出码 1），说明短码作废了，而不是等 5 分钟
+    let started = std::time::Instant::now();
+    let (rest, stderr, exit) = waiting.finish_failed().await;
+    assert_eq!(exit, 1, "stderr: {stderr}");
+    assert!(started.elapsed().as_secs() < 30);
+    let last: serde_json::Value = serde_json::from_str(rest.last().expect("a final JSON line")).unwrap();
+    assert_eq!(last["failed"]["reason"], "replaced", "{rest:?}");
+    assert!(
+        stderr.contains("error: replaced: ") && stderr.contains("another pairing was started on this node"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("run `anycon pair` again"), "{stderr}");
+
+    // 最新的那次不受影响：还能配对成功
+    let cookie = hub.account_cookie().await;
+    let mut web = FakeWeb::connect(&hub.url(), None, Some(&cookie), "Browser", Keypair::generate()).await;
+    web.pair(&newest).await;
 
     daemon.stop().await;
 }

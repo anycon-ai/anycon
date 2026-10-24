@@ -22,13 +22,18 @@ import { Card, Chip, CopyButton, Dot, Segmented, Skeleton, Spinner, Switch } fro
 import { Dialog } from '@/ui/Overlay'
 import { QrCode } from '@/ui/QrCode'
 
+type PairBeginRefusal = 'quota' | 'rate_limited' | 'forbidden'
+
 /**
- * `node.pair_begin` 被 hub 拒绝（节点连着 hub，但 hub 不给登记短码）：`busy` + `data.reason`——`quota`（今天发起配对的次数用完了）
- * 或 `rate_limited`（被限速）。和「节点离线」（`offline`）是两回事，要说清楚是被拒绝。别的错误返回 `null`。
+ * `node.pair_begin` 被 hub 拒绝（节点连着 hub，但 hub 不给登记短码），daemon 的错误是：`busy` + `data.reason`——`quota`（账号今天发起配对的
+ * 次数用完了；这时 `quota` 只可能是它，设备数 / 节点数的上限要到配对收尾才检查）或 `rate_limited`（被限速），或 `forbidden`。
+ * 和「节点离线」（`offline`）是两回事，要说清楚是被拒绝。别的错误返回 `null`。
  */
-function pairBeginRefusal(e: unknown): 'quota' | 'rate_limited' | null {
-  if (!(e instanceof RpcCallError) || e.kind !== 'rpc' || e.code !== 'busy') return null
-  return e.reason === 'quota' || e.reason === 'rate_limited' ? e.reason : null
+function pairBeginRefusal(e: unknown): PairBeginRefusal | null {
+  if (!(e instanceof RpcCallError) || e.kind !== 'rpc') return null
+  if (e.code === 'busy' && (e.reason === 'quota' || e.reason === 'rate_limited')) return e.reason
+  if (e.code === 'forbidden' && e.reason === 'forbidden') return 'forbidden'
+  return null
 }
 
 export function DevicesTab({ nodeId }: { nodeId: string }) {
@@ -40,7 +45,7 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
   const [revoke, setRevoke] = useState<PeerDevice | null>(null)
   const [pairing, setPairing] = useState<NodePairBeginResult | null>(null)
   // hub 拒绝了这次登记（见 `pairBeginRefusal`）：对话框留着，里面写原因
-  const [refusal, setRefusal] = useState<'quota' | 'rate_limited' | null>(null)
+  const [refusal, setRefusal] = useState<PairBeginRefusal | null>(null)
   // 「添加设备」对话框：短码（配对）和接入码（ADR-36）两页
   const [addOpen, setAddOpen] = useState(false)
   const [page, setPage] = useState<'pair' | 'code'>('pair')
@@ -196,7 +201,7 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
               </>
             ) : refusal ? (
               <p className="text-sm text-danger" role="alert" data-testid="pair-begin-refused">
-                {t(`pair.errors.${refusal}`)}
+                {t(`nodeSettings.beginRefused.${refusal}`)}
                 {refusal === 'quota' ? (
                   <>
                     {' '}

@@ -36,7 +36,8 @@ pub mod local_methods {
     pub const CONFIG_RELOAD: &str = "local.config_reload";
     /// `anycon pair` 等新设备时问「这次配对被 hub 拒绝了吗」。参数 `{ "expires_at_ms": <node.pair_begin 返回的值> }`，
     /// 结果 `{ "failed": null }` 或 `{ "failed": { "reason": "quota", "at_ms": <失败时间> } }`（`reason` 是
-    /// `pair_failed.reason` 的 snake_case 名字）。只有这次配对自己的失败才会出现，旧的不算。
+    /// `pair_failed.reason` 的 snake_case 名字，或 `replaced`：同一个 daemon 上又开始了新的 `pair_begin`，这次的短码作废了）。
+    /// 只有这次配对自己的失败才会出现，别的配对的不算。
     pub const PAIR_OUTCOME: &str = "local.pair_outcome";
 }
 
@@ -554,8 +555,10 @@ impl Rpc {
                     .get("expires_at_ms")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| err(ErrorCode::Invalid, "expires_at_ms is required"))?;
-                let failed =
-                    c.peers.pair_failure(expires_at_ms).map(|f| json!({ "reason": f.reason, "at_ms": f.at_ms }));
+                let failed = c
+                    .peers
+                    .pair_failure(expires_at_ms)
+                    .map(|f| json!({ "reason": f.reason.as_str(), "at_ms": f.at_ms }));
                 Ok(json!({ "failed": failed }))
             }
             local_methods::CONFIG_RELOAD => {

@@ -892,6 +892,10 @@ async fn pair_failed_from_the_hub_removes_a_tentative_peer_that_was_waiting_for_
 // ---------------------------------------------------------------------------
 // `local.pair_outcome`：`anycon pair` 靠它知道这次配对被 hub 拒绝了
 
+async fn begin_pairing(td: &TestDaemon, local: &mut anycon_daemon::testutil::TestClient) -> NodePairBeginResult {
+    local.call(td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap()
+}
+
 /// 本机方法 `local.pair_outcome`：这次配对（`node.pair_begin` 返回的 `expires_at_ms`）的失败结果。
 async fn pair_outcome(td: &TestDaemon, local: &mut anycon_daemon::testutil::TestClient, expires_at_ms: u64) -> Value {
     local.call(td, anycon_daemon::local_methods::PAIR_OUTCOME, json!({ "expires_at_ms": expires_at_ms })).await.unwrap()
@@ -920,11 +924,38 @@ async fn a_pairing_the_hub_refuses_is_reported_by_local_pair_outcome_for_that_pa
     let again: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
     assert_ne!(again.expires_at_ms, begin.expires_at_ms);
     assert_eq!(pair_outcome(&td, &mut local, again.expires_at_ms).await, json!({ "failed": null }));
-    assert_eq!(pair_outcome(&td, &mut local, begin.expires_at_ms).await, json!({ "failed": null }));
+    // 旧配对自己的结果还在（等着它的客户端晚一点问也问得到）
+    assert_eq!(pair_outcome(&td, &mut local, begin.expires_at_ms).await["failed"]["reason"], "quota");
 
     // 参数必填
     let missing: Result<Value, RpcError> = local.call(&td, anycon_daemon::local_methods::PAIR_OUTCOME, json!({})).await;
     assert_eq!(missing.unwrap_err().code, ErrorCode::Invalid.rpc_code());
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_newer_pair_begin_is_reported_to_the_client_waiting_on_the_pairing_it_replaced() {
+    let hub = TestHub::start().await;
+    let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
+    wait_daemon_connected(&td).await;
+    let mut local = td.client("cli");
+    // 一个客户端（比如 `anycon pair`）在等 first；网页的「添加设备」又开了一次
+    let first = begin_pairing(&td, &mut local).await;
+    assert_eq!(pair_outcome(&td, &mut local, first.expires_at_ms).await, json!({ "failed": null }));
+    let second = begin_pairing(&td, &mut local).await;
+    assert_ne!(first.expires_at_ms, second.expires_at_ms);
+    let got = pair_outcome(&td, &mut local, first.expires_at_ms).await;
+    assert_eq!(got["failed"]["reason"], "replaced", "{got}");
+    assert!(got["failed"]["at_ms"].as_u64().unwrap() >= first.expires_at_ms - 400_000, "{got}");
+    // 最新的这次不受影响，它自己的结果照样能取到，也不会盖掉被顶掉的那次
+    assert_eq!(pair_outcome(&td, &mut local, second.expires_at_ms).await, json!({ "failed": null }));
+    td.ctx.peers.on_control(Control::PairFailed { reason: PairFailReason::Quota }).await;
+    assert_eq!(pair_outcome(&td, &mut local, second.expires_at_ms).await["failed"]["reason"], "quota");
+    assert_eq!(pair_outcome(&td, &mut local, first.expires_at_ms).await["failed"]["reason"], "replaced");
+    // 再来一次新的：已经失败了的那次不会再被记成「被顶掉」
+    let third = begin_pairing(&td, &mut local).await;
+    assert_eq!(pair_outcome(&td, &mut local, second.expires_at_ms).await["failed"]["reason"], "quota");
+    assert_eq!(pair_outcome(&td, &mut local, third.expires_at_ms).await, json!({ "failed": null }));
     td.shutdown().await;
 }
 
@@ -988,24 +1019,25 @@ async fn the_pairing_watchdog_reports_a_timeout_through_local_pair_outcome() {
 
 #[tokio::test]
 async fn a_hub_refusal_of_pair_begin_is_busy_with_a_reason_and_not_the_not_connected_error() {
-    // 每个账号每天只能发起 1 次配对
-    let hub = TestHub::start_with(|c| c.limits.daily_pairings_per_account = Some(1)).await;
+    // 每个账号每天 2 个名额
+    let hub = TestHub::start_with(|c| c.limits.daily_pairings_per_account = Some(2)).await;
     let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
     wait_daemon_connected(&td).await;
-    // 第一次配对走的是临时连接（还没有账号），不计数；配对完成后这条连接就是正式设备，之后的 pair_begin 计入账号
+    // 第一次配对：daemon 在临时连接上（还没有账号），名额记在加入的浏览器的账号上（1/2）；配对完成后这条连接就是正式设备，
+    // 之后的 pair_begin 计入它的账号（同一个账号）
     let _web = pair_web(&td, &hub, "First").await;
     let mut local = td.client("cli");
     let ok: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
     assert!(!ok.code.is_empty());
 
-    // 第二次：hub 回 pair_failed { quota }。这是「被拒绝」，不是「没连上 hub」（unsupported）
+    // 第三次：hub 回 pair_failed { quota }。这是「被拒绝」，不是「没连上 hub」（unsupported）
     let err = local.call::<NodePairBeginResult>(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::Busy.rpc_code(), "{err:?}");
     let data = err.data.as_ref().expect("error data");
     assert_eq!((data.code, data.reason.as_deref()), (ErrorCode::Busy, Some("quota")), "{err:?}");
     assert!(err.message.contains("refused") && !err.message.contains("not connected"), "{}", err.message);
-    // 被拒绝的这次没有留下进行中的配对
-    assert!(td.ctx.peers.pair_failure(ok.expires_at_ms).is_none());
+    // 被拒绝的这次没有留下进行中的配对；daemon 已经放弃了上一次（它的短码不会再有人接，等着它的客户端会知道）
+    assert_eq!(td.ctx.peers.pair_failure(ok.expires_at_ms).map(|f| f.reason.as_str()), Some("replaced"));
     td.shutdown().await;
 }
 

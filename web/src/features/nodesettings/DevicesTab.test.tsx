@@ -52,7 +52,7 @@ describe('DevicesTab — add device', () => {
 })
 
 describe('DevicesTab — the hub refuses node.pair_begin', () => {
-  it('quota: the dialog stays open, names the limits and links to Settings → Quota (not "the node is busy")', async () => {
+  it('quota: the dialog stays open, says the daily pairing attempts are used up (no "remove devices" advice) and links to Settings → Quota', async () => {
     rpc.handlers['node.pair_begin'] = () => {
       throw rpcError('busy', undefined, 'quota')
     }
@@ -61,11 +61,39 @@ describe('DevicesTab — the hub refuses node.pair_begin', () => {
     await user.click(screen.getByTestId('device-add'))
     const note = await screen.findByTestId('pair-begin-refused')
     expect(note).toHaveAttribute('role', 'alert')
-    expect(note).toHaveTextContent(/limit on devices, nodes or daily pairing attempts/)
+    // 登记时的 quota 只可能是每日配对次数：名额随 24 小时滚动窗口回来，不是去移除设备
+    expect(note).toHaveTextContent(/pairing attempts/)
+    expect(note).toHaveTextContent(/24 hours/)
+    expect(note).not.toHaveTextContent(/remove devices|Remove devices|Account settings → Devices/)
     expect(note).not.toHaveTextContent(/busy with a turn/)
     expect(screen.getByTestId('quota-link')).toHaveAttribute('href', '/settings/quota')
     expect(screen.getByTestId('pair-begin-dialog')).toBeInTheDocument()
     expect(screen.queryByTestId('pair-begin-code')).toBeNull()
+  })
+
+  it('forbidden: the dialog stays open with a clear line, no quota link', async () => {
+    rpc.handlers['node.pair_begin'] = () => {
+      throw rpcError('forbidden', undefined, 'forbidden')
+    }
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(screen.getByTestId('device-add'))
+    const note = await screen.findByTestId('pair-begin-refused')
+    expect(note).toHaveTextContent(/did not allow this node to start a pairing/)
+    expect(note).not.toHaveTextContent(/The node does not allow this/)
+    expect(screen.queryByTestId('quota-link')).toBeNull()
+    expect(screen.getByTestId('pair-begin-dialog')).toBeInTheDocument()
+  })
+
+  it('a forbidden without the hub-refusal reason (any other forbidden) is still the generic toast', async () => {
+    rpc.handlers['node.pair_begin'] = () => {
+      throw rpcError('forbidden')
+    }
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(screen.getByTestId('device-add'))
+    await waitFor(() => expect(screen.queryByTestId('pair-begin-dialog')).toBeNull())
+    expect(screen.queryByTestId('pair-begin-refused')).toBeNull()
   })
 
   it('rate_limited: says to wait, with no quota link; opening the dialog again tries again', async () => {

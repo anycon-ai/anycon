@@ -53,6 +53,12 @@ import type {
   PermissionRequest,
   PermissionResolved,
   PermissionRespondParams,
+  PreviewCloseParams,
+  PreviewListResult,
+  PreviewOpenParams,
+  PreviewOpenResult,
+  PreviewPortsParams,
+  PreviewPortsResult,
   Project,
   RenamedProject,
   SessionArchiveParams,
@@ -161,6 +167,10 @@ export interface RequestMethods {
   'blob.discard': { params: BlobIdParams; result: Empty }
   'permission.respond': { params: PermissionRespondParams; result: Empty }
   'permission.list': { params: PermissionListParams; result: PermissionListResult }
+  'preview.open': { params: PreviewOpenParams; result: PreviewOpenResult }
+  'preview.close': { params: PreviewCloseParams; result: Empty }
+  'preview.list': { params: Empty; result: PreviewListResult }
+  'preview.ports': { params: PreviewPortsParams; result: PreviewPortsResult }
 }
 
 /** D→C 通知方法（没有响应）。 */

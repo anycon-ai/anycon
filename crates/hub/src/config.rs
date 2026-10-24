@@ -39,6 +39,11 @@ pub const DEFAULT_CLIENT_BYTES_PER_MIN: u64 = 10 * 1024 * 1024;
 /// 默认的 daemon 连接入站预算：100 MiB / 分钟（它是所有客户端的汇聚点）。
 pub const DEFAULT_DAEMON_BYTES_PER_MIN: u64 = 100 * 1024 * 1024;
 
+/// 默认的账号预览流量预算：512 MiB / 分钟（`ANYCON_PREVIEW_BYTES_PER_MIN`）。
+pub const DEFAULT_PREVIEW_BYTES_PER_MIN: u64 = 512 * 1024 * 1024;
+/// 默认的每账号预览连接数上限（`ANYCON_PREVIEW_MAX_CONNECTIONS`）。
+pub const DEFAULT_PREVIEW_MAX_CONNECTIONS: u32 = 16;
+
 /// 按 IP / 按连接的限速参数。默认值见 docs/spec/hub.md § 3.4、§ 7.2。
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -83,6 +88,19 @@ pub struct Limits {
     pub push_api_per_min_per_account: u32,
     /// 每台收件设备每分钟最多触发几条推送 / 邮件通知判定（防止配对设备狂发 `notify` 把推送服务和邮件刷爆）。
     pub notify_per_min_per_device: u32,
+    /// 每个账号预览流量（预览连接 ↔ 节点，两个方向合计）每分钟的字节预算（`ANYCON_PREVIEW_BYTES_PER_MIN`，
+    /// docs/spec/hub.md § 13.5）。
+    pub preview_bytes_per_min: u64,
+    /// 每个账号同时在线的预览连接数上限（`ANYCON_PREVIEW_MAX_CONNECTIONS`）。
+    pub preview_max_connections: u32,
+    /// 预览域名上的 WebSocket 升级：每个真实 IP 每分钟（service worker 被浏览器回收后会重连，比主域名宽）。
+    pub preview_ws_upgrade_per_min: u32,
+    /// `POST /api/preview/tokens`：每台设备每分钟。
+    pub preview_tokens_per_min_per_device: u32,
+    /// 同一台设备未过期的预览令牌上限，超过时删掉最旧的。
+    pub preview_tokens_per_device: u32,
+    /// 一个节点最多绑定几个预览 label。
+    pub preview_labels_per_node: u32,
 }
 
 impl Default for Limits {
@@ -109,6 +127,12 @@ impl Default for Limits {
             email_failures_per_day: 30,
             push_api_per_min_per_account: 30,
             notify_per_min_per_device: 30,
+            preview_bytes_per_min: DEFAULT_PREVIEW_BYTES_PER_MIN,
+            preview_max_connections: DEFAULT_PREVIEW_MAX_CONNECTIONS,
+            preview_ws_upgrade_per_min: 120,
+            preview_tokens_per_min_per_device: 60,
+            preview_tokens_per_device: 64,
+            preview_labels_per_node: 256,
         }
     }
 }
@@ -146,6 +170,8 @@ pub struct Timing {
     pub notify_email_dedupe: Duration,
     /// 单个 Web Push 请求的超时（docs/spec/hub.md § 6.1：10 秒）。
     pub push_timeout: Duration,
+    /// 预览令牌的有效期（docs/spec/hub.md § 13.3：24 小时）。
+    pub preview_token_ttl: Duration,
 }
 
 impl Default for Timing {
@@ -166,6 +192,7 @@ impl Default for Timing {
             email_verify_failure_delay: Duration::from_millis(250),
             notify_email_dedupe: Duration::from_secs(10 * 60),
             push_timeout: Duration::from_secs(10),
+            preview_token_ttl: Duration::from_secs(24 * 3600),
         }
     }
 }
@@ -246,6 +273,8 @@ pub struct Config {
     pub push_allow_hosts: Option<Vec<String>>,
     /// **只给测试用**：用这个发信实现代替 SMTP（`Some` 时即使没配 `smtp` 也算「邮件可用」）。
     pub mailer_override: Option<Arc<dyn Mailer>>,
+    /// `ANYCON_PREVIEW_URL`（ADR-39）。`None` = 没有 dev server 预览。
+    pub preview: Option<PreviewUrl>,
 }
 
 impl std::fmt::Debug for Config {
@@ -268,6 +297,7 @@ impl std::fmt::Debug for Config {
             .field("vapid_subject", &self.vapid_subject)
             .field("push_allow_hosts", &self.push_allow_hosts)
             .field("mailer_override", &self.mailer_override.is_some())
+            .field("preview", &self.preview)
             .finish_non_exhaustive()
     }
 }
@@ -344,6 +374,7 @@ impl Config {
             vapid_subject: None,
             push_allow_hosts: None,
             mailer_override: None,
+            preview: None,
         })
     }
 
@@ -405,6 +436,20 @@ impl Config {
         if let Some(s) = raw.rate_daemon_bytes_per_min.as_deref() {
             cfg.limits.daemon_bytes_per_min = parse_rate("ANYCON_RATE_DAEMON_BYTES_PER_MIN", s)?;
         }
+        if let Some(s) = raw.preview_url.as_deref().filter(|s| !s.trim().is_empty()) {
+            cfg.preview = Some(parse_preview_url(s, &cfg.public_url)?);
+        }
+        if let Some(s) = raw.preview_bytes_per_min.as_deref() {
+            cfg.limits.preview_bytes_per_min = parse_rate("ANYCON_PREVIEW_BYTES_PER_MIN", s)?;
+        }
+        if let Some(s) = raw.preview_max_connections.as_deref() {
+            let n: u32 =
+                s.trim().parse().map_err(|e| invalid("ANYCON_PREVIEW_MAX_CONNECTIONS", format!("{s:?}: {e}")))?;
+            if n == 0 {
+                return Err(invalid("ANYCON_PREVIEW_MAX_CONNECTIONS", "must be at least 1"));
+            }
+            cfg.limits.preview_max_connections = n;
+        }
         if let Some(s) = raw.smtp_url.as_deref().filter(|s| !s.trim().is_empty()) {
             cfg.smtp = Some(parse_smtp_url(s)?);
         }
@@ -431,8 +476,12 @@ impl Config {
     }
 
     /// 启动前的最后检查（环境变量路径在 [`Config::from_vars`] 里已经检查过；程序化构造的配置也要过这一关）：
-    /// 配了 SMTP 必须有发件人，`smtp+plain` 的主机写法要过 [`check_plain_host`]（IP 字面量必须是本机 / 内网）。
+    /// 配了 SMTP 必须有发件人，`smtp+plain` 的主机写法要过 [`check_plain_host`]（IP 字面量必须是本机 / 内网），
+    /// 预览域名不能和 `ANYCON_PUBLIC_URL` 在同一个可注册域名下。
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(preview) = &self.preview {
+            check_preview_site(preview, &self.public_url)?;
+        }
         if let Some(smtp) = &self.smtp {
             if self.email_from.is_none() {
                 return Err(invalid("ANYCON_EMAIL_FROM", "required when ANYCON_SMTP_URL is set"));
@@ -624,6 +673,169 @@ fn parse_rate(var: &'static str, s: &str) -> Result<u64, ConfigError> {
     Ok(n)
 }
 
+/// 解析后的 `ANYCON_PREVIEW_URL`（ADR-39，docs/spec/hub.md § 13.1）：预览 origin 的模板
+/// `<scheme>://*.<域名>[:端口]`，`*` 是最左边的一整段，代表每个预览的 label。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewUrl {
+    /// `http` 或 `https`（http 只允许 `localhost` / `*.localhost`）。
+    pub scheme: &'static str,
+    /// 预览域名（小写、不带 `*.`），如 `aiplace.app`。
+    pub domain: String,
+    /// 显式端口；scheme 的默认端口（80 / 443）归一成 `None`。
+    pub port: Option<u16>,
+}
+
+/// [`PreviewUrl::match_host`] 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostMatch {
+    /// 不在预览域名下（主域名、局域网 IP……）：照旧走主站。
+    Other,
+    /// 在预览域名下，但 `*` 那一段不是合法的 label。
+    InvalidLabel,
+    /// `<label>.<预览域名>[:端口]`。
+    Label(String),
+}
+
+impl PreviewUrl {
+    fn default_port(&self) -> u16 {
+        if self.scheme == "https" {
+            443
+        } else {
+            80
+        }
+    }
+
+    fn authority_suffix(&self) -> String {
+        match self.port {
+            Some(p) => format!("{}:{p}", self.domain),
+            None => self.domain.clone(),
+        }
+    }
+
+    /// 某个 label 的预览 origin：`https://<label>.<预览域名>[:端口]`。
+    pub fn origin_for(&self, label: &str) -> String {
+        format!("{}://{label}.{}", self.scheme, self.authority_suffix())
+    }
+
+    /// 给 `/api/config` 的模板：`https://{label}.<预览域名>[:端口]`。
+    pub fn origin_template(&self) -> String {
+        format!("{}://{{label}}.{}", self.scheme, self.authority_suffix())
+    }
+
+    /// 主站 CSP `frame-src` 用的来源表达式：`https://*.<预览域名>[:端口]`。
+    pub fn frame_src(&self) -> String {
+        format!("{}://*.{}", self.scheme, self.authority_suffix())
+    }
+
+    /// `Host` 头（`host[:port]`）是不是 `<label>.<预览域名>[:端口]`。端口按配置：配了显式端口就必须带它，
+    /// 没配则不带或带 scheme 的默认端口都行。主机名不分大小写，末尾的点忽略。
+    pub fn match_host(&self, host: &str) -> HostMatch {
+        let host = host.trim().to_ascii_lowercase();
+        let (name, port) = match host.rsplit_once(':') {
+            Some((name, port)) => match port.parse::<u16>() {
+                Ok(p) => (name, Some(p)),
+                Err(_) => return HostMatch::Other,
+            },
+            None => (host.as_str(), None),
+        };
+        if port.unwrap_or(self.default_port()) != self.port.unwrap_or(self.default_port()) {
+            return HostMatch::Other;
+        }
+        let name = name.strip_suffix('.').unwrap_or(name);
+        let Some(label) = name.strip_suffix(self.domain.as_str()).and_then(|rest| rest.strip_suffix('.')) else {
+            return HostMatch::Other;
+        };
+        if anycon_protocol::preview::tunnel::is_valid_label(label) {
+            HostMatch::Label(label.to_string())
+        } else {
+            HostMatch::InvalidLabel
+        }
+    }
+}
+
+/// 主机是 `localhost` 或 `*.localhost`（RFC 6761）：本机开发用，允许 http，也不参与可注册域名的比较。
+fn is_localhost_name(host: &str) -> bool {
+    let h = host.trim_end_matches('.');
+    h == "localhost" || h.ends_with(".localhost")
+}
+
+/// 解析 `ANYCON_PREVIEW_URL`：`https://*.<预览域名>[:端口]`。
+///
+/// - `*` 只能是最左边的一整段；不带路径 / query / fragment / 用户名；
+/// - 必须是 https，唯一的例外是主机是 `localhost` 或 `*.localhost`（本机开发和测试）；
+/// - 预览域名不能是一个公共后缀（`*.com`），也不能和 `ANYCON_PUBLIC_URL` 在同一个可注册域名下（[`check_preview_site`]）。
+pub fn parse_preview_url(s: &str, public_url: &Url) -> Result<PreviewUrl, ConfigError> {
+    const VAR: &str = "ANYCON_PREVIEW_URL";
+    let s = s.trim();
+    let bad = |why: &str| invalid(VAR, format!("{s:?}: {why}"));
+    let (scheme, rest) = if let Some(rest) = s.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = s.strip_prefix("http://") {
+        ("http", rest)
+    } else {
+        return Err(bad("expected https://*.<domain> (e.g. https://*.preview-example.net)"));
+    };
+    let Some(domain_part) = rest.strip_prefix("*.") else {
+        return Err(bad("the wildcard `*` must be the whole leftmost label, as in https://*.preview-example.net"));
+    };
+    if domain_part.contains('*') {
+        return Err(bad("the wildcard `*` must be the whole leftmost label and may appear only once"));
+    }
+    let url = Url::parse(&format!("{scheme}://{domain_part}")).map_err(|e| bad(&format!("not a valid URL ({e})")))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(bad("must not contain credentials"));
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return Err(bad("must not contain a path, query or fragment"));
+    }
+    if url.port() == Some(0) {
+        return Err(bad("port 0 is not valid"));
+    }
+    let Some(url::Host::Domain(domain)) = url.host() else {
+        return Err(bad("the preview domain must be a DNS name, not an IP address"));
+    };
+    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+    let localhost = is_localhost_name(&domain);
+    if scheme == "http" && !localhost {
+        return Err(bad(
+            "must be https (plain http is only allowed for localhost development, e.g. http://*.preview.localhost:8080)",
+        ));
+    }
+    if !localhost && psl::domain_str(&domain).is_none() {
+        return Err(bad(
+            "the preview domain must be a registrable domain (like preview-example.net), not a public suffix",
+        ));
+    }
+    let preview = PreviewUrl { scheme, domain, port: url.port() };
+    check_preview_site(&preview, public_url)?;
+    Ok(preview)
+}
+
+/// 预览域名不能和 `ANYCON_PUBLIC_URL` 的主机在同一个可注册域名（eTLD+1，按 Public Suffix List）下：
+/// 同站的子域能往父域写 cookie（cookie tossing），覆盖 hub 的登录 cookie。
+/// `ANYCON_PUBLIC_URL` 是 IP 字面量或 `localhost` 一类时不比（没有可注册域名这回事）。
+pub fn check_preview_site(preview: &PreviewUrl, public_url: &Url) -> Result<(), ConfigError> {
+    let public_host = match public_url.host() {
+        Some(url::Host::Domain(d)) => d.trim_end_matches('.').to_ascii_lowercase(),
+        _ => return Ok(()),
+    };
+    if is_localhost_name(&public_host) || is_localhost_name(&preview.domain) {
+        return Ok(());
+    }
+    match (psl::domain_str(&public_host), psl::domain_str(&preview.domain)) {
+        (Some(a), Some(b)) if a == b => Err(invalid(
+            "ANYCON_PREVIEW_URL",
+            format!(
+                "the preview domain `{}` is in the same registrable domain (`{a}`) as ANYCON_PUBLIC_URL's `{public_host}`. \
+                 Pages under a sibling subdomain could set cookies for the hub's domain, so the preview needs its own \
+                 domain (for example the hub at hub.example.com and previews at *.preview-example.net)",
+                preview.domain
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// 解析并校验 `ANYCON_PUBLIC_URL`：必须是 http(s) URL，有主机名，不带路径 / query / fragment。
 pub fn parse_public_url(s: &str) -> Result<Url, ConfigError> {
     let s = s.trim();
@@ -690,6 +902,9 @@ struct RawConfig {
     smtp_url: Option<String>,
     email_from: Option<String>,
     vapid_subject: Option<String>,
+    preview_url: Option<String>,
+    preview_bytes_per_min: Option<String>,
+    preview_max_connections: Option<String>,
     #[serde(flatten)]
     other: BTreeMap<String, String>,
 }
@@ -1090,5 +1305,219 @@ mod tests {
         // 什么都没有：用主机名兜底，仍然是合法的 mailto:
         let c = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://192.168.1.5:8080")])).unwrap();
         assert_eq!(c.vapid_subject(), "mailto:noreply@192.168.1.5");
+    }
+    // ---- ADR-39：预览 ----
+
+    fn preview(url: &str) -> Result<PreviewUrl, ConfigError> {
+        Ok(with(&[("ANYCON_PREVIEW_URL", url)])?.preview.expect("preview configured"))
+    }
+
+    fn preview_err(url: &str) -> String {
+        let err = with(&[("ANYCON_PREVIEW_URL", url)]).expect_err(url);
+        assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_PREVIEW_URL", .. }), "{url}: {err}");
+        err.to_string()
+    }
+
+    #[test]
+    fn preview_is_off_by_default_and_the_variables_are_recognised() {
+        let c = with(&[]).unwrap();
+        assert!(c.preview.is_none());
+        assert_eq!(c.limits.preview_bytes_per_min, 512 * 1024 * 1024);
+        assert_eq!(c.limits.preview_max_connections, 16);
+        assert_eq!(c.timing.preview_token_ttl, Duration::from_secs(24 * 3600));
+        let c = with(&[
+            ("ANYCON_PREVIEW_URL", "https://*.preview-example.net"),
+            ("ANYCON_PREVIEW_BYTES_PER_MIN", "1073741824"),
+            ("ANYCON_PREVIEW_MAX_CONNECTIONS", "4"),
+        ])
+        .unwrap();
+        assert!(c.unknown_vars.is_empty() && c.unimplemented_vars.is_empty());
+        assert_eq!(c.limits.preview_bytes_per_min, 1024 * 1024 * 1024);
+        assert_eq!(c.limits.preview_max_connections, 4);
+        // 空串 = 没配
+        assert!(with(&[("ANYCON_PREVIEW_URL", "  ")]).unwrap().preview.is_none());
+    }
+
+    #[test]
+    fn preview_url_accepts_the_documented_forms() {
+        let p = preview("https://*.preview-example.net").unwrap();
+        assert_eq!((p.scheme, p.domain.as_str(), p.port), ("https", "preview-example.net", None));
+        assert_eq!(p.origin_for("abc"), "https://abc.preview-example.net");
+        assert_eq!(p.origin_template(), "https://{label}.preview-example.net");
+        assert_eq!(p.frame_src(), "https://*.preview-example.net");
+        // 默认端口归一成「没写」
+        assert_eq!(preview("https://*.preview-example.net:443").unwrap().port, None);
+        // 非默认端口保留
+        let p = preview("https://*.preview-example.net:8443").unwrap();
+        assert_eq!(p.port, Some(8443));
+        assert_eq!(p.origin_template(), "https://{label}.preview-example.net:8443");
+        // 大小写、末尾的 /
+        assert_eq!(preview(" https://*.Preview-Example.NET/ ").unwrap().domain, "preview-example.net");
+        // 二级泛域名也行（只是公共 hub 不用，见 deploy.md 的 Cloudflare 说明）
+        assert_eq!(preview("https://*.preview.preview-example.net").unwrap().domain, "preview.preview-example.net");
+        // 公共 hub 自己的配置：hub 在 anycon.ai，预览在 aiplace.app
+        let c = Config::from_vars(vars(&[
+            ("ANYCON_PUBLIC_URL", "https://my-hub.anycon.ai"),
+            ("ANYCON_PREVIEW_URL", "https://*.aiplace.app"),
+        ]))
+        .unwrap();
+        assert_eq!(c.preview.unwrap().origin_template(), "https://{label}.aiplace.app");
+    }
+
+    #[test]
+    fn preview_url_http_is_only_for_localhost() {
+        let p = preview("http://*.preview.localhost:8080").unwrap();
+        assert_eq!((p.scheme, p.domain.as_str(), p.port), ("http", "preview.localhost", Some(8080)));
+        assert_eq!(p.origin_for("x"), "http://x.preview.localhost:8080");
+        assert_eq!(preview("http://*.localhost").unwrap().domain, "localhost");
+        assert_eq!(preview("https://*.localhost").unwrap().scheme, "https");
+        for bad in ["http://*.preview-example.net", "http://*.preview.localhost.example.net", "http://*.notlocalhost"] {
+            assert!(preview_err(bad).contains("must be https"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn preview_url_rejects_malformed_templates() {
+        for (bad, why) in [
+            ("https://preview-example.net", "wildcard"),
+            ("https://*preview-example.net", "wildcard"),
+            ("https://a.*.preview-example.net", "wildcard"),
+            ("https://*.*.preview-example.net", "wildcard"),
+            ("https://*", "wildcard"),
+            ("https://*.", "not a valid URL"),
+            ("*.preview-example.net", "expected https"),
+            ("ftp://*.preview-example.net", "expected https"),
+            ("https://*.preview-example.net/path", "path"),
+            ("https://*.preview-example.net/?x=1", "path"),
+            ("https://*.preview-example.net/#f", "path"),
+            ("https://u:p@*.preview-example.net", "wildcard"),
+            ("https://*.u:p@preview-example.net", "credentials"),
+            ("https://*.preview-example.net:0", "port"),
+            ("https://*.preview-example.net:99999", "not a valid URL"),
+            ("https://*.127.0.0.1", "DNS name"),
+            ("https://*.[::1]", "DNS name"),
+            ("https://*.com", "public suffix"),
+            ("https://*.co.uk", "public suffix"),
+            ("https://*.intranet", "public suffix"),
+        ] {
+            let msg = preview_err(bad);
+            assert!(msg.contains(why), "{bad}: expected {why:?} in {msg}");
+        }
+    }
+
+    #[test]
+    fn preview_domain_must_not_share_a_registrable_domain_with_the_hub() {
+        let hub_and_preview = |hub: &str, preview: &str| {
+            Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", hub), ("ANYCON_PREVIEW_URL", preview)]))
+        };
+        for (hub, preview) in [
+            ("https://hub.example.com", "https://*.preview.example.com"),
+            ("https://hub.example.com", "https://*.example.com"),
+            ("https://example.com", "https://*.preview.example.com"),
+            ("https://hub.example.co.uk", "https://*.preview.example.co.uk"),
+            ("https://a.b.example.com:8443", "https://*.c.example.com"),
+        ] {
+            let err = hub_and_preview(hub, preview).expect_err(preview).to_string();
+            assert!(err.contains("same registrable domain") && err.contains("cookies"), "{hub} vs {preview}: {err}");
+        }
+        // 不同的可注册域名：可以。PSL 的私有部分也算（github.io 下每个用户是一个独立的站点）
+        for (hub, preview) in [
+            ("https://hub.example.com", "https://*.example.net"),
+            ("https://hub.example.co.uk", "https://*.example.org.uk"),
+            ("https://one.github.io", "https://*.two.github.io"),
+            ("https://hub.example.com", "https://*.preview.localhost"),
+        ] {
+            assert!(hub_and_preview(hub, preview).is_ok(), "{hub} vs {preview}");
+        }
+        // ANYCON_PUBLIC_URL 是 IP 字面量或 localhost 一类：不比
+        for hub in ["http://192.168.1.10:8080", "http://[::1]:8080", "http://localhost:8080", "http://hub.localhost"] {
+            assert!(hub_and_preview(hub, "http://*.preview.localhost:8080").is_ok(), "{hub}");
+            assert!(hub_and_preview(hub, "https://*.preview-example.net").is_ok(), "{hub}");
+        }
+        // 程序化构造的配置在 validate() 里过同一关
+        let mut c = Config::new("https://hub.example.com", std::path::Path::new("/nonexistent")).unwrap();
+        c.preview = Some(PreviewUrl { scheme: "https", domain: "preview.example.com".into(), port: None });
+        assert!(c.validate().unwrap_err().to_string().contains("same registrable domain"));
+        c.preview = Some(PreviewUrl { scheme: "https", domain: "example.net".into(), port: None });
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn preview_numbers_are_validated() {
+        for (var, ok) in [
+            ("ANYCON_PREVIEW_BYTES_PER_MIN", "205824"),
+            ("ANYCON_PREVIEW_BYTES_PER_MIN", "536870912"),
+            ("ANYCON_PREVIEW_MAX_CONNECTIONS", "1"),
+            ("ANYCON_PREVIEW_MAX_CONNECTIONS", "100"),
+        ] {
+            assert!(with(&[(var, ok)]).is_ok(), "{var}={ok}");
+        }
+        for (var, bad) in [
+            ("ANYCON_PREVIEW_BYTES_PER_MIN", "205823"),
+            ("ANYCON_PREVIEW_BYTES_PER_MIN", "0"),
+            ("ANYCON_PREVIEW_BYTES_PER_MIN", "512MiB"),
+            ("ANYCON_PREVIEW_MAX_CONNECTIONS", "0"),
+            ("ANYCON_PREVIEW_MAX_CONNECTIONS", "-1"),
+            ("ANYCON_PREVIEW_MAX_CONNECTIONS", "many"),
+        ] {
+            let err = with(&[(var, bad)]).unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { var: v, .. } if v == var), "{var}={bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn preview_host_matching_follows_the_configured_port() {
+        let label = "a".repeat(26);
+        let on = |p: &PreviewUrl, host: &str| p.match_host(host);
+
+        // 没配端口：不带或带默认端口（https 是 443）都行
+        let p = preview("https://*.preview-example.net").unwrap();
+        for host in [
+            format!("{label}.preview-example.net"),
+            format!("{label}.preview-example.net:443"),
+            format!("{label}.PREVIEW-example.net"),
+            format!("{label}.preview-example.net."),
+        ] {
+            assert_eq!(on(&p, &host), HostMatch::Label(label.clone()), "{host}");
+        }
+        for host in [
+            format!("{label}.preview-example.net:8443"),
+            format!("{label}.preview-example.net:80"),
+            format!("{label}.preview-example.net:"),
+            format!("{label}.preview-example.net:abc"),
+            "preview-example.net".to_string(),
+            format!("{label}.preview-example.org"),
+            format!("{label}.xpreview-example.net"),
+            format!("{label}preview-example.net"),
+            "hub.example.com".to_string(),
+            "127.0.0.1:8080".to_string(),
+            "[::1]:8080".to_string(),
+            String::new(),
+        ] {
+            assert_eq!(on(&p, &host), HostMatch::Other, "{host:?}");
+        }
+        // 域名下但 label 不合法
+        for host in [
+            "www.preview-example.net".to_string(),
+            format!("{}.preview-example.net", "A1".repeat(13)),
+            format!("{}.preview-example.net", "a".repeat(25)),
+            format!("{}.preview-example.net", "a".repeat(27)),
+            format!("x.{label}.preview-example.net"),
+            format!("{label}.{label}.preview-example.net"),
+            ".preview-example.net".to_string(),
+        ] {
+            assert_eq!(on(&p, &host), HostMatch::InvalidLabel, "{host}");
+        }
+
+        // 配了端口：必须带这个端口
+        let p = preview("http://*.preview.localhost:8080").unwrap();
+        assert_eq!(on(&p, &format!("{label}.preview.localhost:8080")), HostMatch::Label(label.clone()));
+        assert_eq!(on(&p, &format!("{label}.preview.localhost")), HostMatch::Other);
+        assert_eq!(on(&p, &format!("{label}.preview.localhost:80")), HostMatch::Other);
+        assert_eq!(on(&p, &format!("{label}.preview.localhost:9090")), HostMatch::Other);
+        // http 的默认端口 80 可省
+        let p = preview("http://*.preview.localhost").unwrap();
+        assert_eq!(on(&p, &format!("{label}.preview.localhost")), HostMatch::Label(label.clone()));
+        assert_eq!(on(&p, &format!("{label}.preview.localhost:80")), HostMatch::Label(label));
     }
 }

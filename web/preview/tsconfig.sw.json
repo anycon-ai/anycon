@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "WebWorker", "WebWorker.Iterable"],
+    "types": ["node"],
+    "jsx": "preserve",
+    "baseUrl": ".",
+    "paths": {},
+    "noEmit": true
+  },
+  "include": ["src/sw", "src/sw.ts", "src/shared", "src/test", "src/env.d.ts"]
+}

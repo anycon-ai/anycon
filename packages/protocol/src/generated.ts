@@ -17,6 +17,7 @@ export type Control =
   | {
       client: ClientInfo;
       device_token?: string | null;
+      preview_token?: string | null;
       protocol_version: number;
       type: "auth";
     }
@@ -103,6 +104,11 @@ export type Control =
       type: "peer_offline";
     }
   | {
+      label: string;
+      peer: string;
+      type: "preview_peer";
+    }
+  | {
       seq: number;
       to: string;
       type: "undeliverable";
@@ -128,6 +134,7 @@ export type Control =
     }
   | {
       retry_after_ms: number;
+      to?: string | null;
       type: "rate_limited";
     }
   | {
@@ -431,6 +438,27 @@ export type SecurityEventKind =
 export type NotifyCategory =
   ("permission_requested" | "turn_finished" | "error" | "session_idle") | "enroll_requested" | "security";
 /**
+ * 隧道里响应体的编码。`gzip`：`DATA` 帧拼起来是 gzip 流，预览页要先解压；`headers` 里已经去掉
+ * `content-encoding` / `content-length`。
+ */
+export type PreviewBodyEncoding = "identity" | "gzip";
+/**
+ * 端口探测是否可用。`unavailable`：这台机器上没有可用的探测手段（如没有 `lsof`），只能预览配置里允许的端口。
+ */
+export type PreviewDetection = "ok" | "unavailable";
+export type PreviewGoawayCode = "expired" | "closed" | "revoked" | "disabled" | "port_not_allowed" | "shutdown";
+/**
+ * 这个端口为什么允许预览（spec/daemon.md § 19.3）。
+ */
+export type PreviewPortSource = "session" | "workspace" | "config";
+/**
+ * daemon 拒绝隧道握手的原因（握手回复 `0x01` 后面的 UTF-8 串）。这一条不受 Noise 保护，只能当提示用。
+ */
+export type PreviewRejectReason =
+  ("expired" | "port_not_allowed" | "disabled" | "malformed") | "unknown_ticket" | "label_mismatch" | "busy";
+export type PreviewResetCode =
+  "internal" | "refused" | "timeout" | "too_large" | "cancelled" | "flow_control" | "protocol" | "limit";
+/**
  * 项目从哪来。
  */
 export type ProjectKind = "folder" | "linked";
@@ -555,6 +583,26 @@ export interface ProtocolSchema {
   permission_request: PermissionRequest;
   permission_resolved: PermissionResolved;
   permission_respond_params: PermissionRespondParams;
+  preview_body_encoding: PreviewBodyEncoding;
+  preview_close_params: PreviewCloseParams;
+  preview_detection: PreviewDetection;
+  preview_goaway: PreviewGoaway;
+  preview_goaway_code: PreviewGoawayCode;
+  preview_hello: PreviewHello;
+  preview_info: PreviewInfo;
+  preview_launch: PreviewLaunch;
+  preview_list_result: PreviewListResult;
+  preview_open_params: PreviewOpenParams;
+  preview_open_result: PreviewOpenResult;
+  preview_port: PreviewPort;
+  preview_port_source: PreviewPortSource;
+  preview_ports_params: PreviewPortsParams;
+  preview_ports_result: PreviewPortsResult;
+  preview_reject_reason: PreviewRejectReason;
+  preview_request_head: PreviewRequestHead;
+  preview_reset: PreviewReset;
+  preview_reset_code: PreviewResetCode;
+  preview_response_head: PreviewResponseHead;
   project: Project;
   project_kind: ProjectKind;
   pull_request_info: PullRequestInfo;
@@ -1276,6 +1324,10 @@ export interface NodeCapabilities {
   audit: boolean;
   blobs: boolean;
   fs: boolean;
+  /**
+   * 支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。
+   */
+  preview?: boolean;
   search: boolean;
   /**
    * 有 workspace（文件夹即项目）。SDK 节点可能没有。
@@ -1470,6 +1522,170 @@ export interface PermissionRespondParams {
    */
   option_id?: string | null;
   request_id: string;
+}
+/**
+ * `preview.close` 参数：作废这个 label 的全部票据，断开它的全部隧道。
+ */
+export interface PreviewCloseParams {
+  label: string;
+}
+/**
+ * 隧道 `GOAWAY` 帧的载荷（msgpack，只有 daemon 发，stream 0）：daemon 要关掉这条隧道，之后不再处理它的帧。
+ */
+export interface PreviewGoaway {
+  code: PreviewGoawayCode;
+  message?: string | null;
+}
+/**
+ * 隧道握手第二条消息（daemon → 预览页）的 payload，JSON。到这一条预览页才确认对端持有票据、是钉住的 daemon。
+ */
+export interface PreviewHello {
+  expires_at_ms: number;
+  port: number;
+  session_id?: string | null;
+}
+/**
+ * `preview.list` 的一项：一张未过期的票据。
+ */
+export interface PreviewInfo {
+  created_at_ms: number;
+  /**
+   * 签发这张票据的设备。
+   */
+  created_by: string;
+  created_by_name: string;
+  expires_at_ms: number;
+  label: string;
+  port: number;
+  session_id?: string | null;
+  ticket_id: string;
+  /**
+   * 此刻用这张票据建立的隧道数。
+   */
+  tunnels: number;
+}
+/**
+ * 预览页的启动参数。Web UI 把它序列化成 JSON、再 base64url（无填充），放进
+ * `<预览 origin>/__anycon/enter#<…>` 的 fragment（浏览器不会把 fragment 发给 hub）。引导页读出后存进预览 origin 的
+ * IndexedDB，立即从地址栏抹掉。
+ */
+export interface PreviewLaunch {
+  /**
+   * 票据和令牌里较早的那个过期时间。
+   */
+  expires_at_ms: number;
+  label: string;
+  /**
+   * daemon 的设备 id。
+   */
+  node: string;
+  /**
+   * daemon 的 Noise 静态公钥，64 个小写 hex。预览页用它做 NK 握手（钉住 daemon）。
+   */
+  node_public: string;
+  /**
+   * 打开后先导航到的路径（以 `/` 开头，可带查询串）。
+   */
+  path: string;
+  port: number;
+  psk: string;
+  ticket_id: string;
+  /**
+   * hub 签发的预览令牌（`POST /api/preview/tokens`），预览连接凭它向 hub 认证。
+   */
+  token: string;
+  /**
+   * 格式版本，目前是 1。
+   */
+  v: number;
+}
+export interface PreviewListResult {
+  previews: PreviewInfo[];
+}
+/**
+ * `preview.open` 参数：为本机 `port` 签发一张预览票据。
+ */
+export interface PreviewOpenParams {
+  port: number;
+  /**
+   * 从哪个会话发起（只用于界面展示和审计；端口是否允许不看它，见 spec/daemon.md § 19.3）。
+   */
+  session_id?: string | null;
+}
+/**
+ * `preview.open` 结果。`psk` 是票据的密钥，只交给预览页（放进 [`PreviewLaunch`]），不要写日志、不要发给 hub。
+ */
+export interface PreviewOpenResult {
+  expires_at_ms: number;
+  /**
+   * 这个端口固定的预览 label（26 位小写 base32），预览 origin 是 `<label>.<预览域名>`。
+   */
+  label: string;
+  port: number;
+  /**
+   * 票据密钥，64 个小写 hex（32 字节），Noise PSK。
+   */
+  psk: string;
+  session_id?: string | null;
+  /**
+   * 票据 id，32 个小写 hex（16 字节）。
+   */
+  ticket_id: string;
+}
+export interface PreviewPort {
+  pid?: number | null;
+  port: number;
+  /**
+   * 进程名（可执行文件名，不含参数）。
+   */
+  process?: string | null;
+  session_id?: string | null;
+  source: PreviewPortSource;
+}
+/**
+ * `preview.ports` 参数。带 `session_id` 只列这个会话的端口（外加配置里允许的端口）。
+ */
+export interface PreviewPortsParams {
+  session_id?: string | null;
+}
+export interface PreviewPortsResult {
+  detection: PreviewDetection;
+  ports: PreviewPort[];
+}
+/**
+ * 隧道 `REQUEST` 帧的载荷（msgpack，字段名为键）。
+ */
+export interface PreviewRequestHead {
+  /**
+   * 请求头，按原顺序，名字小写。`cookie` 来自预览页自己的 cookie jar；daemon 转发前改写哪些头见
+   * spec/daemon.md § 19.5。
+   */
+  headers: [string, string][];
+  method: string;
+  /**
+   * 以 `/` 开头，可带查询串；不含 scheme 和主机。
+   */
+  path: string;
+  /**
+   * `true`：这是一个 WebSocket 升级请求（`method` 为 `GET`，子协议在 `sec-websocket-protocol` 头里）。
+   */
+  websocket?: boolean;
+}
+/**
+ * 隧道 `RESET` 帧的载荷（msgpack）：终止这个 stream 的两个方向。
+ */
+export interface PreviewReset {
+  code: PreviewResetCode;
+  message?: string | null;
+}
+/**
+ * 隧道 `RESPONSE` 帧的载荷（msgpack）。WebSocket 流里 `status = 101` 表示升级成功，其他状态码表示被拒，
+ * 后面跟普通响应体。
+ */
+export interface PreviewResponseHead {
+  encoding?: PreviewBodyEncoding & string;
+  headers: [string, string][];
+  status: number;
 }
 /**
  * 一个项目 = workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。

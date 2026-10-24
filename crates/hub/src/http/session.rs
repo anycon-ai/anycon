@@ -14,7 +14,7 @@ use axum::http::{header, HeaderMap, HeaderValue};
 use crate::app::AppState;
 use crate::clientip::{self, ClientCtx};
 use crate::error::{ApiError, ApiResult};
-use crate::store::{Account, WebSession};
+use crate::store::{Account, Device, WebSession};
 use crate::util::{clip, hash_token, ip_prefix, new_secret, now_ms};
 
 pub const COOKIE_NAME: &str = "anycon_session";
@@ -144,10 +144,25 @@ impl FromRequestParts<Arc<AppState>> for Authed {
     }
 }
 
+/// `Authorization: Bearer <token>` 里的 token。没有 `Authorization` 头返回 `Ok(None)`；有但不是 `Bearer`、或 token 为空 /
+/// 过长是 `401 unauthorized`。
+fn bearer_token(headers: &HeaderMap) -> ApiResult<Option<&str>> {
+    let Some(raw) = headers.get(header::AUTHORIZATION) else { return Ok(None) };
+    raw.to_str()
+        .ok()
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, t)| t.trim())
+        .filter(|t| !t.is_empty() && t.len() <= 256)
+        .map(Some)
+        .ok_or_else(ApiError::unauthorized)
+}
+
 /// 只读接口用的登录态：登录 cookie，或设备 token（`Authorization: Bearer <device token>`）。
 ///
 /// 带了 `Authorization` 头就只看它（不回退到 cookie）：不是 `Bearer`、token 不存在、设备已吊销都是
-/// `401 unauthorized`。设备 token 只能读（目前只有 `GET /api/devices`），写操作仍然要登录 cookie。
+/// `401 unauthorized`。设备 token 只能读（目前只有 `GET /api/devices`），写操作仍然要登录 cookie；
+/// 例外是 `POST /api/preview/tokens`，它用 [`DeviceBearer`]。
 /// CLI 已经是这个 hub 上的设备时用它列出账号里的节点，不必再登录一次（spec/cli.md § 3.3）。
 pub struct AccountReader {
     pub account_id: String,
@@ -157,15 +172,7 @@ impl FromRequestParts<Arc<AppState>> for AccountReader {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
-        if let Some(raw) = parts.headers.get(header::AUTHORIZATION) {
-            let token = raw
-                .to_str()
-                .ok()
-                .and_then(|v| v.split_once(' '))
-                .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-                .map(|(_, t)| t.trim())
-                .filter(|t| !t.is_empty() && t.len() <= 256)
-                .ok_or_else(ApiError::unauthorized)?;
+        if let Some(token) = bearer_token(&parts.headers)? {
             return match state.store.find_device_by_token_hash(&hash_token(token)).await? {
                 Some(d) if d.revoked_at_ms.is_none() => Ok(AccountReader { account_id: d.account_id }),
                 _ => Err(ApiError::unauthorized()),
@@ -174,6 +181,25 @@ impl FromRequestParts<Arc<AppState>> for AccountReader {
         match lookup_session(state, &parts.headers).await? {
             Some((_, account)) => Ok(AccountReader { account_id: account.id }),
             None => Err(ApiError::unauthorized()),
+        }
+    }
+}
+
+/// 只认设备 token 的调用者（`Authorization: Bearer <device token>`）：不看 cookie，没有 `Authorization` 头、
+/// 不是 `Bearer`、token 不存在、设备已吊销都是 `401 unauthorized`。`POST /api/preview/tokens` 用它
+/// （docs/spec/hub.md § 13.3）：预览令牌由已配对的设备申请，浏览器的登录会话不行。
+pub struct DeviceBearer {
+    pub device: Device,
+}
+
+impl FromRequestParts<Arc<AppState>> for DeviceBearer {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
+        let token = bearer_token(&parts.headers)?.ok_or_else(ApiError::unauthorized)?;
+        match state.store.find_device_by_token_hash(&hash_token(token)).await? {
+            Some(device) if device.revoked_at_ms.is_none() => Ok(DeviceBearer { device }),
+            _ => Err(ApiError::unauthorized()),
         }
     }
 }
@@ -189,6 +215,34 @@ mod tests {
         assert_eq!(cookie_value(&h, COOKIE_NAME).as_deref(), Some("abc123"));
         assert_eq!(cookie_value(&h, "a").as_deref(), Some("1"));
         assert!(cookie_value(&h, "zzz").is_none());
+    }
+
+    #[test]
+    fn bearer_tokens_are_read_from_the_authorization_header_only() {
+        let with = |v: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::AUTHORIZATION, HeaderValue::from_static(v));
+            h
+        };
+        assert_eq!(bearer_token(&HeaderMap::new()).unwrap(), None, "no header: the caller decides what that means");
+        assert_eq!(bearer_token(&with("Bearer abc")).unwrap(), Some("abc"));
+        assert_eq!(
+            bearer_token(&with("bearer abc ")).unwrap(),
+            Some("abc"),
+            "scheme is case-insensitive, token trimmed"
+        );
+        // 有头但不是合格的 Bearer：401，不回退到别的认证方式
+        for bad in ["Basic abc", "Bearer", "Bearer ", "abc", ""] {
+            assert!(bearer_token(&with(bad)).is_err(), "{bad:?}");
+        }
+        let long = format!("Bearer {}", "a".repeat(257));
+        let mut h = HeaderMap::new();
+        h.insert(header::AUTHORIZATION, HeaderValue::from_str(&long).unwrap());
+        assert!(bearer_token(&h).is_err(), "over-long tokens are not even looked up");
+        // cookie 不是 Authorization
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, HeaderValue::from_static("anycon_session=abc"));
+        assert_eq!(bearer_token(&h).unwrap(), None);
     }
 
     #[test]

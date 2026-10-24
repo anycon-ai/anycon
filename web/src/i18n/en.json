@@ -352,7 +352,7 @@
     "headingScratch": "What should we work on?"
   },
   "session": {
-    "view": { "label": "Session view", "chat": "Chat", "changes": "Changes" },
+    "view": { "label": "Session view", "chat": "Chat", "changes": "Changes", "preview": "Preview" },
     "pendingCount": "{{count}} waiting",
     "archived": "Archived",
     "archivedHint": "Archived · unarchive to send messages",
@@ -606,6 +606,7 @@
     "tabDevices": "Devices",
     "tabWorkspace": "Workspace",
     "tabLimits": "Limits",
+    "tabPreview": "Preview",
     "tabAbout": "About",
     "agentsHint": "Agents found on the node. Defaults here apply to new sessions from every device.",
     "redetect": "Re-detect",
@@ -927,6 +928,73 @@
       "commitsLost_other": "{{count}} commits on this branch would be lost",
       "autoKeeps_one": "{{count}} uncommitted change, so it will be kept.",
       "autoKeeps_other": "{{count}} uncommitted changes, so it will be kept."
+    }
+  },
+  "preview": {
+    "toolbar": "Preview controls",
+    "port": "Port",
+    "choosePort": "Choose a port",
+    "otherPort": "Other port…",
+    "otherLabel": "Port",
+    "otherOpen": "Open",
+    "otherInvalid": "Enter a port between 1 and 65535.",
+    "sourceConfig": "config",
+    "path": "Path",
+    "reload": "Reload",
+    "openTab": "Open in new tab",
+    "openTabShort": "Open",
+    "stop": "Stop preview",
+    "stopTitle": "Stop the preview of port {{port}}?",
+    "stopBody": "This disconnects the preview of this port on all your devices. Pages open elsewhere stop loading. You can start it again at any time.",
+    "stoppedToast": "Stopped the preview of port {{port}}",
+    "stoppedTitle": "Preview stopped",
+    "stoppedBody": "The preview of port {{port}} was closed on every device.",
+    "restart": "Start again",
+    "frameTitle": "Preview of port {{port}}",
+    "loading": "Looking for ports…",
+    "opening": "Opening the preview…",
+    "emptyTitle": "No ports yet",
+    "emptyBody": "When the agent starts a dev server, its port shows up here. You can also pick “Other port…” and enter one yourself.",
+    "detectionUnavailable": "This machine can’t detect listening ports, so only ports listed in preview.allow_ports can be previewed.",
+    "offline": "The node is offline. Ports and new previews are unavailable until it is back.",
+    "portsError": "Could not list the ports: {{error}}",
+    "errorTitle": "Could not open the preview",
+    "retry": "Try again",
+    "errors": {
+      "port_not_allowed": "This port isn’t allowed for preview. By default only servers started by this session are. To preview another port, add it to preview.allow_ports in the node’s config.toml.",
+      "disabled": "Preview is turned off on this node (preview.enabled in config.toml).",
+      "unauthorized": "The hub doesn’t accept this browser as a paired device. Sign in again or pair this browser with the node.",
+      "local": {
+        "no_device_token": "This browser has no device token for the hub yet. Pair it with a node first.",
+        "no_node_key": "This browser doesn’t have the node’s key. Pair it with the node again.",
+        "bad_template": "The hub’s preview address is not valid.",
+        "bad_label": "The node returned a preview name the hub can’t use."
+      },
+      "hub": {
+        "preview_disabled": "This hub has preview turned off.",
+        "invalid_label": "The node returned a preview name the hub can’t use.",
+        "label_taken": "This preview address is already used by another node on this hub.",
+        "too_many_labels": "This node already has the maximum number of preview addresses on this hub.",
+        "not_found": "The hub doesn’t know this node, or this browser isn’t paired with it."
+      }
+    },
+    "list": {
+      "title": "Open previews",
+      "hint": "Preview tickets issued by this node’s devices and still valid. Closing one revokes every ticket of that port and disconnects it.",
+      "empty": "No open previews.",
+      "offline": "The node is offline.",
+      "tunnels_one": "{{count}} tunnel",
+      "tunnels_other": "{{count}} tunnels",
+      "noSession": "No session",
+      "openedBy": "Opened by {{device}}",
+      "expires": "Expires {{time}}",
+      "close": "Close",
+      "closeTitle": "Close the preview of port {{port}}?"
+    },
+    "policy": {
+      "title": "Which ports can be previewed",
+      "default": "By default a preview can only reach servers started by the session itself: the listening process runs under the session’s agent, or was started in its working folder.",
+      "allowPorts": "To allow other ports, list them in preview.allow_ports in the node’s config.toml. Set preview.enabled = false to turn previews off for the whole node. The node only ever connects to 127.0.0.1 and ::1."
     }
   },
   "git": {

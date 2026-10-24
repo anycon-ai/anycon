@@ -21,6 +21,17 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 测试 hub 的预览域名（`http://*.preview.localhost`，没有端口：测试请求自己带 `Host`，直连随机端口）。
+pub const PREVIEW_DOMAIN: &str = "preview.localhost";
+
+/// 一个新的、合法的预览 label。
+pub fn new_label() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    anycon_protocol::preview::tunnel::label_from_bytes(&bytes)
+}
+
 pub struct TestHub {
     pub handle: Handle,
     pub dir: tempfile::TempDir,
@@ -92,6 +103,59 @@ impl TestHub {
             req = req.json(&body);
         }
         req.send().await.unwrap()
+    }
+
+    /// 起一个配了预览（`http://*.preview.localhost`）的 hub。
+    pub async fn start_preview() -> Self {
+        Self::start_preview_with(|_| {}).await
+    }
+
+    pub async fn start_preview_with(tweak: impl FnOnce(&mut Config)) -> Self {
+        Self::start_with(|c| {
+            c.preview =
+                Some(anycon_hub::config::parse_preview_url("http://*.preview.localhost", &c.public_url).unwrap());
+            tweak(c);
+        })
+        .await
+    }
+
+    /// `<label>.preview.localhost`：预览域名上的 `Host`。
+    pub fn preview_host(label: &str) -> String {
+        format!("{label}.{PREVIEW_DOMAIN}")
+    }
+
+    /// 浏览器在这个预览页上会带的 `Origin`。
+    pub fn preview_origin(label: &str) -> String {
+        format!("http://{}", Self::preview_host(label))
+    }
+
+    /// 以预览域名的 `Host` 请求（直连测试 hub 的随机端口）。
+    pub fn preview_request(&self, method: reqwest::Method, label: &str, path: &str) -> reqwest::RequestBuilder {
+        self.http.request(method, self.url(path)).header("host", Self::preview_host(label))
+    }
+
+    pub async fn preview_get(&self, label: &str, path: &str) -> reqwest::Response {
+        self.preview_request(reqwest::Method::GET, label, path).send().await.unwrap()
+    }
+
+    /// `POST /api/preview/tokens`（设备 token，`X-Anycon: 1`）。
+    pub async fn request_preview_token(&self, device_token: &str, node: &str, label: &str) -> reqwest::Response {
+        self.http
+            .post(self.url("/api/preview/tokens"))
+            .header("x-anycon", "1")
+            .header("authorization", format!("Bearer {device_token}"))
+            .json(&serde_json::json!({ "node": node, "label": label }))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// 同 [`request_preview_token`]，要求成功，返回令牌。
+    pub async fn preview_token(&self, device: &Seeded, node: &Seeded, label: &str) -> String {
+        let res = self.request_preview_token(&device.token, &node.id, label).await;
+        assert_eq!(res.status(), 200, "preview token: {}", res.text().await.unwrap());
+        let body: serde_json::Value = res.json().await.unwrap();
+        body["token"].as_str().expect("token").to_string()
     }
 
     /// 起一个带记录型发信实现的 hub（邮箱登录 / 绑定 / 邮件通知可用），返回 hub 和那个 mailer。
@@ -242,6 +306,37 @@ impl FakeDevice {
         }
     }
 
+    /// 在预览域名上连接并用预览令牌认证，要求成功（`Origin` 是这个预览页的 origin）。
+    pub async fn connect_preview(hub: &TestHub, label: &str, token: &str) -> Self {
+        let mut raw = Self::open_preview(hub, label).await.expect("preview ws upgrade");
+        raw.send_preview_auth(Some(token)).await;
+        match raw.recv_control().await {
+            Control::AuthOk { device_id, peers_online, .. } => {
+                raw.id = device_id;
+                raw.peers_online = peers_online;
+                raw
+            }
+            other => panic!("expected auth_ok, got {other:?}"),
+        }
+    }
+
+    /// 只做预览域名上的 WS 升级（`Host` 和 `Origin` 都是这个预览页的），不发 auth。
+    pub async fn open_preview(hub: &TestHub, label: &str) -> Result<Self, tokio_tungstenite::tungstenite::Error> {
+        let (host, origin) = (TestHub::preview_host(label), TestHub::preview_origin(label));
+        Self::open_with(&hub.ws_url(), &[("host", host.as_str()), ("origin", origin.as_str())]).await
+    }
+
+    /// 预览连接的 auth：不带 `device_token`，`client.kind = web`。
+    pub async fn send_preview_auth(&mut self, token: Option<&str>) {
+        self.send_control(&Control::Auth {
+            device_token: None,
+            protocol_version: PROTOCOL_VERSION,
+            client: client_info(DeviceKind::Web, "preview"),
+            preview_token: token.map(str::to_string),
+        })
+        .await;
+    }
+
     /// 只做 WS 升级，不发 auth。
     pub async fn open_with(url: &str, headers: &[(&str, &str)]) -> Result<Self, tokio_tungstenite::tungstenite::Error> {
         let mut req = url.into_client_request().unwrap();
@@ -260,6 +355,7 @@ impl FakeDevice {
             device_token: token.map(str::to_string),
             protocol_version: PROTOCOL_VERSION,
             client: client_info(kind, name),
+            preview_token: None,
         })
         .await;
     }

@@ -35,6 +35,7 @@ use crate::enroll::Enroll;
 use crate::hub::{Bounce, HubOutbox};
 use crate::identity::{write_private, Identity};
 use crate::notify::NotifyOut;
+use crate::preview::Preview;
 use crate::rpc::Rpc;
 use crate::store::{PeerRow, Store};
 use crate::util::now_ms;
@@ -413,6 +414,8 @@ pub struct Peers {
     begins_on_conn: Mutex<(u64, u32)>,
     /// 自己的弱引用（延迟断开等后台任务用）。
     me: std::sync::OnceLock<std::sync::Weak<Peers>>,
+    /// 预览模块（ADR-39）：吊销设备时作废它签发的票据、断开用这些票据的隧道。
+    preview: std::sync::OnceLock<std::sync::Weak<Preview>>,
     /// 配对拿到新 token 后通知 hub 连接重连。
     pub reconnect: Arc<Notify>,
     /// 传输被我们重置过多少次（`reset_peer`；测试 / 诊断用）。
@@ -504,6 +507,7 @@ impl Peers {
             pending_hub_revokes: Mutex::new(HashSet::new()),
             begins_on_conn: Mutex::new((0, 0)),
             me: std::sync::OnceLock::new(),
+            preview: std::sync::OnceLock::new(),
             reconnect: Arc::new(Notify::new()),
             resets: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
@@ -651,6 +655,10 @@ impl Peers {
             return Err(internal("database", &e));
         }
         self.records.lock().unwrap().remove(device_id);
+        // 它签发的预览票据一并作废，用这些票据的隧道收到 `GOAWAY { revoked }`（docs/spec/daemon.md § 19.2）
+        if let Some(preview) = self.preview.get().and_then(std::sync::Weak::upgrade) {
+            preview.on_device_revoked(device_id).await;
+        }
         if caller_device == Some(device_id) {
             let this = self.sessions.lock().unwrap().get(device_id).cloned();
             let (outbox, id) = (self.outbox.clone(), device_id.to_string());
@@ -690,6 +698,19 @@ impl Peers {
         let mut row = self.record(device_id).ok_or_else(|| RpcError::new(ErrorCode::NotFound, "device not paired"))?;
         row.name = name.to_string();
         self.save_record(row).await
+    }
+
+    /// 测试用：直接登记一个已配对设备（不经配对流程），之后可以被 `node.revoke_device` 吊销。
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn add_test_peer(&self, row: PeerRow) {
+        self.store.upsert_peer(&row).await.expect("store the test peer");
+        self.records.lock().unwrap().insert(row.device_id.clone(), row);
+        self.write_json();
+    }
+
+    /// 接上预览模块（装配时调用一次）。
+    pub fn bind_preview(&self, preview: &Arc<Preview>) {
+        let _ = self.preview.set(Arc::downgrade(preview));
     }
 
     fn self_ref(&self) -> Option<Arc<Peers>> {

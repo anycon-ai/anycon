@@ -15,8 +15,8 @@
  *   E2E_REQUIRE_DAEMON  0 = daemon 起不来只警告（默认是整体失败，happy path 依赖它）
  *   E2E_KEEP_TMP      1 = 结束后保留临时目录，方便看 hub / daemon 日志
  *   E2E_TMP_DIR_FILE  设了就把临时目录的路径写进这个文件（CI 失败时据此收集 hub.log / daemon.log）
- *   E2E_BUILD         1 = 先构建 web、触碰 crates/hub/build.rs、cargo build hub + cli（hub 编译时嵌入 web/dist）
- *   E2E_ALLOW_STALE_WEB  1 = hub 服务的 index.html 与 web/dist 不一致也照跑（默认报错：占位页 / 旧的嵌入）
+ *   E2E_BUILD         1 = 先构建 web（同时产出 web/dist 和 web/dist-preview）、触碰 crates/hub/build.rs、cargo build hub + cli（hub 编译时选定并嵌入这两个目录）
+ *   E2E_ALLOW_STALE_WEB  1 = hub 服务的 index.html 与 web/dist 不一致（预览域名上的引导页与 web/dist-preview 不一致）也照跑（默认报错：占位页 / 旧的嵌入）
  */
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -64,6 +64,12 @@ if (!env.E2E_HUB_PORT || !env.E2E_WEB_PORT) {
 
 export const hubPort = Number(env.E2E_HUB_PORT)
 export const hubUrl = `http://127.0.0.1:${hubPort}`
+/**
+ * hub 的 `ANYCON_PREVIEW_URL`（dev server 预览，ADR-39）：预览 origin 是 `http://<label>.preview.localhost:<hub 端口>`。
+ * Chromium 自己把 `*.localhost` 解析到回环地址，`*.localhost` 也算安全上下文（service worker 能用）；
+ * 不能依赖别的程序（Node 的 `fetch`、`curl`）解析它。
+ */
+export const previewTemplate = `http://*.preview.localhost:${hubPort}`
 
 export type WebMode = 'hub' | 'preview' | 'external'
 
@@ -106,4 +112,11 @@ export interface E2EState {
   /** globalSetup 起的假 SMTP 服务（hub 的 `ANYCON_SMTP_URL` 指向它）和它收到的信所在的目录（`helpers/smtp.ts` 读）。 */
   smtpPort: number
   smtpDir: string
+  /** hub 的 `ANYCON_PREVIEW_URL`（`http://*.preview.localhost:<hub 端口>`）。 */
+  previewTemplate: string
+  /**
+   * 预览用例的上游（`helpers/upstream.ts`，globalSetup 进程里的一个 HTTP + WebSocket 服务，监听 127.0.0.1）的端口；
+   * daemon 的 `preview.allow_ports` 里放的就是它。
+   */
+  upstreamPort: number
 }

@@ -92,6 +92,76 @@ impl<K: Hash + Eq + Clone> KeyedLimiter<K> {
     }
 }
 
+/// 按键（账号）的字节令牌桶：容量 = 每分钟字节数，匀速回填。预览流量的账号预算用它（docs/spec/hub.md § 13.5）。
+///
+/// 和 [`KeyedLimiter`] 不同，「能不能放行」（[`ByteBudgets::check`]）和「扣额度」（[`ByteBudgets::charge`]）是两步：
+/// 只在转发**成功之后**才扣，被退回的信封不占额度，发送方等够提示的时间重发就一定放得过。
+/// 两个方向的流量共用一个桶，所以并发时可能略微超出，下一次 `check` 会看到余额不足。
+pub struct ByteBudgets<K> {
+    capacity: f64,
+    refill_per_sec: f64,
+    buckets: Mutex<HashMap<K, Bucket>>,
+}
+
+impl<K: Hash + Eq + Clone> ByteBudgets<K> {
+    /// 每分钟 `bytes` 字节（至少 1）。
+    pub fn per_minute(bytes: u64) -> Self {
+        let capacity = bytes.max(1) as f64;
+        Self { capacity, refill_per_sec: capacity / 60.0, buckets: Mutex::new(HashMap::new()) }
+    }
+
+    /// 还能不能转发 `len` 字节。不够返回估算的恢复时间。不扣额度。
+    /// 比整个桶还大的信封（预算被设得比信封还小）在桶满时放行一个，不会永远过不去。
+    pub fn check(&self, key: &K, len: usize) -> Result<(), Duration> {
+        self.check_at(key, len, Instant::now())
+    }
+
+    fn check_at(&self, key: &K, len: usize, now: Instant) -> Result<(), Duration> {
+        let mut map = self.buckets.lock().expect("byte budget mutex");
+        let b = self.refilled(&mut map, key, now);
+        let need = (len as f64).min(self.capacity);
+        if b.tokens >= need {
+            Ok(())
+        } else {
+            Err(Duration::from_secs_f64((need - b.tokens) / self.refill_per_sec))
+        }
+    }
+
+    /// 转发成功了：扣 `len` 字节。
+    pub fn charge(&self, key: &K, len: usize) {
+        self.charge_at(key, len, Instant::now());
+    }
+
+    fn charge_at(&self, key: &K, len: usize, now: Instant) {
+        let mut map = self.buckets.lock().expect("byte budget mutex");
+        let b = self.refilled(&mut map, key, now);
+        b.tokens = (b.tokens - (len as f64).min(self.capacity)).max(0.0);
+    }
+
+    fn refilled<'a>(&self, map: &'a mut HashMap<K, Bucket>, key: &K, now: Instant) -> &'a mut Bucket {
+        let b = map.entry(key.clone()).or_insert(Bucket { tokens: self.capacity, last: now });
+        let elapsed = now.saturating_duration_since(b.last).as_secs_f64();
+        b.tokens = (b.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        b.last = now;
+        b
+    }
+
+    /// 清掉已经回满的桶，防止 map 无限增长。
+    pub fn sweep(&self) {
+        let now = Instant::now();
+        let mut map = self.buckets.lock().expect("byte budget mutex");
+        map.retain(|_, b| {
+            let elapsed = now.saturating_duration_since(b.last).as_secs_f64();
+            b.tokens + elapsed * self.refill_per_sec < self.capacity
+        });
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.buckets.lock().unwrap().len()
+    }
+}
+
 /// 滚动窗口计数器：任意 `window` 长的区间内最多 `limit` 个事件。
 ///
 /// 和令牌桶不同，它不会「回填」：令牌桶每天 10 个的配额在一个滚动的 24 小时里最多能用到 20 个（先用光一桶，再等回填），
@@ -392,5 +462,49 @@ mod tests {
         assert_eq!(rl.len(), 1);
         rl.sweep(); // 刚用过，还没回满
         assert_eq!(rl.len(), 1);
+    }
+    #[test]
+    fn byte_budget_charges_only_on_success_and_estimates_the_wait() {
+        // 6000 字节 / 分钟 = 100 字节 / 秒
+        let b: ByteBudgets<String> = ByteBudgets::per_minute(6000);
+        let (a, other) = ("acc-a".to_string(), "acc-b".to_string());
+        let t0 = Instant::now();
+        assert!(b.check_at(&a, 4000, t0).is_ok());
+        // check 不扣额度：同一封再问一次仍然放行
+        assert!(b.check_at(&a, 4000, t0).is_ok());
+        b.charge_at(&a, 4000, t0);
+        // 还剩 2000，再来 4000 装不下：缺 2000 字节，补满要 20 秒
+        assert_eq!(b.check_at(&a, 4000, t0).unwrap_err(), Duration::from_secs(20));
+        // 被退回的信封没扣额度：等够提示的时间，重发的同一封一定放得过
+        assert!(b.check_at(&a, 4000, t0 + Duration::from_secs(20)).is_ok());
+        // 别的账号有自己的桶
+        assert!(b.check_at(&other, 6000, t0).is_ok());
+        // 扣到见底也不会变负
+        b.charge_at(&a, 100_000, t0);
+        assert_eq!(b.check_at(&a, 100, t0).unwrap_err(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn byte_budget_lets_one_oversized_envelope_through_a_full_bucket() {
+        let b: ByteBudgets<u8> = ByteBudgets::per_minute(1000);
+        let t0 = Instant::now();
+        assert!(b.check_at(&1, 5000, t0).is_ok(), "a full bucket admits one envelope bigger than itself");
+        b.charge_at(&1, 5000, t0);
+        // 之后要等一整分钟才补满
+        assert_eq!(b.check_at(&1, 5000, t0).unwrap_err(), Duration::from_secs(60));
+        assert!(b.check_at(&1, 5000, t0 + Duration::from_secs(60)).is_ok());
+    }
+
+    #[test]
+    fn byte_budget_sweep_drops_refilled_buckets() {
+        let b: ByteBudgets<u8> = ByteBudgets::per_minute(1000);
+        b.charge(&1, 500);
+        assert_eq!(b.len(), 1);
+        b.sweep(); // 刚扣过，还没回满
+        assert_eq!(b.len(), 1);
+        let idle: ByteBudgets<u8> = ByteBudgets::per_minute(1000);
+        idle.check(&2, 10).unwrap(); // 只看一眼会建一个满的桶，sweep 把它清掉
+        idle.sweep();
+        assert_eq!(idle.len(), 0);
     }
 }

@@ -97,6 +97,11 @@ include_max_bytes = "1GiB"
 approval = true                       # 接受扫码批准和接入码；false = 只能短码配对或节点口令
 password = true                       # 设了节点口令时接受口令接入；口令本身用 anycon passwd 设，不写在这里
 
+[preview]                             # dev server 预览（ADR-39，§ 19）。整段热加载
+enabled = true                        # false = 不签发票据、断开全部预览隧道；node.info.capabilities.preview 跟着变
+allow_ports = []                      # 会话之外额外允许预览的本机端口，如 [3000, 8000]
+ticket_ttl = "24h"                    # 预览票据的有效期，5m–7d
+
 [notify]
 turn_finished = "when_unwatched"      # always | when_unwatched | never
 session_idle_after = "30m"
@@ -106,7 +111,7 @@ level = "info"
 retention_days = 7                     # 只在 daemon 启动时清理一次，长期不重启会累积
 ```
 
-`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、`enroll.*`、`notify.*`、`log.level`、`worktree.*`。其余需重启。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
+`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`。其余需重启。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
 环境变量覆盖文件里的值，写法是 `ANYCON_<段>__<键>`（双下划线表示层级），比如 `ANYCON_SESSIONS__MAX_CONCURRENT=2`；数组按 TOML 写：`ANYCON_WORKSPACE__LINK_ROOTS='["/abs/path"]'`。键名里带连字符的（`agents.claude-code.*`）没法用环境变量设，用 `anycon config set`。`ANYCON_HOME`、`ANYCON_LOG`、`ANYCON_MOCK_AGENT` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`）。
 
@@ -684,6 +689,8 @@ SQLite（WAL）。全部表：
 | `peers` | 已配对客户端：device_id、pubkey、name、kind、paired_at、last_seen |
 | `enroll_password` | 节点口令（§ 15.1）：salt（16 字节）、Argon2id 输出（32 字节）、set_at、set_by；连续失败次数、下次允许尝试的时间、是否锁定。最多一行。接入会话和接入码只在内存 |
 | `agent_cache` | agent id、AgentInfo(JSON)、diagnose 文本、probed_at |
+| `preview_labels` | 预览 label（§ 19.2）：port（主键）、label（唯一）、created_at_ms |
+| `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
@@ -706,9 +713,9 @@ SQLite（WAL）。全部表：
 
 本地 `audit` 表，`anycon audit` 和 `node.audit` RPC 读。每条：ts、device_id、device_name、action、target、detail(JSON)。
 
-记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `worktree.create` `worktree.remove` `session.sync_base` `fs.read` `node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed`。
+记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `worktree.create` `worktree.remove` `session.sync_base` `fs.read` `node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close`。
 
-`session.create` / `session.set_settings` 的 detail 里带本次设置的 `env_keys`（**键名**，不带值）、`cleared`（被 `clear` 清掉的字段）和 `dangerous`（所选模式按当前配置算出的实际风险，不是写死的 false）；模式切换经审批触发时 `reason: permission_approved`；`node.revoke_device` 带 `hub_notified`（hub 侧的撤销是否已发出；hub 没连上时先记下，重连后补发）；`node.pair_begin` 只记 `{ long }`，**不记短码和 `match_id`**。`enroll.*` 记方法和结果（`enroll.failed` 带 `reason`，口令失败带当时的连续失败次数），**不记接入码、扫码密钥、口令和它的派生值**；接入完成前发起方还没有正式 id，`device_id` 记临时 id，`device_name` 记自报的 `hint` 加 ` (unverified)`；`enroll.completed` 记正式 id 和认证过的名字。`enroll.*` 的 `detail` 里 `method` / `result` / `reason` 是字符串（`result` 取 `requested` / `approved` / `denied` / `completed` / `failed` / `expired`），`failures` 是数字，另有 `attempts_left`、`approval`、`changed`、`failures_reset`、`password`、`source`。低价值的行（`enroll.requested`、预检拒绝）每分钟最多写 30 条。
+`session.create` / `session.set_settings` 的 detail 里带本次设置的 `env_keys`（**键名**，不带值）、`cleared`（被 `clear` 清掉的字段）和 `dangerous`（所选模式按当前配置算出的实际风险，不是写死的 false）；模式切换经审批触发时 `reason: permission_approved`；`node.revoke_device` 带 `hub_notified`（hub 侧的撤销是否已发出；hub 没连上时先记下，重连后补发）；`node.pair_begin` 只记 `{ long }`，**不记短码和 `match_id`**。`preview.open` 的 target 是端口，detail 带 `label`、`ticket_id`、`session_id`、`expires_at_ms`、`reused`（返回的是已有票据），**不记票据密钥**；`preview.close` 的 target 是 label，detail 带作废的票据数和断开的隧道数。隧道的建立和断开不进审计（service worker 会频繁重连），只记 debug 日志。`enroll.*` 记方法和结果（`enroll.failed` 带 `reason`，口令失败带当时的连续失败次数），**不记接入码、扫码密钥、口令和它的派生值**；接入完成前发起方还没有正式 id，`device_id` 记临时 id，`device_name` 记自报的 `hint` 加 ` (unverified)`；`enroll.completed` 记正式 id 和认证过的名字。`enroll.*` 的 `detail` 里 `method` / `result` / `reason` 是字符串（`result` 取 `requested` / `approved` / `denied` / `completed` / `failed` / `expired`），`failures` 是数字，另有 `attempts_left`、`approval`、`changed`、`failures_reset`、`password`、`source`。低价值的行（`enroll.requested`、预检拒绝）每分钟最多写 30 条。
 
 保留和会话历史同样的 `history_retention`。
 
@@ -774,6 +781,7 @@ SQLite（WAL）。全部表：
 - 配对：短码本地生成、不发给 hub；joiner 要等 `pair.ack` 才落盘（§ 15）
 - 账号内接入（§ 15.1）：daemon 是唯一的验证点，hub 的限速不算数。口令只存 Argon2id 派生值；口令失败计数在发出 CPace 份额**之前**先写库；同时最多一个口令尝试、3 个接入会话；接入码和扫码密钥只在内存里，不落盘、不进日志和审计
 - 本机 socket 0600；CLI 不需要再认证
+- dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
 - `--add-dir` 之类扩大 agent 文件范围的参数不暴露给客户端
 - worktree（§ 10.1）：目录在项目里面，复核规则同关联项目；不把主仓库 `.git` 加进 agent 的可写目录；`.worktreeinclude` 只复制、不执行，不跟随符号链接；daemon 的 git 关掉 fsmonitor / hooks / 外部 diff / textconv / 合并签名，仓库配置里的 filter / merge driver / sshCommand / askPass / credential helper / uploadpack 仍会被执行（已知限制，§ 10.1「限制」）
 
@@ -787,6 +795,63 @@ SQLite（WAL）。全部表：
 
 v0.1 另含：图片附件（§ 7.10，ADR-35）；账号内接入（§ 15.1，[ADR-36](../decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)）。
 
+v0.2：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）。
+
 **v0.2**：ACP adapter；非图片附件；`node.set_config` 远程改配置；`node.logs`；`anycon export / import`。
 
 **v0.3**：`session.fork`、`session.import`、自动更新、Prometheus。
+
+## 19. 预览
+
+[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。daemon 给已配对设备签发预览票据，接受预览页（浏览器里的 service worker）的隧道，把隧道里的 HTTP 请求和 WebSocket 转给本机端口。方法见 [protocol.md § 5.7](../protocol.md#57-预览adr-39)，隧道格式见 [protocol.md § 11](../protocol.md#11-预览隧道)。
+
+### 19.1 配置与能力
+
+`[preview]`（§ 3），整段热加载。`node.info.capabilities.preview = preview.enabled`。改成 `enabled = false` 时：已有的票据保留（重新打开后还能用），对全部隧道发 `GOAWAY { disabled }` 并断开，`preview.open` 回 `forbidden`（`data.reason = "disabled"`），新握手回 `disabled`。`allow_ports` 里的端口必须是 1–65535。
+
+### 19.2 label 与票据
+
+- **label**：每个端口一个，第一次 `preview.open` 这个端口时生成（16 字节随机数 → 26 位小写 base32，`tunnel::label_from_bytes`），存库，之后固定不变。这样同一个端口的预览 origin 不变，dev app 存在浏览器里的状态（localStorage 等）下次还在，行为和 `localhost:<端口>` 一样
+- **票据**：`preview.open` 签发。`ticket_id` 16 字节、`psk` 32 字节，都来自系统随机数；有效期 `preview.ticket_ttl`。存库（daemon 重启后预览页能直接重连），密钥和其他密钥一样只在 daemon 的数据目录里
+- **复用**：同一设备对同一端口已有一张剩余有效期超过一半的票据时直接返回它（`reused`），避免每次点「预览」都签一张新的
+- **上限**：每个设备至多 64 张未过期的票据，超了删最旧的（并断开用它的隧道）；daemon 同时至多 64 条隧道，超了握手回 `busy`
+- **作废**：过期（每分钟清一次，用它的隧道收到 `GOAWAY { expired }`）；`preview.close { label }`（`GOAWAY { closed }`）；吊销签发它的设备（`node.revoke_device`，`GOAWAY { revoked }`，在吊销流程里和删公钥一起做）。吊销时先等这个设备的隧道把 `GOAWAY { revoked }` 交给出站队列（最多 0.5 秒），再把 `revoke` 发给 hub：hub 收到后会以 `4004` 关掉预览连接，顺序反过来预览页就看不到原因
+
+### 19.3 端口策略
+
+一个端口允许预览，当且仅当 `preview.enabled`，且满足下面任一条：
+
+1. **会话的进程**：某个会话正在监听这个端口，即监听进程的父进程链能走到这个会话 agent 主进程的 pid，或者它的进程组 id 等于 agent 主进程的 pid（adapter 用 `process_group(0)` 拉起 agent，`AgentHandle::pid()`）。agent 让 Bash 工具在后台起的 dev server 就是这种
+2. **会话的目录**：监听进程的工作目录在某个会话的工作目录里（项目目录或它的 worktree）。agent 进程已经因为空闲退出、但 dev server 还在跑时靠这一条
+3. **配置**：端口在 `preview.allow_ports` 里
+
+永远不允许：本机 hub 的端口（`hub.url` 的主机是 `localhost` / 回环地址时）、端口 0。只看绑定在回环地址或通配地址（`0.0.0.0` / `::`）上的监听 socket——只绑在某个局域网地址上的服务从 `127.0.0.1` 连不上。
+
+一个端口上可能有不止一个监听者（IPv4 / IPv6 各一个、`SO_REUSEPORT`）：**每一个**都要符合上面的规则才放行，否则 daemon 先连的 `127.0.0.1` 可能落到别的进程上。这样「混合归属」的端口 `preview.ports` 不列出，`preview.open` 和隧道握手按 `port_not_allowed` 拒绝；写在 `allow_ports` 里的照样列出（`source = config`）。带 `session_id` 过滤时更严：端口上有任何一个监听者不属于这个会话就不列。
+
+判断用的探测结果如果已经超过 0.5 秒，拒绝之前先重新探测一次（agent 刚拉起 dev server 就点「预览」时不会被缓存误拒）。
+
+检查时机：`preview.open` 时一次；每次隧道握手时一次（此时没有进程在监听也放行，dev server 可能正在重启，请求会得到 `RESET { refused }`；有进程在监听但不符合上面三条 → 拒绝 `port_not_allowed`）；隧道存续期间有 stream 活动时每 30 秒复核一次，不通过发 `GOAWAY { port_not_allowed }`。
+
+### 19.4 端口探测
+
+`preview.ports` 和 § 19.3 共用一份探测结果，缓存 2 秒（多个客户端每 5 秒轮询一次也不会反复起进程）。
+
+- 监听 socket：`lsof -nP -iTCP -sTCP:LISTEN -Fpcn`（3 秒超时）
+- 进程关系：`ps -axo pid=,ppid=,pgid=,comm=`（3 秒超时）
+- 工作目录：`lsof -a -p <pid,…> -d cwd -Fpn`（只查监听进程，3 秒超时）
+- 哪一步失败或者命令不存在：`detection = unavailable`，只认 `allow_ports`（并记一条 warn，同一原因 10 分钟内只记一次）。macOS 自带 `lsof`；Linux 发行版通常也有，没有时提示安装
+- 子进程环境和其他外部命令一样（`env_clear` 后补 daemon 的环境，`kill_on_drop`）
+
+### 19.5 隧道和转发
+
+- **握手**：只接受已经收到 `control.preview_peer` 的对端；按 [protocol.md § 11.2](../protocol.md#112-握手) 查票据、核对 label、过期时间和端口策略，失败按原因回拒绝。一个对端同时只有一条传输，新的第一条握手消息顶掉旧的
+- **发送**：隧道消息走 hub 出站队列，和会话传输一样保留原文、按 `seq` 重发；区别是按端到端回执释放（[protocol.md § 11.5](../protocol.md#115-流控与回执)），在途上限 8 MiB。`rate_limited { to }` 只暂停这一个对端
+- **连上游**：每个 HTTP stream 一条新的 TCP 连接，先 `127.0.0.1:<端口>` 再 `[::1]:<端口>`（Vite 在 macOS 上常常只监听 `::1`），连接超时 5 秒，连不上 `RESET { refused }`。用 HTTP/1.1；等响应头最多 120 秒（首次编译慢的框架），超时 `RESET { timeout }`
+- **改写请求头**：`host` 改成 `localhost:<端口>`；`origin` 和 `referer` 里的预览 origin 换成 `http://localhost:<端口>`；去掉逐跳头（`connection`、`keep-alive`、`proxy-*`、`te`、`trailer`、`transfer-encoding`、`upgrade`）和 `forwarded`、`x-forwarded-*`；HTTP 请求一律带 `accept-encoding: gzip`（浏览器不让 service worker 看到这个头，预览页发来的请求里通常没有它），WebSocket 握手不带
+- **改写响应头**：去掉逐跳头；`location` 是指向 `localhost` / 回环地址同一端口的绝对 URL 时改成只有路径的形式；`set-cookie` 原样交给预览页（由 service worker 的 cookie jar 处理）。上游已经是 gzip 的原样转发并标 `encoding = gzip`；没压缩、`content-type` 是文本类（`text/*`、JavaScript、JSON、XML、SVG、wasm；`text/event-stream` 除外）、没有 `content-range` 且大于 1 KiB 的，daemon 边读边 gzip（快速档，每段 sync flush，流式响应不会被攒住）。这两种情况都去掉 `content-encoding` / `content-length`。上游拒绝 WebSocket 升级时的响应原样（identity）转发
+- **WebSocket**：用上游自己的握手（daemon 生成 `sec-websocket-key`），带上改写后的头和子协议；ping / pong 两边各自应答，不进隧道；关闭码和原因原样转发
+- **上限**：每条隧道 256 个 stream；请求体和响应体不设总长，按窗口流式转发；单条 WebSocket 消息 16 MiB
+- **卡死检测**：带帧的消息 120 秒没有被回执，就丢掉传输、发 `RESET` 帧体，让预览页重新握手（纯回执消息不算：对端空闲时本来就不回执它）
+- **握手失败**：Noise 读不了第一条（PSK 不对、钉的不是这台 daemon、消息坏了）回 `malformed`
+- **日志**：隧道建立 / 断开在 debug 级记 label 和对端 id；不记路径、头、正文、票据 id 和密钥

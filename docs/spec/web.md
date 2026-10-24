@@ -8,7 +8,7 @@
 
 **给开发者用，体验对齐 Claude 桌面版**（[ADR-34](../decisions.md#adr-34-web-ui-是开发者客户端体验对齐-claude-桌面版每个会话可以有自己的-worktree)）：登录、配对、项目、会话、审批、设置之外，每个会话可以在自己的 git worktree 和分支里工作，会话页能看相对 base 的改动、同步 base、让 agent 提交和开 PR、看 PR 状态。hub 只管连通性，这些都经 E2E 走 daemon。
 
-不做：终端、远程 shell、编辑器（diff 只读，改代码交给 agent）、经 hub 预览本地 dev server。
+不做：终端、远程 shell、编辑器（diff 只读，改代码交给 agent）、经 hub 明文反代 dev server。dev server 预览走 Noise 隧道，在独立的预览 origin 里跑（§ 13，[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）。
 
 ## 2. 路由
 
@@ -305,6 +305,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | **接入** | ADR-36。**节点口令**：状态（未设置 / 已启用 / 已停用 / 已锁定、连续失败次数、下次允许尝试的时间、设置时间和设置者，`node.enroll_status`）；「设置口令」/「修改口令」（两次输入、至少 8 个字符、`autocomplete="new-password"`，`node.set_enroll_password`）；「清除口令」（确认）；启用 / 停用开关（`node.set_enroll_enabled { password }`）。锁定时显示红色说明和「重新启用」，确认框写「连续 10 次输错可能是有人在猜。确认是你自己输错的再启用；不确定就先改口令」。**批准接入**开关（`node.set_enroll_enabled { approval }`，关掉后扫码批准和接入码都不可用）。**待批准的接入请求**（`node.enroll_list`，每条可批准 / 拒绝，和批准对话框同一套）。**最近的接入活动**（`node.audit` 里的 `enroll.*`，最近 20 条） |
 | **Workspace** | 根目录路径、项目数、回收站内容（可恢复 / 清空）、scratch 目录大小。**Worktree** 一节（`workspace.worktrees`，ADR-34）：每行项目、分支、所属会话（链接；会话已删除时「没有会话」）、状态（使用中 / 已保留 / 已删除 / 不见了）、未提交数、自己的提交数、大小、创建时间；「删除」（`workspace.remove_worktree`）：会话还没归档的禁用并提示「先归档会话」；确认框里有未提交改动时要勾「丢弃未提交的改动」（`force`），另有「同时删除分支」（`delete_branch`，`ahead > 0` 时警告） |
 | **限制** | 并发会话上限、空闲超时、是否允许 `auto` 权限模式。v0.1 只读显示并提示在机器上改 `config.toml`；v0.2 可远程改（`node.set_config`） |
+| **预览** | 节点支持预览时才有（§ 13.1）。`preview.list` 的票据列表：端口、所属会话（链接）、签发设备、过期时间、此刻的隧道数，每行「关闭」（`preview.close`，同一 label 的全部票据一起作废）。下面一段说明端口策略（默认只允许会话自己起的服务，其余端口要在那台机器上写进 `preview.allow_ports`），只读 |
 | **关于** | daemon 版本、协议版本、运行时长、数据库大小、「检查更新」 |
 
 ### 4.9 账号设置 `/settings`
@@ -508,8 +509,75 @@ v0.1 另含 ADR-35：图片附件（上传、显示、缓存）。
 
 v0.1 另含 [ADR-37](../decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)：登录页的邮箱验证码、账号设置里的邮箱绑定、通知设置页（本浏览器推送的开关和测试、每个类别的推送 / 邮件开关）、service worker 的推送和点击处理、页面在后台时的系统通知。
 
+v0.2 含 [ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)：会话页的「预览」视图、iframe 内嵌和新标签页、节点设置的「预览」标签、独立构建的预览运行时（§ 13）。
+
 v0.1 另含 [ADR-36](../decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)：`/unlock`（三种解锁方式）、批准对话框、应用内扫码、「添加设备」的接入码、节点设置的「接入」标签、`/setup` 里的口令提示、接入相关的推送。
 
 **v0.2**：`multi` 模式的邮箱注册和 OAuth 登录、非图片附件、文件浏览、搜索、节点设置远程修改、`/admin` 完整版、配额页。（导出会话为 Markdown 在 v0.1 已经有，客户端本地生成。）
 
 **v0.3**：语音输入、命令面板的更多动作、模板创建项目、多客户端同时在线的光标 / 正在输入提示。
+
+## 13. 预览
+
+[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。两部分：Web UI 里的入口（§ 13.1），和预览 origin 上跑的**预览运行时**（§ 13.2）。两者是两份独立构建：Web UI 在 `web/dist`，预览运行时在 `web/dist-preview`，hub 分开嵌入、分开提供（[hub.md § 13.2](hub.md#132-预览域名上的-http)）。预览运行时的任何文件都不能进 Web UI 的构建产物和 service worker 预缓存。
+
+### 13.1 Web UI 里的入口
+
+**什么时候有**：`/api/config.preview_origin_template` 不为空，且节点 `capabilities.preview = true`。
+
+**会话页的「预览」视图**：顶栏的视图开关在「聊天 / 改动」之后加「预览」（`main-view-preview`；不是 git 会话时只有「聊天 / 预览」）。和「改动」一样是占满顶栏以下的主视图，选择只对当前会话有效。
+
+- **工具条**：端口选择（`preview-port`）、地址栏（路径，默认 `/`，回车跳转）、刷新、「在新标签页打开」（`preview-open-tab`）、「停止预览」（`preview.close`，确认后作废这个端口的全部票据，别的设备上开着的预览也会断开）
+- **端口**：视图可见时每 5 秒调一次 `preview.ports { session_id }`，按 `port` 排序列出（`source = config` 的标「配置」）；另有「其他端口…」输入框，不在列表里的端口也能试（daemon 不允许时显示它的错误）。`detection = unavailable` 时提示「这台机器上没法探测端口，只能预览 `preview.allow_ports` 里的」。一个端口都没有时显示空状态：「agent 起了 dev server 之后这里会出现端口」
+- **打开**：
+  1. `preview.open { port, session_id }` → `{ label, ticket_id, psk, expires_at_ms, … }`
+  2. `POST /api/preview/tokens { node, label }`，带本浏览器的设备 token（`Authorization: Bearer`）→ `{ token, origin, expires_at_ms }`
+  3. 拼 `PreviewLaunch`（`v: 1`，`node_public` 取本地存的节点静态公钥，`expires_at_ms` 取两者较早的，`path` 取地址栏），JSON → base64url（无填充），URL 是 `<origin>/__anycon/enter#<…>`
+  4. 内嵌：`<iframe src=… sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads" referrerpolicy="no-referrer">`，**不给** `allow-top-navigation`。新标签页：`window.open(url, '_blank', 'noopener,noreferrer')`
+- 拿到的 `PreviewLaunch` 只在内存里按（节点，端口）缓存，剩余有效期不到 10 分钟就重新走一遍；不写 IndexedDB。「刷新」总是重新调 `preview.open`（这个预览可能已经在别的设备上被停止，缓存的票据 daemon 不认了；票据还有效时 daemon 返回同一张），hub 令牌剩 10 分钟以上就沿用——每次刷新都换令牌会占满每设备 64 个的上限、挤掉这台设备上别的预览。URL 里的 fragment 带着密钥，不写日志、不进路由状态、不复制到剪贴板（「复制链接」只复制 origin + 路径）
+- Web UI **不监听**来自预览 iframe 的 `message` 事件，也不往里发
+- 手机上同样是主视图；工具条收成一行，「在新标签页打开」放在最显眼的位置（手机浏览器对第三方 iframe 里的 service worker 支持参差）
+- 文案走 i18n（en / zh）
+
+**节点设置的「预览」标签**：见 § 4.8。
+
+### 13.2 预览运行时
+
+在 `https://<label>.<预览域名>/` 上跑。构建：`vite build -c vite.preview.config.ts`，输出 `web/dist-preview`，`base` 是 `/__anycon/`。产物：`index.html`（引导页，**没有内联脚本**，同 Web UI 的约束）、引导脚本、`sw.js`（文件名固定，不带哈希）、`shim.js`（同样固定）、Noise wasm、`assets/*`。`sw.js` 是不含 `import` / `import.meta` 的单文件（Firefox 对 module service worker 的支持晚），wasm 由它显式按 URL 加载。依赖只有 `@anycon/protocol`，不引 React、不引 Web UI 的代码。
+
+**引导页**（hub 对还没被 service worker 接管的页面请求都回它）：
+
+1. 在 `/__anycon/enter` 且有 fragment：解出 `PreviewLaunch`，校验 `v === 1`、`label` 等于主机名的第一段、主机名第一段是合法 label；存进本 origin 的 IndexedDB（库 `anycon-preview`），**立刻** `history.replaceState` 抹掉 fragment；注册 `/__anycon/sw.js`（`scope: '/'`），等它激活，然后 `location.replace(launch.path)`。`path` 在 `decodePreviewLaunch` 里已经拒绝了 `\` 和控制字符（浏览器把 `\` 当 `/`、会吃掉制表符和换行，`/\evil.example` 会变成协议相对的地址）；跳转前再按本 origin 解析一次，解析出的 origin 不是自己、或者落在 `/__anycon/` 下就改成 `/`。没有 fragment 的 `/__anycon/enter`（刷新）跳到存着的 `path`
+2. 别的路径：读 IndexedDB 里的 `PreviewLaunch`。有且没过期 → 确保 service worker 已注册、已激活，然后 `location.reload()`（用 `sessionStorage` 计数，10 秒内重载 3 次仍没被接管就停下，显示错误）；没有或过期 → 显示「这个预览要从 Anycon 打开」的说明页
+3. 浏览器不支持 service worker（或者在第三方 iframe 里不让注册）：显示说明，带一个「在新标签页打开」的按钮。新标签页是另一个存储分区，看不到 iframe 里存的启动参数，所以按钮链接是 `/__anycon/enter#<启动参数>`（在内存里重新编码，`target=_blank`）
+4. 文案按 `navigator.language` 选中文或英文，内置在运行时里
+
+**service worker**（`sw.js`）：
+
+- `install` 时 `skipWaiting`，`activate` 时 `clients.claim`
+- **隧道**：每个 service worker 实例一条。第一次有请求时建立：从 IndexedDB 读 `PreviewLaunch`，连 `wss://<自己的主机>/v1/ws`，用 `token` 认证，等节点在线，按 [protocol.md § 11](../protocol.md#11-预览隧道) 握手。断线按 0.5 秒起、翻倍、封顶 10 秒重连；`auth_fail { invalid | version | protocol }`、close `4004`、`GOAWAY` 和握手被拒都是终态，记下原因，之后的请求直接返回错误页，不再重连（`auth_fail { quota }` 按退避重试；读不了的握手回复重试，连续 3 次后算终态）。隧道在请求发出之前断了，这个请求重试一次；已经发出去的请求失败就失败
+- **拦截**：同 origin、路径不以 `/__anycon/` 开头的请求全部走隧道；跨 origin 的请求不拦。请求头取 `event.request.headers`（名字小写），加上 cookie jar 里匹配的 `cookie`；service worker 看到的请求头里缺了浏览器在网络层才加的那些，补上 dev server 常用到的：非 GET 请求的 `origin`、按 referrer 策略的 `referer`、`sec-fetch-dest` / `-mode` / `-site`、`user-agent`、`accept-language`、`content-length`。请求体先整个读出来（上限 16 MiB，超了回 `413`）再分段发
+- **响应**：`new Response(流, { status, headers })`。`encoding = gzip` 时先过 `DecompressionStream('gzip')`。去掉 `set-cookie`（存进 cookie jar）和 `x-frame-options`；加 `content-security-policy: frame-ancestors 'self' <hub_origin>`（`hub_origin` 来自 `/__anycon/config.json`，读不到时只有 `'self'`；`'self'` 让 dev app 自己的同源 iframe 照常工作；dev server 自己的 CSP 头保留，浏览器取交集）。`204` / `304` 等没有正文的状态码不带流
+- **注入 shim**：导航请求（`request.mode === 'navigate'`）返回 `text/html` 时，在第一个 `<head>` 标签之后插入 `<script src="/__anycon/shim.js" data-cookies="…"></script>`；没有 `<head>` 就放在 `<html>` 之后，再没有就放在 doctype 之后，都没有才放最前面（放在 doctype 前面会让页面进怪异模式）。`data-cookies` 是这个路径上 cookie jar 里非 HttpOnly 的 cookie（和 `document.cookie` 同样的格式，HTML 转义）。流式处理，只缓冲到找到插入点为止（最多 64 KiB）。UTF-16 / UTF-32 的页面不注入
+- **HTTP 缓存**：浏览器不会把 service worker 合成的响应放进 HTTP 缓存，所以 service worker 自己做：`GET` 且状态 200、带 `etag` 或 `last-modified`、没有 `cache-control: no-store` 的响应存进 Cache Storage（`anycon-preview-http`，总量 200 MiB，超了按最近使用删；导航、`Vary` 里有 `accept-encoding` / `origin` 以外的头、单个超过 16 MiB 的不缓存）；下次同一 URL 的请求带上 `if-none-match` / `if-modified-since`，收到 `304` 就用缓存。`cache-control` 带 `immutable`（或 `max-age` 未过期）的直接用缓存，不走隧道。请求的 `cache` 是 `no-store` / `reload` 时绕过缓存
+- **cookie jar**：存 IndexedDB。解析 `Set-Cookie` 的名、值、`Expires`、`Max-Age`、`Path`、`HttpOnly`；`Domain` 忽略（一律只属于本主机）、`Secure` / `SameSite` 忽略。请求时按路径匹配加 `cookie` 头。有非 HttpOnly 的 cookie 变化时 `postMessage` 给本 origin 的全部页面
+- **错误**：隧道不可用时，导航请求返回一页 HTML 说明原因（节点离线、预览已过期 / 被关闭、端口不再允许……），终态时提示「回到 Anycon 重新打开」，可恢复的（节点离线、正在连接）5 秒后自动重试（`<meta http-equiv="refresh">`，没有内联脚本）；子资源请求返回 `502` 纯文本
+- **和页面之间的消息**：页面 → service worker：`ws.open` / `ws.send` / `ws.close`、`cookie.set`、`cookies.sync`、`keepalive`；service worker → 页面：`ws.open` / `ws.message` / `ws.close` / `ws.error`、`cookies`（非 HttpOnly cookie 的快照）。只收本 origin 页面发来的
+- **保活**：页面里的 shim 每 20 秒 `postMessage({ type: 'keepalive' })`，有预览页开着时 service worker 就不会因为空闲被浏览器回收（否则经它转发的 WebSocket 会断）。被回收了也能恢复：下一个请求重新建隧道，dev app 的 WebSocket 客户端照常重连
+
+**shim**（`shim.js`，作为页面的第一个脚本执行）：
+
+- **WebSocket**：把 `window.WebSocket` 换成一个兼容的类。同 origin 的 `ws:` / `wss:` 地址经 service worker 走隧道（`navigator.serviceWorker.controller.postMessage({ type: 'ws.open', id, url, protocols })`，service worker 用 `client.postMessage` 回 `ws.open` / `ws.message` / `ws.close` / `ws.error`）；别的地址用原生的。实现 `readyState`、`protocol`、`binaryType`（`blob` / `arraybuffer`）、`bufferedAmount`、`send`（string / ArrayBuffer / TypedArray / Blob）、`close`、`on*` 和 `addEventListener`
+- **service worker**：`navigator.serviceWorker.register` 改成直接拒绝（`console.warn` 说明预览里不支持 dev app 自己的 service worker），`getRegistration` / `getRegistrations` 返回空（dev app 常见的「注销全部 service worker」清理代码删不掉预览的那个）。否则 dev app 会顶掉预览的 service worker
+- **cookie**：**不用**浏览器原生的 cookie。原生 cookie 会随 `/v1/ws` 和 `/__anycon/*` 的请求发给 hub，hub 就看到了 dev app 的 cookie。shim 在 `document` 上定义 `cookie` 访问器，背后是页面内的一份 cookie 表：初值来自 `data-cookies`，写入时同时 `postMessage` 给 service worker 存进 cookie jar（这样页面自己设的 cookie 也会随请求发出去），收到 service worker 的 `cookies` 快照时更新。HttpOnly 的 cookie 只在 cookie jar 里，页面看不到，和真实浏览器一样
+- 尽量小，不依赖任何库
+
+### 13.3 已知限制
+
+- dev app 里写死的 `http://localhost:<端口>` 绝对地址不工作；相对地址和同 origin 的绝对地址都可以
+- 硬刷新（绕过 service worker）会先回到引导页，再自动重载一次
+- 浏览器在第三方 iframe 里不允许注册 service worker 时，内嵌显示说明，要用新标签页
+- dev app 的 CSP 用 `nonce` / `strict-dynamic` 而且没有 `'self'` 时，注入的 shim 会被拦（WebSocket 不走隧道、cookie 不同步）
+- 隧道重置时已经发出去的请求失败，不重试
+- 经隧道的 WebSocket 的 `bufferedAmount` 是估算值
+- 预览 origin 的 IndexedDB 里有令牌和票据密钥，dev app 的 JS 读得到（[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)「代价」）

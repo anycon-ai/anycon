@@ -13,7 +13,7 @@ use crate::enroll::Enrolls;
 use crate::mail::Mailer;
 use crate::pairing::Broker;
 use crate::push::PushService;
-use crate::ratelimit::{KeyedLimiter, RateLimiter, WindowCounter};
+use crate::ratelimit::{ByteBudgets, KeyedLimiter, RateLimiter, WindowCounter};
 use crate::store::{NewAudit, Store};
 use crate::util::now_ms;
 use crate::ws::registry::Registry;
@@ -37,6 +37,8 @@ pub struct IpLimiters {
     pub email_verify: RateLimiter,
     /// `POST /api/me/email/verify`：每 IP 每分钟。
     pub bind_verify: RateLimiter,
+    /// 预览域名上的 WebSocket 升级：每 IP 每分钟（与主域名的 `ws_upgrade` 各算各的，docs/spec/hub.md § 13.4）。
+    pub preview_ws_upgrade: RateLimiter,
 }
 
 /// 按账号 / 邮箱 / 设备的限速（键是账号 id、`<用途>:<邮箱>` 或设备 id）。
@@ -58,6 +60,8 @@ pub struct AccountLimiters {
     pub notify_device: KeyedLimiter<String>,
     /// 同一账号同一类别的邮件通知去重（10 分钟一封）。
     pub notify_email: KeyedLimiter<(String, NotifyCategory)>,
+    /// `POST /api/preview/tokens`：每台设备每分钟（键是设备 id）。
+    pub preview_tokens: KeyedLimiter<String>,
 }
 
 /// 后台的「发了就不管」任务（发验证码邮件、发推送、发通知邮件）。HTTP 响应和信封转发都不等它们；
@@ -107,6 +111,9 @@ pub struct AppState {
     pub limits: IpLimiters,
     pub account_limits: AccountLimiters,
     pub admin: AdminAuth,
+    /// 账号级的预览流量预算（键是账号 id，docs/spec/hub.md § 13.5）：预览连接和节点之间的 `data` / `handshake`
+    /// 从这里扣，不占发送连接自己的字节预算。
+    pub preview_budget: ByteBudgets<String>,
     pub started_at_ms: u64,
     pub shutdown: CancellationToken,
     /// Web Push 发送（VAPID 密钥、endpoint 白名单、HTTP 客户端）。
@@ -135,6 +142,7 @@ impl AppState {
             bind_send: RateLimiter::per_hour(l.email_send_per_hour_per_ip),
             email_verify: RateLimiter::per_minute(l.email_verify_per_min_per_ip),
             bind_verify: RateLimiter::per_minute(l.email_verify_per_min_per_ip),
+            preview_ws_upgrade: RateLimiter::per_minute(l.preview_ws_upgrade_per_min),
         };
         let minute = Duration::from_secs(60);
         let account_limits = AccountLimiters {
@@ -146,7 +154,9 @@ impl AppState {
             email_daily_failures: WindowCounter::new(l.email_failures_per_day, EMAIL_DAILY_WINDOW),
             notify_device: KeyedLimiter::new(l.notify_per_min_per_device, minute),
             notify_email: KeyedLimiter::new(1, config.timing.notify_email_dedupe),
+            preview_tokens: KeyedLimiter::new(l.preview_tokens_per_min_per_device, minute),
         };
+        let preview_budget = ByteBudgets::per_minute(l.preview_bytes_per_min);
         let broker = Broker::new(config.timing.pair_ttl, config.timing.pair_confirm_timeout);
         let enrolls = Enrolls::new(config.timing.enroll_ttl, l.enrolls_per_daemon);
         Arc::new(Self {
@@ -158,6 +168,7 @@ impl AppState {
             limits,
             account_limits,
             admin,
+            preview_budget,
             started_at_ms: now_ms(),
             shutdown: CancellationToken::new(),
             push,
@@ -207,6 +218,9 @@ impl AppState {
             self.registry.unregister(device_id, conn.id);
             conn.close(close_code::REVOKED, "revoked");
         }
+        // 预览（docs/spec/hub.md § 13.6）：库里已经删了它签发的令牌（它是节点的话还有全部 label 和令牌），
+        // 这里关掉用这些令牌的预览连接。
+        self.registry.close_previews_of(device_id, close_code::REVOKED, "revoked");
         tracing::info!(device = %device_id, "device revoked");
         self.audit(NewAudit {
             event: "device_revoked",

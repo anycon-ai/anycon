@@ -17,6 +17,8 @@ import { useUi } from '@/stores/ui'
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn', session: 'sess_a' }))
+// 预览入口读 hub 的 /api/config（react-query）；这个测试没有 QueryClientProvider，也不涉及预览：当作 hub 没配预览
+vi.mock('@/features/preview/availability', async (orig) => ({ ...(await orig<object>()), usePreviewTemplate: () => null }))
 // 不真的去 daemon 拉会话：事件直接放进 store
 vi.mock('@/features/session/actions', async (orig) => ({
   ...(await orig<object>()),

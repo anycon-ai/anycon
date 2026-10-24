@@ -3,14 +3,17 @@
 //!
 //! - 配对：`Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s`，PSK 由短码派生。**joiner（新设备）是 initiator，host（daemon）是 responder。**
 //! - 重连：`Noise_IK_25519_ChaChaPoly_BLAKE2s`，**客户端是 initiator**（已知 daemon 静态公钥），daemon 是 responder。
+//! - 预览隧道（ADR-39）：`Noise_NKpsk0_25519_ChaChaPoly_BLAKE2s`。initiator 是预览页的 service worker（没有静态密钥），
+//!   已知 daemon 静态公钥；PSK 是 daemon 签发的预览票据密钥；prologue 绑定 label 和票据 id（`anycon_protocol::tunnel::prologue`）。
 //! - 传输：Noise 单条消息上限 65535 字节。[`Transport::encrypt`] 对更长的明文自动分片，
 //!   输出格式为若干 `[u16 be 长度][密文]` 片段拼接；[`Transport::decrypt`] 还原整条明文。
 //!   每条 Noise 消息的 nonce 由 snow 管理，一个 Transport 只能单线程顺序使用。
 //!
 //! 实现要点（消费方需要知道的）：
-//! - 握手谁先写：两种模式都是 **initiator 先写**。XXpsk3：I→R、R→I、I→R 共三条，I 在写完第三条后完成，R 在读完第三条后完成；
-//!   IK：I→R、R→I 共两条。
-//! - 对方静态公钥何时可知：XX initiator 读完第二条后、XX responder 读完第三条后、IK responder 读完第一条后、IK initiator 一开始。
+//! - 握手谁先写：三种模式都是 **initiator 先写**。XXpsk3：I→R、R→I、I→R 共三条，I 在写完第三条后完成，R 在读完第三条后完成；
+//!   IK、NKpsk0：I→R、R→I 共两条。
+//! - 对方静态公钥何时可知：XX initiator 读完第二条后、XX responder 读完第三条后、IK responder 读完第一条后、IK / NK initiator 一开始。
+//!   NK 的 responder 永远不知道对方静态公钥（对方没有），它的 [`Transport::remote_public`] 是全零。
 //! - 握手出错（`read` 返回 `Err`）后这个 [`Handshake`] 作废，后续调用都会报错，重新建一个。
 //! - 传输层 nonce 是隐式计数器：丢包、重放、乱序都会 `Decrypt` 失败。`decrypt` 失败不会推进计数器，
 //!   所以收到一条被篡改的消息后，通道仍可继续收下一条合法消息（对应的发送方没有跳号时）。
@@ -29,6 +32,7 @@ use zeroize::Zeroize;
 
 pub const PAIR_PATTERN: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
 pub const RECONNECT_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
+pub const PREVIEW_PATTERN: &str = "Noise_NKpsk0_25519_ChaChaPoly_BLAKE2s";
 /// 配对 KDF 的盐。只能是全局常量：两端唯一的共享秘密就是短码，没有地方传随机盐。
 /// v1 是 HKDF-BLAKE2s，拿到 `match_id` 的 hub 能离线穷举 8 位短码；v2 换成 Argon2id（ADR-29）。
 pub const PAIR_KDF_SALT: &[u8] = b"anycon-pair-v2";
@@ -292,6 +296,8 @@ pub struct Handshake {
     expected_remote: Option<[u8; 32]>,
     /// `read` 出错（或公钥不符）后置位：snow 的状态此时已不可信，整个握手作废。
     poisoned: bool,
+    /// NK 的 responder：对方没有静态公钥，`into_transport` 不要求它。
+    anonymous_remote: bool,
 }
 
 impl Handshake {
@@ -301,7 +307,7 @@ impl Handshake {
             Role::Responder => b.build_responder(),
         }
         .map_err(map_snow)?;
-        Ok(Handshake { state, expected_remote, poisoned: false })
+        Ok(Handshake { state, expected_remote, poisoned: false, anonymous_remote: false })
     }
 
     /// 配对握手（XXpsk3）。initiator = joiner（新设备），responder = host（daemon）。
@@ -324,6 +330,34 @@ impl Handshake {
             }
             (Role::Responder, expected) => Handshake::from_builder(b, role, expected.copied()),
         }
+    }
+
+    /// 预览隧道握手（NKpsk0）的 initiator：预览页一侧，没有静态密钥，钉住 daemon 的静态公钥。
+    /// `psk` 是预览票据密钥，`prologue` 见 `anycon_protocol::tunnel::prologue`；PSK 在第一条消息就混入，
+    /// daemon 不持有这张票据时连第一条都读不了。
+    pub fn preview_initiator(daemon_public: &[u8; 32], psk: &[u8; 32], prologue: &[u8]) -> Result<Handshake> {
+        let b = builder(PREVIEW_PATTERN)?
+            .remote_public_key(daemon_public)
+            .map_err(map_snow)?
+            .psk(0, psk)
+            .map_err(map_snow)?
+            .prologue(prologue)
+            .map_err(map_snow)?;
+        Handshake::from_builder(b, Role::Initiator, None)
+    }
+
+    /// 预览隧道握手（NKpsk0）的 responder：daemon 一侧。握手完成后的 [`Transport::remote_public`] 是全零。
+    pub fn preview_responder(local: &Keypair, psk: &[u8; 32], prologue: &[u8]) -> Result<Handshake> {
+        let b = builder(PREVIEW_PATTERN)?
+            .local_private_key(&local.secret)
+            .map_err(map_snow)?
+            .psk(0, psk)
+            .map_err(map_snow)?
+            .prologue(prologue)
+            .map_err(map_snow)?;
+        let mut hs = Handshake::from_builder(b, Role::Responder, None)?;
+        hs.anonymous_remote = true;
+        Ok(hs)
     }
 
     /// 现在该我写消息吗。握手已完成或已作废时恒为 `false`。
@@ -404,7 +438,11 @@ impl Handshake {
         if !self.state.is_handshake_finished() {
             return Err(Error::NotFinished);
         }
-        let remote = self.remote_public().ok_or_else(|| Error::Noise("missing remote static key".into()))?;
+        let remote = match self.remote_public() {
+            Some(k) => k,
+            None if self.anonymous_remote => [0u8; 32],
+            None => return Err(Error::Noise("missing remote static key".into())),
+        };
         let state = self.state.into_transport_mode().map_err(map_snow)?;
         Ok(Transport { state, remote })
     }

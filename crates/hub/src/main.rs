@@ -44,6 +44,14 @@ const ENV_HELP: &str = "ENVIRONMENT (the ones that matter for a safe deployment)
   ANYCON_VAPID_SUBJECT     optional. Contact for the push services (`mailto:you@example.com` or an https URL);
                            default: ANYCON_PUBLIC_URL when it is https, else mailto: + ANYCON_EMAIL_FROM.
                            The Web Push key pair is generated on first start into <data>/vapid.json: back it up.
+  ANYCON_PREVIEW_URL       optional. Enables dev server preview: the origin template for previews, `*` being the
+                           whole leftmost label, e.g. https://*.preview-example.net. https only (plain http just
+                           for localhost development: http://*.preview.localhost:8080). The preview domain must
+                           NOT be in the same registrable domain as ANYCON_PUBLIC_URL (the hub refuses to start),
+                           and needs its own wildcard DNS record and certificate. Unset = no preview.
+  ANYCON_PREVIEW_BYTES_PER_MIN  preview traffic budget per account, both directions together, default 536870912
+                           (512 MiB). Minimum 205824. Over budget only the previews are paused, never the sessions.
+  ANYCON_PREVIEW_MAX_CONNECTIONS  preview connections one account may have open at once, default 16.
   ANYCON_ADMIN_TOKEN       fixed admin login token (default: generated on first start, see <data>/admin-token).
   ANYCON_DATA_DIR / ANYCON_LISTEN / ANYCON_LOG   data directory (/data), bind address (0.0.0.0:8080), log filter (info).
 ";

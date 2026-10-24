@@ -123,6 +123,8 @@ pub struct ConfigView {
     vapid_public_key: Option<String>,
     /// hub 能发 Web Push（VAPID 密钥已就绪）。
     push_available: bool,
+    /// dev server 预览的 origin 模板（如 `"https://{label}.aiplace.app"`），没配预览时是 `null`（docs/spec/hub.md § 13）。
+    preview_origin_template: Option<String>,
 }
 
 pub async fn config(State(state): State<Arc<AppState>>) -> Json<ConfigView> {
@@ -139,6 +141,7 @@ pub async fn config(State(state): State<Arc<AppState>>) -> Json<ConfigView> {
         queue_enabled: false,
         vapid_public_key: Some(state.push.public_key().to_string()),
         push_available: true,
+        preview_origin_template: state.config.preview.as_ref().map(|p| p.origin_template()),
     })
 }
 

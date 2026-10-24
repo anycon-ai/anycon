@@ -573,7 +573,8 @@ test.describe('每会话 worktree', () => {
       await expectIdle(page)
       await expect(page.getByTestId('info-panel')).toBeVisible()
       await expect(page.getByTestId('session-branch')).toHaveCount(0)
-      await expect(page.getByTestId('main-view')).toHaveCount(0)
+      // 视图开关里没有「改动」（hub 配了预览时开关还在，是「聊天 / 预览」；没配时整个开关不显示）
+      await expect(page.getByTestId('main-view-changes')).toHaveCount(0)
       await expect(page.getByTestId('git-event')).toHaveCount(0)
       expect(existsSync(join(plainDir, '.anycon'))).toBe(false)
 

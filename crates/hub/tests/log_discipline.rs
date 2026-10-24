@@ -499,3 +499,104 @@ async fn email_and_push_secrets_never_reach_the_logs() {
     // 请求日志只记路由模板，不记 URI
     assert!(!log.contains("evil.example"), "rejected endpoint hosts are not logged either\n");
 }
+
+// ---------------------------------------------------------------------------
+// ADR-39：预览令牌、预览域名上的请求路径、隧道里的信封
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn preview_tokens_paths_and_tunnel_traffic_never_reach_the_logs_or_the_data_dir() {
+    let capture = capture();
+    let hub = TestHub::start_preview().await;
+    let node = hub.seed_device(DeviceKind::Daemon, "node").await;
+    let web = hub.seed_device(DeviceKind::Web, "web").await;
+    hub.seed_paired(&node, &web).await;
+    let label = new_label();
+    let wrong_device_token = "a-wrong-device-token-for-previews-that-must-not-be-logged";
+    let wrong_preview_token = "a-wrong-preview-token-that-must-not-be-logged";
+    let path_marker = "PREVIEW-PATH-SECRET-0123456789";
+    let query_marker = "PREVIEW-QUERY-SECRET-0123456789";
+
+    // 令牌申请：成功的（两次，同一个 label）、设备 token 不对的、节点没配对的
+    let token = hub.preview_token(&web, &node, &label).await;
+    let second = hub.preview_token(&web, &node, &label).await;
+    assert_eq!(hub.request_preview_token(wrong_device_token, &node.id, &label).await.status(), 401);
+    let stranger = hub.seed_device(DeviceKind::Daemon, "stranger").await;
+    assert_eq!(hub.request_preview_token(&web.token, &stranger.id, &label).await.status(), 404);
+
+    // 预览连接：成功的、令牌错误的；双向转发带标记的信封，也走一遍丢弃的路径
+    let mut daemon = FakeDevice::connect(&hub, Some(&node.token), DeviceKind::Daemon, "node").await;
+    let mut p = FakeDevice::connect_preview(&hub, &label, &token).await;
+    assert!(matches!(daemon.recv_control().await, Control::PreviewPeer { .. }));
+    let mut bad = FakeDevice::open_preview(&hub, &label).await.unwrap();
+    bad.send_preview_auth(Some(wrong_preview_token)).await;
+    assert!(matches!(bad.recv_control().await, Control::AuthFail { .. }));
+    p.send_env(&node.id, Kind::Handshake, MARKER.as_bytes().to_vec()).await;
+    assert_eq!(daemon.recv_env().await.body, MARKER.as_bytes());
+    daemon.send_env(&p.id, Kind::Data, MARKER.as_bytes().to_vec()).await;
+    assert_eq!(p.recv_env().await.body, MARKER.as_bytes());
+    p.send_env(&web.id, Kind::Data, MARKER.as_bytes().to_vec()).await; // 发给别人 => 丢弃
+    p.send_env(&node.id, Kind::Notify, MARKER.as_bytes().to_vec()).await; // notify => 丢弃
+    p.send_raw(MARKER.as_bytes().to_vec()).await; // 畸形帧 => 丢弃
+
+    // 预览域名上的 HTTP：路径和查询串里带标记
+    hub.preview_get(&label, &format!("/{path_marker}?q={query_marker}")).await;
+    hub.preview_get(&label, &format!("/__anycon/{path_marker}.js?q={query_marker}")).await;
+    hub.preview_get(&label, "/__anycon/config.json").await;
+    hub.preview_get(&label, "/__anycon/sw.js").await;
+
+    // 吊销签发令牌的设备：连接以 4004 断开，令牌作废
+    let admin = hub.login_admin().await;
+    assert_eq!(
+        hub.send(reqwest::Method::DELETE, &format!("/api/devices/{}", web.id), &admin, json!(null)).await.status(),
+        204
+    );
+    // （之前被丢弃的帧的 dropped 回执可能排在前面）
+    loop {
+        match p.recv().await {
+            Recv::Closed(code) => {
+                assert_eq!(code, Some(4004));
+                break;
+            }
+            Recv::Env(_) => {}
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // 数据目录里只有令牌的哈希，没有明文
+    let mut files = Vec::new();
+    collect_files(hub.dir.path(), &mut files);
+    assert!(files.iter().any(|f| f.ends_with("hub.db")), "sanity: the database is in the data dir: {files:?}");
+    for f in &files {
+        let blob = std::fs::read(f).unwrap_or_default();
+        for (what, secret) in [("preview token", &token), ("second preview token", &second)] {
+            assert!(!blob.windows(secret.len()).any(|w| w == secret.as_bytes()), "{what} in {}", f.display());
+        }
+    }
+
+    let log = String::from_utf8_lossy(&capture.0.lock().unwrap()).to_string();
+    // 自检：这些路径真的走到了
+    assert!(log.contains("preview token issued"), "sanity\n{log}");
+    assert!(log.contains("preview connected"), "sanity\n{log}");
+    assert!(
+        log.contains("route=\"(preview)\"") || log.contains("route=(preview)"),
+        "preview requests are logged as (preview)\n{log}"
+    );
+    assert!(log.contains("drop:"), "sanity: drops are logged at debug/trace\n{log}");
+    for (what, secret) in [
+        ("preview token", token.clone()),
+        ("second preview token", second.clone()),
+        ("preview token hash", anycon_hub::util::hash_token(&token)),
+        ("second preview token hash", anycon_hub::util::hash_token(&second)),
+        ("rejected preview token", wrong_preview_token.to_string()),
+        ("rejected device token", wrong_device_token.to_string()),
+        ("web device token", web.token.clone()),
+        ("request path on the preview domain", path_marker.to_string()),
+        ("request query on the preview domain", query_marker.to_string()),
+        ("preview label", label.clone()),
+        ("envelope body", MARKER.to_string()),
+        ("envelope body (hex)", hex::encode(MARKER)),
+    ] {
+        assert!(!log.contains(&secret), "{what} leaked into the logs");
+    }
+}

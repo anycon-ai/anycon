@@ -38,6 +38,9 @@ pub enum Cause {
     BufferFull,
     /// 发送方超过了自己的速率预算。
     RateLimited,
+    /// 账号的预览流量预算用完了（docs/spec/hub.md § 13.5）。和 `BufferFull` 一样不是这条连接自己的错：
+    /// 预算由账号下所有预览共用，不计入「一直被限速退回 10 秒就断开」。
+    PreviewBudget,
 }
 
 /// 当前该放行的是哪一个：集合非空时才有。

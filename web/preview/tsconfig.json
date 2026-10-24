@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "jsx": "preserve",
+    "baseUrl": ".",
+    "paths": {},
+    "noEmit": true
+  },
+  "include": ["src/shared", "src/boot", "src/boot.ts", "src/shim", "src/shim.ts", "src/test", "src/env.d.ts", "src/vite-env.d.ts", "../vite.preview.config.ts"],
+  "exclude": ["src/sw", "src/sw.ts"]
+}

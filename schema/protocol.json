@@ -697,12 +697,18 @@
       "description": "控制消息集合。方向见注释：D = 设备，H = hub。",
       "oneOf": [
         {
-          "description": "D→H 连接后第一帧。`device_token` 为空表示「还没有身份的临时连接」：hub 分配临时 device id，\n只允许 `pair_join`、`pair_confirm`、`enroll_begin`（升级请求要带账号登录态）、`enroll_cancel` 和撮合后的握手帧；`client.kind = daemon` 的临时连接还可以发\n`pair_begin`（daemon 首次启动靠这个拿到身份）。`pair_done` 后同一条连接升级为正式设备。",
+          "description": "D→H 连接后第一帧。`device_token` 为空表示「还没有身份的临时连接」：hub 分配临时 device id，\n只允许 `pair_join`、`pair_confirm`、`enroll_begin`（升级请求要带账号登录态）、`enroll_cancel` 和撮合后的握手帧；`client.kind = daemon` 的临时连接还可以发\n`pair_begin`（daemon 首次启动靠这个拿到身份）。`pair_done` 后同一条连接升级为正式设备。\n\n带 `preview_token`（不带 `device_token`）的是**预览连接**（ADR-39）：只在预览域名上接受，hub 分配临时 id，\n只能和令牌绑定的那一台 daemon 互发 `handshake` / `data`，不能发任何控制消息。",
           "properties": {
             "client": {
               "$ref": "#/definitions/ClientInfo"
             },
             "device_token": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "preview_token": {
               "type": [
                 "string",
                 "null"
@@ -1083,6 +1089,27 @@
           "type": "object"
         },
         {
+          "description": "H→D（daemon）：有一条本节点的预览连接接上来了（ADR-39）。`peer` 是它的临时 id，之后它的 `handshake` / `data`\n信封 `from` 都是这个 id；`label` 是它的预览令牌绑定的 label（hub 断言，daemon 用它算 Noise prologue，\nhub 说谎只会让握手失败）。daemon 重连后，hub 对每条仍在的预览连接再发一次。预览连接断开时 hub 发 `peer_offline`。",
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "peer": {
+              "type": "string"
+            },
+            "type": {
+              "const": "preview_peer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "peer",
+            "label"
+          ],
+          "type": "object"
+        },
+        {
           "description": "H→D：对端离线且队列未开启，`seq` 那封已丢弃。",
           "properties": {
             "seq": {
@@ -1197,12 +1224,18 @@
           "type": "object"
         },
         {
-          "description": "H→D：发送方超过每连接速率预算，整条连接暂停 `retry_after_ms`（100 ms–30 s）再继续；伴随 `backpressure`\n出现，信封本身没有丢。每连接每秒至多一条。",
+          "description": "H→D：发送方超过速率预算，暂停 `retry_after_ms`（100 ms–30 s）再继续；伴随 `backpressure` 出现，信封本身没有丢。\n每连接每秒至多一条。`to` 为空：整条连接暂停（每连接预算）；`to` 有值：只暂停发往这个对端的信封（预览流量的\n账号预算，ADR-39），其他对端照常。",
           "properties": {
             "retry_after_ms": {
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "to": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "const": "rate_limited",
@@ -2913,6 +2946,11 @@
         "fs": {
           "type": "boolean"
         },
+        "preview": {
+          "default": false,
+          "description": "支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。",
+          "type": "boolean"
+        },
         "search": {
           "type": "boolean"
         },
@@ -3811,6 +3849,570 @@
         "completed"
       ],
       "type": "string"
+    },
+    "PreviewBodyEncoding": {
+      "description": "隧道里响应体的编码。`gzip`：`DATA` 帧拼起来是 gzip 流，预览页要先解压；`headers` 里已经去掉\n`content-encoding` / `content-length`。",
+      "enum": [
+        "identity",
+        "gzip"
+      ],
+      "type": "string"
+    },
+    "PreviewCloseParams": {
+      "description": "`preview.close` 参数：作废这个 label 的全部票据，断开它的全部隧道。",
+      "properties": {
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "PreviewDetection": {
+      "description": "端口探测是否可用。`unavailable`：这台机器上没有可用的探测手段（如没有 `lsof`），只能预览配置里允许的端口。",
+      "enum": [
+        "ok",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "PreviewGoaway": {
+      "description": "隧道 `GOAWAY` 帧的载荷（msgpack，只有 daemon 发，stream 0）：daemon 要关掉这条隧道，之后不再处理它的帧。",
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/PreviewGoawayCode"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "PreviewGoawayCode": {
+      "oneOf": [
+        {
+          "const": "expired",
+          "description": "票据过期。",
+          "type": "string"
+        },
+        {
+          "const": "closed",
+          "description": "票据被 `preview.close` 作废。",
+          "type": "string"
+        },
+        {
+          "const": "revoked",
+          "description": "签发票据的设备被吊销。",
+          "type": "string"
+        },
+        {
+          "const": "disabled",
+          "description": "节点关掉了预览（`preview.enabled = false`）。",
+          "type": "string"
+        },
+        {
+          "const": "port_not_allowed",
+          "description": "端口不再允许预览。",
+          "type": "string"
+        },
+        {
+          "const": "shutdown",
+          "description": "daemon 在退出。",
+          "type": "string"
+        }
+      ]
+    },
+    "PreviewHello": {
+      "description": "隧道握手第二条消息（daemon → 预览页）的 payload，JSON。到这一条预览页才确认对端持有票据、是钉住的 daemon。",
+      "properties": {
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "port",
+        "expires_at_ms"
+      ],
+      "type": "object"
+    },
+    "PreviewInfo": {
+      "description": "`preview.list` 的一项：一张未过期的票据。",
+      "properties": {
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_by": {
+          "description": "签发这张票据的设备。",
+          "type": "string"
+        },
+        "created_by_name": {
+          "type": "string"
+        },
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ticket_id": {
+          "type": "string"
+        },
+        "tunnels": {
+          "description": "此刻用这张票据建立的隧道数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "label",
+        "port",
+        "ticket_id",
+        "created_by",
+        "created_by_name",
+        "created_at_ms",
+        "expires_at_ms",
+        "tunnels"
+      ],
+      "type": "object"
+    },
+    "PreviewLaunch": {
+      "description": "预览页的启动参数。Web UI 把它序列化成 JSON、再 base64url（无填充），放进\n`<预览 origin>/__anycon/enter#<…>` 的 fragment（浏览器不会把 fragment 发给 hub）。引导页读出后存进预览 origin 的\nIndexedDB，立即从地址栏抹掉。",
+      "properties": {
+        "expires_at_ms": {
+          "description": "票据和令牌里较早的那个过期时间。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "node": {
+          "description": "daemon 的设备 id。",
+          "type": "string"
+        },
+        "node_public": {
+          "description": "daemon 的 Noise 静态公钥，64 个小写 hex。预览页用它做 NK 握手（钉住 daemon）。",
+          "type": "string"
+        },
+        "path": {
+          "description": "打开后先导航到的路径（以 `/` 开头，可带查询串）。",
+          "type": "string"
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "psk": {
+          "type": "string"
+        },
+        "ticket_id": {
+          "type": "string"
+        },
+        "token": {
+          "description": "hub 签发的预览令牌（`POST /api/preview/tokens`），预览连接凭它向 hub 认证。",
+          "type": "string"
+        },
+        "v": {
+          "description": "格式版本，目前是 1。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "node",
+        "node_public",
+        "label",
+        "port",
+        "ticket_id",
+        "psk",
+        "token",
+        "expires_at_ms",
+        "path"
+      ],
+      "type": "object"
+    },
+    "PreviewListResult": {
+      "properties": {
+        "previews": {
+          "items": {
+            "$ref": "#/definitions/PreviewInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "previews"
+      ],
+      "type": "object"
+    },
+    "PreviewOpenParams": {
+      "description": "`preview.open` 参数：为本机 `port` 签发一张预览票据。",
+      "properties": {
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "description": "从哪个会话发起（只用于界面展示和审计；端口是否允许不看它，见 spec/daemon.md § 19.3）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "port"
+      ],
+      "type": "object"
+    },
+    "PreviewOpenResult": {
+      "description": "`preview.open` 结果。`psk` 是票据的密钥，只交给预览页（放进 [`PreviewLaunch`]），不要写日志、不要发给 hub。",
+      "properties": {
+        "expires_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "description": "这个端口固定的预览 label（26 位小写 base32），预览 origin 是 `<label>.<预览域名>`。",
+          "type": "string"
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "psk": {
+          "description": "票据密钥，64 个小写 hex（32 字节），Noise PSK。",
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ticket_id": {
+          "description": "票据 id，32 个小写 hex（16 字节）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "port",
+        "ticket_id",
+        "psk",
+        "expires_at_ms"
+      ],
+      "type": "object"
+    },
+    "PreviewPort": {
+      "properties": {
+        "pid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "process": {
+          "description": "进程名（可执行文件名，不含参数）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/PreviewPortSource"
+        }
+      },
+      "required": [
+        "port",
+        "source"
+      ],
+      "type": "object"
+    },
+    "PreviewPortSource": {
+      "description": "这个端口为什么允许预览（spec/daemon.md § 19.3）。",
+      "oneOf": [
+        {
+          "const": "session",
+          "description": "监听它的进程属于某个会话的 agent 进程树（或同一进程组）。",
+          "type": "string"
+        },
+        {
+          "const": "workspace",
+          "description": "监听它的进程的工作目录在某个会话的工作目录里。",
+          "type": "string"
+        },
+        {
+          "const": "config",
+          "description": "写在 `preview.allow_ports` 里。",
+          "type": "string"
+        }
+      ]
+    },
+    "PreviewPortsParams": {
+      "description": "`preview.ports` 参数。带 `session_id` 只列这个会话的端口（外加配置里允许的端口）。",
+      "properties": {
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PreviewPortsResult": {
+      "properties": {
+        "detection": {
+          "$ref": "#/definitions/PreviewDetection"
+        },
+        "ports": {
+          "items": {
+            "$ref": "#/definitions/PreviewPort"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ports",
+        "detection"
+      ],
+      "type": "object"
+    },
+    "PreviewRejectReason": {
+      "description": "daemon 拒绝隧道握手的原因（握手回复 `0x01` 后面的 UTF-8 串）。这一条不受 Noise 保护，只能当提示用。",
+      "oneOf": [
+        {
+          "enum": [
+            "expired",
+            "port_not_allowed",
+            "disabled",
+            "malformed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "unknown_ticket",
+          "description": "没有这张票据（被关掉、被吊销，或者根本不存在）。",
+          "type": "string"
+        },
+        {
+          "const": "label_mismatch",
+          "description": "hub 告知的 label 和票据的不一致。",
+          "type": "string"
+        },
+        {
+          "const": "busy",
+          "description": "这条隧道或这台 daemon 的隧道数已满。",
+          "type": "string"
+        }
+      ]
+    },
+    "PreviewRequestHead": {
+      "description": "隧道 `REQUEST` 帧的载荷（msgpack，字段名为键）。",
+      "properties": {
+        "headers": {
+          "description": "请求头，按原顺序，名字小写。`cookie` 来自预览页自己的 cookie jar；daemon 转发前改写哪些头见\nspec/daemon.md § 19.5。",
+          "items": {
+            "items": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "method": {
+          "type": "string"
+        },
+        "path": {
+          "description": "以 `/` 开头，可带查询串；不含 scheme 和主机。",
+          "type": "string"
+        },
+        "websocket": {
+          "default": false,
+          "description": "`true`：这是一个 WebSocket 升级请求（`method` 为 `GET`，子协议在 `sec-websocket-protocol` 头里）。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "method",
+        "path",
+        "headers"
+      ],
+      "type": "object"
+    },
+    "PreviewReset": {
+      "description": "隧道 `RESET` 帧的载荷（msgpack）：终止这个 stream 的两个方向。",
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/PreviewResetCode"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "PreviewResetCode": {
+      "oneOf": [
+        {
+          "enum": [
+            "internal"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "连不上本机端口。",
+          "type": "string"
+        },
+        {
+          "const": "timeout",
+          "description": "上游超时（等响应头超过 120 秒）。",
+          "type": "string"
+        },
+        {
+          "const": "too_large",
+          "description": "头部或单条 WebSocket 消息超过上限。",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "对端不要了（页面取消了请求、关掉了 WebSocket）。",
+          "type": "string"
+        },
+        {
+          "const": "flow_control",
+          "description": "超过了对端给的流量窗口。",
+          "type": "string"
+        },
+        {
+          "const": "protocol",
+          "description": "帧顺序或格式不对。",
+          "type": "string"
+        },
+        {
+          "const": "limit",
+          "description": "同时打开的 stream 超过上限。",
+          "type": "string"
+        }
+      ]
+    },
+    "PreviewResponseHead": {
+      "description": "隧道 `RESPONSE` 帧的载荷（msgpack）。WebSocket 流里 `status = 101` 表示升级成功，其他状态码表示被拒，\n后面跟普通响应体。",
+      "properties": {
+        "encoding": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PreviewBodyEncoding"
+            }
+          ],
+          "default": "identity"
+        },
+        "headers": {
+          "items": {
+            "items": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "status": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status",
+        "headers"
+      ],
+      "type": "object"
     },
     "Project": {
       "description": "一个项目 = workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。\n元数据全部推导；只有「关联了哪些目录」存在 daemon 的库里。",
@@ -6331,6 +6933,66 @@
     "permission_respond_params": {
       "$ref": "#/definitions/PermissionRespondParams"
     },
+    "preview_body_encoding": {
+      "$ref": "#/definitions/PreviewBodyEncoding"
+    },
+    "preview_close_params": {
+      "$ref": "#/definitions/PreviewCloseParams"
+    },
+    "preview_detection": {
+      "$ref": "#/definitions/PreviewDetection"
+    },
+    "preview_goaway": {
+      "$ref": "#/definitions/PreviewGoaway"
+    },
+    "preview_goaway_code": {
+      "$ref": "#/definitions/PreviewGoawayCode"
+    },
+    "preview_hello": {
+      "$ref": "#/definitions/PreviewHello"
+    },
+    "preview_info": {
+      "$ref": "#/definitions/PreviewInfo"
+    },
+    "preview_launch": {
+      "$ref": "#/definitions/PreviewLaunch"
+    },
+    "preview_list_result": {
+      "$ref": "#/definitions/PreviewListResult"
+    },
+    "preview_open_params": {
+      "$ref": "#/definitions/PreviewOpenParams"
+    },
+    "preview_open_result": {
+      "$ref": "#/definitions/PreviewOpenResult"
+    },
+    "preview_port": {
+      "$ref": "#/definitions/PreviewPort"
+    },
+    "preview_port_source": {
+      "$ref": "#/definitions/PreviewPortSource"
+    },
+    "preview_ports_params": {
+      "$ref": "#/definitions/PreviewPortsParams"
+    },
+    "preview_ports_result": {
+      "$ref": "#/definitions/PreviewPortsResult"
+    },
+    "preview_reject_reason": {
+      "$ref": "#/definitions/PreviewRejectReason"
+    },
+    "preview_request_head": {
+      "$ref": "#/definitions/PreviewRequestHead"
+    },
+    "preview_reset": {
+      "$ref": "#/definitions/PreviewReset"
+    },
+    "preview_reset_code": {
+      "$ref": "#/definitions/PreviewResetCode"
+    },
+    "preview_response_head": {
+      "$ref": "#/definitions/PreviewResponseHead"
+    },
     "project": {
       "$ref": "#/definitions/Project"
     },
@@ -6636,7 +7298,27 @@
     "permission_respond_params",
     "permission_resolved",
     "permission_list_params",
-    "permission_list_result"
+    "permission_list_result",
+    "preview_open_params",
+    "preview_open_result",
+    "preview_close_params",
+    "preview_info",
+    "preview_list_result",
+    "preview_ports_params",
+    "preview_port_source",
+    "preview_port",
+    "preview_detection",
+    "preview_ports_result",
+    "preview_hello",
+    "preview_launch",
+    "preview_request_head",
+    "preview_body_encoding",
+    "preview_response_head",
+    "preview_reset_code",
+    "preview_reset",
+    "preview_goaway_code",
+    "preview_goaway",
+    "preview_reject_reason"
   ],
   "title": "ProtocolSchema",
   "type": "object",
@@ -7072,6 +7754,30 @@
       "name": "permission.list",
       "params": "PermissionListParams",
       "result": "PermissionListResult"
+    },
+    {
+      "direction": "request",
+      "name": "preview.open",
+      "params": "PreviewOpenParams",
+      "result": "PreviewOpenResult"
+    },
+    {
+      "direction": "request",
+      "name": "preview.close",
+      "params": "PreviewCloseParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "preview.list",
+      "params": null,
+      "result": "PreviewListResult"
+    },
+    {
+      "direction": "request",
+      "name": "preview.ports",
+      "params": "PreviewPortsParams",
+      "result": "PreviewPortsResult"
     }
   ],
   "x-anycon-protocol-version": 1

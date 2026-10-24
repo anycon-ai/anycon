@@ -111,6 +111,9 @@ pub struct SendFlow {
     last_flush: Option<Instant>,
     /// 多久之内发出的信封不逐出（默认 [`IN_FLIGHT_GUARD`]；测试里可以缩短）。
     guard: Duration,
+    /// 按端到端回执释放（预览隧道，protocol.md § 11.5）：保留的信封既不按时间、也不按字节数逐出，只在
+    /// [`SendFlow::release_through`] 时放掉；在途量由调用方的回执窗口约束。
+    ack_released: bool,
 }
 
 impl Default for SendFlow {
@@ -168,6 +171,9 @@ impl SendFlow {
     ///
     /// 遇到第一个不满足的就停（seq 有序，发出时间基本单调，后面的只会更新）。
     fn evict(&mut self, now: Instant, keep_newest: bool) {
+        if self.ack_released {
+            return;
+        }
         while self.bytes > RETAIN_BYTES {
             let Some((front, at)) = self.retained.front() else { return };
             let in_flight = now.saturating_duration_since(*at) <= self.guard;
@@ -206,11 +212,42 @@ impl SendFlow {
             rounds: 0,
             last_flush: None,
             guard,
+            ack_released: false,
         }
     }
 
+    /// 切换成按端到端回执释放（预览隧道）。
+    pub fn set_ack_released(&mut self, on: bool) {
+        self.ack_released = on;
+    }
+
+    /// 对端回执已经越过 `seq`（含）：放掉 seq 不大于它的保留（它们一定被 hub 转发过，也不会再被退回）。
+    /// 返回放掉了多少字节。
+    pub fn release_through(&mut self, seq: u64) -> usize {
+        let mut freed = 0;
+        while self.retained.front().is_some_and(|(r, _)| r.seq <= seq) {
+            if let Some((old, _)) = self.retained.pop_front() {
+                self.bytes -= old.body.len();
+                freed += old.body.len();
+            }
+        }
+        self.outstanding.retain(|s| *s > seq);
+        freed
+    }
+
+    /// 向这个对端的发送再暂停 `d`（`rate_limited { to }`：预览流量的账号预算，只暂停这一个对端）。
+    /// 已经有更晚的暂停时不缩短它。
+    pub fn pause_for(&mut self, now: Instant, d: Duration) {
+        let until = now + d.min(RATE_RETRY_MAX);
+        self.paused_until = Some(self.paused_until.map_or(until, |t| t.max(until)));
+    }
+
     /// 放掉保留了超过 `max_age` 的信封（还要重发的不动）。返回这个对端是否已经没有任何保留，可以整个删掉。
+    /// 按回执释放的对端不按时间放（回执没到就是没到）。
     pub fn expire(&mut self, now: Instant, max_age: Duration) -> bool {
+        if self.ack_released {
+            return false;
+        }
         while let Some((r, at)) = self.retained.front() {
             if now.saturating_duration_since(*at) <= max_age || self.outstanding.first().is_some_and(|f| r.seq >= *f) {
                 break;
@@ -572,5 +609,67 @@ mod tests {
         assert_eq!(f.outstanding(), vec![5, 6, 7, 8, 9, 10]);
         assert_eq!(f.take_outstanding(), vec![5, 6, 7, 8, 9, 10]);
         assert!(f.outstanding().is_empty());
+    }
+
+    #[test]
+    fn an_ack_released_flow_keeps_everything_until_the_peer_acks_it() {
+        let t0 = Instant::now();
+        let mut f = SendFlow::default();
+        f.set_ack_released(true);
+        // 超过字节上限、老过保护期、过了保留期：都不逐出
+        let old = t0 - IN_FLIGHT_GUARD - RETAIN_MAX_AGE - Duration::from_secs(5);
+        for s in 1..=3u64 {
+            f.retain_at(r(s, s, RETAIN_BYTES / 2), old);
+        }
+        assert_eq!(f.retained_bytes(), RETAIN_BYTES / 2 * 3);
+        assert!(!f.expire(t0, RETAIN_MAX_AGE), "never expires by time");
+        assert!(f.contains(1) && f.contains(2) && f.contains(3));
+        // 回执越过 2：1、2 放掉（返回放掉的字节数），3 还在
+        assert_eq!(f.release_through(2), RETAIN_BYTES);
+        assert!(!f.contains(1) && !f.contains(2) && f.contains(3));
+        assert_eq!(f.retained_bytes(), RETAIN_BYTES / 2);
+        // 放掉一个已经放掉的是空操作；全放掉之后可以回收
+        assert_eq!(f.release_through(2), 0);
+        f.release_through(10);
+        assert_eq!(f.retained_bytes(), 0);
+        assert!(!f.expire(t0, RETAIN_MAX_AGE), "ack-released flows are removed by the owner, not by trim");
+    }
+
+    #[test]
+    fn releasing_also_forgets_acked_seqs_that_were_waiting_for_a_resend() {
+        let t0 = Instant::now();
+        let mut f = SendFlow::default();
+        f.set_ack_released(true);
+        for s in 1..=4u64 {
+            f.retain(r(s, s, 10));
+        }
+        assert!(f.bounce(3, t0, None));
+        f.defer(4);
+        f.release_through(3);
+        assert_eq!(f.outstanding(), vec![4]);
+    }
+
+    #[test]
+    fn a_pause_for_one_peer_blocks_that_flow_only_and_never_shortens_a_longer_pause() {
+        let t0 = Instant::now();
+        let rate = RatePause::default();
+        let quiet = SendFlow::default();
+        let mut limited = SendFlow::default();
+        limited.pause_for(t0, Duration::from_millis(800));
+        assert!(limited.blocked(t0 + Duration::from_millis(100), &rate));
+        assert!(!quiet.blocked(t0 + Duration::from_millis(100), &rate), "other peers carry on");
+        limited.pause_for(t0, Duration::from_millis(200));
+        assert!(limited.blocked(t0 + Duration::from_millis(700), &rate), "a shorter hint does not shorten the pause");
+        assert!(!limited.blocked(t0 + Duration::from_millis(801), &rate));
+        // 有待发的东西时，重发要等到暂停结束
+        limited.retain(r(1, 1, 10));
+        limited.defer(1);
+        limited.pause_for(t0, Duration::from_secs(2));
+        assert_eq!(limited.ready_at(&rate, t0).unwrap(), t0 + Duration::from_secs(2));
+        // 单次暂停有上限，免得一个异常的 hub 把出站无限期停住
+        let mut capped = SendFlow::default();
+        capped.pause_for(t0, Duration::from_secs(3600));
+        assert!(capped.blocked(t0 + RATE_RETRY_MAX - Duration::from_millis(1), &rate));
+        assert!(!capped.blocked(t0 + RATE_RETRY_MAX + Duration::from_millis(1), &rate));
     }
 }

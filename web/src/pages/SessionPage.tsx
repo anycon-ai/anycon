@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { FileDiff, MessageSquare, PanelRight, PanelRightClose, ShieldAlert } from 'lucide-react'
+import { FileDiff, Globe, MessageSquare, PanelRight, PanelRightClose, ShieldAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import type { PermissionRespondParams } from '@/protocol'
@@ -16,6 +16,8 @@ import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
 import { latestSyncBlock, pendingPermissions } from '@/features/session/reducer'
 import { backgroundCommands, subagentRows } from '@/features/session/subagents'
+import { previewAvailable, usePreviewTemplate } from '@/features/preview/availability'
+import { PreviewView } from '@/features/preview/PreviewView'
 import { ApprovalBanner } from '@/components/ApprovalBanner'
 import { ArchivedBar } from '@/features/session/ui/ArchivedBar'
 import { InfoPanel } from '@/features/session/ui/InfoPanel'
@@ -39,10 +41,10 @@ import { useSessions } from '@/stores/sessions'
 import { toast, useUi } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Input } from '@/ui/Field'
-import { Chip, EmptyState, Segmented, Skeleton, Spinner } from '@/ui/Misc'
+import { Chip, EmptyState, Segmented, Skeleton, Spinner, type SegmentedOption } from '@/ui/Misc'
 import { Drawer, Dialog } from '@/ui/Overlay'
 
-type MainView = 'chat' | 'changes'
+type MainView = 'chat' | 'changes' | 'preview'
 
 /** 发送被 daemon 拒绝时 toast 里的那句话。 */
 function failedText(reason: SendOutcome['reason'], t: TFunction): string {
@@ -79,11 +81,12 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const [focusToken, setFocusToken] = useState(0)
   const [scrollTo, setScrollTo] = useState<string | null>(null)
   const [announce, setAnnounce] = useState('')
-  // 主区显示聊天还是「改动」（只对这个会话；切到别的会话回到聊天）。「改动」是个整页大小的视图，不挤在右栏里
+  // 主区显示聊天、「改动」还是「预览」（只对这个会话；切到别的会话回到聊天）。「改动」「预览」都是整页大小的视图，不挤在右栏里
   const [mainChoice, setMainChoice] = useState<{ sessionId: string; view: MainView } | null>(null)
   const [mergeBusy, setMergeBusy] = useState(false)
   const [unarchiving, setUnarchiving] = useState(false)
   const gitEntry = useGitEntry(sessionId)
+  const previewTemplate = usePreviewTemplate()
 
   useEffect(() => {
     if (!nodeId) return
@@ -192,8 +195,12 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const project = summary?.project
   const projectPath = project ? entry.projects.find((p) => p.name === project)?.path : undefined
   const workDir = projectPath && worktree ? `${projectPath.replace(/\/+$/, '')}/${worktree.path}` : projectPath
-  const mainView: MainView = gitAvailable && mainChoice?.sessionId === sessionId ? mainChoice.view : 'chat'
+  // 「预览」（ADR-39）：hub 配了预览、节点也支持（web.md § 13.1）。和 git 无关，非 git 会话也有
+  const previewTemplateOk = previewAvailable(previewTemplate, entry.info) ? previewTemplate : null
+  const choice = mainChoice?.sessionId === sessionId ? mainChoice.view : 'chat'
+  const mainView: MainView = (choice === 'changes' && gitAvailable) || (choice === 'preview' && previewTemplateOk !== null) ? choice : 'chat'
   const showChanges = mainView === 'changes'
+  const showPreview = mainView === 'preview' && previewTemplateOk !== null
   const openChanges = (): void => setMainChoice({ sessionId, view: 'changes' })
   const syncBlock = view ? latestSyncBlock(view.blocks) : null
   const eventConflictFiles = syncBlock?.action === 'sync_conflicts' ? syncBlock.files : undefined
@@ -269,6 +276,56 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
 
   const loading = !open || (open.phase === 'loading' && (view?.blocks.length ?? 0) === 0)
 
+  // 顶栏的视图开关：「聊天」一直有；「改动」要 git；「预览」要 hub 和节点都支持（只剩「聊天」时不显示开关）
+  const viewOptions: SegmentedOption<MainView>[] = [
+    {
+      value: 'chat',
+      title: t('session.view.chat'),
+      testId: 'main-view-chat',
+      label: (
+        <span className="inline-flex items-center gap-1.5">
+          <MessageSquare className="size-3.5" aria-hidden />
+          <span className="sr-only sm:not-sr-only">{t('session.view.chat')}</span>
+        </span>
+      ),
+    },
+    ...(gitAvailable
+      ? [
+          {
+            value: 'changes' as const,
+            title: t('session.view.changes'),
+            testId: 'main-view-changes',
+            label: (
+              <span className="inline-flex items-center gap-1.5">
+                <FileDiff className="size-3.5" aria-hidden />
+                <span className="sr-only sm:not-sr-only">{t('session.view.changes')}</span>
+                {uncommitted > 0 ? (
+                  <span className="rounded-full bg-bg-muted px-1.5 text-[0.6875rem] leading-4 tabular-nums" title={t('git.chipUncommitted', { count: uncommitted })} data-testid="main-view-changes-count">
+                    {uncommitted}
+                  </span>
+                ) : null}
+              </span>
+            ),
+          },
+        ]
+      : []),
+    ...(previewTemplateOk !== null
+      ? [
+          {
+            value: 'preview' as const,
+            title: t('session.view.preview'),
+            testId: 'main-view-preview',
+            label: (
+              <span className="inline-flex items-center gap-1.5">
+                <Globe className="size-3.5" aria-hidden />
+                <span className="sr-only sm:not-sr-only">{t('session.view.preview')}</span>
+              </span>
+            ),
+          },
+        ]
+      : []),
+  ]
+
   return (
     <>
       <PageHeader
@@ -280,43 +337,8 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
         onBack={goBack}
         meta={
           <>
-            {gitAvailable ? (
-              <Segmented
-                size="sm"
-                ariaLabel={t('session.view.label')}
-                value={mainView}
-                onChange={(v) => setMainChoice({ sessionId, view: v })}
-                testId="main-view"
-                options={[
-                  {
-                    value: 'chat',
-                    title: t('session.view.chat'),
-                    testId: 'main-view-chat',
-                    label: (
-                      <span className="inline-flex items-center gap-1.5">
-                        <MessageSquare className="size-3.5" aria-hidden />
-                        <span className="sr-only sm:not-sr-only">{t('session.view.chat')}</span>
-                      </span>
-                    ),
-                  },
-                  {
-                    value: 'changes',
-                    title: t('session.view.changes'),
-                    testId: 'main-view-changes',
-                    label: (
-                      <span className="inline-flex items-center gap-1.5">
-                        <FileDiff className="size-3.5" aria-hidden />
-                        <span className="sr-only sm:not-sr-only">{t('session.view.changes')}</span>
-                        {uncommitted > 0 ? (
-                          <span className="rounded-full bg-bg-muted px-1.5 text-[0.6875rem] leading-4 tabular-nums" title={t('git.chipUncommitted', { count: uncommitted })} data-testid="main-view-changes-count">
-                            {uncommitted}
-                          </span>
-                        ) : null}
-                      </span>
-                    ),
-                  },
-                ]}
-              />
+            {viewOptions.length > 1 ? (
+              <Segmented size="sm" ariaLabel={t('session.view.label')} value={mainView} onChange={(v) => setMainChoice({ sessionId, view: v })} testId="main-view" options={viewOptions} />
             ) : null}
             {dangerousMode ? (
               <Chip tone="danger" testId="mode-chip-dangerous" icon={<ShieldAlert className="size-3" aria-hidden />} className="shrink-0">
@@ -346,6 +368,8 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
             <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-3 md:p-4" data-testid="changes-view">
               <ChangesTab key={sessionId} nodeId={nodeId} sessionId={sessionId} worktree={worktree} running={running} offline={offline} archived={archived} eventConflictFiles={eventConflictFiles} />
             </div>
+          ) : showPreview ? (
+            <PreviewView key={sessionId} nodeId={nodeId} sessionId={sessionId} template={previewTemplateOk} offline={offline} />
           ) : loading ? (
             <div className="flex-1 space-y-4 p-6" aria-busy="true">
               <Skeleton className="ml-auto h-10 w-2/5" />
@@ -446,7 +470,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
                 {branchChip('inline')}
               </div>
             ) : null
-          ) : archived ? (
+          ) : showPreview ? null : archived ? (
             <ArchivedBar
               leading={branchChip('inline')}
               busy={unarchiving}

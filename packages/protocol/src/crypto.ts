@@ -124,6 +124,15 @@ export interface EnrollCrypto {
 /** `loadCrypto()` 的结果：配对 / 重连 / 传输 + 账号内接入。 */
 export type FullCrypto = Crypto & EnrollCrypto
 
+/** dev server 预览隧道（ADR-39）用到的部分。只有预览页的 service worker 用；`loadCrypto()` 的结果同时满足它。 */
+export interface PreviewCrypto {
+  /**
+   * 预览隧道握手 `Noise_NKpsk0` 的 initiator：没有静态密钥，钉住 daemon 静态公钥 `daemonPublic`（32 字节）。
+   * `psk` 是预览票据密钥（32 字节），`prologue` 用 `previewPrologue(label, ticketId)` 算。
+   */
+  previewInitiator(daemonPublic: Uint8Array, psk: Uint8Array, prologue: Uint8Array): Handshake
+}
+
 /** wasm 产物不存在或加载失败。 */
 export class CryptoUnavailableError extends Error {
   override readonly name = 'CryptoUnavailableError'
@@ -171,6 +180,7 @@ export interface WasmModule {
   WasmHandshake: {
     pairing(role: Role, local: RawKeypair, psk: Uint8Array): RawHandshake
     reconnect(role: Role, local: RawKeypair, remotePublic?: Uint8Array): RawHandshake
+    previewInitiator(daemonPublic: Uint8Array, psk: Uint8Array, prologue: Uint8Array): RawHandshake
   }
   derivePairSecrets(code: string): RawPairSecrets
   derivePsk(code: string): Uint8Array
@@ -262,7 +272,7 @@ function wrapCpace(raw: RawCpace): Cpace {
   }
 }
 
-function wrapModule(mod: WasmModule): FullCrypto {
+function wrapModule(mod: WasmModule): FullCrypto & PreviewCrypto {
   // 传给 wasm 的 Keypair 每次临时重建。握手对象建好后释放它：wasm 若按值消费了它，free 是空操作。
   const withKeypair = (kp: Keypair, build: (raw: RawKeypair) => RawHandshake): Handshake => {
     const raw = mod.WasmKeypair.fromSecret(kp.secret)
@@ -283,6 +293,8 @@ function wrapModule(mod: WasmModule): FullCrypto {
       withKeypair(local, (raw) => mod.WasmHandshake.pairing(role, raw, psk)),
     reconnect: (role, local, remotePublic) =>
       withKeypair(local, (raw) => mod.WasmHandshake.reconnect(role, raw, remotePublic)),
+    previewInitiator: (daemonPublic, psk, prologue) =>
+      wrapHandshake(mod.WasmHandshake.previewInitiator(daemonPublic, psk, prologue)),
     derivePairSecrets: (code) => {
       const raw = mod.derivePairSecrets(code)
       try {
@@ -346,7 +358,7 @@ async function nodeWasmBytes(): Promise<Uint8Array> {
   }
 }
 
-async function initialize(options: LoadCryptoOptions): Promise<FullCrypto> {
+async function initialize(options: LoadCryptoOptions): Promise<FullCrypto & PreviewCrypto> {
   const mod = await (options.module ?? importWasmModule())
   const input: unknown = options.wasm ?? (isNode() ? await nodeWasmBytes() : undefined)
   // wasm-bindgen ≥ 0.2.93 的对象形参；不给 input 时浏览器走胶水 js 里的 `new URL(…, import.meta.url)`。
@@ -354,13 +366,13 @@ async function initialize(options: LoadCryptoOptions): Promise<FullCrypto> {
   return wrapModule(mod)
 }
 
-let cached: Promise<FullCrypto> | undefined
+let cached: Promise<FullCrypto & PreviewCrypto> | undefined
 
 /**
  * 加载并初始化 wasm。进程内只初始化一次（第二次调用返回同一个 Promise；失败不缓存，可重试）。
  * wasm 产物不存在时抛 `CryptoUnavailableError`，消息里写明要跑 `just gen-wasm`。
  */
-export function loadCrypto(options: LoadCryptoOptions = {}): Promise<FullCrypto> {
+export function loadCrypto(options: LoadCryptoOptions = {}): Promise<FullCrypto & PreviewCrypto> {
   if (!cached) {
     cached = initialize(options).catch((err: unknown) => {
       cached = undefined

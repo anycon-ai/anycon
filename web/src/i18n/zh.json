@@ -351,7 +351,7 @@
     "headingScratch": "想做点什么？"
   },
   "session": {
-    "view": { "label": "会话视图", "chat": "聊天", "changes": "改动" },
+    "view": { "label": "会话视图", "chat": "聊天", "changes": "改动", "preview": "预览" },
     "pendingCount": "{{count}} 个待审批",
     "archived": "已归档",
     "archivedHint": "已归档 · 取消归档后才能发送消息",
@@ -597,6 +597,7 @@
     "tabDevices": "设备",
     "tabWorkspace": "Workspace",
     "tabLimits": "限制",
+    "tabPreview": "预览",
     "tabAbout": "关于",
     "agentsHint": "节点上检测到的 agent。这里设置的默认选项会应用到所有设备的新会话。",
     "redetect": "重新检测",
@@ -913,6 +914,72 @@
       "branchKept": "worktree 被保留时，分支也会保留。",
       "commitsLost_other": "分支上的 {{count}} 个提交会丢失",
       "autoKeeps_other": "现在有 {{count}} 个未提交的改动，所以会保留。"
+    }
+  },
+  "preview": {
+    "toolbar": "预览工具条",
+    "port": "端口",
+    "choosePort": "选择端口",
+    "otherPort": "其他端口…",
+    "otherLabel": "端口",
+    "otherOpen": "打开",
+    "otherInvalid": "请输入 1–65535 之间的端口。",
+    "sourceConfig": "配置",
+    "path": "路径",
+    "reload": "刷新",
+    "openTab": "在新标签页打开",
+    "openTabShort": "打开",
+    "stop": "停止预览",
+    "stopTitle": "停止端口 {{port}} 的预览？",
+    "stopBody": "这会断开你所有设备上这个端口的预览，别处已打开的页面将无法继续加载。之后可以随时重新打开。",
+    "stoppedToast": "已停止端口 {{port}} 的预览",
+    "stoppedTitle": "预览已停止",
+    "stoppedBody": "端口 {{port}} 的预览已在所有设备上关闭。",
+    "restart": "重新开始",
+    "frameTitle": "端口 {{port}} 的预览",
+    "loading": "正在查找端口…",
+    "opening": "正在打开预览…",
+    "emptyTitle": "还没有端口",
+    "emptyBody": "agent 启动 dev server 之后，它的端口会出现在这里。也可以选“其他端口…”自己输入一个。",
+    "detectionUnavailable": "这台机器上没法探测端口，只能预览 preview.allow_ports 里的。",
+    "offline": "节点不在线。回来之前无法列出端口，也不能新开预览。",
+    "portsError": "无法列出端口：{{error}}",
+    "errorTitle": "无法打开预览",
+    "retry": "重试",
+    "errors": {
+      "port_not_allowed": "这个端口不允许预览。默认只允许本会话自己启动的服务；要预览其他端口，请把它加到节点 config.toml 的 preview.allow_ports。",
+      "disabled": "这个节点关闭了预览（config.toml 的 preview.enabled）。",
+      "unauthorized": "hub 不认这个浏览器是已配对的设备。请重新登录，或把这个浏览器重新与节点配对。",
+      "local": {
+        "no_device_token": "这个浏览器还没有 hub 的设备令牌。请先与节点配对。",
+        "no_node_key": "这个浏览器没有该节点的密钥。请重新与节点配对。",
+        "bad_template": "hub 的预览地址无效。",
+        "bad_label": "节点返回了 hub 不能用的预览名称。"
+      },
+      "hub": {
+        "preview_disabled": "这个 hub 没有开启预览。",
+        "invalid_label": "节点返回了 hub 不能用的预览名称。",
+        "label_taken": "这个预览地址已被这个 hub 上的另一个节点占用。",
+        "too_many_labels": "这个节点在 hub 上的预览地址数量已达上限。",
+        "not_found": "hub 不认识这个节点，或者这个浏览器没有和它配对。"
+      }
+    },
+    "list": {
+      "title": "已打开的预览",
+      "hint": "这个节点上各设备签发、仍然有效的预览票据。关闭一个会作废该端口的全部票据并断开连接。",
+      "empty": "没有已打开的预览。",
+      "offline": "节点不在线。",
+      "tunnels_other": "{{count}} 条隧道",
+      "noSession": "没有会话",
+      "openedBy": "由 {{device}} 打开",
+      "expires": "{{time}}过期",
+      "close": "关闭",
+      "closeTitle": "关闭端口 {{port}} 的预览？"
+    },
+    "policy": {
+      "title": "哪些端口可以预览",
+      "default": "默认只能预览会话自己启动的服务：监听进程在该会话 agent 的进程树里，或者工作目录在会话的工作目录里。",
+      "allowPorts": "要允许其他端口，把它们写进节点 config.toml 的 preview.allow_ports。设置 preview.enabled = false 可以关掉整个节点的预览。节点只会连接 127.0.0.1 和 ::1。"
     }
   },
   "git": {

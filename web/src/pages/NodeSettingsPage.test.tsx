@@ -3,14 +3,17 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enrollInfo, nodeEntry } from '@/test/factories'
+import { PREVIEW_TEMPLATE, previewNodeInfo } from '@/test/preview'
 import { FakeRpc } from '@/test/fakeRpc'
 import { mockRouter } from '@/test/routerMock'
 import { setRpc } from '@/transport/instance'
 import { useEnroll } from '@/stores/enroll'
 import { useNodes } from '@/stores/nodes'
 
-const h = vi.hoisted(() => ({ navigate: vi.fn() }))
+const h = vi.hoisted(() => ({ navigate: vi.fn(), template: null as string | null }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), h.navigate, { node: 'nnnnnnnn' }))
+// 「预览」标签取决于 hub 的 /api/config（react-query）；测试里直接给模板（null = hub 没配预览）
+vi.mock('@/features/preview/availability', async (orig) => ({ ...(await orig<object>()), usePreviewTemplate: () => h.template }))
 
 import { Route } from '@/routes/_app/_shell/n.$node.settings'
 import { parseSettingsTab } from '@/lib/settingsTabs'
@@ -21,6 +24,7 @@ let rpc: FakeRpc
 
 beforeEach(() => {
   h.navigate.mockReset()
+  h.template = null
   rpc = new FakeRpc()
   rpc.handlers['node.enroll_status'] = () => ({ approval: true, password: { set: false, state: 'enabled', failures: 0 } })
   rpc.handlers['node.enroll_list'] = () => ({ enrolls: [] })
@@ -31,6 +35,53 @@ beforeEach(() => {
   useEnroll.setState({ items: {}, resolved: {}, dialog: null, scannerOpen: false, securityTick: {} })
 })
 afterEach(() => setRpc(null))
+
+describe('the Preview tab', () => {
+  const tabs = (): Array<string | null> => screen.getAllByRole('tab').map((t) => t.getAttribute('data-testid'))
+  const withPreviewNode = (): void => useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'mac-mini', info: previewNodeInfo() }) }, order: [NODE], loaded: true })
+
+  it('is there, between Limits and About, when the hub has preview configured and the node supports it', () => {
+    h.template = PREVIEW_TEMPLATE
+    withPreviewNode()
+    render(<NodeSettingsPage />)
+    expect(tabs()).toEqual(['tab-agent', 'tab-devices', 'tab-enroll', 'tab-workspace', 'tab-limits', 'tab-preview', 'tab-about'])
+  })
+
+  it('is not there when the hub has no preview, or the node does not support it', () => {
+    withPreviewNode()
+    const a = render(<NodeSettingsPage />)
+    expect(tabs()).not.toContain('tab-preview')
+    a.unmount()
+    h.template = PREVIEW_TEMPLATE
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'mac-mini' }) }, order: [NODE], loaded: true })
+    render(<NodeSettingsPage />)
+    expect(tabs()).not.toContain('tab-preview')
+  })
+
+  it('?tab=preview opens it; without the tab it falls back to the first one', async () => {
+    rpc.handlers['preview.list'] = () => ({ previews: [] })
+    h.template = PREVIEW_TEMPLATE
+    withPreviewNode()
+    const a = render(<NodeSettingsPage tab="preview" />)
+    expect(screen.getByTestId('tab-preview')).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByTestId('preview-tab')).toBeInTheDocument()
+    a.unmount()
+    h.template = null
+    render(<NodeSettingsPage tab="preview" />)
+    expect(screen.getByTestId('tab-agent')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByTestId('preview-tab')).toBeNull()
+  })
+
+  it('picking it puts it in the URL', async () => {
+    rpc.handlers['preview.list'] = () => ({ previews: [] })
+    h.template = PREVIEW_TEMPLATE
+    withPreviewNode()
+    const user = userEvent.setup()
+    render(<NodeSettingsPage />)
+    await user.click(screen.getByTestId('tab-preview'))
+    expect(h.navigate).toHaveBeenCalledWith({ to: '/n/$node/settings', params: { node: 'nnnnnnnn' }, search: { tab: 'preview' }, replace: true })
+  })
+})
 
 describe('?tab=', () => {
   it('has an "Access" tab between Devices and Workspace', () => {
@@ -63,6 +114,7 @@ describe('?tab=', () => {
   it('only knows the real tabs', () => {
     expect(parseSettingsTab('enroll')).toBe('enroll')
     expect(parseSettingsTab('devices')).toBe('devices')
+    expect(parseSettingsTab('preview')).toBe('preview')
     expect(parseSettingsTab('nope')).toBeUndefined()
     expect(parseSettingsTab(3)).toBeUndefined()
   })

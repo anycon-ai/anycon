@@ -18,6 +18,7 @@ use crate::hub::{HubLink, HubOutbox, HubState};
 use crate::identity::{Identity, IdentityError};
 use crate::notify::Notifier;
 use crate::peers::Peers;
+use crate::preview::{Preview, PreviewDeps};
 use crate::rpc::Rpc;
 use crate::sessions::{SessionDeps, Sessions};
 use crate::store::{Store, StoreError};
@@ -86,6 +87,8 @@ pub struct Ctx {
     pub notifier: Arc<Notifier>,
     pub audit: Audit,
     pub peers: Arc<Peers>,
+    /// dev server 预览（ADR-39）：票据、端口探测、隧道。
+    pub preview: Arc<Preview>,
     /// 账号内接入引擎（ADR-36）；`peers.enroll` 是同一个。
     pub enroll: Arc<Enroll>,
     pub hub_state: Arc<HubState>,
@@ -217,6 +220,17 @@ impl Daemon {
         )
         .await;
         notifier.set_out(peers.clone());
+        let preview = Preview::new(PreviewDeps {
+            store: store.clone(),
+            config: config.clone(),
+            identity: identity.clone(),
+            outbox: outbox.clone(),
+            audit: audit.clone(),
+            sessions: sessions.clone(),
+            peers: peers.clone(),
+            env: env.base.clone(),
+        });
+        peers.bind_preview(&preview);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let ctx = Arc::new(Ctx {
             paths: paths.clone(),
@@ -232,6 +246,7 @@ impl Daemon {
             notifier,
             audit,
             peers: peers.clone(),
+            preview: preview.clone(),
             enroll: enroll.clone(),
             hub_state: hub_state.clone(),
             outbox: outbox.clone(),
@@ -249,6 +264,7 @@ impl Daemon {
             enroll.spawn_sweeper(),
             enroll.spawn_config_watcher(),
         ];
+        tasks.extend(preview.spawn_background());
         // 出站保留缓冲里陈旧的信封（hub 早就不会再退回它们了）定期放掉，空闲的对端不占内存
         {
             let outbox = outbox.clone();
@@ -297,6 +313,7 @@ impl Daemon {
                 outbox,
                 state: hub_state,
                 peers,
+                preview,
                 agents,
                 wake: Arc::new(Notify::new()),
             });
@@ -310,6 +327,7 @@ impl Daemon {
     pub async fn shutdown(mut self) {
         tracing::info!("daemon shutting down");
         let _ = self.ctx.shutdown_tx.send(true);
+        self.ctx.preview.shutdown().await;
         self.ctx.sessions.shutdown_all().await;
         for t in &self.tasks {
             t.abort();

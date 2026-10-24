@@ -39,3 +39,29 @@ describe('apiFetch — 401 handling', () => {
     await expect(apiFetch('/auth/email/send', { method: 'POST', body: {} })).rejects.toMatchObject({ status: 429, code: 'rate_limited', retryAfter: 42 })
   })
 })
+
+describe('apiFetch — bearer (device token)', () => {
+  it('sends Authorization: Bearer and X-Anycon, and no cookie', async () => {
+    const api = installFakeApi({ 'POST /api/preview/tokens': () => ({ token: 't', origin: 'https://x', expires_at_ms: 1 }) })
+    await apiFetch('/api/preview/tokens', { method: 'POST', body: { node: 'n', label: 'l' }, bearer: 'dev-token' })
+    const call = api.callsTo('POST /api/preview/tokens')[0]!
+    expect(call.headers.Authorization).toBe('Bearer dev-token')
+    expect(call.headers['X-Anycon']).toBe('1')
+    expect((fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0]![1].credentials).toBe('omit')
+  })
+
+  it('without bearer the cookie is used and no Authorization header is sent', async () => {
+    const api = installFakeApi({ 'GET /api/me': () => ({ id: 'u' }) })
+    await apiFetch('/api/me')
+    expect(api.calls[0]!.headers.Authorization).toBeUndefined()
+    expect((fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0]![1].credentials).toBe('same-origin')
+  })
+
+  it('a 401 on a bearer request is about the device, not the login: it does not redirect to the login page', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    installFakeApi({ 'POST /api/preview/tokens': () => ({ status: 401, body: errorBody('unauthorized') }) })
+    await expect(apiFetch('/api/preview/tokens', { method: 'POST', body: {}, bearer: 'dev-token' })).rejects.toMatchObject({ status: 401, code: 'unauthorized' })
+    expect(handler).not.toHaveBeenCalled()
+  })
+})

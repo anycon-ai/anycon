@@ -99,7 +99,7 @@ type ControlType = Control['type']
 
 /** 每个变体的字段声明顺序（不含 `type`），对应 control.rs。 */
 const CONTROL_FIELD_ORDER: Readonly<Record<ControlType, readonly string[]>> = {
-  auth: ['device_token', 'protocol_version', 'client'],
+  auth: ['device_token', 'protocol_version', 'client', 'preview_token'],
   auth_ok: ['device_id', 'server_time_ms', 'peers_online', 'quota'],
   auth_fail: ['reason'],
   pair_begin: ['match_id'],
@@ -117,12 +117,13 @@ const CONTROL_FIELD_ORDER: Readonly<Record<ControlType, readonly string[]>> = {
   revoke: ['device'],
   peer_online: ['device'],
   peer_offline: ['device'],
+  preview_peer: ['peer', 'label'],
   undeliverable: ['to', 'seq'],
   queue_overflow: ['to', 'dropped_seqs'],
   queue_drop: ['seq'],
   backpressure: ['to', 'seq'],
   dropped: ['seq', 'reason'],
-  rate_limited: ['retry_after_ms'],
+  rate_limited: ['retry_after_ms', 'to'],
   quota_update: ['quota'],
   rotate_token: [],
   token_rotated: ['device_token'],
@@ -130,10 +131,11 @@ const CONTROL_FIELD_ORDER: Readonly<Record<ControlType, readonly string[]>> = {
 
 /** Rust 侧 `#[serde(skip_serializing_if = "Option::is_none")]` 的字段：None 时整键省略，而不是编码为 nil。 */
 const CONTROL_SKIP_NONE: Readonly<Record<string, ReadonlySet<string>>> = {
-  auth: new Set(['device_token']),
+  auth: new Set(['device_token', 'preview_token']),
   auth_ok: new Set(['quota']),
   pair_done: new Set(['device_id', 'device_token']),
   enroll_failed: new Set(['enroll_id']),
+  rate_limited: new Set(['to']),
 }
 
 /** 全部控制消息的 `type`，对应 control.rs 的 `Control` 变体（snake_case）。 */

@@ -14,6 +14,9 @@ pub struct NodeCapabilities {
     /// 支持每会话 worktree、`session.git_status` / `diff` / `sync_base`（ADR-34）。daemon 找不到 `git` 时为 false。
     #[serde(default)]
     pub worktree: bool,
+    /// 支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。
+    #[serde(default)]
+    pub preview: bool,
 }
 
 /// 节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。

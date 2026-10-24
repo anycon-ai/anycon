@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && vite build -c vite.preview.config.ts",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p preview/tsconfig.json && tsc --noEmit -p preview/tsconfig.sw.json",
+    "lint": "eslint src preview",
+    "test": "vitest run --project preview && vitest run --project web",
     "test:watch": "vitest",
     "fmt": "echo 'no formatter configured for web'"
   },

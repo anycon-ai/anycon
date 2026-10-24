@@ -21,6 +21,7 @@
 - 能否通过未验证邮箱的 OAuth 身份、验证码流程、登录 token 或邀请链接接管他人账号
 - 已配对客户端能否绕过 `allow_dangerous_modes`、会话 `env` 策略或 workspace 边界，在 daemon 机器上不经审批执行代码
 - 被提示注入的 agent 能否借 Web UI 把数据发往第三方
+- dev server 预览（ADR-39）：预览页里的代码能否读到 Web UI 的密钥或登录态；hub 能否在不持有票据的情况下打开隧道或看到隧道内容；能否经预览访问 daemon 机器上不该放行的端口（会话之外、`preview.allow_ports` 之外、本机 hub）；吊销设备或关闭预览后隧道是否仍能使用
 
 ## 自建用户如何获知安全更新
 
@@ -30,7 +31,7 @@
 
 ## 威胁模型
 
-详见 [docs/architecture.md § 5.6](docs/architecture.md#56-威胁模型)。一句话版本：端到端加密保护的是会话内容在 hub 上不可见；hub 看得到元数据；Web UI 的代码由 hub 下发。
+详见 [docs/architecture.md § 5.6](docs/architecture.md#56-威胁模型)。一句话版本：端到端加密保护的是会话内容（和 dev server 预览的内容）在 hub 上不可见；hub 看得到元数据；Web UI 和预览运行时的代码由 hub 下发。
 
 ## 已知限制（已声明，不算漏洞，但欢迎讨论缓解办法）
 
@@ -50,4 +51,6 @@
 
 **不是沙箱。** agent 以 daemon 用户的身份运行，anycon 提供审批和 workspace 路径边界，不提供 OS 级隔离。已配对设备等于能在那台机器上让 agent 干活。**关联的本机目录**（`workspace.link`，ADR-33）同样交给了已配对设备：里面的文件可以不经审批读取（`fs.read`，进审计），agent 在里面按所选权限模式改文件（normal 风险的模式不逐个审批）。daemon 拒绝关联隐藏目录、常见的系统 / 凭证 / 自启动目录和 anycon 数据目录，但这张拒绝表是启发式的，挡不住所有「写进去就会被执行」的位置；显式放行一个拒绝项会放开它下面的一切。**建议把 `workspace.link_roots` 收窄到代码目录**（比如 `["~/work"]`），设成 `[]` 就关闭关联。 已知窗口：turn 进行中关联目录被换掉（比如换成指向别处的符号链接），daemon 每约 2 秒复核一次、发现后收掉 agent 进程，在这之前 agent 不经审批执行的动作仍可能落到新目标上；报告时请说明是否超出了这个窗口。
 
-**元数据。** hub 看得到谁连谁、什么时候、多大的信封、设备名和账号标识。anycon 不做流量混淆。
+**dev server 预览。** 预览运行时（引导页、service worker、shim）同样由 hub 下发，和 Web UI 同一个信任前提。预览 origin 的 IndexedDB 里存着这个预览的 hub 令牌和票据密钥，预览页里的 dev app（agent 写的代码和它的依赖）读得到它们：拿到的人在过期前（默认 24 小时）能访问这一个端口，关闭预览（`preview.close`）或吊销签发它的设备立即失效。dev app 里写死的 `localhost` 地址、自己的 service worker 在预览里不工作。见 [ADR-39](docs/decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。
+
+**元数据。** hub 看得到谁连谁、什么时候、多大的信封、设备名和账号标识；开着预览时还有预览 label、令牌的申请和预览连接的流量。anycon 不做流量混淆。

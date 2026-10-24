@@ -19,7 +19,7 @@ hub 的每个功能都要能回答一个问题：**这个功能需要看消息�
 | `/`、`/assets/*`、`/manifest.webmanifest`、`/sw.js`、`/THIRD-PARTY-LICENSES.txt` | 嵌入的 Web UI（最后一个是 Web UI 里 npm 包的许可证清单，构建时生成）。所有不匹配 `/api`、`/auth`、`/v1` 的路径回退到 `index.html`（SPA 路由） |
 | `GET /healthz` | 进程活着。返回版本号，不查库 |
 | `GET /readyz` | 数据库可用、migration 已跑完。反代和容器编排用这个 |
-| `GET /api/config` | 公开配置：`mode`、`public_url`、启用的登录方式（`["token"]`，配了 SMTP 时 `["token","email"]`）、是否开启队列、`vapid_public_key`（恒有值）、`push_available`（恒 `true`：VAPID 密钥缺失 hub 起不来）、协议版本。登录页和客户端启动时拉一次，不需要认证 |
+| `GET /api/config` | 公开配置：`mode`、`public_url`、启用的登录方式（`["token"]`，配了 SMTP 时 `["token","email"]`）、是否开启队列、`vapid_public_key`（恒有值）、`push_available`（恒 `true`：VAPID 密钥缺失 hub 起不来）、协议版本、`preview_origin_template`（配了预览时如 `"https://{label}.aiplace.app"`，否则 `null`，§ 13）。登录页和客户端启动时拉一次，不需要认证 |
 
 **安全头**：HTML 响应（`index.html` 和 SPA 回退，含 304）带 `Content-Security-Policy`；JSON 和静态资源不带：
 
@@ -29,7 +29,7 @@ img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' da
 worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
 ```
 
-没有 `unsafe-inline` 的脚本（`index.html` 里不能有内联脚本，主题脚本是外置文件）；`connect-src 'self'` 让页面只能连 hub 自己；`img-src` 里没有 `https:`，所以 Markdown 里的远程图片加载不出来（Web UI 另外把它们默认渲染成「点击加载」的占位）。HTML 响应另带 `Cross-Origin-Opener-Policy: same-origin`；所有响应带 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`。CSP 的作用是限制页面能加载什么、能向哪里发请求（挡被注入内容、第三方脚本和外泄通道）；**它挡不住 hub 自己下发的脚本**——Web UI 的代码由 hub 下发，这是 [architecture.md § 5.6](../architecture.md#56-威胁模型) 里单独声明的信任前提。反代不要覆盖或去掉这些头。
+配了预览（§ 13）时在 `frame-ancestors` 前面多一段 `frame-src <预览 scheme>://*.<预览域名>[:端口];`，Web UI 才能用 iframe 内嵌预览。没有 `unsafe-inline` 的脚本（`index.html` 里不能有内联脚本，主题脚本是外置文件）；`connect-src 'self'` 让页面只能连 hub 自己；`img-src` 里没有 `https:`，所以 Markdown 里的远程图片加载不出来（Web UI 另外把它们默认渲染成「点击加载」的占位）。HTML 响应另带 `Cross-Origin-Opener-Policy: same-origin`；所有响应带 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`。CSP 的作用是限制页面能加载什么、能向哪里发请求（挡被注入内容、第三方脚本和外泄通道）；**它挡不住 hub 自己下发的脚本**——Web UI 的代码由 hub 下发，这是 [architecture.md § 5.6](../architecture.md#56-威胁模型) 里单独声明的信任前提。反代不要覆盖或去掉这些头。
 
 ### 2.2 认证 `/auth/*`
 
@@ -59,7 +59,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | `GET /api/me/tokens` · `POST` · `DELETE /:id` | 登录 token。`POST` 返回明文一次，库里存 blake2 哈希。仅 `single` |
 | `GET /api/me/passkeys` · `PATCH /:id`（改名）· `DELETE /:id` | |
 | `GET /api/me/identities` · `DELETE /:provider` | OAuth 身份。最后一种登录方式不能删，返回 `409 last_login_method` |
-| `GET /api/devices` | 本账号全部设备：id、名称、kind（`daemon` / `web` / `cli` / `sdk`）、平台、origin（web 设备）、创建时间、最近在线、当前是否在线、与哪些设备配对。**也接受设备 token**（`Authorization: Bearer <device token>`，只读，返回内容和 cookie 登录时一样）：CLI 已经是这个 hub 上的设备时用它列节点，不必再登录一次（[spec/cli.md § 3.3](cli.md)）。带了 `Authorization` 头就只看它（不回退到 cookie）；token 不存在、已吊销、不是 `Bearer` 都是 `401 unauthorized`。设备 token 只开放这一个接口，`PATCH` / `DELETE` 和其余 `/api/*` 仍然只认登录 cookie |
+| `GET /api/devices` | 本账号全部设备：id、名称、kind（`daemon` / `web` / `cli` / `sdk`）、平台、origin（web 设备）、创建时间、最近在线、当前是否在线、与哪些设备配对。**也接受设备 token**（`Authorization: Bearer <device token>`，只读，返回内容和 cookie 登录时一样）：CLI 已经是这个 hub 上的设备时用它列节点，不必再登录一次（[spec/cli.md § 3.3](cli.md)）。带了 `Authorization` 头就只看它（不回退到 cookie）；token 不存在、已吊销、不是 `Bearer` 都是 `401 unauthorized`。设备 token 只开放这个接口和 `POST /api/preview/tokens`（§ 13.3，只认设备 token），`PATCH` / `DELETE` 和其余 `/api/*` 仍然只认登录 cookie |
 | `PATCH /api/devices/:id` | 改名 |
 | `DELETE /api/devices/:id` | 吊销：断连接、删配对、删 push 订阅。**只是 hub 侧的一半**，daemon 侧的公钥删除由客户端通过 `node.revoke_device` 完成；UI 两步一起做 |
 | `GET /api/invites` · `POST` · `DELETE /:id` | 邀请链接。`single` 模式管理员专用；`multi` 不开放。单次使用、默认 7 天过期、可附备注 |
@@ -264,7 +264,8 @@ device
 | `POST /api/me/email/verify` | 20 次 / 分钟 / IP；失败至少 250 ms 才回；每个邮箱每天累计失败 30 次后当天不再接受（和登录分开计） |
 | `POST /api/push/subscriptions` · `/api/push/test` | 30 次 / 分钟 / 账号 |
 | OAuth start | 20 次 / 分钟 / IP |
-| WebSocket 升级 | 30 次 / 分钟 / IP |
+| WebSocket 升级 | 30 次 / 分钟 / IP（预览域名上的另算，见 § 13.4） |
+| `POST /api/preview/tokens` | 60 次 / 分钟 / 设备 |
 | `pair_join` | 10 次 / 分钟 / IP |
 | `enroll_begin` | 10 次 / 分钟 / IP；30 次 / 小时 / 账号 |
 | 邀请链接尝试 | 10 次 / 分钟 / IP |
@@ -293,6 +294,7 @@ device
 | `notification_prefs` | 见 § 6.3 |
 | `queue` | **(密文)** 可选离线队列：to_device、seq、from_device、body、enqueued_at |
 | `hub_audit` | 见 § 9 |
+| `preview_labels` · `preview_tokens` | 预览 label 绑定的节点、预览令牌哈希（§ 13.7） |
 | `kv` | schema 版本等杂项（VAPID 密钥在 `${ANYCON_DATA_DIR}/vapid.json`，不在库里，§ 6.1） |
 
 进行中的配对（`match_id`、撮合状态）、进行中的接入会话和限速计数**只在内存**，不落库。
@@ -315,6 +317,7 @@ device
 | 限速触发、配额拒绝 | OAuth access token、验证码 |
 | 推送结果（endpoint 主机名 + 状态码）、邮件发送结果（收件人哈希前 8 位 + SMTP 状态） | 推送 endpoint 的路径、p256dh / auth、VAPID 私钥、SMTP 密码、邮件正文 |
 | | 配对的 `match_id`（短码的函数） |
+| | 预览令牌；预览域名上的请求路径和 label（请求只记 `(preview)`，连接只记临时 id 和节点） |
 
 `tracing` 字段化输出，默认 `info`。这条表格是 code review 的检查项，不是建议。
 
@@ -335,3 +338,81 @@ device
 - 附件存储 → daemon
 - 用户偏好里和内容有关的（默认模型、显示思考过程）→ 客户端本地或 daemon；hub 只存通知渠道偏好这种和路由有关的
 - 多账号共享一台 daemon → 「团队」功能，路线图「之后再说」
+
+## 13. 预览
+
+[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。hub 在第二个泛域名上为 dev server 预览提供一个很小的 HTTP 表面和一种新的 WebSocket 连接；隧道里的内容 hub 看不到（[protocol.md § 11](../protocol.md#11-预览隧道)）。
+
+### 13.1 配置
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | 预览 origin 的模板：`https://*.<预览域名>[:端口]`，`*` 只能是最左边的一整段，代表 label。必须是 https；唯一的例外是本机开发和测试：主机是 `localhost` 或以 `.localhost` 结尾时可以是 http（如 `http://*.preview.localhost:8080`）。**预览域名不能和 `ANYCON_PUBLIC_URL` 的主机在同一个可注册域名下**（按 Public Suffix List 算 eTLD+1，`localhost` 一类除外），否则启动报错：同站的子域能往父域写 cookie。也拒绝：域名本身就是公共后缀（`*.com`、`*.co.uk`）、带用户名密码、端口 0、主机是 IP。二级泛域名（`*.preview.example.net`）可以，但 Cloudflare 的免费证书不覆盖它（[deploy.md](../deploy.md)）。公共 hub 是 `https://*.aiplace.app` |
+| `ANYCON_PREVIEW_BYTES_PER_MIN` | `536870912`（512 MiB），最小 `205824` | 每个账号预览流量（两个方向合计）每分钟的字节预算，令牌桶（§ 13.5） |
+| `ANYCON_PREVIEW_MAX_CONNECTIONS` | `16` | 每个账号同时在线的预览连接数上限 |
+
+启动时 info 打出生效的预览 origin 模板（没配就打「preview disabled」）。
+
+### 13.2 预览域名上的 HTTP
+
+`Host`（经受信反代时取原始 `Host`，不看 `X-Forwarded-Host`；HTTP/2 取 authority）匹配 `<label>.<预览域名>[:端口]` 的请求走这里，其余照旧走 § 2。匹配不区分大小写，忽略末尾的点；配置里没写端口时端口可写可不写（写也只能是默认端口），写了端口就必须一致。预览域名本身（没有 label 的那一层）不算，照旧走主站。label 必须是 26 位小写 base32（`[a-z2-7]{26}`），不是的 → `404`（纯文本）。预览域名上**没有** Web UI、`/api`、`/auth`；Web UI 的 origin 上也**取不到**预览的任何文件——两份前端分开构建（`web/dist`、`web/dist-preview`）、分开嵌入。否则 Web UI 的 origin 上可能被注册一个隧道到别人节点的 service worker，读走 IndexedDB 里的私钥。
+
+| 路径 | 说明 |
+|---|---|
+| `GET /v1/ws` | 预览连接（§ 13.4） |
+| `GET /__anycon/config.json` | `{ label, hub_origin, protocol_version }`（`hub_origin` 是 `ANYCON_PUBLIC_URL` 的 origin），`Cache-Control: no-store` |
+| `GET /__anycon/enter` | 引导页（`web/dist-preview/index.html`） |
+| `GET /__anycon/sw.js` | 预览的 service worker。带 `Service-Worker-Allowed: /`、`Cache-Control: no-cache` |
+| `GET /__anycon/<其他文件>` | `web/dist-preview` 里的文件（整个目录递归嵌入，`Content-Type` 按扩展名，`.wasm` 是 `application/wasm`）；`/__anycon/assets/*` 是 immutable，其余 `no-cache`；不存在 `404`。`/__anycon/` 本身回引导页 |
+| 其他 `GET` / `HEAD` | 引导页，`200`，`Cache-Control: no-store`。service worker 还没接管（第一次打开、硬刷新、被浏览器清掉）时页面请求会落到这里，引导页装好 service worker 后重新加载 |
+| 其他方法 | `405`（`HEAD /v1/ws` 也是） |
+
+响应头：HTML 带下面的 CSP；所有响应带 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`。**不带** `X-Frame-Options` 和 COOP（要能被 Web UI 嵌入，嵌入方由 `frame-ancestors` 限定）。
+
+```
+default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' data:;
+style-src 'self' 'unsafe-inline'; worker-src 'self'; frame-ancestors <ANYCON_PUBLIC_URL 的 origin>;
+base-uri 'none'; form-action 'none'
+```
+
+这份 CSP 只管引导页；dev app 的页面由 service worker 合成，头部见 [web.md § 13.2](web.md#132-预览运行时)。
+
+### 13.3 预览令牌 `POST /api/preview/tokens`
+
+在 hub 的主域名上（§ 2.3 一侧）。只认设备 token：`Authorization: Bearer <device token>`，不看 cookie；照常要 `X-Anycon: 1`。
+
+- 请求 `{ node, label }`。`label` 是 daemon `preview.open` 给的
+- 校验：没配预览 → `404 preview_disabled`；`label` 格式不对 → `400 invalid_label`；调用的设备不是本 hub 未吊销的正式设备 → `401 unauthorized`；`node` 不是同账号未吊销的 daemon，或调用设备没和它配对 → `404 not_found`；`label` 已经绑定到**别的**节点 → `409 label_taken`；这个节点已绑定 256 个 label → `409 too_many_labels`
+- 第一次见到的 `label` 绑定到 `node`（`preview_labels`）。签发令牌：32 字节随机数的 hex，库里只存 blake2s 哈希，24 小时有效；同一设备未过期的令牌超过 64 个时删掉最旧的（还在用它的预览连接随之以 `4004` 关掉）
+- 限速按设备计，认证通过的请求都算（包括随后因为参数不对被拒的）
+- 回 `200 { token, origin, expires_at_ms }`，`origin` 是 `https://<label>.<预览域名>[:端口]`
+
+### 13.4 预览连接
+
+- 升级：只在预览域名上的 `GET /v1/ws`。`Origin` 必须**正好**等于这个请求的预览 origin（scheme + 主机 + 端口），没有 `Origin` 或不一致都是 `403 origin_not_allowed`。另算一个 IP 限速桶：120 次 / 分钟 / IP（service worker 被浏览器回收后会重连）
+- 认证：第一帧 `auth { preview_token, protocol_version, client }`，不能带 `device_token`、`client.kind` 必须是 `web`，否则 `auth_fail { protocol }`。令牌不存在、过期、或绑定的 label 不是主机名里的 label → `auth_fail { invalid }`；这个账号的预览连接已满 → `auth_fail { quota }`。协议版本规则照旧
+- 身份：分配临时 id（`new_id()`），`auth_ok { device_id, peers_online }`，节点在线时 `peers_online = [node]`。它不是设备：不进 `devices`、不算「web 设备在线」（不影响推送判断）、不受临时连接 10 分钟的限制
+- 路由：预览连接的对端集合只有 `node`，节点的连接把它加进对端集合。只转发它和节点之间的 `handshake` / `data`；它发的控制消息一律忽略，`notify` 和发给别人的信封回 `dropped { not_paired }`
+- 上下线：预览连接认证成功时给节点（在线的话）发 `preview_peer { peer, label }`，**不发** `peer_online`；它断开时给节点发 `peer_offline`。节点上线（含重连）时，hub 把这个节点所有在线的预览连接重新加进它的对端集合，逐条发 `preview_peer`，并给这些预览连接发 `peer_online { node }`；节点下线时给它们发 `peer_offline { node }`
+- 结束：令牌过期、被删（设备或节点被吊销，§ 13.6，或者被每设备 64 个的上限挤掉）时 hub 以 `4004` 关掉用它的连接；预览页把 `4004` 当终态，不自动重连。过期在内存里每秒比一次；吊销时立即关；令牌是否还在库里每 5 秒复核一次兜底
+
+### 13.5 流量预算
+
+- 预览连接发给节点的、节点发给预览连接的 `data` / `handshake` 信封，都从**账号的预览预算**里扣（`ANYCON_PREVIEW_BYTES_PER_MIN`，令牌桶，只在转发成功后扣），**不扣**发送连接自己的每连接字节预算。每连接的信封速率上限（500 / 秒）照旧
+- 超出预算：照 § 3.3 退回 `backpressure`（`data` 进粘住集合），另外每秒至多一条 `rate_limited { retry_after_ms, to }`，`to` 是被暂停的那个对端（节点发往预览连接时是预览连接的 id，反过来是节点 id）。发送方只暂停发往 `to` 的信封
+- 「一直被限速退回 10 秒就断开」只看每连接预算；预览预算的退回不计入，否则一个大流量的预览会把 daemon 的连接整个断掉
+
+### 13.6 吊销与清理
+
+- 吊销设备（`DELETE /api/devices/:id` 或 `control.revoke`）：删掉它签发的预览令牌，关掉用这些令牌的预览连接（`4004`）
+- 吊销节点：删掉它的全部 label 和令牌，关掉它的预览连接
+- 过期令牌由后台任务每分钟清一次
+
+### 13.7 数据表
+
+| 表 | 内容 |
+|---|---|
+| `preview_labels` | label（主键）、node_id、account_id、created_at_ms |
+| `preview_tokens` | token_hash（主键）、label、node_id、account_id、device_id（签发它的设备）、created_at_ms、expires_at_ms |
+
+都是元数据：hub 知道哪个账号的哪台节点有哪些 label、谁什么时候申请了令牌；不知道 label 对应哪个端口。新表放在新的 migration（`0002_preview.sql`）里。

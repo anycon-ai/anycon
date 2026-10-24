@@ -556,6 +556,10 @@ impl AgentHandle for CodexHandle {
         &mut self.rx
     }
 
+    fn pid(&self) -> Option<u32> {
+        self.child.pid()
+    }
+
     async fn send(&mut self, input: UserInput) -> Result<()> {
         let items = process::input_items(&input)?;
         if self.child.has_exited() {

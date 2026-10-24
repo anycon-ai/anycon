@@ -119,6 +119,16 @@ pub const PERMISSION_RESPOND: &str = "permission.respond";
 pub const PERMISSION_RESOLVED: &str = "permission.resolved";
 pub const PERMISSION_LIST: &str = "permission.list";
 
+// dev server 预览（ADR-39）。隧道本身不走 JSON-RPC，见 `preview::tunnel`。
+/// 为本机端口签发预览票据（params = PreviewOpenParams → PreviewOpenResult）。
+pub const PREVIEW_OPEN: &str = "preview.open";
+/// 作废一个 label 的全部票据并断开隧道（params = PreviewCloseParams）。
+pub const PREVIEW_CLOSE: &str = "preview.close";
+/// 未过期的票据（→ PreviewListResult）。
+pub const PREVIEW_LIST: &str = "preview.list";
+/// 可以预览的本机端口（params = PreviewPortsParams → PreviewPortsResult）。
+pub const PREVIEW_PORTS: &str = "preview.ports";
+
 /// 方向：C→D 请求，或 D→C 通知。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -218,6 +228,10 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(PERMISSION_RESPOND, Some("PermissionRespondParams"), None),
     notif(PERMISSION_RESOLVED, "PermissionResolved"),
     req(PERMISSION_LIST, Some("PermissionListParams"), Some("PermissionListResult")),
+    req(PREVIEW_OPEN, Some("PreviewOpenParams"), Some("PreviewOpenResult")),
+    req(PREVIEW_CLOSE, Some("PreviewCloseParams"), None),
+    req(PREVIEW_LIST, None, Some("PreviewListResult")),
+    req(PREVIEW_PORTS, Some("PreviewPortsParams"), Some("PreviewPortsResult")),
 ];
 
 #[cfg(test)]

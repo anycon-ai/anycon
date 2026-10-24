@@ -201,7 +201,7 @@ async fn read_receipts(mut stream: WsStream, shared: Shared, wake: Arc<Notify>) 
                         r.backpressure += 1;
                         r.returned.insert(seq);
                     }
-                    Control::RateLimited { retry_after_ms } => {
+                    Control::RateLimited { retry_after_ms, .. } => {
                         r.rate_limited += 1;
                         let until = Instant::now() + Duration::from_millis(retry_after_ms.min(30_000));
                         r.resume_at = Some(r.resume_at.map_or(until, |t| t.max(until)));

@@ -12,7 +12,7 @@
 
 **否掉**：做成大而全的开发环境。
 
-**已被 [ADR-34](#adr-34-web-ui-是开发者客户端体验对齐-claude-桌面版每个会话可以有自己的-worktree) 部分修订**：「薄」只约束连接层（hub + 协议）；Web UI 面向开发者，体验对齐 Claude 桌面版——每会话 worktree、只读 diff、同步 base、经 agent 开 PR。终端、远程 shell、编辑器、经 hub 反代 dev server 仍然不做。
+**已被 [ADR-34](#adr-34-web-ui-是开发者客户端体验对齐-claude-桌面版每个会话可以有自己的-worktree) 部分修订**：「薄」只约束连接层（hub + 协议）；Web UI 面向开发者，体验对齐 Claude 桌面版——每会话 worktree、只读 diff、同步 base、经 agent 开 PR。终端、远程 shell、编辑器、经 hub 反代 dev server 仍然不做（dev server 预览改为 Noise 隧道里的端口转发，见 [ADR-39](#adr-39-预览-dev-servernoise-隧道里的端口转发)）。
 
 ---
 
@@ -451,7 +451,7 @@ ADR-1 拆成两层来看：
 守住的三条线（是安全边界，不只是范围）：
 
 - **不做终端、不做远程 shell**：已配对设备能直接执行命令就绕过了审批（ADR-18、cli.md § 7）。要执行命令让 agent 做，走审批
-- **不经 hub 反代 dev server**：hub 会看到明文。预览本地服务只能做成 Noise 隧道里的端口转发，单独立项
+- **不经 hub 反代 dev server**：hub 会看到明文。预览本地服务只能做成 Noise 隧道里的端口转发，单独立项（[ADR-39](#adr-39-预览-dev-servernoise-隧道里的端口转发)）
 - **不做编辑器**：远程场景下改代码交给 agent；diff 只读
 
 **每会话 worktree**：
@@ -686,3 +686,53 @@ ADR-1 拆成两层来看：
 - 首次发布前要手动准备 GHCR 包的可见性、npm 包的 trusted publisher（`@anycon` scope 属于 npm 账号 `anycon`）、tap 仓库和它的 token（[CONTRIBUTING.md「发布」](../CONTRIBUTING.md#发布)）
 
 **取代**：[tech-stack.md](tech-stack.md) 里「Rust 跨平台 release 用 cargo-dist」的计划。
+
+---
+
+## ADR-39 预览 dev server：Noise 隧道里的端口转发
+
+**背景**：远程使用时，agent 在 daemon 机器上起了 dev server，用户在手机或另一台电脑上看不到。ADR-34 定下「不经 hub 反代 dev server：hub 会看到明文。预览本地服务只能做成 Noise 隧道里的端口转发，单独立项」，这一条就是那个立项。细节见 [protocol.md § 11](protocol.md#11-预览隧道)、[spec/hub.md § 13](spec/hub.md#13-预览)、[spec/daemon.md § 19](spec/daemon.md#19-预览)、[spec/web.md § 13](spec/web.md#13-预览)。
+
+**决定**：
+
+1. **hub 只转发密文**：预览流量是浏览器和 daemon 之间的 Noise 密文，hub 按信封路由，和会话流量同一条纪律。浏览器端用一个**独立的预览 origin** 加它自己的 service worker，把页面发出的请求塞进隧道
+2. **预览 origin**：hub 配 `ANYCON_PREVIEW_URL`（如 `https://*.aiplace.app`），每个（节点, 端口）一个固定的随机 label（26 位小写 base32，由 daemon 生成），预览 origin 是 `https://<label>.aiplace.app`。预览域名必须和 hub 不在同一个可注册域名下（hub 启动时检查），本机开发和测试可以用 `http://*.preview.localhost:<端口>`。没配就没有这个功能。公共 hub 用 `aiplace.app`
+3. **授权分两层**：
+   - **daemon（安全边界，不信任 hub）**：已配对设备调 `preview.open { port }`，daemon 按端口策略检查后签发票据（票据 id + 32 字节密钥，默认 24 小时），记本地审计。预览页和 daemon 用 `Noise_NKpsk0` 握手：预览页没有静态密钥、钉住 daemon 的静态公钥，PSK 是票据密钥，prologue 绑定 label 和票据 id。`preview.close`、票据过期、吊销签发它的设备都会作废票据并断开隧道
+   - **hub（防滥用）**：已配对设备拿设备 token 换一个预览令牌（`POST /api/preview/tokens`，hub 校验这台设备和节点有配对关系，并把 label 绑定到这个节点）。预览连接凭令牌认证，只能和这一台 daemon 互发 `handshake` / `data`
+   - 票据和令牌都放在 URL fragment 里交给预览页（fragment 不发给 hub），存进预览 origin 的 IndexedDB。**预览 origin 不用 cookie**
+4. **daemon 只转发到本机允许的端口**：目标只能是 `127.0.0.1` / `::1`；默认只允许会话自己起的服务（监听进程在会话 agent 的进程树或进程组里，或工作目录在会话的工作目录里），其他端口要写进 `preview.allow_ports`；`preview.enabled = false` 整个关掉
+5. **独立的隧道协议**：预览不跑 JSON-RPC。每条传输消息是「累计回执 + 若干帧」，按 stream 多路复用 HTTP 请求和 WebSocket，每个 stream 单独流控。**回执是端到端的**：发送方收到对端的累计回执才释放保留的密文，在途窗口按往返时间周转，不受会话传输「保留 10 秒」的限制（[protocol.md § 3.1](protocol.md#31-消息大小)）
+6. **浏览器端**：hub 在预览 origin 上只提供引导页、service worker、shim 和 WebSocket，这些文件和 Web UI 分开构建、分开嵌入，Web UI 的 origin 上取不到。service worker 拦截这个 origin 的全部请求；自己维护 cookie jar；做条件请求缓存；HTML 里注入 shim，让同 origin 的 WebSocket（HMR）也走隧道
+7. **iframe 内嵌**：Web UI 的 CSP 加 `frame-src <预览域名>`；预览页只允许被 hub 的公网 origin 嵌入（`frame-ancestors`），iframe 带 sandbox、不给 `allow-top-navigation`。浏览器不允许时退回新标签页
+8. **流量预算**：预览流量按账号单独计（`ANYCON_PREVIEW_BYTES_PER_MIN`、并发预览连接数上限），不占会话流量的每连接预算；超出时只暂停发往这条预览连接的信封（`rate_limited.to`），不影响会话
+
+**原因**：
+
+- dev server 返回的是源码和接口数据，等于会话内容。经 hub 明文反代会破坏「hub 只看到元数据」，公共 hub 还会变成能托管任意内容的服务
+- **为什么要独立 origin**：dev app 是 agent 写的任意代码（加上它的 npm 依赖）。和 Web UI 同 origin，它就能读 IndexedDB 里的 Noise 私钥和会话缓存，等于交出所有已配对的节点。所以预览的引导代码也不能出现在 Web UI 的 origin 上：Web UI 的 service worker 预缓存了什么、hub 在主域名上提供了什么，都可能被诱导去注册一个隧道到攻击者节点的 service worker
+- **为什么要独立的可注册域名**：同站的子域能往父域写 cookie（cookie tossing），覆盖 hub 的登录 cookie
+- **为什么预览不用 cookie**：iframe 里的预览是第三方上下文，第三方 cookie 在 Safari 等浏览器里直接被拦；令牌放 IndexedDB（按顶层站点分区）在新标签页和 iframe 里都能用
+- **为什么两层授权**：hub 不可信，票据必须由 daemon 签发、由 Noise 校验；但只有 daemon 一层的话，公共 hub 上谁都能用随便哪个 label 连上来当中转，hub 那层保证「只有拥有这台节点配对设备的人才能打开」
+- **为什么默认只放行会话的端口**：已配对设备本来就能让 agent `curl localhost`，但那要经过审批；直接转发绕开了审批，所以默认收窄到会话自己起的服务
+- **为什么端到端回执**：预览首屏（Vite 未打包模式）是几 MB 到几十 MB，会话传输的「保留 10 秒」把持续吞吐限在约 1.6 MiB/s。预览是新传输，可以从一开始就带回执，不用改 hub 协议
+
+**否掉**：
+
+- hub 明文反代：见原因
+- 预览放在 hub 的 origin 或同站子域下：见原因
+- 预览 origin 用 cookie 认证：iframe 内嵌时被拦
+- 先做 CLI 的 `anycon forward`（类似 `ssh -L`）：浏览器预览（尤其手机）是主要场景；CLI 转发可以以后基于同一套隧道协议加
+- WebRTC 直连：要在 daemon 里加 WebRTC 栈、ICE 和 TURN，单独做（[roadmap](roadmap.md)）。隧道协议和传输无关，以后换传输不改帧格式
+- 在会话的 JSON-RPC 传输里跑预览：大流量会挡住会话事件，回执和流控语义也不同
+- daemon 自己找一个可用的预览端口、或者预览任意本机端口：前者猜不准，后者见「为什么默认只放行会话的端口」
+
+**代价 / 限制**：
+
+- 预览页的引导页、service worker 和 shim 由 hub 下发，和 Web UI 同一个信任前提（ADR-32）
+- 预览 origin 里的令牌和票据对 dev app 的 JS 可见。dev app 能拿到的就是这个端口在过期前的预览权；它本来就是跑在 daemon 机器上的代码
+- dev app 里写死 `http://localhost:<端口>` 的绝对地址不工作；服务端设的 cookie 由 service worker 代管，`document.cookie` 经 shim 只能看到非 HttpOnly 的；dev app 自己的 service worker 不生效；硬刷新（绕过 service worker）会先回到引导页再自动重载
+- 第一次打开要把整个首屏经 hub 传一遍；公共 hub 承担全部预览流量
+- 浏览器在第三方 iframe 里不允许 service worker 时只能用新标签页
+
+**部分修订**：ADR-34（「不经 hub 反代 dev server」：仍不反代明文，预览按本条做）、ADR-1 的修订说明里「经 hub 反代 dev server 仍然不做」同理。

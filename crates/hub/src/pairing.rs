@@ -565,6 +565,7 @@ mod tests {
             account_id: permanent.then(|| "acc".to_string()),
             permanent,
             peers: HashSet::new(),
+            preview: None,
         });
         (Arc::new(c), rx)
     }

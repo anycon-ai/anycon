@@ -121,11 +121,16 @@ pub enum Control {
     /// D→H 连接后第一帧。`device_token` 为空表示「还没有身份的临时连接」：hub 分配临时 device id，
     /// 只允许 `pair_join`、`pair_confirm`、`enroll_begin`（升级请求要带账号登录态）、`enroll_cancel` 和撮合后的握手帧；`client.kind = daemon` 的临时连接还可以发
     /// `pair_begin`（daemon 首次启动靠这个拿到身份）。`pair_done` 后同一条连接升级为正式设备。
+    ///
+    /// 带 `preview_token`（不带 `device_token`）的是**预览连接**（ADR-39）：只在预览域名上接受，hub 分配临时 id，
+    /// 只能和令牌绑定的那一台 daemon 互发 `handshake` / `data`，不能发任何控制消息。
     Auth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device_token: Option<String>,
         protocol_version: u32,
         client: ClientInfo,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview_token: Option<String>,
     },
     /// H→D
     AuthOk {
@@ -188,6 +193,10 @@ pub enum Control {
     PeerOnline { device: DeviceId },
     /// H→D
     PeerOffline { device: DeviceId },
+    /// H→D（daemon）：有一条本节点的预览连接接上来了（ADR-39）。`peer` 是它的临时 id，之后它的 `handshake` / `data`
+    /// 信封 `from` 都是这个 id；`label` 是它的预览令牌绑定的 label（hub 断言，daemon 用它算 Noise prologue，
+    /// hub 说谎只会让握手失败）。daemon 重连后，hub 对每条仍在的预览连接再发一次。预览连接断开时 hub 发 `peer_offline`。
+    PreviewPeer { peer: DeviceId, label: String },
     /// H→D：对端离线且队列未开启，`seq` 那封已丢弃。
     Undeliverable { to: DeviceId, seq: u64 },
     /// H→D：队列开启时超限丢弃。
@@ -200,9 +209,14 @@ pub enum Control {
     Backpressure { to: DeviceId, seq: u64 },
     /// H→D：`seq` 那封被 hub 丢弃（不是因为对端离线）。`too_large` 时发送方应改为分片（见 `envelope::frame`）。
     Dropped { seq: u64, reason: DropReason },
-    /// H→D：发送方超过每连接速率预算，整条连接暂停 `retry_after_ms`（100 ms–30 s）再继续；伴随 `backpressure`
-    /// 出现，信封本身没有丢。每连接每秒至多一条。
-    RateLimited { retry_after_ms: u64 },
+    /// H→D：发送方超过速率预算，暂停 `retry_after_ms`（100 ms–30 s）再继续；伴随 `backpressure` 出现，信封本身没有丢。
+    /// 每连接每秒至多一条。`to` 为空：整条连接暂停（每连接预算）；`to` 有值：只暂停发往这个对端的信封（预览流量的
+    /// 账号预算，ADR-39），其他对端照常。
+    RateLimited {
+        retry_after_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<DeviceId>,
+    },
     /// H→D：配额用量（连接时和变化时）。
     QuotaUpdate { quota: Quota },
     /// D→H：轮换设备 token（v0.2）。

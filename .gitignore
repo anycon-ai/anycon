@@ -5,6 +5,7 @@
 # Node / bun
 node_modules/
 dist/
+/web/dist-preview
 .turbo/
 *.tsbuildinfo
 

@@ -4,6 +4,9 @@
 //! **绝不**记 `body` 字节（接入期间的 `handshake` 体也一样：`EnrollFrame` 一个字节都不解析）、device token、cookie，
 //! 也不记配对用的 `match_id`（它是短码的函数，拿到就能离线穷举，按秘密对待）。`enroll_id` 不是秘密，可以记。
 //!
+//! 预览连接（ADR-39，docs/spec/hub.md § 13.4）：预览域名上带 `preview_token` 认证的连接，不是设备。它和绑定的节点之间的
+//! `data` / `handshake` 从账号的预览预算里扣，不占每连接的字节预算；它发的控制消息一律忽略；令牌过期或被删就以 `4004` 关掉。
+//!
 //! 转发的两条铁律（docs/protocol.md § 3.1）：已配对 `(from, to)` 的 `data` / `notify` 只有「转发」和「退回
 //! `backpressure`」两种结果，从不静默丢弃；被退回的 `seq` 记在一个有序集合里，集合非空时只有最小值的重发才会被尝试转发，
 //! 其它 `seq` 一律退回并加入集合（[`super::sticky`]）。速率超限走同一条退回路径。
@@ -30,7 +33,7 @@ use crate::store::{Device, NewAudit};
 use crate::util::{hash_token, ip_prefix, new_id, now_ms};
 
 use super::outq::{OutQueue, OutRx, Outbound, PushError};
-use super::registry::{Conn, ConnInit};
+use super::registry::{Conn, ConnInit, PreviewMeta};
 use super::sticky::{Cause, TooManyReturned, MAX_RETURNED};
 use super::UpgradeCtx;
 
@@ -46,8 +49,10 @@ struct Header {
 
 struct Authed {
     client: ClientInfo,
-    /// `Some` = 带了有效 device token 的正式设备；`None` = 只为配对而来的临时连接。
+    /// `Some` = 带了有效 device token 的正式设备；`None` = 只为配对而来的临时连接（或预览连接）。
     device: Option<Device>,
+    /// `Some` = 预览域名上凭有效预览令牌认证的预览连接。
+    preview: Option<PreviewMeta>,
 }
 
 fn control_bytes(to: &str, seq: u64, ctl: &Control) -> Option<Bytes> {
@@ -83,7 +88,9 @@ async fn close_raw(socket: &mut WebSocket, code: u16) {
     let _ = socket.send(Message::Close(Some(CloseFrame { code, reason: close_reason(code).into() }))).await;
 }
 
-async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket) -> Option<Authed> {
+/// `preview_label` 是升级请求所在的预览域名里的 label：`Some` = 这是预览域名上的连接，只接受预览令牌；
+/// `None` = 主域名，只接受设备 token（或没有 token 的临时连接）。
+async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket, preview_label: Option<&str>) -> Option<Authed> {
     let deadline = tokio::time::Instant::now() + state.config.timing.auth_timeout;
     let frame = loop {
         match tokio::time::timeout_at(deadline, socket.recv()).await {
@@ -107,13 +114,52 @@ async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket) -> Option<A
         .flatten()
         .filter(|e| e.kind == Kind::Control && e.v == ENVELOPE_VERSION)
         .and_then(|e| e.control_body().ok());
-    let Some(Control::Auth { device_token, protocol_version, client }) = parsed else {
+    let Some(Control::Auth { device_token, protocol_version, client, preview_token }) = parsed else {
         reject(socket, AuthFailReason::Protocol).await;
         return None;
     };
     if protocol_version.abs_diff(PROTOCOL_VERSION) > 1 {
         reject(socket, AuthFailReason::Version).await;
         return None;
+    }
+
+    // 预览连接只在预览域名上，预览域名上也只有预览连接：不带 device_token、client.kind = web，否则 `protocol`。
+    match (preview_label, preview_token) {
+        (None, None) => {}
+        (None, Some(_)) => {
+            reject(socket, AuthFailReason::Protocol).await;
+            return None;
+        }
+        (Some(label), token) => {
+            let Some(token) = token.filter(|_| device_token.is_none() && client.kind == DeviceKind::Web) else {
+                reject(socket, AuthFailReason::Protocol).await;
+                return None;
+            };
+            // 令牌不存在、过期、或绑定的不是主机名里的 label：一律 `invalid`（不说是哪一种）。
+            let found = match state.store.find_preview_token(&hash_token(&token)).await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!(error = %e, "preview token lookup failed during auth");
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame { code: 1011, reason: "internal error".into() })))
+                        .await;
+                    return None;
+                }
+            };
+            let Some(t) = found.filter(|t| t.label == label && t.expires_at_ms > now_ms() && token.len() <= 256) else {
+                reject(socket, AuthFailReason::Invalid).await;
+                return None;
+            };
+            let meta = PreviewMeta {
+                account_id: t.account_id,
+                node_id: t.node_id,
+                label: t.label,
+                device_id: t.device_id,
+                token_hash: t.token_hash,
+                expires_at_ms: t.expires_at_ms,
+            };
+            return Some(Authed { client, device: None, preview: Some(meta) });
+        }
     }
 
     let device = match device_token {
@@ -136,18 +182,21 @@ async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket) -> Option<A
             }
         },
     };
-    Some(Authed { client, device })
+    Some(Authed { client, device, preview: None })
 }
 
 pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: UpgradeCtx) {
     // 连接建立各阶段的耗时（等 auth 消息 + 查设备、查配对关系），记在下面的 "device connected" 日志里，分析连接慢时用
     let upgraded = Instant::now();
-    let Some(authed) = authenticate(&state, &mut socket).await else { return };
+    let Some(authed) = authenticate(&state, &mut socket, ctx.preview_label.as_deref()).await else { return };
     let auth_ms = upgraded.elapsed().as_millis() as u64;
     let timing = state.config.timing.clone();
 
-    let (device_id, account_id, permanent, peers) = match &authed.device {
-        Some(d) => match state.store.peers_of(&d.id).await {
+    let preview = authed.preview;
+    let (device_id, account_id, permanent, peers) = match (&preview, &authed.device) {
+        // 预览连接：临时 id，唯一的对端是令牌绑定的节点。
+        (Some(meta), _) => (new_id(), Some(meta.account_id.clone()), false, HashSet::from([meta.node_id.clone()])),
+        (None, Some(d)) => match state.store.peers_of(&d.id).await {
             Ok(p) => (d.id.clone(), Some(d.account_id.clone()), true, p.into_iter().collect::<HashSet<_>>()),
             Err(e) => {
                 tracing::error!(error = %e, "failed to load peers");
@@ -156,7 +205,7 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
                 return;
             }
         },
-        None => (new_id(), ctx.cookie_account.clone(), false, HashSet::new()),
+        (None, None) => (new_id(), ctx.cookie_account.clone(), false, HashSet::new()),
     };
     let peers_ms = upgraded.elapsed().as_millis() as u64 - auth_ms;
 
@@ -170,45 +219,62 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
         account_id,
         permanent,
         peers,
+        preview,
     }));
     let (sink, mut stream) = socket.split();
     let mut writer = tokio::spawn(write_loop(sink, out_rx, conn.clone()));
     let mut writer_done = false;
 
     // 登记并发 AuthOk（持锁期间入队，保证它是第一条）。
-    let reg = state.registry.register(&conn, |peers_online| Control::AuthOk {
+    let auth_ok = |peers_online| Control::AuthOk {
         device_id: device_id.clone(),
         server_time_ms: now_ms(),
         peers_online,
         quota: None,
-    });
-    if let Some(old) = reg.superseded {
-        tracing::info!(device = %device_id, "superseding previous connection");
-        old.close(close_code::SUPERSEDED, "superseded");
-    }
-    for peer in &reg.peers_online {
-        if let Some(c) = state.registry.get(peer) {
-            c.send_control(&Control::PeerOnline { device: device_id.clone() });
+    };
+    if let Some(meta) = &conn.preview {
+        // 预览连接：账号的预览连接数检查和登记是同一把锁里的一步（并发接入也不会超）。节点在线时它会收到 `preview_peer`，
+        // 节点收到的是 `preview_peer` 而不是 `peer_online`（`Registry::register_preview`）。
+        let max = state.config.limits.preview_max_connections as usize;
+        if state.registry.register_preview(&conn, max, auth_ok).is_err() {
+            tracing::info!(limit = "preview_connections", "quota exceeded");
+            conn.send_control(&Control::AuthFail { reason: AuthFailReason::Quota });
+            conn.close(1008, "closing");
+            let _ = tokio::time::timeout(Duration::from_secs(2), &mut writer).await;
+            writer.abort();
+            return;
         }
-    }
-    if permanent {
-        // 写库放到后台：AuthOk 已经发出，对端马上会发握手，在这里等写库会让读循环晚开始
-        let (st, id) = (state.clone(), device_id.clone());
-        tokio::spawn(async move {
-            if let Err(e) = st.store.touch_device_seen(&id, now_ms()).await {
-                tracing::warn!(error = %e, "failed to update last_seen");
-            }
-        });
-        tracing::info!(
-            device = %device_id,
-            kind = ?conn.client.kind,
-            peers_online = reg.peers_online.len(),
-            auth_ms,
-            peers_ms,
-            "device connected"
-        );
+        tracing::info!(peer = %device_id, node = %meta.node_id, auth_ms, "preview connected");
     } else {
-        tracing::debug!(temp_id = %device_id, "temporary connection");
+        let reg = state.registry.register(&conn, auth_ok);
+        if let Some(old) = reg.superseded {
+            tracing::info!(device = %device_id, "superseding previous connection");
+            old.close(close_code::SUPERSEDED, "superseded");
+        }
+        for peer in &reg.peers_online {
+            if let Some(c) = state.registry.get(peer) {
+                c.send_control(&Control::PeerOnline { device: device_id.clone() });
+            }
+        }
+        if permanent {
+            // 写库放到后台：AuthOk 已经发出，对端马上会发握手，在这里等写库会让读循环晚开始
+            let (st, id) = (state.clone(), device_id.clone());
+            tokio::spawn(async move {
+                if let Err(e) = st.store.touch_device_seen(&id, now_ms()).await {
+                    tracing::warn!(error = %e, "failed to update last_seen");
+                }
+            });
+            tracing::info!(
+                device = %device_id,
+                kind = ?conn.client.kind,
+                peers_online = reg.peers_online.len(),
+                auth_ms,
+                peers_ms,
+                "device connected"
+            );
+        } else {
+            tracing::debug!(temp_id = %device_id, "temporary connection");
+        }
     }
     if state.shutdown.is_cancelled() {
         conn.close(close_code::RESTARTING, "restarting");
@@ -222,6 +288,8 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
     let mut last_ping = started;
     // 对端发来 Close 后，回一个 Close 再收尾；最多等 2 秒。
     let mut closing: Option<Instant> = None;
+    let mut preview_ticks = 0u64;
+    let mut preview_ended = false;
 
     loop {
         tokio::select! {
@@ -257,10 +325,21 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
                     break;
                 }
                 // 临时连接（没有 device token）只为配对而来，不能无限期挂着占注册表和文件描述符。
-                if !conn.is_permanent() && started.elapsed() >= timing.temp_conn_ttl {
+                // 预览连接不受这个限制：它活到令牌过期为止。
+                if !conn.is_permanent() && conn.preview.is_none() && started.elapsed() >= timing.temp_conn_ttl {
                     tracing::info!(temp_id = %conn.device_id(), "temporary connection expired, closing");
                     conn.kill_with(close_code::AUTH_TIMEOUT);
                     break;
+                }
+                // 预览令牌过期或被删：以 4004 关掉，预览页把它当终态。过期在内存里比；被删（设备 / 节点被吊销时
+                // 已经主动关过一次，这里兜底别的删法和并发接入）每 5 秒查一次库。
+                if let Some(meta) = &conn.preview {
+                    preview_ticks += 1;
+                    if !preview_ended && token_gone(&state, meta, preview_ticks).await {
+                        tracing::info!(peer = %conn.device_id(), "preview token expired or removed, closing");
+                        conn.close(close_code::REVOKED, "revoked");
+                        preview_ended = true;
+                    }
                 }
                 if last_ping.elapsed() >= timing.ping_interval {
                     conn.out.ping();
@@ -293,8 +372,30 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
             }
         }
         tracing::info!(device = %id, "device disconnected");
+    } else if conn.preview.is_some() {
+        // 节点那边的 `peer_offline` 在 `Registry::unregister` 里、持着路由表的锁发出。
+        tracing::info!(peer = %id, "preview disconnected");
     } else {
         tracing::debug!(temp_id = %id, "temporary connection closed");
+    }
+}
+
+/// 预览连接的令牌是不是已经过期或被删了。过期在内存里比（每秒）；库里还在不在，每 5 次 tick 查一次。
+async fn token_gone(state: &AppState, meta: &PreviewMeta, tick: u64) -> bool {
+    let now = now_ms();
+    if now >= meta.expires_at_ms {
+        return true;
+    }
+    if !tick.is_multiple_of(5) {
+        return false;
+    }
+    match state.store.preview_token_valid(&meta.token_hash, now).await {
+        Ok(valid) => !valid,
+        Err(e) => {
+            // 库暂时读不了不该把所有预览都断掉。
+            tracing::warn!(error = %e, "failed to re-check a preview token");
+            false
+        }
     }
 }
 
@@ -384,7 +485,16 @@ impl ConnState {
     /// 再告诉发送方这次要停多久（`rate_limited`，每秒至多一条）。
     fn on_over_limit(&mut self, conn: &Conn, now: Instant, retry_after_ms: u64, timing: &Timing) {
         self.note_limited(now, timing);
-        self.receipt(conn, Control::RateLimited { retry_after_ms });
+        self.receipt(conn, Control::RateLimited { retry_after_ms, to: None });
+    }
+
+    /// 账号的预览预算不够转发 `to` 方向的这一封：告诉发送方只暂停发往 `to` 的信封（`rate_limited { to }`，
+    /// 和别的回执共用每秒一条的预算）。**不**计入「持续被限速退回」：预览预算由账号下所有预览共用，
+    /// 一个大流量的预览不该把 daemon 的连接整个断掉（docs/spec/hub.md § 13.5）。
+    fn on_preview_over_budget(&mut self, conn: &Conn, to: &str, wait: Duration) {
+        let retry_after_ms = (wait.as_secs_f64() * 1000.0).ceil() as u64;
+        let retry_after_ms = retry_after_ms.clamp(MIN_RETRY_AFTER_MS, MAX_RETRY_AFTER_MS);
+        self.receipt(conn, Control::RateLimited { retry_after_ms, to: Some(to.to_string()) });
     }
 
     /// 一个帧因为发送方自己超速而被退回（或者丢弃，控制消息）：「持续超限」的计时。
@@ -429,18 +539,36 @@ fn byte_budget(conn: &Conn, limits: &Limits) -> u64 {
     }
 }
 
+/// 这个帧是不是预览流量：预览连接发出的任何帧，或者节点发给它名下预览连接的 `data` / `handshake`。
+/// 预览流量的字节从账号的预览预算里扣，不占发送连接自己的字节预算（docs/spec/hub.md § 13.5）。
+fn is_preview_flow(state: &AppState, conn: &Conn, hdr: Option<&Header>) -> bool {
+    if conn.preview.is_some() {
+        return true;
+    }
+    let Some(h) = hdr.filter(|h| matches!(h.kind, Kind::Data | Kind::Handshake)) else { return false };
+    let me = conn.device_id();
+    state.registry.get(&h.to).is_some_and(|t| t.preview.as_ref().is_some_and(|m| m.node_id == me))
+}
+
 async fn on_binary(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState, frame: Bytes) {
     if cs.hub_closed {
         return;
     }
     let now = Instant::now();
     let limits = &state.config.limits;
+    // 先只解信封头（解不出来的帧照样计入信封速率）。
+    let hdr = rmp_serde::from_slice::<Header>(&frame).ok();
     // 超限的帧不再被丢弃：`over` 带着「估计多久后额度恢复」，下面按帧的种类决定怎么退回（forward）或丢弃（control）。
-    let over = cs.limiter.check(now, frame.len(), byte_budget(conn, limits), limits.conn_envelopes_per_sec);
+    // 预览流量只算信封数；它的字节另有账号的预览预算（forward 里检查和扣除）。
+    let over = if is_preview_flow(state, conn, hdr.as_ref()) {
+        cs.limiter.check_envelope_rate(now, limits.conn_envelopes_per_sec)
+    } else {
+        cs.limiter.check(now, frame.len(), byte_budget(conn, limits), limits.conn_envelopes_per_sec)
+    };
     if let Some(retry_after_ms) = over {
         cs.on_over_limit(conn, now, retry_after_ms, &state.config.timing);
     }
-    on_frame(state, conn, cs, frame, over.is_some(), now).await;
+    on_frame(state, conn, cs, frame, hdr, over.is_some(), now).await;
     if cs.rate_violation && !cs.hub_closed {
         tracing::warn!(device = %conn.device_id(), "closing connection: sustained rate limit violation");
         conn.close(1008, "rate limited");
@@ -448,11 +576,19 @@ async fn on_binary(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState, 
     }
 }
 
-async fn on_frame(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState, frame: Bytes, over: bool, now: Instant) {
+async fn on_frame(
+    state: &Arc<AppState>,
+    conn: &Arc<Conn>,
+    cs: &mut ConnState,
+    frame: Bytes,
+    hdr: Option<Header>,
+    over: bool,
+    now: Instant,
+) {
     // 超过 2 倍上限的帧到不了这里：底层 WebSocket 的 max_message_size 是 2 × 上限，更大的帧直接让连接出错断开。
     // 1–2 倍之间的帧完整收下，丢弃并告诉发送方（只需要信封头里的 seq）。
     let max = state.config.max_envelope_bytes;
-    let Ok(hdr) = rmp_serde::from_slice::<Header>(&frame) else {
+    let Some(hdr) = hdr else {
         tracing::debug!(device = %conn.device_id(), len = frame.len(), "drop: malformed envelope");
         return;
     };
@@ -469,6 +605,11 @@ async fn on_frame(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState, f
     }
     match hdr.kind {
         Kind::Control => {
+            // 预览连接不是设备，不能发任何控制消息：连解都不解（docs/spec/hub.md § 13.4）。
+            if conn.preview.is_some() {
+                tracing::debug!(peer = %conn.device_id(), "ignore control message from a preview connection");
+                return;
+            }
             // 控制消息没有「退回」可言（`to` 是空的）：超限就丢，和之前一样；发送方靠 `rate_limited` 知道要慢下来。
             if over {
                 tracing::debug!(device = %conn.device_id(), len = frame.len(), "drop: control message over the rate limit");
@@ -483,6 +624,11 @@ async fn on_frame(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState, f
         }
         Kind::Handshake | Kind::Data | Kind::Notify => forward(state, conn, cs, &hdr, frame, over, now),
     }
+}
+
+/// 预览流量的账号预算（`account` 为 `Some` 时）够不够转发 `len` 字节：不够返回估算的恢复时间。
+fn preview_over_budget(state: &AppState, account: Option<&String>, len: usize) -> Option<Duration> {
+    state.preview_budget.check(account?, len).err()
 }
 
 /// 退回一封没转发的信封：`backpressure { to, seq }`，不限频。
@@ -543,6 +689,12 @@ fn forward(
         cs.receipt(conn, Control::Dropped { seq: hdr.seq, reason: DropReason::NotPaired });
         return;
     }
+    // 预览连接只和它的节点互发 `handshake` / `data`；`notify` 没有意义（预览连接不是设备，也不会触发推送 / 邮件）。
+    if conn.preview.is_some() && hdr.kind == Kind::Notify {
+        tracing::debug!(peer = %me, "drop: notify from a preview connection");
+        cs.receipt(conn, Control::Dropped { seq: hdr.seq, reason: DropReason::NotPaired });
+        return;
+    }
     // 握手信封：配对撮合或账号内接入会话进行中的两端之间放行（只看设备 id，不看 body）。
     let matched =
         hdr.kind == Kind::Handshake && (state.broker.is_matched(&me, &hdr.to) || state.enrolls.is_active(&me, &hdr.to));
@@ -563,8 +715,20 @@ fn forward(
         conn.send_control(&Control::Undeliverable { to: hdr.to.clone(), seq: hdr.seq });
         return;
     };
+    // 预览流量（预览连接 ↔ 它的节点）：字节从账号的预览预算里扣，不占发送连接自己的字节预算。
+    let preview_account = conn.preview.as_ref().or(target.preview.as_ref()).map(|m| m.account_id.clone());
+    if hdr.kind == Kind::Notify && target.preview.is_some() {
+        tracing::debug!(from = %me, "drop: notify to a preview connection");
+        cs.receipt(conn, Control::Dropped { seq: hdr.seq, reason: DropReason::NotPaired });
+        return;
+    }
     let len = frame.len();
     let sticky = state.registry.sticky();
+    // 转发成功之后才扣额度（被退回的信封不占额度）。
+    let charge = |cs: &mut ConnState| match &preview_account {
+        Some(account) => state.preview_budget.charge(account, len),
+        None => cs.limiter.charge(len),
+    };
 
     if hdr.kind == Kind::Handshake {
         if over {
@@ -572,9 +736,15 @@ fn forward(
             give_back(conn, &hdr.to, hdr.seq);
             return;
         }
+        if let Some(wait) = preview_over_budget(state, preview_account.as_ref(), len) {
+            tracing::debug!(from = %me, to = %hdr.to, seq = hdr.seq, len, "backpressure: preview budget used up (handshake)");
+            cs.on_preview_over_budget(conn, &hdr.to, wait);
+            give_back(conn, &hdr.to, hdr.seq);
+            return;
+        }
         match target.push_frame(frame) {
             Ok(()) => {
-                cs.limiter.charge(len);
+                charge(cs);
                 cs.limiter.note_progress();
                 // 这一对设备的传输在重新握手：旧传输上两个方向的顺序约束都作废
                 sticky.clear(conn.id, &hdr.to);
@@ -608,9 +778,16 @@ fn forward(
         bounce(state, conn, cs, &target, &hdr.to, hdr.seq, None);
         return;
     }
+    // 预览预算用完：退回并粘住（和缓冲满一样不是发送方自己的错，不计入「持续被限速退回」）。
+    if let Some(wait) = preview_over_budget(state, preview_account.as_ref(), len) {
+        tracing::debug!(from = %me, to = %hdr.to, kind = ?hdr.kind, seq = hdr.seq, len, "backpressure: preview budget used up");
+        cs.on_preview_over_budget(conn, &hdr.to, wait);
+        bounce(state, conn, cs, &target, &hdr.to, hdr.seq, Some(Cause::PreviewBudget));
+        return;
+    }
     match target.push_frame(frame) {
         Ok(()) => {
-            cs.limiter.charge(len);
+            charge(cs);
             cs.limiter.note_progress();
             if gate.is_some() {
                 // 集合的最小值重发成功：从集合去掉，下一个最小值轮到它。
@@ -855,11 +1032,7 @@ impl ConnLimiter {
     /// `None` 表示放行。`retry_after_ms` 是额度恢复所需时间的估算，夹在 100 ms 到 30 s 之间
     /// （发送方据此暂停**整条连接**，所以不会大到让客户端的封顶生效）。这里不扣字节额度，转发成功后由 [`ConnLimiter::charge`] 扣。
     fn check(&mut self, now: Instant, len: usize, bytes_per_min: u64, envelopes_per_sec: u32) -> Option<u64> {
-        if now.duration_since(self.sec_start) >= Duration::from_secs(1) {
-            self.sec_start = now;
-            self.sec_count = 0;
-        }
-        self.sec_count = self.sec_count.saturating_add(1);
+        self.count_envelope(now);
 
         let capacity = bytes_per_min as f64;
         let rate_per_sec = capacity / 60.0;
@@ -884,6 +1057,26 @@ impl ConnLimiter {
             wait_ms = wait_ms.max(((need - self.tokens) / rate_per_sec * 1000.0).ceil());
         }
         Some((wait_ms as u64).clamp(MIN_RETRY_AFTER_MS, MAX_RETRY_AFTER_MS))
+    }
+
+    /// 来了一个预览流量的帧：只算信封数。字节不看——它们由账号的预览预算管（`forward` 里检查和扣除），
+    /// 也不动这条连接自己的字节桶。超限时返回恢复时间，同 [`ConnLimiter::check`]。
+    fn check_envelope_rate(&mut self, now: Instant, envelopes_per_sec: u32) -> Option<u64> {
+        self.count_envelope(now);
+        if self.sec_count <= envelopes_per_sec {
+            return None;
+        }
+        let left = 1000u64.saturating_sub(now.duration_since(self.sec_start).as_millis() as u64);
+        Some(left.clamp(MIN_RETRY_AFTER_MS, MAX_RETRY_AFTER_MS))
+    }
+
+    /// 固定 1 秒窗口里的信封计数加一。
+    fn count_envelope(&mut self, now: Instant) {
+        if now.duration_since(self.sec_start) >= Duration::from_secs(1) {
+            self.sec_start = now;
+            self.sec_count = 0;
+        }
+        self.sec_count = self.sec_count.saturating_add(1);
     }
 
     /// 一个帧被接收（转发了，或控制消息被处理）：扣字节额度。
@@ -925,6 +1118,7 @@ mod tests {
             account_id: None,
             permanent,
             peers: HashSet::new(),
+            preview: None,
         })
     }
 

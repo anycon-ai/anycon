@@ -42,6 +42,7 @@ async fn auth_rules() {
         device_token: None,
         protocol_version: 99,
         client: client_info(DeviceKind::Cli, "x"),
+        preview_token: None,
     })
     .await;
     assert!(matches!(v.recv_control().await, Control::AuthFail { reason: AuthFailReason::Version }));
@@ -702,7 +703,7 @@ async fn over_the_envelope_rate_is_handed_back_with_one_rate_limited_notice_per_
     let rate_limited: Vec<_> = notices.iter().filter(|c| matches!(c, Control::RateLimited { .. })).collect();
     assert_eq!(rate_limited.len(), 1, "{notices:?}");
     assert!(
-        matches!(rate_limited[0], Control::RateLimited { retry_after_ms } if (100..=1000).contains(retry_after_ms))
+        matches!(rate_limited[0], Control::RateLimited { retry_after_ms, .. } if (100..=1000).contains(retry_after_ms))
     );
     let returned: Vec<u64> = notices
         .iter()

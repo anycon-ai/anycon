@@ -24,6 +24,11 @@ export interface ApiOptions {
   signal?: AbortSignal
   /** 401 不触发全局重定向（登录请求本身）。 */
   noRedirect?: boolean
+  /**
+   * 用设备 token 认证（`Authorization: Bearer`），不带 cookie。hub 上只有少数接口认它（`POST /api/preview/tokens`，hub.md § 13.3）。
+   * 这类请求的 401 说的是设备，不是登录态，所以不触发全局的回登录页。
+   */
+  bearer?: string
 }
 
 export async function apiFetch<T = void>(path: string, opts: ApiOptions = {}): Promise<T> {
@@ -33,12 +38,13 @@ export async function apiFetch<T = void>(path: string, opts: ApiOptions = {}): P
     headers['Content-Type'] = 'application/json'
     headers['X-Anycon'] = '1'
   }
+  if (opts.bearer !== undefined) headers.Authorization = `Bearer ${opts.bearer}`
   let res: Response
   try {
     res = await fetch(path, {
       method,
       headers,
-      credentials: 'same-origin',
+      credentials: opts.bearer !== undefined ? 'omit' : 'same-origin',
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       signal: opts.signal,
     })
@@ -59,7 +65,7 @@ export async function apiFetch<T = void>(path: string, opts: ApiOptions = {}): P
       /* 非 JSON 错误体 */
     }
     // 401 + `invalid_code` 是「验证码不对」（绑定邮箱时也可能用 401 回），不是登录态失效：不能因此把人踢回登录页
-    if (res.status === 401 && !opts.noRedirect && code !== 'invalid_code') onUnauthorized?.()
+    if (res.status === 401 && !opts.noRedirect && opts.bearer === undefined && code !== 'invalid_code') onUnauthorized?.()
     if (res.status === 429 && retry === undefined) {
       const h = Number(res.headers.get('Retry-After'))
       if (Number.isFinite(h) && h > 0) retry = h

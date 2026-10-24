@@ -13,6 +13,7 @@ import { useUi } from '@/stores/ui'
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn', session: 'sess_a' }))
+vi.mock('@/features/preview/availability', async (orig) => ({ ...(await orig<object>()), usePreviewTemplate: () => null }))
 vi.mock('@/features/session/actions', async (orig) => ({
   ...(await orig<object>()),
   openSession: vi.fn(async () => {}),

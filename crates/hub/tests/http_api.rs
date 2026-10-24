@@ -618,6 +618,65 @@ async fn html_responses_carry_csp_and_coop() {
     assert_eq!(res.headers()["x-content-type-options"], "nosniff");
 }
 
+#[tokio::test]
+async fn html_csp_gets_a_frame_src_for_the_preview_domain_only_when_preview_is_configured() {
+    // 没配预览：字符串一个字符都不变（上面的 EXPECTED_CSP），也没有 frame-src
+    let plain = TestHub::start().await;
+    let res = plain.http.get(plain.url("/")).send().await.unwrap();
+    assert_eq!(res.headers()["content-security-policy"], EXPECTED_CSP);
+    assert!(!EXPECTED_CSP.contains("frame-src"));
+
+    // 配了预览：frame-ancestors 前面多一段 `frame-src <scheme>://*.<预览域名>[:端口];`，其余不变
+    let hub = TestHub::start_preview().await;
+    let with_preview =
+        EXPECTED_CSP.replace("frame-ancestors 'none'", "frame-src http://*.preview.localhost; frame-ancestors 'none'");
+    for path in ["/", "/n/abc/s/def", "/pair"] {
+        let res = hub.http.get(hub.url(path)).send().await.unwrap();
+        let csp = res.headers()["content-security-policy"].to_str().unwrap();
+        assert_eq!(csp, with_preview, "{path}");
+        // Web UI 自己仍然不能被别人嵌入
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert_eq!(res.headers()["x-frame-options"], "DENY");
+    }
+    // 条件请求的 304 也带
+    let first = hub.http.get(hub.url("/")).send().await.unwrap();
+    let etag = first.headers()["etag"].to_str().unwrap().to_string();
+    let res = hub.http.get(hub.url("/")).header("if-none-match", etag).send().await.unwrap();
+    assert_eq!(res.status(), 304);
+    assert_eq!(res.headers()["content-security-policy"], with_preview);
+
+    // 预览域名带端口时，端口也在 frame-src 里（浏览器的来源表达式要带端口）
+    let hub = TestHub::start_with(|c| {
+        c.preview =
+            Some(anycon_hub::config::parse_preview_url("http://*.preview.localhost:8080", &c.public_url).unwrap());
+    })
+    .await;
+    let res = hub.http.get(hub.url("/")).send().await.unwrap();
+    let csp = res.headers()["content-security-policy"].to_str().unwrap();
+    assert!(csp.contains("frame-src http://*.preview.localhost:8080; frame-ancestors 'none';"), "{csp}");
+}
+
+#[tokio::test]
+async fn config_exposes_the_preview_origin_template_or_null() {
+    let plain = TestHub::start().await;
+    let cfg: serde_json::Value = plain.http.get(plain.url("/api/config")).send().await.unwrap().json().await.unwrap();
+    assert!(cfg["preview_origin_template"].is_null());
+    assert!(cfg.as_object().unwrap().contains_key("preview_origin_template"), "the key is always there: {cfg}");
+
+    let hub = TestHub::start_preview().await;
+    let cfg: serde_json::Value = hub.http.get(hub.url("/api/config")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(cfg["preview_origin_template"], "http://{label}.preview.localhost");
+    // 不需要登录
+    assert_eq!(cfg["mode"], "single");
+
+    let hub = TestHub::start_with(|c| {
+        c.preview = Some(anycon_hub::config::parse_preview_url("https://*.aiplace.app", &c.public_url).unwrap());
+    })
+    .await;
+    let cfg: serde_json::Value = hub.http.get(hub.url("/api/config")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(cfg["preview_origin_template"], "https://{label}.aiplace.app");
+}
+
 // ---------------------------------------------------------------------------
 // 列表分页：`?limit=&cursor=`，下一页游标在 X-Next-Cursor 头里，响应体仍是数组
 // ---------------------------------------------------------------------------

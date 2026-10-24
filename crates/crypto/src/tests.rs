@@ -615,3 +615,61 @@ fn match_id_and_long_code() {
     assert!(crate::derive_match_id("ABCD-EFG").is_err());
     assert!(crate::derive_match_id("0000-0000").is_err());
 }
+
+fn preview_handshake(
+    daemon: &Keypair,
+    pin: &[u8; 32],
+    client_psk: &[u8; 32],
+    daemon_psk: &[u8; 32],
+    client_prologue: &[u8],
+    daemon_prologue: &[u8],
+) -> Result<(Transport, Transport, Vec<u8>)> {
+    let mut i = Handshake::preview_initiator(pin, client_psk, client_prologue)?;
+    let mut r = Handshake::preview_responder(daemon, daemon_psk, daemon_prologue)?;
+    assert!(i.is_my_turn() && !r.is_my_turn());
+    let m1 = i.write(&[])?;
+    assert!(r.read(&m1)?.is_empty());
+    let m2 = r.write(br#"{"port":5173}"#)?;
+    let hello = i.read(&m2)?;
+    assert!(i.is_finished() && r.is_finished());
+    Ok((i.into_transport()?, r.into_transport()?, hello))
+}
+
+#[test]
+fn preview_handshake_success_and_transport() {
+    let daemon = Keypair::generate();
+    let psk = [7u8; 32];
+    let (mut c, mut d, hello) =
+        preview_handshake(&daemon, &daemon.public, &psk, &psk, b"anycon-preview-v1\0lbl", b"anycon-preview-v1\0lbl")
+            .unwrap();
+    assert_eq!(hello, br#"{"port":5173}"#);
+    // initiator 钉住了 daemon 公钥；responder 那边对方没有静态公钥
+    assert_eq!(c.remote_public(), daemon.public);
+    assert_eq!(d.remote_public(), [0u8; 32]);
+    let ct = c.encrypt(b"GET /").unwrap();
+    assert_eq!(d.decrypt(&ct).unwrap(), b"GET /");
+    let ct = d.encrypt(&pattern(100 * 1024)).unwrap();
+    assert_eq!(c.decrypt(&ct).unwrap(), pattern(100 * 1024));
+}
+
+#[test]
+fn preview_handshake_fails_without_the_ticket_secret() {
+    let daemon = Keypair::generate();
+    // PSK 在第一条就混入：daemon 用错的 PSK 连第一条都读不了
+    let mut i = Handshake::preview_initiator(&daemon.public, &[1u8; 32], b"p").unwrap();
+    let mut r = Handshake::preview_responder(&daemon, &[2u8; 32], b"p").unwrap();
+    let m1 = i.write(&[]).unwrap();
+    assert!(r.read(&m1).is_err());
+    assert!(!r.is_my_turn());
+}
+
+#[test]
+fn preview_handshake_fails_on_prologue_or_key_mismatch() {
+    let daemon = Keypair::generate();
+    let psk = [3u8; 32];
+    // hub 告诉 daemon 的 label 和预览页自己的不一致
+    assert!(preview_handshake(&daemon, &daemon.public, &psk, &psk, b"label-a", b"label-b").is_err());
+    // 预览页钉的不是这台 daemon
+    let other = Keypair::generate();
+    assert!(preview_handshake(&daemon, &other.public, &psk, &psk, b"p", b"p").is_err());
+}

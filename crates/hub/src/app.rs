@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::Config;
 use crate::enroll::Enrolls;
 use crate::mail::Mailer;
+use crate::oauth::OAuthRuntime;
 use crate::pairing::Broker;
 use crate::push::PushService;
 use crate::ratelimit::{ByteBudgets, KeyedLimiter, RateLimiter, WindowCounter};
@@ -125,6 +126,8 @@ pub struct AppState {
     pub push: PushService,
     /// 发信。`None` = 没配 SMTP：没有邮箱登录、绑定和邮件通知。
     pub mailer: Option<Arc<dyn Mailer>>,
+    /// OAuth 登录（GitHub、Google）：出站 HTTP 客户端、`start` 的限速。
+    pub oauth: OAuthRuntime,
     pub bg: Background,
 }
 
@@ -164,6 +167,7 @@ impl AppState {
         let preview_budget = ByteBudgets::per_minute(l.preview_bytes_per_min);
         let broker = Broker::new(config.timing.pair_ttl, config.timing.pair_confirm_timeout);
         let enrolls = Enrolls::new(config.timing.enroll_ttl, l.enrolls_per_daemon);
+        let oauth = OAuthRuntime::new(config.timing.oauth_timeout);
         Arc::new(Self {
             config,
             store,
@@ -178,6 +182,7 @@ impl AppState {
             shutdown: CancellationToken::new(),
             push,
             mailer,
+            oauth,
             bg: Background::default(),
         })
     }

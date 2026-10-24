@@ -4,8 +4,10 @@
 //!
 //! - **有效管理员**：库里的 `accounts.is_admin` 标记，或者 `multi` 模式下账号邮箱在 `ANYCON_ADMIN_EMAILS` 里
 //!   （[`is_effective_admin`]）。配置派生的管理员**不写回**库里的标记——改配置立刻生效，删掉邮箱就失去权限。
-//! - **注册**（[`sign_up`]）：`multi` 里第一次邮箱验证码 / OAuth 登录建账号都走它：显示名 + 可选的已验证邮箱，
-//!   唯一邮箱竞争（并发注册同一个邮箱）输了的一方拿到已有账号，写 `account_created` 审计。
+//! - **注册**（[`sign_up`]）：`multi` 里第一次邮箱验证码登录建账号走它：显示名 + 可选的已验证邮箱，
+//!   唯一邮箱竞争（并发注册同一个邮箱）输了的一方拿到已有账号，写 `account_created` 审计。OAuth 首次登录要同时绑身份，
+//!   建账号和绑身份在库里是一个事务（[`crate::oauth::login`]），但显示名（[`signup_display_name`]）和审计
+//!   （[`audit_account_created`]）用的是同一份。
 //! - **登录方式**（[`config_login_methods`]、[`account_login_methods`]）：`/api/config` 和 `/api/me` 用，
 //!   解绑邮箱 / 解除 OAuth 绑定时也靠它判断「是不是最后一种登录方式」。顺序固定：`github`、`google`、`email`、`token`。
 
@@ -72,11 +74,15 @@ pub async fn account_login_methods(state: &AppState, account: &Account) -> Store
 }
 
 /// 账号已绑定、且 hub 配了的 OAuth 提供方（`github`、`google`，按这个顺序）。
-///
-/// HOOK：identities 表还没有，这里先恒为空；OAuth 实现在这里查表（`provider` 取 [`OAuthProvider::as_str`]，
-/// 并且只保留 `state.config.oauth_client(p)` 非空的）。
-async fn linked_oauth_methods(_state: &AppState, _account_id: &str) -> StoreResult<Vec<&'static str>> {
-    Ok(Vec::new())
+/// 提供方不在配置里了的身份留在库里，但不算登录方式（登不进来）。
+async fn linked_oauth_methods(state: &AppState, account_id: &str) -> StoreResult<Vec<&'static str>> {
+    let identities = state.store.list_identities(account_id).await?;
+    Ok(state
+        .config
+        .oauth_providers()
+        .map(OAuthProvider::as_str)
+        .filter(|p| identities.iter().any(|i| i.provider == *p))
+        .collect())
 }
 
 // ---------------------------------------------------------------------------

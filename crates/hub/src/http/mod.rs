@@ -10,6 +10,7 @@ pub mod auth;
 pub mod email;
 pub mod json;
 pub mod notifications;
+pub mod oauth;
 pub mod preview;
 pub mod preview_api;
 pub mod session;
@@ -42,6 +43,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/me", get(api::me).patch(api::patch_me).delete(accounts::delete_me))
         .route("/me/email", post(email::bind_send).delete(email::unbind))
         .route("/me/email/verify", post(email::bind_verify))
+        .route("/me/identities", get(oauth::list_identities))
+        .route("/me/identities/{provider}", delete(oauth::delete_identity))
         .route("/me/notifications", get(notifications::get_prefs).put(notifications::put_prefs))
         .route("/push/subscriptions", get(notifications::list_subscriptions).post(notifications::create_subscription))
         .route("/push/subscriptions/{id}", delete(notifications::delete_subscription))
@@ -72,7 +75,9 @@ pub fn router(state: Arc<AppState>) -> Router {
     let mut auth = Router::new()
         .route("/logout", post(auth::logout))
         .route("/email/send", post(email::login_send))
-        .route("/email/verify", post(email::login_verify));
+        .route("/email/verify", post(email::login_verify))
+        .route("/oauth/{provider}/start", get(oauth::start))
+        .route("/callback/{provider}", get(oauth::callback));
     if single {
         auth = auth.route("/token", post(auth::login_token)).route("/invite", post(auth::login_invite));
     }

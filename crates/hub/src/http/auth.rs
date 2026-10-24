@@ -1,4 +1,5 @@
 //! `/auth/*`：登录（token / 邀请）与登出。成功一律 `204` + `Set-Cookie`，之后用 `GET /api/me` 取账号信息。
+//! token 登录和邀请只有 `single` 有；`multi` 里这两条路由不存在（`404 not_found`，见 [`super::router`]）。
 
 use std::sync::Arc;
 
@@ -7,6 +8,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
+use crate::accounts;
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::store::{NewAudit, RedeemOutcome};
@@ -42,8 +44,10 @@ pub async fn login_token(
         return Err(ApiError::rate_limited(wait));
     }
     let hash = hash_token(req.token.trim());
-    let account_id = if ct_eq(&hash, &state.admin.token_hash) {
-        Some(state.admin.account_id.clone())
+    // `multi` 没有 bootstrap 管理员（路由本身也不挂，这里是兜底）。
+    let bootstrap = state.admin.as_ref().filter(|admin| ct_eq(&hash, &admin.token_hash));
+    let account_id = if let Some(admin) = bootstrap {
+        Some(admin.account_id.clone())
     } else {
         state.store.find_account_by_token_hash(&hash, now_ms()).await?.map(|a| a.id)
     };
@@ -98,6 +102,7 @@ pub async fn login_invite(
         RedeemOutcome::Used => return Err(ApiError::new(StatusCode::GONE, "invite_used", "invite already used")),
     };
     let cookie = start_session(&state, &account.id, &client).await?;
+    accounts::audit_account_created(&state, &client, &account.id, "invite").await;
     state.audit(audit_login(&client, "invite_used", Some(account.id.clone()), "invite")).await;
     state.audit(audit_login(&client, "login_ok", Some(account.id), "invite")).await;
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response())

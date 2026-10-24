@@ -13,9 +13,9 @@ use crate::util::{new_id, ordered};
 
 use super::{
     category_from_str, category_to_str, kind_from_str, kind_to_str, Account, AccountToken, AuditEntry, CodeCandidate,
-    Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken, NotificationPref,
-    PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome, SetEmailOutcome, Store,
-    StoreError, StoreResult, StoreStats, WebSession,
+    CreateAccountOutcome, Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken,
+    NotificationPref, PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome,
+    SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
 };
 
 fn be(e: impl Display) -> StoreError {
@@ -212,6 +212,35 @@ impl Store for SqliteStore {
             .await
             .map_err(be)?;
         Ok(Account { id, display_name: display_name.into(), email: None, is_admin, created_at_ms: now_ms })
+    }
+
+    async fn create_account_with_email(
+        &self,
+        display_name: &str,
+        email: Option<&str>,
+        now_ms: u64,
+    ) -> StoreResult<CreateAccountOutcome> {
+        let id = new_id();
+        let r = sqlx::query(
+            "INSERT INTO accounts (id, display_name, email, is_admin, created_at_ms) VALUES (?, ?, ?, 0, ?)",
+        )
+        .bind(&id)
+        .bind(display_name)
+        .bind(email)
+        .bind(now_ms as i64)
+        .execute(&self.pool)
+        .await;
+        match r {
+            Ok(_) => Ok(CreateAccountOutcome::Created(Account {
+                id,
+                display_name: display_name.into(),
+                email: email.map(str::to_string),
+                is_admin: false,
+                created_at_ms: now_ms,
+            })),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(CreateAccountOutcome::EmailTaken),
+            Err(e) => Err(be(e)),
+        }
     }
 
     async fn get_account(&self, id: &str) -> StoreResult<Option<Account>> {
@@ -1418,6 +1447,38 @@ mod tests {
         assert_eq!(s.set_account_email(&a.id, None).await.unwrap(), SetEmailOutcome::Done);
         assert_eq!(s.set_account_email(&b.id, None).await.unwrap(), SetEmailOutcome::Done);
         assert!(s.find_account_by_email("y@example.com").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_account_can_be_created_with_its_email_and_the_second_creator_of_that_email_loses() {
+        let (s, _d) = store().await;
+        let now = now_ms();
+        let CreateAccountOutcome::Created(a) =
+            s.create_account_with_email("alice", Some("alice@example.com"), now).await.unwrap()
+        else {
+            panic!("the first creation wins")
+        };
+        assert_eq!(
+            (a.display_name.as_str(), a.email.as_deref(), a.is_admin),
+            ("alice", Some("alice@example.com"), false)
+        );
+        assert_eq!(s.find_account_by_email("alice@example.com").await.unwrap().unwrap().id, a.id);
+        // 同一个邮箱（含大小写不同的写法）再建一个：EmailTaken，库里没有多出账号
+        for email in ["alice@example.com", "Alice@Example.com"] {
+            assert!(matches!(
+                s.create_account_with_email("mallory", Some(email), now).await.unwrap(),
+                CreateAccountOutcome::EmailTaken
+            ));
+        }
+        assert_eq!(s.stats().await.unwrap().accounts, 1);
+        // 没有邮箱的账号可以有很多个
+        for name in ["n1", "n2"] {
+            let CreateAccountOutcome::Created(n) = s.create_account_with_email(name, None, now).await.unwrap() else {
+                panic!("accounts without an email never collide")
+            };
+            assert!(n.email.is_none());
+        }
+        assert_eq!(s.stats().await.unwrap().accounts, 3);
     }
 
     /// 这一组里现在的码的哈希，最旧的在前。

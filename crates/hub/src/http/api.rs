@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::accounts;
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::store::{Account, Device, NewAudit};
@@ -114,7 +115,7 @@ fn clean_name(raw: &str, max: usize, what: &str) -> ApiResult<String> {
 pub struct ConfigView {
     mode: &'static str,
     public_url: String,
-    /// 启用的登录方式：`token`；配了 SMTP 才有 `email`。
+    /// 启用的登录方式，顺序固定：`github`、`google`（配了凭据）、`email`（配了 SMTP）、`token`（只有 `single`）。
     login_methods: Vec<&'static str>,
     protocol_version: u32,
     version: &'static str,
@@ -128,14 +129,10 @@ pub struct ConfigView {
 }
 
 pub async fn config(State(state): State<Arc<AppState>>) -> Json<ConfigView> {
-    let mut login_methods = vec!["token"];
-    if state.email_enabled() {
-        login_methods.push("email");
-    }
     Json(ConfigView {
         mode: state.config.mode.as_str(),
         public_url: state.config.public_url_str(),
-        login_methods,
+        login_methods: accounts::config_login_methods(&state),
         protocol_version: PROTOCOL_VERSION,
         version: VERSION,
         queue_enabled: false,
@@ -156,26 +153,16 @@ pub struct MeView {
     #[serde(skip_serializing_if = "Option::is_none")]
     email: Option<String>,
     is_admin: bool,
-    /// 这个账号现在能用来登录的方式：`token`（管理员的 bootstrap token，或自己建过登录 token）、
-    /// `email`（绑定了邮箱，而且 hub 配了 SMTP）。可能是空的（邀请进来、还没建 token、没绑邮箱）。
+    /// 这个账号现在能用来登录的方式（[`accounts::account_login_methods`]）：`github` / `google`（绑了身份）、
+    /// `email`（绑定了邮箱，而且 hub 配了 SMTP）、`token`（只有 `single`：管理员的 bootstrap token，或自己建过登录 token）。
+    /// 可能是空的（邀请进来、还没建 token、没绑邮箱）。
     login_methods: Vec<&'static str>,
 }
 
-/// 账号现在能用来登录的方式（解绑邮箱时用它判断「最后一种登录方式」）。
-pub async fn login_methods(state: &AppState, a: &Account) -> ApiResult<Vec<&'static str>> {
-    let mut methods = Vec::new();
-    if a.id == state.admin.account_id || !state.store.list_account_tokens(&a.id).await?.is_empty() {
-        methods.push("token");
-    }
-    if a.email.is_some() && state.email_enabled() {
-        methods.push("email");
-    }
-    Ok(methods)
-}
-
 pub async fn me_view(state: &AppState, a: Account) -> ApiResult<MeView> {
-    let login_methods = login_methods(state, &a).await?;
-    Ok(MeView { id: a.id, display_name: a.display_name, email: a.email, is_admin: a.is_admin, login_methods })
+    let login_methods = accounts::account_login_methods(state, &a).await?;
+    let is_admin = accounts::is_effective_admin(&state.config, &a);
+    Ok(MeView { id: a.id, display_name: a.display_name, email: a.email, is_admin, login_methods })
 }
 
 pub async fn me(State(state): State<Arc<AppState>>, auth: Authed) -> ApiResult<Json<MeView>> {
@@ -566,6 +553,19 @@ pub async fn admin_audit(
     Ok(page_response(entries, next))
 }
 
+/// 管理页的账号行：账号元数据，`is_admin` 是**有效**值，`admin_by_config` 标出它是靠 `ANYCON_ADMIN_EMAILS` 当上的
+/// （这种管理员改不了库里的标记，要改配置）。
+#[derive(Serialize)]
+pub struct AdminAccountView {
+    id: String,
+    display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    is_admin: bool,
+    admin_by_config: bool,
+    created_at_ms: u64,
+}
+
 /// `GET /api/admin/accounts?limit=&cursor=`：账号元数据，最早创建的在前（spec § 2.4）。
 pub async fn admin_accounts(
     State(state): State<Arc<AppState>>,
@@ -576,8 +576,19 @@ pub async fn admin_accounts(
     let limit = q.limit()?;
     let after = q.cursor().map(decode_cursor).transpose()?;
     let rows = state.store.list_accounts(limit + 1, after).await?;
-    let (accounts, next) = split_page(rows, limit, |a| encode_cursor(a.created_at_ms, &a.id));
-    Ok(page_response(accounts, next))
+    let (rows, next) = split_page(rows, limit, |a| encode_cursor(a.created_at_ms, &a.id));
+    let views: Vec<AdminAccountView> = rows
+        .into_iter()
+        .map(|a| AdminAccountView {
+            is_admin: accounts::is_effective_admin(&state.config, &a),
+            admin_by_config: accounts::admin_by_config(&state.config, &a),
+            id: a.id,
+            display_name: a.display_name,
+            email: a.email,
+            created_at_ms: a.created_at_ms,
+        })
+        .collect();
+    Ok(page_response(views, next))
 }
 
 #[cfg(test)]

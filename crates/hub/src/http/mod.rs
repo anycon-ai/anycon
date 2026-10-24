@@ -25,7 +25,7 @@ use axum::{Json, Router};
 use serde_json::json;
 
 use crate::app::AppState;
-use crate::config::PreviewUrl;
+use crate::config::{Mode, PreviewUrl};
 use crate::error::ApiError;
 use crate::ws;
 
@@ -33,7 +33,10 @@ use crate::ws;
 const API_BODY_LIMIT: usize = 64 * 1024;
 
 pub fn router(state: Arc<AppState>) -> Router {
-    let api = Router::new()
+    // 登录 token、邀请只有 `single` 有：`multi` 里这些路径不挂，落到各自 fallback 的 `404 not_found`
+    // （不论有没有登录，也和「根本没有这个功能」一样，不泄露任何东西）。
+    let single = state.config.mode == Mode::Single;
+    let mut api = Router::new()
         .route("/config", get(api::config))
         .route("/me", get(api::me).patch(api::patch_me))
         .route("/me/email", post(email::bind_send).delete(email::unbind))
@@ -44,26 +47,32 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/push/test", post(notifications::test_push))
         .route("/me/sessions", get(api::list_sessions))
         .route("/me/sessions/{id}", delete(api::delete_session))
-        .route("/me/tokens", get(api::list_tokens).post(api::create_token))
-        .route("/me/tokens/{id}", delete(api::delete_token))
         .route("/devices", get(api::list_devices))
         .route("/devices/{id}", patch(api::patch_device).delete(api::delete_device))
         .route("/preview/tokens", post(preview_api::create_token))
-        .route("/invites", get(api::list_invites).post(api::create_invite))
-        .route("/invites/{id}", delete(api::delete_invite))
         .route("/admin/status", get(api::admin_status))
         .route("/admin/accounts", get(api::admin_accounts))
-        .route("/admin/audit", get(api::admin_audit))
+        .route("/admin/audit", get(api::admin_audit));
+    if single {
+        api = api
+            .route("/me/tokens", get(api::list_tokens).post(api::create_token))
+            .route("/me/tokens/{id}", delete(api::delete_token))
+            .route("/invites", get(api::list_invites).post(api::create_invite))
+            .route("/invites/{id}", delete(api::delete_invite));
+    }
+    let api = api
         .fallback(|| async { ApiError::not_found() })
         .layer(middleware::from_fn(csrf))
         .layer(DefaultBodyLimit::max(API_BODY_LIMIT));
 
-    let auth = Router::new()
-        .route("/token", post(auth::login_token))
+    let mut auth = Router::new()
         .route("/logout", post(auth::logout))
-        .route("/invite", post(auth::login_invite))
         .route("/email/send", post(email::login_send))
-        .route("/email/verify", post(email::login_verify))
+        .route("/email/verify", post(email::login_verify));
+    if single {
+        auth = auth.route("/token", post(auth::login_token)).route("/invite", post(auth::login_invite));
+    }
+    let auth = auth
         .fallback(|| async { ApiError::not_found() })
         .layer(middleware::from_fn(csrf))
         .layer(DefaultBodyLimit::max(API_BODY_LIMIT));

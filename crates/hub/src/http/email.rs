@@ -1,11 +1,12 @@
 //! 邮箱验证码登录和账号里的邮箱绑定（[ADR-37](../../../../docs/decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)，
 //! docs/spec/hub.md § 2.2 / § 2.3 / § 7.2 / § 8）。配了 SMTP 才有；没配时这些路由回 `404 not_found`。
 //!
-//! - `POST /auth/email/send { email }`：**总是 200**。邮箱绑定了账号才发码，而且发码（查库、写库、发信）全在后台任务里做，
-//!   响应时间不随邮箱是否注册变化（防枚举）。限速也与邮箱是否注册无关：先按 IP（5 次 / 小时）、再按邮箱（60 秒一次、
-//!   每天最多 10 个码）。
+//! - `POST /auth/email/send { email }`：**总是 200**。`single` 里邮箱绑定了账号才发码；`multi` 是开放注册，对任何合法邮箱
+//!   都发码。发码（查库、写库、发信）全在后台任务里做，响应时间不随邮箱是否注册变化（防枚举）。限速也与邮箱是否注册无关：
+//!   先按 IP（5 次 / 小时）、再按邮箱（60 秒一次、每天最多 10 个码）。
 //! - `POST /auth/email/verify { email, code }`：成功 `204` + 登录 cookie；码不对、过期、不存在一律 `401 invalid_code`，
-//!   失败的响应至少在请求开始之后 250 ms 才发出（成功不等）。
+//!   失败的响应至少在请求开始之后 250 ms 才发出（成功不等）。`multi` 里码对了、而邮箱还没有账号时，用这个邮箱建账号
+//!   （[`crate::accounts::sign_up`]）再登录；`single` 里这种情况和码不对一样处理。
 //! - `POST /api/me/email { email }` · `POST /api/me/email/verify { email, code }` · `DELETE /api/me/email`：绑定 / 换绑 / 解绑。
 //!
 //! 码：6 位数字，库里只存哈希，比较用常数时间，验证成功立刻删（一次性）。同一组（邮箱，用途，账号）最多同时 3 条有效的码，
@@ -24,7 +25,9 @@ use rand::rngs::OsRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+use crate::accounts::{self, SignUp};
 use crate::app::AppState;
+use crate::config::Mode;
 use crate::error::{ApiError, ApiResult};
 use crate::mail::{code_mail, lang_from_accept_language, normalize_email, CodeKind, Lang, OutgoingMail};
 use crate::store::{EmailCode, EmailPurpose, NewAudit, SetEmailOutcome};
@@ -222,6 +225,11 @@ pub async fn login_send(
     let st = state.clone();
     // 绑定没绑定都走到这里、都立刻返回；查库和发信都在后台，响应时间与结果无关。
     state.bg.spawn(async move {
+        // `multi` 对任何邮箱发码（验证成功时没有账号就建一个）；`single` 只发给已经绑定了账号的邮箱。
+        if st.config.mode == Mode::Multi {
+            issue_code(&st, &email, EmailPurpose::Login, None, lang).await;
+            return;
+        }
         match st.store.find_account_by_email(&email).await {
             Ok(Some(_)) => issue_code(&st, &email, EmailPurpose::Login, None, lang).await,
             Ok(None) => tracing::debug!(to = %email_tag(&email), "login code requested for an email without an account, not sending"),
@@ -260,8 +268,15 @@ pub async fn login_verify(
     if !check_code(&state, &email, EmailPurpose::Login, &req.code, None).await? {
         return fail(None).await;
     }
-    // 码发出之后邮箱可能已经被解绑 / 换掉。
-    let Some(account) = state.store.find_account_by_email(&email).await? else { return fail(None).await };
+    // 码发出之后邮箱可能已经被解绑 / 换掉（`single`）。`multi` 里没有账号就注册一个：码证明了这个邮箱是本人的。
+    let account = match state.store.find_account_by_email(&email).await? {
+        Some(account) => account,
+        None if state.config.mode == Mode::Multi => {
+            let signup = SignUp { method: "email", names: &[], email: Some(&email) };
+            accounts::sign_up(&state, &client, signup).await?.into_account()
+        }
+        None => return fail(None).await,
+    };
     let cookie = start_session(&state, &account.id, &client).await?;
     state.audit(audit_email_login(&client, "login_ok", Some(account.id))).await;
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response())
@@ -371,12 +386,13 @@ pub async fn unbind(State(state): State<Arc<AppState>>, auth: Authed, client: Cl
     if auth.account.email.is_none() {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
-    let others = super::api::login_methods(&state, &auth.account).await?.into_iter().filter(|m| *m != "email").count();
+    let others =
+        accounts::account_login_methods(&state, &auth.account).await?.into_iter().filter(|m| *m != "email").count();
     if others == 0 {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "last_login_method",
-            "the email is the only way this account can sign in; add a login token first",
+            "the email is the only way this account can sign in; add another sign-in method first",
         ));
     }
     state.store.set_account_email(&auth.account.id, None).await?;

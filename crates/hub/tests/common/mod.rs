@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use anycon_hub::config::{Mode, QuotaLimits};
 use anycon_hub::mail::{OutgoingMail, RecordingMailer};
 use anycon_hub::store::NewDevice;
 use anycon_hub::util::{hash_token, new_id, new_secret, now_ms};
@@ -36,6 +37,7 @@ pub struct TestHub {
     pub handle: Handle,
     pub dir: tempfile::TempDir,
     pub http: reqwest::Client,
+    /// bootstrap 管理员的 token。`multi` 没有，是空串（`login_admin` 会直接报错）。
     pub admin_token: String,
 }
 
@@ -51,8 +53,14 @@ impl TestHub {
         // 验证码验证失败默认要等 250 ms：测试里不关心，免得整套用例平白变慢。要测它的用例自己设回来。
         config.timing.email_verify_failure_delay = Duration::ZERO;
         tweak(&mut config);
+        let multi = config.mode == Mode::Multi;
         let handle = anycon_hub::run(config).await.expect("hub starts");
-        let admin_token = handle.generated_admin_token.clone().expect("first run generates an admin token");
+        let admin_token = if multi {
+            assert!(handle.generated_admin_token.is_none(), "multi has no bootstrap admin token");
+            String::new()
+        } else {
+            handle.generated_admin_token.clone().expect("first run generates an admin token")
+        };
         let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
         Self { handle, dir, http, admin_token }
     }
@@ -65,8 +73,9 @@ impl TestHub {
         format!("ws://127.0.0.1:{}/v1/ws", self.handle.addr.port())
     }
 
+    /// bootstrap 管理员的账号 id（只有 `single`）。
     pub fn admin_account_id(&self) -> String {
-        self.handle.state.admin.account_id.clone()
+        self.handle.state.admin.as_ref().expect("single mode has a bootstrap admin").account_id.clone()
     }
 
     /// `POST /auth/token`，返回 `Cookie` 头可直接使用的 `anycon_session=…`。
@@ -84,6 +93,7 @@ impl TestHub {
     }
 
     pub async fn login_admin(&self) -> String {
+        assert!(!self.admin_token.is_empty(), "multi mode has no admin token to log in with");
         self.login(&self.admin_token.clone()).await
     }
 
@@ -172,6 +182,20 @@ impl TestHub {
         })
         .await;
         (hub, mailer)
+    }
+
+    /// 起一个 `multi` 模式的 hub：开放注册，配额取默认值，邮箱验证码登录可用（记录型发信实现）。返回 hub 和那个 mailer。
+    /// 没有 bootstrap 管理员——`admin_token` 是空串，管理员靠 `admin_emails`（`ANYCON_ADMIN_EMAILS`）。
+    pub async fn start_multi() -> (Self, Arc<RecordingMailer>) {
+        Self::start_multi_with(|_| {}).await
+    }
+
+    pub async fn start_multi_with(tweak: impl FnOnce(&mut Config)) -> (Self, Arc<RecordingMailer>) {
+        Self::start_mail_with(move |c| {
+            c.enable_multi(QuotaLimits::default());
+            tweak(c);
+        })
+        .await
     }
 
     /// 等后台的发信 / 推送任务都做完（它们不阻塞 HTTP 响应和信封转发）。

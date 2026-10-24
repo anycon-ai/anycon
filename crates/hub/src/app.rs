@@ -96,6 +96,7 @@ impl Background {
 }
 
 /// 管理员 bootstrap token（来自 `ANYCON_ADMIN_TOKEN` 或 `<data>/admin-token`，不在库里）的哈希与对应账号。
+/// 只有 `single` 有（[`AppState::admin`]）。
 pub struct AdminAuth {
     pub token_hash: String,
     pub account_id: String,
@@ -110,7 +111,8 @@ pub struct AppState {
     pub enrolls: Enrolls,
     pub limits: IpLimiters,
     pub account_limits: AccountLimiters,
-    pub admin: AdminAuth,
+    /// bootstrap 管理员的 token 与账号。`single` 才有；`multi` 为 `None`（没有 bootstrap 账号，也没有 token 登录）。
+    pub admin: Option<AdminAuth>,
     /// 账号级的预览流量预算（键是账号 id，docs/spec/hub.md § 13.5）：预览连接和节点之间的 `data` / `handshake`
     /// 从这里扣，不占发送连接自己的字节预算。
     pub preview_budget: ByteBudgets<String>,
@@ -127,7 +129,7 @@ impl AppState {
     pub fn new(
         config: Config,
         store: Arc<dyn Store>,
-        admin: AdminAuth,
+        admin: Option<AdminAuth>,
         push: PushService,
         mailer: Option<Arc<dyn Mailer>>,
     ) -> Arc<Self> {

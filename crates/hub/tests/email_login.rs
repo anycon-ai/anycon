@@ -45,7 +45,7 @@ async fn bind_an_email_then_log_in_with_it_from_a_fresh_browser() {
 
     // /api/config 宣告了邮箱登录
     let cfg: Value = hub.http.get(hub.url("/api/config")).send().await.unwrap().json().await.unwrap();
-    assert_eq!(cfg["login_methods"], json!(["token", "email"]));
+    assert_eq!(cfg["login_methods"], json!(["email", "token"]));
 
     // 绑定：发码 → 验证
     let me: Value = hub.get("/api/me", &admin).await.json().await.unwrap();
@@ -67,7 +67,7 @@ async fn bind_an_email_then_log_in_with_it_from_a_fresh_browser() {
     assert_eq!(res.status(), 200);
     let me: Value = res.json().await.unwrap();
     assert_eq!(me["email"], "admin@example.com");
-    assert_eq!(me["login_methods"], json!(["token", "email"]));
+    assert_eq!(me["login_methods"], json!(["email", "token"]));
     let me: Value = hub.get("/api/me", &admin).await.json().await.unwrap();
     assert_eq!(me["email"], "admin@example.com");
 
@@ -780,7 +780,7 @@ async fn unbinding_keeps_at_least_one_way_to_log_in() {
     let res = hub.send(Method::POST, "/api/me/tokens", &guest, json!({ "label": "laptop" })).await;
     assert_eq!(res.status(), 200);
     let me: Value = hub.get("/api/me", &guest).await.json().await.unwrap();
-    assert_eq!(me["login_methods"], json!(["token", "email"]));
+    assert_eq!(me["login_methods"], json!(["email", "token"]));
     assert_eq!(hub.send(Method::DELETE, "/api/me/email", &guest, Value::Null).await.status(), 204);
     let audit: Value = hub.get("/api/admin/audit", &admin).await.json().await.unwrap();
     assert!(audit

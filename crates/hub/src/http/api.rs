@@ -566,28 +566,50 @@ pub struct AdminAccountView {
     created_at_ms: u64,
 }
 
-/// `GET /api/admin/accounts?limit=&cursor=`：账号元数据，最早创建的在前（spec § 2.4）。
+/// 管理页账号列表的搜索参数。
+#[derive(Deserialize)]
+pub struct AccountSearch {
+    /// 显示名或邮箱的子串（不区分大小写），或者正好等于账号 id。空白等于没给。
+    #[serde(default)]
+    q: Option<String>,
+}
+
+/// 搜索串最长多少个字符。
+const MAX_SEARCH_CHARS: usize = 200;
+
+/// 一个账号在管理页里的样子（`is_admin` 是有效值，`admin_by_config` 见 [`AdminAccountView`]）。
+pub fn admin_account_view(state: &AppState, a: Account) -> AdminAccountView {
+    AdminAccountView {
+        is_admin: accounts::is_effective_admin(&state.config, &a),
+        admin_by_config: accounts::admin_by_config(&state.config, &a),
+        id: a.id,
+        display_name: a.display_name,
+        email: a.email,
+        created_at_ms: a.created_at_ms,
+    }
+}
+
+/// `GET /api/admin/accounts?q=&limit=&cursor=`：账号元数据，最早创建的在前（spec § 2.4）。
+/// `q` 搜显示名和邮箱（子串，不区分大小写）或账号 id（精确）；分页同没有 `q` 时。
 pub async fn admin_accounts(
     State(state): State<Arc<AppState>>,
     auth: Authed,
     Query(q): Query<PageQuery>,
+    Query(search): Query<AccountSearch>,
 ) -> ApiResult<Response> {
     auth.require_admin()?;
     let limit = q.limit()?;
     let after = q.cursor().map(decode_cursor).transpose()?;
-    let rows = state.store.list_accounts(limit + 1, after).await?;
+    let needle = search.q.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    if needle.is_some_and(|n| n.chars().count() > MAX_SEARCH_CHARS) {
+        return Err(ApiError::bad_request(format!("q must be at most {MAX_SEARCH_CHARS} characters")));
+    }
+    let rows = match needle {
+        Some(needle) => state.store.search_accounts(needle, limit + 1, after).await?,
+        None => state.store.list_accounts(limit + 1, after).await?,
+    };
     let (rows, next) = split_page(rows, limit, |a| encode_cursor(a.created_at_ms, &a.id));
-    let views: Vec<AdminAccountView> = rows
-        .into_iter()
-        .map(|a| AdminAccountView {
-            is_admin: accounts::is_effective_admin(&state.config, &a),
-            admin_by_config: accounts::admin_by_config(&state.config, &a),
-            id: a.id,
-            display_name: a.display_name,
-            email: a.email,
-            created_at_ms: a.created_at_ms,
-        })
-        .collect();
+    let views: Vec<AdminAccountView> = rows.into_iter().map(|a| admin_account_view(&state, a)).collect();
     Ok(page_response(views, next))
 }
 

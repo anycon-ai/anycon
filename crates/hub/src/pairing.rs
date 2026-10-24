@@ -21,7 +21,8 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 
 use crate::app::AppState;
-use crate::store::{NewAudit, NewDevice};
+use crate::quota;
+use crate::store::{CreateDevicesOutcome, DeviceLimit, NewAudit, NewDevice};
 use crate::util::{clip, hash_token, ip_prefix, new_id, new_secret, now_ms, ordered};
 use crate::ws::registry::Conn;
 
@@ -380,12 +381,8 @@ struct Issued {
     token: String,
 }
 
-async fn issue_device(
-    state: &Arc<AppState>,
-    conn: &Arc<Conn>,
-    account: &str,
-    now: u64,
-) -> Result<Issued, crate::store::StoreError> {
+/// 给一条临时连接准备设备记录（还没写库）：随机 id 和 token，名字等取自连接自报的 `ClientInfo`。
+fn prepare_device(conn: &Arc<Conn>, account: &str) -> (Issued, NewDevice) {
     let id = new_id();
     let token = new_secret();
     let c = &conn.client;
@@ -398,8 +395,40 @@ async fn issue_device(
         origin: c.origin.as_deref().map(|o| clip(o, 200)),
         token_hash: hash_token(&token),
     };
-    state.store.create_device(dev, now).await?;
-    Ok(Issued { id, token })
+    (Issued { id, token }, dev)
+}
+
+/// 把这次收尾要新建的设备写库。
+///
+/// `multi`（配了配额）：设备数 / daemon 数的检查和插入在一个写事务里（[`crate::store::Store::create_devices_within_limits`]），
+/// 同一个账号并发收尾也不会冲过上限；超了就一台都不建，`quota`。`single`：没有配额，逐台建。
+async fn create_devices(state: &Arc<AppState>, devices: Vec<NewDevice>, now: u64) -> Result<(), PairFailReason> {
+    let internal = |e: crate::store::StoreError| {
+        tracing::error!(error = %e, "pairing device creation failed");
+        PairFailReason::Timeout
+    };
+    match &state.config.quota {
+        Some(limits) => {
+            match state.store.create_devices_within_limits(devices, quota::device_limits(limits), now).await {
+                Ok(CreateDevicesOutcome::Created(_)) => Ok(()),
+                Ok(CreateDevicesOutcome::Exceeded(limit)) => {
+                    let limit = match limit {
+                        DeviceLimit::Devices => "devices",
+                        DeviceLimit::Daemons => "daemons",
+                    };
+                    tracing::info!(limit, "quota exceeded");
+                    Err(PairFailReason::Quota)
+                }
+                Err(e) => Err(internal(e)),
+            }
+        }
+        None => {
+            for device in devices {
+                state.store.create_device(device, now).await.map_err(internal)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn try_finalize(
@@ -439,19 +468,18 @@ async fn try_finalize(
     // 先建设备记录；中途失败就把已建的作废，免得留下没人持有 token 的孤儿设备。
     let mut issued_host = None;
     let mut issued_joiner = None;
-    let created: Result<(), PairFailReason> = async {
-        if !host.is_permanent() {
-            let i = issue_device(state, host, &account, now).await.map_err(|e| internal("host device creation", e))?;
-            issued_host = Some(i);
-        }
-        if !joiner.is_permanent() {
-            let i =
-                issue_device(state, joiner, &account, now).await.map_err(|e| internal("joiner device creation", e))?;
-            issued_joiner = Some(i);
-        }
-        Ok(())
+    let mut new_devices = Vec::new();
+    if !host.is_permanent() {
+        let (issued, device) = prepare_device(host, &account);
+        issued_host = Some(issued);
+        new_devices.push(device);
     }
-    .await;
+    if !joiner.is_permanent() {
+        let (issued, device) = prepare_device(joiner, &account);
+        issued_joiner = Some(issued);
+        new_devices.push(device);
+    }
+    let created = if new_devices.is_empty() { Ok(()) } else { create_devices(state, new_devices, now).await };
     let host_id = issued_host.as_ref().map_or_else(|| old_host_id.clone(), |i| i.id.clone());
     let joiner_id = issued_joiner.as_ref().map_or_else(|| joiner.device_id(), |i| i.id.clone());
     let result = match created {
@@ -504,6 +532,9 @@ async fn try_finalize(
         }
     }
 
+    // 新建了设备：账号的设备数和连接数都变了（升级后的连接此刻已是永久连接），告诉它其余在线的永久连接。
+    let created_any = issued_host.is_some() || issued_joiner.is_some();
+
     // 运行时：先换身份、更新对端缓存，再发 PairDone，这样对方收到后立刻用新身份发的帧不会被丢。
     for (issued, conn) in [(&issued_host, host), (&issued_joiner, joiner)] {
         if let Some(i) = issued {
@@ -537,6 +568,9 @@ async fn try_finalize(
     // 两边此刻都在线（升级后的同一条连接）：互相发 peer_online，客户端据此直接开始 IK 握手，不用重连。
     host.send_control(&Control::PeerOnline { device: joiner_id });
     joiner.send_control(&Control::PeerOnline { device: host_id });
+    if created_any {
+        quota::broadcast(state, &account, None).await;
+    }
     Ok(())
 }
 

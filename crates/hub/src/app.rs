@@ -20,6 +20,8 @@ use crate::ws::registry::Registry;
 
 /// 邮箱验证码「每天」的窗口：滚动的 24 小时。
 const EMAIL_DAILY_WINDOW: Duration = Duration::from_secs(24 * 3600);
+/// 每日配对与接入次数的窗口：滚动的 24 小时。
+const PAIRING_DAILY_WINDOW: Duration = Duration::from_secs(24 * 3600);
 
 /// 按 IP 的限速器（见 docs/spec/hub.md § 7.2）。
 pub struct IpLimiters {
@@ -45,8 +47,9 @@ pub struct IpLimiters {
 pub struct AccountLimiters {
     /// `enroll_begin`：每账号每小时。
     pub enroll_begin: KeyedLimiter<String>,
-    /// 每日配对与接入次数（docs/spec/hub.md § 7.1）。`None` = 不限（`single` 模式没有配额）。
-    pub daily_pairings: Option<KeyedLimiter<String>>,
+    /// 每日配对与接入次数（docs/spec/hub.md § 7.1）：`pair_begin` / `pair_join` / `enroll_begin` 在已知账号时各记一次，
+    /// 严格的滚动 24 小时窗口（[`crate::quota::record_pairing_attempt`]）。`None` = 不限（`single` 模式没有配额）。
+    pub daily_pairings: Option<WindowCounter<String>>,
     /// `POST /api/push/subscriptions`、`POST /api/push/test`：每账号每分钟。
     pub push_api: KeyedLimiter<String>,
     /// 同一个邮箱两次发码之间的最短间隔。登录码的键是 `login:<邮箱>`（对所有请求者共用），
@@ -149,7 +152,7 @@ impl AppState {
         let minute = Duration::from_secs(60);
         let account_limits = AccountLimiters {
             enroll_begin: KeyedLimiter::per_hour(l.enroll_begin_per_hour_per_account),
-            daily_pairings: l.daily_pairings_per_account.map(KeyedLimiter::per_day),
+            daily_pairings: l.daily_pairings_per_account.map(|n| WindowCounter::new(n, PAIRING_DAILY_WINDOW)),
             push_api: KeyedLimiter::new(l.push_api_per_min_per_account, minute),
             email_resend: KeyedLimiter::new(1, l.email_resend_interval),
             email_daily_codes: WindowCounter::new(l.email_codes_per_day, EMAIL_DAILY_WINDOW),
@@ -226,13 +229,15 @@ impl AppState {
         tracing::info!(device = %device_id, "device revoked");
         self.audit(NewAudit {
             event: "device_revoked",
-            account_id: Some(device.account_id),
+            account_id: Some(device.account_id.clone()),
             device_id: Some(device_id.to_string()),
             ip_prefix: None,
             user_agent: None,
             detail: Some(serde_json::json!({ "by_device": actor })),
         })
         .await;
+        // 设备数（和被吊销设备自己的连接）变了：告诉账号其余在线的永久连接（`multi`）。
+        crate::quota::broadcast(self, &device.account_id, None).await;
         Ok(true)
     }
 

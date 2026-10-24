@@ -3,6 +3,7 @@
 //! 路由清单见 docs/spec/hub.md § 2。配了 `ANYCON_PREVIEW_URL` 时，预览域名上的请求在最外层由 [`preview`] 接走
 //! （docs/spec/hub.md § 13.2），不经过下面的路由和安全头层。
 
+pub mod accounts;
 pub mod api;
 mod assets;
 pub mod auth;
@@ -38,7 +39,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let single = state.config.mode == Mode::Single;
     let mut api = Router::new()
         .route("/config", get(api::config))
-        .route("/me", get(api::me).patch(api::patch_me))
+        .route("/me", get(api::me).patch(api::patch_me).delete(accounts::delete_me))
         .route("/me/email", post(email::bind_send).delete(email::unbind))
         .route("/me/email/verify", post(email::bind_verify))
         .route("/me/notifications", get(notifications::get_prefs).put(notifications::put_prefs))
@@ -47,11 +48,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/push/test", post(notifications::test_push))
         .route("/me/sessions", get(api::list_sessions))
         .route("/me/sessions/{id}", delete(api::delete_session))
+        .route("/quota", get(accounts::get_quota))
         .route("/devices", get(api::list_devices))
         .route("/devices/{id}", patch(api::patch_device).delete(api::delete_device))
         .route("/preview/tokens", post(preview_api::create_token))
         .route("/admin/status", get(api::admin_status))
         .route("/admin/accounts", get(api::admin_accounts))
+        .route("/admin/accounts/{id}", delete(accounts::admin_delete_account))
+        .route("/admin/accounts/{id}/admin", post(accounts::admin_grant).delete(accounts::admin_revoke))
         .route("/admin/audit", get(api::admin_audit));
     if single {
         api = api

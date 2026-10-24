@@ -303,6 +303,39 @@ pub struct NotificationPref {
     pub email: bool,
 }
 
+/// 新建设备时的配额上限（`multi`，来自 [`crate::config::QuotaLimits`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceLimits {
+    /// 账号名下未吊销的设备数上限（所有种类，含 daemon）。
+    pub devices: u32,
+    /// 其中 daemon 的上限。
+    pub daemons: u32,
+}
+
+/// 新建设备时撞上的是哪一项上限。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceLimit {
+    Devices,
+    Daemons,
+}
+
+/// [`Store::create_devices_within_limits`] 的结果。
+#[derive(Debug)]
+pub enum CreateDevicesOutcome {
+    /// 全部建好了（顺序同传入）。
+    Created(Vec<Device>),
+    /// 会超出上限：一台都没建。
+    Exceeded(DeviceLimit),
+}
+
+/// 管理页搜索：`needle` 是已经去空白、转小写的查询串，`raw` 是去空白、没转小写的原串。
+/// 命中条件：显示名或邮箱包含 `needle`（按 Unicode 不区分大小写），或者账号 id 正好等于 `raw`。
+pub(crate) fn account_matches(account: &Account, needle: &str, raw: &str) -> bool {
+    account.id == raw
+        || account.display_name.to_lowercase().contains(needle)
+        || account.email.as_deref().is_some_and(|e| e.to_lowercase().contains(needle))
+}
+
 pub fn category_to_str(c: NotifyCategory) -> &'static str {
     match c {
         NotifyCategory::PermissionRequested => "permission_requested",
@@ -512,4 +545,57 @@ pub trait Store: Send + Sync + 'static {
     // ---- kv ----
     async fn kv_get(&self, key: &str) -> StoreResult<Option<String>>;
     async fn kv_set(&self, key: &str, value: &str) -> StoreResult<()>;
+
+    // ---- multi：配额、账号删除、管理员标记、账号搜索 ----
+    /// 账号名下未吊销的设备数，和其中 daemon 的数：`(devices, daemons)`。
+    async fn count_devices(&self, account_id: &str) -> StoreResult<(u32, u32)>;
+    /// 原子地「按配额检查 + 建设备」：`devices` 全建好，或者（会超出 `limits`）一台都不建。
+    ///
+    /// 检查和插入在同一个写事务里，数的是库里**此刻**未吊销的设备（包括同一事务里前面刚插入的），所以并发的两次
+    /// 配对 / 接入收尾对同一个账号不会一起冲过上限。`devices` 可以是几个账号的，每台按自己的账号数。
+    async fn create_devices_within_limits(
+        &self,
+        devices: Vec<NewDevice>,
+        limits: DeviceLimits,
+        now_ms: u64,
+    ) -> StoreResult<CreateDevicesOutcome>;
+    /// 设置 / 清除库里的管理员标记（不碰 `ANYCON_ADMIN_EMAILS` 派生的管理员）。账号不存在返回 `false`。
+    async fn set_account_admin(&self, account_id: &str, is_admin: bool) -> StoreResult<bool>;
+    /// 删账号：一个事务里删这个账号的 `hub_audit` 行、它兑换过的邀请（外键是 `SET NULL`，留着的话
+    /// `used_by IS NULL` 会让这张邀请重新变得可用）、以它的邮箱发的登录码，然后删账号本身（其余表由外键级联删），
+    /// 最后写入 `tombstone`（唯一留下的审计行）。账号不存在返回 `false`，什么都不写。
+    async fn delete_account(&self, account_id: &str, tombstone: NewAudit, now_ms: u64) -> StoreResult<bool>;
+    /// 管理页搜索：显示名或邮箱包含 `query`（不区分大小写），或账号 id 正好等于 `query`。分页同 [`Store::list_accounts`]。
+    ///
+    /// 默认实现按 keyset 顺序分批扫 [`Store::list_accounts`] 在内存里过滤：SQLite 的 `lower()` / `LIKE` 只认 ASCII，
+    /// 非 ASCII 的显示名（`É`、`Ü`）用它们会漏。账号数量级下，管理员偶尔搜一次的开销可以接受。
+    async fn search_accounts(
+        &self,
+        query: &str,
+        limit: u32,
+        after: Option<(u64, String)>,
+    ) -> StoreResult<Vec<Account>> {
+        const CHUNK: u32 = 500;
+        let raw = query.trim();
+        let needle = raw.to_lowercase();
+        let mut found = Vec::new();
+        let mut cursor = after;
+        loop {
+            let rows = self.list_accounts(CHUNK, cursor.clone()).await?;
+            let full = rows.len() as u32 == CHUNK;
+            let last = rows.last().map(|a| (a.created_at_ms, a.id.clone()));
+            for account in rows {
+                if account_matches(&account, &needle, raw) {
+                    found.push(account);
+                    if found.len() as u32 >= limit {
+                        return Ok(found);
+                    }
+                }
+            }
+            match last {
+                Some(last) if full => cursor = Some(last),
+                _ => return Ok(found),
+            }
+        }
+    }
 }

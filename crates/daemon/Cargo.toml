@@ -50,7 +50,7 @@ http-body = "1.1.0"
 
 [dev-dependencies]
 anycon-hub = { path = "../hub" }
-jsonschema = { version = "0.58.6", default-features = false }
+jsonschema = { version = "0.59.0", default-features = false }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 tempfile = "3.27.0"
 

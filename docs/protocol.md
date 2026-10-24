@@ -175,7 +175,7 @@ daemon                      hub                        新客户端
 | `node.info` | C→D | 版本、能力、workspace 根、已安装 adapter 列表；`capabilities.worktree` 为 true 时带 `worktree { default_mode, branch_prefix }`（节点配置 `[worktree]`，ADR-34） |
 | `node.devices` | C→D | 已配对设备列表 |
 | `node.revoke_device` | C→D | 吊销一台设备（daemon 删公钥，并通过 control 通知 hub 删路由） |
-| `node.pair_begin` | C→D | `{ long? }` → `{ code, expires_at_ms, link }`：让 daemon 本地生成短码并向 hub 登记 `match_id`；`long` 缺省为 `true`，生成 16 位；`long = false` 生成 8 位（`anycon pair --short`，只适合自建 hub，ADR-29）。`link = ${hub}/pair#code=<code>` |
+| `node.pair_begin` | C→D | `{ long? }` → `{ code, expires_at_ms, link }`：让 daemon 本地生成短码并向 hub 登记 `match_id`；`long` 缺省为 `true`，生成 16 位；`long = false` 生成 8 位（`anycon pair --short`，只适合自建 hub，ADR-29）。`link = ${hub}/pair#code=<code>`。错误：daemon 没连上 hub → `unsupported`；hub 拒绝登记（回 `pair_failed`）→ `busy` 且 `data.reason` 是 `quota`（账号今天发起配对的次数用完了，`multi`）或 `rate_limited`，`forbidden` 且 `data.reason = "forbidden"`（约定同 `blob.put_begin` 的 `busy` + `quota`）；hub 没有确认登记 → `internal`。登记之后的失败不在这里返回，见 [spec/daemon.md § 15](spec/daemon.md#15-连接与可靠性) 的 `local.pair_outcome` |
 | `pair.ack` | D→C notification | `{ node_id, peer_id, name, version, fingerprint }`：配对握手完成、`pair_done` 之后 daemon 发给新客户端的第一条加密通知，见 §4.1 |
 | `node.enroll_requested` | D→C notification | `{ enroll_id, method, hint, expires_at_ms }`：有设备请求批准接入（§ 4.4 的 `code`，`approval = true`；`scan` 不发），发给所有在线的已配对设备。`hint` 未经认证 |
 | `node.enroll_list` | C→D | → `{ enrolls: [{ enroll_id, method?, approval, hint?, status: waiting_hello \| wait_approval \| ready, created_at_ms, expires_at_ms }] }`：进行中的接入会话，含还没收到 `hello` 的（`waiting_hello`）和 `scan` 的（节点设置里「待批准的接入请求」和扫码确认页用；打开页面或重连后拉一次，之后靠 `node.enroll_requested` / `node.enroll_resolved` 增量） |

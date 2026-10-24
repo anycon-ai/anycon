@@ -987,6 +987,29 @@ async fn the_pairing_watchdog_reports_a_timeout_through_local_pair_outcome() {
 }
 
 #[tokio::test]
+async fn a_hub_refusal_of_pair_begin_is_busy_with_a_reason_and_not_the_not_connected_error() {
+    // 每个账号每天只能发起 1 次配对
+    let hub = TestHub::start_with(|c| c.limits.daily_pairings_per_account = Some(1)).await;
+    let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
+    wait_daemon_connected(&td).await;
+    // 第一次配对走的是临时连接（还没有账号），不计数；配对完成后这条连接就是正式设备，之后的 pair_begin 计入账号
+    let _web = pair_web(&td, &hub, "First").await;
+    let mut local = td.client("cli");
+    let ok: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
+    assert!(!ok.code.is_empty());
+
+    // 第二次：hub 回 pair_failed { quota }。这是「被拒绝」，不是「没连上 hub」（unsupported）
+    let err = local.call::<NodePairBeginResult>(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::Busy.rpc_code(), "{err:?}");
+    let data = err.data.as_ref().expect("error data");
+    assert_eq!((data.code, data.reason.as_deref()), (ErrorCode::Busy, Some("quota")), "{err:?}");
+    assert!(err.message.contains("refused") && !err.message.contains("not connected"), "{}", err.message);
+    // 被拒绝的这次没有留下进行中的配对
+    assert!(td.ctx.peers.pair_failure(ok.expires_at_ms).is_none());
+    td.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_new_pair_begin_takes_over_a_pairing_in_confirmation_and_removes_its_tentative_peer() {
     let hub = TestHub::start().await;
     let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;

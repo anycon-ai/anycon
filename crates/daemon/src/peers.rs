@@ -381,6 +381,32 @@ struct PairState {
     expires_at_ms: Option<u64>,
 }
 
+/// hub 拒绝了 `pair_begin`（回的是 `pair_failed`）时 `node.pair_begin` 返回的错误。和「没连上 hub」（`unsupported`）区分开：
+/// 调用方（CLI、Web、SDK）据此说清楚是被拒绝，而不是节点离线。形状沿用别处的约定（附件配额是 `busy` + `data.reason = "quota"`）：
+///
+/// - `quota`（每日配对次数用完）→ `busy`，`data.reason = "quota"`；`rate_limited` → `busy`，`data.reason = "rate_limited"`；
+/// - `forbidden` → `forbidden`，`data.reason = "forbidden"`；
+/// - 其余（`pair_begin` 不会收到的原因）→ `internal`，`data.reason` 是 `pair_failed.reason` 的 snake_case 名字。
+fn pair_begin_refused(why: PairFailReason) -> RpcError {
+    let (code, reason, message) = match why {
+        PairFailReason::Quota => (
+            ErrorCode::Busy,
+            "quota",
+            "the hub refused the pairing request: this account has reached its quota (daily pairing attempts)",
+        ),
+        PairFailReason::RateLimited => (
+            ErrorCode::Busy,
+            "rate_limited",
+            "the hub refused the pairing request: too many attempts, wait a minute and try again",
+        ),
+        PairFailReason::Forbidden => (ErrorCode::Forbidden, "forbidden", "the hub refused the pairing request"),
+        PairFailReason::NotFound => (ErrorCode::Internal, "not_found", "the hub refused the pairing request"),
+        PairFailReason::Timeout => (ErrorCode::Internal, "timeout", "the hub refused the pairing request"),
+        PairFailReason::PeerGone => (ErrorCode::Internal, "peer_gone", "the hub refused the pairing request"),
+    };
+    crate::worktree::err_reason(code, message, reason)
+}
+
 /// 一次配对失败的结果（hub 的 `pair_failed`，或配对中途的看门狗超时）。daemon 只记最近一次，由 [`Peers::pair_failure`] 按配对取。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PairFailure {
@@ -1077,10 +1103,7 @@ impl Peers {
                 }
                 Ok(Ok(Err(why))) => {
                     self.clear_pairing(gen);
-                    return Err(RpcError::new(
-                        ErrorCode::Unsupported,
-                        format!("the hub refused the pairing request: {why:?}"),
-                    ));
+                    return Err(pair_begin_refused(why));
                 }
                 _ => {
                     self.clear_pairing(gen);
@@ -1575,6 +1598,44 @@ impl NotifyOut for Peers {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hub_refusal_of_pair_begin_keeps_its_reason_and_is_never_the_not_connected_error() {
+        use super::*;
+        let shape = |why| {
+            let e = pair_begin_refused(why);
+            let d = e.data.clone().expect("data");
+            (d.code, d.reason, e.code)
+        };
+        // 约定同附件配额：busy + data.reason
+        assert_eq!(shape(PairFailReason::Quota), (ErrorCode::Busy, Some("quota".into()), ErrorCode::Busy.rpc_code()));
+        assert_eq!(
+            shape(PairFailReason::RateLimited),
+            (ErrorCode::Busy, Some("rate_limited".into()), ErrorCode::Busy.rpc_code())
+        );
+        assert_eq!(
+            shape(PairFailReason::Forbidden),
+            (ErrorCode::Forbidden, Some("forbidden".into()), ErrorCode::Forbidden.rpc_code())
+        );
+        for (why, name) in [
+            (PairFailReason::NotFound, "not_found"),
+            (PairFailReason::Timeout, "timeout"),
+            (PairFailReason::PeerGone, "peer_gone"),
+        ] {
+            assert_eq!(shape(why), (ErrorCode::Internal, Some(name.into()), ErrorCode::Internal.rpc_code()));
+        }
+        // `unsupported` 留给「没连上 hub」
+        for why in [
+            PairFailReason::NotFound,
+            PairFailReason::Timeout,
+            PairFailReason::PeerGone,
+            PairFailReason::RateLimited,
+            PairFailReason::Quota,
+            PairFailReason::Forbidden,
+        ] {
+            assert_ne!(pair_begin_refused(why).data.unwrap().code, ErrorCode::Unsupported, "{why:?}");
+        }
+    }
+
     use super::*;
     use crate::testutil::{eventually, SimHub};
     use anycon_protocol::{Envelope, Event, SessionEvent};

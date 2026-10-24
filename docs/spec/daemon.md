@@ -740,7 +740,7 @@ SQLite（WAL）。全部表：
 - Noise 会话按客户端独立，一个客户端握手失败不影响其他
 - 所有 RPC 幂等键：`session.send`（和带 prompt 的 `session.create`）带客户端生成的 `message_id`，重发不重复；同一个 `message_id` 配不同内容（prompt / agent / project）返回 `invalid`，不会静默返回第一次的结果
 - **配对与 `pair.ack`**：
-  1. `node.pair_begin { long? }`：本地生成短码（`long` 时 16 位，否则 8 位；CLI 和 Web 默认都传 `long: true`），一次 Argon2id 算出 `match_id` 和 PSK，向 hub 发 `pair_begin { match_id }`，等 `pair_registered { expires_at_ms }`，返回 `{ code, expires_at_ms, link }`，`link = ${hub.url}/pair#code=<code>`（fragment）。短码和 PSK 从不发给 hub，hub 也不记录 `match_id`。同一 daemon 同时只有一个有效短码
+  1. `node.pair_begin { long? }`：本地生成短码（`long` 时 16 位，否则 8 位；CLI 和 Web 默认都传 `long: true`），一次 Argon2id 算出 `match_id` 和 PSK，向 hub 发 `pair_begin { match_id }`，等 `pair_registered { expires_at_ms }`，返回 `{ code, expires_at_ms, link }`，`link = ${hub.url}/pair#code=<code>`（fragment）。短码和 PSK 从不发给 hub，hub 也不记录 `match_id`。同一 daemon 同时只有一个有效短码。**错误**：没连上 hub 是 `unsupported`；hub 对 `pair_begin` 回 `pair_failed`（被拒绝，不是离线）时：`quota`（`multi`，账号今天发起配对的次数用完了）和 `rate_limited`（临时连接上被限速，换一条新连接重试一次之后仍然被限）→ `busy`，`data.reason` 是同名的原因；`forbidden` → `forbidden`，`data.reason = "forbidden"`；hub 回了别的原因或没有确认 → `internal`。调用方（CLI、Web、SDK）靠错误码和 `data.reason` 区分「被拒绝」和「节点没连上 hub」
   2. `pair_matched` 之后 daemon 是 Noise XXpsk3 的 responder；握手成功就记下对方静态公钥和 `ClientInfo`，发 `pair_confirm`
   3. 收到 `pair_done`（`peer` = 新设备的正式 id）后，daemon 把新设备加进 peers，并**经刚建立的 Noise 传输发 `pair.ack`**：`{ node_id, peer_id, name, version, fingerprint }`——自己的正式 id、hub 告知的新设备正式 id、节点名、版本、自己静态公钥的指纹。新设备据此校验（`peer_id` 是自己、`node_id` = `pair_done.peer`、`fingerprint` = 握手得到的公钥指纹）后才落盘；hub 伪造 `pair_done` 做不出这条消息
   4. 之后 hub 发 `peer_online`，客户端用 IK 重连

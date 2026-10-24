@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { NodeDevicesResult, NodeEnrollCodeResult, NodePairBeginParams, NodePairBeginResult, PeerDevice } from '@/protocol'
 import { groupCode } from '@/features/approve/actions'
 import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
+import { QuotaLink } from '@/components/QuotaLink'
 import { revokeDevice } from '@/features/devices/revoke'
 import { localExpiry } from '@/lib/expiry'
 import { formatRelative } from '@/lib/format'
@@ -21,6 +22,15 @@ import { Card, Chip, CopyButton, Dot, Segmented, Skeleton, Spinner, Switch } fro
 import { Dialog } from '@/ui/Overlay'
 import { QrCode } from '@/ui/QrCode'
 
+/**
+ * `node.pair_begin` 被 hub 拒绝（节点连着 hub，但 hub 不给登记短码）：`busy` + `data.reason`——`quota`（今天发起配对的次数用完了）
+ * 或 `rate_limited`（被限速）。和「节点离线」（`offline`）是两回事，要说清楚是被拒绝。别的错误返回 `null`。
+ */
+function pairBeginRefusal(e: unknown): 'quota' | 'rate_limited' | null {
+  if (!(e instanceof RpcCallError) || e.kind !== 'rpc' || e.code !== 'busy') return null
+  return e.reason === 'quota' || e.reason === 'rate_limited' ? e.reason : null
+}
+
 export function DevicesTab({ nodeId }: { nodeId: string }) {
   const { t, i18n } = useTranslation()
   const devices = useNodes((s) => s.byId[nodeId]?.devices)
@@ -29,6 +39,8 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
   const [loading, setLoading] = useState(false)
   const [revoke, setRevoke] = useState<PeerDevice | null>(null)
   const [pairing, setPairing] = useState<NodePairBeginResult | null>(null)
+  // hub 拒绝了这次登记（见 `pairBeginRefusal`）：对话框留着，里面写原因
+  const [refusal, setRefusal] = useState<'quota' | 'rate_limited' | null>(null)
   // 「添加设备」对话框：短码（配对）和接入码（ADR-36）两页
   const [addOpen, setAddOpen] = useState(false)
   const [page, setPage] = useState<'pair' | 'code'>('pair')
@@ -56,12 +68,18 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
 
   const addDevice = async (longCode: boolean): Promise<void> => {
     setBusy(true)
+    setRefusal(null)
     try {
       const params: NodePairBeginParams = { long: longCode }
       setPairing(await rpc().request<NodePairBeginResult>(nodeId, 'node.pair_begin', params))
     } catch (e) {
-      setAddOpen(false)
-      toast.error(describeError(e, t))
+      const refused = pairBeginRefusal(e)
+      if (refused) {
+        setRefusal(refused)
+      } else {
+        setAddOpen(false)
+        toast.error(describeError(e, t))
+      }
     } finally {
       setBusy(false)
     }
@@ -101,6 +119,7 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
               setPage('pair')
               setCodeShown(false)
               setPairing(null)
+              setRefusal(null)
               setAddOpen(true)
               void addDevice(long)
             }}
@@ -138,7 +157,7 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
         ))}
       </ul>
 
-      <Dialog open={addOpen} onOpenChange={(o) => !o && (setAddOpen(false), setPairing(null))} title={t('nodeSettings.addDeviceTitle')} description={page === 'pair' ? t('nodeSettings.addDeviceBody') : t('nodeSettings.enrollCodeBody')} closeLabel={t('common.close')} testId="pair-begin-dialog">
+      <Dialog open={addOpen} onOpenChange={(o) => !o && (setAddOpen(false), setPairing(null), setRefusal(null))} title={t('nodeSettings.addDeviceTitle')} description={page === 'pair' ? t('nodeSettings.addDeviceBody') : t('nodeSettings.enrollCodeBody')} closeLabel={t('common.close')} testId="pair-begin-dialog">
         <div className="flex flex-col items-center gap-4">
           <div className="w-full">
             <Segmented
@@ -175,6 +194,16 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
                 </div>
                 <Countdown until={pairing.expires_at_ms} />
               </>
+            ) : refusal ? (
+              <p className="text-sm text-danger" role="alert" data-testid="pair-begin-refused">
+                {t(`pair.errors.${refusal}`)}
+                {refusal === 'quota' ? (
+                  <>
+                    {' '}
+                    <QuotaLink />
+                  </>
+                ) : null}
+              </p>
             ) : (
               <Spinner className="size-5" />
             )

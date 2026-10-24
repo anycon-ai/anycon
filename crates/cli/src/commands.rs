@@ -232,13 +232,18 @@ pub async fn pair(app: &App, a: PairArgs) -> Result<u8> {
         before.devices.iter().map(|d| (d.device_id.clone(), d.paired_at_ms)).collect();
     // 默认 16 位；`--short` 才是 8 位；`--long` 是无操作（旧脚本兼容）
     let long = !a.short;
-    let r: NodePairBeginResult = conn.call(methods::NODE_PAIR_BEGIN, json!({ "long": long })).await.map_err(|e| {
-        if e.code == "unsupported" {
-            CliError::offline(e.message)
-        } else {
-            e
+    let r: NodePairBeginResult = match conn.call(methods::NODE_PAIR_BEGIN, json!({ "long": long })).await {
+        Ok(r) => r,
+        // `unsupported`：daemon 没连上 hub
+        Err(e) if e.code == "unsupported" => return Err(CliError::offline(e.message)),
+        // hub 拒绝了登记（每日配对次数用完、被限速……）：和之后的 `pair_failed` 同样处理
+        Err(e) => {
+            return Err(match pair_begin_refusal(&e) {
+                Some(reason) => pair_failure_report(app, reason),
+                None => e,
+            })
         }
-    })?;
+    };
     // 8 位短码只适合自建 hub：恶意 hub 拿到 match_id 之后可以离线穷举（即使用了 Argon2id 也只是更贵）
     if a.short {
         if let Some(w) = short_code_warning(r.link.split("/pair#").next().unwrap_or("")) {
@@ -303,11 +308,7 @@ pub async fn pair(app: &App, a: PairArgs) -> Result<u8> {
             .await
             .ok();
         if let Some(reason) = outcome.as_ref().and_then(|o| o["failed"]["reason"].as_str()) {
-            let err = pair_failure_error(reason);
-            if app.json() {
-                app.out.json_line(&json!({ "failed": { "reason": reason, "message": err.message } }));
-            }
-            return Err(err);
+            return Err(pair_failure_report(app, reason));
         }
         if std::time::Instant::now() > deadline {
             return Err(CliError::general(
@@ -315,6 +316,24 @@ pub async fn pair(app: &App, a: PairArgs) -> Result<u8> {
             ));
         }
     }
+}
+
+/// `node.pair_begin` 的错误是不是 hub 拒绝了登记：`busy`（`quota` / `rate_limited`）或 `forbidden`，`data.reason` 是
+/// `pair_failed` 的原因。`unsupported`（daemon 没连上 hub）和别的错误不是。
+fn pair_begin_refusal(e: &CliError) -> Option<&str> {
+    match (e.code.as_str(), e.reason.as_deref()) {
+        ("busy" | "forbidden", Some(reason)) => Some(reason),
+        _ => None,
+    }
+}
+
+/// 配对被 hub 拒绝：`--json` 时先在 stdout 打一行 `{"failed":{"reason","message"}}`，再返回给 `main` 打印的错误。
+fn pair_failure_report(app: &App, reason: &str) -> CliError {
+    let err = pair_failure_error(reason);
+    if app.json() {
+        app.out.json_line(&json!({ "failed": { "reason": reason, "message": err.message } }));
+    }
+    err
 }
 
 /// daemon 报告的配对失败原因（`pair_failed.reason` 的 snake_case 名字）→ 退出码和给用户的话。
@@ -325,7 +344,7 @@ pub(crate) fn pair_failure_error(reason: &str) -> CliError {
     let (exit, message) = match reason {
         "quota" => (
             EXIT_ERROR,
-            "the hub refused the pairing: device quota exceeded on the hub. The device quota for this account is full; remove a device you no longer use (Settings → Devices in the web UI), then run `anycon pair` again".to_string(),
+            "the hub refused the pairing: quota exceeded on the hub. This account has reached its limit on devices, nodes or daily pairing attempts; remove a device you no longer use (Settings → Devices in the web UI) or check which limit is full (Settings → Quota), then run `anycon pair` again".to_string(),
         ),
         "timeout" => (EXIT_ERROR, format!("pairing timed out: the new device did not finish in time; {retry}")),
         "peer_gone" => (EXIT_ERROR, format!("the new device disconnected during pairing; {retry}")),
@@ -1656,7 +1675,7 @@ mod tests {
     fn a_pairing_failure_reported_by_the_daemon_maps_to_an_exit_code_a_code_and_a_message() {
         // 退出码按 docs/spec/cli.md § 4：配额 / 超时 / 限速 / 对端掉线 / 短码失效 → 1；账号不匹配 → 5
         for (reason, exit, words) in [
-            ("quota", 1, "device quota exceeded on the hub"),
+            ("quota", 1, "quota exceeded on the hub"),
             ("timeout", 1, "timed out"),
             ("peer_gone", 1, "disconnected"),
             ("rate_limited", 1, "rate-limited"),
@@ -1668,12 +1687,36 @@ mod tests {
             assert!(e.message.contains(words), "{reason}: {}", e.message);
         }
         let quota = pair_failure_error("quota").message;
-        assert!(quota.contains("quota for this account is full") && quota.contains("anycon pair"), "{quota}");
+        assert!(quota.contains("daily pairing attempts") && quota.contains("Settings → Quota"), "{quota}");
+        assert!(quota.contains("anycon pair"), "{quota}");
         // 以后 hub 加了新原因：退出码 1，形状规整（小写字母和下划线）的原因照用做错误码；别的字符串不照抄，退回 pair_failed
         let e = pair_failure_error("brand_new");
         assert_eq!((e.exit, e.code.as_str()), (1, "brand_new"));
         let e = pair_failure_error("Weird Value!");
         assert_eq!((e.exit, e.code.as_str()), (1, "pair_failed"));
+    }
+
+    #[test]
+    fn a_hub_refusal_of_pair_begin_is_told_apart_from_the_daemon_being_offline() {
+        use anycon_protocol::{ErrorCode, RpcError, RpcErrorData};
+        let rpc = |code, reason: Option<&str>| {
+            let mut e = RpcError::new(code, "the hub refused the pairing request");
+            e.data = Some(RpcErrorData { code, field: None, reason: reason.map(str::to_string), retry_after_ms: None });
+            CliError::from(e)
+        };
+        // 每日配对次数用完 / 被限速：busy + data.reason → 退出码 1；forbidden → 5
+        let quota = rpc(ErrorCode::Busy, Some("quota"));
+        assert_eq!(pair_begin_refusal(&quota), Some("quota"));
+        assert_eq!((pair_failure_error("quota").exit, pair_failure_error("quota").code.as_str()), (1, "quota"));
+        assert_eq!(pair_begin_refusal(&rpc(ErrorCode::Busy, Some("rate_limited"))), Some("rate_limited"));
+        let forbidden = rpc(ErrorCode::Forbidden, Some("forbidden"));
+        assert_eq!(pair_begin_refusal(&forbidden), Some("forbidden"));
+        assert_eq!(pair_failure_error("forbidden").exit, 5);
+        // 没连上 hub（unsupported）、没有细分原因的 busy / forbidden、别的错误：不算拒绝
+        assert_eq!(pair_begin_refusal(&rpc(ErrorCode::Unsupported, None)), None);
+        assert_eq!(pair_begin_refusal(&rpc(ErrorCode::Busy, None)), None);
+        assert_eq!(pair_begin_refusal(&rpc(ErrorCode::Internal, Some("timeout"))), None);
+        assert_eq!(pair_begin_refusal(&CliError::offline("not connected")), None);
     }
 
     #[test]

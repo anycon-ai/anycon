@@ -84,7 +84,7 @@ fn main() -> ExitCode {
     rt.shutdown_background();
     match result {
         Ok(code) => ExitCode::from(code),
-        Err(CliError { exit, code, message }) => {
+        Err(CliError { exit, code, message, .. }) => {
             if exit != error::EXIT_INTERRUPTED {
                 eprintln!("error: {code}: {message}");
             }

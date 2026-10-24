@@ -24,13 +24,14 @@ struct MultiHub {
 }
 
 impl MultiHub {
-    /// `multi` 的 hub，每个账号最多 `devices` 台设备。登录方式只有（假的）GitHub 凭据：测试用库里直接建的会话。
-    async fn start(devices: u32) -> MultiHub {
+    /// `multi` 的 hub，每个账号最多 `devices` 台设备、滚动 24 小时内最多 `daily` 次发起配对。
+    /// 登录方式只有（假的）GitHub 凭据：测试用库里直接建的会话。
+    async fn start(devices: u32, daily: u32) -> MultiHub {
         let dir = tempfile::tempdir().unwrap();
         let mut c = anycon_hub::Config::new("http://127.0.0.1", dir.path()).unwrap();
         c.listen = "127.0.0.1:0".parse().unwrap();
         c.oauth_github = Some(OAuthClient { client_id: "id".into(), client_secret: "secret".into() });
-        c.enable_multi(QuotaLimits { devices, daemons: 3, connections: 10 }, 20);
+        c.enable_multi(QuotaLimits { devices, daemons: 3, connections: 10 }, daily);
         let handle = anycon_hub::run(c).await.expect("hub starts");
         MultiHub { handle, _dir: dir }
     }
@@ -78,7 +79,7 @@ async fn start_node(hub: &MultiHub, dir: &Path) -> (std::path::PathBuf, DaemonPr
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_full_device_quota_stops_anycon_pair_at_once_with_the_reason() {
     let dir = tempfile::tempdir().unwrap();
-    let hub = MultiHub::start(2).await;
+    let hub = MultiHub::start(2, 20).await;
     let cookie = hub.account_cookie().await;
     let (home, daemon) = start_node(&hub, dir.path()).await;
 
@@ -98,8 +99,8 @@ async fn a_full_device_quota_stops_anycon_pair_at_once_with_the_reason() {
     assert!(started.elapsed().as_secs() < 30, "it must not wait for the code to expire");
     let last: serde_json::Value = serde_json::from_str(rest.last().expect("a final JSON line")).unwrap();
     assert_eq!(last["failed"]["reason"], "quota", "{rest:?}");
-    assert!(last["failed"]["message"].as_str().unwrap().contains("device quota"), "{last}");
-    assert!(stderr.contains("error: quota: ") && stderr.contains("device quota exceeded on the hub"), "{stderr}");
+    assert!(last["failed"]["message"].as_str().unwrap().contains("limit on devices"), "{last}");
+    assert!(stderr.contains("error: quota: ") && stderr.contains("quota exceeded on the hub"), "{stderr}");
     assert!(!stderr.contains("timed out"), "not the misleading timeout: {stderr}");
 
     // 人读的输出：同样退出码 1，说明配额满了、怎么办
@@ -110,7 +111,7 @@ async fn a_full_device_quota_stops_anycon_pair_at_once_with_the_reason() {
     assert_eq!(exit, 1, "stderr: {stderr}");
     assert!(rest.iter().all(|l| !l.contains("Paired with")), "{rest:?}");
     assert!(
-        stderr.contains("device quota for this account is full") && stderr.contains("anycon pair"),
+        stderr.contains("limit on devices, nodes or daily pairing attempts") && stderr.contains("anycon pair"),
         "the message says what to do: {stderr}"
     );
 
@@ -123,6 +124,43 @@ async fn a_full_device_quota_stops_anycon_pair_at_once_with_the_reason() {
     let mut web2 = FakeWeb::connect(&hub.url(), None, Some(&cookie), "Third Browser", Keypair::generate()).await;
     web2.pair(&pair.code).await;
     assert_eq!(pair.finish().await["paired"]["name"], "Third Browser");
+
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_pair_begin_is_reported_as_the_hub_refusing_not_as_the_node_being_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    // 每个账号 24 小时内只能发起 1 次配对
+    let hub = MultiHub::start(10, 1).await;
+    let cookie = hub.account_cookie().await;
+    let (home, daemon) = start_node(&hub, dir.path()).await;
+
+    // 第一次配对走的是临时连接（还没有账号），不计数
+    let first = PairProc::begin(&home).await;
+    let mut web = FakeWeb::connect(&hub.url(), None, Some(&cookie), "First Browser", Keypair::generate()).await;
+    web.pair(&first.code).await;
+    assert_eq!(first.finish().await["paired"]["name"], "First Browser");
+
+    // 现在 daemon 是正式设备：这一次用掉唯一的名额
+    let r = anycon(&home, &["pair", "--no-wait", "--json"], None, &[]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+
+    // 再来一次：hub 在登记时就拒绝了。退出码 1（不是「离线」的 3），原因 quota，--json 的 stdout 里有机器可读的原因
+    let r = anycon(&home, &["pair", "--no-wait", "--json"], None, &[]).await;
+    assert_eq!(r.code, 1, "stdout: {}\nstderr: {}", r.stdout, r.stderr);
+    let lines = r.json_lines();
+    assert_eq!(lines.len(), 1, "no pairing code was printed: {lines:?}");
+    assert_eq!(lines[0]["failed"]["reason"], "quota");
+    assert!(r.stderr.contains("error: quota: "), "{}", r.stderr);
+    assert!(r.stderr.contains("daily pairing attempts"), "{}", r.stderr);
+    assert!(!r.stderr.contains("offline") && !r.stderr.contains("not connected"), "{}", r.stderr);
+
+    // 人读的输出：同样的退出码和说明
+    let r = anycon(&home, &["pair", "--no-wait"], None, &[]).await;
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(r.stdout.is_empty(), "{}", r.stdout);
+    assert!(r.stderr.contains("limit on devices, nodes or daily pairing attempts"), "{}", r.stderr);
 
     daemon.stop().await;
 }

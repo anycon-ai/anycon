@@ -12,7 +12,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
-- Web UI: the message list and the input share one column. Its text width follows the center pane, up to 72rem, with side margins that grow from 16px to 120px as the pane widens. User message bubbles are allowed up to 56rem.
+- Web UI: the message list and the input share one column. Its text width follows the center pane, up to 72rem, with side margins that grow from 16px to 100px as the pane widens. User message bubbles are allowed up to 56rem.
 - Web UI: on wide screens, the "will be sent after this turn" notice sits on the same row as the branch chip, on the left.
 
 ### Fixed

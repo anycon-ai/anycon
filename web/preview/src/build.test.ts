@@ -78,16 +78,17 @@ describe.skipIf(!existsSync(`${preview}index.html`))('built preview runtime (dis
 describe.skipIf(!existsSync(`${preview}index.html`) || !existsSync(`${main}index.html`))('preview runtime vs. Web UI build outputs', () => {
   // Noise wasm 两边各放一份（内容相同、文件名也可能相同），许可证文件各有各的；其余不能有交集
   const shared = (f: string): boolean => f.endsWith('.wasm') || f.endsWith('/THIRD-PARTY-LICENSES.txt')
-  const previewFiles = list(preview).filter((f) => !shared(f))
-  const mainFiles = list(main).filter((f) => !shared(f))
+  // 跳过的 describe 在收集阶段也会执行回调，所以目录要等到测试里再读
+  const previewFiles = (): string[] => list(preview).filter((f) => !shared(f))
+  const mainFiles = (): string[] => list(main).filter((f) => !shared(f))
 
   it('never share a file: not by content, and not by name except index.html and sw.js, which are different files in different origins', () => {
-    const mainHashes = new Map(mainFiles.map((f) => [sha(f), relative(main, f)]))
-    for (const f of previewFiles) {
+    const mainHashes = new Map(mainFiles().map((f) => [sha(f), relative(main, f)]))
+    for (const f of previewFiles()) {
       expect(mainHashes.get(sha(f)), `${relative(preview, f)} is also in dist/`).toBeUndefined()
     }
-    const mainNames = new Set(rel(main, mainFiles))
-    for (const name of rel(preview, previewFiles)) {
+    const mainNames = new Set(rel(main, mainFiles()))
+    for (const name of rel(preview, previewFiles())) {
       if (name === 'index.html' || name === 'sw.js') continue
       expect(mainNames.has(name), `${name} exists in both builds`).toBe(false)
     }
@@ -109,14 +110,14 @@ describe.skipIf(!existsSync(`${preview}index.html`) || !existsSync(`${main}index
     const mainSw = readFileSync(`${main}sw.js`, 'utf8')
     const urls = [...mainSw.matchAll(/"url":"([^"]+)"/g)].map((m) => m[1]!)
     expect(urls.length).toBeGreaterThan(3)
-    const previewNames = new Set(rel(preview, previewFiles))
+    const previewNames = new Set(rel(preview, previewFiles()))
     for (const url of urls) {
       if (url === 'index.html') continue // Web UI 自己的 index.html
       expect(previewNames.has(url), `precache lists ${url}`).toBe(false)
       expect(url, url).not.toMatch(/(^|\/)(shim\.js|__anycon)/)
     }
     // 预缓存的每个文件，内容都不是预览运行时的
-    const previewHashes = new Set(previewFiles.map(sha))
+    const previewHashes = new Set(previewFiles().map(sha))
     for (const url of urls) {
       const file = `${main}${url}`
       if (existsSync(file)) expect(previewHashes.has(sha(file)), `precache lists ${url}`).toBe(false)

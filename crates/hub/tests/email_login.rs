@@ -703,7 +703,8 @@ async fn an_email_can_belong_to_one_account_only() {
     hub.handle.store().set_account_email(&hub.admin_account_id(), None).await.unwrap();
     hub.send(Method::POST, "/api/me/email", &guest, json!({ "email": "race@example.com" })).await;
     hub.settle().await;
-    let guest_code = code_in(mailer.sent().last().unwrap());
+    // 上面管理员重绑 shared@ 的信也在后台发，两封信的先后不定，按收件人取
+    let guest_code = code_in(mailer.sent().iter().rfind(|m| m.to == "race@example.com").expect("a code for race@"));
     // 管理员在 guest 验证之前先把这个邮箱占了
     hub.handle.store().set_account_email(&hub.admin_account_id(), Some("race@example.com")).await.unwrap();
     let res = hub

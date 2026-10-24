@@ -13,8 +13,10 @@
 //! - 后台任务（后台 subagent、后台命令）以 `system/background_tasks_changed` 为准，`task_started` / `task_notification` /
 //!   `task_updated` 兜底；数目变化时发 `Background`
 //! - `TodoWrite` → `Plan`；`ExitPlanMode` / `AskUserQuestion` 由权限请求表达，不再发 tool_call / tool_result
-//! - 子 agent 内部的调用（`parent_tool_use_id` 非空）带 `parent_id`；后台启动的子 agent（`tool_use_result.status =
-//!   async_launched`）的结果标 `background`，等 `system/task_notification` 再给同一个 id 补最终结果
+//! - 子 agent 内部的调用（`parent_tool_use_id` 非空）带 `parent_id`
+//! - 转到后台的调用（子 agent 的 `tool_use_result.status = async_launched`、Bash 的 `tool_use_result.backgroundTaskId`，
+//!   或者 `task_started { is_backgrounded }` 指向的调用）的结果标 `background`，等 `system/task_notification` 再给同一个 id
+//!   补最终结果（后台命令从通知的 `summary` 里取退出码）
 //! - 子 agent 用掉的 token：前台的取 `tool_use_result.totalTokens`，后台的取 `task_notification.usage.total_tokens`
 
 use std::collections::{HashMap, HashSet};
@@ -137,8 +139,10 @@ pub struct Translator {
     seen_tool_use: HashSet<String>,
     tools: HashMap<String, ToolMeta>,
     suppressed: HashSet<String>,
-    /// 已返回 `async_launched`、还在后台跑的子 agent 调用：等 `task_notification` 补最终结果。
-    backgrounded: HashSet<String>,
+    /// 结果已标 `background`、还在后台跑的调用（子 agent、后台命令）和它的类别：等 `task_notification` 补最终结果。
+    backgrounded: HashMap<String, ToolCategory>,
+    /// `task_started { is_backgrounded: true }` 报过、结果还没到的调用：结果到了标 `background`。
+    bg_started: HashSet<String>,
 }
 
 fn clip_text(s: &str) -> String {
@@ -177,6 +181,14 @@ fn merge_usage(a: Usage, b: Usage) -> Usage {
 
 fn parse_exit_code(text: &str) -> Option<i32> {
     let rest = text.strip_prefix("Exit code ")?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
+    digits.parse().ok()
+}
+
+/// 后台命令结束通知的 `summary`（`Background command "…" completed (exit code 1)`）里的退出码。
+fn summary_exit_code(summary: &str) -> Option<i32> {
+    const MARK: &str = "(exit code ";
+    let rest = &summary[summary.find(MARK)? + MARK.len()..];
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
     digits.parse().ok()
 }
@@ -280,7 +292,8 @@ impl Translator {
             seen_tool_use: HashSet::new(),
             tools: HashMap::new(),
             suppressed: HashSet::new(),
-            backgrounded: HashSet::new(),
+            backgrounded: HashMap::new(),
+            bg_started: HashSet::new(),
         }
     }
 
@@ -330,6 +343,7 @@ impl Translator {
             self.seen_tool_use.clear();
             self.tools.clear();
             self.suppressed.clear();
+            self.bg_started.clear();
         }
     }
 
@@ -433,6 +447,9 @@ impl Translator {
             }
             Some("task_started") => {
                 if v["is_backgrounded"].as_bool() == Some(true) {
+                    if let Some(tool_id) = v["tool_use_id"].as_str() {
+                        self.bg_started.insert(tool_id.to_string());
+                    }
                     if let Some(id) = v["task_id"].as_str() {
                         self.bg_tasks.insert(id.to_string());
                         self.report_background(out);
@@ -440,7 +457,7 @@ impl Translator {
                 }
             }
             Some("task_notification") => {
-                // 后台子 agent 的最终结果先补上，再报任务数的变化
+                // 后台调用的最终结果先补上，再报任务数的变化
                 self.on_task_notification(v, out);
                 if let Some(id) = v["task_id"].as_str() {
                     self.bg_tasks.remove(id);
@@ -490,22 +507,27 @@ impl Translator {
         }
     }
 
-    /// 后台任务结束（`completed` / `failed` / `stopped`）。只认我们标过 `background` 的子 agent 调用：
-    /// 前台子 agent 和后台 shell 也会发这个通知，它们的结果已经发过了。
+    /// 后台任务结束（`completed` / `failed` / `stopped` / `killed`）。只认我们标过 `background` 的调用：
+    /// 前台子 agent 也会发这个通知，它的结果已经发过了。`failed`、退出码非 0 算错误，被停掉的不算。
     fn on_task_notification(&mut self, v: &Value, out: &mut Vec<Out>) {
         let Some(id) = v.get("tool_use_id").and_then(Value::as_str) else { return };
-        if !self.backgrounded.remove(id) {
-            return;
-        }
+        self.bg_started.remove(id);
+        let Some(category) = self.backgrounded.remove(id) else { return };
         let summary = v["summary"].as_str().unwrap_or("");
-        let total_tokens = u64_of(&v["usage"], "total_tokens");
+        let mut detail = ToolResultDetail::default();
+        match category {
+            ToolCategory::Subagent => detail.total_tokens = u64_of(&v["usage"], "total_tokens"),
+            ToolCategory::Shell => detail.exit_code = summary_exit_code(summary),
+            _ => {}
+        }
+        let is_error = v["status"].as_str() == Some("failed") || detail.exit_code.is_some_and(|c| c != 0);
         Self::push(
             out,
             Event::ToolResult {
                 id: id.to_string(),
                 output: json!(clip_text(summary)),
-                is_error: v["status"].as_str() == Some("failed"),
-                detail: total_tokens.map(|n| ToolResultDetail { total_tokens: Some(n), ..Default::default() }),
+                is_error,
+                detail: if detail == ToolResultDetail::default() { None } else { Some(detail) },
             },
         );
     }
@@ -681,8 +703,18 @@ impl Translator {
             let name = meta.as_ref().map(|m| m.name.as_str()).unwrap_or("");
             let category = tools::category_of(name);
 
+            // 调用马上返回、任务转到后台：结果标 background（后台命令还没有退出码），等 `task_notification` 补最终结果
+            let bg_started = self.bg_started.remove(&id);
+            let background = !is_error
+                && (bg_started
+                    || tur["backgroundTaskId"].is_string()
+                    || (category == ToolCategory::Subagent && tur["status"].as_str() == Some("async_launched")));
             let mut detail = ToolResultDetail::default();
             match category {
+                _ if background => {
+                    detail.background = Some(true);
+                    self.backgrounded.insert(id.clone(), category);
+                }
                 ToolCategory::Shell => detail.exit_code = if is_error { parse_exit_code(&text) } else { Some(0) },
                 ToolCategory::FileEdit if !is_error => {
                     let path = tur["filePath"]
@@ -700,10 +732,6 @@ impl Translator {
                 }
                 ToolCategory::FileRead | ToolCategory::Search if !is_error && (name == "Glob" || name == "Grep") => {
                     detail.match_count = u64_of(tur, "numFiles").map(|n| n as u32);
-                }
-                ToolCategory::Subagent if !is_error && tur["status"].as_str() == Some("async_launched") => {
-                    detail.background = Some(true);
-                    self.backgrounded.insert(id.clone());
                 }
                 ToolCategory::Subagent => detail.total_tokens = u64_of(tur, "totalTokens"),
                 _ => {}

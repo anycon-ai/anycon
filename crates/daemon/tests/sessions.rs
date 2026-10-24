@@ -464,6 +464,9 @@ async fn permission_deny_with_message_question_and_mode_change() {
     assert_eq!((d[0].1.option_id.as_deref(), d[0].1.message.as_deref()), (Some("deny"), Some("not now")));
     let evs = history(&td, &mut a, &s.id).await;
     assert!(evs.iter().any(|e| matches!(&e.event, Event::TextDelta { text } if text == "skipped")));
+    // 答复附的话记进历史（客户端显示「拒绝：not now」）
+    assert!(evs.iter().any(|e| matches!(&e.event,
+        Event::PermissionResolved { message: Some(m), answers: None, .. } if m == "not now")));
     // question：不带 option_id，用 answers
     send(&td, &mut a, &s.id, "a question please").await;
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::WaitingPermission).await);
@@ -480,6 +483,13 @@ async fn permission_deny_with_message_question_and_mode_change() {
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
     let d = td.fake.last_handle().decisions.lock().unwrap().clone();
     assert_eq!(d.last().unwrap().1.answers.as_ref().unwrap()["q1"], json!("blue"));
+    // 回答记进历史：重新打开会话、换一台设备都能看到问题和回答
+    let evs = history(&td, &mut a, &s.id).await;
+    let answers = evs.iter().rev().find_map(|e| match &e.event {
+        Event::PermissionResolved { request_id, answers, .. } if *request_id == req.request_id => answers.clone(),
+        _ => None,
+    });
+    assert_eq!(answers.map(serde_json::Value::Object), Some(json!({ "q1": "blue" })));
     // mode_change：同意后 daemon 切 mode 并发 settings_changed
     send(&td, &mut a, &s.id, "modechange now").await;
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::WaitingPermission).await);

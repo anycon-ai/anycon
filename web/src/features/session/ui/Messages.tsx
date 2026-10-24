@@ -155,16 +155,19 @@ function ToolFrame({ block, summary, summaryTitle, children, defaultOpen, meta }
   const [open, setOpen] = useState(!!defaultOpen)
   const failed = block.result?.isError
   const running = !block.result
+  // 转到后台的调用（后台命令）：结果只是「已在后台启动」，结束时补的那条才是最终结果
+  const background = !failed && !!block.result?.detail?.background
   return (
     // 收起时是一行灰字（失败的是红字），不画卡片；展开的输出 / diff 放在下面的框里
-    <div className="text-sm" data-testid="tool-block" data-category={block.category} data-state={failed ? 'error' : running ? 'running' : 'done'}>
+    <div className="text-sm" data-testid="tool-block" data-category={block.category} data-state={failed ? 'error' : running ? 'running' : background ? 'background' : 'done'}>
       <button type="button" className={cn('flex max-w-full items-center gap-1.5 py-0.5 text-left', failed ? 'text-danger' : 'text-fg-subtle hover:text-fg-muted disabled:hover:text-fg-subtle')} aria-expanded={open} onClick={() => setOpen((v) => !v)} disabled={!children}>
         <span className="min-w-0 truncate font-mono text-[0.8125rem]" title={summaryTitle}>
           {summary}
         </span>
         {/* 失败不只靠红色：后面跟一个词 */}
         {failed ? <span className="shrink-0 text-xs" data-testid="tool-failed">{t('tool.failed')}</span> : null}
-        {running ? <Loader2 className="size-3.5 shrink-0 animate-spin" aria-label={t('status.session.running')} /> : null}
+        {background ? <span className="shrink-0 text-xs">{t('tool.background')}</span> : null}
+        {running || background ? <Loader2 className="size-3.5 shrink-0 animate-spin" aria-label={t('status.session.running')} /> : null}
         {meta}
         <TruncationBadges detail={block.result?.detail} />
         {children ? <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')} aria-hidden /> : null}

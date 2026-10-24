@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Answered questions stay in the conversation: each question is listed with its answer, and a note sent with a reply (a skip note or a denial reason) is shown under it. Protocol: `permission_resolved` carries the device's `answers` and `message`. Both fields are optional, and replies recorded before this change show the one-line summary as before.
+- Claude Code background commands (`run_in_background`) show "running in background" until they finish, then get their final result and exit code. The session panel's Agents card lists them while they run and counts them as working, along with any other background tasks the daemon reports.
+
 ### Changed
 
 - Web UI: the message list and the input share one column. Its text width follows the center pane, up to 72rem, with side margins that grow from 16px to 120px as the pane widens. User message bubbles are allowed up to 56rem.

@@ -688,6 +688,71 @@ fn failed_background_subagent_is_an_error_but_a_stopped_one_is_not() {
 }
 
 #[test]
+fn background_command_gets_its_final_result_and_exit_code_from_the_task_notification() {
+    // 形状取自 Claude Code 2.1.293：Bash 的 `tool_use_result.backgroundTaskId`、通知的 `summary` 末尾带 `(exit code N)`
+    let call = |id: &str| {
+        json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s", "message": {"id": format!("m-{id}"), "role": "assistant",
+            "content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": "cargo test", "run_in_background": true}}]}})
+    };
+    let launched = |id: &str, tur: Value| {
+        json!({"type": "user", "parent_tool_use_id": null, "session_id": "s", "tool_use_result": tur,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": "Command running in background with ID: b1."}]}})
+    };
+    let done = |id: &str, status: &str, summary: &str| json!({"type": "system", "subtype": "task_notification", "task_id": "b1", "tool_use_id": id, "status": status, "summary": summary, "session_id": "s"});
+    let result = |r: &Replay| match r.events()[..] {
+        [Event::ToolResult { output, is_error, detail, .. }] => (
+            output.clone(),
+            *is_error,
+            detail.as_ref().and_then(|d| d.background),
+            detail.as_ref().and_then(|d| d.exit_code),
+        ),
+        ref other => panic!("{other:?}"),
+    };
+
+    for (status, summary, want) in [
+        ("completed", "Background command \"cargo test\" completed (exit code 0)", (false, Some(0))),
+        ("completed", "Background command \"cargo test\" completed (exit code 101)", (true, Some(101))),
+        ("failed", "Background command \"cargo test\" failed (exit code 1: killed by signal)", (true, Some(1))),
+        ("killed", "Background command \"cargo test\" was stopped", (false, None)),
+    ] {
+        let mut t = Translator::new(CWD, json!({}), None);
+        t.begin_turn();
+        let mut feed = |v: Value| Replay { outs: t.feed_line(&v.to_string()) };
+        feed(call("toolu_sh"));
+        // 启动：还没有退出码，标 background
+        let r = feed(launched(
+            "toolu_sh",
+            json!({"stdout": "", "stderr": "", "interrupted": false, "backgroundTaskId": "b1"}),
+        ));
+        assert_eq!(result(&r), (json!("Command running in background with ID: b1."), false, Some(true), None));
+        // 结束：同一个 id 补上通知的摘要和退出码；只补一次
+        let r = feed(done("toolu_sh", status, summary));
+        assert_eq!(result(&r), (json!(summary), want.0, None, want.1), "{summary}");
+        assert!(feed(done("toolu_sh", status, summary)).events().is_empty());
+    }
+
+    // 没有 `backgroundTaskId` 的结果：`task_started { is_backgrounded }` 先报了这个调用，同样算后台
+    let mut t = Translator::new(CWD, json!({}), None);
+    t.begin_turn();
+    let mut feed = |v: Value| Replay { outs: t.feed_line(&v.to_string()) };
+    feed(call("toolu_sh"));
+    feed(
+        json!({"type": "system", "subtype": "task_started", "task_id": "b1", "tool_use_id": "toolu_sh", "is_backgrounded": true, "task_type": "local_bash"}),
+    );
+    let r = feed(launched("toolu_sh", Value::Null));
+    assert_eq!(result(&r).2, Some(true));
+    let r = feed(done("toolu_sh", "completed", "Background command \"cargo test\" completed (exit code 0)"));
+    assert_eq!(result(&r).3, Some(0));
+
+    // 前台命令照旧：退出码 0，不标 background，之后的通知不补结果
+    feed(call("toolu_fg"));
+    let r = feed(json!({"type": "user", "parent_tool_use_id": null, "session_id": "s",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fg", "content": "ok"}]}}));
+    assert_eq!(result(&r), (json!("ok"), false, None, Some(0)));
+    assert!(feed(done("toolu_fg", "completed", "")).events().is_empty());
+}
+
+#[test]
 fn cost_is_a_per_turn_delta_of_the_cumulative_total() {
     let r = Replay::run("two_turns.jsonl");
     let dones = r.turn_dones();
@@ -1023,7 +1088,8 @@ fn background_tasks_and_the_turns_the_cli_starts_on_its_own() {
             // 主 turn 结束之后 subagent 还在干活
             "tool_call:Edit",
             "BACKGROUND:1",
-            // 后台命令结束：CLI 自己开始一轮
+            // 后台命令结束：`task_notification` 给它的调用补上最终结果，CLI 再自己开始一轮
+            "tool_result",
             "TURN_STARTED",
             "text_delta",
             "text_done",
@@ -1069,6 +1135,18 @@ fn background_tasks_and_the_turns_the_cli_starts_on_its_own() {
     assert_eq!(agent_results[0].1.as_ref().and_then(|d| d.background), Some(true));
     assert_eq!(agent_results[1].0, json!("Tests fixed."));
     assert_eq!(agent_results[1].1.as_ref().and_then(|d| d.total_tokens), Some(4200));
+    let bash_results: Vec<_> = r
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::ToolResult { id, output, detail, .. } if id == "toolu_bg" => Some((output.clone(), detail.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bash_results.len(), 2, "launched, then the final result");
+    assert_eq!(bash_results[0].1.as_ref().map(|d| (d.background, d.exit_code)), Some((Some(true), None)));
+    assert_eq!(bash_results[1].0, json!("Background command \"cargo build\" completed (exit code 0)"));
+    assert_eq!(bash_results[1].1.as_ref().map(|d| (d.background, d.exit_code)), Some((None, Some(0))));
     assert!(!t.is_busy());
 }
 

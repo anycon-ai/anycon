@@ -731,6 +731,13 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         option_id: Option<String>,
         by_device: DeviceId,
+        /// 设备答复时带的 `answers`（kind = question：`{ [question_id]: 字符串或字符串数组 }`），原样记下，
+        /// 客户端据此在历史里显示问题和回答。daemon 自己答复的（超时、取消、自动拒绝）没有。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<serde_json::Map<String, Value>>,
+        /// 设备答复时附的话（拒绝的理由、跳过问题时的说明）。daemon 自己答复的没有。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     TurnDone {
         turn_id: u64,

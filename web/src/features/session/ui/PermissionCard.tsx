@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, type ReactNode } from 'react'
 import { AlertTriangle, ChevronRight, Clock, FileEdit, FileText, Globe, HelpCircle, Lock, Puzzle, Search, ShieldAlert, ShieldQuestion, SquareTerminal, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { PermissionOption, PermissionOptionKind, PermissionRespondParams, ToolCategory } from '@/protocol'
+import type { PermissionOption, PermissionOptionKind, PermissionRespondParams, Question, ToolCategory } from '@/protocol'
 import { Markdown } from '@/components/Markdown'
 import { isRecord } from '@/lib/guards'
 import { useNow } from '@/lib/useNow'
@@ -68,6 +68,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
   const needsNote = block.options.some((o) => o.needs_message)
 
   if (block.resolved) {
+    const { answers, message } = block.resolved
     const opt = block.options.find((o) => o.id === block.resolved?.optionId)
     const allowed = opt ? optionTone(opt.kind) === 'allow' : true
     const who = deviceLabel(block.resolved.byDevice)
@@ -80,12 +81,19 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
           ? t('permission.allowedAuto')
           : t('permission.deniedAuto')
       : block.kind === 'question'
-        ? t('permission.answeredBy', { device: who })
+        ? t(allowed ? 'permission.answeredBy' : 'permission.skippedBy', { device: who })
         : opt
           ? t(allowed ? 'permission.allowedBy' : 'permission.deniedBy', { device: who })
           : t('permission.resolvedBy', { device: who })
+    // 问题和回答留在对话里（旧事件没记回答，只剩一行）；答复附的话（拒绝理由、跳过说明）跟在下面
+    const qa = block.kind === 'question' && answers ? <AnsweredQuestions questions={block.detail.questions ?? []} answers={answers} /> : null
+    const note = message ? (
+      <p className="mt-1 border-l-2 border-border pl-3 text-sm whitespace-pre-wrap text-fg-muted [overflow-wrap:anywhere]" data-testid="permission-message">
+        {message}
+      </p>
+    ) : null
     return (
-      <ResolvedLine block={block} testState="resolved" extra={{ 'data-option': block.resolved.optionId ?? '', 'data-by': auto ? 'daemon' : undefined }}>
+      <ResolvedLine block={block} testState="resolved" extra={{ 'data-option': block.resolved.optionId ?? '', 'data-by': auto ? 'daemon' : undefined }} below={qa || note ? <>{qa}{note}</> : undefined}>
         {block.title} — {text}
         {opt && block.kind !== 'question' ? ` (${opt.label})` : null}
       </ResolvedLine>
@@ -251,15 +259,25 @@ function ExpiryNote({ at }: { at: number }) {
  * 已经答复（或作废）的请求：收成一行灰字「标题 — 已由 X 允许（选项）›」，不再是卡片；有工具详情时点开看命令 / diff。
  * 允许 / 拒绝写在文字里，不靠颜色和图标；项目目录变了被拒绝的（turn 被中止）用红字。
  * 作废的（`settled`）只是一行字，没有任何按钮（同一个请求不能再答复）。
+ * `below`：一直显示在这一行下面的内容（问题和回答、答复附的话）。
  */
-function ResolvedLine({ block, testState, danger, extra, children }: { block: PermissionBlock; testState: 'resolved' | 'settled'; danger?: boolean; extra: Record<string, string | undefined>; children: ReactNode }) {
+function ResolvedLine({ block, testState, danger, extra, below, children }: { block: PermissionBlock; testState: 'resolved' | 'settled'; danger?: boolean; extra: Record<string, string | undefined>; below?: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const hasDetail = testState === 'resolved' && !!block.detail.tool
   if (!hasDetail) {
+    const line = cn('py-0.5 text-sm [overflow-wrap:anywhere]', danger ? 'text-danger' : 'text-fg-subtle')
+    if (!below) {
+      return (
+        <p className={line} data-testid="permission-card" data-state={testState} {...extra}>
+          {children}
+        </p>
+      )
+    }
     return (
-      <p className={cn('py-0.5 text-sm [overflow-wrap:anywhere]', danger ? 'text-danger' : 'text-fg-subtle')} data-testid="permission-card" data-state={testState} {...extra}>
-        {children}
-      </p>
+      <div className="text-sm" data-testid="permission-card" data-state={testState} {...extra}>
+        <p className={line}>{children}</p>
+        {below}
+      </div>
     )
   }
   return (
@@ -268,12 +286,36 @@ function ResolvedLine({ block, testState, danger, extra, children }: { block: Pe
         <span className="min-w-0 truncate">{children}</span>
         <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')} aria-hidden />
       </button>
+      {below}
       {open ? (
         <div className="mt-1 rounded-lg border border-border p-2.5">
           <ToolSummary block={block} />
         </div>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * 已回答的提问：每道题下面是设备给的回答（选项 id 换成显示名，多选用逗号连接，自由输入的文字原样）。
+ * 没答的题写「未回答」。
+ */
+function AnsweredQuestions({ questions, answers }: { questions: Question[]; answers: Record<string, string | string[]> }) {
+  const { t } = useTranslation()
+  const label = (q: Question, id: string): string => q.choices?.find((c) => c.id === id)?.label ?? id
+  return (
+    <dl className="mt-1 space-y-2 border-l-2 border-border pl-3" data-testid="permission-answers">
+      {questions.map((q) => {
+        const a = answers[q.id]
+        const text = (Array.isArray(a) ? a.map((x) => label(q, x)).join(', ') : a ? label(q, a) : '').trim()
+        return (
+          <div key={q.id} data-testid="permission-answer" data-question={q.id}>
+            <dt className="text-fg-subtle [overflow-wrap:anywhere]">{q.text}</dt>
+            <dd className={cn('whitespace-pre-wrap [overflow-wrap:anywhere]', text ? 'text-fg' : 'text-fg-subtle')}>{text || t('permission.noAnswer')}</dd>
+          </div>
+        )
+      })}
+    </dl>
   )
 }
 

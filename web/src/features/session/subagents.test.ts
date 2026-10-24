@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { evs, resetSeq } from '@/test/factories'
 import { buildView, type ToolBlock } from './reducer'
-import { countCalls, subagentRows, subagentState, toolTree } from './subagents'
+import { backgroundCommands, countCalls, subagentRows, subagentState, toolTree } from './subagents'
 
 beforeEach(() => resetSeq())
 
@@ -26,6 +26,22 @@ describe('toolTree', () => {
     const view = buildView(evs([call('x', 'gone'), call('self', 'self')]))
     const tree = toolTree(view.blocks)
     expect(tree.nested.size).toBe(0)
+  })
+})
+
+describe('backgroundCommands', () => {
+  const launched = (id: string) => ({ type: 'tool_result', id, output: 'Command running in background with ID: b1.', is_error: false, detail: { background: true } }) as const
+  it('lists the commands still running in the background until their final result arrives; agents are not commands', () => {
+    const events = [call('bg'), launched('bg'), call('fg'), { type: 'tool_result', id: 'fg', output: '', is_error: false, detail: { exit_code: 0 } }, call('agent', undefined, 'subagent'), launched('agent')] as const
+    const ids = (status: Parameters<typeof backgroundCommands>[1], more: readonly object[] = []) =>
+      backgroundCommands(buildView(evs([...events, ...more] as never)).blocks, status).map((b) => b.toolId)
+    expect(ids('idle')).toEqual(['bg'])
+    expect(ids('running')).toEqual(['bg'])
+    // 结束时补的结果不带 background
+    expect(ids('idle', [{ type: 'tool_result', id: 'bg', output: 'Background command "x" completed (exit code 0)', is_error: false, detail: { exit_code: 0 } }])).toEqual([])
+    // 进程不在了：后台命令也跟着没了
+    expect(ids('ended')).toEqual([])
+    expect(ids('interrupted')).toEqual([])
   })
 })
 

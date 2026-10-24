@@ -86,6 +86,10 @@ export interface PermissionResolution {
   optionId: string | null
   byDevice: string
   ts: number
+  /** kind = question 时设备给的回答：题目 id → 选项 id / 自由输入的文字，多选是数组。旧事件和 daemon 自己答复的没有。 */
+  answers?: Record<string, string | string[]>
+  /** 答复时附的话（拒绝的理由、跳过问题时的说明）。 */
+  message?: string
 }
 export interface PermissionBlock extends BlockBase {
   type: 'permission'
@@ -468,7 +472,11 @@ function applyOne(w: Work, se: SessionEvent): void {
       const idx = w.permIndex[ev.request_id]
       const b = idx === undefined ? undefined : w.blocks[idx]
       if (idx !== undefined && b?.type === 'permission') {
-        w.blocks[idx] = { ...b, resolved: { optionId: ev.option_id ?? null, byDevice: ev.by_device, ts: se.ts_ms } }
+        const resolved: PermissionResolution = { optionId: ev.option_id ?? null, byDevice: ev.by_device, ts: se.ts_ms }
+        const answers = answerMap(ev.answers)
+        if (answers) resolved.answers = answers
+        if (ev.message?.trim()) resolved.message = ev.message.trim()
+        w.blocks[idx] = { ...b, resolved }
       }
       return
     }
@@ -598,6 +606,17 @@ export function latestSyncBlock(blocks: readonly Block[]): GitSystemBlock | null
     if (b.type === 'system' && b.kind === 'git' && b.action.startsWith('sync_')) return b
   }
   return null
+}
+
+/** `permission_resolved.answers` 收窄成「题目 id → 字符串或字符串数组」，别的值丢掉；什么都不剩就是没有。 */
+function answerMap(raw: Record<string, unknown> | null | undefined): Record<string, string | string[]> | undefined {
+  if (!raw) return undefined
+  const out: Record<string, string | string[]> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === 'string') out[k] = v
+    else if (Array.isArray(v)) out[k] = v.filter((x): x is string => typeof x === 'string')
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 /** 视图里还没处理的权限卡片。 */

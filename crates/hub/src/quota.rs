@@ -6,8 +6,9 @@
 //! - **设备 / daemon 数**：配对和接入收尾建新设备那一步，由 [`crate::store::Store::create_devices_within_limits`]
 //!   在一个写事务里「数 + 插」，并发收尾不会冲过上限（`pairing::try_finalize`）；
 //! - **在线连接数**：永久设备认证时，[`crate::ws::registry::Registry::register_counted`] 在登记的同一把锁里检查；
-//! - **每日配对与接入次数**：`pair_begin` / `pair_join` / `enroll_begin` 在已知账号时记一次（[`record_pairing_attempt`]），
-//!   滚动 24 小时的窗口；
+//! - **每日配对与接入次数**：上限只有一份，[`crate::config::Limits::daily_pairings_per_account`]。`pair_begin` 和
+//!   `enroll_begin`（发起一次配对 / 接入）在已知账号时检查并记一次（[`record_pairing_attempt`]）；`pair_join` 只检查、
+//!   不记（[`pairing_quota_left`]）——输错的短码不该耗掉额度，一次成功的配对也不该让双方账号各算一次；滚动 24 小时的窗口；
 //! - **用量展示**：`auth_ok.quota`、`quota_update`（[`broadcast`]）和 `GET /api/quota`（[`usage`]）。
 //!
 //! 日志纪律（docs/spec/hub.md § 10）：配额日志只记哪一项（`limit = "devices"` 之类），不记账号 id、邮箱。
@@ -65,11 +66,22 @@ pub async fn broadcast(state: &AppState, account_id: &str, skip_conn: Option<u64
     }
 }
 
-/// 记一次配对 / 接入尝试（`pair_begin`、`pair_join`、`enroll_begin`，已知账号时）。窗口里已经满了返回 `false`
+/// 检查并记一次「发起配对 / 接入」（`pair_begin`、`enroll_begin`，已知账号时）。窗口里已经满了返回 `false`
 /// （这次不记）。没配每日上限（`single` 默认）永远 `true`。
 pub fn record_pairing_attempt(state: &AppState, account_id: &str) -> bool {
     let Some(window) = &state.account_limits.daily_pairings else { return true };
     if window.try_record(&account_id.to_string()).is_err() {
+        tracing::info!(limit = "daily_pairings", "quota exceeded");
+        return false;
+    }
+    true
+}
+
+/// 只检查今天还有没有额度，不记（`pair_join`，已知账号时）：额度已经满了返回 `false`。
+/// 加入方不消耗额度——配对是发起方（`pair_begin`）开的头，输错的短码也不该烧掉加入方的额度。
+pub fn pairing_quota_left(state: &AppState, account_id: &str) -> bool {
+    let Some(window) = &state.account_limits.daily_pairings else { return true };
+    if window.is_full(&account_id.to_string()) {
         tracing::info!(limit = "daily_pairings", "quota exceeded");
         return false;
     }
@@ -91,6 +103,7 @@ pub struct QuotaView {
 }
 
 /// 账号的用量，`single` 里计数照样是真的（上限为 `None`，`daily_pairings` 在没配每日上限时是 0）。
+/// 每日配对的上限和计数器来自同一个配置值（`limits.daily_pairings_per_account`，限速器就是用它建的）。
 pub async fn usage(state: &AppState, account_id: &str) -> StoreResult<QuotaView> {
     let (devices, daemons) = state.store.count_devices(account_id).await?;
     let limits = state.config.quota.as_ref();
@@ -113,7 +126,7 @@ mod tests {
 
     #[test]
     fn build_reports_every_limit_and_saturates_the_connection_count() {
-        let limits = QuotaLimits { devices: 10, daemons: 3, connections: 5, daily_pairings: 20 };
+        let limits = QuotaLimits { devices: 10, daemons: 3, connections: 5 };
         let q = build(&limits, 4, 2, 3);
         assert_eq!(
             q,

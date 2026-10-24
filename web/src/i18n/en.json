@@ -84,7 +84,8 @@
       "invite_used": "This invitation has already been used.",
       "identity_taken": "That {{provider}} account is already linked to another account on this hub.",
       "already_linked": "Your account is already linked to a different {{provider}} account. Unlink that one first.",
-      "not_signed_in": "You need to be signed in to link a {{provider}} account. Sign in, then try again."
+      "not_signed_in": "You need to be signed in to link a {{provider}} account. Sign in, then try again.",
+      "server_error": "The hub hit an error while finishing the {{provider}} sign-in. Try again in a moment; if it keeps happening, tell the hub administrator."
     }
   },
   "invite": {

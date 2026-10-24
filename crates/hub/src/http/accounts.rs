@@ -61,7 +61,7 @@ pub async fn get_quota(State(state): State<Arc<AppState>>, auth: Authed) -> ApiR
 /// `DELETE /api/me`。
 pub async fn delete_me(State(state): State<Arc<AppState>>, auth: Authed, client: Client) -> ApiResult<Response> {
     // bootstrap 管理员是永久的限制，不必先让人重新登录一遍才告诉他。
-    if account_delete::is_bootstrap_admin(&state, &auth.account.id) {
+    if accounts::is_bootstrap_admin(&state, &auth.account.id) {
         return Err(bootstrap_admin());
     }
     if now_ms().saturating_sub(auth.session.created_at_ms) > REAUTH_WINDOW_MS {
@@ -89,7 +89,7 @@ pub async fn admin_delete_account(
     if id == auth.account.id {
         return Err(cannot_modify_self());
     }
-    if account_delete::is_bootstrap_admin(&state, &id) {
+    if accounts::is_bootstrap_admin(&state, &id) {
         return Err(bootstrap_admin());
     }
     if !account_delete::delete_account(&state, &id, DeletedBy::Admin).await? {
@@ -116,7 +116,7 @@ async fn set_admin(
     }
     let target: Account = state.store.get_account(id).await?.ok_or_else(ApiError::not_found)?;
     if !grant {
-        if account_delete::is_bootstrap_admin(state, id) {
+        if accounts::is_bootstrap_admin(state, id) {
             return Err(bootstrap_admin());
         }
         if accounts::admin_by_config(&state.config, &target) {

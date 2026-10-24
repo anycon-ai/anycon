@@ -124,6 +124,7 @@ describe('LoginPage — ?oauth_error', () => {
     ['identity_taken', 'google', /already linked to another account/],
     ['already_linked', 'google', /different Google account/],
     ['not_signed_in', 'github', /signed in to link/],
+    ['server_error', 'github', /hub hit an error while finishing the GitHub sign-in/],
   ] as const)('%s shows its own message', async (code, provider, text) => {
     mount({ mode: 'multi', public_url: location.origin, login_methods: ['github', 'google'] }, { oauthError: code, provider })
     const alert = await screen.findByTestId('oauth-error')

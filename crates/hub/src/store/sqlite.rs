@@ -1288,7 +1288,7 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    // ---- multi：配额、账号删除、管理员标记（SQL 在 `multi.rs`） ----
+    // ---- multi：配额、账号删除、管理员标记、账号搜索（SQL 在 `multi.rs`） ----
 
     async fn count_devices(&self, account_id: &str) -> StoreResult<(u32, u32)> {
         self.count_devices_impl(account_id).await
@@ -1309,6 +1309,15 @@ impl Store for SqliteStore {
 
     async fn delete_account(&self, account_id: &str, tombstone: NewAudit, now_ms: u64) -> StoreResult<bool> {
         self.delete_account_impl(account_id, tombstone, now_ms).await
+    }
+
+    async fn search_accounts(
+        &self,
+        query: &str,
+        limit: u32,
+        after: Option<(u64, String)>,
+    ) -> StoreResult<Vec<Account>> {
+        self.search_accounts_impl(query, limit, after).await
     }
 }
 

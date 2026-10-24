@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anycon_hub::config::{Mode, QuotaLimits};
+use anycon_hub::config::{Mode, QuotaLimits, DEFAULT_DAILY_PAIRINGS};
 use anycon_hub::mail::{OutgoingMail, RecordingMailer};
 use anycon_hub::store::NewDevice;
 use anycon_hub::util::{hash_token, new_id, new_secret, now_ms};
@@ -192,7 +192,7 @@ impl TestHub {
 
     pub async fn start_multi_with(tweak: impl FnOnce(&mut Config)) -> (Self, Arc<RecordingMailer>) {
         Self::start_mail_with(move |c| {
-            c.enable_multi(QuotaLimits::default());
+            c.enable_multi(QuotaLimits::default(), DEFAULT_DAILY_PAIRINGS);
             tweak(c);
         })
         .await

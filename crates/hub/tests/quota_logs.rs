@@ -85,14 +85,13 @@ async fn quota_and_account_deletion_logs_carry_no_emails_account_ids_tokens_or_c
     assert_eq!(c0.recv_control().await, Control::PairFailed { reason: anycon_protocol::PairFailReason::Quota });
     assert_eq!(joiner.recv_control().await, Control::PairFailed { reason: anycon_protocol::PairFailReason::Quota });
 
-    // 每日配对次数超限（上面已经用了 2 次：pair_begin + pair_join）
-    for _ in 0..3 {
-        joiner.send_control(&Control::PairJoin { match_id: new_code().1 }).await;
-        assert_eq!(
-            joiner.recv_control().await,
-            Control::PairFailed { reason: anycon_protocol::PairFailReason::NotFound }
-        );
+    // 每日配对次数超限（额度 5，上面 pair_begin 记了 1 次；pair_join 不记）：再发起 4 次用完，第 6 次被拒
+    for _ in 0..4 {
+        c0.pair_begin(&new_code().1).await;
     }
+    c0.send_control(&Control::PairBegin { match_id: new_code().1 }).await;
+    assert_eq!(c0.recv_control().await, Control::PairFailed { reason: anycon_protocol::PairFailReason::Quota });
+    // 额度满了，加入也被拦
     joiner.send_control(&Control::PairJoin { match_id: new_code().1 }).await;
     assert_eq!(joiner.recv_control().await, Control::PairFailed { reason: anycon_protocol::PairFailReason::Quota });
 

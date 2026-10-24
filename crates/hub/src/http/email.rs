@@ -383,12 +383,13 @@ pub async fn bind_verify(
 /// `DELETE /api/me/email`：解绑。账号没有别的登录方式时 `409 last_login_method`。没有绑定过也是 `204`。
 pub async fn unbind(State(state): State<Arc<AppState>>, auth: Authed, client: Client) -> ApiResult<Response> {
     require_email(&state)?;
-    if auth.account.email.is_none() {
+    // 「检查还有别的登录方式」和「解绑」之间不让别的移除（解除 OAuth 绑定、删 token、另一次解绑）插进来；
+    // 邮箱有没有绑、还剩什么方式，都以锁里重读的账号为准。
+    let removal = accounts::begin_login_method_removal(&state, &auth.account.id).await?;
+    if removal.account.email.is_none() {
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
-    let others =
-        accounts::account_login_methods(&state, &auth.account).await?.into_iter().filter(|m| *m != "email").count();
-    if others == 0 {
+    if removal.would_lock_out("email") {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "last_login_method",

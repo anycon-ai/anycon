@@ -195,7 +195,7 @@ pub async fn run(config: Config) -> Result<Handle, RunError> {
             devices = quota.devices,
             daemons = quota.daemons,
             connections = quota.connections,
-            daily_pairings = quota.daily_pairings,
+            daily_pairings = config.limits.daily_pairings_per_account,
             "per-account quotas (ANYCON_QUOTA_*)"
         );
     }

@@ -332,14 +332,6 @@ pub enum CreateDevicesOutcome {
     Exceeded(DeviceLimit),
 }
 
-/// 管理页搜索：`needle` 是已经去空白、转小写的查询串，`raw` 是去空白、没转小写的原串。
-/// 命中条件：显示名或邮箱包含 `needle`（按 Unicode 不区分大小写），或者账号 id 正好等于 `raw`。
-pub(crate) fn account_matches(account: &Account, needle: &str, raw: &str) -> bool {
-    account.id == raw
-        || account.display_name.to_lowercase().contains(needle)
-        || account.email.as_deref().is_some_and(|e| e.to_lowercase().contains(needle))
-}
-
 pub fn category_to_str(c: NotifyCategory) -> &'static str {
     match c {
         NotifyCategory::PermissionRequested => "permission_requested",
@@ -599,37 +591,9 @@ pub trait Store: Send + Sync + 'static {
     /// `used_by IS NULL` 会让这张邀请重新变得可用）、以它的邮箱发的登录码，然后删账号本身（其余表由外键级联删），
     /// 最后写入 `tombstone`（唯一留下的审计行）。账号不存在返回 `false`，什么都不写。
     async fn delete_account(&self, account_id: &str, tombstone: NewAudit, now_ms: u64) -> StoreResult<bool>;
-    /// 管理页搜索：显示名或邮箱包含 `query`（不区分大小写），或账号 id 正好等于 `query`。分页同 [`Store::list_accounts`]。
-    ///
-    /// 默认实现按 keyset 顺序分批扫 [`Store::list_accounts`] 在内存里过滤：SQLite 的 `lower()` / `LIKE` 只认 ASCII，
-    /// 非 ASCII 的显示名（`É`、`Ü`）用它们会漏。账号数量级下，管理员偶尔搜一次的开销可以接受。
-    async fn search_accounts(
-        &self,
-        query: &str,
-        limit: u32,
-        after: Option<(u64, String)>,
-    ) -> StoreResult<Vec<Account>> {
-        const CHUNK: u32 = 500;
-        let raw = query.trim();
-        let needle = raw.to_lowercase();
-        let mut found = Vec::new();
-        let mut cursor = after;
-        loop {
-            let rows = self.list_accounts(CHUNK, cursor.clone()).await?;
-            let full = rows.len() as u32 == CHUNK;
-            let last = rows.last().map(|a| (a.created_at_ms, a.id.clone()));
-            for account in rows {
-                if account_matches(&account, &needle, raw) {
-                    found.push(account);
-                    if found.len() as u32 >= limit {
-                        return Ok(found);
-                    }
-                }
-            }
-            match last {
-                Some(last) if full => cursor = Some(last),
-                _ => return Ok(found),
-            }
-        }
-    }
+    /// 管理页搜索：显示名或邮箱包含 `query`（不区分大小写），或账号 id 正好等于 `query`；`query` 先去首尾空白。
+    /// 分页同 [`Store::list_accounts`]（最早创建的在前，`after` 是上一页最后一项的 `(created_at_ms, id)`）。
+    /// `query` 里的 `%`、`_` 当字面字符，不是通配符。
+    async fn search_accounts(&self, query: &str, limit: u32, after: Option<(u64, String)>)
+        -> StoreResult<Vec<Account>>;
 }

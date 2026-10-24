@@ -13,18 +13,25 @@ use crate::common::*;
 
 pub const SHORT: Duration = Duration::from_millis(300);
 
-pub fn limits(devices: u32, daemons: u32, connections: u32, daily_pairings: u32) -> QuotaLimits {
-    QuotaLimits { devices, daemons, connections, daily_pairings }
+/// 一组完整的 `multi` 限额：数量类配额，加每日配对上限（它在 `Config.limits` 里，不在 [`QuotaLimits`] 里）。
+#[derive(Debug, Clone, Copy)]
+pub struct MultiLimits {
+    pub quota: QuotaLimits,
+    pub daily_pairings: u32,
+}
+
+pub fn limits(devices: u32, daemons: u32, connections: u32, daily_pairings: u32) -> MultiLimits {
+    MultiLimits { quota: QuotaLimits { devices, daemons, connections }, daily_pairings }
 }
 
 /// 起一个 `multi` hub，配额取给定值。
-pub async fn multi_hub(q: QuotaLimits) -> TestHub {
+pub async fn multi_hub(q: MultiLimits) -> TestHub {
     multi_hub_with(q, |_| {}).await
 }
 
-pub async fn multi_hub_with(q: QuotaLimits, tweak: impl FnOnce(&mut anycon_hub::Config)) -> TestHub {
+pub async fn multi_hub_with(q: MultiLimits, tweak: impl FnOnce(&mut anycon_hub::Config)) -> TestHub {
     let (hub, _mailer) = TestHub::start_multi_with(move |c| {
-        c.enable_multi(q);
+        c.enable_multi(q.quota, q.daily_pairings);
         tweak(c);
     })
     .await;
@@ -107,14 +114,14 @@ pub async fn connect_refused_by_quota(hub: &TestHub, token: &str, kind: DeviceKi
 }
 
 /// 一份用量。
-pub fn quota(devices: u32, daemons: u32, connections: u32, q: &QuotaLimits) -> Quota {
+pub fn quota(devices: u32, daemons: u32, connections: u32, q: &MultiLimits) -> Quota {
     Quota {
         devices,
-        devices_max: Some(q.devices),
+        devices_max: Some(q.quota.devices),
         daemons,
-        daemons_max: Some(q.daemons),
+        daemons_max: Some(q.quota.daemons),
         connections,
-        connections_max: Some(q.connections),
+        connections_max: Some(q.quota.connections),
     }
 }
 

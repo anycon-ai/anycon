@@ -6,7 +6,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anycon_hub::config::{Mode, OAuthClient, QuotaLimits};
+use anycon_hub::config::{Mode, OAuthClient, QuotaLimits, DEFAULT_DAILY_PAIRINGS};
 use anycon_hub::mail::RecordingMailer;
 use anycon_hub::{Config, Handle};
 use common::*;
@@ -102,7 +102,7 @@ async fn a_multi_hub_does_not_read_an_existing_admin_token_file() {
 
     let mut config = Config::new("https://hub.test", dir.path()).unwrap();
     config.listen = "127.0.0.1:0".parse().unwrap();
-    config.enable_multi(QuotaLimits::default());
+    config.enable_multi(QuotaLimits::default(), DEFAULT_DAILY_PAIRINGS);
     config.mailer_override = Some(Arc::new(RecordingMailer::default()));
     let handle = anycon_hub::run(config).await.expect("multi hub starts next to a stale admin-token file");
     assert!(handle.state.admin.is_none() && handle.generated_admin_token.is_none());
@@ -115,7 +115,7 @@ async fn a_multi_hub_without_any_way_to_sign_in_refuses_to_start() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::new("https://hub.test", dir.path()).unwrap();
     config.listen = "127.0.0.1:0".parse().unwrap();
-    config.enable_multi(QuotaLimits::default());
+    config.enable_multi(QuotaLimits::default(), DEFAULT_DAILY_PAIRINGS);
     let err = anycon_hub::run(config.clone()).await.err().expect("nobody could sign in");
     assert!(err.to_string().contains("no way to sign in"), "{err}");
     // 只配 OAuth 也行（不需要 SMTP）
@@ -202,7 +202,7 @@ async fn config_in_multi_never_offers_token_login() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = Config::new("https://hub.test", dir.path()).unwrap();
     c.listen = "127.0.0.1:0".parse().unwrap();
-    c.enable_multi(QuotaLimits::default());
+    c.enable_multi(QuotaLimits::default(), DEFAULT_DAILY_PAIRINGS);
     c.oauth_google = Some(OAuthClient { client_id: "g".into(), client_secret: "s".into() });
     let handle: Handle = anycon_hub::run(c).await.unwrap();
     let url = format!("{}/api/config", handle.base_url());
@@ -470,7 +470,7 @@ async fn switching_an_existing_single_database_to_multi_keeps_accounts_and_drops
         c.timing.email_verify_failure_delay = Duration::ZERO;
         c.mailer_override = Some(mailer.clone());
         if multi {
-            c.enable_multi(QuotaLimits::default());
+            c.enable_multi(QuotaLimits::default(), DEFAULT_DAILY_PAIRINGS);
         }
         c
     };
@@ -504,4 +504,64 @@ async fn switching_an_existing_single_database_to_multi_keeps_accounts_and_drops
     assert_eq!(profile["login_methods"], json!(["email"]));
     assert_eq!(hub.get("/api/me/tokens", &cookie).await.status(), 404);
     assert_eq!(hub.handle.store().stats().await.unwrap().accounts, 1);
+}
+
+// ---------------------------------------------------------------------------
+// 从 multi 切到 single
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn switching_a_multi_database_with_a_granted_admin_to_single_gets_a_separate_bootstrap_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let mailer = Arc::new(RecordingMailer::default());
+
+    // multi：没有 bootstrap 账号；管理员标记授予了一个普通用户（现在两种模式都可以授予）
+    let multi = anycon_hub::run(config_in(dir.path(), &mailer, true)).await.unwrap();
+    let anycon_hub::store::CreateAccountOutcome::Created(user) =
+        multi.store().create_account_with_email("Ulysses", Some("u@example.com"), 1).await.unwrap()
+    else {
+        panic!("created")
+    };
+    multi.store().set_account_admin(&user.id, true).await.unwrap();
+    assert_eq!(multi.store().first_admin().await.unwrap().unwrap().id, user.id, "the setup: U is the first admin");
+    multi.shutdown().await;
+
+    // single：bootstrap token 登录的是它自己的账号，不是 U
+    let single = anycon_hub::run(config_in(dir.path(), &mailer, false)).await.unwrap();
+    let bootstrap_id = single.state.admin.as_ref().unwrap().account_id.clone();
+    assert_ne!(bootstrap_id, user.id, "the bootstrap token must not be bound to a user who was granted admin");
+    let token = single.generated_admin_token.clone().unwrap();
+    let hub = TestHub {
+        handle: single,
+        dir,
+        http: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap(),
+        admin_token: token.clone(),
+    };
+    let cookie = hub.login(&token).await;
+    let profile = me(&hub, &cookie).await;
+    assert_eq!(profile["id"], bootstrap_id.as_str());
+    assert_eq!(profile["is_admin"], true);
+    assert_eq!(profile["login_methods"], json!(["token"]));
+    // U 原样还在，仍是管理员，也没有因此多出 token 登录
+    let u = hub.handle.store().get_account(&user.id).await.unwrap().unwrap();
+    assert!(u.is_admin && u.email.as_deref() == Some("u@example.com"));
+    assert!(hub.handle.store().list_account_tokens(&user.id).await.unwrap().is_empty());
+
+    // 再启动一次还是同一个账号（记在库里）
+    let dir = hub.dir;
+    hub.handle.shutdown().await;
+    let again = anycon_hub::run(config_in(dir.path(), &mailer, false)).await.unwrap();
+    assert_eq!(again.state.admin.as_ref().unwrap().account_id, bootstrap_id);
+    again.shutdown().await;
+}
+
+/// 在 `dir` 这份数据上起 hub 的配置（`multi` 或 `single`）。
+fn config_in(dir: &std::path::Path, mailer: &Arc<RecordingMailer>, multi: bool) -> Config {
+    let mut c = Config::new("https://hub.test", dir).unwrap();
+    c.listen = "127.0.0.1:0".parse().unwrap();
+    c.mailer_override = Some(mailer.clone());
+    if multi {
+        c.enable_multi(QuotaLimits::default(), DEFAULT_DAILY_PAIRINGS);
+    }
+    c
 }

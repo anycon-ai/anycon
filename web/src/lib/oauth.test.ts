@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { configuredProviders, isMultiMode, isOAuthProvider, oauthStartUrl, onPublicOrigin } from './oauth'
+import { configuredProviders, isMultiMode, isOAuthProvider, OAUTH_ERROR_CODES, oauthErrorSearch, oauthErrorText, oauthStartUrl, onPublicOrigin, searchString } from './oauth'
 
 describe('configuredProviders', () => {
   it('keeps only github / google, in the order the hub listed them', () => {
@@ -53,5 +53,35 @@ describe('oauthStartUrl', () => {
 
   it('does not send a pointless next=/', () => {
     expect(oauthStartUrl('github', { next: '/' })).toBe('/auth/oauth/github/start')
+  })
+})
+
+describe('route search parameters', () => {
+  it('searchString keeps non-empty strings and drops everything else', () => {
+    expect(searchString('abc')).toBe('abc')
+    expect(searchString('')).toBeUndefined()
+    expect(searchString(undefined)).toBeUndefined()
+    expect(searchString(7)).toBeUndefined()
+    expect(searchString(['a'])).toBeUndefined()
+    expect(searchString(null)).toBeUndefined()
+  })
+
+  it('oauthErrorSearch reads oauth_error and provider only', () => {
+    expect(oauthErrorSearch({ oauth_error: 'cancelled', provider: 'github', redirect: '/x', linked: 'google' })).toEqual({
+      oauth_error: 'cancelled',
+      provider: 'github',
+    })
+    expect(oauthErrorSearch({ oauth_error: '', provider: 3 })).toEqual({ oauth_error: undefined, provider: undefined })
+    expect(oauthErrorSearch({})).toEqual({ oauth_error: undefined, provider: undefined })
+  })
+})
+
+describe('oauth error codes', () => {
+  it('includes the hub-side failure code, and every known code has its own message', () => {
+    expect(OAUTH_ERROR_CODES).toContain('server_error')
+    // 通用文案以外的码都应该有自己的 i18n 条目：用一个会原样返回 key 的 t 检查
+    const t = ((key: string) => key) as unknown as Parameters<typeof oauthErrorText>[0]
+    for (const code of OAUTH_ERROR_CODES) expect(oauthErrorText(t, code, 'github')).toBe(`oauth.errors.${code}`)
+    expect(oauthErrorText(t, 'something_new', 'github')).toBe('oauth.errors.generic')
   })
 })

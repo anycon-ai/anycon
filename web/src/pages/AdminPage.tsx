@@ -2,23 +2,30 @@ import { useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
-import { useAdminStatus, useCreateInvite, useDeleteInvite, useInvites, useMe } from '@/api/queries'
+import { useAdminStatus, useConfig, useCreateInvite, useDeleteInvite, useInvites, useMe } from '@/api/queries'
 import type { ApiInviteCreated } from '@/api/types'
 import { PageHeader } from '@/components/PageHeader'
+import { AccountsSection } from '@/features/admin/AccountsSection'
 import { describeError } from '@/lib/errors'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
+import { isMultiMode } from '@/lib/oauth'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Field, Input, Select } from '@/ui/Field'
 import { Card, Chip, CopyButton, EmptyState, SectionTitle, Skeleton } from '@/ui/Misc'
 import { Dialog } from '@/ui/Overlay'
 
-/** `/admin`（v0.1 范围）：邀请链接的生成 / 复制 / 撤销，以及 hub 状态。 */
+/**
+ * `/admin`：账号管理（搜索、授予 / 取消管理员、删除）、邀请链接的生成 / 复制 / 撤销（只有 `single`，`multi` 没有邀请）、hub 状态。
+ */
 export function AdminPage() {
   const { t, i18n } = useTranslation()
   const me = useMe()
+  const config = useConfig()
   const isAdmin = me.data?.is_admin ?? false
-  const invites = useInvites(isAdmin)
+  // 配置没到之前不知道有没有邀请：先不拉（`multi` 下 `/api/invites` 是 404）
+  const invitesEnabled = config.data !== undefined && !isMultiMode(config.data)
+  const invites = useInvites(isAdmin && invitesEnabled)
   const status = useAdminStatus(isAdmin)
   const create = useCreateInvite()
   const del = useDeleteInvite()
@@ -42,41 +49,45 @@ export function AdminPage() {
         <div className="mx-auto w-full max-w-3xl space-y-8 p-4 md:p-6">
           <h1 className="text-xl font-semibold">{t('admin.title')}</h1>
 
-          <section>
-            <SectionTitle
-              action={
-                <Button size="sm" variant="primary" icon={<Plus className="size-4" />} onClick={() => { setNote(''); setCreated(null); setOpen(true) }} data-testid="invite-new">
-                  {t('admin.inviteNew')}
-                </Button>
-              }
-            >
-              {t('admin.invites')}
-            </SectionTitle>
-            <p className="mb-3 text-sm text-fg-muted">{t('admin.invitesHint')}</p>
-            {invites.isLoading ? <Skeleton className="h-14" /> : null}
-            {invites.data && invites.data.length === 0 ? <p className="text-sm text-fg-subtle">{t('admin.noInvites')}</p> : null}
-            <ul className="space-y-2" data-testid="invite-list">
-              {(invites.data ?? []).map((inv) => {
-                const expired = inv.expires_at_ms < Date.now()
-                return (
-                  <li key={inv.id}>
-                    <Card className="flex items-center gap-3 p-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                          <span className="truncate">{inv.note || t('admin.noNote')}</span>
-                          {inv.used ? <Chip tone="success">{t('admin.used')}</Chip> : expired ? <Chip tone="neutral">{t('admin.expired')}</Chip> : <Chip tone="info">{t('admin.pending')}</Chip>}
-                        </p>
-                        <p className="text-xs text-fg-subtle">{t('admin.expires', { when: formatDateTime(inv.expires_at_ms, i18n.language) })}</p>
-                      </div>
-                      <Button size="sm" variant="outline-danger" icon={<Trash2 className="size-4" />} onClick={() => del.mutate(inv.id, { onError: (e) => toast.error(describeError(e, t)) })} aria-label={t('admin.revoke')}>
-                        <span className="hidden sm:inline">{t('admin.revoke')}</span>
-                      </Button>
-                    </Card>
-                  </li>
-                )
-              })}
-            </ul>
-          </section>
+          {invitesEnabled ? (
+            <section data-testid="admin-invites">
+              <SectionTitle
+                action={
+                  <Button size="sm" variant="primary" icon={<Plus className="size-4" />} onClick={() => { setNote(''); setCreated(null); setOpen(true) }} data-testid="invite-new">
+                    {t('admin.inviteNew')}
+                  </Button>
+                }
+              >
+                {t('admin.invites')}
+              </SectionTitle>
+              <p className="mb-3 text-sm text-fg-muted">{t('admin.invitesHint')}</p>
+              {invites.isLoading ? <Skeleton className="h-14" /> : null}
+              {invites.data && invites.data.length === 0 ? <p className="text-sm text-fg-subtle">{t('admin.noInvites')}</p> : null}
+              <ul className="space-y-2" data-testid="invite-list">
+                {(invites.data ?? []).map((inv) => {
+                  const expired = inv.expires_at_ms < Date.now()
+                  return (
+                    <li key={inv.id}>
+                      <Card className="flex items-center gap-3 p-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                            <span className="truncate">{inv.note || t('admin.noNote')}</span>
+                            {inv.used ? <Chip tone="success">{t('admin.used')}</Chip> : expired ? <Chip tone="neutral">{t('admin.expired')}</Chip> : <Chip tone="info">{t('admin.pending')}</Chip>}
+                          </p>
+                          <p className="text-xs text-fg-subtle">{t('admin.expires', { when: formatDateTime(inv.expires_at_ms, i18n.language) })}</p>
+                        </div>
+                        <Button size="sm" variant="outline-danger" icon={<Trash2 className="size-4" />} onClick={() => del.mutate(inv.id, { onError: (e) => toast.error(describeError(e, t)) })} aria-label={t('admin.revoke')}>
+                          <span className="hidden sm:inline">{t('admin.revoke')}</span>
+                        </Button>
+                      </Card>
+                    </li>
+                  )
+                })}
+              </ul>
+            </section>
+          ) : null}
+
+          {isAdmin ? <AccountsSection meId={me.data?.id} /> : null}
 
           <section>
             <SectionTitle>{t('admin.status')}</SectionTitle>

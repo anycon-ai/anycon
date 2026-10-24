@@ -1,11 +1,22 @@
 // hub HTTP 响应的形状（docs/spec/hub.md § 2）。hub 的 HTTP 不在 crates/protocol 里，所以这里手写。
 import type { NotifyCategory } from '@/protocol'
 
+/** hub 的运行模式：`single`（自托管，邀请制）或 `multi`（公共 hub，开放注册、有配额）。 */
+export type HubMode = 'single' | 'multi'
+/** 支持的 OAuth 登录方（GitHub / Google）。 */
+export type OAuthProvider = 'github' | 'google'
+/** 登录方式。`/api/config` 和 `/api/me` 的 `login_methods` 都是这几个值，顺序是 github、google、email、token。 */
+export type LoginMethod = OAuthProvider | 'email' | 'token'
+
 export interface ApiConfig {
+  /** `single` / `multi`；认不出的值按 `single` 处理（见 `isMultiMode`）。 */
   mode: string
   public_url?: string
-  /** 启用的登录方式；配了 SMTP 才有 `email`（ADR-37）。 */
-  login_methods: string[]
+  /**
+   * 启用的登录方式：`github` / `google`（配了 OAuth 才有）、`email`（配了 SMTP 才有，ADR-37）、
+   * `token`（只有 `single`）。
+   */
+  login_methods: LoginMethod[]
   protocol_version: number
   version: string
   queue_enabled?: boolean
@@ -20,8 +31,40 @@ export interface ApiMe {
   id: string
   display_name: string
   email?: string | null
+  /** 有效管理员（库里的标记，或 `multi` 下邮箱在 `ANYCON_ADMIN_EMAILS` 里）。 */
   is_admin: boolean
-  login_methods: string[]
+  /** 这个账号现在真能用来登录的方式（已配置 + 已绑定）。只剩一种时它不能被移除。 */
+  login_methods: LoginMethod[]
+}
+/** `GET /api/me/identities` 的一行：已关联的 OAuth 身份。hub 不存也不返回用户名、邮箱和 subject。 */
+export interface ApiIdentity {
+  provider: OAuthProvider
+  created_at_ms: number
+}
+/**
+ * `GET /api/quota`：当前用量和上限。`*_max` 为 `null` 表示不限（`single` 恒为 `null`）。
+ * `daily_pairings` 是滚动 24 小时内的 `pair_begin` / `pair_join` / `enroll_begin` 次数。
+ */
+export interface ApiQuota {
+  devices: number
+  devices_max: number | null
+  daemons: number
+  daemons_max: number | null
+  connections: number
+  connections_max: number | null
+  daily_pairings: number
+  daily_pairings_max: number | null
+}
+/** `GET /api/admin/accounts` 的一行（只有元数据）。 */
+export interface ApiAdminAccount {
+  id: string
+  display_name: string
+  email?: string | null
+  /** 有效管理员。 */
+  is_admin: boolean
+  /** 管理员身份来自 `ANYCON_ADMIN_EMAILS`：在管理页取消不了，要改 hub 配置。 */
+  admin_by_config: boolean
+  created_at_ms: number
 }
 export interface ApiBrowserSession {
   id: string

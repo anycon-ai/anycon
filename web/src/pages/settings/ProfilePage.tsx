@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useConfig, useMe, usePatchMe } from '@/api/queries'
+import { DeleteAccountDialog } from '@/features/account/DeleteAccountDialog'
 import { EmailSection } from '@/features/auth/EmailSection'
 import { describeError } from '@/lib/errors'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Field, Input } from '@/ui/Field'
-import { Card, Chip } from '@/ui/Misc'
+import { Card, Chip, SectionTitle } from '@/ui/Misc'
 
 export function ProfilePage() {
   const { t } = useTranslation()
@@ -16,6 +17,7 @@ export function ProfilePage() {
   // 配了 SMTP 才能绑定 / 用邮箱登录（ADR-37）；没配就只读显示账号上已有的邮箱
   const emailEnabled = config.data?.login_methods.includes('email') ?? false
   const [name, setName] = useState('')
+  const [deleteOpen, setDeleteOpen] = useState(false)
   useEffect(() => {
     if (me.data) setName(me.data.display_name)
   }, [me.data])
@@ -54,6 +56,19 @@ export function ProfilePage() {
           </Field>
         )}
       </Card>
+      <section data-testid="danger-zone">
+        <SectionTitle>{t('settings.dangerZone')}</SectionTitle>
+        <Card tone="danger" className="flex flex-wrap items-center gap-3 p-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">{t('settings.deleteAccount')}</p>
+            <p className="text-xs text-fg-muted">{t('settings.deleteAccountHint')}</p>
+          </div>
+          <Button variant="outline-danger" onClick={() => setDeleteOpen(true)} data-testid="delete-account">
+            {t('settings.deleteAccountButton')}
+          </Button>
+        </Card>
+      </section>
+      <DeleteAccountDialog open={deleteOpen} onOpenChange={setDeleteOpen} />
     </div>
   )
 }

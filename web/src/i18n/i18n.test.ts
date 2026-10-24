@@ -11,6 +11,7 @@ import type { PushStatus } from '@/features/push/usePush'
 import { PREVIEW_DAEMON_REASONS, PREVIEW_HUB_CODES } from '@/features/preview/errors'
 import type { PreviewLocalCode } from '@/features/preview/ticket'
 import { unlockErrorKeys } from '@/features/unlock/errors'
+import { OAUTH_ERROR_CODES, OAUTH_PROVIDERS } from '@/lib/oauth'
 import type { PairErrorCode } from '@/transport/client'
 import type { NodeConnState } from '@/transport/connection'
 import en from './en.json'
@@ -89,7 +90,9 @@ describe('i18n', () => {
     ]
     // `SessionGitStatus.pr_error`
     const prErrors = ['no_pr', 'gh_not_installed', 'gh_not_authenticated', 'no_remote', 'error']
-    const apiCodes = ['unauthorized', 'invalid_token', 'forbidden', 'csrf', 'not_found', 'invite_invalid', 'invite_expired', 'invite_used', 'bad_request', 'unsupported_media_type', 'payload_too_large', 'rate_limited', 'internal', 'network', 'email_taken', 'invalid_code', 'last_login_method', 'push_endpoint_not_allowed', 'device_not_found', 'subscription_not_found', 'invalid_email']
+    const apiCodes = ['unauthorized', 'invalid_token', 'forbidden', 'csrf', 'not_found', 'invite_invalid', 'invite_expired', 'invite_used', 'bad_request', 'unsupported_media_type', 'payload_too_large', 'rate_limited', 'internal', 'network', 'email_taken', 'invalid_code', 'last_login_method', 'push_endpoint_not_allowed', 'device_not_found', 'subscription_not_found', 'invalid_email',
+      // multi 模式（账号删除、管理员管理）
+      'reauth_required', 'bootstrap_admin', 'cannot_modify_self', 'admin_by_config']
     // Web Push / 邮箱通知（ADR-37）：浏览器不能推送的原因、推送动作的错误、六个通知类别、推送卡片的状态、推送文案
     const pushUnsupported: Record<UnsupportedReason, true> = { insecure: true, no_service_worker: true, no_push: true, ios_install: true }
     const pushErrors: Record<PushErrorCode, true> = { dismissed: true, denied: true, no_registration: true, subscribe_failed: true, unsubscribe_failed: true }
@@ -154,6 +157,13 @@ describe('i18n', () => {
       // 运行 / 等审批时不能归档，base 是提交时的 PR 消息
       'info.archiveBusy', 'git.messages.prDefault',
       'login.invite_invalid', 'login.invite_expired', 'login.invite_used',
+      // multi 模式的登录页文案（EmailLogin 用 `signUp` 选 key）
+      'login.emailHintSignUp', 'login.emailSentSignUp', 'login.emailVerifySignUp',
+      // OAuth：`?oauth_error=` 的每个码、每个提供方的名字、用量页每一行
+      ...OAUTH_ERROR_CODES.map((k) => `oauth.errors.${k}`),
+      'oauth.errors.generic', 'oauth.provider.unknown',
+      ...OAUTH_PROVIDERS.map((k) => `oauth.provider.${k}`),
+      ...['devices', 'daemons', 'connections', 'dailyPairings'].flatMap((k) => [`quota.rows.${k}.label`, `quota.rows.${k}.hint`]),
       'setup.step1', 'setup.step2', 'setup.step3',
       'pair.steps.connecting', 'pair.steps.deriving', 'pair.steps.matching', 'pair.steps.handshaking', 'pair.steps.confirming', 'pair.steps.verifying',
       'permission.allowedBy', 'permission.deniedBy', 'system.thinking', 'system.current',

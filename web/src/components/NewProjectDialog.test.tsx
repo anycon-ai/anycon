@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BrowseEntry, Project, WorkspaceBrowseParams, WorkspaceBrowseResult, WorkspaceLinkParams } from '@/protocol'
@@ -6,12 +6,14 @@ import { nodeEntry, project } from '@/test/factories'
 import { FakeRpc, rpcError } from '@/test/fakeRpc'
 import { mockRouter } from '@/test/routerMock'
 import { setRpc } from '@/transport/instance'
+import { useNewProject } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn' }))
 
 import { NewProjectDialog, type NewProjectMode } from './NewProjectDialog'
+import { NewProjectHost } from './NewProjectHost'
 
 const NODE = 'n'.repeat(32)
 const HOME = '/home/me'
@@ -153,7 +155,7 @@ describe('NewProjectDialog: existing folder', () => {
   describe('local duplicate check (NFC, case-insensitive where the node’s filesystem is)', () => {
     const setNode = (platform: string | undefined, names: string[]): void =>
       useNodes.setState({
-        byId: { [NODE]: nodeEntry({ id: NODE, projects: names.map((name) => project({ name })), info: platform ? ({ platform } as never) : undefined }) },
+        byId: { [NODE]: nodeEntry({ id: NODE, projects: names.map((name) => project({ name })), info: platform ? ({ platform, capabilities: {} } as never) : undefined }) },
         order: [NODE],
         loaded: true,
       })
@@ -270,5 +272,55 @@ describe('NewProjectDialog: existing folder', () => {
     mount('clone')
     expect(screen.getByTestId('project-clone-url')).toBeInTheDocument()
     expect(screen.getByTestId('project-new-submit')).toHaveTextContent('Clone')
+  })
+})
+
+describe('NewProjectDialog: opened from anywhere (sidebar, palette, new-session page)', () => {
+  const NODE_B = 'b'.repeat(32)
+
+  beforeEach(() => {
+    rpc.handlers['workspace.create'] = () => ({})
+    useNewProject.setState({ request: null })
+  })
+
+  it('from the new-session page: goes back there with the new project selected', async () => {
+    const user = userEvent.setup()
+    render(<NewProjectDialog nodeId={NODE} open onOpenChange={vi.fn()} then="newSession" />)
+    await user.type(screen.getByTestId('project-new-name'), 'fresh')
+    await user.click(screen.getByTestId('project-new-submit'))
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/n/$node/new', params: { node: 'nnnnnnnn' }, search: { project: 'fresh' } }))
+  })
+
+  it('lets the user pick another node, and creates the project there', async () => {
+    const user = userEvent.setup()
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'laptop' }), [NODE_B]: nodeEntry({ id: NODE_B, name: 'mini' }) }, order: [NODE, NODE_B], loaded: true })
+    render(<NewProjectHost />)
+    act(() => useNewProject.getState().open({ nodeId: NODE, mode: 'empty', then: 'project', pickNode: true }))
+    const picker = await screen.findByTestId('project-new-node')
+    expect(picker).toHaveValue(NODE)
+    await user.selectOptions(picker, NODE_B)
+    await user.type(screen.getByTestId('project-new-name'), 'fresh')
+    await user.click(screen.getByTestId('project-new-submit'))
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/n/$node/p/$project', params: { node: 'bbbbbbbb', project: 'fresh' } }))
+    expect(rpc.calls.find((c) => c.method === 'workspace.create')?.nodeId).toBe(NODE_B)
+    expect(useNewProject.getState().request).toBeNull()
+  })
+
+  it('has no node picker when the caller fixes the node, or with only one node', async () => {
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE }), [NODE_B]: nodeEntry({ id: NODE_B }) }, order: [NODE, NODE_B], loaded: true })
+    render(<NewProjectHost />)
+    act(() => useNewProject.getState().open({ nodeId: NODE, mode: 'empty', then: 'newSession', pickNode: false }))
+    await screen.findByTestId('project-new-name')
+    expect(screen.queryByTestId('project-new-node')).toBeNull()
+  })
+
+  it('cannot create on an offline node, and says why', async () => {
+    const user = userEvent.setup()
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'laptop' }), [NODE_B]: nodeEntry({ id: NODE_B, name: 'mini', conn: 'peer_offline' }) }, order: [NODE, NODE_B], loaded: true })
+    render(<NewProjectDialog nodeId={NODE_B} open onOpenChange={vi.fn()} onNodeChange={vi.fn()} />)
+    expect(screen.getByTestId('project-new-unavailable')).toHaveTextContent(/offline/)
+    expect(screen.getByRole('option', { name: 'mini (unavailable)' })).toBeInTheDocument()
+    await user.type(screen.getByTestId('project-new-name'), 'fresh')
+    expect(screen.getByTestId('project-new-submit')).toBeDisabled()
   })
 })

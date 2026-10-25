@@ -1,6 +1,7 @@
 // hub REST 的 TanStack Query 封装。REST 数据不进 zustand。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { revokeDevice } from '@/features/devices/revoke'
+import { forgetNode } from '@/features/devices/removeNode'
 import { apiFetch } from './client'
 import type { ApiAdminStatus, ApiBrowserSession, ApiConfig, ApiDevice, ApiInvite, ApiInviteCreated, ApiMe, ApiToken } from './types'
 
@@ -69,8 +70,9 @@ export function useUnbindEmail() {
   })
 }
 
-export function useTokens() {
-  return useQuery({ queryKey: keys.tokens, queryFn: () => apiFetch<ApiToken[]>('/api/me/tokens') })
+/** 登录 token 只有 `single` 模式有；`multi` 下这些接口是 404，所以调用方要在 `multi` 里传 `enabled = false`。 */
+export function useTokens(enabled = true) {
+  return useQuery({ queryKey: keys.tokens, queryFn: () => apiFetch<ApiToken[]>('/api/me/tokens'), enabled })
 }
 export function useCreateToken() {
   const qc = useQueryClient()
@@ -118,6 +120,21 @@ export function useRevokeDevice() {
     // 节点那一步（node.revoke_device）+ hub 那一步，见 features/devices/revoke.ts
     mutationFn: (v: { id: string; nodeIds: string[] }) => revokeDevice(v.id, v.nodeIds),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.devices }),
+  })
+}
+
+/**
+ * 从账号里移除一台节点，离线也能做（机器重装了、旧的 daemon 再也不会上线）：hub 吊销它（断开连接、删掉所有配对；hub 已经没有它时当作完成），
+ * 再在这个浏览器里忘记它。hub 那一步失败就不忘记，可以重试。先刷新设备列表再忘记：否则页面守卫拿缓存的旧列表，会把它当成「账号下、还没解锁」的节点跳去解锁页。
+ */
+export function useRemoveNode() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (nodeId: string) => {
+      await revokeDevice(nodeId, [])
+      await qc.invalidateQueries({ queryKey: keys.devices })
+      await forgetNode(nodeId)
+    },
   })
 }
 

@@ -227,6 +227,16 @@ impl<K: Hash + Eq + Clone> WindowCounter<K> {
         })
     }
 
+    /// 窗口里现在有几个事件（不创建键，不记事件）。`GET /api/quota` 展示用量用它。
+    pub fn count(&self, key: &K) -> usize {
+        self.count_at(key, Instant::now())
+    }
+
+    fn count_at(&self, key: &K, now: Instant) -> usize {
+        let map = self.events.lock().expect("window counter mutex");
+        map.get(key).map_or(0, |q| q.iter().filter(|t| now.saturating_duration_since(**t) < self.window).count())
+    }
+
     /// 无条件记一个事件（已经有 `limit` 个时挤掉最老的）。跟踪的键满了就不记新键。
     pub fn record(&self, key: &K) {
         self.record_at(key, Instant::now());
@@ -411,6 +421,23 @@ mod tests {
         c.try_record_at(&k, t0 + day + Duration::from_secs(60)).unwrap();
         // 别的键各算各的
         assert!(c.try_record_at(&"b@example.com".to_string(), t0).is_ok());
+    }
+
+    #[test]
+    fn window_counter_counts_the_events_inside_the_window_without_creating_keys() {
+        let hour = Duration::from_secs(3600);
+        let c: WindowCounter<String> = WindowCounter::new(5, hour);
+        let k = "acc".to_string();
+        let t0 = Instant::now();
+        assert_eq!(c.count_at(&k, t0), 0);
+        assert!(c.is_empty(), "counting never creates a key");
+        c.try_record_at(&k, t0).unwrap();
+        c.try_record_at(&k, t0 + Duration::from_secs(1800)).unwrap();
+        assert_eq!(c.count_at(&k, t0 + Duration::from_secs(1800)), 2);
+        // 最老的滑出窗口之后不再计入
+        assert_eq!(c.count_at(&k, t0 + hour), 1);
+        assert_eq!(c.count_at(&k, t0 + hour + Duration::from_secs(1800)), 0);
+        assert_eq!(c.count_at(&"other".to_string(), t0), 0);
     }
 
     #[test]

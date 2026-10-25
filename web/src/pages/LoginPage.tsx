@@ -1,37 +1,29 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Ticket } from 'lucide-react'
+import { AlertTriangle, KeyRound, Ticket } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { ApiError } from '@/api/client'
 import { keys, loginWithInvite, loginWithToken, useConfig, useMe } from '@/api/queries'
 import { CenterLayout } from '@/components/CenterLayout'
 import { EmailLogin } from '@/features/auth/EmailLogin'
+import { OAuthButtons } from '@/features/auth/OAuthButtons'
+import { consumeAccountDeleted } from '@/lib/accountDeleted'
+import { clearInvite, readInvite } from '@/lib/invite'
 import { clearPendingPairCode } from '@/lib/loginRedirect'
 import { rateLimitedText } from '@/features/auth/rateLimit'
 import { safeRedirect } from '@/lib/nav'
+import { configuredProviders, isMultiMode, oauthErrorText } from '@/lib/oauth'
+import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Field, Input } from '@/ui/Field'
 import { Card, Skeleton } from '@/ui/Misc'
 
-const INVITE_KEY = 'invite'
-
-function readInvite(): string | null {
-  try {
-    return sessionStorage.getItem(INVITE_KEY)
-  } catch {
-    return null
-  }
-}
-function clearInvite(): void {
-  try {
-    sessionStorage.removeItem(INVITE_KEY)
-  } catch {
-    /* ignore */
-  }
-}
-
-export function LoginPage({ redirect }: { redirect?: string }) {
+/**
+ * 登录页（spec/web.md § 4.1）。顺序：GitHub / Google → 邮箱 → token（只在 hub 提供时，有别的方式就折叠起来）。
+ * `oauthError` / `provider`：OAuth 回调失败时 hub 重定向带回来的 `?oauth_error=&provider=`。
+ */
+export function LoginPage({ redirect, oauthError, provider }: { redirect?: string; oauthError?: string; provider?: string }) {
   const { t } = useTranslation()
   const router = useRouter()
   const qc = useQueryClient()
@@ -41,7 +33,9 @@ export function LoginPage({ redirect }: { redirect?: string }) {
   const [tokenOpen, setTokenOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const invite = readInvite()
+  const multi = isMultiMode(config.data)
+  // `multi` 没有邀请：以前留在 sessionStorage 里的码不再有意义
+  const invite = multi ? null : readInvite()
 
   // 登录后回到 redirect（只有路径：配对链接的短码不在 URL 里，由 /pair 自己从 sessionStorage 取，见 loginRedirect.ts）
   const goBack = useCallback((): void => {
@@ -53,14 +47,25 @@ export function LoginPage({ redirect }: { redirect?: string }) {
 
   // 已登录（比如在另一个标签页登录过）：直接进去
   useEffect(() => {
-    if (me.data) goBack()
+    if (me.data) {
+      clearInvite()
+      goBack()
+    }
   }, [me.data, goBack])
 
+  // 删账号后整页跳过来的：提示一次（标记在 sessionStorage，读完就删）
+  useEffect(() => {
+    if (consumeAccountDeleted()) toast.success(t('settings.deleteAccountDone'))
+  }, [t])
+
   const methods = config.data?.login_methods ?? []
+  const providers = configuredProviders(methods)
   const tokenEnabled = methods.includes('token')
   const emailEnabled = methods.includes('email')
-  // 两种都开时，邮箱在前、token 折叠在「使用 token」后面（spec/web.md § 4.1）；只开了 token 就直接是 token 表单
-  const tokenFolded = tokenEnabled && emailEnabled && !tokenOpen
+  const hasOtherMethod = emailEnabled || providers.length > 0
+  // 有别的方式时，token 折叠在「使用 token」后面（spec/web.md § 4.1）；只开了 token 就直接是 token 表单
+  const tokenFolded = tokenEnabled && hasOtherMethod && !tokenOpen
+  const subtitle = multi ? t('login.subtitleMulti') : providers.length > 0 ? t('login.subtitleLinked') : emailEnabled ? t(tokenEnabled ? 'login.subtitleEmail' : 'login.subtitleEmailOnly') : t('login.subtitle')
 
   const fail = (e: unknown): void => {
     if (e instanceof ApiError) {
@@ -111,7 +116,7 @@ export function LoginPage({ redirect }: { redirect?: string }) {
     <CenterLayout>
       <Card className="p-5">
         <h1 className="text-lg font-semibold">{t('login.title')}</h1>
-        <p className="mt-1 text-sm text-fg-muted">{emailEnabled ? t(tokenEnabled ? 'login.subtitleEmail' : 'login.subtitleEmailOnly') : t('login.subtitle')}</p>
+        <p className="mt-1 text-sm text-fg-muted">{subtitle}</p>
 
         {config.isLoading ? (
           <div className="mt-5 space-y-3">
@@ -124,6 +129,13 @@ export function LoginPage({ redirect }: { redirect?: string }) {
           </p>
         ) : (
           <div className="mt-5 space-y-5">
+            {oauthError ? (
+              <p role="alert" className="flex items-start gap-2 rounded-md border border-danger/40 bg-danger-subtle p-3 text-sm text-danger" data-testid="oauth-error" data-code={oauthError}>
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <span>{oauthErrorText(t, oauthError, provider)}</span>
+              </p>
+            ) : null}
+
             {invite ? (
               <div className="rounded-md border border-accent/40 bg-accent-subtle p-3 text-sm">
                 <p className="flex items-center gap-2 font-medium">
@@ -132,10 +144,14 @@ export function LoginPage({ redirect }: { redirect?: string }) {
                 <Button variant="primary" className="mt-3 w-full" loading={busy} onClick={() => void acceptInvite()} data-testid="login-invite-accept">
                   {t('login.acceptInvite')}
                 </Button>
+                {providers.length > 0 ? <p className="mt-2 text-xs text-fg-muted">{t('login.invitedOauth')}</p> : null}
               </div>
             ) : null}
 
-            {emailEnabled ? <EmailLogin onSignedIn={done} autoFocus={!invite} /> : null}
+            {providers.length > 0 ? <OAuthButtons providers={providers} publicUrl={config.data?.public_url} next={safeRedirect(redirect)} invite={invite} /> : null}
+            {providers.length > 0 && (emailEnabled || (tokenEnabled && !tokenFolded)) ? <Divider label={t('login.or')} /> : null}
+
+            {emailEnabled ? <EmailLogin onSignedIn={done} autoFocus={!invite && providers.length === 0} signUp={multi} /> : null}
 
             {tokenEnabled && !tokenFolded ? (
               <form onSubmit={(e) => void submit(e)} className="space-y-3">
@@ -148,7 +164,7 @@ export function LoginPage({ redirect }: { redirect?: string }) {
                     autoCapitalize="off"
                     autoCorrect="off"
                     spellCheck={false}
-                    autoFocus={!invite && (!emailEnabled || tokenOpen)}
+                    autoFocus={!invite && (!hasOtherMethod || tokenOpen)}
                     value={token}
                     onChange={(e) => setToken(e.target.value)}
                     placeholder="anycon_…"
@@ -165,11 +181,21 @@ export function LoginPage({ redirect }: { redirect?: string }) {
                 {t('login.useToken')}
               </button>
             ) : null}
-            {!tokenEnabled && !emailEnabled ? <p className="text-sm text-fg-muted">{t('login.noMethods')}</p> : null}
+            {!tokenEnabled && !hasOtherMethod ? <p className="text-sm text-fg-muted">{t('login.noMethods')}</p> : null}
             {(!tokenEnabled || tokenFolded) && error ? <p className="text-sm text-danger">{error}</p> : null}
           </div>
         )}
       </Card>
     </CenterLayout>
+  )
+}
+
+function Divider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3 text-xs text-fg-subtle">
+      <span className="h-px flex-1 bg-border" />
+      {label}
+      <span className="h-px flex-1 bg-border" />
+    </div>
   )
 }

@@ -170,7 +170,7 @@ impl std::fmt::Debug for PushService {
 }
 
 /// TLS：rustls + `ring` + 内置的 webpki 根证书，不依赖系统证书（distroless 镜像里没有），也不碰 OpenSSL。
-fn tls_config() -> Result<rustls::ClientConfig, PushSetupError> {
+pub(crate) fn tls_config() -> Result<rustls::ClientConfig, PushSetupError> {
     let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     Ok(rustls::ClientConfig::builder_with_provider(provider)

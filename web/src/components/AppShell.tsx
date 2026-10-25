@@ -12,6 +12,7 @@ import { EnrollApprovalDialog } from '@/features/approve/EnrollApprovalDialog'
 import { ScanApproveDialog } from '@/features/approve/ScanApproveDialog'
 import { ApprovalBanner } from './ApprovalBanner'
 import { CommandPalette } from './CommandPalette'
+import { NewProjectHost } from './NewProjectHost'
 import { Sidebar } from './Sidebar'
 import { SidebarResizeHandle } from './SidebarResizeHandle'
 import { StatusBanner } from './StatusBanner'
@@ -79,6 +80,7 @@ export function AppShell() {
         <PendingApprovalBanner nodeId={nodeId} />
       </div>
       <CommandPalette open={palette} onOpenChange={setPalette} />
+      <NewProjectHost />
       {/* 别的设备请求接入时的批准对话框、应用内扫码（ADR-36）：任何页面都能打开 */}
       <EnrollApprovalDialog />
       <ScanApproveDialog />

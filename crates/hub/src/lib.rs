@@ -8,6 +8,8 @@
 //!
 //! 入口：[`run`] 起一个完整的 hub（测试用它起真实服务），二进制 `anycon-hub` 只是对它的薄封装。
 
+pub mod account_delete;
+pub mod accounts;
 pub mod app;
 pub mod bootstrap;
 pub mod clientip;
@@ -17,8 +19,10 @@ pub mod error;
 pub mod http;
 pub mod mail;
 pub mod notify;
+pub mod oauth;
 pub mod pairing;
 pub mod push;
+pub mod quota;
 pub mod ratelimit;
 pub mod store;
 pub mod util;
@@ -65,9 +69,10 @@ pub struct Handle {
     /// 共享状态，测试可以直接访问 `store` 等。
     pub state: Arc<AppState>,
     /// 首次启动自动生成的 admin token 明文（只有这一次拿得到；之后只在 `<data>/admin-token` 里）。
+    /// `multi` 没有 bootstrap token，恒为 `None`。
     pub generated_admin_token: Option<String>,
-    /// `<data>/admin-token`。
-    pub admin_token_file: PathBuf,
+    /// `<data>/admin-token`。`multi` 不读写这个文件，为 `None`。
+    pub admin_token_file: Option<PathBuf>,
     server: JoinHandle<()>,
     background: JoinHandle<()>,
 }
@@ -109,7 +114,7 @@ pub fn init_tracing(filter: &str) {
     let _ = tracing_subscriber::fmt().with_env_filter(filter).with_target(false).with_ansi(ansi).try_init();
 }
 
-/// 起一个完整的 hub：校验数据目录 → 占端口 → 打开库并迁移 → admin 账号 / token → 开始服务。
+/// 起一个完整的 hub：校验数据目录 → 占端口 → 打开库并迁移 → admin 账号 / token（只有 `single`）→ 开始服务。
 pub async fn run(config: Config) -> Result<Handle, RunError> {
     config.validate()?;
     bootstrap::prepare_data_dir(&config.data_dir)?;
@@ -130,7 +135,18 @@ pub async fn run(config: Config) -> Result<Handle, RunError> {
     )?;
     let mailer = build_mailer(&config)?;
     let store: Arc<dyn Store> = Arc::new(SqliteStore::open(config.database_url.as_deref(), &config.data_dir).await?);
-    let boot = bootstrap::bootstrap_admin(store.as_ref(), &config.data_dir, config.admin_token.as_deref()).await?;
+    // 升级前的 `single` 库：把 bootstrap 管理员的账号 id 钉住。两种模式都要，而且在任何东西能改管理员之前。
+    bootstrap::pin_bootstrap_admin(store.as_ref()).await?;
+    // `single`：bootstrap 管理员账号和 token。`multi` 开放注册，没有 bootstrap 账号，也不生成、不读写 `admin-token`
+    // （管理员来自 `ANYCON_ADMIN_EMAILS` 和库里的标记）。
+    let (admin, generated_admin_token, admin_token_file) = match config.mode {
+        config::Mode::Single => {
+            let boot =
+                bootstrap::bootstrap_admin(store.as_ref(), &config.data_dir, config.admin_token.as_deref()).await?;
+            (Some(boot.admin), boot.generated_token, Some(boot.token_file))
+        }
+        config::Mode::Multi => (None, None, None),
+    };
 
     if config.public_url.scheme() == "http" {
         tracing::warn!(
@@ -156,13 +172,37 @@ pub async fn run(config: Config) -> Result<Handle, RunError> {
         );
     }
     for name in &config.unimplemented_vars {
-        tracing::warn!(var = %name, "{name} is set but not implemented in v0.1, ignored");
+        tracing::warn!(var = %name, "{name} is set but not implemented, ignored");
+    }
+    for warning in config.startup_warnings() {
+        tracing::warn!("{warning}");
     }
     for name in &config.unknown_vars {
         tracing::debug!(var = %name, "unrecognised ANYCON_* variable ignored by the hub");
     }
-    if config.admin_token.as_deref().is_some_and(|t| t.len() < 16) {
+    if config.mode == config::Mode::Single && config.admin_token.as_deref().is_some_and(|t| t.len() < 16) {
         tracing::warn!("ANYCON_ADMIN_TOKEN is shorter than 16 characters; use a long random value");
+    }
+    if config.mode == config::Mode::Multi {
+        // 只记个数，不记地址。
+        tracing::info!(admin_emails = config.admin_emails.len(), "multi mode: sign-up is open (ANYCON_MODE=multi)");
+        if config.admin_emails.is_empty() {
+            tracing::warn!(
+                "ANYCON_ADMIN_EMAILS is empty: only accounts already flagged as admin in the database can administer this hub"
+            );
+        }
+    }
+    if let Some(quota) = &config.quota {
+        tracing::info!(
+            devices = quota.devices,
+            daemons = quota.daemons,
+            connections = quota.connections,
+            daily_pairings = config.limits.daily_pairings_per_account,
+            "per-account quotas (ANYCON_QUOTA_*)"
+        );
+    }
+    for provider in config.oauth_providers() {
+        tracing::info!(provider = provider.as_str(), "OAuth sign-in is enabled");
     }
 
     match &config.preview {
@@ -186,7 +226,7 @@ pub async fn run(config: Config) -> Result<Handle, RunError> {
         None => tracing::info!("ANYCON_SMTP_URL is not set: no email login, no email notifications"),
     }
 
-    let state = AppState::new(config, store, boot.admin, push, mailer);
+    let state = AppState::new(config, store, admin, push, mailer);
     let app = http::router(state.clone());
 
     let shutdown = state.shutdown.clone();
@@ -199,14 +239,7 @@ pub async fn run(config: Config) -> Result<Handle, RunError> {
     });
     let background = tokio::spawn(background_tasks(state.clone()));
 
-    Ok(Handle {
-        addr,
-        state,
-        generated_admin_token: boot.generated_token,
-        admin_token_file: boot.token_file,
-        server,
-        background,
-    })
+    Ok(Handle { addr, state, generated_admin_token, admin_token_file, server, background })
 }
 
 /// 发信实现：测试注入的优先，其次按 `ANYCON_SMTP_URL` 建 SMTP；都没有就没有邮件功能。
@@ -218,7 +251,7 @@ fn build_mailer(config: &Config) -> Result<Option<Arc<dyn mail::Mailer>>, mail::
     Ok(Some(Arc::new(mail::SmtpMailer::new(smtp, from.mailbox.clone())?)))
 }
 
-/// 定时清理：过期的配对登记 / 撮合和接入会话（每秒）、限速桶、过期会话和过期的预览令牌（每分钟）、90 天前的审计（每小时）。
+/// 定时清理：过期的配对登记 / 撮合和接入会话（每秒）、限速桶、过期会话、过期的邮箱验证码 / 预览令牌 / OAuth state（每分钟）、90 天前的审计（每小时）。
 async fn background_tasks(state: Arc<AppState>) {
     const AUDIT_RETENTION_MS: u64 = 90 * 24 * 3600 * 1000;
     let skip = tokio::time::MissedTickBehavior::Skip;
@@ -254,6 +287,7 @@ async fn background_tasks(state: Arc<AppState>) {
                 state.account_limits.notify_email.sweep();
                 state.account_limits.preview_tokens.sweep();
                 state.preview_budget.sweep();
+                state.oauth.sweep();
                 if let Some(q) = &state.account_limits.daily_pairings {
                     q.sweep();
                 }
@@ -265,6 +299,9 @@ async fn background_tasks(state: Arc<AppState>) {
                 }
                 if let Err(e) = state.store.purge_expired_preview_tokens(now_ms()).await {
                     tracing::warn!(error = %e, "failed to purge expired preview tokens");
+                }
+                if let Err(e) = state.store.purge_expired_oauth_states(now_ms()).await {
+                    tracing::warn!(error = %e, "failed to purge expired OAuth states");
                 }
             }
             _ = every_hour.tick() => {

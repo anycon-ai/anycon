@@ -40,13 +40,13 @@
 
 | 职责 | 说明 |
 |---|---|
-| 账号 | 登录（token / passkey / 邮箱验证码 / GitHub / Google）、身份关联、邀请、设备列表 |
+| 账号 | 登录（token / 邮箱验证码 / GitHub / Google；passkey 见 [roadmap](roadmap.md)）、身份关联、邀请（`single`）、设备列表、账号删除、管理员（§ 3） |
 | 设备路由 | 维护「设备 ID → 当前 WebSocket 连接」映射，转发信封 |
 | 离线处理 | 目标设备离线时丢弃信封并通知发送方。可选开启密文队列暂存，默认关闭 |
 | 配对撮合 | 按 `match_id`（短码的哈希；hub 看不到短码本身）把两个待配对的连接接到一起，之后只转发 |
 | 接入撮合 | 已登录账号的设备请求接入本账号的某台 daemon 时，确认归属后把两条连接接到一起，之后只转发；能不能接入由 daemon 验证（§ 5.2.1） |
 | 通知 | 把 `notify` 信封的类别转成 Web Push |
-| 配额 | 按信封元数据计数：设备数、连接数。不限会话流量；预览流量按账号限速 |
+| 配额 | `multi` 里按账号限制设备数、daemon 数、在线连接数和每日配对次数，只数元数据。不限会话流量；预览流量按账号限速 |
 | 静态文件 | 嵌入的 Web UI。**浏览器运行的就是 hub 下发的这份代码**，见 § 5.6 |
 | 预览 | 配了预览域名时：在 `<label>.<预览域名>` 上提供预览运行时（另一份嵌入的前端），签发预览令牌，把预览连接的密文转给对应的 daemon（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)） |
 
@@ -76,7 +76,7 @@ hub **不**做：解析消息内容、存会话历史、存附件、搜索、运
 - **CLI**：`anycon send`、`anycon ls`、`anycon attach` 等，走和 Web 同一套协议
 - **TS SDK / Python SDK**：两个方向——作为客户端调用节点，或把自定义 agent 注册为节点。v0.1 只有 TS SDK 的客户端方向（[roadmap](roadmap.md)）
 
-所有客户端都要配置 hub 地址，没有默认值（anycon.ai 公共 hub 在 v0.2）。
+所有客户端都要配置 hub 地址，没有默认值（`multi` 模式已经实现；anycon.ai 公共 hub 的上线见 [roadmap](roadmap.md)）。
 
 ### 2.4 `crates/crypto`
 
@@ -94,18 +94,19 @@ Noise 握手和对称加密的唯一实现。编译成三种产物：
 
 ## 3. 运行模式
 
-一个 hub 二进制，两种模式，用配置切换（v0.1 只实现了 `single`，登录方式是 token 和已绑定邮箱的验证码；`multi`、passkey、OAuth 见 [roadmap](roadmap.md)）。**数据模型从第一天就是 账号 → 设备 → 会话 的多租户形态**，`single` 模式只是恰好只有一个账号。
+一个 hub 二进制，两种模式，用配置（`ANYCON_MODE`）切换。两种模式都已实现；登录方式是 token（仅 `single`）、邮箱验证码、GitHub、Google，按配置启用，passkey 见 [roadmap](roadmap.md)。**数据模型从第一天就是 账号 → 设备 → 会话 的多租户形态**，`single` 模式只是恰好只有一个账号。
 
-| | `single`（自建默认） | `multi`（anycon.ai 公共 hub） |
+| | `single`（自建默认） | `multi`（公共 hub 用的配置） |
 |---|---|---|
-| 注册 | 关闭；管理员用 bootstrap token 登录（首次启动生成并打印，或 `ANYCON_ADMIN_TOKEN`） | 开放，任一登录方式首次登录即创建账号 |
-| 加人 | 管理员生成邀请链接 | 自助注册 |
-| 登录方式 | token、passkey；配置了 SMTP / OAuth 后同样可用邮箱验证码、GitHub、Google | 邮箱验证码、GitHub、Google、passkey。**不提供 token，没有密码** |
-| 配额 | 不启用 | 启用 |
-| 数据库 | SQLite | SQLite 或 Postgres |
+| 注册 | 关闭；管理员用 bootstrap token 登录（首次启动生成并打印，或 `ANYCON_ADMIN_TOKEN`） | 开放，第一次邮箱验证码或 OAuth 登录就创建账号 |
+| 加人 | 管理员生成邀请链接 | 自助注册，没有邀请 |
+| 登录方式 | token；配置了 SMTP / OAuth 后同样可用邮箱验证码（只给已绑定邮箱的账号）、GitHub、Google（新用户要凭邀请） | 邮箱验证码、GitHub、Google（按配置）。**不提供 token，没有密码** |
+| 配额 | 不启用 | 启用：每个账号的设备数、daemon 数、在线连接数、每日配对次数（`ANYCON_QUOTA_*`，默认 10 / 3 / 10 / 20） |
+| 管理员 | bootstrap 管理员，加上被授予的 | `ANYCON_ADMIN_EMAILS` 里的邮箱，加上被授予的 |
+| 数据库 | SQLite | SQLite（Postgres 见 [roadmap](roadmap.md)） |
 | E2E | 启用 | 启用 |
 
-两种模式跑同一份 release，不存在「官方特供分支」。登录方式由配置决定（有没有配 SMTP、有没有配 OAuth provider），不由模式决定；模式只管三件事：注册是否开放、配额是否启用、是否允许 token 登录。见 [ADR-22](decisions.md#adr-22-账号登录方式与身份模型)、[ADR-23](decisions.md#adr-23-token-登录与局域网双-origin)。没有密码，没有二次验证：账号权限很小（§ 5.6），不值得为它背一套密码和 TOTP。（节点口令是 daemon 自己的门，不是账号密码，hub 不经手，见 § 5.2.1。）
+两种模式跑同一份 release，不存在「官方特供分支」。登录方式由配置决定（有没有配 SMTP、有没有配 OAuth provider），不由模式决定；模式只管几件事：注册是否开放（邀请是否存在）、配额是否启用、是否允许 token 登录、管理员从哪来。已有的 `single` 数据库可以直接切到 `multi`（token 和邀请登录停止工作，其余数据不变）。见 [ADR-22](decisions.md#adr-22-账号登录方式与身份模型)、[ADR-23](decisions.md#adr-23-token-登录与局域网双-origin)、[ADR-40](decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。没有密码，没有二次验证：账号权限很小（§ 5.6），不值得为它背一套密码和 TOTP。（节点口令是 daemon 自己的门，不是账号密码，hub 不经手，见 § 5.2.1。）
 
 ### 3.1 登录方式
 
@@ -115,9 +116,9 @@ Noise 握手和对称加密的唯一实现。编译成三种产物：
 |---|---|---|---|
 | token | 粘一次换长期 session cookie。bootstrap token 来自 `ANYCON_ADMIN_TOKEN`，或首次启动自动生成、写入 `/data/admin-token` 并打印到日志；账号设置里可为任何账号再生成，只展示一次，库里存哈希。丢了 passkey 时改环境变量重启就是恢复出口 | 仅 `single` 模式 | 可用 |
 | passkey | WebAuthn，免密。用其他方式登录后在设置里绑定，之后作为日常登录 | https 域名 | 不可用：WebAuthn 要求安全上下文，RP ID 不能是 IP |
-| 邮箱验证码 | 6 位数字码发到邮箱，10 分钟有效，错 5 次作废；同一邮箱 60 秒内只发一次，按 IP 和邮箱双重限速。`single` 模式只给**已在账号设置里绑定了邮箱**的账号用，不能用邮箱注册（[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）；`multi` 的「未注册邮箱直接建号」随 `multi` 一起做 | 配置了 SMTP | 可用 |
-| GitHub | OAuth 授权码流程 + PKCE + `state`，scope `read:user user:email`，用 `/user/emails` 取已验证的主邮箱 | 配置了 GitHub OAuth app | 不可用：回调只回公网域名 |
-| Google | OIDC 授权码流程 + PKCE + `state`，scope `openid email profile`，用 access token 调 userinfo，信任其中的 `email_verified` | 配置了 Google OAuth client | 不可用：同上 |
+| 邮箱验证码 | 6 位数字码发到邮箱，10 分钟有效，错 5 次作废；同一邮箱 60 秒内只发一次，按 IP 和邮箱双重限速。`single` 模式只给**已在账号设置里绑定了邮箱**的账号用，不能用邮箱注册（[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）；`multi` 对任何邮箱发码，验证通过时没有账号就以这个邮箱建号 | 配置了 SMTP | 可用 |
+| GitHub | OAuth 授权码流程 + PKCE + `state`，scope `read:user user:email`，用 `/user/emails` 取已验证的主邮箱（读不到就当没有） | 配置了 GitHub OAuth app | 不可用：回调只回公网域名，登录页的按钮禁用 |
+| Google | OIDC 授权码流程 + PKCE + `state`，scope `openid email profile`，用 access token 调 userinfo（不解析 `id_token`），信任其中的 `email_verified` | 配置了 Google OAuth client | 不可用：同上 |
 
 未配置的方式在登录页不显示。`multi` 模式若既没配 SMTP 也没配任何 OAuth provider，hub 启动时直接报错，因为没有任何人能登录。
 
@@ -125,23 +126,26 @@ Web 登录会话是随机 token 存库，`HttpOnly; SameSite=Lax` cookie，`Secu
 
 ### 3.2 账号与身份
 
-一个账号可以挂多个登录身份，表结构从 v0.1 就是这个形态：
+一个账号可以挂多个登录身份：
 
 ```
 account
-  ├── email?           已验证、唯一。single 模式下只用 token 的账号可以没有
-  ├── tokens[]         登录 token 的哈希 + 标签，可多个；bootstrap token 来自配置，不在库里
-  ├── passkeys[]       WebAuthn credential，可多个
-  └── identities[]     { provider: github | google, subject: provider 的稳定用户 ID }
+  ├── email?           已验证、唯一。可以没有：single 里只用 token 的账号，multi 里 provider 没给出已验证邮箱的 OAuth 账号
+  ├── tokens[]         登录 token 的哈希 + 标签，可多个，仅 single；bootstrap token 来自配置，不在库里
+  ├── passkeys[]       WebAuthn credential，可多个（尚未实现）
+  └── identities[]     { provider: github | google, subject: provider 的稳定用户 ID }，每个 provider 最多一个
 ```
 
-关联规则：
+关联规则（[ADR-40](decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)）：
 
 - OAuth 登录按 `(provider, subject)` 匹配，**不按邮箱或用户名**——这两个都可以改
-- 没匹配到身份时：provider 声明该邮箱已验证且与某个账号的邮箱相同 → 自动关联并登录；provider 没有声明已验证 → 先走一次邮箱验证码，再关联。未验证邮箱自动关联是经典的账号接管漏洞
-- 邮箱也不匹配 → `multi` 创建新账号，`single` 要求邀请链接
-- 用户可在设置里增删身份、换邮箱（新邮箱要验证）；最后一种登录方式不能删
+- 没匹配到身份时，**只有 provider 声明已验证的邮箱**才参与：它等于某个账号的邮箱 → 把身份关联到那个账号并登录（该账号在这个 provider 已经有另一个身份 → 失败，`already_linked`）。**没有、未验证或读不到的邮箱，从不用来匹配账号，也从不写成账号的邮箱**——否则别人在 provider 那边挂一个你的邮箱、不验证就能冒领你的账号，是经典的账号接管。想把这样的身份加到已有账号：先登录那个账号，再在设置里关联（关联不碰账号的邮箱）
+- 邮箱也不匹配 → `multi` 创建新账号（邮箱 = 已验证的邮箱，没有就没邮箱），`single` 要求邀请链接：邀请链接落到登录页，页面上的 OAuth 按钮带着邀请码，hub 在同一个事务里建账号、绑身份、兑换邀请；没有邀请码 → `registration_closed`
+- 在设置里关联：身份已经在别的账号上 → `identity_taken`；本账号在这个 provider 已经有别的身份 → `already_linked`。一个账号在一个 provider 最多一个身份
+- 邮箱验证码：`multi` 对任何邮箱发码，验证通过时邮箱没有账号就建一个；`single` 只给已绑定邮箱的账号
+- 用户可在设置里增删身份、换邮箱（新邮箱要验证）；最后一种登录方式不能删。只有 hub 现在配置了的方式才算登录方式——某个 provider 后来从配置里拿掉了，留在库里的身份不再算
 - 邀请链接不绑定登录方式，受邀者用任一已配置的方式完成注册
+- 账号可以被自己删除（要求 10 分钟内登录过），也可以被管理员删除：设备记录、配对、身份、审计行都从 hub 删掉，只留一条没有 IP 的 `account_deleted`；节点上的会话历史不受影响（[spec/hub.md § 2.6](spec/hub.md#26-账号删除)）
 
 ### 3.3 局域网与公网：两个 origin
 
@@ -150,14 +154,14 @@ hub 跑在家里时的典型用法：家里走 `http://192.168.1.10:8080`，出�
 hub 这边：
 
 - cookie 的 `Secure` 按请求协议决定（`ANYCON_PUBLIC_URL` 是 https 时始终带），不设 `Domain`，各 origin 各自登录一次
-- WebSocket 的 Origin 校验接受 `ANYCON_PUBLIC_URL` 和请求自身的 Host。Host 只用于这个校验和 cookie 属性，**不用于生成任何链接**，避免 Host 头投毒
+- WebSocket 的 Origin 校验接受 `ANYCON_PUBLIC_URL` 和请求自身的 Host。Host 只用于这个校验、cookie 属性，以及 OAuth `start` 判断请求是不是来自公网地址（不是就 302 到 `ANYCON_PUBLIC_URL` 上的同一路径，目标只由配置的公网地址拼出），**不用于生成任何链接**，避免 Host 头投毒。所以反代要把原始 `Host` 传给 hub（[deploy.md § 4](deploy.md#4-反向代理)）
 - 私有网段（RFC 1918）和 localhost 的 http 请求自动放行，不需要配置项
 - `ANYCON_PUBLIC_URL` 仍是公网域名：OAuth 回调、配对链接、WebAuthn RP ID 只用它
 
 浏览器那边，hub 改不了：
 
 - **IndexedDB 按 origin 隔离**。Web 客户端的 Noise 静态密钥和本地缓存都在里面，所以同一个浏览器在两个 origin 上是两台设备，要配对两次，设备列表里出现两条。设备名要带上 origin 以便区分
-- passkey、GitHub、Google 只在 https 公网域名可用，局域网上用 token 或邮箱验证码
+- GitHub、Google（以及将来的 passkey）只在 https 公网域名可用，局域网上用 token（`single`）或邮箱验证码
 - PWA 安装和 Web Push 订阅按 origin，各自一份
 
 **推荐家里也用公网域名**，一个 origin 一切自然；手机在家连 wifi 时直接用公网域名即可，经隧道绕一圈几十毫秒。局域网 IP 适合三种情况：没有公网域名、断网、首次设置。
@@ -170,7 +174,7 @@ hub 这边：
 |---|---|---|---|
 | 账号（邮箱、OAuth 身份 ID、passkey 公钥、登录 token 哈希）、设备列表、路由表 | ✅ | — | — |
 | 离线暂存的密文（仅当开启队列） | ✅ 密文 | — | — |
-| 配额计数、连接审计（元数据） | ✅ | — | — |
+| 配额用量（设备数、连接数）、连接审计（元数据） | ✅ | — | — |
 | 会话历史、消息、附件 | ❌ | ✅ SQLite | 本地缓存（IndexedDB，明文） |
 | 搜索索引 | ❌ | ✅ FTS5 | — |
 | Noise 静态密钥 | ❌ | ✅ 自己的 + 已配对客户端公钥 | ✅ 自己的 |
@@ -181,14 +185,14 @@ hub 这边：
 
 **推论：**
 
-- hub 数据库泄露 = 泄露「账号邮箱、谁有几台设备、什么时候在线、流量多少」，没有任何对话内容、代码、密钥。passkey 存的是公钥，OAuth 不存 token
+- hub 数据库泄露 = 泄露「账号邮箱、谁有几台设备、什么时候在线、流量多少」，以及关联的 GitHub / Google 账号的稳定用户 ID（能对上公开的 GitHub 资料），没有任何对话内容、代码、密钥。passkey 存的是公钥，OAuth 不存 token、用户名和头像
 - daemon 的数据目录是会话历史的**唯一副本**，备份是用户自己的事（导出 / 导入命令 `anycon export` 在 v0.2）
 - daemon 离线时，客户端只能看到本地缓存过的历史，看不到全部。这是刻意接受的代价
 - 客户端本地缓存是明文，在用户自己的设备上，这是合理的
 
 **hub 对 payload 的纪律**：外层信封之外的所有字节都是不透明 blob。不解析、不索引、不写日志。这条纪律是整个隐私承诺的基础。
 
-**hub 能看到的元数据**（说「hub 看不到内容」时，指的是这张清单之外的东西）：账号标识（v0.1 是管理员 / 受邀者的显示名；之后的邮箱、OAuth 身份）、每台设备的 id / 名称 / 类型 / 平台 / 版本 / origin、谁和谁配对、什么时候在线、来自哪个 IP；每个信封的 `from` / `to` / `kind` / `seq` / 大小 / 时间；`notify` 信封明文的 `category` 和不透明的 `session_id`；账号绑定的邮箱、每台浏览器的推送订阅（推送服务的 endpoint 和加密公钥）、通知偏好（[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）；预览（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）：每台节点有哪些预览 label（不知道对应哪个端口）、谁什么时候申请了预览令牌、预览连接什么时候连上断开以及它们的流量。配对时 hub 只见到 `match_id`，且不记录。接入时 hub 见到谁在什么时候对哪台节点发起、有没有完成，见不到接入码、节点口令和二维码里的密钥。流量大小和时间模式本身也是信息，anycon 不做流量混淆。
+**hub 能看到的元数据**（说「hub 看不到内容」时，指的是这张清单之外的东西）：账号标识（显示名；绑定的或 OAuth 提供方验证过的邮箱；关联的 OAuth 身份——只有提供方名和它的稳定用户 ID，不存用户名、头像和 access token）、账号的配额用量、每台设备的 id / 名称 / 类型 / 平台 / 版本 / origin、谁和谁配对、什么时候在线、来自哪个 IP；每个信封的 `from` / `to` / `kind` / `seq` / 大小 / 时间；`notify` 信封明文的 `category` 和不透明的 `session_id`；账号绑定的邮箱、每台浏览器的推送订阅（推送服务的 endpoint 和加密公钥）、通知偏好（[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）；预览（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）：每台节点有哪些预览 label（不知道对应哪个端口）、谁什么时候申请了预览令牌、预览连接什么时候连上断开以及它们的流量。配对时 hub 只见到 `match_id`，且不记录。接入时 hub 见到谁在什么时候对哪台节点发起、有没有完成，见不到接入码、节点口令和二维码里的密钥。流量大小和时间模式本身也是信息，anycon 不做流量混淆。
 
 ## 5. 加密模型
 
@@ -255,7 +259,7 @@ hub 这边：
 - daemon 删掉该设备公钥 → 该设备再也握不上手
 - hub 删掉该设备路由 → 它的连接被断开
 
-两边都要删，缺一个都不干净。daemon 换机器或重装时旧密钥作废，所有客户端需重新配对，UI 要明确提示。
+两边都要删，缺一个都不干净。daemon 换机器或重装时旧密钥作废，所有客户端需重新配对，UI 要明确提示。没有恢复数据目录的重装机器是一台新节点（新的 DeviceId），旧节点不会再上线：在 Web UI 节点设置的「关于」里移除它（hub 吊销 + 本浏览器忘记，离线也能做，[spec/web.md § 4.8](spec/web.md#48-节点设置-nnodesettings)）。旧节点的会话历史只在它的数据目录里（§ 4），没有备份就找不回来。
 
 被吊销的客户端再次连接会看到「需要重新配对」；它用新短码配对或重新接入（§ 5.2.1）即可（daemon 的公钥没变时，客户端那份旧的节点记录被原样复用，不算「公钥冲突」）。浏览器上有两种退出：**退出登录**只清内存里的登录态，本地的 Noise 私钥、device token 和明文缓存**保留**在 IndexedDB 里；**退出并移除本设备**会先吊销这台设备（hub 和 daemon 两边），再清空 IndexedDB。公用 / 借来的电脑用后者。
 
@@ -286,10 +290,13 @@ hub 这边：
 | 经预览访问 daemon 机器上的其他服务 | daemon 只转发到回环地址，默认只放行会话自己起的服务监听的端口，其余端口要在那台机器上写进 `preview.allow_ports`；本机 hub 的端口永远不行。票据由 daemon 签发、用 Noise PSK 校验，hub 伪造不了；hub 的预览令牌另外保证只有和这台节点配对过的设备能申请。残余：预览 origin 里的令牌和票据对 dev app 的 JS 可见，拿到它们的人在过期前能访问这个端口 |
 | 账号被盗 | 盗号者能看元数据、能发起接入请求，但成为设备需要短码（只能从已配对设备或 daemon 机器获得）、已配对设备的批准，或节点口令，三样都不经 hub（§ 5.2.1）。他能做的坏事：用接入请求反复推送骚扰你、把节点口令接入试到锁死；已配对设备不受影响，每次都有通知 |
 | 邮箱或 GitHub / Google 账号被盗 | 等同账号被盗，权限同样小 |
+| **管理员**账号被盗 | 比普通账号多的是账号管理：能列出全部账号的元数据（显示名、邮箱、创建时间）、授予 / 取消管理员、删除账号。仍然看不到任何会话内容，也进不了任何节点（那要已配对设备或节点口令）。`ANYCON_ADMIN_EMAILS` 里的管理员不能经 API 取消（`admin_by_config`），要改配置；管理员的授予 / 取消和账号删除都写审计 |
+| 删账号：盗用旧会话删掉别人的账号，或删除后残留数据 | 自己删账号要求当前浏览器会话创建于 10 分钟内（`reauth_required`），一个被偷走的旧会话删不了；`single` 的 bootstrap 管理员删不了。删除在一个事务里物理删设备记录、配对、身份、审计行，并以 `4004` 立即断开它的所有连接，只留一条没有 IP 的 `account_deleted`。节点上的会话历史不在 hub，不受影响（[spec/hub.md § 2.6](spec/hub.md#26-账号删除)） |
+| `multi` 开放注册被批量滥用，占用 hub 的资源 | 每个账号受配额限制：设备数、daemon 数、在线连接数、滚动 24 小时的配对次数（`ANYCON_QUOTA_*`）；注册本身受邮箱验证码限速（按 IP 和邮箱）和 OAuth start 限速约束，预览流量按账号限速。不限会话流量的字节数（hub 只转发）。限速依赖真实 IP，`ANYCON_TRUSTED_PROXIES` 配错就失效 |
 | 局域网明文 HTTP 下 token 或 cookie 被嗅探 | 同网段攻击者能拿到登录态，权限同账号被盗；会话内容仍是 Noise 密文。介意就家里也走 https 公网域名（§ 3.3） |
-| 用未验证邮箱的 OAuth 身份冒领他人账号 | 只有 provider 声明已验证的邮箱才自动关联，否则先验证码确认（§ 3.2） |
+| 用未验证邮箱的 OAuth 身份冒领他人账号 | 只有 provider 声明已验证的邮箱才用来匹配账号；没有、未验证或读不到的邮箱从不用于匹配，也不会成为账号的邮箱。想把这样的身份加到已有账号，要先登录那个账号再在设置里关联（§ 3.2，[ADR-40](decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)） |
 | 验证码暴力破解 / 邮件轰炸 | 6 位码 10 分钟、错 5 次作废；按 IP 和邮箱限速。限速依赖真实 IP，`ANYCON_TRUSTED_PROXIES` 配错就失效 |
-| OAuth 回调 CSRF / 授权码注入 | `state` + PKCE |
+| OAuth 回调 CSRF / 授权码注入 / 登录 CSRF | `state` 是 32 字节随机数，库里只存哈希，10 分钟、单次使用、绑定 provider；回调时浏览器里的 `anycon_oauth` cookie（`HttpOnly; SameSite=Lax; Path=/auth/callback`）必须和 URL 里的 `state` 一致——攻击者能让受害者的浏览器打开带攻击者 `state` 的回调地址，但种不下对应的 cookie。换 token 用 PKCE（S256）。关联身份的 `state` 记着发起关联的账号，回调时登录态必须还是它，攻击者没法把自己的 GitHub 关联进别人的账号。登录后的跳转 `next` 只收站内路径（不收 `//`、`/\` 开头和带控制字符的），不会变成开放重定向；回调地址只用配置的 `ANYCON_PUBLIC_URL`，不用 `Host`（§ 3.3） |
 
 「账号被盗」那几条值得强调：**账号本身的权限很小**。账号能做的是管理设备列表和看元数据；能和 daemon 说话的是设备，不是账号。账号内接入（§ 5.2.1）不改变这一点：账号只能把请求送到 daemon 门口，开门要已配对设备的批准或节点口令。这也是登录门槛可以比一般 SaaS 低、不做密码和二次验证的原因。
 

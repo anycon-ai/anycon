@@ -20,7 +20,7 @@ zeroize = "1.9.1"
 wasm-bindgen = { version = "0.2", optional = true }
 getrandom = { version = "0.2", features = ["js"], optional = true }
 # 仅 `python` feature（骨架，不构建 wheel）：
-pyo3 = { version = "0.29", optional = true, features = ["extension-module"] }
+pyo3 = { version = "0.30", optional = true, features = ["extension-module"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 curve25519-dalek = { version = "4.1", default-features = false, features = ["alloc", "zeroize"] }
 sha2 = { version = "0.10", default-features = false }

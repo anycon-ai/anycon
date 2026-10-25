@@ -376,7 +376,73 @@ struct PairState {
     caller: Caller,
     updated: Instant,
     generation: u64,
+    /// hub 登记这次配对时给的过期时间（`PairRegistered`）。登记之前是 `None`。它同时是这次配对对外的标识：
+    /// `node.pair_begin` 的结果里带着同一个值，`anycon pair` 用它来问「我这次配对怎么样了」（[`Peers::pair_failure`]）。
+    expires_at_ms: Option<u64>,
 }
+
+/// hub 拒绝了 `pair_begin`（回的是 `pair_failed`）时 `node.pair_begin` 返回的错误。和「没连上 hub」（`unsupported`）区分开：
+/// 调用方（CLI、Web、SDK）据此说清楚是被拒绝，而不是节点离线。形状沿用别处的约定（附件配额是 `busy` + `data.reason = "quota"`）：
+///
+/// - `quota`（每日配对次数用完）→ `busy`，`data.reason = "quota"`；`rate_limited` → `busy`，`data.reason = "rate_limited"`；
+/// - `forbidden` → `forbidden`，`data.reason = "forbidden"`；
+/// - 其余（`pair_begin` 不会收到的原因）→ `internal`，`data.reason` 是 `pair_failed.reason` 的 snake_case 名字。
+fn pair_begin_refused(why: PairFailReason) -> RpcError {
+    let (code, reason, message) = match why {
+        PairFailReason::Quota => (
+            ErrorCode::Busy,
+            "quota",
+            "the hub refused the pairing request: this account has reached its quota (daily pairing attempts)",
+        ),
+        PairFailReason::RateLimited => (
+            ErrorCode::Busy,
+            "rate_limited",
+            "the hub refused the pairing request: too many attempts, wait a minute and try again",
+        ),
+        PairFailReason::Forbidden => (ErrorCode::Forbidden, "forbidden", "the hub refused the pairing request"),
+        PairFailReason::NotFound => (ErrorCode::Internal, "not_found", "the hub refused the pairing request"),
+        PairFailReason::Timeout => (ErrorCode::Internal, "timeout", "the hub refused the pairing request"),
+        PairFailReason::PeerGone => (ErrorCode::Internal, "peer_gone", "the hub refused the pairing request"),
+    };
+    crate::worktree::err_reason(code, message, reason)
+}
+
+/// 一次配对为什么没成。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairFailureReason {
+    /// hub 的 `pair_failed`，或配对中途的看门狗超时（`Timeout`）。
+    Hub(PairFailReason),
+    /// 同一个 daemon 上又开始了一次新的 `pair_begin`（比如网页的「添加设备」）：这次的短码已经失效，等着它的客户端不必再等。
+    Replaced,
+}
+
+impl PairFailureReason {
+    /// 对外的名字：`pair_failed.reason` 的 snake_case 名字，或 `replaced`。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PairFailureReason::Hub(PairFailReason::NotFound) => "not_found",
+            PairFailureReason::Hub(PairFailReason::Timeout) => "timeout",
+            PairFailureReason::Hub(PairFailReason::PeerGone) => "peer_gone",
+            PairFailureReason::Hub(PairFailReason::RateLimited) => "rate_limited",
+            PairFailureReason::Hub(PairFailReason::Quota) => "quota",
+            PairFailureReason::Hub(PairFailReason::Forbidden) => "forbidden",
+            PairFailureReason::Replaced => "replaced",
+        }
+    }
+}
+
+/// 一次配对失败的结果。daemon 记最近几次（[`MAX_PAIR_FAILURES`]），由 [`Peers::pair_failure`] 按配对取。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairFailure {
+    /// 是哪次配对：它的 `expires_at_ms`（`node.pair_begin` 返回的值）。
+    pub expires_at_ms: u64,
+    pub reason: PairFailureReason,
+    /// 失败的时间（毫秒时间戳）。
+    pub at_ms: u64,
+}
+
+/// 记几次配对的失败结果。等着旧配对的客户端每秒问一次，新的配对又失败了也不该把旧的结果挤掉太快。
+const MAX_PAIR_FAILURES: usize = 8;
 
 /// 谁在等 `pair_done`：`pair_confirm` 发出去之后，hub 的 `pair_done` / `pair_failed` 里没有会话标识，
 /// 所以同一时刻只允许一个（配对，或某个接入会话）占着「确认槽」，回执就算它的。
@@ -398,6 +464,10 @@ pub struct Peers {
     online: Mutex<HashSet<String>>,
     sessions: Mutex<HashMap<String, Arc<PeerSession>>>,
     pairing: Mutex<Option<PairState>>,
+    /// 最近几次配对的失败结果，新的在后。`anycon pair` 等不到新设备时靠它知道这次配对没成（hub 拒绝了，比如设备配额满了；
+    /// 或被新的 `pair_begin` 顶掉了），不必干等到短码过期。按 `expires_at_ms` 取，所以别的配对的结果不会被当成这一次的；
+    /// 新的配对开始、失败都不会抹掉旧配对的结果。
+    pair_failures: Mutex<VecDeque<PairFailure>>,
     /// 账号内接入引擎（ADR-36）：握手帧、`enroll_request` / `enroll_failed`、RPC 都归它；收尾借用这里的暂存 / 改键 / `pair.ack`。
     pub enroll: Arc<Enroll>,
     /// 确认槽：谁的 `pair_confirm` 在等 `pair_done`。
@@ -499,6 +569,7 @@ impl Peers {
             online: Mutex::new(HashSet::new()),
             sessions: Mutex::new(HashMap::new()),
             pairing: Mutex::new(None),
+            pair_failures: Mutex::new(VecDeque::new()),
             enroll,
             confirm_owner: Mutex::new(None),
             staged: Mutex::new(HashSet::new()),
@@ -580,6 +651,22 @@ impl Peers {
         self.records.lock().unwrap().keys().filter(|k| !staged.contains(*k)).cloned().collect()
     }
 
+    /// 这次配对（`node.pair_begin` 返回的 `expires_at_ms`）的失败结果；没有失败、或记下的失败都属于别的配对，返回 `None`。
+    pub fn pair_failure(&self, expires_at_ms: u64) -> Option<PairFailure> {
+        self.pair_failures.lock().unwrap().iter().rev().find(|f| f.expires_at_ms == expires_at_ms).copied()
+    }
+
+    /// 记下一次配对的失败。配对还没在 hub 登记成功（没有 `expires_at_ms`）的失败由 `node.pair_begin` 自己的错误返回，不记在这里。
+    fn note_pair_failure(&self, state: &PairState, reason: PairFailureReason) {
+        let Some(expires_at_ms) = state.expires_at_ms else { return };
+        let mut failures = self.pair_failures.lock().unwrap();
+        failures.retain(|f| f.expires_at_ms != expires_at_ms);
+        failures.push_back(PairFailure { expires_at_ms, reason, at_ms: now_ms() });
+        while failures.len() > MAX_PAIR_FAILURES {
+            failures.pop_front();
+        }
+    }
+
     /// 缩短配对每一步的看门狗（测试用）。
     pub fn set_pair_step_timeout(&self, d: Duration) {
         *self.pair_step_timeout.lock().unwrap() = d;
@@ -599,7 +686,15 @@ impl Peers {
 
     /// 取走进行中的配对状态；如果它停在确认阶段，把暂存的 peer 也删掉。
     async fn abort_pairing(&self) {
+        self.abort_pairing_as(None).await;
+    }
+
+    /// [`Peers::abort_pairing`]，被取走的配对已经在 hub 登记过的话，把 `why` 记成它的结果（等着它的客户端据此知道不必再等）。
+    async fn abort_pairing_as(&self, why: Option<PairFailureReason>) {
         let state = self.pairing.lock().unwrap().take();
+        if let (Some(state), Some(why)) = (&state, why) {
+            self.note_pair_failure(state, why);
+        }
         if let Some(PairState { phase: Phase::Confirming { peer, .. }, .. }) = state {
             self.release_confirm(&ConfirmOwner::Pairing);
             if !peer.is_empty() {
@@ -1020,13 +1115,15 @@ impl Peers {
             }
             let (tx, rx) = oneshot::channel();
             let gen = self.pair_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            // 上一次还停在确认阶段：它暂存的 peer 记录不能留着
-            self.abort_pairing().await;
+            // 上一次的配对被这一次顶掉：它的短码作废（等着它的客户端靠 `local.pair_outcome` 知道）；
+            // 它还停在确认阶段的话，暂存的 peer 记录不能留着
+            self.abort_pairing_as(Some(PairFailureReason::Replaced)).await;
             *self.pairing.lock().unwrap() = Some(PairState {
                 phase: Phase::AwaitRegistered { psk: psk.clone(), tx },
                 caller: caller.clone(),
                 updated: Instant::now(),
                 generation: gen,
+                expires_at_ms: None,
             });
             let epoch = self.outbox.epoch();
             if !self.outbox.send_control(&Control::PairBegin { match_id: match_id.clone() }) {
@@ -1046,10 +1143,7 @@ impl Peers {
                 }
                 Ok(Ok(Err(why))) => {
                     self.clear_pairing(gen);
-                    return Err(RpcError::new(
-                        ErrorCode::Unsupported,
-                        format!("the hub refused the pairing request: {why:?}"),
-                    ));
+                    return Err(pair_begin_refused(why));
                 }
                 _ => {
                     self.clear_pairing(gen);
@@ -1121,6 +1215,7 @@ impl Peers {
                         {
                             ps.phase = Phase::AwaitMatch { psk };
                             ps.updated = Instant::now();
+                            ps.expires_at_ms = Some(expires_at_ms);
                             let _ = tx.send(Ok(expires_at_ms));
                         }
                     }
@@ -1168,6 +1263,9 @@ impl Peers {
                             None
                         }
                     };
+                    if let Some(state) = &expired {
+                        this.note_pair_failure(state, PairFailureReason::Hub(PairFailReason::Timeout));
+                    }
                     if let Some(PairState { phase: Phase::Confirming { peer, .. }, .. }) = expired {
                         this.release_confirm(&ConfirmOwner::Pairing);
                         if !peer.is_empty() {
@@ -1186,6 +1284,9 @@ impl Peers {
                 self.release_confirm(&ConfirmOwner::Pairing);
                 let state = self.pairing.lock().unwrap().take();
                 tracing::warn!(?reason, "pairing failed");
+                if let Some(state) = &state {
+                    self.note_pair_failure(state, PairFailureReason::Hub(reason));
+                }
                 match state {
                     Some(PairState { phase: Phase::AwaitRegistered { tx, .. }, .. }) => {
                         let _ = tx.send(Err(reason));
@@ -1537,6 +1638,44 @@ impl NotifyOut for Peers {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hub_refusal_of_pair_begin_keeps_its_reason_and_is_never_the_not_connected_error() {
+        use super::*;
+        let shape = |why| {
+            let e = pair_begin_refused(why);
+            let d = e.data.clone().expect("data");
+            (d.code, d.reason, e.code)
+        };
+        // 约定同附件配额：busy + data.reason
+        assert_eq!(shape(PairFailReason::Quota), (ErrorCode::Busy, Some("quota".into()), ErrorCode::Busy.rpc_code()));
+        assert_eq!(
+            shape(PairFailReason::RateLimited),
+            (ErrorCode::Busy, Some("rate_limited".into()), ErrorCode::Busy.rpc_code())
+        );
+        assert_eq!(
+            shape(PairFailReason::Forbidden),
+            (ErrorCode::Forbidden, Some("forbidden".into()), ErrorCode::Forbidden.rpc_code())
+        );
+        for (why, name) in [
+            (PairFailReason::NotFound, "not_found"),
+            (PairFailReason::Timeout, "timeout"),
+            (PairFailReason::PeerGone, "peer_gone"),
+        ] {
+            assert_eq!(shape(why), (ErrorCode::Internal, Some(name.into()), ErrorCode::Internal.rpc_code()));
+        }
+        // `unsupported` 留给「没连上 hub」
+        for why in [
+            PairFailReason::NotFound,
+            PairFailReason::Timeout,
+            PairFailReason::PeerGone,
+            PairFailReason::RateLimited,
+            PairFailReason::Quota,
+            PairFailReason::Forbidden,
+        ] {
+            assert_ne!(pair_begin_refused(why).data.unwrap().code, ErrorCode::Unsupported, "{why:?}");
+        }
+    }
+
     use super::*;
     use crate::testutil::{eventually, SimHub};
     use anycon_protocol::{Envelope, Event, SessionEvent};

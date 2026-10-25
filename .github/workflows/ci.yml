@@ -27,7 +27,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -49,11 +49,11 @@ jobs:
     name: ts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       # wasm 产物（packages/protocol/wasm）让 protocol / sdk 的测试跑真实 Noise 而不只是 mock，也是 web 构建的输入。
@@ -104,7 +104,7 @@ jobs:
     name: gen-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
@@ -136,7 +136,7 @@ jobs:
       # daemon 默认启动时要跑 `$SHELL -ilc` 解析登录环境；CI 里没有用户 rc，关掉省几秒（测试夹具也各自设了一遍）。
       ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL: "false"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.x
@@ -190,7 +190,7 @@ jobs:
           # 没有会话内容（hub 不解析 payload；daemon 的 debug 日志不打印消息、工具输出或 RPC 参数）
           ANYCON_LOG: info,anycon_hub=debug,anycon_daemon=debug
         run: bun run --cwd e2e test
-      - name: 收集 hub / daemon 日志
+      - name: 收集 hub / daemon 日志（含 multi 用例自己起的 hub）
         if: failure()
         run: |
           mkdir -p e2e/ci-logs
@@ -199,6 +199,10 @@ jobs:
             # 只拿这两个日志：临时目录里还有 daemon 的密钥、hub 的数据库和管理员 token，不进产物
             for f in hub.log daemon.log; do
               if [ -f "$dir/$f" ]; then cp "$dir/$f" e2e/ci-logs/; fi
+            done
+            # multi 模式的用例自己起的 hub（e2e/helpers/multi-hub.ts）：目录在主临时目录下的 m<序号>（m1…），日志是 m<序号>/hub.log
+            for d in "$dir"/m[0-9]*/; do
+              if [ -f "${d}hub.log" ]; then cp "${d}hub.log" "e2e/ci-logs/multi-$(basename "$d")-hub.log"; fi
             done
           else
             echo "e2e tmp dir not found (global-setup did not get that far?)"
@@ -220,7 +224,7 @@ jobs:
     name: docker (hub image)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       # docker/hub.Dockerfile 是自包含的：wasm（wasm-bindgen-cli）→ Web UI（bun + vite）→ hub（嵌入 Web UI）→ distroless。
       # 用默认基础镜像；Docker Hub 连不上的机器本地换源见 `just docker-hub` 的注释。
@@ -287,7 +291,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: 标签
         id: meta
         uses: docker/metadata-action@v6

@@ -55,7 +55,43 @@
     "codeResend": "Send a new code",
     "codeResendIn": "Send a new code in {{seconds}} s",
     "emailVerify": "Sign in",
-    "useToken": "Use an access token instead"
+    "useToken": "Use an access token instead",
+    "subtitleMulti": "Sign in, or create an account if you don’t have one yet.",
+    "subtitleLinked": "Sign in with a method you have set up in your account settings.",
+    "emailHintSignUp": "We’ll email you a 6-digit code. If there is no account for this address yet, one is created when you enter it.",
+    "emailSentSignUp": "If the address is correct, a 6-digit code is on its way. It is valid for 10 minutes. Entering it signs you in, or creates your account if you are new.",
+    "emailVerifySignUp": "Continue",
+    "or": "or",
+    "invitedOauth": "Or create your account with one of the providers below."
+  },
+  "oauth": {
+    "continueWith": "Continue with {{provider}}",
+    "provider": {
+      "github": "GitHub",
+      "google": "Google",
+      "unknown": "that provider"
+    },
+    "wrongOrigin": "Signing in with {{provider}} only works at the hub’s public address: {{url}}",
+    "wrongOriginNote": "GitHub and Google sign-in only work from the hub’s public address, {{url}}. You are on a different address, so these buttons are disabled.",
+    "errors": {
+      "generic": "Signing in with {{provider}} did not work. Try again.",
+      "cancelled": "{{provider}} sign-in was cancelled.",
+      "provider_error": "{{provider}} could not complete the request. Try again in a moment.",
+      "invalid_state": "That sign-in attempt expired, or was started in another browser. Start again from here.",
+      "registration_closed": "This hub is invite-only, and no account here matches that {{provider}} account. Ask the administrator for an invitation link.",
+      "invite_invalid": "This invitation link is not valid.",
+      "invite_expired": "This invitation has expired.",
+      "invite_used": "This invitation has already been used.",
+      "identity_taken": "That {{provider}} account is already linked to another account on this hub.",
+      "already_linked": "Your account is already linked to a different {{provider}} account. Unlink that one first.",
+      "not_signed_in": "You need to be signed in to link a {{provider}} account. Sign in, then try again.",
+      "server_error": "The hub hit an error while finishing the {{provider}} sign-in. Try again in a moment; if it keeps happening, tell the hub administrator."
+    }
+  },
+  "invite": {
+    "openTitle": "Registration is open",
+    "openBody": "This hub lets anyone create an account, so you don’t need an invitation link. Sign in or create your account to continue.",
+    "openAction": "Go to sign in"
   },
   "status": {
     "session": {
@@ -88,7 +124,7 @@
     "pairAgain": "Pair again",
     "version": "The hub does not support this version of the web app. Reload to update.",
     "reload": "Reload",
-    "quota": "Your account has reached its connection limit.",
+    "quota": "Your account has reached its limit on simultaneous connections. Disconnect a browser or node you aren’t using, or remove old devices under Account settings → Devices.",
     "nodeOffline": "This node is offline. New messages stay on this device until it is back.",
     "unsent_one": "{{count}} message not sent yet",
     "unsent_other": "{{count}} messages not sent yet",
@@ -100,7 +136,8 @@
     "storage": "This browser could not save data locally (storage full or blocked). Unsent messages and cached sessions may be lost when you close this tab.",
     "enrollOne": "A device wants to join {{node}}.",
     "enrollMany": "{{count}} devices want to join your nodes.",
-    "review": "Review"
+    "review": "Review",
+    "quotaView": "View limits"
   },
   "sidebar": {
     "menu": "Menu",
@@ -135,6 +172,8 @@
     "expandSidebar": "Show sidebar (Ctrl+B)",
     "locked": "Not unlocked in this browser",
     "lockedHint": "Tap to unlock",
+    "removed": "Removed from your account",
+    "removedHint": "Open it to forget it on this browser",
     "scanApprove": "Scan to approve a new device",
     "notificationSettings": "Notification settings"
   },
@@ -199,7 +238,7 @@
       "invalid_code": "A pairing code has 8 or 16 letters and digits.",
       "not_found": "That code does not exist or has expired. Run anycon pair again.",
       "rate_limited": "Too many attempts. Wait a minute and try again.",
-      "quota": "Your account has reached its device limit.",
+      "quota": "Your account has reached a limit on devices, nodes or daily pairing attempts. Remove devices you no longer use under Account settings → Devices, or check which limit is full.",
       "forbidden": "That node belongs to a different account.",
       "hub_unavailable": "Could not reach the hub. Check your connection.",
       "no_identity": "The hub did not accept this browser as a device.",
@@ -238,7 +277,9 @@
     "repair": "Pair again",
     "forget": "Forget this node",
     "projectsOffline": "The project list is not available while the node is offline.",
-    "reunlock": "Unlock again"
+    "reunlock": "Unlock again",
+    "removedTitle": "This node was removed from your account",
+    "removedBody": "The hub no longer knows this node: it was removed or revoked on another device. Forgetting it deletes its pairing and cached sessions from this browser. Nothing on the node's machine is deleted."
   },
   "project": {
     "new": "New project",
@@ -272,6 +313,10 @@
     "noMatch": "No sessions match.",
     "newClone": "Clone a repository",
     "openExisting": "Open an existing folder",
+    "node": "Node",
+    "nodeOffline": "This node is offline. Projects can only be added while it is online.",
+    "nodeNoWorkspace": "This node does not manage a workspace, so projects cannot be added to it.",
+    "nodeOptionUnavailable": "{{name}} (unavailable)",
     "modeExisting": "Existing folder",
     "link": "Link folder",
     "linked": "Linked",
@@ -349,7 +394,8 @@
     "project": "Project",
     "scratch": "Temporary session (no project)",
     "headingProject": "What should we do in {{project}}?",
-    "headingScratch": "What should we work on?"
+    "headingScratch": "What should we work on?",
+    "newProject": "New project…"
   },
   "session": {
     "view": { "label": "Session view", "chat": "Chat", "changes": "Changes", "preview": "Preview" },
@@ -618,6 +664,11 @@
     "addDevice": "Add device",
     "addDeviceTitle": "Add a device",
     "addDeviceBody": "On the new device open the pairing page and enter this code, or scan the QR code.",
+    "beginRefused": {
+      "quota": "You have used all of your pairing attempts for now. The limit counts the last 24 hours, so a slot frees up as each attempt passes 24 hours old.",
+      "rate_limited": "Too many attempts. Wait a minute and try again.",
+      "forbidden": "The hub did not allow this node to start a pairing."
+    },
     "qr": "Pairing QR code",
     "expiresIn": "Expires in {{time}}",
     "expired": "This code has expired.",
@@ -644,6 +695,13 @@
     "aboutDisk": "Free disk space",
     "checkUpdates": "Check for updates",
     "updatesLater": "Coming in a later version",
+    "removeTitle": "Remove this node",
+    "removeHint": "For a machine that was reinstalled or is no longer used. Removes the node from your account and forgets it on this browser. Works while the node is offline.",
+    "remove": "Remove node",
+    "removeConfirmTitle": "Remove “{{name}}”?",
+    "removeConfirmBody": "The hub stops routing to this node and drops all of its pairings; this browser forgets it. Projects and session history on that machine are not deleted. To use it again, run `anycon init --force` on it and pair again.",
+    "removed": "Removed {{name}}.",
+    "removeFailed": "Could not remove the node: {{error}}. Nothing was changed; try again.",
     "longCode": "Long code (16 characters)",
     "longCodeHint": "Safer when you pair through a hub you do not run. Turn it off for a short code that is easier to type.",
     "tabEnroll": "Access",
@@ -664,6 +722,7 @@
     "revoke": "Revoke",
     "revokeTitle": "Revoke “{{name}}”?",
     "revokeBody": "The device loses access immediately and has to pair again.",
+    "revokeNodeBody": "The hub stops routing to this node and drops all of its pairings; this browser forgets it. Projects and session history on that machine are not deleted. To use it again, run `anycon init --force` on it and pair again.",
     "revokeSelf": "This is the browser you are using. You will have to pair it again.",
     "revokeFailed": "Could not revoke the device: {{error}}. It may still be able to connect — try again.",
     "revokedOffline": "{{count}} node(s) were offline and still hold this device’s key. The hub no longer routes to it; remove it from their device list once they are back."
@@ -718,7 +777,60 @@
     "emailUnlinkTitle": "Unlink {{email}}?",
     "emailUnlinkBody": "You will no longer be able to sign in with this email, and email alerts stop.",
     "emailUnlinked": "Email unlinked.",
-    "emailLastMethod": "This is your only sign-in method, so the email cannot be unlinked. Create an access token first."
+    "emailLastMethod": "This is your only sign-in method, so the email cannot be unlinked. Create an access token first.",
+    "quota": "Quota",
+    "loginEmailOnly": "This hub signs you in by email. You can change your email in",
+    "linkedAccounts": "Linked accounts",
+    "linkedAccountsHint": "Link a GitHub or Google account to sign in with it. For each link the hub keeps only the provider’s account ID, not its username or email.",
+    "identityLinkedSince": "linked {{when}}",
+    "identityNotLinked": "Not linked",
+    "identityLink": "Link",
+    "identityUnlink": "Unlink",
+    "identityLinkedToast": "{{provider}} linked. You can now sign in with it.",
+    "identityUnlinkedToast": "{{provider}} unlinked.",
+    "identityLastMethod": "{{provider}} is your only way to sign in, so it can’t be unlinked. Add another sign-in method first.",
+    "dangerZone": "Danger zone",
+    "deleteAccount": "Delete account",
+    "deleteAccountHint": "Permanently removes your account and its devices from this hub.",
+    "deleteAccountButton": "Delete account…",
+    "deleteAccountTitle": "Delete your account?",
+    "deleteAccountIntro": "This cannot be undone.",
+    "deleteAccountDevices": "Your account, its devices, pairings, sign-in methods and notification settings are removed from this hub, and connected devices are disconnected.",
+    "deleteAccountHistory": "Session history lives on your nodes and is not deleted.",
+    "deleteAccountRepair": "To use a node with another account or hub, you will have to pair it again.",
+    "deleteAccountLocal": "This browser’s saved device keys and cached sessions are cleared.",
+    "deleteAccountConfirm": "Delete my account",
+    "deleteAccountReauth": "For your security, deleting an account needs a recent sign-in (within the last 10 minutes). Sign in again, then come back to finish.",
+    "deleteAccountSignInAgain": "Sign in again",
+    "deleteAccountBootstrap": "This is the administrator account created when the hub was set up, so it can’t be deleted here.",
+    "deleteAccountDone": "Your account has been deleted."
+  },
+  "quota": {
+    "hint": "How much of this hub’s per-account limits you are using. Removing devices you no longer use frees up room.",
+    "manageDevices": "Manage devices",
+    "open": "View your limits",
+    "full": "Full",
+    "nearLimit": "Almost full",
+    "usedOfMax": "{{used}} of {{max}}",
+    "usedUnlimited": "{{used}} · no limit",
+    "rows": {
+      "devices": {
+        "label": "Devices",
+        "hint": "Browsers, nodes, CLI and SDK clients on your account."
+      },
+      "daemons": {
+        "label": "Nodes",
+        "hint": "Machines running the anycon daemon (they also count as devices)."
+      },
+      "connections": {
+        "label": "Live connections",
+        "hint": "Devices connected to the hub right now."
+      },
+      "dailyPairings": {
+        "label": "Pairings in the last 24 hours",
+        "hint": "Pairing and enrollment attempts. Each one counts for 24 hours."
+      }
+    }
   },
   "appearance": {
     "theme": "Theme",
@@ -778,6 +890,28 @@
       "connections": "Connections",
       "devices": "Devices",
       "accounts": "Accounts"
+    },
+    "accounts": {
+      "title": "Accounts",
+      "search": "Search accounts",
+      "searchPlaceholder": "Search by name, email or ID",
+      "none": "No accounts.",
+      "noMatch": "No accounts match your search.",
+      "you": "You",
+      "byConfig": "Admin via ANYCON_ADMIN_EMAILS",
+      "byConfigHint": "This account is an administrator because its email is listed in ANYCON_ADMIN_EMAILS. Change the hub configuration to remove it.",
+      "noEmail": "no email",
+      "created": "joined {{when}}",
+      "grantAdmin": "Make admin",
+      "revokeAdmin": "Remove admin",
+      "granted": "{{name}} is now an administrator.",
+      "revoked": "{{name}} is no longer an administrator.",
+      "delete": "Delete",
+      "deleteTitle": "Delete {{name}}?",
+      "deleteBody": "Removes the account with its devices, pairings and sign-in methods from this hub, and disconnects it right away. Session history lives on that person’s nodes and is not deleted. This cannot be undone.",
+      "deleteConfirm": "Delete account",
+      "deleted": "{{name}} was deleted.",
+      "loadMore": "Load more"
     }
   },
   "errors": {
@@ -819,7 +953,11 @@
       "push_endpoint_not_allowed": "The hub does not support this browser’s push service.",
       "device_not_found": "The hub does not know this browser as a device. Pair or unlock a node first.",
       "subscription_not_found": "The hub has no push subscription for this browser. Turn push off and on again.",
-      "invalid_email": "Enter a valid email address."
+      "invalid_email": "Enter a valid email address.",
+      "reauth_required": "For your security, this needs a recent sign-in. Sign in again and retry.",
+      "bootstrap_admin": "This is the hub’s first administrator account and can’t be deleted or demoted.",
+      "cannot_modify_self": "You can’t do this to your own account.",
+      "admin_by_config": "This administrator is set in the hub’s configuration (ANYCON_ADMIN_EMAILS), so it can’t be removed here."
     },
     "tooLarge": "That is too large to send in one request.",
     "dropped": {
@@ -1444,7 +1582,7 @@
       "offline": "The node is offline. Unlocking needs it to be online.",
       "busy": "This node is handling too many enrollments right now. Try again in a minute.",
       "rate_limited": "Too many attempts. Wait a minute and try again.",
-      "quota": "Your account has reached today’s limit for adding devices.",
+      "quota": "Your account has reached a limit on devices, nodes or daily pairing attempts. Remove devices you no longer use under Account settings → Devices, or check which limit is full.",
       "forbidden": "This browser is not allowed to unlock that node.",
       "not_found": "That node is not on your account.",
       "peer_gone": "The node disconnected. Start over.",

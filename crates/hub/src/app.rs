@@ -8,9 +8,11 @@ use std::time::Duration;
 use anycon_protocol::{close_code, Control, NotifyCategory};
 use tokio_util::sync::CancellationToken;
 
+use crate::accounts::LoginMethodLocks;
 use crate::config::Config;
 use crate::enroll::Enrolls;
 use crate::mail::Mailer;
+use crate::oauth::OAuthRuntime;
 use crate::pairing::Broker;
 use crate::push::PushService;
 use crate::ratelimit::{ByteBudgets, KeyedLimiter, RateLimiter, WindowCounter};
@@ -20,6 +22,8 @@ use crate::ws::registry::Registry;
 
 /// 邮箱验证码「每天」的窗口：滚动的 24 小时。
 const EMAIL_DAILY_WINDOW: Duration = Duration::from_secs(24 * 3600);
+/// 每日配对与接入次数的窗口：滚动的 24 小时。
+const PAIRING_DAILY_WINDOW: Duration = Duration::from_secs(24 * 3600);
 
 /// 按 IP 的限速器（见 docs/spec/hub.md § 7.2）。
 pub struct IpLimiters {
@@ -45,8 +49,11 @@ pub struct IpLimiters {
 pub struct AccountLimiters {
     /// `enroll_begin`：每账号每小时。
     pub enroll_begin: KeyedLimiter<String>,
-    /// 每日配对与接入次数（docs/spec/hub.md § 7.1）。`None` = 不限（`single` 模式没有配额）。
-    pub daily_pairings: Option<KeyedLimiter<String>>,
+    /// 每日配对与接入次数（docs/spec/hub.md § 7.1）：每个成功的撮合恰好记一次。`pair_begin` / `enroll_begin` 在已知账号时检查并各记一次
+    /// （[`crate::quota::record_pairing_attempt`]）；`pair_join` 先检查（[`crate::quota::pairing_quota_left`]），host 的登记没记过账
+    /// （host 没有账号）时在撮合成立之前记在加入方的账号上（[`crate::pairing::Broker::join`]）。
+    /// 严格的滚动 24 小时窗口，上限是 `limits.daily_pairings_per_account`。`None` = 不限（`single` 默认）。
+    pub daily_pairings: Option<WindowCounter<String>>,
     /// `POST /api/push/subscriptions`、`POST /api/push/test`：每账号每分钟。
     pub push_api: KeyedLimiter<String>,
     /// 同一个邮箱两次发码之间的最短间隔。登录码的键是 `login:<邮箱>`（对所有请求者共用），
@@ -96,6 +103,7 @@ impl Background {
 }
 
 /// 管理员 bootstrap token（来自 `ANYCON_ADMIN_TOKEN` 或 `<data>/admin-token`，不在库里）的哈希与对应账号。
+/// 只有 `single` 有（[`AppState::admin`]）。
 pub struct AdminAuth {
     pub token_hash: String,
     pub account_id: String,
@@ -110,7 +118,8 @@ pub struct AppState {
     pub enrolls: Enrolls,
     pub limits: IpLimiters,
     pub account_limits: AccountLimiters,
-    pub admin: AdminAuth,
+    /// bootstrap 管理员的 token 与账号。`single` 才有；`multi` 为 `None`（没有 bootstrap 账号，也没有 token 登录）。
+    pub admin: Option<AdminAuth>,
     /// 账号级的预览流量预算（键是账号 id，docs/spec/hub.md § 13.5）：预览连接和节点之间的 `data` / `handshake`
     /// 从这里扣，不占发送连接自己的字节预算。
     pub preview_budget: ByteBudgets<String>,
@@ -120,6 +129,10 @@ pub struct AppState {
     pub push: PushService,
     /// 发信。`None` = 没配 SMTP：没有邮箱登录、绑定和邮件通知。
     pub mailer: Option<Arc<dyn Mailer>>,
+    /// OAuth 登录（GitHub、Google）：出站 HTTP 客户端、`start` 的限速。
+    pub oauth: OAuthRuntime,
+    /// 移除登录方式（解绑邮箱、解除 OAuth 绑定、删登录 token）的按账号串行化（[`crate::accounts::begin_login_method_removal`]）。
+    pub login_method_locks: LoginMethodLocks,
     pub bg: Background,
 }
 
@@ -127,7 +140,7 @@ impl AppState {
     pub fn new(
         config: Config,
         store: Arc<dyn Store>,
-        admin: AdminAuth,
+        admin: Option<AdminAuth>,
         push: PushService,
         mailer: Option<Arc<dyn Mailer>>,
     ) -> Arc<Self> {
@@ -147,7 +160,7 @@ impl AppState {
         let minute = Duration::from_secs(60);
         let account_limits = AccountLimiters {
             enroll_begin: KeyedLimiter::per_hour(l.enroll_begin_per_hour_per_account),
-            daily_pairings: l.daily_pairings_per_account.map(KeyedLimiter::per_day),
+            daily_pairings: l.daily_pairings_per_account.map(|n| WindowCounter::new(n, PAIRING_DAILY_WINDOW)),
             push_api: KeyedLimiter::new(l.push_api_per_min_per_account, minute),
             email_resend: KeyedLimiter::new(1, l.email_resend_interval),
             email_daily_codes: WindowCounter::new(l.email_codes_per_day, EMAIL_DAILY_WINDOW),
@@ -159,6 +172,7 @@ impl AppState {
         let preview_budget = ByteBudgets::per_minute(l.preview_bytes_per_min);
         let broker = Broker::new(config.timing.pair_ttl, config.timing.pair_confirm_timeout);
         let enrolls = Enrolls::new(config.timing.enroll_ttl, l.enrolls_per_daemon);
+        let oauth = OAuthRuntime::new(config.timing.oauth_timeout);
         Arc::new(Self {
             config,
             store,
@@ -173,6 +187,8 @@ impl AppState {
             shutdown: CancellationToken::new(),
             push,
             mailer,
+            oauth,
+            login_method_locks: LoginMethodLocks::default(),
             bg: Background::default(),
         })
     }
@@ -224,13 +240,15 @@ impl AppState {
         tracing::info!(device = %device_id, "device revoked");
         self.audit(NewAudit {
             event: "device_revoked",
-            account_id: Some(device.account_id),
+            account_id: Some(device.account_id.clone()),
             device_id: Some(device_id.to_string()),
             ip_prefix: None,
             user_agent: None,
             detail: Some(serde_json::json!({ "by_device": actor })),
         })
         .await;
+        // 设备数（和被吊销设备自己的连接）变了：告诉账号其余在线的永久连接（`multi`）。
+        crate::quota::broadcast(self, &device.account_id, None).await;
         Ok(true)
     }
 

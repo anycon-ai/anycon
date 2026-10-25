@@ -200,6 +200,11 @@ async fn invite_flow_creates_an_account() {
     assert!(tokens[0].get("token").is_none());
     assert!(tokens[0]["last_used_ms"].as_u64().is_some());
     let tid = created["id"].as_str().unwrap();
+    // 它是 bob 唯一的登录方式（没有邮箱，也没绑 OAuth）：删不掉；再建一个之后就可以删这个
+    let res = hub.send(Method::DELETE, &format!("/api/me/tokens/{tid}"), &bob, Value::Null).await;
+    assert_eq!(res.status(), 409);
+    assert_eq!(res.json::<Value>().await.unwrap()["error"]["code"], "last_login_method");
+    assert_eq!(hub.send(Method::POST, "/api/me/tokens", &bob, json!({ "label": "phone" })).await.status(), 200);
     assert_eq!(hub.send(Method::DELETE, &format!("/api/me/tokens/{tid}"), &bob, Value::Null).await.status(), 204);
     let res = hub
         .http
@@ -322,8 +327,16 @@ async fn devices_list_accepts_a_device_token_read_only() {
     let bearer =
         |token: &str| hub.http.get(hub.url("/api/devices")).header("authorization", format!("Bearer {token}")).send();
 
+    // hub 在 AuthOk 之后才在后台写 last_seen_ms；等它落库，两次列表之间才不会因为这个字段出现与否而不同。
+    let mut by_cookie: Value = hub.get("/api/devices", &cookie).await.json().await.unwrap();
+    for _ in 0..200 {
+        if by_cookie.as_array().unwrap().iter().any(|d| d["id"] == daemon.id && d.get("last_seen_ms").is_some()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        by_cookie = hub.get("/api/devices", &cookie).await.json().await.unwrap();
+    }
     // 和 cookie 登录时一样的列表（含 online / paired_with）。
-    let by_cookie: Value = hub.get("/api/devices", &cookie).await.json().await.unwrap();
     let res = bearer(&cli.token).await.unwrap();
     assert_eq!(res.status(), 200);
     let by_token: Value = res.json().await.unwrap();

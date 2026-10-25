@@ -11,12 +11,17 @@ use sqlx::{Row, SqlitePool};
 
 use crate::util::{new_id, ordered};
 
+mod multi;
+mod oauth;
+
 use super::{
     category_from_str, category_to_str, kind_from_str, kind_to_str, Account, AccountToken, AuditEntry, CodeCandidate,
-    Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken, NotificationPref,
-    PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome, SetEmailOutcome, Store,
-    StoreError, StoreResult, StoreStats, WebSession,
+    CreateAccountOutcome, Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken,
+    NotificationPref, PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome,
+    SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
 };
+use super::{CreateDevicesOutcome, DeviceLimits};
+use super::{Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthState};
 
 fn be(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
@@ -212,6 +217,62 @@ impl Store for SqliteStore {
             .await
             .map_err(be)?;
         Ok(Account { id, display_name: display_name.into(), email: None, is_admin, created_at_ms: now_ms })
+    }
+
+    async fn create_account_and_record_id(
+        &self,
+        display_name: &str,
+        is_admin: bool,
+        kv_key: &str,
+        now_ms: u64,
+    ) -> StoreResult<Account> {
+        let id = new_id();
+        let mut tx = self.pool.begin().await.map_err(be)?;
+        sqlx::query("INSERT INTO accounts (id, display_name, is_admin, created_at_ms) VALUES (?, ?, ?, ?)")
+            .bind(&id)
+            .bind(display_name)
+            .bind(i64::from(is_admin))
+            .bind(now_ms as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
+        sqlx::query("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(kv_key)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(be)?;
+        tx.commit().await.map_err(be)?;
+        Ok(Account { id, display_name: display_name.into(), email: None, is_admin, created_at_ms: now_ms })
+    }
+
+    async fn create_account_with_email(
+        &self,
+        display_name: &str,
+        email: Option<&str>,
+        now_ms: u64,
+    ) -> StoreResult<CreateAccountOutcome> {
+        let id = new_id();
+        let r = sqlx::query(
+            "INSERT INTO accounts (id, display_name, email, is_admin, created_at_ms) VALUES (?, ?, ?, 0, ?)",
+        )
+        .bind(&id)
+        .bind(display_name)
+        .bind(email)
+        .bind(now_ms as i64)
+        .execute(&self.pool)
+        .await;
+        match r {
+            Ok(_) => Ok(CreateAccountOutcome::Created(Account {
+                id,
+                display_name: display_name.into(),
+                email: email.map(str::to_string),
+                is_admin: false,
+                created_at_ms: now_ms,
+            })),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(CreateAccountOutcome::EmailTaken),
+            Err(e) => Err(be(e)),
+        }
     }
 
     async fn get_account(&self, id: &str) -> StoreResult<Option<Account>> {
@@ -747,6 +808,50 @@ impl Store for SqliteStore {
         Ok(r.rows_affected())
     }
 
+    // ---- OAuth 身份与授权 state（实现在 oauth.rs） ----
+
+    async fn find_identity(&self, provider: &str, subject: &str) -> StoreResult<Option<Identity>> {
+        self.oauth_find_identity(provider, subject).await
+    }
+
+    async fn list_identities(&self, account_id: &str) -> StoreResult<Vec<Identity>> {
+        self.oauth_list_identities(account_id).await
+    }
+
+    async fn link_identity(
+        &self,
+        account_id: &str,
+        provider: &str,
+        subject: &str,
+        now_ms: u64,
+    ) -> StoreResult<LinkIdentityOutcome> {
+        self.oauth_link_identity(account_id, provider, subject, now_ms).await
+    }
+
+    async fn unlink_identity(&self, account_id: &str, provider: &str) -> StoreResult<bool> {
+        self.oauth_unlink_identity(account_id, provider).await
+    }
+
+    async fn create_account_with_identity(
+        &self,
+        new: NewIdentityAccount<'_>,
+        now_ms: u64,
+    ) -> StoreResult<IdentityAccountOutcome> {
+        self.oauth_create_account_with_identity(new, now_ms).await
+    }
+
+    async fn put_oauth_state(&self, state: NewOAuthState, now_ms: u64) -> StoreResult<()> {
+        self.oauth_put_state(state, now_ms).await
+    }
+
+    async fn take_oauth_state(&self, state_hash: &str, now_ms: u64) -> StoreResult<Option<OAuthState>> {
+        self.oauth_take_state(state_hash, now_ms).await
+    }
+
+    async fn purge_expired_oauth_states(&self, now_ms: u64) -> StoreResult<u64> {
+        self.oauth_purge_expired_states(now_ms).await
+    }
+
     // ---- 邀请 ----
 
     async fn create_invite(
@@ -1209,6 +1314,38 @@ impl Store for SqliteStore {
             .map_err(be)?;
         Ok(())
     }
+
+    // ---- multi：配额、账号删除、管理员标记、账号搜索（SQL 在 `multi.rs`） ----
+
+    async fn count_devices(&self, account_id: &str) -> StoreResult<(u32, u32)> {
+        self.count_devices_impl(account_id).await
+    }
+
+    async fn create_devices_within_limits(
+        &self,
+        devices: Vec<NewDevice>,
+        limits: DeviceLimits,
+        now_ms: u64,
+    ) -> StoreResult<CreateDevicesOutcome> {
+        self.create_devices_within_limits_impl(devices, limits, now_ms).await
+    }
+
+    async fn set_account_admin(&self, account_id: &str, is_admin: bool) -> StoreResult<bool> {
+        self.set_account_admin_impl(account_id, is_admin).await
+    }
+
+    async fn delete_account(&self, account_id: &str, tombstone: NewAudit, now_ms: u64) -> StoreResult<bool> {
+        self.delete_account_impl(account_id, tombstone, now_ms).await
+    }
+
+    async fn search_accounts(
+        &self,
+        query: &str,
+        limit: u32,
+        after: Option<(u64, String)>,
+    ) -> StoreResult<Vec<Account>> {
+        self.search_accounts_impl(query, limit, after).await
+    }
 }
 
 #[cfg(test)]
@@ -1351,6 +1488,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_account_and_its_recorded_id_are_written_in_one_transaction() {
+        let (s, _d) = store().await;
+        let a = s.create_account_and_record_id("admin", true, "bootstrap_admin_id", 5).await.unwrap();
+        assert_eq!(s.kv_get("bootstrap_admin_id").await.unwrap().as_deref(), Some(a.id.as_str()));
+        let got = s.get_account(&a.id).await.unwrap().unwrap();
+        assert!((got.display_name.as_str(), got.is_admin, got.created_at_ms) == ("admin", true, 5));
+
+        // 记录写不进去（这里用触发器模拟崩溃 / 写失败）：账号也不留下，没有没人记得的孤儿管理员
+        sqlx::query(
+            "CREATE TRIGGER no_kv BEFORE INSERT ON kv WHEN NEW.key = 'fails' BEGIN SELECT RAISE(ABORT, 'no kv'); END",
+        )
+        .execute(&s.pool)
+        .await
+        .unwrap();
+        assert!(s.create_account_and_record_id("orphan", true, "fails", 6).await.is_err());
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT display_name FROM accounts").fetch_all(&s.pool).await.unwrap();
+        assert_eq!(names, vec!["admin".to_string()], "the failed attempt left no account behind");
+    }
+
+    #[tokio::test]
     async fn audit_and_kv() {
         let (s, _d) = store().await;
         let now = now_ms();
@@ -1418,6 +1576,38 @@ mod tests {
         assert_eq!(s.set_account_email(&a.id, None).await.unwrap(), SetEmailOutcome::Done);
         assert_eq!(s.set_account_email(&b.id, None).await.unwrap(), SetEmailOutcome::Done);
         assert!(s.find_account_by_email("y@example.com").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_account_can_be_created_with_its_email_and_the_second_creator_of_that_email_loses() {
+        let (s, _d) = store().await;
+        let now = now_ms();
+        let CreateAccountOutcome::Created(a) =
+            s.create_account_with_email("alice", Some("alice@example.com"), now).await.unwrap()
+        else {
+            panic!("the first creation wins")
+        };
+        assert_eq!(
+            (a.display_name.as_str(), a.email.as_deref(), a.is_admin),
+            ("alice", Some("alice@example.com"), false)
+        );
+        assert_eq!(s.find_account_by_email("alice@example.com").await.unwrap().unwrap().id, a.id);
+        // 同一个邮箱（含大小写不同的写法）再建一个：EmailTaken，库里没有多出账号
+        for email in ["alice@example.com", "Alice@Example.com"] {
+            assert!(matches!(
+                s.create_account_with_email("mallory", Some(email), now).await.unwrap(),
+                CreateAccountOutcome::EmailTaken
+            ));
+        }
+        assert_eq!(s.stats().await.unwrap().accounts, 1);
+        // 没有邮箱的账号可以有很多个
+        for name in ["n1", "n2"] {
+            let CreateAccountOutcome::Created(n) = s.create_account_with_email(name, None, now).await.unwrap() else {
+                panic!("accounts without an email never collide")
+            };
+            assert!(n.email.is_none());
+        }
+        assert_eq!(s.stats().await.unwrap().accounts, 3);
     }
 
     /// 这一组里现在的码的哈希，最旧的在前。

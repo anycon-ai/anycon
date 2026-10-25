@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ApiDevice } from '@/api/types'
-import { accountNodes, findAccountNode, homeTarget, lockedNodes, unlockParam } from './nodes'
+import { accountNodes, findAccountNode, homeTarget, lockedNodes, removedNodes, unlockParam } from './nodes'
 
 const dev = (id: string, kind: ApiDevice['kind'] = 'daemon', extra: Partial<ApiDevice> = {}): ApiDevice => ({ id, name: id.slice(0, 4), kind, platform: 'linux-x86_64', created_at_ms: 1, online: true, paired_with: [], ...extra })
 const A = 'a'.repeat(32)
@@ -19,6 +19,19 @@ describe('account nodes', () => {
     expect(lockedNodes(devices, [A]).map((d) => d.id)).toEqual([B])
     expect(lockedNodes(devices, [A, B])).toEqual([])
     expect(lockedNodes(devices, []).map((d) => d.id)).toEqual([A, B])
+  })
+
+  it('removed = paired here, but no longer a node of the account, judged only by a list fetched after the pairing', () => {
+    const local = [
+      { id: A, pairedAt: 100 },
+      { id: 'd'.repeat(32), pairedAt: 100 },
+      { id: 'e'.repeat(32), pairedAt: 300 },
+    ]
+    // d 不在账号里了；e 也不在，但它是在这份列表之后配对的，不算
+    expect(removedNodes(devices, 200, local)).toEqual(['d'.repeat(32)])
+    // 同 id 的 web 设备不算节点
+    expect(removedNodes([dev('d'.repeat(32), 'web')], 200, local)).toEqual([A, 'd'.repeat(32)])
+    expect(removedNodes(undefined, 200, local)).toEqual([]) // 列表没拉到：什么都不算
   })
 
   it('resolves the URL parameter: full id, or an unambiguous prefix', () => {

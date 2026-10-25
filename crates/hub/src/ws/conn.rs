@@ -29,11 +29,12 @@ use crate::app::AppState;
 use crate::config::{Limits, Timing};
 use crate::enroll;
 use crate::pairing::{self, BeginError, ConfirmOutcome, Origin};
+use crate::quota;
 use crate::store::{Device, NewAudit};
 use crate::util::{hash_token, ip_prefix, new_id, now_ms};
 
 use super::outq::{OutQueue, OutRx, Outbound, PushError};
-use super::registry::{Conn, ConnInit, PreviewMeta};
+use super::registry::{Conn, ConnInit, ConnectionQuotaFull, PreviewMeta};
 use super::sticky::{Cause, TooManyReturned, MAX_RETURNED};
 use super::UpgradeCtx;
 
@@ -209,6 +210,21 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
     };
     let peers_ms = upgraded.elapsed().as_millis() as u64 - auth_ms;
 
+    // `multi`：永久连接的 `auth_ok` 带配额。设备数 / daemon 数在登记前从库里读（`auth_ok` 在持注册表锁时同步生成，
+    // 不能 await）；连接数由注册表在登记的同一把锁里数（见下面的 `register_counted`）。
+    let device_counts = match (&state.config.quota, permanent, &account_id) {
+        (Some(_), true, Some(account)) => match state.store.count_devices(account).await {
+            Ok(counts) => Some(counts),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to read device counts");
+                let _ =
+                    socket.send(Message::Close(Some(CloseFrame { code: 1011, reason: "internal error".into() }))).await;
+                return;
+            }
+        },
+        _ => None,
+    };
+
     let (out, out_rx) = OutQueue::new(state.config.outbound_buffer_bytes);
     let conn = Arc::new(Conn::new(ConnInit {
         id: state.registry.next_conn_id(),
@@ -246,7 +262,30 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
         }
         tracing::info!(peer = %device_id, node = %meta.node_id, auth_ms, "preview connected");
     } else {
-        let reg = state.registry.register(&conn, auth_ok);
+        // `multi` 的连接配额：账号别的设备已经有 `connections` 条永久连接在线就拒绝，同一设备顶掉自己的旧连接不算。
+        // 检查和登记是同一把锁里的一步（并发认证不会一起冲过上限）。临时连接不受限。
+        let quota_limits = state.config.quota.filter(|_| permanent);
+        let auth_ok = |peers_online, connections| Control::AuthOk {
+            device_id: device_id.clone(),
+            server_time_ms: now_ms(),
+            peers_online,
+            quota: quota_limits
+                .zip(device_counts)
+                .map(|(l, (devices, daemons))| quota::build(&l, devices, daemons, connections)),
+        };
+        let max_connections = quota_limits.map(|l| l.connections as usize);
+        let reg = match state.registry.register_counted(&conn, max_connections, auth_ok) {
+            Ok(reg) => reg,
+            Err(ConnectionQuotaFull) => {
+                tracing::info!(limit = "connections", "quota exceeded");
+                conn.send_control(&Control::AuthFail { reason: AuthFailReason::Quota });
+                conn.close(1008, "closing");
+                let _ = tokio::time::timeout(Duration::from_secs(2), &mut writer).await;
+                writer.abort();
+                return;
+            }
+        };
+        let replaced_own_connection = reg.superseded.is_some();
         if let Some(old) = reg.superseded {
             tracing::info!(device = %device_id, "superseding previous connection");
             old.close(close_code::SUPERSEDED, "superseded");
@@ -272,6 +311,13 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
                 peers_ms,
                 "device connected"
             );
+            // 账号多了一条在线连接：告诉它其余的永久连接（这条已经在 `auth_ok` 里拿到了）。顶掉自己旧连接时
+            // 连接数没变，不用发。
+            if !replaced_own_connection {
+                if let Some(account) = conn.account_id() {
+                    quota::broadcast(&state, &account, Some(conn.id)).await;
+                }
+            }
         } else {
             tracing::debug!(temp_id = %device_id, "temporary connection");
         }
@@ -369,6 +415,11 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
                 if let Some(c) = state.registry.get(&peer) {
                     c.send_control(&Control::PeerOffline { device: id.clone() });
                 }
+            }
+            // 账号少了一条在线连接：告诉它其余的永久连接（`multi`）。被吊销 / 顶掉 / 删账号时连接已经被移出路由表，
+            // `removed` 为 `false`，由发起方自己通知。
+            if let Some(account) = conn.account_id() {
+                quota::broadcast(&state, &account, None).await;
             }
         }
         tracing::info!(device = %id, "device disconnected");
@@ -824,8 +875,18 @@ async fn on_control(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState,
                 }
                 cs.temp_pair_begins += 1;
             }
+            // 每日配对与接入次数（`multi`）：账号已知（正式设备，或带登录 cookie 的临时连接）时检查并记一次，
+            // 并让撮合表记住这次登记已经记过账（`pair_join` 里不再重复记）。账号未知的（第一次启动的 daemon）这里不记，
+            // 由撮合成立时记在加入方的账号上，所以每个成功的撮合恰好记一次。
+            let account = conn.account_id();
+            if let Some(account) = &account {
+                if !quota::record_pairing_attempt(state, account) {
+                    conn.send_control(&Control::PairFailed { reason: PairFailReason::Quota });
+                    return;
+                }
+            }
             // 这里和 broker 里都不要记 match_id。
-            match state.broker.begin(conn, &match_id) {
+            match state.broker.begin(conn, &match_id, account.is_some()) {
                 Ok(expires_at_ms) => conn.send_control(&Control::PairRegistered { expires_at_ms }),
                 Err(BeginError::Malformed) => {
                     tracing::debug!(device = %conn.device_id(), "pair_begin rejected: malformed match id");
@@ -839,7 +900,17 @@ async fn on_control(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState,
                 cs.receipt(conn, Control::PairFailed { reason: PairFailReason::RateLimited });
                 return;
             }
-            if let Err(reason) = state.broker.join(conn, &match_id) {
+            // 每日额度，加入前先检查（用完的账号不用去撮合）。真正记账在撮合成立之前、由 broker 调用：
+            // host 的登记已经记过账就不再记；没记过（host 没有账号）才记在加入方的账号上。输错的短码撮合不成，不花额度。
+            let account = conn.account_id();
+            if let Some(account) = &account {
+                if !quota::pairing_quota_left(state, account) {
+                    conn.send_control(&Control::PairFailed { reason: PairFailReason::Quota });
+                    return;
+                }
+            }
+            let charge = || account.as_deref().is_none_or(|a| quota::record_pairing_attempt(state, a));
+            if let Err(reason) = state.broker.join(conn, &match_id, charge) {
                 conn.send_control(&Control::PairFailed { reason });
             }
         }
@@ -930,8 +1001,7 @@ async fn on_enroll_begin(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnS
         tracing::info!(limit = "enroll_begin_account", "rate limited");
         return rate_limited(cs);
     }
-    if state.account_limits.daily_pairings.as_ref().is_some_and(|q| q.check(&account).is_err()) {
-        tracing::info!(limit = "daily_pairings", "quota exceeded");
+    if !quota::record_pairing_attempt(state, &account) {
         return fail(EnrollFailReason::Quota);
     }
     // 目标：本账号未吊销的 daemon（不区分「不存在」和「不是你的」）。

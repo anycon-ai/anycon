@@ -1,11 +1,15 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeRpc, rpcError } from '@/test/fakeRpc'
+import { mockRouter } from '@/test/routerMock'
 import { setRpc } from '@/transport/instance'
 import { useEnroll } from '@/stores/enroll'
 import { useNodes } from '@/stores/nodes'
 import { DevicesTab } from './DevicesTab'
+
+// 配额用完的说明里有一个去「配额」页的链接（`Link`）
+vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), vi.fn(), {}))
 
 const NODE = 'n'.repeat(32)
 let rpc: FakeRpc
@@ -44,6 +48,82 @@ describe('DevicesTab — add device', () => {
     await user.click(screen.getByRole('switch', { name: /Long code|长码/ }))
     await waitFor(() => expect(screen.getByTestId('pair-begin-code')).toHaveTextContent('ABCD-2345-WXYZ-6789'))
     expect(pairParams).toHaveLength(3)
+  })
+})
+
+describe('DevicesTab — the hub refuses node.pair_begin', () => {
+  it('quota: the dialog stays open, says the daily pairing attempts are used up (no "remove devices" advice) and links to Settings → Quota', async () => {
+    rpc.handlers['node.pair_begin'] = () => {
+      throw rpcError('busy', undefined, 'quota')
+    }
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(screen.getByTestId('device-add'))
+    const note = await screen.findByTestId('pair-begin-refused')
+    expect(note).toHaveAttribute('role', 'alert')
+    // 登记时的 quota 只可能是每日配对次数：名额随 24 小时滚动窗口回来，不是去移除设备
+    expect(note).toHaveTextContent(/pairing attempts/)
+    expect(note).toHaveTextContent(/24 hours/)
+    expect(note).not.toHaveTextContent(/remove devices|Remove devices|Account settings → Devices/)
+    expect(note).not.toHaveTextContent(/busy with a turn/)
+    expect(screen.getByTestId('quota-link')).toHaveAttribute('href', '/settings/quota')
+    expect(screen.getByTestId('pair-begin-dialog')).toBeInTheDocument()
+    expect(screen.queryByTestId('pair-begin-code')).toBeNull()
+  })
+
+  it('forbidden: the dialog stays open with a clear line, no quota link', async () => {
+    rpc.handlers['node.pair_begin'] = () => {
+      throw rpcError('forbidden', undefined, 'forbidden')
+    }
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(screen.getByTestId('device-add'))
+    const note = await screen.findByTestId('pair-begin-refused')
+    expect(note).toHaveTextContent(/did not allow this node to start a pairing/)
+    expect(note).not.toHaveTextContent(/The node does not allow this/)
+    expect(screen.queryByTestId('quota-link')).toBeNull()
+    expect(screen.getByTestId('pair-begin-dialog')).toBeInTheDocument()
+  })
+
+  it('a forbidden without the hub-refusal reason (any other forbidden) is still the generic toast', async () => {
+    rpc.handlers['node.pair_begin'] = () => {
+      throw rpcError('forbidden')
+    }
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(screen.getByTestId('device-add'))
+    await waitFor(() => expect(screen.queryByTestId('pair-begin-dialog')).toBeNull())
+    expect(screen.queryByTestId('pair-begin-refused')).toBeNull()
+  })
+
+  it('rate_limited: says to wait, with no quota link; opening the dialog again tries again', async () => {
+    let refuse = true
+    rpc.handlers['node.pair_begin'] = () => {
+      if (refuse) throw rpcError('busy', undefined, 'rate_limited')
+      return { code: 'ABCD-2345-WXYZ-6789', expires_at_ms: Date.now() + 300_000, link: 'https://hub.example/pair#code=ABCD-2345-WXYZ-6789' }
+    }
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(screen.getByTestId('device-add'))
+    expect(await screen.findByTestId('pair-begin-refused')).toHaveTextContent(/Too many attempts/)
+    expect(screen.queryByTestId('quota-link')).toBeNull()
+    // 关掉重开：旧的拒绝说明不留着，重新请求
+    refuse = false
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByTestId('device-add'))
+    await waitFor(() => expect(screen.getByTestId('pair-begin-code')).toHaveTextContent('ABCD-2345-WXYZ-6789'))
+    expect(screen.queryByTestId('pair-begin-refused')).toBeNull()
+  })
+
+  it('other errors (here: the node cannot reach the hub) still close the dialog and show a toast', async () => {
+    rpc.handlers['node.pair_begin'] = () => {
+      throw rpcError('unsupported')
+    }
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(screen.getByTestId('device-add'))
+    await waitFor(() => expect(screen.queryByTestId('pair-begin-dialog')).toBeNull())
+    expect(screen.queryByTestId('pair-begin-refused')).toBeNull()
   })
 })
 

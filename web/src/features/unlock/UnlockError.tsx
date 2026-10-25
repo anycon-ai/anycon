@@ -1,5 +1,6 @@
 import { ShieldAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { QuotaLink } from '@/components/QuotaLink'
 import { formatCountdown } from '@/lib/expiry'
 import { useNow } from '@/lib/useNow'
 import type { EnrollError } from '@/transport/enroll'
@@ -26,7 +27,15 @@ export function UnlockError({ error, errorAt, entry, onRestart }: { error: Enrol
     <div className="space-y-2 rounded-md border border-danger/40 bg-danger-subtle p-3 text-sm text-danger" role="alert" data-testid="unlock-error" data-code={error.code}>
       <p className="flex items-start gap-2">
         <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-        <span>{text}</span>
+        <span>
+          {text}
+          {error.code === 'quota' ? (
+            <>
+              {' '}
+              <QuotaLink />
+            </>
+          ) : null}
+        </span>
       </p>
       {error.code === 'locked' ? <code className="block rounded bg-bg-muted px-2 py-1 font-mono text-xs text-fg">anycon passwd --enable</code> : null}
       {restart ? (

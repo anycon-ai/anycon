@@ -254,11 +254,13 @@ async fn the_updated_notifications_of_projects_that_finish_together_are_merged_i
         td.new_repo(n);
     }
     td.ctx.workspace.set_git_cold_budget_for_test(Duration::from_millis(300));
+    // 防抖加长到 1.5 秒：三个 git 进程各自睡 1.2 秒再跑，算完的时刻在机器忙时能差出几百毫秒，缺省的 200 毫秒会把一批拆开
+    td.ctx.workspace.set_git_updated_debounce_for_test(Duration::from_millis(1500));
     td.slow_git(&[("*merge*status*", 1.2)]);
     let mut c = td.client("a");
     let l: WorkspaceListResult = c.call(&td, methods::WORKSPACE_LIST, json!({})).await.unwrap();
     assert!(l.projects.iter().all(|p| p.git.is_none() && p.git_pending), "all three are still being computed: {l:?}");
-    // 三个项目差不多同时算完：200 ms 防抖，合并成一条 `workspace.changed`
+    // 三个项目差不多同时算完：防抖窗口内合并成一条 `workspace.changed`
     let updated_events = |notes: Vec<RpcNotification>| -> Vec<Vec<String>> {
         notes
             .into_iter()

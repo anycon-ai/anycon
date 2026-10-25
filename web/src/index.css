@@ -108,16 +108,16 @@ html[data-font='lg'] {
 }
 
 /* 会话区（消息列表、输入框）的栏：正文最宽 72rem，窄于它时随容器自适应；两侧留白随容器宽度分段加大：
-   ≤ 34rem 是 1rem；34rem → 50rem 线性加到 5rem；50rem → 64rem 再线性加到 7.5rem，之后固定。
-   容器宽过 87rem（72rem 正文 + 两侧各 7.5rem）后，多出来的部分由 auto 外边距平分。
+   ≤ 34rem 是 1rem；34rem → 50rem 线性加到 5rem；50rem → 64rem 再线性加到 6.25rem（100px），之后固定。
+   容器宽过 84.5rem（72rem 正文 + 两侧各 6.25rem）后，多出来的部分由 auto 外边距平分。
    左右内边距的百分比按父容器宽度算，所以不用媒体查询也能跟着侧栏 / 信息面板的开合走；
    各段首尾相接，宽度变化时正文不会突然跳一下；第一段斜率取 0.25，正文在整个区间里都在随容器变宽。 */
 @utility chat-column {
   width: 100%;
-  max-width: 87rem;
+  max-width: 84.5rem;
   margin-inline: auto;
-  /* 绝对定位的子元素（虚拟滚动的行）不吃 padding，要用同一个值做 left / right；栏宽 ≤ 87rem 时它的包含块宽度和父容器相同，百分比算出来一致 */
-  --chat-pad: calc(clamp(1rem, 25% - 7.5rem, 5rem) + clamp(0rem, (100% - 50rem) * 0.17857, 2.5rem));
+  /* 绝对定位的子元素（虚拟滚动的行）不吃 padding，要用同一个值做 left / right；栏宽 ≤ 84.5rem 时它的包含块宽度和父容器相同，百分比算出来一致 */
+  --chat-pad: calc(clamp(1rem, 25% - 7.5rem, 5rem) + clamp(0rem, (100% - 50rem) * 0.089286, 1.25rem));
   padding-inline: var(--chat-pad);
 }
 

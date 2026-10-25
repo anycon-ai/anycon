@@ -10,9 +10,10 @@ import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
 import { useEnroll } from '@/stores/enroll'
+import { useNewProject } from '@/stores/newProject'
 
 const navigate = vi.hoisted(() => vi.fn())
-const devices = vi.hoisted(() => ({ data: undefined as unknown }))
+const devices = vi.hoisted(() => ({ data: undefined as unknown, dataUpdatedAt: 0 }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn' }))
 vi.mock('@/api/queries', () => ({ useMe: () => ({ data: undefined }), useDevices: () => devices, logout: vi.fn() }))
 
@@ -35,6 +36,8 @@ beforeEach(() => {
   resetSeq()
   navigate.mockReset()
   devices.data = undefined
+  devices.dataUpdatedAt = 0
+  useNewProject.setState({ request: null })
   usePrefs.setState({ sidebarOpen: true, sidebarNodes: null })
   useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, agents: [mockAgent()], projects: [project({ name: 'app' }), project({ name: 'web' })] }) }, order: [NODE], loaded: true })
   useSessions.setState({
@@ -101,35 +104,56 @@ describe('collapsing the wide-screen sidebar', () => {
 describe('empty sidebar', () => {
   const NODE_B = 'b'.repeat(32)
 
-  it('offers “New project” (to the node home, which has the create / clone / open options) and closes the drawer on click', async () => {
+  it('offers “New project”, which opens the new-project dialog right here and closes the drawer', async () => {
     const user = userEvent.setup()
     useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, projects: [] }) }, order: [NODE], loaded: true })
     useSessions.setState({ list: {}, pending: {}, open: {} })
     const onNavigate = vi.fn()
     wrap(<Sidebar nodeId={NODE} onNavigate={onNavigate} />)
-    const link = screen.getByTestId('sidebar-new-project')
-    expect(link).toHaveTextContent('New project')
-    expect(link).toHaveAttribute('href', '/n/nnnnnnnn')
-    link.addEventListener('click', (e) => e.preventDefault()) // jsdom 不做真正的跳转
-    await user.click(link)
+    const button = screen.getByTestId('sidebar-new-project')
+    expect(button).toHaveTextContent('New project')
+    await user.click(button)
     expect(onNavigate).toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(useNewProject.getState().request).toEqual({ nodeId: NODE, mode: 'empty', then: 'project', pickNode: true })
   })
 
-  it('points at the node the page is on when several nodes are ticked, and is absent once there is anything to show', () => {
+  it('starts on the node the page is on when several nodes are ticked, and is absent once there is anything to show', async () => {
+    const user = userEvent.setup()
     useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE }), [NODE_B]: nodeEntry({ id: NODE_B }) }, order: [NODE, NODE_B], loaded: true })
     useSessions.setState({ list: {}, pending: {}, open: {} })
     const { unmount } = wrap(<Sidebar nodeId={NODE_B} />)
-    expect(screen.getByTestId('sidebar-new-project')).toHaveAttribute('href', '/n/bbbbbbbb')
+    await user.click(screen.getByTestId('sidebar-new-project'))
+    expect(useNewProject.getState().request?.nodeId).toBe(NODE_B)
     unmount()
     // 页面所在的节点没被勾选：用第一个勾选的
     usePrefs.setState({ sidebarNodes: [NODE] })
     const second = wrap(<Sidebar nodeId={NODE_B} />)
-    expect(screen.getByTestId('sidebar-new-project')).toHaveAttribute('href', '/n/nnnnnnnn')
+    await user.click(screen.getByTestId('sidebar-new-project'))
+    expect(useNewProject.getState().request?.nodeId).toBe(NODE)
     second.unmount()
     useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, projects: [project({ name: 'app' })] }) }, order: [NODE], loaded: true })
     wrap(<Sidebar nodeId={NODE} />)
     expect(screen.queryByTestId('sidebar-empty')).toBeNull()
     expect(screen.queryByTestId('sidebar-new-project')).toBeNull()
+  })
+})
+
+describe('“New project” next to search', () => {
+  it('is always there while a node is ticked, and opens the dialog with a node picker', async () => {
+    const user = userEvent.setup()
+    wrap(<Sidebar nodeId={NODE} onSearch={() => {}} />)
+    expect(screen.getAllByTestId('sidebar-project-new').length).toBeGreaterThan(0) // 已经有项目了，按钮照样在
+    const button = screen.getByTestId('sidebar-new-project-button')
+    expect(button).toHaveAccessibleName('New project')
+    await user.click(button)
+    expect(useNewProject.getState().request).toEqual({ nodeId: NODE, mode: 'empty', then: 'project', pickNode: true })
+  })
+
+  it('is absent when this browser has no node', () => {
+    useNodes.setState({ byId: {}, order: [], loaded: true })
+    wrap(<Sidebar nodeId={undefined} />)
+    expect(screen.queryByTestId('sidebar-new-project-button')).toBeNull()
   })
 })
 
@@ -247,6 +271,41 @@ describe('node switcher — nodes of the account this browser has not unlocked (
     await user.click(screen.getByTestId('node-switcher'))
     await screen.findByTestId('node-add')
     expect(screen.queryByTestId('node-locked')).toBeNull()
+  })
+})
+
+describe('node switcher — nodes removed from the account on another device', () => {
+  const daemon = (id: string, name: string) => ({ id, name, kind: 'daemon', platform: 'linux', created_at_ms: 1, online: true, paired_with: [] })
+  const NODE_B = 'b'.repeat(32)
+  beforeEach(() => {
+    useNodes.setState({
+      byId: { [NODE]: nodeEntry({ id: NODE, name: 'laptop', pairedAt: 100 }), [NODE_B]: nodeEntry({ id: NODE_B, name: 'old-mini', pairedAt: 100 }) },
+      order: [NODE, NODE_B],
+      loaded: true,
+    })
+  })
+
+  it('lists a paired node the account no longer has; a click goes to its page (where it can be forgotten)', async () => {
+    const user = userEvent.setup()
+    devices.data = [daemon(NODE, 'laptop')]
+    devices.dataUpdatedAt = 200
+    wrap(<Sidebar nodeId={NODE} />)
+    await user.click(screen.getByTestId('node-switcher'))
+    const removed = await screen.findAllByTestId('node-removed')
+    expect(removed).toHaveLength(1)
+    expect(removed[0]).toHaveTextContent('old-mini')
+    await user.click(removed[0]!)
+    expect(navigate).toHaveBeenCalledWith({ to: '/n/$node', params: { node: 'bbbbbbbb' } })
+  })
+
+  it('does not count a device list older than the pairing (a node paired just now may not be in it yet)', async () => {
+    const user = userEvent.setup()
+    devices.data = [daemon(NODE, 'laptop')]
+    devices.dataUpdatedAt = 50
+    wrap(<Sidebar nodeId={NODE} />)
+    await user.click(screen.getByTestId('node-switcher'))
+    await screen.findByTestId('node-add')
+    expect(screen.queryByTestId('node-removed')).toBeNull()
   })
 })
 

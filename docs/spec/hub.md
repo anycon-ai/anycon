@@ -153,7 +153,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | 认证 | 第一帧必须是 `control.auth { device_token, protocol_version }`，5 秒内未收到则关闭。token 查哈希；设备被吊销则 `auth_fail { reason: revoked }`；`multi` 里账号的在线连接数已到上限则 `auth_fail { reason: quota }`（§ 7.1） |
 | 单连接 | 一个设备同时只允许一条连接。新连接认证成功后旧连接收到 close code `4001 superseded`。手机切网时常见。顶掉自己的旧连接不算新增一条在线连接（§ 7.1） |
 | 上线通知 | 认证成功后，hub 向该设备发 `auth_ok { device_id, server_time_ms, peers_online, quota? }`（`peers_online` 是此刻在线的配对设备列表；`quota` 只在 `multi` 里对永久连接带，是账号的设备数 / daemon 数 / 在线连接数和各自的上限，`single`、临时连接和预览连接没有，§ 7.1），并向这些**在线的配对设备**发 `peer_online`。`multi` 里账号的设备数、daemon 数或在线连接数变了，hub 再向该账号此刻在线的其他永久连接发 `quota_update` |
-| 心跳 | hub 每 30 秒 ping；90 秒无 pong 断开。设备侧不需要自己发心跳 |
+| 心跳 | hub 每 30 秒 ping；90 秒无 pong 断开。设备侧不需要自己发心跳，但可以靠这些 ping 判断连接是否还活着：daemon 75 秒收不到任何帧就断开重连（daemon.md § 15） |
 | 下线 | 连接关闭后向配对设备发 `peer_offline`。断线后 `last_seen` 更新 |
 | 关停 | hub 优雅关停时先发 close code `4002 restarting`，客户端据此用短退避（1–3 秒抖动）重连，而不是指数退避 |
 

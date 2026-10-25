@@ -972,6 +972,7 @@ impl TestDaemon {
                 // 锁由夹具持有（见 `TestDaemon::_lock`）
                 lock: false,
                 env_extra: env_extra.to_vec(),
+                ..Default::default()
             },
         )
         .await

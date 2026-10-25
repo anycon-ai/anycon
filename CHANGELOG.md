@@ -31,6 +31,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `anycon pair` on an already paired node stops as soon as the hub refuses the pairing (for example `quota` when the account's device limit is full, or the new device disconnecting) and says why, instead of waiting until the code expires and reporting a timeout. It also stops, saying so, when another pairing was started on the same node (the Web UI's Add device, a second `anycon pair`) and replaced its code. A refusal when the code is registered (the daily pairing limit, rate limiting) is no longer reported as the node being offline: `node.pair_begin` returns `busy` with `data.reason` `quota` / `rate_limited` (or `forbidden`), `unsupported` stays "not connected to the hub", and the Web UI's Add device dialog explains the quota case with a link to Settings → Quota. `--json` prints `{"failed":{"reason":…,"message":…}}` as the last line. The node keeps the outcome of the pairing it started and exposes it through the local-only `local.pair_outcome`.
 - Web UI: the session info drawer no longer pops up by itself when the window is widened past 1200px and narrowed again.
+- The daemon reconnects when its hub connection goes silent for 75 seconds. Before, a proxy or TUN that dropped the connection without closing it (for example Clash reloading its config) left the daemon thinking it was online while clients showed the node as offline, until the daemon was restarted.
 
 ## [0.1.1] - 2026-10-22
 

@@ -64,11 +64,21 @@ pub struct DaemonOptions {
     pub lock: bool,
     /// 叠加到 daemon 环境上的变量（测试用：给 git 一份不读开发机 `~/.gitconfig` 的配置、在 `PATH` 前面放一个假的 `gh`）。
     pub env_extra: Vec<(String, String)>,
+    /// 到 hub 的连接多久收不到任何帧就重连（默认 [`crate::hub::HUB_SILENCE_TIMEOUT`]，测试里调短）。
+    pub hub_silence_timeout: Duration,
 }
 
 impl Default for DaemonOptions {
     fn default() -> Self {
-        Self { adapters: None, hub: true, socket: true, login_shell: None, lock: true, env_extra: Vec::new() }
+        Self {
+            adapters: None,
+            hub: true,
+            socket: true,
+            login_shell: None,
+            lock: true,
+            env_extra: Vec::new(),
+            hub_silence_timeout: crate::hub::HUB_SILENCE_TIMEOUT,
+        }
     }
 }
 
@@ -316,6 +326,7 @@ impl Daemon {
                 preview,
                 agents,
                 wake: Arc::new(Notify::new()),
+                silence_timeout: opts.hub_silence_timeout,
             });
             tasks.extend(link.spawn(rpc.clone(), shutdown_rx));
         }

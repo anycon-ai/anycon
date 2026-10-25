@@ -104,6 +104,7 @@ impl LocalPreviewHub {
             preview: td.ctx.preview.clone(),
             agents: td.ctx.agents.clone(),
             wake: Arc::new(tokio::sync::Notify::new()),
+            silence_timeout: crate::hub::HUB_SILENCE_TIMEOUT,
         });
         let hub = Arc::new(LocalPreviewHub {
             link: link.clone(),

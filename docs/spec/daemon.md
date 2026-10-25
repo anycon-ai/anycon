@@ -736,6 +736,7 @@ SQLite（WAL）。全部表：
 
 - hub 重连：指数退避 1s → 60s 加抖动；收到 `4002 restarting` 用 1–3 秒
 - 睡眠唤醒：每 5 秒检查单调时钟跳变 > 30 秒即视为唤醒，立即重连并重跑 `agent.list` 探测
+- 静默断线：认证之后 75 秒收不到 hub 的任何帧（hub 每 30 秒 ping，见 hub.md 的连接规则）就当连接已死，断开重连。中间的代理或 TUN（比如 Clash 的 fake-IP 模式重载配置）可能默默丢掉连接、不发 FIN / RST，本机 socket 还是 ESTABLISHED；没有这一条，daemon 会一直以为自己在线，而 hub 早已把它下线、客户端显示节点离线
 - 版本协商：`control.auth` 带协议版本；hub 不兼容时 `auth_fail { reason: version }`，daemon 每 10 分钟重试并在日志里喊；本机 `anycon doctor` 能看到
 - Noise 会话按客户端独立，一个客户端握手失败不影响其他
 - 所有 RPC 幂等键：`session.send`（和带 prompt 的 `session.create`）带客户端生成的 `message_id`，重发不重复；同一个 `message_id` 配不同内容（prompt / agent / project）返回 `invalid`，不会静默返回第一次的结果

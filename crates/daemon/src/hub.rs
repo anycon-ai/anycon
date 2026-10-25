@@ -32,6 +32,11 @@ use crate::util::now_ms;
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// 认证之后多久收不到 hub 的任何帧就当连接已死、断开重连。hub 每 30 秒 ping 一次（docs/spec/hub.md 的连接规则表），
+/// 75 秒是 2.5 个周期，比 hub 那边 90 秒无 pong 判死略早。没有这一条，中间的代理或 TUN 默默丢掉连接、
+/// 又不发 FIN / RST 时，daemon 会一直以为自己在线，而 hub 早已把它下线（docs/spec/daemon.md § 15）。
+pub const HUB_SILENCE_TIMEOUT: Duration = Duration::from_secs(75);
+
 // ---------------------------------------------------------------- 连接工具
 
 /// `http(s)://host[:port][/base]` -> (`ws(s)://host[:port][/base]/v1/ws`, origin)。
@@ -765,6 +770,8 @@ pub struct HubLink {
     pub preview: Arc<Preview>,
     pub agents: Arc<Agents>,
     pub wake: Arc<Notify>,
+    /// 见 [`HUB_SILENCE_TIMEOUT`]；测试里调短。
+    pub silence_timeout: Duration,
 }
 
 fn jitter(d: Duration) -> Duration {
@@ -972,9 +979,11 @@ impl HubLink {
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         self.outbox.attach(&device_id, out_tx);
         let reconnect = self.peers.reconnect.clone();
+        let mut last_rx = Instant::now();
         loop {
             tokio::select! {
                 frame = ws.next() => {
+                    last_rx = Instant::now();
                     match frame {
                         None => return Outcome::Closed { code: None, authed: true },
                         Some(Err(e)) => return Outcome::Error { msg: e.to_string(), authed: true },
@@ -1002,6 +1011,10 @@ impl HubLink {
                     if let Err(e) = ws.flush().await {
                         return Outcome::Error { msg: e.to_string(), authed: true };
                     }
+                }
+                _ = tokio::time::sleep_until((last_rx + self.silence_timeout).into()) => {
+                    let secs = self.silence_timeout.as_secs_f64();
+                    return Outcome::Error { msg: format!("no traffic from the hub for {secs:.0}s; reconnecting"), authed: true };
                 }
                 _ = shutdown.changed() => {
                     let _ = ws.close(None).await;
@@ -1382,6 +1395,93 @@ mod tests {
         assert!(http_request("GET", "http://127.0.0.1:1/", &[("X", "a\r\nb: c")], None, Duration::from_secs(1))
             .await
             .is_err());
+    }
+
+    /// 假 hub：回 `auth_ok` 之后第一条连接一声不吭（模拟被代理默默丢掉的连接），之后的连接每 100ms ping 一次。
+    /// 每接受一条连接往 `conns` 发一次接受的时刻。
+    async fn spawn_silent_then_pinging_hub() -> (String, mpsc::UnboundedReceiver<Instant>) {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            for n in 0.. {
+                let Ok((sock, _)) = l.accept().await else { return };
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(sock).await else { return };
+                    let Some(Ok(Message::Binary(_auth))) = ws.next().await else { return };
+                    let ok = Control::AuthOk {
+                        device_id: "d".repeat(32),
+                        server_time_ms: now_ms(),
+                        peers_online: vec![],
+                        quota: None,
+                    };
+                    let env = Envelope::control("", 0, &ok).unwrap().encode().unwrap();
+                    if ws.send(Message::Binary(env.into())).await.is_err() {
+                        return;
+                    }
+                    let _ = tx.send(Instant::now());
+                    if n == 0 {
+                        // 不读不写，连接保持打开：daemon 只能靠自己的静默超时发现
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        return;
+                    }
+                    loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                                if ws.send(Message::Ping(Vec::new().into())).await.is_err() {
+                                    return;
+                                }
+                            }
+                            frame = ws.next() => if !matches!(frame, Some(Ok(_))) { return },
+                        }
+                    }
+                });
+            }
+        });
+        (url, rx)
+    }
+
+    async fn recv(rx: &mut mpsc::UnboundedReceiver<Instant>, within: Duration) -> Option<Instant> {
+        tokio::time::timeout(within, rx.recv()).await.ok().flatten()
+    }
+
+    #[tokio::test]
+    async fn silent_hub_connection_is_redialed_and_pinged_one_is_kept() {
+        let (url, mut conns) = spawn_silent_then_pinging_hub().await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::config::Paths::new(dir.path().join("home"));
+        let opts = crate::setup::InitOptions {
+            hub: Some(url),
+            workspace: Some(dir.path().join("ws").to_string_lossy().into()),
+            name: Some("test-node".into()),
+            force: false,
+        };
+        crate::setup::init(&paths, &opts).await.unwrap();
+        for builtin in crate::config::BUILTIN_AGENTS {
+            crate::config::set_value(&paths, &format!("agents.{builtin}.enabled"), "false").unwrap();
+        }
+        let silence = Duration::from_millis(500);
+        let daemon = crate::daemon::Daemon::start(
+            paths,
+            crate::daemon::DaemonOptions {
+                adapters: Some(vec![]),
+                socket: false,
+                login_shell: Some(false),
+                lock: false,
+                hub_silence_timeout: silence,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let first = recv(&mut conns, Duration::from_secs(10)).await.expect("first connection");
+        // 静默的连接：超时后断开重连（退避从 1 秒起，加抖动最多 1.25 秒）
+        let second = recv(&mut conns, Duration::from_secs(5)).await.expect("redial after silence");
+        assert!(second - first >= silence, "redialed after {:?}, before the silence timeout", second - first);
+        // 有 ping 的连接：超过几个静默超时也不重连
+        assert!(recv(&mut conns, silence * 4).await.is_none(), "a connection that receives pings must be kept");
+        daemon.shutdown().await;
     }
 
     #[tokio::test]

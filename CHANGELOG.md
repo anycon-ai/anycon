@@ -18,6 +18,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - Web UI: the session info drawer no longer pops up by itself when the window is widened past 1200px and narrowed again.
+- The daemon reconnects when its hub connection goes silent for 75 seconds. Before, a proxy or TUN that dropped the connection without closing it (for example Clash reloading its config) left the daemon thinking it was online while clients showed the node as offline, until the daemon was restarted.
 
 ## [0.1.1] - 2026-10-22
 

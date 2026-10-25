@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::cli::*;
 use crate::conn::{connect_local, Conn};
-use crate::error::{CliError, Result, EXIT_ERROR, EXIT_OFFLINE};
+use crate::error::{CliError, Result, EXIT_DENIED, EXIT_ERROR, EXIT_OFFLINE};
 use crate::follow::{follow, FollowEnd, FollowOpts};
 use crate::output::{ago, short_id, table, visible, Out};
 use crate::remote::{self, HubState, NodeEntry};
@@ -232,13 +232,18 @@ pub async fn pair(app: &App, a: PairArgs) -> Result<u8> {
         before.devices.iter().map(|d| (d.device_id.clone(), d.paired_at_ms)).collect();
     // 默认 16 位；`--short` 才是 8 位；`--long` 是无操作（旧脚本兼容）
     let long = !a.short;
-    let r: NodePairBeginResult = conn.call(methods::NODE_PAIR_BEGIN, json!({ "long": long })).await.map_err(|e| {
-        if e.code == "unsupported" {
-            CliError::offline(e.message)
-        } else {
-            e
+    let r: NodePairBeginResult = match conn.call(methods::NODE_PAIR_BEGIN, json!({ "long": long })).await {
+        Ok(r) => r,
+        // `unsupported`：daemon 没连上 hub
+        Err(e) if e.code == "unsupported" => return Err(CliError::offline(e.message)),
+        // hub 拒绝了登记（每日配对次数用完、被限速……）：和之后的 `pair_failed` 同样处理
+        Err(e) => {
+            return Err(match pair_begin_refusal(&e) {
+                Some(reason) => pair_failure_report(app, reason, true),
+                None => e,
+            })
         }
-    })?;
+    };
     // 8 位短码只适合自建 hub：恶意 hub 拿到 match_id 之后可以离线穷举（即使用了 Argon2id 也只是更贵）
     if a.short {
         if let Some(w) = short_code_warning(r.link.split("/pair#").next().unwrap_or("")) {
@@ -269,6 +274,7 @@ pub async fn pair(app: &App, a: PairArgs) -> Result<u8> {
         + Duration::from_millis(r.expires_at_ms.saturating_sub(anycon_daemon::util::now_ms()).max(1000))
         + Duration::from_secs(2);
     let mut sigint = crate::output::interrupt_signal();
+    let mut poll_outcome = true;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
@@ -296,12 +302,108 @@ pub async fn pair(app: &App, a: PairArgs) -> Result<u8> {
             }
             return Ok(0);
         }
+        // 这次配对没成（hub 拒绝了：设备配额满了、对端中途掉线……；或被新的 `pair_begin` 顶掉了）：daemon 记下了结果，
+        // 不必干等到短码过期。老版本的 daemon 没有这个本机方法：第一次报「找不到方法」就不再问，退回到只等设备出现；
+        // 别的错误只记 debug 日志，下一秒再问。
+        if poll_outcome {
+            match conn
+                .call_raw(anycon_daemon::local_methods::PAIR_OUTCOME, json!({ "expires_at_ms": r.expires_at_ms }))
+                .await
+            {
+                Ok(outcome) => {
+                    if let Some(reason) = outcome["failed"]["reason"].as_str() {
+                        return Err(pair_failure_report(app, reason, false));
+                    }
+                }
+                Err(e) if is_method_not_found(&e) => {
+                    tracing::debug!("this daemon has no local.pair_outcome; waiting for the new device only");
+                    poll_outcome = false;
+                }
+                Err(e) => tracing::debug!(error = %e, "could not ask the daemon how the pairing went"),
+            }
+        }
         if std::time::Instant::now() > deadline {
             return Err(CliError::general(
                 "timed out waiting for the new device to join (the code is valid for 5 minutes)",
             ));
         }
     }
+}
+
+/// daemon 说它没有这个方法（比这个 CLI 老的 daemon）。
+fn is_method_not_found(e: &CliError) -> bool {
+    e.code == "unsupported" && e.message.starts_with("method not found")
+}
+
+/// `node.pair_begin` 的错误是不是 hub 拒绝了登记：`busy`（`quota` / `rate_limited`）或 `forbidden`，`data.reason` 是
+/// `pair_failed` 的原因。`unsupported`（daemon 没连上 hub）和别的错误不是。
+fn pair_begin_refusal(e: &CliError) -> Option<&str> {
+    match (e.code.as_str(), e.reason.as_deref()) {
+        ("busy" | "forbidden", Some(reason)) => Some(reason),
+        _ => None,
+    }
+}
+
+/// 配对没成：`--json` 时先在 stdout 打一行 `{"failed":{"reason","message"}}`，再返回给 `main` 打印的错误。
+/// `at_begin`：是登记短码的时候就被拒绝了（`node.pair_begin` 的错误），而不是登记之后（daemon 记下的结果）。
+fn pair_failure_report(app: &App, reason: &str, at_begin: bool) -> CliError {
+    let err = if at_begin { pair_begin_failure_error(reason) } else { pair_failure_error(reason) };
+    if app.json() {
+        app.out.json_line(&json!({ "failed": { "reason": reason, "message": err.message } }));
+    }
+    err
+}
+
+/// 登记短码时 hub 就拒绝了（`node.pair_begin` 的错误）：同 [`pair_failure_error`]，除了 `quota`——这时它只可能是每日配对次数用完了
+/// （设备数、节点数的上限要到配对收尾才检查），让用户去移除设备是错的建议：名额随 24 小时滚动窗口自己回来。
+pub(crate) fn pair_begin_failure_error(reason: &str) -> CliError {
+    if reason == "quota" {
+        return CliError::new(
+            EXIT_ERROR,
+            "quota",
+            "the hub refused the pairing: this account has used up its daily pairing attempts. A slot frees up as attempts pass 24 hours old; Settings → Quota in the web UI shows the numbers",
+        );
+    }
+    pair_failure_error(reason)
+}
+
+/// daemon 报告的配对失败原因（`pair_failed.reason` 的 snake_case 名字，或 `replaced`）→ 退出码和给用户的话。
+/// 这是登记之后的失败：`quota` 是配对收尾时检查的设备数 / 节点数上限。
+/// 退出码按 docs/spec/cli.md § 4：配额、超时、限速、对端掉线、短码失效都是 1；账号不匹配（`forbidden`）是 5。
+/// 错误码（`error: <code>: …` 里的 `<code>`）就是原因本身。
+pub(crate) fn pair_failure_error(reason: &str) -> CliError {
+    let retry = "run `anycon pair` again for a new code";
+    let (exit, message) = match reason {
+        "quota" => (
+            EXIT_ERROR,
+            "the hub refused the pairing: quota exceeded on the hub. This account has reached its limit on devices or nodes; remove a device you no longer use (Settings → Devices in the web UI) or check which limit is full (Settings → Quota), then run `anycon pair` again".to_string(),
+        ),
+        "timeout" => (EXIT_ERROR, format!("pairing timed out: the new device did not finish in time; {retry}")),
+        "peer_gone" => (EXIT_ERROR, format!("the new device disconnected during pairing; {retry}")),
+        "rate_limited" => (
+            EXIT_ERROR,
+            "the hub rate-limited this pairing (too many attempts); wait a minute, then run `anycon pair` again".to_string(),
+        ),
+        "not_found" => (
+            EXIT_ERROR,
+            format!("the hub no longer knows this pairing code (it expired or was already used); {retry}"),
+        ),
+        "replaced" => (
+            EXIT_ERROR,
+            format!("another pairing was started on this node (from another client); this code is no longer valid — {retry}"),
+        ),
+        "forbidden" => (
+            EXIT_DENIED,
+            "the hub refused this pairing (the devices belong to different accounts, or neither has one)".to_string(),
+        ),
+        other => (EXIT_ERROR, format!("the hub refused the pairing ({other}); {retry}")),
+    };
+    let code = if reason.chars().all(|c| c.is_ascii_lowercase() || c == '_') && !reason.is_empty() {
+        reason
+    } else {
+        "pair_failed"
+    };
+    CliError::new(exit, code, message)
 }
 
 /// `--short` 配对时对 hub 地址的警告（本机 / 私网的自建 hub 不警告）。
@@ -1604,6 +1706,89 @@ pub fn completions(shell: clap_complete::Shell) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pairing_failure_reported_by_the_daemon_maps_to_an_exit_code_a_code_and_a_message() {
+        // 退出码按 docs/spec/cli.md § 4：配额 / 超时 / 限速 / 对端掉线 / 短码失效 → 1；账号不匹配 → 5
+        for (reason, exit, words) in [
+            ("quota", 1, "quota exceeded on the hub"),
+            ("timeout", 1, "timed out"),
+            ("peer_gone", 1, "disconnected"),
+            ("rate_limited", 1, "rate-limited"),
+            ("not_found", 1, "no longer knows"),
+            ("replaced", 1, "another pairing was started on this node"),
+            ("forbidden", 5, "different accounts"),
+        ] {
+            let e = pair_failure_error(reason);
+            assert_eq!((e.exit, e.code.as_str()), (exit, reason), "{reason}");
+            assert!(e.message.contains(words), "{reason}: {}", e.message);
+        }
+        let quota = pair_failure_error("quota").message;
+        // 登记之后的 quota 是设备数 / 节点数：建议移除设备
+        assert!(quota.contains("limit on devices or nodes") && quota.contains("Settings → Devices"), "{quota}");
+        assert!(quota.contains("Settings → Quota") && quota.contains("anycon pair"), "{quota}");
+        // 登记时的 quota 只可能是每日配对次数：不让用户去移除设备，说名额随 24 小时滚动回来
+        let at_begin = pair_begin_failure_error("quota");
+        assert_eq!((at_begin.exit, at_begin.code.as_str()), (1, "quota"));
+        assert!(
+            at_begin.message.contains("daily pairing attempts") && at_begin.message.contains("24 hours"),
+            "{at_begin}"
+        );
+        assert!(at_begin.message.contains("Settings → Quota"), "{at_begin}");
+        assert!(
+            !at_begin.message.contains("remove a device") && !at_begin.message.contains("Settings → Devices"),
+            "{at_begin}"
+        );
+        // 别的原因登记前后说法一样
+        for reason in ["rate_limited", "forbidden"] {
+            assert_eq!(pair_begin_failure_error(reason).message, pair_failure_error(reason).message, "{reason}");
+        }
+        // 以后 hub 加了新原因：退出码 1，形状规整（小写字母和下划线）的原因照用做错误码；别的字符串不照抄，退回 pair_failed
+        let e = pair_failure_error("brand_new");
+        assert_eq!((e.exit, e.code.as_str()), (1, "brand_new"));
+        let e = pair_failure_error("Weird Value!");
+        assert_eq!((e.exit, e.code.as_str()), (1, "pair_failed"));
+    }
+
+    #[test]
+    fn only_a_missing_method_stops_the_pair_outcome_polling() {
+        use anycon_protocol::{ErrorCode, RpcError};
+        // 老 daemon 对不认识的方法的回答（rpc.rs 的 `local_method` 兜底）
+        let mut missing = RpcError::new(ErrorCode::Unsupported, "method not found: local.pair_outcome");
+        missing.code = -32601;
+        assert!(is_method_not_found(&CliError::from(missing)));
+        // 别的错误（本机方法被拒、参数不对、连接断了……）不是：下一秒再问
+        assert!(!is_method_not_found(&CliError::from(RpcError::new(ErrorCode::Forbidden, "only local"))));
+        assert!(!is_method_not_found(&CliError::from(RpcError::new(ErrorCode::Invalid, "expires_at_ms is required"))));
+        assert!(!is_method_not_found(&CliError::from(RpcError::new(
+            ErrorCode::Unsupported,
+            "not connected to the hub"
+        ))));
+        assert!(!is_method_not_found(&CliError::offline("the connection to the daemon was lost")));
+    }
+
+    #[test]
+    fn a_hub_refusal_of_pair_begin_is_told_apart_from_the_daemon_being_offline() {
+        use anycon_protocol::{ErrorCode, RpcError, RpcErrorData};
+        let rpc = |code, reason: Option<&str>| {
+            let mut e = RpcError::new(code, "the hub refused the pairing request");
+            e.data = Some(RpcErrorData { code, field: None, reason: reason.map(str::to_string), retry_after_ms: None });
+            CliError::from(e)
+        };
+        // 每日配对次数用完 / 被限速：busy + data.reason → 退出码 1；forbidden → 5
+        let quota = rpc(ErrorCode::Busy, Some("quota"));
+        assert_eq!(pair_begin_refusal(&quota), Some("quota"));
+        assert_eq!((pair_failure_error("quota").exit, pair_failure_error("quota").code.as_str()), (1, "quota"));
+        assert_eq!(pair_begin_refusal(&rpc(ErrorCode::Busy, Some("rate_limited"))), Some("rate_limited"));
+        let forbidden = rpc(ErrorCode::Forbidden, Some("forbidden"));
+        assert_eq!(pair_begin_refusal(&forbidden), Some("forbidden"));
+        assert_eq!(pair_failure_error("forbidden").exit, 5);
+        // 没连上 hub（unsupported）、没有细分原因的 busy / forbidden、别的错误：不算拒绝
+        assert_eq!(pair_begin_refusal(&rpc(ErrorCode::Unsupported, None)), None);
+        assert_eq!(pair_begin_refusal(&rpc(ErrorCode::Busy, None)), None);
+        assert_eq!(pair_begin_refusal(&rpc(ErrorCode::Internal, Some("timeout"))), None);
+        assert_eq!(pair_begin_refusal(&CliError::offline("not connected")), None);
+    }
 
     #[test]
     fn config_errors_map_to_usage_only_when_the_input_is_bad() {

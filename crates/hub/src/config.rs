@@ -20,18 +20,132 @@ use url::Url;
 
 use crate::mail::Mailer;
 
-/// 运行模式。v0.1 只有 `single`。
+/// 运行模式（`ANYCON_MODE`）。
+///
+/// - `Single`：一个管理员 + 邀请制，登录靠 bootstrap token / 登录 token / 已绑定邮箱的验证码 / 邀请；没有配额。
+/// - `Multi`：开放注册（第一次邮箱验证码或 OAuth 登录就建账号），没有 bootstrap 账号、token 登录和邀请；
+///   有配额，管理员由 `ANYCON_ADMIN_EMAILS` 和库里的标记决定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Single,
+    Multi,
 }
 
 impl Mode {
     pub fn as_str(self) -> &'static str {
         match self {
             Mode::Single => "single",
+            Mode::Multi => "multi",
         }
     }
+
+    pub fn is_multi(self) -> bool {
+        self == Mode::Multi
+    }
+}
+
+/// `multi` 模式下每个账号的数量类配额上限（`ANYCON_QUOTA_*`，每项 ≥ 1）。
+///
+/// 每日配对次数（`ANYCON_QUOTA_DAILY_PAIRINGS`）不在这里：它只有一份，是
+/// [`Limits::daily_pairings_per_account`]（限速器、`GET /api/quota` 都读它；`single` 程序化设置它也照样生效）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuotaLimits {
+    /// 未吊销的设备数（所有种类，含 daemon）。
+    pub devices: u32,
+    /// 未吊销的 daemon 数。
+    pub daemons: u32,
+    /// 同时在线的永久连接数。
+    pub connections: u32,
+}
+
+impl QuotaLimits {
+    pub const DEFAULT_DEVICES: u32 = 10;
+    pub const DEFAULT_DAEMONS: u32 = 3;
+    pub const DEFAULT_CONNECTIONS: u32 = 10;
+}
+
+/// `multi` 里每账号每日配对与接入次数的默认上限（`ANYCON_QUOTA_DAILY_PAIRINGS` 没设时）。
+pub const DEFAULT_DAILY_PAIRINGS: u32 = 20;
+
+impl Default for QuotaLimits {
+    fn default() -> Self {
+        Self { devices: Self::DEFAULT_DEVICES, daemons: Self::DEFAULT_DAEMONS, connections: Self::DEFAULT_CONNECTIONS }
+    }
+}
+
+/// 支持的 OAuth 登录提供方。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OAuthProvider {
+    Github,
+    Google,
+}
+
+impl OAuthProvider {
+    /// 全部提供方，顺序也是 `login_methods` 里的顺序（github 在前）。
+    pub const ALL: [OAuthProvider; 2] = [OAuthProvider::Github, OAuthProvider::Google];
+
+    /// 路由、审计、`login_methods` 里用的名字。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OAuthProvider::Github => "github",
+            OAuthProvider::Google => "google",
+        }
+    }
+
+    /// 精确匹配（小写）；未知返回 `None`。
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+
+    /// 生产环境用的端点（全部 https）。
+    pub fn default_endpoints(self) -> OAuthEndpoints {
+        match self {
+            OAuthProvider::Github => OAuthEndpoints {
+                authorize: "https://github.com/login/oauth/authorize".into(),
+                token: "https://github.com/login/oauth/access_token".into(),
+                userinfo: "https://api.github.com/user".into(),
+                emails: Some("https://api.github.com/user/emails".into()),
+            },
+            OAuthProvider::Google => OAuthEndpoints {
+                authorize: "https://accounts.google.com/o/oauth2/v2/auth".into(),
+                token: "https://oauth2.googleapis.com/token".into(),
+                userinfo: "https://openidconnect.googleapis.com/v1/userinfo".into(),
+                emails: None,
+            },
+        }
+    }
+}
+
+/// 一个 OAuth 提供方的应用凭据（`ANYCON_OAUTH_<P>_CLIENT_ID` / `_CLIENT_SECRET`，两个都有才算配了）。
+/// `Debug` 不输出 secret。
+#[derive(Clone, PartialEq, Eq)]
+pub struct OAuthClient {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+impl std::fmt::Debug for OAuthClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthClient").field("client_id", &self.client_id).field("client_secret", &"<redacted>").finish()
+    }
+}
+
+/// 一个 OAuth 提供方的四个端点。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OAuthEndpoints {
+    pub authorize: String,
+    pub token: String,
+    pub userinfo: String,
+    /// 单独的邮箱列表端点（GitHub 的 `/user/emails`）；Google 的 userinfo 里直接带邮箱，为 `None`。
+    pub emails: Option<String>,
+}
+
+/// **只给测试用的**端点覆盖（没有环境变量）：让集成测试把 OAuth 流程指向 `http://127.0.0.1:<端口>` 上的假提供方。
+/// 生产里两项都是 `None`，用 [`OAuthProvider::default_endpoints`]。
+#[derive(Debug, Clone, Default)]
+pub struct OAuthEndpointOverrides {
+    pub github: Option<OAuthEndpoints>,
+    pub google: Option<OAuthEndpoints>,
 }
 
 /// 默认的客户端连接入站预算：10 MiB / 分钟。
@@ -64,8 +178,11 @@ pub struct Limits {
     pub enroll_begin_per_min_per_ip: u32,
     /// `enroll_begin`：每个账号每小时。
     pub enroll_begin_per_hour_per_account: u32,
-    /// 每账号每日配对与接入次数（`enroll_begin` 计入，超过 `enroll_failed { quota }`）。
-    /// `None` = 不限：`single` 模式没有配额，v0.1 也没有对应的环境变量，`multi` 实现时由 `ANYCON_QUOTA_*` 设置。
+    /// 每账号每日（滚动 24 小时）配对与接入次数，每个成功的撮合恰好记一次：`pair_begin`、`enroll_begin` 在账号已知时记，
+    /// `pair_join` 只在 host 的登记没记过账（host 没有账号）时记在加入方的账号上
+    /// （超过 `pair_failed { quota }` / `enroll_failed { quota }`）。**这是唯一的一份**：限速器从它建，
+    /// `GET /api/quota` 的 `daily_pairings_max` 读它。`None` = 不限（`single` 默认）；`multi` 由
+    /// `ANYCON_QUOTA_DAILY_PAIRINGS` 经 [`Config::enable_multi`] 设置，`single` 程序化设置它也照样生效。
     pub daily_pairings_per_account: Option<u32>,
     /// 每台 daemon 同时进行的接入会话上限，多出来的 `busy`。
     pub enrolls_per_daemon: u32,
@@ -170,6 +287,8 @@ pub struct Timing {
     pub notify_email_dedupe: Duration,
     /// 单个 Web Push 请求的超时（docs/spec/hub.md § 6.1：10 秒）。
     pub push_timeout: Duration,
+    /// OAuth 登录时每次出站调用（换 token、取用户信息、取 GitHub 邮箱）的超时（10 秒）。
+    pub oauth_timeout: Duration,
     /// 预览令牌的有效期（docs/spec/hub.md § 13.3：24 小时）。
     pub preview_token_ttl: Duration,
 }
@@ -192,6 +311,7 @@ impl Default for Timing {
             email_verify_failure_delay: Duration::from_millis(250),
             notify_email_dedupe: Duration::from_secs(10 * 60),
             push_timeout: Duration::from_secs(10),
+            oauth_timeout: Duration::from_secs(10),
             preview_token_ttl: Duration::from_secs(24 * 3600),
         }
     }
@@ -239,14 +359,28 @@ pub struct EmailFrom {
     pub address: String,
 }
 
-/// hub 的完整运行配置。`Debug` 输出里 `admin_token`、SMTP 的用户名密码会被遮掉，免得误打日志时泄露。
+/// hub 的完整运行配置。`Debug` 输出里 `admin_token`、SMTP 的用户名密码、OAuth 的 client secret 会被遮掉，
+/// 管理员邮箱只输出个数，免得误打日志时泄露。
 #[derive(Clone)]
 pub struct Config {
     /// `ANYCON_PUBLIC_URL`，不带末尾 `/`。
     pub public_url: Url,
     pub listen: SocketAddr,
     pub mode: Mode,
+    /// `ANYCON_ADMIN_TOKEN`。只在 `single` 用；`multi` 不生成也不读 bootstrap token，设了会被忽略（启动警告）。
     pub admin_token: Option<String>,
+    /// `ANYCON_ADMIN_EMAILS`：规范化（[`crate::mail::normalize_email`]）、去重后的邮箱。只在 `multi` 起作用
+    /// （见 [`crate::accounts::admin_by_config`]）。`Debug` 和日志里只给个数。
+    pub admin_emails: Vec<String>,
+    /// `multi` 的数量类配额上限；`single` 为 `None`（没有配额）。每日配对次数不在这里，见
+    /// [`Limits::daily_pairings_per_account`]。程序化构造请用 [`Config::enable_multi`]。
+    pub quota: Option<QuotaLimits>,
+    /// `ANYCON_OAUTH_GITHUB_CLIENT_ID` / `_CLIENT_SECRET`。两种模式都可以配。
+    pub oauth_github: Option<OAuthClient>,
+    /// `ANYCON_OAUTH_GOOGLE_CLIENT_ID` / `_CLIENT_SECRET`。
+    pub oauth_google: Option<OAuthClient>,
+    /// **只给测试用，不对应任何环境变量**：把 OAuth 提供方的端点指到本机的假提供方。生产里全是 `None`。
+    pub oauth_endpoint_overrides: OAuthEndpointOverrides,
     pub data_dir: PathBuf,
     /// `None` = `sqlite://<data_dir>/hub.db`。
     pub database_url: Option<String>,
@@ -258,8 +392,11 @@ pub struct Config {
     pub outbound_buffer_bytes: usize,
     pub limits: Limits,
     pub timing: Timing,
-    /// 已识别但 v0.1 没实现的 `ANYCON_*` 变量名（启动时警告）。
+    /// 已识别但没实现的 `ANYCON_*` 变量名（启动时警告）。
     pub unimplemented_vars: Vec<String>,
+    /// 设了、但在当前模式下被忽略的变量名（`multi` 里的 `ANYCON_ADMIN_TOKEN`，`single` 里的
+    /// `ANYCON_ADMIN_EMAILS` 和 `ANYCON_QUOTA_*`）；只有 [`Config::from_vars`] 会填。启动警告见 [`Config::startup_warnings`]。
+    pub ignored_vars: Vec<String>,
     /// 完全不认识的 `ANYCON_*` 变量名（debug 级提示；daemon 的变量也会落在这里）。
     pub unknown_vars: Vec<String>,
     /// `ANYCON_SMTP_URL`（ADR-37）。配了才有邮箱验证码登录和邮件通知。
@@ -284,6 +421,11 @@ impl std::fmt::Debug for Config {
             .field("listen", &self.listen)
             .field("mode", &self.mode)
             .field("admin_token", &self.admin_token.as_ref().map(|_| "<redacted>"))
+            .field("admin_emails", &self.admin_emails.len())
+            .field("quota", &self.quota)
+            .field("oauth_github", &self.oauth_github)
+            .field("oauth_google", &self.oauth_google)
+            .field("oauth_endpoint_overrides", &self.oauth_endpoint_overrides)
             .field("data_dir", &self.data_dir)
             .field("database_url", &self.database_url.as_ref().map(|_| "<redacted>"))
             .field("trusted_proxies", &self.trusted_proxies)
@@ -308,8 +450,11 @@ pub enum ConfigError {
     MissingPublicUrl,
     #[error("invalid {var}: {reason}")]
     Invalid { var: &'static str, reason: String },
-    #[error("ANYCON_MODE=multi is not implemented in v0.1 (only `single` is supported)")]
-    MultiNotImplemented,
+    #[error(
+        "ANYCON_MODE=multi has no way to sign in: set ANYCON_SMTP_URL (email codes) and/or an OAuth provider \
+         (ANYCON_OAUTH_GITHUB_CLIENT_ID/_SECRET, ANYCON_OAUTH_GOOGLE_CLIENT_ID/_SECRET)"
+    )]
+    MultiNoSignIn,
     #[error("failed to read environment: {0}")]
     Env(String),
 }
@@ -337,18 +482,9 @@ pub const MIN_ENVELOPE_BYTES: usize =
 /// 这时请显式设置 `ANYCON_TRUSTED_PROXIES`（空串 = 谁都不信）。
 pub const DEFAULT_TRUSTED_PROXIES: &str = "172.16.0.0/12";
 
-/// deploy.md § 3 里列出、但 v0.1 不实现的变量（小写、去前缀）。
-const UNIMPLEMENTED: &[&str] = &[
-    "queue_enabled",
-    "queue_max_count",
-    "queue_max_bytes",
-    "queue_ttl",
-    "oauth_github_client_id",
-    "oauth_github_client_secret",
-    "oauth_google_client_id",
-    "oauth_google_client_secret",
-    "admin_emails",
-];
+/// deploy.md § 3 里列出、但还没实现的变量（小写、去前缀）。`quota_` 开头的另算（见 [`Config::from_vars`]）：
+/// 设备数、daemon 数、连接数和每日配对数已经实现，其余的（队列配额）仍是「已识别、未实现」。
+const UNIMPLEMENTED: &[&str] = &["queue_enabled", "queue_max_count", "queue_max_bytes", "queue_ttl"];
 
 impl Config {
     /// 带默认值的配置，测试用它再覆盖字段。
@@ -359,6 +495,11 @@ impl Config {
             listen: "0.0.0.0:8080".parse().expect("static addr"),
             mode: Mode::Single,
             admin_token: None,
+            admin_emails: Vec::new(),
+            quota: None,
+            oauth_github: None,
+            oauth_google: None,
+            oauth_endpoint_overrides: OAuthEndpointOverrides::default(),
             data_dir: data_dir.into(),
             database_url: None,
             trusted_proxies: parse_trusted_proxies(DEFAULT_TRUSTED_PROXIES)?,
@@ -368,6 +509,7 @@ impl Config {
             limits: Limits::default(),
             timing: Timing::default(),
             unimplemented_vars: Vec::new(),
+            ignored_vars: Vec::new(),
             unknown_vars: Vec::new(),
             smtp: None,
             email_from: None,
@@ -401,11 +543,14 @@ impl Config {
         if let Some(s) = raw.mode.as_deref() {
             match s.trim().to_ascii_lowercase().as_str() {
                 "single" | "" => {}
-                "multi" => return Err(ConfigError::MultiNotImplemented),
-                other => return Err(invalid("ANYCON_MODE", format!("{other:?} (expected `single`)"))),
+                "multi" => cfg.mode = Mode::Multi,
+                other => return Err(invalid("ANYCON_MODE", format!("{other:?} (expected `single` or `multi`)"))),
             }
         }
         cfg.admin_token = raw.admin_token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        if cfg.mode.is_multi() && cfg.admin_token.is_some() {
+            cfg.ignored_vars.push("ANYCON_ADMIN_TOKEN".into());
+        }
         cfg.database_url = raw.database_url.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         if let Some(s) = raw.trusted_proxies.as_deref() {
             cfg.trusted_proxies = parse_trusted_proxies(s)?;
@@ -465,6 +610,53 @@ impl Config {
         if let Some(s) = raw.vapid_subject.as_deref().filter(|s| !s.trim().is_empty()) {
             cfg.vapid_subject = Some(parse_vapid_subject(s)?);
         }
+
+        // 管理员邮箱、配额、OAuth：不管哪个模式都解析和校验（笔误早点发现，切换模式时不会才炸），
+        // 但只有 `multi` 用管理员邮箱和配额；`single` 里设了就警告被忽略。
+        if let Some(s) = raw.admin_emails.as_deref().filter(|s| !s.trim().is_empty()) {
+            cfg.admin_emails = parse_admin_emails(s)?;
+            if !cfg.mode.is_multi() {
+                cfg.ignored_vars.push("ANYCON_ADMIN_EMAILS".into());
+            }
+        }
+        let quota_value = |var: &'static str, raw: Option<&str>| {
+            raw.filter(|v| !v.trim().is_empty()).map(|v| parse_quota(var, v)).transpose()
+        };
+        let devices = quota_value("ANYCON_QUOTA_DEVICES", raw.quota_devices.as_deref())?;
+        let daemons = quota_value("ANYCON_QUOTA_DAEMONS", raw.quota_daemons.as_deref())?;
+        let connections = quota_value("ANYCON_QUOTA_CONNECTIONS", raw.quota_connections.as_deref())?;
+        let daily_pairings = quota_value("ANYCON_QUOTA_DAILY_PAIRINGS", raw.quota_daily_pairings.as_deref())?;
+        if cfg.mode.is_multi() {
+            let d = QuotaLimits::default();
+            cfg.enable_multi(
+                QuotaLimits {
+                    devices: devices.unwrap_or(d.devices),
+                    daemons: daemons.unwrap_or(d.daemons),
+                    connections: connections.unwrap_or(d.connections),
+                },
+                daily_pairings.unwrap_or(DEFAULT_DAILY_PAIRINGS),
+            );
+        } else {
+            for (var, set) in [
+                ("ANYCON_QUOTA_DEVICES", devices.is_some()),
+                ("ANYCON_QUOTA_DAEMONS", daemons.is_some()),
+                ("ANYCON_QUOTA_CONNECTIONS", connections.is_some()),
+                ("ANYCON_QUOTA_DAILY_PAIRINGS", daily_pairings.is_some()),
+            ] {
+                if set {
+                    cfg.ignored_vars.push(var.into());
+                }
+            }
+        }
+        cfg.oauth_github = parse_oauth_client(
+            ("ANYCON_OAUTH_GITHUB_CLIENT_ID", raw.oauth_github_client_id.as_deref()),
+            ("ANYCON_OAUTH_GITHUB_CLIENT_SECRET", raw.oauth_github_client_secret.as_deref()),
+        )?;
+        cfg.oauth_google = parse_oauth_client(
+            ("ANYCON_OAUTH_GOOGLE_CLIENT_ID", raw.oauth_google_client_id.as_deref()),
+            ("ANYCON_OAUTH_GOOGLE_CLIENT_SECRET", raw.oauth_google_client_secret.as_deref()),
+        )?;
+
         for name in raw.other.keys() {
             if UNIMPLEMENTED.contains(&name.as_str()) || name.starts_with("quota_") {
                 cfg.unimplemented_vars.push(format!("ANYCON_{}", name.to_ascii_uppercase()));
@@ -472,13 +664,84 @@ impl Config {
                 cfg.unknown_vars.push(format!("ANYCON_{}", name.to_ascii_uppercase()));
             }
         }
+        cfg.check_sign_in()?;
         Ok(cfg)
     }
 
+    /// 切到 `multi`：设模式、数量类配额和每日配对上限（写进 `limits.daily_pairings_per_account`，那是它唯一的一份）。
+    /// 环境变量路径和测试都走它。
+    pub fn enable_multi(&mut self, quota: QuotaLimits, daily_pairings: u32) {
+        self.mode = Mode::Multi;
+        self.quota = Some(quota);
+        self.limits.daily_pairings_per_account = Some(daily_pairings);
+    }
+
+    /// 这个 OAuth 提供方配了应用凭据没有。
+    pub fn oauth_client(&self, provider: OAuthProvider) -> Option<&OAuthClient> {
+        match provider {
+            OAuthProvider::Github => self.oauth_github.as_ref(),
+            OAuthProvider::Google => self.oauth_google.as_ref(),
+        }
+    }
+
+    /// 配了凭据的 OAuth 提供方，按 `login_methods` 的顺序（github 在前）。
+    pub fn oauth_providers(&self) -> impl Iterator<Item = OAuthProvider> + '_ {
+        OAuthProvider::ALL.into_iter().filter(|p| self.oauth_client(*p).is_some())
+    }
+
+    /// 某个提供方实际使用的端点：测试覆盖优先，否则是写死的生产端点。
+    pub fn oauth_endpoints(&self, provider: OAuthProvider) -> OAuthEndpoints {
+        let over = match provider {
+            OAuthProvider::Github => self.oauth_endpoint_overrides.github.as_ref(),
+            OAuthProvider::Google => self.oauth_endpoint_overrides.google.as_ref(),
+        };
+        over.cloned().unwrap_or_else(|| provider.default_endpoints())
+    }
+
+    /// 邮箱（规范化后）在 `ANYCON_ADMIN_EMAILS` 里。不看模式——谁能当管理员见 [`crate::accounts::is_effective_admin`]。
+    pub fn is_admin_email(&self, email: &str) -> bool {
+        self.admin_emails.iter().any(|a| a == email)
+    }
+
+    /// 是否有至少一种登录途径：SMTP（或测试注入的发信实现）或任一 OAuth 提供方。
+    fn has_sign_in(&self) -> bool {
+        self.smtp.is_some()
+            || self.mailer_override.is_some()
+            || self.oauth_github.is_some()
+            || self.oauth_google.is_some()
+    }
+
+    /// `multi` 是开放注册，没有 bootstrap token：没有邮箱也没有 OAuth 就没人能登录，启动就报错。
+    fn check_sign_in(&self) -> Result<(), ConfigError> {
+        if self.mode.is_multi() && !self.has_sign_in() {
+            return Err(ConfigError::MultiNoSignIn);
+        }
+        Ok(())
+    }
+
+    /// 启动时要打的警告（由 [`crate::run`] 逐条输出）：被当前模式忽略的变量，以及 OAuth 配了但
+    /// `ANYCON_PUBLIC_URL` 不是 https。文字里不含邮箱、凭据这类值。
+    pub fn startup_warnings(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .ignored_vars
+            .iter()
+            .map(|name| format!("{name} is set but ignored in {} mode", self.mode.as_str()))
+            .collect();
+        if self.oauth_providers().next().is_some() && self.public_url.scheme() != "https" {
+            out.push(
+                "OAuth sign-in is configured but ANYCON_PUBLIC_URL is not https: providers expect an https callback \
+                 URL (plain http is only fine for local development)"
+                    .into(),
+            );
+        }
+        out
+    }
+
     /// 启动前的最后检查（环境变量路径在 [`Config::from_vars`] 里已经检查过；程序化构造的配置也要过这一关）：
-    /// 配了 SMTP 必须有发件人，`smtp+plain` 的主机写法要过 [`check_plain_host`]（IP 字面量必须是本机 / 内网），
+    /// `multi` 至少要有一种登录途径，配了 SMTP 必须有发件人，`smtp+plain` 的主机写法要过 [`check_plain_host`]（IP 字面量必须是本机 / 内网），
     /// 预览域名不能和 `ANYCON_PUBLIC_URL` 在同一个可注册域名下。
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.check_sign_in()?;
         if let Some(preview) = &self.preview {
             check_preview_site(preview, &self.public_url)?;
         }
@@ -836,6 +1099,54 @@ pub fn check_preview_site(preview: &PreviewUrl, public_url: &Url) -> Result<(), 
     }
 }
 
+/// 解析 `ANYCON_ADMIN_EMAILS`：逗号分隔的邮箱，每个按 [`crate::mail::normalize_email`] 规范化，去重，空项忽略。
+/// 有不合法的项就报错——错误里只给序号，不回显内容（它多半是个真实邮箱的笔误）。
+pub fn parse_admin_emails(s: &str) -> Result<Vec<String>, ConfigError> {
+    let mut out: Vec<String> = Vec::new();
+    for (i, item) in s.split(',').enumerate() {
+        if item.trim().is_empty() {
+            continue;
+        }
+        let email = crate::mail::normalize_email(item)
+            .ok_or_else(|| invalid("ANYCON_ADMIN_EMAILS", format!("entry #{} is not a valid email address", i + 1)))?;
+        if !out.contains(&email) {
+            out.push(email);
+        }
+    }
+    Ok(out)
+}
+
+/// 解析 `ANYCON_QUOTA_*`：正整数（≥ 1）。
+fn parse_quota(var: &'static str, s: &str) -> Result<u32, ConfigError> {
+    let n: u32 = s.trim().parse().map_err(|e| invalid(var, format!("{s:?}: {e} (expected a positive integer)")))?;
+    if n == 0 {
+        return Err(invalid(var, "must be at least 1"));
+    }
+    Ok(n)
+}
+
+/// 解析一个 OAuth 提供方的 `CLIENT_ID` / `CLIENT_SECRET`：都空 = 没配；只有一个 = 报错；都有则不能含空白 / 控制字符
+/// （多半是复制粘贴带进来的换行）。**错误里不回显 secret。**
+fn parse_oauth_client(
+    (id_var, id): (&'static str, Option<&str>),
+    (secret_var, secret): (&'static str, Option<&str>),
+) -> Result<Option<OAuthClient>, ConfigError> {
+    let id = id.map(str::trim).filter(|s| !s.is_empty());
+    let secret = secret.map(str::trim).filter(|s| !s.is_empty());
+    let (client_id, client_secret) = match (id, secret) {
+        (None, None) => return Ok(None),
+        (Some(_), None) => return Err(invalid(secret_var, format!("required when {id_var} is set"))),
+        (None, Some(_)) => return Err(invalid(id_var, format!("required when {secret_var} is set"))),
+        (Some(i), Some(s)) => (i, s),
+    };
+    for (var, value) in [(id_var, client_id), (secret_var, client_secret)] {
+        if value.len() > 512 || value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(invalid(var, "must be at most 512 characters with no whitespace or control characters"));
+        }
+    }
+    Ok(Some(OAuthClient { client_id: client_id.to_string(), client_secret: client_secret.to_string() }))
+}
+
 /// 解析并校验 `ANYCON_PUBLIC_URL`：必须是 http(s) URL，有主机名，不带路径 / query / fragment。
 pub fn parse_public_url(s: &str) -> Result<Url, ConfigError> {
     let s = s.trim();
@@ -905,6 +1216,15 @@ struct RawConfig {
     preview_url: Option<String>,
     preview_bytes_per_min: Option<String>,
     preview_max_connections: Option<String>,
+    admin_emails: Option<String>,
+    quota_devices: Option<String>,
+    quota_daemons: Option<String>,
+    quota_connections: Option<String>,
+    quota_daily_pairings: Option<String>,
+    oauth_github_client_id: Option<String>,
+    oauth_github_client_secret: Option<String>,
+    oauth_google_client_id: Option<String>,
+    oauth_google_client_secret: Option<String>,
     #[serde(flatten)]
     other: BTreeMap<String, String>,
 }
@@ -948,10 +1268,26 @@ mod tests {
     }
 
     #[test]
-    fn multi_mode_rejected() {
-        let r = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://x.test"), ("ANYCON_MODE", "multi")]));
-        assert!(matches!(r, Err(ConfigError::MultiNotImplemented)));
-        assert!(r.unwrap_err().to_string().contains("not implemented in v0.1"));
+    fn mode_is_single_or_multi_case_insensitively_and_nothing_else() {
+        let base = ("ANYCON_PUBLIC_URL", "http://x.test");
+        for (value, expected) in [("single", Mode::Single), ("", Mode::Single), (" Single ", Mode::Single)] {
+            assert_eq!(Config::from_vars(vars(&[base, ("ANYCON_MODE", value)])).unwrap().mode, expected, "{value:?}");
+        }
+        assert_eq!(Config::from_vars(vars(&[base])).unwrap().mode, Mode::Single, "default");
+        for value in ["multi", "MULTI", " Multi "] {
+            let c = Config::from_vars(vars(&[
+                base,
+                ("ANYCON_MODE", value),
+                ("ANYCON_SMTP_URL", "smtp+plain://127.0.0.1"),
+                ("ANYCON_EMAIL_FROM", "n@example.com"),
+            ]))
+            .unwrap();
+            assert_eq!(c.mode, Mode::Multi, "{value:?}");
+            assert_eq!(c.mode.as_str(), "multi");
+        }
+        let err = Config::from_vars(vars(&[base, ("ANYCON_MODE", "cluster")])).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_MODE", .. }), "{err}");
+        assert!(err.to_string().contains("single") && err.to_string().contains("multi"), "{err}");
     }
 
     #[test]
@@ -987,14 +1323,15 @@ mod tests {
     fn unimplemented_and_unknown_vars_are_collected() {
         let c = Config::from_vars(vars(&[
             ("ANYCON_PUBLIC_URL", "http://x.test"),
-            ("ANYCON_OAUTH_GITHUB_CLIENT_ID", "x"),
-            ("ANYCON_QUOTA_DEVICES", "3"),
+            ("ANYCON_QUEUE_ENABLED", "true"),
+            ("ANYCON_QUOTA_QUEUE_ITEMS", "3"),
             ("ANYCON_HOME", "/tmp/x"),
             ("OTHER", "1"),
         ]))
         .unwrap();
-        assert_eq!(c.unimplemented_vars, vec!["ANYCON_OAUTH_GITHUB_CLIENT_ID", "ANYCON_QUOTA_DEVICES"]);
+        assert_eq!(c.unimplemented_vars, vec!["ANYCON_QUEUE_ENABLED", "ANYCON_QUOTA_QUEUE_ITEMS"]);
         assert_eq!(c.unknown_vars, vec!["ANYCON_HOME"]);
+        assert!(c.ignored_vars.is_empty());
     }
 
     #[test]
@@ -1306,6 +1643,269 @@ mod tests {
         let c = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://192.168.1.5:8080")])).unwrap();
         assert_eq!(c.vapid_subject(), "mailto:noreply@192.168.1.5");
     }
+
+    // ---- multi 模式：管理员邮箱、配额、OAuth ----
+
+    /// 邮箱登录（SMTP）配齐的最小环境变量集合。
+    const SMTP: [(&str, &str); 2] =
+        [("ANYCON_SMTP_URL", "smtps://mail.example.com"), ("ANYCON_EMAIL_FROM", "n@example.com")];
+
+    fn multi(extra: &[(&str, &str)]) -> Result<Config, ConfigError> {
+        let mut v = vec![("ANYCON_MODE", "multi")];
+        v.extend_from_slice(&SMTP);
+        v.extend_from_slice(extra);
+        with(&v)
+    }
+
+    #[test]
+    fn multi_gets_the_default_quotas_and_single_gets_none() {
+        let c = multi(&[]).unwrap();
+        assert_eq!(c.mode, Mode::Multi);
+        assert_eq!(c.quota, Some(QuotaLimits { devices: 10, daemons: 3, connections: 10 }));
+        assert_eq!(c.quota, Some(QuotaLimits::default()));
+        // 每日配对上限只存在于 limits 里
+        assert_eq!(c.limits.daily_pairings_per_account, Some(20));
+        assert!(c.admin_emails.is_empty() && c.ignored_vars.is_empty() && c.unimplemented_vars.is_empty());
+
+        let s = with(&[]).unwrap();
+        assert_eq!(s.mode, Mode::Single);
+        assert_eq!((s.quota, s.limits.daily_pairings_per_account), (None, None));
+        assert!(s.admin_emails.is_empty() && s.oauth_github.is_none() && s.oauth_google.is_none());
+    }
+
+    #[test]
+    fn quota_variables_are_positive_integers_and_only_apply_in_multi() {
+        let c = multi(&[
+            ("ANYCON_QUOTA_DEVICES", "25"),
+            ("ANYCON_QUOTA_DAEMONS", " 7 "),
+            ("ANYCON_QUOTA_CONNECTIONS", "40"),
+            ("ANYCON_QUOTA_DAILY_PAIRINGS", "1"),
+        ])
+        .unwrap();
+        assert_eq!(c.quota, Some(QuotaLimits { devices: 25, daemons: 7, connections: 40 }));
+        assert_eq!(c.limits.daily_pairings_per_account, Some(1));
+        assert!(c.unimplemented_vars.is_empty() && c.unknown_vars.is_empty() && c.ignored_vars.is_empty());
+        // 只设一个，别的保持默认；空白 = 没设
+        let c = multi(&[("ANYCON_QUOTA_DAEMONS", "9"), ("ANYCON_QUOTA_DEVICES", "  ")]).unwrap();
+        assert_eq!(c.quota, Some(QuotaLimits { daemons: 9, ..QuotaLimits::default() }));
+
+        for var in
+            ["ANYCON_QUOTA_DEVICES", "ANYCON_QUOTA_DAEMONS", "ANYCON_QUOTA_CONNECTIONS", "ANYCON_QUOTA_DAILY_PAIRINGS"]
+        {
+            for bad in ["0", "-1", "1.5", "ten", "4294967296"] {
+                let err = multi(&[(var, bad)]).unwrap_err();
+                assert!(matches!(&err, ConfigError::Invalid { var: v, .. } if *v == var), "{var}={bad}: {err}");
+                // single 里它们会被忽略，但写错了照样报错（切换模式时才炸太晚）
+                assert!(with(&[(var, bad)]).is_err(), "{var}={bad} in single");
+            }
+        }
+
+        // single：合法的值被忽略，并记下来给启动警告用；其它 quota_* 变量仍是「已识别、未实现」
+        let c = with(&[
+            ("ANYCON_QUOTA_DEVICES", "3"),
+            ("ANYCON_QUOTA_DAILY_PAIRINGS", "5"),
+            ("ANYCON_QUOTA_QUEUE_BYTES", "9"),
+        ])
+        .unwrap();
+        assert_eq!((c.quota, c.limits.daily_pairings_per_account), (None, None));
+        assert_eq!(c.ignored_vars, vec!["ANYCON_QUOTA_DEVICES", "ANYCON_QUOTA_DAILY_PAIRINGS"]);
+        assert_eq!(c.unimplemented_vars, vec!["ANYCON_QUOTA_QUEUE_BYTES"]);
+        assert_eq!(
+            c.startup_warnings(),
+            vec![
+                "ANYCON_QUOTA_DEVICES is set but ignored in single mode",
+                "ANYCON_QUOTA_DAILY_PAIRINGS is set but ignored in single mode"
+            ]
+        );
+    }
+
+    #[test]
+    fn admin_emails_are_normalized_deduplicated_and_validated_without_echoing_them() {
+        let c = multi(&[("ANYCON_ADMIN_EMAILS", " Boss@Example.com, ops@example.com ,,boss@example.com,")]).unwrap();
+        assert_eq!(c.admin_emails, vec!["boss@example.com", "ops@example.com"]);
+        assert!(c.is_admin_email("ops@example.com") && !c.is_admin_email("OPS@example.com"));
+        assert!(!c.is_admin_email("other@example.com"));
+        assert!(c.unimplemented_vars.is_empty() && c.ignored_vars.is_empty());
+        // 空 = 没有
+        assert!(multi(&[("ANYCON_ADMIN_EMAILS", "  ")]).unwrap().admin_emails.is_empty());
+        // 有一项不合法就整体报错；错误只给序号，不回显那一项（多半是真实邮箱的笔误）
+        for bad in
+            ["boss@example.com, not-an-email", "typo@@example.com", "a b@example.com", "x@example.com;y@example.com"]
+        {
+            let err = multi(&[("ANYCON_ADMIN_EMAILS", bad)]).unwrap_err();
+            let msg = err.to_string();
+            assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_ADMIN_EMAILS", .. }), "{bad}: {msg}");
+            assert!(msg.contains("entry #") && !msg.contains("typo") && !msg.contains("not-an-email"), "{bad}: {msg}");
+            assert!(with(&[("ANYCON_ADMIN_EMAILS", bad)]).is_err(), "single validates too: {bad}");
+        }
+        // Debug 和日志只给个数
+        let dump = format!("{c:?}");
+        assert!(!dump.contains("boss@") && !dump.contains("ops@") && dump.contains("admin_emails: 2"), "{dump}");
+        // single：解析了但忽略，启动时警告
+        let c = with(&[("ANYCON_ADMIN_EMAILS", "boss@example.com")]).unwrap();
+        assert_eq!(c.ignored_vars, vec!["ANYCON_ADMIN_EMAILS"]);
+        assert_eq!(c.startup_warnings(), vec!["ANYCON_ADMIN_EMAILS is set but ignored in single mode"]);
+    }
+
+    #[test]
+    fn the_admin_token_is_ignored_in_multi_with_a_warning() {
+        let c = multi(&[("ANYCON_ADMIN_TOKEN", "super-secret-token-value")]).unwrap();
+        assert_eq!(c.ignored_vars, vec!["ANYCON_ADMIN_TOKEN"]);
+        assert_eq!(c.startup_warnings(), vec!["ANYCON_ADMIN_TOKEN is set but ignored in multi mode"]);
+        assert!(!format!("{c:?}").contains("super-secret"));
+        // single 里它是正常的
+        let c = with(&[("ANYCON_ADMIN_TOKEN", "super-secret-token-value")]).unwrap();
+        assert!(c.ignored_vars.is_empty() && c.startup_warnings().is_empty());
+    }
+
+    #[test]
+    fn oauth_clients_need_both_halves_and_hide_the_secret() {
+        let c = with(&[
+            ("ANYCON_OAUTH_GITHUB_CLIENT_ID", "gh-id"),
+            ("ANYCON_OAUTH_GITHUB_CLIENT_SECRET", "gh-secret-value"),
+            ("ANYCON_OAUTH_GOOGLE_CLIENT_ID", " g-id.apps "),
+            ("ANYCON_OAUTH_GOOGLE_CLIENT_SECRET", "g-secret-value"),
+        ])
+        .unwrap();
+        assert_eq!(c.oauth_github.as_ref().unwrap().client_id, "gh-id");
+        assert_eq!(c.oauth_google.as_ref().unwrap().client_id, "g-id.apps", "trimmed");
+        assert_eq!(c.oauth_client(OAuthProvider::Github).unwrap().client_secret, "gh-secret-value");
+        assert_eq!(c.oauth_providers().map(OAuthProvider::as_str).collect::<Vec<_>>(), ["github", "google"]);
+        assert!(c.unimplemented_vars.is_empty() && c.unknown_vars.is_empty() && c.ignored_vars.is_empty());
+        let dump = format!("{c:?}");
+        assert!(!dump.contains("secret-value"), "{dump}");
+        assert!(dump.contains("gh-id") && dump.contains("<redacted>"), "{dump}");
+        assert!(!format!("{:?}", c.oauth_google.unwrap()).contains("secret-value"));
+
+        // 只配一个提供方；没配的是 None；空白 = 没配
+        let c = with(&[
+            ("ANYCON_OAUTH_GOOGLE_CLIENT_ID", "g"),
+            ("ANYCON_OAUTH_GOOGLE_CLIENT_SECRET", "s"),
+            ("ANYCON_OAUTH_GITHUB_CLIENT_ID", ""),
+            ("ANYCON_OAUTH_GITHUB_CLIENT_SECRET", "  "),
+        ])
+        .unwrap();
+        assert!(c.oauth_github.is_none() && c.oauth_client(OAuthProvider::Github).is_none());
+        assert_eq!(c.oauth_providers().collect::<Vec<_>>(), [OAuthProvider::Google]);
+
+        // 两种模式都能配
+        assert!(multi(&[("ANYCON_OAUTH_GITHUB_CLIENT_ID", "i"), ("ANYCON_OAUTH_GITHUB_CLIENT_SECRET", "s")])
+            .unwrap()
+            .oauth_github
+            .is_some());
+
+        // 只有一半：报错，指出缺的那个，不回显另一半
+        for (id, secret, missing) in [
+            (Some("the-id"), None, "ANYCON_OAUTH_GITHUB_CLIENT_SECRET"),
+            (None, Some("the-secret"), "ANYCON_OAUTH_GITHUB_CLIENT_ID"),
+        ] {
+            let mut v = Vec::new();
+            v.extend(id.map(|i| ("ANYCON_OAUTH_GITHUB_CLIENT_ID", i)));
+            v.extend(secret.map(|s| ("ANYCON_OAUTH_GITHUB_CLIENT_SECRET", s)));
+            let err = with(&v).unwrap_err();
+            assert!(matches!(&err, ConfigError::Invalid { var, .. } if *var == missing), "{err}");
+            assert!(!err.to_string().contains("the-secret"), "{err}");
+        }
+        let err = with(&[("ANYCON_OAUTH_GOOGLE_CLIENT_ID", "only-id")]).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_OAUTH_GOOGLE_CLIENT_SECRET", .. }), "{err}");
+
+        // 值里有空白 / 控制字符（复制粘贴带进来的）：报错，不回显 secret
+        for bad in ["a b", "a\nb", "a\tb"] {
+            let err = with(&[("ANYCON_OAUTH_GITHUB_CLIENT_ID", "id"), ("ANYCON_OAUTH_GITHUB_CLIENT_SECRET", bad)])
+                .unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_OAUTH_GITHUB_CLIENT_SECRET", .. }), "{err}");
+            assert!(!err.to_string().contains(bad), "{err}");
+        }
+    }
+
+    #[test]
+    fn multi_without_any_way_to_sign_in_refuses_to_start() {
+        let none = with(&[("ANYCON_MODE", "multi")]).unwrap_err();
+        assert!(matches!(none, ConfigError::MultiNoSignIn), "{none}");
+        assert!(none.to_string().contains("ANYCON_SMTP_URL") && none.to_string().contains("OAuth"), "{none}");
+        // 邮箱登录或任一 OAuth 提供方都够
+        assert!(multi(&[]).is_ok());
+        for (id, secret) in [
+            ("ANYCON_OAUTH_GITHUB_CLIENT_ID", "ANYCON_OAUTH_GITHUB_CLIENT_SECRET"),
+            ("ANYCON_OAUTH_GOOGLE_CLIENT_ID", "ANYCON_OAUTH_GOOGLE_CLIENT_SECRET"),
+        ] {
+            assert!(with(&[("ANYCON_MODE", "multi"), (id, "i"), (secret, "s")]).is_ok(), "{id}");
+        }
+        // single 不需要（有 bootstrap token）
+        assert!(with(&[]).is_ok());
+
+        // 程序化构造的配置在 validate() 里过同一关；测试注入的发信实现也算
+        let mut c = Config::new("https://hub.test", std::path::Path::new("/nonexistent")).unwrap();
+        c.enable_multi(QuotaLimits::default(), DEFAULT_DAILY_PAIRINGS);
+        assert!(matches!(c.validate(), Err(ConfigError::MultiNoSignIn)));
+        c.mailer_override = Some(Arc::new(crate::mail::RecordingMailer::default()));
+        assert!(c.validate().is_ok());
+        c.mailer_override = None;
+        c.oauth_google = Some(OAuthClient { client_id: "i".into(), client_secret: "s".into() });
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn oauth_over_plain_http_is_a_startup_warning_not_an_error() {
+        let oauth = [("ANYCON_OAUTH_GITHUB_CLIENT_ID", "i"), ("ANYCON_OAUTH_GITHUB_CLIENT_SECRET", "s")];
+        let http = |extra: &[(&str, &str)]| {
+            let mut v = vec![("ANYCON_PUBLIC_URL", "http://localhost:8080")];
+            v.extend_from_slice(extra);
+            Config::from_vars(vars(&v)).unwrap()
+        };
+        let warnings = http(&oauth).startup_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("OAuth") && warnings[0].contains("https"), "{warnings:?}");
+        // https、或没配 OAuth：不警告
+        assert!(with(&oauth).unwrap().startup_warnings().is_empty());
+        assert!(http(&[]).startup_warnings().is_empty());
+    }
+
+    #[test]
+    fn oauth_endpoints_default_to_the_providers_and_tests_can_override_them() {
+        let github = OAuthProvider::Github.default_endpoints();
+        assert_eq!(github.authorize, "https://github.com/login/oauth/authorize");
+        assert_eq!(github.token, "https://github.com/login/oauth/access_token");
+        assert_eq!(github.userinfo, "https://api.github.com/user");
+        assert_eq!(github.emails.as_deref(), Some("https://api.github.com/user/emails"));
+        let google = OAuthProvider::Google.default_endpoints();
+        assert_eq!(google.authorize, "https://accounts.google.com/o/oauth2/v2/auth");
+        assert_eq!(google.token, "https://oauth2.googleapis.com/token");
+        assert_eq!(google.userinfo, "https://openidconnect.googleapis.com/v1/userinfo");
+        assert!(google.emails.is_none());
+        for e in [&github, &google] {
+            assert!([&e.authorize, &e.token, &e.userinfo].iter().all(|u| u.starts_with("https://")));
+        }
+
+        let mut c = with(&[]).unwrap();
+        assert_eq!(c.oauth_endpoints(OAuthProvider::Github), github, "no override: production endpoints");
+        let fake = OAuthEndpoints {
+            authorize: "http://127.0.0.1:1/authorize".into(),
+            token: "http://127.0.0.1:1/token".into(),
+            userinfo: "http://127.0.0.1:1/user".into(),
+            emails: Some("http://127.0.0.1:1/emails".into()),
+        };
+        c.oauth_endpoint_overrides.github = Some(fake.clone());
+        assert_eq!(c.oauth_endpoints(OAuthProvider::Github), fake);
+        assert_eq!(c.oauth_endpoints(OAuthProvider::Google), google, "the other provider is untouched");
+
+        assert_eq!(OAuthProvider::parse("github"), Some(OAuthProvider::Github));
+        assert_eq!(OAuthProvider::parse("google"), Some(OAuthProvider::Google));
+        for bad in ["GitHub", "gitlab", ""] {
+            assert_eq!(OAuthProvider::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn enable_multi_sets_the_quotas_and_the_one_daily_pairing_limit() {
+        let mut c = Config::new("https://hub.test", std::path::Path::new("/nonexistent")).unwrap();
+        assert_eq!((c.mode, c.quota, c.limits.daily_pairings_per_account), (Mode::Single, None, None));
+        c.enable_multi(QuotaLimits { devices: 2, daemons: 1, connections: 3 }, 4);
+        assert_eq!(c.mode, Mode::Multi);
+        assert_eq!(c.quota.unwrap().daemons, 1);
+        assert_eq!(c.limits.daily_pairings_per_account, Some(4));
+    }
+
     // ---- ADR-39：预览 ----
 
     fn preview(url: &str) -> Result<PreviewUrl, ConfigError> {

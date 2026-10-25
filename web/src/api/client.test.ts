@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { errorBody, installFakeApi } from '@/test/fakeApi'
-import { ApiError, apiFetch, setUnauthorizedHandler } from './client'
+import { ApiError, apiFetch, apiFetchRaw, setUnauthorizedHandler } from './client'
 
 afterEach(() => {
   setUnauthorizedHandler(null)
@@ -63,5 +63,20 @@ describe('apiFetch — bearer (device token)', () => {
     installFakeApi({ 'POST /api/preview/tokens': () => ({ status: 401, body: errorBody('unauthorized') }) })
     await expect(apiFetch('/api/preview/tokens', { method: 'POST', body: {}, bearer: 'dev-token' })).rejects.toMatchObject({ status: 401, code: 'unauthorized' })
     expect(handler).not.toHaveBeenCalled()
+  })
+})
+
+describe('apiFetchRaw', () => {
+  it('returns the body together with the response headers (X-Next-Cursor paging)', async () => {
+    installFakeApi({ 'GET /api/admin/accounts': () => ({ body: [{ id: 'a' }], headers: { 'X-Next-Cursor': '123.abc' } }) })
+    const { data, headers } = await apiFetchRaw<Array<{ id: string }>>('/api/admin/accounts')
+    expect(data).toEqual([{ id: 'a' }])
+    expect(headers.get('X-Next-Cursor')).toBe('123.abc')
+  })
+
+  it('has no cursor header on the last page, and a 204 has no body', async () => {
+    installFakeApi({ 'GET /api/x': () => [], 'DELETE /api/y': () => undefined })
+    expect((await apiFetchRaw('/api/x')).headers.get('X-Next-Cursor')).toBeNull()
+    expect((await apiFetchRaw('/api/y', { method: 'DELETE' })).data).toBeUndefined()
   })
 })

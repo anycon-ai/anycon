@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { ApiError } from '@/api/client'
 import { fetchMe, keys } from '@/api/queries'
 import { AppGate } from '@/components/AppGate'
+import { clearInvite } from '@/lib/invite'
 import { loginRedirectTarget } from '@/lib/loginRedirect'
 import { timed } from '@/lib/timing'
 import { Button } from '@/ui/Button'
@@ -12,6 +13,8 @@ export const Route = createFileRoute('/_app')({
   beforeLoad: async ({ context, location }) => {
     try {
       const me = await context.queryClient.ensureQueryData({ queryKey: keys.me, queryFn: () => timed('http /api/me', fetchMe), staleTime: 60_000 })
+      // 已经登录了：暂存的邀请码不再需要（走 OAuth 兑换邀请时不经过登录页，没人替它清）
+      clearInvite()
       return { me }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {

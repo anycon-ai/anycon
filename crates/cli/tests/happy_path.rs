@@ -58,58 +58,6 @@ impl TestHub {
     }
 }
 
-/// `anycon pair --json`：第一行是短码，进程阻塞到有设备加入。
-struct PairProc {
-    code: String,
-    child: Child,
-    lines: Lines<BufReader<ChildStdout>>,
-}
-
-impl PairProc {
-    /// daemon 刚起来时可能还没连上 hub（`pair` 立即以退出码 3 退出），重试到连上为止。
-    async fn begin(daemon_home: &Path) -> PairProc {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let mut c = Command::new(BIN);
-            c.args(["pair", "--json"])
-                .env("ANYCON_HOME", daemon_home)
-                .env("NO_COLOR", "1")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .stdin(Stdio::null())
-                .kill_on_drop(true);
-            let mut child = c.spawn().unwrap();
-            let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-            match tokio::time::timeout(Duration::from_secs(10), lines.next_line()).await {
-                Ok(Ok(Some(first))) => {
-                    let j: Value = serde_json::from_str(&first).unwrap_or_else(|e| panic!("{first:?}: {e}"));
-                    let code = j["code"].as_str().expect("pair --json prints the code first").to_string();
-                    return PairProc { code, child, lines };
-                }
-                _ => {
-                    assert!(Instant::now() < deadline, "the daemon never connected to the hub");
-                    let _ = child.kill().await;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            }
-        }
-    }
-
-    /// 等配对完成：最后一行 `{ "paired": … }`，退出码 0。
-    async fn finish(mut self) -> Value {
-        let mut last = String::new();
-        let read = async {
-            while let Ok(Some(l)) = self.lines.next_line().await {
-                last = l;
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(20), read).await.expect("pair --json did not finish");
-        let status = tokio::time::timeout(Duration::from_secs(10), self.child.wait()).await.unwrap().unwrap();
-        assert_eq!(status.code(), Some(0));
-        serde_json::from_str(&last).unwrap()
-    }
-}
-
 /// 流式运行 `anycon <args>`（CLI 客户端，`cli_home`），stdout 逐行读。
 struct Streaming {
     child: Child,

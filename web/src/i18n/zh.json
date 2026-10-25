@@ -55,7 +55,43 @@
     "codeResend": "重新发送验证码",
     "codeResendIn": "{{seconds}} 秒后可重新发送",
     "emailVerify": "登录",
-    "useToken": "改用访问 token"
+    "useToken": "改用访问 token",
+    "subtitleMulti": "登录；还没有账号的话，登录时会自动为你创建一个。",
+    "subtitleLinked": "使用你在账号设置里设置过的登录方式。",
+    "emailHintSignUp": "我们会给这个邮箱发一个 6 位验证码。如果这个邮箱还没有账号，输入验证码后会自动创建。",
+    "emailSentSignUp": "如果邮箱地址没错，6 位验证码已经发出，10 分钟内有效。输入后即可登录；如果你是新用户，会同时创建账号。",
+    "emailVerifySignUp": "继续",
+    "or": "或",
+    "invitedOauth": "也可以用下面的第三方账号来创建账号。"
+  },
+  "oauth": {
+    "continueWith": "使用 {{provider}} 继续",
+    "provider": {
+      "github": "GitHub",
+      "google": "Google",
+      "unknown": "该登录方式"
+    },
+    "wrongOrigin": "使用 {{provider}} 登录只能在 hub 的公开地址上进行：{{url}}",
+    "wrongOriginNote": "GitHub / Google 登录和关联只能在 hub 的公开地址 {{url}} 上进行。你现在访问的不是这个地址，所以这些按钮不可用。",
+    "errors": {
+      "generic": "使用 {{provider}} 登录没有成功，请重试。",
+      "cancelled": "已取消 {{provider}} 登录。",
+      "provider_error": "{{provider}} 没能完成请求，请稍后重试。",
+      "invalid_state": "这次登录已过期，或者不是在这个浏览器里发起的。请从这里重新开始。",
+      "registration_closed": "这个 hub 仅限受邀注册，而且没有账号对应这个 {{provider}} 账号。请向管理员要一个邀请链接。",
+      "invite_invalid": "这个邀请链接无效。",
+      "invite_expired": "这个邀请已过期。",
+      "invite_used": "这个邀请已经被使用。",
+      "identity_taken": "这个 {{provider}} 账号已经关联到本 hub 上的另一个账号了。",
+      "already_linked": "你的账号已经关联了另一个 {{provider}} 账号。请先解除那一个。",
+      "not_signed_in": "关联 {{provider}} 账号需要先登录。请登录后再试。",
+      "server_error": "hub 在完成 {{provider}} 登录时出错了。请稍后重试；如果一直这样，请告诉 hub 管理员。"
+    }
+  },
+  "invite": {
+    "openTitle": "注册已开放",
+    "openBody": "这个 hub 允许任何人创建账号，不需要邀请链接。登录或创建账号即可继续。",
+    "openAction": "去登录"
   },
   "status": {
     "session": {
@@ -88,7 +124,7 @@
     "pairAgain": "重新配对",
     "version": "hub 不支持当前版本的网页，请重新加载以更新。",
     "reload": "重新加载",
-    "quota": "你的账号已达到连接数上限。",
+    "quota": "你的账号同时在线的连接数已达上限。请断开不用的浏览器或节点，或到“账号设置 → 设备”里移除旧设备。",
     "nodeOffline": "节点离线，新消息会留在本机，等它回来再发送。",
     "unsent_other": "有 {{count}} 条消息尚未发送",
     "resendNow": "现在重发",
@@ -99,7 +135,8 @@
     "storage": "这个浏览器没能在本地保存数据（空间已满或被禁用）。关掉这个标签页后，未发送的消息和缓存的会话可能会丢失。",
     "enrollOne": "有设备请求接入 {{node}}。",
     "enrollMany": "有 {{count}} 台设备请求接入你的节点。",
-    "review": "查看"
+    "review": "查看",
+    "quotaView": "查看用量"
   },
   "sidebar": {
     "menu": "菜单",
@@ -200,7 +237,7 @@
       "invalid_code": "配对码是 8 位或 16 位字母数字。",
       "not_found": "这个短码不存在或已过期，请在机器上重新运行 anycon pair。",
       "rate_limited": "尝试次数过多，请等一分钟再试。",
-      "quota": "你的账号已达到设备数上限。",
+      "quota": "你的账号已达到上限：设备数、节点数或今天的配对次数用完了。请到“账号设置 → 设备”里移除不再使用的设备，或看看哪一项已满。",
       "forbidden": "那个节点属于另一个账号。",
       "hub_unavailable": "连不上 hub，请检查网络。",
       "no_identity": "hub 没有接受这个浏览器作为设备。",
@@ -618,6 +655,11 @@
     "addDevice": "添加设备",
     "addDeviceTitle": "添加设备",
     "addDeviceBody": "在新设备上打开配对页面，输入这个短码，或扫描二维码。",
+    "beginRefused": {
+      "quota": "配对次数暂时用完了。上限按最近 24 小时滚动计算，每一次配对满 24 小时后会空出一个名额。",
+      "rate_limited": "尝试次数过多，请等一分钟再试。",
+      "forbidden": "hub 不允许这个节点发起配对。"
+    },
     "qr": "配对二维码",
     "expiresIn": "{{time}} 后过期",
     "expired": "这个短码已过期。",
@@ -726,7 +768,60 @@
     "emailUnlinkTitle": "解绑 {{email}}？",
     "emailUnlinkBody": "解绑后不能再用这个邮箱登录，邮件提醒也会停止。",
     "emailUnlinked": "邮箱已解绑。",
-    "emailLastMethod": "这是你唯一的登录方式，邮箱不能解绑。请先创建一个访问 token。"
+    "emailLastMethod": "这是你唯一的登录方式，邮箱不能解绑。请先创建一个访问 token。",
+    "quota": "配额",
+    "loginEmailOnly": "这个 hub 用邮箱登录，邮箱可以在这里更改：",
+    "linkedAccounts": "已关联的账号",
+    "linkedAccountsHint": "关联 GitHub 或 Google 账号后，就能用它登录。每个关联 hub 只记下该账号在提供方的编号，不保存它的用户名和邮箱。",
+    "identityLinkedSince": "{{when}}关联",
+    "identityNotLinked": "未关联",
+    "identityLink": "关联",
+    "identityUnlink": "解除关联",
+    "identityLinkedToast": "{{provider}} 已关联，以后可以用它登录。",
+    "identityUnlinkedToast": "已解除 {{provider}} 的关联。",
+    "identityLastMethod": "{{provider}} 是你唯一的登录方式，不能解除关联。请先添加另一种登录方式。",
+    "dangerZone": "危险操作",
+    "deleteAccount": "删除账号",
+    "deleteAccountHint": "永久删除你的账号，以及它在这个 hub 上的设备。",
+    "deleteAccountButton": "删除账号…",
+    "deleteAccountTitle": "删除你的账号？",
+    "deleteAccountIntro": "删除后无法恢复。",
+    "deleteAccountDevices": "你的账号，以及它的设备、配对、登录方式和通知设置都会从这个 hub 上删除，已连接的设备会立即断开。",
+    "deleteAccountHistory": "会话记录保存在你自己的节点上，不会被删除。",
+    "deleteAccountRepair": "之后想在别的账号或 hub 上使用这些节点，需要重新配对。",
+    "deleteAccountLocal": "这个浏览器里保存的设备密钥和会话缓存也会被清除。",
+    "deleteAccountConfirm": "删除我的账号",
+    "deleteAccountReauth": "出于安全考虑，删除账号需要最近刚登录过（10 分钟内）。请重新登录，然后回来完成删除。",
+    "deleteAccountSignInAgain": "重新登录",
+    "deleteAccountBootstrap": "这是搭建 hub 时创建的管理员账号，不能在这里删除。",
+    "deleteAccountDone": "你的账号已删除。"
+  },
+  "quota": {
+    "hint": "你的账号在这个 hub 上各项的用量和上限。移除不再使用的设备可以腾出额度。",
+    "manageDevices": "管理设备",
+    "open": "查看用量",
+    "full": "已满",
+    "nearLimit": "快满了",
+    "usedOfMax": "{{used}} / {{max}}",
+    "usedUnlimited": "{{used}} · 不限",
+    "rows": {
+      "devices": {
+        "label": "设备",
+        "hint": "账号下的浏览器、节点、CLI 和 SDK 客户端。"
+      },
+      "daemons": {
+        "label": "节点",
+        "hint": "运行 anycon daemon 的机器（同时也计入设备）。"
+      },
+      "connections": {
+        "label": "在线连接",
+        "hint": "此刻连着 hub 的设备。"
+      },
+      "dailyPairings": {
+        "label": "24 小时内的配对",
+        "hint": "配对和接入的尝试次数，每次计 24 小时。"
+      }
+    }
   },
   "appearance": {
     "theme": "主题",
@@ -786,6 +881,28 @@
       "connections": "连接数",
       "devices": "设备数",
       "accounts": "账号数"
+    },
+    "accounts": {
+      "title": "账号",
+      "search": "搜索账号",
+      "searchPlaceholder": "按名称、邮箱或 ID 搜索",
+      "none": "还没有账号。",
+      "noMatch": "没有符合搜索条件的账号。",
+      "you": "你",
+      "byConfig": "管理员 · 由 ANYCON_ADMIN_EMAILS 指定",
+      "byConfigHint": "这个账号的邮箱写在 ANYCON_ADMIN_EMAILS 里，所以是管理员。要取消，请修改 hub 的配置。",
+      "noEmail": "无邮箱",
+      "created": "{{when}}加入",
+      "grantAdmin": "设为管理员",
+      "revokeAdmin": "取消管理员",
+      "granted": "{{name}} 现在是管理员。",
+      "revoked": "{{name}} 不再是管理员。",
+      "delete": "删除",
+      "deleteTitle": "删除 {{name}}？",
+      "deleteBody": "会把这个账号连同它的设备、配对和登录方式从这个 hub 上删除，并立即断开它的连接。会话记录保存在对方自己的节点上，不会被删除。此操作无法撤销。",
+      "deleteConfirm": "删除账号",
+      "deleted": "已删除 {{name}}。",
+      "loadMore": "加载更多"
     }
   },
   "errors": {
@@ -827,7 +944,11 @@
       "push_endpoint_not_allowed": "hub 不支持这个浏览器的推送服务。",
       "device_not_found": "hub 不认识这个浏览器的设备身份。请先配对或解锁一台节点。",
       "subscription_not_found": "hub 里没有这个浏览器的推送订阅。先关闭推送，再重新开启。",
-      "invalid_email": "请输入有效的邮箱地址。"
+      "invalid_email": "请输入有效的邮箱地址。",
+      "reauth_required": "出于安全考虑，这个操作需要最近刚登录过。请重新登录后再试。",
+      "bootstrap_admin": "这是 hub 的首个管理员账号，不能删除，也不能取消管理员。",
+      "cannot_modify_self": "不能对自己的账号做这个操作。",
+      "admin_by_config": "这位管理员是在 hub 配置（ANYCON_ADMIN_EMAILS）里指定的，不能在这里取消。"
     },
     "tooLarge": "内容太大，一次发不出去。",
     "dropped": {
@@ -1437,7 +1558,7 @@
       "offline": "节点离线，解锁需要它在线。",
       "busy": "这台节点同时有太多接入在进行，过一会儿再试。",
       "rate_limited": "尝试太频繁，等一分钟再试。",
-      "quota": "你的账号今天添加设备的次数已经用完。",
+      "quota": "你的账号已达到上限：设备数、节点数或今天的配对次数用完了。请到“账号设置 → 设备”里移除不再使用的设备，或看看哪一项已满。",
       "forbidden": "这个浏览器不能解锁那台节点。",
       "not_found": "那台节点不在你的账号下。",
       "peer_gone": "节点断开了，请重新开始。",

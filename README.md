@@ -60,6 +60,8 @@ docker run -d --name anycon-hub -p 8080:8080 -v anycon-data:/data \
 docker logs anycon-hub    # prints a one-time admin token on first start
 ```
 
+Want people to sign up on their own (email code or GitHub / Google sign-in, with per-account quotas)? Run it with `ANYCON_MODE=multi`; see [docs/deploy.md § 9](docs/deploy.md#9-公共-hub-与-multi-模式).
+
 The image is built for `linux/amd64` and `linux/arm64` and tagged `<version>` (e.g. `0.1.0`), `<major>.<minor>` (`0.1`), and `latest`. Pin a version in production. The hub serves plain HTTP. TLS and your domain are handled by your reverse proxy. [docs/deploy.md](docs/deploy.md) has ready-to-use configs for Caddy, nginx, Traefik, and Cloudflare Tunnel, plus a [compose file](docker/compose.yml).
 
 **2. Install and pair the daemon** on the machine that runs your agents:
@@ -120,6 +122,7 @@ Installed agents are picked up automatically. Use `anycon config set agents.<id>
 
 - Session history is stored **on your machine** (the daemon), never on the hub.
 - The daemon and every client talk over **Noise end-to-end encryption**. The hub sees metadata: which device talks to which, when, and how many bytes, plus account-level data like device names and account identifiers.
+- **Accounts hold little.** The hub stores a display name, an email if you bound one (or one that GitHub / Google reported as verified), the provider and stable user ID of any linked GitHub / Google account (no username, avatar, or access token), your device list, and audit records such as sign-ins. An email the provider has not verified is never used to match or create an account. You can delete your account in settings: the hub removes those records (devices, pairings, sign-in methods, audit rows) and keeps only a deletion record without an IP address. Session history was never on the hub, so it is unaffected.
 - **The Web UI's code is served by the hub.** A malicious or compromised hub could serve modified JavaScript and read keys and plaintext in your browser. Using the Web UI therefore means trusting the operator of that hub. For sensitive use, **self-host the hub**, or use the **CLI / SDK**, whose code you install yourself.
 - Pairing codes are generated on the daemon and never sent to the hub. Both sides derive the pre-shared key from the code with Argon2id. The default 16-character code holds up against offline guessing even by a malicious hub. Use the 8-character `anycon pair --short` only with a hub you run yourself.
 - Browser keys and caches are stored unencrypted in IndexedDB. On a shared computer, use *Sign out and remove this device*, not just *Sign out*.

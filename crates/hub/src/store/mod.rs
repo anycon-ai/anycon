@@ -7,8 +7,12 @@ use anycon_protocol::{DeviceKind, NotifyCategory};
 use async_trait::async_trait;
 use serde::Serialize;
 
+mod oauth;
 mod sqlite;
 
+pub use oauth::{
+    Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthPurpose, OAuthState,
+};
 pub use sqlite::SqliteStore;
 
 #[derive(Debug, thiserror::Error)]
@@ -239,6 +243,14 @@ impl std::fmt::Debug for CodeCandidate {
     }
 }
 
+/// [`Store::create_account_with_email`] 的结果。
+#[derive(Debug)]
+pub enum CreateAccountOutcome {
+    Created(Account),
+    /// 邮箱已经属于别的账号（唯一约束），什么都没写。
+    EmailTaken,
+}
+
 /// 给账号设邮箱的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetEmailOutcome {
@@ -295,6 +307,31 @@ pub struct NotificationPref {
     pub email: bool,
 }
 
+/// 新建设备时的配额上限（`multi`，来自 [`crate::config::QuotaLimits`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceLimits {
+    /// 账号名下未吊销的设备数上限（所有种类，含 daemon）。
+    pub devices: u32,
+    /// 其中 daemon 的上限。
+    pub daemons: u32,
+}
+
+/// 新建设备时撞上的是哪一项上限。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceLimit {
+    Devices,
+    Daemons,
+}
+
+/// [`Store::create_devices_within_limits`] 的结果。
+#[derive(Debug)]
+pub enum CreateDevicesOutcome {
+    /// 全部建好了（顺序同传入）。
+    Created(Vec<Device>),
+    /// 会超出上限：一台都没建。
+    Exceeded(DeviceLimit),
+}
+
 pub fn category_to_str(c: NotifyCategory) -> &'static str {
     match c {
         NotifyCategory::PermissionRequested => "permission_requested",
@@ -345,6 +382,23 @@ pub trait Store: Send + Sync + 'static {
 
     // ---- 账号 ----
     async fn create_account(&self, display_name: &str, is_admin: bool, now_ms: u64) -> StoreResult<Account>;
+    /// 建一个账号，并在**同一个事务**里把它的 id 写进 `kv[kv_key]`：要么账号和记录都在，要么都没有（bootstrap 管理员用它——
+    /// 两步分开写的话，中间崩溃会留下一个没人记得的管理员账号，下次启动又建一个）。
+    async fn create_account_and_record_id(
+        &self,
+        display_name: &str,
+        is_admin: bool,
+        kv_key: &str,
+        now_ms: u64,
+    ) -> StoreResult<Account>;
+    /// 建一个普通账号（非管理员），可以直接带一个**已验证**的邮箱（规范化后的）：自助注册（`multi`）用它。
+    /// 邮箱已被占用 → [`CreateAccountOutcome::EmailTaken`]，什么都不写——并发的两次注册靠唯一索引分出胜负。
+    async fn create_account_with_email(
+        &self,
+        display_name: &str,
+        email: Option<&str>,
+        now_ms: u64,
+    ) -> StoreResult<CreateAccountOutcome>;
     async fn get_account(&self, id: &str) -> StoreResult<Option<Account>>;
     /// single 模式的管理员账号（最早创建的 `is_admin`）。
     async fn first_admin(&self) -> StoreResult<Option<Account>>;
@@ -433,6 +487,36 @@ pub trait Store: Send + Sync + 'static {
     async fn delete_web_sessions_of_account(&self, account_id: &str) -> StoreResult<u64>;
     async fn purge_expired_web_sessions(&self, now_ms: u64) -> StoreResult<u64>;
 
+    // ---- OAuth 身份与授权 state（GitHub、Google） ----
+    /// 按（提供方，提供方的用户 id）找身份。
+    async fn find_identity(&self, provider: &str, subject: &str) -> StoreResult<Option<Identity>>;
+    /// 账号的全部身份，先绑定的在前。
+    async fn list_identities(&self, account_id: &str) -> StoreResult<Vec<Identity>>;
+    /// 把身份绑到账号上。一个账号在一个提供方最多一个身份、一个外部身份只属于一个账号，由库里的唯一约束保证，
+    /// 判断和写入是一个原子操作（见 [`LinkIdentityOutcome`]）。
+    async fn link_identity(
+        &self,
+        account_id: &str,
+        provider: &str,
+        subject: &str,
+        now_ms: u64,
+    ) -> StoreResult<LinkIdentityOutcome>;
+    /// 解绑账号在这个提供方的身份，返回原来有没有。
+    async fn unlink_identity(&self, account_id: &str, provider: &str) -> StoreResult<bool>;
+    /// 原子地「建账号 + 绑身份（+ 带邀请码时兑换邀请）」：任何一步失败都什么都不留（不会有绑不上身份的空账号，
+    /// 也不会白白用掉一个邀请）。
+    async fn create_account_with_identity(
+        &self,
+        new: NewIdentityAccount<'_>,
+        now_ms: u64,
+    ) -> StoreResult<IdentityAccountOutcome>;
+    /// 登记一次授权流程（state 的哈希、用途、PKCE verifier……）。
+    async fn put_oauth_state(&self, state: NewOAuthState, now_ms: u64) -> StoreResult<()>;
+    /// 原子地取走一次授权流程（单次使用）：行被删掉，已过期的也一样，但过期的返回 `None`。
+    async fn take_oauth_state(&self, state_hash: &str, now_ms: u64) -> StoreResult<Option<OAuthState>>;
+    /// 删掉所有过期的授权 state。
+    async fn purge_expired_oauth_states(&self, now_ms: u64) -> StoreResult<u64>;
+
     // ---- 邀请 ----
     async fn create_invite(
         &self,
@@ -496,4 +580,29 @@ pub trait Store: Send + Sync + 'static {
     // ---- kv ----
     async fn kv_get(&self, key: &str) -> StoreResult<Option<String>>;
     async fn kv_set(&self, key: &str, value: &str) -> StoreResult<()>;
+
+    // ---- multi：配额、账号删除、管理员标记、账号搜索 ----
+    /// 账号名下未吊销的设备数，和其中 daemon 的数：`(devices, daemons)`。
+    async fn count_devices(&self, account_id: &str) -> StoreResult<(u32, u32)>;
+    /// 原子地「按配额检查 + 建设备」：`devices` 全建好，或者（会超出 `limits`）一台都不建。
+    ///
+    /// 检查和插入在同一个写事务里，数的是库里**此刻**未吊销的设备（包括同一事务里前面刚插入的），所以并发的两次
+    /// 配对 / 接入收尾对同一个账号不会一起冲过上限。`devices` 可以是几个账号的，每台按自己的账号数。
+    async fn create_devices_within_limits(
+        &self,
+        devices: Vec<NewDevice>,
+        limits: DeviceLimits,
+        now_ms: u64,
+    ) -> StoreResult<CreateDevicesOutcome>;
+    /// 设置 / 清除库里的管理员标记（不碰 `ANYCON_ADMIN_EMAILS` 派生的管理员）。账号不存在返回 `false`。
+    async fn set_account_admin(&self, account_id: &str, is_admin: bool) -> StoreResult<bool>;
+    /// 删账号：一个事务里删这个账号的 `hub_audit` 行、它兑换过的邀请（外键是 `SET NULL`，留着的话
+    /// `used_by IS NULL` 会让这张邀请重新变得可用）、以它的邮箱发的登录码，然后删账号本身（其余表由外键级联删），
+    /// 最后写入 `tombstone`（唯一留下的审计行）。账号不存在返回 `false`，什么都不写。
+    async fn delete_account(&self, account_id: &str, tombstone: NewAudit, now_ms: u64) -> StoreResult<bool>;
+    /// 管理页搜索：显示名或邮箱包含 `query`（不区分大小写），或账号 id 正好等于 `query`；`query` 先去首尾空白。
+    /// 分页同 [`Store::list_accounts`]（最早创建的在前，`after` 是上一页最后一项的 `(created_at_ms, id)`）。
+    /// `query` 里的 `%`、`_` 当字面字符，不是通配符。
+    async fn search_accounts(&self, query: &str, limit: u32, after: Option<(u64, String)>)
+        -> StoreResult<Vec<Account>>;
 }

@@ -7,6 +7,11 @@ vi.mock('@/transport/instance', () => ({
   getClient: () => ({ pair, deviceName: 'Chrome · macOS' }),
 }))
 
+import { mockRouter } from '@/test/routerMock'
+
+// 配额用完的说明里有一个去「配额」页的链接（`Link`）
+vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), vi.fn(), {}))
+
 import { PairForm } from './PairForm'
 
 beforeEach(() => {
@@ -96,5 +101,20 @@ describe('PairForm', () => {
     await user.type(screen.getByTestId('pair-code-input'), '7k3pq2mx')
     await user.click(screen.getByTestId('pair-submit'))
     expect(await screen.findByText(/先在设置里移除它|Remove it in settings first/)).toBeInTheDocument()
+  })
+})
+
+describe('PairForm — pair_failed { quota }', () => {
+  it('names the limits and links to Settings → Quota', async () => {
+    const { PairError } = await import('@/transport/client')
+    pair.mockRejectedValueOnce(new PairError('quota'))
+    const user = userEvent.setup()
+    render(<PairForm onPaired={() => {}} />)
+    await user.type(screen.getByTestId('pair-code-input'), '7k3pq2mx')
+    await user.click(screen.getByTestId('pair-submit'))
+    const link = await screen.findByTestId('quota-link')
+    expect(link).toHaveAttribute('href', '/settings/quota')
+    expect(link.closest('p')).toHaveTextContent(/limit on devices, nodes or daily pairing attempts/)
+    expect(link.closest('p')).toHaveTextContent(/Account settings → Devices/)
   })
 })

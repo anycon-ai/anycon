@@ -190,7 +190,7 @@ jobs:
           # 没有会话内容（hub 不解析 payload；daemon 的 debug 日志不打印消息、工具输出或 RPC 参数）
           ANYCON_LOG: info,anycon_hub=debug,anycon_daemon=debug
         run: bun run --cwd e2e test
-      - name: 收集 hub / daemon 日志
+      - name: 收集 hub / daemon 日志（含 multi 用例自己起的 hub）
         if: failure()
         run: |
           mkdir -p e2e/ci-logs
@@ -199,6 +199,10 @@ jobs:
             # 只拿这两个日志：临时目录里还有 daemon 的密钥、hub 的数据库和管理员 token，不进产物
             for f in hub.log daemon.log; do
               if [ -f "$dir/$f" ]; then cp "$dir/$f" e2e/ci-logs/; fi
+            done
+            # multi 模式的用例自己起的 hub（e2e/helpers/multi-hub.ts）：目录在主临时目录下的 m<序号>（m1…），日志是 m<序号>/hub.log
+            for d in "$dir"/m[0-9]*/; do
+              if [ -f "${d}hub.log" ]; then cp "${d}hub.log" "e2e/ci-logs/multi-$(basename "$d")-hub.log"; fi
             done
           else
             echo "e2e tmp dir not found (global-setup did not get that far?)"

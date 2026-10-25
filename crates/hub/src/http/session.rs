@@ -11,6 +11,7 @@ use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue};
 
+use crate::accounts;
 use crate::app::AppState;
 use crate::clientip::{self, ClientCtx};
 use crate::error::{ApiError, ApiResult};
@@ -43,16 +44,18 @@ pub fn clear_cookie_header(secure: bool) -> HeaderValue {
     set_cookie_header("", 0, secure)
 }
 
-/// 查 cookie 对应的会话（未过期），并按需滑动续期。
+/// 查 cookie 对应的会话（未过期），并按需滑动续期。返回的账号 `is_admin` 已经是有效值（[`accounts::is_effective_admin`]）。
 pub async fn lookup_session(state: &Arc<AppState>, headers: &HeaderMap) -> ApiResult<Option<(WebSession, Account)>> {
     let Some(raw) = cookie_value(headers, COOKIE_NAME) else { return Ok(None) };
     if raw.is_empty() || raw.len() > 256 {
         return Ok(None);
     }
     let now = now_ms();
-    let Some((session, account)) = state.store.find_web_session(&hash_token(&raw), now).await? else {
+    let Some((session, mut account)) = state.store.find_web_session(&hash_token(&raw), now).await? else {
         return Ok(None);
     };
+    // 授权用的账号带的是**有效**管理员标记（库里的标记，或 multi 里邮箱在 ANYCON_ADMIN_EMAILS），不是裸的库字段。
+    account.is_admin = accounts::is_effective_admin(&state.config, &account);
     // 每分钟至多写一次库。
     if now.saturating_sub(session.last_seen_ms) >= 60_000 {
         let expires = now + state.config.timing.session_ttl.as_millis() as u64;

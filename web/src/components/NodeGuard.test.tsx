@@ -1,5 +1,5 @@
 // /n/:node 的守卫：本账号的节点、只是这个浏览器还没配对 → /unlock/:node；不是本账号的 → 404（spec/web.md § 2）。
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiDevice } from '@/api/types'
 import { mockRouter } from '@/test/routerMock'
@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   devices: { data: undefined as unknown, dataUpdatedAt: 0, isPending: false, fetchStatus: 'idle', isError: false },
   removeNode: vi.fn(async (_id: string) => {}),
   enabled: [] as Array<boolean | undefined>,
+  onSettings: false,
 }))
 vi.mock('@tanstack/react-router', async (orig) => {
   const actual = await orig<object>()
@@ -24,6 +25,7 @@ vi.mock('@tanstack/react-router', async (orig) => {
     },
     Outlet: () => <div data-testid="outlet" />,
     useRouter: () => ({ history: { back: vi.fn() } }),
+    useMatchRoute: () => (o: { to: string }) => (o.to === '/n/$node/settings' && h.onSettings ? {} : false),
   }
 })
 vi.mock('@/api/queries', () => ({
@@ -48,6 +50,7 @@ beforeEach(() => {
   h.removeNode.mockClear()
   h.devices.isPending = false
   h.devices.fetchStatus = 'idle'
+  h.onSettings = false
   useNodes.setState({ byId: {}, order: [], loaded: true })
 })
 
@@ -110,5 +113,21 @@ describe('NodeGuard', () => {
     expect(h.navigate).toHaveBeenCalledWith({ to: '/unlock/$node', params: { node: 'aaaaaaaa' } })
     screen.getByTestId('repair').click()
     expect(h.navigate).toHaveBeenCalledWith({ to: '/pair' })
+  })
+
+  it('incompatible versions and an unrecognised device do not block node settings, where the node can be removed from the account', () => {
+    for (const patch of [{ versionMismatch: true, conn: 'peer_offline' as const }, { conn: 'noise_failed' as const }]) {
+      useNodes.setState({ byId: { [A]: nodeEntry({ id: A, ...patch }) }, order: [A], loaded: true })
+      h.onSettings = false
+      const { unmount } = render(<NodeGuard />)
+      expect(screen.queryByTestId('outlet')).toBeNull()
+      screen.getByTestId('guard-node-settings').click()
+      expect(h.navigate).toHaveBeenCalledWith({ to: '/n/$node/settings', params: { node: 'aaaaaaaa' } })
+      unmount()
+      h.onSettings = true
+      render(<NodeGuard />)
+      expect(screen.getByTestId('outlet')).toBeInTheDocument()
+      cleanup()
+    }
   })
 })

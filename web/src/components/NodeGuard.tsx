@@ -1,5 +1,5 @@
-import { Navigate, Outlet, useNavigate } from '@tanstack/react-router'
-import { ServerOff, ShieldAlert, Unplug } from 'lucide-react'
+import { Navigate, Outlet, useMatchRoute, useNavigate } from '@tanstack/react-router'
+import { ServerOff, Settings, ShieldAlert, Unplug } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices } from '@/api/queries'
 import { forgetNode } from '@/features/devices/removeNode'
@@ -18,13 +18,15 @@ import { PageHeader } from './PageHeader'
 /**
  * `/n/:node/*` 的守卫：未知节点 → 404；协议版本不兼容 → 整页提示；
  * Noise 握手失败（daemon 不认识此设备）→ 整页提示重新配对；账号下已经没有这台节点（在别的设备上被移除了）→ 整页提示，可以忘记它。
- * 节点离线不拦截。
+ * 节点离线不拦截。版本不兼容和握手失败的整页提示不挡节点设置页：节点可能再也连不上，「关于」里的「从账号移除」得能用。
  */
 export function NodeGuard() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { param, nodeId, entry, loaded } = useCurrentNode()
   const order = useNodes((s) => s.order)
+  const matchRoute = useMatchRoute()
+  const onSettings = !!matchRoute({ to: '/n/$node/settings' })
   // 本账号的节点、只是这个浏览器还没配对（通知 / 书签 / 别的设备发来的链接）→ 去解锁页（ADR-36）。只在找不到本地节点时才问 hub
   const unknown = loaded && (!nodeId || !entry)
   // 已配对的节点不为它去问 hub，但左栏已经拉过的设备列表照样拿来用（关掉的查询也读缓存）
@@ -80,19 +82,34 @@ export function NodeGuard() {
       </>
     )
 
-  if (entry.versionMismatch)
+  const settingsButton = (
+    <Button variant="outline" icon={<Settings className="size-4" />} onClick={() => void navigate({ to: '/n/$node/settings', params: { node: shortNodeId(nodeId, order) } })} data-testid="guard-node-settings">
+      {t('node.settings')}
+    </Button>
+  )
+
+  if (entry.versionMismatch && !onSettings)
     return (
       <>
         <PageHeader crumbs={[{ label: entry.name }]} />
         <div className="flex flex-1 items-center justify-center" data-testid="version-mismatch">
-          <EmptyState icon={<ShieldAlert className="size-10" />} title={t('node.versionTitle')} action={<Button onClick={() => location.reload()}>{t('banner.reload')}</Button>}>
+          <EmptyState
+            icon={<ShieldAlert className="size-10" />}
+            title={t('node.versionTitle')}
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button onClick={() => location.reload()}>{t('banner.reload')}</Button>
+                {settingsButton}
+              </div>
+            }
+          >
             {t('node.versionBody', { daemon: entry.info?.protocol_version ?? '?', web: PROTOCOL_VERSION })}
           </EmptyState>
         </div>
       </>
     )
 
-  if (entry.conn === 'noise_failed')
+  if (entry.conn === 'noise_failed' && !onSettings)
     return (
       <>
         <PageHeader crumbs={[{ label: entry.name }]} />
@@ -111,6 +128,7 @@ export function NodeGuard() {
                 <Button variant="outline" onClick={() => forget(nodeId)}>
                   {t('node.forget')}
                 </Button>
+                {settingsButton}
               </div>
             }
           >

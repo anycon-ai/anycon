@@ -75,7 +75,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
   const grouped = useMemo(
     () =>
       groupNodeSessions(
-        selected.map((id) => ({ id, projects: nodes[id]?.projects ?? [] })),
+        selected.map((id) => ({ id, projects: nodes[id]?.projects ?? [], projectsLoaded: nodes[id]?.projectsLoaded })),
         Object.values(list),
       ),
     [list, selected, nodes],

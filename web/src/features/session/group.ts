@@ -49,8 +49,12 @@ export interface NodeGroupedSessions {
   scratch: SessionItem[]
 }
 
-/** 左栏按节点过滤后的会话树：每个节点各自分组，再合并成一个列表（项目组按最近活动排，临时会话按更新时间排）。 */
-export function groupNodeSessions(nodes: readonly { id: string; projects: readonly Project[] }[], sessions: readonly SessionItem[]): NodeGroupedSessions {
+/**
+ * 左栏按节点过滤后的会话树：每个节点各自分组，再合并成一个列表（项目组按最近活动排，临时会话按更新时间排）。
+ * 节点的项目列表拉到过（`projectsLoaded`）时，列表里已经没有的项目（进了回收站、解除关联、目录被手工删掉）不成组：
+ * 它的会话还在 daemon 上，从节点首页、搜索和项目页仍然能打开，但左栏不再把它当成一个项目。没拉到过（离线、没有缓存）时照旧按会话里的名字分组。
+ */
+export function groupNodeSessions(nodes: readonly { id: string; projects: readonly Project[]; projectsLoaded?: boolean }[], sessions: readonly SessionItem[]): NodeGroupedSessions {
   const projects: NodeProjectGroup[] = []
   const scratch: SessionItem[] = []
   for (const n of nodes) {
@@ -58,7 +62,7 @@ export function groupNodeSessions(nodes: readonly { id: string; projects: readon
       sessions.filter((s) => s.node_id === n.id),
       n.projects,
     )
-    for (const p of g.projects) projects.push({ ...p, nodeId: n.id })
+    for (const p of g.projects) if (p.project || !n.projectsLoaded) projects.push({ ...p, nodeId: n.id })
     scratch.push(...g.scratch)
   }
   projects.sort((a, b) => b.activity - a.activity || a.name.localeCompare(b.name) || a.nodeId.localeCompare(b.nodeId))

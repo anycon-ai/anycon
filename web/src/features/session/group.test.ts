@@ -45,6 +45,13 @@ describe('groupNodeSessions', () => {
     ])
   })
 
+  it('once the node has listed its projects, a project it no longer has (trashed, unlinked, deleted by hand) is not a group', () => {
+    const sessions = [item({ id: '1', node_id: 'a', project: 'gone', updated_at_ms: 30 }), item({ id: '2', node_id: 'a', project: 'app', updated_at_ms: 10 })]
+    expect(groupNodeSessions([{ id: 'a', projects: [proj('app')], projectsLoaded: true }], sessions).projects.map((p) => p.name)).toEqual(['app'])
+    // 没拉到过项目列表（离线、没有缓存）：不知道哪些还在，照旧按会话里的名字分组
+    expect(groupNodeSessions([{ id: 'a', projects: [], projectsLoaded: false }], sessions).projects.map((p) => p.name)).toEqual(['gone', 'app'])
+  })
+
   it('leaves out sessions of nodes that are not given, scratch merged newest first', () => {
     const g = groupNodeSessions(
       [

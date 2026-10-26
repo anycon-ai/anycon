@@ -24,7 +24,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `login_methods` in `/api/config` and `/api/me` is ordered `github`, `google`, `email`, `token`, so a `single` hub with SMTP now reports `["email","token"]`. The CLI and Web UI do not depend on the order.
 - `ANYCON_ADMIN_EMAILS`, `ANYCON_QUOTA_DEVICES`, `_DAEMONS`, `_CONNECTIONS`, `_DAILY_PAIRINGS`, and `ANYCON_OAUTH_*` no longer log "recognized but not implemented". Blank values count as unset. A value that is set but invalid stops the hub from starting, in both modes. In the mode that does not use a variable it is ignored with a warning, and `ANYCON_ADMIN_TOKEN` is ignored in `multi`.
 - Removing an account's last way to sign in is refused with `409 last_login_method`: unbinding the email, unlinking a GitHub / Google account, and (in `single`) deleting a login token. The three are serialized per account and judged on the account as it is inside the lock, so two requests at the same time cannot both succeed and leave the account locked out. The `single` bootstrap admin always keeps the bootstrap token.
-- Web UI: the message list and the input share one column. Its text width follows the center pane, up to 72rem, with side margins that grow from 16px to 100px as the pane widens. User message bubbles are allowed up to 56rem.
+- Web UI: the message list and the input share one column. Its text width follows the center pane, up to 72rem, with side margins that grow from 16px to 80px as the pane widens. User message bubbles are allowed up to 56rem.
 - Web UI: on wide screens, the "will be sent after this turn" notice sits on the same row as the branch chip, on the left.
 
 ### Fixed

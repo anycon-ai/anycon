@@ -1,5 +1,5 @@
 // 信息面板的「Agent」卡片：主 agent 的状态和 token，子 agent 的状态、token、调用数，在工作的个数；不再有选项和改动的文件。
-import { render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Event, SessionStatus } from '@/protocol'
@@ -82,6 +82,42 @@ describe('InfoPanel agents card', () => {
     expect(screen.getByTestId('info-agents')).toHaveTextContent('2 working')
   })
 
+  it('a sub-agent whose launch result came back at once is a background agent while its task runs, and done after; the daemon count is not added on top', () => {
+    const spawn: Event = { type: 'tool_call', id: 'call_1', name: 'spawnAgent', category: 'subagent', title: 'Start sub-agent pong', input: {} }
+    const started: Event = { type: 'tool_result', id: 'call_1', output: 'Started sub-agent pong (fixture-model-sub)', is_error: false }
+    const child = (status: 'running' | 'completed'): Event => ({ type: 'task', id: 'child', kind: 'subagent', tool_id: 'call_1', title: 'pong', status })
+    const live = (status: SessionStatus, events: Event[]): Partial<InfoPanelProps> => {
+      const view = buildView(evs(events))
+      return { subagents: subagentRows(view.blocks, status, true), backgroundCommands: backgroundCommands(view.blocks, status, true) }
+    }
+    const events = [spawn, started, child('running')]
+    const { unmount } = panel('idle', events, { ...live('idle', events), backgroundTasks: 1 })
+    expect(screen.getByTestId('info-subagent')).toHaveAttribute('data-state', 'background')
+    expect(within(screen.getByTestId('info-subagent')).getByText('Background')).toBeInTheDocument()
+    expect(screen.getByTestId('info-agents')).toHaveTextContent('1 working')
+    expect(screen.queryByTestId('info-background-other')).toBeNull()
+    unmount()
+    const finished = [...events, child('completed')]
+    panel('idle', finished, { ...live('idle', finished), backgroundTasks: 0 })
+    expect(screen.getByTestId('info-subagent')).toHaveAttribute('data-state', 'done')
+    expect(screen.getByTestId('info-agents')).not.toHaveTextContent('working')
+  })
+
+  it('lists a Workflow call as a background item while its task runs (its launch result is not marked background)', () => {
+    const events: Event[] = [
+      { type: 'tool_call', id: 'toolu_wf', name: 'Workflow', category: 'other', title: 'Run workflow: alpha-beta', input: {} },
+      { type: 'tool_result', id: 'toolu_wf', output: 'Workflow launched in background. Task ID: whvf25gph', is_error: false },
+      { type: 'task', id: 'whvf25gph', kind: 'workflow', tool_id: 'toolu_wf', title: 'alpha-beta', status: 'running' },
+    ]
+    const view = buildView(evs(events))
+    panel('idle', events, { backgroundCommands: backgroundCommands(view.blocks, 'idle', true), backgroundTasks: 1 })
+    const rows = screen.getAllByTestId('info-background-command')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent('Run workflow: alpha-beta')
+    expect(screen.getByTestId('info-agents')).toHaveTextContent('1 working')
+    expect(screen.queryByTestId('info-background-other')).toBeNull()
+  })
+
   it('has no options or changed-files cards any more', () => {
     panel('idle', [{ type: 'file_changed', path: 'src/a.ts', kind: 'created' }])
     expect(screen.queryByTestId('info-files')).toBeNull()
@@ -104,5 +140,51 @@ describe('InfoPanel agents card', () => {
     await userEvent.setup().click(screen.getByTestId('info-subagents-more'))
     expect(ids()).toHaveLength(9)
     expect(screen.queryByTestId('info-subagents-more')).toBeNull()
+  })
+})
+
+describe('InfoPanel context usage', () => {
+  it('shows a progress bar with the percentage and the numbers', () => {
+    panel('idle', [], { context: { window: 200_000, tokens: 46_000 } })
+    const row = screen.getByTestId('info-context')
+    expect(row).toHaveTextContent('Context')
+    expect(screen.getByTestId('info-context-value')).toHaveTextContent('23% · 46k / 200k')
+    const bar = within(row).getByRole('progressbar', { name: 'Context' })
+    expect(bar).toHaveAttribute('aria-valuenow', '23')
+    expect(row).toHaveAttribute('data-percent', '23')
+  })
+
+  it('warns as the window fills up and never draws past the end', () => {
+    const { unmount } = panel('idle', [], { context: { window: 200_000, tokens: 160_000 } })
+    expect(within(screen.getByTestId('info-context')).getByRole('progressbar').firstElementChild).toHaveClass('bg-warning')
+    unmount()
+    panel('idle', [], { context: { window: 200_000, tokens: 230_000 } })
+    expect(screen.getByTestId('info-context-value')).toHaveTextContent('115% · 230k / 200k')
+    const bar = within(screen.getByTestId('info-context')).getByRole('progressbar')
+    expect(bar).toHaveAttribute('aria-valuenow', '100')
+    expect(bar.firstElementChild).toHaveClass('bg-danger')
+    expect(bar.firstElementChild).toHaveStyle({ width: '100%' })
+  })
+
+  it('shows nothing when the agent does not report it (or reports a zero window)', () => {
+    panel('idle', [])
+    expect(screen.queryByTestId('info-context')).toBeNull()
+    cleanup()
+    panel('idle', [], { context: null })
+    expect(screen.queryByTestId('info-context')).toBeNull()
+    cleanup()
+    panel('idle', [], { context: { window: 0, tokens: 10 } })
+    expect(screen.queryByTestId('info-context')).toBeNull()
+  })
+
+  it('takes the numbers from the latest turn_done in the session view', () => {
+    const view = buildView(
+      evs([
+        { type: 'turn_done', turn_id: 1, reason: 'completed', usage: { duration_ms: 1, context_window: 200_000, context_tokens: 12_000 } },
+        { type: 'turn_done', turn_id: 2, reason: 'completed', usage: { duration_ms: 1, context_window: 200_000, context_tokens: 30_000 } },
+      ]),
+    )
+    panel('idle', [], { context: view.context })
+    expect(screen.getByTestId('info-context-value')).toHaveTextContent('15% · 30k / 200k')
   })
 })

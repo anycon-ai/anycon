@@ -290,6 +290,95 @@ describe('PermissionCard', () => {
     expect(onRespond).toHaveBeenCalledWith({ request_id: 'r1', option_id: 'answer', answers: { q1: 'keep' } })
   })
 
+  describe('optional questions (MCP elicitation forms)', () => {
+    const form: PermissionBlock = {
+      ...base,
+      kind: 'question',
+      title: 'example-elicit: Please enter your details',
+      detail: {
+        questions: [
+          { id: 'name', text: 'Name — Your first name', free_text: true },
+          { id: 'nick', text: 'Nickname', free_text: true, optional: true },
+          { id: 'color', text: 'Favorite color', choices: [{ id: 'red', label: 'Red' }, { id: 'blue', label: 'Blue' }], optional: true },
+        ],
+      },
+      options: [
+        { id: 'accept', label: 'Submit', kind: 'allow_once' },
+        { id: 'decline', label: 'Decline', kind: 'reject_once' },
+      ],
+    }
+
+    it('marks only the optional questions, and submit is enabled once every required one is answered', async () => {
+      const onRespond = vi.fn()
+      const user = userEvent.setup()
+      render(<PermissionCard block={form} deviceLabel={label} onRespond={onRespond} />)
+      const hints = screen.getAllByTestId('question-optional')
+      expect(hints.map((h) => h.textContent)).toEqual(['optional', 'optional'])
+      expect(screen.getByRole('group', { name: /^Name/ })).not.toHaveTextContent('optional')
+      expect(screen.getByRole('group', { name: /^Nickname/ })).toHaveTextContent('optional')
+      expect(screen.queryByText(/required/i)).toBeNull()
+
+      const submit = screen.getByTestId('permission-option-accept')
+      expect(submit).toBeDisabled()
+      await user.type(screen.getByRole('textbox', { name: 'Name — Your first name' }), 'Ada')
+      expect(submit).toBeEnabled()
+      await user.click(submit)
+      // 没答的可选项不在 answers 里
+      expect(onRespond).toHaveBeenCalledWith({ request_id: 'r1', option_id: 'accept', message: undefined, answers: { name: 'Ada' } })
+      // 拒绝不受影响
+      expect(screen.getByTestId('permission-option-decline')).toBeEnabled()
+    })
+
+    it('answered optional questions are sent, a cleared one is dropped, and a chosen option can be cleared again', async () => {
+      const onRespond = vi.fn()
+      const user = userEvent.setup()
+      render(<PermissionCard block={form} deviceLabel={label} onRespond={onRespond} />)
+      await user.type(screen.getByRole('textbox', { name: 'Name — Your first name' }), 'Ada')
+      await user.type(screen.getByRole('textbox', { name: 'Nickname' }), 'x')
+      await user.clear(screen.getByRole('textbox', { name: 'Nickname' }))
+      await user.click(screen.getByLabelText('Red'))
+      expect(screen.getByTestId('question-clear')).toBeInTheDocument()
+      await user.click(screen.getByTestId('question-clear'))
+      expect(screen.queryByTestId('question-clear')).toBeNull()
+      expect(screen.getByLabelText('Red')).not.toBeChecked()
+      await user.click(screen.getByLabelText('Blue'))
+      await user.click(screen.getByTestId('permission-option-accept'))
+      expect(onRespond).toHaveBeenCalledWith({ request_id: 'r1', option_id: 'accept', message: undefined, answers: { name: 'Ada', color: 'blue' } })
+    })
+
+    it('a form with only optional questions can be submitted empty; required (default) questions behave as before', async () => {
+      const onRespond = vi.fn()
+      const user = userEvent.setup()
+      const allOptional: PermissionBlock = { ...form, detail: { questions: form.detail.questions!.slice(1) } }
+      render(<PermissionCard block={allOptional} deviceLabel={label} onRespond={onRespond} />)
+      const submit = screen.getByTestId('permission-option-accept')
+      expect(submit).toBeEnabled()
+      await user.click(submit)
+      expect(onRespond).toHaveBeenCalledWith({ request_id: 'r1', option_id: 'accept', message: undefined, answers: {} })
+    })
+
+    it('without an adapter submit option the built-in button follows the same rule', async () => {
+      const onRespond = vi.fn()
+      const user = userEvent.setup()
+      render(<PermissionCard block={{ ...form, options: [] }} deviceLabel={label} onRespond={onRespond} />)
+      const submit = screen.getByTestId('permission-submit-answers')
+      expect(submit).toBeDisabled()
+      await user.type(screen.getByRole('textbox', { name: 'Name — Your first name' }), 'Ada')
+      await user.click(submit)
+      expect(onRespond).toHaveBeenCalledWith({ request_id: 'r1', answers: { name: 'Ada' } })
+    })
+
+    it('is written in Chinese when the UI language is Chinese', async () => {
+      await i18n.changeLanguage('zh')
+      try {
+        render(<PermissionCard block={form} deviceLabel={label} onRespond={() => {}} />)
+        expect(screen.getAllByTestId('question-optional').map((h) => h.textContent)).toEqual(['可选', '可选'])
+      } finally {
+        await i18n.changeLanguage('en')
+      }
+    })
+  })
+
   describe('mode_change', () => {
     const modeChange = (mode: string): PermissionBlock => ({
       ...base,
@@ -348,6 +437,80 @@ describe('PermissionCard', () => {
       expect(screen.queryByTestId('permission-expiry')).toBeNull()
       rerender(<PermissionCard block={{ ...base, expiresAtMs: Date.now() + 5000, resolved: { optionId: 'allow', byDevice: 'me', ts: 2 } }} deviceLabel={label} onRespond={() => {}} />)
       expect(screen.queryByTestId('permission-expiry')).toBeNull()
+    })
+  })
+
+  describe('detail.url (URL-mode authorization)', () => {
+    const link: PermissionBlock = {
+      ...base,
+      requestId: 'r-link',
+      kind: 'other',
+      title: 'Open a link to continue',
+      detail: { text: 'The mock-auth server needs you to sign in. Open the link, then confirm here.', url: 'https://example.com/mock-auth?state=abc123&redirect=https%3A%2F%2Fexample.com%2Fdone#section' },
+      options: [
+        { id: 'accept', label: "I've completed it", kind: 'allow_once' },
+        { id: 'decline', label: 'Decline', kind: 'reject_once' },
+      ],
+    }
+
+    it('shows the full URL and an Open button that opens it in a new tab without giving the page away', () => {
+      render(<PermissionCard block={link} deviceLabel={label} onRespond={() => {}} />)
+      expect(screen.getByText(/needs you to sign in/)).toBeInTheDocument()
+      // 完整的 URL：查询串和片段都在，不截断
+      expect(screen.getByTestId('permission-link-url')).toHaveTextContent('https://example.com/mock-auth?state=abc123&redirect=https%3A%2F%2Fexample.com%2Fdone#section')
+      const open = screen.getByTestId('permission-link-open')
+      expect(open.tagName).toBe('A')
+      expect(open).toHaveAttribute('href', 'https://example.com/mock-auth?state=abc123&redirect=https%3A%2F%2Fexample.com%2Fdone#section')
+      expect(open).toHaveAttribute('target', '_blank')
+      expect(open).toHaveAttribute('rel', 'noopener noreferrer')
+      expect(open).toHaveTextContent('Open')
+      expect(screen.queryByTestId('permission-link-blocked')).toBeNull()
+    })
+
+    it('opening the link does not answer the request; the user confirms with the option buttons', async () => {
+      const onRespond = vi.fn()
+      const user = userEvent.setup()
+      render(<PermissionCard block={link} deviceLabel={label} onRespond={onRespond} />)
+      // jsdom 不导航；点击不会触发答复
+      screen.getByTestId('permission-link-open').addEventListener('click', (e) => e.preventDefault())
+      await user.click(screen.getByTestId('permission-link-open'))
+      expect(onRespond).not.toHaveBeenCalled()
+      await user.click(screen.getByTestId('permission-option-accept'))
+      expect(onRespond).toHaveBeenCalledWith({ request_id: 'r-link', option_id: 'accept', message: undefined })
+    })
+
+    it.each(['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'file:///etc/passwd', 'ftp://example.com/x', 'not a url'])('shows %s as plain text with no link at all', (url) => {
+      render(<PermissionCard block={{ ...link, detail: { ...link.detail, url } }} deviceLabel={label} onRespond={() => {}} />)
+      expect(screen.getByTestId('permission-link-url')).toHaveTextContent(url)
+      expect(screen.queryByTestId('permission-link-open')).toBeNull()
+      expect(document.querySelector('a')).toBeNull()
+      expect(screen.getByTestId('permission-link-blocked')).toHaveTextContent('Only http and https links can be opened')
+      // 确认 / 拒绝的按钮照常
+      expect(screen.getByTestId('permission-option-decline')).toBeInTheDocument()
+    })
+
+    it('has no link row without a url, and ignores a url on other kinds', () => {
+      const { rerender } = render(<PermissionCard block={{ ...link, detail: { text: 'just confirm' } }} deviceLabel={label} onRespond={() => {}} />)
+      expect(screen.queryByTestId('permission-link')).toBeNull()
+      rerender(<PermissionCard block={{ ...link, kind: 'plan', detail: { text: '# plan', url: 'https://example.com' } }} deviceLabel={label} onRespond={() => {}} />)
+      expect(screen.queryByTestId('permission-link')).toBeNull()
+    })
+
+    it('is written in Chinese when the UI language is Chinese', async () => {
+      await i18n.changeLanguage('zh')
+      try {
+        render(<PermissionCard block={link} deviceLabel={label} onRespond={() => {}} />)
+        expect(screen.getByTestId('permission-link-open')).toHaveTextContent('打开')
+        expect(screen.getByTestId('permission-link-open')).toHaveAccessibleName('在新标签页中打开链接')
+      } finally {
+        await i18n.changeLanguage('en')
+      }
+    })
+
+    it('an answered link request collapses to the usual one-line summary with no URL', () => {
+      render(<PermissionCard block={{ ...link, resolved: { optionId: 'accept', byDevice: 'me', ts: 2 } }} deviceLabel={label} onRespond={() => {}} />)
+      expect(screen.getByTestId('permission-card')).toHaveAttribute('data-state', 'resolved')
+      expect(screen.queryByTestId('permission-link')).toBeNull()
     })
   })
 })

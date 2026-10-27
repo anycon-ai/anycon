@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ev, evs, resetSeq } from '@/test/factories'
 import type { PendingMessage } from '@/stores/drafts'
-import { buildView } from '../reducer'
+import type { Event } from '@/protocol'
+import { applyEvents, buildView } from '../reducer'
 import { MessageList, retryableErrorKey, VIRTUALIZE_THRESHOLD, type MessageListProps } from './MessageList'
 
 beforeEach(() => resetSeq())
@@ -366,5 +367,130 @@ describe('shell command block', () => {
     expect(line.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getAllByTestId('message-user')).toHaveLength(1)
     expect(screen.getByText('Started in the background.')).toBeInTheDocument()
+  })
+
+  describe('task, notice and activity', () => {
+    const workflowCall = { type: 'tool_call', id: 'wf', name: 'Workflow', category: 'subagent', title: 'Workflow: review', input: { workflow: 'review' } } as const
+    const task = (over: Partial<Extract<Event, { type: 'task' }>> = {}): Event => ({
+      type: 'task',
+      id: 'task-1',
+      kind: 'workflow',
+      tool_id: 'wf',
+      title: 'review',
+      status: 'running',
+      phases: [{ index: 0, title: 'Scan' }],
+      agents: [{ index: 0, label: 'scanner', state: 'running', phase_index: 0 }],
+      ...over,
+    })
+
+    it('draws a task’s progress right under the tool line that started it, and updates it as snapshots arrive', () => {
+      const first = buildView(evs([{ type: 'turn_start', turn_id: 1, message_id: 'm1' }, workflowCall, { type: 'tool_result', id: 'wf', output: 'started', is_error: false, detail: { background: true } }, task()]))
+      const { rerender } = render(<MessageList {...props({ blocks: first.blocks })} />)
+      const tool = screen.getByTestId('tool-block')
+      const progress = screen.getByTestId('task')
+      expect(tool.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(screen.getAllByTestId('task')).toHaveLength(1)
+      expect(screen.getByTestId('task-status')).toHaveTextContent('Running')
+      expect(screen.getByTestId('task-agent')).toHaveAttribute('data-state', 'running')
+
+      const done = applyEvents(first, [ev(task({ status: 'completed', agents: [{ index: 0, label: 'scanner', state: 'done', phase_index: 0 }] }))])
+      rerender(<MessageList {...props({ blocks: done.blocks })} />)
+      expect(screen.getAllByTestId('task')).toHaveLength(1)
+      expect(screen.getByTestId('task-status')).toHaveTextContent('Completed')
+    })
+
+    // 真实录制里 Workflow 的调用结果是「Workflow launched in background. Task ID: …」、不带 background 标记
+    const realWorkflowCall = { type: 'tool_call', id: 'toolu_wf', name: 'Workflow', category: 'other', title: 'Run workflow: alpha-beta', input: { script: 'x' } } as const
+    const realLaunch = { type: 'tool_result', id: 'toolu_wf', output: 'Workflow launched in background. Task ID: whvf25gph', is_error: false } as const
+    const realTask = (status: 'running' | 'completed' | 'failed'): Event => ({ type: 'task', id: 'whvf25gph', kind: 'workflow', tool_id: 'toolu_wf', title: 'alpha-beta', status, phases: [], agents: [] })
+
+    it('a Workflow call whose launch result is not marked background says so while its task runs, and is done when the task completes', () => {
+      const running = buildView(evs([realWorkflowCall, realLaunch, realTask('running')]))
+      const { rerender } = render(<MessageList {...props({ blocks: running.blocks })} />)
+      const row = () => screen.getByTestId('tool-block')
+      expect(row()).toHaveAttribute('data-state', 'background')
+      expect(row()).toHaveTextContent('running in background')
+      expect(within(row()).getByLabelText('Running')).toBeInTheDocument()
+
+      rerender(<MessageList {...props({ blocks: applyEvents(running, [ev(realTask('completed'))]).blocks })} />)
+      expect(row()).toHaveAttribute('data-state', 'done')
+      expect(row()).not.toHaveTextContent('running in background')
+      expect(within(row()).queryByLabelText('Running')).toBeNull()
+
+      const failed = buildView(evs([realWorkflowCall, realLaunch, realTask('running'), realTask('failed')]))
+      rerender(<MessageList {...props({ blocks: failed.blocks })} />)
+      expect(row()).toHaveAttribute('data-state', 'error')
+      expect(row()).toHaveTextContent('failed')
+    })
+
+    it('a running task nobody can advance (tasksLive false) leaves the tool line stopped, not spinning', () => {
+      const view = buildView(evs([realWorkflowCall, realLaunch, realTask('running')]))
+      render(<MessageList {...props({ blocks: view.blocks, tasksLive: false })} />)
+      const row = screen.getByTestId('tool-block')
+      expect(row).toHaveAttribute('data-state', 'stopped')
+      expect(row).not.toHaveTextContent('running in background')
+      expect(within(row).queryByLabelText('Running')).toBeNull()
+    })
+
+    it('a sub-agent started by spawnAgent (immediate result, status only in the task) stays running in the background until its task ends', () => {
+      const spawn = { type: 'tool_call', id: 'call_1', name: 'spawnAgent', category: 'subagent', title: 'Start sub-agent pong', input: {} } as const
+      const result = { type: 'tool_result', id: 'call_1', output: 'Started sub-agent pong (fixture-model-sub)', is_error: false } as const
+      const child = (status: 'running' | 'completed'): Event => ({ type: 'task', id: 'child', kind: 'subagent', tool_id: 'call_1', title: 'pong', status })
+      const first = buildView(evs([spawn, result, child('running')]))
+      const { rerender } = render(<MessageList {...props({ blocks: first.blocks })} />)
+      const row = () => screen.getByTestId('tool-block')
+      expect(row()).toHaveAttribute('data-category', 'subagent')
+      expect(row()).toHaveAttribute('data-state', 'background')
+      expect(row()).toHaveTextContent('running in background')
+      // 立刻返回的那条结果只是「已启动」，不当作子 agent 的总结
+      expect(screen.queryByTestId('subagent-result')).toBeNull()
+
+      rerender(<MessageList {...props({ blocks: applyEvents(first, [ev(child('completed'))]).blocks })} />)
+      expect(row()).toHaveAttribute('data-state', 'done')
+      expect(row()).not.toHaveTextContent('running in background')
+      // 子 agent 又收到新输入、回到运行中
+      rerender(<MessageList {...props({ blocks: applyEvents(applyEvents(first, [ev(child('completed'))]), [ev(child('running'))]).blocks })} />)
+      expect(row()).toHaveAttribute('data-state', 'background')
+    })
+
+    it('a task whose tool call is not loaded gets its own block where it first appeared', () => {
+      const view = buildView(evs([{ type: 'text_delta', text: 'before' }, task({ tool_id: 'not-loaded' }), { type: 'text_delta', text: 'after' }]))
+      render(<MessageList {...props({ blocks: view.blocks })} />)
+      const rows = [...screen.getByTestId('message-list').querySelectorAll(':scope > div > div')]
+      expect(rows.map((r) => (r.querySelector('[data-testid]') as HTMLElement | null)?.dataset.testid)).toEqual(['message-assistant', 'task', 'message-assistant'])
+    })
+
+    it('shows a snapshot stuck on running as stopped unless tasksLive says something may still be running it', () => {
+      const view = buildView(evs([workflowCall, task()]))
+      const { rerender } = render(<MessageList {...props({ blocks: view.blocks, tasksLive: false })} />)
+      expect(screen.getByTestId('task')).toHaveAttribute('data-status', 'stopped')
+      rerender(<MessageList {...props({ blocks: view.blocks, tasksLive: true })} />)
+      expect(screen.getByTestId('task')).toHaveAttribute('data-status', 'running')
+    })
+
+    it('notices are lines in the stream; command output is a block; nothing looks like an error', () => {
+      const view = buildView(
+        evs([
+          { type: 'notice', code: 'model_fallback', level: 'warning', message: 'overloaded', model_from: 'mock-large', model_to: 'mock-small' },
+          { type: 'notice', code: 'command_output', level: 'info', message: 'Context: 6%' },
+          { type: 'notice', code: 'agent_notice', level: 'info', message: 'Heads up' },
+        ]),
+      )
+      render(<MessageList {...props({ blocks: view.blocks, modelLabel: (id) => id.replace('mock-', 'Mock ') })} />)
+      const lines = screen.getAllByTestId('notice')
+      expect(lines.map((l) => l.textContent)).toEqual(['Model switched from Mock large to Mock small — overloaded', 'Heads up'])
+      expect(screen.getByTestId('notice-command-output')).toHaveTextContent('Context: 6%')
+      expect(screen.queryByTestId('error-block')).toBeNull()
+    })
+
+    it('shows the activity line last while one is given, and not otherwise', () => {
+      const view = buildView(evs([{ type: 'user_message', message_id: 'm1', content: 'go', by_device: 'me' }, { type: 'turn_start', turn_id: 1, message_id: 'm1' }, { type: 'activity', state: 'compacting' }]))
+      const { rerender } = render(<MessageList {...props({ blocks: view.blocks, activity: view.activity })} />)
+      const rows = [...screen.getByTestId('message-list').querySelectorAll(':scope > div > div')]
+      expect(rows.at(-1)).toContainElement(screen.getByTestId('activity'))
+      expect(screen.getByTestId('activity')).toHaveTextContent('Compacting context…')
+      rerender(<MessageList {...props({ blocks: view.blocks, activity: null })} />)
+      expect(screen.queryByTestId('activity')).toBeNull()
+    })
   })
 })

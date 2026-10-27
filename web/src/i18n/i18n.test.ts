@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest'
 import { EXPLAINED_ERROR_CODES } from '@/features/session/errors'
 import type { AgentStatus, DiffFileStatus, EnrollMethod, ErrorCode, EnrollResult, GitAction, LinkBlock, NotifyCategory, PullRequestState, SecurityEventKind, SessionStatus, SyncOutcome, TurnDoneReason, WorktreeState } from '@/protocol'
 import type { PushErrorCode } from '@/features/push/actions'
+import { NOTICE_EXTRA_KEYS, NOTICE_TEXT_KEYS } from '@/features/session/notice'
 import type { SubagentActivity } from '@/features/session/subagents'
+import type { AgentDisplayState, TaskDisplayStatus } from '@/features/session/tasks'
 import type { UnsupportedReason } from '@/features/push/browser'
 import type { PushStatus } from '@/features/push/usePush'
 import { PREVIEW_DAEMON_REASONS, PREVIEW_HUB_CODES } from '@/features/preview/errors'
@@ -64,6 +66,9 @@ describe('i18n', () => {
     const sessionStatus: Record<SessionStatus | 'offline', true> = { queued: true, starting: true, running: true, waiting_permission: true, idle: true, ended: true, error: true, interrupted: true, offline: true }
     const nodeConn: Record<NodeConnState, true> = { hub_disconnected: true, hub_connecting: true, hub_authed: true, peer_offline: true, noise_handshaking: true, ready: true, noise_failed: true }
     const subagentActivity: Record<SubagentActivity, true> = { running: true, background: true, done: true, error: true, stopped: true }
+    // 后台任务（`task` 事件）：任务状态、workflow 里 agent 的状态都是拼 key 用的
+    const taskStatus: Record<TaskDisplayStatus, true> = { running: true, completed: true, failed: true, cancelled: true, stopped: true }
+    const agentState: Record<AgentDisplayState, true> = { queued: true, running: true, done: true, failed: true, skipped: true, stopped: true }
     const errCode: Record<ErrorCode, true> = { invalid: true, invalid_settings: true, agent_unavailable: true, node_busy: true, busy: true, already_resolved: true, exists: true, not_found: true, forbidden: true, unsupported: true, protocol_mismatch: true, internal: true }
     const turnReason: Record<TurnDoneReason, true> = { completed: true, cancelled: true, error: true, max_turns: true, budget: true }
     const pairErr: Record<PairErrorCode | 'retry' | 'generic', true> = {
@@ -126,6 +131,12 @@ describe('i18n', () => {
       ...Object.keys(sessionStatus).map((k) => `status.session.${k}`),
       ...Object.keys(nodeConn).map((k) => `status.node.${k}`),
       ...Object.keys(subagentActivity).map((k) => `info.subagentState.${k}`),
+      ...Object.keys(taskStatus).map((k) => `task.status.${k}`),
+      ...Object.keys(agentState).map((k) => `task.agentState.${k}`),
+      // notice：code → 文案（features/session/notice.ts）；activity 按有没有次数 / 倒计时选的几句
+      ...Object.values(NOTICE_TEXT_KEYS),
+      ...NOTICE_EXTRA_KEYS,
+      'activity.retrying', 'activity.retryingIn', 'activity.retryingAttempt', 'activity.retryingAttemptIn', 'activity.compacting',
       ...Object.keys(errCode).map((k) => `errors.rpc.${k}`),
       ...Object.keys(turnReason).map((k) => `turn.reason.${k}`),
       ...Object.keys(pairErr).map((k) => `pair.errors.${k}`),

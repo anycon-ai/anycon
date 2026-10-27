@@ -1,9 +1,10 @@
 import { lazy, Suspense, useState, type ReactNode } from 'react'
-import { AlertTriangle, ChevronRight, Clock, FileEdit, FileText, Globe, HelpCircle, Lock, Puzzle, Search, ShieldAlert, ShieldQuestion, SquareTerminal, Users } from 'lucide-react'
+import { AlertTriangle, ChevronRight, Clock, ExternalLink, FileEdit, FileText, Globe, HelpCircle, Lock, Puzzle, Search, ShieldAlert, ShieldQuestion, SquareTerminal, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { PermissionOption, PermissionOptionKind, PermissionRespondParams, Question, ToolCategory } from '@/protocol'
 import { Markdown } from '@/components/Markdown'
 import { isRecord } from '@/lib/guards'
+import { safeHttpUrl } from '@/lib/url'
 import { useNow } from '@/lib/useNow'
 import { Button, type ButtonVariant } from '@/ui/Button'
 import { cn } from '@/ui/cn'
@@ -114,20 +115,23 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
   // 问答卡片上 allow 类选项（adapter 给的「Submit answers」）就是提交按钮：带上 answers，答完才能点
   const submitsAnswers = (opt: PermissionOption): boolean => isQuestion && optionTone(opt.kind) === 'allow'
 
+  const questions = block.detail.questions ?? []
+  // 提交时只带回答了的题：可选的题留空（或填了又清掉）就不出现在 answers 里，不当作空答案发出去
+  const given = (q: Question): boolean => {
+    const a = answers[q.id]
+    return Array.isArray(a) ? a.length > 0 : !!a?.trim()
+  }
+  const submitted = (): Record<string, string | string[]> => Object.fromEntries(Object.entries(answers).filter(([id]) => questions.some((q) => q.id === id && given(q))))
+  const complete = questions.every((q) => q.optional || given(q))
+
   const respond = (opt: PermissionOption): void => {
     onRespond({
       request_id: block.requestId,
       option_id: opt.id,
       message: opt.needs_message && note.trim() ? note.trim() : undefined,
-      answers: submitsAnswers(opt) ? answers : undefined,
+      answers: submitsAnswers(opt) ? submitted() : undefined,
     })
   }
-
-  const questions = block.detail.questions ?? []
-  const complete = questions.every((q) => {
-    const a = answers[q.id]
-    return Array.isArray(a) ? a.length > 0 : !!a?.trim()
-  })
   // adapter 没给 allow 类选项时才用自带的提交按钮，否则会出现两个「Submit answers」
   const ownSubmit = isQuestion && !block.options.some(submitsAnswers)
 
@@ -166,6 +170,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
         {block.kind === 'other' || block.kind === 'mode_change' ? (
           <p className="text-sm text-fg-muted">{block.detail.text ?? (block.detail.mode ? t('permission.modeChange', { mode: targetMode?.label ?? block.detail.mode }) : '')}</p>
         ) : null}
+        {block.kind === 'other' && block.detail.url ? <LinkRow url={block.detail.url} /> : null}
         {danger ? (
           <p className="flex items-start gap-2 rounded-md border border-danger/40 bg-danger-subtle px-2.5 py-2 text-sm font-medium text-danger" role="alert" data-testid="permission-danger">
             <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
@@ -177,7 +182,14 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
           <div className="space-y-4" data-testid="permission-questions">
             {questions.map((q) => (
               <fieldset key={q.id} className="space-y-2">
-                <legend className="text-sm font-medium">{q.text}</legend>
+                <legend className="text-sm font-medium">
+                  {q.text}
+                  {q.optional ? (
+                    <span className="ml-1.5 text-xs font-normal text-fg-subtle" data-testid="question-optional">
+                      {t('permission.optional')}
+                    </span>
+                  ) : null}
+                </legend>
                 {(q.choices ?? []).map((c) => {
                   const cur = answers[q.id]
                   const checked = q.multi ? Array.isArray(cur) && cur.includes(c.id) : cur === c.id
@@ -200,6 +212,12 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
                     </label>
                   )
                 })}
+                {q.optional && (q.choices ?? []).length > 0 && given(q) ? (
+                  // 单选一旦选了就取消不掉：可选的题给一个清除入口
+                  <button type="button" className="text-xs text-fg-subtle underline-offset-2 hover:text-fg-muted hover:underline" onClick={() => setAnswers((a) => Object.fromEntries(Object.entries(a).filter(([id]) => id !== q.id)))} data-testid="question-clear">
+                    {t('permission.clearAnswer')}
+                  </button>
+                ) : null}
                 {q.free_text ? (
                   <Textarea
                     rows={2}
@@ -218,7 +236,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
 
         <div className="flex flex-wrap gap-2">
           {ownSubmit ? (
-            <Button variant="primary" size="sm" disabled={busy || !complete} onClick={() => onRespond({ request_id: block.requestId, answers })} data-testid="permission-submit-answers">
+            <Button variant="primary" size="sm" disabled={busy || !complete} onClick={() => onRespond({ request_id: block.requestId, answers: submitted() })} data-testid="permission-submit-answers">
               {t('permission.submitAnswers')}
             </Button>
           ) : null}
@@ -238,6 +256,42 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
         </div>
         </div>
       </Card>
+    </div>
+  )
+}
+
+/**
+ * 要用户在浏览器里打开的链接（MCP server 的 URL 模式授权，`detail.url`）：显示完整的 URL（不截断，让人看得清要去哪），
+ * 只对 http(s) 提供「打开」；别的协议只当文字显示。打开本身不答复请求，用户回来点确认。
+ */
+function LinkRow({ url }: { url: string }) {
+  const { t } = useTranslation()
+  const href = safeHttpUrl(url)
+  return (
+    <div className="space-y-1" data-testid="permission-link">
+      <div className="flex items-start gap-2 rounded-md border border-border bg-bg-muted px-2.5 py-1.5">
+        <code className="min-w-0 flex-1 font-mono text-[0.8125rem] whitespace-pre-wrap [overflow-wrap:anywhere]" data-testid="permission-link-url">
+          {url}
+        </code>
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={t('permission.openLinkLabel')}
+            className="inline-flex h-8 shrink-0 select-none items-center gap-1.5 rounded-md border border-border-strong px-3 text-[0.8125rem] font-medium whitespace-nowrap text-fg transition-colors hover:bg-bg-hover"
+            data-testid="permission-link-open"
+          >
+            <ExternalLink className="size-3.5" aria-hidden />
+            {t('permission.openLink')}
+          </a>
+        ) : null}
+      </div>
+      {href ? null : (
+        <p className="text-xs text-fg-subtle" data-testid="permission-link-blocked">
+          {t('permission.linkNotOpenable')}
+        </p>
+      )}
     </div>
   )
 }

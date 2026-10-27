@@ -1,6 +1,8 @@
-// 后台任务提示（daemon.md § 7.3）：主 turn 结束后 agent 进程里还有后台 subagent / 后台命令在跑时，会话是 idle 的，
-// 会话页在输入区上方给一行低调的说明；运行中不显示（状态本身已经有提示），没有后台任务（含旧 daemon 不发该字段）也不显示。
-import { act, render, screen } from '@testing-library/react'
+// 后台任务 chip（spec/web.md § 4.6 输入区）：agent 进程里还有后台任务（后台 subagent、后台命令、workflow）在跑时，输入框上方有一个
+// 「N 个后台任务在运行」的 chip，点开列出；主 turn 结束后会话是 idle 的，弹层里说明结束后 agent 会继续处理。
+// 没有后台任务（含旧 daemon 不发该字段）时不显示。
+import { act, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionStatus, SessionSummary } from '@/protocol'
 import i18n from '@/i18n'
@@ -39,7 +41,7 @@ function seed(over: Partial<SessionSummary> = {}): void {
   // watching: false 时状态取摘要里的 status（见 SessionPage 的 status 推导）
   useSessions.getState().openPatch(SID, { phase: 'ready', watching: false })
 }
-const hint = () => screen.queryByTestId('background-tasks-hint')
+const chip = () => screen.queryByTestId('background-tasks-chip')
 
 beforeEach(async () => {
   resetSeq()
@@ -54,74 +56,78 @@ beforeEach(async () => {
 })
 afterEach(() => setRpc(null))
 
-describe('SessionPage: background tasks hint', () => {
-  it('shows the count when the session is idle and background tasks are still running', async () => {
+describe('SessionPage: background tasks chip', () => {
+  it('shows the count when the session is idle and background tasks are still running, and explains in the list that the agent will continue', async () => {
+    const user = userEvent.setup()
     seed({ status: 'idle', background_tasks: 2 })
     render(<SessionPage sessionId={SID} />)
-    const el = await screen.findByTestId('background-tasks-hint')
-    expect(el).toHaveTextContent('2 background tasks are still running — the agent will pick up their results')
-    expect(el).toHaveAttribute('role', 'status')
-    expect(el).toHaveAttribute('data-count', '2')
+    const el = await screen.findByTestId('background-tasks-chip')
+    expect(el).toHaveTextContent('2 background tasks running')
+    expect(screen.getByTestId('background-tasks')).toHaveAttribute('data-count', '2')
     // 状态点不因后台任务而变
     expect(screen.getByTestId('session-status')).toHaveAttribute('data-status', 'idle')
+    await user.click(el)
+    const list = await screen.findByTestId('background-tasks-list')
+    // 事件里认不出是哪些任务：只有一行数
+    expect(within(list).getByTestId('background-task-other')).toHaveTextContent('2 background tasks')
+    expect(list).toHaveTextContent('The agent will pick up their results when they finish.')
   })
 
   it('uses the singular form for one task', async () => {
     seed({ status: 'idle', background_tasks: 1 })
     render(<SessionPage sessionId={SID} />)
-    expect(await screen.findByTestId('background-tasks-hint')).toHaveTextContent('1 background task is still running — the agent will pick up its result')
+    expect(await screen.findByTestId('background-tasks-chip')).toHaveTextContent('1 background task running')
   })
 
   it('is written in Chinese when the UI language is Chinese', async () => {
     await i18n.changeLanguage('zh')
     seed({ status: 'idle', background_tasks: 3 })
     render(<SessionPage sessionId={SID} />)
-    expect(await screen.findByTestId('background-tasks-hint')).toHaveTextContent('后台还有 3 个任务在运行，结束后 agent 会继续处理')
+    expect(await screen.findByTestId('background-tasks-chip')).toHaveTextContent('3 个后台任务在运行')
   })
 
   it('is not shown without background tasks: 0, or a daemon that does not send the field', async () => {
     seed({ status: 'idle', background_tasks: 0 })
     const view = render(<SessionPage sessionId={SID} />)
     await screen.findByTestId('session-status')
-    expect(hint()).toBeNull()
+    expect(chip()).toBeNull()
     view.unmount()
 
     seed({ status: 'idle' })
     render(<SessionPage sessionId={SID} />)
     await screen.findByTestId('session-status')
-    expect(hint()).toBeNull()
+    expect(chip()).toBeNull()
   })
 
-  it.each<SessionStatus>(['running', 'starting', 'waiting_permission', 'queued'])('is not shown while the session is %s: the running state already says it', async (status) => {
+  it.each<SessionStatus>(['running', 'starting', 'waiting_permission', 'queued'])('is also shown while the session is %s: tasks run next to the main turn', async (status) => {
     seed({ status, background_tasks: 2 })
     render(<SessionPage sessionId={SID} />)
-    await screen.findByTestId('session-status')
-    expect(hint()).toBeNull()
+    expect(await screen.findByTestId('background-tasks-chip')).toHaveTextContent('2 background tasks running')
   })
 
   it('follows the session: appears when the main turn ends with tasks left, updates the count, disappears when they finish', async () => {
-    seed({ status: 'running', background_tasks: 2 })
+    seed({ status: 'running', background_tasks: 0 })
     render(<SessionPage sessionId={SID} />)
     await screen.findByTestId('session-status')
-    expect(hint()).toBeNull()
+    expect(chip()).toBeNull()
 
     const change = (status: SessionSummary['status'], background_tasks?: number) =>
       act(() => {
         useSessions.getState().applyChanged(NODE, { session_id: SID, title: 'hello', status, archived: false, pending_permissions: 0, background_tasks, updated_at_ms: 9, last_seq: 0 })
       })
     change('idle', 2)
-    expect(await screen.findByTestId('background-tasks-hint')).toHaveTextContent('2 background tasks')
+    expect(await screen.findByTestId('background-tasks-chip')).toHaveTextContent('2 background tasks')
     change('idle', 1)
-    expect(screen.getByTestId('background-tasks-hint')).toHaveTextContent('1 background task is')
-    // agent 自己再跑一轮：运行中隐藏
+    expect(screen.getByTestId('background-tasks-chip')).toHaveTextContent('1 background task running')
+    // agent 自己再跑一轮：chip 还在
     change('running', 1)
-    expect(hint()).toBeNull()
+    expect(chip()).not.toBeNull()
     change('idle', 0)
-    expect(hint()).toBeNull()
+    expect(chip()).toBeNull()
     // 通知里没有该字段（旧 daemon）按 0 处理
     change('idle', 1)
-    expect(hint()).not.toBeNull()
+    expect(chip()).not.toBeNull()
     change('idle', undefined)
-    expect(hint()).toBeNull()
+    expect(chip()).toBeNull()
   })
 })

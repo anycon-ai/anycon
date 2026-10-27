@@ -323,11 +323,49 @@ Event =
   | { type: "title_changed",    title }
   | { type: "git",              action, branch, base?, count?, files?, note? }   // daemon 自己做的 git 操作（ADR-34）：worktree_created / worktree_failed / worktree_removed / worktree_kept / worktree_restored / worktree_missing / sync_up_to_date / sync_merged / sync_conflicts / sync_aborted；worktree_removed 的 note 是 branch_deleted | branch_kept，其他动作的 note 是英文说明
   | { type: "error",            code, message, recoverable }
+  | { type: "task",             id, kind, tool_id?, title, status, usage?, last_tool?, summary?, phases?, agents? }   // 后台任务的状态快照，同一个 id 的后一条整条取代前一条；见下
+  | { type: "notice",           code, level: info | warning, message, model_from?, model_to?, resets_at_ms? }      // agent 给用户的提示，不是错误；见下
+  | { type: "activity",         state: none | retrying | compacting, attempt?, max_attempts?, delay_ms?, reason? }  // turn 进行中的临时状态；见下
 ```
 
 `tool_call.category` 取 `shell | file_edit | file_read | search | web | subagent | mcp | other`，各 agent 工具名到 category 的映射见 [spec/daemon.md § 8](spec/daemon.md#8-事件翻译)。adapter 的职责就是把各 agent 的原生事件翻译成这个集合。
 
 子 agent 内部的调用带 `tool_call.parent_id`：启动这个子 agent 的那次调用（`category = subagent`）的 `id`，子 agent 再启动子 agent 时一层层指上去；主 agent 自己的调用不带。后台启动的子 agent 和转到后台的命令（Claude Code Bash 的 `run_in_background`），调用会马上返回，这条 `tool_result` 带 `detail.background = true`；任务结束时同一个 `id` 再来一条 `tool_result`（不带这个标记），取代前一条。后台命令结束的那条，`output` 是 agent 给的一句总结，能取到退出码时带 `detail.exit_code`，退出码非 0 算 `is_error`。子 agent 结束的那条 `tool_result` 可以带 `detail.total_tokens`：agent 报的这个子 agent 一共用掉的 token，`turn_done.usage` 不含这部分。
+
+**`task`：后台任务的状态快照。** workflow、后台子 agent、后台命令的进度不是 `tool_call` / `tool_result` 能表达的（调用早就返回了，任务还在跑），所以单独成一类事件。
+
+- 每条是**整条快照**，不是增量：同一个 `id`（agent 给任务的 id，会话内唯一）的后一条整条取代前一条，客户端按 `id` 只留最新的；漏掉中间的快照不影响正确性。
+- `kind`：`workflow`（多阶段、多 agent，带 `phases` 和 `agents`）、`subagent`、`shell`、`other`。`status`：`running`，终态 `completed` / `failed` / `cancelled`。终态只说明「这一刻不在跑」：Claude Code 的任务进入终态后不再变化，但 Codex 的子 agent 是一个可以再收到输入的 thread，`completed` 之后收到新输入、开始新 turn 会回到 `running`（同一个 `id` 的又一条快照）。客户端始终以最新的一条为准，不要把终态当成最终状态。
+- `tool_id` 是启动这个任务的 `tool_call` 的 `id`；客户端据此把进度挂在那个工具块上，对不上（调用不在已加载的历史里）就单独成块。
+- `usage { total_tokens?, tool_calls?, duration_ms? }` 是整个任务的用量；`last_tool` 是最近一次调用的工具名；`summary` 是 agent 给的进度 / 结果摘要。
+- `phases[] { index, title }` 和 `agents[]` 只有 workflow 才有。`agents[]` 的每项：`index`、`label`、`state`（`queued` / `running` / `done` / `failed` / `skipped`）、`phase_index?`、`model?`、`tokens?`、`tool_calls?`、`duration_ms?`、`last_tool?`、`error?`、`attempt?`（第几次尝试）、`cached?`（结果来自缓存）。
+- daemon 对同一个任务的快照节流（至多每秒一条，状态变化不受节流）；agent 进程退出时还没收尾的任务各补一条 `cancelled`（[spec/daemon.md § 8.3](spec/daemon.md#83-task--notice--activity)）。快照的大小上限见 [spec/daemon.md § 8.2](spec/daemon.md#82-事件大小上限)。
+
+**`notice`：给用户的提示。** 不是错误，不影响 turn，也不触发推送通知。客户端认识 `code` 时用自己的文案（可本地化），`message` 作为补充原文；不认识的 `code` 按 `level` 显示 `message`。`message` 是 agent 给的原文（通常是英文），可以是空串；`command_output` 的 `message` 是本地命令的输出，可能多行。`code` 的稳定取值：
+
+| code | level | 含义 | 专有字段 |
+|---|---|---|---|
+| `model_fallback` | warning | 模型被换了（过载、拒绝、需要同意…） | `model_from`、`model_to` |
+| `context_compacted` | info | 上下文被压缩了（`message` 里可能带压缩前后的 token 数） | |
+| `rate_limit` | warning | 触到了用量限额 | `resets_at_ms`（恢复时间） |
+| `command_output` | info | `/context`、`/cost` 这类本地命令的输出 | |
+| `agent_notice` | info / warning | agent 自己的通知 / 提示 | |
+| `config_warning` | warning | 配置有问题 | |
+| `deprecation` | warning | 用到了即将废弃的功能 | |
+| `mcp_server_failed` | warning | 某个 MCP server 启动失败 | |
+| `permission_denied` | info | 工具调用被权限规则拒绝（`message` 是原因） | |
+| `auto_review` | warning | 自动审批被拒绝（`message` 是审查理由） | |
+| `hook_failed` | warning | hook 失败或阻止了操作 | |
+
+新增 `code` 不算协议变更：不认识的客户端按 `level` 显示 `message`。`notice` 单独成一类，没有复用 `recoverable = true` 的 `error`：那一类的语义是「这个 turn 出了问题」，客户端会按错误样式显示、可能带「重试」，而这里的提示（上下文压缩、换模型）没有出问题。
+
+**`activity`：turn 进行中的临时状态。** agent 在做「非输出」的事时发：`retrying`（正在重试一次失败的 API 请求，`attempt` / `max_attempts` / `delay_ms`（距下一次重试）/ `reason`（错误摘要，如 `529 overloaded_error`））、`compacting`（正在压缩上下文）。客户端在 turn 进行中把它显示成一条临时状态，**收到任何内容事件（`text_delta`、`thinking_delta`、`tool_call`、`tool_result`…）、`turn_done` 或 `state = none` 时清掉**。它不进消息流的持久内容；历史回放时只需要看最后一条之后有没有内容事件。
+
+**`turn_done.usage` 的上下文字段**：`context_window`（模型的上下文窗口大小）和 `context_tokens`（turn 结束时上下文已经占用的 token，即最近一次模型请求的输入加缓存读写）。`input_tokens` 等是累计用量，`context_tokens` 是「此刻窗口里有多少」，客户端拿它们算占用比例；agent 不报就缺省。
+
+**`Question.optional`**：`kind = question` 的一道题可以不答（默认 `false` = 必答，所以 AskUserQuestion 这类每题都要答的请求不变）。MCP elicitation 表单里 schema 没列进 `required` 的属性就是 `optional`：客户端允许留空提交，`permission.respond` 的 `answers` 里没有这一题；adapter 把没答的可选项从 `content` 里省略，必答的题缺答案仍然不行。
+
+**`permission.detail.url`**：`kind = other` 的请求可以带一个要用户在浏览器里打开的链接（MCP server 的 URL 模式 elicitation：先去那个页面完成登录 / 授权，再回来确认）。只会是 `http` / `https`；客户端显示完整 URL，只对这两种协议提供「打开」入口。
 
 错误响应统一为 JSON-RPC error，`data` 里带稳定的 `code`（snake_case）供客户端 i18n：`invalid`、`invalid_settings`（`data.field` 指出字段，如 `mode`、`env.BASH_ENV`）、`agent_unavailable`（`data.reason`）、`node_busy`、`busy`、`already_resolved`、`exists`、`not_found`、`forbidden`、`unsupported`、`protocol_mismatch`、`internal`。完整枚举见 `crates/protocol/src/error.rs`。
 

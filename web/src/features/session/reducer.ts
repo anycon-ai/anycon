@@ -6,12 +6,16 @@
 // - permission_resolved 更新对应卡片
 // - settings_changed 生成「模型已切换为 …」之类的系统行（对比上一份 settings）
 // - git（ADR-34）生成「已在 worktree … 中开始」「已合并 main 的 3 个提交」之类的系统行
+// - task（后台任务快照）按 id 只留最新一条：有 tool_id 且对应的工具块已加载就挂在那个块上，否则在第一次出现的位置单独成块
+// - notice 生成一行提示（info / warning）；activity 是视图级的临时状态，内容事件 / turn_done / state none 时清掉
+// - turn_done.usage 里的 context_window / context_tokens 记成视图的最新上下文占用
 import type {
   AttachmentRef,
   EditKind,
   Event,
   FileChangeKind,
   GitAction,
+  NoticeLevel,
   PermissionDetail,
   PermissionKind,
   PermissionOption,
@@ -19,6 +23,11 @@ import type {
   SessionEvent,
   SessionSettings,
   SessionStatus,
+  TaskAgent,
+  TaskKind,
+  TaskPhase,
+  TaskStatus,
+  TaskUsage,
   ToolCallDetail,
   ToolCategory,
   ToolResultDetail,
@@ -64,6 +73,23 @@ export interface ToolResult {
   isError: boolean
   detail?: ToolResultDetail | null
 }
+/** 后台任务的最新一条快照（`task` 事件，整条取代前一条）。 */
+export interface TaskSnapshot {
+  id: string
+  kind: TaskKind
+  /** 启动它的 tool_call 的 id（`tool_id`）。 */
+  toolId?: string
+  title: string
+  status: TaskStatus
+  usage?: TaskUsage
+  lastTool?: string
+  summary?: string
+  phases: TaskPhase[]
+  agents: TaskAgent[]
+  /** 这条快照的 seq / 时间。 */
+  seq: number
+  ts: number
+}
 export interface ToolBlock extends BlockBase {
   type: 'tool'
   toolId: string
@@ -77,6 +103,23 @@ export interface ToolBlock extends BlockBase {
   /** tool_output_delta 累积出的流式输出。 */
   streamed: string
   result?: ToolResult
+  /** `task.tool_id` 指向这次调用的任务（按第一次出现的顺序），进度画在工具行下面。 */
+  tasks?: TaskSnapshot[]
+}
+/** 对应不上任何已加载工具块的任务，在第一次出现的位置单独成块。 */
+export interface TaskBlock extends BlockBase {
+  type: 'task'
+  task: TaskSnapshot
+}
+export interface NoticeBlock extends BlockBase {
+  type: 'notice'
+  /** 稳定的 code（docs/protocol.md § 6）；不认识的按 level 显示 `message`。 */
+  code: string
+  level: NoticeLevel
+  message: string
+  modelFrom?: string
+  modelTo?: string
+  resetsAtMs?: number
 }
 export interface PlanBlock extends BlockBase {
   type: 'plan'
@@ -148,6 +191,8 @@ export type Block =
   | ThinkingBlock
   | AssistantBlock
   | ToolBlock
+  | TaskBlock
+  | NoticeBlock
   | PlanBlock
   | PermissionBlock
   | TurnDoneBlock
@@ -163,9 +208,29 @@ export interface UsageSum {
   costUsd: number | null
 }
 
+/** turn 进行中 agent 在做的「非输出」的事（`activity` 事件）：重试 API、压缩上下文。 */
+export interface ActivityInfo {
+  state: 'retrying' | 'compacting'
+  attempt?: number
+  maxAttempts?: number
+  /** retrying：距下次重试的毫秒数（从 `ts` 起算）。 */
+  delayMs?: number
+  reason?: string
+  seq: number
+  ts: number
+}
+
+/** 最近一个带 `context_window` 和 `context_tokens` 的 `turn_done`：turn 结束时窗口里的 token 数。 */
+export interface ContextUsage {
+  window: number
+  tokens: number
+}
+
 export interface SessionView {
   blocks: Block[]
   toolIndex: Record<string, number>
+  /** 任务 id → 它所在块的下标（工具块或任务块）。 */
+  taskIndex: Record<string, number>
   permIndex: Record<string, number>
   planByTurn: Record<number, number>
   openAssistant: number | null
@@ -181,12 +246,16 @@ export interface SessionView {
   settings: SessionSettings | null
   changedFiles: Record<string, FileChangeKind>
   usage: UsageSum
+  /** 当前的临时状态；收到内容事件 / `turn_done` / `state = none` 时是 null。显示时还要看会话是不是还在跑。 */
+  activity: ActivityInfo | null
+  context: ContextUsage | null
 }
 
 export function emptyView(initialSettings: SessionSettings | null = null): SessionView {
   return {
     blocks: [],
     toolIndex: {},
+    taskIndex: {},
     permIndex: {},
     planByTurn: {},
     openAssistant: null,
@@ -201,6 +270,8 @@ export function emptyView(initialSettings: SessionSettings | null = null): Sessi
     settings: initialSettings,
     changedFiles: {},
     usage: { turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null },
+    activity: null,
+    context: null,
   }
 }
 
@@ -222,6 +293,7 @@ export function diffSettings(prev: SessionSettings | null, next: SessionSettings
 class Work {
   readonly blocks: Block[]
   readonly toolIndex: Record<string, number>
+  readonly taskIndex: Record<string, number>
   readonly permIndex: Record<string, number>
   readonly planByTurn: Record<number, number>
   openAssistant: number | null
@@ -236,10 +308,13 @@ class Work {
   settings: SessionSettings | null
   changedFiles: Record<string, FileChangeKind>
   usage: UsageSum
+  activity: ActivityInfo | null
+  context: ContextUsage | null
 
   constructor(v: SessionView) {
     this.blocks = v.blocks.slice()
     this.toolIndex = { ...v.toolIndex }
+    this.taskIndex = { ...v.taskIndex }
     this.permIndex = { ...v.permIndex }
     this.planByTurn = { ...v.planByTurn }
     this.openAssistant = v.openAssistant
@@ -254,12 +329,15 @@ class Work {
     this.settings = v.settings
     this.changedFiles = { ...v.changedFiles }
     this.usage = { ...v.usage }
+    this.activity = v.activity
+    this.context = v.context
   }
 
   freeze(): SessionView {
     return {
       blocks: this.blocks,
       toolIndex: this.toolIndex,
+      taskIndex: this.taskIndex,
       permIndex: this.permIndex,
       planByTurn: this.planByTurn,
       openAssistant: this.openAssistant,
@@ -274,6 +352,8 @@ class Work {
       settings: this.settings,
       changedFiles: this.changedFiles,
       usage: this.usage,
+      activity: this.activity,
+      context: this.context,
     }
   }
 
@@ -309,16 +389,19 @@ function applyOne(w: Work, se: SessionEvent): void {
     case 'user_message': {
       if (w.blocks.some((b) => b.type === 'user' && b.messageId === ev.message_id)) return
       w.closeOpen()
+      w.activity = null
       w.push({ ...base, key: `u-${ev.message_id}`, type: 'user', messageId: ev.message_id, content: ev.content, byDevice: ev.by_device, attachments: ev.attachments ?? [] })
       return
     }
     case 'turn_start': {
       w.closeOpen()
+      w.activity = null
       w.currentTurn = ev.turn_id
       w.push({ ...base, turnId: ev.turn_id, key: `t-${se.seq}`, type: 'turn_start', agentStarted: ev.message_id === '' })
       return
     }
     case 'text_delta': {
+      w.activity = null
       if (w.openThinking !== null) w.closeOpen()
       if (w.openAssistant !== null) {
         const b = w.blocks[w.openAssistant]
@@ -339,6 +422,7 @@ function applyOne(w: Work, se: SessionEvent): void {
       return
     }
     case 'thinking_delta': {
+      w.activity = null
       if (w.openAssistant !== null) w.closeOpen()
       if (w.openThinking !== null) {
         const b = w.blocks[w.openThinking]
@@ -363,6 +447,7 @@ function applyOne(w: Work, se: SessionEvent): void {
     }
     case 'tool_call': {
       w.closeOpen()
+      w.activity = null
       const existing = w.toolIndex[ev.id]
       if (existing !== undefined) {
         const b = w.blocks[existing]
@@ -387,6 +472,7 @@ function applyOne(w: Work, se: SessionEvent): void {
       return
     }
     case 'tool_output_delta': {
+      w.activity = null
       const idx = w.toolIndex[ev.id]
       const b = idx === undefined ? undefined : w.blocks[idx]
       if (idx !== undefined && b?.type === 'tool') {
@@ -408,6 +494,7 @@ function applyOne(w: Work, se: SessionEvent): void {
       return
     }
     case 'tool_result': {
+      w.activity = null
       const result: ToolResult = { output: ev.output, isError: ev.is_error ?? false, detail: ev.detail }
       const idx = w.toolIndex[ev.id]
       const b = idx === undefined ? undefined : w.blocks[idx]
@@ -436,6 +523,7 @@ function applyOne(w: Work, se: SessionEvent): void {
     }
     case 'plan': {
       w.closeOpen()
+      w.activity = null
       const turn = w.currentTurn ?? 0
       const idx = w.planByTurn[turn]
       const b = idx === undefined ? undefined : w.blocks[idx]
@@ -448,6 +536,7 @@ function applyOne(w: Work, se: SessionEvent): void {
     }
     case 'permission': {
       w.closeOpen()
+      w.activity = null
       const existing = w.permIndex[ev.request_id]
       const next: PermissionBlock = {
         ...base,
@@ -482,6 +571,7 @@ function applyOne(w: Work, se: SessionEvent): void {
     }
     case 'turn_done': {
       w.closeOpen()
+      w.activity = null
       w.currentTurn = null
       w.push({ ...base, turnId: ev.turn_id, key: `td-${se.seq}`, type: 'turn_done', reason: ev.reason, usage: ev.usage })
       w.usage.turns += 1
@@ -491,10 +581,14 @@ function applyOne(w: Work, se: SessionEvent): void {
         w.usage.cacheReadTokens += ev.usage.cache_read_tokens ?? 0
         w.usage.cacheWriteTokens += ev.usage.cache_write_tokens ?? 0
         if (ev.usage.cost_usd != null) w.usage.costUsd = (w.usage.costUsd ?? 0) + ev.usage.cost_usd
+        // 被取消 / 出错的 turn 常常没有这两个数：不覆盖上一次的
+        if (ev.usage.context_window != null && ev.usage.context_tokens != null) w.context = { window: ev.usage.context_window, tokens: ev.usage.context_tokens }
       }
       return
     }
     case 'status': {
+      // 没有 turn 在进行了：重试 / 压缩的临时状态不会再有下文
+      if (ev.state !== 'running' && ev.state !== 'starting' && ev.state !== 'waiting_permission') w.activity = null
       w.status = ev.state
       w.queuedMessages = ev.queued_messages ?? 0
       w.queuePosition = ev.position ?? null
@@ -530,7 +624,76 @@ function applyOne(w: Work, se: SessionEvent): void {
     }
     case 'error': {
       w.closeOpen()
+      w.activity = null
       w.push({ ...base, key: `err-${se.seq}`, type: 'error', code: ev.code, message: ev.message, recoverable: ev.recoverable })
+      return
+    }
+    case 'task': {
+      const task: TaskSnapshot = {
+        id: ev.id,
+        kind: ev.kind,
+        toolId: ev.tool_id ?? undefined,
+        title: ev.title,
+        status: ev.status,
+        usage: ev.usage ?? undefined,
+        lastTool: ev.last_tool ?? undefined,
+        summary: ev.summary || undefined,
+        phases: ev.phases ?? [],
+        agents: ev.agents ?? [],
+        seq: se.seq,
+        ts: se.ts_ms,
+      }
+      // 同一个 id 的后一条整条取代前一条，留在第一次出现的位置
+      const at = w.taskIndex[ev.id]
+      const placed = at === undefined ? undefined : w.blocks[at]
+      if (at !== undefined && placed?.type === 'task') {
+        w.blocks[at] = { ...placed, task }
+        return
+      }
+      if (at !== undefined && placed?.type === 'tool') {
+        w.blocks[at] = { ...placed, tasks: (placed.tasks ?? []).map((t) => (t.id === ev.id ? task : t)) }
+        return
+      }
+      // 第一次见到：启动它的工具块已加载就挂上去（不新增一行），否则单独成块
+      const toolAt = ev.tool_id ? w.toolIndex[ev.tool_id] : undefined
+      const tool = toolAt === undefined ? undefined : w.blocks[toolAt]
+      if (toolAt !== undefined && tool?.type === 'tool') {
+        w.blocks[toolAt] = { ...tool, tasks: [...(tool.tasks ?? []), task] }
+        w.taskIndex[ev.id] = toolAt
+        return
+      }
+      w.closeOpen()
+      w.taskIndex[ev.id] = w.push({ ...base, key: `task-${ev.id}`, type: 'task', task })
+      return
+    }
+    case 'notice': {
+      w.closeOpen()
+      w.push({
+        ...base,
+        key: `notice-${se.seq}`,
+        type: 'notice',
+        code: ev.code,
+        level: ev.level,
+        message: ev.message,
+        modelFrom: ev.model_from ?? undefined,
+        modelTo: ev.model_to ?? undefined,
+        resetsAtMs: ev.resets_at_ms ?? undefined,
+      })
+      return
+    }
+    case 'activity': {
+      w.activity =
+        ev.state === 'none'
+          ? null
+          : {
+              state: ev.state,
+              attempt: ev.attempt ?? undefined,
+              maxAttempts: ev.max_attempts ?? undefined,
+              delayMs: ev.delay_ms ?? undefined,
+              reason: ev.reason ?? undefined,
+              seq: se.seq,
+              ts: se.ts_ms,
+            }
       return
     }
   }

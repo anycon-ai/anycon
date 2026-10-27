@@ -407,7 +407,6 @@
     "loadOlder": "加载更早的消息",
     "newMessages": "新消息",
     "turnFinished": "agent 已回复完毕。",
-    "backgroundTasks_other": "后台还有 {{count}} 个任务在运行，结束后 agent 会继续处理",
     "goneTitle": "找不到这个会话",
     "goneBody": "它可能已被另一台设备删除。",
     "goneBack": "回到节点",
@@ -477,6 +476,54 @@
     "option": "{{id}} 已设为 {{value}}",
     "agentTurn": "后台任务结束，agent 继续处理"
   },
+  "task": {
+    "title": "后台任务",
+    "chip_other": "{{count}} 个后台任务在运行",
+    "listTitle": "后台任务",
+    "willContinue": "它们结束后 agent 会继续处理。",
+    "status": {
+      "running": "运行中",
+      "completed": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消",
+      "stopped": "已停止"
+    },
+    "agentState": {
+      "queued": "排队中",
+      "running": "运行中",
+      "done": "已完成",
+      "failed": "失败",
+      "skipped": "已跳过",
+      "stopped": "已停止"
+    },
+    "agentsDone": "{{done}}/{{total}} 个 agent 完成",
+    "phase": "阶段 {{n}}",
+    "attempt": "第 {{n}} 次尝试",
+    "cached": "缓存"
+  },
+  "notice": {
+    "modelFallback": "模型已从 {{from}} 换成 {{to}}",
+    "modelFallbackTo": "模型已换成 {{to}}",
+    "modelFallbackGeneric": "模型已被更换",
+    "contextCompacted": "上下文已压缩",
+    "rateLimit": "已达用量上限，{{time}} 恢复",
+    "rateLimitNoTime": "已达用量上限",
+    "commandOutput": "命令输出",
+    "configWarning": "配置警告",
+    "deprecation": "弃用提示",
+    "mcpServerFailed": "有 MCP server 启动失败",
+    "permissionDenied": "有工具调用被权限规则拒绝",
+    "autoReview": "自动审批被拒绝",
+    "hookFailed": "有 hook 失败或拦下了操作",
+    "unknown": "agent 的提示"
+  },
+  "activity": {
+    "retrying": "正在重试…",
+    "retryingIn": "{{seconds}} 秒后重试…",
+    "retryingAttempt": "正在重试（{{attempt}}/{{max}}）…",
+    "retryingAttemptIn": "正在重试（{{attempt}}/{{max}}），{{seconds}} 秒后…",
+    "compacting": "正在压缩上下文…"
+  },
   "code": {
     "text": "文本"
   },
@@ -487,6 +534,8 @@
     "note": "给 agent 的附言",
     "notePlaceholder": "可选：给 agent 的一句话（用于允许附言的选项）",
     "freeText": "输入你的回答",
+    "optional": "可选",
+    "clearAnswer": "清除",
     "submitAnswers": "提交回答",
     "modeChange": "agent 请求切换到模式「{{mode}}」。",
     "allowedBy": "已由 {{device}} 允许",
@@ -507,7 +556,10 @@
     "deniedAuto": "已被 anycon 自动拒绝",
     "resolvedAuto": "已被 anycon 自动处理",
     "deniedFolderChanged": "这个请求已被拒绝：项目目录变了，本轮已中止。",
-    "requestGone": "这个请求已经不存在，无法再答复。"
+    "requestGone": "这个请求已经不存在，无法再答复。",
+    "openLink": "打开",
+    "openLinkLabel": "在新标签页中打开链接",
+    "linkNotOpenable": "这里只能打开 http 和 https 链接。如果你信任这个地址，请复制后自行处理。"
   },
   "composer": {
     "label": "消息",
@@ -623,7 +675,9 @@
     "deleteTitle": "删除这个会话？",
     "deleteBody": "这会从节点上删除它的历史记录。agent 自己的会话文件不会动。",
     "deleteConfirm": "删除会话",
-    "branch": "分支"
+    "branch": "分支",
+    "context": "上下文",
+    "contextValue": "{{percent}}% · {{used}} / {{window}}"
   },
   "agent": {
     "noneReady": "这个节点上没有就绪的 agent。",

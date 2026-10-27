@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""A minimal stdio MCP server (Python standard library only) whose tools ask the client for input via `elicitation/create`.
+
+Used to record `tests/fixtures/claude/real_elicitation_*.jsonl` and by the ignored real-CLI test (`tests/real_claude.rs`).
+Register it in a project's `.mcp.json`:
+  {"mcpServers": {"example-elicit": {"command": "python3", "args": ["<path to this file>"]}}}
+
+Tools (each returns the elicitation response, `{"action": …, "content": …}`, as its text so the agent can report what it got):
+  ask_details   form mode: name (string, required), age (integer 0-150), subscribe (boolean), color (enum red/green/blue)
+  ask_signin    URL mode: asks the user to open https://example.com/signin?state=abc123
+"""
+import json
+import sys
+
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+pending = {}
+next_id = 1000
+
+TOOLS = [
+    {
+        "name": "ask_details",
+        "description": "Ask the user for their details with a form. Call it when the user asks to collect details.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "ask_signin",
+        "description": "Ask the user to sign in on a web page. Call it when the user asks to sign in.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+]
+
+FORM = {
+    "message": "Please enter your details",
+    "requestedSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "title": "Name", "description": "Your first name"},
+            "age": {"type": "integer", "title": "Age", "minimum": 0, "maximum": 150},
+            "subscribe": {"type": "boolean", "title": "Subscribe to updates", "default": False},
+            "color": {"type": "string", "title": "Favorite color", "enum": ["red", "green", "blue"]},
+        },
+        "required": ["name"],
+    },
+}
+
+URL = {
+    "mode": "url",
+    "message": "Sign in to Example to continue",
+    "url": "https://example.com/signin?state=abc123",
+    "elicitationId": "elic-1",
+}
+
+
+def elicit(params, call_id):
+    """Send a server -> client `elicitation/create` request; the tool result is the client's answer."""
+    global next_id
+    next_id += 1
+    pending[next_id] = call_id
+    send({"jsonrpc": "2.0", "id": next_id, "method": "elicitation/create", "params": params})
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        m = json.loads(line)
+    except ValueError:
+        continue
+    if "method" in m:
+        method = m["method"]
+        if method == "initialize":
+            send({
+                "jsonrpc": "2.0",
+                "id": m["id"],
+                "result": {
+                    "protocolVersion": m["params"].get("protocolVersion", "2025-06-18"),
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "example-elicit", "version": "0.0.1"},
+                },
+            })
+        elif method == "tools/list":
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {"tools": TOOLS}})
+        elif method == "tools/call":
+            name = m["params"]["name"]
+            if name == "ask_details":
+                elicit(FORM, m["id"])
+            elif name == "ask_signin":
+                elicit(URL, m["id"])
+            else:
+                send({"jsonrpc": "2.0", "id": m["id"],
+                      "result": {"content": [{"type": "text", "text": "unknown tool"}], "isError": True}})
+        elif method == "ping":
+            send({"jsonrpc": "2.0", "id": m["id"], "result": {}})
+        # notifications (initialized, cancelled, …) need no answer
+    elif "id" in m and m["id"] in pending:
+        call_id = pending.pop(m["id"])
+        outcome = m.get("result", m.get("error"))
+        send({"jsonrpc": "2.0", "id": call_id,
+              "result": {"content": [{"type": "text", "text": "elicitation result: " + json.dumps(outcome)}], "isError": False}})

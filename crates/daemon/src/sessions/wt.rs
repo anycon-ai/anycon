@@ -438,7 +438,7 @@ impl Sessions {
                 if let Some(e) = self.check_worktree(st).await {
                     if st.turn.is_some() {
                         self.fail_turn_with(st, &stable_code_str(&e), e.message.clone(), true).await;
-                    } else if let Some(d) = self.detach(st) {
+                    } else if let Some(d) = self.detach_driver(st).await {
                         // 没有 turn、进程还活着：收掉，会话保持原状态，下一次 send 时按 missing 处理
                         tracing::warn!(session = %st.row.id, "the worktree directory changed under an idle agent process; closing it");
                         self.retire(st, d);
@@ -1060,7 +1060,7 @@ impl Sessions {
             st.wt_busy = Some(WtBusy::Archiving);
             // 先收进程：等审批的 turn 一并收尾（进程没了，请求不可能再被答复）
             self.deny_all(&mut st, "session archived").await;
-            let old = self.detach(&mut st);
+            let old = self.detach_driver(&mut st).await;
             if st.turn.is_some() {
                 st.backlog.clear();
                 self.end_turn(&mut st, anycon_protocol::TurnDoneReason::Cancelled, None, None).await;

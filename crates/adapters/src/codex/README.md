@@ -5,7 +5,8 @@
 子进程、进程里一个 thread**（ADR-26 修订）：env 按会话生效、一个会话卡死不连累别的、和 `AgentHandle` 一一对应；空闲回收与
 Claude Code 相同（`sessions.idle_timeout` 后进程退出，下次 `send` 用 `thread/resume`）。规格见 `docs/spec/daemon.md` § 5–9。
 
-下面的「实测」都来自本机的 `codex-cli 0.157.1`（2026-10-12）。app-server 官方标注 experimental，字段会变，所以：
+下面的「实测」除特别注明外都来自本机的 `codex-cli 0.157.1`（2026-10-12）；子 agent、MCP elicitation、上下文压缩、用量口径那一节
+（「子 agent、MCP elicitation、压缩上下文」）是 `codex-cli 0.164.0`（2026-10-26）的实测。app-server 官方标注 experimental，字段会变，所以：
 线上格式只手写用到的子集（`wire.rs`，未知字段忽略、未知通知 / item 类型丢弃并 `debug!`）；CI 用
 `codex app-server generate-json-schema` 生成的 schema 校验全部 fixture 和 adapter 实际发出的每一条消息（见「测试」）。
 
@@ -16,8 +17,8 @@ Claude Code 相同（`sessions.idle_timeout` 后进程退出，下次 `send` 用
 | `process.rs` | 会话设置 → `thread/start` / `thread/resume` / `turn/start` 的参数；模式映射；值校验 |
 | `rpc.rs` | 行分类（响应 / 服务端请求 / 通知）、请求 / 响应对应（`RpcClient`，探测与会话共用）、超长行的「预览」分类（`classify_oversize`） |
 | `wire.rs` | 线上格式的 serde 子集 |
-| `translate.rs` | 通知 / 服务端请求 → `AgentEvent`（纯同步状态机，直接回放 JSONL 测试） |
-| `permissions.rs` | 审批 / 提问 ↔ `PendingPermission` / `PermissionDecision`；不支持的服务端请求怎么答 |
+| `translate.rs` | 通知 / 服务端请求 → `AgentEvent`（纯同步状态机，直接回放 JSONL 测试）；按 `threadId` 把子 agent 的通知和主 turn 隔开 |
+| `permissions.rs` | 审批 / 提问 / MCP elicitation ↔ `PendingPermission` / `PermissionDecision`（含表单答案的类型转换）；不支持的服务端请求怎么答 |
 | `tools.rs` | thread item → category / 标题 / `ToolCallDetail`；补丁的 unified diff |
 | `handle.rs` | `AgentHandle`：进程 + 读 stdout 的任务 + 事件转发任务；握手、send / steer / respond / cancel / set_settings / shutdown |
 
@@ -211,16 +212,26 @@ stdout 单行上限 8 MiB。真实 codex 0.157.1 上实测（本地假模型服�
 |---|---|
 | `item/agentMessage/delta` / `item/completed agentMessage` | `text_delta` / `text_done`（没收到过 delta 的整段补发） |
 | `item/reasoning/summaryTextDelta`、`textDelta` | `thinking_delta`（摘要第 2 段起前面补空行）；`item/completed reasoning` → `thinking_done`；没有文本的思考块发一条空 `thinking_delta` |
-| `item/started` commandExecution / fileChange / mcpToolCall / webSearch / collabAgentToolCall / imageView / dynamicToolCall / imageGeneration | `tool_call`（category：shell / file_edit / mcp / search / subagent / file_read / other；命令的 `/bin/zsh -lc '…'` 壳拆掉再显示，`input` 原样） |
+| `item/started` commandExecution / fileChange / mcpToolCall / webSearch / collabAgentToolCall / subAgentActivity（`kind = started`）/ imageView / dynamicToolCall / imageGeneration | `tool_call`（category：shell / file_edit / mcp / search / subagent / file_read / other；命令的 `/bin/zsh -lc '…'` 壳拆掉再显示，`input` 原样）。`subagent` 只有启动子 agent 的那次调用（`spawnAgent` / `subAgentActivity`），`wait` 等其它 collab 调用是 `other` |
 | `item/commandExecution/outputDelta`、`item/fileChange/outputDelta` | `tool_output_delta` |
 | `item/completed` | `tool_result`（`declined` / `failed` / 退出码非 0 → `is_error`；命令带 `exit_code`；补丁带 `unified_diff`，并为每个 change 发 `file_changed`：add → created、update → modified、delete → deleted、带 `move_path` 的 update → deleted + created） |
 | `turn/plan/updated` | `plan`（`pending` / `inProgress` / `completed`） |
-| `thread/tokenUsage/updated` | 累积进 `turn_done.usage`：一个 turn 里每次更新的 `last` 之和（`total` 是整个线程的累计；resume 时 app-server 会重放上一个 turn 的用量，只认当前 turn 的）。`input_tokens` **不含**缓存命中（OpenAI 的 `inputTokens` 包含 `cachedInputTokens`，这里减掉，口径与 Claude Code 一致，`input + cache_read` 不重复计数），没有费用 |
+| `thread/tokenUsage/updated` | 累积进 `turn_done.usage`：一个 turn 里每次更新的 `last` 之和（`total` 是整个线程的累计；resume 时 app-server 会重放上一个 turn 的用量，只认当前 turn 的）。`input_tokens` **不含**缓存命中（OpenAI 的 `inputTokens` 包含 `cachedInputTokens`，这里减掉，口径与 Claude Code 一致，`input + cache_read` 不重复计数），没有费用。`context_window` = `modelContextWindow`；`context_tokens` = 最近一次 `last` 的 `inputTokens`（已含缓存命中，不再加 `cachedInputTokens`；压缩后那条更新里 `inputTokens` 是 0，取 `totalTokens`）。只认主 thread 的更新；子 agent 的 `total.totalTokens` 进它的 `task.usage.total_tokens` |
 | `turn/completed` | `turn_done`：`completed` → completed，`interrupted` → cancelled，`failed` → error（先发一条 `error` 事件，除非 `error` 通知已经发过）；`usage.duration_ms` 用 `turn.durationMs` |
 | `error { willRetry: false }` | `error`（`unauthorized` / 401 → `auth_failed`，用量 / 限流 / 过载 / 429 → `rate_limited`，上下文超限 → `context_window_exceeded`，沙箱错误 → `sandbox_error`，其余 `agent_error`） |
 | `error { willRetry: true }`（重连中） | 可恢复的 `error`（`agent_reconnecting`），不收尾 |
 | `serverRequest/resolved` | 丢掉对应的未决审批（比如 turn 被打断时 Codex 自己了结的） |
-| 其余（`warning` / `configWarning` / `guardianWarning` / `item/autoApprovalReview/*` / `thread/status/changed` / `account/*` / …） | 只进日志 |
+| `subAgentActivity` / `collabAgentToolCall` / 子 thread 的通知 | `task`（`kind = subagent`），子 agent 里的调用带 `parent_id`；子 agent 的文本 / 思考 / 计划 / 错误 / `turn/*` 不碰主 turn。见「子 agent」 |
+| `warning`、`guardianWarning` | `notice { agent_notice }`（warning） |
+| `configWarning`、`deprecationNotice` | `notice { config_warning }`、`notice { deprecation }`（warning；`summary` 加 `details`） |
+| `mcpServer/startupStatus/updated`（`failed`） | `notice { mcp_server_failed }`（warning；`error` 原文，需要重新授权的加一句），每个 server 每个进程一次 |
+| `model/rerouted` | `notice { model_fallback, model_from, model_to }`（warning），之后 `usage.model` 是新模型（子 agent 的改道只提示不改） |
+| `item/autoApprovalReview/completed`（`denied` / `timedOut`） | `notice { auto_review }`（warning；被拒绝的动作 + `review.rationale`） |
+| `hook/completed`（`failed` / `blocked`） | `notice { hook_failed }`（warning；`statusMessage` 或 hook 的输出） |
+| `item/started` / `item/completed` contextCompaction | `activity { compacting }` / `activity { none }` + `notice { context_compacted }`（info，`message` 为空）；`activity` 只在主 turn 进行中发 |
+| 其余（`thread/status/changed` / `account/*` / `thread/compacted`（已废弃，被 `contextCompaction` item 取代）/ `item/autoApprovalReview/started` / …） | 只进日志 |
+
+**提示（`notice`）同样的文字每个进程只发一次**：`configWarning` 和 `warning` 是同一段话的两条通知，每个子 agent 的 thread 启动时又把 `warning` 发一遍（实测）。
 
 **被打断 / 失败的 turn 不会为进行中的 item 发 `item/completed`**（实测）：`turn/completed` 时 translator 补上 `text_done` / `thinking_done` 和带 `is_error` 的 `tool_result`，客户端的转圈才停得下来。
 `userMessage` item 不翻译（用户消息由 daemon 生成）。`plan` item（plan 模式的计划全文）和 `thread/name/updated` 不翻译（标题归 daemon，§ 7.7）。
@@ -233,6 +244,9 @@ stdout 单行上限 8 MiB。真实 codex 0.157.1 上实测（本地假模型服�
 | `item/fileChange/requestApproval` | `kind = tool`（file_edit）；补丁内容在同一个 item 的 `item/started.changes` 里（请求本身只有 `itemId`、`reason`、`grantRoot`），标题 / 路径 / diff 从那里补；答复同上。显示规则见下 |
 | `item/permissions/requestApproval` | `kind = tool`（other，tool = `requestPermissions`）；allow → `{permissions: <请求原样>, scope: "turn"}`，allow_session → `scope: "session"`，deny → `{permissions: {}}` |
 | `item/tool/requestUserInput` | `kind = question`；选项 id = label（答复里要回 label），`isOther` / 没有选项 → `free_text`；答 `{answers: {<题 id>: {answers: [...]}}}`；跳过 → `{answers: {}}` |
+| `mcpServer/elicitation/request`，`_meta.codex_approval_kind = "mcp_tool_call"` | MCP 工具调用的审批：`kind = tool`（mcp），标题 `Run MCP tool <server>/<tool>`，`input` = `_meta.tool_params`，`detail.description` = `_meta.tool_description`。options：`allow` → `{action: accept}`；`_meta.persist` 含 `session` 才有 `allow_session` → `{action: accept, _meta: {persist: "session"}}`；含 `always` 才有 `allow_always` → `… persist: "always"`；`deny` / 超时 / 取消 → `{action: decline}` |
+| `mcpServer/elicitation/request`，`mode = form` | `kind = question`，schema 的每个属性一题（顺序是 app-server 给的字母序）：enum / `oneOf` / `anyOf` → choices（`enumNames` / `title` 做标签），数组 → 多选，boolean → choices `true` / `false`（Yes / No），string / number / integer → `free_text`（数值题的文字里写范围）；`required` 里没有的属性 `Question.optional = true`（必答是默认，题干里不另外标）；说明（`message`）进标题（多行 / 太长的并进第一题）。options `accept`（Submit）/ `decline`。答 `accept` + `answers` → `{action: accept, content: {…}}`，按 schema 类型转换（整数 / 小数 / 布尔 / 数组），没答的非必填项省略；必填缺失、类型不对、不在候选里、超出 `minimum` / `maximum` → 按 `decline` 答复，并发一条可恢复的 `error { elicitation_invalid_answer }` 说明哪一项；`decline`、超时、会话取消 → `{action: decline}`。没有属性的表单（别的确认）→ `kind = other`，只有接受 / 拒绝 |
+| `mcpServer/elicitation/request`，`mode = url` | `kind = other`，`detail.text` = `message`，`detail.url` = `url`（只接受 `http` / `https` 且不含空白 / 控制字符，否则按 `decline` 答复并发 `error { elicitation_rejected }`）。options `accept`（I've completed it）→ `{action: accept}`、`decline` |
 
 - 审批请求带的 **`reason` 放在 `detail.tool.detail.description` 的最前面**（web 的审批卡片在命令下面显示这一段），同时保留在 `detail.tool.input.reason`。
 - **补丁审批的显示规则**（现在需要审批的往往恰好是写项目外的补丁，显示不能误导）：
@@ -243,10 +257,68 @@ stdout 单行上限 8 MiB。真实 codex 0.157.1 上实测（本地假模型服�
   - 拿不到 `item/started`（先到的是请求）：标题 `Edit files (patch contents unknown)`，说明以 `The patch contents are unknown: …` 开头，`input.contentUnknown = true`；请求里有的（`reason`、`grantRoot`）照常显示。
 - **会话取消时**未答复的审批回 **`cancel`**（`decline` 会让 agent 接着干，`cancel` 同时中断 turn）。实测 `acceptForSession` 即使不在请求的 `availableDecisions` 里也被接受；
   `decline` 之后 agent 继续同一个 turn。
+- 子 agent 里的请求（`threadId` 不是主 thread）和主 agent 的走同一条路，标题后加 `(sub-agent <名字>)`，让用户看得出是谁在问。
+- 不能交给用户的 elicitation（`openai/form`、`openaiForm` 模式——`requestedSchema` 不限形状，我们不知道它的语义；读不懂的 schema；超过 50 个属性；URL 不是 http(s)）按 `{action: decline}` 答复，并发一条可见的可恢复 `error { code: elicitation_rejected }`（和 Claude Code adapter 同一个 code）。
+  MCP server 给的文字 / 候选有长度上限（单段 2000 字节、单个枚举 100 项），免得它撑爆请求。
 - **v0.1 不支持的服务端请求按 schema 回拒绝，并发一条可见的 `error { code: unsupported_request }`**（不能挂着不回，否则 turn 卡死）：
-  `mcpServer/elicitation/request` → `{action: "decline"}`；`item/tool/call`（动态工具，我们不注册）→ `{success: false, contentItems: [...]}`；
+  `item/tool/call`（动态工具，我们不注册）→ `{success: false, contentItems: [...]}`；
   旧版 `applyPatchApproval` / `execCommandApproval` → `{decision: "abort"}`；`account/chatgptAuthTokens/refresh`（我们不管 token）和 `attestation/generate` → JSON-RPC 错误 `-32603`；
   任何不认识的方法 → `-32601`。参数形状不对的审批请求 → `-32602`。
+
+## 子 agent、MCP elicitation、压缩上下文（`codex-cli 0.164.0` 实测，2026-10-26）
+
+办法：用和 adapter 一样的 `initialize` 参数（`experimentalApi: false`、同一份 `optOutNotificationMethods`）驱动真 `codex app-server`，逐行记下两个方向的全部消息；
+临时 `CODEX_HOME`（`config.toml` 的副本，不碰 `~/.codex`），reasoning effort 调到 low，一共 9 次很短的真实模型调用（子 agent 3 次、MCP 4 次、压缩 1 次、再加一次经过 adapter 的端到端）。
+MCP 用一个只靠标准库的 stdio MCP server（一个工具在 `tools/call` 里回头发 `elicitation/create` 的表单 / URL 模式，一个 `readOnlyHint: false` 的工具）。
+入库的 fixture 清洗过（`real_subagent_*`、`real_mcp_*`、`real_context_compaction`、`real_startup_notices`）。
+
+**子 agent**
+
+- 启用：`features.multi_agent` 在 0.164.0 是 stable 且默认开（`codex features list`），不用配置；`multi_agent_v2`（stable、默认关）打开后事件形状一样。
+- **子 agent 的通知走同一条连接**，各带自己的 `threadId`：`thread/status/changed`、`turn/started`、`item/*`（含 `agentMessage`、`reasoning`、`commandExecution`）、`item/*/delta`、
+  `thread/tokenUsage/updated`、`warning`、`turn/completed`。子 thread 的 `turn/started` / `turn/completed` 里 `turn.rootTurnId` 是**主 turn** 的 id（主 turn 的是它自己）。没有子 thread 的 `thread/started`。
+  子 agent 的审批请求（`item/commandExecution/requestApproval` 等）也走这条连接，`threadId` 是子 thread、`itemId` 是子 thread 里的 item（item id 全局唯一，所以主 thread 的 `tools` 表照样查得到）。
+- **启动子 agent 不是 `collabAgentToolCall`**，而是主 thread 里的 `subAgentActivity { kind: "started", id: <模型那次调用的 id>, agentThreadId, agentPath: "/root/<名字>", model, reasoningEffort }`
+  （`item/started` 和 `item/completed` 同一毫秒，在子 thread 的 `turn/started` 之前）。结束时又一个 `subAgentActivity { kind: "completed", id: "subagent-completed-<子 turn id>" }`，紧挨着子 thread 的 `turn/completed`
+  （schema 里 `kind` 还有 `interacted`、`interrupted`，没有触发）。主 agent 等子 agent 用 `collabAgentToolCall { tool: "wait", receiverThreadIds: [], agentsStates: {} }`——
+  **完成时 `receiverThreadIds` 和 `agentsStates` 也是空的**，子 agent 的结果不在这里。`spawnAgent` 带 `receiverThreadIds` / `agentsStates` 的形状（其它版本 / 工具）只按 schema 手写进 `subagent_collab.jsonl`。
+- 旧代码的后果：子 agent 的 `turn/completed` 之所以没结束主 turn，只是因为 turn id 对不上；它的文本、思考、计划会混进主流，工具调用没有 `parent_id`，`subAgentActivity` 被丢弃。
+- **现在的处理**（`translate.rs`）：
+  - 主 thread 的 id 由 `handle` 在握手后告诉翻译器（回放时从第一个我们自己的 turn 的 `turn/started` 学）。其它 thread 的通知**绝不**碰主 turn：不结束它、不进它的用量 / 计划 / 错误、文本和思考不进主流（和 Claude Code 一致：子 agent 的文本不进主流）。
+  - **只有被明确宣布为子 agent 的 thread 才会露面**：`subAgentActivity`、`collabAgentToolCall` 的 `receiverThreadIds`（`spawnAgent`）和 `agentsStates` 的键。别的 thread（比如自动审批的审查 thread，它有自己的 `item/autoApprovalReview/*`）发来的通知一律忽略。
+  - `subAgentActivity(started)` → `tool_call`（`spawnAgent`，category `subagent`，`parent_id` 为空；嵌套时指向上一层）+ `task`（`id` = 子 thread id，`tool_id` = 这次调用的 id，`title` = `agentPath` 去掉 `/root/`）；`item/completed` → `tool_result`（`Started sub-agent <名字> (<模型>)`）。
+    `collabAgentToolCall(spawnAgent)` 的接收方登记为子 agent，`tool_id` 是这次调用，名字取 prompt 的第一行；`tool_result` 的 `output` 是每个子 agent 一段「名字: 状态」加它的消息，不再是 `agentsStates` 的原始 JSON。
+  - 子 agent 里的工具调用 → `tool_call` / `tool_result`，`parent_id` = 启动它的那次调用。**只在主 turn 进行中展示**（turn 之外发出去的 `tool_call` 没有地方收尾）；子 agent 的 turn 结束时它没完成的调用补一条出错的 `tool_result`。
+  - `task` 快照（整条取代前一条，没变不重发）：`status` 由 `subAgentActivity` 的 `started` / `interacted`（running）、`completed`、`interrupted`（cancelled）、子 thread 的 `turn/started` / `turn/completed`（`completed` / `interrupted` / `failed`）、
+    `agentsStates` 的状态（`pendingInit` / `running` → running，`completed`，`errored` → failed，`interrupted` / `shutdown` / `notFound` → cancelled）和 `thread/closed` 决定；`usage` = 子 thread 累计的 `totalTokens`、工具调用数、最近一个 turn 的耗时；
+    `last_tool` = 最近一次调用的名字；`summary` = 它最近一条完整的回复（失败时是错误信息），最多 4 KiB。一个已经 completed 的子 agent 收到 `interacted` 或开始新 turn 会重新变成 running（task 是对子 agent 当前状态的快照，不是一次性的）。
+  - 子 agent 在主 turn 结束之后还在跑（后台）：`task` 照常更新，进程退出时 daemon 把没收尾的补成 cancelled。**`AgentEvent::Background { tasks }` = 还在跑（`task` 快照是 `running`）的子 agent 数**，每次通知处理完对一次数、变化就发（含降到 0）：不发的话 daemon 会在 `idle_timeout` 到期时回收进程，把还在干活的子 agent 一起杀掉（回收的条件见 `docs/spec/daemon.md § 7.3`）。降回 0 靠：子 thread 的 `turn/completed`（任何状态）、`subAgentActivity` 的 `completed` / `interrupted`、`agentsStates` 里的终态、`thread/closed`；另外用户取消主 turn（`turn/completed { interrupted }`）时，还在跑的子 agent 一并标成 cancelled（实录里没有观察到「主 turn 被打断时子 agent 一定会收到收尾通知」——`subagent_collab` 里被打断的子 agent 有，是按 schema 手写的——所以不依赖它；子 agent 其实还在跑的话，它之后自己的通知会把状态改回来）。主 turn 失败 / 正常结束时不动子 agent。Codex 的父 agent 不会被子 agent 的完成唤醒，所以不会有 `TurnStarted`；daemon 靠 `turn_finished` 的兜底补发通知。
+
+**MCP elicitation 和 MCP 工具审批**
+
+- **MCP 工具调用的审批走 `mcpServer/elicitation/request`，不是 `item/tool/requestUserInput`**。`readOnlyHint: true` 的工具不问，`readOnlyHint: false` 的在 `on-request` 下问（没标 `readOnlyHint` 的没有实测）。请求：
+  `{ threadId, turnId, serverName, mode: "form", message: "Allow the demo MCP server to run tool \"wipe_cache\"?", requestedSchema: {type: "object", properties: {}},
+  _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_description, tool_params: {…}, tool_params_display: [{name, value, display_name}] } }`。
+  请求里**没有 item id 也没有工具名**（工具名在 `message` 里）；adapter 先找参数一致的、正在进行的 `mcpToolCall` 取工具名，找不到再从 `message` 里的 `tool "…"` 取。
+  答复 `{action: "accept"}` 放行；`{action: "accept", _meta: {persist: "session"}}` 放行并且**同一个 turn 里第二次调用不再问**（实测）；`persist: "always"` 是「以后都允许」，没有实测；
+  `{action: "decline"}` → 该调用 `failed`，`error.message = "user rejected MCP tool call"`；`{action: "cancel"}` → `"user cancelled MCP tool call"`；两种之后 agent 都照常继续同一个 turn。
+  adapter 取消时也回 `decline`（随后还有 `turn/interrupt`）。
+- **MCP server 自己的 elicitation**：Codex 作为 MCP 客户端在 `initialize` 里声明 `capabilities.elicitation: { form: {}, url: {} }`。server 发 `elicitation/create` 时，app-server 转成同名的 `mcpServer/elicitation/request`：
+  `mode: "form"`（`message` + `requestedSchema`，`_meta` 为 null；**属性顺序是字母序**，app-server 不保留 server 给的顺序）或 `mode: "url"`（`message`、`url`、`elicitationId`）。
+  答复 `{action: "accept", content: {…}}`（表单）/ `{action: "accept"}`（URL）原样转给 server（server 收到的 `content` 就是我们发的；URL 模式 server 收到 `content: {}`）。schema 里还有 `openai/form`、`openaiForm` 两种 `mode`，没见到。
+- 每个请求紧跟一条 `serverRequest/resolved`；请求发出时对应的 `mcpToolCall` item 已经 `inProgress`，答复后才完成。
+
+**压缩上下文**
+
+- `thread/compact/start { threadId }`（响应 `{}`）会开一个**自己的 turn**：`turn/started` → `item/started { type: "contextCompaction", id }` → 几条 `thread/tokenUsage/updated` → `item/completed { contextCompaction }` → `turn/completed`
+  （turn 里没有别的 item）。自动压缩发生在我们自己的 turn 里时，同样的两个 item 出现在那个 turn 中间，翻译成 `activity { compacting }` → `activity { none }` + `notice { context_compacted }`。
+  已废弃的 `thread/compacted` 通知在这次实测里没有出现。
+- 用量口径：`last.totalTokens = inputTokens + outputTokens`，`inputTokens` **已含** `cachedInputTokens`（18150 输入里 3712 缓存命中）。压缩后的那条更新是 `last = { totalTokens: 5985, inputTokens: 0, … }`——
+  压缩后的上下文估计只在 `totalTokens` 里，所以 `context_tokens` 取 `inputTokens`，为 0 时取 `totalTokens`。压缩 turn 开头还重复了一次上一个 turn 的 `last`（只在用户触发的压缩里见到，会多算进那个 turn 的累计；自动压缩没有实测）。
+- `modelContextWindow` 随每条 `thread/tokenUsage/updated` 给出（实测 258400）。
+
+**启动时的提示**：`configWarning`（没有 `threadId`）在 `initialize` 之后马上到，`warning` 把同一段话在 `thread/start` 之后再发一遍（带 `threadId`），每个子 agent 的 thread 又各发一遍；
+`mcpServer/startupStatus/updated` 按 server 报 `starting` → `ready` / `failed`（`error` 是原因，如 `MCP client for \`broken\` failed to start: MCP startup failed: No such file or directory (os error 2)`），同一个 server 的失败只提示一次，子 agent 的 thread 要是再报一遍也不重复。
 
 ## 和 Claude Code adapter 的行为差异
 
@@ -270,7 +342,10 @@ stdout 单行上限 8 MiB。真实 codex 0.157.1 上实测（本地假模型服�
   （`wire_api = "responses"`、`base_url = http://127.0.0.1:<port>/v1`），再起一个本地小服务（现在是 `tests/bin/fake-responses`）按 Responses API 的 SSE 格式回放脚本；
   所以协议层（通知顺序、审批请求的形状、`turn/completed` 的各种状态、`serverRequest/resolved`）是真的。录制入库前清洗：路径 → `/work/proj`、`/home/user/.codex`，
   thread / turn id → `FIXTURE_THREAD` / `FIXTURE_TURN`，去掉主机名 / 安装 id（`recordings_carry_no_local_environment` 兜底）。
-  其余（`tools_and_plan`、`command_failed`、`reconnecting`、`unsupported_requests`、`long_text`、`two_turns`、`account_read_chatgpt`）按 schema 手写，`unknown_things` 故意带着不认识的东西。
+  `real_subagent_spawn`、`real_subagent_command`、`real_mcp_elicitation`、`real_mcp_tool_declined`、`real_context_compaction`、`real_startup_notices` 是 **`codex-cli 0.164.0` 的真实录制**
+  （这几个的模型输出也是真模型的一次很短的调用，不是脚本；模型名 → `fixture-model*`，子 thread / turn → `FIXTURE_CHILD` / `FIXTURE_CHILD_TURN`，item id → `call_1` / `exec_1` / `msg_1`…）。
+  其余（`tools_and_plan`、`command_failed`、`reconnecting`、`unsupported_requests`、`long_text`、`two_turns`、`account_read_chatgpt`、`subagent_collab`（`collabAgentToolCall` 的 `spawnAgent` / `wait`、被打断的子 agent）、
+  `notices`（每种提示各一条，含重复的）、`mcp_elicitation_forms`（各种类型的表单、非法 URL、`openai/form`、只有 `session` 持久化的审批、空表单））按 schema 手写，`unknown_things` 故意带着不认识的东西。
 - `tests/real_codex.rs`（`#[ignore]` + `ANYCON_REAL_AGENT_TESTS=1`）：
   - `real_schema_validates_every_fixture` / `real_schema_validates_what_the_adapter_sends`：用本机 `codex app-server generate-json-schema`（稳定版，**不入库**）校验全部 fixture
     （服务端通知 / 请求、各种响应，含 `account/read`）以及 adapter 对着假 app-server 实际发出的每一条请求、通知和对服务端请求的答复；后者覆盖四档权限模式，包括 `auto_review`
@@ -291,10 +366,13 @@ ANYCON_REAL_AGENT_TESTS=1 cargo test -p anycon-adapters --test real_codex -- --i
 
 ## 已知限制
 
-- `plan_mode` 没有（experimental，见上）。`auto_review` 模式下 Codex 的审查决定（`item/autoApprovalReview/*`、`guardianWarning`）不单独展示，只体现在命令的结果里。
+- `plan_mode` 没有（experimental，见上）。`auto_review` 模式下 Codex 的审查：被拒绝 / 超时的是 `notice { auto_review }`，放行的不单独展示（`item/autoApprovalReview/started` 只进日志）。
 - `thread/resume` 回退到新 thread 时，如果旧 rollout 其实被删了，上下文会丢（daemon 的事件历史还在）。
 - `system_prompt_append` 的后续改动是「追加一条新指令」，旧指令仍留在历史里。
-- 不支持 MCP elicitation、动态工具、ChatGPT token 刷新（都会被拒绝并提示）。
+- 不支持动态工具、ChatGPT token 刷新、`openai/form` 模式的 elicitation（都会被拒绝并提示）。
+- 超长（> 8 MiB）的通知不看 `threadId`：子 agent 的超长 `item/*` 会被当成主 thread 的补一个「内容没显示」的调用（前缀 4 KiB 里读不到 `threadId`）。
+- 子 agent 的 `subAgentActivity` / `collabAgentToolCall` 在子 thread 的第一条通知之后才到的话（`collabAgentToolCall(spawnAgent)` 完成时才带 `receiverThreadIds`），那之前的子 thread 通知被当成"没宣布的 thread"忽略。
+  实测 `subAgentActivity` 总在子 thread 的 `turn/started` 之前到，`collabAgentToolCall(spawnAgent)` 的时序没有实测。
 - 单个 app-server 进程服务多个会话（共用进程）留到确有需要时再做，那是 adapter 内部的事，不影响协议（ADR-26）。
 - **cacheWrite 口径待确认**：`thread/tokenUsage/updated` 里的 `cacheWriteInputTokens` 和 `inputTokens` 是什么关系还不知道。现在 `input_tokens = inputTokens - cachedInputTokens`，`cache_write_tokens = cacheWriteInputTokens`（大于 0 才给）；
   如果 `inputTokens` 本身就包含 cache write，那 `input_tokens` 里还含着 cache write，和 `cache_write_tokens` 重复计数。本机见到的所有真实输出里 `cacheWriteInputTokens` 都是 0，确认不了。

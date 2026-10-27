@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import type { DiffAgainst, DiffFile, PullRequestInfo, SessionSyncBaseResult, SessionWorktree } from '@/protocol'
 import { copyText } from '@/lib/clipboard'
 import { formatBytes } from '@/lib/format'
+import { safeHttpUrl } from '@/lib/url'
 import { useGitEntry } from '@/stores/git'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
@@ -271,15 +272,8 @@ function gitFetchErrorText(reason: string, code: string, t: TFunction): string {
 
 // ---- PR ----
 
-/** PR 的链接只在是 http(s) 时才渲染成链接（URL 来自 `gh` 的输出）。 */
-export function safeHttpUrl(url: string): string | null {
-  try {
-    const u = new URL(url)
-    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null
-  } catch {
-    return null
-  }
-}
+// PR 的链接只在是 http(s) 时才渲染成链接（URL 来自 `gh` 的输出）。
+export { safeHttpUrl }
 
 function PullRequestRow({ pr, prError, prChecked, loading }: { pr: PullRequestInfo | null; prError: string | null; prChecked: boolean; loading: boolean }) {
   const { t } = useTranslation()

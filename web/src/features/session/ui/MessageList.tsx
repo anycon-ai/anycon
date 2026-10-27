@@ -7,10 +7,12 @@ import type { PendingMessage } from '@/stores/drafts'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { errorSeverity } from '../errors'
-import { latestSyncBlock, type Block } from '../reducer'
+import { latestSyncBlock, type ActivityInfo, type Block } from '../reducer'
 import { toolTree } from '../subagents'
 import { AssistantMessage, ErrorView, PendingBubble, PlanCard, SystemLine, ThinkingView, ToolNode, TurnDivider, TurnUsage, UserBubble, type ConflictActions } from './Messages'
+import { ActivityLine, NoticeLine } from './Notices'
 import { PermissionCard, type SettledReason } from './PermissionCard'
+import { TaskLiveContext, TaskPanel } from './Tasks'
 
 /** 超过这个行数才启用虚拟化；更短的会话全部渲染（更稳，E2E 也更好查）。 */
 export const VIRTUALIZE_THRESHOLD = 80
@@ -37,6 +39,10 @@ export interface MessageListProps {
   /** 权限模式 id 是不是危险模式（mode_change 请求据此醒目警示）。 */
   isDangerousMode?: (id: string) => boolean
   onRetryTurn?: () => void
+  /** 消息流最底下的临时状态（重试 API、压缩上下文）。调用方只在会话还在跑时给。 */
+  activity?: ActivityInfo | null
+  /** 会话里的后台任务还可能有进展（主 agent 在跑，或 daemon 报还有后台任务）。不可能时，停在「运行中」的任务显示成「已停止」。默认 true。 */
+  tasksLive?: boolean
   /** 滚动到某个权限请求（信息面板里点「待审批」）。 */
   scrollToRequest?: string | null
   /**
@@ -97,6 +103,13 @@ function buildRows(p: MessageListProps): Row[] {
         if (tree.nested.has(b.key)) break
         rows.push({ key: b.key, node: <ToolNode block={b} tree={tree} />, line: true })
         break
+      case 'task':
+        rows.push({ key: b.key, node: <TaskPanel task={b.task} /> })
+        break
+      case 'notice':
+        // 命令输出是一个块，其余是一行灰字 / 黄字
+        rows.push({ key: b.key, node: <NoticeLine block={b} modelLabel={p.modelLabel} />, line: b.code !== 'command_output' })
+        break
       case 'plan':
         rows.push({ key: b.key, node: <PlanCard block={b} /> })
         break
@@ -135,6 +148,7 @@ function buildRows(p: MessageListProps): Row[] {
       }
     }
   }
+  if (p.activity) rows.push({ key: 'activity', node: <ActivityLine activity={p.activity} />, line: true })
   for (const m of p.pending) {
     rows.push({
       key: `pending-${m.messageId}`,
@@ -146,6 +160,14 @@ function buildRows(p: MessageListProps): Row[] {
 
 /** 消息流：自动跟随底部、向上翻页拉历史、「↓ 新消息」浮标；超长会话虚拟化。 */
 export function MessageList(props: MessageListProps) {
+  return (
+    <TaskLiveContext.Provider value={props.tasksLive ?? true}>
+      <MessageListView {...props} />
+    </TaskLiveContext.Provider>
+  )
+}
+
+function MessageListView(props: MessageListProps) {
   const { t } = useTranslation()
   const rows = buildRows(props)
   const scrollRef = useRef<HTMLDivElement>(null)

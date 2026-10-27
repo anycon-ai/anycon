@@ -299,6 +299,10 @@ fn dispatch(shared: &Shared, child: &JsonlChild, tx: &mpsc::UnboundedSender<Agen
             shared.pending.lock().expect("pending lock").clear();
             child.send_json(&msg);
         }
+        // translator 自己能答的控制请求（如不能交给用户的 elicitation）：直接写回去
+        Out::Reply(line) => {
+            child.send_json(&line);
+        }
         Out::Unsupported { request_id, subtype } => {
             tracing::debug!(%subtype, "claude: replying with an error to an unsupported control_request");
             child.send_json(&permissions::control_error(
@@ -424,16 +428,35 @@ impl AgentHandle for ClaudeHandle {
             tracing::debug!(request_id, "claude: no pending permission with this id");
             return Ok(());
         };
-        let inner = match permissions::build_decision(&native, &decision) {
-            Ok(v) => v,
-            Err(e) => {
-                // 答复不合法：请求仍然未决，放回去。
-                self.shared.pending.lock().expect("pending lock").insert(request_id.to_string(), native);
-                return Err(e);
-            }
+        // MCP elicitation：答案和 schema 对不上时改按 decline 答复（daemon 已经把请求算作答复过，留着未决 CLI 会一直等），
+        // 原因作为可恢复的 `error` 告诉用户
+        let mut problem = None;
+        let inner = match &native.elicitation {
+            Some(spec) => match permissions::elicitation_reply(spec, &decision) {
+                Ok(reply) => {
+                    problem = reply.problem;
+                    reply.response
+                }
+                Err(e) => {
+                    self.shared.pending.lock().expect("pending lock").insert(request_id.to_string(), native);
+                    return Err(e);
+                }
+            },
+            None => match permissions::build_decision(&native, &decision) {
+                Ok(v) => v,
+                Err(e) => {
+                    // 答复不合法：请求仍然未决，放回去。
+                    self.shared.pending.lock().expect("pending lock").insert(request_id.to_string(), native);
+                    return Err(e);
+                }
+            },
         };
         if !self.child.send_json(&permissions::control_response(request_id, inner)) {
             return Err(AdapterError::Exited("claude is not running".into()));
+        }
+        if let (Some(message), Some(tx)) = (problem, self.events_tx.upgrade()) {
+            let ev = Event::Error { code: "elicitation_invalid_answer".to_string(), message, recoverable: true };
+            let _ = tx.send(AgentEvent::Event(ev));
         }
         Ok(())
     }

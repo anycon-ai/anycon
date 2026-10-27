@@ -13,7 +13,8 @@
 //! `Started { agent_session_id = thread id }`。**续接不上就改开新 thread，并明说**：`thread/resume` 报 `no rollout found`（这个 thread
 //! 从来没有记录过用户消息，比如第一个 turn 在写下用户消息之前就失败了）或 `thread not found`（rollout 被删 / 被 Codex 归档了）就
 //! 回退到 `thread/start`，`Started` 带新 id，紧跟一条可恢复的 `error { code: "agent_context_reset" }`（不让 turn 失败；之前的上下文
-//! agent 看不到了，不说的话用户还以为它记得）。其它 resume 错误照常报错。
+//! agent 看不到了，不说的话用户还以为它记得）。其它 resume 错误照常报错。握手拿到的 thread id 同时告诉翻译器（`set_main_thread`）：
+//! 子 agent 的通知走同一条连接、带各自的 `threadId`，只有分清主 thread，它们才不会碰主 turn。
 //!
 //! **turn**：`send` 在没有 turn 时发 `turn/start`（等响应，错误当场返回），turn 进行中且 `interject = true` 时发 `turn/steer`。
 //! **插话绝不自己开 turn**：没有进行中的 turn（包括 turn 刚结束、`TurnDone` 还在队列里没被 daemon 读到）、`turn/steer` 报
@@ -271,6 +272,8 @@ impl CodexHandle {
         }
         let response = response.expect("thread response");
         self.thread_id = response.thread.id.clone();
+        // 子 agent 的通知走同一条连接：告诉翻译器哪个 thread 是主的，其余的都不能碰主 turn
+        self.shared.translator.lock().expect("translator lock").set_main_thread(&self.thread_id);
         if let Some(m) = response.model.clone().filter(|_| self.current.model.is_none()) {
             self.shared.translator.lock().expect("translator lock").set_model(Some(m));
         }
@@ -593,6 +596,16 @@ impl AgentHandle for CodexHandle {
                 return Err(e);
             }
         };
+        // 用户接受了 MCP 的表单，但回答转不成它要的类型：上面已经按拒绝答复了，把原因告诉用户
+        if let Some(problem) = permissions::answer_problem(&native, &decision, cancelling) {
+            if let Some(tx) = self.events_tx.upgrade() {
+                let _ = tx.send(AgentEvent::Event(Event::Error {
+                    code: "elicitation_invalid_answer".to_string(),
+                    message: format!("The MCP server's form was declined because {problem}."),
+                    recoverable: true,
+                }));
+            }
+        }
         if !self.shared.rpc.reply(&native.rpc_id, result) {
             return Err(AdapterError::Exited("codex is not running".into()));
         }

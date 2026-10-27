@@ -1,6 +1,26 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "ActivityState": {
+      "description": "`Event::Activity` 的状态。",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "临时状态结束。",
+          "type": "string"
+        },
+        {
+          "const": "retrying",
+          "description": "agent 正在重试一次失败的 API 请求。",
+          "type": "string"
+        },
+        {
+          "const": "compacting",
+          "description": "agent 正在压缩上下文。",
+          "type": "string"
+        }
+      ]
+    },
     "AgentCapabilities": {
       "properties": {
         "attachments": {
@@ -2493,6 +2513,182 @@
             "recoverable"
           ],
           "type": "object"
+        },
+        {
+          "description": "后台任务（workflow、后台子 agent、后台命令）的状态快照。同一个 `id` 的后一条整条取代前一条，不是增量；\n客户端按 `id` 只保留最新的一条。daemon 对同一个任务的快照节流（docs/spec/daemon.md § 8.3），\n状态变化（进入终态，或者从终态回到 `running`）不受节流。",
+          "properties": {
+            "agents": {
+              "description": "workflow 里的各个 agent，按 `index` 升序；非 workflow 为空。",
+              "items": {
+                "$ref": "#/definitions/TaskAgent"
+              },
+              "type": "array"
+            },
+            "id": {
+              "description": "agent 给任务的 id（Claude Code 的 `task_id`；Codex 子 agent 的 thread id）。会话内唯一。",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/TaskKind"
+            },
+            "last_tool": {
+              "description": "任务最近一次调用的工具名。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "phases": {
+              "description": "workflow 的阶段，按 `index` 升序；非 workflow 为空。",
+              "items": {
+                "$ref": "#/definitions/TaskPhase"
+              },
+              "type": "array"
+            },
+            "status": {
+              "$ref": "#/definitions/TaskStatus"
+            },
+            "summary": {
+              "description": "agent 给的进度 / 结果摘要。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "description": "workflow 的名字 / 任务描述。",
+              "type": "string"
+            },
+            "tool_id": {
+              "description": "启动这个任务的 `tool_call` 的 `id`（Claude Code 的 `tool_use_id`；Codex 的 collab agent 调用 item id）。\n客户端据此把进度挂在那个工具块上；对不上时单独成块。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "task",
+              "type": "string"
+            },
+            "usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/TaskUsage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "kind",
+            "title",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "agent 给用户的提示：不是错误，不影响 turn，也不触发推送通知。客户端认识 `code` 时用自己的文案\n（`message` 作补充原文），不认识就按 `level` 显示 `message`。`code` 的取值见 docs/protocol.md § 6。",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "level": {
+              "$ref": "#/definitions/NoticeLevel"
+            },
+            "message": {
+              "description": "agent 给的原文（通常是英文），可能是空串。`command_output` 里是本地命令的输出，可能多行。",
+              "type": "string"
+            },
+            "model_from": {
+              "description": "`code = model_fallback`：原来的模型。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model_to": {
+              "description": "`code = model_fallback`：实际使用的模型。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resets_at_ms": {
+              "description": "`code = rate_limit`：限额恢复的时间。",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "notice",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "level",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "turn 进行中 agent 在做的「非输出」的事（重试 API、压缩上下文）。客户端在 turn 进行中把它显示成一条临时状态；\n收到任何内容事件（`text_delta`、`thinking_delta`、`tool_call`…）、`turn_done` 或 `state = none` 时清掉。\n临时状态的快照语义同 `task`：后一条取代前一条。",
+          "properties": {
+            "attempt": {
+              "description": "`retrying`：这是第几次重试（从 1 开始）。",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "delay_ms": {
+              "description": "`retrying`：距下一次重试的毫秒数。",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_attempts": {
+              "description": "`retrying`：最多重试几次。",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "reason": {
+              "description": "`retrying`：触发重试的错误摘要，如 `529 overloaded_error`。",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/definitions/ActivityState"
+            },
+            "type": {
+              "const": "activity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "state"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -3427,6 +3623,14 @@
       ],
       "type": "object"
     },
+    "NoticeLevel": {
+      "description": "`Event::Notice` 的级别。",
+      "enum": [
+        "info",
+        "warning"
+      ],
+      "type": "string"
+    },
     "NotifyBody": {
       "description": "`kind = notify` 的 body（msgpack）。`category` 是外层唯一有语义的明文字段。",
       "properties": {
@@ -3645,6 +3849,13 @@
             }
           ],
           "description": "kind = tool"
+        },
+        "url": {
+          "description": "kind = other：要用户在浏览器里打开的链接（MCP server 的 URL 模式 elicitation）。只会是 `http` / `https`；\n客户端只对这两种协议提供「打开」入口，并且显示完整 URL。",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -4562,6 +4773,10 @@
         },
         "multi": {
           "default": false,
+          "type": "boolean"
+        },
+        "optional": {
+          "description": "可以不答：客户端允许留空提交，答复里就没有这一题的答案。默认 `false`（必答），\n所以 AskUserQuestion 这类每题都要答的行为不变；MCP elicitation 表单里 schema 没列进 `required` 的字段是 `true`。",
           "type": "boolean"
         },
         "text": {
@@ -5914,6 +6129,213 @@
         }
       ]
     },
+    "TaskAgent": {
+      "description": "workflow 里的一个 agent。",
+      "properties": {
+        "attempt": {
+          "description": "第几次尝试（重试过才有）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cached": {
+          "description": "结果来自缓存，没有真的运行。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "duration_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "`state = failed` 时的错误信息。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "在 workflow 里的序号，同一个任务内唯一。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "last_tool": {
+          "description": "最近一次调用的工具名。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase_index": {
+          "description": "所属阶段的 `TaskPhase.index`。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/TaskAgentState"
+        },
+        "tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tool_calls": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "index",
+        "label",
+        "state"
+      ],
+      "type": "object"
+    },
+    "TaskAgentState": {
+      "description": "workflow 里一个 agent 的状态。",
+      "oneOf": [
+        {
+          "enum": [
+            "running",
+            "done",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "queued",
+          "description": "还没轮到。",
+          "type": "string"
+        },
+        {
+          "const": "skipped",
+          "description": "被跳过（上游失败、条件不满足…）。",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskKind": {
+      "description": "`Event::Task` 的任务种类。",
+      "oneOf": [
+        {
+          "enum": [
+            "other"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "workflow",
+          "description": "多阶段、多 agent 的 workflow：带 `phases` 和 `agents`。",
+          "type": "string"
+        },
+        {
+          "const": "subagent",
+          "description": "后台子 agent。",
+          "type": "string"
+        },
+        {
+          "const": "shell",
+          "description": "后台命令。",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskPhase": {
+      "description": "workflow 的一个阶段。",
+      "properties": {
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "title"
+      ],
+      "type": "object"
+    },
+    "TaskStatus": {
+      "description": "`Event::Task` 的任务状态。`Running` 以外的三个是收尾状态（终态）：Claude Code 的任务进入终态后不会再变；\nCodex 的子 agent 是一个可以再收到输入的 thread，`Completed` 之后收到新输入、开始新 turn 就会回到 `Running`。\n所以终态只说明「这一刻不在跑」，不保证同一个 `id` 以后不会再有快照；客户端始终以最新的一条为准。",
+      "oneOf": [
+        {
+          "enum": [
+            "running",
+            "completed",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "被取消，或者 agent 进程退出时任务还没收尾（daemon 补发，docs/spec/daemon.md § 8.3）。",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskUsage": {
+      "description": "任务的用量。每个字段 agent 不报就缺省。",
+      "properties": {
+        "duration_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tool_calls": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ThinkingOptions": {
       "description": "某个模型支持的思考等级。**挂在模型上**，不同模型不同。",
       "properties": {
@@ -6155,6 +6577,24 @@
           ]
         },
         "cache_write_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "context_tokens": {
+          "description": "turn 结束时上下文已经占用的 token：最近一次模型请求的输入 + 缓存读写。和 `input_tokens` 等\n累计用量不同，它是「此刻窗口里有多少」，客户端拿它和 `context_window` 算占用比例。agent 不报就缺省。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "context_window": {
+          "description": "模型的上下文窗口大小（token）。agent 不报就缺省。",
           "format": "uint64",
           "minimum": 0,
           "type": [

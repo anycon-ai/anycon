@@ -234,13 +234,17 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `plan` | 一张可折叠的待办卡片，随后续 `plan` 事件在**同一 turn 内**原地更新，不新增卡片；下一个 turn 另起一张（跨 turn 的话那张卡离当前太远） |
 | `permission` (`kind = tool`) | 内嵌卡片：工具类别图标、摘要（命令全文 / 文件路径 / diff）、详情可展开、按钮**按 `options[]` 渲染**（常见是「允许」「本会话都允许」「拒绝」，按 `kind` 着色），`reject_*` 可附一句话。答复过的收成一行灰字「标题 — 已由 iPhone 允许（选项）›」，点开看命令 / diff；`by_device = "daemon"` 显示「已被 anycon 自动允许 / 拒绝 / 处理」（超时、取消、项目目录变了都会这样）；自己答复时得到 `not_found` 且 `data.reason = "project_dir_changed"`，卡片定格成一行说明「项目目录变了，这个请求已被拒绝，turn 已中止」，不再给按钮；其它 `not_found` 显示通用的「这个请求已经不存在」 |
 | `permission` (`kind = plan`) | 计划卡片：渲染 `detail.text` 的 Markdown，按钮「开始实施」「继续规划」（可附修改意见）；按钮完全由 `options[]` 渲染，v0.1 没有「开始实施，回到之前的模式」 |
-| `permission` (`kind = question`) | 问答卡片：每个问题一组单选 / 多选 / 文本框，一次提交全部 `answers`。答复过的留在对话里：一行灰字「标题 — 已由 iPhone 回答 / 跳过」，下面按题列出问题和回答（`permission_resolved.answers`：选项 id 换成显示名，多选用逗号连接，自由输入原样，没答的写「未回答」）；答复附的话（`permission_resolved.message`，跳过的说明、拒绝的理由，所有 kind 都是）跟在下面。没记回答的旧事件只有那一行 |
+| `permission` (`kind = question`) | 问答卡片：每个问题一组单选 / 多选 / 文本框，一次提交全部 `answers`；每题都答完才能提交，`optional` 的题（MCP elicitation 表单里非必填的属性）标「可选」、可以留空，已选的单选可以清除，留空的不出现在 `answers` 里。答复过的留在对话里：一行灰字「标题 — 已由 iPhone 回答 / 跳过」，下面按题列出问题和回答（`permission_resolved.answers`：选项 id 换成显示名，多选用逗号连接，自由输入原样，没答的写「未回答」）；答复附的话（`permission_resolved.message`，跳过的说明、拒绝的理由，所有 kind 都是）跟在下面。没记回答的旧事件只有那一行 |
+| `permission` (`kind = other`) | 确认卡片：`detail.text` 作说明，按钮按 `options[]` 渲染。带 `detail.url`（MCP server 的 URL 模式授权）时显示**完整的 URL**（不截断、不省略主机名之后的部分）和一个「打开」按钮：只认 `http` / `https`，其它协议不给打开入口（只显示成文字）；链接用 `target="_blank" rel="noopener noreferrer"` 在新标签页打开。打开本身不答复请求：用户在那个页面完成后回来点「我已完成」（`allow_once`）或「拒绝」 |
 | `turn_done` | 一行：「复制」图标（复制这一轮 agent 的全部文字，Markdown，不含工具输出）+ 灰字：模型、用时、token 数、费用（agent 报了才显示） |
 | `error` | 红色块，`recoverable` 时带「重试」 |
 | `status` | 不单独渲染，驱动头部 chip 和 composer 状态 |
 | `file_changed` | 不单独渲染（改了哪些文件看「改动」视图）；git 会话里触发一次 git 状态刷新（见下） |
 | `settings_changed` | 一行灰字：「模型已切换为 …」 |
 | `git` | 一行灰字（失败是红字，冲突 / worktree 被保留是黄字），按 `action`：「已在 worktree `anycon/x` 中开始（基于 main，复制了 2 个文件）」「worktree 创建失败：…」「已删除 worktree（分支保留 / 分支已删除）」「worktree 有未提交的改动，已保留」「已按分支重建 worktree」「worktree 目录不见了」「main 没有新提交」「已合并 main 的 3 个提交」「合并 main 时 2 个文件有冲突：a.rs、b.rs」+ 按钮「让 agent 解决」「放弃合并」「已放弃合并」。同时触发 git 状态刷新 |
+| `task` | 后台任务的进度（workflow、后台子 agent、后台命令）。每条是整条快照，按 `id` 只留最新一条。有 `tool_id` 且对应的 `tool_call` 块在已加载的历史里时，进度挂在那个工具块上显示（工具行本身的状态跟着任务走：挂着的任务有一个在 `running`，工具行就是「后台运行」并一直转圈——Claude Code 的 `Workflow` 和 Codex 的 `spawnAgent` 调用立刻就返回结果、不带 `detail.background`，所以不能只看结果；任务都结束了，有 `failed` 的算失败，否则算完成；任务可能从 `completed` 回到 `running`（Codex 的子 agent 收到了新输入），工具行和进度跟着变回去）；对不上就在第一次出现的位置单独成一个块，之后的快照原地更新。`workflow`：按 `phases` 分组，每个 agent 一行（状态图标、`label`、token 数、最近调用的工具，失败的显示 `error`，重试过的标第几次，来自缓存的标「缓存」），标题行是名字、状态、用量（token / 工具调用 / 用时）和 `summary`。`subagent` / `shell` / `other`：一行标题 + 状态、token、最近调用的工具、`summary`。终态的快照（完成 / 失败 / 已取消）定格；会话没有在跑（`status` 不是 `running` / `starting` / `waiting_permission`）且 `background_tasks == 0` 时，非终态的快照显示成「已停止」（daemon 重启或被强杀后历史里可能留着没收尾的快照） |
+| `notice` | 消息流里的一行系统提示，不是错误（不画红块，没有「重试」）：`info` 灰字，`warning` 黄字。认识的 `code` 用界面语言的文案（`model_fallback` 写「模型已从 A 换成 B」，`rate_limit` 带恢复时间…），`message` 原文作补充（可展开）；不认识的 `code` 按 `level` 直接显示 `message`。`command_output`（`/context`、`/cost` 等本地命令的输出）用等宽字体的块显示 `message`，可折叠 |
+| `activity` | 视图级的临时状态，不进消息流的持久内容：turn 进行中显示在消息流最底部一行（`retrying`：「正在重试（2/10），5 秒后…」，带 `reason`；`compacting`：「正在压缩上下文…」），带转圈。收到任何内容事件（`text_delta`、`thinking_delta`、`tool_call`、`tool_result`…）、`turn_done` 或 `activity { state: none }` 时清掉；翻看历史时只有最后一个 `activity` 之后没有内容事件、而且会话还在跑（`status` 是 `running` / `starting` / `waiting_permission`）的才显示 |
 
 - 列表虚拟化；初次进入拉最近 200 个事件，向上滚动再拉更早的（`session.history`）
 - 自动跟随底部；用户向上滚动后停止跟随，出现一个圆形「↓」浮标（只有图标，「新消息」在 aria-label / 悬停提示里）
@@ -253,6 +257,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 - 自动增高的 textarea，最多 10 行后内部滚动
 - `Enter` 发送、`Shift+Enter` 换行（手机上 Enter 换行，发送靠按钮；设置里可改）
 - 运行中：发送按钮变「停止」（`session.cancel`）；此时输入的内容会**排队**成下一条消息，并明确标注「将在本轮结束后发送」。agent 支持 turn 中插话的（capabilities.`interject`）则直接发
+- 后台任务：输入框附近有任务在运行时（`SessionSummary.background_tasks > 0`，或已加载的历史里有非终态且会话还在跑的 `task`）显示一个「N 个后台任务在运行」的 chip（主 turn 在跑还是已经空闲都显示），点开列出这些任务（名字、状态、用量；摘要也带上）。N 取 `background_tasks` 和历史里认出来的在跑的任务数中较大的一个，认出来的不够数时（事件不在已加载的历史里、旧 daemon 不报）多出来的写成「另外 N 个后台任务」。会话已经空闲（主 turn 结束了）时，弹层底部说明「它们结束后 agent 会继续处理」。没有在跑的任务时不显示
 - 节点离线：输入框可用，发送后标「未发送」
 - 归档：会话在运行或等审批时「归档」按钮禁用并说明「先停止或答复」（daemon 此时返回 `busy`）
 - 已归档的会话：输入区（连同选项栏）换成一条「已归档 · 取消归档后才能发送消息」+「取消归档」按钮（`session-archived-bar` / `session-unarchive`），点了调 `session.unarchive`，成功后输入框回来；取消归档失败（`git_failed`）时说明「没能恢复会话的 worktree，会话仍是归档状态」。`send` 被 `invalid` / `archived` 拒绝时（别的设备刚归档），失败气泡和 toast 显示同一句说明，本地立刻把会话标成已归档，消息留着不丢；已归档会话的错误块不给「重试这一轮」
@@ -290,10 +295,12 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 **概览**标签：
 
 - 工作目录、分支、创建时间
-- 「Agent」卡片（`info-agents`）：标题右边是正在工作的个数（主 agent 在跑一个 turn 或等审批算一个，加上还没结束的子 agent 和后台命令），没有就不显示。第一行是主 agent：名称、累计 token（输入 / 输出）、会话状态 chip。下面是已加载的事件里的子 agent（`category = subagent` 的调用），父在前、子按嵌套层数缩进：说明、agent 报的 token（`tool_result.detail.total_tokens`，结束后才有）和它调了几次工具、状态 chip（运行中 / 后台运行 / 已完成 / 失败 / 已停止）。没有结果的子 agent 在主 agent 的 turn 结束后（或启动它的子 agent 结束后）算「已停止」，后台子 agent 在 agent 进程退出（`ended` / `error` / `interrupted`）后同样算「已停止」。子 agent 超过 6 个时只列还在跑的和最近的 6 个，上面一行「显示更早的 N 个子 agent」展开全部。子 agent 下面是还在后台跑的命令（`shell` 调用的结果带 `detail.background`、还没补上最终结果；agent 进程退出后不再列）：命令说明或 `$ 命令`、「后台运行」chip，结束了就不再列。`SessionSummary.background_tasks` 比认出来的后台子 agent 和后台命令多时（事件不在已加载的历史里、daemon 旧了不标后台命令），多出来的另起一行「另外 N 个后台任务」（一个都没认出来时是「N 个后台任务」），也算进正在工作的个数
+- 「Agent」卡片（`info-agents`）：标题右边是正在工作的个数（主 agent 在跑一个 turn 或等审批算一个，加上还没结束的子 agent 和后台命令），没有就不显示。第一行是主 agent：名称、累计 token（输入 / 输出）、会话状态 chip。下面是已加载的事件里的子 agent（`category = subagent` 的调用），父在前、子按嵌套层数缩进：说明、agent 报的 token（`tool_result.detail.total_tokens`，结束后才有）和它调了几次工具、状态 chip（运行中 / 后台运行 / 已完成 / 失败 / 已停止）。状态：调用没有结果是运行中；有结果时，挂着任务（`task.tool_id` 指向它）的以任务为准——有任务在 `running` 是后台运行（会话没在跑、`background_tasks == 0` 时是已停止），否则有 `failed` 的是失败、其余（完成 / 已取消）是已完成；没有任务的看结果：带 `detail.background` 是后台运行，`is_error` 是失败，其余已完成。没有结果的子 agent 在主 agent 的 turn 结束后（或启动它的子 agent 结束后）算「已停止」，后台子 agent 在 agent 进程退出（`ended` / `error` / `interrupted`）后同样算「已停止」。子 agent 超过 6 个时只列还在跑的和最近的 6 个，上面一行「显示更早的 N 个子 agent」展开全部。子 agent 下面是还在后台跑的调用（不是子 agent 的调用里，状态判为后台运行的：挂着在跑的任务——如 `Workflow`——或者结果带 `detail.background` 还没补上最终结果的后台命令；agent 进程退出后不再列）：命令说明或 `$ 命令`（其它调用是标题）、「后台运行」chip，结束了就不再列。`SessionSummary.background_tasks` 比认出来的后台子 agent 和后台命令多时（事件不在已加载的历史里、daemon 旧了不标后台命令），多出来的另起一行「另外 N 个后台任务」（一个都没认出来时是「N 个后台任务」），也算进正在工作的个数
 - turn 数、累计费用（主 agent 的 token 不含子 agent 的，费用是 agent 报的总数）
+- 上下文占用（最近一个带 `usage.context_window` 和 `context_tokens` 的 `turn_done`）：一条进度条加「百分比 · 已用 / 窗口」（如 `23% · 46k / 200k`），agent 不报时不显示这一行。`context_tokens` 是 turn 结束时窗口里的 token 数，不是累计用量
 - 待审批请求列表（和消息流里的卡片联动）
 - 操作：重命名、归档、删除（二次确认，说明会删 daemon 上的历史）、导出 Markdown
+  - 导出 Markdown 时 `notice` 一条写成一行引用（`> **Warning** (<code>): <agent 的原文>`，原文折成一行、最长 500 字符；没有原文时用 `model_from` / `model_to` 等字段拼一句），`command_output`（`/context` 等本地命令）是一个代码块；后台任务（`task`）每个一行，写导出时的最终快照：名字、种类、状态、agent 完成数 / 总数、token / 工具调用 / 用时，挂在启动它的工具行后面（对不上工具行的在第一次出现的位置）。导出里的标题都是英文，这些行也一样
 - **有 worktree 的会话**：「归档」先弹确认框：说明 worktree 的处理（`auto`：没有未提交的改动就删掉 worktree——分支上有自己的提交就保留分支，没有就一起删；有未提交的改动就保留 worktree），选项「自动 / 保留 worktree / 删除 worktree（丢弃 N 个未提交的改动）」，N 来自 `git_status.uncommitted`。「删除」确认框多两项：worktree 同样三选一；「同时删除分支 anycon/x」复选框，分支上有自己的提交（`ahead > 0`）或没推送的提交时在旁边警告「N 个提交会丢失」。没有 worktree 的会话、worktree 已经 `removed` / `failed` 的会话行为不变（归档不弹框）
 
 ### 4.7 文件浏览 `/n/:node/files/*`（v0.2）

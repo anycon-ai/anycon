@@ -1,5 +1,7 @@
-import type { Block } from './reducer'
+import type { Block, NoticeBlock, TaskSnapshot } from './reducer'
 import type { ToolCategory } from '@/protocol'
+import { formatDuration } from '@/lib/format'
+import { agentCounts } from './tasks'
 import { toolCommand, toolLabel, toolOutputText, toolPath } from './text'
 
 const CATEGORY_LABEL: Record<ToolCategory, string> = {
@@ -16,6 +18,35 @@ const CATEGORY_LABEL: Record<ToolCategory, string> = {
 /** 导出里一张图片附件的写法。 */
 export type ImageLabel = (name: string) => string
 const defaultImageLabel: ImageLabel = (name) => `[image: ${name}]`
+
+/** 一条提示在导出里最多写这么多字符（原文可能很长，导出里它只是一行）。 */
+const NOTICE_MAX = 500
+
+/** 一行文字：折叠空白（原文可能多行）。 */
+const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim()
+
+/**
+ * 一条 notice 的一行文字。和其它系统行一样用固定的英文（导出里的标题都是英文）；agent 的原文 `message` 优先，
+ * 没有原文时按 code 带的字段拼一句。
+ */
+function noticeLine(b: NoticeBlock): string {
+  const message = oneLine(b.message)
+  if (message) return message.length > NOTICE_MAX ? `${message.slice(0, NOTICE_MAX)}…` : message
+  if (b.code === 'model_fallback' && b.modelTo) return b.modelFrom ? `Model switched from ${b.modelFrom} to ${b.modelTo}` : `Model switched to ${b.modelTo}`
+  if (b.code === 'rate_limit' && b.resetsAtMs != null) return `Usage limit reached, resets ${new Date(b.resetsAtMs).toISOString()}`
+  return b.code
+}
+
+/** 一个后台任务导出时的最终状态：名字、种类、状态，以及 agent 完成数和用量（有什么写什么）。 */
+function taskLine(task: TaskSnapshot): string {
+  const facts: string[] = [task.status]
+  if (task.agents.length > 0) facts.push(`${agentCounts(task.agents).done}/${task.agents.length} agents done`)
+  const u = task.usage
+  if (u?.total_tokens != null) facts.push(`${u.total_tokens} tokens`)
+  if (u?.tool_calls != null) facts.push(`${u.tool_calls} tool calls`)
+  if (u?.duration_ms != null && u.duration_ms > 0) facts.push(formatDuration(u.duration_ms))
+  return `> **Task** (${task.kind}) — \`${oneLine(task.title) || 'Background task'}\`: ${facts.join(', ')}`
+}
 
 /**
  * 把已加载的会话导出成 Markdown（客户端本地生成，不经过 daemon）。
@@ -40,8 +71,18 @@ export function exportMarkdown(title: string, blocks: readonly Block[], imageLab
         out.push(`> **${CATEGORY_LABEL[b.category]}** — \`${label}\``)
         if (output) out.push('', '```', output.replace(/\n$/, ''), '```')
         out.push('')
+        // 这次调用启动的后台任务：每个一行，写导出时的状态
+        for (const task of b.tasks ?? []) out.push(taskLine(task), '')
         break
       }
+      case 'task':
+        out.push(taskLine(b.task), '')
+        break
+      case 'notice':
+        // `/context` 之类本地命令的输出是多行原文，当作输出块；其余的提示一行一条
+        if (b.code === 'command_output') out.push('> **Command output**', '', '```', b.message.replace(/\n+$/, ''), '```', '')
+        else out.push(`> **${b.level === 'warning' ? 'Warning' : 'Notice'}** (${b.code}): ${noticeLine(b)}`, '')
+        break
       case 'error':
         out.push(`> **Error** (${b.code}): ${b.message}`, '')
         break

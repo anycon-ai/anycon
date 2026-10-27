@@ -18,8 +18,8 @@ use crate::error::{CliError, Result};
 use crate::output::visible;
 use crate::output::Out;
 use crate::render::{
-    assign_keys, auto_approvable, auto_approve_option, describe_question, describe_request, first_reject, options_line,
-    parse_choice, PromptQueue, Renderer,
+    assign_keys, auto_approvable_request, auto_approve_option, describe_question, describe_request, first_reject,
+    options_line, parse_choice, PromptQueue, Renderer,
 };
 
 /// `--auto-approve` 启动时的警告。
@@ -258,7 +258,7 @@ impl Follower<'_> {
     }
 
     async fn on_request(&mut self, req: PermissionRequest) -> Result<()> {
-        if self.opts.auto_approve && auto_approvable(req.kind) {
+        if self.opts.auto_approve && auto_approvable_request(&req) {
             if !self.queue.seen.insert(req.request_id.clone()) {
                 return Ok(());
             }
@@ -386,7 +386,9 @@ impl Follower<'_> {
             (false, false, false) => "a number",
         };
         let v = if p.full.is_some() { "; v views the whole question" } else { "" };
-        eprint!("    ({hint}; empty line skips{v}) > ");
+        // 可选的题：空行只是不答这一题；必答的题空行是跳过整个提问
+        let empty = if q.optional { "optional, empty line leaves it blank" } else { "empty line skips" };
+        eprint!("    ({hint}; {empty}{v}) > ");
         let _ = std::io::stderr().flush();
     }
 
@@ -457,7 +459,7 @@ impl Follower<'_> {
                     return self.pump_prompt().await;
                 };
                 let t = line.trim();
-                if t.is_empty() {
+                if t.is_empty() && !q.optional {
                     // 跳过整个提问
                     let reject = first_reject(&p.req).map(|o| o.id.clone());
                     self.respond(PermissionRespondParams {
@@ -478,27 +480,30 @@ impl Follower<'_> {
                     }
                     q.choices.iter().find(|c| c.id == tok || c.label.eq_ignore_ascii_case(tok)).map(|c| c.id.clone())
                 };
-                let value = if q.multi && !q.choices.is_empty() {
-                    let picked: Vec<Value> = t.split(',').filter_map(&pick).map(Value::String).collect();
-                    if picked.is_empty() && q.free_text {
-                        Value::String(t.to_string())
-                    } else {
-                        Value::Array(picked)
-                    }
-                } else {
-                    match pick(t) {
-                        Some(id) => Value::String(id),
-                        None if q.free_text || q.choices.is_empty() => Value::String(t.to_string()),
-                        None => {
-                            eprint!("    please pick one of the listed choices > ");
-                            let _ = std::io::stderr().flush();
-                            p.stage = Stage::Question { idx, answers };
-                            self.prompt = Some(p);
-                            return Ok(());
+                // 可选的题留空：不放进 answers（答复里没有这一题），接着问下一题
+                if !t.is_empty() {
+                    let value = if q.multi && !q.choices.is_empty() {
+                        let picked: Vec<Value> = t.split(',').filter_map(&pick).map(Value::String).collect();
+                        if picked.is_empty() && q.free_text {
+                            Value::String(t.to_string())
+                        } else {
+                            Value::Array(picked)
                         }
-                    }
-                };
-                answers.insert(q.id.clone(), value);
+                    } else {
+                        match pick(t) {
+                            Some(id) => Value::String(id),
+                            None if q.free_text || q.choices.is_empty() => Value::String(t.to_string()),
+                            None => {
+                                eprint!("    please pick one of the listed choices > ");
+                                let _ = std::io::stderr().flush();
+                                p.stage = Stage::Question { idx, answers };
+                                self.prompt = Some(p);
+                                return Ok(());
+                            }
+                        }
+                    };
+                    answers.insert(q.id.clone(), value);
+                }
                 if idx + 1 < p.req.detail.questions.len() {
                     p.stage = Stage::Question { idx: idx + 1, answers };
                     self.prompt = Some(p);
@@ -667,6 +672,7 @@ mod tests {
             choices: vec![QuestionChoice { id: "yes".into(), label: "Yes\x1b[0m".into() }],
             multi: false,
             free_text: true,
+            optional: false,
         };
         f.on_request(question_request("body", vec![q])).await.unwrap();
         f.pump_prompt().await.unwrap();
@@ -679,6 +685,64 @@ mod tests {
         let r = &responds(&calls)[0];
         assert_eq!((r["request_id"].as_str(), r["option_id"].as_str()), (Some("q1"), Some("ok")));
         assert_eq!(r["answers"], json!({ "a": "yes" }));
+    }
+
+    fn text_question(id: &str, optional: bool) -> Question {
+        Question {
+            id: id.into(),
+            text: format!("Value of {id}?"),
+            choices: vec![],
+            multi: false,
+            free_text: true,
+            optional,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_line_leaves_an_optional_question_blank_and_moves_on_but_still_skips_a_required_one() {
+        let (conn, calls) = fake_conn();
+        let mut f = follower(&conn);
+        // 必答 -> 可选（留空）-> 可选（回答）：答复里只有回答了的两题
+        f.on_request(question_request(
+            "form",
+            vec![text_question("name", false), text_question("nick", true), text_question("note", true)],
+        ))
+        .await
+        .unwrap();
+        f.pump_prompt().await.unwrap();
+        f.on_line("Ada").await.unwrap();
+        f.on_line("").await.unwrap();
+        assert!(f.prompt.is_some() && responds(&calls).is_empty(), "the blank optional question does not end the form");
+        f.on_line("hello").await.unwrap();
+        assert!(f.prompt.is_none());
+        let r = &responds(&calls)[0];
+        assert_eq!((r["request_id"].as_str(), r["option_id"].as_str()), (Some("q1"), Some("ok")));
+        assert_eq!(r["answers"], json!({ "name": "Ada", "note": "hello" }));
+
+        // 最后一题是可选的、留空：直接提交已有的回答
+        let (conn, calls) = fake_conn();
+        let mut f = follower(&conn);
+        f.on_request(question_request("form", vec![text_question("name", false), text_question("nick", true)]))
+            .await
+            .unwrap();
+        f.pump_prompt().await.unwrap();
+        f.on_line("Ada").await.unwrap();
+        f.on_line("  ").await.unwrap();
+        assert!(f.prompt.is_none());
+        assert_eq!(responds(&calls)[0]["answers"], json!({ "name": "Ada" }));
+
+        // 必答的题留空：跳过整个提问（走「拒绝」类选项）
+        let (conn, calls) = fake_conn();
+        let mut f = follower(&conn);
+        f.on_request(question_request("form", vec![text_question("name", false), text_question("nick", true)]))
+            .await
+            .unwrap();
+        f.pump_prompt().await.unwrap();
+        f.on_line("").await.unwrap();
+        assert!(f.prompt.is_none());
+        let r = &responds(&calls)[0];
+        assert_eq!(r["option_id"], "skip");
+        assert!(r.get("answers").is_none());
     }
 
     #[tokio::test]

@@ -8,7 +8,9 @@
 //! - 全局并发 / 排队在 `Sched`（std Mutex，不跨 await）；释放名额后用 `kick_pump` 在新任务里启动队首，避免两个会话锁互等；
 //! - driver 有「代」（`driver_gen`）：被 detach 的旧 driver 的迟到事件按代号丢弃；`Exited` 是终态，driver 收到后就收尾，
 //!   `on_exited` 也会推进代号，所以一次退出只会被处理一次；
-//! - 旧进程的关闭是异步的（`St::closing`）：下一次拉起前先等它关完，同一个 agent 会话不会同时有两个进程。
+//! - 旧进程的关闭是异步的（`St::closing`）：下一次拉起前先等它关完，同一个 agent 会话不会同时有两个进程；
+//! - 后台任务的 `task` 快照按任务节流，后沿定时器在会话锁之外睡、醒来重新拿锁并核对 `driver_gen`（`on_task` / `flush_task`）；
+//!   摘掉 driver 一律走 `detach_driver`，顺带给没收尾的任务补 `cancelled` 快照。
 //!
 //! **锁顺序**：`Workspace` 的命名空间锁（`ns_lock`，link / unlink / create / rename / promote_scratch…）在前，会话锁（`St`）在后。
 //! 持有会话锁时**绝不**调用要取 `ns_lock` 的 `Workspace` 方法（`unlink` 持着 `ns_lock` 去逐个会话锁查「有没有运行中的会话」，
@@ -33,7 +35,7 @@ use anycon_protocol::{
     RpcError, SearchHit, SessionChanged, SessionCounts, SessionCreateParams, SessionEvent, SessionHistoryParams,
     SessionHistoryResult, SessionListParams, SessionListResult, SessionPromoteParams, SessionSearchParams,
     SessionSendParams, SessionSendResult, SessionSetSettingsParams, SessionSetSettingsResult, SessionSettings,
-    SessionStatus, SessionSummary, SessionWorkspace, TurnDoneReason, UsageTotals, WorktreeState,
+    SessionStatus, SessionSummary, SessionWorkspace, TaskStatus, TurnDoneReason, UsageTotals, WorktreeState,
 };
 use futures::future::{BoxFuture, FutureExt, Shared};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
@@ -79,6 +81,10 @@ const PR_ROUND_EVERY: u32 = 1200;
 /// `permission.respond` 因为关联项目的目录变了而返回 `not_found` 时，`data.reason` 的值（协议文档 § 5.5）。
 pub const PROJECT_DIR_CHANGED: &str = "project_dir_changed";
 const CHANGED_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// 同一个任务的 `task` 快照至多每秒发一条（状态变化除外，docs/spec/daemon.md § 8.3）。
+const TASK_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// 一个会话里记住多少个任务的最新快照；超出时先丢已经结束的。
+const TASKS_TRACKED_MAX: usize = 1024;
 const SET_SETTINGS_TIMEOUT: Duration = Duration::from_secs(3);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(8);
 const FTS_FLUSH_BYTES: usize = 32 * 1024;
@@ -204,6 +210,29 @@ struct St {
     wt_caller: Option<Caller>,
     /// 删除会话时拉起流程正在建 / 重建 worktree：建完之后按这个删除请求处置它（`run_create_worktree`）。
     deleted_with: Option<(Caller, anycon_protocol::SessionDeleteParams)>,
+    /// 当前这个 agent 进程里各个后台任务的最新快照和节流状态，按 task id（docs/spec/daemon.md § 8.3）。
+    /// 进程摘掉时清空：没收尾的任务补一条 `cancelled` 快照。
+    tasks: HashMap<String, TaskTrack>,
+    /// 下一个 [`TaskTrack::order`]。
+    next_task_order: u64,
+}
+
+/// 一个后台任务的节流状态。
+struct TaskTrack {
+    /// 最近一次收到的快照（可能还没发出去）。进程退出时拿它补 `cancelled` 快照。
+    snap: Event,
+    /// 最近一次**发出去**的快照的状态。新快照的状态和它不同 = 状态变化，不受节流。
+    emitted_status: TaskStatus,
+    /// 最近一次发出的时刻。
+    last_emit: Instant,
+    /// `snap` 还没发出去，等后沿的定时器。
+    pending: bool,
+    /// 定时器的代号：状态变化 / 窗口已过而直接发出时 +1，让之前挂的定时器作废。
+    timer_seq: u64,
+    /// 已经挂了一个有效的后沿定时器（代号等于 `timer_seq`）。
+    timer_armed: bool,
+    /// 首次收到的先后，进程退出时按它补快照，输出顺序确定。
+    order: u64,
 }
 
 /// 会话上正在进行的 worktree 操作。
@@ -255,6 +284,8 @@ impl St {
             wt_busy: None,
             wt_caller: None,
             deleted_with: None,
+            tasks: HashMap::new(),
+            next_task_order: 0,
         }
     }
 }
@@ -1170,7 +1201,7 @@ impl Sessions {
             let left = self.dispatch(st);
             self.announce_leftover(st, left).await;
         } else {
-            if let Some(d) = self.detach(st) {
+            if let Some(d) = self.detach_driver(st).await {
                 self.retire(st, d);
             }
             st.needs_restart = false;
@@ -1303,6 +1334,14 @@ impl Sessions {
         st.background_drained_at = None;
         st.finish_notify_pending = false;
         st.driver.take()
+    }
+
+    /// [`Sessions::detach`]，并给没收尾的后台任务补 `cancelled` 快照：任务和 agent 进程同生死，进程没了，
+    /// 它们不会再有下文（否则界面永远显示「运行中」）。会话本身要被删除的路径用不带 `emit` 的 `detach`。
+    async fn detach_driver(&self, st: &mut St) -> Option<Driver> {
+        let d = self.detach(st);
+        self.cancel_open_tasks(st).await;
+        d
     }
 
     /// 在后台关闭一个被摘掉的 driver，并记在 `st.closing` 上：之后要拉起新进程（resume）的人先等它关完。
@@ -1605,7 +1644,7 @@ impl Sessions {
     /// 以一个 `error` 事件收尾当前 turn（会话进入 error 状态，可以修好设置后再 send）。
     async fn fail_turn_with(self: &Arc<Self>, st: &mut St, code: &str, message: String, recoverable: bool) {
         self.emit(st, Event::Error { code: code.into(), message, recoverable }).await;
-        if let Some(d) = self.detach(st) {
+        if let Some(d) = self.detach_driver(st).await {
             self.retire(st, d);
         }
         self.end_turn(st, TurnDoneReason::Error, None, Some(SessionStatus::Error)).await;
@@ -1928,6 +1967,11 @@ impl Sessions {
                 }
                 self.emit(st, Event::ToolResult { id, output, is_error, detail }).await;
             }
+            task @ Event::Task { .. } => self.on_task(st, task).await,
+            // Notice / Activity 照常透传，不触发推送通知（daemon.md § 14）；`notice.message` 的大小上限在 `emit` 里
+            ev @ (Event::Notice { .. } | Event::Activity { .. }) => {
+                self.emit(st, ev).await;
+            }
             Event::Error { code, message, recoverable } => {
                 if code == "agent_exited" {
                     st.saw_exit_error = true;
@@ -1940,6 +1984,123 @@ impl Sessions {
             other => {
                 self.emit(st, other).await;
             }
+        }
+    }
+
+    /// 一条 `task` 快照（docs/spec/daemon.md § 8.3）：按（会话，task id）节流。
+    /// - 这个任务的第一条：前沿，立刻发；
+    /// - 状态和上一条**发出去的**不同（尤其进入终态）：不受节流，立刻发，并作废挂着的后沿；
+    /// - 同状态：离上一次发出不到 1 秒就只记下来（后来的取代先到的），窗口结束时由后沿定时器发出最新的一条；
+    ///   已经过了 1 秒就立刻发；
+    /// - 和最近一次收到的完全一样：丢弃（adapter 常常重复报同一份进度）。
+    async fn on_task(self: &Arc<Self>, st: &mut St, mut e: Event) {
+        // 先限制大小再记：节流期间留在内存里的快照也是有界的（emit 里会再过一遍，是空操作）
+        limits::limit_event(&mut e);
+        let Event::Task { id, status, .. } = &e else { return };
+        let (id, status) = (id.clone(), *status);
+        let now = Instant::now();
+        enum Act {
+            Emit,
+            Arm { due: Duration, seq: u64 },
+            Skip,
+        }
+        let act = if let Some(t) = st.tasks.get_mut(&id) {
+            if t.snap == e {
+                Act::Skip
+            } else {
+                t.snap = e.clone();
+                let since = now.saturating_duration_since(t.last_emit);
+                if status != t.emitted_status || since >= TASK_MIN_INTERVAL {
+                    t.emitted_status = status;
+                    t.last_emit = now;
+                    t.pending = false;
+                    t.timer_seq += 1;
+                    t.timer_armed = false;
+                    Act::Emit
+                } else {
+                    t.pending = true;
+                    if t.timer_armed {
+                        Act::Skip
+                    } else {
+                        t.timer_armed = true;
+                        Act::Arm { due: TASK_MIN_INTERVAL - since, seq: t.timer_seq }
+                    }
+                }
+            }
+        } else {
+            if st.tasks.len() >= TASKS_TRACKED_MAX {
+                st.tasks.retain(|_, t| !task_status_of(&t.snap).is_terminal());
+            }
+            let order = st.next_task_order;
+            st.next_task_order += 1;
+            st.tasks.insert(
+                id.clone(),
+                TaskTrack {
+                    snap: e.clone(),
+                    emitted_status: status,
+                    last_emit: now,
+                    pending: false,
+                    timer_seq: 0,
+                    timer_armed: false,
+                    order,
+                },
+            );
+            Act::Emit
+        };
+        match act {
+            Act::Emit => {
+                self.emit(st, e).await;
+            }
+            Act::Arm { due, seq } => {
+                let this = self.clone();
+                let sid = st.row.id.clone();
+                let gen = st.driver_gen;
+                tokio::spawn(async move {
+                    tokio::time::sleep(due).await;
+                    this.flush_task(&sid, gen, &id, seq).await;
+                });
+            }
+            Act::Skip => {}
+        }
+    }
+
+    /// `task` 快照的后沿：窗口结束，发出这段时间里最新的一条。定时器是在会话锁之外睡的，醒来要重新拿锁，
+    /// 并确认它仍然有效：会话还在、没有换过 agent 进程（`driver_gen`）、没有被状态变化 / 更晚的发送作废（`seq`）。
+    async fn flush_task(self: &Arc<Self>, sid: &str, gen: u64, id: &str, seq: u64) {
+        let Ok(sess) = self.get(sid) else { return };
+        let mut st = sess.st.lock().await;
+        if st.deleted || st.driver_gen != gen {
+            return;
+        }
+        let Some(t) = st.tasks.get_mut(id) else { return };
+        if t.timer_seq != seq || !t.pending {
+            return;
+        }
+        t.pending = false;
+        t.timer_armed = false;
+        t.timer_seq += 1;
+        t.last_emit = Instant::now();
+        let e = t.snap.clone();
+        self.emit(&mut st, e).await;
+    }
+
+    /// agent 进程没了：还不是终态的任务各补一条 `status = cancelled` 的快照（其余字段取最近收到的那一条，
+    /// 包括还没来得及发出去的），然后忘掉所有任务。已经挂着的后沿定时器因为 `driver_gen` 变了而作废。
+    async fn cancel_open_tasks(&self, st: &mut St) {
+        if st.tasks.is_empty() {
+            return;
+        }
+        let mut open: Vec<(u64, Event)> = std::mem::take(&mut st.tasks)
+            .into_values()
+            .filter(|t| !task_status_of(&t.snap).is_terminal())
+            .map(|t| (t.order, t.snap))
+            .collect();
+        open.sort_by_key(|(order, _)| *order);
+        for (_, mut ev) in open {
+            if let Event::Task { status, .. } = &mut ev {
+                *status = TaskStatus::Cancelled;
+            }
+            self.emit(st, ev).await;
         }
     }
 
@@ -1986,7 +2147,7 @@ impl Sessions {
 
     async fn on_exited(self: &Arc<Self>, st: &mut St, code: Option<i32>, error: Option<String>) {
         // 推进代号：这个 driver 之后的任何事件（包括通道关闭时合成的 Exited）都会被丢弃，一次退出只处理一次
-        self.detach(st);
+        self.detach_driver(st).await;
         if st.turn.is_some() {
             let failed = error.is_some() || code.is_some_and(|c| c != 0);
             let msg = error.clone().unwrap_or_else(|| format!("agent exited (code {code:?})"));
@@ -2451,7 +2612,7 @@ impl Sessions {
         let closing = {
             let mut st = sess.st.lock().await;
             self.deny_all(&mut st, "session restarted").await;
-            let old = self.detach(&mut st);
+            let old = self.detach_driver(&mut st).await;
             if st.turn.is_some() {
                 st.backlog.clear();
                 self.end_turn(&mut st, TurnDoneReason::Cancelled, None, None).await;
@@ -2703,7 +2864,7 @@ impl Sessions {
             self.persist(&st).await;
             self.push_changed(self.changed_payload(&st), true);
             // 工作目录变了：旧进程不能继续用，下次 send 重新拉起
-            self.detach(&mut st).map(|d| self.retire_tracked(&mut st, d))
+            self.detach_driver(&mut st).await.map(|d| self.retire_tracked(&mut st, d))
         };
         if let Some(c) = old {
             c.await;
@@ -2861,7 +3022,7 @@ impl Sessions {
                         pending = true;
                         (Some(st.row.id.clone()), None)
                     } else if st.driver.is_some() {
-                        (None, self.detach(&mut st).map(|d| self.retire_tracked(&mut st, d)))
+                        (None, self.detach_driver(&mut st).await.map(|d| self.retire_tracked(&mut st, d)))
                     } else {
                         continue;
                     }
@@ -3093,7 +3254,7 @@ impl Sessions {
                         },
                     )
                     .await;
-                    if let Some(d) = self.detach(&mut st) {
+                    if let Some(d) = self.detach_driver(&mut st).await {
                         self.retire(&mut st, d);
                     }
                     self.end_turn(&mut st, TurnDoneReason::Error, None, Some(SessionStatus::Error)).await;
@@ -3104,7 +3265,7 @@ impl Sessions {
             // 取消后 adapter 迟迟不结束 turn
             if let Some(at) = st.turn.as_ref().and_then(|t| t.cancel_requested_at) {
                 if at.elapsed() > CANCEL_GRACE {
-                    if let Some(d) = self.detach(&mut st) {
+                    if let Some(d) = self.detach_driver(&mut st).await {
                         self.retire(&mut st, d);
                     }
                     st.backlog.clear();
@@ -3129,7 +3290,7 @@ impl Sessions {
                 && st.ended_since.is_some_and(|t| t.elapsed() >= idle_timeout)
                 && self.d.agents.info(&st.row.agent).is_some_and(|i| i.capabilities.resume)
             {
-                if let Some(d) = self.detach(&mut st) {
+                if let Some(d) = self.detach_driver(&mut st).await {
                     let closing = self.retire_tracked(&mut st, d);
                     to_shutdown.push((sess.clone(), closing));
                 }
@@ -3145,7 +3306,7 @@ impl Sessions {
                     {
                         let can_resume = self.d.agents.info(&st.row.agent).is_some_and(|i| i.capabilities.resume);
                         if can_resume {
-                            if let Some(d) = self.detach(&mut st) {
+                            if let Some(d) = self.detach_driver(&mut st).await {
                                 let closing = self.retire_tracked(&mut st, d);
                                 to_shutdown.push((sess.clone(), closing));
                             }
@@ -3290,7 +3451,7 @@ impl Sessions {
             if active {
                 self.deny_all_inner(&mut st, "daemon shutting down", false).await;
             }
-            if let Some(d) = self.detach(&mut st) {
+            if let Some(d) = self.detach_driver(&mut st).await {
                 drivers.push(d);
             }
             if active {
@@ -3326,6 +3487,14 @@ impl Sessions {
     #[cfg(any(test, feature = "testing"))]
     pub fn set_finish_notify_grace(&self, d: Duration) {
         self.finish_notify_grace_ms.store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// `Event::Task` 快照的状态；不是 task 事件当作 `running`（不会发生）。
+fn task_status_of(e: &Event) -> TaskStatus {
+    match e {
+        Event::Task { status, .. } => *status,
+        _ => TaskStatus::Running,
     }
 }
 

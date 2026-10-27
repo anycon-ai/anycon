@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { ev, evs, resetSeq } from '@/test/factories'
-import { applyEvents, buildView, diffSettings, emptyView, latestSyncBlock, pendingPermissions, planIngest, type AssistantBlock, type GitSystemBlock, type PermissionBlock, type ToolBlock, type TurnStartBlock } from './reducer'
+import { applyEvents, buildView, diffSettings, emptyView, latestSyncBlock, pendingPermissions, planIngest, type AssistantBlock, type GitSystemBlock, type NoticeBlock, type PermissionBlock, type TaskBlock, type ToolBlock, type TurnStartBlock } from './reducer'
+import type { Event } from '@/protocol'
 
 beforeEach(() => resetSeq())
 
@@ -293,5 +294,177 @@ describe('turn_start from the agent itself', () => {
     const v1 = buildView(evs([{ type: 'turn_start', turn_id: 1, message_id: 'm1' }, { type: 'turn_done', turn_id: 1, reason: 'completed' }]))
     const v2 = applyEvents(v1, [ev({ type: 'turn_start', turn_id: 2, message_id: '' })])
     expect(turnStarts(v2.blocks).map((b) => b.agentStarted)).toEqual([false, true])
+  })
+})
+
+describe('task snapshots', () => {
+  const workflowCall = { type: 'tool_call', id: 'tool-1', name: 'Workflow', category: 'subagent', title: 'Workflow: review', input: {} } as const
+  const snapshot = (over: Partial<Extract<Event, { type: 'task' }>> = {}): Event => ({ type: 'task', id: 'task-1', kind: 'workflow', tool_id: 'tool-1', title: 'review', status: 'running', ...over })
+
+  it('attaches the snapshot to the tool block that started it, without adding a row', () => {
+    const v = buildView(evs([workflowCall, snapshot({ usage: { total_tokens: 120 }, summary: 'Scanning' })]))
+    expect(v.blocks.map((b) => b.type)).toEqual(['tool'])
+    const tool = v.blocks[0] as ToolBlock
+    expect(tool.tasks).toHaveLength(1)
+    expect(tool.tasks![0]).toMatchObject({ id: 'task-1', kind: 'workflow', toolId: 'tool-1', title: 'review', status: 'running', usage: { total_tokens: 120 }, summary: 'Scanning', phases: [], agents: [] })
+  })
+
+  it('replaces an earlier snapshot of the same id as a whole, in place', () => {
+    const v = buildView(
+      evs([
+        workflowCall,
+        snapshot({ phases: [{ index: 0, title: 'Scan' }], agents: [{ index: 0, label: 'scanner', state: 'running', phase_index: 0 }], last_tool: 'Read' }),
+        { type: 'text_delta', text: 'working' },
+        snapshot({ status: 'completed', agents: [{ index: 0, label: 'scanner', state: 'done', phase_index: 0 }] }),
+      ]),
+    )
+    expect(v.blocks.map((b) => b.type)).toEqual(['tool', 'assistant'])
+    const tasks = (v.blocks[0] as ToolBlock).tasks!
+    expect(tasks).toHaveLength(1)
+    // 整条取代，不是合并：第二条没带 phases / last_tool，就都没有了
+    expect(tasks[0]).toMatchObject({ status: 'completed', phases: [], lastTool: undefined, agents: [{ label: 'scanner', state: 'done' }] })
+    expect(tasks[0]!.seq).toBe(4)
+  })
+
+  it('keeps several tasks started by one tool call in order of first appearance', () => {
+    const v = buildView(evs([workflowCall, snapshot({ id: 'a', title: 'A' }), snapshot({ id: 'b', title: 'B' }), snapshot({ id: 'a', title: 'A', status: 'completed' })]))
+    const tasks = (v.blocks[0] as ToolBlock).tasks!
+    expect(tasks.map((t) => [t.id, t.status])).toEqual([
+      ['a', 'completed'],
+      ['b', 'running'],
+    ])
+  })
+
+  it('makes a standalone block at the first appearance when tool_id is missing or unknown, and updates it in place', () => {
+    const v = buildView(
+      evs([
+        { type: 'text_delta', text: 'before' },
+        snapshot({ id: 'lonely', tool_id: 'not-loaded' }),
+        { type: 'text_delta', text: 'after' },
+        snapshot({ id: 'nobody', tool_id: null }),
+        snapshot({ id: 'lonely', tool_id: 'not-loaded', status: 'failed' }),
+      ]),
+    )
+    expect(v.blocks.map((b) => b.type)).toEqual(['assistant', 'task', 'assistant', 'task'])
+    const [first, second] = v.blocks.filter((b): b is TaskBlock => b.type === 'task')
+    expect(first!.task).toMatchObject({ id: 'lonely', status: 'failed' })
+    expect(first!.key).toBe('task-lonely')
+    expect(second!.task.id).toBe('nobody')
+    // 第一次出现的位置先收口了前面的文字，后面的文字另起一块
+    expect((v.blocks[0] as AssistantBlock).done).toBe(true)
+  })
+
+  it('does not move a standalone task onto a tool block that shows up later', () => {
+    const v = buildView(evs([snapshot({ id: 'early' }), workflowCall, snapshot({ id: 'early', status: 'completed' })]))
+    expect(v.blocks.map((b) => b.type)).toEqual(['task', 'tool'])
+    expect((v.blocks[0] as TaskBlock).task.status).toBe('completed')
+    expect((v.blocks[1] as ToolBlock).tasks).toBeUndefined()
+  })
+
+  it('keeps the attached tasks when the tool_call or tool_result for the block arrive again', () => {
+    const v = buildView(evs([workflowCall, snapshot(), { ...workflowCall, title: 'Workflow: review (again)' }, { type: 'tool_result', id: 'tool-1', output: 'done', is_error: false }]))
+    const tool = v.blocks[0] as ToolBlock
+    expect(tool.title).toBe('Workflow: review (again)')
+    expect(tool.result?.output).toBe('done')
+    expect(tool.tasks).toHaveLength(1)
+  })
+
+  it('a completed task goes back to running when a later snapshot says so (the sub-agent got new input), in the same place', () => {
+    const spawn = { type: 'tool_call', id: 'call_1', name: 'spawnAgent', category: 'subagent', title: 'Start sub-agent', input: {} } as const
+    const child = (status: 'running' | 'completed'): Event => ({ type: 'task', id: 'child', kind: 'subagent', tool_id: 'call_1', title: 'pong', status })
+    const v = buildView(evs([spawn, child('running'), child('completed'), { type: 'text_delta', text: 'the sub-agent said PONG' }, child('running')]))
+    expect(v.blocks.map((b) => b.type)).toEqual(['tool', 'assistant'])
+    expect((v.blocks[0] as ToolBlock).tasks!.map((t) => [t.id, t.status])).toEqual([['child', 'running']])
+    const back = applyEvents(v, [ev(child('completed'))])
+    expect((back.blocks[0] as ToolBlock).tasks![0]!.status).toBe('completed')
+  })
+
+  it('applies incrementally the same way as building from scratch', () => {
+    const events = evs([workflowCall, snapshot(), snapshot({ status: 'completed' })])
+    const inc = applyEvents(applyEvents(emptyView(), events.slice(0, 2)), events.slice(2))
+    expect(inc.blocks).toEqual(buildView(events).blocks)
+    expect(inc.taskIndex).toEqual({ 'task-1': 0 })
+  })
+})
+
+describe('notice events', () => {
+  it('makes a notice block with the level and the model / reset fields, closing the open text', () => {
+    const v = buildView(
+      evs([
+        { type: 'text_delta', text: 'hi' },
+        { type: 'notice', code: 'model_fallback', level: 'warning', message: 'Model A is overloaded', model_from: 'a', model_to: 'b' },
+        { type: 'notice', code: 'rate_limit', level: 'warning', message: '', resets_at_ms: 1_700_000_000_000 },
+        { type: 'notice', code: 'command_output', level: 'info', message: 'line 1\nline 2' },
+      ]),
+    )
+    expect(v.blocks.map((b) => b.type)).toEqual(['assistant', 'notice', 'notice', 'notice'])
+    expect((v.blocks[0] as AssistantBlock).done).toBe(true)
+    const [fallback, limit, output] = v.blocks.slice(1) as NoticeBlock[]
+    expect(fallback).toMatchObject({ code: 'model_fallback', level: 'warning', message: 'Model A is overloaded', modelFrom: 'a', modelTo: 'b' })
+    expect(limit).toMatchObject({ code: 'rate_limit', resetsAtMs: 1_700_000_000_000, modelFrom: undefined })
+    expect(output).toMatchObject({ code: 'command_output', level: 'info', message: 'line 1\nline 2' })
+  })
+
+  it('keeps unknown codes as they are', () => {
+    const v = buildView(evs([{ type: 'notice', code: 'something_new', level: 'info', message: 'hello' }]))
+    expect(v.blocks[0]).toMatchObject({ type: 'notice', code: 'something_new', message: 'hello' })
+  })
+})
+
+describe('activity', () => {
+  const retrying = { type: 'activity', state: 'retrying', attempt: 2, max_attempts: 10, delay_ms: 5000, reason: '529 overloaded_error' } as const
+
+  it('records the transient state at the time of the event and adds no block', () => {
+    const v = buildView(evs([{ type: 'turn_start', turn_id: 1, message_id: 'm' }, retrying]))
+    expect(v.blocks.map((b) => b.type)).toEqual(['turn_start'])
+    expect(v.activity).toEqual({ state: 'retrying', attempt: 2, maxAttempts: 10, delayMs: 5000, reason: '529 overloaded_error', seq: 2, ts: 1_002 })
+    const compacting = applyEvents(v, [ev({ type: 'activity', state: 'compacting' })])
+    expect(compacting.activity).toMatchObject({ state: 'compacting', attempt: undefined, delayMs: undefined })
+  })
+
+  it('is cleared by state none', () => {
+    const v = buildView(evs([retrying, { type: 'activity', state: 'none' }]))
+    expect(v.activity).toBeNull()
+  })
+
+  it.each<[string, Event]>([
+    ['text', { type: 'text_delta', text: 'x' }],
+    ['thinking', { type: 'thinking_delta', text: 'x' }],
+    ['a tool call', { type: 'tool_call', id: 't', name: 'Bash', category: 'shell', title: 'x', input: {} }],
+    ['a tool result', { type: 'tool_result', id: 't', output: '', is_error: false }],
+    ['tool output', { type: 'tool_output_delta', id: 't', text: 'x' }],
+    ['turn_done', { type: 'turn_done', turn_id: 1, reason: 'completed' }],
+    ['an error', { type: 'error', code: 'x', message: 'x', recoverable: false }],
+    ['the session going idle', { type: 'status', state: 'idle' }],
+  ])('is cleared by %s', (_name, event) => {
+    expect(buildView(evs([retrying, event])).activity).toBeNull()
+  })
+
+  it('survives events that are not content: notices, task snapshots, status running, file changes', () => {
+    const v = buildView(
+      evs([
+        retrying,
+        { type: 'status', state: 'running' },
+        { type: 'notice', code: 'context_compacted', level: 'info', message: '' },
+        { type: 'task', id: 't', kind: 'subagent', title: 'x', status: 'running' },
+        { type: 'file_changed', path: 'a', kind: 'created' },
+      ]),
+    )
+    expect(v.activity).toMatchObject({ state: 'retrying' })
+  })
+})
+
+describe('context usage', () => {
+  const done = (usage: Record<string, number>) => ({ type: 'turn_done', turn_id: 1, reason: 'completed', usage: { duration_ms: 1, ...usage } }) as const
+
+  it('takes the latest context_window / context_tokens from turn_done', () => {
+    const v = buildView(evs([done({ context_window: 200_000, context_tokens: 12_000 }), done({ context_window: 200_000, context_tokens: 46_000 })]))
+    expect(v.context).toEqual({ window: 200_000, tokens: 46_000 })
+  })
+
+  it('needs both numbers, and a later turn without them does not erase the last known value', () => {
+    expect(buildView(evs([done({ context_window: 200_000 })])).context).toBeNull()
+    const v = buildView(evs([done({ context_window: 200_000, context_tokens: 12_000 }), done({ input_tokens: 5 }), { type: 'turn_done', turn_id: 3, reason: 'cancelled' }]))
+    expect(v.context).toEqual({ window: 200_000, tokens: 12_000 })
   })
 })

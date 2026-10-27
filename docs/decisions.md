@@ -808,3 +808,49 @@ ADR-1 拆成两层来看：
 - 管理页账号搜索只有 ASCII 字母不区分大小写（SQLite 的 `lower()` 只折叠 ASCII）：显示名里的非 ASCII 字符要大小写一致才命中。换来的是过滤和分页都在 SQL 里做，不把账号表读进内存
 
 **部分修订**：ADR-22（OAuth 关联规则：未验证的邮箱先走邮箱验证码再关联）、ADR-37（`multi` 的「邮箱即注册」随这一条实现：发码给任何有效邮箱，验证通过时没有账号就建一个）。
+
+---
+
+## ADR-41 任务快照、提示和临时状态：三类新事件
+
+**背景**：Claude Code 和 Codex 发出的很多消息，adapter 以前直接丢掉，协议的 `Event` 也表达不了：workflow 和后台任务的进度（`tool_call` / `tool_result` 描述的是一次调用，而这些调用早就返回了，任务还在跑；`/workflows` 在 `-p` 模式下不可用）、API 重试（用户看到的是 agent 像卡住了）、换模型 / 压缩上下文 / 配置警告 / MCP server 启动失败这类提示、`/context` `/cost` 这类本地命令的输出。`error { recoverable: true }` 的语义是「这个 turn 出了问题」，客户端按错误样式显示、可能带「重试」，不适合这些没出问题的提示。字段和语义见 [protocol.md § 6](protocol.md#6-会话事件)，daemon 的行为见 [spec/daemon.md § 8.3](spec/daemon.md#83-task--notice--activity)，界面见 [spec/web.md § 4.6](spec/web.md#46-会话页-nnodessession)。
+
+**决定**：
+
+1. **`task`：后台任务的状态快照，同一个 `id` 的后一条整条取代前一条**，不是增量。`kind`（`workflow` / `subagent` / `shell` / `other`）、`status`（`running` 和三个终态；终态只说明这一刻不在跑，Codex 的子 agent 收到新输入会从 `completed` 回到 `running`，客户端以最新一条为准）、`tool_id`（启动它的 `tool_call` 的 `id`，客户端据此把进度挂在工具块上）、用量、最近调用的工具、摘要；workflow 另带 `phases[]` 和 `agents[]`（每个 agent 的状态、token、最近调用的工具、错误、重试次数、是否来自缓存）
+2. **daemon 节流 `task`**：按（会话，task id）前沿立即发，之后 1 秒窗口内的同状态快照合并、窗口结束发最新的一条（后沿）；`status` 变化（尤其进入终态）不受节流，立即发并作废挂着的后沿；内容和最近收到的一样的丢弃。daemon 记住每个任务的最新快照，agent 进程没了（`Exited`，以及 daemon 自己收进程的路径）时，还不是终态的任务各补一条 `cancelled`
+3. **大小上限**：`agents` / `phases` 各 500 项（`agents` 先保住 `running` / `failed` 的），`title` / `label` / `last_tool` 200 字符，`summary` / `error` 4 KiB，`notice.message` 64 KiB（同 `tool_result.output` 的头尾截断）
+4. **`notice`：非错误的提示**。`code`（开放集合，稳定取值见 protocol.md § 6）+ `level`（`info` / `warning`）+ `message`（agent 的原文）+ 少量专有字段（`model_from` / `model_to`、`resets_at_ms`）。客户端认识 `code` 时用自己的文案，不认识就按 `level` 显示 `message`。不触发推送通知
+5. **`activity`：turn 进行中的临时状态**（`retrying` / `compacting` / `none`）。客户端显示成一条临时状态，收到任何内容事件、`turn_done` 或 `none` 时清掉
+6. **`turn_done.usage` 加 `context_window` / `context_tokens`**：模型的上下文窗口，以及 turn 结束时窗口里已经占用的 token（最近一次模型请求的输入加缓存读写）
+7. **`PermissionDetail.url`**：`kind = other` 的请求可以带一个要用户在浏览器里打开的链接（MCP server 的 URL 模式 elicitation）。只会是 `http` / `https`；Web UI 显示完整 URL 和一个「打开」按钮（`target="_blank" rel="noopener noreferrer"`），CLI 显示完整 URL，`--auto-approve` 不自动答复这类请求
+8. 新增的字段全部可选（缺省不上线路），旧数据照常解析
+
+**原因**：
+
+- 快照整条取代，而不是增量：adapter 从 agent 那里拿到的就是任务的全量状态，增量要 daemon 和每个客户端各自重建，丢一条就错下去；整条取代让节流、漏发、历史分页（只关心某个 id 的最后一条）都是安全的。代价是体积，所以要节流和上限
+- 节流放在 daemon，而不是 adapter 或客户端：事件流、SQLite、全文索引和历史分页（一页 192 KiB）的增长是 daemon 的成本；adapter 不知道有多少客户端在看；客户端节流省不掉存储。1 秒窗口和 `session.changed` 的节流一致
+- 状态变化不节流、并作废后沿：终态必须及时到达；后沿定时器如果在终态之后才醒来，会用一条过期的 `running` 盖掉已经完成的任务（任务真的重新跑起来，是 adapter 报的新快照，不受这条影响）。窗口比较的是上一条**发出去的**状态，所以「running → failed」紧跟在一条 running 之后也立即发
+- 定时器醒来要重新拿会话锁、检查会话和 agent 进程的代号：定时器在会话锁之外睡，期间会话可能被删、进程可能被换；不检查会把旧进程的快照发到新进程的事件流里
+- 进程没了要补 `cancelled`：任务和 agent 进程同生死，只有 daemon 知道进程什么时候没了（崩溃的 adapter 没机会补）。不补的话界面永远显示「运行中」。daemon 被强杀时补不了，客户端在会话没有在跑、`background_tasks = 0` 时把非终态的任务显示成「已停止」
+- `notice` 不复用可恢复的 `error`：两者对客户端的含义不同，前者不该画成红块、不该带「重试」、不该影响会话状态的判断。Codex 已有的 `agent_reconnecting` / `agent_context_reset` 保持原样，不在这一条的范围里
+- `activity` 单独一类，而不是 `notice` 或 `status`：它要被后面的内容事件清掉，生命周期和提示不同；`status` 是会话级状态机，只有 daemon 能发
+- `context_tokens` 单独给出：`input_tokens` 等是累计用量，回答不了「窗口还剩多少」
+- `url` 只认 `http` / `https` 并显示完整地址：用户批准的是「我在这个地址上完成了」，看不全地址就没法判断；`javascript:` 之类的协议不能给打开入口。自动答复等于替用户声称做完了，所以 `--auto-approve` 不碰
+
+**否掉**：
+
+- 增量事件（`task_started` / `task_progress` / `task_done`）：见原因
+- 在 adapter 里节流：adapter 不知道存储和客户端的情况，三个 adapter 要各写一遍
+- 让客户端自己丢掉多余的快照：存储和传输的成本已经付了
+- 复用 `tool_result.detail.background` 承载任务进度：它只能表达「还在后台跑」和最终结果，装不下阶段、各个 agent 的状态和用量
+- `notice` 复用 `error { recoverable: true }`：见原因
+- 把 `activity` 放进 `SessionSummary` / `session.changed`：它是 turn 内的瞬时状态，不需要列表页看到，也不该为它多发 `session.changed`
+
+**代价 / 限制**：
+
+- 节流合并掉窗口里的中间快照；观察者只保证看到每个状态变化和最新的进度
+- 终态不是最终状态：Codex 的子 agent 可以从 `completed` 回到 `running`，所以客户端、daemon 和 adapter 都不能假设「进了终态就不会再变」（daemon 的节流、进程退出时的 `cancelled` 补发、客户端的后台任务计数都按最新一条快照的状态算）；Claude Code 的任务进入终态后 adapter 忽略后续的帧
+- 一条 500 个 agent、每个带 4 KiB 错误的快照最坏约 2 MB，靠 1 秒节流、历史分页里「单个事件单独成页」和传输层分片兜住；超过 500 个 agent 的 workflow 在界面上显示不全
+- `notice` 的 `code` 是开放集合，客户端要为不认识的 `code` 准备兜底显示
+- 进程退出时补的 `cancelled` 快照里，`agents[]` 的状态保持原样（`running` 的 agent 仍写 `running`），客户端按任务的终态显示

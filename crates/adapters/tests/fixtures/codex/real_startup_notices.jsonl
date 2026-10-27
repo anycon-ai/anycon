@@ -1,0 +1,6 @@
+{"method":"configWarning","params":{"summary":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (/home/user/.codex/config.toml): `some_old_setting` is ignored.","details":null},"emittedAtMs":1791800000000}
+{"method":"warning","params":{"threadId":"FIXTURE_THREAD","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (/home/user/.codex/config.toml): `some_old_setting` is ignored."},"emittedAtMs":1791800000022}
+{"method":"mcpServer/startupStatus/updated","params":{"threadId":"FIXTURE_THREAD","name":"demo","status":"starting","error":null,"failureReason":null},"emittedAtMs":1791800000022}
+{"method":"mcpServer/startupStatus/updated","params":{"threadId":"FIXTURE_THREAD","name":"broken","status":"starting","error":null,"failureReason":null},"emittedAtMs":1791800000022}
+{"method":"mcpServer/startupStatus/updated","params":{"threadId":"FIXTURE_THREAD","name":"broken","status":"failed","error":"MCP client for `broken` failed to start: MCP startup failed: No such file or directory (os error 2)","failureReason":null},"emittedAtMs":1791800000022}
+{"method":"mcpServer/startupStatus/updated","params":{"threadId":"FIXTURE_THREAD","name":"demo","status":"ready","error":null,"failureReason":null},"emittedAtMs":1791800000035}

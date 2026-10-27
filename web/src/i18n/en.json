@@ -408,8 +408,6 @@
     "loadOlder": "Load earlier messages",
     "newMessages": "New messages",
     "turnFinished": "The agent finished replying.",
-    "backgroundTasks_one": "{{count}} background task is still running — the agent will pick up its result",
-    "backgroundTasks_other": "{{count}} background tasks are still running — the agent will pick up their results",
     "goneTitle": "Session not found",
     "goneBody": "It may have been deleted from another device.",
     "goneBack": "Back to node",
@@ -481,6 +479,55 @@
     "option": "{{id}} set to {{value}}",
     "agentTurn": "Background task finished — the agent continued"
   },
+  "task": {
+    "title": "Background task",
+    "chip_one": "{{count}} background task running",
+    "chip_other": "{{count}} background tasks running",
+    "listTitle": "Background tasks",
+    "willContinue": "The agent will pick up their results when they finish.",
+    "status": {
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "stopped": "Stopped"
+    },
+    "agentState": {
+      "queued": "Queued",
+      "running": "Running",
+      "done": "Done",
+      "failed": "Failed",
+      "skipped": "Skipped",
+      "stopped": "Stopped"
+    },
+    "agentsDone": "{{done}}/{{total}} agents done",
+    "phase": "Phase {{n}}",
+    "attempt": "attempt {{n}}",
+    "cached": "cached"
+  },
+  "notice": {
+    "modelFallback": "Model switched from {{from}} to {{to}}",
+    "modelFallbackTo": "Model switched to {{to}}",
+    "modelFallbackGeneric": "The model was switched",
+    "contextCompacted": "Context was compacted",
+    "rateLimit": "Usage limit reached — resets {{time}}",
+    "rateLimitNoTime": "Usage limit reached",
+    "commandOutput": "Command output",
+    "configWarning": "Configuration warning",
+    "deprecation": "Deprecation notice",
+    "mcpServerFailed": "An MCP server failed to start",
+    "permissionDenied": "A tool call was denied by the permission rules",
+    "autoReview": "Automatic approval was declined",
+    "hookFailed": "A hook failed or blocked the action",
+    "unknown": "Notice from the agent"
+  },
+  "activity": {
+    "retrying": "Retrying…",
+    "retryingIn": "Retrying in {{seconds}}s…",
+    "retryingAttempt": "Retrying ({{attempt}}/{{max}})…",
+    "retryingAttemptIn": "Retrying ({{attempt}}/{{max}}) in {{seconds}}s…",
+    "compacting": "Compacting context…"
+  },
   "code": {
     "text": "text"
   },
@@ -491,6 +538,8 @@
     "note": "Note to the agent",
     "notePlaceholder": "Optional note for the agent (used with options that accept one)",
     "freeText": "Type your answer",
+    "optional": "optional",
+    "clearAnswer": "Clear",
     "submitAnswers": "Submit answers",
     "modeChange": "The agent asks to switch to mode “{{mode}}”.",
     "allowedBy": "Allowed by {{device}}",
@@ -511,7 +560,10 @@
     "deniedAuto": "Denied automatically by anycon",
     "resolvedAuto": "Handled automatically by anycon",
     "deniedFolderChanged": "This request was denied because the project folder changed, and the turn was stopped.",
-    "requestGone": "This request no longer exists, so it can’t be answered."
+    "requestGone": "This request no longer exists, so it can’t be answered.",
+    "openLink": "Open",
+    "openLinkLabel": "Open the link in a new tab",
+    "linkNotOpenable": "Only http and https links can be opened from here. Copy the address if you trust it."
   },
   "composer": {
     "label": "Message",
@@ -632,7 +684,9 @@
     "deleteTitle": "Delete this session?",
     "deleteBody": "This removes its history from the node. The agent's own session files are not touched.",
     "deleteConfirm": "Delete session",
-    "branch": "Branch"
+    "branch": "Branch",
+    "context": "Context",
+    "contextValue": "{{percent}}% · {{used}} / {{window}}"
   },
   "agent": {
     "noneReady": "No agent is ready on this node.",

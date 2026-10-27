@@ -10,7 +10,7 @@ import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Overlay'
 import { cn } from '@/ui/cn'
 import { Chip, type Tone } from '@/ui/Misc'
-import type { ToolBlock, UsageSum } from '../reducer'
+import type { ContextUsage, ToolBlock, UsageSum } from '../reducer'
 import { isActive, isTurnActive, type SubagentActivity, type SubagentRow } from '../subagents'
 import { toolCommand, toolDescription, toolLabel } from '../text'
 
@@ -28,6 +28,8 @@ export interface InfoPanelProps {
   project?: string | null
   createdAt: number
   usage: UsageSum
+  /** 最近一个 turn 结束时的上下文占用（`turn_done.usage.context_*`）；agent 不报就没有，不显示这一行。 */
+  context?: ContextUsage | null
   /** daemon 汇总的累计（SessionSummary.usage）。`session.changed` 不带用量，这份可能落后于已收到的事件，所以和本地算的取较大值。 */
   usageTotals?: { turns: number; input_tokens: number; output_tokens: number; cost_usd?: number | null }
   pending: Array<Pick<PendingPermission, 'request_id' | 'title'>>
@@ -175,6 +177,7 @@ export function InfoPanel(p: InfoPanelProps) {
       <Card>
         <ValueRow label={t('info.turns')}>{turns}</ValueRow>
         {cost != null ? <ValueRow label={t('info.cost')}>{formatCost(cost)}</ValueRow> : null}
+        {p.context && p.context.window > 0 ? <ContextRow context={p.context} /> : null}
       </Card>
 
       {p.pending.length > 0 ? (
@@ -309,6 +312,29 @@ function AgentRow({ icon: Icon, depth = 0, label, meta, aside, testId, state }: 
         {meta ? <span className="block truncate text-xs text-fg-subtle">{meta}</span> : null}
       </span>
       <span className="shrink-0">{aside}</span>
+    </div>
+  )
+}
+
+/** 上下文占用：一条进度条加「百分比 · 已用 / 窗口」。`tokens` 是 turn 结束时窗口里的 token 数，不是累计用量。 */
+export function contextPercent(c: ContextUsage): number {
+  return c.window > 0 ? Math.max(0, Math.round((c.tokens / c.window) * 100)) : 0
+}
+
+function ContextRow({ context }: { context: ContextUsage }) {
+  const { t } = useTranslation()
+  const percent = contextPercent(context)
+  return (
+    <div className="py-1.5 text-sm" data-testid="info-context" data-percent={percent}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="shrink-0 font-medium">{t('info.context')}</span>
+        <span className="min-w-0 truncate text-right text-fg-subtle" data-testid="info-context-value">
+          {t('info.contextValue', { percent, used: compactNumber(context.tokens), window: compactNumber(context.window) })}
+        </span>
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-bg-muted" role="progressbar" aria-label={t('info.context')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, percent)}>
+        <div className={cn('h-full rounded-full', percent >= 90 ? 'bg-danger' : percent >= 75 ? 'bg-warning' : 'bg-accent')} style={{ width: `${Math.min(100, percent)}%` }} />
+      </div>
     </div>
   )
 }

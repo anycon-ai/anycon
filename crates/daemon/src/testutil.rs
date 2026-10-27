@@ -423,6 +423,7 @@ fn usage() -> Usage {
         cost_usd: Some(0.01),
         duration_ms: 5,
         model: Some("fake-large".into()),
+        ..Default::default()
     }
 }
 
@@ -576,6 +577,7 @@ impl AgentHandle for FakeHandle {
                                 choices: vec![],
                                 multi: false,
                                 free_text: true,
+                                optional: false,
                             }],
                             ..Default::default()
                         },

@@ -4,9 +4,11 @@
 //!   `…[truncated N bytes]`；对象 / 数组形的值保留结构，只截里面超长的字符串叶子；
 //! - `tool_output_delta` 每个工具调用累计转发不超过 64 KiB，超出的丢弃（见 `sessions.rs` 的 `DeltaBudget`）；
 //! - `session.history` 一页按编码后字节数封顶 192 KiB，超出的留给下一页（`has_more`）；单个事件超过上限时单独成页；
-//! - `session.send` 的内容最多 1 MiB，免得一条用户消息把以后的每一页历史都撑爆。
+//! - `session.send` 的内容最多 1 MiB，免得一条用户消息把以后的每一页历史都撑爆；
+//! - `task` 快照：`agents` 最多 500 项，`label` / `title` / `last_tool` 截到 200 字符，`error` / `summary` 截到 4 KiB；
+//! - `notice.message` 超过 64 KiB 同工具输出一样头尾截断。
 
-use anycon_protocol::{Event, SessionEvent};
+use anycon_protocol::{Event, SessionEvent, TaskAgent, TaskAgentState};
 use serde_json::Value;
 
 /// `tool_result.output` / `tool_call.input` 的上限。
@@ -20,6 +22,12 @@ pub const TOOL_DELTA_MAX: usize = 64 * 1024;
 pub const HISTORY_PAGE_MAX: usize = 192 * 1024;
 /// `session.send` / `session.create.prompt` 的内容上限。
 pub const SEND_CONTENT_MAX: usize = 1024 * 1024;
+/// `task` 快照里 `agents`（以及 `phases`）的最大项数。
+pub const TASK_AGENTS_MAX: usize = 500;
+/// `task` 快照里 `label` / `title` / `last_tool` 的最大字符数。
+pub const TASK_LABEL_MAX_CHARS: usize = 200;
+/// `task` 快照里 `error` / `summary` 的最大字节数。
+pub const TASK_TEXT_MAX: usize = 4 * 1024;
 /// `…[truncated N bytes]` 提示（加上两个换行）最多占多少字节。
 const MARKER_SLACK: usize = 128;
 /// JSON 值里单个字符串叶子超过它就先截（再看整体是否仍超限）。
@@ -152,10 +160,94 @@ pub fn limit_value(v: &mut Value) -> bool {
     limit_value_counted(v).is_some()
 }
 
-/// 发送 / 存储前限制单个事件的大小（目前只有工具的输入输出可能很大）。返回是否改动过。
+/// 字符串超过 `max` 个字符时截成 `max` 个字符（最后一个是 `…`）。截过的结果再截一次是空操作。
+fn cut_chars(s: &mut String, max: usize) -> bool {
+    if s.chars().count() <= max {
+        return false;
+    }
+    let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
+    t.push('…');
+    *s = t;
+    true
+}
+
+/// 字符串超过 `max` 字节时在字符边界截断并补 `…`（结果不超过 `max` 字节）。截过的结果再截一次是空操作。
+fn cut_bytes(s: &mut String, max: usize) -> bool {
+    if s.len() <= max {
+        return false;
+    }
+    let mut t = prefix_at(s, max.saturating_sub('…'.len_utf8())).to_string();
+    t.push('…');
+    *s = t;
+    true
+}
+
+fn cut_chars_opt(s: &mut Option<String>, max: usize) -> bool {
+    s.as_mut().is_some_and(|s| cut_chars(s, max))
+}
+
+fn cut_bytes_opt(s: &mut Option<String>, max: usize) -> bool {
+    s.as_mut().is_some_and(|s| cut_bytes(s, max))
+}
+
+/// `agents` 超过上限时丢掉多出的项：先保住 `running` / `failed` 的（用户最想看的），空位再按原顺序补其它的，
+/// 保留下来的仍然按原来的顺序排列。
+fn limit_task_agents(agents: &mut Vec<TaskAgent>) -> bool {
+    if agents.len() <= TASK_AGENTS_MAX {
+        return false;
+    }
+    let mut keep = vec![false; agents.len()];
+    let mut room = TASK_AGENTS_MAX;
+    for pass in 0..2 {
+        for (i, a) in agents.iter().enumerate() {
+            if room == 0 {
+                break;
+            }
+            let urgent = matches!(a.state, TaskAgentState::Running | TaskAgentState::Failed);
+            if !keep[i] && (urgent == (pass == 0)) {
+                keep[i] = true;
+                room -= 1;
+            }
+        }
+    }
+    let mut i = 0;
+    agents.retain(|_| {
+        i += 1;
+        keep[i - 1]
+    });
+    true
+}
+
+/// 发送 / 存储前限制单个事件的大小。返回是否改动过。
 /// `tool_result.output` 被截断时，丢掉的字节数填进 `detail.output_truncated_bytes`（`detail` 为空就新建）。
 pub fn limit_event(ev: &mut Event) -> bool {
     match ev {
+        Event::Task { title, last_tool, summary, phases, agents, .. } => {
+            let mut changed = cut_chars(title, TASK_LABEL_MAX_CHARS);
+            changed |= cut_chars_opt(last_tool, TASK_LABEL_MAX_CHARS);
+            changed |= cut_bytes_opt(summary, TASK_TEXT_MAX);
+            if phases.len() > TASK_AGENTS_MAX {
+                phases.truncate(TASK_AGENTS_MAX);
+                changed = true;
+            }
+            for p in phases.iter_mut() {
+                changed |= cut_chars(&mut p.title, TASK_LABEL_MAX_CHARS);
+            }
+            changed |= limit_task_agents(agents);
+            for a in agents.iter_mut() {
+                changed |= cut_chars(&mut a.label, TASK_LABEL_MAX_CHARS);
+                changed |= cut_chars_opt(&mut a.last_tool, TASK_LABEL_MAX_CHARS);
+                changed |= cut_bytes_opt(&mut a.error, TASK_TEXT_MAX);
+            }
+            changed
+        }
+        Event::Notice { message, .. } => match truncate_tool_text(message) {
+            Some(t) => {
+                *message = t;
+                true
+            }
+            None => false,
+        },
         Event::ToolResult { output, detail, .. } => match limit_value_counted(output) {
             Some(n) => {
                 detail.get_or_insert_with(Default::default).output_truncated_bytes = Some(n);
@@ -381,6 +473,126 @@ mod tests {
         assert!(limit_value(&mut v));
         assert!(v["rows"].is_array() && v["rows"][0]["n"] == 0);
         assert!(serde_json::to_string(&v).unwrap().len() <= TOOL_OUTPUT_MAX);
+    }
+
+    fn task_agent(index: u32, label: &str, state: TaskAgentState) -> TaskAgent {
+        TaskAgent {
+            index,
+            label: label.into(),
+            state,
+            phase_index: None,
+            model: None,
+            tokens: None,
+            tool_calls: None,
+            duration_ms: None,
+            last_tool: None,
+            error: None,
+            attempt: None,
+            cached: None,
+        }
+    }
+
+    fn task(agents: Vec<TaskAgent>) -> Event {
+        Event::Task {
+            id: "t".into(),
+            kind: anycon_protocol::TaskKind::Workflow,
+            tool_id: None,
+            title: "wf".into(),
+            status: anycon_protocol::TaskStatus::Running,
+            usage: None,
+            last_tool: None,
+            summary: None,
+            phases: vec![],
+            agents,
+        }
+    }
+
+    #[test]
+    fn a_task_snapshot_is_bounded() {
+        // 小的原样
+        let mut small = task(vec![task_agent(0, "a", TaskAgentState::Done)]);
+        let before = small.clone();
+        assert!(!limit_event(&mut small));
+        assert_eq!(small, before);
+
+        // 文本字段：label / title / last_tool 按字符，error / summary 按字节
+        let long_cjk = "汉".repeat(500);
+        let mut ev = task(vec![TaskAgent {
+            last_tool: Some(long_cjk.clone()),
+            error: Some("e".repeat(10_000)),
+            ..task_agent(0, &long_cjk, TaskAgentState::Failed)
+        }]);
+        if let Event::Task { title, last_tool, summary, phases, .. } = &mut ev {
+            *title = long_cjk.clone();
+            *last_tool = Some(long_cjk.clone());
+            *summary = Some("é".repeat(10_000));
+            phases.push(anycon_protocol::TaskPhase { index: 0, title: long_cjk.clone() });
+        }
+        assert!(limit_event(&mut ev));
+        let Event::Task { title, last_tool, summary, phases, agents, .. } = &ev else { unreachable!() };
+        assert_eq!(title.chars().count(), TASK_LABEL_MAX_CHARS);
+        assert!(title.ends_with('…'));
+        assert_eq!(last_tool.as_ref().unwrap().chars().count(), TASK_LABEL_MAX_CHARS);
+        assert_eq!(phases[0].title.chars().count(), TASK_LABEL_MAX_CHARS);
+        assert!(summary.as_ref().unwrap().len() <= TASK_TEXT_MAX, "multi-byte text is cut on a char boundary");
+        assert_eq!(agents[0].label.chars().count(), TASK_LABEL_MAX_CHARS);
+        assert_eq!(agents[0].last_tool.as_ref().unwrap().chars().count(), TASK_LABEL_MAX_CHARS);
+        let err = agents[0].error.as_ref().unwrap();
+        assert!(err.len() <= TASK_TEXT_MAX && err.ends_with('…') && err.starts_with("eee"));
+        // 再过一遍是空操作（读历史时会再过一遍）
+        let before = ev.clone();
+        assert!(!limit_event(&mut ev));
+        assert_eq!(ev, before);
+    }
+
+    #[test]
+    fn a_task_snapshot_keeps_at_most_500_agents_and_prefers_running_and_failed_ones() {
+        // 600 个 agent：前 550 个 done，后 50 个 running / failed
+        let mut agents: Vec<TaskAgent> = (0..550).map(|i| task_agent(i, "done", TaskAgentState::Done)).collect();
+        agents.extend(
+            (550..600).map(|i| {
+                task_agent(i, "live", if i % 2 == 0 { TaskAgentState::Running } else { TaskAgentState::Failed })
+            }),
+        );
+        let mut ev = task(agents);
+        assert!(limit_event(&mut ev));
+        let Event::Task { agents, .. } = &ev else { unreachable!() };
+        assert_eq!(agents.len(), TASK_AGENTS_MAX);
+        assert_eq!(agents.iter().filter(|a| a.label == "live").count(), 50, "running / failed ones are kept");
+        assert!(agents.windows(2).all(|w| w[0].index < w[1].index), "original order is kept");
+        assert_eq!(agents[0].index, 0);
+        assert!(!limit_event(&mut ev));
+
+        // 恰好 500 个：不动
+        let mut ev = task((0..500).map(|i| task_agent(i, "a", TaskAgentState::Queued)).collect());
+        assert!(!limit_event(&mut ev));
+
+        // running / failed 本身就超过 500：留前 500 个
+        let mut ev = task((0..700).map(|i| task_agent(i, "a", TaskAgentState::Running)).collect());
+        assert!(limit_event(&mut ev));
+        let Event::Task { agents, .. } = &ev else { unreachable!() };
+        assert_eq!((agents.len(), agents[499].index), (500, 499));
+    }
+
+    #[test]
+    fn a_notice_message_is_cut_like_tool_output() {
+        let mk = |m: String| Event::Notice {
+            code: "command_output".into(),
+            level: anycon_protocol::NoticeLevel::Info,
+            message: m,
+            model_from: None,
+            model_to: None,
+            resets_at_ms: None,
+        };
+        let mut small = mk("ok\nline 2".into());
+        assert!(!limit_event(&mut small));
+        let mut big = mk(format!("HEAD{}TAIL", "n".repeat(300_000)));
+        assert!(limit_event(&mut big));
+        let Event::Notice { message, code, .. } = &big else { unreachable!() };
+        assert_eq!(code, "command_output");
+        assert!(message.starts_with("HEAD") && message.ends_with("TAIL") && message.contains("…[truncated "));
+        assert!(message.len() < TOOL_OUTPUT_MAX + 64);
+        assert!(!limit_event(&mut big), "cutting twice is a no-op");
     }
 
     #[test]

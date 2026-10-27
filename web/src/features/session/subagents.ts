@@ -35,19 +35,25 @@ export function countCalls(toolId: string, tree: ToolTree): number {
 }
 
 /**
- * 子 agent 块的状态。后台启动的子 agent（`tool_result.detail.background`）调用本身早就返回了，
- * 要等结束时补的那条结果才算完。
+ * 一次工具调用的状态（子 agent 块、工具行共用）。`stopped`：没有结果、或任务停在 `running`，但已经不可能还有下文。
+ *
+ * 调用本身早就返回了、真正的工作还在后台跑的，有两种表现：
+ * - 挂着任务（`ToolBlock.tasks`，`task.tool_id` 指向这次调用）：以任务为准——有任务在 `running` 就是 `background`，
+ *   `live` 为 false（会话没在跑、daemon 也没报后台任务，见 `tasksLive`）时是 `stopped`；任务都结束了，有失败的就是 `error`，否则 `done`。
+ *   Claude Code 的 `Workflow` 和 Codex 的 `spawnAgent` 的调用结果都是立刻返回、不带 `background`，只能靠任务判断。
+ * - 没有任务、结果带 `detail.background`（后台命令、旧 daemon 的后台子 agent）：要等结束时补的那条结果才算完。
  */
-export type SubagentState = 'running' | 'background' | 'error' | 'done'
+export type SubagentActivity = 'running' | 'background' | 'error' | 'done' | 'stopped'
 
-export function subagentState(b: ToolBlock): SubagentState {
+export function subagentState(b: ToolBlock, live = true): SubagentActivity {
   if (!b.result) return 'running'
-  if (b.result.detail?.background) return 'background'
-  return b.result.isError ? 'error' : 'done'
+  if (b.result.isError) return 'error'
+  if (b.tasks?.length) {
+    if (b.tasks.some((t) => t.status === 'running')) return live ? 'background' : 'stopped'
+    return b.tasks.some((t) => t.status === 'failed') ? 'error' : 'done'
+  }
+  return b.result.detail?.background ? 'background' : 'done'
 }
-
-/** 信息面板里子 agent 的状态：在 `SubagentState` 之外多一个 `stopped`——没等到结果、但已经不可能还在跑。 */
-export type SubagentActivity = SubagentState | 'stopped'
 
 export interface SubagentRow {
   block: ToolBlock
@@ -72,8 +78,9 @@ export const isActive = (s: SubagentActivity): boolean => s === 'running' || s =
  * 已加载的块里所有子 agent，父在前、子紧跟其后（按启动顺序）。
  * 没有结果的子 agent 只有在主 agent 的 turn 还在跑（或者启动它的子 agent 还在跑）时才算运行中，
  * 否则是 `stopped`（turn 被取消、进程退出时不会再有结果）；后台子 agent 在进程退出后同样算 `stopped`。
+ * `tasksMayProgress`：会话里的后台任务还可能有进展吗（`tasksLive`），挂着任务的子 agent 据此判断任务是不是停了。
  */
-export function subagentRows(blocks: readonly Block[], status: SessionStatus): SubagentRow[] {
+export function subagentRows(blocks: readonly Block[], status: SessionStatus, tasksMayProgress: boolean = isTurnActive(status)): SubagentRow[] {
   const tree = toolTree(blocks)
   const gone = PROCESS_GONE.includes(status)
   const rows: SubagentRow[] = []
@@ -81,7 +88,7 @@ export function subagentRows(blocks: readonly Block[], status: SessionStatus): S
     let live = parentLive
     const isAgent = b.category === 'subagent'
     if (isAgent) {
-      const base = subagentState(b)
+      const base = subagentState(b, tasksMayProgress)
       const state: SubagentActivity = (base === 'running' && !parentLive) || (base === 'background' && gone) ? 'stopped' : base
       rows.push({ block: b, state, depth, calls: countCalls(b.toolId, tree), tokens: b.result?.detail?.total_tokens ?? undefined })
       live = isActive(state)
@@ -93,10 +100,11 @@ export function subagentRows(blocks: readonly Block[], status: SessionStatus): S
 }
 
 /**
- * 还在后台跑的命令（Claude Code 的后台 Bash 等，`tool_result.detail.background`；子 agent 在 `subagentRows` 里）。
- * 结束时同一个调用会补一条不带 `background` 的结果；agent 进程不在了的，后台命令也跟着没了，不再算。
+ * 还在后台跑的调用（Claude Code 的后台 Bash、`Workflow` 等；子 agent 在 `subagentRows` 里）：`subagentState` 判为 `background` 的非子 agent 调用，
+ * 即挂着在跑的任务，或者结果带 `detail.background`。结束时同一个调用会补一条不带 `background` 的结果、任务也会进终态；
+ * agent 进程不在了的，后台命令也跟着没了，不再算。
  */
-export function backgroundCommands(blocks: readonly Block[], status: SessionStatus): ToolBlock[] {
+export function backgroundCommands(blocks: readonly Block[], status: SessionStatus, live = true): ToolBlock[] {
   if (PROCESS_GONE.includes(status)) return []
-  return blocks.filter((b): b is ToolBlock => b.type === 'tool' && b.category !== 'subagent' && !!b.result?.detail?.background)
+  return blocks.filter((b): b is ToolBlock => b.type === 'tool' && b.category !== 'subagent' && subagentState(b, live) === 'background')
 }

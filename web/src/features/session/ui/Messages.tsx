@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useContext, useEffect, useState, type ReactNode } from 'react'
 import { AlertTriangle, Bot, Check, ChevronRight, CircleDashed, Clock, Copy, ListChecks, Loader2, Pencil, RefreshCw, RotateCw, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ToolResultDetail } from '@/protocol'
@@ -18,6 +18,7 @@ import { MessageAttachments } from '@/features/attachments/ui/MessageAttachments
 import type { AssistantBlock, ErrorBlock, GitSystemBlock, PlanBlock, SystemBlock, ThinkingBlock, ToolBlock, TurnDoneBlock, UserBlock } from '../reducer'
 import { countCalls, subagentState, type ToolTree } from '../subagents'
 import { diffStats, splitLines, syntheticDiff, toolCommand, toolDescription, toolFileChanges, toolLabel, toolOutputText, toolPath, toolQuery, toolUrl } from '../text'
+import { TaskList, TaskLiveContext } from './Tasks'
 
 const DiffView = lazy(() => import('./DiffView').then((m) => ({ default: m.DiffView })))
 
@@ -153,13 +154,14 @@ const COLLAPSE_LINES = 20
 function ToolFrame({ block, summary, summaryTitle, children, defaultOpen, meta }: { block: ToolBlock; summary: ReactNode; summaryTitle?: string; children?: ReactNode; defaultOpen?: boolean; meta?: ReactNode }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(!!defaultOpen)
-  const failed = block.result?.isError
-  const running = !block.result
-  // 转到后台的调用（后台命令）：结果只是「已在后台启动」，结束时补的那条才是最终结果
-  const background = !failed && !!block.result?.detail?.background
+  // 转到后台的调用（后台命令、Workflow）：结果只是「已在后台启动」，真正的结果在补来的那条（或挂着的任务）里
+  const state = subagentState(block, useContext(TaskLiveContext))
+  const failed = state === 'error'
+  const running = state === 'running'
+  const background = state === 'background'
   return (
     // 收起时是一行灰字（失败的是红字），不画卡片；展开的输出 / diff 放在下面的框里
-    <div className="text-sm" data-testid="tool-block" data-category={block.category} data-state={failed ? 'error' : running ? 'running' : background ? 'background' : 'done'}>
+    <div className="text-sm" data-testid="tool-block" data-category={block.category} data-state={state}>
       <button type="button" className={cn('flex max-w-full items-center gap-1.5 py-0.5 text-left', failed ? 'text-danger' : 'text-fg-subtle hover:text-fg-muted disabled:hover:text-fg-subtle')} aria-expanded={open} onClick={() => setOpen((v) => !v)} disabled={!children}>
         <span className="min-w-0 truncate font-mono text-[0.8125rem]" title={summaryTitle}>
           {summary}
@@ -319,7 +321,15 @@ export function ToolView({ block }: { block: ToolBlock }) {
 
 /** 一次工具调用：启动子 agent 的（或下面挂着子调用的）画成子 agent 块，其余照常。 */
 export function ToolNode({ block, tree }: { block: ToolBlock; tree: ToolTree }) {
-  return block.category === 'subagent' || tree.children.has(block.toolId) ? <SubagentView block={block} tree={tree} /> : <ToolView block={block} />
+  const view = block.category === 'subagent' || tree.children.has(block.toolId) ? <SubagentView block={block} tree={tree} /> : <ToolView block={block} />
+  // 这次调用启动的后台任务（workflow、后台子 agent / 命令）：进度画在工具行下面
+  if (!block.tasks?.length) return view
+  return (
+    <>
+      {view}
+      <TaskList tasks={block.tasks} />
+    </>
+  )
 }
 
 /**
@@ -330,10 +340,10 @@ export function SubagentView({ block, tree }: { block: ToolBlock; tree: ToolTree
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const kids = tree.children.get(block.toolId) ?? []
-  const state = subagentState(block)
+  const state = subagentState(block, useContext(TaskLiveContext))
   const active = state === 'running' || state === 'background'
   const calls = countCalls(block.toolId, tree)
-  // 后台子 agent 的第一条结果只是「已在后台启动」，结束时补的那条才是它的总结
+  // 后台子 agent 的第一条结果只是「已在后台启动」，结束时补的那条（或任务的终态）才是它的总结
   const output = state === 'done' || state === 'error' ? toolOutputText(block) : ''
   const last = kids.at(-1)
   return (

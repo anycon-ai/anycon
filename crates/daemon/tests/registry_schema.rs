@@ -61,9 +61,7 @@ impl<'a> Walk<'a> {
     async fn call(&mut self, method: &'static str, params: Value) -> Value {
         let spec = REGISTRY.iter().find(|m| m.name == method).unwrap_or_else(|| panic!("{method} is not in REGISTRY"));
         assert_eq!(spec.direction, Direction::Request, "{method}");
-        let v: Value = self
-            .c
-            .call(self.td, method, params)
+        let v: Value = Box::pin(self.c.call(self.td, method, params))
             .await
             .unwrap_or_else(|e| panic!("{method} failed with minimal valid params: {e:?}"));
         self.check(spec.result.unwrap_or("Empty"), &v, method);
@@ -129,26 +127,9 @@ async fn wait_idle(w: &mut Walk<'_>, sid: &str) {
     }
 }
 
-#[tokio::test]
-async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
-    // 带 git 夹具：worktree / git 的请求（ADR-34）也要走一遍
-    let td = TestDaemon::start_git(&[]).await;
-    std::fs::write(td.workspace.join("hello.txt"), "hello").unwrap();
-    let mut w = Walk::new(&td);
-
-    // ---- node / agent
-    w.call(methods::NODE_INFO, json!({})).await;
-    w.call(methods::NODE_DEVICES, json!({})).await;
-    w.call(methods::NODE_STATS, json!({})).await;
-    w.call(methods::NODE_DOCTOR, json!({})).await;
-    w.call(methods::AGENT_LIST, json!({})).await;
-    w.call(methods::AGENT_LIST, json!({ "refresh": true })).await;
-    w.call(methods::AGENT_DIAGNOSE, json!({ "id": "fake" })).await;
-    w.call(methods::NODE_SET_AGENT_DEFAULTS, json!({ "agent": "fake", "mode": "yolo" })).await;
-
-    // ---- 账号内接入（ADR-36）：单独一个函数（这个遍历测试的 future 已经很大，再往里塞会在 debug 下把栈撑爆）
-    Box::pin(walk_enroll(&mut w, &td)).await;
-
+/// 下面每一段是独立的 async fn，调用处再 `Box::pin`：整条遍历写成一个 future 会在 debug 下撑爆测试线程的 2 MiB 栈，
+/// 拆开并放到堆上，栈占用就只取决于最大的那一段，往注册表里加方法也不会再把它推过线。
+async fn walk_workspace(w: &mut Walk<'_>, td: &TestDaemon) {
     // ---- workspace / fs / job
     let p = w.call(methods::WORKSPACE_CREATE, json!({ "name": "alpha" })).await;
     assert_eq!(p["name"], json!("alpha"));
@@ -188,7 +169,9 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     let l = w.call(methods::WORKSPACE_LIST, json!({})).await;
     assert!(l["projects"].as_array().unwrap().iter().any(|p| p["kind"] == json!("linked")));
     w.call(methods::WORKSPACE_UNLINK, json!({ "name": "linked-proj" })).await;
+}
 
+async fn walk_session(w: &mut Walk<'_>) {
     // ---- session
     let s = w
         .call(
@@ -197,12 +180,12 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         )
         .await;
     let sid = s["id"].as_str().unwrap().to_string();
-    wait_idle(&mut w, &sid).await;
+    wait_idle(w, &sid).await;
     w.call(methods::SESSION_LIST, json!({})).await;
     w.call(methods::SESSION_LIST, json!({ "project": "proj", "include_archived": true, "limit": 5 })).await;
     w.call(methods::SESSION_WATCH, json!({ "session_id": sid })).await;
     w.call(methods::SESSION_SEND, json!({ "session_id": sid, "message_id": "m2", "content": "say hello again" })).await;
-    wait_idle(&mut w, &sid).await;
+    wait_idle(w, &sid).await;
     // ---- blob（附件，ADR-35）：上传一张图、拉回来、丢掉一张没用的；带着附件发一条消息，下面的 history 里就有 `attachments`
     let png = anycon_daemon::testutil::png_fixture(64, 48, 1500, 1);
     let sha = anycon_daemon::testutil::sha256_hex(&png);
@@ -231,7 +214,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         json!({ "session_id": sid, "message_id": "m2-img", "content": "", "attachments": [att] }),
     )
     .await;
-    wait_idle(&mut w, &sid).await;
+    wait_idle(w, &sid).await;
     w.call(methods::SESSION_HISTORY, json!({ "session_id": sid, "limit": 100 })).await;
     w.call(methods::SESSION_SET_SETTINGS, json!({ "session_id": sid, "settings": { "model": "fake-small" } })).await;
     w.call(methods::SESSION_RENAME, json!({ "session_id": sid, "title": "A title" })).await;
@@ -247,7 +230,9 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     let scratch = w.call(methods::SESSION_CREATE, json!({ "agent": "fake" })).await;
     let scratch_id = scratch["id"].as_str().unwrap().to_string();
     w.call(methods::SESSION_PROMOTE, json!({ "session_id": scratch_id, "name": "promoted" })).await;
+}
 
+async fn walk_worktree(w: &mut Walk<'_>, td: &TestDaemon) {
     // ---- worktree / git（ADR-34）：真实 git 仓库项目、假 gh
     let repo = td.new_repo("gitproj");
     let remote = td.dir.path().join("remote.git");
@@ -264,7 +249,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         .await;
     assert_eq!(ws["worktree"]["state"], json!("creating"));
     let wsid = ws["id"].as_str().unwrap().to_string();
-    wait_idle(&mut w, &wsid).await;
+    wait_idle(w, &wsid).await;
     let wt_dir = repo.join(".anycon/worktrees/branch");
     std::fs::write(wt_dir.join("new.txt"), "x\ny\n").unwrap();
     td.set_gh(
@@ -289,7 +274,9 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     w.call(methods::WORKSPACE_REMOVE_WORKTREE, json!({ "id": wl["worktrees"][0]["id"], "delete_branch": true })).await;
     w.call(methods::SESSION_UNARCHIVE, json!({ "session_id": wsid })).await;
     w.call(methods::SESSION_DELETE, json!({ "session_id": wsid, "worktree": "remove", "delete_branch": true })).await;
+}
 
+async fn walk_permission(w: &mut Walk<'_>) -> String {
     // ---- permission：让假 agent 发一个权限请求，列出，答复
     let ps = w
         .call(
@@ -309,8 +296,11 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     };
     w.call(methods::PERMISSION_LIST, json!({})).await;
     w.call(methods::PERMISSION_RESPOND, json!({ "request_id": req["request_id"], "option_id": "allow" })).await;
-    wait_idle(&mut w, &psid).await;
+    wait_idle(w, &psid).await;
+    psid
+}
 
+async fn walk_preview(w: &mut Walk<'_>, td: &TestDaemon, psid: &str) {
     // ---- 预览（ADR-39）：端口写进 allow_ports（热加载），签发、列出、列端口、作废
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let preview_port = listener.local_addr().unwrap().port();
@@ -328,6 +318,33 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         .any(|p| p["port"] == json!(preview_port) && p["source"] == json!("config")));
     w.call(methods::PREVIEW_CLOSE, json!({ "label": pt["label"] })).await;
     drop(listener);
+}
+
+#[tokio::test]
+async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
+    // 带 git 夹具：worktree / git 的请求（ADR-34）也要走一遍
+    let td = TestDaemon::start_git(&[]).await;
+    std::fs::write(td.workspace.join("hello.txt"), "hello").unwrap();
+    let mut w = Walk::new(&td);
+
+    // ---- node / agent
+    w.call(methods::NODE_INFO, json!({})).await;
+    w.call(methods::NODE_DEVICES, json!({})).await;
+    w.call(methods::NODE_STATS, json!({})).await;
+    w.call(methods::NODE_DOCTOR, json!({})).await;
+    w.call(methods::AGENT_LIST, json!({})).await;
+    w.call(methods::AGENT_LIST, json!({ "refresh": true })).await;
+    w.call(methods::AGENT_DIAGNOSE, json!({ "id": "fake" })).await;
+    w.call(methods::NODE_SET_AGENT_DEFAULTS, json!({ "agent": "fake", "mode": "yolo" })).await;
+
+    // ---- 账号内接入（ADR-36）：单独一个函数（这个遍历测试的 future 已经很大，再往里塞会在 debug 下把栈撑爆）
+    Box::pin(walk_enroll(&mut w, &td)).await;
+
+    Box::pin(walk_workspace(&mut w, &td)).await;
+    Box::pin(walk_session(&mut w)).await;
+    Box::pin(walk_worktree(&mut w, &td)).await;
+    let psid = Box::pin(walk_permission(&mut w)).await;
+    Box::pin(walk_preview(&mut w, &td, &psid)).await;
 
     // ---- 每个请求方法要么调用过，要么在清单里写明了原因
     let not_called: BTreeSet<&str> = NOT_CALLED.iter().map(|(m, _)| *m).collect();

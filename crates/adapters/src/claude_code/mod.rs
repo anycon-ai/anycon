@@ -1,5 +1,6 @@
 //! Claude Code adapter：`claude -p --output-format stream-json --input-format stream-json` 双向模式，
-//! 权限走 `control_request { subtype: can_use_tool }`。细节与对真实 CLI 的观察见 README.md。
+//! 权限走 `control_request { subtype: can_use_tool }`（MCP server 的 `elicitation` 请求也交给用户答复）。
+//! 细节与对真实 CLI 的观察见 README.md。
 //!
 //! 模块：`probe`（找二进制、版本、认证、诊断）、`models`（内置模型表）、`process`（启动参数）、
 //! `translate`（stream-json → 事件，纯同步）、`permissions`（权限请求 ↔ 答复）、`tools`（工具分类与渲染字段）、

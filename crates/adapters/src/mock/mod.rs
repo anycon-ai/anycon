@@ -10,7 +10,7 @@ mod session;
 /// `big` 关键词产生的确定性大输出文本（测试 / e2e 用来对照）。
 pub use session::big_output_text;
 /// `write` 关键词写的文件名，以及每个 turn 写进去的那一行（测试 / e2e 用来对照）。
-pub use session::{write_line, WRITE_FILE_NAME};
+pub use session::{write_line, LINK_URL, WRITE_FILE_NAME};
 
 use anycon_agent_api::{Adapter, AdapterConfig, AdapterError, AgentHandle, ProbeContext, Result, SpawnRequest};
 use anycon_protocol::{

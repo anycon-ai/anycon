@@ -651,6 +651,13 @@ pub struct Usage {
     pub duration_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// 模型的上下文窗口大小（token）。agent 不报就缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// turn 结束时上下文已经占用的 token：最近一次模型请求的输入 + 缓存读写。和 `input_tokens` 等
+    /// 累计用量不同，它是「此刻窗口里有多少」，客户端拿它和 `context_window` 算占用比例。agent 不报就缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
 }
 
 /// 会话事件。adapter 把各 agent 的原生事件翻译成这个集合（docs/spec/daemon.md § 8）。
@@ -783,6 +790,186 @@ pub enum Event {
         message: String,
         recoverable: bool,
     },
+    /// 后台任务（workflow、后台子 agent、后台命令）的状态快照。同一个 `id` 的后一条整条取代前一条，不是增量；
+    /// 客户端按 `id` 只保留最新的一条。daemon 对同一个任务的快照节流（docs/spec/daemon.md § 8.3），
+    /// 状态变化（进入终态，或者从终态回到 `running`）不受节流。
+    Task {
+        /// agent 给任务的 id（Claude Code 的 `task_id`；Codex 子 agent 的 thread id）。会话内唯一。
+        id: String,
+        kind: TaskKind,
+        /// 启动这个任务的 `tool_call` 的 `id`（Claude Code 的 `tool_use_id`；Codex 的 collab agent 调用 item id）。
+        /// 客户端据此把进度挂在那个工具块上；对不上时单独成块。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_id: Option<String>,
+        /// workflow 的名字 / 任务描述。
+        title: String,
+        status: TaskStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TaskUsage>,
+        /// 任务最近一次调用的工具名。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_tool: Option<String>,
+        /// agent 给的进度 / 结果摘要。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        /// workflow 的阶段，按 `index` 升序；非 workflow 为空。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        phases: Vec<TaskPhase>,
+        /// workflow 里的各个 agent，按 `index` 升序；非 workflow 为空。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agents: Vec<TaskAgent>,
+    },
+    /// agent 给用户的提示：不是错误，不影响 turn，也不触发推送通知。客户端认识 `code` 时用自己的文案
+    /// （`message` 作补充原文），不认识就按 `level` 显示 `message`。`code` 的取值见 docs/protocol.md § 6。
+    Notice {
+        code: String,
+        level: NoticeLevel,
+        /// agent 给的原文（通常是英文），可能是空串。`command_output` 里是本地命令的输出，可能多行。
+        message: String,
+        /// `code = model_fallback`：原来的模型。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_from: Option<String>,
+        /// `code = model_fallback`：实际使用的模型。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_to: Option<String>,
+        /// `code = rate_limit`：限额恢复的时间。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at_ms: Option<TimestampMs>,
+    },
+    /// turn 进行中 agent 在做的「非输出」的事（重试 API、压缩上下文）。客户端在 turn 进行中把它显示成一条临时状态；
+    /// 收到任何内容事件（`text_delta`、`thinking_delta`、`tool_call`…）、`turn_done` 或 `state = none` 时清掉。
+    /// 临时状态的快照语义同 `task`：后一条取代前一条。
+    Activity {
+        state: ActivityState,
+        /// `retrying`：这是第几次重试（从 1 开始）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
+        /// `retrying`：最多重试几次。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_attempts: Option<u32>,
+        /// `retrying`：距下一次重试的毫秒数。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_ms: Option<u64>,
+        /// `retrying`：触发重试的错误摘要，如 `529 overloaded_error`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+/// `Event::Task` 的任务种类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    /// 多阶段、多 agent 的 workflow：带 `phases` 和 `agents`。
+    Workflow,
+    /// 后台子 agent。
+    Subagent,
+    /// 后台命令。
+    Shell,
+    Other,
+}
+
+/// `Event::Task` 的任务状态。`Running` 以外的三个是收尾状态（终态）：Claude Code 的任务进入终态后不会再变；
+/// Codex 的子 agent 是一个可以再收到输入的 thread，`Completed` 之后收到新输入、开始新 turn 就会回到 `Running`。
+/// 所以终态只说明「这一刻不在跑」，不保证同一个 `id` 以后不会再有快照；客户端始终以最新的一条为准。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Running,
+    Completed,
+    Failed,
+    /// 被取消，或者 agent 进程退出时任务还没收尾（daemon 补发，docs/spec/daemon.md § 8.3）。
+    Cancelled,
+}
+
+impl TaskStatus {
+    /// 终态：这一刻不在跑。不保证之后不会再变（Codex 的子 agent 可能从 `Completed` 回到 `Running`）。
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, TaskStatus::Running)
+    }
+}
+
+/// 任务的用量。每个字段 agent 不报就缺省。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TaskUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// workflow 的一个阶段。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TaskPhase {
+    pub index: u32,
+    pub title: String,
+}
+
+/// workflow 里一个 agent 的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskAgentState {
+    /// 还没轮到。
+    Queued,
+    Running,
+    Done,
+    Failed,
+    /// 被跳过（上游失败、条件不满足…）。
+    Skipped,
+}
+
+/// workflow 里的一个 agent。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TaskAgent {
+    /// 在 workflow 里的序号，同一个任务内唯一。
+    pub index: u32,
+    pub label: String,
+    pub state: TaskAgentState,
+    /// 所属阶段的 `TaskPhase.index`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// 最近一次调用的工具名。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool: Option<String>,
+    /// `state = failed` 时的错误信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// 第几次尝试（重试过才有）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    /// 结果来自缓存，没有真的运行。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached: Option<bool>,
+}
+
+/// `Event::Notice` 的级别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeLevel {
+    Info,
+    Warning,
+}
+
+/// `Event::Activity` 的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityState {
+    /// 临时状态结束。
+    None,
+    /// agent 正在重试一次失败的 API 请求。
+    Retrying,
+    /// agent 正在压缩上下文。
+    Compacting,
 }
 
 /// `Event::Git` 的动作。
@@ -857,5 +1044,156 @@ mod tests {
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["type"], "git");
         assert_eq!(v["action"], "sync_conflicts");
+    }
+
+    fn roundtrip(e: &Event) -> serde_json::Value {
+        let v = serde_json::to_value(e).unwrap();
+        let back: Event = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(&back, e);
+        v
+    }
+
+    #[test]
+    fn task_event_wire_shape() {
+        let e = Event::Task {
+            id: "t1".into(),
+            kind: TaskKind::Workflow,
+            tool_id: Some("toolu_1".into()),
+            title: "review".into(),
+            status: TaskStatus::Running,
+            usage: Some(TaskUsage { total_tokens: Some(1200), tool_calls: Some(3), duration_ms: None }),
+            last_tool: Some("Read".into()),
+            summary: None,
+            phases: vec![TaskPhase { index: 0, title: "scan".into() }],
+            agents: vec![TaskAgent {
+                index: 0,
+                label: "scanner".into(),
+                state: TaskAgentState::Queued,
+                phase_index: Some(0),
+                model: None,
+                tokens: None,
+                tool_calls: None,
+                duration_ms: None,
+                last_tool: None,
+                error: None,
+                attempt: None,
+                cached: Some(true),
+            }],
+        };
+        let v = roundtrip(&e);
+        assert_eq!(v["type"], "task");
+        assert_eq!(v["kind"], "workflow");
+        assert_eq!(v["status"], "running");
+        assert_eq!(v["agents"][0]["state"], "queued");
+        assert_eq!(v["usage"], serde_json::json!({"total_tokens": 1200, "tool_calls": 3}));
+        assert!(v.get("summary").is_none());
+
+        // 最小形态：只有必填字段，其余缺省；phases / agents 为空时不上线路。
+        let min = Event::Task {
+            id: "t2".into(),
+            kind: TaskKind::Subagent,
+            tool_id: None,
+            title: "t".into(),
+            status: TaskStatus::Cancelled,
+            usage: None,
+            last_tool: None,
+            summary: None,
+            phases: vec![],
+            agents: vec![],
+        };
+        let v = roundtrip(&min);
+        assert_eq!(
+            v,
+            serde_json::json!({"type": "task", "id": "t2", "kind": "subagent", "title": "t", "status": "cancelled"})
+        );
+
+        // 所有枚举取值都是 snake_case。
+        for (k, s) in [(TaskKind::Shell, "shell"), (TaskKind::Other, "other")] {
+            assert_eq!(serde_json::to_value(k).unwrap(), s);
+        }
+        for (st, s) in [
+            (TaskAgentState::Running, "running"),
+            (TaskAgentState::Done, "done"),
+            (TaskAgentState::Failed, "failed"),
+            (TaskAgentState::Skipped, "skipped"),
+        ] {
+            assert_eq!(serde_json::to_value(st).unwrap(), s);
+        }
+        assert!(!TaskStatus::Running.is_terminal());
+        for st in [TaskStatus::Completed, TaskStatus::Failed, TaskStatus::Cancelled] {
+            assert!(st.is_terminal());
+        }
+    }
+
+    #[test]
+    fn notice_event_wire_shape() {
+        let e = Event::Notice {
+            code: "model_fallback".into(),
+            level: NoticeLevel::Warning,
+            message: "switched".into(),
+            model_from: Some("opus".into()),
+            model_to: Some("sonnet".into()),
+            resets_at_ms: None,
+        };
+        let v = roundtrip(&e);
+        assert_eq!(v["type"], "notice");
+        assert_eq!(v["level"], "warning");
+        assert_eq!(v["model_from"], "opus");
+        assert!(v.get("resets_at_ms").is_none());
+
+        let e = Event::Notice {
+            code: "rate_limit".into(),
+            level: NoticeLevel::Info,
+            message: String::new(),
+            model_from: None,
+            model_to: None,
+            resets_at_ms: Some(1_700_000_000_000),
+        };
+        let v = roundtrip(&e);
+        assert_eq!(v["level"], "info");
+        assert_eq!(v["resets_at_ms"], 1_700_000_000_000u64);
+        // message 是必填字段，空串照常上线路。
+        assert_eq!(v["message"], "");
+    }
+
+    #[test]
+    fn activity_event_wire_shape() {
+        let e = Event::Activity {
+            state: ActivityState::Retrying,
+            attempt: Some(2),
+            max_attempts: Some(10),
+            delay_ms: Some(5000),
+            reason: Some("529 overloaded_error".into()),
+        };
+        let v = roundtrip(&e);
+        assert_eq!(v["type"], "activity");
+        assert_eq!(v["state"], "retrying");
+        assert_eq!(v["delay_ms"], 5000);
+
+        let none = Event::Activity {
+            state: ActivityState::None,
+            attempt: None,
+            max_attempts: None,
+            delay_ms: None,
+            reason: None,
+        };
+        assert_eq!(roundtrip(&none), serde_json::json!({"type": "activity", "state": "none"}));
+        let compacting = serde_json::json!({"type": "activity", "state": "compacting"});
+        let e: Event = serde_json::from_value(compacting).unwrap();
+        assert!(matches!(e, Event::Activity { state: ActivityState::Compacting, attempt: None, .. }));
+    }
+
+    #[test]
+    fn usage_context_fields_are_optional_on_the_wire() {
+        // 旧数据（没有上下文字段）照常解析；没有值时不上线路。
+        let old: Usage = serde_json::from_value(serde_json::json!({"duration_ms": 5, "input_tokens": 1})).unwrap();
+        assert_eq!((old.context_window, old.context_tokens), (None, None));
+        assert!(serde_json::to_value(&old).unwrap().get("context_window").is_none());
+
+        let u = Usage { context_window: Some(200_000), context_tokens: Some(48_000), ..Default::default() };
+        let v = serde_json::to_value(&u).unwrap();
+        assert_eq!((v["context_window"].as_u64(), v["context_tokens"].as_u64()), (Some(200_000), Some(48_000)));
+        let e = Event::TurnDone { turn_id: 1, reason: TurnDoneReason::Completed, usage: Some(u) };
+        roundtrip(&e);
     }
 }

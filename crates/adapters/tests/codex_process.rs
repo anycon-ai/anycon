@@ -512,15 +512,142 @@ async fn unsupported_server_requests_are_declined_and_surfaced() {
     started(&mut handle).await;
     let evs = run_turn(&mut handle, "go").await;
     // 每一个都发了一条可见的错误，turn 没有被卡住
-    assert_eq!(error_codes(&evs), vec!["unsupported_request"; 4]);
+    assert_eq!(error_codes(&evs), vec!["unsupported_request"; 3]);
     assert_eq!(turn_done(&evs).1, TurnDoneReason::Completed);
     let answers = h.answers();
-    assert_eq!(answers.len(), 4);
-    assert_eq!((answers[0]["id"].clone(), answers[0]["result"].clone()), (json!(100), json!({"action": "decline"})));
-    assert_eq!(answers[1]["result"]["success"], false);
-    assert_eq!(answers[1]["result"]["contentItems"][0]["type"], "inputText");
-    assert_eq!(answers[2]["result"], json!({"decision": "abort"}));
-    assert_eq!(answers[3]["error"]["code"], -32603);
+    assert_eq!(answers.len(), 3);
+    assert_eq!(answers[0]["result"]["success"], false);
+    assert_eq!(answers[0]["result"]["contentItems"][0]["type"], "inputText");
+    assert_eq!(answers[1]["result"], json!({"decision": "abort"}));
+    assert_eq!(answers[2]["error"]["code"], -32603);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_elicitations_round_trip_through_the_handle() {
+    // 一个 turn 里三个 elicitation：表单、URL、MCP 工具审批
+    let h = CodexHarness::new().script("real_mcp_elicitation.jsonl");
+    let mut handle = h.spawn(SessionSettings::default(), None).await;
+    started(&mut handle).await;
+    handle.send(input("go")).await.unwrap();
+
+    let form = permission_of(&collect_until(&mut handle, is_permission).await);
+    assert_eq!(form.kind, PermissionKind::Question);
+    let answers = serde_json::Map::from_iter([
+        ("name".to_string(), json!("Ada")),
+        ("color".to_string(), json!("green")),
+        ("age".to_string(), json!("36")),
+        ("subscribe".to_string(), json!("true")),
+    ]);
+    handle
+        .respond_permission(
+            &form.request_id,
+            PermissionDecision { option_id: Some("accept".into()), answers: Some(answers), message: None },
+        )
+        .await
+        .unwrap();
+
+    let url = permission_of(&collect_until(&mut handle, is_permission).await);
+    assert_eq!(
+        (url.kind, url.detail.url.as_deref()),
+        (PermissionKind::Other, Some("https://example.com/demo/authorize?state=abc123"))
+    );
+    handle.respond_permission(&url.request_id, decide("accept")).await.unwrap();
+
+    let tool = permission_of(&collect_until(&mut handle, is_permission).await);
+    assert_eq!((tool.kind, tool.title.as_str()), (PermissionKind::Tool, "Run MCP tool demo/wipe_cache"));
+    handle.respond_permission(&tool.request_id, decide("allow_session")).await.unwrap();
+
+    let rest = collect_until(&mut handle, is_turn_done).await;
+    assert_eq!(turn_done(&rest).1, TurnDoneReason::Completed);
+    let sent = h.answers();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(
+        sent[0]["result"],
+        json!({"action": "accept", "content": {"age": 36, "color": "green", "name": "Ada", "subscribe": true}})
+    );
+    assert_eq!(sent[1]["result"], json!({"action": "accept"}));
+    assert_eq!(sent[2]["result"], json!({"action": "accept", "_meta": {"persist": "session"}}));
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_form_answer_of_the_wrong_type_declines_it_and_tells_the_user() {
+    let h = CodexHarness::new().script("real_mcp_elicitation.jsonl");
+    let mut handle = h.spawn(SessionSettings::default(), None).await;
+    started(&mut handle).await;
+    handle.send(input("go")).await.unwrap();
+    let form = permission_of(&collect_until(&mut handle, is_permission).await);
+    let answers = serde_json::Map::from_iter([
+        ("name".to_string(), json!("Ada")),
+        ("color".to_string(), json!("green")),
+        ("age".to_string(), json!("thirty-six")),
+    ]);
+    handle
+        .respond_permission(
+            &form.request_id,
+            PermissionDecision { option_id: Some("accept".into()), answers: Some(answers), message: None },
+        )
+        .await
+        .unwrap();
+    // 答复 codex 的是 decline，用户另外看到一条可恢复的错误说明原因
+    let evs = collect_until(&mut handle, is_permission).await;
+    let problem = events_of(&evs).into_iter().find_map(|e| match e {
+        Event::Error { code, recoverable, message } => Some((code, recoverable, message)),
+        _ => None,
+    });
+    let (code, recoverable, message) = problem.expect("an error event");
+    assert_eq!((code.as_str(), recoverable), ("elicitation_invalid_answer", true));
+    assert!(message.contains("\"Age\" is not an integer"), "{message}");
+    assert_eq!(h.answers()[0]["result"], json!({"action": "decline"}));
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancel_declines_a_pending_elicitation() {
+    let h = CodexHarness::new().script("real_mcp_elicitation.jsonl").var("FAKE_CODEX_DELAY_MS", "30");
+    let mut handle = h.spawn(SessionSettings::default(), None).await;
+    started(&mut handle).await;
+    handle.send(input("go")).await.unwrap();
+    let form = permission_of(&collect_until(&mut handle, is_permission).await);
+    handle.cancel().await.unwrap();
+    let rest = collect_until(&mut handle, is_turn_done).await;
+    assert_eq!(turn_done(&rest).1, TurnDoneReason::Cancelled);
+    assert_eq!(h.answers()[0]["result"], json!({"action": "decline"}));
+    // 之后到来的 elicitation 也不再摆给用户
+    assert!(h.answers().iter().all(|a| a["result"] == json!({"action": "decline"})));
+    handle.respond_permission(&form.request_id, decide("accept")).await.unwrap();
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_sub_agents_turn_does_not_end_the_turn_and_its_calls_hang_under_the_spawn() {
+    // 子 agent 的 thread id（FIXTURE_CHILD）不会被 fake 改写，主 thread 的是握手拿到的
+    let h = CodexHarness::new().script("real_subagent_command.jsonl");
+    let mut handle = h.spawn(SessionSettings::default(), None).await;
+    started(&mut handle).await;
+    handle.send(input("go")).await.unwrap();
+    let mut all = collect_until(&mut handle, is_permission).await;
+    let p = permission_of(&all);
+    assert_eq!(p.title, "Run command (sub-agent echo_child)");
+    handle.respond_permission(&p.request_id, decide("allow")).await.unwrap();
+    all.extend(collect_until(&mut handle, is_turn_done).await);
+    // 只有最后一个 turn_done，子 agent 的 turn/completed 在它前面已经过去了
+    assert_eq!(names(&all).iter().filter(|n| *n == "turn_done").count(), 1);
+    let evs = events_of(&all);
+    assert!(evs.iter().any(|e| matches!(e, Event::Task { id, status, .. } if id == "FIXTURE_CHILD" && *status == anycon_protocol::TaskStatus::Completed)));
+    assert!(evs.iter().any(|e| matches!(e, Event::ToolCall { id, parent_id, .. } if id == "exec_1" && parent_id.as_deref() == Some("call_1"))));
+    assert_eq!(h.answers()[0]["result"], json!({"decision": "accept"}));
+    assert!(!handle.is_busy());
+    // 子 agent 在跑的时候 handle 报了 1 个后台任务，它结束后降回 0（daemon 据此推迟 / 恢复回收进程）
+    let background: Vec<u32> = all
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Background { tasks } => Some(*tasks),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(background, [1, 0]);
     handle.shutdown().await.unwrap();
 }
 

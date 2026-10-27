@@ -31,10 +31,12 @@
 | 2 回显 | 总是 | `text_delta "Mock reply: "`、`text_delta "[model=<m> thinking=<t> mode=<mode>]"`、（`verbose` 为 true 时 `text_delta " verbose=on"`）、（设了 `system_prompt_append` / `max_turns` / `max_budget_usd` 中任何一个时 `text_delta " prompt_append=<前 32 字符> max_turns=<n> budget=<x>"`，没设的项整项不显示，见下）、`text_delta " You said: <prompt，最多 200 字符>"`、（**消息带附件时**多一个 `text_delta " Attachments: <name> (<mime>, <bytes> bytes, sha256 <前 12 位>)[; …]"`，见下面「附件」）、`text_done`。`<t>` 在没有 thinking 的模型上是 `none` |
 | 3 计划 | prompt 含 `plan` | `plan`（3 项：`Inspect the project` completed、`Implement the change` in_progress、`Run the tests` pending）→ 权限请求 `kind=plan`（见下）→ 允许：`text_delta "Plan approved."`；否则 `"Plan rejected: <message>"`（无 message 时 `"Plan rejected."`）；然后 `text_done` |
 | 4 提问 | prompt 含 `question` | 权限请求 `kind=question`（见下）→ 有 `answers`：`text_delta "You answered: q1=b"`（多个 key 按字典序用 `; ` 连接，数组值（多选）用 `", "` 连接，和 claude-code adapter 一致）；否则 `"Question skipped."`；然后 `text_done` |
+| 4' 链接 | prompt 含 `link` | 权限请求 `kind=other`、带 `detail.url`（见下面「`link`」）→ 选 `accept`：`text_delta "Link confirmed."`；否则 `"Link declined."`；然后 `text_done` |
 | 5 工具 | prompt 含 `permission`，**或**（mode 是 `ask` 且 prompt 含 `run`） | 权限请求 `kind=tool`（见下）→ 选 `allow` / `allow_session`：`tool_call` → `tool_output_delta "hi\n"` → `tool_result`；其它（`deny` 等）：`text_delta "skipped"` + `text_done`，不发 tool 事件 |
 | 5' 工具（免询问） | mode 是 `yolo` 且 prompt 含 `run`（且没触发 5） | 直接 `tool_call` → `tool_output_delta` → `tool_result`，不发权限请求 |
 | 5'' 大输出 | prompt 含 `big`（任何模式，不要权限请求） | `tool_call { name: "Bash", category: shell, input: {command: "cat big.log"}, id: "<session_id>-tool-<n>" }` → `tool_result { output: <约 300 000 字节的字符串>, is_error: false, exit_code: 0 }`；**没有** `tool_output_delta`。输出开头是 `BIGSTART\n`，然后 6000 行定长 50 字节的 `line NNNNN abcdefghijklmnopqrstuvwxyz0123456789ab\n`，结尾是 `BIGEND`（总长 300 015 字节，全 ASCII）。e2e 用它覆盖分片和 daemon 的 64 KiB 输出截断（保留前 48 KiB + 后 16 KiB） |
 | 6 写文件 | prompt 含 `write`（任何模式，**不发权限请求**） | 在 cwd 里创建 / 追加 `anycon-mock.txt`：`tool_call { name: "Write", category: file_edit, detail: {path: "anycon-mock.txt", edit_kind: write} }` → `tool_result { detail.unified_diff }` → `file_changed { path: "anycon-mock.txt", kind: created \| modified }`；写不了时只有 `tool_call` + `tool_result { is_error: true }`。见下面「`write`」 |
+| 6' 后台任务 | prompt 含 `tasks`（任何模式，**不发权限请求**） | 固定序列：`activity(retrying)` → `activity(none)` → `notice(model_fallback)` → `tool_call(Workflow)` → `tool_result(background)` → `task`×3（running、running、completed）→ 最终 `tool_result`。见下面「`tasks`」 |
 | 7 错误 | prompt 含 `error` | `error { code: "mock_error", message: "Mock error requested by the prompt", recoverable: true }`，`turn_done.reason = error` |
 | 8 结束 | 总是 | `turn_done { turn_id, reason, usage }`，`reason` 默认 `completed` |
 
@@ -56,6 +58,8 @@ Mock reply: [model=<m> thinking=<t> mode=<mode>][ verbose=on][ prompt_append=<p>
 - 一旦用户选过 `allow_session`，同一会话后续的 `kind=tool` 请求自动放行（直接 `tool_call`…），不再询问。
 - **`write` 和其它关键词**：各步骤互相独立，按表里的顺序依次执行（`write` 在 `big` 之后、`error` 之前）。`write` 不受 mode 影响（`plan` 模式下也写）、自己不发权限请求；要在写之前走一次审批，同时带 `permission`——那条请求是步骤 5 的 Bash，答复只管 Bash（拒绝只是跳过 Bash，`write` 照常写）。例：`write permission` = …回显…, permission(tool), tool_call(Bash), tool_output_delta, tool_result, tool_call(Write), tool_result, file_changed, turn_done；`write big error` = …回显…, tool_call(Bash `cat big.log`), tool_result, tool_call(Write), tool_result, file_changed, error, turn_done(error)。
 - **`slow`**：prompt 含 `slow` 时，每个事件之前停 200 ms（用来测取消）。等权限答复的时间不算。
+- **`link` / `tasks` 和其它关键词**：同样互相独立，按表里的顺序：`link` 在 `question` 之后、工具（步骤 5）之前；`tasks` 在 `write` 之后、`error` 之前。例：`question link permission` = …回显…, permission(question), permission(other), permission(tool), …；`write tasks error` = …回显…, tool_call(Write), tool_result, file_changed, activity×2, notice, tool_call(Workflow), tool_result, task×3, tool_result, error, turn_done(error)。
+- **写测试用的 prompt 时避开别的关键词**：关键词是子串匹配，`run the tasks` 会因为 `run` 在 `ask` 模式下触发一次权限请求，`planning links` 会因为 `plan` 多出计划和权限请求。`tasks` / `link` 的测试 prompt 用 `show the tasks`、`open a link` 这样不含别的关键词的句子。
 
 ### 权限请求
 
@@ -97,6 +101,52 @@ Mock reply: [model=<m> thinking=<t> mode=<mode>][ verbose=on][ prompt_append=<p>
 
 **取消**：写文件之前取消 = 没写；`tool_call` 之后才取消时，文件可能已经写了但没有 `tool_result` / `file_changed`（和真实 agent 被打断时一样）。
 
+### `link`（步骤 4'）：带链接的确认请求
+
+kind=`other` 的权限请求，`request_id = "<session_id>-perm-<n>"`（和其它请求共用计数）。MCP server 的 URL 模式授权长这样：
+
+| 字段 | 值 |
+|---|---|
+| `kind` | `other` |
+| `title` | `Open a link to continue` |
+| `detail.text` | `The mock-auth server needs you to sign in. Open the link, then confirm here.` |
+| `detail.url` | `https://example.com/mock-auth`（常量 `anycon_adapters::mock::LINK_URL`，和会话无关） |
+| `options` | `accept`（allow_once，"I've completed it"）、`decline`（reject_once，"Decline"，不要求附话） |
+
+答复 `accept`：`text_delta "Link confirmed."`；其它（`decline`、没有 option_id 的答复）：`text_delta "Link declined."`；然后 `text_done`。mock 不会真的去访问这个地址。
+
+### `tasks`（步骤 6'）：activity、notice 和 workflow 任务
+
+在回显（以及 `write`、`big` 等排在前面的步骤）之后、`error` 之前，按下面的顺序发这些事件。**所有值都是写死的**，除了 id 里的计数：
+
+| # | 事件 | 内容 |
+|---|---|---|
+| 1 | `activity` | `{ state: retrying, attempt: 2, max_attempts: 10, delay_ms: 5000, reason: "529 overloaded_error" }` |
+| 2 | `activity` | `{ state: none }` |
+| 3 | `notice` | `{ code: "model_fallback", level: warning, message: "Model mock-large is overloaded; switched to mock-small.", model_from: "mock-large", model_to: "mock-small" }`（和 turn 实际用的模型无关，固定这两个值） |
+| 4 | `tool_call` | `{ id: "<session_id>-tool-<n>", name: "Workflow", category: subagent, title: "Workflow: review", input: {"workflow": "review"}, detail: {description: "Review the change"} }`（和 `Bash` / `Write` 共用 `tool-<n>` 计数） |
+| 5 | `tool_result` | 同一个 id，`output: "Workflow review started in the background"`，`is_error: false`，`detail.background: true`（调用马上返回，任务还在跑） |
+| 6 | `task` | 快照 1，见下 |
+| 7 | `task` | 快照 2 |
+| 8 | `task` | 快照 3，`status: completed` |
+| 9 | `tool_result` | 同一个 id（取代第 5 条），`output: "Workflow review completed: no issues found"`，`is_error: false`，`detail.total_tokens: 1500`，没有 `background` |
+
+`task` 快照的共同字段：`id = "<session_id>-task-<n>"`（n 是会话内第几次 `tasks`，从 1 起；三条快照 id 相同）、`kind: workflow`、`tool_id` = 第 4 条 `tool_call` 的 id、`title: "review"`、`phases: [{index: 0, title: "Scan"}, {index: 1, title: "Review"}]`、`agents` 三项：`index 0 / label "scanner" / phase_index 0`，`index 1 / "reviewer-a" / 1`，`index 2 / "reviewer-b" / 1`，`model` 都是 `mock-small`。变化的部分：
+
+| | `status` | `usage {total_tokens, tool_calls, duration_ms}` | `last_tool` | `summary` | scanner | reviewer-a | reviewer-b |
+|---|---|---|---|---|---|---|---|
+| 快照 1 | `running` | 120 / 1 / 1000 | `Read` | `Scanning the changed files` | `running`，tokens 120，tool_calls 1，duration_ms 1000，last_tool `Read` | `queued` | `queued` |
+| 快照 2 | `running` | 900 / 7 / 4000 | `Grep` | `Reviewing the findings` | `done`，480 / 4 / 3000，`Read` | `running`，300 / 2 / 1000，`Grep` | `running`，120 / 1 / 1000，`Read`，`attempt: 2` |
+| 快照 3 | `completed` | 1500 / 12 / 7000 | `Grep` | `Review finished: no issues found` | `done`，480 / 4 / 3000，`Read` | `done`，560 / 5 / 3500，`Grep` | `done`，460 / 3 / 3000，`Read`，`attempt: 2` |
+
+（agent 一行里依次是 tokens / tool_calls / duration_ms。三个 agent 的 tokens 之和等于任务的 `total_tokens`，其余字段 `error`、`cached` 都不带。）
+
+**经过 daemon 时看到什么**：daemon 对同一个任务的快照节流（至多每秒一条，状态变化不受节流，[spec/daemon.md § 8.3](../../../../docs/spec/daemon.md#83-task--notice--activity)）。
+
+- 不加 `slow`：三条快照在几毫秒内连续发出，客户端只会看到**快照 1 和快照 3**（快照 2 同状态、在窗口内，被合并，之后被终态作废）。适合测「任务完成」。
+- 加 `slow`（`slow tasks`）：除了每个事件前停 200 ms，快照 2 和快照 3 之前再多停 1100 ms（共 1.3 s，超过 daemon 的 1 秒窗口），所以三条快照都会被看到，`running` 的状态持续约 2.6 秒。适合测「运行中」的界面。中途 `cancel()` 立刻结束（`turn_done cancelled`），已经发出的快照留着，不会再有 `completed`——任务停在 `running`，agent 进程退出时 daemon 才补 `cancelled`。
+- mock 不发 `AgentEvent::Background`，`SessionSummary.background_tasks` 始终是 0。
+
 ### 附件（步骤 2 的一部分）
 
 `capabilities.attachments` 是四种图片 mime，daemon 据此放行；mock 自己不再按 mime 拦（不认识的类型照样回显）。消息带附件时多出来的那个 `text_delta` 是：
@@ -116,7 +166,8 @@ Mock reply: [model=<m> thinking=<t> mode=<mode>][ verbose=on][ prompt_append=<p>
 
 `turn_done.usage`：`input_tokens` = prompt 字符数（至少 1）、`output_tokens` = 本 turn 所有 `text_delta` 的字符数、
 `cache_read_tokens = 0`、`cache_write_tokens = 0`、`cost_usd = (input + output) × 1e-6`、`duration_ms = 100`（固定）、
-`model` = 本 turn 生效的模型。被取消的 turn 带的是截至取消时的数字。
+`model` = 本 turn 生效的模型、`context_window = 200000`（所有模型一样）、`context_tokens = 12000 + input_tokens + output_tokens`
+（12000 模拟系统提示等固定开销，所以 Web UI 的上下文占用从 6% 起步）。被取消的 turn 带的是截至取消时的数字。
 
 ## 其它行为
 
@@ -141,6 +192,9 @@ Mock reply: [model=<m> thinking=<t> mode=<mode>][ verbose=on][ prompt_append=<p>
 | `slow hello` | 默认 | 每个事件间隔 200 ms；中途 `cancel()` → turn_done cancelled |
 | `hello` | `system_prompt_append="Be terse."`, `max_turns=3`, `max_budget_usd=1.5` | 回显 `Mock reply: [model=mock-large thinking=high mode=ask] prompt_append=Be terse. max_turns=3 budget=1.5 You said: hello`；之后 `set_settings` 不带这三项 → `Mock reply: [model=mock-large thinking=high mode=ask] You said: hello` |
 | `look` + 1 张图（内容 `abc`，名 `shot.png`，`image/png`） | 默认 | thinking×2, thinking_done, text×4（第 4 个是 ` Attachments: shot.png (image/png, 3 bytes, sha256 ba7816bf8f01)`）, text_done, turn_done |
+| `open a link` | 默认 | …回显…, **permission(other, detail.url)**, → accept → text "Link confirmed.", text_done, turn_done |
+| `show the tasks` | 默认 | …回显…, activity(retrying), activity(none), notice(model_fallback), tool_call(Workflow), tool_result(background), task×3, tool_result, turn_done（不询问；经过 daemon 时 task 只剩快照 1 和 3） |
+| `slow tasks` | 默认 | 同上，每个事件间隔 200 ms，快照之间 1.3 s；经过 daemon 时三条 task 都能看到 |
 | `error` | 默认 | …回显…, error, turn_done(error) |
 | `make a plan` | 默认 | …回显…, plan, permission(plan), text, turn_done |
 | `a question` | 默认 | …回显…, permission(question), text "You answered: q1=…", turn_done |

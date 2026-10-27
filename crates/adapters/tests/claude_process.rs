@@ -5,7 +5,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use anycon_adapters::ClaudeCodeAdapter;
-use anycon_agent_api::{Adapter, AdapterError, AgentEvent, PermissionDecision, ResumeHandle, UserInput};
+use anycon_agent_api::{Adapter, AdapterError, AgentEvent, AgentHandle, PermissionDecision, ResumeHandle, UserInput};
 use anycon_protocol::{AttachmentRef, Event, PermissionKind, SessionSettings, TurnDoneReason};
 use common::*;
 use serde_json::{json, Value};
@@ -420,6 +420,175 @@ async fn question_deny_option_denies_even_when_answers_are_sent() {
     assert_eq!(inner["behavior"], "deny", "{inner}");
     assert_eq!(inner["message"], "skip it");
     assert!(inner.get("updatedInput").is_none());
+    h.shutdown().await.unwrap();
+}
+
+/// 回放 `real_elicitation_*.jsonl`：先答复 MCP 工具的权限，返回随后到来的 elicitation 请求。
+async fn elicitation_request(h: &mut Box<dyn AgentHandle>) -> anycon_agent_api::PendingPermission {
+    let perm = |evs: &[AgentEvent]| match evs.last() {
+        Some(AgentEvent::Permission(p)) => p.clone(),
+        other => panic!("{other:?}"),
+    };
+    let tool = perm(&collect_until(h, is_permission).await);
+    assert_eq!(tool.kind, PermissionKind::Tool);
+    h.respond_permission(&tool.request_id, decision("allow")).await.unwrap();
+    perm(&collect_until(h, is_permission).await)
+}
+
+#[tokio::test]
+async fn mcp_elicitation_form_is_answered_with_typed_content() {
+    let fx = Harness::new().script("real_elicitation_form.jsonl");
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    h.send(input("collect my details")).await.unwrap();
+    let p = elicitation_request(&mut h).await;
+    assert_eq!((p.kind, p.title.as_str()), (PermissionKind::Question, "example-elicit: Please enter your details"));
+    // 答复之前 fake（和真实 CLI）一直在等
+    assert!(h.is_busy());
+
+    let mut answers = serde_json::Map::new();
+    for (k, v) in [("name", "Ada"), ("age", "36"), ("subscribe", "true"), ("color", "green")] {
+        answers.insert(k.into(), json!(v));
+    }
+    let accept = PermissionDecision { option_id: Some("accept".into()), answers: Some(answers), ..Default::default() };
+    h.respond_permission(&p.request_id, accept).await.unwrap();
+    let rest = collect_until(&mut h, is_turn_done).await;
+    assert_eq!(turn_done(&rest).1, TurnDoneReason::Completed);
+    assert!(!names(&rest).contains(&"error".to_string()), "{:?}", names(&rest));
+
+    // 这就是录制时 CLI 收下、并原样转给 MCP server 的 control_response
+    let reply = fx.wait_stdin("elicitation reply", |m| m["response"]["request_id"] == json!(p.request_id)).await;
+    assert_eq!(
+        reply,
+        json!({"type": "control_response", "response": {"subtype": "success", "request_id": p.request_id,
+            "response": {"action": "accept", "content": {"name": "Ada", "age": 36, "subscribe": true, "color": "green"}}}})
+    );
+    // 重复答复：幂等
+    h.respond_permission(&p.request_id, decision("decline")).await.unwrap();
+    h.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_elicitation_declined_cancelled_or_unanswerable_all_decline() {
+    for (answer, want_error) in [
+        // 用户拒绝
+        (PermissionDecision { option_id: Some("decline".into()), ..Default::default() }, false),
+        // daemon 在取消 / 超时时自动答复的是 reject 选项，同样是 decline
+        (
+            PermissionDecision {
+                option_id: Some("decline".into()),
+                message: Some("turn cancelled".into()),
+                ..Default::default()
+            },
+            false,
+        ),
+        // 提交了，但年龄不是整数：改按 decline 答复（请求在 daemon 那边已经算答复过），并说明原因
+        (
+            PermissionDecision {
+                option_id: Some("accept".into()),
+                answers: Some(serde_json::Map::from_iter([
+                    ("name".to_string(), json!("Ada")),
+                    ("age".to_string(), json!("old")),
+                ])),
+                ..Default::default()
+            },
+            true,
+        ),
+        // 必填项没填
+        (
+            PermissionDecision {
+                option_id: Some("accept".into()),
+                answers: Some(serde_json::Map::new()),
+                ..Default::default()
+            },
+            true,
+        ),
+    ] {
+        let fx = Harness::new().script("real_elicitation_form.jsonl");
+        let mut h = fx.spawn(SessionSettings::default(), None).await;
+        h.send(input("collect my details")).await.unwrap();
+        let p = elicitation_request(&mut h).await;
+        h.respond_permission(&p.request_id, answer).await.unwrap();
+        let rest = collect_until(&mut h, is_turn_done).await;
+        let errors: Vec<_> = rest
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Event(Event::Error { code, message, recoverable }) => {
+                    Some((code.as_str(), message.as_str(), *recoverable))
+                }
+                _ => None,
+            })
+            .collect();
+        if want_error {
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert_eq!((errors[0].0, errors[0].2), ("elicitation_invalid_answer", true));
+            assert!(errors[0].1.contains("declined"), "{}", errors[0].1);
+        } else {
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+        let reply = fx.wait_stdin("elicitation reply", |m| m["response"]["request_id"] == json!(p.request_id)).await;
+        assert_eq!(reply["response"]["response"], json!({"action": "decline"}));
+        h.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn mcp_elicitation_url_mode_asks_for_the_link_and_accepts() {
+    let fx = Harness::new().script("real_elicitation_url.jsonl");
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    h.send(input("sign me in")).await.unwrap();
+    let p = {
+        // 这条录制里模型先用了 ToolSearch（自动放行），然后才是 MCP 工具的权限
+        let tool = match collect_until(&mut h, is_permission).await.last() {
+            Some(AgentEvent::Permission(p)) => p.clone(),
+            other => panic!("{other:?}"),
+        };
+        h.respond_permission(&tool.request_id, decision("allow")).await.unwrap();
+        match collect_until(&mut h, is_permission).await.last() {
+            Some(AgentEvent::Permission(p)) => p.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(p.kind, PermissionKind::Other);
+    assert_eq!(p.detail.url.as_deref(), Some("https://example.com/signin?state=abc123"));
+    h.respond_permission(&p.request_id, decision("accept")).await.unwrap();
+    let rest = collect_until(&mut h, is_turn_done).await;
+    assert_eq!(turn_done(&rest).1, TurnDoneReason::Completed);
+    let reply = fx.wait_stdin("elicitation reply", |m| m["response"]["request_id"] == json!(p.request_id)).await;
+    assert_eq!(reply["response"]["response"], json!({"action": "accept"}));
+    h.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_elicitation_with_a_bad_option_stays_pending_and_a_non_web_link_is_declined_at_once() {
+    let fx = Harness::new().script("real_elicitation_form.jsonl");
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    h.send(input("x")).await.unwrap();
+    let p = elicitation_request(&mut h).await;
+    assert!(h.respond_permission(&p.request_id, decision("zzz")).await.is_err());
+    h.respond_permission(&p.request_id, decision("decline")).await.unwrap();
+    let _ = collect_until(&mut h, is_turn_done).await;
+    h.shutdown().await.unwrap();
+
+    // 链接不是 http(s)：不问用户，直接回 decline 并报一个可恢复的 error，turn 照常往下走
+    let fx = Harness::new();
+    let script = fx.dir.path().join("elicit-bad-link.jsonl");
+    std::fs::write(
+        &script,
+        concat!(
+            r#"{"type":"control_request","request_id":"el-bad","request":{"subtype":"elicitation","mcp_server_name":"example-elicit","message":"Sign in","mode":"url","url":"javascript:alert(1)","elicitation_id":"x"}}"#, "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"s","total_cost_usd":0,"usage":{}}"#, "\n",
+        ),
+    )
+    .unwrap();
+    let fx = fx.var("FAKE_CLAUDE_SCRIPT", &script.to_string_lossy());
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    h.send(input("hi")).await.unwrap();
+    let evs = collect_until(&mut h, is_turn_done).await;
+    assert!(!names(&evs).contains(&"PERMISSION".to_string()));
+    assert!(evs.iter().any(|e| matches!(e, AgentEvent::Event(Event::Error { code, recoverable: true, .. }) if code == "elicitation_rejected")));
+    let reply = fx.wait_stdin("decline", |m| m["type"] == "control_response").await;
+    assert_eq!(reply["response"]["request_id"], "el-bad");
+    assert_eq!(reply["response"]["response"], json!({"action": "decline"}));
     h.shutdown().await.unwrap();
 }
 

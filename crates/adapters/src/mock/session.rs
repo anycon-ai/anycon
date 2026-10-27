@@ -16,8 +16,9 @@ use anycon_agent_api::{
     SpawnRequest, UserInput,
 };
 use anycon_protocol::{
-    AttachmentRef, EditKind, Event, FileChangeKind, ModelInfo, PermissionDetail, PermissionKind, PermissionOption,
-    PermissionOptionKind, PlanEntry, PlanStatus, Question, QuestionChoice, SessionSettings, ToolCallDetail,
+    ActivityState, AttachmentRef, EditKind, Event, FileChangeKind, ModelInfo, NoticeLevel, PermissionDetail,
+    PermissionKind, PermissionOption, PermissionOptionKind, PlanEntry, PlanStatus, Question, QuestionChoice,
+    SessionSettings, TaskAgent, TaskAgentState, TaskKind, TaskPhase, TaskStatus, TaskUsage, ToolCallDetail,
     ToolCategory, ToolPermissionDetail, ToolResultDetail, TurnDoneReason, Usage,
 };
 use serde_json::{json, Value};
@@ -26,13 +27,22 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::{models_with, MODEL_LARGE, MODE_ASK, MODE_PLAN, MODE_YOLO};
+use super::{models_with, MODEL_LARGE, MODEL_SMALL, MODE_ASK, MODE_PLAN, MODE_YOLO};
 
 /// `slow` 关键词下每个事件之间的停顿。
 const SLOW_STEP: Duration = Duration::from_millis(200);
+/// `slow tasks` 下 workflow 的快照之间在 [`SLOW_STEP`] 之外多停的时间。daemon 对同一个任务的快照至多每秒发一条
+/// （docs/spec/daemon.md § 8.3），两条快照相隔超过 1 秒才都会被客户端看到：200 ms + 1100 ms = 1.3 s。
+const TASK_SLOW_EXTRA: Duration = Duration::from_millis(1100);
 /// `TurnDone.usage.duration_ms` 固定值（确定性）。
 const FIXED_DURATION_MS: u64 = 100;
 const ECHO_PROMPT_MAX_CHARS: usize = 200;
+/// `TurnDone.usage.context_window` 固定值（所有模型一样）。
+const CONTEXT_WINDOW: u64 = 200_000;
+/// `TurnDone.usage.context_tokens` = 这个底数（模拟系统提示等固定开销）+ `input_tokens` + `output_tokens`。
+const CONTEXT_BASE_TOKENS: u64 = 12_000;
+/// `link` 关键词的权限请求里给的链接（固定，和会话无关）。
+pub const LINK_URL: &str = "https://example.com/mock-auth";
 
 /// `prompt_append=` 回显最多留多少字符。
 const ECHO_APPEND_MAX_CHARS: usize = 32;
@@ -163,6 +173,7 @@ struct Shared {
     pending: Mutex<HashMap<String, oneshot::Sender<PermissionDecision>>>,
     perm_seq: AtomicU64,
     tool_seq: AtomicU64,
+    task_seq: AtomicU64,
     turn_seq: AtomicU64,
 }
 
@@ -200,6 +211,7 @@ impl MockHandle {
             pending: Mutex::new(HashMap::new()),
             perm_seq: AtomicU64::new(0),
             tool_seq: AtomicU64::new(0),
+            task_seq: AtomicU64::new(0),
             turn_seq: AtomicU64::new(0),
         });
         Ok(Self { shared, models, rx, tx: Some(tx), token: CancellationToken::new(), turn: None, resume })
@@ -356,6 +368,17 @@ impl Turn {
         }
     }
 
+    /// `slow` 下额外停一会儿（可取消）；不是 `slow` 时什么都不做。
+    async fn extra_pause(&self, d: Duration) -> std::result::Result<(), Stop> {
+        if self.slow {
+            tokio::select! {
+                _ = tokio::time::sleep(d) => {}
+                _ = self.token.cancelled() => return Err(Stop::Cancelled),
+            }
+        }
+        Ok(())
+    }
+
     fn next_request_id(&self) -> String {
         let n = self.shared.perm_seq.fetch_add(1, Ordering::SeqCst) + 1;
         format!("{}-perm-{n}", self.shared.session_id)
@@ -401,6 +424,8 @@ async fn run_turn(
         cost_usd: Some((in_chars + turn.out_chars) as f64 * 1e-6),
         duration_ms: FIXED_DURATION_MS,
         model: Some(eff.model.clone()),
+        context_window: Some(CONTEXT_WINDOW),
+        context_tokens: Some(CONTEXT_BASE_TOKENS + in_chars + turn.out_chars),
     };
     // 先清 busy 再发 TurnDone：消费者收到 TurnDone 后可以立刻 send 下一条。
     shared.busy.store(false, Ordering::SeqCst);
@@ -442,6 +467,9 @@ async fn script(
     if lower.contains("question") {
         question_branch(t).await?;
     }
+    if lower.contains("link") {
+        link_branch(t).await?;
+    }
 
     let wants_permission = lower.contains("permission") || (eff.mode == MODE_ASK && lower.contains("run"));
     if wants_permission {
@@ -457,6 +485,10 @@ async fn script(
     // 不受 mode 影响、自己不发权限请求（要先走审批就同时带 `permission`，那条请求只管 Bash，答复不影响这里）
     if lower.contains("write") {
         write_file(t).await?;
+    }
+
+    if lower.contains("tasks") {
+        tasks_branch(t).await?;
     }
 
     if lower.contains("error") {
@@ -539,6 +571,7 @@ async fn question_branch(t: &mut Turn) -> std::result::Result<(), Stop> {
                 ],
                 multi: false,
                 free_text: true,
+                optional: false,
             }],
             ..Default::default()
         },
@@ -573,6 +606,29 @@ async fn question_branch(t: &mut Turn) -> std::result::Result<(), Stop> {
         _ => "Question skipped.".to_string(),
     };
     t.text(vec![text]).await
+}
+
+/// `link` 关键词：`kind = other` 的权限请求，`detail.url` 是要用户在浏览器里打开的链接（MCP URL 模式 elicitation 的样子）。
+/// `accept` → `"Link confirmed."`，其它 → `"Link declined."`，然后 `text_done`。
+async fn link_branch(t: &mut Turn) -> std::result::Result<(), Stop> {
+    let req = PendingPermission {
+        request_id: t.next_request_id(),
+        kind: PermissionKind::Other,
+        title: "Open a link to continue".into(),
+        detail: PermissionDetail {
+            text: Some("The mock-auth server needs you to sign in. Open the link, then confirm here.".into()),
+            url: Some(LINK_URL.into()),
+            ..Default::default()
+        },
+        options: vec![
+            option("accept", "I've completed it", PermissionOptionKind::AllowOnce, false),
+            option("decline", "Decline", PermissionOptionKind::RejectOnce, false),
+        ],
+        expires_in: None,
+    };
+    let d = t.ask(req).await?;
+    let text = if d.option_id.as_deref() == Some("accept") { "Link confirmed." } else { "Link declined." };
+    t.text(vec![text.to_string()]).await
 }
 
 async fn tool_branch(t: &mut Turn) -> std::result::Result<(), Stop> {
@@ -670,6 +726,195 @@ async fn run_tool(t: &mut Turn) -> std::result::Result<(), Stop> {
         output: json!("hi\n"),
         is_error: false,
         detail: Some(ToolResultDetail { exit_code: Some(0), ..Default::default() }),
+    })
+    .await
+}
+
+// ---------- tasks：activity / notice / workflow 任务快照 ----------
+
+/// workflow 里的一个 agent（只填 `tasks` 序列用到的字段，其余缺省）。
+fn wf_agent(index: u32, label: &str, phase_index: u32, state: TaskAgentState) -> TaskAgent {
+    TaskAgent {
+        index,
+        label: label.into(),
+        state,
+        phase_index: Some(phase_index),
+        model: Some(MODEL_SMALL.into()),
+        tokens: None,
+        tool_calls: None,
+        duration_ms: None,
+        last_tool: None,
+        error: None,
+        attempt: None,
+        cached: None,
+    }
+}
+
+/// `tasks` 关键词：一串固定的「agent 在 turn 中间做的非输出的事」。
+/// `activity(retrying)` → `activity(none)` → `notice(model_fallback)` → `tool_call(Workflow)` → `tool_result(background)`
+/// → 三条 workflow `task` 快照（running、running、completed）→ 最终 `tool_result`。
+/// 快照里的数字都是写死的；任务 id 是 `<session_id>-task-<n>`（n 从 1 递增）。`slow` 下快照之间多停 1.1 秒（见 [`TASK_SLOW_EXTRA`]）。
+async fn tasks_branch(t: &mut Turn) -> std::result::Result<(), Stop> {
+    t.emit(Event::Activity {
+        state: ActivityState::Retrying,
+        attempt: Some(2),
+        max_attempts: Some(10),
+        delay_ms: Some(5000),
+        reason: Some("529 overloaded_error".into()),
+    })
+    .await?;
+    t.emit(Event::Activity {
+        state: ActivityState::None,
+        attempt: None,
+        max_attempts: None,
+        delay_ms: None,
+        reason: None,
+    })
+    .await?;
+    t.emit(Event::Notice {
+        code: "model_fallback".into(),
+        level: NoticeLevel::Warning,
+        message: format!("Model {MODEL_LARGE} is overloaded; switched to {MODEL_SMALL}."),
+        model_from: Some(MODEL_LARGE.into()),
+        model_to: Some(MODEL_SMALL.into()),
+        resets_at_ms: None,
+    })
+    .await?;
+
+    let n = t.shared.tool_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let tool_id = format!("{}-tool-{n}", t.shared.session_id);
+    let task_n = t.shared.task_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let task_id = format!("{}-task-{task_n}", t.shared.session_id);
+    t.emit(Event::ToolCall {
+        id: tool_id.clone(),
+        name: "Workflow".into(),
+        category: ToolCategory::Subagent,
+        title: "Workflow: review".into(),
+        input: json!({ "workflow": "review" }),
+        detail: Some(ToolCallDetail { description: Some("Review the change".into()), ..Default::default() }),
+        parent_id: None,
+    })
+    .await?;
+    // 后台任务：调用立刻返回，工作还在跑；结束时同一个 id 再来一条 tool_result 取代它
+    t.emit(Event::ToolResult {
+        id: tool_id.clone(),
+        output: json!("Workflow review started in the background"),
+        is_error: false,
+        detail: Some(ToolResultDetail { background: Some(true), ..Default::default() }),
+    })
+    .await?;
+
+    let phases = vec![TaskPhase { index: 0, title: "Scan".into() }, TaskPhase { index: 1, title: "Review".into() }];
+    let snapshot =
+        |status: TaskStatus, usage: TaskUsage, last_tool: &str, summary: &str, agents: Vec<TaskAgent>| Event::Task {
+            id: task_id.clone(),
+            kind: TaskKind::Workflow,
+            tool_id: Some(tool_id.clone()),
+            title: "review".into(),
+            status,
+            usage: Some(usage),
+            last_tool: Some(last_tool.into()),
+            summary: Some(summary.into()),
+            phases: phases.clone(),
+            agents,
+        };
+    let usage = |total_tokens, tool_calls, duration_ms| TaskUsage {
+        total_tokens: Some(total_tokens),
+        tool_calls: Some(tool_calls),
+        duration_ms: Some(duration_ms),
+    };
+
+    // 1：阶段 0 的 scanner 在跑，阶段 1 的两个 reviewer 排队
+    t.emit(snapshot(
+        TaskStatus::Running,
+        usage(120, 1, 1000),
+        "Read",
+        "Scanning the changed files",
+        vec![
+            TaskAgent {
+                tokens: Some(120),
+                tool_calls: Some(1),
+                duration_ms: Some(1000),
+                last_tool: Some("Read".into()),
+                ..wf_agent(0, "scanner", 0, TaskAgentState::Running)
+            },
+            wf_agent(1, "reviewer-a", 1, TaskAgentState::Queued),
+            wf_agent(2, "reviewer-b", 1, TaskAgentState::Queued),
+        ],
+    ))
+    .await?;
+    // 2：scanner 做完，两个 reviewer 在跑（reviewer-b 是第 2 次尝试）
+    t.extra_pause(TASK_SLOW_EXTRA).await?;
+    t.emit(snapshot(
+        TaskStatus::Running,
+        usage(900, 7, 4000),
+        "Grep",
+        "Reviewing the findings",
+        vec![
+            TaskAgent {
+                tokens: Some(480),
+                tool_calls: Some(4),
+                duration_ms: Some(3000),
+                last_tool: Some("Read".into()),
+                ..wf_agent(0, "scanner", 0, TaskAgentState::Done)
+            },
+            TaskAgent {
+                tokens: Some(300),
+                tool_calls: Some(2),
+                duration_ms: Some(1000),
+                last_tool: Some("Grep".into()),
+                ..wf_agent(1, "reviewer-a", 1, TaskAgentState::Running)
+            },
+            TaskAgent {
+                tokens: Some(120),
+                tool_calls: Some(1),
+                duration_ms: Some(1000),
+                last_tool: Some("Read".into()),
+                attempt: Some(2),
+                ..wf_agent(2, "reviewer-b", 1, TaskAgentState::Running)
+            },
+        ],
+    ))
+    .await?;
+    // 3：全部做完，任务 completed（终态）
+    t.extra_pause(TASK_SLOW_EXTRA).await?;
+    t.emit(snapshot(
+        TaskStatus::Completed,
+        usage(1500, 12, 7000),
+        "Grep",
+        "Review finished: no issues found",
+        vec![
+            TaskAgent {
+                tokens: Some(480),
+                tool_calls: Some(4),
+                duration_ms: Some(3000),
+                last_tool: Some("Read".into()),
+                ..wf_agent(0, "scanner", 0, TaskAgentState::Done)
+            },
+            TaskAgent {
+                tokens: Some(560),
+                tool_calls: Some(5),
+                duration_ms: Some(3500),
+                last_tool: Some("Grep".into()),
+                ..wf_agent(1, "reviewer-a", 1, TaskAgentState::Done)
+            },
+            TaskAgent {
+                tokens: Some(460),
+                tool_calls: Some(3),
+                duration_ms: Some(3000),
+                last_tool: Some("Read".into()),
+                attempt: Some(2),
+                ..wf_agent(2, "reviewer-b", 1, TaskAgentState::Done)
+            },
+        ],
+    ))
+    .await?;
+
+    t.emit(Event::ToolResult {
+        id: tool_id,
+        output: json!("Workflow review completed: no issues found"),
+        is_error: false,
+        detail: Some(ToolResultDetail { total_tokens: Some(1500), ..Default::default() }),
     })
     .await
 }

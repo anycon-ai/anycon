@@ -1,15 +1,20 @@
 //! 把 `tests/fixtures/codex/*.jsonl` 里的 app-server 流量直接喂给 `Translator`（不起进程）。
 //!
-//! `real_*.jsonl` 是用本机真实的 `codex app-server`（0.157.1）加一个本地的假模型服务录下来的：协议层是真的，
-//! 模型输出是脚本。其余是按 schema 手写的（`tools_and_plan`、`command_failed`、`reconnecting`、`unsupported_requests`、
-//! `long_text`、`two_turns`；`unknown_things` 故意带着不认识的东西）。录制入库前清洗过（路径 → `/work/proj`，id → `FIXTURE_*`）。
+//! `real_*.jsonl` 是用本机真实的 `codex app-server` 录下来的：协议层是真的，模型输出要么是脚本（0.157.1 + 本地的假模型服务），
+//! 要么是真模型的一次很短的调用（0.164.0：`real_subagent_*`、`real_mcp_*`、`real_context_compaction`、`real_startup_notices`）。
+//! 其余是按 schema 手写的（`tools_and_plan`、`command_failed`、`reconnecting`、`unsupported_requests`、`long_text`、`two_turns`、
+//! `subagent_collab`、`notices`、`mcp_elicitation_forms`；`unknown_things` 故意带着不认识的东西）。录制入库前清洗过
+//! （路径 → `/work/proj`，id → `FIXTURE_*`，模型名 → `fixture-model*`）。
 
 use std::path::PathBuf;
 
-use anycon_adapters::codex::permissions::NativePending;
+use anycon_adapters::codex::permissions::{answer_problem, build_response, NativePending};
 use anycon_adapters::codex::translate::{Out, Translator};
-use anycon_agent_api::{AgentEvent, PendingPermission};
-use anycon_protocol::{Event, FileChangeKind, PermissionKind, PlanStatus, ToolCategory, TurnDoneReason};
+use anycon_agent_api::{AgentEvent, PendingPermission, PermissionDecision};
+use anycon_protocol::{
+    ActivityState, Event, FileChangeKind, NoticeLevel, PermissionKind, PermissionOptionKind, PlanStatus, TaskKind,
+    TaskStatus, ToolCategory, TurnDoneReason,
+};
 use serde_json::{json, Value};
 
 fn fixtures_dir() -> PathBuf {
@@ -566,12 +571,11 @@ fn unsupported_requests_are_each_answered() {
             _ => None,
         })
         .collect();
-    assert_eq!(replies.len(), 4);
-    assert_eq!(replies[0], (json!(0), Ok(json!({"action": "decline"}))));
-    assert_eq!(replies[1].0, json!(1));
-    assert_eq!(replies[1].1.as_ref().unwrap()["success"], false);
-    assert_eq!(replies[2], (json!(2), Ok(json!({"decision": "abort"}))));
-    assert_eq!((replies[3].0.clone(), replies[3].1.clone()), (json!(3), Err(-32603)));
+    assert_eq!(replies.len(), 3);
+    assert_eq!(replies[0].0, json!(1));
+    assert_eq!(replies[0].1.as_ref().unwrap()["success"], false);
+    assert_eq!(replies[1], (json!(2), Ok(json!({"decision": "abort"}))));
+    assert_eq!((replies[2].0.clone(), replies[2].1.clone()), (json!(3), Err(-32603)));
     // 每个都给用户留了一条可见的说明，没有一个变成权限请求
     assert!(permissions(&outs).is_empty());
     let msgs: Vec<String> = events(&outs)
@@ -585,12 +589,9 @@ fn unsupported_requests_are_each_answered() {
             }
         })
         .collect();
-    assert_eq!(msgs.len(), 4);
+    assert_eq!(msgs.len(), 3);
     assert!(
-        msgs[0].contains("MCP")
-            && msgs[1].contains("dynamic tool")
-            && msgs[2].contains("legacy")
-            && msgs[3].contains("codex login"),
+        msgs[0].contains("dynamic tool") && msgs[1].contains("legacy") && msgs[2].contains("codex login"),
         "{msgs:?}"
     );
     assert_eq!(done(&outs).0, TurnDoneReason::Completed);
@@ -806,4 +807,889 @@ fn a_sub_command_approval_shows_the_sub_command_not_the_whole_script() {
     assert_eq!(d.command.as_deref(), Some("rm -f out.txt"));
     assert_eq!(d.description.as_deref(), Some("deletes a file"));
     assert_eq!(p.detail.tool.as_ref().unwrap().input["approvalId"], "b6f1-sub");
+}
+
+// ---------------------------------------------------------------- 子 agent
+
+fn tasks(outs: &[Out]) -> Vec<Event> {
+    events(outs).into_iter().filter(|e| matches!(e, Event::Task { .. })).collect()
+}
+
+fn texts(outs: &[Out]) -> Vec<String> {
+    let mut all = vec![String::new()];
+    for e in events(outs) {
+        match e {
+            Event::TextDelta { text } => all.last_mut().unwrap().push_str(&text),
+            Event::TextDone {} => all.push(String::new()),
+            _ => {}
+        }
+    }
+    all.retain(|t| !t.is_empty());
+    all
+}
+
+fn notices(outs: &[Out]) -> Vec<(String, NoticeLevel, String)> {
+    events(outs)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::Notice { code, level, message, .. } => Some((code, level, message)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_sub_agents_turn_completion_does_not_end_the_main_turn() {
+    // 主 thread 是握手时告诉的，或者从第一个 `turn/started` 学的：两种都一样
+    for told in [Some("FIXTURE_THREAD"), None] {
+        let mut t = Translator::new("/work/proj", None);
+        if let Some(m) = told {
+            t.set_main_thread(m);
+        }
+        t.begin_turn();
+        let mut outs = Vec::new();
+        let mut child_turns_seen = 0;
+        for l in lines("real_subagent_spawn.jsonl") {
+            let v: Value = serde_json::from_str(&l).unwrap();
+            let child_done = v["method"] == "turn/completed" && v["params"]["threadId"] == "FIXTURE_CHILD";
+            let child_started = v["method"] == "turn/started" && v["params"]["threadId"] == "FIXTURE_CHILD";
+            outs.extend(t.feed_line(&l));
+            if child_started || child_done {
+                child_turns_seen += 1;
+                // 子 agent 的 turn 开始 / 结束都和主 turn 无关
+                assert!(t.is_busy(), "{told:?}: the main turn ended at {l}");
+                assert!(!names(&outs).contains(&"turn_done".to_string()), "{told:?}");
+                assert_eq!(t.codex_turn_id(), Some("FIXTURE_TURN"));
+            }
+        }
+        assert_eq!(child_turns_seen, 2);
+        let n = names(&outs);
+        assert_eq!(n.iter().filter(|x| *x == "turn_done").count(), 1);
+        assert_eq!(n.last().map(String::as_str), Some("turn_done"));
+        assert!(!t.is_busy());
+        // 用量只算主 thread 的：4 次主 thread 的请求（子 agent 的 23551 输入不在里面）
+        let (reason, usage) = done(&outs);
+        assert_eq!(reason, TurnDoneReason::Completed);
+        assert_eq!((usage.input_tokens, usage.output_tokens), (Some(14732), Some(98)));
+    }
+}
+
+#[test]
+fn a_sub_agents_text_stays_out_of_the_main_stream() {
+    let (_, outs) = replay("real_subagent_spawn.jsonl");
+    // 子 agent 回复的 `PONG` 不在主流里，只有主 agent 自己的两段话
+    assert_eq!(
+        texts(&outs),
+        vec![
+            "I’ll delegate exactly that one-word response, wait for completion, and report it back.".to_string(),
+            "The sub-agent replied: PONG".to_string()
+        ]
+    );
+    assert!(!names(&outs).contains(&"thinking_delta".to_string()));
+}
+
+#[test]
+fn starting_a_sub_agent_is_a_subagent_tool_call_with_a_task_attached() {
+    let (_, outs) = replay("real_subagent_spawn.jsonl");
+    let evs = events(&outs);
+    // 启动：`subAgentActivity(kind = started)` 是模型那次调用，没有 `collabAgentToolCall`
+    let call = evs.iter().find(|e| matches!(e, Event::ToolCall { id, .. } if id == "call_1")).unwrap();
+    match call {
+        Event::ToolCall { name, category, title, parent_id, input, .. } => {
+            assert_eq!(
+                (name.as_str(), *category, title.as_str()),
+                ("spawnAgent", ToolCategory::Subagent, "Start sub-agent pong")
+            );
+            assert_eq!(parent_id, &None);
+            assert_eq!(input["agentThreadId"], "FIXTURE_CHILD");
+        }
+        _ => unreachable!(),
+    }
+    let result = evs.iter().find_map(|e| match e {
+        Event::ToolResult { id, output, is_error, .. } if id == "call_1" => Some((output.clone(), *is_error)),
+        _ => None,
+    });
+    assert_eq!(result, Some((json!("Started sub-agent pong (fixture-model-sub)"), false)));
+    // `task` 紧跟在 `tool_call` 后面，`tool_id` 指向它
+    let pos = |pred: &dyn Fn(&Event) -> bool| evs.iter().position(pred).unwrap();
+    assert_eq!(
+        pos(&|e| matches!(e, Event::Task { .. })),
+        pos(&|e| matches!(e, Event::ToolCall { id, .. } if id == "call_1")) + 1
+    );
+    let snaps = tasks(&outs);
+    match &snaps[0] {
+        Event::Task { id, kind, tool_id, title, status, summary, .. } => {
+            assert_eq!((id.as_str(), *kind, tool_id.as_deref()), ("FIXTURE_CHILD", TaskKind::Subagent, Some("call_1")));
+            assert_eq!((title.as_str(), *status, summary), ("pong", TaskStatus::Running, &None));
+        }
+        _ => unreachable!(),
+    }
+    // 最后一条：完成，带上它的回复、用量和耗时
+    match snaps.last().unwrap() {
+        Event::Task { status, summary, usage, last_tool, .. } => {
+            assert_eq!(*status, TaskStatus::Completed);
+            assert_eq!(summary.as_deref(), Some("PONG"));
+            let u = usage.unwrap();
+            assert_eq!((u.total_tokens, u.tool_calls, u.duration_ms), (Some(23557), Some(0), Some(5513)));
+            assert_eq!(last_tool, &None);
+        }
+        _ => unreachable!(),
+    }
+    // 没有变化就不重复发：每条快照都和前一条不同
+    for w in snaps.windows(2) {
+        assert_ne!(w[0], w[1]);
+    }
+    // `wait` 不是启动子 agent 的调用：category other，标题是人话
+    let wait = evs.iter().find(|e| matches!(e, Event::ToolCall { id, .. } if id == "call_2")).unwrap();
+    match wait {
+        Event::ToolCall { name, category, title, .. } => {
+            assert_eq!((name.as_str(), *category, title.as_str()), ("wait", ToolCategory::Other, "Wait for sub-agents"))
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn a_sub_agents_tool_calls_point_at_the_call_that_started_it() {
+    let (_, outs) = replay("real_subagent_command.jsonl");
+    let evs = events(&outs);
+    match evs.iter().find(|e| matches!(e, Event::ToolCall { id, .. } if id == "exec_1")).unwrap() {
+        Event::ToolCall { name, category, parent_id, detail, .. } => {
+            assert_eq!((name.as_str(), *category), ("commandExecution", ToolCategory::Shell));
+            assert_eq!(parent_id.as_deref(), Some("call_1"));
+            assert_eq!(detail.as_ref().unwrap().command.as_deref(), Some("echo hello-from-child"));
+        }
+        _ => unreachable!(),
+    }
+    // 主 agent 自己的调用不带 parent_id
+    for e in &evs {
+        if let Event::ToolCall { id, parent_id, .. } = e {
+            assert_eq!(parent_id.is_some(), id == "exec_1", "{id}");
+        }
+    }
+    let result = evs.iter().find_map(|e| match e {
+        Event::ToolResult { id, output, detail, .. } if id == "exec_1" => Some((output.clone(), detail.clone())),
+        _ => None,
+    });
+    let (output, detail) = result.unwrap();
+    assert_eq!((output, detail.unwrap().exit_code), (json!("hello-from-child\n"), Some(0)));
+    // 子 agent 的话不进主流
+    assert_eq!(
+        texts(&outs),
+        vec![
+            "I’m delegating the command exactly as requested and will wait for the child’s result.".to_string(),
+            "The output was `hello-from-child`.".to_string()
+        ]
+    );
+    // task：调用数、最近的工具、它的回复、累计 token
+    match tasks(&outs).last().unwrap() {
+        Event::Task { title, status, usage, last_tool, summary, .. } => {
+            assert_eq!((title.as_str(), *status), ("echo_child", TaskStatus::Completed));
+            let u = usage.unwrap();
+            assert_eq!((u.tool_calls, u.total_tokens), (Some(1), Some(47280)));
+            assert_eq!(last_tool.as_deref(), Some("commandExecution"));
+            assert_eq!(summary.as_deref(), Some("The command output was `hello-from-child`."));
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn a_sub_agents_approval_says_who_is_asking_and_is_answered_like_any_other() {
+    let mut t = Translator::new("/work/proj", None);
+    t.begin_turn();
+    let mut outs = Vec::new();
+    for l in lines("real_subagent_command.jsonl") {
+        outs.extend(t.feed_message(&serde_json::from_str(&l).unwrap()));
+    }
+    let perms = permissions(&outs);
+    assert_eq!(perms.len(), 1);
+    let (p, native) = &perms[0];
+    assert_eq!((p.kind, p.title.as_str()), (PermissionKind::Tool, "Run command (sub-agent echo_child)"));
+    // 子 thread 里的 item 也能给审批补上命令（item id 全局唯一）
+    assert_eq!(
+        p.detail.tool.as_ref().unwrap().detail.as_ref().unwrap().command.as_deref(),
+        Some("echo hello-from-child")
+    );
+    let d = PermissionDecision { option_id: Some("allow".into()), ..Default::default() };
+    assert_eq!(build_response(native, &d, false).unwrap(), json!({"decision": "accept"}));
+}
+
+#[test]
+fn collab_agent_calls_register_their_receivers_and_report_readable_results() {
+    let (t, outs) = replay("subagent_collab.jsonl");
+    let evs = events(&outs);
+    let result_of = |want: &str| {
+        evs.iter().find_map(|e| match e {
+            Event::ToolResult { id, output, is_error, .. } if id == want => Some((output.clone(), *is_error)),
+            _ => None,
+        })
+    };
+    // 启动：结果是「名字: 状态」，不是 `agentsStates` 的原始 JSON
+    assert_eq!(
+        result_of("collab_1"),
+        Some((json!("Survey the test directory and report the slowest tests: running"), false))
+    );
+    // 等待：每个子 agent 一段，带上它们的消息
+    assert_eq!(
+        result_of("collab_3"),
+        Some((
+            json!("Survey the test directory and report the slowest tests: completed\nSlowest: parser_bench (4.2s)\n\nCheck that the lockfile is up to date: interrupted"),
+            false
+        ))
+    );
+    // 子 agent 里的调用指向各自的启动调用；子 agent 的思考 / 文本不进主流
+    let parents: Vec<(String, Option<String>)> = evs
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolCall { id, parent_id, .. } => Some((id.clone(), parent_id.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        parents,
+        vec![
+            ("collab_1".to_string(), None),
+            ("collab_2".to_string(), None),
+            ("exec_c1".to_string(), Some("collab_1".to_string())),
+            ("exec_c2".to_string(), Some("collab_2".to_string())),
+            ("collab_3".to_string(), None),
+        ]
+    );
+    assert_eq!(
+        texts(&outs),
+        vec!["Spawning two helpers.".to_string(), "The slowest test is parser_bench.".to_string()]
+    );
+    assert!(!names(&outs).contains(&"thinking_delta".to_string()));
+    // 被打断的子 agent 没完成的命令补一条出错的结果，task 是 cancelled
+    assert_eq!(result_of("exec_c2"), Some((json!("The sub-agent's turn ended before this finished"), true)));
+    let last_of = |want: &str| {
+        tasks(&outs)
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Task { id, status, summary, usage, .. } if id == want => Some((status, summary, usage)),
+                _ => None,
+            })
+            .next_back()
+            .unwrap()
+    };
+    let (status, summary, usage) = last_of("FIXTURE_CHILD");
+    assert_eq!(
+        (status, summary.as_deref(), usage.unwrap().duration_ms),
+        (TaskStatus::Completed, Some("Slowest: parser_bench (4.2s)"), Some(4200))
+    );
+    let (status, _, _) = last_of("FIXTURE_CHILD_2");
+    assert_eq!(status, TaskStatus::Cancelled);
+    // 两个子 agent 的 turn 都结束了，主 turn 还在：只有最后那一个 `turn_done`
+    assert_eq!(names(&outs).iter().filter(|x| *x == "turn_done").count(), 1);
+    assert_eq!(done(&outs).0, TurnDoneReason::Completed);
+    assert!(!t.is_busy());
+}
+
+/// 事件流里的 task 状态和 `Background` 数按先后排成一串（`task:<status>`、`BACKGROUND:<n>`、`turn_done`），看它们的相对顺序。
+fn background_timeline(outs: &[Out]) -> Vec<String> {
+    outs.iter()
+        .filter_map(|o| match o {
+            Out::Event(AgentEvent::Background { tasks }) => Some(format!("BACKGROUND:{tasks}")),
+            Out::Event(AgentEvent::Event(Event::Task { status, .. })) => Some(format!("task:{status:?}")),
+            Out::Event(AgentEvent::Event(Event::TurnDone { .. })) => Some("turn_done".to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn background_counts(outs: &[Out]) -> Vec<u32> {
+    outs.iter()
+        .filter_map(|o| match o {
+            Out::Event(AgentEvent::Background { tasks }) => Some(*tasks),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_running_sub_agent_counts_as_a_background_task_until_its_turn_ends() {
+    // 真实录制：子 agent 启动 -> 1，它的 turn 结束 -> 0，都在主 turn 结束之前
+    for name in ["real_subagent_spawn.jsonl", "real_subagent_command.jsonl"] {
+        let (_, outs) = replay(name);
+        let tl = background_timeline(&outs);
+        assert_eq!(background_counts(&outs), [1, 0], "{name}");
+        // 每次变化紧跟在引起它的快照后面
+        let first = tl.iter().position(|x| x == "BACKGROUND:1").unwrap();
+        assert_eq!(tl[first - 1], "task:Running", "{tl:?}");
+        let zero = tl.iter().position(|x| x == "BACKGROUND:0").unwrap();
+        assert_eq!(tl[zero - 1], "task:Completed", "{tl:?}");
+        assert!(zero < tl.iter().position(|x| x == "turn_done").unwrap(), "{tl:?}");
+    }
+}
+
+#[test]
+fn two_sub_agents_are_counted_individually_and_the_count_returns_to_zero() {
+    // 手写的流：两个 spawnAgent（都在跑）-> 2，一个完成 -> 1，另一个的 turn 被打断 -> 0
+    let (_, outs) = replay("subagent_collab.jsonl");
+    assert_eq!(background_counts(&outs), [1, 2, 1, 0], "{:?}", background_timeline(&outs));
+}
+
+/// 手动喂几条通知：主 thread `main`，`begin_turn` 之后主 turn `t1` 在跑。
+struct Scenario {
+    t: Translator,
+    outs: Vec<Out>,
+}
+
+impl Scenario {
+    fn new() -> Self {
+        let mut t = Translator::new("/work/proj", None);
+        t.set_main_thread("main");
+        t.begin_turn();
+        let mut s = Self { t, outs: Vec::new() };
+        s.note("turn/started", json!({"threadId": "main", "turn": {"id": "t1", "status": "inProgress", "items": []}}));
+        s
+    }
+
+    fn note(&mut self, method: &str, params: Value) -> &mut Self {
+        let outs = self.t.feed_message(&json!({"method": method, "params": params}));
+        self.outs.extend(outs);
+        self
+    }
+
+    /// 主 thread 里启动一个子 agent（`subAgentActivity` started）。
+    fn spawn(&mut self, call: &str, child: &str) -> &mut Self {
+        let item = json!({"type": "subAgentActivity", "id": call, "kind": "started", "agentThreadId": child, "agentPath": format!("/root/{child}"), "model": "m"});
+        self.note("item/started", json!({"threadId": "main", "turnId": "t1", "item": item.clone()}));
+        self.note("item/completed", json!({"threadId": "main", "turnId": "t1", "item": item}))
+    }
+
+    fn child_turn(&mut self, child: &str, status: &str) -> &mut Self {
+        self.note(
+            "turn/completed",
+            json!({"threadId": child, "turn": {"id": format!("{child}-t"), "status": status, "items": []}}),
+        )
+    }
+
+    fn main_done(&mut self, status: &str) -> &mut Self {
+        self.note("turn/completed", json!({"threadId": "main", "turn": {"id": "t1", "status": status, "items": []}}))
+    }
+
+    fn counts(&self) -> Vec<u32> {
+        background_counts(&self.outs)
+    }
+}
+
+#[test]
+fn every_way_a_sub_agent_can_end_brings_the_count_back_to_zero() {
+    for status in ["completed", "failed", "interrupted"] {
+        let mut s = Scenario::new();
+        s.spawn("c1", "kid").child_turn("kid", status);
+        assert_eq!(s.counts(), [1, 0], "child turn {status}");
+    }
+    // 启动它的 subAgentActivity 之后的状态标记
+    for kind in ["completed", "interrupted"] {
+        let mut s = Scenario::new();
+        s.spawn("c1", "kid");
+        s.note("item/started", json!({"threadId": "main", "turnId": "t1", "item": {"type": "subAgentActivity", "id": "x", "kind": kind, "agentThreadId": "kid", "agentPath": "/root/kid"}}));
+        assert_eq!(s.counts(), [1, 0], "subAgentActivity {kind}");
+    }
+    // 子 thread 被关掉
+    let mut s = Scenario::new();
+    s.spawn("c1", "kid").note("thread/closed", json!({"threadId": "kid"}));
+    assert_eq!(s.counts(), [1, 0], "thread/closed");
+    // collabAgentToolCall 的 agentsStates 说它结束了（或出错、不存在了）
+    for state in ["completed", "errored", "interrupted", "shutdown", "notFound"] {
+        let mut s = Scenario::new();
+        s.spawn("c1", "kid");
+        let item = json!({"type": "collabAgentToolCall", "id": "w", "tool": "wait", "status": "completed", "senderThreadId": "main",
+            "receiverThreadIds": [], "agentsStates": {"kid": {"status": state, "message": null}}});
+        s.note("item/completed", json!({"threadId": "main", "turnId": "t1", "item": item}));
+        assert_eq!(s.counts(), [1, 0], "agentsStates {state}");
+    }
+}
+
+#[test]
+fn a_sub_agent_that_outlives_the_main_turn_keeps_the_count_up_until_it_ends() {
+    let mut s = Scenario::new();
+    s.spawn("c1", "kid").main_done("completed");
+    // 主 turn 结束了，子 agent 还在跑：仍然是 1（daemon 据此不回收进程）
+    assert_eq!(s.counts(), [1]);
+    assert!(!s.t.is_busy());
+    // 之后它自己结束
+    s.child_turn("kid", "completed");
+    assert_eq!(s.counts(), [1, 0]);
+    // 主 turn 失败也一样：子 agent 的状态只由它自己的通知决定
+    let mut s = Scenario::new();
+    s.spawn("c1", "kid").main_done("failed");
+    assert_eq!(s.counts(), [1]);
+}
+
+#[test]
+fn cancelling_the_main_turn_stops_counting_the_sub_agents_even_if_codex_sends_no_wrap_up() {
+    let mut s = Scenario::new();
+    s.spawn("c1", "kid-a").spawn("c2", "kid-b").child_turn("kid-a", "completed");
+    assert_eq!(s.counts(), [1, 2, 1]);
+    s.t.mark_cancel_requested();
+    s.main_done("interrupted");
+    // 没有给 kid-b 发任何收尾：它被一并标成 cancelled，数降到 0，而且在 `turn_done` 之后
+    assert_eq!(s.counts(), [1, 2, 1, 0]);
+    let tl = background_timeline(&s.outs);
+    assert_eq!(&tl[tl.len() - 3..], ["task:Cancelled", "turn_done", "BACKGROUND:0"], "{tl:?}");
+    // 它如果其实还在跑，之后自己的通知会把状态改回来（并重新计数）
+    s.note(
+        "turn/started",
+        json!({"threadId": "kid-b", "turn": {"id": "kid-b-t2", "status": "inProgress", "items": []}}),
+    );
+    assert_eq!(s.counts(), [1, 2, 1, 0, 1]);
+    s.child_turn("kid-b", "completed");
+    assert_eq!(s.counts(), [1, 2, 1, 0, 1, 0]);
+}
+
+#[test]
+fn a_sub_agent_that_gets_new_input_counts_again_after_it_completed() {
+    let mut s = Scenario::new();
+    s.spawn("c1", "kid").child_turn("kid", "completed");
+    assert_eq!(s.counts(), [1, 0]);
+    // 主 agent 给它发了新消息（`interacted`），随后它开始新 turn、结束
+    s.note("item/started", json!({"threadId": "main", "turnId": "t1", "item": {"type": "subAgentActivity", "id": "i1", "kind": "interacted", "agentThreadId": "kid", "agentPath": "/root/kid"}}));
+    assert_eq!(s.counts(), [1, 0, 1]);
+    s.note("turn/started", json!({"threadId": "kid", "turn": {"id": "kid-t2", "status": "inProgress", "items": []}}));
+    assert_eq!(s.counts(), [1, 0, 1], "already running: no duplicate report");
+    s.child_turn("kid", "completed");
+    assert_eq!(s.counts(), [1, 0, 1, 0]);
+    // 同一个 task 的快照：completed -> running -> completed
+    let statuses: Vec<TaskStatus> = tasks(&s.outs)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::Task { status, .. } => Some(status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(statuses, [TaskStatus::Running, TaskStatus::Completed, TaskStatus::Running, TaskStatus::Completed]);
+}
+
+#[test]
+fn without_sub_agents_no_background_count_is_ever_reported() {
+    for name in ["real_context_compaction.jsonl", "real_mcp_elicitation.jsonl", "notices.jsonl", "two_turns.jsonl"] {
+        let (_, outs) = replay(name);
+        assert!(background_counts(&outs).is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn threads_that_were_never_announced_as_sub_agents_do_not_show_up() {
+    // 别的内部 thread（比如自动审批的审查 thread）也可能把通知发在这条连接上：既不能进主流，也不该冒充子 agent
+    let mut t = Translator::new("/work/proj", None);
+    t.set_main_thread("FIXTURE_THREAD");
+    t.begin_turn();
+    let feed =
+        |t: &mut Translator, method: &str, params: Value| t.feed_message(&json!({"method": method, "params": params}));
+    let mut outs = Vec::new();
+    outs.extend(feed(
+        &mut t,
+        "turn/started",
+        json!({"threadId": "FIXTURE_THREAD", "turn": {"id": "T", "status": "inProgress", "items": []}}),
+    ));
+    outs.extend(feed(
+        &mut t,
+        "turn/started",
+        json!({"threadId": "REVIEWER", "turn": {"id": "R", "status": "inProgress", "items": []}}),
+    ));
+    outs.extend(feed(&mut t, "item/started", json!({"threadId": "REVIEWER", "turnId": "R", "item": {"type": "commandExecution", "id": "rc", "command": "ls", "commandActions": []}})));
+    outs.extend(feed(
+        &mut t,
+        "item/agentMessage/delta",
+        json!({"threadId": "REVIEWER", "turnId": "R", "itemId": "m", "delta": "approve?"}),
+    ));
+    outs.extend(feed(&mut t, "thread/tokenUsage/updated", json!({"threadId": "REVIEWER", "turnId": "R", "tokenUsage": {"total": {"totalTokens": 9}, "last": {"totalTokens": 9, "inputTokens": 9}, "modelContextWindow": 10}})));
+    outs.extend(feed(
+        &mut t,
+        "turn/completed",
+        json!({"threadId": "REVIEWER", "turn": {"id": "R", "status": "completed", "items": []}}),
+    ));
+    assert!(events(&outs).is_empty(), "{:?}", events(&outs));
+    assert!(t.is_busy());
+}
+
+// ---------------------------------------------------------------- 提示、压缩、上下文
+
+#[test]
+fn startup_warnings_are_shown_once_even_though_several_messages_carry_them() {
+    // `configWarning` 和 `warning` 是同一段话，两条通知；失败的 MCP server 只提示一次
+    let (_, outs) = replay("real_startup_notices.jsonl");
+    let n = notices(&outs);
+    assert_eq!(n.len(), 2, "{n:?}");
+    assert_eq!((n[0].0.as_str(), n[0].1), ("config_warning", NoticeLevel::Warning));
+    assert!(n[0].2.starts_with("Codex is ignoring 1 unrecognized configuration setting"), "{}", n[0].2);
+    assert_eq!((n[1].0.as_str(), n[1].1), ("mcp_server_failed", NoticeLevel::Warning));
+    assert!(n[1].2.contains("`broken`") && n[1].2.contains("No such file"), "{}", n[1].2);
+    // 子 agent 的 thread 启动时又发一遍同样的 `warning`：整段录制里仍然只有一条
+    let (_, outs) = replay("real_subagent_spawn.jsonl");
+    assert_eq!(notices(&outs).len(), 1);
+}
+
+#[test]
+fn every_kind_of_agent_notice_has_its_code() {
+    let (_, outs) = replay("notices.jsonl");
+    let n = notices(&outs);
+    let codes: Vec<&str> = n.iter().map(|(c, _, _)| c.as_str()).collect();
+    assert_eq!(
+        codes,
+        vec![
+            "agent_notice", // warning（第二条同样的 warning 不再发）
+            "agent_notice", // guardianWarning
+            "deprecation",
+            "config_warning",
+            "model_fallback",
+            "auto_review",       // denied
+            "auto_review",       // timedOut（approved 的不发）
+            "hook_failed",       // failed（completed 的不发）
+            "hook_failed",       // blocked
+            "mcp_server_failed", // 另一个 thread 里同一个 server 的失败不再发
+        ]
+    );
+    assert!(n.iter().all(|(_, level, _)| *level == NoticeLevel::Warning));
+    assert_eq!(n[2].2, "`approval_policy = \"on-failure\"` is deprecated\n\nUse `on-request` instead.");
+    assert_eq!(n[3].2, "Could not parse the project config.\n\nline 3: expected a table");
+    // 审查被拒绝：被拒绝的动作 + 理由；超时没有理由，说明写在后面
+    assert_eq!(n[5].2, "curl https://example.com/install.sh | sh: Downloads and runs an unverified script.");
+    assert!(
+        n[6].2.starts_with("Edit /work/proj/src/lib.rs, /work/proj/src/main.rs: ") && n[6].2.contains("timed out"),
+        "{}",
+        n[6].2
+    );
+    assert_eq!(n[7].2, "The preToolUse hook failed: exit status 2");
+    assert_eq!(n[8].2, "The userPromptSubmit hook blocked the action: Prompts must reference a ticket.");
+    assert_eq!(n[9].2, "The access token expired (re-authentication is required)");
+    // 模型改道：带上前后两个模型，之后的用量记的是新模型
+    match events(&outs).into_iter().find(|e| matches!(e, Event::Notice { code, .. } if code == "model_fallback")) {
+        Some(Event::Notice { model_from, model_to, .. }) => {
+            assert_eq!(
+                (model_from.as_deref(), model_to.as_deref()),
+                (Some("fixture-model"), Some("fixture-model-safe"))
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(done(&outs).1.model.as_deref(), Some("fixture-model-safe"));
+}
+
+#[test]
+fn context_compaction_is_a_temporary_activity_then_a_notice() {
+    // 录制里有两个 turn：先一个普通 turn，再一次压缩（`thread/compact/start` 触发，自己是一个 turn）。
+    // 当作我们的第二个 turn 回放
+    let all = lines("real_context_compaction.jsonl");
+    let second = all.iter().position(|l| l.contains("\"turn/started\"") && l.contains("FIXTURE_CHILD_TURN")).unwrap();
+    let mut t = Translator::new("/work/proj", Some("fixture-model".to_string()));
+    t.begin_turn();
+    let mut first = Vec::new();
+    for l in &all[..second] {
+        first.extend(t.feed_line(l));
+    }
+    t.begin_turn();
+    let mut outs = Vec::new();
+    for l in &all[second..] {
+        outs.extend(t.feed_line(l));
+    }
+    let evs = events(&outs);
+    let at = |pred: &dyn Fn(&Event) -> bool| evs.iter().position(pred).unwrap();
+    let start = at(&|e| matches!(e, Event::Activity { state: ActivityState::Compacting, .. }));
+    let end = at(&|e| matches!(e, Event::Activity { state: ActivityState::None, .. }));
+    assert!(start < end);
+    // 结束：先清掉临时状态，再留一条提示
+    match &evs[end + 1] {
+        Event::Notice { code, level, message, .. } => {
+            assert_eq!((code.as_str(), *level, message.as_str()), ("context_compacted", NoticeLevel::Info, ""))
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(end + 1 < evs.len() - 1 || matches!(evs.last(), Some(Event::TurnDone { .. })));
+    // 窗口大小；上下文占用：第一个 turn 是最近一次请求的输入 18150（已含缓存命中，不再加 3712），
+    // 压缩后那条更新的 `inputTokens` 是 0，取 `totalTokens` 里压缩后的估计 5985
+    let (_, u1) = done(&first);
+    assert_eq!((u1.context_window, u1.context_tokens), (Some(258400), Some(18150)));
+    let (reason, u2) = done(&outs);
+    assert_eq!(reason, TurnDoneReason::Completed);
+    assert_eq!((u2.context_window, u2.context_tokens), (Some(258400), Some(5985)));
+}
+
+#[test]
+fn context_tokens_are_the_latest_request_not_the_sum() {
+    let (_, outs) = replay("real_subagent_command.jsonl");
+    let (_, u) = done(&outs);
+    // 主 thread 的最后一次请求：输入 18378；子 agent 的 47231 不算
+    assert_eq!((u.context_window, u.context_tokens), (Some(258400), Some(18378)));
+    // 累计用量仍是各次请求之和（输入扣掉缓存命中）
+    assert_eq!(u.input_tokens, Some(15043));
+}
+
+// ---------------------------------------------------------------- MCP elicitation
+
+/// 把 fixture 里的服务端请求逐条喂进去，按请求的 id 取出权限请求。
+fn elicitations(name: &str) -> Vec<(i64, Vec<Out>)> {
+    let mut t = Translator::new("/work/proj", None);
+    t.begin_turn();
+    let mut got = Vec::new();
+    for l in lines(name) {
+        let v: Value = serde_json::from_str(&l).unwrap();
+        let outs = t.feed_message(&v);
+        if let Some(id) = v.get("id").and_then(Value::as_i64) {
+            got.push((id, outs));
+        }
+    }
+    got
+}
+
+fn decide(option: Option<&str>, answers: Value) -> PermissionDecision {
+    PermissionDecision { option_id: option.map(str::to_string), answers: answers.as_object().cloned(), message: None }
+}
+
+fn the_permission(outs: &[Out]) -> (PendingPermission, NativePending) {
+    let mut p = permissions(outs);
+    assert_eq!(p.len(), 1, "{outs:?}");
+    p.remove(0)
+}
+
+#[test]
+fn an_mcp_form_becomes_questions_and_the_answers_are_typed_by_the_schema() {
+    let mut forms = elicitations("mcp_elicitation_forms.jsonl");
+    let (_, outs) = forms.remove(0);
+    let (p, native) = the_permission(&outs);
+    assert_eq!(p.kind, PermissionKind::Question);
+    assert_eq!(p.title, "forms: Tell us about the deployment");
+    assert_eq!(
+        p.options.iter().map(|o| (o.id.as_str(), o.kind)).collect::<Vec<_>>(),
+        vec![("accept", PermissionOptionKind::AllowOnce), ("decline", PermissionOptionKind::RejectOnce)]
+    );
+    let q: Vec<(&str, bool, bool, Vec<&str>)> = p
+        .detail
+        .questions
+        .iter()
+        .map(|q| (q.id.as_str(), q.free_text, q.multi, q.choices.iter().map(|c| c.id.as_str()).collect()))
+        .collect();
+    assert_eq!(
+        q,
+        vec![
+            ("budget", true, false, vec![]),
+            ("dry_run", false, false, vec!["true", "false"]),
+            ("environment", false, false, vec!["staging", "prod"]),
+            ("note", true, false, vec![]),
+            ("regions", false, true, vec!["eu", "us", "ap"]),
+            ("replicas", true, false, vec![]),
+            ("tags", false, true, vec!["a", "b"]),
+        ]
+    );
+    let text = |id: &str| p.detail.questions.iter().find(|q| q.id == id).unwrap().text.clone();
+    // 说明、数值范围跟在后面；必答是默认，不在题干里标，没列进 `required` 的是 `optional`
+    assert_eq!(text("environment"), "Environment");
+    assert_eq!(text("replicas"), "Replicas\nEnter an integer between 1 and 10.");
+    let optional: Vec<(&str, bool)> = p.detail.questions.iter().map(|q| (q.id.as_str(), q.optional)).collect();
+    assert_eq!(
+        optional,
+        vec![
+            ("budget", true),
+            ("dry_run", true),
+            ("environment", false),
+            ("note", true),
+            ("regions", true),
+            ("replicas", false),
+            ("tags", true)
+        ]
+    );
+    assert_eq!(text("budget"), "Budget (USD)\nEnter a number, at least 0.");
+    assert_eq!(text("note"), "Note\nAnything else?");
+    assert_eq!(text("regions"), "Regions\nPick at least one");
+    // 单选的候选用 title 做标签、const 做 id
+    let env = p.detail.questions.iter().find(|q| q.id == "environment").unwrap();
+    assert_eq!(env.choices[1].label, "Production");
+
+    // 接受：按 schema 的类型转换（整数 / 小数 / 布尔 / 多选数组），没答的非必填项省略
+    let answers = json!({"environment": "prod", "replicas": "3", "budget": "12.5", "dry_run": "true", "regions": ["eu", "ap"], "note": ""});
+    let r = build_response(&native, &decide(Some("accept"), answers.clone()), false).unwrap();
+    assert_eq!(
+        r,
+        json!({"action": "accept", "content": {"environment": "prod", "replicas": 3, "budget": 12.5, "dry_run": true, "regions": ["eu", "ap"]}})
+    );
+    // 提交问题卡片没带 option_id，只带了回答
+    assert_eq!(build_response(&native, &decide(None, answers), false).unwrap()["action"], "accept");
+    // 拒绝 / 没回答（超时）/ 会话取消：decline
+    let decline = json!({"action": "decline"});
+    assert_eq!(build_response(&native, &decide(Some("decline"), json!({"replicas": "3"})), false).unwrap(), decline);
+    assert_eq!(build_response(&native, &decide(None, json!({})), false).unwrap(), decline);
+    assert_eq!(build_response(&native, &PermissionDecision::default(), false).unwrap(), decline);
+    assert_eq!(
+        build_response(&native, &decide(Some("accept"), json!({"replicas": "3", "environment": "prod"})), true)
+            .unwrap(),
+        decline
+    );
+    // 不认识的选项是协议错误（请求仍然未决）
+    assert!(build_response(&native, &decide(Some("allow"), json!({})), false).is_err());
+}
+
+#[test]
+fn unanswered_optional_properties_are_left_out_and_only_the_required_ones_have_to_be_answered() {
+    let (_, outs) = elicitations("mcp_elicitation_forms.jsonl").remove(0);
+    let (_, native) = the_permission(&outs);
+    // environment / replicas 是 required，其余留空（空串、空数组、没给）：accept，content 里只有答了的
+    let answers = json!({"environment": "prod", "replicas": "2", "note": "  ", "regions": [], "dry_run": ""});
+    assert_eq!(answer_problem(&native, &decide(Some("accept"), answers.clone()), false), None);
+    assert_eq!(
+        build_response(&native, &decide(Some("accept"), answers), false).unwrap(),
+        json!({"action": "accept", "content": {"environment": "prod", "replicas": 2}})
+    );
+    // 必填项留空仍然不行
+    let d = decide(Some("accept"), json!({"environment": "prod", "replicas": ""}));
+    assert!(answer_problem(&native, &d, false).unwrap().contains("\"Replicas\" is required"));
+    assert_eq!(build_response(&native, &d, false).unwrap(), json!({"action": "decline"}));
+}
+
+#[test]
+fn answers_that_do_not_fit_the_schema_decline_the_form_and_say_why() {
+    let (_, outs) = elicitations("mcp_elicitation_forms.jsonl").remove(0);
+    let (_, native) = the_permission(&outs);
+    let decline = json!({"action": "decline"});
+    for (answers, why) in [
+        (json!({"environment": "prod", "replicas": "three"}), "\"Replicas\" is not an integer"),
+        (json!({"environment": "prod", "replicas": "11"}), "\"Replicas\" is out of range"),
+        (json!({"environment": "prod", "replicas": "2", "budget": "-1"}), "\"Budget (USD)\" is out of range"),
+        (json!({"environment": "dev", "replicas": "2"}), "\"Environment\" is not one of the choices"),
+        (json!({"environment": "prod", "replicas": "2", "dry_run": "maybe"}), "\"Dry run\" is not true or false"),
+        (
+            json!({"environment": "prod", "replicas": "2", "regions": ["eu", "mars"]}),
+            "\"Regions\" has a value that is not one of the choices",
+        ),
+        (json!({"replicas": "2"}), "\"Environment\" is required but was not answered"),
+    ] {
+        let d = decide(Some("accept"), answers.clone());
+        assert_eq!(build_response(&native, &d, false).unwrap(), decline, "{answers}");
+        let problem = answer_problem(&native, &d, false).unwrap_or_else(|| panic!("no problem reported for {answers}"));
+        assert!(problem.contains(why), "{problem:?} vs {why:?}");
+    }
+    // 没问题的、拒绝的、取消的都不报
+    assert_eq!(
+        answer_problem(&native, &decide(Some("accept"), json!({"environment": "prod", "replicas": "2"})), false),
+        None
+    );
+    assert_eq!(answer_problem(&native, &decide(Some("decline"), json!({})), false), None);
+    assert_eq!(answer_problem(&native, &decide(Some("accept"), json!({})), true), None);
+}
+
+#[test]
+fn an_mcp_url_request_carries_the_link_and_only_http_links_are_shown() {
+    let mut forms = elicitations("mcp_elicitation_forms.jsonl");
+    let (_, outs) = forms.remove(1);
+    let (p, native) = the_permission(&outs);
+    assert_eq!((p.kind, p.title.as_str()), (PermissionKind::Other, "auth needs you to open a link"));
+    assert_eq!(p.detail.text.as_deref(), Some("Sign in to continue"));
+    assert_eq!(p.detail.url.as_deref(), Some("https://example.com/oauth/start?code=1"));
+    assert_eq!(
+        p.options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(),
+        vec![("accept", "I've completed it"), ("decline", "Decline")]
+    );
+    assert_eq!(
+        build_response(&native, &decide(Some("accept"), json!({})), false).unwrap(),
+        json!({"action": "accept"})
+    );
+    assert_eq!(
+        build_response(&native, &decide(Some("decline"), json!({})), false).unwrap(),
+        json!({"action": "decline"})
+    );
+    assert_eq!(build_response(&native, &decide(None, json!({})), false).unwrap(), json!({"action": "decline"}));
+    // javascript: / ftp: 链接、不认识的表单模式：不给用户看，回 decline 并留一条可见的可恢复错误
+    let refused: Vec<_> = forms.into_iter().filter(|(id, _)| matches!(id, 2..=4)).collect();
+    assert_eq!(refused.len(), 3);
+    for (_, outs) in refused {
+        assert!(permissions(&outs).is_empty());
+        assert_eq!(outs[0], Out::Reply { id: outs_id(&outs), result: Ok(json!({"action": "decline"})) });
+        match &outs[1] {
+            Out::Event(AgentEvent::Event(Event::Error { code, recoverable, message })) => {
+                assert_eq!((code.as_str(), *recoverable), ("elicitation_rejected", true));
+                assert!(message.contains("declined"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+fn outs_id(outs: &[Out]) -> Value {
+    match &outs[0] {
+        Out::Reply { id, .. } => id.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_mcp_tool_approval_is_a_tool_permission_with_codexs_persistence_options() {
+    // 录制：`wipe_cache` 不是只读工具，Codex 用 elicitation 要审批，`_meta` 里给出 `persist: [session, always]`
+    let mut t = Translator::new("/work/proj", None);
+    t.begin_turn();
+    let mut outs = Vec::new();
+    for l in lines("real_mcp_elicitation.jsonl") {
+        outs.extend(t.feed_message(&serde_json::from_str(&l).unwrap()));
+    }
+    let perms = permissions(&outs);
+    assert_eq!(perms.len(), 3);
+    let (p, native) = &perms[2];
+    assert_eq!((p.kind, p.title.as_str()), (PermissionKind::Tool, "Run MCP tool demo/wipe_cache"));
+    let tool = p.detail.tool.as_ref().unwrap();
+    assert_eq!((tool.tool.as_str(), tool.category), ("mcp__demo__wipe_cache", ToolCategory::Mcp));
+    assert_eq!(tool.input, json!({"target": "tmp"}));
+    let d = tool.detail.as_ref().unwrap();
+    assert_eq!((d.server.as_deref(), d.tool.as_deref()), (Some("demo"), Some("wipe_cache")));
+    assert_eq!(d.description.as_deref(), Some("Delete the demo cache. Destructive."));
+    assert_eq!(
+        p.options.iter().map(|o| (o.id.as_str(), o.kind)).collect::<Vec<_>>(),
+        vec![
+            ("allow", PermissionOptionKind::AllowOnce),
+            ("allow_session", PermissionOptionKind::AllowAlways),
+            ("allow_always", PermissionOptionKind::AllowAlways),
+            ("deny", PermissionOptionKind::RejectOnce)
+        ]
+    );
+    let opt = |o: &str| build_response(native, &decide(Some(o), json!({})), false).unwrap();
+    assert_eq!(opt("allow"), json!({"action": "accept"}));
+    assert_eq!(opt("allow_session"), json!({"action": "accept", "_meta": {"persist": "session"}}));
+    assert_eq!(opt("allow_always"), json!({"action": "accept", "_meta": {"persist": "always"}}));
+    assert_eq!(opt("deny"), json!({"action": "decline"}));
+    assert_eq!(build_response(native, &PermissionDecision::default(), false).unwrap(), json!({"action": "decline"}));
+    assert_eq!(build_response(native, &decide(Some("allow"), json!({})), true).unwrap(), json!({"action": "decline"}));
+    assert!(build_response(native, &decide(Some("accept"), json!({})), false).is_err());
+    // 表单和 URL 两个请求也在同一个 turn 里
+    assert_eq!(perms[0].0.kind, PermissionKind::Question);
+    assert_eq!(perms[1].0.detail.url.as_deref(), Some("https://example.com/demo/authorize?state=abc123"));
+}
+
+#[test]
+fn an_mcp_tool_approval_only_offers_the_persistence_codex_allows() {
+    // 请求 5：`persist` 只有 session，调用的 item 没出现过，工具名从提示语里取
+    let (_, outs) = elicitations("mcp_elicitation_forms.jsonl").remove(5);
+    let (p, native) = the_permission(&outs);
+    assert_eq!(p.title, "Run MCP tool docs/publish");
+    assert_eq!(p.detail.tool.as_ref().unwrap().tool, "mcp__docs__publish");
+    assert_eq!(p.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), vec!["allow", "allow_session", "deny"]);
+    assert!(build_response(&native, &decide(Some("allow_always"), json!({})), false).is_err());
+    // 没有属性的表单（别的确认）：kind other，只有接受 / 拒绝
+    let (_, outs) = elicitations("mcp_elicitation_forms.jsonl").remove(6);
+    let (p, native) = the_permission(&outs);
+    assert_eq!((p.kind, p.detail.text.as_deref()), (PermissionKind::Other, Some("Continue with the deployment?")));
+    assert_eq!(
+        build_response(&native, &decide(Some("accept"), json!({})), false).unwrap(),
+        json!({"action": "accept"})
+    );
+    // 多行的说明：标题只放第一行，完整的话并进第一题
+    let (_, outs) = elicitations("mcp_elicitation_forms.jsonl").remove(7);
+    let (p, _) = the_permission(&outs);
+    assert_eq!(p.title, "forms: Line one");
+    assert_eq!(p.detail.questions[0].text, "Line one\nLine two\n\nanswer");
+}
+
+#[test]
+fn an_mcp_approval_in_a_sub_agent_says_which_agent_is_asking() {
+    let mut t = Translator::new("/work/proj", None);
+    t.begin_turn();
+    t.feed_message(&json!({"method": "turn/started", "params": {"threadId": "FIXTURE_THREAD", "turn": {"id": "T", "status": "inProgress", "items": []}}}));
+    t.feed_message(&json!({"method": "item/started", "params": {"threadId": "FIXTURE_THREAD", "turnId": "T",
+        "item": {"type": "subAgentActivity", "id": "call_1", "kind": "started", "agentThreadId": "FIXTURE_CHILD", "agentPath": "/root/publisher"}}}));
+    let outs = t.feed_message(&json!({"method": "mcpServer/elicitation/request", "id": 4, "params": {
+        "threadId": "FIXTURE_CHILD", "turnId": "C", "serverName": "docs", "mode": "form",
+        "_meta": {"codex_approval_kind": "mcp_tool_call", "persist": ["session"], "tool_params": {}},
+        "message": "Allow the docs MCP server to run tool \"publish\"?", "requestedSchema": {"type": "object", "properties": {}}}}));
+    let (p, _) = the_permission(&outs);
+    assert_eq!(p.title, "Run MCP tool docs/publish (sub-agent publisher)");
 }

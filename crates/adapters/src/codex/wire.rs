@@ -110,6 +110,9 @@ pub enum ThreadItem {
         id: String,
         #[serde(default)]
         text: String,
+        /// `commentary` / `final_answer`
+        #[serde(default)]
+        phase: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Reasoning {
@@ -199,6 +202,28 @@ pub enum ThreadItem {
         #[serde(default)]
         agents_states: Value,
     },
+    /// 子 agent 的生命周期标记（`started` / `interacted` / `interrupted` / `completed`）。0.164 里启动子 agent 就是
+    /// 一个 `kind = started` 的该 item，`id` 是模型那次调用的 id，没有对应的 `collabAgentToolCall`。
+    #[serde(rename_all = "camelCase")]
+    SubAgentActivity {
+        id: String,
+        #[serde(default)]
+        kind: String,
+        #[serde(default)]
+        agent_thread_id: String,
+        /// 如 `/root/pong`。
+        #[serde(default)]
+        agent_path: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        reasoning_effort: Option<String>,
+    },
+    /// 上下文压缩：开始 / 结束各一条，没有内容。
+    #[serde(rename_all = "camelCase")]
+    ContextCompaction {
+        id: String,
+    },
     #[serde(rename_all = "camelCase")]
     WebSearch {
         id: String,
@@ -236,21 +261,29 @@ impl ThreadItem {
 
 // ---------- 通知的 params ----------
 
+/// 下面这些通知的 `threadId` 标明消息属于哪个 thread：主 thread，还是它启动的子 agent 的 thread
+/// （app-server 把子 agent 的通知也发在同一条连接上）。老格式缺这个字段时按主 thread 算。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnNotification {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub turn: Turn,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemNotification {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub item: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeltaNotification {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub item_id: String,
     #[serde(default)]
     pub delta: String,
@@ -261,6 +294,8 @@ pub struct DeltaNotification {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SummaryPartAdded {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub item_id: String,
     #[serde(default)]
     pub summary_index: i64,
@@ -279,11 +314,17 @@ pub struct TokenBreakdown {
     pub output_tokens: u64,
     #[serde(default)]
     pub reasoning_output_tokens: u64,
+    /// `inputTokens + outputTokens`（`inputTokens` 已含缓存命中）。压缩上下文之后那条更新里 `inputTokens` 是 0，
+    /// 只有这个字段带着压缩后的上下文估计。
+    #[serde(default)]
+    pub total_tokens: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageNotification {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     #[serde(default)]
     pub turn_id: Option<String>,
     pub token_usage: TokenUsage,
@@ -292,13 +333,21 @@ pub struct TokenUsageNotification {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
+    /// 最近一次模型请求的用量。
     #[serde(default)]
     pub last: TokenBreakdown,
+    /// 整个 thread 的累计。
+    #[serde(default)]
+    pub total: TokenBreakdown,
+    #[serde(default)]
+    pub model_context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorNotification {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub error: TurnError,
     #[serde(default)]
     pub will_retry: bool,
@@ -307,6 +356,8 @@ pub struct ErrorNotification {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanUpdated {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     #[serde(default)]
     pub plan: Vec<PlanStep>,
 }
@@ -330,7 +381,107 @@ pub struct ServerRequestResolved {
 #[serde(rename_all = "camelCase")]
 pub struct ModelRerouted {
     #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub from_model: Option<String>,
+    #[serde(default)]
     pub to_model: Option<String>,
+    /// 目前只有 `highRiskCyberActivity`。
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `warning` / `guardianWarning`。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WarningNotification {
+    #[serde(default)]
+    pub message: String,
+}
+
+/// `configWarning`（`summary` 里已经带着具体是哪个文件的哪个设置）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigWarning {
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub details: Option<String>,
+}
+
+/// `deprecationNotice`。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeprecationNotice {
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub details: Option<String>,
+}
+
+/// `mcpServer/startupStatus/updated`：`status` 是 `starting` / `ready` / `failed` / `cancelled`。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatus {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub error: Option<String>,
+    /// 目前只有 `reauthenticationRequired`。
+    #[serde(default)]
+    pub failure_reason: Option<String>,
+}
+
+/// `item/autoApprovalReview/completed`：`review.status` 是 `inProgress` / `approved` / `denied` / `timedOut` / `aborted`。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoApprovalReviewCompleted {
+    #[serde(default)]
+    pub review: AutoApprovalReview,
+    /// 被审查的动作（`command` / `execve` / `applyPatch` / `networkAccess` / `mcpToolCall` …），只取几个展示用的字段。
+    #[serde(default)]
+    pub action: Value,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoApprovalReview {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub rationale: Option<String>,
+}
+
+/// `hook/completed`：`run.status` 是 `running` / `completed` / `failed` / `blocked` / `stopped`。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookCompleted {
+    pub run: HookRun,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookRun {
+    #[serde(default)]
+    pub event_name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub status_message: Option<String>,
+    #[serde(default)]
+    pub entries: Vec<HookEntry>,
+}
+
+/// hook 的一条输出，`kind`：`warning` / `stop` / `feedback` / `context` / `error`。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookEntry {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub text: String,
 }
 
 // ---------- 服务端请求的 params ----------
@@ -338,6 +489,8 @@ pub struct ModelRerouted {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandApproval {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub item_id: String,
     /// zsh-exec-bridge 的子命令审批：同一个 `itemId` 会有多次回调，每次的 `command` 是那条子命令。
     #[serde(default)]
@@ -359,6 +512,8 @@ pub struct CommandApproval {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileApproval {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub item_id: String,
     #[serde(default)]
     pub reason: Option<String>,
@@ -369,6 +524,8 @@ pub struct FileApproval {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionsApproval {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub item_id: String,
     #[serde(default)]
     pub cwd: Option<String>,
@@ -405,7 +562,32 @@ pub struct UserInputQuestion {
 #[serde(rename_all = "camelCase")]
 pub struct UserInputRequest {
     #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
     pub questions: Vec<UserInputQuestion>,
+}
+
+/// `mcpServer/elicitation/request`：MCP server 向用户要输入（`form` / `url`），或者 Codex 自己用它做 MCP 工具调用的审批
+/// （`_meta.codex_approval_kind = "mcp_tool_call"`，一个空表单）。`mode` 还有 `openai/form`、`openaiForm` 两种
+/// （`requestedSchema` 不限形状），adapter 不认识它们的语义。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpElicitation {
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub server_name: String,
+    /// 缺省按 `form` 算。
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default, rename = "_meta")]
+    pub meta: Option<Value>,
+    #[serde(default)]
+    pub requested_schema: Option<Value>,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 // ---------- 请求的响应 ----------

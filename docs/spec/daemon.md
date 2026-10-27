@@ -346,7 +346,7 @@ create ──► starting ──► running ──► idle ◄──────
 - Claude Code：stream-json 双向模式，turn 结束后保持 stdin 打开，进程保活到 `idle_timeout`；之后 SIGINT 退出。下次 `send` 用 `--resume <agent_session_id>` 重新拉起，用户无感
 - Codex：v0.1 每个会话一个 `codex app-server` 进程、一个 thread（ADR-26 修订），和 Claude Code 一样 turn 结束后保活到 `idle_timeout` 再退出；下次 `send` 重新拉起 app-server，`initialize` 之后 `thread/resume { threadId: agent_session_id }`
 - ACP：一个 agent 进程服务该 agent 的所有会话。agent 声明 `sessionCapabilities.resume` 或 `loadSession` 的，和 Claude Code 一样按 `idle_timeout` 退出、下次 `session/resume`（不重放）或 `session/load`（重放，daemon 吞掉重放事件只取最后状态）；两者都没有的，进程保活到所有会话 `ended`
-- **后台任务**：Claude Code 的 subagent（默认在后台跑）和 `run_in_background` 的命令在主 turn 结束之后还在同一个进程里干活。adapter 从 stream-json 的 `system/background_tasks_changed`（全量列表；`task_started` / `task_notification` / `task_updated` 兜底）得到还在跑的任务数，变化时发 `AgentEvent::Background { tasks }`。daemon 记在会话上（`SessionSummary.background_tasks`、`session.changed` 带出，不进事件流，进程摘掉时清零），大于 0 时：
+- **后台任务**：Claude Code 的 subagent（默认在后台跑）和 `run_in_background` 的命令在主 turn 结束之后还在同一个进程里干活。adapter 从 stream-json 的 `system/background_tasks_changed`（全量列表；`task_started` / `task_notification` / `task_updated` 兜底）得到还在跑的任务数，变化时发 `AgentEvent::Background { tasks }`。Codex 的子 agent 同理：adapter 数还在跑的子 agent（`task` 快照 `running` 的），变化时发 `Background`——子 agent 可以比主 turn 活得更久（不 `wait` 就结束了主 turn），回收进程会把它们一起杀掉；降回 0 靠子 agent 自己的收尾（`turn/completed`、`subAgentActivity`、`agentsStates`、`thread/closed`），用户取消主 turn 时还在跑的一并算取消。Codex 的主 agent 不会被子 agent 的完成唤醒，所以它们结束后没有 agent 自己开的 turn（§ 7.5），推迟的 `turn_finished` 通知靠兜底补发（§ 14）。daemon 记在会话上（`SessionSummary.background_tasks`、`session.changed` 带出，不进事件流，进程摘掉时清零），大于 0 时：
   - 不按 `idle_timeout` 回收进程（`idle` 和回合数 / 预算用完的 `ended` 都一样）——回收会关掉整个进程组，连同后台任务一起杀掉。任务都结束时重新开始计 `idle_timeout`，而不是从上一个 turn 结束算起；
   - 不发 `session_idle`；
   - 改了需要重启进程才生效的设置（§ 6.4），下一个 turn 沿用当前进程，重启推迟到后台任务都结束之后的 turn。进程里的环境、系统提示追加等在这期间还是旧的；
@@ -428,7 +428,7 @@ Codex：一个**从来没有记录过用户消息**的 thread 没有 rollout（�
 
 ## 8. 事件翻译
 
-adapter 把原生事件映射到 [protocol.md § 6](../protocol.md#6-会话事件) 的 `Event`。完整集合（含本次新增）：
+adapter 把原生事件映射到 [protocol.md § 6](../protocol.md#6-会话事件) 的 `Event`。完整集合：
 
 ```
 turn_start        { turn_id, message_id }
@@ -445,11 +445,14 @@ permission        { request_id, kind, title, detail, options: [...] }
 permission_resolved { request_id, option_id?, by_device, answers?, message? }   // answers / message：设备答复时带的原样记下（历史里显示问题和回答）；daemon 自己答复的没有
 turn_done         { turn_id, reason: completed | cancelled | error | max_turns | budget,
                     usage?: { input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                              cost_usd?, duration_ms, model } }
+                              cost_usd?, duration_ms, model, context_window?, context_tokens? } }
 status            { state, position?, queued_messages? }
 settings_changed  { settings }
 title_changed     { title }
 error             { code, message, recoverable }
+task              { id, kind, tool_id?, title, status, usage?, last_tool?, summary?, phases?, agents? }   // 后台任务的状态快照，整条取代同 id 的上一条；§ 8.3
+notice            { code, level, message, model_from?, model_to?, resets_at_ms? }                          // 给用户的提示，不是错误；§ 8.3
+activity          { state: none | retrying | compacting, attempt?, max_attempts?, delay_ms?, reason? }     // turn 进行中的临时状态；§ 8.3
 ```
 
 `detail` 让客户端不用认识每个 agent 的工具参数名就能画出像样的块：
@@ -475,7 +478,7 @@ error             { code, message, recoverable }
 | `file_read` | Read、Glob、LS | — | read |
 | `search` | Grep、WebSearch | webSearch | search |
 | `web` | WebFetch | — | fetch |
-| `subagent` | Task / Agent | collabAgentToolCall | — |
+| `subagent` | Task / Agent | `subAgentActivity`（`kind = started`）、`collabAgentToolCall`（只有 `spawnAgent`；`wait` 等是 `other`） | — |
 | `mcp` | `mcp__*` | mcpToolCall | — |
 | `other` | 其余 | dynamicToolCall、其余 | think / switch_mode / other |
 
@@ -489,14 +492,59 @@ daemon 在**写库和发送之前**限制单个事件的体积，存储和发送
 | `tool_call.input` | 64 KiB | 字符串：同样的头尾截断。对象 / 数组（Write 工具写一个大文件时是 `{ file_path, content }`，对象形的 `tool_result.output` 同理）**保留结构**，值的类型不变：只把里面超长的字符串叶子依次缩到 8 KiB / 2 KiB / 512 B / 128 B 直到整体不超限，条目成千上万的容器只留前 256 / 64 / 16 项并补一条 `…[truncated N items]`；这样还装不下的极端情况才退成截断后的 JSON 文本 |
 | `tool_output_delta`（一次工具调用累计） | 64 KiB | 超过之后不再转发 / 存储后续的 delta，并补一行提示 `…[live output truncated; the final result keeps the head and tail]`；最终的 `tool_result` 里仍是头尾截断的完整输出。并在最终 `tool_result.detail.live_output_truncated = true` 里标记 |
 | `session.send` / `session.create` 的 `prompt` | 1 MiB | 超过返回 `invalid` |
+| `task` 的 `agents`、`phases` | 各 500 项 | 多出的丢掉。`agents` 先保住 `running` / `failed` 的（用户最想看的），空位再按原顺序补其它的，留下来的仍按原顺序排；`phases` 留前 500 项 |
+| `task` 的 `title`、`last_tool`、`agents[].label`、`agents[].last_tool`、`phases[].title` | 200 字符 | 截成 200 个字符，最后一个是 `…` |
+| `task` 的 `summary`、`agents[].error` | 4 KiB | 在字符边界截断，末尾补 `…`，结果不超过 4 KiB |
+| `notice.message` | 64 KiB | 同 `tool_result.output`：保留前 48 KiB 和后 16 KiB，中间放 `\n…[truncated N bytes]\n`（`/context` 之类的本地命令输出可能很长） |
 
 旧数据库里已存的超大事件在读出时同样会被截。其余可能很大的字段（`unified_diff`、`text_delta` 合并后的长文本）不截断，由传输层分片兜底；一页历史的总字节数另受 § 7.9 约束。
 
 三个 adapter 的翻译要点：
 
-- **Claude Code**：`stream_event` 里 `content_block_delta.thinking_delta` → `thinking_delta`、`text_delta` → `text_delta`；`assistant` 消息里的 `tool_use` 块 → `tool_call`（消息的 `parent_tool_use_id` → `parent_id`；子 agent 的文本 / 思考不进主流）；转到后台的调用（子 agent 的 `tool_use_result.status = async_launched`、Bash 的 `tool_use_result.backgroundTaskId`，或者 `system/task_started { is_backgrounded: true }` 报过的调用）结果带 `detail.background`，`system/task_notification`（`completed` / `failed` / `stopped` / `killed`）给同一个调用补最终结果，`output` 是通知里的 `summary`，后台命令从 `summary` 末尾的 `(exit code N)` 取 `detail.exit_code`；`failed` 和退出码非 0 算 `is_error`，被停掉的不算；子 agent 用掉的 token 进 `detail.total_tokens`（前台取 `tool_use_result.totalTokens`，后台取通知里的 `usage.total_tokens`）；`user` 消息里的 `tool_result` → `tool_result`；TodoWrite 的输入 → `plan`；`result` → `turn_done`（`total_cost_usd`、`usage`、`duration_ms`、`num_turns` 进 `usage`）；`system/init` 的 `session_id` 存为 `agent_session_id`
-- **Codex**：`item/agentMessage/delta` → `text_delta`；`item/reasoning/summaryTextDelta` 和 `textDelta` → `thinking_delta`；`item/started` → `tool_call`，`item/commandExecution/outputDelta` → `tool_output_delta`，`item/completed` → `tool_result`（`status: declined` 视为 `is_error`）；`turn/plan/updated` → `plan`；`turn/completed` → `turn_done`（`status: interrupted` → `cancelled`），usage 来自 `thread/tokenUsage/updated`：一个 turn 的用量 = 每次更新的 `last` 之和（`total` 是线程累计），`input_tokens` 扣除缓存命中（和 Claude Code 口径一致），没有费用；只认当前 turn 的更新（resume 后 app-server 会重放上一个 turn 的用量）；`thread/started.thread.id` 存为 `agent_session_id`。被打断 / 失败的 turn 不会为进行中的 item 发 `item/completed`，adapter 在 `turn/completed` 时补 `text_done` / `thinking_done` 和 `is_error` 的 `tool_result`。工具调用的 `name` 是 item 类型（`commandExecution`、`fileChange`、`mcp__<server>__<tool>`…），客户端按 `category` / `detail` 渲染，不按名字。Codex 特有的 `error.code`：`agent_reconnecting`（`willRetry`，可恢复，每 turn 最多 5 条，turn 不收尾）、`agent_context_reset`（可恢复的提示：续接时原 thread 已经不在——`no rollout found` / `thread not found`——adapter 开了新 thread，之前的上下文 agent 看不到了）、`unsupported_request`、`context_window_exceeded`、`sandbox_error`、`policy_violation`，其余 `agent_error`。`initialize` 用 `optOutNotificationMethods` 关掉 adapter 用不到的通知（`turn/diff/updated` 等，它们在大补丁时单行可以超过 10 MB）。单行超过 8 MiB：通知直接丢弃（只记方法名和长度），对应的 item 补一个「内容太大，没有显示」的 `tool_call` / `tool_result`；只有超长的是服务端请求、某个请求的响应或无法识别时才算协议错误
+- **Claude Code**：`stream_event` 里 `content_block_delta.thinking_delta` → `thinking_delta`、`text_delta` → `text_delta`；`assistant` 消息里的 `tool_use` 块 → `tool_call`（消息的 `parent_tool_use_id` → `parent_id`；子 agent 的文本 / 思考不进主流）；转到后台的调用（子 agent 的 `tool_use_result.status = async_launched`、Bash 的 `tool_use_result.backgroundTaskId`，或者 `system/task_started { is_backgrounded: true }` 报过的调用）结果带 `detail.background`，`system/task_notification`（`completed` / `failed` / `stopped` / `killed`）给同一个调用补最终结果，`output` 是通知里的 `summary`，后台命令从 `summary` 末尾的 `(exit code N)` 取 `detail.exit_code`；`failed` 和退出码非 0 算 `is_error`，被停掉的不算；子 agent 用掉的 token 进 `detail.total_tokens`（前台取 `tool_use_result.totalTokens`，后台取通知里的 `usage.total_tokens`）；`user` 消息里的 `tool_result` → `tool_result`；TodoWrite 的输入 → `plan`；`result` → `turn_done`（`total_cost_usd`、`usage`、`duration_ms`、`num_turns` 进 `usage`；`result.modelUsage.<主模型>.contextWindow` → `usage.context_window`，本 turn 最近一条顶层 assistant 消息的 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` → `usage.context_tokens`，子 agent 的消息不算）；`system/init` 的 `session_id` 存为 `agent_session_id`；`system/task_started` / `task_progress` / `task_updated` / `task_notification` 按 `task_id` 合并成后台任务的整条快照 → `task`（workflow 的 `workflow_progress` 是全量数组，没带它的帧沿用上一份；前台任务和 `skip_transcript` / `ambient` 的杂务不发；终态之后的帧忽略；`task_type` `local_workflow` / `local_agent` / `local_bash` → `workflow` / `subagent` / `shell`，其余 `other`）；`system/api_retry`、`system/status`、`system/compact_boundary`、`rate_limit_event`、`system/notification` / `informational` / `permission_denied` / `hook_response`、模型回退一族 → `activity` / `notice`（§ 8.3）；`/context`、`/cost` 等本地斜杠命令的输出 → `notice { code: command_output }`，不当作模型的文本（`-p` 下它是一条模型为 `<synthetic>`、带 `local_command_source` 的 `assistant` 消息，另有 `system/local_command_output`，两种都认）；`control_request { subtype: elicitation }`（MCP server 向用户要输入）→ 权限请求（§ 9.1）
+- **Codex**：`item/agentMessage/delta` → `text_delta`；`item/reasoning/summaryTextDelta` 和 `textDelta` → `thinking_delta`；`item/started` → `tool_call`，`item/commandExecution/outputDelta` → `tool_output_delta`，`item/completed` → `tool_result`（`status: declined` 视为 `is_error`）；`turn/plan/updated` → `plan`；`turn/completed` → `turn_done`（`status: interrupted` → `cancelled`），usage 来自 `thread/tokenUsage/updated`：一个 turn 的用量 = 每次更新的 `last` 之和（`total` 是线程累计），`input_tokens` 扣除缓存命中（和 Claude Code 口径一致），没有费用；`context_window` 取 `modelContextWindow`，`context_tokens` 取最近一次 `last` 的 `inputTokens`（已含缓存命中；压缩后那条更新的 `inputTokens` 是 0，取 `totalTokens`）；只认当前 turn 的更新（resume 后 app-server 会重放上一个 turn 的用量）；`thread/started.thread.id` 存为 `agent_session_id`。**子 agent 的通知走同一条连接、带各自的 `threadId`**（0.164.0 实测）：主 thread 之外的通知绝不碰主 turn（子 agent 的 `turn/completed` 不结束主 turn，用量、计划、错误、文本和思考都不进主流），它们里面的工具调用带 `parent_id`（启动它的那次调用），子 agent 的状态以 `task`（`kind = subagent`）发出（§ 8.3）；启动子 agent 是 `subAgentActivity { kind: started }`（发 `category = subagent` 的 `tool_call` / `tool_result`），不是 `collabAgentToolCall`；`collabAgentToolCall` 的结果是每个子 agent 一段「名字: 状态」加它的消息，不是 `agentsStates` 的原始 JSON，只有 `spawnAgent` 是 `subagent`，`wait` 等是 `other`。`warning` / `guardianWarning` / `configWarning` / `deprecationNotice` / `mcpServer/startupStatus/updated`（失败）/ `model/rerouted` / `item/autoApprovalReview/completed`（拒绝）/ `hook/completed`（失败）→ `notice`，`contextCompaction` item → `activity` + `notice`（§ 8.3）；`mcpServer/elicitation/request` → 权限请求（§ 9.1）。被打断 / 失败的 turn 不会为进行中的 item 发 `item/completed`，adapter 在 `turn/completed` 时补 `text_done` / `thinking_done` 和 `is_error` 的 `tool_result`。工具调用的 `name` 是 item 类型（`commandExecution`、`fileChange`、`mcp__<server>__<tool>`…），客户端按 `category` / `detail` 渲染，不按名字。Codex 特有的 `error.code`：`agent_reconnecting`（`willRetry`，可恢复，每 turn 最多 5 条，turn 不收尾）、`agent_context_reset`（可恢复的提示：续接时原 thread 已经不在——`no rollout found` / `thread not found`——adapter 开了新 thread，之前的上下文 agent 看不到了）、`unsupported_request`（可恢复：动态工具等不支持的服务端请求，已按拒绝答复）、`elicitation_rejected`（可恢复：交不给用户的 MCP elicitation——不认识的模式、读不懂的 schema、链接不是 http / https——已按 decline 答复）、`elicitation_invalid_answer`（可恢复：用户提交的 MCP 表单答案和 schema 对不上，已按 decline 答复）、`context_window_exceeded`、`sandbox_error`、`policy_violation`，其余 `agent_error`。`initialize` 用 `optOutNotificationMethods` 关掉 adapter 用不到的通知（`turn/diff/updated` 等，它们在大补丁时单行可以超过 10 MB）。单行超过 8 MiB：通知直接丢弃（只记方法名和长度），对应的 item 补一个「内容太大，没有显示」的 `tool_call` / `tool_result`；只有超长的是服务端请求、某个请求的响应或无法识别时才算协议错误
 - **ACP**：`agent_message_chunk` → `text_delta`；`agent_thought_chunk` → `thinking_delta`；`tool_call` / `tool_call_update` → `tool_call` / `tool_result`，`content[].type = diff` → `file_changed`，`type = terminal` 的输出 → `tool_output_delta`；`plan` → `plan`；`session_info_update.title` → `title_changed`（agent 自己起的标题优先于 § 7.7 的默认）；`usage_update` 累积到 `turn_done.usage`；`session/prompt` 的 `stopReason` → `turn_done.reason`（`end_turn` → completed、`cancelled`、`max_tokens / max_turn_requests` → max_turns、`refusal` → error）
+
+### 8.3 task / notice / activity
+
+这三类事件由 adapter 作为普通事件发给 daemon，daemon 照常编号、落库、广播，**不触发推送通知**（§ 14 不变）。语义和字段见 [protocol.md § 6](../protocol.md#6-会话事件)。
+
+**`task` 快照的节流**：agent 报告进度的频率没有保证（workflow 每个 agent 的每次工具调用都可能带来一条新快照），而每条快照都是整条的、可能有几百个 agent。daemon 按（会话，task id）节流：
+
+- **前沿**：一个任务的第一条快照立即发；
+- **窗口**：上一条发出后不到 1 秒到达的、状态没变的快照只记下来（后来的取代先到的）；窗口结束时发其中最新的一条（后沿）；窗口已经过了，新到的立即发，开始新的窗口；
+- **状态变化不受节流**：`status` 和上一条**发出去的**不同（进入终态，或者像 Codex 的子 agent 那样从终态回到 `running`）就立即发，并作废挂着的后沿——后沿定时器不会在终态之后补发一条过期的 `running`（任务真的重新跑起来时，那是 adapter 报的新快照，同样按状态变化立即发）；
+- 和最近一次收到的完全一样的快照丢弃（adapter 常常重复报同一份进度）；
+- 后沿定时器在会话锁之外等，醒来重新拿锁，会话已删除、agent 进程已经换过（`driver_gen` 变了）、或者已被状态变化作废时什么也不做；
+- daemon 记住这个进程里每个任务最新收到的快照（含还没发出的），最多 1024 个，超出时先忘掉已经结束的。
+
+节流是为了限制事件流和存储的增长，不影响正确性：快照是整条取代的，漏掉中间的不会丢信息。
+
+**进程没了，任务也没了**：daemon 摘掉会话的 agent 进程时——`AgentEvent::Exited`，以及 daemon 自己收进程的路径（重启会话、`idle_timeout` 回收、取消宽限超时、启动超时、归档、项目目录被换掉、daemon 关闭…；只有删除会话不补，会话本身没了）——还不是终态的任务各补一条 `status = cancelled` 的快照，其余字段取最近收到的那一条（包括还压在节流窗口里没发出的），按任务第一次出现的顺序；然后忘掉全部任务。否则界面会永远显示「运行中」。`agents[]` 里的状态保持原样，客户端按任务的终态显示。daemon 被强杀（没有机会补快照）时，库里最后一条可能仍是 `running`；客户端在会话没有在跑、`background_tasks = 0` 时把非终态的任务显示为「已停止」（[web.md § 4.6](web.md#46-会话页-nnodessession)）。
+
+**`notice` 的 `code` 与来源**（取值见 [protocol.md § 6](../protocol.md#6-会话事件)）：
+
+| code | level | 来源 |
+|---|---|---|
+| `model_fallback` | warning | Claude Code `system/model_fallback`、`model_refusal_fallback`、`model_refusal_no_fallback`（没有回退目标，只有 `model_from`）、`model_consent_fallback`（`message` 取它们的 `content`，`model_from` / `model_to` 取 `original_model` / `fallback_model`）；Codex `model/rerouted`（`model_from` / `model_to` 取 `fromModel` / `toModel`，之后 `usage.model` 是新模型；子 agent 的改道只提示、不改） |
+| `context_compacted` | info | Claude Code `system/compact_boundary`（`message` 形如 `Context compacted (auto): 168000 → 12000 tokens`）；Codex `contextCompaction` item 完成（Codex 不给文字，`message` 是空串） |
+| `rate_limit` | warning | Claude Code `rate_limit_event` 的 `status` 不是 `allowed` 时（`allowed_warning` = 快到了，`rejected` = 到了；按限额类型记，同一状态 + 同一 `resetsAt` 只发一次，回到 `allowed` 后重新计；`resets_at_ms` = `resetsAt` 秒 × 1000） |
+| `command_output` | info | Claude Code `/context`、`/cost` 等本地命令的输出，`message` 是原文（去掉 `<local-command-stdout>` 标签），可能多行。`-p` 下它是一条模型为 `<synthetic>`、带 `local_command_source` 的 `assistant` 消息（stderr 形式发 warning），schema 里的 `system/local_command_output` 同样处理 |
+| `agent_notice` | info / warning | Claude Code `system/notification`（`color` 为 `warning` / `error` → warning，其余 info；`priority = low` 的闲置提示不转；同一 turn 里同 key 同文本只发一次）、`system/informational`（`level` 为 `warning` → warning，`notice` / `suggestion` → info，`info` 级别 CLI 自己也只在转录视图里显示，不转）；Codex `warning`、`guardianWarning`（同样的文字每个进程只发一次：每个子 agent 的 thread 启动时会把 `warning` 再发一遍） |
+| `config_warning` | warning | Codex `configWarning`（`summary`，有 `details` 的空一行接在后面；`warning` 会把同一段话再发一遍，同样的文字每个进程只发一次） |
+| `deprecation` | warning | Codex `deprecationNotice`（`summary` 加 `details`） |
+| `mcp_server_failed` | warning | Codex `mcpServer/startupStatus/updated` 的 `status = failed`（`message` 是它的 `error` 原文，`failureReason = reauthenticationRequired` 的加一句；每个 server 每个进程只发一次）；Claude Code `system/init.mcp_servers[].status == "failed"`（每个 server 每个进程只发一次） |
+| `permission_denied` | info | Claude Code `system/permission_denied`（`message` 形如 `Bash: <decision_reason>`，没有 `decision_reason` 时用它的 `message`） |
+| `auto_review` | warning | Codex `item/autoApprovalReview/completed` 的 `review.status` 是 `denied` 或 `timedOut` 时（`message` 是被审查的动作加 `review.rationale`；超时没有理由就写「审查超时，动作没有放行」；放行的不发） |
+| `hook_failed` | warning | Claude Code `system/hook_response` 的 `outcome = error`（`cancelled` 不算）；CLI 默认只让少数 hook 事件进输出流（`--include-hook-events` 打开全部，adapter 不加），所以多数会话里看不到；Codex `hook/completed` 的 `run.status` 是 `failed` 或 `blocked`（`message` 是 `statusMessage`，没有就用 hook 输出里的 error / stop / warning / feedback 文字） |
+
+ACP 目前不产生这三类事件。
+
+**`activity` 的来源**：Claude Code `system/api_retry` → `retrying`（`attempt` / `max_retries` / `retry_delay_ms`；`reason` = `<HTTP 状态> <错误类别>`，如 `529 overloaded`，连接错误是 `connection error`，首字节超时是 `no response from the API within 30s`），下一个响应开始流式输出（`message_start`）时发 `none`；`system/status { status: "compacting" }` → `compacting`（自动压缩期间会反复发，只发一次），之后 `status: null`（或 `compact_boundary`）→ `none`。只在 turn 进行中发——没有 turn 时（后台 agent 在重试）发出去，客户端没有内容事件或 `turn_done` 来清掉它。Codex `contextCompaction` item 开始 → `compacting`（只在主 turn 进行中发），完成 → `none`（再加一条 `notice` `context_compacted`）。Codex 已有的可恢复错误 `agent_reconnecting` 不变。
+
+**`task` 的来源**：Claude Code 的 workflow / 后台子 agent / 后台命令（`system/task_*`），`tool_id` 是启动它的 `tool_use_id`。`task_started` 的 `workflow_name`（没有就是 `description`）作 `title`，workflow 的 `description`（脚本 `meta.description`）作 `summary`；`task_progress` 的 `usage` → `usage`，子 agent 的 `last_tool_name` → `last_tool`、`summary`（没有就用 `description`，即当前在做的事）→ `summary`；workflow 的 `workflow_progress[]` 全量替换 `phases` / `agents`（`workflow_phase` → `phases`；`workflow_agent` 的 `state`：`start` 带 `queuedAt` 而没有 `startedAt` → `queued`，其余 `start` / `progress` → `running`，`done` → `done`，`error` → `failed`、`skipped: true` → `skipped`；`tokens` / `toolCalls` / `durationMs` / `lastToolName` / `error` / `attempt` / `cached` / `model` / `phaseIndex` 对应 `TaskAgent` 的字段），CLI 对「全是 progress 更新」的批次限频（最多每 10 秒带一次 `workflow_progress`），没带的帧沿用上一份；`task_updated` 的 `patch.status` 和 `task_notification` 的 `status` → 终态（`completed` / `failed` / `killed`、`stopped` → `cancelled`），`patch.error` 和通知的 `summary` 作失败信息；两者终态不一致时以先到的为准。只有后台任务发快照：`is_backgrounded: false` 的前台任务（和 `awaited`）只记状态，`task_updated { patch.is_backgrounded: true }` 之后才开始发；`skip_transcript` / `ambient` 的杂务不发。任务续跑时 `task_id` 不变、`run_id` 变大，比当前小的 `run_id` 的帧是迟到的，忽略。Codex 子 agent 的 thread id 作 `id`，`kind = subagent`，`tool_id` 是启动它的那次调用（0.164.0 里是 `subAgentActivity { kind: started }` 的 id，它同时是一条 `category = subagent` 的 `tool_call`；`collabAgentToolCall` 的 `spawnAgent` 把 `receiverThreadIds` 登记为子 agent，`tool_id` 是它的 id）。`title` 是 `agentPath` 去掉 `/root/`（`/root/pong` → `pong`），没有就取 prompt 的第一行；`status` 由 `subAgentActivity` 的 `kind`（`started` / `interacted` → running，`completed`，`interrupted` → cancelled）、子 thread 的 `turn/started` / `turn/completed`（`completed` / `interrupted` → cancelled / `failed`）、`collabAgentToolCall.agentsStates`（`pendingInit` / `running`，`completed`，`errored` → failed，`interrupted` / `shutdown` / `notFound` → cancelled）和 `thread/closed` 决定，已经 completed 的子 agent 又收到 `interacted` 或开始新 turn 会回到 running；`usage` 是子 thread 累计的 `totalTokens`、工具调用数和最近一个 turn 的耗时，`last_tool` 是它最近一次调用，`summary` 是它最近一条完整的回复（失败时是错误信息）。子 agent 里的工具调用发 `tool_call` / `tool_result` 并带 `parent_id`，**只在主 turn 进行中发**；只有被 `subAgentActivity` / `collabAgentToolCall` 明确宣布过的 thread 才算子 agent，别的 thread（自动审批的审查 thread 等）的通知一律忽略。
+
+**`turn_done.usage.context_window` / `context_tokens`**：Claude Code 取 `result.modelUsage.<model>.contextWindow`，`context_tokens` 是最近一条顶层（`parent_tool_use_id` 为空）assistant 消息的 `usage.input_tokens + cache_read_input_tokens + cache_creation_input_tokens`；Codex 取 `thread/tokenUsage/updated` 的 `modelContextWindow`，`context_tokens` 是最近一次 `last` 的 `inputTokens`（Codex 的 `inputTokens` 已包含 `cachedInputTokens`，所以不再加缓存读写；压缩上下文后那条更新的 `inputTokens` 是 0，压缩后的估计只在 `totalTokens` 里，此时取 `totalTokens`），只看主 thread 的更新。
 
 ## 9. 权限请求
 
@@ -509,17 +557,19 @@ permission { request_id, kind, title, detail, options }
   detail:  kind = tool     → { tool, category, input, cwd, suggestions? }   // 和 tool_call.detail 同结构
            kind = plan     → { text }                                       // 计划全文（Markdown）
            kind = question → { questions: [ { id, text, choices?: [ { id, label } ], multi?: bool, free_text?: bool } ] }
+           kind = other    → { text?, url? }                                // url：要用户在浏览器里打开的链接，只会是 http / https
   options: [ { id, label, kind: allow_once | allow_always | reject_once | reject_always, needs_message?: bool } ]
 ```
 
-四种 kind 的来源和答复语义：
+各 kind 的来源和答复语义：
 
 | kind | 来源 | 答复 |
 |---|---|---|
-| `tool` | Claude Code `can_use_tool`、Codex `item/*/requestApproval`、ACP `session/request_permission` | 选一个 `option_id`，`reject_*` 可带 `message` |
+| `tool` | Claude Code `can_use_tool`、Codex `item/*/requestApproval` 和 MCP 工具调用的审批（`mcpServer/elicitation/request`，`_meta.codex_approval_kind = mcp_tool_call`；`category = mcp`，options 是 Codex 给的持久化范围：本次 / 本会话 / 以后都允许 / 拒绝）、ACP `session/request_permission` | 选一个 `option_id`，`reject_*` 可带 `message` |
 | `plan` | Claude Code 的 `ExitPlanMode` 工具、Codex plan 模式结束 | options 由 adapter 给，v0.1 是两项：「开始实施」（`allow`）、「继续规划」（`deny`，reject，可带修改意见）；「开始实施，回到之前的模式」这个额外选项 v0.1 没有。允许后 daemon 负责切 mode：优先 adapter 在 `detail.mode` 里指明的，其次进入 plan 之前的模式（不是 dangerous 才回去），再其次 `default_mode`，最后 AgentInfo 的默认；切换后发 `settings_changed`、调 `AgentHandle::set_settings`、记审计（`session.set_settings`，`reason: permission_approved`） |
-| `question` | Claude Code 的 `AskUserQuestion`、Codex `item/tool/requestUserInput`、ACP `elicitation/create` | `permission.respond { request_id, answers: { [question_id]: value } }`，没有 `option_id` |
+| `question` | Claude Code 的 `AskUserQuestion`（每题必答）和 MCP elicitation 的表单模式（`requested_schema` 的每个属性一道题，题目 id = 属性名，顺序取 `property_order`；enum / oneOf → 选项，boolean → `true` / `false` 两个选项，string / number / integer → 自由输入，`required` 里没有的属性是 `optional` 题（`Question.optional = true`，客户端允许留空，答复里没有这一题；必答是默认，题干里不另外标），标题是 `<server>: <message>`；options `accept`「Submit」/ `decline`）、Codex `item/tool/requestUserInput` 和 `mcpServer/elicitation/request` 的 `form` 模式（每个属性一题，规则同上；顺序是 app-server 给的字母序）、ACP `elicitation/create` | `permission.respond { request_id, answers: { [question_id]: value } }`，没有 `option_id`（elicitation 也可以带 `option_id`：`accept` 提交、`decline` 拒绝） |
 | `mode_change` | agent 自己请求切换模式（ACP `switch_mode` 类工具） | allow / reject |
+| `other` | 上面都不是的确认。带 `detail.url` 时是 MCP server 的 URL 模式 elicitation（Claude Code `control_request { subtype: elicitation, mode: url }`、Codex `mcpServer/elicitation/request` 的 `url` 模式，`detail.text` 是 `message`；options `accept`「I've completed it」/ `decline`；链接不是 http / https 的不问用户，直接按 decline 答复并发 `error { code: elicitation_rejected }`）：用户先在浏览器里打开链接完成登录 / 授权，再回来确认 | 选一个 `option_id`；`allow_once` 的含义是「我已经在那个链接上完成了」，`reject_*` 是不做 |
 
 `question` 和 `plan` 走权限通道而不是另开一套，是为了复用待办列表、多客户端解决、通知这整条链；通知类别仍是 `permission_requested`（语义都是「agent 在等你」）。
 
@@ -528,7 +578,9 @@ permission { request_id, kind, title, detail, options }
 | | 请求来源 | `allow` | `allow_session` | `deny` |
 |---|---|---|---|---|
 | Claude Code | `control_request { subtype: can_use_tool, tool_name, input, permission_suggestions }` | `{ behavior: allow, updatedInput }` | 同左 + `updatedPermissions: [{ type: addRules, rules: [{ toolName }], behavior: allow, destination: session }]` | `{ behavior: deny, message }` |
-| Codex | `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`、`item/permissions/requestApproval`（`reason` 放进 `detail.tool.detail.description`，`input.reason` 也保留；`fileChange` 的补丁内容取自先前的 `item/started.changes`。显示规则：cwd 之外的路径保持绝对路径；多文件补丁标题写 `Edit N files (a, b, …)`，`description` 依次是 reason、全部路径、`grantRoot` 说明（「并允许本会话写入 <root>」，也写进标题）；拿不到 `item/started` 时标题是 `Edit files (patch contents unknown)` 且 `input.contentUnknown = true`，客户端用警示样式。请求里带非空 `command` 的（zsh 子命令审批）以它为准，标题 `Run sub-command`） | `{ decision: accept }` | `{ decision: acceptForSession }` | `{ decision: decline }`；会话取消时 `cancel`（拒绝并中断 turn）。v0.1 不支持的服务端请求（MCP elicitation、动态工具、ChatGPT token 刷新、v1 旧审批）按 schema 回拒绝，并发 `error { code: unsupported_request }` |
+| Claude Code（MCP elicitation） | `control_request { subtype: elicitation, mcp_server_name, message, mode: form \| url, url?, elicitation_id?, requested_schema?, property_order? }` | `accept`：`{ action: accept, content }`（表单模式，答案按 schema 转成 JSON 类型：integer / number / boolean / enum 的原值 / 多选数组，可选项留空就不出现；URL 模式没有 `content`） | — | `decline`：`{ action: decline }`；会话取消、`permissions.request_timeout` 到期时 daemon 自动答复的 reject 选项同样是 decline。表单答案和 schema 对不上（不是整数、不在 enum 里、必填项为空）时也回 decline——请求在 daemon 这边已经算答复过，不能留着未决让 CLI 一直等——并发 `error { code: elicitation_invalid_answer, recoverable: true }` 说明原因 |
+| Codex | `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`、`item/permissions/requestApproval`（`reason` 放进 `detail.tool.detail.description`，`input.reason` 也保留；`fileChange` 的补丁内容取自先前的 `item/started.changes`。显示规则：cwd 之外的路径保持绝对路径；多文件补丁标题写 `Edit N files (a, b, …)`，`description` 依次是 reason、全部路径、`grantRoot` 说明（「并允许本会话写入 <root>」，也写进标题）；拿不到 `item/started` 时标题是 `Edit files (patch contents unknown)` 且 `input.contentUnknown = true`，客户端用警示样式。请求里带非空 `command` 的（zsh 子命令审批）以它为准，标题 `Run sub-command`） | `{ decision: accept }` | `{ decision: acceptForSession }` | `{ decision: decline }`；会话取消时 `cancel`（拒绝并中断 turn）。v0.1 不支持的服务端请求（动态工具、ChatGPT token 刷新、v1 旧审批）按 schema 回拒绝，并发 `error { code: unsupported_request }` |
+| Codex（MCP elicitation） | `mcpServer/elicitation/request { serverName, threadId, mode: form \| url, message, requestedSchema?, url?, _meta? }`，Codex 自己也用它做 **MCP 工具调用的审批**（0.164.0 实测：`readOnlyHint: false` 的工具在 `on-request` 下问；`_meta.codex_approval_kind = mcp_tool_call`，`_meta.persist` 列出可选的持久化范围，`_meta.tool_params` / `tool_description` 是参数和说明，请求里没有 item id 和工具名，工具名取自参数一致的、正在进行的 `mcpToolCall`，找不到再从 `message` 里取）。子 agent 里的请求标题后加 `(sub-agent <名字>)` | 工具审批 `allow`：`{ action: accept }`；表单 `accept`：`{ action: accept, content }`，答案按 schema 转成 JSON 类型（integer / number / boolean / enum 的原值 / 多选数组，没答的可选项不出现；超出 `minimum` / `maximum` 也算对不上）；URL `accept`：`{ action: accept }` | 工具审批 `allow_session`：`{ action: accept, _meta: { persist: session } }`（实测同一 turn 里再调用同一工具不再问）；`allow_always`：`persist: always`；这两个选项只在 `_meta.persist` 列出时才有 | `{ action: decline }`；会话取消、`permissions.request_timeout` 到期同样 decline（Codex 把 decline 和 cancel 都当「用户拒绝」，agent 继续同一个 turn）。表单答案和 schema 对不上时也回 decline 并发 `error { code: elicitation_invalid_answer, recoverable: true }`；不认识的模式（`openai/form`）、读不懂的 schema、超过 50 个属性、链接不是 http / https 的不问用户，直接回 decline 并发 `error { code: elicitation_rejected, recoverable: true }` |
 | ACP | `session/request_permission { toolCall, options[] }` | 透传 agent 给的 options，`optionId` 原样回 | 同左 | 同左；会话取消时 `{ outcome: cancelled }` |
 
 ACP 的 options 是 agent 定义的，可能只有两项或有四项，客户端按 `options` 渲染而不是写死三个按钮。
@@ -547,6 +599,8 @@ ACP 的 options 是 agent 定义的，可能只有两项或有四项，客户端
 ### 9.3 Claude Code 的接法
 
 v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_response`——这是官方 Agent SDK 和 CLI 之间的通道，不是公开文档化的契约。接受这个风险的理由：SDK 本身依赖它，不会无迁移路径地 break；adapter 锁定支持的 CLI 版本区间，用 `system/init` 的 `capabilities` 做特性检测，升级时跑回放测试。
+
+同一条通道上还有 MCP elicitation（MCP server 在工具调用中途向用户要输入）：stream-json 宿主默认会收到 `control_request { subtype: elicitation, mcp_server_name, message, mode: form | url, … }`，答复是 `control_response` 的 `response: { action: accept | decline | cancel, content? }`（2.1.308 实测：CLI 把这个对象原样交给 MCP server；不合法的 `content` 没有试过，adapter 先按 schema 把答案转成 JSON 类型）；不答 CLI 就一直等，所以 adapter 把它当权限请求交给用户（§ 9.1），用户拒绝 / 取消 / 超时都答 `decline`。
 
 备用方案（文档化的）：`--permission-prompts none` + `PreToolUse` http hook 指向 daemon 的本机端口。缺点是要写 hook 配置到用户的 settings 文件。如果 v0.1 实现时 `control_request` 不稳，切到这条，记一条 ADR。
 
@@ -730,7 +784,7 @@ SQLite（WAL）。全部表：
 | `security` | 新设备经接入加入；节点口令连续失败满 3 次；口令接入被锁定；口令被设置 / 修改 / 清除；`[enroll]` 被修改 |
 | `session_idle` | 会话 `idle` 超过 `session_idle_after` 且期间没有任何客户端 watch 过（提醒「结果还没看」）；后台任务在跑时不算 idle，任务都结束时重新计时。daemon 重启不触发（重启后不给已经 idle 的会话重新计时）；已归档的会话不提醒；一直在 watch 的客户端也算「看过」（idle 开始时和每次扫描都检查当前有没有 watcher）|
 
-同一会话同一 category 60 秒内只发一次；`security` 没有会话，按节点算，60 秒内的多条合并成一次（详情经 `node.security_event` 逐条发给在线客户端）；`enroll_requested` 不合并。
+`task`、`notice`、`activity` 事件本身不触发任何通知。同一会话同一 category 60 秒内只发一次；`security` 没有会话，按节点算，60 秒内的多条合并成一次（详情经 `node.security_event` 逐条发给在线客户端）；`enroll_requested` 不合并。
 
 ## 15. 连接与可靠性
 

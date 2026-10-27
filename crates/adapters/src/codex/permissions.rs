@@ -6,12 +6,15 @@
 //! | `item/fileChange/requestApproval` | `tool`（file_edit） | 同上 |
 //! | `item/permissions/requestApproval` | `tool`（other） | `{ permissions: <请求的原样>, scope: turn \| session }`；拒绝 = `{ permissions: {} }` |
 //! | `item/tool/requestUserInput` | `question` | `{ answers: { <题目 id>: { answers: [<所选 label>…] } } }` |
+//! | `mcpServer/elicitation/request`，`_meta.codex_approval_kind = mcp_tool_call`（MCP 工具调用的审批） | `tool`（mcp） | `{ action: accept \| decline, _meta?: { persist: session \| always } }` |
+//! | `mcpServer/elicitation/request`，表单 | `question`（每个 schema 属性一题） | `{ action: accept, content: { <属性>: <按类型转换的值> } }` / `{ action: decline }` |
+//! | `mcpServer/elicitation/request`，`url` 模式 | `other`（`detail.url`） | `{ action: accept }` / `{ action: decline }` |
 //!
-//! 选项固定三项：`allow`（accept）、`allow_session`（acceptForSession）、`deny`（decline）。**会话取消时**未答复的回 `cancel`
+//! 命令 / 补丁 / 权限的选项固定三项：`allow`（accept）、`allow_session`（acceptForSession）、`deny`（decline）。**会话取消时**未答复的回 `cancel`
 //! （`decline` 会让 agent 接着干，`cancel` 同时中断 turn）。审批请求带的 `reason` 放在 `detail.tool.detail.description`
 //! （web 的审批卡片在命令下面显示这一行），同时保留在 `input` 里。
 //!
-//! 不支持的服务端请求（MCP elicitation、动态工具、ChatGPT token 刷新、旧版 `applyPatchApproval` / `execCommandApproval`…）
+//! 不支持的服务端请求（动态工具、ChatGPT token 刷新、旧版 `applyPatchApproval` / `execCommandApproval`…）
 //! 在 [`unsupported`] 里按 schema 回一个拒绝——**不能挂着不回，否则 turn 卡死**。
 
 use anycon_agent_api::{AdapterError, PendingPermission, PermissionDecision};
@@ -23,17 +26,23 @@ use serde_json::{json, Map, Value};
 
 use super::rpc::{RpcError, INTERNAL_ERROR, METHOD_NOT_FOUND};
 use super::tools::{self, ToolCallParts};
-use super::wire::{CommandApproval, FileApproval, PermissionsApproval, UserInputRequest};
+use super::wire::{CommandApproval, FileApproval, McpElicitation, PermissionsApproval, UserInputRequest};
 
 pub const OPT_ALLOW: &str = "allow";
 pub const OPT_ALLOW_SESSION: &str = "allow_session";
 pub const OPT_DENY: &str = "deny";
 pub const OPT_ANSWER: &str = "answer";
+/// MCP 工具审批里 Codex 给的「以后都允许」（`_meta.persist` 含 `always`）。
+pub const OPT_ALLOW_ALWAYS: &str = "allow_always";
+/// elicitation 的两个选项（对应答复里的 `action`）。
+pub const OPT_ACCEPT: &str = "accept";
+pub const OPT_DECLINE: &str = "decline";
 
 pub const M_COMMAND_APPROVAL: &str = "item/commandExecution/requestApproval";
 pub const M_FILE_APPROVAL: &str = "item/fileChange/requestApproval";
 pub const M_PERMISSIONS_APPROVAL: &str = "item/permissions/requestApproval";
 pub const M_USER_INPUT: &str = "item/tool/requestUserInput";
+pub const M_ELICITATION: &str = "mcpServer/elicitation/request";
 
 /// 适配器自己记着的、回包时要用的原生上下文。
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +63,39 @@ pub enum NativeKind {
     UserInput {
         question_ids: Vec<String>,
     },
+    /// MCP 工具调用的审批（elicitation 的一种）。`persist` 是请求里 `_meta.persist` 给出的持久化选项（`session` / `always`）。
+    McpApproval {
+        persist: Vec<String>,
+    },
+    /// elicitation。`fields` 是表单的各个属性；`None` = 没有表单（URL 模式、空表单），只有接受 / 拒绝。
+    Elicitation {
+        fields: Option<Vec<ElicitField>>,
+    },
+}
+
+/// 表单里的一个属性：答复时按它的类型把用户的回答转成 JSON 值。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElicitField {
+    pub key: String,
+    /// 给用户看的名字（`title`，缺省用属性名），出错说明里用。
+    pub label: String,
+    pub required: bool,
+    pub ty: FieldType,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldType {
+    Text,
+    Number {
+        integer: bool,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    Boolean,
+    /// 单选，值是 `enum` / `oneOf[].const`。
+    Choice(Vec<String>),
+    /// 多选（`type: array`），值是 `items.enum` / `items.anyOf[].const`。
+    Choices(Vec<String>),
 }
 
 fn option(id: &str, label: &str, kind: PermissionOptionKind) -> PermissionOption {
@@ -323,6 +365,7 @@ pub fn from_user_input(request_id: &str, rpc_id: Value, p: &UserInputRequest) ->
                 .collect(),
             multi: false,
             free_text: q.is_other || q.options.as_ref().is_none_or(|o| o.is_empty()),
+            optional: false,
         })
         .collect();
     let pending = PendingPermission {
@@ -346,6 +389,388 @@ fn answer_strings(v: &Value) -> Vec<String> {
         Value::String(s) => vec![s.clone()],
         Value::Null => vec![],
         other => vec![other.to_string()],
+    }
+}
+
+// ---------- MCP elicitation ----------
+
+/// 一个表单最多几个属性 / 一个枚举最多几个候选 / 说明文字的上限：MCP server 给的东西不可信，不能让它撑爆请求。
+const MAX_ELICIT_FIELDS: usize = 50;
+const MAX_ELICIT_CHOICES: usize = 100;
+const MAX_ELICIT_TEXT_BYTES: usize = 2000;
+
+fn clip(s: &str) -> String {
+    crate::common::truncate_bytes(s, MAX_ELICIT_TEXT_BYTES)
+}
+
+/// 只接受 http / https，且不含空白和控制字符：这个 URL 会原样显示给用户并提供「打开」入口。
+pub fn is_safe_http_url(u: &str) -> bool {
+    let lower = u.to_ascii_lowercase();
+    let rest = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://"));
+    rest.is_some_and(|r| !r.is_empty()) && u.len() <= 8192 && !u.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// `Allow the demo MCP server to run tool "wipe_cache"?` → `wipe_cache`。
+fn tool_from_message(message: &str) -> Option<String> {
+    let start = message.find("tool \"")? + "tool \"".len();
+    let len = message[start..].find('"')?;
+    Some(message[start..start + len].to_string()).filter(|t| !t.is_empty())
+}
+
+fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+    v.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn fmt_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
+fn number_hint(integer: bool, min: Option<f64>, max: Option<f64>) -> String {
+    let kind = if integer { "an integer" } else { "a number" };
+    match (min, max) {
+        (Some(a), Some(b)) => format!("Enter {kind} between {} and {}.", fmt_num(a), fmt_num(b)),
+        (Some(a), None) => format!("Enter {kind}, at least {}.", fmt_num(a)),
+        (None, Some(b)) => format!("Enter {kind}, at most {}.", fmt_num(b)),
+        (None, None) => format!("Enter {kind}."),
+    }
+}
+
+/// 单选 / 多选的候选：`oneOf: [{ const, title }]`、`anyOf: [{ const, title }]`、`enum: [..]`（+ `enumNames`）。
+fn schema_choices(v: &Value) -> Option<Vec<QuestionChoice>> {
+    let titled = |arr: &Vec<Value>| -> Vec<QuestionChoice> {
+        arr.iter()
+            .filter_map(|o| {
+                let id = o.get("const").and_then(Value::as_str)?;
+                Some(QuestionChoice { id: id.to_string(), label: str_of(o, "title").unwrap_or(id).to_string() })
+            })
+            .collect()
+    };
+    for key in ["oneOf", "anyOf"] {
+        if let Some(arr) = v.get(key).and_then(Value::as_array) {
+            let mut c = titled(arr);
+            if !c.is_empty() {
+                c.truncate(MAX_ELICIT_CHOICES);
+                return Some(c);
+            }
+        }
+    }
+    let values = v.get("enum").and_then(Value::as_array)?;
+    let names = v.get("enumNames").and_then(Value::as_array);
+    let c: Vec<QuestionChoice> = values
+        .iter()
+        .enumerate()
+        .filter_map(|(i, x)| {
+            let id = x.as_str()?;
+            let label = names.and_then(|n| n.get(i)).and_then(Value::as_str).filter(|l| !l.is_empty()).unwrap_or(id);
+            Some(QuestionChoice { id: id.to_string(), label: label.to_string() })
+        })
+        .take(MAX_ELICIT_CHOICES)
+        .collect();
+    (!c.is_empty()).then_some(c)
+}
+
+/// 表单的一个属性 → 一道题 + 答复时用的类型信息。
+fn field_from_schema(key: &str, prop: &Value, required: bool) -> (ElicitField, Question) {
+    let label = crate::common::truncate_bytes(str_of(prop, "title").unwrap_or(key), 200);
+    let ty_name = str_of(prop, "type").unwrap_or("string");
+    let mut hint: Option<String> = None;
+    let (ty, choices, multi) = if ty_name == "array" {
+        match prop.get("items").and_then(schema_choices) {
+            Some(c) => (FieldType::Choices(c.iter().map(|c| c.id.clone()).collect()), c, true),
+            None => (FieldType::Text, Vec::new(), false),
+        }
+    } else if let Some(c) = schema_choices(prop) {
+        (FieldType::Choice(c.iter().map(|c| c.id.clone()).collect()), c, false)
+    } else if ty_name == "boolean" {
+        let c = vec![
+            QuestionChoice { id: "true".into(), label: "Yes".into() },
+            QuestionChoice { id: "false".into(), label: "No".into() },
+        ];
+        (FieldType::Boolean, c, false)
+    } else if ty_name == "number" || ty_name == "integer" {
+        let integer = ty_name == "integer";
+        let (min, max) = (prop.get("minimum").and_then(Value::as_f64), prop.get("maximum").and_then(Value::as_f64));
+        hint = Some(number_hint(integer, min, max));
+        (FieldType::Number { integer, min, max }, Vec::new(), false)
+    } else {
+        (FieldType::Text, Vec::new(), false)
+    };
+    let mut text = label.clone();
+    for extra in [str_of(prop, "description").map(clip), hint].into_iter().flatten() {
+        text.push('\n');
+        text.push_str(&extra);
+    }
+    let free_text = choices.is_empty();
+    (
+        ElicitField { key: key.to_string(), label, required, ty },
+        // schema 没列进 `required` 的属性可以留空：答复时直接省略（见 `convert_answers`）
+        Question { id: key.to_string(), text, choices, multi, free_text, optional: !required },
+    )
+}
+
+fn elicitation_options() -> Vec<PermissionOption> {
+    vec![
+        option(OPT_ACCEPT, "Submit", PermissionOptionKind::AllowOnce),
+        option(OPT_DECLINE, "Decline", PermissionOptionKind::RejectOnce),
+    ]
+}
+
+/// `mcpServer/elicitation/request` → 权限请求。`started` 是已经开始、参数和这次审批对得上的 MCP 工具调用（只用来取工具名）。
+///
+/// - `_meta.codex_approval_kind = mcp_tool_call`：Codex 用 elicitation 做 MCP 工具调用的审批 → `kind = tool`，选项照
+///   `_meta.persist` 给的（本次 / 本会话 / 以后都允许 / 拒绝）；
+/// - `url` 模式 → `kind = other`，`detail.url`（只接受 http / https）；
+/// - `form` 模式 → `kind = question`，每个 schema 属性一题；没有属性的表单（别的审批）→ `kind = other`，只有接受 / 拒绝。
+///
+/// 返回 `Err(说明)` = 这个请求不能交给用户（不认识的模式 / schema、URL 不是 http(s)）：调用方按 `decline` 答复并把说明作为
+/// 一条可恢复的 `error` 发出。
+pub fn from_elicitation(
+    request_id: &str,
+    rpc_id: Value,
+    p: &McpElicitation,
+    fallback_cwd: &str,
+    started: Option<&ToolCallParts>,
+) -> Result<(PendingPermission, NativePending), String> {
+    let server = p.server_name.trim();
+    let who = if server.is_empty() { "An MCP server".to_string() } else { format!("The MCP server {server}") };
+    let message = p.message.trim();
+    let kind_of_approval = p.meta.as_ref().and_then(|m| str_of(m, "codex_approval_kind"));
+    let mode = p.mode.as_deref().unwrap_or("form");
+
+    if mode == "url" {
+        let url = p.url.as_deref().map(str::trim).unwrap_or("");
+        if !is_safe_http_url(url) {
+            return Err(format!(
+                "{who} asked you to open a link that is not a plain http(s) URL, so the request was declined."
+            ));
+        }
+        let pending = PendingPermission {
+            request_id: request_id.to_string(),
+            kind: PermissionKind::Other,
+            title: if server.is_empty() {
+                "An MCP server needs you to open a link".to_string()
+            } else {
+                format!("{server} needs you to open a link")
+            },
+            detail: PermissionDetail {
+                text: Some(clip(message)).filter(|m| !m.is_empty()),
+                url: Some(url.to_string()),
+                ..Default::default()
+            },
+            options: vec![
+                option(OPT_ACCEPT, "I've completed it", PermissionOptionKind::AllowOnce),
+                option(OPT_DECLINE, "Decline", PermissionOptionKind::RejectOnce),
+            ],
+            expires_in: None,
+        };
+        return Ok((pending, NativePending { rpc_id, kind: NativeKind::Elicitation { fields: None } }));
+    }
+    if mode != "form" {
+        return Err(format!(
+            "{who} asked for input in a form anycon does not support ({mode}), so the request was declined."
+        ));
+    }
+
+    if kind_of_approval == Some("mcp_tool_call") {
+        let meta = p.meta.as_ref().expect("approval kind came from the meta");
+        let tool =
+            started.and_then(|s| s.detail.as_ref()).and_then(|d| d.tool.clone()).or_else(|| tool_from_message(message));
+        let description = str_of(meta, "tool_description").map(clip);
+        let persist: Vec<String> = meta
+            .get("persist")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default();
+        let (title, name) = match (&tool, server.is_empty()) {
+            (Some(t), false) => (format!("Run MCP tool {server}/{t}"), format!("mcp__{server}__{t}")),
+            (Some(t), true) => (format!("Run MCP tool {t}"), format!("mcp__{t}")),
+            (None, false) => (format!("Run an MCP tool on {server}"), format!("mcp__{server}")),
+            (None, true) => ("Run an MCP tool".to_string(), "mcp".to_string()),
+        };
+        let mut options = vec![option(OPT_ALLOW, "Allow", PermissionOptionKind::AllowOnce)];
+        if persist.iter().any(|x| x == "session") {
+            options.push(option(OPT_ALLOW_SESSION, "Allow for this session", PermissionOptionKind::AllowAlways));
+        }
+        if persist.iter().any(|x| x == "always") {
+            options.push(option(OPT_ALLOW_ALWAYS, "Always allow", PermissionOptionKind::AllowAlways));
+        }
+        options.push(option(OPT_DENY, "Deny", PermissionOptionKind::RejectOnce));
+        let pending = PendingPermission {
+            request_id: request_id.to_string(),
+            kind: PermissionKind::Tool,
+            title,
+            detail: PermissionDetail {
+                tool: Some(ToolPermissionDetail {
+                    tool: name,
+                    category: ToolCategory::Mcp,
+                    input: meta.get("tool_params").cloned().unwrap_or_else(|| json!({})),
+                    cwd: Some(fallback_cwd.to_string()),
+                    detail: Some(ToolCallDetail {
+                        server: Some(server.to_string()).filter(|s| !s.is_empty()),
+                        tool,
+                        description,
+                        ..Default::default()
+                    }),
+                }),
+                ..Default::default()
+            },
+            options,
+            expires_in: None,
+        };
+        return Ok((pending, NativePending { rpc_id, kind: NativeKind::McpApproval { persist } }));
+    }
+
+    let schema = p.requested_schema.as_ref().filter(|s| s.is_object());
+    let Some(props) = schema.and_then(|s| s.get("properties")).and_then(Value::as_object) else {
+        return Err(format!("{who} asked for input with a form anycon cannot read, so the request was declined."));
+    };
+    let title = if message.is_empty() {
+        if server.is_empty() {
+            "An MCP server asks for input".to_string()
+        } else {
+            format!("{server} asks for input")
+        }
+    } else if server.is_empty() {
+        tools::first_line_clipped(message, 120)
+    } else {
+        format!("{server}: {}", tools::first_line_clipped(message, 120))
+    };
+    if props.is_empty() {
+        let pending = PendingPermission {
+            request_id: request_id.to_string(),
+            kind: PermissionKind::Other,
+            title,
+            detail: PermissionDetail { text: Some(clip(message)).filter(|m| !m.is_empty()), ..Default::default() },
+            options: elicitation_options(),
+            expires_in: None,
+        };
+        return Ok((pending, NativePending { rpc_id, kind: NativeKind::Elicitation { fields: None } }));
+    }
+    if props.len() > MAX_ELICIT_FIELDS {
+        return Err(format!(
+            "{who} asked for input with a form of {} fields, which is too long to show, so the request was declined.",
+            props.len()
+        ));
+    }
+    let required: Vec<&str> = schema
+        .and_then(|s| s.get("required"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let (mut fields, mut questions) = (Vec::new(), Vec::new());
+    for (key, prop) in props {
+        let (f, q) = field_from_schema(key, prop, required.contains(&key.as_str()));
+        fields.push(f);
+        questions.push(q);
+    }
+    // 标题放不下的整段说明（多行 / 很长）并进第一题，不丢
+    if message.contains('\n') || message.chars().count() > 120 {
+        questions[0].text = format!("{}\n\n{}", clip(message), questions[0].text);
+    }
+    let pending = PendingPermission {
+        request_id: request_id.to_string(),
+        kind: PermissionKind::Question,
+        title,
+        detail: PermissionDetail { questions, ..Default::default() },
+        options: elicitation_options(),
+        expires_in: None,
+    };
+    Ok((pending, NativePending { rpc_id, kind: NativeKind::Elicitation { fields: Some(fields) } }))
+}
+
+/// 把用户对表单的回答按各属性的类型转成 `content`。缺失的非必填项直接省略；必填项缺失、类型不对、不在候选里、
+/// 超出范围都是 `Err(说明)`。
+fn convert_answers(fields: &[ElicitField], answers: Option<&Map<String, Value>>) -> Result<Map<String, Value>, String> {
+    fn scalar(v: &Value) -> Option<String> {
+        match v {
+            Value::String(s) => Some(s.trim().to_string()),
+            Value::Number(n) => Some(n.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            // 只选了一项的数组按那一项算
+            Value::Array(a) if a.len() == 1 => scalar(&a[0]),
+            _ => None,
+        }
+    }
+    let mut out = Map::new();
+    for f in fields {
+        let raw = answers.and_then(|a| a.get(&f.key)).filter(|v| match v {
+            Value::Null => false,
+            Value::String(s) => !s.trim().is_empty(),
+            Value::Array(a) => !a.is_empty(),
+            _ => true,
+        });
+        let Some(raw) = raw else {
+            if f.required {
+                return Err(format!("\"{}\" is required but was not answered", f.label));
+            }
+            continue;
+        };
+        let bad = |why: &str| format!("the answer for \"{}\" {why}", f.label);
+        let value = match &f.ty {
+            FieldType::Text => match raw {
+                Value::String(s) => Value::String(s.clone()),
+                other => Value::String(scalar(other).ok_or_else(|| bad("is not text"))?),
+            },
+            FieldType::Number { integer, min, max } => {
+                let s = scalar(raw).ok_or_else(|| bad("is not a number"))?;
+                let n: f64 = if *integer {
+                    s.parse::<i64>().map_err(|_| bad("is not an integer"))? as f64
+                } else {
+                    s.parse::<f64>().ok().filter(|n| n.is_finite()).ok_or_else(|| bad("is not a number"))?
+                };
+                if min.is_some_and(|m| n < m) || max.is_some_and(|m| n > m) {
+                    return Err(bad("is out of range"));
+                }
+                if *integer {
+                    Value::from(n as i64)
+                } else {
+                    serde_json::Number::from_f64(n).map(Value::Number).ok_or_else(|| bad("is not a number"))?
+                }
+            }
+            FieldType::Boolean => match scalar(raw).map(|s| s.to_ascii_lowercase()).as_deref() {
+                Some("true") => Value::Bool(true),
+                Some("false") => Value::Bool(false),
+                _ => return Err(bad("is not true or false")),
+            },
+            FieldType::Choice(allowed) => {
+                let s = scalar(raw).ok_or_else(|| bad("is not one of the choices"))?;
+                if !allowed.contains(&s) {
+                    return Err(bad("is not one of the choices"));
+                }
+                Value::String(s)
+            }
+            FieldType::Choices(allowed) => {
+                let picked = answer_strings(raw);
+                if picked.iter().any(|s| !allowed.contains(s)) {
+                    return Err(bad("has a value that is not one of the choices"));
+                }
+                Value::Array(picked.into_iter().map(Value::String).collect())
+            }
+        };
+        out.insert(f.key.clone(), value);
+    }
+    Ok(out)
+}
+
+/// 用户接受了表单但回答转不成 `content`：返回说明（调用方按 `decline` 答复，并发一条可恢复的 `error`）。
+pub fn answer_problem(native: &NativePending, decision: &PermissionDecision, cancelling: bool) -> Option<String> {
+    let NativeKind::Elicitation { fields: Some(fields) } = &native.kind else { return None };
+    if cancelling || !elicitation_accepted(decision) {
+        return None;
+    }
+    convert_answers(fields, decision.answers.as_ref()).err()
+}
+
+/// 用户接受了吗：选了 `accept`，或者没选项但带了回答（问题卡片的提交）。
+fn elicitation_accepted(decision: &PermissionDecision) -> bool {
+    match decision.option_id.as_deref() {
+        Some(OPT_ACCEPT) => true,
+        None => decision.answers.as_ref().is_some_and(|a| !a.is_empty()),
+        Some(_) => false,
     }
 }
 
@@ -394,6 +819,34 @@ pub fn build_response(
                 (_, Some(other), _) => Err(AdapterError::Protocol(format!("unknown permission option {other}"))),
             }
         }
+        // 拒绝、超时、会话取消都回 `decline`（取消时随后还有 `turn/interrupt`）
+        NativeKind::McpApproval { persist } => match (cancelling, option_id) {
+            (true, _) | (_, Some(OPT_DENY) | None) => Ok(json!({ "action": "decline" })),
+            (_, Some(OPT_ALLOW)) => Ok(json!({ "action": "accept" })),
+            (_, Some(OPT_ALLOW_SESSION)) if persist.iter().any(|p| p == "session") => {
+                Ok(json!({ "action": "accept", "_meta": { "persist": "session" } }))
+            }
+            (_, Some(OPT_ALLOW_ALWAYS)) if persist.iter().any(|p| p == "always") => {
+                Ok(json!({ "action": "accept", "_meta": { "persist": "always" } }))
+            }
+            (_, Some(other)) => Err(AdapterError::Protocol(format!("unknown permission option {other}"))),
+        },
+        NativeKind::Elicitation { fields } => {
+            if let Some(other) = option_id.filter(|o| *o != OPT_ACCEPT && *o != OPT_DECLINE) {
+                return Err(AdapterError::Protocol(format!("unknown permission option {other}")));
+            }
+            if cancelling || !elicitation_accepted(decision) {
+                return Ok(json!({ "action": "decline" }));
+            }
+            match fields {
+                None => Ok(json!({ "action": "accept" })),
+                Some(fields) => match convert_answers(fields, decision.answers.as_ref()) {
+                    Ok(content) => Ok(json!({ "action": "accept", "content": Value::Object(content) })),
+                    // 回答转不成表单要的类型：不把半截内容交给 MCP server，按拒绝答复（调用方另发一条 error 说明）
+                    Err(_) => Ok(json!({ "action": "decline" })),
+                },
+            }
+        }
     }
 }
 
@@ -410,10 +863,6 @@ pub fn unsupported(method: &str) -> UnsupportedReply {
     let msg =
         |what: &str| format!("Codex asked for {what}, which anycon does not support yet; the request was declined.");
     match method {
-        "mcpServer/elicitation/request" => UnsupportedReply {
-            result: Ok(json!({ "action": "decline" })),
-            message: msg("input from an MCP server (elicitation)"),
-        },
         "item/tool/call" => UnsupportedReply {
             result: Ok(json!({
                 "contentItems": [{ "type": "inputText", "text": "This client does not support dynamic tool calls." }],
@@ -783,7 +1232,6 @@ mod tests {
 
     #[test]
     fn unsupported_requests_get_a_schema_valid_refusal() {
-        assert_eq!(unsupported("mcpServer/elicitation/request").result, Ok(json!({"action": "decline"})));
         let tool = unsupported("item/tool/call").result.unwrap();
         assert_eq!(tool["success"], false);
         assert_eq!(tool["contentItems"][0]["type"], "inputText");
@@ -795,6 +1243,126 @@ mod tests {
         assert_eq!(unknown.result.unwrap_err().code, METHOD_NOT_FOUND);
         assert!(unknown.message.contains("some/new/request"));
         // 说明总是写给人看的
-        assert!(unsupported("mcpServer/elicitation/request").message.contains("MCP"));
+        assert!(unsupported("item/tool/call").message.contains("dynamic tool"));
+    }
+    // ---------- MCP elicitation ----------
+
+    fn elicitation(v: Value) -> McpElicitation {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn form(properties: Value, required: Value) -> McpElicitation {
+        elicitation(json!({
+            "serverName": "s", "threadId": "t", "mode": "form", "message": "Fill in",
+            "requestedSchema": {"type": "object", "properties": properties, "required": required}
+        }))
+    }
+
+    #[test]
+    fn only_plain_http_links_are_safe_to_show() {
+        for ok in ["https://example.com/a?b=c#d", "http://localhost:8080/cb", "HTTPS://EXAMPLE.COM"] {
+            assert!(is_safe_http_url(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "https://",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "file:///etc/passwd",
+            "ftp://example.com/x",
+            "//example.com",
+            "example.com",
+            "https://exa mple.com",
+            "https://example.com/\n",
+            " https://example.com",
+        ] {
+            assert!(!is_safe_http_url(bad), "{bad:?}");
+        }
+        assert!(!is_safe_http_url(&format!("https://example.com/{}", "a".repeat(9000))));
+    }
+
+    #[test]
+    fn the_tool_name_is_read_from_codexs_prompt_when_no_call_matches() {
+        assert_eq!(
+            tool_from_message("Allow the demo MCP server to run tool \"wipe_cache\"?").as_deref(),
+            Some("wipe_cache")
+        );
+        assert_eq!(tool_from_message("Allow something"), None);
+        assert_eq!(tool_from_message("run tool \"\""), None);
+    }
+
+    #[test]
+    fn form_answers_accept_the_shapes_clients_send() {
+        let p = form(
+            json!({
+                "n": {"type": "number"}, "i": {"type": "integer"}, "b": {"type": "boolean"}, "t": {"type": "string"},
+                "pick": {"enum": ["a", "b"], "type": "string"},
+                "many": {"type": "array", "items": {"enum": ["x", "y", "z"], "type": "string"}}
+            }),
+            json!([]),
+        );
+        let (pending, native) = from_elicitation("r", json!(1), &p, "/w", None).unwrap();
+        assert_eq!(pending.detail.questions.len(), 6);
+        // JSON 数字 / 布尔、单个字符串当多选、前后空白
+        let answers = serde_json::Map::from_iter([
+            ("n".to_string(), json!(2.5)),
+            ("i".to_string(), json!(" 7 ")),
+            ("b".to_string(), json!(false)),
+            ("t".to_string(), json!(42)),
+            ("pick".to_string(), json!(["b"])),
+            ("many".to_string(), json!("y")),
+        ]);
+        let d = PermissionDecision { option_id: Some("accept".into()), answers: Some(answers), message: None };
+        assert_eq!(
+            build_response(&native, &d, false).unwrap(),
+            json!({"action": "accept", "content": {"b": false, "i": 7, "many": ["y"], "n": 2.5, "pick": "b", "t": "42"}})
+        );
+        // 全是非必填：不答也能接受，content 是空对象
+        let d = PermissionDecision { option_id: Some("accept".into()), ..Default::default() };
+        assert_eq!(build_response(&native, &d, false).unwrap(), json!({"action": "accept", "content": {}}));
+        assert_eq!(answer_problem(&native, &d, false), None);
+        // 小数不是整数
+        let answers = serde_json::Map::from_iter([("i".to_string(), json!("1.5"))]);
+        let d = PermissionDecision { option_id: Some("accept".into()), answers: Some(answers), message: None };
+        assert_eq!(build_response(&native, &d, false).unwrap(), json!({"action": "decline"}));
+        assert!(answer_problem(&native, &d, false).unwrap().contains("is not an integer"));
+    }
+
+    #[test]
+    fn oversized_or_unreadable_forms_are_refused_not_shown() {
+        // 属性太多
+        let props: Map<String, Value> =
+            (0..=MAX_ELICIT_FIELDS).map(|i| (format!("f{i}"), json!({"type": "string"}))).collect();
+        let err = from_elicitation("r", json!(1), &form(Value::Object(props), json!([])), "/w", None).unwrap_err();
+        assert!(err.contains("too long") && err.contains("declined"), "{err}");
+        // 没有 schema / schema 不是对象 / 不认识的模式
+        for v in [
+            json!({"serverName": "s", "threadId": "t", "mode": "form", "message": "m"}),
+            json!({"serverName": "s", "threadId": "t", "mode": "form", "message": "m", "requestedSchema": true}),
+            json!({"serverName": "s", "threadId": "t", "mode": "openaiForm", "message": "m", "requestedSchema": {"type": "object", "properties": {"a": {}}}}),
+            json!({"serverName": "s", "threadId": "t", "mode": "url", "message": "m"}),
+        ] {
+            let err = from_elicitation("r", json!(1), &elicitation(v.clone()), "/w", None).unwrap_err();
+            assert!(err.contains("declined"), "{v}: {err}");
+        }
+        // 候选和说明文字被截断，答复仍然只认显示出来的候选
+        let many: Vec<String> = (0..300).map(|i| format!("v{i}")).collect();
+        let p = form(json!({"pick": {"type": "string", "enum": many, "description": "d".repeat(5000)}}), json!([]));
+        let (pending, _) = from_elicitation("r", json!(1), &p, "/w", None).unwrap();
+        let q = &pending.detail.questions[0];
+        assert_eq!(q.choices.len(), MAX_ELICIT_CHOICES);
+        assert!(q.text.len() < MAX_ELICIT_TEXT_BYTES + 100, "{}", q.text.len());
+    }
+
+    #[test]
+    fn a_missing_message_or_server_still_gets_a_usable_title() {
+        let p = elicitation(
+            json!({"threadId": "t", "mode": "form", "message": "", "requestedSchema": {"type": "object", "properties": {"a": {"type": "string"}}}}),
+        );
+        let (pending, _) = from_elicitation("r", json!(1), &p, "/w", None).unwrap();
+        assert_eq!(pending.title, "An MCP server asks for input");
+        let p = elicitation(json!({"threadId": "t", "mode": "url", "message": "", "url": "https://example.com/x"}));
+        let (pending, _) = from_elicitation("r", json!(1), &p, "/w", None).unwrap();
+        assert_eq!((pending.title.as_str(), pending.detail.text), ("An MCP server needs you to open a link", None));
     }
 }

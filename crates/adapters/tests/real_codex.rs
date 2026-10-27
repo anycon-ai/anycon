@@ -369,6 +369,35 @@ async fn real_schema_validates_what_the_adapter_sends() {
         handle.shutdown().await.unwrap();
         total += validate_client_log(&s, &h, script);
     }
+    // D2. MCP elicitation：表单（带类型转换的内容）、URL、工具审批（带 `_meta.persist`），以及拒绝
+    for decline in [false, true] {
+        let h = CodexHarness::new().script("real_mcp_elicitation.jsonl");
+        let mut handle = h.spawn(SessionSettings::default(), None).await;
+        let _ = next_event(&mut handle).await;
+        run_to_done(&mut handle, "go", |p| match (decline, p.kind) {
+            (true, anycon_protocol::PermissionKind::Tool) => {
+                PermissionDecision { option_id: Some("deny".into()), ..Default::default() }
+            }
+            (true, _) => PermissionDecision { option_id: Some("decline".into()), ..Default::default() },
+            (false, anycon_protocol::PermissionKind::Question) => PermissionDecision {
+                option_id: Some("accept".into()),
+                answers: Some(serde_json::Map::from_iter([
+                    ("name".to_string(), json!("Ada")),
+                    ("color".to_string(), json!("green")),
+                    ("age".to_string(), json!("36")),
+                    ("subscribe".to_string(), json!("true")),
+                ])),
+                message: None,
+            },
+            (false, anycon_protocol::PermissionKind::Tool) => {
+                PermissionDecision { option_id: Some("allow_always".into()), ..Default::default() }
+            }
+            (false, _) => PermissionDecision { option_id: Some("accept".into()), ..Default::default() },
+        })
+        .await;
+        handle.shutdown().await.unwrap();
+        total += validate_client_log(&s, &h, "mcp elicitation");
+    }
     assert!(total > 40, "only {total} client messages checked");
     eprintln!("validated {total} client messages against the local codex schema");
 }

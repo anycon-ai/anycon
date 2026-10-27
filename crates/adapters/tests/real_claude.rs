@@ -19,7 +19,8 @@ use anycon_agent_api::{
     UserInput, ENV_STRIP,
 };
 use anycon_protocol::{
-    AgentStatus, AttachmentRef, Event, FileChangeKind, PermissionKind, SessionSettings, ToolCategory, TurnDoneReason,
+    AgentStatus, AttachmentRef, Event, FileChangeKind, PermissionKind, SessionSettings, TaskAgentState, TaskKind,
+    TaskStatus, ToolCategory, TurnDoneReason,
 };
 use common::*;
 
@@ -473,6 +474,195 @@ async fn real_image_attachment_is_understood() {
     let _ = collect_until(&mut h, is_exited).await;
 
     // 清理 claude 在 ~/.claude/projects 下为这个临时目录留的会话
+    if let Some(dir) = encoded_project_dir(&cwd) {
+        if dir.is_dir() {
+            eprintln!("cleaning up {}", dir.display());
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- workflow / MCP elicitation
+
+/// 一个事件序列里最后一次出现的 `Task` 快照（按 id 取最新）。
+fn last_task<'a>(evs: &'a [AgentEvent], id: &str) -> Option<&'a Event> {
+    evs.iter().rev().find_map(|e| match e {
+        AgentEvent::Event(ev @ Event::Task { id: i, .. }) if i == id => Some(ev),
+        _ => None,
+    })
+}
+
+fn tool_result_texts(evs: &[AgentEvent]) -> Vec<String> {
+    evs.iter()
+        .filter_map(|e| match e {
+            AgentEvent::Event(Event::ToolResult { output, .. }) => Some(output.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "needs the real claude CLI and ANYCON_REAL_AGENT_TESTS=1"]
+async fn real_workflow_and_mcp_elicitation() {
+    if !enabled() {
+        eprintln!("skipped: set ANYCON_REAL_AGENT_TESTS=1");
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let cwd = project.path().canonicalize().unwrap();
+    // 项目里的 `.mcp.json` 注册一个只用标准库的 MCP server（它的工具会反过来向用户要输入）；`-p` 下不需要额外批准
+    let server = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/bin/elicit-mcp-server");
+    std::fs::write(
+        cwd.join(".mcp.json"),
+        serde_json::json!({"mcpServers": {"example-elicit": {"command": "python3", "args": [server]}}}).to_string(),
+    )
+    .unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let adapter = ClaudeCodeAdapter::new();
+    let ctx = ProbeContext {
+        env: Arc::new(real_env()),
+        config: AdapterConfig { enabled: true, ..Default::default() },
+        deadline: Duration::from_secs(60),
+        cheap: false,
+        previous: None,
+        scratch_dir: scratch.path().to_path_buf(),
+    };
+    let info = Arc::new(adapter.probe(&ctx).await);
+    assert_eq!(info.status, AgentStatus::Ready, "{:?}", info.issue);
+    let settings = SessionSettings {
+        model: Some("claude-haiku-5-5".into()),
+        thinking: Some("low".into()),
+        mode: Some("default".into()),
+        ..Default::default()
+    };
+    let mut h = spawn_real(&adapter, info.clone(), &cwd, settings, None).await;
+    let _ = next_event(&mut h).await; // Started
+
+    // ---- turn 1：Workflow。走 can_use_tool，在后台跑；CLI 在它结束后自己再开一轮，事件一直送到那一轮结束 ----
+    let mut titles = Vec::new();
+    let mut evs = turn(
+        &mut h,
+        "Use a workflow to do this: run exactly two trivial agents in parallel. The first agent just replies with the single word alpha, \
+         the second agent just replies with the single word beta. Then tell me both words. Keep everything minimal.",
+        |p| {
+            titles.push((p.kind, p.title.clone()));
+            PermissionDecision { option_id: Some("allow".into()), ..Default::default() }
+        },
+    )
+    .await;
+    eprintln!("workflow turn: permissions={titles:?} events={:?}", names(&evs));
+    assert!(titles.iter().any(|(k, t)| *k == PermissionKind::Tool && t.starts_with("Run workflow:")), "{titles:?}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let finished = evs.iter().any(|e| {
+            matches!(e, AgentEvent::Event(Event::Task { kind: TaskKind::Workflow, status, .. }) if status.is_terminal())
+        });
+        // CLI 自己开的那一轮要收完（含它的 TurnDone），否则下一个 turn 会把残留的 TurnDone 当成自己的结束
+        let own_turn_done = evs
+            .iter()
+            .position(|e| matches!(e, AgentEvent::TurnStarted))
+            .is_some_and(|i| evs[i..].iter().any(is_turn_done));
+        if finished && own_turn_done {
+            break;
+        }
+        let ev = tokio::time::timeout_at(deadline, h.events().recv())
+            .await
+            .expect("the workflow did not finish")
+            .expect("channel closed");
+        evs.push(ev);
+    }
+    let task_id = evs
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Event(Event::Task { id, kind: TaskKind::Workflow, .. }) => Some(id.clone()),
+            _ => None,
+        })
+        .expect("a workflow task snapshot");
+    match last_task(&evs, &task_id).unwrap() {
+        Event::Task { status, title, agents, phases, usage, tool_id, .. } => {
+            eprintln!("final workflow snapshot: title={title:?} status={status:?} phases={phases:?} usage={usage:?} agents={agents:?}");
+            assert_eq!(*status, TaskStatus::Completed);
+            assert!(!title.is_empty() && tool_id.is_some());
+            assert_eq!(agents.len(), 2, "{agents:?}");
+            assert!(agents.iter().all(|a| a.state == TaskAgentState::Done && a.tokens.unwrap_or(0) > 0), "{agents:?}");
+            assert!(usage.and_then(|u| u.total_tokens).unwrap_or(0) > 0);
+        }
+        _ => unreachable!(),
+    }
+    // 两轮（用户的 turn + CLI 自己开的那一轮）都带着上下文用量
+    let dones: Vec<_> = evs
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Event(Event::TurnDone { usage: Some(u), .. }) => Some(u.clone()),
+            _ => None,
+        })
+        .collect();
+    eprintln!("workflow turns' usage: {dones:?}");
+    assert!(dones.iter().all(|u| u.context_window.unwrap_or(0) > 0 && u.context_tokens.unwrap_or(0) > 0), "{dones:?}");
+
+    // ---- turn 2：表单模式的 elicitation，提交 ----
+    let mut asked = Vec::new();
+    let evs = turn(
+        &mut h,
+        "Call the ask_details tool of the example-elicit MCP server, then tell me exactly what result it returned. Nothing else.",
+        |p| {
+            asked.push(p.clone());
+            if p.kind != PermissionKind::Question {
+                return PermissionDecision { option_id: Some("allow".into()), ..Default::default() };
+            }
+            let mut answers = serde_json::Map::new();
+            for (k, v) in [("name", "Ada"), ("age", "36"), ("subscribe", "true"), ("color", "green")] {
+                answers.insert(k.into(), serde_json::json!(v));
+            }
+            PermissionDecision { option_id: Some("accept".into()), answers: Some(answers), ..Default::default() }
+        },
+    )
+    .await;
+    eprintln!(
+        "form turn: events={:?} asked={:?}",
+        names(&evs),
+        asked.iter().map(|p| (p.kind, &p.title)).collect::<Vec<_>>()
+    );
+    let form = asked.iter().find(|p| p.kind == PermissionKind::Question).expect("an elicitation form");
+    assert_eq!(form.title, "example-elicit: Please enter your details");
+    assert_eq!(form.detail.questions.len(), 4);
+    // MCP server 把它收到的答复放进了工具结果：类型是转换过的（age 是数字、subscribe 是布尔）
+    let results = tool_result_texts(&evs).join("\n");
+    assert!(results.contains(r#"\"action\": \"accept\""#) && results.contains(r#"\"age\": 36"#), "{results}");
+    assert!(results.contains(r#"\"subscribe\": true"#) && results.contains(r#"\"color\": \"green\""#), "{results}");
+
+    // ---- turn 3：URL 模式，确认 ----
+    let mut asked = Vec::new();
+    let evs = turn(
+        &mut h,
+        "Call the ask_signin tool of the example-elicit MCP server, then tell me exactly what result it returned. Nothing else.",
+        |p| {
+            asked.push(p.clone());
+            let id = if p.kind == PermissionKind::Other { "accept" } else { "allow" };
+            PermissionDecision { option_id: Some(id.into()), ..Default::default() }
+        },
+    )
+    .await;
+    eprintln!("url turn: events={:?}", names(&evs));
+    let link = asked.iter().find(|p| p.kind == PermissionKind::Other).expect("a URL elicitation");
+    assert_eq!(link.detail.url.as_deref(), Some("https://example.com/signin?state=abc123"));
+    assert!(tool_result_texts(&evs).join("\n").contains(r#"\"action\": \"accept\""#));
+
+    // ---- turn 4：表单模式，拒绝 ----
+    let evs = turn(
+        &mut h,
+        "Call the ask_details tool of the example-elicit MCP server, then tell me exactly what result it returned. Nothing else.",
+        |p| {
+            let id = if p.kind == PermissionKind::Question { "decline" } else { "allow" };
+            PermissionDecision { option_id: Some(id.into()), ..Default::default() }
+        },
+    )
+    .await;
+    eprintln!("decline turn: events={:?}", names(&evs));
+    assert!(tool_result_texts(&evs).join("\n").contains(r#"\"action\": \"decline\""#));
+
+    h.shutdown().await.unwrap();
+    let _ = collect_until(&mut h, is_exited).await;
     if let Some(dir) = encoded_project_dir(&cwd) {
         if dir.is_dir() {
             eprintln!("cleaning up {}", dir.display());

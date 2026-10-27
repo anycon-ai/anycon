@@ -265,3 +265,107 @@ async fn a_mock_session_on_a_linked_directory_runs_in_that_directory() {
     wait_idle(&td, &mut c, &s.id).await;
     td.shutdown().await;
 }
+
+/// 一个会话里所有 task 快照的 (状态, summary)，按 seq 顺序。
+async fn task_history(td: &TestDaemon, c: &mut TestClient, sid: &str) -> Vec<(TaskStatus, String)> {
+    let h: SessionHistoryResult =
+        c.call(td, methods::SESSION_HISTORY, json!({ "session_id": sid, "limit": 1000 })).await.unwrap();
+    h.events
+        .into_iter()
+        .filter_map(|e| match e.event {
+            Event::Task { status, summary, .. } => Some((status, summary.unwrap_or_default())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn mock_tasks_keyword_goes_through_the_daemon_throttle() {
+    let td = TestDaemon::start_mock(&[], false).await;
+    let mut c = td.client("a");
+    // 不加 slow：三条快照连续到达，第二条（同状态、窗口内）被合并掉，终态立即发
+    let s: SessionSummary = c
+        .call(&td, methods::SESSION_CREATE, json!({ "agent": "mock", "prompt": "show the tasks", "message_id": "m1" }))
+        .await
+        .unwrap();
+    wait_idle(&td, &mut c, &s.id).await;
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    let tasks = task_history(&td, &mut c, &s.id).await;
+    assert_eq!(
+        tasks,
+        vec![
+            (TaskStatus::Running, "Scanning the changed files".to_string()),
+            (TaskStatus::Completed, "Review finished: no issues found".to_string()),
+        ],
+        "the running snapshot in the middle is merged away and never emitted after the terminal one"
+    );
+    // activity / notice / tool_call(Workflow) 照常到达
+    let h: SessionHistoryResult =
+        c.call(&td, methods::SESSION_HISTORY, json!({ "session_id": s.id, "limit": 1000 })).await.unwrap();
+    assert_eq!(h.events.iter().filter(|e| matches!(e.event, Event::Activity { .. })).count(), 2);
+    assert!(h.events.iter().any(|e| matches!(&e.event, Event::Notice { code, .. } if code == "model_fallback")));
+    let call = h.events.iter().find_map(|e| match &e.event {
+        Event::ToolCall { id, name, .. } if name == "Workflow" => Some(id.clone()),
+        _ => None,
+    });
+    let linked = h.events.iter().find_map(|e| match &e.event {
+        Event::Task { tool_id, .. } => tool_id.clone(),
+        _ => None,
+    });
+    assert!(call.is_some() && call == linked, "the task points at the Workflow tool call");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn mock_slow_tasks_shows_every_snapshot_through_the_daemon() {
+    let td = TestDaemon::start_mock(&[], false).await;
+    let mut c = td.client("a");
+    let s: SessionSummary = c
+        .call(
+            &td,
+            methods::SESSION_CREATE,
+            json!({ "agent": "mock", "prompt": "slow tasks", "message_id": "m1",
+                    "settings": { "model": "mock-small" } }),
+        )
+        .await
+        .unwrap();
+    let t = std::time::Instant::now();
+    loop {
+        if task_history(&td, &mut c, &s.id).await.iter().any(|(st, _)| *st == TaskStatus::Completed) {
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(30), "the workflow never completed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let statuses: Vec<TaskStatus> = task_history(&td, &mut c, &s.id).await.into_iter().map(|(st, _)| st).collect();
+    assert_eq!(statuses, vec![TaskStatus::Running, TaskStatus::Running, TaskStatus::Completed]);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn mock_link_keyword_surfaces_the_url_in_the_permission_request() {
+    let td = TestDaemon::start_mock(&[], false).await;
+    let mut c = td.client("a");
+    let s: SessionSummary = c
+        .call(&td, methods::SESSION_CREATE, json!({ "agent": "mock", "prompt": "open a link", "message_id": "m1" }))
+        .await
+        .unwrap();
+    let t = std::time::Instant::now();
+    let req = loop {
+        let l: PermissionListResult = c.call(&td, methods::PERMISSION_LIST, json!({})).await.unwrap();
+        if let Some(r) = l.requests.into_iter().next() {
+            break r;
+        }
+        assert!(t.elapsed() < Duration::from_secs(10));
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(req.kind, PermissionKind::Other);
+    assert_eq!(req.detail.url.as_deref(), Some("https://example.com/mock-auth"));
+    assert_eq!(req.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), vec!["accept", "decline"]);
+    let _: Empty = c
+        .call(&td, methods::PERMISSION_RESPOND, json!({ "request_id": req.request_id, "option_id": "accept" }))
+        .await
+        .unwrap();
+    wait_idle(&td, &mut c, &s.id).await;
+    td.shutdown().await;
+}

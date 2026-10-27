@@ -7,8 +7,9 @@ use std::collections::VecDeque;
 use std::io::Write;
 
 use anycon_protocol::{
-    AttachmentRef, Event, GitAction, PermissionKind, PermissionOption, PermissionOptionKind, PermissionRequest,
-    SessionEvent, ToolCategory, TurnDoneReason, Usage,
+    ActivityState, AttachmentRef, Event, GitAction, NoticeLevel, PermissionKind, PermissionOption,
+    PermissionOptionKind, PermissionRequest, SessionEvent, TaskKind, TaskStatus, TaskUsage, ToolCategory,
+    TurnDoneReason, Usage,
 };
 
 use crate::output::{clip, clip_to, safe_text, visible, Out, CLIP_CHARS, CLIP_LINES};
@@ -19,6 +20,8 @@ pub struct Renderer {
     /// 当前输出位置在行首
     at_line_start: bool,
     in_thinking: bool,
+    /// 每个后台任务最近一次打印出来的状态：`task` 快照每秒可能来一条，终端上只在第一次出现和状态变化时打一行。
+    tasks: std::collections::HashMap<String, TaskStatus>,
     /// 测试里把 stdout 的输出收到这里。
     #[cfg(test)]
     capture: Option<std::sync::Arc<std::sync::Mutex<Vec<u8>>>>,
@@ -104,6 +107,112 @@ pub fn attachment_line(a: &AttachmentRef) -> String {
     format!("  [attachment] {} ({})", visible(&a.name).replace('\n', "\\n"), meta.join(", "))
 }
 
+/// 一个 `task` 快照打印成一行（状态变化时才打）。标题、摘要是 agent 给的文本，经过「可见化」并压成一行。
+pub fn task_line(
+    kind: TaskKind,
+    title: &str,
+    status: TaskStatus,
+    usage: Option<&TaskUsage>,
+    summary: Option<&str>,
+) -> String {
+    let kind = match kind {
+        TaskKind::Workflow => "workflow",
+        TaskKind::Subagent => "agent",
+        TaskKind::Shell => "background command",
+        TaskKind::Other => "task",
+    };
+    let title = clip(title, CLIP_CHARS, false).shown.replace('\n', " ");
+    let mut parts = Vec::new();
+    if let Some(u) = usage {
+        if let Some(t) = u.total_tokens {
+            parts.push(format!("{t} tokens"));
+        }
+        if let Some(n) = u.tool_calls {
+            parts.push(format!("{n} tool calls"));
+        }
+        if let Some(ms) = u.duration_ms {
+            parts.push(format!("{:.1}s", ms as f64 / 1000.0));
+        }
+    }
+    let usage = if parts.is_empty() { String::new() } else { format!(" ({})", parts.join(", ")) };
+    let summary = summary
+        .and_then(|s| s.lines().find(|l| !l.trim().is_empty()))
+        .map(|l| format!(": {}", clip(l, 200, false).shown))
+        .unwrap_or_default();
+    match status {
+        TaskStatus::Running => format!("▸ {kind} started: {title}"),
+        TaskStatus::Completed => format!("✓ {kind} completed: {title}{usage}{summary}"),
+        TaskStatus::Failed => format!("✗ {kind} failed: {title}{usage}{summary}"),
+        TaskStatus::Cancelled => format!("■ {kind} cancelled: {title}{usage}"),
+    }
+}
+
+/// `notice` 的文字（不含 `command_output`，那个原样输出）。认识的 `code` 加一个简短的前缀；`message` 是 agent 给的原文。
+/// 全部经过「可见化」；多行压成一行。
+pub fn notice_text(
+    code: &str,
+    message: &str,
+    model_from: Option<&str>,
+    model_to: Option<&str>,
+    resets_at_ms: Option<u64>,
+) -> String {
+    let message = visible(message.trim()).replace('\n', " ");
+    let label = match code {
+        "model_fallback" => match (model_from, model_to) {
+            (Some(a), Some(b)) => format!("model fallback: {} -> {}", visible(a), visible(b)),
+            _ => "model fallback".to_string(),
+        },
+        "context_compacted" => "context compacted".to_string(),
+        "rate_limit" => match resets_at_ms {
+            Some(ms) => format!("rate limit (resets {} UTC)", anycon_daemon::util::fmt_utc(ms)),
+            None => "rate limit".to_string(),
+        },
+        "config_warning" => "config warning".to_string(),
+        "deprecation" => "deprecation".to_string(),
+        "mcp_server_failed" => "MCP server failed".to_string(),
+        "permission_denied" => "permission denied".to_string(),
+        "auto_review" => "auto review".to_string(),
+        "hook_failed" => "hook failed".to_string(),
+        // agent 自己的提示：原文就是内容，不加前缀
+        "agent_notice" => String::new(),
+        other => visible(other),
+    };
+    match (label.is_empty(), message.is_empty()) {
+        (true, _) => message,
+        (false, true) => label,
+        (false, false) => format!("{label}: {message}"),
+    }
+}
+
+/// `activity` 的文字；`none`（临时状态结束）没有。
+pub fn activity_text(
+    state: ActivityState,
+    attempt: Option<u32>,
+    max_attempts: Option<u32>,
+    delay_ms: Option<u64>,
+    reason: Option<&str>,
+) -> Option<String> {
+    match state {
+        ActivityState::None => None,
+        ActivityState::Compacting => Some("compacting context...".to_string()),
+        ActivityState::Retrying => {
+            let mut s = "retrying".to_string();
+            match (attempt, max_attempts) {
+                (Some(a), Some(m)) => s.push_str(&format!(" ({a}/{m})")),
+                (Some(a), None) => s.push_str(&format!(" (attempt {a})")),
+                _ => {}
+            }
+            if let Some(ms) = delay_ms {
+                s.push_str(&format!(" in {:.0}s", (ms as f64 / 1000.0).ceil()));
+            }
+            if let Some(r) = reason.map(|r| visible(r).replace('\n', " ")).filter(|r| !r.is_empty()) {
+                s.push_str(&format!(": {r}"));
+            }
+            Some(s)
+        }
+    }
+}
+
 pub fn format_usage(reason: TurnDoneReason, usage: &Option<Usage>) -> String {
     let mut parts = vec![format!("{reason:?}").to_lowercase()];
     if let Some(u) = usage {
@@ -127,6 +236,7 @@ impl Renderer {
             show_thinking,
             at_line_start: true,
             in_thinking: false,
+            tasks: std::collections::HashMap::new(),
             #[cfg(test)]
             capture: None,
         }
@@ -278,6 +388,51 @@ impl Renderer {
                 let s = self.out.dim(&text);
                 self.line(&s);
             }
+            Event::Task { id, kind, title, status, usage, summary, .. } => {
+                self.end_thinking();
+                if self.tasks.get(id) != Some(status) {
+                    if self.tasks.len() >= 1024 {
+                        self.tasks.clear();
+                    }
+                    self.tasks.insert(id.clone(), *status);
+                    let text = task_line(*kind, title, *status, usage.as_ref(), summary.as_deref());
+                    let s = match status {
+                        TaskStatus::Failed => self.out.red(&text),
+                        _ => self.out.dim(&text),
+                    };
+                    self.line(&s);
+                }
+            }
+            // `/context`、`/cost` 这类本地命令的输出：用户要看的内容，原样（可见化后）输出到 stdout
+            Event::Notice { code, message, .. } if code == "command_output" => {
+                self.end_thinking();
+                let text = safe_text(message);
+                self.line(text.trim_end_matches('\n'));
+            }
+            Event::Notice { code, level, message, model_from, model_to, resets_at_ms } => {
+                self.end_thinking();
+                let text = notice_text(code, message, model_from.as_deref(), model_to.as_deref(), *resets_at_ms);
+                match level {
+                    NoticeLevel::Info => {
+                        let s = self.out.dim(&format!("• {text}"));
+                        self.line(&s);
+                    }
+                    NoticeLevel::Warning => {
+                        if !self.at_line_start {
+                            self.write("\n");
+                        }
+                        eprintln!("{}", self.out.err_yellow(&format!("[warning: {text}]")));
+                    }
+                }
+            }
+            Event::Activity { state, attempt, max_attempts, delay_ms, reason } => {
+                if let Some(text) = activity_text(*state, *attempt, *max_attempts, *delay_ms, reason.as_deref()) {
+                    if !self.at_line_start {
+                        self.write("\n");
+                    }
+                    eprintln!("{}", self.out.err_dim(&format!("[{text}]")));
+                }
+            }
             Event::Error { code, message, recoverable } => {
                 if !self.at_line_start {
                     self.write("\n");
@@ -363,6 +518,12 @@ pub fn auto_approve_option(req: &PermissionRequest) -> Option<&PermissionOption>
 /// 会让 agent 开始动手）、提问（`question`）都得人来决定。
 pub fn auto_approvable(kind: PermissionKind) -> bool {
     matches!(kind, PermissionKind::Tool | PermissionKind::Other)
+}
+
+/// [`auto_approvable`]，并且请求不是「去浏览器里打开链接并确认」（`detail.url`）：自动答复等于替用户声称
+/// 「我已经在那个地址上完成了」，必须由人来。
+pub fn auto_approvable_request(req: &PermissionRequest) -> bool {
+    auto_approvable(req.kind) && req.detail.url.is_none()
 }
 
 pub fn first_reject(req: &PermissionRequest) -> Option<&PermissionOption> {
@@ -482,6 +643,10 @@ pub fn describe_request(out: &Out, req: &PermissionRequest) -> Described {
         _ => {
             if let Some(text) = &req.detail.text {
                 add("", text);
+            }
+            // 要用户去浏览器里打开的链接：完整显示，批准的是「我已经在这个地址上完成了」
+            if let Some(url) = &req.detail.url {
+                add("url: ", url);
             }
         }
     }
@@ -782,6 +947,7 @@ mod tests {
             choices: vec![anycon_protocol::QuestionChoice { id: "1".into(), label: "ok\x1b[0m".into() }],
             multi: false,
             free_text: false,
+            optional: false,
         };
         let dq = describe_question(&q);
         assert!(!dq.text.contains('\x1b') && !dq.text.contains('\r'), "{:?}", dq.text);
@@ -866,6 +1032,7 @@ mod tests {
                 .collect(),
             multi: false,
             free_text: false,
+            optional: false,
         };
         let d = describe_question(&q);
         assert!(d.text.lines().count() <= 35, "{}", d.text.lines().count());
@@ -1112,6 +1279,148 @@ mod tests {
         let line = attachment_line(&att("evil\x1b[2K\rname\n.png", 1, None));
         assert!(!line.contains('\x1b') && !line.contains('\r') && !line.contains('\n'), "{line:?}");
         assert!(line.contains("\\x1b[2K") && line.contains("\\r") && line.contains("\\n"), "{line:?}");
+    }
+
+    fn task_event(id: &str, status: TaskStatus) -> Event {
+        Event::Task {
+            id: id.into(),
+            kind: TaskKind::Workflow,
+            tool_id: None,
+            title: "review".into(),
+            status,
+            usage: Some(TaskUsage { total_tokens: Some(1500), tool_calls: Some(12), duration_ms: Some(7000) }),
+            last_tool: None,
+            summary: Some("\nall good\nsecond line".into()),
+            phases: vec![],
+            agents: vec![],
+        }
+    }
+
+    #[test]
+    fn a_task_is_printed_when_it_first_appears_and_when_its_status_changes_only() {
+        let (mut r, buf) = capturing(plain(), false);
+        // 同一个任务的快照每秒一条：只在第一次出现和状态变化时打一行
+        for _ in 0..3 {
+            r.event(&sev(task_event("t1", TaskStatus::Running)));
+        }
+        r.event(&sev(task_event("t2", TaskStatus::Running)));
+        r.event(&sev(task_event("t1", TaskStatus::Completed)));
+        r.event(&sev(task_event("t1", TaskStatus::Completed)));
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            out,
+            "▸ workflow started: review\n▸ workflow started: review\n\
+             ✓ workflow completed: review (1500 tokens, 12 tool calls, 7.0s): all good\n"
+        );
+    }
+
+    #[test]
+    fn task_lines_cover_every_status_and_kind_and_make_agent_text_visible() {
+        let u = TaskUsage { total_tokens: None, tool_calls: None, duration_ms: Some(1500) };
+        assert_eq!(
+            task_line(TaskKind::Subagent, "find\x1b[2Kbugs", TaskStatus::Failed, Some(&u), Some("boom")),
+            "✗ agent failed: find\\x1b[2Kbugs (1.5s): boom"
+        );
+        assert_eq!(
+            task_line(TaskKind::Shell, "sleep 100", TaskStatus::Cancelled, None, None),
+            "■ background command cancelled: sleep 100"
+        );
+        assert_eq!(task_line(TaskKind::Other, "x", TaskStatus::Running, None, None), "▸ task started: x");
+        assert_eq!(task_line(TaskKind::Other, "a\nb", TaskStatus::Completed, None, Some("")), "✓ task completed: a b");
+    }
+
+    #[test]
+    fn notices_read_as_one_visible_line_and_command_output_is_printed_as_is() {
+        assert_eq!(
+            notice_text("model_fallback", "overloaded", Some("opus"), Some("sonnet"), None),
+            "model fallback: opus -> sonnet: overloaded"
+        );
+        assert_eq!(notice_text("model_fallback", "", None, None, None), "model fallback");
+        assert_eq!(
+            notice_text("context_compacted", "12k -> 3k tokens", None, None, None),
+            "context compacted: 12k -> 3k tokens"
+        );
+        assert_eq!(
+            notice_text("rate_limit", "", None, None, Some(1_800_000_000_000)),
+            "rate limit (resets 2027-01-15 08:00:00 UTC)"
+        );
+        // agent 自己的提示不加前缀；不认识的 code 当前缀，且和 message 一样可见化
+        assert_eq!(notice_text("agent_notice", "heads\x1b[2K up\nsecond", None, None, None), "heads\\x1b[2K up second");
+        assert_eq!(notice_text("brand_new\r", "hello", None, None, None), "brand_new\\r: hello");
+
+        // info 打到 stdout，command_output 是原文（多行，控制字符显示成转义）
+        let (mut r, buf) = capturing(plain(), false);
+        let notice = |code: &str, level: NoticeLevel, msg: &str| {
+            sev(Event::Notice {
+                code: code.into(),
+                level,
+                message: msg.into(),
+                model_from: None,
+                model_to: None,
+                resets_at_ms: None,
+            })
+        };
+        r.event(&notice("context_compacted", NoticeLevel::Info, "done"));
+        r.event(&notice("command_output", NoticeLevel::Info, "Context: 12%\nfree: 88%\x1b[2K\n"));
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(out, "• context compacted: done\nContext: 12%\nfree: 88%\\x1b[2K\n");
+    }
+
+    #[test]
+    fn activities_read_as_a_transient_status_and_none_prints_nothing() {
+        assert_eq!(
+            activity_text(ActivityState::Retrying, Some(2), Some(10), Some(4500), Some("529 overloaded_error"))
+                .unwrap(),
+            "retrying (2/10) in 5s: 529 overloaded_error"
+        );
+        assert_eq!(activity_text(ActivityState::Retrying, None, None, None, None).unwrap(), "retrying");
+        assert_eq!(
+            activity_text(ActivityState::Retrying, Some(3), None, None, Some("x\ny")).unwrap(),
+            "retrying (attempt 3): x y"
+        );
+        assert_eq!(activity_text(ActivityState::Compacting, None, None, None, None).unwrap(), "compacting context...");
+        assert_eq!(activity_text(ActivityState::None, Some(1), None, None, None), None);
+        // 渲染不报错、也不往 stdout 写东西（临时状态走 stderr）
+        let (mut r, buf) = capturing(plain(), false);
+        r.event(&sev(Event::Activity {
+            state: ActivityState::Retrying,
+            attempt: Some(1),
+            max_attempts: Some(2),
+            delay_ms: Some(1000),
+            reason: None,
+        }));
+        r.event(&sev(Event::Activity {
+            state: ActivityState::None,
+            attempt: None,
+            max_attempts: None,
+            delay_ms: None,
+            reason: None,
+        }));
+        assert!(buf.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_link_request_shows_its_full_url_and_is_never_auto_approved() {
+        let other = |options: Vec<PermissionOption>| PermissionRequest {
+            session_id: "s".into(),
+            request_id: "r".into(),
+            kind: PermissionKind::Other,
+            title: "Open a link".into(),
+            detail: Default::default(),
+            options,
+            created_at_ms: 0,
+            expires_at_ms: None,
+        };
+        let mut r = other(vec![opt("accept", "I've completed it", PermissionOptionKind::AllowOnce)]);
+        r.detail.text = Some("Sign in to continue".into());
+        r.detail.url = Some("https://example.com/auth?x=1\x1b[2K".into());
+        let d = describe_request(&plain(), &r);
+        assert!(d.text.contains("Sign in to continue"), "{}", d.text);
+        assert!(d.text.contains("url: https://example.com/auth?x=1\\x1b[2K"), "{}", d.text);
+        // 普通的 other 请求（没有链接）照旧可以自动批准一次；带链接的不行
+        assert!(auto_approvable_request(&other(vec![])));
+        assert!(!auto_approvable_request(&r));
+        assert!(!auto_approvable_request(&PermissionRequest { kind: PermissionKind::Plan, ..other(vec![]) }));
     }
 
     #[test]

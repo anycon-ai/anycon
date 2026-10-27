@@ -9,7 +9,7 @@ Modes
 The app-server answers `initialize`, `model/list`, `config/read`, `thread/start`, `thread/resume`, `turn/start`,
 `turn/steer`, `turn/interrupt` and `thread/inject_items` the way a real 0.157.1 server does (the shapes come from
 recordings, see tests/fixtures/codex). `turn/start` replays the next "turn" of a fixture: the lines up to and including
-the next `turn/completed` notification. A line `{"_hold": true}` keeps the turn open until the client interrupts it. A line with an `id` and a `method` is a server request: the fake sends it with a
+the next `turn/completed` notification of the main thread (one for a `FIXTURE_CHILD*` thread, a sub-agent, does not end it). A line `{"_hold": true}` keeps the turn open until the client interrupts it. A line with an `id` and a `method` is a server request: the fake sends it with a
 fresh id and waits for the client's answer before going on. `FIXTURE_THREAD` / `FIXTURE_TURN[_n]` in the fixture are
 replaced by the real thread / turn id.
 
@@ -126,7 +126,8 @@ if script:
         if line == "":
             continue
         cur.append(line)
-        if '"method":"turn/completed"' in line:
+        # 子 agent（`FIXTURE_CHILD*` thread）的 `turn/completed` 不是主 turn 的结尾
+        if '"method":"turn/completed"' in line and '"threadId":"FIXTURE_CHILD' not in line:
             turn_chunks.append(cur)
             cur = []
     if cur:

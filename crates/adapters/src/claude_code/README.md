@@ -2,9 +2,10 @@
 
 驱动 `claude -p --output-format stream-json --input-format stream-json` 的双向模式：stdin 常开，一行一条 JSON；
 权限走 `control_request { subtype: can_use_tool }` / `control_response`。规格见 `docs/spec/daemon.md` § 5–9。
-下面的「实测」都来自真实 CLI **2.1.293**（本机已登录，2026-10-11），录制（已脱敏）在 `tests/fixtures/claude/real_*.jsonl`。
+下面的「实测」都来自真实 CLI **2.1.293**（本机已登录，2026-10-11；workflow / 本地命令 / elicitation / 上下文用量那几节是 **2.1.308**，2026-10-26，haiku 5.5），录制（已脱敏）在 `tests/fixtures/claude/real_*.jsonl`。
 录制入库前必须清洗（仓库公开）：`system/init` 里的 `slash_commands` / `skills` / `plugins` / `mcp_servers` / `tools` 换成 `example-*` 占位（保留结构和数量），
-模型输出和流式 delta 里的本机路径换成 `/work/proj`、`/home/user`（delta 被切碎了，要按 content block 拼起来再替换），`rate_limit_event` 的用量比例换成占位。
+模型输出和流式 delta 里的本机路径换成 `/work/proj`、`/home/user`（delta 被切碎了，要按 content block 拼起来再替换；workflow 的转录目录、任务输出文件、`memory_paths`、`messaging_socket_path` 同理，后两个直接删掉），`rate_limit_event` 的用量比例换成占位，
+thinking 块的 `signature` 换成短占位，`/context` 输出里的技能名换成 `example-skill-N`，技能库的长文本（`# Workflow authoring reference`）换成一句说明，MCP server 名换成 `example-*`。
 `tests/claude_translate.rs::real_recordings_carry_no_local_environment` 兜底：init 里的名字必须是 `example-*`，全文（含拼回去的 delta）不能有 `/Users/`、`/private/`、`/tmp/`、
 其它 `/home/<名字>`、`@`、常见密钥前缀。
 
@@ -125,7 +126,7 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 
 ## 事件翻译（实测要点）
 
-- 非 `{` 开头的行忽略；未知 `type` / `subtype`（`system/status`、`commands_changed`、`thinking_tokens`、`task_summary`、`post_turn_summary`、`rate_limit_event`…）忽略。
+- 非 `{` 开头的行忽略；不认识的 `type` / `subtype`（`commands_changed`、`thinking_tokens`、`task_summary`、`post_turn_summary`、`hook_started`…）忽略。认识的 `system/*`、`rate_limit_event` 见下面几节（Task / Activity / Notice）。
 - **`system/init` 每个 turn 都会再发一次，第一条用户消息之前不发。** 所以 `Started` 不等 init：新会话我们自己生成 `--session-id <uuid>`、续接用 `--resume <id>`，spawn 时就发 `Started`；init 带同一个 id 就不重复发，不同才再发一次。
 - 文本 / 思考来自 `stream_event` 的 `content_block_delta`；每个 content block 另有一条自己的 `assistant` 消息（同一个 `message.id`）。文本已流式发过的不再从 `assistant` 重发（没开 partial messages 时才用 `assistant` 兜底）。
 - **思考内容是空的**：较新的 CLI 里 `thinking_delta.thinking` 是 `""`（只有 `estimated_tokens`，另有 `system/thinking_tokens`）。每个思考块发一条空的 `ThinkingDelta` 作「正在思考」标记，块结束发 `ThinkingDone`。`--effort low` 的简单问题往往根本没有思考块。
@@ -148,7 +149,7 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 |---|---|
 | `system/background_tasks_changed` | `tasks: [{ task_id, run_id, task_type: local_agent / local_bash, description, … }]`，**当前还在跑的全量列表**，空数组 = 没有了 |
 | `system/task_started` | `task_id`、`tool_use_id`、`is_backgrounded`、`task_type`、`description`、`prompt` |
-| `system/task_progress` | subagent 的进度（`usage.total_tokens`、`last_tool_name`） |
+| `system/task_progress` | 任务的进度（`usage { total_tokens, tool_uses, duration_ms }`、`last_tool_name`、`description` = 当前在做的事、`summary`？；workflow 另有 `workflow_progress[]`，见「后台任务快照」） |
 | `system/task_updated` | `patch.status`（`completed` …） |
 | `system/task_notification` | `status`、`summary`、`output_file`（任务结束，也是 CLI 接着自己跑一轮的触发） |
 
@@ -160,6 +161,75 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 - 新 turn 开始时清空按 turn 去重的表；工具调用的表（`tools` / `seen_tool_use` / `suppressed`）只在没有后台任务时清——subagent 的工具调用会跨 turn（`tool_use` 在上一轮，`tool_result` 在这一轮），清掉就丢了 diff / `file_changed` 要用的工具名和路径。
 - 用例：`claude_translate.rs` 的 `background_tasks_and_the_turns_the_cli_starts_on_its_own`（手写的 `fixtures/claude/background_tasks.jsonl`，形状照录制）、`background_count_falls_back_to_task_lifecycle_messages`、`a_user_message_during_the_clis_own_turn_waits_for_it_and_takes_it_over`、`cancelling_while_the_message_waits_drops_it`；进程级 `claude_process.rs::a_message_sent_during_the_clis_own_turn_is_written_after_that_turn_ends`（fake-claude 的 `__AUTO__` 自己开一轮、`__PAUSE__` 停一下，日志里核对 stdin 消息排在这一轮的 `result` 之后）。
 
+### 后台任务快照（`Event::Task`）
+
+`system/task_started` / `task_progress` / `task_updated` / `task_notification` 都是增量；adapter 按 `task_id` 合并成整条快照，每次内容变化发一条 `Event::Task`（后一条整条取代前一条，daemon 节流，规格 § 8.3）。
+后台任务数（`AgentEvent::Background`）和调用的 `tool_result` 仍按上一节的老逻辑，互不影响。
+
+**Workflow 在 `-p` 下可用**（实测 2.1.308，`tests/fixtures/claude/real_workflow.jsonl`、`real_workflow_failed.jsonl`）：用户消息里要明说「use a workflow」，模型会先调 `Skill(workflow-authoring)` 取脚本 API，
+再调 `Workflow({ script })`。流程：
+
+1. `control_request can_use_tool`（`tool_name: Workflow`，`input.script`，`description` = 脚本 `meta.description`）——普通的工具权限，adapter 的标题是 `Run workflow: <description>`；
+2. 允许后马上返回 `tool_result`（`Workflow launched in background. Task ID: …`，`tool_use_result { status: async_launched, taskType: local_workflow, workflowName, runId }`），主 turn 随后 `result`。这条结果**不**标 `detail.background`（它的类别是 `other`）：最终状态在 `task` 快照里，不靠第二条 `tool_result`；
+3. `background_tasks_changed` → `task_started { task_type: local_workflow, workflow_name, description, prompt = 脚本全文, tool_use_id }` → 若干 `task_progress` → `task_updated { patch: { status, end_time, error? } }` → `task_notification { status, summary, usage, output_file }` → `background_tasks_changed []` →
+   CLI 自己开一轮（`init` … `result`，`origin.kind = task-notification`）把结果告诉用户。
+
+**`task_progress` 的节奏**（2 个 agent、各一次模型回复、全程约 4 秒的 workflow：5 条，相对 `task_started` 的时间 0.03 s、2.2 s、2.4 s、2.5 s、3.7 s）：来自二进制里 workflow 的进度发射器——agent 条目变化先按 16 ms 去抖成一批，
+SDK 侧至少隔 250 ms 才发一次；批次里**全是 `state: progress` 的更新**（agent 在调工具）时 `workflow_progress` 最多每 10 秒带一次，其余帧只有 `usage` / `description` / `last_tool_name`，没有 agent 列表——所以 adapter 对没带 `workflow_progress` 的帧沿用上一份 `agents` / `phases`，带了的就是全量替换。
+`usage.total_tokens` / `tool_uses` 是各 agent 条目的合计（agent 完成时才计入）；`duration_ms` 是任务开始到现在。
+
+字段（`workflow_progress[]` 的两种条目，取自二进制里的 zod schema，实测 `start` / `done`；`progress`、`error` 来自 schema 和 CLI 自己的消费代码，没有在实录里见到）：
+
+| 条目 | 字段 → 快照 |
+|---|---|
+| `{ type: workflow_phase, index, title, kind? }` | → `phases[]` |
+| `{ type: workflow_agent, index, label, state, … }` | → `agents[]`（`index` / `label` / `state` / `phaseIndex` / `model` / `tokens` / `toolCalls` / `durationMs` / `lastToolName` / `error` / `attempt` / `cached`）；`phaseTitle` 没有对应的 `workflow_phase` 条目时用它补一个阶段；其余字段（`agentId`、`startedAt`、`queuedAt`、`promptPreview`、`resultPreview`、`lastToolSummary`…）不带 |
+
+`state`：`start` 带 `queuedAt` 而没有 `startedAt` = **排队**（`queued`：并发上限、等限额恢复；实录里 beta 先是这样，几十毫秒后才有 `startedAt`），有 `startedAt` 的 `start` 和 `progress` = `running`，`done` = `done`（`cached: true` = 命中缓存、没真跑），
+`error` = `failed`，`skipped: true`（用户跳过）= `skipped`；`error` + `blocked: true` 是被安全分类器拦下，同样是 `failed`。schema 之外的 `state` 整条丢掉。CLI 自己的消费端对终态的任务忽略后续帧，adapter 一样。
+
+其余约定：
+
+- `title`：workflow 取 `workflow_name`（没有就是 `description`），其它取 `description`；`summary`：workflow 是 `description`（`meta.description`），子 agent 是 `task_progress.summary` 或 `description`（当前在做的事，如 `Editing src/lib.rs`），结束时换成通知的 `summary`（子 agent 的结果、`Background command "…" completed (exit code 0)`）；
+  workflow 正常结束时通知的 `summary` 只有 `Dynamic workflow "…" completed`，不换；失败时换成通知的（含错误），`task_updated.patch.error` 先到先用。
+- `last_tool`：子 agent 取 `last_tool_name`；**workflow 不取**——它的 `last_tool_name` 是最近有动静的那个 agent 的 `label`，工具在各 agent 条目的 `lastToolName` 里。
+- `task_type` → `kind`：`local_workflow` / `local_agent` / `local_bash` → `workflow` / `subagent` / `shell`，其余（`mcp_task`、`remote_agent` …）`other`；没有 `task_type` 的老 CLI 看 `workflow_name` / `subagent_type`。
+- **只有后台任务发快照**：`is_backgrounded: false`（前台子 agent）和 `awaited: true`（被前台调用等着的续跑）只记状态，转到后台（`task_updated { patch.is_backgrounded: true }`）之后才开始发；`skip_transcript` / `ambient`（CLI 的杂务）不发。
+  理由：前台调用本来就有 `tool_call` / `tool_result`，规格里的「N 个后台任务在运行」也只数后台的。
+- 终态：`task_updated.patch.status`（`completed` / `failed` / `killed`；`pending` / `running` / `paused` 还没结束）和 `task_notification.status`（`completed` / `failed` / `stopped`）。两者先后到，终态不一致时先到的算数；通知带最终用量和摘要，并进去再发一次。
+- 续跑：任务续跑时 `task_id` 不变、`run_id` 变（字符串比较递增）；比当前小的 `run_id` 的帧是迟到的，忽略；新的 `task_started` 从头开始。
+- 状态只留最近 32 个已结束的任务（迟到的通知还要并进去），进程结束时全忘；daemon 负责给进程退出时还没结束的任务补 `cancelled`。
+
+### Activity 与 Notice
+
+| CLI 消息（字段取自 2.1.308 二进制里的 SDK schema 和发射代码） | 事件 |
+|---|---|
+| `system/api_retry { attempt, max_retries, retry_delay_ms, error_status (连接错误为 null), error (类别), no_response? }`（由内部的 `api_error` 转换而来；用量限额等待用 `429 rate_limit`） | `Activity { retrying, attempt, max_attempts, delay_ms, reason }`；`reason` = `<状态> <类别>`（`529 overloaded`）、连接错误 `connection error`、首字节超时 `no response from the API within Ns`。下一个响应的 `message_start` 到了发 `Activity none`。没有 turn 在跑时（后台 agent 在重试）不发 |
+| `system/status { status: "compacting", compact_output_chars? }`（自动压缩期间会反复发） | `Activity compacting`（只发一次）；`status: null`（带 `compact_result`）或 `compact_boundary` 到了发 `Activity none`。`status: "requesting"` 是每次请求开始时发的，与压缩无关 |
+| `system/compact_boundary { compact_metadata { trigger, pre_tokens, post_tokens? } }` | `Notice context_compacted`：`Context compacted (auto): 168000 → 12000 tokens` |
+| `rate_limit_event { rate_limit_info { status: allowed \| allowed_warning \| rejected, resetsAt (秒), rateLimitType, utilization? } }` | `status != allowed` 时 `Notice rate_limit`（warning，`resets_at_ms = resetsAt × 1000`），按限额类型记（状态，resetsAt），同一组合只发一次，回到 `allowed` 后重新计。这个事件在用量每变一点就发一次（每个 turn 好几条），所以去重必须有 |
+| `system/notification { key, text, priority: low \| medium \| high \| immediate, color? }` | `Notice agent_notice`：`color` 为 `warning` / `error` → warning，否则 info；`low`（REPL 的闲置提示）不转；同一 turn 同 key 同文本只发一次 |
+| `system/informational { content, level: info \| notice \| suggestion \| warning }` | `Notice agent_notice`：`warning` → warning，`notice` / `suggestion` → info，`info` 不转（schema 的说明：只在转录视图里显示） |
+| `system/model_fallback`、`model_refusal_fallback`、`model_refusal_no_fallback`、`model_consent_fallback`（`content`、`original_model`、`fallback_model?`） | `Notice model_fallback`（warning，`model_from` / `model_to`） |
+| `system/permission_denied { tool_name, decision_reason?, message }` | `Notice permission_denied`（info）：`<tool_name>: <decision_reason 或 message>` |
+| `system/hook_response { hook_name, hook_event, outcome: success \| error \| cancelled, exit_code?, stderr, output }` | `outcome = error` → `Notice hook_failed`（warning）。CLI 默认只让少数 hook 事件进输出流（`--include-hook-events` 打开全部，adapter 不加），多数会话里看不到 |
+| `system/init.mcp_servers[] { name, status: connected \| failed \| needs-auth \| pending \| disabled }` | `status = failed` → `Notice mcp_server_failed`（warning），每个进程每个 server 一次（`init` 每个 turn 都发） |
+
+`api_retry` 和 `rate_limit_event` 很难在实测里触发，`tests/fixtures/claude/api_retry.jsonl`、`rate_limit_rejected.jsonl`、`compaction.jsonl` 是照上面的 schema 手写的（形状和字段名来自二进制，没有真实录制）；`rate_limit_event` 的 `allowed` 形态在多数 `real_*` 录制里都有。
+
+### 本地斜杠命令（`/context`、`/cost` …）
+
+实测 2.1.308：`/context`、`/cost`、`/usage`、`/status` 都是本地命令，不调模型（`result { num_turns: 0, modelUsage: {}, local_command: "context" }`）。`-p` stream-json 下输出是一条
+`assistant` 消息：`model: "<synthetic>"`、content 是一个 text block（markdown）、顶层带 `local_command_source: "<local-command-stdout>…</local-command-stdout>"`（以及 `context_usage` / `usage_report` / `local_command_run` 之类的结构化附带信息）。
+以前这条消息被当成模型的文本发出去；现在带 `local_command_source` 的 assistant 消息发 `Notice { code: command_output, message: <text block 原文> }`（`<local-command-stderr>` 形式 warning）。
+schema 里还有 `system/local_command_output { content }`，实测没见到，同样处理。同样是 `<synthetic>` 的 API 错误提示（`isApiErrorMessage`，没有 `local_command_source`）仍是普通文本。录制：`real_local_command.jsonl`（`/context`，技能名已换成占位）。
+
+### 上下文用量
+
+`Usage.context_window` = `result.modelUsage.<模型>.contextWindow`（实测 haiku 5.5 是 1 000 000）：`modelUsage` 按模型分项，子 agent 用别的模型时不止一项，先按本 turn 最近一条顶层 assistant 消息的 `message.model` 取，再按 `system/init.model`，最后只有一项时取它，否则缺省。
+`Usage.context_tokens` = 本 turn 最近一条顶层（`parent_tool_use_id` 为空）assistant 消息的 `usage.input_tokens + cache_read_input_tokens + cache_creation_input_tokens`——同一条请求的每个 content block 各带一条 assistant 消息，输入用量相同；
+`<synthetic>`（本地命令、API 错误）的不算。本地命令没有模型调用，两个字段都缺省。
+
 ## 权限
 
 CLI 发 `control_request { request_id (uuid), request: { subtype: can_use_tool, tool_name, display_name, input, description?, permission_suggestions?, tool_use_id, requires_user_interaction? } }`。
@@ -168,6 +238,7 @@ CLI 发 `control_request { request_id (uuid), request: { subtype: can_use_tool, 
 |---|---|---|---|
 | 普通工具 | `tool`（title 如 `Write /path`、`Run command`） | `allow` / `allow_session` / `deny`（需要 message） | allow：`{behavior: allow, updatedInput: <input 原样>}`；allow_session：再加 `updatedPermissions: [{type: addRules, rules: [{toolName}], behavior: allow, destination: session}]`；deny：`{behavior: deny, message}` |
 | `ExitPlanMode` | `plan`（`detail.text` = `input.plan`） | `allow`（开始实施）/ `deny`（继续规划，可带意见） | allow 把 `input`（含 `plan`、`planFilePath`）原样回传 |
+| MCP elicitation（`control_request { subtype: elicitation }`） | 表单 → `question`；URL → `other`（`detail.url`）。见下面「MCP elicitation」 | `accept` / `decline` | `{ action: accept, content? }` / `{ action: decline }` |
 | `AskUserQuestion` | `question`（`input.questions[]` → `Question`：id `q1..qn`、choices 的 id = label、`multi` = `multiSelect`、`free_text = true`） | `answer` / `deny`；也可以只带 `answers` | 选项优先：`deny` → `{behavior: deny, message}`（**即使带着 `answers`**）；`answer`（或没给 `option_id`）+ `answers` → `{behavior: allow, updatedInput: {...input, answers: {"<题目全文>": "<label>"}}}`，多选用 `", "` 连接；`answer` 却没有 `answers`、或选项不认识 → 报错（请求仍然未决）；既没选项也没 `answers` → deny |
 
 `AskUserQuestion` 与 `ExitPlanMode` 的答复形状**已用真实 CLI 验证**（tool_result 回显 `Your questions have been answered: "Which color do you prefer?"="blue"`，以及 `User has approved your plan`）。多选的 `", "` 连接来自 Agent SDK 文档，没单独验证。
@@ -178,6 +249,33 @@ CLI 发 `control_request { request_id (uuid), request: { subtype: can_use_tool, 
 - ExitPlanMode 被允许后，CLI 自己退出 plan 模式（stdout 出 `system/status { permissionMode: "default" }`）。adapter 没有事件可以报告这个模式变化，由 daemon 按规格 § 9.1 切 mode（走 `set_settings` → `set_permission_mode`）。
 - CLI 撤回未决请求时发 `control_cancel_request`；turn 结束时 adapter 也清空未决表。之后对这些 id 的 `respond_permission` 是 no-op（`Ok`），所以 daemon 在取消后自动 deny 不会报错。
 - 不认识的 `control_request` 子类型（如 `hook_callback`）回一个 `error` 的 `control_response`，免得 CLI 干等。
+
+### MCP elicitation
+
+MCP server 在工具调用中途可以向用户要输入（`elicitation/create`）。实测 2.1.308（`real_elicitation_form.jsonl`、`real_elicitation_url.jsonl`；MCP server 是一个只用标准库的 Python 脚本 `tests/bin/elicit-mcp-server`，
+用项目里的 `.mcp.json` 注册，`-p` 下不需要额外批准）：stream-json 宿主**默认**就会收到 `control_request { subtype: elicitation }`（只有 `--permission-prompts none` 时 CLI 自己回 cancel），不需要 `initialize`；
+不答 CLI 一直等。以前 adapter 对它回 error（= 对所有 elicitation 回了 cancel）。
+
+```
+→ { "type": "control_request", "request_id": "<uuid>", "request": { "subtype": "elicitation", "mcp_server_name": "example-elicit",
+    "message": "Please enter your details", "mode": "form",                       // server 没写 mode 时 CLI 补 "form"
+    "requested_schema": { "type": "object", "properties": { "name": {…}, "age": {…}, … }, "required": ["name"] },
+    "property_order": ["name", "age", "subscribe", "color"] } }                   // 属性顺序（JSON 对象不保序）；URL 模式没有
+→ URL 模式：{ "subtype": "elicitation", "mcp_server_name", "message", "mode": "url", "url": "https://…", "elicitation_id": "elic-1" }
+← { "type": "control_response", "response": { "subtype": "success", "request_id": "<uuid>",
+    "response": { "action": "accept", "content": { "name": "Ada", "age": 36, "subscribe": true, "color": "green" } } } }
+```
+
+三种答复（`accept` + `content`、`accept` 不带 content（URL 模式）、`decline`）都实测过：MCP server 收到的就是 `{action, content?}`，工具结果回显 `elicitation result: {"action": "accept", "content": {…}}`，模型据此继续。`cancel` 是第三个取值，adapter 不用（用户拒绝、取消、超时都答 `decline`）。
+`content` 不合法的情况没有试过，所以 adapter 先按 schema 把答案转成 JSON 类型。
+
+- 表单 → `kind = question`，标题 `<server>: <message>`，每个 `requested_schema.properties` 一道题（id = 属性名，顺序按 `property_order`）：enum / `oneOf`/`anyOf`（`{const, title}`）/ 旧的 `enumNames` → 选项（id = 取值的字符串形式，答复时换回原值，数字枚举回数字）；
+  boolean → `true` / `false` 两个选项（标签 Yes / No）；`array` + enum 的 `items` → 多选；string / number / integer → 自由输入（number / integer 在题干里带类型和 `minimum` / `maximum`）；必答是默认；schema 的 `required` 里没有的属性 `Question.optional = true`（题干里不另外标，客户端自己显示「可选」），`description` 接在后面。options `accept`（Submit，allow_once）/ `decline`（reject_once）。
+- 答案转换：整数 / 数字解析，boolean 认 `true` / `false` / `yes` / `no`，enum 必须是允许的取值；可选项留空就不出现在 `content` 里，必填项为空是错误。**转换失败 → 改按 decline 答复**，并发一个可恢复的 `error { code: elicitation_invalid_answer }` 说明原因：
+  daemon 在转给 adapter 之前就把请求记成了已答复（`permission_resolved`），adapter 如果像别的请求那样「放回去等用户重答」，CLI 会一直等下去。
+- URL → `kind = other`，标题 `<server> needs you to open a link`，`detail.text` = `message`，`detail.url` = 链接，options `accept`（I've completed it）/ `decline`。链接不是 http / https（含 `javascript:`、`file:`、`data:`、相对地址、带控制字符）的不问用户：
+  translator 直接回 `decline`（`Out::Reply`）并发 `error { code: elicitation_rejected, recoverable: true }`。
+- `system/elicitation_complete { mcp_server_name, elicitation_id }`（server 确认 URL 模式完成）不处理：请求靠用户的答复结束。
 
 ## 取消、改设置、关闭
 
@@ -214,6 +312,9 @@ CLI 发 `control_request { request_id (uuid), request: { subtype: can_use_tool, 
 
 - 内置表里 4.6 系列的 `off` 与 `MAX_THINKING_TOKENS=0`、`fast_mode` 的 `--settings` 写法、各模型的 `min_cli_version`（目前都是 2.1.0，机制已就位）。
 - 多选题的 `", "` 连接。
+- `workflow_progress` 里 `state: progress` / `error` 的真实样子（实录里 agent 只经历了 `start` → `done`，`progress` 只出现在 CLI 对「全是 progress 更新」批次限频的那种帧里，那种帧不带 `workflow_progress`）。
+- elicitation 的 `cancel` 取值、`content` 不合法时 CLI 的反应；`system/elicitation_complete` 的实际时序。
+- `hook_response` / `permission_denied` / 模型回退 / `compact_boundary` 的实际样子：字段取自 SDK schema，没有实录。
 - 标题 / 摘要类的 `Title` 事件：CLI 没有对应输出，不发。
 
 ## 真实 CLI 冒烟（`ANYCON_REAL_AGENT_TESTS=1`）
@@ -242,5 +343,17 @@ ANYCON_REAL_AGENT_TESTS=1 cargo test -p anycon-adapters -- --ignored real_ --noc
   `images_go_into_the_stdin_message_as_content_blocks_images_first`、`an_image_only_message_has_no_text_block`、`a_multi_mib_image_goes_through_stdin_in_one_line`、
   `bad_attachments_are_refused_before_anything_is_sent`、`interjecting_with_images_is_still_unsupported`（fake 把收到的 stdin 行记进日志，测试对照形状和 base64）；
   `claude_translate.rs` 的 `echoed_user_messages_with_images_never_become_events`、`tool_result_images_are_replaced_by_a_placeholder_in_the_event`；`claude_probe.rs` 断言 `capabilities.attachments`。
+- Task / Activity / Notice / 上下文用量 / elicitation（`claude_translate.rs`）：`real_recording_workflow`、`real_recording_workflow_that_fails`（`real_workflow*.jsonl`，整条回放，逐条核对快照）、
+  `workflow_agents_are_mapped_state_by_state_and_merged_across_frames`（各种 `state`、乱序、缺 `workflow_phase`、没带 `workflow_progress` 的帧、终态后的帧、终态不一致的通知）、`task_kinds_titles_and_sources`、
+  `subagent_progress_carries_usage_last_tool_and_summary`、`foreground_tasks_only_get_snapshots_once_they_move_to_the_background`、`a_resumed_task_starts_over_and_late_frames_of_the_previous_run_are_ignored`、`only_the_latest_finished_tasks_are_remembered`；
+  `api_retry_stream_*`、`compaction_stream_*`、`rate_limit_stream_*`（手写的整条流：`api_retry.jsonl`、`compaction.jsonl`、`rate_limit_rejected.jsonl`）和逐条的 `api_retries_are_a_temporary_activity_*`、`compaction_is_an_activity_*`、`rate_limit_notices_*`、
+  `notifications_and_informational_lines_*`、`model_fallbacks_permission_denials_and_hook_failures_*`、`failed_mcp_servers_*`、`local_command_output_is_a_notice_*`（`real_local_command.jsonl`）、`usage_carries_the_context_window_*`；
+  `real_recording_elicitation_form` / `_url`、`an_elicitation_link_that_is_not_http_is_declined_without_asking`，以及 `permissions.rs` 里 elicitation 的单元测试（schema → 题目、答案 → 类型、转换失败、URL 校验）。
+- `claude_process.rs` 的 `mcp_elicitation_*`：拿 `real_elicitation_*.jsonl` 当 fake-claude 的脚本，走完 spawn → 权限请求 → 答复 → stdin 上的 `control_response`（类型转换后的 `content`、decline、答案不合法时的 decline + `error`、非 http 链接直接 decline）。
 - `tests/claude_probe.rs`：PATH 里放假的 `claude`，测探测与诊断。
-- `tests/real_claude.rs`：真实 CLI，`#[ignore]`。
+- `tests/real_claude.rs`：真实 CLI，`#[ignore]`。`real_workflow_and_mcp_elicitation`（haiku 5.5，几次很短的调用，几美分以内）：一个两 agent 的 workflow（权限 → `task` 快照 → `Completed`，两个 agent 都 `Done`，CLI 自己开的那一轮带着 `context_window` / `context_tokens`），
+  再用 `tests/bin/elicit-mcp-server`（项目 `.mcp.json` 注册）依次测表单提交（工具结果里能看到 `age: 36`、`subscribe: true`）、URL 确认、表单拒绝。2026-10-26 通过。
+
+**重新录制**：`real_*.jsonl` 是用一个小驱动脚本（Python，起 `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool=stdio --model=haiku`，
+写一条用户消息，自动答复 `control_request`，把 stdout 原样存下来）录的；Workflow 的 prompt 要明说「use a workflow」，elicitation 用 `tests/bin/elicit-mcp-server`（`--mcp-config` 或项目 `.mcp.json`）。
+录下来先按开头的规则清洗再入库，`real_recordings_carry_no_local_environment` 兜底。

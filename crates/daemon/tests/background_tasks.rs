@@ -71,6 +71,7 @@ fn usage() -> Usage {
         cost_usd: Some(0.002),
         duration_ms: 7,
         model: None,
+        ..Default::default()
     }
 }
 

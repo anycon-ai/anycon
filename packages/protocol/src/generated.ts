@@ -398,6 +398,82 @@ export type Event =
       message: string;
       recoverable: boolean;
       type: "error";
+    }
+  | {
+      /**
+       * workflow 里的各个 agent，按 `index` 升序；非 workflow 为空。
+       */
+      agents?: TaskAgent[];
+      /**
+       * agent 给任务的 id（Claude Code 的 `task_id`；Codex 子 agent 的 thread id）。会话内唯一。
+       */
+      id: string;
+      kind: TaskKind;
+      /**
+       * 任务最近一次调用的工具名。
+       */
+      last_tool?: string | null;
+      /**
+       * workflow 的阶段，按 `index` 升序；非 workflow 为空。
+       */
+      phases?: TaskPhase[];
+      status: TaskStatus;
+      /**
+       * agent 给的进度 / 结果摘要。
+       */
+      summary?: string | null;
+      /**
+       * workflow 的名字 / 任务描述。
+       */
+      title: string;
+      /**
+       * 启动这个任务的 `tool_call` 的 `id`（Claude Code 的 `tool_use_id`；Codex 的 collab agent 调用 item id）。
+       * 客户端据此把进度挂在那个工具块上；对不上时单独成块。
+       */
+      tool_id?: string | null;
+      type: "task";
+      usage?: TaskUsage | null;
+    }
+  | {
+      code: string;
+      level: NoticeLevel;
+      /**
+       * agent 给的原文（通常是英文），可能是空串。`command_output` 里是本地命令的输出，可能多行。
+       */
+      message: string;
+      /**
+       * `code = model_fallback`：原来的模型。
+       */
+      model_from?: string | null;
+      /**
+       * `code = model_fallback`：实际使用的模型。
+       */
+      model_to?: string | null;
+      /**
+       * `code = rate_limit`：限额恢复的时间。
+       */
+      resets_at_ms?: number | null;
+      type: "notice";
+    }
+  | {
+      /**
+       * `retrying`：这是第几次重试（从 1 开始）。
+       */
+      attempt?: number | null;
+      /**
+       * `retrying`：距下一次重试的毫秒数。
+       */
+      delay_ms?: number | null;
+      /**
+       * `retrying`：最多重试几次。
+       */
+      max_attempts?: number | null;
+      /**
+       * `retrying`：触发重试的错误摘要，如 `529 overloaded_error`。
+       */
+      reason?: string | null;
+      state: ActivityState;
+      type: "activity";
     };
 export type ToolCategory = "shell" | "file_edit" | "file_read" | "search" | "web" | "subagent" | "mcp" | "other";
 export type EditKind = "edit" | "write" | "delete" | "move";
@@ -422,6 +498,28 @@ export type GitAction =
   | "worktree_kept"
   | "worktree_restored"
   | "worktree_missing";
+/**
+ * workflow 里一个 agent 的状态。
+ */
+export type TaskAgentState = ("running" | "done" | "failed") | "queued" | "skipped";
+/**
+ * `Event::Task` 的任务种类。
+ */
+export type TaskKind = "other" | "workflow" | "subagent" | "shell";
+/**
+ * `Event::Task` 的任务状态。`Running` 以外的三个是收尾状态（终态）：Claude Code 的任务进入终态后不会再变；
+ * Codex 的子 agent 是一个可以再收到输入的 thread，`Completed` 之后收到新输入、开始新 turn 就会回到 `Running`。
+ * 所以终态只说明「这一刻不在跑」，不保证同一个 `id` 以后不会再有快照；客户端始终以最新的一条为准。
+ */
+export type TaskStatus = ("running" | "completed" | "failed") | "cancelled";
+/**
+ * `Event::Notice` 的级别。
+ */
+export type NoticeLevel = "info" | "warning";
+/**
+ * `Event::Activity` 的状态。
+ */
+export type ActivityState = "none" | "retrying" | "compacting";
 /**
  * 信封种类。hub 对每种的处理见 docs/protocol.md § 3。
  */
@@ -1082,12 +1180,22 @@ export interface PermissionDetail {
    * kind = tool
    */
   tool?: ToolPermissionDetail | null;
+  /**
+   * kind = other：要用户在浏览器里打开的链接（MCP server 的 URL 模式 elicitation）。只会是 `http` / `https`；
+   * 客户端只对这两种协议提供「打开」入口，并且显示完整 URL。
+   */
+  url?: string | null;
 }
 export interface Question {
   choices?: QuestionChoice[];
   free_text?: boolean;
   id: string;
   multi?: boolean;
+  /**
+   * 可以不答：客户端允许留空提交，答复里就没有这一题的答案。默认 `false`（必答），
+   * 所以 AskUserQuestion 这类每题都要答的行为不变；MCP elicitation 表单里 schema 没列进 `required` 的字段是 `true`。
+   */
+  optional?: boolean;
   text: string;
 }
 export interface QuestionChoice {
@@ -1119,6 +1227,15 @@ export interface PermissionOption {
 export interface Usage {
   cache_read_tokens?: number | null;
   cache_write_tokens?: number | null;
+  /**
+   * turn 结束时上下文已经占用的 token：最近一次模型请求的输入 + 缓存读写。和 `input_tokens` 等
+   * 累计用量不同，它是「此刻窗口里有多少」，客户端拿它和 `context_window` 算占用比例。agent 不报就缺省。
+   */
+  context_tokens?: number | null;
+  /**
+   * 模型的上下文窗口大小（token）。agent 不报就缺省。
+   */
+  context_window?: number | null;
   cost_usd?: number | null;
   duration_ms: number;
   input_tokens?: number | null;
@@ -1150,6 +1267,56 @@ export interface SessionSettings {
    * 所选模型的 `thinking.options[].id`。
    */
   thinking?: string | null;
+}
+/**
+ * workflow 里的一个 agent。
+ */
+export interface TaskAgent {
+  /**
+   * 第几次尝试（重试过才有）。
+   */
+  attempt?: number | null;
+  /**
+   * 结果来自缓存，没有真的运行。
+   */
+  cached?: boolean | null;
+  duration_ms?: number | null;
+  /**
+   * `state = failed` 时的错误信息。
+   */
+  error?: string | null;
+  /**
+   * 在 workflow 里的序号，同一个任务内唯一。
+   */
+  index: number;
+  label: string;
+  /**
+   * 最近一次调用的工具名。
+   */
+  last_tool?: string | null;
+  model?: string | null;
+  /**
+   * 所属阶段的 `TaskPhase.index`。
+   */
+  phase_index?: number | null;
+  state: TaskAgentState;
+  tokens?: number | null;
+  tool_calls?: number | null;
+}
+/**
+ * workflow 的一个阶段。
+ */
+export interface TaskPhase {
+  index: number;
+  title: string;
+}
+/**
+ * 任务的用量。每个字段 agent 不报就缺省。
+ */
+export interface TaskUsage {
+  duration_ms?: number | null;
+  tool_calls?: number | null;
+  total_tokens?: number | null;
 }
 export interface FsListParams {
   /**

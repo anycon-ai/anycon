@@ -7,7 +7,8 @@
 //! | `fileChange` | `file_edit` | 每个 change 一个 `file_changed`；`unified_diff` 由 change 的 `diff` 补上文件头 |
 //! | `mcpToolCall` | `mcp` | 名字 `mcp__<server>__<tool>` |
 //! | `webSearch` | `search` | |
-//! | `collabAgentToolCall` | `subagent` | |
+//! | `subAgentActivity`（`kind = started`） | `subagent` | 0.164 里启动子 agent 就是它（没有对应的 `collabAgentToolCall`）；`id` 是模型那次调用的 id，名字 `spawnAgent` |
+//! | `collabAgentToolCall` | `spawnAgent` 是 `subagent`，其余（`wait`、`sendInput`、`closeAgent`…）是 `other` | |
 //! | `imageView` | `file_read` | |
 //! | `dynamicToolCall` / `imageGeneration` | `other` | |
 
@@ -258,6 +259,21 @@ pub fn dynamic_output(items: &[Value]) -> String {
     clip_text(&texts.join("\n"))
 }
 
+/// 没有 prompt 的 collab 调用的标题。
+fn collab_title(tool: &str) -> String {
+    match tool {
+        "wait" => "Wait for sub-agents",
+        "closeAgent" => "Close a sub-agent",
+        "sendInput" | "sendMessage" | "followupTask" => "Send a message to a sub-agent",
+        "resumeAgent" => "Resume a sub-agent",
+        "interruptAgent" => "Interrupt a sub-agent",
+        "listAgents" => "List sub-agents",
+        "spawnAgent" => "Start a sub-agent",
+        other => other,
+    }
+    .to_string()
+}
+
 /// 开始时的工具调用描述。不是工具类的 item 返回 `None`。
 pub fn describe_item(item: &ThreadItem, cwd: &str) -> Option<ToolCallParts> {
     match item {
@@ -315,16 +331,37 @@ pub fn describe_item(item: &ThreadItem, cwd: &str) -> Option<ToolCallParts> {
             })
         }
         ThreadItem::CollabAgentToolCall { tool, prompt, model, receiver_thread_ids, .. } => {
-            let description = prompt.clone().filter(|p| !p.is_empty());
+            let description = prompt.clone().filter(|p| !p.trim().is_empty());
             Some(ToolCallParts {
                 name: tool.clone(),
-                category: ToolCategory::Subagent,
+                // 只有启动子 agent 的那次调用是 `subagent`：子 agent 里的调用的 `parent_id` 指向它
+                category: if tool == "spawnAgent" { ToolCategory::Subagent } else { ToolCategory::Other },
                 title: match &description {
                     Some(p) => first_line_clipped(p, 120),
-                    None => tool.clone(),
+                    None => collab_title(tool),
                 },
                 input: json!({ "tool": tool, "prompt": prompt, "model": model, "receiverThreadIds": receiver_thread_ids }),
                 detail: description.map(|d| ToolCallDetail { description: Some(d), ..Default::default() }),
+            })
+        }
+        ThreadItem::SubAgentActivity { kind, agent_thread_id, agent_path, model, reasoning_effort, .. }
+            if kind == "started" =>
+        {
+            let path = agent_path.trim().trim_start_matches('/');
+            let path = path.strip_prefix("root/").unwrap_or(path);
+            Some(ToolCallParts {
+                name: "spawnAgent".to_string(),
+                category: ToolCategory::Subagent,
+                title: if path.is_empty() || path == "root" {
+                    "Start a sub-agent".to_string()
+                } else {
+                    format!("Start sub-agent {path}")
+                },
+                input: json!({
+                    "agentPath": agent_path, "agentThreadId": agent_thread_id,
+                    "model": model, "reasoningEffort": reasoning_effort,
+                }),
+                detail: None,
             })
         }
         ThreadItem::WebSearch { query, action, .. } => Some(ToolCallParts {

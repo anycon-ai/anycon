@@ -2,7 +2,7 @@
 //!
 //! 纯同步状态机：`feed_line` 进、`Vec<Out>` 出，不碰进程和 IO，所以可以直接拿录制的 JSONL 回放测试。
 //! 要点（部分来自对真实 CLI 2.1.x 的观察，见 README.md）：
-//! - 非 `{` 开头的行忽略；未知 `type` / `subtype` 忽略（`status`、`commands_changed`、`rate_limit_event` …）
+//! - 非 `{` 开头的行忽略；不认识的 `type` / `subtype` 忽略（`commands_changed`、`thinking_tokens` …）
 //! - `stream_event` 只取文本 / 思考的增量；**tool_call 在 `assistant` 消息里发**（那里有完整 input）
 //! - 每个 content block 会各自带一条 `assistant` 消息；文本已经流式发过的，不再从 `assistant` 重发
 //! - 思考内容在较新的 CLI 里是空串（只有 `estimated_tokens`）：每个思考块只发一条空的 `ThinkingDelta`
@@ -18,13 +18,24 @@
 //!   或者 `task_started { is_backgrounded }` 指向的调用）的结果标 `background`，等 `system/task_notification` 再给同一个 id
 //!   补最终结果（后台命令从通知的 `summary` 里取退出码）
 //! - 子 agent 用掉的 token：前台的取 `tool_use_result.totalTokens`，后台的取 `task_notification.usage.total_tokens`
+//! - 后台任务的状态快照（`Event::Task`）：`system/task_started` / `task_progress` / `task_updated` / `task_notification` 是增量，
+//!   这里按 `task_id` 合并成整条快照再发（workflow 的 `workflow_progress` 是全量数组，没带的帧沿用上一份）；
+//!   只有后台任务才发（前台任务 `is_backgrounded: false` 转到后台之前只记状态）；终态之后的帧忽略
+//! - `system/api_retry` / `system/status { compacting }` → `Activity`；`system/compact_boundary`、`rate_limit_event`、
+//!   `notification` / `informational`、模型回退、权限拒绝、hook 失败、MCP server 启动失败 → `Notice`（code 见 docs/spec/daemon.md § 8.3）
+//! - 本地斜杠命令（`/context`、`/cost` …）的输出：带 `local_command_source` 的 `assistant` 消息（`-p` 下实测）和
+//!   `system/local_command_output` 都发 `Notice { code: command_output }`，不当作模型的文本
+//! - `result.modelUsage.<模型>.contextWindow` → `Usage.context_window`；`context_tokens` 取本 turn 最近一条顶层 assistant 消息的
+//!   `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+//! - `control_request { subtype: elicitation }`（MCP server 向用户要输入）→ 权限请求，见 `permissions::from_elicitation`
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use anycon_agent_api::{AgentEvent, PendingPermission, ResumeHandle};
 use anycon_protocol::{
-    Event, FileChangeKind, PlanEntry, PlanStatus, ToolCategory, ToolResultDetail, TurnDoneReason, Usage,
+    ActivityState, Event, FileChangeKind, NoticeLevel, PlanEntry, PlanStatus, TaskAgent, TaskAgentState, TaskKind,
+    TaskPhase, TaskStatus, TaskUsage, ToolCategory, ToolResultDetail, TurnDoneReason, Usage,
 };
 use serde_json::{json, Value};
 
@@ -65,6 +76,8 @@ pub enum Out {
     },
     /// 要写进 stdin 的一行：agent 自己的一轮进行中暂存的用户消息，这一轮结束了，现在写进去（[`Translator::submit_user_message`]）。
     Write(Value),
+    /// 要立刻写进 stdin 的 `control_response`（不碰未决权限表）：translator 自己能答复的控制请求，如不能交给用户的 elicitation。
+    Reply(Value),
 }
 
 /// [`Translator::submit_user_message`] 的结果。
@@ -81,6 +94,31 @@ pub enum UserTurn {
 
 /// `task_updated.patch.status` 里表示任务还没结束的取值；其它取值都当作结束。
 const TASK_LIVE_STATUSES: &[&str] = &["running", "pending"];
+
+/// 已经结束的任务保留多少个状态：终态之后迟到的 `task_notification`（带最终用量和摘要）还要和它合并。
+const MAX_FINISHED_TASKS: usize = 32;
+
+/// `system/notification` 的 `priority`：`low` 是 REPL 里的闲置提示（小贴士之类），CLI 自己也只在没有别的通知时才显示，不转成 `Notice`。
+const NOTIFICATION_LOW_PRIORITY: &str = "low";
+
+/// 后台任务的状态：adapter 把 `task_*` 的增量合并成整条快照，每次变化发一条 `Event::Task`（后一条整条取代前一条）。
+struct TaskState {
+    /// `run_id`：任务被续跑（resume）时 `task_id` 不变、`run_id` 变；比当前小的帧是迟到的上一次运行的，忽略。
+    run_id: Option<String>,
+    kind: TaskKind,
+    tool_id: Option<String>,
+    title: String,
+    status: TaskStatus,
+    usage: Option<TaskUsage>,
+    last_tool: Option<String>,
+    summary: Option<String>,
+    phases: Vec<TaskPhase>,
+    agents: Vec<TaskAgent>,
+    /// 后台任务才对外发快照。前台任务（`is_backgrounded: false`、`awaited`）只记状态，转到后台（`task_updated.patch.is_backgrounded`）时才开始发。
+    announced: bool,
+    /// 上一次发出去的快照：内容没变不重发。
+    sent: Option<Event>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockKind {
@@ -143,6 +181,24 @@ pub struct Translator {
     backgrounded: HashMap<String, ToolCategory>,
     /// `task_started { is_backgrounded: true }` 报过、结果还没到的调用：结果到了标 `background`。
     bg_started: HashSet<String>,
+    /// 任务快照的状态，按 `task_id`。
+    tasks: HashMap<String, TaskState>,
+    /// 已经到终态、状态还留着的任务（旧的在前），超过 [`MAX_FINISHED_TASKS`] 就丢最旧的。
+    tasks_done: VecDeque<String>,
+    /// 正在发 `Activity { compacting }`（`system/status` 回到 `null` 时才发 `none`）。
+    compacting: bool,
+    /// 正在发 `Activity { retrying }`（下一次响应开始流式输出时发 `none`）。
+    retrying: bool,
+    /// `rate_limit_event` 已经通知过的状态：按限额类型记（状态，恢复时间），同一状态同一恢复时间只发一次。
+    rate_limit_seen: HashMap<String, (String, Option<u64>)>,
+    /// 已经为它发过 `mcp_server_failed` 的 server（每个进程每个 server 一次）。
+    mcp_failed: HashSet<String>,
+    /// 本 turn 已经发过的 `notification`（key + 文本）。
+    notified: HashSet<(String, String)>,
+    /// 本 turn 最近一条顶层 assistant 消息的上下文占用（输入 + 缓存读写）。
+    context_tokens: Option<u64>,
+    /// 本 turn 最近一条顶层 assistant 消息的模型：从 `result.modelUsage` 里挑主模型的依据。
+    last_model: Option<String>,
 }
 
 fn clip_text(s: &str) -> String {
@@ -176,6 +232,8 @@ fn merge_usage(a: Usage, b: Usage) -> Usage {
         cost_usd: add(a.cost_usd, b.cost_usd),
         duration_ms: a.duration_ms + b.duration_ms,
         model: b.model.or(a.model),
+        context_window: b.context_window.or(a.context_window),
+        context_tokens: b.context_tokens.or(a.context_tokens),
     }
 }
 
@@ -198,6 +256,131 @@ fn plan_status(s: &str) -> PlanStatus {
         "completed" => PlanStatus::Completed,
         "in_progress" => PlanStatus::InProgress,
         _ => PlanStatus::Pending,
+    }
+}
+
+/// 非空字符串字段。
+fn non_empty<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+    v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+}
+
+fn u32_field(v: &Value, key: &str) -> Option<u32> {
+    v.get(key).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())
+}
+
+/// 摘要类文字（任务摘要、错误信息）在 adapter 这一层保留的上限；daemon 还会按规格再截一次。
+const MAX_SUMMARY_CHARS: usize = 8 * 1024;
+
+/// 按字符数截断（落在字符边界上），超出的补 `…`。
+fn clip_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", &s[..end]),
+        None => s.to_string(),
+    }
+}
+
+/// `task_progress` / `task_notification` 的 `usage`。
+fn task_usage(u: &Value) -> Option<TaskUsage> {
+    if !u.is_object() {
+        return None;
+    }
+    Some(TaskUsage {
+        total_tokens: u64_of(u, "total_tokens"),
+        tool_calls: u64_of(u, "tool_uses"),
+        duration_ms: u64_of(u, "duration_ms"),
+    })
+}
+
+/// `task_updated.patch.status` → 任务状态。`pending` / `running` / `paused` 都还没结束；不认识的取值按「被取消」处理
+/// （后台任务计数同样把它们当作已结束）。
+fn task_status_of_patch(s: &str) -> TaskStatus {
+    match s {
+        "pending" | "running" | "paused" => TaskStatus::Running,
+        "completed" => TaskStatus::Completed,
+        "failed" => TaskStatus::Failed,
+        _ => TaskStatus::Cancelled,
+    }
+}
+
+/// workflow 里一个 agent 的条目（`workflow_progress[]` 里 `type = workflow_agent`）。字段含义取自 CLI 2.1.308 二进制里的 schema 和它自己的进度统计：
+/// `state`：`start` 带 `queuedAt` 而没有 `startedAt` = 还在排队（并发上限、等限额恢复），有 `startedAt` 才算在跑；`progress` = 在跑（带最新用量）；
+/// `done`；`error`（`skipped` = 被用户跳过，其余是失败，`blocked` = 被安全分类器拦下）。schema 之外的 `state` 整条丢掉（CLI 自己的消费端也这样）。
+fn parse_workflow_agent(e: &Value) -> Option<TaskAgent> {
+    let index = u32_field(e, "index")?;
+    let present = |k: &str| e.get(k).is_some_and(|v| !v.is_null());
+    let state = match e["state"].as_str()? {
+        "start" if present("queuedAt") && !present("startedAt") => TaskAgentState::Queued,
+        "start" | "progress" => TaskAgentState::Running,
+        "done" => TaskAgentState::Done,
+        "error" if e["skipped"].as_bool() == Some(true) => TaskAgentState::Skipped,
+        "error" => TaskAgentState::Failed,
+        _ => return None,
+    };
+    Some(TaskAgent {
+        index,
+        label: non_empty(e, "label").map(str::to_string).unwrap_or_else(|| format!("agent {index}")),
+        state,
+        phase_index: u32_field(e, "phaseIndex"),
+        model: non_empty(e, "model").map(str::to_string),
+        tokens: u64_of(e, "tokens"),
+        tool_calls: u64_of(e, "toolCalls"),
+        duration_ms: u64_of(e, "durationMs"),
+        last_tool: non_empty(e, "lastToolName").map(str::to_string),
+        error: non_empty(e, "error").map(|m| clip_chars(m, MAX_SUMMARY_CHARS)),
+        attempt: u32_field(e, "attempt"),
+        cached: (e["cached"].as_bool() == Some(true)).then_some(true),
+    })
+}
+
+/// `task_progress.workflow_progress`（全量数组）→ 阶段和 agent，各按 `index` 升序。
+fn parse_workflow_progress(items: &[Value]) -> (Vec<TaskPhase>, Vec<TaskAgent>) {
+    let mut phases: BTreeMap<u32, String> = BTreeMap::new();
+    let mut agents: BTreeMap<u32, TaskAgent> = BTreeMap::new();
+    for item in items {
+        match item["type"].as_str() {
+            Some("workflow_phase") => {
+                if let (Some(index), Some(title)) = (u32_field(item, "index"), item["title"].as_str()) {
+                    phases.insert(index, title.to_string());
+                }
+            }
+            Some("workflow_agent") => {
+                if let Some(a) = parse_workflow_agent(item) {
+                    // agent 指向的阶段没有 `workflow_phase` 条目（脚本里的 `phase()` 没写进 `meta.phases`）：用它自带的阶段名补上
+                    if let (Some(pi), Some(title)) = (a.phase_index, non_empty(item, "phaseTitle")) {
+                        phases.entry(pi).or_insert_with(|| title.to_string());
+                    }
+                    agents.insert(a.index, a);
+                }
+            }
+            _ => {}
+        }
+    }
+    (phases.into_iter().map(|(index, title)| TaskPhase { index, title }).collect(), agents.into_values().collect())
+}
+
+/// 提示类事件的构造。
+fn notice_event(code: &str, level: NoticeLevel, message: impl Into<String>) -> Event {
+    Event::Notice {
+        code: code.to_string(),
+        level,
+        message: message.into(),
+        model_from: None,
+        model_to: None,
+        resets_at_ms: None,
+    }
+}
+
+/// 限额类型 → 给人看的窗口名。
+fn rate_limit_window(kind: Option<&str>) -> &str {
+    match kind {
+        Some("five_hour") => "5-hour",
+        Some("seven_day") => "weekly",
+        Some("seven_day_opus") => "weekly Opus",
+        Some("seven_day_sonnet") => "weekly Sonnet",
+        Some("seven_day_overage_included") => "weekly",
+        Some("overage") => "overage",
+        Some(other) => other,
+        None => "usage",
     }
 }
 
@@ -294,6 +477,15 @@ impl Translator {
             suppressed: HashSet::new(),
             backgrounded: HashMap::new(),
             bg_started: HashSet::new(),
+            tasks: HashMap::new(),
+            tasks_done: VecDeque::new(),
+            compacting: false,
+            retrying: false,
+            rate_limit_seen: HashMap::new(),
+            mcp_failed: HashSet::new(),
+            notified: HashSet::new(),
+            context_tokens: None,
+            last_model: None,
         }
     }
 
@@ -339,6 +531,11 @@ impl Translator {
         self.text_streamed.clear();
         self.thinking_streamed.clear();
         self.fallback_done.clear();
+        self.compacting = false;
+        self.retrying = false;
+        self.notified.clear();
+        self.context_tokens = None;
+        self.last_model = None;
         if self.bg_tasks.is_empty() {
             self.seen_tool_use.clear();
             self.tools.clear();
@@ -395,6 +592,7 @@ impl Translator {
                     out.push(Out::ControlCancel { request_id: id.to_string() });
                 }
             }
+            Some("rate_limit_event") => self.on_rate_limit(v, &mut out),
             _ => {}
         }
         out
@@ -410,6 +608,9 @@ impl Translator {
         self.carry = None;
         self.agent_turn = false;
         self.bg_tasks.clear();
+        // 任务随进程一起没了；daemon 在进程退出时给还没到终态的任务补 `cancelled` 快照
+        self.tasks.clear();
+        self.tasks_done.clear();
         if self.busy {
             if self.cancel_requested {
                 self.busy = false;
@@ -446,6 +647,7 @@ impl Translator {
                 self.report_background(out);
             }
             Some("task_started") => {
+                self.on_task_started(v, out);
                 if v["is_backgrounded"].as_bool() == Some(true) {
                     if let Some(tool_id) = v["tool_use_id"].as_str() {
                         self.bg_started.insert(tool_id.to_string());
@@ -456,8 +658,10 @@ impl Translator {
                     }
                 }
             }
+            Some("task_progress") => self.on_task_progress(v, out),
             Some("task_notification") => {
-                // 后台调用的最终结果先补上，再报任务数的变化
+                // 任务快照先到终态；后台调用的最终结果再补上，最后报任务数的变化
+                self.on_task_finished(v, out);
                 self.on_task_notification(v, out);
                 if let Some(id) = v["task_id"].as_str() {
                     self.bg_tasks.remove(id);
@@ -465,12 +669,28 @@ impl Translator {
                 }
             }
             Some("task_updated") => {
+                self.on_task_updated(v, out);
                 let ended = v["patch"]["status"].as_str().is_some_and(|s| !TASK_LIVE_STATUSES.contains(&s));
                 if let (true, Some(id)) = (ended, v["task_id"].as_str()) {
                     self.bg_tasks.remove(id);
                     self.report_background(out);
                 }
             }
+            Some("api_retry") => self.on_api_retry(v, out),
+            Some("status") => self.on_status(v, out),
+            Some("compact_boundary") => self.on_compact_boundary(v, out),
+            Some("notification") => self.on_notification(v, out),
+            Some("informational") => self.on_informational(v, out),
+            Some("local_command_output") => {
+                if let Some(text) = v["content"].as_str() {
+                    self.command_output(text, NoticeLevel::Info, out);
+                }
+            }
+            Some(
+                "model_fallback" | "model_refusal_fallback" | "model_refusal_no_fallback" | "model_consent_fallback",
+            ) => self.on_model_fallback(v, out),
+            Some("permission_denied") => self.on_permission_denied(v, out),
+            Some("hook_response") => self.on_hook_response(v, out),
             _ => {}
         }
     }
@@ -505,6 +725,7 @@ impl Translator {
                 }));
             }
         }
+        self.on_mcp_servers(v, out);
     }
 
     /// 后台任务结束（`completed` / `failed` / `stopped` / `killed`）。只认我们标过 `background` 的调用：
@@ -532,6 +753,413 @@ impl Translator {
         );
     }
 
+    // ---------- 后台任务快照（Event::Task） ----------
+
+    /// `task_type` → 任务种类。没有 `task_type` 的老 CLI：带 `workflow_name` 的是 workflow，带 `subagent_type` 的是子 agent。
+    fn task_kind(v: &Value) -> TaskKind {
+        match v["task_type"].as_str() {
+            Some("local_workflow") => TaskKind::Workflow,
+            Some("local_agent") => TaskKind::Subagent,
+            Some("local_bash") => TaskKind::Shell,
+            Some(_) => TaskKind::Other,
+            None if non_empty(v, "workflow_name").is_some() => TaskKind::Workflow,
+            None if non_empty(v, "subagent_type").is_some() => TaskKind::Subagent,
+            None => TaskKind::Other,
+        }
+    }
+
+    /// 这一帧是不是上一次运行的迟到帧：任务续跑后 `task_id` 不变、`run_id` 变大（字符串比较，CLI 保证按开始顺序递增）。
+    fn is_late_frame(&self, id: &str, v: &Value) -> bool {
+        match (self.tasks.get(id).and_then(|t| t.run_id.as_deref()), v["run_id"].as_str()) {
+            (Some(cur), Some(frame)) => frame < cur,
+            _ => false,
+        }
+    }
+
+    /// `task_started`：（重新）建立这个任务的状态。`skip_transcript` / `ambient` 的杂务不进界面；前台任务只记状态，不发快照。
+    fn on_task_started(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let Some(id) = v["task_id"].as_str() else { return };
+        if v["skip_transcript"].as_bool() == Some(true) || v["ambient"].as_bool() == Some(true) {
+            return;
+        }
+        if self.is_late_frame(id, v) {
+            return;
+        }
+        let kind = Self::task_kind(v);
+        let description = non_empty(v, "description");
+        let name = non_empty(v, "workflow_name");
+        let title = match kind {
+            TaskKind::Workflow => name.or(description),
+            _ => description.or(name),
+        }
+        .unwrap_or("Background task");
+        // workflow 的标题是脚本里起的名字，`description`（`meta.description`）是一句话说明，放进摘要
+        let summary = description.filter(|d| *d != title).map(|d| clip_chars(d, MAX_SUMMARY_CHARS));
+        let foreground = v["is_backgrounded"].as_bool() == Some(false) || v["awaited"].as_bool() == Some(true);
+        self.tasks_done.retain(|x| x != id);
+        self.tasks.insert(
+            id.to_string(),
+            TaskState {
+                run_id: v["run_id"].as_str().map(str::to_string),
+                kind,
+                tool_id: non_empty(v, "tool_use_id").map(str::to_string),
+                title: title.to_string(),
+                status: TaskStatus::Running,
+                usage: None,
+                last_tool: None,
+                summary,
+                phases: Vec::new(),
+                agents: Vec::new(),
+                announced: !foreground,
+                sent: None,
+            },
+        );
+        self.emit_task(id, out);
+    }
+
+    /// `task_progress`：用量、最近的工具、进度摘要；workflow 另带 `workflow_progress`（全量数组，没带的帧沿用上一份）。
+    fn on_task_progress(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let Some(id) = v["task_id"].as_str() else { return };
+        if self.is_late_frame(id, v) {
+            return;
+        }
+        let Some(st) = self.tasks.get_mut(id) else { return };
+        if st.status.is_terminal() {
+            return;
+        }
+        if let Some(u) = task_usage(&v["usage"]) {
+            st.usage = Some(u);
+        }
+        let workflow = st.kind == TaskKind::Workflow;
+        // workflow 的 `last_tool_name` 是最近有动静的那个 agent 的名字，不是工具：它的工具在各个 agent 条目里
+        if let (false, Some(t)) = (workflow, non_empty(v, "last_tool_name")) {
+            st.last_tool = Some(clip_chars(t, MAX_SUMMARY_CHARS));
+        }
+        // `summary` 是 agent 给的一句话进度；子 agent 没有它时 `description` 是当前在做的事（如 `Editing src/lib.rs`）
+        let line = non_empty(v, "summary").or(if workflow { None } else { non_empty(v, "description") });
+        if let Some(line) = line.filter(|l| *l != st.title) {
+            st.summary = Some(clip_chars(line, MAX_SUMMARY_CHARS));
+        }
+        if let Some(items) = v["workflow_progress"].as_array() {
+            let (phases, agents) = parse_workflow_progress(items);
+            st.phases = phases;
+            st.agents = agents;
+        }
+        self.emit_task(id, out);
+    }
+
+    /// `task_updated`：`patch.status` 进终态，`patch.is_backgrounded` 把前台任务转成后台任务。
+    fn on_task_updated(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let Some(id) = v["task_id"].as_str() else { return };
+        if self.is_late_frame(id, v) {
+            return;
+        }
+        let patch = &v["patch"];
+        let Some(st) = self.tasks.get_mut(id) else { return };
+        if st.status.is_terminal() {
+            return;
+        }
+        if patch["is_backgrounded"].as_bool() == Some(true) {
+            st.announced = true;
+        }
+        if let Some(status) = patch["status"].as_str().map(task_status_of_patch) {
+            st.status = status;
+            if let (TaskStatus::Failed, Some(e)) = (status, non_empty(patch, "error")) {
+                st.summary = Some(clip_chars(e, MAX_SUMMARY_CHARS));
+            }
+        }
+        self.emit_task(id, out);
+        self.retire_task(id);
+    }
+
+    /// `task_notification`：任务结束（`completed` / `failed` / `stopped`），带最终用量和摘要。`task_updated` 通常先到，
+    /// 这里把用量和摘要并进去再发一次；两者的终态不一致时以先到的为准（和 CLI 自己的消费端一样）。
+    fn on_task_finished(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let Some(id) = v["task_id"].as_str() else { return };
+        if self.is_late_frame(id, v) {
+            return;
+        }
+        let Some(st) = self.tasks.get_mut(id) else { return };
+        let status = match v["status"].as_str() {
+            Some("completed") => TaskStatus::Completed,
+            Some("failed") => TaskStatus::Failed,
+            _ => TaskStatus::Cancelled,
+        };
+        if st.status.is_terminal() && st.status != status {
+            return;
+        }
+        st.status = status;
+        if let Some(u) = task_usage(&v["usage"]) {
+            st.usage = Some(u);
+        }
+        // 子 agent / 后台命令的通知摘要就是它的结果（`Background command "…" completed (exit code 0)`）；
+        // workflow 正常结束时只有一句 `Dynamic workflow "…" completed`，不如开头那句 `meta.description` 有用，失败 / 被停时才换成通知的
+        let informative = !(st.kind == TaskKind::Workflow && status == TaskStatus::Completed);
+        if let (true, Some(sum)) = (informative, non_empty(v, "summary")) {
+            st.summary = Some(clip_chars(sum, MAX_SUMMARY_CHARS));
+        }
+        self.emit_task(id, out);
+        self.retire_task(id);
+    }
+
+    /// 发这个任务的快照（后台任务才发；和上一次发出去的一样就不发）。
+    fn emit_task(&mut self, id: &str, out: &mut Vec<Out>) {
+        let Some(st) = self.tasks.get_mut(id) else { return };
+        if !st.announced {
+            return;
+        }
+        let ev = Event::Task {
+            id: id.to_string(),
+            kind: st.kind,
+            tool_id: st.tool_id.clone(),
+            title: st.title.clone(),
+            status: st.status,
+            usage: st.usage,
+            last_tool: st.last_tool.clone(),
+            summary: st.summary.clone(),
+            phases: st.phases.clone(),
+            agents: st.agents.clone(),
+        };
+        if st.sent.as_ref() == Some(&ev) {
+            return;
+        }
+        st.sent = Some(ev.clone());
+        Self::push(out, ev);
+    }
+
+    /// 任务到了终态：前台任务的状态直接丢；后台任务的留一阵（迟到的 `task_notification` 还要并进去），只留最近的 [`MAX_FINISHED_TASKS`] 个。
+    fn retire_task(&mut self, id: &str) {
+        let Some(st) = self.tasks.get(id) else { return };
+        if !st.status.is_terminal() {
+            return;
+        }
+        if !st.announced {
+            self.tasks.remove(id);
+            return;
+        }
+        if !self.tasks_done.iter().any(|x| x == id) {
+            self.tasks_done.push_back(id.to_string());
+        }
+        while self.tasks_done.len() > MAX_FINISHED_TASKS {
+            if let Some(old) = self.tasks_done.pop_front() {
+                self.tasks.remove(&old);
+            }
+        }
+    }
+
+    // ---------- Activity / Notice ----------
+
+    /// 临时状态只在 turn 进行中发：没有 turn 时（后台 agent 在重试）发出去，客户端没有内容事件或 `turn_done` 来清掉它。
+    fn activity(&self, out: &mut Vec<Out>, state: ActivityState) -> bool {
+        if !self.busy {
+            return false;
+        }
+        Self::push(out, Event::Activity { state, attempt: None, max_attempts: None, delay_ms: None, reason: None });
+        true
+    }
+
+    /// `system/api_retry`：API 请求失败，过一会儿重试。`error_status` 是 HTTP 状态码（连接错误为 `null`），`error` 是错误类别
+    /// （`overloaded`、`rate_limit`、`server_error` …）；`no_response` = 首字节超时。
+    fn on_api_retry(&mut self, v: &Value, out: &mut Vec<Out>) {
+        if !self.busy {
+            return;
+        }
+        let status = v["error_status"].as_u64();
+        let class = non_empty(v, "error");
+        let reason = if let Some(waited) = u64_of(&v["no_response"], "waited_ms") {
+            format!("no response from the API within {}s", waited / 1000)
+        } else {
+            match (status, class) {
+                (Some(s), Some(c)) => format!("{s} {c}"),
+                (Some(s), None) => s.to_string(),
+                (None, Some(c)) if c != "unknown" => c.to_string(),
+                (None, _) => "connection error".to_string(),
+            }
+        };
+        self.retrying = true;
+        Self::push(
+            out,
+            Event::Activity {
+                state: ActivityState::Retrying,
+                attempt: u32_field(v, "attempt"),
+                max_attempts: u32_field(v, "max_retries"),
+                delay_ms: u64_of(v, "retry_delay_ms"),
+                reason: Some(reason),
+            },
+        );
+    }
+
+    /// `system/status`：`compacting` = 正在压缩上下文，`null` = 回到普通状态（`requesting` 是每次请求开始时发的，与压缩无关）。
+    fn on_status(&mut self, v: &Value, out: &mut Vec<Out>) {
+        match v.get("status") {
+            Some(Value::String(s)) if s == "compacting" => {
+                if !self.compacting && self.activity(out, ActivityState::Compacting) {
+                    self.compacting = true;
+                }
+            }
+            Some(Value::Null) if self.compacting => {
+                self.compacting = false;
+                self.activity(out, ActivityState::None);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_compact_boundary(&mut self, v: &Value, out: &mut Vec<Out>) {
+        if self.compacting {
+            self.compacting = false;
+            self.activity(out, ActivityState::None);
+        }
+        let m = &v["compact_metadata"];
+        let trigger = non_empty(m, "trigger").unwrap_or("auto");
+        let message = match (u64_of(m, "pre_tokens"), u64_of(m, "post_tokens")) {
+            (Some(pre), Some(post)) => format!("Context compacted ({trigger}): {pre} → {post} tokens"),
+            (Some(pre), None) => format!("Context compacted ({trigger}): was {pre} tokens"),
+            _ => format!("Context compacted ({trigger})"),
+        };
+        Self::push(out, notice_event("context_compacted", NoticeLevel::Info, message));
+    }
+
+    /// `rate_limit_event`：`status` 是 `allowed` 时什么都不发（并忘掉这个限额类型之前的通知，下次再触发还要提醒）；
+    /// `allowed_warning`（快到了）/ `rejected`（到了）各发一次——同一限额类型、同一状态、同一恢复时间只发一次，
+    /// 这个事件在用量每变一点就会发一次。
+    fn on_rate_limit(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let info = &v["rate_limit_info"];
+        let Some(status) = info["status"].as_str() else { return };
+        let kind = info["rateLimitType"].as_str();
+        let slot = kind.unwrap_or("").to_string();
+        if status == "allowed" {
+            self.rate_limit_seen.remove(&slot);
+            return;
+        }
+        let resets_at = info["resetsAt"].as_u64();
+        let key = (status.to_string(), resets_at);
+        if self.rate_limit_seen.get(&slot) == Some(&key) {
+            return;
+        }
+        self.rate_limit_seen.insert(slot, key);
+        let window = rate_limit_window(kind);
+        let message = if status == "rejected" {
+            format!("Usage limit reached ({window})")
+        } else {
+            match info["utilization"].as_f64() {
+                Some(u) => format!("Approaching the usage limit ({window}, {}% used)", (u * 100.0).round() as u64),
+                None => format!("Approaching the usage limit ({window})"),
+            }
+        };
+        Self::push(
+            out,
+            Event::Notice {
+                code: "rate_limit".to_string(),
+                level: NoticeLevel::Warning,
+                message,
+                model_from: None,
+                model_to: None,
+                resets_at_ms: resets_at.map(|s| s.saturating_mul(1000)),
+            },
+        );
+    }
+
+    /// `system/notification`（REPL 通知队列的文本）。`color` 为 `warning` / `error` 的当警告；
+    /// 优先级 `low` 的是闲置提示，不转；同一个 turn 里同 key 同文本只发一次。
+    fn on_notification(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let Some(text) = non_empty(v, "text") else { return };
+        if v["priority"].as_str() == Some(NOTIFICATION_LOW_PRIORITY) {
+            return;
+        }
+        let key = v["key"].as_str().unwrap_or("").to_string();
+        if !self.notified.insert((key, text.to_string())) {
+            return;
+        }
+        let level = match v["color"].as_str() {
+            Some("warning" | "error") => NoticeLevel::Warning,
+            _ => NoticeLevel::Info,
+        };
+        Self::push(out, notice_event("agent_notice", level, text));
+    }
+
+    /// `system/informational`：`level` 为 `warning` 的当警告，`notice` / `suggestion` 当提示；`info` 级别 CLI 自己也只在
+    /// 转录视图里显示，不转。
+    fn on_informational(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let Some(content) = non_empty(v, "content") else { return };
+        let level = match v["level"].as_str() {
+            Some("warning") => NoticeLevel::Warning,
+            Some("notice" | "suggestion") => NoticeLevel::Info,
+            _ => return,
+        };
+        Self::push(out, notice_event("agent_notice", level, content));
+    }
+
+    /// 本地斜杠命令（`/context`、`/cost` …）的输出。
+    fn command_output(&mut self, text: &str, level: NoticeLevel, out: &mut Vec<Out>) {
+        if text.trim().is_empty() {
+            return;
+        }
+        Self::push(out, notice_event("command_output", level, text.trim_end()));
+    }
+
+    /// 模型回退一族：`model_fallback`、`model_refusal_fallback`、`model_refusal_no_fallback`（没有回退目标）、`model_consent_fallback`。
+    fn on_model_fallback(&mut self, v: &Value, out: &mut Vec<Out>) {
+        Self::push(
+            out,
+            Event::Notice {
+                code: "model_fallback".to_string(),
+                level: NoticeLevel::Warning,
+                message: v["content"].as_str().unwrap_or("").to_string(),
+                model_from: non_empty(v, "original_model").map(str::to_string),
+                model_to: non_empty(v, "fallback_model").map(str::to_string),
+                resets_at_ms: None,
+            },
+        );
+    }
+
+    /// `system/permission_denied`：没有权限提示就被拒绝的工具调用（auto 模式分类器、dontAsk 模式、deny 规则）。
+    fn on_permission_denied(&mut self, v: &Value, out: &mut Vec<Out>) {
+        let reason = non_empty(v, "decision_reason").or(non_empty(v, "message")).unwrap_or("denied");
+        let message = match non_empty(v, "tool_name") {
+            Some(tool) => format!("{tool}: {reason}"),
+            None => reason.to_string(),
+        };
+        Self::push(out, notice_event("permission_denied", NoticeLevel::Info, message));
+    }
+
+    /// `system/hook_response`：只有 `outcome = error`（hook 失败或阻止了操作）才提示；`cancelled` 是我们自己中断的。
+    /// 这个消息只在 CLI 开了 hook 事件时才发（`--include-hook-events`，anycon 不加），所以多数会话里看不到。
+    fn on_hook_response(&mut self, v: &Value, out: &mut Vec<Out>) {
+        if v["outcome"].as_str() != Some("error") {
+            return;
+        }
+        let name = non_empty(v, "hook_name").unwrap_or("hook");
+        let mut message = match non_empty(v, "hook_event") {
+            Some(ev) => format!("Hook {name} ({ev}) failed"),
+            None => format!("Hook {name} failed"),
+        };
+        if let Some(code) = v["exit_code"].as_i64() {
+            message.push_str(&format!(" with exit code {code}"));
+        }
+        if let Some(detail) = non_empty(v, "stderr").or(non_empty(v, "output")) {
+            message.push_str(&format!(": {}", clip_chars(detail.trim(), 1000)));
+        }
+        Self::push(out, notice_event("hook_failed", NoticeLevel::Warning, message));
+    }
+
+    /// `system/init.mcp_servers[]`：连接失败的 server 提示一次（`init` 每个 turn 都发，同一个 server 不重复）。
+    fn on_mcp_servers(&mut self, v: &Value, out: &mut Vec<Out>) {
+        for server in v["mcp_servers"].as_array().into_iter().flatten() {
+            let (Some(name), Some("failed")) = (non_empty(server, "name"), server["status"].as_str()) else { continue };
+            if self.mcp_failed.insert(name.to_string()) {
+                Self::push(
+                    out,
+                    notice_event(
+                        "mcp_server_failed",
+                        NoticeLevel::Warning,
+                        format!("MCP server \"{name}\" failed to connect"),
+                    ),
+                );
+            }
+        }
+    }
+
     // ---------- stream_event ----------
 
     fn on_stream_event(&mut self, v: &Value, out: &mut Vec<Out>) {
@@ -542,6 +1170,11 @@ impl Translator {
             Some("message_start") => {
                 self.cur_msg_id = ev["message"]["id"].as_str().unwrap_or("").to_string();
                 self.blocks.clear();
+                // 新的响应开始流式输出 = 重试成功了
+                if self.retrying {
+                    self.retrying = false;
+                    self.activity(out, ActivityState::None);
+                }
             }
             Some("content_block_start") => {
                 let kind = match ev["content_block"]["type"].as_str() {
@@ -609,6 +1242,29 @@ impl Translator {
         let msg = &v["message"];
         let mid = msg["id"].as_str().unwrap_or("").to_string();
         let Some(blocks) = msg["content"].as_array() else { return };
+        // 本地斜杠命令（`/context`、`/cost`）的输出：`-p` 下是一条模型为 `<synthetic>`、带 `local_command_source` 的 assistant 消息
+        // （`<local-command-stdout>…` 原文），不是模型说的话
+        if let Some(source) = v["local_command_source"].as_str() {
+            let text = blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n");
+            let level =
+                if source.starts_with("<local-command-stderr>") { NoticeLevel::Warning } else { NoticeLevel::Info };
+            self.command_output(&text, level, out);
+            return;
+        }
+        if top && msg["model"].as_str() != Some("<synthetic>") {
+            // 这条请求发给模型的上下文大小：输入 + 缓存读写（同一个 `message.id` 的每个 content block 都带同样的输入用量）
+            let u = &msg["usage"];
+            if u["input_tokens"].is_number() {
+                self.context_tokens = Some(
+                    u64_of(u, "input_tokens").unwrap_or(0)
+                        + u64_of(u, "cache_read_input_tokens").unwrap_or(0)
+                        + u64_of(u, "cache_creation_input_tokens").unwrap_or(0),
+                );
+            }
+            if let Some(m) = non_empty(msg, "model") {
+                self.last_model = Some(m.to_string());
+            }
+        }
         for (i, block) in blocks.iter().enumerate() {
             match block["type"].as_str() {
                 Some("text") if top => {
@@ -815,6 +1471,8 @@ impl Translator {
             cost_usd: cost,
             duration_ms: u64_of(v, "duration_ms").unwrap_or(0),
             model: self.model.clone(),
+            context_window: self.context_window_of(&v["modelUsage"]),
+            context_tokens: self.context_tokens,
         };
         let usage = match self.carry.take() {
             Some(c) => merge_usage(c, usage),
@@ -839,6 +1497,20 @@ impl Translator {
         Self::push(out, Event::TurnDone { turn_id: self.turn_counter, reason, usage: Some(usage) });
     }
 
+    /// `result.modelUsage`（模型 → 用量，含 `contextWindow`）里主模型的上下文窗口：先看本 turn 最近一条顶层 assistant 消息的模型，
+    /// 再看 `system/init` 的模型，最后只有一个条目时取它。子 agent 用别的模型时 `modelUsage` 里不止一项，不能随便取。
+    fn context_window_of(&self, model_usage: &Value) -> Option<u64> {
+        let map = model_usage.as_object()?;
+        let by_name = |name: Option<&str>| name.and_then(|n| map.get(n)).and_then(|m| u64_of(m, "contextWindow"));
+        by_name(self.last_model.as_deref()).or_else(|| by_name(self.model.as_deref())).or_else(|| {
+            if map.len() == 1 {
+                map.values().next().and_then(|m| u64_of(m, "contextWindow"))
+            } else {
+                None
+            }
+        })
+    }
+
     // ---------- control ----------
 
     fn on_control_request(&mut self, v: &Value, out: &mut Vec<Out>) {
@@ -849,6 +1521,18 @@ impl Translator {
                 let (pending, native) = permissions::from_can_use_tool(request_id, req, &self.cwd);
                 out.push(Out::Permission { pending, native });
             }
+            // MCP server 向用户要输入（CLI 2.1.308 起 stream-json 宿主默认会收到它；不答的话 CLI 一直等）
+            Some("elicitation") => match permissions::from_elicitation(request_id, req) {
+                Ok((pending, native)) => out.push(Out::Permission { pending, native }),
+                Err(why) => {
+                    // 不能交给用户的请求（URL 不是 http(s)）：直接 decline，并告诉用户发生了什么
+                    out.push(Out::Reply(permissions::control_response(request_id, json!({ "action": "decline" }))));
+                    Self::push(
+                        out,
+                        Event::Error { code: "elicitation_rejected".to_string(), message: why, recoverable: true },
+                    );
+                }
+            },
             other => out.push(Out::Unsupported {
                 request_id: request_id.to_string(),
                 subtype: other.unwrap_or("").to_string(),

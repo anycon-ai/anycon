@@ -12,8 +12,9 @@ use anycon_agent_api::{
     ResumeHandle, SpawnRequest, UserInput,
 };
 use anycon_protocol::{
-    AgentInfo, AgentStatus, AttachmentRef, EditKind, Event, FileChangeKind, PermissionKind, PermissionOptionKind,
-    PlanStatus, SessionSettings, ToolCategory, TurnDoneReason,
+    ActivityState, AgentInfo, AgentStatus, AttachmentRef, EditKind, Event, FileChangeKind, NoticeLevel, PermissionKind,
+    PermissionOptionKind, PlanStatus, SessionSettings, TaskAgentState, TaskKind, TaskStatus, ToolCategory,
+    TurnDoneReason,
 };
 use serde_json::json;
 
@@ -360,6 +361,9 @@ async fn plain_prompt_default_settings() {
     assert_eq!(usage.duration_ms, 100);
     assert_eq!(usage.model.as_deref(), Some("mock-large"));
     assert!(usage.cost_usd.unwrap() > 0.0);
+    // 上下文占用：窗口固定 200 000；已用 = 12 000 + input_tokens + output_tokens
+    assert_eq!(usage.context_window, Some(200_000));
+    assert_eq!(usage.context_tokens, Some(12_000 + 11 + text_of(&evs).chars().count() as u64));
     assert!(!h.is_busy());
 }
 
@@ -655,6 +659,294 @@ async fn error_keyword_emits_error_and_error_reason() {
         _ => unreachable!(),
     }
     assert_eq!(turn_done(&evs).1, TurnDoneReason::Error);
+}
+
+// ---------- link：kind = other 的权限请求，带 detail.url ----------
+
+#[tokio::test]
+async fn link_keyword_asks_to_open_a_url_and_echoes_the_answer() {
+    let mut h = spawn_default().await;
+    let mut seen = None;
+    let evs = run_turn(&mut h, "open a link", |p| {
+        seen = Some(p.clone());
+        PermissionDecision { option_id: Some("accept".into()), ..Default::default() }
+    })
+    .await;
+    let p = seen.unwrap();
+    assert_eq!(p.kind, PermissionKind::Other);
+    assert_eq!(p.request_id, "sess_test-perm-1");
+    assert_eq!(p.title, "Open a link to continue");
+    assert_eq!(
+        p.detail.text.as_deref(),
+        Some("The mock-auth server needs you to sign in. Open the link, then confirm here.")
+    );
+    assert_eq!(p.detail.url.as_deref(), Some("https://example.com/mock-auth"));
+    assert_eq!(p.detail.url.as_deref(), Some(anycon_adapters::mock::LINK_URL));
+    assert!(p.detail.tool.is_none() && p.detail.questions.is_empty());
+    let opts: Vec<(&str, &str, PermissionOptionKind, bool)> =
+        p.options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.kind, o.needs_message)).collect();
+    assert_eq!(
+        opts,
+        vec![
+            ("accept", "I've completed it", PermissionOptionKind::AllowOnce, false),
+            ("decline", "Decline", PermissionOptionKind::RejectOnce, false),
+        ]
+    );
+    // 回显之后：请求 → 文本 → text_done → turn_done
+    let names = type_names(&evs);
+    assert_eq!(&names[names.len() - 5..], ["text_done", "PERMISSION", "text_delta", "text_done", "turn_done"]);
+    assert!(text_of(&evs).ends_with("Link confirmed."));
+
+    // 其它答复（含取消）都是 declined
+    for decision in
+        [PermissionDecision { option_id: Some("decline".into()), ..Default::default() }, PermissionDecision::default()]
+    {
+        let mut h = spawn_default().await;
+        let evs = run_turn(&mut h, "link", |_| decision.clone()).await;
+        assert!(text_of(&evs).ends_with("Link declined."), "{}", text_of(&evs));
+    }
+
+    // 不含 link 的 prompt 不问
+    let evs = run_turn(&mut h, "hello", no_permission).await;
+    assert!(!type_names(&evs).contains(&"PERMISSION".to_string()));
+}
+
+// ---------- tasks：activity / notice / workflow 任务快照 ----------
+
+#[tokio::test]
+async fn tasks_keyword_emits_activity_notice_and_a_workflow_task_linked_to_its_tool_call() {
+    let mut h = spawn_default().await;
+    let _ = next(&mut h).await; // Started
+    let evs = run_turn(&mut h, "show the tasks", no_permission).await;
+    let names = type_names(&evs);
+    // 回显之后：activity×2、notice、tool_call、tool_result（后台）、task×3、tool_result（最终）、turn_done
+    assert_eq!(
+        &names[names.len() - 11..],
+        [
+            "text_done",
+            "activity",
+            "activity",
+            "notice",
+            "tool_call",
+            "tool_result",
+            "task",
+            "task",
+            "task",
+            "tool_result",
+            "turn_done"
+        ]
+    );
+    let evs_only = events_of(&evs);
+    let acts: Vec<&Event> = evs_only.iter().copied().filter(|e| matches!(e, Event::Activity { .. })).collect();
+    assert_eq!(
+        acts,
+        vec![
+            &Event::Activity {
+                state: ActivityState::Retrying,
+                attempt: Some(2),
+                max_attempts: Some(10),
+                delay_ms: Some(5000),
+                reason: Some("529 overloaded_error".into()),
+            },
+            &Event::Activity {
+                state: ActivityState::None,
+                attempt: None,
+                max_attempts: None,
+                delay_ms: None,
+                reason: None
+            },
+        ]
+    );
+    let notice = evs_only.iter().find(|e| matches!(e, Event::Notice { .. })).unwrap();
+    assert_eq!(
+        *notice,
+        &Event::Notice {
+            code: "model_fallback".into(),
+            level: NoticeLevel::Warning,
+            message: "Model mock-large is overloaded; switched to mock-small.".into(),
+            model_from: Some("mock-large".into()),
+            model_to: Some("mock-small".into()),
+            resets_at_ms: None,
+        }
+    );
+
+    // tool_call(Workflow) 和两条 tool_result 同一个 id；第一条 tool_result 标 background，最后一条取代它
+    let call = evs_only
+        .iter()
+        .find_map(|e| match e {
+            Event::ToolCall { id, name, category, title, input, detail, parent_id } => Some((
+                id.clone(),
+                name.clone(),
+                *category,
+                title.clone(),
+                input.clone(),
+                detail.clone(),
+                parent_id.clone(),
+            )),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(call.0, "sess_test-tool-1");
+    assert_eq!((call.1.as_str(), call.2, call.3.as_str()), ("Workflow", ToolCategory::Subagent, "Workflow: review"));
+    assert_eq!(call.4, json!({"workflow": "review"}));
+    assert_eq!(call.5.unwrap().description.as_deref(), Some("Review the change"));
+    assert_eq!(call.6, None);
+    let results: Vec<(&String, &serde_json::Value, bool, bool, Option<u64>)> = evs_only
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolResult { id, output, is_error, detail } => Some((
+                id,
+                output,
+                *is_error,
+                detail.as_ref().and_then(|d| d.background).unwrap_or(false),
+                detail.as_ref().and_then(|d| d.total_tokens),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results,
+        vec![
+            (&call.0, &json!("Workflow review started in the background"), false, true, None),
+            (&call.0, &json!("Workflow review completed: no issues found"), false, false, Some(1500)),
+        ]
+    );
+
+    // 三条快照：同一个 task id，tool_id 指向 tool_call；running、running、completed
+    let tasks: Vec<&Event> = evs_only.iter().copied().filter(|e| matches!(e, Event::Task { .. })).collect();
+    assert_eq!(tasks.len(), 3);
+    let mut statuses = Vec::new();
+    let mut summaries = Vec::new();
+    for e in &tasks {
+        let Event::Task { id, kind, tool_id, title, status, usage, phases, agents, summary, .. } = e else {
+            unreachable!()
+        };
+        assert_eq!(id, "sess_test-task-1");
+        assert_eq!(*kind, TaskKind::Workflow);
+        assert_eq!(tool_id.as_deref(), Some(call.0.as_str()));
+        assert_eq!(title, "review");
+        assert_eq!(
+            phases.iter().map(|p| (p.index, p.title.as_str())).collect::<Vec<_>>(),
+            vec![(0, "Scan"), (1, "Review")]
+        );
+        assert_eq!(
+            agents.iter().map(|a| (a.index, a.label.as_str(), a.phase_index)).collect::<Vec<_>>(),
+            vec![(0, "scanner", Some(0)), (1, "reviewer-a", Some(1)), (2, "reviewer-b", Some(1)),]
+        );
+        assert!(agents.iter().all(|a| a.model.as_deref() == Some("mock-small")));
+        assert!(usage.is_some());
+        statuses.push(*status);
+        summaries.push(summary.clone().unwrap());
+    }
+    assert_eq!(statuses, vec![TaskStatus::Running, TaskStatus::Running, TaskStatus::Completed]);
+    assert_eq!(
+        summaries,
+        vec!["Scanning the changed files", "Reviewing the findings", "Review finished: no issues found"]
+    );
+    let states = |i: usize| -> Vec<TaskAgentState> {
+        let Event::Task { agents, .. } = tasks[i] else { unreachable!() };
+        agents.iter().map(|a| a.state).collect()
+    };
+    assert_eq!(states(0), vec![TaskAgentState::Running, TaskAgentState::Queued, TaskAgentState::Queued]);
+    assert_eq!(states(1), vec![TaskAgentState::Done, TaskAgentState::Running, TaskAgentState::Running]);
+    assert_eq!(states(2), vec![TaskAgentState::Done; 3]);
+    // 终态快照的用量；reviewer-b 重试过
+    let Event::Task { usage, agents, .. } = tasks[2] else { unreachable!() };
+    let u = usage.unwrap();
+    assert_eq!((u.total_tokens, u.tool_calls, u.duration_ms), (Some(1500), Some(12), Some(7000)));
+    assert_eq!(agents.iter().filter_map(|a| a.tokens).sum::<u64>(), 1500);
+    assert_eq!(agents[2].attempt, Some(2));
+    assert_eq!(turn_done(&evs).1, TurnDoneReason::Completed);
+
+    // 第二次：工具和任务的计数继续递增，id 不重复
+    let evs = run_turn(&mut h, "tasks again", no_permission).await;
+    let ids: Vec<String> = events_of(&evs)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::ToolCall { id, .. } => Some(id.clone()),
+            Event::Task { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids[0], "sess_test-tool-2");
+    assert!(ids[1..].iter().all(|i| i == "sess_test-task-2"), "{ids:?}");
+
+    // 不含 tasks 的 prompt 没有这些事件
+    let evs = run_turn(&mut h, "hello", no_permission).await;
+    assert!(!names_contain_any(&evs, &["activity", "notice", "task", "tool_call"]));
+}
+
+fn names_contain_any(evs: &[AgentEvent], any: &[&str]) -> bool {
+    type_names(evs).iter().any(|n| any.contains(&n.as_str()))
+}
+
+#[tokio::test]
+async fn tasks_runs_after_write_and_before_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = spawn_in(dir.path(), SessionSettings::default()).await;
+    let evs = run_turn(&mut h, "write tasks error", no_permission).await;
+    let calls: Vec<String> = events_of(&evs)
+        .into_iter()
+        .filter_map(|e| if let Event::ToolCall { name, .. } = e { Some(name.clone()) } else { None })
+        .collect();
+    assert_eq!(calls, vec!["Write", "Workflow"]);
+    let names = type_names(&evs);
+    assert_eq!(&names[names.len() - 3..], ["tool_result", "error", "turn_done"]);
+    assert_eq!(turn_done(&evs).1, TurnDoneReason::Error);
+
+    // link 在 question 之后、工具之前
+    let mut h = spawn_default().await;
+    let mut kinds = Vec::new();
+    let evs = run_turn(&mut h, "question link permission", |p| {
+        kinds.push(p.kind);
+        PermissionDecision { option_id: Some("allow".into()), ..Default::default() }
+    })
+    .await;
+    assert_eq!(kinds, vec![PermissionKind::Question, PermissionKind::Other, PermissionKind::Tool]);
+    assert_eq!(turn_done(&evs).1, TurnDoneReason::Completed);
+}
+
+#[tokio::test]
+async fn slow_tasks_spaces_the_snapshots_more_than_the_daemon_throttle_window() {
+    // 不用 thinking 的模型：少几个 200 ms
+    let mut h = spawn_with(SessionSettings { model: Some("mock-small".into()), ..Default::default() }).await;
+    h.send(input("slow tasks")).await.unwrap();
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        if let AgentEvent::Event(Event::Task { status, .. }) = next(&mut h).await {
+            seen.push((status, std::time::Instant::now()));
+        }
+    }
+    h.cancel().await.unwrap();
+    assert_eq!(seen[0].0, TaskStatus::Running);
+    // daemon 对同一个任务至多每秒发一条快照：相隔不到 1 秒的第二条会被合并掉，`slow` 下必须超过
+    let gap = seen[1].1 - seen[0].1;
+    assert!(gap >= Duration::from_millis(1250), "{gap:?}");
+}
+
+#[tokio::test]
+async fn tasks_can_be_cancelled_between_events() {
+    let mut h = spawn_default().await;
+    h.send(input("slow tasks")).await.unwrap();
+    // 等到第一个 task 快照出来
+    loop {
+        if let AgentEvent::Event(Event::Task { .. }) = next(&mut h).await {
+            break;
+        }
+    }
+    h.cancel().await.unwrap();
+    let mut rest = Vec::new();
+    loop {
+        let ev = next(&mut h).await;
+        let done = matches!(&ev, AgentEvent::Event(Event::TurnDone { .. }));
+        rest.push(ev);
+        if done {
+            break;
+        }
+    }
+    assert_eq!(turn_done(&rest).1, TurnDoneReason::Cancelled);
+    // 没有走完整个序列：不会出现 completed 的快照
+    assert!(!events_of(&rest).iter().any(|e| matches!(e, Event::Task { status: TaskStatus::Completed, .. })));
 }
 
 // ---------- write：mock 唯一会写文件的关键词 ----------

@@ -1517,7 +1517,8 @@ fn link_roots_notes(unusable: &[Value]) -> Vec<String> {
             let reason = r.get("reason").and_then(Value::as_str).unwrap_or_default();
             let word =
                 if r.get("missing").and_then(Value::as_bool).unwrap_or(false) { "not usable" } else { "ignored" };
-            format!("warning: workspace.link_roots entry {entry:?} is {word}: {reason}")
+            // 引号 + `visible`（控制字符转义），不用 `{:?}`：Windows 路径的反斜杠不该被加倍
+            format!("warning: workspace.link_roots entry \"{}\" is {word}: {reason}", crate::output::visible(entry))
         })
         .collect()
 }
@@ -1889,7 +1890,7 @@ mod tests {
         assert_eq!(absolute_path_arg("~/work/x").unwrap(), "~/work/x");
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(absolute_path_arg("proj").unwrap(), cwd.join("proj").to_string_lossy());
-        assert_eq!(absolute_path_arg("./a/./b").unwrap(), cwd.join("a/b").to_string_lossy());
+        assert_eq!(absolute_path_arg("./a/./b").unwrap(), cwd.join("a").join("b").to_string_lossy());
         // `~user` 不是 `~/…`：当相对路径处理，由 daemon 判为 invalid 之前先变成绝对路径（不会被误展开）
         assert!(std::path::Path::new(&absolute_path_arg("~user/x").unwrap()).is_absolute());
     }

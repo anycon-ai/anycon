@@ -193,7 +193,8 @@ pub fn parse_lsof_cwd(out: &str) -> HashMap<u32, PathBuf> {
             'p' => pid = rest.trim().parse().ok(),
             'n' => {
                 if let Some(pid) = pid {
-                    if Path::new(rest).is_absolute() && !rest.contains(" (readlink:") && !rest.contains(" (stat:") {
+                    let absolute = rest.starts_with('/') || Path::new(rest).is_absolute();
+                    if absolute && !rest.contains(" (readlink:") && !rest.contains(" (stat:") {
                         m.insert(pid, PathBuf::from(rest));
                     }
                 }

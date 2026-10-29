@@ -144,7 +144,12 @@ struct ProcSpec<'a> {
 /// （`NotFound`）。其它平台原样返回，由 `Command` 按子进程环境的 `PATH` 找。
 pub fn command_program(program: &str, env: &HashMap<String, String>) -> std::path::PathBuf {
     if cfg!(windows) {
-        let path = env.get("PATH").map(String::as_str).unwrap_or_default();
+        // daemon 环境的键已经是大写；直接拿 `std::env::vars()` 的调用方给的是 `Path`
+        let path = env
+            .get("PATH")
+            .or_else(|| env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v))
+            .map(String::as_str)
+            .unwrap_or_default();
         let cwd = anycon_adapters::common::neutral_cwd();
         if let Some(p) = anycon_adapters::common::bin::which_all(program, path, &cwd).into_iter().next() {
             return p;
@@ -641,7 +646,7 @@ u UU N... 100644 100644 100644 100644 a b c conflict.rs\0\
 
     #[tokio::test]
     async fn commands_time_out_and_oversized_output_is_cut_without_hanging() {
-        let git = Git::new(Arc::new(std::env::vars().collect()));
+        let git = Git::new(Arc::new(crate::env::canonical_env(std::env::vars())));
         let d = tempfile::tempdir().unwrap();
         let out = git.at(d.path()).args(["--version"]).secs(10).run().await.unwrap();
         assert!(out.success() && out.text().starts_with("git version"));

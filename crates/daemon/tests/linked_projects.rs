@@ -256,8 +256,10 @@ async fn browse_rpc_reports_what_can_be_linked() {
     assert!(r.entries.iter().any(|e| e.name == ".dot"));
     let r: WorkspaceBrowseResult = a.call(&td, methods::WORKSPACE_BROWSE, json!({})).await.unwrap();
     assert!(!r.entries.iter().any(|e| e.name == ".dot"));
-    // 越界
-    let e = a.call::<WorkspaceBrowseResult>(&td, methods::WORKSPACE_BROWSE, json!({ "path": "/" })).await.unwrap_err();
+    // 越界（文件系统根：unix 的 `/`，Windows 上盘符的根）
+    let fs_root = machine.ancestors().last().unwrap().to_string_lossy().to_string();
+    let e =
+        a.call::<WorkspaceBrowseResult>(&td, methods::WORKSPACE_BROWSE, json!({ "path": fs_root })).await.unwrap_err();
     assert_eq!(code(&e), ErrorCode::Forbidden);
     td.shutdown().await;
 }

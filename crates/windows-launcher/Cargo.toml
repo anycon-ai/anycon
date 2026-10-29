@@ -1,0 +1,13 @@
+[package]
+name = "anycon-windows-launcher"
+description = "anyconw.exe：不带控制台窗口地运行 anycon.exe（Windows 计划任务用）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "anyconw"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

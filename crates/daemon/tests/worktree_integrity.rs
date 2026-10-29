@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anycon_daemon::store::WorktreeRow;
+#[cfg(unix)]
 use anycon_daemon::testutil::TestDaemon;
 use anycon_protocol::*;
 use common::wt::*;
@@ -295,7 +296,7 @@ async fn a_leftover_path_that_was_swapped_for_a_symlink_to_another_worktree_is_n
     let s1 = f.create(Some("proj"), None, Some(json!({ "mode": "worktree" }))).await.unwrap();
     let mut row = row_of(&f, &s1.worktree.as_ref().unwrap().id).await;
     let link = f.repo.join(".anycon/worktrees/the-link");
-    std::os::unix::fs::symlink(&dir, &link).unwrap();
+    anycon_daemon::testutil::symlink_dir(&dir, &link).unwrap();
     row.rel_path = ".anycon/worktrees/the-link".into();
     f.td.ctx.store.upsert_worktree(&row).await.unwrap();
     restart(&mut f).await;
@@ -310,18 +311,22 @@ async fn a_leftover_path_that_was_swapped_for_a_symlink_to_another_worktree_is_n
 // 冷缓存时 `workspace.list` 等 git 元数据算完；超时的算完之后发 `workspace.changed { updated }`
 // =====================================================================================================================
 
+#[cfg(unix)]
 async fn list_projects(td: &TestDaemon, c: &mut anycon_daemon::testutil::TestClient) -> WorkspaceListResult {
     c.call(td, methods::WORKSPACE_LIST, json!({})).await.unwrap()
 }
 
+#[cfg(unix)]
 fn pending_of(l: &WorkspaceListResult, name: &str) -> bool {
     l.projects.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{name} missing")).git_pending
 }
 
+#[cfg(unix)]
 fn git_of<'a>(l: &'a WorkspaceListResult, name: &str) -> Option<&'a GitMeta> {
     l.projects.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{name} missing")).git.as_ref()
 }
 
+#[cfg(unix)]
 fn updated_in(n: &RpcNotification) -> Vec<String> {
     if n.method != methods::WORKSPACE_CHANGED {
         return vec![];
@@ -329,6 +334,7 @@ fn updated_in(n: &RpcNotification) -> Vec<String> {
     serde_json::from_value::<WorkspaceChanged>(n.params.clone()).map(|c| c.updated).unwrap_or_default()
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_cold_cache_waits_for_the_git_metadata_instead_of_returning_projects_without_it() {
     let td = TestDaemon::start_git(&[]).await;
@@ -354,6 +360,7 @@ async fn a_cold_cache_waits_for_the_git_metadata_instead_of_returning_projects_w
     td.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn projects_slower_than_the_cold_budget_are_reported_later_with_workspace_changed_updated() {
     let td = TestDaemon::start_git(&[]).await;
@@ -405,6 +412,7 @@ async fn projects_slower_than_the_cold_budget_are_reported_later_with_workspace_
     td.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_project_whose_git_metadata_is_still_being_computed_is_pending_until_it_arrives_and_a_plain_folder_never_is()
 {
@@ -444,6 +452,7 @@ async fn a_project_whose_git_metadata_is_still_being_computed_is_pending_until_i
     td.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn with_a_cached_value_the_list_keeps_its_fifty_millisecond_front_budget() {
     let td = TestDaemon::start_git(&[]).await;
@@ -523,7 +532,7 @@ async fn a_kept_session_that_is_not_archived_is_rechecked_like_an_active_one_and
     let elsewhere = f.td.dir.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     f.td.git(&f.repo, &["worktree", "remove", "--force", dir.to_str().unwrap()]);
-    std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+    anycon_daemon::testutil::symlink_dir(&elsewhere, &dir).unwrap();
     let allow = req.options.iter().find(|o| o.kind == PermissionOptionKind::AllowOnce).unwrap().id.clone();
     let e = f
         .call::<Empty>(methods::PERMISSION_RESPOND, json!({ "request_id": req.request_id, "option_id": allow }))
@@ -572,10 +581,12 @@ async fn remove_worktree_is_busy_while_the_session_still_has_an_agent_process_ev
 // PR 轮次不在 sweeper 的同步路径上
 // =====================================================================================================================
 
+#[cfg(unix)]
 fn open_pr_json() -> String {
     json!({ "number": 9, "url": "https://example.test/pr/9", "title": "t", "state": "OPEN", "isDraft": false, "baseRefName": "main", "statusCheckRollup": [] }).to_string()
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_hung_gh_does_not_stall_the_periodic_directory_check() {
     let mut f = Fx::new().await;
@@ -609,6 +620,7 @@ async fn a_hung_gh_does_not_stall_the_periodic_directory_check() {
 // `gh pr view … -- <记录的分支>`；合并不签名
 // =====================================================================================================================
 
+#[cfg(unix)]
 #[tokio::test]
 async fn gh_is_asked_about_the_recorded_branch_after_a_double_dash_and_never_about_a_dash_name() {
     let mut f = Fx::new().await;
@@ -636,6 +648,7 @@ async fn gh_is_asked_about_the_recorded_branch_after_a_double_dash_and_never_abo
     f.td.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn the_merge_commit_of_a_sync_is_never_signed_and_never_runs_the_configured_gpg_program() {
     let mut f = Fx::new().await;
@@ -789,6 +802,7 @@ async fn records_with_the_old_short_base_spellings_keep_working_and_are_normaliz
 // 同步 / 归档处置 / 删 worktree 期间项目不能改名
 // =====================================================================================================================
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_project_cannot_be_renamed_while_a_session_runs_a_git_operation() {
     let mut f = Fx::new().await;

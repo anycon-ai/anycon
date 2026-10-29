@@ -308,11 +308,46 @@ pub fn reconcile_thinking(info: &AgentInfo, settings: &mut SessionSettings) -> b
     }
 }
 
-/// 不进会话 env 白名单：这些键不允许被 `settings.env` 覆盖。
-pub const ENV_PROTECTED: &[&str] = &["PATH", "HOME", "SHELL", "USER", "LOGNAME", "TMPDIR"];
+/// 不进会话 env 白名单：这些键不允许被 `settings.env` 覆盖。后半是 Windows 上同样地位的变量（家目录、系统目录、临时目录）。
+pub const ENV_PROTECTED: &[&str] = &[
+    "PATH",
+    "HOME",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "SYSTEMROOT",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+];
+
+/// 环境变量名在本平台上的规范写法。Windows 的环境变量不区分大小写（`Path` 和 `PATH` 是同一个变量），统一成大写；
+/// 其它平台原样。daemon 和 adapter 往环境表里放变量、按名字查找或比较之前都先过它，免得同一个变量以两种写法同时存在
+/// （交给子进程时哪个生效取决于顺序），也免得 `path` 这样的写法绕过按名字的检查。
+pub fn env_key_canonical(key: &str) -> std::borrow::Cow<'_, str> {
+    if cfg!(windows) && key.bytes().any(|b| b.is_ascii_lowercase()) {
+        std::borrow::Cow::Owned(key.to_ascii_uppercase())
+    } else {
+        std::borrow::Cow::Borrowed(key)
+    }
+}
+
+/// 环境表里的家目录（必须是绝对路径）：unix 看 `HOME`；Windows 上原生程序用 `USERPROFILE`，先看它再看 `HOME`
+/// （Git Bash 之类会设一个 `/c/Users/…` 形式的 `HOME`，那不是绝对路径，会被跳过）。键按 [`env_key_canonical`] 查。
+pub fn env_home(env: &HashMap<String, String>) -> Option<&str> {
+    let keys: &[&str] = if cfg!(windows) { &["USERPROFILE", "HOME"] } else { &["HOME"] };
+    keys.iter().filter_map(|k| env.get(*k)).map(String::as_str).find(|h| std::path::Path::new(h).is_absolute())
+}
 
 /// 会话 env 的黑名单前缀：能让子进程在审批之外执行代码、或把请求 / 依赖改发到别处的变量。
-/// 前缀匹配（`LD_` 匹配 `LD_PRELOAD`），大小写敏感。
+/// 前缀匹配（`LD_` 匹配 `LD_PRELOAD`），大小写敏感（Windows 上按 [`env_key_canonical`] 不区分大小写）。
 ///
 /// **这份名单不可能枚举完**（实测 `SHELLOPTS` + `PS4`、`LESSOPEN` 都能执行代码），所以它只是
 /// 第二道防线；第一道是 daemon 配置里的允许列表 `permissions.session_env_allow`（ADR-31），
@@ -429,6 +464,10 @@ pub const ENV_DENY_EXACT: &[&str] = &[
     "SUDO_ASKPASS",
     "SSH_ASKPASS",
     "DISPLAY_ASKPASS",
+    // Windows：`cmd /c` 用哪个解释器、哪些扩展名算可执行、PowerShell 从哪里加载模块
+    "COMSPEC",
+    "PATHEXT",
+    "PSMODULEPATH",
     // 编译器 / 构建器
     "CC",
     "CXX",
@@ -472,11 +511,15 @@ pub const ENV_DENY_EXACT: &[&str] = &[
 ];
 
 /// 运维配置的会话 env 允许列表（`permissions.session_env_allow`）是否放行 `key`。
-/// 每一项是精确键名，或以 `*` 结尾的前缀（`FEATURE_*`）；大小写敏感；列表为空就什么都不放行。
+/// 每一项是精确键名，或以 `*` 结尾的前缀（`FEATURE_*`）；大小写敏感（Windows 上不区分）；列表为空就什么都不放行。
 pub fn env_key_in_allowlist(key: &str, allow: &[String]) -> bool {
-    allow.iter().any(|pat| match pat.strip_suffix('*') {
-        Some(prefix) => !prefix.is_empty() && key.starts_with(prefix),
-        None => pat == key,
+    let key = env_key_canonical(key);
+    allow.iter().any(|pat| {
+        let pat = env_key_canonical(pat);
+        match pat.strip_suffix('*') {
+            Some(prefix) => !prefix.is_empty() && key.starts_with(prefix),
+            None => *pat == *key,
+        }
     })
 }
 
@@ -490,10 +533,12 @@ pub fn env_key_allowed(key: &str) -> std::result::Result<(), String> {
     if !valid_chars {
         return Err("invalid variable name".into());
     }
-    if ENV_PROTECTED.contains(&key) || ENV_DENY_EXACT.contains(&key) {
+    // Windows 上 `path` 就是 `PATH`：按规范写法比较
+    let canonical = env_key_canonical(key);
+    if ENV_PROTECTED.contains(&&*canonical) || ENV_DENY_EXACT.contains(&&*canonical) {
         return Err(format!("{key} may not be set per session"));
     }
-    if let Some(p) = ENV_DENY_PREFIXES.iter().find(|p| key.starts_with(*p)) {
+    if let Some(p) = ENV_DENY_PREFIXES.iter().find(|p| canonical.starts_with(*p)) {
         return Err(format!("variables starting with {p} may not be set per session"));
     }
     // npm 读 `npm_config_*` 不分大小写（`NPM_CONFIG_REGISTRY`、`Npm_Config_Registry` 都算）
@@ -555,6 +600,13 @@ mod env_tests {
         for key in ["MY_FLAG", "FEATURE_X", "DEBUG", "RUST_LOG", "TERM"] {
             assert!(env_key_allowed(key).is_ok(), "{key} should pass the denylist");
         }
+        // Windows 的变量；换个大小写在 Windows 上是同一个变量，同样拒绝
+        for key in ["COMSPEC", "PATHEXT", "USERPROFILE", "SYSTEMROOT"] {
+            assert!(env_key_allowed(key).is_err(), "{key} must be denied");
+        }
+        for key in ["path", "Path", "ComSpec", "Ld_Preload"] {
+            assert_eq!(env_key_allowed(key).is_err(), cfg!(windows), "{key}");
+        }
         for key in ["", "1ABC", "A-B", "A B", "é"] {
             assert!(env_key_allowed(key).is_err(), "{key:?} is not a valid name");
         }
@@ -566,7 +618,8 @@ mod env_tests {
         assert!(env_key_in_allowlist("MY_FLAG", &allow));
         assert!(env_key_in_allowlist("FEATURE_X", &allow));
         assert!(!env_key_in_allowlist("MY_FLAG2", &allow));
-        assert!(!env_key_in_allowlist("feature_x", &allow));
+        // 大小写敏感；Windows 的环境变量不区分大小写，`feature_x` 就是 `FEATURE_X`
+        assert_eq!(env_key_in_allowlist("feature_x", &allow), cfg!(windows));
         // 裸 `*` 不是通配，防止手滑放行一切
         assert!(!env_key_in_allowlist("ANYTHING", &allow));
         assert!(!env_key_in_allowlist("MY_FLAG", &[]));

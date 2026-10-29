@@ -252,13 +252,17 @@ async fn walk_worktree(w: &mut Walk<'_>, td: &TestDaemon) {
     wait_idle(w, &wsid).await;
     let wt_dir = repo.join(".anycon/worktrees/branch");
     std::fs::write(wt_dir.join("new.txt"), "x\ny\n").unwrap();
+    // 假 `gh` 是 sh 脚本，Windows 上没有（testutil 的 git 夹具），那里 `pr` 为空
+    #[cfg(unix)]
     td.set_gh(
         r#"{"number":3,"url":"https://example.test/pr/3","title":"t","state":"OPEN","isDraft":true,"baseRefName":"main","statusCheckRollup":[]}"#,
         "",
         0,
     );
     let st = w.call(methods::SESSION_GIT_STATUS, json!({ "session_id": wsid, "include_pr": true })).await;
-    assert_eq!(st["pr"]["state"], json!("draft"));
+    if cfg!(unix) {
+        assert_eq!(st["pr"]["state"], json!("draft"));
+    }
     assert_eq!(st["uncommitted"], json!(1));
     w.call(methods::SESSION_DIFF, json!({ "session_id": wsid })).await;
     let d =

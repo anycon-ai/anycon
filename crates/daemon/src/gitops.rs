@@ -16,6 +16,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anycon_adapters::common::proctree;
 use anycon_protocol::{DiffFileStatus, PullRequestInfo, PullRequestState};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
@@ -126,15 +127,6 @@ async fn read_capped<R: AsyncRead + Unpin>(r: Option<R>, cap: usize) -> (Vec<u8>
     }
 }
 
-fn kill_group(pid: Option<u32>) {
-    if let Some(pid) = pid {
-        // SAFETY: killpg 只是给进程组发信号；pid 是我们自己刚拉起、并且放进了独立进程组的子进程。
-        unsafe {
-            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-        }
-    }
-}
-
 /// 一次子进程调用的描述。
 struct ProcSpec<'a> {
     program: &'static str,
@@ -147,7 +139,7 @@ struct ProcSpec<'a> {
     safe_config: bool,
 }
 
-/// 拉起 `spec.program`，在独立进程组里跑，带超时和输出上限。
+/// 拉起 `spec.program`，在独立进程组里跑（Windows：Job Object，见 `anycon_adapters::common::proctree`），带超时和输出上限。
 async fn run_process(spec: ProcSpec<'_>, env: &HashMap<String, String>) -> Result<GitOut, GitError> {
     let ProcSpec { program, args, cwd, extra_env, timeout, stdout_cap, safe_config } = spec;
     let mut cmd = Command::new(program);
@@ -167,16 +159,16 @@ async fn run_process(spec: ProcSpec<'_>, env: &HashMap<String, String>) -> Resul
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
         .kill_on_drop(true);
+    proctree::isolate(&mut cmd);
     let mut child = cmd.spawn().map_err(|source| GitError::Spawn { program, source })?;
-    let pid = child.id();
+    let tree = proctree::Tree::attach(&child);
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
     let work = async {
         let ((out, truncated), (err, _)) =
             tokio::join!(read_capped(stdout, stdout_cap), read_capped(stderr, STDERR_CAP));
         if truncated {
-            kill_group(pid);
+            tree.kill();
         }
         let status = child.wait().await;
         (out, err, truncated, status)
@@ -187,7 +179,7 @@ async fn run_process(spec: ProcSpec<'_>, env: &HashMap<String, String>) -> Resul
             Ok(GitOut { code: status.code(), stdout, stderr, truncated })
         }
         Err(_) => {
-            kill_group(pid);
+            tree.kill();
             Err(GitError::Timeout { program, secs: timeout.as_secs() })
         }
     }

@@ -8,15 +8,17 @@
 //!   待答复的请求或某个请求的响应超长才是真的出错）
 //! - stdin 通过内部写任务串行写入，调用方随时 `send_json`；`close_stdin` 触发 EOF
 //! - stderr 只保留末尾一小段用于报错，不进日志之外的任何地方（单行也有上限，超出部分丢弃）
-//! - 优雅关闭：关 stdin → 短暂等待 → SIGINT → 宽限期（默认 5 秒）→ SIGKILL（整个进程组）
+//! - 优雅关闭：关 stdin → 短暂等待 → SIGINT → 宽限期（默认 5 秒）→ SIGKILL（整个进程组）。Windows 上没有 SIGINT 这一步
+//!   （[`super::proctree`]），关 stdin 之后等满两段时间再终止整棵进程树
 //!
-//! 子进程放进**自己的进程组**：SIGKILL 时连同它拉起的工具进程一起清掉；SIGINT 只发给进程本身，
-//! 让 agent 自己收尾。daemon 崩溃时 stdin 管道断开，agent 读到 EOF 也会退出。
+//! 子进程放进**自己的进程组**（Windows：Job Object，见 [`super::proctree`]）：SIGKILL 时连同它拉起的工具进程一起清掉；
+//! SIGINT 只发给进程本身，让 agent 自己收尾。daemon 崩溃时 stdin 管道断开，agent 读到 EOF 也会退出。
 //!
 //! **进程组总是会被清掉**：leader 退出（不管是自己退、被我们杀、还是崩溃）的那一刻，等待任务立刻对整个进程组
 //! `killpg(SIGKILL)` 一次，所以 Bash 工具派生的后台进程（dev server 之类）不会在 claude 退出后残留；
 //! `kill()` / `Drop` / `shutdown()` 在 leader 还没被回收时同样 `killpg`。leader 被回收之后不会再对这个 pid / pgid 发信号——
 //! pid 可能被系统复用，再发有误杀别的进程组的风险。「查是否已回收」和「发信号」之间不留空档：见 `Reaped`（本文件内部）。
+//! Windows 的 job 按句柄寻址，没有 pid 复用的问题，同一套调用顺序照样成立。
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -31,6 +33,8 @@ use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
+
+use super::proctree::Tree;
 
 /// stdout 单行上限的默认值（不含换行）。stream-json 里一个 `tool_result` 可能带很大的文件内容，所以给得宽；
 /// 但必须有上限，否则一个坏掉 / 被攻破的 CLI 能让 daemon 内存无限增长。
@@ -222,6 +226,7 @@ pub struct JsonlChild {
     stderr_tail: Arc<Mutex<StderrTail>>,
     /// leader 是否已被回收（回收后等待任务清一次进程组）。之后不再对这个 pid / pgid 发信号，免得 pid 被复用后误杀。
     reap: Arc<Reaped>,
+    tree: Arc<Tree>,
     /// stdout 出现了超过上限的行。
     overflow: Arc<AtomicBool>,
 }
@@ -259,7 +264,7 @@ impl Reaped {
     }
 
     /// leader 是否已被回收（只给测试观察；要发信号请用 [`Self::signal_if_alive`]，它在锁内查）。
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn is_reaped(&self) -> bool {
         self.reaped.load(Ordering::SeqCst)
     }
@@ -273,18 +278,6 @@ impl Reaped {
         }
         send();
         true
-    }
-}
-
-/// 对整个进程组发 SIGKILL。进程组已经空了（`ESRCH`）是正常情况。
-#[cfg(unix)]
-fn killpg_kill(pid: u32) {
-    use nix::sys::signal::{killpg, Signal};
-    use nix::unistd::Pid;
-    if let Err(e) = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL) {
-        if e != nix::errno::Errno::ESRCH {
-            tracing::debug!(pid, error = %e, "killpg failed");
-        }
     }
 }
 
@@ -315,10 +308,10 @@ impl JsonlChild {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        #[cfg(unix)]
-        cmd.process_group(0);
+        super::proctree::isolate(&mut cmd);
         let mut child = cmd.spawn()?;
         let pid = child.id();
+        let tree = Arc::new(Tree::attach(&child));
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -342,6 +335,7 @@ impl JsonlChild {
             let max_line = spec.max_line_bytes.max(1);
             let overflow = overflow.clone();
             let reap = reap.clone();
+            let tree = tree.clone();
             tokio::spawn(async move {
                 let mut rd = BufReader::new(stdout);
                 let mut buf = Vec::new();
@@ -371,12 +365,7 @@ impl JsonlChild {
                             LineSink::Plain(_) => {
                                 tracing::warn!(pid = ?pid, max_line, "child wrote a stdout line over the limit, killing it");
                                 overflow.store(true, Ordering::SeqCst);
-                                #[cfg(unix)]
-                                if let Some(pid) = pid {
-                                    reap.signal_if_alive(|| killpg_kill(pid));
-                                }
-                                #[cfg(not(unix))]
-                                let _ = &reap;
+                                reap.signal_if_alive(|| tree.kill());
                                 break;
                             }
                         },
@@ -419,6 +408,7 @@ impl JsonlChild {
         let (exit_tx, exit_rx) = watch::channel(None);
         {
             let reap = reap.clone();
+            let tree = tree.clone();
             tokio::spawn(async move {
                 let info = match reap.wait(&mut child).await {
                     Ok(status) => {
@@ -431,15 +421,12 @@ impl JsonlChild {
                     Err(_) => ExitInfo { code: None, signal: None },
                 };
                 // leader 已回收（标志已在 `reap.wait` 里置上，别人不会再发信号）：清这一次进程组，免得留后台进程
-                #[cfg(unix)]
-                if let Some(pid) = pid {
-                    killpg_kill(pid);
-                }
+                tree.kill();
                 let _ = exit_tx.send(Some(info));
             });
         }
 
-        Ok(Self { pid, stdin_tx: Mutex::new(Some(stdin_tx)), exit_rx, stderr_tail, reap, overflow })
+        Ok(Self { pid, stdin_tx: Mutex::new(Some(stdin_tx)), exit_rx, stderr_tail, reap, tree, overflow })
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -497,38 +484,31 @@ impl JsonlChild {
         self.stderr_tail.lock().map(|t| t.text()).unwrap_or_default()
     }
 
-    /// SIGINT 只发给进程本身。
+    /// SIGINT 只发给进程本身。Windows 上不做事（见 [`super::proctree`]）。
+    /// 已回收就不发（`has_exited()` 要等回收之后、清理进程组、再发布退出信息，窗口更宽）。
     pub fn interrupt(&self) {
-        #[cfg(unix)]
-        self.signal(nix::sys::signal::Signal::SIGINT);
+        self.reap.signal_if_alive(|| self.tree.interrupt());
     }
 
-    /// SIGKILL 整个进程组。leader 刚退出、还没被回收时照发（工具进程还在的情况正是要清的）；
+    /// 取消没有得到回应时的兜底：unix 发 SIGINT（[`Self::interrupt`]）；Windows 没有只发给一个进程的中断，
+    /// 直接终止整棵进程树（会话下次按 resume 接上）。
+    pub fn interrupt_or_kill(&self) {
+        if cfg!(windows) {
+            self.kill();
+        } else {
+            self.interrupt();
+        }
+    }
+
+    /// SIGKILL 整个进程组（Windows：终止整个 job）。leader 刚退出、还没被回收时照发（工具进程还在的情况正是要清的）；
     /// leader 一旦被回收（等待任务随即清过一次进程组）就不再发，避免 pid 复用误杀。
     pub fn kill(&self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.pid {
-            self.reap.signal_if_alive(|| killpg_kill(pid));
-        }
+        self.reap.signal_if_alive(|| self.tree.kill());
     }
 
     /// stdout 是否出现过超过 `max_line_bytes` 的行（此时进程已被杀，行通道随后关闭）。
     pub fn line_overflowed(&self) -> bool {
         self.overflow.load(Ordering::SeqCst)
-    }
-
-    #[cfg(unix)]
-    fn signal(&self, sig: nix::sys::signal::Signal) {
-        use nix::sys::signal::kill;
-        use nix::unistd::Pid;
-        let Some(pid) = self.pid else { return };
-        let pid = Pid::from_raw(pid as i32);
-        // 已回收就不发（`has_exited()` 要等回收之后、清理进程组、再发布退出信息，窗口更宽）
-        self.reap.signal_if_alive(|| {
-            if let Err(e) = kill(pid, sig) {
-                tracing::debug!(pid = pid.as_raw(), signal = ?sig, error = %e, "signal failed");
-            }
-        });
     }
 
     /// 关 stdin → 等 `after_stdin_close` → SIGINT → 等 `grace` → SIGKILL。返回最终退出信息。
@@ -819,5 +799,39 @@ mod tests {
             assert!(!child.reap.signal_if_alive(|| panic!("signalled a reaped pid")));
             hammer.await.unwrap();
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn spec(script: &str) -> SpawnSpec {
+        let env: HashMap<String, String> = std::env::vars().collect();
+        SpawnSpec {
+            program: PathBuf::from("cmd"),
+            args: vec!["/c".into(), script.into()],
+            env,
+            cwd: std::env::temp_dir(),
+            max_line_bytes: DEFAULT_MAX_LINE_BYTES,
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_lines_and_exit_code() {
+        // cmd 的引号规则和 MSVC 的不一样，这里不用引号
+        let (c, mut rx) = JsonlChild::spawn(&spec("echo hello& exit 3")).unwrap();
+        assert_eq!(rx.recv().await.as_deref(), Some("hello"));
+        let info = c.wait_exit(Duration::from_secs(10)).await.unwrap();
+        assert_eq!(info.code, Some(3));
+    }
+
+    #[tokio::test]
+    async fn shutdown_terminates_a_child_that_ignores_stdin_eof() {
+        let (c, _rx) = JsonlChild::spawn(&spec("ping -n 60 127.0.0.1 >NUL")).unwrap();
+        let t = ShutdownTimings { after_stdin_close: Duration::from_millis(200), grace: Duration::from_millis(200) };
+        let info = tokio::time::timeout(Duration::from_secs(10), c.shutdown(t)).await.unwrap();
+        assert_ne!(info.code, Some(0));
+        assert!(c.has_exited());
     }
 }

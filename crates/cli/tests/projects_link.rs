@@ -154,7 +154,7 @@ async fn config_set_link_roots_prints_which_entries_the_daemon_ignores_and_why()
     let machine = base.join("machine");
     std::fs::create_dir_all(machine.join("real-code")).unwrap();
     std::fs::create_dir_all(machine.join("fine")).unwrap();
-    std::os::unix::fs::symlink(machine.join("real-code"), machine.join("code")).unwrap();
+    anycon_daemon::testutil::symlink_dir(&machine.join("real-code"), &machine.join("code")).unwrap();
     init(&home, &base.join("ws"), "box", None).await;
     for id in ["claude-code", "codex"] {
         let r = anycon(&home, &["config", "set", &format!("agents.{id}.enabled"), "false"], None, &[]).await;

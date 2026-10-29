@@ -116,7 +116,33 @@ pub struct ResolveOptions<'a> {
     pub probe_all: bool,
 }
 
+/// 已知目录里要找的文件名：unix 就是 `name`；Windows 上按 `PATHEXT` 的常见扩展名（`claude.exe`、npm 装的 `codex.cmd`）。
+fn executable_names(name: &str) -> Vec<String> {
+    if cfg!(windows) && Path::new(name).extension().is_none() {
+        [".exe", ".cmd", ".bat", ".com"].iter().map(|ext| format!("{name}{ext}")).collect()
+    } else {
+        vec![name.to_string()]
+    }
+}
+
+/// 已知安装位置。`~/.nvm/versions/node/*/bin` 展开成各个已装的 node 版本。Windows 上是原生安装器、npm、scoop 等的目录。
+#[cfg(windows)]
+pub fn well_known_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(h) = home {
+        // Claude Code 的原生安装器、bun、cargo、npm 全局（`%APPDATA%\npm`）、scoop、volta
+        dirs.push(h.join(".local").join("bin"));
+        dirs.push(h.join(".bun").join("bin"));
+        dirs.push(h.join(".cargo").join("bin"));
+        dirs.push(h.join("AppData").join("Roaming").join("npm"));
+        dirs.push(h.join("scoop").join("shims"));
+        dirs.push(h.join("AppData").join("Local").join("Volta").join("bin"));
+    }
+    dirs
+}
+
 /// 已知安装位置。`~/.nvm/versions/node/*/bin` 展开成各个已装的 node 版本。
+#[cfg(not(windows))]
 pub fn well_known_dirs(home: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(h) = home {
@@ -147,6 +173,7 @@ fn is_executable_file(p: &Path) -> bool {
     std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }
 
+/// Windows 没有可执行位，按扩展名决定（[`executable_names`] 只拼可执行的扩展名）。
 #[cfg(not(unix))]
 fn is_executable_file(p: &Path) -> bool {
     p.is_file()
@@ -185,12 +212,14 @@ pub fn collect_candidates(name: &str, env: &HashMap<String, String>, cwd: &Path)
             push(p, CommandOrigin::Path, &mut out);
         }
     }
-    // 相对的 HOME 会让已知目录按 daemon 当前目录解析，不可信
-    let home = env.get("HOME").map(PathBuf::from).filter(|h| h.is_absolute());
+    // 相对的 HOME 会让已知目录按 daemon 当前目录解析，不可信（`env_home` 只认绝对路径）
+    let home = anycon_agent_api::env_home(env).map(PathBuf::from);
     for dir in well_known_dirs(home.as_deref()) {
-        let p = dir.join(name);
-        if is_executable_file(&p) {
-            push(p, CommandOrigin::WellKnown, &mut out);
+        for file in executable_names(name) {
+            let p = dir.join(file);
+            if is_executable_file(&p) {
+                push(p, CommandOrigin::WellKnown, &mut out);
+            }
         }
     }
     out
@@ -296,7 +325,8 @@ pub fn resolve_program(
     }
 }
 
-#[cfg(test)]
+// 假 CLI 是 `#!/bin/sh` 脚本，只在 unix 上跑
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::fs;

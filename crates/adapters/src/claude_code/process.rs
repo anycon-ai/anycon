@@ -680,6 +680,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn lookup_ignores_relative_path_entries_and_uses_a_neutral_cwd() {
         use std::os::unix::fs::PermissionsExt;

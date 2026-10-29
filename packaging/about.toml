@@ -23,12 +23,13 @@ accepted = [
   "0BSD",
 ]
 
-# 只算发布的四个平台；hub 镜像和 wasm 在命令行用 `--target` 覆盖。
+# 只算发布的五个平台；hub 镜像和 wasm 在命令行用 `--target` 覆盖。
 targets = [
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
 ]
 
 # build / dev 依赖不进最终产物。

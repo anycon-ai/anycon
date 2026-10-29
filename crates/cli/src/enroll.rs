@@ -21,13 +21,12 @@ use anycon_protocol::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::signal::unix::Signal;
 use zeroize::Zeroizing;
 
 use crate::cli::{ConnectArgs, PairArgs, ViaArg};
 use crate::commands::App;
 use crate::error::{CliError, Result, EXIT_ERROR, EXIT_NOT_PAIRED};
-use crate::output::{ago, interrupt_signal, sanitize_label, short_id};
+use crate::output::{ago, interrupt_signal, sanitize_label, short_id, InterruptSignal};
 use crate::remote::{self, ConnectFail, HubState, HubWs, NodeEntry, PairDoneInfo};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -92,7 +91,12 @@ impl Ui for TermUi {
 }
 
 /// 在阻塞线程里问一行，同时等 `Ctrl+C`。
-async fn prompt(ui: &Arc<dyn Ui>, secret: bool, text: String, sigint: &mut Signal) -> Result<Zeroizing<String>> {
+async fn prompt(
+    ui: &Arc<dyn Ui>,
+    secret: bool,
+    text: String,
+    sigint: &mut InterruptSignal,
+) -> Result<Zeroizing<String>> {
     let u = ui.clone();
     let task = tokio::task::spawn_blocking(move || if secret { u.ask_secret(&text) } else { u.ask(&text) });
     tokio::select! {
@@ -230,7 +234,7 @@ impl Account {
     }
 
     /// 登录（已经登录就什么都不做）。方式来自 `GET /api/config`：邮箱验证码，或 token。
-    async fn ensure(&mut self, ui: &Arc<dyn Ui>, sigint: &mut Signal) -> Result<()> {
+    async fn ensure(&mut self, ui: &Arc<dyn Ui>, sigint: &mut InterruptSignal) -> Result<()> {
         if self.cookie.is_some() {
             return Ok(());
         }
@@ -275,7 +279,7 @@ impl Account {
         Ok(())
     }
 
-    async fn login_token(&self, ui: &Arc<dyn Ui>, sigint: &mut Signal) -> Result<String> {
+    async fn login_token(&self, ui: &Arc<dyn Ui>, sigint: &mut InterruptSignal) -> Result<String> {
         let token = prompt(ui, true, "Account token: ".into(), sigint).await?;
         if token.trim().is_empty() {
             return Err(CliError::usage("no token entered"));
@@ -290,7 +294,7 @@ impl Account {
         session_cookie(&r).ok_or_else(|| CliError::general("the hub signed us in but sent no session"))
     }
 
-    async fn login_email(&self, ui: &Arc<dyn Ui>, sigint: &mut Signal) -> Result<String> {
+    async fn login_email(&self, ui: &Arc<dyn Ui>, sigint: &mut InterruptSignal) -> Result<String> {
         let email = match &self.email {
             Some(e) => e.clone(),
             None => prompt(ui, false, "Email address: ".into(), sigint).await?.to_string(),
@@ -433,7 +437,7 @@ fn via_to_method(v: ViaArg) -> (EnrollMethod, bool) {
     }
 }
 
-async fn choose_via(ui: &Arc<dyn Ui>, sigint: &mut Signal) -> Result<ViaArg> {
+async fn choose_via(ui: &Arc<dyn Ui>, sigint: &mut InterruptSignal) -> Result<ViaArg> {
     ui.say("How do you want to unlock the node?");
     ui.say("  1) scan      scan a QR code with a paired phone (web UI: approve a new device)");
     ui.say("  2) approve   ask a paired device to approve this one, then type the 6-digit code it shows");
@@ -452,7 +456,7 @@ async fn choose_via(ui: &Arc<dyn Ui>, sigint: &mut Signal) -> Result<ViaArg> {
     Err(CliError::usage("no method chosen"))
 }
 
-async fn choose_node(ui: &Arc<dyn Ui>, nodes: &[&AccountDevice], sigint: &mut Signal) -> Result<String> {
+async fn choose_node(ui: &Arc<dyn Ui>, nodes: &[&AccountDevice], sigint: &mut InterruptSignal) -> Result<String> {
     ui.say("Which node?");
     for (i, d) in nodes.iter().enumerate() {
         ui.say(&format!(
@@ -479,7 +483,7 @@ async fn enroll_inner(
     req: &EnrollRequest,
     state: &mut HubState,
     account: &mut Account,
-    sigint: &mut Signal,
+    sigint: &mut InterruptSignal,
 ) -> Result<Joined> {
     // 1. 选节点。这台 CLI 已经配对过它（本地记录）或者给的是完整的 id：不用列表，也不用登录；否则按账号里的设备列表选：
     //    这台 CLI 已经是这个 hub 上的设备就先用设备 token 列（只读），hub 不认（401）才回退到登录
@@ -587,7 +591,12 @@ async fn enroll_inner(
 }
 
 /// 问接入码，格式不对（不是 6 位数字）就重问；格式错的不会发给 daemon，不占尝试次数。
-async fn ask_code(ui: &Arc<dyn Ui>, init: &mut Initiator, prompt_text: &str, sigint: &mut Signal) -> Result<()> {
+async fn ask_code(
+    ui: &Arc<dyn Ui>,
+    init: &mut Initiator,
+    prompt_text: &str,
+    sigint: &mut InterruptSignal,
+) -> Result<()> {
     for _ in 0..CODE_FORMAT_RETRIES {
         let code = prompt(ui, false, prompt_text.into(), sigint).await?;
         match init.set_code(&code) {
@@ -711,7 +720,7 @@ async fn run_handshake(
     ttl: Duration,
     ack_timeout: Duration,
     state: &mut HubState,
-    sigint: &mut Signal,
+    sigint: &mut InterruptSignal,
 ) -> Result<NodeEntry> {
     let method = init.method();
     let deadline = Instant::now() + ttl;

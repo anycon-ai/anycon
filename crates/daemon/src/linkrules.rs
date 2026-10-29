@@ -17,6 +17,10 @@
 //!    所以「root 在 D 里面」只需要看它的 canonical 路径；
 //! 4. 隐藏目录（`Hidden`）：从包含它的、最深的 link root 往下，路径里有以 `.` 开头的一段就拒绝；
 //! 5. 使用时复核（[`LinkCtx::resolve_linked`]）：canonicalize 之后必须**等于登记的路径**，并重跑 2–4。
+//!
+//! Windows 上：「符号链接」包括 junction（标准库的 `is_symlink` 两者都认）；文件系统根是每个盘符的根和 UNC 共享的根；
+//! 拒绝表换成 Windows 的系统目录（按 `SystemRoot`、`ProgramFiles` 等环境变量定位）和 home 下的 `AppData`、PowerShell 配置等；
+//! 没有 `/var` 这类系统别名和 firmlink。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -59,7 +63,19 @@ const DENY_UNDER_HOME: &[&str] = &[
     ".claude",
 ];
 
+/// Windows：拒绝表里 home 之下的项。`AppData` 里有自启动目录、凭证和各种程序的配置；PowerShell 的配置脚本每次启动都会执行。
+/// 第二项比 `AppData` 深，单列是为了「放行 `AppData` 仍然不放行自启动目录」。
+#[cfg(windows)]
+const DENY_UNDER_HOME_WINDOWS: &[&str] = &[
+    "AppData",
+    "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup",
+    "Documents/PowerShell",
+    "Documents/WindowsPowerShell",
+    "scoop",
+];
+
 /// 拒绝表里的绝对路径（系统目录）。macOS 上 `/etc` `/var` 是 `/private/…` 的符号链接，canonicalize 之后才比较。
+#[cfg(not(windows))]
 const DENY_ABSOLUTE: &[&str] = &[
     "/etc",
     "/private",
@@ -78,6 +94,42 @@ const DENY_ABSOLUTE: &[&str] = &[
     "/Applications",
 ];
 
+/// Windows 的系统目录：按环境变量定位（系统盘不一定是 `C:`），取不到时用默认位置。
+#[cfg(windows)]
+fn deny_absolute() -> Vec<PathBuf> {
+    let var = |k: &str, default: &str| std::env::var_os(k).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(default));
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    vec![
+        var("SystemRoot", r"C:\Windows"),
+        var("ProgramFiles", r"C:\Program Files"),
+        var("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        var("ProgramW6432", r"C:\Program Files"),
+        var("ProgramData", r"C:\ProgramData"),
+        PathBuf::from(format!(r"{drive}\Users\Public")),
+        PathBuf::from(format!(r"{drive}\Users\Default")),
+        PathBuf::from(format!(r"{drive}\$Recycle.Bin")),
+        PathBuf::from(format!(r"{drive}\System Volume Information")),
+        PathBuf::from(format!(r"{drive}\Recovery")),
+    ]
+}
+
+#[cfg(not(windows))]
+fn deny_absolute() -> Vec<PathBuf> {
+    DENY_ABSOLUTE.iter().map(PathBuf::from).collect()
+}
+
+/// home 之下的拒绝项（相对路径）。
+fn deny_under_home() -> Vec<&'static str> {
+    #[cfg(windows)]
+    {
+        DENY_UNDER_HOME.iter().chain(DENY_UNDER_HOME_WINDOWS).copied().collect()
+    }
+    #[cfg(not(windows))]
+    {
+        DENY_UNDER_HOME.to_vec()
+    }
+}
+
 /// macOS 上第一次访问就会弹「隐私与安全性」授权的 home 下的目录；列 `~` 时不去探测它们里面有没有 `.git`。
 const TCC_UNDER_HOME: &[&str] = &["Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", "Public"];
 
@@ -95,21 +147,25 @@ pub fn check_path_text(raw: &str) -> RpcResult<()> {
     Ok(())
 }
 
-/// 绝对路径原样返回；`~` / `~/…` 按 `home` 展开；其余（相对路径、`~user`）拒绝。
+/// 绝对路径原样返回；`~` / `~/…`（Windows 上也认 `~\…`）按 `home` 展开；其余（相对路径、`~user`）拒绝。
 pub fn expand_with_home(raw: &str, home: Option<&Path>) -> Result<PathBuf, String> {
-    if raw == "~" || raw.starts_with("~/") {
+    let rest = crate::util::strip_tilde_slash(raw);
+    if raw == "~" || rest.is_some() {
         let home = home.ok_or_else(|| "cannot expand `~`: the daemon environment has no usable HOME".to_string())?;
-        return Ok(if raw == "~" { home.to_path_buf() } else { home.join(&raw[2..]) });
+        return Ok(match rest {
+            Some(rest) => home.join(rest),
+            None => home.to_path_buf(),
+        });
     }
-    if raw.starts_with('/') {
+    if Path::new(raw).is_absolute() {
         return Ok(PathBuf::from(raw));
     }
     Err("path must be absolute, `~` or `~/…`".to_string())
 }
 
-/// [`expand_with_home`]，`home` 取 daemon 环境里的 `HOME`（必须是绝对路径）。
+/// [`expand_with_home`]，`home` 取 daemon 环境里的家目录（`HOME`，Windows 上 `USERPROFILE`；必须是绝对路径）。
 pub fn expand_home(raw: &str, env: &HashMap<String, String>) -> Result<PathBuf, String> {
-    expand_with_home(raw, env.get("HOME").filter(|h| h.starts_with('/')).map(Path::new))
+    expand_with_home(raw, anycon_agent_api::env_home(env).map(Path::new))
 }
 
 /// 不碰文件系统地去掉 `.` 和 `..`（只用来决定错误码，不用来授权）。
@@ -133,7 +189,7 @@ pub fn canonicalize_lenient(p: &Path) -> PathBuf {
     let mut existing = p.clone();
     let mut tail: Vec<OsString> = Vec::new();
     loop {
-        match std::fs::canonicalize(&existing) {
+        match crate::sys::canonicalize(&existing) {
             Ok(mut c) => {
                 for t in tail.iter().rev() {
                     c.push(t);
@@ -175,10 +231,9 @@ pub fn starts_with_folded(p: &Path, prefix: &Path, case_insensitive: bool) -> bo
     fold_path(p, case_insensitive).starts_with(fold_path(prefix, case_insensitive))
 }
 
-/// 目录的身份：`(设备号, inode)`。
+/// 目录的身份：`(设备号, inode)`（Windows：卷序列号和文件索引）。
 pub fn identity_of(p: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()))
+    crate::sys::identity_of(p)
 }
 
 /// 一个目录自己和它所有祖先的身份：绝对拒绝的「在里面 / 包含」沿这条链判断，不看路径是哪种写法。
@@ -235,9 +290,9 @@ pub fn deny_table(home: Option<&Path>) -> Vec<DenyEntry> {
 /// [`deny_table`]，`$HOME` 的词法路径（daemon 环境里的原样）和 canonical 路径分开给：canonical 的那个由调用方在启动时固定下来，
 /// 之后 HOME 这个链接被改指向别处，拒绝表仍然指着原来的目录。
 pub fn deny_table_with(home: Option<&Path>, home_canon: Option<&Path>) -> Vec<DenyEntry> {
-    let mut out: Vec<DenyEntry> = DENY_ABSOLUTE.iter().map(|p| DenyEntry::new(PathBuf::from(p))).collect();
+    let mut out: Vec<DenyEntry> = deny_absolute().into_iter().map(DenyEntry::new).collect();
     if let (Some(h), Some(c)) = (home, home_canon) {
-        out.extend(DENY_UNDER_HOME.iter().map(|rel| {
+        out.extend(deny_under_home().into_iter().map(|rel| {
             let lexical = lexical_clean(&h.join(rel));
             DenyEntry { lexical, canon: canonicalize_lenient(&c.join(rel)) }
         }));
@@ -248,13 +303,16 @@ pub fn deny_table_with(home: Option<&Path>, home_canon: Option<&Path>) -> Vec<De
 }
 
 /// 系统别名：macOS 上 `/var` `/tmp` `/etc` 是指向 `/private/…` 的符号链接，运维和脚本通常写短的那个。返回 `(别名, 真实位置)`，
-/// 只含这台机器上确实是别名的（Linux 上一般是空的）。
+/// 只含这台机器上确实是别名的（Linux 上一般是空的，Windows 上没有）。
 pub fn system_aliases() -> Vec<(PathBuf, PathBuf)> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
     ["/var", "/tmp", "/etc"]
         .iter()
         .filter_map(|a| {
             let alias = PathBuf::from(a);
-            let real = std::fs::canonicalize(&alias).ok()?;
+            let real = crate::sys::canonicalize(&alias).ok()?;
             (real != alias).then_some((alias, real))
         })
         .collect()
@@ -651,7 +709,7 @@ impl LinkCtx {
         if let Some(b) = self.lexical_block(&normalized) {
             return Err(err(b.code, b.message));
         }
-        match std::fs::canonicalize(&normalized) {
+        match crate::sys::canonicalize(&normalized) {
             Ok(c) if self.roots.within(&c) => Ok(c),
             Ok(_) => Err(err(ErrorCode::Forbidden, OUTSIDE_ROOTS)),
             Err(e) => match e.kind() {
@@ -663,7 +721,7 @@ impl LinkCtx {
 
     /// 规则 5：使用一个已关联的项目之前复核登记的路径。
     pub fn resolve_linked(&self, registered: &Path) -> Result<PathBuf, LinkedProblem> {
-        let canon = std::fs::canonicalize(registered).map_err(|_| LinkedProblem::Missing)?;
+        let canon = crate::sys::canonicalize(registered).map_err(|_| LinkedProblem::Missing)?;
         if !canon.is_dir() {
             return Err(LinkedProblem::Missing);
         }
@@ -690,7 +748,80 @@ pub fn permission_message() -> &'static str {
     "permission denied; on macOS this is usually a privacy restriction: allow anycon in System Settings > Privacy & Security (Files and Folders, or Full Disk Access) on that machine"
 }
 
-#[cfg(test)]
+// 下面的测试用的是 unix 路径（`/h/.ssh`、`/etc`）；Windows 的规则在 `windows_tests`
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn ctx(roots: &[&str]) -> LinkCtx {
+        let roots: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
+        LinkCtx {
+            roots: LinkRoots { raw: roots.clone(), canon: roots },
+            root: PathBuf::from(r"C:\h\anycon"),
+            data: PathBuf::from(r"C:\h\.anycon"),
+            data_lexical: PathBuf::from(r"C:\h\.anycon"),
+            root_ids: Identities::default(),
+            data_ids: Identities::default(),
+            aliases: PathAliases::default(),
+            deny: deny_table(Some(Path::new(r"C:\h"))),
+            tcc: tcc_table(Some(Path::new(r"C:\h"))),
+            linked: Vec::new(),
+            case_insensitive: true,
+        }
+    }
+
+    fn block(c: &LinkCtx, p: &str) -> Option<LinkBlock> {
+        c.block_of(&canonicalize_lenient(Path::new(p))).map(|b| b.block)
+    }
+
+    #[test]
+    fn system_and_profile_directories_are_denied() {
+        let c = ctx(&[r"C:\"]);
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        for p in [sysroot.clone(), format!(r"{sysroot}\System32")] {
+            assert_eq!(block(&c, &p), Some(LinkBlock::Sensitive), "{p}");
+        }
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            assert_eq!(block(&c, &format!(r"{pf}\Vendor")), Some(LinkBlock::Sensitive));
+        }
+        for p in [
+            r"C:\h\AppData",
+            r"C:\h\AppData\Roaming\npm",
+            r"C:\h\.ssh",
+            r"C:\h\Documents\PowerShell",
+            r"C:\h\Documents\WindowsPowerShell\profile.ps1",
+        ] {
+            assert_eq!(block(&c, p), Some(LinkBlock::Sensitive), "{p}");
+        }
+        assert_eq!(block(&c, r"C:\h\code\proj"), None);
+        assert_eq!(block(&c, r"C:\h\Documents\GitHub\proj"), None);
+        assert_eq!(block(&c, r"C:\"), Some(LinkBlock::FilesystemRoot));
+    }
+
+    #[test]
+    fn allowing_appdata_still_denies_the_startup_folder() {
+        let c = ctx(&[r"C:\h", r"C:\h\AppData"]);
+        assert_eq!(block(&c, r"C:\h\AppData\Local\proj"), None);
+        assert_eq!(
+            block(&c, r"C:\h\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"),
+            Some(LinkBlock::Sensitive)
+        );
+    }
+
+    #[test]
+    fn tilde_expands_with_either_separator_and_drive_paths_are_absolute() {
+        let h = Some(Path::new(r"C:\Users\me"));
+        assert_eq!(expand_with_home("~", h).unwrap(), PathBuf::from(r"C:\Users\me"));
+        assert_eq!(expand_with_home(r"~\code", h).unwrap(), PathBuf::from(r"C:\Users\me\code"));
+        assert_eq!(expand_with_home("~/code", h).unwrap(), PathBuf::from(r"C:\Users\me\code"));
+        assert_eq!(expand_with_home(r"D:\work", h).unwrap(), PathBuf::from(r"D:\work"));
+        assert!(expand_with_home(r"\work", h).is_err(), "no drive letter: not absolute");
+        assert!(expand_with_home("work", h).is_err());
+        assert!(expand_with_home("~", None).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -864,7 +995,7 @@ mod tests {
     #[test]
     fn canonical_tables_follow_the_symlinks_of_the_home_directory() {
         let d = tempfile::tempdir().unwrap();
-        let real = std::fs::canonicalize(d.path()).unwrap().join("real-home");
+        let real = crate::sys::canonicalize(d.path()).unwrap().join("real-home");
         std::fs::create_dir_all(real.join(".ssh")).unwrap();
         let link = real.parent().unwrap().join("home-link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
@@ -887,7 +1018,7 @@ mod tests {
     #[test]
     fn resolve_linked_requires_the_registered_path_and_the_current_rules() {
         let d = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(d.path()).unwrap();
+        let base = crate::sys::canonicalize(d.path()).unwrap();
         let proj = base.join("work/proj");
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::create_dir_all(base.join("data/keys")).unwrap();
@@ -977,7 +1108,7 @@ mod tests {
         assert_eq!(normalize_aliases(Path::new("/home/x"), al), PathBuf::from("/home/x"));
         // 这台机器上的别名：要么是空的（Linux），要么每一项真的是符号链接
         for (alias, real) in system_aliases() {
-            assert_eq!(std::fs::canonicalize(&alias).unwrap(), real);
+            assert_eq!(crate::sys::canonicalize(&alias).unwrap(), real);
             assert_ne!(alias, real);
         }
     }
@@ -1018,7 +1149,7 @@ mod tests {
     #[test]
     fn a_containing_directory_names_a_denied_location_that_exists() {
         let d = tempfile::tempdir().unwrap();
-        let home = std::fs::canonicalize(d.path()).unwrap().join("home");
+        let home = crate::sys::canonicalize(d.path()).unwrap().join("home");
         std::fs::create_dir_all(home.join(".kube")).unwrap(); // 只有 .kube 存在
         let mut c = ctx(&[home.to_str().unwrap()], &[]);
         c.deny = deny_table(Some(&home));

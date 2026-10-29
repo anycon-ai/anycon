@@ -1,30 +1,28 @@
-//! 本机 Unix socket 端到端：换行分隔的 JSON-RPC，和内层协议同一套方法。
+//! 本机通道（Unix socket / Windows 命名管道）端到端：换行分隔的 JSON-RPC，和内层协议同一套方法。
 
-use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
+use anycon_daemon::local::ClientStream;
 use anycon_daemon::testutil::TestDaemon;
 use anycon_daemon::{Daemon, DaemonError, DaemonOptions};
 use anycon_protocol::*;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 
 const T: Duration = Duration::from_secs(10);
 
 struct Sock {
-    r: BufReader<OwnedReadHalf>,
-    w: OwnedWriteHalf,
+    r: BufReader<ReadHalf<ClientStream>>,
+    w: WriteHalf<ClientStream>,
     next: u64,
     notes: Vec<RpcNotification>,
 }
 
 impl Sock {
     async fn connect(td: &TestDaemon) -> Sock {
-        let s = UnixStream::connect(td.paths.sock()).await.unwrap();
-        let (r, w) = s.into_split();
+        let s = anycon_daemon::local::connect(&td.paths.sock()).await.unwrap();
+        let (r, w) = tokio::io::split(s);
         Sock { r: BufReader::new(r), w, next: 0, notes: vec![] }
     }
 
@@ -78,8 +76,10 @@ impl Sock {
 #[tokio::test]
 async fn node_info_agent_list_and_end_to_end_session_over_the_socket() {
     let td = TestDaemon::start_with(&[], true).await;
-    let mode = std::fs::metadata(td.paths.sock()).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "socket is private");
+    // 命名管道不是文件，它的 DACL 在 `local` 模块的单元测试里
+    if cfg!(unix) {
+        anycon_daemon::testutil::assert_mode(&td.paths.sock(), 0o600);
+    }
     let mut s = Sock::connect(&td).await;
 
     let info: NodeInfo = s.call(methods::NODE_INFO, json!({})).await.unwrap();

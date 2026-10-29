@@ -542,7 +542,7 @@ impl AgentHandle for ClaudeHandle {
         self.child
             .send_json(&json!({ "type": "control_request", "request_id": id, "request": { "subtype": "interrupt" } }));
 
-        // 兜底：一段时间内没有 `result` 就 SIGINT。只认发起取消的这个 turn：`busy` 是 watch，
+        // 兜底：一段时间内没有 `result` 就 SIGINT（Windows 上终止进程树）。只认发起取消的这个 turn：`busy` 是 watch，
         // 收尾后紧接着开始的下一个 turn 会把那一下 false 盖掉，单看 `busy` 会把下一个 turn 一起打断。
         let turn = self.shared.translator.lock().expect("translator lock").turn_id();
         let mut busy_rx = self.shared.busy.subscribe();
@@ -556,8 +556,10 @@ impl AgentHandle for ClaudeHandle {
                 t.is_busy() && t.turn_id() == turn
             };
             if still_running && !child.has_exited() {
-                tracing::warn!("claude: no result after interrupt, sending SIGINT");
-                child.interrupt();
+                tracing::warn!(
+                    "claude: no result after interrupt, sending SIGINT (Windows: terminating the process tree)"
+                );
+                child.interrupt_or_kill();
             }
         });
         Ok(())

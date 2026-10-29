@@ -1,16 +1,16 @@
 //! 节点身份：Noise 静态私钥（`keys/node.key`）、hub 签发的设备 id / token。
 //!
-//! 私钥文件是 32 字节随机数的 hex，权限 0600。`anycon init` 生成；daemon 启动时只读取。
+//! 私钥文件是 32 字节随机数的 hex，只有属主能读写（unix 0600；Windows 见 [`crate::sys::restrict_to_owner`]）。`anycon init` 生成；daemon 启动时只读取。
 //! 公钥用 `anycon_crypto::Keypair::from_secret` 现算，所以本模块不依赖 crypto 的实现是否就绪来生成密钥。
 
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::RwLock;
 
 use anycon_crypto::Keypair;
 
 use crate::config::Paths;
+use crate::sys::OwnerOnly;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityError {
@@ -36,11 +36,12 @@ pub fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
     }
     let tmp = path.with_extension("tmp");
     {
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).owner_only().open(&tmp)?;
         f.write_all(content.as_bytes())?;
         f.sync_all()?;
     }
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    // 已有的 tmp 文件不受 `owner_only` 影响；Windows 上数据目录可能还没限制过（只用 CLI 的机器），这里显式设一次
+    crate::sys::restrict_to_owner(&tmp)?;
     std::fs::rename(&tmp, path)
 }
 

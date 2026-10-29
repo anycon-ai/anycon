@@ -3,7 +3,6 @@
 
 mod common;
 
-use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -406,7 +405,7 @@ async fn a_symlinked_anycon_directory_is_refused_and_nothing_is_written_through_
     let mut f = Fx::new().await;
     let outside = f.td.dir.path().join("elsewhere");
     std::fs::create_dir_all(&outside).unwrap();
-    std::os::unix::fs::symlink(&outside, f.repo.join(".anycon")).unwrap();
+    anycon_daemon::testutil::symlink_dir(&outside, &f.repo.join(".anycon")).unwrap();
     let s = f.create_wt("through a link").await;
     let s = f.wait_wt_state(&s.id, WorktreeState::Failed).await;
     assert!(std::fs::read_dir(&outside).unwrap().next().is_none(), "nothing was created behind the link");
@@ -446,8 +445,10 @@ async fn agent_start_timeout_only_counts_after_the_worktree_exists() {
     f.td.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn worktreeinclude_copies_ignored_files_skips_links_and_respects_the_limits() {
+    use std::os::unix::fs::PermissionsExt;
     let mut f = Fx::new().await;
     // 被忽略的本地文件
     f.td.commit_file(&f.repo, ".gitignore", ".env\nnode_modules/\nlink.txt\nsecret.bin\n", "ignore");

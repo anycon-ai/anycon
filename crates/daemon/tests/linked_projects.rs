@@ -438,7 +438,7 @@ async fn a_linked_directory_swapped_for_a_symlink_to_the_data_directory_is_unrea
     std::fs::create_dir_all(td.paths.home.join("keys")).unwrap();
     std::fs::write(td.paths.home.join("keys/node.key"), "dummy-value").unwrap();
     std::fs::remove_dir_all(machine.join("proj")).unwrap();
-    std::os::unix::fs::symlink(&td.paths.home, machine.join("proj")).unwrap();
+    anycon_daemon::testutil::symlink_dir(&td.paths.home, &machine.join("proj")).unwrap();
 
     for (method, params) in [
         (methods::FS_LIST, json!({ "path": "pj" })),
@@ -515,7 +515,7 @@ fn shutdowns(td: &TestDaemon, idx: usize) -> usize {
 
 async fn swap_for_symlink(dir: &std::path::Path, target: &std::path::Path) {
     std::fs::rename(dir, dir.with_extension("real")).unwrap();
-    std::os::unix::fs::symlink(target, dir).unwrap();
+    anycon_daemon::testutil::symlink_dir(target, dir).unwrap();
 }
 
 /// 进程还活着、会话空闲，关联目录被换成指向数据目录的符号链接。

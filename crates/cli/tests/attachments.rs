@@ -4,23 +4,24 @@
 
 mod common;
 
+use anycon_daemon::local::ClientStream;
 use anycon_daemon::testutil::{png_fixture, sha256_hex};
 use base64::Engine as _;
 use common::*;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 
 /// 一行一条 JSON-RPC 的最小 socket 客户端。
 struct Sock {
-    r: BufReader<tokio::net::unix::OwnedReadHalf>,
-    w: tokio::net::unix::OwnedWriteHalf,
+    r: BufReader<ReadHalf<ClientStream>>,
+    w: WriteHalf<ClientStream>,
     next: u64,
 }
 
 impl Sock {
     async fn connect(home: &std::path::Path) -> Sock {
-        let (r, w) = UnixStream::connect(home.join("daemon.sock")).await.unwrap().into_split();
+        let sock = anycon_daemon::config::Paths::new(home).sock();
+        let (r, w) = tokio::io::split(anycon_daemon::local::connect(&sock).await.unwrap());
         Sock { r: BufReader::new(r), w, next: 0 }
     }
 

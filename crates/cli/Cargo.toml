@@ -22,7 +22,6 @@ tracing.workspace = true
 clap = { version = "4.6.7", features = ["derive", "env"] }
 clap_complete = "4.6.11"
 qrcode = "0.14.1"
-libc = "0.2.190"
 hex.workspace = true
 uuid.workspace = true
 rand.workspace = true
@@ -33,6 +32,12 @@ zeroize = "1.9.1"
 sha2 = "0.11.0"
 base64.workspace = true
 rmp-serde.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
 
 [dev-dependencies]
 anycon-daemon = { path = "../daemon", features = ["testing"] }

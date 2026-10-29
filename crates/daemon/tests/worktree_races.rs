@@ -3,6 +3,9 @@
 //! 用 PATH 里的包装脚本制造（`TestDaemon::slow_git` / `fail_git` / `set_gh_sleep`），不依赖机器负载。
 //!
 //! 每个用例都对着一个具体的现象：去掉对应的修复就红。
+//!
+//! 这些测试靠 `testutil` 里的 sh 包装脚本造慢 git / 失败的 git 和假 `gh`，只在 unix 上跑。
+#![cfg(unix)]
 
 mod common;
 

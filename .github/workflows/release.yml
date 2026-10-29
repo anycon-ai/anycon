@@ -1,7 +1,8 @@
 # 发布：推 `v*` 标签时构建并发布（README、docs/deploy.md 的安装说明以这里的产物为准）：
 #   1. hub 镜像 ghcr.io/anycon-ai/hub：linux/amd64、linux/arm64 各在原生 runner 上构建（Rust 在 QEMU 下太慢），
 #      按 digest 推送，再合成一个多架构清单，打 `<版本>`、`<主>.<次>`、`latest` 标签（预发布版只打 `<版本>`）
-#   2. `anycon` 二进制：macOS arm64 / x64、Linux x64 / arm64（glibc ≥ 2.35），连同 install.sh 挂到 GitHub Release
+#   2. `anycon` 二进制：macOS arm64 / x64、Linux x64 / arm64（glibc ≥ 2.35）、Windows x64（另带没有控制台窗口的启动器
+#      anyconw.exe，ADR-42），连同 install.sh / install.ps1 挂到 GitHub Release
 #   3. npm 包 @anycon/protocol、@anycon/sdk：bun 打包（prepack 重新构建 dist 和 wasm，把 workspace:* 换成实际版本），
 #      npm 发布这两个 tarball（带 provenance），protocol 先于 sdk
 #   4. Homebrew formula：在 macOS 上从刚建好的 Release 装一遍、跑 `brew test`，再推到 anycon-ai/homebrew-tap
@@ -227,6 +228,54 @@ jobs:
             dist/*.tar.gz.sha256
           if-no-files-found: error
 
+  # Windows：MSVC 目标，原生 runner。压缩包是 zip，里面有 anycon.exe 和 anyconw.exe（计划任务用的、没有控制台窗口的启动器）。
+  binaries-windows:
+    name: anycon (x86_64-pc-windows-msvc)
+    needs: plan
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      VERSION: ${{ needs.plan.outputs.version }}
+      # aws-lc-sys 在 x86_64 Windows 上要 NASM；runner 上没有，用它自带的预编译目标文件
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+      - name: 构建
+        run: cargo build --release --locked -p anycon-cli -p anycon-windows-launcher --target "$TARGET"
+      - name: 二进制能跑
+        run: |
+          "target/$TARGET/release/anycon.exe" --version | tr -d '\r' | grep -qx "anycon $VERSION"
+          test -s "target/$TARGET/release/anyconw.exe"
+      - name: 安装 cargo-about
+        run: cargo install cargo-about --locked --features cli --version "$CARGO_ABOUT_VERSION"
+      - name: 第三方许可证
+        run: |
+          cargo fetch --locked
+          cargo about generate packaging/about.hbs -c packaging/about.toml -m crates/cli/Cargo.toml --frozen --fail \
+            --target "$TARGET" -o THIRD-PARTY-LICENSES.txt
+      - name: 打包
+        run: |
+          name="anycon-$TARGET"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/anycon.exe" "target/$TARGET/release/anyconw.exe" \
+            LICENSE README.md CHANGELOG.md THIRD-PARTY-LICENSES.txt "dist/$name/"
+          (cd dist && 7z a -tzip -bso0 "$name.zip" "$name")
+          (cd dist && sha256sum "$name.zip" > "$name.zip.sha256")
+          cat "dist/$name.zip.sha256"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bin-${{ env.TARGET }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+
   npm:
     name: npm packages
     needs: plan
@@ -297,7 +346,7 @@ jobs:
 
   image-manifest:
     name: image (tags)
-    needs: [plan, image, binaries, npm]
+    needs: [plan, image, binaries, binaries-windows, npm]
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -350,7 +399,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: [plan, image, binaries, npm]
+    needs: [plan, image, binaries, binaries-windows, npm]
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -367,18 +416,22 @@ jobs:
           path: dist
           pattern: bin-*
           merge-multiple: true
-      - name: install.sh（默认装这一版）和 SHA256SUMS
+      - name: install.sh / install.ps1（默认装这一版）和 SHA256SUMS
         run: |
           sed "s/^DEFAULT_VERSION=\"\"$/DEFAULT_VERSION=\"$VERSION\"/" packaging/install.sh > dist/install.sh
           grep -qx "DEFAULT_VERSION=\"$VERSION\"" dist/install.sh
-          (cd dist && sha256sum ./*.tar.gz install.sh | sed 's| \./| |' > SHA256SUMS)
+          sed "s/^\$DefaultVersion = ''$/\$DefaultVersion = '$VERSION'/" packaging/install.ps1 > dist/install.ps1
+          grep -qx "\$DefaultVersion = '$VERSION'" dist/install.ps1
+          (cd dist && sha256sum ./*.tar.gz ./*.zip install.sh install.ps1 | sed 's| \./| |' > SHA256SUMS)
           cat dist/SHA256SUMS
       - name: 构建来源证明（gh attestation verify）
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.tar.gz
+            dist/*.zip
             dist/install.sh
+            dist/install.ps1
       - name: Release notes（CHANGELOG 里这一版的段落 + 安装方式）
         run: |
           awk -v v="$VERSION" '
@@ -405,6 +458,12 @@ jobs:
           curl -fsSL https://github.com/anycon-ai/anycon/releases/download/v$VERSION/install.sh | sh
           \`\`\`
 
+          Windows x64 (PowerShell):
+
+          \`\`\`powershell
+          irm https://github.com/anycon-ai/anycon/releases/download/v$VERSION/install.ps1 | iex
+          \`\`\`
+
           npm: [\`@anycon/protocol@$VERSION\`](https://www.npmjs.com/package/@anycon/protocol/v/$VERSION), [\`@anycon/sdk@$VERSION\`](https://www.npmjs.com/package/@anycon/sdk/v/$VERSION).
 
           Each archive contains \`THIRD-PARTY-LICENSES.txt\`. Verify an archive with \`sha256sum -c SHA256SUMS\` or \`gh attestation verify <file> --repo anycon-ai/anycon\`.
@@ -424,7 +483,7 @@ jobs:
 
   npm-publish:
     name: npm publish
-    needs: [plan, image, binaries, npm]
+    needs: [plan, image, binaries, binaries-windows, npm]
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:

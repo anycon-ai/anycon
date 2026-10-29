@@ -182,19 +182,20 @@ pub async fn init(app: &App, a: InitArgs) -> Result<u8> {
     Ok(0)
 }
 
-pub async fn daemon(app: &App, _a: DaemonArgs) -> Result<u8> {
-    let cfg = Config::load(&app.paths).map_err(|e| {
-        if app.paths.config_toml().exists() {
+pub async fn daemon(app: &App, a: DaemonArgs) -> Result<u8> {
+    let paths = match a.home {
+        Some(h) => anycon_daemon::config::Paths::new(h),
+        None => app.paths.clone(),
+    };
+    let cfg = Config::load(&paths).map_err(|e| {
+        if paths.config_toml().exists() {
             CliError::general(e.to_string())
         } else {
-            CliError::not_initialized(format!(
-                "{} is not initialized; run `anycon init` first",
-                app.paths.home.display()
-            ))
+            CliError::not_initialized(format!("{} is not initialized; run `anycon init` first", paths.home.display()))
         }
     })?;
-    let _guard = anycon_daemon::logging::init(&app.paths.logs_dir(), &cfg.log.level, cfg.log.retention_days, true);
-    match anycon_daemon::run(app.paths.clone()).await {
+    let _guard = anycon_daemon::logging::init(&paths.logs_dir(), &cfg.log.level, cfg.log.retention_days, true);
+    match anycon_daemon::run(paths).await {
         Ok(()) => Ok(0),
         Err(e) if e.is_not_initialized() => Err(CliError::not_initialized(e.to_string())),
         Err(e) => Err(CliError::general(e.to_string())),
@@ -204,10 +205,10 @@ pub async fn daemon(app: &App, _a: DaemonArgs) -> Result<u8> {
 pub async fn service(app: &App, cmd: ServiceCmd) -> Result<u8> {
     let msg = match cmd {
         ServiceCmd::Install => crate::service::install(&app.paths.home).await?,
-        ServiceCmd::Uninstall => crate::service::uninstall().await?,
-        ServiceCmd::Start => crate::service::control("start").await?,
-        ServiceCmd::Stop => crate::service::control("stop").await?,
-        ServiceCmd::Restart => crate::service::control("restart").await?,
+        ServiceCmd::Uninstall => crate::service::uninstall(&app.paths.home).await?,
+        ServiceCmd::Start => crate::service::control("start", &app.paths.home).await?,
+        ServiceCmd::Stop => crate::service::control("stop", &app.paths.home).await?,
+        ServiceCmd::Restart => crate::service::control("restart", &app.paths.home).await?,
         ServiceCmd::Status => crate::service::status(&app.paths.home).await?,
     };
     if app.json() {
@@ -765,7 +766,7 @@ fn local_path_arg(conn: &Conn, raw: &str) -> Result<String> {
 
 /// 绝对路径和 `~` / `~/…`（由 daemon 按它的 HOME 展开）原样返回；其余相对当前目录转成绝对路径（不解析符号链接，daemon 会 canonicalize）。
 fn absolute_path_arg(raw: &str) -> Result<String> {
-    if raw.starts_with('/') || raw == "~" || raw.starts_with("~/") {
+    if std::path::Path::new(raw).is_absolute() || raw == "~" || anycon_daemon::util::strip_tilde_slash(raw).is_some() {
         return Ok(raw.to_string());
     }
     let abs = std::path::absolute(raw)

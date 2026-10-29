@@ -155,6 +155,7 @@ dependencies = [
  "tracing",
  "uuid",
  "which",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -199,6 +200,7 @@ dependencies = [
  "tracing",
  "unicode-general-category",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -236,6 +238,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
+ "dunce",
  "figment",
  "flate2",
  "futures",
@@ -270,6 +273,7 @@ dependencies = [
  "unicode-normalization",
  "uuid",
  "webpki-roots 0.26.11",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -327,6 +331,13 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "anycon-windows-launcher"
+version = "0.1.1"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

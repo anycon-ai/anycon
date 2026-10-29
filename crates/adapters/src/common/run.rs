@@ -1,8 +1,8 @@
 //! 带超时的一次性子进程调用（`--version`、`auth status`、`type -a` 这类）。
 //!
 //! stdout / stderr 各只保留前 [`MAX_CAPTURE_BYTES`] 字节（超出的部分读掉丢弃，不让子进程卡在写管道上），
-//! 子进程放进自己的进程组，超时或 leader 退出时整组清掉（nvm / volta 的 shim 会再起一层 node）。
-//! leader 被回收之后不再对这个 pid / pgid 发信号（pid 可能已被复用），见 `child::Reaped`。
+//! 子进程放进自己的进程组（Windows：Job Object，见 [`super::proctree`]），超时或 leader 退出时整组清掉
+//! （nvm / volta 的 shim 会再起一层 node）。leader 被回收之后不再对这个 pid / pgid 发信号（pid 可能已被复用），见 `child::Reaped`。
 //! cwd 缺省（目录不存在）时用系统临时目录，**绝不继承 daemon 当前所在的目录**（可能是用户的家目录或项目）。
 
 use std::collections::HashMap;
@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use super::child::Reaped;
+use super::proctree::Tree;
 
 /// 每个输出流最多保留的字节数。
 pub const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
@@ -73,15 +74,6 @@ async fn read_capped<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> (Vec<u8>, bo
     (out, truncated)
 }
 
-#[cfg(unix)]
-fn killpg_kill(pid: u32) {
-    use nix::sys::signal::{killpg, Signal};
-    use nix::unistd::Pid;
-    #[cfg(test)]
-    tests::KILLPG_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(pid);
-    let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
-}
-
 /// 运行 `program args…`：清空继承的环境，只用 `env`；stdin 为空；超时即杀（整个进程组）。
 pub async fn run_capture(
     program: &Path,
@@ -98,8 +90,7 @@ pub async fn run_capture(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(unix)]
-    cmd.process_group(0);
+    super::proctree::isolate(&mut cmd);
     if cwd.is_dir() {
         cmd.current_dir(cwd);
     } else {
@@ -117,7 +108,7 @@ pub async fn run_capture(
             Err(e) => return RunOutput { spawn_error: Some(e.to_string()), ..Default::default() },
         }
     };
-    let pid = child.id();
+    let tree = Tree::attach(&child);
     let (stdout, stderr) = (child.stdout.take().expect("piped stdout"), child.stderr.take().expect("piped stderr"));
     let reap = Reaped::default();
     let work = async {
@@ -125,10 +116,7 @@ pub async fn run_capture(
         // 这是回收之后唯一的一次 killpg；`reap.wait` 在回收的同一刻置标志，超时分支据此不再发信号
         let wait = async {
             let status = reap.wait(&mut child).await;
-            #[cfg(unix)]
-            if let Some(pid) = pid {
-                killpg_kill(pid);
-            }
+            tree.kill();
             status
         };
         tokio::join!(read_capped(stdout, MAX_CAPTURE_BYTES), read_capped(stderr, MAX_CAPTURE_BYTES), wait)
@@ -147,12 +135,7 @@ pub async fn run_capture(
             // 超时：future 已被丢弃。leader 还没被回收就整组杀掉（kill_on_drop 只杀 leader）；
             // 已经回收了（读管道的一侧被逃出进程组的后台进程拖住的情形）就不再发信号——
             // 回收时已经清过一次进程组，这时 pid 可能已被别的进程复用
-            #[cfg(unix)]
-            if let Some(pid) = pid {
-                reap.signal_if_alive(|| killpg_kill(pid));
-            }
-            #[cfg(not(unix))]
-            let _ = &reap;
+            reap.signal_if_alive(|| tree.kill());
             RunOutput { timed_out: true, ..Default::default() }
         }
     }
@@ -161,10 +144,6 @@ pub async fn run_capture(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// 测试里记下每次 `killpg_kill` 的 pid（进程内共享，按 pid 过滤用）。
-    pub(super) static KILLPG_LOG: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
     fn env() -> HashMap<String, String> {
         HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())])
@@ -225,7 +204,12 @@ mod tests {
         .await;
         assert!(out.timed_out, "{out:?}");
         let pid: u32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
-        let n = KILLPG_LOG.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|p| **p == pid).count();
+        let n = crate::common::proctree::KILL_LOG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|p| **p == pid)
+            .count();
         assert_eq!(n, 1, "only the cleanup right after the reaping may killpg pid {pid}");
     }
 
@@ -244,7 +228,12 @@ mod tests {
         .await;
         assert!(out.timed_out);
         let pid: u32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
-        let n = KILLPG_LOG.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|p| **p == pid).count();
+        let n = crate::common::proctree::KILL_LOG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|p| **p == pid)
+            .count();
         assert_eq!(n, 1, "the leader was alive at the deadline: exactly one killpg");
     }
 

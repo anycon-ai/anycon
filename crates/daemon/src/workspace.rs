@@ -15,7 +15,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
@@ -236,7 +235,7 @@ impl Workspace {
         std::fs::create_dir_all(root)?;
         std::fs::create_dir_all(root.join(TRASH_DIR))?;
         std::fs::create_dir_all(root.join(SCRATCH_DIR))?;
-        let root = std::fs::canonicalize(root)?;
+        let root = crate::sys::canonicalize(root)?;
         let linked: BTreeMap<String, PathBuf> = match store.list_linked().await {
             Ok(rows) => rows.into_iter().map(|r| (r.name, PathBuf::from(r.path))).collect(),
             Err(e) => {
@@ -245,9 +244,9 @@ impl Workspace {
             }
         };
         let case_insensitive = probe_case_insensitive(&root);
-        let home = env.get("HOME").filter(|h| h.starts_with('/')).map(|h| {
+        let home = anycon_agent_api::env_home(&env).map(|h| {
             let raw = PathBuf::from(h);
-            let canon = std::fs::canonicalize(&raw).unwrap_or_else(|_| raw.clone());
+            let canon = crate::sys::canonicalize(&raw).unwrap_or_else(|_| raw.clone());
             HomeDir { raw, canon }
         });
         let git = Arc::new(GitMetaSvc::new(env.clone(), clients.clone()));
@@ -332,7 +331,7 @@ impl Workspace {
             Err(_) => return Err(err(ErrorCode::NotFound, format!("project {name} not found"))),
         }
         let canon =
-            std::fs::canonicalize(&p).map_err(|_| err(ErrorCode::NotFound, format!("project {name} not found")))?;
+            crate::sys::canonicalize(&p).map_err(|_| err(ErrorCode::NotFound, format!("project {name} not found")))?;
         if !canon.starts_with(&self.root) {
             return Err(err(ErrorCode::Forbidden, "project path escapes the workspace root"));
         }
@@ -371,7 +370,8 @@ impl Workspace {
         };
         let mut joined = boundary.clone();
         joined.extend(rest);
-        let canon = std::fs::canonicalize(&joined).map_err(|_| err(ErrorCode::NotFound, format!("{rel} not found")))?;
+        let canon =
+            crate::sys::canonicalize(&joined).map_err(|_| err(ErrorCode::NotFound, format!("{rel} not found")))?;
         if !canon.starts_with(&boundary) {
             return Err(err(ErrorCode::Forbidden, "path escapes the project directory"));
         }
@@ -437,7 +437,7 @@ impl Workspace {
             if !md.is_dir() {
                 continue;
             }
-            if let Ok(canon) = std::fs::canonicalize(e.path()) {
+            if let Ok(canon) = crate::sys::canonicalize(e.path()) {
                 if !canon.starts_with(&self.root) {
                     continue;
                 }
@@ -446,7 +446,7 @@ impl Workspace {
                 shadowed.push(name);
                 continue;
             }
-            out.insert(name, md.ino());
+            out.insert(name, crate::sys::file_identity(&md, &e.path(), true).map_or(0, |(_, ino)| ino));
         }
         (out, shadowed)
     }
@@ -735,7 +735,9 @@ impl Workspace {
         }
         let dir = self.project_path(name)?;
         let md = std::fs::metadata(&dir).map_err(|_| err(ErrorCode::NotFound, format!("project {name} not found")))?;
-        Ok(format!("folder:{}#{}:{}", self.canonical_project_name(name), md.dev(), md.ino()))
+        let (dev, ino) = crate::sys::file_identity(&md, &dir, true)
+            .ok_or_else(|| err(ErrorCode::NotFound, format!("project {name} not found")))?;
+        Ok(format!("folder:{}#{}:{}", self.canonical_project_name(name), dev, ino))
     }
 
     /// 记下的位置和现在的位置比较。
@@ -791,7 +793,7 @@ impl Workspace {
     /// HOME 现在的 canonical 路径和启动时不一样了（运行中 HOME 这个链接被改指向别处）：返回现在的路径。
     fn home_moved(&self) -> Option<PathBuf> {
         let h = self.home.as_ref()?;
-        let now = std::fs::canonicalize(&h.raw).ok()?;
+        let now = crate::sys::canonicalize(&h.raw).ok()?;
         (now != h.canon).then_some(now)
     }
 
@@ -834,7 +836,7 @@ impl Workspace {
                 },
             );
         };
-        if configured == "~" || configured.starts_with("~/") {
+        if configured == "~" || crate::util::strip_tilde_slash(configured).is_some() {
             if let Some(now) = self.home_moved() {
                 let was = self.home.as_ref().map(|h| h.canon.display().to_string()).unwrap_or_default();
                 return (
@@ -859,7 +861,7 @@ impl Workspace {
             }
             match std::fs::symlink_metadata(&cur) {
                 Ok(m) if m.file_type().is_symlink() => {
-                    let target = std::fs::canonicalize(&cur).map(|t| t.display().to_string()).unwrap_or_default();
+                    let target = crate::sys::canonicalize(&cur).map(|t| t.display().to_string()).unwrap_or_default();
                     return (
                         Some(normalized.clone()),
                         RootJudgement::Ignored {
@@ -876,7 +878,7 @@ impl Workspace {
                 Err(_) => return (Some(normalized), RootJudgement::Missing),
             }
         }
-        match std::fs::canonicalize(&normalized) {
+        match crate::sys::canonicalize(&normalized) {
             Ok(c) if c.is_dir() => {
                 // 没有链接，canonical 路径和写法最多差在大小写 / Unicode 规范化；差得更多说明有我们没认出来的别名，宁可忽略
                 if fold_path(&c, true) == fold_path(&normalized, true) {
@@ -981,7 +983,7 @@ impl Workspace {
         let mut ctx = LinkCtx {
             roots,
             root: self.root.clone(),
-            data: std::fs::canonicalize(data).unwrap_or_else(|_| data.clone()),
+            data: crate::sys::canonicalize(data).unwrap_or_else(|_| data.clone()),
             data_lexical: lexical_clean(data),
             root_ids: Default::default(),
             data_ids: Default::default(),
@@ -1492,7 +1494,7 @@ impl Workspace {
             let Ok(md) = std::fs::symlink_metadata(&path) else { continue };
             // 指向边界（根目录，或关联项目自己的目录）之外的符号链接不列出
             let md = if md.file_type().is_symlink() {
-                match std::fs::canonicalize(&path) {
+                match crate::sys::canonicalize(&path) {
                     Ok(c) if c.starts_with(&boundary) => std::fs::metadata(&c).unwrap_or(md),
                     _ => continue,
                 }
@@ -1561,12 +1563,9 @@ fn path_string(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// `access(2)`：只看权限位，不打开目录（打开 `~/Documents` 之类会在 macOS 上触发隐私授权弹窗）。
+/// 能不能进入并列出目录（[`crate::sys::can_read_dir`]：unix 上只看权限位，不打开目录）。
 fn can_read_dir(p: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return false };
-    // SAFETY: `c` 是以 NUL 结尾的有效 C 字符串；access 只读取它。
-    unsafe { libc::access(c.as_ptr(), libc::R_OK | libc::X_OK) == 0 }
+    crate::sys::can_read_dir(p)
 }
 
 /// 浏览时一个目录的状态：能不能关联；不能又不是因为已经是项目时，原因。
@@ -1607,7 +1606,7 @@ fn browse_blocking(ctx: &LinkCtx, target: PathBuf, show_hidden: bool) -> RpcResu
         if !md.is_dir() {
             continue;
         }
-        let Ok(canon) = std::fs::canonicalize(&p) else { continue };
+        let Ok(canon) = crate::sys::canonicalize(&p) else { continue };
         if !ctx.roots.within(&canon) || !can_read_dir(&canon) {
             continue;
         }
@@ -1644,8 +1643,9 @@ fn browse_blocking(ctx: &LinkCtx, target: PathBuf, show_hidden: bool) -> RpcResu
 
 /// workspace 根所在的卷是不是不区分大小写：`.trash` 和 `.TRASH` 是不是同一个目录（不写任何东西）。
 fn probe_case_insensitive(root: &Path) -> bool {
-    match (std::fs::metadata(root.join(TRASH_DIR)), std::fs::metadata(root.join(TRASH_DIR.to_uppercase()))) {
-        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+    let (lower, upper) = (root.join(TRASH_DIR), root.join(TRASH_DIR.to_uppercase()));
+    match (crate::sys::identity_of(&lower), crate::sys::identity_of(&upper)) {
+        (Some(a), Some(b)) => a == b,
         _ => false,
     }
 }
@@ -1803,7 +1803,7 @@ pub async fn worktree_ready_fresh(env: &HashMap<String, String>, path: &Path) ->
         return false;
     }
     let top = String::from_utf8_lossy(&top.stdout).trim().to_string();
-    match (std::fs::canonicalize(&top), std::fs::canonicalize(path)) {
+    match (crate::sys::canonicalize(&top), crate::sys::canonicalize(path)) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
@@ -2013,7 +2013,8 @@ pub fn names_of(list: &WorkspaceListResult) -> HashSet<String> {
     list.projects.iter().map(|p| p.name.clone()).collect()
 }
 
-#[cfg(test)]
+// 这些测试大量用到符号链接、权限位和 `/var` 这类 unix 路径；Windows 上的路径规则由 `linkrules` 的 Windows 测试和集成测试覆盖
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::clients::testing::ChanSink;
@@ -2021,6 +2022,7 @@ mod tests {
     use crate::config::{Config, Paths};
     use crate::linkrules::{expand_home, lexical_clean, system_aliases};
     use anycon_protocol::RpcNotification;
+    use std::os::unix::fs::MetadataExt;
     use std::sync::atomic::Ordering;
     use tokio::sync::mpsc;
 
@@ -2397,7 +2399,7 @@ mod tests {
     async fn link_fixture_with(link_roots: &str, prepare: impl FnOnce(&Path, &Path)) -> LinkFx {
         let d = tempfile::tempdir().unwrap();
         // macOS 的临时目录在符号链接（/var -> /private/var）后面：所有断言用 canonical 路径
-        let base = std::fs::canonicalize(d.path()).unwrap();
+        let base = crate::sys::canonicalize(d.path()).unwrap();
         let home = base.join("home");
         let data = home.join(".anycon");
         let root = home.join("anycon");
@@ -2917,7 +2919,7 @@ mod tests {
             assert!(p.starts_with('/'), "{p} is not absolute");
             assert!(p == "/" || !p.ends_with('/'), "{p} has a trailing separator");
             assert!(!p.contains("/./") && !p.contains("/../") && !p.contains("//"), "{p} is not clean");
-            assert_eq!(std::fs::canonicalize(p).unwrap().to_string_lossy(), p, "{p} is not canonical");
+            assert_eq!(crate::sys::canonicalize(p).unwrap().to_string_lossy(), p, "{p} is not canonical");
         };
         // 缺省 path = 第一个可用的 root（跳过不存在的、文件、经过符号链接的）；roots 里每项 canonical，重复合并
         let r = f.ws.browse(None, false).await.unwrap();
@@ -3605,7 +3607,7 @@ mod tests {
     async fn system_alias_spellings_of_a_root_are_usable_and_not_reported_as_ignored() {
         let f = link_fixture("[]").await;
         let aliases = system_aliases();
-        let tmp = std::fs::canonicalize("/tmp").unwrap();
+        let tmp = crate::sys::canonicalize("/tmp").unwrap();
         let mut cases: Vec<(String, PathBuf)> = vec![("/tmp".into(), tmp.clone())];
         if Path::new("/private/tmp").exists() {
             cases.push(("/private/tmp".into(), PathBuf::from("/private/tmp")));
@@ -3980,7 +3982,7 @@ mod tests {
         use crate::linkrules::{LinkCtx, LinkRoots, PathAliases};
         use anycon_protocol::LinkBlock as B;
         let d = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(d.path()).unwrap();
+        let base = crate::sys::canonicalize(d.path()).unwrap();
         std::fs::create_dir_all(base.join("sys/home/me/anycon/proj")).unwrap();
         std::fs::create_dir_all(base.join("sys/home/me/.anycon/keys")).unwrap();
         std::fs::create_dir_all(base.join("sys/home/me/code")).unwrap();
@@ -4031,7 +4033,7 @@ mod tests {
     fn firmlink_spellings_are_normalized_when_the_identities_match() {
         use crate::linkrules::normalize_firmlinks;
         let d = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(d.path()).unwrap();
+        let base = crate::sys::canonicalize(d.path()).unwrap();
         std::fs::create_dir_all(base.join("home/me/work")).unwrap();
         std::fs::create_dir_all(base.join("datavol/usr/local/bin")).unwrap();
         std::fs::create_dir_all(base.join("usr/local")).unwrap();

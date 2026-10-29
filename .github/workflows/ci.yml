@@ -62,8 +62,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # 不在第一个失败的测试二进制处停下：Windows 上的失败往往互不相关，一次看全
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       - name: happy path（hub + daemon + CLI 端到端，经命名管道）
         run: cargo test -p anycon-cli --test happy_path
 

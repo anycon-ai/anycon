@@ -646,10 +646,11 @@ mod tests {
             ("PATH".to_string(), "/usr/bin:/bin".to_string()),
             ("HOME".to_string(), tmp.path().to_string_lossy().into_owned()),
         ]);
-        // 配置里的绝对路径直接用，带前置参数
-        let cfg = AdapterConfig { command: Some("/opt/x/claude --profile a".into()), ..Default::default() };
+        // 配置里的绝对路径直接用，带前置参数（Windows 上绝对路径要带盘符）
+        let abs = if cfg!(windows) { r"C:\opt\x\claude" } else { "/opt/x/claude" };
+        let cfg = AdapterConfig { command: Some(format!("{abs} --profile a")), ..Default::default() };
         let (p, pre) = resolve_program(&cfg, Some("/probed"), &env).unwrap();
-        assert_eq!((p, pre), (PathBuf::from("/opt/x/claude"), vec!["--profile".to_string(), "a".to_string()]));
+        assert_eq!((p, pre), (PathBuf::from(abs), vec!["--profile".to_string(), "a".to_string()]));
         // 否则用探测时选中的路径
         let probed = tmp.path().join("claude");
         std::fs::write(&probed, "").unwrap();

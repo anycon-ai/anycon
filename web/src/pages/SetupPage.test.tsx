@@ -72,3 +72,19 @@ describe('SetupPage — after pairing', () => {
     expect(screen.getByTestId('setup-finish')).toBeInTheDocument()
   })
 })
+
+describe('SetupPage — install step', () => {
+  it('picks the PowerShell installer on Windows', () => {
+    const ua = vi
+      .spyOn(navigator, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36')
+    try {
+      render(<SetupPage />)
+      const commands = screen.getByTestId('setup-commands')
+      expect(commands).toHaveTextContent('install.ps1 | iex')
+      expect(commands).not.toHaveTextContent('install.sh')
+    } finally {
+      ua.mockRestore()
+    }
+  })
+})

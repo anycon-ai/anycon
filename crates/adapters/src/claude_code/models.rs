@@ -215,7 +215,7 @@ pub fn builtin_models(table: &[BuiltinModel], cli: Option<&Version>) -> Vec<Mode
 pub fn read_user_settings(env: &HashMap<String, String>) -> Option<Value> {
     let dir = match env.get("CLAUDE_CONFIG_DIR").filter(|s| !s.is_empty()) {
         Some(d) => PathBuf::from(d),
-        None => PathBuf::from(env.get("HOME")?).join(".claude"),
+        None => PathBuf::from(anycon_agent_api::env_home(env)?).join(".claude"),
     };
     let text = std::fs::read_to_string(dir.join("settings.json")).ok()?;
     serde_json::from_str(&text).ok()

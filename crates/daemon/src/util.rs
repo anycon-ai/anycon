@@ -141,12 +141,12 @@ pub fn parse_compact(s: &str) -> Option<u64> {
     Some(secs as u64 * 1000)
 }
 
-/// `~/x` 展开为 `$HOME/x`。
+/// `~/x` 展开为 `$HOME/x`（Windows 上 `~\x` 也行）。
 pub fn expand_tilde(p: &str) -> std::path::PathBuf {
     if p == "~" {
         return home_dir().unwrap_or_else(|| p.into());
     }
-    if let Some(rest) = p.strip_prefix("~/") {
+    if let Some(rest) = strip_tilde_slash(p) {
         if let Some(h) = home_dir() {
             return h.join(rest);
         }
@@ -154,8 +154,15 @@ pub fn expand_tilde(p: &str) -> std::path::PathBuf {
     p.into()
 }
 
+/// `~/rest` → `rest`；Windows 上 `~\rest` 也认。
+pub fn strip_tilde_slash(p: &str) -> Option<&str> {
+    p.strip_prefix("~/").or_else(|| if cfg!(windows) { p.strip_prefix("~\\") } else { None })
+}
+
+/// 当前用户的家目录：unix 是 `HOME`，Windows 是 `USERPROFILE`。
 pub fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").filter(|s| !s.is_empty()).map(Into::into)
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|s| !s.is_empty()).map(Into::into)
 }
 
 /// 截断到最多 `max` 个字符（按 char），尽量落在词边界上。

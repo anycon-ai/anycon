@@ -9,7 +9,7 @@ use serde_json::json;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn link_browse_list_and_unlink_a_local_directory() {
     let d = tempfile::tempdir().unwrap();
-    let base = std::fs::canonicalize(d.path()).unwrap();
+    let base = anycon_daemon::sys::canonicalize(d.path()).unwrap();
     let home = base.join("home");
     let machine = base.join("machine");
     std::fs::create_dir_all(machine.join("alpha/.git")).unwrap();
@@ -50,21 +50,23 @@ async fn link_browse_list_and_unlink_a_local_directory() {
     assert_eq!(j["entries"][0]["git"], json!(true));
     let all = a!("projects", "browse", "--all", "--json").await.json();
     assert!(all["entries"].as_array().unwrap().iter().any(|e| e["name"] == ".dot"));
-    // 机器上恶意命名的目录（名字里带 ESC / 回车）不能把转义序列写进终端
-    let evil = machine.join("evil\x1b[2K\x1b]52;c;ZXZpbA==\x07dir");
-    std::fs::create_dir_all(&evil).unwrap();
-    let r = a!("projects", "browse").await;
-    assert!(!r.stdout.contains('\x1b') && !r.stdout.contains('\x07'), "{:?}", r.stdout);
-    assert!(r.stdout.contains("evil\\x1b[2K\\x1b]52;c;ZXZpbA==\\x07dir"), "{:?}", r.stdout);
-    // 路径里有控制字符的目录不能关联（invalid）；根目录里手工建出来的、名字带 ESC 的文件夹照样列出，但名字是转义后的
-    let r = a!("projects", "link", &evil.to_string_lossy(), "--name", "evil-one").await;
-    assert_eq!(r.code, 2, "{}", r.stderr);
-    std::fs::remove_dir_all(&evil).unwrap();
-    std::fs::create_dir_all(base.join("ws").join("folder\x1b[2K\x1b]52;c;ZXZpbA==\x07x")).unwrap();
-    let r = a!("projects").await;
-    assert!(!r.stdout.contains('\x1b') && !r.stdout.contains('\x07'), "{:?}", r.stdout);
-    assert!(r.stdout.contains("folder\\x1b[2K\\x1b]52;c;ZXZpbA==\\x07x"), "{:?}", r.stdout);
-    std::fs::remove_dir_all(base.join("ws").join("folder\x1b[2K\x1b]52;c;ZXZpbA==\x07x")).unwrap();
+    // 机器上恶意命名的目录（名字里带 ESC / 回车）不能把转义序列写进终端（Windows 的文件名里不能有控制字符）
+    if cfg!(unix) {
+        let evil = machine.join("evil\x1b[2K\x1b]52;c;ZXZpbA==\x07dir");
+        std::fs::create_dir_all(&evil).unwrap();
+        let r = a!("projects", "browse").await;
+        assert!(!r.stdout.contains('\x1b') && !r.stdout.contains('\x07'), "{:?}", r.stdout);
+        assert!(r.stdout.contains("evil\\x1b[2K\\x1b]52;c;ZXZpbA==\\x07dir"), "{:?}", r.stdout);
+        // 路径里有控制字符的目录不能关联（invalid）；根目录里手工建出来的、名字带 ESC 的文件夹照样列出，但名字是转义后的
+        let r = a!("projects", "link", &evil.to_string_lossy(), "--name", "evil-one").await;
+        assert_eq!(r.code, 2, "{}", r.stderr);
+        std::fs::remove_dir_all(&evil).unwrap();
+        std::fs::create_dir_all(base.join("ws").join("folder\x1b[2K\x1b]52;c;ZXZpbA==\x07x")).unwrap();
+        let r = a!("projects").await;
+        assert!(!r.stdout.contains('\x1b') && !r.stdout.contains('\x07'), "{:?}", r.stdout);
+        assert!(r.stdout.contains("folder\\x1b[2K\\x1b]52;c;ZXZpbA==\\x07x"), "{:?}", r.stdout);
+        std::fs::remove_dir_all(base.join("ws").join("folder\x1b[2K\x1b]52;c;ZXZpbA==\x07x")).unwrap();
+    }
     // 隐藏目录默认不能关联；浏览里标出原因
     let r = a!("projects", "link", &machine.join(".dot").to_string_lossy(), "--name", "dot").await;
     assert_eq!(r.code, 5, "{}", r.stderr);
@@ -149,12 +151,12 @@ async fn link_browse_list_and_unlink_a_local_directory() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn config_set_link_roots_prints_which_entries_the_daemon_ignores_and_why() {
     let d = tempfile::tempdir().unwrap();
-    let base = std::fs::canonicalize(d.path()).unwrap();
+    let base = anycon_daemon::sys::canonicalize(d.path()).unwrap();
     let home = base.join("home");
     let machine = base.join("machine");
     std::fs::create_dir_all(machine.join("real-code")).unwrap();
     std::fs::create_dir_all(machine.join("fine")).unwrap();
-    std::os::unix::fs::symlink(machine.join("real-code"), machine.join("code")).unwrap();
+    anycon_daemon::testutil::symlink_dir(&machine.join("real-code"), &machine.join("code")).unwrap();
     init(&home, &base.join("ws"), "box", None).await;
     for id in ["claude-code", "codex"] {
         let r = anycon(&home, &["config", "set", &format!("agents.{id}.enabled"), "false"], None, &[]).await;

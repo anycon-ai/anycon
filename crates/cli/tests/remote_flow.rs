@@ -76,10 +76,7 @@ async fn cli_pairs_with_a_node_and_drives_it_through_the_hub() {
     // 本地状态：0600 的密钥和 token
     let client_dir = std::fs::read_dir(chome.join("client")).unwrap().next().unwrap().unwrap().path();
     for f in ["client.key", "device-token"] {
-        let mode =
-            std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(client_dir.join(f)).unwrap().permissions())
-                & 0o777;
-        assert_eq!(mode, 0o600, "{f}");
+        anycon_daemon::testutil::assert_mode(&client_dir.join(f), 0o600);
     }
     // daemon 侧：设备名和类型来自第 3 条握手消息
     let devices: NodeDevicesResult = local.call(&td, methods::NODE_DEVICES, json!({})).await.unwrap();

@@ -89,6 +89,7 @@ fn reason(e: &RpcError) -> Option<String> {
 /// macOS 默认每个进程只能开 256 个文件：测试进程里 daemon 和测试服务器两端都在，256 个并发 stream 要 500 多个。
 fn raise_fd_limit() {
     // SAFETY: getrlimit / setrlimit 只读写我们传进去的结构体。
+    #[cfg(unix)]
     unsafe {
         let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
@@ -1056,7 +1057,8 @@ async fn ports_lists_the_configured_ports_with_whatever_listens_on_them() {
     let ports: PreviewPortsResult = r.call(methods::PREVIEW_PORTS, json!({})).await.unwrap();
     let mine = ports.ports.iter().find(|p| p.port == r.up.port).expect("the allowed port is listed");
     assert_eq!((mine.source, mine.session_id.clone()), (PreviewPortSource::Config, None));
-    if have_lsof() {
+    // Windows 上不用 lsof，直接从系统拿（`preview::ports` 的 Windows 部分）
+    if have_lsof() || cfg!(windows) {
         assert_eq!(ports.detection, PreviewDetection::Ok);
         assert_eq!(mine.pid, Some(std::process::id()), "who listens on it");
         assert!(mine.process.as_deref().is_some_and(|p| !p.is_empty()));
@@ -1103,11 +1105,13 @@ impl anycon_daemon::preview::ports::CommandRunner for NoCommands {
 }
 
 /// 起一个监听本机端口的 perl 进程（作为 `sh -c '… & wait'` 的子进程），返回它监听的端口。测试结束时杀掉。
+#[cfg(unix)]
 struct Listener {
     child: tokio::process::Child,
     port: u16,
 }
 
+#[cfg(unix)]
 impl Listener {
     /// `cwd`：监听进程的工作目录。没有 perl 返回 `None`（测试跳过）。
     async fn start(cwd: &std::path::Path) -> Option<Listener> {
@@ -1136,6 +1140,7 @@ impl Listener {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Listener {
     fn drop(&mut self) {
         if let Some(pid) = self.child.id() {
@@ -1147,10 +1152,12 @@ impl Drop for Listener {
     }
 }
 
+#[cfg(unix)]
 fn perl_available() -> bool {
     std::process::Command::new("perl").arg("-e").arg("1").status().is_ok_and(|s| s.success())
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_server_started_under_the_agent_process_is_attributed_to_the_session() {
     if !have_lsof() || !perl_available() {
@@ -1203,6 +1210,7 @@ async fn a_server_started_under_the_agent_process_is_attributed_to_the_session()
     assert_eq!((code(&e), reason(&e).as_deref()), (ErrorCode::Forbidden, Some("port_not_allowed")));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_server_running_in_the_sessions_directory_is_attributed_by_working_directory() {
     if !have_lsof() || !perl_available() {
@@ -1300,7 +1308,7 @@ async fn a_port_shared_with_a_process_that_is_not_the_sessions_is_neither_allowe
     let s: SessionSummary =
         c.call(&td, methods::SESSION_CREATE, json!({ "agent": "fake", "project": "web" })).await.unwrap();
     let port = free_port();
-    let runner = ScriptedRunner::new(port, std::fs::canonicalize(td.workspace.join("web")).unwrap());
+    let runner = ScriptedRunner::new(port, anycon_daemon::sys::canonicalize(td.workspace.join("web")).unwrap());
     td.ctx.preview.detector().set_runner(runner.clone());
     // 只有会话的服务（127.0.0.1）在监听：允许、列出
     runner.listening.store(true, SeqCst);
@@ -1343,7 +1351,7 @@ async fn a_denial_based_on_a_stale_snapshot_is_checked_again_once() {
     let _s: SessionSummary =
         c.call(&td, methods::SESSION_CREATE, json!({ "agent": "fake", "project": "web" })).await.unwrap();
     let port = free_port();
-    let workdir = std::fs::canonicalize(td.workspace.join("web")).unwrap();
+    let workdir = anycon_daemon::sys::canonicalize(td.workspace.join("web")).unwrap();
     let runner = ScriptedRunner::new(port, workdir);
     td.ctx.preview.detector().set_runner(runner.clone());
     // 还没有人监听：拒绝

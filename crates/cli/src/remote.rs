@@ -10,7 +10,6 @@
 //! 数据信封的 body 是 `envelope::frame`（整条 / 分片 / 重置）：发送时按需分片，接收时重组后再解密。
 
 use std::collections::{HashMap, VecDeque};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant as StdInstant};
@@ -135,7 +134,7 @@ impl HubState {
 
     fn write_private(&self, name: &str, content: &str) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let _ = std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700));
+        let _ = anycon_daemon::sys::restrict_to_owner(&self.dir);
         anycon_daemon::identity::write_private(&self.dir.join(name), content)?;
         Ok(())
     }

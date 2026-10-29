@@ -701,7 +701,7 @@ impl Agents {
     fn command_name(&self, id: &str, info: &AgentInfo) -> (String, &'static str) {
         let cfg = self.config.get();
         if let Some(cmd) = cfg.adapter_config(id).and_then(|c| c.command.clone()).filter(|c| !c.trim().is_empty()) {
-            let first = shell_words::split(&cmd).ok().and_then(|v| v.into_iter().next()).unwrap_or(cmd);
+            let first = anycon_adapters::common::parse_command(&cmd).map(|c| c.program).unwrap_or(cmd);
             return (first, "config");
         }
         if let Some(p) = &info.path {
@@ -743,7 +743,11 @@ impl Agents {
         let (cmd, source) = self.command_name(id, info);
         let path_env = self.env.path();
         let shell = self.env.shell.clone().unwrap_or_else(|| "(unknown)".into());
-        let which = run_capture("which", &["-a", &cmd], &self.env.base, Duration::from_secs(5)).await;
+        let which = if cfg!(windows) {
+            run_capture("where.exe", &[&cmd], &self.env.base, Duration::from_secs(5)).await
+        } else {
+            run_capture("which", &["-a", &cmd], &self.env.base, Duration::from_secs(5)).await
+        };
         let type_a = if let Some(sh) = &self.env.shell {
             let script = format!("type -a {}", shell_words::quote(&cmd));
             run_capture(sh, &["-lc", &script], &self.env.base, Duration::from_secs(10)).await

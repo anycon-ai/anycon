@@ -8,6 +8,7 @@ members = [
   "crates/daemon",
   "crates/adapters",
   "crates/cli",
+  "crates/windows-launcher",
 ]
 
 [workspace.package]
@@ -40,6 +41,8 @@ uuid        = { version = "1", features = ["v4"] }
 hex         = "0.4"
 base64      = "0.22"
 rand        = "0.8"
+# Windows 专用代码（Job Object、命名管道的 ACL、控制台等）；各 crate 在 `[target.'cfg(windows)'.dependencies]` 里按需开 feature。
+windows-sys = "0.61"
 
 [profile.dev]
 opt-level = 0

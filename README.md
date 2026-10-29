@@ -50,7 +50,7 @@ The trade-offs, stated plainly:
 
 ## Quick start
 
-You need Docker for the hub. The `anycon` binary (daemon and CLI in one) runs on macOS (Apple silicon and Intel) and Linux (x86_64 and arm64, glibc 2.35 or newer).
+You need Docker for the hub. The `anycon` binary (daemon and CLI in one) runs on macOS (Apple silicon and Intel), Linux (x86_64 and arm64, glibc 2.35 or newer), and Windows (x64, Windows 10 1809 or newer).
 
 **1. Run a hub.** It can run on the same machine as the agents, or anywhere both sides can reach.
 
@@ -76,7 +76,17 @@ anycon daemon             # foreground; or `anycon service install` for launchd 
 anycon pair               # in another terminal: prints a 16-character code and a pairing link (--qr for a QR code)
 ```
 
-Prebuilt binaries are also attached to each [GitHub release](https://github.com/anycon-ai/anycon/releases), with checksums and build provenance. To build from source instead, run `cargo install --path crates/cli --locked` in a clone (needs a current stable Rust toolchain), and `docker build -f docker/hub.Dockerfile -t anycon-hub .` for the hub image.
+On Windows, in PowerShell (installs to `%LOCALAPPDATA%\Programs\anycon\bin` and adds it to your PATH; no administrator rights needed):
+
+```powershell
+irm https://github.com/anycon-ai/anycon/releases/latest/download/install.ps1 | iex
+
+anycon init --hub https://hub.example.com --workspace ~/anycon --name my-pc --yes
+anycon service install    # a scheduled task that starts the daemon at logon, without a console window
+anycon pair
+```
+
+Prebuilt binaries are also attached to each [GitHub release](https://github.com/anycon-ai/anycon/releases), with checksums and build provenance. To build from source instead, run `cargo install --path crates/cli --locked` in a clone (needs a current stable Rust toolchain; on Windows also `cargo install --path crates/windows-launcher --locked` for the console-less launcher the service uses), and `docker build -f docker/hub.Dockerfile -t anycon-hub .` for the hub image.
 
 **3. Open the hub in a browser**, sign in with the admin token, and enter the pairing code. That's it. Every folder under `~/anycon/` is now a project you can work in from the browser. To add another device, use *Add device* in node settings, or run `anycon pair` again.
 

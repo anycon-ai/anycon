@@ -4,7 +4,6 @@
 //! 大部分用例用假 adapter（`td.fake.handle(n).inputs` 能看到交给 adapter 的 `UserInput`）；
 //! 最后一组用真的 mock adapter 验证它读到的是 daemon 给的路径（回复里回显文件名 / 大小 / sha256 前 12 位）。
 
-use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -184,8 +183,8 @@ async fn upload_send_and_the_agent_receives_the_right_files() {
     // 落盘：<数据目录>/blobs/<id>.png，文件 0600、目录 0700，内容一致；上传中的文件不在了
     let file = blob_file(&td, &a, "png");
     assert_eq!(std::fs::read(&file).unwrap(), bytes);
-    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
-    assert_eq!(std::fs::metadata(td.paths.blobs_dir()).unwrap().permissions().mode() & 0o777, 0o700);
+    anycon_daemon::testutil::assert_mode(&file, 0o600);
+    anycon_daemon::testutil::assert_mode(&td.paths.blobs_dir(), 0o700);
     assert!(!part_file(&td, &a.blob_id).exists());
     // 还没被引用
     assert_eq!(bound_session(&td, &a.blob_id).await, None);
@@ -1127,8 +1126,8 @@ async fn blob_transfers_are_not_audited_but_session_send_still_is() {
 
 /// 最小的 socket 客户端：一行一条 JSON-RPC。
 struct Sock {
-    r: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
-    w: tokio::net::unix::OwnedWriteHalf,
+    r: tokio::io::BufReader<tokio::io::ReadHalf<anycon_daemon::local::ClientStream>>,
+    w: tokio::io::WriteHalf<anycon_daemon::local::ClientStream>,
     next: u64,
 }
 
@@ -1155,8 +1154,8 @@ impl Sock {
 #[tokio::test]
 async fn the_blob_methods_work_over_the_local_socket() {
     let td = TestDaemon::start_with(&[], true).await;
-    let stream = tokio::net::UnixStream::connect(td.paths.sock()).await.unwrap();
-    let (r, w) = stream.into_split();
+    let stream = anycon_daemon::local::connect(&td.paths.sock()).await.unwrap();
+    let (r, w) = tokio::io::split(stream);
     let mut sock = Sock { r: tokio::io::BufReader::new(r), w, next: 0 };
     let bytes = png(33, 44, 2000, 40);
     let begin_r = sock

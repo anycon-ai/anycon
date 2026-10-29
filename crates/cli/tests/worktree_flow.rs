@@ -38,7 +38,7 @@ impl World {
     }
 
     fn repo(&self) -> PathBuf {
-        std::fs::canonicalize(self.ws.join("demo")).unwrap()
+        anycon_daemon::sys::canonicalize(self.ws.join("demo")).unwrap()
     }
 }
 

@@ -1,6 +1,5 @@
 //! `anycon init`：生成 `config.toml` 和 Noise 密钥，创建 workspace 根目录（含 `.trash/`、`.scratch/`）。
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crate::config::{default_config_toml, Paths};
@@ -43,9 +42,9 @@ pub async fn init(paths: &Paths, opts: &InitOptions) -> Result<InitOutcome, Init
         crate::hub::ws_url(h).map_err(InitError::Invalid)?;
     }
     std::fs::create_dir_all(&paths.home)?;
-    std::fs::set_permissions(&paths.home, std::fs::Permissions::from_mode(0o700))?;
+    crate::sys::restrict_to_owner(&paths.home)?;
     std::fs::create_dir_all(paths.keys_dir())?;
-    std::fs::set_permissions(paths.keys_dir(), std::fs::Permissions::from_mode(0o700))?;
+    crate::sys::restrict_to_owner(&paths.keys_dir())?;
     std::fs::create_dir_all(paths.logs_dir())?;
 
     let ws_text = opts.workspace.clone().unwrap_or_else(|| "~/anycon".into());
@@ -92,8 +91,8 @@ mod tests {
         let out = init(&paths, &opts).await.unwrap();
         assert!(!out.reinitialized);
         assert!(ws.join(".trash").is_dir() && ws.join(".scratch").is_dir());
-        let mode = std::fs::metadata(paths.node_key()).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        let mode = crate::sys::mode_bits(&std::fs::metadata(paths.node_key()).unwrap());
+        assert!(mode.is_none_or(|m| m == 0o600), "{mode:?}");
         let cfg = crate::config::Config::load(&paths).unwrap();
         assert_eq!(cfg.hub.url.as_deref(), Some("http://127.0.0.1:8080"));
         assert_eq!(cfg.node_name(), "box");

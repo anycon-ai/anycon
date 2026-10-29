@@ -23,7 +23,7 @@ async fn start() -> (TestDaemon, PathBuf) {
     std::fs::create_dir_all(machine.join("proj")).unwrap();
     std::fs::create_dir_all(machine.join("second")).unwrap();
     std::fs::write(machine.join("proj/hello.txt"), "hello from proj").unwrap();
-    let machine = std::fs::canonicalize(machine).unwrap();
+    let machine = anycon_daemon::sys::canonicalize(machine).unwrap();
     let roots = serde_json::to_string(&[machine.to_string_lossy()]).unwrap();
     anycon_daemon::config::set_value(&td.paths, "workspace.link_roots", &roots).unwrap();
     assert!(td.ctx.config.reload().unwrap());
@@ -256,8 +256,10 @@ async fn browse_rpc_reports_what_can_be_linked() {
     assert!(r.entries.iter().any(|e| e.name == ".dot"));
     let r: WorkspaceBrowseResult = a.call(&td, methods::WORKSPACE_BROWSE, json!({})).await.unwrap();
     assert!(!r.entries.iter().any(|e| e.name == ".dot"));
-    // 越界
-    let e = a.call::<WorkspaceBrowseResult>(&td, methods::WORKSPACE_BROWSE, json!({ "path": "/" })).await.unwrap_err();
+    // 越界（文件系统根：unix 的 `/`，Windows 上盘符的根）
+    let fs_root = machine.ancestors().last().unwrap().to_string_lossy().to_string();
+    let e =
+        a.call::<WorkspaceBrowseResult>(&td, methods::WORKSPACE_BROWSE, json!({ "path": fs_root })).await.unwrap_err();
     assert_eq!(code(&e), ErrorCode::Forbidden);
     td.shutdown().await;
 }
@@ -438,7 +440,7 @@ async fn a_linked_directory_swapped_for_a_symlink_to_the_data_directory_is_unrea
     std::fs::create_dir_all(td.paths.home.join("keys")).unwrap();
     std::fs::write(td.paths.home.join("keys/node.key"), "dummy-value").unwrap();
     std::fs::remove_dir_all(machine.join("proj")).unwrap();
-    std::os::unix::fs::symlink(&td.paths.home, machine.join("proj")).unwrap();
+    anycon_daemon::testutil::symlink_dir(&td.paths.home, &machine.join("proj")).unwrap();
 
     for (method, params) in [
         (methods::FS_LIST, json!({ "path": "pj" })),
@@ -475,7 +477,7 @@ async fn sensitive_and_hidden_directories_are_refused_over_rpc_and_flagged_in_br
     let td = TestDaemon::start().await;
     // `TestDaemon` 的环境用的是进程自己的 HOME，所以这里只用临时目录下的绝对路径做 root，不碰真实的 home；
     // 拒绝表里 `$HOME` 之下的项（`~/.ssh`、`~/Library`…）由 workspace.rs 的单元测试在假 HOME 里覆盖，这里验证 RPC 的形状和错误码
-    let machine = std::fs::canonicalize(td.dir.path()).unwrap().join("machine");
+    let machine = anycon_daemon::sys::canonicalize(td.dir.path()).unwrap().join("machine");
     std::fs::create_dir_all(machine.join("work/.cache/x")).unwrap();
     std::fs::create_dir_all(machine.join("work/proj")).unwrap();
     let roots = serde_json::to_string(&[machine.to_string_lossy()]).unwrap();
@@ -515,7 +517,7 @@ fn shutdowns(td: &TestDaemon, idx: usize) -> usize {
 
 async fn swap_for_symlink(dir: &std::path::Path, target: &std::path::Path) {
     std::fs::rename(dir, dir.with_extension("real")).unwrap();
-    std::os::unix::fs::symlink(target, dir).unwrap();
+    anycon_daemon::testutil::symlink_dir(target, dir).unwrap();
 }
 
 /// 进程还活着、会话空闲，关联目录被换成指向数据目录的符号链接。
@@ -576,7 +578,7 @@ async fn listing_a_project_whose_directory_was_swapped_retires_all_its_agent_pro
     assert!(l.projects.iter().find(|p| p.name == "pj").unwrap().missing);
     assert!(eventually(T, || async { shutdowns(&td, 0) == 1 }).await, "workspace.list noticed and retired the process");
     // fs.* 同理（换回来、再换一次）
-    std::fs::remove_file(machine.join("proj")).unwrap();
+    anycon_daemon::testutil::remove_link(&machine.join("proj")).unwrap();
     std::fs::rename(machine.join("proj.real"), machine.join("proj")).unwrap();
     let s2: SessionSummary = a
         .call(
@@ -877,7 +879,7 @@ async fn an_interjection_after_the_directory_was_swapped_is_not_delivered_and_go
     assert_eq!(td.fake.handle(0).inputs.lock().unwrap().len(), 1, "only the first prompt ever reached the process");
     assert!(eventually(T, || async { shutdowns(&td, 0) == 1 }).await);
     // 目录恢复：队列里的消息和新消息一起作为下一个 turn 发出（不丢）
-    std::fs::remove_file(machine.join("proj")).unwrap();
+    anycon_daemon::testutil::remove_link(&machine.join("proj")).unwrap();
     std::fs::rename(machine.join("proj.real"), machine.join("proj")).unwrap();
     say(&td, &mut a, &s.id, "m3", "third thought").await;
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
@@ -1052,7 +1054,7 @@ async fn blocked_interjection_fixture(
 }
 
 fn restore_dir(machine: &std::path::Path) {
-    std::fs::remove_file(machine.join("proj")).unwrap();
+    anycon_daemon::testutil::remove_link(&machine.join("proj")).unwrap();
     std::fs::rename(machine.join("proj.real"), machine.join("proj")).unwrap();
 }
 

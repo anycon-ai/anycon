@@ -71,12 +71,13 @@ pub fn unwrap_shell(command: &str) -> String {
 
 /// 显示用的路径：在工作目录里面的写成相对路径，**cwd 之外的保持绝对路径**（标题、`detail.path`、diff 头都用它）。
 /// 以前把 `/etc/hosts` 显示成 `etc/hosts`，读起来像项目里的文件——而需要审批的恰好是写项目外的补丁。
-/// 含 `..` 的（`/proj/../x`）也保持原样，免得看起来在项目里。
+/// 含 `..` 的（`/proj/../x`）也保持原样，免得看起来在项目里。Windows 上 `\` 也是分隔符。
 pub fn rel_path(cwd: &str, path: &str) -> String {
-    let cwd = cwd.trim_end_matches('/');
+    let seps: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    let cwd = cwd.trim_end_matches(seps);
     match path.strip_prefix(cwd) {
-        Some(rest) if !cwd.is_empty() && rest.starts_with('/') && !rest.split('/').any(|c| c == "..") => {
-            rest.trim_start_matches('/').to_string()
+        Some(rest) if !cwd.is_empty() && rest.starts_with(seps) && !rest.split(seps).any(|c| c == "..") => {
+            rest.trim_start_matches(seps).to_string()
         }
         _ => path.to_string(),
     }

@@ -6,7 +6,7 @@
 
 | 类别 | 例子 | 通道 |
 |---|---|---|
-| **本机管理** | `init` `daemon` `service` `pair` `passwd` `doctor` `devices` `audit` | 本机 Unix socket `~/.anycon/daemon.sock`，JSON-RPC，和内层协议同一套方法，另加几个只在本机可用的方法（`local.status`、`local.rename_device`、`local.config_reload`、`local.pair_outcome`，经 hub 调用一律 `forbidden`）。socket 权限 0600，不需要 Noise，不经过 hub |
+| **本机管理** | `init` `daemon` `service` `pair` `passwd` `doctor` `devices` `audit` | 本机 Unix socket `~/.anycon/daemon.sock`（Windows：命名管道 `\\.\pipe\anycon-<hash>`，ADR-42），JSON-RPC，和内层协议同一套方法，另加几个只在本机可用的方法（`local.status`、`local.rename_device`、`local.config_reload`、`local.pair_outcome`，经 hub 调用一律 `forbidden`）。socket 权限 0600（命名管道：属主和 DACL 都是当前用户，客户端连上后核对属主），不需要 Noise，不经过 hub |
 | **客户端** | `nodes` `agents` `projects` `ls` `new` `send` `attach` `approve` | 作为一台设备经 hub 连到目标 daemon，Noise E2E，和 Web / SDK 完全一样 |
 
 客户端命令的目标节点恰好是本机 daemon 时（`--node` 省略且本机有 daemon，或 `--local`），自动走 socket，不绕 hub。这样在 Mac mini 上 `anycon send "跑测试"` 在断网时也能用。
@@ -23,11 +23,13 @@ CLI 作为客户端设备的密钥和 device token 存在 `~/.anycon/client/<hub
 │   ├── node.key                daemon 的 Noise 静态私钥，0600
 │   └── device-token            hub 签发的设备 token，0600
 ├── peers.json                  已配对客户端的公钥和名称
-├── daemon.sock                 本机 CLI 通道
+├── daemon.sock                 本机 CLI 通道（Windows 上是命名管道，不在这个目录里）
 ├── logs/daemon.log             滚动，默认保留 7 天
 ├── blobs/                      附件
 └── client/<hub-host>/          CLI 作为客户端设备时的密钥和 token
 ```
+
+Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon 启动时给数据目录设一份只有当前用户、SYSTEM 和 Administrators 能访问的受保护 DACL，里面的文件继承它；上面写着 0600 的文件靠的就是它。
 
 ## 3. 子命令
 
@@ -36,11 +38,13 @@ CLI 作为客户端设备的密钥和 device token 存在 `~/.anycon/client/<hub
 | 命令 | 说明 |
 |---|---|
 | `anycon init --hub <url> --workspace <dir> [--name <node-name>]` | 生成 `config.toml` 和 Noise 密钥，创建 workspace 根目录（含 `.trash/`、`.scratch/`）。交互式询问缺省项；`--yes` 全部用默认。已初始化则拒绝，除非 `--force`（会提示重新初始化将使所有已配对设备失效）。结束时提示一句：daemon 跑起来后可以用 `anycon passwd` 设节点口令，出门在外、手边没有已配对设备时用它解锁这台节点（ADR-36） |
-| `anycon daemon [--foreground]` | 前台运行。默认即前台，日志到 stderr；由 launchd / systemd 托管时也是这个命令。没有 daemonize 选项，后台化交给服务管理器 |
-| `anycon service install \| uninstall \| start \| stop \| restart \| status` | 注册为用户级 launchd（macOS）/ systemd user unit（Linux）。`install` 后自动 `start`，开机自启。`status` 显示进程状态和最近日志 |
+| `anycon daemon [--foreground]` | 前台运行。默认即前台，日志到 stderr；由 launchd / systemd / Windows 计划任务托管时也是这个命令。没有 daemonize 选项，后台化交给服务管理器。隐藏参数 `--home <dir>` 代替 `ANYCON_HOME`（Windows 计划任务设不了环境变量） |
+| `anycon service install \| uninstall \| start \| stop \| restart \| status` | 注册为用户级 launchd（macOS）/ systemd user unit（Linux）/ 当前用户的计划任务 `anycon`（Windows，登录时启动，不需要管理员权限，见下）。`install` 后自动 `start`，开机自启。`status` 显示进程状态和最近日志 |
 | `anycon doctor` | 诊断，见 § 5 |
 | `anycon version` | 版本、协议版本、平台 |
 | `anycon update [--check]` | v0.3。检查并替换二进制，之后 `service restart` |
+
+**Windows 的服务**（[ADR-42](../decisions.md#adr-42-windows命名管道job-object计划任务)）：`install` 注册当前用户的计划任务 `anycon`——登录时启动、失败后每分钟重试、不限运行时长、用电池时照常运行，以登录用户的交互令牌运行（agent 要用用户的凭据）。任务运行和 `anycon.exe` 同目录的 `anyconw.exe`（GUI 子系统的小启动器），它以隐藏的控制台运行 `anycon.exe daemon --foreground`；找不到 `anyconw.exe` 时直接运行 `anycon.exe` 并提示会有控制台窗口。`stop` / `restart` 先触发 daemon 的停止事件让它优雅退出，15 秒内没退出再 `schtasks /End`（强制结束，agent 随 job 一起被清掉）。`status` 不解析 `schtasks` 的输出（按系统语言本地化）：「已注册」看 `schtasks /Query` 的退出码，「在跑」看本机通道连不连得上。
 
 ### 3.2 配对与设备（本机管理）
 
@@ -152,14 +156,14 @@ CLI 作为客户端设备的密钥和 device token 存在 `~/.anycon/client/<hub
 | 检查 | 失败时的提示 |
 |---|---|
 | `config.toml` 存在且合法 | 运行 `anycon init` |
-| 密钥文件存在、权限 0600 | 修复权限的命令 |
+| 密钥文件存在、权限 0600（Windows 没有权限位，只查存在） | 修复权限的命令 |
 | hub 可达（`GET /healthz`）、版本兼容 | 网络 / 反代 / 版本 |
 | 设备 token 有效（`control.auth` 成功） | 设备可能已被吊销，重新 `anycon init --force` 后配对 |
 | daemon 进程在跑、socket 可连 | `anycon service start` |
 | workspace 根目录可写、`.trash` `.scratch` 存在 | |
 | 每个 adapter 的探测结果（见 [daemon.md § 5](daemon.md#5-agent-探测与能力声明)） | 未安装 / 未登录 / 版本过低各自的命令 |
-| 登录 shell 的 `PATH` 能找到这些 agent | 说明 launchd 环境和终端不同，建议在 `config.toml` 写绝对路径 |
-| launchd / systemd 服务已注册且开机自启 | `anycon service install` |
+| 登录 shell 的 `PATH` 能找到这些 agent | 说明 launchd 环境和终端不同，建议在 `config.toml` 写绝对路径（Windows 不跑登录 shell，用 `where.exe` 对照） |
+| launchd / systemd 服务 / Windows 计划任务已注册且开机自启 | `anycon service install` |
 | 系统睡眠策略（macOS：`pmset` 的 `sleep` 是否为 0 或开了 Wake for network access） | 提示机器睡着了就收不到消息 |
 | 节点口令（ADR-36）：是否设置、是否被锁定、连续失败次数 | 被锁定：先看 `anycon audit` 里的 `enroll.failed`，确认是自己输错的再 `anycon passwd --enable`；没设口令只是提示（可选），不算失败 |
 | 时钟偏差 < 60 秒 | Noise 不依赖时钟，但短码 TTL 和日志依赖 |

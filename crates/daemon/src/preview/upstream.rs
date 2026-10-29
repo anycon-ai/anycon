@@ -191,15 +191,31 @@ fn reset(emit: &Emit, code: PreviewResetCode, message: &'static str) {
 
 // ---------------------------------------------------------------- 连接
 
-/// 连本机端口：先 `127.0.0.1` 再 `[::1]`（Vite 在 macOS 上常常只监听 `::1`）。`timeout` 是两次尝试合计的时限。
+/// 连本机端口：`127.0.0.1` 和 `[::1]` 同时连，用先连上的那个（两个都马上连上时用 IPv4）；都失败报 IPv4 的错误。
+/// 只监听 `::1` 的服务很常见（Vite 在 macOS 上）。不逐个试：Windows 上连一个没人监听的端口要重试约 2 秒才报拒绝，
+/// 逐个试的话这类服务的每条连接都要先白等 2 秒。`timeout` 是整体的时限。
 pub async fn connect_local(port: u16, timeout: Duration) -> Result<TcpStream, std::io::Error> {
     let attempt = async {
-        let v4 = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-        match TcpStream::connect(v4).await {
-            Ok(s) => Ok(s),
-            Err(first) => {
-                let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, port));
-                TcpStream::connect(v6).await.map_err(|_| first)
+        let v4 = TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port)));
+        let v6 = TcpStream::connect(SocketAddr::from((Ipv6Addr::LOCALHOST, port)));
+        tokio::pin!(v4, v6);
+        let (mut e4, mut v6_failed) = (None, false);
+        loop {
+            tokio::select! {
+                biased;
+                r = &mut v4, if e4.is_none() => match r {
+                    Ok(s) => return Ok(s),
+                    Err(e) => e4 = Some(e),
+                },
+                r = &mut v6, if !v6_failed => match r {
+                    Ok(s) => return Ok(s),
+                    Err(_) => v6_failed = true,
+                },
+            }
+            if v6_failed {
+                if let Some(e) = e4.take() {
+                    return Err(e);
+                }
             }
         }
     };

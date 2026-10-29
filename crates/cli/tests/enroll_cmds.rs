@@ -10,7 +10,6 @@ use std::time::Duration;
 use common::*;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
 
 const PW: &str = "correct horse battery";
 
@@ -157,10 +156,10 @@ fn now_ms() -> u64 {
 async fn fake_daemon(home: &std::path::Path, calls: Arc<Mutex<Vec<(String, Value)>>>) -> tokio::task::JoinHandle<()> {
     std::fs::create_dir_all(home).unwrap();
     std::fs::write(home.join("config.toml"), "").unwrap();
-    let l = UnixListener::bind(home.join("daemon.sock")).unwrap();
+    let mut l = anycon_daemon::local::bind(&anycon_daemon::config::Paths::new(home).sock()).unwrap();
     tokio::spawn(async move {
-        let (s, _) = l.accept().await.unwrap();
-        let (r, mut w) = s.into_split();
+        let s = l.accept().await.unwrap();
+        let (r, mut w) = tokio::io::split(s);
         let mut lines = BufReader::new(r).lines();
         while let Some(line) = lines.next_line().await.unwrap() {
             let v: Value = serde_json::from_str(&line).unwrap();

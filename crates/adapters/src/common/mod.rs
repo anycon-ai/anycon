@@ -7,6 +7,7 @@ pub mod bin;
 pub mod child;
 pub mod command;
 pub mod probe_util;
+pub mod proctree;
 pub mod run;
 pub mod version;
 

@@ -23,7 +23,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::os::unix::fs::{FileExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,6 +40,7 @@ use tokio::sync::{watch, Notify, OwnedRwLockReadGuard, RwLock as AsyncRwLock};
 
 use crate::config::{ConfigStore, Paths};
 use crate::store::{BlobRow, Store, StoreError};
+use crate::sys::{read_exact_at, write_all_at, OwnerOnly};
 use crate::util::now_ms;
 use crate::worktree::err_reason;
 
@@ -388,7 +388,7 @@ impl Blobs {
         }
         std::fs::create_dir_all(&tmp)?;
         for d in [&dir, &tmp] {
-            std::fs::set_permissions(d, PermissionsExt::from_mode(0o700))?;
+            crate::sys::restrict_to_owner(d)?;
         }
         let this = Arc::new(Blobs {
             dir,
@@ -591,7 +591,7 @@ impl Blobs {
         let file = {
             let part = part.clone();
             tokio::task::spawn_blocking(move || -> std::io::Result<File> {
-                let f = std::fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&part)?;
+                let f = std::fs::OpenOptions::new().read(true).write(true).create_new(true).owner_only().open(&part)?;
                 f.set_len(size)?;
                 Ok(f)
             })
@@ -695,7 +695,7 @@ impl Blobs {
                     format!("the chunk must be exactly {expected} bytes, got {}", bytes.len()),
                 ));
             }
-            file.write_all_at(&bytes, offset).map_err(|e| internal("cannot write an upload chunk", e))?;
+            write_all_at(&file, &bytes, offset).map_err(|e| internal("cannot write an upload chunk", e))?;
             Ok(guard)
         })
         .await
@@ -902,7 +902,7 @@ impl Blobs {
         let bytes = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
             let f = File::open(&path)?;
             let mut buf = vec![0u8; len];
-            f.read_exact_at(&mut buf, offset)?;
+            read_exact_at(&f, &mut buf, offset)?;
             Ok(buf)
         })
         .await
@@ -1141,7 +1141,7 @@ fn verify(file: &File, size: u64, mime: &str, want_sha: &str) -> Result<(Option<
     let mut off = 0u64;
     while off < size {
         let n = ((size - off) as usize).min(HASH_BUF);
-        file.read_exact_at(&mut buf[..n], off).map_err(Verdict::Io)?;
+        read_exact_at(file, &mut buf[..n], off).map_err(Verdict::Io)?;
         hasher.update(&buf[..n]);
         off += n as u64;
     }
@@ -1150,7 +1150,7 @@ fn verify(file: &File, size: u64, mime: &str, want_sha: &str) -> Result<(Option<
     }
     let mut head = [0u8; 16];
     let n = (size as usize).min(head.len());
-    file.read_exact_at(&mut head[..n], 0).map_err(Verdict::Io)?;
+    read_exact_at(file, &mut head[..n], 0).map_err(Verdict::Io)?;
     if sniff_mime(&head[..n]) != Some(mime) {
         return Err(Verdict::Mime);
     }
@@ -1159,7 +1159,7 @@ fn verify(file: &File, size: u64, mime: &str, want_sha: &str) -> Result<(Option<
             return None;
         }
         let mut b = vec![0u8; n];
-        file.read_exact_at(&mut b, off).ok()?;
+        read_exact_at(file, &mut b, off).ok()?;
         Some(b)
     };
     let dims = image_size(mime, &read);

@@ -512,7 +512,7 @@ impl Sessions {
             return Err(not_git());
         }
         if t.scratch {
-            match (std::fs::canonicalize(out.text()), std::fs::canonicalize(&t.cwd)) {
+            match (crate::sys::canonicalize(out.text()), crate::sys::canonicalize(&t.cwd)) {
                 (Ok(a), Ok(b)) if a == b => {}
                 _ => return Err(not_git()),
             }
@@ -1585,7 +1585,8 @@ fn untracked_patch(cwd: &Path, rel: &str) -> (String, bool) {
         || format!("diff --git a/{rel} b/{rel}\nnew file mode 100644\nBinary files /dev/null and b/{rel} differ\n");
     let Ok(f) = crate::fsopen::open_file_in(&abs, cwd) else { return (binary_patch(), false) };
     let md = f.metadata().ok();
-    let exec = md.as_ref().is_some_and(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0);
+    // Windows 没有可执行位：一律按 100644
+    let exec = md.as_ref().and_then(crate::sys::mode_bits).is_some_and(|m| m & 0o111 != 0);
     let mut buf = Vec::new();
     if f.take(UNTRACKED_COUNT_MAX + 1).read_to_end(&mut buf).is_err() || buf.len() as u64 > UNTRACKED_COUNT_MAX {
         return (binary_patch(), false);

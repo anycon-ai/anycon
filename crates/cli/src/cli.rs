@@ -24,7 +24,7 @@ pub struct Cli {
     /// Node to use when there are several (name or id prefix)
     #[arg(long, global = true, value_name = "NODE")]
     pub node: Option<String>,
-    /// Always use the local daemon's Unix socket
+    /// Always use the local daemon's socket (a named pipe on Windows)
     #[arg(long, global = true)]
     pub local: bool,
     /// How long to wait for each request, in seconds
@@ -38,9 +38,9 @@ pub struct Cli {
 pub enum Command {
     /// Generate the config and Noise keys, and create the workspace directory
     Init(InitArgs),
-    /// Run the daemon in the foreground (leave backgrounding to launchd / systemd)
+    /// Run the daemon in the foreground (leave backgrounding to launchd / systemd / the Windows scheduled task)
     Daemon(DaemonArgs),
-    /// Install and manage the user-level service (launchd / systemd user unit)
+    /// Install and manage the user-level service (launchd / systemd user unit / Windows scheduled task)
     #[command(subcommand)]
     Service(ServiceCmd),
     /// Have the daemon start pairing and print a pairing code (`--enroll`: a 6-digit join code for a new device signed
@@ -143,6 +143,9 @@ pub struct DaemonArgs {
     /// Run in the foreground (already the default; kept for service units)
     #[arg(long)]
     pub foreground: bool,
+    /// Data directory, instead of ANYCON_HOME (used by the Windows scheduled task, which cannot set environment variables)
+    #[arg(long, value_name = "DIR", hide = true)]
+    pub home: Option<std::path::PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]

@@ -230,7 +230,7 @@ async fn mock_is_not_listed_without_config_and_env_alias_enables_it() {
 #[tokio::test]
 async fn a_mock_session_on_a_linked_directory_runs_in_that_directory() {
     let td = TestDaemon::start_mock(&[], false).await;
-    let machine = std::fs::canonicalize(td.dir.path()).unwrap().join("machine");
+    let machine = anycon_daemon::sys::canonicalize(td.dir.path()).unwrap().join("machine");
     std::fs::create_dir_all(machine.join("proj")).unwrap();
     let roots = serde_json::to_string(&[machine.to_string_lossy()]).unwrap();
     anycon_daemon::config::set_value(&td.paths, "workspace.link_roots", &roots).unwrap();

@@ -2934,7 +2934,7 @@ impl Sessions {
                         .map(|d| r.rel_path.as_deref().map_or(d.clone(), |rel| d.join(rel))),
                     None => Some(self.d.workspace.scratch_path(&r.id)),
                 };
-                let workdir = dir.map(|d| std::fs::canonicalize(&d).unwrap_or(d));
+                let workdir = dir.map(|d| crate::sys::canonicalize(&d).unwrap_or(d));
                 crate::preview::ports::SessionTarget {
                     pid: pids.get(&r.id).map(|(_, p)| *p),
                     session_id: r.id,

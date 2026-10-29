@@ -3,7 +3,6 @@
 
 mod common;
 
-use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -47,7 +46,10 @@ async fn creating_a_worktree_session_makes_the_branch_the_directory_and_the_excl
     // agent 的 cwd 是 worktree 目录（不是项目目录）
     let spawns = f.td.fake.spawns.lock().unwrap().clone();
     assert_eq!(spawns.len(), 1);
-    assert_eq!(std::fs::canonicalize(&spawns[0].cwd).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert_eq!(
+        anycon_daemon::sys::canonicalize(&spawns[0].cwd).unwrap(),
+        anycon_daemon::sys::canonicalize(&dir).unwrap()
+    );
     // git 事件在历史里：worktree_created 带分支、base、复制的文件数
     let evs = f.git_events(&s.id).await;
     assert_eq!(evs.len(), 1, "{evs:?}");
@@ -156,7 +158,7 @@ async fn create_validates_synchronously_before_returning() {
     let e = f.create(Some("empty"), Some("hi"), Some(json!({ "mode": "worktree" }))).await.unwrap_err();
     assert_eq!(reason(&e), Some("not_worktree_ready"), "no commit yet");
     // 仓库里的子目录：只能靠「关联已有目录」当项目（根目录下的项目都是一级文件夹）
-    let machine = std::fs::canonicalize(f.td.dir.path()).unwrap().join("machine");
+    let machine = anycon_daemon::sys::canonicalize(f.td.dir.path()).unwrap().join("machine");
     let outer = machine.join("outer");
     std::fs::create_dir_all(outer.join("sub")).unwrap();
     f.td.git(&outer, &["init", "-q", "-b", "main"]);
@@ -165,7 +167,7 @@ async fn create_validates_synchronously_before_returning() {
     let roots = serde_json::to_string(&[machine.to_string_lossy()]).unwrap();
     anycon_daemon::config::set_value(&f.td.paths, "workspace.link_roots", &roots).unwrap();
     f.td.ctx.config.reload().unwrap();
-    let sub = std::fs::canonicalize(outer.join("sub")).unwrap();
+    let sub = anycon_daemon::sys::canonicalize(outer.join("sub")).unwrap();
     let _: Project =
         f.call(methods::WORKSPACE_LINK, json!({ "path": sub.to_string_lossy(), "name": "subproj" })).await.unwrap();
     let e = f.create(Some("subproj"), Some("hi"), Some(json!({ "mode": "worktree" }))).await.unwrap_err();
@@ -406,7 +408,7 @@ async fn a_symlinked_anycon_directory_is_refused_and_nothing_is_written_through_
     let mut f = Fx::new().await;
     let outside = f.td.dir.path().join("elsewhere");
     std::fs::create_dir_all(&outside).unwrap();
-    std::os::unix::fs::symlink(&outside, f.repo.join(".anycon")).unwrap();
+    anycon_daemon::testutil::symlink_dir(&outside, &f.repo.join(".anycon")).unwrap();
     let s = f.create_wt("through a link").await;
     let s = f.wait_wt_state(&s.id, WorktreeState::Failed).await;
     assert!(std::fs::read_dir(&outside).unwrap().next().is_none(), "nothing was created behind the link");
@@ -416,7 +418,7 @@ async fn a_symlinked_anycon_directory_is_refused_and_nothing_is_written_through_
         "{evs:?}"
     );
     // `.anycon` 是个文件也一样
-    std::fs::remove_file(f.repo.join(".anycon")).unwrap();
+    anycon_daemon::testutil::remove_link(&f.repo.join(".anycon")).unwrap();
     std::fs::write(f.repo.join(".anycon"), "file").unwrap();
     let s = f.create_wt("blocked by a file").await;
     f.wait_wt_state(&s.id, WorktreeState::Failed).await;
@@ -446,8 +448,10 @@ async fn agent_start_timeout_only_counts_after_the_worktree_exists() {
     f.td.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn worktreeinclude_copies_ignored_files_skips_links_and_respects_the_limits() {
+    use std::os::unix::fs::PermissionsExt;
     let mut f = Fx::new().await;
     // 被忽略的本地文件
     f.td.commit_file(&f.repo, ".gitignore", ".env\nnode_modules/\nlink.txt\nsecret.bin\n", "ignore");
@@ -592,7 +596,10 @@ async fn worktree_sessions_survive_a_daemon_restart() {
     f.send(&s.id, "after the restart").await.unwrap();
     f.wait_status(&s.id, SessionStatus::Idle).await;
     let spawns = f.td.fake.spawns.lock().unwrap().clone();
-    assert_eq!(std::fs::canonicalize(&spawns.last().unwrap().cwd).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert_eq!(
+        anycon_daemon::sys::canonicalize(&spawns.last().unwrap().cwd).unwrap(),
+        anycon_daemon::sys::canonicalize(&dir).unwrap()
+    );
     let list: WorkspaceWorktreesResult = f.call(methods::WORKSPACE_WORKTREES, json!({})).await.unwrap();
     assert_eq!(list.worktrees.len(), 1);
     f.td.shutdown().await;

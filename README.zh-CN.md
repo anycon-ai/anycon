@@ -50,7 +50,7 @@ Anycon 把跑 AI agent 的那台机器（家里的 Mac mini、工作站、服务
 
 ## 快速开始
 
-hub 需要 Docker。`anycon`（daemon 和 CLI 是同一个二进制）支持 macOS（Apple 芯片和 Intel）和 Linux（x86_64 和 arm64，glibc 2.35 及以上）。
+hub 需要 Docker。`anycon`（daemon 和 CLI 是同一个二进制）支持 macOS（Apple 芯片和 Intel）、Linux（x86_64 和 arm64，glibc 2.35 及以上）和 Windows（x64，Windows 10 1809 及以上）。
 
 **1. 启动 hub**（可以和 agent 在同一台机器上，也可以放在两边都能访问的任何地方）
 
@@ -76,7 +76,17 @@ anycon daemon             # 前台运行；或 `anycon service install` 注册�
 anycon pair               # 另开一个终端：显示 16 位短码和配对链接（--qr 画二维码）
 ```
 
-每个 [GitHub Release](https://github.com/anycon-ai/anycon/releases) 也附带预构建的二进制、校验和与构建来源证明。想从源码构建：在克隆下来的仓库里跑 `cargo install --path crates/cli --locked`（需要较新的 stable Rust 工具链），hub 镜像用 `docker build -f docker/hub.Dockerfile -t anycon-hub .`。
+Windows 上在 PowerShell 里（装到 `%LOCALAPPDATA%\Programs\anycon\bin` 并加进 PATH，不需要管理员权限）：
+
+```powershell
+irm https://github.com/anycon-ai/anycon/releases/latest/download/install.ps1 | iex
+
+anycon init --hub https://hub.example.com --workspace ~/anycon --name my-pc --yes
+anycon service install    # 计划任务：登录时启动 daemon，没有控制台窗口
+anycon pair
+```
+
+每个 [GitHub Release](https://github.com/anycon-ai/anycon/releases) 也附带预构建的二进制、校验和与构建来源证明。想从源码构建：在克隆下来的仓库里跑 `cargo install --path crates/cli --locked`（需要较新的 stable Rust 工具链；Windows 上再装一个服务用的、没有控制台窗口的启动器：`cargo install --path crates/windows-launcher --locked`），hub 镜像用 `docker build -f docker/hub.Dockerfile -t anycon-hub .`。
 
 **3. 浏览器打开 hub 地址**，用管理员 token 登录，输入短码。完成——`~/anycon/` 下每个文件夹都是一个项目，可以在浏览器里直接开始工作。再加一台设备：在节点设置里点「添加设备」，或者再跑一次 `anycon pair`。
 

@@ -44,7 +44,7 @@ impl Budget {
 pub fn effective_env(ctx: &ProbeContext) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = ctx.env.as_ref().clone();
     for (k, v) in &ctx.config.env {
-        env.insert(k.clone(), v.clone());
+        env.insert(anycon_agent_api::env_key_canonical(k).into_owned(), v.clone());
     }
     env
 }
@@ -61,11 +61,15 @@ pub fn field(label: &str, value: impl Into<String>) -> DiagnosticField {
     DiagnosticField { label: label.to_string(), value: value.into() }
 }
 
-/// `$SHELL -lc 'type -a <cmd>'`：对照「终端里的命令和 daemon 找到的是不是同一个」。
+/// `$SHELL -lc 'type -a <cmd>'`：对照「终端里的命令和 daemon 找到的是不是同一个」。Windows 上没有登录 shell，用 `where.exe <cmd>`。
 pub async fn shell_type_a(env: &HashMap<String, String>, name: &str, cwd: &Path) -> String {
-    let Some(shell) = env.get("SHELL").filter(|s| !s.is_empty()) else { return "(SHELL is not set)".to_string() };
-    let script = format!("type -a {}", shell_words::quote(name));
-    let out = run_capture(Path::new(shell), &["-lc".to_string(), script], env, cwd, SHELL_TYPE_TIMEOUT).await;
+    let out = if cfg!(windows) {
+        run_capture(Path::new("where.exe"), &[name.to_string()], env, cwd, SHELL_TYPE_TIMEOUT).await
+    } else {
+        let Some(shell) = env.get("SHELL").filter(|s| !s.is_empty()) else { return "(SHELL is not set)".to_string() };
+        let script = format!("type -a {}", shell_words::quote(name));
+        run_capture(Path::new(shell), &["-lc".to_string(), script], env, cwd, SHELL_TYPE_TIMEOUT).await
+    };
     let text = format!("{}{}", out.stdout.trim(), if out.stdout.trim().is_empty() { out.stderr.trim() } else { "" });
     if text.is_empty() {
         format!("(no output: {})", out.failure_reason())

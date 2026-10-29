@@ -25,10 +25,13 @@ const openCalls = () => rpc.calls.filter((c) => c.method === 'preview.open')
 const portsCalls = () => rpc.calls.filter((c) => c.method === 'preview.ports')
 
 function serve(ports = [previewPort(3000, { process: 'node' }), previewPort(5173, { process: 'vite' })], detection: 'ok' | 'unavailable' = 'ok'): void {
+  // 票据和令牌用同一个过期时间：iframe 地址里带的是两者中较早的那个，各自取 `Date.now()` 的话，
+  // 两次调用落在不同的毫秒里，重开之后地址就变了（测试在慢机器上时好时坏）
+  const expires = Date.now() + 24 * HOUR_MS
   rpc.handlers['preview.ports'] = () => ({ ports, detection })
-  rpc.handlers['preview.open'] = (p) => openResult({ port: (p as PreviewOpenParams).port })
+  rpc.handlers['preview.open'] = (p) => openResult({ port: (p as PreviewOpenParams).port, expires_at_ms: expires })
   rpc.handlers['preview.close'] = () => ({})
-  api.set('POST /api/preview/tokens', () => ({ token: 'hub-token', origin: `https://${LABEL}.preview.test`, expires_at_ms: Date.now() + 24 * HOUR_MS }))
+  api.set('POST /api/preview/tokens', () => ({ token: 'hub-token', origin: `https://${LABEL}.preview.test`, expires_at_ms: expires }))
 }
 
 function view(over: { offline?: boolean; sessionId?: string } = {}) {

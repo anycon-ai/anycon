@@ -1304,15 +1304,16 @@ dangerous_modes = ["yolo"]
         let d = tempfile::tempdir().unwrap();
         let paths = Paths::new(d.path());
         assert_eq!(Config::load(&paths).unwrap().workspace.link_roots, vec!["~".to_string()]);
-        // `anycon config set workspace.link_roots '["/abs/path"]'`：值按 TOML 数组解析
-        set_value(&paths, "workspace.link_roots", "[\"/abs/path\", \"~/work\", \"~\"]").unwrap();
+        // `anycon config set workspace.link_roots '["/abs/path"]'`：值按 TOML 数组解析（Windows 上绝对路径要带盘符）
+        let abs = if cfg!(windows) { "C:/abs/path" } else { "/abs/path" };
+        set_value(&paths, "workspace.link_roots", &format!("[\"{abs}\", \"~/work\", \"~\"]")).unwrap();
         assert_eq!(
             Config::load(&paths).unwrap().workspace.link_roots,
-            vec!["/abs/path".to_string(), "~/work".to_string(), "~".to_string()]
+            vec![abs.to_string(), "~/work".to_string(), "~".to_string()]
         );
         assert_eq!(
             get_value(&Config::load(&paths).unwrap(), "workspace.link_roots"),
-            Some(serde_json::json!(["/abs/path", "~/work", "~"]))
+            Some(serde_json::json!([abs, "~/work", "~"]))
         );
         set_value(&paths, "workspace.link_roots", "[]").unwrap();
         assert!(Config::load(&paths).unwrap().workspace.link_roots.is_empty());

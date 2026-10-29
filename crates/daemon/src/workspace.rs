@@ -1379,7 +1379,7 @@ impl Workspace {
         dest: &Path,
         mut cancel: oneshot::Receiver<()>,
     ) -> Result<(), String> {
-        let mut cmd = Command::new("git");
+        let mut cmd = Command::new(crate::gitops::command_program("git", &self.env));
         cmd.args([
             "-c",
             "protocol.ext.allow=never",
@@ -1770,7 +1770,7 @@ async fn run_git(
     cwd: Option<&Path>,
     timeout: Duration,
 ) -> std::io::Result<std::process::Output> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(crate::gitops::command_program("git", env));
     cmd.args(git_invocation(args))
         .env_clear()
         .envs(env.iter().filter(|(k, _)| !crate::gitops::GIT_ENV_STRIP.contains(&k.as_str())))

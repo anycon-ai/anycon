@@ -21,7 +21,7 @@ fn code(e: &RpcError) -> ErrorCode {
 
 async fn start() -> (TestDaemon, std::path::PathBuf) {
     let td = TestDaemon::start().await;
-    let machine = std::fs::canonicalize(td.dir.path()).unwrap().join("machine");
+    let machine = anycon_daemon::sys::canonicalize(td.dir.path()).unwrap().join("machine");
     std::fs::create_dir_all(&machine).unwrap();
     let roots = serde_json::to_string(&[machine.to_string_lossy()]).unwrap();
     anycon_daemon::config::set_value(&td.paths, "workspace.link_roots", &roots).unwrap();

@@ -193,7 +193,7 @@ pub fn parse_lsof_cwd(out: &str) -> HashMap<u32, PathBuf> {
             'p' => pid = rest.trim().parse().ok(),
             'n' => {
                 if let Some(pid) = pid {
-                    if rest.starts_with('/') && !rest.contains(" (readlink:") && !rest.contains(" (stat:") {
+                    if Path::new(rest).is_absolute() && !rest.contains(" (readlink:") && !rest.contains(" (stat:") {
                         m.insert(pid, PathBuf::from(rest));
                     }
                 }
@@ -1176,6 +1176,8 @@ mod tests {
         assert!(det.warned_recently("lsof is not installed"));
     }
 
+    // 跑的是 `env`：Windows 上只有 Git Bash 带的那个，它自己会补 `HOME`
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_system_runner_clears_the_environment_and_reports_missing_programs() {
         let env: Arc<HashMap<String, String>> = Arc::new(

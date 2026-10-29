@@ -1308,7 +1308,7 @@ async fn a_port_shared_with_a_process_that_is_not_the_sessions_is_neither_allowe
     let s: SessionSummary =
         c.call(&td, methods::SESSION_CREATE, json!({ "agent": "fake", "project": "web" })).await.unwrap();
     let port = free_port();
-    let runner = ScriptedRunner::new(port, std::fs::canonicalize(td.workspace.join("web")).unwrap());
+    let runner = ScriptedRunner::new(port, anycon_daemon::sys::canonicalize(td.workspace.join("web")).unwrap());
     td.ctx.preview.detector().set_runner(runner.clone());
     // 只有会话的服务（127.0.0.1）在监听：允许、列出
     runner.listening.store(true, SeqCst);
@@ -1351,7 +1351,7 @@ async fn a_denial_based_on_a_stale_snapshot_is_checked_again_once() {
     let _s: SessionSummary =
         c.call(&td, methods::SESSION_CREATE, json!({ "agent": "fake", "project": "web" })).await.unwrap();
     let port = free_port();
-    let workdir = std::fs::canonicalize(td.workspace.join("web")).unwrap();
+    let workdir = anycon_daemon::sys::canonicalize(td.workspace.join("web")).unwrap();
     let runner = ScriptedRunner::new(port, workdir);
     td.ctx.preview.detector().set_runner(runner.clone());
     // 还没有人监听：拒绝

@@ -275,7 +275,10 @@ async fn unarchive_rebuilds_a_removed_worktree_from_its_branch_and_sessions_work
     f.send(&s.id, "continue working").await.unwrap();
     f.wait_status(&s.id, SessionStatus::Idle).await;
     let spawns = f.td.fake.spawns.lock().unwrap().clone();
-    assert_eq!(std::fs::canonicalize(&spawns.last().unwrap().cwd).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert_eq!(
+        anycon_daemon::sys::canonicalize(&spawns.last().unwrap().cwd).unwrap(),
+        anycon_daemon::sys::canonicalize(&dir).unwrap()
+    );
     f.td.shutdown().await;
 }
 
@@ -350,7 +353,7 @@ async fn a_failed_rebuild_on_unarchive_keeps_the_session_archived() {
     assert_eq!(after.worktree.unwrap().state, WorktreeState::Removed);
     assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none());
     // 修好之后再来
-    std::fs::remove_file(f.repo.join(".anycon")).unwrap();
+    anycon_daemon::testutil::remove_link(&f.repo.join(".anycon")).unwrap();
     unarchive(&mut f, &s.id).await.unwrap();
     assert_eq!(f.get(&s.id).await.worktree.unwrap().state, WorktreeState::Active);
     f.td.shutdown().await;
@@ -476,7 +479,10 @@ async fn a_deleted_worktree_directory_is_noticed_and_rebuilt_on_the_next_send() 
     assert!(!dir.join("uncommitted.txt").exists());
     assert_eq!(f.git_actions(&s.id).await.iter().filter(|a| **a == GitAction::WorktreeRestored).count(), 1);
     let spawns = f.td.fake.spawns.lock().unwrap().clone();
-    assert_eq!(std::fs::canonicalize(&spawns.last().unwrap().cwd).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert_eq!(
+        anycon_daemon::sys::canonicalize(&spawns.last().unwrap().cwd).unwrap(),
+        anycon_daemon::sys::canonicalize(&dir).unwrap()
+    );
     // 新目录是新身份：再次复核通过
     f.send(&s.id, "third try").await.unwrap();
     f.wait_status(&s.id, SessionStatus::Idle).await;
@@ -533,7 +539,7 @@ async fn a_replaced_worktree_directory_is_never_rebuilt_over_and_never_followed(
     assert!(std::fs::symlink_metadata(&dir).unwrap().file_type().is_symlink(), "not rebuilt over");
     assert_eq!(std::fs::read_to_string(elsewhere.join("secret.txt")).unwrap(), "outside");
     // 被换成另一个真目录也一样
-    std::fs::remove_file(&dir).unwrap();
+    anycon_daemon::testutil::remove_link(&dir).unwrap();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("other.txt"), "someone else's directory").unwrap();
     f.send(&s.id, "and now?").await.unwrap();
@@ -736,7 +742,7 @@ async fn renaming_the_project_repairs_the_worktrees() {
     }
     let _: RenamedProject =
         f.call(methods::WORKSPACE_RENAME, json!({ "from": "proj", "to": "renamed" })).await.unwrap();
-    let new_repo = std::fs::canonicalize(f.td.workspace.join("renamed")).unwrap();
+    let new_repo = anycon_daemon::sys::canonicalize(f.td.workspace.join("renamed")).unwrap();
     let wt_dir = new_repo.join(".anycon/worktrees/survive-rename");
     // git 在 worktree 里能用（没修的话 `.git` 文件还指着旧路径）
     assert_eq!(f.td.git(&wt_dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "anycon/survive-rename");
@@ -753,7 +759,7 @@ async fn renaming_the_project_repairs_the_worktrees() {
     f.send(&s.id, "still works").await.unwrap();
     f.wait_status(&s.id, SessionStatus::Idle).await;
     let spawns = f.td.fake.spawns.lock().unwrap().clone();
-    assert_eq!(std::fs::canonicalize(&spawns.last().unwrap().cwd).unwrap(), wt_dir);
+    assert_eq!(anycon_daemon::sys::canonicalize(&spawns.last().unwrap().cwd).unwrap(), wt_dir);
     let st: SessionGitStatus = f.call(methods::SESSION_GIT_STATUS, json!({ "session_id": s.id })).await.unwrap();
     assert_eq!(st.branch.as_deref(), Some("anycon/survive-rename"));
     f.td.shutdown().await;
@@ -899,7 +905,7 @@ async fn the_pr_round_is_skipped_when_gh_is_not_usable_and_asks_about_at_most_tw
 #[tokio::test]
 async fn worktrees_work_in_a_linked_project_and_follow_it_when_it_is_linked_again_under_another_name() {
     let mut f = Fx::new().await;
-    let machine = std::fs::canonicalize(f.td.dir.path()).unwrap().join("machine");
+    let machine = anycon_daemon::sys::canonicalize(f.td.dir.path()).unwrap().join("machine");
     let linked = machine.join("elsewhere-repo");
     std::fs::create_dir_all(&linked).unwrap();
     f.td.git(&linked, &["init", "-q", "-b", "main"]);

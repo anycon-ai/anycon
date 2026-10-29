@@ -10,14 +10,16 @@ fn link_roots_can_be_set_from_the_environment_as_an_array() {
     let paths = Paths::new(d.path());
     assert_eq!(Config::load(&paths).unwrap().workspace.link_roots, vec!["~".to_string()]);
 
+    // 绝对路径：Windows 上要带盘符
+    let abs = |p: &str| if cfg!(windows) { format!("C:{p}") } else { p.to_string() };
     // 带引号的数组；环境变量盖过配置文件
-    std::fs::write(paths.config_toml(), "[workspace]\nlink_roots = [\"/from/file\"]\n").unwrap();
-    std::env::set_var("ANYCON_WORKSPACE__LINK_ROOTS", "[\"/tmp/a\", \"/tmp/b\"]");
-    assert_eq!(Config::load(&paths).unwrap().workspace.link_roots, vec!["/tmp/a".to_string(), "/tmp/b".to_string()]);
+    std::fs::write(paths.config_toml(), format!("[workspace]\nlink_roots = [\"{}\"]\n", abs("/from/file"))).unwrap();
+    std::env::set_var("ANYCON_WORKSPACE__LINK_ROOTS", format!("[\"{}\", \"{}\"]", abs("/tmp/a"), abs("/tmp/b")));
+    assert_eq!(Config::load(&paths).unwrap().workspace.link_roots, vec![abs("/tmp/a"), abs("/tmp/b")]);
 
     // 单个元素
-    std::env::set_var("ANYCON_WORKSPACE__LINK_ROOTS", "[\"/only/one\"]");
-    assert_eq!(Config::load(&paths).unwrap().workspace.link_roots, vec!["/only/one".to_string()]);
+    std::env::set_var("ANYCON_WORKSPACE__LINK_ROOTS", format!("[\"{}\"]", abs("/only/one")));
+    assert_eq!(Config::load(&paths).unwrap().workspace.link_roots, vec![abs("/only/one")]);
 
     // 空数组 = 关闭
     std::env::set_var("ANYCON_WORKSPACE__LINK_ROOTS", "[]");

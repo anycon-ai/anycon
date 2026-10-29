@@ -148,7 +148,7 @@ async fn walk_workspace(w: &mut Walk<'_>, td: &TestDaemon) {
     assert_eq!(r["text"], json!("hello"));
 
     // ---- 关联已有目录（ADR-33）：link_roots 指向临时目录（热加载），不碰真实 HOME
-    let machine = std::fs::canonicalize(td.dir.path()).unwrap().join("machine");
+    let machine = anycon_daemon::sys::canonicalize(td.dir.path()).unwrap().join("machine");
     std::fs::create_dir_all(machine.join("linked-proj")).unwrap();
     let roots = serde_json::to_string(&[machine.to_string_lossy()]).unwrap();
     anycon_daemon::config::set_value(&td.paths, "workspace.link_roots", &roots).unwrap();

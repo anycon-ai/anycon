@@ -1211,6 +1211,15 @@ pub fn assert_mode(p: &Path, mode: u32) {
     }
 }
 
+/// 删掉一个符号链接（不碰它指向的东西）。Windows 上指向目录的链接要用 `remove_dir` 删，`remove_file` 会被拒绝。
+pub fn remove_link(link: &Path) -> std::io::Result<()> {
+    if cfg!(windows) && std::fs::symlink_metadata(link)?.is_dir() {
+        std::fs::remove_dir(link)
+    } else {
+        std::fs::remove_file(link)
+    }
+}
+
 /// 建一个指向文件的符号链接（Windows 上同 [`symlink_dir`]，要特权）。
 pub fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
     #[cfg(unix)]

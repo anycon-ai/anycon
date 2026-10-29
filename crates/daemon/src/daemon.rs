@@ -27,7 +27,8 @@ use crate::worktree::WorktreeMgr;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
-    #[error("another anycon daemon is already running (pid {0})")]
+    /// 持锁进程的 pid；Windows 的文件锁是强制的，读不到时为空。
+    #[error("another anycon daemon is already running{}", if .0.is_empty() { String::new() } else { format!(" (pid {})", .0) })]
     AlreadyRunning(String),
     #[error(transparent)]
     Config(#[from] ConfigError),

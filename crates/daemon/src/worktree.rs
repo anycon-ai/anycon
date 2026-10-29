@@ -204,9 +204,11 @@ fn read_git_file(wt_dir: &Path) -> Option<String> {
 }
 
 /// 创建 / 重建时记下的指针：原始内容里项目目录的绝对路径换成 `{project}`，项目改名之后记录仍然有意义。
+/// Git for Windows 在指针里写 `/` 分隔的路径（`gitdir: C:/Users/…`），两种写法都换。
 pub fn read_git_pointer(project_dir: &Path, wt_dir: &Path) -> Option<String> {
     let project = project_dir.to_string_lossy();
-    Some(read_git_file(wt_dir)?.replace(project.as_ref(), "{project}"))
+    let text = read_git_file(wt_dir)?.replace(project.as_ref(), "{project}");
+    Some(if cfg!(windows) { text.replace(&project.replace('\\', "/"), "{project}") } else { text })
 }
 
 /// 指针内容 `gitdir: <路径>` 指向哪里：绝对路径原样，相对路径（git 的 `worktree.useRelativePaths`）按 worktree 目录解析；

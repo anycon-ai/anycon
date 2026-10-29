@@ -168,8 +168,10 @@ pub fn expand_home(raw: &str, env: &HashMap<String, String>) -> Result<PathBuf, 
     expand_with_home(raw, anycon_agent_api::env_home(env).map(Path::new))
 }
 
-/// 不碰文件系统地去掉 `.` 和 `..`（只用来决定错误码，不用来授权）。
+/// 不碰文件系统地去掉 `.` 和 `..`（只用来决定错误码，不用来授权）。Windows 上 `\\?\C:\…` 这种写法先换成 `C:\…`
+/// （和 [`crate::sys::canonicalize`] 的结果一致），否则同一个目录会被当成两个不同的路径。
 pub fn lexical_clean(p: &Path) -> PathBuf {
+    let p = crate::sys::simplified(p);
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {

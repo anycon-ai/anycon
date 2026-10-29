@@ -9,7 +9,7 @@ use serde_json::json;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn link_browse_list_and_unlink_a_local_directory() {
     let d = tempfile::tempdir().unwrap();
-    let base = std::fs::canonicalize(d.path()).unwrap();
+    let base = anycon_daemon::sys::canonicalize(d.path()).unwrap();
     let home = base.join("home");
     let machine = base.join("machine");
     std::fs::create_dir_all(machine.join("alpha/.git")).unwrap();
@@ -149,7 +149,7 @@ async fn link_browse_list_and_unlink_a_local_directory() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn config_set_link_roots_prints_which_entries_the_daemon_ignores_and_why() {
     let d = tempfile::tempdir().unwrap();
-    let base = std::fs::canonicalize(d.path()).unwrap();
+    let base = anycon_daemon::sys::canonicalize(d.path()).unwrap();
     let home = base.join("home");
     let machine = base.join("machine");
     std::fs::create_dir_all(machine.join("real-code")).unwrap();

@@ -113,7 +113,7 @@ async fn a_failed_repair_only_asks_for_git_worktree_repair_and_archiving_never_c
         f.call(methods::WORKSPACE_RENAME, json!({ "from": "proj", "to": "renamed" })).await.unwrap();
     f.td.fail_git(&[]);
     let dir = f.td.workspace.join("renamed").join(&s.worktree.as_ref().unwrap().path);
-    let dir = std::fs::canonicalize(&dir).unwrap();
+    let dir = anycon_daemon::sys::canonicalize(&dir).unwrap();
     std::fs::write(dir.join("wip.txt"), "uncommitted work").unwrap();
     // 指针没改写：send 得到 not_found，说明是指针不对、该运行 `git worktree repair`，而不是「把路径移走」
     f.send(&s.id, "after the failed repair").await.unwrap();
@@ -171,7 +171,8 @@ async fn a_pointer_written_as_a_relative_path_is_the_same_pointer() {
     std::fs::write(&cfg, text).unwrap();
     let _: RenamedProject =
         f.call(methods::WORKSPACE_RENAME, json!({ "from": "proj", "to": "renamed" })).await.unwrap();
-    let dir = std::fs::canonicalize(f.td.workspace.join("renamed").join(&s.worktree.as_ref().unwrap().path)).unwrap();
+    let dir = anycon_daemon::sys::canonicalize(f.td.workspace.join("renamed").join(&s.worktree.as_ref().unwrap().path))
+        .unwrap();
     let pointer = std::fs::read_to_string(dir.join(".git")).unwrap();
     assert!(pointer.starts_with("gitdir: ../"), "repair wrote a relative pointer: {pointer}");
     // 语义上还是同一个管理目录：会话照常工作，周期检查也不误报

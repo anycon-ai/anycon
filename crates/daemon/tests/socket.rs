@@ -307,6 +307,8 @@ async fn single_instance_lock_and_not_initialized() {
     )
     .await;
     match second {
+        // Windows 的文件锁是强制的，另一个打开者读不到锁文件里的 pid
+        Err(DaemonError::AlreadyRunning(pid)) if cfg!(windows) => assert_eq!(pid, ""),
         Err(DaemonError::AlreadyRunning(pid)) => assert_eq!(pid, std::process::id().to_string()),
         Err(e) => panic!("{e}"),
         Ok(_) => panic!("second instance must not start"),

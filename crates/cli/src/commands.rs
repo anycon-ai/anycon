@@ -1883,14 +1883,15 @@ mod tests {
 
     #[test]
     fn path_arguments_become_absolute_only_when_relative() {
-        assert_eq!(absolute_path_arg("/abs/x").unwrap(), "/abs/x");
+        let abs = if cfg!(windows) { r"C:\abs\x" } else { "/abs/x" };
+        assert_eq!(absolute_path_arg(abs).unwrap(), abs);
         assert_eq!(absolute_path_arg("~").unwrap(), "~");
         assert_eq!(absolute_path_arg("~/work/x").unwrap(), "~/work/x");
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(absolute_path_arg("proj").unwrap(), cwd.join("proj").to_string_lossy());
         assert_eq!(absolute_path_arg("./a/./b").unwrap(), cwd.join("a/b").to_string_lossy());
         // `~user` 不是 `~/…`：当相对路径处理，由 daemon 判为 invalid 之前先变成绝对路径（不会被误展开）
-        assert!(absolute_path_arg("~user/x").unwrap().starts_with('/'));
+        assert!(std::path::Path::new(&absolute_path_arg("~user/x").unwrap()).is_absolute());
     }
 
     #[test]

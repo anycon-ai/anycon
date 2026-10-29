@@ -139,10 +139,25 @@ struct ProcSpec<'a> {
     safe_config: bool,
 }
 
+/// 交给 `Command::new` 的程序：Windows 上先按 daemon 环境的 `PATH` 找到它的完整路径——标准库在子进程环境的 `PATH` 里
+/// 找不到时会退回 daemon 进程自己的 `PATH`，daemon 环境里明明没有 `git` 也照样拉得起来。找不到时得到一个必然失败的名字
+/// （`NotFound`）。其它平台原样返回，由 `Command` 按子进程环境的 `PATH` 找。
+pub fn command_program(program: &str, env: &HashMap<String, String>) -> std::path::PathBuf {
+    if cfg!(windows) {
+        let path = env.get("PATH").map(String::as_str).unwrap_or_default();
+        let cwd = anycon_adapters::common::neutral_cwd();
+        if let Some(p) = anycon_adapters::common::bin::which_all(program, path, &cwd).into_iter().next() {
+            return p;
+        }
+        return std::path::PathBuf::from(format!("{program}-not-found-on-the-daemon-path"));
+    }
+    std::path::PathBuf::from(program)
+}
+
 /// 拉起 `spec.program`，在独立进程组里跑（Windows：Job Object，见 `anycon_adapters::common::proctree`），带超时和输出上限。
 async fn run_process(spec: ProcSpec<'_>, env: &HashMap<String, String>) -> Result<GitOut, GitError> {
     let ProcSpec { program, args, cwd, extra_env, timeout, stdout_cap, safe_config } = spec;
-    let mut cmd = Command::new(program);
+    let mut cmd = Command::new(command_program(program, env));
     if safe_config {
         cmd.args(GIT_SAFE_CONFIG);
     }

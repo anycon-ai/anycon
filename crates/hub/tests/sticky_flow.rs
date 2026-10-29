@@ -419,6 +419,11 @@ async fn thirty_mib_from_a_daemon_to_a_slow_reader_loses_nothing_and_stays_conne
     }
 }
 
+// hub 只发 Linux 镜像；Windows runner 上客户端收到 `rate_limited` 的时刻抖动远超这里留的 10% 余量
+#[cfg_attr(
+    windows,
+    ignore = "receive-time jitter on Windows runners exceeds the 10% margin; the hub only ships for Linux"
+)]
 #[tokio::test]
 async fn thirty_mib_over_a_lower_daemon_budget_is_throttled_not_dropped() {
     // 把 daemon 预算降到 20 MiB / 分钟（桶容量 20 MiB，回填约 0.33 MiB / 秒）：灌 30 MiB 会撞上它，多出来的要等额度慢慢回来（约 30 秒）。

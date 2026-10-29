@@ -1256,7 +1256,7 @@ async fn write_refuses_what_is_not_a_small_utf8_regular_file() {
     // cwd 不存在：I/O 错误原样报出，也不会把 cwd 建出来
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("gone");
-    assert_write_refused(&missing, "No such file").await;
+    assert_write_refused(&missing, if cfg!(windows) { "cannot find the path" } else { "No such file" }).await;
     assert!(!missing.exists());
 }
 

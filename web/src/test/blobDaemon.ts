@@ -1,12 +1,20 @@
 // 假 daemon 的 blob.* 方法（测试用）：记录收到的块，put_end 返回 daemon 风格的 AttachmentRef。
-// 每次 put_begin 生成一个新的 blob_id（`b…001`、`b…002` …），多张图的测试里互相区分得开。
+// 每次 put_begin 生成一个新的 blob_id（`b…001`、`b…002` …），多个附件的测试里互相区分得开。
+//
+// 像真 daemon 一样收任何合格的 `type/subtype` mime（不带参数、≤ 127 字节、不分大小写，记录成小写；不合格回 `invalid`），
+// 只有这四种图片类型会在 put_end 时核对文件头（对不上回 `invalid` / `mime_mismatch`），记录也只有它们带宽高（固定 40×30）；
+// 别的类型不看内容。
 //
 // 像真 daemon 一样限流：同一时间进行中（put_begin 之后、还没 put_end / discard）的上传最多 8 个，第 9 个 put_begin 回 `busy`
 // （protocol.md § 5.6，`MAX_UPLOADS_PER_DEVICE`）。另外记下并发的峰值（`peak`），测试里直接断言写死的数字，
 // 不拿代码里的常量跟自己比。
 import type { AttachmentRef, BlobPutBeginParams, BlobPutChunkParams } from '@/protocol'
+import { sniffImageMime } from '@/features/attachments/normalize'
 import { base64ToBytes } from '@/lib/base64'
 import { rpcError, type FakeRpc } from './fakeRpc'
+
+const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/
+const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
 /** 真 daemon 每台设备同时进行中的上传上限。 */
 export const DAEMON_MAX_UPLOADS = 8
@@ -51,7 +59,9 @@ export function installBlobDaemon(rpc: FakeRpc, opts: BlobDaemonOptions = {}): B
     peak: { uploads: 0, chunks: 0 },
   }
   rpc.handlers['blob.put_begin'] = (p) => {
-    const params = p as BlobPutBeginParams
+    const raw = p as BlobPutBeginParams
+    if (raw.mime.length > 127 || !MIME_RE.test(raw.mime)) throw rpcError('invalid')
+    const params: BlobPutBeginParams = { ...raw, mime: raw.mime.toLowerCase() }
     if (inProgress() >= DAEMON_MAX_UPLOADS) throw rpcError('busy')
     opts.onBegin?.(params)
     counter += 1
@@ -81,8 +91,10 @@ export function installBlobDaemon(rpc: FakeRpc, opts: BlobDaemonOptions = {}): B
     endAttempts.set(blob_id, attempt)
     opts.onEnd?.(blob_id, attempt)
     const up = uploads.get(blob_id)!
+    const image = IMAGE_MIMES.includes(up.begin.mime)
+    if (image && sniffImageMime(up.chunks.get(0) ?? new Uint8Array(0)) !== up.begin.mime) throw rpcError('invalid', undefined, 'mime_mismatch')
     up.ended = true
-    const ref: AttachmentRef = { blob_id, name: up.begin.name, mime: up.begin.mime, bytes: up.begin.size, width: 40, height: 30 }
+    const ref: AttachmentRef = { blob_id, name: up.begin.name, mime: up.begin.mime, bytes: up.begin.size, ...(image ? { width: 40, height: 30 } : {}) }
     return ref
   }
   rpc.handlers['blob.discard'] = (p) => {

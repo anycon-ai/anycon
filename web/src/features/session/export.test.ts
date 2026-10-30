@@ -1,4 +1,4 @@
-// 导出 Markdown 里的 notice 和后台任务（事件形状和 reducer.test 里的一致）。
+// 导出 Markdown 里的附件、notice 和后台任务（事件形状和 reducer.test 里的一致）。
 import { beforeEach, describe, expect, it } from 'vitest'
 import { evs, resetSeq } from '@/test/factories'
 import { exportMarkdown } from './export'
@@ -7,6 +7,23 @@ import { buildView } from './reducer'
 beforeEach(() => resetSeq())
 
 const md = (events: Parameters<typeof evs>[0]): string => exportMarkdown('T', buildView(evs(events)).blocks)
+
+describe('exportMarkdown: attachments', () => {
+  const user = { type: 'user_message' as const, message_id: 'm1', content: 'see these', by_device: 'me', attachments: [
+    { blob_id: 'a'.repeat(32), name: 'shot.png', mime: 'image/png', bytes: 10, width: 4, height: 3 },
+    { blob_id: 'b'.repeat(32), name: 'spec.pdf', mime: 'application/pdf', bytes: 20 },
+    { blob_id: 'c'.repeat(32), name: 'logo.svg', mime: 'image/svg+xml', bytes: 30 },
+  ] }
+
+  it('writes the names only: images as [image: …], everything else (SVG included) as [file: …]', () => {
+    expect(md([user])).toContain('see these\n\n[image: shot.png]\n\n[file: spec.pdf]\n\n[file: logo.svg]\n')
+  })
+
+  it('lets the UI word the labels in its language', () => {
+    const out = exportMarkdown('T', buildView(evs([user])).blocks, (name, kind) => (kind === 'image' ? `[图片：${name}]` : `[文件：${name}]`))
+    expect(out).toContain('[图片：shot.png]\n\n[文件：spec.pdf]\n\n[文件：logo.svg]')
+  })
+})
 
 describe('exportMarkdown: notices', () => {
   it('writes each notice as one line with its level, code and the agent’s text', () => {

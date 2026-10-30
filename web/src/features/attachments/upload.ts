@@ -1,19 +1,18 @@
-// 上传一张规整过的图（spec/web.md § 4.6「上传」、protocol.md § 5.6）：
+// 上传一个附件（规整过的图，或原样的文件；spec/web.md § 4.6「上传」、protocol.md § 5.6）：
 // `blob.put_begin` → 每块 512 KiB、最多 2 块在途的 `blob.put_chunk` → `blob.put_end`。
-// 每块都有答复：失败的块自己重试 2 次，不用整张重传；块与块之间让出主线程；取消 = `blob.discard`。
+// 每块都有答复：失败的块自己重试 2 次，不用整个重传；块与块之间让出主线程；取消 = `blob.discard`。
 import type { AttachmentRef, BlobPutBeginResult } from '@/protocol'
 import { bytesToBase64 } from '@/lib/base64'
 import { warnOnError } from '@/lib/log'
 import { AbortedError, isAborted, withRetry, yieldToMain } from './async'
 import { writeCached } from './cache'
-import type { NormalizedImage } from './normalize'
 import { blobCall } from './rpc'
 import { sha256Hex } from './sha256'
 
 /**
  * 同时在途的块数。上传和这台设备的其它请求（允许 / 停止 / 发消息）共用一条有序的加密通道，
  * 在途的字节越多，排在后面的交互请求等得越久（经 hub 时还有客户端限速）：2 块 ≈ 1.4 MB（base64 后），最多让它们等一两秒。
- * 每个节点同时也只有一张图在上传（见 `composerUploads.ts`），所以整个节点在途的就是这 2 块。
+ * 每个节点同时也只有一个附件在上传（见 `composerUploads.ts`），所以整个节点在途的就是这 2 块。
  */
 export const MAX_IN_FLIGHT_CHUNKS = 2
 /** 失败的块（和 `put_end`）再试几次。 */
@@ -27,6 +26,13 @@ export const UPLOAD_REQUEST_TIMEOUT_MS = 90_000
 /** daemon 给的 `chunk_size` 不会离谱；超出这个范围当作协议错误，不照着切。 */
 const MAX_CHUNK_BYTES = 4 * 1024 * 1024
 
+/** 要上传的字节和 `blob.put_begin` 用的名字、mime。 */
+export interface UploadSource {
+  bytes: Uint8Array
+  mime: string
+  name: string
+}
+
 export interface UploadHooks {
   signal?: AbortSignal
   /** 已确认的字节数 / 总字节数，0..1。 */
@@ -37,7 +43,7 @@ export interface UploadHooks {
 
 /**
  * 等 `p`，但 `signal` 中止时立刻放弃（抛 `AbortedError`；在途的请求还会跑完，结果不再有人要）。
- * 每个节点同时只有一张图在上传：被移除的图不能让队列里的下一张等它的请求超时（最长 90 秒）。
+ * 每个节点同时只有一个附件在上传：被移除的那个不能让队列里的下一个等它的请求超时（最长 90 秒）。
  */
 function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return p
@@ -55,19 +61,19 @@ export function discardBlob(nodeId: string, blobId: string): void {
 }
 
 /**
- * 上传并返回 daemon 的记录（`AttachmentRef`，含宽高）。成功后立刻写进图片缓存，之后显示不用再拉。
- * 失败 / 中止时尽力 `blob.discard`，原样抛出错误（中止抛 `AbortedError`）。
+ * 上传并返回 daemon 的记录（`AttachmentRef`，图片含宽高）。成功后立刻写进附件缓存：之后显示不用再拉，
+ * blob 被节点回收时也能从缓存重传。失败 / 中止时尽力 `blob.discard`，原样抛出错误（中止抛 `AbortedError`）。
  */
-export async function uploadImage(nodeId: string, image: NormalizedImage, hooks: UploadHooks = {}): Promise<AttachmentRef> {
+export async function uploadBlob(nodeId: string, source: UploadSource, hooks: UploadHooks = {}): Promise<AttachmentRef> {
   const { signal, onProgress } = hooks
   const delayMs = hooks.retryDelayMs ?? RETRY_DELAY_MS
   const aborted = (): boolean => signal?.aborted === true
   if (aborted()) throw new AbortedError()
 
-  const size = image.bytes.length
-  const sha256 = await sha256Hex(image.bytes)
+  const size = source.bytes.length
+  const sha256 = await sha256Hex(source.bytes)
   if (aborted()) throw new AbortedError()
-  const beginReq = blobCall(nodeId, 'blob.put_begin', { name: image.name, mime: image.mime, size, sha256 })
+  const beginReq = blobCall(nodeId, 'blob.put_begin', { name: source.name, mime: source.mime, size, sha256 })
   let begin: BlobPutBeginResult
   try {
     begin = await raceAbort(beginReq, signal)
@@ -94,7 +100,7 @@ export async function uploadImage(nodeId: string, image: NormalizedImage, hooks:
         await yieldToMain()
         if (failure !== null || aborted()) return
         const start = index * chunkSize
-        const slice = image.bytes.subarray(start, Math.min(size, start + chunkSize))
+        const slice = source.bytes.subarray(start, Math.min(size, start + chunkSize))
         try {
           await withRetry(() => blobCall(nodeId, 'blob.put_chunk', { blob_id: blobId, index, data: bytesToBase64(slice) }, UPLOAD_REQUEST_TIMEOUT_MS), { retries: CHUNK_RETRIES, delayMs, signal })
         } catch (e) {
@@ -113,7 +119,7 @@ export async function uploadImage(nodeId: string, image: NormalizedImage, hooks:
     const ref = await raceAbort(withRetry(() => blobCall(nodeId, 'blob.put_end', { blob_id: blobId }, UPLOAD_REQUEST_TIMEOUT_MS), { retries: CHUNK_RETRIES, delayMs, signal }), signal)
     // 传完的同时用户移除了它：不再有人引用，下面的 catch 会丢掉
     if (aborted()) throw new AbortedError()
-    await writeCached(ref.blob_id, image.bytes, ref.mime)
+    await writeCached(ref.blob_id, source.bytes, ref.mime)
     onProgress?.(1)
     return ref
   } catch (e) {

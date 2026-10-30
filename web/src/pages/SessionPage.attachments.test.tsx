@@ -104,6 +104,14 @@ describe('SessionPage: when the attach menu is offered', () => {
     expect((screen.getByTestId('composer-file-input') as HTMLInputElement).accept).toBe('image/png,image/jpeg,image/*')
   })
 
+  it('an agent that takes any file (“*/*”): the plus menu is offered and the file picker takes any type', async () => {
+    seed({ agent: { capabilities: { ...IMAGE_CAPS, attachments: ['*/*'] } } })
+    render(<SessionPage sessionId={SID} />)
+    await userEvent.click(screen.getByTestId('composer-plus'))
+    expect(await screen.findByTestId('composer-attach')).toHaveTextContent('Add files or photos')
+    expect(screen.getByTestId('composer-file-input')).not.toHaveAttribute('accept')
+  })
+
   it('node without the blobs capability: not shown', () => {
     seed({ blobs: false })
     render(<SessionPage sessionId={SID} />)
@@ -127,7 +135,7 @@ describe('SessionPage: when the attach menu is offered', () => {
     await userEvent.click(screen.getByTestId('composer-plus'))
     const item = await screen.findByTestId('composer-attach')
     expect(item).toHaveAttribute('data-disabled')
-    expect(item).toHaveTextContent("The node is offline. Images can't be attached right now.")
+    expect(item).toHaveTextContent("The node is offline. Files can't be attached right now.")
     expect(screen.getByTestId('composer-file-input')).toBeDisabled()
   })
 })
@@ -211,7 +219,7 @@ describe('SessionPage: attachments the node no longer has', () => {
     const err = screen.getByTestId('message-unsent-error')
     expect(err).toHaveTextContent('no longer on the node')
     expect(err).toHaveAttribute('data-reason', 'blob_expired')
-    expect(useUi.getState().toasts.map((t) => t.text)).toEqual(['An attachment is no longer on the node. Edit the message and add the images again.'])
+    expect(useUi.getState().toasts.map((t) => t.text)).toEqual(['An attachment is no longer on the node. Edit the message and add the attachments again.'])
     act(() => io.intersect())
     expect(await within(screen.getByTestId('message-user')).findByRole('img', { name: 'old.png' })).toBeInTheDocument()
   })
@@ -296,19 +304,19 @@ describe('SessionPage: retrying a turn and exporting', () => {
     expect(sends()[0]).toMatchObject({ content: 'why is this broken?', attachments: [ref] })
   })
 
-  it('the Markdown export lists the images as [image: name] in the UI language', async () => {
-    seed({ events: [events[0]!] })
+  it('the Markdown export lists images as [image: name] and other files as [file: name], in the UI language', async () => {
+    seed({ events: [{ type: 'user_message', message_id: 'm1', content: 'why is this broken?', by_device: 'me', attachments: [ref, { blob_id: 'f'.repeat(32), name: 'trace.log', mime: 'text/plain', bytes: 99 }] }] })
     usePrefs.setState({ infoPanelOpen: true })
     const i18n = (await import('@/i18n')).default
     render(<SessionPage sessionId={SID} />)
     await userEvent.click(await screen.findByRole('button', { name: 'Export Markdown' }))
     expect(download).toHaveBeenCalledTimes(1)
-    expect(download.mock.calls[0]![1]).toContain('why is this broken?\n\n[image: bug.png]')
+    expect(download.mock.calls[0]![1]).toContain('why is this broken?\n\n[image: bug.png]\n\n[file: trace.log]')
 
     await i18n.changeLanguage('zh')
     try {
       await userEvent.click(await screen.findByRole('button', { name: /导出/ }))
-      expect(download.mock.calls[1]![1]).toContain('[图片：bug.png]')
+      expect(download.mock.calls[1]![1]).toContain('[图片：bug.png]\n\n[文件：trace.log]')
     } finally {
       await i18n.changeLanguage('en')
     }

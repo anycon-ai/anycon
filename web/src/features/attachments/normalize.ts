@@ -117,6 +117,26 @@ export function nameForMime(name: string, mime: string): string {
   return sanitizeName(`${stem}.${exts[0]}`)
 }
 
+/**
+ * 能当图片显示（`<img>`、大图）、作为图片交给模型的四种栅格格式。别的类型（含 `image/svg+xml`）一律按文件处理：
+ * 不内联显示，只能下载。
+ */
+export function isImageMime(mime: string): boolean {
+  return (UPLOAD_MIMES as readonly string[]).includes(mime)
+}
+
+/** daemon 收的 mime 写法（`blobs.rs::normalize_mime`）：`type/subtype`，两段都是 RFC 6838 的 restricted-name（字母数字开头），≤ 127 字节。 */
+const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/
+const MIME_MAX = 127
+/** 浏览器给不出（或给的不合格）类型时用的 mime。 */
+export const OCTET_STREAM = 'application/octet-stream'
+
+/** 按文件上传时的 mime：浏览器报的类型转小写、去掉参数；空的或不合格的用 `application/octet-stream`。 */
+export function fileMime(type: string): string {
+  const m = (type.split(';')[0] ?? '').trim().toLowerCase()
+  return m.length <= MIME_MAX && MIME_RE.test(m) ? m : OCTET_STREAM
+}
+
 /** agent 收的 mime 和 daemon 上传白名单的交集（顺序跟 agent 的）。 */
 export function uploadableMimes(agentMimes: readonly string[]): string[] {
   return agentMimes.filter((m) => (UPLOAD_MIMES as readonly string[]).includes(m))
@@ -124,7 +144,7 @@ export function uploadableMimes(agentMimes: readonly string[]): string[] {
 
 // ---- 规整 ----
 
-async function readBytes(blob: Blob): Promise<Uint8Array> {
+export async function readBytes(blob: Blob): Promise<Uint8Array> {
   if (typeof blob.arrayBuffer === 'function') return new Uint8Array(await blob.arrayBuffer())
   return new Promise((resolve, reject) => {
     const r = new FileReader()

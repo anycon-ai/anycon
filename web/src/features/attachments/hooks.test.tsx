@@ -74,6 +74,19 @@ describe('useBlobUrl', () => {
     expect(result.current.url).not.toBe(first)
   })
 
+  it('never makes a URL for bytes that are not one of the four raster image types (HTML, SVG …): that ends in error', async () => {
+    await writeCached('c'.repeat(32), new TextEncoder().encode('<script>alert(1)</script>'), 'text/html')
+    await writeCached('d'.repeat(32), new TextEncoder().encode('<svg onload="alert(1)"/>'), 'image/svg+xml')
+    const created = vi.spyOn(URL, 'createObjectURL')
+    for (const id of ['c'.repeat(32), 'd'.repeat(32)]) {
+      const { result, unmount } = renderHook(() => useBlobUrl('n', id, true))
+      await vi.waitFor(() => expect(result.current.status).toBe('error'))
+      expect(result.current.url).toBeUndefined()
+      unmount()
+    }
+    expect(created).not.toHaveBeenCalled()
+  })
+
   it('ends in error (not a thrown rejection) when the image cannot be had', async () => {
     const { result } = renderHook(() => useBlobUrl('n', 'f'.repeat(32), true))
     await vi.waitFor(() => expect(result.current.status).toBe('error'))

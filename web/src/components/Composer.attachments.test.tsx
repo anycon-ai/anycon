@@ -1,4 +1,4 @@
-// 输入区的图片附件（ADR-35，spec/web.md § 4.6）：「＋」菜单 / 粘贴 / 拖放 → 缩略图条 → 发送。
+// 输入区的附件（ADR-35，spec/web.md § 4.6）：「＋」菜单 / 粘贴 / 拖放 → 缩略图 / 文件条 → 发送。
 // jsdom 没有 createImageBitmap / canvas：规整用的编解码注入假的，上传走假 daemon。
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -21,11 +21,14 @@ const KEY = 's1'
 const PNG_HEAD = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 let rpc: FakeRpc
 
-const png = (name = 'shot.png', size = 2000): File => {
-  const bytes = new Uint8Array(size)
+/** `size` 字节、以 PNG 文件头开头（假 daemon 和真的一样核对四种图片的文件头）。 */
+const pngBytes = (size: number, fill = 0): Uint8Array<ArrayBuffer> => {
+  const bytes = new Uint8Array(size).fill(fill)
   bytes.set(PNG_HEAD)
-  return new File([bytes], name, { type: 'image/png' })
+  return bytes
 }
+const png = (name = 'shot.png', size = 2000): File => new File([pngBytes(size)], name, { type: 'image/png' })
+const doc = (name: string, type: string, size = 300): File => new File([new Uint8Array(size).fill(3)], name, { type })
 const codec: ImageCodec = {
   decode: async () => ({ width: 40, height: 30, close: () => {} }),
   encode: async () => null,
@@ -125,7 +128,7 @@ describe('Composer attachments: picking, uploading, sending', () => {
     expect(within(thumb).getByRole('progressbar')).toBeInTheDocument()
     expect(within(thumb).getByRole('img', { name: 'shot.png' })).toHaveAttribute('src', expect.stringMatching(/^blob:/))
     expect(screen.getByTestId('composer-send')).toBeDisabled()
-    expect(screen.getByTestId('composer-send')).toHaveAttribute('title', 'Wait for the images to finish uploading.')
+    expect(screen.getByTestId('composer-send')).toHaveAttribute('title', 'Wait for the attachments to finish uploading.')
     // 上传中，即使有文字也不能发
     await userEvent.type(screen.getByTestId('composer-input'), 'look{Enter}')
     expect(onSend).not.toHaveBeenCalled()
@@ -188,7 +191,7 @@ describe('Composer attachments: picking, uploading, sending', () => {
     expect(screen.getByTestId('composer-attachment-error')).toHaveTextContent('did not answer in time')
     await userEvent.type(screen.getByTestId('composer-input'), 'hello')
     expect(screen.getByTestId('composer-send')).toBeDisabled()
-    expect(screen.getByTestId('composer-send')).toHaveAttribute('title', 'Retry or remove the images that failed to upload first.')
+    expect(screen.getByTestId('composer-send')).toHaveAttribute('title', 'Retry or remove the attachments that failed to upload first.')
 
     fail = false
     await userEvent.click(screen.getByTestId('composer-attachment-retry'))
@@ -203,16 +206,16 @@ describe('Composer attachments: picking, uploading, sending', () => {
     setup()
     await userEvent.upload(screen.getByTestId('composer-file-input'), Array.from({ length: 11 }, (_, i) => png(`${i}.png`)))
     await waitFor(() => expect(thumbs()).toHaveLength(10))
-    expect(toastTexts()).toEqual(['You can attach up to 10 images to one message.'])
+    expect(toastTexts()).toEqual(['You can attach up to 10 files to one message.'])
   })
 
-  it('ignores files that are not images, with a hint', async () => {
+  it('ignores files that are not images, with a hint, when the agent only takes images', async () => {
     installBlobDaemon(rpc)
     setup()
     // input 的 accept 在真实浏览器里会过滤；拖放不会，所以走拖放
     fireEvent.drop(screen.getByTestId('composer-dropzone'), { dataTransfer: { types: ['Files'], files: [new File(['x'], 'notes.txt', { type: 'text/plain' })] } })
     expect(thumbs()).toEqual([])
-    expect(toastTexts()).toEqual(['Only images can be attached. Skipped notes.txt.'])
+    expect(toastTexts()).toEqual(['This agent only accepts images. Skipped notes.txt.'])
   })
 
   it('tells the user when an image cannot be decoded and leaves no placeholder', async () => {
@@ -222,6 +225,117 @@ describe('Composer attachments: picking, uploading, sending', () => {
     await userEvent.upload(screen.getByTestId('composer-file-input'), png('bad.png'))
     await waitFor(() => expect(toastTexts()).toEqual(["Couldn't read bad.png as an image."]))
     expect(thumbs()).toEqual([])
+  })
+})
+
+describe('Composer attachments: files (the agent takes any file)', () => {
+  const files = (over: Partial<AttachProp> = {}) => attach({ files: true, ...over })
+
+  it('the file picker takes any file type (no accept filter) and drops say “files”', () => {
+    setup({ attachments: files() })
+    expect((screen.getByTestId('composer-file-input') as HTMLInputElement).hasAttribute('accept')).toBe(false)
+    fireEvent.dragEnter(screen.getByTestId('composer-dropzone'), { dataTransfer: { types: ['Files'] } })
+    expect(screen.getByTestId('composer-drop-hint')).toHaveTextContent('Drop files to attach them')
+  })
+
+  it('an agent that only takes any file (no image format named) still gets the plus menu', async () => {
+    setup({ attachments: files({ accept: [] }) })
+    await openPlus()
+    expect(await screen.findByTestId('composer-attach')).toHaveTextContent('Add files or photos')
+  })
+
+  it('a picked file shows as a file chip (name, size) with progress; it cannot be opened, and a file-only message can be sent', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    installBlobDaemon(rpc, { chunkSize: 1024, onChunk: () => gate })
+    const { onSend } = setup({ attachments: files() })
+    await userEvent.upload(screen.getByTestId('composer-file-input'), doc('spec.pdf', 'application/pdf', 2048))
+    const chip = await screen.findByTestId('composer-attachment')
+    expect(chip).toHaveAttribute('data-kind', 'file')
+    expect(chip).toHaveAttribute('data-state', 'uploading')
+    expect(within(chip).getByTestId('attachment-file-name')).toHaveTextContent('spec.pdf')
+    expect(within(chip).getByTestId('attachment-file-size')).toHaveTextContent('2.0 KiB')
+    expect(within(chip).getByRole('progressbar')).toBeInTheDocument()
+    expect(within(chip).queryByRole('img')).toBeNull()
+    expect(within(chip).queryByTestId('composer-attachment-open')).toBeNull()
+    expect(screen.getByTestId('composer-send')).toBeDisabled()
+
+    release()
+    await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready'))
+    await userEvent.click(screen.getByTestId('composer-attachment'))
+    expect(screen.queryByTestId('attachment-viewer')).toBeNull()
+    await userEvent.click(screen.getByTestId('composer-send'))
+    const [text, refs] = onSend.mock.calls[0] as [string, AttachmentRef[]]
+    expect(text).toBe('')
+    expect(refs).toEqual([{ blob_id: blobId(1), name: 'spec.pdf', mime: 'application/pdf', bytes: 2048 }])
+  })
+
+  it('images and files go out together in the order they were added; dropped and pasted files work too', async () => {
+    installBlobDaemon(rpc, { chunkSize: 1024 })
+    const { onSend } = setup({ attachments: files() })
+    await userEvent.upload(screen.getByTestId('composer-file-input'), [png('a.png'), doc('b.csv', 'text/csv')])
+    fireEvent.drop(screen.getByTestId('composer-dropzone'), { dataTransfer: { types: ['Files'], files: [doc('c.zip', 'application/zip')] } })
+    fireEvent.paste(screen.getByTestId('composer-input'), { clipboardData: { files: [doc('d.log', 'not a mime type')], items: [], getData: () => '' } })
+    await waitFor(() => expect(thumbs().map((t) => [t.getAttribute('data-name'), t.getAttribute('data-kind'), t.getAttribute('data-state')])).toEqual([
+      ['a.png', 'image', 'ready'],
+      ['b.csv', 'file', 'ready'],
+      ['c.zip', 'file', 'ready'],
+      ['d.log', 'file', 'ready'],
+    ]), { timeout: 5000 })
+    await userEvent.type(screen.getByTestId('composer-input'), 'see attached{Enter}')
+    const [text, refs] = onSend.mock.calls[0] as [string, AttachmentRef[]]
+    expect(text).toBe('see attached')
+    expect(refs.map((r) => [r.name, r.mime])).toEqual([
+      ['a.png', 'image/png'],
+      ['b.csv', 'text/csv'],
+      ['c.zip', 'application/zip'],
+      ['d.log', 'application/octet-stream'],
+    ])
+  })
+
+  it('a file the node turns down shows the reason and can be retried or removed', async () => {
+    let fail = true
+    const d = installBlobDaemon(rpc, {
+      onBegin: () => {
+        if (fail) throw rpcError('invalid', undefined, 'too_large')
+      },
+    })
+    setup({ attachments: files() })
+    await userEvent.upload(screen.getByTestId('composer-file-input'), doc('big.mov', 'video/quicktime'))
+    await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'error'))
+    expect(screen.getByTestId('composer-attachment-error')).toHaveTextContent("Couldn't upload big.mov: The file is larger than this node accepts.")
+    fail = false
+    await userEvent.click(screen.getByTestId('composer-attachment-retry'))
+    await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready'))
+    await userEvent.click(screen.getByTestId('composer-attachment-remove'))
+    expect(thumbs()).toEqual([])
+    expect(d.discarded).toEqual([blobId(1)])
+  })
+
+  it('a file restored from the draft is a file chip and is not fetched for a preview', async () => {
+    const fileRef: AttachmentRef = { blob_id: blobId(6), name: 'notes.md', mime: 'text/markdown', bytes: 900 }
+    rpc.handlers['blob.get'] = () => ({ blob: fileRef, data: 'AA==', eof: false })
+    useDrafts.setState({ byKey: { [KEY]: { session_id: KEY, text: '', attachments: [fileRef], unsent: [] } } })
+    const { onSend } = setup({ attachments: files() })
+    const chip = await screen.findByTestId('composer-attachment')
+    expect(chip).toHaveAttribute('data-kind', 'file')
+    await waitFor(() => expect(screen.getByTestId('composer-send')).toBeEnabled())
+    // 只问了一次「还在不在」（max_bytes 1），没有拉内容做预览
+    expect(rpc.calls.map((c) => c.params)).toEqual([{ blob_id: fileRef.blob_id, offset: 0, max_bytes: 1 }])
+    await userEvent.click(screen.getByTestId('composer-send'))
+    expect(onSend).toHaveBeenCalledWith('', [fileRef])
+  })
+
+  it('after switching to an agent that only takes images, files already added are dimmed and left out of the message', async () => {
+    installBlobDaemon(rpc, { chunkSize: 1024 })
+    const { onSend, rerender } = setup({ attachments: files() })
+    await userEvent.upload(screen.getByTestId('composer-file-input'), [png('a.png'), doc('b.txt', 'text/plain')])
+    await waitFor(() => expect(thumbs().map((t) => t.getAttribute('data-state'))).toEqual(['ready', 'ready']))
+    rerender(<Composer draftKey={KEY} onSend={onSend} attachments={attach()} />)
+    expect(thumbs().map((t) => t.getAttribute('data-unsupported'))).toEqual([null, 'true'])
+    await userEvent.click(screen.getByTestId('composer-send'))
+    const [, refs] = onSend.mock.calls[0] as [string, AttachmentRef[]]
+    expect(refs.map((r) => r.name)).toEqual(['a.png'])
   })
 })
 
@@ -330,7 +444,7 @@ describe('Composer attachments: drafts', () => {
   const ref: AttachmentRef = { blob_id: blobId(5), name: 'kept.png', mime: 'image/png', bytes: 600, width: 20, height: 10 }
 
   it('restores finished attachments saved with the draft, with the thumbnail taken from the image cache', async () => {
-    await writeCached(ref.blob_id, new Uint8Array(600).fill(3), 'image/png')
+    await writeCached(ref.blob_id, pngBytes(600, 3), 'image/png')
     useDrafts.setState({ byKey: { [KEY]: { session_id: KEY, text: '', attachments: [ref], unsent: [] } } })
     const { onSend } = setup()
     const thumb = await screen.findByTestId('composer-attachment')
@@ -345,7 +459,7 @@ describe('Composer attachments: drafts', () => {
   it('checks that a restored attachment is still on the node before it can be sent', async () => {
     let answer: (v: unknown) => void = () => {}
     rpc.handlers['blob.get'] = () => new Promise((resolve) => (answer = resolve))
-    await writeCached(ref.blob_id, new Uint8Array(600).fill(3), 'image/png') // 缩略图从缓存取，不去问节点
+    await writeCached(ref.blob_id, pngBytes(600, 3), 'image/png') // 缩略图从缓存取，不去问节点
     useDrafts.setState({ byKey: { [KEY]: { session_id: KEY, text: '', attachments: [ref], unsent: [] } } })
     const { onSend } = setup()
     await screen.findByTestId('composer-attachment')
@@ -364,7 +478,7 @@ describe('Composer attachments: drafts', () => {
     rpc.handlers['blob.get'] = () => {
       throw rpcError('not_found', undefined, 'blob')
     }
-    await writeCached(ref.blob_id, new Uint8Array(600).fill(3), 'image/png')
+    await writeCached(ref.blob_id, pngBytes(600, 3), 'image/png')
     useDrafts.setState({ byKey: { [KEY]: { session_id: KEY, text: '', attachments: [ref], unsent: [] } } })
     const { onSend } = setup()
     await waitFor(() => expect(d.uploads.size).toBe(1))
@@ -380,12 +494,12 @@ describe('Composer attachments: drafts', () => {
     }
     useDrafts.setState({ byKey: { [KEY]: { session_id: KEY, text: '', attachments: [ref], unsent: [] } } })
     setup()
-    await waitFor(() => expect(toastTexts()).toContain('1 image could not be restored. Add it again.'))
+    await waitFor(() => expect(toastTexts()).toContain('1 attachment could not be restored. Add it again.'))
     expect(thumbs()).toEqual([])
   })
 
   it('does not ask a node that is offline (the thumbnails are still restored)', async () => {
-    await writeCached(ref.blob_id, new Uint8Array(600).fill(3), 'image/png')
+    await writeCached(ref.blob_id, pngBytes(600, 3), 'image/png')
     useDrafts.setState({ byKey: { [KEY]: { session_id: KEY, text: '', attachments: [ref], unsent: [] } } })
     setup({ attachments: attach({ disabledReason: 'The node is offline.' }) })
     expect(await screen.findByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready')

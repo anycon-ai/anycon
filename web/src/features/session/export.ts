@@ -1,5 +1,6 @@
 import type { Block, NoticeBlock, TaskSnapshot } from './reducer'
-import type { ToolCategory } from '@/protocol'
+import type { AttachmentRef, ToolCategory } from '@/protocol'
+import { isImageMime } from '@/features/attachments/normalize'
 import { formatDuration } from '@/lib/format'
 import { agentCounts } from './tasks'
 import { toolCommand, toolLabel, toolOutputText, toolPath } from './text'
@@ -15,9 +16,10 @@ const CATEGORY_LABEL: Record<ToolCategory, string> = {
   other: 'Tool',
 }
 
-/** 导出里一张图片附件的写法。 */
-export type ImageLabel = (name: string) => string
-const defaultImageLabel: ImageLabel = (name) => `[image: ${name}]`
+/** 导出里一个附件的写法（`image` = 四种栅格图片之一，其余是文件）。 */
+export type AttachmentLabel = (name: string, kind: 'image' | 'file') => string
+const defaultAttachmentLabel: AttachmentLabel = (name, kind) => `[${kind}: ${name}]`
+const attachmentKind = (a: Pick<AttachmentRef, 'mime'>): 'image' | 'file' => (isImageMime(a.mime) ? 'image' : 'file')
 
 /** 一条提示在导出里最多写这么多字符（原文可能很长，导出里它只是一行）。 */
 const NOTICE_MAX = 500
@@ -50,16 +52,17 @@ function taskLine(task: TaskSnapshot): string {
 
 /**
  * 把已加载的会话导出成 Markdown（客户端本地生成，不经过 daemon）。
- * 图片附件只写文件名（`[image: shot.png]`），不嵌入内容；`imageLabel` 让界面按当前语言写（`[图片：shot.png]`）。
+ * 附件只写文件名（图片 `[image: shot.png]`、其它文件 `[file: notes.pdf]`），不嵌入内容；
+ * `attachmentLabel` 让界面按当前语言写（`[图片：shot.png]`、`[文件：notes.pdf]`）。
  */
-export function exportMarkdown(title: string, blocks: readonly Block[], imageLabel: ImageLabel = defaultImageLabel): string {
+export function exportMarkdown(title: string, blocks: readonly Block[], attachmentLabel: AttachmentLabel = defaultAttachmentLabel): string {
   const out: string[] = [`# ${title}`, '']
   for (const b of blocks) {
     switch (b.type) {
       case 'user':
         out.push(`## User`, '')
         if (b.content || b.attachments.length === 0) out.push(b.content, '')
-        for (const a of b.attachments) out.push(imageLabel(a.name), '')
+        for (const a of b.attachments) out.push(attachmentLabel(a.name, attachmentKind(a)), '')
         break
       case 'assistant':
         out.push(`## Assistant`, '', b.text, '')

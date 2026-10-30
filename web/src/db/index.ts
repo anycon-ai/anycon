@@ -78,7 +78,7 @@ export interface DraftRecord {
   unsent: UnsentMessage[]
 }
 
-/** 图片缓存（ADR-35，LRU 上限 200 MiB，见 features/attachments/cache.ts）。读到缺字段的旧记录当缓存未命中。 */
+/** 附件缓存（ADR-35，LRU 上限 200 MiB，见 features/attachments/cache.ts）。读到缺字段的旧记录当缓存未命中。 */
 export interface BlobRecord {
   blob_id: string
   bytes: Uint8Array
@@ -274,7 +274,7 @@ export async function listDrafts(): Promise<DraftRecord[]> {
   return (await getDb()).getAll('drafts')
 }
 
-// ---- blobs（图片缓存） ----
+// ---- blobs（附件缓存） ----
 
 /** 记录形状对得上（旧版本只有 `blob_id` 和 `bytes`，缺 `mime` / `last_used_ms`）。 */
 export function isBlobRecord(rec: unknown): rec is BlobRecord {

@@ -9,7 +9,7 @@ export interface Inflight {
   messageId: string
   sessionId: string
   content: string
-  /** 随这条消息发出的附件引用（ADR-35），乐观气泡据此显示缩略图。 */
+  /** 随这条消息发出的附件引用（ADR-35），乐观气泡据此显示缩略图 / 文件。 */
   attachments?: AttachmentRef[]
   createdAt: number
   /** daemon 说这条被排到下一轮了。 */
@@ -28,6 +28,8 @@ export type AttachmentItemState = 'uploading' | 'ready' | 'error'
 export interface AttachmentItem {
   /** 本地 id（不是 blob_id）。 */
   id: string
+  /** `file`：按文件原样上传（不规整、没有预览），显示成文件条。没有 = 图片。 */
+  kind?: 'file'
   name: string
   mime: string
   width?: number
@@ -37,9 +39,9 @@ export interface AttachmentItem {
   progress: number
   /** `ready` 时有：daemon 的记录。 */
   ref?: AttachmentRef
-  /** 规整后（或 daemon 记录里）的字节数；一条消息的附件合计有上限，加图时据此判断。规整完成之前没有。 */
+  /** 规整后（文件是原大小，或 daemon 记录里）的字节数；一条消息的附件合计有上限，添加时据此判断。图片规整完成之前没有。 */
   bytes?: number
-  /** 规整后字节生成的本地预览（`blob:`）；从草稿恢复的没有，缩略图改从图片缓存取。 */
+  /** 规整后字节生成的本地预览（`blob:`，只有图片有）；从草稿恢复的没有，缩略图改从附件缓存取。 */
   previewUrl?: string
   /** 刷新后从草稿恢复的引用，正在向节点确认 blob 还在；确认完之前不能发送（过期的会改走「从缓存重传」）。 */
   checking?: boolean
@@ -187,7 +189,7 @@ function mergeUnsent(a: UnsentMessage[], b: UnsentMessage[]): UnsentMessage[] {
 export interface PendingMessage {
   messageId: string
   content: string
-  /** 带的图片附件（ADR-35）；没有就是 undefined 或空。 */
+  /** 带的附件（ADR-35）；没有就是 undefined 或空。 */
   attachments?: AttachmentRef[]
   createdAt: number
   state: 'sending' | 'queued' | 'unsent' | 'failed' | 'accepted'

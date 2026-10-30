@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { AttachmentRef } from '@/protocol'
 import { addFiles, clearItems, hydrateFromDraft, removeItem, retryItem, type AttachContext, type AttachNotice } from '@/features/attachments/composerUploads'
 import { describeAttachNotice } from '@/features/attachments/errors'
+import { acceptsAttachment } from '@/features/attachments/support'
 import { ComposerAttachments } from '@/features/attachments/ui/ComposerAttachments'
 import { useIsTouch, useIsWide } from '@/lib/useMediaQuery'
 import { useDrafts, type AttachmentItem } from '@/stores/drafts'
@@ -14,11 +15,13 @@ import { cn } from '@/ui/cn'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/ui/Menu'
 import { Sheet } from '@/ui/Overlay'
 
-/** 输入区的图片附件（ADR-35）。不传这个 prop，「＋」菜单里就没有「添加文件或照片」，粘贴 / 拖放也不处理。 */
+/** 输入区的附件（ADR-35）。不传这个 prop，「＋」菜单里就没有「添加文件或照片」，粘贴 / 拖放也不处理。 */
 export interface ComposerAttachmentConfig {
   nodeId: string
-  /** agent 收的 mime（已经和 daemon 的上传白名单取过交集）。 */
+  /** agent 作为图片收的 mime（已经和四种图片格式取过交集，`AttachmentSupport.images`）。可以为空（只收任意文件）。 */
   accept: readonly string[]
+  /** agent 收任意文件（`AttachmentSupport.files`）：选文件框不限类型，不是图片的文件原样上传。 */
+  files?: boolean
   /** 有值时「添加文件或照片」禁用并说明原因（节点不在线）。 */
   disabledReason?: string
   /** 测试注入（规整用的编解码、上传的重试间隔）。 */
@@ -28,7 +31,7 @@ export interface ComposerAttachmentConfig {
 export interface ComposerProps {
   /** drafts store 的 key：会话 id，或新建会话用的 `new:<node>:<project>`。 */
   draftKey: string
-  /** `attachments` 是上传完的图片（`blob.put_end` 的结果），没有图片是空数组。只有图片、没有文字也会发。 */
+  /** `attachments` 是上传完、当前 agent 收的附件（`blob.put_end` 的结果），没有是空数组。只有附件、没有文字也会发。 */
   onSend: (text: string, attachments: AttachmentRef[]) => void | Promise<void>
   attachments?: ComposerAttachmentConfig
   onStop?: () => void
@@ -85,10 +88,10 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
   const notify = useCallback((n: AttachNotice) => toast.info(describeAttachNotice(n, t)), [t])
 
   // 刷新后：草稿里存着传完的附件，还没有列表时用它们恢复。节点在线时顺便确认这些 blob 还在（放太久会被 daemon 回收，
-  // 回收了的改走「从缓存重传」）；离线 / 还没拿到节点信息时只恢复缩略图，不探
+  // 回收了的改走「从缓存重传」）；离线 / 还没拿到节点信息时只恢复附件条，不探
   useEffect(() => {
     if (items !== undefined || !draftAttachments?.length || !attach) return
-    hydrateFromDraft(draftKey, draftAttachments, attach.disabledReason ? undefined : { draftKey, nodeId: attach.nodeId, accepted: attach.accept, notify, ...attach.test })
+    hydrateFromDraft(draftKey, draftAttachments, attach.disabledReason ? undefined : { draftKey, nodeId: attach.nodeId, accepted: attach.accept, files: attach.files, notify, ...attach.test })
   }, [items, draftAttachments, draftKey, attach, notify])
 
   useEffect(() => {
@@ -110,8 +113,11 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
   const list = attach ? (items ?? NO_ITEMS) : NO_ITEMS
   const uploading = list.some((i) => i.state === 'uploading' || i.checking)
   const failed = list.some((i) => i.state === 'error')
-  const readyRefs = list.flatMap((i) => (i.state === 'ready' && i.ref ? [i.ref] : []))
-  // 上传中不能发（消息得带上传完的引用）；传失败的也先处理掉（重试或移除），免得悄悄少发一张
+  // 换了 agent 之后，它不收的附件（比如只收图片的 agent 遇上已经添加的文件）留在输入区里调暗，发送时不带
+  const support = attach ? { images: [...attach.accept], files: !!attach.files } : null
+  const unsupported = (i: AttachmentItem): boolean => i.state === 'ready' && !!i.ref && !acceptsAttachment(support, i.ref.mime)
+  const readyRefs = list.flatMap((i) => (i.state === 'ready' && i.ref && !unsupported(i) ? [i.ref] : []))
+  // 上传中不能发（消息得带上传完的引用）；传失败的也先处理掉（重试或移除），免得悄悄少发一个
   const attachBlock = uploading ? t('composer.attachUploading') : failed ? t('composer.attachFailedBlock') : undefined
   const canSend = (text.trim().length > 0 || readyRefs.length > 0) && !blockedReason && !sending && !attachBlock
 
@@ -123,11 +129,11 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
     void onSend(value, readyRefs)
   }
 
-  // ---- 图片附件：选图 / 粘贴 / 拖放 ----
+  // ---- 附件：选文件 / 粘贴 / 拖放 ----
   const handleFiles = (files: File[]): void => {
     if (!attach || files.length === 0) return
     if (attach.disabledReason) return toast.info(attach.disabledReason)
-    addFiles(files, { draftKey, nodeId: attach.nodeId, accepted: attach.accept, notify, ...attach.test })
+    addFiles(files, { draftKey, nodeId: attach.nodeId, accepted: attach.accept, files: attach.files, notify, ...attach.test })
   }
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>): void => {
     if (!attach) return
@@ -217,7 +223,7 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
       >
         {dragging ? (
           <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent bg-accent-subtle/90 text-sm font-medium text-accent-text" data-testid="composer-drop-hint">
-            {attach?.disabledReason ?? t('composer.dropHint')}
+            {attach?.disabledReason ?? (attach?.files ? t('composer.dropHintFiles') : t('composer.dropHint'))}
           </div>
         ) : null}
         {notice}
@@ -244,7 +250,7 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
           </div>
         ) : null}
         <div className="relative rounded-2xl border border-border-strong bg-bg shadow-sm transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20" data-testid="composer-box">
-          {attach && list.length > 0 ? <ComposerAttachments nodeId={attach.nodeId} items={list} onRemove={(id) => removeItem(draftKey, attach.nodeId, id)} onRetry={(id) => retryItem(draftKey, id)} /> : null}
+          {attach && list.length > 0 ? <ComposerAttachments nodeId={attach.nodeId} items={list} unsupported={unsupported} onRemove={(id) => removeItem(draftKey, attach.nodeId, id)} onRetry={(id) => retryItem(draftKey, id)} /> : null}
           <div className="flex items-end gap-1 p-2">
             {!wide && options ? (
               <Button variant="ghost" size="icon" aria-label={t('composer.options')} onClick={() => setSheet(true)} data-testid="composer-options-button" className="shrink-0 rounded-full">
@@ -269,7 +275,8 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
                   ref={fileRef}
                   type="file"
                   multiple
-                  accept={[...attach.accept, 'image/*'].join(',')}
+                  // agent 收任意文件时不限类型；只收图片时列出它收的格式，再加上 image/*（HEIC 等会被转换）
+                  accept={attach.files ? undefined : [...attach.accept, 'image/*'].join(',')}
                   className="hidden"
                   tabIndex={-1}
                   aria-hidden
@@ -277,7 +284,7 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
                   data-testid="composer-file-input"
                   onChange={(e) => {
                     handleFiles(Array.from(e.target.files ?? []))
-                    e.target.value = '' // 同一张图可以再选一次
+                    e.target.value = '' // 同一个文件可以再选一次
                   }}
                 />
               </>

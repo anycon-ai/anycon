@@ -9,7 +9,7 @@ import { isAborted } from './async'
 import { readCached, resetBlobCache } from './cache'
 import type { NormalizedImage } from './normalize'
 import { sha256Hex } from './sha256'
-import { CHUNK_RETRIES, UPLOAD_REQUEST_TIMEOUT_MS, uploadImage } from './upload'
+import { CHUNK_RETRIES, UPLOAD_REQUEST_TIMEOUT_MS, uploadBlob } from './upload'
 
 const NODE = 'n'.repeat(32)
 const BLOB = 'b'.repeat(32)
@@ -56,12 +56,12 @@ beforeEach(async () => {
 })
 afterEach(() => setRpc(null))
 
-describe('uploadImage', () => {
+describe('uploadBlob', () => {
   it('sends put_begin with the file facts, then every chunk at its index, then put_end, and returns the daemon record', async () => {
     const img = image(2500)
     const d = daemon(1024)
     const progress: number[] = []
-    const ref = await uploadImage(NODE, img, { retryDelayMs: 0, onProgress: (f) => progress.push(f) })
+    const ref = await uploadBlob(NODE, img, { retryDelayMs: 0, onProgress: (f) => progress.push(f) })
 
     expect(d.begin()).toEqual({ name: 'shot.png', mime: 'image/png', size: 2500, sha256: await sha256Hex(img.bytes) })
     expect([...d.received.keys()].sort()).toEqual([0, 1, 2])
@@ -78,7 +78,7 @@ describe('uploadImage', () => {
   it('writes the uploaded bytes to the image cache right after put_end', async () => {
     const img = image(1500)
     daemon(1024)
-    const ref = await uploadImage(NODE, img, { retryDelayMs: 0 })
+    const ref = await uploadBlob(NODE, img, { retryDelayMs: 0 })
     const hit = await readCached(ref.blob_id)
     expect(hit?.mime).toBe('image/png')
     // fake-indexeddb 的结构化克隆在另一个 realm 里，toEqual 比的是原型：转成数组再比
@@ -96,7 +96,7 @@ describe('uploadImage', () => {
         active -= 1
       },
     })
-    await uploadImage(NODE, image(1500), { retryDelayMs: 0 })
+    await uploadBlob(NODE, image(1500), { retryDelayMs: 0 })
     expect(d.received.size).toBe(15)
     expect(peak).toBe(2)
   })
@@ -107,7 +107,7 @@ describe('uploadImage', () => {
         if (p.index === 1 && attempt <= CHUNK_RETRIES) throw new RpcCallError('timeout', 'put_chunk: timed out')
       },
     })
-    await uploadImage(NODE, image(3000), { retryDelayMs: 0 })
+    await uploadBlob(NODE, image(3000), { retryDelayMs: 0 })
     expect(d.attempts.get(1)).toBe(3)
     expect(d.attempts.get(0)).toBe(1)
     expect(d.attempts.get(2)).toBe(1)
@@ -120,7 +120,7 @@ describe('uploadImage', () => {
         if (p.index === 1) throw new RpcCallError('offline', 'node link not ready')
       },
     })
-    await expect(uploadImage(NODE, image(3000), { retryDelayMs: 0 })).rejects.toMatchObject({ kind: 'offline' })
+    await expect(uploadBlob(NODE, image(3000), { retryDelayMs: 0 })).rejects.toMatchObject({ kind: 'offline' })
     expect(rpc.methods()).not.toContain('blob.put_end')
     expect(rpc.calls.filter((c) => c.method === 'blob.discard')).toHaveLength(1)
     expect(rpc.calls.find((c) => c.method === 'blob.discard')!.params).toEqual({ blob_id: BLOB })
@@ -134,7 +134,7 @@ describe('uploadImage', () => {
         throw rpcError('not_found')
       },
     })
-    await expect(uploadImage(NODE, image(900), { retryDelayMs: 0 })).rejects.toMatchObject({ code: 'not_found' })
+    await expect(uploadBlob(NODE, image(900), { retryDelayMs: 0 })).rejects.toMatchObject({ code: 'not_found' })
     expect(d.attempts.get(0)).toBe(1)
   })
 
@@ -144,14 +144,14 @@ describe('uploadImage', () => {
         if (n === 1) throw new RpcCallError('timeout', 'put_end: timed out')
       },
     })
-    await uploadImage(NODE, image(900), { retryDelayMs: 0 })
+    await uploadBlob(NODE, image(900), { retryDelayMs: 0 })
     expect(d.endAttempts()).toBe(2)
 
     rpc.calls = []
     rpc.handlers['blob.put_end'] = () => {
       throw rpcError('invalid', undefined, 'hash_mismatch')
     }
-    await expect(uploadImage(NODE, image(900), { retryDelayMs: 0 })).rejects.toMatchObject({ code: 'invalid', reason: 'hash_mismatch' })
+    await expect(uploadBlob(NODE, image(900), { retryDelayMs: 0 })).rejects.toMatchObject({ code: 'invalid', reason: 'hash_mismatch' })
     expect(rpc.methods().filter((m) => m === 'blob.put_end')).toHaveLength(1)
   })
 
@@ -159,7 +159,7 @@ describe('uploadImage', () => {
     rpc.handlers['blob.put_begin'] = () => {
       throw rpcError('invalid', undefined, 'too_large')
     }
-    await expect(uploadImage(NODE, image(900), { retryDelayMs: 0 })).rejects.toMatchObject({ reason: 'too_large' })
+    await expect(uploadBlob(NODE, image(900), { retryDelayMs: 0 })).rejects.toMatchObject({ reason: 'too_large' })
     expect(rpc.methods()).toEqual(['blob.put_begin'])
   })
 
@@ -171,7 +171,7 @@ describe('uploadImage', () => {
         await new Promise((r) => setTimeout(r, 2))
       },
     })
-    const err = await uploadImage(NODE, image(5000), { retryDelayMs: 0, signal: ctl.signal }).catch((e: unknown) => e)
+    const err = await uploadBlob(NODE, image(5000), { retryDelayMs: 0, signal: ctl.signal }).catch((e: unknown) => e)
     expect(isAborted(err)).toBe(true)
     expect(rpc.methods()).not.toContain('blob.put_end')
     expect(d.received.size).toBeLessThan(50)
@@ -182,7 +182,7 @@ describe('uploadImage', () => {
     const before = new AbortController()
     before.abort()
     daemon(1024)
-    expect(isAborted(await uploadImage(NODE, image(100), { signal: before.signal }).catch((e: unknown) => e))).toBe(true)
+    expect(isAborted(await uploadBlob(NODE, image(100), { signal: before.signal }).catch((e: unknown) => e))).toBe(true)
     expect(rpc.calls).toEqual([])
 
     const ctl = new AbortController()
@@ -191,14 +191,14 @@ describe('uploadImage', () => {
       ctl.abort()
       return inner(p, n)
     }
-    expect(isAborted(await uploadImage(NODE, image(100), { signal: ctl.signal }).catch((e: unknown) => e))).toBe(true)
+    expect(isAborted(await uploadBlob(NODE, image(100), { signal: ctl.signal }).catch((e: unknown) => e))).toBe(true)
     await vi.waitFor(() => expect(rpc.methods()).toEqual(['blob.put_begin', 'blob.discard']))
   })
 
   it('an abort does not wait for a request that never answers: the upload returns at once (the node queue moves on), and still discards', async () => {
     const ctl = new AbortController()
     daemon(100, { chunk: () => new Promise(() => {}) })
-    const p = uploadImage(NODE, image(1000), { retryDelayMs: 0, signal: ctl.signal })
+    const p = uploadBlob(NODE, image(1000), { retryDelayMs: 0, signal: ctl.signal })
     await vi.waitFor(() => expect(rpc.methods()).toContain('blob.put_chunk'))
     ctl.abort()
     // 请求本身永远不返回；没有 raceAbort 的话这里要等 90 秒的超时
@@ -210,7 +210,7 @@ describe('uploadImage', () => {
     const ctl2 = new AbortController()
     let answer: (v: unknown) => void = () => {}
     rpc.handlers['blob.put_begin'] = () => new Promise((resolve) => (answer = resolve))
-    const q = uploadImage(NODE, image(100), { signal: ctl2.signal })
+    const q = uploadBlob(NODE, image(100), { signal: ctl2.signal })
     await vi.waitFor(() => expect(rpc.methods()).toEqual(['blob.put_begin']))
     ctl2.abort()
     expect(isAborted(await q.catch((e: unknown) => e))).toBe(true)
@@ -221,7 +221,7 @@ describe('uploadImage', () => {
   it('rejects a nonsensical chunk_size from the daemon instead of slicing by it', async () => {
     rpc.handlers['blob.put_begin'] = () => ({ blob_id: BLOB, chunk_size: 0, expires_at_ms: 1 })
     rpc.handlers['blob.discard'] = () => ({})
-    await expect(uploadImage(NODE, image(100), { retryDelayMs: 0 })).rejects.toThrow(/chunk_size/)
+    await expect(uploadBlob(NODE, image(100), { retryDelayMs: 0 })).rejects.toThrow(/chunk_size/)
     expect(rpc.methods()).toEqual(['blob.put_begin', 'blob.discard'])
   })
 
@@ -230,7 +230,7 @@ describe('uploadImage', () => {
     const db = await import('@/db')
     vi.spyOn(db, 'putBlobRecord').mockRejectedValue(new Error('quota'))
     daemon(1024)
-    await expect(uploadImage(NODE, image(500), { retryDelayMs: 0 })).resolves.toMatchObject({ blob_id: BLOB })
+    await expect(uploadBlob(NODE, image(500), { retryDelayMs: 0 })).resolves.toMatchObject({ blob_id: BLOB })
   })
 
   it('gives chunks and put_end a longer timeout than a normal request (slow uplinks), and leaves the others at the default', async () => {
@@ -243,7 +243,7 @@ describe('uploadImage', () => {
         return (await rpc.request(nodeId, method, params)) as R
       },
     })
-    await uploadImage(NODE, image(1500), { retryDelayMs: 0 })
+    await uploadBlob(NODE, image(1500), { retryDelayMs: 0 })
     expect(seen).toEqual([
       ['blob.put_begin', undefined],
       ['blob.put_chunk', UPLOAD_REQUEST_TIMEOUT_MS],

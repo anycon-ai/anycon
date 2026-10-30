@@ -426,12 +426,16 @@ pub enum WorktreesCmd {
 pub struct SendArgs {
     /// Session id (a prefix is enough) or `last`
     pub session: String,
-    /// Message text; can be left out when --image is given
-    #[arg(required_unless_present = "images")]
+    /// Message text; can be left out when --image or --file is given
+    #[arg(required_unless_present_any = ["images", "files"])]
     pub text: Option<String>,
-    /// Attach an image (PNG / JPEG / GIF / WebP; repeatable, at most 20 per message and 20 MiB in total; not resized)
+    /// Attach an image (PNG / JPEG / GIF / WebP; repeatable; not resized). The agent sees it as an image
     #[arg(long = "image", value_name = "PATH")]
     pub images: Vec<std::path::PathBuf>,
+    /// Attach any file (repeatable). The agent gets its path on the node and reads it with its own tools.
+    /// Together with --image: at most 20 attachments and 20 MiB per message
+    #[arg(long = "file", value_name = "PATH")]
+    pub files: Vec<std::path::PathBuf>,
     #[arg(long)]
     pub no_wait: bool,
     #[arg(long)]

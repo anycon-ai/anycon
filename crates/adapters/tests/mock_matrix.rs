@@ -186,7 +186,7 @@ async fn run_with(h: &mut Box<dyn AgentHandle>, inp: UserInput) -> Vec<AgentEven
 #[tokio::test]
 async fn probe_advertises_exactly_the_four_image_types() {
     let info = info().await;
-    assert_eq!(info.capabilities.attachments, vec!["image/png", "image/jpeg", "image/gif", "image/webp"]);
+    assert_eq!(info.capabilities.attachments, vec!["image/png", "image/jpeg", "image/gif", "image/webp", "*/*"]);
 }
 
 #[tokio::test]

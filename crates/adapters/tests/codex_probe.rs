@@ -80,7 +80,7 @@ async fn ready_when_installed_and_logged_in() {
     let c = &info.capabilities;
     assert!(c.resume && c.interrupt && c.interject && c.thinking_stream && c.usage && c.env);
     assert!(!c.rewind);
-    assert_eq!(c.attachments, vec!["image/png", "image/jpeg", "image/gif", "image/webp"]);
+    assert_eq!(c.attachments, vec!["image/png", "image/jpeg", "image/gif", "image/webp", "*/*"]);
 }
 
 #[tokio::test]

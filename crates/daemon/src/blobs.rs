@@ -1,8 +1,9 @@
-//! 附件 / blob 通道（[ADR-35](../../../docs/decisions.md)，docs/spec/daemon.md § 7.10）：图片分块上传、校验、落盘、分页下载、回收，
-//! 以及 `session.send` / `session.create` 对 `AttachmentRef` 的核对与绑定。
+//! 附件 / blob 通道（[ADR-35](../../../docs/decisions.md)，docs/spec/daemon.md § 7.10）：文件（图片或任意文件）分块上传、校验、落盘、
+//! 分页下载、回收，以及 `session.send` / `session.create` 对 `AttachmentRef` 的核对与绑定。
 //!
 //! - **存放**：`<数据目录>/blobs/<blob_id>.<ext>`（目录 0700、文件 0600），上传中的写 `blobs/tmp/<blob_id>.part`，启动时清空 `tmp/`。
-//!   `blob_id` 是 32 位小写 hex，**每个入口先校验格式**（它会进路径）；文件名里没有任何客户端给的字符串（`name` 只是展示用）。
+//!   `blob_id` 是 32 位小写 hex，**每个入口先校验格式**（它会进路径）。`ext` 对图片由 mime 决定；其它文件取 `name` 的扩展名，
+//!   但只认 1–16 个 ASCII 字母数字（[`stored_ext`]），否则是 `bin`——路径里没有其它客户端给的字符。
 //! - **上传状态**在内存里（`blob_id` → 期望大小、mime、sha256、已收的块、发起设备、最后活动时间）；同一设备同时进行中的上传
 //!   至多 8 个；10 分钟没有新块就作废。`put_end` 才写 `blobs` 表（`session_id` 为空 = 还没被消息引用）。
 //! - **`put_end` 是收尾，不是又一块**：它在锁内把上传标成「收尾中」，之后的 `put_chunk` 一律 `invalid`（`finalizing`）；
@@ -13,8 +14,9 @@
 //!   随会话删除。
 //! - **总量**：完成但没被引用的 blob（加上进行中的上传）全节点合计 ≤ 1 GiB，`put_begin` 超了 → `busy`（`quota`）；
 //!   数据目录所在卷剩余空间 < `size` + 1 GiB → `busy`（`disk_full`）。
-//! - **校验点只有这里**：大小、SHA-256、文件头（magic bytes）必须和声明的 mime 一致；宽高由文件头读出，读不出就省略。
-//!   文件头只是**前缀比对**（PNG 8 字节、JPEG 3、GIF 6、WebP 12），不解码、不校验图片结构。
+//! - **校验点只有这里**：mime 的格式、大小、SHA-256；四种图片类型（[`ext_of`]）的文件头（magic bytes）必须和声明的 mime 一致，
+//!   宽高由文件头读出，读不出就省略。文件头只是**前缀比对**（PNG 8 字节、JPEG 3、GIF 6、WebP 12），不解码、不校验图片结构。
+//!   其它类型不看内容：它们以路径交给 agent，由 agent 自己读（ADR-35「任意文件」）。
 //! - **名字**只用于展示：拒绝 `/` `\`、控制字符（Cc）、双向控制符（U+200E / U+200F / U+202A–U+202E / U+2066–U+2069）和
 //!   U+2028 / U+2029；`put_end` 记录的名字扩展名和 mime 对不上时在后面补 `.<ext>`。
 //!
@@ -30,8 +32,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anycon_protocol::{
-    AttachmentRef, BlobGetParams, BlobGetResult, BlobIdParams, BlobPutBeginParams, BlobPutBeginResult,
-    BlobPutChunkParams, ErrorCode, RpcError,
+    accepts_attachment, AttachmentRef, BlobGetParams, BlobGetResult, BlobIdParams, BlobPutBeginParams,
+    BlobPutBeginResult, BlobPutChunkParams, ErrorCode, RpcError,
 };
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -91,7 +93,7 @@ pub enum BlobError {
     Store(#[from] StoreError),
 }
 
-/// 白名单里 mime 对应的扩展名（Codex 按扩展名判断图片类型）。
+/// 四种图片类型对应的扩展名（Codex 按扩展名判断图片类型）；不是这四种返回 `None`。
 pub fn ext_of(mime: &str) -> Option<&'static str> {
     match mime {
         "image/png" => Some("png"),
@@ -100,6 +102,52 @@ pub fn ext_of(mime: &str) -> Option<&'static str> {
         "image/webp" => Some("webp"),
         _ => None,
     }
+}
+
+/// 是不是会核对文件头、作为图片交给模型的四种类型之一。
+pub fn is_image_mime(mime: &str) -> bool {
+    ext_of(mime).is_some()
+}
+
+/// mime 的字节上限（RFC 6838：type 和 subtype 各 ≤ 127，这里合起来限 127）。
+const MIME_MAX: usize = 127;
+
+/// 规整 `put_begin` 的 mime：`type/subtype`，两段都是 RFC 6838 的 restricted-name（字母数字开头，之后是字母数字和
+/// `!#$&-^_.+`），不带参数，合计 ≤ 127 字节；转成小写。不合格返回 `None`。
+pub fn normalize_mime(mime: &str) -> Option<String> {
+    let ok = |part: &str| {
+        part.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+            && part.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'!' | b'#' | b'$' | b'&' | b'-' | b'^' | b'_' | b'.' | b'+')
+            })
+    };
+    let (ty, sub) = mime.split_once('/')?;
+    (mime.len() <= MIME_MAX && ok(ty) && ok(sub)).then(|| mime.to_ascii_lowercase())
+}
+
+/// 落盘文件的扩展名：图片按 mime（[`ext_of`]）；其它文件取 `name` 最后一个 `.` 之后的部分，1–16 个 ASCII 字母数字才用
+/// （转小写，agent 和它的工具靠扩展名认文件类型），否则 `bin`。
+pub fn stored_ext(name: &str, mime: &str) -> String {
+    if let Some(e) = ext_of(mime) {
+        return e.to_string();
+    }
+    match name.rsplit_once('.') {
+        Some((stem, ext))
+            if !stem.is_empty() && (1..=16).contains(&ext.len()) && ext.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+        {
+            ext.to_ascii_lowercase()
+        }
+        _ => "bin".to_string(),
+    }
+}
+
+/// 落盘的文件名是不是 `<blob_id>.<ext>` 的样子（[`stored_ext`] 能产生的扩展名）。
+fn is_stored_file_name(name: &str) -> bool {
+    name.split_once('.').is_some_and(|(id, ext)| {
+        is_blob_id(id)
+            && (1..=16).contains(&ext.len())
+            && ext.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    })
 }
 
 /// 32 位小写 hex（会进路径，所以每个入口都先过它）。
@@ -239,8 +287,8 @@ fn validate_name(name: &str) -> RpcResult<()> {
     Ok(())
 }
 
-/// 记录下来的名字：扩展名和 mime 对不上（没有扩展名、`.html` 配 `image/jpeg`…）就在后面补 `.<ext>`（`png`；`jpg` / `jpeg`；
-/// `gif`；`webp`，不分大小写）。补完超过 255 字节时截短原来的名字（在字符边界上）。
+/// 记录下来的名字：图片的扩展名和 mime 对不上（没有扩展名、`.html` 配 `image/jpeg`…）就在后面补 `.<ext>`（`png`；
+/// `jpg` / `jpeg`；`gif`；`webp`，不分大小写）。补完超过 255 字节时截短原来的名字（在字符边界上）。其它类型原样保留。
 pub fn normalize_name(name: &str, mime: &str) -> String {
     let Some(want) = ext_of(mime) else { return name.to_string() };
     let ok_exts: &[&str] = if want == "jpg" { &["jpg", "jpeg"] } else { std::slice::from_ref(&want) };
@@ -508,10 +556,10 @@ impl Blobs {
         let Ok(rd) = std::fs::read_dir(&self.dir) else { return };
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let Some((id, ext)) = name.split_once('.') else { continue };
-            if !is_blob_id(id) || !matches!(ext, "png" | "jpg" | "gif" | "webp") {
+            if !is_stored_file_name(&name) {
                 continue;
             }
+            let Some((id, _)) = name.split_once('.') else { continue };
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
@@ -532,12 +580,13 @@ impl Blobs {
     pub async fn put_begin(&self, device: &str, p: BlobPutBeginParams) -> RpcResult<BlobPutBeginResult> {
         self.expire_uploads();
         validate_name(&p.name)?;
-        let Some(ext) = ext_of(&p.mime) else {
+        let Some(mime) = normalize_mime(&p.mime) else {
             return Err(RpcError::new(
-                ErrorCode::Unsupported,
-                "only image/png, image/jpeg, image/gif and image/webp are accepted",
+                ErrorCode::Invalid,
+                "mime must be a type/subtype without parameters, at most 127 bytes",
             ));
         };
+        let image = is_image_mime(&mime);
         let max = self.config.get().max_attachment_bytes();
         if p.size == 0 || p.size > max {
             return Err(err_reason(
@@ -618,7 +667,7 @@ impl Blobs {
                 id.clone(),
                 Upload {
                     name: p.name,
-                    mime: p.mime,
+                    mime,
                     size: p.size,
                     sha256: p.sha256,
                     device: device.to_string(),
@@ -631,7 +680,7 @@ impl Blobs {
                 },
             );
         }
-        tracing::debug!(blob = %id, bytes = p.size, ext, "attachment upload started");
+        tracing::debug!(blob = %id, bytes = p.size, image, "attachment upload started");
         Ok(BlobPutBeginResult {
             blob_id: id,
             chunk_size: CHUNK_SIZE,
@@ -786,7 +835,7 @@ impl Blobs {
             reached.notify_one();
             release.notified().await;
         }
-        // 算 SHA-256、读文件头、读宽高：在阻塞线程里，一个 10 MiB 的文件不能占着运行时
+        // 算 SHA-256、（图片）读文件头和宽高：在阻塞线程里，一个 10 MiB 的文件不能占着运行时
         let verdict = {
             let (file, mime, sha, size) = (job.file.clone(), job.mime.clone(), job.sha256.clone(), job.size);
             tokio::task::spawn_blocking(move || verify(&file, size, &mime, &sha))
@@ -819,8 +868,7 @@ impl Blobs {
                 return Err(internal("cannot read the upload", e));
             }
         };
-        let ext = ext_of(&job.mime).unwrap_or("bin");
-        let file_name = format!("{id}.{ext}");
+        let file_name = format!("{id}.{}", stored_ext(&job.name, &job.mime));
         let (part, dest) = (self.part_path(id), self.dir.join(&file_name));
         if let Err(e) = std::fs::rename(&part, &dest) {
             let _ = std::fs::remove_file(&part);
@@ -1026,7 +1074,7 @@ impl Blobs {
     /// - 至多 20 个，`blob_id` 不重复，字节合计 ≤ 20 MiB（`invalid`；合计超了是 `too_large`）；
     /// - blob 不存在 / 还没 `put_end` / 文件不见了 → `not_found`（`data.reason = "blob"`）；
     /// - `name` / `mime` / `bytes` 和记录不一致 → `invalid`；已被**别的**会话引用 → `invalid`（`blob_in_use`）；
-    /// - mime 不在 `allowed` 里 → `unsupported`。
+    /// - mime 不在 `allowed` 里（也没有 `*/*`）→ `unsupported`。
     pub async fn resolve(
         &self,
         session_id: &str,
@@ -1077,7 +1125,7 @@ impl Blobs {
                     REASON_BLOB_IN_USE,
                 ));
             }
-            if !allowed.contains(&row.mime) {
+            if !accepts_attachment(allowed, &row.mime) {
                 return Err(RpcError::new(
                     ErrorCode::Unsupported,
                     format!("this agent does not accept {} attachments", row.mime),
@@ -1134,7 +1182,7 @@ enum Verdict {
     Io(std::io::Error),
 }
 
-/// 整个文件的 SHA-256 必须等于声明的值，文件头必须和 mime 一致；返回读到的宽高（读不出就是 `None`）。
+/// 整个文件的 SHA-256 必须等于声明的值；四种图片类型的文件头必须和 mime 一致，返回读到的宽高（读不出、不是图片就是 `None`）。
 fn verify(file: &File, size: u64, mime: &str, want_sha: &str) -> Result<(Option<u32>, Option<u32>), Verdict> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; HASH_BUF];
@@ -1147,6 +1195,9 @@ fn verify(file: &File, size: u64, mime: &str, want_sha: &str) -> Result<(Option<
     }
     if hex::encode(hasher.finalize()) != want_sha {
         return Err(Verdict::Hash);
+    }
+    if !is_image_mime(mime) {
+        return Ok((None, None));
     }
     let mut head = [0u8; 16];
     let n = (size as usize).min(head.len());
@@ -1166,12 +1217,13 @@ fn verify(file: &File, size: u64, mime: &str, want_sha: &str) -> Result<(Option<
     Ok((dims.map(|d| d.0), dims.map(|d| d.1)))
 }
 
-/// 没有文字时，标题 / 摘要用的标签：`[image] 文件名`（多个时 `[image] 文件名 (+N)`）。
+/// 没有文字时，标题 / 摘要用的标签：`[image] 文件名`（多个时 `[image] 文件名 (+N)`）；有不是图片的附件时是 `[file]`。
 pub fn attachment_label(refs: &[AttachmentRef]) -> String {
+    let tag = if refs.iter().all(|r| is_image_mime(&r.mime)) { "[image]" } else { "[file]" };
     match refs {
         [] => String::new(),
-        [one] => format!("[image] {}", one.name),
-        [first, rest @ ..] => format!("[image] {} (+{})", first.name, rest.len()),
+        [one] => format!("{tag} {}", one.name),
+        [first, rest @ ..] => format!("{tag} {} (+{})", first.name, rest.len()),
     }
 }
 
@@ -1361,5 +1413,75 @@ mod tests {
         assert_eq!(attachment_label(&[]), "");
         assert_eq!(attachment_label(&[a("shot.png")]), "[image] shot.png");
         assert_eq!(attachment_label(&[a("a.png"), a("b.png"), a("c.png")]), "[image] a.png (+2)");
+        let pdf = AttachmentRef { mime: "application/pdf".into(), ..a("spec.pdf") };
+        assert_eq!(attachment_label(std::slice::from_ref(&pdf)), "[file] spec.pdf");
+        assert_eq!(attachment_label(&[a("a.png"), pdf]), "[file] a.png (+1)");
+    }
+
+    #[test]
+    fn mimes_are_checked_and_lowercased() {
+        for (raw, want) in [
+            ("image/png", "image/png"),
+            ("application/pdf", "application/pdf"),
+            ("Text/Plain", "text/plain"),
+            (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            ("image/svg+xml", "image/svg+xml"),
+            ("application/octet-stream", "application/octet-stream"),
+        ] {
+            assert_eq!(normalize_mime(raw).as_deref(), Some(want), "{raw}");
+        }
+        for bad in [
+            "",
+            "text",
+            "/plain",
+            "text/",
+            "text/plain; charset=utf-8",
+            "text/pl ain",
+            "a/b/c",
+            "текст/plain",
+            "*/*",
+            "text/*",
+            ".x/y",
+            "x/+y",
+        ] {
+            assert_eq!(normalize_mime(bad), None, "{bad:?}");
+        }
+        assert_eq!(normalize_mime(&format!("application/{}", "x".repeat(115))).map(|m| m.len()), Some(127));
+        assert_eq!(normalize_mime(&format!("application/{}", "x".repeat(116))), None);
+        assert!(is_image_mime("image/webp"));
+        assert!(!is_image_mime("image/svg+xml"));
+        assert!(!is_image_mime("application/pdf"));
+    }
+
+    #[test]
+    fn stored_extension_comes_from_the_mime_or_a_plain_name_extension() {
+        assert_eq!(stored_ext("x.html", "image/jpeg"), "jpg");
+        assert_eq!(stored_ext("spec.PDF", "application/pdf"), "pdf");
+        assert_eq!(stored_ext("archive.tar.gz", "application/gzip"), "gz");
+        assert_eq!(stored_ext("Makefile", "text/plain"), "bin");
+        assert_eq!(stored_ext(".bashrc", "text/plain"), "bin");
+        assert_eq!(stored_ext("a.", "text/plain"), "bin");
+        assert_eq!(stored_ext("a.tar-gz", "application/gzip"), "bin");
+        assert_eq!(stored_ext("a.文档", "text/plain"), "bin");
+        assert_eq!(stored_ext(&format!("a.{}", "x".repeat(17)), "text/plain"), "bin");
+        assert_eq!(stored_ext(&format!("a.{}", "x".repeat(16)), "text/plain"), "x".repeat(16));
+
+        let id = "0123456789abcdef0123456789abcdef";
+        for ok in ["png", "pdf", "bin", "mp4", "x".repeat(16).as_str()] {
+            assert!(is_stored_file_name(&format!("{id}.{ok}")), "{ok}");
+        }
+        for bad in [
+            id.to_string(),
+            format!("{id}.PDF"),
+            format!("{id}.tar.gz"),
+            format!("{id}."),
+            format!("{id}.{}", "x".repeat(17)),
+            "notanid.png".into(),
+        ] {
+            assert!(!is_stored_file_name(&bad), "{bad}");
+        }
     }
 }

@@ -25,7 +25,7 @@
       "properties": {
         "attachments": {
           "default": [],
-          "description": "可接受的附件 mime，如 `image/png`。",
+          "description": "可接受的附件 mime，如 `image/png`；含 [`ATTACHMENT_ANY_FILE`]（`*/*`）表示收任意文件。\n点名的图片类型作为图片直接交给模型，其余文件以 daemon 上的路径交给 agent、由它自己读（ADR-35「任意文件」）。\n空 = 不收附件。",
           "items": {
             "type": "string"
           },
@@ -316,7 +316,7 @@
           "type": "string"
         },
         "width": {
-          "description": "图片像素宽高（daemon 读文件头得出；读不出来时省略）。客户端用来在下载前占好位置。",
+          "description": "图片像素宽高（四种图片类型由 daemon 读文件头得出；读不出来、或者不是图片时省略）。客户端用来在下载前占好位置。",
           "format": "uint32",
           "minimum": 0,
           "type": [
@@ -471,7 +471,7 @@
       "description": "`blob.put_begin`：开始一次上传。",
       "properties": {
         "mime": {
-          "description": "只接受 `image/png` `image/jpeg` `image/gif` `image/webp`，其它 → `unsupported`。",
+          "description": "`type/subtype`（不带参数，≤ 127 字节，大小写不敏感，daemon 记成小写）；不知道类型时用 `application/octet-stream`。\n`image/png` `image/jpeg` `image/gif` `image/webp` 四种会核对文件头、读宽高，其它类型不看内容。",
           "type": "string"
         },
         "name": {
@@ -5218,7 +5218,7 @@
           "type": "string"
         },
         "attachments": {
-          "description": "第一条消息的附件（`blob.put_end` 的结果）。agent 的 `capabilities.attachments` 不含其 mime → `unsupported`。",
+          "description": "第一条消息的附件（`blob.put_end` 的结果）。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `*/*`）→ `unsupported`。",
           "items": {
             "$ref": "#/definitions/AttachmentRef"
           },
@@ -5677,7 +5677,7 @@
     "SessionSendParams": {
       "properties": {
         "attachments": {
-          "description": "`blob.put_end` 的结果，每条至多 20 个。agent 的 `capabilities.attachments` 不含其 mime → `unsupported`。",
+          "description": "`blob.put_end` 的结果，每条至多 20 个。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `*/*`）→ `unsupported`。",
           "items": {
             "$ref": "#/definitions/AttachmentRef"
           },

@@ -117,8 +117,9 @@ pub fn capabilities() -> AgentCapabilities {
         interrupt: true,
         // stream-json 里 turn 进行中收到的用户消息会排到下一个 turn。
         interject: false,
-        // 图片：adapter 读 daemon 落盘的文件，转 base64 放进 stream-json 用户消息的 `image` block（ADR-35）
-        attachments: crate::common::IMAGE_MIMES.iter().map(|m| m.to_string()).collect(),
+        // 图片：adapter 读 daemon 落盘的文件，转 base64 放进 stream-json 用户消息的 `image` block；
+        // 其它文件（`*/*`）把 daemon 上的路径告诉 Claude，由它自己读（ADR-35）
+        attachments: crate::common::accepted_attachments(),
         thinking_stream: true,
         usage: true,
         structured_output: true,

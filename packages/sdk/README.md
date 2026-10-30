@@ -93,13 +93,13 @@ await node.worktrees.remove(id, { force: true, deleteBranch: false })
 - With `prompt`, `create()` doesn't collect the first turn's events for you. Call `s.events({ fromSeq: 0 })` right after creating the session (live events that arrive while history is being backfilled are held and appended afterwards, so seqs are strictly increasing with no duplicates). Permission policies also only answer once the session has an active `events()` / `send()`. You can pass your own idempotency key as `messageId`: if `create()` times out and you retry with the same key, the daemon returns the session it created the first time instead of opening a second one.
 - When creation is refused, check `RpcError.code` / `.reason`: the project isn't `worktree_ready` → `invalid` / `not_worktree_ready`; the branch already exists → `exists`; `base` can't be resolved → `invalid` / `bad_base`. `syncBase` failures: a turn is running → `busy`; there are uncommitted changes → `invalid` / `uncommitted_changes`; the previous merge stopped in conflicts → `invalid` / `merge_in_progress`; fetch / merge failed → `internal` / `fetch_failed` / `git_failed`. `gitStatus` on a session that isn't in a git repository → `invalid` / `not_git`.
 
-## Image attachments (ADR-35)
+## Attachments (ADR-35)
 
-Images are first sent to the node over the blob channel (`blob.put_begin` → `blob.put_chunk` in 512 KiB chunks with at most 2 in flight → `blob.put_end`). The message carries only the reference the daemon returns (`AttachmentRef`):
+Images and other files are first sent to the node over the blob channel (`blob.put_begin` → `blob.put_chunk` in 512 KiB chunks with at most 2 in flight → `blob.put_end`). The message carries only the reference the daemon returns (`AttachmentRef`):
 
 ```ts
 import { readFile } from 'node:fs/promises'
-import { AttachmentError } from '@anycon/sdk'
+import { AttachmentError, acceptsAttachment } from '@anycon/sdk'
 
 const ref = await node.uploadImage(await readFile('shot.png'), {
   name: 'shot.png', // without mime, the type is detected from the file header (png / jpeg / gif / webp)
@@ -122,24 +122,35 @@ try {
 await node.sessions.create({ project: 'app', agent: 'claude-code', attachments: [ref2] })
 // uploaded but not sent; if you don't discard it, the daemon reclaims it after 24 hours
 await node.discardAttachment(ref3)
+
+// any other file: same channel, same queue
+const doc = await node.uploadFile(await readFile('spec.pdf'), {
+  name: 'spec.pdf', // without mime: image header, else the extension, else application/octet-stream
+}) // → { blob_id, name, mime: 'application/pdf', bytes }
+if (acceptsAttachment(agent, doc.mime)) {
+  // agent: an entry of node.agents.list()
+  for await (const ev of session.send('summarize this', { attachments: [doc] })) { /* … */ }
+}
 ```
 
-- **The SDK doesn't resize or re-encode images.** Keep each image to **≤ 2000 px on the long edge and about ≤ 1.5 MiB** yourself (for example, shrink it with `sharp` / ImageMagick first). The daemon's hard limits are 10 MiB per image (`sessions.max_attachment_bytes`) and at most 20 images per message, ≤ 20 MiB in total. Once an image is in a Claude Code session's history, it is resent with every later turn, so large images quickly push the session past Claude's request size limit. In the same way, `node.uploadImage()` uploads the bytes as they are: it **doesn't strip EXIF metadata (including GPS location) and doesn't apply the EXIF orientation**. Only the Web UI re-encodes images before upload. If privacy or orientation matters to you, handle it before `uploadImage` (for example, `sharp(bytes).rotate().toBuffer()` rotates according to EXIF, and its output has no metadata by default).
-- Whether an agent accepts images: `(await node.agents.list())[i].capabilities?.attachments`. Whether the node supports the blob channel: `(await node.info()).capabilities.blobs`.
-- Uploads on one `Node` are **queued and go one image at a time** (even a `Promise.all` batch has only one image uploading, with 2 chunks in flight), so requests like "allow" or "stop" don't wait behind a multi-megabyte image. A chunk that times out (90 seconds per chunk by default, `requestTimeoutMs`) or is lost to a disconnect is retried up to 2 times. Explicit refusals from the daemon are not retried. On failure or `signal` abort, the SDK makes a best-effort `blob.discard`.
+- **Images vs. other files.** `image/png`, `image/jpeg`, `image/gif` and `image/webp` go to the model as images (the daemon checks the file header and reads the size). Any other file is handed to the agent as a path on the daemon's machine; the agent reads it with its own tools (Claude Code may ask for permission to read it). An agent that accepts arbitrary files lists `'*/*'` (`ATTACHMENT_ANY_FILE`) in `capabilities.attachments`; `acceptsAttachment(agent, mime)` checks both named types and the wildcard.
+- **`uploadFile(bytes, { name, mime? })`.** Without `mime`, the SDK uses the file header for the four image types, then a small table of common extensions (`pdf`, `txt`, `md`, `csv`, `json`, `html`, `xml`, `yaml`, `zip`, `gz`, `tar`, `js`, `ts`, `py`, `rs`, `go`, …; see `guessMime`), and falls back to `application/octet-stream`. A file whose name ends in `.png` but whose content isn't a PNG is not guessed as an image. A `mime` you pass must be a well-formed `type/subtype` without parameters; it is lowercased before sending, and a malformed one throws `AnyconError('invalid_mime')` with nothing sent. The daemon is the real validation point. `uploadImage` stays image-only: any other `mime`, or no `mime` and an unrecognized header, throws `AnyconError('unsupported_image')`.
+- **The SDK doesn't resize or re-encode images.** Keep each image to **≤ 2000 px on the long edge and about ≤ 1.5 MiB** yourself (for example, shrink it with `sharp` / ImageMagick first). The daemon's hard limits are 10 MiB per file (`sessions.max_attachment_bytes`) and at most 20 attachments per message, ≤ 20 MiB in total. Once an image is in a Claude Code session's history, it is resent with every later turn, so large images quickly push the session past Claude's request size limit. In the same way, `node.uploadImage()` uploads the bytes as they are: it **doesn't strip EXIF metadata (including GPS location) and doesn't apply the EXIF orientation**. Only the Web UI re-encodes images before upload. If privacy or orientation matters to you, handle it before `uploadImage` (for example, `sharp(bytes).rotate().toBuffer()` rotates according to EXIF, and its output has no metadata by default).
+- Whether an agent accepts a file type: `acceptsAttachment((await node.agents.list())[i], ref.mime)`. Whether the node supports the blob channel: `(await node.info()).capabilities.blobs`.
+- Uploads on one `Node` (images and files alike) are **queued and go one at a time** (even a `Promise.all` batch has only one upload in progress, with 2 chunks in flight), so requests like "allow" or "stop" don't wait behind a multi-megabyte file. A chunk that times out (90 seconds per chunk by default, `requestTimeoutMs`) or is lost to a disconnect is retried up to 2 times. Explicit refusals from the daemon are not retried. On failure or `signal` abort, the SDK makes a best-effort `blob.discard`.
 - Refusals throw `AttachmentError` (a subclass of `RpcError`; `.code` is unchanged and `.reason` is narrowed):
 
   | `reason` | `code` | When it happens / what to do |
   |---|---|---|
-  | `too_large` | `invalid` | One image is over the node's limit, or one message totals more than 20 MiB: shrink it or split it across messages |
-  | `quota` | `busy` | Unreferenced images on the node total more than 1 GiB: send them first, or `discardAttachment()` |
+  | `too_large` | `invalid` | One file is over the node's limit, or one message totals more than 20 MiB: shrink it or split it across messages |
+  | `quota` | `busy` | Unreferenced uploads on the node total more than 1 GiB: send them first, or `discardAttachment()` |
   | `disk_full` | `busy` | The node's data disk is nearly full |
-  | `blob` | `not_found` | The referenced image was reclaimed (unused for 24 hours) or discarded: upload it again |
-  | `blob_in_use` | `invalid` | The image is already used in another session (an image belongs to one session only): upload it again |
-  | `in_use` | `invalid` | `discardAttachment` on an image that a message already references (it is deleted along with the session) |
+  | `blob` | `not_found` | The referenced attachment was reclaimed (unused for 24 hours) or discarded: upload it again |
+  | `blob_in_use` | `invalid` | The attachment is already used in another session (an attachment belongs to one session only): upload it again |
+  | `in_use` | `invalid` | `discardAttachment` on an attachment that a message already references (it is deleted along with the session) |
   | `finalizing` / `incomplete` / `hash_mismatch` / `mime_mismatch` | `invalid` | The upload failed finalization or verification (the file header doesn't match `mime`, or the content was corrupted in transit) |
 
-  A `mime` that isn't on the allowlist, or an agent that doesn't accept images → `RpcError` (`unsupported`). More than 8 concurrent uploads from this device → `RpcError` (`busy`, no `reason`). No `mime` and an unrecognized file header → `AnyconError('unsupported_image')`, and nothing is sent.
+  Sending an attachment to an agent that doesn't accept its type → `RpcError` (`unsupported`). More than 8 concurrent uploads from this device → `RpcError` (`busy`, no `reason`). `uploadImage` with a non-image `mime`, or with no `mime` and an unrecognized file header → `AnyconError('unsupported_image')`; `uploadFile` with a malformed `mime` → `AnyconError('invalid_mime')`. In both cases nothing is sent.
 
 ## API overview
 
@@ -152,7 +163,7 @@ await node.discardAttachment(ref3)
 - `forgetNode(hubUrl, nodeNameOrIdPrefix, { storage?, profile? })`: forgets a locally stored node. Use it after `NodeKeyChanged`, once you've confirmed the new public key can be trusted, then `pair()` again.
 - `connect(hubUrl, { node?, storage?, onPermission?, headers?, … })` → `Node`. Every time the WebSocket connects, or `peer_online` arrives (or `auth_ok.peers_online` includes the node), it does a new IK handshake. After a disconnect it reconnects with exponential backoff (1 s → 30 s; a hub restart, close code `4002`, uses 1–3 s with jitter).
 - Several nodes at once: `const client = await Client.open(hubUrl)` plus `client.node('name')` for each node (the hub allows only one connection per device, so the nodes share one `Client`).
-- `Node`: `info()`, `agents.list({ refresh? })` (cached by etag), `projects.list/create/clone/link/unlink/browse/branches/rename/trash/trashList/restore/purge`, `sessions.list/get/create/search` (`create` accepts `workspace`, `prompt`, `attachments`, `messageId`), `worktrees.list/remove`, `uploadImage(bytes, { name, mime?, signal?, onProgress?, requestTimeoutMs? })` / `downloadAttachment(refOrBlobId)` / `discardAttachment(refOrBlobId)` (see [Image attachments](#image-attachments-adr-35) above), `permissions.list`, `online` / `waitOnline()`, the events `online` / `offline` / `permission` / `permission_error` / `error` (non-fatal channel problems) / `session_changed` …, `call(method, params)` (typed), and `rpc(method, params)` (raw).
+- `Node`: `info()`, `agents.list({ refresh? })` (cached by etag), `projects.list/create/clone/link/unlink/browse/branches/rename/trash/trashList/restore/purge`, `sessions.list/get/create/search` (`create` accepts `workspace`, `prompt`, `attachments`, `messageId`), `worktrees.list/remove`, `uploadImage(bytes, { name, mime?, signal?, onProgress?, requestTimeoutMs? })` / `uploadFile(bytes, { name, mime?, signal?, onProgress?, requestTimeoutMs? })` / `downloadAttachment(refOrBlobId)` / `discardAttachment(refOrBlobId)` (see [Attachments](#attachments-adr-35) above), `permissions.list`, `online` / `waitOnline()`, the events `online` / `offline` / `permission` / `permission_error` / `error` (non-fatal channel problems) / `session_changed` …, `call(method, params)` (typed), and `rpc(method, params)` (raw).
   - `projects.link(path, { name? })` registers an existing directory on the daemon's machine as a project, without moving or copying it. The path must be inside the daemon's `workspace.link_roots`. `unlink(name)` only removes the link and leaves the directory alone. `browse({ path?, showHidden? })` lists the subdirectories inside `link_roots` to choose from. Linked projects have `kind` `linked`, and `missing` is true when the directory is gone.
 - `Session`: `send(text, { attachments?, messageId?, signal? })` → an iterable event stream (**sent immediately**; iteration runs until this turn's `turn_done` or an unrecoverable `error`; a `break` midway doesn't cancel the turn), `run(text)`, `respond(requestId, optionId | { answers }, message?)`, `setSettings(settings, { clear? })`, `cancel`, `history`, `events()`, `rename/archive/unarchive/delete/restart` (`archive({ worktree? })`, `delete({ worktree?, deleteBranch? })`), `worktree` (getter), `gitStatus({ includePr? })`, `diff({ against?, path? })`, `syncBase({ abort? })`. `watch` / `unwatch` and catching up on events after a disconnect (`session.history`) are handled internally.
 - Permissions: the `permission` event has `allow()` / `allowSession()` / `deny(message?)` / `respond(optionId)` / `answer(answers)`. An `onPermission` policy returns `'allow' | 'allow_session' | 'deny' | { option, message? } | { deny } | { answers } | undefined`. **Policies answer only for sessions the SDK itself is using (with an active `send()` / `events()`)**, and never decide for sessions the user opened in the Web UI. The SDK denies requests that nobody answers after `permissionTimeoutMs` (10 minutes by default).

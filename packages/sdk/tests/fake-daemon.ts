@@ -17,8 +17,8 @@
  * `session.changed`；`session.git_status` / `diff` / `sync_base` 给脚本化的结果（`syncResults` 队列可预置 `sync_base` 的答复）。
  *
  * 附件（ADR-35，protocol.md § 5.6）：`blob.put_begin` / `put_chunk` / `put_end` / `get` / `discard` 按真 daemon 的规则
- * （白名单、大小、sha256、每设备 8 个进行中的上传、块长度、乱序 / 重发、`finalizing`、缺块、hash / 文件头校验、
- * `put_end` 幂等、分页、discard 的三种情况）；`blobRefusal` 让 `put_begin` 答 `busy`（`quota` / `disk_full`），
+ * （mime 成形 + 转小写、大小、sha256、每设备 8 个进行中的上传、块长度、乱序 / 重发、`finalizing`、缺块、hash / 文件头校验、
+ * 只对四种图片核对文件头 / 读宽高，`put_end` 幂等、分页、discard 的三种情况）；`blobRefusal` 让 `put_begin` 答 `busy`（`quota` / `disk_full`），
  * `chunkHook` 给块加延迟或让它失败，`chunksPeak` 记同时在处理的块数。`session.send` / `session.create` 核对附件
  * （不存在 → `not_found` / `blob`，元数据不符 → `invalid`，别的会话的 → `invalid` / `blob_in_use`，合计超 20 MiB →
  * `invalid` / `too_large`），通过后绑定到会话、`user_message` 带 daemon 的记录，回复里回显附件名和大小。
@@ -124,6 +124,8 @@ export interface FakeBlob {
 }
 
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+/** `type/subtype`，不带参数，≤ 127 字节（大小写不敏感，记成小写）。 */
+const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/
 const MAX_UPLOADS_PER_DEVICE = 8
 const MAX_MESSAGE_ATTACHMENTS = 20
 const MAX_MESSAGE_BYTES = 20 * 1024 * 1024
@@ -1011,8 +1013,9 @@ export class FakeDaemon {
       if (!p.name || new TextEncoder().encode(p.name).length > 255 || /[/\\\p{Cc}]/u.test(p.name)) {
         throw AnyconRpcError.of('invalid', 'bad attachment name')
       }
-      if (!IMAGE_MIMES.includes(p.mime)) {
-        throw AnyconRpcError.of('unsupported', 'only png, jpeg, gif and webp images are accepted')
+      const mime = p.mime.toLowerCase()
+      if (mime.length > 127 || !MIME_RE.test(mime)) {
+        throw AnyconRpcError.of('invalid', 'mime must be type/subtype without parameters')
       }
       if (p.size < 1 || p.size > this.maxAttachmentBytes) {
         throw reasoned(
@@ -1034,7 +1037,7 @@ export class FakeDaemon {
       this.uploads.set(blobId, {
         peer: peerId,
         name: p.name,
-        mime: p.mime,
+        mime,
         size: p.size,
         sha256: p.sha256,
         chunkSize: this.blobChunkSize,
@@ -1090,7 +1093,7 @@ export class FakeDaemon {
         this.uploads.delete(p.blob_id)
         throw reasoned('invalid', 'the content does not match sha256', 'hash_mismatch')
       }
-      if (sniffMime(bytes) !== up.mime) {
+      if (IMAGE_MIMES.includes(up.mime) && sniffMime(bytes) !== up.mime) {
         this.uploads.delete(p.blob_id)
         throw reasoned('invalid', `the file is not ${up.mime}`, 'mime_mismatch')
       }

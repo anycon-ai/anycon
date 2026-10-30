@@ -137,7 +137,8 @@ pub fn capabilities() -> AgentCapabilities {
         interrupt: true,
         // `turn/steer`
         interject: true,
-        attachments: process::IMAGE_MIMES.iter().map(|m| m.to_string()).collect(),
+        // 图片走 `localImage`，其它文件（`*/*`）把路径告诉 Codex（ADR-35）
+        attachments: crate::common::accepted_attachments(),
         thinking_stream: true,
         usage: true,
         // `turn/start.outputSchema` 存在，但 `SessionSettings` 里没有东西可以喂给它
@@ -876,5 +877,6 @@ mod tests {
         let c = capabilities();
         assert!(c.resume && c.interrupt && c.interject && c.thinking_stream && c.usage && c.env);
         assert!(c.attachments.contains(&"image/png".to_string()));
+        assert!(c.attachments.contains(&"*/*".to_string()));
     }
 }

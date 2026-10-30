@@ -401,8 +401,8 @@ impl AgentHandle for ClaudeHandle {
             return Err(AdapterError::Unsupported("Claude Code cannot take input during a turn".into()));
         }
         // 附件的校验和读文件都在改任何状态之前：失败时没有半截的 turn
-        let images = input::load_images(&input).await?;
-        let msg = input::user_message(&input.content, images);
+        let attachments = input::load_attachments(&input).await?;
+        let msg = input::user_message(&input.content, attachments);
         let turn = self.shared.translator.lock().expect("translator lock").submit_user_message(msg);
         match turn {
             UserTurn::Busy => Err(AdapterError::Unsupported("Claude Code cannot take input during a turn".into())),

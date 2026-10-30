@@ -26,7 +26,7 @@
 - 会话存储（SQLite + FTS5）、权限请求转发与多客户端答复、会话 watch、本地审计；会话 env 默认关闭（ADR-31）
 - workspace：文件夹即项目，新建 / 克隆 / 改名 / 移到回收站 / 恢复、scratch 会话；关联本机已有目录（ADR-33）
 - 每会话 git worktree：创建与复核、`.worktreeinclude`、改动 / diff / 同步 base、归档与删除时的处置、PR 状态与自动归档（ADR-34）
-- 图片附件（ADR-35）
+- 附件（ADR-35）：图片，以及以路径交给 agent 的任意文件
 - 账号内接入：节点口令、扫码批准、接入码（ADR-36）
 
 **Web UI**
@@ -89,7 +89,6 @@
 
 - Store 的 Postgres 实现
 - ACP client adapter（OpenCode、Pi 等一次覆盖）
-- 非图片附件
 - 会话搜索 UI
 - 多 workspace 根
 - `anycon export` / 导入，支持从公共 hub 搬到自建

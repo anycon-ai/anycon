@@ -104,6 +104,14 @@ pub struct ConfigOption {
     pub default: Value,
 }
 
+/// `AgentCapabilities.attachments` 里的通配项：agent 收任意类型的文件。
+pub const ATTACHMENT_ANY_FILE: &str = "*/*";
+
+/// 这个 agent 收不收 `mime` 类型的附件：点名了，或者有 [`ATTACHMENT_ANY_FILE`]。
+pub fn accepts_attachment(allowed: &[String], mime: &str) -> bool {
+    allowed.iter().any(|m| m == mime || m == ATTACHMENT_ANY_FILE)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentCapabilities {
     /// 进程退出后能否续接。
@@ -111,7 +119,9 @@ pub struct AgentCapabilities {
     pub interrupt: bool,
     /// turn 进行中能否插话。
     pub interject: bool,
-    /// 可接受的附件 mime，如 `image/png`。
+    /// 可接受的附件 mime，如 `image/png`；含 [`ATTACHMENT_ANY_FILE`]（`*/*`）表示收任意文件。
+    /// 点名的图片类型作为图片直接交给模型，其余文件以 daemon 上的路径交给 agent、由它自己读（ADR-35「任意文件」）。
+    /// 空 = 不收附件。
     #[serde(default)]
     pub attachments: Vec<String>,
     /// 会不会发 `thinking_delta`。

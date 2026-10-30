@@ -224,7 +224,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 | 事件 | 渲染 |
 |---|---|
-| 用户消息 | 右对齐的浅灰底气泡；未发送的加「未发送」角标和重试 / 编辑 / 删除；附件显示成气泡上方的缩略图（按 `width` / `height` 先占位，进入视口才用 `blob.get` 拉，点开看大图），拉不到显示「图片不可用」 |
+| 用户消息 | 右对齐的浅灰底气泡；未发送的加「未发送」角标和重试 / 编辑 / 删除；附件显示在气泡上方：四种图片是缩略图（按 `width` / `height` 先占位，进入视口才用 `blob.get` 拉，点开看大图），拉不到显示「图片不可用」；其它文件是文件条（名字、大小、下载图标），点了才下载（见下面「附件」） |
 | `turn_start` | 一条细分隔线，hover 显示 turn 编号和时间 |
 | `thinking_delta` | 「思考中…」一行灰字（不画卡片），流式时显示最近两行，结束后折叠成一行「思考了 12 秒」。可展开。设置里可改为始终展开或隐藏 |
 | `text_delta` | Markdown 流式渲染（react-markdown + shiki），代码块有复制按钮和语言标签。**远程图片（`http(s)://`）不会自动加载**：被提示注入的 agent 可以借图片 URL 把数据带出去，所以只显示成带主机名的占位按钮，点了才请求；hub 的 CSP（`img-src 'self' data: blob:`）本来就不允许页面加载第三方图片，点了之后会退成一条链接「从 <主机> 打开」。`data:image/*`（非 SVG）、`blob:` 直接渲染；同源只放行已知静态资源路径（`/assets/<名字>`、`/icons/<名字>` 和几个固定的根文件：只有一层路径，名字限 `[A-Za-z0-9._-]`、≤ 128 字符，不能带 `?`、百分号编码或 userinfo），其他同源路径（比如 `/x?d=…`，能不点击就把内容送到 hub）同样走占位按钮。`javascript:` 等协议的链接被拦；**不开 `skipHtml`**——没有 rehype-raw，react-markdown 默认就把 HTML 当文本转义（开了会把 `Vec<String>` 里的 `<String>` 当标签吞掉） |
@@ -253,7 +253,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 #### 输入区（composer）
 
 - 一个圆角框：上面是待发送图片的缩略图，下面一行是「＋」、输入框、停止 / 发送；框下面一行是选项（宽屏）
-- 「＋」点开浮动菜单，目前只有「添加文件或照片」（见下面「图片附件」），以后的入口都加在这里
+- 「＋」点开浮动菜单，目前只有「添加文件或照片」（见下面「附件」），以后的入口都加在这里
 - 自动增高的 textarea，最多 10 行后内部滚动
 - `Enter` 发送、`Shift+Enter` 换行（手机上 Enter 换行，发送靠按钮；设置里可改）
 - 运行中：发送按钮变「停止」（`session.cancel`）；此时输入的内容会**排队**成下一条消息，并明确标注「将在本轮结束后发送」。agent 支持 turn 中插话的（capabilities.`interject`）则直接发
@@ -261,17 +261,19 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 - 节点离线：输入框可用，发送后标「未发送」
 - 归档：会话在运行或等审批时「归档」按钮禁用并说明「先停止或答复」（daemon 此时返回 `busy`）
 - 已归档的会话：输入区（连同选项栏）换成一条「已归档 · 取消归档后才能发送消息」+「取消归档」按钮（`session-archived-bar` / `session-unarchive`），点了调 `session.unarchive`，成功后输入框回来；取消归档失败（`git_failed`）时说明「没能恢复会话的 worktree，会话仍是归档状态」。`send` 被 `invalid` / `archived` 拒绝时（别的设备刚归档），失败气泡和 toast 显示同一句说明，本地立刻把会话标成已归档，消息留着不丢；已归档会话的错误块不给「重试这一轮」
-- 附件（ADR-35，见下面「图片附件」）：「＋」菜单选图、粘贴图片、拖进输入区；节点 `capabilities.blobs` 为真且 agent 的 `capabilities.attachments` 非空才显示
+- 附件（ADR-35，见下面「附件」）：「＋」菜单选文件、粘贴、拖进输入区；节点 `capabilities.blobs` 为真，且 agent 点名了至少一种图片或者有 `*/*`，才显示
 - 选项行（输入框下面）：左边权限模式和「更多」（其余 agent 特定选项），右边模型和思考等级，都是下拉（§ 5）；窄屏收进「⚙」底部弹层
 
-#### 图片附件（ADR-35）
+#### 附件（ADR-35）
 
-- **入口**：输入框左边「＋」（`composer-plus`）菜单里的「添加文件或照片」（`composer-attach`，打开 `accept` 为 agent 收的类型加 `image/*` 的文件选择框，可多选）、在输入框里粘贴图片、把图片拖进输入区（拖入时整块高亮）。非图片文件给一句提示后忽略。agent 不收附件时没有「＋」；节点不在线时菜单项禁用并说明原因
-- **规整**：上传前在浏览器里处理（ADR-35「2026-10 修订」）——长边 > 2 000 px 的一律缩到 2 000；缩完（或原图）> 1.5 MiB 就有损重编码（agent 收 WebP 且浏览器编得出 → WebP 0.9，否则 JPEG 0.9，有透明通道的先铺白底）；单张硬上限 3.75 MiB；带 EXIF 的 JPEG 一律重编码（方向转正、去掉 GPS 等元数据）；浏览器能解码而 agent 不收的格式（HEIC、BMP…）转成 agent 收的格式。agent 收的格式、长边 ≤ 2 000、≤ 1.5 MiB、没有 EXIF 的原样上传（动图 GIF 保持动图）。一条消息的附件合计 ≤ 15 MiB，再加的图提示后忽略。解不开的图给提示。文件名去掉控制字符和双向控制符；下载时文件名用 `<主名>.<mime 对应扩展名>`
-- **上传**：选中就开始传（`blob.put_begin` → 每块 512 KiB 的 `blob.put_chunk` → `blob.put_end`；同一节点同时只有 1 张在上传、2 块在途，其余排队（规整可以提前做最多 2 张）——同一设备到 daemon 是一条有序的传输，这样「允许」「停止」最多排在约 1.4 MB 后面；daemon 每台设备同时也只收 8 个进行中的上传），输入框里一排 64 px 缩略图（`composer-attachment`，`data-state` = `uploading` / `ready` / `error`），点开看大图（和消息里的图同一个对话框），上传中显示进度，失败的可以点重试，每张右上角有移除（移除时 `blob.discard`）。一条消息最多 10 张。有附件在上传时发送按钮禁用；上传完了，只有图片没有文字也能发
-- **发送**：`session.send` / `session.create` 带 `attachments`；「未发送」的消息连同附件引用一起留在本地，重发照常（daemon 已回收的附件会得到 `not_found` / `blob`，「编辑」时从本地缓存重传）。新建会话失败后重发沿用第一次的 `message_id`（超时但其实建好了时 daemon 返回那个会话）。草稿里的附件引用随草稿持久化，刷新后用 `blob.get { max_bytes: 1 }` 探一下，已被回收的从缓存重传（缓存没有就提示并去掉）。新建表单换到不收图的 agent 而输入区有图时提示发送时不会带上
+- **入口**：输入框左边「＋」（`composer-plus`）菜单里的「添加文件或照片」（`composer-attach`，可多选；agent 有 `*/*` 时文件选择框不设 `accept`，否则 `accept` 是 agent 收的图片类型加 `image/*`）、在输入框里粘贴、把文件拖进输入区（拖入时整块高亮，提示「拖到这里添加文件」或「拖到这里添加图片」）。agent 只收图片时，非图片文件给一句提示后忽略。agent 不收附件时没有「＋」；节点不在线时菜单项禁用并说明原因
+- **图片还是文件**：`File.type` 是 `image/*` 或为空、且 agent 点名了图片类型的，走下面的「规整」；规整失败（不是图片、解不开、编不出 agent 收的格式）而 agent 有 `*/*` 时，退回按文件原样上传，不提示（还是太大的照旧提示并忽略）。其它文件在 agent 有 `*/*` 时一个字节不动地上传：mime 取 `File.type` 转小写、去掉参数，不合 daemon 的格式（protocol.md § 5.6）就用 `application/octet-stream`；声明成四种图片之一而文件头对不上的，改用文件头认出的类型，认不出就是 `application/octet-stream`（否则 daemon 会以 `mime_mismatch` 拒绝）。文件不解码、不做预览
+- **规整**：上传前在浏览器里处理（ADR-35「2026-10 修订」）——长边 > 2 000 px 的一律缩到 2 000；缩完（或原图）> 1.5 MiB 就有损重编码（agent 收 WebP 且浏览器编得出 → WebP 0.9，否则 JPEG 0.9，有透明通道的先铺白底）；单张硬上限 3.75 MiB；带 EXIF 的 JPEG 一律重编码（方向转正、去掉 GPS 等元数据）；浏览器能解码而 agent 不收的格式（HEIC、BMP…）转成 agent 收的格式。agent 收的格式、长边 ≤ 2 000、≤ 1.5 MiB、没有 EXIF 的原样上传（动图 GIF 保持动图）。一条消息的附件（图片和文件一起算）合计 ≤ 15 MiB，再加的提示后忽略（文件在读内容之前就按 `File.size` 判断）。解不开的图给提示。文件名去掉控制字符和双向控制符；下载时文件名用 `<主名>.<mime 对应扩展名>`
+- **上传**：选中就开始传（`blob.put_begin` → 每块 512 KiB 的 `blob.put_chunk` → `blob.put_end`；同一节点同时只有 1 张在上传、2 块在途，其余排队（规整可以提前做最多 2 张）——同一设备到 daemon 是一条有序的传输，这样「允许」「停止」最多排在约 1.4 MB 后面；daemon 每台设备同时也只收 8 个进行中的上传），输入框里一排附件（`composer-attachment`，`data-state` = `uploading` / `ready` / `error`，`data-kind` = `image` / `file`）：图片是 64 px 缩略图，点开看大图（和消息里的图同一个对话框）；文件是带图标、名字和大小的文件条，点了没有动作。上传中显示进度，失败的可以点重试（超过节点的 `sessions.max_attachment_bytes` 时显示「文件超过了这个节点允许的大小」），每个右上角有移除（移除时 `blob.discard`）。一条消息最多 10 个。有附件在上传时发送按钮禁用；上传完了，只有附件没有文字也能发
+- **发送**：`session.send` / `session.create` 带 `attachments`；「未发送」的消息连同附件引用一起留在本地，重发照常（daemon 已回收的附件会得到 `not_found` / `blob`，「编辑」时从本地缓存重传）。新建会话失败后重发沿用第一次的 `message_id`（超时但其实建好了时 daemon 返回那个会话）。草稿里的附件引用随草稿持久化，刷新后用 `blob.get { max_bytes: 1 }` 探一下，已被回收的从缓存重传（缓存没有就提示并去掉）。换到不收某些附件的 agent 时，那些附件留在输入区、变暗（`data-unsupported`），发送时不带；新建表单里会提示（全都不收 / 有一部分不收各一句）
+- **文件的显示和下载**：四种图片之外的附件（包括 `image/svg+xml`、`text/html`）**永远不内联显示**：消息里是文件条（按钮，无障碍名「下载 <名字>」），滚动时不拉，点了才按「缓存 → `blob.get` 分段拉 → 写缓存」取到内容，用 `application/octet-stream` 的 `Blob` 加 `<a download>` 保存（文件名是记录的名字去掉不安全的字符），下载中显示转圈，失败显示「下载失败，点击重试」。`useBlobUrl` 对非图片的 mime 一律不建 `blob:` URL——附件里的 HTML / SVG 没有机会在 Web UI 的源里渲染或执行
 - **显示**：自己刚传的图直接用本地数据（同时写进 IndexedDB 的 `blobs` 缓存，键是 `blob_id`）；历史里的图先查缓存，没有再懒加载（`blob.get` 分段拉、同一节点同时最多 2 张），拉完写缓存，用 `blob:` URL 显示（CSP 已允许 `img-src blob:`）。点开是一个对话框看大图，带文件名、尺寸和下载
-- 导出 Markdown 时附件写成 `[图片：<文件名>]`
+- 导出 Markdown 时图片写成 `[图片：<文件名>]`（en：`[image: <name>]`），其它附件写成 `[文件：<文件名>]`（en：`[file: <name>]`）
 
 #### 分支 chip（ADR-34）
 
@@ -423,7 +425,7 @@ nodes       { node_id, name, info, agents, last_seen }
 sessions    { session_id, node_id, project, agent, title, status, options, last_seq, updated_at }
 events      { [session_id, seq], event }                 主键是复合键，范围查询拉增量
 drafts      { session_id, text, attachments?: [AttachmentRef], unsent: [{ …, attachments? }] }
-blobs       { blob_id, bytes, mime, last_used_ms }       图片缓存（ADR-35），LRU 上限 200 MiB
+blobs       { blob_id, bytes, mime, last_used_ms }       附件缓存（ADR-35），LRU 上限 200 MiB
 ```
 
 按 origin 隔离，这是 [ADR-23](../decisions.md#adr-23-token-登录与局域网双-origin) 接受的代价。
@@ -520,7 +522,7 @@ Noise 的 wasm 在主线程跑：单条消息加解密是微秒级，开 Worker 
 
 v0.1 另含 ADR-34：新建会话的工作位置（worktree）、分支 chip、「改动」标签（只读 diff、同步 base、快捷消息、PR 状态）、归档 / 删除时的 worktree 处理、节点设置里的 worktree 列表。
 
-v0.1 另含 ADR-35：图片附件（上传、显示、缓存）。
+v0.1 另含 ADR-35：附件（图片的上传、显示、缓存；任意文件的上传和下载）。
 
 v0.1 另含 [ADR-37](../decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)：登录页的邮箱验证码、账号设置里的邮箱绑定、通知设置页（本浏览器推送的开关和测试、每个类别的推送 / 邮件开关）、service worker 的推送和点击处理、页面在后台时的系统通知。
 
@@ -528,7 +530,7 @@ v0.2 含 [ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端�
 
 v0.1 另含 [ADR-36](../decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)：`/unlock`（三种解锁方式）、批准对话框、应用内扫码、「添加设备」的接入码、节点设置的「接入」标签、`/setup` 里的口令提示、接入相关的推送。
 
-**v0.2** 已有：`multi` 模式的邮箱注册、GitHub / Google 登录和关联（登录页、邀请页、设置里的「登录方式」）、配额页、账号删除、`/admin` 的账号管理（搜索、授予 / 取消管理员、删除）。**v0.2** 还没有：非图片附件、文件浏览、搜索、节点设置远程修改。（导出会话为 Markdown 在 v0.1 已经有，客户端本地生成。）
+**v0.2** 已有：`multi` 模式的邮箱注册、GitHub / Google 登录和关联（登录页、邀请页、设置里的「登录方式」）、配额页、账号删除、`/admin` 的账号管理（搜索、授予 / 取消管理员、删除）。**v0.2** 还没有：文件浏览、搜索、节点设置远程修改。（导出会话为 Markdown 在 v0.1 已经有，客户端本地生成。）
 
 **v0.3**：语音输入、命令面板的更多动作、模板创建项目、多客户端同时在线的光标 / 正在输入提示。
 

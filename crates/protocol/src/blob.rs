@@ -1,4 +1,4 @@
-//! 附件 / blob 通道（ADR-35）：客户端把图片分块传到 daemon，daemon 落盘并校验；会话消息只带 [`AttachmentRef`]。
+//! 附件 / blob 通道（ADR-35）：客户端把文件（图片或任意文件）分块传到 daemon，daemon 落盘并校验；会话消息只带 [`AttachmentRef`]。
 //!
 //! 流程：`blob.put_begin` → 若干 `blob.put_chunk`（可乱序、可并发、可重发）→ `blob.put_end` 得到 `AttachmentRef`
 //! → 放进 `session.send` / `session.create` 的 `attachments`。没被消息引用的 blob 过一段时间由 daemon 回收；
@@ -15,7 +15,8 @@ use crate::{AttachmentRef, TimestampMs};
 pub struct BlobPutBeginParams {
     /// 展示用的文件名（1–255 字节，不能含 `/` `\` 和控制字符）。daemon 不用它拼路径。
     pub name: String,
-    /// 只接受 `image/png` `image/jpeg` `image/gif` `image/webp`，其它 → `unsupported`。
+    /// `type/subtype`（不带参数，≤ 127 字节，大小写不敏感，daemon 记成小写）；不知道类型时用 `application/octet-stream`。
+    /// `image/png` `image/jpeg` `image/gif` `image/webp` 四种会核对文件头、读宽高，其它类型不看内容。
     pub mime: String,
     /// 总字节数，`1 ..= sessions.max_attachment_bytes`。
     pub size: u64,

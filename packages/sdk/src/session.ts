@@ -74,10 +74,10 @@ export interface SendOptions {
   /** 幂等键，默认随机 uuid。重发同一条消息时传同一个（附件也要一样，否则 `invalid`）。 */
   messageId?: string
   /**
-   * 图片附件：`node.uploadImage()` 的结果，原样放进来（每条至多 20 个、合计 ≤ 20 MiB）。有附件时 `content` 可以是空串。
+   * 附件：`node.uploadImage()` / `node.uploadFile()` 的结果，原样放进来（每条至多 20 个、合计 ≤ 20 MiB）。有附件时 `content` 可以是空串。
    * daemon 逐个核对，拒绝时 `send()` 的迭代以 `AttachmentError` 失败：blob 不存在 / 已回收 → `reason = 'blob'`（重新上传）；
-   * 已经用在别的会话里 → `blob_in_use`；合计超限 → `too_large`。agent 不收这种图（看 `AgentInfo.capabilities.attachments`）
-   * → `RpcError`（`unsupported`）。
+   * 已经用在别的会话里 → `blob_in_use`；合计超限 → `too_large`。agent 不收这种类型（`acceptsAttachment(agent, mime)` 为 false：
+   * `capabilities.attachments` 既没点名也没有 `ATTACHMENT_ANY_FILE`）→ `RpcError`（`unsupported`）。
    */
   attachments?: AttachmentRef[]
   /** 中止**迭代**（不会取消 turn；要取消用 `session.cancel()`）。 */

@@ -245,14 +245,10 @@ async fn bad_attachments_are_refused_before_anything_is_sent() {
     let many = UserInput { attachments: vec![], attachment_paths: vec![good.1.clone()], ..input("t") };
     assert!(matches!(h.send(many).await, Err(AdapterError::Protocol(_))));
 
-    // 不支持的类型（哪怕同时带着一张好图）
-    let pdf = put_file(&fx, "doc.pdf", "application/pdf", b"%PDF-1.7");
-    let err = h.send(with_files("t", vec![good.clone(), pdf])).await.unwrap_err();
-    assert!(matches!(&err, AdapterError::Unsupported(m) if m.contains("doc.pdf")), "{err:?}");
-    let bmp = put_file(&fx, "x.bmp", "image/bmp", b"BM");
-    assert!(matches!(h.send(with_files("t", vec![bmp])).await, Err(AdapterError::Unsupported(_))));
-
-    // 文件读不了：缺失 / 是目录
+    // 文件读不了：缺失 / 是目录（不是图片的附件不读内容，但也要在；哪怕同时带着一张好图）
+    let gone_pdf = (attachment("doc.pdf", "application/pdf", 3), fx.dir.path().join("doc.pdf"));
+    let err = h.send(with_files("t", vec![good.clone(), gone_pdf])).await.unwrap_err();
+    assert!(matches!(&err, AdapterError::Io(e) if e.to_string().contains("doc.pdf")), "{err:?}");
     let missing = (attachment("gone.png", "image/png", 3), fx.dir.path().join("gone.png"));
     let err = h.send(with_files("t", vec![missing])).await.unwrap_err();
     assert!(matches!(&err, AdapterError::Io(e) if e.kind() == std::io::ErrorKind::NotFound), "{err:?}");
@@ -265,6 +261,26 @@ async fn bad_attachments_are_refused_before_anything_is_sent() {
     let evs = collect_until(&mut h, is_turn_done).await;
     assert_eq!(turn_done(&evs), (1, TurnDoneReason::Completed));
     assert_eq!(user_messages(&fx).len(), 1);
+    h.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn other_files_are_listed_by_path_between_the_images_and_the_text() {
+    let fx = Harness::new().script("text_stream.jsonl");
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    let img = put_file(&fx, "a.png", "image/png", b"\x89PNG-ish");
+    let pdf = put_file(&fx, "doc.pdf", "application/pdf", b"%PDF-1.7");
+    let pdf_path = pdf.1.clone();
+    h.send(with_files("summarise", vec![pdf, img])).await.unwrap();
+    let evs = collect_until(&mut h, is_turn_done).await;
+    assert_eq!(turn_done(&evs), (1, TurnDoneReason::Completed));
+    let msgs = user_messages(&fx);
+    let content = msgs[0]["message"]["content"].as_array().unwrap().clone();
+    assert_eq!(content.len(), 3, "{content:?}");
+    assert_eq!(content[0]["type"], "image");
+    let listed = content[1]["text"].as_str().unwrap();
+    assert!(listed.contains(&format!("doc.pdf (application/pdf, 8 bytes): {}", pdf_path.display())), "{listed}");
+    assert_eq!(content[2], json!({"type": "text", "text": "summarise"}));
     h.shutdown().await.unwrap();
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Outlet, useNavigate, useParams } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { shortNodeId } from '@/lib/ids'
@@ -13,13 +13,17 @@ import { ScanApproveDialog } from '@/features/approve/ScanApproveDialog'
 import { ApprovalBanner } from './ApprovalBanner'
 import { CommandPalette } from './CommandPalette'
 import { NewProjectHost } from './NewProjectHost'
-import { Sidebar } from './Sidebar'
+import { Sidebar, SidebarRail } from './Sidebar'
 import { SidebarResizeHandle } from './SidebarResizeHandle'
 import { StatusBanner } from './StatusBanner'
 import { useShortcuts } from './useShortcuts'
+import { useSidebarPeek } from './useSidebarPeek'
 import { cn } from '@/ui/cn'
 
-/** 已登录页面的外壳：左栏（≥768px 常驻、可收起、可拖动调宽，手机是抽屉）+ 状态横幅 + 页面。 */
+/**
+ * 已登录页面的外壳：左栏 + 状态横幅 + 页面。
+ * 左栏 ≥768px 时钉住就常驻占位、可拖动调宽；没钉住时只留一条窄条，悬停浮出、盖在页面上，移开收回。手机上是抽屉。
+ */
 export function AppShell() {
   const { t } = useTranslation()
   const { nodeId } = useCurrentNode()
@@ -35,6 +39,13 @@ export function AppShell() {
   const open = useUi((s) => s.leftDrawerOpen)
   const setOpen = useUi((s) => s.setLeftDrawer)
   const [palette, setPalette] = useState(false)
+  const flyout = useRef<HTMLElement>(null)
+  const { peek, close: closePeek, railProps, open: openPeek } = useSidebarPeek(!sidebarOpen, flyout)
+  const togglePin = (): void => setPrefs({ sidebarOpen: !sidebarOpen })
+  const search = (): void => {
+    closePeek()
+    setPalette(true)
+  }
   useShortcuts()
 
   const activeNode = nodeId ?? (lastNode && byId[lastNode] ? lastNode : order[0])
@@ -57,18 +68,37 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen-dvh overflow-hidden bg-bg">
-      {/* 最宽不超过半个窗口，窄窗口里中栏不会被挤没 */}
-      <aside className={cn('relative hidden max-w-[50vw] shrink-0 border-r border-border', sidebarOpen && 'md:block')} style={{ width: sidebarWidth }} data-testid="sidebar-aside">
-        <Sidebar nodeId={activeNode} onSearch={() => setPalette(true)} onCollapse={() => setPrefs({ sidebarOpen: false })} />
-        <SidebarResizeHandle
-          width={sidebarWidth}
-          onResize={setDragWidth}
-          onCommit={(w) => {
-            setDragWidth(null)
-            setPrefs({ sidebarWidth: w })
-          }}
-        />
-      </aside>
+      {/* z-30：浮出的左栏盖住页面，但在菜单 / 对话框（z-40 起）下面 */}
+      <div className="relative z-30 hidden shrink-0 md:flex" data-testid="sidebar-dock">
+        {sidebarOpen ? null : <SidebarRail nodeId={activeNode} onSearch={search} onPeek={openPeek} onPin={togglePin} {...railProps} />}
+        {/* 最宽不超过半个窗口，窄窗口里中栏不会被挤没。没钉住时从窄条后面滑出，收回时只是藏起来（不卸载），
+            从左栏里打开的对话框、项目的展开状态都还在 */}
+        <aside
+          ref={flyout}
+          className={cn(
+            'max-w-[50vw] shrink-0 border-r border-border',
+            sidebarOpen
+              ? 'relative'
+              : cn(
+                  'absolute inset-y-0 left-full shadow-pop transition-[translate,visibility] duration-200 ease-out motion-reduce:transition-none',
+                  peek ? 'visible translate-x-0' : 'invisible -translate-x-full',
+                ),
+          )}
+          style={{ width: sidebarWidth }}
+          data-testid="sidebar-aside"
+          data-state={sidebarOpen ? 'pinned' : peek ? 'peek' : 'hidden'}
+        >
+          <Sidebar nodeId={activeNode} onNavigate={sidebarOpen ? undefined : closePeek} onSearch={search} pin={{ pinned: sidebarOpen, onToggle: togglePin }} />
+          <SidebarResizeHandle
+            width={sidebarWidth}
+            onResize={setDragWidth}
+            onCommit={(w) => {
+              setDragWidth(null)
+              setPrefs({ sidebarWidth: w })
+            }}
+          />
+        </aside>
+      </div>
       <Drawer side="left" open={open} onOpenChange={setOpen} title={t('sidebar.menu')} closeLabel={t('common.close')}>
         <Sidebar nodeId={activeNode} onNavigate={() => setOpen(false)} onSearch={() => { setOpen(false); setPalette(true) }} />
       </Drawer>

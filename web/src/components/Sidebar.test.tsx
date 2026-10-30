@@ -1,4 +1,5 @@
-// 左栏：项目行右边的「＋」在该项目里新建会话（左栏没有单独的「新会话」按钮）；顶部的节点下拉是多选过滤；宽屏左栏可以收起（偏好记在 localStorage，⌘/Ctrl+B 开合）。
+// 左栏：项目行右边的「＋」在该项目里新建会话（左栏没有单独的「新会话」按钮）；顶部的节点下拉是多选过滤；
+// 宽屏左栏可以取消固定，收成窄条（偏好记在 localStorage，⌘/Ctrl+B 切换）。
 import type { ReactNode } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -17,8 +18,7 @@ const devices = vi.hoisted(() => ({ data: undefined as unknown, dataUpdatedAt: 0
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn' }))
 vi.mock('@/api/queries', () => ({ useMe: () => ({ data: undefined }), useDevices: () => devices, logout: vi.fn() }))
 
-import { PageHeader } from './PageHeader'
-import { Sidebar } from './Sidebar'
+import { Sidebar, SidebarRail } from './Sidebar'
 import { useShortcuts } from './useShortcuts'
 
 const NODE = 'n'.repeat(32)
@@ -68,27 +68,51 @@ describe('sidebar project rows', () => {
     expect(screen.getByRole('button', { name: /Search/ })).toBeInTheDocument()
   })
 
-  it('the collapse button only exists where the caller can collapse (not in the phone drawer)', () => {
+  it('the pin button only exists on the wide-screen sidebar (not in the phone drawer), and shows which way it goes', () => {
     const { unmount } = wrap(<Sidebar nodeId={NODE} />)
-    expect(screen.queryByTestId('sidebar-collapse')).toBeNull()
+    expect(screen.queryByTestId('sidebar-pin')).toBeNull()
     unmount()
-    const onCollapse = vi.fn()
-    wrap(<Sidebar nodeId={NODE} onCollapse={onCollapse} />)
-    screen.getByTestId('sidebar-collapse').click()
-    expect(onCollapse).toHaveBeenCalledTimes(1)
+    const onToggle = vi.fn()
+    const pinned = wrap(<Sidebar nodeId={NODE} pin={{ pinned: true, onToggle }} />)
+    expect(screen.getByTestId('sidebar-pin')).toHaveAccessibleName('Unpin sidebar (Ctrl+B)')
+    expect(screen.getByTestId('sidebar-pin')).toHaveAttribute('aria-pressed', 'true')
+    screen.getByTestId('sidebar-pin').click()
+    expect(onToggle).toHaveBeenCalledTimes(1)
+    pinned.unmount()
+    wrap(<Sidebar nodeId={NODE} pin={{ pinned: false, onToggle }} />)
+    expect(screen.getByTestId('sidebar-pin')).toHaveAccessibleName('Pin sidebar (Ctrl+B)')
   })
 })
 
-describe('collapsing the wide-screen sidebar', () => {
-  it('the page header offers “show sidebar” only while it is collapsed', async () => {
+describe('unpinned wide-screen sidebar rail', () => {
+  it('keeps search, new project and the pin button within reach', async () => {
     const user = userEvent.setup()
-    usePrefs.setState({ sidebarOpen: false })
-    wrap(<PageHeader crumbs={[{ label: 'x' }]} />)
-    await user.click(screen.getByTestId('sidebar-expand'))
-    expect(usePrefs.getState().sidebarOpen).toBe(true)
-    expect(screen.queryByTestId('sidebar-expand')).toBeNull()
+    const onSearch = vi.fn()
+    const onPin = vi.fn()
+    wrap(<SidebarRail nodeId={NODE} onSearch={onSearch} onPeek={() => {}} onPin={onPin} />)
+    await user.click(screen.getByRole('button', { name: /Search/ }))
+    expect(onSearch).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole('button', { name: 'New project' }))
+    expect(useNewProject.getState().request).toEqual({ nodeId: NODE, mode: 'empty', then: 'project', pickNode: true })
+    await user.click(screen.getByTestId('sidebar-pin'))
+    expect(onPin).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('sidebar-rail-waiting')).toBeNull()
   })
 
+  it('shows how many sessions wait for approval; clicking it slides the sidebar out', async () => {
+    const user = userEvent.setup()
+    const a = useSessions.getState().list.a!
+    useSessions.setState({ list: { ...useSessions.getState().list, a: { ...a, pending_permissions: 1 } } })
+    const onPeek = vi.fn()
+    wrap(<SidebarRail nodeId={NODE} onSearch={() => {}} onPeek={onPeek} onPin={() => {}} />)
+    const badge = screen.getByTestId('sidebar-rail-waiting')
+    expect(badge).toHaveAccessibleName('1 session needs approval')
+    await user.click(badge)
+    expect(onPeek).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('toggling the wide-screen sidebar', () => {
   it('⌘/Ctrl+B toggles it, and holding the keys down does not flicker', async () => {
     const user = userEvent.setup()
     wrap(<Shortcuts />)

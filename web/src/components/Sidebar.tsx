@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type HTMLAttributes } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, ChevronRight, FolderGit2, FolderPlus, Lock, LogOut, PanelLeftClose, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, FolderGit2, FolderPlus, Lock, LogOut, Pin, PinOff, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices, useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
@@ -51,23 +51,53 @@ function useNodeFilter(): { selected: string[]; toggle: (id: string, on: boolean
 }
 
 /**
- * `nodeId`：页面当前所在的节点，只用于下拉里的「节点设置」；左栏显示哪些节点由下拉里的勾选决定。
- * `onCollapse`：宽屏常驻的左栏才传，Logo 旁边多一个收起按钮（手机抽屉自己有关闭按钮）。
+ * 「新建项目」默认建在哪个节点：页面当前所在的节点（在勾选里的话），否则第一个勾选的；对话框里还能换。
+ * 没有可建的节点时返回 undefined。
  */
-export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void; onCollapse?: () => void }) {
+function useNewProjectAction(nodeId: string | undefined, selected: string[], onNavigate?: () => void): (() => void) | undefined {
+  const target = nodeId && selected.includes(nodeId) ? nodeId : selected[0]
+  if (!target) return undefined
+  return () => {
+    onNavigate?.()
+    useNewProject.getState().open({ nodeId: target, mode: 'empty', then: 'project', pickNode: true })
+  }
+}
+
+/** 待审批的会话（只算勾选的节点），最近的在前：左栏置顶（spec/web.md § 7），没固定时窄条上显示个数。 */
+function useWaitingSessions(selected: string[]) {
+  const list = useSessions((s) => s.list)
+  return useMemo(
+    () =>
+      Object.values(list)
+        .filter((x) => selected.includes(x.node_id) && !x.archived && (x.pending_permissions > 0 || x.status === 'waiting_permission'))
+        .sort((a, b) => b.updated_at_ms - a.updated_at_ms),
+    [list, selected],
+  )
+}
+
+/** 钉住 / 取消钉住宽屏左栏的按钮：钉住时常驻占位，没钉住时收成窄条、悬停浮出（见 AppShell）。 */
+function PinButton({ pinned, onToggle, className }: { pinned: boolean; onToggle: () => void; className?: string }) {
+  const { t } = useTranslation()
+  const label = pinned ? t('sidebar.unpinSidebar') : t('sidebar.pinSidebar')
+  return (
+    <button type="button" aria-label={label} title={label} aria-pressed={pinned} className={cn('rounded-md p-1.5 text-fg-subtle hover:bg-bg-hover hover:text-fg', className)} onClick={onToggle} data-testid="sidebar-pin">
+      {pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+    </button>
+  )
+}
+
+/**
+ * `nodeId`：页面当前所在的节点，只用于下拉里的「节点设置」；左栏显示哪些节点由下拉里的勾选决定。
+ * `pin`：宽屏左栏才传，Logo 旁边多一个钉住 / 取消钉住按钮（手机抽屉自己有关闭按钮）。
+ */
+export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void; pin?: { pinned: boolean; onToggle: () => void } }) {
   const { t } = useTranslation()
   const nodes = useNodes((s) => s.byId)
   const order = useNodes((s) => s.order)
   const list = useSessions((s) => s.list)
   const params = useParams({ strict: false }) as { node?: string; session?: string; project?: string }
   const { selected } = useNodeFilter()
-  // 「新建项目」默认建在哪个节点：页面当前所在的节点（在勾选里的话），否则第一个勾选的；对话框里还能换
-  const projectTarget = nodeId && selected.includes(nodeId) ? nodeId : selected[0]
-  const newProject = (): void => {
-    if (!projectTarget) return
-    onNavigate?.()
-    useNewProject.getState().open({ nodeId: projectTarget, mode: 'empty', then: 'project', pickNode: true })
-  }
+  const newProject = useNewProjectAction(nodeId, selected, onNavigate)
   const paramOf = (id: string): string => shortNodeId(id, order)
   // 勾了多个节点时，项目行和置顶行要标出各自属于哪个节点
   const nodeLabel = (id: string): string | undefined => (selected.length > 1 ? nodes[id]?.name : undefined)
@@ -81,14 +111,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
     [list, selected, nodes],
   )
 
-  // 待审批的会话在左栏置顶（spec/web.md § 7）
-  const waiting = useMemo(
-    () =>
-      Object.values(list)
-        .filter((x) => selected.includes(x.node_id) && !x.archived && (x.pending_permissions > 0 || x.status === 'waiting_permission'))
-        .sort((a, b) => b.updated_at_ms - a.updated_at_ms),
-    [list, selected],
-  )
+  const waiting = useWaitingSessions(selected)
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-subtle" data-testid="sidebar">
@@ -96,18 +119,14 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
         <Link to="/" onClick={onNavigate} className="mr-auto rounded-md px-1 py-1">
           <Logo />
         </Link>
-        {onCollapse ? (
-          <button type="button" aria-label={t('sidebar.collapseSidebar')} title={t('sidebar.collapseSidebar')} className="rounded-md p-1.5 text-fg-subtle hover:bg-bg-hover hover:text-fg" onClick={onCollapse} data-testid="sidebar-collapse">
-            <PanelLeftClose className="size-4" />
-          </button>
-        ) : null}
+        {pin ? <PinButton pinned={pin.pinned} onToggle={pin.onToggle} /> : null}
       </div>
 
       <div className="flex items-stretch gap-2 px-3 pb-2">
         <div className="min-w-0 flex-1">
           <NodeSwitcher nodeId={nodeId} onNavigate={onNavigate} />
         </div>
-        {projectTarget ? (
+        {newProject ? (
           <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('project.new')} title={t('project.new')} onClick={newProject} data-testid="sidebar-new-project-button">
             <FolderPlus className="size-4" />
           </Button>
@@ -158,7 +177,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
               <div className="px-2 py-6 text-center text-sm text-fg-subtle" data-testid="sidebar-empty">
                 <p>{t('sidebar.empty')}</p>
                 {/* 左栏没有单独的「新会话」按钮，没有项目就没有「＋」可点：直接在这里打开新建项目对话框 */}
-                {projectTarget ? (
+                {newProject ? (
                   <button type="button" onClick={newProject} className="mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium text-accent-text hover:bg-bg-hover" data-testid="sidebar-new-project">
                     <FolderPlus className="size-4" />
                     {t('project.new')}
@@ -173,6 +192,42 @@ export function Sidebar({ nodeId, onNavigate, onSearch, onCollapse }: { nodeId: 
       </nav>
 
       <AccountFooter onNavigate={onNavigate} />
+    </div>
+  )
+}
+
+/**
+ * 宽屏左栏没钉住时留在左边的窄条（像 VS Code 的活动栏）：Logo、搜索、新建项目、待审批个数，底部是钉住按钮。
+ * 悬停 / 点空白处浮出整个左栏的事件由调用方挂上（`useSidebarPeek` 的 `railProps`）；点待审批个数也浮出，置顶的就是它们。
+ */
+export function SidebarRail({ nodeId, onSearch, onPeek, onPin, ...rest }: { nodeId: string | undefined; onSearch: () => void; onPeek: () => void; onPin: () => void } & Omit<HTMLAttributes<HTMLDivElement>, 'children'>) {
+  const { t } = useTranslation()
+  const hasNodes = useNodes((s) => s.order.length > 0)
+  const { selected } = useNodeFilter()
+  const newProject = useNewProjectAction(nodeId, selected)
+  const waiting = useWaitingSessions(selected)
+  const icon = 'rounded-md p-2 text-fg-subtle hover:bg-bg-hover hover:text-fg'
+  return (
+    <div {...rest} className="relative z-10 flex w-12 shrink-0 flex-col items-center gap-1 border-r border-border bg-bg-subtle pt-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]" data-testid="sidebar-rail">
+      <Link to="/" className="mb-2 rounded-md p-1" aria-label="Anycon">
+        <Logo withWord={false} />
+      </Link>
+      {hasNodes ? (
+        <button type="button" aria-label={t('sidebar.search')} title={t('sidebar.search')} className={icon} onClick={onSearch}>
+          <Search className="size-4" />
+        </button>
+      ) : null}
+      {newProject ? (
+        <button type="button" aria-label={t('project.new')} title={t('project.new')} className={icon} onClick={newProject}>
+          <FolderPlus className="size-4" />
+        </button>
+      ) : null}
+      {waiting.length > 0 ? (
+        <button type="button" aria-label={t('sidebar.waitingCount', { count: waiting.length })} title={t('sidebar.waitingCount', { count: waiting.length })} className="mt-1 rounded-full" onClick={onPeek} data-testid="sidebar-rail-waiting">
+          <Chip tone="warning">{waiting.length}</Chip>
+        </button>
+      ) : null}
+      <PinButton pinned={false} onToggle={onPin} className="mt-auto p-2" />
     </div>
   )
 }

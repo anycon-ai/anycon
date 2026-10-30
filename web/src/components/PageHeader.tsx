@@ -1,9 +1,8 @@
 import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
-import { ArrowLeft, ChevronRight, Menu, PanelLeftOpen, Pencil } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Menu, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCurrentNode } from '@/lib/nav'
-import { usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
 import { Chip } from '@/ui/Misc'
 import { connectionLabel, connectionTone } from './useConnectionLabel'
@@ -19,15 +18,13 @@ export interface Crumb {
 }
 
 /**
- * 页面顶栏：手机上的菜单 / 返回按钮（宽屏左栏收起时是展开按钮）、面包屑、页面的状态（`meta`，比如会话页的「聊天 / 改动」和状态 chip）、
+ * 页面顶栏：手机上的菜单 / 返回按钮、面包屑、页面的状态（`meta`，比如会话页的「聊天 / 改动」和状态 chip）、
  * 节点状态 chip、页面自己的操作按钮。
  */
 export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBack }: { crumbs: Crumb[]; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void }) {
   const { t } = useTranslation()
   const { entry } = useCurrentNode()
   const setLeft = useUi((s) => s.setLeftDrawer)
-  const sidebarOpen = usePrefs((s) => s.sidebarOpen)
-  const setPrefs = usePrefs((s) => s.set)
   return (
     <header className="pt-safe flex min-h-12 shrink-0 items-center gap-2 border-b border-border bg-bg px-3">
       <button type="button" aria-label={t('sidebar.menu')} className="rounded-md p-2 text-fg-muted hover:bg-bg-hover md:hidden" onClick={() => setLeft(true)} data-testid="menu-button">
@@ -38,11 +35,6 @@ export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBac
           <ArrowLeft className="size-4" />
         </button>
       ) : null}
-      {sidebarOpen ? null : (
-        <button type="button" aria-label={t('sidebar.expandSidebar')} title={t('sidebar.expandSidebar')} className="hidden rounded-md p-1.5 text-fg-muted hover:bg-bg-hover hover:text-fg md:inline-flex" onClick={() => setPrefs({ sidebarOpen: true })} data-testid="sidebar-expand">
-          <PanelLeftOpen className="size-4" />
-        </button>
-      )}
       <nav aria-label={t('common.breadcrumb')} className="flex min-w-0 flex-1 items-center gap-1 text-sm">
         {crumbs.map((c, i) => (
           <span key={`${i}-${c.label}`} className={i === crumbs.length - 1 ? 'flex min-w-0 items-center gap-1' : 'hidden min-w-0 items-center gap-1 sm:flex'}>

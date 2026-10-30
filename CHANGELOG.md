@@ -29,6 +29,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Web UI: unpinning the wide-screen sidebar (the pin button next to the logo, or ⌘/Ctrl+B) leaves a narrow strip with search, new project, the number of sessions waiting for approval, and a pin button. Hovering the strip slides the sidebar out over the page, and it slides back once the pointer leaves, on a click outside, or on Esc. On touch screens, tap the strip. The "show sidebar" button in the page header is gone.
 - `login_methods` in `/api/config` and `/api/me` is ordered `github`, `google`, `email`, `token`, so a `single` hub with SMTP now reports `["email","token"]`. The CLI and Web UI do not depend on the order.
 - `ANYCON_ADMIN_EMAILS`, `ANYCON_QUOTA_DEVICES`, `_DAEMONS`, `_CONNECTIONS`, `_DAILY_PAIRINGS`, and `ANYCON_OAUTH_*` no longer log "recognized but not implemented". Blank values count as unset. A value that is set but invalid stops the hub from starting, in both modes. In the mode that does not use a variable it is ignored with a warning, and `ANYCON_ADMIN_TOKEN` is ignored in `multi`.
 - Removing an account's last way to sign in is refused with `409 last_login_method`: unbinding the email, unlinking a GitHub / Google account, and (in `single`) deleting a login token. The three are serialized per account and judged on the account as it is inside the lock, so two requests at the same time cannot both succeed and leave the account locked out. The `single` bootstrap admin always keeps the bootstrap token.

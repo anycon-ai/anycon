@@ -372,7 +372,7 @@
       "oneOf": [
         {
           "const": "invalid",
-          "description": "token 不存在或已轮换。",
+          "description": "token 不存在，或它是轮换前的旧 token 且 60 秒宽限已过。",
           "type": "string"
         },
         {
@@ -1286,7 +1286,7 @@
           "type": "object"
         },
         {
-          "description": "D→H：轮换设备 token（v0.2）。",
+          "description": "D→H：请求轮换设备 token。只对带设备 token 认证过的永久连接有效（临时连接、预览连接的请求被忽略）。\nhub 回 [`Control::TokenRotated`]，旧 token 再保留 60 秒；同一设备 1 分钟内多余的请求被忽略、不回复。",
           "properties": {
             "type": {
               "const": "rotate_token",
@@ -1299,7 +1299,7 @@
           "type": "object"
         },
         {
-          "description": "H→D",
+          "description": "H→D：轮换后的新设备 token，只传这一次。客户端要先把它（和签发时间）持久化，再用它重连。",
           "properties": {
             "device_token": {
               "type": "string"

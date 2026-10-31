@@ -277,8 +277,15 @@ async fn temporary_connection_with_cookie_enrolls_end_to_end() {
         ("Chrome · macOS", DeviceKind::Web, hub.admin_account_id().as_str())
     );
     assert!(store.is_paired(&node_id, &new_id).await.unwrap());
-    assert!(store.find_device_by_token_hash(&hash_token(&new_token)).await.unwrap().is_some());
-    assert!(store.find_device_by_token_hash(&new_token).await.unwrap().is_none(), "only the hash is stored");
+    assert!(store
+        .find_device_by_token_hash(&hash_token(&new_token), anycon_hub::util::now_ms())
+        .await
+        .unwrap()
+        .is_some());
+    assert!(
+        store.find_device_by_token_hash(&new_token, anycon_hub::util::now_ms()).await.unwrap().is_none(),
+        "only the hash is stored"
+    );
     assert!(enrolls_dump(&hub).contains("sessions: 0"), "{}", enrolls_dump(&hub));
     let audit = store.list_audit(50, None).await.unwrap();
     let started = audit.iter().find(|e| e.event == "enroll_started").expect("enroll_started is audited");

@@ -187,8 +187,15 @@ async fn full_pairing_flow() {
     assert_eq!(dev.kind, DeviceKind::Web);
     assert_eq!(dev.account_id, hub.admin_account_id());
     assert!(store.is_paired(&seeded.id, &new_id).await.unwrap());
-    assert!(store.find_device_by_token_hash(&new_token).await.unwrap().is_none(), "plaintext token is not stored");
-    assert!(store.find_device_by_token_hash(&anycon_hub::util::hash_token(&new_token)).await.unwrap().is_some());
+    assert!(
+        store.find_device_by_token_hash(&new_token, anycon_hub::util::now_ms()).await.unwrap().is_none(),
+        "plaintext token is not stored"
+    );
+    assert!(store
+        .find_device_by_token_hash(&anycon_hub::util::hash_token(&new_token), anycon_hub::util::now_ms())
+        .await
+        .unwrap()
+        .is_some());
     let audit = store.list_audit(50, None).await.unwrap();
     assert!(audit.iter().any(|e| e.event == "device_paired" && e.device_id.as_deref() == Some(new_id.as_str())));
 

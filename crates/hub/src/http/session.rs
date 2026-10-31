@@ -176,7 +176,7 @@ impl FromRequestParts<Arc<AppState>> for AccountReader {
 
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
         if let Some(token) = bearer_token(&parts.headers)? {
-            return match state.store.find_device_by_token_hash(&hash_token(token)).await? {
+            return match state.store.find_device_by_token_hash(&hash_token(token), now_ms()).await? {
                 Some(d) if d.revoked_at_ms.is_none() => Ok(AccountReader { account_id: d.account_id }),
                 _ => Err(ApiError::unauthorized()),
             };
@@ -200,7 +200,7 @@ impl FromRequestParts<Arc<AppState>> for DeviceBearer {
 
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
         let token = bearer_token(&parts.headers)?.ok_or_else(ApiError::unauthorized)?;
-        match state.store.find_device_by_token_hash(&hash_token(token)).await? {
+        match state.store.find_device_by_token_hash(&hash_token(token), now_ms()).await? {
             Some(device) if device.revoked_at_ms.is_none() => Ok(DeviceBearer { device }),
             _ => Err(ApiError::unauthorized()),
         }

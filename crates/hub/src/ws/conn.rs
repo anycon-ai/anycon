@@ -30,8 +30,8 @@ use crate::config::{Limits, Timing};
 use crate::enroll;
 use crate::pairing::{self, BeginError, ConfirmOutcome, Origin};
 use crate::quota;
-use crate::store::{Device, NewAudit};
-use crate::util::{hash_token, ip_prefix, new_id, now_ms};
+use crate::store::{Device, NewAudit, RotateOutcome};
+use crate::util::{hash_token, ip_prefix, new_id, new_secret, now_ms};
 
 use super::outq::{OutQueue, OutRx, Outbound, PushError};
 use super::registry::{Conn, ConnInit, ConnectionQuotaFull, PreviewMeta};
@@ -165,7 +165,7 @@ async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket, preview_lab
 
     let device = match device_token {
         None => None,
-        Some(token) => match state.store.find_device_by_token_hash(&hash_token(&token)).await {
+        Some(token) => match state.store.find_device_by_token_hash(&hash_token(&token), now_ms()).await {
             Ok(Some(d)) if d.revoked_at_ms.is_none() => Some(d),
             Ok(Some(_)) => {
                 reject(socket, AuthFailReason::Revoked).await;
@@ -508,6 +508,8 @@ struct ConnState {
     rate_violation: bool,
     /// hub 已经因为发送方违规（持续超限、被退回的信封太多）发起了关闭：之后读到的帧都不再处理。
     hub_closed: bool,
+    /// 这条连接上被「轮换太频繁」忽略的 `rotate_token` 已经记过一条 warn：之后的降到 debug，免得一个狂发的客户端刷满日志。
+    rotate_too_soon_logged: bool,
 }
 
 impl ConnState {
@@ -518,6 +520,7 @@ impl ConnState {
             temp_pair_begins: 0,
             rate_violation: false,
             hub_closed: false,
+            rotate_too_soon_logged: false,
         }
     }
 
@@ -956,8 +959,67 @@ async fn on_control(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState,
                 tracing::error!(error = %e, "revoke failed");
             }
         }
-        // 认证后再发 auth、hub→设备方向的消息、v0.2 才有的功能：忽略。
+        Control::RotateToken {} => on_rotate_token(state, conn, cs).await,
+        // 认证后再发 auth、hub→设备方向的消息：忽略。
         other => tracing::debug!(device = %conn.device_id(), msg = ?control_name(&other), "ignore control message"),
+    }
+}
+
+/// `RotateToken`（docs/spec/hub.md § 5）：给这台设备签发新的 device token，旧的再保留 [`Timing::token_grace`](crate::config::Timing)。
+///
+/// 只有带设备 token 认证的永久连接（以及配对完成、原地升级成正式设备的连接）可以请求；临时连接、预览连接忽略。
+/// 同一设备两次轮换之间至少隔 `token_rotate_min_interval`（库里记着上次轮换的时间，不看是哪条连接）：更早的请求被忽略、
+/// 不回复，只记一条 warn。新旧 token 和它们的哈希都不进日志。
+async fn on_rotate_token(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState) {
+    if !conn.is_permanent() || conn.preview.is_some() {
+        tracing::debug!(temp_id = %conn.device_id(), "ignore rotate_token: not a device connection");
+        return;
+    }
+    let device = conn.device_id();
+    let timing = &state.config.timing;
+    let new_token = new_secret();
+    let outcome = state
+        .store
+        .rotate_device_token(
+            &device,
+            &hash_token(&new_token),
+            now_ms(),
+            timing.token_grace.as_millis() as u64,
+            timing.token_rotate_min_interval.as_millis() as u64,
+        )
+        .await;
+    match outcome {
+        Ok(RotateOutcome::Rotated) => {
+            tracing::info!(device = %device, "device token rotated");
+            state
+                .audit(NewAudit {
+                    event: "token_rotated",
+                    account_id: conn.account_id(),
+                    device_id: Some(device.clone()),
+                    ip_prefix: Some(ip_prefix(conn.ip)),
+                    user_agent: None,
+                    detail: None,
+                })
+                .await;
+            // 库里已经换了：新 token 必须送到。控制消息队列满（对端不读 socket）时断开连接，和退回通知一样——
+            // 静默丢失会让客户端以为什么都没发生；它重连后还能用旧 token（宽限内）再请求。
+            if conn.try_send_control(&Control::TokenRotated { device_token: new_token }).is_err() {
+                tracing::warn!(device = %device, "cannot deliver the rotated token: control queue is full, closing as slow consumer");
+                conn.kill_with(close_code::SLOW_CONSUMER);
+            }
+        }
+        Ok(RotateOutcome::TooSoon) => {
+            if cs.rotate_too_soon_logged {
+                tracing::debug!(device = %device, "ignore rotate_token: rotated too recently");
+            } else {
+                cs.rotate_too_soon_logged = true;
+                tracing::warn!(device = %device, "ignore rotate_token: this device rotated its token too recently");
+            }
+        }
+        Ok(RotateOutcome::Unavailable) => {
+            tracing::debug!(device = %device, "ignore rotate_token: device is revoked or gone");
+        }
+        Err(e) => tracing::error!(device = %device, error = %e, "token rotation failed"),
     }
 }
 
@@ -1041,7 +1103,6 @@ fn control_name(c: &Control) -> &'static str {
     match c {
         Control::Auth { .. } => "auth",
         Control::QueueDrop { .. } => "queue_drop",
-        Control::RotateToken {} => "rotate_token",
         _ => "hub_to_device",
     }
 }

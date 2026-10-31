@@ -94,7 +94,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | `GET /api/me/tokens` · `POST` · `DELETE /:id` | 登录 token。`POST` 返回明文一次，库里存 blake2 哈希。删的是账号最后一个登录 token、而账号没有别的登录方式（绑定了邮箱且配了 SMTP、hub 配了的提供方的 OAuth 身份）→ `409 last_login_method`；`single` 的 bootstrap 管理员始终有 bootstrap token（它不是库里的行），所以删得掉自己名下的 token；`id` 不属于本账号 → `404 not_found`。和解绑邮箱、解除身份一起按账号串行（见下）。仅 `single`（`multi` 里 `404 not_found`） |
 | `GET /api/me/passkeys` · `PATCH /:id`（改名）· `DELETE /:id` | |
 | `GET /api/me/identities` · `DELETE /:provider` | OAuth 身份，两种模式都有。`GET` → `[{ provider: "github" \| "google", created_at_ms }]`；库里只存 `(provider, subject, account_id, created_at_ms)`，不存也不返回用户名、邮箱、头像和 access token。`DELETE` → `204`（没绑过也是 `204`）；`:provider` 不是 `github` / `google` → `404 not_found`；这是账号唯一的登录方式 → `409 last_login_method`（只有 hub 现在配了的提供方才算登录方式）；和解绑邮箱、删登录 token 一起按账号串行（见下）。审计 `identity_unlinked`。一个账号在一个提供方最多一个身份 |
-| `GET /api/devices` | 本账号全部设备：id、名称、kind（`daemon` / `web` / `cli` / `sdk`）、平台、origin（web 设备）、创建时间、最近在线、当前是否在线、与哪些设备配对。**也接受设备 token**（`Authorization: Bearer <device token>`，只读，返回内容和 cookie 登录时一样）：CLI 已经是这个 hub 上的设备时用它列节点，不必再登录一次（[spec/cli.md § 3.3](cli.md)）。带了 `Authorization` 头就只看它（不回退到 cookie）；token 不存在、已吊销、不是 `Bearer` 都是 `401 unauthorized`。设备 token 只开放这个接口和 `POST /api/preview/tokens`（§ 13.3，只认设备 token），`PATCH` / `DELETE` 和其余 `/api/*` 仍然只认登录 cookie |
+| `GET /api/devices` | 本账号全部设备：id、名称、kind（`daemon` / `web` / `cli` / `sdk`）、平台、origin（web 设备）、创建时间、最近在线、当前是否在线、与哪些设备配对。**也接受设备 token**（`Authorization: Bearer <device token>`，当前 token 或轮换后 60 秒宽限内的上一个 token 都认，§ 5；只读，返回内容和 cookie 登录时一样）：CLI 已经是这个 hub 上的设备时用它列节点，不必再登录一次（[spec/cli.md § 3.3](cli.md)）。带了 `Authorization` 头就只看它（不回退到 cookie）；token 不存在、已吊销、不是 `Bearer` 都是 `401 unauthorized`。设备 token 只开放这个接口和 `POST /api/preview/tokens`（§ 13.3，只认设备 token），`PATCH` / `DELETE` 和其余 `/api/*` 仍然只认登录 cookie |
 | `PATCH /api/devices/:id` | 改名 |
 | `DELETE /api/devices/:id` | 吊销：断连接、删配对、删 push 订阅。**只是 hub 侧的一半**，daemon 侧的公钥删除由客户端通过 `node.revoke_device` 完成；UI 两步一起做 |
 | `GET /api/invites` · `POST` · `DELETE /:id` | 邀请链接。仅 `single`，管理员专用（`multi` 里 `404 not_found`，开放注册没有邀请）。单次使用、默认 7 天过期、可附备注。受邀者用链接兑换（`/auth/invite`），或者带着邀请码走 OAuth 登录（§ 2.2.1） |
@@ -150,7 +150,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | 阶段 | 规则 |
 |---|---|
 | 升级 | 校验 `Origin`（`ANYCON_PUBLIC_URL`、自身 Host、私有网段 http 自动放行）。失败 `403` |
-| 认证 | 第一帧必须是 `control.auth { device_token, protocol_version }`，5 秒内未收到则关闭。token 查哈希；设备被吊销则 `auth_fail { reason: revoked }`；`multi` 里账号的在线连接数已到上限则 `auth_fail { reason: quota }`（§ 7.1） |
+| 认证 | 第一帧必须是 `control.auth { device_token, protocol_version }`，5 秒内未收到则关闭。token 查哈希：当前 token，或轮换之后 60 秒宽限内的上一个 token 都认（§ 5）；设备被吊销则 `auth_fail { reason: revoked }`（新旧 token 都是）；`multi` 里账号的在线连接数已到上限则 `auth_fail { reason: quota }`（§ 7.1） |
 | 单连接 | 一个设备同时只允许一条连接。新连接认证成功后旧连接收到 close code `4001 superseded`。手机切网时常见。顶掉自己的旧连接不算新增一条在线连接（§ 7.1） |
 | 上线通知 | 认证成功后，hub 向该设备发 `auth_ok { device_id, server_time_ms, peers_online, quota? }`（`peers_online` 是此刻在线的配对设备列表；`quota` 只在 `multi` 里对永久连接带，是账号的设备数 / daemon 数 / 在线连接数和各自的上限，`single`、临时连接和预览连接没有，§ 7.1），并向这些**在线的配对设备**发 `peer_online`。`multi` 里账号的设备数、daemon 数或在线连接数变了，hub 再向该账号此刻在线的其他永久连接发 `quota_update` |
 | 心跳 | hub 每 30 秒 ping；90 秒无 pong 断开。设备侧不需要自己发心跳，但可以靠这些 ping 判断连接是否还活着：daemon 75 秒收不到任何帧就断开重连（daemon.md § 15） |
@@ -245,12 +245,20 @@ device
   name          客户端提供，可改。Web 默认 "Chrome · macOS · hub.example.com"
   platform      客户端自报：os、arch、客户端版本
   origin        仅 web：该浏览器访问 hub 的 origin（区分局域网/公网两份）
-  token_hash    device token 的 blake2 哈希
+  token_hash    当前 device token 的 blake2 哈希
+  prev_token_hash · prev_token_expires_at   轮换之前的那个 token 的哈希和它的宽限截止时间（没轮换过是空）
+  token_rotated_at                          上一次轮换的时间（没轮换过是空）
   created_at · last_seen_at · revoked_at
 ```
 
-- device token 是 32 字节随机数，配对确认时签发，只传一次；客户端存在自己的配置目录 / IndexedDB
-- 轮换：`control.rotate_token` → hub 返回新 token，旧 token 保留 60 秒宽限（v0.2）
+- device token 是 32 字节随机数（64 位小写 hex），配对确认时签发，只传一次；客户端存在自己的配置目录 / IndexedDB。hub 只存哈希
+- **轮换**：`control.rotate_token`（设备→hub，没有字段）→ hub 回 `token_rotated { device_token }`，旧 token 再保留 60 秒宽限。目的是缩短**泄露了的 token** 的有效期；客户端默认在 token 满 30 天后的下一次连接上发起（各客户端的策略和落盘方式见 [daemon.md § 15](daemon.md#15-连接与可靠性)、[cli.md § 2](cli.md#2-目录与配置)、[web.md § 6.4](web.md#64-连接状态机每个节点)、[sdk.md § 2](sdk.md#2-身份与配对)）。规则：
+  - **谁能轮换**：带设备 token 认证的永久连接（daemon / web / cli / sdk 一视同仁），含配对 / 接入完成后原地升级成正式设备的连接。没有身份的临时连接和预览连接发的 `rotate_token` 一律忽略（不回复、不影响连接）
+  - **做什么**：生成新 token，**一条 `UPDATE` 里**把新哈希写成当前 token、原来的当前 token 记为「上一个」并带 `now + 60 秒` 的截止时间、记下轮换时间；写成功才回 `token_rotated`。回执进不了连接的控制消息队列（对端不读 socket）时以 `4003` 断开它，不静默丢失。审计 `token_rotated`（设备 id、IP 前缀，不含任何 token，§ 9）
+  - **认证**：token 的哈希等于当前 token，或者等于上一个 token 且没到截止时间，都认（WebSocket 的 `auth` 和接受设备 token 的 HTTP 接口一样）。只留**一个**「上一个」：连续轮换两次，最早的 token 立刻失效。宽限只管**新的认证**，已经建立的连接不受影响
+  - **频率**：同一设备 1 分钟内最多轮换一次。上次轮换的时间记在库里，所以这是设备级的限制：不分连接、重启不丢。多余的请求被忽略、**不回复**，hub 记一条不含 token 的 warn（设备 id；同一条连接上只记第一次，之后降到 debug）
+  - **吊销**：`revoked_at` 置位后，新旧 token 都不能再认证（回 `revoked`），也不能再轮换
+  - **被别人抢先轮换的后果**：谁拿着当前有效的 token（泄露、旧备份）并抢在设备自己之前发了 `rotate_token`，新 token 归他，原持有者手里的 token 60 秒后失效（它下一次认证得到 `auth_fail { invalid }`，客户端提示需要重新配对）。这时要重新配对，并在设备列表里吊销原来的设备：在吊销之前，这个设备 id 和它的配对关系属于拿着新 token 的人。反过来，设备自己轮换之后，旧 token（宽限内仍能连接）的持有者在 1 分钟内轮换不了，宽限也只有 60 秒，所以泄露的**旧** token 抢不到新 token。轮换不会让已经拿到有效 token 的人立刻失效，它限制的是泄露的 token 还能用多久
 - 吊销 = `revoked_at` 置位，不物理删除，保留审计。连接立即断开，close code `4004 revoked`。吊销的设备不计入配额（§ 7.1）。删账号则是物理删除它名下的全部设备记录（§ 2.6）
 - hub **不存设备的 Noise 公钥**。配对关系只是一条 `(device_a, device_b)` 记录，用于路由判定
 
@@ -346,7 +354,7 @@ device
 | `email_codes` | 规范化的邮箱、用途（`login` / `bind`）、账号（`bind` 时）、码哈希、过期、尝试次数、创建时间。登录码每个邮箱最多同时有 3 个有效的（新码不让旧码作废，别人请求新码顶不掉你手里那个）；绑定码按（账号，邮箱）存，别的账号请求同一个邮箱的绑定码影响不到你；`accounts` 另有 `lower(email)` 的唯一索引兜底 |
 | `oauth_states` | state 的哈希（主键）、provider、用途（`login` / `link` / `invite`）、account_id（`link` 用途）、invite_hash（`invite` 用途）、next_path、PKCE verifier、创建和过期时间。10 分钟有效，回调时原子取走（单次使用），过期的行由每分钟的清理任务删除；随账号级联删除 |
 | `invites` | code 哈希、created_by、note、expires、used_by |
-| `devices` | 见 § 5 |
+| `devices` | 见 § 5（轮换用的 `prev_token_hash`、`prev_token_expires_at_ms`、`token_rotated_at_ms` 三列在迁移 `0004_token_rotation.sql`） |
 | `pairings` | device_a、device_b、created_at；无向，存归一化顺序 |
 | `push_subscriptions` | id、device_id（唯一：一台设备一条）、endpoint、p256dh、auth、created |
 | `notification_prefs` | 见 § 6.3 |
@@ -355,7 +363,7 @@ device
 | `preview_labels` · `preview_tokens` | 预览 label 绑定的节点、预览令牌哈希（§ 13.7） |
 | `kv` | schema 版本等杂项；`single` 的 bootstrap token 哈希（`admin_token_hash`）和 bootstrap 管理员的账号 id（`bootstrap_admin_id`，§ 2.4）（VAPID 密钥在 `${ANYCON_DATA_DIR}/vapid.json`，不在库里，§ 6.1） |
 
-进行中的配对（`match_id`、撮合状态）、进行中的接入会话、限速计数和每日配对次数**只在内存**，不落库。`identities` 和 `oauth_states` 在迁移 `0003_identities.sql` 里；迁移只前进。
+进行中的配对（`match_id`、撮合状态）、进行中的接入会话、限速计数和每日配对次数**只在内存**，不落库。`identities` 和 `oauth_states` 在迁移 `0003_identities.sql` 里，设备 token 轮换的三列在 `0004_token_rotation.sql` 里；迁移只前进。
 
 ### 8.1 存储后端：SQLite 和 Postgres
 
@@ -388,7 +396,7 @@ device
 
 记录账号层面的安全事件，供账号设置页的「安全活动」和管理员页使用：
 
-`login_ok` / `login_fail`（`detail.method`：`token` / `invite` / `email` / `github` / `google`，IP 前缀、UA）· `account_created`（`detail.method`：`email` / `github` / `google` / `invite`，即这个账号是怎么建出来的）· `email_changed`（`bound` / `changed` / `removed`，不记邮箱）· `token_created` / `token_deleted` · `identity_linked` / `identity_unlinked`（`detail.provider`）· `admin_granted` / `admin_revoked`（`account_id` 是目标账号，`detail.by` 是操作者的账号 id）· `device_paired` · `enroll_started`（节点、IP 前缀）/ `device_enrolled`（hub 不知道用的是哪种方法；接入只记它，不再同时记 `device_paired`）· `device_revoked` · `invite_created` / `used` · `account_deleted`（`detail.by`：`self` / `admin`）。passkey 的 `passkey_added` / `removed` 随 passkey 一起做
+`login_ok` / `login_fail`（`detail.method`：`token` / `invite` / `email` / `github` / `google`，IP 前缀、UA）· `account_created`（`detail.method`：`email` / `github` / `google` / `invite`，即这个账号是怎么建出来的）· `email_changed`（`bound` / `changed` / `removed`，不记邮箱）· `token_created` / `token_deleted` · `identity_linked` / `identity_unlinked`（`detail.provider`）· `admin_granted` / `admin_revoked`（`account_id` 是目标账号，`detail.by` 是操作者的账号 id）· `device_paired` · `token_rotated`（设备轮换了自己的 token：`device_id`、IP 前缀，不记 token）· `enroll_started`（节点、IP 前缀）/ `device_enrolled`（hub 不知道用的是哪种方法；接入只记它，不再同时记 `device_paired`）· `device_revoked` · `invite_created` / `used` · `account_deleted`（`detail.by`：`self` / `admin`）。passkey 的 `passkey_added` / `removed` 随 passkey 一起做
 
 删账号（§ 2.6）会把这个账号自己的审计行（包括登录记录）一起删掉，只留一行没有 IP 和 UA 的 `account_deleted`。
 
@@ -399,9 +407,9 @@ device
 | 记录 | 不记录 |
 |---|---|
 | 连接建立 / 断开，设备 id，close code | 任何 `body` 字节，包括 `notify` 的密文部分 |
-| 信封 kind、大小、是否投递 / 丢弃（debug 级） | device token、登录 token、cookie、Authorization |
+| 信封 kind、大小、是否投递 / 丢弃（debug 级） | device token（含轮换前后的新旧 token）、登录 token、cookie、Authorization，以及它们的哈希 |
 | HTTP 路由模板、状态码、耗时（不记实际 URI，所以回调地址里的 `code` / `state`、路径里的邀请码不会进日志） | 邮箱地址（用哈希前 8 位代替）、邀请码 |
-| 限速触发、配额拒绝（只记是哪一项，不记账号 id） | OAuth `code`、`state`、PKCE verifier、access token、client secret，验证码 |
+| 限速触发、配额拒绝（只记是哪一项，不记账号 id）；设备 token 轮换成功、被频率限制忽略的 `rotate_token`（只记设备 id） | OAuth `code`、`state`、PKCE verifier、access token、client secret，验证码 |
 | 推送结果（endpoint 主机名 + 状态码）、邮件发送结果（收件人哈希前 8 位 + SMTP 状态） | 推送 endpoint 的路径、p256dh / auth、VAPID 私钥、SMTP 密码、邮件正文 |
 | OAuth：提供方名、用途（`login` / `link` / `invite`）、失败的类别和提供方返回的状态码；账号删除：谁发起的（`self` / `admin`）和规模（设备数、连接数） | OAuth 提供方给的用户 id（`subject`）和邮箱、提供方的响应内容、被删账号的 id、管理员邮箱（`ANYCON_ADMIN_EMAILS` 只记个数） |
 | | 配对的 `match_id`（短码的函数） |

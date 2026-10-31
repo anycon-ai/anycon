@@ -232,6 +232,40 @@ async fn logs_never_contain_secrets_or_envelope_bodies() {
     assert!(!log.to_lowercase().contains("set-cookie"), "cookie header leaked into the logs");
 }
 
+/// 设备 token 轮换（docs/spec/hub.md § 5）：新旧 token 和它们的哈希都不进日志；被限频忽略的请求有一条不含 token 的 warn。
+#[tokio::test]
+async fn token_rotation_never_logs_tokens_or_their_hashes() {
+    let capture = capture();
+    let hub = TestHub::start().await;
+    let dev = hub.seed_device(DeviceKind::Cli, "rotating-cli").await;
+    let mut conn = FakeDevice::connect(&hub, Some(&dev.token), DeviceKind::Cli, "rotating-cli").await;
+    conn.send_control(&Control::RotateToken {}).await;
+    let new_token = match conn.recv_control().await {
+        Control::TokenRotated { device_token } => device_token,
+        other => panic!("{other:?}"),
+    };
+    // 限频忽略的请求：warn 一次、不回复
+    conn.send_control(&Control::RotateToken {}).await;
+    conn.expect_silence(std::time::Duration::from_millis(300)).await;
+    // 用旧 token 和新 token 各认证一次
+    for token in [&dev.token, &new_token] {
+        let mut d = FakeDevice::connect(&hub, Some(token), DeviceKind::Cli, "rotating-cli").await;
+        d.expect_silence(std::time::Duration::from_millis(50)).await;
+    }
+
+    let log = String::from_utf8_lossy(&capture.0.lock().unwrap()).to_string();
+    assert!(log.contains("device token rotated"), "sanity: the rotation is logged\n{log}");
+    assert!(log.contains("rotated its token too recently"), "the ignored request is logged as a warning\n{log}");
+    for (what, secret) in [
+        ("previous token", dev.token.clone()),
+        ("new token", new_token.clone()),
+        ("hash of the previous token", anycon_hub::util::hash_token(&dev.token)),
+        ("hash of the new token", anycon_hub::util::hash_token(&new_token)),
+    ] {
+        assert!(!log.contains(&secret), "{what} leaked into the logs");
+    }
+}
+
 fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();

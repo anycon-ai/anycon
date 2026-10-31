@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { EXPLAINED_ERROR_CODES } from '@/features/session/errors'
-import type { AgentStatus, DiffFileStatus, EnrollMethod, ErrorCode, EnrollResult, GitAction, LinkBlock, NotifyCategory, PullRequestState, SecurityEventKind, SessionStatus, SyncOutcome, TurnDoneReason, WorktreeState } from '@/protocol'
+import type { AgentStatus, DiffFileStatus, EnrollMethod, ErrorCode, EnrollResult, GitAction, LinkBlock, NodeLogLevel, NotifyCategory, PullRequestState, SecurityEventKind, SessionStatus, SyncOutcome, TurnDoneReason, WorktreeState } from '@/protocol'
 import type { PushErrorCode } from '@/features/push/actions'
 import { NOTICE_EXTRA_KEYS, NOTICE_TEXT_KEYS } from '@/features/session/notice'
 import type { SubagentActivity } from '@/features/session/subagents'
@@ -114,7 +114,21 @@ describe('i18n', () => {
     // 预览（ADR-39）：本地条件、hub 令牌接口的错误码、daemon 的 `forbidden` 原因都是拼 key 用的
     const previewLocal: Record<PreviewLocalCode, true> = { no_device_token: true, no_node_key: true, bad_template: true, bad_label: true }
     const auditActions = ['requested', 'approved', 'denied', 'code', 'completed', 'failed', 'password_set', 'password_cleared', 'password_locked', 'settings']
+    // 节点设置「限制」（ADR-43）：daemon 白名单里的每个键都要有文案（白名单是 crates/daemon/src/remote_config.rs 的 `SPECS`）。
+    // daemon 加了键而这里没跟上，页面会退回显示键名，所以让测试在这里红
+    const remoteConfig = readFileSync(resolve(srcDir, '../../crates/daemon/src/remote_config.rs'), 'utf8').split('#[cfg(test)]')[0]!
+    const limitKeys = [...remoteConfig.matchAll(/key: "([a-z_]+\.[a-z_]+)"/g)].map((m) => m[1]!)
+    const limitEnums: Record<string, string[]> = {
+      'worktree.default': ['worktree', 'local'],
+      'notify.turn_finished': ['always', 'when_unwatched', 'never'],
+      'log.level': ['error', 'warn', 'info', 'debug', 'trace'],
+    }
+    const logLevels: Record<NodeLogLevel, true> = { trace: true, debug: true, info: true, warn: true, error: true }
     const want: string[] = [
+      ...limitKeys.map((k) => `nodeSettings.limits.keys.${k}.label`),
+      ...new Set(limitKeys.map((k) => `nodeSettings.limits.sections.${k.split('.')[0]}`)),
+      ...Object.entries(limitEnums).flatMap(([k, vs]) => vs.map((v) => `nodeSettings.limits.options.${k}.${v}`)),
+      ...Object.keys(logLevels).map((l) => `nodeSettings.logs.levels.${l}`),
       ...unlockErrorKeys(),
       ...unlockEntries.flatMap((k) => [`unlock.entries.${k}.title`, `unlock.entries.${k}.hint`]),
       ...unlockSteps.map((k) => `unlock.steps.${k}`),
@@ -179,6 +193,7 @@ describe('i18n', () => {
       'pair.steps.connecting', 'pair.steps.deriving', 'pair.steps.matching', 'pair.steps.handshaking', 'pair.steps.confirming', 'pair.steps.verifying',
       'permission.allowedBy', 'permission.deniedBy', 'system.thinking', 'system.current',
     ]
+    expect(limitKeys.length).toBeGreaterThanOrEqual(12)
     expect(want.filter((k) => !enKeys.has(k) || !zhKeys.has(k))).toEqual([])
   })
 })

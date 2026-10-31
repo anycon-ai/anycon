@@ -740,11 +740,140 @@
     "restore": "Restore",
     "purge": "Delete permanently",
     "emptyTrash": "Empty trash",
-    "limitsBody": "Limits are read-only for now. Change them in the node's config.toml:",
-    "limitConcurrent": "Maximum concurrent running sessions",
-    "limitIdle": "Idle timeout before the agent process exits",
-    "limitDangerous": "Whether dangerous permission modes are allowed",
-    "limitsLater": "Editing limits from the web comes in a later version.",
+    "limits": {
+      "hint": "Settings you can change from here. They take effect right away; the node does not restart. Everything else, such as agent commands, folders and the hub address, can only be changed on the machine itself.",
+      "offline": "The node is offline. Its settings cannot be read or changed until it is back.",
+      "saved": "Settings saved",
+      "notSaved": "Nothing was saved. Fix the marked setting and try again.",
+      "discard": "Discard changes",
+      "envOverride": "Set by the environment variable {{name}}, which overrides config.toml. Change it where the node is started.",
+      "tightenOnly": "From here this can only be turned off. To turn it on again, run `{{command}}` on the node.",
+      "rangeInt": "{{min}} to {{max}}",
+      "rangeDuration": "{{min}} to {{max}}, written like 30s, 20m or 2h",
+      "sections": {
+        "sessions": "Sessions",
+        "permissions": "Permissions",
+        "worktree": "Worktrees",
+        "preview": "Preview",
+        "notify": "Notifications",
+        "log": "Logging"
+      },
+      "keys": {
+        "sessions": {
+          "max_concurrent": {
+            "label": "Concurrent sessions",
+            "hint": "How many sessions can run a turn at the same time. The others wait in a queue."
+          },
+          "idle_timeout": {
+            "label": "Idle timeout",
+            "hint": "How long an idle agent process stays alive before it exits. The session can still be continued. 0 keeps it running."
+          }
+        },
+        "permissions": {
+          "allow_dangerous_modes": {
+            "label": "Allow dangerous permission modes",
+            "hint": "Modes such as bypass permissions or full access, where the agent acts without asking."
+          },
+          "request_timeout": {
+            "label": "Approval timeout",
+            "hint": "A permission request nobody answers is denied after this long. 0 means never."
+          }
+        },
+        "worktree": {
+          "default": {
+            "label": "Where new sessions start",
+            "hint": "In git projects: in a worktree of their own, or directly in the project folder. This only sets the initial choice."
+          },
+          "branch_prefix": {
+            "label": "Branch prefix",
+            "hint": "New worktree branches are named prefix/name. Letters, digits, . _ and -, up to 40 characters; leave empty for no prefix."
+          },
+          "auto_archive_on_pr_close": {
+            "label": "Archive when the pull request closes",
+            "hint": "Archive a session when the pull request of its branch is merged or closed. Needs gh installed and signed in on the node."
+          }
+        },
+        "preview": {
+          "enabled": {
+            "label": "Dev server preview",
+            "hint": "Lets your devices open the web apps running on that machine. Turning it off closes every open preview."
+          },
+          "ticket_ttl": {
+            "label": "Preview link lifetime",
+            "hint": "How long a preview link stays valid."
+          }
+        },
+        "notify": {
+          "turn_finished": {
+            "label": "Notify when a turn finishes"
+          },
+          "session_idle_after": {
+            "label": "Remind about unread results after",
+            "hint": "A session that stays idle this long without anyone looking at it triggers a reminder."
+          }
+        },
+        "log": {
+          "level": {
+            "label": "Log level",
+            "hint": "How much the node writes to its log. You can read the log under About, View logs."
+          }
+        }
+      },
+      "options": {
+        "worktree": {
+          "default": {
+            "worktree": "A worktree of its own",
+            "local": "The project folder"
+          }
+        },
+        "notify": {
+          "turn_finished": {
+            "always": "Always",
+            "when_unwatched": "Only when nobody is watching",
+            "never": "Never"
+          }
+        },
+        "log": {
+          "level": {
+            "error": "Error",
+            "warn": "Warning",
+            "info": "Info",
+            "debug": "Debug",
+            "trace": "Trace"
+          }
+        }
+      },
+      "errors": {
+        "format": "This value is not valid.",
+        "notInt": "Enter a whole number.",
+        "rangeInt": "Enter a whole number from {{min}} to {{max}}.",
+        "rangeDuration": "Enter a duration between {{min}} and {{max}}, like 20m.",
+        "rangeText": "Use at most {{max}} characters.",
+        "envOverride": "Set by the environment variable {{name}}; it cannot be changed from here.",
+        "tightenOnly": "From here this can only be turned off. Run `{{command}}` on the node to turn it on.",
+        "notEditable": "This setting cannot be changed from here."
+      }
+    },
+    "logs": {
+      "open": "View logs",
+      "title": "Node logs",
+      "hint": "The end of the node's log file. Lines that could contain conversation text are left out.",
+      "level": "Level",
+      "lines": "Lines",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "empty": "No log lines at this level.",
+      "count_one": "Showing {{count}} line.",
+      "count_other": "Showing the latest {{count}} lines.",
+      "truncated": "Older lines are not shown.",
+      "levels": {
+        "trace": "Everything (trace)",
+        "debug": "Debug and above",
+        "info": "Info and above",
+        "warn": "Warnings and above",
+        "error": "Errors only"
+      }
+    },
     "aboutName": "Name",
     "aboutVersion": "Daemon version",
     "aboutProtocol": "Protocol version",

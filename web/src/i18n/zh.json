@@ -730,11 +730,140 @@
     "restore": "恢复",
     "purge": "永久删除",
     "emptyTrash": "清空回收站",
-    "limitsBody": "限制目前是只读的，请在节点的 config.toml 里修改：",
-    "limitConcurrent": "同时运行的会话数上限",
-    "limitIdle": "空闲多久后 agent 进程退出",
-    "limitDangerous": "是否允许危险权限模式",
-    "limitsLater": "从网页修改限制会在之后的版本提供。",
+    "limits": {
+      "hint": "这里可以修改的设置，保存后立即生效，节点不用重启。其余的设置（agent 命令、目录、hub 地址等）只能在那台机器上修改。",
+      "offline": "节点离线，上线之前读不到也改不了它的设置。",
+      "saved": "设置已保存",
+      "notSaved": "没有保存任何内容。请改正标出的设置后重试。",
+      "discard": "放弃修改",
+      "envOverride": "由环境变量 {{name}} 设置，它会盖过 config.toml。请到启动节点的地方修改。",
+      "tightenOnly": "在这里只能关闭。要再打开，请在节点上运行 `{{command}}`。",
+      "rangeInt": "{{min}} 到 {{max}}",
+      "rangeDuration": "{{min}} 到 {{max}}，写法如 30s、20m、2h",
+      "sections": {
+        "sessions": "会话",
+        "permissions": "权限",
+        "worktree": "Worktree",
+        "preview": "预览",
+        "notify": "通知",
+        "log": "日志"
+      },
+      "keys": {
+        "sessions": {
+          "max_concurrent": {
+            "label": "同时运行的会话数",
+            "hint": "最多有多少个会话可以同时跑 turn，其余的排队等待。"
+          },
+          "idle_timeout": {
+            "label": "空闲超时",
+            "hint": "空闲的 agent 进程保留多久后退出，会话之后仍可继续。0 表示一直保留。"
+          }
+        },
+        "permissions": {
+          "allow_dangerous_modes": {
+            "label": "允许危险权限模式",
+            "hint": "比如绕过权限、完全访问这类 agent 不经询问就动手的模式。"
+          },
+          "request_timeout": {
+            "label": "审批超时",
+            "hint": "权限请求超过这个时间没人答复就自动拒绝。0 表示不超时。"
+          }
+        },
+        "worktree": {
+          "default": {
+            "label": "新会话的工作位置",
+            "hint": "在 git 项目里：在会话自己的 worktree 里，还是直接在项目目录里。这只决定初始选择。"
+          },
+          "branch_prefix": {
+            "label": "分支前缀",
+            "hint": "新 worktree 的分支名是 前缀/名字。只能用字母、数字、. _ -，最多 40 个字符；留空表示不加前缀。"
+          },
+          "auto_archive_on_pr_close": {
+            "label": "PR 关闭后自动归档",
+            "hint": "分支的 pull request 合并或关闭后自动归档会话。节点上要装好并登录 gh。"
+          }
+        },
+        "preview": {
+          "enabled": {
+            "label": "开发服务器预览",
+            "hint": "让你的设备打开那台机器上运行的网页应用。关闭会同时关掉所有打开的预览。"
+          },
+          "ticket_ttl": {
+            "label": "预览链接有效期",
+            "hint": "预览链接多久之后失效。"
+          }
+        },
+        "notify": {
+          "turn_finished": {
+            "label": "turn 结束时通知"
+          },
+          "session_idle_after": {
+            "label": "未读结果的提醒时间",
+            "hint": "会话空闲这么久还没人看，就提醒一次。"
+          }
+        },
+        "log": {
+          "level": {
+            "label": "日志级别",
+            "hint": "节点往日志里写多少内容。日志可以在「关于」里的「查看日志」读到。"
+          }
+        }
+      },
+      "options": {
+        "worktree": {
+          "default": {
+            "worktree": "会话自己的 worktree",
+            "local": "项目目录"
+          }
+        },
+        "notify": {
+          "turn_finished": {
+            "always": "总是通知",
+            "when_unwatched": "没人在看时才通知",
+            "never": "从不通知"
+          }
+        },
+        "log": {
+          "level": {
+            "error": "错误",
+            "warn": "警告",
+            "info": "信息",
+            "debug": "调试",
+            "trace": "跟踪"
+          }
+        }
+      },
+      "errors": {
+        "format": "这个值不合法。",
+        "notInt": "请输入整数。",
+        "rangeInt": "请输入 {{min}} 到 {{max}} 之间的整数。",
+        "rangeDuration": "请输入 {{min}} 到 {{max}} 之间的时长，如 20m。",
+        "rangeText": "最多 {{max}} 个字符。",
+        "envOverride": "由环境变量 {{name}} 设置，不能在这里修改。",
+        "tightenOnly": "在这里只能关闭。要打开，请在节点上运行 `{{command}}`。",
+        "notEditable": "这个设置不能在这里修改。"
+      }
+    },
+    "logs": {
+      "open": "查看日志",
+      "title": "节点日志",
+      "hint": "节点日志文件的末尾。可能带有会话文字的行已经去掉了。",
+      "level": "级别",
+      "lines": "行数",
+      "refresh": "刷新",
+      "loading": "加载中…",
+      "empty": "这个级别下没有日志。",
+      "count_one": "显示 {{count}} 行。",
+      "count_other": "显示最近 {{count}} 行。",
+      "truncated": "更早的行没有显示。",
+      "levels": {
+        "trace": "全部（trace）",
+        "debug": "debug 及以上",
+        "info": "info 及以上",
+        "warn": "警告及以上",
+        "error": "只看错误"
+      }
+    },
     "aboutName": "名称",
     "aboutVersion": "daemon 版本",
     "aboutProtocol": "协议版本",

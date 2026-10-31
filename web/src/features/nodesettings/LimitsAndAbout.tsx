@@ -12,27 +12,13 @@ import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Card } from '@/ui/Misc'
 import { Dialog } from '@/ui/Overlay'
-
-export function LimitsTab() {
-  const { t } = useTranslation()
-  return (
-    <Card className="space-y-3 p-4">
-      <p className="text-sm">{t('nodeSettings.limitsBody')}</p>
-      <ul className="list-inside list-disc space-y-1 text-sm text-fg-muted">
-        <li>{t('nodeSettings.limitConcurrent')}</li>
-        <li>{t('nodeSettings.limitIdle')}</li>
-        <li>{t('nodeSettings.limitDangerous')}</li>
-      </ul>
-      <code className="block rounded-md bg-bg-muted px-3 py-2 font-mono text-xs">anycon config path</code>
-      <p className="text-xs text-fg-subtle">{t('nodeSettings.limitsLater')}</p>
-    </Card>
-  )
-}
+import { LogsDialog } from './LogsDialog'
 
 export function AboutTab({ nodeId }: { nodeId: string }) {
   const { t, i18n } = useTranslation()
   const entry = useNodes((s) => s.byId[nodeId])
   const [stats, setStats] = useState<NodeStats | null>(null)
+  const [logsOpen, setLogsOpen] = useState(false)
   useEffect(() => {
     if (entry?.conn !== 'ready') return
     let cancelled = false
@@ -64,12 +50,16 @@ export function AboutTab({ nodeId }: { nodeId: string }) {
             <AboutRow label={t('nodeSettings.aboutDisk')}>{formatBytes(stats.disk_free_bytes)}</AboutRow>
           </>
         ) : null}
-        <div className="px-4 py-3">
+        <div className="flex flex-wrap gap-2 px-4 py-3">
           <Button variant="outline" size="sm" disabled title={t('nodeSettings.updatesLater')}>
             {t('nodeSettings.checkUpdates')}
           </Button>
+          <Button variant="outline" size="sm" disabled={entry.conn !== 'ready'} onClick={() => setLogsOpen(true)} data-testid="logs-open">
+            {t('nodeSettings.logs.open')}
+          </Button>
         </div>
       </Card>
+      {logsOpen ? <LogsDialog nodeId={nodeId} open={logsOpen} onOpenChange={setLogsOpen} /> : null}
       <RemoveNodeCard nodeId={nodeId} name={entry.name} />
     </div>
   )

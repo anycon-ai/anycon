@@ -152,7 +152,7 @@ pub async fn export(app: &App, a: ExportArgs) -> Result<u8> {
         project: a.project,
         since_ms,
         sessions,
-        include_archived: a.all,
+        exclude_archived: a.exclude_archived,
         overwrite: a.force,
     };
     let r: ExportResult = call_long(app, &mut conn, local_methods::EXPORT, params, "exporting").await?;
@@ -161,12 +161,6 @@ pub async fn export(app: &App, a: ExportArgs) -> Result<u8> {
         return Ok(0);
     }
     println!("{}", render_export(&r));
-    if r.skipped_archived > 0 {
-        eprintln!(
-            "note: {} left out; add --all to include archived sessions",
-            plural(r.skipped_archived, "archived session")
-        );
-    }
     for w in &r.warnings {
         eprintln!("warning: {}", visible(w));
     }

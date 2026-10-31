@@ -143,7 +143,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 
 ## 4. 数据目录
 
-见 [cli.md § 2](cli.md#2-目录与配置)。会话历史是**唯一副本**，备份有两种：整份数据目录——停掉 daemon 复制它，或者在线 `sqlite3 daemon.db ".backup …"` 再加上 `blobs/`（连节点密钥、配对设备、配置一起带走，只能原样恢复到同一个 `ANYCON_HOME`）；或者只带会话历史——`anycon export --all` 导出成一个 zip，`anycon import` 在这台或别的机器上导入（[§ 20](#20-导出文件格式anycon-export--import)；不含密钥、配对设备、配置和审计，所以搬到新机器是一个新节点，要重新配对）。
+见 [cli.md § 2](cli.md#2-目录与配置)。会话历史是**唯一副本**，备份有两种：整份数据目录——停掉 daemon 复制它，或者在线 `sqlite3 daemon.db ".backup …"` 再加上 `blobs/`（连节点密钥、配对设备、配置一起带走，只能原样恢复到同一个 `ANYCON_HOME`）；或者只带会话历史——`anycon export` 导出成一个 zip，`anycon import` 在这台或别的机器上导入（[§ 20](#20-导出文件格式anycon-export--import)；不含密钥、配对设备、配置和审计，所以搬到新机器是一个新节点，要重新配对）。
 
 ## 5. Agent 探测与能力声明
 
@@ -1020,11 +1020,11 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
   "anycon_version": "0.2.0",
   "node_name": "mac-mini",
   "session_count": 3,
-  "filters": { "project": null, "since_ms": null, "sessions": null, "include_archived": true }
+  "filters": { "project": null, "since_ms": null, "sessions": null, "exclude_archived": false }
 }
 ```
 
-`format` 固定 `anycon-export`；`version` 是格式版本（整数）；`session_count` 是压缩包里 `sessions/` 下的会话目录数，导入时核对；`anycon_version`、`node_name` 只是信息；`filters` 记这个压缩包是怎么筛出来的（`project`、`since_ms`、点名的 `sessions`、`include_archived`），不参与校验。
+`format` 固定 `anycon-export`；`version` 是格式版本（整数）；`session_count` 是压缩包里 `sessions/` 下的会话目录数，导入时核对；`anycon_version`、`node_name` 只是信息；`filters` 记这个压缩包是怎么筛出来的（`project`、`since_ms`、点名的 `sessions`、`exclude_archived`——是否排除了已归档的会话，缺省 false），不参与校验。
 
 **`sessions/<id>/session.json`**——会话行里值得带走的列、worktree 记录和附件记录（时间一律 Unix 毫秒）：
 

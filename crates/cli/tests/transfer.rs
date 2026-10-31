@@ -69,32 +69,34 @@ async fn sessions_move_between_two_daemons_through_the_binary() {
             && default_name.len() == "anycon-export-alpha-box-2026-10-31.zip".len(),
         "{default_name}"
     );
-    assert!(r.stdout.starts_with("exported 1 session (") && r.stdout.contains(&default_name), "{}", r.stdout);
-    assert!(r.stderr.contains("1 archived session left out; add --all"), "{}", r.stderr);
+    assert!(r.stdout.starts_with("exported 2 sessions (") && r.stdout.contains(&default_name), "{}", r.stdout);
+    assert!(r.stderr.is_empty(), "no hint, nothing was left out: {}", r.stderr);
     // 同一个名字再导出：拒绝覆盖；--force 才行
     let r = anycon_in(&a, Some(&cwd), &["export"], None, &[]).await;
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(r.stderr.contains("error: exists:") && r.stderr.contains("already exists"), "{}", r.stderr);
-    let r = anycon_in(&a, Some(&cwd), &["export", "--force", "--all"], None, &[]).await;
+    let r = anycon_in(&a, Some(&cwd), &["export", "--force", "--exclude-archived", "--json"], None, &[]).await;
     assert_eq!(r.code, 0, "{}", r.stderr);
-    assert!(r.stdout.starts_with("exported 2 sessions ("), "{}", r.stdout);
-    assert!(!r.stderr.contains("left out"), "{}", r.stderr);
+    let j = r.json();
+    assert_eq!((j["sessions"].clone(), j["skipped_archived"].clone()), (serde_json::json!(1), serde_json::json!(1)));
+    assert_eq!(a!("export", "--all").await.code, 2, "the old --all switch is gone");
     // --out 给目录：默认文件名放进去；相对路径按当前目录解析
     let sub = cwd.join("backups");
     std::fs::create_dir_all(&sub).unwrap();
     let r = anycon_in(&a, Some(&cwd), &["export", "--out", "backups", "--json"], None, &[]).await;
     assert_eq!(r.code, 0, "{}", r.stderr);
     let j = r.json();
-    assert_eq!(j["sessions"], 1);
+    assert_eq!(j["sessions"], 2);
     assert!(j["path"].as_str().unwrap().starts_with(sub.canonicalize().unwrap().to_str().unwrap()), "{j}");
     assert_eq!(std::fs::read_dir(&sub).unwrap().count(), 1);
 
     // 筛选
     let zip = d.path().join("demo.zip");
     let zip_s = zip.to_str().unwrap();
-    let r = a!("export", "--out", zip_s, "--project", "demo", "--all", "--json").await;
+    let r = a!("export", "--out", zip_s, "--project", "demo", "--json").await;
     assert_eq!((r.code, r.json()["sessions"].clone()), (0, serde_json::json!(1)), "{}", r.stderr);
-    let r = a!("export", "--out", zip_s, "--force", "--session", &scratch_id[..12], "--json").await;
+    let r =
+        a!("export", "--out", zip_s, "--force", "--exclude-archived", "--session", &scratch_id[..12], "--json").await;
     assert_eq!(
         (r.code, r.json()["sessions"].clone()),
         (0, serde_json::json!(1)),
@@ -103,9 +105,9 @@ async fn sessions_move_between_two_daemons_through_the_binary() {
     );
     let r = a!("export", "--out", zip_s, "--force", "--session", "last", "--json").await;
     assert_eq!(r.code, 0, "{}", r.stderr);
-    let r = a!("export", "--out", zip_s, "--force", "--all", "--since", "1d", "--json").await;
+    let r = a!("export", "--out", zip_s, "--force", "--since", "1d", "--json").await;
     assert_eq!(r.json()["sessions"], 2);
-    let r = a!("export", "--out", zip_s, "--force", "--all", "--since", "2099-01-01", "--json").await;
+    let r = a!("export", "--out", zip_s, "--force", "--since", "2099-01-01", "--json").await;
     assert_eq!(r.json()["sessions"], 0);
     assert_eq!(a!("export", "--since", "yesterday").await.code, 2);
     assert_eq!(a!("export", "--session", "sess_nosuchsession").await.code, 1);
@@ -114,7 +116,7 @@ async fn sessions_move_between_two_daemons_through_the_binary() {
     // 完整导出，导入到另一台 daemon
     let full = d.path().join("full.zip");
     let full_s = full.to_str().unwrap();
-    assert_eq!(a!("export", "--out", full_s, "--all").await.code, 0);
+    assert_eq!(a!("export", "--out", full_s).await.code, 0);
     let (b, daemon_b) = node(d.path(), "beta box", "b").await;
     macro_rules! b {
         ($($x:expr),* $(,)?) => { anycon(&b, &[$($x),*], None, &[]) };
@@ -219,7 +221,7 @@ async fn export_and_import_say_what_is_wrong_when_the_daemon_is_not_running() {
     assert!(r.stderr.contains("error: not_initialized:"), "{}", r.stderr);
     init(&home, &d.path().join("ws"), "box", None).await;
     // 已初始化但 daemon 没跑：3，并且说明为什么要它
-    for args in [&["export"][..], &["export", "--all", "--out", "x.zip"], &["import", "x.zip"]] {
+    for args in [&["export"][..], &["export", "--exclude-archived", "--out", "x.zip"], &["import", "x.zip"]] {
         if args[0] == "import" {
             std::fs::write(d.path().join("x.zip"), b"x").unwrap();
         }

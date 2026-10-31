@@ -518,13 +518,14 @@ pub struct ExportArgs {
     /// midnight), a UTC time (`2026-10-01T12:30:00Z`) or Unix milliseconds
     #[arg(long, value_name = "DATE|DURATION")]
     pub since: Option<String>,
-    /// Only this session (id, id prefix or `last`); repeat for several. Named sessions are exported even when archived
+    /// Only this session (id, id prefix or `last`); repeat for several. A named session is exported even with
+    /// --exclude-archived
     #[arg(long = "session", value_name = "SESSION")]
     pub sessions: Vec<String>,
-    /// Include archived sessions (like `anycon ls --all`). Without it they are left out, and the number left out is
-    /// reported; use it for a full backup
+    /// Leave archived sessions out. By default everything is exported, archived sessions included, so that a plain
+    /// `anycon export` is a full backup
     #[arg(long)]
-    pub all: bool,
+    pub exclude_archived: bool,
     /// Replace the output file if it already exists
     #[arg(long)]
     pub force: bool,
@@ -672,7 +673,7 @@ mod tests {
     fn export_and_import_take_their_options() {
         let Command::Export(a) = parse(&["export"]).unwrap().command else { panic!() };
         assert!(a.out.is_none() && a.project.is_none() && a.since.is_none() && a.sessions.is_empty());
-        assert!(!a.all && !a.force);
+        assert!(!a.exclude_archived && !a.force);
         let Command::Export(a) = parse(&[
             "export",
             "--out",
@@ -685,7 +686,7 @@ mod tests {
             "last",
             "--session",
             "sess_x",
-            "--all",
+            "--exclude-archived",
             "--force",
         ])
         .unwrap()
@@ -696,7 +697,9 @@ mod tests {
         assert_eq!(a.out.as_deref(), Some(std::path::Path::new("b.zip")));
         assert_eq!((a.project.as_deref(), a.since.as_deref()), (Some("p"), Some("7d")));
         assert_eq!(a.sessions, vec!["last".to_string(), "sess_x".to_string()]);
-        assert!(a.all && a.force);
+        assert!(a.exclude_archived && a.force);
+        // 旧名字 --all 没有了：导出缺省就是全部
+        assert!(parse(&["export", "--all"]).is_err());
         let Command::Import(a) = parse(&["import", "b.zip", "--dry-run"]).unwrap().command else { panic!() };
         assert!(a.dry_run);
         assert_eq!(a.file, std::path::PathBuf::from("b.zip"));

@@ -135,9 +135,9 @@ pub struct ExportFilters {
     /// 点名的会话 id。
     #[serde(default)]
     pub sessions: Option<Vec<String>>,
-    /// 是否包含已归档的会话。
+    /// 是否排除了已归档的会话（缺省不排除：导出是备份手段，默认带上全部）。
     #[serde(default)]
-    pub include_archived: bool,
+    pub exclude_archived: bool,
 }
 
 /// `sessions/<id>/session.json`：会话行里值得带走的列、worktree 记录和附件记录。
@@ -289,11 +289,12 @@ pub struct ExportParams {
     /// 只要最后活动时间不早于它的会话。
     #[serde(default)]
     pub since_ms: Option<u64>,
-    /// 点名的会话（完整 id）。点名的会话不受「已归档」的限制，其它条件照样要满足。
+    /// 点名的会话（完整 id）。点名的会话不受 `exclude_archived` 的限制，其它条件照样要满足。
     #[serde(default)]
     pub sessions: Vec<String>,
+    /// 不要已归档的会话（缺省带上）。
     #[serde(default)]
-    pub include_archived: bool,
+    pub exclude_archived: bool,
     /// 输出文件已经存在时覆盖它；缺省拒绝（`exists`）。
     #[serde(default)]
     pub overwrite: bool,
@@ -307,7 +308,7 @@ pub struct ExportResult {
     pub sessions: u64,
     pub events: u64,
     pub blobs: u64,
-    /// 因为已归档而没有导出的会话数（没给 `include_archived` 时）。
+    /// 因为 `exclude_archived` 而没有导出的已归档会话数（没给 `exclude_archived` 时为 0）。
     pub skipped_archived: u64,
     /// 没能完整导出的东西（附件文件丢了 / 对不上、会话在导出过程中被删了）。
     #[serde(default)]

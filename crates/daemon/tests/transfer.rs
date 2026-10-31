@@ -207,7 +207,7 @@ impl Fixture {
         let out = a.dir.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
         let zip = out.join("backup.zip");
-        let r = export(&a, &mut c, json!({ "out": zip, "include_archived": true })).await.unwrap();
+        let r = export(&a, &mut c, json!({ "out": zip })).await.unwrap();
         assert_eq!((r.sessions, r.blobs), (2, 1), "{r:?}");
         Fixture { a, s1, s2, blob, png, zip }
     }
@@ -290,7 +290,7 @@ async fn export_then_import_round_trips_events_attachments_search_and_archive_st
     assert_eq!(manifest["session_count"], 2);
     assert_eq!(manifest["node_name"], "test-node");
     assert_eq!(manifest["anycon_version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["filters"]["include_archived"], true);
+    assert_eq!(manifest["filters"]["exclude_archived"], false);
     assert!(manifest["exported_at_ms"].as_u64().unwrap() > 1_700_000_000_000);
     let sj = fx.session_json(&fx.s1);
     assert_eq!(sj["project"], "proj");
@@ -530,43 +530,49 @@ async fn filters_pick_sessions_by_project_last_activity_id_and_archive_state() {
         v.into_iter().cloned().collect()
     };
 
-    // 缺省：不含已归档的，但告诉你漏了几个
+    // 缺省：全部都带上，已归档的也在（导出是备份）
     let (p, f) = run(json!({}));
-    let r = export(&a, &mut c, p).await.unwrap();
-    assert_eq!((r.sessions, r.skipped_archived), (3, 1));
-    assert_eq!(ids(&f), sorted(vec![&p1, &p2, &scratch]));
-    // --all
-    let (p, f) = run(json!({ "include_archived": true }));
     let r = export(&a, &mut c, p).await.unwrap();
     assert_eq!((r.sessions, r.skipped_archived), (4, 0));
     assert_eq!(ids(&f), sorted(vec![&p1, &p1_archived, &p2, &scratch]));
+    // exclude_archived：不含已归档的，数一数漏了几个
+    let (p, f) = run(json!({ "exclude_archived": true }));
+    let r = export(&a, &mut c, p).await.unwrap();
+    assert_eq!((r.sessions, r.skipped_archived), (3, 1));
+    assert_eq!(ids(&f), sorted(vec![&p1, &p2, &scratch]));
+    let manifest: Value = serde_json::from_slice(&read_zip(&f)["manifest.json"]).unwrap();
+    assert_eq!(manifest["filters"]["exclude_archived"], true);
     // 项目
     let (p, f) = run(json!({ "project": "p1" }));
     let r = export(&a, &mut c, p).await.unwrap();
-    assert_eq!((r.sessions, r.skipped_archived), (1, 1));
-    assert_eq!(ids(&f), vec![p1.clone()]);
-    let (p, f) = run(json!({ "project": "p1", "include_archived": true }));
-    export(&a, &mut c, p).await.unwrap();
+    assert_eq!((r.sessions, r.skipped_archived), (2, 0));
     assert_eq!(ids(&f), sorted(vec![&p1, &p1_archived]));
     let manifest: Value = serde_json::from_slice(&read_zip(&f)["manifest.json"]).unwrap();
     assert_eq!(manifest["filters"]["project"], "p1");
+    let (p, f) = run(json!({ "project": "p1", "exclude_archived": true }));
+    let r = export(&a, &mut c, p).await.unwrap();
+    assert_eq!((r.sessions, r.skipped_archived), (1, 1));
+    assert_eq!(ids(&f), vec![p1.clone()]);
     let (p, f) = run(json!({ "project": "nope" }));
     let r = export(&a, &mut c, p).await.unwrap();
     assert_eq!(r.sessions, 0, "an empty selection is a valid, empty export");
     assert!(ids(&f).is_empty());
     // 最后活动时间
     let since = util::parse_utc("2026-01-01").unwrap();
-    let (p, f) = run(json!({ "since_ms": since, "include_archived": true }));
+    let (p, f) = run(json!({ "since_ms": since }));
     export(&a, &mut c, p).await.unwrap();
     assert_eq!(ids(&f), sorted(vec![&p1, &p1_archived, &scratch]), "p2 was last active in 2020");
-    let (p, f) = run(json!({ "since_ms": old, "include_archived": true }));
+    let (p, f) = run(json!({ "since_ms": since, "exclude_archived": true }));
+    export(&a, &mut c, p).await.unwrap();
+    assert_eq!(ids(&f), sorted(vec![&p1, &scratch]));
+    let (p, f) = run(json!({ "since_ms": old }));
     export(&a, &mut c, p).await.unwrap();
     assert_eq!(ids(&f).len(), 4);
-    let (p, f) = run(json!({ "since_ms": util::now_ms() + 3_600_000, "include_archived": true }));
+    let (p, f) = run(json!({ "since_ms": util::now_ms() + 3_600_000 }));
     assert_eq!(export(&a, &mut c, p).await.unwrap().sessions, 0);
     assert!(ids(&f).is_empty());
-    // 点名：不受归档限制；多个；条件取交集
-    let (p, f) = run(json!({ "sessions": [p1_archived] }));
+    // 点名：不受 exclude_archived 限制；多个；条件取交集
+    let (p, f) = run(json!({ "sessions": [p1_archived], "exclude_archived": true }));
     let r = export(&a, &mut c, p).await.unwrap();
     assert_eq!((r.sessions, r.skipped_archived), (1, 0));
     assert_eq!(ids(&f), vec![p1_archived.clone()]);
@@ -709,7 +715,7 @@ async fn progress_goes_only_to_the_connection_that_asked() {
     let mut ca = fx.a.client("asker");
     let mut other = fx.a.client("other");
     let out = fx.a.dir.path().join("out").join("p.zip");
-    export(&fx.a, &mut ca, json!({ "out": out, "include_archived": true })).await.unwrap();
+    export(&fx.a, &mut ca, json!({ "out": out })).await.unwrap();
     let notes = ca.drain_now();
     let progress: Vec<Progress> = notes
         .iter()
@@ -1246,7 +1252,7 @@ async fn worktree_sessions_come_back_with_unusable_directories_and_only_the_meta
     }
     let mut c = a.client("a");
     let zip = a.dir.path().join("wt.zip");
-    export(&a, &mut c, json!({ "out": zip, "include_archived": true })).await.unwrap();
+    export(&a, &mut c, json!({ "out": zip })).await.unwrap();
     // 只有元数据：没有设备号 / inode、没有 .git 指针、没有项目位置
     let e = read_zip(&zip);
     let live_json: Value = serde_json::from_slice(&e[&format!("sessions/{live}/session.json")]).unwrap();

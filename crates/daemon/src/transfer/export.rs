@@ -108,7 +108,7 @@ pub async fn export(ctx: &Arc<Ctx>, client: &Arc<ClientHandle>, p: ExportParams)
             project: p.project.clone(),
             since_ms: p.since_ms,
             sessions: (!p.sessions.is_empty()).then(|| p.sessions.clone()),
-            include_archived: p.include_archived,
+            exclude_archived: p.exclude_archived,
         },
     };
     let (cancel, watcher) = cancel_on_disconnect(client);
@@ -214,8 +214,8 @@ async fn select(ctx: &Arc<Ctx>, p: &ExportParams) -> Result<(Vec<String>, u64), 
                 continue;
             }
         }
-        // 点名的会话不受「已归档」的限制
-        if row.archived && !p.include_archived && named.is_none() {
+        // 点名的会话不受 `exclude_archived` 的限制
+        if row.archived && p.exclude_archived && named.is_none() {
             skipped_archived += 1;
             continue;
         }

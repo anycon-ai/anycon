@@ -491,6 +491,7 @@ async fn switching_an_existing_single_database_to_multi_keeps_accounts_and_drops
         dir,
         http: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap(),
         admin_token: String::new(),
+        pg: None,
     };
     // token 登录不存在了（bootstrap token 和账号 token 都一样）
     for token in [admin_token.as_str(), "tok"] {
@@ -536,6 +537,7 @@ async fn switching_a_multi_database_with_a_granted_admin_to_single_gets_a_separa
         dir,
         http: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap(),
         admin_token: token.clone(),
+        pg: None,
     };
     let cookie = hub.login(&token).await;
     let profile = me(&hub, &cookie).await;
@@ -594,6 +596,7 @@ async fn a_pre_record_single_database_started_in_multi_first_still_keeps_its_ori
         dir,
         http: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap(),
         admin_token: token.clone(),
+        pg: None,
     };
     let profile = me(&hub, &hub.login(&token).await).await;
     assert_eq!((profile["id"].as_str(), &profile["is_admin"]), (Some(original.as_str()), &json!(true)));

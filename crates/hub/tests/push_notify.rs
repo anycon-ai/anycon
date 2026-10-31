@@ -701,33 +701,26 @@ async fn the_device_must_be_a_live_web_device_of_this_account() {
 async fn subscribing_and_testing_are_limited_to_thirty_requests_a_minute_per_account() {
     let rig = Rig::new().await;
     let browser = Browser::new();
-    // 已经订阅过 1 次；再来 29 次用满配额
-    for i in 0..29 {
-        let res = rig
-            .hub
-            .send(
-                Method::POST,
-                "/api/push/subscriptions",
-                &rig.cookie,
-                browser.subscription(&rig.web.id, &rig.push.endpoint(&format!("p{i}"))),
-            )
-            .await;
-        assert_eq!(res.status(), 200, "{i}");
-    }
-    let res = rig
-        .hub
-        .send(
-            Method::POST,
-            "/api/push/subscriptions",
-            &rig.cookie,
-            browser.subscription(&rig.web.id, &rig.push.endpoint("over")),
-        )
-        .await;
-    assert_eq!(res.status(), 429);
-    assert!(res.headers().contains_key("retry-after"));
-    // test 接口共用这个配额
-    let res = rig.hub.send(Method::POST, "/api/push/test", &rig.cookie, json!({ "device_id": rig.web.id })).await;
-    assert_eq!(res.status(), 429);
+    // 已经订阅过 1 次，桶里还剩 29 个。同时发 60 个请求，订阅和 test 各一半（两个接口共用这个配额）。同时发是因为桶每秒补
+    // 0.5 个令牌：逐个发的话，慢一点的存储（Postgres、机器忙）要花几秒，补回来的令牌会让「刚好第 31 个被拒」的断言落空。
+    // 这里放过去的数量允许比 29 多几个（burst 期间补回来的）。
+    let sends = (0..60).map(|i| {
+        if i % 2 == 0 {
+            let body = browser.subscription(&rig.web.id, &rig.push.endpoint(&format!("p{i}")));
+            rig.hub.send(Method::POST, "/api/push/subscriptions", &rig.cookie, body)
+        } else {
+            rig.hub.send(Method::POST, "/api/push/test", &rig.cookie, json!({ "device_id": rig.web.id }))
+        }
+    });
+    let responses = futures::future::join_all(sends).await;
+    let limited: Vec<usize> = responses.iter().enumerate().filter(|(_, r)| r.status() == 429).map(|(i, _)| i).collect();
+    let passed = responses.len() - limited.len();
+    assert!((29..=33).contains(&passed), "29 left in the bucket, plus a few refilled during the burst: {passed}");
+    assert!(responses.iter().filter(|r| r.status() == 429).all(|r| r.headers().contains_key("retry-after")));
+    assert!(
+        limited.iter().any(|i| i % 2 == 0) && limited.iter().any(|i| i % 2 == 1),
+        "subscribing and testing draw from the same bucket: {limited:?}"
+    );
     // 别的账号不受影响
     let (gid, guest) = rig.hub.invite_account(&rig.cookie).await;
     let gweb = rig.hub.seed_device_in(&gid, DeviceKind::Web, "g").await;

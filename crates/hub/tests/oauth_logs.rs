@@ -225,8 +225,12 @@ async fn oauth_flows_never_log_codes_states_tokens_secrets_subjects_or_emails() 
     }
 
     // 数据目录：授权码、access token、state 原文、client secret 不落盘（verifier 与 state 行同生共死，不查）
+    // （用 Postgres 时库不在数据目录里：这里只扫其余的状态文件，不做「身份落了盘」的自检）
     let files = data_dir_bytes(hub.dir.path());
-    assert!(contains(&files, github_subject), "sanity: the identity (provider, subject) is stored, by design");
+    assert!(
+        hub.pg.is_some() || contains(&files, github_subject),
+        "sanity: the identity (provider, subject) is stored, by design"
+    );
     for (what, secret) in flow_secrets.iter().filter(|(what, _)| *what != "PKCE verifier") {
         assert!(!contains(&files, secret), "{what} was written to the data directory");
     }

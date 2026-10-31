@@ -25,7 +25,7 @@ pub const REGISTRY: &[RegistryEntry] = &[
         id: "opencode",
         label: "OpenCode",
         command: "opencode acp",
-        install_hint: "install OpenCode (https://opencode.ai) and make sure `opencode` is on the daemon's PATH",
+        install_hint: "install from https://opencode.ai",
     },
     RegistryEntry {
         id: "gemini",
@@ -37,13 +37,13 @@ pub const REGISTRY: &[RegistryEntry] = &[
         id: "goose",
         label: "Goose",
         command: "goose acp",
-        install_hint: "install goose (https://block.github.io/goose/) and make sure `goose` is on the daemon's PATH",
+        install_hint: "install from https://block.github.io/goose/",
     },
     RegistryEntry {
         id: "kimi",
         label: "Kimi Code",
         command: "kimi acp",
-        install_hint: "install Kimi CLI (https://moonshotai.github.io/kimi-cli/) and make sure `kimi` is on the daemon's PATH",
+        install_hint: "install from https://moonshotai.github.io/kimi-cli/",
     },
     RegistryEntry {
         id: "qwen",
@@ -55,7 +55,7 @@ pub const REGISTRY: &[RegistryEntry] = &[
         id: "cursor",
         label: "Cursor",
         command: "cursor-agent acp",
-        install_hint: "install the Cursor CLI (https://cursor.com/docs/cli/acp) and make sure `cursor-agent` is on the daemon's PATH",
+        install_hint: "install from https://cursor.com/docs/cli/acp",
     },
     RegistryEntry {
         id: "copilot",

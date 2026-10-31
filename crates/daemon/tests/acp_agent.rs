@@ -126,6 +126,16 @@ async fn an_acp_agent_is_listed_like_any_other_and_runs_sessions() {
         assert_eq!((a.driver.as_str(), a.status), ("acp", AgentStatus::Disabled), "{id}");
     }
 
+    // agent.diagnose 用 adapter 自己的诊断：协议版本、登录方式、能力
+    let d: AgentDiagnoseResult = c.call(&td, methods::AGENT_DIAGNOSE, json!({ "id": "fakeacp" })).await.unwrap();
+    let field = |label: &str| {
+        d.fields.iter().find(|f| f.label == label).unwrap_or_else(|| panic!("{label}: {}", d.text)).value.clone()
+    };
+    assert_eq!(field("ACP protocol version"), "1");
+    assert!(field("agent capabilities").contains("resume=true"));
+    assert_eq!(field("status"), "ready");
+    assert!(d.text.contains("fakeacp"));
+
     // 新建会话：默认值来自探测（fast / medium / ask），agent 给的标题优先
     let s: SessionSummary = c
         .call(

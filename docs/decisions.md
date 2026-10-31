@@ -976,13 +976,13 @@ ADR-1 拆成两层来看：
 3. **安装 = 命令的第一个词在 daemon 环境的 `PATH`（和已知安装目录）里**；不跑 `npx` / `uvx`。注册表里的 agent 没装、用户也没动过它的配置段时**不出现在 `agent.list` / `doctor` 里**（claude-code / codex 没装要显示「未安装」是引导安装，八个用户可能一个都不用的 agent 一直挂着「未安装」只是噪音）；装了自动出现，动过配置的照常列出。
 4. **client 能力**：不声明 `fs` 和 `terminal`（agent 用它自己的工具，权限走 `session/request_permission`；声明了就等于让 daemon 代 agent 读写文件、跑命令，违背「daemon 不做终端、文件编辑」，daemon.md § 1）；声明 `elicitation`（form / url，规格 § 9.1 把 agent 的结构化提问接进权限通道）和 `session.configOptions.boolean`（不声明 agent 不给布尔选项）；不声明 `auth.terminal`、`session.notices`、`session.compaction`（没有交互式终端；规格里 ACP 不产生 notice / activity 事件）。
 5. **不调 `authenticate`**：登录方式可能要打开浏览器或读终端输入，daemon 做不了。`session/new` 报 `-32000` → `not_authenticated`，hint 列出登录方式，`terminal` 类型的给出要在机器上跑的命令。
-6. **只用 v1 稳定接口**，依据官方 `schema/v1/schema.json`（入库在 `crates/adapters/tests/fixtures/acp/`，测试用它校验 adapter 发的每条消息）。模型 / 思考等级 / 模式 / 其余选项全部来自 `configOptions`（没有 `category = model` 的选项就不提供模型选择；不支持草案里的 `models` / `session/set_model`）；`PromptResponse.usage`（单 turn 还是累计没定）不读，所以没有 token 数，只有上下文占用和 USD 费用的增量。
+6. **只用 v1 稳定接口**，依据官方 `schema/v1/schema.json`（入库在 `crates/adapters/tests/fixtures/acp/`，测试用它校验 adapter 发的每条消息）。模型 / 思考等级 / 模式 / 其余选项全部来自 `configOptions`（没有 `category = model` 的选项就不提供模型选择；不支持旧的 `models` 字段和 `session/set_model`，它们不在 v1 的 schema 里）；`PromptResponse.usage`（单 turn 还是累计没定）不读，所以没有 token 数，只有上下文占用和 USD 费用的增量。
 7. **设置只发变化的**：拉起时和 agent 当前的值比，会话中和上一次**请求**的值比，所以 agent 自己切了模式（批准计划之后）不会被 daemon 记着的旧值冲掉。
 8. **取消没有 SIGINT 兜底**：`session/cancel`（未答复的请求先按 `cancelled` 答复）；agent 不理就靠 daemon 的取消宽限让句柄脱离。进程是共用的，杀进程会连累别的会话。
 
 **原因**：ACP 本来就是一条连接多个会话，每会话一个进程要为每个会话付 agent 的启动成本（连 MCP server、拉模型目录），而 ACP agent 也没有会话级环境的需求（Codex 当初改成每会话一个进程，主要原因就是会话级 `env`，ADR-26 修订）；每个 agent 单独一项是因为它们的模型、模式、登录方式、安装方式各不相同，合成一项 `acp` 客户端就得内置 agent 知识（ADR-24）；热增减是因为用户加一个 agent 期望马上能用，重启 daemon 会打断正在跑的会话。
 
-**否掉**：每会话一个进程（见上）；自动 `npx` / `uvx`（在用户机器上下载并执行东西）；声明 `fs` / `terminal` 让 daemon 代理（见 4）；自动 `authenticate`（见 5）；把 `acp` 做成一个 agent、`session.create` 里再选「哪个 ACP agent」（客户端要认识 agent）；读草案里的 `models` / `PromptResponse.usage`（会随协议变，v1 稳定版的语义不明确）；没装的注册表 agent 也一直列出（见 3）。
+**否掉**：每会话一个进程（见上）；自动 `npx` / `uvx`（在用户机器上下载并执行东西）；声明 `fs` / `terminal` 让 daemon 代理（见 4）；自动 `authenticate`（见 5）；把 `acp` 做成一个 agent、`session.create` 里再选「哪个 ACP agent」（客户端要认识 agent）；用旧的 `models` / `session/set_model`（不在 v1 schema 里）、读草案里的 `PromptResponse.usage`（语义没定：单 turn 还是累计）；没装的注册表 agent 也一直列出（见 3）。
 
 **代价 / 限制**：
 

@@ -230,7 +230,11 @@ pub async fn run_probe(ctx: &ProbeContext, id: &str, label: &str, probe_all: boo
             &mut report.info,
             AgentStatus::NotInstalled,
             "binary_not_found",
-            format!("the `{}` command was not found", spec.program),
+            if spec.is_path() {
+                format!("the command {} does not exist", spec.program)
+            } else {
+                format!("the `{}` command was not found on the daemon's PATH", spec.program)
+            },
             Some(install_hint(id)),
         );
         return report;

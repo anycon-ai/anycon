@@ -5,8 +5,8 @@ OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot�
 
 **依据的协议版本**：ACP **v1**（`initialize` 的 `protocolVersion: 1`；agent 回别的版本 → `unsupported_version`）。字段名、方法名以官方 JSON Schema
 `schema/v1/schema.json`（schema crate **1.28.0**，2026-10-30）和同日的 `docs/protocol/v1/*` 为准，不凭记忆；同一份 schema 入库在
-`tests/fixtures/acp/schema.v1.json`，`tests/acp_schema.rs` 用它校验 adapter 发出的每一条消息。**只用稳定的接口**：`schema.unstable.json` 里的东西（`PromptResponse.usage`、
-`session/fork` / `session/list` 的导入、`session/set_title`、提供方管理、子 agent、MCP-over-ACP、plan 操作…）一律不用；v2 仍是草案，不支持。
+`tests/fixtures/acp/schema.v1.json`，`tests/acp_schema.rs` 用它校验 adapter 发出的每一条消息。**只用稳定的接口**：草案里（`schema.unstable.json`）的东西——`PromptResponse.usage`、
+`session/fork`、`session/set_title`、提供方管理、子 agent、MCP-over-ACP、plan 操作…——一律不用；稳定的 `session/list` / `session/delete` / `logout` 也没有用到（`session.import` 是 v0.3）；v2 仍是草案，不支持。
 
 每个 ACP agent 是一个独立的 adapter 实例（`AcpAdapter::new(<名字>)`），id 就是名字，配置在 `config.agents.acp.<名字>`，在 `agent.list` 里是独立的一项（`driver = "acp"`）。
 

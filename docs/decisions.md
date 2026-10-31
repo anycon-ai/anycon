@@ -922,3 +922,41 @@ ADR-1 拆成两层来看：
 - 二进制没有 Authenticode 签名：浏览器下载会触发 SmartScreen 提示，`install.ps1` 下载的不受影响
 - `schtasks` 的输出按系统语言本地化，`service status` 不解析它：「已注册」看退出码，「在跑」看本机通道连不连得上
 - 测试：依赖 sh 脚本的假 CLI / 假 `gh` / 慢 git、伪终端和 unix 权限位的测试只在 unix 上跑，对应的 Windows 行为由各模块的 Windows 单元测试覆盖
+
+---
+
+## ADR-43 远程修改节点配置：白名单，安全相关的只能收紧
+
+**背景**：节点设置的「限制」标签原来只读，要改并发数、超时、日志级别得登录到那台机器。但 `config.toml` 同时是机器主人的最后一道边界：`agents.<id>.command` / `env` 等于远程执行任意命令，`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports` 决定 agent 和预览能碰到机器上的什么，`permissions.allow_dangerous_modes` 决定 agent 能不能不经审批行动，`hub.*` 决定 daemon 连到哪。已配对的客户端可能被盗用（丢手机、公用电脑，浏览器里的设备私钥是明文放在 IndexedDB 的，[architecture.md § 5.6](architecture.md#56-威胁模型)）；如果它能改这些键，「放宽权限必须在机器上做」这道边界就没了。
+
+**决定**：
+
+1. **白名单，不是黑名单**。`node.get_config` 只返回、`node.set_config` 只接受下面这些键，其余一律不能远程改（`forbidden`），也不会出现在 `node.get_config` 里。只放热加载的键，改完不需要重启：
+   - 任意改（带取值约束）：`sessions.max_concurrent`（1–32）、`sessions.idle_timeout`、`permissions.request_timeout`、`notify.turn_finished`、`notify.session_idle_after`、`log.level`、`worktree.default`、`worktree.branch_prefix`、`worktree.auto_archive_on_pr_close`、`preview.ticket_ttl`（5m–7d）
+   - **只能收紧**：`permissions.allow_dangerous_modes`、`preview.enabled`，只能从 `true` 改成 `false`；远程想放宽回 `forbidden`（`data.reason = tighten_only`），要在机器上 `anycon config set`
+   - 刻意不在名单里：`agents.*`、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.*`、`enroll.*`（有专门的 RPC，各自有口令 / 批准的保护）、`sessions.max_attachment_bytes`、`sessions.history_retention`
+2. **被 `ANYCON_*` 环境变量覆盖的键只读**。环境变量盖过文件，远程写进文件也不生效，所以 `node.get_config` 把它标成 `env_override = true`、`editable = no`，`node.set_config` 回 `forbidden`（`data.reason = env_override`）。`log.level` 还会被 `ANYCON_LOG` / `RUST_LOG` 接管，同样算
+3. **整体校验，整体写入**。一次 `node.set_config` 里任何一项不合法（类型、范围、枚举、键重复）就回 `invalid`（`data.field` 是出错的键），一项都不写；校验通过后用 `anycon config set` 同一套写入逻辑（`toml_edit` 保留注释和格式、整份配置校验通过才原子替换、进程内锁 + `config.toml.lock`），再走同一条热加载路径（重读文件，各组件订阅配置变化），审计每个真正变化的键（`config.changed`：键、旧值、新值、发起设备）。和现在一样的值是空操作。并发的 `node.set_config` 在 daemon 里一次处理一个，所以旧值和「只能收紧」的判断不会基于过时的状态
+4. **谁能调**：和其他 `node.*` 一致——任何已配对设备，没有设备分级；本机 socket 上也是同一套规则（CLI 不用这个 RPC，`anycon config get/set` 保持本地、不受白名单限制）
+5. **`node.logs { lines?, level? }`**：只读现有的日志文件尾部，不另外收集；`lines` 缺省 200、最多 1000，每行最多 2 KiB。返回前去掉可能带会话内容的行，规则见 [daemon.md § 17](spec/daemon.md#17-诊断)
+
+**原因**：
+
+- 远程能放宽的，只能是不扩大攻击面的设置。并发数、超时、日志级别、通知策略、worktree 的默认选择和分支前缀改错了顶多是不方便，改回来就行；而放宽权限或改可执行的东西，一旦发生就是任意代码执行，被盗的客户端不该有这个能力
+- 白名单的失败方向是安全的：以后加了新配置键，默认不能远程改，要加进名单必须经过评审；黑名单漏列一个就是漏洞
+- 「只能收紧」让被盗的设备也能做一件有用的事（发现设备被盗时，别的设备可以立刻关掉危险模式和预览），却不能反过来
+- 收紧的开关允许远程操作而放宽不允许，本质上是不对称的：恢复要机器主人到场。这正是想要的
+
+**否掉**：
+
+- 整份 `config.toml` 可远程编辑：等于远程命令执行，见背景
+- 黑名单（只禁几个危险键）：见原因
+- 放宽也允许，但要二次确认或口令：确认走的是同一条可能被盗的通道，没有新的信任根；口令（ADR-36）是接入新设备用的，不拿来给配置放行
+- 远程改要重启才生效的键、远程重启 daemon：改错了可能让节点再也连不上，那时远程已经没法纠正
+- 另起一条日志收集通道（推送到 hub 或第三方）：日志留在节点上，需要时由已配对设备经加密通道读取
+
+**代价 / 限制**：
+
+- 没有设备分级：任何已配对设备都能改名单里的键，比如把 `sessions.max_concurrent` 改成 1 让新会话排队，或把 `permissions.request_timeout` 设得很短让审批自动拒绝。这些都是可恢复的、进审计、不涉及放宽权限
+- 取值范围（并发 1–32 等）只约束远程写入；机器上手写 `config.toml` 可以超出，`node.get_config` 照实显示，不会因此拒绝保存别的键
+- `node.logs` 的过滤按 target 和 `error=` 字段做，是启发式的，不是内容识别；本机的 `anycon logs` 和日志文件本身不受它约束（见 daemon.md § 17 的残余风险）

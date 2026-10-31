@@ -113,6 +113,30 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 
 `anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`。其余需重启。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
+**远程修改**（`node.get_config` / `node.set_config`，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）：客户端（Web 的节点设置「限制」标签、SDK）可以读写下面这张白名单里的键，其余一律不行。只收热加载的键，改完不用重启。
+
+| 键 | 类型与范围 | 远程 |
+|---|---|---|
+| `sessions.max_concurrent` | 整数 1–32 | 任意改 |
+| `sessions.idle_timeout` | 时长 0–7d（`0` = 常驻） | 任意改 |
+| `permissions.request_timeout` | 时长 0–7d（`0` = 不超时） | 任意改 |
+| `worktree.default` | `worktree` \| `local` | 任意改 |
+| `worktree.branch_prefix` | 文本，最多 40 个字符，规则同 `validate_branch_prefix` | 任意改 |
+| `worktree.auto_archive_on_pr_close` | 布尔 | 任意改 |
+| `preview.ticket_ttl` | 时长 5m–7d | 任意改 |
+| `notify.turn_finished` | `always` \| `when_unwatched` \| `never` | 任意改 |
+| `notify.session_idle_after` | 时长 0–7d | 任意改 |
+| `log.level` | `error` \| `warn` \| `info` \| `debug` \| `trace` | 任意改 |
+| `permissions.allow_dangerous_modes` | 布尔 | **只能收紧**：`true` → `false` |
+| `preview.enabled` | 布尔 | **只能收紧**：`true` → `false` |
+
+- **名单之外**的键既不出现在 `node.get_config` 里，也不接受（`forbidden`，`data.reason = not_editable`）：尤其是 `agents.*`（`command` / `env` 等于远程执行任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.*`、`enroll.*`（有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`。想放宽权限，或改这些键，只能在机器上 `anycon config set`
+- **只能收紧**的开关远程想从 `false` 改成 `true`，回 `forbidden`（`data.reason = tighten_only`，同一请求里别的改动也不写）。Web 上这两个开关在关着时禁用，并提示在机器上运行 `anycon config set <键> true`
+- **环境变量覆盖的键只读**：`node.get_config` 里 `env_override = true`、`editable = no`（`log.level` 还包括被 `ANYCON_LOG` / `RUST_LOG` 接管），`node.set_config` 回 `forbidden`（`data.reason = env_override`）。判断和加载配置时用同一个环境变量层，不会各说各话
+- **`node.get_config`** → `{ items: [{ key, value, kind, editable, env_override, options?, min?, max? }] }`：`value` 是当前生效值（默认值 → 文件 → 环境变量合并后）；`kind` 是 `bool` \| `int` \| `duration` \| `enum` \| `text`；`editable` 是 `any` \| `tighten_only` \| `no`；`options`（`enum`）、`min` / `max`（`int` 是数值，`duration` 是毫秒，`text` 的 `max` 是字符数）给客户端渲染控件和做本地校验用。顺序固定，按配置段分组
+- **`node.set_config { changes: [{ key, value }] }`**：先校验**全部**改动，任何一项不合法就一项都不写——键重复、`changes` 为空、值的 JSON 类型和 `kind` 不符、超出范围、不在枚举里、时长写不出来都回 `invalid`（`data.field` 是键，`data.reason` 是 `duplicate` / `type` / `range` / `format`）；多个问题时报请求里的第一个。通过之后用 `anycon config set` 同一套逻辑写 `config.toml`（保留注释和格式、整份配置校验通过才原子替换，值按类型写——`branch_prefix = "123"` 写成字符串），再走同一条热加载路径，审计 `config.changed`（§ 13），返回新的 `node.get_config` 结果。和当前值相同的改动是空操作（不写、不审计）；全是空操作时直接返回当前结果。daemon 里同一时刻只处理一个 `node.set_config`（先重读一次文件，再算旧值、判断「只能收紧」），并发的两次不会互相覆盖成不一致的文件
+- 范围（并发 1–32、时长上限 7d 等）只约束远程写入；`config.toml` 里手写的越界值照常加载，`node.get_config` 照实显示
+
 环境变量覆盖文件里的值，写法是 `ANYCON_<段>__<键>`（双下划线表示层级），比如 `ANYCON_SESSIONS__MAX_CONCURRENT=2`；数组按 TOML 写：`ANYCON_WORKSPACE__LINK_ROOTS='["/abs/path"]'`。键名里带连字符的（`agents.claude-code.*`）没法用环境变量设，用 `anycon config set`。`ANYCON_HOME`、`ANYCON_LOG`、`ANYCON_MOCK_AGENT` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`）。
 
 ## 4. 数据目录
@@ -773,6 +797,8 @@ SQLite（WAL）。全部表：
 
 `session.create` / `session.set_settings` 的 detail 里带本次设置的 `env_keys`（**键名**，不带值）、`cleared`（被 `clear` 清掉的字段）和 `dangerous`（所选模式按当前配置算出的实际风险，不是写死的 false）；模式切换经审批触发时 `reason: permission_approved`；`node.revoke_device` 带 `hub_notified`（hub 侧的撤销是否已发出；hub 没连上时先记下，重连后补发）；`node.pair_begin` 只记 `{ long }`，**不记短码和 `match_id`**。`preview.open` 的 target 是端口，detail 带 `label`、`ticket_id`、`session_id`、`expires_at_ms`、`reused`（返回的是已有票据），**不记票据密钥**；`preview.close` 的 target 是 label，detail 带作废的票据数和断开的隧道数。隧道的建立和断开不进审计（service worker 会频繁重连），只记 debug 日志。`enroll.*` 记方法和结果（`enroll.failed` 带 `reason`，口令失败带当时的连续失败次数），**不记接入码、扫码密钥、口令和它的派生值**；接入完成前发起方还没有正式 id，`device_id` 记临时 id，`device_name` 记自报的 `hint` 加 ` (unverified)`；`enroll.completed` 记正式 id 和认证过的名字。`enroll.*` 的 `detail` 里 `method` / `result` / `reason` 是字符串（`result` 取 `requested` / `approved` / `denied` / `completed` / `failed` / `expired`），`failures` 是数字，另有 `attempts_left`、`approval`、`changed`、`failures_reset`、`password`、`source`。低价值的行（`enroll.requested`、预检拒绝）每分钟最多写 30 条。
 
+`config.changed`：`node.set_config`（§ 3）每个**真正变化**的键一条，`target` 是键，`detail` 是 `{ old, new }`（旧值和新值本身——白名单里没有敏感值，`device_id` / `device_name` 是发起的设备）；`node.set_agent_defaults` 写 `agents.<id>.default_*` 时一条，`target` 是 `agents.<id>.default_*`，`detail` 为空。直接改文件（`anycon config set`、手工编辑）不进审计：能碰那台机器的人本来就不受审计约束。和当前值相同的 `node.set_config` 改动是空操作，不进审计。
+
 保留和会话历史同样的 `history_retention`。
 
 ## 14. 通知触发
@@ -840,12 +866,25 @@ SQLite（WAL）。全部表：
 - 账号内接入（§ 15.1）：daemon 是唯一的验证点，hub 的限速不算数。口令只存 Argon2id 派生值；口令失败计数在发出 CPace 份额**之前**先写库；同时最多一个口令尝试、3 个接入会话；接入码和扫码密钥只在内存里，不落盘、不进日志和审计
 - 本机 socket 0600；CLI 不需要再认证。Windows 上是命名管道：属主和 DACL 都是当前用户、拒绝远程客户端、第一个实例独占名字；管道名字是全局的，客户端连上之后核对管道属主是当前用户，防别的本机用户抢先建同名管道冒充 daemon（ADR-42）
 - dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
+- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes` 和 `preview.enabled` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.*`、`enroll.*` 不在名单里；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
 - `--add-dir` 之类扩大 agent 文件范围的参数不暴露给客户端
 - worktree（§ 10.1）：目录在项目里面，复核规则同关联项目；不把主仓库 `.git` 加进 agent 的可写目录；`.worktreeinclude` 只复制、不执行，不跟随符号链接；daemon 的 git 关掉 fsmonitor / hooks / 外部 diff / textconv / 合并签名，仓库配置里的 filter / merge driver / sshCommand / askPass / credential helper / uploadpack 仍会被执行（已知限制，§ 10.1「限制」）
 
 ## 17. 诊断
 
-`node.doctor` 返回 [cli.md § 5](cli.md#5-anycon-doctor) 的检查项；`node.stats` 返回运行时长、连接状态、各状态会话数、进程数、数据库大小、磁盘剩余；`node.logs { lines, level }`（v0.2）返回最近日志，不含内容类字段。
+`node.doctor` 返回 [cli.md § 5](cli.md#5-anycon-doctor) 的检查项；`node.stats` 返回运行时长、连接状态、各状态会话数、进程数、数据库大小、磁盘剩余；`node.logs { lines?, level? }` 返回 daemon 日志文件的尾部。
+
+**`node.logs`**：
+
+- 只读现有的 `logs/daemon.log.<日期>`（§ 3 的 `[log]`，格式是 `tracing` 的默认文本：`<时间戳> <级别> <target>: <消息> <字段…>`），不另外收集、不另外存。从最新的文件尾部往回读；当天的文件不够 `lines` 行时接着读前一天的，一次调用最多扫描 4 MiB
+- `lines` 缺省 200，最多 1000（超出按 1000，0 按 1）；`level` 是**最低级别**（`trace` < `debug` < `info` < `warn` < `error`），缺省不过滤。没有时间戳的续行（多行的记录）跟随它所属记录的过滤结果；开头认不出所属记录的续行丢掉
+- 结果 `{ lines, truncated }`：`lines` 旧的在前，每行最多 2 KiB（超出的截断，行尾加 `…`）；`truncated = true` 表示还有更早的行没有返回（行数到了上限，或扫描量到了上限）。没有日志文件时返回空列表
+- **不含会话内容**：daemon 自己的日志只写 id、计数、路径、状态和错误，不写会话内容（核对过各个 `tracing` 调用点）。例外是**错误文字来自 agent 进程**的地方——adapter 的错误（`Protocol` / `Exited` 里可能带 agent 的 stderr 片段）、解析 agent 输出失败时 `serde_json` 引用的值、agent 自己的报错——所以 `node.logs` 返回前再过滤一道：
+  - target 是 `anycon_adapters`（含子模块）的行**整行不返回**（包括续行）。adapter 直接面对 agent 进程的输出，默认的 `log.level` 只给自己的 `anycon_daemon` / `anycon_cli` 调到所选级别，adapter 的日志停在 `warn`，设了 `ANYCON_LOG` 才会更多
+  - target 是 `anycon_daemon::sessions`（含 `sessions::wt`）的行，`error=` 之后的文字换成 `error=[withheld]`，续行不返回：这个模块把 adapter 的错误和 git / gh 的输出原样写进 `error` 字段
+  - 其余行原样返回，包括别的模块里的 `error=`（数据库、hub 连接、配置等）
+- 残余风险：过滤按 target 和 `error=` 字段名做，是启发式，不是内容识别；格式不是预期的行（认不出 target）不返回；本机的 `anycon logs` 读同一个文件、**不过滤**，日志文件本身仍可能含上面那几处 agent 报错文字。日志经 Noise 通道发给已配对设备，hub 只看到密文；已配对设备本来就能读会话历史，所以这道过滤防的是「日志被复制出去分享」而不是越权读取
+
 
 ## 18. 版本范围
 

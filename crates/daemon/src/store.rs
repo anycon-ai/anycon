@@ -640,6 +640,10 @@ impl Store {
     // ---------------- FTS ----------------
 
     pub async fn index_text(&self, session_id: &str, seq: u64, role: &str, ts_ms: u64, text: &str) -> Result<()> {
+        // \x01 / \x02 是 `snippet()` 的高亮标记（见 `marked_snippet`）：正文里自带的这两个字符不能留下，
+        // 否则会话内容就能在片段里伪造出 `<mark>`
+        let text = text.replace(['\u{1}', '\u{2}'], "");
+        let text = text.as_str();
         if text.trim().is_empty() {
             return Ok(());
         }
@@ -1363,6 +1367,8 @@ fn row_to_hit(r: &sqlx::sqlite::SqliteRow) -> SearchHit {
 }
 
 /// snippet() 用 \x01 \x02 作高亮标记；先转义 HTML，再换成 `<mark>`。
+/// 结果里只有这一对字面标签是 HTML，正文里原有的 `<` `>` `&` 都已转义成 `&lt;` `&gt;` `&amp;`
+/// （约定见 docs/protocol.md § 5.4 的 `session.search`）。
 fn marked_snippet(raw: &str) -> String {
     let esc = html_escape(raw);
     esc.replace('\u{1}', "<mark>").replace('\u{2}', "</mark>")
@@ -1634,6 +1640,75 @@ mod tests {
         assert!(s.search("parser", None, 10).await.unwrap().is_empty());
         assert!(s.events_after("s1", 0, 10).await.unwrap().is_empty());
         assert!(s.get_session("s1").await.unwrap().is_none());
+    }
+
+    /// 片段里去掉 `<mark>` / `</mark>` 之后不剩任何 HTML：没有 `<` `>`，每个 `&` 都是 `&amp;` `&lt;` `&gt;` 之一。
+    fn assert_inert(snippet: &str) {
+        let plain = snippet.replace("<mark>", "").replace("</mark>", "");
+        assert!(!plain.contains('<') && !plain.contains('>'), "raw angle bracket: {snippet}");
+        for (i, _) in plain.match_indices('&') {
+            let rest = &plain[i..];
+            assert!(
+                rest.starts_with("&amp;") || rest.starts_with("&lt;") || rest.starts_with("&gt;"),
+                "unescaped ampersand: {snippet}"
+            );
+        }
+        assert_eq!(snippet.matches("<mark>").count(), snippet.matches("</mark>").count(), "{snippet}");
+    }
+
+    /// 片段只把命中词包进 `<mark>`；会话内容里的 HTML（含它自带的 `<mark>`）一律转义，既不能注入标签，也不能伪造高亮。
+    #[tokio::test]
+    async fn search_snippets_only_contain_the_mark_tags() {
+        let (_d, s) = temp_store().await;
+        s.upsert_session(&row("s1", None)).await.unwrap();
+        s.index_text(
+            "s1",
+            1,
+            "assistant",
+            10,
+            "run <script>alert(1)</script> & <img src=x onerror=alert(2)> for parser",
+        )
+        .await
+        .unwrap();
+        s.index_text("s1", 2, "assistant", 20, "the <mark>danger</mark> tag, A&B and &lt;b&gt; stay text")
+            .await
+            .unwrap();
+        // 控制字符 \x01 / \x02 是 snippet() 的标记：正文里自带的不能变成 `<mark>`
+        s.index_text("s1", 3, "user", 30, "ctrl\u{1}chars\u{2} then stuff").await.unwrap();
+        s.index_text("s1", 4, "user", 40, "数据库<script>x</script>&迁移").await.unwrap();
+
+        // MATCH 路径
+        let hits = s.search("parser", None, 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_inert(&hits[0].snippet);
+        assert!(hits[0].snippet.contains("&lt;script&gt;alert(1)&lt;/script&gt; &amp; &lt;img"), "{}", hits[0].snippet);
+        assert!(hits[0].snippet.contains("<mark>parser</mark>"), "{}", hits[0].snippet);
+
+        let hits = s.search("danger", None, 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_inert(&hits[0].snippet);
+        // 正文自带的 <mark> 被转义，真正的高亮只有命中词那一对
+        assert!(hits[0].snippet.contains("&lt;mark&gt;<mark>danger</mark>&lt;/mark&gt;"), "{}", hits[0].snippet);
+        assert_eq!(hits[0].snippet.matches("<mark>").count(), 1);
+        // 已经长得像实体的文字也被再转义一次，客户端解一层就还原
+        let hits = s.search("stay", None, 10).await.unwrap();
+        assert_inert(&hits[0].snippet);
+        assert!(hits[0].snippet.contains("A&amp;B and &amp;lt;b&amp;gt;"), "{}", hits[0].snippet);
+
+        let hits = s.search("stuff", None, 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_inert(&hits[0].snippet);
+        assert!(hits[0].snippet.contains("ctrlchars then <mark>stuff</mark>"), "{}", hits[0].snippet);
+
+        // LIKE 兜底路径（词中间的子串，FTS 没有命中）
+        let hits = s.search("据库", None, 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_inert(&hits[0].snippet);
+        assert!(
+            hits[0].snippet.contains("<mark>据库</mark>&lt;script&gt;x&lt;/script&gt;&amp;迁移"),
+            "{}",
+            hits[0].snippet
+        );
     }
 
     fn wt_row(id: &str, session: Option<&str>) -> WorktreeRow {

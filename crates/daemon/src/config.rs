@@ -111,7 +111,12 @@ pub struct HubConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
+    /// 主根（ADR-45）：放 `.scratch/`，新项目缺省建在这里；它下面的一级子文件夹是项目（ADR-9）。
     pub root: String,
+    /// 额外的 workspace 根（绝对路径或 `~` / `~/…`），每个根下的一级子文件夹同样是项目。**启动时读一次，改了要重启**：
+    /// 额外根之间、和主根之间不能相同或嵌套，不能在数据目录里或包含数据目录，不能是文件系统根（违反则 daemon 拒绝启动，
+    /// 见 [`crate::wsroots`]）；目录不存在或不是目录（外接盘没插）时跳过并 warn。
+    pub extra_roots: Vec<String>,
     /// 可以关联为项目 / 可以被 `workspace.browse` 浏览的本机目录范围（ADR-33）。每项是绝对路径或 `~` / `~/…`
     /// （按 daemon 环境的 `HOME` 展开）；`[]` = 关闭「关联已有目录」。热加载：每次调用读最新值。
     ///
@@ -127,6 +132,7 @@ impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
             root: "~/anycon".into(),
+            extra_roots: Vec::new(),
             link_roots: vec!["~".into()],
             trash_retention_days: 30,
             scratch_retention_days: 7,
@@ -498,7 +504,10 @@ impl Config {
         parse_duration(&self.agents.probe_timeout).map_err(|e| bad("agents.probe_timeout", e))?;
         parse_duration(&self.notify.session_idle_after).map_err(|e| bad("notify.session_idle_after", e))?;
         for r in &self.workspace.link_roots {
-            validate_link_root(r).map_err(|e| bad("workspace.link_roots", e))?;
+            validate_abs_entry(r).map_err(|e| bad("workspace.link_roots", e))?;
+        }
+        for r in &self.workspace.extra_roots {
+            validate_abs_entry(r).map_err(|e| bad("workspace.extra_roots", e))?;
         }
         if !matches!(self.worktree.default.as_str(), "worktree" | "local") {
             return Err(bad("worktree.default", "expected worktree | local".into()));
@@ -552,8 +561,13 @@ impl Config {
         Ok(())
     }
 
+    /// 主根（`~` 已展开，不 canonicalize）。
     pub fn workspace_root(&self) -> PathBuf {
         expand_tilde(&self.workspace.root)
+    }
+    /// 额外根（`~` 已展开，不 canonicalize），按配置顺序。
+    pub fn workspace_extra_roots(&self) -> Vec<PathBuf> {
+        self.workspace.extra_roots.iter().map(|r| expand_tilde(r)).collect()
     }
     pub fn idle_timeout(&self) -> Duration {
         parse_duration(&self.sessions.idle_timeout).unwrap_or(Duration::from_secs(1200))
@@ -619,8 +633,9 @@ impl Config {
     }
 }
 
-/// `workspace.link_roots` 的一项：绝对路径，或 `~` / `~/…`（Windows 上 `~\…` 也行；不支持 `~user`），不含 NUL / 控制字符。
-fn validate_link_root(r: &str) -> Result<(), String> {
+/// `workspace.link_roots` / `workspace.extra_roots` 的一项：绝对路径，或 `~` / `~/…`（Windows 上 `~\…` 也行；不支持 `~user`），
+/// 不含 NUL / 控制字符。
+fn validate_abs_entry(r: &str) -> Result<(), String> {
     if r.is_empty() {
         return Err("an entry is empty".into());
     }
@@ -891,6 +906,9 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     );
     s.push_str("# 要关联它们，把那个目录显式写进这个列表（例如 \"~/.config/nvim\"）。关联后 agent 按所选权限模式在里面工作，文件读取不经审批\n");
     s.push_str("link_roots = [\"~\"]\n");
+    s.push_str("# 额外的 workspace 根（绝对路径或 ~/…）：每个根下的一级子文件夹同样是项目。主根（root）放 .scratch，新项目缺省建在主根；\n");
+    s.push_str("# 根之间不能相同或嵌套，也不能包含 / 位于 anycon 数据目录里。目录不存在（例如外接盘没插）时跳过。改了要重启 daemon\n");
+    s.push_str("# extra_roots = [\"/Volumes/work/projects\"]\n");
     s.push_str("trash_retention_days = 30\nscratch_retention_days = 7\n");
     s.push_str("\n[sessions]\nmax_concurrent = 3\nidle_timeout = \"20m\"\n");
     s.push_str("# 单个图片附件的上限；一条消息的附件合计另有 20 MiB 的上限（固定，不可配置）\n");
@@ -1252,6 +1270,8 @@ dangerous_modes = ["yolo"]
         }
         assert!(!is_hot_key("hub.url"));
         assert!(!is_hot_key("workspace.root"));
+        // 额外的 workspace 根只在启动时读（ADR-45）
+        assert!(!is_hot_key("workspace.extra_roots"));
     }
 
     #[test]
@@ -1510,5 +1530,35 @@ dangerous_modes = ["yolo"]
         assert!(is_hot_key("agents.acp.mine.env.FOO"));
         assert!(is_hot_key("agents.acp.opencode.enabled"));
         assert!(!is_hot_key("agents.claude-code.command"));
+    }
+
+    #[test]
+    fn extra_roots_default_to_none_validate_like_link_roots_and_are_set_via_config_set() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path());
+        let cfg = Config::load(&paths).unwrap();
+        assert!(cfg.workspace.extra_roots.is_empty() && cfg.workspace_extra_roots().is_empty());
+        let abs = if cfg!(windows) { "C:/ext/projects" } else { "/ext/projects" };
+        set_value(&paths, "workspace.extra_roots", &format!("[\"{abs}\", \"~/more\"]")).unwrap();
+        let cfg = Config::load(&paths).unwrap();
+        assert_eq!(cfg.workspace.extra_roots, vec![abs.to_string(), "~/more".to_string()]);
+        let expanded = cfg.workspace_extra_roots();
+        assert_eq!(expanded[0], PathBuf::from(abs));
+        assert!(!expanded[1].starts_with("~") || crate::util::home_dir().is_none(), "{expanded:?}");
+        assert_eq!(get_value(&cfg, "workspace.extra_roots"), Some(serde_json::json!([abs, "~/more"])));
+        // 每项必须是绝对路径或 ~ / ~/…；非法值不落盘
+        let before = std::fs::read_to_string(paths.config_toml()).unwrap();
+        for bad in ["[\"relative/path\"]", "[\"\"]", "[\"~user/x\"]", "[\"/a\\nb\"]", "[\"/ok\", \"nope\"]"] {
+            assert!(
+                matches!(set_value(&paths, "workspace.extra_roots", bad), Err(ConfigError::Invalid(m)) if m.contains("workspace.extra_roots")),
+                "{bad}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(paths.config_toml()).unwrap(), before);
+        // 示例配置里是注释掉的例子，能解析、缺省为空
+        let example = default_config_toml(None, None, "~/anycon");
+        assert!(example.contains("# extra_roots = ["));
+        write(d.path(), &example);
+        assert!(Config::load(&paths).unwrap().workspace.extra_roots.is_empty());
     }
 }

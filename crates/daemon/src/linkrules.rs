@@ -1,6 +1,6 @@
 //! 关联已有目录的规则引擎（ADR-33「风险与对策」五条、daemon.md § 10）。
 //!
-//! 这里只有「给定一份快照（`link_roots`、workspace 根、数据目录、拒绝表、已关联的项目），一个 canonical 目录能不能关联、
+//! 这里只有「给定一份快照（`link_roots`、所有 workspace 根、数据目录、拒绝表、已关联的项目），一个 canonical 目录能不能关联、
 //! 为什么不能」的纯判断，不碰会话、不发事件。`workspace.rs` 在 `link` / `browse` 和每次使用关联项目（`list`、`fs.*`、
 //! 新建会话、拉起 agent）时各取一份快照，用同一套规则判断。
 //!
@@ -10,7 +10,7 @@
 //!    firmlink `/System/Volumes/Data/X` ↔ `/X`，见 [`PathAliases`]）规范化之后**逐段 `lstat`**，任何一段是符号链接就整项忽略
 //!    （`workspace.rs` 的 `judge_root`）；大小写或 NFC / NFD 写法和盘上不同不算链接，以 canonical 路径为准；每次请求都重判，不靠快照。
 //!    请求的路径先做词法规范化，**不在任何 root 之内就一律回「不在 `link_roots` 之内」**，不管它解析到哪里、存不存在；
-//! 2. 绝对拒绝（不能放行）：文件系统根；workspace 根目录里面（`invalid`）或包含它；anycon 数据目录、在它里面或包含它。「在里面 / 包含」
+//! 2. 绝对拒绝（不能放行）：文件系统根；任何一个 workspace 根（主根或额外根，ADR-45）里面（`invalid`）或包含它；anycon 数据目录、在它里面或包含它。「在里面 / 包含」
 //!    除了路径前缀，还按目录身份 `(dev, ino)` 沿祖先链判断；
 //! 3. 内置拒绝表（`Sensitive`，启发式的）：系统、凭证、自启动目录。等于、在里面、或包含其中任何一个都拒绝；只有 `link_roots` 的某一项
 //!    本身就在拒绝项 D 里面（含等于）时，那一项**之下**不再受 D 限制，更深的拒绝项仍然生效。root 不经过符号链接（规则 1），
@@ -469,7 +469,7 @@ pub fn block_name(b: LinkBlock) -> &'static str {
     match b {
         LinkBlock::Hidden => "hidden directory",
         LinkBlock::Sensitive => "sensitive system or credential directory",
-        LinkBlock::Workspace => "inside or containing the workspace root",
+        LinkBlock::Workspace => "inside or containing a workspace root",
         LinkBlock::DataDir => "anycon data directory",
         LinkBlock::FilesystemRoot => "filesystem root",
     }
@@ -479,16 +479,17 @@ pub fn block_name(b: LinkBlock) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct LinkCtx {
     pub roots: LinkRoots,
-    /// workspace 根目录（canonical）。
-    pub root: PathBuf,
+    /// 所有 workspace 根目录（ADR-45）：主根和额外根；可用的是 canonical 路径，暂时不可用的（外接盘没插）是展开后的路径。
+    /// 里面的目录已经是项目，包含它们的目录不能关联。
+    pub workspace_roots: Vec<PathBuf>,
     /// anycon 数据目录（canonical；不存在就是配置里的原样）。
     pub data: PathBuf,
     /// anycon 数据目录的词法路径（配置里的原样，只用于不存在性无关的词法判断）。
     pub data_lexical: PathBuf,
     /// 内置拒绝表。
     pub deny: Vec<DenyEntry>,
-    /// workspace 根目录和它所有祖先的身份。
-    pub root_ids: Identities,
+    /// 每个 workspace 根目录和它所有祖先的身份（和 `workspace_roots` 一一对应；根不存在时身份取不到，只剩路径前缀）。
+    pub root_ids: Vec<Identities>,
     /// anycon 数据目录和它所有祖先的身份。
     pub data_ids: Identities,
     /// 这台机器上的系统别名（`/var` → `/private/var`、firmlink …），词法比较前先换掉。
@@ -507,7 +508,7 @@ impl LinkCtx {
         if let Some((name, _)) = self.linked.iter().find(|(_, p)| p == canon) {
             return Some(name.clone());
         }
-        if canon.parent() == Some(self.root.as_path()) {
+        if canon.parent().is_some_and(|p| self.workspace_roots.iter().any(|r| r == p)) {
             let name = canon.file_name()?.to_str()?;
             let key = name_key(name, self.case_insensitive);
             if !name.starts_with('.') && !self.linked.iter().any(|(n, _)| name_key(n, self.case_insensitive) == key) {
@@ -545,27 +546,31 @@ impl LinkCtx {
         }
         // 绝对拒绝按路径前缀**和**目录身份 (dev, ino) 沿祖先链判断：同一个目录的另一种写法（firmlink、大小写变体、
         // 别的 canonical 写法）也绕不过去。身份取不到（路径不存在）时只剩路径前缀。
-        let cand = if self.root_ids.me.is_some() || self.data_ids.me.is_some() {
+        let cand = if self.root_ids.iter().any(|ids| ids.me.is_some()) || self.data_ids.me.is_some() {
             Identities::of(canon)
         } else {
             Identities::default()
         };
         let is_or_contains = |ids: &Identities| cand.me.is_some_and(|m| ids.chain.contains(&m));
         let is_or_inside = |ids: &Identities| ids.me.is_some_and(|m| cand.chain.contains(&m));
-        if self.root.starts_with(canon) || is_or_contains(&self.root_ids) {
+        // workspace 根：主根和每一个额外根都一样（ADR-45）
+        let empty = Identities::default();
+        let roots_with_ids =
+            || self.workspace_roots.iter().enumerate().map(|(i, r)| (r, self.root_ids.get(i).unwrap_or(&empty)));
+        if roots_with_ids().any(|(r, ids)| r.starts_with(canon) || is_or_contains(ids)) {
             return blocked(
                 LinkBlock::Workspace,
                 ErrorCode::Forbidden,
                 true,
-                "the directory is, or contains, the workspace root".into(),
+                "the directory is, or contains, a workspace root".into(),
             );
         }
-        if canon.starts_with(&self.root) || is_or_inside(&self.root_ids) {
+        if roots_with_ids().any(|(r, ids)| canon.starts_with(r) || is_or_inside(ids)) {
             return blocked(
                 LinkBlock::Workspace,
                 ErrorCode::Invalid,
                 true,
-                "the directory is inside the workspace root: it is already a project there (or lives in .trash / .scratch)"
+                "the directory is inside a workspace root: it is already a project there (or lives in .trash / .scratch)"
                     .into(),
             );
         }
@@ -645,9 +650,9 @@ impl LinkCtx {
         self.aliases.normalize(p)
     }
 
-    /// 按当前的 `root` / `data` 重新取它们和祖先的身份。
+    /// 按当前的 `workspace_roots` / `data` 重新取它们和祖先的身份。
     pub fn refresh_identities(&mut self) {
-        self.root_ids = Identities::of(&self.root);
+        self.root_ids = self.workspace_roots.iter().map(|r| Identities::of(r)).collect();
         self.data_ids = Identities::of(&self.data);
     }
 
@@ -759,10 +764,10 @@ mod windows_tests {
         let roots: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
         LinkCtx {
             roots: LinkRoots { raw: roots.clone(), canon: roots },
-            root: PathBuf::from(r"C:\h\anycon"),
+            workspace_roots: vec![PathBuf::from(r"C:\h\anycon")],
             data: PathBuf::from(r"C:\h\.anycon"),
             data_lexical: PathBuf::from(r"C:\h\.anycon"),
-            root_ids: Identities::default(),
+            root_ids: Vec::new(),
             data_ids: Identities::default(),
             aliases: PathAliases::default(),
             deny: deny_table(Some(Path::new(r"C:\h"))),
@@ -831,10 +836,10 @@ mod tests {
         let roots: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
         LinkCtx {
             roots: LinkRoots { raw: roots.clone(), canon: roots },
-            root: PathBuf::from("/h/anycon"),
+            workspace_roots: vec![PathBuf::from("/h/anycon")],
             data: PathBuf::from("/h/.anycon"),
             data_lexical: PathBuf::from("/h/.anycon"),
-            root_ids: Identities::default(),
+            root_ids: Vec::new(),
             data_ids: Identities::default(),
             aliases: PathAliases::default(),
             deny: deny_table(Some(Path::new("/h"))),
@@ -932,7 +937,7 @@ mod tests {
         // root 恰好等于拒绝项（Linux 的 root 用户：HOME = /root）：默认的 `~` 照常可用
         let mut c = ctx(&["/root"], &[]);
         c.deny = deny_table(Some(Path::new("/root")));
-        c.root = PathBuf::from("/root/anycon");
+        c.workspace_roots = vec![PathBuf::from("/root/anycon")];
         c.data = PathBuf::from("/root/.anycon");
         assert_eq!(block(&c, "/root/work"), None);
     }
@@ -1025,7 +1030,7 @@ mod tests {
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::create_dir_all(base.join("data/keys")).unwrap();
         let mut c = ctx(&[base.to_str().unwrap()], &[]);
-        c.root = base.join("ws");
+        c.workspace_roots = vec![base.join("ws")];
         c.data = base.join("data");
         c.deny = vec![];
         assert_eq!(c.resolve_linked(&proj), Ok(proj.clone()));
@@ -1155,7 +1160,7 @@ mod tests {
         std::fs::create_dir_all(home.join(".kube")).unwrap(); // 只有 .kube 存在
         let mut c = ctx(&[home.to_str().unwrap()], &[]);
         c.deny = deny_table(Some(&home));
-        c.root = PathBuf::from("/nowhere/anycon");
+        c.workspace_roots = vec![PathBuf::from("/nowhere/anycon")];
         c.data = PathBuf::from("/nowhere/.anycon");
         c.data_lexical = c.data.clone();
         let b = c.block_of(&home).unwrap();

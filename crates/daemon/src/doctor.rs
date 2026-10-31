@@ -193,41 +193,17 @@ pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCh
         }
     }
 
-    // 6. workspace
-    {
-        let root = cfg.workspace_root();
-        let mut problems = Vec::new();
-        if !root.is_dir() {
-            problems.push(format!("{} is not a directory", root.display()));
-        } else {
-            let probe = root.join(format!(".anycon-doctor-{}", std::process::id()));
-            match std::fs::write(&probe, b"x") {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&probe);
-                }
-                Err(e) => problems.push(format!("{} is not writable: {e}", root.display())),
-            }
-            for d in [crate::workspace::TRASH_DIR, crate::workspace::SCRATCH_DIR] {
-                if !root.join(d).is_dir() {
-                    problems.push(format!("{d}/ is missing"));
-                }
-            }
-        }
-        if problems.is_empty() {
-            out.push(check(
-                "workspace",
-                true,
-                format!("{} (writable, .trash and .scratch present)", root.display()),
-                None,
-            ));
-        } else {
-            out.push(check(
-                "workspace",
-                false,
-                problems.join("; "),
-                Some("anycon init (creates the directories), or fix permissions"),
-            ));
-        }
+    // 6. workspace：每个根一项（主根 `workspace`，额外根 `workspace:<路径>`，ADR-45）
+    out.push(primary_root_check(&cfg.workspace_root()));
+    match crate::wsroots::plan(cfg, &paths.home) {
+        Ok(roots) => out.extend(roots.iter().filter(|r| !r.primary).map(|r| extra_root_check(r, ctx))),
+        // 配置错误：daemon 拒绝启动，直到改掉它
+        Err(e) => out.push(check(
+            "workspace_roots",
+            false,
+            format!("{e}; the daemon refuses to start with this configuration"),
+            Some("fix workspace.extra_roots in config.toml (anycon config set workspace.extra_roots '[...]'), then restart the daemon"),
+        )),
     }
 
     // 7. 每个 adapter
@@ -377,6 +353,100 @@ pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCh
     out
 }
 
+/// 主根：是目录、可写，`.trash` 和 `.scratch` 在。
+fn primary_root_check(root: &Path) -> DoctorCheck {
+    let mut problems = Vec::new();
+    if !root.is_dir() {
+        problems.push(format!("{} is not a directory", root.display()));
+    } else {
+        if let Some(e) = write_probe(root) {
+            problems.push(format!("{} is not writable: {e}", root.display()));
+        }
+        for d in [crate::workspace::TRASH_DIR, crate::workspace::SCRATCH_DIR] {
+            if !root.join(d).is_dir() {
+                problems.push(format!("{d}/ is missing"));
+            }
+        }
+    }
+    if problems.is_empty() {
+        check("workspace", true, format!("{} (writable, .trash and .scratch present)", root.display()), None)
+    } else {
+        check(
+            "workspace",
+            false,
+            problems.join("; "),
+            Some("anycon init (creates the directories), or fix permissions"),
+        )
+    }
+}
+
+/// 额外根：不存在（外接盘没插）、不是目录、不可写都算失败。daemon 在跑时还要核对它启动时就带着这个根——启动之后才出现的根
+/// （盘后来挂上了、配置后来加的）要重启才生效。
+fn extra_root_check(r: &crate::wsroots::PlannedRoot, ctx: Option<&Ctx>) -> DoctorCheck {
+    let id = format!("workspace:{}", r.path.display());
+    if let Some(why) = &r.unavailable {
+        return check(
+            &id,
+            false,
+            format!("{}: {why}; the daemon skips this root, so its projects are not listed", r.path.display()),
+            Some("mount the disk or create the directory, then restart the daemon (anycon service restart); workspace.extra_roots is read when the daemon starts"),
+        );
+    }
+    if let Some(e) = write_probe(&r.path) {
+        return check(
+            &id,
+            false,
+            format!("{} is not writable: {e}", r.path.display()),
+            Some("fix the permissions (new projects and the trash need to write here)"),
+        );
+    }
+    if let Some(c) = ctx {
+        match c.workspace.roots().iter().find(|w| w.path == r.path) {
+            None => {
+                return check(
+                    &id,
+                    false,
+                    format!("{} is configured, but the running daemon was started without it", r.path.display()),
+                    Some("anycon service restart (workspace.extra_roots is read when the daemon starts)"),
+                )
+            }
+            Some(w) if !w.active => {
+                return check(
+                    &id,
+                    false,
+                    format!(
+                        "{} exists now, but it was missing when the daemon started, so it is being skipped",
+                        r.path.display()
+                    ),
+                    Some("anycon service restart"),
+                )
+            }
+            Some(_) if !r.path.join(crate::workspace::TRASH_DIR).is_dir() => {
+                return check(
+                    &id,
+                    false,
+                    format!("{}: .trash/ is missing", r.path.display()),
+                    Some("restart the daemon (it creates the directory)"),
+                )
+            }
+            Some(_) => {}
+        }
+    }
+    check(&id, true, format!("{} (writable)", r.path.display()), None)
+}
+
+/// 往目录里写一个探测文件再删掉；写不进去返回原因。
+fn write_probe(dir: &Path) -> Option<std::io::Error> {
+    let probe = dir.join(format!(".anycon-doctor-{}", std::process::id()));
+    match std::fs::write(&probe, b"x") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            None
+        }
+        Err(e) => Some(e),
+    }
+}
+
 /// 节点口令这一项（见上）。
 async fn enroll_password_check(ctx: Option<&Ctx>) -> DoctorCheck {
     use anycon_protocol::EnrollPasswordState;
@@ -521,6 +591,46 @@ mod tests {
     fn disk_free_is_positive_for_tmp() {
         assert!(disk_free(&std::env::temp_dir()) > 0);
         assert_eq!(disk_free(Path::new("/definitely/not/here")), 0);
+    }
+
+    #[tokio::test]
+    async fn offline_doctor_has_one_workspace_entry_per_root_and_reports_a_bad_configuration() {
+        let d = tempfile::tempdir().unwrap();
+        let base = crate::sys::canonicalize(d.path()).unwrap();
+        let paths = Paths::new(base.join("home"));
+        let (ws, ext, gone, file) = (base.join("ws"), base.join("ext"), base.join("unplugged"), base.join("a-file"));
+        for dir in [ws.join(".trash"), ws.join(".scratch"), ext.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(&file, "x").unwrap();
+        let mut cfg = Config::default();
+        cfg.agents.env_from_login_shell = false;
+        cfg.workspace.root = ws.to_string_lossy().into_owned();
+        cfg.workspace.extra_roots = [&ext, &gone, &file].iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let checks = run(&paths, &cfg, None).await;
+        let get = |id: &str| checks.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no check {id}: {checks:?}"));
+        assert!(get("workspace").ok);
+        let ok = get(&format!("workspace:{}", ext.display()));
+        assert!(ok.ok && ok.detail.contains("writable"), "{ok:?}");
+        let missing = get(&format!("workspace:{}", gone.display()));
+        assert!(!missing.ok && missing.detail.contains("does not exist"), "{missing:?}");
+        assert!(missing.fix.as_deref().unwrap().contains("restart the daemon"), "{missing:?}");
+        let not_dir = get(&format!("workspace:{}", file.display()));
+        assert!(!not_dir.ok && not_dir.detail.contains("not a directory"), "{not_dir:?}");
+        assert!(!checks.iter().any(|c| c.id == "workspace_roots"), "no configuration error");
+
+        // 嵌套：daemon 拒绝启动，doctor 单独给一项说明，主根和别的项照常检查
+        cfg.workspace.extra_roots =
+            vec![ext.to_string_lossy().into_owned(), ws.join("inner").to_string_lossy().into_owned()];
+        std::fs::create_dir_all(ws.join("inner")).unwrap();
+        let checks = run(&paths, &cfg, None).await;
+        let bad = checks.iter().find(|c| c.id == "workspace_roots").expect("a configuration error entry");
+        assert!(
+            !bad.ok && bad.detail.contains("workspace.extra_roots") && bad.detail.contains("refuses to start"),
+            "{bad:?}"
+        );
+        assert!(bad.fix.is_some());
+        assert!(checks.iter().any(|c| c.id == "workspace" && c.ok));
     }
 
     #[tokio::test]

@@ -3,6 +3,11 @@
 //! 根目录下每个一级子文件夹是一个项目，元数据全部推导。所有路径操作先 `canonicalize` 再做前缀检查，
 //! 符号链接指向根外的一律拒绝。回收站 `.trash/<name>-<timestamp>/`，临时会话目录 `.scratch/<session-id>/`。
 //!
+//! **多个根**（ADR-45）：主根（`workspace.root`）放 `.scratch/`，新项目缺省建在这里；`workspace.extra_roots` 里的每个额外根下的一级
+//! 子文件夹同样是项目。项目名在所有根之间全局唯一，同名时 关联项目 > 主根 > 额外根（按配置顺序），输的那个不出现在列表里；
+//! 所以 `fs.*` 的 `<项目名>/<相对路径>` 不需要知道项目在哪个根。每个根有自己的 `.trash/`（`rename` 不跨文件系统），改名只在同一个根内。
+//! 根的集合在启动时定下来（[`crate::wsroots`]），之后不变。
+//!
 //! **锁顺序**：命名空间锁 `ns_lock`（link / unlink / create / clone / rename / restore / promote_scratch）在前，
 //! 会话锁在后——`unlink` 持着 `ns_lock` 调用方传进来的 `busy` 回调，回调会逐个锁会话；所以任何代码都不能持有会话锁再来取
 //! `ns_lock`（`Sessions::promote` 为此拆成三步）。`ns_lock` 之内不要等会话的事件。
@@ -23,7 +28,7 @@ use std::time::{Duration, Instant};
 use anycon_protocol::{
     methods, BrowseEntry, ErrorCode, FsEntry, FsListResult, FsReadEncoding, FsReadResult, GitMeta, JobDone,
     JobProgress, LinkBlock, Project, ProjectKind, RenamedProject, RpcError, TrashEntry, WorkspaceBrowseResult,
-    WorkspaceChanged, WorkspaceListResult,
+    WorkspaceChanged, WorkspaceListResult, WorkspaceRootInfo,
 };
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -68,6 +73,28 @@ type RpcResult<T> = Result<T, RpcError>;
 
 fn err(code: ErrorCode, msg: impl Into<String>) -> RpcError {
     RpcError::new(code, msg)
+}
+
+/// [`Workspace::new`] 的错误：建主根的目录失败，或 `workspace.extra_roots` 的配置错误（daemon 拒绝启动）。
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceError {
+    #[error("workspace: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Roots(#[from] crate::wsroots::RootsError),
+}
+
+/// 一个 workspace 根（ADR-45）。`Workspace` 里下标 0 是主根。
+#[derive(Debug, Clone)]
+pub struct WsRoot {
+    /// 可用的根是 canonical 路径；不可用的根是 `~` 展开后的配置值。
+    pub path: PathBuf,
+    /// 主根：放 `.scratch/`，新项目缺省建在这里。
+    pub primary: bool,
+    /// 启动时是一个存在的目录。不可用的根不扫描、不监听、没有 `.trash`、不能新建项目。
+    pub active: bool,
+    /// 配置里的原样。
+    pub configured: String,
 }
 
 /// 项目名校验：不含 `/` 和 NUL、不以 `.` 开头、≤ 255 字节、不是 `.trash` / `.scratch`。
@@ -200,7 +227,8 @@ impl Drop for WatchGuard {
 }
 
 pub struct Workspace {
-    root: PathBuf,
+    /// 所有根：下标 0 是主根，后面是额外根（配置顺序）。启动时定下来，之后不变。
+    roots: Vec<WsRoot>,
     config: Arc<ConfigStore>,
     store: Store,
     clients: Arc<Clients>,
@@ -212,13 +240,14 @@ pub struct Workspace {
     test_firmlinks: RwLock<Vec<(PathBuf, PathBuf)>>,
     git: Arc<GitMetaSvc>,
     jobs: Mutex<HashMap<String, JobHandle>>,
-    /// 目录名 → inode，用来在重新扫描时识别「改名」（只含根目录下的项目，不含被关联项目盖住的同名文件夹）。
-    snapshot: Mutex<HashMap<String, u64>>,
+    /// 目录名 → 目录身份 `(dev, ino)`，用来在重新扫描时识别「改名」（含所有可用根下的项目，不含被盖住的同名文件夹）。
+    /// 身份带设备号：不同根可能在不同的盘上，只比 inode 会把别的根里碰巧同号的目录当成改名。
+    snapshot: Mutex<HashMap<String, (u64, u64)>>,
     /// 关联的项目：名字（NFC）→ 登记的目录（link 时 canonicalize 过）。和 `linked_projects` 表保持一致。
     linked: RwLock<BTreeMap<String, PathBuf>>,
-    /// workspace 根所在的文件系统不区分大小写（APFS 默认）：项目名按小写比较。
+    /// 任何一个可用根所在的文件系统不区分大小写（APFS 默认）：项目名（全局一个命名空间）按小写比较。
     case_insensitive: std::sync::atomic::AtomicBool,
-    /// 已经为「被关联项目盖住的根目录同名文件夹」记过 warn 的名字（每个名字每次进程只记一次）。
+    /// 已经为「被更高优先级的项目盖住的同名文件夹」记过 warn 的名字（每个名字每次进程只记一次）。
     shadow_warned: Mutex<HashSet<String>>,
     /// 已经为某个 `link_roots` 项记过 warn 的原因（每个原因每个进程只记一次，免得每次请求都刷屏；判定本身每次请求都重做）。
     roots_warned: Mutex<HashSet<String>>,
@@ -230,17 +259,50 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// `root` 是主根（调用方已展开 `~`）；额外根取自 `config` 的 `workspace.extra_roots`，按 [`crate::wsroots`] 的规则校验
+    /// （配置错误 → [`WorkspaceError::Roots`]），不存在的跳过并 warn。
     pub async fn new(
         root: &Path,
         config: Arc<ConfigStore>,
         store: Store,
         clients: Arc<Clients>,
         env: Arc<HashMap<String, String>>,
-    ) -> std::io::Result<Arc<Self>> {
+    ) -> Result<Arc<Self>, WorkspaceError> {
         std::fs::create_dir_all(root)?;
         std::fs::create_dir_all(root.join(TRASH_DIR))?;
         std::fs::create_dir_all(root.join(SCRATCH_DIR))?;
         let root = crate::sys::canonicalize(root)?;
+        let roots = {
+            let cfg = config.get();
+            let planned = crate::wsroots::plan_with(
+                &cfg.workspace.root,
+                &root,
+                &cfg.workspace.extra_roots,
+                &config.paths().home,
+            )?;
+            let mut roots = Vec::with_capacity(planned.len());
+            for p in planned {
+                if let Some(why) = &p.unavailable {
+                    tracing::warn!(
+                        root = %p.path.display(),
+                        "workspace.extra_roots: skipping {:?}: {why}; its projects are not listed. Restart the daemon after fixing it",
+                        p.configured
+                    );
+                } else if !p.primary {
+                    // 每个根有自己的 `.trash/`（rename 不跨文件系统）；建不了（只读的盘）不拦：项目照常列出，trash 时才报错
+                    if let Err(e) = std::fs::create_dir_all(p.path.join(TRASH_DIR)) {
+                        tracing::warn!(root = %p.path.display(), error = %e, "cannot create .trash in this workspace root");
+                    }
+                }
+                roots.push(WsRoot {
+                    path: if p.primary { root.clone() } else { p.path },
+                    primary: p.primary,
+                    active: p.unavailable.is_none(),
+                    configured: p.configured,
+                });
+            }
+            roots
+        };
         let linked: BTreeMap<String, PathBuf> = match store.list_linked().await {
             Ok(rows) => rows.into_iter().map(|r| (r.name, PathBuf::from(r.path))).collect(),
             Err(e) => {
@@ -248,7 +310,7 @@ impl Workspace {
                 BTreeMap::new()
             }
         };
-        let case_insensitive = probe_case_insensitive(&root);
+        let case_insensitive = roots.iter().filter(|r| r.active).any(|r| probe_case_insensitive(&r.path));
         let home = anycon_agent_api::env_home(&env).map(|h| {
             let raw = PathBuf::from(h);
             let canon = crate::sys::canonicalize(&raw).unwrap_or_else(|_| raw.clone());
@@ -256,7 +318,7 @@ impl Workspace {
         });
         let git = Arc::new(GitMetaSvc::new(env.clone(), clients.clone()));
         let ws = Arc::new(Workspace {
-            root,
+            roots,
             config,
             store,
             clients,
@@ -281,8 +343,31 @@ impl Workspace {
         Ok(ws)
     }
 
+    /// 主根。
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.roots[0].path
+    }
+
+    /// 所有根（主根在最前）。
+    pub fn roots(&self) -> &[WsRoot] {
+        &self.roots
+    }
+
+    /// `node.info.workspace_roots`：`available` = 启动时可用并且现在目录还在（外接盘中途拔掉会变成 false）。
+    pub fn roots_info(&self) -> Vec<WorkspaceRootInfo> {
+        self.roots
+            .iter()
+            .map(|r| WorkspaceRootInfo {
+                path: path_string(&r.path),
+                primary: r.primary,
+                available: r.active && r.path.is_dir(),
+            })
+            .collect()
+    }
+
+    /// 可用的根（启动时可用的，含现在目录已经不在的），带下标，主根在最前。
+    fn active_roots(&self) -> impl Iterator<Item = (usize, &WsRoot)> {
+        self.roots.iter().enumerate().filter(|(_, r)| r.active)
     }
 
     /// workspace 根所在的卷不区分大小写（项目名按小写比较）。
@@ -324,30 +409,45 @@ impl Workspace {
     // ---------------- 路径安全 ----------------
 
     /// 项目目录（必须存在）。校验名字、canonicalize、前缀检查。关联的项目优先：返回关联的目录
-    /// （目录不在了返回 `not_found`）；否则是根目录下的文件夹，必须仍在根目录之内。
+    /// （目录不在了返回 `not_found`）；否则是某个根下的文件夹（主根优先，再按配置顺序找额外根），必须仍在那个根之内。
     pub fn project_path(&self, name: &str) -> RpcResult<PathBuf> {
+        self.locate(name).map(|(_, canon)| canon)
+    }
+
+    /// 项目所在的根（下标；关联项目没有，是 `None`）和 canonical 目录。规则同 [`project_path`](Self::project_path)。
+    fn locate(&self, name: &str) -> RpcResult<(Option<usize>, PathBuf)> {
         validate_name(name)?;
         if let Some(stored) = self.find_linked(name) {
-            return self.linked_dir(&stored);
+            return self.linked_dir(&stored).map(|d| (None, d));
         }
-        let p = self.root_entry(name);
-        match std::fs::symlink_metadata(&p) {
-            Ok(_) => {}
-            Err(_) => return Err(err(ErrorCode::NotFound, format!("project {name} not found"))),
-        }
+        let Some((idx, p)) = self.find_entry(name) else {
+            return Err(err(ErrorCode::NotFound, format!("project {name} not found")));
+        };
+        let root = &self.roots[idx].path;
         let canon =
             crate::sys::canonicalize(&p).map_err(|_| err(ErrorCode::NotFound, format!("project {name} not found")))?;
-        if !canon.starts_with(&self.root) {
+        if !canon.starts_with(root) {
             return Err(err(ErrorCode::Forbidden, "project path escapes the workspace root"));
         }
         if !canon.is_dir() {
             return Err(err(ErrorCode::NotFound, format!("project {name} is not a directory")));
         }
-        Ok(canon)
+        Ok((Some(idx), canon))
+    }
+
+    /// 根下项目所在的根（下标）；关联项目 `None`。项目不存在 / 不可用时报错。
+    fn root_of_project(&self, name: &str) -> RpcResult<usize> {
+        match self.locate(name)? {
+            (Some(idx), _) => Ok(idx),
+            (None, _) => {
+                Err(err(ErrorCode::Invalid, format!("{name} is a linked directory, not a folder in a workspace root")))
+            }
+        }
     }
 
     /// `fs.*` 的相对路径解析。拒绝绝对路径、`..`、NUL；canonicalize 后必须仍在所属的边界之内（符号链接逃逸被拒绝）。
-    /// 第一段是关联项目名时，其余部分相对关联目录解析、边界是关联目录；否则相对根目录、边界是根目录。
+    /// 第一段是关联项目名时，其余部分相对关联目录解析、边界是关联目录；否则相对项目所在的 workspace 根、边界是那个根
+    /// （第一段不是任何根下的项目时——空路径、`.trash`、`.scratch`、不存在的名字——是主根）。
     pub fn resolve_rel(&self, rel: &str) -> RpcResult<PathBuf> {
         self.resolve_in(rel).map(|(canon, _)| canon)
     }
@@ -369,9 +469,10 @@ impl Workspace {
                 _ => return Err(err(ErrorCode::Forbidden, "path escapes the workspace root")),
             }
         }
-        let (boundary, rest) = match segments.first().and_then(|s| s.to_str()).and_then(|n| self.find_linked(n)) {
+        let first = segments.first().and_then(|s| s.to_str());
+        let (boundary, rest) = match first.and_then(|n| self.find_linked(n)) {
             Some(name) => (self.linked_dir(&name)?, &segments[1..]),
-            None => (self.root.clone(), &segments[..]),
+            None => (self.boundary_root(first), &segments[..]),
         };
         let mut joined = boundary.clone();
         joined.extend(rest);
@@ -383,15 +484,21 @@ impl Workspace {
         Ok((canon, boundary))
     }
 
-    /// `.scratch/<session-id>`，不存在则创建。
+    /// 第一段名字所属的 workspace 根（路径）：它是某个根下的项目就是那个根，否则（含以 `.` 开头的名字）是主根。
+    fn boundary_root(&self, first: Option<&str>) -> PathBuf {
+        let idx = first.filter(|n| !n.starts_with('.')).and_then(|n| self.find_entry(n)).map_or(0, |(i, _)| i);
+        self.roots[idx].path.clone()
+    }
+
+    /// `.scratch/<session-id>`（主根下；scratch 只在主根），不存在则创建。
     pub fn scratch_dir(&self, session_id: &str) -> std::io::Result<PathBuf> {
-        let p = self.root.join(SCRATCH_DIR).join(session_id);
+        let p = self.scratch_path(session_id);
         std::fs::create_dir_all(&p)?;
         Ok(p)
     }
 
     pub fn scratch_path(&self, session_id: &str) -> PathBuf {
-        self.root.join(SCRATCH_DIR).join(session_id)
+        self.root().join(SCRATCH_DIR).join(session_id)
     }
 
     /// 删除 scratch 目录（会话删除 / 过期清理）。
@@ -400,12 +507,12 @@ impl Workspace {
             return;
         }
         let p = self.scratch_path(session_id);
-        if p.starts_with(self.root.join(SCRATCH_DIR)) {
+        if p.starts_with(self.root().join(SCRATCH_DIR)) {
             let _ = std::fs::remove_dir_all(p);
         }
     }
 
-    /// scratch 会话转项目：`mv .scratch/<id> <root>/<name>`。
+    /// scratch 会话转项目：`mv .scratch/<id> <主根>/<name>`（scratch 在主根，转成的项目也在主根，同一个文件系统）。
     pub async fn promote_scratch(&self, session_id: &str, name: &str) -> RpcResult<PathBuf> {
         let name = nfc(name);
         let name = name.as_str();
@@ -414,7 +521,7 @@ impl Workspace {
         if !src.is_dir() {
             return Err(err(ErrorCode::NotFound, "scratch directory not found"));
         }
-        let dst = self.root.join(name);
+        let dst = self.root().join(name);
         {
             let _ns = self.ns_lock.lock().await;
             self.check_name_free(name)?;
@@ -426,51 +533,78 @@ impl Workspace {
 
     // ---------------- 扫描与元数据 ----------------
 
-    /// 根目录下的项目：目录名 → inode。同名的关联项目盖住根目录里的文件夹，那个文件夹不算（第二个返回值是被盖住的名字）。
-    fn scan(&self) -> (HashMap<String, u64>, Vec<String>) {
-        let mut out = HashMap::new();
+    /// 所有可用根下的项目。名字全局唯一，同名时 关联项目 > 主根 > 额外根（按配置顺序）：输的那个文件夹不算项目，
+    /// 记在第二个返回值里（调用方 warn）。同一个根里按字节不同、只差大小写 / NFC 的两个文件夹不互相盖住（沿用 v0.1）。
+    fn scan(&self) -> (Vec<Scanned>, Vec<Shadowed>) {
+        let mut out = Vec::new();
         let mut shadowed = Vec::new();
-        let Ok(rd) = std::fs::read_dir(&self.root) else { return (out, shadowed) };
         let linked_keys: HashSet<String> = self.linked.read().unwrap().keys().map(|n| name_key(n, self.ci())).collect();
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
-            }
-            // metadata() 跟随符号链接：指向根外的目录不算项目
-            let Ok(md) = std::fs::metadata(e.path()) else { continue };
-            if !md.is_dir() {
-                continue;
-            }
-            if let Ok(canon) = crate::sys::canonicalize(e.path()) {
-                if !canon.starts_with(&self.root) {
+        // 更高优先级的根已经占了的名字（键 → 根的下标）
+        let mut taken: HashMap<String, usize> = HashMap::new();
+        for (idx, root) in self.active_roots() {
+            let Ok(rd) = std::fs::read_dir(&root.path) else { continue };
+            let mut mine = Vec::new();
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') {
                     continue;
                 }
+                // metadata() 跟随符号链接：指向根外的目录不算项目
+                let Some(md) = project_dir_metadata(&root.path, &e.path()) else { continue };
+                let key = name_key(&name, self.ci());
+                if linked_keys.contains(&key) {
+                    shadowed.push(Shadowed { name, root: idx, by: ShadowedBy::Linked });
+                    continue;
+                }
+                if let Some(&winner) = taken.get(&key) {
+                    shadowed.push(Shadowed { name, root: idx, by: ShadowedBy::Root(winner) });
+                    continue;
+                }
+                mine.push(key);
+                out.push(Scanned {
+                    id: crate::sys::file_identity(&md, &e.path(), true).unwrap_or((0, 0)),
+                    name,
+                    root: idx,
+                });
             }
-            if linked_keys.contains(&name_key(&name, self.ci())) {
-                shadowed.push(name);
-                continue;
+            for key in mine {
+                taken.insert(key, idx);
             }
-            out.insert(name, crate::sys::file_identity(&md, &e.path(), true).map_or(0, |(_, ino)| ino));
         }
         (out, shadowed)
     }
 
-    fn scan_names(&self) -> HashMap<String, u64> {
-        self.scan().0
+    fn scan_names(&self) -> HashMap<String, (u64, u64)> {
+        self.scan().0.into_iter().map(|e| (e.name, e.id)).collect()
     }
 
-    /// `workspace.list`：根目录下的项目 + 关联的项目。`active` = 项目名 → 活跃会话数（由 sessions 提供）。
-    pub async fn list(&self, active: &HashMap<String, u32>) -> WorkspaceListResult {
-        let (names, shadowed) = self.scan();
-        for name in shadowed {
-            if self.shadow_warned.lock().unwrap().insert(name.clone()) {
-                tracing::warn!(
-                    project = %name,
-                    "a folder in the workspace root has the same name as a linked project; the linked project wins and the folder is hidden"
-                );
+    /// 被盖住的同名文件夹：warn 一次（每个名字每次进程只记一次）。
+    fn warn_shadowed(&self, shadowed: Vec<Shadowed>) {
+        for s in shadowed {
+            if !self.shadow_warned.lock().unwrap().insert(s.name.clone()) {
+                continue;
+            }
+            let hidden_root = path_string(&self.roots[s.root].path);
+            match s.by {
+                ShadowedBy::Linked => tracing::warn!(
+                    project = %s.name,
+                    root = %hidden_root,
+                    "a folder in a workspace root has the same name as a linked project; the linked project wins and the folder is hidden"
+                ),
+                ShadowedBy::Root(winner) => tracing::warn!(
+                    project = %s.name,
+                    root = %hidden_root,
+                    winner = %path_string(&self.roots[winner].path),
+                    "a folder in this workspace root has the same name as a project in a workspace root listed before it; the earlier one wins and this folder is hidden"
+                ),
             }
         }
+    }
+
+    /// `workspace.list`：所有可用根下的项目 + 关联的项目。`active` = 项目名 → 活跃会话数（由 sessions 提供）。
+    pub async fn list(&self, active: &HashMap<String, u32>) -> WorkspaceListResult {
+        let (entries, shadowed) = self.scan();
+        self.warn_shadowed(shadowed);
         // 会话里存的项目名可能和盘上的写法不同（NFC / NFD、大小写）：按规范化的键汇总活跃会话数
         let mut active_by_key: HashMap<String, u32> = HashMap::new();
         for (n, c) in active {
@@ -478,9 +612,10 @@ impl Workspace {
         }
         let active_of = |n: &str| active_by_key.get(&name_key(n, self.ci())).copied().unwrap_or(0);
         let mut tasks = Vec::new();
-        for name in names.keys() {
-            let path = self.root.join(name);
-            let name = name.clone();
+        for e in entries {
+            let root = path_string(&self.roots[e.root].path);
+            let path = self.roots[e.root].path.join(&e.name);
+            let name = e.name;
             let active_sessions = active_of(&name);
             let git_svc = self.git.clone();
             tasks.push(tokio::spawn(async move {
@@ -491,6 +626,7 @@ impl Workspace {
                     Project {
                         name,
                         path: path.to_string_lossy().into_owned(),
+                        root: Some(root),
                         git,
                         modified_at_ms,
                         active_sessions,
@@ -522,7 +658,7 @@ impl Workspace {
             }
         }
         projects.sort_by(|a, b| b.modified_at_ms.cmp(&a.modified_at_ms).then(a.name.cmp(&b.name)));
-        WorkspaceListResult { root: self.root.to_string_lossy().into_owned(), projects }
+        WorkspaceListResult { root: path_string(self.root()), projects }
     }
 
     /// 单个项目的当前信息。关联项目的目录不在了不算错误（`missing: true`）；根目录下不存在的项目是 `not_found`。
@@ -537,13 +673,14 @@ impl Workspace {
             }
             return Ok(project);
         }
-        let path = self.project_path(name)?;
+        let (idx, path) = self.locate(name)?;
         let modified_at_ms = std::fs::metadata(&path).ok().as_ref().map(mtime_ms).unwrap_or(0);
         let canonical_name = self.canonical_project_name(name);
         let (git, git_pending) = self.git.get(&canonical_name, &path).await;
         Ok(Project {
             name: canonical_name,
             path: path.to_string_lossy().into_owned(),
+            root: idx.map(|i| path_string(&self.roots[i].path)),
             git,
             modified_at_ms,
             active_sessions: active,
@@ -555,7 +692,9 @@ impl Workspace {
 
     // ---------------- 变更通知 ----------------
 
-    /// 重新扫描根目录，和快照做 diff，有变化就发 `workspace.changed`。改名靠 inode 识别。
+    /// 重新扫描所有根，和快照做 diff，有变化就发 `workspace.changed`。改名靠目录身份识别（只认同一个根内的改名：
+    /// 跨根的移动要拷贝，身份会变，是一次删除加一次新增）。同名项目换了落脚的目录（更高优先级的根里的同名文件夹没了、
+    /// 露出另一个根里的）进 `updated`，客户端重新拉列表。
     pub async fn rescan_and_notify(&self) {
         let new = self.scan_names();
         let change = {
@@ -565,45 +704,49 @@ impl Workspace {
             let mut removed: Vec<String> = old.keys().filter(|k| !new.contains_key(*k)).cloned().collect();
             let mut renamed = Vec::new();
             for r in removed.clone() {
-                let ino = old[&r];
-                if let Some(a) = added.iter().find(|a| new[*a] == ino).cloned() {
+                let id = old[&r];
+                if let Some(a) = added.iter().find(|a| new[*a] == id).cloned() {
                     renamed.push(RenamedProject { from: r.clone(), to: a.clone() });
                     removed.retain(|x| x != &r);
                     added.retain(|x| x != &a);
                 }
             }
+            let mut updated: Vec<String> =
+                new.iter().filter(|(k, id)| old.get(*k).is_some_and(|o| o != *id)).map(|(k, _)| k.clone()).collect();
             added.sort();
             removed.sort();
-            WorkspaceChanged { added, removed, renamed, updated: Vec::new() }
+            updated.sort();
+            WorkspaceChanged { added, removed, renamed, updated }
         };
-        if !change.added.is_empty() || !change.removed.is_empty() || !change.renamed.is_empty() {
+        if !change.added.is_empty()
+            || !change.removed.is_empty()
+            || !change.renamed.is_empty()
+            || !change.updated.is_empty()
+        {
             self.clients.broadcast(methods::WORKSPACE_CHANGED, &change);
         }
     }
 
-    /// 只 watch 根目录一层，500 ms 防抖。返回的 guard drop 时停止。
+    /// 只 watch 每个可用根的一层，500 ms 防抖。返回的 guard drop 时停止。额外根 watch 不上只 warn（主根不行才报错）。
     pub fn spawn_watcher(self: &Arc<Self>) -> notify::Result<WatchGuard> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let root = self.root.clone();
+        let roots: Vec<PathBuf> = self.active_roots().map(|(_, r)| r.path.clone()).collect();
+        let event_roots = roots.clone();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(ev) = res else { return };
-            // 只关心根下一级的非隐藏条目（.trash / .scratch 里的变化不是项目增删）
-            let relevant = ev.paths.iter().any(|p| match p.strip_prefix(&root) {
-                Ok(rel) => {
-                    let mut comps = rel.components();
-                    match (comps.next(), comps.next()) {
-                        (Some(Component::Normal(first)), None) => !first.to_string_lossy().starts_with('.'),
-                        (None, _) => true,
-                        _ => false,
-                    }
-                }
-                Err(_) => true,
-            });
-            if relevant {
+            if ev.paths.iter().any(|p| event_is_relevant(&event_roots, p)) {
                 let _ = tx.send(());
             }
         })?;
-        watcher.watch(&self.root, RecursiveMode::NonRecursive)?;
+        for (i, root) in roots.iter().enumerate() {
+            match watcher.watch(root, RecursiveMode::NonRecursive) {
+                Ok(()) => {}
+                Err(e) if i > 0 => {
+                    tracing::warn!(root = %root.display(), error = %e, "cannot watch this workspace root; changes in it show up on the next list");
+                }
+                Err(e) => return Err(e),
+            }
+        }
         let this = Arc::clone(self);
         let task = tokio::spawn(async move {
             while rx.recv().await.is_some() {
@@ -670,7 +813,8 @@ impl Workspace {
         hook(name.to_string());
     }
 
-    /// 名字已被占用（某个关联项目，或根目录里的任何条目，NFC / 不区分大小写地比较）-> `exists`。
+    /// 名字已被占用（某个关联项目，或任何一个根里的任何条目，NFC / 不区分大小写地比较）-> `exists`。
+    /// 全局一个命名空间：别的根里的同名文件夹也算占用（它会被列在列表里，新的这个反而会被盖住）。
     fn check_name_free(&self, name: &str) -> RpcResult<()> {
         if self.is_linked(name) {
             return Err(err(ErrorCode::Exists, format!("project {name} already exists (a linked directory)")));
@@ -681,16 +825,18 @@ impl Workspace {
         Ok(())
     }
 
-    /// 根目录里有没有占着这个名字的条目：文件系统自己认的（含符号链接），或者按 NFC / 大小写规则等价的。
+    /// 可用的根里有没有占着这个名字的条目：文件系统自己认的（含符号链接），或者按 NFC / 大小写规则等价的。
     fn root_name_taken(&self, name: &str) -> bool {
-        if std::fs::symlink_metadata(self.root.join(name)).is_ok() {
-            return true;
-        }
         let key = name_key(name, self.ci());
-        match std::fs::read_dir(&self.root) {
-            Ok(rd) => rd.flatten().any(|e| name_key(&e.file_name().to_string_lossy(), self.ci()) == key),
-            Err(_) => false,
-        }
+        self.active_roots().any(|(_, r)| {
+            if std::fs::symlink_metadata(r.path.join(name)).is_ok() {
+                return true;
+            }
+            match std::fs::read_dir(&r.path) {
+                Ok(rd) => rd.flatten().any(|e| name_key(&e.file_name().to_string_lossy(), self.ci()) == key),
+                Err(_) => false,
+            }
+        })
     }
 
     /// 两个项目名是不是同一个名字（NFC；不区分大小写的文件系统上再忽略大小写）。
@@ -698,34 +844,54 @@ impl Workspace {
         a == b || name_key(a, self.ci()) == name_key(b, self.ci())
     }
 
-    /// 会话里存的项目名、对外显示的项目名：已关联的用登记的名字；根目录下的项目用**盘上那一项的原样名字**
+    /// 会话里存的项目名、对外显示的项目名：已关联的用登记的名字；根下的项目用**盘上那一项的原样名字**
     /// （按规范化的键在根目录里找：Finder 建的 NFD 名字和 `workspace.list` 给的是同一个字符串）；
     /// 都找不到（项目还不存在）就是 NFC。
     pub fn canonical_project_name(&self, name: &str) -> String {
         if let Some(stored) = self.find_linked(name) {
             return stored;
         }
-        self.disk_name(name).unwrap_or_else(|| nfc(name))
+        self.find_entry(name)
+            .and_then(|(idx, _)| self.disk_name_in(&self.roots[idx].path, name))
+            .unwrap_or_else(|| nfc(name))
     }
 
-    /// 根目录里和 `name` 按规范化的键等价的那一项（不含点开头的），返回盘上原样的名字。
-    fn disk_name(&self, name: &str) -> Option<String> {
+    /// `root` 里和 `name` 按规范化的键等价的那一项（不含点开头的），返回盘上原样的名字。
+    fn disk_name_in(&self, root: &Path, name: &str) -> Option<String> {
         let key = name_key(name, self.ci());
-        std::fs::read_dir(&self.root)
+        std::fs::read_dir(root)
             .ok()?
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .find(|on_disk| !on_disk.starts_with('.') && name_key(on_disk, self.ci()) == key)
     }
 
-    /// 根目录下项目 `name` 在盘上的路径：原样的名字在就用它，否则用按规范化的键找到的那一项。
+    /// 根 `root` 下项目 `name` 在盘上的路径：原样的名字在就用它，否则用按规范化的键找到的那一项。
     /// APFS 不区分 NFC / NFD，ext4 之类按字节比较名字：NFC 写法找不到 NFD 名字的文件夹，要靠后一步。
-    fn root_entry(&self, name: &str) -> PathBuf {
-        let p = self.root.join(name);
+    fn root_entry_in(&self, root: &Path, name: &str) -> PathBuf {
+        let p = root.join(name);
         if std::fs::symlink_metadata(&p).is_ok() {
             return p;
         }
-        self.disk_name(name).map_or(p, |on_disk| self.root.join(on_disk))
+        self.disk_name_in(root, name).map_or(p, |on_disk| root.join(on_disk))
+    }
+
+    /// 按项目优先级（主根，再按配置顺序的额外根）找名字对应的盘上条目：根的下标和条目路径。优先返回「确实是项目」的条目
+    /// （目录，且 canonical 路径在所属的根之内），所有根里都没有这样的条目时退回第一个同名条目，让调用方按它报具体的错
+    /// （不是目录、指向根外……）。不含关联项目。
+    fn find_entry(&self, name: &str) -> Option<(usize, PathBuf)> {
+        let mut fallback = None;
+        for (idx, root) in self.active_roots() {
+            let p = self.root_entry_in(&root.path, name);
+            if std::fs::symlink_metadata(&p).is_err() {
+                continue;
+            }
+            if project_dir_metadata(&root.path, &p).is_some() {
+                return Some((idx, p));
+            }
+            fallback.get_or_insert((idx, p));
+        }
+        fallback
     }
 
     /// 项目现在指向哪里，用来给会话记「创建时的 cwd」。
@@ -760,6 +926,9 @@ impl Workspace {
                             LocCheck::Different
                         }
                     }
+                    // 设备号不同，但记下的那个设备现在还是某个 workspace 根所在的盘：不是「整个根搬了盘」，而是这个名字现在
+                    // 指向了另一个根里的另一个目录（比如原来那个进了回收站、别的根里建了同名的）：拒绝续接
+                    (Some((rd, _)), Some(_)) if self.is_root_device(rd) => LocCheck::Different,
                     // 设备号不同（整个根搬了盘），或旧版本只记了名字：接受并重新记下
                     _ => LocCheck::Refresh(now.to_string()),
                 }
@@ -769,11 +938,16 @@ impl Workspace {
         }
     }
 
+    /// 有没有可用的 workspace 根在设备 `dev` 上。
+    fn is_root_device(&self, dev: u64) -> bool {
+        self.active_roots().any(|(_, r)| crate::sys::identity_of(&r.path).is_some_and(|(d, _)| d == dev))
+    }
+
     /// `project_loc` 的人读形式（拒绝续接时写进消息）。
     pub fn describe_loc(recorded: &str) -> String {
         match (recorded.strip_prefix("linked:"), parse_folder_loc(recorded)) {
             (Some(path), _) => path.to_string(),
-            (_, Some((name, _))) => format!("the folder {name} in the workspace root"),
+            (_, Some((name, _))) => format!("the folder {name} in a workspace root"),
             _ => recorded.to_string(),
         }
     }
@@ -987,10 +1161,10 @@ impl Workspace {
         let data = &self.config.paths().home;
         let mut ctx = LinkCtx {
             roots,
-            root: self.root.clone(),
+            workspace_roots: self.roots.iter().map(|r| r.path.clone()).collect(),
             data: crate::sys::canonicalize(data).unwrap_or_else(|_| data.clone()),
             data_lexical: lexical_clean(data),
-            root_ids: Default::default(),
+            root_ids: Vec::new(),
             data_ids: Default::default(),
             deny: deny_table_with(home.map(|h| h.raw.as_path()), home.map(|h| h.canon.as_path())),
             aliases,
@@ -1128,11 +1302,13 @@ impl Workspace {
 
     // ---------------- 项目操作 ----------------
 
-    pub async fn create(&self, name: &str, git_init: bool) -> RpcResult<PathBuf> {
+    /// 新建空项目。`root` 缺省 = 主根；否则必须是 `node.info` 列出的某个根（见 [`Self::resolve_root`]）。
+    pub async fn create(&self, name: &str, git_init: bool, root: Option<&str>) -> RpcResult<PathBuf> {
         let name = nfc(name);
         let name = name.as_str();
         validate_name(name)?;
-        let p = self.root.join(name);
+        let root_idx = self.resolve_root(root)?;
+        let p = self.roots[root_idx].path.join(name);
         // `create_dir` 本身是原子的：并发的 create / clone 抢同一个名字，只有一个能成功；
         // 关联的项目和根目录下的项目共用命名空间，所以名字不能已被某个关联项目占用
         {
@@ -1160,6 +1336,41 @@ impl Workspace {
         Ok(p)
     }
 
+    /// `workspace.create` / `clone` 的 `root` 参数：缺省 = 主根；给了就必须是 `node.info.workspace_roots` 里的某个根
+    /// （`~` 按固定的 HOME 展开，词法规范化后或 canonicalize 后等于某个根的路径；其他值，包括根下面的子目录，`invalid`）。
+    /// 匹配上了但这个根现在不可用（启动时就不存在、或之后目录没了）→ `not_found`。
+    fn resolve_root(&self, requested: Option<&str>) -> RpcResult<usize> {
+        let idx = match requested {
+            None => 0,
+            Some(raw) => {
+                check_path_text(raw)?;
+                let expanded = self.expand_user_path(raw).map_err(|m| err(ErrorCode::Invalid, m))?;
+                let lexical = lexical_clean(&expanded);
+                let canon = crate::sys::canonicalize(&lexical).ok();
+                self.roots
+                    .iter()
+                    .position(|r| r.path == lexical || canon.as_ref().is_some_and(|c| *c == r.path))
+                    .ok_or_else(|| {
+                        err(
+                            ErrorCode::Invalid,
+                            "root is not one of this node's workspace roots (workspace.root or an entry of workspace.extra_roots; node.info lists them)",
+                        )
+                    })?
+            }
+        };
+        let root = &self.roots[idx];
+        if !root.active || !root.path.is_dir() {
+            return Err(err(
+                ErrorCode::NotFound,
+                format!(
+                    "the workspace root {} is not available (is the disk mounted?); the node reads workspace.extra_roots when it starts",
+                    root.path.display()
+                ),
+            ));
+        }
+        Ok(idx)
+    }
+
     /// 原子地占住一个新目录：已存在（含符号链接）返回 `exists`。
     fn claim_dir(&self, path: &Path, name: &str) -> RpcResult<()> {
         match std::fs::create_dir(path) {
@@ -1182,9 +1393,11 @@ impl Workspace {
             if let Some(stored) = self.find_linked(from) {
                 return self.rename_linked(&stored, to).await;
             }
+            // 只在同一个根内改名：新名字落在原来所在的根里（跨根要拷贝，不是改名）
+            let root_idx = self.root_of_project(from)?;
             let src = self.project_path(from)?;
             self.check_name_free(to)?;
-            let dst = self.root.join(to);
+            let dst = self.roots[root_idx].path.join(to);
             std::fs::rename(&src, &dst).map_err(|e| err(ErrorCode::Internal, format!("rename: {e}")))?;
             self.git.forget(&src);
         }
@@ -1218,58 +1431,71 @@ impl Workspace {
         Ok(())
     }
 
-    /// 移到 `.trash/<name>-<timestamp>`。
+    /// 移到所在根的 `.trash/<name>-<timestamp>`（每个根有自己的回收站，`rename` 不跨文件系统）。
     pub async fn trash(&self, name: &str) -> RpcResult<TrashEntry> {
         validate_name(name)?;
         self.ensure_not_linked_for_trash(name)?;
-        let src = self.project_path(name)?;
+        let root_idx = self.root_of_project(name)?;
+        let root = &self.roots[root_idx].path;
         let ts = now_ms();
         let id = format!("{name}-{}", fmt_compact(ts));
-        let dst = self.root.join(TRASH_DIR).join(&id);
-        if dst.exists() {
+        // id 在所有根之间唯一：`restore` / `purge` 只带 id，靠它找到是哪个根的回收站
+        if self.active_roots().any(|(_, r)| r.path.join(TRASH_DIR).join(&id).exists()) {
             return Err(err(ErrorCode::Exists, "trash entry already exists; retry in a second"));
         }
-        std::fs::create_dir_all(self.root.join(TRASH_DIR)).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+        let dst = root.join(TRASH_DIR).join(&id);
+        std::fs::create_dir_all(root.join(TRASH_DIR)).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
         // 如果 name 本身是符号链接，rename 的是链接而不是目标
-        let src_for_move = self.root_entry(name);
-        let _ = src;
+        let src_for_move = self.root_entry_in(root, name);
         std::fs::rename(&src_for_move, &dst).map_err(|e| err(ErrorCode::Internal, format!("move to trash: {e}")))?;
         self.rescan_and_notify().await;
         let bytes = dir_size(&dst).await;
-        Ok(TrashEntry { id, original_name: name.to_string(), trashed_at_ms: ts, bytes })
+        Ok(TrashEntry { id, original_name: name.to_string(), trashed_at_ms: ts, bytes, root: Some(path_string(root)) })
     }
 
+    /// 所有可用根的回收站（主根在前），按删除时间从新到旧；每项标出来自哪个根。
     pub async fn trash_list(&self) -> Vec<TrashEntry> {
-        let dir = self.root.join(TRASH_DIR);
         let mut entries = Vec::new();
-        let Ok(rd) = std::fs::read_dir(&dir) else { return entries };
-        for e in rd.flatten() {
-            let id = e.file_name().to_string_lossy().into_owned();
-            let Some((original, ts)) = parse_trash_id(&id) else { continue };
-            let bytes = dir_size(&e.path()).await;
-            entries.push(TrashEntry { id, original_name: original, trashed_at_ms: ts, bytes });
+        for (_, root) in self.active_roots() {
+            let Ok(rd) = std::fs::read_dir(root.path.join(TRASH_DIR)) else { continue };
+            let root_str = path_string(&root.path);
+            for e in rd.flatten() {
+                let id = e.file_name().to_string_lossy().into_owned();
+                let Some((original, ts)) = parse_trash_id(&id) else { continue };
+                let bytes = dir_size(&e.path()).await;
+                entries.push(TrashEntry {
+                    id,
+                    original_name: original,
+                    trashed_at_ms: ts,
+                    bytes,
+                    root: Some(root_str.clone()),
+                });
+            }
         }
         entries.sort_by_key(|e| std::cmp::Reverse(e.trashed_at_ms));
         entries
     }
 
-    fn trash_path(&self, id: &str) -> RpcResult<PathBuf> {
+    /// 回收站条目 `id` 所在的根（下标）和路径：在可用根的 `.trash/` 里按顺序找。
+    fn trash_path(&self, id: &str) -> RpcResult<(usize, PathBuf)> {
         if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains('\0') || id == "." || id == ".." {
             return Err(err(ErrorCode::Invalid, "invalid trash id"));
         }
-        let p = self.root.join(TRASH_DIR).join(id);
-        if std::fs::symlink_metadata(&p).is_err() {
-            return Err(err(ErrorCode::NotFound, format!("trash entry {id} not found")));
+        for (idx, root) in self.active_roots() {
+            let p = root.path.join(TRASH_DIR).join(id);
+            if std::fs::symlink_metadata(&p).is_ok() {
+                return Ok((idx, p));
+            }
         }
-        Ok(p)
+        Err(err(ErrorCode::NotFound, format!("trash entry {id} not found")))
     }
 
-    /// 还原到原名。返回还原后的项目名。
+    /// 还原到原名，回到原来的根（回收站在哪个根，就还原到那个根）。返回还原后的项目名。
     pub async fn restore(&self, id: &str) -> RpcResult<String> {
-        let src = self.trash_path(id)?;
+        let (root_idx, src) = self.trash_path(id)?;
         let (original, _) = parse_trash_id(id).ok_or_else(|| err(ErrorCode::Invalid, "malformed trash id"))?;
         validate_name(&original)?;
-        let dst = self.root.join(&original);
+        let dst = self.roots[root_idx].path.join(&original);
         {
             let _ns = self.ns_lock.lock().await;
             self.check_name_free(&original)?;
@@ -1281,13 +1507,13 @@ impl Workspace {
 
     /// 永久删除一个回收站条目。
     pub async fn purge(&self, id: &str) -> RpcResult<()> {
-        let p = self.trash_path(id)?;
+        let (_, p) = self.trash_path(id)?;
         let md = std::fs::symlink_metadata(&p).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
         let r = if md.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
         r.map_err(|e| err(ErrorCode::Internal, format!("purge: {e}")))
     }
 
-    /// 回收站超期条目自动删除。返回删除数。`trash_retention_days = 0` 表示不自动清理。
+    /// 回收站超期条目自动删除（所有可用根的回收站）。返回删除数。`trash_retention_days = 0` 表示不自动清理。
     pub async fn cleanup_trash(&self) -> usize {
         let days = self.config.get().workspace.trash_retention_days;
         if days == 0 {
@@ -1305,15 +1531,16 @@ impl Workspace {
 
     // ---------------- 克隆 ----------------
 
-    /// 开始克隆，返回 job id。进度走 `job.progress`，结束走 `job.done`。
-    pub async fn clone_start(self: &Arc<Self>, url: &str, name: Option<&str>) -> RpcResult<String> {
+    /// 开始克隆，返回 job id。进度走 `job.progress`，结束走 `job.done`。`root` 缺省 = 主根，规则同 [`Self::create`]。
+    pub async fn clone_start(self: &Arc<Self>, url: &str, name: Option<&str>, root: Option<&str>) -> RpcResult<String> {
         validate_clone_url(url)?;
         let name = match name {
             Some(n) => nfc(n),
             None => nfc(&name_from_url(url)),
         };
         validate_name(&name)?;
-        let dest = self.root.join(&name);
+        let root_idx = self.resolve_root(root)?;
+        let dest = self.roots[root_idx].path.join(&name);
         // 先原子地占住目标目录（空目录），`git clone` 往这个已占好的空目录里克隆；失败时只删这个 job 自己建的目录，
         // 不会误删并发的 create / clone 在同名处建起来的东西
         {
@@ -1736,6 +1963,7 @@ async fn linked_project_state(
     let project = Project {
         name,
         path: registered.to_string_lossy().into_owned(),
+        root: None,
         git,
         modified_at_ms,
         active_sessions,
@@ -2066,6 +2294,61 @@ impl GitMetaSvc {
     }
 }
 
+/// 扫描到的一个根下项目。
+struct Scanned {
+    /// 盘上的原样名字。
+    name: String,
+    /// 所在的根（`Workspace::roots` 的下标）。
+    root: usize,
+    /// 目录身份 `(dev, ino)`。
+    id: (u64, u64),
+}
+
+/// 谁盖住了一个同名文件夹。
+enum ShadowedBy {
+    /// 关联项目（最高优先级）。
+    Linked,
+    /// 更靠前的根（下标）里的同名项目。
+    Root(usize),
+}
+
+/// 被盖住、不出现在列表里的同名文件夹。
+struct Shadowed {
+    name: String,
+    /// 被盖住的文件夹所在的根。
+    root: usize,
+    by: ShadowedBy,
+}
+
+/// 根 `root` 下的 `p` 是不是项目目录：跟随符号链接是目录，且 canonical 路径还在 `root` 之内（指向根外的不算）。
+/// 是就返回它的元数据（跟随符号链接）。
+fn project_dir_metadata(root: &Path, p: &Path) -> Option<std::fs::Metadata> {
+    let md = std::fs::metadata(p).ok()?;
+    if !md.is_dir() {
+        return None;
+    }
+    match crate::sys::canonicalize(p) {
+        Ok(canon) if !canon.starts_with(root) => None,
+        _ => Some(md),
+    }
+}
+
+/// 文件系统事件值不值得重新扫描：只关心某个根下一级的非隐藏条目（`.trash` / `.scratch` 里的变化不是项目增删）和根本身；
+/// 不在任何根之下的路径（平台报出的奇怪路径）保守地算相关。根之间不嵌套，所以一个路径至多在一个根之下。
+fn event_is_relevant(roots: &[PathBuf], p: &Path) -> bool {
+    for root in roots {
+        if let Ok(rel) = p.strip_prefix(root) {
+            let mut comps = rel.components();
+            return match (comps.next(), comps.next()) {
+                (Some(Component::Normal(first)), None) => !first.to_string_lossy().starts_with('.'),
+                (None, _) => true,
+                _ => false,
+            };
+        }
+    }
+    true
+}
+
 /// 项目名集合（测试用）。
 pub fn names_of(list: &WorkspaceListResult) -> HashSet<String> {
     list.projects.iter().map(|p| p.name.clone()).collect()
@@ -2174,13 +2457,13 @@ mod tests {
         let ws = f.ws.clone();
         assert!(f.root.join(TRASH_DIR).is_dir() && f.root.join(SCRATCH_DIR).is_dir());
 
-        ws.create("alpha", false).await.unwrap();
+        ws.create("alpha", false, None).await.unwrap();
         let n = next_changed(&mut f.rx, methods::WORKSPACE_CHANGED, Duration::from_secs(2)).await.expect("added event");
         let ch: WorkspaceChanged = serde_json::from_value(n.params).unwrap();
         assert_eq!(ch.added, vec!["alpha".to_string()]);
-        assert_eq!(ws.create("alpha", false).await.unwrap_err().stable_code(), Some(ErrorCode::Exists));
-        assert_eq!(ws.create("../evil", false).await.unwrap_err().stable_code(), Some(ErrorCode::Invalid));
-        assert_eq!(ws.create(".trash", false).await.unwrap_err().stable_code(), Some(ErrorCode::Invalid));
+        assert_eq!(ws.create("alpha", false, None).await.unwrap_err().stable_code(), Some(ErrorCode::Exists));
+        assert_eq!(ws.create("../evil", false, None).await.unwrap_err().stable_code(), Some(ErrorCode::Invalid));
+        assert_eq!(ws.create(".trash", false, None).await.unwrap_err().stable_code(), Some(ErrorCode::Invalid));
 
         let mut active = HashMap::new();
         active.insert("alpha".to_string(), 2);
@@ -2198,7 +2481,7 @@ mod tests {
         assert_eq!(ch.renamed, vec![RenamedProject { from: "alpha".into(), to: "beta".into() }]);
         assert!(ch.added.is_empty() && ch.removed.is_empty());
         assert_eq!(ws.rename("alpha", "gamma").await.unwrap_err().stable_code(), Some(ErrorCode::NotFound));
-        ws.create("gamma", false).await.unwrap();
+        ws.create("gamma", false, None).await.unwrap();
         assert_eq!(ws.rename("beta", "gamma").await.unwrap_err().stable_code(), Some(ErrorCode::Exists));
 
         // 回收站
@@ -2211,7 +2494,7 @@ mod tests {
         assert_eq!(tl.len(), 1);
         assert_eq!(tl[0].id, entry.id);
         // 同名占用时还原失败
-        ws.create("beta", false).await.unwrap();
+        ws.create("beta", false, None).await.unwrap();
         assert_eq!(ws.restore(&entry.id).await.unwrap_err().stable_code(), Some(ErrorCode::Exists));
         ws.trash("beta").await.unwrap_err(); // 同一秒内第二次回收同名：Exists（时间戳相同）或成功都可接受
         let _ = std::fs::remove_dir_all(f.root.join("beta"));
@@ -2229,7 +2512,7 @@ mod tests {
     async fn path_escape_is_rejected() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("proj", false).await.unwrap();
+        ws.create("proj", false, None).await.unwrap();
         std::fs::write(f.root.join("proj/a.txt"), "x").unwrap();
         let outside = f._d.path().join("outside");
         std::fs::create_dir_all(&outside).unwrap();
@@ -2283,7 +2566,7 @@ mod tests {
     async fn fs_read_limits_and_binary() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("p", false).await.unwrap();
+        ws.create("p", false, None).await.unwrap();
         std::fs::write(f.root.join("p/big.txt"), "a".repeat(5000)).unwrap();
         std::fs::write(f.root.join("p/bin.dat"), [0u8, 1, 2, 255, 0]).unwrap();
         std::fs::write(f.root.join("p/cjk.txt"), "你好世界").unwrap();
@@ -2303,7 +2586,7 @@ mod tests {
     async fn fs_read_base64_returns_the_raw_bytes() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("p", false).await.unwrap();
+        ws.create("p", false, None).await.unwrap();
         // PNG 文件头：含 NUL 和 0x89，不是合法的 UTF-8
         let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R'];
         std::fs::write(f.root.join("p/a.png"), &png).unwrap();
@@ -2338,7 +2621,7 @@ mod tests {
     async fn fs_read_base64_returns_at_most_one_chunk_per_call() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("p", false).await.unwrap();
+        ws.create("p", false, None).await.unwrap();
         std::fs::write(f.root.join("p/big.bin"), vec![7u8; FS_READ_MAX as usize + 1]).unwrap();
         let len =
             |r: &anycon_protocol::FsReadResult| B64.decode(r.data_base64.as_deref().unwrap()).unwrap().len() as u64;
@@ -2363,7 +2646,7 @@ mod tests {
     async fn fs_read_base64_reads_a_file_in_chunks_with_offset() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("p", false).await.unwrap();
+        ws.create("p", false, None).await.unwrap();
         let chunk = FS_READ_CHUNK as usize;
         let data: Vec<u8> = (0..chunk * 2 + 1234).map(|i| (i % 251) as u8).collect();
         std::fs::write(f.root.join("p/img.bin"), &data).unwrap();
@@ -2397,7 +2680,7 @@ mod tests {
     async fn fs_read_base64_offset_at_or_past_the_end_gives_an_empty_chunk() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("p", false).await.unwrap();
+        ws.create("p", false, None).await.unwrap();
         std::fs::write(f.root.join("p/a.bin"), [1u8, 2, 3, 4, 5]).unwrap();
         std::fs::write(f.root.join("p/empty.bin"), []).unwrap();
         for (path, offset, total) in [
@@ -2422,7 +2705,7 @@ mod tests {
     async fn fs_read_text_rejects_a_nonzero_offset() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("p", false).await.unwrap();
+        ws.create("p", false, None).await.unwrap();
         std::fs::write(f.root.join("p/a.txt"), "hello").unwrap();
         let e = ws.fs_read_as("p/a.txt", None, FsReadEncoding::Text, 1).await.unwrap_err();
         assert_eq!(e.stable_code(), Some(ErrorCode::Invalid));
@@ -2440,7 +2723,7 @@ mod tests {
     async fn fs_opens_session_working_directories() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("proj", false).await.unwrap();
+        ws.create("proj", false, None).await.unwrap();
         let wt = f.root.join("proj/.anycon/worktrees/fix-login");
         std::fs::create_dir_all(wt.join("src")).unwrap();
         std::fs::write(wt.join("src/main.rs"), "fn main() {}").unwrap();
@@ -2496,7 +2779,7 @@ mod tests {
     async fn git_metadata_and_init() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        ws.create("repo", true).await.unwrap();
+        ws.create("repo", true, None).await.unwrap();
         assert!(f.root.join("repo/.git").exists());
         // 第一次可能超过 50ms 预算而返回 None；后台任务会填缓存，稍后再取
         let mut meta = None;
@@ -2513,7 +2796,7 @@ mod tests {
         assert!(g.remote.is_none());
         std::fs::write(f.root.join("repo/new.txt"), "x").unwrap();
         // 缓存 5 秒内仍是旧值；这里只验证非 git 目录没有 meta
-        ws.create("plain", false).await.unwrap();
+        ws.create("plain", false, None).await.unwrap();
         assert!(ws.project("plain", 0).await.unwrap().git.is_none());
     }
 
@@ -2521,10 +2804,13 @@ mod tests {
     async fn clone_rejects_bad_urls_and_existing_names() {
         let f = fixture().await;
         let ws = f.ws.clone();
-        assert_eq!(ws.clone_start("file:///etc", None).await.unwrap_err().stable_code(), Some(ErrorCode::Invalid));
-        ws.create("repo", false).await.unwrap();
         assert_eq!(
-            ws.clone_start("https://example.invalid/x/repo.git", None).await.unwrap_err().stable_code(),
+            ws.clone_start("file:///etc", None, None).await.unwrap_err().stable_code(),
+            Some(ErrorCode::Invalid)
+        );
+        ws.create("repo", false, None).await.unwrap();
+        assert_eq!(
+            ws.clone_start("https://example.invalid/x/repo.git", None, None).await.unwrap_err().stable_code(),
             Some(ErrorCode::Exists)
         );
         assert_eq!(ws.cancel_job("nope").unwrap_err().stable_code(), Some(ErrorCode::NotFound));
@@ -2534,16 +2820,16 @@ mod tests {
     async fn clone_claims_its_target_atomically_and_a_failure_removes_only_that_directory() {
         let f = fixture().await;
         // 克隆进行中，目标目录已经被占住：同名的 create / clone 立刻得到 exists，不会互相踩
-        let job = f.ws.clone_start("ssh://127.0.0.1:1/x/claimed.git", Some("claimed")).await.unwrap();
+        let job = f.ws.clone_start("ssh://127.0.0.1:1/x/claimed.git", Some("claimed"), None).await.unwrap();
         assert!(f.root.join("claimed").is_dir(), "the target directory is created up front");
-        let e = f.ws.create("claimed", false).await.unwrap_err();
+        let e = f.ws.create("claimed", false, None).await.unwrap_err();
         assert_eq!(e.stable_code(), Some(ErrorCode::Exists));
-        let e = f.ws.clone_start("ssh://127.0.0.1:1/x/claimed.git", Some("claimed")).await.unwrap_err();
+        let e = f.ws.clone_start("ssh://127.0.0.1:1/x/claimed.git", Some("claimed"), None).await.unwrap_err();
         assert_eq!(e.stable_code(), Some(ErrorCode::Exists));
         // 已经存在的同名目录（别人的）永远不会被这个 job 删掉：clone_start 在占位时就失败了
         std::fs::create_dir(f.root.join("mine")).unwrap();
         std::fs::write(f.root.join("mine").join("keep.txt"), "x").unwrap();
-        let e = f.ws.clone_start("ssh://127.0.0.1:1/x/mine.git", Some("mine")).await.unwrap_err();
+        let e = f.ws.clone_start("ssh://127.0.0.1:1/x/mine.git", Some("mine"), None).await.unwrap_err();
         assert_eq!(e.stable_code(), Some(ErrorCode::Exists));
         assert!(f.root.join("mine").join("keep.txt").is_file());
         // 克隆失败后，只有自己建的目录被清理
@@ -2561,7 +2847,7 @@ mod tests {
         // 不依赖网络：指向一个必然连不上的本机端口，任务应以 job.done ok=false 结束且不留半成品目录
         let mut f = fixture().await;
         let ws = f.ws.clone();
-        let id = ws.clone_start("ssh://git@127.0.0.1:1/x/y.git", Some("cloned")).await.unwrap();
+        let id = ws.clone_start("ssh://git@127.0.0.1:1/x/y.git", Some("cloned"), None).await.unwrap();
         let done = next_changed(&mut f.rx, methods::JOB_DONE, Duration::from_secs(30)).await.expect("job.done");
         let d: JobDone = serde_json::from_value(done.params).unwrap();
         assert_eq!(d.job_id, id);
@@ -2619,6 +2905,12 @@ mod tests {
 
     /// `prepare(home, base)` 在 `Workspace` 创建（= `link_roots` 拍快照）之前运行：需要「一开始就存在」的符号链接 root 时用。
     async fn link_fixture_with(link_roots: &str, prepare: impl FnOnce(&Path, &Path)) -> LinkFx {
+        let cfg = format!("[workspace]\nlink_roots = {link_roots}\n");
+        link_fixture_cfg(move |_| cfg, prepare).await
+    }
+
+    /// [`link_fixture_with`]，`config.toml` 的内容由 `config(base)` 给（要在里面写 `base` 之下的路径时用）。
+    async fn link_fixture_cfg(config: impl FnOnce(&Path) -> String, prepare: impl FnOnce(&Path, &Path)) -> LinkFx {
         let d = tempfile::tempdir().unwrap();
         // macOS 的临时目录在符号链接（/var -> /private/var）后面：所有断言用 canonical 路径
         let base = crate::sys::canonicalize(d.path()).unwrap();
@@ -2641,7 +2933,7 @@ mod tests {
         std::fs::write(base.join("outside/secret.txt"), "top secret").unwrap();
         prepare(&home, &base);
         let paths = Paths::new(data);
-        std::fs::write(paths.config_toml(), format!("[workspace]\nlink_roots = {link_roots}\n")).unwrap();
+        std::fs::write(paths.config_toml(), config(&base)).unwrap();
         let store = Store::open(&paths.db()).await.unwrap();
         let config = ConfigStore::load(&paths).unwrap();
         let clients = Clients::new();
@@ -2687,7 +2979,7 @@ mod tests {
         // 另起一个项目（带显式名字），根目录里再有一个普通项目
         let b = f.ws.link(&format!("{}/work/proj-b", f.home.display()), Some("bee")).await.unwrap();
         assert_eq!(b.name, "bee");
-        f.ws.create("plain", false).await.unwrap();
+        f.ws.create("plain", false, None).await.unwrap();
         let list = f.ws.list(&HashMap::from([("proj-a".to_string(), 2)])).await;
         let kinds: HashMap<&str, ProjectKind> = list.projects.iter().map(|p| (p.name.as_str(), p.kind)).collect();
         assert_eq!(
@@ -2789,7 +3081,7 @@ mod tests {
     #[tokio::test]
     async fn the_workspace_root_the_data_dir_and_their_parents_cannot_be_linked() {
         let f = link_fixture("[\"~\"]").await;
-        f.ws.create("mine", false).await.unwrap();
+        f.ws.create("mine", false, None).await.unwrap();
         // HOME 本身包含数据目录和 workspace 根目录
         assert_eq!(code_of(f.ws.link("~", Some("home")).await), ErrorCode::Forbidden);
         // 数据目录本身 / 里面
@@ -2815,7 +3107,7 @@ mod tests {
     #[tokio::test]
     async fn names_share_one_namespace_with_the_root_projects() {
         let f = link_fixture("[\"~\"]").await;
-        f.ws.create("taken", false).await.unwrap();
+        f.ws.create("taken", false, None).await.unwrap();
         f.ws.link("~/work/proj-a", None).await.unwrap();
         // 同一个 canonical 路径（包括经过符号链接的另一条路径）不能关联两次，消息里带已有的名字
         let e = f.ws.link("~/work/proj-a", Some("again")).await.unwrap_err();
@@ -2841,9 +3133,9 @@ mod tests {
         assert!(e.message.contains("pass a name"), "{}", e.message);
         assert_eq!(f.ws.link("~/work/.hidden", Some("hidden")).await.unwrap().name, "hidden");
         // 反过来：新建 / 克隆 / 改名 / 恢复 / scratch 转项目遇到关联项目的名字都是 exists
-        assert_eq!(code_of(f.ws.create("proj-a", false).await), ErrorCode::Exists);
+        assert_eq!(code_of(f.ws.create("proj-a", false, None).await), ErrorCode::Exists);
         assert_eq!(
-            code_of(f.ws.clone_start("https://example.invalid/x/y.git", Some("proj-a")).await),
+            code_of(f.ws.clone_start("https://example.invalid/x/y.git", Some("proj-a"), None).await),
             ErrorCode::Exists
         );
         assert!(!f.root.join("proj-a").exists(), "nothing was created in the root");
@@ -2997,7 +3289,7 @@ mod tests {
         assert!(e.message.contains("unlink"), "{}", e.message);
         assert!(dir.join("f.txt").is_file() && f.ws.trash_list().await.is_empty());
         // unlink：根目录里的项目 / 不存在的名字是 invalid；关联项目成功，目录和文件原样
-        f.ws.create("plain", false).await.unwrap();
+        f.ws.create("plain", false, None).await.unwrap();
         drain(&mut f.rx, methods::WORKSPACE_CHANGED);
         assert_eq!(code_of(unlink(&f.ws, "plain").await), ErrorCode::Invalid);
         assert_eq!(code_of(unlink(&f.ws, "ghost").await), ErrorCode::Invalid);
@@ -3017,7 +3309,7 @@ mod tests {
     #[tokio::test]
     async fn browse_lists_sub_directories_with_flags_and_stays_inside_the_roots() {
         let f = link_fixture("[\"~\"]").await;
-        f.ws.create("mine", false).await.unwrap();
+        f.ws.create("mine", false, None).await.unwrap();
         f.ws.link("~/work/proj-a", None).await.unwrap();
         // 缺省 = 第一个 root（HOME）：只列目录，隐藏目录默认不列
         let r = f.ws.browse(None, false).await.unwrap();
@@ -3513,11 +3805,11 @@ mod tests {
         let nfc_cafe = "Caf\u{e9}";
         let nfd_cafe = "Cafe\u{301}";
         // 新建时统一 NFC；另一种写法算同一个名字
-        f.ws.create(nfd_cafe, false).await.unwrap();
+        f.ws.create(nfd_cafe, false, None).await.unwrap();
         let list = f.ws.list(&HashMap::new()).await;
         assert_eq!(list.projects.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec![nfc_cafe]);
-        assert_eq!(code_of(f.ws.create(nfc_cafe, false).await), ErrorCode::Exists);
-        assert_eq!(code_of(f.ws.create(nfd_cafe, false).await), ErrorCode::Exists);
+        assert_eq!(code_of(f.ws.create(nfc_cafe, false, None).await), ErrorCode::Exists);
+        assert_eq!(code_of(f.ws.create(nfd_cafe, false, None).await), ErrorCode::Exists);
         assert_eq!(code_of(f.ws.link("~/work/proj-a", Some(nfd_cafe)).await), ErrorCode::Exists);
         // 关联的名字也是 NFC；用 NFD 写法查得到，新建 NFC / NFD 都是 exists
         std::fs::create_dir_all(f.home.join("work/Résumé")).unwrap();
@@ -3525,7 +3817,7 @@ mod tests {
         assert_eq!(p.name, "R\u{e9}sum\u{e9}");
         assert!(f.ws.is_linked("Re\u{301}sume\u{301}") && f.ws.is_linked("R\u{e9}sum\u{e9}"));
         assert_eq!(f.ws.project_path("Re\u{301}sume\u{301}").unwrap(), f.home.join("work/Résumé"));
-        assert_eq!(code_of(f.ws.create("Re\u{301}sume\u{301}", false).await), ErrorCode::Exists);
+        assert_eq!(code_of(f.ws.create("Re\u{301}sume\u{301}", false, None).await), ErrorCode::Exists);
         assert_eq!(code_of(f.ws.rename(nfc_cafe, "Re\u{301}sume\u{301}").await), ErrorCode::Exists);
         // 项目名比较也用同一套规则（会话、busy 检查）
         assert!(f.ws.same_project_name(nfc_cafe, nfd_cafe));
@@ -3535,7 +3827,7 @@ mod tests {
         // 大小写：这台机器的真实行为
         f.ws.link("~/work/proj-b", Some("proj")).await.unwrap();
         let on_ci_volume = f.ws.ci();
-        let created = f.ws.create("PROJ", false).await;
+        let created = f.ws.create("PROJ", false, None).await;
         if on_ci_volume {
             assert_eq!(code_of(created), ErrorCode::Exists, "the workspace volume is case-insensitive");
         } else {
@@ -3543,7 +3835,7 @@ mod tests {
         }
         // 不区分大小写的规则本身（和卷无关）：强制打开
         f.ws.set_case_insensitive_for_test(true);
-        assert_eq!(code_of(f.ws.create("Proj", false).await), ErrorCode::Exists);
+        assert_eq!(code_of(f.ws.create("Proj", false, None).await), ErrorCode::Exists);
         assert_eq!(code_of(f.ws.link("~/work/proj-a", Some("PROJ")).await), ErrorCode::Exists);
         assert_eq!(
             code_of(f.ws.link("~/work/proj-a", Some("CAFE\u{301}")).await),
@@ -3554,7 +3846,7 @@ mod tests {
         assert_eq!(f.ws.project_path("PROJ").unwrap(), f.home.join("work/proj-b"), "fs.* and sessions find it too");
         assert_eq!(f.ws.fs_list("PROJ/.git").unwrap().entries.len(), 0);
         // 反过来：根目录里已有的文件夹挡住大小写不同的关联名
-        f.ws.create("Folder", false).await.unwrap();
+        f.ws.create("Folder", false, None).await.unwrap();
         assert_eq!(code_of(f.ws.link("~/work/proj-a", Some("FOLDER")).await), ErrorCode::Exists);
         // 被关联项目盖住的判断同样按键比较：根目录里的 `PROJ`（大小写不同）被 `proj` 盖住
         if !on_ci_volume {
@@ -3580,7 +3872,7 @@ mod tests {
     #[tokio::test]
     async fn project_locations_identify_the_directory_a_session_was_created_in() {
         let f = link_fixture("[\"~\"]").await;
-        f.ws.create("folder", false).await.unwrap();
+        f.ws.create("folder", false, None).await.unwrap();
         f.ws.link("~/work/proj-a", None).await.unwrap();
         let linked = f.ws.project_loc("proj-a").unwrap();
         let folder = f.ws.project_loc("folder").unwrap();
@@ -3621,7 +3913,7 @@ mod tests {
         f.ws.restore(&trashed.id).await.unwrap();
         assert_eq!(f.ws.check_loc(&folder, &f.ws.project_loc("folder").unwrap()), LocCheck::Same);
         let trashed = f.ws.trash("folder").await.unwrap();
-        f.ws.create("folder", false).await.unwrap();
+        f.ws.create("folder", false, None).await.unwrap();
         assert_eq!(f.ws.check_loc(&folder, &f.ws.project_loc("folder").unwrap()), LocCheck::Different);
         let _ = trashed;
     }
@@ -3661,7 +3953,7 @@ mod tests {
             o1.lock().unwrap().push("unlinked");
         });
         tokio::time::sleep(Duration::from_millis(80)).await;
-        f.ws.create("late", false).await.unwrap();
+        f.ws.create("late", false, None).await.unwrap();
         order.lock().unwrap().push("created");
         unlinking.await.unwrap();
         assert_eq!(*order.lock().unwrap(), vec!["checked", "unlinked", "created"]);
@@ -4225,10 +4517,10 @@ mod tests {
         let ctx = |root: PathBuf, data: PathBuf| {
             let mut c = LinkCtx {
                 roots: LinkRoots { raw: vec![base.clone()], canon: vec![base.clone()] },
-                root: root.clone(),
+                workspace_roots: vec![root.clone()],
                 data: data.clone(),
                 data_lexical: data,
-                root_ids: Default::default(),
+                root_ids: Vec::new(),
                 data_ids: Default::default(),
                 deny: vec![],
                 aliases: PathAliases::default(),
@@ -4242,7 +4534,7 @@ mod tests {
         let c = ctx(base.join("sys/home/me/anycon"), base.join("sys/home/me/.anycon"));
         let alias = base.join("alias/home/me");
         // 包含 workspace 根 / 数据目录：路径前缀认不出来（`alias/…` 不是 `sys/…` 的前缀），身份认得出
-        assert!(!c.root.starts_with(&alias));
+        assert!(!c.workspace_roots[0].starts_with(&alias));
         assert_eq!(c.block_of(&alias).map(|b| b.block), Some(B::Workspace));
         // 在 workspace 根里面（Invalid）/ 就是它（Forbidden）
         let b = c.block_of(&alias.join("anycon/proj")).unwrap();
@@ -4390,5 +4682,460 @@ mod tests {
         f.config.reload().unwrap();
         let e = ws.browse(None, false).await.unwrap_err();
         assert!(e.message.contains('~') && e.message.contains("HOME"), "{}", e.message);
+    }
+
+    // ---------------- 多个 workspace 根（ADR-45） ----------------
+
+    /// 夹具：主根 `<base>/home/anycon`，额外根 `<base>/ext1`、`<base>/gone`（不存在，模拟没插的盘）、`<base>/ext2`
+    /// （配置顺序就是这样）。`link_roots = [<base>]`（它在拒绝表里的系统临时目录之下时，显式写出来才放行）。
+    struct MultiFx {
+        f: LinkFx,
+        ext1: PathBuf,
+        ext2: PathBuf,
+        gone: PathBuf,
+    }
+
+    async fn multi_fixture() -> MultiFx {
+        let f = link_fixture_cfg(
+            |base| {
+                let q = |p: PathBuf| format!("{:?}", p.to_string_lossy());
+                format!(
+                    "[workspace]\nlink_roots = [{}]\nextra_roots = [{}, {}, {}]\n",
+                    q(base.to_path_buf()),
+                    q(base.join("ext1")),
+                    q(base.join("gone")),
+                    q(base.join("ext2"))
+                )
+            },
+            |_, base| {
+                std::fs::create_dir_all(base.join("ext1")).unwrap();
+                std::fs::create_dir_all(base.join("ext2")).unwrap();
+            },
+        )
+        .await;
+        let (ext1, ext2, gone) = (f.base.join("ext1"), f.base.join("ext2"), f.base.join("gone"));
+        MultiFx { f, ext1, ext2, gone }
+    }
+
+    fn project_roots(list: &WorkspaceListResult) -> Vec<(String, Option<String>)> {
+        let mut v: Vec<_> = list.projects.iter().map(|p| (p.name.clone(), p.root.clone())).collect();
+        v.sort();
+        v
+    }
+
+    fn some(p: &Path) -> Option<String> {
+        Some(p.to_string_lossy().into_owned())
+    }
+
+    #[tokio::test]
+    async fn startup_lists_the_roots_skips_a_missing_one_and_gives_each_available_root_a_trash() {
+        let m = multi_fixture().await;
+        let roots = m.f.ws.roots_info();
+        assert_eq!(
+            roots.iter().map(|r| (r.path.clone(), r.primary, r.available)).collect::<Vec<_>>(),
+            vec![
+                (m.f.root.to_string_lossy().into_owned(), true, true),
+                (m.ext1.to_string_lossy().into_owned(), false, true),
+                (m.gone.to_string_lossy().into_owned(), false, false),
+                (m.ext2.to_string_lossy().into_owned(), false, true),
+            ],
+            "the primary root first, the extra roots in configuration order; the missing one is listed as unavailable"
+        );
+        assert!(m.ext1.join(TRASH_DIR).is_dir() && m.ext2.join(TRASH_DIR).is_dir());
+        assert!(!m.ext1.join(SCRATCH_DIR).exists(), "scratch lives only in the primary root");
+        assert!(!m.gone.exists(), "a missing root is not created");
+        // 外接盘中途拔掉：启动时可用的根现在目录没了，`available` 跟着变
+        std::fs::remove_dir_all(&m.ext2).unwrap();
+        assert!(!m.f.ws.roots_info()[3].available);
+    }
+
+    #[tokio::test]
+    async fn a_bad_extra_root_configuration_stops_the_workspace_from_starting() {
+        let f = link_fixture("[\"~\"]").await;
+        let inner = f.root.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        crate::config::set_value(&f.paths, "workspace.extra_roots", &format!("[{:?}]", inner.to_string_lossy()))
+            .unwrap();
+        f.config.reload().unwrap();
+        let e = Workspace::new(&f.root, f.config.clone(), f.store.clone(), Clients::new(), f.env.clone())
+            .await
+            .err()
+            .expect("an extra root inside the primary root is a configuration error");
+        assert!(matches!(e, WorkspaceError::Roots(_)), "{e}");
+        assert!(e.to_string().contains("workspace.extra_roots") && e.to_string().contains("inside"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn projects_of_every_root_are_listed_with_their_root_and_resolve_to_it() {
+        let m = multi_fixture().await;
+        for (root, name) in [(&m.f.root, "a"), (&m.ext1, "b"), (&m.ext2, "c")] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        std::fs::write(m.ext1.join("b/note.txt"), "in ext1").unwrap();
+        std::fs::write(m.ext2.join("not-a-project.txt"), "x").unwrap();
+        let list = m.f.ws.list(&HashMap::new()).await;
+        assert_eq!(list.root, m.f.root.to_string_lossy(), "`root` stays the primary root");
+        assert_eq!(
+            project_roots(&list),
+            vec![
+                ("a".to_string(), some(&m.f.root)),
+                ("b".to_string(), some(&m.ext1)),
+                ("c".to_string(), some(&m.ext2))
+            ]
+        );
+        let b = list.projects.iter().find(|p| p.name == "b").unwrap();
+        assert_eq!(b.path, m.ext1.join("b").to_string_lossy());
+        assert_eq!(m.f.ws.project_path("b").unwrap(), m.ext1.join("b"));
+        assert_eq!(m.f.ws.project("c", 0).await.unwrap().root, some(&m.ext2));
+        // 关联项目没有「所在的根」
+        let linked = m.f.ws.link(&m.f.base.join("outside/dir").to_string_lossy(), Some("out")).await.unwrap();
+        assert_eq!((linked.kind, linked.root), (ProjectKind::Linked, None));
+        // fs.*：第一段是哪个根下的项目，就相对哪个根；空路径列主根
+        assert_eq!(m.f.ws.fs_read("b/note.txt", None).await.unwrap().text, "in ext1");
+        let names = |l: FsListResult| l.entries.into_iter().map(|e| e.name).collect::<Vec<_>>();
+        assert_eq!(names(m.f.ws.fs_list("b").unwrap()), vec!["note.txt"]);
+        let top = names(m.f.ws.fs_list("").unwrap());
+        assert!(top.contains(&"a".to_string()) && !top.contains(&"b".to_string()), "{top:?}");
+        // 项目里指向它所在根之外的符号链接照样被拒绝，哪怕指向另一个根
+        std::os::unix::fs::symlink(m.f.root.join("a"), m.ext1.join("b/to-primary")).unwrap();
+        assert_eq!(code_of(m.f.ws.fs_list("b/to-primary")), ErrorCode::Forbidden);
+        // 没插上的根下没有项目，也解析不到
+        assert_eq!(code_of(m.f.ws.fs_list("nope")), ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn a_name_found_in_several_places_resolves_linked_then_primary_then_extra_roots_in_order() {
+        let mut m = multi_fixture().await;
+        let f = &m.f;
+        // 额外根之间：按配置顺序，ext1 在 ext2 前
+        for root in [&m.ext1, &m.ext2] {
+            std::fs::create_dir_all(root.join("dup")).unwrap();
+        }
+        std::fs::write(m.ext1.join("dup/who"), "ext1").unwrap();
+        std::fs::write(m.ext2.join("dup/who"), "ext2").unwrap();
+        let list = f.ws.list(&HashMap::new()).await;
+        assert_eq!(project_roots(&list), vec![("dup".to_string(), some(&m.ext1))]);
+        assert_eq!(f.ws.fs_read("dup/who", None).await.unwrap().text, "ext1");
+        assert_eq!(f.ws.project_path("dup").unwrap(), m.ext1.join("dup"));
+        // 主根胜过额外根
+        std::fs::create_dir_all(f.root.join("dup")).unwrap();
+        std::fs::write(f.root.join("dup/who"), "primary").unwrap();
+        let list = f.ws.list(&HashMap::new()).await;
+        assert_eq!(project_roots(&list), vec![("dup".to_string(), some(&f.root))]);
+        assert_eq!(f.ws.fs_read("dup/who", None).await.unwrap().text, "primary");
+        assert_eq!(f.ws.project("dup", 0).await.unwrap().root, some(&f.root));
+        // 每个输的文件夹每个名字只 warn 一次（ext1 和 ext2 的两个都记在同一个名字下）
+        for _ in 0..3 {
+            f.ws.list(&HashMap::new()).await;
+        }
+        assert_eq!(f.ws.shadow_warned.lock().unwrap().len(), 1);
+        // 关联项目胜过所有根下的同名文件夹
+        std::fs::create_dir_all(f.base.join("outside/dir")).unwrap();
+        std::fs::write(f.base.join("outside/dir/who"), "linked").unwrap();
+        std::fs::remove_dir_all(f.root.join("dup")).unwrap();
+        std::fs::remove_dir_all(m.ext1.join("dup")).unwrap();
+        std::fs::remove_dir_all(m.ext2.join("dup")).unwrap();
+        let linked = f.ws.link(&f.base.join("outside/dir").to_string_lossy(), Some("dup")).await.unwrap();
+        assert_eq!(linked.kind, ProjectKind::Linked);
+        for root in [&f.root, &m.ext1, &m.ext2] {
+            std::fs::create_dir_all(root.join("dup")).unwrap();
+        }
+        let list = f.ws.list(&HashMap::new()).await;
+        assert_eq!(list.projects.iter().filter(|p| p.name == "dup").count(), 1);
+        assert_eq!(list.projects.iter().find(|p| p.name == "dup").unwrap().kind, ProjectKind::Linked);
+        assert_eq!(f.ws.fs_read("dup/who", None).await.unwrap().text, "linked");
+        // 赢家换了（主根的同名文件夹没了，露出额外根里的）：同名项目换了落脚的目录，发 `updated` 让客户端重新拉
+        unlink(&f.ws, "dup").await.unwrap();
+        f.ws.rescan_and_notify().await;
+        drain(&mut m.f.rx, methods::WORKSPACE_CHANGED);
+        std::fs::remove_dir_all(m.f.root.join("dup")).unwrap();
+        m.f.ws.rescan_and_notify().await;
+        let events = drain(&mut m.f.rx, methods::WORKSPACE_CHANGED);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].updated, vec!["dup".to_string()]);
+        assert!(events[0].added.is_empty() && events[0].removed.is_empty(), "{events:?}");
+        assert_eq!(m.f.ws.project("dup", 0).await.unwrap().root, some(&m.ext1));
+    }
+
+    #[tokio::test]
+    async fn a_file_with_a_projects_name_in_an_earlier_root_does_not_hide_the_folder_in_a_later_one() {
+        let m = multi_fixture().await;
+        std::fs::write(m.f.root.join("both"), "a file").unwrap();
+        std::fs::create_dir_all(m.ext2.join("both")).unwrap();
+        let list = m.f.ws.list(&HashMap::new()).await;
+        assert_eq!(project_roots(&list), vec![("both".to_string(), some(&m.ext2))]);
+        assert_eq!(m.f.ws.project_path("both").unwrap(), m.ext2.join("both"), "lookup agrees with the list");
+        // 但这个名字在主根里被占着：新建 / 克隆 / 改名过来都是 exists
+        assert_eq!(code_of(m.f.ws.create("both", false, None).await), ErrorCode::Exists);
+    }
+
+    #[tokio::test]
+    async fn create_and_clone_go_to_the_requested_root_and_reject_anything_else() {
+        let m = multi_fixture().await;
+        let ws = &m.f.ws;
+        // 缺省 = 主根
+        assert_eq!(ws.create("p0", false, None).await.unwrap(), m.f.root.join("p0"));
+        // 指定根：和 node.info 列出的路径一致
+        assert_eq!(ws.create("p1", false, Some(&m.ext1.to_string_lossy())).await.unwrap(), m.ext1.join("p1"));
+        assert!(m.ext1.join("p1").is_dir() && !m.f.root.join("p1").exists());
+        let p1 = ws.project("p1", 0).await.unwrap();
+        assert_eq!(p1.root, some(&m.ext1));
+        // 同一个目录的另一种写法（`..`、符号链接）也认；`~` 展开
+        let dotted = format!("{}/../ext2", m.ext2.display());
+        assert_eq!(ws.create("p2", false, Some(&dotted)).await.unwrap(), m.ext2.join("p2"));
+        let alias = m.f.base.join("alias-of-ext2");
+        std::os::unix::fs::symlink(&m.ext2, &alias).unwrap();
+        assert_eq!(ws.create("p3", false, Some(&alias.to_string_lossy())).await.unwrap(), m.ext2.join("p3"));
+        assert_eq!(ws.create("p4", false, Some("~/anycon")).await.unwrap(), m.f.root.join("p4"));
+        // git init 也在那个根里
+        ws.create("repo", true, Some(&m.ext1.to_string_lossy())).await.unwrap();
+        assert!(m.ext1.join("repo/.git").exists());
+        // 不是任何一个根：invalid（根下面的子目录、别的目录、相对路径、空串、控制字符）
+        for bad in [
+            m.ext1.join("p1").to_string_lossy().into_owned(),
+            m.f.base.join("outside/dir").to_string_lossy().into_owned(),
+            "ext1".to_string(),
+            String::new(),
+            "/tmp\u{7}".to_string(),
+        ] {
+            assert_eq!(code_of(ws.create("nope", false, Some(&bad)).await), ErrorCode::Invalid, "{bad:?}");
+        }
+        assert!(!m.ext1.join("nope").exists() && !m.f.root.join("nope").exists());
+        // 配置里有、但现在不可用的根：not_found，什么都没建
+        let e = ws.create("nope", false, Some(&m.gone.to_string_lossy())).await.unwrap_err();
+        assert_eq!(e.stable_code(), Some(ErrorCode::NotFound));
+        assert!(e.message.contains("not available"), "{}", e.message);
+        assert!(!m.gone.exists());
+        // 名字全局唯一：别的根里有同名项目也是 exists
+        assert_eq!(code_of(ws.create("p0", false, Some(&m.ext1.to_string_lossy())).await), ErrorCode::Exists);
+        assert_eq!(code_of(ws.create("p1", false, None).await), ErrorCode::Exists);
+        assert_eq!(code_of(ws.create("p1", false, Some(&m.ext2.to_string_lossy())).await), ErrorCode::Exists);
+        // 克隆：根的校验同 create，目标目录在那个根里占好位
+        assert_eq!(
+            code_of(ws.clone_start("https://example.invalid/x/y.git", Some("c0"), Some("/not/a/root")).await),
+            ErrorCode::Invalid
+        );
+        assert_eq!(
+            code_of(
+                ws.clone_start("https://example.invalid/x/y.git", Some("c0"), Some(&m.gone.to_string_lossy())).await
+            ),
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            code_of(
+                ws.clone_start("https://example.invalid/x/y.git", Some("p1"), Some(&m.ext2.to_string_lossy())).await
+            ),
+            ErrorCode::Exists,
+            "the name is taken in another root"
+        );
+        let _job =
+            ws.clone_start("ssh://127.0.0.1:1/x/c1.git", Some("c1"), Some(&m.ext2.to_string_lossy())).await.unwrap();
+        assert!(m.ext2.join("c1").is_dir(), "the target directory is claimed in the requested root");
+        assert!(!m.f.root.join("c1").exists());
+        assert_eq!(code_of(ws.create("c1", false, None).await), ErrorCode::Exists);
+        // 克隆失败只清掉自己在那个根里建的目录
+        let t = std::time::Instant::now();
+        while m.ext2.join("c1").exists() && t.elapsed() < Duration::from_secs(20) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!m.ext2.join("c1").exists());
+        assert!(m.ext2.join("p2").is_dir(), "other projects in that root are untouched");
+    }
+
+    #[tokio::test]
+    async fn rename_stays_in_the_projects_root_and_the_name_is_checked_across_roots() {
+        let m = multi_fixture().await;
+        let ws = &m.f.ws;
+        ws.create("x", false, Some(&m.ext1.to_string_lossy())).await.unwrap();
+        ws.create("taken", false, None).await.unwrap();
+        ws.create("y", false, Some(&m.ext2.to_string_lossy())).await.unwrap();
+        std::fs::write(m.ext1.join("x/f"), "content").unwrap();
+        // 别的根里的名字：exists
+        assert_eq!(code_of(ws.rename("x", "taken").await), ErrorCode::Exists);
+        assert_eq!(code_of(ws.rename("x", "y").await), ErrorCode::Exists);
+        // 改名之后还在原来的根里
+        ws.rename("x", "x2").await.unwrap();
+        assert!(m.ext1.join("x2/f").is_file() && !m.ext1.join("x").exists() && !m.f.root.join("x2").exists());
+        assert_eq!(ws.project("x2", 0).await.unwrap().root, some(&m.ext1));
+        // scratch 只在主根，转项目也落在主根
+        let scratch = ws.scratch_dir("sess_7").unwrap();
+        assert!(scratch.starts_with(&m.f.root));
+        assert!(!m.ext1.join(SCRATCH_DIR).exists() && !m.ext2.join(SCRATCH_DIR).exists());
+        assert_eq!(ws.promote_scratch("sess_7", "from-scratch").await.unwrap(), m.f.root.join("from-scratch"));
+        assert_eq!(code_of(ws.promote_scratch("sess_8", "x2").await), ErrorCode::NotFound);
+        ws.scratch_dir("sess_9").unwrap();
+        assert_eq!(code_of(ws.promote_scratch("sess_9", "x2").await), ErrorCode::Exists, "x2 lives in ext1");
+    }
+
+    #[tokio::test]
+    async fn every_root_has_its_own_trash_and_restore_purge_and_cleanup_cover_all_of_them() {
+        let m = multi_fixture().await;
+        let ws = &m.f.ws;
+        ws.create("t0", false, None).await.unwrap();
+        ws.create("t1", false, Some(&m.ext1.to_string_lossy())).await.unwrap();
+        ws.create("t2", false, Some(&m.ext2.to_string_lossy())).await.unwrap();
+        std::fs::write(m.ext1.join("t1/keep"), "k").unwrap();
+        let e0 = ws.trash("t0").await.unwrap();
+        let e1 = ws.trash("t1").await.unwrap();
+        let e2 = ws.trash("t2").await.unwrap();
+        // 各进各自根的 .trash（同一个文件系统，rename 不跨盘）
+        assert!(m.f.root.join(TRASH_DIR).join(&e0.id).is_dir());
+        assert!(m.ext1.join(TRASH_DIR).join(&e1.id).is_dir());
+        assert!(m.ext2.join(TRASH_DIR).join(&e2.id).is_dir());
+        assert_eq!(
+            (e0.root.as_deref(), e1.root.as_deref(), e2.root.as_deref()),
+            (Some(m.f.root.to_str().unwrap()), Some(m.ext1.to_str().unwrap()), Some(m.ext2.to_str().unwrap()))
+        );
+        assert!(ws.list(&HashMap::new()).await.projects.is_empty());
+        // 汇总，标出来自哪个根
+        let list = ws.trash_list().await;
+        let mut seen: Vec<(String, Option<String>)> =
+            list.iter().map(|e| (e.original_name.clone(), e.root.clone())).collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                ("t0".to_string(), some(&m.f.root)),
+                ("t1".to_string(), some(&m.ext1)),
+                ("t2".to_string(), some(&m.ext2))
+            ]
+        );
+        assert!(list.iter().find(|e| e.original_name == "t1").unwrap().bytes >= 1);
+        // restore 回到原来的根
+        assert_eq!(ws.restore(&e1.id).await.unwrap(), "t1");
+        assert_eq!(std::fs::read_to_string(m.ext1.join("t1/keep")).unwrap(), "k");
+        assert!(!m.f.root.join("t1").exists());
+        assert_eq!(ws.project("t1", 0).await.unwrap().root, some(&m.ext1));
+        // 原名被占：exists（哪个根里占的都算）
+        ws.create("t2", false, None).await.unwrap();
+        assert_eq!(code_of(ws.restore(&e2.id).await), ErrorCode::Exists);
+        // purge 找得到任何根的条目
+        ws.purge(&e2.id).await.unwrap();
+        assert!(!m.ext2.join(TRASH_DIR).join(&e2.id).exists());
+        assert_eq!(code_of(ws.purge(&e2.id).await), ErrorCode::NotFound);
+        assert_eq!(code_of(ws.restore("../x-20260101T000000Z").await), ErrorCode::Invalid);
+        // 自动清理覆盖所有根
+        let old = now_ms() - 40 * 86_400_000;
+        for root in [&m.f.root, &m.ext1, &m.ext2] {
+            std::fs::create_dir_all(root.join(TRASH_DIR).join(format!(
+                "old-{}-{}",
+                root.file_name().unwrap().to_string_lossy(),
+                fmt_compact(old)
+            )))
+            .unwrap();
+        }
+        assert_eq!(ws.cleanup_trash().await, 3, "the expired entries of all three roots, nothing else");
+        assert_eq!(ws.trash_list().await.len(), 1, "only the fresh t0 is left");
+        // 同一秒内再次删除同名项目：id 在所有根之间唯一，撞上就让客户端稍后重试
+        ws.create("clash", false, Some(&m.ext1.to_string_lossy())).await.unwrap();
+        let first = ws.trash("clash").await.unwrap();
+        ws.create("clash", false, Some(&m.ext2.to_string_lossy())).await.unwrap();
+        let again = ws.trash("clash").await;
+        match again {
+            Ok(e) => assert_ne!(e.id, first.id, "a different second gives a different id"),
+            Err(e) => assert_eq!(e.stable_code(), Some(ErrorCode::Exists), "same second, other root's trash"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_watcher_covers_every_available_root() {
+        let mut m = multi_fixture().await;
+        let _guard = m.f.ws.spawn_watcher().unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::create_dir(m.ext2.join("w-ext2")).unwrap();
+        let n = next_changed(&mut m.f.rx, methods::WORKSPACE_CHANGED, Duration::from_secs(8)).await.expect("event");
+        let ch: WorkspaceChanged = serde_json::from_value(n.params).unwrap();
+        assert_eq!(ch.added, vec!["w-ext2".to_string()]);
+        std::fs::create_dir(m.ext1.join("w-ext1")).unwrap();
+        let n = next_changed(&mut m.f.rx, methods::WORKSPACE_CHANGED, Duration::from_secs(8)).await.expect("event");
+        let ch: WorkspaceChanged = serde_json::from_value(n.params).unwrap();
+        assert_eq!(ch.added, vec!["w-ext1".to_string()]);
+        // 改名只在同一个根里认：在 ext1 里 mv
+        std::fs::rename(m.ext1.join("w-ext1"), m.ext1.join("w-ext1b")).unwrap();
+        let n = next_changed(&mut m.f.rx, methods::WORKSPACE_CHANGED, Duration::from_secs(8)).await.expect("event");
+        let ch: WorkspaceChanged = serde_json::from_value(n.params).unwrap();
+        assert_eq!(ch.renamed, vec![RenamedProject { from: "w-ext1".into(), to: "w-ext1b".into() }]);
+        // 各根的 .trash 里的变化不是项目增删
+        std::fs::create_dir(m.ext1.join(TRASH_DIR).join("junk")).unwrap();
+        assert!(next_changed(&mut m.f.rx, methods::WORKSPACE_CHANGED, Duration::from_millis(1200)).await.is_none());
+    }
+
+    #[test]
+    fn only_top_level_visible_entries_of_a_root_are_relevant_to_the_watcher() {
+        let roots = vec![PathBuf::from("/w/main"), PathBuf::from("/mnt/ext")];
+        for yes in ["/w/main", "/w/main/p", "/mnt/ext/p", "/mnt/ext", "/elsewhere/odd"] {
+            assert!(event_is_relevant(&roots, Path::new(yes)), "{yes}");
+        }
+        for no in ["/w/main/.trash", "/w/main/p/src/x.rs", "/mnt/ext/.trash/p-1", "/mnt/ext/.hidden", "/mnt/ext/p/.git"]
+        {
+            assert!(!event_is_relevant(&roots, Path::new(no)), "{no}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_linking_rules_apply_to_every_root() {
+        let m = multi_fixture().await;
+        let (f, ws) = (&m.f, &m.f.ws);
+        ws.create("in-primary", false, None).await.unwrap();
+        ws.create("in-ext1", false, Some(&m.ext1.to_string_lossy())).await.unwrap();
+        async fn link_to(ws: &Workspace, p: &Path) -> RpcResult<Project> {
+            ws.link(&p.to_string_lossy(), Some("l")).await
+        }
+        // 额外根里面的目录已经是项目 / 在 .trash 里：invalid；根本身、包含根的目录：forbidden
+        assert_eq!(code_of(link_to(ws, &m.ext1.join("in-ext1")).await), ErrorCode::Invalid);
+        assert_eq!(code_of(link_to(ws, &m.ext1.join(TRASH_DIR)).await), ErrorCode::Invalid);
+        assert_eq!(code_of(link_to(ws, &f.root.join("in-primary")).await), ErrorCode::Invalid);
+        assert_eq!(code_of(link_to(ws, &m.ext1).await), ErrorCode::Forbidden);
+        assert_eq!(code_of(link_to(ws, &m.ext2).await), ErrorCode::Forbidden);
+        assert_eq!(
+            code_of(link_to(ws, &f.base).await),
+            ErrorCode::Forbidden,
+            "contains every root and the data directory"
+        );
+        assert_eq!(code_of(link_to(ws, &f.base.join("gone")).await), ErrorCode::NotFound, "nothing is there to link");
+        // 一个普通目录照常可以
+        assert_eq!(link_to(ws, &f.base.join("outside/dir")).await.unwrap().kind, ProjectKind::Linked);
+        // browse：额外根里的项目标成项目，不可关联；根里的目录不能再关联
+        let b = ws.browse(Some(&m.ext1.to_string_lossy()), true).await.unwrap();
+        assert_eq!((b.linkable, b.blocked), (false, Some(LinkBlock::Workspace)));
+        let e = b.entries.iter().find(|e| e.name == "in-ext1").unwrap();
+        assert_eq!((e.project.as_deref(), e.linkable), (Some("in-ext1"), false));
+        let b = ws.browse(Some(&f.base.to_string_lossy()), true).await.unwrap();
+        for name in ["ext1", "ext2"] {
+            let e = b.entries.iter().find(|e| e.name == name).unwrap();
+            assert_eq!((e.linkable, e.blocked), (false, Some(LinkBlock::Workspace)), "{name}");
+        }
+        // 规则引擎看得到所有根，包括这次启动时不可用的那个（只剩路径前缀可比：它之后被挂上时，关联项目复核会拒绝落进去的）
+        let ctx = ws.link_ctx_lenient();
+        assert!(ctx.workspace_roots.contains(&m.ext2) && ctx.workspace_roots.contains(&m.gone));
+        assert_eq!(ctx.block_of(&m.ext2.join("anything")).map(|b| b.block), Some(LinkBlock::Workspace));
+        assert_eq!(ctx.block_of(&m.gone.join("anything")).map(|b| b.block), Some(LinkBlock::Workspace));
+        assert_eq!(ctx.block_of(&m.gone).map(|b| b.block), Some(LinkBlock::Workspace));
+        assert_eq!(ctx.resolve_linked(&m.ext1.join("in-ext1")), Err(LinkedProblem::NotAllowed(LinkBlock::Workspace)));
+    }
+
+    #[tokio::test]
+    async fn a_name_that_moved_to_another_roots_disk_is_a_different_directory_but_a_moved_root_is_not() {
+        // 用真实的设备号：根所在的盘 = `dev`
+        let d = tempfile::tempdir().unwrap();
+        let (dev, ino) = crate::sys::identity_of(d.path()).unwrap();
+        let paths = Paths::new(d.path().join("home"));
+        std::fs::create_dir_all(&paths.home).unwrap();
+        let store = Store::open(&paths.db()).await.unwrap();
+        let config = ConfigStore::with_config(paths, Config::default());
+        let ws = Workspace::new(&d.path().join("ws"), config, store, Clients::new(), Arc::new(HashMap::new()))
+            .await
+            .unwrap();
+        let rec = |dev: u64, ino: u64| format!("folder:p#{dev}:{ino}");
+        // 同一个设备：看 inode
+        assert_eq!(ws.check_loc(&rec(dev, 5), &rec(dev, 5)), LocCheck::Same);
+        assert_eq!(ws.check_loc(&rec(dev, 5), &rec(dev, 6)), LocCheck::Different);
+        // 记下的设备已经不是任何一个根所在的盘：整个根搬了盘，接受并重新记下
+        let gone_dev = dev.wrapping_add(7919);
+        assert_eq!(ws.check_loc(&rec(gone_dev, 5), &rec(dev, ino)), LocCheck::Refresh(rec(dev, ino)));
+        // 记下的设备现在还是某个根所在的盘，名字却指向了别的设备上的目录：是另一个根里的另一个目录，拒绝续接
+        assert_eq!(ws.check_loc(&rec(dev, 5), &rec(gone_dev, 5)), LocCheck::Different);
+        // 旧版本只记了名字：接受
+        assert_eq!(ws.check_loc("folder:p", &rec(dev, 5)), LocCheck::Refresh(rec(dev, 5)));
     }
 }

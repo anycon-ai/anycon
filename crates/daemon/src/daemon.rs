@@ -40,6 +40,9 @@ pub enum DaemonError {
     Io(#[from] std::io::Error),
     #[error("attachments: {0}")]
     Blobs(#[from] crate::blobs::BlobError),
+    /// workspace 根：建不了主根的目录，或 `workspace.extra_roots` 配置错误（相同 / 嵌套 / 在数据目录里…）。
+    #[error(transparent)]
+    Workspace(#[from] crate::workspace::WorkspaceError),
     #[error("{0}")]
     Other(String),
 }
@@ -342,7 +345,13 @@ impl Daemon {
             });
             tasks.extend(link.spawn(rpc.clone(), shutdown_rx));
         }
-        tracing::info!(home = %paths.home.display(), workspace = %workspace.root().display(), version = env!("CARGO_PKG_VERSION"), "daemon started");
+        tracing::info!(
+            home = %paths.home.display(),
+            workspace = %workspace.root().display(),
+            extra_roots = workspace.roots().iter().filter(|r| !r.primary && r.active).count(),
+            version = env!("CARGO_PKG_VERSION"),
+            "daemon started"
+        );
         Ok(Daemon { ctx, rpc, tasks, _lock: lock, _watch: watch_guard, socket_path })
     }
 

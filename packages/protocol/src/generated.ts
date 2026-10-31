@@ -778,6 +778,7 @@ export interface ProtocolSchema {
   workspace_name_params: WorkspaceNameParams;
   workspace_remove_worktree_params: WorkspaceRemoveWorktreeParams;
   workspace_rename_params: WorkspaceRenameParams;
+  workspace_root_info: WorkspaceRootInfo;
   workspace_trash_id_params: WorkspaceTrashIdParams;
   workspace_trash_list_result: WorkspaceTrashListResult;
   workspace_worktrees_params: WorkspaceWorktreesParams;
@@ -1586,7 +1587,14 @@ export interface NodeInfo {
   protocol_version: number;
   started_at_ms: number;
   version: string;
+  /**
+   * 主根。多个根时看 `workspace_roots`。
+   */
   workspace_root?: string | null;
+  /**
+   * 所有 workspace 根，主根在最前，额外根按配置顺序。老版本的 daemon 不给，客户端当作只有 `workspace_root` 一个。
+   */
+  workspace_roots?: WorkspaceRootInfo[];
   /**
    * `capabilities.worktree` 为 true 时给出。
    */
@@ -1609,6 +1617,24 @@ export interface NodeCapabilities {
    * 支持每会话 worktree、`session.git_status` / `diff` / `sync_base`（ADR-34）。daemon 找不到 `git` 时为 false。
    */
   worktree?: boolean;
+}
+/**
+ * 一个 workspace 根（ADR-45）。每个根下的一级子文件夹都是项目。
+ */
+export interface WorkspaceRootInfo {
+  /**
+   * 现在能用：daemon 启动时它是一个存在的目录，并且现在还在。不可用的根下的项目不出现在列表里，也不能在上面新建 / 克隆；
+   * 配置只在启动时读，修好（挂上外接盘）之后要重启 daemon。
+   */
+  available: boolean;
+  /**
+   * canonical 绝对路径（根不可用时是展开后的配置值）。`workspace.create` / `clone` 的 `root` 取这里的值。
+   */
+  path: string;
+  /**
+   * 主根：放 `.scratch/`，不指定 `root` 时新项目建在这里。恰好有一个。
+   */
+  primary: boolean;
 }
 /**
  * 节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。
@@ -1995,7 +2021,7 @@ export interface PreviewResponseHead {
   status: number;
 }
 /**
- * 一个项目 = workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。
+ * 一个项目 = 某个 workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。
  * 元数据全部推导；只有「关联了哪些目录」存在 daemon 的库里。
  */
 export interface Project {
@@ -2017,13 +2043,18 @@ export interface Project {
   missing?: boolean;
   modified_at_ms: number;
   /**
-   * 项目名。根目录下的项目和关联的项目共用一个命名空间，客户端的所有操作都用它。
+   * 项目名。所有 workspace 根下的项目和关联的项目共用一个命名空间，客户端的所有操作都用它。
    */
   name: string;
   /**
    * 绝对路径，仅展示用。
    */
   path: string;
+  /**
+   * 文件夹项目所在的 workspace 根（canonical 绝对路径，等于 `node.info.workspace_roots` 里的某一项的 `path`）；
+   * 关联项目没有。老版本的 daemon 不给，客户端当作主根。
+   */
+  root?: string | null;
 }
 export interface GitMeta {
   branch?: string | null;
@@ -2464,10 +2495,14 @@ export interface SessionSyncBaseResult {
 export interface TrashEntry {
   bytes: number;
   /**
-   * `.trash/` 下的目录名，如 `my-app-20261011T120000Z`。
+   * `.trash/` 下的目录名，如 `my-app-20261011T120000Z`。每个根有自己的 `.trash/`，id 在所有根之间唯一。
    */
   id: string;
   original_name: string;
+  /**
+   * 条目所在（也是 `restore` 还原到）的 workspace 根。老版本的 daemon 不给，客户端当作主根。
+   */
+  root?: string | null;
   trashed_at_ms: number;
 }
 /**
@@ -2565,6 +2600,10 @@ export interface RenamedProject {
 export interface WorkspaceCloneParams {
   name?: string | null;
   /**
+   * 克隆到哪个 workspace 根下，规则同 `WorkspaceCreateParams.root`。
+   */
+  root?: string | null;
+  /**
    * 只允许 `https://`、`ssh://`、`git@host:path` 三种形式。
    */
   url: string;
@@ -2572,6 +2611,11 @@ export interface WorkspaceCloneParams {
 export interface WorkspaceCreateParams {
   git_init?: boolean;
   name: string;
+  /**
+   * 在哪个 workspace 根下新建。必须是 `node.info.workspace_roots` 里的某一项的 `path`；缺省 = 主根；
+   * 不在列表里 → `invalid`，在列表里但现在不可用（`available = false`）→ `not_found`。
+   */
+  root?: string | null;
 }
 /**
  * `workspace.link`：把本机一个已有目录关联为项目。
@@ -2589,6 +2633,9 @@ export interface WorkspaceLinkParams {
 }
 export interface WorkspaceListResult {
   projects: Project[];
+  /**
+   * 主根（`node.info.workspace_roots` 里 `primary` 的那一项）。其余根下的项目看 `Project.root`。
+   */
   root: string;
 }
 export interface WorkspaceNameParams {

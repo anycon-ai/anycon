@@ -28,6 +28,18 @@ pub struct NodeWorktreeSettings {
     pub branch_prefix: String,
 }
 
+/// 一个 workspace 根（ADR-45）。每个根下的一级子文件夹都是项目。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceRootInfo {
+    /// canonical 绝对路径（根不可用时是展开后的配置值）。`workspace.create` / `clone` 的 `root` 取这里的值。
+    pub path: String,
+    /// 主根：放 `.scratch/`，不指定 `root` 时新项目建在这里。恰好有一个。
+    pub primary: bool,
+    /// 现在能用：daemon 启动时它是一个存在的目录，并且现在还在。不可用的根下的项目不出现在列表里，也不能在上面新建 / 克隆；
+    /// 配置只在启动时读，修好（挂上外接盘）之后要重启 daemon。
+    pub available: bool,
+}
+
 /// `node.info` 结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NodeInfo {
@@ -36,8 +48,12 @@ pub struct NodeInfo {
     pub version: String,
     pub protocol_version: u32,
     pub platform: String,
+    /// 主根。多个根时看 `workspace_roots`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<String>,
+    /// 所有 workspace 根，主根在最前，额外根按配置顺序。老版本的 daemon 不给，客户端当作只有 `workspace_root` 一个。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<WorkspaceRootInfo>,
     pub capabilities: NodeCapabilities,
     pub started_at_ms: TimestampMs,
     /// `capabilities.worktree` 为 true 时给出。

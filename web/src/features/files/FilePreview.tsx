@@ -8,7 +8,7 @@ import { formatBytes } from '@/lib/format'
 import { highlightCode } from '@/lib/highlight'
 import { cn } from '@/ui/cn'
 import { CopyButton, Segmented, Skeleton } from '@/ui/Misc'
-import { IMAGE_MAX_BYTES, readImage, readText, TEXT_MAX_BYTES } from './api'
+import { IMAGE_CHUNK_BYTES, IMAGE_MAX_BYTES, readImage, readText, TEXT_MAX_BYTES } from './api'
 import { useAsync, useObjectUrl } from './hooks'
 import { ErrorBlock, Loading } from './parts'
 import { baseName, fileKind, parentOf, resolveLocalUrl } from './paths'
@@ -210,7 +210,9 @@ function ImagePreview({ nodeId, path, mime, size }: { nodeId: string; path: stri
   const { t } = useTranslation()
   // 目录列表已经说明它超过上限就不用取了（取回来也是被截断的）
   const knownTooLarge = size !== undefined && size > IMAGE_MAX_BYTES
-  const { state, retry } = useAsync(`${nodeId}\0${path}`, () => readImage(nodeId, path), !knownTooLarge)
+  // 一块一块读：大图显示进度。换文件 / 关掉预览时 `useAsync` 会中止，后面的块不再请求
+  const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null)
+  const { state, retry } = useAsync(`${nodeId}\0${path}`, (signal) => readImage(nodeId, path, { signal, onProgress: (loaded, total) => setProgress({ loaded, total }) }), !knownTooLarge)
   const ready = state.status === 'ready' ? state.data : null
   const bytes = ready && !ready.truncated ? ready.bytes : null
   const url = useObjectUrl(bytes, mime)
@@ -227,7 +229,16 @@ function ImagePreview({ nodeId, path, mime, size }: { nodeId: string; path: stri
         <p>{t('files.imageTooLarge', { size: formatBytes(total ?? IMAGE_MAX_BYTES), limit: formatBytes(IMAGE_MAX_BYTES) })}</p>
       </Centered>
     )
-  else if (state.status === 'error') body = <ErrorBlock error={state.error} onRetry={retry} />
+  else if (state.status === 'error')
+    body = (
+      <ErrorBlock
+        error={state.error}
+        onRetry={() => {
+          setProgress(null)
+          retry()
+        }}
+      />
+    )
   else if (failed)
     body = (
       <Centered testId="files-image-failed">
@@ -242,7 +253,7 @@ function ImagePreview({ nodeId, path, mime, size }: { nodeId: string; path: stri
         <img src={url} alt={baseName(path)} decoding="async" referrerPolicy="no-referrer" className="max-h-full max-w-full object-contain" data-testid="file-image" onError={() => setFailed(true)} />
       </div>
     )
-  else body = <Loading />
+  else body = <Loading progress={progress && progress.total > IMAGE_CHUNK_BYTES ? progress : undefined} />
   return (
     <Frame path={path} size={total} icon={icon}>
       {body}
@@ -256,7 +267,7 @@ export function FileImage({ nodeId, path, alt }: { nodeId: string; path: string;
   const kind = fileKind(baseName(path))
   const [ref, seen] = useInView<HTMLSpanElement>()
   const isImage = kind.type === 'image'
-  const { state } = useAsync(`${nodeId}\0${path}`, () => readImage(nodeId, path), seen && isImage)
+  const { state } = useAsync(`${nodeId}\0${path}`, (signal) => readImage(nodeId, path, { signal }), seen && isImage)
   const ready = state.status === 'ready' && !state.data.truncated ? state.data.bytes : null
   const url = useObjectUrl(ready, kind.type === 'image' ? kind.mime : '')
   const [failed, setFailed] = useState(false)

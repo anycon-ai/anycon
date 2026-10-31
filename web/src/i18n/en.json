@@ -373,6 +373,7 @@
     "emptyFolder": "This folder is empty",
     "emptyFile": "This file is empty",
     "loading": "Loading\u2026",
+    "loadingProgress": "Loading\u2026 {{loaded}} of {{total}}",
     "retry": "Retry",
     "name": "Name",
     "size": "Size",
@@ -396,7 +397,8 @@
       "forbidden": "The node does not allow access to this path.",
       "invalid": "This path is not a regular file or folder.",
       "image_unsupported": "The node is too old to send images. Update the anycon daemon on it.",
-      "bad_data": "The node sent data that could not be read."
+      "bad_data": "The node sent data that could not be read.",
+      "changed": "The file changed while it was being read. Try again."
     }
   },
   "folderPicker": {

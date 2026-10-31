@@ -327,7 +327,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 |---|---|
 | 文本 | 带行号的代码，按扩展名用 shiki 高亮（语言见 `lib/highlight.ts`：TypeScript / JavaScript / JSON / Rust / Go / Python / shell / CSS / SCSS / HTML / XML / YAML / TOML / INI / SQL / C / C++ / Java / Kotlin / Swift / Ruby / Lua / Dockerfile / Makefile / diff / Markdown；`Dockerfile`、`Makefile`、`Cargo.lock` 按文件名认）。不认识的扩展名显示纯文本。**超过 200 000 个字符不高亮**（shiki 在主线程里跑，1 MiB 的文件会卡住页面），并提示「文件较大，已关闭语法高亮」。空文件说明「这个文件是空的」 |
 | Markdown（`.md` / `.markdown`） | 默认渲染，头部有「渲染 / 源码」切换（切换不重新读）。复用消息的 `Markdown` 组件和它的全部安全设置：原始 HTML 不解释，外部链接 `target="_blank" rel="noopener noreferrer"`，远程图片是点击才加载的占位（§ 4.6 消息流）。**相对地址不让浏览器去请求**：相对图片（`![](img/a.png)`）进入视口才经 `fs.read` 取、显示成 `blob:` 图片；相对链接（`[x](../README.md#a)`）变成应用内链接，去文件浏览里对应的路径（`?query` 和 `#hash` 去掉）；`/x` 相对项目目录；走出项目目录的、`#锚点` 的链接显示为普通文字，走出项目目录的图片显示为说明文字；相对图片不是图片文件、读不到或太大时显示成「图片：<alt>」。超过 300 000 个字符的 Markdown 默认先看源码 |
-| 图片（png / jpg / gif / webp / svg，另有 avif / bmp / ico） | `fs.read { encoding: "base64", max_bytes: 10 MiB }` 取字节，放进 `<img src="blob:…">`（卸载时 revoke）。**SVG 只通过 `<img>` 显示，不会内联进 DOM**，里面的脚本不会执行。超过 10 MiB（目录列表里的大小已经超限就根本不取；列表过时、读回来被截断时同样）不显示，提示「这张图片太大，无法预览（N，上限 10 MiB）」；浏览器解码失败时提示「无法显示」。旧 daemon 不认 `encoding`（回来没有 `data_base64`）时提示更新节点上的 daemon |
+| 图片（png / jpg / gif / webp / svg，另有 avif / bmp / ico） | `fs.read { encoding: "base64", max_bytes: 512 KiB, offset }` **一块一块顺序读**（同时只有一个请求在途），拼好后放进 `<img src="blob:…">`（卸载时 revoke）。分块是因为设备到 daemon 只有一条有序的传输：一个十几 MiB 的响应会让会话事件、审批请求、「停止」的回复都排在它后面（和附件的 blob 通道同一个道理，[ADR-35](../decisions.md#adr-35-图片附件经-blob-通道传到-daemon消息只带引用)「上传让路」），每块只占 512 KiB。第一块就带着文件总长：**超过 10 MiB 的不再往下读**（不显示，提示「这张图片太大，无法预览（N，上限 10 MiB）」；目录列表里的大小已经超限就连第一块也不取）。超过一块的图片，加载时显示进度（「已读 / 总共」和进度条）。每块都核对：`bytes`（文件总长）变了说明文件在读的过程中被改写，**从头重读一次**，再变就报「读取过程中文件被改动了，请重试」；块的 `offset` 回显、长度对不上、base64 坏了报「节点发来的数据无法读取」。换文件、关掉预览会中止，后面的块不再请求。**SVG 只通过 `<img>` 显示，不会内联进 DOM**，里面的脚本不会执行。浏览器解码失败时提示「无法显示」。旧 daemon 不认 `encoding`（回来没有 `data_base64`），或不认 `offset`（忽略它，回应里没有 `offset` 字段：只有整张图在第一块里读完才能用，否则同一块会被重复拼起来得到坏图）时，提示更新节点上的 daemon |
 | 其他二进制（读回来 `binary = true`） | 「二进制文件，N 字节」，不显示内容 |
 
 文本（含 Markdown 源码）最多读前 1 MiB（`max_bytes`）；文件更大时在预览上方提示「只显示了前 1.0 MiB（共 N）」，`bytes` 是文件总长。预览里的一次读取就是一次 `fs.read`，会进 daemon 的审计（daemon.md § 13）。
@@ -340,7 +340,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 - 读单个文件失败只影响预览，树照常。
 - 页面里的数据都不进 IndexedDB，也不跨页面缓存：离开页面就丢，下次进来重新读，因为节点上的文件随时会变（agent 在改）；页面里没有自动轮询，要看最新的点「刷新」。
 
-**限制**：只读；单文件文本最多 1 MiB、图片最多 10 MiB；没有搜索、没有文件内跳转（行号锚点）、没有 diff（改动在会话页的「改动」视图，§ 4.6）；目录列表不分页（daemon 一次返回整个目录）；不按 `.gitignore` 过滤（`node_modules` 之类也会列出来，展开才读）。
+**限制**：只读；单文件文本最多 1 MiB、图片最多 10 MiB（每块 512 KiB，最多 20 个请求）；文件在读的过程中被改写成**同样长度**时检测不到（只比较总长），图片可能由新旧内容拼成；没有搜索、没有文件内跳转（行号锚点）、没有 diff（改动在会话页的「改动」视图，§ 4.6）；目录列表不分页（daemon 一次返回整个目录）；不按 `.gitignore` 过滤（`node_modules` 之类也会列出来，展开才读）。
 
 ### 4.8 节点设置 `/n/:node/settings`
 

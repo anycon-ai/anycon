@@ -81,9 +81,10 @@ export type Async<T> = { status: 'loading' } | { status: 'ready'; data: T } | { 
 
 /**
  * 按 `key` 做一次异步读取：`key` 变了重新读，旧的结果不会短暂显示在新的 key 下面；`retry` 重读。
+ * `run` 拿到一个 `AbortSignal`：`key` 变了、组件卸载、重读之前都会触发它，分块读的大文件靠它停下来，不再占着链路。
  * `enabled` 为 false 时不读（保持 `loading`）。`run` 不用进依赖：它由 `key` 决定。
  */
-export function useAsync<T>(key: string, run: () => Promise<T>, enabled = true): { state: Async<T>; retry: () => void } {
+export function useAsync<T>(key: string, run: (signal: AbortSignal) => Promise<T>, enabled = true): { state: Async<T>; retry: () => void } {
   const [attempt, setAttempt] = useState(0)
   const [result, setResult] = useState<{ key: string; value: Async<T> } | null>(null)
   const runRef = useRef(run)
@@ -94,7 +95,8 @@ export function useAsync<T>(key: string, run: () => Promise<T>, enabled = true):
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
-    runRef.current().then(
+    const controller = new AbortController()
+    runRef.current(controller.signal).then(
       (data) => {
         if (!cancelled) setResult({ key: full, value: { status: 'ready', data } })
       },
@@ -104,6 +106,7 @@ export function useAsync<T>(key: string, run: () => Promise<T>, enabled = true):
     )
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [full, enabled])
   const retry = useCallback(() => setAttempt((n) => n + 1), [])

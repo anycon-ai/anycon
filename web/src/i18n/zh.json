@@ -371,6 +371,7 @@
     "emptyFolder": "这个文件夹是空的",
     "emptyFile": "这个文件是空的",
     "loading": "加载中\u2026",
+    "loadingProgress": "加载中\u2026 {{loaded}} / {{total}}",
     "retry": "重试",
     "name": "名称",
     "size": "大小",
@@ -394,7 +395,8 @@
       "forbidden": "节点不允许访问这个路径。",
       "invalid": "这个路径不是普通文件或文件夹。",
       "image_unsupported": "节点版本太旧，无法发送图片。请更新节点上的 anycon daemon。",
-      "bad_data": "节点发来的数据无法读取。"
+      "bad_data": "节点发来的数据无法读取。",
+      "changed": "读取过程中文件被改动了，请重试。"
     }
   },
   "folderPicker": {

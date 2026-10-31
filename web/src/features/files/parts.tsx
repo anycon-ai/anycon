@@ -3,16 +3,21 @@ import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { formatBytes } from '@/lib/format'
 import { Button } from '@/ui/Button'
 import { Spinner } from '@/ui/Misc'
 import { describeFsError } from './errors'
 
-export function Loading() {
+/** `progress`：分块读的大文件已读 / 总字节数（只在有一块以上时给）。 */
+export function Loading({ progress }: { progress?: { loaded: number; total: number } }) {
   const { t } = useTranslation()
   return (
-    <div className="flex flex-1 items-center justify-center gap-2 p-8 text-sm text-fg-muted" role="status" aria-busy="true" data-testid="files-loading">
-      <Spinner />
-      {t('files.loading')}
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-sm text-fg-muted" role="status" aria-busy="true" data-testid="files-loading">
+      <div className="flex items-center gap-2">
+        <Spinner />
+        {progress ? t('files.loadingProgress', { loaded: formatBytes(progress.loaded), total: formatBytes(progress.total) }) : t('files.loading')}
+      </div>
+      {progress ? <progress className="h-1.5 w-48 max-w-full accent-accent" value={progress.loaded} max={progress.total} aria-label={t('files.loading')} data-testid="files-progress" /> : null}
     </div>
   )
 }

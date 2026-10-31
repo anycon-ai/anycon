@@ -46,7 +46,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 | 命令 | 说明 |
 |---|---|
-| `anycon init --hub <url> --workspace <dir> [--name <node-name>]` | 生成 `config.toml` 和 Noise 密钥，创建 workspace 根目录（含 `.trash/`、`.scratch/`）。交互式询问缺省项；`--yes` 全部用默认。已初始化则拒绝，除非 `--force`（会提示重新初始化将使所有已配对设备失效）。结束时提示一句：daemon 跑起来后可以用 `anycon passwd` 设节点口令，出门在外、手边没有已配对设备时用它解锁这台节点（ADR-36） |
+| `anycon init --hub <url> --workspace <dir> [--name <node-name>]` | 生成 `config.toml` 和 Noise 密钥，创建 workspace 主根（含 `.trash/`、`.scratch/`）。额外的 workspace 根用 `anycon config set workspace.extra_roots '["/mnt/ext/projects"]'` 加（[ADR-45](../decisions.md#adr-45-多个-workspace-根)，启动时读，要重启）。交互式询问缺省项；`--yes` 全部用默认。已初始化则拒绝，除非 `--force`（会提示重新初始化将使所有已配对设备失效）。结束时提示一句：daemon 跑起来后可以用 `anycon passwd` 设节点口令，出门在外、手边没有已配对设备时用它解锁这台节点（ADR-36） |
 | `anycon daemon [--foreground]` | 前台运行。默认即前台，日志到 stderr；由 launchd / systemd / Windows 计划任务托管时也是这个命令。没有 daemonize 选项，后台化交给服务管理器。隐藏参数 `--home <dir>` 代替 `ANYCON_HOME`（Windows 计划任务设不了环境变量） |
 | `anycon service install \| uninstall \| start \| stop \| restart \| status` | 注册为用户级 launchd（macOS）/ systemd user unit（Linux）/ 当前用户的计划任务 `anycon`（Windows，登录时启动，不需要管理员权限，见下）。`install` 后自动 `start`，开机自启。`status` 显示进程状态和最近日志 |
 | `anycon doctor` | 诊断，见 § 5 |
@@ -108,9 +108,9 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | 命令 | 说明 |
 |---|---|
 | `anycon agents [--refresh]` | `agent.list`：每个 agent 的状态、版本、模型和选项 |
-| `anycon projects` | 项目列表及推导元数据；关联项目标 `linked` 并显示路径，`missing` 的标出来 |
-| `anycon projects create <name> [--git]` | |
-| `anycon projects clone <url> [--name]` | 流式打印克隆进度 |
+| `anycon projects` | 项目列表及推导元数据；LOCATION 列：关联项目标 `linked` 并显示路径，`missing` 的标出来；不在主根里的文件夹项目标 `root: <所在的根>`（主根下的留空）。`--json` 每项带 `root` |
+| `anycon projects create <name> [--git] [--root <path>]` | `--root`：建在哪个 workspace 根下，必须是节点的某个根（`workspace.root` 或 `workspace.extra_roots` 的一项），缺省主根；本机 daemon 时相对路径按 CLI 当前目录解析，远程节点原样发。不是任何一个根 → 退出码 2（`invalid`），根现在不可用（盘没插）→ 1（`not_found`） |
+| `anycon projects clone <url> [--name] [--root <path>]` | 流式打印克隆进度；`--root` 同 `create` |
 | `anycon projects rename <from> <to>` · `trash <name>` | |
 | `anycon projects link <path> [--name <name>]` | `workspace.link`：把本机已有目录关联为项目；`path` 相对路径按当前目录解析成绝对路径再发（远程 `--node` 时不解析，原样发，`~` 由 daemon 展开） |
 | `anycon projects unlink <name>` | `workspace.unlink`：只解除关联，不删文件 |
@@ -141,7 +141,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `anycon export [--out <file>] [--project] [--since]` | 导出会话历史为一个 zip（JSONL + 附件），用于备份和搬迁（v0.2） |
 | `anycon import <file>` | 导入（v0.2） |
 | `anycon audit [--since] [--device] [--json]` | 本地审计日志 |
-| `anycon config get <key>` · `set <key> <value>` · `edit` · `path` | 读写 `config.toml`；`set` 后对支持热加载的键立即生效，否则提示重启。只作用于本机，不提供远程版本：远程改配置是 Web / SDK 的 `node.set_config`，只有一张白名单（[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)），本机的 `config set` 不受白名单限制，也是放宽 `permissions.allow_dangerous_modes` / `preview.enabled` 的唯一办法 |
+| `anycon config get <key>` · `set <key> <value>` · `edit` · `path` | 读写 `config.toml`；`set` 后对支持热加载的键立即生效，否则提示重启。`set workspace.link_roots` 之后打印 daemon 对每一项的判定；`set workspace.root` / `workspace.extra_roots` 之后按 daemon 启动时的规则判一遍，配置错误（daemon 会拒绝启动）和暂时用不了的额外根（会被跳过）各打印一行警告（`--json` 在 `workspace_roots_warnings` 里）。只作用于本机，不提供远程版本：远程改配置是 Web / SDK 的 `node.set_config`，只有一张白名单（[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)），本机的 `config set` 不受白名单限制，也是放宽 `permissions.allow_dangerous_modes` / `preview.enabled` 的唯一办法 |
 | `anycon logs [-f] [-n 200]` | daemon 日志（本机读日志文件，不过滤；远程客户端用 `node.logs`，会去掉可能带会话文字的行，[daemon.md § 17](daemon.md#17-诊断)） |
 | `anycon stats` | 运行时长、会话数、磁盘占用、hub 连接状态 |
 
@@ -169,7 +169,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | hub 可达（`GET /healthz`）、版本兼容 | 网络 / 反代 / 版本 |
 | 设备 token 有效（`control.auth` 成功） | 设备可能已被吊销，重新 `anycon init --force` 后配对 |
 | daemon 进程在跑、socket 可连 | `anycon service start` |
-| workspace 根目录可写、`.trash` `.scratch` 存在 | |
+| 每个 workspace 根一项：主根（`workspace`）可写、`.trash` `.scratch` 存在；每个额外根（`workspace:<路径>`）存在、是目录、可写，daemon 在跑时还要它启动时就带着这个根、`.trash` 在 | 主根：`anycon init` 或修权限。额外根：挂上磁盘 / 建目录之后重启 daemon（根只在启动时读）。`workspace_roots`：额外根的配置错误（相同 / 嵌套 / 在数据目录里或包含它 / 文件系统根），daemon 拒绝启动，改掉 `workspace.extra_roots` |
 | 每个 adapter 的探测结果（见 [daemon.md § 5](daemon.md#5-agent-探测与能力声明)） | 未安装 / 未登录 / 版本过低各自的命令 |
 | 登录 shell 的 `PATH` 能找到这些 agent | 说明 launchd 环境和终端不同，建议在 `config.toml` 写绝对路径（Windows 不跑登录 shell，用 `where.exe` 对照） |
 | launchd / systemd 服务 / Windows 计划任务已注册且开机自启 | `anycon service install` |

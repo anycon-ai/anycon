@@ -172,7 +172,7 @@ daemon                      hub                        新客户端
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `node.info` | C→D | 版本、能力、workspace 根、已安装 adapter 列表；`capabilities.worktree` 为 true 时带 `worktree { default_mode, branch_prefix }`（节点配置 `[worktree]`，ADR-34） |
+| `node.info` | C→D | 版本、能力、workspace 根（`workspace_root` 是主根；`workspace_roots: [{ path, primary, available }]` 列出所有根，主根在最前、额外根按配置顺序，`available = false` 是暂时用不了的根，ADR-45；老 daemon 不给 `workspace_roots`，客户端当作只有主根）、已安装 adapter 列表；`capabilities.worktree` 为 true 时带 `worktree { default_mode, branch_prefix }`（节点配置 `[worktree]`，ADR-34） |
 | `node.devices` | C→D | 已配对设备列表 |
 | `node.revoke_device` | C→D | 吊销一台设备（daemon 删公钥，并通过 control 通知 hub 删路由） |
 | `node.pair_begin` | C→D | `{ long? }` → `{ code, expires_at_ms, link }`：让 daemon 本地生成短码并向 hub 登记 `match_id`；`long` 缺省为 `true`，生成 16 位；`long = false` 生成 8 位（`anycon pair --short`，只适合自建 hub，ADR-29）。`link = ${hub}/pair#code=<code>`。错误：daemon 没连上 hub → `unsupported`；hub 拒绝登记（回 `pair_failed`）→ `busy` 且 `data.reason` 是 `quota`（账号今天的配对名额用完了，`multi`）或 `rate_limited`，`forbidden` 且 `data.reason = "forbidden"`（约定同 `blob.put_begin` 的 `busy` + `quota`）；hub 没有确认登记 → `internal`。登记之后的失败不在这里返回，见 [spec/daemon.md § 15](spec/daemon.md#15-连接与可靠性) 的 `local.pair_outcome` |
@@ -207,20 +207,20 @@ daemon                      hub                        新客户端
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `workspace.list` | C→D | 项目列表 + 推导的元数据。每项带 `kind`（`folder` 根目录下的文件夹 / `linked` 关联的本机目录）；关联目录不在了时 `missing: true`；`git.worktree_ready` 表示能给会话开 worktree（项目目录是仓库顶层且有提交）；`git_pending: true` 表示 git 元数据还在算（`git` 为空不代表不是 git 项目），算完之后发 `workspace.changed { updated }` |
-| `workspace.create` | C→D | 新建空项目 `{ name, git_init }` |
-| `workspace.clone` | C→D | 克隆 `{ url, name? }`，返回 job id |
+| `workspace.list` | C→D | 项目列表 + 推导的元数据。`root` 是主根。每项带 `kind`（`folder` 某个 workspace 根下的文件夹 / `linked` 关联的本机目录）；文件夹项目带 `root`（所在的根，等于 `node.info.workspace_roots` 里的某个 `path`），关联项目没有；项目名在所有根之间唯一（同名时 关联项目 > 主根 > 额外根）；关联目录不在了时 `missing: true`；`git.worktree_ready` 表示能给会话开 worktree（项目目录是仓库顶层且有提交）；`git_pending: true` 表示 git 元数据还在算（`git` 为空不代表不是 git 项目），算完之后发 `workspace.changed { updated }` |
+| `workspace.create` | C→D | 新建空项目 `{ name, git_init, root? }`。`root`：建在哪个根下，必须是 `node.info.workspace_roots` 里某一项的 `path`，缺省主根；不在列表里 `invalid`，在列表里但不可用 `not_found`；重名（任何一个根或关联项目里的）`exists` |
+| `workspace.clone` | C→D | 克隆 `{ url, name?, root? }`，返回 job id；`root` 同 `workspace.create` |
 | `workspace.link` | C→D | 把本机已有目录关联为项目 `{ path, name? }` → `Project`。`path` 是绝对路径或 `~/…`，必须在 daemon 的 `workspace.link_roots` 之内，并且过 ADR-33 的规则（隐藏目录、内置拒绝表、数据目录 / 文件系统根）；越界或被规则拒绝 `forbidden`，在 workspace 根里 `invalid`，重名或已关联 `exists`，不存在 / 不是目录 `not_found` |
 | `workspace.unlink` | C→D | `{ name }`：解除关联，不动目录；对根目录下的项目返回 `invalid`；有运行中的会话返回 `busy` |
 | `workspace.browse` | C→D | `{ path?, show_hidden? }` → `{ path, parent?, roots, linkable, project?, blocked?, entries: [{ name, path, git?, project?, linkable, blocked? }], truncated? }`（`git` / `truncated` 为 false 时省略；`blocked` 是不能关联的原因 `hidden` / `sensitive` / `workspace` / `data_dir` / `filesystem_root`）：给关联选择器列 `link_roots` 之内的子目录（只有目录名）；拒绝表和数据目录里面不能列（`forbidden`） |
 | `workspace.branches` | C→D | `{ project }` → `{ current?, default_base, local, remote, truncated? }`：新建会话选 base 用。`default_base` 是当前分支的上游（有的话）或当前分支；不列 anycon 自己的 `<branch_prefix>/…` 分支；非 git 项目 `invalid` |
 | `workspace.worktrees` | C→D | `{ project? }` → `{ worktrees: [WorktreeInfo] }`：anycon 建的全部 worktree（含已保留的、会话已删除的），带状态、未提交文件数、自己的提交数、磁盘占用 |
 | `workspace.remove_worktree` | C→D | `{ id, force?, delete_branch? }`：删掉一个 worktree。所属会话没归档、或者还有 turn / agent 进程 → `busy`；有未提交改动而没 `force` → `invalid`（`data.reason = "uncommitted_changes"`） |
-| `workspace.rename` | C→D | `{ from, to }`。关联项目只改名字，不动目录；项目里有 anycon 的 worktree 时改名后跑 `git worktree repair` |
-| `workspace.trash` | C→D | 移到 `.trash/`。关联项目返回 `invalid`（用 `workspace.unlink`） |
-| `workspace.trash_list` / `restore` / `purge` | C→D | 回收站 |
+| `workspace.rename` | C→D | `{ from, to }`。关联项目只改名字，不动目录；文件夹项目只在它所在的根内改名；项目里有 anycon 的 worktree 时改名后跑 `git worktree repair` |
+| `workspace.trash` | C→D | 移到项目所在根的 `.trash/`。关联项目返回 `invalid`（用 `workspace.unlink`） |
+| `workspace.trash_list` / `restore` / `purge` | C→D | 回收站：每个根各有一个，`trash_list` 汇总所有可用根，每项带 `root`；`restore { id }` 回到原来的根；`purge` 和自动清理覆盖所有根；id 在所有根之间唯一 |
 | `job.cancel` | C→D | 取消长任务 |
-| `workspace.changed` | D→C notification | 项目增删改名事件（含关联 / 解除关联）；`updated` 列出元数据（`git`）有了或变了的项目，比如 daemon 重启后冷缓存里第一次算完——只当作「重新 `workspace.list`」的信号，里面的名字可能已经被改名或删除 |
+| `workspace.changed` | D→C notification | 项目增删改名事件（含关联 / 解除关联）；`updated` 列出元数据（`git`）有了或变了、或者同名项目换了落脚的目录（多个根时，高优先级的根里的同名文件夹没了、露出另一个根里的）的项目，比如 daemon 重启后冷缓存里第一次算完——只当作「重新 `workspace.list`」的信号，里面的名字可能已经被改名或删除 |
 | `job.progress` | D→C notification | 长任务进度 `{ job_id, stage, percent?, log_line? }` |
 | `job.done` | D→C notification | `{ job_id, ok, error? }` |
 
@@ -228,7 +228,7 @@ daemon                      hub                        新客户端
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `fs.list` | C→D | 列目录。`path` 是 `<项目名>/<项目内相对路径>`：第一段是关联项目时相对那个目录解析，否则相对 workspace 根；canonicalize 后都不能走出所在的项目 / 根目录 |
+| `fs.list` | C→D | 列目录。`path` 是 `<项目名>/<项目内相对路径>`：第一段是关联项目时相对那个目录解析，否则相对这个项目所在的 workspace 根（第一段不是任何项目名时相对主根）；canonicalize 后都不能走出所在的项目 / 根目录 |
 | `fs.read` | C→D | `{ path, max_bytes?, encoding?, offset? }` → `{ text, binary, truncated, bytes, data_base64?, offset? }`。`bytes` 是文件总长，`truncated` 是「读到的这一段**之后**还有内容」。`encoding` 缺省 / `"text"`：读文件开头的 `max_bytes` 个**原始字节**（默认 1 MiB，上限 10 MiB），UTF-8 文本放 `text`，二进制文件不返回内容（`binary = true`）；`offset > 0` 是 `invalid`（从中间读起会落在半个字符上）。`"base64"`：从 `offset`（缺省 0）起读，原始字节（文本、二进制一样）做标准 base64 放 `data_base64`，`text` 为空，并回显 `offset`。**一次最多一块（512 KiB 原始字节，和 `blob.get` 一样）**：`max_bytes` 缺省就是一块，更大的按一块算（不报错），`0` 只回大小；大文件由客户端自己用 `offset` 一块一块读，每一块的 `bytes` 都是总长，变了说明文件在读的过程中被改写。`offset` 在文件末尾或之后不是错误：回空的 `data_base64`、`truncated = false`。`binary` 在 base64 模式按**这一块**判断，只有 `offset = 0` 那块说明整个文件。不认识 `offset` 的旧 daemon 会忽略它、回应里没有 `offset` 字段，客户端据此知道分块读不能用。分块是因为设备到 daemon 只有一条有序的传输（见 § 3.1 的粘住规则和 [ADR-35](decisions.md#adr-35-图片附件经-blob-通道传到-daemon消息只带引用) 的「上传让路」）：一个十几 MiB 的响应会让会话事件、审批请求、「停止」的回复都排在它后面。未知的 `encoding` 是 `invalid`。响应超过一片时由传输层分片（§3.1）。要把文件交给 agent 用 blob 通道（§ 5.6） |
 
 ### 5.4 会话

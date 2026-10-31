@@ -1,4 +1,4 @@
-# CI：Rust（macOS / Linux / Windows）、TS、生成产物检查、E2E（Playwright + SDK 对真实 hub/daemon）、Docker 构建（自包含 Dockerfile）；
+# CI：Rust（macOS / Linux / Windows）、hub 的 Postgres 存储、TS、生成产物检查、E2E（Playwright + SDK 对真实 hub/daemon）、Docker 构建（自包含 Dockerfile）；
 # main 上全部通过后推 edge 镜像。
 # 本地等价命令：`just lint`、`just test`、`just gen-check`、`just e2e`、`just test-sdk-real`、`just docker-hub`。
 name: CI
@@ -67,6 +67,39 @@ jobs:
         run: cargo test --workspace --no-fail-fast
       - name: happy path（hub + daemon + CLI 端到端，经命名管道）
         run: cargo test -p anycon-cli --test happy_path
+
+  # hub 的 Postgres 存储（ADR-12）：store 的共用测试和依赖 store 的集成测试在真实的 Postgres 上再跑一遍（设了
+  # ANYCON_TEST_POSTGRES_URL 才会跑；`rust` job 里没设，Postgres 那一遍直接跳过）。每个用例在库里建自己的 schema，跑完删掉。
+  # 版本：最老的和最新的主版本各一个；更老的没有验证。本地怎么跑见 CONTRIBUTING.md「提交前」。
+  hub-postgres:
+    name: hub (postgres ${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [15, 18]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: anycon
+          POSTGRES_PASSWORD: anycon
+          POSTGRES_DB: anycon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U anycon -d anycon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      ANYCON_TEST_POSTGRES_URL: postgres://anycon:anycon@localhost:5432/anycon
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test -p anycon-hub（SQLite 和 Postgres 各一遍）
+        run: cargo test -p anycon-hub
 
   ts:
     name: ts
@@ -307,7 +340,7 @@ jobs:
   # docker job 刚用同一个 Dockerfile 写了 gha 缓存，这里基本全部命中，不重新编译。
   edge:
     name: docker (edge image)
-    needs: [rust, rust-windows, ts, gen-check, e2e, docker]
+    needs: [rust, rust-windows, hub-postgres, ts, gen-check, e2e, docker]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

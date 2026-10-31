@@ -18,6 +18,7 @@
 //! | 验证码每组最多留 `keep` 条（`put_email_code`） | 写事务 | 事务里先拿这一组（邮箱，用途，账号）的 advisory 事务锁（`pg_advisory_xact_lock`）：同一组的并发登记排队，修剪看到的是前一个的结果 |
 //! | 预览 label 先到先得、每节点 label 数、每设备令牌数、吊销竞争（`issue_preview_token`） | 写事务 | 事务里先 `SELECT … FOR NO KEY UPDATE` 锁住节点和签发设备的 `devices` 行（按 id 排序）：同一节点 / 设备的并发签发排队，数量上限不会被一起冲过；它和吊销设备（`FOR UPDATE`）冲突，所以吊销要么看见这条令牌并删掉它，要么先于签发完成。label 本身的先到先得靠主键上的 `ON CONFLICT DO NOTHING` |
 //! | 吊销设备（`revoke_device`） | 写事务 | 先 `SELECT … FOR UPDATE` 锁设备行：和并发的配对 / 令牌签发（外键检查拿 `FOR KEY SHARE`）互斥，之后的删除看得到它们已提交的行；并发的第二次吊销在新版本上看到已吊销，返回空 |
+//! | 设备 token 轮换（`rotate_device_token`） | 一条 `UPDATE`，`WHERE` 里带「没吊销、`token_hash` 还是请求方的那个、距上次轮换够久」 | 同一条 `UPDATE`：并发的第二条等第一条提交（行锁），在新版本的行上重新判断 `WHERE`，`token_hash = current` 已不成立，0 行，只有一个赢家；它和吊销（`FOR UPDATE`）互斥，吊销先到就是 `Unavailable` |
 //! | 删账号（`delete_account`） | 写事务 | 先 `SELECT … FOR UPDATE` 锁账号行，并发的第二个删除看不到它、返回 `false`，不会多写一条墓碑审计 |
 //! | 吊销 / 登录方式一类的「读后改」 | hub 内存里按账号的锁（[`crate::accounts::LoginMethodLocks`]） | 同一把锁（不在库里），多条语句各自原子 |
 //!
@@ -54,7 +55,7 @@ use super::{
     category_from_str, category_to_str, kind_from_str, kind_to_str, Account, AccountToken, AuditEntry, CodeCandidate,
     CreateAccountOutcome, Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken,
     NotificationPref, PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome,
-    SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
+    RotateOutcome, SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
 };
 use super::{CreateDevicesOutcome, DeviceLimits};
 use super::{Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthState};
@@ -979,13 +980,60 @@ impl Store for PostgresStore {
         row.as_ref().map(device_from).transpose()
     }
 
-    async fn find_device_by_token_hash(&self, token_hash: &str) -> StoreResult<Option<Device>> {
-        let row = sqlx::query(device_select!("WHERE token_hash = $1"))
-            .bind(token_hash)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(be)?;
+    async fn find_device_by_token_hash(&self, token_hash: &str, now_ms: u64) -> StoreResult<Option<Device>> {
+        let row = sqlx::query(device_select!(
+            "WHERE token_hash = $1 OR (prev_token_hash = $1 AND prev_token_expires_at_ms > $2) LIMIT 1"
+        ))
+        .bind(token_hash)
+        .bind(now_ms as i64)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(be)?;
         row.as_ref().map(device_from).transpose()
+    }
+
+    async fn rotate_device_token(
+        &self,
+        id: &str,
+        current_token_hash: &str,
+        new_token_hash: &str,
+        now_ms: u64,
+        grace_ms: u64,
+        min_interval_ms: u64,
+    ) -> StoreResult<RotateOutcome> {
+        // 一条 UPDATE 同时做检查（没吊销、请求方的 token 还是当前 token、距上次轮换够久）和写入。`SET` 里等号右边引用的是
+        // 更新前的值，所以 `prev_token_hash = token_hash` 取到的是原来的当前 token。并发的第二条 `UPDATE` 等第一条提交（行锁），
+        // Postgres 在新版本的行上重新判断 `WHERE`：`token_hash = current` 已经不成立，0 行，只有一个赢家。
+        let r = sqlx::query(
+            "UPDATE devices SET prev_token_hash = token_hash, prev_token_expires_at_ms = $1, token_hash = $2, \
+             token_rotated_at_ms = $3 \
+             WHERE id = $4 AND revoked_at_ms IS NULL AND token_hash = $5 \
+             AND (token_rotated_at_ms IS NULL OR token_rotated_at_ms <= $6)",
+        )
+        .bind(now_ms.saturating_add(grace_ms) as i64)
+        .bind(new_token_hash)
+        .bind(now_ms as i64)
+        .bind(id)
+        .bind(current_token_hash)
+        .bind(now_ms.saturating_sub(min_interval_ms) as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(be)?;
+        if r.rows_affected() > 0 {
+            return Ok(RotateOutcome::Rotated);
+        }
+        // 没改到：区分「设备不在 / 已吊销」「请求方的 token 不是当前的」和「刚轮换过」
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT token_hash FROM devices WHERE id = $1 AND revoked_at_ms IS NULL")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(be)?;
+        Ok(match current {
+            None => RotateOutcome::Unavailable,
+            Some(h) if h != current_token_hash => RotateOutcome::Stale,
+            Some(_) => RotateOutcome::TooSoon,
+        })
     }
 
     async fn list_devices(&self, account_id: &str) -> StoreResult<Vec<Device>> {
@@ -1584,7 +1632,12 @@ mod tests {
                 .fetch_all(db.pg())
                 .await
                 .unwrap();
-        assert_eq!(applied, ["init", "preview", "identities"]);
+        // 迁移目录里有几个文件就记了几条，每条只记一次（不随迁移的增加改这个测试）
+        let files = std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations/postgres"))
+            .unwrap()
+            .count();
+        assert_eq!(applied.len(), files, "{applied:?}");
+        assert_eq!(&applied[..3], ["init", "preview", "identities"]);
     }
 
     #[tokio::test]
@@ -1781,6 +1834,64 @@ mod tests {
         // 吊销在配对提交之后才做删除，所以删得到它，也报得出对端
         assert_eq!(finishes(task).await.unwrap(), ["b"]);
         assert!(!s.is_paired("a", "b").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_rotation_waits_for_a_concurrent_one_and_then_sees_that_it_lost() {
+        let Some(db) = backend_postgres().await else { return };
+        let (s, pool) = (db.store.clone(), db.pg().clone());
+        let t0 = 1_000_000u64;
+        let acc = s.create_account("a", false, t0).await.unwrap();
+        s.create_device(new_device(&acc.id, "dev", "t1"), t0).await.unwrap();
+        // 另一个轮换已经把当前 token 换成了 winner，还没提交
+        let mut winner = pool.begin().await.unwrap();
+        sqlx::query(
+            "UPDATE devices SET prev_token_hash = token_hash, prev_token_expires_at_ms = $1, token_hash = $2, \
+             token_rotated_at_ms = $3 WHERE id = 'dev'",
+        )
+        .bind((t0 + 60_000) as i64)
+        .bind(hash_token("winner"))
+        .bind(t0 as i64)
+        .execute(&mut *winner)
+        .await
+        .unwrap();
+        let task = tokio::spawn({
+            let s = s.clone();
+            async move { s.rotate_device_token("dev", &hash_token("t1"), &hash_token("loser"), t0, 60_000, 60_000).await }
+        });
+        assert_waiting(&task).await;
+        winner.commit().await.unwrap();
+        // 等到赢家提交之后，在新版本的行上重新判断 WHERE：当前 token 已经不是 t1，什么都没写
+        assert_eq!(finishes(task).await.unwrap(), RotateOutcome::Stale);
+        let find = |token: &'static str| {
+            let s = s.clone();
+            async move { s.find_device_by_token_hash(&hash_token(token), t0 + 1).await.unwrap().is_some() }
+        };
+        assert!(find("winner").await && find("t1").await, "the winner's token and the grace period of t1 stand");
+        assert!(!find("loser").await);
+    }
+
+    #[tokio::test]
+    async fn a_rotation_waits_for_a_revocation_in_progress_and_then_finds_the_device_gone() {
+        let Some(db) = backend_postgres().await else { return };
+        let (s, pool) = (db.store.clone(), db.pg().clone());
+        let t0 = 1_000_000u64;
+        let acc = s.create_account("a", false, t0).await.unwrap();
+        s.create_device(new_device(&acc.id, "dev", "t1"), t0).await.unwrap();
+        let mut revoking = pool.begin().await.unwrap();
+        sqlx::query("UPDATE devices SET revoked_at_ms = $1 WHERE id = 'dev'")
+            .bind(t0 as i64)
+            .execute(&mut *revoking)
+            .await
+            .unwrap();
+        let task = tokio::spawn({
+            let s = s.clone();
+            async move { s.rotate_device_token("dev", &hash_token("t1"), &hash_token("t2"), t0, 60_000, 60_000).await }
+        });
+        assert_waiting(&task).await;
+        revoking.commit().await.unwrap();
+        assert_eq!(finishes(task).await.unwrap(), RotateOutcome::Unavailable);
+        assert!(s.find_device_by_token_hash(&hash_token("t2"), t0).await.unwrap().is_none());
     }
 
     #[tokio::test]

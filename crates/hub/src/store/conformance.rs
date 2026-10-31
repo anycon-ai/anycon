@@ -248,6 +248,9 @@ macro_rules! suite {
                 invites_are_single_use
                 invites_and_accounts_paginate_by_keyset_even_with_identical_timestamps
                 devices_pairings_revoke
+                rotating_a_device_token_keeps_only_the_previous_one_for_the_grace_period
+                only_a_request_made_with_the_current_token_can_rotate
+                a_revoked_or_unknown_device_cannot_rotate_and_both_tokens_still_identify_it_as_revoked
                 text_ids_are_ordered_bytewise_whatever_the_database_collation
                 an_account_and_its_recorded_id_are_written_in_one_transaction
                 audit_and_kv
@@ -297,6 +300,7 @@ macro_rules! suite {
                 revoking_a_device_while_it_is_being_paired_leaves_a_consistent_state
                 batches_spanning_two_accounts_complete_whatever_the_order
                 repeated_races_for_the_last_free_slot_never_overshoot
+                concurrent_rotations_of_one_device_succeed_exactly_once_per_interval
             ]
         );
     };
@@ -436,7 +440,7 @@ pub(crate) async fn devices_pairings_revoke(db: &TestDb) {
     peers.sort();
     assert_eq!(peers, vec!["bbbb", "cccc"]);
     assert_eq!(s.list_pairings_of_account(&acc.id).await.unwrap().len(), 2);
-    assert_eq!(s.find_device_by_token_hash(&hash_token("t1")).await.unwrap().unwrap().id, "bbbb");
+    assert_eq!(s.find_device_by_token_hash(&hash_token("t1"), now).await.unwrap().unwrap().id, "bbbb");
 
     let mut former = s.revoke_device("aaaa", now + 1).await.unwrap();
     former.sort();
@@ -1510,6 +1514,156 @@ pub(crate) async fn creating_an_account_through_an_invite_redeems_it_atomically(
     let r = s.create_account_with_identity(with(Some(&live), "2"), now).await.unwrap();
     assert!(matches!(r, IdentityAccountOutcome::InviteUsed), "{r:?}");
     assert!(s.find_identity("google", "2").await.unwrap().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// 设备 token 轮换（docs/spec/hub.md § 5）
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn rotating_a_device_token_keeps_only_the_previous_one_for_the_grace_period(db: &TestDb) {
+    let s = &db.store;
+    let t0 = 1_000_000u64;
+    let (grace, interval) = (60_000u64, 60_000u64);
+    let acc = s.create_account("admin", true, t0).await.unwrap();
+    s.create_device(new_device(&acc.id, "dev1", "t1"), t0).await.unwrap();
+    s.create_device(new_device(&acc.id, "dev2", "other"), t0).await.unwrap();
+    let find = |token: &'static str, at: u64| {
+        let s = s.clone();
+        async move { s.find_device_by_token_hash(&hash_token(token), at).await.unwrap().map(|d| d.id) }
+    };
+
+    // 没轮换过：只认当前 token
+    assert_eq!(find("t1", t0).await.as_deref(), Some("dev1"));
+    assert_eq!(find("t2", t0).await, None);
+
+    // 第一次轮换：新旧都认，旧的只到 t0 + 宽限（截止时刻本身已经不认）
+    let r = s.rotate_device_token("dev1", &hash_token("t1"), &hash_token("t2"), t0, grace, interval).await.unwrap();
+    assert_eq!(r, RotateOutcome::Rotated);
+    assert_eq!(find("t2", t0).await.as_deref(), Some("dev1"));
+    assert_eq!(find("t1", t0).await.as_deref(), Some("dev1"));
+    assert_eq!(find("t1", t0 + grace - 1).await.as_deref(), Some("dev1"));
+    assert_eq!(find("t1", t0 + grace).await, None, "the grace ends at the deadline");
+    assert_eq!(find("t2", t0 + 10 * grace).await.as_deref(), Some("dev1"), "the new token does not expire");
+    assert_eq!(find("other", t0).await.as_deref(), Some("dev2"), "other devices are untouched");
+
+    // 间隔不够：什么都不改（t3 没有生效），旧 token 的宽限也没有被顺延
+    let r = s
+        .rotate_device_token("dev1", &hash_token("t2"), &hash_token("t3"), t0 + interval - 1, grace, interval)
+        .await
+        .unwrap();
+    assert_eq!(r, RotateOutcome::TooSoon);
+    assert_eq!(find("t3", t0 + interval - 1).await, None);
+    assert_eq!(find("t2", t0 + interval - 1).await.as_deref(), Some("dev1"));
+    assert_eq!(find("t1", t0 + grace).await, None);
+
+    // 间隔够了：t2 成为「上一个」，t1 彻底失效（只保留一个上一个）
+    let t1 = t0 + interval;
+    let r = s.rotate_device_token("dev1", &hash_token("t2"), &hash_token("t3"), t1, grace, interval).await.unwrap();
+    assert_eq!(r, RotateOutcome::Rotated);
+    assert_eq!(find("t3", t1).await.as_deref(), Some("dev1"));
+    assert_eq!(find("t2", t1 + grace - 1).await.as_deref(), Some("dev1"));
+    assert_eq!(find("t2", t1 + grace).await, None);
+    assert_eq!(find("t1", t1).await, None, "t1 was replaced as the previous token");
+
+    // 间隔为 0 时不限频
+    let r = s.rotate_device_token("dev1", &hash_token("t3"), &hash_token("t4"), t1, grace, 0).await.unwrap();
+    assert_eq!(r, RotateOutcome::Rotated);
+
+    // 只存哈希：明文不是任何一个 token
+    assert_eq!(s.find_device_by_token_hash("t4", t1).await.unwrap().map(|d| d.id), None);
+}
+
+pub(crate) async fn only_a_request_made_with_the_current_token_can_rotate(db: &TestDb) {
+    let s = &db.store;
+    let t0 = 1_000_000u64;
+    let (grace, interval) = (60_000u64, 60_000u64);
+    let acc = s.create_account("admin", true, t0).await.unwrap();
+    s.create_device(new_device(&acc.id, "dev1", "t1"), t0).await.unwrap();
+    let rotate = |from: &'static str, to: &'static str, at: u64, min_interval: u64| {
+        let s = s.clone();
+        async move {
+            s.rotate_device_token("dev1", &hash_token(from), &hash_token(to), at, grace, min_interval).await.unwrap()
+        }
+    };
+    let find = |token: &'static str, at: u64| {
+        let s = s.clone();
+        async move { s.find_device_by_token_hash(&hash_token(token), at).await.unwrap().map(|d| d.id) }
+    };
+    assert_eq!(rotate("t1", "t2", t0, interval).await, RotateOutcome::Rotated);
+
+    // 一条用旧 token t1 认证的连接（宽限期里连上来的）：不管过没过最短间隔都不能轮换，什么都不变
+    let late = t0 + 10 * interval;
+    assert_eq!(rotate("t1", "t9", t0 + 1, interval).await, RotateOutcome::Stale, "stale wins over too soon");
+    assert_eq!(rotate("t1", "t9", t0 + 1, 0).await, RotateOutcome::Stale);
+    assert_eq!(rotate("t1", "t9", late, 0).await, RotateOutcome::Stale, "also long after the grace");
+    assert_eq!(rotate("never-issued", "t9", late, 0).await, RotateOutcome::Stale);
+    assert_eq!(find("t9", late).await, None);
+    assert_eq!(find("t2", late).await.as_deref(), Some("dev1"), "the current token is untouched");
+    assert_eq!(find("t1", t0 + grace - 1).await.as_deref(), Some("dev1"), "the grace was not extended or cut");
+    assert_eq!(find("t1", t0 + grace).await, None);
+
+    // 当前 token 在间隔内：TooSoon（不是 Stale）；够久了才轮换
+    assert_eq!(rotate("t2", "t3", t0 + 1, interval).await, RotateOutcome::TooSoon);
+    assert_eq!(rotate("t2", "t3", t0 + interval, interval).await, RotateOutcome::Rotated);
+    // t2 轮换之后就成了旧 token，不能再用它轮换
+    assert_eq!(rotate("t2", "t4", late, 0).await, RotateOutcome::Stale);
+    assert_eq!(rotate("t3", "t4", late, 0).await, RotateOutcome::Rotated);
+}
+
+pub(crate) async fn a_revoked_or_unknown_device_cannot_rotate_and_both_tokens_still_identify_it_as_revoked(
+    db: &TestDb,
+) {
+    let s = &db.store;
+    let t0 = 1_000_000u64;
+    let acc = s.create_account("admin", true, t0).await.unwrap();
+    s.create_device(new_device(&acc.id, "dev1", "t1"), t0).await.unwrap();
+    let r = s.rotate_device_token("dev1", &hash_token("t1"), &hash_token("t2"), t0, 60_000, 60_000).await.unwrap();
+    assert_eq!(r, RotateOutcome::Rotated);
+
+    s.revoke_device("dev1", t0 + 1).await.unwrap();
+    // 吊销之后：不能再轮换；新旧 token 仍能认出是这台（已吊销的）设备，认证时据此回 `revoked`
+    let r = s
+        .rotate_device_token("dev1", &hash_token("t2"), &hash_token("t3"), t0 + 10 * 60_000, 60_000, 60_000)
+        .await
+        .unwrap();
+    assert_eq!(r, RotateOutcome::Unavailable);
+    for token in ["t1", "t2"] {
+        let d = s.find_device_by_token_hash(&hash_token(token), t0 + 2).await.unwrap().expect(token);
+        assert!(d.revoked_at_ms.is_some(), "{token}");
+    }
+    assert!(s.find_device_by_token_hash(&hash_token("t3"), t0 + 2).await.unwrap().is_none());
+
+    let r = s.rotate_device_token("nobody", &hash_token("t1"), &hash_token("t9"), t0, 60_000, 60_000).await.unwrap();
+    assert_eq!(r, RotateOutcome::Unavailable);
+}
+
+pub(crate) async fn concurrent_rotations_of_one_device_succeed_exactly_once_per_interval(db: &TestDb) {
+    let s = &db.store;
+    let t0 = 1_000_000u64;
+    let acc = s.create_account("admin", true, t0).await.unwrap();
+    s.create_device(new_device(&acc.id, "dev1", "t1"), t0).await.unwrap();
+    let tasks: Vec<_> = (0..8)
+        .map(|i| {
+            let s = s.clone();
+            tokio::spawn(async move {
+                s.rotate_device_token("dev1", &hash_token("t1"), &hash_token(&format!("n{i}")), t0, 60_000, 60_000)
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut outcomes = Vec::new();
+    for t in tasks {
+        outcomes.push(t.await.unwrap());
+    }
+    assert_eq!(outcomes.iter().filter(|o| **o == RotateOutcome::Rotated).count(), 1, "{outcomes:?}");
+    // 其余的看到的要么是「当前 token 已经不是 t1」（赢家先提交），要么是「刚轮换过」
+    assert!(
+        outcomes.iter().all(|o| matches!(o, RotateOutcome::Rotated | RotateOutcome::TooSoon | RotateOutcome::Stale)),
+        "{outcomes:?}"
+    );
+    // 原来的 token 只剩一个「上一个」的位置：恰好是 t1
+    assert!(s.find_device_by_token_hash(&hash_token("t1"), t0).await.unwrap().is_some());
 }
 
 // ---------------------------------------------------------------------------

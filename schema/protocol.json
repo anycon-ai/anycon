@@ -2876,10 +2876,34 @@
       ],
       "type": "object"
     },
+    "FsReadEncoding": {
+      "description": "`fs.read` 返回内容的方式。",
+      "oneOf": [
+        {
+          "const": "text",
+          "description": "默认：UTF-8 文本放进 `FsReadResult.text`；二进制文件不返回内容（`binary = true`）。",
+          "type": "string"
+        },
+        {
+          "const": "base64",
+          "description": "读到的原始字节（文本和二进制都一样）做标准 base64（带 padding）放进 `FsReadResult.data_base64`，`text` 为空。\n给图片预览之类要字节的用途。`binary` 仍按内容判断（和 `text` 模式一致），客户端不必依赖它。",
+          "type": "string"
+        }
+      ]
+    },
     "FsReadParams": {
       "properties": {
+        "encoding": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FsReadEncoding"
+            }
+          ],
+          "default": "text",
+          "description": "缺省 `text`。"
+        },
         "max_bytes": {
-          "description": "默认 1 MiB，上限 10 MiB。",
+          "description": "读多少**原始字节**：默认 1 MiB，上限 10 MiB。`encoding = base64` 时响应体约是它的 4/3。",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -2903,15 +2927,24 @@
           "type": "boolean"
         },
         "bytes": {
+          "description": "文件的总字节数（不是读到的）。",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
+        "data_base64": {
+          "description": "`encoding = base64` 时读到的字节（不超过 `max_bytes`，`truncated` 时只是前一段）；`text` 模式没有这个字段。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "text": {
-          "description": "UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。",
+          "description": "UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。`encoding = base64` 时恒为空。",
           "type": "string"
         },
         "truncated": {
+          "description": "文件比读到的更长（超过 `max_bytes`）。",
           "type": "boolean"
         }
       },
@@ -7487,6 +7520,9 @@
     "fs_list_result": {
       "$ref": "#/definitions/FsListResult"
     },
+    "fs_read_encoding": {
+      "$ref": "#/definitions/FsReadEncoding"
+    },
     "fs_read_params": {
       "$ref": "#/definitions/FsReadParams"
     },
@@ -7931,6 +7967,7 @@
     "job_cancel_params",
     "fs_list_params",
     "fs_list_result",
+    "fs_read_encoding",
     "fs_read_params",
     "fs_read_result",
     "workspace_branches_params",

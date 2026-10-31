@@ -529,6 +529,10 @@ export type NoticeLevel = "info" | "warning";
  */
 export type ActivityState = "none" | "retrying" | "compacting";
 /**
+ * `fs.read` 返回内容的方式。
+ */
+export type FsReadEncoding = "text" | "base64";
+/**
  * 信封种类。hub 对每种的处理见 docs/protocol.md § 3。
  */
 export type Kind = "handshake" | "data" | "notify" | "control";
@@ -659,6 +663,7 @@ export interface ProtocolSchema {
   event: Event;
   fs_list_params: FsListParams;
   fs_list_result: FsListResult;
+  fs_read_encoding: FsReadEncoding;
   fs_read_params: FsReadParams;
   fs_read_result: FsReadResult;
   git_action: GitAction;
@@ -1401,7 +1406,11 @@ export interface FsEntry {
 }
 export interface FsReadParams {
   /**
-   * 默认 1 MiB，上限 10 MiB。
+   * 缺省 `text`。
+   */
+  encoding?: FsReadEncoding & string;
+  /**
+   * 读多少**原始字节**：默认 1 MiB，上限 10 MiB。`encoding = base64` 时响应体约是它的 4/3。
    */
   max_bytes?: number | null;
   /**
@@ -1411,11 +1420,21 @@ export interface FsReadParams {
 }
 export interface FsReadResult {
   binary: boolean;
+  /**
+   * 文件的总字节数（不是读到的）。
+   */
   bytes: number;
   /**
-   * UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。
+   * `encoding = base64` 时读到的字节（不超过 `max_bytes`，`truncated` 时只是前一段）；`text` 模式没有这个字段。
+   */
+  data_base64?: string | null;
+  /**
+   * UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。`encoding = base64` 时恒为空。
    */
   text: string;
+  /**
+   * 文件比读到的更长（超过 `max_bytes`）。
+   */
   truncated: boolean;
 }
 export interface JobCancelParams {

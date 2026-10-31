@@ -61,7 +61,7 @@ Envelope {
 | hub：目标连接的发送缓冲 | 每连接 4 MiB（控制消息另有 64–256 KiB） | 满了不丢：hub 退回 `backpressure { to, seq }`，并**按 `(from, to)` 粘住**（见下）。持续 30 秒读不动的连接以 `4003` 断开 |
 | hub：每连接入站速率 | 客户端连接默认 10 MiB / 分钟；daemon 连接默认 100 MiB / 分钟（它是所有客户端的汇聚点；`ANYCON_RATE_*_BYTES_PER_MIN` 可调） | 超限**也不丢**：和缓冲满一样退回 `backpressure { to, seq }`，另外每秒至多一条 `rate_limited { retry_after_ms }` 告诉发送方停多久。只有持续超限 10 秒以上才以 `1008` 断开 |
 | 传输：一条 RPC 消息 | 分片 ≤ 200 KiB / 片，重组后密文 ≤ 16 MiB | 一条 JSON-RPC 消息加密后，超过一片就拆成 `msg_id / index / count` 的多个 `data` 信封，接收方收齐再解密（[ADR-30](decisions.md#adr-30-内层分片与大小上限)）。接收方严格按序：`index` 必须是期望的下一片且 `< count`，同一 `msg_id` 的 `count` 不能变 |
-| daemon：响应内容 | `session.history` 一页编码后 ≤ 192 KiB；`tool_result.output` ≤ 64 KiB；`fs.read` ≤ 10 MiB；`session.send` ≤ 1 MiB；`blob.put_chunk` / `blob.get` 一块 ≤ 512 KiB（base64 前） | daemon 主动控制，避免无意义的巨型消息，细节见 [spec/daemon.md § 7.9、§ 8.2](spec/daemon.md#79-历史分页) |
+| daemon：响应内容 | `session.history` 一页编码后 ≤ 192 KiB；`tool_result.output` ≤ 64 KiB；`fs.read` ≤ 10 MiB（原始字节；base64 编码后约 13.4 MiB）；`session.send` ≤ 1 MiB；`blob.put_chunk` / `blob.get` 一块 ≤ 512 KiB（base64 前） | daemon 主动控制，避免无意义的巨型消息，细节见 [spec/daemon.md § 7.9、§ 8.2](spec/daemon.md#79-历史分页) |
 
 分片是**传输层**行为，对 JSON-RPC 层透明。Noise 传输用隐式递增的 nonce，所以任何一片丢失都会让整条传输失步：解密失败 / 分片乱序时，daemon 丢弃该客户端的传输并发 RESET，客户端丢弃传输并重新 IK 握手。
 
@@ -229,7 +229,7 @@ daemon                      hub                        新客户端
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `fs.list` | C→D | 列目录。`path` 是 `<项目名>/<项目内相对路径>`：第一段是关联项目时相对那个目录解析，否则相对 workspace 根；canonicalize 后都不能走出所在的项目 / 根目录 |
-| `fs.read` | C→D | `{ path, max_bytes? }` → `{ text, binary, truncated, bytes }`。默认读 1 MiB，上限 10 MiB，超出部分截断并置 `truncated`；二进制文件不返回内容。响应超过一片时由传输层分片（§3.1）。要把文件交给 agent 用 blob 通道（§ 5.6） |
+| `fs.read` | C→D | `{ path, max_bytes?, encoding? }` → `{ text, binary, truncated, bytes, data_base64? }`。`max_bytes` 是读多少**原始字节**，默认 1 MiB，上限 10 MiB，超出部分截断并置 `truncated`（`bytes` 是文件总长）。`encoding` 缺省 / `"text"`：UTF-8 文本放 `text`，二进制文件不返回内容（`binary = true`）。`"base64"`：读到的原始字节（文本、二进制一样）做标准 base64 放 `data_base64`，`text` 为空，`binary` 仍按内容判断；响应体约是 `max_bytes` 的 4/3，10 MiB 时约 13.4 MiB，在重组上限（§3.1）之内。未知的 `encoding` 是 `invalid`。响应超过一片时由传输层分片（§3.1）。要把文件交给 agent 用 blob 通道（§ 5.6） |
 
 ### 5.4 会话
 

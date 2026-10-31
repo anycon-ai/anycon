@@ -21,10 +21,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anycon_protocol::{
-    methods, BrowseEntry, ErrorCode, FsEntry, FsListResult, FsReadResult, GitMeta, JobDone, JobProgress, LinkBlock,
-    Project, ProjectKind, RenamedProject, RpcError, TrashEntry, WorkspaceBrowseResult, WorkspaceChanged,
-    WorkspaceListResult,
+    methods, BrowseEntry, ErrorCode, FsEntry, FsListResult, FsReadEncoding, FsReadResult, GitMeta, JobDone,
+    JobProgress, LinkBlock, Project, ProjectKind, RenamedProject, RpcError, TrashEntry, WorkspaceBrowseResult,
+    WorkspaceChanged, WorkspaceListResult,
 };
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -1513,7 +1515,19 @@ impl Workspace {
         Ok(FsListResult { entries })
     }
 
+    /// `fs.read` 的文本模式（`encoding` 缺省）。
     pub async fn fs_read(&self, rel: &str, max_bytes: Option<u64>) -> RpcResult<FsReadResult> {
+        self.fs_read_as(rel, max_bytes, FsReadEncoding::Text).await
+    }
+
+    /// 读文件的前 `max_bytes`（默认 1 MiB，上限 10 MiB）个字节。`Text`：UTF-8 文本放 `text`，二进制不返回内容；
+    /// `Base64`：读到的原始字节做 base64 放 `data_base64`（图片预览要字节），`text` 为空。两种模式用同一份路径检查和打开方式。
+    pub async fn fs_read_as(
+        &self,
+        rel: &str,
+        max_bytes: Option<u64>,
+        encoding: FsReadEncoding,
+    ) -> RpcResult<FsReadResult> {
         let (path, boundary) = self.resolve_in(rel)?;
         crate::fsopen::after_resolve(&path);
         let md = std::fs::metadata(&path).map_err(|e| err(ErrorCode::NotFound, e.to_string()))?;
@@ -1524,7 +1538,7 @@ impl Workspace {
         // 从边界目录开始逐段 `openat`（每段 `O_NOFOLLOW`）：检查之后、打开之前目录被换成符号链接读不到边界外；
         // 不再拿「打开之前按路径 stat 的身份」去比（那个身份可能是换目录之后才取的）
         let rel_owned = rel.to_string();
-        let (buf, total) = tokio::task::spawn_blocking(move || -> RpcResult<(Vec<u8>, u64)> {
+        let (mut buf, total) = tokio::task::spawn_blocking(move || -> RpcResult<(Vec<u8>, u64)> {
             let mut f = crate::fsopen::open_file_in(&path, &boundary).map_err(|e| Self::open_error(&rel_owned, e))?;
             let total = f.metadata().map_err(|e| err(ErrorCode::Internal, e.to_string()))?.len();
             let mut buf = Vec::new();
@@ -1535,26 +1549,37 @@ impl Workspace {
         .await
         .map_err(|e| err(ErrorCode::Internal, format!("fs.read: {e}")))??;
         let truncated = total > buf.len() as u64;
-        if buf[..buf.len().min(8192)].contains(&0) {
-            return Ok(FsReadResult { text: String::new(), binary: true, truncated, bytes: total });
+        let text_len = text_prefix_len(&buf, truncated);
+        if encoding == FsReadEncoding::Base64 {
+            return Ok(FsReadResult {
+                text: String::new(),
+                binary: text_len.is_none(),
+                truncated,
+                bytes: total,
+                data_base64: Some(B64.encode(&buf)),
+            });
         }
-        match String::from_utf8(buf) {
-            Ok(text) => Ok(FsReadResult { text, binary: false, truncated, bytes: total }),
-            Err(e) => {
-                let valid = e.utf8_error().valid_up_to();
-                let bytes = e.into_bytes();
-                // 截断恰好落在多字节字符中间：保留有效前缀；否则是二进制
-                if truncated && bytes.len() - valid < 4 {
-                    Ok(FsReadResult {
-                        text: String::from_utf8_lossy(&bytes[..valid]).into_owned(),
-                        binary: false,
-                        truncated,
-                        bytes: total,
-                    })
-                } else {
-                    Ok(FsReadResult { text: String::new(), binary: true, truncated, bytes: total })
-                }
-            }
+        let Some(n) = text_len else {
+            return Ok(FsReadResult { text: String::new(), binary: true, truncated, bytes: total, data_base64: None });
+        };
+        buf.truncate(n);
+        // `text_prefix_len` 已经保证 `buf[..n]` 是合法的 UTF-8
+        let text = String::from_utf8(buf).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+        Ok(FsReadResult { text, binary: false, truncated, bytes: total, data_base64: None })
+    }
+}
+
+/// 读到的字节里可以当文本的前缀长度；`None` = 二进制。前 8 KiB 里有 NUL 就是二进制；不是合法 UTF-8 也是二进制，
+/// 唯一的例外是读被截断、并且只是最后一个多字节字符被切成了两半（不足 4 字节）：保留有效前缀。
+fn text_prefix_len(buf: &[u8], truncated: bool) -> Option<usize> {
+    if buf[..buf.len().min(8192)].contains(&0) {
+        return None;
+    }
+    match std::str::from_utf8(buf) {
+        Ok(_) => Some(buf.len()),
+        Err(e) => {
+            let valid = e.valid_up_to();
+            (truncated && buf.len() - valid < 4).then_some(valid)
         }
     }
 }
@@ -2240,6 +2265,82 @@ mod tests {
         assert_eq!(r.text, "你好世界");
     }
 
+    /// base64 模式：读到的原始字节（二进制 / 文本都一样）放进 `data_base64`，`text` 为空；上限和文本模式一样。
+    #[tokio::test]
+    async fn fs_read_base64_returns_the_raw_bytes() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("p", false).await.unwrap();
+        // PNG 文件头：含 NUL 和 0x89，不是合法的 UTF-8
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R'];
+        std::fs::write(f.root.join("p/a.png"), &png).unwrap();
+        std::fs::write(f.root.join("p/logo.svg"), "<svg/>").unwrap();
+        std::fs::write(f.root.join("p/cjk.txt"), "你好世界").unwrap();
+
+        let r = ws.fs_read_as("p/a.png", None, FsReadEncoding::Base64).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.as_deref().unwrap()).unwrap(), png);
+        assert!(r.text.is_empty() && r.binary && !r.truncated && r.bytes == png.len() as u64);
+        // 文本文件：字节原样，`binary` 仍是 false，`text` 不填
+        let r = ws.fs_read_as("p/logo.svg", None, FsReadEncoding::Base64).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.as_deref().unwrap()).unwrap(), b"<svg/>");
+        assert!(r.text.is_empty() && !r.binary);
+        // 截断：只给前 max_bytes 个字节（截在多字节字符中间也照样按字节切），`bytes` 是文件总长
+        let r = ws.fs_read_as("p/cjk.txt", Some(4), FsReadEncoding::Base64).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.as_deref().unwrap()).unwrap(), "你好世界".as_bytes()[..4]);
+        assert!(r.truncated && r.bytes == 12 && !r.binary, "{r:?}");
+        // 文本模式不带这个字段，行为不变
+        let r = ws.fs_read("p/a.png", None).await.unwrap();
+        assert!(r.binary && r.data_base64.is_none());
+        let r = ws.fs_read("p/logo.svg", None).await.unwrap();
+        assert!(r.text == "<svg/>" && r.data_base64.is_none());
+        // 路径检查和文本模式一样
+        for bad in ["../x", "/etc/passwd", "p"] {
+            assert!(ws.fs_read_as(bad, None, FsReadEncoding::Base64).await.is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fs_read_base64_is_capped_at_the_read_limit() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("p", false).await.unwrap();
+        std::fs::write(f.root.join("p/big.bin"), vec![7u8; FS_READ_MAX as usize + 1]).unwrap();
+        let r = ws.fs_read_as("p/big.bin", Some(u64::MAX), FsReadEncoding::Base64).await.unwrap();
+        assert!(r.truncated && r.bytes == FS_READ_MAX + 1);
+        assert_eq!(B64.decode(r.data_base64.unwrap()).unwrap().len() as u64, FS_READ_MAX);
+        // 缺省 1 MiB
+        let r = ws.fs_read_as("p/big.bin", None, FsReadEncoding::Base64).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.unwrap()).unwrap().len() as u64, FS_READ_DEFAULT);
+    }
+
+    /// Web 的文件浏览要能打开会话的工作目录：worktree 在 `<项目>/.anycon/worktrees/<名字>`，scratch 会话在 `.scratch/<id>`。
+    /// 这两条路径都含以 `.` 开头的段，`fs.*` 不能因此拒绝（隐藏目录的限制只用于关联目录，见 daemon.md § 10）。
+    #[tokio::test]
+    async fn fs_opens_session_working_directories() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("proj", false).await.unwrap();
+        let wt = f.root.join("proj/.anycon/worktrees/fix-login");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        std::fs::write(wt.join("src/main.rs"), "fn main() {}").unwrap();
+        let names = |l: FsListResult| l.entries.into_iter().map(|e| e.name).collect::<Vec<_>>();
+        assert_eq!(names(ws.fs_list("proj/.anycon/worktrees/fix-login").unwrap()), vec!["src"]);
+        assert_eq!(
+            ws.fs_read("proj/.anycon/worktrees/fix-login/src/main.rs", None).await.unwrap().text,
+            "fn main() {}"
+        );
+        // 项目目录里这些目录是可以列出来的
+        assert_eq!(names(ws.fs_list("proj").unwrap()), vec![".anycon"]);
+        assert_eq!(names(ws.fs_list("proj/.anycon").unwrap()), vec!["worktrees"]);
+
+        let scratch = ws.scratch_dir("sess_abc").unwrap();
+        std::fs::write(scratch.join("notes.md"), "# hi").unwrap();
+        assert_eq!(names(ws.fs_list(".scratch/sess_abc").unwrap()), vec!["notes.md"]);
+        assert_eq!(ws.fs_read(".scratch/sess_abc/notes.md", None).await.unwrap().text, "# hi");
+        // 仍然出不了 workspace 根
+        assert_eq!(code_of(ws.fs_list(".scratch/../../x")), ErrorCode::Forbidden);
+    }
+
     #[tokio::test]
     async fn watcher_reports_external_changes_with_debounce() {
         let mut f = fixture().await;
@@ -2668,6 +2769,19 @@ mod tests {
         let p = list.projects.iter().find(|p| p.name == "proj-a").unwrap();
         assert_eq!(p.kind, ProjectKind::Folder);
         assert_eq!(f.ws.project_path("proj-a").unwrap(), f.root.join("proj-a"));
+    }
+
+    /// 关联项目里的 worktree（`<关联目录>/.anycon/worktrees/<名字>`）也能经 `<项目名>/.anycon/worktrees/<名字>` 浏览。
+    #[tokio::test]
+    async fn fs_opens_a_worktree_inside_a_linked_project() {
+        let f = link_fixture("[\"~\"]").await;
+        f.ws.link("~/work/proj-a", None).await.unwrap();
+        let wt = f.home.join("work/proj-a/.anycon/worktrees/fix");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("x.txt"), "in worktree").unwrap();
+        let names = |l: FsListResult| l.entries.into_iter().map(|e| e.name).collect::<Vec<_>>();
+        assert_eq!(names(f.ws.fs_list("proj-a/.anycon/worktrees/fix").unwrap()), vec!["x.txt"]);
+        assert_eq!(f.ws.fs_read("proj-a/.anycon/worktrees/fix/x.txt", None).await.unwrap().text, "in worktree");
     }
 
     #[tokio::test]

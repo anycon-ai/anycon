@@ -223,6 +223,16 @@ async fn workspace_and_fs_methods_over_the_socket() {
     assert!(fl.entries.iter().any(|e| e.name == "readme.md" && !e.is_dir));
     let fr: FsReadResult = s.call(methods::FS_READ, json!({ "path": "alpha/readme.md" })).await.unwrap();
     assert_eq!(fr.text, "# hi");
+    assert!(fr.data_base64.is_none());
+    // base64 模式：同一个文件的原始字节
+    let fb: FsReadResult =
+        s.call(methods::FS_READ, json!({ "path": "alpha/readme.md", "encoding": "base64" })).await.unwrap();
+    assert_eq!((fb.text.as_str(), fb.data_base64.as_deref(), fb.bytes), ("", Some("IyBoaQ=="), 4));
+    let e = s
+        .call::<FsReadResult>(methods::FS_READ, json!({ "path": "alpha/readme.md", "encoding": "hex" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::Invalid));
     for bad in ["../outside", "/etc/passwd", "alpha/../../x"] {
         let e = s.call::<FsReadResult>(methods::FS_READ, json!({ "path": bad })).await.unwrap_err();
         assert!(matches!(e.stable_code(), Some(ErrorCode::Forbidden)), "{bad}: {e:?}");

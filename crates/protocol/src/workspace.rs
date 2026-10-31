@@ -259,22 +259,42 @@ pub struct FsListResult {
     pub entries: Vec<FsEntry>,
 }
 
+/// `fs.read` 返回内容的方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FsReadEncoding {
+    /// 默认：UTF-8 文本放进 `FsReadResult.text`；二进制文件不返回内容（`binary = true`）。
+    #[default]
+    Text,
+    /// 读到的原始字节（文本和二进制都一样）做标准 base64（带 padding）放进 `FsReadResult.data_base64`，`text` 为空。
+    /// 给图片预览之类要字节的用途。`binary` 仍按内容判断（和 `text` 模式一致），客户端不必依赖它。
+    Base64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FsReadParams {
     /// 解析规则同 `FsListParams.path`。
     pub path: String,
-    /// 默认 1 MiB，上限 10 MiB。
+    /// 读多少**原始字节**：默认 1 MiB，上限 10 MiB。`encoding = base64` 时响应体约是它的 4/3。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
+    /// 缺省 `text`。
+    #[serde(default)]
+    pub encoding: FsReadEncoding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FsReadResult {
-    /// UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。
+    /// UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。`encoding = base64` 时恒为空。
     pub text: String,
     pub binary: bool,
+    /// 文件比读到的更长（超过 `max_bytes`）。
     pub truncated: bool,
+    /// 文件的总字节数（不是读到的）。
     pub bytes: u64,
+    /// `encoding = base64` 时读到的字节（不超过 `max_bytes`，`truncated` 时只是前一段）；`text` 模式没有这个字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_base64: Option<String>,
 }
 
 // ---- 分支与 worktree（ADR-34）----
@@ -369,4 +389,37 @@ pub struct WorkspaceRemoveWorktreeParams {
     /// 同时删掉分支（`git branch -D`）。分支上有没合并的提交也会丢。
     #[serde(default)]
     pub delete_branch: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fs_read_params_default_to_text_and_accept_base64() {
+        let p: FsReadParams = serde_json::from_str(r#"{"path":"a/b.txt"}"#).unwrap();
+        assert_eq!((p.encoding, p.max_bytes), (FsReadEncoding::Text, None));
+        let p: FsReadParams = serde_json::from_str(r#"{"path":"a/x.png","max_bytes":10,"encoding":"base64"}"#).unwrap();
+        assert_eq!((p.encoding, p.max_bytes), (FsReadEncoding::Base64, Some(10)));
+        // 不认识的编码是错误，不静默当成文本
+        assert!(serde_json::from_str::<FsReadParams>(r#"{"path":"a","encoding":"hex"}"#).is_err());
+    }
+
+    #[test]
+    fn fs_read_result_omits_data_base64_for_text_reads() {
+        let text = FsReadResult { text: "x".into(), binary: false, truncated: false, bytes: 1, data_base64: None };
+        assert!(!serde_json::to_string(&text).unwrap().contains("data_base64"));
+        // 旧 daemon 没有这个字段
+        let old: FsReadResult =
+            serde_json::from_str(r#"{"text":"x","binary":false,"truncated":false,"bytes":1}"#).unwrap();
+        assert_eq!(old, text);
+        let b64 = FsReadResult {
+            text: String::new(),
+            binary: true,
+            truncated: false,
+            bytes: 3,
+            data_base64: Some("AAEC".into()),
+        };
+        assert_eq!(serde_json::from_str::<FsReadResult>(&serde_json::to_string(&b64).unwrap()).unwrap(), b64);
+    }
 }

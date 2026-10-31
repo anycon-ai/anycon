@@ -93,6 +93,7 @@ pub struct ProtocolSchema {
     pub job_cancel_params: JobCancelParams,
     pub fs_list_params: FsListParams,
     pub fs_list_result: FsListResult,
+    pub fs_read_encoding: FsReadEncoding,
     pub fs_read_params: FsReadParams,
     pub fs_read_result: FsReadResult,
     // worktree / git（ADR-34）

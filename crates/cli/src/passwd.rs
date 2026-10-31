@@ -77,8 +77,50 @@ impl SecretBuf {
     }
 }
 
-/// 不回显地读一行口令（`fd` 必须是终端）。原始模式逐字节读：退格、Ctrl+U 可用，Ctrl+C 是中断（退出码 130），
-/// 方向键等转义序列被吃掉。不管怎么返回，终端都会恢复原来的设置。
+/// 编辑一行口令：`read_byte` 逐字节给输入（`None` = 输入结束）。退格、Ctrl+U 可用，Ctrl+C 是中断（退出码 130），
+/// 空行上的 `eof` 字节（终端 Ctrl+D，Windows 控制台 Ctrl+Z）是输入结束。`vt_escapes`：终端会把方向键等发成 `ESC [ …`
+/// 转义序列，要整段吃掉；Windows 控制台不发（只有单独的 ESC），不能往后多读。
+fn edit_secret_line(
+    mut read_byte: impl FnMut() -> Result<Option<u8>>,
+    eof: u8,
+    vt_escapes: bool,
+) -> Result<Zeroizing<String>> {
+    let mut bytes = SecretBuf::new();
+    let result = loop {
+        let Some(b) = read_byte()? else {
+            if bytes.is_empty() {
+                break Err(CliError::general("end of input"));
+            }
+            break Ok(());
+        };
+        match b {
+            b'\n' | b'\r' => break Ok(()),
+            3 => break Err(CliError::interrupted()),
+            c if c == eof && bytes.is_empty() => break Err(CliError::general("end of input")),
+            0x7f | 0x08 => bytes.backspace(),
+            0x15 => bytes.clear(),
+            0x1b if vt_escapes => {
+                // 方向键之类的转义序列：吃到最后一个字节
+                if let Some(b'[' | b'O') = read_byte()? {
+                    while let Some(c) = read_byte()? {
+                        if (0x40..=0x7e).contains(&c) {
+                            break;
+                        }
+                    }
+                }
+            }
+            c if c < 0x20 => {}
+            c => bytes.push(c),
+        }
+    };
+    eprintln!();
+    result?;
+    bytes.into_string().map_err(|e| CliError::usage(format!("the password is not valid UTF-8: {e}")))
+}
+
+/// 不回显地读一行口令（`fd` 必须是终端）。原始模式逐字节读（编辑规则见 [`edit_secret_line`]）。
+/// 不管怎么返回，终端都会恢复原来的设置。
+#[cfg(unix)]
 pub fn read_secret_from(fd: i32, prompt: &str) -> Result<Zeroizing<String>> {
     // SAFETY: tcgetattr 只写入我们提供的结构体。
     let mut orig: libc::termios = unsafe { std::mem::zeroed() };
@@ -123,37 +165,76 @@ pub fn read_secret_from(fd: i32, prompt: &str) -> Result<Zeroizing<String>> {
             }
         }
     };
-    let mut bytes = SecretBuf::new();
-    let result = loop {
-        let Some(b) = read_byte()? else {
-            if bytes.is_empty() {
-                break Err(CliError::general("end of input"));
+    edit_secret_line(read_byte, 4, true)
+}
+
+/// Windows 控制台：关掉回显、行输入和 Ctrl+C 处理（Ctrl+C 作为 0x03 读进来），用 `ReadConsoleW` 逐个读 UTF-16 字符，
+/// 转成 UTF-8 字节交给 [`edit_secret_line`]。不管怎么返回，控制台模式都会恢复。
+#[cfg(windows)]
+fn read_secret_console(prompt: &str) -> Result<Zeroizing<String>> {
+    use std::collections::VecDeque;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetStdHandle, ReadConsoleW, SetConsoleMode, CONSOLE_MODE, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
+        ENABLE_PROCESSED_INPUT, STD_INPUT_HANDLE,
+    };
+
+    // SAFETY: 取本进程的标准输入句柄，不转移所有权。
+    let h: HANDLE = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    let mut orig: CONSOLE_MODE = 0;
+    // SAFETY: 只写入 `orig`；不是控制台时失败。
+    if unsafe { GetConsoleMode(h, &mut orig) } == 0 {
+        return Err(CliError::usage("standard input is not a terminal; pass the password with --stdin"));
+    }
+    struct Restore(HANDLE, CONSOLE_MODE);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: 用原来的模式恢复。
+            unsafe { SetConsoleMode(self.0, self.1) };
+        }
+    }
+    let _restore = Restore(h, orig);
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+    // SAFETY: 同上。
+    if unsafe { SetConsoleMode(h, orig & !(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT)) } == 0 {
+        return Err(CliError::general("cannot turn off console echo"));
+    }
+    let mut pending: VecDeque<u8> = VecDeque::new();
+    let mut high: Option<u16> = None;
+    let read_byte = || -> Result<Option<u8>> {
+        loop {
+            if let Some(b) = pending.pop_front() {
+                return Ok(Some(b));
             }
-            break Ok(());
-        };
-        match b {
-            b'\n' | b'\r' => break Ok(()),
-            3 => break Err(CliError::interrupted()),
-            4 if bytes.is_empty() => break Err(CliError::general("end of input")),
-            0x7f | 0x08 => bytes.backspace(),
-            0x15 => bytes.clear(),
-            0x1b => {
-                // 方向键之类的转义序列：吃到最后一个字节
-                if let Some(b'[' | b'O') = read_byte()? {
-                    while let Some(c) = read_byte()? {
-                        if (0x40..=0x7e).contains(&c) {
-                            break;
-                        }
-                    }
+            let mut unit = [0u16; 1];
+            let mut n = 0u32;
+            // SAFETY: 读一个 UTF-16 单元到 `unit`。
+            if unsafe { ReadConsoleW(h, unit.as_mut_ptr().cast(), 1, &mut n, std::ptr::null()) } == 0 {
+                return Err(CliError::general("cannot read from the console"));
+            }
+            if n == 0 {
+                return Ok(None);
+            }
+            let u = unit[0];
+            let units: Vec<u16> = match (high.take(), u) {
+                (None, 0xD800..=0xDBFF) => {
+                    high = Some(u);
+                    continue;
                 }
+                (Some(h), 0xDC00..=0xDFFF) => vec![h, u],
+                (_, u) => vec![u],
+            };
+            let mut buf = [0u8; 4];
+            for c in char::decode_utf16(units).filter_map(|c| c.ok()) {
+                pending.extend(c.encode_utf8(&mut buf).bytes());
             }
-            c if c < 0x20 => {}
-            c => bytes.push(c),
+            buf.zeroize();
         }
     };
-    eprintln!();
-    result?;
-    bytes.into_string().map_err(|e| CliError::usage(format!("the password is not valid UTF-8: {e}")))
+    let out = edit_secret_line(read_byte, 0x1a, false);
+    pending.iter_mut().for_each(|b| *b = 0);
+    out
 }
 
 /// 在标准输入（终端）上不回显地读一行。
@@ -161,7 +242,14 @@ pub fn read_secret(prompt: &str) -> Result<Zeroizing<String>> {
     if !std::io::stdin().is_terminal() {
         return Err(CliError::usage("standard input is not a terminal"));
     }
-    read_secret_from(libc::STDIN_FILENO, prompt)
+    #[cfg(unix)]
+    {
+        read_secret_from(libc::STDIN_FILENO, prompt)
+    }
+    #[cfg(windows)]
+    {
+        read_secret_console(prompt)
+    }
 }
 
 /// 从标准输入读一行（`--stdin`）：去掉行尾的 `\n` / `\r\n`，其余原样。
@@ -385,9 +473,11 @@ async fn status(app: &App) -> Result<u8> {
 mod tests {
     use super::*;
     use anycon_protocol::EnrollPasswordStatus;
+    #[cfg(unix)]
     use std::os::fd::AsRawFd;
 
     /// 一对伪终端 (master, slave)。
+    #[cfg(unix)]
     fn pty() -> (std::fs::File, std::fs::File) {
         use std::os::fd::FromRawFd;
         let (mut m, mut s) = (0i32, 0i32);
@@ -399,6 +489,7 @@ mod tests {
         unsafe { (std::fs::File::from_raw_fd(m), std::fs::File::from_raw_fd(s)) }
     }
 
+    #[cfg(unix)]
     fn echo_on(fd: i32) -> bool {
         // SAFETY: tcgetattr 写我们的结构体。
         let mut t: libc::termios = unsafe { std::mem::zeroed() };
@@ -407,6 +498,7 @@ mod tests {
         t.c_lflag & libc::ECHO != 0
     }
 
+    #[cfg(unix)]
     /// 在 pty 上读一个口令：`typed` 是用户敲的字节。返回 (读到的结果, master 上看到的回显, 读完后终端回显是不是又开了)。
     fn type_into_prompt(typed: &'static [u8]) -> (Result<Zeroizing<String>>, Vec<u8>, bool) {
         use std::io::{Read, Write};
@@ -447,6 +539,7 @@ mod tests {
         (r, echoed, restored)
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_secret_is_read_without_echo_with_editing_keys_and_the_terminal_is_restored() {
         // 退格删一个字符（多字节字符整个删），Ctrl+U 清行，方向键被吃掉
@@ -462,6 +555,7 @@ mod tests {
         assert_eq!(&*r.unwrap(), "密码密码密码密码");
     }
 
+    #[cfg(unix)]
     #[test]
     fn ctrl_c_and_end_of_input_stop_the_prompt_and_still_restore_the_terminal() {
         let (r, _, restored) = type_into_prompt(b"half\x03");
@@ -501,11 +595,39 @@ mod tests {
         assert_eq!(b.into_string().unwrap().len(), SECRET_BUF_BYTES);
     }
 
+    #[cfg(unix)]
     #[test]
     fn something_that_is_not_a_terminal_is_a_usage_error() {
         let f = std::fs::File::open("/dev/null").unwrap();
         let e = read_secret_from(f.as_raw_fd(), "x").unwrap_err();
         assert_eq!(e.exit, crate::error::EXIT_USAGE);
+    }
+
+    /// 编辑规则本身（不经过终端）：退格、Ctrl+U、Ctrl+C、空行上的 EOF 字节、转义序列。
+    #[test]
+    fn line_editing_rules() {
+        let feed = |input: &'static [u8], eof: u8, vt: bool| {
+            let mut it = input.iter().copied();
+            edit_secret_line(move || Ok(it.next()), eof, vt)
+        };
+        assert_eq!(feed(b"ab\x7fc\r", 4, true).unwrap().as_str(), "ac");
+        assert_eq!(feed(b"abc\x15xy\n", 4, true).unwrap().as_str(), "xy");
+        assert_eq!(feed("p\u{e4}ss\x08\r".as_bytes(), 4, true).unwrap().as_str(), "p\u{e4}s");
+        assert_eq!(
+            feed(b"a\x1b[Db\r", 4, true).unwrap().as_str(),
+            "ab",
+            "a terminal escape sequence is swallowed whole"
+        );
+        assert_eq!(feed(b"a\x1bb\r", 0x1a, false).unwrap().as_str(), "ab", "a console sends a lone ESC");
+        assert_eq!(feed(b"ab\x03", 4, true).unwrap_err().exit, crate::error::EXIT_INTERRUPTED);
+        assert!(feed(b"\x04", 4, true).is_err());
+        assert!(feed(b"\x1a", 0x1a, false).is_err());
+        assert_eq!(
+            feed(b"a\x1a\r", 4, true).unwrap().as_str(),
+            "a",
+            "another platform's EOF byte is just a control character"
+        );
+        assert!(feed(b"", 4, true).is_err());
     }
 
     #[test]

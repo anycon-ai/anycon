@@ -21,7 +21,7 @@ fn code(e: &RpcError) -> ErrorCode {
 
 async fn start() -> (TestDaemon, std::path::PathBuf) {
     let td = TestDaemon::start().await;
-    let machine = std::fs::canonicalize(td.dir.path()).unwrap().join("machine");
+    let machine = anycon_daemon::sys::canonicalize(td.dir.path()).unwrap().join("machine");
     std::fs::create_dir_all(&machine).unwrap();
     let roots = serde_json::to_string(&[machine.to_string_lossy()]).unwrap();
     anycon_daemon::config::set_value(&td.paths, "workspace.link_roots", &roots).unwrap();
@@ -223,6 +223,7 @@ async fn the_session_lock_is_free_while_git_runs() {
 /// 归档、worktree 和冷缓存相关的路径同样不取命名空间锁，也不在会话锁里等 git / gh：已归档会话的 `send` / `sync_base`、
 /// `remove_worktree` 的 turn / 进程检查、`project_busy` 看 git 忙标记、冷缓存时等 git 元数据的 `workspace.list`、
 /// PR 自动归档的一轮（含它里面的 `archive`）。
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn archive_worktree_and_cold_cache_paths_do_not_wait_for_the_namespace_lock() {
     let mut f = Fx::new().await;
@@ -296,6 +297,7 @@ async fn archive_worktree_and_cold_cache_paths_do_not_wait_for_the_namespace_loc
 /// `slow_git` / `fail_git` 把 `bin/git` 换成刚写出的包装脚本。macOS 上「第一次执行一个刚写出的脚本」偶尔要停顿约 3 秒，
 /// 所以夹具在交出去之前就同步执行过它一次（脚本第一次被执行时留下 `git.warm`）：测试里 daemon 的 git 调用不再带着这个停顿
 /// 去赶 3 秒的冷缓存预算。
+#[cfg(unix)]
 #[tokio::test]
 async fn the_git_wrapper_has_already_run_once_when_the_fixture_is_handed_over() {
     let td = TestDaemon::start_git(&[]).await;

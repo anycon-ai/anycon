@@ -3,7 +3,6 @@
 //! daemon 在跑时通过 RPC 在 daemon 内执行（能看到 hub 连接状态和 agent 缓存）；daemon 没起来时 CLI 本地执行同一套
 //! 检查的离线版本（`ctx = None`）。
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,8 +13,10 @@ use crate::daemon::Ctx;
 
 pub const SERVICE_LABEL: &str = "ai.anycon.daemon";
 pub const SYSTEMD_UNIT: &str = "anycon.service";
+/// Windows 上 `anycon service` 注册的计划任务名。
+pub const WINDOWS_TASK: &str = "anycon";
 
-/// 服务单元文件路径：macOS launchd plist / Linux systemd user unit。
+/// 服务单元文件路径：macOS launchd plist / Linux systemd user unit。Windows 的服务是计划任务，没有单元文件（[`WINDOWS_TASK`]）。
 pub fn service_unit_path() -> Option<PathBuf> {
     let home = crate::util::home_dir()?;
     if cfg!(target_os = "macos") {
@@ -27,18 +28,22 @@ pub fn service_unit_path() -> Option<PathBuf> {
     }
 }
 
-/// 路径所在文件系统的可用字节数。
+/// 路径所在文件系统的可用字节数（取不到时 0）。
 pub fn disk_free(path: &Path) -> u64 {
-    use std::ffi::CString;
-    let Ok(c) = CString::new(path.as_os_str().as_encoded_bytes()) else { return 0 };
-    // SAFETY: statvfs 只写入我们提供的结构体。
-    unsafe {
-        let mut s: libc::statvfs = std::mem::zeroed();
-        if libc::statvfs(c.as_ptr(), &mut s) == 0 {
-            (s.f_bavail as u64).saturating_mul(s.f_frsize as u64)
-        } else {
-            0
-        }
+    crate::sys::disk_free(path).unwrap_or(0)
+}
+
+/// Windows：计划任务 [`WINDOWS_TASK`] 是否已注册（`schtasks /Query` 的退出码）。跑不了 `schtasks` 时 `None`。
+pub async fn windows_task_installed() -> Option<bool> {
+    let mut cmd = tokio::process::Command::new("schtasks");
+    cmd.args(["/Query", "/TN", WINDOWS_TASK])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    match tokio::time::timeout(Duration::from_secs(10), cmd.status()).await {
+        Ok(Ok(s)) => Some(s.success()),
+        _ => None,
     }
 }
 
@@ -46,8 +51,9 @@ fn check(id: &str, ok: bool, detail: impl Into<String>, fix: Option<&str>) -> Do
     DoctorCheck { id: id.into(), ok, detail: detail.into(), fix: if ok { None } else { fix.map(str::to_string) } }
 }
 
-fn mode_of(p: &Path) -> Option<u32> {
-    std::fs::metadata(p).ok().map(|m| m.permissions().mode() & 0o777)
+/// 文件不存在：`None`；存在：`Some(权限位)`，Windows 没有权限位时是 `Some(None)`（访问控制靠数据目录的 DACL）。
+fn mode_of(p: &Path) -> Option<Option<u32>> {
+    std::fs::metadata(p).ok().map(|m| crate::sys::mode_bits(&m))
 }
 
 pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCheck> {
@@ -80,14 +86,14 @@ pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCh
             format!("{} not found", key.display()),
             Some("anycon init --force  (this invalidates all paired devices)"),
         )),
-        Some(m) if m & 0o077 != 0 => {
+        Some(Some(m)) if m & 0o077 != 0 => {
             let fix = format!("chmod 600 {}", key.display());
             out.push(check("keys", false, format!("{} has mode {m:o}; it must be 600", key.display()), Some(&fix)))
         }
-        Some(_) => {
+        Some(bits) => {
             let tok = paths.device_token();
             match mode_of(&tok) {
-                Some(m) if m & 0o077 != 0 => {
+                Some(Some(m)) if m & 0o077 != 0 => {
                     let fix = format!("chmod 600 {}", tok.display());
                     out.push(check(
                         "keys",
@@ -96,6 +102,7 @@ pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCh
                         Some(&fix),
                     ))
                 }
+                _ if bits.is_none() => out.push(check("keys", true, "node.key present", None)),
                 _ => out.push(check("keys", true, "node.key present, permissions 0600", None)),
             }
         }
@@ -172,7 +179,7 @@ pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCh
             None,
         )),
         None => {
-            let alive = tokio::net::UnixStream::connect(paths.sock()).await.is_ok();
+            let alive = crate::local::connect(&paths.sock()).await.is_ok();
             out.push(check(
                 "daemon",
                 alive,
@@ -308,6 +315,16 @@ pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCh
 
     // 9. 服务
     match service_unit_path() {
+        None if cfg!(windows) => out.push(match windows_task_installed().await {
+            Some(true) => check("service", true, format!("scheduled task {WINDOWS_TASK} installed"), None),
+            Some(false) => check(
+                "service",
+                false,
+                format!("scheduled task {WINDOWS_TASK} not found"),
+                Some("anycon service install"),
+            ),
+            None => check("service", true, "could not run schtasks", None),
+        }),
         None => out.push(check("service", true, "service management is not supported on this platform", None)),
         Some(p) if p.exists() => out.push(check("service", true, format!("{} installed", p.display()), None)),
         Some(p) => {

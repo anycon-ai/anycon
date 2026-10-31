@@ -1,11 +1,17 @@
-//! `anycon service`：注册为用户级 launchd（macOS）/ systemd user unit（Linux）。其它平台报不支持。
+//! `anycon service`：注册为用户级 launchd（macOS）/ systemd user unit（Linux）/ 计划任务（Windows）。其它平台报不支持。
 //!
-//! 单元文件内容由纯函数生成（有单元测试）；真正调用 `launchctl` / `systemctl` 的部分带超时。
+//! 单元文件内容由纯函数生成（有单元测试）；真正调用 `launchctl` / `systemctl` / `schtasks` 的部分带超时。
+//!
+//! **Windows**：当前用户的计划任务 `anycon`（登录时启动、失败后每分钟重试、不限运行时长、用电池时照常运行），不需要管理员权限。
+//! 任务拉起的是同目录下的 `anyconw.exe`（没有控制台窗口的小启动器，见 `crates/windows-launcher`），它再以隐藏的控制台运行
+//! `anycon.exe daemon`；找不到 `anyconw.exe` 时直接运行 `anycon.exe`，会有一个控制台窗口（关掉它 daemon 就停了）。计划任务不能设
+//! 环境变量，非默认的数据目录用 `daemon --home` 传。`stop` 先发停止事件让 daemon 优雅退出（`anycon_daemon::daemon::stop_event`），
+//! 等不到再 `schtasks /End`。
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anycon_daemon::doctor::{service_unit_path, SERVICE_LABEL, SYSTEMD_UNIT};
+use anycon_daemon::doctor::{service_unit_path, SERVICE_LABEL, SYSTEMD_UNIT, WINDOWS_TASK};
 
 use crate::error::{CliError, Result};
 
@@ -88,9 +94,15 @@ async fn run(prog: &str, args: &[&str]) -> Result<(bool, String)> {
     }
 }
 
+#[cfg(unix)]
 fn uid() -> u32 {
     // SAFETY: getuid 无副作用。
     unsafe { libc::getuid() }
+}
+
+#[cfg(not(unix))]
+fn uid() -> u32 {
+    0
 }
 
 fn unit_path() -> Result<PathBuf> {
@@ -141,6 +153,9 @@ fn service_exe_path(exe: &Path) -> PathBuf {
 }
 
 pub async fn install(home: &Path) -> Result<String> {
+    if cfg!(windows) {
+        return windows_install(home).await;
+    }
     let path = unit_path()?;
     let exe = service_exe_path(&std::env::current_exe()?);
     let logs = home.join("logs");
@@ -169,7 +184,10 @@ pub async fn install(home: &Path) -> Result<String> {
     }
 }
 
-pub async fn uninstall() -> Result<String> {
+pub async fn uninstall(home: &Path) -> Result<String> {
+    if cfg!(windows) {
+        return windows_uninstall(home).await;
+    }
     let path = unit_path()?;
     if cfg!(target_os = "macos") {
         let _ = run("launchctl", &["bootout", &format!("gui/{}/{SERVICE_LABEL}", uid())]).await;
@@ -185,7 +203,10 @@ pub async fn uninstall() -> Result<String> {
     Ok(format!("removed {}", path.display()))
 }
 
-pub async fn control(action: &str) -> Result<String> {
+pub async fn control(action: &str, home: &Path) -> Result<String> {
+    if cfg!(windows) {
+        return windows_control(action, home).await;
+    }
     let path = unit_path()?;
     if !path.exists() {
         return Err(CliError::general(format!(
@@ -242,8 +263,27 @@ pub async fn control(action: &str) -> Result<String> {
 
 /// 进程状态 + 最近日志。
 pub async fn status(home: &Path) -> Result<String> {
-    let path = unit_path()?;
     let mut s = String::new();
+    if cfg!(windows) {
+        s = windows_status(home).await?;
+    } else {
+        unix_status(&mut s).await?;
+    }
+    if let Some(log) = anycon_daemon::logging::latest_log(&home.join("logs")) {
+        if let Ok(text) = std::fs::read_to_string(&log) {
+            let lines: Vec<&str> = text.lines().collect();
+            s.push_str(&format!("-- last log lines ({}) --\n", log.display()));
+            for l in &lines[lines.len().saturating_sub(10)..] {
+                s.push_str(l);
+                s.push('\n');
+            }
+        }
+    }
+    Ok(s)
+}
+
+async fn unix_status(s: &mut String) -> Result<()> {
+    let path = unit_path()?;
     if !path.exists() {
         s.push_str(&format!("not installed ({} not found); run `anycon service install`\n", path.display()));
     } else if cfg!(target_os = "macos") {
@@ -264,17 +304,256 @@ pub async fn status(home: &Path) -> Result<String> {
         let (_, out) = run("systemctl", &["--user", "is-active", SYSTEMD_UNIT]).await?;
         s.push_str(&format!("state: {out}\n"));
     }
-    if let Some(log) = anycon_daemon::logging::latest_log(&home.join("logs")) {
-        if let Ok(text) = std::fs::read_to_string(&log) {
-            let lines: Vec<&str> = text.lines().collect();
-            s.push_str(&format!("-- last log lines ({}) --\n", log.display()));
-            for l in &lines[lines.len().saturating_sub(10)..] {
-                s.push_str(l);
-                s.push('\n');
+    Ok(())
+}
+
+// ---------------------------------------------------------------- Windows：计划任务
+
+/// Windows 命令行的一个参数（`CommandLineToArgvW` 的规则）：没有空白和引号就原样，否则加引号，
+/// 引号前和结尾的反斜杠加倍。
+pub fn windows_quote_arg(a: &str) -> String {
+    if !a.is_empty() && !a.chars().any(|c| c.is_whitespace() || c == '"') {
+        return a.to_string();
+    }
+    let mut out = String::from("\"");
+    let mut backslashes = 0usize;
+    for c in a.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            c => {
+                out.push_str(&"\\".repeat(backslashes));
+                out.push(c);
+                backslashes = 0;
             }
         }
     }
-    Ok(s)
+    out.push_str(&"\\".repeat(backslashes * 2));
+    out.push('"');
+    out
+}
+
+/// 计划任务的 XML（任务计划程序 1.2 架构）。`user` 是当前用户的 SID：登录触发器只对这个用户生效，所以不需要管理员权限。
+/// 不限运行时长（默认是 72 小时）、用电池时照常运行、失败后每分钟重试；以登录用户的交互令牌运行（agent 要用到用户的凭据）。
+pub fn windows_task_xml(program: &Path, args: &[String], workdir: &Path, user: &str) -> String {
+    let args = args.iter().map(|a| windows_quote_arg(a)).collect::<Vec<_>>().join(" ");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>anycon daemon</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{program}</Command>
+      <Arguments>{args}</Arguments>
+      <WorkingDirectory>{workdir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"#,
+        user = xml_escape(user),
+        program = xml_escape(&program.to_string_lossy()),
+        args = xml_escape(&args),
+        workdir = xml_escape(&workdir.to_string_lossy()),
+    )
+}
+
+/// `schtasks /XML` 要的文件：UTF-16LE，带 BOM。
+fn utf16le_with_bom(s: &str) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xFE];
+    for u in s.encode_utf16() {
+        out.extend_from_slice(&u.to_le_bytes());
+    }
+    out
+}
+
+/// 任务要拉起的程序和参数：有同目录的 `anyconw.exe` 就用它（没有控制台窗口），否则直接用 `anycon.exe`。
+fn windows_task_command(exe: &Path, home: &Path) -> (PathBuf, Vec<String>, bool) {
+    let launcher = exe.with_file_name("anyconw.exe");
+    let mut args = vec!["daemon".to_string(), "--foreground".to_string()];
+    if pass_home(home) {
+        let abs = std::path::absolute(home).unwrap_or_else(|_| home.to_path_buf());
+        args.push("--home".into());
+        args.push(abs.to_string_lossy().into_owned());
+    }
+    if launcher.is_file() {
+        (launcher, args, true)
+    } else {
+        (exe.to_path_buf(), args, false)
+    }
+}
+
+async fn windows_task_exists() -> Result<bool> {
+    Ok(run("schtasks", &["/Query", "/TN", WINDOWS_TASK]).await?.0)
+}
+
+/// daemon 的本机通道连得上。
+async fn daemon_running(home: &Path) -> bool {
+    anycon_daemon::local::connect(&anycon_daemon::config::Paths::new(home).sock()).await.is_ok()
+}
+
+/// 等 daemon 退出（本机通道连不上），最多 `secs` 秒。
+async fn wait_daemon_gone(home: &Path, secs: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while tokio::time::Instant::now() < deadline {
+        if !daemon_running(home).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    !daemon_running(home).await
+}
+
+#[cfg(windows)]
+fn windows_user_sid() -> Result<String> {
+    anycon_daemon::sys::win::current_user_sid()
+        .map_err(|e| CliError::general(format!("cannot determine the current user: {e}")))
+}
+
+#[cfg(not(windows))]
+fn windows_user_sid() -> Result<String> {
+    Err(CliError::general("not on Windows"))
+}
+
+#[cfg(windows)]
+fn request_stop(home: &Path) -> bool {
+    anycon_daemon::daemon::stop_event::request(&anycon_daemon::config::Paths::new(home)).unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn request_stop(_home: &Path) -> bool {
+    false
+}
+
+async fn windows_install(home: &Path) -> Result<String> {
+    let exe = anycon_daemon::sys::canonicalize(std::env::current_exe()?)?;
+    let (program, args, windowless) = windows_task_command(&exe, home);
+    std::fs::create_dir_all(home.join("logs"))?;
+    let xml = windows_task_xml(&program, &args, home, &windows_user_sid()?);
+    let file = home.join("anycon-task.xml");
+    std::fs::write(&file, utf16le_with_bom(&xml))?;
+    let created = run("schtasks", &["/Create", "/TN", WINDOWS_TASK, "/XML", &file.to_string_lossy(), "/F"]).await;
+    let _ = std::fs::remove_file(&file);
+    let (ok, out) = created?;
+    if !ok {
+        return Err(CliError::general(format!("schtasks /Create failed: {out}")));
+    }
+    if !daemon_running(home).await {
+        let (ok, out) = run("schtasks", &["/Run", "/TN", WINDOWS_TASK]).await?;
+        if !ok {
+            return Err(CliError::general(format!("schtasks /Run failed: {out}")));
+        }
+    }
+    let mut msg = format!("installed the scheduled task {WINDOWS_TASK} (runs at logon) and started it");
+    if !windowless {
+        msg.push_str(&format!(
+            "\nnote: {} was not found next to anycon.exe, so the daemon runs in a visible console window; closing it stops the daemon",
+            program.with_file_name("anyconw.exe").display()
+        ));
+    }
+    Ok(msg)
+}
+
+/// 优雅停止：先发停止事件，等 15 秒；还在就 `schtasks /End`（强制结束，agent 随 job 一起被清掉）。
+async fn windows_stop(home: &Path) -> Result<()> {
+    if request_stop(home) && wait_daemon_gone(home, 15).await {
+        let _ = run("schtasks", &["/End", "/TN", WINDOWS_TASK]).await;
+        return Ok(());
+    }
+    let (ok, out) = run("schtasks", &["/End", "/TN", WINDOWS_TASK]).await?;
+    if !ok && daemon_running(home).await {
+        return Err(CliError::general(format!("schtasks /End failed: {out}")));
+    }
+    Ok(())
+}
+
+async fn windows_uninstall(home: &Path) -> Result<String> {
+    if !windows_task_exists().await? {
+        return Ok(format!("the scheduled task {WINDOWS_TASK} is not installed"));
+    }
+    windows_stop(home).await?;
+    let (ok, out) = run("schtasks", &["/Delete", "/TN", WINDOWS_TASK, "/F"]).await?;
+    if !ok {
+        return Err(CliError::general(format!("schtasks /Delete failed: {out}")));
+    }
+    Ok(format!("removed the scheduled task {WINDOWS_TASK}"))
+}
+
+async fn windows_control(action: &str, home: &Path) -> Result<String> {
+    if !windows_task_exists().await? {
+        return Err(CliError::general(format!(
+            "the service is not installed (no scheduled task {WINDOWS_TASK}); run `anycon service install`"
+        )));
+    }
+    match action {
+        "start" => {
+            if !daemon_running(home).await {
+                let (ok, out) = run("schtasks", &["/Run", "/TN", WINDOWS_TASK]).await?;
+                if !ok {
+                    return Err(CliError::general(format!("schtasks /Run failed: {out}")));
+                }
+            }
+        }
+        "stop" => windows_stop(home).await?,
+        "restart" => {
+            windows_stop(home).await?;
+            let (ok, out) = run("schtasks", &["/Run", "/TN", WINDOWS_TASK]).await?;
+            if !ok {
+                return Err(CliError::general(format!("schtasks /Run failed: {out}")));
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(format!("service {action}: ok"))
+}
+
+async fn windows_status(home: &Path) -> Result<String> {
+    if !windows_task_exists().await? {
+        return Ok(format!("not installed (no scheduled task {WINDOWS_TASK}); run `anycon service install`\n"));
+    }
+    let state = if daemon_running(home).await { "running" } else { "stopped; run `anycon service start`" };
+    Ok(format!("scheduled task: {WINDOWS_TASK}\nstate: {state}\n"))
 }
 
 #[cfg(test)]
@@ -312,6 +591,55 @@ mod tests {
         assert!(u.contains("Environment=ANYCON_HOME=/home/a/.anycon"));
         assert!(u.contains("WantedBy=default.target"));
         assert!(!systemd_unit(Path::new("/usr/bin/anycon"), Path::new("/x"), false).contains("Environment="));
+    }
+
+    #[test]
+    fn windows_args_are_quoted_like_command_line_to_argv() {
+        assert_eq!(windows_quote_arg("daemon"), "daemon");
+        assert_eq!(windows_quote_arg(r"C:\Users\me\.anycon"), r"C:\Users\me\.anycon");
+        assert_eq!(windows_quote_arg(r"C:\Users\John Doe\.anycon"), r#""C:\Users\John Doe\.anycon""#);
+        // 结尾的反斜杠在收尾引号前加倍；引号前的反斜杠加倍再转义引号
+        assert_eq!(windows_quote_arg(r"C:\My Dir\"), r#""C:\My Dir\\""#);
+        assert_eq!(windows_quote_arg(r#"a\"b"#), r#""a\\\"b""#);
+        assert_eq!(windows_quote_arg(""), r#""""#);
+    }
+
+    #[test]
+    fn windows_task_runs_at_logon_without_time_limit_and_escapes() {
+        let x = windows_task_xml(
+            Path::new(r"C:\Program Files\anycon & co\anyconw.exe"),
+            &["daemon".into(), "--foreground".into(), "--home".into(), r"C:\Users\John Doe\.anycon".into()],
+            Path::new(r"C:\Users\John Doe\.anycon"),
+            "S-1-5-21-1-2-3-1001",
+        );
+        assert!(x.starts_with(r#"<?xml version="1.0" encoding="UTF-16"?>"#));
+        assert!(x.contains("<LogonTrigger>") && x.contains("<UserId>S-1-5-21-1-2-3-1001</UserId>"));
+        assert!(x.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(x.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+        assert!(x.contains("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"));
+        assert!(x.contains("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
+        assert!(x.contains(r"<Command>C:\Program Files\anycon &amp; co\anyconw.exe</Command>"));
+        assert!(
+            x.contains(r#"<Arguments>daemon --foreground --home &quot;C:\Users\John Doe\.anycon&quot;</Arguments>"#)
+        );
+        let bytes = utf16le_with_bom(&x);
+        assert_eq!(&bytes[..4], &[0xFF, 0xFE, b'<', 0]);
+    }
+
+    #[test]
+    fn windows_task_prefers_the_windowless_launcher() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("anycon.exe");
+        std::fs::write(&exe, "").unwrap();
+        let home = anycon_daemon::config::Paths::from_env().home;
+        let (program, args, windowless) = windows_task_command(&exe, &home);
+        assert_eq!((program.as_path(), windowless), (exe.as_path(), false));
+        assert_eq!(&args[..2], ["daemon", "--foreground"]);
+        std::fs::write(tmp.path().join("anyconw.exe"), "").unwrap();
+        let (program, _, windowless) = windows_task_command(&exe, &home);
+        assert_eq!((program, windowless), (tmp.path().join("anyconw.exe"), true));
+        let (_, args, _) = windows_task_command(&exe, &tmp.path().join("custom"));
+        assert_eq!(&args[2..3], ["--home"]);
     }
 
     #[test]

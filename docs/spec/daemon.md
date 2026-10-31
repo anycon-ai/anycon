@@ -8,7 +8,7 @@
 
 daemon 做的事，一句话各一条：
 
-- 对 hub 保持一条出站连接，对本机 CLI 开一个 Unix socket
+- 对 hub 保持一条出站连接，对本机 CLI 开一个 Unix socket（Windows：命名管道，ADR-42）
 - 探测本机装了哪些 agent、能用什么模型和选项，告诉客户端
 - 按客户端的要求拉起 agent 进程，把它的事件翻译成协议事件，把用户输入和权限答复送回去
 - 把会话历史、附件、审计存在本机 SQLite
@@ -20,9 +20,9 @@ daemon **不**做：自己调用任何模型 API（标题生成、摘要都不�
 ## 2. 进程模型
 
 ```
-launchd / systemd ──► anycon daemon
+launchd / systemd / 计划任务 ──► anycon daemon
                         ├── hub 连接（一条 WebSocket，Noise 会话 × N 个客户端）
-                        ├── ~/.anycon/daemon.sock（本机 CLI）
+                        ├── ~/.anycon/daemon.sock（本机 CLI；Windows 是命名管道 \\.\pipe\anycon-<hash>）
                         ├── adapter: claude-code ──► claude -p … （每会话一个进程，空闲后退出）
                         ├── adapter: codex       ──► codex app-server（每会话一个进程、一个 thread，空闲后退出；ADR-26 修订）
                         ├── adapter: acp:<name>  ──► <agent> 的 ACP 模式（一个进程，多 session）
@@ -235,11 +235,12 @@ daemon 内置一张来自 [ACP 官方注册表](https://github.com/agentclientpr
 launchd / systemd 起的 daemon 没有用户 shell 的 `PATH`，`nvm`、`bun`、`cargo` 装的 agent 都找不到。这是远程控制类工具最常见的「在终端能用、在 daemon 里不能用」问题。
 
 - 启动时执行 `$SHELL -ilc 'printenv -0 2>/dev/null || env -0'`（15 秒超时；失败再试一次非交互的 `-lc`），把结果作为 **daemon 环境**：找 agent、拉起 agent 都用它。macOS 自带的 BSD `printenv` 没有 `-0`（报 `illegal option`，整个解析会失败），所以回落到 `env -0`。两次都失败则退回进程自身环境并在日志和 `doctor` 里警告。桌面应用通常在壳层做这件事，anycon 没有桌面壳，所以放在 daemon 里。用户的 rc 文件重时这一步要 1–4 秒、期间 socket 还没开；测试 / CI 里可设 `agents.env_from_login_shell = false`（环境变量 `ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL=false`）跳过
+- **Windows** 上不跑登录 shell，直接用进程环境：用户的环境变量在注册表里，进程（包括计划任务拉起的 daemon）启动时就拿到了；从 Git Bash 里启动时的 `SHELL` 是 MSYS 路径，不用它。Windows 的变量名不区分大小写，daemon 环境里的键统一大写（`Path` 存成 `PATH`），叠加配置和会话 env 时同名变量互相覆盖，不会以两种写法并存
 - 从 daemon 环境里**剔除** `CLAUDECODE`、`CLAUDE_CODE_ENTRYPOINT`、`CLAUDE_CODE_SSE_PORT`、`CLAUDE_AGENT_SDK_VERSION` 这类「我正在某个 agent 会话里」的标记：用户常在 Claude Code 的终端里敲 `anycon daemon`，不剔除的话拉起的 Claude Code 会拒绝嵌套启动。剔除只在 daemon 构造环境时做一次，adapter 不再重复剔除
 - `config.agents.env` 和 `agents.<id>.env` 追加 / 覆盖。这是运维配的环境，**最高优先级**：会话 `env` 不能覆盖里面出现的键
 - 每会话可再传 `env`（`session.create.settings.env`），但**默认整体被拒绝**（`permissions.allow_session_env = false`，ADR-31）。开启之后一个键要同时满足三条才接受，拒绝时返回 `invalid_settings { field: "env.<KEY>", reason }`（实现按 2 → 1 → 3 的顺序检查，所以黑名单键即使写进了允许列表也先按「黑名单」报错；配置加载时对这种允许项会 warn）：
-  1. 在运维配置的**允许列表** `permissions.session_env_allow` 里（`anycon_agent_api::env_key_in_allowlist`：每项是精确键名或 `PREFIX_*`，大小写敏感，裸 `*` 不是通配；默认空，所以只开开关不配列表等于什么都不放行）
-  2. 通过 `anycon_agent_api::env_key_allowed`：键名是合法标识符（`[A-Za-z_][A-Za-z0-9_]*`），不在保护集合（`PATH`、`HOME`、`SHELL`、`USER`、`LOGNAME`、`TMPDIR`），不命中黑名单。黑名单是**兜底**不是主防线（复验实测 `SHELLOPTS` + `PS4`、`LESSOPEN` 都能执行代码而第一版名单没有它们——黑名单枚举不全），完整名单以 `crates/agent-api/src/lib.rs` 的 `ENV_DENY_PREFIXES` / `ENV_DENY_EXACT` 为准，大致覆盖：动态链接（`LD_*`、`DYLD_*`、`GCONV_*`）、shell 启动 / 调试钩子（`BASH_ENV`、`ENV`、`SHELLOPTS`、`BASHOPTS`、`PS0`–`PS4`、`PROMPT_COMMAND`、`ZDOTDIR`、`FPATH`、`IFS`）、会被工具拉起的外部程序（`EDITOR`、`VISUAL`、`PAGER`、`LESSOPEN`、`VIMINIT`、`GIT_SSH*`、`*_ASKPASS`）、编译器 / 构建器（`CC`、`CXX`、`LD`、`MAKEFLAGS`、`RUSTC*`、`CARGO_*`）、各语言运行时和包源（`PYTHON*`、`PIP_*`、`UV_*`、`NODE_*`、`npm_config_*`、`BUN_*`、`DENO_*`、`RUBY*`、`GEM_*`、`PERL*`、`LUA_*`、`JAVA_*`、`_JAVA_*`、`JDK_*`、`DOTNET_*`、`GO*` 的若干、`PHP*`、`R_*`）、容器 / 集群（`DOCKER_*`、`KUBE*`、`KUBECONFIG`）、模型 / 云厂商和本项目的变量（`ANYCON_*`、`CLAUDE*`、`ANTHROPIC_*`、`OPENAI_*`、`GEMINI_*`、`GOOGLE_*`、`AWS_*`、`AZURE_*`、`GH_*`、`GITHUB_*`）、证书 / 名字解析 / 本地化（`SSL_CERT_*`、`CURL_CA_BUNDLE`、`NODE_EXTRA_CA_CERTS`、`HOSTALIASES`、`LOCPATH`、`NLSPATH`、`TERMINFO*`）、代理变量（大小写两种）、`XDG_*`
+  1. 在运维配置的**允许列表** `permissions.session_env_allow` 里（`anycon_agent_api::env_key_in_allowlist`：每项是精确键名或 `PREFIX_*`，大小写敏感（Windows 上不区分），裸 `*` 不是通配；默认空，所以只开开关不配列表等于什么都不放行）
+  2. 通过 `anycon_agent_api::env_key_allowed`：键名是合法标识符（`[A-Za-z_][A-Za-z0-9_]*`），不在保护集合（`PATH`、`HOME`、`SHELL`、`USER`、`LOGNAME`、`TMPDIR`，以及 Windows 的 `USERPROFILE`、`HOMEDRIVE`、`HOMEPATH`、`APPDATA`、`LOCALAPPDATA`、`PROGRAMDATA`、`SYSTEMROOT`、`WINDIR`、`TEMP`、`TMP`），不命中黑名单；Windows 上这几项检查都不区分大小写（那里 `path` 就是 `PATH`）。黑名单是**兜底**不是主防线（复验实测 `SHELLOPTS` + `PS4`、`LESSOPEN` 都能执行代码而第一版名单没有它们——黑名单枚举不全），完整名单以 `crates/agent-api/src/lib.rs` 的 `ENV_DENY_PREFIXES` / `ENV_DENY_EXACT` 为准，大致覆盖：动态链接（`LD_*`、`DYLD_*`、`GCONV_*`）、shell 启动 / 调试钩子（`BASH_ENV`、`ENV`、`SHELLOPTS`、`BASHOPTS`、`PS0`–`PS4`、`PROMPT_COMMAND`、`ZDOTDIR`、`FPATH`、`IFS`）、会被工具拉起的外部程序（`EDITOR`、`VISUAL`、`PAGER`、`LESSOPEN`、`VIMINIT`、`GIT_SSH*`、`*_ASKPASS`；Windows 的 `COMSPEC`、`PATHEXT`、`PSMODULEPATH`）、编译器 / 构建器（`CC`、`CXX`、`LD`、`MAKEFLAGS`、`RUSTC*`、`CARGO_*`）、各语言运行时和包源（`PYTHON*`、`PIP_*`、`UV_*`、`NODE_*`、`npm_config_*`、`BUN_*`、`DENO_*`、`RUBY*`、`GEM_*`、`PERL*`、`LUA_*`、`JAVA_*`、`_JAVA_*`、`JDK_*`、`DOTNET_*`、`GO*` 的若干、`PHP*`、`R_*`）、容器 / 集群（`DOCKER_*`、`KUBE*`、`KUBECONFIG`）、模型 / 云厂商和本项目的变量（`ANYCON_*`、`CLAUDE*`、`ANTHROPIC_*`、`OPENAI_*`、`GEMINI_*`、`GOOGLE_*`、`AWS_*`、`AZURE_*`、`GH_*`、`GITHUB_*`）、证书 / 名字解析 / 本地化（`SSL_CERT_*`、`CURL_CA_BUNDLE`、`NODE_EXTRA_CA_CERTS`、`HOSTALIASES`、`LOCPATH`、`NLSPATH`、`TERMINFO*`）、代理变量（大小写两种）、`XDG_*`
   3. 不覆盖 `agents.env` / `agents.<id>.env` 里运维配置的键
   - 另外：`permissions.allow_session_env = false`（默认）时带任何非空 `env` 都得到 `invalid_settings { field: "env" }`；开启后每个值不含 NUL 且 ≤ 8 KiB，最多 64 个键。每次拉起 agent 前也会按当前配置重新校验，关掉开关或收紧允许列表后，已带 env 的会话下一个 turn 会失败
   - 为什么：这些变量能让子进程在审批之外执行代码（`BASH_ENV`、`LD_PRELOAD`、`NODE_OPTIONS`、`SHELLOPTS` + `PS4`），或者把提示词和凭据转发到别处（`ANTHROPIC_BASE_URL`、`*_PROXY`、`npm_config_registry`）。已配对客户端本来只能在审批下行动。对绝大多数部署，正确配置就是不开
@@ -613,6 +614,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
 - **项目名校验**：不含 `/` 和 NUL、不以 `.` 开头、≤ 255 字节、不是 `.trash` / `.scratch`；重名返回 `exists`。根目录下的项目和关联项目**共用一个命名空间**：新建、克隆、改名、恢复、scratch 转项目、关联遇到任何一边已占用的名字都返回 `exists`
 - **路径安全**：所有 `fs.*` 和项目操作先 `canonicalize`，结果必须在所属项目的目录下（根目录下的项目：根目录；关联项目：关联目录本身）。边界按**路径**判断：项目里指向项目外文件的**硬链接**照常可读（它就是项目里的一个文件名），硬链接不是边界；根目录里指向根外的符号链接仍然拒绝
 - **能关联哪些目录**（ADR-33 修订）：范围、隐藏目录、内置拒绝表、绝对拒绝、使用时复核这五条规则以 [ADR-33](../decisions.md#adr-33-关联本机已有目录为项目) 为准。拒绝时返回 `forbidden`（在 workspace 根里是 `invalid`），消息说明原因；`workspace.browse` 的条目用 `linkable = false` + `blocked`（`hidden` / `sensitive` / `workspace` / `data_dir` / `filesystem_root`）标出来，已经是项目的看 `project`。同时命中几条时只报一个原因，优先级 `filesystem_root` → `workspace` → `data_dir` → `sensitive` → `hidden`（所以 `~/.ssh` 报 `sensitive`）。拒绝表里的目录和数据目录（以及它们里面）不能 browse 进去（`forbidden`）；包含它们的上级目录（如 `~`）和普通隐藏目录可以进。**不泄露存在性**：`browse` / `link` 先把请求的路径做词法规范化（展开 `~`、去掉 `.` / `..`、套系统别名），**不在任何 root 之内就一律回「不在 `link_roots` 之内」**，不管它解析到哪里、存不存在（经范围外的链接或 `/Volumes/<启动盘>` 拼进来的路径本来也不接受）；再按词法路径判断是否落在拒绝表 / 数据目录里（不区分大小写的卷上按 NFC + 大小写折叠比较），命中就 `forbidden`，不管那个路径存不存在、是不是目录；在拒绝表之外，`browse` 和 `link` 对「不存在」和「不是目录」也给同一个错误（`not_found`）和消息。**已知缺口**：① 范围之内的符号链接（`~/work/lnk -> ~/.ssh`，或指向范围外的链接）后面的路径仍能区分存在与否；② 大小写折叠用的是 Unicode 小写，不等于 APFS 的折叠规则（`ß` ↔ `ss`、`ſ` ↔ `s` 这类写法不在其中），这类变体也能区分拒绝表目录里子目录的存在与否。两种都只泄露存在性，读不到内容。`sensitive` 用于「包含拒绝项」时，消息点名一个确实存在的拒绝项。**root 不能经过符号链接**（ADR-33 第 1 条），每次请求都重判。判定顺序：规范化（固定的 canonical HOME、系统别名、firmlink）→ 逐段 `lstat`（任何一段是链接就忽略这一项）→ canonical 路径和写法只差大小写 / NFC 时以 canonical 路径生效。也就是说判断「经过符号链接」是逐段 `lstat`，大小写或 NFC / NFD 写法和盘上不一致（`~/Work` vs `~/work`）**不算**，这样的项以 canonical 路径生效；没有可用的 root 时，错误消息列出每一项的简短原因（不说链接指向哪里），完整原因在 daemon 日志和 `anycon config set workspace.link_roots …` 的输出里（`--json` 是 `link_roots_unusable`）。想关联的目录路径里有符号链接（`~/code -> ~/real-code`）时，`link_roots` 要写真实路径；启动、`config set` / 热加载时对被忽略的项 warn 一次（只对确实被忽略的项 warn，`/var/folders/…` 这类经系统别名的正常写法不 warn）。拒绝表本身同样按 `/var` / `/tmp` / `/etc` 这组别名匹配。firmlink（`/System/Volumes/Data/X` ↔ `/X`）的归一化**只作用于按原样大小写写出的词法路径**：canonical 结果、启动时固定的 HOME、拒绝表都不按它归一化，所以运维在 `link_roots` 里用 firmlink 写法的大小写变体、或 HOME 本身是数据卷写法时，拒绝表里 HOME 下的项可能匹配不上（已知限制；workspace 根和数据目录按 `(dev, ino)` 判，不受影响）
+- **Windows 上的路径规则**（ADR-42）：`link_roots` 的项可以写 `C:\…` 这样带盘符的绝对路径，或 `~` / `~/…` / `~\…`（`~` 是 `USERPROFILE`）；没有盘符的 `\work` 不算绝对路径。「符号链接」包括 junction；文件系统根是每个盘符的根和 UNC 共享的根；卷默认不区分大小写。拒绝表换成 Windows 的系统目录（`SystemRoot`、`ProgramFiles`、`ProgramFiles(x86)`、`ProgramData`、`<系统盘>\Users\Public`、`Users\Default`、`$Recycle.Bin`、`System Volume Information`、`Recovery`，按环境变量定位）加上 home 下的项：上面那组（`.ssh`、`.aws`、`.config` 等）和 `AppData`、`AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup`（放行 `AppData` 仍不放行自启动目录）、`Documents\PowerShell`、`Documents\WindowsPowerShell`（PowerShell 每次启动都执行里面的配置脚本）、`scoop`。没有 `/var` 这类系统别名，也没有 firmlink。`fs.read` / `fs.list` 的「检查之后被换掉」防护见 `crates/daemon/src/fsopen.rs`：按路径打开、最后一段不跟随重解析点，再按句柄的真实路径复核
 - **关联已有目录**（ADR-33）：`workspace.link { path, name? }`。`path` 可以是绝对路径或 `~` / `~/…`（按 daemon **启动时固定的 canonical HOME** 展开），NUL / 控制字符、超过 4096 字节返回 `invalid`。判断顺序：① 词法规范化之后不在任何可用的 root 之内 → `forbidden`（不管存不存在；没有可用的 root、列表为空也是 `forbidden`）；② 按词法路径落在拒绝表 / 数据目录里 → `forbidden`；③ canonicalize 后不存在或不是目录 → `not_found`（两种同一条消息）；④ 按 canonical 路径重跑 ADR-33 第 2–4 条。以下也拒绝：在 workspace 根目录里面（`invalid`，它已经是项目或在 `.trash` / `.scratch` 里）；是文件系统根、包含 workspace 根目录或 anycon 数据目录（`ANYCON_HOME`）、在 anycon 数据目录里面（`forbidden`）；同一个 canonical 路径已经关联过（`exists`，消息里带已有的名字）。名字缺省取目录名（不合法时让客户端给）。存进 SQLite `linked_projects (name PRIMARY KEY, path UNIQUE, created_ms)`；发 `workspace.changed { added }`；审计 `workspace.link`（记路径）
 - **解除关联**：`workspace.unlink { name }` 删掉那一行，发 `workspace.changed { removed }`，审计；目录和里面的文件不动。不是关联项目 → `invalid`；有运行中（queued / starting / running / waiting_permission）的会话 → `busy`。检查之后才开始的 turn 会被取消、这个项目所有会话的 agent 进程都被收掉（循环直到收干净）。**锁顺序**：`ns_lock`（workspace 命名空间）在前，会话锁在后；任何代码都不能持有会话锁去取 `ns_lock`（`session.promote` 先在会话锁里做检查、释放后再改名、再加锁写回并复核）。已有会话保留：每个会话记着自己的位置（`linked:<canonical 目录>` 或 `folder:<名字>#<dev>:<ino>`，根目录项目不记绝对路径，记目录的设备号和 inode；同一个设备上 inode 不同 = 换了一个目录（比如进了回收站再新建同名文件夹、从备份恢复、删掉后重新 clone），旧会话不能继续，错误消息先说明「如果是有意替换的，新建一个会话；旧会话的历史仍然可以查看」；设备号不同 = workspace 根整体搬到了别的盘，接受并重新记下；旧版本只记了名字的同样接受并补记），之后这个名字指向别的目录（同名重新关联到别处、被盖住的同名根目录文件夹露出来）时，拉起 agent 前发现 cwd 变了就拒绝（`not_found`，提示原来的目录），不会在新目录里续接；同一个目录用任何名字重新关联回来，会话就能继续（旧会话的 `project` 改成新名字，审计 `workspace.link` 的 `detail.adopted_sessions` 记下它们）
 - **关联项目的其余操作**：`workspace.rename` 只改表里的名字（同时更新会话的 `project`）；`workspace.trash` 返回 `invalid`（提示 unlink）——anycon 永远不移动、不删除关联目录里的文件；`workspace.list` 现算元数据，目录不在了（不是目录 / 无法访问）时 `missing: true`、`git` 为空、`modified_at_ms = 0`；`missing`（不在了、被换成指向别处的符号链接、或按当前规则已经不允许）的项目上 `session.create` 返回 `not_found`
@@ -836,7 +838,7 @@ SQLite（WAL）。全部表：
 - 响应大小：`session.history` 一页 ≤ 192 KiB（§ 7.9），`tool_result.output` ≤ 64 KiB（§ 8.2），`session.send` ≤ 1 MiB；其余靠传输层分片（≤ 200 KiB / 片，重组上限 16 MiB）。大消息经 hub 的 4 MiB 发送缓冲时会被退回一部分并重发（hub 保证顺序，[protocol.md § 3.1](../protocol.md#31-消息大小)）；daemon 收到 `backpressure` / `rate_limited` 要暂停再按序重发，不能继续灌
 - 配对：短码本地生成、不发给 hub；joiner 要等 `pair.ack` 才落盘（§ 15）
 - 账号内接入（§ 15.1）：daemon 是唯一的验证点，hub 的限速不算数。口令只存 Argon2id 派生值；口令失败计数在发出 CPace 份额**之前**先写库；同时最多一个口令尝试、3 个接入会话；接入码和扫码密钥只在内存里，不落盘、不进日志和审计
-- 本机 socket 0600；CLI 不需要再认证
+- 本机 socket 0600；CLI 不需要再认证。Windows 上是命名管道：属主和 DACL 都是当前用户、拒绝远程客户端、第一个实例独占名字；管道名字是全局的，客户端连上之后核对管道属主是当前用户，防别的本机用户抢先建同名管道冒充 daemon（ADR-42）
 - dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
 - `--add-dir` 之类扩大 agent 文件范围的参数不暴露给客户端
 - worktree（§ 10.1）：目录在项目里面，复核规则同关联项目；不把主仓库 `.git` 加进 agent 的可写目录；`.worktreeinclude` 只复制、不执行，不跟随符号链接；daemon 的 git 关掉 fsmonitor / hooks / 外部 diff / textconv / 合并签名，仓库配置里的 filter / merge driver / sshCommand / askPass / credential helper / uploadpack 仍会被执行（已知限制，§ 10.1「限制」）
@@ -897,6 +899,7 @@ v0.2：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-se
 - 进程关系：`ps -axo pid=,ppid=,pgid=,comm=`（3 秒超时）
 - 工作目录：`lsof -a -p <pid,…> -d cwd -Fpn`（只查监听进程，3 秒超时）
 - 哪一步失败或者命令不存在：`detection = unavailable`，只认 `allow_ports`（并记一条 warn，同一原因 10 分钟内只记一次）。macOS 自带 `lsof`；Linux 发行版通常也有，没有时提示安装
+- **Windows** 不跑命令，直接调系统接口：监听 socket 和所属 pid 用 `GetExtendedTcpTable`（IPv4 / IPv6，只认回环和通配地址，规则同上），进程关系用 Toolhelp 快照；「进程组」换成 agent 的 Job Object——agent 的 job 里的进程归属 agent 主进程，父进程链断了的后台进程也算（Windows 不给孤儿换父进程）。拿不到别的进程的工作目录，按工作目录归属的规则在 Windows 上不生效：用户自己在终端里起的 dev server 要写进 `preview.allow_ports`（ADR-42）
 - 子进程环境和其他外部命令一样（`env_clear` 后补 daemon 的环境，`kill_on_drop`）
 
 ### 19.5 隧道和转发

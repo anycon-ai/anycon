@@ -18,7 +18,7 @@
 - 自包含的 Docker 镜像构建；反向代理示例 ×4、compose 示例（[deploy.md](deploy.md)）
 
 **anycon（daemon + CLI）**
-- 出站连接、断线重连、睡眠恢复；本机 Unix socket 通道（ADR-27）；launchd / systemd 用户服务
+- 出站连接、断线重连、睡眠恢复；本机 Unix socket 通道（ADR-27；Windows 是命名管道）；launchd / systemd 用户服务、Windows 计划任务（ADR-42）
 - `init` / `daemon` / `pair` / `passwd` / `doctor` / `connect` / `ls` / `new` / `send` / `attach` / `diff` / `sync` / `worktrees` / `archive` / `delete` 等子命令（[spec/cli.md](spec/cli.md)）
 - 登录 shell 环境解析（launchd 下也找得到 nvm / bun 装的 agent）
 - agent 探测与能力声明：状态、版本、认证、按模型的思考等级、权限模式（[spec/daemon.md § 5](spec/daemon.md#5-agent-探测与能力声明)）
@@ -51,6 +51,7 @@
 
 - macOS 二进制的开发者签名与公证（现在没有：用 curl / Homebrew 下载不受 Gatekeeper 拦截，浏览器下载的要手动放行）
 - musl 静态 Linux 二进制（覆盖 Alpine 和 glibc 2.35 以前的发行版）
+- Windows：Authenticode 签名（现在浏览器下载会触发 SmartScreen 提示）、arm64 原生二进制（现在用 x64 版在模拟下跑）、winget / scoop 包；预览按工作目录归属的规则（拿别的进程的工作目录）；adapter 进程层测试的 Windows 版（假 CLI 现在是带 shebang 的 python 脚本）
 - `anycon-hub backup`
 - CI 加 `cargo deny` / `bun audit`
 

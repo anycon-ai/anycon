@@ -1,6 +1,5 @@
 //! daemon 的装配与生命周期：单实例锁、配置、存储、环境、各组件、后台任务、优雅退出。
 
-use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,7 +27,8 @@ use crate::worktree::WorktreeMgr;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
-    #[error("another anycon daemon is already running (pid {0})")]
+    /// 持锁进程的 pid；Windows 的文件锁是强制的，读不到时为空。
+    #[error("another anycon daemon is already running{}", if .0.is_empty() { String::new() } else { format!(" (pid {})", .0) })]
     AlreadyRunning(String),
     #[error(transparent)]
     Config(#[from] ConfigError),
@@ -109,7 +109,7 @@ pub struct Ctx {
     pub shutdown_tx: watch::Sender<bool>,
 }
 
-/// 单实例锁：`daemon.lock` 上的 flock。进程退出（含崩溃）自动释放。
+/// 单实例锁：`daemon.lock` 上的文件锁（unix `flock`，Windows `LockFileEx`）。进程退出（含崩溃）自动释放。
 pub struct DaemonLock {
     _file: std::fs::File,
 }
@@ -119,12 +119,15 @@ impl DaemonLock {
         use std::io::{Read, Seek, Write};
         let mut f =
             std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(paths.lock())?;
-        // SAFETY: flock 只操作我们刚打开的 fd。
-        let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc != 0 {
-            let mut pid = String::new();
-            let _ = f.read_to_string(&mut pid);
-            return Err(DaemonError::AlreadyRunning(pid.trim().to_string()));
+        match f.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                // Windows 的锁是强制的，读不到持锁进程写的 pid，这时 pid 为空
+                let mut pid = String::new();
+                let _ = f.read_to_string(&mut pid);
+                return Err(DaemonError::AlreadyRunning(pid.trim().to_string()));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
         f.set_len(0)?;
         f.rewind()?;
@@ -145,10 +148,7 @@ pub struct Daemon {
 impl Daemon {
     pub async fn start(paths: Paths, opts: DaemonOptions) -> Result<Daemon, DaemonError> {
         std::fs::create_dir_all(&paths.home)?;
-        crate::util::warn_err(
-            "restrict the home directory to its owner",
-            std::fs::set_permissions(&paths.home, std::os::unix::fs::PermissionsExt::from_mode(0o700)),
-        );
+        crate::util::warn_err("restrict the home directory to its owner", crate::sys::restrict_to_owner(&paths.home));
         let lock = if opts.lock { Some(DaemonLock::acquire(&paths)?) } else { None };
         let identity = Arc::new(Identity::load(&paths)?);
         let config = ConfigStore::load(&paths)?;
@@ -159,7 +159,7 @@ impl Daemon {
         let mut resolved = crate::env::resolve(login_shell, std::time::Duration::from_secs(15)).await;
         if !opts.env_extra.is_empty() {
             let mut base = (*resolved.base).clone();
-            base.extend(opts.env_extra.iter().cloned());
+            base.extend(crate::env::canonical_env(opts.env_extra.iter().cloned()));
             resolved.base = Arc::new(base);
         }
         let env = Arc::new(resolved);
@@ -347,21 +347,166 @@ impl Daemon {
             let _ = t.await;
         }
         if let Some(p) = &self.socket_path {
-            let _ = std::fs::remove_file(p);
+            crate::local::cleanup(p);
         }
         self.ctx.store.close().await;
     }
 
-    /// 等 SIGINT / SIGTERM，然后优雅退出。
+    /// 等 SIGINT / SIGTERM（Windows：Ctrl+C、Ctrl+Break、关闭控制台、注销、关机，以及 `anycon service stop` 发的停止事件），
+    /// 然后优雅退出。
     pub async fn run_until_signal(self) {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut term = signal(SignalKind::terminate()).ok();
-        let mut int = signal(SignalKind::interrupt()).ok();
+        #[cfg(windows)]
+        let stop = match stop_event::create(&self.ctx.paths) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot create the stop event; `anycon service stop` will terminate the process");
+                None
+            }
+        };
+        #[cfg(windows)]
         tokio::select! {
-            _ = async { if let Some(s) = term.as_mut() { s.recv().await } else { std::future::pending().await } } => {}
-            _ = async { if let Some(s) = int.as_mut() { s.recv().await } else { std::future::pending().await } } => {}
+            _ = wait_for_stop_signal() => {}
+            _ = async { match &stop { Some(e) => e.wait().await, None => std::future::pending().await } } => {
+                tracing::info!("stop requested");
+            }
         }
+        #[cfg(unix)]
+        wait_for_stop_signal().await;
         self.shutdown().await;
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_stop_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate()).ok();
+    let mut int = signal(SignalKind::interrupt()).ok();
+    tokio::select! {
+        _ = async { if let Some(s) = term.as_mut() { s.recv().await } else { std::future::pending().await } } => {}
+        _ = async { if let Some(s) = int.as_mut() { s.recv().await } else { std::future::pending().await } } => {}
+    }
+}
+
+/// 控制台的关闭 / 注销 / 关机事件只给几秒钟（之后系统强制结束进程）；agent 都在 job 里，daemon 被强制结束时也会被一起清掉。
+#[cfg(windows)]
+async fn wait_for_stop_signal() {
+    use tokio::signal::windows;
+    let mut c = windows::ctrl_c().ok();
+    let mut brk = windows::ctrl_break().ok();
+    let mut close = windows::ctrl_close().ok();
+    let mut logoff = windows::ctrl_logoff().ok();
+    let mut shutdown = windows::ctrl_shutdown().ok();
+    macro_rules! recv {
+        ($s:expr) => {
+            async {
+                match $s.as_mut() {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            }
+        };
+    }
+    tokio::select! {
+        _ = recv!(c) => {}
+        _ = recv!(brk) => {}
+        _ = recv!(close) => {}
+        _ = recv!(logoff) => {}
+        _ = recv!(shutdown) => {}
+    }
+}
+
+/// Windows 上给 `anycon service stop` 用的停止事件：命名事件 `Local\anycon-stop-<hash>`（和命名管道同一个 hash），DACL 只允许
+/// 当前用户。计划任务拉起的 daemon 没有可见的控制台，收不到 Ctrl+C，所以用它请求优雅退出；`Local\` 是登录会话内的命名空间，
+/// 别的用户看不到也抢不了这个名字。
+#[cfg(windows)]
+pub mod stop_event {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, WAIT_OBJECT_0};
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::System::Threading::{
+        CreateEventW, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE,
+    };
+
+    use crate::config::Paths;
+    use crate::sys::win::{current_user_sid, wide, SecurityDescriptor};
+
+    pub fn name(paths: &Paths) -> String {
+        let pipe = paths.sock();
+        let hash = pipe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        format!(r"Local\{}", hash.replace("anycon-", "anycon-stop-"))
+    }
+
+    pub struct StopEvent(std::sync::Arc<OwnedHandle>);
+
+    pub fn create(paths: &Paths) -> std::io::Result<StopEvent> {
+        let sid = current_user_sid()?;
+        let sd = SecurityDescriptor::from_sddl(&format!("O:{sid}D:P(A;;GA;;;{sid})"))?;
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.as_ptr(),
+            bInheritHandle: 0,
+        };
+        let w = wide(std::ffi::OsStr::new(&name(paths)));
+        // SAFETY: `sa`、`sd`、`w` 在调用期间有效；手动复位，初始未触发。
+        let h = unsafe { CreateEventW(&sa, 1, 0, w.as_ptr()) };
+        if h.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: 刚创建的有效句柄。
+        Ok(StopEvent(std::sync::Arc::new(unsafe { OwnedHandle::from_raw_handle(h) })))
+    }
+
+    impl StopEvent {
+        /// 等事件被触发（在阻塞线程里等）。
+        pub async fn wait(&self) {
+            let h = self.0.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                // SAFETY: 句柄由 Arc 持有，等待期间有效。
+                unsafe { WaitForSingleObject(h.as_raw_handle(), INFINITE) == WAIT_OBJECT_0 }
+            })
+            .await;
+        }
+    }
+
+    /// 请求 daemon 优雅退出。事件不存在（daemon 没在跑，或者是不支持它的旧版本）返回 `Ok(false)`。
+    pub fn request(paths: &Paths) -> std::io::Result<bool> {
+        let w = wide(std::ffi::OsStr::new(&name(paths)));
+        // SAFETY: `w` 以 NUL 结尾。
+        let h = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, w.as_ptr()) };
+        if h.is_null() {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) {
+                return Ok(false);
+            }
+            return Err(e);
+        }
+        // SAFETY: 刚打开的有效句柄。
+        let h = unsafe { OwnedHandle::from_raw_handle(h) };
+        // SAFETY: 句柄有效且带 EVENT_MODIFY_STATE。
+        if unsafe { SetEvent(h.as_raw_handle()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn request_wakes_the_waiter() {
+            let tmp = tempfile::tempdir().unwrap();
+            let paths = Paths::new(tmp.path());
+            assert!(name(&paths).starts_with(r"Local\anycon-stop-"), "{}", name(&paths));
+            assert!(!request(&paths).unwrap(), "nobody listens yet");
+            let ev = create(&paths).unwrap();
+            let waiter = tokio::spawn(async move { ev.wait().await });
+            assert!(request(&paths).unwrap());
+            tokio::time::timeout(std::time::Duration::from_secs(5), waiter).await.unwrap().unwrap();
+        }
     }
 }
 

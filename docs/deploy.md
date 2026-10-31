@@ -308,16 +308,26 @@ curl -fsSL https://github.com/anycon-ai/anycon/releases/latest/download/install.
 cargo install --path crates/cli --locked # 从源码，在仓库根目录
 ```
 
-预构建的二进制覆盖 macOS arm64 / x64 和 Linux x64 / arm64（glibc 2.35 及以上，Ubuntu 22.04、Debian 12 及更新）；其它平台（musl、更老的 glibc）从源码构建。安装脚本校验 sha256、装到 `~/.local/bin`，不用 sudo；环境变量加在 `sh` 前面：`… | ANYCON_VERSION=0.1.0 sh` 装指定版本，`ANYCON_INSTALL_DIR` 改安装目录。每个 [GitHub Release](https://github.com/anycon-ai/anycon/releases) 附带各平台的压缩包、`SHA256SUMS` 和构建来源证明（`gh attestation verify <文件> --repo anycon-ai/anycon`），压缩包里有 `THIRD-PARTY-LICENSES.txt`。
+Windows 上在 PowerShell 里：
+
+```powershell
+irm https://github.com/anycon-ai/anycon/releases/latest/download/install.ps1 | iex
+# 从源码：两个都装（第二个是服务用的、没有控制台窗口的启动器 anyconw.exe）
+cargo install --path crates/cli --locked; cargo install --path crates/windows-launcher --locked
+```
+
+预构建的二进制覆盖 macOS arm64 / x64、Linux x64 / arm64（glibc 2.35 及以上，Ubuntu 22.04、Debian 12 及更新）和 Windows x64（Windows 10 1809 / Server 2019 及以上；Windows on Arm 用 x64 版）；其它平台（musl、更老的 glibc）从源码构建。安装脚本校验 sha256、装到 `~/.local/bin`，不用 sudo；环境变量加在 `sh` 前面：`… | ANYCON_VERSION=0.1.0 sh` 装指定版本，`ANYCON_INSTALL_DIR` 改安装目录。Windows 的 `install.ps1` 同样校验 sha256，装到 `%LOCALAPPDATA%\Programs\anycon\bin` 并加进用户 PATH，不需要管理员权限，同名的环境变量先在 PowerShell 里设好（`$env:ANYCON_VERSION = '0.1.0'`）。每个 [GitHub Release](https://github.com/anycon-ai/anycon/releases) 附带各平台的压缩包、`SHA256SUMS` 和构建来源证明（`gh attestation verify <文件> --repo anycon-ai/anycon`），压缩包里有 `THIRD-PARTY-LICENSES.txt`。
 
 ```bash
 anycon init --hub https://hub.example.com --workspace ~/anycon
-anycon service install                   # launchd (macOS) / systemd user (Linux)
+anycon service install                   # launchd (macOS) / systemd user (Linux) / 计划任务 (Windows)
 anycon pair
 anycon doctor                            # 检查网络、agent CLI 是否安装、权限
 ```
 
 升级（`brew upgrade anycon` 或重跑安装脚本）后 `anycon service restart` 换上新版本。服务文件记的路径升级后不变：Homebrew 装的记 formula 的固定入口 `<prefix>/opt/anycon/bin/anycon`，不记带版本号的 Cellar 路径。
+
+Windows 上的服务是当前用户的计划任务 `anycon`：登录时启动、失败后每分钟重试、不限运行时长、用电池时照常运行，不需要管理员权限。任务运行同目录的 `anyconw.exe`，它不带控制台窗口地拉起 `anycon.exe daemon`；没有 `anyconw.exe` 时直接运行 `anycon.exe`，会有一个控制台窗口（关掉它 daemon 就停了）。daemon 在跑的时候 `anycon.exe` 被占用、不能覆盖，安装脚本先把旧文件改名再放新的，之后照样 `anycon service restart`（[ADR-42](decisions.md#adr-42-windows命名管道job-object计划任务)）。
 
 daemon 数据目录 `~/.anycon/`：
 
@@ -329,13 +339,13 @@ daemon 数据目录 `~/.anycon/`：
 │   ├── node.key                Noise 静态私钥，0600
 │   └── device-token            hub 签发的设备 token，0600
 ├── peers.json                  已配对设备公钥（数据库的镜像）
-├── daemon.sock                 本机 CLI 通道，0600
+├── daemon.sock                 本机 CLI 通道，0600（Windows 上是命名管道 \\.\pipe\anycon-<hash>，不在这个目录里）
 ├── logs/                       daemon 日志，默认保留 7 天
 ├── client/<hub-host>/          CLI 作为客户端设备时的密钥和 token
 └── blobs/                      图片附件（ADR-35）
 ```
 
-完整说明见 [spec/cli.md § 2](spec/cli.md#2-目录与配置)。
+完整说明见 [spec/cli.md § 2](spec/cli.md#2-目录与配置)。Windows 上 `~` 是 `%USERPROFILE%`；这个目录没有权限位，daemon 给它设一份只有当前用户、SYSTEM 和 Administrators 能访问的 DACL，里面的文件继承它。
 
 Mac 睡眠后 daemon 会自动重连，但如果 Mac mini 要 7×24 可用，系统设置里要关掉「允许电脑自动进入睡眠」。
 

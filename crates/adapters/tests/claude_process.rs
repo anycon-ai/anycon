@@ -1,4 +1,7 @@
 //! Claude Code 进程层：用 `tests/bin/fake-claude` 回放固定 JSONL，端到端测 spawn / send / respond / cancel / set_settings / shutdown。
+//!
+//! 假 CLI（`tests/bin/fake-*`）是带 shebang 的 python 脚本，Windows 上不能直接执行：这个文件只在 unix 上跑。
+#![cfg(unix)]
 
 mod common;
 

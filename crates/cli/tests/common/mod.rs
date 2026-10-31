@@ -97,12 +97,18 @@ pub struct DaemonProc {
 }
 
 impl DaemonProc {
+    /// 让 daemon 优雅退出：unix 发 SIGTERM；Windows 发停止事件（`anycon service stop` 用的那个），等不到就强制结束。
     pub async fn stop(mut self) {
+        #[cfg(unix)]
         if let Some(pid) = self.child.id() {
             // SAFETY: 给自己起的子进程发 SIGTERM。
             unsafe { libc::kill(pid as i32, libc::SIGTERM) };
         }
-        let _ = tokio::time::timeout(Duration::from_secs(15), self.child.wait()).await;
+        #[cfg(windows)]
+        let _ = anycon_daemon::daemon::stop_event::request(&anycon_daemon::config::Paths::new(&self.home));
+        if tokio::time::timeout(Duration::from_secs(15), self.child.wait()).await.is_err() {
+            let _ = self.child.kill().await;
+        }
     }
 }
 
@@ -116,9 +122,9 @@ pub async fn start_daemon(home: &Path, env: &[(&str, &str)]) -> DaemonProc {
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
     let child = c.spawn().expect("spawn daemon");
-    let sock = home.join("daemon.sock");
+    let sock = anycon_daemon::config::Paths::new(home).sock();
     let t = std::time::Instant::now();
-    while tokio::net::UnixStream::connect(&sock).await.is_err() {
+    while anycon_daemon::local::connect(&sock).await.is_err() {
         assert!(t.elapsed() < Duration::from_secs(20), "daemon did not come up");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

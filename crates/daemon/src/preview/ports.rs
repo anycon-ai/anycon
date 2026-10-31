@@ -9,6 +9,11 @@
 //! 3. **执行与缓存**：[`PortDetector`] 跑上面三条命令（带超时、`env_clear` 后补 daemon 的环境、`kill_on_drop`），
 //!    结果缓存 2 秒（多个客户端每 5 秒轮询一次也不会反复起进程）；任何一步失败或命令不存在就降级成
 //!    `detection = unavailable`（只认 `preview.allow_ports`），并记一条 warn（同一原因 10 分钟内只记一次）。
+//!
+//! **Windows** 没有 `lsof` / `ps`，[`SystemRunner`] 直接调系统接口拿同样的三样东西：监听 socket 和所属 pid
+//! （`GetExtendedTcpTable`）、进程关系（Toolhelp 快照）；「进程组」换成 agent 的 Job Object——job 里的进程的 pgid 记成 agent 主进程的
+//! pid（`anycon_adapters::common::proctree::job_members`），归属规则不变。别的进程的工作目录拿不到，规则 2（工作目录）在 Windows 上
+//! 不生效：用户自己在终端里起的 dev server 要写进 `preview.allow_ports` 才能预览。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -188,7 +193,8 @@ pub fn parse_lsof_cwd(out: &str) -> HashMap<u32, PathBuf> {
             'p' => pid = rest.trim().parse().ok(),
             'n' => {
                 if let Some(pid) = pid {
-                    if rest.starts_with('/') && !rest.contains(" (readlink:") && !rest.contains(" (stat:") {
+                    let absolute = rest.starts_with('/') || Path::new(rest).is_absolute();
+                    if absolute && !rest.contains(" (readlink:") && !rest.contains(" (stat:") {
                         m.insert(pid, PathBuf::from(rest));
                     }
                 }
@@ -416,6 +422,11 @@ pub fn local_hub_port(hub_url: Option<&str>) -> Option<u16> {
 pub trait CommandRunner: Send + Sync {
     /// 成功（拿到了输出，不论退出码）返回 stdout；命令不存在、超时、读不了输出返回原因。
     async fn run(&self, program: &str, args: &[String]) -> Result<String, String>;
+
+    /// 不靠命令、直接从系统拿整份探测结果（Windows）。`None`：照常跑命令。
+    async fn native_snapshot(&self) -> Option<Result<Snapshot, String>> {
+        None
+    }
 }
 
 /// 真的起子进程：`env_clear` 后补 daemon 的环境，`kill_on_drop`，3 秒超时，输出有上限。
@@ -464,6 +475,12 @@ impl CommandRunner for SystemRunner {
             // 超时：future 被丢弃，`kill_on_drop` 杀掉子进程
             Err(_) => Err(format!("{program} timed out after {}s", COMMAND_TIMEOUT.as_secs())),
         }
+    }
+
+    #[cfg(windows)]
+    async fn native_snapshot(&self) -> Option<Result<Snapshot, String>> {
+        let snap = tokio::task::spawn_blocking(win::snapshot).await.map_err(|e| format!("port detection failed: {e}"));
+        Some(snap.and_then(|r| r))
     }
 }
 
@@ -534,6 +551,9 @@ impl PortDetector {
     }
 
     async fn detect_with(&self, runner: &dyn CommandRunner) -> Result<Snapshot, String> {
+        if let Some(snap) = runner.native_snapshot().await {
+            return snap;
+        }
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let lsof = runner.run("lsof", &args(&["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"])).await?;
         let listeners = parse_lsof_listeners(&lsof);
@@ -570,6 +590,144 @@ impl PortDetector {
     #[cfg(test)]
     fn warned_recently(&self, why: &str) -> bool {
         self.warned.lock().unwrap().get(why).is_some_and(|at| at.elapsed() < WARN_INTERVAL)
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    //! Windows 的探测：监听 socket（IPv4 / IPv6）、进程表、agent 的 job。
+
+    use std::collections::{HashMap, HashSet};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE, NO_ERROR};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID,
+        MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
+    };
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+
+    use super::{parse_listen_name, Listener, ProcInfo, Snapshot};
+
+    pub(super) fn snapshot() -> Result<Snapshot, String> {
+        let mut procs = processes()?;
+        // job 里的进程（agent 派生的，哪怕父进程链已经断了）的「进程组」是 agent 主进程
+        for (leader, members) in anycon_adapters::common::proctree::job_members() {
+            for pid in members {
+                if let Some(p) = procs.get_mut(&pid) {
+                    p.pgid = leader;
+                }
+            }
+        }
+        let mut listeners = Vec::new();
+        let mut seen = HashSet::new();
+        for (name, pid) in tcp_listeners()? {
+            if let Some(port) = parse_listen_name(&name) {
+                if seen.insert((pid, port)) {
+                    let command = procs.get(&pid).map(|p| p.comm.clone()).unwrap_or_default();
+                    listeners.push(Listener { port, pid, command });
+                }
+            }
+        }
+        Ok(Snapshot { available: true, listeners, procs, cwds: HashMap::new() })
+    }
+
+    /// 所有处于 LISTEN 的 TCP socket：`(lsof 写法的地址, pid)`，如 `127.0.0.1:3000`、`[::]:3000`。
+    fn tcp_listeners() -> Result<Vec<(String, u32)>, String> {
+        let mut out = Vec::new();
+        let v4 = table(AF_INET as u32)?;
+        if v4.len() >= std::mem::size_of::<u32>() {
+            // SAFETY: 成功返回的缓冲开头是 MIB_TCPTABLE_OWNER_PID，后面接着 dwNumEntries 行。
+            unsafe {
+                let t = v4.as_ptr() as *const MIB_TCPTABLE_OWNER_PID;
+                let rows = std::slice::from_raw_parts(
+                    std::ptr::addr_of!((*t).table) as *const MIB_TCPROW_OWNER_PID,
+                    (*t).dwNumEntries as usize,
+                );
+                for r in rows {
+                    let ip = std::net::Ipv4Addr::from(u32::from_be(r.dwLocalAddr));
+                    out.push((format!("{ip}:{}", u16::from_be(r.dwLocalPort as u16)), r.dwOwningPid));
+                }
+            }
+        }
+        let v6 = table(AF_INET6 as u32)?;
+        if v6.len() >= std::mem::size_of::<u32>() {
+            // SAFETY: 同上，IPv6 的表。
+            unsafe {
+                let t = v6.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID;
+                let rows = std::slice::from_raw_parts(
+                    std::ptr::addr_of!((*t).table) as *const MIB_TCP6ROW_OWNER_PID,
+                    (*t).dwNumEntries as usize,
+                );
+                for r in rows {
+                    let ip = std::net::Ipv6Addr::from(r.ucLocalAddr);
+                    out.push((format!("[{ip}]:{}", u16::from_be(r.dwLocalPort as u16)), r.dwOwningPid));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `GetExtendedTcpTable(TCP_TABLE_OWNER_PID_LISTENER)` 的原始缓冲（u32 对齐）。
+    fn table(family: u32) -> Result<Vec<u32>, String> {
+        let mut size = 0u32;
+        for _ in 0..8 {
+            let mut buf = vec![0u32; (size as usize).div_ceil(4).max(1)];
+            // SAFETY: 缓冲长度如实传入；不够时系统把需要的长度写回 `size`。
+            let rc = unsafe {
+                GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut size, 0, family, TCP_TABLE_OWNER_PID_LISTENER, 0)
+            };
+            match rc {
+                NO_ERROR => return Ok(buf),
+                ERROR_INSUFFICIENT_BUFFER => continue,
+                e => return Err(format!("GetExtendedTcpTable failed ({e})")),
+            }
+        }
+        Err("GetExtendedTcpTable: the table kept growing".into())
+    }
+
+    /// 进程表：pid → (父进程, 可执行文件名)。`pgid` 先填 0，由调用方按 job 补上。
+    fn processes() -> Result<HashMap<u32, ProcInfo>, String> {
+        // SAFETY: 参数是常量；失败返回 INVALID_HANDLE_VALUE。
+        let h = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(format!("CreateToolhelp32Snapshot failed: {}", std::io::Error::last_os_error()));
+        }
+        // SAFETY: 刚创建的快照句柄，由 OwnedHandle 负责关闭。
+        let snap = unsafe { OwnedHandle::from_raw_handle(h) };
+        let mut m = HashMap::new();
+        // SAFETY: 全零是合法值；dwSize 必须先设好。
+        let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        // SAFETY: 快照句柄有效，`e` 由调用写入。
+        let mut ok = unsafe { Process32FirstW(snap.as_raw_handle(), &mut e) } != 0;
+        while ok {
+            let len = e.szExeFile.iter().position(|c| *c == 0).unwrap_or(e.szExeFile.len());
+            let comm = String::from_utf16_lossy(&e.szExeFile[..len]);
+            m.insert(e.th32ProcessID, ProcInfo { ppid: e.th32ParentProcessID, pgid: 0, comm });
+            // SAFETY: 同上。
+            ok = unsafe { Process32NextW(snap.as_raw_handle(), &mut e) } != 0;
+        }
+        Ok(m)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn sees_a_listener_of_this_process() {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let snap = snapshot().unwrap();
+            assert!(snap.available);
+            let me = std::process::id();
+            assert!(snap.listeners.iter().any(|x| x.port == port && x.pid == me), "{:?}", snap.listeners);
+            assert!(snap.procs.contains_key(&me));
+        }
     }
 }
 
@@ -1019,6 +1177,8 @@ mod tests {
         assert!(det.warned_recently("lsof is not installed"));
     }
 
+    // 跑的是 `env`：Windows 上只有 Git Bash 带的那个，它自己会补 `HOME`
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_system_runner_clears_the_environment_and_reports_missing_programs() {
         let env: Arc<HashMap<String, String>> = Arc::new(

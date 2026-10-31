@@ -1,5 +1,8 @@
 //! Codex 探测：用假 `codex`（`tests/bin/fake-codex`）回答 `--version`、`login status` 和 `app-server`
 //! （`initialize` / `model/list` / `config/read`）。模型列表是真实 0.157.1 的录制（`tests/fixtures/codex/model_list.json`）。
+//!
+//! 假 CLI（`tests/bin/fake-*`）是带 shebang 的 python 脚本，Windows 上不能直接执行：这个文件只在 unix 上跑。
+#![cfg(unix)]
 
 mod common;
 

@@ -15,7 +15,6 @@
 
 use std::collections::HashSet;
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,6 +27,7 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use crate::config::ConfigStore;
 use crate::gitops::{parse_status_v2, Git, GitOut, StatusV2};
 use crate::store::{Store, WorktreeRow};
+use crate::sys::OwnerOnly;
 use crate::util::{new_worktree_id, now_ms};
 use crate::workspace::{worktree_ready_fresh, Workspace};
 
@@ -172,7 +172,10 @@ pub fn inspect(project_dir: &Path, rel: &str) -> WtCheck {
             return WtCheck::Replaced(format!("{} is not a directory", segs[..=i].join("/")));
         }
         if i + 1 == segs.len() {
-            return WtCheck::Ok { dir: cur, identity: (md.dev(), md.ino()) };
+            let Some(identity) = crate::sys::file_identity(&md, &cur, false) else {
+                return WtCheck::Replaced("cannot be inspected (no file identity)".into());
+            };
+            return WtCheck::Ok { dir: cur, identity };
         }
     }
     WtCheck::Gone
@@ -201,9 +204,11 @@ fn read_git_file(wt_dir: &Path) -> Option<String> {
 }
 
 /// 创建 / 重建时记下的指针：原始内容里项目目录的绝对路径换成 `{project}`，项目改名之后记录仍然有意义。
+/// Git for Windows 在指针里写 `/` 分隔的路径（`gitdir: C:/Users/…`），两种写法都换。
 pub fn read_git_pointer(project_dir: &Path, wt_dir: &Path) -> Option<String> {
     let project = project_dir.to_string_lossy();
-    Some(read_git_file(wt_dir)?.replace(project.as_ref(), "{project}"))
+    let text = read_git_file(wt_dir)?.replace(project.as_ref(), "{project}");
+    Some(if cfg!(windows) { text.replace(&project.replace('\\', "/"), "{project}") } else { text })
 }
 
 /// 指针内容 `gitdir: <路径>` 指向哪里：绝对路径原样，相对路径（git 的 `worktree.useRelativePaths`）按 worktree 目录解析；
@@ -742,7 +747,7 @@ impl WorktreeMgr {
                 Err(e) => return Err(format!("cannot inspect {}: {e}", info.display())),
             }
             let file = info.join("exclude");
-            let existing = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&file) {
+            let existing = match crate::sys::open_no_follow(std::fs::OpenOptions::new().read(true), &file) {
                 Ok(mut f) => {
                     let mut s = String::new();
                     std::io::Read::read_to_string(&mut f, &mut s)
@@ -755,13 +760,11 @@ impl WorktreeMgr {
             if existing.lines().any(|l| l.trim() == EXCLUDE_LINE) {
                 return Ok(());
             }
-            let mut f = std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .mode(0o644)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&file)
-                .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+            let mut f = crate::sys::open_no_follow(
+                std::fs::OpenOptions::new().append(true).create(true).unix_mode(0o644),
+                &file,
+            )
+            .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
             let lead = if existing.is_empty() || existing.ends_with('\n') { "" } else { "\n" };
             f.write_all(format!("{lead}{EXCLUDE_LINE}\n").as_bytes())
                 .map_err(|e| format!("cannot write {}: {e}", file.display()))
@@ -1353,7 +1356,6 @@ fn copy_listed_files(
     max_files: u64,
     max_bytes: u64,
 ) -> (u32, Option<String>) {
-    use std::os::unix::ffi::OsStrExt;
     let (mut files, mut bytes) = (0u64, 0u64);
     let mut made_dirs: HashSet<PathBuf> = HashSet::new();
     let mut note = None;
@@ -1361,7 +1363,7 @@ fn copy_listed_files(
         if raw.is_empty() {
             continue;
         }
-        let rel = Path::new(std::ffi::OsStr::from_bytes(raw));
+        let Some(rel) = crate::sys::path_from_bytes(raw) else { continue };
         let comps: Vec<&std::ffi::OsStr> = rel
             .components()
             .map(|c| match c {
@@ -1403,13 +1405,11 @@ fn copy_listed_files(
             made_dirs.insert(cur.clone());
         }
         let dst = dst_root.join(rel);
-        let Ok(mut out) = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(md.permissions().mode() & 0o777)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&dst)
-        else {
+        let mode = crate::sys::mode_bits(&md);
+        let Ok(mut out) = crate::sys::open_no_follow(
+            std::fs::OpenOptions::new().write(true).create_new(true).unix_mode(mode.unwrap_or(0o644)),
+            &dst,
+        ) else {
             continue;
         };
         if std::io::copy(&mut f, &mut out).is_err() {
@@ -1418,7 +1418,9 @@ fn copy_listed_files(
             continue;
         }
         // umask 可能削掉了权限位：补回源文件的
-        let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(md.permissions().mode() & 0o777));
+        if let Some(m) = mode {
+            let _ = crate::sys::set_mode_bits(&dst, m);
+        }
         files += 1;
         bytes += md.len();
     }
@@ -1545,11 +1547,12 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_worktree_directory_is_verified_segment_by_segment_and_by_identity() {
         use std::os::unix::fs::symlink;
         let d = tempfile::tempdir().unwrap();
-        let project = std::fs::canonicalize(d.path()).unwrap();
+        let project = crate::sys::canonicalize(d.path()).unwrap();
         let rel = ".anycon/worktrees/x";
         assert_eq!(inspect(&project, rel), WtCheck::Gone);
         std::fs::create_dir_all(project.join(rel)).unwrap();
@@ -1595,11 +1598,12 @@ mod tests {
         assert!(matches!(inspect(&project, rel), WtCheck::Replaced(_)));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_include_copier_skips_links_and_special_paths_and_stops_at_the_limits() {
-        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::{symlink, PermissionsExt};
         let d = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(d.path()).unwrap();
+        let root = crate::sys::canonicalize(d.path()).unwrap();
         let (src, dst) = (root.join("src"), root.join("dst"));
         std::fs::create_dir_all(src.join("sub")).unwrap();
         std::fs::create_dir_all(src.join(".anycon/worktrees/other")).unwrap();

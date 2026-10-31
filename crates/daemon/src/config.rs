@@ -56,8 +56,21 @@ impl Paths {
     pub fn peers_json(&self) -> PathBuf {
         self.home.join("peers.json")
     }
+    /// 本机通道（ADR-27）：unix 是 `<home>/daemon.sock`；Windows 是命名管道 `\\.\pipe\anycon-<hash>`，名字由数据目录的规范路径
+    /// （目录还不存在时用绝对路径；不区分大小写、`/` 和 `\` 同等）决定：同一个目录的不同写法（短文件名、大小写、符号链接）
+    /// 得到同一个名字，不同的 `ANYCON_HOME` 不会撞到一起。
     pub fn sock(&self) -> PathBuf {
-        self.home.join("daemon.sock")
+        if cfg!(windows) {
+            use sha2::Digest;
+            let abs = crate::sys::canonicalize(&self.home)
+                .or_else(|_| std::path::absolute(&self.home))
+                .unwrap_or_else(|_| self.home.clone());
+            let key = abs.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+            let digest = sha2::Sha256::digest(key.as_bytes());
+            PathBuf::from(format!(r"\\.\pipe\anycon-{}", hex::encode(&digest[..8])))
+        } else {
+            self.home.join("daemon.sock")
+        }
     }
     pub fn lock(&self) -> PathBuf {
         self.home.join("daemon.lock")
@@ -531,7 +544,7 @@ impl Config {
     }
 }
 
-/// `workspace.link_roots` 的一项：绝对路径，或 `~` / `~/…`（不支持 `~user`），不含 NUL / 控制字符。
+/// `workspace.link_roots` 的一项：绝对路径，或 `~` / `~/…`（Windows 上 `~\…` 也行；不支持 `~user`），不含 NUL / 控制字符。
 fn validate_link_root(r: &str) -> Result<(), String> {
     if r.is_empty() {
         return Err("an entry is empty".into());
@@ -539,26 +552,18 @@ fn validate_link_root(r: &str) -> Result<(), String> {
     if r.len() > 4096 || r.chars().any(|c| c.is_control()) {
         return Err(format!("{r:?} is too long or contains control characters"));
     }
-    if r == "~" || r.starts_with("~/") || r.starts_with('/') {
+    if r == "~" || r.starts_with("~/") || (cfg!(windows) && r.starts_with("~\\")) || Path::new(r).is_absolute() {
         return Ok(());
     }
     Err(format!("{r:?} must be an absolute path, `~` or `~/…`"))
 }
 
-/// 主机名（`hostname` 命令；失败退回 `anycon-node`）。
+/// 主机名（系统调用，不起子进程；失败退回 `anycon-node`）。
 pub fn hostname() -> String {
-    // libc::gethostname：避免起子进程
-    let mut buf = [0u8; 256];
-    // SAFETY: buf 足够大，gethostname 只写入 buf。
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-    if rc == 0 {
-        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-        let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
-        if !name.is_empty() {
-            return name.trim_end_matches(".local").to_string();
-        }
+    match crate::sys::hostname() {
+        Some(name) if !name.trim().is_empty() => name.trim().trim_end_matches(".local").to_string(),
+        _ => "anycon-node".into(),
     }
-    "anycon-node".into()
 }
 
 /// 配置的共享句柄：读最新值、订阅变化、热加载。
@@ -649,29 +654,28 @@ pub fn get_value(cfg: &Config, key: &str) -> Option<serde_json::Value> {
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// `<home>/config.toml.lock` 上的 `flock`，drop 时释放。最多等 10 秒。
+/// `<home>/config.toml.lock` 上的文件锁（unix `flock`，Windows `LockFileEx`），drop 时释放。最多等 10 秒。
 struct ConfigFileLock {
     _file: std::fs::File,
 }
 
 impl ConfigFileLock {
     fn acquire(home: &Path) -> Result<Self, ConfigError> {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::fs::OpenOptionsExt;
+        use crate::sys::OwnerOnly;
         std::fs::create_dir_all(home)?;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .mode(0o600)
+            .owner_only()
             .open(home.join("config.toml.lock"))?;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            // SAFETY: flock 只操作我们刚打开的 fd。
-            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-            if rc == 0 {
-                return Ok(ConfigFileLock { _file: file });
+            match file.try_lock() {
+                Ok(()) => return Ok(ConfigFileLock { _file: file }),
+                Err(std::fs::TryLockError::WouldBlock) => {}
+                Err(std::fs::TryLockError::Error(e)) => return Err(ConfigError::Io(e)),
             }
             if std::time::Instant::now() >= deadline {
                 return Err(ConfigError::Io(std::io::Error::new(
@@ -686,12 +690,12 @@ impl ConfigFileLock {
 
 /// 写一个唯一文件名的 0600 临时文件（同目录，便于 rename 原子替换）。
 fn write_unique_private(dir: &Path, stem: &str, content: &str) -> std::io::Result<PathBuf> {
+    use crate::sys::OwnerOnly;
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(dir)?;
     let n = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let p = dir.join(format!("{stem}.{}.{n}.tmp", std::process::id()));
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&p)?;
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).owner_only().open(&p)?;
     f.write_all(content.as_bytes())?;
     f.sync_all()?;
     Ok(p)
@@ -1175,7 +1179,6 @@ dangerous_modes = ["yolo"]
 
     #[test]
     fn concurrent_set_value_calls_lose_no_updates_and_the_file_stays_private() {
-        use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let paths = Paths::new(d.path());
         write(d.path(), "[agents.claude-code]\nenabled = true\n");
@@ -1200,8 +1203,8 @@ dangerous_modes = ["yolo"]
             );
         }
         // 重写之后仍然是 0600（里面可能有 API key），也没有遗留临时文件
-        let mode = std::fs::metadata(paths.config_toml()).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        let mode = crate::sys::mode_bits(&std::fs::metadata(paths.config_toml()).unwrap());
+        assert!(mode.is_none_or(|m| m == 0o600), "{mode:?}");
         let leftovers: Vec<_> = std::fs::read_dir(d.path())
             .unwrap()
             .flatten()
@@ -1301,15 +1304,16 @@ dangerous_modes = ["yolo"]
         let d = tempfile::tempdir().unwrap();
         let paths = Paths::new(d.path());
         assert_eq!(Config::load(&paths).unwrap().workspace.link_roots, vec!["~".to_string()]);
-        // `anycon config set workspace.link_roots '["/abs/path"]'`：值按 TOML 数组解析
-        set_value(&paths, "workspace.link_roots", "[\"/abs/path\", \"~/work\", \"~\"]").unwrap();
+        // `anycon config set workspace.link_roots '["/abs/path"]'`：值按 TOML 数组解析（Windows 上绝对路径要带盘符）
+        let abs = if cfg!(windows) { "C:/abs/path" } else { "/abs/path" };
+        set_value(&paths, "workspace.link_roots", &format!("[\"{abs}\", \"~/work\", \"~\"]")).unwrap();
         assert_eq!(
             Config::load(&paths).unwrap().workspace.link_roots,
-            vec!["/abs/path".to_string(), "~/work".to_string(), "~".to_string()]
+            vec![abs.to_string(), "~/work".to_string(), "~".to_string()]
         );
         assert_eq!(
             get_value(&Config::load(&paths).unwrap(), "workspace.link_roots"),
-            Some(serde_json::json!(["/abs/path", "~/work", "~"]))
+            Some(serde_json::json!([abs, "~/work", "~"]))
         );
         set_value(&paths, "workspace.link_roots", "[]").unwrap();
         assert!(Config::load(&paths).unwrap().workspace.link_roots.is_empty());

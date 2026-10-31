@@ -2,13 +2,17 @@
 //!
 //! launchd / systemd 起的 daemon 没有用户 shell 的 `PATH`。启动时用 `$SHELL -ilc 'printenv -0'` 取登录 shell 的环境
 //! （15 秒超时，失败再试 `-lc`，都失败退回进程自身环境），剔除 `ENV_STRIP`，再叠加配置里的 `agents.env` / `agents.<id>.env`。
+//!
+//! Windows 上没有登录 shell 这回事：用户的环境变量在注册表里，进程（包括由计划任务拉起的 daemon）启动时就拿到了，直接用进程环境。
+//! Windows 的变量名不区分大小写，表里的键统一按 [`anycon_agent_api::env_key_canonical`] 存（大写），叠加配置时同名变量互相覆盖，
+//! 不会以两种写法并存。
 
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anycon_agent_api::ENV_STRIP;
+use anycon_agent_api::{env_key_canonical, ENV_STRIP};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
@@ -53,11 +57,11 @@ impl DaemonEnv {
     pub fn for_agent(&self, cfg: &Config, agent_id: &str) -> Arc<HashMap<String, String>> {
         let mut m: HashMap<String, String> = (*self.base).clone();
         for (k, v) in &cfg.agents.env {
-            m.insert(k.clone(), v.clone());
+            m.insert(env_key_canonical(k).into_owned(), v.clone());
         }
         if let Some(a) = cfg.adapter_config(agent_id) {
             for (k, v) in &a.env {
-                m.insert(k.clone(), v.clone());
+                m.insert(env_key_canonical(k).into_owned(), v.clone());
             }
         }
         Arc::new(m)
@@ -90,15 +94,17 @@ impl DaemonEnv {
                 tracing::warn!(key = %k, "dropping a session env variable that is not allowed");
                 continue;
             }
-            m.insert(k.clone(), v.clone());
+            m.insert(env_key_canonical(k).into_owned(), v.clone());
         }
         Arc::new(m)
     }
 }
 
-/// 运维是否在配置里设置过这个环境变量（`agents.env` 或 `agents.<id>.env`）。
+/// 运维是否在配置里设置过这个环境变量（`agents.env` 或 `agents.<id>.env`；Windows 上不区分大小写）。
 fn operator_sets(cfg: &Config, agent_id: &str, key: &str) -> bool {
-    cfg.agents.env.contains_key(key) || cfg.adapter_config(agent_id).is_some_and(|a| a.env.contains_key(key))
+    let key = env_key_canonical(key);
+    let sets = |env: &HashMap<String, String>| env.keys().any(|k| env_key_canonical(k) == key);
+    sets(&cfg.agents.env) || cfg.adapter_config(agent_id).is_some_and(|a| sets(&a.env))
 }
 
 /// 会话 env 最多这么多个、键值最长这么长。
@@ -170,6 +176,11 @@ pub fn parse_printenv0(raw: &[u8]) -> HashMap<String, String> {
     out
 }
 
+/// 环境变量表，键按 [`env_key_canonical`] 规范化（Windows 上统一大写）。
+pub fn canonical_env(vars: impl IntoIterator<Item = (String, String)>) -> HashMap<String, String> {
+    vars.into_iter().map(|(k, v)| (env_key_canonical(&k).into_owned(), v)).collect()
+}
+
 /// 剔除 `ENV_STRIP`（「我正在某个 agent 会话里」的标记）。**整个系统里只有这一处**剥离：adapters 不再自己剥，
 /// 它们拿到的环境（探测和拉起都一样）已经是干净的。
 fn strip(mut m: HashMap<String, String>) -> HashMap<String, String> {
@@ -210,9 +221,18 @@ async fn run_shell(shell: &str, flags: &str, timeout: Duration) -> Result<HashMa
     }
 }
 
-/// 解析 daemon 环境。`use_login_shell = false` 时直接用进程环境。
+/// 解析 daemon 环境。`use_login_shell = false` 时（以及在 Windows 上）直接用进程环境。
 pub async fn resolve(use_login_shell: bool, timeout: Duration) -> DaemonEnv {
-    let process_env: HashMap<String, String> = std::env::vars().collect();
+    let process_env = canonical_env(std::env::vars());
+    if cfg!(windows) {
+        // 从 Git Bash 里启动时 `SHELL` 是 `/usr/bin/bash` 这种 MSYS 路径，不能拿来用
+        return DaemonEnv {
+            base: Arc::new(strip(process_env)),
+            source: EnvSource::Process,
+            shell: None,
+            warning: None,
+        };
+    }
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty());
     if !use_login_shell {
         return DaemonEnv { base: Arc::new(strip(process_env)), source: EnvSource::Process, shell, warning: None };
@@ -263,9 +283,10 @@ pub async fn resolve(use_login_shell: bool, timeout: Duration) -> DaemonEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     fn fake_shell(dir: &std::path::Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
         let p = dir.join(name);
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -284,6 +305,7 @@ mod tests {
     }
 
     // 注意：这些测试会改进程环境变量 SHELL，所以放在同一个测试里顺序执行。
+    #[cfg(unix)]
     #[tokio::test]
     async fn login_shell_resolution_and_fallbacks() {
         let d = tempfile::tempdir().unwrap();
@@ -333,6 +355,21 @@ mod tests {
         assert_eq!(e.source, EnvSource::Process);
     }
 
+    /// Windows：不跑登录 shell，进程环境的键统一成大写；配置里换个大小写写的同名变量覆盖它，而不是并存。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_uses_the_process_environment_with_canonical_keys() {
+        let env = resolve(true, Duration::from_secs(1)).await;
+        assert_eq!(env.source, EnvSource::Process);
+        assert!(env.base.contains_key("PATH"), "the Windows `Path` is stored as `PATH`");
+        assert!(env.base.keys().all(|k| !k.bytes().any(|b| b.is_ascii_lowercase())));
+        let mut cfg = Config::default();
+        cfg.agents.env.insert("Path".into(), r"C:\tools".into());
+        let m = env.for_agent(&cfg, "x");
+        assert_eq!(m["PATH"], r"C:\tools");
+        assert!(!m.contains_key("Path"));
+    }
+
     #[test]
     fn layering_and_session_env_rules() {
         let base: HashMap<String, String> =
@@ -370,7 +407,10 @@ mod tests {
         assert_eq!(env.for_session(&cfg, "x", &sess)["FOO"], "bar");
         let feature: BTreeMap<String, String> = [("FEATURE_X".to_string(), "1".to_string())].into();
         assert!(validate_session_env(&cfg, "x", &feature).is_ok());
-        for k in ["OTHER", "FOO2", "feature_x", "FEATURE"] {
+        // Windows 的变量名不区分大小写：`feature_x` 就是 `FEATURE_X`，在允许列表里
+        let rejected: &[&str] =
+            if cfg!(windows) { &["OTHER", "FOO2", "FEATURE"] } else { &["OTHER", "FOO2", "feature_x", "FEATURE"] };
+        for k in rejected {
             let e: BTreeMap<String, String> = [(k.to_string(), "v".to_string())].into();
             let (field, reason) = validate_session_env(&cfg, "x", &e).unwrap_err();
             assert_eq!(field, format!("env.{k}"));

@@ -313,6 +313,8 @@ async fn session_workflow_with_the_mock_agent() {
 }
 
 #[cfg(unix)]
+// 要给子进程发 SIGINT（Windows 上没有只发给一个进程的 Ctrl+C）
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ctrl_c_detaches_without_cancelling() {
     use std::process::Stdio;
@@ -430,13 +432,13 @@ async fn history_gives_up_when_the_node_claims_more_pages_but_sends_nothing_new(
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join("config.toml"), "").unwrap();
     // 假 daemon：session.history 永远回 `has_more: true` 和一页空事件
-    let listener = tokio::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
+    let mut listener = anycon_daemon::local::bind(&anycon_daemon::config::Paths::new(&home).sock()).unwrap();
     let server = tokio::spawn(async move {
         loop {
-            let Ok((s, _)) = listener.accept().await else { return };
+            let Ok(s) = listener.accept().await else { return };
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
-                let (r, mut w) = s.into_split();
+                let (r, mut w) = tokio::io::split(s);
                 let mut lines = BufReader::new(r).lines();
                 while let Ok(Some(l)) = lines.next_line().await {
                     let v: serde_json::Value = serde_json::from_str(&l).unwrap();

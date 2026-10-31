@@ -345,6 +345,8 @@
 
 **否掉**：CLI 永远经 hub；daemon 开本机 HTTP 端口（要处理 token，且暴露面更大）。
 
+**补充（ADR-42）**：Windows 上同一个通道是命名管道 `\\.\pipe\anycon-<hash>`，权限靠管道的属主和 DACL（只有当前用户），不靠文件权限位；客户端连上之后先核对管道属主是不是自己。
+
 ---
 
 ## ADR-28 会话事件只发给 watcher
@@ -875,3 +877,48 @@ ADR-1 拆成两层来看：
 - 一条 500 个 agent、每个带 4 KiB 错误的快照最坏约 2 MB，靠 1 秒节流、历史分页里「单个事件单独成页」和传输层分片兜住；超过 500 个 agent 的 workflow 在界面上显示不全
 - `notice` 的 `code` 是开放集合，客户端要为不认识的 `code` 准备兜底显示
 - 进程退出时补的 `cancelled` 快照里，`agents[]` 的状态保持原样（`running` 的 agent 仍写 `running`），客户端按任务的终态显示
+
+---
+
+## ADR-42 Windows：命名管道、Job Object、计划任务
+
+**背景**：`anycon`（daemon + CLI）原先只支持 macOS 和 Linux，平台相关的地方都按 unix 写：本机通道是 Unix socket（ADR-27），agent 和它派生的进程按进程组清理（`killpg`），数据目录靠权限位 0700 / 0600，单实例锁是 `flock`，打开文件防「检查之后被换成符号链接」靠逐段 `openat`，daemon 的环境取自登录 shell（daemon.md § 5.5），预览的端口归属靠 `lsof` / `ps`，服务交给 launchd / systemd。hub 只发 Linux 镜像，不在这次范围里，但 CLI 的集成测试在进程内起 hub，所以它也要能在 Windows 上编译和测试。
+
+**决定**（平台差异集中在 `crates/daemon/src/sys.rs`、`local.rs`、`fsopen.rs`，`crates/adapters/src/common/proctree.rs`，`crates/cli/src/service.rs`，`crates/windows-launcher`）：
+
+1. **本机通道**：命名管道 `\\.\pipe\anycon-<数据目录规范路径（不区分大小写）的 sha256 前 8 字节>`，协议不变（每行一条 JSON-RPC）。管道的属主是当前用户，DACL 只允许当前用户，拒绝远程客户端；第一个实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`，名字已被占用时 daemon 起不来。管道名字是全局的，别的本机用户可以抢先建一个同名管道，所以客户端连上之后核对管道对象的属主 SID 是当前用户，不是就断开
+2. **进程树**：每个子进程放进一个 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，清理 = `TerminateJobObject`；最后一个句柄关闭时系统清掉 job 里剩下的进程，daemon 崩溃也不留孤儿。子进程带 `CREATE_NO_WINDOW`，有自己看不见的控制台、不和 daemon 共享（相当于 unix 上的独立进程组）。Windows 没有只发给一个进程的 SIGINT：优雅关闭是关 stdin → 等 → 终止整个 job；取消没有回应时的兜底是终止进程树（会话下次按 resume 接上）
+3. **数据目录**：`~/.anycon`（`USERPROFILE` 下）在 `anycon init` 和 daemon 启动时设一份受保护的 DACL（当前用户、SYSTEM、Administrators，带继承），里面新建的文件继承它；`write_private` 写的文件另外显式设一次。单实例锁和 `config.toml.lock` 用标准库的文件锁（Windows 上是 `LockFileEx`）
+4. **安全打开文件**：Windows 没有 `openat`。按完整路径打开，最后一段不跟随重解析点，然后对**句柄**复核：是符号链接 / junction 就算越界；`GetFinalPathNameByHandleW` 给的真实路径不在边界之内也算越界。目录用打开的句柄枚举（`GetFileInformationByHandleEx`）。路径一律用不带 `\\?\` 前缀的规范写法（`dunce`），交给 git、agent 和客户端的也是它
+5. **环境**：不跑登录 shell，直接用进程环境（用户的环境变量在注册表里，进程启动时就拿到了）。变量名不区分大小写：环境表里的键统一大写，会话 env 的保护名单、黑名单、允许列表都按不区分大小写比较（否则 `path` 会绕过对 `PATH` 的保护）；保护名单加上 Windows 的 `USERPROFILE`、`APPDATA`、`SYSTEMROOT`、`TEMP` 等，黑名单加上 `COMSPEC`、`PATHEXT`、`PSMODULEPATH`
+6. **关联目录的拒绝表**：Windows 的系统目录（按 `SystemRoot`、`ProgramFiles`、`ProgramData` 等定位）和 home 下的 `AppData`（自启动目录单列为更深的一项）、PowerShell 的配置目录、`scoop`；文件系统根是每个盘符的根和 UNC 共享的根；没有 `/var` 这类系统别名
+7. **预览的端口探测**：直接调系统接口——监听 socket 和所属 pid（`GetExtendedTcpTable`）、进程表（Toolhelp）；「进程组」换成 agent 的 job（job 里的进程归属 agent 主进程）。拿不到别的进程的工作目录，按工作目录归属的规则不生效
+8. **服务**：当前用户的计划任务 `anycon`：登录时启动、失败后每分钟重试、不限运行时长、用电池时照常运行，以登录用户的交互令牌运行，不需要管理员权限。任务拉起 `anyconw.exe`——一个 GUI 子系统的小启动器（没有控制台），它用 `CREATE_NO_WINDOW` 运行同目录的 `anycon.exe daemon`，并把它放进 `KILL_ON_JOB_CLOSE` 的 job（启动器被结束时 daemon 跟着结束）。计划任务设不了环境变量，非默认的数据目录用隐藏参数 `daemon --home` 传。`service stop` 先触发命名事件 `Local\anycon-stop-<hash>`（DACL 只允许当前用户）让 daemon 优雅退出，等不到再 `schtasks /End`
+9. **发布**：`x86_64-pc-windows-msvc` 在原生 Windows runner 上构建，zip 里有 `anycon.exe` 和 `anyconw.exe`；安装脚本 `packaging/install.ps1`（校验 sha256、装到 `%LOCALAPPDATA%\Programs\anycon\bin`、加进用户 PATH、不要管理员权限）。CI 加一个 Windows job 跑 clippy 和全部测试；依赖 sh 脚本、伪终端或 unix 权限位的测试用 `cfg(unix)` 跳过
+
+**原因**：
+
+- 命名管道是 Windows 上本机 IPC 的惯用做法，tokio 直接支持；访问控制靠对象的 DACL，和「socket 权限就是认证」是同一个思路。AF_UNIX 在 Windows 10 1803 之后也有，但 tokio 不支持、权限也不按文件 ACL 走
+- 属主核对：Unix socket 放在 0700 的数据目录里，别的用户碰不到那个路径；命名管道没有这层保护，`passwd` 之类的请求会把口令发给抢先建管道的人
+- Job Object 是 Windows 上唯一能可靠清掉整棵进程树的办法（不会给孤儿换父进程，按父进程链找会漏），按句柄寻址也没有 pid 复用的问题；同一个 job 正好替代预览归属里的进程组
+- 启动器单独一个二进制：Windows 上一个可执行文件要么是控制台程序要么是 GUI 程序，CLI 必须是控制台程序（否则 shell 不等它结束）。计划任务直接运行控制台程序会弹出一个窗口，关掉它 daemon 就停了；daemon 自己 `FreeConsole` 也会闪一下窗口，而且之后它起的每个控制台子进程都会各弹一个窗口。启动器让 daemon 从一开始就有一个看不见的控制台，它的子进程沿用这个控制台
+- 计划任务而不是 Windows 服务：Windows 服务要管理员权限安装，以 SYSTEM 或存了密码的账号运行，拿不到用户的凭据（agent 要用）；注册表的 Run 键不能失败重启。`S4U`（「不管用户是否登录都运行」）同样拿不到用户的凭据
+- 停止事件而不是控制台的 Ctrl+Break：daemon 的控制台是隐藏的，往别的进程的控制台发事件要先脱离自己的控制台再附加过去，CLI 自己的输出会受影响
+
+**否掉**：
+
+- Windows 上用本机 TCP 端口 + token：暴露面更大，要管 token（ADR-27 否掉过）
+- AF_UNIX socket：见上
+- Windows 服务（SCM）、注册表 Run 键、`S4U` 计划任务：见上
+- `conhost.exe --headless` 拉起 daemon：没有文档，不同 Windows 版本行为不一定
+- 让 `anycon.exe` 本身成为 GUI 子系统程序再 `AttachConsole`：交互命令（`passwd`、`attach`）在 shell 里没法用
+- 读别的进程的 PEB 拿工作目录：要 `ReadProcessMemory` 和未公开的结构，不值得
+
+**代价 / 限制**：
+
+- `spawn` 和把子进程放进 job 之间有一个很短的窗口，子进程在这期间派生的进程不在 job 里（标准库不提供「挂起创建 → 放进 job → 恢复」）
+- 预览的端口归属在 Windows 上只有进程树 / job 这一条；用户在终端里自己起的 dev server 要写进 `preview.allow_ports`
+- 只发 x64；Windows on Arm 用 x64 版（系统自带的模拟）。最低 Windows 10 1809 / Server 2019
+- 二进制没有 Authenticode 签名：浏览器下载会触发 SmartScreen 提示，`install.ps1` 下载的不受影响
+- `schtasks` 的输出按系统语言本地化，`service status` 不解析它：「已注册」看退出码，「在跑」看本机通道连不连得上
+- 测试：依赖 sh 脚本的假 CLI / 假 `gh` / 慢 git、伪终端和 unix 权限位的测试只在 unix 上跑，对应的 Windows 行为由各模块的 Windows 单元测试覆盖

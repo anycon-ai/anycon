@@ -101,10 +101,7 @@ async fn first_pairing_issues_a_device_token_and_then_ik_rpc_works() {
     );
     let token = td.ctx.identity.device_token().unwrap();
     assert_eq!(std::fs::read_to_string(td.paths.device_token()).unwrap().trim(), token);
-    let mode =
-        std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(td.paths.device_token()).unwrap().permissions())
-            & 0o777;
-    assert_eq!(mode, 0o600);
+    anycon_daemon::testutil::assert_mode(&td.paths.device_token(), 0o600);
     let node_id = web.node_id.clone().unwrap();
     assert_eq!(
         td.ctx.identity.device_id().as_deref(),

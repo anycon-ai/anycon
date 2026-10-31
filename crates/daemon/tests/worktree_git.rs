@@ -1,5 +1,8 @@
 //! `session.git_status` / `session.diff` / `session.sync_base`（daemon.md § 10.1）：真实 `git`，「远端」是本地裸仓库，
 //! `gh` 是 PATH 里的假脚本。
+//!
+//! 这些测试用到假 `gh`（sh 脚本）和 unix 的权限位，只在 unix 上跑。
+#![cfg(unix)]
 
 mod common;
 

@@ -67,7 +67,7 @@ hub **不**做：解析消息内容、存会话历史、存附件、搜索、运
 | adapter | 拉起 agent 进程，把 agent 的事件流翻译成协议事件，把用户输入和权限答复送回去 |
 | 审计 | 本地记录谁通过哪个设备做了什么 |
 | 预览 | 给已配对设备签发预览票据；接受预览页的 Noise 隧道，把里面的 HTTP / WebSocket 转给本机允许的端口（[spec/daemon.md § 19](spec/daemon.md#19-预览)） |
-| 服务 | `anycon service install` 注册 launchd / systemd |
+| 服务 | `anycon service install` 注册 launchd / systemd / Windows 计划任务（[ADR-42](decisions.md#adr-42-windows命名管道job-object计划任务)） |
 
 ### 2.3 客户端
 
@@ -200,7 +200,7 @@ hub 这边：
 
 每个 daemon 和每个客户端设备各有一对 Noise 静态密钥（X25519）。
 
-- daemon：存在数据目录，文件权限 0600
+- daemon：存在数据目录，文件权限 0600（Windows 没有权限位：数据目录设受保护的 DACL，只有当前用户、SYSTEM 和 Administrators 能访问，文件继承它）
 - Web：IndexedDB，按 origin 隔离（见 § 3.3）
 - CLI / SDK：各自的配置目录
 
@@ -358,7 +358,7 @@ ADR-34：git 项目里新建会话时可以选「新 worktree」，daemon 在项
 
 ### 6.4 fs watch
 
-只 watch 根目录这一层，只关心项目的增删改名。不监听项目内部——`node_modules`、`.git/objects` 会产生海量事件。macOS 用 FSEvents，Linux 用 inotify，通过 `notify` crate 统一。
+只 watch 根目录这一层，只关心项目的增删改名。不监听项目内部——`node_modules`、`.git/objects` 会产生海量事件。macOS 用 FSEvents，Linux 用 inotify，Windows 用 `ReadDirectoryChangesW`，通过 `notify` crate 统一。
 
 ## 7. 会话与 adapter
 

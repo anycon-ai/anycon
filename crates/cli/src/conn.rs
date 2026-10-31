@@ -1,4 +1,5 @@
-//! 到 daemon 的 JSON-RPC 连接：本机 Unix socket（明文换行分隔）或经 hub 的 Noise 通道（见 `remote.rs`）。
+//! 到 daemon 的 JSON-RPC 连接：本机通道（Unix socket / Windows 命名管道，明文换行分隔，`anycon_daemon::local`）
+//! 或经 hub 的 Noise 通道（见 `remote.rs`）。
 //! 对命令层是同一个接口：`call` 发请求等响应，`notifications` 收 D→C 通知。
 //!
 //! - 本机 socket 的读由**独立的读任务**完成（`read_until` 不可取消，所以绝不放进 `select!`），解析好的消息经 channel 交给
@@ -11,12 +12,12 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use anycon_daemon::local::ClientStream;
 use anycon_protocol::{RpcError, RpcId, RpcMessage, RpcNotification};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{CliError, Result, EXIT_OFFLINE};
@@ -110,7 +111,7 @@ impl Conn {
 
 /// 读任务：一行一行读，解析成消息交给驱动循环。读任务自己不参与 `select!`，所以不会丢半行数据。
 /// 文件结束 / 出错 / 行超长时发 `None` 并退出。
-async fn read_task(r: tokio::net::unix::OwnedReadHalf, out: mpsc::UnboundedSender<Option<RpcMessage>>) {
+async fn read_task(r: ReadHalf<ClientStream>, out: mpsc::UnboundedSender<Option<RpcMessage>>) {
     let mut reader = BufReader::new(r);
     let mut buf = Vec::new();
     loop {
@@ -141,7 +142,7 @@ async fn read_task(r: tokio::net::unix::OwnedReadHalf, out: mpsc::UnboundedSende
 /// 连本机 daemon 的 socket。socket 不存在 / 连不上时按是否已初始化区分错误。
 pub async fn connect_local(home: &Path) -> Result<Conn> {
     let paths = anycon_daemon::config::Paths::new(home);
-    let stream = match UnixStream::connect(paths.sock()).await {
+    let stream = match anycon_daemon::local::connect(&paths.sock()).await {
         Ok(s) => s,
         Err(e) => {
             if !paths.config_toml().exists() {
@@ -155,7 +156,7 @@ pub async fn connect_local(home: &Path) -> Result<Conn> {
             )));
         }
     };
-    let (r, mut w) = stream.into_split();
+    let (r, mut w) = tokio::io::split(stream);
     let (req_tx, mut req_rx) = mpsc::unbounded_channel::<Req>();
     let (note_tx, note_rx) = mpsc::unbounded_channel::<RpcNotification>();
     let (line_tx, mut line_rx) = mpsc::unbounded_channel::<Option<RpcMessage>>();
@@ -203,19 +204,19 @@ pub async fn connect_local(home: &Path) -> Result<Conn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anycon_daemon::local::Listener;
     use tokio::io::AsyncWriteExt;
-    use tokio::net::UnixListener;
 
-    fn setup() -> (tempfile::TempDir, UnixListener) {
+    fn setup() -> (tempfile::TempDir, Listener) {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("config.toml"), "").unwrap();
-        let l = UnixListener::bind(d.path().join("daemon.sock")).unwrap();
+        let l = anycon_daemon::local::bind(&anycon_daemon::config::Paths::new(d.path()).sock()).unwrap();
         (d, l)
     }
 
     #[tokio::test]
     async fn a_request_sent_while_a_long_notification_is_half_read_loses_nothing() {
-        let (d, listener) = setup();
+        let (d, mut listener) = setup();
         let big = "n".repeat(3_000_000);
         let note = RpcMessage::Notification(RpcNotification {
             jsonrpc: "2.0".into(),
@@ -225,8 +226,8 @@ mod tests {
         let mut line = note.encode();
         line.push(b'\n');
         let server = tokio::spawn(async move {
-            let (s, _) = listener.accept().await.unwrap();
-            let (r, mut w) = s.into_split();
+            let s = listener.accept().await.unwrap();
+            let (r, mut w) = tokio::io::split(s);
             // 先写半条通知，等一会儿（这时客户端会发出请求），再写后半条和响应
             let half = line.len() / 2;
             w.write_all(&line[..half]).await.unwrap();
@@ -260,11 +261,11 @@ mod tests {
 
     #[tokio::test]
     async fn requests_time_out_instead_of_hanging_and_a_lost_connection_says_why() {
-        let (d, listener) = setup();
+        let (d, mut listener) = setup();
         let server = tokio::spawn(async move {
-            let (s, _) = listener.accept().await.unwrap();
+            let s = listener.accept().await.unwrap();
             // 收下请求但永远不答复，然后（第二个请求时）关掉连接
-            let (r, w) = s.into_split();
+            let (r, w) = tokio::io::split(s);
             let mut reader = BufReader::new(r);
             let mut line = String::new();
             reader.read_line(&mut line).await.unwrap();

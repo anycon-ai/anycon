@@ -228,7 +228,7 @@ async fn archive_with_the_directory_gone_or_replaced_never_touches_what_is_there
     std::fs::create_dir_all(&precious).unwrap();
     std::fs::write(precious.join("keep.txt"), "keep me").unwrap();
     f.td.git(&f.repo, &["worktree", "remove", "--force", ld.to_str().unwrap()]);
-    std::os::unix::fs::symlink(&precious, &ld).unwrap();
+    anycon_daemon::testutil::symlink_dir(&precious, &ld).unwrap();
     // 目录不在了：照常 `removed`；被换成别的东西的：磁盘一概不动，**也不能说它被删了**——记录保持 `missing`，事件说明目录没动
     archive(&mut f, &gone.id, Some("remove")).await.unwrap();
     assert_eq!(f.get(&gone.id).await.worktree.unwrap().state, WorktreeState::Removed);
@@ -275,7 +275,10 @@ async fn unarchive_rebuilds_a_removed_worktree_from_its_branch_and_sessions_work
     f.send(&s.id, "continue working").await.unwrap();
     f.wait_status(&s.id, SessionStatus::Idle).await;
     let spawns = f.td.fake.spawns.lock().unwrap().clone();
-    assert_eq!(std::fs::canonicalize(&spawns.last().unwrap().cwd).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert_eq!(
+        anycon_daemon::sys::canonicalize(&spawns.last().unwrap().cwd).unwrap(),
+        anycon_daemon::sys::canonicalize(&dir).unwrap()
+    );
     f.td.shutdown().await;
 }
 
@@ -341,7 +344,7 @@ async fn a_failed_rebuild_on_unarchive_keeps_the_session_archived() {
     std::fs::remove_dir_all(f.repo.join(".anycon")).unwrap();
     let elsewhere = f.td.dir.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, f.repo.join(".anycon")).unwrap();
+    anycon_daemon::testutil::symlink_dir(&elsewhere, &f.repo.join(".anycon")).unwrap();
     let e = unarchive(&mut f, &s.id).await.unwrap_err();
     assert_eq!(code(&e), ErrorCode::Internal);
     assert!(e.message.contains("symbolic link"), "{}", e.message);
@@ -350,7 +353,7 @@ async fn a_failed_rebuild_on_unarchive_keeps_the_session_archived() {
     assert_eq!(after.worktree.unwrap().state, WorktreeState::Removed);
     assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none());
     // 修好之后再来
-    std::fs::remove_file(f.repo.join(".anycon")).unwrap();
+    anycon_daemon::testutil::remove_link(&f.repo.join(".anycon")).unwrap();
     unarchive(&mut f, &s.id).await.unwrap();
     assert_eq!(f.get(&s.id).await.worktree.unwrap().state, WorktreeState::Active);
     f.td.shutdown().await;
@@ -476,7 +479,10 @@ async fn a_deleted_worktree_directory_is_noticed_and_rebuilt_on_the_next_send() 
     assert!(!dir.join("uncommitted.txt").exists());
     assert_eq!(f.git_actions(&s.id).await.iter().filter(|a| **a == GitAction::WorktreeRestored).count(), 1);
     let spawns = f.td.fake.spawns.lock().unwrap().clone();
-    assert_eq!(std::fs::canonicalize(&spawns.last().unwrap().cwd).unwrap(), std::fs::canonicalize(&dir).unwrap());
+    assert_eq!(
+        anycon_daemon::sys::canonicalize(&spawns.last().unwrap().cwd).unwrap(),
+        anycon_daemon::sys::canonicalize(&dir).unwrap()
+    );
     // 新目录是新身份：再次复核通过
     f.send(&s.id, "third try").await.unwrap();
     f.wait_status(&s.id, SessionStatus::Idle).await;
@@ -517,7 +523,7 @@ async fn a_replaced_worktree_directory_is_never_rebuilt_over_and_never_followed(
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::fs::write(elsewhere.join("secret.txt"), "outside").unwrap();
     f.td.git(&f.repo, &["worktree", "remove", "--force", dir.to_str().unwrap()]);
-    std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+    anycon_daemon::testutil::symlink_dir(&elsewhere, &dir).unwrap();
     f.wait_wt_state(&s.id, WorktreeState::Missing).await;
     for _ in 0..2 {
         f.send(&s.id, "try anyway").await.unwrap();
@@ -533,7 +539,7 @@ async fn a_replaced_worktree_directory_is_never_rebuilt_over_and_never_followed(
     assert!(std::fs::symlink_metadata(&dir).unwrap().file_type().is_symlink(), "not rebuilt over");
     assert_eq!(std::fs::read_to_string(elsewhere.join("secret.txt")).unwrap(), "outside");
     // 被换成另一个真目录也一样
-    std::fs::remove_file(&dir).unwrap();
+    anycon_daemon::testutil::remove_link(&dir).unwrap();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("other.txt"), "someone else's directory").unwrap();
     f.send(&s.id, "and now?").await.unwrap();
@@ -563,7 +569,7 @@ async fn a_swapped_worktree_blocks_permission_grants_and_interjections() {
     let elsewhere = f.td.dir.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     f.td.git(&f.repo, &["worktree", "remove", "--force", dir.to_str().unwrap()]);
-    std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+    anycon_daemon::testutil::symlink_dir(&elsewhere, &dir).unwrap();
     let allow = req.options.iter().find(|o| o.kind == PermissionOptionKind::AllowOnce).unwrap().id.clone();
     let e = f
         .call::<Empty>(methods::PERMISSION_RESPOND, json!({ "request_id": req.request_id, "option_id": allow }))
@@ -624,7 +630,7 @@ async fn a_live_idle_process_is_not_reused_after_the_directory_was_swapped() {
     let elsewhere = f.td.dir.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     f.td.git(&f.repo, &["worktree", "remove", "--force", dir.to_str().unwrap()]);
-    std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+    anycon_daemon::testutil::symlink_dir(&elsewhere, &dir).unwrap();
     let inputs_before = f.td.fake.last_handle().inputs.lock().unwrap().len();
     f.send(&s.id, "must not reach the old process").await.unwrap();
     f.wait_status(&s.id, SessionStatus::Error).await;
@@ -736,7 +742,7 @@ async fn renaming_the_project_repairs_the_worktrees() {
     }
     let _: RenamedProject =
         f.call(methods::WORKSPACE_RENAME, json!({ "from": "proj", "to": "renamed" })).await.unwrap();
-    let new_repo = std::fs::canonicalize(f.td.workspace.join("renamed")).unwrap();
+    let new_repo = anycon_daemon::sys::canonicalize(f.td.workspace.join("renamed")).unwrap();
     let wt_dir = new_repo.join(".anycon/worktrees/survive-rename");
     // git 在 worktree 里能用（没修的话 `.git` 文件还指着旧路径）
     assert_eq!(f.td.git(&wt_dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "anycon/survive-rename");
@@ -753,7 +759,7 @@ async fn renaming_the_project_repairs_the_worktrees() {
     f.send(&s.id, "still works").await.unwrap();
     f.wait_status(&s.id, SessionStatus::Idle).await;
     let spawns = f.td.fake.spawns.lock().unwrap().clone();
-    assert_eq!(std::fs::canonicalize(&spawns.last().unwrap().cwd).unwrap(), wt_dir);
+    assert_eq!(anycon_daemon::sys::canonicalize(&spawns.last().unwrap().cwd).unwrap(), wt_dir);
     let st: SessionGitStatus = f.call(methods::SESSION_GIT_STATUS, json!({ "session_id": s.id })).await.unwrap();
     assert_eq!(st.branch.as_deref(), Some("anycon/survive-rename"));
     f.td.shutdown().await;
@@ -786,14 +792,17 @@ async fn trashing_a_project_with_unarchived_worktree_sessions_is_busy_and_restor
 
 // ---------------------------------------------------------------------------------------- PR 自动归档
 
+#[cfg(unix)]
 fn merged_json() -> String {
     json!({ "number": 9, "url": "https://example.test/pr/9", "title": "t", "state": "MERGED", "isDraft": false, "baseRefName": "main", "statusCheckRollup": [] }).to_string()
 }
 
+#[cfg(unix)]
 fn state_json(state: &str) -> String {
     merged_json().replace("MERGED", state)
 }
 
+#[cfg(unix)]
 fn add_remote(f: &Fx) {
     let remote = f.td.dir.path().join("remote.git");
     f.td.git(f.td.dir.path(), &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
@@ -801,6 +810,7 @@ fn add_remote(f: &Fx) {
     f.td.git(&f.repo, &["push", "-q", "-u", "origin", "main"]);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn closed_prs_archive_their_sessions_only_when_enabled_and_only_eligible_ones() {
     let mut f = Fx::new().await;
@@ -855,6 +865,7 @@ async fn closed_prs_archive_their_sessions_only_when_enabled_and_only_eligible_o
     f.td.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn the_pr_round_is_skipped_when_gh_is_not_usable_and_asks_about_at_most_twenty_sessions() {
     let mut f = Fx::new().await;
@@ -890,10 +901,11 @@ async fn the_pr_round_is_skipped_when_gh_is_not_usable_and_asks_about_at_most_tw
 
 // ---------------------------------------------------------------------------------------- 关联项目（ADR-33 补充）
 
+#[cfg(unix)]
 #[tokio::test]
 async fn worktrees_work_in_a_linked_project_and_follow_it_when_it_is_linked_again_under_another_name() {
     let mut f = Fx::new().await;
-    let machine = std::fs::canonicalize(f.td.dir.path()).unwrap().join("machine");
+    let machine = anycon_daemon::sys::canonicalize(f.td.dir.path()).unwrap().join("machine");
     let linked = machine.join("elsewhere-repo");
     std::fs::create_dir_all(&linked).unwrap();
     f.td.git(&linked, &["init", "-q", "-b", "main"]);
@@ -944,7 +956,7 @@ fn setup_includes(f: &Fx) {
     std::fs::write(f.repo.join("node_modules/pkg/index.js"), "module.exports = 1\n").unwrap();
     let outside = f.td.dir.path().join("outside.txt");
     std::fs::write(&outside, "do not copy").unwrap();
-    std::os::unix::fs::symlink(&outside, f.repo.join("link.txt")).unwrap();
+    anycon_daemon::testutil::symlink_file(&outside, &f.repo.join("link.txt")).unwrap();
 }
 
 fn assert_included(dir: &std::path::Path) {

@@ -1,4 +1,7 @@
 //! Claude Code 探测：用 PATH 里的假 `claude`（`tests/bin/fake-claude`）回答 `--version` 与 `auth status`。
+//!
+//! 假 CLI（`tests/bin/fake-*`）是带 shebang 的 python 脚本，Windows 上不能直接执行：这个文件只在 unix 上跑。
+#![cfg(unix)]
 
 mod common;
 

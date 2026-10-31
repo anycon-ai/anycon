@@ -1,4 +1,5 @@
-# CI：Rust、TS、生成产物检查、E2E（Playwright + SDK 对真实 hub/daemon）、Docker 构建（自包含 Dockerfile）；main 上全部通过后推 edge 镜像。
+# CI：Rust（macOS / Linux / Windows）、TS、生成产物检查、E2E（Playwright + SDK 对真实 hub/daemon）、Docker 构建（自包含 Dockerfile）；
+# main 上全部通过后推 edge 镜像。
 # 本地等价命令：`just lint`、`just test`、`just gen-check`、`just e2e`、`just test-sdk-real`、`just docker-hub`。
 name: CI
 
@@ -44,6 +45,28 @@ jobs:
         run: cargo test -p anycon-cli --test happy_path
       - name: crypto wasm 目标能编译
         run: cargo check -p anycon-crypto --features wasm --target wasm32-unknown-unknown
+
+  # Windows：daemon + CLI（命名管道、Job Object、计划任务，ADR-42）。hub 只发 Linux 镜像，但 CLI 的集成测试在进程内起 hub，所以整个
+  # workspace 都要能编译、能测。依赖 sh 脚本 / 伪终端 / unix 权限位的测试在代码里用 `cfg(unix)` 跳过。
+  rust-windows:
+    name: rust (windows-latest)
+    runs-on: windows-latest
+    env:
+      # aws-lc-sys 在 x86_64 Windows 上要 NASM；runner 上没有，用它自带的预编译目标文件
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # 不在第一个失败的测试二进制处停下：Windows 上的失败往往互不相关，一次看全
+      - name: cargo test
+        run: cargo test --workspace --no-fail-fast
+      - name: happy path（hub + daemon + CLI 端到端，经命名管道）
+        run: cargo test -p anycon-cli --test happy_path
 
   ts:
     name: ts
@@ -284,7 +307,7 @@ jobs:
   # docker job 刚用同一个 Dockerfile 写了 gha 缓存，这里基本全部命中，不重新编译。
   edge:
     name: docker (edge image)
-    needs: [rust, ts, gen-check, e2e, docker]
+    needs: [rust, rust-windows, ts, gen-check, e2e, docker]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

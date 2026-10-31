@@ -311,6 +311,8 @@ mod tests {
         );
     }
 
+    // 靠 `/proc` 不可写；Windows 上这个路径落在当前盘上，建得出来
+    #[cfg(unix)]
     #[test]
     fn unwritable_data_dir_fails_clearly() {
         let err = prepare_data_dir(Path::new("/proc/definitely/not/writable")).unwrap_err();

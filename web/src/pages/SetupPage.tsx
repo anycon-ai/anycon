@@ -14,12 +14,13 @@ import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Card, CopyButton, Segmented } from '@/ui/Misc'
 
-type Platform = 'macos' | 'linux' | 'other'
+type Platform = 'macos' | 'linux' | 'windows' | 'other'
 
 function guessPlatform(): Platform {
   const os = detectOS()
   if (os === 'macOS') return 'macos'
   if (os === 'Linux') return 'linux'
+  if (os === 'Windows') return 'windows'
   return 'macos'
 }
 
@@ -39,11 +40,13 @@ export function SetupPage({ code: legacyCode }: { code?: string }) {
   const hub = useMemo(() => location.origin, [])
   const nodeCount = useNodes((s) => s.order.length)
 
-  // 安装方式与 README / docs/deploy.md 一致：macOS 走 Homebrew tap，Linux 走发布页的安装脚本，其余平台从源码构建
+  // 安装方式与 README / docs/deploy.md 一致：macOS 走 Homebrew tap，Linux 走发布页的安装脚本，Windows 走 PowerShell 安装脚本，
+  // 其余平台从源码构建
   const init = [`anycon init --hub ${hub} --workspace ~/anycon`, 'anycon daemon']
   const install: Record<Platform, string[]> = {
     macos: ['brew install anycon-ai/tap/anycon', ...init],
     linux: ['curl -fsSL https://github.com/anycon-ai/anycon/releases/latest/download/install.sh | sh', ...init],
+    windows: ['irm https://github.com/anycon-ai/anycon/releases/latest/download/install.ps1 | iex', ...init],
     other: [`# ${t('setup.installSourceHint')}`, 'cargo install --git https://github.com/anycon-ai/anycon anycon-cli --locked', ...init],
   }
 
@@ -76,6 +79,7 @@ export function SetupPage({ code: legacyCode }: { code?: string }) {
               options={[
                 { value: 'macos', label: 'macOS' },
                 { value: 'linux', label: 'Linux' },
+                { value: 'windows', label: 'Windows' },
                 { value: 'other', label: t('setup.otherPlatform') },
               ]}
             />

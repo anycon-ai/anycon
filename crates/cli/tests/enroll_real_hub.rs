@@ -4,6 +4,9 @@
 //! 测试盯着 stderr 里出现提示再敲答案（口令提示关了回显才敲）。覆盖：账号 token 登录 + 接入码、接入后 `anycon ls` / `nodes` /
 //! `agents` 能用、已经是设备时不再登录就能列节点（设备 token）、错口令的退出码。逐方式的细节（退避、锁定、批准……）在
 //! `src/enroll_tests.rs` 里用同一个 initiator 状态机覆盖。
+//!
+//! 交互输入走伪终端（`openpty`），只在 unix 上跑。
+#![cfg(unix)]
 
 mod common;
 /// hub 的测试里那个最小 SMTP 服务（lettre 真的会对它发信），原样借来用，不再抄一份。

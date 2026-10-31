@@ -895,20 +895,29 @@ impl TestDaemon {
             )
             .unwrap();
             // PATH 里只有一个临时目录：`git`（真的，符号链接）和假的 `gh`。这样 `remove_gh` 之后 daemon 真的找不到 `gh`，
-            // 开发机上装没装 `gh` 都不影响测试
+            // 开发机上装没装 `gh` 都不影响测试。Windows 上建符号链接要特权、假 `gh` 是 sh 脚本，所以 PATH 是这个空目录加上真 git
+            // 所在的目录（Git for Windows 的 `cmd` 目录里只有 git 自己），没有 `gh`
             let bin = dir.path().join("bin");
             std::fs::create_dir_all(&bin).unwrap();
-            let real_git = std::env::var("PATH")
-                .unwrap_or_default()
-                .split(':')
-                .map(|d| Path::new(d).join("git"))
+            let git_name = format!("git{}", std::env::consts::EXE_SUFFIX);
+            let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|d| d.join(&git_name))
                 .find(|p| p.is_file())
                 .expect("git is installed");
-            std::os::unix::fs::symlink(real_git, bin.join("git")).unwrap();
-            write_fake_gh(&bin);
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(real_git, bin.join("git")).unwrap();
+                write_fake_gh(&bin);
+                env_extra.push(("PATH".into(), bin.to_string_lossy().into_owned()));
+            }
+            #[cfg(windows)]
+            {
+                let git_dir = real_git.parent().expect("git has a directory").to_path_buf();
+                let path = std::env::join_paths([bin.clone(), git_dir]).unwrap();
+                env_extra.push(("PATH".into(), path.to_string_lossy().into_owned()));
+            }
             env_extra.push(("GIT_CONFIG_GLOBAL".into(), cfg.to_string_lossy().into_owned()));
             env_extra.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
-            env_extra.push(("PATH".into(), bin.to_string_lossy().into_owned()));
         }
         let paths = Paths::new(dir.path().join("home"));
         let workspace = dir.path().join("ws");
@@ -1054,7 +1063,7 @@ impl TestDaemon {
         std::fs::write(dir.join("README.md"), "# readme\n").unwrap();
         self.git(&dir, &["add", "-A"]);
         self.git(&dir, &["commit", "-q", "-m", "initial"]);
-        std::fs::canonicalize(&dir).unwrap()
+        crate::sys::canonicalize(&dir).unwrap()
     }
 
     /// 写文件（必要时建目录）、`git add`、`git commit`，返回新提交的 sha。
@@ -1069,6 +1078,7 @@ impl TestDaemon {
         self.git(dir, &["rev-parse", "HEAD"])
     }
 
+    #[cfg(unix)]
     /// 假 `gh` 的行为：下次被调用时 stdout 输出 `stdout`、stderr 输出 `stderr`、以 `code` 退出。
     pub fn set_gh(&self, stdout: &str, stderr: &str, code: i32) {
         let bin = self.dir.path().join("bin");
@@ -1077,21 +1087,25 @@ impl TestDaemon {
         std::fs::write(bin.join("gh.code"), code.to_string()).unwrap();
     }
 
+    #[cfg(unix)]
     /// 假 `gh` 被调用过几次。
     pub fn gh_calls(&self) -> usize {
         std::fs::read_to_string(self.dir.path().join("bin/gh.calls")).map(|s| s.lines().count()).unwrap_or(0)
     }
 
+    #[cfg(unix)]
     /// 把假 `gh` 删掉（模拟没装）。
     pub fn remove_gh(&self) {
         let _ = std::fs::remove_file(self.dir.path().join("bin/gh"));
     }
 
+    #[cfg(unix)]
     /// 把 [`TestDaemon::remove_gh`] 删掉的假 `gh` 放回去。
     pub fn write_gh_back(&self) {
         write_fake_gh(&self.dir.path().join("bin"));
     }
 
+    #[cfg(unix)]
     /// 假 `gh` 每次被调用时（记下调用之后）先睡这么多秒：测「`gh` 卡住」。0 = 不睡。
     pub fn set_gh_sleep(&self, secs: f64) {
         let f = self.dir.path().join("bin/gh.sleep");
@@ -1103,6 +1117,7 @@ impl TestDaemon {
     }
 
     /// 把 daemon `PATH` 里的 `git` 换成一个转发给真 git 的包装脚本（第一次调用时装上），返回 `bin` 目录。
+    #[cfg(unix)]
     fn git_wrapper_dir(&self) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let bin = self.dir.path().join("bin");
@@ -1120,6 +1135,7 @@ impl TestDaemon {
         bin
     }
 
+    #[cfg(unix)]
     /// 把 daemon `PATH` 里的 `git` 换成一个转发给真 git 的包装脚本，让匹配 `rules` 的调用先睡一会儿——不依赖机器负载就能造出
     /// 慢 git。每条规则是 (shell 通配模式, 秒数)，模式匹配的是 `"<cwd> <git 的参数…>"` 这一整行（daemon 的每条 git 命令都带
     /// `-c core.fsmonitor=false -c core.hooksPath=/dev/null` 在前，所以写 `*slowrepo*status*`）。命中的调用记在
@@ -1130,6 +1146,7 @@ impl TestDaemon {
         std::fs::write(bin.join("git.slow"), text).unwrap();
     }
 
+    #[cfg(unix)]
     /// 同 [`TestDaemon::slow_git`]，但命中的调用直接以失败退出（stderr `fatal: injected failure`，退出码 1）。`&[]` = 全部放行。
     pub fn fail_git(&self, patterns: &[&str]) {
         let bin = self.git_wrapper_dir();
@@ -1137,6 +1154,7 @@ impl TestDaemon {
         std::fs::write(bin.join("git.fail"), text).unwrap();
     }
 
+    #[cfg(unix)]
     /// [`TestDaemon::slow_git`] 的规则命中过的调用（`"<cwd> <参数…>"` 一行一条）。
     pub fn git_hits(&self) -> Vec<String> {
         std::fs::read_to_string(self.dir.path().join("bin/git.hits"))
@@ -1151,6 +1169,7 @@ impl TestDaemon {
 ///
 /// 测试并行跑，别的线程这时可能正好 fork，子进程会短暂继承刚写脚本时还没关的写 fd，exec 这个脚本就得到 ETXTBSY
 /// （「Text file busy」）；那个 fd 在子进程 exec 时就关了，所以重试几次即可。
+#[cfg(unix)]
 fn run_once(exe: &Path) {
     let started = std::time::Instant::now();
     let mut child = loop {
@@ -1185,7 +1204,47 @@ fn run_once(exe: &Path) {
     }
 }
 
+/// 断言 `p` 的权限位是 `mode`（如 0o600）。Windows 没有权限位，不检查（访问控制靠数据目录的 DACL，见 `sys::restrict_to_owner`）。
+pub fn assert_mode(p: &Path, mode: u32) {
+    if let Some(m) = crate::sys::mode_bits(&std::fs::metadata(p).unwrap()) {
+        assert_eq!(m, mode, "mode of {}", p.display());
+    }
+}
+
+/// 删掉一个符号链接（不碰它指向的东西）。Windows 上指向目录的链接要用 `remove_dir` 删，`remove_file` 会被拒绝。
+pub fn remove_link(link: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(link) {
+        Err(_) if cfg!(windows) => std::fs::remove_dir(link),
+        r => r,
+    }
+}
+
+/// 建一个指向文件的符号链接（Windows 上同 [`symlink_dir`]，要特权）。
+pub fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+/// 建一个指向目录的符号链接。Windows 上是目录符号链接（要管理员权限或开发者模式；CI 的 runner 有）。
+pub fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+}
+
 /// 假 `gh`：输出 `gh.out`、`gh.err`，按 `gh.code` 退出，每次调用往 `gh.calls` 记一行。
+#[cfg(unix)]
 fn write_fake_gh(bin: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let script = "#!/bin/sh\nPATH=/usr/bin:/bin\nd=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$d/gh.calls\"\n[ -f \"$d/gh.sleep\" ] && sleep \"$(cat \"$d/gh.sleep\")\"\n[ -f \"$d/gh.err\" ] && cat \"$d/gh.err\" >&2\n[ -f \"$d/gh.out\" ] && cat \"$d/gh.out\"\ncode=0\n[ -f \"$d/gh.code\" ] && code=$(cat \"$d/gh.code\")\nexit \"$code\"\n";

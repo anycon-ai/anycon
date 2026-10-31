@@ -16,7 +16,8 @@
 | CLI | clap（derive） | |
 | 日志 | tracing + tracing-subscriber | 结构化，后续接 OpenTelemetry 不改代码 |
 | 静态资源嵌入 | rust-embed | Web UI 构建产物打进 hub 二进制 |
-| 文件监听 | notify | macOS FSEvents / Linux inotify 统一 |
+| 文件监听 | notify | macOS FSEvents / Linux inotify / Windows `ReadDirectoryChangesW` 统一 |
+| Windows 系统接口 | windows-sys | 命名管道的 DACL、Job Object、文件身份、端口探测、控制台（ADR-42）；路径规范化不带 `\\?\` 前缀用 dunce |
 | Passkey | webauthn-rs | 免密登录，仅 https 域名可用。没有密码、没有 TOTP（ADR-23） |
 | OAuth | 自己实现（hyper + hyper-rustls） | GitHub / Google 授权码流程 + PKCE（S256）。拿到 access token 后调 userinfo 取身份，不解析 `id_token`，省掉 JWKS / JWT 校验。只有几步，不引 oauth2 crate（[ADR-40](decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)） |
 | HTTP 客户端（出站） | hyper + hyper-util + hyper-rustls | OAuth 换 token、调 userinfo 和 Web Push 共用同一套（`ring` + 内置 webpki 根证书），每次调用有超时、不跟随重定向。不用 reqwest（见 [ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）；reqwest 只在 hub 的测试里用 |
@@ -123,7 +124,7 @@ adapter trait 的语义对齐 [ACP](https://agentclientprotocol.com)。各 CLI �
 | CI | GitHub Actions |
 | 任务入口 | just（`just dev` / `just test` / `just gen`） |
 | 工具链版本 | mise |
-| Rust 跨平台 release | GitHub Actions 矩阵，原生 runner：macOS arm64/x64、Linux x64/arm64（glibc ≥ 2.35）；安装脚本和 Homebrew formula 在 `packaging/`（ADR-38） |
+| Rust 跨平台 release | GitHub Actions 矩阵，原生 runner：macOS arm64/x64、Linux x64/arm64（glibc ≥ 2.35）、Windows x64（MSVC）；安装脚本（`install.sh` / `install.ps1`）和 Homebrew formula 在 `packaging/`（ADR-38、ADR-42） |
 | macOS 签名 | rcodesign（apple-codesign）：在 Linux CI 上签名 + notarize，不需要 Mac runner |
 | Docker | multi-arch（amd64 + arm64，各在原生 runner 上构建），distroless 基础镜像，目标几十 MB，推到 GHCR |
 | 版本与 changelog | 手工维护 `CHANGELOG.md`（按 conventional commits 整理） |

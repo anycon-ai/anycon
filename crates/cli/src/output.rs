@@ -75,10 +75,24 @@ impl Out {
     }
 }
 
-/// 立即登记 SIGINT 处理（`signal()` 创建时就生效，不像 `ctrl_c()` 要等到第一次 poll）。
-pub fn interrupt_signal() -> tokio::signal::unix::Signal {
-    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        .expect("cannot register the SIGINT handler")
+/// [`interrupt_signal`] 的类型：`recv().await` 等下一次 Ctrl+C。
+#[cfg(unix)]
+pub type InterruptSignal = tokio::signal::unix::Signal;
+#[cfg(windows)]
+pub type InterruptSignal = tokio::signal::windows::CtrlC;
+
+/// 立即登记 SIGINT 处理（`signal()` 创建时就生效，不像 `ctrl_c()` 要等到第一次 poll）。Windows 上是控制台的 Ctrl+C 事件，
+/// `windows::ctrl_c()` 同样在创建时就登记。
+pub fn interrupt_signal() -> InterruptSignal {
+    #[cfg(unix)]
+    {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("cannot register the SIGINT handler")
+    }
+    #[cfg(windows)]
+    {
+        tokio::signal::windows::ctrl_c().expect("cannot register the Ctrl+C handler")
+    }
 }
 
 /// anycon 自己用的 SGR 前缀（`Out` 的颜色方法）：表格单元格里只认「整个单元格被其中一种包起来」。

@@ -1,5 +1,8 @@
 //! Codex 进程级测试：真的拉起假 `codex app-server`（`tests/bin/fake-codex`，回放 `tests/fixtures/codex` 里的录制），
 //! 驱动 `CodexAdapter::spawn` 出来的 `AgentHandle`，检查握手、请求参数、事件、权限答复、取消 / 转向、设置、续接、关闭。
+//!
+//! 假 CLI（`tests/bin/fake-*`）是带 shebang 的 python 脚本，Windows 上不能直接执行：这个文件只在 unix 上跑。
+#![cfg(unix)]
 
 mod common;
 

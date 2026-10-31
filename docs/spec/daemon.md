@@ -940,7 +940,7 @@ SQLite（WAL）。全部表：
 
 v0.1 另含：图片附件（§ 7.10，ADR-35）；账号内接入（§ 15.1，[ADR-36](../decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)）。
 
-**v0.2** 已有：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）。**v0.2** 还没有：ACP adapter；非图片附件；多 workspace 根；`node.set_config` 远程改配置；`node.logs`；`anycon export / import`。
+**v0.2** 已有：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）；ACP adapter（§ 5.7，[ADR-47](../decisions.md#adr-47-acp-adapter每个-agent-一个-adapter一个进程服务它的所有会话)）；任意文件附件落到会话工作目录（§ 7.10，[ADR-44](../decisions.md#adr-44-非图片附件落到会话工作目录)）；多个 workspace 根（§ 10，[ADR-45](../decisions.md#adr-45-多个-workspace-根)）；`node.get_config` / `node.set_config` 远程改配置（§ 3，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）、`node.logs`（§ 17）；`fs.read` 的 base64 分块读取（§ 16）；设备 token 轮换（§ 15）；`anycon export` / `import`（§ 20，[ADR-46](../decisions.md#adr-46-导出--导入一个-zip只走本机通道导入不带-agent-会话-id)）。
 
 **v0.3**：`session.fork`、`session.import`、自动更新、Prometheus。
 

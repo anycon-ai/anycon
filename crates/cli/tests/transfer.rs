@@ -87,7 +87,9 @@ async fn sessions_move_between_two_daemons_through_the_binary() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     let j = r.json();
     assert_eq!(j["sessions"], 2);
-    assert!(j["path"].as_str().unwrap().starts_with(sub.canonicalize().unwrap().to_str().unwrap()), "{j}");
+    // 两边都 canonicalize 再比：Windows 上临时目录可能一边是 8.3 短名（`RUNNER~1`），一边是 `\\?\` 长路径
+    let written = std::path::Path::new(j["path"].as_str().unwrap());
+    assert_eq!(written.parent().unwrap().canonicalize().unwrap(), sub.canonicalize().unwrap(), "{j}");
     assert_eq!(std::fs::read_dir(&sub).unwrap().count(), 1);
 
     // 筛选

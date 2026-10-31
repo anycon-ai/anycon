@@ -147,7 +147,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 **导出与导入**（`export` / `import`，文件格式和校验规则在 [daemon.md § 20](daemon.md#20-导出文件格式anycon-export--import)）：
 
-- **通道**：本机管理命令，走本机 socket 的 `local.export` / `local.import`，由 daemon 读写数据库（它拥有数据库，不会和正在跑的会话并发写）。不经 hub，远程节点不支持（`--node` 指向别处 → 退出码 2）；经 hub 调用这两个方法一律 `forbidden`。daemon 没在运行时退出码 3，说明要先 `anycon service start`（或 `anycon daemon`）：导出导入都要 daemon 在，因为数据库归它管。路径都在 CLI 这一侧变成绝对路径再发给 daemon。
+- **通道**：本机管理命令，走本机 socket 的 `local.export` / `local.import`，由 daemon 读写数据库（它拥有数据库，不会和正在跑的会话并发写）。不经 hub，远程节点不支持（给了 `--node` → 退出码 2）；经 hub 调用这两个方法一律 `forbidden`。daemon 没在运行时退出码 3，说明要先 `anycon service start`（或 `anycon daemon`）：导出导入都要 daemon 在，因为数据库归它管。路径都在 CLI 这一侧变成绝对路径再发给 daemon。
 - **进度**：长请求，没有超时。`local.progress` 通知只发给发起的这个连接；交互终端的 stderr 画一行 `exporting sessions 12/340 (84.2 MiB)`，管道和 `--json` 时不画。Ctrl+C 断开连接，daemon 随之取消（导出删掉临时文件，导入回滚正在写的那个会话；已经导入完的会话留着），退出码 130。
 - **`export`**：
   - 缺省输出到当前目录的 `anycon-export-<节点名>-<日期>.zip`（节点名里非字母数字 / `._-` 的字符换成 `-`，日期是 UTC 的 `YYYY-MM-DD`）；`--out` 给的是已有目录就把默认文件名放进去。先写同目录的临时文件（权限 0600；Windows 上是只有当前用户、SYSTEM 和 Administrators 能访问的 DACL），写完 fsync 再 rename，失败或取消时不留任何文件。输出文件已经存在时退出码 1（`exists`），加 `--force` 才覆盖。

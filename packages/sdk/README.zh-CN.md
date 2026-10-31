@@ -173,6 +173,28 @@ await pair(hub, { code: code2, name: 'ci-runner' })
 
 `profile` 默认 `default`，`ANYCON_PROFILE` 或 `{ profile }` 切换。profile 会变成目录名，所以只允许字母数字和 `. _ -`（以字母数字开头、最多 64 位、不含 `..`），路径分隔符 / `..` / 空串直接抛 `invalid_profile`；`ANYCON_HOME` 是空串时当作没设。CI 里可以不落盘直接注入：`ANYCON_DEVICE_KEY`（32 字节私钥 hex）+ `ANYCON_DEVICE_TOKEN`，以及要连的节点 `ANYCON_NODE_ID` + `ANYCON_NODE_KEY`（daemon 公钥 hex）。
 
+## 设备 token 轮换
+
+配对时 hub 签发一个设备 token。为了缩短泄露的 token 能用多久，SDK 会定期轮换它（`rotate_token` → `token_rotated`；hub 让旧 token 再有效 60 秒，同一设备 1 分钟内最多轮换一次）。
+
+- **身份由 SDK 自己存着**（`pair()` 写的，或你传的 `storage`）：`connect()` / `Client.open()` 认证成功后，token 满 30 天就轮换。新 token 和签发时间（`tokenIssuedAtMs`）在**一次** `storage.set` 里写回（`FileStorage`：临时文件 + rename、0600），写完才用于重连。没有签发时间的老记录（以及签发时间在未来、时钟被拨回过的）当作很旧，下次连上换一次。回复没等到就 75 秒后重发（一条连接上头 3 次发送各隔 75 秒），之后每小时复查一次，所以连上几周不断的长连接也会轮换。`close()` 最多多等 2 秒，让还在路上的回复落盘，刚连上就退出的脚本不会丢新 token。写存储失败不致命：新 token 仍留在内存里供本进程重连，事件里 `persisted: false`。
+- **凭据来自环境变量**（`ANYCON_DEVICE_KEY` / `ANYCON_DEVICE_TOKEN`）时**不自动轮换**：SDK 没有地方存新 token，换了没保存会把设备锁在外面（旧 token 60 秒后失效，只能重新配对并吊销旧设备）。要轮换就自己调 `client.rotateToken()`，并保存返回的 `deviceToken`。
+
+```ts
+import { Client } from '@anycon/sdk'
+
+const client = await Client.open(hubUrl, {
+  // 每次轮换成功都会调用。环境变量凭据时 SDK 不写任何存储，新 token 要在这里自己存。
+  onTokenRotated: ({ deviceToken, persisted }) => {
+    if (!persisted) secrets.put('ANYCON_DEVICE_TOKEN', deviceToken)
+  },
+})
+client.on('tokenRotated', (rotation) => {}) // 同样的参数：{ deviceToken, issuedAtMs, persisted, persistError? }
+const rotation = await client.rotateToken() // 立刻轮换；resolve 同一个对象
+```
+
+`rotateToken({ timeoutMs })` 默认最多等 10 秒：还没连上 hub 抛 `not_connected`；hub 不回复抛 `rotate_timeout`（同一设备 1 分钟内的第二次请求会被忽略，不支持轮换的 hub 也不会回复）；等待期间断线或 client 关闭则失败。超时之后才到的回复仍会处理。`connect()` 不暴露 `Client`，要按需轮换请用 `Client.open()`。`ClientOptions.tokenRotation` 里 `auto: false` 关闭自动轮换，`maxAgeMs` / `retryAfterMs` / `recheckMs` / `closeWaitMs` 调整各项时间（主要给测试用）。
+
 ## 大消息与传输失步
 
 hub 对单个信封有大小上限（默认 256 KiB），而一页 `session.history` 或一条 `tool_result` 可能更大。所以 SDK 把每条 JSON-RPC 消息加密之后按 `frame`（`@anycon/protocol`，ADR-30）切成 ≤ 200 KiB 的 `data` 信封，对端重组后再解密；两个方向都是。Noise 的 nonce 是顺序的，**任何一片丢失都意味着传输失步**，所以：

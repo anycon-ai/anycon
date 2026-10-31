@@ -27,6 +27,8 @@ async with anycon.connect("https://hub.example.com", node="mac-mini") as node: .
 - `code` 接受 16 位或 8 位短码（`anycon pair [--short]`），也接受整条配对链接（取 `#code=` 后面的）。短码只在本地用来算 `match_id` 和 PSK（一次 Argon2id，`derivePairSecrets`，Node / 浏览器 wasm 里约 0.1–1 s），不发给 hub
 - 配对完成的判据是 daemon 经加密传输发来的 `pair.ack`，不是 hub 的 `pair_done`：`pair()` 校验 `peer_id` 是自己的正式 id、`node_id` 等于 `pair_done.peer`、`fingerprint` 等于握手得到的公钥指纹，通过才把节点写进存储；30 秒没收到抛 `PairingFailed`，本地已有同 id 但公钥不同的节点时抛 `NodeKeyChanged`（带已存的和新出示的公钥指纹）、旧记录原样保留，用户确认后用 `forgetNode(hubUrl, nameOrIdPrefix)` 忘掉旧记录再配对；同 id 同公钥（吊销后重新配对）允许。节点名取 `pair.ack` 里的（去掉控制字符、限长 64）
 - 本地的 device token 被 hub 判为 `invalid` / `revoked`（被吊销、hub 丢了数据）时，`pair()` 丢掉旧 token 和设备 id，用临时连接重新配对，而不是抛 `NodeRejected` 卡住
+- **device token 轮换**（[hub.md § 5](hub.md#5-设备与设备-token)）：`pair()` 记下 hub 签发 token 的时间（`StoredIdentity.tokenIssuedAtMs`）。身份由 SDK 自己存着（`pair()` 写的，或你传的 `storage`）时，`connect()` / `Client.open()` 认证成功后若 token 满 30 天就自动轮换：发 `rotate_token`，收到 `token_rotated` 后把新 token 和新签发时间在**一次** `storage.set` 里写回身份记录（`FileStorage` 是临时文件 + rename、0600），再用新 token 重连。没有签发时间的老记录、以及签发时间在未来（时钟被拨回过）的，都当作很旧，下次连上换一次。回复没等到就 75 秒后重发：一条连接上头 3 次发送各隔 75 秒，之后每小时复查一次（长连接可以几十天不重连，不能只在认证时看一次；hub 一直不回复时也不会刷屏），每条新连接重新计次。hub 在回复之前就已经轮换了，旧 token 只再保留 60 秒，所以刚发出请求就 `close()` 会多等最多 2 秒让回复落盘。写存储失败不致命：新 token 仍留在内存里供本进程重连，事件里 `persisted: false` 并带 `persistError`
+- **凭据来自环境变量**（`ANYCON_DEVICE_KEY` / `ANYCON_DEVICE_TOKEN`）时**不自动轮换**：SDK 没有地方存新 token，换了没保存就等于把设备锁在外面（旧 token 60 秒后失效，只能重新配对并吊销旧设备）。要轮换就自己调 `client.rotateToken()`，保存返回值（或 `tokenRotated` 事件 / `onTokenRotated` 回调）里的 `deviceToken`。被别人抢先轮换的后果见 hub.md § 5
 - `node=` 接受节点名或 id 前缀；只配对了一个节点时可省略
 - 一个 SDK 进程可同时连多个节点，每个节点一条独立的 Noise 会话
 
@@ -101,6 +103,18 @@ Node 用 `ws`，浏览器用原生 WebSocket，同构；事件类型从 `package
 **权限的便捷路径不会悄悄扩大授权**：事件上的 `ev.allow()` 只选 `allow_once`，没有这个选项时抛 `no_matching_option`；`ev.allowSession()` 没有 `allow_always` 时退回 `allow_once`（只会收窄）。内置策略 `policies.allowAll` 只放行 `tool` / `other` 类请求，**不放行 `mode_change` 和 `plan`，也不代答 `question`**；需要时显式用 `policies.allowAllWith({ modeChange?, plan? })`。策略回调抛异常、或策略要的决定无法执行时，`Node` 发 `permission_error(error, request)` 事件，请求仍按超时 deny，不会被吞掉。
 
 **事件**：`Node` 是 `EventEmitter` 风格，除 `online` / `offline` / `permission` / `session_changed` 外有两个报问题的事件：`permission_error`（上面）和 `error`（非致命的通道问题，payload 是 `AnyconError`）。hub 的 `dropped { seq, reason }` 每连接每秒至多一条，是「发错东西」的信号，**不据此逐条重发**：`error` 事件收到 `envelope_too_large`（分片之后仍超限，说明 hub 的 `ANYCON_MAX_ENVELOPE_BYTES` 比一片还小）时进行中的请求失败、通道重新握手；`not_paired` 变成 `NodeRejected`。
+
+**设备 token 轮换**（策略见 § 2）：`Client` 的事件除 `connected` / `disconnected` / `error` 外有 `tokenRotated(rotation)`，`rotation` 是 `{ deviceToken, issuedAtMs, persisted, persistError? }`，每次轮换成功（自动的，或 `client.rotateToken({ timeoutMs? })` 触发的）各一次。`ClientOptions.onTokenRotated` 是同一时刻的回调：在 `connect()` / `Client.open()` 里直接传，不会错过 `open` 返回之前就发生的轮换；回调抛错或返回被拒的 promise 都被吞掉，不影响连接。
+
+```ts
+const client = await Client.open(hub, {
+  // 凭据来自环境变量时，SDK 不会写存储，新 token 要在这里自己存
+  onTokenRotated: ({ deviceToken }) => secrets.put('ANYCON_DEVICE_TOKEN', deviceToken),
+})
+await client.rotateToken()   // 按需轮换；自动轮换只针对 SDK 自己存着的身份
+```
+
+`rotateToken()` 等到新 token（默认 10 秒）并返回同一个对象；已有请求在等回复时返回同一个 promise、不重复发。没连上 hub 抛 `not_connected`，hub 不回复（同一设备 1 分钟内的第二次请求被忽略，或 hub 不支持轮换）抛 `rotate_timeout`，等待期间断线或 `close()` 则失败（hub 可能已经轮换过，旧 token 还有 60 秒，重连后再换一次）。超时之后才到的回复照样处理：hub 已经换了，新 token 不能丢。`connect()` 返回的 `Node` 不暴露 `Client`，要按需轮换用 `Client.open()`。`ClientOptions.tokenRotation`：`auto: false` 关闭自动轮换；`maxAgeMs` / `retryAfterMs` / `recheckMs` / `closeWaitMs` 调整各项时间（主要给测试用）。
 
 **背压与速率**（[protocol.md § 3.1](../protocol.md#31-消息大小)）：SDK 把最近发出的 `data` 信封原文留在一个**在途窗口**里（默认 16 MiB，`resendBufferBytes` 可调）：发出不满 10 s（`resendRetainMs`）的和等待重发的永不逐出，窗口满了就暂停发新的、等最老一批过了 10 s 再继续，不逐出。收到 `backpressure { to, seq }` 只暂停那个节点（新请求排队），等 `retry_after_ms`（最近一条 `rate_limited` 给的，封顶 30 s；没有就 100–300 ms 加抖动，连续几轮翻倍到 ×8），然后把所有被退回的 `seq` 按升序**原样**重发，再放行排队的请求。`rate_limited` 是「整条 hub 连接暂停多久」的提示，所有节点共享（之后才连上的节点也要等；取较大值，重连清零）：不让请求失败、不重新握手、不发 `error`。被退回的 `seq` 已不在窗口里 → 丢传输、重新 IK（SDK 不发 RESET 占位帧，hub 转发新的 `handshake` 时会清掉粘住集合）；旧传输的 `backpressure` 被忽略。握手本身被退回时不重发也不重置，按同样的退避（300–1000 ms 起、翻倍、封顶 30 s，不早于 `rate_limited` 过期）延后再发起，这一次不占握手重试次数。
 
@@ -182,6 +196,7 @@ anycon.serve(hub="https://hub.example.com", name="bot-host", workspace="~/bots")
 | `PairingFailed(reason)` | 配对失败：短码不存在 / 过期、握手失败、`pair.ack` 超时或与 hub 告知的不一致（不保存任何东西）、与本地已有节点的公钥冲突 |
 | `NodeOffline` | 节点不在线 |
 | `NodeRejected` | Noise 握手失败，设备被吊销或 daemon 重装 |
+| `AnyconError('rotate_timeout' \| 'not_connected')` | `client.rotateToken()`：hub 没有回复新 token，或还没连上 hub，见 § 3.2「设备 token 轮换」 |
 | `NodeKeyChanged` | 配对时发现本地已有同 id 节点但公钥不同（daemon 重装、或有人冒充）：不覆盖，`forgetNode` 之后再配对 |
 | `AgentUnavailable(reason)` | agent 未安装 / 未登录 / 被禁用 |
 | `SettingsInvalid(field, reason)` | 模型 / 思考 / 模式 / 选项不被该 agent 接受 |

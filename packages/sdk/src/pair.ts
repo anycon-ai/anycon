@@ -205,7 +205,9 @@ function join(
     /** msg3 之后的新传输：只用来读 daemon 的 `pair.ack`，之后丢弃（重连走 IK）。 */
     let transport: Transport | undefined
     let nodePublic: Uint8Array | undefined
-    let done: { peer: string; deviceId: string; deviceToken: string } | undefined
+    let done:
+      | { peer: string; deviceId: string; deviceToken: string; tokenIssuedAtMs: number | undefined }
+      | undefined
     const early: Uint8Array[] = []
     const reassembler = new Reassembler()
     let settled = false
@@ -294,7 +296,9 @@ function join(
         return
       }
       if (msg.device_id) hub.adoptDeviceId(msg.device_id)
-      done = { peer: msg.peer, deviceId, deviceToken }
+      // hub 这次签发了新 token：签发时间就是现在；沿用已有 token 时保留原来的记录（可能没有，那就当作很旧）。
+      const tokenIssuedAtMs = msg.device_token ? Date.now() : existing?.tokenIssuedAtMs
+      done = { peer: msg.peer, deviceId, deviceToken, tokenIssuedAtMs }
       ackTimer = setTimeout(
         () =>
           fail(
@@ -369,6 +373,9 @@ function join(
           const identity: StoredIdentity = {
             deviceId: confirmed.deviceId,
             deviceToken: confirmed.deviceToken,
+            ...(confirmed.tokenIssuedAtMs !== undefined
+              ? { tokenIssuedAtMs: confirmed.tokenIssuedAtMs }
+              : {}),
             secretKey: hexOf(keypair.secret),
             name: options.name,
             createdAtMs: existing?.createdAtMs ?? Date.now(),

@@ -12,6 +12,10 @@
  * `interceptor` 返回 `'backpressure'` 表示「这一封的目标缓冲满了」，`'rate_limited'` 表示「超了速率预算」
  * （同样退回，另外回一条 `rate_limited { retry_after_ms }`，回执每秒至多一条）。
  *
+ * 设备 token 轮换（docs/spec/hub.md § 5）：`rotate_token` 换新 token 并回 `token_rotated`，旧 token 照旧能认证（真实 hub 的 60 秒
+ * 宽限），测试用 `expireOldTokens` 让宽限结束；`rotation = 'ignore'` 模拟「同一设备 1 分钟内的第二次请求被忽略」（或不支持轮换的
+ * hub）；`rotateReplyDelayMs` 推迟回复。
+ *
  * 测试可以让它「作恶」：`forgePairDoneOnConfirm`（joiner 一确认就伪造 PairDone，host 从未确认）、
  * `tamperPairDonePeer`（PairDone 里报一个假的节点 id）。
  */
@@ -88,6 +92,16 @@ export class FakeHub {
   forgePairDoneOnConfirm = false
   /** 收到的全部控制消息（含 pair_join 的 match_id），断言「短码从没到过 hub」用。 */
   readonly controlLog: Control[] = []
+  /** `rotate_token` 的处理：`rotate` 照常换新 token；`ignore` 不回复（也不换）。 */
+  rotation: 'rotate' | 'ignore' = 'rotate'
+  /** `token_rotated` 推迟多久再发（模拟回复很慢 / 比客户端的等待时间还晚到）。 */
+  rotateReplyDelayMs = 0
+  /** 每次 auth 帧里带的设备 token（临时连接是 `undefined`），按到达顺序。 */
+  readonly authTokens: Array<string | undefined> = []
+  /** 收到的每条 `rotate_token` 来自哪台设备，按到达顺序。 */
+  readonly rotateRequests: string[] = []
+  /** 做过的轮换：设备、旧 token、新 token。 */
+  readonly rotations: Array<{ id: string; oldToken: string; newToken: string }> = []
   /** 把发给 joiner 的 PairDone 推迟这么久（模拟 daemon 的 pair.ack 先于 PairDone 到达）。 */
   delayJoinerPairDoneMs = 0
   /** 作恶：PairDone 里 joiner 看到的节点 id（参数是真实的 host id）。 */
@@ -167,6 +181,16 @@ export class FakeHub {
     this.#conns.get(id)?.ws.terminate()
   }
 
+  /** 让某台设备已轮换掉的旧 token 失效（hub 的 60 秒宽限结束）。 */
+  expireOldTokens(id: string): void {
+    for (const r of this.rotations) if (r.id === id) this.#byToken.delete(r.oldToken)
+  }
+
+  /** 设备当前的 token（轮换后是新的）。 */
+  currentToken(id: string): string | undefined {
+    return this.devices.get(id)?.token
+  }
+
   closeConnection(id: string, code: number): void {
     this.#conns.get(id)?.ws.close(code, 'test')
   }
@@ -244,6 +268,7 @@ export class FakeHub {
       conn.ws.close(1008, 'version')
       return
     }
+    this.authTokens.push(ctrl.device_token ?? undefined)
     let device: Device | undefined
     if (ctrl.device_token) {
       device = this.#byToken.get(ctrl.device_token)
@@ -361,6 +386,23 @@ export class FakeHub {
         this.#sendControl(host, { type: 'peer_online', device: joiner.id })
         this.#sendControl(joiner, { type: 'peer_online', device: host.id })
         this.peerOnlineAfterPair.push(host.id, joiner.id)
+        return
+      }
+      case 'rotate_token': {
+        const device = this.devices.get(conn.id)
+        if (!device) return
+        this.rotateRequests.push(device.id)
+        if (this.rotation === 'ignore') return
+        const oldToken = device.token
+        device.token = `tok_${rid()}`
+        this.#byToken.set(device.token, device)
+        this.rotations.push({ id: device.id, oldToken, newToken: device.token })
+        const reply: Control = { type: 'token_rotated', device_token: device.token }
+        if (this.rotateReplyDelayMs > 0) {
+          setTimeout(() => this.#sendControl(conn, reply), this.rotateReplyDelayMs)
+        } else {
+          this.#sendControl(conn, reply)
+        }
         return
       }
       default:

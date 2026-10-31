@@ -69,7 +69,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 anycon-hub = { path = "../hub" }
-jsonschema = { version = "0.59.0", default-features = false }
+jsonschema = { version = "0.60.2", default-features = false }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 tempfile = "3.27.0"
 

@@ -1014,6 +1014,32 @@ ADR-1 拆成两层来看：
 
 ---
 
+## ADR-46 导出 / 导入：一个 zip、只走本机通道、导入不带 agent 会话 id
+
+**决定**：`anycon export` 把会话历史（含附件）写成一个 zip（`manifest.json`、每个会话一个 `session.json` + `events.jsonl` + 附件文件，格式见 [daemon.md § 20](spec/daemon.md#20-导出文件格式anycon-export--import)），`anycon import` 读它。
+
+1. **只走本机 socket**（`local.export` / `local.import`，ADR-27）：daemon 拥有数据库，由它读写，不会和正在跑的会话并发写；路径是 daemon 所在机器上的，远程客户端不该能让 daemon 读写任意文件，经 hub 一律 `forbidden`。进度只发给发起的连接。
+2. **zip，每个会话一个目录**：用户能用任何 zip 工具看里面有什么；事件用 JSONL（和 `session.history` 同结构）；附件原样放文件。manifest 写 `format` / `version`，格式有版本，读的一方不认识就拒绝。
+3. **导入把压缩包当不可信输入**：只认格式定义的条目名，拒绝符号链接、超限的大小、版本不认识的、SHA-256 对不上的；`session.json` 的每个字段都校验（项目名、worktree 路径和分支名之后会拼进路径和 `git` 命令）。压缩包层的问题整个拒绝；会话层的问题只让那个会话失败，每个会话一个事务，不留半个会话。
+4. **已存在的会话跳过，不覆盖**：导入不是合并，重复导入同一个文件是无操作。
+5. **`agent_session_id` 导出但导入时清空，`launch_args` 不导出**：agent 的会话文件在别的机器上不存在，带着 id 的话下一次发消息 resume 必然失败，而且 id 一直在，会一直失败。清空之后下一次发消息开一个新的 agent 会话，历史仍在、仍可搜索，只是 agent 不记得。`project_loc`（目录身份）同样是原机器的东西，导入时为空，第一次拉起时按本机同名项目补记。
+6. **导入的会话没有进程**：导出时在跑的变成 `interrupted`，没有答复的权限请求在历史里收尾，worktree 记录标成目录不存在（`missing`，下一条消息按分支重建；已经是 `removed` / `failed` 的不变）。
+7. **默认不含已归档的会话**（`--all` 才含，和 `anycon ls` 一致），漏掉了几个会告诉你；点名的会话不受限制。
+
+**原因**：会话历史只在 daemon（ADR-5），这是用户唯一的备份 / 搬迁手段，而复制数据目录只能原样恢复到同一个节点身份——它连密钥一起带走，搬到新机器等于克隆节点。导出只带会话历史，不带密钥、配对设备、配置、审计，所以文件泄露的后果是内容泄露（明文，所以 0600、要妥善保管），而不是节点被冒充。
+
+**否掉**：
+
+- 导入时保留 `agent_session_id`，resume 失败再自动退成新会话：改动 resume 的失败处理（今天它让这一轮失败并保留 id），而且同一台机器上「恢复数据库、保留 `~/.claude`」本来就少见；留一个以后可以加的开关，比默认就让每次发消息报错好。
+- 经 hub 远程导出 / 导入：要在 hub 上走几个 GiB 的密文，还要在协议里加方法；备份是在 daemon 所在机器上的事。
+- 导入时覆盖或合并已有会话：合并两份事件流没有可靠的规则（seq 冲突、重复消息）。
+- 把整个 SQLite 文件放进压缩包：带上密钥和配对设备，也无法跨版本迁移和校验。
+- 用广播的 `job.progress` 报进度：它发给所有在线客户端（含经 hub 的），`job.done` 也没有地方放导入报告。
+
+**代价 / 限制**：导入一个会话期间事务持着数据库写锁（事件分批写，见 daemon.md § 20.7）；同一台机器上恢复时 agent 不接着原来的对话；压缩包没有加密和签名；在旧版本 daemon 上导入含新事件类型的导出会让那个会话失败。
+
+---
+
 ## ADR-47 ACP adapter：每个 agent 一个 adapter，一个进程服务它的所有会话
 
 **背景**：ADR-26 / ADR-25 之后，OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi 这类 agent 都说 [ACP](https://agentclientprotocol.com)（stdio JSON-RPC）。路线图要的是「一个 adapter 一次覆盖」，而 ADR-24 要求客户端不内置任何 agent 知识。

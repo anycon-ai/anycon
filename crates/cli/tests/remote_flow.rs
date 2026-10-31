@@ -17,9 +17,13 @@ struct TestHub {
 
 impl TestHub {
     async fn start() -> TestHub {
+        Self::start_with(|_| {}).await
+    }
+    async fn start_with(tweak: impl FnOnce(&mut anycon_hub::Config)) -> TestHub {
         let dir = tempfile::tempdir().unwrap();
         let mut c = anycon_hub::Config::new("http://127.0.0.1", dir.path()).unwrap();
         c.listen = "127.0.0.1:0".parse().unwrap();
+        tweak(&mut c);
         let handle = anycon_hub::run(c).await.expect("hub starts");
         TestHub { handle, _dir: dir }
     }
@@ -235,7 +239,13 @@ async fn pair_json_prints_the_code_first_then_blocks_until_a_device_joins() {
 
 /// 起 hub + 带 hub 的 daemon，并用 web（带管理员 cookie）完成第一次配对，返回 (hub, daemon, 本机客户端)。
 async fn hub_with_a_paired_daemon() -> (TestHub, TestDaemon, anycon_daemon::testutil::TestClient) {
-    let hub = TestHub::start().await;
+    hub_with_a_paired_daemon_with(|_| {}).await
+}
+
+async fn hub_with_a_paired_daemon_with(
+    tweak: impl FnOnce(&mut anycon_hub::Config),
+) -> (TestHub, TestDaemon, anycon_daemon::testutil::TestClient) {
+    let hub = TestHub::start_with(tweak).await;
     let td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
     assert!(
         anycon_daemon::testutil::eventually(Duration::from_secs(10), || async { td.ctx.hub_state.get().connected })
@@ -425,5 +435,73 @@ async fn the_approval_prompt_escapes_control_characters_clips_only_past_the_thre
     assert!(!r.stderr[..first_clip].contains("TAILMARK-DO-NOT-HIDE"), "the dangerous tail is not in the clipped view");
     assert!(r.stderr[first_clip..].contains("\\x1b[2K; echo TAILMARK-DO-NOT-HIDE"), "v prints the whole command");
     assert!(r.stdout.contains("skipped"), "the request was denied: {}", r.stdout);
+    td.shutdown().await;
+}
+
+/// 设备 token 轮换（docs/spec/cli.md § 2）：连节点的命令在 token 满 30 天（或没有签发时间）时请求轮换，回执落盘，
+/// 下一条命令用新 token；`anycon nodes` 不轮换。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn commands_that_open_a_node_connection_rotate_a_stale_device_token() {
+    // 轮换间隔设为 0：同一个测试里连着轮换几次，不用等 hub 的 1 分钟限频
+    let (hub, td, mut local) =
+        hub_with_a_paired_daemon_with(|c| c.timing.token_rotate_min_interval = Duration::ZERO).await;
+    let d = tempfile::tempdir().unwrap();
+    let chome = d.path().join("cli-home");
+    let url = hub.url();
+    let begin: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
+    let r = anycon(&chome, &["connect", &url, "--code", &begin.code, "--name", "cli-box"], None, &[]).await;
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    let client_dir = std::fs::read_dir(chome.join("client")).unwrap().next().unwrap().unwrap().path();
+    let (token_path, issued_path) = (client_dir.join("device-token"), client_dir.join("device-token-issued-at"));
+    let token = || std::fs::read_to_string(&token_path).unwrap();
+    let issued = || std::fs::read_to_string(&issued_path).unwrap().trim().parse::<u64>().unwrap();
+    let rotations = || async {
+        hub.handle.store().list_audit(100, None).await.unwrap().iter().filter(|e| e.event == "token_rotated").count()
+    };
+    let day = 24 * 3600 * 1000u64;
+
+    // 刚配对：签发时间是配对的时刻，命令不轮换
+    let first = token();
+    assert!(issued() <= anycon_daemon::util::now_ms() && issued() + 60_000 > anycon_daemon::util::now_ms());
+    anycon_daemon::testutil::assert_mode(&issued_path, 0o600);
+    assert_eq!(anycon(&chome, &["agents", "--json"], None, &[]).await.code, 0);
+    assert_eq!((token(), rotations().await), (first.clone(), 0), "a fresh token is left alone");
+
+    // 满 30 天：这条命令轮换，新 token 和签发时间落盘（0600），hub 认得新 token
+    std::fs::write(&issued_path, (anycon_daemon::util::now_ms() - 31 * day).to_string()).unwrap();
+    let r = anycon(&chome, &["agents", "--json"], None, &[]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let second = token();
+    assert_ne!(second, first);
+    assert!(issued() + 60_000 > anycon_daemon::util::now_ms(), "the issue time is now");
+    for f in [&token_path, &issued_path] {
+        anycon_daemon::testutil::assert_mode(f, 0o600);
+    }
+    assert_eq!(rotations().await, 1);
+    let dev = hub
+        .handle
+        .store()
+        .find_device_by_token_hash(&anycon_hub::util::hash_token(second.trim()), anycon_daemon::util::now_ms())
+        .await
+        .unwrap()
+        .expect("the hub knows the new token");
+    assert_eq!(dev.kind, DeviceKind::Cli);
+    assert_eq!(dev.name, "cli-box");
+    // 下一条命令用新 token（旧的已经不是当前 token），不再轮换
+    assert_eq!(anycon(&chome, &["agents", "--json"], None, &[]).await.code, 0);
+    assert_eq!((token(), rotations().await), (second.clone(), 1));
+
+    // `anycon nodes` 只读在线列表就断开，不轮换（发出请求就断开的话 hub 换了新 token 却没人收）
+    std::fs::write(&issued_path, (anycon_daemon::util::now_ms() - 31 * day).to_string()).unwrap();
+    assert_eq!(anycon(&chome, &["nodes", "--json"], None, &[]).await.code, 0);
+    assert_eq!((token(), rotations().await), (second.clone(), 1));
+
+    // 轮换功能之前配对的状态没有签发时间：当作很旧，下一条命令轮换并补上这个文件
+    std::fs::remove_file(&issued_path).unwrap();
+    assert_eq!(anycon(&chome, &["agents", "--json"], None, &[]).await.code, 0);
+    assert_ne!(token(), second);
+    assert!(issued_path.exists() && issued() + 60_000 > anycon_daemon::util::now_ms());
+    assert_eq!(rotations().await, 2);
+    assert_eq!(anycon(&chome, &["agents", "--json"], None, &[]).await.code, 0, "the rotated token works");
     td.shutdown().await;
 }

@@ -21,7 +21,8 @@ CLI 作为客户端设备的密钥和 device token 存在 `~/.anycon/client/<hub
 ├── daemon.db                   会话、消息、附件、FTS、审计
 ├── keys/
 │   ├── node.key                daemon 的 Noise 静态私钥，0600
-│   └── device-token            hub 签发的设备 token，0600
+│   ├── device-token            hub 签发的设备 token，0600
+│   └── device-token-issued-at  这个 token 的签发时间（Unix 毫秒），0600，见下
 ├── peers.json                  已配对客户端的公钥和名称
 ├── daemon.sock                 本机 CLI 通道（Windows 上是命名管道，不在这个目录里）
 ├── logs/daemon.log             滚动，默认保留 7 天
@@ -30,6 +31,14 @@ CLI 作为客户端设备的密钥和 device token 存在 `~/.anycon/client/<hub
 ```
 
 Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon 启动时给数据目录设一份只有当前用户、SYSTEM 和 Administrators 能访问的受保护 DACL，里面的文件继承它；上面写着 0600 的文件靠的就是它。
+
+**设备 token 轮换**（hub 侧规则见 [hub.md § 5](hub.md#5-设备与设备-token)；daemon 的做法见 [daemon.md § 15](daemon.md#15-连接与可靠性)）。`device-token` 签发满 30 天就换一个，缩短泄露的 token 的有效期；签发时间记在同目录的 `device-token-issued-at`（十进制 Unix 毫秒，0600）。daemon 的 `keys/` 和 CLI 作为客户端设备的 `client/<hub-host>/` 各有一对。
+
+- daemon：认证之后马上检查，满 30 天就发 `rotate_token`；没回执就 75 秒后重发（头 3 次），之后每小时一次；回执先落盘（先 token、后签发时间，各自原子替换）再用于之后的重连
+- CLI（`client/<hub-host>/`）：只有**连节点的命令**（`anycon agents`、`send`、`attach` 等一切走 hub 的客户端命令）轮换：连上 hub、认证成功之后，token 满 30 天（没有 `device-token-issued-at` 的旧状态、或记的时间在「未来」也算）就在**第一帧**发 `rotate_token`，**不等回复**，命令照常往下走；回执在后面的任何一次读里被截下来落盘，所以不会拖慢命令，老 hub（不认识这条消息、不回复）也不会让命令多等。hub 在转发后面的任何帧之前先发回执，命令不可能读到后面的东西却漏掉它。`anycon nodes` 只读一下在线列表就断开，不轮换（发出请求就断开的话，hub 换了新 token 却没人收）。本机 daemon（走 socket）的命令不涉及 hub，不轮换。CLI 是一次性进程，不重发：没拿到回执的这次，下一条命令再试
+- 回执写不进磁盘（目录只读、磁盘满）：命令照常做完，stderr 上打一条 `warning:`，说明旧 token 一分钟内失效、下一条命令要 `anycon connect` 重新配对
+- 配对 / 接入拿到新 token 时同时写入签发时间；`anycon init --force`（daemon）和 CLI 丢弃失效身份时（`connect` 发现已存的 token 被 hub 判为 `invalid` / `revoked`）会一并删掉它
+- 被别人抢先轮换的后果（旧 token 60 秒后失效，要重新配对并吊销旧设备）见 hub.md § 5
 
 ## 3. 子命令
 

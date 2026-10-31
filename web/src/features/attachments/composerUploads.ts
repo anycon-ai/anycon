@@ -104,7 +104,7 @@ function patchItem(key: string, id: string, patch: Partial<AttachmentItem>): voi
 /** 浏览器没报类型的文件（有的平台上 HEIC 就是这样）也试着当图片解码，解不开再提示（或改按文件上传）。 */
 export const isImageFile = (f: File): boolean => f.type === '' || f.type.toLowerCase().startsWith('image/')
 
-/** 规整失败时，agent 收任意文件就改按文件原样上传的原因：不是图片 / 浏览器解不开 / 编不出 agent 收的图片格式。 */
+/** 规整失败时，节点收任意文件就改按文件原样上传的原因：不是图片 / 浏览器解不开 / 编不出 agent 收的图片格式。 */
 const FILE_FALLBACK: readonly ImageErrorCode[] = ['not_image', 'undecodable', 'unsupported_format']
 
 /** 一条消息里已经准备好 / 传完的附件合计多少字节（`exceptId` 那个不算）；`only` 限定哪些算。 */
@@ -167,7 +167,7 @@ async function prepare(key: string, id: string, rt: Runtime): Promise<boolean> {
   } catch (e) {
     if (ctl.signal.aborted || !hasItem(key, id)) return false
     if (!(e instanceof ImageError)) throw e
-    // agent 收任意文件：当图片用不了的，改按文件原样上传
+    // 节点收任意文件：当图片用不了的，改按文件原样上传
     if (ctx.files && FILE_FALLBACK.includes(e.code)) {
       rt.asFile = true
       return prepareFile(key, id, rt)

@@ -218,7 +218,7 @@ describe('adding images', () => {
   })
 })
 
-describe('adding other files (the agent takes any file)', () => {
+describe('adding other files (the node takes any file)', () => {
   const files = (over: Partial<AttachContext> = {}) => ctx({ files: true, ...over })
   const uploaded = (d: ReturnType<typeof installBlobDaemon>, n: number) => d.uploads.get(blobId(n))!
 
@@ -262,7 +262,7 @@ describe('adding other files (the agent takes any file)', () => {
     expect(d.uploads.size).toBe(2)
   })
 
-  it('an agent that names no image format but takes any file gets images byte for byte too, without decoding them', async () => {
+  it('an agent that names no image format, on a node that takes any file, gets images byte for byte too, without decoding them', async () => {
     const d = installBlobDaemon(rpc, { chunkSize: 1024 })
     addFiles([png('shot.png')], files({ accepted: [] }))
     await vi.waitFor(allSettled('ready'))

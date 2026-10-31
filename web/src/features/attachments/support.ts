@@ -4,7 +4,7 @@ import { isImageMime, uploadableMimes } from './normalize'
 
 /** 这个 agent 在这个节点上能收什么附件。 */
 export interface AttachmentSupport {
-  /** 作为图片交给模型的格式（agent 点名的 ∩ 四种图片格式），添加图片时规整成其中一种。可能为空（只收任意文件）。 */
+  /** 作为图片交给模型的格式（agent 点名的 ∩ 四种图片格式），添加图片时规整成其中一种。可能为空（agent 不原生收图，节点收任意文件时图片按普通文件传）。 */
   images: string[]
   /**
    * 节点能把任意文件交给任何会话的 agent（`node.info` 的 `capabilities.file_attachments`，ADR-44）：agent 不原生收的附件由 daemon 落到会话的

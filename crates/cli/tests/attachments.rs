@@ -232,3 +232,82 @@ async fn send_image_uploads_over_the_socket_and_attaches_it() {
     assert_eq!(blob_files(&home), 2);
     daemon.stop().await;
 }
+
+/// `--file`（ADR-44）：任意文件经 blob 通道上传；mock agent 原生只收图片，所以文件由 daemon 存进会话的工作目录，
+/// 路径清单追加在发给 agent 的文字里（mock 会回显）。`new` 和 `send` 都支持，`--image` 和 `--file` 可以一起用。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_attaches_any_file_with_new_and_send() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let ws = d.path().join("ws");
+    init(&home, &ws, "box", None).await;
+    for agent in ["claude-code", "codex"] {
+        assert_eq!(
+            anycon(&home, &["config", "set", &format!("agents.{agent}.enabled"), "false"], None, &[]).await.code,
+            0
+        );
+    }
+    let daemon = start_daemon(&home, &[("ANYCON_MOCK_AGENT", "1")]).await;
+    let notes = d.path().join("notes.txt");
+    std::fs::write(&notes, "hello notes\n").unwrap();
+    let notes_s = notes.to_string_lossy().into_owned();
+
+    // new：文件 + 文字，跟到 turn 结束；清单里是相对工作目录的路径、类型和大小
+    let r = anycon(&home, &["new", "--agent", "mock", "--file", &notes_s, "summarize this"], None, &[]).await;
+    assert_eq!(r.code, 0, "stdout: {}\nstderr: {}", r.stdout, r.stderr);
+    assert!(r.stdout.contains("[Attached files, saved in the working directory]"), "{}", r.stdout);
+    assert!(r.stdout.contains("notes.txt (text/plain, 12 B)"), "{}", r.stdout);
+    assert!(r.stdout.contains("> summarize this\n  [attachment] notes.txt (text/plain, 12 B)"), "{}", r.stdout);
+
+    // 没有文字、只有文件：`--no-wait --json` 拿到会话 id，文件就在那个会话的工作目录里
+    let created =
+        anycon(&home, &["new", "--agent", "mock", "--no-wait", "--json", "--file", &notes_s], None, &[]).await;
+    assert_eq!(created.code, 0, "{}", created.stderr);
+    let sid = created.json()["id"].as_str().unwrap().to_string();
+    let short = &sid[..12];
+    wait_turns(&home, short, 1).await;
+    let saved = ws.join(".scratch").join(&sid).join(".anycon/attachments").join(&sid).join("notes.txt");
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), "hello notes\n");
+
+    // send：`--image` 和 `--file` 一起；图片 mock 原生收（读到的 sha256 证明是同一个文件），文件落盘并写在清单里
+    let shot = d.path().join("shot.png");
+    let bytes = png_fixture(640, 480, 4096, 9);
+    std::fs::write(&shot, &bytes).unwrap();
+    let pdf = d.path().join("Report.PDF");
+    std::fs::write(&pdf, b"%PDF-1.7 fake").unwrap();
+    let r = anycon(
+        &home,
+        &["send", short, "--image", &shot.to_string_lossy(), "--file", &pdf.to_string_lossy(), "both"],
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(r.code, 0, "stdout: {}\nstderr: {}", r.stdout, r.stderr);
+    assert!(
+        r.stdout.contains(&format!(
+            "shot.png (image/png, {} bytes, sha256 {})",
+            bytes.len(),
+            &sha256_hex(&bytes)[..12]
+        )),
+        "{}",
+        r.stdout
+    );
+    // 类型取自扩展名（不分大小写）；清单里只有落盘的文件，原生传的图不在里面
+    let list = r.stdout.split("[Attached files, saved in the working directory]").nth(1).expect("the list is echoed");
+    assert!(list.contains("Report.PDF (application/pdf, 13 B)"), "{}", r.stdout);
+    let items: Vec<&str> = list.lines().filter(|l| l.starts_with("- ")).collect();
+    assert_eq!(items.len(), 1, "only the saved file is listed, not the native image: {}", r.stdout);
+    assert_eq!(std::fs::read(saved.with_file_name("Report.PDF")).unwrap(), b"%PDF-1.7 fake");
+
+    // 本地就拒的：目录、不存在、空文件；文字和文件都没有是参数错误
+    let r = anycon(&home, &["send", short, "--file", &d.path().to_string_lossy(), "x"], None, &[]).await;
+    assert_eq!((r.code, r.stderr.contains("is not a file")), (2, true), "{}", r.stderr);
+    let r = anycon(&home, &["send", short, "--file", &d.path().join("nope").to_string_lossy(), "x"], None, &[]).await;
+    assert_eq!((r.code, r.stderr.contains("cannot read")), (2, true), "{}", r.stderr);
+    let empty = d.path().join("empty");
+    std::fs::write(&empty, b"").unwrap();
+    let r = anycon(&home, &["new", "--agent", "mock", "--file", &empty.to_string_lossy()], None, &[]).await;
+    assert_eq!((r.code, r.stderr.contains("is empty")), (2, true), "{}", r.stderr);
+    assert_eq!(anycon(&home, &["new", "--agent", "mock"], None, &[]).await.code, 2);
+    daemon.stop().await;
+}

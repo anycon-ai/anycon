@@ -1014,6 +1014,11 @@ fn end_code(end: &FollowEnd) -> u8 {
 }
 
 pub async fn new_session(app: &App, a: NewArgs) -> Result<u8> {
+    // 文件先在本地看一眼（是不是文件、大小、个数）：明显不对的不必连节点
+    let files = crate::attach::load_attachments(&[], &a.files)?;
+    for advice in files.iter().filter_map(crate::attach::LocalFile::advice) {
+        eprintln!("{}", app.out.err_yellow(&advice));
+    }
     let mut conn = app.conn().await?;
     // 工作位置（ADR-34）：--worktree / --here / --base / --branch；都不给就按节点的 worktree.default
     let choice = crate::worktree_cmds::choose_workspace(&conn, &a).await?;
@@ -1025,9 +1030,14 @@ pub async fn new_session(app: &App, a: NewArgs) -> Result<u8> {
         options: parse_options(&a.options)?,
         ..Default::default()
     };
+    // 经 blob 通道传文件（ADR-44），第一条消息只带 daemon 返回的引用
+    let attachments = crate::attach::upload_all(&conn, &files).await?;
     let message_id = uuid::Uuid::new_v4().to_string();
     let mut notes = conn.notifications();
-    let mut params = json!({ "project": a.project, "agent": agent, "prompt": a.prompt, "message_id": message_id, "settings": settings });
+    let mut params = json!({ "project": a.project, "agent": agent, "prompt": a.prompt.unwrap_or_default(), "message_id": message_id, "settings": settings });
+    if !attachments.is_empty() {
+        params["attachments"] = serde_json::to_value(&attachments)?;
+    }
     if let Some(w) = &choice.workspace {
         params["workspace"] = w.clone();
     }
@@ -1042,9 +1052,19 @@ pub async fn new_session(app: &App, a: NewArgs) -> Result<u8> {
                 );
             }
             params.as_object_mut().map(|m| m.remove("workspace"));
-            conn.call(methods::SESSION_CREATE, params).await?
+            let retried: Result<SessionSummary> = conn.call(methods::SESSION_CREATE, params).await;
+            if retried.is_err() {
+                crate::attach::discard_all(&conn, &attachments).await;
+            }
+            retried?
         }
-        other => other?,
+        other => {
+            if other.is_err() {
+                // 没建成的会话没人引用这些文件：丢掉（建成了只是没收到答复的，daemon 回 in_use，不影响）
+                crate::attach::discard_all(&conn, &attachments).await;
+            }
+            other?
+        }
     };
     if a.no_wait {
         if app.json() {
@@ -1093,7 +1113,7 @@ pub async fn send(app: &App, a: SendArgs) -> Result<u8> {
     if before.archived && !images.is_empty() {
         return Err(archived());
     }
-    // 经 blob 通道传附件（ADR-35），消息只带 daemon 返回的引用
+    // 经 blob 通道传附件（ADR-35、ADR-44），消息只带 daemon 返回的引用
     let attachments = crate::attach::upload_all(&conn, &images).await?;
     let message_id = uuid::Uuid::new_v4().to_string();
     let mut notes = conn.notifications();
@@ -1103,7 +1123,7 @@ pub async fn send(app: &App, a: SendArgs) -> Result<u8> {
     }
     let sent: Result<SessionSendResult> = conn.call(methods::SESSION_SEND, params).await;
     if sent.is_err() {
-        // 没发出去的图没人引用：丢掉（发出去了只是没收到答复的，daemon 回 in_use，不影响）
+        // 没发出去的附件没人引用：丢掉（发出去了只是没收到答复的，daemon 回 in_use，不影响）
         crate::attach::discard_all(&conn, &attachments).await;
     }
     // 已归档的会话不能直接发消息：告诉用户怎么办（退出码 2，和别的参数 / 状态错误一致）

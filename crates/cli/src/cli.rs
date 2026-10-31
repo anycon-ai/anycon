@@ -348,7 +348,14 @@ pub struct NewArgs {
     /// Show the agent's thinking
     #[arg(long)]
     pub show_thinking: bool,
-    pub prompt: String,
+    /// Attach any file to the first message (repeatable; at most 20 attachments and 20 MiB in total, and the node's
+    /// per-file limit). The agent gets it as an image if it takes that type natively; otherwise the node saves it in
+    /// the session's working directory (.anycon/attachments/) and tells the agent the path
+    #[arg(long = "file", value_name = "PATH")]
+    pub files: Vec<std::path::PathBuf>,
+    /// Prompt for the first message; can be left out when --file is given
+    #[arg(required_unless_present = "files")]
+    pub prompt: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -446,11 +453,12 @@ pub struct SendArgs {
     /// Message text; can be left out when --image or --file is given
     #[arg(required_unless_present_any = ["images", "files"])]
     pub text: Option<String>,
-    /// Attach an image (PNG / JPEG / GIF / WebP; repeatable; not resized). The agent sees it as an image
+    /// Attach an image (PNG / JPEG / GIF / WebP; repeatable; not resized). Counts toward the same limits as --file
     #[arg(long = "image", value_name = "PATH")]
     pub images: Vec<std::path::PathBuf>,
-    /// Attach any file (repeatable). The agent gets its path on the node and reads it with its own tools.
-    /// Together with --image: at most 20 attachments and 20 MiB per message
+    /// Attach any file (repeatable; at most 20 attachments and 20 MiB in total per message, and the node's per-file
+    /// limit). The agent gets it as an image if it takes that type natively; otherwise the node saves it in the
+    /// session's working directory (.anycon/attachments/) and tells the agent the path
     #[arg(long = "file", value_name = "PATH")]
     pub files: Vec<std::path::PathBuf>,
     #[arg(long)]
@@ -616,6 +624,26 @@ mod tests {
         assert!(parse(&["new", "--worktree", "--here", "hi"]).is_err());
         assert!(parse(&["new", "--here", "--base", "main", "hi"]).is_err());
         assert!(parse(&["new", "--here", "--branch", "x", "hi"]).is_err());
+    }
+
+    #[test]
+    fn send_and_new_take_files_and_the_text_becomes_optional() {
+        let Command::Send(a) =
+            parse(&["send", "last", "--file", "a.pdf", "--file", "b.txt", "--image", "c.png"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert_eq!(a.files, ["a.pdf", "b.txt"].map(std::path::PathBuf::from));
+        assert_eq!(a.images, [std::path::PathBuf::from("c.png")]);
+        assert!(a.text.is_none());
+        // 什么都没有：缺文字
+        assert!(parse(&["send", "last"]).is_err());
+        let Command::New(a) = parse(&["new", "--file", "a.pdf"]).unwrap().command else { panic!() };
+        assert_eq!(a.files, [std::path::PathBuf::from("a.pdf")]);
+        assert!(a.prompt.is_none());
+        let Command::New(a) = parse(&["new", "--file", "a.pdf", "read it"]).unwrap().command else { panic!() };
+        assert_eq!(a.prompt.as_deref(), Some("read it"));
+        assert!(parse(&["new"]).is_err(), "a prompt or a file is needed");
     }
 
     #[test]

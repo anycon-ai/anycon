@@ -236,6 +236,8 @@ AgentInfo {
 | 权限模式 | `default`(Always Ask) / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions`；`bypassPermissions` 标 dangerous，`plan` 标 safe | adapter 把 `approvalPolicy × sandbox × approvals_reviewer` 收成四档：`read_only`（safe：`readOnly` + `on-request`）/ `workspace`（normal，默认：`workspaceWrite` + `on-request`，审批送客户端）/ `auto_review`（normal：`approvals_reviewer = auto_review`，Codex 自己的审查子代理放行）/ `full_access`（dangerous：`dangerFullAccess` + `never`） | `session/new` 返回的 `configOptions` 里 `category = "mode"`（优先），没有才用 `modes.availableModes`（v1，已标 deprecated）。ACP 不给风险等级：默认全部 `normal`，`config.agents.acp.<name>.dangerous_modes` 可标 dangerous | 节点声明 |
 | 其他选项 | `fast_mode`(bool，仅支持的模型) | `fast_mode`(bool → `serviceTier`：开 `priority`、明确关 `default`、没指定不传)、`model_reasoning_summary`(select: auto / concise / detailed / none → `turn/start.summary`)。`plan_mode` v0.1 **不提供**：`collaborationMode` 只在 experimental schema 里（要 `experimentalApi`），v0.1 只用稳定接口，所以 Codex 也不会发 `kind = plan` 的权限请求 | 其余 `configOptions` 原样透传：`select` 和 `boolean` 两种 `type`，`category = model_config` 或自定义 | 节点声明 |
 
+ACP 的 `initialize` 里声明的 client 能力：**不声明 `fs` 和 `terminal`**（agent 用它自己的工具读写文件、跑命令，权限走 `session/request_permission`；声明了就等于让 daemon 代 agent 读写文件、跑命令，违背 § 1）；声明 `elicitation`（form / url，§ 9.1）和 `session.configOptions.boolean`（否则 agent 不给布尔选项）；不声明终端登录（`auth.terminal`）、`session.notices`、`session.compaction`（ACP 不产生 notice / activity 事件，§ 8.3）。
+
 ACP agent 的 cheap 探测（`probe_interval`）只看命令的路径和 `--version` 的输出有没有变，都没变且上一次是 `ready` 就沿用上一次的结果，不拉起 agent；变了、或者上一次不是 `ready`（登录状态 cheap 探测看不出来）就做完整探测。
 
 各 CLI 变化快，adapter 里这些探测逻辑要和 CLI 版本一起维护；回放测试用录制的真实输出。Codex app-server 官方标注 experimental，CI 里用 `codex app-server generate-json-schema` 生成对应版本的 schema 做编译期校验。

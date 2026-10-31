@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anycon_adapters::claude_code::Timings;
 use anycon_adapters::common::ShutdownTimings;
-use anycon_adapters::{ClaudeCodeAdapter, CodexAdapter};
+use anycon_adapters::{AcpAdapter, ClaudeCodeAdapter, CodexAdapter};
 use anycon_agent_api::{
     Adapter, AdapterConfig, AgentEvent, AgentHandle, ProbeContext, ResumeHandle, SpawnRequest, UserInput,
 };
@@ -367,4 +367,178 @@ impl CodexHarness {
 /// 最常用的一套设置：只指定模式。
 pub fn mode(m: &str) -> SessionSettings {
     SessionSettings { mode: Some(m.into()), ..Default::default() }
+}
+
+// ---------------------------------------------------------------- ACP
+
+pub fn fake_acp() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/bin/fake-acp-agent")
+}
+
+/// 测试里把等待时间都缩短。
+pub fn acp_fast_timings() -> anycon_adapters::acp::Timings {
+    anycon_adapters::acp::Timings {
+        handshake: Duration::from_secs(20),
+        session: Duration::from_secs(20),
+        request: Duration::from_secs(10),
+        close: Duration::from_secs(3),
+        shutdown: ShutdownTimings { after_stdin_close: Duration::from_millis(150), grace: Duration::from_millis(600) },
+    }
+}
+
+/// 用假 ACP agent（`tests/bin/fake-acp-agent`）的一套环境。**同一个 harness 里的所有 spawn 共用一个 `AcpAdapter`**
+/// （它的进程池就在 adapter 里），所以可以测一个进程服务多个会话。
+pub struct AcpHarness {
+    pub dir: tempfile::TempDir,
+    pub project: PathBuf,
+    pub log: PathBuf,
+    pub state: PathBuf,
+    pub env: HashMap<String, String>,
+    pub config: AdapterConfig,
+    pub id: String,
+    pub adapter: AcpAdapter,
+    info: std::sync::Mutex<Option<Arc<AgentInfo>>>,
+}
+
+impl AcpHarness {
+    pub fn new() -> Self {
+        Self::with_id("fakeacp")
+    }
+
+    pub fn with_id(id: &str) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let log = dir.path().join("fake-acp.log");
+        let state = dir.path().join("state");
+        let mut env = HashMap::new();
+        env.insert("PATH".to_string(), std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()));
+        env.insert("HOME".to_string(), dir.path().to_string_lossy().into_owned());
+        env.insert("FAKE_ACP_LOG".to_string(), log.to_string_lossy().into_owned());
+        env.insert("FAKE_ACP_STATE".to_string(), state.to_string_lossy().into_owned());
+        // 开发机忙（别的 cargo 在编译）时 python 冷启动可能超过 2 秒
+        env.insert("ANYCON_VERSION_TIMEOUT_MS".to_string(), "20000".to_string());
+        let config = AdapterConfig {
+            enabled: true,
+            command: Some(format!("{} acp", fake_acp().to_string_lossy())),
+            ..Default::default()
+        };
+        Self {
+            dir,
+            project,
+            log,
+            state,
+            env,
+            config,
+            id: id.to_string(),
+            adapter: AcpAdapter::with_timings(id, acp_fast_timings()),
+            info: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn var(mut self, k: &str, v: &str) -> Self {
+        self.env.insert(k.to_string(), v.to_string());
+        self
+    }
+
+    pub fn probe_ctx(&self) -> ProbeContext {
+        ProbeContext {
+            env: Arc::new(self.env.clone()),
+            config: self.config.clone(),
+            deadline: Duration::from_secs(60),
+            cheap: false,
+            previous: None,
+            scratch_dir: self.dir.path().to_path_buf(),
+        }
+    }
+
+    /// 探测结果（第一次调用时探测，之后沿用）。
+    pub async fn info(&self) -> Arc<AgentInfo> {
+        let cached = self.info.lock().unwrap().clone();
+        if let Some(i) = cached {
+            return i;
+        }
+        let i = Arc::new(self.adapter.probe(&self.probe_ctx()).await);
+        // 探测会拉起一个 agent 进程并写日志；清掉，让后面的断言只看会话进程
+        let _ = std::fs::remove_file(&self.log);
+        *self.info.lock().unwrap() = Some(i.clone());
+        i
+    }
+
+    pub async fn request(&self, settings: SessionSettings, resume: Option<ResumeHandle>) -> SpawnRequest {
+        SpawnRequest {
+            session_id: "sess_test".into(),
+            cwd: self.project.clone(),
+            settings,
+            env: Arc::new(self.env.clone()),
+            config: self.config.clone(),
+            resume,
+            agent_info: self.info().await,
+        }
+    }
+
+    pub async fn spawn(&self, settings: SessionSettings, resume: Option<ResumeHandle>) -> Box<dyn AgentHandle> {
+        self.try_spawn(settings, resume).await.expect("spawn")
+    }
+
+    pub async fn try_spawn(
+        &self,
+        settings: SessionSettings,
+        resume: Option<ResumeHandle>,
+    ) -> anycon_agent_api::Result<Box<dyn AgentHandle>> {
+        let req = self.request(settings, resume).await;
+        self.adapter.spawn(req).await
+    }
+
+    /// fake-acp-agent 写下的日志（每行一个 JSON，带 `pid`）。
+    pub fn log_entries(&self) -> Vec<Value> {
+        std::fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    /// 拉起的 agent 服务进程（`argv` 日志，每个进程一条）。
+    pub fn launches(&self) -> Vec<Value> {
+        self.log_entries().into_iter().filter(|e| e["kind"] == "argv").collect()
+    }
+
+    /// 客户端发给 agent 的全部消息（带 `pid`）。
+    pub fn stdin_messages(&self) -> Vec<Value> {
+        self.log_entries().into_iter().filter(|e| e["kind"] == "in").collect()
+    }
+
+    /// 某个 method 的全部请求 / 通知（只要 `msg`）。
+    pub fn requests(&self, method: &str) -> Vec<Value> {
+        self.stdin_messages().into_iter().map(|e| e["msg"].clone()).filter(|m| m["method"] == method).collect()
+    }
+
+    pub fn methods(&self) -> Vec<String> {
+        self.stdin_messages().iter().filter_map(|e| e["msg"]["method"].as_str().map(str::to_string)).collect()
+    }
+
+    /// 等日志里出现满足条件的 stdin 消息。
+    pub async fn wait_stdin(&self, what: &str, pred: impl Fn(&Value) -> bool) -> Value {
+        let start = Instant::now();
+        loop {
+            if let Some(m) = self.stdin_messages().into_iter().map(|e| e["msg"].clone()).find(|m| pred(m)) {
+                return m;
+            }
+            assert!(start.elapsed() < Duration::from_secs(10), "timed out waiting for stdin message: {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+/// 等进程退出（最多 10 秒）。
+pub async fn wait_gone(pid: u64) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(10) {
+        if !pid_alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    false
 }

@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""A fake ACP (Agent Client Protocol v1) agent for the adapter tests (no network, no model).
+
+  fake-acp-agent --version        prints a version line
+  fake-acp-agent acp              a JSON-RPC 2.0 server on stdio (newline-delimited), many sessions in one process
+
+What the agent does with a prompt depends on the first text block (a keyword anywhere in it):
+  stream      thought chunks, message chunks in two messages, a usage_update, end_turn
+  tool        a tool call that starts as an empty `pending` shell, gets its input with `in_progress`, completes with output
+  edit        an edit tool call with `diff` content (one modified file, one new file)
+  plan        a plan update
+  title       a session_info_update title
+  permission  a tool call, then `session/request_permission` with four options; waits for the answer; allow* -> the tool
+              completes, anything else -> it fails; a `cancelled` outcome ends the turn with stopReason cancelled
+  elicit      `elicitation/create` (form with an enum, an integer and an optional string); echoes the answer
+  hold        one chunk, then waits until `session/cancel` arrives and answers `cancelled` (FAKE_ACP_IGNORE_CANCEL=1: never)
+  images      answers with the content block types it received ("blocks: image/png,text")
+  switchmode  the agent switches its own mode to `code` (config_option_update + current_mode_update)
+  fsread      asks the client for fs/read_text_file and reports the error code it gets back
+  crash       exits (code 3) in the middle of the turn
+  error       the prompt fails with -32603;  authfail: -32000;  refuse: stopReason refusal;  maxtokens: stopReason max_tokens
+  (anything else) echoes the text as a message
+
+Environment (all optional)
+  FAKE_ACP_LOG             append JSON lines: argv at start, every message received on stdin (`in`) and written to stdout (`out`)
+  FAKE_ACP_STATE           directory where sessions are kept between processes (needed for resume / load across restarts)
+  FAKE_ACP_CAPS            comma list of: resume, load, close, image   (default: resume,close,image)
+  FAKE_ACP_CONFIG          options (default) | legacy (only `modes`) | none | nomodel (config options without a model selector)
+  FAKE_ACP_AUTH            required (session/new and prompts need login) | terminal (same, with a terminal login method)
+  FAKE_ACP_INIT            fail (exit 1 with a message on stderr) | hang | v2 (answers protocolVersion 2) | noversion
+  FAKE_ACP_VERSION_TEXT / FAKE_ACP_VERSION_EXIT   the --version output / exit code
+  FAKE_ACP_RESUME_FAIL     notfound | other   session/resume and session/load fail
+  FAKE_ACP_DELAY_MS        pause between streamed chunks
+  FAKE_ACP_IGNORE_CANCEL   `hold` never ends on its own
+"""
+import json
+import os
+import queue
+import signal
+import sys
+import threading
+import time
+
+env = os.environ
+args = sys.argv[1:]
+
+
+def log(obj):
+    path = env.get("FAKE_ACP_LOG")
+    if path:
+        obj = dict(obj)
+        obj["pid"] = os.getpid()
+        with open(path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+
+
+if "--version" in args:
+    print(env.get("FAKE_ACP_VERSION_TEXT", "fake-acp 1.0.0"))
+    sys.exit(int(env.get("FAKE_ACP_VERSION_EXIT", "0")))
+
+signal.signal(signal.SIGINT, lambda *a: sys.exit(0))
+log({"kind": "argv", "args": args, "cwd": os.getcwd()})
+
+FLAGS = set(filter(None, env.get("FAKE_ACP_CAPS", "resume,close,image").split(",")))
+CONFIG = env.get("FAKE_ACP_CONFIG", "options")
+STATE = env.get("FAKE_ACP_STATE")
+DELAY = float(env.get("FAKE_ACP_DELAY_MS", "0")) / 1000.0
+
+out_lock = threading.Lock()
+
+
+req_methods = {}
+
+
+def send(obj):
+    obj = dict(obj)
+    obj["jsonrpc"] = "2.0"
+    entry = {"kind": "out", "msg": obj}
+    if "id" in obj and "method" not in obj and obj["id"] in req_methods:
+        entry["for"] = req_methods[obj["id"]]
+    log(entry)
+    with out_lock:
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+
+def reply(id, result):
+    send({"id": id, "result": result})
+
+
+def reply_err(id, code, message):
+    send({"id": id, "error": {"code": code, "message": message}})
+
+
+def update(sid, upd):
+    send({"method": "session/update", "params": {"sessionId": sid, "update": upd}})
+
+
+waiters = {}
+next_id = [9000]
+
+
+def ask(method, params, timeout=30):
+    """A request to the client; blocks for its response."""
+    next_id[0] += 1
+    rid = next_id[0]
+    q = queue.Queue()
+    waiters[rid] = q
+    send({"id": rid, "method": method, "params": params})
+    try:
+        return q.get(timeout=timeout)
+    except queue.Empty:
+        return {"error": {"code": -1, "message": "timed out"}}
+
+
+# ---------------------------------------------------------------- sessions
+
+sessions = {}          # active in this process
+counter = [0]
+
+
+def model_options(s):
+    levels = ["medium", "high", "max"] if s["config"]["model"] == "smart" else ["low", "medium", "high"]
+    return levels
+
+
+def config_options(s):
+    c = s["config"]
+    opts = []
+    if CONFIG in ("options", "nomodel"):
+        opts.append({"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": c["mode"],
+                     "options": [{"value": "ask", "name": "Ask", "description": "Ask before changes"},
+                                 {"value": "code", "name": "Code"}, {"value": "plan", "name": "Plan"}]})
+        if CONFIG == "options":
+            opts.append({"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": c["model"],
+                         "options": [{"group": "g1", "name": "Group", "options": [
+                             {"value": "fast", "name": "Fast model", "description": "quick"},
+                             {"value": "smart", "name": "Smart model"}]}]})
+            lv = model_options(s)
+            opts.append({"id": "effort", "name": "Thinking", "category": "thought_level", "type": "select",
+                         "currentValue": c["effort"] if c["effort"] in lv else lv[1],
+                         "options": [{"value": v, "name": v.capitalize()} for v in lv]})
+        opts.append({"id": "brave", "name": "Brave mode", "description": "Skip confirmations", "type": "boolean",
+                     "currentValue": c["brave"]})
+        opts.append({"id": "ctx", "name": "Context size", "category": "model_config", "type": "select",
+                     "currentValue": c["ctx"], "options": [{"value": "200k", "name": "200K"}, {"value": "1m", "name": "1M"}]})
+    return opts
+
+
+def session_state(s):
+    out = {}
+    if CONFIG in ("options", "nomodel"):
+        out["configOptions"] = config_options(s)
+    if CONFIG == "legacy":
+        out["modes"] = {"currentModeId": s["config"]["mode"], "availableModes": [
+            {"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code", "description": "Write code"}]}
+    return out
+
+
+def save(s):
+    if STATE:
+        os.makedirs(STATE, exist_ok=True)
+        with open(os.path.join(STATE, s["id"] + ".json"), "w") as f:
+            json.dump({"id": s["id"], "cwd": s["cwd"], "config": s["config"], "history": s["history"]}, f)
+
+
+def load_saved(sid):
+    if not STATE:
+        return None
+    p = os.path.join(STATE, sid + ".json")
+    if not os.path.exists(p):
+        return None
+    with open(p) as f:
+        d = json.load(f)
+    return {"id": d["id"], "cwd": d["cwd"], "config": d["config"], "history": d["history"], "cancel": threading.Event()}
+
+
+def new_session(cwd):
+    counter[0] += 1
+    sid = "fake-%d-%d" % (os.getpid(), counter[0])
+    s = {"id": sid, "cwd": cwd, "config": {"mode": "ask", "model": "fast", "effort": "medium", "brave": False, "ctx": "200k"},
+         "history": [], "cancel": threading.Event()}
+    sessions[sid] = s
+    save(s)
+    return s
+
+
+def need_auth():
+    return env.get("FAKE_ACP_AUTH") in ("required", "terminal")
+
+
+# ---------------------------------------------------------------- prompts
+
+def run_prompt(msg_id, params):
+    sid = params.get("sessionId")
+    s = sessions.get(sid)
+    if s is None:
+        return reply_err(msg_id, -32002, "Resource not found")
+    if need_auth():
+        return reply_err(msg_id, -32000, "Authentication required")
+    prompt = params.get("prompt") or []
+    text = " ".join(b.get("text", "") for b in prompt if b.get("type") == "text")
+    types = [(b.get("mimeType") if b.get("type") == "image" else b.get("type")) for b in prompt]
+    s["cancel"].clear()
+    collected = []
+
+    def chunk(kind, t, mid=None):
+        u = {"sessionUpdate": kind, "content": {"type": "text", "text": t}}
+        if mid:
+            u["messageId"] = mid
+        update(sid, u)
+        if kind == "agent_message_chunk":
+            collected.append(t)
+        if DELAY:
+            time.sleep(DELAY)
+
+    def finish(stop="end_turn"):
+        s["history"].append({"user": text, "agent": "".join(collected)})
+        save(s)
+        reply(msg_id, {"stopReason": stop})
+
+    if "crash" in text:
+        chunk("agent_message_chunk", "about to crash")
+        os._exit(3)
+    if "error" in text:
+        return reply_err(msg_id, -32603, "model exploded")
+    if "authfail" in text:
+        return reply_err(msg_id, -32000, "Authentication required")
+    if "refuse" in text:
+        return finish("refusal")
+    if "maxtokens" in text:
+        chunk("agent_message_chunk", "partial answer")
+        return finish("max_tokens")
+    if "title" in text:
+        update(sid, {"sessionUpdate": "session_info_update", "title": "A better title"})
+    if "stream" in text:
+        chunk("agent_thought_chunk", "Let me think. ")
+        chunk("agent_thought_chunk", "Still thinking.")
+        chunk("agent_message_chunk", "Hello ", "m1")
+        chunk("agent_message_chunk", "world", "m1")
+        chunk("agent_message_chunk", "Second message", "m2")
+        update(sid, {"sessionUpdate": "usage_update", "used": 1234, "size": 200000,
+                     "cost": {"amount": 0.05 * (len(s["history"]) + 1), "currency": "USD"}})
+        return finish()
+    if "plan" in text:
+        update(sid, {"sessionUpdate": "plan", "entries": [
+            {"content": "Read the code", "priority": "high", "status": "completed"},
+            {"content": "Write the fix", "priority": "high", "status": "in_progress"},
+            {"content": "Run the tests", "priority": "medium", "status": "pending"}]})
+        return finish()
+    if "switchmode" in text:
+        s["config"]["mode"] = "code"
+        update(sid, {"sessionUpdate": "config_option_update", "configOptions": config_options(s)})
+        update(sid, {"sessionUpdate": "current_mode_update", "currentModeId": "code"})
+        chunk("agent_message_chunk", "switched")
+        return finish()
+    if "fsread" in text:
+        r = ask("fs/read_text_file", {"sessionId": sid, "path": s["cwd"] + "/a.txt"})
+        chunk("agent_message_chunk", "fs: " + str((r.get("error") or {}).get("code")))
+        return finish()
+    if "images" in text:
+        chunk("agent_message_chunk", "blocks: " + ",".join(types))
+        return finish()
+    if "tool" in text:
+        update(sid, {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Run ls", "kind": "execute",
+                     "status": "pending", "rawInput": {}})
+        update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress",
+                     "rawInput": {"command": "ls -la"}})
+        update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+                     "content": [{"type": "content", "content": {"type": "text", "text": "file-a\nfile-b\n"}}],
+                     "rawOutput": {"exit_code": 0}})
+        chunk("agent_message_chunk", "listed")
+        return finish()
+    if "edit" in text:
+        update(sid, {"sessionUpdate": "tool_call", "toolCallId": "e1", "title": "Edit files", "kind": "edit",
+                     "status": "in_progress", "locations": [{"path": s["cwd"] + "/a.txt"}]})
+        update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "e1", "status": "completed", "content": [
+            {"type": "diff", "path": s["cwd"] + "/a.txt", "oldText": "one\n", "newText": "two\n"},
+            {"type": "diff", "path": s["cwd"] + "/new.txt", "oldText": None, "newText": "fresh\n"}]})
+        return finish()
+    if "permission" in text:
+        update(sid, {"sessionUpdate": "tool_call", "toolCallId": "p1", "title": "Run rm", "kind": "execute",
+                     "status": "pending", "rawInput": {}})
+        r = ask("session/request_permission", {
+            "sessionId": sid,
+            "toolCall": {"toolCallId": "p1", "title": "Run `rm -rf build`", "kind": "execute", "status": "pending",
+                         "rawInput": {"command": "rm -rf build"}},
+            "options": [{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+                        {"optionId": "allow-always", "name": "Always allow rm", "kind": "allow_always"},
+                        {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+                        {"optionId": "reject-always", "name": "Never allow rm", "kind": "reject_always"}]})
+        outcome = (r.get("result") or {}).get("outcome") or {}
+        log({"kind": "permission_outcome", "outcome": outcome})
+        if outcome.get("outcome") == "cancelled":
+            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "p1", "status": "failed"})
+            return finish("cancelled")
+        opt = outcome.get("optionId", "")
+        if opt.startswith("allow"):
+            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "p1", "status": "in_progress"})
+            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "p1", "status": "completed",
+                         "content": [{"type": "content", "content": {"type": "text", "text": "ran after " + opt}}]})
+        else:
+            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": "p1", "status": "failed",
+                         "content": [{"type": "content", "content": {"type": "text", "text": "refused: " + opt}}]})
+        chunk("agent_message_chunk", "permission answered: " + opt)
+        return finish()
+    if "elicit" in text:
+        r = ask("elicitation/create", {
+            "sessionId": sid, "mode": "form", "message": "How should I proceed?",
+            "requestedSchema": {"type": "object", "required": ["strategy", "count"], "properties": {
+                "strategy": {"type": "string", "title": "Strategy", "enum": ["safe", "fast"]},
+                "count": {"type": "integer", "minimum": 1, "maximum": 5},
+                "note": {"type": "string"}}}})
+        res = r.get("result") or {}
+        chunk("agent_message_chunk", "elicitation: " + json.dumps(res, sort_keys=True))
+        return finish()
+    if "hold" in text:
+        chunk("agent_message_chunk", "working...")
+        update(sid, {"sessionUpdate": "tool_call", "toolCallId": "h1", "title": "Sleep", "kind": "execute",
+                     "status": "in_progress", "rawInput": {"command": "sleep 100"}})
+        if env.get("FAKE_ACP_IGNORE_CANCEL"):
+            time.sleep(300)
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if s["cancel"].wait(0.05):
+                return finish("cancelled")
+        return finish()
+    chunk("agent_message_chunk", "echo: " + text)
+    return finish()
+
+
+# ---------------------------------------------------------------- dispatch
+
+def handle(msg):
+    method = msg.get("method")
+    mid = msg.get("id")
+    if mid is not None and method:
+        req_methods[mid] = method
+    p = msg.get("params") or {}
+    if method == "initialize":
+        mode = env.get("FAKE_ACP_INIT")
+        if mode == "fail":
+            sys.stderr.write("fake-acp: cannot start: missing config\n")
+            sys.stderr.flush()
+            sys.exit(1)
+        if mode == "hang":
+            time.sleep(3600)
+        res = {"agentCapabilities": {"loadSession": "load" in FLAGS,
+                                     "promptCapabilities": {"image": "image" in FLAGS},
+                                     "sessionCapabilities": {}},
+               "authMethods": [], "agentInfo": {"name": "fake-acp", "title": "Fake ACP", "version": "1.2.3"}}
+        if mode != "noversion":
+            res["protocolVersion"] = 2 if mode == "v2" else 1
+        if "resume" in FLAGS:
+            res["agentCapabilities"]["sessionCapabilities"]["resume"] = {}
+        if "close" in FLAGS:
+            res["agentCapabilities"]["sessionCapabilities"]["close"] = {}
+        if need_auth():
+            res["authMethods"] = [{"id": "login", "name": "Log in with Fake", "description": "Opens a browser"}]
+            if env.get("FAKE_ACP_AUTH") == "terminal":
+                res["authMethods"].append({"id": "term", "name": "Terminal login", "type": "terminal", "args": ["--login"]})
+        return reply(mid, res)
+    if method == "session/new":
+        if need_auth():
+            return reply_err(mid, -32000, "Authentication required")
+        s = new_session(p.get("cwd"))
+        res = {"sessionId": s["id"]}
+        res.update(session_state(s))
+        return reply(mid, res)
+    if method in ("session/resume", "session/load"):
+        fail = env.get("FAKE_ACP_RESUME_FAIL")
+        if fail == "other":
+            return reply_err(mid, -32603, "disk on fire")
+        sid = p.get("sessionId")
+        saved = load_saved(sid) if fail != "notfound" else None
+        if saved is None:
+            return reply_err(mid, -32002, "Resource not found")
+        sessions[sid] = saved
+        if method == "session/load":
+            for h in saved["history"]:
+                update(sid, {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": h["user"]}})
+                update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": h["agent"]}})
+        return reply(mid, session_state(saved))
+    if method == "session/prompt":
+        threading.Thread(target=run_prompt, args=(mid, p), daemon=True).start()
+        return
+    if method == "session/cancel":
+        s = sessions.get(p.get("sessionId"))
+        if s:
+            s["cancel"].set()
+        return
+    if method == "session/close":
+        s = sessions.pop(p.get("sessionId"), None)
+        if s:
+            s["cancel"].set()
+        return reply(mid, {})
+    if method == "session/set_mode":
+        s = sessions.get(p.get("sessionId"))
+        if not s:
+            return reply_err(mid, -32002, "Resource not found")
+        if p.get("modeId") not in ("ask", "code"):
+            return reply_err(mid, -32602, "unknown mode")
+        s["config"]["mode"] = p["modeId"]
+        save(s)
+        return reply(mid, {})
+    if method == "session/set_config_option":
+        s = sessions.get(p.get("sessionId"))
+        if not s:
+            return reply_err(mid, -32002, "Resource not found")
+        cid, val = p.get("configId"), p.get("value")
+        c = s["config"]
+        valid = {"mode": ["ask", "code", "plan"], "model": ["fast", "smart"], "effort": model_options(s), "ctx": ["200k", "1m"]}
+        if cid == "brave":
+            if not isinstance(val, bool):
+                return reply_err(mid, -32602, "brave needs a boolean")
+            c["brave"] = val
+        elif cid in valid and val in valid[cid]:
+            c[cid] = val
+            if cid == "model":
+                lv = model_options(s)
+                c["effort"] = lv[1]
+        else:
+            return reply_err(mid, -32602, "unknown option or value")
+        save(s)
+        return reply(mid, {"configOptions": config_options(s)})
+    if mid is not None:
+        return reply_err(mid, -32601, "Method not found: %s" % method)
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    log({"kind": "in", "msg": msg})
+    if "method" in msg:
+        handle(msg)
+    elif "id" in msg and msg["id"] in waiters:
+        waiters.pop(msg["id"]).put(msg)
+
+log({"kind": "eof"})
+sys.exit(0)

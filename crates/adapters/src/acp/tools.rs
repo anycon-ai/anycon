@@ -408,8 +408,8 @@ mod tests {
     fn output_prefers_text_then_raw_output_then_a_diff_summary() {
         let d = DiffBlock { path: "/w/a".into(), old: None, new: "x".into() };
         assert_eq!(output_value("out", &json!({"x": 1}), &[]), json!("out"));
-        assert_eq!(output_value("", &json!({"x": 1}), &[d.clone()]), json!({"x": 1}));
-        assert_eq!(output_value("", &Value::Null, &[d.clone()]), json!("Edited /w/a"));
+        assert_eq!(output_value("", &json!({"x": 1}), std::slice::from_ref(&d)), json!({"x": 1}));
+        assert_eq!(output_value("", &Value::Null, std::slice::from_ref(&d)), json!("Edited /w/a"));
         assert_eq!(output_value("", &Value::Null, &[d.clone(), d]), json!("Edited 2 files"));
         assert_eq!(output_value("", &Value::Null, &[]), Value::Null);
     }

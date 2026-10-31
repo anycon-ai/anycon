@@ -112,7 +112,9 @@ impl Adapter for AcpAdapter {
             return Err(AdapterError::Spawn(format!("working directory does not exist: {}", req.cwd.display())));
         }
 
-        let connection = self.pool.acquire(&launch, &self.label, &self.timings).await?;
+        // 错误消息里用探测到的名字（自己加的 agent 的名字来自它的 `agentInfo`）
+        let label = if req.agent_info.label.is_empty() { self.label.clone() } else { req.agent_info.label.clone() };
+        let connection = self.pool.acquire(&launch, &label, &self.timings).await?;
         let (session, opened) = match connection.open_session(&req, &self.timings).await {
             Ok(x) => x,
             Err(e) => {

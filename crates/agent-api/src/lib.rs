@@ -17,8 +17,8 @@ use anycon_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// `config.agents.<id>` 的内容，daemon 读 toml 后交给 adapter。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// `config.agents.<id>`（ACP agent 是 `config.agents.acp.<id>`）的内容，daemon 读 toml 后交给 adapter。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AdapterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,

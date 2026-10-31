@@ -455,7 +455,7 @@ async fn offline_probe(paths: &Paths, cfg: &Config, env: &crate::env::DaemonEnv)
     let scratch = paths.probe_scratch();
     let _ = std::fs::create_dir_all(&scratch);
     let mut out = Vec::new();
-    for a in anycon_adapters::all() {
+    for a in anycon_adapters::all_with_acp(cfg.acp_names()) {
         let Some(ac) = cfg.adapter_config(a.id()) else { continue };
         if !ac.enabled {
             out.push(anycon_protocol::AgentInfo {
@@ -485,6 +485,8 @@ async fn offline_probe(paths: &Paths, cfg: &Config, env: &crate::env::DaemonEnv)
             scratch_dir: scratch.clone(),
         };
         match tokio::time::timeout(Duration::from_secs(25), a.probe(&ctx)).await {
+            // 注册表里的 ACP agent 没装、用户也没动过它的配置：和 `agent.list` 一样不报
+            Ok(i) if i.driver == "acp" && i.status == AgentStatus::NotInstalled && cfg.is_implicit_acp(&i.id) => {}
             Ok(i) => out.push(i),
             Err(_) => out.push(anycon_protocol::AgentInfo {
                 id: a.id().into(),

@@ -133,6 +133,8 @@ pub struct FakeAdapter {
     pub order: Arc<Mutex<Vec<String>>>,
     /// 新 handle 的 `AgentHandle::pid()`（预览按它判断监听端口是不是会话起的）；默认 `None`。
     pub pid: Mutex<Option<u32>>,
+    /// `Adapter::driver()` / `AgentInfo.driver`；默认 `mock`。
+    pub driver: Mutex<&'static str>,
 }
 
 /// 假 adapter 对**插话**（`UserInput.interject = true`）的失败方式。
@@ -181,6 +183,7 @@ impl FakeAdapter {
             shutdown_delay: Arc::new(Mutex::new(Duration::ZERO)),
             order: Arc::new(Mutex::new(Vec::new())),
             pid: Mutex::new(None),
+            driver: Mutex::new("mock"),
         })
     }
 
@@ -215,7 +218,7 @@ impl FakeAdapter {
         let mut info = AgentInfo {
             id: self.id.to_string(),
             label: "Fake Agent".into(),
-            driver: "mock".into(),
+            driver: self.driver.lock().unwrap().to_string(),
             enabled: true,
             status,
             version: Some(version),
@@ -321,7 +324,7 @@ impl Adapter for FakeAdapter {
         "Fake Agent"
     }
     fn driver(&self) -> &'static str {
-        "mock"
+        *self.driver.lock().unwrap()
     }
 
     async fn probe(&self, ctx: &ProbeContext) -> AgentInfo {
@@ -810,6 +813,27 @@ impl ClientSink for ChanSink {
     }
 }
 
+/// 夹具用哪套 adapter。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kit {
+    /// 假 adapter（`fake`）。
+    Fake,
+    /// `anycon_adapters::all()`（真 mock / claude-code / codex，不含 ACP）。
+    Real,
+    /// daemon 默认的集合（三个内置的加上配置里的 ACP agent，随配置热增减）；带的是要等它探测完成的那个 agent。
+    Acp(&'static str),
+}
+
+impl Kit {
+    fn ready_agent(self) -> &'static str {
+        match self {
+            Kit::Fake => "fake",
+            Kit::Real => "mock",
+            Kit::Acp(a) => a,
+        }
+    }
+}
+
 /// 一台临时 daemon：临时 `ANYCON_HOME`、临时 workspace、假 adapter，不连 hub（可选开本机 socket）。
 pub struct TestDaemon {
     pub dir: tempfile::TempDir,
@@ -826,8 +850,7 @@ pub struct TestDaemon {
     _lock: DaemonLock,
     socket: bool,
     hub: bool,
-    /// 用 `anycon_adapters::all()`（真 mock / claude-code）而不是假 adapter。
-    real_adapters: bool,
+    kit: Kit,
     ready_agent: &'static str,
     /// 叠加到 daemon 环境上的变量（git 夹具：`GIT_CONFIG_GLOBAL` 等）。
     env_extra: Vec<(String, String)>,
@@ -851,37 +874,50 @@ impl TestDaemon {
 
     /// 用 `anycon_adapters::all()` 里的真 mock adapter（`agents.mock.enabled = true`）。
     pub async fn start_mock(overrides: &[(&str, &str)], socket: bool) -> TestDaemon {
-        Self::start_inner(overrides, socket, None, true, false, vec![]).await
+        Self::start_inner(overrides, socket, None, Kit::Real, false, vec![]).await
+    }
+
+    /// 带 ACP agent 的 daemon：adapter 集合是 daemon 默认的（三个内置的加上配置里的 ACP agent），注册表里的 ACP agent 全部关掉
+    /// （不碰机器上真装着的），要测的 agent 用 `overrides` 配（`agents.acp.<name>.command` …）。`ready_agent`：等它探测完成。
+    pub async fn start_acp(overrides: &[(&str, &str)], ready_agent: &'static str) -> TestDaemon {
+        Self::start_inner(overrides, false, None, Kit::Acp(ready_agent), false, vec![]).await
     }
 
     /// 带 git 夹具的 daemon（假 adapter）：daemon 的环境里 `GIT_CONFIG_GLOBAL` 指向临时文件（`user.name` / `user.email` /
     /// `init.defaultBranch = main`），`GIT_CONFIG_NOSYSTEM=1`，`PATH` 前面放着一个假的 `gh`（见 [`TestDaemon::set_gh`]）——
     /// 不读开发机的 `~/.gitconfig`，不联网。
     pub async fn start_git(overrides: &[(&str, &str)]) -> TestDaemon {
-        Self::start_inner(overrides, false, None, false, true, vec![]).await
+        Self::start_inner(overrides, false, None, Kit::Fake, true, vec![]).await
     }
 
     /// daemon 的 `PATH` 里没有 `git`（`NodeCapabilities.worktree` 为 false）。
     pub async fn start_without_git() -> TestDaemon {
-        Self::start_inner(&[], false, None, false, false, vec![("PATH".into(), "/nonexistent-anycon-test-dir".into())])
-            .await
+        Self::start_inner(
+            &[],
+            false,
+            None,
+            Kit::Fake,
+            false,
+            vec![("PATH".into(), "/nonexistent-anycon-test-dir".into())],
+        )
+        .await
     }
 
     /// [`TestDaemon::start_git`]，用真的 mock agent（`anycon_adapters::all()`，支持 `write` 关键词）。
     pub async fn start_mock_git(overrides: &[(&str, &str)]) -> TestDaemon {
-        Self::start_inner(overrides, false, None, true, true, vec![]).await
+        Self::start_inner(overrides, false, None, Kit::Real, true, vec![]).await
     }
 
     /// `hub_url` 为 Some 时写进 `hub.url` 并连接 hub。
     pub async fn start_full(overrides: &[(&str, &str)], socket: bool, hub_url: Option<&str>) -> TestDaemon {
-        Self::start_inner(overrides, socket, hub_url, false, false, vec![]).await
+        Self::start_inner(overrides, socket, hub_url, Kit::Fake, false, vec![]).await
     }
 
     async fn start_inner(
         overrides: &[(&str, &str)],
         socket: bool,
         hub_url: Option<&str>,
-        real: bool,
+        kit: Kit,
         git: bool,
         extra: Vec<(String, String)>,
     ) -> TestDaemon {
@@ -928,8 +964,15 @@ impl TestDaemon {
             force: false,
         };
         crate::setup::init(&paths, &opts).await.unwrap();
-        let ready_agent = if real { "mock" } else { "fake" };
-        crate::config::set_value(&paths, &format!("agents.{ready_agent}.enabled"), "true").unwrap();
+        let ready_agent = kit.ready_agent();
+        if matches!(kit, Kit::Acp(_)) {
+            // 注册表里的 ACP agent 全部关掉：测试不碰机器上真装着的 agent
+            for id in anycon_adapters::acp::registry_ids() {
+                crate::config::set_value(&paths, &format!("agents.acp.{id}.enabled"), "false").unwrap();
+            }
+        } else {
+            crate::config::set_value(&paths, &format!("agents.{ready_agent}.enabled"), "true").unwrap();
+        }
         // 内置的真实 agent 没有配置段也参与探测（daemon.md § 5.6）：测试不碰机器上真装着的 claude / codex
         for builtin in crate::config::BUILTIN_AGENTS {
             crate::config::set_value(&paths, &format!("agents.{builtin}.enabled"), "false").unwrap();
@@ -940,7 +983,7 @@ impl TestDaemon {
         let fake = FakeAdapter::new("fake");
         let hub = hub_url.is_some();
         let lock = DaemonLock::acquire(&paths).unwrap();
-        let (daemon, ctx) = Self::boot(&paths, &fake, socket, hub, real, &env_extra).await;
+        let (daemon, ctx) = Self::boot(&paths, &fake, socket, hub, kit, &env_extra).await;
         // 等首次探测完成
         let t = Instant::now();
         while ctx.agents.info(ready_agent).is_none_or(|i| i.status != AgentStatus::Ready)
@@ -959,7 +1002,7 @@ impl TestDaemon {
             _lock: lock,
             socket,
             hub,
-            real_adapters: real,
+            kit,
             ready_agent,
             env_extra,
         }
@@ -970,13 +1013,17 @@ impl TestDaemon {
         fake: &Arc<FakeAdapter>,
         socket: bool,
         hub: bool,
-        real: bool,
+        kit: Kit,
         env_extra: &[(String, String)],
     ) -> (Daemon, Arc<Ctx>) {
         let daemon = Daemon::start(
             paths.clone(),
             DaemonOptions {
-                adapters: if real { None } else { Some(vec![fake.clone() as Arc<dyn anycon_agent_api::Adapter>]) },
+                adapters: match kit {
+                    Kit::Acp(_) => None,
+                    Kit::Real => Some(anycon_adapters::all()),
+                    Kit::Fake => Some(vec![fake.clone() as Arc<dyn anycon_agent_api::Adapter>]),
+                },
                 hub,
                 socket,
                 login_shell: Some(false),
@@ -997,8 +1044,7 @@ impl TestDaemon {
         if let Some(d) = self.daemon.take() {
             d.shutdown().await;
         }
-        let (daemon, ctx) =
-            Self::boot(&self.paths, &self.fake, self.socket, self.hub, self.real_adapters, &self.env_extra).await;
+        let (daemon, ctx) = Self::boot(&self.paths, &self.fake, self.socket, self.hub, self.kit, &self.env_extra).await;
         let t = Instant::now();
         while ctx.agents.info(self.ready_agent).is_none_or(|i| i.status != AgentStatus::Ready)
             && t.elapsed() < Duration::from_secs(5)

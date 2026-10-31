@@ -4,7 +4,9 @@
 //! - 周期（`probe_interval`）只跑 cheap 探测；首次 / `refresh` / 命令或版本变了 / 该 agent 的配置变了才跑完整探测；
 //! - 结果缓存在 `agent_cache` 表；`etag` 是整张列表（忽略 `probed_at_ms`）的哈希；变化时向所有在线客户端推 `agent.changed`。
 //!
-//! 没有 `[agents.<id>]` 配置段的 adapter 不参与（不出现在列表里）。daemon 对具体 adapter 一无所知。
+//! 没有 `[agents.<id>]` 配置段的 adapter 不参与（不出现在列表里）。daemon 对具体 adapter 一无所知，只知道 ACP agent 的名字来自
+//! 配置（`[agents.acp.<name>]`）：配置增删了名字，adapter 集合跟着变（`AdapterFactory`），不用重启。注册表里的 ACP agent 没装、
+//! 用户也没动过它的配置时不出现在列表里（`Config::is_implicit_acp`）。
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -25,6 +27,10 @@ use crate::env::DaemonEnv;
 use crate::store::Store;
 use crate::util::{now_ms, warn_err};
 
+/// 按名字造一个 ACP agent 的 adapter（`anycon_adapters::acp::adapter_for`）。daemon 用它在配置里出现新的 `[agents.acp.<name>]`
+/// 时补上 adapter；测试里用假的 adapter 集合时不给。
+pub type AdapterFactory = Arc<dyn Fn(&str) -> Arc<dyn Adapter> + Send + Sync>;
+
 #[derive(Default)]
 struct State {
     infos: BTreeMap<String, Arc<AgentInfo>>,
@@ -32,14 +38,15 @@ struct State {
 }
 
 pub struct Agents {
-    adapters: Vec<Arc<dyn Adapter>>,
+    adapters: RwLock<Vec<Arc<dyn Adapter>>>,
+    acp_factory: Option<AdapterFactory>,
     config: Arc<ConfigStore>,
     env: Arc<DaemonEnv>,
     store: Store,
     clients: Arc<Clients>,
     paths: Paths,
     state: RwLock<State>,
-    locks: HashMap<String, Arc<AsyncMutex<()>>>,
+    locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     /// 每个 agent 上一次生效的「影响探测」的配置指纹。
     fingerprints: Mutex<HashMap<String, String>>,
     wake: tokio::sync::Notify,
@@ -156,20 +163,36 @@ impl Agents {
         clients: Arc<Clients>,
         paths: Paths,
     ) -> Arc<Self> {
+        Self::with_factory(adapters, None, config, env, store, clients, paths).await
+    }
+
+    /// 和 [`Agents::new`] 一样，另外给一个造 ACP adapter 的工厂：配置里的 `[agents.acp.<name>]` 增删时 adapter 集合跟着变。
+    pub async fn with_factory(
+        adapters: Vec<Arc<dyn Adapter>>,
+        acp_factory: Option<AdapterFactory>,
+        config: Arc<ConfigStore>,
+        env: Arc<DaemonEnv>,
+        store: Store,
+        clients: Arc<Clients>,
+        paths: Paths,
+    ) -> Arc<Self> {
         let locks = adapters.iter().map(|a| (a.id().to_string(), Arc::new(AsyncMutex::new(())))).collect();
         let this = Arc::new(Agents {
-            adapters,
+            adapters: RwLock::new(adapters),
+            acp_factory,
             config,
             env,
             store,
             clients,
             paths,
             state: RwLock::new(State::default()),
-            locks,
+            locks: Mutex::new(locks),
             fingerprints: Mutex::new(HashMap::new()),
             wake: tokio::sync::Notify::new(),
             announced_etag: Mutex::new(String::new()),
         });
+        // 配置里的 ACP agent（注册表里的加用户自己加的）：工厂给的话在这里补上 adapter
+        this.sync_acp_adapters(&this.config.get());
         this.seed_from_cache().await;
         this
     }
@@ -185,8 +208,9 @@ impl Agents {
             .map(|(i, _)| (i.id.clone(), i))
             .collect();
         let cfg = self.config.get();
+        let adapters = self.adapters.read().unwrap().clone();
         let mut st = self.state.write().unwrap();
-        for a in &self.adapters {
+        for a in &adapters {
             let Some(ac) = cfg.adapter_config(a.id()) else { continue };
             let info = if !ac.enabled {
                 self.disabled_info(a.as_ref())
@@ -229,7 +253,7 @@ impl Agents {
     }
 
     pub fn adapter(&self, id: &str) -> Option<Arc<dyn Adapter>> {
-        self.adapters.iter().find(|a| a.id() == id).cloned()
+        self.adapters.read().unwrap().iter().find(|a| a.id() == id).cloned()
     }
 
     pub fn info(&self, id: &str) -> Option<Arc<AgentInfo>> {
@@ -239,8 +263,20 @@ impl Agents {
     /// 客户端看到的列表：探测结果 + 配置的叠加（见 [`effective_info`]）。
     pub fn list(&self) -> AgentListResult {
         let cfg = self.config.get();
-        let agents: Vec<AgentInfo> =
-            self.state.read().unwrap().infos.values().map(|i| effective_info(i, &cfg)).collect();
+        let agents: Vec<AgentInfo> = self
+            .state
+            .read()
+            .unwrap()
+            .infos
+            .values()
+            // 注册表里的 ACP agent 没装、用户也没动过它的配置：不出现（首次探测还没跑完的占位项同理）
+            .filter(|i| {
+                !(i.driver == "acp"
+                    && matches!(i.status, AgentStatus::NotInstalled | AgentStatus::Loading)
+                    && cfg.is_implicit_acp(&i.id))
+            })
+            .map(|i| effective_info(i, &cfg))
+            .collect();
         let etag = compute_etag(&agents);
         AgentListResult { agents, etag, not_modified: false }
     }
@@ -275,13 +311,14 @@ impl Agents {
 
     fn participating_ids(&self) -> Vec<String> {
         let cfg = self.config.get();
-        self.adapters.iter().filter(|a| cfg.adapter_config(a.id()).is_some()).map(|a| a.id().to_string()).collect()
+        let adapters = self.adapters.read().unwrap();
+        adapters.iter().filter(|a| cfg.adapter_config(a.id()).is_some()).map(|a| a.id().to_string()).collect()
     }
 
     /// 探测一个 agent。`cheap = true` 只跑便宜的步骤（除非需要升级为完整探测）。
     pub async fn probe(self: &Arc<Self>, id: &str, cheap: bool) -> Option<Arc<AgentInfo>> {
         let adapter = self.adapter(id)?;
-        let lock = self.locks.get(id)?.clone();
+        let lock = self.locks.lock().unwrap().entry(id.to_string()).or_default().clone();
         // 周期性 cheap 探测碰到正在跑的探测就跳过；强制探测排队等
         let _guard = if cheap {
             match lock.try_lock() {
@@ -457,11 +494,40 @@ impl Agents {
         })
     }
 
+    /// 配置里的 ACP agent 名字变了：给新名字造 adapter，去掉不再在配置里的（只有用户自己加的会被去掉，注册表里的永远在）。
+    fn sync_acp_adapters(&self, cfg: &crate::config::Config) {
+        let Some(factory) = &self.acp_factory else { return };
+        let wanted: std::collections::BTreeSet<&str> = cfg.acp_names().collect();
+        let mut removed = Vec::new();
+        {
+            let mut adapters = self.adapters.write().unwrap();
+            for name in &wanted {
+                if !adapters.iter().any(|a| a.id() == *name) {
+                    adapters.push(factory(name));
+                }
+            }
+            adapters.retain(|a| {
+                let keep = a.driver() != "acp" || wanted.contains(a.id());
+                if !keep {
+                    removed.push(a.id().to_string());
+                }
+                keep
+            });
+        }
+        for id in removed {
+            self.remove(&id);
+            self.fingerprints.lock().unwrap().remove(&id);
+            self.locks.lock().unwrap().remove(&id);
+        }
+    }
+
     async fn on_config_changed(self: &Arc<Self>) {
+        self.sync_acp_adapters(&self.config.get());
         self.announce_if_view_changed();
         let cfg = self.config.get();
         let mut to_probe = Vec::new();
-        for a in &self.adapters {
+        let adapters = self.adapters.read().unwrap().clone();
+        for a in &adapters {
             let id = a.id();
             let fp = probe_fingerprint(&cfg, id);
             let changed = self.fingerprints.lock().unwrap().get(id).is_none_or(|old| old != &fp);
@@ -671,7 +737,13 @@ impl Agents {
                 .or_else(|| info.models.iter().find(|m| m.default).map(|m| m.id.clone()));
         }
         self.validate_settings(&p.agent, &info, &checked)?;
-        let key = |k: &str| format!("agents.{}.{k}", p.agent);
+        // ACP agent 的配置在 `agents.acp.<名字>` 下
+        let prefix = if self.config.get().agents.acp.contains_key(&p.agent) {
+            format!("agents.acp.{}", p.agent)
+        } else {
+            format!("agents.{}", p.agent)
+        };
+        let key = |k: &str| format!("{prefix}.{k}");
         let quote = |s: &str| serde_json::to_string(s).unwrap_or_default();
         // 一次写入：要么全部生效要么都不写
         let mut edits: Vec<(String, String)> = Vec::new();
@@ -728,9 +800,19 @@ impl Agents {
                 previous: Some((*info).clone()),
                 scratch_dir: scratch,
             };
-            if let Ok(Some((text, fields))) =
-                tokio::time::timeout(Duration::from_secs(40), anycon_adapters::diagnose(id, &ctx)).await
-            {
+            // adapter 自己的诊断（ACP agent）优先，其次 `anycon_adapters::diagnose`（内置的三个），都没有就用通用字段
+            let own = match self.adapter(id) {
+                Some(a) => tokio::time::timeout(Duration::from_secs(40), a.diagnose(&ctx)).await.ok().flatten(),
+                None => None,
+            };
+            let found = match own {
+                Some(r) => Some(r),
+                None => tokio::time::timeout(Duration::from_secs(40), anycon_adapters::diagnose(id, &ctx))
+                    .await
+                    .ok()
+                    .flatten(),
+            };
+            if let Some((text, fields)) = found {
                 self.state.write().unwrap().diagnose.insert(id.to_string(), text.clone());
                 warn_err("save the agent cache", self.store.save_agent_cache(&info, Some(&text)).await);
                 return Ok(AgentDiagnoseResult { id: id.to_string(), text, fields });
@@ -881,6 +963,53 @@ mod tests {
             Agents::new(vec![fake.clone() as Arc<dyn Adapter>], config.clone(), env, store, clients.clone(), paths)
                 .await;
         Fx { _d: d, agents, config, fake, rx }
+    }
+
+    /// 注册表里的 ACP agent 没装、用户也没动过它的配置：不出现在列表里（装了的、或者用户动过配置的照常列出）。
+    #[tokio::test]
+    async fn registry_acp_agents_that_are_not_installed_stay_out_of_the_list() {
+        async fn list_ids(
+            cfg_toml: &str,
+            installed: &[&'static str],
+            missing: &[&'static str],
+        ) -> Vec<(String, AgentStatus)> {
+            let d = tempfile::tempdir().unwrap();
+            let paths = Paths::new(d.path());
+            std::fs::write(paths.config_toml(), cfg_toml).unwrap();
+            let config = ConfigStore::load(&paths).unwrap();
+            let store = Store::open(&paths.db()).await.unwrap();
+            let clients = Clients::new();
+            let env = Arc::new(DaemonEnv {
+                base: Arc::new(std::env::vars().collect()),
+                source: EnvSource::Process,
+                shell: None,
+                warning: None,
+            });
+            let mut adapters: Vec<Arc<dyn Adapter>> = Vec::new();
+            for id in installed.iter().chain(missing) {
+                let f = FakeAdapter::new(id);
+                *f.driver.lock().unwrap() = "acp";
+                if missing.contains(id) {
+                    *f.status.lock().unwrap() = AgentStatus::NotInstalled;
+                }
+                adapters.push(f);
+            }
+            let agents = Agents::new(adapters, config, env, store, clients, paths).await;
+            agents.refresh_all().await;
+            agents.list().agents.into_iter().map(|a| (a.id, a.status)).collect()
+        }
+        // 装了的列出，没装的不列
+        let l = list_ids("", &["goose"], &["opencode", "gemini"]).await;
+        assert_eq!(l, vec![("goose".to_string(), AgentStatus::Ready)]);
+        // 用户动过它的配置（这里是设了默认模式）：没装也列出，给 not_installed 和安装提示
+        let l = list_ids("[agents.acp.opencode]\ndefault_mode = \"code\"\n", &["goose"], &["opencode", "gemini"]).await;
+        assert_eq!(
+            l,
+            vec![("goose".to_string(), AgentStatus::Ready), ("opencode".to_string(), AgentStatus::NotInstalled)]
+        );
+        // 用户自己加的（不在注册表里）：没装也列出
+        let l = list_ids("[agents.acp.mine]\ncommand = \"mine --acp\"\n", &[], &["mine"]).await;
+        assert_eq!(l, vec![("mine".to_string(), AgentStatus::NotInstalled)]);
     }
 
     #[tokio::test]

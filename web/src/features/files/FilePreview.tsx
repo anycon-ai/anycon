@@ -119,7 +119,6 @@ function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo }: { nod
       </Frame>
     )
   const { binary, truncated, bytes } = state.data
-  const total = size ?? bytes
   if (binary)
     return (
       <Frame path={path} size={bytes} icon={icon}>
@@ -151,7 +150,7 @@ function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo }: { nod
     />
   ) : undefined
   return (
-    <Frame path={path} size={total} icon={icon} toolbar={toolbar} notices={notices}>
+    <Frame path={path} size={bytes} icon={icon} toolbar={toolbar} notices={notices}>
       {text === '' && !truncated ? (
         <Centered testId="files-empty-file">{t('files.emptyFile')}</Centered>
       ) : markdown && shown === 'rendered' ? (

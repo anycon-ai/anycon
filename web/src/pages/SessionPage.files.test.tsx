@@ -15,8 +15,9 @@ import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
 import { useUi } from '@/stores/ui'
 
-// 数据是异步读的；机器忙的时候 1 秒的默认等待不够
+// 数据是异步读的（渲染整页、shiki 都不快）；机器忙的时候默认的 1 秒等待和 5 秒用例超时不够
 configure({ asyncUtilTimeout: 5000 })
+vi.setConfig({ testTimeout: 20_000 })
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn', session: 'sess_a' }))

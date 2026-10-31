@@ -153,3 +153,21 @@ describe('ProjectPage: project under the workspace root', () => {
     expect(screen.queryByTestId('project-remove')).toBeNull()
   })
 })
+
+describe('ProjectPage: files', () => {
+  it('has a Files button that opens the read-only file browser on the project', async () => {
+    const user = userEvent.setup()
+    mount([project({ name: 'plain' })], 'plain')
+    expect(screen.getByTestId('project-files')).toHaveTextContent('Files')
+    await user.click(screen.getByTestId('project-files'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/n/$node/files/$', params: { node: 'nnnnnnnn', _splat: 'plain' } })
+  })
+
+  it('works for a linked project too, and is not offered when its folder is missing', () => {
+    const { unmount } = mount([project({ name: 'ext', kind: 'linked' })], 'ext')
+    expect(screen.getByTestId('project-files')).toBeInTheDocument()
+    unmount()
+    mount([project({ name: 'gone', kind: 'linked', missing: true })], 'gone')
+    expect(screen.queryByTestId('project-files')).toBeNull()
+  })
+})

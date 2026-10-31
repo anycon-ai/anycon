@@ -9,6 +9,7 @@ import { Composer } from '@/components/Composer'
 import { PageHeader } from '@/components/PageHeader'
 import { SessionStatusChip } from '@/components/SessionListItem'
 import { attachmentSupport } from '@/features/attachments/support'
+import { sessionWorkDir } from '@/features/files/paths'
 import { discardRefs, restoreAttachments } from '@/features/attachments/composerUploads'
 import { describeAttachmentFailure, describeAttachNotice } from '@/features/attachments/errors'
 import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, unarchiveSession, type SendOutcome } from '@/features/session/actions'
@@ -242,6 +243,8 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
   const project = summary?.project
   const projectPath = project ? entry.projects.find((p) => p.name === project)?.path : undefined
   const workDir = projectPath && worktree ? `${projectPath.replace(/\/+$/, '')}/${worktree.path}` : projectPath
+  // 工作目录在文件浏览里的路径（只读，docs/spec/web.md § 4.7）；会话还没加载出来时没有
+  const workDirFiles = summary ? sessionWorkDir(summary, projectMeta) : null
   // 「预览」（ADR-39）：hub 配了预览、节点也支持（web.md § 13.1）。和 git 无关，非 git 会话也有
   const previewTemplateOk = previewAvailable(previewTemplate, entry.info) ? previewTemplate : null
   const choice = mainChoice?.sessionId === sessionId ? mainChoice.view : 'chat'
@@ -294,6 +297,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
       backgroundTasks={backgroundTasks}
       workDir={workDir}
       project={project}
+      onOpenWorkDir={workDirFiles === null ? undefined : () => void navigate({ to: '/n/$node/files/$', params: { node: nodeParam, _splat: workDirFiles } })}
       createdAt={summary?.created_at_ms ?? 0}
       usage={view?.usage ?? { turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null }}
       context={view?.context}

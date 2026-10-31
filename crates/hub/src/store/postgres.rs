@@ -43,7 +43,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rand::RngCore;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow};
-use sqlx::{PgPool, Row};
+use sqlx::{Connection, PgConnection, PgPool, Row};
 
 use crate::util::{new_id, ordered};
 
@@ -249,6 +249,20 @@ impl PostgresStore {
         // 只描述「连的是哪里」（主机、端口、库名），不含用户名和密码，错误信息和日志里都可以放。
         let target = format!("{}:{}/{}", options.get_host(), options.get_port(), options.get_database().unwrap_or(""));
         let options = options.application_name("anycon-hub");
+        // 先单独连一次：池在连不上时会一直重试到 `acquire_timeout`，最后只报「池超时」，看不到真正的原因（拒绝连接、
+        // 认证失败、不支持 TLS……）。直接连一次，错误就是驱动给的那个。
+        match tokio::time::timeout(ACQUIRE_TIMEOUT, PgConnection::connect_with(&options)).await {
+            Err(_) => {
+                return Err(StoreError::Backend(format!(
+                    "cannot connect to Postgres at {target}: no answer within {} seconds",
+                    ACQUIRE_TIMEOUT.as_secs()
+                )))
+            }
+            Ok(Err(e)) => return Err(StoreError::Backend(format!("cannot connect to Postgres at {target}: {e}"))),
+            Ok(Ok(conn)) => {
+                let _ = conn.close().await;
+            }
+        }
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
             .acquire_timeout(ACQUIRE_TIMEOUT)
@@ -1550,6 +1564,10 @@ mod tests {
         let err = PostgresStore::open("postgres://anycon:hunter2@127.0.0.1:1/hub").await.err().expect("unreachable");
         let msg = err.to_string();
         assert!(msg.contains("cannot connect to Postgres at 127.0.0.1:1/hub"), "{msg}");
+        assert!(
+            msg.contains("error communicating with database"),
+            "the driver's own error is shown, not a pool timeout: {msg}"
+        );
         assert!(!msg.contains("hunter2") && !msg.contains("anycon:"), "credentials must not appear: {msg}");
     }
 

@@ -9,7 +9,7 @@
 | 异步运行时 | tokio | 事实标准 |
 | HTTP / WebSocket | axum | tower 中间件生态（限速、超时、压缩、trace 都是现成的），WS 内置，tokio 团队维护。性能差距对本项目无意义——瓶颈在 agent 不在 HTTP 层 |
 | 数据库访问 | sqlx | 编译期校验 SQL，自带 migration。不用 `sqlx::Any`，用 trait 抽象双后端（见下） |
-| 数据库 | SQLite（WAL） / Postgres | SQLite 是默认，单文件即全部数据；Postgres 给公共 hub 留的 |
+| 数据库 | SQLite（WAL） / Postgres | SQLite 是默认，单文件即全部数据；Postgres 给公共 hub 用（`ANYCON_DATABASE_URL=postgres://…`，TLS 用 rustls） |
 | 序列化 | serde + serde_json + rmp-serde | 外层信封 MessagePack，内层 JSON |
 | 协议类型导出 | schemars → JSON Schema | 一份 schema 同时生成 TS 和 pydantic；typeshare 只出类型不出 schema，Python 端吃亏 |
 | 配置 | figment | TOML + 环境变量合并 |
@@ -42,7 +42,7 @@ pub struct SqliteStore(Pool<Sqlite>);
 pub struct PostgresStore(Pool<Postgres>);
 ```
 
-两个实现，两套 migration 目录（`migrations/sqlite/`、`migrations/postgres/`），CI 都跑。trait 和 SQLite 实现在 v0.1 完成；Postgres 实现可以晚几周，但抽象层从第一天就有。
+两个实现，两套 migration 目录（`migrations/sqlite/`、`migrations/postgres/`，编号和名字一一对应），CI 都跑：`Store` 的测试是同一套，对两个后端各跑一遍（Postgres 那一遍要 `ANYCON_TEST_POSTGRES_URL`）。trait 和 SQLite 实现在 v0.1 完成，Postgres 实现在 v0.2；并发语义（SQLite 的单写者 vs Postgres 的行锁）见 [spec/hub.md § 8.1](spec/hub.md#81-存储后端sqlite-和-postgres)。
 
 ### 二进制划分
 

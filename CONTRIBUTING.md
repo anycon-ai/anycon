@@ -45,6 +45,7 @@ hub 只嵌入它**编译时**看到的 `web/dist`：先编了 hub、后构建 we
 - 改了 `crates/protocol` 必须 `just gen` 并一起提交 `schema/`、`packages/protocol/src/generated.ts` 和 `packages/protocol/src/method-types.ts`（方法的 params / result 类型由 `schema/methods.json` 生成），CI 用 `just gen-check` 检查
 - 端到端：`just e2e`（Playwright，真实 hub + daemon(mock) + web；端口随机，可以和别的 e2e 同时跑）、`just test-sdk-real`（3–4 分钟）、`just test-happy-path`。改了配对 / 加密 / 消息大小相关的东西，e2e 里有对应用例，见 [e2e/README.md](e2e/README.md)
 - 真实 agent CLI 的测试放在 `ANYCON_REAL_AGENT_TESTS=1` 后面，会花你的 token
+- hub 的 Postgres 存储：`cargo test -p anycon-hub` 默认只跑 SQLite。设 `ANYCON_TEST_POSTGRES_URL=postgres://用户:密码@主机:端口/库名`（一个能建 schema 的测试库，比如 `docker run --rm -e POSTGRES_PASSWORD=anycon -e POSTGRES_USER=anycon -p 55432:5432 postgres:18`）后，store 的共用测试和用 `TestHub` 起 hub 的集成测试会在同一个库里各建一个临时 schema 再跑一遍 Postgres，跑完删掉；没设就跳过。加数据库迁移要在 `migrations/sqlite/` 和 `migrations/postgres/` 里按同一个编号各加一份（有测试检查文件名一致）
 - 用 npm 镜像源装过依赖的话，提交前跑 `just lock-clean`：CI 拒绝 `bun.lock` 里出现非默认 registry 的地址
 
 ## 约定

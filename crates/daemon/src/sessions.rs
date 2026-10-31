@@ -87,7 +87,7 @@ const TASK_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const TASKS_TRACKED_MAX: usize = 1024;
 const SET_SETTINGS_TIMEOUT: Duration = Duration::from_secs(3);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(8);
-const FTS_FLUSH_BYTES: usize = 32 * 1024;
+pub(crate) const FTS_FLUSH_BYTES: usize = 32 * 1024;
 const RESOLVED_MEMORY: usize = 2048;
 
 // ---------------------------------------------------------------- 内部类型
@@ -871,6 +871,36 @@ impl Sessions {
             agent_session_id: st.row.agent_session_id.clone(),
             worktree: st.wt.as_ref().map(session_worktree),
         }
+    }
+
+    /// 导入（`anycon import`，docs/spec/daemon.md § 20）写进库里的会话装进内存：之后 `session.list` / `history` / `search`
+    /// 马上看得到，并通知在线客户端。会话在库里是完整的（事件、附件、worktree 记录都在同一个事务里提交过了），
+    /// 没有 agent 进程、没有 turn，和重启之后加载的 idle / ended 会话是一回事。
+    pub async fn adopt_imported(self: &Arc<Self>, id: &str) -> RpcResult<()> {
+        let internal = |e: crate::store::StoreError| err(ErrorCode::Internal, format!("cannot load the session: {e}"));
+        let row = self
+            .d
+            .store
+            .get_session(id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| err(ErrorCode::NotFound, format!("session {id} not found")))?;
+        let wt = match &row.worktree_id {
+            Some(wid) => self.d.store.get_worktree(wid).await.map_err(internal)?,
+            None => None,
+        };
+        let mut st = St::new(row);
+        st.wt = wt;
+        let payload = self.changed_payload(&st);
+        {
+            let mut map = self.map.write().unwrap();
+            if map.contains_key(id) {
+                return Ok(());
+            }
+            map.insert(id.to_string(), Arc::new(Session { id: id.to_string(), st: AsyncMutex::new(st) }));
+        }
+        self.push_changed(payload, true);
+        Ok(())
     }
 
     pub async fn get_summary(&self, id: &str) -> RpcResult<SessionSummary> {

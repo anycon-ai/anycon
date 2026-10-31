@@ -158,9 +158,17 @@ async fn first_pairing_issues_a_device_token_and_then_ik_rpc_works() {
     let audit: NodeAuditResult = web.call(methods::NODE_AUDIT, json!({ "limit": 20 })).await.unwrap();
     let respond = audit.entries.iter().find(|e| e.action == "permission.respond").unwrap();
     assert_eq!((respond.device_id.as_str(), respond.device_name.as_str()), (web.device_id.as_str(), "Test Browser"));
-    // 本机管理方法不能经 hub 调用
+    // 本机管理方法不能经 hub 调用（导出 / 导入读写 daemon 机器上的任意路径，更不行）
     let e = web.call::<Value>("local.status", json!({})).await.unwrap_err();
     assert_eq!(e.stable_code(), Some(ErrorCode::Forbidden));
+    for (method, params) in [
+        (anycon_daemon::local_methods::EXPORT, json!({ "out": td.dir.path().join("remote.zip") })),
+        (anycon_daemon::local_methods::IMPORT, json!({ "file": td.dir.path().join("remote.zip") })),
+    ] {
+        let e = web.call::<Value>(method, params).await.unwrap_err();
+        assert_eq!(e.stable_code(), Some(ErrorCode::Forbidden), "{method}");
+    }
+    assert!(!td.dir.path().join("remote.zip").exists());
 
     td.shutdown().await;
 }

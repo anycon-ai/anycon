@@ -6,6 +6,7 @@
 //! - `sessions` / `agents` / `workspace` / `wsroots` / `worktree`：会话、agent 注册与探测、项目目录（多个 workspace 根）、每会话 worktree
 //! - `store` / `config` / `audit` / `blobs`：SQLite 存储、配置、审计、附件通道
 //! - `remote_config` / `logtail`：远程查看 / 修改节点配置（白名单，ADR-43）、远程读日志尾部（`node.logs`）
+//! - `transfer`：`anycon export` / `import`（会话历史和附件的 zip 导出 / 导入，只走本机通道）
 //! - `preview`：dev server 预览（票据、端口探测、Noise 隧道里的 HTTP / WebSocket 转发）
 //! - `sys`：平台差异的小工具（只给属主访问、文件身份、规范路径……）
 
@@ -38,6 +39,7 @@ pub mod sessions;
 pub mod setup;
 pub mod store;
 pub mod sys;
+pub mod transfer;
 pub mod util;
 pub mod workspace;
 pub mod worktree;

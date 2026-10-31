@@ -266,7 +266,7 @@ pub fn image_size(mime: &str, read: &dyn Fn(u64, usize) -> Option<Vec<u8>>) -> O
 
 /// 文件名里不允许的字符：路径分隔符、控制字符（Unicode Cc，含 C1）、双向控制符（会让显示出来的文件名和真实的不一样，
 /// 例如 `invoice\u{202E}gnp.exe`）、行 / 段分隔符 U+2028 / U+2029。
-fn is_forbidden_in_name(c: char) -> bool {
+pub(crate) fn is_forbidden_in_name(c: char) -> bool {
     c == '/'
         || c == '\\'
         || c.is_control()
@@ -494,6 +494,11 @@ impl Blobs {
     /// 测试用：剩余磁盘空间的底线（缺省 1 GiB）。
     pub fn set_disk_reserve(&self, bytes: u64) {
         self.disk_reserve.store(bytes, Ordering::Relaxed);
+    }
+
+    /// 数据目录所在卷至少要剩这么多（再加上要写入的大小）才收新的上传 / 导入。
+    pub fn disk_reserve(&self) -> u64 {
+        self.disk_reserve.load(Ordering::Relaxed)
     }
 
     /// 测试用：让下一个 `put_end` 的收尾停在「已经接手、还没开始校验」处，直到 [`FinalizeHold::release`]。

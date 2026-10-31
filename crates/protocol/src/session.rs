@@ -360,7 +360,7 @@ pub struct SessionIdParams {
     pub session_id: SessionId,
 }
 
-/// 消息里的一个附件（ADR-35）：指向 daemon 上已经传完的 blob。客户端从 `blob.put_end` 拿到它、原样放进
+/// 消息里的一个附件（ADR-35、ADR-44）：指向 daemon 上已经传完的 blob（图片或任意文件）。客户端从 `blob.put_end` 拿到它、原样放进
 /// `session.send` / `session.create`；daemon 以自己记录的元数据为准写进 `user_message` 事件。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AttachmentRef {
@@ -368,7 +368,7 @@ pub struct AttachmentRef {
     pub name: String,
     pub mime: String,
     pub bytes: u64,
-    /// 图片像素宽高（四种图片类型由 daemon 读文件头得出；读不出来、或者不是图片时省略）。客户端用来在下载前占好位置。
+    /// 图片像素宽高（daemon 读文件头得出；读不出来、不是图片时省略）。客户端用来在下载前占好位置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -389,7 +389,8 @@ pub struct SessionCreateParams {
     pub message_id: Option<String>,
     #[serde(default)]
     pub settings: SessionSettings,
-    /// 第一条消息的附件（`blob.put_end` 的结果）。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `*/*`）→ `unsupported`。
+    /// 第一条消息的附件（`blob.put_end` 的结果）。agent 原生收的 mime（`capabilities.attachments`）交给 adapter，
+    /// 其余落到会话工作目录、路径写在交给 agent 的文字里（ADR-44）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AttachmentRef>,
     /// 在哪里工作；缺省 = `local`（ADR-34）。
@@ -404,7 +405,8 @@ pub struct SessionSendParams {
     pub message_id: String,
     /// 带了附件时可以为空串。
     pub content: String,
-    /// `blob.put_end` 的结果，每条至多 20 个。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `*/*`）→ `unsupported`。
+    /// `blob.put_end` 的结果，每条至多 20 个。agent 原生收的 mime（`capabilities.attachments`）交给 adapter，
+    /// 其余落到会话工作目录、路径写在交给 agent 的文字里（ADR-44）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AttachmentRef>,
 }

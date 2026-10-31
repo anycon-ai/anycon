@@ -91,6 +91,8 @@ pub struct SpawnRequest {
 pub struct UserInput {
     pub message_id: String,
     pub content: String,
+    /// 这条消息里 agent **原生**收的附件（mime 在它的 `capabilities.attachments` 里）。别的附件 daemon 复制到会话工作目录，
+    /// 路径写在 `content` 末尾（ADR-44），adapter 不会在这里收到它们。
     pub attachments: Vec<AttachmentRef>,
     /// 附件的本地路径（daemon 已落盘），与 `attachments` 一一对应。
     pub attachment_paths: Vec<PathBuf>,

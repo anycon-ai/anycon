@@ -41,6 +41,7 @@ pub mod store;
 pub mod sys;
 pub mod transfer;
 pub mod util;
+pub mod workfiles;
 pub mod workspace;
 pub mod worktree;
 pub mod wsroots;

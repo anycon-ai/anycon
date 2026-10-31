@@ -829,9 +829,8 @@ export interface AgentInfo {
 }
 export interface AgentCapabilities {
   /**
-   * 可接受的附件 mime，如 `image/png`；含 [`ATTACHMENT_ANY_FILE`]（`* /*`）表示收任意文件。
-   * 点名的图片类型作为图片直接交给模型，其余文件以 daemon 上的路径交给 agent、由它自己读（ADR-35「任意文件」）。
-   * 空 = 不收附件。
+   * agent **原生**收的附件 mime，如 `image/png`。其它附件（非图片、这里没列出的图片格式）不受它限制：daemon 把它们落到
+   * 会话工作目录并在文字里附上路径（ADR-44）。
    */
   attachments?: string[];
   /**
@@ -932,7 +931,7 @@ export interface AgentListResult {
   not_modified?: boolean;
 }
 /**
- * 消息里的一个附件（ADR-35）：指向 daemon 上已经传完的 blob。客户端从 `blob.put_end` 拿到它、原样放进
+ * 消息里的一个附件（ADR-35、ADR-44）：指向 daemon 上已经传完的 blob（图片或任意文件）。客户端从 `blob.put_end` 拿到它、原样放进
  * `session.send` / `session.create`；daemon 以自己记录的元数据为准写进 `user_message` 事件。
  */
 export interface AttachmentRef {
@@ -942,7 +941,7 @@ export interface AttachmentRef {
   mime: string;
   name: string;
   /**
-   * 图片像素宽高（四种图片类型由 daemon 读文件头得出；读不出来、或者不是图片时省略）。客户端用来在下载前占好位置。
+   * 图片像素宽高（daemon 读文件头得出；读不出来、不是图片时省略）。客户端用来在下载前占好位置。
    */
   width?: number | null;
 }
@@ -980,12 +979,13 @@ export interface BlobIdParams {
  */
 export interface BlobPutBeginParams {
   /**
-   * `type/subtype`（不带参数，≤ 127 字节，大小写不敏感，daemon 记成小写）；不知道类型时用 `application/octet-stream`。
-   * `image/png` `image/jpeg` `image/gif` `image/webp` 四种会核对文件头、读宽高，其它类型不看内容。
+   * 任意 `type/subtype`：不合法或空的按 `application/octet-stream` 记录（不报错），大小写和 `;` 之后的参数规整掉。
+   * 声明为 `image/png` `image/jpeg` `image/gif` `image/webp` 的才校验文件头、读宽高。
    */
   mime: string;
   /**
-   * 展示用的文件名（1–255 字节，不能含 `/` `\` 和控制字符）。daemon 不用它拼路径。
+   * 展示用的文件名（1–255 字节，不能含 `/` `\` 和控制字符）。非图片的存储扩展名取自它（清洗过），落到工作目录时也用它
+   * 作文件名；daemon 不用它拼出别的路径。
    */
   name: string;
   /**
@@ -1580,6 +1580,10 @@ export interface NodeEnrollStatusResult {
  * `node.info` 结果。
  */
 export interface NodeInfo {
+  /**
+   * `capabilities.blobs` 为 true 时给出。
+   */
+  attachment_limits?: NodeAttachmentLimits | null;
   capabilities: NodeCapabilities;
   name: string;
   node_id: string;
@@ -1600,9 +1604,31 @@ export interface NodeInfo {
    */
   worktree?: NodeWorktreeSettings | null;
 }
+/**
+ * 附件的上限（`node.info`），客户端据此在上传之前就拒绝明显超限的文件。
+ */
+export interface NodeAttachmentLimits {
+  /**
+   * 单个附件的字节上限（`sessions.max_attachment_bytes`，热加载；这里是 `node.info` 被调用那一刻的值）。
+   */
+  max_bytes: number;
+  /**
+   * 一条消息的附件字节合计上限。
+   */
+  max_message_bytes: number;
+  /**
+   * 一条消息至多带几个附件。
+   */
+  max_per_message: number;
+}
 export interface NodeCapabilities {
   audit: boolean;
   blobs: boolean;
+  /**
+   * daemon 能把任意类型的文件交给任何会话的 agent（非图片、agent 不原生收的图片落到会话工作目录，ADR-44）。
+   * 为 false（旧 daemon）时客户端只能上传图片。
+   */
+  file_attachments?: boolean;
   fs: boolean;
   /**
    * 支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。
@@ -2177,7 +2203,8 @@ export interface SessionWorktree {
 export interface SessionCreateParams {
   agent: string;
   /**
-   * 第一条消息的附件（`blob.put_end` 的结果）。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `* /*`）→ `unsupported`。
+   * 第一条消息的附件（`blob.put_end` 的结果）。agent 原生收的 mime（`capabilities.attachments`）交给 adapter，
+   * 其余落到会话工作目录、路径写在交给 agent 的文字里（ADR-44）。
    */
   attachments?: AttachmentRef[];
   /**
@@ -2430,7 +2457,8 @@ export interface SearchHit {
 }
 export interface SessionSendParams {
   /**
-   * `blob.put_end` 的结果，每条至多 20 个。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `* /*`）→ `unsupported`。
+   * `blob.put_end` 的结果，每条至多 20 个。agent 原生收的 mime（`capabilities.attachments`）交给 adapter，
+   * 其余落到会话工作目录、路径写在交给 agent 的文字里（ADR-44）。
    */
   attachments?: AttachmentRef[];
   /**

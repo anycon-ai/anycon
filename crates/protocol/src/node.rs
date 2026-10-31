@@ -10,6 +10,10 @@ pub struct NodeCapabilities {
     pub fs: bool,
     pub search: bool,
     pub blobs: bool,
+    /// daemon 能把任意类型的文件交给任何会话的 agent（非图片、agent 不原生收的图片落到会话工作目录，ADR-44）。
+    /// 为 false（旧 daemon）时客户端只能上传图片。
+    #[serde(default)]
+    pub file_attachments: bool,
     pub audit: bool,
     /// 支持每会话 worktree、`session.git_status` / `diff` / `sync_base`（ADR-34）。daemon 找不到 `git` 时为 false。
     #[serde(default)]
@@ -40,6 +44,17 @@ pub struct WorkspaceRootInfo {
     pub available: bool,
 }
 
+/// 附件的上限（`node.info`），客户端据此在上传之前就拒绝明显超限的文件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeAttachmentLimits {
+    /// 单个附件的字节上限（`sessions.max_attachment_bytes`，热加载；这里是 `node.info` 被调用那一刻的值）。
+    pub max_bytes: u64,
+    /// 一条消息至多带几个附件。
+    pub max_per_message: u32,
+    /// 一条消息的附件字节合计上限。
+    pub max_message_bytes: u64,
+}
+
 /// `node.info` 结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NodeInfo {
@@ -59,6 +74,9 @@ pub struct NodeInfo {
     /// `capabilities.worktree` 为 true 时给出。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<NodeWorktreeSettings>,
+    /// `capabilities.blobs` 为 true 时给出。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_limits: Option<NodeAttachmentLimits>,
 }
 
 /// 已配对的客户端设备（daemon 视角）。

@@ -1410,30 +1410,45 @@ export interface FsReadParams {
    */
   encoding?: FsReadEncoding & string;
   /**
-   * 读多少**原始字节**：默认 1 MiB，上限 10 MiB。`encoding = base64` 时响应体约是它的 4/3。
+   * 读多少**原始字节**。`encoding = text`：默认 1 MiB，上限 10 MiB。`encoding = base64`：一次最多一块（512 KiB，和
+   * `blob.get` 一样），缺省就是一块，超过的按一块算（不报错）；`0` 只回大小、不带数据。
    */
   max_bytes?: number | null;
+  /**
+   * 从文件的第几个字节读起，缺省 0。只有 `encoding = base64` 能用：大文件按块一块一块读，一个响应不会长时间占住设备到 daemon
+   * 那条有序的传输。`text` 模式下 `offset > 0` 是 `invalid`。
+   */
+  offset?: number;
   /**
    * 解析规则同 `FsListParams.path`。
    */
   path: string;
 }
 export interface FsReadResult {
+  /**
+   * `text` 模式：文件是二进制（不返回内容）。`base64` 模式：按**这一块**的内容判断（前 8 KiB 里有 NUL、或不是合法的
+   * UTF-8），只有 `offset = 0` 的那一块说明整个文件；从中间读起的块可能从半个字符开始，客户端不要依赖它。
+   */
   binary: boolean;
   /**
-   * 文件的总字节数（不是读到的）。
+   * 文件的总字节数（不是读到的）。分块读的时候每一块都带着它：总数变了说明文件在读的过程中被改写过。
    */
   bytes: number;
   /**
-   * `encoding = base64` 时读到的字节（不超过 `max_bytes`，`truncated` 时只是前一段）；`text` 模式没有这个字段。
+   * `encoding = base64` 时读到的字节（至多一块；`offset` 在文件末尾或之后时为空串）；`text` 模式没有这个字段。
    */
   data_base64?: string | null;
+  /**
+   * `encoding = base64` 时 `data_base64` 从文件的第几个字节开始（原样回显请求的 `offset`）；`text` 模式没有这个字段。
+   * 不认识 `offset` 的旧 daemon 不会带它，客户端据此知道分块读不能用。
+   */
+  offset?: number | null;
   /**
    * UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。`encoding = base64` 时恒为空。
    */
   text: string;
   /**
-   * 文件比读到的更长（超过 `max_bytes`）。
+   * 文件在读到的这一段**之后**还有内容（`offset + 读到的字节数 < bytes`）。
    */
   truncated: boolean;
 }

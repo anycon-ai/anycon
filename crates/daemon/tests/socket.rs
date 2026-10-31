@@ -228,6 +228,16 @@ async fn workspace_and_fs_methods_over_the_socket() {
     let fb: FsReadResult =
         s.call(methods::FS_READ, json!({ "path": "alpha/readme.md", "encoding": "base64" })).await.unwrap();
     assert_eq!((fb.text.as_str(), fb.data_base64.as_deref(), fb.bytes), ("", Some("IyBoaQ=="), 4));
+    assert_eq!(fb.offset, Some(0));
+    // `offset`：从第 2 个字节起；文本模式不支持
+    let fo: FsReadResult = s
+        .call(methods::FS_READ, json!({ "path": "alpha/readme.md", "encoding": "base64", "offset": 2 }))
+        .await
+        .unwrap();
+    assert_eq!((fo.data_base64.as_deref(), fo.offset, fo.bytes, fo.truncated), (Some("aGk="), Some(2), 4, false));
+    let e =
+        s.call::<FsReadResult>(methods::FS_READ, json!({ "path": "alpha/readme.md", "offset": 2 })).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::Invalid));
     let e = s
         .call::<FsReadResult>(methods::FS_READ, json!({ "path": "alpha/readme.md", "encoding": "hex" }))
         .await

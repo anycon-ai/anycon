@@ -879,7 +879,7 @@ SQLite（WAL）。全部表：
 - `dangerous` 模式：config 可禁；允许时每次 `session.create` / `set_settings` 选它都进审计
 - 会话 `env`：默认整体拒绝（`permissions.allow_session_env = false`）；开启后键必须在运维配置的允许列表 `permissions.session_env_allow` 里，再过黑名单兜底（`LD_*`、`DYLD_*`、`BASH_ENV`、`SHELLOPTS`、`PS4`、`LESSOPEN`、`NODE_*`、`ANTHROPIC_*`、`*_PROXY` 等，完整列表见 § 5.5），且不能覆盖 `agents.env` 里运维配置的键，键名进审计（ADR-31）
 - 附件（§ 7.10）：单个 ≤ `max_attachment_bytes`，上传只收四种图片且文件头必须和 mime 一致，发送时还要在该 agent 的 `capabilities.attachments` 里；`blob_id` 先校验格式再进路径
-- `fs.read` 只读、限 workspace 根目录和关联目录内；默认读 1 MiB、最大 10 MiB（原始字节），超出的部分截断（`truncated = true`）。`encoding = "base64"` 时把读到的字节原样放进 `data_base64`（Web 文件浏览的图片预览用它），同一份路径检查和上限；`binary` 的判断不变：前 8 KiB 里有 NUL、或不是合法 UTF-8（只有被截断时最后一个多字节字符被切开的情形除外）就是二进制。blob 通道（§ 7.10）只收图片
+- `fs.read` 只读、限 workspace 根目录和关联目录内。文本模式默认读 1 MiB、最大 10 MiB（原始字节），超出的部分截断（`truncated = true`），不支持 `offset`。`encoding = "base64"`（Web 文件浏览的图片预览用它）把读到的字节原样放进 `data_base64`，同一份路径检查，**一次最多 512 KiB**（和 `blob.get` 一样；设备到 daemon 是一条有序的传输，大响应会挡住别的消息），用 `offset` 一块一块读，回显 `offset`；`offset` 在末尾或之后回空块。`binary` 的判断：前 8 KiB 里有 NUL、或不是合法 UTF-8（只有被截断时最后一个多字节字符被切开的情形除外）就是二进制，base64 模式按这一块判断。blob 通道（§ 7.10）只收图片
 - 响应大小：`session.history` 一页 ≤ 192 KiB（§ 7.9），`tool_result.output` ≤ 64 KiB（§ 8.2），`session.send` ≤ 1 MiB；其余靠传输层分片（≤ 200 KiB / 片，重组上限 16 MiB）。大消息经 hub 的 4 MiB 发送缓冲时会被退回一部分并重发（hub 保证顺序，[protocol.md § 3.1](../protocol.md#31-消息大小)）；daemon 收到 `backpressure` / `rate_limited` 要暂停再按序重发，不能继续灌
 - 配对：短码本地生成、不发给 hub；joiner 要等 `pair.ack` 才落盘（§ 15）
 - 账号内接入（§ 15.1）：daemon 是唯一的验证点，hub 的限速不算数。口令只存 Argon2id 派生值；口令失败计数在发出 CPace 份额**之前**先写库；同时最多一个口令尝试、3 个接入会话；接入码和扫码密钥只在内存里，不落盘、不进日志和审计

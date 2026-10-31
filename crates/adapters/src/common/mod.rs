@@ -1,11 +1,12 @@
 //! 各 adapter 共用的小工具：命令行解析、二进制定位（`which -a` + 已知目录 + `--version` 探活）、
 //! semver 解析、带超时的一次性子进程调用、以及「换行分隔 JSON 子进程」封装（含优雅关闭）。
 //!
-//! 这里不含任何 agent 专属知识。`claude_code`、以后的 `codex` / `acp` 都用同一套。
+//! 这里不含任何 agent 专属知识。`claude_code`、`codex`、`acp` 都用同一套。
 
 pub mod bin;
 pub mod child;
 pub mod command;
+pub mod elicit;
 pub mod probe_util;
 pub mod proctree;
 pub mod run;

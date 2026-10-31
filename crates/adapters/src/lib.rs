@@ -28,7 +28,7 @@ pub fn all() -> Vec<Arc<dyn Adapter>> {
 mod tests {
     #[test]
     fn all_lists_every_builtin_adapter() {
-        let ids: Vec<&str> = super::all().iter().map(|a| a.id()).collect();
+        let ids: Vec<String> = super::all().iter().map(|a| a.id().to_string()).collect();
         assert_eq!(ids, vec!["claude-code", "codex", "mock"]);
     }
 }

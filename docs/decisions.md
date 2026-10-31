@@ -962,3 +962,31 @@ ADR-1 拆成两层来看：
 - 没有设备分级：任何已配对设备都能改名单里的键，比如把 `sessions.max_concurrent` 改成 1 让新会话排队，或把 `permissions.request_timeout` 设得很短让审批自动拒绝。这些都是可恢复的、进审计、不涉及放宽权限
 - 取值范围（并发 1–32 等）只约束远程写入；机器上手写 `config.toml` 可以超出，`node.get_config` 照实显示，不会因此拒绝保存别的键
 - `node.logs` 的过滤按 target 和 `error=` 字段做，是启发式的，不是内容识别；本机的 `anycon logs` 和日志文件本身不受它约束（见 daemon.md § 17 的残余风险）
+
+---
+
+## ADR-47 ACP adapter：每个 agent 一个 adapter，一个进程服务它的所有会话
+
+**背景**：ADR-26 / ADR-25 之后，OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi 这类 agent 都说 [ACP](https://agentclientprotocol.com)（stdio JSON-RPC）。路线图要的是「一个 adapter 一次覆盖」，而 ADR-24 要求客户端不内置任何 agent 知识。
+
+**决定**（实现在 `crates/adapters/src/acp/`，细节和映射表见它的 README，规格见 [spec/daemon.md](spec/daemon.md) § 5.7 / § 7.3）：
+
+1. **一个实现，每个 agent 一个 adapter 实例**：同一份 ACP client 代码，但 `agent.list` 里每个 agent 是独立的一项，id 是它的名字，配置在 `[agents.acp.<name>]`（`enabled` / `command` / `env` / `dangerous_modes` / `default_*` 和别的 agent 一样）。内置注册表八项（命令和包名取自官方注册表）；用户可以覆盖命令，也可以加注册表里没有的（必须写 `command`）。daemon 的 adapter 集合随配置热增减，不用重启（`Adapter::id` / `label` 因此从 `&'static str` 改成 `&str`）。
+2. **一个 agent 一个进程，服务它的所有会话**（ACP 的设计就是一条连接多个会话），进程按挂着的句柄数计数，最后一个会话脱离才退出。daemon 的 `idle_timeout` 只是让一个会话脱离（agent 有 `session/close` 就关掉它）。agent 声明 `session/resume` 或 `session/load` 时 `capabilities.resume = true`，daemon 才回收会话，下次 `send` 续接；两者都没有的 agent，daemon 不回收它的会话。续接不上（会话不在了）就开新会话并发一条可恢复的 `agent_context_reset`，和 Codex 一致。
+3. **安装 = 命令的第一个词在 daemon 环境的 `PATH`（和已知安装目录）里**；不跑 `npx` / `uvx`。注册表里的 agent 没装、用户也没动过它的配置段时**不出现在 `agent.list` / `doctor` 里**（claude-code / codex 没装要显示「未安装」是引导安装，八个用户可能一个都不用的 agent 一直挂着「未安装」只是噪音）；装了自动出现，动过配置的照常列出。
+4. **client 能力**：不声明 `fs` 和 `terminal`（agent 用它自己的工具，权限走 `session/request_permission`；声明了就等于让 daemon 代 agent 读写文件、跑命令，违背「daemon 不做终端、文件编辑」，daemon.md § 1）；声明 `elicitation`（form / url，规格 § 9.1 把 agent 的结构化提问接进权限通道）和 `session.configOptions.boolean`（不声明 agent 不给布尔选项）；不声明 `auth.terminal`、`session.notices`、`session.compaction`（没有交互式终端；规格里 ACP 不产生 notice / activity 事件）。
+5. **不调 `authenticate`**：登录方式可能要打开浏览器或读终端输入，daemon 做不了。`session/new` 报 `-32000` → `not_authenticated`，hint 列出登录方式，`terminal` 类型的给出要在机器上跑的命令。
+6. **只用 v1 稳定接口**，依据官方 `schema/v1/schema.json`（入库在 `crates/adapters/tests/fixtures/acp/`，测试用它校验 adapter 发的每条消息）。模型 / 思考等级 / 模式 / 其余选项全部来自 `configOptions`（没有 `category = model` 的选项就不提供模型选择；不支持草案里的 `models` / `session/set_model`）；`PromptResponse.usage`（单 turn 还是累计没定）不读，所以没有 token 数，只有上下文占用和 USD 费用的增量。
+7. **设置只发变化的**：拉起时和 agent 当前的值比，会话中和上一次**请求**的值比，所以 agent 自己切了模式（批准计划之后）不会被 daemon 记着的旧值冲掉。
+8. **取消没有 SIGINT 兜底**：`session/cancel`（未答复的请求先按 `cancelled` 答复）；agent 不理就靠 daemon 的取消宽限让句柄脱离。进程是共用的，杀进程会连累别的会话。
+
+**原因**：ACP 本来就是一条连接多个会话，每会话一个进程要为每个会话付 agent 的启动成本（连 MCP server、拉模型目录），而 ACP agent 也没有会话级环境的需求（Codex 当初改成每会话一个进程，主要原因就是会话级 `env`，ADR-26 修订）；每个 agent 单独一项是因为它们的模型、模式、登录方式、安装方式各不相同，合成一项 `acp` 客户端就得内置 agent 知识（ADR-24）；热增减是因为用户加一个 agent 期望马上能用，重启 daemon 会打断正在跑的会话。
+
+**否掉**：每会话一个进程（见上）；自动 `npx` / `uvx`（在用户机器上下载并执行东西）；声明 `fs` / `terminal` 让 daemon 代理（见 4）；自动 `authenticate`（见 5）；把 `acp` 做成一个 agent、`session.create` 里再选「哪个 ACP agent」（客户端要认识 agent）；读草案里的 `models` / `PromptResponse.usage`（会随协议变，v1 稳定版的语义不明确）；没装的注册表 agent 也一直列出（见 3）。
+
+**代价 / 限制**：
+
+- 共享进程：没有会话级 `env`（带了 → `invalid_settings`，用 `agents.acp.<name>.env`）；同一个 agent 的会话在预览的端口归属里共用一个进程组；一个会话把进程搞崩，同一个 agent 的所有会话一起中断（各自标 `error`，下一条消息续接）。
+- 思考等级不按模型区分（探测时只看得到默认模型的那一组），换模型后 agent 给出别的等级时，daemon 用探测时那组校验，agent 不接受的值在设置时才报错。
+- `max_tokens` / `max_turn_requests` 按规格映射成 `max_turns`，daemon 会把会话标成 `ended`（进程还活着，能继续发消息）。
+- 本机没有装任何 ACP agent，真实 agent 的冒烟测试（OpenCode，`ANYCON_REAL_AGENT_TESTS=1`）没有跑过；各家 `rawInput` 的形状、有没有 `session/close` 的差异靠宽松解析兜底。

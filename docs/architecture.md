@@ -387,13 +387,13 @@ trait AgentHandle {
 
 所有目标 agent 都有结构化事件流，**不走 PTY**。adapter 的语义对齐 ACP，使 ACP agent 零成本接入。
 
-### 7.3 v0.1 的 adapter
+### 7.3 Adapter
 
 | agent | 驱动方式 |
 |---|---|
 | Claude Code | `claude -p --output-format stream-json --input-format stream-json`，双向 JSONL |
 | Codex | `codex app-server` JSON-RPC（`codex exec` 在无头模式下不询问审批，不用） |
-| OpenCode、Pi、其他 ACP agent | ACP v1 client adapter |
+| OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi、其他 ACP agent | ACP v1 client adapter：每个 agent 一个 adapter 实例，一个进程服务它的所有会话（[ADR-47](decisions.md#adr-47-acp-adapter每个-agent-一个-adapter一个进程服务它的所有会话)） |
 | 自定义 | Python / TS SDK，agent 本身就是一个 daemon 节点 |
 
 各 CLI 的具体接口变化很快，实现前以各自当时的文档为准。每个 adapter 还要实现 `probe()`：探测是否安装、版本、认证状态、模型列表（含每个模型的思考等级）、权限模式集合，细节见 [spec/daemon.md § 5](spec/daemon.md#5-agent-探测与能力声明)。

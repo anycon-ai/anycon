@@ -124,9 +124,10 @@ for await (const ev of session.send('跑一下测试，把失败的修了')) {
 |---|---|
 | Claude Code | 原生 adapter（`stream-json` 双向） |
 | Codex | 原生 adapter（`codex app-server`，`codex-cli` ≥ 0.157.0） |
+| OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi | [ACP](https://agentclientprotocol.com) v1 adapter（一个 agent 一个进程，它的所有会话共用；命令要已经在 daemon 的 `PATH` 里，不会用 `npx` / `uvx` 去下载） |
 | Mock agent | 确定性的假 agent，开发和测试用（`ANYCON_MOCK_AGENT=1`） |
 
-装了就会自动出现，`anycon config set agents.<id>.enabled false` 关掉。接下来：[ACP](https://agentclientprotocol.com) agent（OpenCode、Pi……），以及用 SDK 把自己的 agent 注册为节点，见[路线图](docs/roadmap.md)。
+装了就会自动出现，`anycon config set agents.<id>.enabled false` 关掉（ACP agent 是 `agents.acp.<id>.enabled`）。别的 ACP agent 用 `anycon config set agents.acp.<名字>.command "<命令>"` 加。接下来：用 SDK 把自己的 agent 注册为节点，见[路线图](docs/roadmap.md)。
 
 ## 隐私模型
 

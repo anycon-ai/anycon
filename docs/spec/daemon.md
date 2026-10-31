@@ -25,7 +25,7 @@ launchd / systemd / 计划任务 ──► anycon daemon
                         ├── ~/.anycon/daemon.sock（本机 CLI；Windows 是命名管道 \\.\pipe\anycon-<hash>）
                         ├── adapter: claude-code ──► claude -p … （每会话一个进程，空闲后退出）
                         ├── adapter: codex       ──► codex app-server（每会话一个进程、一个 thread，空闲后退出；ADR-26 修订）
-                        ├── adapter: acp:<name>  ──► <agent> 的 ACP 模式（一个进程，多 session）
+                        ├── adapter: <name>（每个 ACP agent 一个）──► <agent> 的 ACP 模式（一个进程服务它的所有会话；最后一个会话回收后退出，§ 7.3）
                         └── fs watch（workspace 根目录；关联的目录不 watch）
 ```
 
@@ -82,9 +82,10 @@ enabled = true
 command = "codex"
 default_mode = "workspace"
 
-[agents.acp.opencode]                 # ACP agent 按名注册；内置一张已知表（§ 5.7），用户可加 / 覆盖
-command = "opencode acp"
+[agents.acp.opencode]                 # ACP agent 按名注册；内置一张已知表（§ 5.7），用户可加 / 覆盖；表里的不写这一段也参与探测
+command = "opencode acp"              # 缺省用表里的；自己加的（不在表里）必须写。第一个词在 PATH 里找得到才算安装，不跑 npx / uvx
 dangerous_modes = []                  # ACP 不提供风险等级，由用户标记
+# 其余键和别的 agent 一样：enabled、env、default_model / default_thinking / default_mode / default_options（additional_models 对 ACP 无效：ACP 只接受 agent 列表里的模型）
 
 [worktree]                            # 每会话 worktree（ADR-34，§ 10.1）。整段热加载
 default = "worktree"                  # git 项目里新会话的初始选择：worktree | local。只影响客户端的初始选择；线路上不带 workspace 时总是 local
@@ -111,7 +112,7 @@ level = "info"
 retention_days = 7                     # 只在 daemon 启动时清理一次，长期不重启会累积
 ```
 
-`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`。其余需重启。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
+`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`。其余需重启。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
 **远程修改**（`node.get_config` / `node.set_config`，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）：客户端（Web 的节点设置「限制」标签、SDK）可以读写下面这张白名单里的键，其余一律不行。只收热加载的键，改完不用重启。
 
@@ -226,33 +227,40 @@ AgentInfo {
 
 | | Claude Code | Codex | ACP agent | SDK 节点 |
 |---|---|---|---|---|
-| 驱动 | `claude -p --output-format stream-json --input-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio`，stdin 常开；少了 `--permission-prompt-tool stdio` CLI 会自动拒绝所有需确认的工具而不发请求 | `codex app-server`（stdio，换行分隔的 JSON-RPC，省略 `jsonrpc` 头；先 `initialize`）。**不用 `codex exec`**：它在无头模式下写死 `approval_policy = never`，无法把审批交给人 | ACP v1（`protocolVersion: 1`），stdio；v2 仍是草案，按协商结果启用 | 节点自己就是协议实现 |
+| 驱动 | `claude -p --output-format stream-json --input-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio`，stdin 常开；少了 `--permission-prompt-tool stdio` CLI 会自动拒绝所有需确认的工具而不发请求 | `codex app-server`（stdio，换行分隔的 JSON-RPC，省略 `jsonrpc` 头；先 `initialize`）。**不用 `codex exec`**：它在无头模式下写死 `approval_policy = never`，无法把审批交给人 | ACP v1（`protocolVersion: 1`），stdio（换行分隔、带 `jsonrpc: "2.0"` 头的 JSON-RPC）；agent 回别的版本 → `unsupported_version`；v2 仍是草案，不支持。只用稳定接口，依据 schema crate 1.28.0（见 `crates/adapters/src/acp/README.md`） | 节点自己就是协议实现 |
 | 命令 | `claude` | `codex` | § 5.7 注册表里的命令，如 `opencode acp` | 不探测，节点自己声明 |
 | 版本 | `claude --version` | `codex --version`（输出如 `codex-cli 0.162.1`） | `<cmd> --version` 尽力而为；`initialize` 返回的 `agentInfo.version` 优先 | — |
-| 认证 | `claude auth status`（JSON；退出码 0 已登录、1 未登录；`authMethod` 给出方式）。`--bare` 模式不读 OAuth，所以 daemon 不用 `--bare` | `codex login status`（文本在 stderr、stdout 为空；退出码 0 已登录，1 + `Not logged in` 未登录，1 + 其它文字（如 `auth.json` 损坏）按 unknown 不挡）。凭证在 `~/.codex/auth.json` 或系统钥匙串。**权威判定是 app-server 的 `account/read`**（完整探测里，`config/read` 之后调）：`requiresOpenaiAuth = false`（自定义提供方等）→ 不挡；`account` 为空且 `requiresOpenaiAuth = true` → `not_authenticated`（hint `codex login`）；其余按已登录。完整探测里 `account/read` 用不了（老版本、超时、app-server 起不来）时，依次退回：同一个二进制路径上一次**权威**（来自 `account/read`）的判定 → `codex login status`（只有确认未登录才挡）。cheap 探测只跑 `codex login status`：结果和上一次一样就沿用上一次的判定（不拉起 app-server）；不一样（登录了 / 退出了）才在 cheap 探测里补跑一次 `account/read`（只做这一步，不拉模型列表）。「上一次的判定」存在 adapter 实例里（daemon 一直用 `anycon_adapters::all()` 给的同一个实例）；`login status` 没变、只改了提供方配置时 cheap 探测发现不了，要等下一次完整探测。`model/list` 不需要登录 | `initialize` 返回的 `authMethods`；`session/new` 报认证错误 → `not_authenticated`，hint 列出 `authMethods[].name`；`type = terminal` 的方法要用户在机器上跑一次命令 | — |
-| 模型列表 | CLI 没有独立的列模型命令（stream-json 的 `initialize` 控制请求会返回 `models[]`（含 `supportedEffortLevels`）、`commands`、`account`，约 5 秒回，但要拉起完整 CLI 含用户的 MCP server，周期探测不用它；`initialize` 本身不是必需的，interrupt / set_model / set_permission_mode / can_use_tool 不发它也能用）。adapter 内置一张表（完整 id + 别名 `opus` / `sonnet` / `haiku` / `fable`、`[1m]` 后缀），每项带 `min_cli_version`，按 `claude --version` 过滤；**按模型给出思考等级**；再把用户 `~/.claude/settings.json` 的 `model` 和环境里 `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_*_MODEL` 的值追加为可选项（Bedrock / Vertex / 代理用户靠这个）；`allow_custom_model = true` 让用户填任意 id。表随 adapter 版本更新 | `model/list` → 每项 `id / displayName / description / supportedReasoningEfforts[] / defaultReasoningEffort / isDefault / hidden / upgrade`；再 `config/read` 取用户 `~/.codex/config.toml` 里的 `model` 和 `model_reasoning_effort` 作为默认项（列表里没有这个模型——常见于自定义 `model_provider`——就追加一项，思考等级取列表里各模型共有的等级并上 `model_reasoning_effort`）。**不内置模型 id**（Codex 的模型淘汰很快，官方文档也说用返回值） | 在临时 cwd 下 `session/new`，取 `configOptions` 里 `category = "model"` 的 `options`（可能分组）；没有就不提供模型选择 | 节点声明 |
-| 思考等级 | Claude Code 的 `--effort`：`low / medium / high / xhigh / max`；4.6 系列没有 `xhigh`；Opus 5.5 / Sonnet 5.5 / Haiku 5.5 不能关（无 `off`）。这就是为什么**等级挂在模型上** | `model/list` 的 `supportedReasoningEfforts`，按模型（`low / medium / high / xhigh / max / ultra` 的子集） | `configOptions` 里 `category = "thought_level"`；没有就不提供 | 节点声明 |
-| 权限模式 | `default`(Always Ask) / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions`；`bypassPermissions` 标 dangerous，`plan` 标 safe | adapter 把 `approvalPolicy × sandbox × approvals_reviewer` 收成四档：`read_only`（safe：`readOnly` + `on-request`）/ `workspace`（normal，默认：`workspaceWrite` + `on-request`，审批送客户端）/ `auto_review`（normal：`approvals_reviewer = auto_review`，Codex 自己的审查子代理放行）/ `full_access`（dangerous：`dangerFullAccess` + `never`） | `session/new` 返回的 `modes.availableModes`（v1，已标 deprecated）或 `configOptions` 里 `category = "mode"`。ACP 不给风险等级：默认全部 `normal`，`config.agents.acp.<name>.dangerous_modes` 可标 dangerous | 节点声明 |
+| 认证 | `claude auth status`（JSON；退出码 0 已登录、1 未登录；`authMethod` 给出方式）。`--bare` 模式不读 OAuth，所以 daemon 不用 `--bare` | `codex login status`（文本在 stderr、stdout 为空；退出码 0 已登录，1 + `Not logged in` 未登录，1 + 其它文字（如 `auth.json` 损坏）按 unknown 不挡）。凭证在 `~/.codex/auth.json` 或系统钥匙串。**权威判定是 app-server 的 `account/read`**（完整探测里，`config/read` 之后调）：`requiresOpenaiAuth = false`（自定义提供方等）→ 不挡；`account` 为空且 `requiresOpenaiAuth = true` → `not_authenticated`（hint `codex login`）；其余按已登录。完整探测里 `account/read` 用不了（老版本、超时、app-server 起不来）时，依次退回：同一个二进制路径上一次**权威**（来自 `account/read`）的判定 → `codex login status`（只有确认未登录才挡）。cheap 探测只跑 `codex login status`：结果和上一次一样就沿用上一次的判定（不拉起 app-server）；不一样（登录了 / 退出了）才在 cheap 探测里补跑一次 `account/read`（只做这一步，不拉模型列表）。「上一次的判定」存在 adapter 实例里（daemon 一直用 `anycon_adapters::all()` 给的同一个实例）；`login status` 没变、只改了提供方配置时 cheap 探测发现不了，要等下一次完整探测。`model/list` 不需要登录 | `initialize` 返回的 `authMethods`；`session/new` 报认证错误（`-32000`）→ `not_authenticated`，hint 列出 `authMethods[].name`；`type = terminal` 的方法要用户在机器上跑一次命令（hint 给出 `<配置的命令> <方法的 args>`）。**adapter 不调 `authenticate`**：登录方式可能要打开浏览器或读终端输入，daemon 做不了，用户在机器上用 agent 自己的 CLI 登录一次 | — |
+| 模型列表 | CLI 没有独立的列模型命令（stream-json 的 `initialize` 控制请求会返回 `models[]`（含 `supportedEffortLevels`）、`commands`、`account`，约 5 秒回，但要拉起完整 CLI 含用户的 MCP server，周期探测不用它；`initialize` 本身不是必需的，interrupt / set_model / set_permission_mode / can_use_tool 不发它也能用）。adapter 内置一张表（完整 id + 别名 `opus` / `sonnet` / `haiku` / `fable`、`[1m]` 后缀），每项带 `min_cli_version`，按 `claude --version` 过滤；**按模型给出思考等级**；再把用户 `~/.claude/settings.json` 的 `model` 和环境里 `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_*_MODEL` 的值追加为可选项（Bedrock / Vertex / 代理用户靠这个）；`allow_custom_model = true` 让用户填任意 id。表随 adapter 版本更新 | `model/list` → 每项 `id / displayName / description / supportedReasoningEfforts[] / defaultReasoningEffort / isDefault / hidden / upgrade`；再 `config/read` 取用户 `~/.codex/config.toml` 里的 `model` 和 `model_reasoning_effort` 作为默认项（列表里没有这个模型——常见于自定义 `model_provider`——就追加一项，思考等级取列表里各模型共有的等级并上 `model_reasoning_effort`）。**不内置模型 id**（Codex 的模型淘汰很快，官方文档也说用返回值） | 在临时 cwd 下 `session/new`，取 `configOptions` 里 `category = "model"` 的 `options`（可能分组，组名放 `tags`）；没有就不提供模型选择（旧的 `models` 字段和 `session/set_model` 不在 v1 稳定 schema 里，不支持）；`allow_custom_model = false`，ACP 只接受列表里的值 | 节点声明 |
+| 思考等级 | Claude Code 的 `--effort`：`low / medium / high / xhigh / max`；4.6 系列没有 `xhigh`；Opus 5.5 / Sonnet 5.5 / Haiku 5.5 不能关（无 `off`）。这就是为什么**等级挂在模型上** | `model/list` 的 `supportedReasoningEfforts`，按模型（`low / medium / high / xhigh / max / ultra` 的子集） | `configOptions` 里 `category = "thought_level"`；没有就不提供。ACP 的等级不按模型区分：探测时看到的是默认模型的那一组，所有模型共用 | 节点声明 |
+| 权限模式 | `default`(Always Ask) / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions`；`bypassPermissions` 标 dangerous，`plan` 标 safe | adapter 把 `approvalPolicy × sandbox × approvals_reviewer` 收成四档：`read_only`（safe：`readOnly` + `on-request`）/ `workspace`（normal，默认：`workspaceWrite` + `on-request`，审批送客户端）/ `auto_review`（normal：`approvals_reviewer = auto_review`，Codex 自己的审查子代理放行）/ `full_access`（dangerous：`dangerFullAccess` + `never`） | `session/new` 返回的 `configOptions` 里 `category = "mode"`（优先），没有才用 `modes.availableModes`（v1，已标 deprecated）。ACP 不给风险等级：默认全部 `normal`，`config.agents.acp.<name>.dangerous_modes` 可标 dangerous | 节点声明 |
 | 其他选项 | `fast_mode`(bool，仅支持的模型) | `fast_mode`(bool → `serviceTier`：开 `priority`、明确关 `default`、没指定不传)、`model_reasoning_summary`(select: auto / concise / detailed / none → `turn/start.summary`)。`plan_mode` v0.1 **不提供**：`collaborationMode` 只在 experimental schema 里（要 `experimentalApi`），v0.1 只用稳定接口，所以 Codex 也不会发 `kind = plan` 的权限请求 | 其余 `configOptions` 原样透传：`select` 和 `boolean` 两种 `type`，`category = model_config` 或自定义 | 节点声明 |
+
+ACP agent 的 cheap 探测（`probe_interval`）只看命令的路径和 `--version` 的输出有没有变，都没变且上一次是 `ready` 就沿用上一次的结果，不拉起 agent；变了、或者上一次不是 `ready`（登录状态 cheap 探测看不出来）就做完整探测。
 
 各 CLI 变化快，adapter 里这些探测逻辑要和 CLI 版本一起维护；回放测试用录制的真实输出。Codex app-server 官方标注 experimental，CI 里用 `codex app-server generate-json-schema` 生成对应版本的 schema 做编译期校验。
 
 ### 5.7 ACP agent 注册表
 
-daemon 内置一张来自 [ACP 官方注册表](https://github.com/agentclientprotocol/registry) 的快照（随 release 更新），只收录**用户机器上已经有二进制**的启动方式：
+daemon 内置一张来自 [ACP 官方注册表](https://github.com/agentclientprotocol/registry) 的快照（随 release 更新），只收录**用户机器上已经有二进制**的启动方式。每个 ACP agent 在 `agent.list` 里是独立的一项，id 是它的名字（按命令名取，和官方注册表里的 id 不一定一样）：
 
-| agent | 命令 |
-|---|---|
-| OpenCode | `opencode acp` |
-| Gemini CLI | `gemini --acp` |
-| Goose | `goose acp` |
-| Kimi Code | `kimi acp` |
-| Qwen Code | `qwen --acp` |
-| Cursor | `cursor-agent acp` |
-| GitHub Copilot | `copilot --acp` |
-| Pi | `pi-acp`（需用户自己装 `npm i -g pi-acp`） |
+| agent | id | 命令 |
+|---|---|---|
+| OpenCode | `opencode` | `opencode acp` |
+| Gemini CLI | `gemini` | `gemini --acp` |
+| Goose | `goose` | `goose acp` |
+| Kimi Code | `kimi` | `kimi acp` |
+| Qwen Code | `qwen` | `qwen --acp` |
+| Cursor | `cursor` | `cursor-agent acp` |
+| GitHub Copilot | `copilot` | `copilot --acp` |
+| Pi | `pi` | `pi-acp`（需用户自己装 `npm i -g pi-acp`） |
 
-探测规则：命令的第一个词在 daemon 环境的 `PATH` 里能找到才算安装；**不自动跑 `npx` / `uvx`** 形式的分发（那会在用户机器上下载并执行东西）。用户在 `config.agents.acp.<name>.command` 里加的任意命令照单全收。Claude Code 和 Codex 也有 ACP 封装（`claude-agent-acp`、`codex-acp`），anycon 不用它们，原生 adapter 的控制面更完整。
+探测规则：命令的第一个词在 daemon 环境的 `PATH`（再加 § 5.3 第 1 步的已知安装目录）里能找到才算安装；**不自动跑 `npx` / `uvx`** 形式的分发（那会在用户机器上下载并执行东西）。用户在 `config.agents.acp.<name>.command` 里写的任意命令照单全收（绝对路径，或带参数的字符串；缺省用注册表里的）。Claude Code 和 Codex 也有 ACP 封装（`claude-agent-acp`、`codex-acp`），anycon 不用它们，原生 adapter 的控制面更完整。
+
+- **注册表里的 agent**：不写配置段也参与探测。没装、用户也没动过它的配置段时不出现在 `agent.list` 和 `anycon doctor` 里（§ 5.6）；装了就自动出现。
+- **自己加的 agent**：`[agents.acp.<name>]`，**必须写 `command`**（没有默认命令）；名字是小写字母 / 数字 / `-` / `_`、至多 32 个字符，不能是保留字（`claude-code`、`codex`、`mock`、`acp`、`env`…）；配置里写成 `[agents.<name>]` 会在加载时报错并指路（不会悄悄不生效）。自己加的 agent 的显示名取自它 `initialize` 返回的 `agentInfo`（`title`，没有就是 `name`），没有就用 id。
+- **增减不用重启**：配置里出现 / 去掉一段 `[agents.acp.<name>]`，daemon 的 adapter 集合跟着变（热加载，§ 3），新的立即探测。
+- 每个 agent 的行为（进程模型、选项、权限、限制）见 [`crates/adapters/src/acp/README.md`](../../crates/adapters/src/acp/README.md)。
 
 ### 5.5 子进程环境
 
@@ -275,10 +283,10 @@ launchd / systemd 起的 daemon 没有用户 shell 的 `PATH`，`nvm`、`bun`、
 
 | 方法 | 说明 |
 |---|---|
-| `agent.list { refresh?, if_none_match? }` | `{ agents: [AgentInfo], etag }`。`refresh` 强制重探（含第 4 步）；`if_none_match` 等于当前 `etag` 时返回 `{ agents: [], etag, not_modified: true }`，客户端每次连上都可以便宜地问一次（客户端缓存上一次的列表）。返回的是**客户端视图**：探测结果叠加配置——`agents.<id>.default_*` 反映到各项的 `default` 标记（所以 `etag` 随默认值变化，配置变化时推 `agent.changed`）；`permissions.allow_dangerous_modes = false` 时 `risk = dangerous` 的模式不出现在 `modes` 里（校验仍按完整信息，直接指定得到 `forbidden`）；`agents.<id>.dangerous_modes` 里的模式被标为 dangerous；内置的真实 agent（`claude-code`、`codex`）**没有配置段也参与探测**（没装就是 `not_installed`，客户端据此显示「未安装」和安装命令），`mock` 只在有 `[agents.mock]` 段或 `ANYCON_MOCK_AGENT=1` 时出现；`enabled = false` 的以 `status: disabled` 列出且不调 `probe` |
+| `agent.list { refresh?, if_none_match? }` | `{ agents: [AgentInfo], etag }`。`refresh` 强制重探（含第 4 步）；`if_none_match` 等于当前 `etag` 时返回 `{ agents: [], etag, not_modified: true }`，客户端每次连上都可以便宜地问一次（客户端缓存上一次的列表）。返回的是**客户端视图**：探测结果叠加配置——`agents.<id>.default_*` 反映到各项的 `default` 标记（所以 `etag` 随默认值变化，配置变化时推 `agent.changed`）；`permissions.allow_dangerous_modes = false` 时 `risk = dangerous` 的模式不出现在 `modes` 里（校验仍按完整信息，直接指定得到 `forbidden`）；`agents.<id>.dangerous_modes` 里的模式被标为 dangerous；内置的真实 agent（`claude-code`、`codex`）**没有配置段也参与探测**（没装就是 `not_installed`，客户端据此显示「未安装」和安装命令）；注册表里的 ACP agent 同样参与探测，但**没装、而且用户没动过它的配置段时不出现**在列表里（免得躺着一堆没装的）——用户动过（关掉、改命令、设默认值…）或自己加的 ACP agent 照常列出，没装就是 `not_installed`，`mock` 只在有 `[agents.mock]` 段或 `ANYCON_MOCK_AGENT=1` 时出现；`enabled = false` 的以 `status: disabled` 列出且不调 `probe` |
 | `agent.diagnose { id }` | § 5.5 的诊断文本 + 结构化字段 |
 | `agent.changed` (D→C) | 探测结果变化（装了新 agent、登录了、版本升了） |
-| `node.set_agent_defaults { agent, model?, thinking?, mode?, options? }` | 写 `config.agents.<id>.default_*`，所有客户端共享。和 `session.create` 走**同一套校验**（§ 6.1）：选项值要合法，危险模式在 `allow_dangerous_modes = false` 时返回 `forbidden`；写入进审计（`config.changed`） |
+| `node.set_agent_defaults { agent, model?, thinking?, mode?, options? }` | 写 `config.agents.<id>.default_*`（ACP agent 是 `config.agents.acp.<id>.default_*`），所有客户端共享。和 `session.create` 走**同一套校验**（§ 6.1）：选项值要合法，危险模式在 `allow_dangerous_modes = false` 时返回 `forbidden`；写入进审计（`config.changed`） |
 
 ## 6. 会话选项
 
@@ -323,11 +331,13 @@ ConfigOption {
 | `model` | `--model <id>`；会话中 `set_model` | `thread/start { model }`；会话中 `turn/start { model }` 按 turn 覆盖 | `session/set_config_option { sessionId, configId: <model 项的 id>, value }` |
 | `thinking` | `--effort <level>`；会话中无法直接改 → 下一 turn 前**重启进程并 resume**（§ 7.4） | `turn/start { effort }` 按 turn 传，天然 live | `session/set_config_option`，`configId` 为 `thought_level` 那一项 |
 | `mode` | `--permission-mode <mode>`；会话中 `set_permission_mode` | `thread/start` / `turn/start` 的 `approvalPolicy` + `sandboxPolicy`（wire 上是 camelCase：`workspaceWrite`、`dangerFullAccess`） | `session/set_mode { sessionId, modeId }`，或 `set_config_option` 的 `mode` 项 |
-| `env` | 子进程环境 | 子进程环境（v0.1 每会话一个 app-server 进程，ADR-26 修订） | 子进程环境（进程按 agent 共享时不支持，adapter 按实际情况声明） |
-| `system_prompt_append` | `--append-system-prompt` | 新会话 `thread/start { developerInstructions }`；之后改动用 `thread/inject_items` 追加一条 developer 消息，立即生效（`thread/resume` 会忽略 `developerInstructions`，以 rollout 里的为准；旧指令留在历史里） | 不支持 |
-| `max_turns` / `max_budget_usd` | `--max-turns` / `--max-budget-usd` | 不支持（带了 → `invalid_settings`） | 不支持 |
-| 附件 | 图片：stdin 消息 `content` 数组里的 `image` block（`source: { type: "base64", media_type, data }`，adapter 读 daemon 的文件）；其它文件：一个列出名字、类型、大小和 daemon 上绝对路径的 `text` block，Claude 用 Read 等工具自己读（workspace 之外，可能要审批）。顺序：图、文件清单、用户文字 | 图片：`turn/start.input` / `turn/steer.input` 的 `{ type: "localImage", path }`（daemon 的文件，扩展名与 mime 一致）；其它文件：同样的路径清单作为第一项 `text`（沙箱只限制写，读不用审批） | `session/prompt` 的 image ContentBlock（`promptCapabilities.image` 为 true 才行） |
+| `env` | 子进程环境 | 子进程环境（v0.1 每会话一个 app-server 进程，ADR-26 修订） | 不支持：进程按 agent 共享，`capabilities.env = false`，带 `env` → `invalid_settings { field: "env" }`；要给 agent 环境变量写 `agents.acp.<name>.env` |
+| `system_prompt_append` | `--append-system-prompt` | 新会话 `thread/start { developerInstructions }`；之后改动用 `thread/inject_items` 追加一条 developer 消息，立即生效（`thread/resume` 会忽略 `developerInstructions`，以 rollout 里的为准；旧指令留在历史里） | 不支持（`invalid_settings`） |
+| `max_turns` / `max_budget_usd` | `--max-turns` / `--max-budget-usd` | 不支持（带了 → `invalid_settings`） | 不支持（`invalid_settings`） |
+| 附件 | 图片：stdin 消息 `content` 数组里的 `image` block（`source: { type: "base64", media_type, data }`，adapter 读 daemon 的文件）；其它文件：一个列出名字、类型、大小和 daemon 上绝对路径的 `text` block，Claude 用 Read 等工具自己读（workspace 之外，可能要审批）。顺序：图、文件清单、用户文字 | 图片：`turn/start.input` / `turn/steer.input` 的 `{ type: "localImage", path }`（daemon 的文件，扩展名与 mime 一致）；其它文件：同样的路径清单作为第一项 `text`（沙箱只限制写，读不用审批） | `session/prompt` 的 image ContentBlock（`{ type: "image", data: base64, mimeType }`，图在前、文字在后；`promptCapabilities.image` 为 true 才行，`capabilities.attachments` 据此声明） |
 | 结构化输出 | `--json-schema` | `turn/start { outputSchema }` 存在，但 v0.1 的 `SessionSettings` 没有东西喂它，`capabilities.structured_output = false` | 不支持 |
+
+ACP 的设置（模型 / 思考 / 模式 / 其余选项）全部**随时生效**（`applied_now`，不需要重启进程）：拉起时把完整设置和 agent 当前的值比、不一样的才发请求；会话中 `set_settings` 只发和**上一次请求的值**不一样的，所以 agent 自己切了模式（比如批准计划之后）不会被 daemon 记着的旧值冲掉。应用不上的：拉起时不让会话失败，发一条可恢复的 `error { agent_setting_failed }`，会话照常用 agent 当前的值；`set_settings` 返回 `invalid_settings`。
 
 ### 6.4 会话中修改
 
@@ -370,7 +380,7 @@ create ──► starting ──► running ──► idle ◄──────
 
 - Claude Code：stream-json 双向模式，turn 结束后保持 stdin 打开，进程保活到 `idle_timeout`；之后 SIGINT 退出。下次 `send` 用 `--resume <agent_session_id>` 重新拉起，用户无感
 - Codex：v0.1 每个会话一个 `codex app-server` 进程、一个 thread（ADR-26 修订），和 Claude Code 一样 turn 结束后保活到 `idle_timeout` 再退出；下次 `send` 重新拉起 app-server，`initialize` 之后 `thread/resume { threadId: agent_session_id }`
-- ACP：一个 agent 进程服务该 agent 的所有会话。agent 声明 `sessionCapabilities.resume` 或 `loadSession` 的，和 Claude Code 一样按 `idle_timeout` 退出、下次 `session/resume`（不重放）或 `session/load`（重放，daemon 吞掉重放事件只取最后状态）；两者都没有的，进程保活到所有会话 `ended`
+- ACP：**一个 agent 一个进程，服务该 agent 的所有会话**（进程按「挂着的句柄数」计数）。agent 声明 `sessionCapabilities.resume` 或 `loadSession` 的（`capabilities.resume = true`），和 Claude Code 一样按 `idle_timeout` 回收会话：回收只是让这个会话脱离（agent 有 `session/close` 就关掉它），**该 agent 的会话都回收完，进程才退出**；下次 `send` 用 `session/resume`（不重放）或 `session/load`（重放，adapter 吞掉重放事件、只取最后的选项状态）接上，接不上（会话不在了）就开新会话并发一条可恢复的 `error { agent_context_reset }`。两者都没有的 agent（`capabilities.resume = false`），daemon 不回收它的会话，进程保活到会话被删除 / 归档（规格：保活到所有会话结束）。进程崩溃：每个还挂着句柄的会话各自收到 `Exited`（中途崩溃的先有 `error { agent_exited }`），daemon 把它们标成 `error`，下一条消息走续接；一个会话的 agent 进程 pid 是共享进程的 pid，所以预览的端口归属（§ 19）对同一个 agent 的会话是共用的
 - **后台任务**：Claude Code 的 subagent（默认在后台跑）和 `run_in_background` 的命令在主 turn 结束之后还在同一个进程里干活。adapter 从 stream-json 的 `system/background_tasks_changed`（全量列表；`task_started` / `task_notification` / `task_updated` 兜底）得到还在跑的任务数，变化时发 `AgentEvent::Background { tasks }`。Codex 的子 agent 同理：adapter 数还在跑的子 agent（`task` 快照 `running` 的），变化时发 `Background`——子 agent 可以比主 turn 活得更久（不 `wait` 就结束了主 turn），回收进程会把它们一起杀掉；降回 0 靠子 agent 自己的收尾（`turn/completed`、`subAgentActivity`、`agentsStates`、`thread/closed`），用户取消主 turn 时还在跑的一并算取消。Codex 的主 agent 不会被子 agent 的完成唤醒，所以它们结束后没有 agent 自己开的 turn（§ 7.5），推迟的 `turn_finished` 通知靠兜底补发（§ 14）。daemon 记在会话上（`SessionSummary.background_tasks`、`session.changed` 带出，不进事件流，进程摘掉时清零），大于 0 时：
   - 不按 `idle_timeout` 回收进程（`idle` 和回合数 / 预算用完的 `ended` 都一样）——回收会关掉整个进程组，连同后台任务一起杀掉。任务都结束时重新开始计 `idle_timeout`，而不是从上一个 turn 结束算起；
   - 不发 `session_idle`；
@@ -383,6 +393,8 @@ create ──► starting ──► running ──► idle ◄──────
 每个会话记录 `agent_session_id`（Claude Code 的 `session_id`、Codex 的 thread id、ACP 的 session id）和启动参数。resume 时**重新传**所有启动参数（Claude Code 的 `--add-dir`、`--mcp-config`、`--settings` 不会随 resume 恢复）。同一 agent 会话不允许两个进程同时 resume：旧进程还在收尾时，新的 `send` 先等它退完。resume 前还要按当前配置重新判断危险模式（§ 6.1）。
 
 Codex：一个**从来没有记录过用户消息**的 thread 没有 rollout（比如第一个 turn 因为没登录立刻失败），之后 `thread/resume` 报 `no rollout found`。adapter 回退成 `thread/start` 新开一个，`Started` 带新的 `agent_session_id`。Codex 的 `set_settings` 只有 `env` 变了才需要重启进程；模型、思考、模式、`fast_mode`、`model_reasoning_summary` 都按 turn 传，`system_prompt_append` 用 `thread/inject_items`，都立即生效。
+
+ACP：resume 时 adapter 先看进程里还有没有这个会话（之前脱离时 agent 没有 `session/close`，没关）——有就直接接上；否则有 `session/resume` 用它，其次 `session/load`（先登记会话、重放期间的更新一律吞掉，响应回来才放行）；`-32002` / 消息里说找不到会话、或者 agent 两个能力都没有，就 `session/new` 开新会话，`Started` 带新的 `agent_session_id`，紧跟一条可恢复的 `error { agent_context_reset }`。`launch_args` 只是当前设置的快照（`model` / `thinking` / `mode` / `options`），续接时不读它，设置按 daemon 给的完整设置重新应用。
 
 已知限制（Claude Code）：Claude Code 按 cwd 存会话，会话目录挪了之后 `--resume` 找不到原来的会话（`No conversation found`）——根目录项目改名、scratch 会话 `promote`、跟着项目改名移动的 worktree 都会这样，下一次发消息失败。关联项目（目录不动）和 Codex 不受影响。
 
@@ -405,7 +417,7 @@ Codex：一个**从来没有记录过用户消息**的 thread 没有 rollout（�
 
 ### 7.6 取消
 
-`session.cancel`：没有 turn 在跑时，清空等待发送的消息（目录变了期间留在队列里的，§ 7.5），状态不变，不发事件；有 turn 时 → adapter 的中断（Claude Code：控制消息 `interrupt`，失败则 SIGINT；Codex：先把未答复的审批回 `cancel`，再 `turn/interrupt { threadId, turnId }`，3 秒没收尾补 SIGINT；ACP：`session/cancel`，agent 以 `stopReason: cancelled` 结束 prompt）。agent 收尾后发 `turn_done { reason: cancelled }`，状态 `idle`。取消不杀进程。
+`session.cancel`：没有 turn 在跑时，清空等待发送的消息（目录变了期间留在队列里的，§ 7.5），状态不变，不发事件；有 turn 时 → adapter 的中断（Claude Code：控制消息 `interrupt`，失败则 SIGINT；Codex：先把未答复的审批回 `cancel`，再 `turn/interrupt { threadId, turnId }`，3 秒没收尾补 SIGINT；ACP：先把未答复的权限请求 / elicitation 按 `cancelled` 答复（ACP 要求），再发 `session/cancel` 通知，agent 以 `stopReason: cancelled` 结束 prompt；**没有 SIGINT 兜底**，因为进程是该 agent 所有会话共用的，agent 迟迟不收尾由 daemon 的取消宽限处理——它让这个会话的句柄 `shutdown`，进程和别的会话不受影响）。agent 收尾后发 `turn_done { reason: cancelled }`，状态 `idle`。取消不杀进程。
 
 `capabilities.interject`（turn 进行中插话）：Codex 有 `turn/steer`，为 true；Claude Code 的 stream-json 在 turn 中收到的用户消息会排队到下一 turn，为 false；ACP v1 为 false。
 
@@ -528,7 +540,7 @@ daemon 在**写库和发送之前**限制单个事件的体积，存储和发送
 
 - **Claude Code**：`stream_event` 里 `content_block_delta.thinking_delta` → `thinking_delta`、`text_delta` → `text_delta`；`assistant` 消息里的 `tool_use` 块 → `tool_call`（消息的 `parent_tool_use_id` → `parent_id`；子 agent 的文本 / 思考不进主流）；转到后台的调用（子 agent 的 `tool_use_result.status = async_launched`、Bash 的 `tool_use_result.backgroundTaskId`，或者 `system/task_started { is_backgrounded: true }` 报过的调用）结果带 `detail.background`，`system/task_notification`（`completed` / `failed` / `stopped` / `killed`）给同一个调用补最终结果，`output` 是通知里的 `summary`，后台命令从 `summary` 末尾的 `(exit code N)` 取 `detail.exit_code`；`failed` 和退出码非 0 算 `is_error`，被停掉的不算；子 agent 用掉的 token 进 `detail.total_tokens`（前台取 `tool_use_result.totalTokens`，后台取通知里的 `usage.total_tokens`）；`user` 消息里的 `tool_result` → `tool_result`；TodoWrite 的输入 → `plan`；`result` → `turn_done`（`total_cost_usd`、`usage`、`duration_ms`、`num_turns` 进 `usage`；`result.modelUsage.<主模型>.contextWindow` → `usage.context_window`，本 turn 最近一条顶层 assistant 消息的 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` → `usage.context_tokens`，子 agent 的消息不算）；`system/init` 的 `session_id` 存为 `agent_session_id`；`system/task_started` / `task_progress` / `task_updated` / `task_notification` 按 `task_id` 合并成后台任务的整条快照 → `task`（workflow 的 `workflow_progress` 是全量数组，没带它的帧沿用上一份；前台任务和 `skip_transcript` / `ambient` 的杂务不发；终态之后的帧忽略；`task_type` `local_workflow` / `local_agent` / `local_bash` → `workflow` / `subagent` / `shell`，其余 `other`）；`system/api_retry`、`system/status`、`system/compact_boundary`、`rate_limit_event`、`system/notification` / `informational` / `permission_denied` / `hook_response`、模型回退一族 → `activity` / `notice`（§ 8.3）；`/context`、`/cost` 等本地斜杠命令的输出 → `notice { code: command_output }`，不当作模型的文本（`-p` 下它是一条模型为 `<synthetic>`、带 `local_command_source` 的 `assistant` 消息，另有 `system/local_command_output`，两种都认）；`control_request { subtype: elicitation }`（MCP server 向用户要输入）→ 权限请求（§ 9.1）
 - **Codex**：`item/agentMessage/delta` → `text_delta`；`item/reasoning/summaryTextDelta` 和 `textDelta` → `thinking_delta`；`item/started` → `tool_call`，`item/commandExecution/outputDelta` → `tool_output_delta`，`item/completed` → `tool_result`（`status: declined` 视为 `is_error`）；`turn/plan/updated` → `plan`；`turn/completed` → `turn_done`（`status: interrupted` → `cancelled`），usage 来自 `thread/tokenUsage/updated`：一个 turn 的用量 = 每次更新的 `last` 之和（`total` 是线程累计），`input_tokens` 扣除缓存命中（和 Claude Code 口径一致），没有费用；`context_window` 取 `modelContextWindow`，`context_tokens` 取最近一次 `last` 的 `inputTokens`（已含缓存命中；压缩后那条更新的 `inputTokens` 是 0，取 `totalTokens`）；只认当前 turn 的更新（resume 后 app-server 会重放上一个 turn 的用量）；`thread/started.thread.id` 存为 `agent_session_id`。**子 agent 的通知走同一条连接、带各自的 `threadId`**（0.164.0 实测）：主 thread 之外的通知绝不碰主 turn（子 agent 的 `turn/completed` 不结束主 turn，用量、计划、错误、文本和思考都不进主流），它们里面的工具调用带 `parent_id`（启动它的那次调用），子 agent 的状态以 `task`（`kind = subagent`）发出（§ 8.3）；启动子 agent 是 `subAgentActivity { kind: started }`（发 `category = subagent` 的 `tool_call` / `tool_result`），不是 `collabAgentToolCall`；`collabAgentToolCall` 的结果是每个子 agent 一段「名字: 状态」加它的消息，不是 `agentsStates` 的原始 JSON，只有 `spawnAgent` 是 `subagent`，`wait` 等是 `other`。`warning` / `guardianWarning` / `configWarning` / `deprecationNotice` / `mcpServer/startupStatus/updated`（失败）/ `model/rerouted` / `item/autoApprovalReview/completed`（拒绝）/ `hook/completed`（失败）→ `notice`，`contextCompaction` item → `activity` + `notice`（§ 8.3）；`mcpServer/elicitation/request` → 权限请求（§ 9.1）。被打断 / 失败的 turn 不会为进行中的 item 发 `item/completed`，adapter 在 `turn/completed` 时补 `text_done` / `thinking_done` 和 `is_error` 的 `tool_result`。工具调用的 `name` 是 item 类型（`commandExecution`、`fileChange`、`mcp__<server>__<tool>`…），客户端按 `category` / `detail` 渲染，不按名字。Codex 特有的 `error.code`：`agent_reconnecting`（`willRetry`，可恢复，每 turn 最多 5 条，turn 不收尾）、`agent_context_reset`（可恢复的提示：续接时原 thread 已经不在——`no rollout found` / `thread not found`——adapter 开了新 thread，之前的上下文 agent 看不到了）、`unsupported_request`（可恢复：动态工具等不支持的服务端请求，已按拒绝答复）、`elicitation_rejected`（可恢复：交不给用户的 MCP elicitation——不认识的模式、读不懂的 schema、链接不是 http / https——已按 decline 答复）、`elicitation_invalid_answer`（可恢复：用户提交的 MCP 表单答案和 schema 对不上，已按 decline 答复）、`context_window_exceeded`、`sandbox_error`、`policy_violation`，其余 `agent_error`。`initialize` 用 `optOutNotificationMethods` 关掉 adapter 用不到的通知（`turn/diff/updated` 等，它们在大补丁时单行可以超过 10 MB）。单行超过 8 MiB：通知直接丢弃（只记方法名和长度），对应的 item 补一个「内容太大，没有显示」的 `tool_call` / `tool_result`；只有超长的是服务端请求、某个请求的响应或无法识别时才算协议错误
-- **ACP**：`agent_message_chunk` → `text_delta`；`agent_thought_chunk` → `thinking_delta`；`tool_call` / `tool_call_update` → `tool_call` / `tool_result`，`content[].type = diff` → `file_changed`，`type = terminal` 的输出 → `tool_output_delta`；`plan` → `plan`；`session_info_update.title` → `title_changed`（agent 自己起的标题优先于 § 7.7 的默认）；`usage_update` 累积到 `turn_done.usage`；`session/prompt` 的 `stopReason` → `turn_done.reason`（`end_turn` → completed、`cancelled`、`max_tokens / max_turn_requests` → max_turns、`refusal` → error）
+- **ACP**：`agent_message_chunk` → `text_delta`（`messageId` 变了、被别的内容打断、turn 结束时 `text_done`）；`agent_thought_chunk` → `thinking_delta`（收口时 `thinking_done`）；`tool_call` / `tool_call_update` 按 `toolCallId` 合并成一次调用：**`tool_call` 事件等到有内容才发**（很多 agent 先发空壳的 `pending`，`rawInput` 随后才补上，事件一旦发出就改不了）——第一次有输入 / 内容 / 位置、状态不再是 `pending`、权限请求引用它、后面出现别的内容、或 turn 结束时才发，发的时候先补上排在前面还没发的；`completed` / `failed` → `tool_result`（`failed` → `is_error`；`output` 是内容里的文字，其次 `rawOutput`，最后是 diff 的概述）；`in_progress` 期间内容文字在末尾增长的部分 → `tool_output_delta`；`content[].type = diff` → `unified_diff`（`tool_result.detail`）和成功后的 `file_changed`（`type = terminal` 的内容不翻译：adapter 没有声明 `terminal` 能力）；`detail` 是在 `rawInput` 里找各 agent 常见的键名得到的，找不到就留空；`plan` → `plan`；`session_info_update.title` → `title_changed`（agent 自己起的标题优先于 § 7.7 的默认）；`usage_update` 累积到 `turn_done.usage`（`context_tokens` = `used`、`context_window` = `size`，`cost_usd` = 累计费用相对上个 turn 结束时的增量，只认 USD；ACP v1 稳定版没有 token 数，`input_tokens` / `output_tokens` 为空）；`session/prompt` 的 `stopReason` → `turn_done.reason`（`end_turn` → completed、`cancelled`、`max_tokens / max_turn_requests` → max_turns（daemon 把它当会话正常结束：状态 `ended`，进程还活着、能继续发消息）、`refusal` → error（先发一条可恢复的 `error { agent_refusal }`））；prompt 的 JSON-RPC 错误：`-32800` 或取消之后的任何错误 → cancelled，`-32000` → `error { auth_failed }`，其余 `error { agent_error }`；turn 结束时还没收尾的工具调用补一条 `tool_result`（取消 / 出错的标 `is_error`）。`user_message_chunk` 不翻译（用户消息由 daemon 生成）；`current_mode_update` / `config_option_update` 只更新 adapter 里这个会话的选项状态，不进事件流。ACP 特有的 `error.code`：`agent_exited`（进程中途崩溃，可恢复）、`agent_context_reset`（可恢复：续接时原会话已经不在，开了新会话，之前的上下文 agent 看不到了）、`agent_setting_failed`（可恢复：拉起时某个设置 agent 不接受，会话照常用 agent 当前的值）、`agent_refusal`、`elicitation_rejected` / `elicitation_invalid_answer`（同 Codex）、`unsupported_request`（权限请求一个选项都没有，已按取消答复）、`auth_failed`、`agent_error`。agent 发来的 `fs/*` / `terminal/*` 请求（我们没有声明这些能力）一律答 `-32601`
 
 ### 8.3 task / notice / activity
 
@@ -563,7 +575,7 @@ daemon 在**写库和发送之前**限制单个事件的体积，存储和发送
 | `auto_review` | warning | Codex `item/autoApprovalReview/completed` 的 `review.status` 是 `denied` 或 `timedOut` 时（`message` 是被审查的动作加 `review.rationale`；超时没有理由就写「审查超时，动作没有放行」；放行的不发） |
 | `hook_failed` | warning | Claude Code `system/hook_response` 的 `outcome = error`（`cancelled` 不算）；CLI 默认只让少数 hook 事件进输出流（`--include-hook-events` 打开全部，adapter 不加），所以多数会话里看不到；Codex `hook/completed` 的 `run.status` 是 `failed` 或 `blocked`（`message` 是 `statusMessage`，没有就用 hook 输出里的 error / stop / warning / feedback 文字） |
 
-ACP 目前不产生这三类事件。
+ACP 目前不产生这三类事件（adapter 没有声明 `session.notices` / `session.compaction` 能力，agent 就不会发；`activity` 没有对应的 ACP 更新）。
 
 **`activity` 的来源**：Claude Code `system/api_retry` → `retrying`（`attempt` / `max_retries` / `retry_delay_ms`；`reason` = `<HTTP 状态> <错误类别>`，如 `529 overloaded`，连接错误是 `connection error`，首字节超时是 `no response from the API within 30s`），下一个响应开始流式输出（`message_start`）时发 `none`；`system/status { status: "compacting" }` → `compacting`（自动压缩期间会反复发，只发一次），之后 `status: null`（或 `compact_boundary`）→ `none`。只在 turn 进行中发——没有 turn 时（后台 agent 在重试）发出去，客户端没有内容事件或 `turn_done` 来清掉它。Codex `contextCompaction` item 开始 → `compacting`（只在主 turn 进行中发），完成 → `none`（再加一条 `notice` `context_compacted`）。Codex 已有的可恢复错误 `agent_reconnecting` 不变。
 
@@ -606,9 +618,10 @@ permission { request_id, kind, title, detail, options }
 | Claude Code（MCP elicitation） | `control_request { subtype: elicitation, mcp_server_name, message, mode: form \| url, url?, elicitation_id?, requested_schema?, property_order? }` | `accept`：`{ action: accept, content }`（表单模式，答案按 schema 转成 JSON 类型：integer / number / boolean / enum 的原值 / 多选数组，可选项留空就不出现；URL 模式没有 `content`） | — | `decline`：`{ action: decline }`；会话取消、`permissions.request_timeout` 到期时 daemon 自动答复的 reject 选项同样是 decline。表单答案和 schema 对不上（不是整数、不在 enum 里、必填项为空）时也回 decline——请求在 daemon 这边已经算答复过，不能留着未决让 CLI 一直等——并发 `error { code: elicitation_invalid_answer, recoverable: true }` 说明原因 |
 | Codex | `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`、`item/permissions/requestApproval`（`reason` 放进 `detail.tool.detail.description`，`input.reason` 也保留；`fileChange` 的补丁内容取自先前的 `item/started.changes`。显示规则：cwd 之外的路径保持绝对路径；多文件补丁标题写 `Edit N files (a, b, …)`，`description` 依次是 reason、全部路径、`grantRoot` 说明（「并允许本会话写入 <root>」，也写进标题）；拿不到 `item/started` 时标题是 `Edit files (patch contents unknown)` 且 `input.contentUnknown = true`，客户端用警示样式。请求里带非空 `command` 的（zsh 子命令审批）以它为准，标题 `Run sub-command`） | `{ decision: accept }` | `{ decision: acceptForSession }` | `{ decision: decline }`；会话取消时 `cancel`（拒绝并中断 turn）。v0.1 不支持的服务端请求（动态工具、ChatGPT token 刷新、v1 旧审批）按 schema 回拒绝，并发 `error { code: unsupported_request }` |
 | Codex（MCP elicitation） | `mcpServer/elicitation/request { serverName, threadId, mode: form \| url, message, requestedSchema?, url?, _meta? }`，Codex 自己也用它做 **MCP 工具调用的审批**（0.164.0 实测：`readOnlyHint: false` 的工具在 `on-request` 下问；`_meta.codex_approval_kind = mcp_tool_call`，`_meta.persist` 列出可选的持久化范围，`_meta.tool_params` / `tool_description` 是参数和说明，请求里没有 item id 和工具名，工具名取自参数一致的、正在进行的 `mcpToolCall`，找不到再从 `message` 里取）。子 agent 里的请求标题后加 `(sub-agent <名字>)` | 工具审批 `allow`：`{ action: accept }`；表单 `accept`：`{ action: accept, content }`，答案按 schema 转成 JSON 类型（integer / number / boolean / enum 的原值 / 多选数组，没答的可选项不出现；超出 `minimum` / `maximum` 也算对不上）；URL `accept`：`{ action: accept }` | 工具审批 `allow_session`：`{ action: accept, _meta: { persist: session } }`（实测同一 turn 里再调用同一工具不再问）；`allow_always`：`persist: always`；这两个选项只在 `_meta.persist` 列出时才有 | `{ action: decline }`；会话取消、`permissions.request_timeout` 到期同样 decline（Codex 把 decline 和 cancel 都当「用户拒绝」，agent 继续同一个 turn）。表单答案和 schema 对不上时也回 decline 并发 `error { code: elicitation_invalid_answer, recoverable: true }`；不认识的模式（`openai/form`）、读不懂的 schema、超过 50 个属性、链接不是 http / https 的不问用户，直接回 decline 并发 `error { code: elicitation_rejected, recoverable: true }` |
-| ACP | `session/request_permission { toolCall, options[] }` | 透传 agent 给的 options，`optionId` 原样回 | 同左 | 同左；会话取消时 `{ outcome: cancelled }` |
+| ACP | `session/request_permission { toolCall, options[] }`；`toolCall.kind = switch_mode` 的是 `mode_change` | 透传 agent 给的 options（`optionId` → id，`name` → label，`kind` 照搬；不认识的 kind 当 `allow_once`），`{ outcome: { outcome: selected, optionId } }`，`optionId` 原样回 | 同左 | 同左；没带选项（超时 / 自动拒绝）时挑 agent 给的 `reject_once`，再 `reject_always`，都没有就按取消答复（绝不当放行）；会话取消时 `{ outcome: cancelled }` |
+| ACP（elicitation） | `elicitation/create { sessionId, mode: form \| url, message, requestedSchema? \| url? }`（adapter 声明了 `elicitation: { form: {}, url: {} }`） | 表单：`accept`：`{ action: accept, content }`（答案按 schema 转成 JSON 类型，规则同 Codex 的表单 elicitation）；URL：`accept`：`{ action: accept }` | — | `decline`：`{ action: decline }`；会话取消 `{ action: cancel }`；答案和 schema 对不上时也回 decline 并发 `error { code: elicitation_invalid_answer, recoverable: true }`；不认识的模式 / 读不懂的 schema / 超过 50 个属性 / 链接不是 http(s) 的不问用户，直接 decline 并发 `error { code: elicitation_rejected, recoverable: true }`；没有 `sessionId` 的请求级 elicitation 没人能答复，直接 decline |
 
-ACP 的 options 是 agent 定义的，可能只有两项或有四项，客户端按 `options` 渲染而不是写死三个按钮。
+ACP 的 options 是 agent 定义的，可能只有两项或有四项，客户端按 `options` 渲染而不是写死三个按钮。`allow_always` / `reject_always` 的记忆由 agent 自己管（ACP 规定），anycon 不替它记；`session/request_permission` 的答复里没地方放理由，所以 `reject_*` 的 `needs_message` 恒为假。`switch_mode` 类请求（`mode_change`）的 `detail.text` 是计划文字，没有 `detail.mode`（每个选项对应的目标模式 ACP 没规定），所以批准后 daemon 不会改 `settings.mode`，agent 自己切了模式 daemon 也不知道（`settings.mode` 可能和实际模式不一致；下次拉起按 daemon 记的重新设）。
 
 ### 9.2 答复
 

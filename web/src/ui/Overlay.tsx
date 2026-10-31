@@ -15,12 +15,14 @@ interface Common {
   testId?: string
   /** 对话框宽度：`md`（默认，28rem）或 `lg`（36rem，放目录选择器这类内容）。 */
   size?: 'md' | 'lg'
+  /** 竖直位置：`center`（默认）居中；`top` 贴近顶部，内容高度变化（搜索结果陆续出现）时输入框不会跟着挪、手机软键盘也盖不住它。 */
+  placement?: 'center' | 'top'
 }
 
 const overlay = 'fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] data-[state=open]:animate-in'
 
 /** 居中对话框。 */
-export function Dialog({ open, onOpenChange, title, description, children, hideTitle, closeLabel = 'Close', testId, size = 'md' }: Common) {
+export function Dialog({ open, onOpenChange, title, description, children, hideTitle, closeLabel = 'Close', testId, size = 'md', placement = 'center' }: Common) {
   return (
     <RDialog.Root open={open} onOpenChange={onOpenChange}>
       <RDialog.Portal>
@@ -29,7 +31,8 @@ export function Dialog({ open, onOpenChange, title, description, children, hideT
           data-testid={testId}
           {...(description ? {} : { 'aria-describedby': undefined })}
           className={cn(
-            'fixed left-1/2 top-1/2 z-50 max-h-[85dvh] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border bg-surface p-5 shadow-pop focus:outline-none',
+            'fixed left-1/2 z-50 w-[calc(100vw-2rem)] -translate-x-1/2 overflow-y-auto rounded-lg border border-border bg-surface p-5 shadow-pop focus:outline-none',
+            placement === 'top' ? 'top-[max(1rem,8dvh)] max-h-[calc(100dvh-6rem)]' : 'top-1/2 max-h-[85dvh] -translate-y-1/2',
             size === 'lg' ? 'max-w-xl' : 'max-w-md',
           )}
         >

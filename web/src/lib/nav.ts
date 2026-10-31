@@ -10,6 +10,12 @@ export function safeRedirect(href: string | undefined): string {
   return href && /^\/(?![/\\])/.test(href) ? href : '/'
 }
 
+/** 会话页 `?seq=`（搜索命中的事件 seq）：正整数，来自 URL 的数字串也认；别的值一律当没有。 */
+export function parseSeqParam(v: unknown): number | undefined {
+  const n = typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v
+  return typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : undefined
+}
+
 /** 当前 URL 里的节点（短 id → 完整 id）。 */
 export function useCurrentNode(): { param: string | undefined; nodeId: string | undefined; entry: NodeEntry | undefined; loaded: boolean } {
   const params = useParams({ strict: false }) as { node?: string }

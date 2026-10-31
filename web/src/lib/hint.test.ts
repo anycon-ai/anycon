@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { cleanHintText, displayHint } from './hint'
+import { cleanHintText, displayHint, stripUnsafe } from './hint'
+
+describe('stripUnsafe', () => {
+  it('turns control and bidi characters into spaces, and leaves everything else (including other whitespace runs and the length) alone', () => {
+    expect(stripUnsafe('a\u{202e}b\nc\u{0}d')).toBe('a b c d')
+    expect(stripUnsafe('  keep   spacing  ')).toBe('  keep   spacing  ')
+    expect(stripUnsafe('数据库 😀')).toBe('数据库 😀')
+  })
+})
 
 describe('cleanHintText', () => {
   it('strips control characters and bidi controls from what the other device claims to be', () => {

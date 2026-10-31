@@ -11,7 +11,7 @@ import { SessionStatusChip } from '@/components/SessionListItem'
 import { attachmentSupport } from '@/features/attachments/support'
 import { discardRefs, restoreAttachments } from '@/features/attachments/composerUploads'
 import { describeAttachmentFailure, describeAttachNotice } from '@/features/attachments/errors'
-import { archiveSession, cancelTurn, closeSession, deleteSession, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, unarchiveSession, type SendOutcome } from '@/features/session/actions'
+import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, unarchiveSession, type SendOutcome } from '@/features/session/actions'
 import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
 import { latestSyncBlock, pendingPermissions } from '@/features/session/reducer'
@@ -54,7 +54,11 @@ function failedText(reason: SendOutcome['reason'], t: TFunction): string {
   return describeAttachmentFailure(reason, t) ?? t('message.failed')
 }
 
-export function SessionPage({ sessionId }: { sessionId: string }) {
+/**
+ * `focusSeq`：URL 的 `?seq=`，搜索命中带来的事件 seq（spec/web.md § 9）。会话第一次同步完之后，把历史往前加载到那个 seq、
+ * 切回「聊天」视图、滚到那条消息并高亮，然后把 `?seq=` 从地址里去掉（刷新或重新渲染不会再滚一遍）。
+ */
+export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: string; focusSeq?: number }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { nodeId, entry } = useCurrentNode()
@@ -82,6 +86,9 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const [renameOpen, setRenameOpen] = useState(false)
   const [focusToken, setFocusToken] = useState(0)
   const [scrollTo, setScrollTo] = useState<string | null>(null)
+  // 搜索命中定位：`finding` = 正在往前加载历史；`focusSeq` 交给消息列表去滚动和高亮，它处理完就清掉
+  const [focusSeq, setFocusSeq] = useState<number | null>(null)
+  const [finding, setFinding] = useState(false)
   const [announce, setAnnounce] = useState('')
   // 主区显示聊天、「改动」还是「预览」（只对这个会话；切到别的会话回到聊天）。「改动」「预览」都是整页大小的视图，不挤在右栏里
   const [mainChoice, setMainChoice] = useState<{ sessionId: string; view: MainView } | null>(null)
@@ -98,6 +105,40 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
       void closeSession(nodeId, sessionId)
     }
   }, [nodeId, sessionId, loadDraft])
+
+  const phase = open?.phase
+  const catchingUp = open?.catchingUp
+  useEffect(() => {
+    // 等第一次同步完（追赶中的历史会盖掉我们刚并进去的）
+    if (wantedSeq === undefined || !nodeId || !phase || phase === 'loading' || catchingUp) return
+    let cancelled = false
+    const clearParam = (): void => void navigate({ to: '/n/$node/s/$session', params: { node: nodeParam, session: sessionId }, search: {}, replace: true })
+    setMainChoice({ sessionId, view: 'chat' })
+    if (phase === 'error') {
+      clearParam()
+      return
+    }
+    setFinding(true)
+    loadHistoryTo(sessionId, wantedSeq)
+      .then((r) => {
+        if (r === 'too_far') toast.info(t('session.messageTooFar'))
+        return true
+      })
+      .catch((e: unknown) => {
+        toast.error(describeError(e, t))
+        return false
+      })
+      .then((ok) => {
+        if (cancelled) return
+        setFinding(false)
+        if (ok) setFocusSeq(wantedSeq)
+        clearParam()
+      })
+    return () => {
+      cancelled = true
+      setFinding(false)
+    }
+  }, [wantedSeq, nodeId, nodeParam, sessionId, phase, catchingUp, navigate, t])
 
   const view = open?.view
   const status = (open?.watching ? view?.status ?? summary?.status : summary?.status ?? view?.status) ?? 'idle'
@@ -429,6 +470,9 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
               activity={isTurnActive(status) ? view?.activity : null}
               tasksLive={tasksMayProgress}
               scrollToRequest={scrollTo}
+              focusSeq={focusSeq}
+              onFocused={() => setFocusSeq(null)}
+              finding={finding}
               git={
                 worktree
                   ? {

@@ -12,12 +12,12 @@ import { groupNodeSessions, type NodeProjectGroup } from '@/features/session/gro
 import { useEnroll } from '@/stores/enroll'
 import { cleanHintText } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
+import { useNodeFilter } from '@/lib/nodeFilter'
 import { connectionTone } from './useConnectionLabel'
 import { SessionDot } from './StatusDot'
 import { useHub } from '@/stores/hub'
 import { useNewProject } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
-import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
@@ -29,26 +29,6 @@ import { RemoveDeviceDialog } from './RemoveDeviceDialog'
 import { SignOutDialog } from './SignOutDialog'
 
 const RECENT_PER_PROJECT = 5
-
-/**
- * 左栏显示哪些节点：偏好里存的是用户勾选的节点（null = 全部）。勾选里已经没有存在的节点（节点被移除）时退回全部，
- * 免得左栏一片空白；至少留一个，取消最后一个勾选不生效。
- */
-function useNodeFilter(): { selected: string[]; toggle: (id: string, on: boolean) => void } {
-  const order = useNodes((s) => s.order)
-  const saved = usePrefs((s) => s.sidebarNodes)
-  const setPrefs = usePrefs((s) => s.set)
-  const selected = useMemo(() => {
-    const picked = saved ? order.filter((id) => saved.includes(id)) : order
-    return picked.length > 0 ? picked : order
-  }, [saved, order])
-  const toggle = (id: string, on: boolean): void => {
-    const next = order.filter((x) => (x === id ? on : selected.includes(x)))
-    if (next.length === 0) return
-    setPrefs({ sidebarNodes: next.length === order.length ? null : next })
-  }
-  return { selected, toggle }
-}
 
 /**
  * 「新建项目」默认建在哪个节点：页面当前所在的节点（在勾选里的话），否则第一个勾选的；对话框里还能换。

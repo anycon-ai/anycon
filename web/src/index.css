@@ -359,10 +359,28 @@ html[data-font='lg'] {
   animation: anycon-caret 1s step-end infinite;
   color: var(--accent-text);
 }
+/* 搜索命中定位到的那条消息：底色淡出（时长和 MessageList 里 FLASH_MS 对应，到点由组件去掉 class） */
+@keyframes anycon-search-flash {
+  from {
+    background-color: color-mix(in srgb, var(--warning) 28%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.search-flash {
+  border-radius: var(--radius-md);
+  animation: anycon-search-flash 2s ease-out both;
+}
 @media (prefers-reduced-motion: reduce) {
   .animate-pulse-soft,
   .stream-caret::after,
   .animate-spin {
     animation: none !important;
+  }
+  /* 不做淡出：底色一直在，直到组件去掉 class */
+  .search-flash {
+    animation: none;
+    background-color: color-mix(in srgb, var(--warning) 20%, transparent);
   }
 }

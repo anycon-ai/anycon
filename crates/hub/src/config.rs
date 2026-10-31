@@ -382,7 +382,8 @@ pub struct Config {
     /// **只给测试用，不对应任何环境变量**：把 OAuth 提供方的端点指到本机的假提供方。生产里全是 `None`。
     pub oauth_endpoint_overrides: OAuthEndpointOverrides,
     pub data_dir: PathBuf,
-    /// `None` = `sqlite://<data_dir>/hub.db`。
+    /// `None` = `sqlite://<data_dir>/hub.db`；`sqlite:…` 是别处的 SQLite 文件；`postgres://…` / `postgresql://…` 是 Postgres
+    /// （[`crate::store::open`]）。`Debug` 里不输出它（Postgres 的 URL 带密码）。
     pub database_url: Option<String>,
     pub trusted_proxies: Vec<IpNet>,
     /// tracing 过滤表达式（`ANYCON_LOG`）。

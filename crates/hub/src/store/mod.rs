@@ -1,18 +1,28 @@
-//! 存储抽象。hub 的其余部分只依赖 [`Store`] trait，v0.1 的实现是 [`SqliteStore`]（Postgres 以后再加）。
+//! 存储抽象。hub 的其余部分只依赖 [`Store`] trait，有两个实现：默认的 [`SqliteStore`]，和给公共 hub 用的 [`PostgresStore`]
+//! （ADR-12）。[`open`] 按 `ANYCON_DATABASE_URL` 的协议头选一个。
 //!
-//! 表结构见 `migrations/sqlite/` 和 docs/spec/hub.md § 8：全是元数据，没有任何会话内容。
-//! 所有 token / 邀请码 / cookie 值都只以哈希形式出现在这里（见 [`crate::util::hash_token`]）。
+//! 表结构见 `migrations/sqlite/`、`migrations/postgres/`（同样的编号和名字，一一对应）和 docs/spec/hub.md § 8：
+//! 全是元数据，没有任何会话内容。所有 token / 邀请码 / cookie 值都只以哈希形式出现在这里（见 [`crate::util::hash_token`]）。
+//!
+//! 两个实现的行为要完全一致：`conformance.rs` 是两边共用的一套测试（Postgres 那一边要设 `ANYCON_TEST_POSTGRES_URL`）。
+
+use std::path::Path;
+use std::sync::Arc;
 
 use anycon_protocol::{DeviceKind, NotifyCategory};
 use async_trait::async_trait;
 use serde::Serialize;
 
+#[cfg(test)]
+mod conformance;
 mod oauth;
+mod postgres;
 mod sqlite;
 
 pub use oauth::{
     Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthPurpose, OAuthState,
 };
+pub use postgres::PostgresStore;
 pub use sqlite::SqliteStore;
 
 #[derive(Debug, thiserror::Error)]
@@ -26,6 +36,38 @@ pub enum StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
+
+/// `ANYCON_DATABASE_URL` 指向 Postgres（`postgres://…` 或 `postgresql://…`，不区分大小写）。
+pub fn is_postgres_url(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    lower.starts_with("postgres:") || lower.starts_with("postgresql:")
+}
+
+/// 按 `ANYCON_DATABASE_URL` 打开存储并跑完迁移：没设用 `<data_dir>/hub.db` 的 SQLite，`sqlite:…` 是 SQLite，
+/// `postgres://…` / `postgresql://…` 是 Postgres，其它协议报错。
+pub async fn open(database_url: Option<&str>, data_dir: &Path) -> StoreResult<Arc<dyn Store>> {
+    Ok(match database_url {
+        Some(url) if is_postgres_url(url) => Arc::new(PostgresStore::open(url.trim()).await?),
+        other => Arc::new(SqliteStore::open(other, data_dir).await?),
+    })
+}
+
+/// `LIKE` 的转义字符（SQL 里是 `ESCAPE '\'`）。
+const LIKE_ESCAPE: char = '\\';
+
+/// 把用户输入包成「包含」模式 `%…%`：`%`、`_` 和转义字符本身都转义，当字面字符匹配。账号搜索（两个后端）用它。
+fn like_contains(needle: &str) -> String {
+    let mut pattern = String::with_capacity(needle.len() + 2);
+    pattern.push('%');
+    for c in needle.chars() {
+        if matches!(c, '%' | '_' | LIKE_ESCAPE) {
+            pattern.push(LIKE_ESCAPE);
+        }
+        pattern.push(c);
+    }
+    pattern.push('%');
+    pattern
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Account {
@@ -605,4 +647,56 @@ pub trait Store: Send + Sync + 'static {
     /// `query` 里的 `%`、`_` 当字面字符，不是通配符。
     async fn search_accounts(&self, query: &str, limit: u32, after: Option<(u64, String)>)
         -> StoreResult<Vec<Account>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn postgres_urls_are_told_apart_by_their_scheme_only() {
+        for url in ["postgres://u@h/db", "postgresql://u@h/db", "POSTGRES://u@h/db", "  postgresql:///db"] {
+            assert!(is_postgres_url(url), "{url}");
+        }
+        for url in ["sqlite://x.db", "sqlite:x.db", "postgresx://h", "mysql://h", "/srv/postgres://", ""] {
+            assert!(!is_postgres_url(url), "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn open_picks_the_backend_from_the_url() {
+        let dir = tempfile::tempdir().unwrap();
+        // 没设：数据目录里的 SQLite
+        open(None, dir.path()).await.unwrap().ping().await.unwrap();
+        assert!(dir.path().join("hub.db").exists());
+        // postgres:// 走 Postgres（端口 1 上没有服务，所以是连接错误，不是「不认识的协议」）
+        let err = open(Some("postgres://u:pw@127.0.0.1:1/db"), dir.path()).await.err().expect("unreachable");
+        assert!(err.to_string().contains("cannot connect to Postgres at 127.0.0.1:1/db"), "{err}");
+        let err = open(Some("postgresql://u:pw@127.0.0.1:1/db"), dir.path()).await.err().expect("unreachable");
+        assert!(err.to_string().contains("cannot connect to Postgres"), "{err}");
+        // 别的协议：报错并说明认哪几种
+        let err = open(Some("mysql://u@h/db"), dir.path()).await.err().expect("rejected");
+        assert!(err.to_string().contains("sqlite://") && err.to_string().contains("postgres://"), "{err}");
+    }
+
+    /// 两个后端的迁移一一对应：同样的编号和名字。以后加迁移，两边按同一个编号各加一份。
+    #[test]
+    fn both_backends_have_the_same_migrations() {
+        let list = |backend: &str| -> Vec<String> {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations").join(backend);
+            let mut names: Vec<String> = std::fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let (sqlite, postgres) = (list("sqlite"), list("postgres"));
+        assert!(sqlite.len() >= 3, "{sqlite:?}");
+        assert_eq!(sqlite, postgres, "migrations/sqlite and migrations/postgres must have the same files");
+        for (i, name) in sqlite.iter().enumerate() {
+            let expected = format!("{:04}_", i + 1);
+            assert!(name.starts_with(&expected) && name.ends_with(".sql"), "{name}: numbered without gaps from 0001");
+        }
+    }
 }

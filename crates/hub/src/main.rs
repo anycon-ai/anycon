@@ -62,7 +62,13 @@ const ENV_HELP: &str = "ENVIRONMENT (the ones that matter for a safe deployment)
                            daemons (3), online connections (10) and pairings per day (20). Positive integers.
   ANYCON_OAUTH_GITHUB_CLIENT_ID / _CLIENT_SECRET, ANYCON_OAUTH_GOOGLE_CLIENT_ID / _CLIENT_SECRET   optional OAuth
                            sign-in. Both values of a provider are required. ANYCON_PUBLIC_URL should be https.
-  ANYCON_DATA_DIR / ANYCON_LISTEN / ANYCON_LOG   data directory (/data), bind address (0.0.0.0:8080), log filter (info).
+  ANYCON_DATABASE_URL      storage backend. Default: SQLite at <data>/hub.db; sqlite:///path/to/hub.db picks another
+                           file. postgres://user:password@host:5432/dbname (or postgresql://) uses Postgres: the
+                           tables are created on start; add ?sslmode=require for TLS. Percent-encode special
+                           characters in the password. The URL is never logged. Postgres does not make the hub
+                           multi-instance: run exactly one.
+  ANYCON_DATA_DIR / ANYCON_LISTEN / ANYCON_LOG   data directory (/data: admin token, push keys, the SQLite file),
+                           bind address (0.0.0.0:8080), log filter (info).
 ";
 
 #[tokio::main]

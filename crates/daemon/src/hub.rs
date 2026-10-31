@@ -774,6 +774,39 @@ pub struct HubLink {
     pub silence_timeout: Duration,
 }
 
+/// 设备 token 该轮换了就向 hub 发 `rotate_token`；返回多久之后再检查一次（[`identity::next_rotation_check`]）。
+///
+/// hub 同一设备 1 分钟内只轮换一次，多余的请求不回复；旧 token 轮换之后只再有效 60 秒。所以回执（`token_rotated`）
+/// 丢了就靠这里重发：头几次隔 75 秒，之后每小时一次——连着 hub 几十天不重连的 daemon 也能轮换。
+fn rotation_check(identity: &Identity, outbox: &HubOutbox, sends: &mut u32, now_ms: u64) -> Duration {
+    if !identity.token_due(now_ms) {
+        *sends = 0;
+        return crate::identity::ROTATE_RECHECK;
+    }
+    if outbox.send_control(&Control::RotateToken {}) {
+        *sends += 1;
+        tracing::info!(attempt = *sends, "the device token is due for rotation; asked the hub for a new one");
+    }
+    crate::identity::next_rotation_check(*sends)
+}
+
+/// hub 回了 `token_rotated`：先写盘（token、签发时间），再让之后的重连用新 token。没有 token 的临时身份不会收到这条，
+/// 收到就忽略。写盘失败也换上内存里的（见 [`Identity::rotate_token`]），但要把后果写清楚。
+fn on_token_rotated(identity: &Identity, token: &str, now_ms: u64) {
+    if identity.device_token().is_none() || token.is_empty() {
+        tracing::debug!("ignored token_rotated: this daemon has no device token");
+        return;
+    }
+    match identity.rotate_token(token, now_ms) {
+        Ok(()) => tracing::info!("device token rotated"),
+        Err(e) => tracing::error!(
+            error = %e,
+            "could not save the rotated device token: this process keeps using the new one, but after a restart the \
+             saved one is no longer valid (the hub keeps the previous token for only 60 s) and the device must be paired again"
+        ),
+    }
+}
+
 fn jitter(d: Duration) -> Duration {
     d.mul_f64(rand::thread_rng().gen_range(0.75..1.25))
 }
@@ -980,8 +1013,17 @@ impl HubLink {
         self.outbox.attach(&device_id, out_tx);
         let reconnect = self.peers.reconnect.clone();
         let mut last_rx = Instant::now();
+        // 设备 token 轮换（docs/spec/daemon.md § 15）：认证后马上检查一次，之后按 `rotation_check` 返回的间隔再查。
+        // 只对用 token 认证的连接做；没有 token 的临时身份刚经 `PairDone` 拿到的 token 是新的。
+        let can_rotate = token.is_some();
+        let mut rotate_sends = 0u32;
+        let mut next_rotation = tokio::time::Instant::now();
         loop {
             tokio::select! {
+                _ = tokio::time::sleep_until(next_rotation), if can_rotate => {
+                    let wait = rotation_check(&self.identity, &self.outbox, &mut rotate_sends, now_ms());
+                    next_rotation = tokio::time::Instant::now() + wait;
+                }
                 frame = ws.next() => {
                     last_rx = Instant::now();
                     match frame {
@@ -1083,11 +1125,7 @@ impl HubLink {
                 tracing::warn!(retry_after_ms, "hub rate limit hit; pausing outbound envelopes");
                 self.outbox.on_rate_limited(retry_after_ms);
             }
-            Control::TokenRotated { device_token } => {
-                if let Err(e) = self.identity.set_device(None, Some(&device_token)) {
-                    tracing::error!(error = %e, "failed to store the rotated token");
-                }
-            }
+            Control::TokenRotated { device_token } => on_token_rotated(&self.identity, &device_token, now_ms()),
             // 账号内接入：有设备请求接入这台 daemon / 接入会话被对端取消、断线或超时
             Control::EnrollRequest { enroll_id, peer, .. } => self.peers.enroll.on_request(enroll_id, peer).await,
             Control::EnrollFailed { enroll_id, reason } => self.peers.enroll.on_failed(enroll_id, reason).await,
@@ -1154,6 +1192,86 @@ mod tests {
     async fn next(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Envelope {
         let b = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("an envelope").unwrap();
         Envelope::decode(&b).unwrap()
+    }
+
+    /// 临时目录里的身份（带一个已签发的 token，签发时间 `issued_at_ms`）。
+    fn identity_with_token(dir: &std::path::Path, issued_at_ms: Option<u64>) -> Arc<Identity> {
+        let paths = crate::config::Paths::new(dir.join("home"));
+        crate::identity::create_node_key(&paths).unwrap();
+        std::fs::create_dir_all(paths.keys_dir()).unwrap();
+        crate::identity::write_private(&paths.device_token(), "tok1").unwrap();
+        if let Some(t) = issued_at_ms {
+            crate::identity::write_private(&paths.device_token_issued_at(), &t.to_string()).unwrap();
+        }
+        Arc::new(Identity::load(&paths).unwrap())
+    }
+
+    const DAY_MS: u64 = 24 * 3600 * 1000;
+
+    #[tokio::test]
+    async fn a_due_token_asks_the_hub_for_rotation_every_75_s_three_times_and_then_hourly() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = 100 * DAY_MS;
+        for issued in [Some(now - 31 * DAY_MS), None, Some(now + 1)] {
+            let identity = identity_with_token(&dir.path().join(format!("{issued:?}")), issued);
+            let (ob, mut rx) = attached();
+            let mut sends = 0;
+            let mut waits = Vec::new();
+            for _ in 0..5 {
+                waits.push(rotation_check(&identity, &ob, &mut sends, now));
+            }
+            let secs: Vec<u64> = waits.iter().map(|d| d.as_secs()).collect();
+            assert_eq!(secs, [75, 75, 3600, 3600, 3600], "{issued:?}");
+            assert_eq!(sends, 5);
+            for _ in 0..5 {
+                let env = next(&mut rx).await;
+                assert_eq!(env.kind, Kind::Control);
+                assert!(matches!(env.control_body().unwrap(), Control::RotateToken {}));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_token_is_not_rotated_and_resets_the_retry_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = 100 * DAY_MS;
+        let identity = identity_with_token(dir.path(), Some(now - 29 * DAY_MS));
+        let (ob, mut rx) = attached();
+        let mut sends = 2;
+        assert_eq!(rotation_check(&identity, &ob, &mut sends, now), Duration::from_secs(3600));
+        assert_eq!(sends, 0);
+        assert!(rx.try_recv().is_err(), "nothing was sent");
+        // 同一个 token 再过两天就满 30 天了：每小时的复查会在那时发出请求
+        assert_eq!(rotation_check(&identity, &ob, &mut sends, now + 2 * DAY_MS), Duration::from_secs(75));
+        assert!(matches!(next(&mut rx).await.control_body().unwrap(), Control::RotateToken {}));
+    }
+
+    #[tokio::test]
+    async fn an_identity_without_a_token_never_asks_for_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::config::Paths::new(dir.path().join("home"));
+        let identity = Identity::from_secret(&paths, [7; 32]);
+        let (ob, mut rx) = attached();
+        let mut sends = 0;
+        assert_eq!(rotation_check(&identity, &ob, &mut sends, 100 * DAY_MS), Duration::from_secs(3600));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn token_rotated_is_saved_and_used_and_ignored_without_a_device_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = identity_with_token(dir.path(), Some(1));
+        on_token_rotated(&identity, "tok2", 9_000);
+        assert_eq!((identity.device_token().as_deref(), identity.token_issued_at_ms()), (Some("tok2"), Some(9_000)));
+        let reloaded = Identity::load(&crate::config::Paths::new(dir.path().join("home"))).unwrap();
+        assert_eq!((reloaded.device_token().as_deref(), reloaded.token_issued_at_ms()), (Some("tok2"), Some(9_000)));
+        on_token_rotated(&identity, "", 10_000);
+        assert_eq!(identity.device_token().as_deref(), Some("tok2"), "an empty token is ignored");
+
+        let none_dir = tempfile::tempdir().unwrap();
+        let temp = Identity::from_secret(&crate::config::Paths::new(none_dir.path().join("home")), [7; 32]);
+        on_token_rotated(&temp, "tok2", 9_000);
+        assert!(temp.device_token().is_none(), "a temporary identity does not adopt a token it did not ask for");
     }
 
     #[tokio::test]

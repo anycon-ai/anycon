@@ -61,7 +61,7 @@ pub async fn init(paths: &Paths, opts: &InitOptions) -> Result<InitOutcome, Init
 
     if initialized {
         // 重新初始化：旧的配对关系和设备身份作废
-        for p in [paths.device_token(), paths.device_id(), paths.peers_json()] {
+        for p in [paths.device_token(), paths.device_token_issued_at(), paths.device_id(), paths.peers_json()] {
             let _ = std::fs::remove_file(p);
         }
         if paths.db().exists() {
@@ -100,10 +100,11 @@ mod tests {
         assert!(matches!(init(&paths, &opts).await, Err(InitError::AlreadyInitialized(_))));
         // --force：换新密钥，清掉身份
         std::fs::write(paths.device_token(), "tok").unwrap();
+        std::fs::write(paths.device_token_issued_at(), "1").unwrap();
         let out = init(&paths, &InitOptions { force: true, ..opts.clone() }).await.unwrap();
         assert!(out.reinitialized);
         assert_ne!(std::fs::read_to_string(paths.node_key()).unwrap(), key1);
-        assert!(!paths.device_token().exists());
+        assert!(!paths.device_token().exists() && !paths.device_token_issued_at().exists());
         // 坏的 hub URL
         let paths2 = Paths::new(d.path().join("home2"));
         assert!(matches!(

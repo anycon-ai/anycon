@@ -367,7 +367,8 @@ daemon 数据目录 `~/.anycon/`：
 ├── daemon.db                   会话历史、FTS、审计（SQLite）
 ├── keys/
 │   ├── node.key                Noise 静态私钥，0600
-│   └── device-token            hub 签发的设备 token，0600
+│   ├── device-token            hub 签发的设备 token，0600
+│   └── device-token-issued-at  这个 token 的签发时间（Unix 毫秒，轮换用），0600
 ├── peers.json                  已配对设备公钥（数据库的镜像）
 ├── daemon.sock                 本机 CLI 通道，0600（Windows 上是命名管道 \\.\pipe\anycon-<hash>，不在这个目录里）
 ├── logs/                       daemon 日志，默认保留 7 天

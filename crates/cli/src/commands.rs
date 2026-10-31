@@ -701,12 +701,7 @@ pub async fn projects(app: &App, a: ProjectsArgs) -> Result<u8> {
                             )
                         })
                         .unwrap_or_else(|| "-".into());
-                    // 关联的目录标 linked 和路径；目录不在了再标 missing
-                    let location = match (p.kind, p.missing) {
-                        (ProjectKind::Folder, _) => String::new(),
-                        (ProjectKind::Linked, false) => format!("linked: {}", p.path),
-                        (ProjectKind::Linked, true) => format!("linked: {} (missing)", p.path),
-                    };
+                    let location = project_location(p, &r.root);
                     rows.push(vec![
                         p.name.clone(),
                         git,
@@ -718,8 +713,10 @@ pub async fn projects(app: &App, a: ProjectsArgs) -> Result<u8> {
                 table(&rows)
             });
         }
-        Some(ProjectsCmd::Create { name, git }) => {
-            let p: Project = conn.call(methods::WORKSPACE_CREATE, json!({ "name": name, "git_init": git })).await?;
+        Some(ProjectsCmd::Create { name, git, root }) => {
+            let root = root.map(|r| local_path_arg(&conn, &r)).transpose()?;
+            let p: Project =
+                conn.call(methods::WORKSPACE_CREATE, json!({ "name": name, "git_init": git, "root": root })).await?;
             print_json_or(app, &p, || format!("created {} at {}\n", visible(&p.name), visible(&p.path)));
         }
         Some(ProjectsCmd::Rename { from, to }) => {
@@ -749,9 +746,25 @@ pub async fn projects(app: &App, a: ProjectsArgs) -> Result<u8> {
                 conn.call(methods::WORKSPACE_BROWSE, json!({ "path": path, "show_hidden": all })).await?;
             print_json_or(app, &r, || render_browse(&r));
         }
-        Some(ProjectsCmd::Clone { url, name }) => return clone(app, conn, url, name).await,
+        Some(ProjectsCmd::Clone { url, name, root }) => {
+            let root = root.map(|r| local_path_arg(&conn, &r)).transpose()?;
+            return clone(app, conn, url, name, root).await;
+        }
     }
     Ok(0)
+}
+
+/// `anycon projects` 的 LOCATION 列：关联项目标 `linked` 和路径（目录不在了再标 `missing`）；不在主根里的文件夹项目标出所在的根；
+/// 主根下的项目留空。`primary` 是 `workspace.list` 给的主根。路径来自机器上的文件系统，调用方负责可见化（表格输出时统一处理）。
+fn project_location(p: &Project, primary: &str) -> String {
+    match (p.kind, p.missing) {
+        (ProjectKind::Linked, false) => format!("linked: {}", p.path),
+        (ProjectKind::Linked, true) => format!("linked: {} (missing)", p.path),
+        (ProjectKind::Folder, _) => match p.root.as_deref() {
+            Some(root) if root != primary => format!("root: {root}"),
+            _ => String::new(),
+        },
+    }
 }
 
 /// 本机 daemon 时，相对路径按 CLI 当前目录转成绝对路径再发（daemon 的 cwd 不是用户的 cwd）；
@@ -821,9 +834,10 @@ fn render_browse(r: &WorkspaceBrowseResult) -> String {
     out
 }
 
-async fn clone(app: &App, mut conn: Conn, url: String, name: Option<String>) -> Result<u8> {
+async fn clone(app: &App, mut conn: Conn, url: String, name: Option<String>, root: Option<String>) -> Result<u8> {
     let mut notes = conn.notifications();
-    let job: JobStarted = conn.call(methods::WORKSPACE_CLONE, json!({ "url": url, "name": name })).await?;
+    let job: JobStarted =
+        conn.call(methods::WORKSPACE_CLONE, json!({ "url": url, "name": name, "root": root })).await?;
     let mut sigint = crate::output::interrupt_signal();
     let tty = std::io::stderr().is_terminal();
     loop {
@@ -1472,15 +1486,24 @@ pub async fn config(app: &App, cmd: ConfigCmd) -> Result<u8> {
             } else {
                 "saved; this key needs a daemon restart to take effect (`anycon service restart`)"
             };
+            // 工作区的根只在 daemon 启动时读：现在就按启动时的规则判一遍，免得重启之后 daemon 起不来才发现
+            let root_notes = if matches!(key.as_str(), "workspace.root" | "workspace.extra_roots") {
+                workspace_roots_notes(&app.paths)
+            } else {
+                Vec::new()
+            };
             if app.json() {
                 let mut out = json!({ "key": key, "applied": running && hot, "restart_required": running && !hot });
                 if key == "workspace.link_roots" {
                     out["link_roots_unusable"] = Value::Array(unusable);
                 }
+                if !root_notes.is_empty() {
+                    out["workspace_roots_warnings"] = json!(root_notes);
+                }
                 app.out.json_line(&out);
             } else {
                 println!("{note}");
-                for line in link_roots_notes(&unusable) {
+                for line in link_roots_notes(&unusable).into_iter().chain(root_notes) {
                     println!("{line}");
                 }
             }
@@ -1521,6 +1544,25 @@ fn link_roots_notes(unusable: &[Value]) -> Vec<String> {
             format!("warning: workspace.link_roots entry \"{}\" is {word}: {reason}", crate::output::visible(entry))
         })
         .collect()
+}
+
+/// `config set workspace.root / workspace.extra_roots` 之后按 daemon 启动时的规则（[`anycon_daemon::wsroots`]）判一遍：
+/// 配置错误（daemon 会拒绝启动）和暂时用不了的额外根（会被跳过），每条一行。
+fn workspace_roots_notes(paths: &anycon_daemon::config::Paths) -> Vec<String> {
+    let Ok(cfg) = Config::load(paths) else { return Vec::new() };
+    match anycon_daemon::wsroots::plan(&cfg, &paths.home) {
+        Err(e) => vec![format!("warning: {e}; the daemon will refuse to start with this configuration")],
+        Ok(roots) => roots
+            .iter()
+            .filter_map(|r| {
+                let why = r.unavailable.as_ref()?;
+                Some(format!(
+                    "warning: workspace.extra_roots entry \"{}\" is not usable: {why}; the daemon will skip it",
+                    crate::output::visible(&r.configured)
+                ))
+            })
+            .collect(),
+    }
 }
 
 fn shell_words_split(s: &str) -> Vec<String> {
@@ -1945,5 +1987,40 @@ mod tests {
         assert!(render_browse(&empty).contains("(no sub-directories)"));
         let proj = WorkspaceBrowseResult { project: Some("p".into()), ..empty };
         assert!(render_browse(&proj).starts_with("/m  (already project p)"));
+    }
+    fn project(kind: ProjectKind, path: &str, root: Option<&str>, missing: bool) -> Project {
+        Project {
+            name: "p".into(),
+            path: path.into(),
+            root: root.map(Into::into),
+            git: None,
+            modified_at_ms: 0,
+            active_sessions: 0,
+            kind,
+            missing,
+            git_pending: false,
+        }
+    }
+
+    #[test]
+    fn the_location_column_names_a_projects_root_only_when_it_is_not_the_primary_one() {
+        let primary = "/home/me/anycon";
+        // 主根下的项目、老 daemon 没给 root 的项目：留空
+        assert_eq!(
+            project_location(&project(ProjectKind::Folder, "/home/me/anycon/a", Some(primary), false), primary),
+            ""
+        );
+        assert_eq!(project_location(&project(ProjectKind::Folder, "/home/me/anycon/a", None, false), primary), "");
+        // 额外根下的项目：标出根
+        assert_eq!(
+            project_location(&project(ProjectKind::Folder, "/mnt/ext/b", Some("/mnt/ext"), false), primary),
+            "root: /mnt/ext"
+        );
+        // 关联项目照旧
+        assert_eq!(project_location(&project(ProjectKind::Linked, "/x/c", None, false), primary), "linked: /x/c");
+        assert_eq!(
+            project_location(&project(ProjectKind::Linked, "/x/c", None, true), primary),
+            "linked: /x/c (missing)"
+        );
     }
 }

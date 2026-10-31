@@ -148,6 +148,8 @@ pub enum RotateOutcome {
     Rotated,
     /// 距离这台设备上一次轮换不到最短间隔，什么都没改。
     TooSoon,
+    /// 设备还在，但请求方认证用的 token 已经不是当前 token（它是轮换之前的旧 token，在宽限期里连上来的），什么都没改。
+    Stale,
     /// 设备不存在或已吊销，什么都没改。
     Unavailable,
 }
@@ -592,12 +594,17 @@ pub trait Store: Send + Sync + 'static {
     /// 不看吊销：调用方自己比较 `revoked_at_ms`（吊销之后新旧 token 都认得出是哪台设备，认证时才能回 `revoked`）。
     async fn find_device_by_token_hash(&self, token_hash: &str, now_ms: u64) -> StoreResult<Option<Device>>;
     /// 轮换设备 token（docs/spec/hub.md § 5）：**一条语句**里把 `new_token_hash` 写成当前 token，原来的当前 token 记为
-    /// 「上一个」并在 `now_ms + grace_ms` 之前继续有效，再记下轮换时间。设备已吊销 / 不存在返回
-    /// [`RotateOutcome::Unavailable`]；距离上一次轮换不到 `min_interval_ms` 返回 [`RotateOutcome::TooSoon`]；
-    /// 两种情况都不改任何东西。检查和写入在同一条 `UPDATE` 里，并发的请求只有一个能成功。
+    /// 「上一个」并在 `now_ms + grace_ms` 之前继续有效，再记下轮换时间。
+    ///
+    /// 只有请求方认证用的 token 就是**当前** token（哈希是 `current_token_hash`）才轮换：在宽限期里用上一个 token 连上来的连接
+    /// 活得过宽限期，不能让旧 token 的持有者靠它把设备抢走。其余情况都不改任何东西：设备已吊销 / 不存在返回
+    /// [`RotateOutcome::Unavailable`]；`current_token_hash` 已经不是当前 token 返回 [`RotateOutcome::Stale`]；
+    /// 距离上一次轮换不到 `min_interval_ms` 返回 [`RotateOutcome::TooSoon`]（`Stale` 优先）。
+    /// 检查和写入在同一条 `UPDATE` 里，并发的请求只有一个能成功。
     async fn rotate_device_token(
         &self,
         id: &str,
+        current_token_hash: &str,
         new_token_hash: &str,
         now_ms: u64,
         grace_ms: u64,

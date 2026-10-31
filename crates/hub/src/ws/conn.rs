@@ -54,6 +54,8 @@ struct Authed {
     device: Option<Device>,
     /// `Some` = 预览域名上凭有效预览令牌认证的预览连接。
     preview: Option<PreviewMeta>,
+    /// 认证用的设备 token 的哈希（`device` 为 `Some` 时有值）：记进 [`Conn::set_credential`]，轮换只认当前 token。
+    token_hash: Option<String>,
 }
 
 fn control_bytes(to: &str, seq: u64, ctl: &Control) -> Option<Bytes> {
@@ -159,10 +161,11 @@ async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket, preview_lab
                 token_hash: t.token_hash,
                 expires_at_ms: t.expires_at_ms,
             };
-            return Some(Authed { client, device: None, preview: Some(meta) });
+            return Some(Authed { client, device: None, preview: Some(meta), token_hash: None });
         }
     }
 
+    let token_hash = device_token.as_deref().map(hash_token);
     let device = match device_token {
         None => None,
         Some(token) => match state.store.find_device_by_token_hash(&hash_token(&token), now_ms()).await {
@@ -183,7 +186,7 @@ async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket, preview_lab
             }
         },
     };
-    Some(Authed { client, device, preview: None })
+    Some(Authed { client, device, preview: None, token_hash })
 }
 
 pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: UpgradeCtx) {
@@ -237,6 +240,9 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
         peers,
         preview,
     }));
+    if let Some(hash) = authed.token_hash {
+        conn.set_credential(hash);
+    }
     let (sink, mut stream) = socket.split();
     let mut writer = tokio::spawn(write_loop(sink, out_rx, conn.clone()));
     let mut writer_done = false;
@@ -510,6 +516,8 @@ struct ConnState {
     hub_closed: bool,
     /// 这条连接上被「轮换太频繁」忽略的 `rotate_token` 已经记过一条 warn：之后的降到 debug，免得一个狂发的客户端刷满日志。
     rotate_too_soon_logged: bool,
+    /// 同上，针对「这条连接认证用的 token 已经不是当前 token」。
+    rotate_stale_logged: bool,
 }
 
 impl ConnState {
@@ -521,6 +529,7 @@ impl ConnState {
             rate_violation: false,
             hub_closed: false,
             rotate_too_soon_logged: false,
+            rotate_stale_logged: false,
         }
     }
 
@@ -968,21 +977,30 @@ async fn on_control(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState,
 /// `RotateToken`（docs/spec/hub.md § 5）：给这台设备签发新的 device token，旧的再保留 [`Timing::token_grace`](crate::config::Timing)。
 ///
 /// 只有带设备 token 认证的永久连接（以及配对完成、原地升级成正式设备的连接）可以请求；临时连接、预览连接忽略。
-/// 同一设备两次轮换之间至少隔 `token_rotate_min_interval`（库里记着上次轮换的时间，不看是哪条连接）：更早的请求被忽略、
-/// 不回复，只记一条 warn。新旧 token 和它们的哈希都不进日志。
+/// 而且**认证用的必须是当前 token**：宽限期里用上一个 token 连上来的连接会活过宽限期，不能让旧 token 的持有者靠它把设备
+/// 抢走（轮换会让原来的当前 token 在 60 秒后失效）。连接记着认证用的 token 的哈希（[`Conn::credential`]），轮换成功后换成
+/// 新 token 的哈希，长连接才能再轮换。不是当前 token 的请求被忽略、不回复，记一条 warn。
+/// 同一设备两次轮换之间至少隔 `token_rotate_min_interval`（库里记着上次轮换的时间，不看是哪条连接）：更早的请求同样被忽略、
+/// 不回复，记一条 warn。新旧 token 和它们的哈希都不进日志。
 async fn on_rotate_token(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState) {
     if !conn.is_permanent() || conn.preview.is_some() {
         tracing::debug!(temp_id = %conn.device_id(), "ignore rotate_token: not a device connection");
         return;
     }
     let device = conn.device_id();
+    let Some(credential) = conn.credential() else {
+        tracing::debug!(device = %device, "ignore rotate_token: the connection has no recorded credential");
+        return;
+    };
     let timing = &state.config.timing;
     let new_token = new_secret();
+    let new_hash = hash_token(&new_token);
     let outcome = state
         .store
         .rotate_device_token(
             &device,
-            &hash_token(&new_token),
+            &credential,
+            &new_hash,
             now_ms(),
             timing.token_grace.as_millis() as u64,
             timing.token_rotate_min_interval.as_millis() as u64,
@@ -990,6 +1008,8 @@ async fn on_rotate_token(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnS
         .await;
     match outcome {
         Ok(RotateOutcome::Rotated) => {
+            // 这条连接之后凭新 token 轮换（先于发出新 token：收到它的客户端可能马上再请求）
+            conn.set_credential(new_hash);
             tracing::info!(device = %device, "device token rotated");
             state
                 .audit(NewAudit {
@@ -1006,6 +1026,17 @@ async fn on_rotate_token(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnS
             if conn.try_send_control(&Control::TokenRotated { device_token: new_token }).is_err() {
                 tracing::warn!(device = %device, "cannot deliver the rotated token: control queue is full, closing as slow consumer");
                 conn.kill_with(close_code::SLOW_CONSUMER);
+            }
+        }
+        Ok(RotateOutcome::Stale) => {
+            if cs.rotate_stale_logged {
+                tracing::debug!(device = %device, "ignore rotate_token: authenticated with a previous token");
+            } else {
+                cs.rotate_stale_logged = true;
+                tracing::warn!(
+                    device = %device,
+                    "ignore rotate_token: this connection authenticated with a token that is no longer the current one"
+                );
             }
         }
         Ok(RotateOutcome::TooSoon) => {

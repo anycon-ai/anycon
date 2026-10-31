@@ -177,7 +177,7 @@ await pair(hub, { code: code2, name: 'ci-runner' })
 
 配对时 hub 签发一个设备 token。为了缩短泄露的 token 能用多久，SDK 会定期轮换它（`rotate_token` → `token_rotated`；hub 让旧 token 再有效 60 秒，同一设备 1 分钟内最多轮换一次）。
 
-- **身份由 SDK 自己存着**（`pair()` 写的，或你传的 `storage`）：`connect()` / `Client.open()` 认证成功后，token 满 30 天就轮换。新 token 和签发时间（`tokenIssuedAtMs`）在**一次** `storage.set` 里写回（`FileStorage`：临时文件 + rename、0600），写完才用于重连。没有签发时间的老记录（以及签发时间在未来、时钟被拨回过的）当作很旧，下次连上换一次。回复没等到就 75 秒后重发（一条连接上头 3 次发送各隔 75 秒），之后每小时复查一次，所以连上几周不断的长连接也会轮换。`close()` 最多多等 2 秒，让还在路上的回复落盘，刚连上就退出的脚本不会丢新 token。写存储失败不致命：新 token 仍留在内存里供本进程重连，事件里 `persisted: false`。
+- **身份由 SDK 自己存着**（`pair()` 写的，或你传的 `storage`）：`connect()` / `Client.open()` 认证成功后，token 满 30 天就轮换。新 token 和签发时间（`tokenIssuedAtMs`）在**一次** `storage.set` 里写回（`FileStorage`：临时文件 + rename、0600），写完才用于重连。没有签发时间的老记录（以及签发时间在未来、时钟被拨回过的）当作很旧，下次连上换一次。回复没等到就 75 秒后重发（一条连接上头 3 次发送各隔 75 秒），之后每小时复查一次，所以连上几周不断的长连接也会轮换。重发有用的情形：请求被当作「太频繁」忽略了，或者回复在同一条连接上丢了。重连之后不行：hub 只让用当前 token 认证的连接轮换，回复丢了、又在 60 秒宽限内用旧 token 重连的话，不能再请求，宽限一过要重新配对。`close()` 最多多等 2 秒，让还在路上的回复落盘，刚连上就退出的脚本不会丢新 token。写存储失败不致命：新 token 仍留在内存里供本进程重连，事件里 `persisted: false`。
 - **凭据来自环境变量**（`ANYCON_DEVICE_KEY` / `ANYCON_DEVICE_TOKEN`）时**不自动轮换**：SDK 没有地方存新 token，换了没保存会把设备锁在外面（旧 token 60 秒后失效，只能重新配对并吊销旧设备）。要轮换就自己调 `client.rotateToken()`，并保存返回的 `deviceToken`。
 
 ```ts
@@ -193,7 +193,7 @@ client.on('tokenRotated', (rotation) => {}) // 同样的参数：{ deviceToken, 
 const rotation = await client.rotateToken() // 立刻轮换；resolve 同一个对象
 ```
 
-`rotateToken({ timeoutMs })` 默认最多等 10 秒：还没连上 hub 抛 `not_connected`；hub 不回复抛 `rotate_timeout`（同一设备 1 分钟内的第二次请求会被忽略，不支持轮换的 hub 也不会回复）；等待期间断线或 client 关闭则失败。超时之后才到的回复仍会处理。`connect()` 不暴露 `Client`，要按需轮换请用 `Client.open()`。`ClientOptions.tokenRotation` 里 `auto: false` 关闭自动轮换，`maxAgeMs` / `retryAfterMs` / `recheckMs` / `closeWaitMs` 调整各项时间（主要给测试用）。
+`rotateToken({ timeoutMs })` 默认最多等 10 秒：还没连上 hub 抛 `not_connected`；hub 不回复抛 `rotate_timeout`（同一设备 1 分钟内的第二次请求会被忽略，用旧 token 认证的连接上的请求也会，不支持轮换的 hub 也不会回复）；等待期间断线或 client 关闭则失败。超时之后才到的回复仍会处理。`connect()` 不暴露 `Client`，要按需轮换请用 `Client.open()`。`ClientOptions.tokenRotation` 里 `auto: false` 关闭自动轮换，`maxAgeMs` / `retryAfterMs` / `recheckMs` / `closeWaitMs` 调整各项时间（主要给测试用）。
 
 ## 大消息与传输失步
 

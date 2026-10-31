@@ -776,8 +776,9 @@ pub struct HubLink {
 
 /// 设备 token 该轮换了就向 hub 发 `rotate_token`；返回多久之后再检查一次（[`identity::next_rotation_check`]）。
 ///
-/// hub 同一设备 1 分钟内只轮换一次，多余的请求不回复；旧 token 轮换之后只再有效 60 秒。所以回执（`token_rotated`）
-/// 丢了就靠这里重发：头几次隔 75 秒，之后每小时一次——连着 hub 几十天不重连的 daemon 也能轮换。
+/// hub 同一设备 1 分钟内只轮换一次，多余的请求不回复，所以没等到回执（`token_rotated`）就靠这里重发：头几次隔 75 秒，
+/// 之后每小时一次——连着 hub 几十天不重连的 daemon 也能轮换。重发在「请求被当作太频繁忽略」和「回执在同一条连接上丢了」时
+/// 有用；重连之后不行，用旧 token 认证的连接不能轮换（docs/spec/hub.md § 5）。
 fn rotation_check(identity: &Identity, outbox: &HubOutbox, sends: &mut u32, now_ms: u64) -> Duration {
     if !identity.token_due(now_ms) {
         *sends = 0;

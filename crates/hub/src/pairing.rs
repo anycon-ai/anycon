@@ -555,6 +555,8 @@ async fn try_finalize(
     // 运行时：先换身份、更新对端缓存，再发 PairDone，这样对方收到后立刻用新身份发的帧不会被丢。
     for (issued, conn) in [(&issued_host, host), (&issued_joiner, joiner)] {
         if let Some(i) = issued {
+            // 凭据先于身份：升级完成的瞬间这条连接就是永久连接，可能马上收到 `rotate_token`，它认的是配对时签发的这个 token
+            conn.set_credential(hash_token(&i.token));
             if let Some(old) = state.registry.upgrade(conn, &i.id, Some(account.clone())) {
                 old.close(anycon_protocol::close_code::SUPERSEDED, "superseded");
             }

@@ -683,7 +683,7 @@ export class AnyconClient {
   /**
    * `auth_ok` 之后立刻调用一次，之后按需自己排下一次：token 到期就发 `rotate_token`。
    * 头 `ROTATE_QUICK_SENDS` 次之间隔 `ROTATE_RETRY_MS`（hub 同一设备 1 分钟内只轮换一次，多余的请求不回复，所以重发的
-   * 间隔要比这长；`token_rotated` 丢了也有机会补上），之后以及没到期时每 `ROTATE_RECHECK_MS` 看一次、到期就再发：
+   * 间隔要比这长；回执在同一条连接上丢了也有机会补上，重连之后不行：用旧 token 认证的连接不能轮换），之后以及没到期时每 `ROTATE_RECHECK_MS` 看一次、到期就再发：
    * 一直开着的标签页超过 30 天也会轮换，hub 一直不回复也只是每小时一帧。没有 device token 的连接（临时连接）不发。
    */
   private async checkRotation(): Promise<void> {

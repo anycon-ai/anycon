@@ -13,7 +13,7 @@ export const DUPLICATE_PEER_ONLINE_MS = 1_000
 // device token 轮换（spec/web.md § 6.4，docs/spec/hub.md § 5）
 /** device token 签发超过这么久就请求 hub 轮换。 */
 export const TOKEN_MAX_AGE_MS = 30 * 24 * 3600_000
-/** 发了 `rotate_token` 还没拿到新 token，等这么久再发一次：hub 同一设备 1 分钟内只轮换一次、多余的请求不回复，这个间隔要比它长。 */
+/** 发了 `rotate_token` 还没拿到新 token，等这么久再发一次：hub 同一设备 1 分钟内只轮换一次、多余的请求不回复，这个间隔要比它长。重连之后重发没用：用旧 token 认证的连接不能轮换（docs/spec/hub.md § 5）。 */
 export const ROTATE_RETRY_MS = 75_000
 /** 一条连接上头几次 `rotate_token` 各隔 `ROTATE_RETRY_MS`；这几次之后改成每隔 `ROTATE_RECHECK_MS` 看一次。 */
 export const ROTATE_QUICK_SENDS = 3

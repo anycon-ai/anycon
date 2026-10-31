@@ -227,7 +227,8 @@ export class Client extends Emitter<ClientEvents> {
       this.#stopRotation(
         new ConnectionError(
           'the hub connection dropped before the token rotation was confirmed; ' +
-            'the hub may or may not have rotated the token, the previous token stays valid for 60 s: reconnect and rotate again',
+            'the hub may have rotated the token without the new one reaching this client; the previous token stays valid for 60 s, ' +
+            'but a connection that authenticated with it cannot rotate again, so pair again if the grace runs out',
         ),
       )
       this.#onlinePeers.clear()

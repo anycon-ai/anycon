@@ -140,8 +140,12 @@ async fn revoking_the_device_invalidates_the_old_and_the_new_token() {
     assert_eq!(try_auth(&hub, &t2).await, Err(AuthFailReason::Revoked));
 
     // 吊销之后库里也不再接受轮换
-    let outcome =
-        hub.handle.store().rotate_device_token(&dev.id, &hash_token("t3"), now_ms(), 60_000, 0).await.unwrap();
+    let outcome = hub
+        .handle
+        .store()
+        .rotate_device_token(&dev.id, &hash_token(&t2), &hash_token("t3"), now_ms(), 60_000, 0)
+        .await
+        .unwrap();
     assert_eq!(outcome, anycon_hub::store::RotateOutcome::Unavailable);
     assert_eq!(try_auth(&hub, "t3").await, Err(AuthFailReason::Invalid));
 }
@@ -226,4 +230,89 @@ async fn a_peer_keeps_its_pairings_across_a_rotation() {
     assert_eq!(w.id, web.id);
     assert_eq!(w.peers_online, vec![daemon.id.clone()]);
     assert!(matches!(d.recv_control().await, Control::PeerOnline { device } if device == web.id));
+}
+
+#[tokio::test]
+async fn a_connection_that_authenticated_with_the_previous_token_cannot_rotate() {
+    // 间隔设为 0：被拒绝的原因只可能是「这条连接用的不是当前 token」，不是频率限制
+    let hub = TestHub::start_with(|c| c.timing.token_rotate_min_interval = Duration::ZERO).await;
+    let dev = hub.seed_device(DeviceKind::Daemon, "d").await;
+    let mut owner = FakeDevice::connect(&hub, Some(&dev.token), DeviceKind::Daemon, "d").await;
+    let t1 = rotate(&mut owner).await;
+
+    // 小偷拿着泄露的旧 token 在宽限期里连上来（认证只在连接建立时查，这条连接会活过宽限期）：
+    // 不管请求多少次都不回复，也不改任何东西
+    let mut thief = FakeDevice::connect(&hub, Some(&dev.token), DeviceKind::Daemon, "d").await;
+    for _ in 0..3 {
+        rotate_ignored(&mut thief).await;
+    }
+    assert_eq!(audit_events(&hub, "token_rotated").await.len(), 1, "only the owner's rotation happened");
+
+    // 当前 token 没变、没有被缩短：主人用 t1 连上来（顶掉小偷的连接）还能再轮换
+    let mut owner = FakeDevice::connect(&hub, Some(&t1), DeviceKind::Daemon, "d").await;
+    let t2 = rotate(&mut owner).await;
+    assert_ne!(t2, t1);
+    assert_eq!(try_auth(&hub, &t2).await, Ok(dev.id.clone()));
+    // 轮换之后 t1 成了旧 token：一条用 t1 连上来的连接同样不能再轮换
+    let mut late = FakeDevice::connect(&hub, Some(&t1), DeviceKind::Daemon, "d").await;
+    rotate_ignored(&mut late).await;
+    assert_eq!(audit_events(&hub, "token_rotated").await.len(), 2);
+}
+
+#[tokio::test]
+async fn one_connection_keeps_rotating_because_its_credential_follows_each_new_token() {
+    let hub = TestHub::start_with(|c| c.timing.token_rotate_min_interval = Duration::ZERO).await;
+    let dev = hub.seed_device(DeviceKind::Daemon, "d").await;
+    let mut conn = FakeDevice::connect(&hub, Some(&dev.token), DeviceKind::Daemon, "d").await;
+    let mut seen = vec![dev.token.clone()];
+    // 连着三次：第二次起这条连接凭轮换得到的 token 轮换（连接开了几十天的 daemon 靠这个再轮换）
+    for _ in 0..3 {
+        let next = rotate(&mut conn).await;
+        assert!(is_token(&next) && !seen.contains(&next), "a fresh token every time");
+        seen.push(next);
+    }
+    assert_eq!(audit_events(&hub, "token_rotated").await.len(), 3);
+    // 只有最后一个是当前 token，倒数第二个还在宽限里，更早的已经失效
+    assert_eq!(try_auth(&hub, &seen[3]).await, Ok(dev.id.clone()));
+    assert_eq!(try_auth(&hub, &seen[2]).await, Ok(dev.id.clone()));
+    assert_eq!(try_auth(&hub, &seen[1]).await, Err(AuthFailReason::Invalid));
+    assert_eq!(try_auth(&hub, &seen[0]).await, Err(AuthFailReason::Invalid));
+}
+
+#[tokio::test]
+async fn a_connection_upgraded_in_place_by_pairing_can_rotate_the_token_it_was_issued() {
+    let hub = TestHub::start().await;
+    let seeded = hub.seed_device(DeviceKind::Daemon, "d").await;
+    let mut host = FakeDevice::connect(&hub, Some(&seeded.token), DeviceKind::Daemon, "d").await;
+    let (_code, match_id) = new_code();
+    host.pair_begin(&match_id).await;
+    // 没有身份的临时连接配对：升级之前它不能轮换
+    let mut joiner = FakeDevice::connect(&hub, None, DeviceKind::Web, "w").await;
+    rotate_ignored(&mut joiner).await;
+    joiner.send_control(&Control::PairJoin { match_id }).await;
+    assert!(matches!(joiner.recv_control().await, Control::PairMatched { .. }));
+    let temp_id = joiner.id.clone();
+    assert!(matches!(host.recv_control().await, Control::PairMatched { .. }));
+    joiner.send_control(&Control::PairConfirm { peer: seeded.id.clone() }).await;
+    host.send_control(&Control::PairConfirm { peer: temp_id }).await;
+    let paired_token = match joiner.recv_control().await {
+        Control::PairDone { device_token: Some(t), .. } => t,
+        other => panic!("{other:?}"),
+    };
+
+    // 升级之后的同一条连接用配对时签发的 token 认证：可以轮换（PairDone 之后还会有 peer_online，先收掉）
+    joiner.send_control(&Control::RotateToken {}).await;
+    let rotated = loop {
+        match joiner.recv_control().await {
+            Control::TokenRotated { device_token } => break device_token,
+            Control::PeerOnline { .. } => continue,
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert!(is_token(&rotated) && rotated != paired_token);
+    let found = hub.handle.store().find_device_by_token_hash(&hash_token(&rotated), now_ms()).await.unwrap();
+    let device = found.expect("the new token identifies the paired device");
+    assert_eq!(device.kind, DeviceKind::Web);
+    assert_eq!(try_auth(&hub, &rotated).await, Ok(device.id.clone()));
+    assert_eq!(try_auth(&hub, &paired_token).await, Ok(device.id), "the pairing token is the previous one, in grace");
 }

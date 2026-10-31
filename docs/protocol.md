@@ -427,7 +427,7 @@ hub 管理员可开启（`ANYCON_QUEUE_ENABLED=true`）。开启后：
 | `queue_overflow { to, dropped_seqs }` | hub→设备 | 队列开启时，超限丢弃 |
 | `queue_drop { seq }` | 设备→hub | 队列开启时，撤回自己排队中的信封 |
 | `quota_update { quota }` | hub→设备 | 当前配额用量（`multi`），载荷同 `auth_ok.quota`。账号的设备被创建 / 吊销，或在线连接上线 / 下线时，发给该账号此刻在线的**其他**永久连接（刚认证的那条已在 `auth_ok` 里拿到）。每日配对次数不在里面，那一项用 HTTP 的 `GET /api/quota` 取（[spec/hub.md § 2.3](spec/hub.md#23-账号与设备-api)） |
-| `rotate_token` / `token_rotated { device_token }` | 设备→hub / hub→设备 | 轮换设备 token。`rotate_token` 没有字段，只对**带设备 token 认证的永久连接**有效（临时连接、预览连接发的被忽略）；hub 签发新的 32 字节随机 token，回 `token_rotated { device_token }`（只传这一次），原来的 token 再保留 60 秒。同一设备 1 分钟内最多轮换一次，多余的请求被忽略、**不回复**（没有失败回执，客户端靠超时判断）。收到 `token_rotated` 的客户端要先持久化新 token 再用它重连。何时轮换是客户端的策略（默认 token 满 30 天，各客户端见 spec 里各自的章节）；规则细节和被别人抢先轮换的后果见 [spec/hub.md § 5](spec/hub.md#5-设备与设备-token) |
+| `rotate_token` / `token_rotated { device_token }` | 设备→hub / hub→设备 | 轮换设备 token。`rotate_token` 没有字段，只对**用当前设备 token 认证的永久连接**有效（临时连接、预览连接、以及宽限期里用上一个 token 连上来的连接发的被忽略）；hub 签发新的 32 字节随机 token，回 `token_rotated { device_token }`（只传这一次），原来的 token 再保留 60 秒。同一设备 1 分钟内最多轮换一次，多余的请求被忽略、**不回复**（没有失败回执，客户端靠超时判断）。收到 `token_rotated` 的客户端要先持久化新 token 再用它重连；回执丢了又用旧 token 重连的客户端不能再请求，宽限一过要重新配对。何时轮换是客户端的策略（默认 token 满 30 天，各客户端见 spec 里各自的章节）；规则细节和被别人抢先轮换的后果见 [spec/hub.md § 5](spec/hub.md#5-设备与设备-token) |
 
 控制消息本身也计入每连接的发送缓冲上限；一个不读 socket 的连接即使只收控制消息，也会被以 `4003 slow_consumer` 断开。
 

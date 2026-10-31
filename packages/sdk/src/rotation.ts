@@ -8,7 +8,8 @@
 export const TOKEN_MAX_AGE_MS = 30 * 24 * 3600 * 1000
 /**
  * 发出 `rotate_token` 之后没等到 `token_rotated`，多久后再发一次。比 hub 的「同一设备 1 分钟最多轮换一次」窗口长：
- * 第一次的回复丢了而 hub 其实已经轮换过，重试时窗口已经过去，才不会被当作多余的请求忽略。
+ * 请求被当作「太频繁」忽略的话，重试时窗口已经过去；回复在同一条连接上丢了的话，hub 记着这条连接用的已经是新 token，
+ * 重试同样能成。重连之后不行：用旧 token 认证的连接不能轮换（docs/spec/hub.md § 5）。
  */
 export const ROTATE_RETRY_MS = 75_000
 /** 一条连接上头几次发送（间隔 [`ROTATE_RETRY_MS`]）的次数；之后只按 [`ROTATE_RECHECK_MS`] 的节奏复查。 */

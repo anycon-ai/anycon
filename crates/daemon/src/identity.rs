@@ -26,7 +26,8 @@ pub enum IdentityError {
 /// 设备 token 签发满这么久，就在下一次连上 hub 之后请求轮换（docs/spec/hub.md § 5，daemon.md § 15）。
 pub const TOKEN_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 /// 发出 `rotate_token` 之后没等到新 token，隔这么久再发一次。比 hub 的「同一设备 1 分钟内只轮换一次」长：
-/// 回执丢了的话，上一次轮换已经过了限频窗口，这次能成。
+/// 请求被当作「太频繁」忽略的话，重发时窗口已经过去；回执在同一条连接上丢了的话，hub 记着这条连接用的已经是新 token，
+/// 重发同样能成。重连之后不行：用旧 token 认证的连接不能轮换（docs/spec/hub.md § 5）。
 pub const ROTATE_RETRY: Duration = Duration::from_secs(75);
 /// 一条连接上头几次 `rotate_token` 之间隔 [`ROTATE_RETRY`]，之后改成每隔 [`ROTATE_RECHECK`]。
 pub const ROTATE_QUICK_SENDS: u32 = 3;

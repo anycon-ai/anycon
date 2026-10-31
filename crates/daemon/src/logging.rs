@@ -26,10 +26,19 @@ fn filter_for(level: &str) -> EnvFilter {
         .unwrap_or_else(|_| EnvFilter::new("warn,anycon_daemon=info"))
 }
 
+/// `ANYCON_LOG` / `RUST_LOG` 给的过滤规则（非空才算）。它们优先于 `log.level`。
+fn env_filter_directive() -> Option<String> {
+    std::env::var("ANYCON_LOG").ok().or_else(|| std::env::var("RUST_LOG").ok()).filter(|s| !s.trim().is_empty())
+}
+
+/// 日志过滤是否被 `ANYCON_LOG` / `RUST_LOG` 接管：是的话 `log.level` 改了也不生效（`node.get_config` 据此把它标成只读）。
+pub fn env_filter_override() -> bool {
+    env_filter_directive().is_some()
+}
+
 /// 初始化全局日志。重复调用返回 `None`（测试里多次调用无副作用）。
 pub fn init(logs_dir: &Path, level: &str, retention_days: u32, to_stderr: bool) -> Option<LogGuard> {
-    let env_filter =
-        std::env::var("ANYCON_LOG").ok().or_else(|| std::env::var("RUST_LOG").ok()).filter(|s| !s.trim().is_empty());
+    let env_filter = env_filter_directive();
     let _ = ENV_OVERRIDE.set(env_filter.is_some());
     let filter = match &env_filter {
         Some(f) => EnvFilter::try_new(f).unwrap_or_else(|_| filter_for(level)),

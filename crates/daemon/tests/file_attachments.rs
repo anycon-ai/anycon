@@ -117,7 +117,8 @@ async fn history(td: &TestDaemon, c: &mut TestClient, sid: &str) -> Vec<SessionE
     r.events
 }
 
-/// 历史里 `error` 事件的 `(code, message)`。
+/// 历史里 `error` 事件的 `(code, message)`。只有 unix 上的失败场景（符号链接、只读目录）用它。
+#[cfg(unix)]
 async fn errors(td: &TestDaemon, c: &mut TestClient, sid: &str) -> Vec<(String, String)> {
     history(td, c, sid)
         .await

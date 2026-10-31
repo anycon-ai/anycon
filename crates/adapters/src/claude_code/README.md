@@ -17,7 +17,7 @@ thinking 块的 `signature` 换成短占位，`/context` 输出里的技能名�
 | `translate.rs` | stream-json 一行 → `AgentEvent`（纯同步状态机，直接回放 JSONL 测试） |
 | `permissions.rs` | `can_use_tool` ↔ `PendingPermission`，`PermissionDecision` → `control_response` |
 | `tools.rs` | 工具名 → category / 标题 / `ToolCallDetail` |
-| `input.rs` | 用户输入 → stdin 上的 stream-json 用户消息；图片附件读文件、转 base64、拼 `image` block |
+| `input.rs` | 用户输入 → stdin 上的 stream-json 用户消息；图片附件读文件、转 base64、拼 `image` block，其它文件拼一个列出路径的 `text` block |
 | `handle.rs` | `AgentHandle`：进程 + 读 stdout 的任务；send / respond / cancel / set_settings / shutdown |
 
 ## 启动参数
@@ -84,9 +84,9 @@ daemon 在没有存活进程时（idle 关闭、daemon 重启、ended）改设�
 | `options.fast_mode` | `--settings '{"fastMode":true}'`（**未验证**：`fastMode` 是 settings.json 的键，init 里 `fast_mode_disabled_reason: sdk_opt_in_required` 说明 SDK 模式下可能还要别的开关）；改它 → `restart_required` |
 | `system_prompt_append` / `max_turns` / `max_budget_usd` | `--append-system-prompt` / `--max-turns` / `--max-budget-usd`；改它们 → `restart_required` |
 | `env` | 子进程环境（daemon 已合并进 `req.env`）；改它 → `restart_required` |
-| 附件 | 只收图片（ADR-35）：`capabilities.attachments = ["image/png", "image/jpeg", "image/gif", "image/webp"]`。`send` 读 `attachment_paths[i]`（daemon 落盘的文件）→ base64 → stdin 消息 `content` 数组里的 `image` block，图在前、文字在后；见下面「图片附件」 |
+| 附件 | ADR-35：`capabilities.attachments = ["image/png", "image/jpeg", "image/gif", "image/webp", "*/*"]`。图片：`send` 读 `attachment_paths[i]`（daemon 落盘的文件）→ base64 → stdin 消息 `content` 数组里的 `image` block；其它文件不读，只把路径告诉 Claude（一个 `text` block）。顺序：图、文件清单、文字；见下面「附件」 |
 
-### 图片附件
+### 附件
 
 stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 是字符串）：
 
@@ -94,15 +94,17 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 {"type":"user","message":{"role":"user","content":"hello"},"parent_tool_use_id":null}
 ```
 
-**有附件时** `content` 是数组：`image` block 按附件顺序在前，`text` block 在后，文字为空就不放 `text` block：
+**有附件时** `content` 是数组：`image` block 按附件顺序在前；有不是图片的附件时接着一个 `text` block 列出它们（名字、类型、大小、daemon 上的绝对路径，`common::file_reference_text`）；用户的文字在最后，为空就不放：
 
 ```json
 {"type":"user","message":{"role":"user","content":[
   {"type":"image","source":{"type":"base64","media_type":"image/png","data":"<base64>"}},
+  {"type":"text","text":"The user attached a file. It is saved on this machine; read it from the path below.\n- spec.pdf (application/pdf, 81234 bytes): /Users/me/.anycon/blobs/<blob_id>.pdf"},
   {"type":"text","text":"what is this?"}]},"parent_tool_use_id":null}
 ```
 
-- 校验在改任何状态**之前**做（出错没有半截的 turn，下一条正常消息仍是同一个 turn 计数）：`attachments` 与 `attachment_paths` 数量不一致 → `Protocol`；mime 不在上面四种里 → `Unsupported`；文件读不了（不存在、是目录、权限）→ `Io`（保留 `ErrorKind`，信息里带附件名，不带路径；路径写在 `tracing` 的 warn 里），绝不 panic。
+- 不是图片的文件在 daemon 的数据目录里，不在 workspace 里：Claude 用 Read 读它时可能触发权限请求（走正常的审批）。文件不进请求，也不算进下面 30 MiB 的 base64 上限。
+- 校验在改任何状态**之前**做（出错没有半截的 turn，下一条正常消息仍是同一个 turn 计数）：`attachments` 与 `attachment_paths` 数量不一致 → `Protocol`；文件不在 / 读不了（不存在、是目录、权限；不是图片的也要是个普通文件）→ `Io`（保留 `ErrorKind`，信息里带附件名，不带路径；路径写在 `tracing` 的 warn 里），绝不 panic。
 - `interject = true` 照旧 `Unsupported`（带不带图都是），turn 进行中收到的消息也是 `Unsupported`，两种情况都不读文件。
 - **一行可能有好几 MiB**（base64 比原文件大 1/3）：stdin 这一侧没有行长限制（`JsonlChild` 的写任务对整行 `write_all`），只有 **stdout** 单行有 8 MiB 上限。用例 `a_multi_mib_image_goes_through_stdin_in_one_line`（6 MiB 文件 → 8 MiB 的一行，fake 收到后字节完全一致）。一条输入里的图片 base64 合计超过 30 MiB（`MAX_IMAGES_BASE64`，按文件大小算、先于读内容）→ `Unsupported`，不写 stdin：Anthropic 的请求体上限是 32 MB，超了的图一旦进了 Claude Code 的会话历史，之后每个 turn 都会带着它失败。上游还有两层（ADR-35「2026-10 修订」）：daemon 每个附件默认 ≤ 10 MiB、每条消息合计 ≤ 20 MiB、积压合并成一个 turn 时附件累计超过 20 个或 20 MiB 就分到下一个 turn；Web 把图缩到长边 ≤ 2 000 px（一次请求里超过 20 张图时 Anthropic 要求每张 ≤ 2 000 px）、单张通常 ≤ 1.5 MiB、一条消息合计 ≤ 15 MiB。
 - **已知限制**：图进了 Claude Code 的会话历史之后，每个 turn 都会随历史重发。一个会话里累计的图很多时（按单张约 1 MiB 算几十张），整段历史可能超过请求体上限，之后的 turn 失败，只能新开会话——这一点 anycon 控制不了（Claude Code 自己的压缩 / 裁剪策略决定）。
@@ -339,9 +341,9 @@ ANYCON_REAL_AGENT_TESTS=1 cargo test -p anycon-adapters -- --ignored real_ --noc
 - `tests/claude_process.rs`：用 `tests/bin/fake-claude`（Python 3，按 `FAKE_CLAUDE_*` 环境变量回放 fixture、记录收到的 stdin、模拟 interrupt / SIGINT / 崩溃 / resume 失败 / 超长行 / 后台进程 / 拒绝某个模式；`--flag=value` 和 `--flag value` 都认）端到端测 spawn / send / respond / cancel / set_settings（含清除值、部分失败）/ shutdown / 超长行 / 进程组清理 / argv 校验。
 - 「resume 不读 `launch_args`」的进程级用例（`claude_process.rs`）：`resume_after_clear_does_not_resurrect_values_from_a_stale_launch_args`（带值拉起 → 退出 → 手里是「清掉之后的目标设置 + 过期的 launch_args」→ resume，argv 里没有旧值；
   对照：resume 时 settings 仍带值 → argv 有值，取的是 settings 的而不是 launch_args 的）和 `resume_passes_resume_flag_and_keeps_session_id`。
-- 图片附件：`input.rs` 的单元测试（消息形状、读文件、各种坏输入）；`claude_process.rs` 的 `plain_text_messages_keep_the_string_content`、
+- 附件：`input.rs` 的单元测试（消息形状、读文件、各种坏输入）；`claude_process.rs` 的 `plain_text_messages_keep_the_string_content`、
   `images_go_into_the_stdin_message_as_content_blocks_images_first`、`an_image_only_message_has_no_text_block`、`a_multi_mib_image_goes_through_stdin_in_one_line`、
-  `bad_attachments_are_refused_before_anything_is_sent`、`interjecting_with_images_is_still_unsupported`（fake 把收到的 stdin 行记进日志，测试对照形状和 base64）；
+  `bad_attachments_are_refused_before_anything_is_sent`、`other_files_are_listed_by_path_between_the_images_and_the_text`、`interjecting_with_images_is_still_unsupported`（fake 把收到的 stdin 行记进日志，测试对照形状和 base64）；
   `claude_translate.rs` 的 `echoed_user_messages_with_images_never_become_events`、`tool_result_images_are_replaced_by_a_placeholder_in_the_event`；`claude_probe.rs` 断言 `capabilities.attachments`。
 - Task / Activity / Notice / 上下文用量 / elicitation（`claude_translate.rs`）：`real_recording_workflow`、`real_recording_workflow_that_fails`（`real_workflow*.jsonl`，整条回放，逐条核对快照）、
   `workflow_agents_are_mapped_state_by_state_and_merged_across_frames`（各种 `state`、乱序、缺 `workflow_phase`、没带 `workflow_progress` 的帧、终态后的帧、终态不一致的通知）、`task_kinds_titles_and_sources`、

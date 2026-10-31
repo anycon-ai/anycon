@@ -226,7 +226,7 @@ daemon                      hub                        新客户端
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `fs.list` | C→D | 列目录。`path` 是 `<项目名>/<项目内相对路径>`：第一段是关联项目时相对那个目录解析，否则相对 workspace 根；canonicalize 后都不能走出所在的项目 / 根目录 |
-| `fs.read` | C→D | `{ path, max_bytes? }` → `{ text, binary, truncated, bytes }`。默认读 1 MiB，上限 10 MiB，超出部分截断并置 `truncated`；二进制文件不返回内容。响应超过一片时由传输层分片（§3.1）。blob 通道（§ 5.6）目前只收图片 |
+| `fs.read` | C→D | `{ path, max_bytes? }` → `{ text, binary, truncated, bytes }`。默认读 1 MiB，上限 10 MiB，超出部分截断并置 `truncated`；二进制文件不返回内容。响应超过一片时由传输层分片（§3.1）。要把文件交给 agent 用 blob 通道（§ 5.6） |
 
 ### 5.4 会话
 
@@ -260,19 +260,19 @@ daemon                      hub                        新客户端
 
 多个客户端同时在线时，任一客户端答复即生效，其余客户端收到 `permission.resolved`；重复答复返回 `already_resolved`。daemon 自己也会答复：关联项目的目录在 turn 进行中变了（[ADR-33](decisions.md#adr-33-关联本机已有目录为项目) 第 5 条）时，放行的 `permission.respond` 被 daemon **消耗**并按拒绝答复 agent，发起答复的客户端得到 `not_found` 且 `data.reason = "project_dir_changed"`（不要重试；别的原因的 `not_found`——未知的 `request_id`、找不到会话——没有这个 `reason`），所有客户端收到 `permission.resolved { by_device: "daemon", 拒绝选项 }`，随后是 `error { code: not_found }` 和 `turn_done { reason: error }`；超时（`permissions.request_timeout`）和取消时 daemon 自动答复也用 `by_device: "daemon"`。
 
-### 5.6 附件 / blob（[ADR-35](decisions.md#adr-35-图片附件经-blob-通道传到-daemon消息只带引用)）
+### 5.6 附件 / blob（[ADR-35](decisions.md#adr-35-附件经-blob-通道传到-daemon消息只带引用)）
 
-目前只有图片：`image/png` `image/jpeg` `image/gif` `image/webp`。`node.info.capabilities.blobs = true` 表示 daemon 支持这一组方法；某个 agent 收不收附件看它的 `capabilities.attachments`。
+附件可以是任意文件。四种图片（`image/png` `image/jpeg` `image/gif` `image/webp`）会核对文件头、读宽高，作为图片交给模型；其它类型 daemon 不看内容，把它在 daemon 上的路径交给 agent，由 agent 自己读（ADR-35「任意文件」）。`node.info.capabilities.blobs = true` 表示 daemon 支持这一组方法；某个 agent 收不收某种附件看它的 `capabilities.attachments`：点名了这个 mime，或者含 `*/*`（任意文件）。
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `blob.put_begin` | C→D | `{ name, mime, size, sha256 }` → `{ blob_id, chunk_size, expires_at_ms }`。`mime` 不在上面四种里 → `unsupported`；`size` 为 0 或超过 `sessions.max_attachment_bytes` → `invalid`（`data.reason = "too_large"`）；`name` 1–255 字节、不含 `/` `\` 和控制字符；`sha256` 是 64 位小写 hex。同一设备同时进行中的上传至多 8 个（再多 `busy`）；完成但没被引用的 blob 全节点合计超过 1 GiB → `busy`（`data.reason = "quota"`），数据目录所在卷剩余空间不够 `size + 1 GiB` → `busy`（`disk_full`）。名字不能含控制字符（Unicode Cc）、双向控制符（U+200E U+200F U+202A–U+202E U+2066–U+2069）和 U+2028 / U+2029。`chunk_size` 目前是 512 KiB |
+| `blob.put_begin` | C→D | `{ name, mime, size, sha256 }` → `{ blob_id, chunk_size, expires_at_ms }`。`mime` 必须是 `type/subtype`（RFC 6838 的 restricted-name：字母数字开头，之后是字母数字和 `!#$&-^_.+`；不带参数；≤ 127 字节；大小写不敏感，记成小写），否则 → `invalid`，不知道类型时用 `application/octet-stream`；`size` 为 0 或超过 `sessions.max_attachment_bytes` → `invalid`（`data.reason = "too_large"`）；`name` 1–255 字节、不含 `/` `\` 和控制字符；`sha256` 是 64 位小写 hex。同一设备同时进行中的上传至多 8 个（再多 `busy`）；完成但没被引用的 blob 全节点合计超过 1 GiB → `busy`（`data.reason = "quota"`），数据目录所在卷剩余空间不够 `size + 1 GiB` → `busy`（`disk_full`）。名字不能含控制字符（Unicode Cc）、双向控制符（U+200E U+200F U+202A–U+202E U+2066–U+2069）和 U+2028 / U+2029。`chunk_size` 目前是 512 KiB |
 | `blob.put_chunk` | C→D | `{ blob_id, index, data }` → `{}`。`data` 是标准 base64（带 padding），解码后长度必须正好是这一块应有的长度（最后一块是余数）；偏移 = `index × chunk_size`。可以乱序、并发、重发同一块（幂等）。上传不存在 / 已过期 / 已完成 → `not_found`；`index` 越界、长度不对、base64 不合法 → `invalid`；`put_end` 已经开始收尾 → `invalid`（`data.reason = "finalizing"`） |
-| `blob.put_end` | C→D | `{ blob_id }` → `AttachmentRef { blob_id, name, mime, bytes, width?, height? }`。缺块 → `invalid`（`data.reason = "incomplete"`，上传保留，补发后再 `put_end`）；SHA-256 不符（`hash_mismatch`）或文件头和 mime 不符（`mime_mismatch`）→ `invalid`，上传作废。对已经完成的 blob 重复 `put_end`、以及并发的 `put_end` 都返回同一个结果。`put_end` 开始收尾后不再接受块，已经在写的块先写完再校验。文件头只是前缀比对（不解码图片）。记录的 `name` 扩展名和 mime 对不上时 daemon 在后面补上（`x.html` → `x.html.jpg`） |
+| `blob.put_end` | C→D | `{ blob_id }` → `AttachmentRef { blob_id, name, mime, bytes, width?, height? }`。缺块 → `invalid`（`data.reason = "incomplete"`，上传保留，补发后再 `put_end`）；SHA-256 不符（`hash_mismatch`）或四种图片的文件头和 mime 不符（`mime_mismatch`）→ `invalid`，上传作废。对已经完成的 blob 重复 `put_end`、以及并发的 `put_end` 都返回同一个结果。`put_end` 开始收尾后不再接受块，已经在写的块先写完再校验。文件头只是前缀比对（不解码图片），其它类型不看内容、没有 `width` / `height`。图片记录的 `name` 扩展名和 mime 对不上时 daemon 在后面补上（`x.html` → `x.html.jpg`），其它类型的名字原样记录 |
 | `blob.get` | C→D | `{ blob_id, offset?, max_bytes? }` → `{ blob: AttachmentRef, offset, data, eof }`。`max_bytes` 缺省和上限都是 512 KiB；`max_bytes = 0` 按 1 处理；`offset` 超过大小 → `invalid`；blob 不存在、还没 `put_end`、或者记录在而文件不在了 → `not_found`（文件不在时 `data.reason = "blob"`）。任何已配对设备都能读任何 blob |
 | `blob.discard` | C→D | `{ blob_id }` → `{}`。丢掉一个进行中的上传，或已完成但还没被消息引用的 blob；已被消息引用 → `invalid`（`data.reason = "in_use"`）；不存在也返回成功（幂等） |
 
-消息只带引用：`session.send` / `session.create` 的 `attachments` 放 `blob.put_end` 的结果。daemon 逐个核对：blob 不存在 → `not_found`（`data.reason = "blob"`）；`name` / `mime` / `bytes` 和记录不一致、或已经被**别的**会话的消息引用（`blob_in_use`）→ `invalid`；mime 不在该会话 agent 的 `capabilities.attachments` 里 → `unsupported`；一条消息至多 20 个附件、合计 ≤ 20 MiB（超了 `invalid` / `too_large`）。积压的多条消息合并成一个 turn 时，附件累计超过 20 个或 20 MiB 就停，剩下的作为下一个 turn。`session.create` 带 `message_id` 的重试先按幂等返回第一次建好的会话，再核对附件（不会因为附件已经绑定到第一次的会话而得到 `blob_in_use`）。带附件时 `content` 可以为空串。第一次被引用时 blob 绑定到这个会话，随会话删除；没被引用的 blob 24 小时后回收，进行中的上传 10 分钟没有新块就作废。
+消息只带引用：`session.send` / `session.create` 的 `attachments` 放 `blob.put_end` 的结果。daemon 逐个核对：blob 不存在 → `not_found`（`data.reason = "blob"`）；`name` / `mime` / `bytes` 和记录不一致、或已经被**别的**会话的消息引用（`blob_in_use`）→ `invalid`；该会话的 agent 不收这个 mime（`capabilities.attachments` 既没点名它也没有 `*/*`）→ `unsupported`；一条消息至多 20 个附件、合计 ≤ 20 MiB（超了 `invalid` / `too_large`）。积压的多条消息合并成一个 turn 时，附件累计超过 20 个或 20 MiB 就停，剩下的作为下一个 turn。`session.create` 带 `message_id` 的重试先按幂等返回第一次建好的会话，再核对附件（不会因为附件已经绑定到第一次的会话而得到 `blob_in_use`）。带附件时 `content` 可以为空串。第一次被引用时 blob 绑定到这个会话，随会话删除；没被引用的 blob 24 小时后回收，进行中的上传 10 分钟没有新块就作废。
 
 分块在内层，hub 看到的只是若干个 `data` 信封。
 

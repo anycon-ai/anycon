@@ -97,7 +97,7 @@ pub fn git_event_line(
     }
 }
 
-/// 用户消息的一个附件（图片，ADR-35）：`  [attachment] shot.png (image/png, 120.0 KiB, 1280×800)`。
+/// 用户消息的一个附件（ADR-35；图片带宽高）：`  [attachment] shot.png (image/png, 120.0 KiB, 1280×800)`。
 /// 文件名是别的客户端给的，经过「可见化」并压成一行；宽高读不出来时省略。
 pub fn attachment_line(a: &AttachmentRef) -> String {
     let mut meta = vec![visible(&a.mime), anycon_daemon::util::human_bytes(a.bytes)];

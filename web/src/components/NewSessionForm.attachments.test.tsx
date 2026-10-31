@@ -99,7 +99,7 @@ describe('new-session form: images', () => {
     const item = await screen.findByTestId('composer-attach')
     expect(item).toHaveAttribute('data-disabled')
     expect(item).toHaveAttribute('aria-disabled', 'true')
-    expect(item).toHaveTextContent("The node is offline. Images can't be attached right now.")
+    expect(item).toHaveTextContent("The node is offline. Files can't be attached right now.")
   })
 
   it('creates the session with the first message’s images — and works with no text at all', async () => {
@@ -152,7 +152,7 @@ describe('new-session form: images', () => {
     await userEvent.upload(screen.getByTestId('composer-file-input'), png('keep.png'))
     await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready'))
     await userEvent.type(screen.getByTestId('composer-input'), 'please{Enter}')
-    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.text)).toContain('An attachment is no longer on the node. Edit the message and add the images again.'))
+    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.text)).toContain('An attachment is no longer on the node. Edit the message and add the attachments again.'))
     await waitFor(() => expect(d.uploads.size).toBe(2))
     await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready'))
     expect(useDrafts.getState().byKey[DRAFT]!.attachments).toMatchObject([{ blob_id: blobId(2), name: 'keep.png' }])
@@ -166,12 +166,29 @@ describe('new-session form: images', () => {
     expect(screen.queryByTestId('composer-attachments-unsupported')).toBeNull()
 
     await pickAgent('plain')
-    expect(screen.getByTestId('composer-attachments-unsupported')).toHaveTextContent("The selected agent doesn't accept images, so the images you added won't be sent.")
+    expect(screen.getByTestId('composer-attachments-unsupported')).toHaveTextContent("The selected agent doesn't accept attachments, so the ones you added won't be sent.")
     expect(screen.queryByTestId('composer-plus')).toBeNull()
     await userEvent.type(screen.getByTestId('composer-input'), 'hello{Enter}')
     await waitFor(() => expect(createParams()).toBeDefined())
     expect(createParams()!.attachments).toBeUndefined()
     expect(createParams()).toMatchObject({ agent: 'plain', prompt: 'hello' })
+  })
+
+  it('switching from an agent that takes any file to one that only takes images: a hint, and the files added are left out (the images still go)', async () => {
+    installBlobDaemon(rpc, { chunkSize: 1024 })
+    mount([mockAgent({ capabilities: caps(['image/png', '*/*']) }), mockAgent({ id: 'pics', label: 'Pics', capabilities: caps(['image/png']) })])
+    expect(screen.getByTestId('composer-file-input')).not.toHaveAttribute('accept')
+    await userEvent.upload(screen.getByTestId('composer-file-input'), [png('keep.png'), new File(['# notes'], 'notes.md', { type: 'text/markdown' })])
+    await waitFor(() => expect(screen.getAllByTestId('composer-attachment').map((e) => e.getAttribute('data-state'))).toEqual(['ready', 'ready']))
+    expect(screen.queryByTestId('composer-attachments-unsupported')).toBeNull()
+
+    await pickAgent('pics')
+    expect(screen.getByTestId('composer-attachments-unsupported')).toHaveTextContent("The selected agent doesn't accept some of the files you added, so those won't be sent.")
+    expect(screen.getByTestId('composer-file-input')).toHaveAttribute('accept', 'image/png,image/*')
+    await userEvent.type(screen.getByTestId('composer-input'), 'hello{Enter}')
+    await waitFor(() => expect(createParams()).toBeDefined())
+    expect(createParams()).toMatchObject({ agent: 'pics', prompt: 'hello', attachments: [{ name: 'keep.png', mime: 'image/png' }] })
+    expect(createParams()!.attachments).toHaveLength(1)
   })
 
   it('the hint goes away and the images are back when the agent that takes images is selected again', async () => {
@@ -240,7 +257,7 @@ describe('new-session form: images', () => {
     await userEvent.upload(screen.getByTestId('composer-file-input'), png('keep.png'))
     await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready'))
     await userEvent.type(screen.getByTestId('composer-input'), 'please{Enter}')
-    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.text)).toContain('These images already belong to another session (for example one that was just created while the connection dropped). Edit the message and add the images again.'))
+    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.text)).toContain('These attachments already belong to another session (for example one that was just created while the connection dropped). Edit the message and add the attachments again.'))
     await waitFor(() => expect(d.uploads.size).toBe(2))
     await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready'))
     expect(useDrafts.getState().byKey[DRAFT]!.attachments).toMatchObject([{ blob_id: blobId(2), name: 'keep.png' }])
@@ -255,7 +272,7 @@ describe('new-session form: images', () => {
     await userEvent.upload(screen.getByTestId('composer-file-input'), png('keep.png'))
     await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready'))
     await userEvent.type(screen.getByTestId('composer-input'), 'please{Enter}')
-    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.text)).toContain('The images on this message add up to more than the node accepts. Edit the message and remove some.'))
+    await waitFor(() => expect(useUi.getState().toasts.map((t) => t.text)).toContain('The attachments on this message add up to more than the node accepts. Edit the message and remove some.'))
     await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-name', 'keep.png'))
     expect(d.uploads.size).toBe(1) // 不是丢了的问题，不重传
     expect(useDrafts.getState().byKey[DRAFT]!.attachments).toMatchObject([{ blob_id: blobId(1) }])

@@ -503,9 +503,9 @@ ADR-1 拆成两层来看：
 
 ---
 
-## ADR-35 图片附件：经 blob 通道传到 daemon，消息只带引用
+## ADR-35 附件：经 blob 通道传到 daemon，消息只带引用
 
-**决定**（附件从 v0.2 提前；目前只有图片）：
+**决定**（附件从 v0.2 提前；最初只有图片，任意文件见文末「任意文件」）：
 
 1. **上传**：客户端把图片分块传给 daemon（`blob.put_begin` → `blob.put_chunk` × N → `blob.put_end`），daemon 落盘到 `<数据目录>/blobs/<blob_id>.<扩展名>`、记进 `blobs` 表，`put_end` 返回 `AttachmentRef`。`session.send` / `session.create` 只带 `AttachmentRef`，事件流里的 `user_message.attachments` 也只带引用。hub 没有任何改动，看到的仍然只是密文 `data` 信封
 2. **分块是请求，不是通知**：每块都有答复，客户端据此显示进度、只重发失败的那一块；块按 `index` 定位（偏移 = `index × chunk_size`），可以乱序、并发（客户端最多 4 块在途）、重发
@@ -519,7 +519,7 @@ ADR-1 拆成两层来看：
 
 - 内容只在 daemon 和客户端之间流动，hub「不碰内容」不变（ADR-1 / ADR-30）
 - 消息只带引用：`session.send` 的 1 MiB、历史一页 192 KiB 的上限都不受图片影响，事件表里没有大段 base64，多台设备回放历史时只拉自己要看的图
-- 只做图片：两个 adapter 都只认图片；别的文件要给 agent，放进项目目录就行
+- 只做图片（最初）：两个 adapter 都只认图片；别的文件要给 agent，放进项目目录就行——后来改了，见「任意文件」
 
 **否掉**：
 
@@ -541,6 +541,27 @@ ADR-1 拆成两层来看：
 - **校验的边界**：文件头只是前缀比对（magic bytes），不解码图片；`put_end` 收尾时上传进入「收尾中」，之后的块被拒绝、已经在写的块先写完再算 SHA-256，所以校验过的就是落盘的；并发的 `put_end` 拿到同一个结果
 - **磁盘**：完成但没被引用的 blob 全节点合计 ≤ 1 GiB，数据目录所在卷剩余空间不够 `size + 1 GiB` 时拒绝新上传
 - **名字**：拒绝控制字符和双向控制符；扩展名和 mime 对不上时 daemon 补上正确的扩展名（`x.html` + `image/jpeg` → `x.html.jpg`）
+
+**任意文件（2026-10 第二次修订）**：附件不再只限图片。原来「别的文件放进项目目录就行」在手机上做不到，scratch 会话也没有项目目录。
+
+- **上传**：`blob.put_begin` 收任意格式正确的 mime（`type/subtype`，RFC 6838 的字符，不带参数，≤ 127 字节，记成小写），不认识的类型用 `application/octet-stream`。四种图片照旧核对文件头、读宽高；其它类型 daemon 不看内容。大小、个数、配额、生命周期的规则不变（每个 ≤ `sessions.max_attachment_bytes`，每条消息 ≤ 20 个、≤ 20 MiB）
+- **落盘**：`<blob_id>.<ext>`，图片的 `ext` 由 mime 定；其它文件取名字的扩展名（1–16 个 ASCII 字母数字，转小写），否则 `bin`。agent 和它的工具靠扩展名认类型（Claude Code 的 Read 读 PDF 就是）
+- **agent 怎么收**：`capabilities.attachments` 里的 `*/*` 表示收任意文件；内置的三个 adapter 都是「四种图片 + `*/*`」。点名的图片照旧作为图片交给模型；其它文件**不读进请求**，adapter 在用户消息前面加一段文字，列出每个文件的名字、类型、大小和 daemon 上的绝对路径，agent 用自己的工具去读。Claude Code：在 `image` block 之后、用户文字之前加一个 `text` block；Codex：`turn/start.input` 的第一项文字
+- **客户端**：图片照旧走规整（Web）；其它文件原样上传。Web 只把四种图片内联显示，其它附件显示成文件条，点了才下载，下载用 `application/octet-stream` 的 `Blob` 加 `<a download>`——`text/html`、`image/svg+xml` 之类的附件永远不会在 Web UI 的源里被渲染或执行。CLI 加 `anycon send --file`，SDK 加 `uploadFile()`
+
+**原因**：路径交给 agent 而不是把内容塞进请求——PDF、表格、代码包各家模型的支持不一样，大文件塞进请求还会被会话历史一直带着重发（见上面的总量上限）；agent 本来就有读文件的工具，读多少由它决定。
+
+**否掉**：
+
+- Claude 的 `document` block（PDF / 纯文本直接进请求）：只有 Claude 有，Codex 没有对应的输入；进了历史的文档每个 turn 都重发，和图片一样撑大请求
+- 把文件复制进 workspace：会弄脏用户的仓库（git status 里多出文件），scratch 会话也不一定有合适的位置
+- daemon 按内容嗅探真实类型：只能认出一小部分格式，认不出的仍然要信客户端；不执行、不渲染的文件，类型只是给 agent 的提示
+
+**代价 / 限制**：
+
+- 文件在 daemon 的数据目录里，不在 workspace 里：Claude Code 读 workspace 之外的文件可能要走权限审批（Web 上会出现审批卡片）；Codex 的沙箱只限制写，读不需要审批
+- agent 拿到的是本机路径：会话删除后文件随之删除，之后的 turn 里 agent 再去读同一个路径会找不到
+- 一条消息 20 MiB 的合计上限原本是为图片定的，现在对文件也一样（文件并不进请求，这个上限对它们偏紧，先不区分）
 
 ---
 

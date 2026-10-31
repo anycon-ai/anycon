@@ -295,7 +295,7 @@ async fn failing_turn_start_is_reported_by_send() {
 }
 
 #[tokio::test]
-async fn images_are_sent_as_local_images_and_other_attachments_refused() {
+async fn images_are_sent_as_local_images_and_other_files_by_path() {
     let h = CodexHarness::new();
     let mut handle = h.spawn(SessionSettings::default(), None).await;
     started(&mut handle).await;
@@ -329,8 +329,15 @@ async fn images_are_sent_as_local_images_and_other_attachments_refused() {
         attachments: vec![att("a.pdf", "application/pdf")],
         attachment_paths: vec!["/tmp/a.pdf".into()],
     };
-    assert!(matches!(handle.send(pdf).await, Err(AdapterError::Unsupported(_))));
-    assert_eq!(h.requests("turn/start").len(), 1);
+    handle.send(pdf).await.unwrap();
+    collect_until(&mut handle, is_turn_done).await;
+    let starts = h.requests("turn/start");
+    assert_eq!(starts.len(), 2);
+    let input = &starts[1]["params"]["input"];
+    assert_eq!(input.as_array().unwrap().len(), 2, "{input}");
+    let listed = input[0]["text"].as_str().unwrap();
+    assert!(listed.contains("- a.pdf (application/pdf, 1 bytes): /tmp/a.pdf"), "{listed}");
+    assert_eq!(input[1], json!({"type": "text", "text": "read"}));
     handle.shutdown().await.unwrap();
 }
 
@@ -735,15 +742,6 @@ async fn an_interjection_carries_its_images_as_local_images_too() {
         height: None,
     };
 
-    // 非图片的插话在发出 turn/steer 之前就被拒绝
-    let pdf = UserInput {
-        attachments: vec![att("a.pdf", "application/pdf")],
-        attachment_paths: vec!["/tmp/anycon-a.pdf".into()],
-        ..interject("read this")
-    };
-    assert!(matches!(handle.send(pdf).await, Err(AdapterError::Unsupported(_))));
-    assert!(h.requests("turn/steer").is_empty());
-
     // 文字 + 两张图，按顺序；只有图片时不放空文本
     let two = UserInput {
         attachments: vec![att("a.png", "image/png"), att("b.jpg", "image/jpeg")],
@@ -757,8 +755,18 @@ async fn an_interjection_carries_its_images_as_local_images_too() {
         ..interject("")
     };
     handle.send(only_image).await.unwrap();
+    // 非图片的插话：路径清单在前
+    let pdf = UserInput {
+        attachments: vec![att("a.pdf", "application/pdf")],
+        attachment_paths: vec!["/tmp/anycon-a.pdf".into()],
+        ..interject("read this")
+    };
+    handle.send(pdf).await.unwrap();
     let steers = h.requests("turn/steer");
-    assert_eq!(steers.len(), 2);
+    assert_eq!(steers.len(), 3);
+    let listed = steers[2]["params"]["input"][0]["text"].as_str().unwrap();
+    assert!(listed.contains("/tmp/anycon-a.pdf"), "{listed}");
+    assert_eq!(steers[2]["params"]["input"][1], json!({"type": "text", "text": "read this"}));
     assert_eq!(
         steers[0]["params"]["input"],
         json!([

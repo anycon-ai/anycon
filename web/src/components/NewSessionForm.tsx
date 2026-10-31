@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, FolderGit2, FolderPlus, MessageSquare } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { AgentInfo, Project, SessionWorkspace, SessionWorkspaceMode } from '@/protocol'
-import { attachmentMimes } from '@/features/attachments/support'
+import { acceptsAttachment, attachmentSupport } from '@/features/attachments/support'
 import { restoreAttachments } from '@/features/attachments/composerUploads'
 import { describeAttachmentFailure, describeAttachNotice } from '@/features/attachments/errors'
 import { attachmentFailure, createSession, needsReupload } from '@/features/session/actions'
@@ -79,11 +79,16 @@ export function NewSessionForm({ nodeId, project, agentId, focus, onProjectChang
   const branches = useBranches(nodeId, project, worktreeReady && workspaceMode === 'worktree' && !offline)
   const branchProblem = worktreeReady && workspaceMode === 'worktree' ? branchNameProblem(branch) : null
 
-  // 图片附件（ADR-35）：节点支持 blob、选中的 agent 收图片才显示回形针
-  const attachMimes = attachmentMimes(entry?.info, agent)
-  // 换到不收图片的 agent 时，输入区里已经添加的图（内存里的，或刷新前存在草稿里的）发送时不会带上：说一声
+  // 附件（ADR-35）：节点支持 blob、选中的 agent 收图片或任意文件才显示「＋」
+  const support = attachmentSupport(entry?.info, agent)
+  // 换到不收附件的 agent 时，输入区里已经添加的附件（内存里的，或刷新前存在草稿里的）发送时不会带上：说一声。
+  // 换到只收一部分的 agent（只收图片，而已经添加了文件）时，它不收的那些同样不会带上
   const draftKey = `new:${nodeId}:${project ?? ''}`
-  const imageCount = useDrafts((s) => (s.items[draftKey] ?? s.byKey[draftKey]?.attachments ?? []).length)
+  const pendingItems = useDrafts((s) => s.items[draftKey])
+  const draftRefs = useDrafts((s) => s.byKey[draftKey]?.attachments)
+  const pendingCount = (pendingItems ?? draftRefs ?? []).length
+  const pendingMimes = pendingItems ? pendingItems.flatMap((i) => (i.state === 'ready' && i.ref ? [i.ref.mime] : [])) : (draftRefs ?? []).map((r) => r.mime)
+  const someUnsupported = !!support && pendingMimes.some((m) => !acceptsAttachment(support, m))
 
   if (entry && entry.agentsLoaded && agents.length === 0) return <NoAgentsNotice agents={entry.agents} />
   if (!agent || !selection) return null
@@ -132,9 +137,9 @@ export function NewSessionForm({ nodeId, project, agentId, focus, onProjectChang
           {t('options.dangerousDefaultSkipped', { mode: resolved.skippedDangerousMode.label })}
         </p>
       ) : null}
-      {!attachMimes && imageCount > 0 ? (
+      {(!support && pendingCount > 0) || someUnsupported ? (
         <p className="mb-1 px-1 text-xs text-warning" role="status" data-testid="composer-attachments-unsupported">
-          {t('composer.attachmentsUnsupported')}
+          {support ? t('composer.attachmentsPartlyUnsupported') : t('composer.attachmentsUnsupported')}
         </p>
       ) : null}
     </>
@@ -150,7 +155,7 @@ export function NewSessionForm({ nodeId, project, agentId, focus, onProjectChang
         notice={notice}
         context={contextControls(false)}
         placeholder={project ? t('composer.placeholderProject', { project }) : t('composer.placeholderScratch')}
-        attachments={attachMimes ? { nodeId, accept: attachMimes, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
+        attachments={support ? { nodeId, accept: support.images, files: support.files, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
         options={(layout) => {
           const stacked = layout === 'stacked'
           return (
@@ -190,9 +195,9 @@ export function NewSessionForm({ nodeId, project, agentId, focus, onProjectChang
             const failure = attachmentFailure(e)
             const expired = needsReupload(failure)
             toast.error(describeAttachmentFailure(failure, t) ?? describeCreateError(e, t, worktreeReady && workspaceMode === 'worktree'))
-            // 发送失败把文字和图片放回输入框，别丢
+            // 发送失败把文字和附件放回输入框，别丢
             useDrafts.getState().setText(draftKey, prompt)
-            if (attachments.length > 0) void restoreAttachments({ draftKey, nodeId, accepted: attachMimes ?? [], notify: (n) => toast.info(describeAttachNotice(n, t)) }, attachments, { expired })
+            if (attachments.length > 0) void restoreAttachments({ draftKey, nodeId, accepted: support?.images ?? [], files: support?.files, notify: (n) => toast.info(describeAttachNotice(n, t)) }, attachments, { expired })
           } finally {
             setBusy(false)
           }

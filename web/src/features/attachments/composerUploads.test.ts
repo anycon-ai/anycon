@@ -17,11 +17,15 @@ let rpc: FakeRpc
 let notices: AttachNotice[]
 let decodes: number
 
-const png = (name: string, size = 2000): File => {
-  const bytes = new Uint8Array(size)
+/** `size` 字节、以 PNG 文件头开头（假 daemon 和真的一样核对四种图片的文件头）。 */
+const pngBytes = (size: number, fill = 0): Uint8Array => {
+  const bytes = new Uint8Array(size).fill(fill)
   bytes.set(PNG_HEAD)
-  return new File([bytes], name, { type: 'image/png' })
+  return bytes
 }
+const png = (name: string, size = 2000): File => new File([pngBytes(size) as Uint8Array<ArrayBuffer>], name, { type: 'image/png' })
+const doc = (name: string, type: string, size = 300): File => new File([new Uint8Array(size).fill(3)], name, { type })
+const WEBP_HEAD = [0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]
 
 const codec: ImageCodec = {
   async decode() {
@@ -166,13 +170,18 @@ describe('adding images', () => {
     // 每张规整后 3 MiB（假编码器）：5 张刚好 15 MiB，第 6 张超了
     const big: ImageCodec = {
       decode: async () => ({ width: 40, height: 30, close: () => {} }),
-      encode: async (_i, _w, _h, mime) => new Blob([new Uint8Array(3 * MiB)], { type: mime === 'image/png' ? 'image/webp' : mime }),
+      encode: async () => {
+        const bytes = new Uint8Array(3 * MiB)
+        bytes.set(WEBP_HEAD)
+        return new Blob([bytes], { type: 'image/webp' })
+      },
     }
     const d = installBlobDaemon(rpc, { chunkSize: 512 * 1024 })
     addFiles(Array.from({ length: 6 }, (_, i) => png(`${i}.png`, 2 * MiB)), ctx({ codec: big, accepted: ['image/png', 'image/webp'] }))
-    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    // 要搬 15 MiB（sha256、base64、假 daemon 收块），比别的测试慢
+    await vi.waitFor(() => expect(notices).toHaveLength(1), { timeout: 5000 })
     expect(notices[0]).toMatchObject({ kind: 'total', max: 15 * MiB })
-    await vi.waitFor(allSettled('ready'))
+    await vi.waitFor(allSettled('ready'), { timeout: 5000 })
     expect(items()).toHaveLength(5)
     expect(d.uploads.size).toBe(5)
     expect(items().reduce((n, i) => n + (i.ref?.bytes ?? 0), 0)).toBe(15 * MiB)
@@ -188,7 +197,7 @@ describe('adding images', () => {
     expect([...d.uploads.values()].map((u) => u.begin.name)).toEqual(['a.png', 'b.png'])
   })
 
-  it('skips files that are not images, with a notice', () => {
+  it('skips files that are not images, with a notice, when the agent only takes images', () => {
     installBlobDaemon(rpc)
     addFiles([new File(['x'], 'notes.txt', { type: 'text/plain' })], ctx())
     expect(items()).toEqual([])
@@ -206,6 +215,126 @@ describe('adding images', () => {
     await vi.waitFor(() => expect(notices).toEqual([{ kind: 'undecodable', name: 'broken.png' }]))
     expect(items()).toEqual([])
     expect(rpc.calls).toEqual([])
+  })
+})
+
+describe('adding other files (the agent takes any file)', () => {
+  const files = (over: Partial<AttachContext> = {}) => ctx({ files: true, ...over })
+  const uploaded = (d: ReturnType<typeof installBlobDaemon>, n: number) => d.uploads.get(blobId(n))!
+
+  it('uploads a file that is not an image byte for byte, with its type in lower case and without parameters; no preview, no decoding', async () => {
+    const d = installBlobDaemon(rpc, { chunkSize: 1024 })
+    addFiles([doc('notes.TXT', 'Text/Plain; charset=utf-8', 3000)], files())
+    expect(items()).toMatchObject([{ kind: 'file', name: 'notes.TXT', mime: 'text/plain', bytes: 3000, state: 'uploading' }])
+    await vi.waitFor(allSettled('ready'))
+    const [item] = items()
+    expect(item).toMatchObject({ kind: 'file', state: 'ready', name: 'notes.TXT', mime: 'text/plain', bytes: 3000 })
+    expect(item!.previewUrl).toBeUndefined()
+    expect(item!.ref).toEqual({ blob_id: blobId(1), name: 'notes.TXT', mime: 'text/plain', bytes: 3000 })
+    expect(uploaded(d, 1).begin).toMatchObject({ name: 'notes.TXT', mime: 'text/plain', size: 3000 })
+    const sent = [0, 1, 2].flatMap((i) => Array.from(uploaded(d, 1).chunks.get(i)!))
+    expect(sent).toEqual(Array.from(new Uint8Array(3000).fill(3)))
+    expect(decodes).toBe(0)
+    expect(notices).toEqual([])
+    // 自己传的文件也进缓存（blob 被节点回收后可以从这里重传）
+    expect(await readCached(blobId(1))).toMatchObject({ mime: 'text/plain' })
+  })
+
+  it('a file whose type the browser does not know (or gives in a form the node does not take) goes up as application/octet-stream', async () => {
+    const d = installBlobDaemon(rpc, { chunkSize: 1024 })
+    addFiles([doc('data.bin', 'weird type'), doc('archive.tar.zst', 'application/x-tar zst')], files({ accepted: [] }))
+    await vi.waitFor(allSettled('ready'))
+    expect([...d.uploads.values()].map((u) => [u.begin.name, u.begin.mime])).toEqual([
+      ['data.bin', 'application/octet-stream'],
+      ['archive.tar.zst', 'application/octet-stream'],
+    ])
+  })
+
+  it('an image goes through the image pipeline as before when the agent also names image formats', async () => {
+    const d = installBlobDaemon(rpc, { chunkSize: 1024 })
+    addFiles([png('shot.png'), doc('spec.pdf', 'application/pdf')], files())
+    await vi.waitFor(allSettled('ready'))
+    expect(items().map((i) => [i.name, i.kind ?? 'image', i.mime, !!i.previewUrl, i.width ?? null])).toEqual([
+      ['shot.png', 'image', 'image/png', true, 40],
+      ['spec.pdf', 'file', 'application/pdf', false, null],
+    ])
+    expect(decodes).toBe(1)
+    expect(d.uploads.size).toBe(2)
+  })
+
+  it('an agent that names no image format but takes any file gets images byte for byte too, without decoding them', async () => {
+    const d = installBlobDaemon(rpc, { chunkSize: 1024 })
+    addFiles([png('shot.png')], files({ accepted: [] }))
+    await vi.waitFor(allSettled('ready'))
+    expect(decodes).toBe(0)
+    expect(items()[0]).toMatchObject({ kind: 'file', mime: 'image/png', ref: { mime: 'image/png', bytes: 2000 } })
+    expect(uploaded(d, 1).begin).toMatchObject({ name: 'shot.png', mime: 'image/png', size: 2000 })
+  })
+
+  it('an image the browser cannot decode is uploaded as a file instead; a claimed PNG whose header is not PNG goes up as application/octet-stream', async () => {
+    const d = installBlobDaemon(rpc, { chunkSize: 1024 })
+    const broken: ImageCodec = { decode: () => Promise.reject(new Error('bad')), encode: async () => null }
+    addFiles([doc('photo.heic', 'image/heic'), doc('broken.png', 'image/png')], files({ codec: broken }))
+    await vi.waitFor(allSettled('ready'))
+    expect(notices).toEqual([])
+    expect(items().map((i) => [i.kind, i.name, i.mime])).toEqual([
+      ['file', 'photo.heic', 'image/heic'],
+      ['file', 'broken.png', 'application/octet-stream'],
+    ])
+    expect([...d.uploads.values()].map((u) => u.begin.mime)).toEqual(['image/heic', 'application/octet-stream'])
+  })
+
+  it('a file without a type that is not an image (tried as one first) ends up uploaded as a file', async () => {
+    installBlobDaemon(rpc, { chunkSize: 1024 })
+    const broken: ImageCodec = { decode: () => Promise.reject(new Error('bad')), encode: async () => null }
+    addFiles([doc('Makefile', '')], files({ codec: broken }))
+    await vi.waitFor(allSettled('ready'))
+    expect(items()[0]).toMatchObject({ kind: 'file', name: 'Makefile', mime: 'application/octet-stream' })
+  })
+
+  it('images and files count together towards 10 per message and 15 MiB per message; a file over the total is skipped without being read', async () => {
+    const MiB = 1024 * 1024
+    const d = installBlobDaemon(rpc, { chunkSize: 512 * 1024 })
+    addFiles([...Array.from({ length: 6 }, (_, i) => png(`${i}.png`)), ...Array.from({ length: 6 }, (_, i) => doc(`${i}.txt`, 'text/plain'))], files())
+    expect(items()).toHaveLength(MAX_ATTACHMENTS)
+    expect(notices).toEqual([{ kind: 'max', max: 10 }])
+    await vi.waitFor(allSettled('ready'))
+    clearItems(KEY)
+    notices = []
+
+    const big = new File([new Uint8Array(1)], 'huge.iso', { type: 'application/x-iso9660-image' })
+    Object.defineProperty(big, 'size', { value: 16 * MiB })
+    const read = vi.spyOn(big, 'arrayBuffer')
+    addFiles([big], files())
+    await vi.waitFor(() => expect(notices).toEqual([{ kind: 'total', name: 'huge.iso', max: 15 * MiB }]))
+    expect(items()).toEqual([])
+    expect(read).not.toHaveBeenCalled()
+    expect(d.uploads.size).toBe(10)
+  })
+
+  it('a file the node turns down as too large becomes an error item (the node has its own per-file limit)', async () => {
+    installBlobDaemon(rpc, {
+      onBegin: () => {
+        throw rpcError('invalid', undefined, 'too_large')
+      },
+    })
+    addFiles([doc('video.mp4', 'video/mp4')], files())
+    await vi.waitFor(allSettled('error'))
+    expect(items()[0]!.error).toMatchObject({ code: 'invalid', reason: 'too_large' })
+  })
+
+  it('a restored file the node no longer has is re-uploaded from the local cache as a file (no preview, no decoding)', async () => {
+    const d = installBlobDaemon(rpc, { chunkSize: 1024 })
+    rpc.handlers['blob.get'] = () => {
+      throw rpcError('not_found', undefined, 'blob')
+    }
+    await writeCached(blobId(51), new Uint8Array(40).fill(5), 'application/pdf')
+    hydrateFromDraft(KEY, [ref(51, { name: 'spec.pdf', mime: 'application/pdf', bytes: 40, width: undefined, height: undefined })], files())
+    expect(items()[0]).toMatchObject({ kind: 'file', state: 'ready', checking: true })
+    await vi.waitFor(() => expect(items()[0]).toMatchObject({ state: 'ready', checking: false, ref: { blob_id: blobId(1) } }))
+    expect(items()[0]!.previewUrl).toBeUndefined()
+    expect(uploaded(d, 1).begin).toMatchObject({ name: 'spec.pdf', mime: 'application/pdf', size: 40 })
+    expect(decodes).toBe(0)
   })
 })
 
@@ -313,7 +442,7 @@ describe('restoring attachments', () => {
       if (id === blobId(91) || id === blobId(93)) throw rpcError('not_found', undefined, 'blob')
       return { blob: ref(92), data: 'AA==', eof: false }
     }
-    await writeCached(blobId(91), new Uint8Array(500).fill(7), 'image/png')
+    await writeCached(blobId(91), pngBytes(500, 7), 'image/png')
     // 92 还在；91 回收了、缓存里有；93 回收了、缓存里也没有
     hydrateFromDraft(KEY, [ref(91), ref(92), ref(93)], ctx())
     await vi.waitFor(() => expect(notices).toEqual([{ kind: 'lost', count: 1 }]))
@@ -321,7 +450,7 @@ describe('restoring attachments', () => {
     // 位置不变；91 换成了新上传的 blob，93 被去掉了
     expect(items().map((i) => i.name)).toEqual(['r91.png', 'r92.png'])
     expect(items().map((i) => i.ref?.blob_id)).toEqual([blobId(1), blobId(92)])
-    expect(Array.from(d.uploads.get(blobId(1))!.chunks.get(0)!)).toEqual(Array.from(new Uint8Array(500).fill(7)))
+    expect(Array.from(d.uploads.get(blobId(1))!.chunks.get(0)!)).toEqual(Array.from(pngBytes(500, 7)))
     expect(d.uploads.get(blobId(1))!.begin).toMatchObject({ name: 'r91.png', mime: 'image/png', size: 500 })
     // 草稿里存的是新的引用，不是已经回收了的旧的
     expect(useDrafts.getState().byKey[KEY]?.attachments?.map((r) => r.blob_id)).toEqual([blobId(1), blobId(92)])
@@ -354,14 +483,14 @@ describe('restoring attachments', () => {
 
   it('re-uploads from the local image cache when the node has dropped the blobs, and reports the ones the cache lacks', async () => {
     const d = installBlobDaemon(rpc, { chunkSize: 1024 })
-    await writeCached(blobId(7), new Uint8Array(500).fill(9), 'image/png')
+    await writeCached(blobId(7), pngBytes(500, 9), 'image/png')
     const r = await restoreAttachments(ctx(), [ref(7), ref(8)], { expired: true })
     expect(r).toEqual({ restored: 1, lost: 1 })
     await vi.waitFor(allSettled('ready'))
     // 新上传得到新的 blob_id，内容是缓存里的字节
     const fresh = items()[0]!.ref!
     expect(fresh.blob_id).toBe(blobId(1))
-    expect(Array.from(d.uploads.get(blobId(1))!.chunks.get(0)!)).toEqual(Array.from(new Uint8Array(500).fill(9)))
+    expect(Array.from(d.uploads.get(blobId(1))!.chunks.get(0)!)).toEqual(Array.from(pngBytes(500, 9)))
     expect(d.uploads.get(blobId(1))!.begin).toMatchObject({ name: 'r7.png', mime: 'image/png', size: 500 })
     expect(await readCached(fresh.blob_id)).not.toBeNull()
     expect(decodes).toBe(0)

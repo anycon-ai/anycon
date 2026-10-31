@@ -8,7 +8,7 @@ import { SettingsControls } from '@/components/SettingsControls'
 import { Composer } from '@/components/Composer'
 import { PageHeader } from '@/components/PageHeader'
 import { SessionStatusChip } from '@/components/SessionListItem'
-import { attachmentMimes } from '@/features/attachments/support'
+import { attachmentSupport } from '@/features/attachments/support'
 import { discardRefs, restoreAttachments } from '@/features/attachments/composerUploads'
 import { describeAttachmentFailure, describeAttachNotice } from '@/features/attachments/errors'
 import { archiveSession, cancelTurn, closeSession, deleteSession, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, unarchiveSession, type SendOutcome } from '@/features/session/actions'
@@ -218,8 +218,8 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
   const allPending = [...pendingList, ...fromStore]
   const noAgent = !agent
   const blockedReason = noAgent ? t('session.agentMissing', { agent: summary?.agent ?? '' }) : undefined
-  // 图片附件（ADR-35）：节点支持 blob、agent 收图片才显示回形针；节点不在线时禁用并说明
-  const attachMimes = attachmentMimes(entry.info, agent)
+  // 附件（ADR-35）：节点支持 blob、agent 收图片或任意文件才显示「＋」；节点不在线时禁用并说明
+  const attachSupport = attachmentSupport(entry.info, agent)
 
   // 分支 chip 宽屏放在输入框上方靠右，窄屏和其他选项一起在「⚙」底部弹层里；点了切到「改动」
   const branchChip = (layout: 'inline' | 'stacked') => (gitAvailable ? <BranchChip className={layout === 'inline' ? 'min-h-0' : undefined} worktree={worktree} status={gitStatus} onOpen={openChanges} /> : null)
@@ -276,7 +276,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
       onDelete={(opts) => {
         deleteSession(nodeId, sessionId, opts).then(goBack).catch((e: unknown) => toast.error(describeGitError(e, t)))
       }}
-      onExport={() => downloadText(`${title.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'session'}.md`, exportMarkdown(title, view?.blocks ?? [], (name) => t('export.image', { name })))}
+      onExport={() => downloadText(`${title.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'session'}.md`, exportMarkdown(title, view?.blocks ?? [], (name, kind) => (kind === 'image' ? t('export.image', { name }) : t('export.file', { name }))))}
       onRestart={() => void restartSession(nodeId, sessionId).catch((e: unknown) => toast.error(describeError(e, t)))}
     />
   )
@@ -410,7 +410,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
                 d.setText(sessionId, (d.byKey[sessionId]?.text ? `${d.byKey[sessionId]!.text}\n` : '') + m.content)
                 // 附件放回输入区；已过期的（daemon 回收了）从本地缓存取回字节重新上传
                 if (m.attachments?.length) {
-                  void restoreAttachments({ draftKey: sessionId, nodeId, accepted: attachMimes ?? [], notify: (n) => toast.info(describeAttachNotice(n, t)) }, m.attachments, { expired: needsReupload(m.error) }).then(({ lost }) => {
+                  void restoreAttachments({ draftKey: sessionId, nodeId, accepted: attachSupport?.images ?? [], files: attachSupport?.files, notify: (n) => toast.info(describeAttachNotice(n, t)) }, m.attachments, { expired: needsReupload(m.error) }).then(({ lost }) => {
                     if (lost > 0) toast.info(t('message.attachmentLost', { count: lost }))
                   })
                 }
@@ -418,7 +418,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
               }}
               onDeletePending={(id) => {
                 const m = draft?.unsent.find((u) => u.message_id === id)
-                // 没发出去的消息删了，它的图也没人要了
+                // 没发出去的消息删了，它的附件也没人要了
                 if (m?.attachments?.length) discardRefs(nodeId, m.attachments)
                 useDrafts.getState().removeUnsent(sessionId, id)
               }}
@@ -500,7 +500,7 @@ export function SessionPage({ sessionId }: { sessionId: string }) {
               blockedReason={blockedReason}
               aside={branchChip('inline')}
               options={agent ? options : undefined}
-              attachments={attachMimes ? { nodeId, accept: attachMimes, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
+              attachments={attachSupport ? { nodeId, accept: attachSupport.images, files: attachSupport.files, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
               focusToken={focusToken}
               autoFocus
               onStop={() => void cancelTurn(nodeId, sessionId).catch((e: unknown) => toast.error(describeError(e, t)))}

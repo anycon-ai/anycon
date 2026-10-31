@@ -113,7 +113,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 |---|---|
 | `anycon ls [--project <p>] [--status running\|waiting\|idle\|ended] [--all]` | 会话列表，默认最近 20 条；有 worktree 的会话多一列 BRANCH |
 | `anycon new [--project <p>] [--agent <a>] [--model <m>] [--thinking <id>] [--mode <id>] [-o key=value]... [--worktree \| --here] [--base <ref>] [--branch <name>] [--no-wait] "<prompt>"` | 创建会话并发第一条消息。默认跟随输出直到本轮结束（等同 `attach`），`--no-wait` 只打印会话 id。`--project` 省略则 scratch。**工作位置**（ADR-34）：`--worktree` 在新的 worktree 和分支里工作，`--here` 在项目目录本身；都不给时按节点的 `worktree.default` 先试 worktree，项目开不了（`not_worktree_ready`）就退回项目目录并在 stderr 提示一行。`--base` / `--branch` 隐含 `--worktree`；对 scratch 或不能开 worktree 的项目给 `--worktree` 直接报错（退出码 2）。跟随输出时，worktree 建好会打印一行 `worktree: anycon/x (base main)`。`--model` / `--thinking` / `--mode` 的值是 `anycon agents` 列出的 id，不做翻译；`-o` 传 agent 特定选项 |
-| `anycon send <session> ["<text>"] [--image <path>]... [--no-wait]` | 续发。`--image` 附图（可重复，每条消息至多 20 张；带图时文字可省）：本地先检查文件头，原样上传，不缩放、不去 EXIF（含 GPS 位置）；长边超过 2000 px 或大于约 1.5 MiB 时在 stderr 提醒。`<session>` 支持 id 前缀和 `last`（最近一个会话）。会话已归档时报错并提示 `anycon unarchive <session>`（退出码 2） |
+| `anycon send <session> ["<text>"] [--image <path>]... [--file <path>]... [--no-wait]` | 续发。`--image` 附图（可重复；带附件时文字可省）：本地先检查文件头必须是 PNG / JPEG / GIF / WebP，原样上传，不缩放、不去 EXIF（含 GPS 位置）；长边超过 2000 px 或大于约 1.5 MiB 时在 stderr 提醒。`--file` 附任意文件（可重复）：文件头是四种图片之一就按图片传，否则按扩展名猜类型（和 SDK 的 `uploadFile` 同一张表），猜不出是 `application/octet-stream`；agent 拿到的是文件在节点上的路径，自己去读。两者合计每条消息至多 20 个、20 MiB。`<session>` 支持 id 前缀和 `last`（最近一个会话）。会话已归档时报错并提示 `anycon unarchive <session>`（退出码 2） |
 | `anycon attach <session>` | 跟随事件流，直到 `Ctrl+C`（只断开，不取消）。权限请求在终端交互式回答，按键按 `options[]` 生成（常见 `[a]llow / [s]ession / [d]eny`），`question` 类逐题提问（空行跳过整个提问；`optional` 的题——MCP elicitation 表单里非必填的属性——空行只是留空这一题、接着问下一题，答复里没有它）；`--auto-approve` 自动答复（危险，**启动时**就在 stderr 警告，不是等到第一次自动答复）：只自动批准 `tool` / `other` 类请求的 **allow_once** 选项（带 `detail.url`、要用户去浏览器里打开链接再确认的 `other` 请求除外：自动答复等于替用户声称已经完成了），没有 allow_once 就拒绝，绝不升级成 allow_always；`mode_change` / `plan` / `question` 不自动答复（交互终端里照常提示，非交互时留着等 `anycon approve` 或别的设备）。`new` / `send` 同理。**来自 agent 的文本（命令、路径、URL、标题、计划、问题、选项标签、转写行）一律先「可见化」**：控制字符、ANSI 转义、双向 / 零宽字符显示成转义序列，不能改写终端上已显示的内容；默认展示全文，超过 2000 字符才截断并注明 `…(+N chars; press v to view all)`，按 `v` 打印全文而不作答——被提示注入的 agent 不能把危险部分藏在截断之后或用 `\r` 盖掉 |
 | `anycon cancel <session>` | 中断当前 turn |
 | `anycon approve <request-id> [--session]` · `anycon deny <request-id> [-m "<message>"]` | 回答一条待审批请求，`anycon pending` 列出所有待审批。`approve`（不带 `--session`）选 `allow_once`；请求里没有 allow_once 选项时报错（退出码 2），不会悄悄换成 allow_always |
@@ -167,7 +167,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | 系统睡眠策略（macOS：`pmset` 的 `sleep` 是否为 0 或开了 Wake for network access） | 提示机器睡着了就收不到消息 |
 | 节点口令（ADR-36）：是否设置、是否被锁定、连续失败次数 | 被锁定：先看 `anycon audit` 里的 `enroll.failed`，确认是自己输错的再 `anycon passwd --enable`；没设口令只是提示（可选），不算失败 |
 | 时钟偏差 < 60 秒 | Noise 不依赖时钟，但短码 TTL 和日志依赖 |
-| 附件（`blobs`，ADR-35）：文件数、字节数、进行中的上传；数据目录所在卷剩余空间 ≥ 1 GiB | 磁盘快满了：新的图片上传会被拒绝（`disk_full`），清理磁盘或删掉不用的会话 |
+| 附件（`blobs`，ADR-35）：文件数、字节数、进行中的上传；数据目录所在卷剩余空间 ≥ 1 GiB | 磁盘快满了：新的附件上传会被拒绝（`disk_full`），清理磁盘或删掉不用的会话 |
 
 `--json` 输出每项的 `{ id, ok, detail, fix }`，Web 的节点设置页「关于」标签也调用同一个 RPC（`node.doctor`）。
 

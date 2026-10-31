@@ -7,7 +7,7 @@ import { setRpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
 import { isAborted } from './async'
 import { readCached, resetBlobCache, writeCached } from './cache'
-import { acquireBlob, DOWNLOAD_PAGE_BYTES, loadBlob, MAX_CONCURRENT_DOWNLOADS, resetDownloads } from './download'
+import { acquireBlob, DOWNLOAD_PAGE_BYTES, downloadName, loadBlob, MAX_CONCURRENT_DOWNLOADS, resetDownloads } from './download'
 
 const NODE = 'n'.repeat(32)
 let rpc: FakeRpc
@@ -160,5 +160,16 @@ describe('loadBlob', () => {
     resetDownloads()
     rpc.handlers['blob.get'] = () => ({ blob: { blob_id: id(2), name: 'a.png', mime: 'image/png', bytes: 100 }, offset: 0, data: '', eof: false })
     await expect(loadBlob(NODE, { blob_id: id(2) })).rejects.toThrow(/progress/)
+  })
+})
+
+describe('downloadName', () => {
+  it('images get the extension of their real type; other files keep the recorded name (minus characters that cannot be in a file name)', () => {
+    expect(downloadName({ name: 'x.html', mime: 'image/jpeg' })).toBe('x.jpg')
+    expect(downloadName({ name: 'photo', mime: 'image/webp' })).toBe('photo.webp')
+    expect(downloadName({ name: 'report.final.pdf', mime: 'application/pdf' })).toBe('report.final.pdf')
+    expect(downloadName({ name: 'page.html', mime: 'text/html' })).toBe('page.html')
+    expect(downloadName({ name: 'a/b\\c\u202etxt.exe', mime: 'application/octet-stream' })).toBe('a_b_c_txt.exe')
+    expect(downloadName({ name: '', mime: 'application/octet-stream' })).toBe('file')
   })
 })

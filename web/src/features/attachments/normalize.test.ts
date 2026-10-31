@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ImageError, jpegHasExif, MAX_IMAGE_BYTES, MAX_LONG_EDGE, nameForMime, normalizeImage, REENCODE_BYTES, sanitizeName, sniffImageMime, uploadableMimes, type DecodedImage, type ImageCodec } from './normalize'
+import { fileMime, ImageError, isImageMime, jpegHasExif, MAX_IMAGE_BYTES, MAX_LONG_EDGE, nameForMime, normalizeImage, REENCODE_BYTES, sanitizeName, sniffImageMime, uploadableMimes, type DecodedImage, type ImageCodec } from './normalize'
 
 const ALL = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 const MiB = 1024 * 1024
@@ -335,5 +335,27 @@ describe('helpers', () => {
   it('uploadableMimes intersects the agent list with the node whitelist', () => {
     expect(uploadableMimes(['image/png', 'image/bmp', 'image/webp'])).toEqual(['image/png', 'image/webp'])
     expect(uploadableMimes([])).toEqual([])
+  })
+})
+
+describe('fileMime / isImageMime', () => {
+  it('the type a file is uploaded with: lower case, no parameters, application/octet-stream when empty or not something the node takes', () => {
+    expect(fileMime('application/pdf')).toBe('application/pdf')
+    expect(fileMime('Text/Plain; charset=UTF-8')).toBe('text/plain')
+    expect(fileMime('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    expect(fileMime('')).toBe('application/octet-stream')
+    expect(fileMime('text')).toBe('application/octet-stream')
+    expect(fileMime('a b/c')).toBe('application/octet-stream')
+    expect(fileMime('*/*')).toBe('application/octet-stream')
+    expect(fileMime('.x/y')).toBe('application/octet-stream')
+    expect(fileMime('x/+y')).toBe('application/octet-stream')
+    expect(fileMime(`application/${'x'.repeat(130)}`)).toBe('application/octet-stream')
+  })
+
+  it('only png / jpeg / gif / webp count as images that can be shown inline', () => {
+    expect(['image/png', 'image/jpeg', 'image/gif', 'image/webp'].every(isImageMime)).toBe(true)
+    expect(isImageMime('image/svg+xml')).toBe(false)
+    expect(isImageMime('image/heic')).toBe(false)
+    expect(isImageMime('text/html')).toBe(false)
   })
 })

@@ -47,6 +47,8 @@ import type {
   CreateSessionParams,
   DownloadedAttachment,
   SendOptions,
+  UploadFileOptions,
+  UploadImageOptions,
   LinkBlock as SdkLinkBlock,
   Node,
   Session,
@@ -138,6 +140,10 @@ export type BlockedFields = [
 // 图片附件（ADR-35）：上传返回 daemon 的记录，原样放进 send / create；拒绝时 reason 是收窄的联合
 export type Attachments = [
   Expect<Equal<Resolved<Node['uploadImage']>, AttachmentRef>>,
+  Expect<Equal<Resolved<Node['uploadFile']>, AttachmentRef>>,
+  Expect<Equal<Parameters<Node['uploadFile']>, [bytes: Uint8Array, options: UploadFileOptions]>>,
+  Expect<Equal<UploadFileOptions['mime'], string | undefined>>,
+  Expect<UploadImageOptions extends UploadFileOptions ? true : false>,
   Expect<Equal<Resolved<Node['downloadAttachment']>, DownloadedAttachment>>,
   Expect<Equal<DownloadedAttachment['ref'], AttachmentRef>>,
   Expect<Equal<Resolved<Node['discardAttachment']>, void>>,

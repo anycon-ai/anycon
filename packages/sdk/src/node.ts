@@ -34,9 +34,12 @@ import {
 import {
   downloadAttachment,
   raceAbort,
-  uploadImage,
+  resolveFileMime,
+  resolveImageMime,
+  uploadBlob,
   type DownloadOptions,
   type DownloadedAttachment,
+  type UploadFileOptions,
   type UploadImageOptions,
 } from './attachments.js'
 import type { Client } from './client.js'
@@ -107,7 +110,7 @@ export interface CreateSessionParams {
    */
   prompt?: string
   /**
-   * 第一条消息的附件（`node.uploadImage()` 的结果，原样放进来）。有附件时 `prompt` 可以为空，照样发第一条消息。
+   * 第一条消息的附件（`node.uploadImage()` / `node.uploadFile()` 的结果，原样放进来）。有附件时 `prompt` 可以为空，照样发第一条消息。
    * daemon 的核对见 `Session.send` 的 `attachments`。
    */
   attachments?: AttachmentRef[]
@@ -421,28 +424,51 @@ export class Node extends Emitter<NodeEvents> {
   /**
    * 把一张图片传到节点（`blob.put_begin` → 512 KiB 一块、最多 2 块在途的 `blob.put_chunk` → `blob.put_end`），
    * 返回 daemon 的记录（`AttachmentRef`，含宽高），原样放进 `session.send(text, { attachments })` /
-   * `sessions.create({ attachments })`。同一个节点上的上传排队、一张一张传。
+   * `sessions.create({ attachments })`。同一个节点上的上传（图片和文件）排队、一个一个传。
    *
-   * SDK 不缩放、不重编码：调用方自己把图控制在长边 ≤ 2000 px、单张 ≤ 约 1.5 MiB（daemon 每张默认上限 10 MiB）。
+   * 只收 `image/png` / `image/jpeg` / `image/gif` / `image/webp`：`mime` 缺省而文件头认不出，或者给的不是这四种，
+   * 抛 `AnyconError('unsupported_image')`，什么都不发。别的文件用 `uploadFile()`。
+   * SDK 不缩放、不重编码：调用方自己把图控制在长边 ≤ 2000 px、单张 ≤ 约 1.5 MiB（daemon 每个文件默认上限 10 MiB）。
    * 被拒绝时抛 `AttachmentError`（`reason`：`too_large` / `quota` / `disk_full` / `hash_mismatch` / `mime_mismatch` / …）
-   * 或 `RpcError`（`unsupported`：mime 不在白名单；`busy`：这台设备同时进行的上传太多）。没传完的上传会被 `blob.discard`。
+   * 或 `RpcError`（`busy`：这台设备同时进行的上传太多）。没传完的上传会被 `blob.discard`。
    * 没上传完就不要了用 `signal`；传完了但不发了用 `discardAttachment()`（不丢的话 daemon 24 小时后回收）。
    */
   async uploadImage(bytes: Uint8Array, options: UploadImageOptions): Promise<AttachmentRef> {
+    const mime = resolveImageMime(bytes, options)
+    return this.#queueUpload(options.signal, () => uploadBlob(this, bytes, mime, options))
+  }
+
+  /**
+   * 把任意文件传到节点，和 `uploadImage()` 走同一套分块上传、同一个队列，返回 `AttachmentRef`（四种图片才有宽高）。
+   *
+   * `mime` 缺省时：文件头是四种图片之一就用它，否则按 `name` 的扩展名猜（`pdf`、`txt`、`md`、`csv`、`json`、`zip`、
+   * `py`、`rs`……），猜不出用 `application/octet-stream`。给了 `mime` 就必须是成形的 `type/subtype`（不带参数，
+   * 发出去前转小写），否则抛 `AnyconError('invalid_mime')`，什么都不发；真正的校验在 daemon。
+   * 四种图片作为图片交给模型；其它文件以 daemon 所在机器上的路径交给 agent，由 agent 用自己的工具读
+   * （Claude Code 可能先请求读取权限）。agent 收不收看 `acceptsAttachment(agent, ref.mime)`；不收的话
+   * `send()` / `sessions.create()` 得到 `RpcError`（`unsupported`）。拒绝、中止、清理同 `uploadImage()`。
+   */
+  async uploadFile(bytes: Uint8Array, options: UploadFileOptions): Promise<AttachmentRef> {
+    const mime = resolveFileMime(bytes, options)
+    return this.#queueUpload(options.signal, () => uploadBlob(this, bytes, mime, options))
+  }
+
+  /** 同一个节点上的上传排队：前一个结束（成功或失败）才开始下一个；排队时被中止的什么都不发。 */
+  async #queueUpload<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
     const prev = this.#uploadTail
     let release!: () => void
     this.#uploadTail = new Promise<void>((resolve) => (release = resolve))
     try {
-      await raceAbort(prev, options.signal)
-      return await uploadImage(this, bytes, options)
+      await raceAbort(prev, signal)
+      return await run()
     } finally {
-      // 排队时被中止：等前一张传完再放行下一张，保证同时只有一张在传
+      // 排队时被中止：等前一个传完再放行下一个，保证同时只有一个在传
       void prev.then(release)
     }
   }
 
   /**
-   * 下载一个附件（`blob.get` 按 512 KiB 分页拉）。任何已配对设备都能读任何 blob；不存在 / 文件不见了 →
+   * 下载一个附件（图片或任意文件，`blob.get` 按 512 KiB 分页拉）。任何已配对设备都能读任何 blob；不存在 / 文件不见了 →
    * `RpcError`（`not_found`，文件不见了时是 `AttachmentError`，`reason = 'blob'`）。
    */
   downloadAttachment(

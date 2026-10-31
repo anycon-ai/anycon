@@ -139,7 +139,7 @@ async fn ready_when_installed_and_logged_in() {
     assert!(c.resume && c.interrupt && c.thinking_stream && c.usage && c.structured_output && c.env);
     assert!(!c.interject);
     // 图片附件：四种，不多不少（ADR-35）
-    assert_eq!(c.attachments, vec!["image/png", "image/jpeg", "image/gif", "image/webp"]);
+    assert_eq!(c.attachments, vec!["image/png", "image/jpeg", "image/gif", "image/webp", "*/*"]);
 }
 
 #[tokio::test]

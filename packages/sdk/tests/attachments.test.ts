@@ -1,5 +1,6 @@
-// ADR-35：图片附件。覆盖 node.uploadImage（分块、在途上限、重试、排队、中止、mime 判断）、downloadAttachment /
-// discardAttachment、session.send / sessions.create 带附件，以及 daemon 的拒绝映射成带 reason 的 AttachmentError。
+// ADR-35：附件。覆盖 node.uploadImage（分块、在途上限、重试、排队、中止、mime 判断）、node.uploadFile（任意文件、
+// mime 猜测与校验、和图片共用队列）、downloadAttachment / discardAttachment、session.send / sessions.create 带附件，
+// acceptsAttachment（含通配 `ATTACHMENT_ANY_FILE`），以及 daemon 的拒绝映射成带 reason 的 AttachmentError。
 // fake daemon 的 blob.* 见 tests/fake-daemon.ts。
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -8,11 +9,15 @@ import { describe, it } from 'node:test'
 import { AnyconRpcError, type Crypto } from '@anycon/protocol'
 
 import {
+  ATTACHMENT_ANY_FILE,
   AnyconError,
   AttachmentError,
   RpcError,
+  acceptsAttachment,
   connect,
   detectImageMime,
+  guessMime,
+  normalizeMime,
   type Node,
   type StreamEvent,
 } from '../src/index.js'
@@ -106,6 +111,69 @@ describe('detectImageMime', () => {
     assert.equal(detectImageMime(ascii('<svg xmlns=')), undefined)
     assert.equal(detectImageMime(new Uint8Array()), undefined)
     assert.equal(detectImageMime(png(1, 1, 64).subarray(0, 4)), undefined)
+  })
+})
+
+describe('guessMime / normalizeMime / acceptsAttachment', () => {
+  it('guessMime：先按文件头认四种图片，再按扩展名查表，都不行是 application/octet-stream', () => {
+    const text = new TextEncoder().encode('hello')
+    // 文件头优先于扩展名
+    assert.equal(guessMime(png(1, 1, 64), 'shot.bin'), 'image/png')
+    assert.equal(guessMime(Uint8Array.of(0xff, 0xd8, 0xff, 0xe0), 'photo'), 'image/jpeg')
+    assert.equal(guessMime(text, 'report.pdf'), 'application/pdf')
+    assert.equal(guessMime(text, 'NOTES.MD'), 'text/markdown')
+    assert.equal(guessMime(text, 'data.csv'), 'text/csv')
+    assert.equal(guessMime(text, 'a.json'), 'application/json')
+    assert.equal(guessMime(text, 'conf.yml'), 'application/yaml')
+    assert.equal(guessMime(text, 'conf.yaml'), 'application/yaml')
+    assert.equal(guessMime(text, 'src.tar'), 'application/x-tar')
+    assert.equal(guessMime(text, 'src.tar.gz'), 'application/gzip')
+    assert.equal(guessMime(text, 'main.rs'), 'text/x-rust')
+    assert.equal(guessMime(text, 'main.py'), 'text/x-python')
+    assert.equal(guessMime(text, 'index.ts'), 'text/x-typescript')
+    // 不认识的扩展名、没有扩展名、点开头的文件名
+    assert.equal(guessMime(text, 'blob.xyz'), 'application/octet-stream')
+    assert.equal(guessMime(text, 'Makefile'), 'application/octet-stream')
+    assert.equal(guessMime(text, '.json'), 'application/octet-stream')
+    // 扩展名是图片但内容不是：不猜成图片（否则 put_end 会 mime_mismatch）
+    assert.equal(guessMime(text, 'fake.png'), 'application/octet-stream')
+  })
+
+  it('normalizeMime：成形的转小写，不成形的 undefined', () => {
+    assert.equal(normalizeMime('Application/PDF'), 'application/pdf')
+    assert.equal(
+      normalizeMime('application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    )
+    assert.equal(normalizeMime('image/svg+xml'), 'image/svg+xml')
+    for (const bad of [
+      '',
+      'pdf',
+      'text/',
+      '/plain',
+      'text/plain; charset=utf-8',
+      'text/plain/x',
+      ' text/plain',
+      '*/*',
+      'text/*',
+      `application/${'x'.repeat(120)}`,
+    ]) {
+      assert.equal(normalizeMime(bad), undefined, JSON.stringify(bad))
+    }
+  })
+
+  it('acceptsAttachment：点名的类型，或者通配 */*；没有 capabilities / 空列表不收', () => {
+    const images = { capabilities: { attachments: ['image/png', 'image/jpeg'] } }
+    assert.equal(acceptsAttachment(images, 'image/png'), true)
+    assert.equal(acceptsAttachment(images, 'IMAGE/JPEG'), true)
+    assert.equal(acceptsAttachment(images, 'application/pdf'), false)
+    const any = { capabilities: { attachments: ['image/png', ATTACHMENT_ANY_FILE] } }
+    assert.equal(ATTACHMENT_ANY_FILE, '*/*')
+    assert.equal(acceptsAttachment(any, 'application/pdf'), true)
+    assert.equal(acceptsAttachment(any, 'application/octet-stream'), true)
+    assert.equal(acceptsAttachment({}, 'image/png'), false)
+    assert.equal(acceptsAttachment({ capabilities: {} }, 'image/png'), false)
+    assert.equal(acceptsAttachment({ capabilities: { attachments: [] } }, 'image/png'), false)
   })
 })
 
@@ -207,6 +275,10 @@ for (const impl of cryptoImpls) {
         const ref = await node.uploadImage(jpeg(3000), { name: 'photo.jpg' })
         assert.equal(ref.mime, 'image/jpeg')
         assert.equal(paramsOf(env, 'blob.put_begin')[0]?.mime, 'image/jpeg')
+        // 给的 mime 大小写不敏感，发出去是小写
+        const upper = await node.uploadImage(png(2, 2, 100), { name: 'a.png', mime: 'IMAGE/PNG' })
+        assert.equal(upper.mime, 'image/png')
+        assert.equal(paramsOf(env, 'blob.put_begin')[1]?.mime, 'image/png')
 
         const before = env.daemon.requests.length
         await assert.rejects(
@@ -221,7 +293,7 @@ for (const impl of cryptoImpls) {
       })
     })
 
-    it('daemon 的拒绝带 reason：too_large / quota / disk_full 是 AttachmentError、不 discard；mime 不在白名单是 unsupported；文件头不符是 mime_mismatch', async () => {
+    it('daemon 的拒绝带 reason：too_large / quota / disk_full 是 AttachmentError、不 discard；uploadImage 给非图片 mime 本地抛 unsupported_image；文件头不符是 mime_mismatch', async () => {
       await withNode(await impl.load(), async (node, env) => {
         env.daemon.maxAttachmentBytes = 1000
         await rejectsAttachment(
@@ -243,14 +315,18 @@ for (const impl of cryptoImpls) {
           'disk_full',
         )
         env.daemon.blobRefusal = undefined
+        // uploadImage 只传四种图片：别的 mime 在本地挡掉（daemon 已经收任意文件了），什么都不发
+        const before = env.daemon.requests.length
         await assert.rejects(
           node.uploadImage(png(10, 10, 500), { name: 'a.bmp', mime: 'image/bmp' }),
           (err: unknown) => {
-            assert.ok(err instanceof RpcError && !(err instanceof AttachmentError))
-            assert.equal(err.code, 'unsupported')
+            assert.ok(err instanceof AnyconError)
+            assert.equal(err.code, 'unsupported_image')
+            assert.match(err.message, /uploadFile/)
             return true
           },
         )
+        assert.equal(env.daemon.requests.length, before)
         // put_begin 被拒：没有上传可丢
         assert.deepEqual(paramsOf(env, 'blob.discard'), [])
 
@@ -314,6 +390,108 @@ for (const impl of cryptoImpls) {
         const taken = paramsOf(env, 'blob.put_chunk').at(-1)?.blob_id as string
         assert.equal(env.daemon.chunkArrivals.get(`${taken}:0`), 1)
         assert.deepEqual(paramsOf(env, 'blob.put_end').at(-1), { blob_id: taken })
+      })
+    })
+
+    it('uploadFile：任意文件走同一套分块上传；mime 缺省时按文件头 / 扩展名猜，给了就转小写；非图片没有宽高、不核对文件头；downloadAttachment 原样拉回', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        env.daemon.blobChunkSize = 1024
+        const pdf = new Uint8Array(2500).fill(0x41)
+        pdf.set(ascii('%PDF-1.7\n'))
+        const progress: Array<[number, number]> = []
+        const ref = await node.uploadFile(pdf, {
+          name: 'report.pdf',
+          onProgress: (sent, total) => progress.push([sent, total]),
+        })
+        assert.deepEqual(paramsOf(env, 'blob.put_begin')[0], {
+          name: 'report.pdf',
+          mime: 'application/pdf',
+          size: pdf.length,
+          sha256: sha256(pdf),
+        })
+        assert.deepEqual(
+          paramsOf(env, 'blob.put_chunk')
+            .map((c) => c.index)
+            .toSorted(),
+          [0, 1, 2],
+        )
+        assert.deepEqual(ref, {
+          blob_id: ref.blob_id,
+          name: 'report.pdf',
+          mime: 'application/pdf',
+          bytes: pdf.length,
+        })
+        assert.deepEqual(progress.at(-1), [pdf.length, pdf.length])
+        const down = await node.downloadAttachment(ref)
+        assert.deepEqual(down.ref, ref)
+        assert.ok(Buffer.from(down.bytes).equals(Buffer.from(pdf)))
+
+        // 认不出的文件：application/octet-stream；扩展名像图片也不当图片（不会 mime_mismatch）
+        const text = new TextEncoder().encode('not really a picture')
+        assert.equal(
+          (await node.uploadFile(text, { name: 'fake.png' })).mime,
+          'application/octet-stream',
+        )
+        assert.equal((await node.uploadFile(text, { name: 'notes.md' })).mime, 'text/markdown')
+        // 内容是图片：按图片传，daemon 读出宽高
+        const img = await node.uploadFile(png(40, 30, 600), { name: 'pic' })
+        assert.equal(img.mime, 'image/png')
+        assert.equal(img.width, 40)
+        assert.equal(img.height, 30)
+        // 显式 mime 转小写；显式说成图片但内容不是 → daemon 的 mime_mismatch 照常
+        const csv = await node.uploadFile(text, { name: 'x.dat', mime: 'Text/CSV' })
+        assert.equal(csv.mime, 'text/csv')
+        assert.equal(paramsOf(env, 'blob.put_begin').at(-1)?.mime, 'text/csv')
+        await rejectsAttachment(
+          node.uploadFile(text, { name: 'x.png', mime: 'image/png' }),
+          'invalid',
+          'mime_mismatch',
+        )
+      })
+    })
+
+    it('uploadFile：不成形的 mime 本地抛 invalid_mime，什么都不发；从不抛 unsupported_image', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const before = env.daemon.requests.length
+        for (const mime of ['pdf', 'text/plain; charset=utf-8', '*/*', '']) {
+          await assert.rejects(
+            node.uploadFile(Uint8Array.of(1, 2, 3), { name: 'a', mime }),
+            (err: unknown) => {
+              assert.ok(err instanceof AnyconError, String(err))
+              assert.equal(err.code, 'invalid_mime')
+              return true
+            },
+          )
+        }
+        assert.equal(env.daemon.requests.length, before)
+        // 认不出的二进制照样能传
+        const ref = await node.uploadFile(Uint8Array.of(0, 1, 2, 3), { name: 'blob' })
+        assert.equal(ref.mime, 'application/octet-stream')
+      })
+    })
+
+    it('uploadFile 和 uploadImage 共用一个队列：同时开始，第二个的 put_begin 在第一个的 put_end 之后；带非图片附件发消息', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        env.daemon.blobChunkSize = 1024
+        env.daemon.chunkHook = () => sleep(5)
+        const [a, b] = await Promise.all([
+          node.uploadImage(png(10, 10, 5000), { name: 'one.png' }),
+          node.uploadFile(new Uint8Array(5000).fill(7), { name: 'two.zip' }),
+        ])
+        const methods = blobMethods(env)
+        assert.ok(
+          methods.lastIndexOf('blob.put_begin') > methods.indexOf('blob.put_end'),
+          methods.join(' '),
+        )
+        assert.equal(b.mime, 'application/zip')
+
+        const session = await node.sessions.create({ agent: 'mock', project: 'app' })
+        const events = await collect(session.send('see attached', { attachments: [a, b] }))
+        assert.deepEqual(paramsOf(env, 'session.send')[0]?.attachments, [a, b])
+        const user = events.find(
+          (e): e is Extract<StreamEvent, { type: 'user_message' }> => e.type === 'user_message',
+        )
+        assert.deepEqual(user?.attachments, [a, b])
       })
     })
 

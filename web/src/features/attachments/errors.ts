@@ -5,7 +5,7 @@ import { formatBytes } from '@/lib/format'
 import { RpcCallError } from '@/transport/rpcClient'
 import type { AttachNotice } from './composerUploads'
 
-/** 添加图片时要告诉用户的事（toast）。 */
+/** 添加附件时要告诉用户的事（toast）。 */
 export function describeAttachNotice(n: AttachNotice, t: TFunction): string {
   switch (n.kind) {
     case 'not_image':
@@ -32,7 +32,7 @@ export function describeAttachmentError(e: unknown, t: TFunction): string {
     if (e.code === 'invalid' && (e.reason === 'hash_mismatch' || e.reason === 'mime_mismatch' || e.reason === 'incomplete')) return t('attachment.errors.corrupt')
     if (e.code === 'invalid' && e.reason === 'finalizing') return t('attachment.errors.finalizing')
     if (e.code === 'unsupported') return t('attachment.errors.unsupported')
-    // `blob.put_begin` 的 `busy`：没被引用的图在节点上堆得太多（quota）/ 数据盘快满了（disk_full）/ 同时进行的上传太多（没有 reason）
+    // `blob.put_begin` 的 `busy`：没被引用的附件在节点上堆得太多（quota）/ 数据盘快满了（disk_full）/ 同时进行的上传太多（没有 reason）
     if (e.code === 'busy' && e.reason === 'quota') return t('attachment.errors.quota')
     if (e.code === 'busy' && e.reason === 'disk_full') return t('attachment.errors.diskFull')
     if (e.code === 'busy') return t('attachment.errors.busy')

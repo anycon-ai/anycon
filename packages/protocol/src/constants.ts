@@ -181,3 +181,6 @@ export const ERROR_CODE_NUMBERS = {
   protocol_mismatch: -32010,
   internal: -32603,
 } as const
+
+/** `AgentCapabilities.attachments` 里的通配项：agent 收任意类型的文件（ADR-35「任意文件」）。与 `crates/protocol` 的 `ATTACHMENT_ANY_FILE` 一致。 */
+export const ATTACHMENT_ANY_FILE = '*/*'

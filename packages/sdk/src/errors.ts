@@ -129,11 +129,11 @@ export class NodeBusy extends RpcError {
 /**
  * 附件（blob 通道，ADR-35）被 daemon 拒绝时的 `data.reason`（protocol.md § 5.6）：
  *
- * - `too_large`（`invalid`）：单张超过 `sessions.max_attachment_bytes`（默认 10 MiB），或一条消息的附件合计超过 20 MiB
+ * - `too_large`（`invalid`）：单个文件超过 `sessions.max_attachment_bytes`（默认 10 MiB），或一条消息的附件合计超过 20 MiB
  * - `quota`（`busy`）：完成但没被引用的 blob 全节点合计超过 1 GiB——先发出去或 `discardAttachment()` 一些
  * - `disk_full`（`busy`）：daemon 数据目录所在卷剩余空间不够
  * - `blob`（`not_found`）：消息引用的 blob 不存在（24 小时没被引用已被回收、被丢掉了，或文件不见了）——重新上传
- * - `blob_in_use`（`invalid`）：blob 已经绑定到**别的**会话的消息上——一张图只能属于一个会话，重新上传
+ * - `blob_in_use`（`invalid`）：blob 已经绑定到**别的**会话的消息上——一个附件只能属于一个会话，重新上传
  * - `in_use`（`invalid`）：`blob.discard` 一个已被消息引用的 blob
  * - `finalizing`（`invalid`）：`put_end` 已经开始收尾之后又来了块
  * - `incomplete` / `hash_mismatch` / `mime_mismatch`（`invalid`）：`put_end` 校验失败（缺块 / SHA-256 不符 / 文件头和 mime 不符）
@@ -167,7 +167,7 @@ const ATTACHMENT_CODES: ReadonlySet<string> = new Set(['invalid', 'busy', 'not_f
 
 /**
  * 附件被 daemon 拒绝（`blob.*`，或 `session.send` / `session.create` 核对附件时）。`code` 仍是稳定码
- * （`invalid` / `busy` / `not_found`），`reason` 是 `AttachmentErrorReason`，按它决定重传、换图还是提示用户。
+ * （`invalid` / `busy` / `not_found`），`reason` 是 `AttachmentErrorReason`，按它决定重传、换文件还是提示用户。
  */
 export class AttachmentError extends RpcError {
   override readonly name: string = 'AttachmentError'

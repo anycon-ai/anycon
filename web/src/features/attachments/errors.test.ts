@@ -7,20 +7,20 @@ import { describeAttachmentError, describeAttachmentFailure, describeAttachNotic
 const t = i18n.t.bind(i18n)
 
 describe('describeAttachNotice', () => {
-  it('has a sentence for every reason an image can be turned away', () => {
-    expect(describeAttachNotice({ kind: 'not_image', name: 'a.txt' }, t)).toBe('Only images can be attached. Skipped a.txt.')
-    expect(describeAttachNotice({ kind: 'max', max: 10 }, t)).toBe('You can attach up to 10 images to one message.')
+  it('has a sentence for every reason an attachment can be turned away', () => {
+    expect(describeAttachNotice({ kind: 'not_image', name: 'a.txt' }, t)).toBe('This agent only accepts images. Skipped a.txt.')
+    expect(describeAttachNotice({ kind: 'max', max: 10 }, t)).toBe('You can attach up to 10 files to one message.')
     expect(describeAttachNotice({ kind: 'undecodable', name: 'b.png' }, t)).toBe("Couldn't read b.png as an image.")
     expect(describeAttachNotice({ kind: 'too_large', name: 'c.png' }, t)).toBe('c.png is still too large after shrinking it.')
     expect(describeAttachNotice({ kind: 'unsupported_format', name: 'd.png' }, t)).toContain("doesn't accept")
-    expect(describeAttachNotice({ kind: 'total', name: 'e.png', max: 15 * 1024 * 1024 }, t)).toBe('Skipped e.png: the images on one message can add up to 15 MiB at most.')
-    expect(describeAttachNotice({ kind: 'lost', count: 1 }, t)).toBe('1 image could not be restored. Add it again.')
-    expect(describeAttachNotice({ kind: 'lost', count: 3 }, t)).toBe('3 images could not be restored. Add them again.')
+    expect(describeAttachNotice({ kind: 'total', name: 'e.png', max: 15 * 1024 * 1024 }, t)).toBe('Skipped e.png: the attachments on one message can add up to 15 MiB at most.')
+    expect(describeAttachNotice({ kind: 'lost', count: 1 }, t)).toBe('1 attachment could not be restored. Add it again.')
+    expect(describeAttachNotice({ kind: 'lost', count: 3 }, t)).toBe('3 attachments could not be restored. Add them again.')
   })
 })
 
 describe('describeAttachmentFailure', () => {
-  it('has a sentence for each way the node can turn a message down because of its images', () => {
+  it('has a sentence for each way the node can turn a message down because of its attachments', () => {
     expect(describeAttachmentFailure('blob_expired', t)).toContain('no longer on the node')
     expect(describeAttachmentFailure('blob_in_use', t)).toContain('already belong to another session')
     expect(describeAttachmentFailure('attachments_too_large', t)).toContain('add up to more than the node accepts')
@@ -34,7 +34,7 @@ describe('describeAttachmentError', () => {
     expect(describeAttachmentError(rpcError('invalid', undefined, 'too_large'), t)).toContain('larger than this node accepts')
     expect(describeAttachmentError(rpcError('invalid', undefined, 'hash_mismatch'), t)).toContain('damaged')
     expect(describeAttachmentError(rpcError('invalid', undefined, 'mime_mismatch'), t)).toContain('damaged')
-    expect(describeAttachmentError(rpcError('unsupported'), t)).toContain('format')
+    expect(describeAttachmentError(rpcError('unsupported'), t)).toContain('file type')
     expect(describeAttachmentError(rpcError('busy'), t)).toContain('busy')
     expect(describeAttachmentError(rpcError('not_found'), t)).toContain('expired')
     // blob.put_begin 的 busy 有三种：同时进行的上传太多（没有 reason）、没发送的图堆太多、数据盘快满了
@@ -49,12 +49,12 @@ describe('describeAttachmentError', () => {
   it('speaks Chinese when the UI does', async () => {
     await i18n.changeLanguage('zh')
     try {
-      expect(describeAttachmentError(rpcError('invalid', undefined, 'too_large'), t)).toBe('图片超过了这个节点接受的大小。')
-      expect(describeAttachNotice({ kind: 'max', max: 10 }, t)).toBe('一条消息最多带 10 张图片。')
-      expect(describeAttachNotice({ kind: 'total', name: 'e.png', max: 15 * 1024 * 1024 }, t)).toBe('已忽略 e.png：一条消息的图片合计最多 15 MiB。')
-      expect(describeAttachNotice({ kind: 'lost', count: 2 }, t)).toBe('有 2 张图片没能恢复，请重新添加。')
-      expect(describeAttachmentError(rpcError('busy', undefined, 'quota'), t)).toBe('节点上堆着太多还没发送的图片。先发送或移除一些，或者稍后再试。')
-      expect(describeAttachmentError(rpcError('busy', undefined, 'disk_full'), t)).toBe('节点的磁盘快满了，暂时收不了更多图片。')
+      expect(describeAttachmentError(rpcError('invalid', undefined, 'too_large'), t)).toBe('文件超过了这个节点接受的大小。')
+      expect(describeAttachNotice({ kind: 'max', max: 10 }, t)).toBe('一条消息最多带 10 个附件。')
+      expect(describeAttachNotice({ kind: 'total', name: 'e.png', max: 15 * 1024 * 1024 }, t)).toBe('已忽略 e.png：一条消息的附件合计最多 15 MiB。')
+      expect(describeAttachNotice({ kind: 'lost', count: 2 }, t)).toBe('有 2 个附件没能恢复，请重新添加。')
+      expect(describeAttachmentError(rpcError('busy', undefined, 'quota'), t)).toBe('节点上堆着太多还没发送的附件。先发送或移除一些，或者稍后再试。')
+      expect(describeAttachmentError(rpcError('busy', undefined, 'disk_full'), t)).toBe('节点的磁盘快满了，暂时收不了更多附件。')
       expect(describeAttachmentError(rpcError('invalid', undefined, 'finalizing'), t)).toBe('节点正在完成这次上传，请重试。')
       expect(describeAttachmentFailure('blob_in_use', t)).toContain('已经属于另一个会话')
       expect(describeAttachmentFailure('attachments_too_large', t)).toContain('加起来超过了节点接受的大小')

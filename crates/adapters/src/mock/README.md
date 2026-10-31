@@ -18,7 +18,7 @@
 | 模型 | `mock-large`（默认；thinking `low` / `high`，默认 `high`）、`mock-small`（无 thinking）；`config.additional_models` 追加在后面（按 id 去重），**探测得到的，`spawn` / `set_settings` 也能真的选用**（用它自己的 `thinking` 选项和默认值） |
 | 权限模式 | `ask`（normal，默认）、`plan`（safe）、`yolo`（dangerous） |
 | 选项 | `verbose`（bool，默认 false） |
-| capabilities | `resume`、`interrupt`、`thinking_stream`、`usage` 为 true；`interject`、`env` 等为 false；`attachments` = `["image/png", "image/jpeg", "image/gif", "image/webp"]`（ADR-35） |
+| capabilities | `resume`、`interrupt`、`thinking_stream`、`usage` 为 true；`interject`、`env` 等为 false；`attachments` = `["image/png", "image/jpeg", "image/gif", "image/webp", "*/*"]`（ADR-35） |
 | `allow_custom_model` | false |
 
 ## 一个 turn 的事件序列
@@ -149,7 +149,7 @@ kind=`other` 的权限请求，`request_id = "<session_id>-perm-<n>"`（和其�
 
 ### 附件（步骤 2 的一部分）
 
-`capabilities.attachments` 是四种图片 mime，daemon 据此放行；mock 自己不再按 mime 拦（不认识的类型照样回显）。消息带附件时多出来的那个 `text_delta` 是：
+`capabilities.attachments` 是四种图片 mime 加 `*/*`（任意文件），daemon 据此放行；mock 自己不按 mime 拦（不认识的类型照样回显）。消息带附件时多出来的那个 `text_delta` 是：
 
 ```
  Attachments: <name> (<mime>, <bytes> bytes, sha256 <前 12 位小写 hex>); <name2> (<mime2>, …)

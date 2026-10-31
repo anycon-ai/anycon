@@ -64,7 +64,7 @@ async with anycon.connect(hub, node="mac-mini") as node:
     session = await node.sessions.create(..., on_permission=anycon.policies.allow_reads_deny_rest)
     result = await session.run("把 README 翻译成英文")   # 发送 + 收完 + 返回最终文本
 
-    ref = await node.upload_image(png_bytes, name="shot.png")    # blob.* 分块上传 → AttachmentRef（见 § 3.2「图片附件」）
+    ref = await node.upload_image(png_bytes, name="shot.png")    # blob.* 分块上传 → AttachmentRef（见 § 3.2「附件」；任意文件用 upload_file）
     async for ev in session.send("这张图里是什么？", attachments=[ref]): ...
 
     await session.set_settings(model="sonnet")          # 下一 turn 生效
@@ -122,19 +122,22 @@ await node.worktrees.list({ project: "app" }); // workspace.worktrees；node.wor
 
 `sessions.create` 不带 `workspace` 就是在项目目录本身工作（线路缺省 `local`），SDK 不替调用方读节点的 `worktree.default`。`create` 现在也接受 `prompt`（创建后立即发第一条消息）：`message_id` 由 SDK 生成 uuid v4，也可以用 `messageId` 自己给——它是 `create` 的幂等键，超时重试时传同一个，daemon 返回第一次创建的会话；空串 `prompt` 当作没有。`create({ prompt })` 不替调用方收第一个 turn：用 `s.events({ fromSeq: 0 })` 从头看（补历史期间到达的实时事件先扣住，补完按 seq 合并，消费者看到的 seq 严格递增、不重复）。`node.worktrees.list()` 直接返回 `WorktreeInfo[]`（和 `projects.list()` 一样解包）。`Session.worktree` 随 `session.changed` 更新，通知里不带 `worktree` 时保持原值。Python 的 API 形状相同（`workspace={"mode": "worktree"}`、`git_status(include_pr=True)`…），随 Python SDK 一起实现。
 
-**图片附件**（[ADR-35](../decisions.md#adr-35-图片附件经-blob-通道传到-daemon消息只带引用)，[protocol.md § 5.6](../protocol.md#56-附件--blobadr-35)）：图片先经 blob 通道传到 daemon，消息只带引用。
+**附件**（[ADR-35](../decisions.md#adr-35-附件经-blob-通道传到-daemon消息只带引用)，[protocol.md § 5.6](../protocol.md#56-附件--blobadr-35)）：图片或任意文件先经 blob 通道传到 daemon，消息只带引用。图片作为图片交给模型；其它文件以 daemon 上的路径交给 agent，由 agent 用自己的工具读（Claude Code 读它可能要审批）。
 
 ```ts
 const ref = await node.uploadImage(bytes, { name: 'shot.png' })          // → AttachmentRef { blob_id, name, mime, bytes, width?, height? }
+const doc = await node.uploadFile(pdfBytes, { name: 'spec.pdf' })         // 任意文件；不是图片的没有 width / height
+if (acceptsAttachment(agentInfo, doc.mime)) { … }                         // agent 点名了这个 mime 或者有 `*/*`
 for await (const ev of session.send('这张图里是什么？', { attachments: [ref] })) { … }   // 有附件时文字可以是空串
 await node.sessions.create({ project: 'app', agent: 'claude-code', attachments: [ref] })   // 第一条消息只有图也行
 const { ref: meta, bytes: data } = await node.downloadAttachment(userMessage.attachments[0])   // 历史里的图（blob.get 分页）
 await node.discardAttachment(ref)                                         // 传了但不发（不丢的话 daemon 24 小时后回收）
 ```
 
+- `uploadFile(bytes, { name, mime?, signal?, onProgress?, requestTimeoutMs? })`：任意文件。`mime` 缺省时先按文件头认四种图片，再按扩展名查一张常见类型的小表（`pdf` `txt` `md` `csv` `json` `html` `yaml` `zip` `gz` 和常见源码等；四种图片的扩展名不在表里——图片只认文件头），都不中就是 `application/octet-stream`。给了 `mime` 时先检查格式（`type/subtype`、RFC 6838 的字符、不带参数、≤ 127 字节，转小写），不对抛 `AnyconError('invalid_mime')`、什么都不发。从不抛 `unsupported_image`。上传流程和 `uploadImage` 相同，两者共用一条队列。
 - `uploadImage(bytes, { name, mime?, signal?, onProgress?, requestTimeoutMs? })`：`blob.put_begin` → 按 daemon 给的 `chunk_size`（512 KiB）切块、**最多 2 块在途**的 `blob.put_chunk` → `blob.put_end`，返回 daemon 的记录（宽高由 daemon 读文件头得出），原样放进 `send` / `create`。同一个 `Node` 上的上传**排队、一次一张**（ADR-35「2026-10 修订」：每节点 1 张在上传、2 块在途，「允许」「停止」最多排在约 1.4 MB 后面）。超时（每块默认 90 秒）/ 掉线的块各自重试 2 次（掉线时先等节点重新上线），daemon 的明确答复不重试（块答 `finalizing` 说明 `put_end` 已经接手，SDK 不再发块、直接 `put_end` 拿结果）；失败、或 `signal` 中止时尽力 `blob.discard`。`onProgress(sent, total)` 从 `(0, total)` 开始、以 `(total, total)` 结束。
 - **SDK 不缩放、不重编码图片**（Node 没有通用的图片编解码，浏览器的规整规则在 Web 里）：调用方自己把图控制在**长边 ≤ 2000 px、单张 ≤ 约 1.5 MiB**。硬上限是 daemon 的每张 10 MiB（`sessions.max_attachment_bytes`）、每条消息至多 20 张且合计 ≤ 20 MiB；Claude 单张 base64 后约 5 MB、一次请求超过 20 张时每张长边 ≤ 2000 px，而且图一旦进了 Claude Code 的会话历史，之后每个 turn 都会带着它重发——大图很快会让会话超过请求体上限。
-- daemon 是唯一的校验点：SDK 只在 `mime` 缺省时按文件头（magic bytes）判断类型，认不出抛 `AnyconError('unsupported_image')`、什么都不发；名字、大小、白名单、SHA-256、文件头都由 daemon 判。agent 收不收看 `AgentInfo.capabilities.attachments`，不收 → `RpcError`（`unsupported`）。
+- daemon 是唯一的校验点：`uploadImage` 在 `mime` 缺省时按文件头（magic bytes）判断类型，认不出、或者给的 `mime` 不是四种图片之一，抛 `AnyconError('unsupported_image')`、什么都不发（daemon 现在什么类型都收，不在本地拦的话一张 BMP 会悄悄变成普通文件）；名字、大小、SHA-256、图片的文件头都由 daemon 判。agent 收不收看 `AgentInfo.capabilities.attachments`（点名了这个 mime，或者有 `*/*`；`acceptsAttachment()` 就是这条规则），不收 → `RpcError`（`unsupported`）。
 - 附件被拒抛 **`AttachmentError`**（`RpcError` 的子类，`code` 不变，`reason` 收窄成 `AttachmentErrorReason`）：`too_large`（`invalid`：单张或每条消息合计超限）、`quota`（`busy`：没被引用的 blob 全节点超过 1 GiB——先发出去或 `discardAttachment()`）、`disk_full`（`busy`：daemon 的数据盘快满了）、`blob`（`not_found`：引用的 blob 已被回收 / 丢掉——重新上传）、`blob_in_use`（`invalid`：已经用在**别的**会话里，一张图只属于一个会话）、`in_use`（`invalid`：`discardAttachment` 一个已被引用的）、`finalizing` / `incomplete` / `hash_mismatch` / `mime_mismatch`（`invalid`：`put_end` 的收尾和校验）。没有 `reason` 的 `busy`（这台设备同时进行的上传超过 8 个）、`unsupported` 仍是普通 `RpcError`。
 - `send` 的 `messageId` 幂等：重发同一条消息时附件也要一样（否则 `invalid`）；`create` 带 `messageId` 的重试先按幂等返回第一次建好的会话，不会因为附件已经绑定而得到 `blob_in_use`。
 

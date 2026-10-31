@@ -42,8 +42,9 @@ pub const MAX_MODEL_LEN: usize = 200;
 pub const MAX_EFFORT_LEN: usize = 32;
 /// `system_prompt_append` 最大字节数。
 pub const MAX_SYSTEM_PROMPT_APPEND_BYTES: usize = 32 * 1024;
-/// 支持的图片附件类型（和 claude-code / mock 同一份，见 [`crate::common::IMAGE_MIMES`]）。
+/// 作为图片交给模型的附件类型（和 claude-code / mock 同一份，见 [`crate::common::IMAGE_MIMES`]）。
 pub use crate::common::IMAGE_MIMES;
+use crate::common::{file_reference_text, is_inline_image};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sandbox {
@@ -430,20 +431,26 @@ pub fn instructions_notice(new: &Option<String>) -> Value {
     json!({ "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": text }] })
 }
 
-/// 用户输入 → `turn/start.input` / `turn/steer.input`。图片走 `localImage`（daemon 已落盘，路径与 `attachments` 一一对应）。
+/// 用户输入 → `turn/start.input` / `turn/steer.input`（daemon 已落盘，路径与 `attachments` 一一对应）。
+/// 其它文件的路径清单（[`file_reference_text`]）是第一项文字，然后是用户的文字（为空就不放），图片走 `localImage` 跟在后面。
+/// Codex 的沙箱只限制写，读 daemon 数据目录里的文件不需要审批。
 pub fn input_items(input: &UserInput) -> Result<Vec<Value>> {
     if input.attachments.len() != input.attachment_paths.len() {
         return Err(AdapterError::Protocol("attachments and attachment_paths differ in length".into()));
     }
     let mut items = Vec::new();
+    if let Some(files) =
+        file_reference_text(input.attachments.iter().zip(input.attachment_paths.iter().map(|p| p.as_path())))
+    {
+        items.push(json!({ "type": "text", "text": files }));
+    }
     if !input.content.is_empty() || input.attachments.is_empty() {
         items.push(json!({ "type": "text", "text": input.content }));
     }
     for (a, path) in input.attachments.iter().zip(&input.attachment_paths) {
-        if !IMAGE_MIMES.contains(&a.mime.as_str()) {
-            return Err(AdapterError::Unsupported(format!("Codex cannot take {} attachments ({})", a.mime, a.name)));
+        if is_inline_image(&a.mime) {
+            items.push(json!({ "type": "localImage", "path": path.to_string_lossy() }));
         }
-        items.push(json!({ "type": "localImage", "path": path.to_string_lossy() }));
     }
     Ok(items)
 }
@@ -851,19 +858,39 @@ mod tests {
         let empty =
             UserInput { content: String::new(), attachments: vec![], attachment_paths: vec![], ..input.clone() };
         assert_eq!(input_items(&empty).unwrap(), vec![json!({"type": "text", "text": ""})]);
-        // 非图片
-        let pdf = UserInput {
-            attachments: vec![AttachmentRef {
-                blob_id: "b".into(),
-                name: "a.pdf".into(),
-                mime: "application/pdf".into(),
-                bytes: 3,
-                width: None,
-                height: None,
-            }],
+        // 非图片：路径清单在前，然后是文字和图片
+        let pdf_ref = AttachmentRef {
+            blob_id: "c".into(),
+            name: "a.pdf".into(),
+            mime: "application/pdf".into(),
+            bytes: 3,
+            width: None,
+            height: None,
+        };
+        let mixed = UserInput {
+            attachments: vec![input.attachments[0].clone(), pdf_ref.clone()],
+            attachment_paths: vec!["/tmp/a.png".into(), "/tmp/c.pdf".into()],
             ..input.clone()
         };
-        assert!(matches!(input_items(&pdf), Err(AdapterError::Unsupported(_))));
+        let items = input_items(&mixed).unwrap();
+        assert_eq!(items.len(), 3);
+        let listed = items[0]["text"].as_str().unwrap();
+        assert!(listed.contains("- a.pdf (application/pdf, 3 bytes): /tmp/c.pdf"), "{listed}");
+        assert!(!listed.contains("a.png"), "{listed}");
+        assert_eq!(
+            items[1..],
+            [json!({"type": "text", "text": "look"}), json!({"type": "localImage", "path": "/tmp/a.png"})]
+        );
+        // 只有文件：只有路径清单
+        let only_pdf = UserInput {
+            content: String::new(),
+            attachments: vec![pdf_ref],
+            attachment_paths: vec!["/tmp/c.pdf".into()],
+            ..input.clone()
+        };
+        let items = input_items(&only_pdf).unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0]["text"].as_str().unwrap().starts_with("The user attached a file."));
         // 路径数量对不上
         let bad = UserInput { attachment_paths: vec![], ..input };
         assert!(matches!(input_items(&bad), Err(AdapterError::Protocol(_))));

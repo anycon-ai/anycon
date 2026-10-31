@@ -163,7 +163,7 @@ impl Adapter for MockAdapter {
             resume: true,
             interrupt: true,
             interject: false,
-            attachments: crate::common::IMAGE_MIMES.iter().map(|m| m.to_string()).collect(),
+            attachments: crate::common::accepted_attachments(),
             thinking_stream: true,
             usage: true,
             structured_output: false,
@@ -244,6 +244,6 @@ mod tests {
         let c = &info.capabilities;
         assert!(c.resume && c.interrupt && c.thinking_stream && c.usage);
         assert!(!c.interject);
-        assert_eq!(c.attachments, vec!["image/png", "image/jpeg", "image/gif", "image/webp"]);
+        assert_eq!(c.attachments, vec!["image/png", "image/jpeg", "image/gif", "image/webp", "*/*"]);
     }
 }

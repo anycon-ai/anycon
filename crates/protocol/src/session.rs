@@ -368,7 +368,7 @@ pub struct AttachmentRef {
     pub name: String,
     pub mime: String,
     pub bytes: u64,
-    /// 图片像素宽高（daemon 读文件头得出；读不出来时省略）。客户端用来在下载前占好位置。
+    /// 图片像素宽高（四种图片类型由 daemon 读文件头得出；读不出来、或者不是图片时省略）。客户端用来在下载前占好位置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -389,7 +389,7 @@ pub struct SessionCreateParams {
     pub message_id: Option<String>,
     #[serde(default)]
     pub settings: SessionSettings,
-    /// 第一条消息的附件（`blob.put_end` 的结果）。agent 的 `capabilities.attachments` 不含其 mime → `unsupported`。
+    /// 第一条消息的附件（`blob.put_end` 的结果）。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `*/*`）→ `unsupported`。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AttachmentRef>,
     /// 在哪里工作；缺省 = `local`（ADR-34）。
@@ -404,7 +404,7 @@ pub struct SessionSendParams {
     pub message_id: String,
     /// 带了附件时可以为空串。
     pub content: String,
-    /// `blob.put_end` 的结果，每条至多 20 个。agent 的 `capabilities.attachments` 不含其 mime → `unsupported`。
+    /// `blob.put_end` 的结果，每条至多 20 个。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `*/*`）→ `unsupported`。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AttachmentRef>,
 }

@@ -212,3 +212,88 @@ describe('image viewer', () => {
     await waitFor(() => expect(screen.queryByTestId('attachment-viewer')).toBeNull())
   })
 })
+
+describe('files (anything that is not a png / jpeg / gif / webp image)', () => {
+  const file = (n: number, over: Partial<AttachmentRef> = {}): AttachmentRef => ({ blob_id: `c${n.toString(16).padStart(31, '0')}`, name: `doc${n}.pdf`, mime: 'application/pdf', bytes: 600, ...over })
+  /** 截下 `<a download>` 的点击（jsdom 不会真的下载），记下名字和 href 对应的 Blob。 */
+  function captureDownloads() {
+    const blobs = new Map<string, Blob>()
+    const created = vi.spyOn(URL, 'createObjectURL').mockImplementation((b: Blob | MediaSource) => {
+      const url = `blob:test/${blobs.size + 1}`
+      blobs.set(url, b as Blob)
+      return url
+    })
+    const clicks: { name: string; blob: Blob | undefined }[] = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push({ name: this.download, blob: blobs.get(this.getAttribute('href') ?? '') })
+    })
+    return { created, clicks }
+  }
+
+  it('shows a file chip with the name and the size, and fetches nothing when it scrolls into view', () => {
+    serve()
+    render(<MessageAttachments nodeId={NODE} attachments={[file(1, { bytes: 123_456 })]} />)
+    const chip = screen.getByTestId('message-attachment')
+    expect(chip).toHaveAttribute('data-kind', 'file')
+    expect(chip).toHaveTextContent('doc1.pdf')
+    expect(chip).toHaveTextContent('121 KiB')
+    act(() => io.intersect())
+    expect(rpc.calls).toEqual([])
+    expect(screen.queryByRole('img')).toBeNull()
+  })
+
+  it('clicking downloads it: the bytes are pulled with blob.get (and cached), then saved under the recorded name as application/octet-stream', async () => {
+    const stats = serve({ page: 250 })
+    const { clicks } = captureDownloads()
+    render(<MessageAttachments nodeId={NODE} attachments={[file(1, { name: 'report.final.pdf' })]} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Download report.final.pdf' }))
+    await waitFor(() => expect(clicks).toHaveLength(1))
+    expect(stats.calls).toEqual(['1@0', '1@250', '1@500'])
+    expect(clicks[0]!.name).toBe('report.final.pdf')
+    expect(clicks[0]!.blob!.type).toBe('application/octet-stream')
+    expect(new Uint8Array(await clicks[0]!.blob!.arrayBuffer())).toEqual(content(1))
+    expect(await readCached(file(1).blob_id)).not.toBeNull()
+    expect(screen.getByTestId('message-attachment')).toHaveAttribute('data-state', 'idle')
+  })
+
+  it('never shows HTML or SVG inline, and never hands them to the browser with their own type', async () => {
+    const atts = [file(1, { name: 'page.html', mime: 'text/html' }), file(2, { name: 'logo.svg', mime: 'image/svg+xml' })]
+    for (const a of atts) await writeCached(a.blob_id, content(1), a.mime)
+    const { created, clicks } = captureDownloads()
+    render(<MessageAttachments nodeId={NODE} attachments={atts} />)
+    act(() => io.intersect())
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(created).not.toHaveBeenCalled()
+    expect(screen.getAllByTestId('message-attachment').map((c) => c.getAttribute('data-kind'))).toEqual(['file', 'file'])
+    await userEvent.click(screen.getByRole('button', { name: 'Download page.html' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Download logo.svg' }))
+    await waitFor(() => expect(clicks).toHaveLength(2))
+    expect(clicks.map((c) => [c.name, c.blob!.type])).toEqual([
+      ['page.html', 'application/octet-stream'],
+      ['logo.svg', 'application/octet-stream'],
+    ])
+  })
+
+  it('a failed download says so on the chip, and clicking again tries again', async () => {
+    rpc.handlers['blob.get'] = () => {
+      throw rpcError('not_found', undefined, 'blob')
+    }
+    const { clicks } = captureDownloads()
+    render(<MessageAttachments nodeId={NODE} attachments={[file(1)]} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Download doc1.pdf' }))
+    expect(await screen.findByTestId('message-attachment-error')).toHaveTextContent("Couldn't download. Click to try again.")
+    expect(screen.getByTestId('message-attachment')).toHaveAttribute('data-state', 'error')
+    serve()
+    await userEvent.click(screen.getByRole('button', { name: 'Download doc1.pdf' }))
+    await waitFor(() => expect(clicks).toHaveLength(1))
+    expect(screen.queryByTestId('message-attachment-error')).toBeNull()
+  })
+
+  it('an image the node recorded under one of the four raster types still shows inline, next to the files', async () => {
+    await writeCached(ref(1).blob_id, content(1), 'image/png')
+    render(<MessageAttachments nodeId={NODE} attachments={[ref(1), file(2)]} />)
+    act(() => io.intersect())
+    await screen.findByRole('img', { name: 'pic1.png' })
+    expect(screen.getAllByTestId('message-attachment').map((c) => c.getAttribute('data-kind'))).toEqual(['image', 'file'])
+  })
+})

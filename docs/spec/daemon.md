@@ -160,7 +160,7 @@ AgentInfo {
     resume:            bool            // 进程退出后能否续接
     interrupt:         bool
     interject:         bool            // turn 进行中能否插话
-    attachments:       [ "image/png", "image/jpeg", "image/gif", "image/webp" ]   // 收哪些附件；空 = 不收（§ 7.10）
+    attachments:       [ "image/png", "image/jpeg", "image/gif", "image/webp", "*/*" ]   // 收哪些附件：点名的图片作为图片交给模型，`*/*` = 任意文件（以路径交给 agent）；空 = 不收（§ 7.10）
     thinking_stream:   bool            // 会不会发 thinking_delta
     usage:             bool            // turn_done 带不带 usage
     structured_output: bool
@@ -302,7 +302,7 @@ ConfigOption {
 | `env` | 子进程环境 | 子进程环境（v0.1 每会话一个 app-server 进程，ADR-26 修订） | 子进程环境（进程按 agent 共享时不支持，adapter 按实际情况声明） |
 | `system_prompt_append` | `--append-system-prompt` | 新会话 `thread/start { developerInstructions }`；之后改动用 `thread/inject_items` 追加一条 developer 消息，立即生效（`thread/resume` 会忽略 `developerInstructions`，以 rollout 里的为准；旧指令留在历史里） | 不支持 |
 | `max_turns` / `max_budget_usd` | `--max-turns` / `--max-budget-usd` | 不支持（带了 → `invalid_settings`） | 不支持 |
-| 附件 | stdin 消息 `content` 数组里的 `image` block（`source: { type: "base64", media_type, data }`，adapter 读 daemon 的文件；图在前、文字在后） | `turn/start.input` / `turn/steer.input` 的 `{ type: "localImage", path }`（daemon 的文件，扩展名与 mime 一致） | `session/prompt` 的 image ContentBlock（`promptCapabilities.image` 为 true 才行） |
+| 附件 | 图片：stdin 消息 `content` 数组里的 `image` block（`source: { type: "base64", media_type, data }`，adapter 读 daemon 的文件）；其它文件：一个列出名字、类型、大小和 daemon 上绝对路径的 `text` block，Claude 用 Read 等工具自己读（workspace 之外，可能要审批）。顺序：图、文件清单、用户文字 | 图片：`turn/start.input` / `turn/steer.input` 的 `{ type: "localImage", path }`（daemon 的文件，扩展名与 mime 一致）；其它文件：同样的路径清单作为第一项 `text`（沙箱只限制写，读不用审批） | `session/prompt` 的 image ContentBlock（`promptCapabilities.image` 为 true 才行） |
 | 结构化输出 | `--json-schema` | `turn/start { outputSchema }` 存在，但 v0.1 的 `SessionSettings` 没有东西喂它，`capabilities.structured_output = false` | 不支持 |
 
 ### 6.4 会话中修改
@@ -387,7 +387,7 @@ Codex：一个**从来没有记录过用户消息**的 thread 没有 rollout（�
 
 ### 7.7 标题
 
-- 默认取第一条用户消息前 60 个字符（截到词边界）；只有图片没有文字的消息用 `[image] <第一个附件名>`（多张时加 ` (+N)`），会话列表的预览同理
+- 默认取第一条用户消息前 60 个字符（截到词边界）；只有附件没有文字的消息用 `[image] <第一个附件名>`（多个时加 ` (+N)`；附件里有不是图片的时候是 `[file]`），会话列表的预览同理
 - `session.rename` 改，事件 `title_changed`
 - daemon 不调模型生成标题（§ 1）
 
@@ -412,17 +412,17 @@ Codex：一个**从来没有记录过用户消息**的 thread 没有 rollout（�
 - 为什么：传输层会分片（[ADR-30](../decisions.md#adr-30-内层分片与大小上限)），所以不再有「超过 hub 上限就丢」的问题；按字节分页是为了让每页大小有界——一页 1000 条带大输出的事件能有几 MiB，手机上解析、渲染、解密都吃力
 - `session.list` 没有字节分页：客户端应当传 `limit`（不传时返回全部，会话很多时响应会很大，靠传输层分片兜底）
 
-### 7.10 附件（[ADR-35](../decisions.md#adr-35-图片附件经-blob-通道传到-daemon消息只带引用)）
+### 7.10 附件（[ADR-35](../decisions.md#adr-35-附件经-blob-通道传到-daemon消息只带引用)）
 
 方法和错误码见 [protocol.md § 5.6](../protocol.md#56-附件--blobadr-35)。daemon 这边：
 
-- **存放**：`<数据目录>/blobs/<blob_id>.<ext>`（`ext` 按 mime：`png` `jpg` `gif` `webp`；Codex 按扩展名判断类型），上传中的写 `blobs/tmp/<blob_id>.part`；目录 0700、文件 0600。`blob_id` 是 32 位小写 hex，每个 RPC 入口都先按这个格式校验（它会进路径）。`put_end` 校验通过后 rename 成正式文件、写 `blobs` 表（`session_id` 为空 = 还没被引用；`path` 记的是 `blobs/` 下的文件名，不是绝对路径）。启动时清掉 `blobs/tmp/`，并删掉 `blobs/` 里没有记录的 `<blob_id>.<ext>` 文件（崩溃留下的）；记录在、文件不在的 blob 按不存在处理（`not_found` / `blob`）
-- **上传状态**在内存里（daemon 重启会丢掉进行中的上传）：`blob_id` → 期望大小、mime、name、sha256、已收的块、发起设备、最后活动时间。同一设备同时进行中的上传 ≤ 8；10 分钟没有新块的上传作废（删 `.part`）。`put_end` 先在锁内把上传标成「收尾中」（之后的 `put_chunk` → `invalid` / `finalizing`），等已经在写的块写完（每个上传一把读写锁：块拿读锁、收尾拿写锁），再算整个文件的 SHA-256、读文件头核对 mime（只是前缀比对，不解码：PNG `89 50 4E 47 0D 0A 1A 0A`、JPEG `FF D8 FF`、GIF `GIF87a` / `GIF89a`、WebP `RIFF????WEBP`），并尽量读出宽高（读不出来就省略，不算错）；并发的第二个 `put_end` 等第一个的结果。名字的扩展名和 mime 对不上时补上正确的扩展名
+- **存放**：`<数据目录>/blobs/<blob_id>.<ext>`（图片的 `ext` 按 mime：`png` `jpg` `gif` `webp`，Codex 按扩展名判断类型；其它文件取名字的扩展名，1–16 个 ASCII 字母数字、转小写，否则 `bin`——agent 的工具靠扩展名认类型），上传中的写 `blobs/tmp/<blob_id>.part`；目录 0700、文件 0600。`blob_id` 是 32 位小写 hex，每个 RPC 入口都先按这个格式校验（它会进路径）。`put_end` 校验通过后 rename 成正式文件、写 `blobs` 表（`session_id` 为空 = 还没被引用；`path` 记的是 `blobs/` 下的文件名，不是绝对路径）。启动时清掉 `blobs/tmp/`，并删掉 `blobs/` 里没有记录的 `<blob_id>.<ext>` 文件（崩溃留下的）；记录在、文件不在的 blob 按不存在处理（`not_found` / `blob`）
+- **上传状态**在内存里（daemon 重启会丢掉进行中的上传）：`blob_id` → 期望大小、mime、name、sha256、已收的块、发起设备、最后活动时间。同一设备同时进行中的上传 ≤ 8；10 分钟没有新块的上传作废（删 `.part`）。`put_end` 先在锁内把上传标成「收尾中」（之后的 `put_chunk` → `invalid` / `finalizing`），等已经在写的块写完（每个上传一把读写锁：块拿读锁、收尾拿写锁），再算整个文件的 SHA-256；四种图片再读文件头核对 mime（只是前缀比对，不解码：PNG `89 50 4E 47 0D 0A 1A 0A`、JPEG `FF D8 FF`、GIF `GIF87a` / `GIF89a`、WebP `RIFF????WEBP`），并尽量读出宽高（读不出来就省略，不算错），其它类型不看内容；并发的第二个 `put_end` 等第一个的结果。图片名字的扩展名和 mime 对不上时补上正确的扩展名
 - **发送**：`session.send` / `session.create` 的每个 `AttachmentRef` 按库里的记录核对（规则见 protocol.md § 5.6），事件 `user_message.attachments` 写 daemon 记录的元数据；消息被接受（写进事件流）时把 blob 绑定到会话（`UPDATE … WHERE session_id IS NULL OR session_id = 本会话`）。幂等重试：同一个 `message_id` 再来时附件的 `blob_id` 列表也要一致，否则 `invalid`
-- **名字**：`put_begin` 拒绝控制字符（Cc）、双向控制符（U+200E U+200F U+202A–U+202E U+2066–U+2069）和 U+2028 / U+2029；`put_end` 记录的名字扩展名和 mime 对不上时补 `.<ext>`（`png` `jpg` `gif` `webp`；`photo` → `photo.png`，`x.html` → `x.html.jpg`，超过 255 字节先截断主名）。客户端要原样使用 `put_end` 返回的 `AttachmentRef`
-- **交给 adapter**：`UserInput.attachments` 是这条（或合并后的几条）消息的附件，`attachment_paths` 是对应的正式文件路径，一一对应；积压合并（§ 7.5）时按消息顺序拼接；插话同样带附件
+- **名字**：`put_begin` 拒绝控制字符（Cc）、双向控制符（U+200E U+200F U+202A–U+202E U+2066–U+2069）和 U+2028 / U+2029；`put_end` 记录的图片名字扩展名和 mime 对不上时补 `.<ext>`（其它类型原样记录；`png` `jpg` `gif` `webp`；`photo` → `photo.png`，`x.html` → `x.html.jpg`，超过 255 字节先截断主名）。客户端要原样使用 `put_end` 返回的 `AttachmentRef`
+- **交给 adapter**：`UserInput.attachments` 是这条（或合并后的几条）消息的附件，`attachment_paths` 是对应的正式文件路径，一一对应；积压合并（§ 7.5）时按消息顺序拼接；插话同样带附件。四种图片之外的附件 adapter 不读，只把路径告诉 agent（§ 6 的表、ADR-35「任意文件」）；会话删除后这些路径就不在了
 - **回收**：每小时的清理任务删掉 24 小时前完成、仍没被引用的 blob（文件和行）；`session.delete` 删会话的 blob。`blob.discard` 只删没被引用的
-- **数量**：一条消息 ≤ 20 个附件、合计 ≤ 20 MiB；单个 ≤ `sessions.max_attachment_bytes`（默认 10 MiB）。积压合并（§ 7.5）时按顺序收消息，附件累计超过 20 个或 20 MiB 就停（第一条总是收），剩下的留在队列里，本 turn 结束后作为下一个 turn 发出。这些是 Claude 单次请求的上限（请求体 32 MB、一次超过 20 张图时每张 ≤ 2 000 px）倒推的，对所有 agent 一样
+- **数量**：一条消息 ≤ 20 个附件、合计 ≤ 20 MiB；单个 ≤ `sessions.max_attachment_bytes`（默认 10 MiB）。积压合并（§ 7.5）时按顺序收消息，附件累计超过 20 个或 20 MiB 就停（第一条总是收），剩下的留在队列里，本 turn 结束后作为下一个 turn 发出。这些是 Claude 单次请求的上限（请求体 32 MB、一次超过 20 张图时每张 ≤ 2 000 px）倒推的，对所有 agent、所有类型的附件一样（不是图片的文件并不进请求，先不区分）
 - **磁盘**：完成但没被引用的 blob 全节点合计 ≤ 1 GiB（`put_begin` → `busy` / `quota`）；数据目录所在卷剩余空间不够 `size + 1 GiB` → `busy` / `disk_full`（这两个 `busy` 不要自动重试：要发掉 / 移除附件或腾出磁盘）；配额里也算进行中的上传。`anycon doctor`（`node.doctor`）多一项 `blobs`：文件数、字节数、进行中的上传，剩余空间 < 1 GiB 时失败
 - 审计：不记 blob 的上传 / 下载（量大、没有安全意义）；`session.send` 的审计照旧
 - 同一个客户端的请求是串行处理的：客户端多块在途只是省掉往返，`put_end` 算 SHA-256 期间这个客户端的其它请求要等（10 MiB 约几十毫秒）

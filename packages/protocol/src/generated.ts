@@ -802,7 +802,9 @@ export interface AgentInfo {
 }
 export interface AgentCapabilities {
   /**
-   * 可接受的附件 mime，如 `image/png`。
+   * 可接受的附件 mime，如 `image/png`；含 [`ATTACHMENT_ANY_FILE`]（`* /*`）表示收任意文件。
+   * 点名的图片类型作为图片直接交给模型，其余文件以 daemon 上的路径交给 agent、由它自己读（ADR-35「任意文件」）。
+   * 空 = 不收附件。
    */
   attachments?: string[];
   /**
@@ -913,7 +915,7 @@ export interface AttachmentRef {
   mime: string;
   name: string;
   /**
-   * 图片像素宽高（daemon 读文件头得出；读不出来时省略）。客户端用来在下载前占好位置。
+   * 图片像素宽高（四种图片类型由 daemon 读文件头得出；读不出来、或者不是图片时省略）。客户端用来在下载前占好位置。
    */
   width?: number | null;
 }
@@ -951,7 +953,8 @@ export interface BlobIdParams {
  */
 export interface BlobPutBeginParams {
   /**
-   * 只接受 `image/png` `image/jpeg` `image/gif` `image/webp`，其它 → `unsupported`。
+   * `type/subtype`（不带参数，≤ 127 字节，大小写不敏感，daemon 记成小写）；不知道类型时用 `application/octet-stream`。
+   * `image/png` `image/jpeg` `image/gif` `image/webp` 四种会核对文件头、读宽高，其它类型不看内容。
    */
   mime: string;
   /**
@@ -2006,7 +2009,7 @@ export interface SessionWorktree {
 export interface SessionCreateParams {
   agent: string;
   /**
-   * 第一条消息的附件（`blob.put_end` 的结果）。agent 的 `capabilities.attachments` 不含其 mime → `unsupported`。
+   * 第一条消息的附件（`blob.put_end` 的结果）。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `* /*`）→ `unsupported`。
    */
   attachments?: AttachmentRef[];
   /**
@@ -2241,7 +2244,7 @@ export interface SearchHit {
 }
 export interface SessionSendParams {
   /**
-   * `blob.put_end` 的结果，每条至多 20 个。agent 的 `capabilities.attachments` 不含其 mime → `unsupported`。
+   * `blob.put_end` 的结果，每条至多 20 个。agent 不收其 mime（`capabilities.attachments` 既没点名也没有 `* /*`）→ `unsupported`。
    */
   attachments?: AttachmentRef[];
   /**

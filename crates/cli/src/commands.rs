@@ -1060,9 +1060,9 @@ pub async fn new_session(app: &App, a: NewArgs) -> Result<u8> {
 }
 
 pub async fn send(app: &App, a: SendArgs) -> Result<u8> {
-    // 图片先在本地看一眼（文件头、大小、张数）：明显不对的不必连节点
-    let images = crate::attach::load_images(&a.images)?;
-    for advice in images.iter().filter_map(crate::attach::LocalImage::advice) {
+    // 附件先在本地看一眼（文件头、大小、个数）：明显不对的不必连节点
+    let images = crate::attach::load_attachments(&a.images, &a.files)?;
+    for advice in images.iter().filter_map(crate::attach::LocalFile::advice) {
         eprintln!("{}", app.out.err_yellow(&advice));
     }
     let mut conn = app.conn().await?;
@@ -1075,11 +1075,11 @@ pub async fn send(app: &App, a: SendArgs) -> Result<u8> {
             short_id(&sid)
         ))
     };
-    // 已归档的会话收不了消息：别先把图传上去再丢掉
+    // 已归档的会话收不了消息：别先把附件传上去再丢掉
     if before.archived && !images.is_empty() {
         return Err(archived());
     }
-    // 经 blob 通道传图（ADR-35），消息只带 daemon 返回的引用
+    // 经 blob 通道传附件（ADR-35），消息只带 daemon 返回的引用
     let attachments = crate::attach::upload_all(&conn, &images).await?;
     let message_id = uuid::Uuid::new_v4().to_string();
     let mut notes = conn.notifications();

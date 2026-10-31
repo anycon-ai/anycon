@@ -48,12 +48,17 @@ export {
   type TurnStream,
 } from './session.js'
 export {
+  DEFAULT_FILE_MIME,
   IMAGE_MIME_TYPES,
   MAX_CHUNKS_IN_FLIGHT,
+  acceptsAttachment,
   detectImageMime,
+  guessMime,
+  normalizeMime,
   type DownloadOptions,
   type DownloadedAttachment,
   type ImageMime,
+  type UploadFileOptions,
   type UploadImageOptions,
 } from './attachments.js'
 export {
@@ -99,7 +104,7 @@ export { toWsUrl, type WebSocketFactory, type WebSocketInit, type WebSocketLike 
 export { SDK_VERSION } from './version.js'
 
 // 协议层类型和常用值，省得使用方再装一个包。
-export { PROTOCOL_VERSION, METHODS, CLOSE_CODE } from '@anycon/protocol'
+export { PROTOCOL_VERSION, METHODS, CLOSE_CODE, ATTACHMENT_ANY_FILE } from '@anycon/protocol'
 export type {
   AgentCapabilities,
   AgentInfo,

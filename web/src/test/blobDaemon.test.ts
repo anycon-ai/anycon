@@ -6,7 +6,8 @@ import { blobId, DAEMON_MAX_UPLOADS, installBlobDaemon } from './blobDaemon'
 const NODE = 'n'.repeat(32)
 let rpc: FakeRpc
 
-const begin = (i: number) => rpc.request(NODE, 'blob.put_begin', { name: `${i}.png`, mime: 'image/png', size: 10, sha256: 'a'.repeat(64) })
+// 不是四种图片之一：put_end 不核对文件头（这里不传块）
+const begin = (i: number, mime = 'application/octet-stream') => rpc.request(NODE, 'blob.put_begin', { name: `${i}.bin`, mime, size: 10, sha256: 'a'.repeat(64) })
 
 beforeEach(() => {
   rpc = new FakeRpc()
@@ -34,6 +35,16 @@ describe('installBlobDaemon', () => {
     await begin(10)
     expect(d.inProgress()).toBe(8)
     expect(d.peak.uploads).toBe(8)
+  })
+
+  it('takes any well-formed type/subtype (recorded in lower case), refuses malformed ones, and checks the header only for the four image types', async () => {
+    installBlobDaemon(rpc)
+    for (const bad of ['', 'text', 'text/plain; charset=utf-8', '*/*', `a/${'b'.repeat(130)}`]) await expect(begin(1, bad)).rejects.toMatchObject({ code: 'invalid' })
+    const { blob_id: pdf } = (await begin(1, 'Application/PDF')) as { blob_id: string }
+    expect(await rpc.request(NODE, 'blob.put_end', { blob_id: pdf })).toEqual({ blob_id: pdf, name: '1.bin', mime: 'application/pdf', bytes: 10 })
+    const { blob_id: png } = (await begin(2, 'image/png')) as { blob_id: string }
+    await rpc.request(NODE, 'blob.put_chunk', { blob_id: png, index: 0, data: 'AAAAAAAAAAAAAA==' })
+    await expect(rpc.request(NODE, 'blob.put_end', { blob_id: png })).rejects.toMatchObject({ code: 'invalid', reason: 'mime_mismatch' })
   })
 
   it('tracks how many put_chunk requests are in flight at once', async () => {

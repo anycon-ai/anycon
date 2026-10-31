@@ -160,7 +160,7 @@ leader 一退出就清整个进程组——都来自 `common/child.rs`，和 Cla
   `expected active turn id …`，一律返回 `AdapterError::TurnEnded`，daemon 把消息退回队列、作为下一个 turn 发（以前这里会自己 `turn/start`，daemon 不知道那个 turn，
   它的事件没有 turn 包着、`turn_done` 被丢掉，会话一直显示 idle）。**已经 `cancel`、turn 还没收尾时再插话也是 `TurnEnded`，一条 `turn/steer` 都不发**（原因见下一条）。
   `interject = false` 而 adapter 里还有 turn 在跑 → `Unsupported`（daemon 不会这样发）。
-  附件：图片 → `{type: "localImage", path}`（png / jpeg / gif / webp），其它类型 `Unsupported`。
+  附件（`capabilities.attachments` = 四种图片 + `*/*`）：图片 → `{type: "localImage", path}`（png / jpeg / gif / webp）；其它文件不读，`input` 的第一项是列出名字、类型、大小和 daemon 上路径的 `text`（`common::file_reference_text`），Codex 自己去读（沙箱只限制写）。
 - **steer 之后 interrupt，steer 的消息会丢**（真实 codex 0.157.1 实测，本地假模型服务 + 临时 `CODEX_HOME`；模型请求在途时 `turn/steer` 一条消息、紧接着 `turn/interrupt`）：
   `turn/steer` 的响应是 `{ turnId }`（接受了），`turn/interrupt` 的响应是 `{}`，turn 以 `interrupted` 收尾；但那条 steer 的消息**既没有变成 `userMessage` 条目，也没有出现在下一个 turn 请求的历史里**
   （下一个 turn 的请求里只有第一条消息、一条 `<turn_aborted>` 提示和新消息），重复两次结果一样。codex 把 steer 的输入放进「待处理输入」，等当前模型请求结束后才并入历史，interrupt 把这一步直接丢了。

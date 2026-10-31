@@ -389,10 +389,15 @@ async fn begin_with(td: &TestDaemon, device: &str, patch: Value) -> Result<BlobP
 #[tokio::test]
 async fn put_begin_validates_name_mime_size_and_sha() {
     let td = TestDaemon::start_with(&[("sessions.max_attachment_bytes", "\"4KiB\"")], false).await;
-    // mime 不在白名单
-    for mime in ["image/svg+xml", "application/pdf", "image/bmp", "text/plain", "IMAGE/PNG", ""] {
+    // mime 的格式不对
+    for mime in ["", "text", "text/plain; charset=utf-8", "*/*", "a/b/c", "text/pl ain"] {
         let e = begin_with(&td, "m", json!({ "mime": mime })).await.unwrap_err();
-        assert_eq!(code(&e), ErrorCode::Unsupported, "{mime:?}");
+        assert_eq!(code(&e), ErrorCode::Invalid, "{mime:?}");
+    }
+    // 任意类型都收（四种图片之外的不看内容）
+    for mime in ["image/svg+xml", "application/pdf", "image/bmp", "text/plain", "IMAGE/PNG", "application/octet-stream"]
+    {
+        begin_with(&td, &format!("m-{mime}"), json!({ "mime": mime })).await.unwrap();
     }
     // 名字
     for name in ["", "a/b.png", "..\\x.png", "a\nb.png", "a\u{7}.png", &"x".repeat(256)] {
@@ -411,8 +416,8 @@ async fn put_begin_validates_name_mime_size_and_sha() {
         let e = begin_with(&td, "h", json!({ "sha256": bad })).await.unwrap_err();
         assert_eq!(code(&e), ErrorCode::Invalid, "{bad:?}");
     }
-    // 失败的 put_begin 不占名额，也不留文件：只有上面两次成功的留下了 .part
-    assert_eq!(std::fs::read_dir(td.paths.blobs_tmp()).unwrap().count(), 2);
+    // 失败的 put_begin 不占名额，也不留文件：只有上面成功的（6 种 mime + 名字 + 大小）留下了 .part
+    assert_eq!(std::fs::read_dir(td.paths.blobs_tmp()).unwrap().count(), 8);
     td.shutdown().await;
 }
 
@@ -670,10 +675,14 @@ async fn startup_clears_tmp_and_orphan_files_but_keeps_recorded_blobs() {
     // 名字不符合 `<32 hex>.<ext>` 的文件不碰
     let stranger = td.paths.blobs_dir().join("notes.txt");
     std::fs::write(&stranger, b"keep me").unwrap();
+    // 不是图片的扩展名也一样认
+    let orphan_pdf = td.paths.blobs_dir().join(format!("{}.pdf", "cd".repeat(16)));
+    std::fs::write(&orphan_pdf, b"x").unwrap();
     td.restart().await;
     assert!(!part_file(&td, &half.blob_id).exists(), "uploads in flight do not survive a restart");
     assert!(td.paths.blobs_tmp().is_dir());
     assert!(!orphan.exists(), "a file without a record is removed");
+    assert!(!orphan_pdf.exists());
     assert!(stranger.exists());
     assert!(blob_file(&td, &a, "png").exists());
     // 记录还在，重启后仍可下载
@@ -820,6 +829,52 @@ async fn the_agent_must_accept_the_attachment_mime() {
     assert_eq!(code(&e), ErrorCode::Unsupported);
     let after: SessionListResult = c.call(&td, methods::SESSION_LIST, json!({})).await.unwrap();
     assert_eq!(before.sessions.len(), after.sessions.len(), "a rejected create leaves no empty session behind");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn any_file_is_stored_as_is_and_handed_to_an_agent_that_accepts_files() {
+    let td = TestDaemon::start().await;
+    let mut c = td.client("a");
+    // 不是图片：不看文件头、没有宽高，mime 记成小写，名字原样保留，落盘的扩展名取名字的
+    let pdf_bytes = b"%PDF-1.7 not really".to_vec();
+    let pdf = upload_as(&td, &mut c, "Spec v2.PDF", "Application/PDF", &pdf_bytes).await;
+    assert_eq!(
+        (pdf.name.as_str(), pdf.mime.as_str(), pdf.bytes),
+        ("Spec v2.PDF", "application/pdf", pdf_bytes.len() as u64)
+    );
+    assert_eq!((pdf.width, pdf.height), (None, None));
+    assert_eq!(std::fs::read(blob_file(&td, &pdf, "pdf")).unwrap(), pdf_bytes);
+    // PNG 的内容声明成别的类型也行（当作普通文件）；没有像样扩展名的落成 `.bin`
+    let raw = upload_as(&td, &mut c, "Makefile", "application/octet-stream", &small_png(30)).await;
+    assert_eq!((raw.width, raw.height), (None, None));
+    assert!(blob_file(&td, &raw, "bin").is_file());
+    let g = get(&td, &mut c, &pdf.blob_id, 0, None).await.unwrap();
+    let data = base64::engine::general_purpose::STANDARD.decode(&g.data).unwrap();
+    assert_eq!((g.blob.clone(), data, g.eof), (pdf.clone(), pdf_bytes.clone(), true));
+
+    // agent 只收图片：文件 → unsupported
+    let s = new_session(&td, &mut c).await;
+    let e = send(&td, &mut c, &s.id, "m1", "", &[&pdf]).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::Unsupported);
+    assert_eq!(bound_session(&td, &pdf.blob_id).await, None);
+    // agent 收 `*/*`：文件和图片都交给 adapter，路径就是落盘的文件
+    *td.fake.attachments.lock().unwrap() = vec![PNG.to_string(), "*/*".to_string()];
+    let _: AgentListResult = c.call(&td, methods::AGENT_LIST, json!({ "refresh": true })).await.unwrap();
+    let png = upload(&td, &mut c, "shot.png", &small_png(31)).await;
+    let s = new_session(&td, &mut c).await;
+    send(&td, &mut c, &s.id, "m2", "", &[&pdf, &png, &raw]).await.unwrap();
+    wait_status(&td, &mut c, &s.id, SessionStatus::Idle).await;
+    let last = td.fake.handles.lock().unwrap().last().cloned().unwrap();
+    let input = last.inputs.lock().unwrap()[0].clone();
+    assert_eq!(input.attachments, vec![pdf.clone(), png.clone(), raw.clone()]);
+    assert_eq!(
+        input.attachment_paths,
+        vec![blob_file(&td, &pdf, "pdf"), blob_file(&td, &png, "png"), blob_file(&td, &raw, "bin")]
+    );
+    assert_eq!(bound_session(&td, &pdf.blob_id).await.as_deref(), Some(s.id.as_str()));
+    // 有不是图片的附件时，标题用 `[file]`
+    assert_eq!(summary(&td, &mut c, &s.id).await.title, "[file] Spec v2.PDF (+2)");
     td.shutdown().await;
 }
 

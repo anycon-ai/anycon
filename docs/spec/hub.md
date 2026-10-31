@@ -371,8 +371,8 @@ device
 
 `ANYCON_DATABASE_URL` 不设（或 `sqlite:…`）用 SQLite，`postgres://…` / `postgresql://…` 用 Postgres（[ADR-12](../decisions.md#adr-12-sqlx-双后端trait-抽象)）。hub 的其余代码只依赖 `Store` trait，两个实现的行为一致，由同一套测试（`crates/hub/src/store/conformance.rs`）验证。
 
-- **迁移**：两套，`crates/hub/migrations/sqlite/` 和 `crates/hub/migrations/postgres/`，编号和名字一一对应（`0001_init`、`0002_preview`、`0003_identities`……），启动时跑当前后端那一套，只前进。以后加迁移两边按同一个编号各加一份（有测试检查两个目录的文件名一致）
-- **类型**：毫秒时间戳是 SQLite `INTEGER` / Postgres `BIGINT`（Rust 侧 `u64`，字段名以 `_ms` 结尾）；布尔（`is_admin`、`push`、`email`）是 `INTEGER` 0/1 / `BOOLEAN`；自增 id（`email_codes.id`、`hub_audit.id`）是 `AUTOINCREMENT` / `GENERATED ALWAYS AS IDENTITY`；`hub_audit.detail` 是 JSON 文本，两边都是 `TEXT`（Postgres 不用 JSONB：hub 不解析它）。`preview_labels`、`preview_tokens` 在 Postgres 里多一个 `seq` 自增列：SQLite 靠隐含的 rowid 给同一毫秒写入的行排先后，Postgres 没有 rowid
+- **迁移**：两套，`crates/hub/migrations/sqlite/` 和 `crates/hub/migrations/postgres/`，编号和名字一一对应（`0001_init`、`0002_preview`、`0003_identities`、`0004_token_rotation`……），启动时跑当前后端那一套，只前进。以后加迁移两边按同一个编号各加一份（有测试检查两个目录的文件名一致）
+- **类型**：毫秒时间戳是 SQLite `INTEGER` / Postgres `BIGINT`（Rust 侧 `u64`，字段名以 `_ms` 结尾；`devices` 的 `prev_token_expires_at_ms`、`token_rotated_at_ms` 也是，`prev_token_hash` 是 `TEXT`）；布尔（`is_admin`、`push`、`email`）是 `INTEGER` 0/1 / `BOOLEAN`；自增 id（`email_codes.id`、`hub_audit.id`）是 `AUTOINCREMENT` / `GENERATED ALWAYS AS IDENTITY`；`hub_audit.detail` 是 JSON 文本，两边都是 `TEXT`（Postgres 不用 JSONB：hub 不解析它）。`preview_labels`、`preview_tokens` 在 Postgres 里多一个 `seq` 自增列：SQLite 靠隐含的 rowid 给同一毫秒写入的行排先后，Postgres 没有 rowid
 - **排序规则**：SQLite 的文本按字节比较，Postgres 的默认排序规则随数据库的 locale。需要和代码里一致的地方（`pairings` 的 `device_a < device_b`、`ORDER BY id`、keyset 分页的游标）在 Postgres 里显式用 `COLLATE "C"`，所以两边的排序和翻页结果相同
 
 **并发**：SQLite 只有一个写者，「先查再写」的逻辑放进一个写事务就天然串行。Postgres 是多写者（`READ COMMITTED`），每一处用行锁、advisory 锁或唯一约束保证相同的结果，撞上死锁（`40P01`）或串行化失败（`40001`）时整个事务重试几次。逐项对照：
@@ -387,6 +387,7 @@ device
 | 每组验证码最多留 `keep` 条（`put_email_code`） | 先拿这一组（邮箱，用途，账号）的 advisory 事务锁（行锁锁不住还没有的行）：同一组的并发登记排队，修剪看到的是前一个的结果 |
 | 预览 label 先到先得、每节点 label 数、每设备令牌数（`issue_preview_token`） | 先 `SELECT … FOR NO KEY UPDATE` 锁住节点和签发设备的 `devices` 行（按 id 排序）：同一节点 / 设备的并发签发排队；label 的先到先得靠主键上的 `ON CONFLICT DO NOTHING` |
 | 吊销设备（`revoke_device`） | 先 `SELECT … FOR UPDATE` 锁设备行：和并发的配对、令牌签发（外键检查拿 `FOR KEY SHARE`）互斥，之后的删除看得到它们已提交的行；并发的第二次吊销在新版本上看到已吊销，返回空 |
+| 设备 token 轮换（`rotate_device_token`） | 一条 `UPDATE`，`WHERE` 里带「没吊销、`token_hash` 还是请求方认证用的那个、距上次轮换够久」，和 SQLite 一样：并发的第二条等第一条提交（行锁），Postgres 在新版本的行上重新判断 `WHERE`，`token_hash` 已经变了，0 行，只有一个赢家；随后的 `SELECT` 区分 `Stale` / `TooSoon` / `Unavailable`。它和吊销（`FOR UPDATE`）互斥：吊销先提交就是 `Unavailable` |
 | 删账号（`delete_account`） | 先 `SELECT … FOR UPDATE` 锁账号行：并发的第二个删除等第一个提交，看不到这个账号，返回 `false`，不多写墓碑审计 |
 
 「移除登录方式」一类跨多条语句的读后改（解绑邮箱、解除 OAuth 绑定、删登录 token）靠 hub 进程内按账号的锁串行化，不在库里，和后端无关。每日配对名额、限速、在线连接数在内存里，不涉及存储。库里没有「最后一个管理员不能取消」这类规则：取消管理员只拦 `single` 的 bootstrap 管理员和 `ANYCON_ADMIN_EMAILS` 派生的管理员，两者都只看配置，不看库里的状态。

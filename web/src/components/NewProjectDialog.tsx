@@ -25,7 +25,8 @@ export function repoName(url: string): string {
 
 /**
  * 新建项目：空项目（名称、git init）/ 从 Git 克隆（URL、名称可选，进度条走 job.progress）/
- * 已有目录（目录选择器 + 名称，提交 `workspace.link`，ADR-33）。
+ * 已有目录（目录选择器 + 名称，提交 `workspace.link`，ADR-33）。节点配了多个 workspace 根（ADR-45）时，空项目和克隆多一个
+ * 「位置」下拉（默认主根）；已有目录不受影响（它不放进任何根）。
  * `initialMode` 决定每次打开时停在哪一项（空状态的三个按钮各开一项）。
  * `then`：建好之后去项目页（默认），还是去新建会话页并选中这个项目。
  * `onNodeChange` 有值且这个浏览器配对了不止一台节点时，顶上多一个节点下拉（从左栏、命令面板打开时）。
@@ -66,6 +67,15 @@ export function NewProjectDialog({
   const job = useNodes((s) => (jobId ? s.byId[nodeId]?.jobs[jobId] : undefined))
   const taken = useNodes((s) => s.byId[nodeId]?.projects)
   const platform = useNodes((s) => s.byId[nodeId]?.info?.platform)
+  // 多个 workspace 根：「位置」下拉。`rootPath` 是用户选的根；null = 没动过，用主根
+  const roots = useNodes((s) => s.byId[nodeId]?.info?.workspace_roots) ?? []
+  const [rootPath, setRootPath] = useState<string | null>(null)
+  const primaryRoot = roots.find((r) => r.primary)
+  const chosenRoot = roots.find((r) => r.path === (rootPath ?? primaryRoot?.path))
+  const showRoots = roots.length > 1 && mode !== 'existing'
+  // 选了主根（或没选）时线路上不带 `root`：缺省就是主根
+  const rootParam = showRoots && chosenRoot && !chosenRoot.primary ? chosenRoot.path : undefined
+  const rootUnavailable = showRoots && chosenRoot?.available === false
   // 节点离线、或者它不管理 workspace（`capabilities.workspace = false`）：这里建不了项目
   const usable = (id: string): boolean => byId[id]?.conn === 'ready' && byId[id]?.info?.capabilities.workspace !== false
   const unusableReason = !byId[nodeId] || byId[nodeId]?.conn !== 'ready' ? t('project.nodeOffline') : !usable(nodeId) ? t('project.nodeNoWorkspace') : null
@@ -81,6 +91,7 @@ export function NewProjectDialog({
     setLinkNameTouched(false)
     setLinkUnavailable(false)
     setError(null)
+    setRootPath(null)
   }, [nodeId])
 
   useEffect(() => {
@@ -94,6 +105,7 @@ export function NewProjectDialog({
       setLinkName('')
       setLinkNameTouched(false)
       setLinkUnavailable(false)
+      setRootPath(null)
     }
   }, [open])
 
@@ -148,7 +160,7 @@ export function NewProjectDialog({
     try {
       if (mode === 'empty') {
         const created = name.trim()
-        await createProject(nodeId, created, gitInit)
+        await createProject(nodeId, created, gitInit, rootParam)
         onOpenChange(false)
         setBusy(false)
         await goTo(created)
@@ -160,7 +172,7 @@ export function NewProjectDialog({
         await goTo(linked.name)
       } else {
         setCloned(name.trim() || repoName(url.trim()))
-        setJobId(await cloneProject(nodeId, url.trim(), name.trim() || undefined))
+        setJobId(await cloneProject(nodeId, url.trim(), name.trim() || undefined, rootParam))
       }
     } catch (err) {
       setError(mode === 'existing' ? describeErrorIn(err, t, 'project.linkErrors') : describeError(err, t))
@@ -170,6 +182,7 @@ export function NewProjectDialog({
 
   const valid =
     unusableReason === null &&
+    !rootUnavailable &&
     (mode === 'empty' ? name.trim().length > 0 : mode === 'clone' ? url.trim().length > 0 : picked !== null && !linkUnavailable && linkProblem === null && !linkNameExists)
 
   return (
@@ -249,6 +262,17 @@ export function NewProjectDialog({
         {mode === 'clone' ? (
           <Field label={t('project.cloneUrl')} htmlFor="project-clone-url" hint={t('project.cloneHint')}>
             <Input id="project-clone-url" data-testid="project-clone-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/org/repo.git" disabled={busy} autoFocus autoCapitalize="off" spellCheck={false} />
+          </Field>
+        ) : null}
+        {showRoots ? (
+          <Field label={t('project.location')} htmlFor="project-new-root" hint={rootUnavailable ? undefined : t('project.locationHint')} error={rootUnavailable ? t('project.rootUnavailableHint') : undefined}>
+            <Select id="project-new-root" data-testid="project-new-root" value={chosenRoot?.path ?? ''} onChange={(e) => setRootPath(e.target.value)} disabled={busy}>
+              {roots.map((r) => (
+                <option key={r.path} value={r.path} disabled={!r.available}>
+                  {r.available ? (r.primary ? t('project.rootPrimary', { path: r.path }) : r.path) : t('project.rootUnavailable', { path: r.path })}
+                </option>
+              ))}
+            </Select>
           </Field>
         ) : null}
         {mode !== 'existing' ? (

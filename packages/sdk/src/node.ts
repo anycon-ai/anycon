@@ -318,13 +318,22 @@ export class Node extends Emitter<NodeEvents> {
 
   readonly projects = {
     list: async (): Promise<Project[]> => (await this.call('workspace.list', {})).projects,
-    create: (name: string, options: { gitInit?: boolean } = {}) =>
-      this.call('workspace.create', { name, git_init: options.gitInit ?? false }),
-    /** 克隆是长任务：返回 `Job`，`job.progress()` 看进度，`job.wait()` 等结束。 */
-    clone: async (url: string, options: { name?: string } = {}): Promise<Job> => {
+    /**
+     * `root`：建在哪个 workspace 根下（`info().workspace_roots` 里某一项的 `path`），缺省 = 主根；
+     * 不在列表里 → `invalid`，在列表里但现在不可用（`available: false`）→ `not_found`。
+     */
+    create: (name: string, options: { gitInit?: boolean; root?: string } = {}) =>
+      this.call('workspace.create', {
+        name,
+        git_init: options.gitInit ?? false,
+        ...(options.root !== undefined ? { root: options.root } : {}),
+      }),
+    /** 克隆是长任务：返回 `Job`，`job.progress()` 看进度，`job.wait()` 等结束。`root` 同 `create`。 */
+    clone: async (url: string, options: { name?: string; root?: string } = {}): Promise<Job> => {
       const started = await this.call('workspace.clone', {
         url,
         ...(options.name !== undefined ? { name: options.name } : {}),
+        ...(options.root !== undefined ? { root: options.root } : {}),
       })
       return this.#jobHandle(started.job_id)
     },

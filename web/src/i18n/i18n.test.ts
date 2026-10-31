@@ -165,6 +165,8 @@ describe('i18n', () => {
       // 关联已有目录（ADR-33）：按错误码查专门的说法（`describeErrorIn`）
       ...['forbidden', 'exists', 'invalid', 'not_found'].map((k) => `project.linkErrors.${k}`),
       ...['busy', 'invalid', 'not_found'].map((k) => `project.removeErrors.${k}`),
+      // 文件浏览：daemon 的 `not_found` / `forbidden` / `invalid` 和本地的几种失败（`describeFsError`）
+      ...['offline', 'not_found', 'forbidden', 'invalid', 'image_unsupported', 'bad_data'].map((k) => `files.errors.${k}`),
       ...['forbidden', 'invalid', 'not_found', 'protected_sensitive', 'protected_data_dir'].map((k) => `folderPicker.errors.${k}`),
       // `LinkBlock`（workspace.browse 的 blocked）：Record 让编译器保证枚举完整
       ...Object.keys(linkBlock).map((k) => `folderPicker.blocked.${k}`),

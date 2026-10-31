@@ -33,6 +33,8 @@ export interface PrefsState {
   thinkingDisplay: ThinkingDisplay
   enterBehavior: EnterBehavior
   projectView: ProjectView
+  /** 文件浏览（`/n/:node/files`）是否显示以 `.` 开头的文件和目录。 */
+  filesShowHidden: boolean
   infoPanelOpen: boolean
   /** 宽屏左栏是否展开（手机上左栏是抽屉，不受影响）。 */
   sidebarOpen: boolean
@@ -87,6 +89,7 @@ export const usePrefs = create<PrefsState>()(
       thinkingDisplay: 'collapsed',
       enterBehavior: 'auto',
       projectView: 'cards',
+      filesShowHidden: false,
       infoPanelOpen: true,
       sidebarOpen: true,
       sidebarWidth: SIDEBAR_DEFAULT,
@@ -119,6 +122,7 @@ export const usePrefs = create<PrefsState>()(
         thinkingDisplay: s.thinkingDisplay,
         enterBehavior: s.enterBehavior,
         projectView: s.projectView,
+        filesShowHidden: s.filesShowHidden,
         infoPanelOpen: s.infoPanelOpen,
         sidebarOpen: s.sidebarOpen,
         sidebarWidth: s.sidebarWidth,

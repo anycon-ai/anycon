@@ -17,6 +17,20 @@ const LANG_LOADERS: Record<string, () => Promise<{ default: unknown }>> = {
   toml: () => import('shiki/langs/toml.mjs'),
   markdown: () => import('shiki/langs/markdown.mjs'),
   diff: () => import('shiki/langs/diff.mjs'),
+  // 文件浏览（docs/spec/web.md § 4.7）按扩展名选语言：再加几种常见的，都是按需懒加载的小块
+  c: () => import('shiki/langs/c.mjs'),
+  cpp: () => import('shiki/langs/cpp.mjs'),
+  java: () => import('shiki/langs/java.mjs'),
+  kotlin: () => import('shiki/langs/kotlin.mjs'),
+  swift: () => import('shiki/langs/swift.mjs'),
+  ruby: () => import('shiki/langs/ruby.mjs'),
+  sql: () => import('shiki/langs/sql.mjs'),
+  xml: () => import('shiki/langs/xml.mjs'),
+  scss: () => import('shiki/langs/scss.mjs'),
+  lua: () => import('shiki/langs/lua.mjs'),
+  dockerfile: () => import('shiki/langs/dockerfile.mjs'),
+  makefile: () => import('shiki/langs/makefile.mjs'),
+  ini: () => import('shiki/langs/ini.mjs'),
 }
 
 const ALIASES: Record<string, string> = {
@@ -33,6 +47,11 @@ const ALIASES: Record<string, string> = {
   yml: 'yaml',
   md: 'markdown',
   patch: 'diff',
+  'c++': 'cpp',
+  kt: 'kotlin',
+  rb: 'ruby',
+  docker: 'dockerfile',
+  make: 'makefile',
 }
 
 export function resolveLang(lang: string | undefined): string | null {

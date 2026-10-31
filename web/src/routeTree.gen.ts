@@ -31,6 +31,7 @@ import { Route as AppShellSettingsSessionsRouteImport } from './routes/_app/_she
 import { Route as AppShellNNodeIndexRouteImport } from './routes/_app/_shell/n.$node.index'
 import { Route as AppShellNNodeNewRouteImport } from './routes/_app/_shell/n.$node.new'
 import { Route as AppShellNNodeSettingsRouteImport } from './routes/_app/_shell/n.$node.settings'
+import { Route as AppShellNNodeFilesSplatRouteImport } from './routes/_app/_shell/n.$node.files.$'
 import { Route as AppShellNNodePProjectRouteImport } from './routes/_app/_shell/n.$node.p.$project'
 import { Route as AppShellNNodeSSessionRouteImport } from './routes/_app/_shell/n.$node.s.$session'
 
@@ -145,6 +146,11 @@ const AppShellNNodeSettingsRoute = AppShellNNodeSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppShellNNodeRoute,
 } as any)
+const AppShellNNodeFilesSplatRoute = AppShellNNodeFilesSplatRouteImport.update({
+  id: '/files/$',
+  path: '/files/$',
+  getParentRoute: () => AppShellNNodeRoute,
+} as any)
 const AppShellNNodePProjectRoute = AppShellNNodePProjectRouteImport.update({
   id: '/p/$project',
   path: '/p/$project',
@@ -177,6 +183,7 @@ export interface FileRoutesByFullPath {
   '/n/$node/new': typeof AppShellNNodeNewRoute
   '/n/$node/settings': typeof AppShellNNodeSettingsRoute
   '/n/$node/': typeof AppShellNNodeIndexRoute
+  '/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/n/$node/p/$project': typeof AppShellNNodePProjectRoute
   '/n/$node/s/$session': typeof AppShellNNodeSSessionRoute
 }
@@ -199,6 +206,7 @@ export interface FileRoutesByTo {
   '/n/$node/new': typeof AppShellNNodeNewRoute
   '/n/$node/settings': typeof AppShellNNodeSettingsRoute
   '/n/$node': typeof AppShellNNodeIndexRoute
+  '/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/n/$node/p/$project': typeof AppShellNNodePProjectRoute
   '/n/$node/s/$session': typeof AppShellNNodeSSessionRoute
 }
@@ -226,6 +234,7 @@ export interface FileRoutesById {
   '/_app/_shell/n/$node/new': typeof AppShellNNodeNewRoute
   '/_app/_shell/n/$node/settings': typeof AppShellNNodeSettingsRoute
   '/_app/_shell/n/$node/': typeof AppShellNNodeIndexRoute
+  '/_app/_shell/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/_app/_shell/n/$node/p/$project': typeof AppShellNNodePProjectRoute
   '/_app/_shell/n/$node/s/$session': typeof AppShellNNodeSSessionRoute
 }
@@ -252,6 +261,7 @@ export interface FileRouteTypes {
     | '/n/$node/new'
     | '/n/$node/settings'
     | '/n/$node/'
+    | '/n/$node/files/$'
     | '/n/$node/p/$project'
     | '/n/$node/s/$session'
   fileRoutesByTo: FileRoutesByTo
@@ -274,6 +284,7 @@ export interface FileRouteTypes {
     | '/n/$node/new'
     | '/n/$node/settings'
     | '/n/$node'
+    | '/n/$node/files/$'
     | '/n/$node/p/$project'
     | '/n/$node/s/$session'
   id:
@@ -300,6 +311,7 @@ export interface FileRouteTypes {
     | '/_app/_shell/n/$node/new'
     | '/_app/_shell/n/$node/settings'
     | '/_app/_shell/n/$node/'
+    | '/_app/_shell/n/$node/files/$'
     | '/_app/_shell/n/$node/p/$project'
     | '/_app/_shell/n/$node/s/$session'
   fileRoutesById: FileRoutesById
@@ -466,6 +478,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppShellNNodeSettingsRouteImport
       parentRoute: typeof AppShellNNodeRoute
     }
+    '/_app/_shell/n/$node/files/$': {
+      id: '/_app/_shell/n/$node/files/$'
+      path: '/files/$'
+      fullPath: '/n/$node/files/$'
+      preLoaderRoute: typeof AppShellNNodeFilesSplatRouteImport
+      parentRoute: typeof AppShellNNodeRoute
+    }
     '/_app/_shell/n/$node/p/$project': {
       id: '/_app/_shell/n/$node/p/$project'
       path: '/p/$project'
@@ -510,6 +529,7 @@ interface AppShellNNodeRouteChildren {
   AppShellNNodeNewRoute: typeof AppShellNNodeNewRoute
   AppShellNNodeSettingsRoute: typeof AppShellNNodeSettingsRoute
   AppShellNNodeIndexRoute: typeof AppShellNNodeIndexRoute
+  AppShellNNodeFilesSplatRoute: typeof AppShellNNodeFilesSplatRoute
   AppShellNNodePProjectRoute: typeof AppShellNNodePProjectRoute
   AppShellNNodeSSessionRoute: typeof AppShellNNodeSSessionRoute
 }
@@ -518,6 +538,7 @@ const AppShellNNodeRouteChildren: AppShellNNodeRouteChildren = {
   AppShellNNodeNewRoute: AppShellNNodeNewRoute,
   AppShellNNodeSettingsRoute: AppShellNNodeSettingsRoute,
   AppShellNNodeIndexRoute: AppShellNNodeIndexRoute,
+  AppShellNNodeFilesSplatRoute: AppShellNNodeFilesSplatRoute,
   AppShellNNodePProjectRoute: AppShellNNodePProjectRoute,
   AppShellNNodeSSessionRoute: AppShellNNodeSSessionRoute,
 }

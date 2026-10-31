@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
-import { classifyImage, Markdown, STATIC_NAME_MAX } from './Markdown'
+import { classifyImage, Markdown, STATIC_NAME_MAX, type LocalFiles } from './Markdown'
 
 describe('classifyImage', () => {
   it('lets inline bitmaps and same-origin paths load directly, and flags every other host as remote', () => {
@@ -136,5 +136,63 @@ describe('Markdown images', () => {
     const a = screen.getByRole('link', { name: 'docs' })
     expect(a).toHaveAttribute('target', '_blank')
     expect(a.getAttribute('rel')).toContain('noopener')
+  })
+})
+
+describe('Markdown rendering a file on the node (`local`)', () => {
+  // 路径解析本身在 features/files/paths.test.ts；这里只看 Markdown 把哪些地址交给回调
+  const local: LocalFiles = {
+    resolve: (url) => (url.includes('..') || url.startsWith('#') ? null : `p/${url}`),
+    image: (path, alt) => (
+      <span data-testid="local-image" data-path={path}>
+        {alt}
+      </span>
+    ),
+    link: (path, children) => (
+      <a href={`/files/${path}`} data-testid="local-link">
+        {children}
+      </a>
+    ),
+  }
+
+  it('hands relative images and links to the callbacks instead of making the browser fetch them', () => {
+    const { container } = render(<Markdown local={local} text={'![pic](img/a.png) and [doc](docs/b.md)'} />)
+    expect(screen.getByTestId('local-image')).toHaveAttribute('data-path', 'p/img/a.png')
+    expect(screen.getByTestId('local-image')).toHaveTextContent('pic')
+    expect(screen.getByTestId('local-link')).toHaveAttribute('href', '/files/p/docs/b.md')
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.queryByTestId('md-image-placeholder')).toBeNull()
+  })
+
+  it('shows what cannot be resolved (outside the project, an in-page anchor) as plain text', () => {
+    const { container } = render(<Markdown local={local} text={'[up](../x.md) [top](#top) ![out](../y.png)'} />)
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.queryByTestId('local-link')).toBeNull()
+    expect(screen.queryByTestId('local-image')).toBeNull()
+    expect(container.querySelector('img')).toBeNull()
+    expect(container).toHaveTextContent('up top out')
+  })
+
+  it('treats a root-relative path like any other relative one: it is never a request to the hub', () => {
+    const { container } = render(<Markdown local={local} text={'![logo](/assets/logo.png)'} />)
+    expect(screen.getByTestId('local-image')).toHaveAttribute('data-path', 'p//assets/logo.png')
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  it('leaves absolute addresses exactly as in messages: remote images are placeholders, links open in a new tab, data: images are inline', () => {
+    const { container } = render(<Markdown local={local} text={'![r](https://evil.example/x.png) [site](https://example.com) ![d](data:image/png;base64,AAAA) [mail](mailto:a@b.c)'} />)
+    expect(screen.getByTestId('md-image-placeholder')).toHaveAttribute('data-host', 'evil.example')
+    const site = screen.getByRole('link', { name: 'site' })
+    expect(site).toHaveAttribute('target', '_blank')
+    expect(site.getAttribute('rel')).toContain('noopener')
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA')
+    expect(screen.getByRole('link', { name: 'mail' })).toHaveAttribute('href', 'mailto:a@b.c')
+    expect(screen.queryByTestId('local-image')).toBeNull()
+    expect(screen.queryByTestId('local-link')).toBeNull()
+  })
+
+  it('without `local` nothing changes for relative addresses (messages)', () => {
+    render(<Markdown text={'![pic](img/a.png)'} />)
+    expect(screen.getByTestId('md-image-placeholder')).toBeInTheDocument()
   })
 })

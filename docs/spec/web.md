@@ -256,7 +256,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 
 #### 输入区（composer）
 
-- 一个圆角框：上面是待发送图片的缩略图，下面一行是「＋」、输入框、停止 / 发送；框下面一行是选项（宽屏）
+- 一个圆角框：上面是待发送附件（图片是缩略图，其它文件是文件条），下面一行是「＋」、输入框、停止 / 发送；框下面一行是选项（宽屏）
 - 「＋」点开浮动菜单，目前只有「添加文件或照片」（见下面「附件」），以后的入口都加在这里
 - 自动增高的 textarea，最多 10 行后内部滚动
 - `Enter` 发送、`Shift+Enter` 换行（手机上 Enter 换行，发送靠按钮；设置里可改）
@@ -265,16 +265,17 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 - 节点离线：输入框可用，发送后标「未发送」
 - 归档：会话在运行或等审批时「归档」按钮禁用并说明「先停止或答复」（daemon 此时返回 `busy`）
 - 已归档的会话：输入区（连同选项栏）换成一条「已归档 · 取消归档后才能发送消息」+「取消归档」按钮（`session-archived-bar` / `session-unarchive`），点了调 `session.unarchive`，成功后输入框回来；取消归档失败（`git_failed`）时说明「没能恢复会话的 worktree，会话仍是归档状态」。`send` 被 `invalid` / `archived` 拒绝时（别的设备刚归档），失败气泡和 toast 显示同一句说明，本地立刻把会话标成已归档，消息留着不丢；已归档会话的错误块不给「重试这一轮」
-- 附件（ADR-35，见下面「附件」）：「＋」菜单选文件、粘贴、拖进输入区；节点 `capabilities.blobs` 为真，且 agent 点名了至少一种图片或者有 `*/*`，才显示
+- 附件（ADR-35、ADR-44，见下面「附件」）：「＋」菜单选文件、粘贴、拖进输入区。节点 `capabilities.blobs` 为真，并且节点带 `capabilities.file_attachments`（任何 agent 都行，agent 不原生收的附件由 daemon 落到会话的工作目录）或者 agent 点名了至少一种图片，才显示；旧 daemon（没有 `file_attachments`）上保持只收图片
 - 选项行（输入框下面）：左边权限模式和「更多」（其余 agent 特定选项），右边模型和思考等级，都是下拉（§ 5）；窄屏收进「⚙」底部弹层
 
-#### 附件（ADR-35）
+#### 附件（ADR-35、ADR-44）
 
-- **入口**：输入框左边「＋」（`composer-plus`）菜单里的「添加文件或照片」（`composer-attach`，可多选；agent 有 `*/*` 时文件选择框不设 `accept`，否则 `accept` 是 agent 收的图片类型加 `image/*`）、在输入框里粘贴、把文件拖进输入区（拖入时整块高亮，提示「拖到这里添加文件」或「拖到这里添加图片」）。agent 只收图片时，非图片文件给一句提示后忽略。agent 不收附件时没有「＋」；节点不在线时菜单项禁用并说明原因
-- **图片还是文件**：`File.type` 是 `image/*` 或为空、且 agent 点名了图片类型的，走下面的「规整」；规整失败（不是图片、解不开、编不出 agent 收的格式）而 agent 有 `*/*` 时，退回按文件原样上传，不提示（还是太大的照旧提示并忽略）。其它文件在 agent 有 `*/*` 时一个字节不动地上传：mime 取 `File.type` 转小写、去掉参数，不合 daemon 的格式（protocol.md § 5.6）就用 `application/octet-stream`；声明成四种图片之一而文件头对不上的，改用文件头认出的类型，认不出就是 `application/octet-stream`（否则 daemon 会以 `mime_mismatch` 拒绝）。文件不解码、不做预览
-- **规整**：上传前在浏览器里处理（ADR-35「2026-10 修订」）——长边 > 2 000 px 的一律缩到 2 000；缩完（或原图）> 1.5 MiB 就有损重编码（agent 收 WebP 且浏览器编得出 → WebP 0.9，否则 JPEG 0.9，有透明通道的先铺白底）；单张硬上限 3.75 MiB；带 EXIF 的 JPEG 一律重编码（方向转正、去掉 GPS 等元数据）；浏览器能解码而 agent 不收的格式（HEIC、BMP…）转成 agent 收的格式。agent 收的格式、长边 ≤ 2 000、≤ 1.5 MiB、没有 EXIF 的原样上传（动图 GIF 保持动图）。一条消息的附件（图片和文件一起算）合计 ≤ 15 MiB，再加的提示后忽略（文件在读内容之前就按 `File.size` 判断）。解不开的图给提示。文件名去掉控制字符和双向控制符；下载时文件名用 `<主名>.<mime 对应扩展名>`
+- **入口**：输入框左边「＋」（`composer-plus`）菜单里的「添加文件或照片」（`composer-attach`，可多选；节点带 `file_attachments` 时文件选择框不设 `accept`，否则 `accept` 是 agent 收的图片类型加 `image/*`）、在输入框里粘贴、把文件拖进输入区（拖入时整块高亮，提示「拖到这里添加文件」或「拖到这里添加图片」）。节点只收图片（旧 daemon）时，非图片文件给一句提示（「这个节点只接受图片」）后忽略；节点只收图片、而 agent 又没有可用的图片格式时没有「＋」；节点不在线时菜单项禁用并说明原因
+- **图片还是文件**：`File.type` 是 `image/*` 或为空、且 agent 点名了（原生收）图片类型的，走下面的「规整」；规整失败（不是图片、解不开、编不出 agent 收的格式）而节点带 `file_attachments` 时，退回按文件原样上传，不提示（还是太大的照旧提示并忽略）。其它文件（以及 agent 不原生收图时的图片）在节点带 `file_attachments` 时一个字节不动地上传：mime 取 `File.type` 转小写、去掉参数，不合 daemon 的格式（protocol.md § 5.6）就用 `application/octet-stream`；声明成四种图片之一而文件头对不上的，改用文件头认出的类型，认不出就是 `application/octet-stream`（否则 daemon 会以 `mime_mismatch` 拒绝）。文件不解码、不做预览
+- **规整**：上传前在浏览器里处理（ADR-35「2026-10 修订」）——长边 > 2 000 px 的一律缩到 2 000；缩完（或原图）> 1.5 MiB 就有损重编码（agent 收 WebP 且浏览器编得出 → WebP 0.9，否则 JPEG 0.9，有透明通道的先铺白底）；单张硬上限 3.75 MiB；带 EXIF 的 JPEG 一律重编码（方向转正、去掉 GPS 等元数据）；浏览器能解码而 agent 不收的格式（HEIC、BMP…）转成 agent 收的格式。agent 收的格式、长边 ≤ 2 000、≤ 1.5 MiB、没有 EXIF 的原样上传（动图 GIF 保持动图）。解不开的图给提示。文件名去掉控制字符和双向控制符；下载时文件名用 `<主名>.<mime 对应扩展名>`
+- **大小和个数的上限**（上传之前先查，超了提示后忽略）：原样上传的文件，单个超过节点报的上限（`node.info.attachment_limits.max_bytes`，旧 daemon 没有就按默认的 10 MiB）的，在读内容、算哈希之前就按 `File.size` 拒绝，提示「单个文件最多 10 MiB」。一条消息最多 10 个附件；走规整的图片合计 ≤ 15 MiB（Claude 单次请求的体积限制，原样上传的文件不进请求、不占这个额度）；所有附件合计 ≤ 节点的单条消息上限（`attachment_limits.max_message_bytes`，缺省 20 MiB，daemon 另有同样的兜底）。再加的提示后忽略（文件在读内容之前就按 `File.size` 判断）。
 - **上传**：选中就开始传（`blob.put_begin` → 每块 512 KiB 的 `blob.put_chunk` → `blob.put_end`；同一节点同时只有 1 张在上传、2 块在途，其余排队（规整可以提前做最多 2 张）——同一设备到 daemon 是一条有序的传输，这样「允许」「停止」最多排在约 1.4 MB 后面；daemon 每台设备同时也只收 8 个进行中的上传），输入框里一排附件（`composer-attachment`，`data-state` = `uploading` / `ready` / `error`，`data-kind` = `image` / `file`）：图片是 64 px 缩略图，点开看大图（和消息里的图同一个对话框）；文件是带图标、名字和大小的文件条，点了没有动作。上传中显示进度，失败的可以点重试（超过节点的 `sessions.max_attachment_bytes` 时显示「文件超过了这个节点允许的大小」），每个右上角有移除（移除时 `blob.discard`）。一条消息最多 10 个。有附件在上传时发送按钮禁用；上传完了，只有附件没有文字也能发
-- **发送**：`session.send` / `session.create` 带 `attachments`；「未发送」的消息连同附件引用一起留在本地，重发照常（daemon 已回收的附件会得到 `not_found` / `blob`，「编辑」时从本地缓存重传）。新建会话失败后重发沿用第一次的 `message_id`（超时但其实建好了时 daemon 返回那个会话）。草稿里的附件引用随草稿持久化，刷新后用 `blob.get { max_bytes: 1 }` 探一下，已被回收的从缓存重传（缓存没有就提示并去掉）。换到不收某些附件的 agent 时，那些附件留在输入区、变暗（`data-unsupported`），发送时不带；新建表单里会提示（全都不收 / 有一部分不收各一句）
+- **发送**：`session.send` / `session.create` 带 `attachments`；「未发送」的消息连同附件引用一起留在本地，重发照常（daemon 已回收的附件会得到 `not_found` / `blob`，「编辑」时从本地缓存重传）。新建会话失败后重发沿用第一次的 `message_id`（超时但其实建好了时 daemon 返回那个会话）。草稿里的附件引用随草稿持久化，刷新后用 `blob.get { max_bytes: 1 }` 探一下，已被回收的从缓存重传（缓存没有就提示并去掉）。节点带 `file_attachments` 时换 agent 不影响已添加的附件（agent 不原生收的由 daemon 落到工作目录）；旧 daemon 上换到不收某些附件的 agent 时，那些附件留在输入区、变暗（`data-unsupported`），发送时不带；新建表单里会提示（全都不收 / 有一部分不收各一句）。agent 不原生收的附件，daemon 在开 turn 时复制到会话工作目录的 `.anycon/attachments/<会话 id>/` 并把路径写进发给 agent 的文字，消息流里仍是用户发的原文；复制失败这一轮以 `attachment_failed` 错误结束（消息仍在历史里，处理好原因后重发），见 [daemon.md § 7.10](daemon.md#710-附件adr-35adr-44)
 - **文件的显示和下载**：四种图片之外的附件（包括 `image/svg+xml`、`text/html`）**永远不内联显示**：消息里是文件条（按钮，无障碍名「下载 <名字>」），滚动时不拉，点了才按「缓存 → `blob.get` 分段拉 → 写缓存」取到内容，用 `application/octet-stream` 的 `Blob` 加 `<a download>` 保存（文件名是记录的名字去掉不安全的字符），下载中显示转圈，失败显示「下载失败，点击重试」。`useBlobUrl` 对非图片的 mime 一律不建 `blob:` URL——附件里的 HTML / SVG 没有机会在 Web UI 的源里渲染或执行
 - **显示**：自己刚传的图直接用本地数据（同时写进 IndexedDB 的 `blobs` 缓存，键是 `blob_id`）；历史里的图先查缓存，没有再懒加载（`blob.get` 分段拉、同一节点同时最多 2 张），拉完写缓存，用 `blob:` URL 显示（CSP 已允许 `img-src blob:`）。点开是一个对话框看大图，带文件名、尺寸和下载
 - 导出 Markdown 时图片写成 `[图片：<文件名>]`（en：`[image: <name>]`），其它附件写成 `[文件：<文件名>]`（en：`[file: <name>]`）
@@ -458,7 +459,7 @@ nodes       { node_id, name, info, agents, last_seen }
 sessions    { session_id, node_id, project, agent, title, status, options, last_seq, updated_at }
 events      { [session_id, seq], event }                 主键是复合键，范围查询拉增量
 drafts      { session_id, text, attachments?: [AttachmentRef], unsent: [{ …, attachments? }] }
-blobs       { blob_id, bytes, mime, last_used_ms }       附件缓存（ADR-35），LRU 上限 200 MiB
+blobs       { blob_id, bytes, mime, last_used_ms }       附件缓存（ADR-35、ADR-44：图片和下载过 / 上传过的文件），LRU 上限 200 MiB
 ```
 
 按 origin 隔离，这是 [ADR-23](../decisions.md#adr-23-token-登录与局域网双-origin) 接受的代价。

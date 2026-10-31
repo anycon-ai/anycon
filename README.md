@@ -92,7 +92,7 @@ Prebuilt binaries are also attached to each [GitHub release](https://github.com/
 
 ## Clients
 
-**Web UI.** Served by the hub and installable as a PWA. It has streaming Markdown, tool-call rendering, diffs, permission approvals, model / reasoning / permission-mode pickers, per-session worktrees, image attachments, and Web Push notifications. Available in English and Chinese.
+**Web UI.** Served by the hub and installable as a PWA. It has streaming Markdown, tool-call rendering, diffs, permission approvals, model / reasoning / permission-mode pickers, per-session worktrees, image and file attachments, and Web Push notifications. Available in English and Chinese.
 
 **CLI.** Use it from any terminal:
 

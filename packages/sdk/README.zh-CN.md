@@ -71,13 +71,16 @@ await node.worktrees.remove(id, { force: true, deleteBranch: false })   // 会�
 - `prompt` 时 `create()` 不替你收第一个 turn 的事件：创建后马上 `s.events({ fromSeq: 0 })`（补历史期间到的实时事件会扣住、补完再接上，seq 严格递增不重复）。权限策略也要等会话有进行中的 `events()` / `send()` 才会代答。`messageId` 可传自己的幂等键：`create()` 超时后重试传同一个，daemon 返回第一次创建的会话，不会再开第二个。
 - 创建被拒的原因看 `RpcError.code` / `.reason`：项目不是 `worktree_ready` → `invalid` / `not_worktree_ready`，分支已存在 → `exists`，`base` 解析不了 → `invalid` / `bad_base`。`syncBase` 的失败：turn 在跑 → `busy`；有未提交改动 → `invalid` / `uncommitted_changes`；上次合并停在冲突里 → `invalid` / `merge_in_progress`；fetch / merge 失败 → `internal` / `fetch_failed` / `git_failed`。`gitStatus` 在会话不在 git 仓库里时 → `invalid` / `not_git`。
 
-## 附件（ADR-35）
+## 附件（ADR-35、ADR-44）
 
-图片和其它文件先经 blob 通道传到节点（`blob.put_begin` → 512 KiB 一块、最多 2 块在途的 `blob.put_chunk` → `blob.put_end`），消息只带 daemon 返回的引用（`AttachmentRef`）：
+图片和文件先经 blob 通道传到节点（`blob.put_begin` → 512 KiB 一块、最多 2 块在途的 `blob.put_chunk` → `blob.put_end`），消息只带 daemon 返回的引用（`AttachmentRef`）：
 
 ```ts
 import { readFile } from 'node:fs/promises'
 import { AttachmentError, acceptsAttachment } from '@anycon/sdk'
+
+// 任意文件：daemon 记下文件名和 mime，不看非图片的内容
+const doc = await node.uploadFile(await readFile('spec.pdf'), { name: 'spec.pdf' })   // mime 缺省：认得出图片就用图片的，否则 application/octet-stream
 
 const ref = await node.uploadImage(await readFile('shot.png'), {
   name: 'shot.png',                                          // mime 缺省按文件头判断（png / jpeg / gif / webp）
@@ -105,10 +108,11 @@ if (acceptsAttachment(agent, doc.mime)) {                    // agent：node.age
 }
 ```
 
-- **图片和其它文件。** `image/png`、`image/jpeg`、`image/gif`、`image/webp` 作为图片交给模型（daemon 核对文件头、读宽高）；其它文件以 daemon 所在机器上的路径交给 agent，由 agent 用自己的工具读（Claude Code 可能先请求读取权限）。收任意文件的 agent 在 `capabilities.attachments` 里列出 `'*/*'`（`ATTACHMENT_ANY_FILE`）；`acceptsAttachment(agent, mime)` 同时认点名的类型和通配项。
+- **图片和其它文件。** `image/png`、`image/jpeg`、`image/gif`、`image/webp` 是图片：daemon 核对文件头、读宽高，原生收图的 agent 把它们当图片看。其它文件 daemon 完全不读。agent 原生收的类型（`capabilities.attachments`，一般只是四种图片）直接交给它；其余的由 daemon 复制进会话的工作目录（`.anycon/attachments/<session_id>/`），路径列在发给 agent 的文字末尾。所以只要节点报了 `file_attachments`，每个 agent 都能用每种文件。
 - **`uploadFile(bytes, { name, mime? })`。** `mime` 缺省时先按文件头认四种图片，再查一张常见扩展名的小表（`pdf`、`txt`、`md`、`csv`、`json`、`html`、`xml`、`yaml`、`zip`、`gz`、`tar`、`js`、`ts`、`py`、`rs`、`go`……，见 `guessMime`），都不行用 `application/octet-stream`；扩展名是 `.png` 但内容不是 PNG 的不会被猜成图片。显式给的 `mime` 必须是成形的 `type/subtype`（不带参数），发出去前转小写，不成形抛 `AnyconError('invalid_mime')`，什么都不发；真正的校验在 daemon。`uploadImage` 仍然只传图片：给了别的 `mime`，或者没给而文件头认不出，抛 `AnyconError('unsupported_image')`。
 - **SDK 不缩放、不重编码图片。** 调用方自己把图控制在**长边 ≤ 2000 px、单张 ≤ 约 1.5 MiB**（比如先用 `sharp` / ImageMagick 缩一下）。daemon 的硬上限是每个文件 10 MiB（`sessions.max_attachment_bytes`）、每条消息至多 20 个附件且合计 ≤ 20 MiB；而图一旦进了 Claude Code 的会话历史，之后每个 turn 都会带着它重发，大图会让会话很快超过 Claude 的请求体上限。同理，`node.uploadImage()` 原样上传字节：**不去掉 EXIF 元数据（包括 GPS 位置），也不按 EXIF 方向转正**，只有 Web UI 会在上传前重编码图片。在意隐私或方向的调用方，请在 `uploadImage` 之前自己处理（比如 `sharp(bytes).rotate().toBuffer()`：按 EXIF 转正，输出默认不带元数据）。
-- agent 收不收某种文件看 `acceptsAttachment((await node.agents.list())[i], ref.mime)`；节点支不支持 blob 通道看 `(await node.info()).capabilities.blobs`。
+- 节点和 agent 收不收某种文件看 `acceptsAttachment(await node.info(), agent, ref.mime)`（节点带 `capabilities.file_attachments` 时为 true，否则只对 agent 原生收的类型为 true，即 `isNativeAttachment(agent, ref.mime)`；`agent` 是 `node.agents.list()` 里的一项）；节点支不支持 blob 通道看 `(await node.info()).capabilities.blobs`，上限在 `attachment_limits` 里。
+- **文件和 agent 不原生收的图片会落到工作目录。** agent 收的 mime（`capabilities.attachments`）直接交给它；其余的（所有非图片文件、agent 不收的图片格式）daemon 复制到会话工作目录的 `.anycon/attachments/<session_id>/` 下，并在发给 agent 的文字末尾用相对路径列出；`user_message` 事件里仍是原文和附件元数据。单个文件默认 ≤ 10 MiB（`sessions.max_attachment_bytes`），每条消息至多 20 个、合计 ≤ 20 MiB。复制失败（磁盘满、`.anycon/attachments` 被换成符号链接…）时这一轮以 `error { code: 'attachment_failed' }` 结束，处理好原因后重发。没有 `file_attachments` 的 daemon（旧版本）只收图片，别的文件得到 `unsupported`。
 - 同一个 `Node` 上的上传（图片和文件一样）**排队、一次一个**（`Promise.all` 一批也只有一个在传、2 块在途），免得「允许」「停止」之类的请求排在几 MB 的文件后面。超时（每块默认 90 秒，`requestTimeoutMs`）/ 掉线的块各自重试 2 次，daemon 的明确拒绝不重试；失败或 `signal` 中止时 SDK 尽力 `blob.discard`。
 - 被拒抛 `AttachmentError`（`RpcError` 的子类，`.code` 照旧，`.reason` 收窄）：
 
@@ -120,9 +124,9 @@ if (acceptsAttachment(agent, doc.mime)) {                    // agent：node.age
   | `blob` | `not_found` | 引用的附件已被回收（24 小时没用）或丢掉了：重新上传 |
   | `blob_in_use` | `invalid` | 这个附件已经用在别的会话里（一个附件只属于一个会话）：重新上传 |
   | `in_use` | `invalid` | `discardAttachment` 一个已被消息引用的附件（它随会话删除） |
-  | `finalizing` / `incomplete` / `hash_mismatch` / `mime_mismatch` | `invalid` | 上传的收尾和校验没过（文件头和 `mime` 对不上、内容在路上坏了） |
+  | `finalizing` / `incomplete` / `hash_mismatch` / `mime_mismatch` | `invalid` | 上传的收尾和校验没过（声明为图片而文件头和 `mime` 对不上、内容在路上坏了） |
 
-  把附件发给不收这种类型的 agent → `RpcError`（`unsupported`）；这台设备同时进行的上传超过 8 个 → `RpcError`（`busy`，没有 `reason`）；`uploadImage` 给了非图片 `mime`、或 `mime` 缺省而文件头认不出 → `AnyconError('unsupported_image')`；`uploadFile` 给了不成形的 `mime` → `AnyconError('invalid_mime')`。这两种情况什么都不发。
+  没有 `file_attachments` 的 daemon（旧版本）收到 agent 原生收的类型以外的文件 → `RpcError`（`unsupported`）；这台设备同时进行的上传超过 8 个 → `RpcError`（`busy`，没有 `reason`）；`uploadImage` 给了非图片 `mime`、或 `mime` 缺省而文件头认不出 → `AnyconError('unsupported_image')`；`uploadFile` 给了不成形的 `mime` → `AnyconError('invalid_mime')`。这两种情况什么都不发。
 
 ## API 速览
 

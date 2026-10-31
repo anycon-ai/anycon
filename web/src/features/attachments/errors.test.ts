@@ -8,12 +8,14 @@ const t = i18n.t.bind(i18n)
 
 describe('describeAttachNotice', () => {
   it('has a sentence for every reason an attachment can be turned away', () => {
-    expect(describeAttachNotice({ kind: 'not_image', name: 'a.txt' }, t)).toBe('This agent only accepts images. Skipped a.txt.')
+    expect(describeAttachNotice({ kind: 'not_image', name: 'a.txt' }, t)).toBe('This node only accepts images. Skipped a.txt.')
     expect(describeAttachNotice({ kind: 'max', max: 10 }, t)).toBe('You can attach up to 10 files to one message.')
     expect(describeAttachNotice({ kind: 'undecodable', name: 'b.png' }, t)).toBe("Couldn't read b.png as an image.")
     expect(describeAttachNotice({ kind: 'too_large', name: 'c.png' }, t)).toBe('c.png is still too large after shrinking it.')
     expect(describeAttachNotice({ kind: 'unsupported_format', name: 'd.png' }, t)).toContain("doesn't accept")
-    expect(describeAttachNotice({ kind: 'total', name: 'e.png', max: 15 * 1024 * 1024 }, t)).toBe('Skipped e.png: the attachments on one message can add up to 15 MiB at most.')
+    expect(describeAttachNotice({ kind: 'total', name: 'e.png', max: 15 * 1024 * 1024 }, t)).toBe('Skipped e.png: the images on one message can add up to 15 MiB at most.')
+    expect(describeAttachNotice({ kind: 'total', name: 'f.zip', max: 20 * 1024 * 1024, scope: 'all' }, t)).toBe('Skipped f.zip: the attachments on one message can add up to 20 MiB at most.')
+    expect(describeAttachNotice({ kind: 'file_too_large', name: 'g.pdf', max: 10 * 1024 * 1024 }, t)).toBe('Skipped g.pdf: a single file can be 10 MiB at most.')
     expect(describeAttachNotice({ kind: 'lost', count: 1 }, t)).toBe('1 attachment could not be restored. Add it again.')
     expect(describeAttachNotice({ kind: 'lost', count: 3 }, t)).toBe('3 attachments could not be restored. Add them again.')
   })
@@ -51,7 +53,9 @@ describe('describeAttachmentError', () => {
     try {
       expect(describeAttachmentError(rpcError('invalid', undefined, 'too_large'), t)).toBe('文件超过了这个节点接受的大小。')
       expect(describeAttachNotice({ kind: 'max', max: 10 }, t)).toBe('一条消息最多带 10 个附件。')
-      expect(describeAttachNotice({ kind: 'total', name: 'e.png', max: 15 * 1024 * 1024 }, t)).toBe('已忽略 e.png：一条消息的附件合计最多 15 MiB。')
+      expect(describeAttachNotice({ kind: 'total', name: 'e.png', max: 15 * 1024 * 1024 }, t)).toBe('已忽略 e.png：一条消息的图片合计最多 15 MiB。')
+      expect(describeAttachNotice({ kind: 'total', name: 'f.zip', max: 20 * 1024 * 1024, scope: 'all' }, t)).toBe('已忽略 f.zip：一条消息的附件合计最多 20 MiB。')
+      expect(describeAttachNotice({ kind: 'file_too_large', name: 'g.pdf', max: 10 * 1024 * 1024 }, t)).toBe('已忽略 g.pdf：单个文件最多 10 MiB。')
       expect(describeAttachNotice({ kind: 'lost', count: 2 }, t)).toBe('有 2 个附件没能恢复，请重新添加。')
       expect(describeAttachmentError(rpcError('busy', undefined, 'quota'), t)).toBe('节点上堆着太多还没发送的附件。先发送或移除一些，或者稍后再试。')
       expect(describeAttachmentError(rpcError('busy', undefined, 'disk_full'), t)).toBe('节点的磁盘快满了，暂时收不了更多附件。')

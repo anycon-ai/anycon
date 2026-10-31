@@ -6,7 +6,7 @@ describe('errorSeverity', () => {
     expect(errorSeverity('agent_reconnecting')).toBe('notice')
     expect(errorSeverity('agent_context_reset')).toBe('notice')
     expect(errorSeverity('unsupported_request')).toBe('warning')
-    for (const code of ['context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed', 'agent_error', 'agent_exited', '']) {
+    for (const code of ['context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed', 'attachment_failed', 'agent_error', 'agent_exited', '']) {
       expect(errorSeverity(code)).toBe('error')
     }
   })
@@ -19,7 +19,7 @@ describe('errorSeverity', () => {
   })
 
   it('knows which codes have localized copy', () => {
-    for (const code of ['agent_reconnecting', 'agent_context_reset', 'unsupported_request', 'context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed']) {
+    for (const code of ['agent_reconnecting', 'agent_context_reset', 'unsupported_request', 'context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed', 'attachment_failed']) {
       expect(isExplainedError(code)).toBe(true)
     }
     expect(isExplainedError('agent_error')).toBe(false)

@@ -18,7 +18,7 @@ export function errorSeverity(code: string): ErrorSeverity {
 }
 
 /** 有本地化说明（`agentError.<code>`）的 code；其它 code 只显示 daemon 给的 message。 */
-export const EXPLAINED_ERROR_CODES = ['agent_reconnecting', 'agent_context_reset', 'unsupported_request', 'context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed'] as const
+export const EXPLAINED_ERROR_CODES = ['agent_reconnecting', 'agent_context_reset', 'unsupported_request', 'context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed', 'attachment_failed'] as const
 
 const EXPLAINED: ReadonlySet<string> = new Set(EXPLAINED_ERROR_CODES)
 

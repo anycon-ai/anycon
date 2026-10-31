@@ -37,9 +37,14 @@ describe('installBlobDaemon', () => {
     expect(d.peak.uploads).toBe(8)
   })
 
-  it('takes any well-formed type/subtype (recorded in lower case), refuses malformed ones, and checks the header only for the four image types', async () => {
+  it('takes any mime (recorded in lower case, parameters dropped, malformed ones as application/octet-stream) and checks the header only for the four image types', async () => {
     installBlobDaemon(rpc)
-    for (const bad of ['', 'text', 'text/plain; charset=utf-8', '*/*', `a/${'b'.repeat(130)}`]) await expect(begin(1, bad)).rejects.toMatchObject({ code: 'invalid' })
+    for (const bad of ['', 'text', '*/*', `a/${'b'.repeat(130)}`]) {
+      const { blob_id } = (await begin(1, bad)) as { blob_id: string }
+      expect(await rpc.request(NODE, 'blob.put_end', { blob_id })).toMatchObject({ mime: 'application/octet-stream' })
+    }
+    const { blob_id: withParams } = (await begin(1, 'Text/Plain; charset=utf-8')) as { blob_id: string }
+    expect(await rpc.request(NODE, 'blob.put_end', { blob_id: withParams })).toMatchObject({ mime: 'text/plain' })
     const { blob_id: pdf } = (await begin(1, 'Application/PDF')) as { blob_id: string }
     expect(await rpc.request(NODE, 'blob.put_end', { blob_id: pdf })).toEqual({ blob_id: pdf, name: '1.bin', mime: 'application/pdf', bytes: 10 })
     const { blob_id: png } = (await begin(2, 'image/png')) as { blob_id: string }

@@ -641,11 +641,13 @@
     "attachOffline": "The node is offline. Files can't be attached right now.",
     "attachMax_one": "You can attach up to {{count}} file to one message.",
     "attachMax_other": "You can attach up to {{count}} files to one message.",
-    "attachNotImage": "This agent only accepts images. Skipped {{name}}.",
+    "attachNotImage": "This node only accepts images. Skipped {{name}}.",
+    "attachFileTooLarge": "Skipped {{name}}: a single file can be {{size}} at most.",
     "attachUndecodable": "Couldn't read {{name}} as an image.",
     "attachTooLarge": "{{name}} is still too large after shrinking it.",
     "attachUnsupported": "This agent doesn't accept any of the image formats the app can send.",
-    "attachTotal": "Skipped {{name}}: the attachments on one message can add up to {{size}} at most.",
+    "attachTotal": "Skipped {{name}}: the images on one message can add up to {{size}} at most.",
+    "attachTotalAll": "Skipped {{name}}: the attachments on one message can add up to {{size}} at most.",
     "attachmentsUnsupported": "The selected agent doesn't accept attachments, so the ones you added won't be sent.",
     "attachmentsPartlyUnsupported": "The selected agent doesn't accept some of the files you added, so those won't be sent.",
     "attachUploading": "Wait for the attachments to finish uploading.",
@@ -1231,7 +1233,8 @@
     "policy_violation": "The provider’s usage policy stopped this request. Rephrase it or change the task.",
     "rate_limited": "The agent hit a rate or usage limit. Wait a while and try again.",
     "auth_failed": "The agent is not signed in, or its credentials were rejected. Check its status in the node settings.",
-    "agent_context_reset": "Earlier messages in this conversation are no longer visible to the agent — it started a fresh thread."
+    "agent_context_reset": "Earlier messages in this conversation are no longer visible to the agent — it started a fresh thread.",
+    "attachment_failed": "The node couldn't save the attachments in the session's working directory, so this message was not passed to the agent. Fix the cause below (for example free up disk space), then send it again."
   },
   "markdown": {
     "loadImage": "Load image from {{host}}",

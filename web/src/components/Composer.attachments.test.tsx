@@ -215,7 +215,7 @@ describe('Composer attachments: picking, uploading, sending', () => {
     // input 的 accept 在真实浏览器里会过滤；拖放不会，所以走拖放
     fireEvent.drop(screen.getByTestId('composer-dropzone'), { dataTransfer: { types: ['Files'], files: [new File(['x'], 'notes.txt', { type: 'text/plain' })] } })
     expect(thumbs()).toEqual([])
-    expect(toastTexts()).toEqual(['This agent only accepts images. Skipped notes.txt.'])
+    expect(toastTexts()).toEqual(['This node only accepts images. Skipped notes.txt.'])
   })
 
   it('tells the user when an image cannot be decoded and leaves no placeholder', async () => {

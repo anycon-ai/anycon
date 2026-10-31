@@ -1,6 +1,6 @@
 // 输入区附件的流水线（ADR-35）：选中 → 规整（图片）/ 读出字节（其它文件）→ 上传 → 传完。状态放在 drafts store 的 `items` 里（组件卸载 / 切换会话不会打断上传），
 // 这里只管把 File 推过流水线、处理移除 / 重试 / 发送后清理 / 失败后恢复。组件和测试都调这些函数。
-import type { AttachmentRef } from '@/protocol'
+import type { AttachmentRef, NodeAttachmentLimits } from '@/protocol'
 import { uuid } from '@/lib/ids'
 import { useDrafts, onDraftsReset, type AttachmentItem } from '@/stores/drafts'
 import { RpcCallError } from '@/transport/rpcClient'
@@ -13,11 +13,15 @@ import { fileMime, ImageError, isImageMime, nameForMime, normalizeImage, OCTET_S
 /** 一条消息最多带几个附件（图片和文件一起算；daemon 的上限是 20，输入区取 10）。 */
 export const MAX_ATTACHMENTS = 10
 /**
- * 一条消息的附件（图片按规整后、文件按原大小，合在一起算）合计字节上限：15 MiB。Claude 单次请求的上限是 32 MB，
- * 图片 base64 后每张约 ×1.33，再留出文字和历史的余地；daemon 另有单个附件（`sessions.max_attachment_bytes`）和
- * 每条消息 20 MiB 的兜底（`invalid` / `too_large`）。再加的附件提示后忽略。
+ * 一条消息里走规整流程的图片（规整后的大小）合计字节上限：15 MiB。Claude 单次请求的上限是 32 MB，图片 base64 后每张约 ×1.33，
+ * 再留出文字和历史的余地。原样上传的文件（包括 agent 不收图时按文件传的图片）不进请求，不受这个限制，只受下面节点的
+ * 单条消息上限。再加的附件提示后忽略。
  */
 export const MAX_TOTAL_BYTES = 15 * 1024 * 1024
+/** 节点没报 `attachment_limits`（旧 daemon）时的单个附件上限：`sessions.max_attachment_bytes` 的默认值。 */
+export const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024
+/** 节点没报 `attachment_limits` 时一条消息所有附件的合计上限：daemon 固定的 20 MiB。 */
+export const DEFAULT_MAX_MESSAGE_BYTES = 20 * 1024 * 1024
 /**
  * 同一节点同时上传几个：1。上传和这台设备的其它请求（允许 / 停止 / 发消息）共用一条有序的加密通道，
  * 一个附件在传时在途的只有 2 块（base64 后约 1.4 MB），排在后面的交互请求最多等一两秒；多个同时传只会让它们等得更久。
@@ -36,8 +40,10 @@ export type AttachNotice =
   | { kind: 'not_image'; name: string }
   | { kind: 'max'; max: number }
   | { kind: ImageErrorCode; name: string }
-  /** 加上这个，一条消息的附件合计超过 `max` 字节：这个被忽略。 */
-  | { kind: 'total'; name: string; max: number }
+  /** 文件超过节点的单个附件上限 `max` 字节：这个被忽略（不读、不算哈希、不上传）。 */
+  | { kind: 'file_too_large'; name: string; max: number }
+  /** 加上这个，一条消息的附件超过 `max` 字节：这个被忽略。`scope = 'all'` 是所有附件的合计（节点的单条消息上限），缺省是走规整的图片的合计。 */
+  | { kind: 'total'; name: string; max: number; scope?: 'all' }
   /** 草稿 / 未发送消息里的附件在节点上没了、本地缓存里也没有：`count` 个被去掉。 */
   | { kind: 'lost'; count: number }
 
@@ -47,8 +53,10 @@ export interface AttachContext {
   nodeId: string
   /** 这个 agent 作为图片收的 mime（已经和四种图片格式取过交集，见 `AttachmentSupport.images`）。 */
   accepted: readonly string[]
-  /** agent 收任意文件（`AttachmentSupport.files`）：不是图片的文件原样上传，规整不了的图也改按文件上传。 */
+  /** 节点收任意文件（`AttachmentSupport.files`，ADR-44）：不是图片的文件原样上传，规整不了的图（或 agent 不收图时的图）也改按文件上传。 */
   files?: boolean
+  /** 节点报的附件上限（`AttachmentSupport.limits`）；缺省按 [`DEFAULT_MAX_FILE_BYTES`] / [`DEFAULT_MAX_MESSAGE_BYTES`]。 */
+  limits?: NodeAttachmentLimits
   notify: (notice: AttachNotice) => void
   /** 测试注入。 */
   codec?: ImageCodec
@@ -99,8 +107,12 @@ export const isImageFile = (f: File): boolean => f.type === '' || f.type.toLower
 /** 规整失败时，agent 收任意文件就改按文件原样上传的原因：不是图片 / 浏览器解不开 / 编不出 agent 收的图片格式。 */
 const FILE_FALLBACK: readonly ImageErrorCode[] = ['not_image', 'undecodable', 'unsupported_format']
 
-/** 一条消息里已经准备好 / 传完的附件合计多少字节（`exceptId` 那个不算）。 */
-const usedBytes = (key: string, exceptId: string): number => items(key).reduce((sum, i) => (i.id === exceptId ? sum : sum + (i.ref?.bytes ?? i.bytes ?? 0)), 0)
+/** 一条消息里已经准备好 / 传完的附件合计多少字节（`exceptId` 那个不算）；`only` 限定哪些算。 */
+const usedBytes = (key: string, exceptId: string, only?: (i: AttachmentItem) => boolean): number =>
+  items(key).reduce((sum, i) => (i.id === exceptId || (only && !only(i)) ? sum : sum + (i.ref?.bytes ?? i.bytes ?? 0)), 0)
+
+const maxFileBytes = (ctx: AttachContext): number => ctx.limits?.max_bytes ?? DEFAULT_MAX_FILE_BYTES
+const maxMessageBytes = (ctx: AttachContext): number => ctx.limits?.max_message_bytes ?? DEFAULT_MAX_MESSAGE_BYTES
 
 /**
  * 一个附件的流水线：排规整名额 → 规整 / 读出字节 → 排上传名额（拿到后才放掉规整名额）→ 上传。
@@ -145,7 +157,7 @@ async function prepare(key: string, id: string, rt: Runtime): Promise<boolean> {
   try {
     const image = await normalizeImage(rt.file!, { accepted: ctx.accepted, codec: ctx.codec })
     if (ctl.signal.aborted || !hasItem(key, id)) return false
-    if (!withinTotal(key, id, rt.file?.name ?? image.name, image.bytes.length, ctx)) return false
+    if (!withinTotal(key, id, rt.file?.name ?? image.name, image.bytes.length, ctx, 'image')) return false
     rt.prepared = image
     rt.file = undefined
     // 只有四种栅格图片会做本地预览（规整的结果一定是其中之一）
@@ -168,11 +180,30 @@ async function prepare(key: string, id: string, rt: Runtime): Promise<boolean> {
   }
 }
 
-/** 加上 `bytes` 一条消息的附件合计还在上限内；超了就丢掉这个并提示，返回 false。 */
-function withinTotal(key: string, id: string, name: string, bytes: number, ctx: AttachContext): boolean {
-  if (usedBytes(key, id) + bytes <= MAX_TOTAL_BYTES) return true
+/**
+ * 加上 `bytes` 之后一条消息的附件还在上限内；超了就丢掉这个并提示，返回 false。走规整的图片先看图片的 15 MiB（它们进模型的请求），
+ * 所有附件再看节点的单条消息上限（默认 20 MiB）。
+ */
+function withinTotal(key: string, id: string, name: string, bytes: number, ctx: AttachContext, kind: 'image' | 'file'): boolean {
+  if (kind === 'image' && usedBytes(key, id, (i) => i.kind !== 'file') + bytes > MAX_TOTAL_BYTES) {
+    dropItem(key, id)
+    ctx.notify({ kind: 'total', name, max: MAX_TOTAL_BYTES })
+    return false
+  }
+  const max = maxMessageBytes(ctx)
+  if (usedBytes(key, id) + bytes > max) {
+    dropItem(key, id)
+    ctx.notify({ kind: 'total', name, max, scope: 'all' })
+    return false
+  }
+  return true
+}
+
+/** 文件超过节点的单个附件上限：丢掉并提示（还没读、没算哈希）。 */
+function withinFileLimit(key: string, id: string, file: File, ctx: AttachContext): boolean {
+  if (file.size <= maxFileBytes(ctx)) return true
   dropItem(key, id)
-  ctx.notify({ kind: 'total', name, max: MAX_TOTAL_BYTES })
+  ctx.notify({ kind: 'file_too_large', name: file.name, max: maxFileBytes(ctx) })
   return false
 }
 
@@ -191,7 +222,8 @@ function uploadMime(declared: string, bytes: Uint8Array): string {
 async function prepareFile(key: string, id: string, rt: Runtime): Promise<boolean> {
   const { ctx, ctl } = rt
   const file = rt.file!
-  if (!withinTotal(key, id, file.name, file.size, ctx)) return false
+  // 先按 `File.size` 查（不必读出来）：节点的单个上限和一条消息的合计上限
+  if (!withinFileLimit(key, id, file, ctx) || !withinTotal(key, id, file.name, file.size, ctx, 'file')) return false
   const bytes = await readBytes(file)
   if (ctl.signal.aborted || !hasItem(key, id)) return false
   const mime = uploadMime(file.type, bytes)
@@ -230,15 +262,18 @@ function start(ctx: AttachContext, item: AttachmentItem, source: { file?: File; 
 }
 
 /**
- * 选择 / 粘贴 / 拖放进来的文件。agent 收图片时，图片（含浏览器没报类型的）先规整；agent 收任意文件时，其余文件原样上传，
- * 否则提示后忽略。超过 10 个的提示后忽略。
+ * 选择 / 粘贴 / 拖放进来的文件。agent 收图片时，图片（含浏览器没报类型的）先规整；节点收任意文件时，其余文件（以及 agent 不收图时的图片）
+ * 原样上传，超过节点单个上限的提示后忽略；节点只收图片（旧 daemon）时，其余文件提示后忽略。超过 10 个的提示后忽略。
  */
 export function addFiles(files: Iterable<File>, ctx: AttachContext): void {
   const picked: { file: File; asFile: boolean }[] = []
   for (const file of files) {
     if (ctx.accepted.length > 0 && isImageFile(file)) picked.push({ file, asFile: false })
-    else if (ctx.files) picked.push({ file, asFile: true })
-    else ctx.notify({ kind: 'not_image', name: file.name })
+    else if (ctx.files) {
+      // 原样上传的先按节点的单个上限看一眼：超了就不必读、不必算哈希。走规整的图在规整后再按它自己的上限看
+      if (file.size > maxFileBytes(ctx)) ctx.notify({ kind: 'file_too_large', name: file.name, max: maxFileBytes(ctx) })
+      else picked.push({ file, asFile: true })
+    } else ctx.notify({ kind: 'not_image', name: file.name })
   }
   const room = Math.max(0, MAX_ATTACHMENTS - items(ctx.draftKey).length)
   if (picked.length > room) ctx.notify({ kind: 'max', max: MAX_ATTACHMENTS })

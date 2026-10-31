@@ -12,6 +12,8 @@ export function describeAttachNotice(n: AttachNotice, t: TFunction): string {
       return t('composer.attachNotImage', { name: n.name })
     case 'max':
       return t('composer.attachMax', { count: n.max })
+    case 'file_too_large':
+      return t('composer.attachFileTooLarge', { name: n.name, size: formatBytes(n.max) })
     case 'undecodable':
       return t('composer.attachUndecodable', { name: n.name })
     case 'too_large':
@@ -19,7 +21,7 @@ export function describeAttachNotice(n: AttachNotice, t: TFunction): string {
     case 'unsupported_format':
       return t('composer.attachUnsupported')
     case 'total':
-      return t('composer.attachTotal', { name: n.name, size: formatBytes(n.max) })
+      return t(n.scope === 'all' ? 'composer.attachTotalAll' : 'composer.attachTotal', { name: n.name, size: formatBytes(n.max) })
     case 'lost':
       return t('message.attachmentLost', { count: n.count })
   }

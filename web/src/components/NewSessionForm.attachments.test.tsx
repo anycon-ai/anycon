@@ -35,8 +35,9 @@ const png = (name = 'shot.png', size = 1500): File => {
 }
 const caps = (attachments?: string[]) => ({ env: false, interject: false, interrupt: true, resume: true, rewind: false, structured_output: false, thinking_stream: true, usage: true, attachments })
 
-function mount(agents: AgentInfo[] = [mockAgent({ capabilities: caps(['image/png']) })], blobs = true, conn: 'ready' | 'peer_offline' = 'ready') {
-  const info = nodeInfo({ capabilities: { audit: true, blobs, fs: true, search: false, workspace: true }, worktree: null })
+/** `files`：节点收任意文件（`capabilities.file_attachments`，ADR-44）。 */
+function mount(agents: AgentInfo[] = [mockAgent({ capabilities: caps(['image/png']) })], blobs = true, conn: 'ready' | 'peer_offline' = 'ready', files = false) {
+  const info = nodeInfo({ capabilities: { audit: true, blobs, fs: true, search: false, workspace: true, ...(files ? { file_attachments: true } : {}) }, worktree: null })
   useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, agents, projects: [gitProject('app')], info, conn }) }, order: [NODE], loaded: true })
   return render(<NewSessionForm nodeId={NODE} project="app" />)
 }
@@ -174,21 +175,34 @@ describe('new-session form: images', () => {
     expect(createParams()).toMatchObject({ agent: 'plain', prompt: 'hello' })
   })
 
-  it('switching from an agent that takes any file to one that only takes images: a hint, and the files added are left out (the images still go)', async () => {
+  it('on a node that takes any file, switching agents never leaves an attachment out: the node saves what the agent does not take natively', async () => {
     installBlobDaemon(rpc, { chunkSize: 1024 })
-    mount([mockAgent({ capabilities: caps(['image/png', '*/*']) }), mockAgent({ id: 'pics', label: 'Pics', capabilities: caps(['image/png']) })])
+    mount([mockAgent({ capabilities: caps(['image/png']) }), mockAgent({ id: 'plain', label: 'Plain', capabilities: caps(undefined) })], true, 'ready', true)
     expect(screen.getByTestId('composer-file-input')).not.toHaveAttribute('accept')
     await userEvent.upload(screen.getByTestId('composer-file-input'), [png('keep.png'), new File(['# notes'], 'notes.md', { type: 'text/markdown' })])
     await waitFor(() => expect(screen.getAllByTestId('composer-attachment').map((e) => e.getAttribute('data-state'))).toEqual(['ready', 'ready']))
-    expect(screen.queryByTestId('composer-attachments-unsupported')).toBeNull()
 
-    await pickAgent('pics')
-    expect(screen.getByTestId('composer-attachments-unsupported')).toHaveTextContent("The selected agent doesn't accept some of the files you added, so those won't be sent.")
-    expect(screen.getByTestId('composer-file-input')).toHaveAttribute('accept', 'image/png,image/*')
+    // 不原生收任何附件的 agent：仍然有「＋」，已经添加的都还在，也没有「不会带上」的提示
+    await pickAgent('plain')
+    expect(screen.getByTestId('composer-plus')).toBeEnabled()
+    expect(screen.queryByTestId('composer-attachments-unsupported')).toBeNull()
+    expect(screen.getByTestId('composer-file-input')).not.toHaveAttribute('accept')
     await userEvent.type(screen.getByTestId('composer-input'), 'hello{Enter}')
     await waitFor(() => expect(createParams()).toBeDefined())
-    expect(createParams()).toMatchObject({ agent: 'pics', prompt: 'hello', attachments: [{ name: 'keep.png', mime: 'image/png' }] })
-    expect(createParams()!.attachments).toHaveLength(1)
+    expect(createParams()).toMatchObject({ agent: 'plain', prompt: 'hello', attachments: [{ name: 'keep.png', mime: 'image/png' }, { name: 'notes.md', mime: 'text/markdown' }] })
+    expect(createParams()!.attachments).toHaveLength(2)
+  })
+
+  it('on a node that only takes images, switching to an agent that takes none leaves the attachments out, with a hint', async () => {
+    installBlobDaemon(rpc, { chunkSize: 1024 })
+    mount([mockAgent({ capabilities: caps(['image/png']) }), mockAgent({ id: 'plain', label: 'Plain', capabilities: caps(undefined) })])
+    await userEvent.upload(screen.getByTestId('composer-file-input'), png('keep.png'))
+    await waitFor(() => expect(screen.getByTestId('composer-attachment')).toHaveAttribute('data-state', 'ready'))
+    await pickAgent('plain')
+    expect(screen.getByTestId('composer-attachments-unsupported')).toBeInTheDocument()
+    await userEvent.type(screen.getByTestId('composer-input'), 'hello{Enter}')
+    await waitFor(() => expect(createParams()).toBeDefined())
+    expect(createParams()!.attachments).toBeUndefined()
   })
 
   it('the hint goes away and the images are back when the agent that takes images is selected again', async () => {

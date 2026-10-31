@@ -155,7 +155,7 @@ export function NewSessionForm({ nodeId, project, agentId, focus, onProjectChang
         notice={notice}
         context={contextControls(false)}
         placeholder={project ? t('composer.placeholderProject', { project }) : t('composer.placeholderScratch')}
-        attachments={support ? { nodeId, accept: support.images, files: support.files, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
+        attachments={support ? { nodeId, accept: support.images, files: support.files, limits: support.limits, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
         options={(layout) => {
           const stacked = layout === 'stacked'
           return (
@@ -197,7 +197,7 @@ export function NewSessionForm({ nodeId, project, agentId, focus, onProjectChang
             toast.error(describeAttachmentFailure(failure, t) ?? describeCreateError(e, t, worktreeReady && workspaceMode === 'worktree'))
             // 发送失败把文字和附件放回输入框，别丢
             useDrafts.getState().setText(draftKey, prompt)
-            if (attachments.length > 0) void restoreAttachments({ draftKey, nodeId, accepted: support?.images ?? [], files: support?.files, notify: (n) => toast.info(describeAttachNotice(n, t)) }, attachments, { expired })
+            if (attachments.length > 0) void restoreAttachments({ draftKey, nodeId, accepted: support?.images ?? [], files: support?.files, limits: support?.limits, notify: (n) => toast.info(describeAttachNotice(n, t)) }, attachments, { expired })
           } finally {
             setBusy(false)
           }

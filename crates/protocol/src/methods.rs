@@ -13,6 +13,12 @@ pub const NODE_STATS: &str = "node.stats";
 pub const NODE_DOCTOR: &str = "node.doctor";
 pub const NODE_AUDIT: &str = "node.audit";
 pub const NODE_SET_AGENT_DEFAULTS: &str = "node.set_agent_defaults";
+/// 可以远程查看的配置项（白名单，ADR-43）。
+pub const NODE_GET_CONFIG: &str = "node.get_config";
+/// 远程修改白名单里的配置项；安全相关的键只能收紧（ADR-43）。
+pub const NODE_SET_CONFIG: &str = "node.set_config";
+/// daemon 日志文件的尾部。
+pub const NODE_LOGS: &str = "node.logs";
 
 // 账号内接入（ADR-36）
 /// 进行中的接入会话。
@@ -165,6 +171,9 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(NODE_DOCTOR, None, Some("NodeDoctorResult")),
     req(NODE_AUDIT, Some("NodeAuditParams"), Some("NodeAuditResult")),
     req(NODE_SET_AGENT_DEFAULTS, Some("NodeSetAgentDefaultsParams"), None),
+    req(NODE_GET_CONFIG, None, Some("NodeConfigResult")),
+    req(NODE_SET_CONFIG, Some("NodeSetConfigParams"), Some("NodeConfigResult")),
+    req(NODE_LOGS, Some("NodeLogsParams"), Some("NodeLogsResult")),
     req(NODE_ENROLL_LIST, None, Some("NodeEnrollListResult")),
     req(NODE_ENROLL_APPROVE, Some("NodeEnrollApproveParams"), Some("NodeEnrollApproveResult")),
     req(NODE_ENROLL_DENY, Some("NodeEnrollIdParams"), None),

@@ -44,6 +44,12 @@ export const METHODS = {
   NODE_DOCTOR: 'node.doctor',
   NODE_AUDIT: 'node.audit',
   NODE_SET_AGENT_DEFAULTS: 'node.set_agent_defaults',
+  /** 可以远程查看的配置项（白名单，ADR-43）。 */
+  NODE_GET_CONFIG: 'node.get_config',
+  /** 远程修改白名单里的配置项；安全相关的键只能收紧（ADR-43）。 */
+  NODE_SET_CONFIG: 'node.set_config',
+  /** daemon 日志文件的尾部。 */
+  NODE_LOGS: 'node.logs',
 
   // 账号内接入（ADR-36）
   /** 进行中的接入会话。 */

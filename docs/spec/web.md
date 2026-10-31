@@ -420,7 +420,7 @@ hub 的 REST 接口用 TanStack Query，不进 zustand。
 ### 6.2 IndexedDB
 
 ```
-keys        { device_id, static_keypair }                 本设备 Noise 密钥
+keys        { device_id, device_token, device_token_issued_at_ms, static_keypair }   本设备 Noise 密钥、hub 签发的 device token 和它的签发时间（轮换见 § 6.4）
 nodes       { node_id, name, info, agents, last_seen }
 sessions    { session_id, node_id, project, agent, title, status, options, last_seq, updated_at }
 events      { [session_id, seq], event }                 主键是复合键，范围查询拉增量
@@ -455,6 +455,13 @@ hub_disconnected → hub_connecting → hub_authed
 ```
 
 hub 重连用指数退避 1s → 30s 加抖动；收到 `4002 restarting` 用 1–3 秒。页面从后台回到前台（`visibilitychange`）立即触发一次重连检查，这对手机很重要。
+
+**device token 轮换**（hub 侧规则见 [hub.md § 5](hub.md#5-设备与设备-token)）。device token 签发满 30 天就换一个，缩短泄露的 token 的有效期。`keys` 记录里的 `device_token_issued_at_ms` 是它的签发时间（配对 / 接入拿到它，或最近一次轮换的时刻）；没有这个字段的旧记录当作「很旧」，下次连上 hub 就轮换一次。
+
+- **触发**：每次 `auth_ok` 之后，在用 device token 认证的连接上，token 到期（满 30 天；签发时间未知，或在「未来」——时钟被往回拨过，时间不可信——也算到期）就发 `rotate_token`。临时连接（没有 device token，只为配对而来）不发
+- **重发和复查**：hub 同一设备 1 分钟内只轮换一次，多余的请求既不回复也没有失败通知，而旧 token 轮换之后在 hub 只再保留 60 秒，所以 `token_rotated` 丢了不能不管：发出 75 秒后还没拿到新 token 就再发一次，一条连接上头 3 次都这样间隔 75 秒（轮换成功、或 token 不再到期后重新计数）；之后以及没到期时，每小时检查一次、到期就再发：一个一直开着的标签页超过 30 天也会轮换，hub 一直不回复（比如不支持轮换）时也只是每小时一帧。断开和停止时清掉定时器，新连接 `auth_ok` 后重新开始
+- **落盘**：收到 `token_rotated` 后，新 token 和新的签发时间作为同一份 `keys` 记录一次写入 IndexedDB（单条记录的写入是原子的），内存里同时换上，之后的重连用新 token。新 token 只传这一次，所以写库失败也不回退，只在控制台报错——旧 token 只剩 60 秒，回退没有意义；这种情况下刷新页面之后可能要重新配对。没有 device token 的连接收到 `token_rotated` 一律忽略
+- **多个标签页**：同一个 origin 的标签页共用 IndexedDB 里的一份身份，各自在内存里留一份副本；一个标签页轮换之后，别的标签页内存里还是旧 token。三道防护：① 写 `keys` 在一个读写事务里「读 → 合并 → 写」：库里的 token 签发时间严格更晚、且是同一个设备身份（Noise 公钥相同）时保留库里的 token（连同签发时间和设备 id），旧副本改设备名之类的写入盖不掉新 token；② 请求轮换之前先读一次库，库里有签发更晚的 token 就换上、不再重复轮换；③ 旧副本的 token 过了宽限，hub 回 `auth_fail { invalid }` 时先重读库，库里有不同的 token 就换上它、马上重连，不当作失效。库里没有不同的 token 才清除、停在「需要重新配对」，清除只在库里的 token 仍是被拒的那份时进行，不会抹掉别的标签页刚存的新 token。设备被吊销（`auth_fail { revoked }` / 关闭码 4004）时清掉内存里的 token；库里的 token 如果已经不是这份就不动，它下次被 hub 拒绝时再清
 
 **配对完成的最后一步：`pair.ack`**。配对不是在 hub 发 `pair_done` 时结束的。握手成功、收到 `pair_done` 之后，浏览器用刚建立的 Noise 传输等 daemon 发来的第一条通知 `pair.ack`（`{ node_id, peer_id, name, version, fingerprint }`），逐项校验：`peer_id` 等于 hub 在 `pair_done` 里告诉自己的正式设备 id；`node_id` 等于 `pair_done.peer`；`fingerprint` 等于本地对握手得到的 daemon 静态公钥算出的指纹。全部通过才把节点（id、**认证过的**名称、公钥）写进 IndexedDB 并显示为已配对；节点名取 `pair.ack` 的，不取握手第 2 条里未经认证的那个。30 秒没收到、或任何一项对不上，就放弃，什么都不保存。本地已有同 id 但公钥不同的节点时不覆盖，提示用户先忘记旧节点。这样一个伪造 `pair_done` 的 hub 骗不了浏览器（它没有 PSK，造不出 `pair.ack`）。
 

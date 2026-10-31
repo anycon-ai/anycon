@@ -1,7 +1,7 @@
 // 传输层的总管：hub WebSocket、认证、重连、配对、每个节点的 Noise 会话。
 // 对 UI 层只暴露 `ClientSink`（状态变化回调）和 `request(nodeId, method, params)`。
 import type { AuthFailReason, ClientInfo, Control, DropReason, EnrollMethod, NotifyBody, PairAck, PairFailReason } from '@/protocol'
-import { APP_VERSION, CLOSE_CODE, METHODS, PAIR_ACK_TIMEOUT_MS, PAIR_STEP_TIMEOUT_MS, PROTOCOL_VERSION } from '@/lib/constants'
+import { APP_VERSION, CLOSE_CODE, METHODS, PAIR_ACK_TIMEOUT_MS, PAIR_STEP_TIMEOUT_MS, PROTOCOL_VERSION, ROTATE_QUICK_SENDS, ROTATE_RECHECK_MS, ROTATE_RETRY_MS } from '@/lib/constants'
 import { bytesEqual } from '@/lib/bytes'
 import { isValidPairCode } from '@/lib/code'
 import { isRecord } from '@/lib/guards'
@@ -27,6 +27,7 @@ import { NodeLink } from './nodeLink'
 import { decodeNotifyBody } from './notifyBody'
 import { nextPaint } from './paint'
 import { EnvelopeSender } from './sender'
+import { tokenRotationDue } from './tokenRotation'
 import type { RpcCallError } from './rpcClient'
 import { decodeControl, decodeEnvelope, decodeFrame, decodeRpc, encodeControl, encodeEnvelope, isRpcNotification, makeEnvelope, Reassembler, type Envelope } from './wire'
 
@@ -46,6 +47,8 @@ export interface WebSocketLike {
 export interface ClientStorage {
   loadIdentity(): Promise<db.IdentityRecord | undefined>
   saveIdentity(rec: db.IdentityRecord): Promise<void>
+  /** 清掉存着的 device token（连同设备 id 和签发时间），仅当它还是 `expected`；返回是否清了（见 `db.clearDeviceToken`）。 */
+  clearDeviceToken(expected: string): Promise<boolean>
   loadNodes(): Promise<db.NodeRecord[]>
   saveNode(rec: db.NodeRecord): Promise<void>
   deleteNode(nodeId: string): Promise<void>
@@ -55,6 +58,7 @@ export interface ClientStorage {
 export const idbStorage: ClientStorage = {
   loadIdentity: db.getIdentity,
   saveIdentity: db.putIdentity,
+  clearDeviceToken: db.clearDeviceToken,
   loadNodes: db.listNodes,
   saveNode: db.putNode,
   deleteNode: db.deleteNode,
@@ -211,6 +215,12 @@ export class AnyconClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private authTimer: ReturnType<typeof setTimeout> | null = null
   private stableTimer: ReturnType<typeof setTimeout> | null = null
+  /** 下一次「该不该轮换 device token」的检查（`checkRotation`）；断开 / 停止时清掉。 */
+  private rotateTimer: ReturnType<typeof setTimeout> | null = null
+  /** 这条连接上已经发了几次 `rotate_token`（新连接清零）。 */
+  private rotateSends = 0
+  /** 这条连接认证用的 device token；`null` = 临时连接。hub 说它 `invalid` 时要知道到底是哪一份被拒了。 */
+  private authToken: string | null = null
   private deviceId: string | null = null
   private seq = 0
   private started = false
@@ -301,6 +311,7 @@ export class AnyconClient {
     if (this.authTimer) clearTimeout(this.authTimer)
     if (this.stableTimer) clearTimeout(this.stableTimer)
     this.reconnectTimer = this.authTimer = this.stableTimer = null
+    this.clearRotateTimer()
     const ws = this.ws
     this.ws = null
     if (ws) {
@@ -484,6 +495,7 @@ export class AnyconClient {
   private sendAuth(): void {
     const id = this.identity!
     this.wsAuthName = id.device_name
+    this.authToken = id.device_token ?? null
     const auth: Control = {
       type: 'auth',
       device_token: id.device_token ?? null,
@@ -507,11 +519,12 @@ export class AnyconClient {
     if (this.authTimer) clearTimeout(this.authTimer)
     if (this.stableTimer) clearTimeout(this.stableTimer)
     this.authTimer = this.stableTimer = null
+    this.clearRotateTimer()
     this.sender.clear()
     this.onlinePeers.clear()
     for (const l of this.links.values()) l.hubDown()
     this.pairMailbox?.close()
-    if (code === CLOSE_CODE.REVOKED) void this.forgetToken()
+    if (code === CLOSE_CODE.REVOKED) void this.forgetToken(null)
     // 主动断开（页面在后台）不是失败：不计退避，也不安排重连
     this.dispatchHub(this.suspended ? { type: 'suspend' } : { type: 'closed', code })
     this.scheduleReconnect()
@@ -610,18 +623,107 @@ export class AnyconClient {
     }
   }
 
-  private async forgetToken(): Promise<void> {
+  /**
+   * hub 不认这个设备了：丢掉内存里的 token、设备 id 和签发时间，并清掉库里的。
+   * `rejected` 是 hub 说 `invalid` 的那份 token：内存里已经换成别的 token（`adoptStoredToken`）就什么都不做。
+   * 设备被吊销时传 `null`（它所有的 token 都作废）。两种情况下库里的 token 如果已经不是内存里这份
+   * （别的标签页轮换过 / 重新配对过）都不碰库：那份不是我们该清的（`db.clearDeviceToken`）。
+   */
+  private async forgetToken(rejected: string | null): Promise<void> {
     // 停掉之后（比如「退出并移除本设备」正在清库）不能再写存储，否则会把刚删掉的库又建出来
     if (!this.started || !this.identity?.device_token) return
-    const { device_token: _t, device_id: _d, ...rest } = this.identity
+    if (rejected && this.identity.device_token !== rejected) return
+    const gone = this.identity.device_token
+    const { device_token: _t, device_token_issued_at_ms: _i, device_id: _d, ...rest } = this.identity
     this.identity = rest
     this.deviceId = null
     try {
-      await this.deps.storage.saveIdentity(rest)
+      await this.deps.storage.clearDeviceToken(gone)
     } catch (e) {
       // 别的标签页刚清掉了本地库（本标签页的库已被禁用）或存储不可写：别抛成未处理的 rejection
       console.warn('anycon: could not persist clearing the device token', e)
     }
+  }
+
+  /**
+   * 同一个浏览器的别的标签页可能已经轮换过 device token 并落盘，库里的比内存里的新：并入内存身份，返回是否换了 token。
+   * 只认同一个设备身份（Noise 公钥相同）。`force`：我们手里这份刚被 hub 拒绝，库里有任何不同的 token 都换上；
+   * 否则只换签发时间更晚的（轮换之前先看一眼，别替别的标签页重复轮换）。
+   */
+  private async adoptStoredToken(force: boolean): Promise<boolean> {
+    const cur = this.identity
+    if (!cur?.device_token) return false
+    let stored: db.IdentityRecord | undefined
+    try {
+      stored = await this.deps.storage.loadIdentity()
+    } catch {
+      return false
+    }
+    if (!stored?.device_token || stored.device_token === cur.device_token) return false
+    if (!this.started || this.identity?.device_token !== cur.device_token) return false // 等库的时候身份已经变了
+    if (!bytesEqual(stored.static_keypair.public, cur.static_keypair.public)) return false
+    if (!force && (stored.device_token_issued_at_ms ?? 0) <= (cur.device_token_issued_at_ms ?? 0)) return false
+    const { device_id: _d, device_token_issued_at_ms: _i, ...rest } = cur
+    this.identity = {
+      ...rest,
+      device_token: stored.device_token,
+      ...(stored.device_token_issued_at_ms !== undefined ? { device_token_issued_at_ms: stored.device_token_issued_at_ms } : {}),
+      ...((stored.device_id ?? cur.device_id) !== undefined ? { device_id: stored.device_id ?? cur.device_id } : {}),
+    }
+    return true
+  }
+
+  // ---- device token 轮换（spec/web.md § 6.4） ----
+
+  private clearRotateTimer(): void {
+    if (this.rotateTimer) clearTimeout(this.rotateTimer)
+    this.rotateTimer = null
+  }
+
+  /**
+   * `auth_ok` 之后立刻调用一次，之后按需自己排下一次：token 到期就发 `rotate_token`。
+   * 头 `ROTATE_QUICK_SENDS` 次之间隔 `ROTATE_RETRY_MS`（hub 同一设备 1 分钟内只轮换一次，多余的请求不回复，所以重发的
+   * 间隔要比这长；`token_rotated` 丢了也有机会补上），之后以及没到期时每 `ROTATE_RECHECK_MS` 看一次、到期就再发：
+   * 一直开着的标签页超过 30 天也会轮换，hub 一直不回复也只是每小时一帧。没有 device token 的连接（临时连接）不发。
+   */
+  private async checkRotation(): Promise<void> {
+    this.clearRotateTimer()
+    const ws = this.ws
+    let delay = ROTATE_RECHECK_MS
+    if (this.identity?.device_token) {
+      await this.adoptStoredToken(false)
+      // 等库的时候连接可能已经换了（新连接有自己的检查）或停了
+      if (!this.started || this.ws !== ws || this.hubMachine.phase !== 'hub_authed') return
+      const id = this.identity
+      if (id?.device_token && tokenRotationDue(id.device_token_issued_at_ms, Date.now())) {
+        if (this.rawSend(makeEnvelope('', '', 'control', ++this.seq, encodeControl({ type: 'rotate_token' })))) {
+          this.rotateSends += 1
+          delay = this.rotateSends < ROTATE_QUICK_SENDS ? ROTATE_RETRY_MS : ROTATE_RECHECK_MS
+        }
+      } else {
+        this.rotateSends = 0 // 不到期了（轮换成功 / 别的标签页轮换过）：下一个 30 天重新数
+      }
+    }
+    if (!this.started || this.ws !== ws || this.hubMachine.phase !== 'hub_authed') return
+    this.rotateTimer = setTimeout(() => void this.checkRotation(), delay)
+  }
+
+  /**
+   * hub 轮换了 device token（回应我们的 `rotate_token`），新 token 只传这一次：新 token 和签发时间作为一份身份一次写入库，
+   * 内存里马上换上，之后的重连用它。写库失败也不回退——旧 token 在 hub 只再保留 60 秒，回退没有意义，只能大声说出来。
+   * hub 不会给没有 device token 的连接发这条，收到就忽略。
+   */
+  private onTokenRotated(token: string): void {
+    const id = this.identity
+    if (!this.started || !id?.device_token || !token) return
+    const next: db.IdentityRecord = { ...id, device_token: token, device_token_issued_at_ms: Date.now() }
+    this.identity = next
+    this.rotateSends = 0
+    this.deps.storage
+      .saveIdentity(next)
+      .catch((e: unknown) =>
+        console.warn('anycon: could not persist the rotated device token; the previous token stops working within a minute, so reloading this page may require pairing again', e),
+      )
   }
 
   /** 后台落盘身份。失败要看得见：丢了 token 轮换意味着下次启动认证失败。 */
@@ -718,6 +820,8 @@ export class AnyconClient {
         this.dispatchHub({ type: 'auth_ok' })
         if (this.stableTimer) clearTimeout(this.stableTimer)
         this.stableTimer = setTimeout(() => this.dispatchHub({ type: 'stable' }), STABLE_AFTER_MS)
+        this.rotateSends = 0
+        void this.checkRotation()
         if (msg.quota) this.sink.quota?.(msg.quota)
         const online = new Set(msg.peers_online)
         this.onlinePeers.clear()
@@ -753,10 +857,7 @@ export class AnyconClient {
         this.sink.quota?.(msg.quota)
         return
       case 'token_rotated':
-        if (this.identity) {
-          this.identity = { ...this.identity, device_token: msg.device_token }
-          this.persistIdentity(this.identity)
-        }
+        this.onTokenRotated(msg.device_token)
         return
       case 'pair_matched':
         this.pairMailbox?.push({ t: 'matched', peer: msg.peer, role: msg.role })
@@ -785,9 +886,23 @@ export class AnyconClient {
   }
 
   private onAuthFail(reason: AuthFailReason): void {
-    if (reason === 'invalid' || reason === 'revoked') void this.forgetToken()
+    const rejected = this.authToken
+    if (reason === 'invalid' && rejected) {
+      // 先别下结论：同一个浏览器的另一个标签页可能刚轮换过 token、新的已经在库里，这份只是过期了的旧 token
+      this.dropWsAfterAuthFail()
+      void this.recoverFromInvalidToken(rejected)
+      return
+    }
+    if (reason === 'revoked') void this.forgetToken(null) // 设备被吊销，它的所有 token 都作废，不分哪一份
     this.dispatchHub({ type: 'auth_fail', reason })
-    // hub 随后会关连接；这里主动关，免得等 close 事件
+    this.dropWsAfterAuthFail()
+    this.scheduleReconnect()
+  }
+
+  /** hub 随后会关连接；这里主动关，免得等 close 事件。 */
+  private dropWsAfterAuthFail(): void {
+    if (this.authTimer) clearTimeout(this.authTimer)
+    this.authTimer = null
     if (this.ws) {
       const ws = this.ws
       this.ws = null
@@ -801,6 +916,23 @@ export class AnyconClient {
       for (const l of this.links.values()) l.hubDown()
       this.pairMailbox?.close()
     }
+  }
+
+  /**
+   * hub 说 `rejected` 这份 token 无效。库里有别的 token（别的标签页轮换过）就换上它、马上重连；
+   * 没有才当作真的失效：清掉、停在「需要重新配对」。
+   */
+  private async recoverFromInvalidToken(rejected: string): Promise<void> {
+    await this.adoptStoredToken(true)
+    if (!this.started) return
+    const cur = this.identity?.device_token
+    if (cur && cur !== rejected) {
+      this.hubMachine = { ...this.hubMachine, halt: null, attempt: 0, retryInMs: 0 }
+      this.connect()
+      return
+    }
+    await this.forgetToken(rejected)
+    this.dispatchHub({ type: 'auth_fail', reason: 'invalid' })
     this.scheduleReconnect()
   }
 
@@ -943,10 +1075,13 @@ export class AnyconClient {
     const crypto = this.crypto
     if (!this.identity || !crypto) throw new PairError('no_identity')
     const id = this.identity
+    const issued = !!done.deviceToken && done.deviceToken !== id.device_token
     const next: db.IdentityRecord = {
       ...id,
       device_id: done.deviceId ?? id.device_id,
       device_token: done.deviceToken ?? id.device_token,
+      // 新 token 是此刻签发的；沿用旧 token 就沿用它的签发时间
+      ...(issued ? { device_token_issued_at_ms: Date.now() } : {}),
     }
     if (!next.device_token) throw new PairError('no_identity', 'hub did not issue a device token')
     this.identity = next

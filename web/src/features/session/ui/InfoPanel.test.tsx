@@ -188,3 +188,21 @@ describe('InfoPanel context usage', () => {
     expect(screen.getByTestId('info-context-value')).toHaveTextContent('15% · 30k / 200k')
   })
 })
+
+describe('InfoPanel working directory', () => {
+  it('is plain text without a way to open it', () => {
+    panel('idle', [], { project: 'app', workDir: '/ws/app' })
+    expect(screen.getByTestId('info-workdir')).toHaveTextContent('app · /ws/app')
+    expect(screen.queryByTestId('info-workdir-link')).toBeNull()
+  })
+
+  it('is a button that opens the file browser when the page gives it one', async () => {
+    let opened = 0
+    panel('idle', [], { project: 'app', workDir: '/ws/app', onOpenWorkDir: () => void opened++ })
+    const link = screen.getByTestId('info-workdir-link')
+    expect(link).toHaveTextContent('app · /ws/app')
+    expect(link).toHaveAttribute('title', 'Browse the files in the working directory')
+    await userEvent.setup().click(link)
+    expect(opened).toBe(1)
+  })
+})

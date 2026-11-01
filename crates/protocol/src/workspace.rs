@@ -259,22 +259,57 @@ pub struct FsListResult {
     pub entries: Vec<FsEntry>,
 }
 
+/// `fs.read` 返回内容的方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FsReadEncoding {
+    /// 默认：UTF-8 文本放进 `FsReadResult.text`；二进制文件不返回内容（`binary = true`）。
+    #[default]
+    Text,
+    /// 读到的原始字节（文本和二进制都一样）做标准 base64（带 padding）放进 `FsReadResult.data_base64`，`text` 为空。
+    /// 给图片预览之类要字节的用途；一次最多一块，用 `offset` 接着读。
+    Base64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FsReadParams {
     /// 解析规则同 `FsListParams.path`。
     pub path: String,
-    /// 默认 1 MiB，上限 10 MiB。
+    /// 读多少**原始字节**。`encoding = text`：默认 1 MiB，上限 10 MiB。`encoding = base64`：一次最多一块（512 KiB，和
+    /// `blob.get` 一样），缺省就是一块，超过的按一块算（不报错）；`0` 只回大小、不带数据。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
+    /// 缺省 `text`。
+    #[serde(default)]
+    pub encoding: FsReadEncoding,
+    /// 从文件的第几个字节读起，缺省 0。只有 `encoding = base64` 能用：大文件按块一块一块读，一个响应不会长时间占住设备到 daemon
+    /// 那条有序的传输。`text` 模式下 `offset > 0` 是 `invalid`。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub offset: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FsReadResult {
-    /// UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。
+    /// UTF-8 文本；二进制文件 `text` 为空且 `binary = true`。`encoding = base64` 时恒为空。
     pub text: String,
+    /// `text` 模式：文件是二进制（不返回内容）。`base64` 模式：按**这一块**的内容判断（前 8 KiB 里有 NUL、或不是合法的
+    /// UTF-8），只有 `offset = 0` 的那一块说明整个文件；从中间读起的块可能从半个字符开始，客户端不要依赖它。
     pub binary: bool,
+    /// 文件在读到的这一段**之后**还有内容（`offset + 读到的字节数 < bytes`）。
     pub truncated: bool,
+    /// 文件的总字节数（不是读到的）。分块读的时候每一块都带着它：总数变了说明文件在读的过程中被改写过。
     pub bytes: u64,
+    /// `encoding = base64` 时读到的字节（至多一块；`offset` 在文件末尾或之后时为空串）；`text` 模式没有这个字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_base64: Option<String>,
+    /// `encoding = base64` 时 `data_base64` 从文件的第几个字节开始（原样回显请求的 `offset`）；`text` 模式没有这个字段。
+    /// 不认识 `offset` 的旧 daemon 不会带它，客户端据此知道分块读不能用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
 }
 
 // ---- 分支与 worktree（ADR-34）----
@@ -369,4 +404,56 @@ pub struct WorkspaceRemoveWorktreeParams {
     /// 同时删掉分支（`git branch -D`）。分支上有没合并的提交也会丢。
     #[serde(default)]
     pub delete_branch: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fs_read_params_default_to_text_and_accept_base64() {
+        let p: FsReadParams = serde_json::from_str(r#"{"path":"a/b.txt"}"#).unwrap();
+        assert_eq!((p.encoding, p.max_bytes, p.offset), (FsReadEncoding::Text, None, 0));
+        let p: FsReadParams =
+            serde_json::from_str(r#"{"path":"a/x.png","max_bytes":10,"encoding":"base64","offset":524288}"#).unwrap();
+        assert_eq!((p.encoding, p.max_bytes, p.offset), (FsReadEncoding::Base64, Some(10), 524_288));
+        // 偏移为 0 时不序列化（旧 daemon 看到的请求和以前一样）
+        assert!(!serde_json::to_string(&FsReadParams {
+            path: "a".into(),
+            max_bytes: None,
+            encoding: FsReadEncoding::Text,
+            offset: 0
+        })
+        .unwrap()
+        .contains("offset"));
+        // 不认识的编码是错误，不静默当成文本
+        assert!(serde_json::from_str::<FsReadParams>(r#"{"path":"a","encoding":"hex"}"#).is_err());
+    }
+
+    #[test]
+    fn fs_read_result_omits_data_base64_for_text_reads() {
+        let text = FsReadResult {
+            text: "x".into(),
+            binary: false,
+            truncated: false,
+            bytes: 1,
+            data_base64: None,
+            offset: None,
+        };
+        let wire = serde_json::to_string(&text).unwrap();
+        assert!(!wire.contains("data_base64") && !wire.contains("offset"));
+        // 旧 daemon 没有这个字段
+        let old: FsReadResult =
+            serde_json::from_str(r#"{"text":"x","binary":false,"truncated":false,"bytes":1}"#).unwrap();
+        assert_eq!(old, text);
+        let b64 = FsReadResult {
+            text: String::new(),
+            binary: true,
+            truncated: false,
+            bytes: 3,
+            data_base64: Some("AAEC".into()),
+            offset: Some(0),
+        };
+        assert_eq!(serde_json::from_str::<FsReadResult>(&serde_json::to_string(&b64).unwrap()).unwrap(), b64);
+    }
 }

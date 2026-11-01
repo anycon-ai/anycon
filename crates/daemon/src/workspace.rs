@@ -21,10 +21,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anycon_protocol::{
-    methods, BrowseEntry, ErrorCode, FsEntry, FsListResult, FsReadResult, GitMeta, JobDone, JobProgress, LinkBlock,
-    Project, ProjectKind, RenamedProject, RpcError, TrashEntry, WorkspaceBrowseResult, WorkspaceChanged,
-    WorkspaceListResult,
+    methods, BrowseEntry, ErrorCode, FsEntry, FsListResult, FsReadEncoding, FsReadResult, GitMeta, JobDone,
+    JobProgress, LinkBlock, Project, ProjectKind, RenamedProject, RpcError, TrashEntry, WorkspaceBrowseResult,
+    WorkspaceChanged, WorkspaceListResult,
 };
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -54,6 +56,9 @@ const GIT_HARD_TIMEOUT: Duration = Duration::from_secs(5);
 const DEBOUNCE: Duration = Duration::from_millis(500);
 pub const FS_READ_DEFAULT: u64 = 1024 * 1024;
 pub const FS_READ_MAX: u64 = 10 * 1024 * 1024;
+/// `fs.read` 的 base64 模式一次最多回多少原始字节（和 `blob.get` 一样 512 KiB）：设备到 daemon 是一条有序的传输，
+/// 一个大响应会让别的消息（事件、审批、「停止」的回复）排在它后面，所以大文件分块读（`offset`）。
+pub const FS_READ_CHUNK: u64 = 512 * 1024;
 /// `workspace.browse` 最多返回的子目录数。
 pub const BROWSE_MAX_ENTRIES: usize = 1000;
 /// `workspace.browse` 最多检查多少个候选条目（一个塞满文件的目录不能拖住 daemon）；超过就当作被截断。
@@ -1513,48 +1518,101 @@ impl Workspace {
         Ok(FsListResult { entries })
     }
 
+    /// `fs.read` 的文本模式（`encoding` 缺省）。
     pub async fn fs_read(&self, rel: &str, max_bytes: Option<u64>) -> RpcResult<FsReadResult> {
+        self.fs_read_as(rel, max_bytes, FsReadEncoding::Text, 0).await
+    }
+
+    /// 读文件。
+    /// - `Text`：前 `max_bytes`（默认 1 MiB，上限 10 MiB）个字节，UTF-8 文本放 `text`，二进制不返回内容。`offset > 0` 是 `invalid`：
+    ///   从中间读起会落在半个字符上，而文本模式的「截断在字符中间就保留有效前缀」只管结尾。
+    /// - `Base64`：从 `offset` 起至多 `max_bytes`（默认和上限都是一块，[`FS_READ_CHUNK`]）个原始字节，做 base64 放 `data_base64`，
+    ///   `text` 为空，并回显 `offset`。`offset` 在文件末尾或之后不是错误：回一个空块（`bytes` 仍是总长，`truncated = false`），
+    ///   这样文件在分块读的过程中变短，客户端从 `bytes` 的变化就能看出来。
+    ///
+    /// 两种模式用同一份路径检查和打开方式。
+    pub async fn fs_read_as(
+        &self,
+        rel: &str,
+        max_bytes: Option<u64>,
+        encoding: FsReadEncoding,
+        offset: u64,
+    ) -> RpcResult<FsReadResult> {
+        let base64 = encoding == FsReadEncoding::Base64;
+        if !base64 && offset > 0 {
+            return Err(err(ErrorCode::Invalid, "offset needs encoding \"base64\""));
+        }
         let (path, boundary) = self.resolve_in(rel)?;
         crate::fsopen::after_resolve(&path);
         let md = std::fs::metadata(&path).map_err(|e| err(ErrorCode::NotFound, e.to_string()))?;
         if !md.is_file() {
             return Err(err(ErrorCode::Invalid, format!("{rel} is not a regular file")));
         }
-        let max = max_bytes.unwrap_or(FS_READ_DEFAULT).min(FS_READ_MAX);
+        let max = if base64 {
+            max_bytes.unwrap_or(FS_READ_CHUNK).min(FS_READ_CHUNK)
+        } else {
+            max_bytes.unwrap_or(FS_READ_DEFAULT).min(FS_READ_MAX)
+        };
         // 从边界目录开始逐段 `openat`（每段 `O_NOFOLLOW`）：检查之后、打开之前目录被换成符号链接读不到边界外；
         // 不再拿「打开之前按路径 stat 的身份」去比（那个身份可能是换目录之后才取的）
         let rel_owned = rel.to_string();
-        let (buf, total) = tokio::task::spawn_blocking(move || -> RpcResult<(Vec<u8>, u64)> {
+        let (mut buf, total) = tokio::task::spawn_blocking(move || -> RpcResult<(Vec<u8>, u64)> {
             let mut f = crate::fsopen::open_file_in(&path, &boundary).map_err(|e| Self::open_error(&rel_owned, e))?;
             let total = f.metadata().map_err(|e| err(ErrorCode::Internal, e.to_string()))?.len();
             let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut std::io::Read::take(&mut f, max), &mut buf)
-                .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+            // 文件末尾或之后：空块。不去 seek（`u64::MAX` 这样的偏移转成 `off_t` 会溢出，seek 报 `EINVAL`）
+            if offset < total {
+                if offset > 0 {
+                    std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(offset))
+                        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+                }
+                std::io::Read::read_to_end(&mut std::io::Read::take(&mut f, max), &mut buf)
+                    .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+            }
             Ok((buf, total))
         })
         .await
         .map_err(|e| err(ErrorCode::Internal, format!("fs.read: {e}")))??;
-        let truncated = total > buf.len() as u64;
-        if buf[..buf.len().min(8192)].contains(&0) {
-            return Ok(FsReadResult { text: String::new(), binary: true, truncated, bytes: total });
+        let truncated = total > offset.saturating_add(buf.len() as u64);
+        let text_len = text_prefix_len(&buf, truncated);
+        if base64 {
+            return Ok(FsReadResult {
+                text: String::new(),
+                binary: text_len.is_none(),
+                truncated,
+                bytes: total,
+                data_base64: Some(B64.encode(&buf)),
+                offset: Some(offset),
+            });
         }
-        match String::from_utf8(buf) {
-            Ok(text) => Ok(FsReadResult { text, binary: false, truncated, bytes: total }),
-            Err(e) => {
-                let valid = e.utf8_error().valid_up_to();
-                let bytes = e.into_bytes();
-                // 截断恰好落在多字节字符中间：保留有效前缀；否则是二进制
-                if truncated && bytes.len() - valid < 4 {
-                    Ok(FsReadResult {
-                        text: String::from_utf8_lossy(&bytes[..valid]).into_owned(),
-                        binary: false,
-                        truncated,
-                        bytes: total,
-                    })
-                } else {
-                    Ok(FsReadResult { text: String::new(), binary: true, truncated, bytes: total })
-                }
-            }
+        let Some(n) = text_len else {
+            return Ok(FsReadResult {
+                text: String::new(),
+                binary: true,
+                truncated,
+                bytes: total,
+                data_base64: None,
+                offset: None,
+            });
+        };
+        buf.truncate(n);
+        // `text_prefix_len` 已经保证 `buf[..n]` 是合法的 UTF-8
+        let text = String::from_utf8(buf).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+        Ok(FsReadResult { text, binary: false, truncated, bytes: total, data_base64: None, offset: None })
+    }
+}
+
+/// 读到的字节里可以当文本的前缀长度；`None` = 二进制。前 8 KiB 里有 NUL 就是二进制；不是合法 UTF-8 也是二进制，
+/// 唯一的例外是读被截断、并且只是最后一个多字节字符被切成了两半（不足 4 字节）：保留有效前缀。
+fn text_prefix_len(buf: &[u8], truncated: bool) -> Option<usize> {
+    if buf[..buf.len().min(8192)].contains(&0) {
+        return None;
+    }
+    match std::str::from_utf8(buf) {
+        Ok(_) => Some(buf.len()),
+        Err(e) => {
+            let valid = e.valid_up_to();
+            (truncated && buf.len() - valid < 4).then_some(valid)
         }
     }
 }
@@ -2240,6 +2298,170 @@ mod tests {
         assert_eq!(r.text, "你好世界");
     }
 
+    /// base64 模式：读到的原始字节（二进制 / 文本都一样）放进 `data_base64`，`text` 为空，并回显 `offset`。
+    #[tokio::test]
+    async fn fs_read_base64_returns_the_raw_bytes() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("p", false).await.unwrap();
+        // PNG 文件头：含 NUL 和 0x89，不是合法的 UTF-8
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R'];
+        std::fs::write(f.root.join("p/a.png"), &png).unwrap();
+        std::fs::write(f.root.join("p/logo.svg"), "<svg/>").unwrap();
+        std::fs::write(f.root.join("p/cjk.txt"), "你好世界").unwrap();
+
+        let r = ws.fs_read_as("p/a.png", None, FsReadEncoding::Base64, 0).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.as_deref().unwrap()).unwrap(), png);
+        assert!(r.text.is_empty() && r.binary && !r.truncated && r.bytes == png.len() as u64);
+        assert_eq!(r.offset, Some(0));
+        // 文本文件：字节原样，`binary` 仍是 false，`text` 不填
+        let r = ws.fs_read_as("p/logo.svg", None, FsReadEncoding::Base64, 0).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.as_deref().unwrap()).unwrap(), b"<svg/>");
+        assert!(r.text.is_empty() && !r.binary);
+        // 截断：只给前 max_bytes 个字节（截在多字节字符中间也照样按字节切），`bytes` 是文件总长
+        let r = ws.fs_read_as("p/cjk.txt", Some(4), FsReadEncoding::Base64, 0).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.as_deref().unwrap()).unwrap(), "你好世界".as_bytes()[..4]);
+        assert!(r.truncated && r.bytes == 12 && !r.binary, "{r:?}");
+        // 文本模式不带 `data_base64` / `offset`，行为不变
+        let r = ws.fs_read("p/a.png", None).await.unwrap();
+        assert!(r.binary && r.data_base64.is_none() && r.offset.is_none());
+        let r = ws.fs_read("p/logo.svg", None).await.unwrap();
+        assert!(r.text == "<svg/>" && r.data_base64.is_none() && r.offset.is_none());
+        // 路径检查和文本模式一样
+        for bad in ["../x", "/etc/passwd", "p"] {
+            assert!(ws.fs_read_as(bad, None, FsReadEncoding::Base64, 0).await.is_err(), "{bad}");
+        }
+    }
+
+    /// base64 模式一次最多一块（512 KiB），`max_bytes` 更大的按一块算，缺省也是一块；`bytes` 一直是总长。
+    #[tokio::test]
+    async fn fs_read_base64_returns_at_most_one_chunk_per_call() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("p", false).await.unwrap();
+        std::fs::write(f.root.join("p/big.bin"), vec![7u8; FS_READ_MAX as usize + 1]).unwrap();
+        let len =
+            |r: &anycon_protocol::FsReadResult| B64.decode(r.data_base64.as_deref().unwrap()).unwrap().len() as u64;
+        for max in [None, Some(u64::MAX), Some(FS_READ_MAX), Some(FS_READ_CHUNK + 1), Some(FS_READ_CHUNK)] {
+            let r = ws.fs_read_as("p/big.bin", max, FsReadEncoding::Base64, 0).await.unwrap();
+            assert_eq!(len(&r), FS_READ_CHUNK, "max_bytes {max:?}");
+            assert!(r.truncated && r.bytes == FS_READ_MAX + 1);
+        }
+        // 小于一块的照给；0 只回大小
+        let r = ws.fs_read_as("p/big.bin", Some(10), FsReadEncoding::Base64, 0).await.unwrap();
+        assert_eq!(len(&r), 10);
+        let r = ws.fs_read_as("p/big.bin", Some(0), FsReadEncoding::Base64, 0).await.unwrap();
+        assert_eq!((len(&r), r.truncated, r.bytes), (0, true, FS_READ_MAX + 1));
+        // 文本模式的上限不变：缺省 1 MiB，最大 10 MiB
+        assert_eq!(ws.fs_read("p/big.bin", None).await.unwrap().bytes, FS_READ_MAX + 1);
+        assert_eq!(ws.fs_read("p/big.bin", Some(u64::MAX)).await.unwrap().text.len() as u64, FS_READ_MAX);
+        assert_eq!(ws.fs_read("p/big.bin", None).await.unwrap().text.len() as u64, FS_READ_DEFAULT);
+    }
+
+    /// 用 `offset` 一块一块读完整个文件，拼起来和原文件一样；`truncated` 只有最后一块是 false，每一块的 `bytes` 都是总长。
+    #[tokio::test]
+    async fn fs_read_base64_reads_a_file_in_chunks_with_offset() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("p", false).await.unwrap();
+        let chunk = FS_READ_CHUNK as usize;
+        let data: Vec<u8> = (0..chunk * 2 + 1234).map(|i| (i % 251) as u8).collect();
+        std::fs::write(f.root.join("p/img.bin"), &data).unwrap();
+        let mut got = Vec::new();
+        let mut calls = Vec::new();
+        loop {
+            let r = ws.fs_read_as("p/img.bin", None, FsReadEncoding::Base64, got.len() as u64).await.unwrap();
+            assert_eq!((r.offset, r.bytes), (Some(got.len() as u64), data.len() as u64));
+            got.extend(B64.decode(r.data_base64.unwrap()).unwrap());
+            calls.push(r.truncated);
+            if !r.truncated {
+                break;
+            }
+            assert!(calls.len() < 10);
+        }
+        assert_eq!(calls, vec![true, true, false]);
+        assert_eq!(got, data);
+        // 不是块的整数倍的偏移也行，`max_bytes` 照样生效
+        let r = ws.fs_read_as("p/img.bin", Some(100), FsReadEncoding::Base64, 1000).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.unwrap()).unwrap(), data[1000..1100]);
+        assert!(r.truncated);
+        // 刚好读到末尾的那一块不算「还有」
+        let r = ws.fs_read_as("p/img.bin", None, FsReadEncoding::Base64, data.len() as u64 - 10).await.unwrap();
+        assert_eq!(B64.decode(r.data_base64.unwrap()).unwrap(), data[data.len() - 10..]);
+        assert!(!r.truncated);
+    }
+
+    /// `offset` 在文件末尾或之后不是错误：回空块、`truncated = false`、`bytes` 是当前的总长（文件在分块读的时候变短，
+    /// 客户端从 `bytes` 的变化看得出来）。
+    #[tokio::test]
+    async fn fs_read_base64_offset_at_or_past_the_end_gives_an_empty_chunk() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("p", false).await.unwrap();
+        std::fs::write(f.root.join("p/a.bin"), [1u8, 2, 3, 4, 5]).unwrap();
+        std::fs::write(f.root.join("p/empty.bin"), []).unwrap();
+        for (path, offset, total) in [
+            ("p/a.bin", 5u64, 5u64),
+            ("p/a.bin", 6, 5),
+            ("p/a.bin", u64::MAX, 5),
+            ("p/empty.bin", 0, 0),
+            ("p/empty.bin", 7, 0),
+        ] {
+            let r = ws.fs_read_as(path, None, FsReadEncoding::Base64, offset).await.unwrap();
+            assert_eq!(r.data_base64.as_deref(), Some(""), "{path} @{offset}");
+            assert_eq!(
+                (r.truncated, r.bytes, r.offset, r.text.as_str()),
+                (false, total, Some(offset), ""),
+                "{path} @{offset}"
+            );
+        }
+    }
+
+    /// 文本模式不支持 `offset`：从中间读起会落在半个字符上。`offset = 0` 照旧。
+    #[tokio::test]
+    async fn fs_read_text_rejects_a_nonzero_offset() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("p", false).await.unwrap();
+        std::fs::write(f.root.join("p/a.txt"), "hello").unwrap();
+        let e = ws.fs_read_as("p/a.txt", None, FsReadEncoding::Text, 1).await.unwrap_err();
+        assert_eq!(e.stable_code(), Some(ErrorCode::Invalid));
+        assert_eq!(ws.fs_read_as("p/a.txt", None, FsReadEncoding::Text, 0).await.unwrap().text, "hello");
+        // 路径不存在时先报参数错误，不泄露存在性
+        assert_eq!(
+            ws.fs_read_as("p/none.txt", None, FsReadEncoding::Text, 1).await.unwrap_err().stable_code(),
+            Some(ErrorCode::Invalid)
+        );
+    }
+
+    /// Web 的文件浏览要能打开会话的工作目录：worktree 在 `<项目>/.anycon/worktrees/<名字>`，scratch 会话在 `.scratch/<id>`。
+    /// 这两条路径都含以 `.` 开头的段，`fs.*` 不能因此拒绝（隐藏目录的限制只用于关联目录，见 daemon.md § 10）。
+    #[tokio::test]
+    async fn fs_opens_session_working_directories() {
+        let f = fixture().await;
+        let ws = f.ws.clone();
+        ws.create("proj", false).await.unwrap();
+        let wt = f.root.join("proj/.anycon/worktrees/fix-login");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        std::fs::write(wt.join("src/main.rs"), "fn main() {}").unwrap();
+        let names = |l: FsListResult| l.entries.into_iter().map(|e| e.name).collect::<Vec<_>>();
+        assert_eq!(names(ws.fs_list("proj/.anycon/worktrees/fix-login").unwrap()), vec!["src"]);
+        assert_eq!(
+            ws.fs_read("proj/.anycon/worktrees/fix-login/src/main.rs", None).await.unwrap().text,
+            "fn main() {}"
+        );
+        // 项目目录里这些目录是可以列出来的
+        assert_eq!(names(ws.fs_list("proj").unwrap()), vec![".anycon"]);
+        assert_eq!(names(ws.fs_list("proj/.anycon").unwrap()), vec!["worktrees"]);
+
+        let scratch = ws.scratch_dir("sess_abc").unwrap();
+        std::fs::write(scratch.join("notes.md"), "# hi").unwrap();
+        assert_eq!(names(ws.fs_list(".scratch/sess_abc").unwrap()), vec!["notes.md"]);
+        assert_eq!(ws.fs_read(".scratch/sess_abc/notes.md", None).await.unwrap().text, "# hi");
+        // 仍然出不了 workspace 根
+        assert_eq!(code_of(ws.fs_list(".scratch/../../x")), ErrorCode::Forbidden);
+    }
+
     #[tokio::test]
     async fn watcher_reports_external_changes_with_debounce() {
         let mut f = fixture().await;
@@ -2668,6 +2890,19 @@ mod tests {
         let p = list.projects.iter().find(|p| p.name == "proj-a").unwrap();
         assert_eq!(p.kind, ProjectKind::Folder);
         assert_eq!(f.ws.project_path("proj-a").unwrap(), f.root.join("proj-a"));
+    }
+
+    /// 关联项目里的 worktree（`<关联目录>/.anycon/worktrees/<名字>`）也能经 `<项目名>/.anycon/worktrees/<名字>` 浏览。
+    #[tokio::test]
+    async fn fs_opens_a_worktree_inside_a_linked_project() {
+        let f = link_fixture("[\"~\"]").await;
+        f.ws.link("~/work/proj-a", None).await.unwrap();
+        let wt = f.home.join("work/proj-a/.anycon/worktrees/fix");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("x.txt"), "in worktree").unwrap();
+        let names = |l: FsListResult| l.entries.into_iter().map(|e| e.name).collect::<Vec<_>>();
+        assert_eq!(names(f.ws.fs_list("proj-a/.anycon/worktrees/fix").unwrap()), vec!["x.txt"]);
+        assert_eq!(f.ws.fs_read("proj-a/.anycon/worktrees/fix/x.txt", None).await.unwrap().text, "in worktree");
     }
 
     #[tokio::test]

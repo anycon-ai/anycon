@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { FolderPen, GitBranch, MoreHorizontal, Plus, Trash2, Unlink } from 'lucide-react'
+import { FolderOpen, FolderPen, GitBranch, MoreHorizontal, Plus, Trash2, Unlink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { MissingProjectNotice } from '@/components/MissingProjectNotice'
 import { PageHeader } from '@/components/PageHeader'
@@ -101,9 +101,15 @@ export function ProjectPage({ project }: { project: string }) {
         actions={
           <>
             {missing ? null : (
-              <Button variant="primary" size="sm" icon={<Plus className="size-4" />} onClick={() => void navigate({ to: '/n/$node/new', params: { node: nodeParam }, search: { project } })} data-testid="project-new-session">
-                {t('sidebar.newSession')}
-              </Button>
+              <>
+                {/* 项目目录里的文件（只读，docs/spec/web.md § 4.7） */}
+                <Button variant="outline" size="sm" icon={<FolderOpen className="size-4" />} onClick={() => void navigate({ to: '/n/$node/files/$', params: { node: nodeParam, _splat: project } })} data-testid="project-files">
+                  {t('files.open')}
+                </Button>
+                <Button variant="primary" size="sm" icon={<Plus className="size-4" />} onClick={() => void navigate({ to: '/n/$node/new', params: { node: nodeParam }, search: { project } })} data-testid="project-new-session">
+                  {t('sidebar.newSession')}
+                </Button>
+              </>
             )}
             <Menu>
               <MenuTrigger asChild>

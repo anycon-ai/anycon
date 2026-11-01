@@ -1,4 +1,4 @@
-import { memo, useState, type ComponentProps } from 'react'
+import { memo, useState, type ComponentProps, type ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import { ImageOff } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -112,19 +112,48 @@ function MarkdownImage({ src, alt }: { src: string; alt?: string }) {
 }
 
 /**
+ * 渲染的是节点上的某个文件（文件浏览，docs/spec/web.md § 4.7）时，文件里的相对图片和链接指向节点上的文件，不是 hub 上的地址：
+ * 交给这里的回调，经 `fs.read` 取、在应用内跳转，浏览器不会拿相对地址去发请求。
+ */
+export interface LocalFiles {
+  /** 相对地址 → 节点上的路径；解析不了（走出项目目录、`#锚点`）返回 null。 */
+  resolve: (url: string) => string | null
+  /** 渲染一张节点上的图片。 */
+  image: (path: string, alt: string | undefined) => ReactNode
+  /** 渲染一个指向节点上文件或目录的链接。 */
+  link: (path: string, children: ReactNode) => ReactNode
+}
+
+/** 有协议（`https:`、`mailto:`、`data:`…）或 `//` 开头：不是相对地址。 */
+const isAbsoluteUrl = (url: string): boolean => url.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(url)
+
+/**
  * Markdown 渲染。原始 HTML 不会被解释：没有用 rehype-raw，react-markdown 把 HTML 节点当作文本转义输出
  * （刻意没开 `skipHtml`——那会把 `Vec<String>` 里的 `<String>` 当成标签吞掉）。
- * `streaming` 为 true 时代码块不高亮、末尾带闪烁光标。
+ * `streaming` 为 true 时代码块不高亮、末尾带闪烁光标。`local` 见 [`LocalFiles`]：只有渲染节点上的文件时才传，
+ * 绝对地址（外部链接、远程图片、`data:`）的处理和消息里完全一样。
  */
-export const Markdown = memo(function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
+export const Markdown = memo(function Markdown({ text, streaming, local }: { text: string; streaming?: boolean; local?: LocalFiles }) {
   return (
     <div className={streaming ? 'md stream-caret' : 'md'}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         urlTransform={urlTransform}
         components={{
-          a: ({ node: _n, ...props }: ComponentProps<'a'> & { node?: unknown }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-          img: ({ node: _n, src, alt }: ComponentProps<'img'> & { node?: unknown }) => <MarkdownImage src={typeof src === 'string' ? src : ''} alt={alt} />,
+          a: ({ node: _n, ...props }: ComponentProps<'a'> & { node?: unknown }) => {
+            if (local && typeof props.href === 'string' && !isAbsoluteUrl(props.href)) {
+              const path = local.resolve(props.href)
+              return path === null ? <span>{props.children}</span> : local.link(path, props.children)
+            }
+            return <a {...props} target="_blank" rel="noopener noreferrer" />
+          },
+          img: ({ node: _n, src, alt }: ComponentProps<'img'> & { node?: unknown }) => {
+            if (local && typeof src === 'string' && src !== '' && !isAbsoluteUrl(src)) {
+              const path = local.resolve(src)
+              return path === null ? alt ? <span className="text-fg-subtle">{alt}</span> : null : local.image(path, alt)
+            }
+            return <MarkdownImage src={typeof src === 'string' ? src : ''} alt={alt} />
+          },
           pre: ({ children }) => <>{children}</>,
           code: ({ className, children, node: _n, ...props }: ComponentProps<'code'> & { node?: unknown }) => {
             const lang = langOf(className)

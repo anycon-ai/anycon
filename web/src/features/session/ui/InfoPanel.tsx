@@ -26,6 +26,8 @@ export interface InfoPanelProps {
   backgroundTasks?: number
   workDir?: string
   project?: string | null
+  /** 打开工作目录的文件浏览（`/n/:node/files/*`）；没有能打开的目录（项目目录不在了）时不传，工作目录就是普通文字。 */
+  onOpenWorkDir?: () => void
   createdAt: number
   usage: UsageSum
   /** 最近一个 turn 结束时的上下文占用（`turn_done.usage.context_*`）；agent 不报就没有，不显示这一行。 */
@@ -99,22 +101,30 @@ export function InfoPanel(p: InfoPanelProps) {
   const shownSubagents = allSubagents ? p.subagents : p.subagents.filter((r, i) => i >= recent || isActive(r.state))
   const hiddenSubagents = p.subagents.length - shownSubagents.length
 
+  const workDirLabel = p.project ? (
+    <>
+      {p.project}
+      {p.workDir ? (
+        <>
+          <span className="text-fg-subtle"> · </span>
+          <span className="font-mono text-xs text-fg-subtle">{p.workDir}</span>
+        </>
+      ) : null}
+    </>
+  ) : (
+    (p.workDir ?? t('info.scratch'))
+  )
+
   const overview = (
     <div className="flex flex-col gap-3" data-testid="info-overview">
       <Card title={t('info.session')}>
-        <IconRow icon={Folder} title={p.workDir}>
-          {p.project ? (
-            <>
-              {p.project}
-              {p.workDir ? (
-                <>
-                  <span className="text-fg-subtle"> · </span>
-                  <span className="font-mono text-xs text-fg-subtle">{p.workDir}</span>
-                </>
-              ) : null}
-            </>
+        <IconRow icon={Folder} title={p.workDir} testId="info-workdir">
+          {p.onOpenWorkDir ? (
+            <button type="button" onClick={p.onOpenWorkDir} title={t('files.openWorkdir')} className="max-w-full cursor-pointer truncate text-left hover:underline" data-testid="info-workdir-link">
+              {workDirLabel}
+            </button>
           ) : (
-            (p.workDir ?? t('info.scratch'))
+            workDirLabel
           )}
         </IconRow>
         {p.worktree ? (

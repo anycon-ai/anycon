@@ -117,6 +117,8 @@ struct Shared {
     begins: Mutex<Vec<String>>,
     daemon_confirmed: Mutex<bool>,
     login_methods: Mutex<Vec<String>>,
+    /// `/api/config` 里额外的字段（`terms_url` / `privacy_url` 的用例才设）。
+    config_extra: Mutex<serde_json::Map<String, Value>>,
     /// 账号里除了这台节点还有别的 daemon（选节点 / 歧义的用例才开）。
     extra_nodes: Mutex<bool>,
     /// hub 给 CLI 签发的设备 id（之后带 token 重连得到的还是它）。
@@ -305,7 +307,9 @@ async fn serve(mut stream: TcpStream, shared: Arc<Shared>, td: Arc<TestDaemon>, 
         ["GET", "/api/config"] => {
             shared.http.lock().unwrap().push("GET /api/config".into());
             let methods = shared.login_methods.lock().unwrap().clone();
-            (200, String::new(), json!({ "mode": "multi", "login_methods": methods }).to_string())
+            let mut cfg = json!({ "mode": "multi", "login_methods": methods });
+            cfg.as_object_mut().unwrap().extend(shared.config_extra.lock().unwrap().clone());
+            (200, String::new(), cfg.to_string())
         }
         ["POST", "/auth/token"] => {
             shared.http.lock().unwrap().push("POST /auth/token".into());
@@ -948,6 +952,46 @@ async fn email_sign_in_sends_the_address_as_typed_asks_for_the_code_and_does_not
         let text = String::from_utf8_lossy(&std::fs::read(f.path()).unwrap()).into_owned();
         assert!(!text.contains("sess-abc") && !text.contains(GOOD_EMAIL_CODE), "{:?}", f.path());
     }
+}
+
+#[tokio::test]
+async fn email_sign_in_first_points_to_the_terms_and_privacy_policy_the_hub_publishes() {
+    let rig = Rig::new().await;
+    rig.set_password().await;
+    *rig.hub.shared.login_methods.lock().unwrap() = vec!["email".into()];
+    rig.hub.shared.config_extra.lock().unwrap().extend([
+        ("terms_url".to_string(), json!("https://example.com/terms")),
+        // hub 下发的地址打印前去掉控制字符
+        ("privacy_url".to_string(), json!("https://example.com/privacy\u{1b}[2J")),
+    ]);
+    let ui = Arc::new(ScriptedUi::default().text("Code from the email", GOOD_EMAIL_CODE).text("Node password", PW));
+    run(&rig, ui.clone(), email_req(Some("me@example.test"), "mac-mini")).await.unwrap();
+    let said = ui.said.lock().unwrap().clone();
+    let notice = said.iter().position(|s| s.starts_with("By continuing")).expect("notice printed");
+    assert_eq!(
+        said[notice],
+        "By continuing, you agree to the Terms of Service (https://example.com/terms) and acknowledge the Privacy \
+         Policy (https://example.com/privacy[2J)."
+    );
+    let sent = said.iter().position(|s| s.contains("6-digit code")).unwrap();
+    assert!(notice < sent, "before the code is sent: {said:?}");
+
+    // 只配了一个就只提那一个；token 登录建不了账号，不提
+    assert_eq!(
+        legal_notice(&json!({ "privacy_url": "https://example.com/privacy" })).as_deref(),
+        Some("By continuing, you acknowledge the Privacy Policy (https://example.com/privacy).")
+    );
+    assert_eq!(
+        legal_notice(&json!({ "terms_url": "https://example.com/terms", "privacy_url": "" })).as_deref(),
+        Some("By continuing, you agree to the Terms of Service (https://example.com/terms).")
+    );
+    assert_eq!(legal_notice(&json!({ "mode": "single" })), None);
+    let rig = Rig::new().await;
+    rig.set_password().await;
+    rig.hub.shared.config_extra.lock().unwrap().insert("terms_url".into(), json!("https://example.com/terms"));
+    let ui = Arc::new(ScriptedUi::default().text("Account token", GOOD_TOKEN).text("Node password", PW));
+    run(&rig, ui.clone(), email_req(None, "mac-mini")).await.unwrap();
+    assert!(!ui.said.lock().unwrap().iter().any(|s| s.starts_with("By continuing")));
 }
 
 #[tokio::test]

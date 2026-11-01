@@ -224,6 +224,21 @@ pub(crate) fn api_error(what: &str, r: &HttpResponse) -> CliError {
     }
 }
 
+/// `/api/config` 的 `terms_url` / `privacy_url`（hub 的 `ANYCON_TERMS_URL` / `ANYCON_PRIVACY_URL`）拼成的提示，
+/// 只提配了的那个；两个都没有是 `None`。地址来自 hub，打印前去掉控制字符和不可见字符（[`sanitize_label`]）。
+pub(crate) fn legal_notice(cfg: &Value) -> Option<String> {
+    let url =
+        |key: &str| cfg.get(key).and_then(Value::as_str).map(|s| sanitize_label(s, 2048, "")).filter(|s| !s.is_empty());
+    match (url("terms_url"), url("privacy_url")) {
+        (Some(terms), Some(privacy)) => Some(format!(
+            "By continuing, you agree to the Terms of Service ({terms}) and acknowledge the Privacy Policy ({privacy})."
+        )),
+        (Some(terms), None) => Some(format!("By continuing, you agree to the Terms of Service ({terms}).")),
+        (None, Some(privacy)) => Some(format!("By continuing, you acknowledge the Privacy Policy ({privacy}).")),
+        (None, None) => None,
+    }
+}
+
 impl Account {
     fn new(hub_url: &str, email: Option<String>) -> Account {
         Account { hub_url: hub_url.to_string(), email, cookie: None }
@@ -274,6 +289,12 @@ impl Account {
                 }
             }
         };
+        // `multi` 里邮箱验证码会顺带创建账号：hub 配了服务条款 / 隐私政策就先说一声，和 Web 登录页同一句话
+        if use_email {
+            if let Some(notice) = legal_notice(&cfg) {
+                ui.say(&notice);
+            }
+        }
         self.cookie =
             Some(if use_email { self.login_email(ui, sigint).await? } else { self.login_token(ui, sigint).await? });
         Ok(())

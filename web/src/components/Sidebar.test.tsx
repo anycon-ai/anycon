@@ -38,7 +38,7 @@ beforeEach(() => {
   devices.data = undefined
   devices.dataUpdatedAt = 0
   useNewProject.setState({ request: null })
-  usePrefs.setState({ sidebarOpen: true, sidebarNodes: null })
+  usePrefs.setState({ sidebarOpen: true, sidebarNodes: null, sidebarRecent: true })
   useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, agents: [mockAgent()], projects: [project({ name: 'app' }), project({ name: 'web' })] }) }, order: [NODE], loaded: true })
   useSessions.setState({
     list: {
@@ -81,6 +81,82 @@ describe('sidebar project rows', () => {
     pinned.unmount()
     wrap(<Sidebar nodeId={NODE} pin={{ pinned: false, onToggle }} />)
     expect(screen.getByTestId('sidebar-pin')).toHaveAccessibleName('Pin sidebar (Ctrl+B)')
+  })
+})
+
+describe('Recent group (running sessions)', () => {
+  function setSessions(items: Record<string, Partial<ReturnType<typeof summary>>>) {
+    useSessions.setState({
+      list: Object.fromEntries(Object.entries(items).map(([id, over]) => [id, { ...summary({ id, title: id, ...over }), node_id: NODE, cached_seq: 0 }])),
+      pending: {},
+      open: {},
+    })
+  }
+
+  it('lists the running sessions above the project tree, with their project, newest first; idle, ended and archived ones stay out', () => {
+    setSessions({
+      old: { project: 'app', status: 'running', updated_at_ms: 10 },
+      fresh: { project: 'web', status: 'starting', updated_at_ms: 20 },
+      scratchy: { status: 'queued', updated_at_ms: 15 },
+      idle: { project: 'app', status: 'idle', updated_at_ms: 30 },
+      done: { project: 'app', status: 'ended', updated_at_ms: 31 },
+      gone: { project: 'app', status: 'running', archived: true, updated_at_ms: 32 },
+    })
+    wrap(<Sidebar nodeId={NODE} />)
+    const group = screen.getByTestId('sidebar-recent')
+    expect(group).toHaveTextContent('Recent')
+    const rows = [...group.querySelectorAll('a')]
+    expect(rows.map((a) => a.textContent)).toEqual(['freshweb', 'scratchy', 'oldapp'])
+    // 项目树里同一个会话照常在：Recent 只是多一个入口
+    expect(screen.getAllByText('old')).toHaveLength(2)
+    // 位置在项目树上面
+    expect(group.compareDocumentPosition(screen.getAllByTestId('sidebar-project-new')[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('does not repeat a session that is already pinned under “Needs approval”', () => {
+    setSessions({
+      ask: { project: 'app', status: 'waiting_permission', pending_permissions: 1, updated_at_ms: 20 },
+      busy: { project: 'app', status: 'running', updated_at_ms: 10 },
+    })
+    wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.getByTestId('sidebar-waiting')).toHaveTextContent('ask')
+    expect(screen.getByTestId('sidebar-recent')).not.toHaveTextContent('ask')
+    expect(screen.getByTestId('sidebar-recent')).toHaveTextContent('busy')
+  })
+
+  it('is absent when nothing is running', () => {
+    wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.queryByTestId('sidebar-recent')).toBeNull()
+  })
+
+  it('only shows sessions of the selected nodes', () => {
+    const other = 'o'.repeat(32)
+    useNodes.setState({
+      byId: { [NODE]: nodeEntry({ id: NODE, name: 'here', projects: [project({ name: 'app' })] }), [other]: nodeEntry({ id: other, name: 'there', projects: [project({ name: 'app' })] }) },
+      order: [NODE, other],
+      loaded: true,
+    })
+    useSessions.setState({
+      list: {
+        mine: { ...summary({ id: 'mine', title: 'mine', project: 'app', status: 'running' }), node_id: NODE, cached_seq: 0 },
+        theirs: { ...summary({ id: 'theirs', title: 'theirs', project: 'app', status: 'running' }), node_id: other, cached_seq: 0 },
+      },
+      pending: {},
+      open: {},
+    })
+    usePrefs.setState({ sidebarNodes: [NODE] })
+    wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.getByTestId('sidebar-recent')).toHaveTextContent('mine')
+    expect(screen.queryByText('theirs')).toBeNull()
+  })
+
+  it('can be turned off in the preferences', () => {
+    setSessions({ busy: { project: 'app', status: 'running' } })
+    usePrefs.setState({ sidebarRecent: false })
+    wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.queryByTestId('sidebar-recent')).toBeNull()
+    // 项目树里它还在
+    expect(screen.getByText('busy')).toBeInTheDocument()
   })
 })
 

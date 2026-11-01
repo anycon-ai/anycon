@@ -8,7 +8,7 @@ import { describeError } from '@/lib/errors'
 import { resetClientState, signOut as signOutOfHub } from '@/app/session'
 import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { accountNodes, lockedNodes, removedNodes, unlockParam } from '@/features/unlock/nodes'
-import { groupNodeSessions, type NodeProjectGroup } from '@/features/session/group'
+import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
 import { useEnroll } from '@/stores/enroll'
 import { cleanHintText } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
@@ -18,7 +18,8 @@ import { SessionDot } from './StatusDot'
 import { useHub } from '@/stores/hub'
 import { useNewProject } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
-import { useSessions } from '@/stores/sessions'
+import { usePrefs } from '@/stores/prefs'
+import { useSessions, type SessionItem } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
@@ -43,15 +44,36 @@ function useNewProjectAction(nodeId: string | undefined, selected: string[], onN
   }
 }
 
+function isWaiting(s: SessionItem): boolean {
+  return s.pending_permissions > 0 || s.status === 'waiting_permission'
+}
+
 /** 待审批的会话（只算勾选的节点），最近的在前：左栏置顶（spec/web.md § 7），没固定时窄条上显示个数。 */
 function useWaitingSessions(selected: string[]) {
   const list = useSessions((s) => s.list)
   return useMemo(
     () =>
       Object.values(list)
-        .filter((x) => selected.includes(x.node_id) && !x.archived && (x.pending_permissions > 0 || x.status === 'waiting_permission'))
+        .filter((x) => selected.includes(x.node_id) && !x.archived && isWaiting(x))
         .sort((a, b) => b.updated_at_ms - a.updated_at_ms),
     [list, selected],
+  )
+}
+
+/**
+ * 进行中的会话（只算勾选的节点），最近的在前：左栏「Recent」分组，省得挨个项目去找。
+ * 「进行中」和项目页的筛选同一个口径（`isActiveStatus`）；待审批的已经在上面的置顶组里，这里不重复列。
+ */
+function useRecentSessions(selected: string[], enabled: boolean) {
+  const list = useSessions((s) => s.list)
+  return useMemo(
+    () =>
+      enabled
+        ? Object.values(list)
+            .filter((x) => selected.includes(x.node_id) && !x.archived && isActiveStatus(x.status) && !isWaiting(x))
+            .sort((a, b) => b.updated_at_ms - a.updated_at_ms)
+        : [],
+    [list, selected, enabled],
   )
 }
 
@@ -92,6 +114,8 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
   )
 
   const waiting = useWaitingSessions(selected)
+  const showRecent = usePrefs((s) => s.sidebarRecent)
+  const recent = useRecentSessions(selected, showRecent)
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-subtle" data-testid="sidebar">
@@ -126,6 +150,14 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
                 <p className="px-2 py-1 text-xs font-semibold tracking-wide text-warning uppercase">{t('sidebar.waiting')}</p>
                 {waiting.map((s) => (
                   <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
+                ))}
+              </div>
+            ) : null}
+            {recent.length > 0 ? (
+              <div className="mb-2" data-testid="sidebar-recent">
+                <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.recent')}</p>
+                {recent.map((s) => (
+                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} project={s.project ?? undefined} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
                 ))}
               </div>
             ) : null}
@@ -260,7 +292,9 @@ function ProjectBranch({ nodeParam, nodeName, group, activeNode, activeSession, 
   )
 }
 
-function SessionRow({ nodeParam, nodeName, id, title, status, pending, branch, active, onNavigate }: { nodeParam: string; nodeName?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; onNavigate?: () => void }) {
+/** `project`：不在项目树里的行（Recent）带上所属项目，不然看不出这个会话是哪个项目的。 */
+function SessionRow({ nodeParam, nodeName, project, id, title, status, pending, branch, active, onNavigate }: { nodeParam: string; nodeName?: string; project?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; onNavigate?: () => void }) {
+  const meta = [project, nodeName].filter(Boolean).join(' · ')
   return (
     <Link
       // 分支名放在悬停提示里（左栏窄，不占位置）
@@ -274,7 +308,7 @@ function SessionRow({ nodeParam, nodeName, id, title, status, pending, branch, a
     >
       <SessionDot status={status} />
       <span className="min-w-0 flex-1 truncate">{title || id}</span>
-      {nodeName ? <span className="max-w-[40%] shrink-0 truncate text-xs text-fg-subtle">{nodeName}</span> : null}
+      {meta ? <span className="max-w-[40%] shrink-0 truncate text-xs text-fg-subtle">{meta}</span> : null}
       {pending > 0 ? <Chip tone="warning">{pending}</Chip> : null}
     </Link>
   )

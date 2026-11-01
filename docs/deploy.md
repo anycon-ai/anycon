@@ -127,7 +127,7 @@ ANYCON_DATABASE_URL=postgres://anycon:密码@db.example.com:5432/anycon
 
 - **URL**：`postgres://` 或 `postgresql://`，libpq 风格。用户名、密码里的特殊字符要百分号编码（`@` → `%40`）。参数写在查询串里：`sslmode`（`disable`、`prefer`（默认）、`require`、`verify-ca`、`verify-full`）、`sslrootcert=/path/ca.pem`（自己的 CA；不给时用内置的公共根证书）。库和 hub 不在同一台机器 / 同一个 Docker 网络里时，用 `sslmode=verify-full`（加 `sslrootcert`，服务商用公共 CA 的话不用）：默认的 `prefer` 只是「能加密就加密」，不校验证书，挡不住中间人；`require` 加密但同样不校验。库里是账号、设备、配对等元数据和各种 token 的哈希，没有会话内容（hub.md § 8），但哈希和邮箱也不该在网上明文走。TLS 由 hub 自己用 rustls 做，镜像里不需要装什么
 - **准备库**：先建好库和角色（`CREATE ROLE anycon LOGIN PASSWORD '…'; CREATE DATABASE anycon OWNER anycon;`）。hub 启动时自己建表、跑迁移（`crates/hub/migrations/postgres/`），角色要能在库里建表、建索引：做库的属主最省事（Postgres 15 起普通角色不能在 `public` schema 里建表，属主可以），否则要在用到的 schema 上授予 `CREATE`；表放在连接的默认 schema 里（要换 schema：`?options=-c%20search_path%3Dmyschema`，schema 要先建好）。hub 只往自己的表里读写，不需要超级用户
-- **版本**：CI 在 Postgres 15 和 18 上跑全部 hub 测试；更老的版本没有验证
+- **版本**：CI 在 Postgres 18 上跑全部 hub 测试；别的版本没有验证
 - **连接失败**：连不上、认证失败、迁移失败时 hub 打印原因（主机、端口、库名和驱动的错误，没有密码）并以非零状态退出，不会带着坏掉的存储启动。连接池上限 10，建立连接最多等 10 秒。运行中数据库暂时不可用：请求报错，`/readyz` 回 `503`，库恢复后自动重连，不用重启 hub
 - **数据在哪**：账号、设备、配对、邀请、审计、预览 label 等元数据在库里（hub.md § 8）；管理员 token（`admin-token`，`single`）和 VAPID 密钥（`vapid.json`）仍然在 `ANYCON_DATA_DIR` 里，所以 `/data` 卷要保留（容器重建后丢了 `vapid.json`，所有浏览器的推送订阅都失效）
 - **SQLite 和 Postgres 之间没有自动迁移**：换后端等于一个新的库，账号、设备和配对不会带过去，设备要重新配对。导出 / 导入工具在计划里

@@ -134,7 +134,7 @@
 
 **否掉**：`sqlx::Any`；只做 SQLite；sea-orm（抽象层用不上）。
 
-**实现**（v0.2）：`PostgresStore` 和 `SqliteStore` 实现同一个 `Store` trait，`ANYCON_DATABASE_URL` 的协议头选后端（`postgres://` / `postgresql://` 是 Postgres，没设或 `sqlite:` 是 SQLite）。两套迁移目录 `migrations/sqlite/`、`migrations/postgres/`，编号和名字一一对应，以后两边按同一个编号各加一份，Postgres 一侧用 `BIGINT` 毫秒时间戳、`BOOLEAN`、`GENERATED ALWAYS AS IDENTITY`（类型映射见 `migrations/postgres/0001_init.sql` 开头）。「先查再写」的逻辑在 SQLite 里靠唯一的写者天然串行，在 Postgres 里逐处换成行锁（`FOR UPDATE` / `FOR NO KEY UPDATE`）、advisory 锁或唯一约束，撞上死锁时整个事务重试，逐项对照在 [hub.md § 8.1](spec/hub.md#81-存储后端sqlite-和-postgres)。两个实现由同一套测试验证（`crates/hub/src/store/conformance.rs`；Postgres 那一遍设 `ANYCON_TEST_POSTGRES_URL` 才跑，CI 在 Postgres 15 和 18 上跑）。Postgres 只换存储：路由表、配对撮合和限速计数仍在进程内存里，hub 仍然只能跑一个实例。SQLite 和 Postgres 之间没有自动迁移数据的工具（导出 / 导入见 [roadmap](roadmap.md)）。
+**实现**（v0.2）：`PostgresStore` 和 `SqliteStore` 实现同一个 `Store` trait，`ANYCON_DATABASE_URL` 的协议头选后端（`postgres://` / `postgresql://` 是 Postgres，没设或 `sqlite:` 是 SQLite）。两套迁移目录 `migrations/sqlite/`、`migrations/postgres/`，编号和名字一一对应，以后两边按同一个编号各加一份，Postgres 一侧用 `BIGINT` 毫秒时间戳、`BOOLEAN`、`GENERATED ALWAYS AS IDENTITY`（类型映射见 `migrations/postgres/0001_init.sql` 开头）。「先查再写」的逻辑在 SQLite 里靠唯一的写者天然串行，在 Postgres 里逐处换成行锁（`FOR UPDATE` / `FOR NO KEY UPDATE`）、advisory 锁或唯一约束，撞上死锁时整个事务重试，逐项对照在 [hub.md § 8.1](spec/hub.md#81-存储后端sqlite-和-postgres)。两个实现由同一套测试验证（`crates/hub/src/store/conformance.rs`；Postgres 那一遍设 `ANYCON_TEST_POSTGRES_URL` 才跑，CI 在 Postgres 18 上跑）。Postgres 只换存储：路由表、配对撮合和限速计数仍在进程内存里，hub 仍然只能跑一个实例。SQLite 和 Postgres 之间没有自动迁移数据的工具。
 
 ---
 

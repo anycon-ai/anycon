@@ -432,7 +432,7 @@ Mac 睡眠后 daemon 会自动重连，但如果 Mac mini 要 7×24 可用，系
 
 ## 9. 公共 hub 与 `multi` 模式
 
-公共 hub（anycon.ai）运行的是同一份 release，只是配置不同：`ANYCON_MODE=multi`，加上 SMTP、GitHub / Google 的 OAuth 应用、`ANYCON_ADMIN_EMAILS`、它自己选的 `ANYCON_QUOTA_*`，以及指向它的服务条款和隐私政策的 `ANYCON_TERMS_URL=https://anycon.ai/terms`、`ANYCON_PRIVACY_URL=https://anycon.ai/privacy`（登录页据此显示链接，§ 3）。自建的人也可以这样配，得到一个开放注册的 hub。anycon.ai 公共 hub 的上线见 [roadmap](roadmap.md)。
+公共 hub（https://hub.anycon.ai）运行的是同一份 release，只是配置不同：`ANYCON_MODE=multi`，加上 SMTP、GitHub / Google 的 OAuth 应用、`ANYCON_ADMIN_EMAILS`、它自己选的 `ANYCON_QUOTA_*`，以及指向它的服务条款和隐私政策的 `ANYCON_TERMS_URL=https://anycon.ai/terms`、`ANYCON_PRIVACY_URL=https://anycon.ai/privacy`（登录页据此显示链接，§ 3）。自建的人也可以这样配，得到一个开放注册的 hub。
 
 `multi` 和默认的 `single` 的区别（[architecture.md § 3](architecture.md#3-运行模式)）：
 

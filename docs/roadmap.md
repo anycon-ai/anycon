@@ -93,11 +93,11 @@
 - 设备 token 轮换（30 天自动轮换，旧 token 60 秒宽限）
 - 多个 workspace 根（[ADR-45](decisions.md#adr-45-多个-workspace-根)）
 - `anycon export` / `import`：会话历史和附件的备份、换机器（[ADR-46](decisions.md#adr-46-导出--导入一个-zip只走本机通道导入不带-agent-会话-id)）
+- 公共 hub 上线：[hub.anycon.ai](https://hub.anycon.ai)（`multi`，邮箱验证码登录，每个账号一个节点，预览在 `*.aiplace.app`）；服务条款和隐私政策在 anycon.ai（`/terms`、`/privacy`），登录页和 `anycon connect` 经 `ANYCON_TERMS_URL` / `ANYCON_PRIVACY_URL` 链过去
 
 还没做：
 
-- 隐私页、服务条款
-- anycon.ai 公共 hub 上线
+- 公共 hub 的 GitHub / Google 登录（要先注册 OAuth 应用）
 - 英文文档：之后英文为主、中文同步
 
 ## v0.3 — 体验

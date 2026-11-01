@@ -62,7 +62,6 @@
 - hub 离线队列（默认关闭的那个）
 - Python：crypto wheel、pydantic 类型生成、Python SDK 客户端方向、`@anycon.agent` 注册节点
 - `fs.*` 写入
-- `anycon new --image`（协议的 `session.create` 已经支持附件）
 - CLI / SDK 上传图片时去掉 EXIF（含 GPS）并按方向转正——现在只有 Web UI 会重编码
 - 管理员状态页显示邮件 / 推送的配置和订阅数
 - scratch 过期前 7 天的提示；plan 批准时「开始实施，回到之前的模式」选项
@@ -85,17 +84,18 @@
 - 登录方式：`multi` 的邮箱注册、GitHub、Google、OAuth 身份关联、设置页管理登录方式（ADR-22、ADR-40）
 - 账号删除：自己删（要求 10 分钟内登录过）、管理员删；管理员页的账号搜索、授予 / 取消管理员
 - dev server 预览：Noise 隧道 + 独立的预览域名（公共 hub 用 `aiplace.app`），会话页内嵌或新标签页打开（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）
+- hub 的 Postgres 存储（ADR-12），和 SQLite 同一套行为、同一套测试
+- ACP client adapter：OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi 等说 ACP 的 agent 一次覆盖（[ADR-47](decisions.md#adr-47-acp-adapter每个-agent-一个-adapter一个进程服务它的所有会话)）
+- 任意文件附件：agent 不原生收的文件复制进会话工作目录（[ADR-44](decisions.md#adr-44-非图片附件落到会话工作目录)）；CLI 的 `anycon send` / `new --file`
+- Web 的会话全文搜索（⌘K 面板搜 daemon 的全文索引，命中直接定位到消息）
+- Web 的只读文件浏览（`/n/:node/files/*`）
+- 远程改节点配置（白名单，安全相关的只能收紧，[ADR-43](decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）、远程读日志
+- 设备 token 轮换（30 天自动轮换，旧 token 60 秒宽限）
+- 多个 workspace 根（[ADR-45](decisions.md#adr-45-多个-workspace-根)）
+- `anycon export` / `import`：会话历史和附件的备份、换机器（[ADR-46](decisions.md#adr-46-导出--导入一个-zip只走本机通道导入不带-agent-会话-id)）
 
 还没做：
 
-- Store 的 Postgres 实现
-- ACP client adapter（OpenCode、Pi 等一次覆盖）
-- 会话搜索 UI
-- Web UI 的只读文件浏览（`/n/:node/files/*`，[spec/web.md § 4.7](spec/web.md)）
-- 远程改节点配置（`node.set_config`）、远程读日志（`node.logs`）
-- 设备 token 轮换（`control.rotate_token`）
-- 多 workspace 根
-- `anycon export` / 导入，支持从公共 hub 搬到自建
 - 隐私页、服务条款
 - anycon.ai 公共 hub 上线
 - 英文文档：之后英文为主、中文同步

@@ -208,6 +208,29 @@ The device identity and paired nodes are stored locally, behind a minimal key-va
 
 `profile` defaults to `default`. Switch it with `ANYCON_PROFILE` or `{ profile }`. The profile becomes a directory name, so only letters, digits and `. _ -` are allowed (it must start with a letter or digit, be at most 64 characters, and not contain `..`). Path separators, `..` or an empty string throw `invalid_profile`. An empty `ANYCON_HOME` is treated as unset. In CI you can inject credentials without writing to disk: `ANYCON_DEVICE_KEY` (the 32-byte private key, hex) + `ANYCON_DEVICE_TOKEN`, plus the node to connect to, `ANYCON_NODE_ID` + `ANYCON_NODE_KEY` (the daemon's public key, hex).
 
+## Device token rotation
+
+The hub signs a device token when you pair. To shorten how long a leaked token stays useful, the SDK rotates it (`rotate_token` → `token_rotated`; the hub keeps the previous token valid for another 60 s and accepts at most one rotation per device per minute).
+
+- **Identity kept by the SDK** (written by `pair()`, or in the `storage` you pass): after authenticating, `connect()` / `Client.open()` rotates a token that is 30 days old or older. The new token and its issue time (`tokenIssuedAtMs`) are written back in **one** `storage.set` (`FileStorage`: temporary file + rename, mode 0600), and only then used for reconnects. Records without an issue time (and issue times in the future, after a clock change) count as old and are rotated once on the next connect. If the reply doesn't arrive, the request is sent again after 75 s (the first 3 sends of a connection are 75 s apart), then re-checked hourly, so a connection that stays up for weeks still rotates. Resending helps when the request was ignored as too soon, or when the reply was lost on a connection that stayed up. It does not help after a reconnect: the hub only lets a connection that authenticated with the current token rotate, so if a reply is lost and the client reconnects with the old token inside the 60 s grace, it cannot rotate again and has to pair again once the grace is over. `close()` waits up to 2 s for a reply that is still on its way so a script that exits right after connecting doesn't lose the new token. A failed storage write isn't fatal: the new token stays in memory for this process's reconnects, and the event says `persisted: false`.
+- **Credentials from environment variables** (`ANYCON_DEVICE_KEY` / `ANYCON_DEVICE_TOKEN`) are **not rotated automatically**: the SDK has nowhere to save a new token, and rotating without saving locks the device out (the old token stops working after 60 s; you would have to pair again and revoke the old device). Call `client.rotateToken()` yourself and save the returned `deviceToken`.
+
+```ts
+import { Client } from '@anycon/sdk'
+
+const client = await Client.open(hubUrl, {
+  // Called on every successful rotation. With env credentials the SDK doesn't write
+  // anything, so this is where you store the new token.
+  onTokenRotated: ({ deviceToken, persisted }) => {
+    if (!persisted) secrets.put('ANYCON_DEVICE_TOKEN', deviceToken)
+  },
+})
+client.on('tokenRotated', (rotation) => {}) // same payload: { deviceToken, issuedAtMs, persisted, persistError? }
+const rotation = await client.rotateToken() // rotate now; resolves with the same object
+```
+
+`rotateToken({ timeoutMs })` waits up to 10 s by default. It rejects with `not_connected` before the hub connection is up, `rotate_timeout` if the hub doesn't answer (a second request within a minute of the previous rotation is ignored, so is a request on a connection that authenticated with an old token, and hubs without rotation never answer), and fails if the connection drops or the client closes while waiting. A reply that arrives after the timeout is still applied. `connect()` doesn't expose the `Client`; use `Client.open()` to rotate on demand. `ClientOptions.tokenRotation` has `auto: false` to turn off automatic rotation, and `maxAgeMs` / `retryAfterMs` / `recheckMs` / `closeWaitMs` to change the timings (mainly for tests).
+
 ## Large messages and transport desync
 
 The hub limits the size of a single envelope (256 KiB by default), and a page of `session.history` or a single `tool_result` can be larger. So the SDK encrypts each JSON-RPC message and then uses `frame` (`@anycon/protocol`, ADR-30) to split it into `data` envelopes of ≤ 200 KiB, which the peer reassembles and then decrypts. This works the same in both directions. Noise nonces are sequential, so **losing any fragment desynchronizes the transport**. Therefore:

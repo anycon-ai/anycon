@@ -14,7 +14,13 @@
  * ```
  */
 export { connect, type ConnectOptions } from './connect.js'
-export { Client, selectNode, type ClientEvents, type ClientOptions } from './client.js'
+export {
+  Client,
+  selectNode,
+  type ClientEvents,
+  type ClientOptions,
+  type TokenRotation,
+} from './client.js'
 export {
   PAIR_ACK_TIMEOUT_MS,
   forgetNode,

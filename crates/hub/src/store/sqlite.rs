@@ -21,7 +21,7 @@ use super::{
     category_from_str, category_to_str, kind_from_str, kind_to_str, Account, AccountToken, AuditEntry, CodeCandidate,
     CreateAccountOutcome, Device, EmailCode, EmailPurpose, Invite, IssueOutcome, NewAudit, NewDevice, NewPreviewToken,
     NotificationPref, PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome,
-    SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
+    RotateOutcome, SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
 };
 use super::{CreateDevicesOutcome, DeviceLimits};
 use super::{Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthState};
@@ -989,13 +989,60 @@ impl Store for SqliteStore {
         row.as_ref().map(device_from).transpose()
     }
 
-    async fn find_device_by_token_hash(&self, token_hash: &str) -> StoreResult<Option<Device>> {
-        let row = sqlx::query(device_select!("WHERE token_hash = ?"))
-            .bind(token_hash)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(be)?;
+    async fn find_device_by_token_hash(&self, token_hash: &str, now_ms: u64) -> StoreResult<Option<Device>> {
+        let row = sqlx::query(device_select!(
+            "WHERE token_hash = ? OR (prev_token_hash = ? AND prev_token_expires_at_ms > ?) LIMIT 1"
+        ))
+        .bind(token_hash)
+        .bind(token_hash)
+        .bind(now_ms as i64)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(be)?;
         row.as_ref().map(device_from).transpose()
+    }
+
+    async fn rotate_device_token(
+        &self,
+        id: &str,
+        current_token_hash: &str,
+        new_token_hash: &str,
+        now_ms: u64,
+        grace_ms: u64,
+        min_interval_ms: u64,
+    ) -> StoreResult<RotateOutcome> {
+        // 一条 UPDATE 同时做检查（没吊销、请求方的 token 还是当前 token、距上次轮换够久）和写入；SQL 里等号右边引用的是
+        // 更新前的值，所以 `prev_token_hash = token_hash` 取到的是原来的当前 token。
+        let r = sqlx::query(
+            "UPDATE devices SET prev_token_hash = token_hash, prev_token_expires_at_ms = ?, token_hash = ?, \
+             token_rotated_at_ms = ? \
+             WHERE id = ? AND revoked_at_ms IS NULL AND token_hash = ? \
+             AND (token_rotated_at_ms IS NULL OR token_rotated_at_ms <= ?)",
+        )
+        .bind(now_ms.saturating_add(grace_ms) as i64)
+        .bind(new_token_hash)
+        .bind(now_ms as i64)
+        .bind(id)
+        .bind(current_token_hash)
+        .bind(now_ms.saturating_sub(min_interval_ms) as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(be)?;
+        if r.rows_affected() > 0 {
+            return Ok(RotateOutcome::Rotated);
+        }
+        // 没改到：区分「设备不在 / 已吊销」「请求方的 token 不是当前的」和「刚轮换过」
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT token_hash FROM devices WHERE id = ? AND revoked_at_ms IS NULL")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(be)?;
+        Ok(match current {
+            None => RotateOutcome::Unavailable,
+            Some(h) if h != current_token_hash => RotateOutcome::Stale,
+            Some(_) => RotateOutcome::TooSoon,
+        })
     }
 
     async fn list_devices(&self, account_id: &str) -> StoreResult<Vec<Device>> {

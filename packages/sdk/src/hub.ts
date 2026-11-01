@@ -65,6 +65,11 @@ export interface HubEvents {
   control: [Control]
   /** handshake / data / notify 信封。 */
   envelope: [Envelope]
+  /**
+   * hub 轮换了设备 token（`token_rotated`），参数是新 token。只在本连接持有设备 token 时才会触发；
+   * 消息不经过 `control`（新 token 是秘密，不往外多扇出）。调用方要先持久化它再 {@link HubConnection.setToken}。
+   */
+  tokenRotated: [deviceToken: string]
   disconnected: [info: { code: number; reason: string; willReconnect: boolean }]
   /** 不会再重连的终止性错误（被顶掉、被吊销、token 无效……）。 */
   fatal: [Error]
@@ -96,6 +101,8 @@ export class HubConnection extends Emitter<HubEvents> {
   readonly #factory: WebSocketFactory
   readonly #backoff: Required<BackoffOptions>
   readonly #authTimeoutMs: number
+  /** 之后每次（重）连接认证用的设备 token；轮换后由 {@link HubConnection.setToken} 换成新的。 */
+  #token: string | undefined
   #state: State = 'idle'
   #ws: WebSocketLike | undefined
   #deviceId: string
@@ -116,6 +123,7 @@ export class HubConnection extends Emitter<HubEvents> {
   constructor(options: HubConnectionOptions) {
     super()
     this.#opts = options
+    this.#token = options.token
     this.#factory = options.webSocket ?? defaultWebSocket
     const r = typeof options.reconnect === 'object' ? options.reconnect : {}
     this.#backoff = { initialMs: r.initialMs ?? 1000, maxMs: r.maxMs ?? 30_000 }
@@ -129,6 +137,14 @@ export class HubConnection extends Emitter<HubEvents> {
    */
   adoptDeviceId(id: string): void {
     this.#deviceId = id
+  }
+
+  /**
+   * 轮换成功后换上新的设备 token：之后的重连用它认证。当前这条连接不受影响（认证只在连接建立时发生）。
+   * 临时连接（没有 token）调用无效。
+   */
+  setToken(token: string): void {
+    if (this.#token !== undefined) this.#token = token
   }
 
   /** hub 分配 / 确认的设备 id（`auth_ok` 之后可用）。 */
@@ -262,7 +278,7 @@ export class HubConnection extends Emitter<HubEvents> {
       )
       const auth: Control = {
         type: 'auth',
-        ...(this.#opts.token ? { device_token: this.#opts.token } : {}),
+        ...(this.#token ? { device_token: this.#token } : {}),
         protocol_version: PROTOCOL_VERSION,
         client: this.#opts.client,
       }
@@ -336,6 +352,12 @@ export class HubConnection extends Emitter<HubEvents> {
         this.emit('control', ctrl)
         return
       }
+      case 'token_rotated':
+        // 临时连接（没有设备 token）不该收到；收到的话当作 hub 的噪声丢掉。
+        if (this.#token !== undefined && this.#state === 'ready' && ctrl.device_token) {
+          this.emit('tokenRotated', ctrl.device_token)
+        }
+        return
       default:
         this.emit('control', ctrl)
     }

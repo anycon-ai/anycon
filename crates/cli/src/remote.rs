@@ -1,7 +1,12 @@
 //! CLI 作为客户端设备经 hub 连 daemon：配对（Noise XXpsk3 initiator）、重连（IK initiator）、加密 JSON-RPC。
 //!
 //! 每个 hub 一套状态，存在 `<home>/client/<hub-host>/`：
-//! `client.key`（Noise 私钥 hex，0600）、`device-token`（0600）、`device-id`、`nodes.json`（已配对节点：id、名称、公钥）。
+//! `client.key`（Noise 私钥 hex，0600）、`device-token`（0600）、`device-token-issued-at`（token 的签发时间，Unix 毫秒）、
+//! `device-id`、`nodes.json`（已配对节点：id、名称、公钥）。
+//!
+//! 设备 token 轮换（docs/spec/hub.md § 5、spec/cli.md § 2）：[`open`] 连上 hub 之后，token 满 30 天（或不知道签发时间）就在
+//! 第一帧发 `rotate_token`，**不等回复**：回执在之后的任何一次读里被截下来并落盘（先 token、后签发时间），所以老 hub
+//! （不认识这条消息、不回复）不会拖慢命令。hub 发回执在转发别的帧之前，命令不可能在读到它之前就读到后面的东西。
 //!
 //! 配对（docs/protocol.md § 4.1、ADR-29）：短码只在本机出现——发给 hub 的是 `match_id`；握手完成、收到 `PairDone` 之后还要等
 //! daemon 经新建立的 Noise 传输发来的 `pair.ack`，校验 `peer_id` 是自己的正式 id、`node_id` 等于 `PairDone.peer`、
@@ -60,10 +65,28 @@ pub struct HubState {
     pub hub_url: String,
     pub secret: Option<[u8; 32]>,
     pub token: Option<String>,
+    /// `token` 的签发时间（Unix 毫秒）；没有记录（轮换功能之前配对的）= 未知，按「该轮换了」处理。
+    pub token_issued_at_ms: Option<u64>,
     pub device_id: Option<String>,
     pub nodes: Vec<NodeEntry>,
     /// 状态文件存在但读不出来（损坏）：不能当作「没有」继续——`connect` 会生成新密钥把旧的覆盖掉。
     pub problem: Option<String>,
+    /// 载入时磁盘上的 token。`save` 只在 `token` 变了（配对拿到新的）才写 token 文件：一份在轮换之前载入的旧状态
+    /// 之后 `save`（改节点名、`disconnect`）不会把轮换好的新 token 盖回旧的。
+    loaded_token: Option<String>,
+}
+
+/// 签发时间文件的名字（和 `device-token` 在同一个目录）。
+const TOKEN_ISSUED_FILE: &str = "device-token-issued-at";
+
+/// 把 token 和它的签发时间写进状态目录：**先 token、后签发时间**，各自是「临时文件 + rename」的原子替换（0600）。
+/// 中途崩溃只会留下「新 token + 旧签发时间」（下次多轮换一次），不会留下「新签发时间 + 旧 token」
+/// （那会让一个已被 hub 换掉的 token 被当成新的，宽限一过就认证失败）。
+fn write_token_files(dir: &Path, token: &str, issued_at_ms: u64) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let _ = anycon_daemon::sys::restrict_to_owner(dir);
+    anycon_daemon::identity::write_private(&dir.join("device-token"), token)?;
+    anycon_daemon::identity::write_private(&dir.join(TOKEN_ISSUED_FILE), &issued_at_ms.to_string())
 }
 
 pub fn host_of(hub_url: &str) -> Result<String> {
@@ -105,11 +128,16 @@ impl HubState {
             }
             None => None,
         };
+        let token = read_trim(&dir.join("device-token"));
+        let token_issued_at_ms =
+            token.as_ref().and_then(|_| anycon_daemon::identity::read_issued_at(&dir.join(TOKEN_ISSUED_FILE)));
         HubState {
             dir: dir.to_path_buf(),
             hub_url: if nodes_file.hub_url.is_empty() { hub_url.to_string() } else { nodes_file.hub_url },
             secret,
-            token: read_trim(&dir.join("device-token")),
+            loaded_token: token.clone(),
+            token,
+            token_issued_at_ms,
             device_id: read_trim(&dir.join("device-id")),
             nodes: nodes_file.nodes,
             problem: (!problems.is_empty()).then(|| problems.join("; ")),
@@ -144,8 +172,10 @@ impl HubState {
         if let Some(s) = &self.secret {
             self.write_private("client.key", &hex::encode(s))?;
         }
-        if let Some(t) = &self.token {
-            self.write_private("device-token", t)?;
+        if let Some(t) = self.token.as_ref().filter(|t| self.loaded_token.as_ref() != Some(*t)) {
+            // 配对刚拿到的新 token（它的签发时间是此刻）；没变的 token 不碰，见 `loaded_token`
+            let issued = self.token_issued_at_ms.unwrap_or_else(anycon_daemon::util::now_ms);
+            write_token_files(&self.dir, t, issued)?;
         }
         if let Some(i) = &self.device_id {
             self.write_private("device-id", i)?;
@@ -158,8 +188,10 @@ impl HubState {
     /// hub 不认这个设备了（token 无效 / 已被吊销）：丢掉保存的 token 和设备 id，之后以临时连接重新配对。
     pub fn forget_credentials(&mut self) -> Result<()> {
         self.token = None;
+        self.token_issued_at_ms = None;
+        self.loaded_token = None;
         self.device_id = None;
-        for f in ["device-token", "device-id"] {
+        for f in ["device-token", TOKEN_ISSUED_FILE, "device-id"] {
             match std::fs::remove_file(self.dir.join(f)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -244,6 +276,8 @@ pub(crate) struct HubWs {
     pub(crate) peers_online: Vec<String>,
     /// hub 关连接时的 close code。
     close_code: Option<u16>,
+    /// 设了就表示这条连接发过 `rotate_token`：`token_rotated` 回执在 [`HubWs::recv`] 里被截下来、落盘到这个状态目录。
+    rotation_dir: Option<PathBuf>,
 }
 
 /// 认证失败的几种结局。
@@ -307,6 +341,7 @@ impl HubWs {
             data: VecDeque::new(),
             peers_online: vec![],
             close_code: None,
+            rotation_dir: None,
         };
         h.send_control(&Control::Auth {
             device_token: token,
@@ -362,6 +397,17 @@ impl HubWs {
         self.ws.send(Message::Binary(bytes.into())).await.map_err(|e| CliError::offline(e.to_string()))
     }
 
+    /// 这封信封是不是我们等着的 `token_rotated` 回执（只在发过 `rotate_token` 的连接上认）。
+    fn take_rotated_token(&self, env: &Envelope) -> Option<String> {
+        if self.rotation_dir.is_none() || env.kind != Kind::Control {
+            return None;
+        }
+        match env.control_body() {
+            Ok(Control::TokenRotated { device_token }) => Some(device_token),
+            _ => None,
+        }
+    }
+
     /// 先到的 data / notify 信封留着（`pair.ack` 可能比我们读到 `pair_done` 更早被收进来）。
     pub(crate) fn stash_data(&mut self, env: Envelope) {
         self.data.push_back(env);
@@ -375,7 +421,12 @@ impl HubWs {
                 Ok(None) => return Err(CliError::offline("the hub closed the connection")),
                 Ok(Some(Err(e))) => return Err(CliError::offline(e.to_string())),
                 Ok(Some(Ok(Message::Binary(b)))) => {
-                    return Envelope::decode(&b).map(Some).map_err(|e| CliError::general(format!("bad envelope: {e}")));
+                    let env = Envelope::decode(&b).map_err(|e| CliError::general(format!("bad envelope: {e}")))?;
+                    if let Some(token) = self.take_rotated_token(&env) {
+                        save_rotated_token(self.rotation_dir.as_deref(), &token);
+                        continue;
+                    }
+                    return Ok(Some(env));
                 }
                 Ok(Some(Ok(Message::Ping(_)))) => {
                     let _ = self.ws.flush().await;
@@ -651,6 +702,7 @@ pub(crate) async fn complete_pairing(
     state.device_id = Some(my_id);
     if let Some(t) = token {
         state.token = Some(t);
+        state.token_issued_at_ms = Some(anycon_daemon::util::now_ms());
     }
     state.nodes.retain(|n| n.id != entry.id);
     state.nodes.push(entry.clone());
@@ -673,6 +725,32 @@ pub(crate) fn pair_failed(reason: PairFailReason) -> CliError {
 }
 
 // ---------------------------------------------------------------- 连接节点（IK）
+
+/// 设备 token 满 30 天（或不知道签发时间）就向 hub 请求轮换。必须是认证之后的第一帧，**不等回复**：
+/// 回执由 [`HubWs::recv`]（以及握手之后的 [`Driver`]）截下来落盘。hub 在转发后面的任何帧之前先回这条，
+/// 所以命令读到后面的东西之前一定先读到它；老 hub 不认识这条消息、不回复，命令不会因此变慢。
+/// 发不出去（连接已经坏了）不管：后面的读会报真正的错误。
+async fn request_rotation_if_due(h: &mut HubWs, state: &HubState) {
+    if !anycon_daemon::identity::token_due(state.token_issued_at_ms, anycon_daemon::util::now_ms()) {
+        return;
+    }
+    if h.send_control(&Control::RotateToken {}).await.is_ok() {
+        h.rotation_dir = Some(state.dir.clone());
+        tracing::debug!("the device token is due for rotation; asked the hub for a new one");
+    }
+}
+
+/// 把 `token_rotated` 带来的新 token 落盘（`dir` 是状态目录）。hub 已经换了、旧 token 只再有效 60 秒，写不进去时命令照常
+/// 做完，但要告诉用户：下一次命令会认证失败，得重新配对。
+fn save_rotated_token(dir: Option<&Path>, token: &str) {
+    let Some(dir) = dir else { return };
+    match write_token_files(dir, token, anycon_daemon::util::now_ms()) {
+        Ok(()) => tracing::debug!("device token rotated"),
+        Err(e) => eprintln!(
+            "warning: the hub issued a new device token but it could not be saved ({e}); the previous token stops working within a minute, so the next command will have to pair again (`anycon connect`)"
+        ),
+    }
+}
 
 /// 在已认证的 hub 连接上对 `node_id` 做 IK 握手，并把连接交给后台任务驱动成 [`Conn`]。
 async fn ik_connect(
@@ -724,12 +802,13 @@ async fn ik_connect(
     let transport = hs.into_transport().map_err(|e| CliError::general(e.to_string()))?;
 
     // 把 ws 和 transport 交给后台任务
-    let HubWs { ws, seq, device_id, .. } = h;
+    let HubWs { ws, seq, device_id, rotation_dir, .. } = h;
     let (req_tx, req_rx) = mpsc::unbounded_channel::<Req>();
     let (note_tx, note_rx) = mpsc::unbounded_channel::<RpcNotification>();
     let closed: ClosedReason = Arc::new(Mutex::new(None));
     let node = node_id.to_string();
-    let driver = Driver::new(ws, transport, device_id, node.clone(), seq);
+    let mut driver = Driver::new(ws, transport, device_id, node.clone(), seq);
+    driver.rotation_dir = rotation_dir;
     let closed_d = closed.clone();
     tokio::spawn(async move {
         let reason = driver.run(req_rx, note_tx).await;
@@ -758,6 +837,8 @@ struct Driver {
     reasm: frame::Reassembler,
     flow: SendFlow,
     rate: RatePause,
+    /// 发过 `rotate_token` 的连接：握手之后才到的 `token_rotated` 也落盘到这里（见 [`save_rotated_token`]）。
+    rotation_dir: Option<PathBuf>,
 }
 
 impl Driver {
@@ -773,6 +854,7 @@ impl Driver {
             reasm: frame::Reassembler::new(),
             flow: SendFlow::default(),
             rate: RatePause::default(),
+            rotation_dir: None,
         }
     }
 
@@ -889,6 +971,8 @@ impl Driver {
                                     }
                                     // hub 丢了我们的某一封（不是退回）：加密通道已经少了一条，只能重来
                                     Ok(Control::Dropped { reason, .. }) => break format!("the hub dropped one of our messages ({reason:?}); run the command again"),
+                                    // 轮换的回执一般在握手期间就被 `HubWs::recv` 截下了；这里兜底
+                                    Ok(Control::TokenRotated { device_token }) if self.rotation_dir.is_some() => save_rotated_token(self.rotation_dir.as_deref(), &device_token),
                                     _ => {}
                                 },
                                 _ => {}
@@ -938,6 +1022,7 @@ pub async fn open(state: &HubState, node: &NodeEntry, device_name: &str) -> Resu
         .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
         .ok_or_else(|| CliError::general("corrupt nodes.json"))?;
     let mut h = HubWs::connect(&state.hub_url, Some(token), device_name).await?;
+    request_rotation_if_due(&mut h, state).await;
     let mut online = h.peers_online.contains(&node.id);
     if !online {
         // 节点刚好在重连：给一点时间等 peer_online

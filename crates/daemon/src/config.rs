@@ -50,6 +50,10 @@ impl Paths {
     pub fn device_token(&self) -> PathBuf {
         self.keys_dir().join("device-token")
     }
+    /// `device-token` 签发时间（Unix 毫秒，十进制文本）：配对 / 接入拿到 token 或最近一次轮换的时刻。
+    pub fn device_token_issued_at(&self) -> PathBuf {
+        self.keys_dir().join("device-token-issued-at")
+    }
     pub fn device_id(&self) -> PathBuf {
         self.keys_dir().join("device-id")
     }

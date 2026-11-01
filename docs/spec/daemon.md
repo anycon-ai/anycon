@@ -794,6 +794,10 @@ SQLite（WAL）。全部表：
 - 睡眠唤醒：每 5 秒检查单调时钟跳变 > 30 秒即视为唤醒，立即重连并重跑 `agent.list` 探测
 - 静默断线：认证之后 75 秒收不到 hub 的任何帧（hub 每 30 秒 ping，见 hub.md 的连接规则）就当连接已死，断开重连。中间的代理或 TUN（比如 Clash 的 fake-IP 模式重载配置）可能默默丢掉连接、不发 FIN / RST，本机 socket 还是 ESTABLISHED；没有这一条，daemon 会一直以为自己在线，而 hub 早已把它下线、客户端显示节点离线
 - 版本协商：`control.auth` 带协议版本；hub 不兼容时 `auth_fail { reason: version }`，daemon 每 10 分钟重试并在日志里喊；本机 `anycon doctor` 能看到
+- **设备 token 轮换**（hub 侧规则见 [hub.md § 5](hub.md#5-设备与设备-token)）：token 签发满 30 天就换一个，缩短泄露的 token 的有效期。签发时间记在 `keys/device-token-issued-at`（十进制 Unix 毫秒，和 `keys/device-token` 同目录、同样 0600）：首次配对 / 账号内接入拿到 token 时写入，之后每次轮换更新。没有这个文件（轮换功能之前配对的）、内容读不出来、或者记的时间在「未来」（时钟被往回拨过，时间不可信）都当作「很旧」，下次连上 hub 就轮换一次。
+  - **触发**：用 token 认证的连接上，`auth_ok` 之后马上检查，到期就发 `rotate_token`；没有 token 的临时身份不发（它刚经 `pair_done` 拿到的 token 是新的）。hub 同一设备 1 分钟内只轮换一次，多余的请求既不回复也没有失败通知，所以没等到回执就要重发：头 3 次发送各隔 75 秒（比 hub 的 1 分钟限频长），之后每小时检查一次、仍然到期就再发。重发有用的情形：请求被当作「太频繁」忽略了，或者回执在同一条连接上丢了（hub 记着这条连接用的已经是新 token）。**重连之后不行**：用旧 token 认证的连接不能轮换（hub.md § 5），回执丢了、daemon 又在 60 秒宽限内用旧 token 重连的话，这台 daemon 不能再请求，宽限一过只能重新配对——连着 hub 几十天不重连的 daemon 也能轮换，hub 一直不回复（比如不支持轮换）时也只是每小时一帧。每条新连接重新计次；token 不再到期后计次清零
+  - **落盘**：收到 `token_rotated` 后先写 `keys/device-token`、再写 `keys/device-token-issued-at`，各自是「临时文件 + rename」的原子替换（0600），然后这个进程之后的重连用新 token。这个顺序是故意的：中途崩溃只会留下「新 token + 旧签发时间」（多轮换一次），不会留下「新签发时间 + 旧 token」（那会让一个已被 hub 换掉的 token 被当成新的，60 秒宽限一过认证就失败）。写盘失败（磁盘满、目录只读）也在内存里换上新 token——hub 已经换了，继续用旧的只会让下一次重连认证失败——同时记一条 error 日志：重启之前如果没有成功的轮换，重启后读到的是已失效的旧 token，设备要重新配对（`anycon init --force` 再 `anycon pair`）
+  - `anycon init --force` 清掉这两个文件。日志里不出现 token，只记「轮换了」和第几次请求
 - Noise 会话按客户端独立，一个客户端握手失败不影响其他
 - 所有 RPC 幂等键：`session.send`（和带 prompt 的 `session.create`）带客户端生成的 `message_id`，重发不重复；同一个 `message_id` 配不同内容（prompt / agent / project）返回 `invalid`，不会静默返回第一次的结果
 - **配对与 `pair.ack`**：

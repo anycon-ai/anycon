@@ -291,6 +291,10 @@ pub struct Timing {
     pub oauth_timeout: Duration,
     /// 预览令牌的有效期（docs/spec/hub.md § 13.3：24 小时）。
     pub preview_token_ttl: Duration,
+    /// 设备 token 轮换之后，上一个 token 继续有效多久（docs/spec/hub.md § 5：60 秒）。
+    pub token_grace: Duration,
+    /// 同一设备两次轮换之间的最短间隔（docs/spec/hub.md § 5：1 分钟）；更早到达的 `rotate_token` 被忽略。
+    pub token_rotate_min_interval: Duration,
 }
 
 impl Default for Timing {
@@ -313,6 +317,8 @@ impl Default for Timing {
             push_timeout: Duration::from_secs(10),
             oauth_timeout: Duration::from_secs(10),
             preview_token_ttl: Duration::from_secs(24 * 3600),
+            token_grace: Duration::from_secs(60),
+            token_rotate_min_interval: Duration::from_secs(60),
         }
     }
 }
@@ -1588,6 +1594,14 @@ mod tests {
         let t = Timing::default();
         assert_eq!(t.email_verify_failure_delay, Duration::from_millis(250));
         assert_eq!(t.email_code_ttl, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn token_rotation_timings_have_the_documented_defaults() {
+        // docs/spec/hub.md § 5
+        let t = Timing::default();
+        assert_eq!(t.token_grace, Duration::from_secs(60));
+        assert_eq!(t.token_rotate_min_interval, Duration::from_secs(60));
     }
 
     #[test]

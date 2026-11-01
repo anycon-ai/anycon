@@ -68,6 +68,10 @@ pub struct Conn {
     /// `Some` = 预览连接（不是设备，没有设备 token，只能和 `node_id` 互发 `handshake` / `data`）。
     pub preview: Option<PreviewMeta>,
     identity: RwLock<Identity>,
+    /// 这条连接认证时用的设备 token 的哈希（配对后原地升级的连接是配对时签发的那个 token 的哈希；临时连接、预览连接是 `None`）。
+    /// 轮换只认「用当前 token 认证的连接」（docs/spec/hub.md § 5）：认证只在连接建立时发生，宽限期内用旧 token 连上来的
+    /// 连接会活过宽限期，不能让它再去轮换。轮换成功后换成新 token 的哈希，长连接才能再轮换。
+    credential: RwLock<Option<String>>,
     peers: RwLock<HashSet<String>>,
     seq: AtomicU64,
 }
@@ -100,9 +104,21 @@ impl Conn {
                 account_id: init.account_id,
                 permanent: init.permanent,
             }),
+            credential: RwLock::new(None),
             peers: RwLock::new(init.peers),
             seq: AtomicU64::new(0),
         }
+    }
+
+    /// 这条连接认证用的设备 token 的哈希，见 [`Conn::set_credential`]。
+    pub fn credential(&self) -> Option<String> {
+        self.credential.read().expect("conn credential").clone()
+    }
+
+    /// 记下（或换成）这条连接的凭据哈希：认证成功时、配对后原地升级之前（先于 [`Registry::upgrade`]，
+    /// 升级完成的瞬间连接就可能收到 `rotate_token`）、轮换成功时调用。
+    pub fn set_credential(&self, token_hash: String) {
+        *self.credential.write().expect("conn credential") = Some(token_hash);
     }
 
     pub fn device_id(&self) -> String {

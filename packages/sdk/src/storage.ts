@@ -40,6 +40,11 @@ export interface StoredIdentity {
   deviceId: string
   /** hub 签发的设备 token。敏感。 */
   deviceToken: string
+  /**
+   * 这个 token 的签发时间（配对完成或上次轮换成功的时刻，Unix 毫秒），轮换策略据此判断是否到期（`rotation.ts`）。
+   * 没有这个字段的旧记录当作「很久以前」，下次连上 hub 时会轮换一次。
+   */
+  tokenIssuedAtMs?: number
   /** Noise 静态私钥，hex。敏感。 */
   secretKey: string
   /** 配对时给 hub 看的显示名。 */
@@ -77,12 +82,29 @@ export class StateStore {
   }
 
   setIdentity(identity: StoredIdentity): Promise<void> {
-    return this.storage.set(IDENTITY_KEY, JSON.stringify(identity))
+    return this.#serial(() => this.storage.set(IDENTITY_KEY, JSON.stringify(identity)))
+  }
+
+  /**
+   * 轮换成功之后换上新 token 和它的签发时间：读—改—写在同一个串行区里，**一次** `storage.set` 写完整条身份记录
+   * （token 和签发时间不会只落一半）。本地已经没有身份（被吊销清掉了、或没配对过）时不写——不能把作废的身份又写回去——
+   * 返回 `false`。
+   */
+  rotateIdentityToken(deviceToken: string, issuedAtMs: number): Promise<boolean> {
+    return this.#serial(async () => {
+      const identity = await this.getIdentity()
+      if (!identity) return false
+      await this.storage.set(
+        IDENTITY_KEY,
+        JSON.stringify({ ...identity, deviceToken, tokenIssuedAtMs: issuedAtMs }),
+      )
+      return true
+    })
   }
 
   /** 设备被吊销后清掉本地凭据（私钥 + token）；节点公钥记录留着，重新配对会覆盖。 */
   clearIdentity(): Promise<void> {
-    return this.storage.delete(IDENTITY_KEY)
+    return this.#serial(() => this.storage.delete(IDENTITY_KEY))
   }
 
   async getNodes(): Promise<StoredNode[]> {

@@ -1091,3 +1091,72 @@ async fn a_pairing_cancelled_while_the_tentative_peer_is_being_saved_leaves_no_g
     );
     td.shutdown().await;
 }
+
+/// 设备 token 轮换（docs/spec/daemon.md § 15）：签发满 30 天（或没有签发时间）的 token 在连上 hub 之后被换掉，
+/// 新 token 和签发时间落盘（0600），hub 认得新 token；刚签发的 token 不动。
+#[tokio::test]
+async fn a_stale_device_token_is_rotated_after_connecting_and_saved() {
+    // 轮换间隔设为 0：同一个测试里连着轮换几次，不用等 hub 的 1 分钟限频
+    let hub = TestHub::start_with(|c| c.timing.token_rotate_min_interval = Duration::ZERO).await;
+    let mut td = TestDaemon::start_full(&[], true, Some(&hub.url())).await;
+    wait_daemon_connected(&td).await;
+    let _web = pair_web(&td, &hub, "Test Browser").await;
+    assert!(eventually(T, || async { td.ctx.identity.device_token().is_some() }).await);
+    let node_id = td.ctx.identity.device_id().unwrap();
+    let day = 24 * 3600 * 1000u64;
+    let now = anycon_daemon::util::now_ms;
+    let rotations = || async {
+        hub.handle.store().list_audit(100, None).await.unwrap().iter().filter(|e| e.event == "token_rotated").count()
+    };
+    let token_on_disk = |td: &TestDaemon| std::fs::read_to_string(td.paths.device_token()).unwrap();
+
+    // 刚配对：签发时间落了盘；重启之后重连也不轮换
+    let first = td.ctx.identity.device_token().unwrap();
+    let issued: u64 = std::fs::read_to_string(td.paths.device_token_issued_at()).unwrap().parse().unwrap();
+    assert!(issued <= now() && issued + 60_000 > now());
+    anycon_daemon::testutil::assert_mode(&td.paths.device_token_issued_at(), 0o600);
+    td.restart().await;
+    wait_daemon_connected(&td).await;
+    assert!(td.ctx.hub_state.get().authenticated_with_token);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!((td.ctx.identity.device_token().unwrap(), rotations().await), (first.clone(), 0));
+
+    // 满 30 天：重启后连上 hub 就轮换
+    std::fs::write(td.paths.device_token_issued_at(), (now() - 31 * day).to_string()).unwrap();
+    td.restart().await;
+    wait_daemon_connected(&td).await;
+    assert!(
+        eventually(T, || async { td.ctx.identity.device_token().as_deref() != Some(first.as_str()) }).await,
+        "the stale token is rotated"
+    );
+    let second = td.ctx.identity.device_token().unwrap();
+    assert_eq!(token_on_disk(&td).trim(), second);
+    let issued: u64 = std::fs::read_to_string(td.paths.device_token_issued_at()).unwrap().parse().unwrap();
+    assert!(issued + 60_000 > now(), "the issue time is the moment of the rotation");
+    for f in [td.paths.device_token(), td.paths.device_token_issued_at()] {
+        anycon_daemon::testutil::assert_mode(&f, 0o600);
+    }
+    assert_eq!(rotations().await, 1);
+    let dev = hub
+        .handle
+        .store()
+        .find_device_by_token_hash(&anycon_hub::util::hash_token(&second), now())
+        .await
+        .unwrap()
+        .expect("the hub knows the new token");
+    assert_eq!(dev.id, node_id);
+    // 之后的重连用新 token 认证，设备 id 不变
+    td.ctx.peers.reconnect.notify_one();
+    assert!(eventually(T, || async { td.ctx.hub_state.get().connected }).await);
+    assert_eq!(td.ctx.identity.device_token().unwrap(), second);
+    assert_eq!(td.ctx.hub_state.get().device_id.as_deref(), Some(node_id.as_str()));
+
+    // 轮换功能之前配对的 daemon 没有签发时间文件：当作很旧，连上就轮换一次并补上这个文件
+    std::fs::remove_file(td.paths.device_token_issued_at()).unwrap();
+    td.restart().await;
+    wait_daemon_connected(&td).await;
+    assert!(eventually(T, || async { td.ctx.identity.device_token().as_deref() != Some(second.as_str()) }).await);
+    assert!(td.paths.device_token_issued_at().exists());
+    assert_eq!(rotations().await, 2);
+    td.shutdown().await;
+}

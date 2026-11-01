@@ -87,6 +87,12 @@ export class FakeHub {
   /** 下一次 auth 之后给的正式身份；有 token 时 device_id=CLIENT_ID。 */
   autoAuth = true
   authFail: 'invalid' | 'revoked' | 'version' | 'quota' | 'protocol' | null = null
+  /** 非 null 时，带了不在集合里的 device token 的 `auth` 得到 `auth_fail { invalid }`（模拟轮换之后过期的旧 token）。 */
+  validTokens: Set<string> | null = null
+  /** 收到的 `rotate_token` 请求数（按连接不分）。 */
+  rotateRequests = 0
+  /** 每个 `rotate_token` 依次用队首回一条 `token_rotated`；队列空了就不回（像被 hub 的频率限制忽略的请求）。 */
+  rotateReplies: string[] = []
   // 配对脚本
   /** daemon 本地生成的短码（hub 永远看不到它，这里只是脚本）。 */
   pairCodeOk: string | null = null
@@ -206,6 +212,7 @@ export class FakeHub {
         case 'auth': {
           this.authFrames.push(msg)
           if (this.authFail) return this.reply(sock, { type: 'auth_fail', reason: this.authFail })
+          if (this.validTokens && msg.device_token && !this.validTokens.has(msg.device_token)) return this.reply(sock, { type: 'auth_fail', reason: 'invalid' })
           if (!this.autoAuth) return
           const authed = !!msg.device_token
           this.reply(sock, {
@@ -214,6 +221,12 @@ export class FakeHub {
             server_time_ms: Date.now(),
             peers_online: authed && this.daemonOnline ? [DAEMON_ID] : [],
           })
+          return
+        }
+        case 'rotate_token': {
+          this.rotateRequests += 1
+          const token = this.rotateReplies.shift()
+          if (token) this.reply(sock, { type: 'token_rotated', device_token: token })
           return
         }
         case 'pair_join': {
@@ -504,6 +517,7 @@ export function memoryStorage(initial: { identity?: IdentityRecord; nodes?: Node
   identity?: IdentityRecord
   nodes: Map<string, NodeRecord>
   wiped: number
+  saved: IdentityRecord[]
 } {
   const s = {
     identity: initial.identity,
@@ -512,8 +526,17 @@ export function memoryStorage(initial: { identity?: IdentityRecord; nodes?: Node
     async loadIdentity() {
       return s.identity
     },
+    /** 每次 `saveIdentity` 的参数（按调用顺序）：断言「新 token 和签发时间在同一次写入里」。 */
+    saved: [] as IdentityRecord[],
     async saveIdentity(rec: IdentityRecord) {
+      s.saved.push(rec)
       s.identity = rec
+    },
+    async clearDeviceToken(expected: string) {
+      if (s.identity?.device_token !== expected) return false
+      const { device_token: _t, device_token_issued_at_ms: _i, device_id: _d, ...rest } = s.identity
+      s.identity = rest
+      return true
     },
     async loadNodes() {
       return [...s.nodes.values()]
@@ -534,7 +557,7 @@ export function memoryStorage(initial: { identity?: IdentityRecord; nodes?: Node
 }
 
 /** 一个接好假 hub / 假存储的 AnyconClient，记录它推给 UI 层的全部状态。 */
-export function setupClient(opts: { paired?: boolean; hub?: FakeHub; knowsNode?: boolean } = {}) {
+export function setupClient(opts: { paired?: boolean; hub?: FakeHub; knowsNode?: boolean; tokenIssuedAtMs?: number | null } = {}) {
   FakeSocket.instances = []
   const hub = opts.hub ?? new FakeHub({ rpc: { 'node.info': () => ({ name: 'n' }) } })
   const kp = hub.crypto.generateKeypair()
@@ -543,7 +566,14 @@ export function setupClient(opts: { paired?: boolean; hub?: FakeHub; knowsNode?:
     static_keypair: { public: kp.public, secret: kp.secret },
     device_name: 'Chrome · macOS · localhost',
     account_id: 'acct1',
-    ...(opts.paired === false ? {} : { device_id: CLIENT_ID, device_token: 'tok' }),
+    ...(opts.paired === false
+      ? {}
+      : {
+          device_id: CLIENT_ID,
+          device_token: 'tok',
+          // 默认是刚签发的（不会触发轮换）；传 null = 没有记录（旧记录），传数字 = 指定时间
+          ...(opts.tokenIssuedAtMs === null ? {} : { device_token_issued_at_ms: opts.tokenIssuedAtMs ?? Date.now() }),
+        }),
   }
   const nodes: NodeRecord[] =
     opts.knowsNode === false ? [] : [{ node_id: DAEMON_ID, name: 'n', public_key: hub.daemonKp.public, paired_at: 1, last_seen: 1 }]

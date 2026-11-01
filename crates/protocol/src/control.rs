@@ -31,7 +31,7 @@ pub struct ClientInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthFailReason {
-    /// token 不存在或已轮换。
+    /// token 不存在，或它是轮换前的旧 token 且 60 秒宽限已过。
     Invalid,
     /// 设备已被吊销。
     Revoked,
@@ -219,9 +219,10 @@ pub enum Control {
     },
     /// H→D：配额用量（连接时和变化时）。
     QuotaUpdate { quota: Quota },
-    /// D→H：轮换设备 token（v0.2）。
+    /// D→H：请求轮换设备 token。只对带设备 token 认证过的永久连接有效（临时连接、预览连接的请求被忽略）。
+    /// hub 回 [`Control::TokenRotated`]，旧 token 再保留 60 秒；同一设备 1 分钟内多余的请求被忽略、不回复。
     RotateToken {},
-    /// H→D
+    /// H→D：轮换后的新设备 token，只传这一次。客户端要先把它（和签发时间）持久化，再用它重连。
     TokenRotated { device_token: String },
 }
 

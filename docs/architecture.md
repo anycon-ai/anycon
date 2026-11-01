@@ -283,6 +283,7 @@ hub 这边：
 | 节点口令泄露（公共 hub 的 Web UI、钓鱼页面） | Web UI 里输入的口令，hub 下发的 JS 能拿到——和设备私钥同一个信任前提（下面「Web 客户端代码的信任问题」）。口令挡不住钓鱼，同步 passkey 接入（路线图）才防。客户端不保存口令；怀疑泄露就改口令，每次接入成功都有通知 |
 | 被动网络窃听 | TLS（用户反代）+ Noise 双层 |
 | 客户端设备丢失 / 公用电脑 | 从其他设备吊销。浏览器里的 Noise 私钥、device token 和会话缓存是**明文**放在 IndexedDB 的，「退出登录」不删它们；公用电脑要用「退出并移除本设备」。建议设备本身开磁盘加密 |
+| device token 泄露（备份、日志、被入侵的客户端机器） | device token 只证明「我是这台设备」：能以它的身份连 hub、读本账号的设备列表，但进不了 E2E 通道——握手还需要设备的 Noise 私钥。token 默认每 30 天轮换一次（`rotate_token`，旧 token 再保留 60 秒，[spec/hub.md § 5](spec/hub.md#5-设备与设备-token)），泄露的 token 最多再用到下一次轮换。**限定**：轮换挡不住已经拿到**当前**有效 token 的人，他在这之前可以冒充该设备连 hub，也可以抢在设备之前轮换——这时设备手里的 token 60 秒后失效，要重新配对并吊销旧设备。拿着**旧** token 的人做不到：只有用当前 token 认证的连接才能轮换，宽限期里用旧 token 连上来的连接（哪怕活过了宽限）得不到新 token。代价是回执丢了又用旧 token 重连的客户端不能再请求，宽限一过要重新配对。怀疑泄露就直接吊销设备 |
 | daemon 机器被入侵 | 不在范围内——它本来就是跑 agent 的机器 |
 | 已配对设备滥用权限 | 已配对设备能让 agent 在 daemon 机器上干活，权限就是 agent 的权限，只受审批和 workspace 边界约束，不受 OS 沙箱约束。危险权限模式受 `permissions.allow_dangerous_modes` 约束，会话重启 / resume 时重新检查；会话级 `env` 默认被拒（`permissions.allow_session_env = false`，[ADR-31](decisions.md#adr-31-会话-env-默认关闭)），开启后仍有黑名单；`set_agent_defaults` 走同样的校验 |
 | 提示注入的 agent 借浏览器外泄数据 | Markdown 里的远程图片默认不加载（点击才加载）；hub 给 Web UI 加 CSP（`connect-src 'self'`、`img-src 'self' data: blob:`、`frame-ancestors 'none'`），页面不能向第三方发请求。agent 自己的网络请求走权限审批 |

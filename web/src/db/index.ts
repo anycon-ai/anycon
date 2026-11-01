@@ -1,12 +1,18 @@
 // IndexedDB（idb）。schema 见 spec/web.md § 6.2。按 origin 隔离，这是 ADR-23 接受的代价。
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { AgentInfo, AttachmentRef, NodeInfo, Project, SessionEvent, SessionSummary } from '@/protocol'
+import { bytesEqual } from '@/lib/bytes'
 
 export interface IdentityRecord {
   id: 'self'
   /** 配对时 hub 签发的正式设备 id；还没配对过是 undefined。 */
   device_id?: string
   device_token?: string
+  /**
+   * `device_token` 的签发时间（Unix 毫秒）：配对 / 接入拿到它的时刻，或最近一次轮换的时刻。没有 = 未知，按「很旧」处理，
+   * 下次连上 hub 就轮换一次（spec/web.md § 6.4）。
+   */
+  device_token_issued_at_ms?: number
   /** 本设备 Noise 静态密钥。 */
   static_keypair: { public: Uint8Array; secret: Uint8Array }
   device_name: string
@@ -190,8 +196,54 @@ export async function getIdentity(): Promise<IdentityRecord | undefined> {
   return (await getDb()).get('keys', 'self')
 }
 
+/**
+ * 写身份时和库里已有的那份合并。同一个浏览器的几个标签页各持一份内存里的身份：一个标签页轮换了 device token 并落盘之后，
+ * 另一个还拿着旧 token 的标签页再写身份（改设备名、补 device_id……）不能把新 token 盖回旧的。
+ *
+ * 规则：库里和写入的都有 token、token 不同、两份是同一个设备身份（Noise 公钥相同），且库里的签发时间严格更晚
+ * （未知按 0）→ token 连同签发时间和设备 id 取库里的，其余字段取写入的。其他情况原样写入：
+ * 写入的没有 token（显式清除）、签发时间不更旧（配对 / 轮换拿到的新 token）、换了身份。
+ */
+export function mergeIdentity(stored: IdentityRecord | undefined, incoming: IdentityRecord): IdentityRecord {
+  if (!stored?.device_token || !incoming.device_token || stored.device_token === incoming.device_token) return incoming
+  if (!bytesEqual(stored.static_keypair.public, incoming.static_keypair.public)) return incoming
+  if ((stored.device_token_issued_at_ms ?? 0) <= (incoming.device_token_issued_at_ms ?? 0)) return incoming
+  const { device_id: _d, device_token_issued_at_ms: _i, ...rest } = incoming
+  return {
+    ...rest,
+    device_token: stored.device_token,
+    ...(stored.device_token_issued_at_ms !== undefined ? { device_token_issued_at_ms: stored.device_token_issued_at_ms } : {}),
+    ...(stored.device_id !== undefined ? { device_id: stored.device_id } : {}),
+  }
+}
+
+/** 一个读写事务里「读 → 合并 → 写」（见 [`mergeIdentity`]）。 */
 export async function putIdentity(rec: IdentityRecord): Promise<void> {
-  await (await getDb()).put('keys', rec)
+  const db = await getDb()
+  const tx = db.transaction('keys', 'readwrite')
+  const store = tx.objectStore('keys')
+  const stored = await store.get(rec.id)
+  await store.put(mergeIdentity(stored, rec))
+  await tx.done
+}
+
+/**
+ * 清掉库里的 device token（和它的设备 id、签发时间），**仅当库里的 token 还是 `expected`**：hub 拒绝的是我们手里的这一份，
+ * 别的标签页可能已经轮换并存了新的，那份是有效的，不能抹掉。返回是否清了。
+ */
+export async function clearDeviceToken(expected: string): Promise<boolean> {
+  const db = await getDb()
+  const tx = db.transaction('keys', 'readwrite')
+  const store = tx.objectStore('keys')
+  const stored = await store.get('self')
+  if (!stored || stored.device_token !== expected) {
+    await tx.done
+    return false
+  }
+  const { device_token: _t, device_id: _d, device_token_issued_at_ms: _i, ...rest } = stored
+  await store.put(rest)
+  await tx.done
+  return true
 }
 
 // ---- nodes ----

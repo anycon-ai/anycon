@@ -52,6 +52,8 @@ const ENV_HELP: &str = "ENVIRONMENT (the ones that matter for a safe deployment)
   ANYCON_PREVIEW_BYTES_PER_MIN  preview traffic budget per account, both directions together, default 536870912
                            (512 MiB). Minimum 205824. Over budget only the previews are paused, never the sessions.
   ANYCON_PREVIEW_MAX_CONNECTIONS  preview connections one account may have open at once, default 16.
+  ANYCON_TERMS_URL / ANYCON_PRIVACY_URL   optional https URLs of your terms of service and privacy policy. When
+                           set, the sign-in pages link to them (`By continuing, you agree to ...`). Both modes.
   ANYCON_ADMIN_TOKEN       fixed admin login token (default: generated on first start, see <data>/admin-token).
                            single mode only; ignored (with a warning) in multi mode.
   ANYCON_MODE              `single` (default: one admin, invite-only) or `multi` (open sign-up by email code or

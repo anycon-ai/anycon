@@ -690,6 +690,30 @@ async fn config_exposes_the_preview_origin_template_or_null() {
     assert_eq!(cfg["preview_origin_template"], "https://{label}.aiplace.app");
 }
 
+#[tokio::test]
+async fn config_exposes_the_terms_and_privacy_urls_only_when_set() {
+    let plain = TestHub::start().await;
+    let cfg: serde_json::Value = plain.http.get(plain.url("/api/config")).send().await.unwrap().json().await.unwrap();
+    let keys = cfg.as_object().unwrap();
+    assert!(!keys.contains_key("terms_url") && !keys.contains_key("privacy_url"), "omitted when unset: {cfg}");
+
+    let (hub, _mail) = TestHub::start_multi_with(|c| {
+        c.terms_url = Some("https://example.com/terms".into());
+        c.privacy_url = Some("https://example.com/privacy".into());
+    })
+    .await;
+    // 不需要登录
+    let cfg: serde_json::Value = hub.http.get(hub.url("/api/config")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(cfg["mode"], "multi");
+    assert_eq!(cfg["terms_url"], "https://example.com/terms");
+    assert_eq!(cfg["privacy_url"], "https://example.com/privacy");
+
+    let hub = TestHub::start_with(|c| c.privacy_url = Some("https://example.com/privacy".into())).await;
+    let cfg: serde_json::Value = hub.http.get(hub.url("/api/config")).send().await.unwrap().json().await.unwrap();
+    assert!(!cfg.as_object().unwrap().contains_key("terms_url"), "{cfg}");
+    assert_eq!(cfg["privacy_url"], "https://example.com/privacy");
+}
+
 // ---------------------------------------------------------------------------
 // 列表分页：`?limit=&cursor=`，下一页游标在 X-Next-Cursor 头里，响应体仍是数组
 // ---------------------------------------------------------------------------

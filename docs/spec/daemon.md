@@ -853,9 +853,7 @@ SQLite（WAL）。全部表：
 
 v0.1 另含：图片附件（§ 7.10，ADR-35）；账号内接入（§ 15.1，[ADR-36](../decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)）。
 
-v0.2：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）。
-
-**v0.2**：ACP adapter；非图片附件；`node.set_config` 远程改配置；`node.logs`；`anycon export / import`。
+**v0.2** 已有：dev server 预览（§ 19，[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）。**v0.2** 还没有：ACP adapter；非图片附件；多 workspace 根；`node.set_config` 远程改配置；`node.logs`；`anycon export / import`。
 
 **v0.3**：`session.fork`、`session.import`、自动更新、Prometheus。
 

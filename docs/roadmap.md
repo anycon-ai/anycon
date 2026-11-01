@@ -61,7 +61,7 @@
 - `notify` 的密文详情
 - hub 离线队列（默认关闭的那个）
 - Python：crypto wheel、pydantic 类型生成、Python SDK 客户端方向、`@anycon.agent` 注册节点
-- 文件浏览（Web UI、`fs.*` 写入）
+- `fs.*` 写入
 - `anycon new --image`（协议的 `session.create` 已经支持附件）
 - CLI / SDK 上传图片时去掉 EXIF（含 GPS）并按方向转正——现在只有 Web UI 会重编码
 - 管理员状态页显示邮件 / 推送的配置和订阅数
@@ -91,10 +91,13 @@
 - Store 的 Postgres 实现
 - ACP client adapter（OpenCode、Pi 等一次覆盖）
 - 会话搜索 UI
+- Web UI 的只读文件浏览（`/n/:node/files/*`，[spec/web.md § 4.7](spec/web.md)）
+- 远程改节点配置（`node.set_config`）、远程读日志（`node.logs`）
+- 设备 token 轮换（`control.rotate_token`）
 - 多 workspace 根
 - `anycon export` / 导入，支持从公共 hub 搬到自建
 - 隐私页、服务条款
-- anycon.ai 公共 hub 上线，成本与捐赠公开
+- anycon.ai 公共 hub 上线
 - 英文文档：之后英文为主、中文同步
 
 ## v0.3 — 体验

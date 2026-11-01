@@ -187,6 +187,112 @@ pub struct NodeSetAgentDefaultsParams {
     pub options: Option<serde_json::Map<String, Value>>,
 }
 
+/// 一项配置能不能被远程客户端改（ADR-43）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigEditable {
+    /// 任意改（在取值约束之内）。
+    Any,
+    /// 只能往更严的方向改：开关只能从 `true` 改成 `false`。想放宽要在节点机器上 `anycon config set`。
+    TightenOnly,
+    /// 只读：不在白名单里的键不会出现在列表里；出现在这里的 `no` 是被 `ANYCON_*` 环境变量覆盖的键
+    /// （环境变量盖过文件，远程改了也不生效）。
+    No,
+}
+
+/// 配置值的类型，客户端据此选控件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigValueKind {
+    /// JSON 布尔。
+    Bool,
+    /// JSON 整数，范围见 [`ConfigItem::min`] / [`ConfigItem::max`]。
+    Int,
+    /// 时长字符串（`30s`、`20m`、`2h`、`7d`，纯数字按秒；`0` 在有「不限」含义的键上表示不限），范围（毫秒）见 `min` / `max`。
+    Duration,
+    /// 字符串，取值是 [`ConfigItem::options`] 之一。
+    Enum,
+    /// 自由文本，长度（字符数）上限见 `max`；内容另有键自己的规则，不合法时 `node.set_config` 回 `invalid`。
+    Text,
+}
+
+/// `node.get_config` 的一项：一个可以远程查看的配置键。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ConfigItem {
+    /// 点分隔的键，和 `config.toml` 一致（`sessions.max_concurrent`）。
+    pub key: String,
+    /// 当前生效的值（默认值 → 文件 → 环境变量合并后的结果）：布尔、整数或字符串，类型见 `kind`。
+    pub value: Value,
+    pub kind: ConfigValueKind,
+    pub editable: ConfigEditable,
+    /// 被 `ANYCON_*` 环境变量覆盖（`log.level` 还包括 `ANYCON_LOG` / `RUST_LOG`）。为真时 `editable` 一定是 `no`。
+    #[serde(default)]
+    pub env_override: bool,
+    /// `kind = enum` 时允许的取值。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// 取值下限：`int` 是数值，`duration` 是毫秒，`text` 不用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<u64>,
+    /// 取值上限：`int` 是数值，`duration` 是毫秒，`text` 是字符数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u64>,
+}
+
+/// `node.get_config` / `node.set_config` 的结果：白名单里的全部配置项（顺序固定，按段分组）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeConfigResult {
+    pub items: Vec<ConfigItem>,
+}
+
+/// `node.set_config` 的一项改动。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ConfigChange {
+    pub key: String,
+    /// 新值，JSON 类型要和该键的 `kind` 一致（布尔、整数、字符串）。
+    pub value: Value,
+}
+
+/// `node.set_config` 参数。所有改动先校验，任何一项不合法就一项都不写。
+///
+/// 错误：键不在白名单、被环境变量覆盖、想放宽只能收紧的键 → `forbidden`（`data.field` 是键，`data.reason` 是
+/// `not_editable` / `env_override` / `tighten_only`）；值的类型或取值不合法、键重复、`changes` 为空 → `invalid`（`data.field` 是键）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeSetConfigParams {
+    pub changes: Vec<ConfigChange>,
+}
+
+/// 日志级别，`node.logs` 的最低级别过滤。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeLogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+/// `node.logs` 参数。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeLogsParams {
+    /// 最多返回多少行，缺省 200，最大 1000（超出按 1000）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u32>,
+    /// 最低级别：只返回这个级别及更高级别的行。缺省 = 不过滤。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<NodeLogLevel>,
+}
+
+/// `node.logs` 结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeLogsResult {
+    /// 日志行，旧的在前、新的在后；每行最多 2 KiB（超出的截断，行尾加 `…`）。
+    pub lines: Vec<String>,
+    /// 还有更早的行没有返回（行数到了上限，或扫描的日志量到了上限）。
+    pub truncated: bool,
+}
+
 /// 空参数 / 空结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Empty {}

@@ -11,6 +11,14 @@ export type AgentStatus =
 export type LinkBlock = "hidden" | "sensitive" | "workspace" | "data_dir" | "filesystem_root";
 export type DeviceKind = "daemon" | "web" | "cli" | "sdk";
 /**
+ * 一项配置能不能被远程客户端改（ADR-43）。
+ */
+export type ConfigEditable = "any" | "tighten_only" | "no";
+/**
+ * 配置值的类型，客户端据此选控件。
+ */
+export type ConfigValueKind = "bool" | "int" | "duration" | "enum" | "text";
+/**
  * 控制消息集合。方向见注释：D = 设备，H = hub。
  */
 export type Control =
@@ -529,6 +537,10 @@ export type Kind = "handshake" | "data" | "notify" | "control";
  */
 export type SessionWorkspaceMode = "local" | "worktree";
 /**
+ * 日志级别，`node.logs` 的最低级别过滤。
+ */
+export type NodeLogLevel = "trace" | "debug" | "info" | "warn" | "error";
+/**
  * `node.security_event.kind`。
  */
 export type SecurityEventKind =
@@ -623,6 +635,10 @@ export interface ProtocolSchema {
   blob_put_chunk_params: BlobPutChunkParams;
   browse_entry: BrowseEntry;
   client_info: ClientInfo;
+  config_change: ConfigChange;
+  config_editable: ConfigEditable;
+  config_item: ConfigItem;
+  config_value_kind: ConfigValueKind;
   control: Control;
   diff_against: DiffAgainst;
   diff_file: DiffFile;
@@ -654,6 +670,7 @@ export interface ProtocolSchema {
   link_block: LinkBlock;
   node_audit_params: NodeAuditParams;
   node_audit_result: NodeAuditResult;
+  node_config_result: NodeConfigResult;
   node_devices_result: NodeDevicesResult;
   node_doctor_result: NodeDoctorResult;
   node_enroll_approve_params: NodeEnrollApproveParams;
@@ -664,11 +681,15 @@ export interface ProtocolSchema {
   node_enroll_resolved: NodeEnrollResolved;
   node_enroll_status_result: NodeEnrollStatusResult;
   node_info: NodeInfo;
+  node_log_level: NodeLogLevel;
+  node_logs_params: NodeLogsParams;
+  node_logs_result: NodeLogsResult;
   node_pair_begin_params: NodePairBeginParams;
   node_pair_begin_result: NodePairBeginResult;
   node_revoke_device_params: NodeRevokeDeviceParams;
   node_security_event: NodeSecurityEvent;
   node_set_agent_defaults_params: NodeSetAgentDefaultsParams;
+  node_set_config_params: NodeSetConfigParams;
   node_set_enroll_enabled_params: NodeSetEnrollEnabledParams;
   node_set_enroll_password_params: NodeSetEnrollPasswordParams;
   node_stats: NodeStats;
@@ -1040,6 +1061,47 @@ export interface ClientInfo {
    */
   version: string;
 }
+/**
+ * `node.set_config` 的一项改动。
+ */
+export interface ConfigChange {
+  key: string;
+  /**
+   * 新值，JSON 类型要和该键的 `kind` 一致（布尔、整数、字符串）。
+   */
+  value: unknown;
+}
+/**
+ * `node.get_config` 的一项：一个可以远程查看的配置键。
+ */
+export interface ConfigItem {
+  editable: ConfigEditable;
+  /**
+   * 被 `ANYCON_*` 环境变量覆盖（`log.level` 还包括 `ANYCON_LOG` / `RUST_LOG`）。为真时 `editable` 一定是 `no`。
+   */
+  env_override?: boolean;
+  /**
+   * 点分隔的键，和 `config.toml` 一致（`sessions.max_concurrent`）。
+   */
+  key: string;
+  kind: ConfigValueKind;
+  /**
+   * 取值上限：`int` 是数值，`duration` 是毫秒，`text` 是字符数。
+   */
+  max?: number | null;
+  /**
+   * 取值下限：`int` 是数值，`duration` 是毫秒，`text` 不用。
+   */
+  min?: number | null;
+  /**
+   * `kind = enum` 时允许的取值。
+   */
+  options?: string[];
+  /**
+   * 当前生效的值（默认值 → 文件 → 环境变量合并后的结果）：布尔、整数或字符串，类型见 `kind`。
+   */
+  value: unknown;
+}
 export interface Quota {
   connections: number;
   connections_max?: number | null;
@@ -1389,6 +1451,12 @@ export interface AuditEntry {
   target?: string | null;
   ts_ms: number;
 }
+/**
+ * `node.get_config` / `node.set_config` 的结果：白名单里的全部配置项（顺序固定，按段分组）。
+ */
+export interface NodeConfigResult {
+  items: ConfigItem[];
+}
 export interface NodeDevicesResult {
   devices: PeerDevice[];
 }
@@ -1521,6 +1589,32 @@ export interface NodeWorktreeSettings {
    */
   default_mode: SessionWorkspaceMode;
 }
+/**
+ * `node.logs` 参数。
+ */
+export interface NodeLogsParams {
+  /**
+   * 最低级别：只返回这个级别及更高级别的行。缺省 = 不过滤。
+   */
+  level?: NodeLogLevel | null;
+  /**
+   * 最多返回多少行，缺省 200，最大 1000（超出按 1000）。
+   */
+  lines?: number | null;
+}
+/**
+ * `node.logs` 结果。
+ */
+export interface NodeLogsResult {
+  /**
+   * 日志行，旧的在前、新的在后；每行最多 2 KiB（超出的截断，行尾加 `…`）。
+   */
+  lines: string[];
+  /**
+   * 还有更早的行没有返回（行数到了上限，或扫描的日志量到了上限）。
+   */
+  truncated: boolean;
+}
 export interface NodePairBeginParams {
   /**
    * `true`（缺省）= 16 位短码（约 79 bit；链接、二维码、默认都是它）；`false` = 8 位（约 40 bit），
@@ -1581,6 +1675,15 @@ export interface NodeSetAgentDefaultsParams {
     [k: string]: unknown;
   } | null;
   thinking?: string | null;
+}
+/**
+ * `node.set_config` 参数。所有改动先校验，任何一项不合法就一项都不写。
+ *
+ * 错误：键不在白名单、被环境变量覆盖、想放宽只能收紧的键 → `forbidden`（`data.field` 是键，`data.reason` 是
+ * `not_editable` / `env_override` / `tighten_only`）；值的类型或取值不合法、键重复、`changes` 为空 → `invalid`（`data.field` 是键）。
+ */
+export interface NodeSetConfigParams {
+  changes: ConfigChange[];
 }
 /**
  * `node.set_enroll_enabled` 参数：写 `[enroll]` 配置。`password: true` 同时解除锁定、失败计数清零。

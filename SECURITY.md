@@ -23,7 +23,7 @@
 - GitHub / Google 登录的回调能否被 CSRF 或授权码注入利用（`state` 与浏览器里的 `anycon_oauth` cookie 绑定、单次使用，换 token 用 PKCE；关联身份时登录态必须仍是发起关联的账号），回调的跳转能否被引到站外（开放重定向）
 - `multi` 的开放注册：能否绕过账号配额（设备数、daemon 数、在线连接数、每日配对次数）和验证码限速
 - 删账号：能否在没有最近登录（10 分钟内）的情况下删掉别人的账号或自己的账号，能否借别的路径让已删账号的设备继续连接，或删除后仍留下账号的设备、身份、审计数据
-- 已配对客户端能否绕过 `allow_dangerous_modes`、会话 `env` 策略或 workspace 边界，在 daemon 机器上不经审批执行代码
+- 已配对客户端能否绕过 `allow_dangerous_modes`、会话 `env` 策略或 workspace 边界，在 daemon 机器上不经审批执行代码；能否经 `node.set_config`（ADR-43：只有一张热加载键的白名单，`allow_dangerous_modes` 和 `preview.enabled` 只能收紧）改到名单之外的键、放宽只能收紧的开关，或在被环境变量覆盖的键上写出不一致的状态；`node.logs` 能否带出会话内容
 - 被提示注入的 agent 能否借 Web UI 把数据发往第三方
 - dev server 预览（ADR-39）：预览页里的代码能否读到 Web UI 的密钥或登录态；hub 能否在不持有票据的情况下打开隧道或看到隧道内容；能否经预览访问 daemon 机器上不该放行的端口（会话之外、`preview.allow_ports` 之外、本机 hub）；吊销设备或关闭预览后隧道是否仍能使用
 

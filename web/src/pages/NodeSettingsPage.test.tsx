@@ -111,6 +111,14 @@ describe('?tab=', () => {
     await vi.waitFor(() => expect(useEnroll.getState().dialog).toEqual({ nodeId: NODE, enrollId: 'a' }))
   })
 
+  it('?tab=limits opens the editable limits form for this node', async () => {
+    rpc.handlers['node.get_config'] = () => ({ items: [{ key: 'sessions.max_concurrent', value: 3, kind: 'int', editable: 'any', env_override: false, min: 1, max: 32 }] })
+    render(<NodeSettingsPage tab="limits" />)
+    expect(screen.getByTestId('tab-limits')).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByTestId('limit-sessions.max_concurrent')).toHaveValue(3)
+    expect(rpc.calls.find((c) => c.method === 'node.get_config')!.nodeId).toBe(NODE)
+  })
+
   it('only knows the real tabs', () => {
     expect(parseSettingsTab('enroll')).toBe('enroll')
     expect(parseSettingsTab('devices')).toBe('devices')

@@ -191,6 +191,9 @@ daemon                      hub                        新客户端
 | `node.doctor` | C→D | 诊断检查项（同 `anycon doctor --json`） |
 | `node.audit` | C→D | 本地审计日志 `{ since?, device?, limit }` |
 | `node.set_agent_defaults` | C→D | `{ agent, model?, thinking?, mode?, options? }`：设置某 agent 在该节点上的默认模型 / 思考 / 权限模式。和 `session.create` 走同一套校验（含危险模式的 `forbidden`） |
+| `node.get_config` | C→D | → `{ items: [{ key, value, kind, editable, env_override, options?, min?, max? }] }`：可以远程查看的配置项（一张白名单，[ADR-43](decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）。`value` 是当前生效值；`kind` 是 `bool` \| `int` \| `duration` \| `enum` \| `text`；`editable` 是 `any` \| `tighten_only`（只能从 `true` 改成 `false`）\| `no`；`env_override` 为真（被 `ANYCON_*` 环境变量覆盖）时一定是 `no`；`options` / `min` / `max` 是取值约束（`duration` 的 `min` / `max` 是毫秒）。名单和每项的含义见 [spec/daemon.md § 3](spec/daemon.md#3-配置-configtoml) |
+| `node.set_config` | C→D | `{ changes: [{ key, value }] }` → 同 `node.get_config` 的新结果：先校验全部改动，再写 `config.toml`、热加载、审计 `config.changed`。键不在白名单（`data.reason = not_editable`）、被环境变量覆盖（`env_override`）、想放宽只能收紧的键（`tighten_only`）→ `forbidden`，`data.field` 是键；值的类型 / 范围 / 取值不对、键重复（`duplicate`）、`changes` 为空 → `invalid`（`data.reason` 是 `type` / `range` / `format` / `duplicate`）。任何一项出错都一项不写 |
+| `node.logs` | C→D | `{ lines?, level? }` → `{ lines: [string], truncated }`：daemon 当前日志文件的尾部。`lines` 缺省 200、最多 1000；`level`（`trace` \| `debug` \| `info` \| `warn` \| `error`）是最低级别，缺省不过滤；每行最多 2 KiB；`lines` 旧的在前；`truncated` 表示还有更早的行。可能带会话文字的行已被去掉，见 [spec/daemon.md § 17](spec/daemon.md#17-诊断) |
 
 ### 5.1.1 Agent
 

@@ -115,6 +115,30 @@ async fn walk_enroll(w: &mut Walk<'_>, td: &TestDaemon) {
     w.call(methods::NODE_SET_ENROLL_PASSWORD, json!({})).await;
 }
 
+/// 远程配置和日志（ADR-43）：读、改（热加载）、读日志尾部。
+async fn walk_config(w: &mut Walk<'_>, td: &TestDaemon) {
+    let got = w.call(methods::NODE_GET_CONFIG, json!({})).await;
+    assert!(got["items"].as_array().unwrap().iter().any(|i| i["key"] == json!("sessions.max_concurrent")));
+    let set = w
+        .call(methods::NODE_SET_CONFIG, json!({ "changes": [{ "key": "notify.session_idle_after", "value": "45m" }] }))
+        .await;
+    let idle =
+        set["items"].as_array().unwrap().iter().find(|i| i["key"] == json!("notify.session_idle_after")).unwrap();
+    assert_eq!(idle["value"], json!("45m"));
+    // 写 config.toml、热加载、审计 `config.changed`
+    assert_eq!(td.ctx.config.get().notify.session_idle_after, "45m");
+    let dir = td.paths.logs_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("daemon.log.2026-10-30"),
+        "2026-10-30T10:00:00.000000Z  INFO anycon_daemon::daemon: daemon started\n",
+    )
+    .unwrap();
+    let logs = w.call(methods::NODE_LOGS, json!({ "lines": 5 })).await;
+    assert_eq!(logs["lines"].as_array().unwrap().len(), 1);
+    assert_eq!(logs["truncated"], json!(false));
+}
+
 async fn wait_idle(w: &mut Walk<'_>, sid: &str) {
     let t = std::time::Instant::now();
     loop {
@@ -343,6 +367,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
 
     // ---- 账号内接入（ADR-36）：单独一个函数（这个遍历测试的 future 已经很大，再往里塞会在 debug 下把栈撑爆）
     Box::pin(walk_enroll(&mut w, &td)).await;
+    Box::pin(walk_config(&mut w, &td)).await;
 
     Box::pin(walk_workspace(&mut w, &td)).await;
     Box::pin(walk_session(&mut w)).await;

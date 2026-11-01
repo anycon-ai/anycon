@@ -4,7 +4,8 @@ import { PageHeader } from '@/components/PageHeader'
 import { AgentTab } from '@/features/nodesettings/AgentTab'
 import { DevicesTab } from '@/features/nodesettings/DevicesTab'
 import { EnrollTab } from '@/features/nodesettings/EnrollTab'
-import { AboutTab, LimitsTab } from '@/features/nodesettings/LimitsAndAbout'
+import { AboutTab } from '@/features/nodesettings/LimitsAndAbout'
+import { LimitsTab } from '@/features/nodesettings/LimitsTab'
 import { PreviewTab } from '@/features/nodesettings/PreviewTab'
 import { WorkspaceTab } from '@/features/nodesettings/WorkspaceTab'
 import { previewAvailable, usePreviewTemplate } from '@/features/preview/availability'
@@ -36,7 +37,7 @@ export function NodeSettingsPage({ tab, review }: { tab?: SettingsTab; review?: 
               { value: 'devices', label: t('nodeSettings.tabDevices'), testId: 'tab-devices', content: <DevicesTab nodeId={nodeId} /> },
               { value: 'enroll', label: t('nodeSettings.tabEnroll'), testId: 'tab-enroll', content: <EnrollTab nodeId={nodeId} autoReview={review} /> },
               { value: 'workspace', label: t('nodeSettings.tabWorkspace'), testId: 'tab-workspace', content: <WorkspaceTab nodeId={nodeId} /> },
-              { value: 'limits', label: t('nodeSettings.tabLimits'), testId: 'tab-limits', content: <LimitsTab /> },
+              { value: 'limits', label: t('nodeSettings.tabLimits'), testId: 'tab-limits', content: <LimitsTab nodeId={nodeId} /> },
               ...(hasPreview ? [{ value: 'preview', label: t('nodeSettings.tabPreview'), testId: 'tab-preview', content: <PreviewTab nodeId={nodeId} /> }] : []),
               { value: 'about', label: t('nodeSettings.tabAbout'), testId: 'tab-about', content: <AboutTab nodeId={nodeId} /> },
             ]}

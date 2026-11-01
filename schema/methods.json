@@ -55,6 +55,24 @@
   },
   {
     "direction": "request",
+    "name": "node.get_config",
+    "params": null,
+    "result": "NodeConfigResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.set_config",
+    "params": "NodeSetConfigParams",
+    "result": "NodeConfigResult"
+  },
+  {
+    "direction": "request",
+    "name": "node.logs",
+    "params": "NodeLogsParams",
+    "result": "NodeLogsResult"
+  },
+  {
+    "direction": "request",
     "name": "node.enroll_list",
     "params": null,
     "result": "NodeEnrollListResult"

@@ -403,6 +403,24 @@ pub struct Config {
     pub log: LogConfig,
 }
 
+/// `ANYCON_<段>__<键>` 环境变量层。加载配置和判断「哪些键被环境变量覆盖」（[`env_overrides`]）用同一个构造，不会各说各话。
+fn env_provider() -> Env {
+    Env::prefixed("ANYCON_").ignore(&["HOME", "LOG", "MOCK_AGENT"]).split("__")
+}
+
+/// 当前进程环境里有没有 `ANYCON_<段>__<键>` 覆盖 `key`（点分隔的两段键，如 `sessions.max_concurrent`）。
+/// 覆盖了的键，配置文件里写什么都不生效（环境变量盖过文件），所以远程改它没有意义（`node.set_config` 拒绝，ADR-43）。
+pub fn env_overrides(key: &str) -> bool {
+    use figment::value::Value;
+    use figment::Provider;
+    let Some((section, name)) = key.split_once('.') else { return false };
+    let Ok(data) = env_provider().data() else { return false };
+    data.values().any(|dict| match dict.get(section) {
+        Some(Value::Dict(_, inner)) => inner.contains_key(name),
+        _ => false,
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("config: {0}")]
@@ -424,7 +442,7 @@ impl Config {
         if file.exists() {
             fig = fig.merge(Toml::file(file));
         }
-        fig = fig.merge(Env::prefixed("ANYCON_").ignore(&["HOME", "LOG", "MOCK_AGENT"]).split("__"));
+        fig = fig.merge(env_provider());
         let mut cfg: Config = fig.extract().map_err(|e| ConfigError::Parse(e.to_string()))?;
         if matches!(std::env::var("ANYCON_MOCK_AGENT").as_deref(), Ok("1") | Ok("true")) {
             let e = cfg
@@ -731,20 +749,43 @@ pub async fn set_values_blocking(paths: &Paths, edits: Vec<(String, String)>) ->
     .map_err(|e| ConfigError::Io(std::io::Error::other(format!("config write task failed: {e}"))))?
 }
 
+/// [`set_toml_values`] 的异步版（见 [`set_value_blocking`]）。
+pub async fn set_toml_values_blocking(
+    paths: &Paths,
+    edits: Vec<(String, toml_edit::Value)>,
+) -> Result<(), ConfigError> {
+    let paths = paths.clone();
+    tokio::task::spawn_blocking(move || set_toml_values(&paths, edits))
+        .await
+        .map_err(|e| ConfigError::Io(std::io::Error::other(format!("config write task failed: {e}"))))?
+}
+
 /// 一次读-改-写里改多个键：要么全部写入要么都不写（校验失败整体放弃）。
 pub fn set_values(paths: &Paths, edits: &[(&str, &str)]) -> Result<(), ConfigError> {
-    use toml_edit::{DocumentMut, Item, Table, Value};
+    let typed = edits
+        .iter()
+        .map(|(key, raw)| {
+            let value = raw.parse::<toml_edit::Value>().unwrap_or_else(|_| toml_edit::Value::from(*raw));
+            ((*key).to_string(), value)
+        })
+        .collect();
+    set_toml_values(paths, typed)
+}
+
+/// [`set_values`] 的带类型版本：值已经是 TOML 值，不再从文本猜类型。`node.set_config` 用它：
+/// `branch_prefix = "123"` 必须写成字符串，不能被当成整数。其余行为（保留注释、整体校验、原子替换、加锁）和 `set_values` 相同。
+pub fn set_toml_values(paths: &Paths, edits: Vec<(String, toml_edit::Value)>) -> Result<(), ConfigError> {
+    use toml_edit::{DocumentMut, Item, Table};
     let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _flock = ConfigFileLock::acquire(&paths.home)?;
     let file = paths.config_toml();
     let text = if file.exists() { std::fs::read_to_string(&file)? } else { String::new() };
     let mut doc: DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))?;
-    for (key, raw) in edits {
+    for (key, mut value) in edits {
         let segs: Vec<&str> = key.split('.').collect();
         if segs.is_empty() || segs.iter().any(|s| s.is_empty()) {
             return Err(ConfigError::Invalid(format!("bad key: {key}")));
         }
-        let mut value: Value = raw.parse::<Value>().unwrap_or_else(|_| Value::from(*raw));
         let mut tbl: &mut Table = doc.as_table_mut();
         for seg in &segs[..segs.len() - 1] {
             let entry = tbl.entry(seg).or_insert(Item::Table(Table::new()));

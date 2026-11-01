@@ -29,6 +29,7 @@ import type {
   JobStarted,
   NodeAuditParams,
   NodeAuditResult,
+  NodeConfigResult,
   NodeDevicesResult,
   NodeDoctorResult,
   NodeEnrollApproveParams,
@@ -39,11 +40,14 @@ import type {
   NodeEnrollResolved,
   NodeEnrollStatusResult,
   NodeInfo,
+  NodeLogsParams,
+  NodeLogsResult,
   NodePairBeginParams,
   NodePairBeginResult,
   NodeRevokeDeviceParams,
   NodeSecurityEvent,
   NodeSetAgentDefaultsParams,
+  NodeSetConfigParams,
   NodeSetEnrollEnabledParams,
   NodeSetEnrollPasswordParams,
   NodeStats,
@@ -115,6 +119,9 @@ export interface RequestMethods {
   'node.doctor': { params: Empty; result: NodeDoctorResult }
   'node.audit': { params: NodeAuditParams; result: NodeAuditResult }
   'node.set_agent_defaults': { params: NodeSetAgentDefaultsParams; result: Empty }
+  'node.get_config': { params: Empty; result: NodeConfigResult }
+  'node.set_config': { params: NodeSetConfigParams; result: NodeConfigResult }
+  'node.logs': { params: NodeLogsParams; result: NodeLogsResult }
   'node.enroll_list': { params: Empty; result: NodeEnrollListResult }
   'node.enroll_approve': { params: NodeEnrollApproveParams; result: NodeEnrollApproveResult }
   'node.enroll_deny': { params: NodeEnrollIdParams; result: Empty }

@@ -141,8 +141,8 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `anycon export [--out <file>] [--project] [--since]` | 导出会话历史为一个 zip（JSONL + 附件），用于备份和搬迁（v0.2） |
 | `anycon import <file>` | 导入（v0.2） |
 | `anycon audit [--since] [--device] [--json]` | 本地审计日志 |
-| `anycon config get <key>` · `set <key> <value>` · `edit` · `path` | 读写 `config.toml`；`set` 后对支持热加载的键立即生效，否则提示重启 |
-| `anycon logs [-f] [-n 200]` | daemon 日志 |
+| `anycon config get <key>` · `set <key> <value>` · `edit` · `path` | 读写 `config.toml`；`set` 后对支持热加载的键立即生效，否则提示重启。只作用于本机，不提供远程版本：远程改配置是 Web / SDK 的 `node.set_config`，只有一张白名单（[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)），本机的 `config set` 不受白名单限制，也是放宽 `permissions.allow_dangerous_modes` / `preview.enabled` 的唯一办法 |
+| `anycon logs [-f] [-n 200]` | daemon 日志（本机读日志文件，不过滤；远程客户端用 `node.logs`，会去掉可能带会话文字的行，[daemon.md § 17](daemon.md#17-诊断)） |
 | `anycon stats` | 运行时长、会话数、磁盘占用、hub 连接状态 |
 
 ## 4. 输出约定

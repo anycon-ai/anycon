@@ -8,17 +8,17 @@ use std::sync::Arc;
 use anycon_protocol::{
     methods, AgentDiagnoseParams, AgentListParams, BlobGetParams, BlobIdParams, BlobPutBeginParams, BlobPutChunkParams,
     Empty, ErrorCode, FsListParams, FsReadParams, JobCancelParams, JobStarted, NodeAuditParams, NodeAuditResult,
-    NodeCapabilities, NodeDevicesResult, NodeEnrollApproveParams, NodeEnrollIdParams, NodeInfo, NodePairBeginParams,
-    NodeRevokeDeviceParams, NodeSetAgentDefaultsParams, NodeSetEnrollEnabledParams, NodeSetEnrollPasswordParams,
-    NodeStats, NodeWorktreeSettings, PermissionListParams, PermissionRespondParams, PreviewCloseParams,
-    PreviewOpenParams, PreviewPortsParams, RenamedProject, RpcError, RpcId, RpcMessage, RpcRequest,
-    SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams, SessionGitStatusParams,
-    SessionHistoryParams, SessionIdParams, SessionListParams, SessionPromoteParams, SessionRenameParams,
-    SessionSearchParams, SessionSearchResult, SessionSendParams, SessionSetSettingsParams, SessionSyncBaseParams,
-    SessionWorkspaceMode, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams, WorkspaceCloneParams,
-    WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams, WorkspaceRemoveWorktreeParams,
-    WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult, WorkspaceWorktreesParams,
-    PROTOCOL_VERSION,
+    NodeCapabilities, NodeDevicesResult, NodeEnrollApproveParams, NodeEnrollIdParams, NodeInfo, NodeLogsParams,
+    NodePairBeginParams, NodeRevokeDeviceParams, NodeSetAgentDefaultsParams, NodeSetConfigParams,
+    NodeSetEnrollEnabledParams, NodeSetEnrollPasswordParams, NodeStats, NodeWorktreeSettings, PermissionListParams,
+    PermissionRespondParams, PreviewCloseParams, PreviewOpenParams, PreviewPortsParams, RenamedProject, RpcError,
+    RpcId, RpcMessage, RpcRequest, SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams,
+    SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionPromoteParams,
+    SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams, SessionSetSettingsParams,
+    SessionSyncBaseParams, SessionWorkspaceMode, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams,
+    WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams,
+    WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult,
+    WorkspaceWorktreesParams, PROTOCOL_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -159,6 +159,20 @@ impl Rpc {
                     .record(caller, "config.changed", Some(&format!("agents.{}.default_*", p.agent)), json!({}))
                     .await;
                 ok(Empty {})
+            }
+            methods::NODE_GET_CONFIG => ok(crate::remote_config::get(c)),
+            methods::NODE_SET_CONFIG => {
+                let p: NodeSetConfigParams = params(p)?;
+                ok(crate::remote_config::set(c, caller, p).await?)
+            }
+            methods::NODE_LOGS => {
+                let p: NodeLogsParams = params(p)?;
+                let dir = c.paths.logs_dir();
+                // 读文件（最多扫描几 MiB），放进阻塞线程
+                let r = tokio::task::spawn_blocking(move || crate::logtail::read(&dir, &p))
+                    .await
+                    .map_err(|e| err(ErrorCode::Internal, format!("cannot read the logs: {e}")))?;
+                ok(r)
             }
 
             // ---------------- agent ----------------

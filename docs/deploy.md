@@ -328,6 +328,55 @@ docker run -d --name anycon-hub …                 # 和 § 2 同样的参数�
 - 镜像自带的 `HEALTHCHECK`（`anycon-hub healthcheck`）只探本机的 `/healthz`，不读 `ANYCON_DATABASE_URL`、不连库：用 Postgres 时它照样能用，Postgres 暂时不可用也不会让容器被判 unhealthy 而被重启（反代和编排要「数据库可用才接流量」的话用 `/readyz`）
 - `/metrics`（Prometheus 格式：在线设备数、信封转发速率、未送达数、握手失败数、队列深度）是 v0.3 的计划，v0.1 没有
 
+### 7.1 探测什么
+
+| 探测 | 期望 | 说明 |
+|---|---|---|
+| `GET https://<hub>/healthz` | `200` | 进程活着、反代和证书正常。响应里的 `version` 可以用关键字检查，升级后确认换上了新版本 |
+| `GET https://<hub>/readyz` | `200` | 数据库可用。只有它挂、`/healthz` 正常，就是库的问题 |
+| `GET https://aaaaaaaaaaaaaaaaaaaaaaaaaa.<预览域名>/__anycon/config.json` | `200`，JSON | 开了预览才需要。26 个 `a` 是一个格式合法的 label，不需要真的存在：这一条验证泛域名 DNS、泛域名证书和按 `Host` 的路由（[spec/hub.md § 13.2](spec/hub.md#132-预览域名上的-http)） |
+| 证书到期 | 剩余 > 14 天 | 证书由 Cloudflare 或托管平台管理时可以省掉 |
+
+**探测要放在 hub 那台机器之外**：机器宕机、断网时，跑在它上面的监控也一起停了，没人报警。外部探测的免费档（UptimeRobot、Better Stack 一类）就够用，顺便能给用户一个状态页；也可以在另一台机器上跑 Uptime Kuma。
+
+### 7.2 小机器怎么监控
+
+2 核 2 GB 这一档跑 hub + Postgres + 反代绰绰有余，但放不下一套 Prometheus + Grafana（光 Prometheus 就要几百 MB 内存）。在 `/metrics` 实现之前，hub 自己也没有可抓的指标，所以按下面分层：
+
+- **可用性**：§ 7.1 的外部探测，告警发邮件或 IM
+- **主机资源**：先用云厂商自带的主机监控（CPU、内存、磁盘、公网出入带宽，大多免费、带告警，不占机器资源）。建议的告警：内存 > 85% 持续 5 分钟、磁盘 > 80%、公网出带宽 > 上限的 80% 持续 5 分钟。要看到每个容器的用量，再装一个轻量的 agent（例如 Beszel 的 agent，常驻内存几十 MB 以内），面板放在别的机器上
+- **日志**：hub 的日志不含会话内容（[spec/hub.md § 10](spec/hub.md#10-日志纪律)），值得留意的是 `WARN` / `ERROR`：数据库错误、邮件和推送发送失败、限速和配额拒绝突然增多。`docker compose logs --since 1h hub | grep -E 'WARN|ERROR'` 先手动看；不必为这一台机器上集中日志
+- **日志轮转**：Docker 默认的 `json-file` 不轮转，日志会慢慢写满磁盘。在 compose 里给每个服务加上：
+
+  ```yaml
+      logging:
+        driver: json-file
+        options: { max-size: "10m", max-file: "5" }
+  ```
+
+  这是按大小轮转，流量小的时候一份日志可能留得比你想的久。要按天数保留（比如隐私政策里写了日志保留期），改用 `driver: journald`，并在宿主机的 `/etc/systemd/journald.conf` 里设 `MaxRetentionSec=30day`、`SystemMaxUse=500M`
+- **内存**：加 1–2 GB swap，防止突发时被 OOM killer 杀掉进程。Postgres 在这一档设 `shared_buffers=128MB`、`max_connections=20` 就够了（hub 的连接池上限是 10，§ 3.2）
+- **备份**：`pg_dump` 的定时任务（§ 5）是否成功也要能看到。最简单的办法是任务成功后 ping 一个心跳地址（Healthchecks.io 一类），心跳到期没来就告警
+
+### 7.3 带宽：怎么测、怎么设限
+
+hub 转发所有会话流量（密文）。一个字节从发送方进来、再发给接收方，所以**服务器出方向的流量 ≈ 转发的全部字节 + Web UI 静态文件 + 预览流量**。云服务器的出带宽通常是最先碰到的上限（入方向一般不限速或限得宽得多）。换算：1 Mbps ≈ 每分钟 7.2 MiB，3 Mbps ≈ 每分钟 21 MiB，而且是所有用户共用。
+
+几个默认值都比小带宽机器的整条出口大：每条 daemon 连接每分钟 100 MiB（`ANYCON_RATE_DAEMON_BYTES_PER_MIN`），每个账号的预览每分钟 512 MiB（`ANYCON_PREVIEW_BYTES_PER_MIN`，约 72 Mbps）。它们防止一台设备拖垮 hub，不负责在用户之间分带宽。
+
+**怎么测**：
+
+- 宿主机装 `vnstat`（常驻开销很小）：`vnstat -5` 看 5 分钟粒度、`vnstat -d` 看每天的总量，测试时 `vnstat -l` 看实时速率
+- 分容器看：`docker stats --no-stream` 的 `NET I/O` 是容器启动以来的累计，测试前后各读一次相减
+- 估预览需要多少带宽：在一个新的隐私窗口里打开一个典型项目（比如一个 Vite 应用）的预览，记下这次加载的出方向字节数和耗时；再刷新一次（service worker 的条件请求缓存生效后），再改一行代码看一次热更新。冷加载的字节数 × 8 ÷ 你能接受的秒数，就是一个人打开预览需要的带宽；再看同时有几个人在用
+
+**怎么减**：
+
+- hub 自己不压缩 HTTP 响应。Web UI 第一次打开要传将近 1 MB 的 JS 和 wasm（主程序、加密模块、会话页），在反代上打开压缩（Caddy 的 `encode zstd gzip`、nginx 的 `gzip on` 加上 `gzip_types application/javascript application/wasm text/css`），或交给 Cloudflare
+- 带哈希的静态文件（`/assets/*`）hub 发的是 `Cache-Control: public, max-age=31536000, immutable`，Cloudflare 一类的 CDN 可以把它们缓存在边缘，Web UI 的加载流量基本不再经过你的出口（`.wasm` 可能要单独加一条缓存规则）。Cloudflare 因此在 Web UI 的信任链上，见 § 4「反代也是信任链的一环」
+- 按测出来的数调低 `ANYCON_PREVIEW_BYTES_PER_MIN`，让一个账号的预览只占出口的一部分（比如 3 Mbps 的机器设成每分钟 10 MiB 左右，`10485760`）。超出预算只暂停预览，不影响会话
+- 出带宽固定、流量是一阵一阵的，按流量计费（峰值带宽设高、配一个费用告警）往往比买固定带宽合适
+
 ## 8. daemon 侧
 
 安装 `anycon`（daemon 和 CLI 是同一个二进制），三选一：

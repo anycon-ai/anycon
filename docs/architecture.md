@@ -76,7 +76,7 @@ hub **不**做：解析消息内容、存会话历史、存附件、搜索、运
 - **CLI**：`anycon send`、`anycon ls`、`anycon attach` 等，走和 Web 同一套协议
 - **TS SDK / Python SDK**：两个方向——作为客户端调用节点，或把自定义 agent 注册为节点。v0.1 只有 TS SDK 的客户端方向（[roadmap](roadmap.md)）
 
-所有客户端都要配置 hub 地址，没有默认值（`multi` 模式已经实现；anycon.ai 公共 hub 的上线见 [roadmap](roadmap.md)）。
+所有客户端都要配置 hub 地址，没有默认值（`multi` 模式已经实现；公共 hub 在 https://hub.anycon.ai）。
 
 ### 2.4 `crates/crypto`
 

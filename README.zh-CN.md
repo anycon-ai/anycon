@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/status-v0.1-orange" alt="Status: v0.1">
+  <img src="https://img.shields.io/badge/status-v0.2-orange" alt="Status: v0.2">
   <a href="README.md">English</a>
 </p>
 
@@ -52,6 +52,8 @@ Anycon 把跑 AI agent 的那台机器（家里的 Mac mini、工作站、服务
 
 hub 需要 Docker。`anycon`（daemon 和 CLI 是同一个二进制）支持 macOS（Apple 芯片和 Intel）、Linux（x86_64 和 arm64，glibc 2.35 及以上）和 Windows（x64，Windows 10 1809 及以上）。
 
+**还不想自己跑 hub？** 用 [hub.anycon.ai](https://hub.anycon.ai) 上的公共 hub：用邮箱登录，然后直接做第 2 步，`--hub` 填 `https://hub.anycon.ai`。免费套餐每个账号一个节点（一台运行 daemon 的机器）。它跑的是和自建 hub 相同的 release，但 Web UI 的代码由 hub 下发，用它的 Web UI 就是信任它的运营者（[隐私模型](#隐私模型)）。隐私敏感的使用请自建 hub，或者用 CLI / SDK。它的[服务条款](https://anycon.ai/zh/terms)和[隐私政策](https://anycon.ai/zh/privacy)在 anycon.ai 上。
+
 **1. 启动 hub**（可以和 agent 在同一台机器上，也可以放在两边都能访问的任何地方）
 
 ```bash
@@ -88,7 +90,7 @@ anycon pair
 
 每个 [GitHub Release](https://github.com/anycon-ai/anycon/releases) 也附带预构建的二进制、校验和与构建来源证明。想从源码构建：在克隆下来的仓库里跑 `cargo install --path crates/cli --locked`（需要较新的 stable Rust 工具链；Windows 上再装一个服务用的、没有控制台窗口的启动器：`cargo install --path crates/windows-launcher --locked`），hub 镜像用 `docker build -f docker/hub.Dockerfile -t anycon-hub .`。
 
-**3. 浏览器打开 hub 地址**，用管理员 token 登录，输入短码。完成——`~/anycon/` 下每个文件夹都是一个项目，可以在浏览器里直接开始工作。再加一台设备：在节点设置里点「添加设备」，或者再跑一次 `anycon pair`。
+**3. 浏览器打开 hub 地址**，用管理员 token 登录（公共 hub 用邮箱登录），输入短码。完成——`~/anycon/` 下每个文件夹都是一个项目，可以在浏览器里直接开始工作。再加一台设备：在节点设置里点「添加设备」，或者再跑一次 `anycon pair`。
 
 ## 客户端
 
@@ -170,7 +172,7 @@ just e2e     # Playwright：真实 hub + daemon + Web UI
 
 ## 状态
 
-Anycon 处于 **v0.1**。核心流程——启动 hub、配对、和 agent 对话、审批权限、在 worktree 里工作——端到端跑通且有自动化测试。协议和 API 在 minor 版本之间仍可能变化。问题和不顺手的地方请提 [issue](https://github.com/anycon-ai/anycon/issues)，安全问题按 [SECURITY.md](SECURITY.md) 里的方式报告。
+Anycon 处于 **v0.2**。核心流程——启动 hub、配对、和 agent 对话、审批权限、在 worktree 里工作——端到端跑通且有自动化测试。协议和 API 在 minor 版本之间仍可能变化。问题和不顺手的地方请提 [issue](https://github.com/anycon-ai/anycon/issues)，安全问题按 [SECURITY.md](SECURITY.md) 里的方式报告。
 
 ## License
 

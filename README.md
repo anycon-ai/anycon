@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/status-v0.1-orange" alt="Status: v0.1">
+  <img src="https://img.shields.io/badge/status-v0.2-orange" alt="Status: v0.2">
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
@@ -52,6 +52,8 @@ The trade-offs, stated plainly:
 
 You need Docker for the hub. The `anycon` binary (daemon and CLI in one) runs on macOS (Apple silicon and Intel), Linux (x86_64 and arm64, glibc 2.35 or newer), and Windows (x64, Windows 10 1809 or newer).
 
+**Don't want to run a hub yet?** Use the public hub at [hub.anycon.ai](https://hub.anycon.ai): sign in with your email address, then skip to step 2 and use `--hub https://hub.anycon.ai`. The free plan has one node (a machine running the daemon) per account. It runs the same release as a self-hosted hub, but its Web UI's code is served by the hub, so using that Web UI means trusting its operator ([privacy model](#privacy-model)). For anything sensitive, run your own hub or use the CLI / SDK. Its [terms](https://anycon.ai/terms) and [privacy policy](https://anycon.ai/privacy) are on anycon.ai.
+
 **1. Run a hub.** It can run on the same machine as the agents, or anywhere both sides can reach.
 
 ```bash
@@ -88,7 +90,7 @@ anycon pair
 
 Prebuilt binaries are also attached to each [GitHub release](https://github.com/anycon-ai/anycon/releases), with checksums and build provenance. To build from source instead, run `cargo install --path crates/cli --locked` in a clone (needs a current stable Rust toolchain; on Windows also `cargo install --path crates/windows-launcher --locked` for the console-less launcher the service uses), and `docker build -f docker/hub.Dockerfile -t anycon-hub .` for the hub image.
 
-**3. Open the hub in a browser**, sign in with the admin token, and enter the pairing code. That's it. Every folder under `~/anycon/` is now a project you can work in from the browser. To add another device, use *Add device* in node settings, or run `anycon pair` again.
+**3. Open the hub in a browser**, sign in with the admin token (on the public hub, with your email), and enter the pairing code. That's it. Every folder under `~/anycon/` is now a project you can work in from the browser. To add another device, use *Add device* in node settings, or run `anycon pair` again.
 
 ## Clients
 
@@ -172,7 +174,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, conventions, and where 
 
 ## Status
 
-Anycon is at **v0.1**. The core flow works end to end and has automated tests: run a hub, pair, chat with an agent, approve permissions, work in worktrees. The protocol and APIs may still change between minor versions. Please report bugs and rough edges in [issues](https://github.com/anycon-ai/anycon/issues), and send security problems to the channel in [SECURITY.md](SECURITY.md).
+Anycon is at **v0.2**. The core flow works end to end and has automated tests: run a hub, pair, chat with an agent, approve permissions, work in worktrees. The protocol and APIs may still change between minor versions. Please report bugs and rough edges in [issues](https://github.com/anycon-ai/anycon/issues), and send security problems to the channel in [SECURITY.md](SECURITY.md).
 
 ## License
 

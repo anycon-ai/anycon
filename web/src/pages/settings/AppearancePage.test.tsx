@@ -1,4 +1,4 @@
-// /settings/appearance：「禁止页面缩放」只在 iOS / Android 上出现，默认关。
+// /settings/appearance：「禁止页面缩放」只在 iOS / Android 上出现，默认关；「侧栏显示最近会话」默认开。
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -9,7 +9,7 @@ const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebK
 
 afterEach(() => {
   Reflect.deleteProperty(navigator, 'userAgent')
-  usePrefs.setState({ blockZoom: false })
+  usePrefs.setState({ blockZoom: false, sidebarRecent: true })
 })
 
 describe('AppearancePage — block page zoom', () => {
@@ -27,5 +27,17 @@ describe('AppearancePage — block page zoom', () => {
     expect(screen.getByText(/no longer zooms the page in/)).toBeInTheDocument()
     await user.click(sw)
     expect(usePrefs.getState().blockZoom).toBe(true)
+  })
+})
+
+describe('AppearancePage — sidebar Recent group', () => {
+  it('is on by default, and the switch saves the preference', async () => {
+    const user = userEvent.setup()
+    render(<AppearancePage />)
+    const sw = screen.getByTestId('sidebar-recent-switch')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    await user.click(sw)
+    expect(usePrefs.getState().sidebarRecent).toBe(false)
+    expect(sw).toHaveAttribute('aria-checked', 'false')
   })
 })

@@ -63,6 +63,9 @@ export function AppearancePage() {
         <Row label={t('appearance.compact')} hint={t('appearance.compactHint')}>
           <Switch label={t('appearance.compact')} checked={p.compact} onCheckedChange={(v) => p.set({ compact: v })} />
         </Row>
+        <Row label={t('appearance.sidebarRecent')} hint={t('appearance.sidebarRecentHint')}>
+          <Switch label={t('appearance.sidebarRecent')} checked={p.sidebarRecent} onCheckedChange={(v) => p.set({ sidebarRecent: v })} testId="sidebar-recent-switch" />
+        </Row>
         {zoom ? (
           <Row label={t('appearance.blockZoom')} hint={t(zoom === 'ios' ? 'appearance.blockZoomHintIos' : 'appearance.blockZoomHintAndroid')}>
             <Switch label={t('appearance.blockZoom')} checked={p.blockZoom} onCheckedChange={(v) => p.set({ blockZoom: v })} testId="block-zoom" />

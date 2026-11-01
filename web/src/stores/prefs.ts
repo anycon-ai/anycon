@@ -42,6 +42,8 @@ export interface PrefsState {
   sidebarWidth: number
   /** 左栏显示哪些节点上的项目（节点 id）；null = 全部节点（之后配对的新节点也在内）。 */
   sidebarNodes: string[] | null
+  /** 左栏顶部是否列出进行中的会话（Recent）；默认开，外观设置里可以关。 */
+  sidebarRecent: boolean
   lastNode: string | null
   notifyBannerDismissed: boolean
   /** key = `${nodeId}:${agentId}` */
@@ -94,6 +96,7 @@ export const usePrefs = create<PrefsState>()(
       sidebarOpen: true,
       sidebarWidth: SIDEBAR_DEFAULT,
       sidebarNodes: null,
+      sidebarRecent: true,
       lastNode: null,
       notifyBannerDismissed: false,
       lastUsed: {},
@@ -127,6 +130,7 @@ export const usePrefs = create<PrefsState>()(
         sidebarOpen: s.sidebarOpen,
         sidebarWidth: s.sidebarWidth,
         sidebarNodes: s.sidebarNodes,
+        sidebarRecent: s.sidebarRecent,
         lastNode: s.lastNode,
         notifyBannerDismissed: s.notifyBannerDismissed,
         lastUsed: s.lastUsed,

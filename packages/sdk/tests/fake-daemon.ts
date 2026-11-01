@@ -17,8 +17,8 @@
  * `session.changed`；`session.git_status` / `diff` / `sync_base` 给脚本化的结果（`syncResults` 队列可预置 `sync_base` 的答复）。
  *
  * 附件（ADR-35，protocol.md § 5.6）：`blob.put_begin` / `put_chunk` / `put_end` / `get` / `discard` 按真 daemon 的规则
- * （mime 成形 + 转小写、大小、sha256、每设备 8 个进行中的上传、块长度、乱序 / 重发、`finalizing`、缺块、hash / 文件头校验、
- * 只对四种图片核对文件头 / 读宽高，`put_end` 幂等、分页、discard 的三种情况）；`blobRefusal` 让 `put_begin` 答 `busy`（`quota` / `disk_full`），
+ * （mime 转小写、去掉参数，不成形的记成 application/octet-stream、不报错；大小、sha256、每设备 8 个进行中的上传、块长度、乱序 / 重发、
+ * `finalizing`、缺块、hash 校验、只对四种图片核对文件头 / 读宽高，`put_end` 幂等、分页、discard 的三种情况）；`blobRefusal` 让 `put_begin` 答 `busy`（`quota` / `disk_full`），
  * `chunkHook` 给块加延迟或让它失败，`chunksPeak` 记同时在处理的块数。`session.send` / `session.create` 核对附件
  * （不存在 → `not_found` / `blob`，元数据不符 → `invalid`，别的会话的 → `invalid` / `blob_in_use`，合计超 20 MiB →
  * `invalid` / `too_large`），通过后绑定到会话、`user_message` 带 daemon 的记录，回复里回显附件名和大小。
@@ -126,6 +126,12 @@ export interface FakeBlob {
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 /** `type/subtype`，不带参数，≤ 127 字节（大小写不敏感，记成小写）。 */
 const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/
+
+/** daemon 记录的 mime：去掉参数、转小写；不成形的（含空串）是 application/octet-stream，不报错。 */
+function declaredMime(raw: string): string {
+  const essence = (raw.split(';')[0] ?? '').trim().toLowerCase()
+  return essence.length <= 127 && MIME_RE.test(essence) ? essence : 'application/octet-stream'
+}
 const MAX_UPLOADS_PER_DEVICE = 8
 const MAX_MESSAGE_ATTACHMENTS = 20
 const MAX_MESSAGE_BYTES = 20 * 1024 * 1024
@@ -584,7 +590,19 @@ export class FakeDaemon {
       protocol_version: this.opts.protocolVersion ?? PROTOCOL_VERSION,
       platform: 'test',
       workspace_root: '/tmp/fake-workspace',
-      capabilities: { workspace: true, fs: false, search: false, blobs: true, audit: false },
+      capabilities: {
+        workspace: true,
+        fs: false,
+        search: false,
+        blobs: true,
+        file_attachments: true,
+        audit: false,
+      },
+      attachment_limits: {
+        max_bytes: this.maxAttachmentBytes,
+        max_per_message: MAX_MESSAGE_ATTACHMENTS,
+        max_message_bytes: MAX_MESSAGE_BYTES,
+      },
       started_at_ms: 1,
     }))
     on<{ if_none_match?: string | null; refresh?: boolean }, unknown>('agent.list', (p) =>
@@ -1013,10 +1031,7 @@ export class FakeDaemon {
       if (!p.name || new TextEncoder().encode(p.name).length > 255 || /[/\\\p{Cc}]/u.test(p.name)) {
         throw AnyconRpcError.of('invalid', 'bad attachment name')
       }
-      const mime = p.mime.toLowerCase()
-      if (mime.length > 127 || !MIME_RE.test(mime)) {
-        throw AnyconRpcError.of('invalid', 'mime must be type/subtype without parameters')
-      }
+      const mime = declaredMime(p.mime)
       if (p.size < 1 || p.size > this.maxAttachmentBytes) {
         throw reasoned(
           'invalid',

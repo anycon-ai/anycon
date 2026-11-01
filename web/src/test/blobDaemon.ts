@@ -1,7 +1,8 @@
 // 假 daemon 的 blob.* 方法（测试用）：记录收到的块，put_end 返回 daemon 风格的 AttachmentRef。
 // 每次 put_begin 生成一个新的 blob_id（`b…001`、`b…002` …），多个附件的测试里互相区分得开。
 //
-// 像真 daemon 一样收任何合格的 `type/subtype` mime（不带参数、≤ 127 字节、不分大小写，记录成小写；不合格回 `invalid`），
+// 像真 daemon 一样收任何 mime：去掉参数、不分大小写（记录成小写），不合格的（空、不是 `type/subtype`、通配、> 127 字节）记成
+// `application/octet-stream`，不报错；
 // 只有这四种图片类型会在 put_end 时核对文件头（对不上回 `invalid` / `mime_mismatch`），记录也只有它们带宽高（固定 40×30）；
 // 别的类型不看内容。
 //
@@ -60,8 +61,8 @@ export function installBlobDaemon(rpc: FakeRpc, opts: BlobDaemonOptions = {}): B
   }
   rpc.handlers['blob.put_begin'] = (p) => {
     const raw = p as BlobPutBeginParams
-    if (raw.mime.length > 127 || !MIME_RE.test(raw.mime)) throw rpcError('invalid')
-    const params: BlobPutBeginParams = { ...raw, mime: raw.mime.toLowerCase() }
+    const essence = (raw.mime.split(';')[0] ?? '').trim().toLowerCase()
+    const params: BlobPutBeginParams = { ...raw, mime: essence.length <= 127 && MIME_RE.test(essence) ? essence : 'application/octet-stream' }
     if (inProgress() >= DAEMON_MAX_UPLOADS) throw rpcError('busy')
     opts.onBegin?.(params)
     counter += 1

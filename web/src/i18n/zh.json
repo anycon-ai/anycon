@@ -635,11 +635,13 @@
     "offlineNew": "节点离线。可以先写好消息，但暂时无法开始会话。",
     "attachOffline": "节点离线，暂时无法添加附件。",
     "attachMax_other": "一条消息最多带 {{count}} 个附件。",
-    "attachNotImage": "这个 agent 只接受图片，已跳过 {{name}}。",
+    "attachNotImage": "这个节点只接受图片，已跳过 {{name}}。",
+    "attachFileTooLarge": "已忽略 {{name}}：单个文件最多 {{size}}。",
     "attachUndecodable": "无法把 {{name}} 当作图片读取。",
     "attachTooLarge": "{{name}} 缩小之后仍然太大。",
     "attachUnsupported": "这个 agent 不接受应用能发送的任何图片格式。",
-    "attachTotal": "已忽略 {{name}}：一条消息的附件合计最多 {{size}}。",
+    "attachTotal": "已忽略 {{name}}：一条消息的图片合计最多 {{size}}。",
+    "attachTotalAll": "已忽略 {{name}}：一条消息的附件合计最多 {{size}}。",
     "attachmentsUnsupported": "当前选的 agent 不接受附件，已添加的附件发送时不会带上。",
     "attachmentsPartlyUnsupported": "当前选的 agent 不接受已添加的部分文件，发送时不会带上它们。",
     "attachUploading": "请等附件上传完。",
@@ -1221,7 +1223,8 @@
     "policy_violation": "提供方的使用政策拦下了这次请求。请换个说法或调整任务。",
     "rate_limited": "agent 触发了频率或用量限制。请稍等一会儿再试。",
     "auth_failed": "agent 还没有登录，或凭证被拒绝。请到节点设置里查看它的状态。",
-    "agent_context_reset": "这段对话之前的内容 agent 已经看不到了——它开了一个新的会话线程。"
+    "agent_context_reset": "这段对话之前的内容 agent 已经看不到了——它开了一个新的会话线程。",
+    "attachment_failed": "节点没能把附件存进会话的工作目录，所以这条消息没有交给 agent。按下面的原因处理（比如腾出磁盘空间）后重新发送。"
   },
   "markdown": {
     "loadImage": "加载来自 {{host}} 的图片",

@@ -218,7 +218,7 @@ describe('adding images', () => {
   })
 })
 
-describe('adding other files (the agent takes any file)', () => {
+describe('adding other files (the node takes any file)', () => {
   const files = (over: Partial<AttachContext> = {}) => ctx({ files: true, ...over })
   const uploaded = (d: ReturnType<typeof installBlobDaemon>, n: number) => d.uploads.get(blobId(n))!
 
@@ -262,7 +262,7 @@ describe('adding other files (the agent takes any file)', () => {
     expect(d.uploads.size).toBe(2)
   })
 
-  it('an agent that names no image format but takes any file gets images byte for byte too, without decoding them', async () => {
+  it('an agent that names no image format, on a node that takes any file, gets images byte for byte too, without decoding them', async () => {
     const d = installBlobDaemon(rpc, { chunkSize: 1024 })
     addFiles([png('shot.png')], files({ accepted: [] }))
     await vi.waitFor(allSettled('ready'))
@@ -292,25 +292,64 @@ describe('adding other files (the agent takes any file)', () => {
     expect(items()[0]).toMatchObject({ kind: 'file', name: 'Makefile', mime: 'application/octet-stream' })
   })
 
-  it('images and files count together towards 10 per message and 15 MiB per message; a file over the total is skipped without being read', async () => {
-    const MiB = 1024 * 1024
-    const d = installBlobDaemon(rpc, { chunkSize: 512 * 1024 })
+  it('images and files count together towards 10 attachments per message', async () => {
+    installBlobDaemon(rpc, { chunkSize: 512 * 1024 })
     addFiles([...Array.from({ length: 6 }, (_, i) => png(`${i}.png`)), ...Array.from({ length: 6 }, (_, i) => doc(`${i}.txt`, 'text/plain'))], files())
     expect(items()).toHaveLength(MAX_ATTACHMENTS)
     expect(notices).toEqual([{ kind: 'max', max: 10 }])
     await vi.waitFor(allSettled('ready'))
-    clearItems(KEY)
-    notices = []
+  })
 
+  it('a file over the node’s per-file limit is skipped with a notice and never read, hashed or uploaded (the default is 10 MiB when the node reports no limits)', async () => {
+    const MiB = 1024 * 1024
+    const d = installBlobDaemon(rpc, { chunkSize: 512 * 1024 })
     const big = new File([new Uint8Array(1)], 'huge.iso', { type: 'application/x-iso9660-image' })
-    Object.defineProperty(big, 'size', { value: 16 * MiB })
+    Object.defineProperty(big, 'size', { value: 11 * MiB })
     const read = vi.spyOn(big, 'arrayBuffer')
     addFiles([big], files())
-    await vi.waitFor(() => expect(notices).toEqual([{ kind: 'total', name: 'huge.iso', max: 15 * MiB }]))
+    expect(notices).toEqual([{ kind: 'file_too_large', name: 'huge.iso', max: 10 * MiB }])
     expect(items()).toEqual([])
     expect(read).not.toHaveBeenCalled()
-    expect(d.uploads.size).toBe(10)
+    expect(d.uploads.size).toBe(0)
+    // 节点报了自己的上限：按它的
+    notices = []
+    addFiles([doc('a.bin', 'application/octet-stream', 5000), doc('b.bin', 'application/octet-stream', 4096)], files({ limits: { max_bytes: 4096, max_per_message: 20, max_message_bytes: 1 << 20 } }))
+    expect(notices).toEqual([{ kind: 'file_too_large', name: 'a.bin', max: 4096 }])
+    await vi.waitFor(allSettled('ready'))
+    expect(items().map((i) => i.name)).toEqual(['b.bin'])
   })
+
+  it('the attachments of one message may add up to the node’s message limit; the one that would go over is skipped without being read', async () => {
+    const d = installBlobDaemon(rpc, { chunkSize: 512 * 1024 })
+    const limits = { max_bytes: 4096, max_per_message: 20, max_message_bytes: 6000 }
+    addFiles([doc('a.bin', 'application/octet-stream', 2500), doc('b.bin', 'application/octet-stream', 2500)], files({ limits }))
+    await vi.waitFor(allSettled('ready'))
+    notices = []
+    const third = doc('c.bin', 'application/octet-stream', 2500)
+    const read = vi.spyOn(third, 'arrayBuffer')
+    addFiles([third], files({ limits }))
+    await vi.waitFor(() => expect(notices).toEqual([{ kind: 'total', name: 'c.bin', max: 6000, scope: 'all' }]))
+    expect(items().map((i) => i.name)).toEqual(['a.bin', 'b.bin'])
+    expect(read).not.toHaveBeenCalled()
+    expect(d.uploads.size).toBe(2)
+  })
+
+  it('the 15 MiB budget is for images that go through normalisation: raw files (also an image when the agent takes none) do not use it up', async () => {
+    const MiB = 1024 * 1024
+    installBlobDaemon(rpc, { chunkSize: 512 * 1024 })
+    // 两个 9 MiB 的文件加起来 18 MiB（> 15 MiB），但在节点 20 MiB 的单条消息上限之内，也都在单个上限之内
+    const limits = { max_bytes: 10 * MiB, max_per_message: 20, max_message_bytes: 20 * MiB }
+    const nine = (name: string): File => {
+      const f = new File([new Uint8Array(1)], name, { type: 'application/octet-stream' })
+      Object.defineProperty(f, 'size', { value: 9 * MiB })
+      Object.defineProperty(f, 'arrayBuffer', { value: async () => new ArrayBuffer(9 * MiB) })
+      return f
+    }
+    addFiles([nine('a.bin'), nine('b.bin')], files({ limits }))
+    await vi.waitFor(allSettled('ready'), { timeout: 40_000 })
+    expect(notices).toEqual([])
+    expect(items().map((i) => i.bytes)).toEqual([9 * MiB, 9 * MiB])
+  }, 60_000)
 
   it('a file the node turns down as too large becomes an error item (the node has its own per-file limit)', async () => {
     installBlobDaemon(rpc, {

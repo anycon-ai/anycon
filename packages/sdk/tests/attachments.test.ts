@@ -1,6 +1,6 @@
 // ADR-35：附件。覆盖 node.uploadImage（分块、在途上限、重试、排队、中止、mime 判断）、node.uploadFile（任意文件、
 // mime 猜测与校验、和图片共用队列）、downloadAttachment / discardAttachment、session.send / sessions.create 带附件，
-// acceptsAttachment（含通配 `ATTACHMENT_ANY_FILE`），以及 daemon 的拒绝映射成带 reason 的 AttachmentError。
+// acceptsAttachment / isNativeAttachment（节点的 `file_attachments` 加 agent 原生收的类型），以及 daemon 的拒绝映射成带 reason 的 AttachmentError。
 // fake daemon 的 blob.* 见 tests/fake-daemon.ts。
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -9,11 +9,11 @@ import { describe, it } from 'node:test'
 import { AnyconRpcError, type Crypto } from '@anycon/protocol'
 
 import {
-  ATTACHMENT_ANY_FILE,
   AnyconError,
   AttachmentError,
   RpcError,
   acceptsAttachment,
+  isNativeAttachment,
   connect,
   detectImageMime,
   guessMime,
@@ -162,18 +162,39 @@ describe('guessMime / normalizeMime / acceptsAttachment', () => {
     }
   })
 
-  it('acceptsAttachment：点名的类型，或者通配 */*；没有 capabilities / 空列表不收', () => {
+  it('isNativeAttachment：agent 点名的类型（不分大小写）；没有 capabilities / 空列表一个都不是', () => {
     const images = { capabilities: { attachments: ['image/png', 'image/jpeg'] } }
-    assert.equal(acceptsAttachment(images, 'image/png'), true)
-    assert.equal(acceptsAttachment(images, 'IMAGE/JPEG'), true)
-    assert.equal(acceptsAttachment(images, 'application/pdf'), false)
-    const any = { capabilities: { attachments: ['image/png', ATTACHMENT_ANY_FILE] } }
-    assert.equal(ATTACHMENT_ANY_FILE, '*/*')
-    assert.equal(acceptsAttachment(any, 'application/pdf'), true)
-    assert.equal(acceptsAttachment(any, 'application/octet-stream'), true)
-    assert.equal(acceptsAttachment({}, 'image/png'), false)
-    assert.equal(acceptsAttachment({ capabilities: {} }, 'image/png'), false)
-    assert.equal(acceptsAttachment({ capabilities: { attachments: [] } }, 'image/png'), false)
+    assert.equal(isNativeAttachment(images, 'image/png'), true)
+    assert.equal(isNativeAttachment(images, 'IMAGE/JPEG'), true)
+    assert.equal(isNativeAttachment(images, 'application/pdf'), false)
+    // 没有通配项：`*/*` 不是一个类型，也不让别的类型变成原生的
+    assert.equal(
+      isNativeAttachment({ capabilities: { attachments: ['*/*'] } }, 'application/pdf'),
+      false,
+    )
+    assert.equal(isNativeAttachment({}, 'image/png'), false)
+    assert.equal(isNativeAttachment({ capabilities: {} }, 'image/png'), false)
+    assert.equal(isNativeAttachment({ capabilities: { attachments: [] } }, 'image/png'), false)
+  })
+
+  it('acceptsAttachment：节点带 file_attachments 时任何类型都行（不原生收的落到工作目录），旧节点只收 agent 原生收的', () => {
+    const images = { capabilities: { attachments: ['image/png', 'image/jpeg'] } }
+    const noImages = { capabilities: { attachments: [] } }
+    const modern = { capabilities: { file_attachments: true } }
+    const old = { capabilities: { blobs: true } }
+    for (const agent of [images, noImages, {}]) {
+      assert.equal(acceptsAttachment(modern, agent, 'application/pdf'), true)
+      assert.equal(acceptsAttachment(modern, agent, 'application/octet-stream'), true)
+    }
+    assert.equal(acceptsAttachment(old, images, 'image/png'), true)
+    assert.equal(acceptsAttachment(old, images, 'IMAGE/JPEG'), true)
+    assert.equal(acceptsAttachment(old, images, 'application/pdf'), false)
+    assert.equal(acceptsAttachment(old, noImages, 'image/png'), false)
+    assert.equal(acceptsAttachment({}, images, 'application/pdf'), false)
+    assert.equal(
+      acceptsAttachment({ capabilities: { file_attachments: false } }, images, 'text/plain'),
+      false,
+    )
   })
 })
 

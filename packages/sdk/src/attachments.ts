@@ -3,8 +3,9 @@
  *
  * - 两个入口共用同一套分块上传：`uploadImage` 只传图片（`image/png|jpeg|gif|webp`，认不出抛 `unsupported_image`），
  *   `uploadFile` 传任意文件（mime 缺省时先按文件头认图片，再按扩展名猜，猜不出用 `application/octet-stream`）。
- *   四种图片由 daemon 核对文件头、读宽高，作为图片交给模型；其它文件 daemon 不看内容，以它所在机器上的路径交给 agent，
- *   由 agent 自己读（agent 收不收看 `capabilities.attachments`，通配项 `ATTACHMENT_ANY_FILE` = 任意文件）。
+ *   四种图片由 daemon 核对文件头、读宽高；其它文件 daemon 不看内容。agent 原生收的类型（`capabilities.attachments`，一般是图片）
+ *   交给 adapter，其余的由 daemon 复制进会话的工作目录、在发给 agent 的文字里附上路径（ADR-44）；节点要有 `capabilities.file_attachments`
+ *   才收这些（`acceptsAttachment` 综合两者判断）。
  * - 上传：`blob.put_begin` → 每块 `chunk_size`（daemon 给，目前 512 KiB）的 `blob.put_chunk`，最多 2 块在途 →
  *   `blob.put_end`，返回 daemon 记录的 `AttachmentRef`（图片含宽高）。每块都有答复：超时 / 掉线的块自己重试，不整个重传；
  *   daemon 明确拒绝的不重试（块答 `finalizing` = `put_end` 已经接手，直接 `put_end` 拿结果）。失败或中止时尽力 `blob.discard`。
@@ -15,11 +16,11 @@
  * - 下载：`blob.get` 按偏移分页拉（每段 ≤ 512 KiB），图片和其它文件一样。
  */
 import {
-  ATTACHMENT_ANY_FILE,
   RpcTimeoutError,
   type AgentCapabilities,
   type AttachmentRef,
   type BlobPutBeginResult,
+  type NodeCapabilities,
 } from '@anycon/protocol'
 
 import { AnyconError, AttachmentError, NodeOffline } from './errors.js'
@@ -161,17 +162,28 @@ export function guessMime(bytes: Uint8Array, name: string): string {
 }
 
 /**
- * agent 收不收 `mime` 类型的附件：`capabilities.attachments` 点名了它，或者含通配项 `ATTACHMENT_ANY_FILE`（任意文件）。
- * 没有 `capabilities` / 列表为空 = 不收附件。和 daemon 在 `session.send` / `session.create` 的核对一致。
+ * agent **原生**收不收 `mime` 类型的附件（`capabilities.attachments` 点名了它，不分大小写）。原生收的由 daemon 交给 adapter
+ * （图片作为图片给模型）；别的附件 daemon 落到工作目录，见 `acceptsAttachment`。没有 `capabilities` / 列表为空 = 一个都不原生收。
  */
-export function acceptsAttachment(
+export function isNativeAttachment(
   agent: { capabilities?: Pick<AgentCapabilities, 'attachments'> | null },
   mime: string,
 ): boolean {
   const want = mime.toLowerCase()
-  return (agent.capabilities?.attachments ?? []).some(
-    (m) => m === ATTACHMENT_ANY_FILE || m.toLowerCase() === want,
-  )
+  return (agent.capabilities?.attachments ?? []).some((m) => m.toLowerCase() === want)
+}
+
+/**
+ * 这个节点上的这个 agent 能不能收 `mime` 类型的附件：节点带 `capabilities.file_attachments`（`node.info()`，ADR-44）时任何类型都行
+ * ——agent 原生收的交给它，其余落到会话工作目录；旧节点（没有这个字段）只收 agent 原生收的类型（`isNativeAttachment`），
+ * 别的得到 `unsupported`。和 daemon 在 `session.send` / `session.create` 的核对一致。
+ */
+export function acceptsAttachment(
+  node: { capabilities?: Partial<Pick<NodeCapabilities, 'blobs' | 'file_attachments'>> | null },
+  agent: { capabilities?: Pick<AgentCapabilities, 'attachments'> | null },
+  mime: string,
+): boolean {
+  return node.capabilities?.file_attachments === true || isNativeAttachment(agent, mime)
 }
 
 /** @internal `uploadImage` 的 mime：给了就必须是四种图片之一，没给按文件头认。 */

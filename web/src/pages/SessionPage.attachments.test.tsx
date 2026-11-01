@@ -47,12 +47,12 @@ const png = (name = 'shot.png', size = 1500): File => {
   return new File([bytes], name, { type: 'image/png' })
 }
 const IMAGE_CAPS = { env: false, interject: false, interrupt: true, resume: true, rewind: false, structured_output: false, thinking_stream: true, usage: true, attachments: ['image/png', 'image/jpeg'] }
-const blobInfo = (blobs: boolean): NodeInfo => nodeInfo({ capabilities: { audit: true, blobs, fs: true, search: false, workspace: true }, worktree: null })
+const blobInfo = (blobs: boolean, files = false): NodeInfo => nodeInfo({ capabilities: { audit: true, blobs, fs: true, search: false, workspace: true, ...(files ? { file_attachments: true } : {}) }, worktree: null })
 
-function seed(opts: { blobs?: boolean; agent?: Partial<AgentInfo>; events?: Event[]; conn?: 'ready' | 'peer_offline' } = {}): void {
+function seed(opts: { blobs?: boolean; files?: boolean; agent?: Partial<AgentInfo>; events?: Event[]; conn?: 'ready' | 'peer_offline' } = {}): void {
   rpc.handlers['session.send'] = () => ({ queued: false })
   const agent = mockAgent({ capabilities: IMAGE_CAPS, ...opts.agent })
-  useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, agents: [agent], info: blobInfo(opts.blobs ?? true), conn: opts.conn ?? 'ready' }) }, order: [NODE], loaded: true })
+  useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, agents: [agent], info: blobInfo(opts.blobs ?? true, opts.files), conn: opts.conn ?? 'ready' }) }, order: [NODE], loaded: true })
   useSessions.setState({ list: { [SID]: { ...summary({ id: SID }), node_id: NODE, cached_seq: 0 } }, pending: {}, open: {} })
   useSessions.getState().openStart(NODE, SID, (opts.events ?? []).map((e) => ev(e)))
   useSessions.getState().openPatch(SID, { phase: 'ready', watching: true })
@@ -104,8 +104,8 @@ describe('SessionPage: when the attach menu is offered', () => {
     expect((screen.getByTestId('composer-file-input') as HTMLInputElement).accept).toBe('image/png,image/jpeg,image/*')
   })
 
-  it('an agent that takes any file (“*/*”): the plus menu is offered and the file picker takes any type', async () => {
-    seed({ agent: { capabilities: { ...IMAGE_CAPS, attachments: ['*/*'] } } })
+  it('a node that takes any file (file_attachments): the plus menu is offered whatever the agent takes natively, and the file picker takes any type', async () => {
+    seed({ files: true, agent: { capabilities: { ...IMAGE_CAPS, attachments: undefined } } })
     render(<SessionPage sessionId={SID} />)
     await userEvent.click(screen.getByTestId('composer-plus'))
     expect(await screen.findByTestId('composer-attach')).toHaveTextContent('Add files or photos')

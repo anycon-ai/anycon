@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use anycon_protocol::{
     methods, AgentDiagnoseParams, AgentListParams, BlobGetParams, BlobIdParams, BlobPutBeginParams, BlobPutChunkParams,
-    Empty, ErrorCode, FsListParams, FsReadParams, JobCancelParams, JobStarted, NodeAuditParams, NodeAuditResult,
-    NodeCapabilities, NodeDevicesResult, NodeEnrollApproveParams, NodeEnrollIdParams, NodeInfo, NodeLogsParams,
-    NodePairBeginParams, NodeRevokeDeviceParams, NodeSetAgentDefaultsParams, NodeSetConfigParams,
+    Empty, ErrorCode, FsListParams, FsReadParams, JobCancelParams, JobStarted, NodeAttachmentLimits, NodeAuditParams,
+    NodeAuditResult, NodeCapabilities, NodeDevicesResult, NodeEnrollApproveParams, NodeEnrollIdParams, NodeInfo,
+    NodeLogsParams, NodePairBeginParams, NodeRevokeDeviceParams, NodeSetAgentDefaultsParams, NodeSetConfigParams,
     NodeSetEnrollEnabledParams, NodeSetEnrollPasswordParams, NodeStats, NodeWorktreeSettings, PermissionListParams,
     PermissionRespondParams, PreviewCloseParams, PreviewOpenParams, PreviewPortsParams, RenamedProject, RpcError,
     RpcId, RpcMessage, RpcRequest, SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams,
@@ -642,11 +642,17 @@ impl Rpc {
                 fs: true,
                 search: true,
                 blobs: true,
+                file_attachments: true,
                 audit: true,
                 worktree: c.worktrees.available(),
                 preview: c.preview.enabled(),
             },
             started_at_ms: c.started_at_ms,
+            attachment_limits: Some(NodeAttachmentLimits {
+                max_bytes: c.config.get().max_attachment_bytes(),
+                max_per_message: crate::blobs::MAX_ATTACHMENTS_PER_MESSAGE as u32,
+                max_message_bytes: c.blobs.message_bytes_limit(),
+            }),
             // 每次现读配置（`[worktree]` 整段热加载）
             worktree: c.worktrees.available().then(|| {
                 let cfg = c.config.get();

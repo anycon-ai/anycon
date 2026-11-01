@@ -55,6 +55,77 @@ pub fn err_reason(code: ErrorCode, msg: impl Into<String>, reason: &str) -> RpcE
     e
 }
 
+/// 从 `base` 起逐段确认 `segs` 是真目录：不存在就建（建好后调 `on_create(路径, 第几段)`，调用方用它收紧权限），
+/// 存在时必须是目录且不是符号链接（`lstat`，不跟随），否则返回说明。成功返回最后一段的路径。
+/// worktree 目录（ADR-34）和落到工作目录的附件（ADR-44）共用它：这两处都要写进项目里，而项目里的 `.anycon` 可能被 agent
+/// 换成指向别处的符号链接。
+pub fn ensure_real_dirs(
+    base: &Path,
+    segs: &[&str],
+    on_create: &dyn Fn(&Path, usize) -> std::io::Result<()>,
+) -> Result<PathBuf, String> {
+    let mut cur = base.to_path_buf();
+    for (i, seg) in segs.iter().enumerate() {
+        cur.push(seg);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(md) if md.file_type().is_symlink() => {
+                return Err(format!("{} is a symbolic link; refusing to write through it", cur.display()))
+            }
+            Ok(md) if !md.is_dir() => return Err(format!("{} exists and is not a directory", cur.display())),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::create_dir(&cur) {
+                Ok(()) => on_create(&cur, i).map_err(|e| format!("cannot set up {}: {e}", cur.display()))?,
+                // 同一个项目的另一个会话刚好也在建：它建好的真目录照常用，别的东西（符号链接、文件）不行
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if !std::fs::symlink_metadata(&cur).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) {
+                        return Err(format!("{} exists and is not a plain directory", cur.display()));
+                    }
+                }
+                Err(e) => return Err(format!("cannot create {}: {e}", cur.display())),
+            },
+            Err(e) => return Err(format!("cannot inspect {}: {e}", cur.display())),
+        }
+    }
+    Ok(cur)
+}
+
+/// 把 `line` 追加进 `<common>/info/exclude`（已经有就不动；文件不存在就建；`info` 和 `exclude` 都不能是符号链接）。
+/// 不改仓库里的 `.gitignore`。`common` 是 `git rev-parse --git-common-dir` 的结果（绝对路径）。
+pub async fn add_exclude_line(common: PathBuf, line: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let info = common.join("info");
+        match std::fs::symlink_metadata(&info) {
+            Ok(md) if md.is_dir() && !md.file_type().is_symlink() => {}
+            Ok(_) => return Err(format!("{} is not a directory", info.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&info).map_err(|e| format!("cannot create {}: {e}", info.display()))?;
+            }
+            Err(e) => return Err(format!("cannot inspect {}: {e}", info.display())),
+        }
+        let file = info.join("exclude");
+        let existing = match crate::sys::open_no_follow(std::fs::OpenOptions::new().read(true), &file) {
+            Ok(mut f) => {
+                let mut s = String::new();
+                std::io::Read::read_to_string(&mut f, &mut s)
+                    .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+                s
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("cannot read {}: {e}", file.display())),
+        };
+        if existing.lines().any(|l| l.trim() == line) {
+            return Ok(());
+        }
+        let mut f =
+            crate::sys::open_no_follow(std::fs::OpenOptions::new().append(true).create(true).unix_mode(0o644), &file)
+                .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+        let lead = if existing.is_empty() || existing.ends_with('\n') { "" } else { "\n" };
+        f.write_all(format!("{lead}{line}\n").as_bytes()).map_err(|e| format!("cannot write {}: {e}", file.display()))
+    })
+    .await
+    .map_err(|e| format!("exclude task failed: {e}"))?
+}
+
 // ---------------------------------------------------------------- 名字
 
 const ADJECTIVES: &[&str] = &[
@@ -707,25 +778,7 @@ impl WorktreeMgr {
 
     /// `<项目>/.anycon` 和 `<项目>/.anycon/worktrees`：不存在就建，存在时必须是真目录（不是符号链接、不是文件）。
     fn ensure_dirs(project_dir: &Path) -> Result<(), String> {
-        let mut cur = project_dir.to_path_buf();
-        for seg in [".anycon", "worktrees"] {
-            cur.push(seg);
-            match std::fs::symlink_metadata(&cur) {
-                Ok(md) if md.file_type().is_symlink() => {
-                    return Err(format!(
-                        "{} is a symbolic link; refusing to create worktrees through it",
-                        cur.display()
-                    ))
-                }
-                Ok(md) if !md.is_dir() => return Err(format!("{} exists and is not a directory", cur.display())),
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    std::fs::create_dir(&cur).map_err(|e| format!("cannot create {}: {e}", cur.display()))?;
-                }
-                Err(e) => return Err(format!("cannot inspect {}: {e}", cur.display())),
-            }
-        }
-        Ok(())
+        ensure_real_dirs(project_dir, &[".anycon", "worktrees"], &|_, _| Ok(())).map(|_| ())
     }
 
     /// `<git common dir>/info/exclude` 里没有 `/.anycon/` 就追加一行（文件不存在就建）。不改仓库里的 `.gitignore`。
@@ -736,41 +789,7 @@ impl WorktreeMgr {
         }
         let p = out.text();
         let common = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { project_dir.join(&p) };
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let info = common.join("info");
-            match std::fs::symlink_metadata(&info) {
-                Ok(md) if md.is_dir() && !md.file_type().is_symlink() => {}
-                Ok(_) => return Err(format!("{} is not a directory", info.display())),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    std::fs::create_dir(&info).map_err(|e| format!("cannot create {}: {e}", info.display()))?;
-                }
-                Err(e) => return Err(format!("cannot inspect {}: {e}", info.display())),
-            }
-            let file = info.join("exclude");
-            let existing = match crate::sys::open_no_follow(std::fs::OpenOptions::new().read(true), &file) {
-                Ok(mut f) => {
-                    let mut s = String::new();
-                    std::io::Read::read_to_string(&mut f, &mut s)
-                        .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
-                    s
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-                Err(e) => return Err(format!("cannot read {}: {e}", file.display())),
-            };
-            if existing.lines().any(|l| l.trim() == EXCLUDE_LINE) {
-                return Ok(());
-            }
-            let mut f = crate::sys::open_no_follow(
-                std::fs::OpenOptions::new().append(true).create(true).unix_mode(0o644),
-                &file,
-            )
-            .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
-            let lead = if existing.is_empty() || existing.ends_with('\n') { "" } else { "\n" };
-            f.write_all(format!("{lead}{EXCLUDE_LINE}\n").as_bytes())
-                .map_err(|e| format!("cannot write {}: {e}", file.display()))
-        })
-        .await
-        .map_err(|e| format!("exclude task failed: {e}"))?
+        add_exclude_line(common, EXCLUDE_LINE.to_string()).await
     }
 
     /// `git worktree list --porcelain` 里有没有**恰好这个路径**。不 `canonicalize`、路径本身是符号链接就不认：

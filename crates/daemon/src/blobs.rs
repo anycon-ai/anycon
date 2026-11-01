@@ -1,5 +1,5 @@
-//! 附件 / blob 通道（[ADR-35](../../../docs/decisions.md)，docs/spec/daemon.md § 7.10）：文件（图片或任意文件）分块上传、校验、落盘、
-//! 分页下载、回收，以及 `session.send` / `session.create` 对 `AttachmentRef` 的核对与绑定。
+//! 附件 / blob 通道（[ADR-35](../../../docs/decisions.md)、ADR-44，docs/spec/daemon.md § 7.10）：文件（图片或任意文件）分块上传、
+//! 校验、落盘、分页下载、回收，以及 `session.send` / `session.create` 对 `AttachmentRef` 的核对与绑定。
 //!
 //! - **存放**：`<数据目录>/blobs/<blob_id>.<ext>`（目录 0700、文件 0600），上传中的写 `blobs/tmp/<blob_id>.part`，启动时清空 `tmp/`。
 //!   `blob_id` 是 32 位小写 hex，**每个入口先校验格式**（它会进路径）。`ext` 对图片由 mime 决定；其它文件取 `name` 的扩展名，
@@ -14,9 +14,10 @@
 //!   随会话删除。
 //! - **总量**：完成但没被引用的 blob（加上进行中的上传）全节点合计 ≤ 1 GiB，`put_begin` 超了 → `busy`（`quota`）；
 //!   数据目录所在卷剩余空间 < `size` + 1 GiB → `busy`（`disk_full`）。
-//! - **校验点只有这里**：mime 的格式、大小、SHA-256；四种图片类型（[`ext_of`]）的文件头（magic bytes）必须和声明的 mime 一致，
-//!   宽高由文件头读出，读不出就省略。文件头只是**前缀比对**（PNG 8 字节、JPEG 3、GIF 6、WebP 12），不解码、不校验图片结构。
-//!   其它类型不看内容：它们以路径交给 agent，由 agent 自己读（ADR-35「任意文件」）。
+//! - **校验点只有这里**：大小、SHA-256；mime 先规整（[`declared_mime`]：小写、去掉参数，不成形的记成 `application/octet-stream`，
+//!   不报错）；四种图片类型（[`ext_of`]）的文件头（magic bytes）必须和声明的 mime 一致，宽高由文件头读出，读不出就省略。
+//!   文件头只是**前缀比对**（PNG 8 字节、JPEG 3、GIF 6、WebP 12），不解码、不校验图片结构。其它类型不看内容：agent 不原生收的附件
+//!   由 daemon 复制进会话的工作目录（`workfiles.rs`，ADR-44）。
 //! - **名字**只用于展示：拒绝 `/` `\`、控制字符（Cc）、双向控制符（U+200E / U+200F / U+202A–U+202E / U+2066–U+2069）和
 //!   U+2028 / U+2029；`put_end` 记录的名字扩展名和 mime 对不上时在后面补 `.<ext>`。
 //!
@@ -31,8 +32,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anycon_protocol::{
-    accepts_attachment, AttachmentRef, BlobGetParams, BlobGetResult, BlobIdParams, BlobPutBeginParams,
-    BlobPutBeginResult, BlobPutChunkParams, ErrorCode, RpcError,
+    AttachmentRef, BlobGetParams, BlobGetResult, BlobIdParams, BlobPutBeginParams, BlobPutBeginResult,
+    BlobPutChunkParams, ErrorCode, RpcError,
 };
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -123,6 +124,17 @@ pub fn normalize_mime(mime: &str) -> Option<String> {
     };
     let (ty, sub) = mime.split_once('/')?;
     (mime.len() <= MIME_MAX && ok(ty) && ok(sub)).then(|| mime.to_ascii_lowercase())
+}
+
+/// 不知道类型、或声明的类型不成形时记录的 mime。
+pub const OCTET_STREAM: &str = "application/octet-stream";
+
+/// `blob.put_begin` 声明的 mime 记成什么：去掉两端空白和 `;` 之后的参数，过 [`normalize_mime`]（小写、`type/subtype`、
+/// 字符和长度的限制）；空的或不成形的（`*/*`、`text`、带控制字符的…）记成 [`OCTET_STREAM`]，**不报错**——mime 对非图片只是展示和
+/// 清单里的提示，不值得让用户等了哈希和传输之后因为它失败；图片类型照旧在 `put_end` 核对文件头。
+pub fn declared_mime(raw: &str) -> String {
+    let essence = raw.split(';').next().unwrap_or("").trim();
+    normalize_mime(essence).unwrap_or_else(|| OCTET_STREAM.to_string())
 }
 
 /// 落盘文件的扩展名：图片按 mime（[`ext_of`]）；其它文件取 `name` 最后一个 `.` 之后的部分，1–16 个 ASCII 字母数字才用
@@ -585,12 +597,7 @@ impl Blobs {
     pub async fn put_begin(&self, device: &str, p: BlobPutBeginParams) -> RpcResult<BlobPutBeginResult> {
         self.expire_uploads();
         validate_name(&p.name)?;
-        let Some(mime) = normalize_mime(&p.mime) else {
-            return Err(RpcError::new(
-                ErrorCode::Invalid,
-                "mime must be a type/subtype without parameters, at most 127 bytes",
-            ));
-        };
+        let mime = declared_mime(&p.mime);
         let image = is_image_mime(&mime);
         let max = self.config.get().max_attachment_bytes();
         if p.size == 0 || p.size > max {
@@ -1078,14 +1085,10 @@ impl Blobs {
     ///
     /// - 至多 20 个，`blob_id` 不重复，字节合计 ≤ 20 MiB（`invalid`；合计超了是 `too_large`）；
     /// - blob 不存在 / 还没 `put_end` / 文件不见了 → `not_found`（`data.reason = "blob"`）；
-    /// - `name` / `mime` / `bytes` 和记录不一致 → `invalid`；已被**别的**会话引用 → `invalid`（`blob_in_use`）；
-    /// - mime 不在 `allowed` 里（也没有 `*/*`）→ `unsupported`。
-    pub async fn resolve(
-        &self,
-        session_id: &str,
-        refs: &[AttachmentRef],
-        allowed: &[String],
-    ) -> RpcResult<Vec<BlobRow>> {
+    /// - `name` / `mime` / `bytes` 和记录不一致 → `invalid`；已被**别的**会话引用 → `invalid`（`blob_in_use`）。
+    ///
+    /// agent 收不收这种 mime 不在这里管：原生收的交给 adapter，其余落到工作目录（ADR-44），所以不再有附件引起的 `unsupported`。
+    pub async fn resolve(&self, session_id: &str, refs: &[AttachmentRef]) -> RpcResult<Vec<BlobRow>> {
         if refs.len() > MAX_ATTACHMENTS_PER_MESSAGE {
             return Err(RpcError::new(
                 ErrorCode::Invalid,
@@ -1128,12 +1131,6 @@ impl Blobs {
                     ErrorCode::Invalid,
                     format!("attachment {} already belongs to another session", r.blob_id),
                     REASON_BLOB_IN_USE,
-                ));
-            }
-            if !accepts_attachment(allowed, &row.mime) {
-                return Err(RpcError::new(
-                    ErrorCode::Unsupported,
-                    format!("this agent does not accept {} attachments", row.mime),
                 ));
             }
             out.push(row);
@@ -1459,6 +1456,30 @@ mod tests {
         assert!(is_image_mime("image/webp"));
         assert!(!is_image_mime("image/svg+xml"));
         assert!(!is_image_mime("application/pdf"));
+    }
+
+    #[test]
+    fn a_declared_mime_is_cleaned_up_and_never_refused() {
+        for (raw, want) in [
+            ("application/pdf", "application/pdf"),
+            ("  Text/HTML ; charset=UTF-8 ", "text/html"),
+            ("IMAGE/PNG", "image/png"),
+            ("image/svg+xml", "image/svg+xml"),
+            // 空的、不成形的、通配的、带注入企图的：一律是 octet-stream
+            ("", OCTET_STREAM),
+            ("pdf", OCTET_STREAM),
+            ("a/b/c", OCTET_STREAM),
+            ("/b", OCTET_STREAM),
+            ("a/", OCTET_STREAM),
+            ("*/*", OCTET_STREAM),
+            ("text/*", OCTET_STREAM),
+            ("a b/c", OCTET_STREAM),
+            (";charset=utf-8", OCTET_STREAM),
+            ("text/plain\nx-injected: 1", OCTET_STREAM),
+            (&format!("a/{}", "b".repeat(200)), OCTET_STREAM),
+        ] {
+            assert_eq!(declared_mime(raw), want, "{raw:?}");
+        }
     }
 
     #[test]

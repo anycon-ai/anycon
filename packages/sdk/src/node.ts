@@ -453,9 +453,10 @@ export class Node extends Emitter<NodeEvents> {
    * `mime` 缺省时：文件头是四种图片之一就用它，否则按 `name` 的扩展名猜（`pdf`、`txt`、`md`、`csv`、`json`、`zip`、
    * `py`、`rs`……），猜不出用 `application/octet-stream`。给了 `mime` 就必须是成形的 `type/subtype`（不带参数，
    * 发出去前转小写），否则抛 `AnyconError('invalid_mime')`，什么都不发；真正的校验在 daemon。
-   * 四种图片作为图片交给模型；其它文件以 daemon 所在机器上的路径交给 agent，由 agent 用自己的工具读
-   * （Claude Code 可能先请求读取权限）。agent 收不收看 `acceptsAttachment(agent, ref.mime)`；不收的话
-   * `send()` / `sessions.create()` 得到 `RpcError`（`unsupported`）。拒绝、中止、清理同 `uploadImage()`。
+   * agent 原生收的类型（`AgentInfo.capabilities.attachments`，一般是四种图片）由 daemon 交给 adapter；其余的 daemon 复制到
+   * 会话工作目录的 `.anycon/attachments/<session_id>/` 下，并在发给 agent 的文字末尾附上路径（ADR-44）。节点带
+   * `capabilities.file_attachments` 才收这些，看 `acceptsAttachment(await node.info(), agent, ref.mime)`；旧节点上 `send()` /
+   * `sessions.create()` 对不原生收的类型得到 `RpcError`（`unsupported`）。拒绝、中止、清理同 `uploadImage()`。
    */
   async uploadFile(bytes: Uint8Array, options: UploadFileOptions): Promise<AttachmentRef> {
     const mime = resolveFileMime(bytes, options)

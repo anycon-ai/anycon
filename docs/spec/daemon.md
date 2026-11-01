@@ -186,7 +186,7 @@ AgentInfo {
     resume:            bool            // 进程退出后能否续接
     interrupt:         bool
     interject:         bool            // turn 进行中能否插话
-    attachments:       [ "image/png", "image/jpeg", "image/gif", "image/webp", "*/*" ]   // 收哪些附件：点名的图片作为图片交给模型，`*/*` = 任意文件（以路径交给 agent）；空 = 不收（§ 7.10）
+    attachments:       [ "image/png", "image/jpeg", "image/gif", "image/webp" ]   // 原生收哪些附件；其它附件（含非图片）落到会话工作目录，空 = 全部落盘（§ 7.10，ADR-44）
     thinking_stream:   bool            // 会不会发 thinking_delta
     usage:             bool            // turn_done 带不带 usage
     structured_output: bool
@@ -337,7 +337,7 @@ ConfigOption {
 | `env` | 子进程环境 | 子进程环境（v0.1 每会话一个 app-server 进程，ADR-26 修订） | 不支持：进程按 agent 共享，`capabilities.env = false`，带 `env` → `invalid_settings { field: "env" }`；要给 agent 环境变量写 `agents.acp.<name>.env` |
 | `system_prompt_append` | `--append-system-prompt` | 新会话 `thread/start { developerInstructions }`；之后改动用 `thread/inject_items` 追加一条 developer 消息，立即生效（`thread/resume` 会忽略 `developerInstructions`，以 rollout 里的为准；旧指令留在历史里） | 不支持（`invalid_settings`） |
 | `max_turns` / `max_budget_usd` | `--max-turns` / `--max-budget-usd` | 不支持（带了 → `invalid_settings`） | 不支持（`invalid_settings`） |
-| 附件 | 图片：stdin 消息 `content` 数组里的 `image` block（`source: { type: "base64", media_type, data }`，adapter 读 daemon 的文件）；其它文件：一个列出名字、类型、大小和 daemon 上绝对路径的 `text` block，Claude 用 Read 等工具自己读（workspace 之外，可能要审批）。顺序：图、文件清单、用户文字 | 图片：`turn/start.input` / `turn/steer.input` 的 `{ type: "localImage", path }`（daemon 的文件，扩展名与 mime 一致）；其它文件：同样的路径清单作为第一项 `text`（沙箱只限制写，读不用审批） | `session/prompt` 的 image ContentBlock（`{ type: "image", data: base64, mimeType }`，图在前、文字在后；`promptCapabilities.image` 为 true 才行，`capabilities.attachments` 据此声明） |
+| 附件（只给原生收的；其它附件 daemon 落到工作目录，§ 7.10，ADR-44） | stdin 消息 `content` 数组里的 `image` block（`source: { type: "base64", media_type, data }`，adapter 读 daemon 的文件；图在前、文字在后） | `turn/start.input` / `turn/steer.input` 的 `{ type: "localImage", path }`（daemon 的文件，扩展名与 mime 一致） | `session/prompt` 的 image ContentBlock（`{ type: "image", data: base64, mimeType }`，图在前、文字在后；`promptCapabilities.image` 为 true 才行，`capabilities.attachments` 据此声明） |
 | 结构化输出 | `--json-schema` | `turn/start { outputSchema }` 存在，但 v0.1 的 `SessionSettings` 没有东西喂它，`capabilities.structured_output = false` | 不支持 |
 
 ACP 的设置（模型 / 思考 / 模式 / 其余选项）全部**随时生效**（`applied_now`，不需要重启进程）：拉起时把完整设置和 agent 当前的值比、不一样的才发请求；会话中 `set_settings` 只发和**上一次请求的值**不一样的，所以 agent 自己切了模式（比如批准计划之后）不会被 daemon 记着的旧值冲掉。应用不上的：拉起时不让会话失败，发一条可恢复的 `error { agent_setting_failed }`，会话照常用 agent 当前的值；`set_settings` 返回 `invalid_settings`。
@@ -409,7 +409,7 @@ ACP：resume 时 adapter 先看进程里还有没有这个会话（之前脱离�
 - **agent 自己开的 turn**：Claude Code 的后台任务结束后，CLI 不等用户消息、自己再跑一轮处理结果（没有 turn 时出现的 `system/init`）。adapter 发 `AgentEvent::TurnStarted`，daemon 开一个 `turn_start { turn_id, message_id: "" }` 的 turn（空串 = 没有对应的用户消息），状态 `running`，照常以 adapter 的 `turn_done` 结束、计入用量；它不占并发名额（§ 7.2，进程已经在跑，daemon 拦不住）。期间到达的消息和普通 turn 一样入队，这一轮结束后作为下一个 turn 发出；可以 `session.cancel`。daemon 已经有 turn 时收到 `TurnStarted` 直接忽略；已归档的会话（归档不一定收进程，后台任务可能还在跑）也不开，这一轮的事件记在 turn 之外
 - 竞态：daemon 发出 `send` 时 CLI 恰好自己开始了一轮（`TurnStarted` 还在通道里没被读到）。这时写进 stdin 的话，CLI 会把消息排到这一轮之后，先到的是这一轮的 `result`，会被当成用户 turn 的结束。所以 adapter 把消息**暂存**，这一轮的 `result` 之后再写进去，不为这一轮发 `turn_done`，两轮合成一个用户 turn（事件、用量都归它）。暂存期间取消的，消息不再写，以 `cancelled` 收尾
 - 积压消息合并规则见 [protocol.md § 7.3](../protocol.md#73-daemon-侧突发消息合并)
-- 带附件的积压合并时按顺序收消息，附件累计超过 20 个或 20 MiB 就停（第一条总是收），剩下的留在队列里，本 turn 结束后作为下一个 turn 发出，并立刻发 `status { queued_messages }`（§ 7.10）
+- 带附件的积压合并时按顺序收消息，附件累计超过 20 个或 20 MiB 就停（第一条总是收），剩下的留在队列里，本 turn 结束后作为下一个 turn 发出，并立刻发 `status { queued_messages }`（§ 7.10）。合并后的文字末尾只有一段附件清单，列出这一轮所有要落到工作目录的文件（按消息顺序）；agent 原生收的附件照旧拼进 `UserInput.attachments`
 - turn 进行中收到的 `send`：`capabilities.interject` 为 true 的 agent 直接送入（`UserInput.interject = true`）；否则入队，turn 结束后作为下一 turn 发出，事件 `status { state: running, queued_messages: n }` 让客户端显示「1 条待发送」
 - **已知限制**（Codex 实测）：插话被 `turn/steer` 接受之后、turn 又被取消的，这条消息 agent 看不到，也不会出现在下一个 turn 里；daemon 无法区分它是已经被模型读到还是丢了，所以不重发（避免重复）。客户端上标出「可能没有送达」在 v0.1.x
 - 关联项目的会话在插话之前、放行权限请求之前，以及每 2 秒（共享的周期任务，覆盖有 turn 在跑的会话和**没有 turn 但 agent 进程还活着**的会话）都复核一次项目目录（ADR-33 第 5 条）。目录变了：
@@ -437,7 +437,7 @@ ACP：resume 时 adapter 先看进程里还有没有这个会话（之前脱离�
 | 方法 | 行为 |
 |---|---|
 | `session.archive` / `unarchive` | flag，列表默认不显示 archived。**已归档的会话不能 `send`**（`invalid`，`data.reason = "archived"`，先 `unarchive`；ADR-34 修订）。有 worktree 的会话：`archive { worktree: auto \| keep \| remove }` 先收掉 agent 进程再按 § 10.1「归档、删除、取消归档」处理 worktree；`unarchive` 按分支重建被删掉的 worktree，重建失败则保持归档并返回错误 |
-| `session.delete` | 删 SQLite 里的事件和附件、scratch 目录；agent 自己的会话文件（如 `~/.claude/projects/…`）**不动**，那是用户的。有 worktree 的会话：`delete { worktree, delete_branch }` 同上处理，被保留下来的 worktree 变成「没有会话的 worktree」 |
+| `session.delete` | 删 SQLite 里的事件和附件、scratch 目录、落到工作目录的附件（`<工作目录>/.anycon/attachments/<session_id>/`，只删这一个目录，§ 7.10）；agent 自己的会话文件（如 `~/.claude/projects/…`）**不动**，那是用户的。有 worktree 的会话：`delete { worktree, delete_branch }` 同上处理，被保留下来的 worktree 变成「没有会话的 worktree」 |
 | `session.restart` | 杀进程、resume。用于 agent 卡死或改了 `thinking` 后想立即生效 |
 | `session.rewind`（v0.3） | `{ message_id, scope: conversation \| files \| both }` 回退到某条用户消息之前。Claude Code 有文件检查点，Codex / ACP 看各自能力；`capabilities.rewind` 声明 |
 | `session.fork`（v0.3） | 从当前历史分出新会话：Claude Code `--fork-session`、Codex `thread/fork`、ACP `session/fork`（尚不稳定） |
@@ -453,17 +453,33 @@ ACP：resume 时 adapter 先看进程里还有没有这个会话（之前脱离�
 - 为什么：传输层会分片（[ADR-30](../decisions.md#adr-30-内层分片与大小上限)），所以不再有「超过 hub 上限就丢」的问题；按字节分页是为了让每页大小有界——一页 1000 条带大输出的事件能有几 MiB，手机上解析、渲染、解密都吃力
 - `session.list` 没有字节分页：客户端应当传 `limit`（不传时返回全部，会话很多时响应会很大，靠传输层分片兜底）
 
-### 7.10 附件（[ADR-35](../decisions.md#adr-35-附件经-blob-通道传到-daemon消息只带引用)）
+### 7.10 附件（[ADR-35](../decisions.md#adr-35-附件经-blob-通道传到-daemon消息只带引用)、[ADR-44](../decisions.md#adr-44-非图片附件落到会话工作目录)）
 
 方法和错误码见 [protocol.md § 5.6](../protocol.md#56-附件--blobadr-35)。daemon 这边：
 
-- **存放**：`<数据目录>/blobs/<blob_id>.<ext>`（图片的 `ext` 按 mime：`png` `jpg` `gif` `webp`，Codex 按扩展名判断类型；其它文件取名字的扩展名，1–16 个 ASCII 字母数字、转小写，否则 `bin`——agent 的工具靠扩展名认类型），上传中的写 `blobs/tmp/<blob_id>.part`；目录 0700、文件 0600。`blob_id` 是 32 位小写 hex，每个 RPC 入口都先按这个格式校验（它会进路径）。`put_end` 校验通过后 rename 成正式文件、写 `blobs` 表（`session_id` 为空 = 还没被引用；`path` 记的是 `blobs/` 下的文件名，不是绝对路径）。启动时清掉 `blobs/tmp/`，并删掉 `blobs/` 里没有记录的 `<blob_id>.<ext>` 文件（崩溃留下的）；记录在、文件不在的 blob 按不存在处理（`not_found` / `blob`）
-- **上传状态**在内存里（daemon 重启会丢掉进行中的上传）：`blob_id` → 期望大小、mime、name、sha256、已收的块、发起设备、最后活动时间。同一设备同时进行中的上传 ≤ 8；10 分钟没有新块的上传作废（删 `.part`）。`put_end` 先在锁内把上传标成「收尾中」（之后的 `put_chunk` → `invalid` / `finalizing`），等已经在写的块写完（每个上传一把读写锁：块拿读锁、收尾拿写锁），再算整个文件的 SHA-256；四种图片再读文件头核对 mime（只是前缀比对，不解码：PNG `89 50 4E 47 0D 0A 1A 0A`、JPEG `FF D8 FF`、GIF `GIF87a` / `GIF89a`、WebP `RIFF????WEBP`），并尽量读出宽高（读不出来就省略，不算错），其它类型不看内容；并发的第二个 `put_end` 等第一个的结果。图片名字的扩展名和 mime 对不上时补上正确的扩展名
-- **发送**：`session.send` / `session.create` 的每个 `AttachmentRef` 按库里的记录核对（规则见 protocol.md § 5.6），事件 `user_message.attachments` 写 daemon 记录的元数据；消息被接受（写进事件流）时把 blob 绑定到会话（`UPDATE … WHERE session_id IS NULL OR session_id = 本会话`）。幂等重试：同一个 `message_id` 再来时附件的 `blob_id` 列表也要一致，否则 `invalid`
-- **名字**：`put_begin` 拒绝控制字符（Cc）、双向控制符（U+200E U+200F U+202A–U+202E U+2066–U+2069）和 U+2028 / U+2029；`put_end` 记录的图片名字扩展名和 mime 对不上时补 `.<ext>`（其它类型原样记录；`png` `jpg` `gif` `webp`；`photo` → `photo.png`，`x.html` → `x.html.jpg`，超过 255 字节先截断主名）。客户端要原样使用 `put_end` 返回的 `AttachmentRef`
-- **交给 adapter**：`UserInput.attachments` 是这条（或合并后的几条）消息的附件，`attachment_paths` 是对应的正式文件路径，一一对应；积压合并（§ 7.5）时按消息顺序拼接；插话同样带附件。四种图片之外的附件 adapter 不读，只把路径告诉 agent（§ 6 的表、ADR-35「任意文件」）；会话删除后这些路径就不在了
-- **回收**：每小时的清理任务删掉 24 小时前完成、仍没被引用的 blob（文件和行）；`session.delete` 删会话的 blob。`blob.discard` 只删没被引用的
-- **数量**：一条消息 ≤ 20 个附件、合计 ≤ 20 MiB；单个 ≤ `sessions.max_attachment_bytes`（默认 10 MiB）。积压合并（§ 7.5）时按顺序收消息，附件累计超过 20 个或 20 MiB 就停（第一条总是收），剩下的留在队列里，本 turn 结束后作为下一个 turn 发出。这些是 Claude 单次请求的上限（请求体 32 MB、一次超过 20 张图时每张 ≤ 2 000 px）倒推的，对所有 agent、所有类型的附件一样（不是图片的文件并不进请求，先不区分）
+- **存放**：`<数据目录>/blobs/<blob_id>.<ext>`（图片的 `ext` 按 mime：`png` `jpg` `gif` `webp`，Codex 按扩展名判断类型；非图片取自原文件名最后一个 `.` 之后的部分，只留 ASCII 字母数字、转小写、至多 16 个字符，没有扩展名、`.bashrc` 这种只有点前缀、含别的字符或太长的是 `bin`），上传中的写 `blobs/tmp/<blob_id>.part`；目录 0700、文件 0600。`blob_id` 是 32 位小写 hex，每个 RPC 入口都先按这个格式校验（它会进路径）。`put_end` 校验通过后 rename 成正式文件、写 `blobs` 表（`session_id` 为空 = 还没被引用；`path` 记的是 `blobs/` 下的文件名，不是绝对路径）。启动时清掉 `blobs/tmp/`，并删掉 `blobs/` 里没有记录的 `<blob_id>.<ext>` 文件（`ext` 是上面能产生的任何一种；崩溃留下的，别的名字不碰）；记录在、文件不在的 blob 按不存在处理（`not_found` / `blob`）
+- **上传状态**在内存里（daemon 重启会丢掉进行中的上传）：`blob_id` → 期望大小、规整后的 mime、name、sha256、已收的块、发起设备、最后活动时间。同一设备同时进行中的上传 ≤ 8；10 分钟没有新块的上传作废（删 `.part`）。`put_end` 先在锁内把上传标成「收尾中」（之后的 `put_chunk` → `invalid` / `finalizing`），等已经在写的块写完（每个上传一把读写锁：块拿读锁、收尾拿写锁），再算整个文件的 SHA-256；声明为四种图片之一的还要读文件头核对 mime（只是前缀比对，不解码：PNG `89 50 4E 47 0D 0A 1A 0A`、JPEG `FF D8 FF`、GIF `GIF87a` / `GIF89a`、WebP `RIFF????WEBP`），并尽量读出宽高（读不出来就省略，不算错）；非图片不看内容。并发的第二个 `put_end` 等第一个的结果。图片名字的扩展名和 mime 对不上时补上正确的扩展名
+- **mime**：`put_begin` 的 `mime` 去掉两端空白和 `;` 之后的参数；`type` / `subtype` 两段都是 RFC 6838 的 restricted-name（字母数字开头，之后是字母数字和 `! # $ & ^ _ . + -`），合计 ≤ 127 字节，就转小写照记；否则（含空串、`*/*`、`text`）记 `application/octet-stream`，**不报错**。只有记成 `image/png` `image/jpeg` `image/gif` `image/webp` 的才校验文件头（所以 `IMAGE/PNG` 配非 PNG 的内容是 `mime_mismatch`，`application/pdf` 配 PNG 的字节没有问题）
+- **发送**：`session.send` / `session.create` 的每个 `AttachmentRef` 按库里的记录核对（规则见 protocol.md § 5.6；agent 收不收这种 mime 不在这里管，不再有附件引起的 `unsupported`），事件 `user_message.attachments` 写 daemon 记录的元数据；消息被接受（写进事件流）时把 blob 绑定到会话（`UPDATE … WHERE session_id IS NULL OR session_id = 本会话`）。幂等重试：同一个 `message_id` 再来时附件的 `blob_id` 列表也要一致，否则 `invalid`
+- **名字**：`put_begin` 拒绝控制字符（Cc）、双向控制符（U+200E U+200F U+202A–U+202E U+2066–U+2069）和 U+2028 / U+2029；`put_end` 记录的**图片**名字扩展名和 mime 对不上时补 `.<ext>`（`png` `jpg` `gif` `webp`；`photo` → `photo.png`，`x.html` → `x.html.jpg`，超过 255 字节先截断主名），非图片的名字原样记录。客户端要原样使用 `put_end` 返回的 `AttachmentRef`
+- **原生还是落盘**：在开 turn / 插话、要组装 `UserInput` 的那一刻，按该会话 agent **当时**的 `capabilities.attachments` 分流：mime 在里面 → 原生；不在（所有非图片，以及 agent 不收的图片格式）→ 落到工作目录。`capabilities.attachments` 为空的 agent 也能收到任何文件。两类可以出现在同一条消息里
+- **交给 adapter**：`UserInput.attachments` 是这条（或合并后的几条）消息里**原生**的附件，`attachment_paths` 是对应的正式文件路径，一一对应；积压合并（§ 7.5）时按消息顺序拼接；插话同样带附件。adapter 只会收到它原生支持的附件，所以 Claude Code / Codex 里对非图片 mime 的 `Unsupported` 检查留着，只是 daemon 不会触发它
+- **落到工作目录**（`workfiles.rs`）：落盘的附件（`blobs/` 里文件的副本）复制到 `<工作目录>/.anycon/attachments/<session_id>/<文件名>`，在交给 adapter 的文字末尾追加
+
+  ```
+
+  [Attached files, saved in the working directory]
+  - .anycon/attachments/<session_id>/report.pdf (application/pdf, 120.0 KiB)
+  ```
+
+  （英文，给 agent 看；路径相对工作目录，永远用 `/`；大小是 B / KiB / MiB，一位小数；消息没有文字时没有开头的空行。合并后的一轮只有一段，列出这一轮所有落盘的文件。）事件流里的 `user_message` 是用户原文和附件元数据，不含这段文字。**工作目录**：scratch 会话是 `.scratch/<id>`，项目会话是项目目录，worktree 会话是 worktree 目录（项目目录加 `SessionWorktree.path`）。
+  - **时机**：复制在 driver 里、送进 adapter 之前做（不在会话锁里，也不是 `session.send` 被接受的那一刻）：开 turn 时目录已经过 ADR-33 / ADR-34 的复核，worktree 会话第一条消息的 worktree 也已经建好；插话在送进当前 turn 之前复制。工作目录解析不了（项目不见了、worktree 不是 `active` / `kept`）时不插话，消息入队等下一个 turn
+  - **目录**：`.anycon`、`attachments`、`<session_id>` 必须是真目录（符号链接 / 文件 → 失败）；不存在的建出来，`attachments` 和 `<session_id>` 是 0700（Windows 上是受保护的 DACL），`.anycon` 按平时的权限；两个会话同时建同一个项目的 `.anycon` 不冲突（已存在的真目录照用）。**unix**：相对目录 fd 逐级打开，没有「先检查、再按路径打开」的窗口——从边界目录（项目目录；scratch 会话是工作目录自己，`PlaceJob` 里的 `WorkDir.boundary`）起，经过 `cwd` 相对边界的那几段（worktree 目录），再到这三级，每一级 `openat(O_DIRECTORY | O_NOFOLLOW)`，缺的一级 `mkdirat` 之后再用 `O_NOFOLLOW` 打开（`fsopen::open_dir_chain`）。某一级在被打开之前被换成链接：`O_NOFOLLOW` 让这一级失败；拿到 fd 之后再换：文件仍落在 fd 指的那个目录里，不会写到链接指向的地方。**Windows**：没有相对句柄创建文件的有文档的办法，仍是 `worktree::ensure_real_dirs`（逐级 `lstat`）之后按路径建，检查和创建之间有一个很短的窗口（agent 恰好在这一刻把某一级换成指向别处的链接，文件会建到那里；不覆盖已有文件），是已知残余（ADR-44「威胁模型」）
+  - **文件**：`create_new_file_at`（unix：`openat(目录 fd, 名字, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)`；Windows：`create_new`）创建，复制后核对字节数；重名依次试 `<主名> (2).<扩展名>`、`(3)`…（至多 1000，名字总长不超过 255 字节）；文件名里的 `.` / `..` 换成 `file`，Windows 上再把 `< > : " | ? *` 换成 `_`、去掉结尾的 `.` 和空格、给 `CON` / `NUL` / `COM1` 这类保留名加 `_` 前缀。同一个 blob 再次落盘（插话没送进去后退回队列、两条消息引用同一个 blob）沿用已有的文件（内存里记着 blob → 路径；文件还在且大小对得上才沿用）
+  - **git**：项目会话的工作目录在 git 仓库里时（`git rev-parse --git-common-dir --show-prefix` 成功），确保 `<git common dir>/info/exclude` 里有排除 `.anycon/` 的一行：工作目录是仓库顶层就是 `/.anycon/`（和 worktree 共用同一行），是子目录就带相对仓库顶层的前缀（`/pkg/app/.anycon/`，gitignore 通配符转义）；写不进去（`info` / `exclude` 是符号链接、没有权限、`git` 超时 10 秒）就拒绝落盘。不在仓库里、找不到 `git`、scratch 会话：不处理
+  - **失败**：目录检查不过、磁盘满、写不进去、blob 文件读不了、没能写 exclude：开新 turn 的消息，这个 turn 以 `error { code: "attachment_failed", message: 原因（带文件名）, recoverable: true }` + `turn_done { reason: error }` 收尾，会话进入 `error`；这一轮合并的消息已经在事件流里，但**没有**交给 agent（和 adapter `send` 失败一样不重试）；已经复制好的文件留在目录里。修好之后重发：blob 已经绑定在这个会话里，可以带同样的引用（沿用已复制的文件，不重复）。插话失败（落盘失败也算）退回队列，下一个 turn 再试，不算 turn 失败（§ 7.5）
+- **回收**：每小时的清理任务删掉 24 小时前完成、仍没被引用的 blob（文件和行）；`session.delete` 删会话的 blob，并删 `<工作目录>/.anycon/attachments/<session_id>/`（只删这一个目录；unix：从项目目录起逐级 `openat(O_NOFOLLOW)`（worktree 目录那几段、`.anycon`、`attachments`、`<session_id>` 任何一级是符号链接或不是目录就一个都不删，只记 warn），再相对目录 fd 递归 `unlinkat`，里面的符号链接只删链接本身，嵌套超过 64 层报错；Windows：逐级 `lstat` 之后 `remove_dir_all`，有同上的窗口；scratch 随目录一起删；worktree 被保留时这个目录也删，worktree 被删时随它一起没了）。归档、改名项目不动这个目录（路径相对工作目录）。`blob.discard` 只删没被引用的
+- **数量**：一条消息 ≤ 20 个附件、合计 ≤ 20 MiB；单个 ≤ `sessions.max_attachment_bytes`（默认 10 MiB），`node.info.attachment_limits` 把这三个数告诉客户端。积压合并（§ 7.5）时按顺序收消息，附件累计超过 20 个或 20 MiB 就停（第一条总是收），剩下的留在队列里，本 turn 结束后作为下一个 turn 发出。这些是 Claude 单次请求的上限（请求体 32 MB、一次超过 20 张图时每张 ≤ 2 000 px）倒推的，对所有 agent 和所有文件类型一样
 - **磁盘**：完成但没被引用的 blob 全节点合计 ≤ 1 GiB（`put_begin` → `busy` / `quota`）；数据目录所在卷剩余空间不够 `size + 1 GiB` → `busy` / `disk_full`（这两个 `busy` 不要自动重试：要发掉 / 移除附件或腾出磁盘）；配额里也算进行中的上传。`anycon doctor`（`node.doctor`）多一项 `blobs`：文件数、字节数、进行中的上传，剩余空间 < 1 GiB 时失败
 - 审计：不记 blob 的上传 / 下载（量大、没有安全意义）；`session.send` 的审计照旧
 - 同一个客户端的请求是串行处理的：客户端多块在途只是省掉往返，`put_end` 算 SHA-256 期间这个客户端的其它请求要等（10 MiB 约几十毫秒）
@@ -747,7 +763,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
 - `workspace.trash` 整个项目时 worktree 跟着进回收站（它们在项目里）；有没归档的 worktree 会话时和现在一样返回 `busy`
 - `workspace.rename` / `trash` 的「项目忙」判断也看会话的 git 忙标记（同步 base、归档处置、删 worktree 进行中）
 - `workspace.branches`：`git for-each-ref --sort=-committerdate --format=%(refname:short) refs/heads refs/remotes`，去掉 `*/HEAD` 和 `<branch_prefix>/` 开头的本地分支，各取前 200 个
-- 关联项目（ADR-33 补充）：上面所有写操作只发生在 `.anycon/worktrees/` 里 anycon 自己建的目录、`info/exclude` 的那一行，以及 git 的 worktree / 分支元数据
+- 关联项目（ADR-33 补充）：上面所有写操作只发生在 `.anycon/worktrees/` 里 anycon 自己建的目录、`info/exclude` 的那一行，以及 git 的 worktree / 分支元数据；另外会话的附件落在 `<工作目录>/.anycon/attachments/<session_id>/`（§ 7.10，ADR-44；worktree 会话落在它自己的 worktree 里，不是项目目录），这个目录同样是 anycon 自己建、自己删的，`info/exclude` 里的 `/.anycon/` 一并覆盖它
 
 **PR 自动归档**（`worktree.auto_archive_on_pr_close = true`）：周期任务每 10 分钟一次，**不在 sweeper 的同步路径上跑**（单独 `tokio::spawn`，原子标记保证同一时刻只有一轮；每小时的 `cleanup` 同样移出），挑没归档、没有 turn 在跑、有上游的 worktree 会话（每次最多 20 个），`gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档；归档前在会话锁里重新检查，这时有 turn、在等审批或有排队消息就跳过、留到下一轮。`gh` 不可用就整轮跳过。
 
@@ -890,8 +906,8 @@ SQLite（WAL）。全部表：
 - agent 以 daemon 用户身份运行，没有沙箱；anycon 提供的是**审批**和**workspace 路径边界**，不是隔离（README 已声明）。关联目录（§ 10）也在边界之内：已配对设备可以不经审批读里面的文件，agent 按所选模式改文件；能关联哪些目录见 ADR-33 的五条规则
 - `dangerous` 模式：config 可禁；允许时每次 `session.create` / `set_settings` 选它都进审计
 - 会话 `env`：默认整体拒绝（`permissions.allow_session_env = false`）；开启后键必须在运维配置的允许列表 `permissions.session_env_allow` 里，再过黑名单兜底（`LD_*`、`DYLD_*`、`BASH_ENV`、`SHELLOPTS`、`PS4`、`LESSOPEN`、`NODE_*`、`ANTHROPIC_*`、`*_PROXY` 等，完整列表见 § 5.5），且不能覆盖 `agents.env` 里运维配置的键，键名进审计（ADR-31）
-- 附件（§ 7.10）：单个 ≤ `max_attachment_bytes`，上传只收四种图片且文件头必须和 mime 一致，发送时还要在该 agent 的 `capabilities.attachments` 里；`blob_id` 先校验格式再进路径
-- `fs.read` 只读、限项目所在的 workspace 根目录（每个根各自）和关联目录内。文本模式默认读 1 MiB、最大 10 MiB（原始字节），超出的部分截断（`truncated = true`），不支持 `offset`。`encoding = "base64"`（Web 文件浏览的图片预览用它）把读到的字节原样放进 `data_base64`，同一份路径检查，**一次最多 512 KiB**（和 `blob.get` 一样；设备到 daemon 是一条有序的传输，大响应会挡住别的消息），用 `offset` 一块一块读，回显 `offset`；`offset` 在末尾或之后回空块。`binary` 的判断：前 8 KiB 里有 NUL、或不是合法 UTF-8（只有被截断时最后一个多字节字符被切开的情形除外）就是二进制，base64 模式按这一块判断。blob 通道（§ 7.10）只收图片
+- 附件（§ 7.10）：单个 ≤ `max_attachment_bytes`，一条消息 ≤ 20 个且合计 ≤ 20 MiB；任意文件都收，只有声明为四种图片的才校验文件头；`blob_id` 先校验格式再进路径，非图片的存储扩展名取自清洗过的文件名。agent 不原生收的附件由 daemon 复制进会话工作目录的 `.anycon/attachments/<session_id>/`（ADR-44）：每一级必须是真目录、拒绝符号链接（unix 上相对目录 fd 逐级 `O_NOFOLLOW` 打开，agent 在检查和创建之间换链接也写不出去；Windows 上有一个很短的残余窗口），目录 0700 / 文件 0600，`O_EXCL` 不覆盖已有文件，文件名里的 `.` / `..` 和 Windows 不允许的字符换掉，写之前确保 `info/exclude`，只在复核过的目录里写，`session.delete` 只删这个会话自己的那个目录。这不扩大已配对设备的能力（它本来就能让 agent 在工作目录里写任何文件），写的范围更小
+- `fs.read` 只读、限项目所在的 workspace 根目录（每个根各自）和关联目录内。文本模式默认读 1 MiB、最大 10 MiB（原始字节），超出的部分截断（`truncated = true`），不支持 `offset`。`encoding = "base64"`（Web 文件浏览的图片预览用它）把读到的字节原样放进 `data_base64`，同一份路径检查，**一次最多 512 KiB**（和 `blob.get` 一样；设备到 daemon 是一条有序的传输，大响应会挡住别的消息），用 `offset` 一块一块读，回显 `offset`；`offset` 在末尾或之后回空块。`binary` 的判断：前 8 KiB 里有 NUL、或不是合法 UTF-8（只有被截断时最后一个多字节字符被切开的情形除外）就是二进制，base64 模式按这一块判断。blob 通道（§ 7.10）只在 `blobs/` 里存文件、按 `blob_id` 读，不接受路径
 - 响应大小：`session.history` 一页 ≤ 192 KiB（§ 7.9），`tool_result.output` ≤ 64 KiB（§ 8.2），`session.send` ≤ 1 MiB；其余靠传输层分片（≤ 200 KiB / 片，重组上限 16 MiB）。大消息经 hub 的 4 MiB 发送缓冲时会被退回一部分并重发（hub 保证顺序，[protocol.md § 3.1](../protocol.md#31-消息大小)）；daemon 收到 `backpressure` / `rate_limited` 要暂停再按序重发，不能继续灌
 - 配对：短码本地生成、不发给 hub；joiner 要等 `pair.ack` 才落盘（§ 15）
 - 账号内接入（§ 15.1）：daemon 是唯一的验证点，hub 的限速不算数。口令只存 Argon2id 派生值；口令失败计数在发出 CPace 份额**之前**先写库；同时最多一个口令尝试、3 个接入会话；接入码和扫码密钥只在内存里，不落盘、不进日志和审计

@@ -440,6 +440,8 @@
 
 **ADR-34 补充**：「永远不移动、不删除关联目录里的文件」有一个例外——anycon 在关联目录里建、删它自己的 `.anycon/worktrees/<slug>`（只删库里记录过的），往 `info/exclude` 写一行 `/.anycon/`，以及 `git worktree` / `git branch` 对仓库元数据的修改。worktree 目录按本条第 5 条同样的时机复核。
 
+**ADR-44 补充**：另一个例外——anycon 在会话的工作目录（关联目录本身，或它的 worktree）里建、删 `.anycon/attachments/<session_id>/`（只删这一个目录），文件是用户给这个会话的附件的副本；仓库的 `info/exclude` 同样写 `/.anycon/`（工作目录是仓库子目录时带上前缀）。写之前复核的时机见 ADR-44。
+
 **否掉**：
 - 用「多个 workspace 根」代替关联：根只能在配置里加整个父目录，不能从客户端挑一个目录，所以关联仍然需要。**这一条已被 ADR-45 部分取代**：v0.2 做了多个 workspace 根（配置键是 `workspace.extra_roots`，不是 `workspace.roots`），但它和关联并存，各解决一个问题——多根是运维把一整个父目录（比如外接盘上的 `projects/`）交给 anycon，关联是客户端从 `link_roots` 里挑单个目录；关联目录的规则对所有根生效，见 ADR-45
 - 放开符号链接：会把「符号链接指向根外的一律拒绝」这条路径安全规则整个打开，而且符号链接要在那台机器上建
@@ -509,7 +511,9 @@ ADR-1 拆成两层来看：
 
 ## ADR-35 附件：经 blob 通道传到 daemon，消息只带引用
 
-**决定**（附件从 v0.2 提前；最初只有图片，任意文件见文末「任意文件」）：
+> 部分被 [ADR-44](#adr-44-非图片附件落到会话工作目录) 取代：上传白名单（只收四种图片）、发送时按 agent 的 `capabilities.attachments` 核对（不收就 `unsupported`）和「原因」里的「只做图片」不再成立；后来的「任意文件（2026-10 第二次修订）」里把文件路径（数据目录里）交给 agent、`capabilities.attachments` 里用 `*/*` 的交付方式也被 ADR-44 取代——agent 不原生收的附件由 daemon 复制进会话的工作目录。blob 通道本身（分块、拉取、校验点、生命周期、总量和磁盘限制）、图片的原生传递和 Web 规整、任意文件的上传和客户端部分不变。
+
+**决定**（附件从 v0.2 提前；最初只有图片，任意文件见文末「任意文件」和 ADR-44）：
 
 1. **上传**：客户端把图片分块传给 daemon（`blob.put_begin` → `blob.put_chunk` × N → `blob.put_end`），daemon 落盘到 `<数据目录>/blobs/<blob_id>.<扩展名>`、记进 `blobs` 表，`put_end` 返回 `AttachmentRef`。`session.send` / `session.create` 只带 `AttachmentRef`，事件流里的 `user_message.attachments` 也只带引用。hub 没有任何改动，看到的仍然只是密文 `data` 信封
 2. **分块是请求，不是通知**：每块都有答复，客户端据此显示进度、只重发失败的那一块；块按 `index` 定位（偏移 = `index × chunk_size`），可以乱序、并发（客户端最多 4 块在途）、重发
@@ -547,6 +551,8 @@ ADR-1 拆成两层来看：
 - **名字**：拒绝控制字符和双向控制符；扩展名和 mime 对不上时 daemon 补上正确的扩展名（`x.html` + `image/jpeg` → `x.html.jpg`）
 
 **任意文件（2026-10 第二次修订）**：附件不再只限图片。原来「别的文件放进项目目录就行」在手机上做不到，scratch 会话也没有项目目录。
+
+> **交付方式被 [ADR-44](#adr-44-非图片附件落到会话工作目录) 取代**：下面「agent 怎么收」（`capabilities.attachments` 里的 `*/*`、内置 adapter 声明「四种图片 + `*/*`」、adapter 在消息里列出文件在数据目录里的路径）、「否掉」里的「把文件复制进 workspace」和「代价」里关于数据目录路径与读文件审批的几条，已经改成：`capabilities.attachments` 只列 agent 原生收的 mime，其余附件由 daemon 复制到会话工作目录的 `.anycon/attachments/<session_id>/`，路径写在发给 agent 的文字里，adapter 收不到非原生的附件。这一节其余的——上传时的 mime 规则和存放扩展名、四种图片以外 daemon 不看内容、Web 里的文件条和只下载不渲染、`anycon send --file`、SDK 的 `uploadFile()`——保留，下面照原样留作历史。
 
 - **上传**：`blob.put_begin` 收任意格式正确的 mime（`type/subtype`，RFC 6838 的字符，不带参数，≤ 127 字节，记成小写），不认识的类型用 `application/octet-stream`。四种图片照旧核对文件头、读宽高；其它类型 daemon 不看内容。大小、个数、配额、生命周期的规则不变（每个 ≤ `sessions.max_attachment_bytes`，每条消息 ≤ 20 个、≤ 20 MiB）
 - **落盘**：`<blob_id>.<ext>`，图片的 `ext` 由 mime 定；其它文件取名字的扩展名（1–16 个 ASCII 字母数字，转小写），否则 `bin`。agent 和它的工具靠扩展名认类型（Claude Code 的 Read 读 PDF 就是）
@@ -964,6 +970,57 @@ ADR-1 拆成两层来看：
 - 没有设备分级：任何已配对设备都能改名单里的键，比如把 `sessions.max_concurrent` 改成 1 让新会话排队，或把 `permissions.request_timeout` 设得很短让审批自动拒绝。这些都是可恢复的、进审计、不涉及放宽权限
 - 取值范围（并发 1–32 等）只约束远程写入；机器上手写 `config.toml` 可以超出，`node.get_config` 照实显示，不会因此拒绝保存别的键
 - `node.logs` 的过滤按 target 和 `error=` 字段做，是启发式的，不是内容识别；本机的 `anycon logs` 和日志文件本身不受它约束（见 daemon.md § 17 的残余风险）
+
+---
+
+## ADR-44 非图片附件落到会话工作目录
+
+**背景**：ADR-35 只做图片，因为两个 adapter 都只认图片，别的文件要给 agent「放进项目目录就行」——这对手机和浏览器上的用户等于做不到。v0.2 要让任意文件都能当附件，而且对所有 agent（Claude Code、Codex、ACP agent）、所有文件类型一样地工作，不要求每个 adapter 各自实现一遍「文件怎么交给 agent」。ADR-35 的「任意文件（2026-10 第二次修订）」先做过一版——文件留在数据目录、adapter 声明 `*/*` 并在消息里列出路径；本条取代它的**交付方式**，上传和客户端部分沿用（见下面「和 ADR-35『任意文件』的关系」）。
+
+**决定**（细节见 [protocol.md § 5.6](protocol.md#56-附件--blobadr-35)、[spec/daemon.md § 7.10](spec/daemon.md#710-附件adr-35)）：
+
+1. **上传收任意 mime**：`blob.put_begin` 的 `mime` 去掉两端空白和 `;` 之后的参数，要求是 `type/subtype`（两段都是 RFC 6838 的 restricted-name：字母数字开头，之后是字母数字和 `!#$&-^_.+`，合计 ≤ 127 字节），转成小写记录；不合格的（空、没有 `/`、`*/*`、带别的杂质、太长）按 `application/octet-stream` 记录，**不报错**——mime 对非图片只是展示和给 agent 的提示，不值得让用户等了哈希和传输之后因为它失败。只有声明为 `image/png` `image/jpeg` `image/gif` `image/webp` 的才校验文件头、读宽高、按 mime 补扩展名。大小（≤ `sessions.max_attachment_bytes`）、每条消息 ≤ 20 个且合计 ≤ 20 MiB、配额、磁盘、名字（拒绝控制字符等）的规则不变。blob 仍存在 `blobs/<blob_id>.<ext>`，非图片的 `ext` 取自原文件名最后一个 `.` 之后的部分（1–16 个 ASCII 字母数字，转小写，否则 `bin`）
+2. **能力**：`node.info.capabilities.file_attachments = true` 表示 daemon 能把任意文件交给任何会话；`node.info.attachment_limits { max_bytes, max_per_message, max_message_bytes }` 让客户端在算哈希和上传之前就拒绝超限的文件。agent 的 `capabilities.attachments` 含义不变：它能**原生**收的 mime
+3. **原生还是落盘，开 turn / 插话时按当时的探测结果决定**：mime 在该会话 agent 的 `capabilities.attachments` 里 → 原生（`UserInput.attachments` / `attachment_paths`，和以前一样）；否则复制到 `<会话工作目录>/.anycon/attachments/<session_id>/<文件名>`，并在**交给 adapter 的文字**末尾追加一段英文清单（`[Attached files, saved in the working directory]`，每个文件一行 `- <相对工作目录的路径> (<mime>, <大小>)`）。事件流里的 `user_message` 仍是用户原文和附件元数据，不含这段文字。积压合并和插话同样处理（清单在合并后的文字末尾只出现一次）。adapter 只会收到它原生支持的附件，所以 claude / codex 里对非图片 mime 的 `Unsupported` 检查保留
+4. **复制发生在送进 adapter 之前、目录复核之后**，不是 `session.send` 被接受的那一刻：worktree 会话的第一条消息被接受时 worktree 还没建出来；而关联目录 / worktree 的复核（ADR-33 第 5 条、ADR-34 第 9 条）就在开 turn 和插话前做，复制要落在复核过的目录里。代价是复制失败时用户消息已经在事件流里（见第 6 条）
+5. **落盘的安全约束**：`.anycon`、`attachments`、`<session_id>` 每一级都必须是真目录，符号链接或文件一律拒绝——agent 能写工作目录（沙箱里的 agent 能在 cwd 里建符号链接，但写不到 cwd 之外），可以把任何一级换成链接，而 daemon 不在沙箱里，顺着链接写就是替 agent 越过它的写边界。**unix 上整个过程相对目录 fd 做，没有「先检查路径、再按路径打开」的两步**：从边界目录（项目目录；scratch 会话是工作目录自己）起逐级 `openat(O_DIRECTORY | O_NOFOLLOW)`——worktree 目录那几段也一样——缺的一级 `mkdirat` 之后再用 `O_NOFOLLOW` 打开一次，文件用 `openat(目录 fd, 名字, O_CREAT | O_EXCL | O_NOFOLLOW, 0600)` 建在拿到的 fd 里（`fsopen::open_dir_chain` / `create_new_file_at`，和 `fs.read` 同一套逐级 `openat`）。某一级在被打开之前被换成链接，`O_NOFOLLOW` 让它失败；拿到 fd 之后再换，文件落在 fd 指的那个目录里（那个目录哪怕被挪了位置、原路径换成了链接，也写不到链接指向的地方）。新建的 `attachments` 和 `<session_id>` 是 0700、文件 0600；重名加 ` (2)` 之类的后缀；文件名里的 `.` / `..`、Windows 不允许的字符和保留设备名换成安全的写法；同一个 blob 再次落盘（插话没送进去后重新排队、两条消息引用同一个 blob）沿用已有文件。工作目录在 git 仓库里（项目会话；scratch 目录不处理）时确保 `<git common dir>/info/exclude` 有排除 `.anycon/` 的一行（工作目录是仓库顶层就是 `/.anycon/`，是子目录就带相对仓库顶层的前缀）；写不进去就拒绝落盘，不留下没被排除的文件。复用 ADR-34 的 `ensure_real_dirs` / `info/exclude` 写入函数
+6. **复制失败**（磁盘满、目录不可写、某一级是符号链接、没能写 exclude）：开新 turn 的消息，这个 turn 以 `error { code: "attachment_failed", recoverable: true }` + `turn_done { reason: error }` 收尾，会话进入 `error`，这一轮合并的消息都**没有**交给 agent，用户处理原因后重发（blob 已经绑定在会话里，重发可以带同样的引用）；插话失败照插话的规矩退回队列，下一个 turn 再试，不算 turn 失败。选这个而不是让 `session.send` 同步失败，是因为第 4 条
+7. **清理**：`session.delete` 删 `<工作目录>/.anycon/attachments/<session_id>/`，只删这一个目录：unix 上同样从边界目录起逐级 `openat(O_NOFOLLOW)` 到 `attachments`（任何一级是符号链接就一个都不删），再相对目录 fd 递归 `unlinkat`，里面的符号链接只删链接本身，嵌套超过 64 层报错；scratch 会话随目录一起删，worktree 随 worktree 删（worktree 因有未提交改动被保留时，这个目录仍然删掉）。blob 本身的回收规则不变。已经落盘的文件不随归档、改名项目而动（路径相对工作目录）；worktree 在归档时被删掉又重建后，旧消息清单里的路径不再有效
+8. **客户端**：Web 在节点有 `file_attachments` 时文件选择框不限类型，粘贴 / 拖入的任意文件都收（对每个 agent 都一样，包括一种附件都不原生收的）；agent 原生收图时图片照旧规整，agent 不收图时图片按普通文件原样上传；超过 `attachment_limits.max_bytes` 的文件在读之前就被拒绝；四种图片显示成缩略图，其它附件显示成文件条，点击用 `blob.get` 拉取后保存，文件名用 daemon 记录的名字，Blob 的类型固定是 `application/octet-stream`、用 `<a download>` 存盘——`text/html`、`image/svg+xml` 之类的附件永远不会在 Web UI 的源里被渲染或执行；导出 Markdown 写 `[file: 名字]`。节点没有 `file_attachments`（旧 daemon）时保持只收图片。CLI `anycon send` 加 `--file <path>`、`anycon new` 加 `--file <path>`（都可重复），SDK 有 `Node.uploadFile()`，`acceptsAttachment(node, agent, mime)` 看节点的 `file_attachments` 和 agent 原生收的类型
+
+**原因**：
+
+- 落到工作目录是对所有 agent 都成立的最小公约数：agent 本来就能读 cwd 里的文件（Claude Code、Codex、ACP agent 都有读文件的工具），不需要每个 adapter 实现一遍协议层的「文件」content block（各家支持的类型和大小限制都不同，ACP 还要看 agent 声明的 prompt 能力）
+- 路径附在文字里而不是另开一个字段：adapter 接口不变，历史里 agent 的上下文就是它实际看到的文字
+- 放在工作目录里而不是数据目录：agent 不能在数据目录里工作（ADR-34 的绝对拒绝）；读 cwd 之外的路径通常要走权限审批，放在 cwd 里不需要
+- 复用 ADR-34 的 `.anycon/` 和 `info/exclude`：用户的仓库里不会出现新的未跟踪文件，也不会被 `git add -A` 提交
+
+**和 ADR-35「任意文件」的关系**：那一节里交付方式的几条理由，逐条回答：
+
+- **「把文件复制进 workspace 会弄脏用户的仓库」**：`/.anycon/` 写进 `<git common dir>/info/exclude`（ADR-34 为 worktree 就这么做，不改仓库里的 `.gitignore`），文件从来不会出现在 `git status` 里，也不会被 agent 的 `git add -A` 提交。工作目录是仓库的子目录时排除的是那个子目录里的 `.anycon/`。写不进 `info/exclude` 就拒绝落盘，不会留下没被排除的文件
+- **「scratch 会话也不一定有合适的位置」**：scratch 会话的 cwd 就是它自己的 scratch 目录（workspace 根下的 `.scratch/<id>`），放在里面正合适；它不属于任何用户的仓库，不需要 `info/exclude`，会话删除时整个目录一起删
+- **权衡**：文件留在数据目录时，agent 读 workspace 之外的路径要走权限审批（Claude Code 在 Web 上会弹出审批卡片，一个附件读一次问一次）；放进 cwd 避开了这一点。代价是每个落盘的文件在磁盘上有第二份副本（blob 一份、工作目录一份，各 ≤ `max_attachment_bytes`），daemon 要往 agent 能写的目录里写东西——所以才有第 5 条的 fd 相对打开
+- **沿用**：上传时的 mime 规则（RFC 6838 的语法、不认识就 `application/octet-stream`）、存放扩展名、四种图片以外 daemon 不看内容、Web 的文件条和只下载不渲染、`anycon send --file`、`uploadFile()`、`[file]` 标题。**取代**：`capabilities.attachments` 里的 `*/*`（该字段又只表示原生收的 mime，协议里没有通配项了）、adapter 在消息里列路径、文件留在数据目录
+
+**否掉**：
+
+- 把文件内容塞进 prompt 文字：撞 `session.send` 的 1 MiB 上限，二进制不能表示，历史和全文索引里是大块数据
+- 每个 adapter 各自实现「文件 content block」：agent 差异大、ACP 的能力是动态的；落盘方案不排斥以后某个 adapter 对特定类型原生支持（把它写进 `capabilities.attachments` 即可）
+- 把 blob 文件的绝对路径（数据目录里）直接给 agent（ADR-35 第二次修订的做法）：数据目录不是 agent 的工作范围，读它要审批；每个 adapter 各自列一遍路径、各自声明 `*/*`，ACP 也得照做
+- 软链接 / 硬链接 blob 到工作目录：硬链接让 agent 改到 blob 本身，符号链接指向数据目录（越界）
+- `session.send` 被接受时同步复制：worktree 还没建出来、没有复核过的目录，失败要在建会话之前处理
+- 保留 `unsupported`（agent 不收就拒绝）：这正是要消除的限制
+
+**威胁模型**：配对设备上传的文件由 daemon 写进工作目录，**没有扩大攻击面**：已配对设备本来就能让 agent 在这个目录里写任何文件（权限就是 agent 的权限，只受审批和 workspace 边界约束，[architecture.md § 5.6](architecture.md#56-威胁模型)），而 daemon 写的范围更小——只有 `.anycon/attachments/<session_id>/` 一个目录，每一级拒绝符号链接，单个 ≤ `max_attachment_bytes`、一条消息 ≤ 20 MiB。agent 可能因此读到用户传的任何文件，这是传附件的本意。**这一条能成立靠第 5 条的 fd 相对打开**：如果只在按路径写之前 `lstat` 检查，agent 在检查和创建之间把一级换成链接，daemon 就会替它把文件写到沙箱外面——内容和名字虽然是用户给的、也不覆盖已有文件，但那是一个越过沙箱写边界的原语。**Windows 上没有对应物**（没有相对目录句柄创建文件的有文档的办法），落盘仍是逐级 `lstat` 之后按路径 `create_new`，删除是逐级 `lstat` 之后 `remove_dir_all`，检查和操作之间有一个很短的窗口：agent 恰好在这一刻把某一级换成指向别处的链接，文件会建到链接的目标里（不覆盖已有文件）、删除会删到目标里同名的 `<session_id>` 目录。这是已知的残余，和 ADR-33 / ADR-34 里其它按路径做的复核一样是纵深防御，不是隔离。hub 看到的仍然只是密文 `data` 信封（元数据不变），不改 `architecture.md § 5.6`、README 的隐私模型和 `SECURITY.md` 的表述。daemon 不解析、不执行文件内容；Web 里的文件条只在用户点击时下载，不渲染非图片内容（`image/svg+xml` 也是文件条，不当 `<img>` 显示），下载走 `application/octet-stream` 的 Blob
+
+**代价 / 限制**：
+
+- 每个会话至多这些文件占着工作目录的磁盘，直到会话删除；归档不清理
+- 复制发生在 turn 开始时，所以复制失败体现为这个 turn 失败，而不是 `session.send` 的错误；用户消息已在历史里但这一轮没有交给 agent
+- 清单里的 mime 是客户端声明的（只有四种图片被校验），只供 agent 参考
+- 单个文件仍受 `sessions.max_attachment_bytes`（默认 10 MiB）限制；大文件要先放进项目目录
+- Windows 上落盘和删除没有 fd 相对的实现，见「威胁模型」里的残余窗口
+- 工作目录里的副本被 agent 改过、删过，daemon 不知道也不管（同一个 blob 再次落盘时若文件不见了或大小不符会重新复制）
 
 ---
 

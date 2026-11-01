@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { ArrowUp, Paperclip, Plus, SlidersHorizontal, Square } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { AttachmentRef } from '@/protocol'
+import type { AttachmentRef, NodeAttachmentLimits } from '@/protocol'
 import { addFiles, clearItems, hydrateFromDraft, removeItem, retryItem, type AttachContext, type AttachNotice } from '@/features/attachments/composerUploads'
 import { describeAttachNotice } from '@/features/attachments/errors'
 import { acceptsAttachment } from '@/features/attachments/support'
@@ -18,10 +18,12 @@ import { Sheet } from '@/ui/Overlay'
 /** 输入区的附件（ADR-35）。不传这个 prop，「＋」菜单里就没有「添加文件或照片」，粘贴 / 拖放也不处理。 */
 export interface ComposerAttachmentConfig {
   nodeId: string
-  /** agent 作为图片收的 mime（已经和四种图片格式取过交集，`AttachmentSupport.images`）。可以为空（只收任意文件）。 */
+  /** agent 作为图片收的 mime（已经和四种图片格式取过交集，`AttachmentSupport.images`）。可以为空（agent 不原生收图；节点收任意文件时图片按普通文件传）。 */
   accept: readonly string[]
-  /** agent 收任意文件（`AttachmentSupport.files`）：选文件框不限类型，不是图片的文件原样上传。 */
+  /** 节点收任意文件（`AttachmentSupport.files`，ADR-44）：选文件框不限类型，不是图片的文件原样上传。 */
   files?: boolean
+  /** 节点报的附件上限（`AttachmentSupport.limits`）：超过单个上限的文件在读之前就被拒绝。 */
+  limits?: NodeAttachmentLimits
   /** 有值时「添加文件或照片」禁用并说明原因（节点不在线）。 */
   disabledReason?: string
   /** 测试注入（规整用的编解码、上传的重试间隔）。 */
@@ -91,7 +93,7 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
   // 回收了的改走「从缓存重传」）；离线 / 还没拿到节点信息时只恢复附件条，不探
   useEffect(() => {
     if (items !== undefined || !draftAttachments?.length || !attach) return
-    hydrateFromDraft(draftKey, draftAttachments, attach.disabledReason ? undefined : { draftKey, nodeId: attach.nodeId, accepted: attach.accept, files: attach.files, notify, ...attach.test })
+    hydrateFromDraft(draftKey, draftAttachments, attach.disabledReason ? undefined : { draftKey, nodeId: attach.nodeId, accepted: attach.accept, files: attach.files, limits: attach.limits, notify, ...attach.test })
   }, [items, draftAttachments, draftKey, attach, notify])
 
   useEffect(() => {
@@ -133,7 +135,7 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
   const handleFiles = (files: File[]): void => {
     if (!attach || files.length === 0) return
     if (attach.disabledReason) return toast.info(attach.disabledReason)
-    addFiles(files, { draftKey, nodeId: attach.nodeId, accepted: attach.accept, files: attach.files, notify, ...attach.test })
+    addFiles(files, { draftKey, nodeId: attach.nodeId, accepted: attach.accept, files: attach.files, limits: attach.limits, notify, ...attach.test })
   }
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>): void => {
     if (!attach) return
@@ -275,7 +277,7 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
                   ref={fileRef}
                   type="file"
                   multiple
-                  // agent 收任意文件时不限类型；只收图片时列出它收的格式，再加上 image/*（HEIC 等会被转换）
+                  // 节点收任意文件时不限类型；只收图片（旧 daemon）时列出 agent 收的格式，再加上 image/*（HEIC 等会被转换）
                   accept={attach.files ? undefined : [...attach.accept, 'image/*'].join(',')}
                   className="hidden"
                   tabIndex={-1}

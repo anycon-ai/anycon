@@ -215,7 +215,7 @@ describe('Composer attachments: picking, uploading, sending', () => {
     // input 的 accept 在真实浏览器里会过滤；拖放不会，所以走拖放
     fireEvent.drop(screen.getByTestId('composer-dropzone'), { dataTransfer: { types: ['Files'], files: [new File(['x'], 'notes.txt', { type: 'text/plain' })] } })
     expect(thumbs()).toEqual([])
-    expect(toastTexts()).toEqual(['This agent only accepts images. Skipped notes.txt.'])
+    expect(toastTexts()).toEqual(['This node only accepts images. Skipped notes.txt.'])
   })
 
   it('tells the user when an image cannot be decoded and leaves no placeholder', async () => {
@@ -228,7 +228,7 @@ describe('Composer attachments: picking, uploading, sending', () => {
   })
 })
 
-describe('Composer attachments: files (the agent takes any file)', () => {
+describe('Composer attachments: files (the node takes any file)', () => {
   const files = (over: Partial<AttachProp> = {}) => attach({ files: true, ...over })
 
   it('the file picker takes any file type (no accept filter) and drops say “files”', () => {
@@ -238,7 +238,7 @@ describe('Composer attachments: files (the agent takes any file)', () => {
     expect(screen.getByTestId('composer-drop-hint')).toHaveTextContent('Drop files to attach them')
   })
 
-  it('an agent that only takes any file (no image format named) still gets the plus menu', async () => {
+  it('an agent that names no image format still gets the plus menu on a node that takes any file', async () => {
     setup({ attachments: files({ accept: [] }) })
     await openPlus()
     expect(await screen.findByTestId('composer-attach')).toHaveTextContent('Add files or photos')

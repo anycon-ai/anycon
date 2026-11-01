@@ -50,6 +50,7 @@ use crate::limits;
 use crate::notify::Notifier;
 use crate::store::{SessionRow, Store, WorktreeRow};
 use crate::util::{fmt_utc, new_session_id, now_ms, preview_of, truncate_title, warn_err};
+use crate::workfiles::{self, PlaceError, WorkFiles};
 use crate::workspace::Workspace;
 use crate::worktree::{session_worktree, WorktreeMgr};
 
@@ -95,9 +96,13 @@ const RESOLVED_MEMORY: usize = 2048;
 enum DriverCmd {
     /// `retry`：这条是**插话**（`input.interject = true`）时带上原消息；插话失败（任何错误）daemon 把它放回队列，
     /// 不算 turn 失败（daemon.md § 7.5）。开新 turn 的 `Send` 没有它，失败照旧让 turn 失败。
+    ///
+    /// `place`：这条消息里 agent 不原生收的附件（ADR-44）。driver 在送进 adapter 之前把它们复制进工作目录，把路径清单追加到
+    /// `input.content` 末尾；复制失败时开新 turn 的消息让 turn 以 `attachment_failed` 失败，插话退回队列。
     Send {
         input: UserInput,
         retry: Option<Backlog>,
+        place: Option<PlaceJob>,
     },
     Respond {
         request_id: String,
@@ -137,6 +142,25 @@ struct Backlog {
     ord: u64,
     /// 这条消息的附件（已核对并绑定到会话，ADR-35）；合并成一个 turn 时按消息顺序拼接，插话失败退回队列时跟着消息走。
     attachments: Vec<Attached>,
+}
+
+/// 会话的工作目录，以及它所在的、agent 换不掉的边界目录（落附件时从边界起逐级用 `O_NOFOLLOW` 打开，ADR-44）。
+#[derive(Debug, Clone)]
+struct WorkDir {
+    /// 项目目录（scratch 会话就是 `cwd` 自己）。
+    boundary: PathBuf,
+    /// agent 的 cwd：项目目录，worktree 会话是 `boundary` 下的 worktree 目录。
+    cwd: PathBuf,
+}
+
+/// 要落到会话工作目录的附件（ADR-44）。
+struct PlaceJob {
+    session_id: String,
+    /// 会话现在的工作目录；解析不了时是 `None`（落盘失败）。
+    cwd: Option<WorkDir>,
+    /// 项目会话（工作目录在用户的目录里，要确保 `info/exclude`）；scratch 会话不处理。
+    project: bool,
+    files: Vec<Attached>,
 }
 
 struct TurnRt {
@@ -402,6 +426,8 @@ pub struct Sessions {
     /// 每个会话当前 agent 进程的 `(driver 代号, pid)`（adapter 报告得出的才有；进程退出时清掉）。
     /// 预览按它判断监听端口是不是会话起的（docs/spec/daemon.md § 19.3），见 [`Sessions::preview_targets`]。
     agent_pids: Mutex<HashMap<String, (u64, u32)>>,
+    /// 落到工作目录的附件（ADR-44）：复制、清单、删除。
+    workfiles: WorkFiles,
 }
 
 /// 「同一时刻只有一个」的标记：拿到它的人跑，drop 时放回去（任务 panic 也会放）。
@@ -458,6 +484,7 @@ impl Sessions {
             cleanup_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pr_round_every: std::sync::atomic::AtomicU32::new(PR_ROUND_EVERY),
             agent_pids: Mutex::new(HashMap::new()),
+            workfiles: WorkFiles::new(),
         });
         this.load().await;
         this
@@ -748,10 +775,10 @@ impl Sessions {
         agents.validate_settings(&p.agent, &info, &settings)?;
 
         let id = new_session_id();
-        // 附件在建会话之前先核对一遍（blob 不存在 / 信息对不上 / agent 不收这种图…）：不能留下一个因为附件不对而没有第一条
+        // 附件在建会话之前先核对一遍（blob 不存在 / 信息对不上…）：不能留下一个因为附件不对而没有第一条
         // 消息的空会话。真正的绑定在 `send_locked` 里，和事件一起（它会再核对一次）
         if !p.attachments.is_empty() {
-            self.d.blobs.resolve(&id, &p.attachments, &info.capabilities.attachments).await?;
+            self.d.blobs.resolve(&id, &p.attachments).await?;
         }
         // 项目：解析（missing / 被换成符号链接 / 规则不允许 → not_found）并记下它现在指向哪里
         let (project, project_loc) = match &p.project {
@@ -1023,20 +1050,12 @@ impl Sessions {
                 return Err(err(ErrorCode::Unsupported, "session has ended and the agent cannot resume it"));
             }
         }
-        // 附件：逐个核对（存在、信息和记录一致、没被别的会话引用、该 agent 收这种图），然后在写事件之前一次性绑定到会话——
-        // 校验或绑定失败时什么都还没发生（ADR-35）
+        // 附件：逐个核对（存在、信息和记录一致、没被别的会话引用），然后在写事件之前一次性绑定到会话——
+        // 校验或绑定失败时什么都还没发生（ADR-35）。agent 原生收的交给 adapter，其余在开 turn / 插话时落到工作目录（ADR-44）
         let attached: Vec<Attached> = if attachments.is_empty() {
             vec![]
         } else {
-            let allowed = self
-                .d
-                .agents
-                .info(&st.row.agent)
-                .ok_or_else(|| err(ErrorCode::AgentUnavailable, "agent not found"))?
-                .capabilities
-                .attachments
-                .clone();
-            let rows = self.d.blobs.resolve(&st.row.id, &attachments, &allowed).await?;
+            let rows = self.d.blobs.resolve(&st.row.id, &attachments).await?;
             self.d.blobs.bind(&st.row.id, &rows).await?;
             rows.iter().map(|r| self.d.blobs.attached(r)).collect()
         };
@@ -1079,7 +1098,11 @@ impl Sessions {
             // 有一条插话还没有结果时也只入队（顺序）
             let dispatched = turn.dispatched;
             let steerable = dispatched && turn.cancel_requested_at.is_none() && st.interjecting == 0;
-            if interject && steerable {
+            // 要落盘的附件需要知道工作目录；解析不了就不插话，排队等下一个 turn（那时目录会被重新解析和复核）
+            let cwd = self.session_cwd(st);
+            let native = self.native_mimes(&st.row.agent);
+            let needs_dir = attached.iter().any(|a| workfiles::needs_placing(&a.reference.mime, &native));
+            if interject && steerable && (cwd.is_some() || !needs_dir) {
                 let turn_id = turn.turn_id;
                 // 插话之前复核项目目录（ADR-33 第 5 条）：目录变了就不送出，消息退回队列，turn 以 not_found 结束、进程收掉
                 if st.driver.is_some() {
@@ -1104,17 +1127,12 @@ impl Sessions {
                     // 插话：交给 adapter 送进当前 turn。失败（turn 刚好结束、或任何别的错误）不让 turn 失败，
                     // driver 报告后消息退回队列，作为下一个 turn 发出（`on_interject_failed`）
                     let msg = self.new_backlog(st, message_id, content, ts, attached);
-                    // 插话同样带附件（ADR-35）；失败退回队列时附件跟着消息走（`retry` 里的 `Backlog`）
-                    let input = UserInput {
-                        message_id: msg.message_id.clone(),
-                        content: msg.content.clone(),
-                        attachments: msg.attachments.iter().map(|a| a.reference.clone()).collect(),
-                        attachment_paths: msg.attachments.iter().map(|a| a.path.clone()).collect(),
-                        interject: true,
-                    };
+                    // 插话同样带附件（ADR-35 / ADR-44）；失败退回队列时附件跟着消息走（`retry` 里的 `Backlog`）
+                    let (input, place) =
+                        self.user_input(st, cwd, &msg.message_id, msg.content.clone(), msg.attachments.iter(), true);
                     st.interjecting += 1;
                     if let Some(d) = &st.driver {
-                        let _ = d.tx.send(DriverCmd::Send { input, retry: Some(msg) });
+                        let _ = d.tx.send(DriverCmd::Send { input, retry: Some(msg), place });
                     }
                     return Ok(SessionSendResult { turn_id: Some(turn_id), queued: false, duplicate: false });
                 }
@@ -1228,7 +1246,8 @@ impl Sessions {
                 self.fail_turn_with(st, &stable_code_str(&e), e.message.clone(), true).await;
                 return;
             }
-            let left = self.dispatch(st);
+            let cwd = self.session_cwd(st);
+            let left = self.dispatch(st, cwd);
             self.announce_leftover(st, left).await;
         } else {
             if let Some(d) = self.detach_driver(st).await {
@@ -1399,8 +1418,8 @@ impl Sessions {
 
     /// 把 backlog 合并后交给 driver。合并按消息顺序收：附件累计超过 20 个或 20 MiB（Claude 一次请求的体积有上限）
     /// 就停，剩下的留在队列里，本 turn 结束后自动作为下一个 turn 发出；第一条总是收（单条消息的附件在 `send` 时已经核对过上限）。
-    /// 返回留在队列里的消息条数。
-    fn dispatch(&self, st: &mut St) -> usize {
+    /// `cwd` 是会话现在的工作目录（agent 不原生收的附件要落到那里，ADR-44）。返回留在队列里的消息条数。
+    fn dispatch(&self, st: &mut St, cwd: Option<WorkDir>) -> usize {
         if st.backlog.is_empty() {
             return 0;
         }
@@ -1417,22 +1436,87 @@ impl Sessions {
         }
         let msgs: Vec<Backlog> = st.backlog.drain(..take).collect();
         let pairs: Vec<(String, u64)> = msgs.iter().map(|m| (m.content.clone(), m.ts_ms)).collect();
-        // 几条消息合并成一个 turn 时，附件按消息顺序拼接；`attachments` 和 `attachment_paths` 一一对应（ADR-35）
-        let attached: Vec<&Attached> = msgs.iter().flat_map(|m| m.attachments.iter()).collect();
-        let input = UserInput {
-            message_id: msgs[0].message_id.clone(),
-            content: merge_messages(&pairs),
-            attachments: attached.iter().map(|a| a.reference.clone()).collect(),
-            attachment_paths: attached.iter().map(|a| a.path.clone()).collect(),
-            interject: false,
-        };
+        // 几条消息合并成一个 turn 时，附件按消息顺序拼接（ADR-35）：原生的进 `attachments` / `attachment_paths`（一一对应），
+        // 其余的随后落到工作目录、清单追加在合并后的文字末尾（ADR-44）
+        let (input, place) = self.user_input(
+            st,
+            cwd,
+            &msgs[0].message_id,
+            merge_messages(&pairs),
+            msgs.iter().flat_map(|m| m.attachments.iter()),
+            false,
+        );
         if let Some(t) = st.turn.as_mut() {
             t.dispatched = true;
         }
         if let Some(d) = &st.driver {
-            let _ = d.tx.send(DriverCmd::Send { input, retry: None });
+            let _ = d.tx.send(DriverCmd::Send { input, retry: None, place });
         }
         st.backlog.len()
+    }
+
+    /// 该会话的 agent 原生收的附件 mime（`capabilities.attachments`，现在的探测结果）。
+    fn native_mimes(&self, agent: &str) -> Vec<String> {
+        self.d.agents.info(agent).map(|i| i.capabilities.attachments.clone()).unwrap_or_default()
+    }
+
+    /// 组装交给 adapter 的输入：agent 原生收的附件放进 `UserInput`，其余的包成 [`PlaceJob`]（没有就是 `None`）。
+    fn user_input<'a>(
+        &self,
+        st: &St,
+        cwd: Option<WorkDir>,
+        message_id: &str,
+        content: String,
+        attached: impl Iterator<Item = &'a Attached>,
+        interject: bool,
+    ) -> (UserInput, Option<PlaceJob>) {
+        let native = self.native_mimes(&st.row.agent);
+        let (own, other): (Vec<&Attached>, Vec<&Attached>) =
+            attached.partition(|a| !workfiles::needs_placing(&a.reference.mime, &native));
+        let input = UserInput {
+            message_id: message_id.to_string(),
+            content,
+            attachments: own.iter().map(|a| a.reference.clone()).collect(),
+            attachment_paths: own.iter().map(|a| a.path.clone()).collect(),
+            interject,
+        };
+        let place = (!other.is_empty()).then(|| PlaceJob {
+            session_id: st.row.id.clone(),
+            cwd,
+            project: st.row.project.is_some(),
+            files: other.into_iter().cloned().collect(),
+        });
+        (input, place)
+    }
+
+    /// 会话现在的工作目录（agent 的 cwd）：scratch 目录，或项目目录——有 worktree 的会话再加上 worktree 的相对路径。
+    /// 只在调用方刚复核过目录的时刻用（开 turn、插话）。解析不了（项目不见了、worktree 不是 `active` / `kept`）返回 `None`。
+    fn session_cwd(&self, st: &St) -> Option<WorkDir> {
+        let Some(project) = st.row.project.as_deref() else {
+            let dir = self.d.workspace.scratch_path(&st.row.id);
+            return Some(WorkDir { boundary: dir.clone(), cwd: dir });
+        };
+        let dir = match st.spawn_dir.clone() {
+            Some(d) => d,
+            None => self.d.workspace.project_path(project).ok()?,
+        };
+        match st.wt.as_ref() {
+            None => Some(WorkDir { boundary: dir.clone(), cwd: dir }),
+            Some(w) if matches!(w.state, WorktreeState::Active | WorktreeState::Kept) => {
+                Some(WorkDir { cwd: dir.join(&w.rel_path), boundary: dir })
+            }
+            Some(_) => None,
+        }
+    }
+
+    /// driver 里、送进 adapter 之前：把 agent 不原生收的附件复制进工作目录，返回要追加到文字末尾的清单（没有文字时不带开头的空行）。
+    async fn place_files(&self, job: PlaceJob, text_is_empty: bool) -> Result<String, PlaceError> {
+        let Some(wd) = job.cwd else {
+            return Err(PlaceError::Dir("the session's working directory cannot be resolved".into()));
+        };
+        let git = job.project.then(|| self.d.worktrees.git());
+        let placed = self.workfiles.place(git, &wd.boundary, &wd.cwd, &job.session_id, job.files).await?;
+        Ok(workfiles::note(&placed, !text_is_empty))
     }
 
     /// `dispatch` 之后还有消息留在队列里（附件超过了一个 turn 的上限）：告诉客户端有几条在排队。
@@ -1554,9 +1638,10 @@ impl Sessions {
                     st.row.project_loc = Some(loc);
                     self.persist(&st).await;
                 }
+                let place_cwd = WorkDir { cwd: wt_dir.clone().unwrap_or_else(|| cwd.clone()), boundary: cwd.clone() };
                 st.spawn_dir = cwd_project.is_some().then_some(cwd);
                 st.driver = Some(driver);
-                let left = self.dispatch(&mut st);
+                let left = self.dispatch(&mut st, Some(place_cwd));
                 self.announce_leftover(&mut st, left).await;
             }
             Ok((driver, _, _)) => {
@@ -2252,6 +2337,19 @@ impl Sessions {
         }
     }
 
+    /// driver 报告附件没能落到工作目录（磁盘满、`.anycon/attachments` 是符号链接…）：这个 turn 以 `attachment_failed` 失败
+    /// （`recoverable`，会话进入 error，修好之后可以再发）。消息已经在事件流里，但没有交给 agent；这一轮合并的几条消息都一样，
+    /// 用户按提示处理后重发。
+    async fn on_place_failed(self: &Arc<Self>, sid: &str, gen: u64, e: PlaceError) {
+        let Ok(sess) = self.get(sid) else { return };
+        let mut st = sess.st.lock().await;
+        if st.deleted || st.driver_gen != gen || st.turn.is_none() {
+            return;
+        }
+        tracing::warn!(session = %sid, error = %e, "cannot save the attachments in the working directory");
+        self.fail_turn_with(&mut st, "attachment_failed", e.to_string(), true).await;
+    }
+
     /// driver 报告 `AgentHandle::send` 失败。
     async fn on_send_failed(self: &Arc<Self>, sid: &str, gen: u64, e: AdapterError) {
         let Ok(sess) = self.get(sid) else { return };
@@ -2760,7 +2858,7 @@ impl Sessions {
     ) -> RpcResult<()> {
         let session_id = p.session_id.as_str();
         let sess = self.get(session_id)?;
-        let (old, was_scratch, wt) = {
+        let (old, was_scratch, wt, attach_site) = {
             let mut st = sess.st.lock().await;
             if st.deleted {
                 return Err(err(ErrorCode::NotFound, "session was deleted"));
@@ -2795,10 +2893,22 @@ impl Sessions {
             self.release_slot(&mut st);
             st.turn = None;
             st.backlog.clear();
-            (self.detach(&mut st), st.row.project.is_none(), wt)
+            // 落到工作目录的附件（ADR-44）在哪：项目会话的项目目录（worktree 会话是 worktree 的相对路径）；scratch 目录整个删，
+            // worktree 还在创建（会话不可能收过消息）或不是 `active` / `kept` 的不处理
+            let attach_site = st.row.project.clone().and_then(|p| match st.wt.as_ref() {
+                None => Some((p, None)),
+                Some(w) if matches!(w.state, WorktreeState::Active | WorktreeState::Kept) => {
+                    Some((p, Some(w.rel_path.clone())))
+                }
+                Some(_) => None,
+            });
+            (self.detach(&mut st), st.row.project.is_none(), wt, attach_site)
         };
         if let Some(d) = old {
             shutdown_driver(d).await;
+        }
+        if let Some((project, rel)) = attach_site {
+            self.remove_placed_files(session_id, &project, rel.as_deref()).await;
         }
         if let Some(wt) = wt {
             self.dispose_worktree_of_deleted(caller, &wt, &p).await;
@@ -2807,6 +2917,7 @@ impl Sessions {
             self.d.store.delete_session(session_id).await.map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
         // 会话的附件（`blobs/<blob_id>.<ext>`）随会话删除
         self.d.blobs.remove_files(&blob_files);
+        self.workfiles.forget(&blob_files);
         if was_scratch {
             self.d.workspace.remove_scratch(session_id);
         }
@@ -2830,6 +2941,32 @@ impl Sessions {
             },
         );
         Ok(())
+    }
+
+    /// 删掉会话落到工作目录的附件：`<项目目录>[/<worktree>]/.anycon/attachments/<session_id>/`，只删这一个目录；从项目目录起逐级
+    /// `openat(O_NOFOLLOW)`（[`workfiles::remove_session_dir`]，worktree 的目录那几段也一样），任何一级是符号链接就一个都不删。
+    /// 出错只记 warn，不让删除会话失败。
+    async fn remove_placed_files(&self, session_id: &str, project: &str, wt_rel: Option<&str>) {
+        let Ok(project_dir) = self.d.workspace.project_path(project) else { return };
+        let cwd = match wt_rel {
+            None => project_dir.clone(),
+            Some(rel) => match crate::worktree::inspect(&project_dir, rel) {
+                crate::worktree::WtCheck::Ok { dir, .. } => dir,
+                _ => return,
+            },
+        };
+        let sid = session_id.to_string();
+        let res = tokio::task::spawn_blocking(move || workfiles::remove_session_dir(&project_dir, &cwd, &sid)).await;
+        match res {
+            Ok(Ok(true)) => {
+                tracing::debug!(session = %session_id, "removed the attachments saved in the working directory")
+            }
+            Ok(Ok(false)) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(session = %session_id, error = %e, "cannot remove the attachments saved in the working directory")
+            }
+            Err(e) => tracing::warn!(session = %session_id, error = %e, "removing the saved attachments failed"),
+        }
     }
 
     pub async fn search(&self, p: SessionSearchParams) -> RpcResult<Vec<SearchHit>> {
@@ -3606,12 +3743,30 @@ async fn driver_loop(
                     return;
                 };
                 match cmd {
-                    DriverCmd::Send { input, retry } => match (handle.send(input).await, retry) {
-                        (Ok(()), Some(_)) => sessions.on_interject_done(&sid).await,
-                        (Ok(()), None) => {}
-                        (Err(e), Some(msg)) => sessions.on_interject_failed(&sid, gen, msg, e).await,
-                        (Err(e), None) => sessions.on_send_failed(&sid, gen, e).await,
-                    },
+                    DriverCmd::Send { mut input, retry, place } => {
+                        // agent 不原生收的附件先落到工作目录（ADR-44）；落不了的不送进 adapter
+                        if let Some(job) = place {
+                            match sessions.place_files(job, input.content.is_empty()).await {
+                                Ok(note) => input.content.push_str(&note),
+                                Err(e) => {
+                                    match retry {
+                                        Some(msg) => {
+                                            let e = AdapterError::Io(std::io::Error::other(e.to_string()));
+                                            sessions.on_interject_failed(&sid, gen, msg, e).await
+                                        }
+                                        None => sessions.on_place_failed(&sid, gen, e).await,
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        match (handle.send(input).await, retry) {
+                            (Ok(()), Some(_)) => sessions.on_interject_done(&sid).await,
+                            (Ok(()), None) => {}
+                            (Err(e), Some(msg)) => sessions.on_interject_failed(&sid, gen, msg, e).await,
+                            (Err(e), None) => sessions.on_send_failed(&sid, gen, e).await,
+                        }
+                    }
                     DriverCmd::Respond { request_id, decision } => {
                         if let Err(e) = handle.respond_permission(&request_id, decision).await {
                             tracing::warn!(session = %sid, error = %e, "respond_permission failed");

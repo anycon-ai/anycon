@@ -455,7 +455,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
                 d.setText(sessionId, (d.byKey[sessionId]?.text ? `${d.byKey[sessionId]!.text}\n` : '') + m.content)
                 // 附件放回输入区；已过期的（daemon 回收了）从本地缓存取回字节重新上传
                 if (m.attachments?.length) {
-                  void restoreAttachments({ draftKey: sessionId, nodeId, accepted: attachSupport?.images ?? [], files: attachSupport?.files, notify: (n) => toast.info(describeAttachNotice(n, t)) }, m.attachments, { expired: needsReupload(m.error) }).then(({ lost }) => {
+                  void restoreAttachments({ draftKey: sessionId, nodeId, accepted: attachSupport?.images ?? [], files: attachSupport?.files, limits: attachSupport?.limits, notify: (n) => toast.info(describeAttachNotice(n, t)) }, m.attachments, { expired: needsReupload(m.error) }).then(({ lost }) => {
                     if (lost > 0) toast.info(t('message.attachmentLost', { count: lost }))
                   })
                 }
@@ -548,7 +548,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
               blockedReason={blockedReason}
               aside={branchChip('inline')}
               options={agent ? options : undefined}
-              attachments={attachSupport ? { nodeId, accept: attachSupport.images, files: attachSupport.files, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
+              attachments={attachSupport ? { nodeId, accept: attachSupport.images, files: attachSupport.files, limits: attachSupport.limits, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
               focusToken={focusToken}
               autoFocus
               onStop={() => void cancelTurn(nodeId, sessionId).catch((e: unknown) => toast.error(describeError(e, t)))}

@@ -16,11 +16,18 @@
 //! **硬链接**：项目里的文件在项目外另有一个硬链接时，`F_GETPATH` 可能报出外面的名字。文件走逐段 `openat`，
 //! 到达它的名字都在边界之内，不看 `F_GETPATH`，所以这不是越界；硬链接本来就不是边界（见 daemon.md § 10）。
 //!
+//! - **写**（[`open_dir_chain`] / [`create_new_file_at`] / [`remove_dir_at`]，unix）：落到工作目录的附件（ADR-44）要在 agent 能写的目录里
+//!   建目录、建文件、删目录。从边界目录起逐级 `openat(O_DIRECTORY | O_NOFOLLOW)`（缺的那一级 `mkdirat` 之后**再用 `O_NOFOLLOW` 打开一次**，
+//!   不信刚建出来的名字），之后在拿到的目录 fd 里 `openat(O_CREAT | O_EXCL | O_NOFOLLOW)` 建文件、`unlinkat` 删东西。拿到 fd 之后路径上
+//!   的任何一级被换成符号链接都不再有影响：文件落在 fd 指的那个目录里（那个目录哪怕被改了名，也不会写到链接指向的地方）；
+//!   换发生在某一级被打开之前，则 `O_NOFOLLOW` 让这一级失败。这里没有「先 `lstat` 再按路径打开」的两步。
+//!
 //! **Windows** 没有 `openat`。文件和目录都按完整路径打开，最后一段不跟随重解析点（`FILE_FLAG_OPEN_REPARSE_POINT`），
 //! 然后对**打开的句柄**复核：是符号链接 / junction 就算越界；句柄的真实路径（`GetFinalPathNameByHandleW`）不在边界之内也算越界——
 //! 中间某一段在检查之后被换成指向边界外的链接，打开时会顺着它走，真实路径就落到了外面。复核的是句柄而不是路径，所以没有
 //! 「复核之后又被换掉」的窗口。硬链接：真实路径是打开时用的那个名字，在边界之内。目录用打开的句柄枚举
-//! （`GetFileInformationByHandleEx`），不再按路径重新列。
+//! （`GetFileInformationByHandleEx`），不再按路径重新列。**写**没有对应物（建文件要么按路径、要么走没有文档保证的 NT 根目录句柄），
+//! 所以 Windows 上落附件仍是「逐级 `lstat` 之后按路径 `create_new`」，检查和创建之间有一个很短的窗口（daemon.md § 7.10）。
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -82,7 +89,7 @@ pub fn add_before_open_hook(hook: BeforeOpen) -> HookGuard {
     HookGuard(id)
 }
 
-fn before_open(_path: &Path) {
+pub(crate) fn before_open(_path: &Path) {
     #[cfg(any(test, feature = "testing"))]
     for (_, h) in HOOKS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
         h(_path);
@@ -279,6 +286,204 @@ fn open_file_segments(boundary: &Path, segs: &[&OsStr]) -> Result<File, OpenErro
         cur = open_dir_segment(Some(&cur), seg)?;
     }
     Ok(openat(Some(&cur), last, libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK)?)
+}
+
+/// [`open_dir_chain`] 失败：`at` 是出问题的那一级的路径，`error` 是原因。
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct ChainError {
+    pub at: PathBuf,
+    pub error: OpenError,
+}
+
+#[cfg(unix)]
+impl ChainError {
+    /// 这一级（或它的上级）不存在。
+    pub fn is_not_found(&self) -> bool {
+        matches!(&self.error, OpenError::Io(e) if e.kind() == io::ErrorKind::NotFound)
+    }
+}
+
+#[cfg(unix)]
+fn mkdirat(dir: &File, name: &OsStr, mode: u32) -> io::Result<()> {
+    let c = CString::new(name.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in name"))?;
+    // SAFETY: `c` 是以 NUL 结尾的有效 C 字符串；`dir` 持有的 fd 在调用期间有效。
+    if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), mode as libc::mode_t) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unlinkat(dir: &File, name: &OsStr, flags: libc::c_int) -> io::Result<()> {
+    let c = CString::new(name.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in name"))?;
+    // SAFETY: 同 `mkdirat`。
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), c.as_ptr(), flags) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// `name`（在 `dir` 里）的 `st_mode`，不跟随符号链接。
+#[cfg(unix)]
+fn mode_at(dir: &File, name: &OsStr) -> io::Result<libc::mode_t> {
+    let c = CString::new(name.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in name"))?;
+    // SAFETY: `st` 由 `fstatat` 写入；其余参数同 `mkdirat`。
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        if libc::fstatat(dir.as_raw_fd(), c.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(st.st_mode)
+    }
+}
+
+/// 从 `boundary` 起逐级打开（不跟随符号链接）一串目录，返回最后一级的目录 fd。
+///
+/// - `existing`：`boundary` 之下、必须已经存在的路径（比如 worktree 目录相对项目目录的那几段）；不在 `boundary` 之下 → `Escaped`；
+/// - `create`：接着往下的几级，`(名字, Some(mode))` = 不存在就 `mkdirat` 建（`mode` 受 umask 影响；不带群组 / 其他人权限的 `mode`
+///   再 `fchmod` 一次，免得 umask 反而放宽它），`None` = 必须已经存在。每一级都是 `openat(O_DIRECTORY | O_NOFOLLOW)`，建出来的那一级也再
+///   这样打开一次：符号链接 / 文件一律失败，不会顺着链接走到别处；
+/// - 每一级打开之前调用 [`before_open`]（参数是这一级的路径），测试用它在「决定打开」和真正 `openat` 之间换目录。
+///
+/// 边界目录自己按路径打开一次（最后一段不跟随）：它在 agent 的写权限之外（项目目录 / scratch 目录），上级不会被 agent 换掉。
+#[cfg(unix)]
+pub fn open_dir_chain(boundary: &Path, existing: &Path, create: &[(&OsStr, Option<u32>)]) -> Result<File, ChainError> {
+    let at = |p: &Path, error: OpenError| ChainError { at: p.to_path_buf(), error };
+    let segs = segments_within(existing, boundary).map_err(|e| at(existing, e))?;
+    let mut path = boundary.to_path_buf();
+    before_open(&path);
+    let mut cur = open_dir_segment(None, boundary.as_os_str()).map_err(|e| at(&path, e))?;
+    for seg in segs {
+        path.push(seg);
+        before_open(&path);
+        cur = open_dir_segment(Some(&cur), seg).map_err(|e| at(&path, e))?;
+    }
+    for (name, mode) in create {
+        path.push(name);
+        before_open(&path);
+        cur = match (open_dir_segment(Some(&cur), name), mode) {
+            (Ok(f), _) => f,
+            (Err(OpenError::Io(e)), Some(mode)) if e.kind() == io::ErrorKind::NotFound => {
+                match mkdirat(&cur, name, *mode) {
+                    Ok(()) => {}
+                    // 同一个项目的另一个会话刚好也在建：它建好的真目录照常用（下面的 `O_NOFOLLOW` 打开会拒绝别的东西）
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(at(&path, e.into())),
+                }
+                let f = open_dir_segment(Some(&cur), name).map_err(|e| at(&path, e))?;
+                if mode & 0o077 == 0 {
+                    use std::os::unix::fs::PermissionsExt;
+                    f.set_permissions(std::fs::Permissions::from_mode(*mode)).map_err(|e| at(&path, e.into()))?;
+                }
+                f
+            }
+            (Err(e), _) => return Err(at(&path, e)),
+        };
+    }
+    Ok(cur)
+}
+
+/// 在目录 fd `dir` 里新建一个文件（`O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW`，权限 `mode` 受 umask 影响）：
+/// 已经有任何东西（包括符号链接）都失败，不会覆盖、不会写穿链接。
+#[cfg(unix)]
+pub fn create_new_file_at(dir: &File, name: &OsStr, mode: u32) -> io::Result<File> {
+    let c = CString::new(name.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in name"))?;
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // SAFETY: `c` 是以 NUL 结尾的有效 C 字符串；`dir` 持有的 fd 在调用期间有效；`mode` 是 `openat` 在带 `O_CREAT` 时要的第四个参数。
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, mode as libc::c_uint) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` 是刚由 `openat` 返回的、我们独占的有效 fd。
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+/// 删掉目录 fd `dir` 里名为 `name` 的文件（不是目录；符号链接只删链接本身）。
+#[cfg(unix)]
+pub fn unlink_file_at(dir: &File, name: &OsStr) -> io::Result<()> {
+    unlinkat(dir, name, 0)
+}
+
+/// 删掉 `parent` 里名为 `name` 的目录和它里面的一切，全程相对 fd（`openat(O_NOFOLLOW)` / `unlinkat`），不按路径、不跟随符号链接：
+/// 里面的符号链接只删链接本身。`name` 不存在返回 `Ok(false)`；它是符号链接或不是目录 → 错误，什么都不删。
+/// 目录嵌套超过 [`REMOVE_MAX_DEPTH`] 层也报错（agent 能在里面造任意深的树）。
+#[cfg(unix)]
+pub fn remove_dir_at(parent: &File, name: &OsStr) -> io::Result<bool> {
+    match mode_at(parent, name) {
+        Ok(m) if m & libc::S_IFMT == libc::S_IFDIR => {}
+        Ok(_) => return Err(io::Error::other("is not a plain directory")),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    }
+    let dir = open_dir_segment(Some(parent), name).map_err(open_to_io)?;
+    remove_contents(&dir, 0)?;
+    drop(dir);
+    unlinkat(parent, name, libc::AT_REMOVEDIR)?;
+    Ok(true)
+}
+
+/// [`remove_dir_at`] 最多往下进这么多层。
+#[cfg(unix)]
+pub const REMOVE_MAX_DEPTH: usize = 64;
+
+#[cfg(unix)]
+fn open_to_io(e: OpenError) -> io::Error {
+    match e {
+        OpenError::Io(e) => e,
+        OpenError::Escaped => io::Error::other("was replaced by a symbolic link"),
+        OpenError::WrongKind => io::Error::other("is not a directory"),
+    }
+}
+
+/// 删光目录 fd `dir` 里的内容（递归）。名字先读完再删：边读边删会让目录流的位置不可预期。
+#[cfg(unix)]
+fn remove_contents(dir: &File, depth: usize) -> io::Result<()> {
+    if depth > REMOVE_MAX_DEPTH {
+        return Err(io::Error::other("the directory is nested too deeply"));
+    }
+    // SAFETY: `dup` 返回我们独占的新 fd；`fdopendir` 成功后目录流接管它（`closedir` 时一起关），失败时我们自己关。
+    // `readdir` 返回的指针在下一次 `readdir` / `closedir` 之前有效，这里立刻拷贝名字。
+    let names = unsafe {
+        let fd = libc::dup(dir.as_raw_fd());
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let dirp = libc::fdopendir(fd);
+        if dirp.is_null() {
+            let e = io::Error::last_os_error();
+            libc::close(fd);
+            return Err(e);
+        }
+        let mut names = Vec::new();
+        loop {
+            let ent = libc::readdir(dirp);
+            if ent.is_null() {
+                break;
+            }
+            let n = CStr::from_ptr((*ent).d_name.as_ptr()).to_bytes();
+            if n != b"." && n != b".." {
+                names.push(OsString::from_vec(n.to_vec()));
+            }
+        }
+        libc::closedir(dirp);
+        names
+    };
+    for name in names {
+        match mode_at(dir, &name) {
+            Ok(m) if m & libc::S_IFMT == libc::S_IFDIR => {
+                let sub = open_dir_segment(Some(dir), &name).map_err(open_to_io)?;
+                remove_contents(&sub, depth + 1)?;
+                drop(sub);
+                unlinkat(dir, &name, libc::AT_REMOVEDIR)?;
+            }
+            Ok(_) => unlinkat(dir, &name, 0)?,
+            // 刚读到、又不见了（别人删的）：不算错
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// 打开一个目录并列出里面的名字（不含 `.` `..`）。返回复核过的真实路径（调用方用它拼各个条目的路径）和名字。

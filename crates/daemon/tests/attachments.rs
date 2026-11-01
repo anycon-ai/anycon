@@ -1,5 +1,6 @@
 //! 图片附件（ADR-35，docs/spec/daemon.md § 7.10，protocol.md § 5.6）：blob 通道的上传 / 校验 / 下载 / 丢弃 / 回收，
-//! 以及 `session.send` / `session.create` 对附件的核对、绑定、合并和交给 adapter。
+//! 以及 `session.send` / `session.create` 对附件的核对、绑定、合并和交给 adapter。非图片文件和落到工作目录的行为
+//! （ADR-44）在 `file_attachments.rs`。
 //!
 //! 大部分用例用假 adapter（`td.fake.handle(n).inputs` 能看到交给 adapter 的 `UserInput`）；
 //! 最后一组用真的 mock adapter 验证它读到的是 daemon 给的路径（回复里回显文件名 / 大小 / sha256 前 12 位）。
@@ -389,15 +390,23 @@ async fn begin_with(td: &TestDaemon, device: &str, patch: Value) -> Result<BlobP
 #[tokio::test]
 async fn put_begin_validates_name_mime_size_and_sha() {
     let td = TestDaemon::start_with(&[("sessions.max_attachment_bytes", "\"4KiB\"")], false).await;
-    // mime 的格式不对
-    for mime in ["", "text", "text/plain; charset=utf-8", "*/*", "a/b/c", "text/pl ain"] {
-        let e = begin_with(&td, "m", json!({ "mime": mime })).await.unwrap_err();
-        assert_eq!(code(&e), ErrorCode::Invalid, "{mime:?}");
-    }
-    // 任意类型都收（四种图片之外的不看内容）
-    for mime in ["image/svg+xml", "application/pdf", "image/bmp", "text/plain", "IMAGE/PNG", "application/octet-stream"]
-    {
-        begin_with(&td, &format!("m-{mime}"), json!({ "mime": mime })).await.unwrap();
+    // 任何 mime 都收（四种图片之外的不看内容）；空的、不成形的、通配的记成 application/octet-stream，不报错
+    let mimes = [
+        "image/svg+xml",
+        "application/pdf",
+        "image/bmp",
+        "text/plain",
+        "IMAGE/PNG",
+        "application/octet-stream",
+        "",
+        "text",
+        "text/plain; charset=utf-8",
+        "*/*",
+        "a/b/c",
+        "text/pl ain",
+    ];
+    for (i, mime) in mimes.iter().enumerate() {
+        begin_with(&td, &format!("m-{i}"), json!({ "mime": mime })).await.unwrap();
     }
     // 名字
     for name in ["", "a/b.png", "..\\x.png", "a\nb.png", "a\u{7}.png", &"x".repeat(256)] {
@@ -416,8 +425,8 @@ async fn put_begin_validates_name_mime_size_and_sha() {
         let e = begin_with(&td, "h", json!({ "sha256": bad })).await.unwrap_err();
         assert_eq!(code(&e), ErrorCode::Invalid, "{bad:?}");
     }
-    // 失败的 put_begin 不占名额，也不留文件：只有上面成功的（6 种 mime + 名字 + 大小）留下了 .part
-    assert_eq!(std::fs::read_dir(td.paths.blobs_tmp()).unwrap().count(), 8);
+    // 失败的 put_begin 不占名额，也不留文件：只有上面成功的（每种 mime 一个 + 名字 + 大小）留下了 .part
+    assert_eq!(std::fs::read_dir(td.paths.blobs_tmp()).unwrap().count(), mimes.len() + 2);
     td.shutdown().await;
 }
 
@@ -793,47 +802,47 @@ async fn attachments_are_checked_against_the_records() {
     td.shutdown().await;
 }
 
+/// agent 只原生收一部分 mime 时，别的附件不被拒绝：它们落到工作目录（ADR-44，详细行为见 `file_attachments.rs`）。
+/// 附件本身照常绑定到会话、事件里写 daemon 的记录。
 #[tokio::test]
-async fn the_agent_must_accept_the_attachment_mime() {
+async fn attachments_the_agent_does_not_take_natively_are_not_refused() {
     let td = TestDaemon::start().await;
     let mut c = td.client("a");
     let png_a = upload(&td, &mut c, "a.png", &small_png(25)).await;
     let mut gif = b"GIF89a".to_vec();
     gif.extend_from_slice(&[1, 0, 1, 0, 0, 0]);
     let gif_a = upload_as(&td, &mut c, "a.gif", "image/gif", &gif).await;
-    // agent 只收 PNG
+    // agent 只原生收 PNG
     *td.fake.attachments.lock().unwrap() = vec![PNG.to_string()];
     let _: AgentListResult = c.call(&td, methods::AGENT_LIST, json!({ "refresh": true })).await.unwrap();
     let s = new_session(&td, &mut c).await;
-    let e = send(&td, &mut c, &s.id, "m1", "gif", &[&gif_a]).await.unwrap_err();
-    assert_eq!(code(&e), ErrorCode::Unsupported);
-    assert_eq!(bound_session(&td, &gif_a.blob_id).await, None);
+    send(&td, &mut c, &s.id, "m1", "gif", &[&gif_a]).await.unwrap();
+    wait_status(&td, &mut c, &s.id, SessionStatus::Idle).await;
+    assert_eq!(bound_session(&td, &gif_a.blob_id).await.as_deref(), Some(s.id.as_str()));
     send(&td, &mut c, &s.id, "m2", "png", &[&png_a]).await.unwrap();
     wait_status(&td, &mut c, &s.id, SessionStatus::Idle).await;
-    // agent 不收任何附件
+    let inputs = td.fake.handle(0).inputs.lock().unwrap().clone();
+    assert!(inputs[0].attachments.is_empty(), "the gif is not handed to the adapter");
+    assert_eq!(inputs[1].attachments, vec![png_a.clone()]);
+    // agent 不原生收任何附件：create 带附件同样不拒绝
     *td.fake.attachments.lock().unwrap() = vec![];
     let _: AgentListResult = c.call(&td, methods::AGENT_LIST, json!({ "refresh": true })).await.unwrap();
-    let e = send(&td, &mut c, &s.id, "m3", "png", &[&png_a]).await.unwrap_err();
-    assert_eq!(code(&e), ErrorCode::Unsupported);
-    // create 带附件同样检查，而且被拒绝时不留下会话
     let fresh = upload(&td, &mut c, "fresh.png", &small_png(37)).await;
-    let before: SessionListResult = c.call(&td, methods::SESSION_LIST, json!({})).await.unwrap();
-    let e = c
-        .call::<SessionSummary>(
+    let created: SessionSummary = c
+        .call(
             &td,
             methods::SESSION_CREATE,
             json!({ "agent": "fake", "prompt": "hi", "message_id": "c1", "attachments": [fresh] }),
         )
         .await
-        .unwrap_err();
-    assert_eq!(code(&e), ErrorCode::Unsupported);
-    let after: SessionListResult = c.call(&td, methods::SESSION_LIST, json!({})).await.unwrap();
-    assert_eq!(before.sessions.len(), after.sessions.len(), "a rejected create leaves no empty session behind");
+        .unwrap();
+    wait_status(&td, &mut c, &created.id, SessionStatus::Idle).await;
+    assert_eq!(bound_session(&td, &fresh.blob_id).await.as_deref(), Some(created.id.as_str()));
     td.shutdown().await;
 }
 
 #[tokio::test]
-async fn any_file_is_stored_as_is_and_handed_to_an_agent_that_accepts_files() {
+async fn any_file_is_stored_as_is_and_only_native_attachments_reach_the_adapter() {
     let td = TestDaemon::start().await;
     let mut c = td.client("a");
     // 不是图片：不看文件头、没有宽高，mime 记成小写，名字原样保留，落盘的扩展名取名字的
@@ -853,26 +862,18 @@ async fn any_file_is_stored_as_is_and_handed_to_an_agent_that_accepts_files() {
     let data = base64::engine::general_purpose::STANDARD.decode(&g.data).unwrap();
     assert_eq!((g.blob.clone(), data, g.eof), (pdf.clone(), pdf_bytes.clone(), true));
 
-    // agent 只收图片：文件 → unsupported
-    let s = new_session(&td, &mut c).await;
-    let e = send(&td, &mut c, &s.id, "m1", "", &[&pdf]).await.unwrap_err();
-    assert_eq!(code(&e), ErrorCode::Unsupported);
-    assert_eq!(bound_session(&td, &pdf.blob_id).await, None);
-    // agent 收 `*/*`：文件和图片都交给 adapter，路径就是落盘的文件
-    *td.fake.attachments.lock().unwrap() = vec![PNG.to_string(), "*/*".to_string()];
-    let _: AgentListResult = c.call(&td, methods::AGENT_LIST, json!({ "refresh": true })).await.unwrap();
+    // agent 原生只收图片：文件不被拒绝（落到工作目录，详细行为见 `file_attachments.rs`），图片原生交给 adapter
     let png = upload(&td, &mut c, "shot.png", &small_png(31)).await;
     let s = new_session(&td, &mut c).await;
     send(&td, &mut c, &s.id, "m2", "", &[&pdf, &png, &raw]).await.unwrap();
     wait_status(&td, &mut c, &s.id, SessionStatus::Idle).await;
     let last = td.fake.handles.lock().unwrap().last().cloned().unwrap();
     let input = last.inputs.lock().unwrap()[0].clone();
-    assert_eq!(input.attachments, vec![pdf.clone(), png.clone(), raw.clone()]);
-    assert_eq!(
-        input.attachment_paths,
-        vec![blob_file(&td, &pdf, "pdf"), blob_file(&td, &png, "png"), blob_file(&td, &raw, "bin")]
-    );
-    assert_eq!(bound_session(&td, &pdf.blob_id).await.as_deref(), Some(s.id.as_str()));
+    assert_eq!(input.attachments, vec![png.clone()], "only the native image reaches the adapter");
+    assert_eq!(input.attachment_paths, vec![blob_file(&td, &png, "png")]);
+    for bound in [&pdf, &png, &raw] {
+        assert_eq!(bound_session(&td, &bound.blob_id).await.as_deref(), Some(s.id.as_str()));
+    }
     // 有不是图片的附件时，标题用 `[file]`
     assert_eq!(summary(&td, &mut c, &s.id).await.title, "[file] Spec v2.PDF (+2)");
     td.shutdown().await;

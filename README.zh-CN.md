@@ -92,7 +92,7 @@ anycon pair
 
 ## 客户端
 
-**Web UI**：由 hub 提供，可安装为 PWA。流式 Markdown、工具调用渲染、diff、权限审批、模型 / 思考 / 权限模式选择、每会话 worktree、图片附件、Web Push 通知。中英文界面。
+**Web UI**：由 hub 提供，可安装为 PWA。流式 Markdown、工具调用渲染、diff、权限审批、模型 / 思考 / 权限模式选择、每会话 worktree、图片和文件附件、Web Push 通知。中英文界面。
 
 **CLI**：任何终端都能用。
 

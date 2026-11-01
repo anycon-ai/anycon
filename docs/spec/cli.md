@@ -6,7 +6,7 @@
 
 | 类别 | 例子 | 通道 |
 |---|---|---|
-| **本机管理** | `init` `daemon` `service` `pair` `passwd` `doctor` `devices` `audit` | 本机 Unix socket `~/.anycon/daemon.sock`（Windows：命名管道 `\\.\pipe\anycon-<hash>`，ADR-42），JSON-RPC，和内层协议同一套方法，另加几个只在本机可用的方法（`local.status`、`local.rename_device`、`local.config_reload`、`local.pair_outcome`，经 hub 调用一律 `forbidden`）。socket 权限 0600（命名管道：属主和 DACL 都是当前用户，客户端连上后核对属主），不需要 Noise，不经过 hub |
+| **本机管理** | `init` `daemon` `service` `pair` `passwd` `doctor` `devices` `audit` `export` `import` | 本机 Unix socket `~/.anycon/daemon.sock`（Windows：命名管道 `\\.\pipe\anycon-<hash>`，ADR-42），JSON-RPC，和内层协议同一套方法，另加几个只在本机可用的方法（`local.status`、`local.rename_device`、`local.config_reload`、`local.pair_outcome`、`local.export`、`local.import`，经 hub 调用一律 `forbidden`）。socket 权限 0600（命名管道：属主和 DACL 都是当前用户，客户端连上后核对属主），不需要 Noise，不经过 hub |
 | **客户端** | `nodes` `agents` `projects` `ls` `new` `send` `attach` `approve` | 作为一台设备经 hub 连到目标 daemon，Noise E2E，和 Web / SDK 完全一样 |
 
 客户端命令的目标节点恰好是本机 daemon 时（`--node` 省略且本机有 daemon，或 `--local`），自动走 socket，不绕 hub。这样在 Mac mini 上 `anycon send "跑测试"` 在断网时也能用。
@@ -138,12 +138,29 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 | 命令 | 说明 |
 |---|---|
-| `anycon export [--out <file>] [--project] [--since]` | 导出会话历史为一个 zip（JSONL + 附件），用于备份和搬迁（v0.2） |
-| `anycon import <file>` | 导入（v0.2） |
+| `anycon export [--out <file>] [--project <name>] [--since <date\|duration>] [--session <id>]... [--exclude-archived] [--force]` | 把会话历史（含附件，已归档的也在）导出成一个 zip，用于备份和搬迁。细节见下面「导出与导入」 |
+| `anycon import <file> [--dry-run]` | 导入 `anycon export` 产生的 zip：严格校验，已经存在的会话跳过、不覆盖。细节见下面 |
 | `anycon audit [--since] [--device] [--json]` | 本地审计日志 |
 | `anycon config get <key>` · `set <key> <value>` · `edit` · `path` | 读写 `config.toml`；`set` 后对支持热加载的键立即生效，否则提示重启。`set workspace.link_roots` 之后打印 daemon 对每一项的判定；`set workspace.root` / `workspace.extra_roots` 之后按 daemon 启动时的规则判一遍，配置错误（daemon 会拒绝启动）和暂时用不了的额外根（会被跳过）各打印一行警告（`--json` 在 `workspace_roots_warnings` 里）。只作用于本机，不提供远程版本：远程改配置是 Web / SDK 的 `node.set_config`，只有一张白名单（[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)），本机的 `config set` 不受白名单限制，也是放宽 `permissions.allow_dangerous_modes` / `preview.enabled` 的唯一办法 |
 | `anycon logs [-f] [-n 200]` | daemon 日志（本机读日志文件，不过滤；远程客户端用 `node.logs`，会去掉可能带会话文字的行，[daemon.md § 17](daemon.md#17-诊断)） |
 | `anycon stats` | 运行时长、会话数、磁盘占用、hub 连接状态 |
+
+**导出与导入**（`export` / `import`，文件格式和校验规则在 [daemon.md § 20](daemon.md#20-导出文件格式anycon-export--import)）：
+
+- **通道**：本机管理命令，走本机 socket 的 `local.export` / `local.import`，由 daemon 读写数据库（它拥有数据库，不会和正在跑的会话并发写）。不经 hub，远程节点不支持（给了 `--node` → 退出码 2）；经 hub 调用这两个方法一律 `forbidden`。daemon 没在运行时退出码 3，说明要先 `anycon service start`（或 `anycon daemon`）：导出导入都要 daemon 在，因为数据库归它管。路径都在 CLI 这一侧变成绝对路径再发给 daemon。
+- **进度**：长请求，没有超时。`local.progress` 通知只发给发起的这个连接；交互终端的 stderr 画一行 `exporting sessions 12/340 (84.2 MiB)`，管道和 `--json` 时不画。Ctrl+C 断开连接，daemon 随之取消（导出删掉临时文件，导入回滚正在写的那个会话；已经导入完的会话留着），退出码 130。
+- **`export`**：
+  - 缺省输出到当前目录的 `anycon-export-<节点名>-<日期>.zip`（节点名里非字母数字 / `._-` 的字符换成 `-`，日期是 UTC 的 `YYYY-MM-DD`）；`--out` 给的是已有目录就把默认文件名放进去。先写同目录的临时文件（权限 0600；Windows 上是只有当前用户、SYSTEM 和 Administrators 能访问的 DACL），写完 fsync 再 rename，失败或取消时不留任何文件。输出文件已经存在时退出码 1（`exists`），加 `--force` 才覆盖。
+  - 选哪些会话：`--project <name>`（项目名的比较规则同 `ls`）、`--since`（按会话**最后活动时间**，取会话行的更新时间和最后一个事件的时间中较大的；写法是时长 `7d` / `12h`、UTC 日期 `2026-10-01`（当天 00:00）、UTC 时刻 `2026-10-01T12:30:00Z`、Unix 毫秒）、`--session <id>`（可重复，id 前缀和 `last` 都行，在 CLI 里解析成完整 id；点名的会话不受下面 `--exclude-archived` 的限制，找不到 → 退出码 1）。几个条件取交集。
+  - **已归档的会话**：默认**包含**。导出是用户唯一的备份 / 搬迁手段，不带参数的 `anycon export` 就该是完整备份，不能悄悄少。`--exclude-archived` 才把已归档的排除（这和 `ls` 相反：`ls` 是看列表，默认只看没归档的）；排除了几个记在 `--json` 结果的 `skipped_archived` 里（不排除时恒为 0），不再另外在 stderr 提示。点名的 `--session` 不受 `--exclude-archived` 限制。
+  - 筛选条件选出 0 个会话也写出一个合法的空压缩包，退出码 0（定时备份不该因为「今天没有新会话」失败）。
+  - 完成后打印 `exported 12 sessions (340 events, 5 attachments, 84.2 MiB) to <path>`；附件文件丢了或和记录对不上（磁盘损坏）、会话在导出过程中被删了，stderr 打 `warning: …`，其余照常导出；`--json` 时 stdout 是一个 `{ path, bytes, sessions, events, blobs, skipped_archived, warnings }` 对象。
+- **`import`**：
+  - 严格校验、只认格式里定义的路径、不覆盖已有会话、每个会话一个事务，规则见 daemon.md § 20.4。`--dry-run` 做完全部校验（含逐个附件的 SHA-256 和逐行事件）但什么都不写，报告「会导入多少」。
+  - 报告：`imported 3 sessions (212 events, 4 attachments), skipped 1, failed 0`，下面逐个列出跳过的会话（`already exists, left as it is`）和失败的会话（原因）、来源（节点名、导出时间、anycon 版本）；压缩包里的会话属于本机不存在的项目时，stderr 打一条 warning（会话照样导入、能看，要继续就建一个同名项目或关联目录）；`sessions.history_retention` 设了且导入的会话比它老时也打 warning（下一次清理会删掉它们）。`--json` 时 stdout 是 `{ dry_run, total, imported, skipped, failed, events, blobs, source_node, source_version, exported_at_ms, warnings }`。
+  - 退出码：整个压缩包被拒绝（不是 zip、manifest 的 `format` / `version` 不认识、条目名不在格式里、符号链接、超过大小上限……）→ 2，什么都没写；有会话失败（内容校验不过）→ 1，报告照常打印，别的会话已经导入；文件不存在 → 2；全部成功或跳过 → 0。
+  - 导入的会话**没有 agent 进程**，也不带原来的 agent 会话 id：之后发消息开一个新的 agent 会话（历史仍在、仍可搜索，但 agent 不记得之前的对话），原因见 daemon.md § 20.5。有 worktree 的会话，worktree 目录不在本机，下一条消息按分支重建（重建不了会报错，历史照样能看）。
+- **隐私**：压缩包里是会话的**明文**内容（消息、工具输出、附件）和会话设置（含会话 `env` 的值），权限 0600，和数据目录一样要妥善保管；不含节点密钥、配对设备、配置和审计日志。hub 不参与。审计记 `export` / `import`，只记数量和压缩包的文件名（不含目录），不记内容。
 
 ## 4. 输出约定
 

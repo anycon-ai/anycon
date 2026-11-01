@@ -4,7 +4,7 @@
 //! 列表级通知（`session.changed`、`permission.request` 等）发给所有客户端（docs/spec/daemon.md § 12）。
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anycon_protocol::{DeviceKind, RpcNotification};
@@ -44,6 +44,8 @@ pub struct ClientHandle {
     pub caller: Caller,
     sink: Box<dyn ClientSink>,
     watching: Mutex<HashSet<String>>,
+    /// 连接已经断开（[`Clients::unregister`] 置位）。长请求（导出 / 导入）据此取消。
+    gone: AtomicBool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -54,6 +56,11 @@ pub enum WatchError {
 impl ClientHandle {
     pub fn notify(&self, n: &RpcNotification) {
         self.sink.send(n.clone());
+    }
+
+    /// 这个连接已经断开了。
+    pub fn is_gone(&self) -> bool {
+        self.gone.load(Ordering::SeqCst)
     }
 
     pub fn watch(&self, session_id: &str) -> Result<(), WatchError> {
@@ -91,13 +98,21 @@ impl Clients {
 
     pub fn register(&self, caller: Caller, sink: Box<dyn ClientSink>) -> Arc<ClientHandle> {
         let conn_id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        let h = Arc::new(ClientHandle { conn_id, caller, sink, watching: Mutex::new(HashSet::new()) });
+        let h = Arc::new(ClientHandle {
+            conn_id,
+            caller,
+            sink,
+            watching: Mutex::new(HashSet::new()),
+            gone: AtomicBool::new(false),
+        });
         self.map.lock().unwrap().insert(conn_id, h.clone());
         h
     }
 
     pub fn unregister(&self, conn_id: u64) {
-        self.map.lock().unwrap().remove(&conn_id);
+        if let Some(h) = self.map.lock().unwrap().remove(&conn_id) {
+            h.gone.store(true, Ordering::SeqCst);
+        }
     }
 
     /// 经 hub 的对端（非本机）按设备 id 取。
@@ -107,7 +122,13 @@ impl Clients {
 
     /// 注销某设备的所有（非本机）连接。
     pub fn unregister_device(&self, device_id: &str) {
-        self.map.lock().unwrap().retain(|_, c| c.caller.local || c.caller.device_id != device_id);
+        self.map.lock().unwrap().retain(|_, c| {
+            let keep = c.caller.local || c.caller.device_id != device_id;
+            if !keep {
+                c.gone.store(true, Ordering::SeqCst);
+            }
+            keep
+        });
     }
 
     fn snapshot(&self) -> Vec<Arc<ClientHandle>> {

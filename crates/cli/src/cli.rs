@@ -98,6 +98,12 @@ pub enum Command {
     Search(SearchArgs),
     /// Turn a scratch session into a project
     Promote { session: String, project_name: String },
+    /// Export session history and attachments to a zip file, for backups or moving to another machine (the local daemon
+    /// does the work; the file contains conversation content in plain text, so keep it as private as the data directory)
+    Export(ExportArgs),
+    /// Import the sessions in a zip file made by `anycon export`; sessions that already exist are skipped, never
+    /// overwritten (the local daemon does the work)
+    Import(ImportArgs),
     /// Show the local audit log
     Audit(AuditArgs),
     /// Read and write config.toml
@@ -499,6 +505,42 @@ pub struct SearchArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct ExportArgs {
+    /// File to write, or an existing directory to put the default name in (default:
+    /// ./anycon-export-<node name>-<date>.zip, the date in UTC). Written to a temporary file next to it first, with
+    /// permissions 0600; an existing file is only replaced with --force
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<std::path::PathBuf>,
+    /// Only sessions of this project
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Only sessions whose last activity is not older than this: a duration (`7d`, `12h`), a date (`2026-10-01`, UTC
+    /// midnight), a UTC time (`2026-10-01T12:30:00Z`) or Unix milliseconds
+    #[arg(long, value_name = "DATE|DURATION")]
+    pub since: Option<String>,
+    /// Only this session (id, id prefix or `last`); repeat for several. A named session is exported even with
+    /// --exclude-archived
+    #[arg(long = "session", value_name = "SESSION")]
+    pub sessions: Vec<String>,
+    /// Leave archived sessions out. By default everything is exported, archived sessions included, so that a plain
+    /// `anycon export` is a full backup
+    #[arg(long)]
+    pub exclude_archived: bool,
+    /// Replace the output file if it already exists
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ImportArgs {
+    /// Zip file made by `anycon export`
+    pub file: std::path::PathBuf,
+    /// Check the file and report what would be imported, without writing anything
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct AuditArgs {
     /// How far back to look, e.g. 1h or 2d (or a Unix timestamp in milliseconds)
     #[arg(long)]
@@ -625,6 +667,45 @@ mod tests {
         // 短码配对和账号内接入的选项不能混着用
         assert!(parse(&["connect", "https://hub", "--code", "X", "--via", "scan"]).is_err());
         assert!(parse(&["connect", "https://hub", "--code", "X", "--email", "a@b.c"]).is_err());
+    }
+
+    #[test]
+    fn export_and_import_take_their_options() {
+        let Command::Export(a) = parse(&["export"]).unwrap().command else { panic!() };
+        assert!(a.out.is_none() && a.project.is_none() && a.since.is_none() && a.sessions.is_empty());
+        assert!(!a.exclude_archived && !a.force);
+        let Command::Export(a) = parse(&[
+            "export",
+            "--out",
+            "b.zip",
+            "--project",
+            "p",
+            "--since",
+            "7d",
+            "--session",
+            "last",
+            "--session",
+            "sess_x",
+            "--exclude-archived",
+            "--force",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!()
+        };
+        assert_eq!(a.out.as_deref(), Some(std::path::Path::new("b.zip")));
+        assert_eq!((a.project.as_deref(), a.since.as_deref()), (Some("p"), Some("7d")));
+        assert_eq!(a.sessions, vec!["last".to_string(), "sess_x".to_string()]);
+        assert!(a.exclude_archived && a.force);
+        // 旧名字 --all 没有了：导出缺省就是全部
+        assert!(parse(&["export", "--all"]).is_err());
+        let Command::Import(a) = parse(&["import", "b.zip", "--dry-run"]).unwrap().command else { panic!() };
+        assert!(a.dry_run);
+        assert_eq!(a.file, std::path::PathBuf::from("b.zip"));
+        // import 要一个文件
+        assert!(parse(&["import"]).is_err());
+        assert!(parse(&["import", "a.zip", "b.zip"]).is_err());
     }
 
     #[test]

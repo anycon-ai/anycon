@@ -107,6 +107,8 @@ pub struct Ctx {
     pub hub_state: Arc<HubState>,
     pub outbox: Arc<HubOutbox>,
     pub identity: Arc<Identity>,
+    /// `anycon export` / `import`：互斥和导入上限。
+    pub transfer: crate::transfer::Transfer,
     pub started_at_ms: u64,
     pub started: Instant,
     pub shutdown_tx: watch::Sender<bool>,
@@ -276,6 +278,7 @@ impl Daemon {
             hub_state: hub_state.clone(),
             outbox: outbox.clone(),
             identity: identity.clone(),
+            transfer: Default::default(),
             started_at_ms: now_ms(),
             started: Instant::now(),
             shutdown_tx,

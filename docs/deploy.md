@@ -306,7 +306,7 @@ docker exec anycon-hub anycon-hub backup /data/backup.db   # 在线一致性备�
 
 v0.1：直接停容器复制 `/data` 目录（或在宿主机上对 `hub.db` 跑 `sqlite3 hub.db ".backup backup.db"`）。
 
-**提醒**：hub 里没有会话历史。历史在每台 daemon 的数据目录（默认 `~/.anycon/`），那边要单独备份：停掉 daemon 复制整个目录，或者在线 `sqlite3 ~/.anycon/daemon.db ".backup backup.db"`（附件在 `~/.anycon/blobs/`，一并复制）。
+**提醒**：hub 里没有会话历史。历史在每台 daemon 的数据目录（默认 `~/.anycon/`），那边要单独备份：停掉 daemon 复制整个目录，或者在线 `sqlite3 ~/.anycon/daemon.db ".backup backup.db"`（附件在 `~/.anycon/blobs/`，一并复制）；只想带走会话历史（含附件，已归档的会话也在）用 `anycon export`，换机器后 `anycon import` 导入（zip 里是明文内容，不含密钥和配对设备，按数据目录同等保管；格式见 [spec/daemon.md § 20](spec/daemon.md#20-导出文件格式anycon-export--import)）。
 
 ## 6. 升级
 

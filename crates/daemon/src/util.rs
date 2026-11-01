@@ -22,6 +22,11 @@ pub fn new_session_id() -> String {
     s
 }
 
+/// 是不是会话 id：`sess_` + 22 位 base62（[`new_session_id`] 的输出）。会进路径和 SQL 之前的格式校验用它。
+pub fn is_session_id(s: &str) -> bool {
+    s.len() == 27 && s.strip_prefix("sess_").is_some_and(|r| r.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
 /// worktree id：`wt_` + 22 位 base62。
 pub fn new_worktree_id() -> String {
     let mut rng = rand::thread_rng();
@@ -120,6 +125,50 @@ pub fn fmt_utc(ms: u64) -> String {
 pub fn fmt_compact(ms: u64) -> String {
     let (y, mo, d, h, mi, s) = civil_from_ms(ms);
     format!("{y:04}{mo:02}{d:02}T{h:02}{mi:02}{s:02}Z")
+}
+
+/// 解析 UTC 的日期或时刻：`2026-10-01`（当天 00:00）、`2026-10-01T12:30Z`、`2026-10-01T12:30:15Z`。不是这些写法、
+/// 或日期不存在（`2026-02-30`）返回 `None`。
+pub fn parse_utc(s: &str) -> Option<u64> {
+    let (date, time) = match s.split_once('T') {
+        Some((d, t)) => (d, Some(t.strip_suffix('Z')?)),
+        None => (s, None),
+    };
+    let mut parts = date.split('-');
+    let (y, mo, d) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || y.len() != 4 || mo.len() != 2 || d.len() != 2 {
+        return None;
+    }
+    let digits = |x: &str| x.bytes().all(|b| b.is_ascii_digit());
+    if !(digits(y) && digits(mo) && digits(d)) {
+        return None;
+    }
+    let (y, mo, d) = (y.parse::<i64>().ok()?, mo.parse::<u32>().ok()?, d.parse::<u32>().ok()?);
+    let (mut h, mut mi, mut se) = (0i64, 0i64, 0i64);
+    if let Some(t) = time {
+        let mut tp = t.split(':');
+        let (th, tm, ts) = (tp.next()?, tp.next()?, tp.next());
+        if tp.next().is_some() || th.len() != 2 || tm.len() != 2 || ts.is_some_and(|s| s.len() != 2) {
+            return None;
+        }
+        if !(digits(th) && digits(tm) && ts.is_none_or(digits)) {
+            return None;
+        }
+        (h, mi, se) = (th.parse().ok()?, tm.parse().ok()?, ts.map_or(Some(0), |s| s.parse().ok())?);
+        if h > 23 || mi > 59 || se > 59 {
+            return None;
+        }
+    }
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let secs = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
+    if secs < 0 {
+        return None;
+    }
+    // 2026-02-30 这样的日期会滚到下个月：换回去对不上就是不存在
+    let (cy, cm, cd, ..) = civil_from_ms(secs as u64 * 1000);
+    (cy == y && cm == mo && cd == d).then_some(secs as u64 * 1000)
 }
 
 /// `fmt_compact` 的逆。
@@ -296,6 +345,34 @@ mod tests {
     }
 
     #[test]
+    fn utc_dates_and_times() {
+        let noon = 1_791_720_000_000u64; // 2026-10-11T12:00:00Z
+        assert_eq!(parse_utc("2026-10-11T12:00:00Z"), Some(noon));
+        assert_eq!(parse_utc("2026-10-11T12:00Z"), Some(noon));
+        assert_eq!(parse_utc("2026-10-11"), Some(noon - 12 * 3_600_000));
+        assert_eq!(parse_utc("1970-01-01"), Some(0));
+        for bad in [
+            "",
+            "2026",
+            "2026-10",
+            "2026-10-1",
+            "26-10-11",
+            "2026-13-01",
+            "2026-02-30",
+            "2026-10-11T24:00Z",
+            "2026-10-11T12:00",
+            "2026-10-11T12Z",
+            "2026-10-11 12:00Z",
+            "2026-10-11T12:00:00:00Z",
+            "2026-10-+1",
+            "1969-12-31",
+        ] {
+            assert_eq!(parse_utc(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_utc("2024-02-29").map(fmt_utc).as_deref(), Some("2024-02-29 00:00:00"), "leap day");
+    }
+
+    #[test]
     fn titles() {
         assert_eq!(truncate_title("hello world", 60), "hello world");
         let long = "word ".repeat(30);
@@ -310,5 +387,16 @@ mod tests {
         let id = new_session_id();
         assert!(id.starts_with("sess_"));
         assert_eq!(id.len(), 27);
+        assert!(is_session_id(&id));
+        for bad in [
+            "",
+            "sess_",
+            "sess_short",
+            "SESS_aaaaaaaaaaaaaaaaaaaaaa",
+            "sess_aaaaaaaaaaaaaaaaaaaaa/",
+            "sess_../../etc/passwdxxx",
+        ] {
+            assert!(!is_session_id(bad), "{bad:?}");
+        }
     }
 }

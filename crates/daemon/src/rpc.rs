@@ -39,6 +39,13 @@ pub mod local_methods {
     /// `pair_failed.reason` 的 snake_case 名字，或 `replaced`：同一个 daemon 上又开始了新的 `pair_begin`，这次的短码作废了）。
     /// 只有这次配对自己的失败才会出现，别的配对的不算。
     pub const PAIR_OUTCOME: &str = "local.pair_outcome";
+    /// `anycon export`：把会话历史（含附件）写成一个 zip。参数 [`crate::transfer::ExportParams`]，结果
+    /// [`crate::transfer::ExportResult`]；进度以 `local.progress` 通知只发给发起的连接。路径是 daemon 所在机器上的绝对路径，
+    /// 所以只能走本机 socket（经 hub 调用一律 `forbidden`）。
+    pub const EXPORT: &str = "local.export";
+    /// `anycon import`：导入一个 `local.export` 产生的 zip。参数 [`crate::transfer::ImportParams`]，结果
+    /// [`crate::transfer::ImportResult`]。同上，只能走本机 socket。
+    pub const IMPORT: &str = "local.import";
 }
 
 fn err(code: ErrorCode, msg: impl Into<String>) -> RpcError {
@@ -533,7 +540,7 @@ impl Rpc {
                 if !caller.local {
                     return Err(err(ErrorCode::Forbidden, "this method is only available on the local socket"));
                 }
-                self.local_method(m, p).await
+                self.local_method(client, m, p).await
             }
 
             other => {
@@ -544,7 +551,7 @@ impl Rpc {
         }
     }
 
-    async fn local_method(&self, method: &str, p: Value) -> RpcResult<Value> {
+    async fn local_method(&self, client: &Arc<ClientHandle>, method: &str, p: Value) -> RpcResult<Value> {
         let c = &self.ctx;
         match method {
             local_methods::STATUS => {
@@ -586,6 +593,14 @@ impl Rpc {
                     .pair_failure(expires_at_ms)
                     .map(|f| json!({ "reason": f.reason.as_str(), "at_ms": f.at_ms }));
                 Ok(json!({ "failed": failed }))
+            }
+            local_methods::EXPORT => {
+                let p: crate::transfer::ExportParams = params(p)?;
+                ok(crate::transfer::export::export(c, client, p).await?)
+            }
+            local_methods::IMPORT => {
+                let p: crate::transfer::ImportParams = params(p)?;
+                ok(crate::transfer::import::import(c, client, p).await?)
             }
             local_methods::CONFIG_RELOAD => {
                 let changed = c.config.reload().map_err(|e| err(ErrorCode::Invalid, e.to_string()))?;

@@ -143,7 +143,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 
 ## 4. 数据目录
 
-见 [cli.md § 2](cli.md#2-目录与配置)。会话历史是**唯一副本**：备份就是停掉 daemon 复制数据目录，或者在线 `sqlite3 daemon.db ".backup …"` 再加上 `blobs/`（`anycon export` 在 v0.2）。
+见 [cli.md § 2](cli.md#2-目录与配置)。会话历史是**唯一副本**，备份有两种：整份数据目录——停掉 daemon 复制它，或者在线 `sqlite3 daemon.db ".backup …"` 再加上 `blobs/`（连节点密钥、配对设备、配置一起带走，只能原样恢复到同一个 `ANYCON_HOME`）；或者只带会话历史——`anycon export` 导出成一个 zip，`anycon import` 在这台或别的机器上导入（[§ 20](#20-导出文件格式anycon-export--import)；不含密钥、配对设备、配置和审计，所以搬到新机器是一个新节点，要重新配对）。
 
 ## 5. Agent 探测与能力声明
 
@@ -398,6 +398,8 @@ create ──► starting ──► running ──► idle ◄──────
 Codex：一个**从来没有记录过用户消息**的 thread 没有 rollout（比如第一个 turn 因为没登录立刻失败），之后 `thread/resume` 报 `no rollout found`。adapter 回退成 `thread/start` 新开一个，`Started` 带新的 `agent_session_id`。Codex 的 `set_settings` 只有 `env` 变了才需要重启进程；模型、思考、模式、`fast_mode`、`model_reasoning_summary` 都按 turn 传，`system_prompt_append` 用 `thread/inject_items`，都立即生效。
 
 ACP：resume 时 adapter 先看进程里还有没有这个会话（之前脱离时 agent 没有 `session/close`，没关）——有就直接接上；否则有 `session/resume` 用它，其次 `session/load`（先登记会话、重放期间的更新一律吞掉，响应回来才放行）；`-32002` / 消息里说找不到会话、或者 agent 两个能力都没有，就 `session/new` 开新会话，`Started` 带新的 `agent_session_id`，紧跟一条可恢复的 `error { agent_context_reset }`。`launch_args` 只是当前设置的快照（`model` / `thinking` / `mode` / `options`），续接时不读它，设置按 daemon 给的完整设置重新应用。
+
+导入的会话（[§ 20](#20-导出文件格式anycon-export--import)）没有 `agent_session_id`（导入时不收：它指向的 agent 会话文件在别的机器上不存在，`--resume` 必然失败），所以下一次 `send` 开一个新的 agent 会话，不走 resume。
 
 已知限制（Claude Code）：Claude Code 按 cwd 存会话，会话目录挪了之后 `--resume` 找不到原来的会话（`No conversation found`）——根目录项目改名、scratch 会话 `promote`、跟着项目改名移动的 worktree 都会这样，下一次发消息失败。关联项目（目录不动）和 Codex 不受影响。
 
@@ -800,6 +802,8 @@ SQLite（WAL）。全部表：
 
 事件表按会话删除；`history_retention` 到期的会话整条删。`VACUUM` 不自动跑，`anycon stats` 显示可回收空间并给命令。
 
+**备份**（见 [§ 4](#4-数据目录)）：`sessions` / `events` / `turns` / `messages_fts` / `blobs` / `worktrees` 里属于某个会话的行，加上 `blobs/` 下的附件文件，就是这个会话的全部历史；`anycon export` 把它们按 [§ 20](#20-导出文件格式anycon-export--import) 的格式打成 zip，`anycon import` 在一个事务里还原一个会话（事件、附件记录、worktree 记录、全文索引、turn 汇总）。`peers`、`enroll_password`、`agent_cache`、`preview_*`、`audit`、`jobs`、`kv`、`linked_projects` 不进导出：它们是这台节点自己的状态，不是会话历史。
+
 ## 12. 多客户端
 
 - 每个客户端一条 Noise 会话，daemon 对每条连接**单独加密**。所以事件不是广播，是按 watcher 逐个发
@@ -816,9 +820,9 @@ SQLite（WAL）。全部表：
 
 本地 `audit` 表，`anycon audit` 和 `node.audit` RPC 读。每条：ts、device_id、device_name、action、target、detail(JSON)。
 
-记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `worktree.create` `worktree.remove` `session.sync_base` `fs.read` `node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close`。
+记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read` `node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close`。
 
-`session.create` / `session.set_settings` 的 detail 里带本次设置的 `env_keys`（**键名**，不带值）、`cleared`（被 `clear` 清掉的字段）和 `dangerous`（所选模式按当前配置算出的实际风险，不是写死的 false）；模式切换经审批触发时 `reason: permission_approved`；`node.revoke_device` 带 `hub_notified`（hub 侧的撤销是否已发出；hub 没连上时先记下，重连后补发）；`node.pair_begin` 只记 `{ long }`，**不记短码和 `match_id`**。`preview.open` 的 target 是端口，detail 带 `label`、`ticket_id`、`session_id`、`expires_at_ms`、`reused`（返回的是已有票据），**不记票据密钥**；`preview.close` 的 target 是 label，detail 带作废的票据数和断开的隧道数。隧道的建立和断开不进审计（service worker 会频繁重连），只记 debug 日志。`enroll.*` 记方法和结果（`enroll.failed` 带 `reason`，口令失败带当时的连续失败次数），**不记接入码、扫码密钥、口令和它的派生值**；接入完成前发起方还没有正式 id，`device_id` 记临时 id，`device_name` 记自报的 `hint` 加 ` (unverified)`；`enroll.completed` 记正式 id 和认证过的名字。`enroll.*` 的 `detail` 里 `method` / `result` / `reason` 是字符串（`result` 取 `requested` / `approved` / `denied` / `completed` / `failed` / `expired`），`failures` 是数字，另有 `attempts_left`、`approval`、`changed`、`failures_reset`、`password`、`source`。低价值的行（`enroll.requested`、预检拒绝）每分钟最多写 30 条。
+`export` / `import` 的 target 是压缩包的**文件名**（不含目录），detail 只有数量（导出：`sessions` `events` `blobs` `bytes`；导入：`imported` `skipped` `failed` `events` `blobs`），不记路径、会话 id 和内容；`--dry-run` 的导入不改任何东西，不记审计。`session.create` / `session.set_settings` 的 detail 里带本次设置的 `env_keys`（**键名**，不带值）、`cleared`（被 `clear` 清掉的字段）和 `dangerous`（所选模式按当前配置算出的实际风险，不是写死的 false）；模式切换经审批触发时 `reason: permission_approved`；`node.revoke_device` 带 `hub_notified`（hub 侧的撤销是否已发出；hub 没连上时先记下，重连后补发）；`node.pair_begin` 只记 `{ long }`，**不记短码和 `match_id`**。`preview.open` 的 target 是端口，detail 带 `label`、`ticket_id`、`session_id`、`expires_at_ms`、`reused`（返回的是已有票据），**不记票据密钥**；`preview.close` 的 target 是 label，detail 带作废的票据数和断开的隧道数。隧道的建立和断开不进审计（service worker 会频繁重连），只记 debug 日志。`enroll.*` 记方法和结果（`enroll.failed` 带 `reason`，口令失败带当时的连续失败次数），**不记接入码、扫码密钥、口令和它的派生值**；接入完成前发起方还没有正式 id，`device_id` 记临时 id，`device_name` 记自报的 `hint` 加 ` (unverified)`；`enroll.completed` 记正式 id 和认证过的名字。`enroll.*` 的 `detail` 里 `method` / `result` / `reason` 是字符串（`result` 取 `requested` / `approved` / `denied` / `completed` / `failed` / `expired`），`failures` 是数字，另有 `attempts_left`、`approval`、`changed`、`failures_reset`、`password`、`source`。低价值的行（`enroll.requested`、预检拒绝）每分钟最多写 30 条。
 
 `config.changed`：`node.set_config`（§ 3）每个**真正变化**的键一条，`target` 是键，`detail` 是 `{ old, new }`（旧值和新值本身——白名单里没有敏感值，`device_id` / `device_name` 是发起的设备）；`node.set_agent_defaults` 写 `agents.<id>.default_*` 时一条，`target` 是 `agents.<id>.default_*`，`detail` 为空。直接改文件（`anycon config set`、手工编辑）不进审计：能碰那台机器的人本来就不受审计约束。和当前值相同的 `node.set_config` 改动是空操作，不进审计。
 
@@ -891,6 +895,7 @@ SQLite（WAL）。全部表：
 - 响应大小：`session.history` 一页 ≤ 192 KiB（§ 7.9），`tool_result.output` ≤ 64 KiB（§ 8.2），`session.send` ≤ 1 MiB；其余靠传输层分片（≤ 200 KiB / 片，重组上限 16 MiB）。大消息经 hub 的 4 MiB 发送缓冲时会被退回一部分并重发（hub 保证顺序，[protocol.md § 3.1](../protocol.md#31-消息大小)）；daemon 收到 `backpressure` / `rate_limited` 要暂停再按序重发，不能继续灌
 - 配对：短码本地生成、不发给 hub；joiner 要等 `pair.ack` 才落盘（§ 15）
 - 账号内接入（§ 15.1）：daemon 是唯一的验证点，hub 的限速不算数。口令只存 Argon2id 派生值；口令失败计数在发出 CPace 份额**之前**先写库；同时最多一个口令尝试、3 个接入会话；接入码和扫码密钥只在内存里，不落盘、不进日志和审计
+- 导出 / 导入（§ 20）：`local.export` / `local.import` 只在本机 socket 上，经 hub 一律 `forbidden`——它们读写 daemon 所在机器上调用方指定的路径。压缩包里是明文的会话内容（消息、工具输出、附件、会话 `env` 的值），输出文件 0600，要和数据目录一样保管。导入把压缩包当不可信输入：不按压缩包里的路径解压（附件只会写成 `blobs/<blob_id>.<扩展名>`，文件名是校验过格式再拼出来的）、条目名 / 符号链接 / 大小 / SHA-256 / 每个字段都校验，写进库里的 `settings` 在每次拉起 agent 前照常按当前配置复核（危险模式、会话 `env` 策略），`launch_args` 不收
 - 本机 socket 0600；CLI 不需要再认证。Windows 上是命名管道：属主和 DACL 都是当前用户、拒绝远程客户端、第一个实例独占名字；管道名字是全局的，客户端连上之后核对管道属主是当前用户，防别的本机用户抢先建同名管道冒充 daemon（ADR-42）
 - dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
 - 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes` 和 `preview.enabled` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.*`、`enroll.*` 不在名单里；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
@@ -978,3 +983,123 @@ v0.1 另含：图片附件（§ 7.10，ADR-35）；账号内接入（§ 15.1，[
 - **卡死检测**：带帧的消息 120 秒没有被回执，就丢掉传输、发 `RESET` 帧体，让预览页重新握手（纯回执消息不算：对端空闲时本来就不回执它）
 - **握手失败**：Noise 读不了第一条（PSK 不对、钉的不是这台 daemon、消息坏了）回 `malformed`
 - **日志**：隧道建立 / 断开在 debug 级记 label 和对端 id；不记路径、头、正文、票据 id 和密钥
+
+## 20. 导出文件格式（`anycon export` / `import`）
+
+[cli.md § 3.6](cli.md#36-数据与审计本机管理) 是命令的行为，[ADR-46](../decisions.md#adr-46-导出--导入一个-zip只走本机通道导入不带-agent-会话-id) 是取舍。这一节是**文件格式**——长期契约：以后的版本要能读旧版本导出的文件。
+
+### 20.1 通道
+
+- 方法 `local.export` / `local.import`，只在本机 socket 上（`local.*`，经 hub 调用一律 `forbidden`；参数里的路径是 daemon 所在机器上的绝对路径，相对路径、空串、带 NUL 都是 `invalid`）。类型是 `anycon_daemon::transfer::{ExportParams, ExportResult, ImportParams, ImportResult}`，不在 `crates/protocol` 里（不属于客户端协议）。
+- 请求是长请求，不分阶段：响应就是最终结果，进度以 `local.progress { op, done, total, bytes }`（`op` 是 `export` / `import`，`done` / `total` 按会话数，`bytes` 是已经读写的字节数）通知**只发给发起的这个连接**（不像 `job.progress` 广播给所有客户端）。连接断开 = 取消：导出删掉临时文件，导入回滚正在写的那个会话、删掉已经放好的附件文件。
+- 同一时刻只有一个导出或导入，第二个得到 `busy`。输出文件已经存在且没带 `overwrite` → `exists`（`data.reason = "output_exists"`）；输出目录不存在、`out` 是目录、`since_ms` 不是合理的时间、点名的会话 id 格式不对 → `invalid`；点名的会话不存在 → `not_found`；导入的文件不存在 → `not_found`。
+- 审计：`export` / `import`，见 § 13。
+
+### 20.2 压缩包布局（版本 1）
+
+一个普通的 zip（deflate 或 stored，不加密，没有 zip 注释的要求）。条目名全是 ASCII、`/` 分隔、相对路径，**只有**下面这些：
+
+```
+manifest.json
+sessions/<会话 id>/session.json
+sessions/<会话 id>/events.jsonl
+sessions/<会话 id>/blobs/<blob_id>.<扩展名>
+```
+
+- `<会话 id>` 是 `sess_` + 22 位 base62；`<blob_id>` 是 32 位小写 hex；`<扩展名>` 是 1–16 个 ASCII 字母数字，取自 daemon 存的文件名（附件不限图片，扩展名只是文件名的一部分，类型以 `session.json` 里的 `mime` 为准）。
+- `sessions/`、`sessions/<id>/`、`sessions/<id>/blobs/` 的目录条目可有可无；读的一方忽略它们。**条目顺序没有意义**（导出时 `manifest.json` 写在最后，因为会话数要等写完才准）。
+- 导出写的条目权限是 0600；读的一方不看权限位（只用它识别符号链接和特殊文件）。
+
+**`manifest.json`**
+
+```json
+{
+  "format": "anycon-export",
+  "version": 1,
+  "exported_at_ms": 1791720000000,
+  "anycon_version": "0.2.0",
+  "node_name": "mac-mini",
+  "session_count": 3,
+  "filters": { "project": null, "since_ms": null, "sessions": null, "exclude_archived": false }
+}
+```
+
+`format` 固定 `anycon-export`；`version` 是格式版本（整数）；`session_count` 是压缩包里 `sessions/` 下的会话目录数，导入时核对；`anycon_version`、`node_name` 只是信息；`filters` 记这个压缩包是怎么筛出来的（`project`、`since_ms`、点名的 `sessions`、`exclude_archived`——是否排除了已归档的会话，缺省 false），不参与校验。
+
+**`sessions/<id>/session.json`**——会话行里值得带走的列、worktree 记录和附件记录（时间一律 Unix 毫秒）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 和目录名一致 |
+| `project` | string \| null | 项目名；scratch 会话为 null |
+| `agent` | string | agent id（`claude-code`、`codex`、`acp:…`） |
+| `title`、`title_locked` | string、bool | 标题，以及用户是否手动改过（改过就不再自动取） |
+| `status` | string | 导出时的状态（`SessionStatus`） |
+| `archived` | bool | |
+| `settings` | object | `SessionSettings`，含会话 `env` 的值 |
+| `agent_session_id` | string \| null | agent 自己的会话 id。**导出，导入时不收**（§ 20.5） |
+| `created_ms`、`updated_ms` | number | `updated_ms` 是最后活动时间：会话行的 `updated_ms` 和最后一个事件的时间中较大的 |
+| `last_seq`、`event_count` | number | 最后一个事件的 seq（没有事件为 0）、`events.jsonl` 的事件数；导入时核对 |
+| `next_turn_id` | number | |
+| `usage` | object | `UsageTotals` |
+| `preview` | string \| null | 列表里的最后一条消息摘要 |
+| `worktree` | object \| null | 会话的 worktree 记录，只有元数据：`branch`、`base`（规范化的引用名或完整 SHA）、`base_display`、`base_sha`、`rel_path`（`.anycon/worktrees/<名字>`）、`state`、`created_ms` |
+| `blobs` | array | 绑定在这个会话上的附件，`blobs/` 下每个文件一条：`blob_id`、`file`（`<blob_id>.<扩展名>`）、`name`（展示名）、`mime`、`bytes`、`sha256`（内容的 SHA-256，64 位小写 hex）、`width`、`height`（可空）、`created_ms` |
+
+读的一方忽略不认识的字段，缺省值见 `anycon_daemon::transfer::SessionFile`。
+
+**`sessions/<id>/events.jsonl`**：按 seq 升序的完整事件流，每行一个 JSON 对象，结构就是 `session.history` 返回的 `SessionEvent`（`{ session_id, seq, ts_ms, turn_id?, event: { type, … } }`，[protocol.md § 6](../protocol.md#6-会话事件)）。UTF-8，`\n` 结尾；读的一方忽略空行和行尾的 `\r`。没有事件的会话是一个空文件。
+
+**`sessions/<id>/blobs/<blob_id>.<扩展名>`**：附件的原始字节，不转码、不去 EXIF。
+
+### 20.3 导出什么、不导出什么
+
+| | |
+|---|---|
+| **导出** | `sessions` 行里的：`id` `project` `agent` `title` `title_locked` `status` `archived` `settings` `agent_session_id` `created_ms` `updated_ms` `next_turn_id` `usage` `preview`，以及从事件流得出的 `last_seq`；`events` 全部；`worktrees` 行里的 `branch` `base` `base_display` `base_sha` `rel_path` `state` `created_ms`；绑定在会话上的 `blobs` 行的 `id` `name` `mime` `size` `sha256` `width` `height` `created_ms` 和文件内容 |
+| **不导出，因为只对原来那台机器有意义** | `sessions.project_loc`（`linked:<绝对路径>` 或目录的 `(dev, ino)`）、`sessions.launch_args`（上次拉起 agent 的参数快照：resume 不读它，里面可能有原机器的路径）、`worktrees` 的 `id`（导入时重新生成）、`project_loc`、`dev` / `ino`、`git_pointer`、`session_id`；worktree **目录里的文件**（用户的代码在 git 里，不是会话历史） |
+| **不导出，因为是别的东西** | 节点密钥（`keys/`）、配对设备（`peers`）、节点口令、配置（`config.toml`）、审计日志、预览标签和票据、agent 探测缓存、任务、没有被消息引用的 blob（`session_id` 为空）、关联项目的登记（`linked_projects`）；进行中的权限请求（只在内存里；已经写进事件流的 `permission` 事件当然在，导入时收尾，§ 20.5）；agent 自己的会话文件（`~/.claude/projects/…`，那是 agent 的，anycon 不动也不带） |
+
+### 20.4 导入的校验
+
+**压缩包层**——任何一条不满足就整个拒绝（`invalid`，`data.reason = "bad_archive"`，版本不认识是 `"unsupported_version"`），什么都不写：
+
+1. 是 zip，条目数 ≤ 1 000 000，没有重名或互相重叠的条目。
+2. `manifest.json` 存在，`format = "anycon-export"`，`version = 1`（先于条目结构检查：版本不认识时结构本来就可能不同）。
+3. 每个条目名都是 § 20.2 列出的形式——绝对路径、`..`、反斜杠、盘符、非 ASCII、多余的目录层级和文件（包括 macOS 重新打包带的 `__MACOSX/`）一律拒绝；条目不是加密的、压缩方式是 stored 或 deflate、不是符号链接（也不是设备、管道、套接字）、目录条目没有内容。
+4. 大小上限：`manifest.json` ≤ 1 MiB，`session.json` ≤ 16 MiB，`events.jsonl` ≤ 16 GiB，单个附件 ≤ 4 GiB，全部条目解压后合计 ≤ 128 GiB（按条目头声明的算；读的时候再强制每个条目读到的字节数恰好等于声明的，所以头里撒谎的压缩包到不了上限之外）。非试运行时还要数据目录所在卷的剩余空间 ≥ 解压后合计 + 1 GiB（`disk_full`，`busy`）。
+5. 每个会话目录都有 `session.json` 和 `events.jsonl`；`manifest.json` 的 `session_count` 等于会话目录数。
+
+**会话层**——只让这个会话失败（报告里列出原因，其它会话照常导入）：
+
+1. `session.json` 能解析，`id` 和目录名一致；`agent` 是 1–64 个 `[A-Za-z0-9._:-]`；`project` 过项目名校验（不含 `/` `\`、NUL、控制字符，不以 `.` 开头，≤ 255 字节）；`title`、`preview` ≤ 4096 字节；`settings` 序列化后 ≤ 64 KiB；时间 ≤ 公元 3000 年；seq 和计数 ≤ 2^53。
+2. worktree：没有项目的会话不能有 worktree；`rel_path` 必须是 `.anycon/worktrees/<名字>`（名字是 1–200 个 `[A-Za-z0-9._-]`、不全是点）；`branch` 和 `base` 只收引用名的保守子集（`[A-Za-z0-9._/-]`，不以 `-` `.` `/` 开头，没有 `..` `//` `/.`，不以 `/` `.` `.lock` 结尾）或完整 SHA，`base_sha` 是 40 / 64 位 hex——这些之后会拼进 `git worktree add`，所以不能出现选项或特殊语法。
+3. 附件：`file` 必须是 `<blob_id>.<扩展名>` 且 `blob_id` 和它一致；`blob_id`、`file` 在会话内不重复；`name` ≤ 255 字节、不含 `/` `\`、控制字符和双向控制符；`mime` 是 `类型/子类型` 的 token 形式（不限图片，没有写死的列表）；`sha256` 是 64 位小写 hex；`bytes` ≤ 单个附件上限；`blobs/` 下的文件和这份列表一一对应；每个文件的字节数等于 `bytes`，内容的 SHA-256 等于 `sha256`。
+4. `events.jsonl`：每行能解析成 `SessionEvent`（事件类型必须是这个版本认识的），`session_id` 是这个会话，`seq` ≥ 1 且严格递增（可以有空缺），一行 ≤ 8 MiB；行数等于 `event_count`，最后一个 seq 等于 `last_seq`。
+5. 会话 id 已经在库里 → **跳过**（报告里是 `already_exists`），什么都不改。附件的 `blob_id` 已经被这台节点上别的会话或未引用的 blob 占着 → 这个会话失败，已有的文件不动。
+
+`--dry-run` 做完上面全部（读每个事件、给每个附件算 SHA-256），只是不写库、不放文件。
+
+### 20.5 导入的会话是什么样的
+
+每个会话一个数据库事务（会话行、worktree 行、附件记录、事件、全文索引、turn 汇总）：附件先写到 `blobs/tmp/import-<随机>/`（0600，边写边核对 SHA-256），数据库都写成功之后 rename 到 `blobs/`，最后提交；任何一步失败都回滚并删掉已经放好的文件，不会留下半个会话。提交之后会话装进内存、向在线客户端发 `session.changed`，马上能列出、读历史、搜索。
+
+- **id、时间、标题、设置、用量、归档状态**原样保留；项目名按本机盘上的写法规范（`canonical_project_name`）。项目在本机不存在时照样导入：会话仍能从节点首页和搜索打开，要继续对话就建（或关联）一个同名项目；导入报告会列出这样的项目。
+- **没有 agent 进程**。`status`：导出时是 `queued` / `starting` / `running` / `waiting_permission` 的变成 `interrupted`（和 daemon 崩溃重启后的孤儿会话一样，§ 2），其余（`idle` `ended` `error` `interrupted`）不变。没有答复的 `permission` 事件在历史里收尾（追加 `permission_resolved { by_device: "daemon" }`），导出时在跑的会话再追加一条 `status { interrupted }`；这些追加的事件接在原有最后一个 seq 之后，时间是导入时间，这是导入会改动事件流的唯一地方。事件流里有 `turn_start` 没有 `turn_done` 的 turn 在 `turns` 表里标 `error`。
+- **`agent_session_id` 清空，`launch_args` 不收**。理由：agent 的会话文件（Claude Code 的 `~/.claude/projects/<cwd>/<id>.jsonl`、Codex 的 rollout）在别的机器上不存在，带着 id 的话下一次 `send` 走 resume 必然失败，而且会一直失败（id 一直在）。清掉之后下一次 `send` 开一个新的 agent 会话：历史仍在、仍可搜索，但 agent 不记得之前的对话。代价：在**同一台机器**上从导出恢复（agent 的会话文件还在）时 resume 也不再接上原来的 agent 对话。`launch_args` 本来就不被 resume 读（adapter 只取 `agent_session_id`，其余按当前设置），而且来自不可信的文件，所以不收。
+- **`project_loc` 为空**：和迁移之前创建的旧会话一样，第一次拉起 agent 时按本机同名项目补记（§ 10 里「记下位置」的规则），所以同名项目换了目录、设备号和 inode 不同都不会让导入的会话被拒。
+- **worktree**：有 worktree 的会话得到一条新的 `worktrees` 记录（新 id；没有设备号 / inode、`.git` 指针、项目位置）。导出时是 `removed`（归档时已经删掉）的保持 `removed`，`failed` 的保持 `failed`，其余（`creating` `active` `kept` `missing`）变成 `missing`——目录在这台机器上不存在。下一条消息按分支重建（`git worktree add -b <分支> <路径> <base_sha>`，§ 10.1「cwd 与复核」），本机项目里没有那个提交之类让重建失败时，这条消息以错误收尾，历史照常能看；路径上已经有别的目录时按「被换掉」报错、不会把它认成自己的（没有记下目录身份）。`removed` 的会话取消归档时按分支重建。
+- **全文索引、turn 汇总**从事件流重建，规则和 daemon 平时写的一致：用户消息一条一行；assistant 文字按 `text_delta` 累积，在 `text_done`、`turn_done` 或累积到 32 KiB 时收成一行。
+- **`sessions.history_retention`**：导入的会话保留原来的最后活动时间，设了保留期而它比保留期老的，下一次清理（启动时和每小时）就会删掉——导入报告里有 warning。
+
+### 20.6 版本和兼容
+
+- `version` 变了读的一方拒绝（`unsupported_version`），不猜。向后兼容的改动（给 `session.json` 或 `manifest.json` 加可选字段、加新的附件扩展名）不升版本；读的一方忽略不认识的字段。改字段语义、删字段、换条目布局才升版本。
+- `events.jsonl` 里的事件就是协议的 `Event`：新版本加了事件类型，旧版本 daemon 导入新版本导出的、含这种事件的会话时，那个会话校验失败（报告里写明不认识的类型），先升级 daemon 再导入。事件是协议的一部分，导入不拿 `Value` 原样存，因为 `session.history` 读到不认识的事件整页都会失败。
+
+### 20.7 限制
+
+- 导入一个会话期间事务持着数据库写锁：事件按 256 条一批写（一条多行 `INSERT`），实测 10 万事件的会话在 debug 构建、负载很高的机器上约 8 秒（发布构建更快）；写锁持有期间别的会话的落库要等（`busy_timeout` 10 秒，超时那一条事件写不进库）。特别大的会话尽量在没有会话在跑的时候导入。
+- 导出是每个会话各一个只读快照，不是整个数据库的快照：导出过程中新来的事件、新建的会话可能在、也可能不在文件里；导出过程中被删除的会话（或附件文件）记一条 warning、不在文件里。
+- 导入是「补进去」，不是合并：已经存在的会话不会被覆盖或补齐（比如先导入了一个旧的导出，再导入同一个会话的新导出，新的那份被跳过）。要用新的导出覆盖，先 `anycon delete` 那个会话。
+- 文件是明文，没有加密、没有签名；防篡改靠每个附件的 SHA-256 之外没有别的（压缩包本身来自谁，由用户自己判断）。

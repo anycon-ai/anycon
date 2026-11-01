@@ -449,9 +449,18 @@ impl Store {
 
     // ---------------- events ----------------
 
+    /// 导入（[`ImportTx`]）和正常写入共用的几条 SQL：行的写法只有一份（事件的批量插入列顺序和 `EVENT_INSERT` 一致）。
+    const EVENT_INSERT: &'static str =
+        "INSERT INTO events (session_id, seq, ts_ms, turn_id, kind, ref_id, event) VALUES (?,?,?,?,?,?,?)";
+    const FTS_INSERT: &'static str = "INSERT INTO messages_fts (text, session_id, seq, role, ts_ms) VALUES (?,?,?,?,?)";
+    const TURN_START: &'static str =
+        "INSERT OR REPLACE INTO turns (session_id, turn_id, message_id, started_ms) VALUES (?,?,?,?)";
+    const TURN_END: &'static str =
+        "UPDATE turns SET ended_ms = ?, reason = ?, usage = ? WHERE session_id = ? AND turn_id = ?";
+
     pub async fn append_event(&self, ev: &SessionEvent) -> Result<()> {
         let (kind, ref_id) = event_index(&ev.event);
-        sqlx::query("INSERT INTO events (session_id, seq, ts_ms, turn_id, kind, ref_id, event) VALUES (?,?,?,?,?,?,?)")
+        sqlx::query(Self::EVENT_INSERT)
             .bind(&ev.session_id)
             .bind(ev.seq as i64)
             .bind(ev.ts_ms as i64)
@@ -578,7 +587,7 @@ impl Store {
     // ---------------- turns ----------------
 
     pub async fn turn_start(&self, session_id: &str, turn_id: u64, message_id: &str, started_ms: u64) -> Result<()> {
-        sqlx::query("INSERT OR REPLACE INTO turns (session_id, turn_id, message_id, started_ms) VALUES (?,?,?,?)")
+        sqlx::query(Self::TURN_START)
             .bind(session_id)
             .bind(turn_id as i64)
             .bind(message_id)
@@ -596,7 +605,7 @@ impl Store {
         reason: &str,
         usage: Option<&Value>,
     ) -> Result<()> {
-        sqlx::query("UPDATE turns SET ended_ms = ?, reason = ?, usage = ? WHERE session_id = ? AND turn_id = ?")
+        sqlx::query(Self::TURN_END)
             .bind(ended_ms as i64)
             .bind(reason)
             .bind(usage.map(|u| u.to_string()))
@@ -647,7 +656,7 @@ impl Store {
         if text.trim().is_empty() {
             return Ok(());
         }
-        sqlx::query("INSERT INTO messages_fts (text, session_id, seq, role, ts_ms) VALUES (?,?,?,?,?)")
+        sqlx::query(Self::FTS_INSERT)
             .bind(text)
             .bind(session_id)
             .bind(seq as i64)
@@ -1352,6 +1361,259 @@ impl Store {
             started_ms: r.get::<i64, _>("started_ms") as u64,
             ended_ms: r.get::<Option<i64>, _>("ended_ms").map(|v| v as u64),
         }))
+    }
+}
+
+// ---------------- 导出 / 导入（docs/spec/daemon.md § 20）----------------
+
+impl Store {
+    /// 会话是否已经在库里。
+    pub async fn session_exists(&self, id: &str) -> Result<bool> {
+        Ok(sqlx::query("SELECT 1 FROM sessions WHERE id = ?").bind(id).fetch_optional(&self.pool).await?.is_some())
+    }
+
+    /// 会话最后一个事件的时间（没有事件为 `None`）。`sessions.updated_ms` 只在落库点才更新，会落后于事件流，
+    /// 「最后活动时间」取两者的较大值。
+    pub async fn last_event_ts(&self, session_id: &str) -> Result<Option<u64>> {
+        let r = sqlx::query("SELECT ts_ms FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT 1")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(r.map(|r| r.get::<i64, _>(0) as u64))
+    }
+
+    /// 导出读一个会话用的只读事务：行、worktree、附件记录和事件都取自同一个 WAL 快照，写入不被它挡住。
+    /// 用完调 [`SnapshotTx::finish`]（不调直接丢掉也会回滚）。
+    pub async fn begin_snapshot(&self) -> Result<SnapshotTx> {
+        Ok(SnapshotTx { tx: self.pool.begin().await? })
+    }
+
+    /// 导入一个会话用的写事务：会话行、worktree 行、附件记录、事件、全文索引、turn 汇总在同一个事务里，
+    /// 失败回滚时不留下半个会话。第一条语句必须是 [`ImportTx::insert_session`]（它先拿写锁，同时检测 id 冲突）。
+    pub async fn begin_import(&self) -> Result<ImportTx> {
+        Ok(ImportTx { tx: self.pool.begin().await? })
+    }
+}
+
+/// [`Store::begin_snapshot`]。
+pub struct SnapshotTx {
+    tx: sqlx::Transaction<'static, sqlx::Sqlite>,
+}
+
+impl SnapshotTx {
+    pub async fn session(&mut self, id: &str) -> Result<Option<SessionRow>> {
+        let row = sqlx::query("SELECT * FROM sessions WHERE id = ?").bind(id).fetch_optional(&mut *self.tx).await?;
+        row.as_ref().map(Store::row_to_session).transpose()
+    }
+
+    pub async fn worktree(&mut self, id: &str) -> Result<Option<WorktreeRow>> {
+        let row = sqlx::query("SELECT * FROM worktrees WHERE id = ?").bind(id).fetch_optional(&mut *self.tx).await?;
+        row.as_ref().map(Store::row_to_worktree).transpose()
+    }
+
+    /// 绑定在这个会话上的附件记录（没被消息引用的 blob 不属于任何会话）。
+    pub async fn blobs_of(&mut self, session_id: &str) -> Result<Vec<BlobRow>> {
+        let rows = sqlx::query("SELECT * FROM blobs WHERE session_id = ? ORDER BY created_ms, id")
+            .bind(session_id)
+            .fetch_all(&mut *self.tx)
+            .await?;
+        rows.iter().map(Store::row_to_blob).collect()
+    }
+
+    /// seq > `after_seq` 的事件，升序，最多 `limit` 条。
+    pub async fn events_after(&mut self, session_id: &str, after_seq: u64, limit: u32) -> Result<Vec<SessionEvent>> {
+        let rows = sqlx::query("SELECT * FROM events WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?")
+            .bind(session_id)
+            .bind(after_seq as i64)
+            .bind(limit as i64)
+            .fetch_all(&mut *self.tx)
+            .await?;
+        rows.iter().map(Store::row_to_event).collect()
+    }
+
+    /// 结束事务（只读，回滚即可）。
+    pub async fn finish(self) -> Result<()> {
+        Ok(self.tx.rollback().await?)
+    }
+}
+
+/// [`Store::begin_import`]。
+pub struct ImportTx {
+    tx: sqlx::Transaction<'static, sqlx::Sqlite>,
+}
+
+impl ImportTx {
+    /// 写会话行。id 已经在库里返回 `false`（什么都没写）。
+    pub async fn insert_session(&mut self, s: &SessionRow) -> Result<bool> {
+        let n = sqlx::query(
+            "INSERT INTO sessions (id, project, agent, title, title_locked, status, archived, settings, agent_session_id, launch_args, \
+             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+             ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(&s.id)
+        .bind(&s.project)
+        .bind(&s.agent)
+        .bind(&s.title)
+        .bind(s.title_locked)
+        .bind(status_str(s.status))
+        .bind(s.archived)
+        .bind(serde_json::to_string(&s.settings)?)
+        .bind(&s.agent_session_id)
+        .bind(serde_json::to_string(&s.launch_args)?)
+        .bind(s.created_ms as i64)
+        .bind(s.updated_ms as i64)
+        .bind(s.last_seq as i64)
+        .bind(s.next_turn_id as i64)
+        .bind(serde_json::to_string(&s.usage)?)
+        .bind(&s.preview)
+        .bind(&s.project_loc)
+        .bind(&s.worktree_id)
+        .execute(&mut *self.tx)
+        .await?
+        .rows_affected();
+        Ok(n > 0)
+    }
+
+    pub async fn insert_worktree(&mut self, w: &WorktreeRow) -> Result<()> {
+        Store::bind_worktree(sqlx::query(Store::WORKTREE_UPSERT), w).execute(&mut *self.tx).await?;
+        Ok(())
+    }
+
+    /// 写附件记录。id 已经在库里（别的会话或未引用的 blob 占着）返回 `false`。
+    pub async fn insert_blob(&mut self, b: &BlobRow) -> Result<bool> {
+        let n = sqlx::query(
+            "INSERT INTO blobs (id, session_id, name, mime, size, sha256, width, height, path, created_ms) \
+             VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(&b.id)
+        .bind(&b.session_id)
+        .bind(&b.name)
+        .bind(&b.mime)
+        .bind(b.size as i64)
+        .bind(&b.sha256)
+        .bind(b.width.map(i64::from))
+        .bind(b.height.map(i64::from))
+        .bind(&b.path)
+        .bind(b.created_ms as i64)
+        .execute(&mut *self.tx)
+        .await?
+        .rows_affected();
+        Ok(n > 0)
+    }
+
+    /// 一批事件一条多行 `INSERT`：导入一个会话时整个事务持着数据库写锁，逐条插入（每条一次往返）会让它拖得很长，
+    /// 别的会话落库要等锁。列和 [`Store::EVENT_INSERT`] 一致。
+    pub async fn insert_events(&mut self, evs: &[SessionEvent]) -> Result<()> {
+        if evs.is_empty() {
+            return Ok(());
+        }
+        let mut rows = Vec::with_capacity(evs.len());
+        for ev in evs {
+            let (kind, ref_id) = event_index(&ev.event);
+            rows.push((ev, kind, ref_id, serde_json::to_string(&ev.event)?));
+        }
+        let mut q = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "INSERT INTO events (session_id, seq, ts_ms, turn_id, kind, ref_id, event) ",
+        );
+        q.push_values(rows, |mut b, (ev, kind, ref_id, json)| {
+            b.push_bind(&ev.session_id)
+                .push_bind(ev.seq as i64)
+                .push_bind(ev.ts_ms as i64)
+                .push_bind(ev.turn_id.map(|t| t as i64))
+                .push_bind(kind)
+                .push_bind(ref_id)
+                .push_bind(json);
+        });
+        q.build().execute(&mut *self.tx).await?;
+        Ok(())
+    }
+
+    /// 全文索引一段文字（空白的不收，和 [`Store::index_text`] 一样）。
+    pub async fn index_text(&mut self, session_id: &str, seq: u64, role: &str, ts_ms: u64, text: &str) -> Result<()> {
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        sqlx::query(Store::FTS_INSERT)
+            .bind(text)
+            .bind(session_id)
+            .bind(seq as i64)
+            .bind(role)
+            .bind(ts_ms as i64)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn turn_start(
+        &mut self,
+        session_id: &str,
+        turn_id: u64,
+        message_id: &str,
+        started_ms: u64,
+    ) -> Result<()> {
+        sqlx::query(Store::TURN_START)
+            .bind(session_id)
+            .bind(turn_id as i64)
+            .bind(message_id)
+            .bind(started_ms as i64)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn turn_end(
+        &mut self,
+        session_id: &str,
+        turn_id: u64,
+        ended_ms: u64,
+        reason: &str,
+        usage: Option<&Value>,
+    ) -> Result<()> {
+        sqlx::query(Store::TURN_END)
+            .bind(ended_ms as i64)
+            .bind(reason)
+            .bind(usage.map(|u| u.to_string()))
+            .bind(session_id)
+            .bind(turn_id as i64)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// 这个会话里还没结束的 turn 都标 `error`（和重启恢复一样：事件流里有 `turn_start` 没有 `turn_done`）。
+    pub async fn close_open_turns(&mut self, session_id: &str, ended_ms: u64) -> Result<()> {
+        sqlx::query("UPDATE turns SET ended_ms = ?, reason = 'error' WHERE session_id = ? AND ended_ms IS NULL")
+            .bind(ended_ms as i64)
+            .bind(session_id)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// 事件流写完之后回填由事件流得出的列：最后一个 seq、下一个 turn id、最终状态。
+    pub async fn finish_session(
+        &mut self,
+        id: &str,
+        last_seq: u64,
+        next_turn_id: u64,
+        status: SessionStatus,
+    ) -> Result<()> {
+        sqlx::query("UPDATE sessions SET last_seq = ?, next_turn_id = ?, status = ? WHERE id = ?")
+            .bind(last_seq as i64)
+            .bind(next_turn_id as i64)
+            .bind(status_str(status))
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn commit(self) -> Result<()> {
+        Ok(self.tx.commit().await?)
+    }
+
+    pub async fn rollback(self) -> Result<()> {
+        Ok(self.tx.rollback().await?)
     }
 }
 

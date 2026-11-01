@@ -11,7 +11,7 @@
 | `crates/crypto` | Noise 握手与加密、CPace；同一份实现编译成 Rust / wasm（→ `packages/protocol/wasm`，生成产物不进仓库） |
 | `crates/hub` | `anycon-hub` 二进制；`docker/` 是它的镜像和 compose 示例 |
 | `crates/daemon` | daemon 核心：会话、workspace、worktree、权限、存储 |
-| `crates/adapters` | Claude Code / Codex / mock adapter |
+| `crates/adapters` | Claude Code / Codex / ACP（OpenCode、Gemini CLI 等一切说 ACP 的 agent）/ mock adapter |
 | `crates/cli` | `anycon` 二进制（daemon + CLI 合一）；`scripts/dev.sh` 是 `just dev` 的实现 |
 | `web/` | Web UI（React + Vite），构建产物嵌入 hub |
 | `packages/protocol` | 生成的 TS 类型、信封 / JSON-RPC 编解码、wasm 封装 |
@@ -83,4 +83,4 @@ hub 只嵌入它**编译时**看到的 `web/dist`：先编了 hub、后构建 we
 - 对 [decisions.md](docs/decisions.md) 里的任何一条提出反对，带理由
 - 在你的机器 / 发行版上跑一遍 `just dev` 和 `just e2e`，报告环境问题（Linux 上的 systemd 用户服务还没有在实机上验证过）
 - Windows（ADR-42）：在实机上试 `anycon service install` / `stop` / `restart`、agent 的拉起和取消、关联目录和 `fs.read`，报告问题。Windows 上 `cargo test --workspace` 要 Git for Windows（测试会调 `git`）；建符号链接的测试要管理员权限或开发者模式。依赖 sh 脚本 / 伪终端 / unix 权限位的测试在 Windows 上编译时就跳过了
-- 新的 agent adapter（见 [roadmap](docs/roadmap.md) 的 ACP adapter）
+- 在真实的 ACP agent（OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi）上跑一遍，报告和 [ACP adapter](crates/adapters/src/acp/README.md) 的差异（`ANYCON_REAL_AGENT_TESTS=1` 的冒烟测试目前只有 OpenCode，作者本机没有装任何 ACP agent）

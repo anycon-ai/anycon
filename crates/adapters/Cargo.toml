@@ -1,6 +1,6 @@
 [package]
 name = "anycon-adapters"
-description = "agent adapter：claude-code（stream-json）、codex（app-server JSON-RPC）、mock（测试与 E2E）"
+description = "agent adapter：claude-code（stream-json）、codex（app-server JSON-RPC）、acp（任何 ACP agent）、mock（测试与 E2E）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,7 +1,7 @@
 //! daemon ↔ adapter 的接口。`crates/adapters` 实现 [`Adapter`]，`crates/daemon` 调用。两边只依赖这里和 protocol。
 //!
-//! 一个 adapter 对应一种 agent（claude-code、codex、mock…）。daemon 对每个会话调用 [`Adapter::spawn`]
-//! 得到一个 [`AgentHandle`]，之后通过它收事件、发用户输入、答复权限、改设置、取消、关闭。
+//! 一个 adapter 对应一个 agent（claude-code、codex、mock，以及每个 ACP agent 各一个）。daemon 对每个会话调用
+//! [`Adapter::spawn`] 得到一个 [`AgentHandle`]，之后通过它收事件、发用户输入、答复权限、改设置、取消、关闭。
 //!
 //! 语义见 docs/spec/daemon.md § 5–9。
 
@@ -11,13 +11,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anycon_protocol::{
-    AgentInfo, AttachmentRef, Event, ModelInfo, PermissionDetail, PermissionKind, PermissionOption, SessionSettings,
+    AgentInfo, AttachmentRef, DiagnosticField, Event, ModelInfo, PermissionDetail, PermissionKind, PermissionOption,
+    SessionSettings,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// `config.agents.<id>` 的内容，daemon 读 toml 后交给 adapter。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// `config.agents.<id>`（ACP agent 是 `config.agents.acp.<id>`）的内容，daemon 读 toml 后交给 adapter。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AdapterConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -187,9 +188,10 @@ pub type Result<T> = std::result::Result<T, AdapterError>;
 
 #[async_trait::async_trait]
 pub trait Adapter: Send + Sync + 'static {
-    /// 稳定 id，也是 `config.agents.<id>` 的键。
-    fn id(&self) -> &'static str;
-    fn label(&self) -> &'static str;
+    /// 稳定 id，也是 `config.agents.<id>` 的键（ACP agent 是 `config.agents.acp.<id>`）。
+    /// 返回 `&str` 而不是 `&'static str`：ACP agent 的名字来自用户配置，运行时才知道。
+    fn id(&self) -> &str;
+    fn label(&self) -> &str;
     /// `claude-stream-json` | `codex-app-server` | `acp` | `mock`
     fn driver(&self) -> &'static str;
 
@@ -204,6 +206,12 @@ pub trait Adapter: Send + Sync + 'static {
 
     /// 拉起或续接一个 agent 会话。
     async fn spawn(&self, req: SpawnRequest) -> Result<Box<dyn AgentHandle>>;
+
+    /// `agent.diagnose` / `anycon doctor` 用的诊断：`(人类可读全文, 结构化字段)`。内部可以跑一次完整探测，
+    /// 所有子进程调用都带超时。`None` = 这个 adapter 没有自己的诊断，daemon 用通用的字段。
+    async fn diagnose(&self, _ctx: &ProbeContext) -> Option<(String, Vec<DiagnosticField>)> {
+        None
+    }
 }
 
 #[async_trait::async_trait]

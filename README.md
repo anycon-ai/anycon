@@ -124,9 +124,10 @@ for await (const ev of session.send('run the tests and fix whatever fails')) {
 |---|---|
 | Claude Code | Native adapter (bidirectional `stream-json`) |
 | Codex | Native adapter (`codex app-server`, `codex-cli` ≥ 0.157.0) |
+| OpenCode, Gemini CLI, Goose, Kimi Code, Qwen Code, Cursor, GitHub Copilot, Pi | [ACP](https://agentclientprotocol.com) v1 adapter (one process per agent, shared by its sessions; the command must already be on the daemon's `PATH`, nothing is fetched with `npx` / `uvx`) |
 | Mock agent | Deterministic fake agent for development and tests (`ANYCON_MOCK_AGENT=1`) |
 
-Installed agents are picked up automatically. Use `anycon config set agents.<id>.enabled false` to turn one off. Planned next: [ACP](https://agentclientprotocol.com) agents (OpenCode, Pi, …) and custom agents registered as nodes through the SDK. See the [roadmap](docs/roadmap.md).
+Installed agents are picked up automatically. Use `anycon config set agents.<id>.enabled false` to turn one off (`agents.acp.<id>.enabled` for an ACP agent). Any other ACP agent can be added with `anycon config set agents.acp.<name>.command "<command>"`. Planned next: custom agents registered as nodes through the SDK. See the [roadmap](docs/roadmap.md).
 
 ## Privacy model
 

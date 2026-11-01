@@ -52,7 +52,7 @@ impl DaemonError {
 }
 
 pub struct DaemonOptions {
-    /// `None` = `anycon_adapters::all()`。
+    /// `None` = `anycon_adapters::all()` 加上配置里的 ACP agent（注册表里的和 `[agents.acp.<name>]` 里加的，随配置热增减）。
     pub adapters: Option<Vec<Arc<dyn Adapter>>>,
     /// 连接 hub（默认 true）。
     pub hub: bool,
@@ -182,9 +182,21 @@ impl Daemon {
         )
         .await;
         let blobs = Blobs::open(&paths, store.clone(), config.clone()).await?;
-        let adapters = opts.adapters.unwrap_or_else(anycon_adapters::all);
-        let agents =
-            Agents::new(adapters, config.clone(), env.clone(), store.clone(), clients.clone(), paths.clone()).await;
+        // 给了 adapter 集合（测试）就只用它；否则是三个内置 adapter，ACP agent 由工厂按配置里的名字补上
+        let (adapters, acp_factory): (_, Option<crate::agents::AdapterFactory>) = match opts.adapters {
+            Some(a) => (a, None),
+            None => (anycon_adapters::all(), Some(Arc::new(|name: &str| anycon_adapters::acp::adapter_for(name)))),
+        };
+        let agents = Agents::with_factory(
+            adapters,
+            acp_factory,
+            config.clone(),
+            env.clone(),
+            store.clone(),
+            clients.clone(),
+            paths.clone(),
+        )
+        .await;
         let sessions = Sessions::new(SessionDeps {
             store: store.clone(),
             clients: clients.clone(),

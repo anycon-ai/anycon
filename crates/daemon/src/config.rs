@@ -294,7 +294,7 @@ impl Default for LogConfig {
 }
 
 /// `[agents]`：标量键（`env_from_login_shell` 等）和 `[agents.<id>]` 子表混在同一张表里，
-/// 所以反序列化走中间形态再分拣。
+/// 所以反序列化走中间形态再分拣。ACP agent 单独放在 `[agents.acp.<name>]` 下（`acp`）。
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentsConfig {
     pub env_from_login_shell: bool,
@@ -304,15 +304,28 @@ pub struct AgentsConfig {
     pub env: HashMap<String, String>,
     #[serde(flatten)]
     pub agent: BTreeMap<String, AdapterConfig>,
+    /// `[agents.acp.<name>]`：ACP agent（docs/spec/daemon.md § 5.7）。内置注册表里的每一个都有一项（缺省启用，命令取注册表里的），
+    /// 文件里的段按键覆盖；也可以加注册表里没有的（那样必须写 `command`）。
+    pub acp: BTreeMap<String, AdapterConfig>,
 }
 
 /// 内置的真实 agent：没有 `[agents.<id>]` 段也参与探测（没装就是 `not_installed`），写 `enabled = false` 才关。
-/// `mock` 不在其中：它只在显式开启时出现。
+/// `mock` 不在其中：它只在显式开启时出现。ACP agent 见 [`AgentsConfig::acp`]。
 pub const BUILTIN_AGENTS: &[&str] = &["claude-code", "codex"];
 
 /// 缺省的 `agents` 子表：每个内置 agent 一项，`enabled = true`，其余缺省。文件里的段按键覆盖它。
 fn builtin_agent_defaults() -> BTreeMap<String, AdapterConfig> {
     BUILTIN_AGENTS.iter().map(|id| ((*id).to_string(), AdapterConfig { enabled: true, ..Default::default() })).collect()
+}
+
+/// 注册表里没有用户改动的 ACP agent 的配置：启用，其余缺省。
+fn acp_default() -> AdapterConfig {
+    AdapterConfig { enabled: true, ..Default::default() }
+}
+
+/// 缺省的 `agents.acp` 子表：注册表里每个 agent 一项。
+fn acp_defaults() -> BTreeMap<String, AdapterConfig> {
+    anycon_adapters::acp::registry_ids().map(|id| (id.to_string(), acp_default())).collect()
 }
 
 impl Default for AgentsConfig {
@@ -323,6 +336,7 @@ impl Default for AgentsConfig {
             probe_timeout: "60s".into(),
             env: HashMap::new(),
             agent: builtin_agent_defaults(),
+            acp: acp_defaults(),
         }
     }
 }
@@ -364,14 +378,22 @@ impl<'de> Deserialize<'de> for AgentsConfig {
         let raw = RawAgents::deserialize(d)?;
         // 内置 agent 先放缺省项（不经过 figment 的缺省层、直接反序列化时也一样），文件里的段覆盖它
         let mut agent = builtin_agent_defaults();
+        let mut acp = acp_defaults();
         for (k, v) in raw.rest {
             if !v.is_object() {
                 // 未知的标量键：忽略（向前兼容）
                 continue;
             }
             if k == "acp" {
-                // ACP agent 注册表（`[agents.acp.<name>]`）v0.1 没有实现：以前会被解析然后没人读，现在明说。
-                tracing::warn!("[agents.acp.*] is not supported yet and is ignored");
+                let table: BTreeMap<String, serde_json::Value> =
+                    serde_json::from_value(v).map_err(|e| D::Error::custom(format!("agents.acp: {e}")))?;
+                for (name, entry) in table {
+                    anycon_adapters::acp::validate_name(&name)
+                        .map_err(|e| D::Error::custom(format!("agents.acp.{name}: {e}")))?;
+                    let c: AdapterConfig = serde_json::from_value(entry)
+                        .map_err(|e| D::Error::custom(format!("agents.acp.{name}: {e}")))?;
+                    acp.insert(name, c);
+                }
             } else {
                 let c: AdapterConfig =
                     serde_json::from_value(v).map_err(|e| D::Error::custom(format!("agents.{k}: {e}")))?;
@@ -384,6 +406,7 @@ impl<'de> Deserialize<'de> for AgentsConfig {
             probe_timeout: raw.probe_timeout,
             env: raw.env,
             agent,
+            acp,
         })
     }
 }
@@ -497,6 +520,25 @@ impl Config {
         if !(PREVIEW_TTL_MIN..=PREVIEW_TTL_MAX).contains(&ttl) {
             return Err(bad("preview.ticket_ttl", "must be between 5m and 7d".into()));
         }
+        for (name, c) in &self.agents.acp {
+            if anycon_adapters::acp::registry_entry(name).is_none()
+                && c.command.as_deref().is_none_or(|cmd| cmd.trim().is_empty())
+            {
+                return Err(bad(
+                    &format!("agents.acp.{name}.command"),
+                    "required: this agent is not in the built-in registry, so there is no default command".into(),
+                ));
+            }
+        }
+        // ACP agent 只在 `[agents.acp.<名字>]` 下配置：写成 `[agents.<名字>]` 不会生效，直接报错比悄悄忽略好
+        for k in self.agents.agent.keys() {
+            if self.agents.acp.contains_key(k) {
+                return Err(bad(
+                    &format!("agents.{k}"),
+                    format!("{k} is an ACP agent: configure it under [agents.acp.{k}]"),
+                ));
+            }
+        }
         for pat in &self.permissions.session_env_allow {
             let name = pat.strip_suffix('*').unwrap_or(pat);
             let ok = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
@@ -554,9 +596,20 @@ impl Config {
             parse_duration(&self.sessions.history_retention).ok()
         }
     }
-    /// 取某个 adapter 的配置。没有 `[agents.<id>]` 段 = 未配置。
+    /// 取某个 adapter 的配置。没有 `[agents.<id>]` 段 = 未配置（ACP agent 看 `[agents.acp.<id>]`，注册表里的总有一项）。
     pub fn adapter_config(&self, id: &str) -> Option<&AdapterConfig> {
-        self.agents.agent.get(id)
+        self.agents.agent.get(id).or_else(|| self.agents.acp.get(id))
+    }
+
+    /// 全部 ACP agent 的名字：注册表里的加上用户在 `[agents.acp.<name>]` 里加的。
+    pub fn acp_names(&self) -> impl Iterator<Item = &str> {
+        self.agents.acp.keys().map(String::as_str)
+    }
+
+    /// 是不是「注册表里的 ACP agent 且用户没动过它的配置」：没装时不出现在 `agent.list` 里（免得列表里躺着一堆没装的）；
+    /// 用户写过它的段（关掉、改了命令、设了默认值…）或者它是用户自己加的，就照常列出。
+    pub fn is_implicit_acp(&self, id: &str) -> bool {
+        anycon_adapters::acp::registry_entry(id).is_some() && self.agents.acp.get(id) == Some(&acp_default())
     }
     pub fn node_name(&self) -> String {
         if let Some(n) = self.hub.name.as_ref().filter(|n| !n.is_empty()) {
@@ -847,6 +900,8 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("# session_env_allow = [\"MY_FLAG\", \"FEATURE_*\"]\n");
     s.push_str("\n[agents]\nenv_from_login_shell = true\nprobe_interval = \"10m\"\n");
     s.push_str("\n[agents.claude-code]\nenabled = true\n");
+    s.push_str("\n# ACP agent（OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi）装了就会自动出现；\n");
+    s.push_str("# 自己加一个或改命令（热加载；自己加的必须写 command）：\n# [agents.acp.my-agent]\n# command = \"my-agent --acp\"\n");
     s.push_str("\n[worktree]\n");
     s.push_str("# 每会话 git worktree（热加载）。default 只影响客户端的初始选择：worktree | local\n");
     s.push_str("default = \"worktree\"\n");
@@ -898,6 +953,10 @@ pub fn is_hot_key(key: &str) -> bool {
         || key.starts_with("preview.")
         || key == "log.level"
     {
+        return true;
+    }
+    // ACP agent 的整段都热加载：agent 的适配器随配置增减，命令 / 环境变了会重新探测，下次拉起时用新的
+    if key.starts_with("agents.acp.") {
         return true;
     }
     if let Some(rest) = key.strip_prefix("agents.") {
@@ -1008,8 +1067,12 @@ dangerous_modes = ["yolo"]
         assert_eq!(cc.command.as_deref(), Some("claude --foo"));
         assert_eq!(cc.default_model.as_deref(), Some("opus"));
         assert!(!cfg.adapter_config("codex").unwrap().enabled);
-        // `[agents.acp.*]` v0.1 不支持：忽略，不当作 adapter
+        // `[agents.acp.<name>]` 是 ACP agent，`acp` 本身不是 agent id
         assert!(cfg.adapter_config("acp").is_none());
+        let oc = cfg.adapter_config("opencode").unwrap();
+        assert!(oc.enabled, "an ACP entry without `enabled` is on");
+        assert_eq!(oc.command.as_deref(), Some("opencode acp"));
+        assert_eq!(oc.dangerous_modes, vec!["yolo".to_string()]);
     }
 
     #[test]
@@ -1375,5 +1438,77 @@ dangerous_modes = ["yolo"]
         assert!(example.contains("link_roots = [\"~\"]"));
         write(d.path(), &example);
         assert_eq!(Config::load(&paths).unwrap().workspace.link_roots, vec!["~".to_string()]);
+    }
+
+    // ---------------- ACP agent
+
+    fn acp_cfg(toml: &str) -> Result<Config, ConfigError> {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), toml);
+        Config::load(&Paths::new(d.path()))
+    }
+
+    #[test]
+    fn every_registry_acp_agent_has_a_default_entry_and_is_implicit_until_touched() {
+        let cfg = Config::default();
+        let names: Vec<&str> = cfg.acp_names().collect();
+        for id in anycon_adapters::acp::registry_ids() {
+            assert!(names.contains(&id), "{id}");
+            assert!(cfg.adapter_config(id).unwrap().enabled);
+            assert!(cfg.is_implicit_acp(id), "{id}");
+        }
+        assert_eq!(names.len(), 8);
+        // 用户动过（关掉 / 改命令 / 设默认值）就不再是「隐含的」；自己加的 agent 从来不是
+        let cfg = acp_cfg("[agents.acp.opencode]\nenabled = false\n[agents.acp.gemini]\ncommand = \"/opt/g/gemini --acp\"\n[agents.acp.pi]\ndefault_mode = \"x\"\n[agents.acp.mine]\ncommand = \"mine --acp\"\n").unwrap();
+        for id in ["opencode", "gemini", "pi", "mine"] {
+            assert!(!cfg.is_implicit_acp(id), "{id}");
+        }
+        assert!(cfg.is_implicit_acp("goose"));
+        assert!(!cfg.adapter_config("opencode").unwrap().enabled);
+        assert_eq!(cfg.adapter_config("gemini").unwrap().command.as_deref(), Some("/opt/g/gemini --acp"));
+        assert_eq!(cfg.adapter_config("mine").unwrap().command.as_deref(), Some("mine --acp"));
+        assert_eq!(cfg.acp_names().count(), 9);
+        // 其余 adapter 的配置不受影响
+        assert!(cfg.adapter_config("codex").unwrap().enabled);
+        assert!(cfg.adapter_config("mock").is_none());
+    }
+
+    #[test]
+    fn acp_entries_are_validated() {
+        // 自己加的 agent 必须写命令
+        let e = acp_cfg("[agents.acp.mine]\nenabled = true\n").unwrap_err().to_string();
+        assert!(e.contains("agents.acp.mine.command"), "{e}");
+        assert!(acp_cfg("[agents.acp.mine]\ncommand = \"  \"\n").is_err());
+        // 名字的规则；保留字
+        for bad in ["Mine", "a b", "codex", "claude-code", "mock", "env"] {
+            let e = acp_cfg(&format!("[agents.acp.\"{bad}\"]\ncommand = \"x\"\n")).unwrap_err().to_string();
+            assert!(e.contains(&format!("agents.acp.{bad}")), "{bad}: {e}");
+        }
+        // 写成 `[agents.opencode]` 不会生效：报错并指路
+        let e = acp_cfg("[agents.opencode]\nenabled = false\n").unwrap_err().to_string();
+        assert!(e.contains("[agents.acp.opencode]"), "{e}");
+        // 写错类型
+        assert!(acp_cfg("[agents.acp]\nopencode = 3\n").is_err());
+        // 注册表里的 agent 不用写命令
+        acp_cfg("[agents.acp.opencode]\ndangerous_modes = [\"yolo\"]\n").unwrap();
+    }
+
+    #[test]
+    fn acp_keys_can_be_read_and_set_and_are_hot() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "");
+        let paths = Paths::new(d.path());
+        set_value(&paths, "agents.acp.mine.command", "\"mine --acp\"").unwrap();
+        set_value(&paths, "agents.acp.opencode.default_mode", "\"code\"").unwrap();
+        let cfg = Config::load(&paths).unwrap();
+        assert_eq!(get_value(&cfg, "agents.acp.mine.command"), Some(serde_json::json!("mine --acp")));
+        assert_eq!(cfg.adapter_config("opencode").unwrap().default_mode.as_deref(), Some("code"));
+        // 一个没有命令的新 agent 写不进去（整体校验失败，文件不变）
+        assert!(set_value(&paths, "agents.acp.broken.enabled", "true").is_err());
+        assert!(Config::load(&paths).unwrap().adapter_config("broken").is_none());
+        assert!(is_hot_key("agents.acp.mine.command"));
+        assert!(is_hot_key("agents.acp.mine.env.FOO"));
+        assert!(is_hot_key("agents.acp.opencode.enabled"));
+        assert!(!is_hot_key("agents.claude-code.command"));
     }
 }

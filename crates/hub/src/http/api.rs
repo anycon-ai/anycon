@@ -126,6 +126,12 @@ pub struct ConfigView {
     push_available: bool,
     /// dev server 预览的 origin 模板（如 `"https://{label}.aiplace.app"`），没配预览时是 `null`（docs/spec/hub.md § 13）。
     preview_origin_template: Option<String>,
+    /// 服务条款的地址（`ANYCON_TERMS_URL`），登录页据此显示「继续即表示同意」的链接；没配就不出现这个字段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terms_url: Option<String>,
+    /// 隐私政策的地址（`ANYCON_PRIVACY_URL`）；没配就不出现。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    privacy_url: Option<String>,
 }
 
 pub async fn config(State(state): State<Arc<AppState>>) -> Json<ConfigView> {
@@ -139,6 +145,8 @@ pub async fn config(State(state): State<Arc<AppState>>) -> Json<ConfigView> {
         vapid_public_key: Some(state.push.public_key().to_string()),
         push_available: true,
         preview_origin_template: state.config.preview.as_ref().map(|p| p.origin_template()),
+        terms_url: state.config.terms_url.clone(),
+        privacy_url: state.config.privacy_url.clone(),
     })
 }
 

@@ -31,7 +31,7 @@ hub 的每个功能都要能回答一个问题：**这个功能需要看消息�
 | `/`、`/assets/*`、`/manifest.webmanifest`、`/sw.js`、`/THIRD-PARTY-LICENSES.txt` | 嵌入的 Web UI（最后一个是 Web UI 里 npm 包的许可证清单，构建时生成）。所有不匹配 `/api`、`/auth`、`/v1` 的路径回退到 `index.html`（SPA 路由） |
 | `GET /healthz` | 进程活着。返回版本号，不查库 |
 | `GET /readyz` | 数据库可用、migration 已跑完。反代和容器编排用这个 |
-| `GET /api/config` | 公开配置：`mode`、`public_url`、启用的登录方式 `login_methods`（顺序固定：`github`、`google`（配了对应的 OAuth 凭据）、`email`（配了 SMTP）、`token`（仅 `single`）；只有 `single` 且配了 SMTP 时是 `["email","token"]`）、是否开启队列、`vapid_public_key`（恒有值）、`push_available`（恒 `true`：VAPID 密钥缺失 hub 起不来）、协议版本、`preview_origin_template`（配了预览时如 `"https://{label}.aiplace.app"`，否则 `null`，§ 13）。登录页和客户端启动时拉一次，不需要认证 |
+| `GET /api/config` | 公开配置：`mode`、`public_url`、启用的登录方式 `login_methods`（顺序固定：`github`、`google`（配了对应的 OAuth 凭据）、`email`（配了 SMTP）、`token`（仅 `single`）；只有 `single` 且配了 SMTP 时是 `["email","token"]`）、是否开启队列、`vapid_public_key`（恒有值）、`push_available`（恒 `true`：VAPID 密钥缺失 hub 起不来）、协议版本、`preview_origin_template`（配了预览时如 `"https://{label}.aiplace.app"`，否则 `null`，§ 13）、`terms_url` / `privacy_url`（`ANYCON_TERMS_URL` / `ANYCON_PRIVACY_URL`，服务条款和隐私政策的地址，登录页据此显示链接；没配的那个不出现在响应里）。登录页和客户端启动时拉一次，不需要认证 |
 
 **安全头**：HTML 响应（`index.html` 和 SPA 回退，含 304）带 `Content-Security-Policy`；JSON 和静态资源不带：
 

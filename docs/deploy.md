@@ -83,6 +83,7 @@ hub 跑在家里、家里走局域网 IP 的部署方式见 § 4「家里跑 hub
 | `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | dev server 预览的 origin 模板（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)），如 `https://*.preview-example.net`：`*` 是最左边的一整段，代表每个预览的 label。**预览域名必须和 `ANYCON_PUBLIC_URL` 不在同一个可注册域名下**（`hub.example.com` 配 `*.preview.example.com` 会启动报错），要单独的域名和泛域名证书，见 § 4「dev server 预览」。只有本机开发可以用 http：`http://*.preview.localhost:8080` |
 | `ANYCON_PREVIEW_BYTES_PER_MIN` | `536870912`（512 MiB），最小 `205824` | 每个账号预览流量（两个方向合计）每分钟的预算。超了只暂停预览，不影响会话 |
 | `ANYCON_PREVIEW_MAX_CONNECTIONS` | `16` | 每个账号同时在线的预览连接数（一个预览域名的所有标签页共用一条） |
+| `ANYCON_TERMS_URL` / `ANYCON_PRIVACY_URL` | （空 = 不显示） | 服务条款、隐私政策的地址，两种模式都能用。配了的那个经 `/api/config` 的 `terms_url` / `privacy_url` 下发：登录页最下面显示「继续即表示你同意服务条款，并已阅读隐私政策」并链接过去（只配一个就只提那一个，新标签页打开），`anycon connect` 用邮箱验证码登录前也打印同一句话——这两处是账号被创建的地方（`multi` 的开放注册）。必须是 https：链接显示在登录页上，http 的地址在路上可以被换掉；只有 `localhost`、`*.localhost` 和本机 / 内网 IP 可以用 http（本机开发）。不能带用户名密码。不合法启动报错。开放注册的 hub（§ 9）应该配上；只给自己和邀请的人用的 hub 一般不需要 |
 
 **已识别、但还没有实现**的变量：设置了不会报错，hub 启动时在日志里警告「ignored」。这些是后续版本的设计目标：
 
@@ -431,7 +432,7 @@ Mac 睡眠后 daemon 会自动重连，但如果 Mac mini 要 7×24 可用，系
 
 ## 9. 公共 hub 与 `multi` 模式
 
-公共 hub（anycon.ai）运行的是同一份 release，只是配置不同：`ANYCON_MODE=multi`，加上 SMTP、GitHub / Google 的 OAuth 应用、`ANYCON_ADMIN_EMAILS`，以及它自己选的 `ANYCON_QUOTA_*`。自建的人也可以这样配，得到一个开放注册的 hub。anycon.ai 公共 hub 的上线见 [roadmap](roadmap.md)。
+公共 hub（anycon.ai）运行的是同一份 release，只是配置不同：`ANYCON_MODE=multi`，加上 SMTP、GitHub / Google 的 OAuth 应用、`ANYCON_ADMIN_EMAILS`、它自己选的 `ANYCON_QUOTA_*`，以及指向它的服务条款和隐私政策的 `ANYCON_TERMS_URL=https://anycon.ai/terms`、`ANYCON_PRIVACY_URL=https://anycon.ai/privacy`（登录页据此显示链接，§ 3）。自建的人也可以这样配，得到一个开放注册的 hub。anycon.ai 公共 hub 的上线见 [roadmap](roadmap.md)。
 
 `multi` 和默认的 `single` 的区别（[architecture.md § 3](architecture.md#3-运行模式)）：
 

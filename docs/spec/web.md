@@ -107,6 +107,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
   - `single`：发码后显示「如果这个邮箱绑定了账号，验证码已经发出」（hub 不告诉你邮箱有没有绑定）；一句提示「邮箱要先在账号设置里绑定才能用来登录」
   - `multi`：页面副标题是「登录；还没有账号的话，登录时会自动为你创建一个」；提示「我们会给这个邮箱发一个 6 位验证码。如果这个邮箱还没有账号，输入验证码后会自动创建」；发码后显示「如果邮箱地址没错，6 位验证码已经发出……输入后即可登录；如果你是新用户，会同时创建账号」，按钮是「继续」（`multi` 里没有「先绑定」的说法，任何邮箱都能收到码）
 - 邀请（仅 `single`；`multi` 忽略暂存的码）：`/invite/:code` 把 code 暂存在 sessionStorage，登录页读到就显示「接受邀请」卡片，点了用 `/auth/invite` 兑换；有 OAuth 时卡片下提示「也可以用下面的第三方账号来创建账号」，GitHub / Google 按钮的 URL 带上 `invite=<code>`，由 hub 在 OAuth 登录时兑换。没有邀请的 `single` hub 上，邮箱码只给已绑定邮箱的账号用，OAuth 新用户会得到 `registration_closed`
+- **服务条款 / 隐私政策**：`/api/config` 带了 `terms_url` / `privacy_url`（hub 的 `ANYCON_TERMS_URL` / `ANYCON_PRIVACY_URL`）时，所有登录方式下面一行小字「继续即表示你同意服务条款，并已阅读隐私政策」，两个词各链接到对应地址（`target="_blank"`、`rel="noopener noreferrer"`）；只配了一个就只提那一个，都没配（自建 hub 的默认）就没有这一行。Web UI 里账号只在这一页创建（OAuth 从这里发起，邀请页也转到这里），所以只放这一处
 - 删账号之后整页跳到 `/login` 时，显示一次「账号已删除」的提示（§ 4.9）
 - passkey 使用 conditional UI（实现后）：页面加载即发起 `navigator.credentials.get({ mediation: 'conditional' })`，有 passkey 的用户点一下自动填充就进去
 

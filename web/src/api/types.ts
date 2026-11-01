@@ -26,6 +26,10 @@ export interface ApiConfig {
   push_available?: boolean
   /** 预览 origin 的模板（如 `https://{label}.aiplace.app`，hub.md § 13.1）；没配预览是 `null`。 */
   preview_origin_template?: string | null
+  /** 服务条款的地址（hub 的 `ANYCON_TERMS_URL`）；没配时没有这个字段。登录页据此显示链接。 */
+  terms_url?: string
+  /** 隐私政策的地址（`ANYCON_PRIVACY_URL`）；没配时没有这个字段。 */
+  privacy_url?: string
 }
 export interface ApiMe {
   id: string

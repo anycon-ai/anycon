@@ -419,6 +419,10 @@ pub struct Config {
     pub mailer_override: Option<Arc<dyn Mailer>>,
     /// `ANYCON_PREVIEW_URL`（ADR-39）。`None` = 没有 dev server 预览。
     pub preview: Option<PreviewUrl>,
+    /// `ANYCON_TERMS_URL`：服务条款的地址，经 `/api/config.terms_url` 给登录页显示链接。`None` = 不显示。
+    pub terms_url: Option<String>,
+    /// `ANYCON_PRIVACY_URL`：隐私政策的地址（`/api/config.privacy_url`）。
+    pub privacy_url: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -447,6 +451,8 @@ impl std::fmt::Debug for Config {
             .field("push_allow_hosts", &self.push_allow_hosts)
             .field("mailer_override", &self.mailer_override.is_some())
             .field("preview", &self.preview)
+            .field("terms_url", &self.terms_url)
+            .field("privacy_url", &self.privacy_url)
             .finish_non_exhaustive()
     }
 }
@@ -524,6 +530,8 @@ impl Config {
             push_allow_hosts: None,
             mailer_override: None,
             preview: None,
+            terms_url: None,
+            privacy_url: None,
         })
     }
 
@@ -616,6 +624,12 @@ impl Config {
         }
         if let Some(s) = raw.vapid_subject.as_deref().filter(|s| !s.trim().is_empty()) {
             cfg.vapid_subject = Some(parse_vapid_subject(s)?);
+        }
+        if let Some(s) = raw.terms_url.as_deref().filter(|s| !s.trim().is_empty()) {
+            cfg.terms_url = Some(parse_document_url("ANYCON_TERMS_URL", s)?);
+        }
+        if let Some(s) = raw.privacy_url.as_deref().filter(|s| !s.trim().is_empty()) {
+            cfg.privacy_url = Some(parse_document_url("ANYCON_PRIVACY_URL", s)?);
         }
 
         // 管理员邮箱、配额、OAuth：不管哪个模式都解析和校验（笔误早点发现，切换模式时不会才炸），
@@ -930,6 +944,32 @@ pub fn parse_vapid_subject(s: &str) -> Result<String, ConfigError> {
     Ok(s.to_string())
 }
 
+/// 解析 `ANYCON_TERMS_URL` / `ANYCON_PRIVACY_URL`：登录页上链接过去的文档地址。必须是 https——链接显示在
+/// 登录页上，http 的地址在路上可以被换掉；只有本机开发（`localhost`、`*.localhost`、本机 / 内网 IP）可以用 http。
+/// 不能带用户名密码。返回 [`Url`] 规范化后的字符串。
+pub fn parse_document_url(var: &'static str, s: &str) -> Result<String, ConfigError> {
+    let s = s.trim();
+    let url = Url::parse(s).map_err(|e| invalid(var, format!("{s:?}: {e}")))?;
+    let local = match url.host() {
+        Some(url::Host::Domain(d)) => is_localhost_name(d),
+        Some(url::Host::Ipv4(ip)) => is_private_ip(IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => is_private_ip(IpAddr::V6(ip)),
+        None => return Err(invalid(var, format!("{s:?}: missing host"))),
+    };
+    match url.scheme() {
+        "https" => {}
+        "http" if local => {}
+        "http" => {
+            return Err(invalid(var, format!("{s:?}: must be https (plain http only for localhost development)")))
+        }
+        _ => return Err(invalid(var, format!("{s:?}: must be an https:// URL"))),
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(invalid(var, format!("{s:?}: must not contain a user name or password")));
+    }
+    Ok(url.to_string())
+}
+
 /// 解析 `ANYCON_RATE_*_BYTES_PER_MIN`：正整数字节数，不小于 [`MIN_ENVELOPE_BYTES`]——
 /// 预算小于一个满片信封的话，发送方永远凑不够额度把它送出去。
 fn parse_rate(var: &'static str, s: &str) -> Result<u64, ConfigError> {
@@ -1223,6 +1263,8 @@ struct RawConfig {
     preview_url: Option<String>,
     preview_bytes_per_min: Option<String>,
     preview_max_connections: Option<String>,
+    terms_url: Option<String>,
+    privacy_url: Option<String>,
     admin_emails: Option<String>,
     quota_devices: Option<String>,
     quota_daemons: Option<String>,
@@ -1657,6 +1699,45 @@ mod tests {
         // 什么都没有：用主机名兜底，仍然是合法的 mailto:
         let c = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "http://192.168.1.5:8080")])).unwrap();
         assert_eq!(c.vapid_subject(), "mailto:noreply@192.168.1.5");
+    }
+
+    #[test]
+    fn document_urls_are_optional_https_and_validated() {
+        let c = with(&[]).unwrap();
+        assert_eq!((c.terms_url, c.privacy_url), (None, None));
+        // 空白等于没设
+        let c = with(&[("ANYCON_TERMS_URL", "  "), ("ANYCON_PRIVACY_URL", "")]).unwrap();
+        assert_eq!((c.terms_url, c.privacy_url), (None, None));
+        let c = with(&[
+            ("ANYCON_TERMS_URL", " https://example.com/terms "),
+            ("ANYCON_PRIVACY_URL", "https://example.com/legal?doc=privacy#data"),
+        ])
+        .unwrap();
+        assert_eq!(c.terms_url.as_deref(), Some("https://example.com/terms"));
+        assert_eq!(c.privacy_url.as_deref(), Some("https://example.com/legal?doc=privacy#data"));
+        // 两种模式都认
+        let c = multi(&[("ANYCON_TERMS_URL", "https://example.com/terms")]).unwrap();
+        assert_eq!(c.terms_url.as_deref(), Some("https://example.com/terms"));
+        assert!(c.ignored_vars.is_empty(), "{:?}", c.ignored_vars);
+        // 本机开发可以用 http
+        for local in
+            ["http://localhost:4321/terms", "http://site.localhost/terms", "http://127.0.0.1/t", "http://[::1]/t"]
+        {
+            assert!(with(&[("ANYCON_TERMS_URL", local)]).is_ok(), "{local}");
+        }
+        for bad in [
+            "http://example.com/terms",
+            "example.com/terms",
+            "/terms",
+            "ftp://example.com/terms",
+            "mailto:legal@example.com",
+            "https://user:pass@example.com/terms",
+        ] {
+            let err = with(&[("ANYCON_TERMS_URL", bad)]).unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_TERMS_URL", .. }), "{bad}: {err}");
+            let err = with(&[("ANYCON_PRIVACY_URL", bad)]).unwrap_err();
+            assert!(matches!(err, ConfigError::Invalid { var: "ANYCON_PRIVACY_URL", .. }), "{bad}: {err}");
+        }
     }
 
     // ---- multi 模式：管理员邮箱、配额、OAuth ----

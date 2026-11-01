@@ -62,7 +62,12 @@
     "emailSentSignUp": "如果邮箱地址没错，6 位验证码已经发出，10 分钟内有效。输入后即可登录；如果你是新用户，会同时创建账号。",
     "emailVerifySignUp": "继续",
     "or": "或",
-    "invitedOauth": "也可以用下面的第三方账号来创建账号。"
+    "invitedOauth": "也可以用下面的第三方账号来创建账号。",
+    "legal": {
+      "both": "继续即表示你同意<terms>服务条款</terms>，并已阅读<privacy>隐私政策</privacy>。",
+      "terms": "继续即表示你同意<terms>服务条款</terms>。",
+      "privacy": "继续即表示你已阅读<privacy>隐私政策</privacy>。"
+    }
   },
   "oauth": {
     "continueWith": "使用 {{provider}} 继续",

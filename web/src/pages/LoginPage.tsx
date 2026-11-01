@@ -7,6 +7,7 @@ import { ApiError } from '@/api/client'
 import { keys, loginWithInvite, loginWithToken, useConfig, useMe } from '@/api/queries'
 import { CenterLayout } from '@/components/CenterLayout'
 import { EmailLogin } from '@/features/auth/EmailLogin'
+import { LegalNotice } from '@/features/auth/LegalNotice'
 import { OAuthButtons } from '@/features/auth/OAuthButtons'
 import { consumeAccountDeleted } from '@/lib/accountDeleted'
 import { clearInvite, readInvite } from '@/lib/invite'
@@ -20,7 +21,8 @@ import { Field, Input } from '@/ui/Field'
 import { Card, Skeleton } from '@/ui/Misc'
 
 /**
- * 登录页（spec/web.md § 4.1）。顺序：GitHub / Google → 邮箱 → token（只在 hub 提供时，有别的方式就折叠起来）。
+ * 登录页（spec/web.md § 4.1）。顺序：GitHub / Google → 邮箱 → token（只在 hub 提供时，有别的方式就折叠起来），
+ * hub 配了服务条款 / 隐私政策的地址时最下面是指向它们的一行。Web UI 里账号只在这一页创建（邀请页也转到这里）。
  * `oauthError` / `provider`：OAuth 回调失败时 hub 重定向带回来的 `?oauth_error=&provider=`。
  */
 export function LoginPage({ redirect, oauthError, provider }: { redirect?: string; oauthError?: string; provider?: string }) {
@@ -183,6 +185,7 @@ export function LoginPage({ redirect, oauthError, provider }: { redirect?: strin
             ) : null}
             {!tokenEnabled && !hasOtherMethod ? <p className="text-sm text-fg-muted">{t('login.noMethods')}</p> : null}
             {(!tokenEnabled || tokenFolded) && error ? <p className="text-sm text-danger">{error}</p> : null}
+            <LegalNotice termsUrl={config.data?.terms_url} privacyUrl={config.data?.privacy_url} />
           </div>
         )}
       </Card>

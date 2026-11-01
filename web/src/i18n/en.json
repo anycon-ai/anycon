@@ -62,7 +62,12 @@
     "emailSentSignUp": "If the address is correct, a 6-digit code is on its way. It is valid for 10 minutes. Entering it signs you in, or creates your account if you are new.",
     "emailVerifySignUp": "Continue",
     "or": "or",
-    "invitedOauth": "Or create your account with one of the providers below."
+    "invitedOauth": "Or create your account with one of the providers below.",
+    "legal": {
+      "both": "By continuing, you agree to the <terms>Terms of Service</terms> and acknowledge the <privacy>Privacy Policy</privacy>.",
+      "terms": "By continuing, you agree to the <terms>Terms of Service</terms>.",
+      "privacy": "By continuing, you acknowledge the <privacy>Privacy Policy</privacy>."
+    }
   },
   "oauth": {
     "continueWith": "Continue with {{provider}}",

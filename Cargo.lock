@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "anycon-adapters"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anycon-agent-api",
  "anycon-protocol",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "anycon-agent-api"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anycon-protocol",
  "anyhow",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "anycon-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anycon-crypto",
  "anycon-daemon",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "anycon-crypto"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anycon-protocol",
  "argon2",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "anycon-daemon"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anycon-adapters",
  "anycon-agent-api",
@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "anycon-hub"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anycon-crypto",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "anycon-protocol"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "rmp-serde",
  "schemars",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "anycon-windows-launcher"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "windows-sys 0.61.2",
 ]

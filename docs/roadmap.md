@@ -78,7 +78,7 @@
 
 ## v0.2 — 公共 hub 与更多 agent
 
-已完成（随下个版本发布，见 [CHANGELOG](../CHANGELOG.md#unreleased)）：
+已完成（v0.2.0 发布，见 [CHANGELOG](../CHANGELOG.md#020---2026-11-01)）：
 
 - `multi` 模式：开放注册、配额与限速、`auth_ok.quota` / `quota_update`（[ADR-40](decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)）
 - 登录方式：`multi` 的邮箱注册、GitHub、Google、OAuth 身份关联、设置页管理登录方式（ADR-22、ADR-40）

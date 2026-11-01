@@ -3,7 +3,7 @@
 //! 主要模块：
 //! - `daemon` / `local` / `rpc`：装配与生命周期、本机通道（Unix socket / Windows 命名管道）、RPC 调度
 //! - `hub` / `peers` / `flow`：到 hub 的连接、已配对客户端的 Noise 会话、发送方流控
-//! - `sessions` / `agents` / `workspace` / `worktree`：会话、agent 注册与探测、项目目录、每会话 worktree
+//! - `sessions` / `agents` / `workspace` / `wsroots` / `worktree`：会话、agent 注册与探测、项目目录（多个 workspace 根）、每会话 worktree
 //! - `store` / `config` / `audit` / `blobs`：SQLite 存储、配置、审计、附件通道
 //! - `remote_config` / `logtail`：远程查看 / 修改节点配置（白名单，ADR-43）、远程读日志尾部（`node.logs`）
 //! - `preview`：dev server 预览（票据、端口探测、Noise 隧道里的 HTTP / WebSocket 转发）
@@ -41,6 +41,7 @@ pub mod sys;
 pub mod util;
 pub mod workspace;
 pub mod worktree;
+pub mod wsroots;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testutil;

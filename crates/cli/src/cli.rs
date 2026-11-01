@@ -245,12 +245,20 @@ pub enum ProjectsCmd {
         /// Also run git init
         #[arg(long)]
         git: bool,
+        /// Workspace root to create it in (default: the primary root). Must be one of the node's roots:
+        /// `workspace.root` or an entry of `workspace.extra_roots`
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
     },
     /// Clone a repository (streams progress)
     Clone {
         url: String,
         #[arg(long)]
         name: Option<String>,
+        /// Workspace root to clone into (default: the primary root). Must be one of the node's roots:
+        /// `workspace.root` or an entry of `workspace.extra_roots`
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
     },
     Rename {
         from: String,
@@ -661,5 +669,31 @@ mod tests {
             panic!()
         };
         assert!(matches!(w.cmd, Some(WorktreesCmd::Remove { delete_branch: true, yes: true, .. })));
+    }
+    #[test]
+    fn projects_create_and_clone_take_an_optional_workspace_root() {
+        let Command::Projects(p) =
+            parse(&["projects", "create", "app", "--git", "--root", "/mnt/ext"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert!(matches!(p.cmd, Some(ProjectsCmd::Create { git: true, root: Some(ref r), .. }) if r == "/mnt/ext"));
+        let Command::Projects(p) = parse(&["projects", "create", "app"]).unwrap().command else { panic!() };
+        assert!(matches!(p.cmd, Some(ProjectsCmd::Create { root: None, git: false, .. })));
+        let Command::Projects(p) =
+            parse(&["projects", "clone", "https://x/y.git", "--name", "yy", "--root", "~/ext"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            p.cmd,
+            Some(ProjectsCmd::Clone { ref name, root: Some(ref r), .. }) if name.as_deref() == Some("yy") && r == "~/ext"
+        ));
+        let Command::Projects(p) = parse(&["projects", "clone", "https://x/y.git"]).unwrap().command else { panic!() };
+        assert!(matches!(p.cmd, Some(ProjectsCmd::Clone { root: None, .. })));
+        // `--root` needs a value; the other project commands do not take it
+        assert!(parse(&["projects", "create", "app", "--root"]).is_err());
+        assert!(parse(&["projects", "trash", "app", "--root", "/x"]).is_err());
+        assert!(parse(&["projects", "rename", "a", "b", "--root", "/x"]).is_err());
     }
 }

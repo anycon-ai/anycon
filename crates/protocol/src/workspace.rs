@@ -30,14 +30,18 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// 一个项目 = workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。
+/// 一个项目 = 某个 workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。
 /// 元数据全部推导；只有「关联了哪些目录」存在 daemon 的库里。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Project {
-    /// 项目名。根目录下的项目和关联的项目共用一个命名空间，客户端的所有操作都用它。
+    /// 项目名。所有 workspace 根下的项目和关联的项目共用一个命名空间，客户端的所有操作都用它。
     pub name: String,
     /// 绝对路径，仅展示用。
     pub path: String,
+    /// 文件夹项目所在的 workspace 根（canonical 绝对路径，等于 `node.info.workspace_roots` 里的某一项的 `path`）；
+    /// 关联项目没有。老版本的 daemon 不给，客户端当作主根。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitMeta>,
     pub modified_at_ms: TimestampMs,
@@ -57,6 +61,7 @@ pub struct Project {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceListResult {
+    /// 主根（`node.info.workspace_roots` 里 `primary` 的那一项）。其余根下的项目看 `Project.root`。
     pub root: String,
     pub projects: Vec<Project>,
 }
@@ -66,6 +71,10 @@ pub struct WorkspaceCreateParams {
     pub name: String,
     #[serde(default)]
     pub git_init: bool,
+    /// 在哪个 workspace 根下新建。必须是 `node.info.workspace_roots` 里的某一项的 `path`；缺省 = 主根；
+    /// 不在列表里 → `invalid`，在列表里但现在不可用（`available = false`）→ `not_found`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -74,6 +83,9 @@ pub struct WorkspaceCloneParams {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 克隆到哪个 workspace 根下，规则同 `WorkspaceCreateParams.root`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 /// `workspace.link`：把本机一个已有目录关联为项目。
@@ -150,7 +162,7 @@ pub enum LinkBlock {
     /// 内置拒绝表里的系统 / 凭证 / 自启动目录（`~/Library`、`~/.ssh`、`/etc`…），在它们里面，或包含它们。
     /// 只有 `link_roots` 的某一项本身就在那个目录里面时，那一项之下才放行。
     Sensitive,
-    /// 在 workspace 根目录里（它已经是项目，或在 `.trash` / `.scratch` 里），或包含 workspace 根目录。
+    /// 在某个 workspace 根目录里（它已经是项目，或在 `.trash` / `.scratch` 里），或包含某个 workspace 根目录。
     Workspace,
     /// 是 anycon 数据目录（`ANYCON_HOME`）、在它里面，或包含它。不能放行。
     DataDir,
@@ -176,11 +188,14 @@ pub struct WorkspaceNameParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TrashEntry {
-    /// `.trash/` 下的目录名，如 `my-app-20261011T120000Z`。
+    /// `.trash/` 下的目录名，如 `my-app-20261011T120000Z`。每个根有自己的 `.trash/`，id 在所有根之间唯一。
     pub id: String,
     pub original_name: String,
     pub trashed_at_ms: TimestampMs,
     pub bytes: u64,
+    /// 条目所在（也是 `restore` 还原到）的 workspace 根。老版本的 daemon 不给，客户端当作主根。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -22,6 +22,7 @@ pub struct ProtocolSchema {
     pub empty: Empty,
     // node
     pub node_info: NodeInfo,
+    pub workspace_root_info: WorkspaceRootInfo,
     pub node_devices_result: NodeDevicesResult,
     pub node_revoke_device_params: NodeRevokeDeviceParams,
     pub node_pair_begin_params: NodePairBeginParams,

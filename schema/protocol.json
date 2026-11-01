@@ -3154,7 +3154,7 @@
         },
         {
           "const": "workspace",
-          "description": "在 workspace 根目录里（它已经是项目，或在 `.trash` / `.scratch` 里），或包含 workspace 根目录。",
+          "description": "在某个 workspace 根目录里（它已经是项目，或在 `.trash` / `.scratch` 里），或包含某个 workspace 根目录。",
           "type": "string"
         },
         {
@@ -3537,10 +3537,18 @@
           "type": "string"
         },
         "workspace_root": {
+          "description": "主根。多个根时看 `workspace_roots`。",
           "type": [
             "string",
             "null"
           ]
+        },
+        "workspace_roots": {
+          "description": "所有 workspace 根，主根在最前，额外根按配置顺序。老版本的 daemon 不给，客户端当作只有 `workspace_root` 一个。",
+          "items": {
+            "$ref": "#/definitions/WorkspaceRootInfo"
+          },
+          "type": "array"
         },
         "worktree": {
           "anyOf": [
@@ -4886,7 +4894,7 @@
       "type": "object"
     },
     "Project": {
-      "description": "一个项目 = workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。\n元数据全部推导；只有「关联了哪些目录」存在 daemon 的库里。",
+      "description": "一个项目 = 某个 workspace 根目录下的一个一级子文件夹，或一个关联的本机目录（`kind = linked`）。\n元数据全部推导；只有「关联了哪些目录」存在 daemon 的库里。",
       "properties": {
         "active_sessions": {
           "format": "uint32",
@@ -4926,12 +4934,19 @@
           "type": "integer"
         },
         "name": {
-          "description": "项目名。根目录下的项目和关联的项目共用一个命名空间，客户端的所有操作都用它。",
+          "description": "项目名。所有 workspace 根下的项目和关联的项目共用一个命名空间，客户端的所有操作都用它。",
           "type": "string"
         },
         "path": {
           "description": "绝对路径，仅展示用。",
           "type": "string"
+        },
+        "root": {
+          "description": "文件夹项目所在的 workspace 根（canonical 绝对路径，等于 `node.info.workspace_roots` 里的某一项的 `path`）；\n关联项目没有。老版本的 daemon 不给，客户端当作主根。",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -6801,11 +6816,18 @@
           "type": "integer"
         },
         "id": {
-          "description": "`.trash/` 下的目录名，如 `my-app-20261011T120000Z`。",
+          "description": "`.trash/` 下的目录名，如 `my-app-20261011T120000Z`。每个根有自己的 `.trash/`，id 在所有根之间唯一。",
           "type": "string"
         },
         "original_name": {
           "type": "string"
+        },
+        "root": {
+          "description": "条目所在（也是 `restore` 还原到）的 workspace 根。老版本的 daemon 不给，客户端当作主根。",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "trashed_at_ms": {
           "format": "uint64",
@@ -7124,6 +7146,13 @@
             "null"
           ]
         },
+        "root": {
+          "description": "克隆到哪个 workspace 根下，规则同 `WorkspaceCreateParams.root`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "url": {
           "description": "只允许 `https://`、`ssh://`、`git@host:path` 三种形式。",
           "type": "string"
@@ -7142,6 +7171,13 @@
         },
         "name": {
           "type": "string"
+        },
+        "root": {
+          "description": "在哪个 workspace 根下新建。必须是 `node.info.workspace_roots` 里的某一项的 `path`；缺省 = 主根；\n不在列表里 → `invalid`，在列表里但现在不可用（`available = false`）→ `not_found`。",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -7178,6 +7214,7 @@
           "type": "array"
         },
         "root": {
+          "description": "主根（`node.info.workspace_roots` 里 `primary` 的那一项）。其余根下的项目看 `Project.root`。",
           "type": "string"
         }
       },
@@ -7232,6 +7269,29 @@
       "required": [
         "from",
         "to"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRootInfo": {
+      "description": "一个 workspace 根（ADR-45）。每个根下的一级子文件夹都是项目。",
+      "properties": {
+        "available": {
+          "description": "现在能用：daemon 启动时它是一个存在的目录，并且现在还在。不可用的根下的项目不出现在列表里，也不能在上面新建 / 克隆；\n配置只在启动时读，修好（挂上外接盘）之后要重启 daemon。",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "canonical 绝对路径（根不可用时是展开后的配置值）。`workspace.create` / `clone` 的 `root` 取这里的值。",
+          "type": "string"
+        },
+        "primary": {
+          "description": "主根：放 `.scratch/`，不指定 `root` 时新项目建在这里。恰好有一个。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "primary",
+        "available"
       ],
       "type": "object"
     },
@@ -7881,6 +7941,9 @@
     "workspace_rename_params": {
       "$ref": "#/definitions/WorkspaceRenameParams"
     },
+    "workspace_root_info": {
+      "$ref": "#/definitions/WorkspaceRootInfo"
+    },
     "workspace_trash_id_params": {
       "$ref": "#/definitions/WorkspaceTrashIdParams"
     },
@@ -7915,6 +7978,7 @@
     "error_code",
     "empty",
     "node_info",
+    "workspace_root_info",
     "node_devices_result",
     "node_revoke_device_params",
     "node_pair_begin_params",

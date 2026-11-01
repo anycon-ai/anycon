@@ -3,14 +3,15 @@ import { refreshProjects } from '@/features/sync/notifications'
 import { rpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 
-export async function createProject(nodeId: string, name: string, gitInit: boolean): Promise<void> {
-  await rpc().request(nodeId, 'workspace.create', { name, git_init: gitInit })
+/** `root`：建在哪个 workspace 根下（`node.info.workspace_roots` 里的某个 `path`）；缺省 = 主根，这时线路上不带这个字段。 */
+export async function createProject(nodeId: string, name: string, gitInit: boolean, root?: string): Promise<void> {
+  await rpc().request(nodeId, 'workspace.create', { name, git_init: gitInit, ...(root ? { root } : {}) })
   await refreshProjects(nodeId)
 }
 
 /** 克隆是长任务：返回 job id，进度走 job.progress / job.done 通知（见 notifications.ts）。 */
-export async function cloneProject(nodeId: string, url: string, name?: string): Promise<string> {
-  const res = await rpc().request<JobStarted>(nodeId, 'workspace.clone', { url, name: name || undefined })
+export async function cloneProject(nodeId: string, url: string, name?: string, root?: string): Promise<string> {
+  const res = await rpc().request<JobStarted>(nodeId, 'workspace.clone', { url, name: name || undefined, ...(root ? { root } : {}) })
   useNodes.getState().jobProgress(nodeId, { id: res.job_id, stage: 'starting', percent: 0 })
   return res.job_id
 }

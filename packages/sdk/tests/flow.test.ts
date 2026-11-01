@@ -43,6 +43,18 @@ for (const impl of cryptoImpls) {
 
           const created = await node.projects.create('demo', { gitInit: true })
           assert.equal(created.name, 'demo')
+          // `root` 只在给了的时候才上线（缺省 = 主根）
+          const sent = () =>
+            env.daemon.requests.filter((r) => r.method === 'workspace.create').map((r) => r.params)
+          assert.deepEqual(sent(), [{ name: 'demo', git_init: true }])
+          await node.projects.create('far', { root: '/mnt/ext/projects' })
+          assert.deepEqual(sent().at(-1), {
+            name: 'far',
+            git_init: false,
+            root: '/mnt/ext/projects',
+          })
+          await node.projects.trash('far')
+          await node.projects.purge((await node.projects.trashList())[0]!.id)
           assert.deepEqual(
             (await node.projects.list()).map((p) => p.name),
             ['app', 'demo'],
@@ -106,7 +118,16 @@ for (const impl of cryptoImpls) {
             (await node.projects.list()).map((p) => p.name),
             ['app'],
           )
+          await (
+            await node.projects.clone('https://example.com/r.git', { root: '/mnt/ext/projects' })
+          ).wait()
+          const cloneParams = () =>
+            env.daemon.requests.filter((r) => r.method === 'workspace.clone').map((r) => r.params)
+          assert.deepEqual(cloneParams(), [
+            { url: 'https://example.com/r.git', root: '/mnt/ext/projects' },
+          ])
           const job = await node.projects.clone('https://example.com/r.git')
+          assert.deepEqual(cloneParams().at(-1), { url: 'https://example.com/r.git' })
           const stages: string[] = []
           for await (const p of job.progress()) stages.push(p.stage)
           assert.deepEqual(stages, ['receiving'])

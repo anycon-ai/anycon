@@ -192,15 +192,27 @@ impl Rpc {
             }
             methods::WORKSPACE_CREATE => {
                 let p: WorkspaceCreateParams = params(p)?;
-                c.workspace.create(&p.name, p.git_init).await?;
-                c.audit.record(caller, "workspace.create", Some(&p.name), json!({ "git_init": p.git_init })).await;
+                c.workspace.create(&p.name, p.git_init, p.root.as_deref()).await?;
+                c.audit
+                    .record(
+                        caller,
+                        "workspace.create",
+                        Some(&p.name),
+                        json!({ "git_init": p.git_init, "root": p.root }),
+                    )
+                    .await;
                 ok(c.workspace.project(&p.name, 0).await?)
             }
             methods::WORKSPACE_CLONE => {
                 let p: WorkspaceCloneParams = params(p)?;
-                let job_id = c.workspace.clone_start(&p.url, p.name.as_deref()).await?;
+                let job_id = c.workspace.clone_start(&p.url, p.name.as_deref(), p.root.as_deref()).await?;
                 c.audit
-                    .record(caller, "workspace.clone", p.name.as_deref(), json!({ "url": p.url, "job_id": job_id }))
+                    .record(
+                        caller,
+                        "workspace.clone",
+                        p.name.as_deref(),
+                        json!({ "url": p.url, "job_id": job_id, "root": p.root }),
+                    )
                     .await;
                 ok(JobStarted { job_id })
             }
@@ -609,6 +621,7 @@ impl Rpc {
             protocol_version: PROTOCOL_VERSION,
             platform: crate::hub::platform(),
             workspace_root: Some(c.workspace.root().to_string_lossy().into_owned()),
+            workspace_roots: c.workspace.roots_info(),
             capabilities: NodeCapabilities {
                 workspace: true,
                 fs: true,

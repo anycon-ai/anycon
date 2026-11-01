@@ -325,13 +325,15 @@ hub 这边：
 
 ### 6.1 文件夹即项目
 
-daemon 配置一个 workspace 根目录（v0.1 只支持一个，多根是后续配置项）。根目录下**每个一级子文件夹就是一个项目**：
+daemon 配置一个主根（`workspace.root`），可以再加几个额外根（`workspace.extra_roots`，[ADR-45](decisions.md#adr-45-多个-workspace-根)，启动时读，改了要重启）。每个根目录下**每个一级子文件夹就是一个项目**，项目名在所有根之间全局唯一（同名时 关联项目 > 主根 > 额外根），所以客户端用项目名寻址，不需要知道项目在哪个根：
 
 - 不需要注册。用户 `mkdir` 一个文件夹，客户端几秒内看到
 - 元数据全部推导：是否 git 仓库、当前分支、remote、是否有未提交改动、最近修改时间。不存数据库，不会有幽灵项目
 - 沙箱边界天然存在：agent 的 cwd 在根目录内（关联项目是关联目录本身），cwd 外的写操作由 agent 的权限模式决定是否审批
 
-另外可以把本机**已有的目录**关联为项目（ADR-33）：客户端在选择器里挑一个 `workspace.link_roots`（默认 `~`）之内的目录，daemon 记下它的路径，不移动、不复制；解除关联也不动文件。关联项目的边界是那个目录本身。
+另外可以把本机**已有的目录**关联为项目（ADR-33）：客户端在选择器里挑一个 `workspace.link_roots`（默认 `~`）之内的目录，daemon 记下它的路径，不移动、不复制；解除关联也不动文件。关联项目的边界是那个目录本身。两种方式并存：多个根是运维把一整个父目录（比如外接盘上的 `projects/`）交给 anycon，关联是客户端挑单个目录；关联目录的规则对所有根生效。
+
+额外根不存在（外接盘没插）时跳过并 warn，daemon 照常启动；额外根和别的根相同 / 嵌套、在数据目录里或包含数据目录、是文件系统根，是配置错误，daemon 拒绝启动。`node.info.workspace_roots` 列出所有根和它们现在能不能用。细节见 [spec/daemon.md § 10](spec/daemon.md#10-workspace)。
 
 ### 6.2 客户端的项目操作
 
@@ -339,19 +341,19 @@ daemon 配置一个 workspace 根目录（v0.1 只支持一个，多根是后续
 
 | 操作 | 实现 |
 |---|---|
-| 新建空项目 | `mkdir` + 可选 `git init` |
+| 新建空项目 | `mkdir` + 可选 `git init`；多个根时可以选建在哪个根（缺省主根） |
 | 关联已有目录 | 记下路径（`linked_projects` 表），选择器经 `workspace.browse` 列目录名 |
-| 从 Git 克隆 | daemon 执行 `git clone`，凭证用机器上已有的 ssh key / credential helper，daemon 自己不碰凭证 |
+| 从 Git 克隆 | daemon 执行 `git clone`（多个根时可以选克隆到哪个根），凭证用机器上已有的 ssh key / credential helper，daemon 自己不碰凭证 |
 | 会话的 worktree | 新建会话时可选：`git worktree add` 到 `<项目>/.anycon/worktrees/<slug>`，分支 `<前缀>/<slug>`；同步 base、只读 diff、归档时清理（§ 6.5） |
-| 重命名 | `mv` |
-| 删除 | 移到 `<root>/.trash/`，不 `rm -rf`；关联项目只解除关联 |
+| 重命名 | `mv`，只在项目所在的根内 |
+| 删除 | 移到项目所在根的 `.trash/`（每个根一个，`rename` 不跨文件系统），不 `rm -rf`；关联项目只解除关联 |
 | 从模板创建 | 后续：clone 模板仓库再删 `.git` |
 
 克隆这类长操作返回 job id，进度走流式通道。
 
 ### 6.3 临时会话
 
-不绑定项目的会话在 `<root>/.scratch/<session-id>/` 下运行，适合「帮我写个脚本试试」。产出满意可一键转成项目（`mv`）。
+不绑定项目的会话在主根的 `.scratch/<session-id>/` 下运行（scratch 只在主根），适合「帮我写个脚本试试」。产出满意可一键转成项目（`mv`，落在主根）。
 
 ### 6.5 每会话 worktree
 
@@ -359,7 +361,7 @@ ADR-34：git 项目里新建会话时可以选「新 worktree」，daemon 在项
 
 ### 6.4 fs watch
 
-只 watch 根目录这一层，只关心项目的增删改名。不监听项目内部——`node_modules`、`.git/objects` 会产生海量事件。macOS 用 FSEvents，Linux 用 inotify，Windows 用 `ReadDirectoryChangesW`，通过 `notify` crate 统一。
+只 watch 每个可用根的这一层，只关心项目的增删改名。不监听项目内部——`node_modules`、`.git/objects` 会产生海量事件。macOS 用 FSEvents，Linux 用 inotify，Windows 用 `ReadDirectoryChangesW`，通过 `notify` crate 统一。
 
 ## 7. 会话与 adapter
 

@@ -1,8 +1,8 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { BrowseEntry, Project, WorkspaceBrowseParams, WorkspaceBrowseResult, WorkspaceLinkParams } from '@/protocol'
-import { nodeEntry, project } from '@/test/factories'
+import type { BrowseEntry, Project, WorkspaceBrowseParams, WorkspaceBrowseResult, WorkspaceLinkParams, WorkspaceRootInfo } from '@/protocol'
+import { nodeEntry, nodeInfo, project } from '@/test/factories'
 import { FakeRpc, rpcError } from '@/test/fakeRpc'
 import { mockRouter } from '@/test/routerMock'
 import { setRpc } from '@/transport/instance'
@@ -322,5 +322,116 @@ describe('NewProjectDialog: opened from anywhere (sidebar, palette, new-session 
     expect(screen.getByRole('option', { name: 'mini (unavailable)' })).toBeInTheDocument()
     await user.type(screen.getByTestId('project-new-name'), 'fresh')
     expect(screen.getByTestId('project-new-submit')).toBeDisabled()
+  })
+})
+
+describe('NewProjectDialog: more than one workspace root', () => {
+  const MAIN = '/home/me/anycon'
+  const EXT = '/mnt/ext/projects'
+  const GONE = '/mnt/unplugged'
+  const roots = (...extra: WorkspaceRootInfo[]): WorkspaceRootInfo[] => [{ path: MAIN, primary: true, available: true }, ...extra]
+  const withRoots = (list: WorkspaceRootInfo[]): void => {
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, info: nodeInfo({ workspace_roots: list }) }) }, order: [NODE], loaded: true })
+  }
+  const optionTexts = () => within(screen.getByTestId('project-new-root')).getAllByRole('option').map((o) => o.textContent)
+  const params = (method: string) => rpc.calls.find((c) => c.method === method)?.params
+
+  beforeEach(() => {
+    rpc.handlers['workspace.create'] = () => ({})
+    rpc.handlers['workspace.clone'] = () => ({ job_id: 'job1' })
+  })
+
+  it('has no location choice on a node with a single root (nothing changes on the wire either)', async () => {
+    const user = userEvent.setup()
+    withRoots(roots())
+    mount('empty')
+    expect(screen.queryByTestId('project-new-root')).toBeNull()
+    await user.type(screen.getByTestId('project-new-name'), 'fresh')
+    await user.click(screen.getByTestId('project-new-submit'))
+    await waitFor(() => expect(params('workspace.create')).toBeDefined())
+    expect(params('workspace.create')).toEqual({ name: 'fresh', git_init: true })
+    expect(params('workspace.create')).not.toHaveProperty('root')
+  })
+
+  it('is also hidden on a node that predates workspace_roots', () => {
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, info: nodeInfo() }) }, order: [NODE], loaded: true })
+    mount('empty')
+    expect(screen.queryByTestId('project-new-root')).toBeNull()
+  })
+
+  it('offers every root with the primary one selected, and does not send `root` while it stays selected', async () => {
+    const user = userEvent.setup()
+    withRoots(roots({ path: EXT, primary: false, available: true }))
+    mount('empty')
+    expect(screen.getByTestId('project-new-root')).toHaveValue(MAIN)
+    expect(optionTexts()).toEqual([`${MAIN} (default)`, EXT])
+    await user.type(screen.getByTestId('project-new-name'), 'fresh')
+    await user.click(screen.getByTestId('project-new-submit'))
+    await waitFor(() => expect(params('workspace.create')).toBeDefined())
+    expect(params('workspace.create')).toEqual({ name: 'fresh', git_init: true })
+  })
+
+  it('creates an empty project in the chosen root', async () => {
+    const user = userEvent.setup()
+    withRoots(roots({ path: EXT, primary: false, available: true }))
+    mount('empty')
+    await user.selectOptions(screen.getByTestId('project-new-root'), EXT)
+    await user.type(screen.getByTestId('project-new-name'), 'far')
+    await user.click(screen.getByTestId('project-new-submit'))
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/n/$node/p/$project', params: { node: 'nnnnnnnn', project: 'far' } }))
+    expect(params('workspace.create')).toEqual({ name: 'far', git_init: true, root: EXT })
+  })
+
+  it('clones into the chosen root', async () => {
+    const user = userEvent.setup()
+    withRoots(roots({ path: EXT, primary: false, available: true }))
+    mount('clone')
+    await user.selectOptions(screen.getByTestId('project-new-root'), EXT)
+    await user.type(screen.getByTestId('project-clone-url'), 'https://example.com/org/repo.git')
+    await user.click(screen.getByTestId('project-new-submit'))
+    await waitFor(() => expect(params('workspace.clone')).toBeDefined())
+    expect(params('workspace.clone')).toEqual({ url: 'https://example.com/org/repo.git', root: EXT })
+  })
+
+  it('does not show the choice for an existing folder (a linked folder is not put in any root)', async () => {
+    const user = userEvent.setup()
+    withRoots(roots({ path: EXT, primary: false, available: true }))
+    mount('empty')
+    expect(screen.getByTestId('project-new-root')).toBeInTheDocument()
+    await user.click(screen.getByTestId('project-new-mode-existing'))
+    expect(await screen.findByTestId('folder-picker')).toBeInTheDocument()
+    expect(screen.queryByTestId('project-new-root')).toBeNull()
+    await user.click(screen.getByTestId('project-new-mode-clone'))
+    expect(screen.getByTestId('project-new-root')).toBeInTheDocument()
+  })
+
+  it('lists a root that is not mounted as unavailable and cannot be picked', async () => {
+    withRoots(roots({ path: GONE, primary: false, available: false }))
+    mount('empty')
+    expect(optionTexts()).toEqual([`${MAIN} (default)`, `${GONE} (unavailable)`])
+    expect(within(screen.getByTestId('project-new-root')).getByRole('option', { name: `${GONE} (unavailable)` })).toBeDisabled()
+    expect(screen.getByTestId('project-new-root')).toHaveValue(MAIN)
+  })
+
+  it('cannot submit while the selected root is unavailable (the primary root vanished), and says why', async () => {
+    const user = userEvent.setup()
+    withRoots([{ path: MAIN, primary: true, available: false }, { path: EXT, primary: false, available: true }])
+    mount('empty')
+    await user.type(screen.getByTestId('project-new-name'), 'x')
+    expect(screen.getByTestId('project-new-submit')).toBeDisabled()
+    expect(screen.getByText(/not available on the node/)).toBeInTheDocument()
+    // 换到一个可用的根就好了
+    await user.selectOptions(screen.getByTestId('project-new-root'), EXT)
+    expect(screen.getByTestId('project-new-submit')).toBeEnabled()
+  })
+
+  it('goes back to the primary root when the dialog is reopened or the node changes', async () => {
+    const user = userEvent.setup()
+    withRoots(roots({ path: EXT, primary: false, available: true }))
+    const { rerender } = render(<NewProjectDialog nodeId={NODE} open onOpenChange={vi.fn()} initialMode="empty" />)
+    await user.selectOptions(screen.getByTestId('project-new-root'), EXT)
+    rerender(<NewProjectDialog nodeId={NODE} open={false} onOpenChange={vi.fn()} initialMode="empty" />)
+    rerender(<NewProjectDialog nodeId={NODE} open onOpenChange={vi.fn()} initialMode="empty" />)
+    expect(screen.getByTestId('project-new-root')).toHaveValue(MAIN)
   })
 })

@@ -185,12 +185,18 @@
   },
   "palette": {
     "title": "Command palette",
-    "placeholder": "Search sessions, projects, nodes…",
+    "placeholder": "Search messages, sessions, projects, nodes…",
     "newSession": "New session",
     "project": "Project",
     "node": "Node",
     "scratch": "Temporary",
-    "empty": "Nothing found."
+    "empty": "Nothing found.",
+    "content": "In conversations",
+    "searching": "Searching conversations…",
+    "noContentMatch": "No matches in conversations.",
+    "minChars": "Type at least 2 characters to search conversations.",
+    "failed": "Could not search {{names}}.",
+    "skipped": "Not searched (offline or not unlocked): {{names}}."
   },
   "setup": {
     "steps": "Setup steps",
@@ -409,6 +415,8 @@
     "promoteBody": "The temporary workspace becomes a project folder with this name.",
     "loadOlder": "Load earlier messages",
     "newMessages": "New messages",
+    "findingMessage": "Loading the message…",
+    "messageTooFar": "That message is too far back to jump to. Scroll up to load more.",
     "turnFinished": "The agent finished replying.",
     "goneTitle": "Session not found",
     "goneBody": "It may have been deleted from another device.",

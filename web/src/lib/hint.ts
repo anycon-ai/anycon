@@ -4,10 +4,15 @@ import type { EnrollHint } from '@/protocol'
 // eslint-disable-next-line no-control-regex
 const UNSAFE = /[\u{0}-\u{1f}\u{7f}-\u{9f}\u{200e}\u{200f}\u{202a}-\u{202e}\u{2066}-\u{2069}\u{2028}\u{2029}]/gu
 
+/** 把控制字符和双向控制符换成空格（不动其他空白、不截断）：会话里的文字显示前用，不让它改写周围界面文字的顺序。 */
+export function stripUnsafe(value: string): string {
+  return value.replace(UNSAFE, ' ')
+}
+
 /** 对端自报的文字（设备名、平台）显示前的清理：去掉控制字符和双向控制符，空白折成一个，按字符（不是 UTF-16 单元）截断。 */
 export function cleanHintText(value: unknown, max = 64): string {
   if (typeof value !== 'string') return ''
-  return [...value.replace(UNSAFE, ' ').replace(/\s+/g, ' ').trim()].slice(0, max).join('')
+  return [...stripUnsafe(value).replace(/\s+/g, ' ').trim()].slice(0, max).join('')
 }
 
 export interface DisplayHint {

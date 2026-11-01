@@ -46,14 +46,38 @@ export interface MessageListProps {
   /** 滚动到某个权限请求（信息面板里点「待审批」）。 */
   scrollToRequest?: string | null
   /**
+   * 搜索命中：滚到这个 seq 所在的那条消息并短暂高亮（命中的 seq 可以落在一个块的中间，见 `focusRowIndex`）。
+   * 会话已经加载到那里了才给；处理完（不管找没找到）调 `onFocused`，调用方据此清掉它。
+   */
+  focusSeq?: number | null
+  onFocused?: () => void
+  /** 正在为 `focusSeq` 往前加载历史：盖一层转圈，别让人以为卡住了。 */
+  finding?: boolean
+  /**
    * 冲突那条 `git` 事件上的按钮（ADR-34）。只给最近一次同步的冲突，而且 `merging` 不是 false（合并确实还停在中途，
    * 或者还不知道）时才显示。
    */
   git?: { merging?: boolean; busy?: boolean; onResolve: () => void; onAbort: () => void }
 }
 
-/** `line`：一行灰字的块（思考、工具、系统提示、答复过的审批）。连着的几行之间只留很小的间距，像一张列表。 */
-type Row = { key: string; node: ReactNode; line?: boolean }
+/** `line`：一行灰字的块（思考、工具、系统提示、答复过的审批）。连着的几行之间只留很小的间距，像一张列表。`seq`：产生这一行的块的第一个事件的 seq。 */
+type Row = { key: string; node: ReactNode; line?: boolean; seq?: number }
+
+/** 定位后高亮多久（和 index.css 里 `.search-flash` 的动画时长一致）。 */
+const FLASH_MS = 2200
+
+/**
+ * 搜索命中的 seq 落在哪一行：起点不晚于它的最后一个块。`session.search` 给的 seq 是被索引那段文字开始处的事件：
+ * 用户消息就是那条消息的 seq，assistant 文字是一个块里某一段的第一个 `text_delta`（长文字每 32 KiB 切一段索引），
+ * 所以不一定恰好等于某个块的起点。找不到（它比已加载的最早的块还早）返回 -1。
+ */
+export function focusRowIndex(rows: ReadonlyArray<{ seq?: number }>, seq: number): number {
+  let best = -1
+  rows.forEach((r, i) => {
+    if (r.seq !== undefined && r.seq <= seq && (best < 0 || r.seq >= (rows[best]!.seq ?? 0))) best = i
+  })
+  return best
+}
 
 /** 这一行下面的间距：后面紧跟着另一行灰字时收紧，其余用消息间距。 */
 function rowGap(rows: Row[], i: number): string {
@@ -83,6 +107,7 @@ function buildRows(p: MessageListProps): Row[] {
   // 这一轮 agent 说的全部文字：turn_done 那一行的「复制」用
   let turnText: string[] = []
   for (const b of p.blocks) {
+    const start = rows.length
     switch (b.type) {
       case 'user':
         turnText = []
@@ -147,6 +172,7 @@ function buildRows(p: MessageListProps): Row[] {
         break
       }
     }
+    for (let i = start; i < rows.length; i++) rows[i]!.seq = b.seq
   }
   if (p.activity) rows.push({ key: 'activity', node: <ActivityLine activity={p.activity} />, line: true })
   for (const m of p.pending) {
@@ -177,6 +203,10 @@ function MessageListView(props: MessageListProps) {
   const lastCount = useRef(0)
   const prevHeight = useRef<number | null>(null)
   const virtual = rows.length > VIRTUALIZE_THRESHOLD
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  /** 刚被定位到的那一行（key），高亮一会儿。 */
+  const [flash, setFlash] = useState<string | null>(null)
 
   const virtualizer = useVirtualizer({
     count: virtual ? rows.length : 0,
@@ -232,6 +262,27 @@ function MessageListView(props: MessageListProps) {
     return () => ro.disconnect()
   }, [scrollToBottom])
 
+  // 搜索命中的定位：不再跟随底部，把那一行滚到中间并高亮。虚拟化时目标行可能还没渲染，交给 virtualizer 按下标滚
+  const { focusSeq, onFocused } = props
+  useEffect(() => {
+    if (focusSeq == null) return
+    const rs = rowsRef.current
+    const idx = focusRowIndex(rs, focusSeq)
+    onFocused?.()
+    if (idx < 0) return
+    followingRef.current = false
+    setFollowing(false)
+    if (virtual) virtualizer.scrollToIndex(idx, { align: 'center' })
+    else scrollRef.current?.querySelector(`[data-index="${idx}"]`)?.scrollIntoView({ block: 'center' })
+    setFlash(rs[idx]!.key)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在要定位的 seq 变化时跑一次
+  }, [focusSeq])
+  useEffect(() => {
+    if (flash === null) return
+    const timer = setTimeout(() => setFlash(null), FLASH_MS)
+    return () => clearTimeout(timer)
+  }, [flash])
+
   useEffect(() => {
     if (!props.scrollToRequest) return
     const el = scrollRef.current?.querySelector(`[data-request="${CSS.escape(props.scrollToRequest)}"]`)
@@ -256,18 +307,26 @@ function MessageListView(props: MessageListProps) {
                 if (!row) return null
                 // 绝对定位不吃父级 padding，左右偏移用 chat-column 同一个 --chat-pad，否则内容会贴边、也对不上输入框
                 return (
-                  <div key={row.key} data-index={v.index} ref={virtualizer.measureElement} className={cn('absolute left-[var(--chat-pad)] right-[var(--chat-pad)] top-0', rowGap(rows, v.index))} style={{ transform: `translateY(${v.start}px)` }}>
+                  <div key={row.key} data-index={v.index} ref={virtualizer.measureElement} className={cn('absolute left-[var(--chat-pad)] right-[var(--chat-pad)] top-0', rowGap(rows, v.index), flash === row.key && 'search-flash')} style={{ transform: `translateY(${v.start}px)` }}>
                     {row.node}
                   </div>
                 )
               })
             : rows.map((row, i) => (
-                <div key={row.key} className={rowGap(rows, i)}>
+                <div key={row.key} data-index={i} className={cn(rowGap(rows, i), flash === row.key && 'search-flash')}>
                   {row.node}
                 </div>
               ))}
         </div>
       </div>
+      {props.finding ? (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-bg/60" role="status" aria-busy="true" data-testid="message-list-finding">
+          <span className="inline-flex items-center gap-2 rounded-md bg-surface px-3 py-2 text-sm text-fg-muted shadow-pop">
+            <Loader2 className="size-4 animate-spin" aria-hidden />
+            {t('session.findingMessage')}
+          </span>
+        </div>
+      ) : null}
       {!following && unseen ? (
         // 只有一个圆形向下箭头，文字放进 aria-label / title
         <Button variant="outline" size="icon" className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-surface shadow-pop" aria-label={t('session.newMessages')} title={t('session.newMessages')} onClick={() => { followingRef.current = true; setFollowing(true); setUnseen(false); scrollToBottom() }} data-testid="new-messages">

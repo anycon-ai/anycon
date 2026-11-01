@@ -6,7 +6,7 @@ import { setRpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
 import { pendingMessages, resetDrafts, useDrafts } from '@/stores/drafts'
 import { useSessions } from '@/stores/sessions'
-import { archiveSession, ATTACHMENTS_TOO_LARGE, BLOB_EXPIRED, BLOB_IN_USE, catchUp, countUnsent, createSession, deleteSession, enqueueLive, flushLive, flushUnsent, loadOlder, openSession, reapEchoed, respondPermission, resendUnsent, sendMessage, setSessionSettings, unarchiveSession } from './actions'
+import { archiveSession, ATTACHMENTS_TOO_LARGE, BLOB_EXPIRED, BLOB_IN_USE, catchUp, countUnsent, createSession, deleteSession, enqueueLive, flushLive, flushUnsent, FOCUS_MAX_PAGES, loadHistoryTo, loadOlder, openSession, reapEchoed, respondPermission, resendUnsent, sendMessage, setSessionSettings, unarchiveSession } from './actions'
 import { handleNotification } from '@/features/sync/notifications'
 import { diffSettings } from '@/features/settings/resolve'
 import type { AttachmentRef, SessionEvent } from '@/protocol'
@@ -582,5 +582,86 @@ describe('image attachments (ADR-35)', () => {
       await createSession(NODE, { project: 'app', agent: 'mock', settings: {} })
       expect(ids()).toEqual([undefined, undefined])
     })
+  })
+})
+
+describe('loadHistoryTo — jumping to a search hit far back in the history', () => {
+  /** 假 daemon 的历史：seq 1..last，每个事件一个 text_delta，按 before_seq / limit 分页；`perPage` 模拟每页的字节上限。 */
+  function fakeHistory(last: number, perPage = Number.POSITIVE_INFINITY) {
+    return (p: unknown) => {
+      const { before_seq, limit = 200 } = p as { before_seq: number; limit?: number }
+      const below = Math.min(before_seq - 1, last)
+      const n = Math.max(0, Math.min(limit, perPage, below))
+      const from = below - n + 1
+      return { events: Array.from({ length: n }, (_, i) => delta(from + i)), has_more: from > 1 }
+    }
+  }
+  const historyCalls = () => rpc.calls.filter((c) => c.method === 'session.history').map((c) => c.params as { before_seq: number; limit: number })
+
+  async function openAt(last: number, perPage?: number): Promise<void> {
+    rpc.handlers['session.watch'] = () => ({})
+    rpc.handlers['session.history'] = fakeHistory(last, perPage)
+    useSessions.getState().upsertSummaries(NODE, [summary({ id: SID, last_seq: last })])
+    await openSession(NODE, SID)
+  }
+
+  it('does not ask the node when the loaded range already covers the target', async () => {
+    await openAt(3000)
+    const before = historyCalls().length
+    expect(await loadHistoryTo(SID, 2900)).toBe('reached')
+    expect(await loadHistoryTo(SID, 2821)).toBe('reached') // 目标前面的 20 个事件上下文刚好都在
+    expect(historyCalls()).toHaveLength(before)
+  })
+
+  it('pulls older pages (up to 1000 events each, never more than needed) until the target and a little context above it are loaded, then merges them in one go', async () => {
+    await openAt(3000)
+    expect(useSessions.getState().open[SID]!.lowSeq).toBe(2801)
+    expect(await loadHistoryTo(SID, 500)).toBe('reached')
+    // 2801 → 1801 → 801 → 480（目标 500 前面留 20 个事件的上下文，最后一页只要 321 个）
+    expect(historyCalls().slice(1)).toEqual([
+      { session_id: SID, before_seq: 2801, limit: 1000 },
+      { session_id: SID, before_seq: 1801, limit: 1000 },
+      { session_id: SID, before_seq: 801, limit: 321 },
+    ])
+    const o = useSessions.getState().open[SID]!
+    expect(o.lowSeq).toBe(480)
+    expect(o.hasMoreOlder).toBe(true)
+    expect(o.events).toHaveLength(3000 - 480 + 1)
+    expect(o.events.map((e) => e.seq)).toEqual(Array.from({ length: 3000 - 480 + 1 }, (_, i) => 480 + i))
+  })
+
+  it('stops at the start of the session', async () => {
+    await openAt(300)
+    expect(await loadHistoryTo(SID, 5)).toBe('reached')
+    const o = useSessions.getState().open[SID]!
+    expect(o.lowSeq).toBe(1)
+    expect(o.hasMoreOlder).toBe(false)
+  })
+
+  it('gives up after a bounded number of pages and says the target is too far, keeping what it loaded', async () => {
+    await openAt(100_000, 5) // 每页只放得下 5 个事件
+    const start = useSessions.getState().open[SID]!.lowSeq
+    expect(await loadHistoryTo(SID, 10)).toBe('too_far')
+    expect(historyCalls()).toHaveLength(1 + FOCUS_MAX_PAGES)
+    const o = useSessions.getState().open[SID]!
+    expect(o.lowSeq).toBe(start - 5 * FOCUS_MAX_PAGES)
+    expect(o.hasMoreOlder).toBe(true)
+  })
+
+  it('keeps the pages it already got when a later one fails, and passes the error on', async () => {
+    await openAt(3000)
+    let n = 0
+    const page = fakeHistory(3000)
+    rpc.handlers['session.history'] = (p) => {
+      if (++n === 2) throw rpcError('internal')
+      return page(p)
+    }
+    await expect(loadHistoryTo(SID, 100)).rejects.toMatchObject({ code: 'internal' })
+    expect(useSessions.getState().open[SID]!.lowSeq).toBe(1801)
+  })
+
+  it('does nothing for a session that is not open', async () => {
+    expect(await loadHistoryTo('sess_none', 10)).toBe('reached')
+    expect(rpc.calls).toEqual([])
   })
 })

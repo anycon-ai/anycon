@@ -183,12 +183,18 @@
   },
   "palette": {
     "title": "命令面板",
-    "placeholder": "搜索会话、项目、节点…",
+    "placeholder": "搜索消息、会话、项目、节点…",
     "newSession": "新建会话",
     "project": "项目",
     "node": "节点",
     "scratch": "临时",
-    "empty": "没有找到。"
+    "empty": "没有找到。",
+    "content": "会话内容",
+    "searching": "正在搜索会话内容…",
+    "noContentMatch": "会话内容里没有找到。",
+    "minChars": "至少输入 2 个字符才会搜索会话内容。",
+    "failed": "无法搜索 {{names}}。",
+    "skipped": "未搜索（离线或未解锁）：{{names}}。"
   },
   "setup": {
     "steps": "设置步骤",
@@ -407,6 +413,8 @@
     "promoteBody": "临时工作区会变成一个以此命名的项目文件夹。",
     "loadOlder": "加载更早的消息",
     "newMessages": "新消息",
+    "findingMessage": "正在加载这条消息…",
+    "messageTooFar": "这条消息太靠前，没能直接跳到。向上滚动可以继续加载。",
     "turnFinished": "agent 已回复完毕。",
     "goneTitle": "找不到这个会话",
     "goneBody": "它可能已被另一台设备删除。",

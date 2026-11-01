@@ -481,9 +481,12 @@ pub struct SessionRenameParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionSearchParams {
+    /// 空白分隔的若干个词，每个词按前缀匹配、都要出现在同一段文字里；不能为空（`invalid`）。
     pub query: String,
+    /// 只搜这个项目里的会话。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// 最多返回几条命中，默认 20，上限 200。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
@@ -491,9 +494,14 @@ pub struct SessionSearchParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SearchHit {
     pub session_id: SessionId,
+    /// 命中的那段文字开始处的事件 seq：用户消息就是 `user_message` 的 seq；assistant 文字是那一段第一个 `text_delta` 的 seq
+    /// （长文字每 32 KiB 切一段索引，所以同一条回复可以有几个不同的 seq）。
     pub seq: u64,
+    /// 会话当前的标题。
     pub title: String,
-    /// 带 `<mark>` 的片段。
+    /// 命中处的片段。除了包住命中词的字面 `<mark>` / `</mark>`，里面没有 HTML：会话文字里原有的
+    /// `<` `>` `&` 已转义成 `&lt;` `&gt;` `&amp;`，客户端按 `<mark>` 切开后把这三个实体还原成字符、
+    /// 当纯文本显示即可，不要当 HTML 解析。
     pub snippet: String,
     pub ts_ms: TimestampMs,
 }

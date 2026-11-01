@@ -173,6 +173,45 @@ export async function loadOlder(sessionId: string): Promise<void> {
   useSessions.getState().prepend(sessionId, eventsOf(res), res.has_more)
 }
 
+/** 定位到一个 seq 时，在它前面多留这么多个事件：它前面的用户消息、turn 分隔线跟着出现，不是贴着顶边。 */
+const FOCUS_CONTEXT_EVENTS = 20
+/** 每页向 daemon 要的事件数（`session.history` 的上限）。 */
+const FOCUS_PAGE = 1000
+/** 最多翻这么多页（约 4 万个事件，要几秒）：再远的消息不跳了，停在翻到的地方，让用户自己往上滚。 */
+export const FOCUS_MAX_PAGES = 40
+
+/**
+ * 向上翻页，直到已加载的区间盖住 `seq`（搜索命中要定位到的事件）。已经盖住就不发请求。
+ *
+ * `session.history` 只能从某个 seq 往前（`before_seq`）或往后（`after_seq`）翻，没有「取目标前后一段」：
+ * 只加载目标附近一段的话，它和最新的事件之间缺一块，实时事件接不上。所以从已加载的最低 seq 一路往前拉到目标，
+ * 一页最多 1000 个事件（还受 daemon 每页 192 KiB 的限制），拉完一次性并入，不是一页一页地重建视图。
+ * 中途失败时已经拉到的照样并入，然后把错误抛出去。返回 `too_far`：翻了 `FOCUS_MAX_PAGES` 页还没到。
+ */
+export async function loadHistoryTo(sessionId: string, seq: number): Promise<'reached' | 'too_far'> {
+  const first = useSessions.getState().open[sessionId]
+  if (!first) return 'reached'
+  const want = Math.max(1, seq - FOCUS_CONTEXT_EVENTS)
+  let low = first.lowSeq
+  let hasMore = first.hasMoreOlder
+  const pages: SessionEvent[][] = []
+  try {
+    for (let page = 0; page < FOCUS_MAX_PAGES && low > want && hasMore; page++) {
+      if (!useSessions.getState().open[sessionId]) return 'reached' // 翻页期间离开了这个会话
+      const limit = Math.min(FOCUS_PAGE, Math.max(HISTORY_PAGE, low - want))
+      const res = await rpc().request<SessionHistoryResult>(first.nodeId, 'session.history', { session_id: sessionId, before_seq: low, limit })
+      const events = eventsOf(res)
+      hasMore = res.has_more && events.length > 0
+      if (events.length === 0) break
+      pages.push(events)
+      low = events[0]!.seq
+    }
+  } finally {
+    if (pages.length > 0) useSessions.getState().prepend(sessionId, pages.reverse().flat(), hasMore)
+  }
+  return low <= want || !hasMore ? 'reached' : 'too_far'
+}
+
 // ---- 实时事件（rAF 合并） ----
 
 const liveBuffer = new Map<string, SessionEvent[]>()

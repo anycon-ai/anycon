@@ -17,14 +17,14 @@ anycon-hub 容器**只做一件事**：在一个明文 HTTP 端口上提供服�
 | 由容器负责 | 由你负责 |
 |---|---|
 | HTTP + WebSocket 服务 | TLS 证书 |
-| 数据库（SQLite 在 `/data`） | 反向代理 |
+| 数据库（默认 SQLite，文件在 `/data`；用 Postgres 时库由你提供，§ 3.2） | 反向代理 |
 | 数据库迁移 | 域名与 DNS |
 | 嵌入的 Web UI | 防火墙 |
 | 健康检查端点 | 备份 |
 
 不内置 ACME，不内置 nginx。原因：你已经有自己的反代方案（Caddy、Traefik、nginx、Cloudflare Tunnel），容器里再塞一个只会冲突。
 
-**只跑一个实例。** 路由表、配对 / 接入撮合和限速计数都在进程内存里，不要开多副本，也不要在前面挂负载均衡分流。
+**只跑一个实例。** 路由表、配对 / 接入撮合和限速计数都在进程内存里，不要开多副本，也不要在前面挂负载均衡分流。用 Postgres 存储也一样：它只换存储（多一个可以单独备份、单独扩容的库），不让 hub 变成多实例。
 
 ## 2. 最小启动
 
@@ -70,8 +70,8 @@ hub 跑在家里、家里走局域网 IP 的部署方式见 § 4「家里跑 hub
 | `ANYCON_QUOTA_DAILY_PAIRINGS` | `20` | 仅 `multi`。每个账号滚动 24 小时内最多多少次配对和接入，每个成功的撮合记一次（节点发起时记节点的账号，第一次启动、还没有账号的节点由配对它的账号记；输错短码不记）。计数在内存里，hub 重启清零 |
 | `ANYCON_OAUTH_GITHUB_CLIENT_ID` / `ANYCON_OAUTH_GITHUB_CLIENT_SECRET` | （空） | GitHub 登录的 OAuth 应用凭据，两种模式都能用。要么两个都设，要么都不设（只设一个启动报错），值不能含空白。配了登录页才出现 GitHub 按钮；回调地址和应用的设置见 § 3.1。client secret 不进日志。`ANYCON_PUBLIC_URL` 不是 https 时启动警告（本机开发可以） |
 | `ANYCON_OAUTH_GOOGLE_CLIENT_ID` / `ANYCON_OAUTH_GOOGLE_CLIENT_SECRET` | （空） | 同上，Google 登录 |
-| `ANYCON_DATA_DIR` | `/data` | SQLite 文件、管理员 token 等 |
-| `ANYCON_DATABASE_URL` | `sqlite://<DATA_DIR>/hub.db` | v0.1 只支持 SQLite（`sqlite://路径`）；`postgres://…` 会被拒绝，Postgres 在 v0.2 |
+| `ANYCON_DATA_DIR` | `/data` | SQLite 文件（用 Postgres 时没有）、管理员 token、Web Push 的 VAPID 密钥（`vapid.json`）等 |
+| `ANYCON_DATABASE_URL` | `sqlite://<DATA_DIR>/hub.db` | 存储后端：`sqlite://路径`（默认），或 `postgres://用户:密码@主机:端口/库名`（`postgresql://` 也行），用法见 § 3.2。别的协议启动报错。URL 带密码，hub 不会把它打进日志或错误信息 |
 | `ANYCON_TRUSTED_PROXIES` | `172.16.0.0/12` | 逗号分隔的 CIDR / IP：只有直连对端落在这里，hub 才相信 `X-Forwarded-For` / `X-Forwarded-Proto`。默认值是 Docker 默认桥接网段，所以反代也在 Docker 默认网络里时开箱即用；**不在 Docker 里部署时务必显式设置**（填反代的地址），否则要么限速只看到反代的 IP，要么（客户端恰好在这个网段时）客户端能伪造转发头。空串 = 不信任任何代理（`ANYCON_PUBLIC_URL` 是 https 而这里为空时，启动日志会警告：反代后所有人共用反代 IP 的限速桶）。启动时会 info 打出生效的网段。限速靠真实 IP（IPv6 按 /64 归并），这个配错了限速就失效。`ANYCON_PUBLIC_URL` 是 https 时 session cookie 始终带 `Secure`，不依赖转发头 |
 | `ANYCON_MAX_ENVELOPE_BYTES` | `262144`（256 KiB），最小 `205824`（一个最坏情况的满片分片信封；更小的值拒绝启动） | 单个信封（外层 WebSocket 帧里的一个 `Envelope`）的大小上限。超过的信封被丢弃，hub 回发送方 `control.dropped { too_large }`（每连接每秒至多一条）；WebSocket 层的硬上限是 `max(2 × 这个值, 64 KiB)`，更大的帧直接断开连接。这是防御性上限，**一条 RPC 消息比它大没关系**：客户端和 daemon 会按 200 KiB 一片分片（[ADR-30](decisions.md#adr-30-内层分片与大小上限)）。调大它没有好处，除非你有特殊的反代 / 内存约束；低于一个满片的分片信封时 hub 拒绝启动 |
 | `ANYCON_RATE_CLIENT_BYTES_PER_MIN` | `10485760`（10 MiB），最小 `205824` | 每条客户端连接（web / cli / sdk、临时连接）每分钟的入站字节预算（令牌桶：容量 = 这个值，匀速补充，只有转发成功的信封才扣额度）。超过的信封不丢，hub 退回 `backpressure` 并每秒至多一条 `rate_limited { retry_after_ms }`，发送方暂停后按序重发；只有「一直被限速退回、期间没有任何信封被转发」持续 10 秒才以 `1008` 断开（[spec/hub.md § 3.4](spec/hub.md#34-速率)）。低于最小值拒绝启动 |
@@ -116,6 +116,23 @@ hub 跑在家里、家里走局域网 IP 的部署方式见 § 4「家里跑 hub
 下面是还没实现的方式，写在这里是为了让部署计划有个预期；**hub 现在不认这些配置**（SMTP 服务商：Resend、SES、Postmark、Mailgun 等都提供 SMTP 端点，直接填进 `ANYCON_SMTP_URL` 即可）：
 
 - **passkey**（v0.1.x）：无需配置。WebAuthn 的 RP ID 取自 `ANYCON_PUBLIC_URL` 的域名，所以 hub 一定要在最终域名上跑，中途换域名所有 passkey 作废，用户需要用其他方式登录后重新绑定。要求 https 域名
+
+### 3.2 数据库：SQLite 或 Postgres
+
+默认用 SQLite（`/data/hub.db`），一个文件就是全部数据，自建 hub 够用。公共 hub、想把库放在托管服务里、或者想用 `pg_dump` 做备份和复制时用 Postgres：
+
+```bash
+ANYCON_DATABASE_URL=postgres://anycon:密码@db.example.com:5432/anycon
+```
+
+- **URL**：`postgres://` 或 `postgresql://`，libpq 风格。用户名、密码里的特殊字符要百分号编码（`@` → `%40`）。参数写在查询串里：`sslmode`（`disable`、`prefer`（默认）、`require`、`verify-ca`、`verify-full`）、`sslrootcert=/path/ca.pem`（自己的 CA；不给时用内置的公共根证书）。库和 hub 不在同一台机器 / 同一个 Docker 网络里时，用 `sslmode=verify-full`（加 `sslrootcert`，服务商用公共 CA 的话不用）：默认的 `prefer` 只是「能加密就加密」，不校验证书，挡不住中间人；`require` 加密但同样不校验。库里是账号、设备、配对等元数据和各种 token 的哈希，没有会话内容（hub.md § 8），但哈希和邮箱也不该在网上明文走。TLS 由 hub 自己用 rustls 做，镜像里不需要装什么
+- **准备库**：先建好库和角色（`CREATE ROLE anycon LOGIN PASSWORD '…'; CREATE DATABASE anycon OWNER anycon;`）。hub 启动时自己建表、跑迁移（`crates/hub/migrations/postgres/`），角色要能在库里建表、建索引：做库的属主最省事（Postgres 15 起普通角色不能在 `public` schema 里建表，属主可以），否则要在用到的 schema 上授予 `CREATE`；表放在连接的默认 schema 里（要换 schema：`?options=-c%20search_path%3Dmyschema`，schema 要先建好）。hub 只往自己的表里读写，不需要超级用户
+- **版本**：CI 在 Postgres 15 和 18 上跑全部 hub 测试；更老的版本没有验证
+- **连接失败**：连不上、认证失败、迁移失败时 hub 打印原因（主机、端口、库名和驱动的错误，没有密码）并以非零状态退出，不会带着坏掉的存储启动。连接池上限 10，建立连接最多等 10 秒。运行中数据库暂时不可用：请求报错，`/readyz` 回 `503`，库恢复后自动重连，不用重启 hub
+- **数据在哪**：账号、设备、配对、邀请、审计、预览 label 等元数据在库里（hub.md § 8）；管理员 token（`admin-token`，`single`）和 VAPID 密钥（`vapid.json`）仍然在 `ANYCON_DATA_DIR` 里，所以 `/data` 卷要保留（容器重建后丢了 `vapid.json`，所有浏览器的推送订阅都失效）
+- **SQLite 和 Postgres 之间没有自动迁移**：换后端等于一个新的库，账号、设备和配对不会带过去，设备要重新配对。导出 / 导入工具在计划里
+- **只跑一个实例**：Postgres 不改变这一点（§ 1）；限速计数、每日配对名额和在线连接数仍是这个进程内存里的，重启清零
+- 完整的 compose 示例（hub + Postgres）：`docker/compose.postgres.yml`
 
 ## 4. 反向代理
 
@@ -265,9 +282,21 @@ volumes:
   caddy-data:
 ```
 
-完整示例在 `docker/` 目录。
+完整示例在 `docker/` 目录：`docker/compose.yml`（SQLite）、`docker/compose.postgres.yml`（hub + Postgres）。
 
 ## 5. 备份
+
+用 Postgres 时：库用 `pg_dump` 备份，`/data` 卷里的 `vapid.json`（以及 `single` 模式的 `admin-token`，除非你用 `ANYCON_ADMIN_TOKEN` 固定了它）另外备份：
+
+```bash
+# docker/compose.postgres.yml 的容器名；自带的 Postgres 换成你的主机和用户
+docker exec anycon-postgres pg_dump -U anycon -Fc anycon > anycon-$(date +%F).dump
+docker run --rm -v anycon-data:/data -v "$PWD":/backup alpine tar czf /backup/anycon-data-$(date +%F).tgz -C /data vapid.json admin-token
+# 恢复：先停 hub，再导入到一个空库
+docker exec -i anycon-postgres pg_restore -U anycon -d anycon --clean --if-exists < anycon-2026-01-01.dump
+```
+
+`pg_dump` 是一致的在线快照，不用停 hub。两份备份来自同一时刻不是必须的：`vapid.json` 只在首次启动时生成，之后不变。托管的 Postgres 用服务商自带的备份 / 时间点恢复即可。
 
 SQLite 模式下，`/data` 目录就是全部状态：
 
@@ -295,7 +324,8 @@ docker run -d --name anycon-hub …                 # 和 § 2 同样的参数�
 ## 7. 健康检查与监控
 
 - `GET /healthz` → `200`，JSON `{ "status": "ok", "version": … }`，不查库
-- `GET /readyz` → 数据库可用时 `200`，否则 `503`
+- `GET /readyz` → 数据库可用时 `200`，否则 `503`（SQLite 和 Postgres 都是）
+- 镜像自带的 `HEALTHCHECK`（`anycon-hub healthcheck`）只探本机的 `/healthz`，不读 `ANYCON_DATABASE_URL`、不连库：用 Postgres 时它照样能用，Postgres 暂时不可用也不会让容器被判 unhealthy 而被重启（反代和编排要「数据库可用才接流量」的话用 `/readyz`）
 - `/metrics`（Prometheus 格式：在线设备数、信封转发速率、未送达数、握手失败数、队列深度）是 v0.3 的计划，v0.1 没有
 
 ## 8. daemon 侧

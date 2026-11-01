@@ -1,6 +1,7 @@
 //! 集成测试公共设施：起真实 hub（随机端口、临时数据目录）、假设备（tokio-tungstenite + msgpack 信封）。
 #![allow(dead_code)]
 
+pub mod pg;
 pub mod smtp;
 
 use std::net::SocketAddr;
@@ -39,6 +40,9 @@ pub struct TestHub {
     pub http: reqwest::Client,
     /// bootstrap 管理员的 token。`multi` 没有，是空串（`login_admin` 会直接报错）。
     pub admin_token: String,
+    /// 设了 `ANYCON_TEST_POSTGRES_URL` 时这个 hub 用的临时 schema（hub 用 Postgres 存储，库不在 `dir` 里）；否则是 `None`（SQLite，
+    /// 库文件在 `dir/hub.db`）。放在最后：hub 先释放，再删 schema。
+    pub pg: Option<pg::PgSchema>,
 }
 
 impl TestHub {
@@ -53,6 +57,11 @@ impl TestHub {
         // 验证码验证失败默认要等 250 ms：测试里不关心，免得整套用例平白变慢。要测它的用例自己设回来。
         config.timing.email_verify_failure_delay = Duration::ZERO;
         tweak(&mut config);
+        // 设了 ANYCON_TEST_POSTGRES_URL：用例没有自己指定库的话，hub 用 Postgres（一个临时 schema），整套集成测试顺带验证 Postgres 存储。
+        let pg = if config.database_url.is_none() { pg::PgSchema::from_env().await } else { None };
+        if let Some(pg) = &pg {
+            config.database_url = Some(pg.database_url());
+        }
         let multi = config.mode == Mode::Multi;
         let handle = anycon_hub::run(config).await.expect("hub starts");
         let admin_token = if multi {
@@ -62,7 +71,19 @@ impl TestHub {
             handle.generated_admin_token.clone().expect("first run generates an admin token")
         };
         let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
-        Self { handle, dir, http, admin_token }
+        Self { handle, dir, http, admin_token, pg }
+    }
+
+    /// 把库里的一张表改名（模拟库出了故障：之后碰这张表的查询都报错）。表名是测试里写死的字面量。SQLite 和 Postgres 都行。
+    pub async fn break_table(&self, table: &str) {
+        if let Some(pg) = &self.pg {
+            return pg.break_table(table).await;
+        }
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::ConnectOptions;
+        let mut conn = SqliteConnectOptions::new().filename(self.dir.path().join("hub.db")).connect().await.unwrap();
+        let sql = sqlx::AssertSqlSafe(format!("ALTER TABLE {table} RENAME TO {table}_broken"));
+        sqlx::query(sql).execute(&mut conn).await.unwrap();
     }
 
     pub fn url(&self, path: &str) -> String {

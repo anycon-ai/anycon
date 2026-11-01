@@ -1,0 +1,57 @@
+# anycon-hub + Postgres 的 docker compose 示例（hub 用 Postgres 存账号、设备、配对等元数据，ADR-12）。
+#
+#   echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" > docker/.env      # compose 自动读同目录的 .env；已被 .gitignore 忽略
+#   docker compose -f docker/compose.postgres.yml up -d
+#   docker compose -f docker/compose.postgres.yml logs hub              # 首次启动会打印管理员 token（single 模式）
+#
+# 和 docker/compose.yml 的区别只有数据库：hub 连同一个 compose 项目里的 postgres 服务，数据在 anycon-pgdata 卷里。
+# hub 的 /data 卷仍然要留着：Web Push 的 VAPID 密钥（vapid.json）和 single 模式的 admin-token 在那里，不在数据库里。
+# 备份：`pg_dump` 加 /data 卷，见 docs/deploy.md § 5。TLS、反向代理、其余环境变量同 docker/compose.yml 和 docs/deploy.md。
+# hub 仍然只能跑一个实例（路由表、配对撮合、限速计数都在进程内存里）；Postgres 只换存储，不改变这一点。
+
+services:
+  postgres:
+    image: postgres:18
+    container_name: anycon-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: anycon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?put POSTGRES_PASSWORD=<random> in docker/.env (see the top of this file)}
+      POSTGRES_DB: anycon
+    volumes:
+      # 18 的镜像把数据放在 /var/lib/postgresql/18/docker，所以挂 /var/lib/postgresql；
+      # 17 及更早的镜像挂 /var/lib/postgresql/data。
+      - anycon-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anycon -d anycon"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # 不对外开端口：只有 hub 通过 compose 网络连它。要用 psql / pg_dump 从宿主机连的话，把端口绑到回环：
+    # ports: ["127.0.0.1:5432:5432"]
+
+  hub:
+    image: ghcr.io/anycon-ai/hub:latest
+    # 想从源码构建：同 docker/compose.yml 里的 `build:` 段。
+    container_name: anycon-hub
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # 只绑回环，对外由反向代理暴露。
+      - "127.0.0.1:8080:8080"
+    environment:
+      # 必填：公网地址。
+      ANYCON_PUBLIC_URL: https://hub.example.com
+      # Postgres 连接 URL。密码里的特殊字符要百分号编码（用 `openssl rand -hex` 生成的密码不需要）。
+      # 数据库不在这个 compose 网络里（托管的 Postgres 之类）时，改成指向它，并加 `?sslmode=verify-full`；用自己的 CA 的话再加
+      # `&sslrootcert=/path/ca.pem`（把文件挂进容器）。同一个 compose 网络里的 postgres 服务不需要 TLS。
+      ANYCON_DATABASE_URL: postgres://anycon:${POSTGRES_PASSWORD}@postgres:5432/anycon
+      # 其它变量（ANYCON_MODE、ANYCON_TRUSTED_PROXIES、ANYCON_SMTP_URL ……）见 docker/compose.yml 和 docs/deploy.md § 3。
+    volumes:
+      - anycon-data:/data
+
+volumes:
+  anycon-data:
+  anycon-pgdata:

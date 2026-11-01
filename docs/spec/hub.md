@@ -111,7 +111,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | 路径 | 说明 |
 |---|---|
 | `GET /api/admin/status` | 模式、版本、启动时间、在线连接数、设备数、账号数、队列状态、数据库大小 |
-| `GET /api/admin/accounts` | 账号列表（只读元数据）：`{ id, display_name, email?, is_admin, admin_by_config, created_at_ms }`，按创建时间从早到晚。`is_admin` 是有效值；`admin_by_config` 为真表示这个账号是靠 `ANYCON_ADMIN_EMAILS` 当上的（要取消只能改配置）。分页见 § 2.5。`?q=`：显示名或邮箱包含它，或者**正好**等于账号 id；首尾空白去掉，空白等于没给，超过 200 个字符 `400 bad_request`；带 `q` 时分页方式不变。过滤和分页都在 SQL 里做（`LIKE … ESCAPE`，`q` 里的 `%`、`_` 当字面字符），不把账号表读进内存。**只有 ASCII 字母不区分大小写**（SQLite 的 `lower()` 只折叠 ASCII；邮箱存的本来就是小写）：显示名里的非 ASCII 字符（`É`、`ü`）要大小写完全一致才命中，管理员搜索可以接受这个限制 |
+| `GET /api/admin/accounts` | 账号列表（只读元数据）：`{ id, display_name, email?, is_admin, admin_by_config, created_at_ms }`，按创建时间从早到晚。`is_admin` 是有效值；`admin_by_config` 为真表示这个账号是靠 `ANYCON_ADMIN_EMAILS` 当上的（要取消只能改配置）。分页见 § 2.5。`?q=`：显示名或邮箱包含它，或者**正好**等于账号 id；首尾空白去掉，空白等于没给，超过 200 个字符 `400 bad_request`；带 `q` 时分页方式不变。过滤和分页都在 SQL 里做（`LIKE … ESCAPE`，`q` 里的 `%`、`_` 当字面字符），不把账号表读进内存。**只有 ASCII 字母不区分大小写**，两个存储后端一样（SQLite 的 `lower()` 只折叠 ASCII；Postgres 的 `lower()` 会随数据库的 locale 折叠非 ASCII 字符，所以那边用 `translate()` 只把 `A`–`Z` 换成 `a`–`z`；邮箱存的本来就是小写）：显示名里的非 ASCII 字符（`É`、`ü`）要大小写完全一致才命中，管理员搜索可以接受这个限制 |
 | `POST /api/admin/accounts/:id/admin` · `DELETE` | 授予 / 取消库里的管理员标记，回更新后的账号行（`200`）。幂等：已经是（不是）管理员也 `200`。标记真的变了才写审计 `admin_granted` / `admin_revoked`（`account_id` = 目标账号，`detail.by` = 操作者的账号 id）。错误：目标是自己 `400 cannot_modify_self`；取消的是靠 `ANYCON_ADMIN_EMAILS` 当上的管理员 `409 admin_by_config`（`DELETE` 只清库里的标记，改变不了配置）；取消 `single` 的 bootstrap 管理员 `409 bootstrap_admin`；目标不存在 `404 not_found` |
 | `DELETE /api/admin/accounts/:id` | 删账号，`204`。过程同 `DELETE /api/me`（§ 2.6），审计里 `detail.by = admin`。错误：目标是自己 `400 cannot_modify_self`（自己删走 `DELETE /api/me`）；`single` 的 bootstrap 管理员 `409 bootstrap_admin`；不存在 `404 not_found` |
 | `GET /api/admin/audit` | hub 侧审计：登录、账号创建 / 删除、身份关联、管理员授予、设备增删、吊销、配对（只有元数据，见 § 9） |
@@ -302,7 +302,7 @@ device
 
 执行细节：
 
-- **设备数 / daemon 数**：「数 + 插」是 SQLite 的一个写事务里的 `INSERT … SELECT … WHERE 数量 < 上限`（每台设备一条），同一账号的并发收尾不会一起冲过上限；一次收尾要建两台设备时整批在一个事务里，任何一台超限就一台都不建。吊销设备释放名额（吊销只置位 `revoked_at`，不计入）。重新配对两台已有的设备不建设备记录，不检查
+- **设备数 / daemon 数**：「数 + 插」是一个事务里的 `INSERT … SELECT … WHERE 数量 < 上限`（每台设备一条），同一账号的并发收尾不会一起冲过上限：SQLite 靠唯一的写者（事务一开始就拿写锁），Postgres 先锁住涉及的账号行（`SELECT … FOR NO KEY UPDATE`，按 id 排序）再数，后到的事务数到的是前一个已提交的结果（§ 8.1）；一次收尾要建两台设备时整批在一个事务里，任何一台超限就一台都不建。吊销设备释放名额（吊销只置位 `revoked_at`，不计入）。重新配对两台已有的设备不建设备记录，不检查
 - **在线连接**：检查和登记是连接注册表同一把锁里的一步，并发认证的两条连接不会一起冲过上限。同一设备的新连接顶掉自己的旧连接不算新增（数的是「账号别的设备」）。临时连接不受限；`pair_done` 把临时连接原地升级成正式连接时不检查——一台设备至多一条连接，所以设备数配额仍然封住它
 - **每日配对与接入**：严格的滚动 24 小时窗口（不是按日历日清零，不会在零点附近一次放过两倍），计数在内存里，hub 重启清零。规则是**每个成功的撮合恰好记一次**。`pair_begin`、`enroll_begin` 在连接的账号已知时（正式设备，或带登录 cookie 的临时连接）检查并记一次，撮合表在这条登记上记一个「已记账」标记。`pair_join` 加入前先检查加入方的账号（用完了 → `pair_failed { quota }`）；撮合成立之前，登记已记账（host 有账号）就不再记，没记账（host 是第一次启动、没有账号的 daemon）就对加入方的账号检查并记一次——所有校验（短码对得上、没过期、不是自己加入自己、加入方没有别的撮合）都过了才记，记失败（和别的请求竞争到额度刚好用完）回 `pair_failed { quota }`，登记原样留着，撮合表里没有悬着的东西。输错的短码撮合不成，什么都不记。这样一次配对不会让双方各记一次，输错短码不烧名额，第一次启动的 daemon 的配对也不是免费的。加入方没有账号（也没有 host 的账号可记）时没有人可记，受 § 4 和 § 7.2 的 IP 限速约束
 - **日志**：超限只记 `limit = "devices" | "daemons" | "connections" | "daily_pairings"`，不记账号 id
@@ -330,7 +330,7 @@ device
 
 邮箱相关的每日上限超出时回 `429`，`Retry-After` 可能是几个小时；这些计数和其它限速桶一样在内存里，hub 重启就清零。知道某个邮箱地址的人能用掉它当天的码额度、或一直占着 60 秒的重发窗口——这是接受的拒绝服务，token 登录不受影响。
 
-限速键是真实 IP，依赖 `ANYCON_TRUSTED_PROXIES`；**IPv6 按 /64 归并**（一个住宅前缀内的地址共用一个桶，轮换地址绕不过去）。默认受信网段是 `172.16.0.0/12`（Docker 默认桥接网段）：不在 Docker 里部署时必须显式设置，否则反代后所有人共用反代 IP 的桶，或者（客户端恰好在这个网段）能伪造 `X-Forwarded-For`。`ANYCON_PUBLIC_URL` 是 https 时 cookie 始终带 `Secure`，不看转发头。令牌桶，内存实现；多实例部署（Postgres 后端）时退化为每实例独立计数，可接受。
+限速键是真实 IP，依赖 `ANYCON_TRUSTED_PROXIES`；**IPv6 按 /64 归并**（一个住宅前缀内的地址共用一个桶，轮换地址绕不过去）。默认受信网段是 `172.16.0.0/12`（Docker 默认桥接网段）：不在 Docker 里部署时必须显式设置，否则反代后所有人共用反代 IP 的桶，或者（客户端恰好在这个网段）能伪造 `X-Forwarded-For`。`ANYCON_PUBLIC_URL` 是 https 时 cookie 始终带 `Secure`，不看转发头。令牌桶，内存实现，每个 hub 进程各自计数、重启清零。换成 Postgres 存储也一样：Postgres 只换存储，限速计数、每日配对名额、在线连接表和配对撮合都在进程内存里，所以 hub 仍然只能跑一个实例（[deploy.md § 1](../deploy.md#1-边界)）；多开几个实例指向同一个库，限速是各算各的，路由表也不共享，不是支持的部署方式。
 
 ## 8. 数据表
 
@@ -356,6 +356,33 @@ device
 | `kv` | schema 版本等杂项；`single` 的 bootstrap token 哈希（`admin_token_hash`）和 bootstrap 管理员的账号 id（`bootstrap_admin_id`，§ 2.4）（VAPID 密钥在 `${ANYCON_DATA_DIR}/vapid.json`，不在库里，§ 6.1） |
 
 进行中的配对（`match_id`、撮合状态）、进行中的接入会话、限速计数和每日配对次数**只在内存**，不落库。`identities` 和 `oauth_states` 在迁移 `0003_identities.sql` 里；迁移只前进。
+
+### 8.1 存储后端：SQLite 和 Postgres
+
+`ANYCON_DATABASE_URL` 不设（或 `sqlite:…`）用 SQLite，`postgres://…` / `postgresql://…` 用 Postgres（[ADR-12](../decisions.md#adr-12-sqlx-双后端trait-抽象)）。hub 的其余代码只依赖 `Store` trait，两个实现的行为一致，由同一套测试（`crates/hub/src/store/conformance.rs`）验证。
+
+- **迁移**：两套，`crates/hub/migrations/sqlite/` 和 `crates/hub/migrations/postgres/`，编号和名字一一对应（`0001_init`、`0002_preview`、`0003_identities`……），启动时跑当前后端那一套，只前进。以后加迁移两边按同一个编号各加一份（有测试检查两个目录的文件名一致）
+- **类型**：毫秒时间戳是 SQLite `INTEGER` / Postgres `BIGINT`（Rust 侧 `u64`，字段名以 `_ms` 结尾）；布尔（`is_admin`、`push`、`email`）是 `INTEGER` 0/1 / `BOOLEAN`；自增 id（`email_codes.id`、`hub_audit.id`）是 `AUTOINCREMENT` / `GENERATED ALWAYS AS IDENTITY`；`hub_audit.detail` 是 JSON 文本，两边都是 `TEXT`（Postgres 不用 JSONB：hub 不解析它）。`preview_labels`、`preview_tokens` 在 Postgres 里多一个 `seq` 自增列：SQLite 靠隐含的 rowid 给同一毫秒写入的行排先后，Postgres 没有 rowid
+- **排序规则**：SQLite 的文本按字节比较，Postgres 的默认排序规则随数据库的 locale。需要和代码里一致的地方（`pairings` 的 `device_a < device_b`、`ORDER BY id`、keyset 分页的游标）在 Postgres 里显式用 `COLLATE "C"`，所以两边的排序和翻页结果相同
+
+**并发**：SQLite 只有一个写者，「先查再写」的逻辑放进一个写事务就天然串行。Postgres 是多写者（`READ COMMITTED`），每一处用行锁、advisory 锁或唯一约束保证相同的结果，撞上死锁（`40P01`）或串行化失败（`40001`）时整个事务重试几次。逐项对照：
+
+| 操作 | Postgres 怎么保证 |
+|---|---|
+| 设备数 / daemon 数上限（`create_devices_within_limits`） | 先 `SELECT … FOR NO KEY UPDATE` 锁住涉及的账号行（按 id 排序），再 `INSERT … SELECT … WHERE 数量 < 上限`：同一账号的并发建设备排队，后到的事务数到的是前一个已提交的结果 |
+| 邀请只能兑换一次（`redeem_invite`、OAuth 带邀请码注册） | 一条 `UPDATE … WHERE used_by IS NULL AND 未过期`：并发的第二条等第一条提交，在新版本上重新判断，不满足就是 0 行，整个事务回滚（不留账号） |
+| 邮箱、外部身份唯一（`create_account_with_email`、`set_account_email`、`link_identity`、`create_account_with_identity`） | 唯一约束；并发的第二个写入等第一个提交或回滚，再报冲突。账号 + 身份 + 邀请在一个事务里，任何一步冲突都什么都不留 |
+| 一次性取走（`take_oauth_state`、`take_email_code`） | 一条 `DELETE`（`RETURNING`）：并发的第二条等第一条提交，找不到行，只有一个赢家 |
+| 验证码尝试次数（`attempt_email_codes`） | 事务里先 `SELECT … ORDER BY id FOR UPDATE` 锁住这一组里还能猜的码（拿到锁后重新判断 `attempts < max`），再 `UPDATE … RETURNING`：并发提交一共只有 `max_attempts` 次比较的机会 |
+| 每组验证码最多留 `keep` 条（`put_email_code`） | 先拿这一组（邮箱，用途，账号）的 advisory 事务锁（行锁锁不住还没有的行）：同一组的并发登记排队，修剪看到的是前一个的结果 |
+| 预览 label 先到先得、每节点 label 数、每设备令牌数（`issue_preview_token`） | 先 `SELECT … FOR NO KEY UPDATE` 锁住节点和签发设备的 `devices` 行（按 id 排序）：同一节点 / 设备的并发签发排队；label 的先到先得靠主键上的 `ON CONFLICT DO NOTHING` |
+| 吊销设备（`revoke_device`） | 先 `SELECT … FOR UPDATE` 锁设备行：和并发的配对、令牌签发（外键检查拿 `FOR KEY SHARE`）互斥，之后的删除看得到它们已提交的行；并发的第二次吊销在新版本上看到已吊销，返回空 |
+| 删账号（`delete_account`） | 先 `SELECT … FOR UPDATE` 锁账号行：并发的第二个删除等第一个提交，看不到这个账号，返回 `false`，不多写墓碑审计 |
+
+「移除登录方式」一类跨多条语句的读后改（解绑邮箱、解除 OAuth 绑定、删登录 token）靠 hub 进程内按账号的锁串行化，不在库里，和后端无关。每日配对名额、限速、在线连接数在内存里，不涉及存储。库里没有「最后一个管理员不能取消」这类规则：取消管理员只拦 `single` 的 bootstrap 管理员和 `ANYCON_ADMIN_EMAILS` 派生的管理员，两者都只看配置，不看库里的状态。
+
+- **差异**：账号搜索两边一致（只有 ASCII 字母不区分大小写，§ 2.4）。Postgres 的 `TEXT` 不能含 NUL（`\0`），自由文本字段（设备名、备注、UA 等客户端给的字符串）写入前去掉 NUL，SQLite 原样存。`/api/admin/status` 的数据库大小：SQLite 是库文件大小，Postgres 是整个数据库（`pg_database_size`）的大小
+- **连接**：Postgres 的连接 URL 是 libpq 风格（`postgres://用户:密码@主机:端口/库名?sslmode=…`），TLS 用 rustls（内置 webpki 根证书，`sslrootcert` 可指定自己的 CA）。连接池上限 10，建立连接最多等 10 秒；连不上、认证失败、迁移失败时 hub 带着原因（主机、端口、库名和驱动的错误，不含密码）退出。只有 hub 自己的表（`_sqlx_migrations` 加 § 8 里的表）放在连接的默认 schema（`search_path` 的第一个）里
 
 ## 9. hub 侧审计
 
@@ -391,7 +418,7 @@ device
   - `ANYCON_ADMIN_EMAILS` 里每一项必须是合法邮箱，`ANYCON_QUOTA_*` 必须是 ≥ 1 的整数。**两种模式都校验**（笔误早点暴露，切换模式时不会才炸）；错误里不回显邮箱（只报第几项）和 secret。空白的值当作没设
   - 警告而不是错误：在不用它的模式里设了（`single` 里的 `ANYCON_ADMIN_EMAILS` / `ANYCON_QUOTA_*`，`multi` 里的 `ANYCON_ADMIN_TOKEN`）→ 「ignored」；配了 OAuth 但 `ANYCON_PUBLIC_URL` 不是 https（提供方要求 https 回调，本机开发除外）；`multi` 里 `ANYCON_ADMIN_EMAILS` 为空（只有库里已有管理员标记的账号能管理这个 hub）。日志里管理员邮箱只记个数
 - **升级**：migration 只前进；跨多个 minor 升级时逐个 migration 跑。回滚靠备份
-- **备份**：`anycon-hub backup <path>` 用 SQLite online backup API 导出一致快照，容器里可 `docker exec`。Postgres 用 `pg_dump`。（**v0.1 没有 `backup` 子命令**，只有 `serve` / `healthcheck` / `version`；先停容器拷 `/data`，或在宿主机用 `sqlite3 hub.db ".backup …"`。v0.1.x 补）
+- **备份**：`anycon-hub backup <path>` 用 SQLite online backup API 导出一致快照，容器里可 `docker exec`。Postgres 用 `pg_dump`（只备份库；`ANYCON_DATA_DIR` 里的 `vapid.json`、`admin-token` 不在库里，要另外备份，[deploy.md § 5](../deploy.md#5-备份)）。（**v0.1 没有 `backup` 子命令**，只有 `serve` / `healthcheck` / `version`；先停容器拷 `/data`，或在宿主机用 `sqlite3 hub.db ".backup …"`。v0.1.x 补）
 - **关停**：SIGTERM → 停止接受新连接 → 对所有连接发 `4002 restarting` → 最多等 5 秒 → 退出
 - **指标**（v0.3）：`/metrics` Prometheus 格式，只有计数和直方图，不含设备 id 维度
 
@@ -481,4 +508,4 @@ base-uri 'none'; form-action 'none'
 | `preview_labels` | label（主键）、node_id、account_id、created_at_ms |
 | `preview_tokens` | token_hash（主键）、label、node_id、account_id、device_id（签发它的设备）、created_at_ms、expires_at_ms |
 
-都是元数据：hub 知道哪个账号的哪台节点有哪些 label、谁什么时候申请了令牌；不知道 label 对应哪个端口。新表放在新的 migration（`0002_preview.sql`）里。
+都是元数据：hub 知道哪个账号的哪台节点有哪些 label、谁什么时候申请了令牌；不知道 label 对应哪个端口。新表放在新的 migration（`0002_preview.sql`，SQLite 和 Postgres 各一份）里。

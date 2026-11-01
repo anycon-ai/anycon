@@ -1148,14 +1148,9 @@ async fn next_is_validated_and_defaults_to_the_root() {
 // hub 这边出错：也是 302，不是 JSON
 // ---------------------------------------------------------------------------
 
-/// 在 hub 的库文件上另开一个连接，把一张表改名（模拟库出了故障：之后碰这张表的查询都报错）。
+/// 把库里的一张表改名（模拟库出了故障：之后碰这张表的查询都报错）。
 async fn break_table(env: &Env, table: &str) {
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::ConnectOptions;
-    let mut conn = SqliteConnectOptions::new().filename(env.hub.dir.path().join("hub.db")).connect().await.unwrap();
-    // 表名是测试里写死的字面量
-    let sql = sqlx::AssertSqlSafe(format!("ALTER TABLE {table} RENAME TO {table}_broken"));
-    sqlx::query(sql).execute(&mut conn).await.unwrap();
+    env.hub.break_table(table).await;
 }
 
 #[tokio::test]
@@ -1314,9 +1309,11 @@ async fn a_provider_that_is_no_longer_configured_is_not_a_login_method() {
     let session = env.sign_in_ok("github", gh("1").email("a@example.com", true)).await;
     // 重启成只配 Google 的 hub（同一份数据）：库里的 GitHub 身份还在，但不算登录方式
     let dir = env.hub.dir.path().to_path_buf();
+    let database_url = env.hub.handle.state.config.database_url.clone();
     let fake = FakeOAuth::start().await;
     env.hub.handle.shutdown().await;
     let mut config = Config::new("https://hub.test", &dir).unwrap();
+    config.database_url = database_url;
     config.listen = "127.0.0.1:0".parse().unwrap();
     config.enable_multi(anycon_hub::config::QuotaLimits::default(), anycon_hub::config::DEFAULT_DAILY_PAIRINGS);
     config.mailer_override = Some(Arc::new(RecordingMailer::default()));

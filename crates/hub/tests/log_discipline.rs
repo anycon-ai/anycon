@@ -204,7 +204,11 @@ async fn logs_never_contain_secrets_or_envelope_bodies() {
     assert!(broker_dump.contains("registrations: 1"), "the pending registration is still alive: {broker_dump}");
     let mut files = Vec::new();
     collect_files(hub.dir.path(), &mut files);
-    assert!(files.iter().any(|f| f.ends_with("hub.db")), "sanity: the database is in the data dir: {files:?}");
+    // Postgres 时库不在数据目录里：这里只扫其余的状态文件（admin-token、vapid.json）。
+    assert!(
+        hub.pg.is_some() || files.iter().any(|f| f.ends_with("hub.db")),
+        "sanity: the database is in the data dir: {files:?}"
+    );
     let state_blobs: Vec<(String, Vec<u8>)> = files
         .iter()
         .map(|f| (f.display().to_string(), std::fs::read(f).unwrap_or_default()))
@@ -566,7 +570,11 @@ async fn preview_tokens_paths_and_tunnel_traffic_never_reach_the_logs_or_the_dat
     // 数据目录里只有令牌的哈希，没有明文
     let mut files = Vec::new();
     collect_files(hub.dir.path(), &mut files);
-    assert!(files.iter().any(|f| f.ends_with("hub.db")), "sanity: the database is in the data dir: {files:?}");
+    // Postgres 时库不在数据目录里：这里只扫其余的状态文件（admin-token、vapid.json）。
+    assert!(
+        hub.pg.is_some() || files.iter().any(|f| f.ends_with("hub.db")),
+        "sanity: the database is in the data dir: {files:?}"
+    );
     for f in &files {
         let blob = std::fs::read(f).unwrap_or_default();
         for (what, secret) in [("preview token", &token), ("second preview token", &second)] {

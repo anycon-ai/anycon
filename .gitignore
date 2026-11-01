@@ -24,6 +24,7 @@ pkg/
 /web/public/wasm
 
 # 测试与本地开发
+/docker/.env
 /e2e/test-results
 /e2e/playwright-report
 /.anycon-dev

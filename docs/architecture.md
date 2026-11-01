@@ -103,7 +103,7 @@ Noise 握手和对称加密的唯一实现。编译成三种产物：
 | 登录方式 | token；配置了 SMTP / OAuth 后同样可用邮箱验证码（只给已绑定邮箱的账号）、GitHub、Google（新用户要凭邀请） | 邮箱验证码、GitHub、Google（按配置）。**不提供 token，没有密码** |
 | 配额 | 不启用 | 启用：每个账号的设备数、daemon 数、在线连接数、每日配对次数（`ANYCON_QUOTA_*`，默认 10 / 3 / 10 / 20） |
 | 管理员 | bootstrap 管理员，加上被授予的 | `ANYCON_ADMIN_EMAILS` 里的邮箱，加上被授予的 |
-| 数据库 | SQLite | SQLite（Postgres 见 [roadmap](roadmap.md)） |
+| 数据库 | SQLite（默认），或 Postgres（`ANYCON_DATABASE_URL`） | SQLite（默认），或 Postgres（[ADR-12](decisions.md#adr-12-sqlx-双后端trait-抽象)） |
 | E2E | 启用 | 启用 |
 
 两种模式跑同一份 release，不存在「官方特供分支」。登录方式由配置决定（有没有配 SMTP、有没有配 OAuth provider），不由模式决定；模式只管几件事：注册是否开放（邀请是否存在）、配额是否启用、是否允许 token 登录、管理员从哪来。已有的 `single` 数据库可以直接切到 `multi`（token 和邀请登录停止工作，其余数据不变）。见 [ADR-22](decisions.md#adr-22-账号登录方式与身份模型)、[ADR-23](decisions.md#adr-23-token-登录与局域网双-origin)、[ADR-40](decisions.md#adr-40-multi-模式开放注册管理员配额账号删除和-oauth-绑定)。没有密码，没有二次验证：账号权限很小（§ 5.6），不值得为它背一套密码和 TOTP。（节点口令是 daemon 自己的门，不是账号密码，hub 不经手，见 § 5.2.1。）

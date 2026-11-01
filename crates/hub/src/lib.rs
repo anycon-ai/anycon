@@ -38,7 +38,7 @@ use tracing_subscriber::EnvFilter;
 
 pub use app::AppState;
 pub use config::Config;
-pub use store::{SqliteStore, Store};
+pub use store::{PostgresStore, SqliteStore, Store};
 
 use crate::util::now_ms;
 
@@ -114,7 +114,7 @@ pub fn init_tracing(filter: &str) {
     let _ = tracing_subscriber::fmt().with_env_filter(filter).with_target(false).with_ansi(ansi).try_init();
 }
 
-/// 起一个完整的 hub：校验数据目录 → 占端口 → 打开库并迁移 → admin 账号 / token（只有 `single`）→ 开始服务。
+/// 起一个完整的 hub：校验数据目录 → 占端口 → 打开库（SQLite 或 Postgres，按 `ANYCON_DATABASE_URL`）并迁移 → admin 账号 / token（只有 `single`）→ 开始服务。
 pub async fn run(config: Config) -> Result<Handle, RunError> {
     config.validate()?;
     bootstrap::prepare_data_dir(&config.data_dir)?;
@@ -134,7 +134,7 @@ pub async fn run(config: Config) -> Result<Handle, RunError> {
         config.timing.push_timeout,
     )?;
     let mailer = build_mailer(&config)?;
-    let store: Arc<dyn Store> = Arc::new(SqliteStore::open(config.database_url.as_deref(), &config.data_dir).await?);
+    let store: Arc<dyn Store> = store::open(config.database_url.as_deref(), &config.data_dir).await?;
     // 升级前的 `single` 库：把 bootstrap 管理员的账号 id 钉住。两种模式都要，而且在任何东西能改管理员之前。
     bootstrap::pin_bootstrap_admin(store.as_ref()).await?;
     // `single`：bootstrap 管理员账号和 token。`multi` 开放注册，没有 bootstrap 账号，也不生成、不读写 `admin-token`

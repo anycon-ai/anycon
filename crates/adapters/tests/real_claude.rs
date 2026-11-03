@@ -482,6 +482,78 @@ async fn real_image_attachment_is_understood() {
     }
 }
 
+/// `block_outside_writes`（ADR-48，CLI ≥ 2.1.314）：项目外的 Write 不发权限请求，直接被拒，成了 `notice { permission_denied }`。
+#[tokio::test]
+#[ignore = "needs the real claude CLI and ANYCON_REAL_AGENT_TESTS=1"]
+async fn real_block_outside_writes_refuses_a_write_outside_the_project() {
+    if !enabled() {
+        eprintln!("skipped: set ANYCON_REAL_AGENT_TESTS=1");
+        return;
+    }
+    let project = tempfile::tempdir().unwrap();
+    let cwd = project.path().canonicalize().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().canonicalize().unwrap().join("blocked.txt");
+    let scratch = tempfile::tempdir().unwrap();
+    let adapter = ClaudeCodeAdapter::new();
+    let ctx = ProbeContext {
+        env: Arc::new(real_env()),
+        config: AdapterConfig { enabled: true, ..Default::default() },
+        deadline: Duration::from_secs(60),
+        cheap: false,
+        previous: None,
+        scratch_dir: scratch.path().to_path_buf(),
+    };
+    let info = Arc::new(adapter.probe(&ctx).await);
+    assert_eq!(info.status, AgentStatus::Ready, "{:?}", info.issue);
+    let too_old = info
+        .version
+        .as_deref()
+        .and_then(anycon_adapters::common::parse_semver)
+        .is_some_and(|v| !anycon_adapters::common::version_at_least(&v, "2.1.314"));
+    if too_old {
+        eprintln!("skipped: claude {:?} is older than 2.1.314", info.version);
+        return;
+    }
+    let mut options = serde_json::Map::new();
+    options.insert("block_outside_writes".into(), serde_json::json!(true));
+    let settings = SessionSettings {
+        model: Some("claude-haiku-5-5".into()),
+        thinking: Some("low".into()),
+        mode: Some("default".into()),
+        options,
+        ..Default::default()
+    };
+    let mut h = spawn_real(&adapter, info, &cwd, settings, None).await;
+    let _ = next_event(&mut h).await; // Started
+    let mut asked = Vec::new();
+    let prompt = format!(
+        "Use the Write tool (not Bash) to create the file {} containing the word hi. If it fails, do not retry and do not use any other tool; just report the error.",
+        target.display()
+    );
+    let evs = turn(&mut h, &prompt, |p| {
+        asked.push(p.title.clone());
+        PermissionDecision { option_id: Some("allow".into()), ..Default::default() }
+    })
+    .await;
+    eprintln!("block turn events: {:?} asked={asked:?}", names(&evs));
+    let denied: Vec<&String> = evs
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Event(Event::Notice { code, message, .. }) if code == "permission_denied" => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert!(!target.exists(), "the write outside the project went through");
+    assert!(asked.iter().all(|t| !t.contains("blocked.txt")), "the CLI asked instead of refusing: {asked:?}");
+    assert!(denied.iter().any(|m| m.contains("blockWritesOutsideWorkingDirectories")), "{denied:?}");
+    h.shutdown().await.unwrap();
+    let _ = collect_until(&mut h, is_exited).await;
+    if let Some(dir) = encoded_project_dir(&cwd) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 // ---------------------------------------------------------------- workflow / MCP elicitation
 
 /// 一个事件序列里最后一次出现的 `Task` 快照（按 id 取最新）。

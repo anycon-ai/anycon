@@ -1122,3 +1122,19 @@ ADR-1 拆成两层来看：
 - 思考等级不按模型区分（探测时只看得到默认模型的那一组），换模型后 agent 给出别的等级时，daemon 用探测时那组校验，agent 不接受的值在设置时才报错。
 - `max_tokens` / `max_turn_requests` 按规格映射成 `max_turns`，daemon 会把会话标成 `ended`（进程还活着，能继续发消息）。
 - 本机没有装任何 ACP agent，真实 agent 的冒烟测试（OpenCode，`ANYCON_REAL_AGENT_TESTS=1`）没有跑过；各家 `rawInput` 的形状、有没有 `session/close` 的差异靠宽松解析兜底。
+
+## ADR-48 Claude Code：文件工具不写项目外（可选，默认关）
+
+**背景**：Claude Code 2.1.314 加了设置 `permissions.blockWritesOutsideWorkingDirectories`：Write、Edit、NotebookEdit 在任何权限模式下（含 `bypassPermissions`）都拒绝写工作目录以外的路径。ADR-34 第 9 条担心的正是这类写入：worktree 会话里 agent 往主仓库 `.git/hooks` 写脚本，用户之后在终端里 `git commit` 就会执行它们；现在 adapter 只是不预先放行，`bypassPermissions` / `acceptEdits` 下这道门要靠 agent 自己的权限流程。
+
+**决定**（实现在 `crates/adapters/src/claude_code/process.rs`，见它的 README「启动参数」）：
+
+1. Claude Code adapter 加一个布尔选项 `block_outside_writes`，**默认关**。打开 = 启动参数 `--settings={"permissions":{"blockWritesOutsideWorkingDirectories":true}}`；和 `fast_mode` 的 `fastMode` 合在同一个 `--settings` 里（CLI 只取最后一个 `--settings`）。改它 → `restart_required`（和别的启动参数一样）。
+2. 2.1.316 实测：被拦的写入在 `can_use_tool` 之前就被拒，CLI 发 `system/permission_denied`（adapter 已有的 `notice { permission_denied }`）和一条 `is_error` 的 `tool_result`；关掉时同样的写入照常走权限请求。CLI 自己的文件不受影响：plan 模式把计划写进 `~/.claude/plans` 照常成功。2.1.309 收下这个键既不报错也不生效（项目外的写入照常走权限请求）。
+3. 选项说明写明**不管 shell 命令**（Bash 里的 `echo > /path` 不受这个设置约束），也不改变已有的沙箱 / 权限模式语义。
+
+**原因**：它补的是「权限模式放得很宽时，文件工具仍然不出项目」这一档，且由 CLI 自己在工具层面执行，adapter 不用解析路径。默认关：一是默认开会悄悄改变现有会话的行为——用户本来批准得了的项目外写入（相邻的仓库、dotfiles）会直接被拒，连权限请求都没有；二是老于 2.1.314 的 CLI 不认识这个键（不报错，也不生效），默认开会给人一种不存在的保护。
+
+**否掉**：worktree 会话默认打开（同一个选项在不同会话里默认值不同不好解释，worktree 会话里写相邻目录的需求一样存在）；adapter 自己按路径拒绝 `can_use_tool`（`bypassPermissions` / 规则放行的调用根本不发 `can_use_tool`，拦不住）；用 `--disallowedTools` 按路径写规则（规则语法挡不住符号链接，也挡不住 `..`）。
+
+**代价 / 限制**：只覆盖 Claude Code 的三个文件工具；shell 命令写项目外仍然只受权限模式和 Claude Code 沙箱约束。CLI 低于 2.1.314 时选项不生效，adapter 不检查版本。

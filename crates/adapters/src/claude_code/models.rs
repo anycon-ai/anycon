@@ -121,16 +121,6 @@ pub const BUILTIN: &[BuiltinModel] = &[
         min_cli_version: "2.1.0",
     },
     BuiltinModel {
-        id: "opus[1m]",
-        label: "Opus (latest, 1M context)",
-        description: "Alias for the latest Opus with 1M context",
-        default: false,
-        levels: LEVELS_5X,
-        default_level: "medium",
-        tags: &["1m"],
-        min_cli_version: "2.1.0",
-    },
-    BuiltinModel {
         id: "sonnet",
         label: "Sonnet (latest)",
         description: "Alias for the latest Sonnet",
@@ -138,16 +128,6 @@ pub const BUILTIN: &[BuiltinModel] = &[
         levels: LEVELS_5X,
         default_level: "medium",
         tags: &[],
-        min_cli_version: "2.1.0",
-    },
-    BuiltinModel {
-        id: "sonnet[1m]",
-        label: "Sonnet (latest, 1M context)",
-        description: "Alias for the latest Sonnet with 1M context",
-        default: false,
-        levels: LEVELS_5X,
-        default_level: "medium",
-        tags: &["1m"],
         min_cli_version: "2.1.0",
     },
     BuiltinModel {
@@ -326,7 +306,9 @@ mod tests {
         for alias in ["opus", "sonnet", "haiku", "fable"] {
             by_id(alias);
         }
-        assert_eq!(by_id("opus[1m]").tags, vec!["1m"]);
+        assert_eq!(by_id("claude-sonnet-4-6[1m]").tags, vec!["1m"]);
+        // 5.x 默认就是 1M 上下文，`[1m]` 不起作用（2.1.316 实测 `opus[1m]` 的 contextWindow 与 `opus` 相同），不列
+        assert!(!models.iter().any(|m| m.id == "opus[1m]" || m.id == "sonnet[1m]"));
         // 每个模型的默认等级都在它的选项里
         for m in &models {
             let t = m.thinking.as_ref().unwrap();

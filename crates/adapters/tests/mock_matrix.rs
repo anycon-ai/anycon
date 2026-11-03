@@ -128,6 +128,7 @@ fn type_names(evs: &[AgentEvent]) -> Vec<String> {
         .map(|e| match e {
             AgentEvent::Event(ev) => serde_json::to_value(ev).unwrap()["type"].as_str().unwrap().to_string(),
             AgentEvent::Permission(_) => "PERMISSION".to_string(),
+            AgentEvent::PermissionWithdrawn { request_id } => format!("WITHDRAWN:{request_id}"),
             AgentEvent::Started { .. } => "STARTED".to_string(),
             AgentEvent::Title(_) => "TITLE".to_string(),
             AgentEvent::TurnStarted => "TURN_STARTED".to_string(),

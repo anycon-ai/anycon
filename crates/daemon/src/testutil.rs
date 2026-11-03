@@ -152,6 +152,8 @@ pub enum InterjectFailure {
 pub enum AdapterErrorKind {
     NotInstalled,
     NotAuthenticated,
+    /// `AdapterError::AgentConfig`（agent 自己的配置和会话对不上）
+    AgentConfig(String),
     Other(String),
 }
 
@@ -349,6 +351,7 @@ impl Adapter for FakeAdapter {
             return Err(match kind {
                 AdapterErrorKind::NotInstalled => AdapterError::NotInstalled("fake binary missing".into()),
                 AdapterErrorKind::NotAuthenticated => AdapterError::NotAuthenticated("fake login required".into()),
+                AdapterErrorKind::AgentConfig(m) => AdapterError::AgentConfig(m),
                 AdapterErrorKind::Other(m) => AdapterError::Spawn(m),
             });
         }

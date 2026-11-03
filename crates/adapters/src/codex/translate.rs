@@ -297,9 +297,16 @@ pub fn error_code(e: &TurnError) -> (&'static str, bool) {
     let lower = e.message.to_ascii_lowercase();
     match e.info_name().as_deref() {
         Some("unauthorized") => ("auth_failed", false),
-        Some("usageLimitExceeded" | "rateLimitExceeded" | "serverOverloaded" | "sessionBudgetExceeded") => {
-            ("rate_limited", true)
-        }
+        // `policyCapacityUnavailable`（0.166.0）：按策略分到的容量暂时没有，和过载一样稍后再试
+        Some(
+            "usageLimitExceeded"
+            | "rateLimitExceeded"
+            | "serverOverloaded"
+            | "sessionBudgetExceeded"
+            | "policyCapacityUnavailable",
+        ) => ("rate_limited", true),
+        // 0.165.0 起提供方说模型不存在就不再重试：换个模型能接着用
+        Some("modelNotFound") => ("model_not_found", true),
         Some("contextWindowExceeded") => ("context_window_exceeded", true),
         Some("cyberPolicy" | "misalignmentPolicyViolation") => ("policy_violation", true),
         Some("sandboxError") => ("sandbox_error", true),
@@ -2116,6 +2123,14 @@ mod tests {
             ("context_window_exceeded", true)
         );
         assert_eq!(error_code(&e(json!({"message": "m", "codexErrorInfo": "sandboxError"}))), ("sandbox_error", true));
+        assert_eq!(
+            error_code(&e(json!({"message": "m", "codexErrorInfo": "modelNotFound"}))),
+            ("model_not_found", true)
+        );
+        assert_eq!(
+            error_code(&e(json!({"message": "m", "codexErrorInfo": "policyCapacityUnavailable"}))),
+            ("rate_limited", true)
+        );
         assert_eq!(
             error_code(&e(
                 json!({"message": "m", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 403}}})

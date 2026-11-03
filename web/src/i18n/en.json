@@ -1239,7 +1239,9 @@
     "rate_limited": "The agent hit a rate or usage limit. Wait a while and try again.",
     "auth_failed": "The agent is not signed in, or its credentials were rejected. Check its status in the node settings.",
     "agent_context_reset": "Earlier messages in this conversation are no longer visible to the agent — it started a fresh thread.",
-    "attachment_failed": "The node couldn't save the attachments in the session's working directory, so this message was not passed to the agent. Fix the cause below (for example free up disk space), then send it again."
+    "attachment_failed": "The node couldn't save the attachments in the session's working directory, so this message was not passed to the agent. Fix the cause below (for example free up disk space), then send it again.",
+    "agent_config": "The agent’s own configuration no longer matches this conversation. Do what the message below says (for Codex, switch back to the model provider the conversation was created with), then send again.",
+    "model_not_found": "The provider says this model does not exist or is not available to you. Pick another model in the session settings."
   },
   "markdown": {
     "loadImage": "Load image from {{host}}",

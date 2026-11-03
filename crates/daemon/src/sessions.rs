@@ -1745,6 +1745,7 @@ impl Sessions {
             AdapterError::UnsupportedVersion(_) => "unsupported_version",
             AdapterError::InvalidSettings { .. } => "invalid_settings",
             AdapterError::Exited(_) => "agent_exited",
+            AdapterError::AgentConfig(_) => "agent_config",
             _ => "agent_error",
         };
         if matches!(
@@ -1946,6 +1947,10 @@ impl Sessions {
             AgentEvent::Permission(p) => {
                 self.mark_first_event(&mut st).await;
                 self.on_permission(&mut st, p).await;
+            }
+            AgentEvent::PermissionWithdrawn { request_id } => {
+                // 已经答复过 / 不认识的 id：auto_deny_one 什么都不做
+                self.auto_deny_one(&mut st, &request_id, "withdrawn by the agent").await;
             }
             AgentEvent::Event(e) => {
                 self.mark_first_event(&mut st).await;

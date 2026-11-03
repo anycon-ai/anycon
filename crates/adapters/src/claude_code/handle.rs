@@ -291,8 +291,11 @@ fn dispatch(shared: &Shared, child: &JsonlChild, tx: &mpsc::UnboundedSender<Agen
                 }
             }
         }
+        // CLI 撤回了还没答复的请求（如 MCP 工具超时，它的 elicitation 没人答）：让 daemon 撤下卡片，免得用户的答复白填
         Out::ControlCancel { request_id } => {
-            shared.pending.lock().expect("pending lock").remove(&request_id);
+            if shared.pending.lock().expect("pending lock").remove(&request_id).is_some() {
+                let _ = tx.send(AgentEvent::PermissionWithdrawn { request_id });
+            }
         }
         // CLI 自己的一轮结束了，暂存的用户消息现在写进去（这一轮的未决权限请求随它一起作废）
         Out::Write(msg) => {
@@ -474,6 +477,7 @@ impl AgentHandle for ClaudeHandle {
             || next.max_turns != cur.max_turns
             || next.max_budget_usd != cur.max_budget_usd
             || next.fast_mode != cur.fast_mode
+            || next.block_outside_writes != cur.block_outside_writes
             || next.env != cur.env
         {
             restart = true;
@@ -483,6 +487,7 @@ impl AgentHandle for ClaudeHandle {
         cur.max_turns = next.max_turns;
         cur.max_budget_usd = next.max_budget_usd;
         cur.fast_mode = next.fast_mode;
+        cur.block_outside_writes = next.block_outside_writes;
         cur.env = next.env.clone();
 
         // 3. 能热生效的字段，固定顺序 model → mode，逐个应用。每成功一个就记进 `cur`；

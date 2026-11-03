@@ -188,6 +188,7 @@ pub fn names(evs: &[AgentEvent]) -> Vec<String> {
         .map(|e| match e {
             AgentEvent::Event(ev) => serde_json::to_value(ev).unwrap()["type"].as_str().unwrap().to_string(),
             AgentEvent::Permission(_) => "PERMISSION".into(),
+            AgentEvent::PermissionWithdrawn { request_id } => format!("WITHDRAWN:{request_id}"),
             AgentEvent::Started { .. } => "STARTED".into(),
             AgentEvent::Title(_) => "TITLE".into(),
             AgentEvent::TurnStarted => "TURN_STARTED".into(),

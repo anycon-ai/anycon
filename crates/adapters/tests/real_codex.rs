@@ -604,10 +604,10 @@ impl Drop for Stub {
     }
 }
 
-/// 临时 `CODEX_HOME`，`config.toml` 里配一个指向假模型服务的自定义提供方。
+/// 临时 `CODEX_HOME`，`config.toml` 里配两个指向假模型服务的自定义提供方（`fake` 选中，`fake2` 备用）。
 struct StubHome {
     stub: Stub,
-    _home: tempfile::TempDir,
+    home: tempfile::TempDir,
     project: tempfile::TempDir,
     scratch: tempfile::TempDir,
     env: HashMap<String, String>,
@@ -617,21 +617,19 @@ impl StubHome {
     fn new(plan: Value) -> Self {
         let stub = Stub::start(&plan);
         let home = tempfile::tempdir().unwrap();
-        std::fs::write(
-            home.path().join("config.toml"),
-            format!(
-                "model = \"fake-model\"\nmodel_provider = \"fake\"\n\n[model_providers.fake]\nname = \"Fake\"\nbase_url = \"http://127.0.0.1:{}/v1\"\nwire_api = \"responses\"\nrequest_max_retries = 0\nstream_max_retries = 0\n",
-                stub.port
-            ),
-        )
-        .unwrap();
+        write_stub_config(home.path(), stub.port, "fake", "");
         let mut env = real_env();
         env.insert("CODEX_HOME".into(), home.path().to_string_lossy().into_owned());
         // 本机的代理设置不能把 127.0.0.1 也绕出去
         for k in ["NO_PROXY", "no_proxy"] {
             env.insert(k.into(), "127.0.0.1,localhost".into());
         }
-        Self { stub, _home: home, project: tempfile::tempdir().unwrap(), scratch: tempfile::tempdir().unwrap(), env }
+        Self { stub, home, project: tempfile::tempdir().unwrap(), scratch: tempfile::tempdir().unwrap(), env }
+    }
+
+    /// 改写 `config.toml`：选中的提供方 + 额外的顶层设置（在任何表之前）。
+    fn configure(&self, provider: &str, extra_top_level: &str) {
+        write_stub_config(self.home.path(), self.stub.port, provider, extra_top_level);
     }
 
     fn probe_ctx(&self) -> ProbeContext {
@@ -646,16 +644,61 @@ impl StubHome {
     }
 
     async fn spawn(&self, info: Arc<anycon_protocol::AgentInfo>, settings: SessionSettings) -> Box<dyn AgentHandle> {
+        self.try_spawn(info, settings, None).await.expect("spawn real codex against the stub provider")
+    }
+
+    async fn try_spawn(
+        &self,
+        info: Arc<anycon_protocol::AgentInfo>,
+        settings: SessionSettings,
+        resume: Option<anycon_agent_api::ResumeHandle>,
+    ) -> anycon_agent_api::Result<Box<dyn AgentHandle>> {
         let req = SpawnRequest {
             session_id: "sess_stub".into(),
             cwd: self.project.path().canonicalize().unwrap(),
             settings,
             env: Arc::new(self.env.clone()),
             config: AdapterConfig { enabled: true, ..Default::default() },
-            resume: None,
+            resume,
             agent_info: info,
         };
-        CodexAdapter::new().spawn(req).await.expect("spawn real codex against the stub provider")
+        CodexAdapter::new().spawn(req).await
+    }
+}
+
+fn write_stub_config(home: &Path, port: u16, provider: &str, extra_top_level: &str) {
+    let providers: String = ["fake", "fake2"]
+        .iter()
+        .map(|n| {
+            format!(
+                "[model_providers.{n}]\nname = \"{n}\"\nbase_url = \"http://127.0.0.1:{port}/v1\"\nwire_api = \"responses\"\nrequest_max_retries = 0\nstream_max_retries = 0\n\n"
+            )
+        })
+        .collect();
+    std::fs::write(
+        home.join("config.toml"),
+        format!("model = \"fake-model\"\nmodel_provider = \"{provider}\"\n{extra_top_level}\n{providers}"),
+    )
+    .unwrap();
+}
+
+/// 收事件直到 `pred` 命中，相邻两个事件之间最多等 `gap`（`collect_until` 是 15 秒）。
+async fn collect_until_within(
+    h: &mut Box<dyn AgentHandle>,
+    gap: Duration,
+    pred: impl Fn(&AgentEvent) -> bool,
+) -> Vec<AgentEvent> {
+    let mut out = Vec::new();
+    loop {
+        let ev = tokio::time::timeout(gap, h.events().recv())
+            .await
+            .expect("timed out waiting for an agent event")
+            .expect("event channel closed");
+        let hit = pred(&ev);
+        out.push(ev);
+        if hit {
+            return out;
+        }
     }
 }
 
@@ -699,9 +742,13 @@ async fn real_custom_provider_is_ready_and_survives_a_huge_patch() {
     let mut h = t.spawn(info, SessionSettings::default()).await;
     let _ = next_event(&mut h).await;
     h.send(input("write a big file")).await.unwrap();
-    let evs = tokio::time::timeout(Duration::from_secs(120), collect_until(&mut h, is_turn_done))
-        .await
-        .expect("turn timed out");
+    // codex 0.166.0 处理这个补丁时，用户消息之后约 25 秒才发补丁的 `item/started`，中间没有任何通知
+    let evs = tokio::time::timeout(
+        Duration::from_secs(120),
+        collect_until_within(&mut h, Duration::from_secs(90), is_turn_done),
+    )
+    .await
+    .expect("turn timed out");
     let events: Vec<Event> =
         evs.iter().filter_map(|e| if let AgentEvent::Event(ev) = e { Some(ev.clone()) } else { None }).collect();
     eprintln!("events: {:?}", names(&evs));
@@ -822,6 +869,93 @@ async fn real_a_steered_message_is_lost_when_the_turn_is_then_interrupted() {
         bodies.iter().all(|b| !b.contains("STEERED-MSG-123")),
         "codex now keeps a steered message across an interrupt; revisit the cancel-pending rule in codex/handle.rs"
     );
+    h.shutdown().await.unwrap();
+    collect_until(&mut h, is_exited).await;
+}
+
+/// 0.166.0 起对话记着自己的模型提供方：`config.toml` 换了提供方之后，`turn/start` 和 `thread/resume` 都被拒
+/// （`data.type = modelProviderMismatch`）。adapter 报 `AgentConfig`（daemon 的 `agent_config`），不当成续接失败去开新 thread；
+/// 改回配置就能接着用，历史还在。
+#[tokio::test]
+#[ignore = "needs the real codex CLI and ANYCON_REAL_AGENT_TESTS=1"]
+async fn real_a_provider_change_is_an_agent_config_error_and_reverting_it_recovers() {
+    if !enabled() {
+        eprintln!("skipped: set ANYCON_REAL_AGENT_TESTS=1");
+        return;
+    }
+    if real_codex().is_none() {
+        eprintln!("skipped: no codex on this machine");
+        return;
+    }
+    let t = StubHome::new(json!([[{"text": "first answer"}], [{"text": "after the revert"}]]));
+    let info = Arc::new(CodexAdapter::new().probe(&t.probe_ctx()).await);
+    assert_eq!(info.status, AgentStatus::Ready, "{:?}", info.issue);
+    let mut h = t.spawn(info.clone(), SessionSettings::default()).await;
+    let resume = match next_event(&mut h).await {
+        AgentEvent::Started { resume } => resume,
+        other => panic!("{other:?}"),
+    };
+    h.send(input("first")).await.unwrap();
+    collect_until(&mut h, is_turn_done).await;
+
+    // 同一个进程里换提供方：下一个 turn/start 被拒
+    t.configure("fake2", "");
+    match h.send(input("second")).await {
+        Err(anycon_agent_api::AdapterError::AgentConfig(m)) => assert!(m.contains("fake2"), "{m}"),
+        other => panic!("expected AgentConfig, got {other:?}"),
+    }
+    h.shutdown().await.unwrap();
+    collect_until(&mut h, is_exited).await;
+
+    // 新进程续接：同样被拒，而且没有退回 thread/start
+    match t.try_spawn(info.clone(), SessionSettings::default(), Some(resume.clone())).await {
+        Err(anycon_agent_api::AdapterError::AgentConfig(m)) => assert!(m.contains("fake"), "{m}"),
+        Err(e) => panic!("expected AgentConfig, got {e:?}"),
+        Ok(_) => panic!("resume must fail while the provider does not match"),
+    }
+
+    // 改回去：续接成功，还是同一个 thread
+    t.configure("fake", "");
+    let mut h = t.try_spawn(info, SessionSettings::default(), Some(resume.clone())).await.expect("resume after revert");
+    match next_event(&mut h).await {
+        AgentEvent::Started { resume: again } => assert_eq!(again.agent_session_id, resume.agent_session_id),
+        other => panic!("{other:?}"),
+    }
+    h.send(input("third")).await.unwrap();
+    let evs = collect_until(&mut h, is_turn_done).await;
+    assert!(text_of(&evs).contains("after the revert"), "{:?}", names(&evs));
+    h.shutdown().await.unwrap();
+    collect_until(&mut h, is_exited).await;
+}
+
+/// 0.166.0 把 `thread_unload_delay_secs` 的默认值从 1800 降到 60。adapter 一直连着、只开一个 thread，卸载不该影响它：
+/// 这里把延迟设成 0（立即可卸载），空闲几秒后再来一个 turn，照样收到 `turn_done`。
+#[tokio::test]
+#[ignore = "needs the real codex CLI and ANYCON_REAL_AGENT_TESTS=1"]
+async fn real_a_turn_after_an_idle_pause_still_completes_with_immediate_unloading() {
+    if !enabled() {
+        eprintln!("skipped: set ANYCON_REAL_AGENT_TESTS=1");
+        return;
+    }
+    if real_codex().is_none() {
+        eprintln!("skipped: no codex on this machine");
+        return;
+    }
+    let t = StubHome::new(json!([[{"text": "one"}], [{"text": "two"}]]));
+    t.configure("fake", "thread_unload_delay_secs = 0\n");
+    let info = Arc::new(CodexAdapter::new().probe(&t.probe_ctx()).await);
+    let mut h = t.spawn(info, SessionSettings::default()).await;
+    let _ = next_event(&mut h).await;
+    h.send(input("first")).await.unwrap();
+    collect_until(&mut h, is_turn_done).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    h.send(input("second")).await.unwrap();
+    let evs = collect_until(&mut h, is_turn_done).await;
+    match evs.last().unwrap() {
+        AgentEvent::Event(Event::TurnDone { reason, .. }) => assert_eq!(*reason, TurnDoneReason::Completed),
+        _ => unreachable!(),
+    }
+    assert!(text_of(&evs).contains("two"));
     h.shutdown().await.unwrap();
     collect_until(&mut h, is_exited).await;
 }

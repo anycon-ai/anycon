@@ -359,6 +359,8 @@ async fn command_approval_round_trip_allow() {
     handle.respond_permission(&p.request_id, decide("allow")).await.unwrap();
     let rest = collect_until(&mut handle, is_turn_done).await;
     assert!(names(&rest).contains(&"tool_output_delta".to_string()));
+    // 我们答复之后的 `serverRequest/resolved` 不是撤回
+    assert!(!names(&rest).iter().any(|n| n.starts_with("WITHDRAWN")), "{:?}", names(&rest));
     let result = events_of(&rest).into_iter().find(|e| matches!(e, Event::ToolResult { .. })).unwrap();
     match result {
         Event::ToolResult { output, is_error, detail, .. } => {
@@ -377,6 +379,26 @@ async fn command_approval_round_trip_allow() {
     // 重复答复是幂等的
     handle.respond_permission(&p.request_id, decide("allow")).await.unwrap();
     handle.shutdown().await.unwrap();
+}
+
+/// Codex 自己了结了一个还没答复的审批（`serverRequest/resolved` 先于我们的答复）：adapter 报 `PermissionWithdrawn`，
+/// 之后的答复是 no-op，不再写给 app-server。
+#[tokio::test]
+async fn an_approval_codex_resolves_on_its_own_is_withdrawn() {
+    let h = CodexHarness::new().script("exec_approval_resolved_by_codex.jsonl");
+    let mut handle = h.spawn(SessionSettings::default(), None).await;
+    started(&mut handle).await;
+    handle.send(input("run a command")).await.unwrap();
+    let p = permission_of(&collect_until(&mut handle, is_permission).await);
+    let evs = collect_until(&mut handle, |e| matches!(e, AgentEvent::PermissionWithdrawn { .. })).await;
+    match evs.last() {
+        Some(AgentEvent::PermissionWithdrawn { request_id }) => assert_eq!(request_id, &p.request_id),
+        other => panic!("{other:?}"),
+    }
+    collect_until(&mut handle, is_turn_done).await;
+    handle.respond_permission(&p.request_id, decide("allow")).await.unwrap();
+    handle.shutdown().await.unwrap();
+    assert!(h.answers().is_empty(), "a withdrawn approval is not answered: {:?}", h.answers());
 }
 
 #[tokio::test]

@@ -146,6 +146,8 @@ pub struct LaunchOptions {
     pub max_turns: Option<u32>,
     pub max_budget_usd: Option<f64>,
     pub fast_mode: bool,
+    /// `permissions.blockWritesOutsideWorkingDirectories`：Write / Edit / NotebookEdit 在任何权限模式下都不写工作目录以外的路径。
+    pub block_outside_writes: bool,
     /// 会话设置里的 `env` 覆盖（进程环境本身由 daemon 合并好放在 `SpawnRequest.env`）。
     pub env: BTreeMap<String, String>,
     /// 续接：`--resume <id>`。
@@ -240,11 +242,13 @@ impl LaunchOptions {
             return Err(invalid("mode", format!("unknown mode {mode}")));
         }
 
-        let fast_mode = match settings.options.get("fast_mode") {
-            Some(Value::Bool(b)) => *b,
-            Some(_) => return Err(invalid("options.fast_mode", "expected a boolean")),
-            None => false,
+        let bool_option = |id: &str| match settings.options.get(id) {
+            Some(Value::Bool(b)) => Ok(*b),
+            Some(_) => Err(invalid(&format!("options.{id}"), "expected a boolean")),
+            None => Ok(false),
         };
+        let fast_mode = bool_option("fast_mode")?;
+        let block_outside_writes = bool_option(probe::OPTION_BLOCK_OUTSIDE_WRITES)?;
 
         let opts = Self {
             model,
@@ -254,6 +258,7 @@ impl LaunchOptions {
             max_turns: settings.max_turns,
             max_budget_usd: settings.max_budget_usd,
             fast_mode,
+            block_outside_writes,
             env: settings.env.clone(),
             resume_id,
             session_id,
@@ -319,9 +324,17 @@ impl LaunchOptions {
         if let Some(x) = self.max_budget_usd {
             kv(&mut a, "--max-budget-usd", &x.to_string());
         }
+        // settings.json 的键用一个内联 JSON 传（`--settings` 只取最后一个，所以合在一起）。2.1.316 实测两个键都生效：
+        // `initialize` 回 `fast_mode_state: on`；项目外的 Write 在 `can_use_tool` 之前就被拒（`system/permission_denied`）
+        let mut extra = serde_json::Map::new();
         if self.fast_mode {
-            // 未经真实 CLI 验证：`fastMode` 是 settings.json 的键，这里用内联 JSON 传。
-            kv(&mut a, "--settings", &json!({ "fastMode": true }).to_string());
+            extra.insert("fastMode".into(), json!(true));
+        }
+        if self.block_outside_writes {
+            extra.insert("permissions".into(), json!({ "blockWritesOutsideWorkingDirectories": true }));
+        }
+        if !extra.is_empty() {
+            kv(&mut a, "--settings", &Value::Object(extra).to_string());
         }
         if let Some(id) = &self.resume_id {
             kv(&mut a, "--resume", id);
@@ -341,6 +354,7 @@ impl LaunchOptions {
             "max_turns": self.max_turns,
             "max_budget_usd": self.max_budget_usd,
             "fast_mode": self.fast_mode,
+            "block_outside_writes": self.block_outside_writes,
         })
     }
 
@@ -435,6 +449,37 @@ mod tests {
         assert_eq!(
             (o.model.as_deref(), o.thinking.as_deref(), o.mode.as_str()),
             (Some("claude-haiku-5-5"), Some("low"), "acceptEdits")
+        );
+    }
+
+    #[test]
+    fn block_outside_writes_shares_one_settings_json_with_fast_mode() {
+        let settings_args = |o: &LaunchOptions| -> Vec<String> {
+            o.to_args().into_iter().filter(|a| a.starts_with("--settings=")).collect()
+        };
+        let with = |pairs: &[(&str, Value)]| SessionSettings {
+            options: pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            ..Default::default()
+        };
+        let o = resolve(with(&[("block_outside_writes", json!(true))]), None).unwrap();
+        assert_eq!(
+            settings_args(&o),
+            vec![r#"--settings={"permissions":{"blockWritesOutsideWorkingDirectories":true}}"#.to_string()]
+        );
+        assert_eq!(o.to_json()["block_outside_writes"], true);
+        // 两个都开：还是一个 `--settings`（CLI 只取最后一个）
+        let o = resolve(with(&[("fast_mode", json!(true)), ("block_outside_writes", json!(true))]), None).unwrap();
+        let args = settings_args(&o);
+        assert_eq!(args.len(), 1);
+        let v: Value = serde_json::from_str(args[0].trim_start_matches("--settings=")).unwrap();
+        assert_eq!(v, json!({"fastMode": true, "permissions": {"blockWritesOutsideWorkingDirectories": true}}));
+        // 都不开：没有 `--settings`
+        assert!(settings_args(&resolve(SessionSettings::default(), None).unwrap()).is_empty());
+        // 不是布尔
+        let err = resolve(with(&[("block_outside_writes", json!("yes"))]), None).unwrap_err();
+        assert!(
+            matches!(err, AdapterError::InvalidSettings { ref field, .. } if field == "options.block_outside_writes"),
+            "{err:?}"
         );
     }
 

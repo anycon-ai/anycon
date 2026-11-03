@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use anycon_agent_api::AgentEvent;
 use anycon_daemon::testutil::{eventually, AdapterErrorKind, TestClient, TestDaemon};
 use anycon_protocol::*;
 use serde_json::json;
@@ -535,6 +536,36 @@ async fn permission_request_timeout_auto_denies() {
     td.shutdown().await;
 }
 
+/// agent 自己撤回了未决请求（Claude Code 的 `control_cancel_request`、Codex 的 `serverRequest/resolved`）：daemon 按拒绝收掉、
+/// 广播 `permission_resolved`，会话回到 running；之后客户端再答复得到 `already_resolved`。
+#[tokio::test]
+async fn a_permission_the_agent_withdraws_is_resolved_and_late_answers_are_refused() {
+    let td = TestDaemon::start().await;
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, None).await;
+    send(&td, &mut a, &s.id, "permission withdrawn later").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::WaitingPermission).await);
+    let req =
+        a.call::<PermissionListResult>(&td, methods::PERMISSION_LIST, json!({})).await.unwrap().requests.remove(0);
+    td.fake.last_handle().inject(AgentEvent::PermissionWithdrawn { request_id: req.request_id.clone() }).await;
+    let resolved = a.wait_notification(T, |n| n.method == methods::PERMISSION_RESOLVED).await.unwrap().params;
+    assert_eq!(resolved["request_id"], json!(req.request_id));
+    assert_eq!(resolved["by_device"], "daemon");
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    assert_eq!(get(&td, &mut a, &s.id).await.pending_permissions, 0);
+    let e = a
+        .call::<Empty>(&td, methods::PERMISSION_RESPOND, json!({ "request_id": req.request_id, "option_id": "allow" }))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::AlreadyResolved);
+    // 撤回不认识 / 已经了结的 id：什么都不做
+    td.fake.last_handle().inject(AgentEvent::PermissionWithdrawn { request_id: req.request_id.clone() }).await;
+    td.fake.last_handle().inject(AgentEvent::PermissionWithdrawn { request_id: "nope".into() }).await;
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    td.shutdown().await;
+}
+
 #[tokio::test]
 async fn cancel_running_turn_and_pending_permissions() {
     let td = TestDaemon::start().await;
@@ -918,6 +949,29 @@ async fn spawn_failures_report_agent_errors_and_trigger_reprobe() {
     *td.fake.fail_spawn.lock().unwrap() = None;
     td.ctx.agents.refresh_all().await;
     send(&td, &mut a, &s.id, "now it works").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    td.shutdown().await;
+}
+
+/// agent 自己的配置和会话对不上（Codex：对话属于另一个模型提供方）：`error { agent_config }`，原话照给，不重探 agent。
+#[tokio::test]
+async fn an_agent_config_mismatch_is_reported_as_agent_config() {
+    let td = TestDaemon::start().await;
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, None).await;
+    let msg = "This chat uses openai, but your current provider is gcp. Switch to openai to continue.";
+    *td.fake.fail_spawn.lock().unwrap() = Some(AdapterErrorKind::AgentConfig(msg.into()));
+    send(&td, &mut a, &s.id, "hello").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Error).await);
+    let evs = history(&td, &mut a, &s.id).await;
+    assert!(
+        evs.iter().any(|e| matches!(&e.event, Event::Error { code, message, recoverable: true } if code == "agent_config" && message == msg)),
+        "{:?}",
+        kinds(&evs)
+    );
+    // 改好之后接着用
+    *td.fake.fail_spawn.lock().unwrap() = None;
+    send(&td, &mut a, &s.id, "again").await;
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
     td.shutdown().await;
 }

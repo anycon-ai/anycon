@@ -136,6 +136,10 @@ pub enum AgentEvent {
     /// 权限 / 计划 / 提问。daemon 转成 `Permission` 事件 + `permission.request` 通知，答复通过
     /// [`AgentHandle::respond_permission`] 回来。
     Permission(PendingPermission),
+    /// agent 自己撤回了一个还没答复的请求（Claude Code 的 `control_cancel_request`，比如 MCP 工具调用超时时撤回
+    /// 它的 elicitation；Codex 的 `serverRequest/resolved`）。daemon 把它按拒绝收掉、通知客户端撤下卡片；
+    /// 之后对这个 `request_id` 的 [`AgentHandle::respond_permission`] 仍须是 no-op（`Ok`）。
+    PermissionWithdrawn { request_id: String },
     /// agent 自己给会话起的标题（ACP `session_info_update`）。
     Title(String),
     /// agent **自己**开始了一个 turn，不是 [`AgentHandle::send`] 触发的：Claude Code 的后台任务（后台 subagent、
@@ -177,6 +181,10 @@ pub enum AdapterError {
     Protocol(String),
     #[error("agent exited: {0}")]
     Exited(String),
+    /// agent 自己的配置和这个会话对不上，改好 agent 的配置就能接着用（如 Codex 的对话属于另一个模型提供方）。
+    /// 文字是 agent 的原话，直接给用户看。
+    #[error("{0}")]
+    AgentConfig(String),
     /// 插话（`UserInput.interject = true`）时目标 turn 已经结束。daemon 把消息退回队列，不算 turn 失败。
     #[error("the turn already ended")]
     TurnEnded,

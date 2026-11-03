@@ -6,7 +6,8 @@
 Claude Code 相同（`sessions.idle_timeout` 后进程退出，下次 `send` 用 `thread/resume`）。规格见 `docs/spec/daemon.md` § 5–9。
 
 下面的「实测」除特别注明外都来自本机的 `codex-cli 0.157.1`（2026-10-12）；子 agent、MCP elicitation、上下文压缩、用量口径那一节
-（「子 agent、MCP elicitation、压缩上下文」）是 `codex-cli 0.164.0`（2026-10-26）的实测。app-server 官方标注 experimental，字段会变，所以：
+（「子 agent、MCP elicitation、压缩上下文」）是 `codex-cli 0.164.0`（2026-10-26）的实测；「0.165 / 0.166 的变化」一节是 `codex-cli 0.166.0`（2026-11-02）的实测，
+`real_codex.rs` 的全部用例（除了要登录的 `real_logged_in_turn`）在 0.166.0 上通过。app-server 官方标注 experimental，字段会变，所以：
 线上格式只手写用到的子集（`wire.rs`，未知字段忽略、未知通知 / item 类型丢弃并 `debug!`）；CI 用
 `codex app-server generate-json-schema` 生成的 schema 校验全部 fixture 和 adapter 实际发出的每一条消息（见「测试」）。
 
@@ -39,7 +40,7 @@ leader 一退出就清整个进程组——都来自 `common/child.rs`，和 Cla
 
 ## 版本
 
-最低 **0.157.0**（`MIN_CLI_VERSION`，本机验证过的版本），没有上限。更老 → `unsupported_version`，hint `npm i -g @openai/codex@latest`；
+最低 **0.157.0**（`MIN_CLI_VERSION`，本机验证过的版本），没有上限；最近一次验证的是 0.166.0。更老 → `unsupported_version`，hint `npm i -g @openai/codex@latest`；
 没装 → `not_installed`，hint `npm i -g @openai/codex`。版本解析不出来只 warn，不挡。
 
 ## 认证判定（`account/read` 为准，`codex login status` 兜底）
@@ -146,6 +147,10 @@ leader 一退出就清整个进程组——都来自 `common/child.rs`，和 Cla
    而失败）没有 rollout 文件，之后再 `send` 走 resume 会失败（本机实测 `no rollout found for thread id …`）；后者是 rollout 被删 / 被 Codex 自己归档了。回退时 `Started` 带新 id，
    紧跟着发一条可恢复的 **`error { code: "agent_context_reset", recoverable: true }`**（不让 turn 失败），消息里带 Codex 的原话和「之前的上下文 agent 看不到了」——否则模型像第一次见面一样回答，用户还以为它记得。
    其它 resume 错误照常报错。
+   **对话属于另一个模型提供方**（0.166.0 起）：`config.toml` 换了 `model_provider` 之后，`thread/resume` 和 `turn/start` 都报 `-32600`，
+   `error.data = { type: "modelProviderMismatch", modelProvider, currentModelProvider }`（另有 `modelProviderNotConfigured`、`modelProviderPolicyConflict`），
+   `message` 是给人看的一句（`This chat uses fake, but your current provider is fake2. Switch to fake to continue.`）。这**不是**续接失败：改回配置就能接着用、历史都在，
+   所以不退回 `thread/start`，而是 `AdapterError::AgentConfig(<message>)`，daemon 记成 `error { agent_config }`（可恢复）。按 `data.type` 以 `modelProvider` 开头识别。
 4. **`system_prompt_append` 只能在 thread 创建时给**。实测 `thread/resume { developerInstructions }` 被**忽略**（rollout 里持久化的赢，请求体里仍是旧指令）。
    所以后来的改动走 `thread/inject_items`，往 thread 的历史里追加一条 developer 消息（"从现在起按下面的指令，取代之前的附加指令：…"；清掉时是「之前的附加指令作废」）。
    `ResumeHandle.launch_args.instructions_applied` 记着 thread 已经知道的文本（私有键，daemon 的 `sync_launch_args` 不碰它）：续接时和期望值不同就注入一次；
@@ -218,9 +223,9 @@ stdout 单行上限 8 MiB。真实 codex 0.157.1 上实测（本地假模型服�
 | `turn/plan/updated` | `plan`（`pending` / `inProgress` / `completed`） |
 | `thread/tokenUsage/updated` | 累积进 `turn_done.usage`：一个 turn 里每次更新的 `last` 之和（`total` 是整个线程的累计；resume 时 app-server 会重放上一个 turn 的用量，只认当前 turn 的）。`input_tokens` **不含**缓存命中（OpenAI 的 `inputTokens` 包含 `cachedInputTokens`，这里减掉，口径与 Claude Code 一致，`input + cache_read` 不重复计数），没有费用。`context_window` = `modelContextWindow`；`context_tokens` = 最近一次 `last` 的 `inputTokens`（已含缓存命中，不再加 `cachedInputTokens`；压缩后那条更新里 `inputTokens` 是 0，取 `totalTokens`）。只认主 thread 的更新；子 agent 的 `total.totalTokens` 进它的 `task.usage.total_tokens` |
 | `turn/completed` | `turn_done`：`completed` → completed，`interrupted` → cancelled，`failed` → error（先发一条 `error` 事件，除非 `error` 通知已经发过）；`usage.duration_ms` 用 `turn.durationMs` |
-| `error { willRetry: false }` | `error`（`unauthorized` / 401 → `auth_failed`，用量 / 限流 / 过载 / 429 → `rate_limited`，上下文超限 → `context_window_exceeded`，沙箱错误 → `sandbox_error`，其余 `agent_error`） |
+| `error { willRetry: false }` | `error`（`unauthorized` / 401 → `auth_failed`，用量 / 限流 / 过载 / `policyCapacityUnavailable` / 429 → `rate_limited`，`modelNotFound` → `model_not_found`（0.165.0 起不再重试），上下文超限 → `context_window_exceeded`，沙箱错误 → `sandbox_error`，其余 `agent_error`） |
 | `error { willRetry: true }`（重连中） | 可恢复的 `error`（`agent_reconnecting`），不收尾 |
-| `serverRequest/resolved` | 丢掉对应的未决审批（比如 turn 被打断时 Codex 自己了结的） |
+| `serverRequest/resolved` | 我们答复过的请求已经不在未决表里，什么都不做；还在的（Codex 自己了结的，比如 turn 被打断）→ 删掉并发 `AgentEvent::PermissionWithdrawn`，daemon 撤下卡片 |
 | `subAgentActivity` / `collabAgentToolCall` / 子 thread 的通知 | `task`（`kind = subagent`），子 agent 里的调用带 `parent_id`；子 agent 的文本 / 思考 / 计划 / 错误 / `turn/*` 不碰主 turn。见「子 agent」 |
 | `warning`、`guardianWarning` | `notice { agent_notice }`（warning） |
 | `configWarning`、`deprecationNotice` | `notice { config_warning }`、`notice { deprecation }`（warning；`summary` 加 `details`） |
@@ -320,6 +325,17 @@ MCP 用一个只靠标准库的 stdio MCP server（一个工具在 `tools/call` 
 **启动时的提示**：`configWarning`（没有 `threadId`）在 `initialize` 之后马上到，`warning` 把同一段话在 `thread/start` 之后再发一遍（带 `threadId`），每个子 agent 的 thread 又各发一遍；
 `mcpServer/startupStatus/updated` 按 server 报 `starting` → `ready` / `failed`（`error` 是原因，如 `MCP client for \`broken\` failed to start: MCP startup failed: No such file or directory (os error 2)`），同一个 server 的失败只提示一次，子 agent 的 thread 要是再报一遍也不重复。
 
+## 0.165 / 0.166 的变化（`codex-cli 0.166.0` 实测，2026-11-02）
+
+- **提供方校验**：见「握手与 thread」第 3 条。`real_a_provider_change_is_an_agent_config_error_and_reverting_it_recovers` 固定了同进程 `turn/start`、新进程 `thread/resume`、改回配置后续接三步。
+- **thread 卸载**：`thread_unload_delay_secs` 默认值从 1800 降到 60（没有订阅者、也没有活动的 thread 才卸载）。adapter 一直连着、只开一个 thread，不受影响：
+  空闲 75 秒（默认值）、以及设成 0 后空闲 5 秒，下一个 turn 都正常收到 `turn/completed`。`real_a_turn_after_an_idle_pause_still_completes_with_immediate_unloading` 用 0 固定下来。
+- **会话中途改 reasoning effort** 默认开启（`reasoning_effort_override` 转正）：每个 `turn/start` 带的 `effort` 照常生效，实测模型请求里的 `reasoning.effort` 第一个 turn `low`、第二个 turn `high`。
+- **大补丁**：处理 11 MB 补丁时，用户消息之后约 25 秒才有补丁的 `item/started`，中间没有任何通知（0.164.0 上同一个用例按每个事件 15 秒的等待通过了，所以那时的空档短于 15 秒）。adapter 不受影响，`real_custom_provider_is_ready_and_survives_a_huge_patch` 相邻事件之间改成最多等 90 秒。
+- **线上格式的新字段**：thread item 上的 `startedAtMs` / `completedAtMs`、通知顶层的 `emittedAtMs`、`Account` 的 `gcp` 类型和 `workspaceName`、`ThreadUsage.nativeUsageUsdMicros`（只在 `account/tokenUsage/read` 的响应里），adapter 都不读；`AccountRef.kind` 是字符串，`gcp` 照常解析。
+- **续接 / 分叉时保留已批准的权限设置**（#57227）：按更新日志，`acceptForSession` 一类的会话级批准在 `thread/resume` 之后可能仍然有效（daemon 空闲回收再续接也算）；**没有实测**，所以「和 Claude Code adapter 的行为差异」里没有写成事实。
+- npm 包装器改成 `execve` 原生二进制、standalone 包多了 `codex-exec-server`：进程组照常整个清掉，没有要改的。
+
 ## 和 Claude Code adapter 的行为差异
 
 - 一个进程的 **thread id 由 Codex 分配**（Claude Code 的 session id 是我们生成的），`Started` 要等握手完成；`spawn` 因此是异步握手，失败在 `spawn` 里报。
@@ -337,6 +353,8 @@ MCP 用一个只靠标准库的 stdio MCP server（一个工具在 `tools/call` 
   `thread/inject_items` / `thread/resume` / `account/read` 的行为和真的一致，日志记录收到的每条请求；`FAKE_CODEX_*` 开关见脚本头；fixture 里的 `{"_hold": true}` 让 turn 一直开着等客户端打断）。
 - `tests/codex_probe.rs`、`tests/codex_process.rs`、`tests/codex_translate.rs`：探测（含 `account/read` 判定、cheap 探测沿用、`account/read` 失败时沿用上一次权威判定）、进程级（握手、参数、审批、取消 / 转向 / 插话、不阻塞、超长行、设置、续接与 `agent_context_reset`、崩溃、关闭）、翻译。
   不阻塞用例：fake 连续输出 5000 条 delta 且不读 `events()` 时，`cancel()` / 插话 / `set_settings` 都要在 5 秒内返回，随后读到全部 5000 条和 `turn_done { cancelled }`。
+- `fake-codex` 的 fixture 里，带 `"_nowait": true` 的服务端请求发出去不等答复（后面跟一条 `serverRequest/resolved` = Codex 自己了结了它）：`exec_approval_resolved_by_codex.jsonl`（由 `real_exec_approval` 改出来）
+  和 `codex_process.rs::an_approval_codex_resolves_on_its_own_is_withdrawn`。
 - `tests/fixtures/codex/`：`real_*.jsonl`、`initialize_response.json`、`model_list.json`、`config_read_*.json`、`thread_*_response.json`、`account_read_{out,custom,apikey}.json` 是用**本机真实的 `codex app-server` 0.157.1**
   录的——模型输出是脚本（本机的 OpenAI 登录不可用），办法是在临时 `CODEX_HOME` 的 `config.toml` 里配一个自定义提供方
   （`wire_api = "responses"`、`base_url = http://127.0.0.1:<port>/v1`），再起一个本地小服务（现在是 `tests/bin/fake-responses`）按 Responses API 的 SSE 格式回放脚本；
@@ -357,6 +375,8 @@ MCP 用一个只靠标准库的 stdio MCP server（一个工具在 `tools/call` 
     命令输出很密（`yes`）时 `cancel()` 毫秒级返回、随后读到 `turn_done { cancelled }`。
   - `real_a_steered_message_is_lost_when_the_turn_is_then_interrupted`：模型请求在途时 `turn/steer` 一条消息、再 `cancel`，下一个 turn 的请求历史里没有那条消息（把「会丢」固定下来，codex 改了行为它会失败）；
     假服务（`tests/bin/fake-responses`）可以把收到的每个模型请求写进日志文件。
+  - `real_a_provider_change_is_an_agent_config_error_and_reverting_it_recovers` / `real_a_turn_after_an_idle_pause_still_completes_with_immediate_unloading`：见「0.165 / 0.166 的变化」
+    （`StubHome` 的 `config.toml` 里有 `fake` / `fake2` 两个提供方，`configure` 可以换选中的那个、加顶层设置）。
   - `real_logged_in_turn`：真的 `pong` 一轮，**会通过用户配置的提供方发一个真实请求**；没登录（`login status` 说未登录、`account/read` 又说要登录）就跳过；留在用户 `~/.codex` 里的 thread 事后归档（可逆）。
     需要时用 `--skip real_logged_in_turn` 跳过。
 

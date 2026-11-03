@@ -426,6 +426,35 @@ async fn question_deny_option_denies_even_when_answers_are_sent() {
     h.shutdown().await.unwrap();
 }
 
+/// MCP 工具超时（elicitation 没人答）时 CLI 发 `control_cancel_request` 撤回它（2.1.316 实测）：adapter 报
+/// `PermissionWithdrawn`，之后对它的答复是 no-op，stdin 上不出现这条 `control_response`。
+#[tokio::test]
+async fn a_withdrawn_elicitation_is_reported_and_a_late_answer_is_dropped() {
+    let fx = Harness::new().script("elicitation_timeout.jsonl");
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    h.send(input("collect my details")).await.unwrap();
+    let p = elicitation_request(&mut h).await;
+    let evs = collect_until(&mut h, |e| matches!(e, AgentEvent::PermissionWithdrawn { .. })).await;
+    match evs.last() {
+        Some(AgentEvent::PermissionWithdrawn { request_id }) => assert_eq!(request_id, &p.request_id),
+        other => panic!("{other:?}"),
+    }
+    let rest = collect_until(&mut h, is_turn_done).await;
+    assert_eq!(turn_done(&rest).1, TurnDoneReason::Completed);
+    // 工具结果是 CLI 的超时说明
+    assert!(
+        rest.iter().any(|e| matches!(e, AgentEvent::Event(Event::ToolResult { is_error: true, .. }))),
+        "{:?}",
+        names(&rest)
+    );
+    h.respond_permission(&p.request_id, decision("accept")).await.unwrap();
+    h.shutdown().await.unwrap();
+    assert!(
+        !fx.stdin_messages().iter().any(|m| m["response"]["request_id"] == json!(p.request_id)),
+        "a withdrawn request must not be answered"
+    );
+}
+
 /// 回放 `real_elicitation_*.jsonl`：先答复 MCP 工具的权限，返回随后到来的 elicitation 请求。
 async fn elicitation_request(h: &mut Box<dyn AgentHandle>) -> anycon_agent_api::PendingPermission {
     let perm = |evs: &[AgentEvent]| match evs.last() {
@@ -730,6 +759,10 @@ async fn set_settings_uses_control_requests() {
     d.options.insert("fast_mode".into(), json!(true));
     let r = h.set_settings(&d).await.unwrap();
     assert!(r.restart_required);
+    d.options.insert("block_outside_writes".into(), json!(true));
+    let r = h.set_settings(&d).await.unwrap();
+    assert!(r.restart_required);
+    assert_eq!(h.resume_handle().unwrap().launch_args["block_outside_writes"], true);
 
     // CLI 拒绝的模型 → InvalidSettings
     d.model = Some("bogus-model".into());

@@ -132,8 +132,13 @@ async fn ready_when_installed_and_logged_in() {
             ("bypassPermissions", ModeRisk::Dangerous, false),
         ]
     );
-    assert_eq!(info.options.len(), 1);
-    assert_eq!((info.options[0].id.as_str(), info.options[0].kind), ("fast_mode", ConfigOptionKind::Bool));
+    assert_eq!(
+        info.options.iter().map(|o| (o.id.as_str(), o.kind, o.default.clone())).collect::<Vec<_>>(),
+        vec![
+            ("fast_mode", ConfigOptionKind::Bool, serde_json::json!(false)),
+            ("block_outside_writes", ConfigOptionKind::Bool, serde_json::json!(false)),
+        ]
+    );
 
     let c = &info.capabilities;
     assert!(c.resume && c.interrupt && c.thinking_stream && c.usage && c.structured_output && c.env);

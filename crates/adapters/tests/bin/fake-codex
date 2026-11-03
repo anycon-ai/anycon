@@ -9,7 +9,7 @@ Modes
 The app-server answers `initialize`, `model/list`, `config/read`, `thread/start`, `thread/resume`, `turn/start`,
 `turn/steer`, `turn/interrupt` and `thread/inject_items` the way a real 0.157.1 server does (the shapes come from
 recordings, see tests/fixtures/codex). `turn/start` replays the next "turn" of a fixture: the lines up to and including
-the next `turn/completed` notification of the main thread (one for a `FIXTURE_CHILD*` thread, a sub-agent, does not end it). A line `{"_hold": true}` keeps the turn open until the client interrupts it. A line with an `id` and a `method` is a server request: the fake sends it with a
+the next `turn/completed` notification of the main thread (one for a `FIXTURE_CHILD*` thread, a sub-agent, does not end it). A line `{"_hold": true}` keeps the turn open until the client interrupts it. A server request line with `"_nowait": true` is sent without waiting for the answer (Codex resolving a request on its own, followed by a `serverRequest/resolved` line). A line with an `id` and a `method` is a server request: the fake sends it with a
 fresh id and waits for the client's answer before going on. `FIXTURE_THREAD` / `FIXTURE_TURN[_n]` in the fixture are
 replaced by the real thread / turn id.
 
@@ -372,7 +372,10 @@ def run_turn(thread_id, turn_id):
             state["last_req"] = rid
             obj["id"] = rid
             log({"kind": "server_request", "id": rid, "method": obj["method"]})
+            no_wait = obj.pop("_nowait", False)
             emit(obj)
+            if no_wait:
+                continue
             wait_for_response(rid)
             if state["abort"]:
                 finish_interrupted(thread_id, turn_id)

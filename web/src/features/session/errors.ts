@@ -1,5 +1,6 @@
 // `error` 事件的分级与说明。各 agent 的 error code 不同（Claude Code：`agent_exited`、`auth_failed`…；Codex 另有
-// `agent_reconnecting`、`agent_context_reset`、`unsupported_request`、`context_window_exceeded`、`sandbox_error`、`policy_violation`），
+// `agent_reconnecting`、`agent_context_reset`、`unsupported_request`、`context_window_exceeded`、`sandbox_error`、`policy_violation`、
+// `model_not_found`；daemon 另有 `agent_config`），
 // 渲染只认 code 的分级，不认 agent。
 
 /** notice：淡色一行，不是错误（重连中）；warning：黄色，需要知道但不用处理；error：红色错误块。 */
@@ -18,7 +19,7 @@ export function errorSeverity(code: string): ErrorSeverity {
 }
 
 /** 有本地化说明（`agentError.<code>`）的 code；其它 code 只显示 daemon 给的 message。 */
-export const EXPLAINED_ERROR_CODES = ['agent_reconnecting', 'agent_context_reset', 'unsupported_request', 'context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed', 'attachment_failed'] as const
+export const EXPLAINED_ERROR_CODES = ['agent_reconnecting', 'agent_context_reset', 'unsupported_request', 'context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed', 'attachment_failed', 'agent_config', 'model_not_found'] as const
 
 const EXPLAINED: ReadonlySet<string> = new Set(EXPLAINED_ERROR_CODES)
 

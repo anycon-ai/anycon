@@ -2,7 +2,8 @@
 
 驱动 `claude -p --output-format stream-json --input-format stream-json` 的双向模式：stdin 常开，一行一条 JSON；
 权限走 `control_request { subtype: can_use_tool }` / `control_response`。规格见 `docs/spec/daemon.md` § 5–9。
-下面的「实测」都来自真实 CLI **2.1.293**（本机已登录，2026-10-11；workflow / 本地命令 / elicitation / 上下文用量那几节是 **2.1.308**，2026-10-26，haiku 5.5），录制（已脱敏）在 `tests/fixtures/claude/real_*.jsonl`。
+下面的「实测」都来自真实 CLI **2.1.293**（本机已登录，2026-10-11；workflow / 本地命令 / elicitation / 上下文用量那几节是 **2.1.308**，2026-10-26，haiku 5.5；`--settings`、模型表、elicitation 超时撤回、Bash 超时是 **2.1.316**，2026-11-02），录制（已脱敏）在 `tests/fixtures/claude/real_*.jsonl`。
+2.1.316 上 `real_claude.rs` 的五个用例全部通过（含 `real_block_outside_writes_refuses_a_write_outside_the_project`：打开 `block_outside_writes` 后，项目外的 Write 没有权限请求、文件没写出来、有一条 `notice { permission_denied }`；CLI 低于 2.1.314 时跳过）。
 录制入库前必须清洗（仓库公开）：`system/init` 里的 `slash_commands` / `skills` / `plugins` / `mcp_servers` / `tools` 换成 `example-*` 占位（保留结构和数量），
 模型输出和流式 delta 里的本机路径换成 `/work/proj`、`/home/user`（delta 被切碎了，要按 content block 拼起来再替换；workflow 的转录目录、任务输出文件、`memory_paths`、`messaging_socket_path` 同理，后两个直接删掉），`rate_limit_event` 的用量比例换成占位，
 thinking 块的 `signature` 换成短占位，`/context` 输出里的技能名换成 `example-skill-N`，技能库的长文本（`# Workflow authoring reference`）换成一句说明，MCP server 名换成 `example-*`。
@@ -26,7 +27,8 @@ thinking 块的 `signature` 换成短占位，`/context` 输出里的技能名�
 claude -p --output-format=stream-json --input-format=stream-json --verbose --include-partial-messages
        --permission-prompt-tool=stdio
        --model=<m> [--effort=<e>] --permission-mode=<mode> [--dangerously-skip-permissions]
-       [--append-system-prompt=S] [--max-turns=N] [--max-budget-usd=X] [--settings={"fastMode":true}]
+       [--append-system-prompt=S] [--max-turns=N] [--max-budget-usd=X]
+       [--settings={"fastMode":true,"permissions":{"blockWritesOutsideWorkingDirectories":true}}]
        (--resume=<agent_session_id> | --session-id=<新 uuid>)
 ```
 
@@ -81,7 +83,8 @@ daemon 在没有存活进程时（idle 关闭、daemon 重启、ended）改设�
 | `model` | `--model`；会话中 `set_model` |
 | `thinking` | `--effort`（`low`…`max`）；`off`（仅 4.6 系列）= 不传 `--effort` + 环境 `MAX_THINKING_TOKENS=0`；会话中无法改 → `restart_required` |
 | `mode` | `--permission-mode`；`bypassPermissions` 另加 `--dangerously-skip-permissions`；会话中 `set_permission_mode` |
-| `options.fast_mode` | `--settings '{"fastMode":true}'`（**未验证**：`fastMode` 是 settings.json 的键，init 里 `fast_mode_disabled_reason: sdk_opt_in_required` 说明 SDK 模式下可能还要别的开关）；改它 → `restart_required` |
+| `options.fast_mode` | `--settings` 里的 `"fastMode": true`（2.1.316 实测生效：`initialize` 回 `fast_mode_state: on`；`result` 里的 `fast_mode_disabled_reason: sdk_opt_in_required` 只出现在没开的时候）；改它 → `restart_required` |
+| `options.block_outside_writes` | `--settings` 里的 `"permissions": {"blockWritesOutsideWorkingDirectories": true}`（ADR-48，默认关）：Write / Edit / NotebookEdit 在任何权限模式下都不写工作目录以外的路径，shell 命令不管。和 `fastMode` 合在**同一个** `--settings` 里（CLI 只取最后一个）。2.1.316 实测：被拦的写入不发 `can_use_tool`，直接 `system/permission_denied` + `is_error` 的 `tool_result`；CLI 自己的 plan 文件（`~/.claude/plans`）照常写；2.1.309 收下这个键但不生效。改它 → `restart_required` |
 | `system_prompt_append` / `max_turns` / `max_budget_usd` | `--append-system-prompt` / `--max-turns` / `--max-budget-usd`；改它们 → `restart_required` |
 | `env` | 子进程环境（daemon 已合并进 `req.env`）；改它 → `restart_required` |
 | 附件 | 原生只收图片（ADR-35）：`capabilities.attachments = ["image/png", "image/jpeg", "image/gif", "image/webp"]`；其它附件由 daemon 落到工作目录、路径写在文字里（ADR-44），adapter 收不到。`send` 读 `attachment_paths[i]`（daemon 落盘的文件）→ base64 → stdin 消息 `content` 数组里的 `image` block，图在前、文字在后；见下面「图片附件」 |
@@ -120,6 +123,8 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 3. 认证：`claude auth status`，退出码 0 已登录 / 1 未登录，stdout JSON 的 `loggedIn` / `authMethod` / `email` 尽力解析。
    未登录 → `not_authenticated`（hint ``run `claude` on the machine to log in``）。环境里有 API key / Bedrock / Vertex / Foundry 凭证时，`auth status` 说未登录也不挡（当 unknown）。超时 / 其它退出码 = unknown，不阻塞。
 4. 模型：内置表 → 用户配置的（`ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_*_MODEL`、`~/.claude/settings.json` 的 `model` 与 `env`，用 `ctx.env`）→ `additional_models`，按 id 去重；`allow_custom_model = true`。
+   内置表不列 `opus[1m]` / `sonnet[1m]`：5.x 默认就是 1M 上下文，2.1.311 起 CLI 对不起作用的 `[1m]` 后缀直接去掉（2.1.316 实测 `sonnet` 和 `sonnet[1m]`、`opus[1m]` 的
+   `modelUsage.contextWindow` 都是 1 000 000，`system/init.model` 里也没有后缀；`initialize` 的 `models[]` 不列任何 `[1m]`）。4.6 的 `[1m]` 仍然有效，保留。用户自己写的 `xxx[1m]` 照常当自定义模型接受。
    用户 / 配置追加的模型没有思考选项（等级因模型而异，不瞎猜）。没有慢步骤，所以 `cheap` 与否结果一样。整个探测遵守 `ctx.deadline`，超时错误里列出没跑完的步骤。
 
 诊断：`anycon_adapters::diagnose("claude-code", &ctx)`（或 `ClaudeCodeAdapter::diagnose`）返回 `(文本, 字段)`：命令来源、daemon PATH / shell、`which -a`、`$SHELL -lc 'type -a claude'`、各候选的 `--version` 结果、解析路径、版本、认证、模型数、状态、issue。
@@ -247,7 +252,8 @@ CLI 发 `control_request { request_id (uuid), request: { subtype: can_use_tool, 
 - 实测默认模式下 Bash `echo hi` 被 CLI 自己按规则放行（`permission_decision.source: config`），不发 `can_use_tool`；`Write` 会发。
 - `permission_suggestions` 里是 `{type: setMode, mode: acceptEdits, destination: session}` 这类；我们的 `allow_session` 按规格用 `addRules` 按 `toolName` 放行本会话，不采用这些建议（建议里可能有写入 settings 文件的 destination）。
 - ExitPlanMode 被允许后，CLI 自己退出 plan 模式（stdout 出 `system/status { permissionMode: "default" }`）。adapter 没有事件可以报告这个模式变化，由 daemon 按规格 § 9.1 切 mode（走 `set_settings` → `set_permission_mode`）。
-- CLI 撤回未决请求时发 `control_cancel_request`；turn 结束时 adapter 也清空未决表。之后对这些 id 的 `respond_permission` 是 no-op（`Ok`），所以 daemon 在取消后自动 deny 不会报错。
+- CLI 撤回未决请求时发 `control_cancel_request`：adapter 把它从未决表里删掉并发 `AgentEvent::PermissionWithdrawn { request_id }`，daemon 按拒绝收掉、通知客户端撤下卡片（否则卡片挂到 turn 结束，用户填的答案白填）。
+  turn 结束时 adapter 也清空未决表。之后对这些 id 的 `respond_permission` 是 no-op（`Ok`），所以 daemon 在取消后自动 deny 不会报错。
 - 不认识的 `control_request` 子类型（如 `hook_callback`）回一个 `error` 的 `control_response`，免得 CLI 干等。
 
 ### MCP elicitation
@@ -276,6 +282,8 @@ MCP server 在工具调用中途可以向用户要输入（`elicitation/create`�
 - URL → `kind = other`，标题 `<server> needs you to open a link`，`detail.text` = `message`，`detail.url` = 链接，options `accept`（I've completed it）/ `decline`。链接不是 http / https（含 `javascript:`、`file:`、`data:`、相对地址、带控制字符）的不问用户：
   translator 直接回 `decline`（`Out::Reply`）并发 `error { code: elicitation_rejected, recoverable: true }`。
 - `system/elicitation_complete { mcp_server_name, elicitation_id }`（server 确认 URL 模式完成）不处理：请求靠用户的答复结束。
+- **没人答、MCP 工具超时**（2.1.316 实测，`MCP_TOOL_TIMEOUT=8000`）：CLI 对这条 elicitation 发 `control_cancel_request`，工具结果是一条 `is_error` 的说明（`… timed out after 8s. The server asked the user a question, and no answer came before the time limit. Do not call this tool again in this turn …`），turn 照常继续。
+  adapter 发 `PermissionWithdrawn`（见「权限」）。用例 `claude_process.rs::a_withdrawn_elicitation_is_reported_and_a_late_answer_is_dropped`（手写的 `fixtures/claude/elicitation_timeout.jsonl`，形状照这次实测；fake-claude 的 `__NOWAIT__` 让下一条 `control_request` 不等答复）。
 
 ## 取消、改设置、关闭
 
@@ -310,7 +318,8 @@ MCP server 在工具调用中途可以向用户要输入（`elicitation/create`�
 
 ## 未验证 / 假设
 
-- 内置表里 4.6 系列的 `off` 与 `MAX_THINKING_TOKENS=0`、`fast_mode` 的 `--settings` 写法、各模型的 `min_cli_version`（目前都是 2.1.0，机制已就位）。
+- 内置表里 4.6 系列的 `off` 与 `MAX_THINKING_TOKENS=0`、各模型的 `min_cli_version`（目前都是 2.1.0，机制已就位）。
+- Bash 工具的**默认**超时（2 分钟）到了之后命令转到后台继续跑（2.1.311 的更新日志）：结果里有没有 `backgroundTaskId` 没有实测。显式给了 `timeout` 的（2.1.316 实测 `timeout: 2000`）是被杀掉，结果 `Exit code 143\nCommand timed out after 2s`，不转后台。
 - 多选题的 `", "` 连接。
 - `workflow_progress` 里 `state: progress` / `error` 的真实样子（实录里 agent 只经历了 `start` → `done`，`progress` 只出现在 CLI 对「全是 progress 更新」批次限频的那种帧里，那种帧不带 `workflow_progress`）。
 - elicitation 的 `cancel` 取值、`content` 不合法时 CLI 的反应；`system/elicitation_complete` 的实际时序。

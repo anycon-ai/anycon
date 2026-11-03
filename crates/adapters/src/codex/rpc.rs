@@ -15,16 +15,23 @@ use tokio::sync::oneshot;
 
 use crate::common::JsonlChild;
 
-/// JSON-RPC 错误对象（`{ code, message }`）。
+/// JSON-RPC 错误对象（`{ code, message, data? }`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    /// 结构化的附加信息（如 `ModelProviderError`：`{ type: "modelProviderMismatch", … }`）；只在读响应时有，答复服务端请求时不带。
+    pub data: Option<Value>,
 }
 
 impl RpcError {
     pub fn new(code: i64, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self { code, message: message.into(), data: None }
+    }
+
+    /// `data.type`（app-server 的结构化错误种类）。
+    pub fn data_type(&self) -> Option<&str> {
+        self.data.as_ref()?.get("type")?.as_str()
     }
 
     pub fn to_json(&self) -> Value {
@@ -80,7 +87,8 @@ pub fn classify_value(v: &Value) -> Option<Incoming> {
             if let Some(err) = obj.get("error") {
                 let code = err.get("code").and_then(Value::as_i64).unwrap_or(0);
                 let message = err.get("message").and_then(Value::as_str).unwrap_or("").to_string();
-                Some(Incoming::Response { id, result: Err(RpcError { code, message }) })
+                let data = err.get("data").filter(|d| !d.is_null()).cloned();
+                Some(Incoming::Response { id, result: Err(RpcError { code, message, data }) })
             } else {
                 let result = obj.get("result").cloned().unwrap_or(Value::Null);
                 Some(Incoming::Response { id, result: Ok(result) })
@@ -469,6 +477,20 @@ mod tests {
         assert_eq!(
             classify(r#"{"error":{"code":-32600,"message":"no active turn to steer"},"id":4}"#),
             Some(Incoming::Response { id: 4, result: Err(RpcError::new(-32600, "no active turn to steer")) })
+        );
+        // 0.166.0 实测：提供方对不上时的结构化错误
+        let Some(Incoming::Response { result: Err(e), .. }) = classify(
+            r#"{"error":{"code":-32600,"data":{"type":"modelProviderMismatch","modelProvider":"fake","currentModelProvider":"fake2"},"message":"This chat uses fake, but your current provider is fake2. Switch to fake to continue."},"id":12}"#,
+        ) else {
+            panic!("not an error response")
+        };
+        assert_eq!(e.data_type(), Some("modelProviderMismatch"));
+        assert_eq!(
+            classify(r#"{"error":{"code":1,"message":"m","data":null},"id":5}"#).map(|i| match i {
+                Incoming::Response { result: Err(e), .. } => e.data,
+                _ => unreachable!(),
+            }),
+            Some(None)
         );
         assert_eq!(
             classify(r#"{"method":"item/commandExecution/requestApproval","id":0,"params":{"itemId":"c"}}"#),

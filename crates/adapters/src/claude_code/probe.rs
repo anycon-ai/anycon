@@ -101,15 +101,34 @@ pub fn modes() -> Vec<ModeInfo> {
 }
 
 pub fn options() -> Vec<ConfigOption> {
-    vec![ConfigOption {
-        id: "fast_mode".to_string(),
-        label: "Fast mode".to_string(),
-        description: Some("Faster output at a higher price (supported models only)".to_string()),
-        kind: ConfigOptionKind::Bool,
-        choices: vec![],
-        default: Value::Bool(false),
-    }]
+    vec![
+        ConfigOption {
+            id: "fast_mode".to_string(),
+            label: "Fast mode".to_string(),
+            description: Some("Faster output at a higher price (supported models only)".to_string()),
+            kind: ConfigOptionKind::Bool,
+            choices: vec![],
+            default: Value::Bool(false),
+        },
+        // `permissions.blockWritesOutsideWorkingDirectories`（2.1.314+；更老的 CLI 收下但不生效）。默认关：打开后项目外的写入
+        // 直接被拒、连权限请求都没有（ADR-48）
+        ConfigOption {
+            id: OPTION_BLOCK_OUTSIDE_WRITES.to_string(),
+            label: "Block file writes outside the project".to_string(),
+            description: Some(
+                "Write, Edit and NotebookEdit refuse paths outside the working directory in every permission mode, \
+                 including Bypass Permissions. Shell commands are not covered. Needs Claude Code 2.1.314 or later."
+                    .to_string(),
+            ),
+            kind: ConfigOptionKind::Bool,
+            choices: vec![],
+            default: Value::Bool(false),
+        },
+    ]
 }
+
+/// 选项 id：文件工具不许写工作目录以外的路径。
+pub const OPTION_BLOCK_OUTSIDE_WRITES: &str = "block_outside_writes";
 
 pub fn capabilities() -> AgentCapabilities {
     AgentCapabilities {

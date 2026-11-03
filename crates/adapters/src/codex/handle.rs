@@ -55,7 +55,7 @@ use crate::common::{JsonlChild, LineEvent, ShutdownTimings, SpawnSpec, DEFAULT_M
 use super::permissions::{self, NativePending};
 use super::probe::initialize_params;
 use super::process::{self, LaunchOptions, Sent};
-use super::rpc::{classify, classify_oversize, Incoming, OversizeKind, RpcClient, RpcFailure};
+use super::rpc::{classify, classify_oversize, Incoming, OversizeKind, RpcClient, RpcError, RpcFailure};
 use super::translate::{Out, Translator};
 use super::wire::{ThreadResponse, TurnStartResponse};
 
@@ -123,6 +123,9 @@ fn map_spawn_error(program: &std::path::Path, e: std::io::Error) -> AdapterError
 
 fn map_failure(what: &str, e: RpcFailure) -> AdapterError {
     match e {
+        // 对话属于另一个模型提供方（0.166.0 起 `thread/resume` / `turn/start` 都会这样拒绝）：改回 Codex 的配置就能接着用，
+        // 所以不当成续接失败去开新 thread；Codex 的原话已经说清楚了怎么办
+        RpcFailure::Rpc(err) if is_provider_error(&err) => AdapterError::AgentConfig(err.message),
         RpcFailure::Rpc(err) => AdapterError::Protocol(format!("{what}: {}", err.message)),
         RpcFailure::Timeout => AdapterError::Protocol(format!("{what}: timed out waiting for codex")),
         RpcFailure::Closed => AdapterError::Exited(format!("{what}: codex is not running")),
@@ -147,6 +150,11 @@ async fn startup_failure(shared: &Shared, child: &JsonlChild, e: RpcFailure, wha
         }
         other => map_failure(what, other),
     }
+}
+
+/// app-server 的 `ModelProviderError`：`modelProviderMismatch` / `modelProviderNotConfigured` / `modelProviderPolicyConflict`。
+fn is_provider_error(err: &RpcError) -> bool {
+    err.data_type().is_some_and(|t| t.starts_with("modelProvider"))
 }
 
 fn is_no_rollout(e: &RpcFailure) -> bool {
@@ -437,7 +445,19 @@ fn dispatch(shared: &Shared, events: &mpsc::UnboundedSender<AgentEvent>, out: Ou
             }
         }
         Out::Resolved { rpc_id } => {
-            shared.pending.lock().expect("pending lock").retain(|_, n| n.rpc_id != rpc_id);
+            // 我们答复过的请求已经不在表里；还在的是 Codex 自己了结的（turn 被打断、审查子代理放行…），让 daemon 撤下卡片
+            let withdrawn: Vec<String> = {
+                let mut pending = shared.pending.lock().expect("pending lock");
+                let ids: Vec<String> =
+                    pending.iter().filter(|(_, n)| n.rpc_id == rpc_id).map(|(id, _)| id.clone()).collect();
+                for id in &ids {
+                    pending.remove(id);
+                }
+                ids
+            };
+            for request_id in withdrawn {
+                let _ = events.send(AgentEvent::PermissionWithdrawn { request_id });
+            }
         }
         Out::TurnStarted { .. } => {}
     }

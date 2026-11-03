@@ -19,7 +19,7 @@ describe('errorSeverity', () => {
   })
 
   it('knows which codes have localized copy', () => {
-    for (const code of ['agent_reconnecting', 'agent_context_reset', 'unsupported_request', 'context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed', 'attachment_failed']) {
+    for (const code of ['agent_reconnecting', 'agent_context_reset', 'unsupported_request', 'context_window_exceeded', 'sandbox_error', 'policy_violation', 'rate_limited', 'auth_failed', 'attachment_failed', 'agent_config', 'model_not_found']) {
       expect(isExplainedError(code)).toBe(true)
     }
     expect(isExplainedError('agent_error')).toBe(false)

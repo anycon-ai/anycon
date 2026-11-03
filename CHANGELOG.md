@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
+## [Unreleased]
+
+### Added
+
+- Claude Code adapter: a "Block file writes outside the project" option (`block_outside_writes`, off by default; [ADR-48](docs/decisions.md#adr-48-claude-code文件工具不写项目外可选默认关)). When on, Write, Edit and NotebookEdit refuse paths outside the session's working directory in every permission mode, Bypass Permissions included, and the refusal shows as a notice. Shell commands are not covered. It needs Claude Code 2.1.314 or later; older versions accept the setting and ignore it. Changing it restarts the agent process before the next turn.
+- When an agent withdraws a request it is still waiting on, the permission card goes away right away instead of staying until the turn ends. This happens when an MCP tool times out while its form is unanswered (Claude Code), or when Codex settles an approval itself. An answer sent after that gets `already_resolved`.
+
+### Changed
+
+- Claude Code adapter: the model list no longer offers "Opus (latest, 1M context)" and "Sonnet (latest, 1M context)". The 5.x models already have a 1M-token context window, and Claude Code ignores the `[1m]` suffix on them. A session that uses `opus[1m]` or `sonnet[1m]` keeps working: the id is accepted as a custom model.
+- Codex adapter: tested with Codex 0.166.0. When a conversation was created with a different model provider than the one now selected in Codex's `config.toml`, the turn ends with an `agent_config` error that quotes Codex ("This chat uses …, switch to … to continue") instead of a protocol error. Switch the provider back and send again; the conversation history is kept. A model the provider does not know ends the turn with `model_not_found`, and Codex's policy-capacity errors count as `rate_limited`. The Web UI explains both new codes.
+
 ## [0.2.0] - 2026-11-01
 
 ### Added

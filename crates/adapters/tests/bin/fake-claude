@@ -20,6 +20,8 @@ Environment (all optional)
   FAKE_CLAUDE_BIG_LINE      write one stdout line of this many bytes (not valid JSON) right after start
   FAKE_CLAUDE_BG_PID_FILE   spawn a background `sleep` in our process group and write its pid to this file
 A fixture line `__HOLD__` keeps the turn open until the client interrupts it.
+A fixture line `__NOWAIT__` makes the next `control_request` line go out without waiting for its answer (the real CLI
+does this when it later withdraws the request with `control_cancel_request`, e.g. an MCP tool timing out).
 A fixture line `__PAUSE__ <ms>` pauses the turn for that long (stdin is still read and logged meanwhile).
 A turn whose first line is `__AUTO__` is started by the fake itself right after the previous turn ends, without a user
 message (like the real CLI does after a background task finishes).
@@ -239,6 +241,7 @@ def wait_for_control_response(timeout=15.0):
 
 def replay(lines):
     state["abort"] = False
+    no_wait = False
     for line in lines:
         poll()
         if state["abort"]:
@@ -251,6 +254,9 @@ def replay(lines):
             while time.time() < end:
                 poll()
                 time.sleep(0.01)
+            continue
+        if line == "__NOWAIT__":
+            no_wait = True
             continue
         if line == "__HOLD__":
             # keep the turn open until the client interrupts it
@@ -266,7 +272,10 @@ def replay(lines):
             time.sleep(delay)
         emit(line.replace(FIXTURE_SID, state["session_id"]))
         if line.startswith("{") and '"type":"control_request"' in line:
-            wait_for_control_response()
+            if no_wait:
+                no_wait = False
+            else:
+                wait_for_control_response()
 
 
 def replay_auto_turns():

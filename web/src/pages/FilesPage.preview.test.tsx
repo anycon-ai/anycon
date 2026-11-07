@@ -14,6 +14,7 @@ import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
+import { useUi } from '@/stores/ui'
 
 // 数据是异步读的（渲染整页、shiki 都不快）；机器忙的时候默认的 1 秒等待和 5 秒用例超时不够
 configure({ asyncUtilTimeout: 5000 })
@@ -160,6 +161,127 @@ describe('binary files', () => {
     expect(screen.getByTestId('file-size')).toHaveTextContent('1.2 KiB')
     await i18n.changeLanguage('zh')
     expect(screen.getByTestId('files-binary')).toHaveTextContent('二进制文件，1,234 字节')
+  })
+})
+
+describe('download', () => {
+  /** 捕获 `<a download>` 的点击：下载的文件名和字节。 */
+  function captureSave() {
+    const saved: Array<{ name: string; blob: Blob }> = []
+    const create = vi.spyOn(URL, 'createObjectURL')
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved.push({ name: this.download, blob: create.mock.calls.at(-1)![0] as Blob })
+    })
+    return saved
+  }
+  const bytesOf = async (b: Blob): Promise<Uint8Array> => new Uint8Array(await b.arrayBuffer())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    useUi.setState({ toasts: [] })
+  })
+
+  it('saves a text file, read in base64 chunks, as an octet-stream blob under its own name', async () => {
+    const saved = captureSave()
+    mount('app/src/main.ts')
+    await screen.findByTestId('file-code')
+    await userEvent.click(screen.getByTestId('file-download'))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(saved[0]!.name).toBe('main.ts')
+    expect(saved[0]!.blob.type).toBe('application/octet-stream')
+    expect(new TextDecoder().decode(await bytesOf(saved[0]!.blob))).toBe('export const answer = 42\nexport const other = 1\n')
+    expect(reads().at(-1)).toEqual({ path: 'app/src/main.ts', max_bytes: 512 * KiB, encoding: 'base64', offset: 0 })
+  })
+
+  it('is there for a binary file, which has no preview', async () => {
+    const saved = captureSave()
+    mount('app/data.bin')
+    await screen.findByTestId('files-binary')
+    await userEvent.click(screen.getByTestId('file-download'))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(await bytesOf(saved[0]!.blob)).toEqual(new Uint8Array([0, 1, 2, 3]))
+  })
+
+  it('never gives an SVG or HTML file its own type, so it cannot run in the app origin', async () => {
+    const saved = captureSave()
+    mount('app/logo.svg')
+    await screen.findByTestId('file-image')
+    await userEvent.click(screen.getByTestId('file-download'))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(saved[0]!.name).toBe('logo.svg')
+    expect(saved[0]!.blob.type).toBe('application/octet-stream')
+  })
+
+  it('assembles a file of several chunks and shows the progress while it is on its way', async () => {
+    const big = new Uint8Array(2 * 512 * KiB + 100).map((_, i) => (i * 7 + (i >> 9)) & 0xff)
+    serveFs(rpc, { 'app/big.dat': big })
+    const saved = captureSave()
+    mount('app/big.dat')
+    await screen.findByTestId('files-binary')
+    await userEvent.click(screen.getByTestId('file-download'))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(await bytesOf(saved[0]!.blob)).toEqual(big)
+    expect(reads().filter((r) => r.encoding === 'base64').map((r) => r.offset)).toEqual([0, 512 * KiB, 1024 * KiB])
+  })
+
+  it('is disabled for a file the listing shows to be over the limit, and nothing is read', async () => {
+    serveFs(rpc, { 'app/huge.dat': new Uint8Array(51 * MiB) })
+    mount('app/huge.dat')
+    await screen.findByTestId('files-binary')
+    const button = screen.getByTestId('file-download')
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute('title', expect.stringContaining('too large to download here (51 MiB). The limit is 50 MiB.'))
+    expect(reads().filter((r) => r.encoding === 'base64')).toEqual([])
+  })
+
+  it('stops after the first chunk when the file has grown over the limit since the preview was opened, and says so', async () => {
+    const files: Record<string, FakeFile> = { 'app/grow.dat': new Uint8Array([0, 1, 2, 3]) }
+    serveFs(rpc, files)
+    const saved = captureSave()
+    mount('app/grow.dat')
+    await screen.findByTestId('files-binary')
+    files['app/grow.dat'] = new Uint8Array(51 * MiB)
+    await userEvent.click(screen.getByTestId('file-download'))
+    await waitFor(() => expect(useUi.getState().toasts.map((x) => x.text).join()).toContain('too large to download here (51 MiB)'))
+    expect(saved).toEqual([])
+    expect(reads().filter((r) => r.encoding === 'base64')).toHaveLength(1) // 只读了第一块，不是 50 MiB
+  })
+
+  it('reports a read error and lets the user try again', async () => {
+    const saved = captureSave()
+    mount('app/data.bin')
+    await screen.findByTestId('files-binary')
+    const serve = rpc.handlers['fs.read']!
+    rpc.handlers['fs.read'] = () => {
+      throw new Error('boom')
+    }
+    await userEvent.click(screen.getByTestId('file-download'))
+    await waitFor(() => expect(useUi.getState().toasts.some((x) => x.kind === 'error' && x.text.startsWith('Could not download the file.'))).toBe(true))
+    expect(saved).toEqual([])
+    rpc.handlers['fs.read'] = serve
+    await userEvent.click(screen.getByTestId('file-download'))
+    await waitFor(() => expect(saved).toHaveLength(1))
+  })
+
+  it('cancels a download in progress: no more chunks are requested and nothing is saved', async () => {
+    serveFs(rpc, { 'app/big.dat': new Uint8Array(4 * 512 * KiB) })
+    const serve = rpc.handlers['fs.read']!
+    let held: (() => void) | null = null
+    rpc.handlers['fs.read'] = async (p, n) => {
+      if ((p as FsReadParams).offset === 512 * KiB) await new Promise<void>((r) => (held = r))
+      return serve(p, n)
+    }
+    const saved = captureSave()
+    mount('app/big.dat')
+    await screen.findByTestId('files-binary')
+    const before = reads().length
+    await userEvent.click(screen.getByTestId('file-download'))
+    await waitFor(() => expect(held).not.toBeNull())
+    expect(screen.getByTestId('file-download-progress')).toHaveTextContent('512 KiB / 2.0 MiB')
+    await userEvent.click(screen.getByTestId('file-download-cancel'))
+    ;(held as (() => void) | null)?.()
+    await waitFor(() => expect(screen.getByTestId('file-download')).toBeEnabled())
+    expect(saved).toEqual([])
+    expect(reads().length - before).toBe(2) // 第 0 块和被拦住的第 1 块，之后不再请求
   })
 })
 

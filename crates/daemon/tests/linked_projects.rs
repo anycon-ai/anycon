@@ -183,6 +183,39 @@ async fn link_and_unlink_are_audited_broadcast_and_unlink_protects_running_sessi
 }
 
 #[tokio::test]
+async fn chunked_fs_read_is_audited_once_per_device_and_path() {
+    let (td, machine) = start().await;
+    let mut a = td.client("a");
+    let mut b = td.client("b");
+    link(&td, &mut a, &machine.join("proj"), None).await;
+    std::fs::write(machine.join("proj/big.bin"), vec![7u8; 1_500_000]).unwrap();
+    let count = |audit: &NodeAuditResult, device: &str, path: &str| {
+        audit
+            .entries
+            .iter()
+            .filter(|e| e.action == "fs.read" && e.device_name == device && e.target.as_deref() == Some(path))
+            .count()
+    };
+    // a 跳过第 0 块、从 offset > 0 读起：照样记一条（不能靠跳过第 0 块绕开审计）；后面的块不再各记一条
+    for offset in [524_288u64, 1_048_576, 0] {
+        let r: FsReadResult = a
+            .call(&td, methods::FS_READ, json!({ "path": "proj/big.bin", "encoding": "base64", "offset": offset }))
+            .await
+            .unwrap();
+        assert_eq!(r.bytes, 1_500_000);
+    }
+    // 同一路径、另一台设备、另一个文件：各记一条
+    let _: FsReadResult =
+        b.call(&td, methods::FS_READ, json!({ "path": "proj/big.bin", "encoding": "base64" })).await.unwrap();
+    let _: FsReadResult = a.call(&td, methods::FS_READ, json!({ "path": "proj/hello.txt" })).await.unwrap();
+    let audit: NodeAuditResult = a.call(&td, methods::NODE_AUDIT, json!({ "limit": 100 })).await.unwrap();
+    assert_eq!(count(&audit, "a", "proj/big.bin"), 1);
+    assert_eq!(count(&audit, "b", "proj/big.bin"), 1);
+    assert_eq!(count(&audit, "a", "proj/hello.txt"), 1);
+    td.shutdown().await;
+}
+
+#[tokio::test]
 async fn rpc_errors_namespace_trash_and_missing_projects() {
     let (td, machine) = start().await;
     let mut a = td.client("a");

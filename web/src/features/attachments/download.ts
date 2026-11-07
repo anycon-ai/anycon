@@ -133,20 +133,25 @@ export function downloadName(ref: Pick<AttachmentRef, 'name' | 'mime'>): string 
 }
 
 /**
- * 把附件存到本机（点文件条时）：取字节（缓存 / `blob.get`），再用 `<a download>` 触发下载。
- * 安全：`Blob` 的类型固定是 `application/octet-stream`，不用附件自己的 mime——`text/html`、`image/svg+xml` 这类内容
- * 在应用的源里打开就能跑脚本，octet-stream 加 `download` 只会存盘。
+ * 把字节存到本机：`<a download>` 触发保存。
+ * 安全：`Blob` 的类型固定是 `application/octet-stream`，不用文件自己的 mime——`text/html`、`image/svg+xml` 这类内容
+ * 在应用的源里打开就能跑脚本，octet-stream 加 `download` 只会存盘。附件和文件浏览的「下载」共用。
  */
-export async function saveAttachment(nodeId: string, ref: Pick<AttachmentRef, 'blob_id' | 'name' | 'mime'>): Promise<void> {
-  const { bytes } = await loadBlob(nodeId, ref)
+export function saveBytes(bytes: Uint8Array, filename: string): void {
   const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'application/octet-stream' }))
   const a = document.createElement('a')
   a.href = url
-  a.download = downloadName(ref)
+  a.download = filename
   a.rel = 'noopener'
   document.body.appendChild(a)
   a.click()
   a.remove()
   // 立刻 revoke 的话有的浏览器还没开始读就断了
   setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
+/** 把附件存到本机（点文件条时）：取字节（缓存 / `blob.get`），再 [`saveBytes`]。 */
+export async function saveAttachment(nodeId: string, ref: Pick<AttachmentRef, 'blob_id' | 'name' | 'mime'>): Promise<void> {
+  const { bytes } = await loadBlob(nodeId, ref)
+  saveBytes(bytes, downloadName(ref))
 }

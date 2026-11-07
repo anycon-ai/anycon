@@ -328,7 +328,7 @@ impl Rpc {
             methods::FS_READ => {
                 let p: FsReadParams = params(p)?;
                 let r = c.workspace.fs_read_as(&p.path, p.max_bytes, p.encoding, p.offset).await?;
-                c.audit.record(caller, "fs.read", Some(&p.path), json!({ "bytes": r.bytes })).await;
+                c.audit.record_fs_read(caller, &p.path, r.bytes).await;
                 ok(r)
             }
 

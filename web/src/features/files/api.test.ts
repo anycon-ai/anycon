@@ -4,7 +4,7 @@ import type { FsReadParams, FsReadResult } from '@/protocol'
 import { FAKE_FS_CHUNK, serveFs, type FakeFile } from '@/test/fakeFs'
 import { FakeRpc } from '@/test/fakeRpc'
 import { setRpc } from '@/transport/instance'
-import { FsDataError, IMAGE_CHUNK_BYTES, IMAGE_MAX_BYTES, readImage } from './api'
+import { DOWNLOAD_MAX_BYTES, FsDataError, IMAGE_CHUNK_BYTES, IMAGE_MAX_BYTES, readFileBytes, readImage } from './api'
 
 // 10 MiB 的那条要转 base64、再解码 20 遍；机器忙的时候 5 秒的默认超时不够
 vi.setConfig({ testTimeout: 30_000 })
@@ -241,5 +241,25 @@ describe('readImage: abort', () => {
     ctl.abort()
     await expect(readImage(NODE, 'a.png', { signal: ctl.signal })).rejects.toMatchObject({ name: 'AbortError' })
     expect(reads()).toHaveLength(0)
+  })
+})
+
+describe('readFileBytes: the limit is a parameter', () => {
+  it('reads past the image limit when the caller allows it, up to the download limit', async () => {
+    expect(DOWNLOAD_MAX_BYTES).toBe(50 * 1024 * KiB)
+    const data = pattern(IMAGE_MAX_BYTES + 1000)
+    files['big.dat'] = data
+    const file = await readFileBytes(NODE, 'big.dat', { maxBytes: DOWNLOAD_MAX_BYTES })
+    expect(file.truncated).toBe(false)
+    expect(file.bytes.every((b, i) => b === data[i])).toBe(true)
+    // readImage 还是 10 MiB 封顶
+    expect((await readImage(NODE, 'big.dat')).truncated).toBe(true)
+  })
+
+  it('stops after the first chunk for a file over the given limit', async () => {
+    files['big.dat'] = new Uint8Array(3 * IMAGE_CHUNK_BYTES)
+    const file = await readFileBytes(NODE, 'big.dat', { maxBytes: 2 * IMAGE_CHUNK_BYTES })
+    expect(file).toEqual({ bytes: new Uint8Array(0), truncated: true, total: 3 * IMAGE_CHUNK_BYTES })
+    expect(reads()).toHaveLength(1)
   })
 })

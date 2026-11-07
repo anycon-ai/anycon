@@ -9,6 +9,7 @@ import { highlightCode } from '@/lib/highlight'
 import { cn } from '@/ui/cn'
 import { CopyButton, Segmented, Skeleton } from '@/ui/Misc'
 import { IMAGE_CHUNK_BYTES, IMAGE_MAX_BYTES, readImage, readText, TEXT_MAX_BYTES } from './api'
+import { DownloadButton } from './DownloadButton'
 import { useAsync, useObjectUrl } from './hooks'
 import { ErrorBlock, Loading } from './parts'
 import { baseName, fileKind, parentOf, resolveLocalUrl } from './paths'
@@ -47,8 +48,8 @@ export function FilePreview({ nodeId, path, root, size, reloadKey, linkTo }: Fil
   )
 }
 
-/** 预览区的框架：文件名、大小、复制路径，以及页面自己的工具（Markdown 的视图切换）和提示条。 */
-function Frame({ path, size, icon, toolbar, notices, children }: { path: string; size?: number; icon: ReactNode; toolbar?: ReactNode; notices?: ReactNode; children: ReactNode }) {
+/** 预览区的框架：文件名、大小、下载、复制路径，以及页面自己的工具（Markdown 的视图切换）和提示条。 */
+function Frame({ nodeId, path, size, icon, toolbar, notices, children }: { nodeId: string; path: string; size?: number; icon: ReactNode; toolbar?: ReactNode; notices?: ReactNode; children: ReactNode }) {
   const { t } = useTranslation()
   return (
     <>
@@ -66,6 +67,7 @@ function Frame({ path, size, icon, toolbar, notices, children }: { path: string;
         ) : null}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {toolbar}
+          <DownloadButton nodeId={nodeId} path={path} size={size} />
           <CopyButton text={path} iconOnly label={t('files.copyPath')} testId="file-copy-path" />
         </div>
       </div>
@@ -108,20 +110,20 @@ function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo }: { nod
   const icon = <FileText className="size-4" />
   if (state.status === 'loading')
     return (
-      <Frame path={path} size={size} icon={icon}>
+      <Frame nodeId={nodeId} path={path} size={size} icon={icon}>
         <Loading />
       </Frame>
     )
   if (state.status === 'error')
     return (
-      <Frame path={path} size={size} icon={icon}>
+      <Frame nodeId={nodeId} path={path} size={size} icon={icon}>
         <ErrorBlock error={state.error} onRetry={retry} />
       </Frame>
     )
   const { binary, truncated, bytes } = state.data
   if (binary)
     return (
-      <Frame path={path} size={bytes} icon={icon}>
+      <Frame nodeId={nodeId} path={path} size={bytes} icon={icon}>
         <Centered testId="files-binary">
           <FileImageIcon className="size-8 text-fg-subtle" aria-hidden />
           <p>{t('files.binary', { bytes: bytes.toLocaleString(i18n.language) })}</p>
@@ -150,7 +152,7 @@ function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo }: { nod
     />
   ) : undefined
   return (
-    <Frame path={path} size={bytes} icon={icon} toolbar={toolbar} notices={notices}>
+    <Frame nodeId={nodeId} path={path} size={bytes} icon={icon} toolbar={toolbar} notices={notices}>
       {text === '' && !truncated ? (
         <Centered testId="files-empty-file">{t('files.emptyFile')}</Centered>
       ) : markdown && shown === 'rendered' ? (
@@ -255,7 +257,7 @@ function ImagePreview({ nodeId, path, mime, size }: { nodeId: string; path: stri
     )
   else body = <Loading progress={progress && progress.total > IMAGE_CHUNK_BYTES ? progress : undefined} />
   return (
-    <Frame path={path} size={total} icon={icon}>
+    <Frame nodeId={nodeId} path={path} size={total} icon={icon}>
       {body}
     </Frame>
   )

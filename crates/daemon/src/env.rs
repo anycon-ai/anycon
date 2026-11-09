@@ -323,7 +323,7 @@ mod tests {
         let ok = fake_shell(
             d.path(),
             "shell-ok",
-            r#"if [ "$1" = "-ilc" ]; then printf 'PATH=/fake/bin:/usr/bin\0FOO=from-shell\0CLAUDECODE=1\0CLAUDE_CODE_ENTRYPOINT=cli\0'; else exit 1; fi"#,
+            r#"if [ "$1" = "-ilc" ]; then printf 'PATH=/fake/bin:/usr/bin\0FOO=from-shell\0CLAUDECODE=1\0CLAUDE_CODE_ENTRYPOINT=cli\0ANYCON_AGENT=1\0'; else exit 1; fi"#,
         );
         std::env::set_var("SHELL", &ok);
         let e = resolve(true, Duration::from_secs(5)).await;
@@ -332,6 +332,12 @@ mod tests {
         assert_eq!(e.path(), "/fake/bin:/usr/bin");
         assert!(!e.base.contains_key("CLAUDECODE"));
         assert!(!e.base.contains_key("CLAUDE_CODE_ENTRYPOINT"));
+        // 从 anycon 会话里前台启动的 daemon，自身环境里的 ANYCON_AGENT 也不进 daemon 环境（探测用的环境不带它）；
+        // 拉起 agent 时 `for_session` 再放回去
+        assert!(!e.base.contains_key("ANYCON_AGENT"));
+        let cfg = Config::default();
+        assert!(!e.for_agent(&cfg, "x").contains_key("ANYCON_AGENT"), "probes do not get the marker");
+        assert_eq!(e.for_session(&cfg, "x", &BTreeMap::new())["ANYCON_AGENT"], "1", "spawned agents do");
 
         // 2) -ilc 失败、-lc 成功
         let second = fake_shell(

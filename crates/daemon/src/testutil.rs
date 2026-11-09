@@ -129,6 +129,8 @@ pub struct FakeAdapter {
     /// （默认的假 adapter 把每条输入都当成一个独立的小 turn）。是否确认「模型读到了」由测试用 `HandleLog::inject`
     /// 注入 `AgentEvent::InterjectionRead` 来决定。
     pub interject_folds_into_turn: Arc<AtomicBool>,
+    /// `InterjectFailure::Hang` 等的门：`notify_one()` 放行一条挂住的（或下一条）插话。
+    pub interject_gate: Arc<Notify>,
     /// 新 handle 的 `cancel_delay`。
     pub cancel_delay: Mutex<Duration>,
     /// 关闭一个 handle 要多久（测「resume 前先等旧进程关完」）。
@@ -150,6 +152,9 @@ pub enum InterjectFailure {
     EndTurnThenTurnEnded,
     /// 返回别的错误（超时之类）；当前 turn 照常继续。
     Other(String),
+    /// `send` 一直不返回，直到测试调用 `FakeAdapter::interject_gate.notify_one()`，然后像被接受一样返回（要配合
+    /// `interject_folds_into_turn`）。用来摆出「插话在途时 daemon 自己结束了 turn」。
+    Hang,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +191,7 @@ impl FakeAdapter {
             counter: AtomicUsize::new(0),
             interject_failure: Arc::new(Mutex::new(None)),
             interject_folds_into_turn: Arc::new(AtomicBool::new(false)),
+            interject_gate: Arc::new(Notify::new()),
             cancel_delay: Mutex::new(Duration::ZERO),
             shutdown_delay: Arc::new(Mutex::new(Duration::ZERO)),
             order: Arc::new(Mutex::new(Vec::new())),
@@ -397,6 +403,7 @@ impl Adapter for FakeAdapter {
             perm_counter: Arc::new(AtomicUsize::new(0)),
             interject_failure: self.interject_failure.clone(),
             interject_folds_into_turn: self.interject_folds_into_turn.clone(),
+            interject_gate: self.interject_gate.clone(),
             read_attachments: self.read_attachments.load(Ordering::SeqCst),
             n,
             order: self.order.clone(),
@@ -420,6 +427,7 @@ pub struct FakeHandle {
     perm_counter: Arc<AtomicUsize>,
     interject_failure: Arc<Mutex<Option<InterjectFailure>>>,
     interject_folds_into_turn: Arc<AtomicBool>,
+    interject_gate: Arc<Notify>,
     read_attachments: bool,
     n: usize,
     order: Arc<Mutex<Vec<String>>>,
@@ -489,6 +497,7 @@ impl AgentHandle for FakeHandle {
             match failure {
                 Some(InterjectFailure::TurnEnded) => return Err(AdapterError::TurnEnded),
                 Some(InterjectFailure::Other(m)) => return Err(AdapterError::Protocol(m)),
+                Some(InterjectFailure::Hang) => self.interject_gate.notified().await,
                 Some(InterjectFailure::EndTurnThenTurnEnded) => {
                     let tx = self.tx.lock().unwrap().clone();
                     if let Some(tx) = tx {

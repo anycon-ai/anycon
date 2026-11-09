@@ -273,8 +273,6 @@ async fn an_accepted_interjection_that_was_never_confirmed_is_marked_uncertain_w
     let r = send(&td, &mut a, &s.id, "m2", "steer please").await;
     assert_eq!((r.turn_id, r.queued), (Some(1), false));
     assert!(eventually(T, || async { delivered(&td, "steer please").len() == 1 }).await);
-    // 接受之后 on_interject_done 才记下这条消息：等 interjecting 归零，免得取消抢在它前面
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
     let t = trace(&history(&td, &mut a, &s.id).await);
@@ -295,12 +293,10 @@ async fn a_confirmed_interjection_is_not_marked_when_the_turn_is_cancelled() {
     send(&td, &mut a, &s.id, "m2", "read me").await;
     send(&td, &mut a, &s.id, "m3", "lost one").await;
     assert!(eventually(T, || async { delivered(&td, "lost one").len() == 1 }).await);
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let h = td.fake.last_handle();
     h.inject(AgentEvent::InterjectionRead { message_id: "m2".into() }).await;
     h.inject(AgentEvent::InterjectionRead { message_id: "m2".into() }).await;
     h.inject(AgentEvent::InterjectionRead { message_id: "no-such-message".into() }).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
     let t = trace(&history(&td, &mut a, &s.id).await);
@@ -323,11 +319,45 @@ async fn an_unconfirmed_interjection_is_not_marked_when_the_turn_completes() {
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
     send(&td, &mut a, &s.id, "m2", "steer please").await;
     assert!(eventually(T, || async { delivered(&td, "steer please").len() == 1 }).await);
-    tokio::time::sleep(Duration::from_millis(100)).await;
     td.fake.last_handle().release();
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
     let t = trace(&history(&td, &mut a, &s.id).await);
     assert_eq!(t, vec!["user:m1", "turn_start:1:m1", "user:m2", "turn_done:1"], "{t:?}");
+    td.shutdown().await;
+}
+
+/// `send` 还没返回（driver 卡在 adapter 里）时 daemon 自己结束了 turn（这里是 `session.restart`；取消宽限到期同理）：
+/// 进程随后被收掉，这条消息不会有人读到，但它还没被登记为「已接受」。它要在这个 turn 收尾时就被标上；
+/// 旧 driver 迟到的结果不能碰新 turn 和新 driver 的计数。
+#[tokio::test]
+async fn an_interjection_in_flight_when_the_daemon_ends_the_turn_is_marked_and_its_late_result_is_ignored() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    *td.fake.interject_failure.lock().unwrap() = Some(InterjectFailure::Hang);
+    send(&td, &mut a, &s.id, "m2", "stuck in flight").await;
+    // 让 driver 先走进 adapter 的 send 并卡住（插话才算「在途」）
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(delivered(&td, "stuck in flight").is_empty());
+    let sessions = td.ctx.sessions.clone();
+    let sid = s.id.clone();
+    let restart = tokio::spawn(async move { sessions.restart(&sid).await });
+    assert!(wait_trace(&td, &mut a, &s.id, |t| t.contains(&"turn_done:1".to_string())).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert_eq!(t, vec!["user:m1", "turn_start:1:m1", "user:m2", "delivery:m2:Uncertain", "turn_done:1"], "{t:?}");
+    // 旧 driver 的 send 现在才返回 Ok；它晚到的结果什么都不碰
+    *td.fake.interject_failure.lock().unwrap() = None;
+    td.fake.interject_gate.notify_one();
+    restart.await.unwrap().unwrap();
+    // 新进程上的新 turn：没有带过来的标记
+    send(&td, &mut a, &s.id, "m3", "hold again").await;
+    assert!(wait_trace(&td, &mut a, &s.id, |t| t.contains(&"turn_start:2:m3".to_string())).await);
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert_eq!(t.iter().filter(|x| x.starts_with("delivery:")).count(), 1, "{t:?}");
     td.shutdown().await;
 }
 
@@ -351,5 +381,26 @@ async fn a_rejected_interjection_that_goes_back_to_the_queue_is_never_marked() {
     let t = trace(&history(&td, &mut a, &s.id).await);
     assert!(!t.iter().any(|x| x.starts_with("delivery:")), "{t:?}");
     assert!(t.contains(&"turn_done:2".to_string()), "{t:?}");
+    td.shutdown().await;
+}
+
+/// `message_delivery` 是 daemon 生成的事件：adapter 自己发的会被丢掉，不进事件日志（不能让 adapter 往用户消息上乱贴标记）。
+#[tokio::test]
+async fn a_message_delivery_event_from_the_adapter_is_dropped() {
+    let td = start().await;
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    td.fake
+        .last_handle()
+        .inject(AgentEvent::Event(Event::MessageDelivery {
+            message_id: "m1".into(),
+            state: MessageDeliveryState::Uncertain,
+        }))
+        .await;
+    td.fake.last_handle().release();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert!(!t.iter().any(|x| x.starts_with("delivery:")), "{t:?}");
     td.shutdown().await;
 }

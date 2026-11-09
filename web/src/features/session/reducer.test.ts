@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { ev, evs, resetSeq } from '@/test/factories'
-import { applyEvents, buildView, diffSettings, emptyView, latestSyncBlock, pendingPermissions, planIngest, type AssistantBlock, type GitSystemBlock, type NoticeBlock, type PermissionBlock, type TaskBlock, type ToolBlock, type TurnStartBlock } from './reducer'
+import { applyEvents, buildView, diffSettings, emptyView, latestSyncBlock, pendingPermissions, planIngest, type AssistantBlock, type ErrorBlock, type GitSystemBlock, type NoticeBlock, type PermissionBlock, type TaskBlock, type ToolBlock, type TurnStartBlock } from './reducer'
 import type { Event } from '@/protocol'
 
 beforeEach(() => resetSeq())
@@ -384,6 +384,20 @@ describe('task snapshots', () => {
     const inc = applyEvents(applyEvents(emptyView(), events.slice(0, 2)), events.slice(2))
     expect(inc.blocks).toEqual(buildView(events).blocks)
     expect(inc.taskIndex).toEqual({ 'task-1': 0 })
+  })
+})
+
+describe('error events', () => {
+  it('carries the reset time and the limit scope when the agent gave them, and leaves them out otherwise', () => {
+    const v = buildView(
+      evs([
+        { type: 'error', code: 'usage_limit', message: 'Usage limit reached (weekly Sonnet)', recoverable: true, resets_at_ms: 1_700_000_000_000, limit_scope: 'model' },
+        { type: 'error', code: 'rate_limited', message: 'slow down', recoverable: true },
+      ]),
+    )
+    const [limit, rate] = v.blocks as ErrorBlock[]
+    expect(limit).toMatchObject({ type: 'error', code: 'usage_limit', resetsAtMs: 1_700_000_000_000, limitScope: 'model' })
+    expect(rate).toMatchObject({ code: 'rate_limited', resetsAtMs: undefined, limitScope: undefined })
   })
 })
 

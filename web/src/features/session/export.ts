@@ -87,7 +87,7 @@ export function exportMarkdown(title: string, blocks: readonly Block[], attachme
         else out.push(`> **${b.level === 'warning' ? 'Warning' : 'Notice'}** (${b.code}): ${noticeLine(b)}`, '')
         break
       case 'error':
-        out.push(`> **Error** (${b.code}): ${b.message}`, '')
+        out.push(`> **Error** (${b.code}): ${b.message}${b.resetsAtMs != null ? ` (resets ${new Date(b.resetsAtMs).toISOString()})` : ''}`, '')
         break
       default:
         break

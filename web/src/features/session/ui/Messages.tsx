@@ -11,7 +11,7 @@ import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Chip, CopyButton } from '@/ui/Misc'
-import { errorSeverity, isExplainedError } from '../errors'
+import { errorExtras, errorSeverity, isExplainedError } from '../errors'
 import { gitEventText } from '@/features/worktree/eventText'
 import { describeAttachmentFailure } from '@/features/attachments/errors'
 import { MessageAttachments } from '@/features/attachments/ui/MessageAttachments'
@@ -455,7 +455,7 @@ export function TurnUsage({ block, copyText }: { block: TurnDoneBlock; copyText?
 // ---- 错误 / 系统行 ----
 
 export function ErrorView({ block, onRetry }: { block: ErrorBlock; onRetry?: () => void }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const severity = errorSeverity(block.code)
   const explained = isExplainedError(block.code) ? t(`agentError.${block.code}`) : null
   if (severity === 'notice') {
@@ -475,6 +475,7 @@ export function ErrorView({ block, onRetry }: { block: ErrorBlock; onRetry?: () 
     )
   }
   const warning = severity === 'warning'
+  const extras = errorExtras(t, i18n.language, block)
   return (
     <div
       role={warning ? 'status' : 'alert'}
@@ -487,6 +488,8 @@ export function ErrorView({ block, onRetry }: { block: ErrorBlock; onRetry?: () 
       <div className="min-w-0 flex-1">
         <p className="font-medium">{block.message}</p>
         {explained ? <p className="mt-0.5 text-xs" data-testid="error-explained">{explained}</p> : null}
+        {extras.resets ? <p className="mt-0.5 text-xs font-medium" data-testid="error-resets">{extras.resets}</p> : null}
+        {extras.modelHint ? <p className="mt-0.5 text-xs" data-testid="error-model-hint">{extras.modelHint}</p> : null}
         <p className="font-mono text-xs opacity-70">{block.code}</p>
       </div>
       {!warning && block.recoverable && onRetry ? (

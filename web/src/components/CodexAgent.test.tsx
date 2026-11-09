@@ -8,6 +8,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveDefaults, toSessionSettings, type Selection } from '@/features/settings/resolve'
 import { buildView } from '@/features/session/reducer'
+import { formatResetTime } from '@/features/session/notice'
 import { exportMarkdown } from '@/features/session/export'
 import { DiffView } from '@/features/session/ui/DiffView'
 import { MessageList, retryableErrorKey, type MessageListProps } from '@/features/session/ui/MessageList'
@@ -499,7 +500,7 @@ describe('Codex: event rendering', () => {
 
 // ---- Codex 的 error code ----
 
-const errorEv = (code: string, message: string, recoverable = true) => ev({ type: 'error', code, message, recoverable })
+const errorEv = (code: string, message: string, recoverable = true, extra: { resets_at_ms?: number; limit_scope?: 'account' | 'model' } = {}) => ev({ type: 'error', code, message, recoverable, ...extra })
 
 describe('Codex: error events', () => {
   it('shows agent_reconnecting as a muted one-line notice — not a red error block, not an alert, and never with a retry button', () => {
@@ -584,7 +585,10 @@ describe('Codex: error events', () => {
     ['context_window_exceeded', 'Codex ran out of room in the model’s context window.', /no longer fits in the model’s context window/],
     ['sandbox_error', 'The sandbox failed to run the command', /Check the session’s permission mode/],
     ['policy_violation', 'The request was blocked by a usage policy', /usage policy stopped this request/],
-    ['rate_limited', 'Usage limit reached', /rate or usage limit/],
+    ['usage_limit', 'Quota exceeded. Check your plan and billing details.', /usage limit for your plan or account has been reached/],
+    ['rate_limited', 'Rate limit reached for requests', /limiting how fast requests can be sent/],
+    ['overloaded', 'Selected model is at capacity', /overloaded right now. This is not about your own usage/],
+    ['budget_exceeded', 'The shared session token budget has been used up.', /token budget is used up/],
     ['auth_failed', 'Not logged in', /not signed in, or its credentials were rejected/],
   ])('shows %s as a red error with the adapter’s message, a short explanation and the code', (code, message, explanation) => {
     const view = buildView([errorEv(code, message, code !== 'auth_failed')])
@@ -596,6 +600,38 @@ describe('Codex: error events', () => {
     expect(block).toHaveTextContent(message)
     expect(screen.getByTestId('error-explained')).toHaveTextContent(explanation)
     expect(block).toHaveTextContent(code)
+  })
+
+  it('shows when a usage limit resets, in local time, and only hints at another model for a per-model limit', () => {
+    const at = new Date(2100, 0, 5, 15, 30).getTime()
+    const view = buildView([
+      errorEv('usage_limit', 'Usage limit reached (5-hour)', true, { resets_at_ms: at, limit_scope: 'account' }),
+      errorEv('usage_limit', 'Usage limit reached (weekly Sonnet)', true, { resets_at_ms: at, limit_scope: 'model' }),
+      errorEv('usage_limit', 'You have hit your limit'),
+    ])
+    render(<MessageList {...listProps({ blocks: view.blocks })} />)
+    const [account, model, unknown] = screen.getAllByTestId('error-block')
+    const time = formatResetTime(at, 'en')
+    expect(within(account!).getByTestId('error-resets')).toHaveTextContent(`Resets ${time}.`)
+    expect(within(account!).queryByTestId('error-model-hint')).toBeNull()
+    expect(within(model!).getByTestId('error-resets')).toHaveTextContent(`Resets ${time}.`)
+    expect(within(model!).getByTestId('error-model-hint')).toHaveTextContent('Pick another model in the session settings')
+    // 上游没给恢复时间 / 范围：什么都不编
+    expect(within(unknown!).queryByTestId('error-resets')).toBeNull()
+    expect(within(unknown!).queryByTestId('error-model-hint')).toBeNull()
+    expect(within(unknown!).getByTestId('error-explained')).toBeInTheDocument()
+  })
+
+  it('falls back to the raw message for a code it does not know, but still shows a reset time if one came with it', () => {
+    const at = new Date(2100, 0, 5, 15, 30).getTime()
+    const view = buildView([errorEv('credits_depleted', 'Out of credits', true, { resets_at_ms: at })])
+    render(<MessageList {...listProps({ blocks: view.blocks })} />)
+    const block = screen.getByTestId('error-block')
+    expect(block).toHaveAttribute('data-severity', 'error')
+    expect(block).toHaveTextContent('Out of credits')
+    expect(block).toHaveTextContent('credits_depleted')
+    expect(screen.queryByTestId('error-explained')).toBeNull()
+    expect(screen.getByTestId('error-resets')).toHaveTextContent('Resets')
   })
 
   it('offers “Retry” only on the last recoverable real error, and notices do not take it away', async () => {
@@ -620,6 +656,24 @@ describe('Codex: error events', () => {
     render(<MessageList {...listProps({ blocks: view.blocks })} />)
     expect(screen.getByTestId('error-block')).toHaveAttribute('data-severity', 'error')
     expect(screen.queryByTestId('error-explained')).toBeNull()
+  })
+
+  it('has Chinese copy for the limit errors', async () => {
+    await i18n.changeLanguage('zh')
+    try {
+      const at = new Date(2100, 0, 5, 15, 30).getTime()
+      const view = buildView([errorEv('usage_limit', 'x', true, { resets_at_ms: at, limit_scope: 'model' }), errorEv('overloaded', 'y'), errorEv('budget_exceeded', 'z'), errorEv('rate_limited', 'w')])
+      render(<MessageList {...listProps({ blocks: view.blocks })} />)
+      const [limit, overloaded, budget, rate] = screen.getAllByTestId('error-explained')
+      expect(limit).toHaveTextContent('用量上限已用完')
+      expect(screen.getByTestId('error-resets')).toHaveTextContent('恢复')
+      expect(screen.getByTestId('error-model-hint')).toHaveTextContent('换一个模型')
+      expect(overloaded).toHaveTextContent('过载')
+      expect(budget).toHaveTextContent('预算')
+      expect(rate).toHaveTextContent('限制请求频率')
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 
   it('has Chinese copy for all of them', async () => {

@@ -482,3 +482,29 @@ describe('context usage', () => {
     expect(v.context).toEqual({ window: 200_000, tokens: 12_000 })
   })
 })
+
+describe('message_delivery', () => {
+  const user = (id: string): Event => ({ type: 'user_message', message_id: id, content: `text ${id}`, by_device: 'me' })
+
+  it('marks the user message as possibly not delivered and adds no block of its own', () => {
+    const v = buildView(evs([user('m1'), { type: 'turn_start', turn_id: 1, message_id: 'm1' }, user('m2'), { type: 'message_delivery', message_id: 'm2', state: 'uncertain' }, { type: 'turn_done', turn_id: 1, reason: 'cancelled' }]))
+    expect(v.blocks.map((b) => b.type)).toEqual(['user', 'turn_start', 'user', 'turn_done'])
+    const users = v.blocks.filter((b) => b.type === 'user')
+    expect(users.map((b) => b.type === 'user' && !!b.deliveryUncertain)).toEqual([false, true])
+  })
+
+  it('applies to a message loaded earlier, also across separate batches (live events after history)', () => {
+    const v1 = buildView(evs([user('m1')]))
+    const v2 = applyEvents(v1, [ev({ type: 'message_delivery', message_id: 'm1', state: 'uncertain' })])
+    expect(v2.blocks[0]).toMatchObject({ type: 'user', messageId: 'm1', deliveryUncertain: true })
+    // 原视图不被改（不可变）
+    expect(v1.blocks[0]).not.toHaveProperty('deliveryUncertain')
+  })
+
+  it('ignores a message that is not in the loaded window and repeats of the same mark', () => {
+    const v = buildView(evs([user('m1'), { type: 'message_delivery', message_id: 'gone', state: 'uncertain' }, { type: 'message_delivery', message_id: 'm1', state: 'uncertain' }, { type: 'message_delivery', message_id: 'm1', state: 'uncertain' }]))
+    expect(v.blocks).toHaveLength(1)
+    expect(v.blocks[0]).toMatchObject({ deliveryUncertain: true })
+    expect(v.lastSeq).toBe(4)
+  })
+})

@@ -7,7 +7,7 @@ import type { PendingMessage } from '@/stores/drafts'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { errorSeverity } from '../errors'
-import { latestSyncBlock, type ActivityInfo, type Block } from '../reducer'
+import { latestSyncBlock, type ActivityInfo, type Block, type UserBlock } from '../reducer'
 import { toolTree } from '../subagents'
 import { AssistantMessage, ErrorView, PendingBubble, PlanCard, SystemLine, ThinkingView, ToolNode, TurnDivider, TurnUsage, UserBubble, type ConflictActions } from './Messages'
 import { ActivityLine, NoticeLine } from './Notices'
@@ -39,6 +39,13 @@ export interface MessageListProps {
   /** 权限模式 id 是不是危险模式（mode_change 请求据此醒目警示）。 */
   isDangerousMode?: (id: string) => boolean
   onRetryTurn?: () => void
+  /**
+   * 「可能没有送达」的用户消息上的「重发」：用新的 `message_id` 再发一遍同样的内容和附件引用。不给（离线、已归档）就只显示提示。
+   * 不会自动重发，由用户决定。
+   */
+  onResendMessage?: (block: UserBlock) => void
+  /** 已经重发过的原消息 id（按钮换成「已重发」，免得点两次）。 */
+  resentMessageIds?: ReadonlySet<string>
   /** 消息流最底下的临时状态（重试 API、压缩上下文）。调用方只在会话还在跑时给。 */
   activity?: ActivityInfo | null
   /** 会话里的后台任务还可能有进展（主 agent 在跑，或 daemon 报还有后台任务）。不可能时，停在「运行中」的任务显示成「已停止」。默认 true。 */
@@ -111,7 +118,10 @@ function buildRows(p: MessageListProps): Row[] {
     switch (b.type) {
       case 'user':
         turnText = []
-        rows.push({ key: b.key, node: <UserBubble block={b} nodeId={p.nodeId} /> })
+        rows.push({
+          key: b.key,
+          node: <UserBubble block={b} nodeId={p.nodeId} onResend={p.onResendMessage ? () => p.onResendMessage?.(b) : undefined} resent={p.resentMessageIds?.has(b.messageId)} />,
+        })
         break
       case 'turn_start':
         turnText = []

@@ -362,18 +362,22 @@ Event =
 
 新增 `code` 不算协议变更：不认识的客户端按 `level` 显示 `message`。`notice` 单独成一类，没有复用 `recoverable = true` 的 `error`：那一类的语义是「这个 turn 出了问题」，客户端会按错误样式显示、可能带「重试」，而这里的提示（上下文压缩、换模型）没有出问题。
 
-**`error`：限额类的 `code`。** 用户碰到限额时该做的事完全不同（等到某个时间点、稍后重试、和自己的额度无关、去改设置），所以按上游给的信号拆成四个码，不再共用一个 `rate_limited`。每个码都对应 adapter 实际收到的上游信号；上游没有给出的信号就没有对应的码。`recoverable` 对这四个码都是 `true`：会话本身没坏，等一等或改完设置之后再发消息就能继续（`false` 留给 `auth_failed` 这类要先修好登录的错误）。
+**`error`：限额类的 `code`。** 用户碰到限额时该做的事不同（等到某个时间点、稍后重试、和自己的额度无关、去改设置），所以按上游给的信号拆成四个码，不再共用一个 `rate_limited`。每个码都对应 adapter 实际收到的上游信号；上游没有给出的信号就没有对应的码。`recoverable` 对这四个码都是 `true`：会话本身没坏，等一等或改完设置之后再发消息就能继续（`false` 留给 `auth_failed` 这类要先修好登录的错误）。
 
 | code | 含义 | 上游信号 | 恢复时间 `resets_at_ms` |
 |---|---|---|---|
-| `usage_limit` | 套餐 / 周期用量耗尽，要等到恢复 | Codex `codexErrorInfo = usageLimitExceeded`；Claude Code：`result` 的 `terminal_reason = blocking_limit`，或 429 的 `result` 之前出现过 `status: rejected` 的 `rate_limit_event` | 上游给了才有：Codex 取 `account/rateLimits/updated` 里已用满（`usedPercent ≥ 100`）、恢复时间还在未来的窗口，Claude Code 取 `rate_limit_event.resetsAt`；多个窗口都满了取最晚的。没有就缺省，不估算 |
-| `rate_limited` | 短时的请求限流，稍后重试即可 | Codex `rateLimitExceeded`、HTTP 429；Claude Code 的 `result` 是 429 且没见过 `rejected` 的限额事件 | 不带 |
-| `overloaded` | 上游容量问题，和自己的额度无关 | Codex `serverOverloaded`、`policyCapacityUnavailable`（按策略分到的容量暂时没有）；Claude Code `result.api_error_status = 529` | 不带 |
-| `budget_exceeded` | 会话的 token 预算用完了，要改设置 | Codex `sessionBudgetExceeded`（会话共享的 token 预算；Claude Code 的 `error_max_budget_usd` 没有 `error` 事件，只有 `turn_done { reason: budget }`） | 不带 |
+| `usage_limit` | 账号的用量 / 额度已达上限（套餐的会话 / 周 / 按模型窗口、用量额度的花费上限；Codex 的 `usageLimitExceeded` 还包括 API key 的计费额度用完，那种情况不会自己恢复） | Codex `codexErrorInfo = usageLimitExceeded`；Claude Code：首选 turn 里带 `api_error = usage_limit_reached` 的 API 错误消息（`@internal` 字段，上游说明只有账号自己的用量限额才带它），回退是 429 的 `result` 且最近一条 `rate_limit_event` 是 `rejected` | 上游给了才有：Codex 取 `account/rateLimits/updated` 里已用满（`usedPercent ≥ 100`）、恢复时间还在未来的窗口，按计量桶选（见下）；Claude Code 取 `rate_limit_info.resetsAt`，已经过去的不带。没有就缺省，不估算 |
+| `rate_limited` | 请求限流，稍后重试即可（旧 daemon 上，Codex 的用量耗尽等也还是这个码，所以文案保持中性） | Codex `rateLimitExceeded`、HTTP 429；Claude Code 的 `result` 是 429 且不满足上面的用量耗尽信号 | 不带 |
+| `overloaded` | 上游容量问题，和自己的额度无关，稍后重试或换模型 | Codex `serverOverloaded`、`policyCapacityUnavailable`（按策略分到的容量暂时没有）、`flexUnavailable`（"Flex capacity unavailable."）；Claude Code `result.api_error_status = 529` | 不带 |
+| `budget_exceeded` | 会话的 token 预算用完了，要改 agent 自己的配置 | Codex `sessionBudgetExceeded`（会话共享的 token 预算；Claude Code 的 `error_max_budget_usd` 没有 `error` 事件，只有 `turn_done { reason: budget }`） | 不带 |
 
-`limit_scope`（`account` \| `model`）只用于 `usage_limit`：上游明确给出限额类型时才有。Claude Code 的 `rateLimitType` 里 `seven_day_opus`、`seven_day_sonnet` 是单个模型系列的窗口 → `model`（换个模型可以接着用），`five_hour`、`seven_day`、`seven_day_overage_included`、`overage` 是账号级的 → `account`；不认识的类型不报。同时有多个窗口被拒绝时，账号级的优先于模型级的（换模型没用），同一组里取最晚的恢复时间。Codex 的错误和用量通知里没有可靠的范围信息，所以不带。
+Claude Code 的 `result.terminal_reason` 为 `blocking_limit`、`prompt_too_long`、`rapid_refill_breaker`（上游同一个 case，"Prompt is too long"）是**上下文超限**，不是用量耗尽，映射到已有的 `context_window_exceeded`（`recoverable = true`）。
 
-兼容：这些都是 `error` 上新增的可选字段和新的 `code` 取值，不改变线路格式。不认识这些码的老客户端按 `message` 显示（Web 的错误卡片对不认识的码就是这个行为）；老 daemon 写下的历史事件里，用量耗尽仍然是 `rate_limited`。daemon 对这几个码没有特殊处理：原样透传，不因为限额自动重试或排队。
+**Codex 恢复时间按计量桶选**：Codex 有按模型的限额（`RateLimitSnapshot.normalModelSlug`），不同桶的恢复时间不能混在一起。先选 `normalModelSlug` 等于当前会话模型的已满的桶；没有就看是否只有**一个**桶已满，是就用它；仍有歧义就不带。同一个桶里 `primary` / `secondary` 都满了取最晚的恢复时间（得全部恢复才能接着用）。adapter 不读 `account/rateLimits/read` 的基线，新进程第一个 turn 就撞限额时可能还没收到过用量通知，拿不到恢复时间。
+
+`limit_scope`（`account` \| `model`）只用于 `usage_limit`：上游明确给出限额类型时才有。Claude Code 的 `rateLimitType` 里 `seven_day_opus`、`seven_day_sonnet` 是单个模型系列的窗口 → `model`（换个模型可以接着用），`five_hour`、`seven_day`、`seven_day_overage_included`、`overage` 是账号级的 → `account`；不认识的类型不报。Claude Code 的限额状态只认最近一条 `rate_limit_event`（上游同一时刻只有一个起限制作用的窗口），`allowed` / `allowed_warning` 会清掉它。Codex 的错误和用量通知里没有可靠的范围信息，所以不带。
+
+兼容：这些都是 `error` 上新增的可选字段和新的 `code` 取值，不改变线路格式。不认识这些码的老客户端按 `message` 显示（Web 的错误卡片对不认识的码就是这个行为）；老 daemon 写下的历史事件里，用量耗尽仍然是 `rate_limited`，Claude Code 的上下文超限仍然是 `agent_error`。daemon 对这几个码没有特殊处理：原样透传，不因为限额自动重试或排队。
 
 **`activity`：turn 进行中的临时状态。** agent 在做「非输出」的事时发：`retrying`（正在重试一次失败的 API 请求，`attempt` / `max_attempts` / `delay_ms`（距下一次重试）/ `reason`（错误摘要，如 `529 overloaded_error`））、`compacting`（正在压缩上下文）。客户端在 turn 进行中把它显示成一条临时状态，**收到任何内容事件（`text_delta`、`thinking_delta`、`tool_call`、`tool_result`…）、`turn_done` 或 `state = none` 时清掉**。它不进消息流的持久内容；历史回放时只需要看最后一条之后有没有内容事件。
 

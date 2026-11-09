@@ -150,7 +150,7 @@ pub enum AgentEvent {
     TurnStarted,
     /// 一条插话（[`UserInput::interject`]，按 `message_id`）已经被 agent 并入当前 turn 的历史，模型一定读到了它。
     /// 只有能确认这件事的 adapter 才发（Codex：`turn/steer` 的 `clientUserMessageId` 在对应的 `userMessage` 条目里原样回来）。
-    /// daemon 据此在 turn 被取消时区分「已经读到」和「可能丢了」：`send` 返回 `Ok` 之后还没收到它就取消的插话，
+    /// daemon 据此在 turn 被取消时区分「已经读到」和「可能丢了」：交给 adapter 之后还没收到它就取消的插话，
     /// daemon 记 `message_delivery { state: uncertain }`（docs/spec/daemon.md § 7.5）。
     /// `capabilities.interject = true` 却不发它的 adapter，在 turn 取消时被接受的插话一律算不确定（偏保守）。
     InterjectionRead { message_id: String },

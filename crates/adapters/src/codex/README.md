@@ -168,7 +168,8 @@ leader 一退出就清整个进程组——都来自 `common/child.rs`，和 Cla
   附件：图片 → `{type: "localImage", path}`（png / jpeg / gif / webp），其它类型 `Unsupported`（daemon 只把原生支持的交给 adapter，其它附件落到工作目录、路径写在文字里，ADR-44）。
 - **steer 之后 interrupt，steer 的消息会丢**（真实 codex 0.157.1 实测，本地假模型服务 + 临时 `CODEX_HOME`；模型请求在途时 `turn/steer` 一条消息、紧接着 `turn/interrupt`）：
   `turn/steer` 的响应是 `{ turnId }`（接受了），`turn/interrupt` 的响应是 `{}`，turn 以 `interrupted` 收尾；但那条 steer 的消息**既没有变成 `userMessage` 条目，也没有出现在下一个 turn 请求的历史里**
-  （下一个 turn 的请求里只有第一条消息、一条 `<turn_aborted>` 提示和新消息），重复两次结果一样。codex 把 steer 的输入放进「待处理输入」，等当前模型请求结束后才并入历史，interrupt 把这一步直接丢了。
+  （下一个 turn 的请求里只有第一条消息、一条 `<turn_aborted>` 提示和新消息），重复两次结果一样。也就是说 steer 被接受到并入历史之间有一个窗口，interrupt 落在窗口里，消息就丢了。
+  0.167.0 的对照（见下一条）：模型请求正在流式输出时，steer 之后 Codex 放弃在途的请求、带上插话重新发一次，所以这个窗口在流式阶段是毫秒级；工具执行期间窗口会不会更长，没有验证。
   反过来，interrupt 先到、steer 后到：steer 被拒绝，`-32600 no active turn to steer`（在 `turn/completed` 之后才回），已经映射成 `TurnEnded`。
   所以 `cancel` 发出之后 adapter 把插话当成「没有进行中的 turn」：`TurnEnded`、不发 `turn/steer`，daemon 把消息退回队列、作为下一个 turn 发出，不丢。
   `cancel` 之前**已经被接受**的 steer 追不回来，但 adapter 能知道它有没有被并入历史（下一条）。
@@ -436,5 +437,6 @@ ANYCON_REAL_AGENT_TESTS=1 cargo test -p anycon-adapters --test real_codex -- --i
 - `login status` 没变而 `config.toml` 改了提供方时，cheap 探测不会发现（见「认证判定」），要等完整探测。
 - 一条已经被 `turn/steer` 接受、但模型还没读到的插话，如果随后用户 `cancel`，会被 codex 连同 turn 一起丢掉（上面「steer 之后 interrupt」）。codex 不会把它找回来，adapter 也不重发（可能已经并入了历史）；
   adapter 发 `InterjectionRead` 说明哪些读到了，daemon 把取消时还没读到的标成 `message_delivery { uncertain }`，由用户决定要不要重发。只有 `cancel` 之后才到的插话会被退回队列、作为下一个 turn 发出。
-  这个判断依赖 `userMessage` 条目的通知：通知在取消前一刻已发出、daemon 还没处理时，会多标一条其实已经读到的消息（重发只是重复一次）。
+  `userMessage` 通知和 `turn/completed` 在同一个有序通道里、由 daemon 的 driver 逐条处理，确认一定先于 `turn_done` 被处理，所以不会因为通知还没处理而误标。
+  不会标的情况：turn 以 `error` 收尾（比如接受之后进程崩溃）、daemon 在 turn 收尾前重启；确认丢失的情况（超过 8 MiB 被丢弃的 `userMessage` 通知）会多标。
 - 完整探测里 `account/read` 失败、而 `login status` 没变时，沿用的是同一个二进制上一次的权威判定：如果 `config.toml` 在这期间改了提供方而 `account/read` 又一直失败，要等它恢复才会更新（`login status` 看不出提供方）。

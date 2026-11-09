@@ -1184,14 +1184,16 @@ ADR-1 拆成两层来看：
 - 经 `--hub` / `--node` 连远程节点时，每次连接重连要重新握手；远程连接不声明客户端种类，审计里是配对的设备。
 - 并发的 `send_message` 等待各占一个调用任务，没有专门的上限；上限是 MCP 客户端自己的并发和节点的 `sessions.max_concurrent`。
 
-## ADR-49 被接受的插话在取消时标「送达不确定」，不重发
+---
 
-**背景**：agent 支持 turn 中插话时（`capabilities.interject`，目前是 Codex 的 `turn/steer`），被拒的插话 daemon 退回队列、不丢（daemon.md § 7.5）。被**接受**之后的消息 Codex 先放进「待处理输入」，等当前模型请求结束才并入历史；turn 在这之前被取消，这条消息连同 turn 一起丢掉，既不进下一个 turn，也不是历史里的用户消息条目。
+## ADR-50 被接受的插话在取消时标「送达不确定」，不重发
+
+**背景**：agent 支持 turn 中插话时（`capabilities.interject`，目前是 Codex 的 `turn/steer`），被拒的插话 daemon 退回队列、不丢（daemon.md § 7.5）。被**接受**（`turn/steer` 返回 `{turnId}`）之后，消息要等 Codex 把它并入历史才算数；在这之前 turn 被取消（实测：steer 之后紧接着 interrupt），这条消息连同 turn 一起丢掉，既不进下一个 turn，也不是历史里的用户消息条目。0.167.0 实测，模型请求正在流式输出时 Codex 收到 steer 会放弃在途的请求、带上插话重新发一次，所以这个窗口（接受到并入历史）在流式阶段是毫秒级；工具执行期间会不会更长，没有验证。
 
 **决定**：
 
 1. Codex 在 `turn/steer` / `turn/start` 的参数里收 `clientUserMessageId`，并入历史时发的 `userMessage` 条目把它原样放在 `clientId` 里（0.167.0 实测，`crates/adapters/src/codex/README.md`）。adapter 用 `message_id` 作这个 id，看到对应条目就发 `AgentEvent::InterjectionRead { message_id }`。
-2. daemon 把 `send` 返回 `Ok` 的插话记在当前 turn 上，收到 `InterjectionRead` 划掉；turn 以 `cancelled` 收尾时仍在的，每条发一个 `message_delivery { message_id, state: uncertain }`，排在 `turn_done` 之前。
+2. daemon 在把插话交给 adapter 时就记在当前 turn 上，收到 `InterjectionRead` 或者插话被拒（退回队列）就划掉；turn 以 `cancelled` 收尾时仍在的，每条发一个 `message_delivery { message_id, state: uncertain }`，排在 `turn_done` 之前。
 3. 事件日志只追加，所以是新事件，不改已经写下的 `user_message`；它进持久化的事件日志，历史回放时标记还在。
 4. **不自动重发**。Web 在那条消息上显示「可能没有送达」，「重发」用新的 `message_id` 发同样的内容和附件引用，由用户点；CLI 打印一行警告。
 5. 不能确认「读到了」的 adapter 就是保守判断（取消时被接受的插话一律标不确定）。
@@ -1200,4 +1202,8 @@ ADR-1 拆成两层来看：
 
 **否掉**：自动重发（可能重复）；取消时一律不提示（用户不知道消息丢了）；取消后把被接受的插话全部退回队列（可能重复，且 Claude Code / ACP 本来就是排队而不是插话）；在 `user_message` 上加可变字段（事件流只追加）。
 
-**代价 / 限制**：确认依赖 app-server 的通知：通知在取消前一刻已发出而 daemon 还没处理时，会多标一条其实已经读到的消息（重发只是重复一次）。只处理 `cancelled`；插话被接受后进程崩溃、turn 以 `error` 收尾的不标。
+**代价 / 限制**：
+
+- 只处理 `cancelled`。不会标的情况（漏标）：turn 以 `error` 收尾（比如插话被接受后进程崩溃）；daemon 在 turn 收尾之前重启（记录在内存里）；agent 在没有取消的情况下丢了消息（没有观察到）。
+- `userMessage` 通知和 `turn/completed` 走同一个有序通道、由同一个 driver 逐条处理，`InterjectionRead` 一定先于 adapter 报的 `turn_done` 被处理，所以「读到了却被标上」只会出在 adapter 没法确认的情况（比如超过 8 MiB 被 adapter 丢弃的 `userMessage` 通知）。
+- 取消在 `send` 还没返回时由 daemon 自己判定（取消宽限到期、`session.restart`）：进程随后被收掉，那条消息即使被 adapter 接受也没有人读到，所以派发时就登记，turn 收尾时一并标上。

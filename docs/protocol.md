@@ -329,6 +329,7 @@ Event =
   | { type: "task",             id, kind, tool_id?, title, status, usage?, last_tool?, summary?, phases?, agents? }   // 后台任务的状态快照，同一个 id 的后一条整条取代前一条；见下
   | { type: "notice",           code, level: info | warning, message, model_from?, model_to?, resets_at_ms? }      // agent 给用户的提示，不是错误；见下
   | { type: "activity",         state: none | retrying | compacting, attempt?, max_attempts?, delay_ms?, reason? }  // turn 进行中的临时状态；见下
+  | { type: "message_delivery", message_id, state: uncertain }   // 这条用户消息可能没有送达；见下
 ```
 
 `tool_call.category` 取 `shell | file_edit | file_read | search | web | subagent | mcp | other`，各 agent 工具名到 category 的映射见 [spec/daemon.md § 8](spec/daemon.md#8-事件翻译)。adapter 的职责就是把各 agent 的原生事件翻译成这个集合。
@@ -380,6 +381,8 @@ Claude Code 的 `result.terminal_reason` 为 `blocking_limit`、`prompt_too_long
 兼容：这些都是 `error` 上新增的可选字段和新的 `code` 取值，不改变线路格式。不认识这些码的老客户端按 `message` 显示（Web 的错误卡片对不认识的码就是这个行为）；老 daemon 写下的历史事件里，用量耗尽仍然是 `rate_limited`，Claude Code 的上下文超限仍然是 `agent_error`。daemon 对这几个码没有特殊处理：原样透传，不因为限额自动重试或排队。
 
 **`activity`：turn 进行中的临时状态。** agent 在做「非输出」的事时发：`retrying`（正在重试一次失败的 API 请求，`attempt` / `max_attempts` / `delay_ms`（距下一次重试）/ `reason`（错误摘要，如 `529 overloaded_error`））、`compacting`（正在压缩上下文）。客户端在 turn 进行中把它显示成一条临时状态，**收到任何内容事件（`text_delta`、`thinking_delta`、`tool_call`、`tool_result`…）、`turn_done` 或 `state = none` 时清掉**。它不进消息流的持久内容；历史回放时只需要看最后一条之后有没有内容事件。
+
+**`message_delivery`：用户消息的送达状态。** turn 进行中发的消息（插话）被 agent 接受之后，turn 又在确认它被读到之前被取消的，agent 可能把它丢了（Codex 会这样）。daemon 对这样的每条消息发一个 `message_delivery { message_id, state: "uncertain" }`，排在那个 turn 的 `turn_done` 之前。事件流只追加，所以它不改 `user_message`，而是单独一条：客户端按 `message_id` 把「可能没有送达」挂到那条用户消息上，并提供「重发」入口（用新的 `message_id` 再发一次同样的内容和附件引用；附件已经属于这个会话，可以复用）。daemon 不会自动重发，因为消息也可能已经被读到，重发会重复。目前 `state` 只有 `uncertain`，客户端把不认识的取值当作没有标记。它是持久事件，历史回放时标记还在；规则细节见 [spec/daemon.md § 7.5](spec/daemon.md#75-turn-与消息合并)。
 
 **`turn_done.usage` 的上下文字段**：`context_window`（模型的上下文窗口大小）和 `context_tokens`（turn 结束时上下文已经占用的 token，即最近一次模型请求的输入加缓存读写）。`input_tokens` 等是累计用量，`context_tokens` 是「此刻窗口里有多少」，客户端拿它们算占用比例；agent 不报就缺省。
 

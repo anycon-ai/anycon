@@ -105,6 +105,8 @@ anycon new --project my-app "run the tests and fix whatever fails"
 
 Output streams live, and you answer permission requests right in the terminal.
 
+**MCP server.** `anycon mcp` runs an [MCP](https://modelcontextprotocol.io) server on stdio, so another agent can list, read, search, and drive the sessions on your node (set it up as an MCP server with command `anycon` and args `["mcp"]`). It has no tool to approve permission requests, which stay with you; it refuses dangerous permission modes unless you start it with `--allow-dangerous-modes`, and refuses to create or drive sessions from inside an anycon session unless you pass `--allow-nested`. See [ADR-49](docs/decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排) and the [CLI spec](docs/spec/cli.md#37-anycon-mcp).
+
 **TypeScript SDK** ([`@anycon/sdk`](packages/sdk)):
 
 ```ts

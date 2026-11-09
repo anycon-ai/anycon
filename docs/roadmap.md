@@ -102,6 +102,12 @@
 
 ## v0.3 — 体验
 
+已完成（尚未发布，见 [CHANGELOG](../CHANGELOG.md) 的 Unreleased）：
+
+- `anycon mcp`：stdio MCP server，让别的 agent 通过九个 MCP 工具查看和驱动节点上的会话；不暴露权限审批、默认拒绝危险模式和嵌套使用（[ADR-49](decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）
+
+还没做：
+
 - Telegram 通知
 - 语音输入
 - 从模板创建项目
@@ -122,4 +128,4 @@
 
 ## 明确不做
 
-多 agent 编排、IDE / 终端 / 远程 shell、经 hub 明文反代 dev server（预览走 Noise 隧道，[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）、issue 看板、E2E 之外的任何加密选项。
+多 agent 编排（`anycon mcp` 只是又一个客户端入口，给调用方和 CLI / SDK 同等的原语，不调度、不在会话之间转发消息，编排逻辑在调用方，[ADR-49](decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）、IDE / 终端 / 远程 shell、经 hub 明文反代 dev server（预览走 Noise 隧道，[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）、issue 看板、E2E 之外的任何加密选项。

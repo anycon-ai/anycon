@@ -1138,3 +1138,48 @@ ADR-1 拆成两层来看：
 **否掉**：worktree 会话默认打开（同一个选项在不同会话里默认值不同不好解释，worktree 会话里写相邻目录的需求一样存在）；adapter 自己按路径拒绝 `can_use_tool`（`bypassPermissions` / 规则放行的调用根本不发 `can_use_tool`，拦不住）；用 `--disallowedTools` 按路径写规则（规则语法挡不住符号链接，也挡不住 `..`）。
 
 **代价 / 限制**：只覆盖 Claude Code 的三个文件工具；shell 命令写项目外仍然只受权限模式和 Claude Code 沙箱约束。CLI 低于 2.1.314 时选项不生效，adapter 不检查版本。
+
+---
+
+## ADR-49 anycon mcp：stdio MCP server 是又一个客户端入口，不暴露审批、不做编排
+
+**背景**：让一个 agent（编码 agent、脚本、别的 MCP 客户端）能看到并操作这个节点上的会话——查已有会话和搜索结果、开新会话派活、给会话发消息并等结果、看改动——有现成的路：它自己跑 `anycon` 命令，或者用 SDK。MCP 是 agent 客户端接外部工具的通用方式，一条「命令 + 参数」的配置就接上，不用教每个 agent 怎么调 CLI。但这里调用方是 agent，不是人：而 anycon 的权限审批（ADR-1、`docs/spec/daemon.md` § 9）存在的意义就是人在回路里；路线图又明确「多 agent 编排」不做。所以要定的是边界，而不只是形状。
+
+**决定**（实现在 `crates/cli/src/mcp/`，用法见 [spec/cli.md § 3.7](spec/cli.md#37-anycon-mcp)）：
+
+1. **形态**：`anycon mcp` 子命令（ADR-17，同一个二进制，不新增二进制、不引入 Node），MCP 的 stdio 传输：换行分隔的 JSON-RPC 2.0，stdout 只写协议消息，日志走 stderr，stdin EOF 即退出。连接层复用 CLI 的（`App::conn`）：默认连本机 daemon（Unix socket / 命名管道，ADR-27），`--hub` / `--node` / `--local` 和其它子命令一致，不发明新的选择方式。**手写最小实现**：`initialize`（版本协商：请求的版本在支持列表 `2025-06-18` / `2025-03-26` / `2024-11-05` 里就回它，否则回最新的）、`notifications/initialized`、`notifications/cancelled`、`ping`、`tools/list`、`tools/call`；未知方法 `-32601`，通知不回复，工具执行失败用结果里的 `isError: true`，协议错误才用 JSON-RPC error。只有 tools：不做 resources / prompts / sampling，也不收 JSON-RPC 批量（2025-06-18 起规范里没有了）。
+2. **九个工具，全部映射到已有的 RPC**，daemon 没有为 MCP 增加任何业务接口：`list_agents`（`agent.list`）、`list_projects`（`workspace.list`）、`list_sessions`（`session.list`）、`read_session`（`session.get` + `session.history`）、`search_sessions`（`session.search`）、`create_session`（`agent.list` + `session.create`）、`send_message`（`session.send`）、`cancel_turn`（`session.cancel`）、`get_diff`（`session.diff`）。agent、模型、思考等级、权限模式及其风险全部来自 daemon 的 `agent.list`，工具里不内置任何 agent 知识（ADR-24）。
+3. **`send_message` / `create_session` 的等待**：参数 `wait`（缺省 true）和 `timeout_seconds`（缺省 50，上限 600）。等待靠轮询 `session.history`（按 seq 增量）加 `session.get`，直到这一轮的 `turn_done`，返回最终文字（上限 30 000 字符，超出保留末尾）、会话状态和用量摘要；超时返回 `still_running`，turn 继续在节点上跑，调用方之后用 `read_session` 查。不用 `session.watch`：一个连接最多 watch 5 个会话，而 MCP 客户端可以并发调用；轮询没有这个限制，也没有断线后要恢复的订阅状态。`read_session` 返回会话状态和最近若干条用户 / 助手消息的文字（每条 4 000 字符、总共约 60 000 字符封顶，不含工具输出），`before_seq` 往前翻页；`get_diff` 只给文件列表和行数，带 `path` 才给那个文件的补丁（10 万字符封顶）。
+4. **安全边界**（逐条有测试）：
+   - **不暴露权限审批。** 没有批准 / 拒绝权限请求的工具。等待期间会话进入等待审批，立即返回 `waiting_permission`，附请求的标题和种类，并说明要由人在已配对设备上处理。否则一个 agent 可以替另一个 agent 批准权限，审批就从「人在回路」变成「agent 自己点头」。
+   - **不能选危险权限模式。** `create_session` 选了 `risk = dangerous` 的模式、或没指定模式而 agent 的默认模式是危险的，工具级报错并说明原因，除非启动时带 `--allow-dangerous-modes`。这是第一道闸；daemon 的 `permissions.allow_dangerous_modes` 仍是更高的上限（它关着的时候危险模式不在 `agent.list` 里，选了也被 daemon 拒绝），两道都要过。工具的 schema 里没有会话级 `env`（也没有 `system_prompt_append`、`max_turns` 等设置），多传的参数一律拒绝（`additionalProperties: false`）。
+   - **防递归。** daemon 拉起 agent 进程时在环境里注入 `ANYCON_AGENT=1`，作为构造环境的**最后一步**（`DaemonEnv::for_session`）：daemon 自己的环境、`agents.env`、会话 `env` 都覆盖不了它（`ANYCON_` 前缀本来也在会话 env 的黑名单里）。`anycon mcp` 启动时看到它，`create_session`、`send_message`、`cancel_turn` 返回错误，只读工具照常；`--allow-nested` 放开。这是**防误用的护栏，不是安全边界**：agent 能改自己的环境、能改自己的 MCP 配置。真正的上限是 `sessions.max_concurrent` 和审批本身。
+   - **审计身份。** 本机通道的调用方原来一律记成 `local-cli`，审计里分不清是人敲的命令还是 agent 经 MCP 发的。新增本机专用方法 `local.set_client { client: "cli" | "mcp" }`：连接后自报客户端种类，**固定枚举**，daemon 据此把这条连接之后的审计设备名记成 `local-cli` / `local-mcp`（`device_id` 仍是 `local`）；不声明就是 `local-cli`。`anycon mcp` 连上本机 daemon 后第一件事就是声明 `mcp`。只在本机通道生效：经 hub 调用一律 `forbidden`（和其它 `local.*` 一致，而不是静默忽略——静默忽略会让调用方以为声明成功了），经 hub 的连接身份由配对的设备决定。它不是协议方法：不在 `schema/methods.json` 里，和 `local.status` 等一样只在 `docs/spec/cli.md` § 1 登记，因为 Web / SDK 没有「本机进程」这个概念。
+   - **不做编排。** MCP server 只是又一个客户端入口：不调度、不在会话之间转发消息、不保存状态（每个工具调用都是对 daemon 的一次查询或操作，连接断了下次调用重连）。「哪个会话做什么、结果怎么传给下一个」的逻辑在调用方。这和路线图「明确不做：多 agent 编排」的界线是：anycon 提供的是和 CLI / SDK 同等的原语（开会话、发消息、读结果），不提供把它们编排起来的东西。
+
+**原因**：
+
+- MCP 是 agent 接外部工具最通用的方式；一个 stdio 命令比让每个 agent 学一遍 CLI 的输出格式更稳，工具的 `inputSchema` 也让调用方知道哪些参数合法。
+- 协议面很小（五个方法），而 MCP 规范版本更新很快：手写让每条消息的行为（并发调用、取消、错误区分、超时）完全由我们控制，不为一个小子集背一个 SDK 的依赖树和它的异步运行时约定。
+- 不暴露审批、不能选危险模式，是因为审批和模式选择是「人决定 agent 能做什么」的两个点；MCP 的调用方是 agent，把这两个点交给它就等于去掉了人。
+- 轮询而不是 watch：见上。
+
+**否掉**：
+
+- **引入 MCP SDK 依赖**：见原因；协议子集小，依赖和版本追随的成本比手写大。
+- **做成单独的 Node 包**：要用户多装一个运行时和包，连接层（本机 socket、经 hub 的 Noise）要在 TS 里再接一遍；ADR-17 的出发点就是「用户少装一个东西」。
+- **暴露权限审批工具**（哪怕带确认参数或白名单）：调用方是 agent，「确认」可以由它自己填；审批的价值在于做决定的是人。
+- **自由文本的客户端名**：本机任何进程都能把自己写成审计里的任何名字（包括一台已配对设备的名字）；固定枚举下审计里只会出现 `local-cli` / `local-mcp` 两个值。
+- **daemon 开 HTTP 端口给 MCP**：ADR-27 已经否掉；stdio 由 MCP 客户端拉起，权限就是客户端进程的权限。
+- **把 `local.set_client` 做成协议方法**（进注册表、生成 TS 类型）：Web / SDK 用不到，反而让它们的类型里多一个永远 `forbidden` 的方法。
+- **经 hub 的连接调用它时静默忽略**：见上，宁可明确拒绝。
+- **MCP 的 resources / prompts / sampling、批量请求、`structuredContent` / `outputSchema`**：工具返回的文字块里放紧凑的 JSON 已够用，加了就要为每个协议版本的差异负责。
+
+**代价 / 限制**：
+
+- 工具调用有超时（MCP 客户端自己通常也有，常见 60 秒，所以缺省 50 秒），长 turn 要靠 `wait: false`（或超时后的 `still_running`）加 `read_session` 查询；没有服务端推送，也没有进度通知。
+- 护栏可被绕过，必须如实说：`ANYCON_AGENT` 是 agent 可以改的环境变量；有些 MCP 客户端启动 stdio server 时只传一份精简的环境，标记到不了 `anycon mcp`，这时护栏不起作用；`--allow-dangerous-modes` / `--allow-nested` 写在 MCP 配置的命令行里，能改自己配置的 agent 可以加上。**这个 server 约束的是 MCP 这个接口，不是对那个 agent 的隔离**：本机用户把它配置给的 agent，如果同时有 shell 能力，本来就能直接跑 `anycon approve`、连 socket——anycon 不是沙箱（`docs/architecture.md § 5.6`）。真正挡在后面的是 `sessions.max_concurrent`、daemon 的 `permissions.allow_dangerous_modes`、审批本身，以及 agent 自己的权限设置。
+- `local-mcp` 是自报的：它让审计能分清「人敲的」和「agent 经 MCP 发的」，对付不了故意不声明或声明成 `cli` 的本机进程（它们本来就能直接用 CLI 的身份）。老 daemon 没有 `local.set_client`，审计里仍记 `local-cli`，`anycon mcp` 在 stderr 提示一次。
+- 轮询的延迟最多约 1 秒，等待期间每轮两个本机 RPC；`read_session` 不含工具输出，要看完整过程用 `anycon history` 或 Web UI。
+- 经 `--hub` / `--node` 连远程节点时，每次连接重连要重新握手；远程连接不声明客户端种类，审计里是配对的设备。
+- 并发的 `send_message` 等待各占一个调用任务，没有专门的上限；上限是 MCP 客户端自己的并发和节点的 `sessions.max_concurrent`。

@@ -105,6 +105,8 @@ anycon new --project my-app "跑一下测试，把失败的修了"
 
 输出实时流式显示，权限请求直接在终端里答复。
 
+**MCP server**：`anycon mcp` 在 stdio 上跑一个 [MCP](https://modelcontextprotocol.io) server，让别的 agent 查看、搜索、驱动你节点上的会话（在 MCP 客户端里配成命令 `anycon`、参数 `["mcp"]`）。它没有批准权限请求的工具，审批仍然在你手里；默认拒绝危险权限模式（启动时带 `--allow-dangerous-modes` 才放开），也默认拒绝在 anycon 会话里再开会话或发消息（`--allow-nested` 放开）。见 [ADR-49](docs/decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排) 和 [CLI 规格](docs/spec/cli.md#37-anycon-mcp)。
+
 **TypeScript SDK**（[`@anycon/sdk`](packages/sdk)）：
 
 ```ts

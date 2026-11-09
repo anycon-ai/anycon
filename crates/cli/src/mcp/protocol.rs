@@ -267,28 +267,34 @@ fn handle_line<H: ToolHost>(
         return;
     };
     let id = obj.get("id").cloned();
-    let method = obj.get("method").and_then(Value::as_str);
+    // MCP 的请求 id 是字符串或整数（不收 null 和小数）
+    let valid_id = |v: &Value| v.is_string() || v.is_i64() || v.is_u64();
+    // 出错时回给谁：有合法 id 就回给它，否则 null
+    let reply_id = id.clone().filter(valid_id).unwrap_or(Value::Null);
     if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-        // 回复谁：有合法 id 就回给它，否则 null
-        let id = id.filter(|i| i.is_string() || i.is_number()).unwrap_or(Value::Null);
-        let _ = out.send(error_response(&id, INVALID_REQUEST, "jsonrpc must be \"2.0\""));
+        let _ = out.send(error_response(&reply_id, INVALID_REQUEST, "jsonrpc must be \"2.0\""));
         return;
     }
     let params = obj.get("params").cloned().unwrap_or(Value::Null);
-    match (method, id) {
-        // 客户端的响应：我们不发请求，忽略
-        (None, _) => {}
-        (Some(method), None) => on_notification(method, &params, in_flight),
-        (Some(method), Some(id)) => {
-            if !(id.is_string() || id.is_number()) {
+    match obj.get("method") {
+        Some(Value::String(method)) => match id {
+            None => on_notification(method, &params, in_flight),
+            Some(id) if valid_id(&id) => on_request(host, method, params, id, out, in_flight, calls),
+            Some(_) => {
                 let _ = out.send(error_response(
                     &Value::Null,
                     INVALID_REQUEST,
-                    "a request id must be a string or a number",
+                    "a request id must be a string or an integer",
                 ));
-                return;
             }
-            on_request(host, method, params, id, out, in_flight, calls);
+        },
+        Some(_) => {
+            let _ = out.send(error_response(&reply_id, INVALID_REQUEST, "method must be a string"));
+        }
+        // 客户端对我们请求的响应：我们不发请求，忽略
+        None if obj.contains_key("result") || obj.contains_key("error") => {}
+        None => {
+            let _ = out.send(error_response(&reply_id, INVALID_REQUEST, "a message needs a method"));
         }
     }
 }
@@ -344,6 +350,8 @@ fn on_request<H: ToolHost>(
             let key = id_key(&id);
             let (host, out, table) = (host.clone(), out.clone(), in_flight.clone());
             let key2 = key.clone();
+            // 表一直锁到登记完：调用在登记之前就结束的话，它清理表项要等这把锁，不会留下永远删不掉的残项
+            let mut registry = in_flight.lock().unwrap_or_else(|e| e.into_inner());
             let handle = calls.spawn(async move {
                 // 工具跑在内层任务里：它 panic 了，调用方也能收到一个错误响应，而不是永远等下去
                 let mut inner = AbortOnDrop(tokio::spawn({
@@ -359,7 +367,7 @@ fn on_request<H: ToolHost>(
                 };
                 let _ = out.send(line);
             });
-            in_flight.lock().unwrap_or_else(|e| e.into_inner()).insert(key, handle);
+            registry.insert(key, handle);
         }
         other => {
             let _ = out.send(error_response(&id, METHOD_NOT_FOUND, &format!("method not found: {other}")));
@@ -521,7 +529,9 @@ mod tests {
         let input = format!(
             "not json at all\n\n   \n[1,2]\n42\n\"str\"\nnull\n{{\"jsonrpc\":\"1.0\",\"id\":3,\"method\":\"ping\"}}\n{{\"id\":4,\"method\":\"ping\"}}\n\
              {{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}}\n{{\"jsonrpc\":\"2.0\",\"id\":{{}},\"method\":\"ping\"}}\n\
-             {{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":7}}\n{big}\
+             {{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":7}}\n{{\"jsonrpc\":\"2.0\",\"id\":6}}\n\
+             {{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"ping\"}}\n{{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{{}}}}\n\
+             {{\"jsonrpc\":\"2.0\",\"method\":7}}\n{big}\
              {}{}{}{{\"truncated\":",
             req(10, "tools/call", json!({})),
             req(11, "tools/call", json!({ "name": "echo", "arguments": [1] })),
@@ -538,7 +548,11 @@ mod tests {
         // tools/call 缺名字、arguments 不是对象 = -32602
         assert!(r.iter().any(|m| m["id"] == 10 && m["error"]["code"] == INVALID_PARAMS), "{r:?}");
         assert!(r.iter().any(|m| m["id"] == 11 && m["error"]["code"] == INVALID_PARAMS), "{r:?}");
-        // `"method": 7` 当作没有方法的消息（响应），不回复；jsonrpc 版本不对 / null id 都有错误回复
+        // 有 id 的畸形请求要回错误：method 不是字符串、没有 method 也不是响应、id 是小数
+        assert!(r.iter().any(|m| m["id"] == 5 && m["error"]["code"] == INVALID_REQUEST), "{r:?}");
+        assert!(r.iter().any(|m| m["id"] == 6 && m["error"]["code"] == INVALID_REQUEST), "{r:?}");
+        assert!(r.iter().all(|m| m["id"] != 9), "a response from the client is ignored: {r:?}");
+        // jsonrpc 版本不对 / null id / 小数 id / 没有 id 的畸形消息都有错误回复（id 不合法的回 null）
         assert!(r.iter().any(|m| m["id"] == 3 && m["error"]["code"] == INVALID_REQUEST), "{r:?}");
         assert!(r.iter().any(|m| m["id"].is_null() && m["error"]["code"] == INVALID_REQUEST), "{r:?}");
         assert!(r.iter().any(|m| m["error"]["code"] == PARSE_ERROR), "not json / truncated JSON: {r:?}");

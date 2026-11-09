@@ -51,9 +51,19 @@ impl Mcp {
 
     /// 发请求，等同 id 的响应。stdout 的每一行都必须是 JSON-RPC 消息（否则解析就失败）。
     async fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.send_request(method, params).await;
+        self.response(id).await
+    }
+
+    /// 只发请求，不等响应（之后用 [`Mcp::response`] 取）。同一时间只放一个在途请求。
+    async fn send_request(&mut self, method: &str, params: Value) -> u64 {
         self.next += 1;
         let id = self.next;
         self.write(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })).await;
+        id
+    }
+
+    async fn response(&mut self, id: u64) -> Value {
         loop {
             let line = tokio::time::timeout(Duration::from_secs(60), self.lines.next_line())
                 .await
@@ -402,4 +412,95 @@ async fn the_server_starts_without_a_daemon_and_reports_it_per_call() {
     let ping = m.request("ping", json!({})).await;
     assert_eq!(ping["result"], json!({}));
     assert_eq!(m.close().await, 0);
+}
+
+/// 轮询 CLI 的 `ls`，直到会话到了某个状态。
+async fn wait_status(n: &Node, session: &str, status: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let ls = n.cli(&["ls", "--all", "--json"]).await.json();
+        let now = ls["sessions"].as_array().unwrap().iter().find(|s| s["id"] == session).map(|s| s["status"].clone());
+        if now == Some(json!(status)) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "session {session} never became {status}: {now:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_sent_while_the_session_is_busy_gets_its_own_answer() {
+    let n = node().await;
+    let mut m = Mcp::start(&n.home, &[], &[]).await;
+    // 第一轮很慢（mock 每个事件之间停 200 ms）；第二条消息在它进行中发出，排在它后面
+    let r = m
+        .ok("create_session", json!({ "agent": "mock", "prompt": "slow answer please, first turn", "wait": false }))
+        .await;
+    let sid = r["session"]["id"].as_str().unwrap().to_string();
+    let started = Instant::now();
+    let r = m.ok("send_message", json!({ "session": &sid, "message": "SECOND message" })).await;
+    assert_eq!(r["outcome"], "completed", "{r}");
+    let text = r["text"].as_str().unwrap();
+    assert!(text.contains("You said: SECOND message"), "{r}");
+    assert!(!text.contains("first turn"), "the answer of the previous turn must not come back: {r}");
+    assert_eq!(r["usage"]["session_total"]["turns"], 2, "both turns were over when it returned: {r}");
+    assert!(started.elapsed() > Duration::from_millis(500), "it waited for the first turn to end first");
+    assert_eq!(m.close().await, 0);
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_message_that_is_cancelled_is_reported_as_dropped() {
+    let n = node().await;
+    assert_eq!(n.cli(&["config", "set", "sessions.max_concurrent", "1"]).await.code, 0);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let mut m = Mcp::start(&n.home, &[], &[]).await;
+    // B 先跑完一轮、闲下来；A 随后占着唯一的名额（等人批准）
+    let b = m.ok("create_session", json!({ "agent": "mock", "prompt": "hello b" })).await;
+    let bid = b["session_id"].as_str().unwrap().to_string();
+    let a = m.ok("create_session", json!({ "agent": "mock", "prompt": "run permission now" })).await;
+    assert_eq!(a["outcome"], "waiting_permission", "{a}");
+    // 给 B 发消息：没有名额，B 排队；这个调用还在等的时候有人把队列清了
+    let id = m.send_request("tools/call", json!({ "name": "send_message", "arguments": { "session": &bid, "message": "queued one", "timeout_seconds": 60 } })).await;
+    wait_status(&n, &bid, "queued").await;
+    assert_eq!(n.cli(&["cancel", &bid]).await.code, 0);
+    let started = Instant::now();
+    let r = m.response(id).await;
+    assert!(started.elapsed() < Duration::from_secs(10), "reported soon after the cancel, not at the timeout");
+    let text = r["result"]["content"][0]["text"].as_str().unwrap();
+    let v: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(v["outcome"], "dropped", "{v}");
+    assert!(!text.contains("keeps running"), "{v}");
+    assert_eq!(m.close().await, 0);
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sessions_in_a_dangerous_mode_cannot_be_driven_without_the_flag() {
+    let n = node().await;
+    // 带标志的 server 开一个危险模式的会话
+    let mut dangerous = Mcp::start(&n.home, &["--allow-dangerous-modes"], &[]).await;
+    let r = dangerous.ok("create_session", json!({ "agent": "mock", "prompt": "run it", "mode": "yolo" })).await;
+    assert_eq!(r["outcome"], "completed", "{r}");
+    let sid = r["session_id"].as_str().unwrap().to_string();
+    assert_eq!(dangerous.close().await, 0);
+
+    // 不带标志的 server：读、取消可以，发消息不行
+    let mut m = Mcp::start(&n.home, &[], &[]).await;
+    let (err, v, _) = m.call("send_message", json!({ "session": &sid, "message": "more", "wait": false })).await;
+    assert!(err, "{v}");
+    let msg = v.as_str().unwrap();
+    assert!(msg.contains("dangerous") && msg.contains("--allow-dangerous-modes"), "{msg}");
+    let rs = m.ok("read_session", json!({ "session": &sid })).await;
+    assert_eq!(rs["session"]["mode"], "yolo");
+    m.ok("cancel_turn", json!({ "session": &sid })).await;
+    // 没有多出一条用户消息
+    let users = rs["messages"].as_array().unwrap().iter().filter(|x| x["role"] == "user").count();
+    let after = m.ok("read_session", json!({ "session": &sid })).await;
+    assert_eq!(after["messages"].as_array().unwrap().iter().filter(|x| x["role"] == "user").count(), users);
+    // 请求的模式不在清单里：创建被拒
+    let (err, v, _) = m.call("create_session", json!({ "agent": "mock", "prompt": "x", "mode": "ghost" })).await;
+    assert!(err && v.as_str().unwrap().contains("ghost"), "{v}");
+    assert_eq!(m.close().await, 0);
+    n.stop().await;
 }

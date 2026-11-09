@@ -373,9 +373,10 @@ fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "send_message",
             title: "Send a message to a session",
-            description: "Send a message to an existing session. With wait=true (default) it waits up to timeout_seconds for the agent to finish the turn and returns the agent's final text, the session status and a usage summary. \
+            description: "Send a message to an existing session. With wait=true (default) it waits up to timeout_seconds for the agent to finish the turn that handles this message (when the session is busy, the message is queued and that is the next turn) and returns that turn's text (segments around tool calls separated by a blank line), the session status and a usage summary. \
+                 Refused when the session is in a permission mode marked dangerous, unless this server was started with --allow-dangerous-modes. \
                  If the session starts waiting for a permission decision it returns immediately with outcome `waiting_permission` and the request's title and kind: that has to be decided by a person on a paired device, this server cannot do it. \
-                 If the time runs out it returns `still_running`; the turn continues on the node, so check later with read_session. Messages sent while a turn is running are queued by the node."
+                 If the time runs out it returns `still_running`; the turn (or the queued message) stays on the node, so check later with read_session. If the queued message is dropped (someone cancelled the session's queue) it returns `dropped`."
             .into(),
             input_schema: obj(
                 json!({
@@ -684,7 +685,7 @@ impl<N: Node> AnyconTools<N> {
         let project = a.project.clone().filter(|p| !p.is_empty());
         let agents: AgentListResult = self.rpc(methods::AGENT_LIST, json!({ "refresh": false })).await?;
         let agent = self.pick_agent(&agents, a.agent.as_deref())?;
-        self.check_mode(agent, a.mode.as_deref())?;
+        self.check_mode(agent, a.mode.as_deref(), false)?;
         let workspace = self.choose_workspace(project.as_deref(), a.worktree).await?;
         let message_id = uuid::Uuid::new_v4().to_string();
         let mut params = json!({
@@ -710,7 +711,7 @@ impl<N: Node> AnyconTools<N> {
         if !a.wait {
             return Ok(ToolOutput::json(&json!({ "session": summary_json(&s), "message_id": message_id })));
         }
-        let outcome = self.wait_turn(&s.id, 0, &message_id, wait_duration(a.timeout_seconds)).await?;
+        let outcome = self.wait_turn(&s.id, 0, &message_id, None, wait_duration(a.timeout_seconds)).await?;
         Ok(ToolOutput::json(&outcome.to_json(&s.id)))
     }
 
@@ -739,10 +740,19 @@ impl<N: Node> AnyconTools<N> {
         }
     }
 
-    /// 拒绝危险的权限模式。请求的模式、或没指定时 agent 的默认模式，只要 `risk = dangerous` 就拒绝（除非 `--allow-dangerous-modes`）。
-    /// 模式清单来自 daemon（`agent.list`），这里不内置任何 agent 的知识；daemon 自己的 `permissions.allow_dangerous_modes`
-    /// 是另一道、更高的闸：它关着的时候危险模式根本不在清单里，选了会被 daemon 拒绝。
-    fn check_mode(&self, agent: &AgentInfo, requested: Option<&str>) -> std::result::Result<(), String> {
+    /// 拒绝危险的权限模式，以及判断不了风险的模式（除非 `--allow-dangerous-modes`）。
+    ///
+    /// `existing = false`：`create_session` 要用的模式（`requested`，没指定就是 agent 的默认模式）；
+    /// `existing = true`：`send_message` 要发消息的会话当前所处的模式。两处的规则一样：模式的 `risk = dangerous` 就拒绝；
+    /// 模式不在 daemon 给的清单（`agent.list`）里也拒绝——风险未知就不放行，而不是按「没找到就当安全」处理。
+    /// 清单来自 daemon，这里不内置任何 agent 的知识；daemon 自己的 `permissions.allow_dangerous_modes` 是另一道、更高的闸：
+    /// 它关着的时候危险模式根本不在清单里。
+    fn check_mode(
+        &self,
+        agent: &AgentInfo,
+        requested: Option<&str>,
+        existing: bool,
+    ) -> std::result::Result<(), String> {
         if self.opts.allow_dangerous_modes {
             return Ok(());
         }
@@ -750,25 +760,46 @@ impl<N: Node> AnyconTools<N> {
             Some(m) => agent.modes.iter().find(|x| x.id == m),
             None => agent.modes.iter().find(|x| x.default),
         };
-        let Some(mode) = effective else { return Ok(()) };
+        let safe: Vec<&str> =
+            agent.modes.iter().filter(|m| m.risk != ModeRisk::Dangerous).map(|m| m.id.as_str()).collect();
+        let hint = if safe.is_empty() { String::new() } else { format!(" (available: {})", safe.join(", ")) };
+        let Some(mode) = effective else {
+            // 这个 agent 根本没有权限模式：没有什么可选、也没有什么危险
+            if requested.is_none() && agent.modes.is_empty() {
+                return Ok(());
+            }
+            return Err(match requested {
+                Some(m) => format!(
+                    "permission mode {m:?} is not one of the modes agent {:?} offers (see list_agents); a mode the node does not list cannot be checked, so it is refused{}",
+                    agent.id,
+                    if existing { "" } else { &hint }
+                ),
+                None => format!(
+                    "agent {:?} has no default permission mode in list_agents, so the risk of the mode it would run in cannot be checked; choose a mode with the `mode` argument{hint}",
+                    agent.id
+                ),
+            });
+        };
         if mode.risk != ModeRisk::Dangerous {
             return Ok(());
         }
-        let safe: Vec<&str> =
-            agent.modes.iter().filter(|m| m.risk != ModeRisk::Dangerous).map(|m| m.id.as_str()).collect();
-        let how = if requested.is_some() {
-            format!("permission mode {:?} of agent {:?} is marked dangerous", mode.id, agent.id)
-        } else {
+        let flag = "This MCP server refuses dangerous modes unless a person starts it with `anycon mcp --allow-dangerous-modes`.";
+        Err(if existing {
             format!(
-                "the default permission mode ({:?}) of agent {:?} is marked dangerous and no `mode` was given",
+                "this session is in permission mode {:?} of agent {:?}, which is marked dangerous: messages sent to it run tools without asking a person. {flag} A person can switch the session to another mode first.",
                 mode.id, agent.id
             )
-        };
-        Err(format!(
-            "{how}: it would let the agent act without asking a person. This MCP server refuses dangerous modes unless a person starts it with `anycon mcp --allow-dangerous-modes`. \
-             Choose another mode with the `mode` argument{}.",
-            if safe.is_empty() { String::new() } else { format!(" (available: {})", safe.join(", ")) }
-        ))
+        } else if requested.is_some() {
+            format!(
+                "permission mode {:?} of agent {:?} is marked dangerous: it would let the agent act without asking a person. {flag} Choose another mode with the `mode` argument{hint}.",
+                mode.id, agent.id
+            )
+        } else {
+            format!(
+                "the default permission mode ({:?}) of agent {:?} is marked dangerous and no `mode` was given: it would let the agent act without asking a person. {flag} Choose another mode with the `mode` argument{hint}.",
+                mode.id, agent.id
+            )
+        })
     }
 
     async fn choose_workspace(
@@ -813,6 +844,17 @@ impl<N: Node> AnyconTools<N> {
         if before.archived {
             return Err(format!("session {sid} is archived; a person has to unarchive it first (`anycon unarchive`)"));
         }
+        // 不带 `--allow-dangerous-modes` 时不向处在危险模式的会话发消息：那等于驱动一个不问人就跑工具的 agent
+        if !self.opts.allow_dangerous_modes {
+            let agents: AgentListResult = self.rpc(methods::AGENT_LIST, json!({ "refresh": false })).await?;
+            let agent = agents.agents.iter().find(|a| a.id == before.agent).ok_or_else(|| {
+                format!(
+                    "the agent of this session ({:?}) is not listed by the node, so the risk of the session's permission mode cannot be checked",
+                    before.agent
+                )
+            })?;
+            self.check_mode(agent, before.settings.mode.as_deref(), true)?;
+        }
         let message_id = uuid::Uuid::new_v4().to_string();
         let sent: SessionSendResult = self
             .rpc(methods::SESSION_SEND, json!({ "session_id": sid, "message_id": message_id, "content": a.message }))
@@ -825,7 +867,8 @@ impl<N: Node> AnyconTools<N> {
                 "message_id": message_id,
             })));
         }
-        let outcome = self.wait_turn(&sid, before.last_seq, &message_id, wait_duration(a.timeout_seconds)).await?;
+        let outcome =
+            self.wait_turn(&sid, before.last_seq, &message_id, sent.turn_id, wait_duration(a.timeout_seconds)).await?;
         Ok(ToolOutput::json(&outcome.to_json(&sid)))
     }
 
@@ -872,24 +915,43 @@ impl<N: Node> AnyconTools<N> {
         })))
     }
 
-    /// 等 `message_id` 对应的这一轮结束。
+    /// 等我发出的那条消息（`message_id`）被处理完。
     ///
-    /// 每一轮：按 seq 增量拉历史（累积助手文字、记下还没答复的权限请求、看有没有 `turn_done`），再看会话状态。
+    /// 要等的是**我的那一轮**，不是「下一个 `turn_done`」：会话忙着的时候，daemon 在 `send` 时就写了 `user_message`，
+    /// 消息进队列，等当前 turn 结束才开新 turn（`turn_start`），所以我的消息之后第一个 `turn_done` 往往是上一轮的。认法：
+    /// - `session.send` 返回了 `turn_id`（会话空闲、新 turn 立刻开了；或者插话进了正在跑的 turn）：等这个 turn；
+    /// - 否则（排队，`create_session` 也一样）：等我的 `user_message` 之后第一个 `turn_start`，等它的 `turn_done`；
+    /// - 助手文字只取我这一轮的（事件的 `turn_id`）。
+    ///
+    /// 每一轮：按 seq 增量拉历史（累积文字、记下还没答复的权限请求、看有没有我那一轮的 `turn_done`），再看会话状态。
     /// 权限请求一出现就返回 `waiting_permission`：等下去也只会等到超时，因为这里没有任何办法答复它。
+    /// 消息被丢掉（排队时有人 `session.cancel`）的情形靠状态判断：见下面 `Dropped` 的条件。
     async fn wait_turn(
         &self,
         sid: &str,
         start_seq: u64,
         message_id: &str,
+        known_turn: Option<u64>,
         timeout: Duration,
     ) -> std::result::Result<TurnOutcome, String> {
         let deadline = Instant::now() + timeout;
         let mut after = start_seq;
         let mut saw = false;
+        // 我的那一轮；插话进正在跑的 turn 时 `send` 一返回就知道，排队的要等到它的 `turn_start`
+        let mut my_turn = known_turn;
+        // 看到了我那一轮的 `turn_start`（在我的 `user_message` 之后）。没看到而 `my_turn` 已知 = 插话进了别的 turn
+        let mut started_after_me = false;
         let mut text = String::new();
         let mut text_truncated = false;
+        // 上一段文字之后出现过工具调用 / 文字块结束：下一段文字前插一个空行，免得连成一片
+        let mut break_before_next = false;
         let mut open: Vec<(String, PermissionKind, String)> = Vec::new();
         let mut last_error: Option<(String, String)> = None;
+        // 插话的 turn 结束了，但插话可能失败（消息退回队列、作为下一个 turn 发出）：再多看一轮历史，
+        // 看到我的消息开了新 turn 就改等那一轮，否则就用这个结果
+        let mut pending_done: Option<TurnOutcome> = None;
+        let mut pending_checked = false;
+        let mut idle_polls = 0u32;
         let mut poll = Duration::from_millis(150);
         loop {
             let page: SessionHistoryResult = self
@@ -898,9 +960,30 @@ impl<N: Node> AnyconTools<N> {
             let progressed = !page.events.is_empty();
             for ev in page.events {
                 after = ev.seq;
+                let ev_turn = ev.turn_id;
                 match ev.event {
                     Event::UserMessage { message_id: m, .. } if m == message_id => saw = true,
-                    Event::TextDelta { text: t } if saw => {
+                    Event::TurnStart { turn_id: t, message_id: first } if saw => {
+                        if pending_done.is_some() && first == message_id {
+                            // 插话失败，消息作为新 turn 的第一条发出了
+                            pending_done = None;
+                            my_turn = Some(t);
+                            started_after_me = true;
+                            text.clear();
+                            text_truncated = false;
+                            last_error = None;
+                        } else if my_turn.is_none() {
+                            my_turn = Some(t);
+                            started_after_me = true;
+                        } else if my_turn == Some(t) {
+                            started_after_me = true;
+                        }
+                    }
+                    Event::TextDelta { text: t } if my_turn.is_some() && ev_turn.is_none_or(|x| Some(x) == my_turn) => {
+                        if break_before_next && !text.is_empty() && !text.ends_with("\n\n") {
+                            text.push_str("\n\n");
+                        }
+                        break_before_next = false;
                         text.push_str(&t);
                         // 只留末尾：超出上限一倍时砍一次，免得无限增长
                         if text.chars().count() > MAX_TEXT_CHARS * 2 {
@@ -908,22 +991,28 @@ impl<N: Node> AnyconTools<N> {
                             text_truncated = true;
                         }
                     }
+                    Event::ToolCall { .. } | Event::TextDone {} if my_turn.is_some() => break_before_next = true,
                     Event::Permission { request_id, kind, title, .. } => open.push((request_id, kind, title)),
                     Event::PermissionResolved { request_id, .. } => open.retain(|(id, _, _)| *id != request_id),
-                    Event::Error { code, message, .. } if saw => last_error = Some((code, message)),
-                    Event::TurnDone { reason, usage, .. } if saw => {
-                        let (t, cut) = tail(&text, MAX_TEXT_CHARS);
-                        let s = self.rpc(methods::SESSION_GET, json!({ "session_id": sid })).await.ok();
-                        return Ok(TurnOutcome::Done {
+                    Event::Error { code, message, .. } if saw && my_turn.is_some() => {
+                        last_error = Some((code, message))
+                    }
+                    Event::TurnDone { turn_id: t, reason, usage } if saw && my_turn == Some(t) => {
+                        let (txt, cut) = tail(&text, MAX_TEXT_CHARS);
+                        let done = TurnOutcome::Done {
                             reason,
                             usage,
-                            text: t,
+                            text: txt,
                             text_truncated: text_truncated || cut,
-                            error: last_error,
-                            session: s,
-                        });
+                            error: last_error.clone(),
+                            session: None,
+                        };
+                        if started_after_me {
+                            return self.finish_done(sid, done).await;
+                        }
+                        pending_done = Some(done);
                     }
-                    Event::Status { state, .. } if saw && is_terminal(state) => {
+                    Event::Status { state, .. } if saw && my_turn.is_some() && is_terminal(state) => {
                         let (t, cut) = tail(&text, MAX_TEXT_CHARS);
                         let s = self.rpc(methods::SESSION_GET, json!({ "session_id": sid })).await.ok();
                         return Ok(TurnOutcome::Ended {
@@ -939,6 +1028,16 @@ impl<N: Node> AnyconTools<N> {
             }
             if page.has_more {
                 continue;
+            }
+            if let Some(done) = pending_done.take() {
+                // 这一页之后还没有我的新 turn：多等一个间隔再确认一次
+                if !pending_checked {
+                    pending_checked = true;
+                    pending_done = Some(done);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    continue;
+                }
+                return self.finish_done(sid, done).await;
             }
             if let Some((_, kind, title)) = open.first() {
                 let s = self.rpc(methods::SESSION_GET, json!({ "session_id": sid })).await.ok();
@@ -957,9 +1056,24 @@ impl<N: Node> AnyconTools<N> {
                     });
                 }
             }
+            // 消息被丢掉：我的消息已经在事件流里，却没有开过 turn，会话也闲着、没有没读到的事件。
+            // 连续两次看到才算（排除 turn 刚结束、下一个 turn 马上开的瞬间；那一瞬间会有新事件，`last_seq` 会超过 `after`）
+            if saw && my_turn.is_none() && s.status == SessionStatus::Idle && s.last_seq <= after {
+                idle_polls += 1;
+                if idle_polls >= 2 {
+                    return Ok(TurnOutcome::Dropped { session: s });
+                }
+            } else {
+                idle_polls = 0;
+            }
             if Instant::now() >= deadline {
                 let (t, cut) = tail(&text, MAX_TEXT_CHARS);
-                return Ok(TurnOutcome::StillRunning { text: t, text_truncated: text_truncated || cut, session: s });
+                return Ok(TurnOutcome::StillRunning {
+                    text: t,
+                    text_truncated: text_truncated || cut,
+                    turn_started: my_turn.is_some(),
+                    session: s,
+                });
             }
             if progressed {
                 poll = Duration::from_millis(150);
@@ -968,6 +1082,17 @@ impl<N: Node> AnyconTools<N> {
             }
             tokio::time::sleep(poll.min(deadline.saturating_duration_since(Instant::now()))).await;
         }
+    }
+
+    /// `turn_done` 之后补上会话状态和累计用量。
+    async fn finish_done(&self, sid: &str, done: TurnOutcome) -> std::result::Result<TurnOutcome, String> {
+        let s = self.rpc(methods::SESSION_GET, json!({ "session_id": sid })).await.ok();
+        Ok(match done {
+            TurnOutcome::Done { reason, usage, text, text_truncated, error, .. } => {
+                TurnOutcome::Done { reason, usage, text, text_truncated, error, session: s }
+            }
+            other => other,
+        })
     }
 }
 
@@ -1004,6 +1129,12 @@ enum TurnOutcome {
     StillRunning {
         text: String,
         text_truncated: bool,
+        /// 我那一轮已经开始了（否则消息还在排队）。
+        turn_started: bool,
+        session: SessionSummary,
+    },
+    /// 消息没有被处理：会话闲着，它没开过 turn，也不在队列里（排队时被 `session.cancel` 清掉了）。
+    Dropped {
         session: SessionSummary,
     },
 }
@@ -1065,13 +1196,31 @@ impl TurnOutcome {
                     v["session_status"] = json!(status_str(s.status));
                 }
             }
-            TurnOutcome::StillRunning { text, text_truncated, session } => {
+            TurnOutcome::StillRunning { text, text_truncated, turn_started, session } => {
                 v["outcome"] = json!("still_running");
                 v["session_status"] = json!(status_str(session.status));
                 v["text_so_far"] = json!(text);
                 v["text_truncated"] = json!(text_truncated);
-                v["note"] = json!(
+                // 说明只讲真实情况：有 turn 在跑才说「在跑」，排队就说排队
+                let running = matches!(
+                    session.status,
+                    SessionStatus::Starting | SessionStatus::Running | SessionStatus::WaitingPermission
+                );
+                v["note"] = json!(if session.status == SessionStatus::Queued {
+                    "The session is queued: the node runs at most sessions.max_concurrent turns at once, and this one starts when a slot is free. The message stays queued without this call. Check on it later with read_session."
+                } else if running && *turn_started {
                     "The turn is still running on the node and keeps running without this call. Check on it later with read_session."
+                } else if running {
+                    "The message is queued behind the turn that is running now; the node sends it when that turn ends, with or without this call. Check on it later with read_session."
+                } else {
+                    "The wait ran out before the turn was reported finished. Check the state with read_session."
+                });
+            }
+            TurnOutcome::Dropped { session } => {
+                v["outcome"] = json!("dropped");
+                v["session_status"] = json!(status_str(session.status));
+                v["note"] = json!(
+                    "The message was not processed: it was queued, but the session is idle and no turn was started for it, so the queue was cleared (for example by someone cancelling the session). Send the message again if it is still wanted."
                 );
             }
         }
@@ -1278,6 +1427,18 @@ pub mod fake {
     pub fn event(session_id: &str, seq: u64, event: Value) -> Value {
         json!({ "session_id": session_id, "seq": seq, "ts_ms": 1, "event": event })
     }
+
+    /// 带 `turn_id` 的事件（turn 里的内容事件）。
+    pub fn event_in(session_id: &str, seq: u64, turn_id: u64, event: Value) -> Value {
+        json!({ "session_id": session_id, "seq": seq, "ts_ms": 1, "turn_id": turn_id, "event": event })
+    }
+
+    /// 当前权限模式为 `mode` 的会话。
+    pub fn session_in_mode(id: &str, status: &str, last_seq: u64, mode: &str) -> Value {
+        let mut v = session(id, status, last_seq);
+        v["settings"] = json!({ "mode": mode });
+        v
+    }
 }
 
 #[cfg(test)]
@@ -1433,32 +1594,42 @@ mod tests {
         assert!(v["note"].as_str().unwrap().contains("read_session"));
     }
 
-    /// 脚本化一个会话：`session.send` 记下 message_id，之后的 `session.history` 按 `script` 吐事件（用 `{mid}` 占位）。
-    fn scripted(script: Vec<Value>, final_status: &'static str) -> FakeNode {
+    /// 脚本化一个会话：`session.send` 记下 message_id，之后每次 `session.history` 依次吐出 `pages` 里的一页事件
+    /// （用 `{mid}` 占位我的 message_id），吐完了就是空页；`session.get` 一直是 `status` / `last_seq` / `mode`。
+    fn scripted_pages(
+        pages: Vec<Vec<Value>>,
+        send_result: Value,
+        status: &'static str,
+        last_seq: u64,
+        mode: &'static str,
+    ) -> FakeNode {
         let mid = Arc::new(Mutex::new(String::new()));
-        let served = Arc::new(Mutex::new(false));
+        let served = Arc::new(Mutex::new(0usize));
         FakeNode::new(move |m, p| match m {
-            "session.get" => Ok(session(SID, final_status, 9)),
+            "agent.list" => Ok(agent_list("ask")),
+            "session.get" => Ok(session_in_mode(SID, status, last_seq, mode)),
             "session.send" => {
                 *mid.lock().unwrap() = p["message_id"].as_str().unwrap().to_string();
-                Ok(json!({ "turn_id": 2, "queued": false }))
+                Ok(send_result.clone())
             }
             "session.history" => {
                 let mut served = served.lock().unwrap();
-                if *served {
-                    return Ok(json!({ "events": [], "has_more": false }));
-                }
-                *served = true;
+                let i = *served;
+                *served += 1;
+                let Some(page) = pages.get(i) else { return Ok(json!({ "events": [], "has_more": false })) };
                 let mid = mid.lock().unwrap().clone();
-                let events: Vec<Value> = script
-                    .iter()
-                    .map(|e| serde_json::from_str(&e.to_string().replace("{mid}", &mid)).unwrap())
-                    .collect();
+                let events: Vec<Value> =
+                    page.iter().map(|e| serde_json::from_str(&e.to_string().replace("{mid}", &mid)).unwrap()).collect();
                 Ok(json!({ "events": events, "has_more": false }))
             }
             "permission.list" => Ok(json!({ "requests": [] })),
             other => panic!("unexpected {other}"),
         })
+    }
+
+    /// 一页事件、新 turn 立刻开始（`turn_id: 2`）的常见情形。
+    fn scripted(script: Vec<Value>, final_status: &'static str) -> FakeNode {
+        scripted_pages(vec![script], json!({ "turn_id": 2, "queued": false }), final_status, 9, "ask")
     }
 
     #[tokio::test]
@@ -1662,6 +1833,264 @@ mod tests {
         assert_eq!(r.blocks.len(), 2);
         assert_eq!(r.blocks[1].chars().count(), DIFF_PATCH_CHARS);
         assert_eq!(text_of(&r)["file"]["patch_truncated"], true);
+    }
+
+    fn user_msg(seq: u64) -> Value {
+        event(SID, seq, json!({ "type": "user_message", "message_id": "{mid}", "content": "hi", "by_device": "local" }))
+    }
+
+    fn done_event(seq: u64, turn: u64, out_tokens: u64) -> Value {
+        event_in(
+            SID,
+            seq,
+            turn,
+            json!({ "type": "turn_done", "turn_id": turn, "reason": "completed",
+                    "usage": { "output_tokens": out_tokens, "duration_ms": 5 } }),
+        )
+    }
+
+    fn text_in(seq: u64, turn: u64, text: &str) -> Value {
+        event_in(SID, seq, turn, json!({ "type": "text_delta", "text": text }))
+    }
+
+    /// 会话正忙：我的消息在上一轮进行中被写进事件流（排队），上一轮的 `turn_done` 先到，
+    /// 我的那一轮（`turn_start.message_id` 是我的）随后才开始。返回的必须是第二轮的文字和用量，不是第一轮的。
+    #[tokio::test]
+    async fn a_message_sent_to_a_busy_session_gets_the_answer_of_its_own_turn() {
+        let first = vec![
+            event_in(SID, 3, 1, json!({ "type": "turn_start", "turn_id": 1, "message_id": "other" })),
+            text_in(4, 1, "first answer"),
+            user_msg(5),
+            done_event(6, 1, 111),
+        ];
+        let second = vec![
+            event_in(SID, 7, 2, json!({ "type": "turn_start", "turn_id": 2, "message_id": "{mid}" })),
+            text_in(8, 2, "second answer"),
+            done_event(9, 2, 222),
+        ];
+        // 两页（轮询到两次）和一页（一次读到）都一样
+        for pages in [vec![first.clone(), second.clone()], vec![[first.clone(), second.clone()].concat()]] {
+            let t = tools(scripted_pages(pages, json!({ "queued": true }), "idle", 9, "ask"), Options::default());
+            let v = text_of(&t.call("send_message", json!({ "session": SID, "message": "hi" })).await.unwrap());
+            assert_eq!(v["outcome"], "completed", "{v}");
+            assert_eq!(v["text"], "second answer", "must not return the previous turn's result: {v}");
+            assert_eq!(v["usage"]["turn"]["output_tokens"], 222, "{v}");
+        }
+    }
+
+    /// 同样的情形发生在 `create_session` 的等待里没有意义（新会话没有上一轮），但 turn 的认法一样：按我的 `user_message` 之后的 `turn_start`。
+    #[tokio::test]
+    async fn create_session_waits_for_the_turn_that_starts_after_its_message() {
+        let node = FakeNode::new({
+            let mid = Arc::new(Mutex::new(String::new()));
+            move |m, p| match m {
+                "agent.list" => Ok(agent_list("ask")),
+                "session.create" => {
+                    *mid.lock().unwrap() = p["message_id"].as_str().unwrap().to_string();
+                    Ok(session(SID, "running", 3))
+                }
+                "session.get" => Ok(session(SID, "idle", 6)),
+                "session.history" => {
+                    let mid = mid.lock().unwrap().clone();
+                    let evs = vec![
+                        event(
+                            SID,
+                            1,
+                            json!({ "type": "user_message", "message_id": mid, "content": "hi", "by_device": "x" }),
+                        ),
+                        event_in(SID, 2, 1, json!({ "type": "turn_start", "turn_id": 1, "message_id": mid })),
+                        text_in(3, 1, "created"),
+                        done_event(4, 1, 7),
+                    ];
+                    Ok(json!({ "events": evs, "has_more": false }))
+                }
+                other => panic!("unexpected {other}"),
+            }
+        });
+        let t = tools(node, Options::default());
+        let v = text_of(&t.call("create_session", json!({ "prompt": "hi" })).await.unwrap());
+        assert_eq!((v["outcome"].as_str(), v["text"].as_str()), (Some("completed"), Some("created")), "{v}");
+    }
+
+    /// 插话进了正在跑的 turn：等的就是这个 turn；文字是这个 turn 的全部（从发出消息前的 `start_seq` 之后算起）。
+    #[tokio::test]
+    async fn an_interjected_message_waits_for_the_running_turn() {
+        let script = vec![text_in(4, 1, "partial "), user_msg(5), text_in(6, 1, "rest"), done_event(7, 1, 9)];
+        let t = tools(
+            scripted_pages(vec![script], json!({ "turn_id": 1, "queued": false }), "idle", 7, "ask"),
+            Options::default(),
+        );
+        let v = text_of(&t.call("send_message", json!({ "session": SID, "message": "hi" })).await.unwrap());
+        assert_eq!((v["outcome"].as_str(), v["text"].as_str()), (Some("completed"), Some("partial rest")), "{v}");
+    }
+
+    /// 插话失败：消息退回队列，作为下一个 turn 的第一条发出。那个 turn 才是我的。
+    #[tokio::test]
+    async fn a_failed_interjection_is_followed_into_the_turn_that_really_ran_it() {
+        let script = vec![
+            text_in(4, 1, "old turn"),
+            user_msg(5),
+            done_event(6, 1, 1),
+            event_in(SID, 7, 2, json!({ "type": "turn_start", "turn_id": 2, "message_id": "{mid}" })),
+            text_in(8, 2, "answer to mine"),
+            done_event(9, 2, 2),
+        ];
+        let t = tools(
+            scripted_pages(vec![script], json!({ "turn_id": 1, "queued": false }), "idle", 9, "ask"),
+            Options::default(),
+        );
+        let v = text_of(&t.call("send_message", json!({ "session": SID, "message": "hi" })).await.unwrap());
+        assert_eq!((v["outcome"].as_str(), v["text"].as_str()), (Some("completed"), Some("answer to mine")), "{v}");
+    }
+
+    /// 排队的消息被丢掉（有人 `session.cancel` 清了队列）：会话闲着、我的消息没开过 turn，要尽快说明，而不是等满超时再谎报「在跑」。
+    #[tokio::test]
+    async fn a_dropped_message_is_reported_instead_of_waiting_for_the_timeout() {
+        let node = scripted_pages(vec![vec![user_msg(5)]], json!({ "queued": true }), "idle", 5, "ask");
+        let t = tools(node, Options::default());
+        let started = Instant::now();
+        let r =
+            t.call("send_message", json!({ "session": SID, "message": "hi", "timeout_seconds": 30 })).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5), "does not wait for the timeout");
+        let v = text_of(&r);
+        assert_eq!(v["outcome"], "dropped", "{v}");
+        assert!(!v["note"].as_str().unwrap().contains("keeps running"), "{v}");
+
+        // 会话里还有没读到的事件（比如下一个 turn 马上要开）：不算丢
+        let node = scripted_pages(vec![vec![user_msg(5)]], json!({ "queued": true }), "idle", 6, "ask");
+        let t = tools(node, Options::default());
+        let v = text_of(
+            &t.call("send_message", json!({ "session": SID, "message": "hi", "timeout_seconds": 1 })).await.unwrap(),
+        );
+        assert_eq!(v["outcome"], "still_running", "{v}");
+    }
+
+    /// 超时的说明只讲真实情况：因 `max_concurrent` 排队就说排队；排在别人的 turn 后面就说排队；真有 turn 在跑才说「在跑」。
+    #[tokio::test]
+    async fn the_timeout_note_matches_what_is_really_happening() {
+        let cases = [
+            ("queued", "max_concurrent"),
+            ("running", "queued behind"), // 我的消息排在另一个 turn 后面，我的 turn 还没开始
+        ];
+        for (status, want) in cases {
+            let node = scripted_pages(vec![vec![user_msg(5)]], json!({ "queued": true }), status, 5, "ask");
+            let t = tools(node, Options::default());
+            let v = text_of(
+                &t.call("send_message", json!({ "session": SID, "message": "hi", "timeout_seconds": 1 }))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(v["outcome"], "still_running", "{v}");
+            let note = v["note"].as_str().unwrap();
+            assert!(note.contains(want) && !note.contains("keeps running"), "{status}: {note}");
+        }
+        // 我的 turn 已经开始并且在跑
+        let node = scripted(vec![user_msg(5)], "running");
+        let t = tools(node, Options::default());
+        let v = text_of(
+            &t.call("send_message", json!({ "session": SID, "message": "hi", "timeout_seconds": 1 })).await.unwrap(),
+        );
+        assert!(v["note"].as_str().unwrap().contains("keeps running"), "{v}");
+    }
+
+    /// 文字在工具调用前后分成几段：段与段之间留一个空行，不连成一片。
+    #[tokio::test]
+    async fn text_around_tool_calls_is_separated() {
+        let script = vec![
+            user_msg(5),
+            event_in(SID, 6, 2, json!({ "type": "turn_start", "turn_id": 2, "message_id": "{mid}" })),
+            text_in(7, 2, "Let me look."),
+            event_in(
+                SID,
+                8,
+                2,
+                json!({ "type": "tool_call", "id": "t1", "name": "Bash", "category": "shell", "title": "ls" }),
+            ),
+            text_in(9, 2, "Found it."),
+            text_in(10, 2, " Done."),
+            done_event(11, 2, 1),
+        ];
+        let t = tools(scripted(script, "idle"), Options::default());
+        let v = text_of(&t.call("send_message", json!({ "session": SID, "message": "hi" })).await.unwrap());
+        assert_eq!(v["text"], "Let me look.\n\nFound it. Done.", "{v}");
+    }
+
+    /// 向处在危险模式的会话发消息：不带 `--allow-dangerous-modes` 拒绝（`cancel_turn` 和只读工具不受限）。
+    #[tokio::test]
+    async fn messages_to_a_session_in_a_dangerous_mode_are_refused_unless_the_flag_is_given() {
+        let node = || {
+            FakeNode::new(|m, p| match m {
+                "agent.list" => Ok(agent_list("ask")),
+                "session.get" => Ok(session_in_mode(SID, "idle", 4, "yolo")),
+                "session.send" => {
+                    assert!(p["content"].is_string());
+                    Ok(json!({ "queued": true }))
+                }
+                "session.cancel" => Ok(json!({})),
+                "session.history" => Ok(json!({ "events": [], "has_more": false })),
+                other => panic!("unexpected {other}"),
+            })
+        };
+        let n = node();
+        let t = tools(n.clone(), Options::default());
+        let r = t.call("send_message", json!({ "session": SID, "message": "hi", "wait": false })).await.unwrap();
+        assert!(r.is_error, "{r:?}");
+        assert!(r.blocks[0].contains("dangerous") && r.blocks[0].contains("--allow-dangerous-modes"), "{r:?}");
+        assert!(!n.methods().contains(&"session.send".to_string()), "nothing was sent");
+        // cancel_turn 不受限
+        let r = t.call("cancel_turn", json!({ "session": SID })).await.unwrap();
+        assert!(!r.is_error, "{r:?}");
+        // 带标志放行
+        let n = node();
+        let t = tools(n.clone(), Options { allow_dangerous_modes: true, ..Default::default() });
+        let r = t.call("send_message", json!({ "session": SID, "message": "hi", "wait": false })).await.unwrap();
+        assert!(!r.is_error, "{r:?}");
+        assert!(n.methods().contains(&"session.send".to_string()));
+    }
+
+    /// 没有记录模式的会话按 agent 的默认模式判断；模式不在清单里（风险未知）一律不放行，创建和发消息都一样。
+    #[tokio::test]
+    async fn a_mode_that_the_node_does_not_list_is_refused() {
+        // 创建：请求的模式不在清单里
+        let node = FakeNode::new(|m, _| match m {
+            "agent.list" => Ok(agent_list("ask")),
+            other => panic!("unexpected {other}"),
+        });
+        let t = tools(node.clone(), Options::default());
+        let r = t.call("create_session", json!({ "prompt": "hi", "mode": "ghost", "wait": false })).await.unwrap();
+        assert!(r.is_error && r.blocks[0].contains("ghost") && r.blocks[0].contains("not one of the modes"), "{r:?}");
+        assert!(!node.methods().contains(&"session.create".to_string()));
+
+        // 发消息：会话的模式不在清单里
+        let node = FakeNode::new(|m, _| match m {
+            "agent.list" => Ok(agent_list("ask")),
+            "session.get" => Ok(session_in_mode(SID, "idle", 4, "ghost")),
+            other => panic!("unexpected {other}"),
+        });
+        let t = tools(node, Options::default());
+        let r = t.call("send_message", json!({ "session": SID, "message": "hi", "wait": false })).await.unwrap();
+        assert!(r.is_error && r.blocks[0].contains("ghost"), "{r:?}");
+
+        // 会话没记录模式：按 agent 的默认模式（ask，普通）判断，放行
+        let node = FakeNode::new(|m, _| match m {
+            "agent.list" => Ok(agent_list("ask")),
+            "session.get" => Ok(session(SID, "idle", 4)),
+            "session.send" => Ok(json!({ "queued": true })),
+            other => panic!("unexpected {other}"),
+        });
+        let t = tools(node, Options::default());
+        let r = t.call("send_message", json!({ "session": SID, "message": "hi", "wait": false })).await.unwrap();
+        assert!(!r.is_error, "{r:?}");
+
+        // 会话没记录模式、默认模式是危险的：拒绝
+        let node = FakeNode::new(|m, _| match m {
+            "agent.list" => Ok(agent_list("yolo")),
+            "session.get" => Ok(session(SID, "idle", 4)),
+            other => panic!("unexpected {other}"),
+        });
+        let t = tools(node, Options::default());
+        let r = t.call("send_message", json!({ "session": SID, "message": "hi", "wait": false })).await.unwrap();
+        assert!(r.is_error && r.blocks[0].contains("dangerous"), "{r:?}");
     }
 
     #[test]

@@ -130,9 +130,10 @@ pub enum Command {
 
 #[derive(Args, Debug)]
 pub struct McpArgs {
-    /// Let `create_session` use permission modes the node marks as dangerous (modes that run tools without asking a
-    /// person). Off by default: an agent using this server could otherwise start sessions nobody supervises. The
-    /// node's own `permissions.allow_dangerous_modes` must be on as well
+    /// Let `create_session` choose permission modes the node marks as dangerous (modes that run tools without
+    /// asking a person), and let `send_message` write to sessions that are already in such a mode. Off by default:
+    /// an agent using this server could otherwise start or drive sessions nobody supervises. The node's own
+    /// `permissions.allow_dangerous_modes` must be on as well
     #[arg(long)]
     pub allow_dangerous_modes: bool,
     /// Allow `create_session`, `send_message` and `cancel_turn` even when this server was started inside an anycon

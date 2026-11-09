@@ -142,6 +142,7 @@ for await (const ev of session.send('跑一下测试，把失败的修了')) {
 - 配对短码在 daemon 本地生成，不发给 hub；两端用 Argon2id 从短码派生预共享密钥。默认的 16 位短码即使面对恶意 hub 也扛得住离线穷举；8 位的 `anycon pair --short` 只在自建 hub 上用
 - 浏览器里的密钥和缓存以明文存在 IndexedDB。公用电脑上请用「退出并移除本设备」，不要只点「退出登录」
 - **dev server 预览**跑在单独的域名上（公共 hub 是 `*.aiplace.app`），经自己的 Noise 隧道到 daemon。hub 看得到有一个预览开着、流量多大，看不到页面内容。预览的加载代码同样由 hub 下发，信任前提和 Web UI 一样。daemon 默认只转发 agent 会话自己起的服务所监听的端口
+- **把 `anycon mcp` 配置给某个 agent，它就能以你本机 CLI 的权限操作节点上的会话。** 这个 MCP server 只暴露九个映射到已有请求的工具，约束在这个接口上：没有批准或拒绝权限请求的工具（调用碰到权限请求会返回 `waiting_permission`，由人在已配对设备上处理）；`create_session` 拒绝选标为 dangerous 的权限模式、`send_message` 拒绝向已处在这类模式的会话发消息，除非启动时带 `--allow-dangerous-modes`（节点的 `permissions.allow_dangerous_modes` 仍然生效）；没有会话 `env`；在 anycon 拉起的 agent 里，创建、驱动和取消会话默认被拒绝，除非带 `--allow-nested`。这些是接口上的护栏，不是隔离：agent 能改自己的环境和 MCP 配置，能执行 shell 命令的 agent 本来就能直接运行 `anycon`。经它做的操作在审计里记为 `local-mcp`。
 - Anycon 不是沙箱（见上面的「代价」）
 
 完整的威胁模型见 [docs/architecture.md § 5.6](docs/architecture.md#56-威胁模型) 和 [SECURITY.md](SECURITY.md)。

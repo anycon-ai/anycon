@@ -171,7 +171,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 - **传输**：换行分隔的 JSON-RPC 2.0，一行一条消息；stdout 只写协议消息，日志和提示走 stderr；stdin EOF 即退出（还在跑的调用最多再等 10 秒）。只实现 tools（`initialize`、`ping`、`tools/list`、`tools/call` 和通知）；协议版本 `2025-06-18`、`2025-03-26`、`2024-11-05`，客户端请求的版本在列表里就回它，否则回 `2025-06-18`。没有 resources / prompts / sampling，不收 JSON-RPC 批量。手写实现，没有 MCP SDK 依赖。
 - **连接**：用 CLI 的连接层，全局选项 `--hub` / `--node` / `--local` / `--timeout` 的含义和其它客户端命令一样（默认连本机 daemon 的 socket）。daemon 没在跑不会让 server 退出：`initialize` 和 `tools/list` 照常，工具调用返回错误，daemon 起来之后下一次调用就能用。连上本机 daemon 后先发 `local.set_client { client: "mcp" }`，审计里这条连接的操作记为 `local-mcp`（人敲的命令是 `local-cli`）；经 hub 连远程节点时不发，审计里是配对的设备。
 - **标志**：
-  - `--allow-dangerous-modes`：`create_session` 可以用节点标为 `dangerous` 的权限模式。缺省拒绝（包括没指定 `mode`、agent 的默认模式恰好是危险的）。节点自己的 `permissions.allow_dangerous_modes` 仍是上限，两道都要过
+  - `--allow-dangerous-modes`：`create_session` 可以选节点标为 `dangerous` 的权限模式，`send_message` 可以向已经处在这类模式的会话发消息。缺省两者都拒绝：包括 `create_session` 没指定 `mode` 而 agent 的默认模式是危险的，以及模式不在节点的 `agent.list` 里、风险判断不了的（未知就不放行）；`cancel_turn` 和只读工具不受这个限制。节点自己的 `permissions.allow_dangerous_modes` 仍是上限，两道都要过
   - `--allow-nested`：在 anycon 拉起的 agent 里启动（环境里有 `ANYCON_AGENT`）时，缺省 `create_session`、`send_message`、`cancel_turn` 返回错误，只读工具照常；带这个标志放开。这是防误用的护栏，不是安全边界（[daemon.md § 5.5](daemon.md#55-子进程环境)）
 - **工具**（名字 snake_case，参数用 JSON Schema 声明，多传的参数被拒绝；结果是一个文字块，内容是紧凑 JSON，`get_diff` 带 `path` 时多一个补丁文字块；失败时 `isError: true`）：
 
@@ -182,12 +182,12 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `list_sessions` | `session.list` | 可按 `project`、`status`（`running` / `waiting` / `idle` / `ended` / `error` / `queued`）过滤，`include_archived`，`limit`（缺省 20，上限 100） |
 | `read_session` | `session.get` + `session.history` | 会话状态加最近 `limit` 条（缺省 20，上限 100）用户 / 助手消息的文字，每条 ≤ 4 000 字符、总共约 60 000 字符；不含工具输出。`next_before_seq` 传给 `before_seq` 往前翻。等待审批的会话带 `waiting_permission`（请求的标题和种类） |
 | `search_sessions` | `session.search` | 全文搜索（`query`、可选 `project`、`limit` 缺省 20 上限 50）；命中词用 `**` 包住 |
-| `create_session` | `agent.list` + `session.create` | `prompt`（必填）、`project`（省略 = scratch）、`agent`（只有一个 ready 时可省）、`model`、`thinking`、`mode`、`worktree`（省略 = 按节点的 `worktree.default`，项目开不了就退回项目目录，同 `anycon new`），再加 `wait` / `timeout_seconds`。**没有** `env` 和别的会话设置。拒绝危险模式（见标志） |
-| `send_message` | `session.send` | `session`（id、前缀或 `last`）、`message`、`wait`（缺省 true）、`timeout_seconds`（缺省 50，范围 1–600） |
+| `create_session` | `agent.list` + `session.create` | `prompt`（必填）、`project`（省略 = scratch）、`agent`（只有一个 ready 时可省）、`model`、`thinking`、`mode`、`worktree`（省略 = 按节点的 `worktree.default`，项目开不了就退回项目目录，同 `anycon new`），再加 `wait` / `timeout_seconds`。**没有** `env` 和别的会话设置。拒绝危险模式和风险未知的模式（见标志） |
+| `send_message` | `session.send` | `session`（id、前缀或 `last`）、`message`、`wait`（缺省 true）、`timeout_seconds`（缺省 50，范围 1–600）。会话处在危险模式时拒绝（见标志） |
 | `cancel_turn` | `session.cancel` | 中断当前 turn |
 | `get_diff` | `session.diff` | `session`、可选 `uncommitted`、`path`；不带 `path` 列文件和行数（≤ 200 个），带 `path` 给补丁（≤ 10 万字符）。在项目目录本身工作的会话只有未提交的改动 |
 
-  `wait` 为 true（`create_session` 和 `send_message` 缺省）时，调用等到这一轮结束，返回 `outcome`：`completed`（`text` 是这一轮助手的最终文字，上限 30 000 字符、超出保留末尾；`usage` 有这一轮和会话累计的用量；`session_status`）、`cancelled`、`failed`（带 `error`）、**`waiting_permission`**（带请求的 `kind` 和 `title`，立即返回，不等超时）、**`still_running`**（超时，turn 还在节点上跑，之后用 `read_session` 查）。`wait: false` 时返回消息已被接受（`send_message`：`sent`、`queued`；`create_session`：新会话的摘要）。**没有任何批准或拒绝权限请求的工具**：`waiting_permission` 要由人在已配对设备上、或用 `anycon approve` / `anycon deny` 处理。
+  `wait` 为 true（`create_session` 和 `send_message` 缺省）时，调用等到**这条消息触发的那一轮**结束（会话忙时消息先排队，等的是排在它后面的那个 turn，不是正在跑的这一个；插话进了正在跑的 turn 就等这个 turn），返回 `outcome`：`completed`（`text` 是这一轮助手的文字，工具调用前后的几段之间留一个空行，上限 30 000 字符、超出保留末尾；`usage` 有这一轮和会话累计的用量；`session_status`）、`cancelled`、`failed`（带 `error`）、**`waiting_permission`**（带请求的 `kind` 和 `title`，立即返回，不等超时）、**`still_running`**（超时：`note` 按实际情况说是 turn 还在跑、排在别的 turn 后面，还是因 `sessions.max_concurrent` 在排队；之后用 `read_session` 查）、**`dropped`**（排队的消息没被处理：会话闲着、这条消息没开过 turn，比如有人在它排队时 `anycon cancel` 清了队列，需要的话重发）。`wait: false` 时返回消息已被接受（`send_message`：`sent`、`queued`；`create_session`：新会话的摘要）。**没有任何批准或拒绝权限请求的工具**：`waiting_permission` 要由人在已配对设备上、或用 `anycon approve` / `anycon deny` 处理。
 - **在 MCP 客户端里配置**：server 命令是 `anycon`，参数是 `mcp`。通用写法（各客户端的配置文件格式不同，字段名大同小异）：
 
   ```json

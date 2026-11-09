@@ -2832,6 +2832,27 @@
             "state"
           ],
           "type": "object"
+        },
+        {
+          "description": "一条用户消息的送达状态不确定：它是 turn 进行中的插话，agent 接受了，但在确认读到它之前 turn 就被取消了\n（Codex 会把还没并入历史的插话连同 turn 一起丢掉，见 docs/spec/daemon.md § 7.5）。事件流只追加，所以\n不改 `user_message`，客户端按 `message_id` 把标记挂到那条消息上。daemon 不会自动重发（可能重复），\n由用户决定。",
+          "properties": {
+            "message_id": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/definitions/MessageDeliveryState"
+            },
+            "type": {
+              "const": "message_delivery",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "state"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -3200,6 +3221,16 @@
         {
           "const": "filesystem_root",
           "description": "文件系统根。",
+          "type": "string"
+        }
+      ]
+    },
+    "MessageDeliveryState": {
+      "description": "`Event::MessageDelivery` 的状态。目前只有 `uncertain`；未来如有别的取值，客户端把不认识的当成没有标记。",
+      "oneOf": [
+        {
+          "const": "uncertain",
+          "description": "可能没有送达：agent 接受了这条插话，但 turn 在确认它被读到之前被取消。可能已经被读到，也可能丢了。",
           "type": "string"
         }
       ]

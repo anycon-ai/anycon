@@ -30,12 +30,13 @@ use anycon_agent_api::{
     AdapterError, AgentEvent, AgentHandle, PermissionDecision, ResumeHandle, SettingsApply, SpawnRequest, UserInput,
 };
 use anycon_protocol::{
-    methods, AgentStatus, AttachmentRef, ErrorCode, Event, ModeRisk, PermissionKind, PermissionListParams,
-    PermissionListResult, PermissionOptionKind, PermissionRequest, PermissionResolved, PermissionRespondParams,
-    RpcError, SearchHit, SessionChanged, SessionCounts, SessionCreateParams, SessionEvent, SessionHistoryParams,
-    SessionHistoryResult, SessionListParams, SessionListResult, SessionPromoteParams, SessionSearchParams,
-    SessionSendParams, SessionSendResult, SessionSetSettingsParams, SessionSetSettingsResult, SessionSettings,
-    SessionStatus, SessionSummary, SessionWorkspace, TaskStatus, TurnDoneReason, UsageTotals, WorktreeState,
+    methods, AgentStatus, AttachmentRef, ErrorCode, Event, MessageDeliveryState, ModeRisk, PermissionKind,
+    PermissionListParams, PermissionListResult, PermissionOptionKind, PermissionRequest, PermissionResolved,
+    PermissionRespondParams, RpcError, SearchHit, SessionChanged, SessionCounts, SessionCreateParams, SessionEvent,
+    SessionHistoryParams, SessionHistoryResult, SessionListParams, SessionListResult, SessionPromoteParams,
+    SessionSearchParams, SessionSendParams, SessionSendResult, SessionSetSettingsParams, SessionSetSettingsResult,
+    SessionSettings, SessionStatus, SessionSummary, SessionWorkspace, TaskStatus, TurnDoneReason, UsageTotals,
+    WorktreeState,
 };
 use futures::future::{BoxFuture, FutureExt, Shared};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
@@ -176,6 +177,9 @@ struct TurnRt {
     preparing: bool,
     /// agent 自己开始的 turn（adapter 的 `TurnStarted`，没有用户消息，daemon.md § 7.5）。
     by_agent: bool,
+    /// 已被 adapter 接受、但还没收到 `InterjectionRead` 确认模型读到的插话（`message_id`，按接受顺序）。
+    /// turn 以 `cancelled` 收尾时仍在这里的，记 `message_delivery { uncertain }`（daemon.md § 7.5）；别的收尾方式直接丢掉。
+    unread_interjections: Vec<String>,
 }
 
 struct PendingPerm {
@@ -1215,6 +1219,7 @@ impl Sessions {
             cancel_requested_at: None,
             preparing: !wt_ready,
             by_agent: false,
+            unread_interjections: Vec::new(),
         });
         self.set_status(st, SessionStatus::Starting, None).await;
         self.emit(st, Event::TurnStart { turn_id, message_id: first_msg.clone() }).await;
@@ -1779,8 +1784,16 @@ impl Sessions {
         let Some(turn) = st.turn.as_ref() else { return };
         let turn_id = turn.turn_id;
         let by_agent = turn.by_agent;
+        let unread = st.turn.as_mut().map(|t| std::mem::take(&mut t.unread_interjections)).unwrap_or_default();
         self.deny_all_inner(st, "turn ended", false).await;
         self.flush_text(st).await;
+        // 取消时 adapter 已经接受、却没确认读到的插话：agent 可能把它连同 turn 一起丢了（Codex），也可能已经读到。
+        // 标成「送达不确定」，由用户决定要不要重发；不自动重发（可能重复）。别的收尾方式（正常结束、出错）不标
+        if reason == TurnDoneReason::Cancelled {
+            for message_id in unread {
+                self.emit(st, Event::MessageDelivery { message_id, state: MessageDeliveryState::Uncertain }).await;
+            }
+        }
         self.emit(st, Event::TurnDone { turn_id, reason, usage: usage.clone() }).await;
         let reason_s = match reason {
             TurnDoneReason::Completed => "completed",
@@ -1957,6 +1970,12 @@ impl Sessions {
                 self.mark_first_event(&mut st).await;
                 self.on_event(&mut st, e).await;
             }
+            AgentEvent::InterjectionRead { message_id } => {
+                // 模型读到了：不再可疑。没有 turn / 不认识的 id（重复的通知、已经收尾的 turn）什么都不做
+                if let Some(turn) = st.turn.as_mut() {
+                    turn.unread_interjections.retain(|m| m != &message_id);
+                }
+            }
             AgentEvent::TurnStarted => {
                 self.begin_agent_turn(&mut st).await;
             }
@@ -1989,6 +2008,7 @@ impl Sessions {
             cancel_requested_at: None,
             preparing: false,
             by_agent: true,
+            unread_interjections: Vec::new(),
         });
         self.set_status(st, SessionStatus::Running, None).await;
         self.emit(st, Event::TurnStart { turn_id, message_id: String::new() }).await;
@@ -2041,7 +2061,8 @@ impl Sessions {
             | Event::Permission { .. }
             | Event::PermissionResolved { .. }
             | Event::SettingsChanged { .. }
-            | Event::TitleChanged { .. } => {
+            | Event::TitleChanged { .. }
+            | Event::MessageDelivery { .. } => {
                 tracing::warn!(session = %st.row.id, "adapter emitted a daemon-owned event type; dropped");
             }
             Event::TurnDone { reason, usage, .. } => {
@@ -2318,10 +2339,16 @@ impl Sessions {
 
     /// driver 报告一次**插话**送进去了（`send` 返回 `Ok`）。如果这期间 turn 已经结束、积压里有消息在等它的结果
     /// （有插话没结果时后来的消息只入队），现在可以接着开下一个 turn 了。
-    async fn on_interject_done(self: &Arc<Self>, sid: &str) {
+    ///
+    /// 被接受的插话记在当前 turn 上，等 adapter 的 `InterjectionRead` 确认；turn 在确认之前被取消的，标「送达不确定」（`end_turn`）。
+    /// driver 在 `send` 返回之后才处理后面的事件，所以同一条消息的确认一定排在这里之后。
+    async fn on_interject_done(self: &Arc<Self>, sid: &str, message_id: String) {
         let Ok(sess) = self.get(sid) else { return };
         let mut st = sess.st.lock().await;
         st.interjecting = st.interjecting.saturating_sub(1);
+        if let Some(turn) = st.turn.as_mut() {
+            turn.unread_interjections.push(message_id);
+        }
         if !st.deleted && st.turn.is_none() && st.interjecting == 0 && !st.backlog.is_empty() {
             self.requeue_for_backlog(&mut st).await;
         }
@@ -3782,7 +3809,7 @@ async fn driver_loop(
                             }
                         }
                         match (handle.send(input).await, retry) {
-                            (Ok(()), Some(_)) => sessions.on_interject_done(&sid).await,
+                            (Ok(()), Some(msg)) => sessions.on_interject_done(&sid, msg.message_id).await,
                             (Ok(()), None) => {}
                             (Err(e), Some(msg)) => sessions.on_interject_failed(&sid, gen, msg, e).await,
                             (Err(e), None) => sessions.on_send_failed(&sid, gen, e).await,
@@ -3993,7 +4020,7 @@ mod interject_order_tests {
         send(&td, &mut c, &s.id, "m4", "fourth message").await;
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(td.fake.last_handle().inputs.lock().unwrap().len(), n, "still waiting for the interjection result");
-        sessions.on_interject_done(&s.id).await;
+        sessions.on_interject_done(&s.id, "m2".into()).await;
         let t = std::time::Instant::now();
         while td.fake.last_handle().inputs.lock().unwrap().len() == n {
             assert!(t.elapsed() < Duration::from_secs(10), "the queued message never started a turn");

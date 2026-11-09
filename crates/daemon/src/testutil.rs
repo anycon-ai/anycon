@@ -125,6 +125,10 @@ pub struct FakeAdapter {
     counter: AtomicUsize,
     /// 设了就让之后所有插话按这种方式失败（`None` = 按真实 adapter 的约定：没有进行中的 turn 才 `TurnEnded`）。
     pub interject_failure: Arc<Mutex<Option<InterjectFailure>>>,
+    /// 设了就让被接受的插话像真实 adapter 那样**并入当前 turn**：记下输入、返回 `Ok`，不另起一个会自己结束的任务
+    /// （默认的假 adapter 把每条输入都当成一个独立的小 turn）。是否确认「模型读到了」由测试用 `HandleLog::inject`
+    /// 注入 `AgentEvent::InterjectionRead` 来决定。
+    pub interject_folds_into_turn: Arc<AtomicBool>,
     /// 新 handle 的 `cancel_delay`。
     pub cancel_delay: Mutex<Duration>,
     /// 关闭一个 handle 要多久（测「resume 前先等旧进程关完」）。
@@ -181,6 +185,7 @@ impl FakeAdapter {
             status: Mutex::new(AgentStatus::Ready),
             counter: AtomicUsize::new(0),
             interject_failure: Arc::new(Mutex::new(None)),
+            interject_folds_into_turn: Arc::new(AtomicBool::new(false)),
             cancel_delay: Mutex::new(Duration::ZERO),
             shutdown_delay: Arc::new(Mutex::new(Duration::ZERO)),
             order: Arc::new(Mutex::new(Vec::new())),
@@ -391,6 +396,7 @@ impl Adapter for FakeAdapter {
             interject: self.interject.load(Ordering::SeqCst),
             perm_counter: Arc::new(AtomicUsize::new(0)),
             interject_failure: self.interject_failure.clone(),
+            interject_folds_into_turn: self.interject_folds_into_turn.clone(),
             read_attachments: self.read_attachments.load(Ordering::SeqCst),
             n,
             order: self.order.clone(),
@@ -413,6 +419,7 @@ pub struct FakeHandle {
     interject: bool,
     perm_counter: Arc<AtomicUsize>,
     interject_failure: Arc<Mutex<Option<InterjectFailure>>>,
+    interject_folds_into_turn: Arc<AtomicBool>,
     read_attachments: bool,
     n: usize,
     order: Arc<Mutex<Vec<String>>>,
@@ -500,6 +507,10 @@ impl AgentHandle for FakeHandle {
             }
             if !self.busy.load(Ordering::SeqCst) {
                 return Err(AdapterError::TurnEnded);
+            }
+            if self.interject_folds_into_turn.load(Ordering::SeqCst) {
+                self.log.inputs.lock().unwrap().push(input);
+                return Ok(());
             }
         } else if self.busy.load(Ordering::SeqCst) && !self.interject {
             return Err(AdapterError::Unsupported("turn in progress".into()));

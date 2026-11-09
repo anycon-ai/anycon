@@ -7,6 +7,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use anycon_agent_api::AgentEvent;
 use anycon_daemon::testutil::{eventually, InterjectFailure, TestClient, TestDaemon};
 use anycon_protocol::*;
 use serde_json::json;
@@ -73,6 +74,7 @@ fn trace(evs: &[SessionEvent]) -> Vec<String> {
             Event::TurnStart { turn_id, message_id, .. } => Some(format!("turn_start:{turn_id}:{message_id}")),
             Event::TurnDone { turn_id, .. } => Some(format!("turn_done:{turn_id}")),
             Event::Error { code, .. } => Some(format!("error:{code}")),
+            Event::MessageDelivery { message_id, state } => Some(format!("delivery:{message_id}:{state:?}")),
             _ => None,
         })
         .collect()
@@ -256,5 +258,98 @@ async fn a_message_that_arrives_while_a_cancel_is_pending_is_queued_not_interjec
         vec!["user:m1", "turn_start:1:m1", "user:m2", "queued:1", "turn_done:1", "turn_start:2:m2", "turn_done:2"],
         "{t:?}"
     );
+    td.shutdown().await;
+}
+
+/// 插话被 adapter 接受（并入当前 turn）之后 turn 被取消，adapter 又没确认模型读到它：消息可能被 agent 丢了，
+/// 记 `message_delivery { uncertain }`，排在 `turn_done` 之前。daemon 不自动重发（可能重复）。
+#[tokio::test]
+async fn an_accepted_interjection_that_was_never_confirmed_is_marked_uncertain_when_the_turn_is_cancelled() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    let r = send(&td, &mut a, &s.id, "m2", "steer please").await;
+    assert_eq!((r.turn_id, r.queued), (Some(1), false));
+    assert!(eventually(T, || async { delivered(&td, "steer please").len() == 1 }).await);
+    // 接受之后 on_interject_done 才记下这条消息：等 interjecting 归零，免得取消抢在它前面
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert_eq!(t, vec!["user:m1", "turn_start:1:m1", "user:m2", "delivery:m2:Uncertain", "turn_done:1"], "{t:?}");
+    // 没有重发：agent 只收到过这一次，而且是插话
+    assert_eq!(delivered(&td, "steer please"), vec![(true, "steer please".to_string())]);
+    td.shutdown().await;
+}
+
+/// adapter 确认读到了（`InterjectionRead`）的插话，之后 turn 再被取消也不标。重复的确认无害。
+#[tokio::test]
+async fn a_confirmed_interjection_is_not_marked_when_the_turn_is_cancelled() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    send(&td, &mut a, &s.id, "m2", "read me").await;
+    send(&td, &mut a, &s.id, "m3", "lost one").await;
+    assert!(eventually(T, || async { delivered(&td, "lost one").len() == 1 }).await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let h = td.fake.last_handle();
+    h.inject(AgentEvent::InterjectionRead { message_id: "m2".into() }).await;
+    h.inject(AgentEvent::InterjectionRead { message_id: "m2".into() }).await;
+    h.inject(AgentEvent::InterjectionRead { message_id: "no-such-message".into() }).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    // 只有 m3 没被确认
+    assert_eq!(
+        t,
+        vec!["user:m1", "turn_start:1:m1", "user:m2", "user:m3", "delivery:m3:Uncertain", "turn_done:1"],
+        "{t:?}"
+    );
+    td.shutdown().await;
+}
+
+/// 接受之后 turn 正常结束：不标（标记只和取消有关）。
+#[tokio::test]
+async fn an_unconfirmed_interjection_is_not_marked_when_the_turn_completes() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    send(&td, &mut a, &s.id, "m2", "steer please").await;
+    assert!(eventually(T, || async { delivered(&td, "steer please").len() == 1 }).await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    td.fake.last_handle().release();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert_eq!(t, vec!["user:m1", "turn_start:1:m1", "user:m2", "turn_done:1"], "{t:?}");
+    td.shutdown().await;
+}
+
+/// 被拒的插话退回队列、作为下一个 turn 发出：从来没被接受过，取消也不标。标记不会跨 turn 带过去。
+#[tokio::test]
+async fn a_rejected_interjection_that_goes_back_to_the_queue_is_never_marked() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    *td.fake.interject_failure.lock().unwrap() = Some(InterjectFailure::TurnEnded);
+    send(&td, &mut a, &s.id, "m2", "hold that thought").await;
+    assert!(wait_trace(&td, &mut a, &s.id, |t| t.contains(&"queued:1".to_string())).await);
+    *td.fake.interject_failure.lock().unwrap() = None;
+    // 取消第一个 turn：m2 作为第二个 turn 开始（也是 hold），再取消一次
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_trace(&td, &mut a, &s.id, |t| t.contains(&"turn_start:2:m2".to_string())).await);
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert!(!t.iter().any(|x| x.starts_with("delivery:")), "{t:?}");
+    assert!(t.contains(&"turn_done:2".to_string()), "{t:?}");
     td.shutdown().await;
 }

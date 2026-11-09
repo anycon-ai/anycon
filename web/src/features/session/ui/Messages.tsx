@@ -11,7 +11,7 @@ import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Chip, CopyButton } from '@/ui/Misc'
-import { errorExtras, errorSeverity, isExplainedError } from '../errors'
+import { errorExplanation, errorExtras, errorSeverity } from '../errors'
 import { gitEventText } from '@/features/worktree/eventText'
 import { describeAttachmentFailure } from '@/features/attachments/errors'
 import { MessageAttachments } from '@/features/attachments/ui/MessageAttachments'
@@ -457,7 +457,7 @@ export function TurnUsage({ block, copyText }: { block: TurnDoneBlock; copyText?
 export function ErrorView({ block, onRetry }: { block: ErrorBlock; onRetry?: () => void }) {
   const { t, i18n } = useTranslation()
   const severity = errorSeverity(block.code)
-  const explained = isExplainedError(block.code) ? t(`agentError.${block.code}`) : null
+  const explained = errorExplanation(t, i18n.language, block)
   if (severity === 'notice') {
     // 重连中、上下文被重置之类：淡色提示，不是错误，也不打断阅读（不用 alert）。窄屏上文字多了会换行，不会撑出屏幕
     return (

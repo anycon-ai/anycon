@@ -585,10 +585,10 @@ describe('Codex: error events', () => {
     ['context_window_exceeded', 'Codex ran out of room in the model’s context window.', /no longer fits in the model’s context window/],
     ['sandbox_error', 'The sandbox failed to run the command', /Check the session’s permission mode/],
     ['policy_violation', 'The request was blocked by a usage policy', /usage policy stopped this request/],
-    ['usage_limit', 'Quota exceeded. Check your plan and billing details.', /usage limit for your plan or account has been reached/],
-    ['rate_limited', 'Rate limit reached for requests', /limiting how fast requests can be sent/],
-    ['overloaded', 'Selected model is at capacity', /overloaded right now. This is not about your own usage/],
-    ['budget_exceeded', 'The shared session token budget has been used up.', /token budget is used up/],
+    ['usage_limit', 'Quota exceeded. Check your plan and billing details.', /usage or credit limit has been reached. Check your plan and billing details/],
+    ['rate_limited', 'Rate limit reached for requests', /rate or usage limit/],
+    ['overloaded', 'Selected model is at capacity', /out of capacity right now. This is not about your own usage.*another model/],
+    ['budget_exceeded', 'The shared session token budget has been used up.', /token budget is used up. Adjust the budget in the agent’s own configuration/],
     ['auth_failed', 'Not logged in', /not signed in, or its credentials were rejected/],
   ])('shows %s as a red error with the adapter’s message, a short explanation and the code', (code, message, explanation) => {
     const view = buildView([errorEv(code, message, code !== 'auth_failed')])
@@ -602,24 +602,24 @@ describe('Codex: error events', () => {
     expect(block).toHaveTextContent(code)
   })
 
-  it('shows when a usage limit resets, in local time, and only hints at another model for a per-model limit', () => {
+  it('says when a usage limit resets, in local time, and only hints at another model for a per-model limit', () => {
     const at = new Date(2100, 0, 5, 15, 30).getTime()
     const view = buildView([
       errorEv('usage_limit', 'Usage limit reached (5-hour)', true, { resets_at_ms: at, limit_scope: 'account' }),
       errorEv('usage_limit', 'Usage limit reached (weekly Sonnet)', true, { resets_at_ms: at, limit_scope: 'model' }),
-      errorEv('usage_limit', 'You have hit your limit'),
+      errorEv('usage_limit', 'Quota exceeded. Check your plan and billing details.'),
     ])
     render(<MessageList {...listProps({ blocks: view.blocks })} />)
     const [account, model, unknown] = screen.getAllByTestId('error-block')
     const time = formatResetTime(at, 'en')
-    expect(within(account!).getByTestId('error-resets')).toHaveTextContent(`Resets ${time}.`)
+    expect(within(account!).getByTestId('error-explained')).toHaveTextContent(`It resets ${time}.`)
     expect(within(account!).queryByTestId('error-model-hint')).toBeNull()
-    expect(within(model!).getByTestId('error-resets')).toHaveTextContent(`Resets ${time}.`)
+    expect(within(model!).getByTestId('error-explained')).toHaveTextContent(`It resets ${time}.`)
     expect(within(model!).getByTestId('error-model-hint')).toHaveTextContent('Pick another model in the session settings')
-    // 上游没给恢复时间 / 范围：什么都不编
+    // 上游没给恢复时间 / 范围：不说“等恢复”（可能是计费额度用完，不会自己恢复），也不编范围
+    expect(within(unknown!).getByTestId('error-explained')).toHaveTextContent('Check your plan and billing details, or wait for the limit window to reset')
     expect(within(unknown!).queryByTestId('error-resets')).toBeNull()
     expect(within(unknown!).queryByTestId('error-model-hint')).toBeNull()
-    expect(within(unknown!).getByTestId('error-explained')).toBeInTheDocument()
   })
 
   it('falls back to the raw message for a code it does not know, but still shows a reset time if one came with it', () => {
@@ -665,12 +665,12 @@ describe('Codex: error events', () => {
       const view = buildView([errorEv('usage_limit', 'x', true, { resets_at_ms: at, limit_scope: 'model' }), errorEv('overloaded', 'y'), errorEv('budget_exceeded', 'z'), errorEv('rate_limited', 'w')])
       render(<MessageList {...listProps({ blocks: view.blocks })} />)
       const [limit, overloaded, budget, rate] = screen.getAllByTestId('error-explained')
-      expect(limit).toHaveTextContent('用量上限已用完')
-      expect(screen.getByTestId('error-resets')).toHaveTextContent('恢复')
+      expect(limit).toHaveTextContent('用量已达上限')
+      expect(limit).toHaveTextContent('恢复')
       expect(screen.getByTestId('error-model-hint')).toHaveTextContent('换一个模型')
-      expect(overloaded).toHaveTextContent('过载')
+      expect(overloaded).toHaveTextContent('容量不足')
       expect(budget).toHaveTextContent('预算')
-      expect(rate).toHaveTextContent('限制请求频率')
+      expect(rate).toHaveTextContent('频率或用量限制')
     } finally {
       await i18n.changeLanguage('en')
     }

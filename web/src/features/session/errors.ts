@@ -32,7 +32,8 @@ export function isExplainedError(code: string): boolean {
 
 /**
  * 错误卡片里除 `message` 和 code 说明之外的补充行：
- * - 有恢复时间（`resets_at_ms`）就写本地化的恢复时间——任何 code 都写，不认识的新 code 带了也有用；
+ * - 有恢复时间（`resets_at_ms`）就写本地化的恢复时间——任何 code 都写，不认识的新 code 带了也有用
+ *   （`usage_limit` 的恢复时间已经写在它的说明里，见 [`errorExplanation`]，这里不重复）；
  * - `usage_limit` 且范围是某个模型（`limit_scope = model`）时提示换模型（输入区已有模型选择）。
  * 返回的 key 供测试和卡片用。
  */
@@ -41,9 +42,20 @@ export interface ErrorExtras {
   modelHint?: string
 }
 
+/**
+ * code 的本地化说明；没有说明的 code 返回 null（卡片只显示 daemon 给的 `message`）。
+ * `usage_limit` 有恢复时间就说恢复时间；没有就不说“等恢复”：Codex 的 `usageLimitExceeded` 也包括 API key 的计费额度用完，
+ * 那种情况不会自己恢复。
+ */
+export function errorExplanation(t: TFunction, lang: string, b: ErrorBlock, now: number = Date.now()): string | null {
+  if (!isExplainedError(b.code)) return null
+  if (b.code === 'usage_limit' && b.resetsAtMs != null) return t('agentError.usage_limit_resets', { time: formatResetTime(b.resetsAtMs, lang, now) })
+  return t(`agentError.${b.code}`)
+}
+
 export function errorExtras(t: TFunction, lang: string, b: ErrorBlock, now: number = Date.now()): ErrorExtras {
   const extras: ErrorExtras = {}
-  if (b.resetsAtMs != null) extras.resets = t('agentError.resetsAt', { time: formatResetTime(b.resetsAtMs, lang, now) })
+  if (b.resetsAtMs != null && b.code !== 'usage_limit') extras.resets = t('agentError.resetsAt', { time: formatResetTime(b.resetsAtMs, lang, now) })
   if (b.code === 'usage_limit' && b.limitScope === 'model') extras.modelHint = t('agentError.limitScopeModel')
   return extras
 }

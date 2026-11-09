@@ -162,7 +162,7 @@ describe('i18n', () => {
       ...sessionPushKeys.map((k) => `push.${k}`),
       // `error` 事件里有本地化说明的 code（features/session/errors.ts）
       ...EXPLAINED_ERROR_CODES.map((k) => `agentError.${k}`),
-      'agentError.resetsAt', 'agentError.limitScopeModel',
+      'agentError.resetsAt', 'agentError.limitScopeModel', 'agentError.usage_limit_resets',
       // 关联已有目录（ADR-33）：按错误码查专门的说法（`describeErrorIn`）
       ...['forbidden', 'exists', 'invalid', 'not_found'].map((k) => `project.linkErrors.${k}`),
       ...['busy', 'invalid', 'not_found'].map((k) => `project.removeErrors.${k}`),

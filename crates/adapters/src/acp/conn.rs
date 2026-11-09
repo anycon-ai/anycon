@@ -716,7 +716,13 @@ impl Session {
                 Some(f) => format!("{label} protocol error: {f}, so it was stopped ({detail})"),
                 None => format!("{label} exited in the middle of a turn ({detail})"),
             };
-            self.emit_event(Event::Error { code: "agent_exited".to_string(), message, recoverable: true });
+            self.emit_event(Event::Error {
+                code: "agent_exited".to_string(),
+                message,
+                recoverable: true,
+                resets_at_ms: None,
+                limit_scope: None,
+            });
         }
         self.emit(AgentEvent::Exited { code: exit.code, error });
         self.detach();

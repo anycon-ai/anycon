@@ -496,6 +496,8 @@ async fn script(
             code: "mock_error".into(),
             message: "Mock error requested by the prompt".into(),
             recoverable: true,
+            resets_at_ms: None,
+            limit_scope: None,
         })
         .await?;
         return Ok(TurnDoneReason::Error);

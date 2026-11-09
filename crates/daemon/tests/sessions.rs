@@ -965,7 +965,7 @@ async fn an_agent_config_mismatch_is_reported_as_agent_config() {
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Error).await);
     let evs = history(&td, &mut a, &s.id).await;
     assert!(
-        evs.iter().any(|e| matches!(&e.event, Event::Error { code, message, recoverable: true } if code == "agent_config" && message == msg)),
+        evs.iter().any(|e| matches!(&e.event, Event::Error { code, message, recoverable: true, .. } if code == "agent_config" && message == msg)),
         "{:?}",
         kinds(&evs)
     );

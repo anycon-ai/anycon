@@ -2618,11 +2618,31 @@
             "code": {
               "type": "string"
             },
+            "limit_scope": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LimitScope"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`code = usage_limit`：触到的是账号级的窗口还是特定模型的窗口。只有上游明确给出限额类型时才有；\n缺省 = 不知道。"
+            },
             "message": {
               "type": "string"
             },
             "recoverable": {
               "type": "boolean"
+            },
+            "resets_at_ms": {
+              "description": "限额类错误（`usage_limit`，有时 `rate_limited`）：限额恢复的时间。和 `Notice.resets_at_ms` 同语义；\n上游没给就缺省，不估算。",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "type": {
               "const": "error",
@@ -3135,6 +3155,21 @@
         {
           "const": "control",
           "description": "hub ↔ 设备的控制消息，body 是 msgpack 的 [`crate::Control`]。hub 自己处理，不转发。",
+          "type": "string"
+        }
+      ]
+    },
+    "LimitScope": {
+      "description": "`Event::Error.limit_scope`：用量限额的范围。",
+      "oneOf": [
+        {
+          "const": "account",
+          "description": "账号 / 套餐级的窗口：换模型没用，只能等恢复。",
+          "type": "string"
+        },
+        {
+          "const": "model",
+          "description": "只针对某个模型（或模型系列）的窗口：换一个模型可以接着用。",
           "type": "string"
         }
       ]

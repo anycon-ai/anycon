@@ -140,7 +140,7 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 - 子 agent（`parent_tool_use_id` 非空）的文本 / 思考不混进主流，它们内部的工具调用照常发，带 `parent_id = parent_tool_use_id`，客户端据此把它们收进子 agent 的块里。
 - 转到后台的调用：后台子 agent（`Agent` 的 `run_in_background`）马上返回 `tool_use_result.status = "async_launched"`；后台命令（Bash 的 `run_in_background`，或者跑着跑着被转到后台的）马上返回 `Command running in background with ID: …`，`tool_use_result.backgroundTaskId` 有值（实测 2.1.293）。另外 `system/task_started { is_backgrounded: true, tool_use_id }` 先于结果到达，也认。这些结果标 `detail.background`（后台命令不给 `exit_code`）；任务结束时 CLI 发 `system/task_notification { tool_use_id, status: completed | failed | stopped | killed, summary }`，翻译器给同一个调用补一条 `ToolResult`（`output` = `summary`；后台命令的 `summary` 形如 `Background command "…" completed (exit code 1)`，从中取 `exit_code`；`failed` 和退出码非 0 算错误，被停掉的不算）。前台子 agent 也会发这个通知，它不是 background 的，忽略。
 - 子 agent 用掉的 token → `detail.total_tokens`：前台的取 `tool_use_result.totalTokens`，后台的取 `task_notification.usage.total_tokens`（实测 2.1.293：`usage: { total_tokens, tool_uses, duration_ms }`）。`result.usage` 只算主 agent 自己的调用，不含子 agent 的（`modelUsage` 和 `total_cost_usd` 含）。
-- `result`：**`usage` 与 `duration_ms` 是本 turn 的，`total_cost_usd` 是进程内累计值**（实测第二个 turn 的 `total_cost_usd` 大于第一个、`modelUsage` 也是累计的）——翻译器把费用换成相邻两次的差值，所以 daemon 直接把各 turn 的 `cost_usd` 相加即可。`success` → completed；`error_max_turns` → max_turns；`error_max_budget_usd` → budget；其它 → error（先发 `Error` 事件：`api_error_status` 401/403 → `auth_failed`（不可恢复），429 → `rate_limited`，其它 `agent_error`）。我们刚发过 interrupt 的那个 turn，非 success 的 result 一律算 `cancelled`（不发 Error）。没有进行中的 turn 时的 error result（比如 `--resume` 不存在的会话）只发 `Error`，不发 `TurnDone`。
+- `result`：**`usage` 与 `duration_ms` 是本 turn 的，`total_cost_usd` 是进程内累计值**（实测第二个 turn 的 `total_cost_usd` 大于第一个、`modelUsage` 也是累计的）——翻译器把费用换成相邻两次的差值，所以 daemon 直接把各 turn 的 `cost_usd` 相加即可。`success` → completed；`error_max_turns` → max_turns；`error_max_budget_usd` → budget；其它 → error（先发 `Error` 事件，码按下面的顺序选：`api_error_status` 401/403 → `auth_failed`（不可恢复）；`terminal_reason = blocking_limit`，或 429 且此前见过 `status: rejected` 的 `rate_limit_event` → `usage_limit`（带 `resets_at_ms` 和 `limit_scope`，见下面「限额类错误」）；其余 429 → `rate_limited`；529 → `overloaded`；`error_max_structured_output_retries` → `structured_output_failed`；其它 `agent_error`。除 `auth_failed` 外 `recoverable` 都是 true）。我们刚发过 interrupt 的那个 turn，非 success 的 result 一律算 `cancelled`（不发 Error）。没有进行中的 turn 时的 error result（比如 `--resume` 不存在的会话）只发 `Error`，不发 `TurnDone`。
 - `TurnDone.turn_id` 是 adapter 进程内的计数（从 1 递增）；daemon 自己发 `turn_start`，应该用自己的 turn id 覆盖它。
 
 ### 后台任务与 CLI 自己开的 turn
@@ -220,7 +220,19 @@ SDK 侧至少隔 250 ms 才发一次；批次里**全是 `state: progress` 的�
 | `system/hook_response { hook_name, hook_event, outcome: success \| error \| cancelled, exit_code?, stderr, output }` | `outcome = error` → `Notice hook_failed`（warning）。CLI 默认只让少数 hook 事件进输出流（`--include-hook-events` 打开全部，adapter 不加），多数会话里看不到 |
 | `system/init.mcp_servers[] { name, status: connected \| failed \| needs-auth \| pending \| disabled }` | `status = failed` → `Notice mcp_server_failed`（warning），每个进程每个 server 一次（`init` 每个 turn 都发） |
 
-`api_retry` 和 `rate_limit_event` 很难在实测里触发，`tests/fixtures/claude/api_retry.jsonl`、`rate_limit_rejected.jsonl`、`compaction.jsonl` 是照上面的 schema 手写的（形状和字段名来自二进制，没有真实录制）；`rate_limit_event` 的 `allowed` 形态在多数 `real_*` 录制里都有。
+`api_retry` 和 `rate_limit_event` 很难在实测里触发，`tests/fixtures/claude/api_retry.jsonl`、`rate_limit_rejected.jsonl`、`compaction.jsonl` 是照上面的 schema 手写的（形状和字段名来自二进制，没有真实录制）；限额类错误的补充 fixture 也是手写的，在 `rate_limit_rejected.jsonl` 的基础上换了限额类型 / 状态 / `result`：`rate_limit_rejected_model.jsonl`（只有 `seven_day_sonnet` 被拒绝，`result` 是普通 429）、`rate_limit_rejected_multi.jsonl`（`five_hour`、`seven_day_opus`、`seven_day` 同时被拒绝）、`rate_limit_recovered_then_429.jsonl`（被拒绝后又回到 `allowed`）、`result_blocking_limit_no_event.jsonl`（只有 `blocking_limit`）、`result_overloaded.jsonl`（`api_error_status = 529`）；`rate_limit_event` 的 `allowed` 形态在多数 `real_*` 录制里都有。
+
+### 限额类错误
+
+turn 以限额错误收尾时（`result.is_error`，`api_error_status` 429 / 529）的码和上游信号：
+
+| 码 | 上游信号 | 恢复时间 / 范围 |
+|---|---|---|
+| `usage_limit` | `result.terminal_reason = blocking_limit`（CLI 自己判定被用量限额挡住，录制里 `api_error_status` 同时是 429）；或 `api_error_status = 429` 且此前见过 `status: rejected` 的 `rate_limit_event`（`rate_limit_seen` 里按限额类型记着，`allowed` 事件会把它忘掉） | `resets_at_ms` = 被拒绝的限额的 `resetsAt` × 1000；`limit_scope` 见下。只有 `blocking_limit` 而没有 rejected 事件时两者都不带（`result` 文本里的「resets 3pm」是口语化的本地时间，不解析） |
+| `rate_limited` | `api_error_status = 429`，`terminal_reason` 不是 `blocking_limit`，也没有 rejected 的限额事件（真实录制 `result_rate_limited.jsonl`：`result = "Rate limit reached"`） | 不带 |
+| `overloaded` | `api_error_status = 529`（CLI 重试用尽后 `result` 里的状态；重试期间是 `system/api_retry { error_status: 529 }`，那是 `Activity`） | 不带 |
+
+`rate_limit_seen` 里同时有多个被拒绝的限额类型时的选择规则（`rejected_limit`）：账号级的（`five_hour`、`seven_day`、`seven_day_overage_included`、`overage`，以及不认识的类型）优先于模型级的（`seven_day_opus`、`seven_day_sonnet`）——只要有一个账号级窗口被拒绝，换模型也没用；同一组里取最晚的 `resetsAt`（几个窗口都被拒绝，得全部恢复才能接着用）；`resetsAt` 相同时按类型名排，保证结果确定。`limit_scope`：被选中的类型是模型级的 → `model`，账号级的 → `account`，不认识的类型不报。只有模型级窗口被拒绝时 Web 提示换模型。
 
 ### 本地斜杠命令（`/context`、`/cost` …）
 

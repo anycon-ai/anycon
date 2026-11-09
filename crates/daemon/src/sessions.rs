@@ -1759,7 +1759,8 @@ impl Sessions {
 
     /// 以一个 `error` 事件收尾当前 turn（会话进入 error 状态，可以修好设置后再 send）。
     async fn fail_turn_with(self: &Arc<Self>, st: &mut St, code: &str, message: String, recoverable: bool) {
-        self.emit(st, Event::Error { code: code.into(), message, recoverable }).await;
+        self.emit(st, Event::Error { code: code.into(), message, recoverable, resets_at_ms: None, limit_scope: None })
+            .await;
         if let Some(d) = self.detach_driver(st).await {
             self.retire(st, d);
         }
@@ -2092,11 +2093,12 @@ impl Sessions {
             ev @ (Event::Notice { .. } | Event::Activity { .. }) => {
                 self.emit(st, ev).await;
             }
-            Event::Error { code, message, recoverable } => {
+            Event::Error { code, message, recoverable, resets_at_ms, limit_scope } => {
                 if code == "agent_exited" {
                     st.saw_exit_error = true;
                 }
-                self.emit(st, Event::Error { code, message, recoverable }).await;
+                // 限额类的恢复时间和范围照原样透传；daemon 不因为限额自动重试或排队
+                self.emit(st, Event::Error { code, message, recoverable, resets_at_ms, limit_scope }).await;
                 if !recoverable {
                     self.d.notifier.error(&st.row.id);
                 }
@@ -2273,7 +2275,17 @@ impl Sessions {
             let msg = error.clone().unwrap_or_else(|| format!("agent exited (code {code:?})"));
             if failed {
                 if !st.saw_exit_error {
-                    self.emit(st, Event::Error { code: "agent_exited".into(), message: msg, recoverable: true }).await;
+                    self.emit(
+                        st,
+                        Event::Error {
+                            code: "agent_exited".into(),
+                            message: msg,
+                            recoverable: true,
+                            resets_at_ms: None,
+                            limit_scope: None,
+                        },
+                    )
+                    .await;
                 }
                 self.end_turn(st, TurnDoneReason::Error, None, Some(SessionStatus::Error)).await;
                 self.d.notifier.error(&st.row.id);
@@ -2290,6 +2302,8 @@ impl Sessions {
                         code: "agent_exited".into(),
                         message: error.unwrap_or_else(|| format!("agent exited (code {code:?})")),
                         recoverable: true,
+                        resets_at_ms: None,
+                        limit_scope: None,
                     },
                 )
                 .await;
@@ -3423,6 +3437,8 @@ impl Sessions {
                             code: "agent_start_timeout".into(),
                             message: "agent did not respond within 60 seconds".into(),
                             recoverable: true,
+                            resets_at_ms: None,
+                            limit_scope: None,
                         },
                     )
                     .await;

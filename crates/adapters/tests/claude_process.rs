@@ -544,7 +544,7 @@ async fn mcp_elicitation_declined_cancelled_or_unanswerable_all_decline() {
         let errors: Vec<_> = rest
             .iter()
             .filter_map(|e| match e {
-                AgentEvent::Event(Event::Error { code, message, recoverable }) => {
+                AgentEvent::Event(Event::Error { code, message, recoverable, .. }) => {
                     Some((code.as_str(), message.as_str(), *recoverable))
                 }
                 _ => None,

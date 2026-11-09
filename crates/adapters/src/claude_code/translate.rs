@@ -34,8 +34,8 @@ use std::time::Instant;
 
 use anycon_agent_api::{AgentEvent, PendingPermission, ResumeHandle};
 use anycon_protocol::{
-    ActivityState, Event, FileChangeKind, NoticeLevel, PlanEntry, PlanStatus, TaskAgent, TaskAgentState, TaskKind,
-    TaskPhase, TaskStatus, TaskUsage, ToolCategory, ToolResultDetail, TurnDoneReason, Usage,
+    ActivityState, Event, FileChangeKind, LimitScope, NoticeLevel, PlanEntry, PlanStatus, TaskAgent, TaskAgentState,
+    TaskKind, TaskPhase, TaskStatus, TaskUsage, ToolCategory, ToolResultDetail, TurnDoneReason, Usage,
 };
 use serde_json::{json, Value};
 
@@ -367,6 +367,16 @@ fn notice_event(code: &str, level: NoticeLevel, message: impl Into<String>) -> E
         model_from: None,
         model_to: None,
         resets_at_ms: None,
+    }
+}
+
+/// `rateLimitType` → 限额范围。只有 CLI 明确区分的才报：`seven_day_opus` / `seven_day_sonnet` 是单个模型系列的周窗口，
+/// `five_hour`、`seven_day`、`overage` 这些是账号级的；不认识的类型不猜。
+fn limit_scope(kind: &str) -> Option<LimitScope> {
+    match kind {
+        "seven_day_opus" | "seven_day_sonnet" => Some(LimitScope::Model),
+        "five_hour" | "seven_day" | "seven_day_overage_included" | "overage" => Some(LimitScope::Account),
+        _ => None,
     }
 }
 
@@ -1060,6 +1070,28 @@ impl Translator {
         );
     }
 
+    /// 眼下被拒绝（`status: rejected`）的限额，用来给 `usage_limit` 错误补恢复时间和范围：`(恢复时间 Unix 秒, 范围)`。
+    ///
+    /// 同时有好几个限额类型被拒绝时的选择规则：
+    /// 1. 账号级（和不认识的类型）的窗口优先于模型级的：只要有一个账号级窗口被拒绝，换模型也没用，范围就不能报 `model`；
+    /// 2. 同一组里取最晚的恢复时间：几个窗口都被拒绝，得全部恢复才能接着用；
+    /// 3. 恢复时间相同时按类型名排，保证结果确定（`rate_limit_seen` 是 `HashMap`）。
+    ///
+    /// 记录在 `allowed` 事件时清掉，所以过期的拒绝不会一直留着。
+    fn rejected_limit(&self) -> Option<(Option<u64>, Option<LimitScope>)> {
+        let mut cands: Vec<(&str, Option<u64>)> = self
+            .rate_limit_seen
+            .iter()
+            .filter(|(_, (st, _))| st == "rejected")
+            .map(|(k, (_, r))| (k.as_str(), *r))
+            .collect();
+        if cands.iter().any(|(k, _)| limit_scope(k) != Some(LimitScope::Model)) {
+            cands.retain(|(k, _)| limit_scope(k) != Some(LimitScope::Model));
+        }
+        cands.sort_by(|a, b| (a.1, a.0).cmp(&(b.1, b.0)));
+        cands.last().map(|(kind, resets)| (*resets, limit_scope(kind)))
+    }
+
     /// `system/notification`（REPL 通知队列的文本）。`color` 为 `warning` / `error` 的当警告；
     /// 优先级 `low` 的是闲置提示，不转；同一个 turn 里同 key 同文本只发一次。
     fn on_notification(&mut self, v: &Value, out: &mut Vec<Out>) {
@@ -1429,9 +1461,24 @@ impl Translator {
 
         if reason == TurnDoneReason::Error {
             let status = u64_of(v, "api_error_status");
+            // `terminal_reason: blocking_limit`：用量限额挡住了请求（CLI 自己的判定，不看 HTTP 状态）
+            let blocked = v["terminal_reason"].as_str() == Some("blocking_limit");
+            let rejected = self.rejected_limit();
+            let mut resets_at_ms = None;
+            let mut limit_scope = None;
             let code = match status {
                 Some(401) | Some(403) => "auth_failed",
+                // 套餐 / 周期用量耗尽：CLI 说 `blocking_limit`，或 429 之前见过 `status: rejected` 的 `rate_limit_event`。
+                // 普通的短时限流（429 的 `result`，没有 rejected 事件）仍是 `rate_limited`
+                _ if blocked || (status == Some(429) && rejected.is_some()) => {
+                    if let Some((resets, scope)) = rejected {
+                        resets_at_ms = resets.map(|s| s.saturating_mul(1000));
+                        limit_scope = scope;
+                    }
+                    "usage_limit"
+                }
                 Some(429) => "rate_limited",
+                Some(529) => "overloaded",
                 _ if subtype == "error_max_structured_output_retries" => "structured_output_failed",
                 _ => "agent_error",
             };
@@ -1446,7 +1493,16 @@ impl Translator {
                         .filter(|s| !s.is_empty())
                 })
                 .unwrap_or_else(|| format!("Claude Code reported {subtype}"));
-            Self::push(out, Event::Error { code: code.to_string(), message, recoverable: code != "auth_failed" });
+            Self::push(
+                out,
+                Event::Error {
+                    code: code.to_string(),
+                    message,
+                    recoverable: code != "auth_failed",
+                    resets_at_ms,
+                    limit_scope,
+                },
+            );
         }
 
         if !self.busy {
@@ -1529,7 +1585,13 @@ impl Translator {
                     out.push(Out::Reply(permissions::control_response(request_id, json!({ "action": "decline" }))));
                     Self::push(
                         out,
-                        Event::Error { code: "elicitation_rejected".to_string(), message: why, recoverable: true },
+                        Event::Error {
+                            code: "elicitation_rejected".to_string(),
+                            message: why,
+                            recoverable: true,
+                            resets_at_ms: None,
+                            limit_scope: None,
+                        },
                     );
                 }
             },

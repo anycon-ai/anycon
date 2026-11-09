@@ -799,6 +799,14 @@ pub enum Event {
         code: String,
         message: String,
         recoverable: bool,
+        /// 限额类错误（`usage_limit`，有时 `rate_limited`）：限额恢复的时间。和 `Notice.resets_at_ms` 同语义；
+        /// 上游没给就缺省，不估算。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at_ms: Option<TimestampMs>,
+        /// `code = usage_limit`：触到的是账号级的窗口还是特定模型的窗口。只有上游明确给出限额类型时才有；
+        /// 缺省 = 不知道。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit_scope: Option<LimitScope>,
     },
     /// 后台任务（workflow、后台子 agent、后台命令）的状态快照。同一个 `id` 的后一条整条取代前一条，不是增量；
     /// 客户端按 `id` 只保留最新的一条。daemon 对同一个任务的快照节流（docs/spec/daemon.md § 8.3），
@@ -968,6 +976,16 @@ pub struct TaskAgent {
 pub enum NoticeLevel {
     Info,
     Warning,
+}
+
+/// `Event::Error.limit_scope`：用量限额的范围。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitScope {
+    /// 账号 / 套餐级的窗口：换模型没用，只能等恢复。
+    Account,
+    /// 只针对某个模型（或模型系列）的窗口：换一个模型可以接着用。
+    Model,
 }
 
 /// `Event::Activity` 的状态。
@@ -1164,6 +1182,41 @@ mod tests {
         assert_eq!(v["resets_at_ms"], 1_700_000_000_000u64);
         // message 是必填字段，空串照常上线路。
         assert_eq!(v["message"], "");
+    }
+
+    #[test]
+    fn error_event_wire_shape() {
+        // 恢复时间和范围缺省时不出现在线路上：老客户端和老历史看到的就是原来的三个字段。
+        let e = Event::Error {
+            code: "rate_limited".into(),
+            message: "slow down".into(),
+            recoverable: true,
+            resets_at_ms: None,
+            limit_scope: None,
+        };
+        let v = roundtrip(&e);
+        assert_eq!(v["type"], "error");
+        assert!(v.get("resets_at_ms").is_none());
+        assert!(v.get("limit_scope").is_none());
+
+        let e = Event::Error {
+            code: "usage_limit".into(),
+            message: "limit".into(),
+            recoverable: true,
+            resets_at_ms: Some(1_700_000_000_000),
+            limit_scope: Some(LimitScope::Model),
+        };
+        let v = roundtrip(&e);
+        assert_eq!(v["resets_at_ms"], 1_700_000_000_000u64);
+        assert_eq!(v["limit_scope"], "model");
+        assert_eq!(serde_json::to_value(LimitScope::Account).unwrap(), "account");
+
+        // 老 daemon 写下的历史事件没有这两个字段，照常能读。
+        let old: Event = serde_json::from_value(
+            serde_json::json!({"type": "error", "code": "agent_error", "message": "x", "recoverable": true}),
+        )
+        .unwrap();
+        assert!(matches!(old, Event::Error { resets_at_ms: None, limit_scope: None, .. }));
     }
 
     #[test]

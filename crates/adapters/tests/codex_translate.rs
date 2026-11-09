@@ -423,23 +423,49 @@ fn add_update_move_delete_patches() {
     assert_eq!(diffs[3], "--- a/hello.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-hello there\n-second line\n");
 }
 
-#[test]
-fn errors_become_coded_error_events() {
-    let (_, outs) = replay("real_error_usage_limit.jsonl");
-    assert_eq!(names(&outs), vec!["error", "turn_done"]);
-    match &events(&outs)[0] {
-        Event::Error { code, message, recoverable } => {
-            assert_eq!((code.as_str(), *recoverable), ("rate_limited", true));
-            assert_eq!(message, "Quota exceeded. Check your plan and billing details.");
+/// 重放 fixture，取出唯一的 `Event::Error` 的 `(code, recoverable, resets_at_ms)`，并确认 turn 以 `Error` 收尾。
+fn error_of(name: &str) -> (String, bool, Option<u64>, String) {
+    let (_, outs) = replay(name);
+    assert_eq!(names(&outs), vec!["error", "turn_done"], "{name}");
+    assert_eq!(done(&outs).0, TurnDoneReason::Error, "{name}");
+    match events(&outs).remove(0) {
+        Event::Error { code, message, recoverable, resets_at_ms, limit_scope } => {
+            assert_eq!(limit_scope, None, "{name}");
+            (code, recoverable, resets_at_ms, message)
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(done(&outs).0, TurnDoneReason::Error);
+}
+
+#[test]
+fn errors_become_coded_error_events() {
+    // 真实录制：用量耗尽，但那次没有账号用量通知，所以不带恢复时间
+    let (code, recoverable, resets, message) = error_of("real_error_usage_limit.jsonl");
+    assert_eq!((code.as_str(), recoverable, resets), ("usage_limit", true, None));
+    assert_eq!(message, "Quota exceeded. Check your plan and billing details.");
 
     let (_, outs) = replay("real_error_http_401.jsonl");
     match &events(&outs)[0] {
         Event::Error { code, recoverable, .. } => assert_eq!((code.as_str(), *recoverable), ("auth_failed", false)),
         other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn limit_errors_are_told_apart() {
+    // 手写 fixture（按 schema 在真实录制的基础上换了 `codexErrorInfo`）
+    // 用量耗尽 + 账号用量通知里两个窗口都满了：恢复时间取较晚的（secondary，2100-01-05）
+    let (code, recoverable, resets, _) = error_of("error_usage_limit_resets.jsonl");
+    assert_eq!((code.as_str(), recoverable, resets), ("usage_limit", true, Some(4_102_876_800_000)));
+
+    for (fixture, want) in [
+        ("error_rate_limit_exceeded.jsonl", "rate_limited"),
+        ("error_server_overloaded.jsonl", "overloaded"),
+        ("error_policy_capacity.jsonl", "overloaded"),
+        ("error_session_budget.jsonl", "budget_exceeded"),
+    ] {
+        let (code, recoverable, resets, _) = error_of(fixture);
+        assert_eq!((code.as_str(), recoverable, resets), (want, true, None), "{fixture}");
     }
 }
 
@@ -547,7 +573,7 @@ fn reconnect_notices_are_recoverable_and_do_not_end_the_turn() {
     let errs: Vec<Event> = events(&outs).into_iter().filter(|e| matches!(e, Event::Error { .. })).collect();
     assert_eq!(errs.len(), 2);
     match &errs[0] {
-        Event::Error { code, message, recoverable } => {
+        Event::Error { code, message, recoverable, .. } => {
             assert_eq!((code.as_str(), *recoverable), ("agent_reconnecting", true));
             assert!(message.starts_with("Reconnecting... 1/5") && message.contains("tls handshake eof"), "{message}");
         }
@@ -1598,7 +1624,7 @@ fn an_mcp_url_request_carries_the_link_and_only_http_links_are_shown() {
         assert!(permissions(&outs).is_empty());
         assert_eq!(outs[0], Out::Reply { id: outs_id(&outs), result: Ok(json!({"action": "decline"})) });
         match &outs[1] {
-            Out::Event(AgentEvent::Event(Event::Error { code, recoverable, message })) => {
+            Out::Event(AgentEvent::Event(Event::Error { code, recoverable, message, .. })) => {
                 assert_eq!((code.as_str(), *recoverable), ("elicitation_rejected", true));
                 assert!(message.contains("declined"), "{message}");
             }

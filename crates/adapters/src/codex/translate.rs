@@ -44,9 +44,9 @@ use super::tools::{self, ToolCallParts};
 use super::wire::{
     AutoApprovalReviewCompleted, CommandApproval, ConfigWarning, DeltaNotification, DeprecationNotice,
     ErrorNotification, FileApproval, HookCompleted, ItemNotification, ItemStatus, McpElicitation, McpServerStatus,
-    ModelRerouted, PatchChangeKind, PermissionsApproval, PlanUpdated, ServerRequestResolved, SummaryPartAdded,
-    ThreadItem, TokenUsageNotification, Turn, TurnError, TurnNotification, TurnStatus, UserInputRequest,
-    WarningNotification,
+    ModelRerouted, PatchChangeKind, PermissionsApproval, PlanUpdated, RateLimitSnapshot, RateLimitsUpdated,
+    ServerRequestResolved, SummaryPartAdded, ThreadItem, TokenUsageNotification, Turn, TurnError, TurnNotification,
+    TurnStatus, UserInputRequest, WarningNotification,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +155,8 @@ pub struct Translator {
     model: Option<String>,
     usage: UsageAcc,
     error_emitted: bool,
+    /// `account/rateLimits/updated` 报过的用量窗口，按计量桶（`limitId`）记最新的；只用来在 `usage_limit` 错误里补恢复时间。
+    rate_limits: HashMap<String, RateLimitSnapshot>,
     texts: HashMap<String, TextState>,
     text_order: Vec<String>,
     thinks: HashMap<String, ThinkState>,
@@ -293,18 +295,22 @@ fn review_action_summary(action: &Value) -> Option<String> {
 }
 
 /// `TurnError` → `(事件 code, recoverable)`。
+///
+/// 限额类的 `codexErrorInfo` 按用户该做的事分开：
+/// - `usageLimitExceeded` → `usage_limit`：套餐 / 周期用量耗尽，要等到恢复时间；
+/// - `rateLimitExceeded` 和 HTTP 429 → `rate_limited`：短时请求限流，稍后重试；
+/// - `serverOverloaded`、`policyCapacityUnavailable`（0.166.0，按策略分到的容量暂时没有）→ `overloaded`：上游容量问题，和自己的额度无关；
+/// - `sessionBudgetExceeded` → `budget_exceeded`：会话共享的 token 预算（Codex 的 `token_budget` 功能）用完了，要改设置。
+///
+/// 这几类 `recoverable` 都是 `true`：会话本身没坏，等一等或改完设置之后再发消息就能继续。
 pub fn error_code(e: &TurnError) -> (&'static str, bool) {
     let lower = e.message.to_ascii_lowercase();
     match e.info_name().as_deref() {
         Some("unauthorized") => ("auth_failed", false),
-        // `policyCapacityUnavailable`（0.166.0）：按策略分到的容量暂时没有，和过载一样稍后再试
-        Some(
-            "usageLimitExceeded"
-            | "rateLimitExceeded"
-            | "serverOverloaded"
-            | "sessionBudgetExceeded"
-            | "policyCapacityUnavailable",
-        ) => ("rate_limited", true),
+        Some("usageLimitExceeded") => ("usage_limit", true),
+        Some("rateLimitExceeded") => ("rate_limited", true),
+        Some("serverOverloaded" | "policyCapacityUnavailable") => ("overloaded", true),
+        Some("sessionBudgetExceeded") => ("budget_exceeded", true),
         // 0.165.0 起提供方说模型不存在就不再重试：换个模型能接着用
         Some("modelNotFound") => ("model_not_found", true),
         Some("contextWindowExceeded") => ("context_window_exceeded", true),
@@ -318,6 +324,11 @@ pub fn error_code(e: &TurnError) -> (&'static str, bool) {
             _ => ("agent_error", true),
         },
     }
+}
+
+/// 现在的 Unix 毫秒。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 fn error_message(e: &TurnError) -> String {
@@ -350,6 +361,7 @@ impl Translator {
             model,
             usage: UsageAcc::default(),
             error_emitted: false,
+            rate_limits: HashMap::new(),
             texts: HashMap::new(),
             text_order: Vec::new(),
             thinks: HashMap::new(),
@@ -587,6 +599,11 @@ impl Translator {
                     }
                 }
             }
+            "account/rateLimits/updated" => {
+                if let Some(n) = parse::<RateLimitsUpdated>(method, params) {
+                    self.on_rate_limits(n.rate_limits);
+                }
+            }
             "error" => {
                 if let Some(n) = parse::<ErrorNotification>(method, params) {
                     if self.is_main(n.thread_id.as_deref()) {
@@ -716,14 +733,17 @@ impl Translator {
             reason = TurnDoneReason::Cancelled;
         }
         if reason == TurnDoneReason::Error && !self.error_emitted {
-            let (code, recoverable, message) = match &turn.error {
-                Some(e) => {
-                    let (c, r) = error_code(e);
-                    (c, r, error_message(e))
-                }
-                None => ("agent_error", true, "Codex ended the turn with an error".to_string()),
+            let ev = match &turn.error {
+                Some(e) => self.error_event(e),
+                None => Event::Error {
+                    code: "agent_error".to_string(),
+                    message: "Codex ended the turn with an error".to_string(),
+                    recoverable: true,
+                    resets_at_ms: None,
+                    limit_scope: None,
+                },
             };
-            push(out, Event::Error { code: code.to_string(), message, recoverable });
+            push(out, ev);
         }
 
         // 用户取消了主 turn：还在跑的子 agent 一并算取消（Stop 的意思是都停；子 agent 若其实还在跑，它自己后面的通知会把状态改回来）。
@@ -820,14 +840,59 @@ impl Translator {
     fn on_error(&mut self, n: &ErrorNotification, out: &mut Vec<Out>) {
         let message = error_message(&n.error);
         if n.will_retry {
-            push(out, Event::Error { code: "agent_reconnecting".to_string(), message, recoverable: true });
+            push(
+                out,
+                Event::Error {
+                    code: "agent_reconnecting".to_string(),
+                    message,
+                    recoverable: true,
+                    resets_at_ms: None,
+                    limit_scope: None,
+                },
+            );
             return;
         }
-        let (code, recoverable) = error_code(&n.error);
         if self.busy {
             self.error_emitted = true;
         }
-        push(out, Event::Error { code: code.to_string(), message, recoverable });
+        push(out, self.error_event(&n.error));
+    }
+
+    /// 合并一条用量窗口更新：窗口缺省（`null`）不代表清零，沿用之前记的。
+    fn on_rate_limits(&mut self, mut n: RateLimitSnapshot) {
+        let slot = self.rate_limits.entry(n.limit_id.clone().unwrap_or_default()).or_default();
+        slot.limit_id = n.limit_id.take();
+        if n.primary.is_some() {
+            slot.primary = n.primary.take();
+        }
+        if n.secondary.is_some() {
+            slot.secondary = n.secondary.take();
+        }
+    }
+
+    /// 用量耗尽（已满的窗口）里最晚的恢复时间，毫秒。多个窗口都满了得全部恢复才能接着用，所以取最晚的；
+    /// 已经过去的恢复时间是过期的记录，不用。没有可信的就是 `None`，不估算。
+    fn usage_resets_at_ms(&self, now_ms: u64) -> Option<u64> {
+        self.rate_limits
+            .values()
+            .flat_map(|s| [s.primary.as_ref(), s.secondary.as_ref()])
+            .flatten()
+            .filter(|w| w.used_percent >= 100)
+            .filter_map(|w| w.resets_at.filter(|t| *t > 0).map(|t| (t as u64).saturating_mul(1000)))
+            .filter(|t| *t > now_ms)
+            .max()
+    }
+
+    /// 一个失败的 turn / `error` 通知 → `Event::Error`。
+    fn error_event(&self, e: &TurnError) -> Event {
+        let (code, recoverable) = error_code(e);
+        Event::Error {
+            code: code.to_string(),
+            message: error_message(e),
+            recoverable,
+            resets_at_ms: if code == "usage_limit" { self.usage_resets_at_ms(now_ms()) } else { None },
+            limit_scope: None,
+        }
     }
 
     // ---------- 文本 / 思考 ----------
@@ -1604,7 +1669,13 @@ impl Translator {
                             out.push(Out::Reply { id, result: Ok(json!({ "action": "decline" })) });
                             push(
                                 &mut out,
-                                Event::Error { code: "elicitation_rejected".to_string(), message, recoverable: true },
+                                Event::Error {
+                                    code: "elicitation_rejected".to_string(),
+                                    message,
+                                    recoverable: true,
+                                    resets_at_ms: None,
+                                    limit_scope: None,
+                                },
                             );
                             return out;
                         }
@@ -1617,7 +1688,13 @@ impl Translator {
                 out.push(Out::Reply { id, result: u.result });
                 push(
                     &mut out,
-                    Event::Error { code: "unsupported_request".to_string(), message: u.message, recoverable: true },
+                    Event::Error {
+                        code: "unsupported_request".to_string(),
+                        message: u.message,
+                        recoverable: true,
+                        resets_at_ms: None,
+                        limit_scope: None,
+                    },
                 );
                 return out;
             }
@@ -2080,8 +2157,8 @@ mod tests {
         all.extend(completed(&mut t, "t1", "failed", json!({"error": e})));
         assert_eq!(names(&all), vec!["error", "turn_done"]);
         match &events(&all)[0] {
-            Event::Error { code, message, recoverable } => {
-                assert_eq!((code.as_str(), *recoverable), ("rate_limited", true));
+            Event::Error { code, message, recoverable, .. } => {
+                assert_eq!((code.as_str(), *recoverable), ("usage_limit", true));
                 assert!(message.starts_with("Quota exceeded"));
             }
             other => panic!("{other:?}"),
@@ -2127,10 +2204,16 @@ mod tests {
             error_code(&e(json!({"message": "m", "codexErrorInfo": "modelNotFound"}))),
             ("model_not_found", true)
         );
-        assert_eq!(
-            error_code(&e(json!({"message": "m", "codexErrorInfo": "policyCapacityUnavailable"}))),
-            ("rate_limited", true)
-        );
+        // 限额类按用户该做的事分开
+        for (info, want) in [
+            ("usageLimitExceeded", "usage_limit"),
+            ("rateLimitExceeded", "rate_limited"),
+            ("serverOverloaded", "overloaded"),
+            ("policyCapacityUnavailable", "overloaded"),
+            ("sessionBudgetExceeded", "budget_exceeded"),
+        ] {
+            assert_eq!(error_code(&e(json!({"message": "m", "codexErrorInfo": info}))), (want, true), "{info}");
+        }
         assert_eq!(
             error_code(&e(
                 json!({"message": "m", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 403}}})
@@ -2155,6 +2238,65 @@ mod tests {
         assert_eq!(error_message(&e(json!({"message": ""}))), "Codex reported an error");
     }
 
+    /// 失败 turn 的 `Event::Error` 里的 `resets_at_ms`。
+    fn failed_turn_resets(t: &mut Translator, info: &str) -> Option<u64> {
+        let tid = format!("t-{info}");
+        turn_started(t, &tid);
+        let outs = completed(t, &tid, "failed", json!({"error": {"message": "m", "codexErrorInfo": info}}));
+        match &events(&outs)[0] {
+            Event::Error { resets_at_ms, limit_scope, .. } => {
+                assert_eq!(*limit_scope, None, "Codex 的错误里没有可靠的限额范围");
+                *resets_at_ms
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn rate_limits(t: &mut Translator, primary: Value, secondary: Value) {
+        let n = json!({"rateLimits": {"limitId": "codex", "primary": primary, "secondary": secondary}});
+        assert!(feed(t, "account/rateLimits/updated", n).is_empty());
+    }
+
+    #[test]
+    fn usage_limit_error_carries_the_reset_time_the_account_reported() {
+        // 2100-01-01 / 2100-01-05（Unix 秒）：都在未来
+        let (soon, later) = (4_102_444_800u64, 4_102_790_400u64);
+
+        // 没有用量通知：不编恢复时间
+        let mut t = Translator::new("/w", None);
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
+
+        // 两个窗口都满了：得全部恢复才能接着用，取最晚的
+        let mut t = Translator::new("/w", None);
+        rate_limits(
+            &mut t,
+            json!({"usedPercent": 100, "resetsAt": soon}),
+            json!({"usedPercent": 100, "resetsAt": later}),
+        );
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), Some(later * 1000));
+        // 同一份快照，非用量类的错误不带
+        assert_eq!(failed_turn_resets(&mut t, "rateLimitExceeded"), None);
+        assert_eq!(failed_turn_resets(&mut t, "serverOverloaded"), None);
+
+        // 没满的窗口不算；稀疏更新里缺的窗口（null）不会清掉之前记的
+        let mut t = Translator::new("/w", None);
+        rate_limits(
+            &mut t,
+            json!({"usedPercent": 100, "resetsAt": soon}),
+            json!({"usedPercent": 40, "resetsAt": later}),
+        );
+        rate_limits(&mut t, Value::Null, json!({"usedPercent": 41, "resetsAt": later}));
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), Some(soon * 1000));
+        // 窗口恢复之后的新快照取代旧的
+        rate_limits(&mut t, json!({"usedPercent": 3, "resetsAt": later}), Value::Null);
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
+
+        // 已经过去的恢复时间是过期的记录，不用；没有恢复时间的窗口也不编
+        let mut t = Translator::new("/w", None);
+        rate_limits(&mut t, json!({"usedPercent": 100, "resetsAt": 1_700_000_000u64}), json!({"usedPercent": 100}));
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
+    }
+
     #[test]
     fn reconnecting_errors_are_recoverable_notices() {
         let mut t = Translator::new("/w", None);
@@ -2165,7 +2307,7 @@ mod tests {
             json!({"error": {"message": "Reconnecting... 2/5", "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": null}}, "additionalDetails": "tls handshake eof"}, "willRetry": true, "threadId": "th", "turnId": "t1"}),
         );
         match &events(&outs)[0] {
-            Event::Error { code, recoverable, message } => {
+            Event::Error { code, recoverable, message, .. } => {
                 assert_eq!((code.as_str(), *recoverable), ("agent_reconnecting", true));
                 assert!(message.contains("Reconnecting") && message.contains("tls handshake eof"));
             }

@@ -240,7 +240,7 @@ async fn command_that_fails_and_plan_and_other_tools() {
 #[tokio::test]
 async fn errors_end_the_turn_with_a_coded_error_event() {
     for (fixture, code, recoverable) in
-        [("real_error_usage_limit.jsonl", "rate_limited", true), ("real_error_http_401.jsonl", "auth_failed", false)]
+        [("real_error_usage_limit.jsonl", "usage_limit", true), ("real_error_http_401.jsonl", "auth_failed", false)]
     {
         let h = CodexHarness::new().script(fixture);
         let mut handle = h.spawn(SessionSettings::default(), None).await;
@@ -618,7 +618,7 @@ async fn a_form_answer_of_the_wrong_type_declines_it_and_tells_the_user() {
     // 答复 codex 的是 decline，用户另外看到一条可恢复的错误说明原因
     let evs = collect_until(&mut handle, is_permission).await;
     let problem = events_of(&evs).into_iter().find_map(|e| match e {
-        Event::Error { code, recoverable, message } => Some((code, recoverable, message)),
+        Event::Error { code, recoverable, message, .. } => Some((code, recoverable, message)),
         _ => None,
     });
     let (code, recoverable, message) = problem.expect("an error event");
@@ -1513,7 +1513,7 @@ async fn context_reset_is_announced_when_the_thread_cannot_be_resumed() {
         assert_eq!(r.agent_session_id, "thr-0001", "{mode}: a new thread was started");
         // 紧跟着一条可恢复的提示（不让 turn 失败）
         match next_event(&mut handle).await {
-            AgentEvent::Event(Event::Error { code, message, recoverable }) => {
+            AgentEvent::Event(Event::Error { code, message, recoverable, .. }) => {
                 assert_eq!(code, "agent_context_reset", "{mode}");
                 assert!(recoverable);
                 assert!(message.contains(reason) && message.contains("new thread"), "{mode}: {message}");

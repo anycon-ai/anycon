@@ -397,6 +397,8 @@ impl Translator {
                     message: "The agent asked for permission without any option to choose from, so the request was cancelled."
                         .to_string(),
                     recoverable: true,
+                    resets_at_ms: None,
+                    limit_scope: None,
                 }));
                 out.push(Out::Reply { id: rpc_id, result: Ok(cancelled()) });
             }
@@ -423,7 +425,13 @@ impl Translator {
                 out.push(Out::Permission { pending, native });
             }
             Err(message) => {
-                out.push(ev(Event::Error { code: "elicitation_rejected".to_string(), message, recoverable: true }));
+                out.push(ev(Event::Error {
+                    code: "elicitation_rejected".to_string(),
+                    message,
+                    recoverable: true,
+                    resets_at_ms: None,
+                    limit_scope: None,
+                }));
                 out.push(Out::Reply { id: rpc_id, result: Ok(json!({ "action": "decline" })) });
             }
         }
@@ -471,7 +479,13 @@ impl Translator {
             finish_tool(&mut turn, &cwd, &id, Some((errored, fallback)), &mut out);
         }
         if let Some((code, message)) = error {
-            out.push(ev(Event::Error { code: code.to_string(), message, recoverable: true }));
+            out.push(ev(Event::Error {
+                code: code.to_string(),
+                message,
+                recoverable: true,
+                resets_at_ms: None,
+                limit_scope: None,
+            }));
         }
         let cost_usd = match (turn.cost, self.cost_baseline) {
             (Some(c), Some(b)) => {

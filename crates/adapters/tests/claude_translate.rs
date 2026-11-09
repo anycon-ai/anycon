@@ -106,7 +106,7 @@ impl Replay {
         self.events()
             .into_iter()
             .filter_map(|e| {
-                if let Event::Error { code, message, recoverable } = e {
+                if let Event::Error { code, message, recoverable, .. } = e {
                     Some((code.clone(), message.clone(), *recoverable))
                 } else {
                     None
@@ -443,8 +443,11 @@ fn result_subtypes_map_to_reasons() {
     assert_eq!(r.errors(), vec![("auth_failed".to_string(), "Invalid API key · Please run /login".to_string(), false)]);
     assert_eq!(r.turn_dones()[0].1, TurnDoneReason::Error);
 
+    // 429 且之前没有 rejected 的限额事件：短时限流
     let r = Replay::run("result_rate_limited.jsonl");
     assert_eq!(r.errors()[0].0, "rate_limited");
+    assert_eq!(events_of_type(&r, "error")[0]["recoverable"], true);
+    assert!(events_of_type(&r, "error")[0].get("resets_at_ms").is_none());
 }
 
 #[test]
@@ -2232,6 +2235,60 @@ fn rate_limit_stream_warns_once_per_state_and_the_turn_ends_with_the_429() {
         ]
     );
     assert!(ns.iter().all(|n| n["resets_at_ms"] == 1_791_721_200_000u64));
-    assert_eq!(r.errors()[0].0, "rate_limited");
+    // 见过 rejected：turn 的错误是用量耗尽，带上同一个恢复时间；5 小时窗口是账号级的
+    let errs = events_of_type(&r, "error");
+    assert_eq!(errs.len(), 1);
+    assert_eq!(errs[0]["code"], "usage_limit");
+    assert_eq!(errs[0]["recoverable"], true);
+    assert_eq!(errs[0]["resets_at_ms"], 1_791_721_200_000u64);
+    assert_eq!(errs[0]["limit_scope"], "account");
     assert_eq!(r.turn_dones()[0].1, TurnDoneReason::Error);
+}
+
+// 手写 fixture：真实录制只有 `five_hour`，这几个是在它的基础上换了限额类型 / 状态。
+
+#[test]
+fn usage_limit_scope_is_model_only_when_every_rejected_window_is_per_model() {
+    let r = Replay::run("rate_limit_rejected_model.jsonl");
+    // result 是普通 429（没有 blocking_limit），靠之前的 rejected 事件认出是用量耗尽
+    let errs = events_of_type(&r, "error");
+    assert_eq!(errs[0]["code"], "usage_limit");
+    assert_eq!(errs[0]["resets_at_ms"], 1_792_076_400_000u64);
+    assert_eq!(errs[0]["limit_scope"], "model");
+}
+
+#[test]
+fn several_rejected_windows_prefer_account_level_and_the_latest_reset() {
+    let r = Replay::run("rate_limit_rejected_multi.jsonl");
+    let errs = events_of_type(&r, "error");
+    // five_hour（1791721200）、seven_day（1792076400）是账号级，seven_day_opus（1793000000）是模型级：
+    // 账号级优先，同组取最晚 → seven_day；换模型没用，所以范围是 account
+    assert_eq!(errs[0]["code"], "usage_limit");
+    assert_eq!(errs[0]["resets_at_ms"], 1_792_076_400_000u64);
+    assert_eq!(errs[0]["limit_scope"], "account");
+}
+
+#[test]
+fn a_recovered_window_is_forgotten_so_a_later_429_is_just_rate_limited() {
+    let r = Replay::run("rate_limit_recovered_then_429.jsonl");
+    let errs = events_of_type(&r, "error");
+    assert_eq!(errs[0]["code"], "rate_limited");
+    assert!(errs[0].get("resets_at_ms").is_none() && errs[0].get("limit_scope").is_none());
+}
+
+#[test]
+fn blocking_limit_without_a_rate_limit_event_is_a_usage_limit_with_no_reset_time() {
+    let r = Replay::run("result_blocking_limit_no_event.jsonl");
+    let errs = events_of_type(&r, "error");
+    assert_eq!(errs[0]["code"], "usage_limit");
+    // 没有上游给的恢复时间就不填（result 文本里的「resets 3pm」是本地时间的口语，不解析）
+    assert!(errs[0].get("resets_at_ms").is_none() && errs[0].get("limit_scope").is_none());
+}
+
+#[test]
+fn a_529_result_is_overloaded() {
+    let r = Replay::run("result_overloaded.jsonl");
+    let errs = events_of_type(&r, "error");
+    assert_eq!((errs[0]["code"].as_str(), errs[0]["recoverable"].as_bool()), (Some("overloaded"), Some(true)));
+    assert!(errs[0].get("resets_at_ms").is_none());
 }

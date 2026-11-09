@@ -383,7 +383,10 @@ impl CodexHandle {
     /// （响应 `{turnId}`），可是随后的 interrupt 会把还没被模型读到的 steer 消息连同 turn 一起丢掉（既不进下一次请求的
     /// 历史，也没有 `userMessage` 条目）。返回 `TurnEnded` 让 daemon 把消息退回队列，作为下一个 turn 发出，才不会丢。
     /// 反过来，steer 已经被接受之后才到的 cancel 无法追回那条消息（见 README「已知限制」）。
-    async fn steer(&mut self, items: Vec<Value>) -> Result<()> {
+    ///
+    /// `clientUserMessageId` 带上 `message_id`：codex 把这条消息并入历史时发的 `userMessage` 条目会原样带回它（`clientId`），
+    /// translator 据此发 [`AgentEvent::InterjectionRead`]，daemon 才知道 steer 被接受之后的消息有没有被模型读到。
+    async fn steer(&mut self, message_id: &str, items: Vec<Value>) -> Result<()> {
         if !self.busy() || self.shared.translator.lock().expect("translator lock").is_cancelling() {
             return Err(AdapterError::TurnEnded);
         }
@@ -394,7 +397,12 @@ impl CodexHandle {
                 AdapterError::TurnEnded
             });
         };
-        let params = json!({ "threadId": self.thread_id, "expectedTurnId": turn_id, "input": items });
+        let params = json!({
+            "threadId": self.thread_id,
+            "expectedTurnId": turn_id,
+            "input": items,
+            "clientUserMessageId": message_id,
+        });
         match self.shared.rpc.request("turn/steer", params, self.timings.request).await {
             Ok(_) => Ok(()),
             // turn 在我们发 steer 的同时结束了
@@ -593,7 +601,7 @@ impl AgentHandle for CodexHandle {
             return Err(AdapterError::Exited("codex is not running".into()));
         }
         if input.interject {
-            return self.steer(items).await;
+            return self.steer(&input.message_id, items).await;
         }
         if self.busy() {
             // daemon 只在没有 turn 时才不带 `interject` 发消息

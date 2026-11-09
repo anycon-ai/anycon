@@ -818,6 +818,52 @@ async fn real_cancel_under_heavy_command_output_returns_promptly() {
     collect_until(&mut h, is_exited).await;
 }
 
+/// 被 `turn/steer` 接受的消息并入历史时，app-server 发带着 `clientUserMessageId` 的 `userMessage` 条目，adapter 据此报告
+/// `InterjectionRead`（daemon 靠它区分「读到了」和「取消时可能丢了」，见下一条测试的对照）。
+#[tokio::test]
+#[ignore = "needs the real codex CLI and ANYCON_REAL_AGENT_TESTS=1"]
+async fn real_a_steered_message_is_reported_as_read_when_it_is_merged() {
+    if !enabled() {
+        eprintln!("skipped: set ANYCON_REAL_AGENT_TESTS=1");
+        return;
+    }
+    if real_codex().is_none() {
+        eprintln!("skipped: no codex on this machine");
+        return;
+    }
+    let t = StubHome::new(json!([[{"sleep": 3}, {"text": "first answer"}], [{"text": "second answer"}]]));
+    let info = Arc::new(CodexAdapter::new().probe(&t.probe_ctx()).await);
+    assert_eq!(info.status, AgentStatus::Ready, "{:?}", info.issue);
+    let mut h = t.spawn(info, SessionSettings::default()).await;
+    let _ = next_event(&mut h).await;
+    h.send(input("first")).await.unwrap();
+    let began = std::time::Instant::now();
+    while t.stub.requests().is_empty() {
+        assert!(began.elapsed() < Duration::from_secs(30), "the first model request never arrived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    h.send(interject("STEERED-MSG-456")).await.expect("codex accepts the steer while a model request is in flight");
+    // 不取消，让 turn 自己走完
+    let evs = tokio::time::timeout(Duration::from_secs(60), collect_until(&mut h, is_turn_done))
+        .await
+        .expect("the steered turn must finish");
+    match evs.last().unwrap() {
+        AgentEvent::Event(Event::TurnDone { reason, .. }) => assert_eq!(*reason, TurnDoneReason::Completed),
+        _ => unreachable!(),
+    }
+    let read: Vec<&str> = evs
+        .iter()
+        .filter_map(
+            |e| if let AgentEvent::InterjectionRead { message_id } = e { Some(message_id.as_str()) } else { None },
+        )
+        .collect();
+    assert!(!read.is_empty() && read.iter().all(|id| *id == "m"), "{read:?}");
+    // 那条消息确实到了模型
+    assert!(t.stub.requests().iter().any(|r| r.to_string().contains("STEERED-MSG-456")));
+    h.shutdown().await.unwrap();
+    collect_until(&mut h, is_exited).await;
+}
+
 /// 被 `turn/steer` 接受的消息，随后 turn 被 interrupt，会不会丢？（真实 codex 0.157.1 上会丢，所以 `cancel` 之后的插话要退回队列。）
 /// 这条测试把「会丢」固定下来：哪天 codex 改了，它会失败，提醒我们重新考虑 adapter 里「`cancel` 之后的插话 = `TurnEnded`」的取舍。
 #[tokio::test]
@@ -857,6 +903,8 @@ async fn real_a_steered_message_is_lost_when_the_turn_is_then_interrupted() {
         AgentEvent::Event(Event::TurnDone { reason, .. }) => assert_eq!(*reason, TurnDoneReason::Cancelled),
         _ => unreachable!(),
     }
+    // 丢掉的 steer 没有 userMessage 条目，所以 adapter 不会报它被读到（daemon 因此把它标成「送达不确定」）
+    assert!(!evs.iter().any(|e| matches!(e, AgentEvent::InterjectionRead { .. })), "{:?}", names(&evs));
     // ……取消之后的插话 adapter 不再发 steer，而是 TurnEnded（daemon 会把它退回队列）
     assert!(matches!(h.send(interject("too late")).await, Err(anycon_agent_api::AdapterError::TurnEnded)));
     // 下一个 turn

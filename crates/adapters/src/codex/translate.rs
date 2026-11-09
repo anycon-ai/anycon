@@ -201,7 +201,7 @@ fn item_id(item: &ThreadItem) -> Option<&str> {
         | ThreadItem::WebSearch { id, .. }
         | ThreadItem::ImageView { id, .. }
         | ThreadItem::ImageGeneration { id, .. } => Some(id.as_str()),
-        ThreadItem::UserMessage {} | ThreadItem::Other => None,
+        ThreadItem::UserMessage { .. } | ThreadItem::Other => None,
     }
 }
 
@@ -1006,7 +1006,14 @@ impl Translator {
                     self.think_state(id);
                 }
             }
-            ThreadItem::UserMessage {} | ThreadItem::Plan { .. } => {}
+            ThreadItem::UserMessage { client_id } => {
+                // 插话（`turn/steer`）被并入历史：条目带着我们给的 `clientUserMessageId`。`item/started` 和 `item/completed`
+                // 都会到，都发（daemon 对重复的忽略）；`turn/start` 的消息我们不带 id，所以有 id 的一定是插话
+                if let (true, Some(id)) = (main, client_id.as_deref().filter(|id| !id.is_empty())) {
+                    out.push(Out::Event(AgentEvent::InterjectionRead { message_id: id.to_string() }));
+                }
+            }
+            ThreadItem::Plan { .. } => {}
             ThreadItem::ContextCompaction { .. } => {
                 // 临时状态只在 turn 进行中有意义（客户端在 `turn_done` 时清掉它）；压缩完成的提示不挑时候
                 if main && completed {

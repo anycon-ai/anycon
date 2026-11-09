@@ -30,6 +30,9 @@ Environment (all optional)
   FAKE_CODEX_THREAD_ID        fixed thread id for thread/start
   FAKE_CODEX_RESUME_FAIL      `none` ("no rollout found") | `notfound` ("thread not found") | other (some other error)  for thread/resume
   FAKE_CODEX_STEER_REJECT=1   `turn/steer` always answers "no active turn to steer" (the turn ended a moment ago)
+  FAKE_CODEX_STEER_NO_ECHO=1  an accepted `turn/steer` is never merged into the history (no `userMessage` item), like a steer
+                              that a real codex drops when the turn is interrupted; otherwise the accepted message comes
+                              back right away as a `userMessage` item carrying `clientUserMessageId` as `clientId`
   FAKE_CODEX_TURN_START_ERROR message: `turn/start` fails with it
   FAKE_CODEX_INJECT_FAIL=1    `thread/inject_items` fails
   FAKE_CODEX_IGNORE_INTERRUPT=1  answer `turn/interrupt` but keep going
@@ -269,6 +272,11 @@ def handle_request(msg):
         if params.get("expectedTurnId") != state["active_turn"]:
             return err(rid, "expected active turn id `%s` but found `%s`" % (params.get("expectedTurnId"), state["active_turn"]))
         ok(rid, {"turnId": state["active_turn"]})
+        if env.get("FAKE_CODEX_STEER_NO_ECHO") != "1":
+            state["steer_seq"] = state.get("steer_seq", 0) + 1
+            item = {"type": "userMessage", "id": "user-steer-%d" % state["steer_seq"], "clientId": params.get("clientUserMessageId"), "content": params.get("input") or []}
+            for kind, extra in (("item/started", {"startedAtMs": now_ms()}), ("item/completed", {"completedAtMs": now_ms()})):
+                emit({"method": kind, "params": dict(extra, item=item, threadId=params.get("threadId"), turnId=state["active_turn"]), "emittedAtMs": now_ms()})
     elif method == "turn/interrupt":
         if not state["active_turn"]:
             return err(rid, "no active turn to interrupt")

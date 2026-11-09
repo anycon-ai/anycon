@@ -1725,3 +1725,38 @@ fn an_mcp_approval_in_a_sub_agent_says_which_agent_is_asking() {
     let (p, _) = the_permission(&outs);
     assert_eq!(p.title, "Run MCP tool docs/publish (sub-agent publisher)");
 }
+
+/// 真实录制（codex 0.167.0，本地假模型服务）：turn 进行中 `turn/steer`（带 `clientUserMessageId`），codex 把它并入历史时
+/// 发出的 `userMessage` 条目带着同一个 `clientId`；`turn/start` 的第一条消息 `clientId` 是 null。
+#[test]
+fn a_steered_message_merged_into_the_history_is_reported_as_read() {
+    let (t, outs) = replay("real_steer_merged.jsonl");
+    let read: Vec<&str> = outs
+        .iter()
+        .filter_map(|o| match o {
+            Out::Event(AgentEvent::InterjectionRead { message_id }) => Some(message_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    // item/started 和 item/completed 各一次；第一条消息（clientId null）不报
+    assert_eq!(read, vec!["5c1d6b0e-7a41-4b8e-9f2d-3a6e0c9d4b11"; 2]);
+    // userMessage 不进事件流（daemon 自己记用户消息），其余照常
+    assert!(!names(&outs).iter().any(|n| n == "user_message"));
+    assert_eq!(done(&outs).0, TurnDoneReason::Completed);
+    assert!(!t.is_busy());
+}
+
+#[test]
+fn a_user_message_without_a_client_id_is_not_an_interjection_signal() {
+    let mut t = Translator::new("/work/proj", None);
+    t.begin_turn();
+    for client_id in [json!(null), json!("")] {
+        let outs = t.feed_message(&json!({"method": "item/started", "params": {
+            "threadId": "t", "turnId": "u",
+            "item": {"type": "userMessage", "id": "x", "clientId": client_id, "content": []}}}));
+        assert!(outs.is_empty(), "{outs:?}");
+    }
+    let outs = t.feed_message(&json!({"method": "item/completed", "params": {
+        "threadId": "t", "turnId": "u", "item": {"type": "userMessage", "id": "x", "content": []}}}));
+    assert!(outs.is_empty(), "{outs:?}");
+}

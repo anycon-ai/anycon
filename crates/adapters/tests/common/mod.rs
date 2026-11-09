@@ -192,6 +192,7 @@ pub fn names(evs: &[AgentEvent]) -> Vec<String> {
             AgentEvent::Started { .. } => "STARTED".into(),
             AgentEvent::Title(_) => "TITLE".into(),
             AgentEvent::TurnStarted => "TURN_STARTED".into(),
+            AgentEvent::InterjectionRead { message_id } => format!("INTERJECTION_READ:{message_id}"),
             AgentEvent::Background { tasks } => format!("BACKGROUND:{tasks}"),
             AgentEvent::Exited { .. } => "EXITED".into(),
         })

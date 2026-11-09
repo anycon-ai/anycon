@@ -1760,3 +1760,25 @@ fn a_user_message_without_a_client_id_is_not_an_interjection_signal() {
         "threadId": "t", "turnId": "u", "item": {"type": "userMessage", "id": "x", "content": []}}}));
     assert!(outs.is_empty(), "{outs:?}");
 }
+
+/// 子 agent 的 thread 走同一条连接：它里面带 `clientId` 的 `userMessage` 不是主 turn 的插话，不报。
+#[test]
+fn a_sub_agent_thread_user_message_with_a_client_id_is_not_reported_as_read() {
+    let mut t = Translator::new("/work/proj", None);
+    t.set_main_thread("main");
+    t.begin_turn();
+    for method in ["item/started", "item/completed"] {
+        let outs = t.feed_message(&json!({"method": method, "params": {
+            "threadId": "child", "turnId": "u",
+            "item": {"type": "userMessage", "id": "x", "clientId": "m-from-a-sub-agent", "content": []}}}));
+        assert!(outs.is_empty(), "{outs:?}");
+    }
+    // 同样的条目在主 thread 里就报
+    let outs = t.feed_message(&json!({"method": "item/started", "params": {
+        "threadId": "main", "turnId": "u",
+        "item": {"type": "userMessage", "id": "x", "clientId": "m-main", "content": []}}}));
+    assert!(
+        matches!(outs.as_slice(), [Out::Event(AgentEvent::InterjectionRead { message_id })] if message_id == "m-main"),
+        "{outs:?}"
+    );
+}

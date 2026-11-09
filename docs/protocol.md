@@ -325,7 +325,7 @@ Event =
   | { type: "settings_changed", settings }
   | { type: "title_changed",    title }
   | { type: "git",              action, branch, base?, count?, files?, note? }   // daemon 自己做的 git 操作（ADR-34）：worktree_created / worktree_failed / worktree_removed / worktree_kept / worktree_restored / worktree_missing / sync_up_to_date / sync_merged / sync_conflicts / sync_aborted；worktree_removed 的 note 是 branch_deleted | branch_kept，其他动作的 note 是英文说明
-  | { type: "error",            code, message, recoverable }
+  | { type: "error",            code, message, recoverable, resets_at_ms?, limit_scope? }   // 限额类错误带恢复时间和范围；见下
   | { type: "task",             id, kind, tool_id?, title, status, usage?, last_tool?, summary?, phases?, agents? }   // 后台任务的状态快照，同一个 id 的后一条整条取代前一条；见下
   | { type: "notice",           code, level: info | warning, message, model_from?, model_to?, resets_at_ms? }      // agent 给用户的提示，不是错误；见下
   | { type: "activity",         state: none | retrying | compacting, attempt?, max_attempts?, delay_ms?, reason? }  // turn 进行中的临时状态；见下
@@ -361,6 +361,19 @@ Event =
 | `hook_failed` | warning | hook 失败或阻止了操作 | |
 
 新增 `code` 不算协议变更：不认识的客户端按 `level` 显示 `message`。`notice` 单独成一类，没有复用 `recoverable = true` 的 `error`：那一类的语义是「这个 turn 出了问题」，客户端会按错误样式显示、可能带「重试」，而这里的提示（上下文压缩、换模型）没有出问题。
+
+**`error`：限额类的 `code`。** 用户碰到限额时该做的事完全不同（等到某个时间点、稍后重试、和自己的额度无关、去改设置），所以按上游给的信号拆成四个码，不再共用一个 `rate_limited`。每个码都对应 adapter 实际收到的上游信号；上游没有给出的信号就没有对应的码。`recoverable` 对这四个码都是 `true`：会话本身没坏，等一等或改完设置之后再发消息就能继续（`false` 留给 `auth_failed` 这类要先修好登录的错误）。
+
+| code | 含义 | 上游信号 | 恢复时间 `resets_at_ms` |
+|---|---|---|---|
+| `usage_limit` | 套餐 / 周期用量耗尽，要等到恢复 | Codex `codexErrorInfo = usageLimitExceeded`；Claude Code：`result` 的 `terminal_reason = blocking_limit`，或 429 的 `result` 之前出现过 `status: rejected` 的 `rate_limit_event` | 上游给了才有：Codex 取 `account/rateLimits/updated` 里已用满（`usedPercent ≥ 100`）、恢复时间还在未来的窗口，Claude Code 取 `rate_limit_event.resetsAt`；多个窗口都满了取最晚的。没有就缺省，不估算 |
+| `rate_limited` | 短时的请求限流，稍后重试即可 | Codex `rateLimitExceeded`、HTTP 429；Claude Code 的 `result` 是 429 且没见过 `rejected` 的限额事件 | 不带 |
+| `overloaded` | 上游容量问题，和自己的额度无关 | Codex `serverOverloaded`、`policyCapacityUnavailable`（按策略分到的容量暂时没有）；Claude Code `result.api_error_status = 529` | 不带 |
+| `budget_exceeded` | 会话的 token 预算用完了，要改设置 | Codex `sessionBudgetExceeded`（会话共享的 token 预算；Claude Code 的 `error_max_budget_usd` 没有 `error` 事件，只有 `turn_done { reason: budget }`） | 不带 |
+
+`limit_scope`（`account` \| `model`）只用于 `usage_limit`：上游明确给出限额类型时才有。Claude Code 的 `rateLimitType` 里 `seven_day_opus`、`seven_day_sonnet` 是单个模型系列的窗口 → `model`（换个模型可以接着用），`five_hour`、`seven_day`、`seven_day_overage_included`、`overage` 是账号级的 → `account`；不认识的类型不报。同时有多个窗口被拒绝时，账号级的优先于模型级的（换模型没用），同一组里取最晚的恢复时间。Codex 的错误和用量通知里没有可靠的范围信息，所以不带。
+
+兼容：这些都是 `error` 上新增的可选字段和新的 `code` 取值，不改变线路格式。不认识这些码的老客户端按 `message` 显示（Web 的错误卡片对不认识的码就是这个行为）；老 daemon 写下的历史事件里，用量耗尽仍然是 `rate_limited`。daemon 对这几个码没有特殊处理：原样透传，不因为限额自动重试或排队。
 
 **`activity`：turn 进行中的临时状态。** agent 在做「非输出」的事时发：`retrying`（正在重试一次失败的 API 请求，`attempt` / `max_attempts` / `delay_ms`（距下一次重试）/ `reason`（错误摘要，如 `529 overloaded_error`））、`compacting`（正在压缩上下文）。客户端在 turn 进行中把它显示成一条临时状态，**收到任何内容事件（`text_delta`、`thinking_delta`、`tool_call`、`tool_result`…）、`turn_done` 或 `state = none` 时清掉**。它不进消息流的持久内容；历史回放时只需要看最后一条之后有没有内容事件。
 

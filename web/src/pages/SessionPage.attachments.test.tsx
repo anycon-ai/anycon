@@ -323,7 +323,7 @@ describe('SessionPage: retrying a turn and exporting', () => {
     expect(screen.queryByTestId('message-resend')).toBeNull()
   })
 
-  it('a rejected resend gives the button back and says why', async () => {
+  it('a rejected resend leaves one place to retry: the original stays “Sent again”, the failed new message has its own Retry', async () => {
     seed({ events: [{ type: 'user_message', message_id: 'm1', content: 'hello', by_device: 'me' }, { type: 'message_delivery', message_id: 'm1', state: 'uncertain' }] })
     rpc.handlers['session.send'] = () => {
       throw rpcError('invalid')
@@ -331,8 +331,23 @@ describe('SessionPage: retrying a turn and exporting', () => {
     render(<SessionPage sessionId={SID} />)
     await userEvent.click(await screen.findByTestId('message-resend'))
     await waitFor(() => expect(useUi.getState().toasts.length).toBeGreaterThan(0))
-    expect(await screen.findByTestId('message-resend')).toBeInTheDocument()
-    expect(screen.queryByTestId('message-resent')).toBeNull()
+    expect(await screen.findByTestId('message-unsent-badge')).toBeInTheDocument()
+    expect(screen.getAllByTestId('message-retry')).toHaveLength(1)
+    expect(screen.queryByTestId('message-resend')).toBeNull()
+    expect(screen.getByTestId('message-resent')).toBeInTheDocument()
+  })
+
+  it('a resend that could not reach the node ends up in the unsent list once; the original does not offer a second send', async () => {
+    seed({ events: [{ type: 'user_message', message_id: 'm1', content: 'hello', by_device: 'me' }, { type: 'message_delivery', message_id: 'm1', state: 'uncertain' }] })
+    rpc.handlers['session.send'] = () => {
+      throw new Error('connection lost')
+    }
+    render(<SessionPage sessionId={SID} />)
+    await userEvent.click(await screen.findByTestId('message-resend'))
+    await waitFor(() => expect(screen.getAllByTestId('message-unsent-badge')).toHaveLength(1))
+    expect(screen.getAllByTestId('message-retry')).toHaveLength(1)
+    expect(screen.queryByTestId('message-resend')).toBeNull()
+    expect(screen.getByTestId('message-resent')).toBeInTheDocument()
   })
 
   it('no “Send again” while the node is offline', async () => {

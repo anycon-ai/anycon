@@ -195,19 +195,14 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
   }, [nodeId, sessionId, view?.blocks, t])
 
   // 「可能没有送达」的消息上的「重发」：用新的 message_id 把同样的内容和附件引用再发一遍（附件已经属于这个会话，daemon 允许在同一个会话里复用）。
-  // 不会自动重发（可能重复），由用户点。发送被拒时撤回「已重发」，让用户可以再点
+  // 不会自动重发（可能重复），由用户点。交给 sendMessage 之后原消息就固定显示「已重发」：发送失败或没发出去时，新消息自己有
+  // 「失败 / 未发送」气泡和它的「重试」，不在原消息上再给第二个入口（两边都点会发两遍）
   const onResendMessage = useCallback(
     (block: UserBlock) => {
       if (!nodeId) return
       setResent((s) => new Set(s).add(block.messageId))
       void sendMessage(nodeId, sessionId, block.content, block.attachments).then((r) => {
-        if (r.state !== 'failed') return
-        setResent((s) => {
-          const n = new Set(s)
-          n.delete(block.messageId)
-          return n
-        })
-        toast.error(failedText(r.reason, t))
+        if (r.state === 'failed') toast.error(failedText(r.reason, t))
       })
     },
     [nodeId, sessionId, t],

@@ -366,6 +366,9 @@ pub struct RateLimitSnapshot {
     /// 计量桶的 id（比如 `codex`）。
     #[serde(default)]
     pub limit_id: Option<String>,
+    /// 这个计量桶对应的常规模型（按模型的限额才有）。
+    #[serde(default)]
+    pub normal_model_slug: Option<String>,
     #[serde(default)]
     pub primary: Option<RateLimitWindow>,
     #[serde(default)]

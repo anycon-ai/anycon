@@ -22,6 +22,11 @@ fn fixture(name: &str) -> Vec<String> {
         .collect()
 }
 
+/// 回放用的“现在”：2026-10-01（Unix 毫秒）。
+fn fixed_now_ms() -> u64 {
+    1_790_800_000_000
+}
+
 #[derive(Default)]
 struct Replay {
     outs: Vec<Out>,
@@ -30,7 +35,7 @@ struct Replay {
 impl Replay {
     /// 回放全文。第一行之前、以及每个 `result` 之后的下一行之前开一个新 turn。
     fn run(name: &str) -> Self {
-        let mut t = Translator::new(CWD, json!({"model": "m"}), None);
+        let mut t = Translator::new(CWD, json!({"model": "m"}), None).with_clock(fixed_now_ms);
         Self::run_with(&mut t, name, true)
     }
 
@@ -2245,44 +2250,88 @@ fn rate_limit_stream_warns_once_per_state_and_the_turn_ends_with_the_429() {
     assert_eq!(r.turn_dones()[0].1, TurnDoneReason::Error);
 }
 
-// 手写 fixture：真实录制只有 `five_hour`，这几个是在它的基础上换了限额类型 / 状态。
+// 限额类错误的 fixture 全是手写的（没有真实录制）：事件形状来自 2.1.311 二进制里的 SDK schema；
+// `rate_limit_event` 的类型 / 状态、`result` 的 `terminal_reason` / `api_error_status` 按各个用例改。
+// 回放用的时钟固定在 2026-10-01，fixture 里的恢复时间（1791721200 起）都在它之后。
+
+/// `error` 事件的 `(code, resets_at_ms, limit_scope)`。
+fn limit_errors(r: &Replay) -> Vec<(String, Option<u64>, Option<String>)> {
+    events_of_type(r, "error")
+        .iter()
+        .map(|e| {
+            (
+                e["code"].as_str().unwrap().to_string(),
+                e["resets_at_ms"].as_u64(),
+                e["limit_scope"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
 
 #[test]
-fn usage_limit_scope_is_model_only_when_every_rejected_window_is_per_model() {
+fn an_api_error_marked_usage_limit_reached_is_the_preferred_usage_limit_signal() {
+    // assistant 消息带 `api_error: usage_limit_reached` 和 `rate_limit_info`，没有 `rate_limit_event`：
+    // 码、恢复时间、范围都从它取
+    let r = Replay::run("usage_limit_api_error.jsonl");
+    assert_eq!(limit_errors(&r), [("usage_limit".to_string(), Some(1_792_076_400_000), Some("model".to_string()))]);
+    assert_eq!(events_of_type(&r, "error")[0]["recoverable"], true);
+}
+
+#[test]
+fn a_429_api_error_without_usage_limit_reached_stays_rate_limited() {
+    // 同样的 API 错误消息，但没有 `api_error`（临时节流、API key 的 429 …）：不是用量耗尽
+    let r = Replay::run("rate_limit_api_error_without_usage_limit.jsonl");
+    assert_eq!(limit_errors(&r), [("rate_limited".to_string(), None, None)]);
+}
+
+#[test]
+fn a_429_after_a_rejected_rate_limit_event_is_the_usage_limit_fallback() {
     let r = Replay::run("rate_limit_rejected_model.jsonl");
-    // result 是普通 429（没有 blocking_limit），靠之前的 rejected 事件认出是用量耗尽
-    let errs = events_of_type(&r, "error");
-    assert_eq!(errs[0]["code"], "usage_limit");
-    assert_eq!(errs[0]["resets_at_ms"], 1_792_076_400_000u64);
-    assert_eq!(errs[0]["limit_scope"], "model");
+    assert_eq!(limit_errors(&r), [("usage_limit".to_string(), Some(1_792_076_400_000), Some("model".to_string()))]);
 }
 
 #[test]
-fn several_rejected_windows_prefer_account_level_and_the_latest_reset() {
+fn only_the_last_rate_limit_status_counts() {
+    // 上游同一时刻只有一个起限制作用的窗口：five_hour 之后的 seven_day_opus 取代它，不是几个窗口的并集
     let r = Replay::run("rate_limit_rejected_multi.jsonl");
-    let errs = events_of_type(&r, "error");
-    // five_hour（1791721200）、seven_day（1792076400）是账号级，seven_day_opus（1793000000）是模型级：
-    // 账号级优先，同组取最晚 → seven_day；换模型没用，所以范围是 account
-    assert_eq!(errs[0]["code"], "usage_limit");
-    assert_eq!(errs[0]["resets_at_ms"], 1_792_076_400_000u64);
-    assert_eq!(errs[0]["limit_scope"], "account");
+    assert_eq!(limit_errors(&r), [("usage_limit".to_string(), Some(1_793_000_000_000), Some("model".to_string()))]);
 }
 
 #[test]
-fn a_recovered_window_is_forgotten_so_a_later_429_is_just_rate_limited() {
-    let r = Replay::run("rate_limit_recovered_then_429.jsonl");
-    let errs = events_of_type(&r, "error");
-    assert_eq!(errs[0]["code"], "rate_limited");
-    assert!(errs[0].get("resets_at_ms").is_none() && errs[0].get("limit_scope").is_none());
+fn a_later_allowed_or_allowed_warning_clears_the_rejection_whatever_its_type() {
+    // 真实录制里 `allowed` 的类型一律是 five_hour：不能指望它清掉同类型的槽位
+    let r = Replay::run("rate_limit_cleared_by_later_status.jsonl");
+    assert_eq!(
+        limit_errors(&r),
+        [
+            ("usage_limit".to_string(), Some(1_792_076_400_000), Some("model".to_string())),
+            ("rate_limited".to_string(), None, None),
+            ("usage_limit".to_string(), Some(1_792_076_400_000), Some("account".to_string())),
+            ("rate_limited".to_string(), None, None),
+        ]
+    );
 }
 
 #[test]
-fn blocking_limit_without_a_rate_limit_event_is_a_usage_limit_with_no_reset_time() {
-    let r = Replay::run("result_blocking_limit_no_event.jsonl");
-    let errs = events_of_type(&r, "error");
-    assert_eq!(errs[0]["code"], "usage_limit");
-    // 没有上游给的恢复时间就不填（result 文本里的「resets 3pm」是本地时间的口语，不解析）
-    assert!(errs[0].get("resets_at_ms").is_none() && errs[0].get("limit_scope").is_none());
+fn a_rejection_whose_reset_time_has_passed_is_not_a_usage_limit_any_more() {
+    let r = Replay::run("rate_limit_rejected_expired.jsonl");
+    assert_eq!(limit_errors(&r), [("rate_limited".to_string(), None, None)]);
+}
+
+#[test]
+fn blocking_limit_prompt_too_long_and_rapid_refill_breaker_are_context_limits() {
+    // 二进制里这三个是同一个 case（"Prompt is too long"），和用量无关
+    for reason in ["blocking_limit", "prompt_too_long", "rapid_refill_breaker"] {
+        let mut t = Translator::new(CWD, json!({"model": "m"}), None).with_clock(fixed_now_ms);
+        t.begin_turn();
+        let mut outs = Vec::new();
+        for line in fixture("result_context_limit.jsonl") {
+            outs.extend(t.feed_line(&line.replace("blocking_limit", reason)));
+        }
+        let r = Replay { outs };
+        assert_eq!(limit_errors(&r), [("context_window_exceeded".to_string(), None, None)], "{reason}");
+        assert_eq!(events_of_type(&r, "error")[0]["recoverable"], true);
+    }
 }
 
 #[test]

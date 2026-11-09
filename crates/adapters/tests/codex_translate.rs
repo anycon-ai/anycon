@@ -31,8 +31,13 @@ fn lines(name: &str) -> Vec<String> {
 }
 
 /// 回放一个 fixture：返回全部输出。
+/// 回放用的“现在”：2026-10-01（Unix 毫秒）；fixture 里的恢复时间都在它之后。
+fn fixed_now_ms() -> u64 {
+    1_790_800_000_000
+}
+
 fn replay(name: &str) -> (Translator, Vec<Out>) {
-    let mut t = Translator::new("/work/proj", Some("fixture-model".to_string()));
+    let mut t = Translator::new("/work/proj", Some("fixture-model".to_string())).with_clock(fixed_now_ms);
     t.begin_turn();
     let mut outs = Vec::new();
     for l in lines(name) {
@@ -454,14 +459,15 @@ fn errors_become_coded_error_events() {
 #[test]
 fn limit_errors_are_told_apart() {
     // 手写 fixture（按 schema 在真实录制的基础上换了 `codexErrorInfo`）
-    // 用量耗尽 + 账号用量通知里两个窗口都满了：恢复时间取较晚的（secondary，2100-01-05）
+    // 用量耗尽 + 账号用量通知里同一个计量桶的两个窗口都满了：恢复时间取较晚的（secondary，1792076400 秒）
     let (code, recoverable, resets, _) = error_of("error_usage_limit_resets.jsonl");
-    assert_eq!((code.as_str(), recoverable, resets), ("usage_limit", true, Some(4_102_876_800_000)));
+    assert_eq!((code.as_str(), recoverable, resets), ("usage_limit", true, Some(1_792_076_400_000)));
 
     for (fixture, want) in [
         ("error_rate_limit_exceeded.jsonl", "rate_limited"),
         ("error_server_overloaded.jsonl", "overloaded"),
         ("error_policy_capacity.jsonl", "overloaded"),
+        ("error_flex_unavailable.jsonl", "overloaded"),
         ("error_session_budget.jsonl", "budget_exceeded"),
     ] {
         let (code, recoverable, resets, _) = error_of(fixture);

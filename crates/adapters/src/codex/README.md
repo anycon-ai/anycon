@@ -277,14 +277,24 @@ stdout 单行上限 8 MiB。真实 codex 0.157.1 上实测（本地假模型服�
 
 | 码 | `recoverable` | 上游信号 | `resets_at_ms` |
 |---|---|---|---|
-| `usage_limit` | true | `usageLimitExceeded`（套餐 / 周期用量耗尽） | `account/rateLimits/updated` 里已用满（`usedPercent ≥ 100`）、`resetsAt`（Unix 秒）还在未来的窗口；`primary` / `secondary` 和各计量桶的窗口都满了取最晚的（得全部恢复）。没有这样的窗口就不带，不估算 |
+| `usage_limit` | true | `usageLimitExceeded`（账号用量 / 额度耗尽；唯一的真实录制消息是 "Quota exceeded. Check your plan and billing details."，也就是它还包括 API key 的计费额度用完，那种情况不会自己恢复，所以文案不承诺“等恢复”） | `account/rateLimits/updated` 里已满（`usedPercent ≥ 100`）、`resetsAt`（Unix 秒）还在未来的窗口，**按计量桶选**，见下。没有可信的就不带，不估算 |
 | `rate_limited` | true | `rateLimitExceeded`；HTTP 429（`httpStatusCode` 或消息里的 `429 too many requests`） | 不带 |
-| `overloaded` | true | `serverOverloaded`；`policyCapacityUnavailable`（0.166.0，按策略分到的容量暂时没有——schema 没有写明含义，按名字和 Codex 的处理当作上游暂时没有容量，稍后再试） | 不带 |
-| `budget_exceeded` | true | `sessionBudgetExceeded`：会话共享的 token 预算（`token_budget` 功能，二进制里的提示是 "weighted tokens left in the shared session token budget"）用完了，要改设置。不是套餐限额，所以不和 `usage_limit` 合并；`turn_done.reason` 仍是 `error`（改成 `budget` 会让 daemon 把会话标成已结束） | 不带 |
+| `overloaded` | true | `serverOverloaded`；`policyCapacityUnavailable`（0.166.0，按策略分到的容量暂时没有——schema 没有写明含义，按名字当作上游暂时没有容量，稍后再试）；`flexUnavailable`（二进制里的文案 "Flex capacity unavailable."） | 不带 |
+| `budget_exceeded` | true | `sessionBudgetExceeded`：会话共享的 token 预算（`token_budget` 功能，二进制里的提示是 "weighted tokens left in the shared session token budget"）用完了，要改 Codex 自己的配置（anycon 没有这个设置项，Codex 也拒收 `max_budget_usd`）。不是套餐限额，所以不和 `usage_limit` 合并；`turn_done.reason` 仍是 `error`（改成 `budget` 会让 daemon 把会话标成已结束） | 不带 |
 
-不带 `limit_scope`：`RateLimitSnapshot.limitName` / `normalModelSlug` 暗示有模型专属的计量桶，但错误本身没有说是哪一个，不够可靠。
+**恢复时间按计量桶选**：Codex 有按模型的限额（文案 "You've hit your usage limit for <model>…"，`RateLimitSnapshot` 有 `limitName` / `normalModelSlug`），不同桶的恢复时间不能混在一起。adapter 按 `limitId` 记每个桶最新的窗口（稀疏更新：`null` 的窗口不清掉之前记的），然后：
 
-测试：`codex_translate.rs` 的 `errors_become_coded_error_events`（真实录制 `real_error_usage_limit.jsonl`：那次没有用量通知，所以不带恢复时间）和 `limit_errors_are_told_apart`；`translate.rs` 单元测试 `error_codes`、`usage_limit_error_carries_the_reset_time_the_account_reported`（合并稀疏更新、取最晚、忽略过期的恢复时间）。下面的 fixture 是在 `real_error_usage_limit.jsonl` 的基础上手写的（只换了 `codexErrorInfo` 和 `message`，用量通知按 schema 写）：`error_usage_limit_resets.jsonl`（两个窗口都满了，恢复时间在 2100 年，免得随时间过期）、`error_rate_limit_exceeded.jsonl`、`error_server_overloaded.jsonl`、`error_policy_capacity.jsonl`、`error_session_budget.jsonl`。
+1. 已满的桶里有 `normalModelSlug` 等于当前会话模型（不分大小写）的 → 用它；
+2. 否则只有**一个**桶已满 → 用它；
+3. 仍有歧义（多个桶都满了、又认不出哪个是当前模型的）→ 不带，不猜。
+
+“得全部恢复才能接着用，取最晚的”只在**同一个桶内**成立（`primary` / `secondary` 都满了）。已经过去的 `resetsAt` 是过期的记录，不用（时钟可注入，`Translator::with_clock`）。
+
+**已知限制**：adapter 不读 `account/rateLimits/read` 的基线，只靠 `account/rateLimits/updated` 的推送。新进程的第一个 turn 就撞限额时可能还没收到过用量通知，这时拿不到恢复时间（错误本身照常报 `usage_limit`）。`usage_limit` 的真实录制 `real_error_usage_limit.jsonl` 里没有用量通知，但那份录制是在通知被 opt-out 的状态下做的，所以它说明不了 Codex 在限额时会不会推这条通知；窗口、桶和 `resetsAt` 的形状只按 schema 写。
+
+不带 `limit_scope`：`limitName` / `normalModelSlug` 暗示有模型专属的计量桶，但错误本身没有说是哪一个，不够可靠。
+
+测试：`codex_translate.rs` 的 `errors_become_coded_error_events` 和 `limit_errors_are_told_apart`；`translate.rs` 单元测试 `error_codes`、`usage_limit_error_carries_the_reset_time_the_account_reported`（合并稀疏更新、同桶取最晚、忽略过期的恢复时间）、`the_reset_time_comes_from_the_bucket_of_the_current_model`（桶的选择和歧义）。下面的 fixture 是在 `real_error_usage_limit.jsonl` 的基础上手写的（只换了 `codexErrorInfo` 和 `message`，用量通知按 schema 写）：`error_usage_limit_resets.jsonl`（一个桶的两个窗口都满了）、`error_rate_limit_exceeded.jsonl`、`error_server_overloaded.jsonl`、`error_policy_capacity.jsonl`、`error_flex_unavailable.jsonl`、`error_session_budget.jsonl`；测试回放用固定在 2026-10-01 的时钟。
 
 ## 子 agent、MCP elicitation、压缩上下文（`codex-cli 0.164.0` 实测，2026-10-26）
 

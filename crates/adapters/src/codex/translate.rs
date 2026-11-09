@@ -157,6 +157,8 @@ pub struct Translator {
     error_emitted: bool,
     /// `account/rateLimits/updated` 报过的用量窗口，按计量桶（`limitId`）记最新的；只用来在 `usage_limit` 错误里补恢复时间。
     rate_limits: HashMap<String, RateLimitSnapshot>,
+    /// 现在的 Unix 毫秒；测试里换成固定时间。
+    now_ms: fn() -> u64,
     texts: HashMap<String, TextState>,
     text_order: Vec<String>,
     thinks: HashMap<String, ThinkState>,
@@ -299,7 +301,8 @@ fn review_action_summary(action: &Value) -> Option<String> {
 /// 限额类的 `codexErrorInfo` 按用户该做的事分开：
 /// - `usageLimitExceeded` → `usage_limit`：套餐 / 周期用量耗尽，要等到恢复时间；
 /// - `rateLimitExceeded` 和 HTTP 429 → `rate_limited`：短时请求限流，稍后重试；
-/// - `serverOverloaded`、`policyCapacityUnavailable`（0.166.0，按策略分到的容量暂时没有）→ `overloaded`：上游容量问题，和自己的额度无关；
+/// - `serverOverloaded`、`policyCapacityUnavailable`（0.166.0，按策略分到的容量暂时没有）、`flexUnavailable`（"Flex capacity unavailable."）
+///   → `overloaded`：上游容量问题，和自己的额度无关；
 /// - `sessionBudgetExceeded` → `budget_exceeded`：会话共享的 token 预算（Codex 的 `token_budget` 功能）用完了，要改设置。
 ///
 /// 这几类 `recoverable` 都是 `true`：会话本身没坏，等一等或改完设置之后再发消息就能继续。
@@ -309,7 +312,7 @@ pub fn error_code(e: &TurnError) -> (&'static str, bool) {
         Some("unauthorized") => ("auth_failed", false),
         Some("usageLimitExceeded") => ("usage_limit", true),
         Some("rateLimitExceeded") => ("rate_limited", true),
-        Some("serverOverloaded" | "policyCapacityUnavailable") => ("overloaded", true),
+        Some("serverOverloaded" | "policyCapacityUnavailable" | "flexUnavailable") => ("overloaded", true),
         Some("sessionBudgetExceeded") => ("budget_exceeded", true),
         // 0.165.0 起提供方说模型不存在就不再重试：换个模型能接着用
         Some("modelNotFound") => ("model_not_found", true),
@@ -327,7 +330,7 @@ pub fn error_code(e: &TurnError) -> (&'static str, bool) {
 }
 
 /// 现在的 Unix 毫秒。
-fn now_ms() -> u64 {
+fn system_now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -350,6 +353,12 @@ fn parse<T: DeserializeOwned>(method: &str, params: &Value) -> Option<T> {
 }
 
 impl Translator {
+    /// 换掉墙上时钟（过滤已过去的恢复时间用），测试注入固定时间。
+    pub fn with_clock(mut self, now_ms: fn() -> u64) -> Self {
+        self.now_ms = now_ms;
+        self
+    }
+
     pub fn new(cwd: impl Into<String>, model: Option<String>) -> Self {
         Self {
             cwd: cwd.into(),
@@ -362,6 +371,7 @@ impl Translator {
             usage: UsageAcc::default(),
             error_emitted: false,
             rate_limits: HashMap::new(),
+            now_ms: system_now_ms,
             texts: HashMap::new(),
             text_order: Vec::new(),
             thinks: HashMap::new(),
@@ -862,6 +872,9 @@ impl Translator {
     fn on_rate_limits(&mut self, mut n: RateLimitSnapshot) {
         let slot = self.rate_limits.entry(n.limit_id.clone().unwrap_or_default()).or_default();
         slot.limit_id = n.limit_id.take();
+        if n.normal_model_slug.is_some() {
+            slot.normal_model_slug = n.normal_model_slug.take();
+        }
         if n.primary.is_some() {
             slot.primary = n.primary.take();
         }
@@ -870,17 +883,41 @@ impl Translator {
         }
     }
 
-    /// 用量耗尽（已满的窗口）里最晚的恢复时间，毫秒。多个窗口都满了得全部恢复才能接着用，所以取最晚的；
-    /// 已经过去的恢复时间是过期的记录，不用。没有可信的就是 `None`，不估算。
-    fn usage_resets_at_ms(&self, now_ms: u64) -> Option<u64> {
-        self.rate_limits
+    /// `usage_limit` 错误的恢复时间，毫秒。
+    ///
+    /// Codex 有按模型的限额（计量桶带 `normalModelSlug`），所以不能把所有桶混在一起取最晚的恢复时间。选桶：
+    /// 1. 有已满的桶的 `normalModelSlug` 等于当前会话的模型 → 用它；
+    /// 2. 否则只有**一个**桶已满 → 用它；
+    /// 3. 仍有歧义（多个桶都满了、又认不出哪个是当前模型的）→ 不带，不猜。
+    ///
+    /// 桶里的窗口（`primary` / `secondary`）都满了得全部恢复才能接着用，取最晚的；已经过去的恢复时间是过期的记录，
+    /// 不用。已满 = `usedPercent ≥ 100` 且有还没到的 `resetsAt`。
+    fn usage_resets_at_ms(&self) -> Option<u64> {
+        let now = (self.now_ms)();
+        let exhausted: Vec<(&RateLimitSnapshot, u64)> = self
+            .rate_limits
             .values()
-            .flat_map(|s| [s.primary.as_ref(), s.secondary.as_ref()])
-            .flatten()
-            .filter(|w| w.used_percent >= 100)
-            .filter_map(|w| w.resets_at.filter(|t| *t > 0).map(|t| (t as u64).saturating_mul(1000)))
-            .filter(|t| *t > now_ms)
-            .max()
+            .filter_map(|s| {
+                let latest = [s.primary.as_ref(), s.secondary.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .filter(|w| w.used_percent >= 100)
+                    .filter_map(|w| w.resets_at.filter(|t| *t > 0).map(|t| (t as u64).saturating_mul(1000)))
+                    .filter(|t| *t > now)
+                    .max()?;
+                Some((s, latest))
+            })
+            .collect();
+        let mine = self.model.as_deref().and_then(|m| {
+            exhausted
+                .iter()
+                .find(|(s, _)| s.normal_model_slug.as_deref().is_some_and(|slug| slug.eq_ignore_ascii_case(m)))
+        });
+        match (mine, exhausted.as_slice()) {
+            (Some((_, t)), _) => Some(*t),
+            (None, [(_, t)]) => Some(*t),
+            _ => None,
+        }
     }
 
     /// 一个失败的 turn / `error` 通知 → `Event::Error`。
@@ -890,7 +927,7 @@ impl Translator {
             code: code.to_string(),
             message: error_message(e),
             recoverable,
-            resets_at_ms: if code == "usage_limit" { self.usage_resets_at_ms(now_ms()) } else { None },
+            resets_at_ms: if code == "usage_limit" { self.usage_resets_at_ms() } else { None },
             limit_scope: None,
         }
     }
@@ -2210,6 +2247,7 @@ mod tests {
             ("rateLimitExceeded", "rate_limited"),
             ("serverOverloaded", "overloaded"),
             ("policyCapacityUnavailable", "overloaded"),
+            ("flexUnavailable", "overloaded"),
             ("sessionBudgetExceeded", "budget_exceeded"),
         ] {
             assert_eq!(error_code(&e(json!({"message": "m", "codexErrorInfo": info}))), (want, true), "{info}");
@@ -2252,48 +2290,81 @@ mod tests {
         }
     }
 
-    fn rate_limits(t: &mut Translator, primary: Value, secondary: Value) {
-        let n = json!({"rateLimits": {"limitId": "codex", "primary": primary, "secondary": secondary}});
+    fn at_2026_10_01() -> u64 {
+        1_790_800_000_000
+    }
+
+    fn translator(model: Option<&str>) -> Translator {
+        Translator::new("/w", model.map(str::to_string)).with_clock(at_2026_10_01)
+    }
+
+    /// 带计量桶 id 和（按模型的限额才有的）`normalModelSlug` 的用量更新。
+    fn bucket(t: &mut Translator, id: &str, slug: Option<&str>, primary: Value, secondary: Value) {
+        let n =
+            json!({"rateLimits": {"limitId": id, "normalModelSlug": slug, "primary": primary, "secondary": secondary}});
         assert!(feed(t, "account/rateLimits/updated", n).is_empty());
     }
 
     #[test]
     fn usage_limit_error_carries_the_reset_time_the_account_reported() {
-        // 2100-01-01 / 2100-01-05（Unix 秒）：都在未来
-        let (soon, later) = (4_102_444_800u64, 4_102_790_400u64);
+        // 都在 2026-10-01 之后（Unix 秒）
+        let (soon, later) = (1_791_721_200u64, 1_792_076_400u64);
+        let full = |reset: u64| json!({"usedPercent": 100, "resetsAt": reset});
 
         // 没有用量通知：不编恢复时间
-        let mut t = Translator::new("/w", None);
+        let mut t = translator(None);
         assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
 
-        // 两个窗口都满了：得全部恢复才能接着用，取最晚的
-        let mut t = Translator::new("/w", None);
-        rate_limits(
-            &mut t,
-            json!({"usedPercent": 100, "resetsAt": soon}),
-            json!({"usedPercent": 100, "resetsAt": later}),
-        );
+        // 同一个桶的两个窗口都满了：得全部恢复才能接着用，取最晚的
+        let mut t = translator(None);
+        bucket(&mut t, "codex", None, full(soon), full(later));
         assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), Some(later * 1000));
         // 同一份快照，非用量类的错误不带
         assert_eq!(failed_turn_resets(&mut t, "rateLimitExceeded"), None);
         assert_eq!(failed_turn_resets(&mut t, "serverOverloaded"), None);
 
         // 没满的窗口不算；稀疏更新里缺的窗口（null）不会清掉之前记的
-        let mut t = Translator::new("/w", None);
-        rate_limits(
-            &mut t,
-            json!({"usedPercent": 100, "resetsAt": soon}),
-            json!({"usedPercent": 40, "resetsAt": later}),
-        );
-        rate_limits(&mut t, Value::Null, json!({"usedPercent": 41, "resetsAt": later}));
+        let mut t = translator(None);
+        bucket(&mut t, "codex", None, full(soon), json!({"usedPercent": 40, "resetsAt": later}));
+        bucket(&mut t, "codex", None, Value::Null, json!({"usedPercent": 41, "resetsAt": later}));
         assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), Some(soon * 1000));
         // 窗口恢复之后的新快照取代旧的
-        rate_limits(&mut t, json!({"usedPercent": 3, "resetsAt": later}), Value::Null);
+        bucket(&mut t, "codex", None, json!({"usedPercent": 3, "resetsAt": later}), Value::Null);
         assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
 
         // 已经过去的恢复时间是过期的记录，不用；没有恢复时间的窗口也不编
-        let mut t = Translator::new("/w", None);
-        rate_limits(&mut t, json!({"usedPercent": 100, "resetsAt": 1_700_000_000u64}), json!({"usedPercent": 100}));
+        let mut t = translator(None);
+        bucket(&mut t, "codex", None, full(1_700_000_000), json!({"usedPercent": 100}));
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
+    }
+
+    #[test]
+    fn the_reset_time_comes_from_the_bucket_of_the_current_model() {
+        let (soon, later) = (1_791_721_200u64, 1_792_076_400u64);
+        let full = |reset: u64| json!({"usedPercent": 100, "resetsAt": reset});
+        let ok = json!({"usedPercent": 10, "resetsAt": later});
+
+        // 两个桶都满了：当前模型的桶（normalModelSlug 对得上，不分大小写）优先
+        let mut t = translator(Some("gpt-5.5-spark"));
+        bucket(&mut t, "codex", None, full(later), ok.clone());
+        bucket(&mut t, "codex_spark", Some("GPT-5.5-Spark"), full(soon), ok.clone());
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), Some(soon * 1000));
+
+        // 当前模型不是按模型限额的那个：它的桶没满、对不上，只有一个桶满了 → 用满的那个
+        let mut t = translator(Some("gpt-5.5"));
+        bucket(&mut t, "codex", None, full(later), ok.clone());
+        bucket(&mut t, "codex_spark", Some("gpt-5.5-spark"), ok.clone(), ok.clone());
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), Some(later * 1000));
+
+        // 多个桶都满了、又认不出哪个是当前模型的：有歧义，不猜
+        let mut t = translator(Some("gpt-5.5"));
+        bucket(&mut t, "codex", None, full(later), ok.clone());
+        bucket(&mut t, "codex_spark", Some("gpt-5.5-spark"), full(soon), ok.clone());
+        assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
+        // 不知道当前模型时同样
+        let mut t = translator(None);
+        bucket(&mut t, "codex", None, full(later), ok.clone());
+        bucket(&mut t, "codex_spark", Some("gpt-5.5-spark"), full(soon), ok);
         assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
     }
 

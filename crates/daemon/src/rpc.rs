@@ -46,6 +46,11 @@ pub mod local_methods {
     /// `anycon import`：导入一个 `local.export` 产生的 zip。参数 [`crate::transfer::ImportParams`]，结果
     /// [`crate::transfer::ImportResult`]。同上，只能走本机 socket。
     pub const IMPORT: &str = "local.import";
+    /// 本机连接声明自己是什么客户端：参数 `{ "client": "cli" | "mcp" }`（[`crate::clients::LocalClientKind`]，固定枚举，别的值 `invalid`），
+    /// 结果 `{ "client": "<种类>" }`。daemon 据此把这条连接之后的审计设备名记成 `local-cli` / `local-mcp`；不声明就是 `local-cli`。
+    /// 只在本机 socket 上有（经 hub 调用一律 `forbidden`，经 hub 的连接身份由配对的设备决定）。声明只影响这一条连接，
+    /// 只是标注，不改变权限。
+    pub const SET_CLIENT: &str = "local.set_client";
 }
 
 fn err(code: ErrorCode, msg: impl Into<String>) -> RpcError {
@@ -95,7 +100,8 @@ impl Rpc {
 
     async fn dispatch(&self, client: &Arc<ClientHandle>, method: &str, p: Value) -> RpcResult<Value> {
         let c = &self.ctx;
-        let caller = &client.caller;
+        let caller_owned = client.caller();
+        let caller = &caller_owned;
         match method {
             // ---------------- node ----------------
             methods::NODE_INFO => ok(self.node_info()),
@@ -601,6 +607,18 @@ impl Rpc {
             local_methods::IMPORT => {
                 let p: crate::transfer::ImportParams = params(p)?;
                 ok(crate::transfer::import::import(c, client, p).await?)
+            }
+            local_methods::SET_CLIENT => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct SetClient {
+                    client: crate::clients::LocalClientKind,
+                }
+                let p: SetClient = params(p)?;
+                if !client.set_local_kind(p.client) {
+                    return Err(err(ErrorCode::Forbidden, "this connection cannot change its client kind"));
+                }
+                Ok(json!({ "client": p.client.as_str() }))
             }
             local_methods::CONFIG_RELOAD => {
                 let changed = c.config.reload().map_err(|e| err(ErrorCode::Invalid, e.to_string()))?;

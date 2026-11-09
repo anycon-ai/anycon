@@ -168,7 +168,7 @@ pub async fn import(ctx: &Arc<Ctx>, client: &Arc<ClientHandle>, p: ImportParams)
         // 审计只记数量和文件名，不记内容
         ctx.audit
             .record(
-                &client.caller,
+                &client.caller(),
                 "import",
                 Some(&name),
                 serde_json::json!({

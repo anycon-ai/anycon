@@ -148,7 +148,7 @@ pub async fn export(ctx: &Arc<Ctx>, client: &Arc<ClientHandle>, p: ExportParams)
     // 审计只记数量和文件名，不记路径和内容
     ctx.audit
         .record(
-            &client.caller,
+            &client.caller(),
             "export",
             Some(&name),
             serde_json::json!({

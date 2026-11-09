@@ -947,10 +947,12 @@ impl<N: Node> AnyconTools<N> {
         let mut break_before_next = false;
         let mut open: Vec<(String, PermissionKind, String)> = Vec::new();
         let mut last_error: Option<(String, String)> = None;
-        // 插话的 turn 结束了，但插话可能失败（消息退回队列、作为下一个 turn 发出）：再多看一轮历史，
-        // 看到我的消息开了新 turn 就改等那一轮，否则就用这个结果
+        // 插话的 turn 结束了，但插话可能失败（消息退回队列、作为下一个 turn 发出）：先把这个结果放着，
+        // 看会话里还有没有动静，有就改等我的消息真正进的那个 turn，否则才用这个结果
         let mut pending_done: Option<TurnOutcome> = None;
-        let mut pending_checked = false;
+        // 插话期间看到了 daemon 在插话失败时发的 `status { queued_messages }`：消息很可能退回了队列
+        let mut requeued_seen = false;
+        let mut pending_idle = 0u32;
         let mut idle_polls = 0u32;
         let mut poll = Duration::from_millis(150);
         loop {
@@ -964,14 +966,19 @@ impl<N: Node> AnyconTools<N> {
                 match ev.event {
                     Event::UserMessage { message_id: m, .. } if m == message_id => saw = true,
                     Event::TurnStart { turn_id: t, message_id: first } if saw => {
-                        if pending_done.is_some() && first == message_id {
-                            // 插话失败，消息作为新 turn 的第一条发出了
-                            pending_done = None;
-                            my_turn = Some(t);
-                            started_after_me = true;
-                            text.clear();
-                            text_truncated = false;
-                            last_error = None;
+                        if pending_done.is_some() {
+                            // 插话失败的话，消息退回队列、随后和积压的消息合并成下一个 turn（`turn_start` 记的是积压里的
+                            // 第一条，不一定是我的）。有退回的迹象就认下一个 turn；没有迹象时只认第一条就是我的那种
+                            if requeued_seen || first == message_id {
+                                pending_done = None;
+                                my_turn = Some(t);
+                                started_after_me = true;
+                                requeued_seen = false;
+                                text.clear();
+                                text_truncated = false;
+                                break_before_next = false;
+                                last_error = None;
+                            }
                         } else if my_turn.is_none() {
                             my_turn = Some(t);
                             started_after_me = true;
@@ -1012,6 +1019,16 @@ impl<N: Node> AnyconTools<N> {
                         }
                         pending_done = Some(done);
                     }
+                    Event::Status { state, queued_messages, .. }
+                        if saw
+                            && my_turn.is_some()
+                            && !started_after_me
+                            && pending_done.is_none()
+                            && queued_messages.is_some()
+                            && !is_terminal(state) =>
+                    {
+                        requeued_seen = true;
+                    }
                     Event::Status { state, .. } if saw && my_turn.is_some() && is_terminal(state) => {
                         let (t, cut) = tail(&text, MAX_TEXT_CHARS);
                         let s = self.rpc(methods::SESSION_GET, json!({ "session_id": sid })).await.ok();
@@ -1028,16 +1045,6 @@ impl<N: Node> AnyconTools<N> {
             }
             if page.has_more {
                 continue;
-            }
-            if let Some(done) = pending_done.take() {
-                // 这一页之后还没有我的新 turn：多等一个间隔再确认一次
-                if !pending_checked {
-                    pending_checked = true;
-                    pending_done = Some(done);
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    continue;
-                }
-                return self.finish_done(sid, done).await;
             }
             if let Some((_, kind, title)) = open.first() {
                 let s = self.rpc(methods::SESSION_GET, json!({ "session_id": sid })).await.ok();
@@ -1056,6 +1063,37 @@ impl<N: Node> AnyconTools<N> {
                     });
                 }
             }
+            // 插话的 turn 结束了：消息是不是退回队列了？
+            // - 有退回的迹象：会话还在排队 / 启动 / 跑别的 turn，就一直等到我的消息进的那个 turn 开始（只受 `timeout` 限制：
+            //   别的会话占着名额时新 turn 可以晚很久）；会话闲着了仍没有新 turn，消息就是被清掉了；
+            // - 没有迹象：会话在排队 / 启动、或还有没读到的事件时再等等，其余就用这个 turn 的结果（连续两次确认）
+            if pending_done.is_some() {
+                let active = matches!(
+                    s.status,
+                    SessionStatus::Queued
+                        | SessionStatus::Starting
+                        | SessionStatus::Running
+                        | SessionStatus::WaitingPermission
+                );
+                let hold = s.last_seq > after
+                    || if requeued_seen {
+                        active
+                    } else {
+                        matches!(s.status, SessionStatus::Queued | SessionStatus::Starting)
+                    };
+                if hold {
+                    pending_idle = 0;
+                } else {
+                    pending_idle += 1;
+                    if pending_idle >= 2 {
+                        return match pending_done.take() {
+                            Some(_) if requeued_seen => Ok(TurnOutcome::Dropped { session: s }),
+                            Some(done) => self.finish_done(sid, done).await,
+                            None => unreachable!(),
+                        };
+                    }
+                }
+            }
             // 消息被丢掉：我的消息已经在事件流里，却没有开过 turn，会话也闲着、没有没读到的事件。
             // 连续两次看到才算（排除 turn 刚结束、下一个 turn 马上开的瞬间；那一瞬间会有新事件，`last_seq` 会超过 `after`）
             if saw && my_turn.is_none() && s.status == SessionStatus::Idle && s.last_seq <= after {
@@ -1071,7 +1109,7 @@ impl<N: Node> AnyconTools<N> {
                 return Ok(TurnOutcome::StillRunning {
                     text: t,
                     text_truncated: text_truncated || cut,
-                    turn_started: my_turn.is_some(),
+                    turn_started: my_turn.is_some() && pending_done.is_none(),
                     session: s,
                 });
             }
@@ -2091,6 +2129,70 @@ mod tests {
         let t = tools(node, Options::default());
         let r = t.call("send_message", json!({ "session": SID, "message": "hi", "wait": false })).await.unwrap();
         assert!(r.is_error && r.blocks[0].contains("dangerous"), "{r:?}");
+    }
+
+    fn requeued_status(seq: u64) -> Value {
+        event(SID, seq, json!({ "type": "status", "state": "running", "queued_messages": 1 }))
+    }
+
+    /// 插话失败（daemon 发了 `status { queued_messages }`，消息退回队列），新 turn 因为别的会话占着名额而很久以后才开始：
+    /// 一直等下去，不拿上一个 turn 的结果交差。
+    #[tokio::test]
+    async fn a_failed_interjection_waits_as_long_as_the_new_turn_takes_to_start() {
+        let first = vec![text_in(4, 1, "old turn"), user_msg(5), requeued_status(6), done_event(7, 1, 1)];
+        let late = vec![
+            event_in(SID, 8, 2, json!({ "type": "turn_start", "turn_id": 2, "message_id": "{mid}" })),
+            text_in(9, 2, "answer to mine"),
+            done_event(10, 2, 2),
+        ];
+        // 中间好几次轮询什么都没有，会话一直是 queued
+        let mut pages = vec![first];
+        pages.extend(std::iter::repeat_n(vec![], 8));
+        pages.push(late);
+        let node = scripted_pages(pages, json!({ "turn_id": 1, "queued": false }), "queued", 7, "ask");
+        let t = tools(node, Options::default());
+        let started = Instant::now();
+        let v = text_of(
+            &t.call("send_message", json!({ "session": SID, "message": "hi", "timeout_seconds": 60 })).await.unwrap(),
+        );
+        assert_eq!((v["outcome"].as_str(), v["text"].as_str()), (Some("completed"), Some("answer to mine")), "{v}");
+        assert!(started.elapsed() > Duration::from_secs(2), "it really waited");
+    }
+
+    /// 插话失败、前面还有更早的积压消息：下一个 turn 的 `turn_start.message_id` 是积压里的第一条，不是我的；
+    /// 积压合并成一个 turn，我的消息就在里面。
+    #[tokio::test]
+    async fn a_failed_interjection_behind_older_backlog_follows_the_merged_turn() {
+        let script = vec![
+            text_in(4, 1, "old turn"),
+            user_msg(5),
+            requeued_status(6),
+            done_event(7, 1, 1),
+            event_in(
+                SID,
+                8,
+                2,
+                json!({ "type": "turn_start", "turn_id": 2, "message_id": "someone-elses-older-message" }),
+            ),
+            text_in(9, 2, "merged answer"),
+            done_event(10, 2, 2),
+        ];
+        let node = scripted_pages(vec![script], json!({ "turn_id": 1, "queued": false }), "idle", 10, "ask");
+        let t = tools(node, Options::default());
+        let v = text_of(&t.call("send_message", json!({ "session": SID, "message": "hi" })).await.unwrap());
+        assert_eq!((v["outcome"].as_str(), v["text"].as_str()), (Some("completed"), Some("merged answer")), "{v}");
+    }
+
+    /// 插话失败、消息退回队列后队列被清掉：没有新 turn，会话闲着。要报 `dropped`，不是拿旧 turn 的结果。
+    #[tokio::test]
+    async fn a_failed_interjection_whose_queue_was_cleared_is_reported_as_dropped() {
+        let script = vec![text_in(4, 1, "old turn"), user_msg(5), requeued_status(6), done_event(7, 1, 1)];
+        let node = scripted_pages(vec![script], json!({ "turn_id": 1, "queued": false }), "idle", 7, "ask");
+        let t = tools(node, Options::default());
+        let v = text_of(
+            &t.call("send_message", json!({ "session": SID, "message": "hi", "timeout_seconds": 30 })).await.unwrap(),
+        );
+        assert_eq!(v["outcome"], "dropped", "{v}");
     }
 
     #[test]

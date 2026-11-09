@@ -1178,7 +1178,7 @@ ADR-1 拆成两层来看：
 **代价 / 限制**：
 
 - 工具调用有超时（MCP 客户端自己通常也有，常见 60 秒，所以缺省 50 秒），长 turn 要靠 `wait: false`（或超时后的 `still_running`）加 `read_session` 查询；没有服务端推送，也没有进度通知。
-- 护栏可被绕过，必须如实说：`ANYCON_AGENT` 是 agent 可以改的环境变量；有些 MCP 客户端启动 stdio server 时只传一份精简的环境，标记到不了 `anycon mcp`，这时护栏不起作用——Codex（本项目支持的 agent）启动 stdio MCP server 时默认只传一份白名单环境，所以对 Codex 这个护栏默认不起作用；`--allow-dangerous-modes` / `--allow-nested` 写在 MCP 配置的命令行里，能改自己配置的 agent 可以加上。**这个 server 约束的是 MCP 这个接口，不是对那个 agent 的隔离**：本机用户把它配置给的 agent，如果同时有 shell 能力，本来就能直接跑 `anycon approve`、连 socket——anycon 不是沙箱（`docs/architecture.md § 5.6`）。真正挡在后面的是 `sessions.max_concurrent`、daemon 的 `permissions.allow_dangerous_modes`、审批本身，以及 agent 自己的权限设置。
+- 护栏可被绕过，必须如实说：`ANYCON_AGENT` 是 agent 可以改的环境变量；有些 MCP 客户端启动 stdio server 时只传一份精简的环境，标记到不了 `anycon mcp`，这时护栏不起作用（哪些客户端这样做、能不能配置，由各客户端决定，这里没有逐个验证）；`--allow-dangerous-modes` / `--allow-nested` 写在 MCP 配置的命令行里，能改自己配置的 agent 可以加上。**这个 server 约束的是 MCP 这个接口，不是对那个 agent 的隔离**：本机用户把它配置给的 agent，如果同时有 shell 能力，本来就能直接跑 `anycon approve`、连 socket——anycon 不是沙箱（`docs/architecture.md § 5.6`）。真正挡在后面的是 `sessions.max_concurrent`、daemon 的 `permissions.allow_dangerous_modes`、审批本身，以及 agent 自己的权限设置。
 - `local-mcp` 是自报的：它让审计能分清「人敲的」和「agent 经 MCP 发的」，对付不了故意不声明或声明成 `cli` 的本机进程（它们本来就能直接用 CLI 的身份）。老 daemon 没有 `local.set_client`，审计里仍记 `local-cli`，`anycon mcp` 在 stderr 提示一次。
 - 轮询的延迟最多约 1 秒，等待期间每轮两个本机 RPC；`read_session` 不含工具输出，要看完整过程用 `anycon history` 或 Web UI。
 - 经 `--hub` / `--node` 连远程节点时，每次连接重连要重新握手；远程连接不声明客户端种类，审计里是配对的设备。

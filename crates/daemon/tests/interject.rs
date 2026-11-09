@@ -291,6 +291,8 @@ async fn a_confirmed_interjection_is_not_marked_when_the_turn_is_cancelled() {
     let s = create(&td, &mut a, "hold this", "m1").await;
     assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
     send(&td, &mut a, &s.id, "m2", "read me").await;
+    // 有插话还没结果时后来的消息只入队、不插话：先等 m2 的结果落地，m3 才会是第二条插话
+    assert!(eventually(T, || async { td.ctx.sessions.in_flight_interjections(&s.id).await == 0 }).await);
     send(&td, &mut a, &s.id, "m3", "lost one").await;
     assert!(eventually(T, || async { delivered(&td, "lost one").len() == 1 }).await);
     let h = td.fake.last_handle();

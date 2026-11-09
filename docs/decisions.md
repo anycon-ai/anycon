@@ -1207,3 +1207,4 @@ ADR-1 拆成两层来看：
 - 只处理 `cancelled`。不会标的情况（漏标）：turn 以 `error` 收尾（比如插话被接受后进程崩溃）；daemon 在 turn 收尾之前重启（记录在内存里）；agent 在没有取消的情况下丢了消息（没有观察到）。
 - `userMessage` 通知和 `turn/completed` 走同一个有序通道、由同一个 driver 逐条处理，`InterjectionRead` 一定先于 adapter 报的 `turn_done` 被处理，所以「读到了却被标上」只会出在 adapter 没法确认的情况（比如超过 8 MiB 被 adapter 丢弃的 `userMessage` 通知）。
 - 取消在 `send` 还没返回时由 daemon 自己判定（取消宽限到期、`session.restart`）：进程随后被收掉，那条消息即使被 adapter 接受也没有人读到，所以派发时就登记，turn 收尾时一并标上。
+- 上一条的残留不一致：steer 卡在 adapter 里（Codex 的请求上限是 30 秒）期间 daemon 取消宽限（10 秒）到期或者 `session.restart`，消息被标为不确定；随后 steer 超时或被拒，`on_interject_failed` 又把它插回 backlog，在新进程上自动作为下一个 turn 发出。用户看到「可能没有送达」而消息其实已经重发，再点「重发」就是第二遍。后果是重复一次、不丢消息；触发需要 steer 卡住超过 10 秒，或者恰好在毫秒窗口里 restart。另外 restart 和宽限到期本身会清空 backlog，唯独这条迟到失败的消息会回来，这是已知的不一致，这次不改（改法：记下已标过的 id，迟到的失败对已标的跳过退回；留作后续）。

@@ -575,6 +575,16 @@ impl Sessions {
         }
     }
 
+    /// 已交给 driver、还没有结果的插话条数（测试用：等上一条插话的结果落地再发下一条，否则后一条会因为
+    /// 「有插话没结果时只入队」进队列，而不是插话）。会话不存在返回 0。
+    #[doc(hidden)]
+    pub async fn in_flight_interjections(&self, id: &str) -> u32 {
+        match self.get(id) {
+            Ok(sess) => sess.st.lock().await.interjecting,
+            Err(_) => 0,
+        }
+    }
+
     fn get(&self, id: &str) -> RpcResult<Arc<Session>> {
         self.map
             .read()

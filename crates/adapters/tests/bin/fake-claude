@@ -19,6 +19,9 @@ Environment (all optional)
   FAKE_CLAUDE_REJECT_MODE   a permission mode that `set_permission_mode` refuses (error_code=invalid_mode)
   FAKE_CLAUDE_BIG_LINE      write one stdout line of this many bytes (not valid JSON) right after start
   FAKE_CLAUDE_BG_PID_FILE   spawn a background `sleep` in our process group and write its pid to this file
+  FAKE_CLAUDE_INIT          how `initialize` is answered: models (default: the recorded `models[]` in
+                            fixtures/claude/real_initialize.json) | error | nomodels | hang | exit
+  FAKE_CLAUDE_INIT_FILE     answer `initialize` with the models of this recorded control_response instead
 A fixture line `__HOLD__` keeps the turn open until the client interrupts it.
 A fixture line `__NOWAIT__` makes the next `control_request` line go out without waiting for its answer (the real CLI
 does this when it later withdraws the request with `control_cancel_request`, e.g. an MCP tool timing out).
@@ -191,7 +194,23 @@ def handle_control_request(msg):
         else:
             ack(rid, {"mode": req.get("mode")})
     elif sub == "initialize":
-        ack(rid, {"commands": [], "models": [{"value": "opus", "displayName": "Opus"}], "account": {"email": "test@example.com"}, "pid": os.getpid()})
+        mode = env.get("FAKE_CLAUDE_INIT", "models")
+        if mode == "error":
+            ack(rid, error="initialize is not available")
+        elif mode == "nomodels":
+            ack(rid, {"commands": [], "account": {"email": "test@example.com"}, "pid": os.getpid()})
+        elif mode == "hang":
+            pass
+        elif mode == "exit":
+            sys.stderr.write("fatal: cannot initialize\n")
+            sys.stderr.flush()
+            os._exit(4)
+        else:
+            path = env.get("FAKE_CLAUDE_INIT_FILE") or os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "claude", "real_initialize.json")
+            with open(path) as f:
+                models = json.loads(f.readline())["response"]["response"]["models"]
+            ack(rid, {"commands": [], "models": models, "account": {"email": "test@example.com"}, "pid": os.getpid()})
     else:
         ack(rid, {})
 

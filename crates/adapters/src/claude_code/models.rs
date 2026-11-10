@@ -1,7 +1,9 @@
-//! 模型表（docs/spec/daemon.md § 5.4）：内置一张表 + 用户 `~/.claude/settings.json` / 环境里的模型 + 配置里的 `additional_models`。
+//! 模型表（docs/spec/daemon.md § 5.4）：CLI 自己的模型清单 + 用户 `~/.claude/settings.json` / 环境里的模型 + 配置里的
+//! `additional_models`。
 //!
-//! CLI 没有「列模型」的子命令，所以内置表是基线。（`initialize` 控制请求的响应里其实带一份 `models[]`，但要起整个 CLI
-//! 并拉起用户的 MCP server / 插件，探测不该这么重，所以不用；见 README.md。）
+//! CLI 没有「列模型」的子命令，但 stream-json 的 `initialize` 控制请求回的 `models[]` 就是它的模型清单（和终端里 `/model`
+//! 看到的一样，随账号、CLI 版本变）。完整探测发一次 `initialize`，[`from_cli`] 把它转成模型表；问不到（老 CLI、超时、
+//! 起不来）才用内置表 [`BUILTIN`]，内置表随 adapter 版本维护，只是兜底。
 //! 思考等级**挂在模型上**：5.x 系列不能关（没有 `off`），4.6 系列没有 `xhigh` 但可以关。
 
 use std::collections::HashMap;
@@ -9,6 +11,7 @@ use std::path::PathBuf;
 
 use anycon_protocol::{Choice, ModelInfo, ThinkingOptions};
 use semver::Version;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::common::version_at_least;
@@ -16,7 +19,7 @@ use crate::common::version_at_least;
 pub const LEVELS_5X: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const LEVELS_46: &[&str] = &["off", "low", "medium", "high", "max"];
 
-/// 内置表的一项。`min_cli_version` 低于它的 CLI 看不到这个模型。
+/// 内置表的一项（`initialize` 问不到模型时的兜底）。`min_cli_version` 低于它的 CLI 看不到这个模型。
 pub struct BuiltinModel {
     pub id: &'static str,
     pub label: &'static str,
@@ -152,15 +155,24 @@ pub const BUILTIN: &[BuiltinModel] = &[
     },
 ];
 
-fn level_label(id: &str) -> &'static str {
+/// 思考等级的显示名。认识的给固定写法，不认识的（CLI 以后加的等级）首字母大写。
+fn level_label(id: &str) -> String {
     match id {
-        "off" => "Off",
-        "low" => "Low",
-        "medium" => "Medium",
-        "high" => "High",
-        "xhigh" => "Extra high",
-        "max" => "Max",
-        _ => "Level",
+        "off" => "Off".to_string(),
+        "low" => "Low".to_string(),
+        "medium" => "Medium".to_string(),
+        "high" => "High".to_string(),
+        "xhigh" => "Extra high".to_string(),
+        "max" => "Max".to_string(),
+        other => capitalize(other),
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
     }
 }
 
@@ -169,7 +181,7 @@ pub fn thinking_options(levels: &[&str], default: &str) -> ThinkingOptions {
     ThinkingOptions {
         options: levels
             .iter()
-            .map(|l| Choice { id: (*l).to_string(), label: level_label(l).to_string(), description: None })
+            .map(|l| Choice { id: (*l).to_string(), label: level_label(l), description: None })
             .collect(),
         default: Some(default.to_string()),
     }
@@ -189,6 +201,147 @@ pub fn builtin_models(table: &[BuiltinModel], cli: Option<&Version>) -> Vec<Mode
             tags: m.tags.iter().map(|t| (*t).to_string()).collect(),
         })
         .collect()
+}
+
+/// `initialize` 响应里 `models[]` 的一项。只取用得到的字段，其余（`supportsFastMode`、`promoListPrice`…）忽略。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliModel {
+    /// 传给 `--model` 的值：完整 id、别名（`opus`）或 `default`。
+    pub value: String,
+    /// 这一行实际指向的完整 id（`opus` → `claude-opus-5-5`）。CLI 的说明：让调用方把存下来的完整 id 对到覆盖它的别名行。
+    #[serde(default)]
+    pub resolved_model: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub supports_effort: Option<bool>,
+    #[serde(default)]
+    pub supported_effort_levels: Option<Vec<String>>,
+    #[serde(default)]
+    pub supports_thinking_off: Option<bool>,
+    /// 看得见但不能选（比如组织的零数据保留设置排除了它）。
+    #[serde(default)]
+    pub disabled: Option<bool>,
+}
+
+/// CLI 清单里表示「默认模型」的那一行。
+pub const DEFAULT_ROW: &str = "default";
+
+fn non_empty(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// CLI 不给默认思考等级：沿用内置表里同一个模型的，没有就同系列别名的（`claude-fable-5-2` → `fable`），
+/// 再没有就 `medium`，最后取第一个不是 `off` 的。
+fn default_level(id: &str, levels: &[&str]) -> String {
+    let family = id.strip_prefix("claude-").and_then(|r| r.split('-').next());
+    BUILTIN
+        .iter()
+        .find(|b| b.id == id)
+        .or_else(|| family.and_then(|f| BUILTIN.iter().find(|b| b.id == f)))
+        .map(|b| b.default_level)
+        .filter(|l| levels.contains(l))
+        .or_else(|| levels.iter().copied().find(|l| *l == "medium"))
+        .or_else(|| levels.iter().copied().find(|l| *l != "off"))
+        .or_else(|| levels.first().copied())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// 一行的思考等级：`supportedEffortLevels`，能关（`supportsThinkingOff`）就在前面加 `off`。没有等级的模型不给思考选项。
+fn cli_thinking(row: &CliModel, id: &str) -> Option<ThinkingOptions> {
+    if row.supports_effort == Some(false) {
+        return None;
+    }
+    let mut levels: Vec<&str> = Vec::new();
+    if row.supports_thinking_off == Some(true) {
+        levels.push("off");
+    }
+    for l in row.supported_effort_levels.iter().flatten().map(|l| l.trim()) {
+        if !l.is_empty() && !levels.contains(&l) {
+            levels.push(l);
+        }
+    }
+    if levels.iter().all(|l| *l == "off") {
+        return None;
+    }
+    Some(thinking_options(&levels, &default_level(id, &levels)))
+}
+
+/// `initialize` 的模型清单 → 模型表。
+///
+/// - 每个模型以**完整 id** 出现一次（别名行用它的 `resolvedModel`），所以以前存下来的 `claude-opus-5-5` 之类照样对得上；
+/// - 别名（`opus`、`fable`…）另列在完整 id 后面，跟着 CLI 解析（`fable` 不一定是最新的 Fable，描述里写当前指向谁）；
+/// - `default` 行不单列：它指向的模型标为默认、排第一；CLI 没给默认就标第一个；
+/// - `disabled` 的不列。
+pub fn from_cli(rows: &[CliModel]) -> Vec<ModelInfo> {
+    let mut full: Vec<ModelInfo> = Vec::new();
+    let mut aliases: Vec<ModelInfo> = Vec::new();
+    let mut default_row: Option<&CliModel> = None;
+    for row in rows {
+        if row.disabled == Some(true) {
+            continue;
+        }
+        let Some(value) = non_empty(Some(&row.value)) else { continue };
+        if value == DEFAULT_ROW {
+            default_row.get_or_insert(row);
+            continue;
+        }
+        let id = non_empty(row.resolved_model.as_deref()).unwrap_or(value);
+        let label = non_empty(row.display_name.as_deref()).unwrap_or(id).to_string();
+        let thinking = cli_thinking(row, id);
+        if !full.iter().any(|m| m.id == id) {
+            full.push(ModelInfo {
+                id: id.to_string(),
+                label: label.clone(),
+                description: non_empty(row.description.as_deref()).map(str::to_string),
+                default: false,
+                thinking: thinking.clone(),
+                tags: vec![],
+            });
+        }
+        if id != value && !aliases.iter().any(|m| m.id == value) {
+            aliases.push(ModelInfo {
+                id: value.to_string(),
+                label: format!("{} (alias)", capitalize(value)),
+                description: Some(format!("Claude Code's `{value}` alias, currently {label}")),
+                default: false,
+                thinking,
+                tags: vec![],
+            });
+        }
+    }
+    let default_id = default_row.and_then(|r| non_empty(r.resolved_model.as_deref()));
+    match default_id.and_then(|id| full.iter().position(|m| m.id == id)) {
+        Some(i) => {
+            let m = full.remove(i);
+            full.insert(0, m);
+        }
+        // 默认行指向一个清单里别处没列的模型：单独加一项，名字只能用 id（`displayName` 是「Default (recommended)」）
+        None => {
+            if let (Some(id), Some(row)) = (default_id, default_row) {
+                full.insert(
+                    0,
+                    ModelInfo {
+                        id: id.to_string(),
+                        label: id.to_string(),
+                        description: non_empty(row.description.as_deref()).map(str::to_string),
+                        default: false,
+                        thinking: cli_thinking(row, id),
+                        tags: vec![],
+                    },
+                );
+            }
+        }
+    }
+    if let Some(first) = full.first_mut() {
+        first.default = true;
+    }
+    full.extend(aliases);
+    full
 }
 
 /// `~/.claude/settings.json`（或 `$CLAUDE_CONFIG_DIR/settings.json`）。读不到 / 解析不了就是 `None`。
@@ -241,9 +394,9 @@ pub fn user_configured_models(env: &HashMap<String, String>, settings: Option<&V
     out
 }
 
-/// 内置表 + 用户配置的 + `additional_models`，按 id 去重（先到先得）。
-pub fn assemble(builtin: Vec<ModelInfo>, user: Vec<(String, String)>, additional: &[ModelInfo]) -> Vec<ModelInfo> {
-    let mut models = builtin;
+/// CLI 清单（或内置表）+ 用户配置的 + `additional_models`，按 id 去重（先到先得）。
+pub fn assemble(base: Vec<ModelInfo>, user: Vec<(String, String)>, additional: &[ModelInfo]) -> Vec<ModelInfo> {
+    let mut models = base;
     let push = |m: ModelInfo, models: &mut Vec<ModelInfo>| {
         if !models.iter().any(|x| x.id == m.id) {
             models.push(m);
@@ -395,6 +548,120 @@ mod tests {
         // additional 不能抢默认
         assert_eq!(models.iter().filter(|m| m.default).count(), 1);
         assert!(models.iter().find(|m| m.id == "opus").unwrap().label.contains("latest"));
+    }
+
+    /// 真实 CLI（2.1.311）`initialize` 回的 `models[]`（录制见 `tests/fixtures/claude/real_initialize.json`）。
+    fn recorded_rows() -> Vec<CliModel> {
+        let line: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/claude/real_initialize.json")).unwrap();
+        serde_json::from_value(line["response"]["response"]["models"].clone()).unwrap()
+    }
+
+    fn row(value: &str, resolved: Option<&str>, levels: &[&str]) -> CliModel {
+        CliModel {
+            value: value.into(),
+            resolved_model: resolved.map(Into::into),
+            display_name: Some(format!("Name of {value}")),
+            description: None,
+            supports_effort: Some(!levels.is_empty()),
+            supported_effort_levels: Some(levels.iter().map(|l| l.to_string()).collect()),
+            supports_thinking_off: None,
+            disabled: None,
+        }
+    }
+
+    #[test]
+    fn recorded_initialize_models_become_the_model_table() {
+        let models = from_cli(&recorded_rows());
+        let by_id = |id: &str| models.iter().find(|m| m.id == id).unwrap_or_else(|| panic!("missing {id}"));
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        // 完整 id 在前（默认行指向的排第一），别名在后；`default` 行本身不列
+        assert_eq!(
+            ids,
+            vec![
+                "claude-sonnet-5-5",
+                "claude-opus-5-5",
+                "claude-fable-5-2",
+                "claude-haiku-5-5",
+                "claude-fable-5-1",
+                "claude-haiku-4-5-20251001",
+                "claude-sonnet-5",
+                "claude-opus-5",
+                "claude-fable-5",
+                "claude-opus-4-8",
+                "claude-opus-4-7",
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
+                "opus",
+                "sonnet",
+                "haiku",
+                "fable",
+            ]
+        );
+        assert_eq!(
+            models.iter().filter(|m| m.default).map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["claude-sonnet-5-5"]
+        );
+
+        // 别名行的名字给它指向的完整 id；别名自己写清楚当前指向谁
+        assert_eq!(by_id("claude-opus-5-5").label, "Opus 5.5");
+        assert_eq!(by_id("fable").label, "Fable (alias)");
+        assert!(by_id("fable").description.as_deref().unwrap().contains("Fable 5.1"));
+
+        let levels =
+            |id: &str| by_id(id).thinking.as_ref().map(|t| t.options.iter().map(|o| o.id.clone()).collect::<Vec<_>>());
+        let default_level = |id: &str| by_id(id).thinking.as_ref().and_then(|t| t.default.clone());
+        assert_eq!(levels("claude-opus-5-5").unwrap(), vec!["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(default_level("claude-opus-5-5").as_deref(), Some("medium"));
+        // 新模型沿用同系列的默认等级
+        assert_eq!(default_level("claude-fable-5-2").as_deref(), Some("high"));
+        assert_eq!(default_level("fable").as_deref(), Some("high"));
+        // 能关的在前面加 off；4.6 没有 xhigh
+        assert_eq!(levels("claude-opus-4-6").unwrap(), vec!["off", "low", "medium", "high", "max"]);
+        assert_eq!(levels("claude-opus-4-8").unwrap(), vec!["off", "low", "medium", "high", "xhigh", "max"]);
+        // 不支持 effort 的（Haiku 4.5）没有思考选项
+        assert!(by_id("claude-haiku-4-5-20251001").thinking.is_none());
+        for m in &models {
+            if let Some(t) = &m.thinking {
+                assert!(t.options.iter().any(|o| Some(&o.id) == t.default.as_ref()), "{}", m.id);
+            }
+        }
+    }
+
+    #[test]
+    fn from_cli_edge_cases() {
+        // 没有默认行：第一个当默认；没有 resolvedModel：value 就是 id，不当别名
+        let models = from_cli(&[row("model-a", None, &["low", "high"]), row("model-b", None, &[])]);
+        assert_eq!(
+            models.iter().map(|m| (m.id.as_str(), m.default)).collect::<Vec<_>>(),
+            vec![("model-a", true), ("model-b", false)]
+        );
+        assert_eq!(models[0].thinking.as_ref().unwrap().default.as_deref(), Some("low"));
+        assert!(models[1].thinking.is_none());
+
+        // 默认行指向别处没列的模型：单独加一项
+        let mut d = row("default", Some("claude-new-9"), &["medium"]);
+        d.description = Some("New 9 · Something".into());
+        let models = from_cli(&[d, row("claude-opus-5-5", Some("claude-opus-5-5"), &["medium"])]);
+        assert_eq!(
+            models.iter().map(|m| (m.id.as_str(), m.default)).collect::<Vec<_>>(),
+            vec![("claude-new-9", true), ("claude-opus-5-5", false)]
+        );
+        assert_eq!(models[0].label, "claude-new-9");
+
+        // disabled 的不列；同一个完整 id 只列一次；不认识的等级首字母大写
+        let mut off = row("claude-zdr", None, &["low"]);
+        off.disabled = Some(true);
+        let models = from_cli(&[
+            off,
+            row("opus", Some("claude-opus-5-5"), &["low", "ultra"]),
+            row("claude-opus-5-5", Some("claude-opus-5-5"), &["low"]),
+            row("  ", None, &[]),
+        ]);
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["claude-opus-5-5", "opus"]);
+        let opts = &models[0].thinking.as_ref().unwrap().options;
+        assert_eq!(opts.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), vec!["Low", "Ultra"]);
+        assert!(from_cli(&[]).is_empty());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! 权限走 `control_request { subtype: can_use_tool }`（MCP server 的 `elicitation` 请求也交给用户答复）。
 //! 细节与对真实 CLI 的观察见 README.md。
 //!
-//! 模块：`probe`（找二进制、版本、认证、诊断）、`models`（内置模型表）、`process`（启动参数）、
+//! 模块：`probe`（找二进制、版本、认证、模型清单、诊断）、`models`（CLI 清单 → 模型表，内置表兜底）、`process`（启动参数）、
 //! `translate`（stream-json → 事件，纯同步）、`permissions`（权限请求 ↔ 答复）、`tools`（工具分类与渲染字段）、
 //! `input`（用户输入 → stream-json 用户消息，含图片附件）、`handle`（`AgentHandle`）。
 
@@ -26,6 +26,8 @@ pub use probe::{DRIVER, ID, LABEL};
 #[derive(Debug, Clone, Default)]
 pub struct ClaudeCodeAdapter {
     timings: Timings,
+    /// 上一次 `initialize` 问到的模型表，cheap 探测沿用。
+    models_memo: std::sync::Arc<probe::CliModelsMemoCell>,
 }
 
 impl ClaudeCodeAdapter {
@@ -35,7 +37,7 @@ impl ClaudeCodeAdapter {
 
     /// 自定义等待时间（测试里把 3 秒 / 5 秒缩短）。
     pub fn with_timings(timings: Timings) -> Self {
-        Self { timings }
+        Self { timings, ..Self::default() }
     }
 }
 
@@ -54,7 +56,7 @@ impl Adapter for ClaudeCodeAdapter {
     }
 
     async fn probe(&self, ctx: &ProbeContext) -> AgentInfo {
-        probe::run_probe(ctx, false).await.info
+        probe::run_probe(ctx, false, &self.models_memo).await.info
     }
 
     /// 通用校验（模型 / 模式 / 选项存在）+ 会进 argv 的值的检查（字符集、长度、预算有限性），

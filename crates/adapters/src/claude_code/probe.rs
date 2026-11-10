@@ -1,29 +1,36 @@
 //! 探测（docs/spec/daemon.md § 5.3）与诊断（§ 5.5）。
 //!
-//! 步骤：解析命令 → `--version`（semver，最低 2.1.0）→ `claude auth status` → 内置模型表 + 用户配置的模型。
-//! 没有昂贵的步骤（CLI 没有「列模型」命令），所以 `cheap` 与否结果一样。整个探测遵守 `ctx.deadline`，
-//! 超时时错误里列出还没完成的步骤。
+//! 步骤：解析命令 → `--version`（semver，最低 2.1.0）→ `claude auth status` → 模型（`initialize` 的 `models[]`，问不到用
+//! 内置表）+ 用户配置的模型。整个探测遵守 `ctx.deadline`，超时时错误里列出还没完成的步骤。
+//!
+//! 昂贵的只有模型这一步：要起一个 `claude` 进程发 `initialize`（约 4 秒）。cheap 探测不起，沿用同一个二进制、同一个版本上一次
+//! 问到的清单（记在 adapter 实例里，daemon 一直用同一个实例）；版本变了 daemon 会补一次完整探测。探测用的进程不拉起用户的
+//! MCP server（`--strict-mcp-config`）、不跑 hooks（`disableAllHooks`）、不写会话记录（`--no-session-persistence`），
+//! cwd 是 workspace 之外的临时目录。
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anycon_agent_api::ProbeContext;
 use anycon_protocol::{
     AgentCapabilities, AgentInfo, AgentIssue, AgentStatus, ConfigOption, ConfigOptionKind, DiagnosticField, ModeInfo,
-    ModeRisk,
+    ModeRisk, ModelInfo,
 };
 use semver::Version;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::common::bin::which_all;
 use crate::common::probe_util::candidate_lines;
 use crate::common::{
-    effective_env, field, now_ms, parse_semver, resolve_binary, run_capture, shell_type_a, version_at_least,
-    version_timeout, Budget, Resolution, ResolveOptions,
+    effective_env, field, neutral_cwd, now_ms, parse_semver, resolve_binary, run_capture, shell_type_a,
+    version_at_least, version_timeout, Budget, JsonlChild, Resolution, ResolveOptions, ShutdownTimings, SpawnSpec,
+    DEFAULT_MAX_LINE_BYTES,
 };
 
-use super::models;
+use super::models::{self, CliModel};
+use super::process;
 
 pub const ID: &str = "claude-code";
 pub const LABEL: &str = "Claude Code";
@@ -37,6 +44,10 @@ pub const LOGIN_HINT: &str = "run `claude` on the machine to log in";
 
 pub use crate::common::VERSION_TIMEOUT_ENV;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// `initialize` 这一步的上限（实测冷启动约 4 秒，留足机器忙时的余量）。
+const MODELS_TIMEOUT: Duration = Duration::from_secs(20);
+/// 探测发的 `initialize` 控制请求的 id。
+const MODELS_REQUEST_ID: &str = "anycon-probe-models";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthState {
@@ -74,7 +85,19 @@ pub struct ProbeReport {
     pub resolution: Option<Resolution>,
     pub version: Option<Version>,
     pub auth: Option<AuthState>,
+    /// 模型清单的来源（`initialize` / 上一次的 / 内置表，以及为什么）。
+    pub models_note: Option<String>,
 }
+
+/// 上一次 `initialize` 问到的模型表（[`models::from_cli`] 的结果），和当时的二进制路径、版本。cheap 探测只在二者都没变时沿用。
+#[derive(Debug, Clone)]
+pub struct CliModelsMemo {
+    pub path: Option<String>,
+    pub version: Option<String>,
+    pub models: Vec<ModelInfo>,
+}
+
+pub type CliModelsMemoCell = Mutex<Option<CliModelsMemo>>;
 
 pub fn modes() -> Vec<ModeInfo> {
     let m = |id: &str, label: &str, description: &str, default: bool, risk: ModeRisk| ModeInfo {
@@ -208,11 +231,12 @@ pub async fn auth_status(res: &Resolution, env: &HashMap<String, String>, cwd: &
     state
 }
 
-/// 完整探测。`probe_all`：`--version` 把所有候选都跑一遍（`doctor` 用）。
-pub async fn run_probe(ctx: &ProbeContext, probe_all: bool) -> ProbeReport {
+/// 完整探测。`probe_all`：`--version` 把所有候选都跑一遍（`doctor` 用）。`memo`：cheap 探测沿用的模型清单。
+pub async fn run_probe(ctx: &ProbeContext, probe_all: bool, memo: &CliModelsMemoCell) -> ProbeReport {
     let budget = Budget::new(ctx.deadline);
     let mut info = base_info(ctx);
-    let report = |info: AgentInfo, resolution, version, auth| ProbeReport { info, resolution, version, auth };
+    let report =
+        |info: AgentInfo, resolution, version, auth| ProbeReport { info, resolution, version, auth, models_note: None };
 
     if !ctx.config.enabled {
         fail(
@@ -309,11 +333,48 @@ pub async fn run_probe(ctx: &ProbeContext, probe_all: bool) -> ProbeReport {
     }
     let auth = auth_status(&resolution, &env, &ctx.scratch_dir, auth_budget).await;
 
-    // 4. 模型与选项（本地计算，没有慢步骤）
+    // 4. 模型：完整探测问 CLI（`initialize`），cheap 探测沿用上一次问到的；都没有就用内置表
+    let remembered = memo
+        .lock()
+        .expect("models memo lock")
+        .clone()
+        .filter(|m| m.path == info.path && m.version == info.version)
+        .map(|m| m.models);
+    let (cli_models, models_note) = if ctx.cheap {
+        let note = if remembered.is_some() {
+            "from the last initialize (cheap probe)"
+        } else {
+            "built-in table (cheap probe)"
+        };
+        (remembered, note.to_string())
+    } else if budget.remaining().is_zero() {
+        (remembered, "initialize skipped: the probe ran out of time".to_string())
+    } else {
+        let program = resolution.path().expect("chosen candidate");
+        let step = budget.cap(MODELS_TIMEOUT);
+        let listed = query_cli_models(program, &resolution.prefix_args, &env, &ctx.scratch_dir, step)
+            .await
+            .map(|rows| models::from_cli(&rows))
+            .and_then(|m| if m.is_empty() { Err("initialize listed no usable models".to_string()) } else { Ok(m) });
+        match listed {
+            Ok(m) => {
+                *memo.lock().expect("models memo lock") =
+                    Some(CliModelsMemo { path: info.path.clone(), version: info.version.clone(), models: m.clone() });
+                let note = format!("{} models from initialize", m.len());
+                (Some(m), note)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "claude: could not list models via initialize");
+                let fallback =
+                    if remembered.is_some() { "kept the last initialize" } else { "using the built-in table" };
+                (remembered, format!("{e}; {fallback}"))
+            }
+        }
+    };
     let settings_json = models::read_user_settings(&env);
     let user = models::user_configured_models(&env, settings_json.as_ref());
     info.models = models::assemble(
-        models::builtin_models(models::BUILTIN, version.as_ref()),
+        cli_models.unwrap_or_else(|| models::builtin_models(models::BUILTIN, version.as_ref())),
         user,
         &ctx.config.additional_models,
     );
@@ -330,12 +391,90 @@ pub async fn run_probe(ctx: &ProbeContext, probe_all: bool) -> ProbeReport {
             Some(LOGIN_HINT),
         );
     }
-    report(info, Some(resolution), version, Some(auth))
+    let mut out = report(info, Some(resolution), version, Some(auth));
+    out.models_note = Some(models_note);
+    out
+}
+
+/// 探测用的 `claude` 进程的参数：会话的固定参数 + 不拉起 MCP server、不跑 hooks、不写会话记录。
+pub fn models_query_args() -> Vec<String> {
+    let mut a = process::base_args();
+    a.push("--strict-mcp-config".to_string());
+    a.push("--no-session-persistence".to_string());
+    a.push(format!("--settings={}", json!({ "disableAllHooks": true })));
+    a
+}
+
+/// `initialize` 的回执里取 `models[]`。不是我们那个请求的回执给 `None`；单项解析不了的跳过。
+pub fn parse_initialize_response(line: &str) -> Option<Result<Vec<CliModel>, String>> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v.get("type").and_then(Value::as_str) != Some("control_response") {
+        return None;
+    }
+    let r = v.get("response")?;
+    if r.get("request_id").and_then(Value::as_str) != Some(MODELS_REQUEST_ID) {
+        return None;
+    }
+    if r.get("subtype").and_then(Value::as_str) == Some("error") {
+        let why = r.get("error").and_then(Value::as_str).unwrap_or("unknown error");
+        return Some(Err(format!("initialize failed: {why}")));
+    }
+    let Some(rows) = r.pointer("/response/models").and_then(Value::as_array) else {
+        return Some(Err("the initialize response has no models list".to_string()));
+    };
+    Some(Ok(rows.iter().filter_map(|m| serde_json::from_value(m.clone()).ok()).collect()))
+}
+
+/// 起一个 `claude` 进程，发 `initialize`，取回模型清单，然后关掉进程。整个过程不超过 `timeout`（加上关进程的几秒）。
+pub async fn query_cli_models(
+    program: &Path,
+    prefix_args: &[String],
+    env: &HashMap<String, String>,
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<Vec<CliModel>, String> {
+    let mut args = prefix_args.to_vec();
+    args.extend(models_query_args());
+    let spec = SpawnSpec {
+        program: program.to_path_buf(),
+        args,
+        cwd: if cwd.is_dir() { cwd.to_path_buf() } else { neutral_cwd() },
+        env: env.clone(),
+        max_line_bytes: DEFAULT_MAX_LINE_BYTES,
+    };
+    let (child, mut lines) =
+        JsonlChild::spawn(&spec).map_err(|e| format!("failed to start {}: {e}", program.display()))?;
+    let request = json!({
+        "type": "control_request",
+        "request_id": MODELS_REQUEST_ID,
+        "request": { "subtype": "initialize" },
+    });
+    let result = if child.send_json(&request) {
+        let wait = async {
+            while let Some(line) = lines.recv().await {
+                if let Some(r) = parse_initialize_response(&line) {
+                    return r;
+                }
+            }
+            let tail = child.stderr_tail();
+            Err(format!("claude exited before answering initialize: {}", tail.trim()))
+        };
+        match tokio::time::timeout(timeout, wait).await {
+            Ok(r) => r,
+            Err(_) => Err(format!("initialize did not answer within {}s", timeout.as_secs())),
+        }
+    } else {
+        Err("could not write to the stdin of claude".to_string())
+    };
+    child
+        .shutdown(ShutdownTimings { after_stdin_close: Duration::from_millis(300), grace: Duration::from_secs(2) })
+        .await;
+    result
 }
 
 /// § 5.5 的诊断：命令来源、daemon 的 PATH / shell、`which -a`、`type -a`、各候选的探活结果、解析路径、版本、认证、模型数、状态。
 pub async fn diagnose_fields(ctx: &ProbeContext) -> Vec<DiagnosticField> {
-    let report = run_probe(ctx, true).await;
+    let report = run_probe(ctx, true, &CliModelsMemoCell::default()).await;
     let env = effective_env(ctx);
     let name = ctx
         .config
@@ -382,6 +521,9 @@ pub async fn diagnose_fields(ctx: &ProbeContext) -> Vec<DiagnosticField> {
     f.push(field("version", report.info.version.clone().unwrap_or_else(|| "(unknown)".to_string())));
     f.push(field("auth", report.auth.as_ref().map(AuthState::describe).unwrap_or_else(|| "(not checked)".to_string())));
     f.push(field("models", report.info.models.len().to_string()));
+    if let Some(n) = &report.models_note {
+        f.push(field("models source", n.clone()));
+    }
     let status =
         serde_json::to_value(report.info.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
     f.push(field("status", status));

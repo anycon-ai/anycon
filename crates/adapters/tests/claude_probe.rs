@@ -1,4 +1,5 @@
-//! Claude Code 探测：用 PATH 里的假 `claude`（`tests/bin/fake-claude`）回答 `--version` 与 `auth status`。
+//! Claude Code 探测：用 PATH 里的假 `claude`（`tests/bin/fake-claude`）回答 `--version`、`auth status` 和 `initialize`
+//! （默认回放录制的 `models[]`，`tests/fixtures/claude/real_initialize.json`）。
 //!
 //! 假 CLI（`tests/bin/fake-*`）是带 shebang 的 python 脚本，Windows 上不能直接执行：这个文件只在 unix 上跑。
 #![cfg(unix)]
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anycon_adapters::claude_code::probe::{self, AuthState};
+use anycon_adapters::claude_code::probe::{self, AuthState, CliModelsMemoCell};
 use anycon_adapters::ClaudeCodeAdapter;
 use anycon_agent_api::{Adapter, AdapterConfig, ProbeContext};
 use anycon_protocol::{AgentStatus, ConfigOptionKind, ModeRisk, ModelInfo};
@@ -76,6 +77,22 @@ impl Setup {
         self
     }
 
+    /// 假 CLI 把每次进入 stream-json 模式时的 argv 记到这个文件（`--version` / `auth status` 不记）。
+    fn with_log(self) -> Self {
+        let log = self.dir.path().join("fake.log");
+        self.var("FAKE_CLAUDE_LOG", log.to_str().unwrap())
+    }
+
+    /// 记下的 stream-json 进程的 argv，一次启动一项。
+    fn spawned_argv(&self) -> Vec<Vec<String>> {
+        let Ok(text) = std::fs::read_to_string(self.dir.path().join("fake.log")) else { return vec![] };
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["kind"] == "argv")
+            .map(|v| serde_json::from_value(v["args"].clone()).unwrap())
+            .collect()
+    }
+
     fn ctx(&self) -> ProbeContext {
         ProbeContext {
             env: Arc::new(self.env.clone()),
@@ -108,11 +125,12 @@ async fn ready_when_installed_and_logged_in() {
     assert!(info.probed_at_ms > 0);
     assert!(info.allow_custom_model);
 
-    // 模型：内置表，一个默认，思考等级挂在模型上
+    // 模型：CLI 的清单（录制里有内置表没有的 Fable 5.2），一个默认，思考等级挂在模型上
     assert_eq!(
         info.models.iter().filter(|m| m.default).map(|m| m.id.as_str()).collect::<Vec<_>>(),
-        vec!["claude-opus-5-5"]
+        vec!["claude-sonnet-5-5"]
     );
+    assert!(info.models.iter().any(|m| m.id == "claude-fable-5-2"));
     let opus = info.models.iter().find(|m| m.id == "claude-opus-5-5").unwrap();
     assert_eq!(opus.thinking.as_ref().unwrap().default.as_deref(), Some("medium"));
     let old = info.models.iter().find(|m| m.id == "claude-opus-4-6").unwrap();
@@ -148,15 +166,97 @@ async fn ready_when_installed_and_logged_in() {
 }
 
 #[tokio::test]
-async fn cheap_probe_gives_the_same_answer() {
-    let s = Setup::with_claude_on_path();
-    let full = s.probe().await;
+async fn the_models_probe_runs_claude_without_mcp_servers_hooks_or_a_transcript() {
+    let s = Setup::with_claude_on_path().with_log();
+    let report = probe::run_probe(&s.ctx(), false, &CliModelsMemoCell::default()).await;
+    assert_eq!(report.models_note.as_deref(), Some("17 models from initialize"));
+    let argv = s.spawned_argv();
+    assert_eq!(argv.len(), 1, "{argv:?}");
+    for want in [
+        "-p",
+        "--input-format=stream-json",
+        "--output-format=stream-json",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        r#"--settings={"disableAllHooks":true}"#,
+    ] {
+        assert!(argv[0].iter().any(|a| a == want), "missing {want} in {:?}", argv[0]);
+    }
+}
+
+#[tokio::test]
+async fn cheap_probe_reuses_the_last_initialize_of_the_same_adapter() {
+    let s = Setup::with_claude_on_path().with_log();
+    let adapter = ClaudeCodeAdapter::new();
+    let full = adapter.probe(&s.ctx()).await;
+    assert!(full.models.iter().any(|m| m.id == "claude-fable-5-2"));
     let mut ctx = s.ctx();
     ctx.cheap = true;
     ctx.previous = Some(full.clone());
-    let cheap = ClaudeCodeAdapter::new().probe(&ctx).await;
+    let cheap = adapter.probe(&ctx).await;
     assert_eq!(cheap.status, full.status);
     assert_eq!(cheap.models, full.models);
+    // cheap 探测不起 claude 进程
+    assert_eq!(s.spawned_argv().len(), 1);
+
+    // 别的实例（daemon 重启后）没有记录：cheap 探测给内置表，不起进程
+    let fresh = ClaudeCodeAdapter::new().probe(&ctx).await;
+    assert!(fresh.models.iter().any(|m| m.id == "claude-opus-4-6[1m]"));
+    assert!(!fresh.models.iter().any(|m| m.id == "claude-fable-5-2"));
+    assert_eq!(s.spawned_argv().len(), 1);
+
+    // 版本变了：记录不再适用（daemon 随后会补一次完整探测）
+    let s2 =
+        Setup { dir: s.dir, env: s.env, config: s.config }.var("FAKE_CLAUDE_VERSION_TEXT", "2.1.400 (Claude Code)");
+    let mut ctx = s2.ctx();
+    ctx.cheap = true;
+    let bumped = adapter.probe(&ctx).await;
+    assert!(!bumped.models.iter().any(|m| m.id == "claude-fable-5-2"));
+}
+
+#[tokio::test]
+async fn falls_back_to_the_built_in_table_when_initialize_does_not_work() {
+    for (mode, note) in [
+        ("error", "initialize failed: initialize is not available"),
+        ("nomodels", "has no models list"),
+        ("exit", "fatal: cannot initialize"),
+    ] {
+        let s = Setup::with_claude_on_path().var("FAKE_CLAUDE_INIT", mode);
+        let report = probe::run_probe(&s.ctx(), false, &CliModelsMemoCell::default()).await;
+        assert_eq!(report.info.status, AgentStatus::Ready, "{mode}");
+        let got = report.models_note.unwrap();
+        assert!(got.contains(note) && got.ends_with("using the built-in table"), "{mode}: {got}");
+        assert_eq!(
+            report.info.models.iter().filter(|m| m.default).map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["claude-opus-5-5"],
+            "{mode}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_initialize_keeps_the_last_good_list() {
+    let s = Setup::with_claude_on_path();
+    let memo = CliModelsMemoCell::default();
+    let first = probe::run_probe(&s.ctx(), false, &memo).await;
+    let s = Setup { dir: s.dir, env: s.env, config: s.config }.var("FAKE_CLAUDE_INIT", "error");
+    let second = probe::run_probe(&s.ctx(), false, &memo).await;
+    assert_eq!(second.info.models, first.info.models);
+    assert!(second.models_note.unwrap().ends_with("kept the last initialize"));
+}
+
+#[tokio::test]
+async fn hanging_initialize_respects_the_deadline() {
+    let s = Setup::with_claude_on_path().var("FAKE_CLAUDE_INIT", "hang");
+    let mut ctx = s.ctx();
+    ctx.deadline = Duration::from_secs(6);
+    let t0 = Instant::now();
+    let report = probe::run_probe(&ctx, false, &CliModelsMemoCell::default()).await;
+    // 预算用完 + 关进程（SIGINT 前等 300 毫秒）
+    assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+    assert_eq!(report.info.status, AgentStatus::Ready);
+    assert!(report.models_note.unwrap().contains("did not answer"));
+    assert!(report.info.models.iter().any(|m| m.id == "claude-opus-5-5"));
 }
 
 #[tokio::test]
@@ -258,7 +358,7 @@ async fn not_logged_in() {
 async fn environment_credentials_are_not_blocked_by_auth_status() {
     for (k, v) in [("ANTHROPIC_API_KEY", "sk-test"), ("CLAUDE_CODE_USE_BEDROCK", "1")] {
         let s = Setup::with_claude_on_path().var("FAKE_CLAUDE_AUTH", "out").var(k, v);
-        let report = probe::run_probe(&s.ctx(), false).await;
+        let report = probe::run_probe(&s.ctx(), false, &CliModelsMemoCell::default()).await;
         assert_eq!(report.info.status, AgentStatus::Ready, "{k}: {:?} auth={:?}", report.info.issue, report.auth);
         assert!(matches!(report.auth, Some(AuthState::Unknown(_))), "{k}: {:?}", report.auth);
     }
@@ -270,7 +370,7 @@ async fn environment_credentials_are_not_blocked_by_auth_status() {
 #[tokio::test]
 async fn auth_state_details() {
     let s = Setup::with_claude_on_path();
-    let report = probe::run_probe(&s.ctx(), false).await;
+    let report = probe::run_probe(&s.ctx(), false, &CliModelsMemoCell::default()).await;
     assert_eq!(
         report.auth,
         Some(AuthState::LoggedIn { method: Some("claude.ai".into()), email: Some("test@example.com".into()) })
@@ -279,12 +379,12 @@ async fn auth_state_details() {
 
     // 老版本 CLI 打文本、退出码 0
     let s = Setup::with_claude_on_path().var("FAKE_CLAUDE_AUTH", "nojson");
-    let report = probe::run_probe(&s.ctx(), false).await;
+    let report = probe::run_probe(&s.ctx(), false, &CliModelsMemoCell::default()).await;
     assert_eq!(report.auth, Some(AuthState::LoggedIn { method: None, email: None }));
 
     // 退出码既不是 0 也不是 1：不确定，不阻塞
     let s = Setup::with_claude_on_path().var("FAKE_CLAUDE_AUTH", "error");
-    let report = probe::run_probe(&s.ctx(), false).await;
+    let report = probe::run_probe(&s.ctx(), false, &CliModelsMemoCell::default()).await;
     assert!(matches!(report.auth, Some(AuthState::Unknown(_))));
     assert_eq!(report.info.status, AgentStatus::Ready);
 }
@@ -295,7 +395,7 @@ async fn hanging_auth_check_respects_the_deadline() {
     let mut ctx = s.ctx();
     ctx.deadline = Duration::from_secs(4);
     let t0 = Instant::now();
-    let report = probe::run_probe(&ctx, false).await;
+    let report = probe::run_probe(&ctx, false, &CliModelsMemoCell::default()).await;
     assert!(t0.elapsed() < Duration::from_secs(8), "{:?}", t0.elapsed());
     assert!(matches!(report.auth, Some(AuthState::Unknown(ref why)) if why == "timed out"), "{:?}", report.auth);
     assert_eq!(report.info.status, AgentStatus::Ready);
@@ -332,7 +432,7 @@ async fn config_command_override_with_args() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Setup::bare(dir);
     s.config.command = Some(format!("{} --profile work", fake_claude().display()));
-    let report = probe::run_probe(&s.ctx(), false).await;
+    let report = probe::run_probe(&s.ctx(), false, &CliModelsMemoCell::default()).await;
     assert_eq!(report.info.status, AgentStatus::Ready, "{:?}", report.info.issue);
     assert_eq!(report.info.path.as_deref(), Some(fake_claude().to_str().unwrap()));
     assert_eq!(report.resolution.unwrap().prefix_args, vec!["--profile", "work"]);
@@ -375,9 +475,9 @@ async fn user_models_from_settings_json_env_and_config_are_appended() {
     {
         assert!(ids.contains(&want), "missing {want} in {ids:?}");
     }
-    // 追加的都排在内置表后面，也不会抢默认
+    // 追加的都排在 CLI 清单后面，也不会抢默认
     assert_eq!(info.models.iter().filter(|m| m.default).count(), 1);
-    assert_eq!(info.models[0].id, "claude-opus-5-5");
+    assert_eq!(info.models[0].id, "claude-sonnet-5-5");
     let custom = info.models.iter().find(|m| m.id == "my-settings-model").unwrap();
     assert!(custom.description.as_deref().unwrap().contains("settings.json"));
 }
@@ -415,6 +515,7 @@ async fn diagnose_has_the_fields_from_the_spec() {
     assert_eq!(get("version"), "2.1.293");
     assert_eq!(get("auth"), "logged in via claude.ai as test@example.com");
     assert!(get("models").parse::<usize>().unwrap() >= 10);
+    assert_eq!(get("models source"), "17 models from initialize");
     assert_eq!(get("status"), "ready");
     // 文本版
     assert!(text.starts_with("Claude Code (claude-code)"));

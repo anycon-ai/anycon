@@ -24,13 +24,34 @@ const DiffView = lazy(() => import('./DiffView').then((m) => ({ default: m.DiffV
 
 // ---- 用户消息 ----
 
-export function UserBubble({ block, nodeId }: { block: UserBlock; nodeId?: string }) {
+/**
+ * 消息被标了「可能没有送达」（`block.deliveryUncertain`）时，气泡下面显示提示和重发入口。`onResend` 不给（离线、已归档）就只显示提示；
+ * `resent` 为 true 表示用户已经重发过一次，按钮换成「已重发」。重发是用户的决定，daemon 不会自动重发（可能重复）。
+ */
+export function UserBubble({ block, nodeId, onResend, resent }: { block: UserBlock; nodeId?: string; onResend?: () => void; resent?: boolean }) {
+  const { t } = useTranslation()
   return (
-    <div className="flex flex-col items-end gap-1.5" data-testid="message-user">
+    <div className="flex flex-col items-end gap-1.5" data-testid="message-user" data-delivery={block.deliveryUncertain ? 'uncertain' : undefined}>
       <MessageAttachments nodeId={nodeId} attachments={block.attachments} />
       {block.content || block.attachments.length === 0 ? (
-        <div className="max-w-[min(85%,56rem)] rounded-2xl bg-bg-muted px-4 py-2.5 text-fg">
+        <div className={cn('max-w-[min(85%,56rem)] rounded-2xl px-4 py-2.5 text-fg', block.deliveryUncertain ? 'border border-dashed border-warning bg-warning-subtle' : 'bg-bg-muted')}>
           <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{block.content}</p>
+        </div>
+      ) : null}
+      {block.deliveryUncertain ? (
+        <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-fg-subtle" data-testid="message-delivery-uncertain">
+          <Chip tone="warning">{t('message.deliveryUncertain')}</Chip>
+          {resent ? (
+            <span className="inline-flex items-center gap-1" data-testid="message-resent">
+              <Check className="size-3" />
+              {t('message.resent')}
+            </span>
+          ) : onResend ? (
+            <button type="button" className="inline-flex items-center gap-1 hover:text-fg" onClick={onResend} data-testid="message-resend">
+              <RotateCw className="size-3" />
+              {t('message.resend')}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

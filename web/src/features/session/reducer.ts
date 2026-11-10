@@ -8,6 +8,7 @@
 // - git（ADR-34）生成「已在 worktree … 中开始」「已合并 main 的 3 个提交」之类的系统行
 // - task（后台任务快照）按 id 只留最新一条：有 tool_id 且对应的工具块已加载就挂在那个块上，否则在第一次出现的位置单独成块
 // - notice 生成一行提示（info / warning）；activity 是视图级的临时状态，内容事件 / turn_done / state none 时清掉
+// - message_delivery 把「可能没有送达」标在对应的用户消息块上（事件流只追加，不改 user_message）
 // - turn_done.usage 里的 context_window / context_tokens 记成视图的最新上下文占用
 import type {
   AttachmentRef,
@@ -52,6 +53,8 @@ export interface UserBlock extends BlockBase {
   byDevice: string
   /** 消息带的图片附件（ADR-35），以 daemon 的记录为准（含宽高）。没有附件是空数组。 */
   attachments: AttachmentRef[]
+  /** `message_delivery { uncertain }`：这条插话被 agent 接受，但 turn 在确认它被读到之前被取消，可能没有送达（daemon.md § 7.5）。 */
+  deliveryUncertain?: boolean
 }
 export interface TurnStartBlock extends BlockBase {
   type: 'turn_start'
@@ -684,6 +687,18 @@ function applyOne(w: Work, se: SessionEvent): void {
         modelTo: ev.model_to ?? undefined,
         resetsAtMs: ev.resets_at_ms ?? undefined,
       })
+      return
+    }
+    case 'message_delivery': {
+      // 不认识的 state 当作没有标记（协议只保证 uncertain）；消息不在已加载的窗口里就没什么可标的
+      if (ev.state !== 'uncertain') return
+      for (let i = w.blocks.length - 1; i >= 0; i--) {
+        const b = w.blocks[i]
+        if (b?.type === 'user' && b.messageId === ev.message_id) {
+          if (!b.deliveryUncertain) w.blocks[i] = { ...b, deliveryUncertain: true }
+          return
+        }
+      }
       return
     }
     case 'activity': {

@@ -7,12 +7,15 @@ use std::collections::VecDeque;
 use std::io::Write;
 
 use anycon_protocol::{
-    ActivityState, AttachmentRef, Event, GitAction, LimitScope, NoticeLevel, PermissionKind, PermissionOption,
-    PermissionOptionKind, PermissionRequest, SessionEvent, TaskKind, TaskStatus, TaskUsage, ToolCategory,
-    TurnDoneReason, Usage,
+    ActivityState, AttachmentRef, Event, GitAction, LimitScope, MessageDeliveryState, NoticeLevel, PermissionKind,
+    PermissionOption, PermissionOptionKind, PermissionRequest, SessionEvent, TaskKind, TaskStatus, TaskUsage,
+    ToolCategory, TurnDoneReason, Usage,
 };
 
 use crate::output::{clip, clip_to, safe_text, visible, Out, CLIP_CHARS, CLIP_LINES};
+
+/// `Renderer` 记住的最近用户消息条数（`message_delivery` 用它说明是哪一条）。
+const RECENT_USER_MESSAGES: usize = 32;
 
 pub struct Renderer {
     out: Out,
@@ -22,6 +25,8 @@ pub struct Renderer {
     in_thinking: bool,
     /// 每个后台任务最近一次打印出来的状态：`task` 快照每秒可能来一条，终端上只在第一次出现和状态变化时打一行。
     tasks: std::collections::HashMap<String, TaskStatus>,
+    /// 最近几条用户消息（id、第一行的开头），`message_delivery` 要告诉用户是哪一条。回放历史时也是边读边记，所以只留最近的。
+    recent_user: VecDeque<(String, String)>,
     /// 测试里把 stdout 的输出收到这里。
     #[cfg(test)]
     capture: Option<std::sync::Arc<std::sync::Mutex<Vec<u8>>>>,
@@ -235,6 +240,17 @@ pub fn activity_text(
     }
 }
 
+/// `message_delivery { uncertain }` 的提示。`preview` 是那条消息第一行的开头（已可见化；回放时没见过这条消息就没有）。
+fn delivery_warning(message_id: &str, preview: Option<&str>) -> String {
+    let what = match preview {
+        Some(p) if !p.is_empty() => format!("message \"{p}\""),
+        _ => format!("message {}", visible(message_id)),
+    };
+    format!(
+        "[warning: {what} may not have been delivered: the turn was cancelled before the agent confirmed reading it. Send it again if it matters]"
+    )
+}
+
 pub fn format_usage(reason: TurnDoneReason, usage: &Option<Usage>) -> String {
     let mut parts = vec![format!("{reason:?}").to_lowercase()];
     if let Some(u) = usage {
@@ -259,6 +275,7 @@ impl Renderer {
             at_line_start: true,
             in_thinking: false,
             tasks: std::collections::HashMap::new(),
+            recent_user: VecDeque::new(),
             #[cfg(test)]
             capture: None,
         }
@@ -299,8 +316,13 @@ impl Renderer {
     /// 渲染一个事件。`permission` 事件不在这里处理（走 `permission.request` 通知的交互提示）。
     pub fn event(&mut self, ev: &SessionEvent) {
         match &ev.event {
-            Event::UserMessage { content, attachments, .. } => {
+            Event::UserMessage { message_id, content, attachments, .. } => {
                 self.end_thinking();
+                if self.recent_user.len() >= RECENT_USER_MESSAGES {
+                    self.recent_user.pop_front();
+                }
+                let first_line = content.lines().next().unwrap_or("");
+                self.recent_user.push_back((message_id.clone(), clip(first_line, 40, false).shown));
                 // 用户消息也可能来自别的客户端：和 agent 的文字一样，控制字符显示成转义
                 // 只有附件（没有文字）的消息不打印空的 `> ` 行
                 if !content.is_empty() || attachments.is_empty() {
@@ -454,6 +476,15 @@ impl Renderer {
                     }
                     eprintln!("{}", self.out.err_dim(&format!("[{text}]")));
                 }
+            }
+            Event::MessageDelivery { message_id, state: MessageDeliveryState::Uncertain } => {
+                // 插话被 agent 接受之后 turn 被取消：它可能没读到。不自动重发，提示用户自己决定
+                let preview = self.recent_user.iter().find(|(id, _)| id == message_id).map(|(_, p)| p.as_str());
+                let text = delivery_warning(message_id, preview);
+                if !self.at_line_start {
+                    self.write("\n");
+                }
+                eprintln!("{}", self.out.err_yellow(&text));
             }
             Event::Error { code, message, recoverable, resets_at_ms, limit_scope } => {
                 if !self.at_line_start {
@@ -1402,6 +1433,38 @@ mod tests {
             error_text("usage_limit", "hit\x1b[2K", true, Some(1_800_000_000_000), Some(LimitScope::Model)),
             "error: usage_limit: hit\\x1b[2K (resets 2027-01-15 08:00:00 UTC) (this limit is for one model; another model may still work)"
         );
+    }
+
+    #[test]
+    fn an_uncertain_delivery_names_the_message_and_never_prints_to_stdout() {
+        assert_eq!(
+            delivery_warning("m2", Some("fix the build")),
+            "[warning: message \"fix the build\" may not have been delivered: the turn was cancelled before the agent confirmed reading it. Send it again if it matters]"
+        );
+        // 回放时没见过这条消息：退到 id（控制字符照常可见化）
+        assert!(delivery_warning("m\x1b[2K2", None).starts_with("[warning: message m\\x1b[2K2 may not"));
+        // 预览取自之前渲染过的用户消息，和 turn 一样走 stderr：stdout 什么都不写
+        let (mut r, buf) = capturing(plain(), false);
+        r.event(&sev(Event::UserMessage {
+            message_id: "m2".into(),
+            content: "fix the build\nplease".into(),
+            by_device: "d".into(),
+            attachments: vec![],
+        }));
+        let before = buf.lock().unwrap().len();
+        r.event(&sev(Event::MessageDelivery { message_id: "m2".into(), state: MessageDeliveryState::Uncertain }));
+        assert_eq!(buf.lock().unwrap().len(), before);
+        assert_eq!(r.recent_user.back().unwrap().1, "fix the build");
+        // 只留最近的几条
+        for i in 0..(RECENT_USER_MESSAGES + 5) {
+            r.event(&sev(Event::UserMessage {
+                message_id: format!("x{i}"),
+                content: "x".into(),
+                by_device: "d".into(),
+                attachments: vec![],
+            }));
+        }
+        assert_eq!(r.recent_user.len(), RECENT_USER_MESSAGES);
     }
 
     #[test]

@@ -168,10 +168,16 @@ leader 一退出就清整个进程组——都来自 `common/child.rs`，和 Cla
   附件：图片 → `{type: "localImage", path}`（png / jpeg / gif / webp），其它类型 `Unsupported`（daemon 只把原生支持的交给 adapter，其它附件落到工作目录、路径写在文字里，ADR-44）。
 - **steer 之后 interrupt，steer 的消息会丢**（真实 codex 0.157.1 实测，本地假模型服务 + 临时 `CODEX_HOME`；模型请求在途时 `turn/steer` 一条消息、紧接着 `turn/interrupt`）：
   `turn/steer` 的响应是 `{ turnId }`（接受了），`turn/interrupt` 的响应是 `{}`，turn 以 `interrupted` 收尾；但那条 steer 的消息**既没有变成 `userMessage` 条目，也没有出现在下一个 turn 请求的历史里**
-  （下一个 turn 的请求里只有第一条消息、一条 `<turn_aborted>` 提示和新消息），重复两次结果一样。codex 把 steer 的输入放进「待处理输入」，等当前模型请求结束后才并入历史，interrupt 把这一步直接丢了。
+  （下一个 turn 的请求里只有第一条消息、一条 `<turn_aborted>` 提示和新消息），重复两次结果一样。也就是说 steer 被接受到并入历史之间有一个窗口，interrupt 落在窗口里，消息就丢了。
+  0.167.0 的对照（见下一条）：模型请求正在流式输出时，steer 之后 Codex 放弃在途的请求、带上插话重新发一次，所以这个窗口在流式阶段是毫秒级；工具执行期间窗口会不会更长，没有验证。
   反过来，interrupt 先到、steer 后到：steer 被拒绝，`-32600 no active turn to steer`（在 `turn/completed` 之后才回），已经映射成 `TurnEnded`。
   所以 `cancel` 发出之后 adapter 把插话当成「没有进行中的 turn」：`TurnEnded`、不发 `turn/steer`，daemon 把消息退回队列、作为下一个 turn 发出，不丢。
-  `cancel` 之前**已经被接受**的 steer 追不回来（adapter 不知道 codex 有没有把它并入历史）——见「已知限制」。
+  `cancel` 之前**已经被接受**的 steer 追不回来，但 adapter 能知道它有没有被并入历史（下一条）。
+- **steer 被并入历史的信号**（0.167.0 实测，同样是本地假模型服务 + 临时 `CODEX_HOME`，录制是 `real_steer_merged.jsonl`）：`turn/steer` 和 `turn/start` 的参数都有 `clientUserMessageId`；
+  steer 的消息真正并入历史时，app-server 发 `item/started` + `item/completed`，条目是 `userMessage`，`clientId` 就是我们给的那个 id（`turn/start` 不带 id 的第一条消息 `clientId` 是 `null`）。
+  adapter 用 `message_id` 作 `clientUserMessageId`，translator 看到主 thread 的 `userMessage` 条目带非空 `clientId` 就发 `AgentEvent::InterjectionRead { message_id }`（两条通知各一次，daemon 对重复的忽略）。
+  steer 被接受后立刻 interrupt 的对照实验里没有这个条目，下一个 turn 的请求里也没有那条消息——和上一条的结论一致。
+  daemon 据此区分「模型读到了」和「可能丢了」：turn 以 `cancelled` 收尾时仍未确认的插话标 `message_delivery { uncertain }`（`docs/spec/daemon.md § 7.5`）。
 - **每个 `turn/start` 都带当前的覆盖项**（对「本 turn 及之后」有效）：`model`、`effort`（= thinking）、`summary`、`approvalPolicy`、`approvalsReviewer`；
   `sandboxPolicy` 和 `serviceTier` **只在与线程当前值不同时才传**（`process::Sent`）——没动过它们的会话保留用户 `config.toml` 里
   `[sandbox_workspace_write]`（网络、可写根）和 `service_tier` 的细节，因为 `sandboxPolicy` 是整个策略、不带这些细节。
@@ -376,7 +382,7 @@ MCP 用一个只靠标准库的 stdio MCP server（一个工具在 `tools/call` 
 ## 测试
 
 - `tests/bin/fake-codex`（Python）：`--version`、`login status`（`FAKE_CODEX_AUTH=in|apikey|out|error|hang`）、`app-server`（回放 fixture，服务端请求要等客户端答复，`turn/steer` / `turn/interrupt` /
-  `thread/inject_items` / `thread/resume` / `account/read` 的行为和真的一致，日志记录收到的每条请求；`FAKE_CODEX_*` 开关见脚本头；fixture 里的 `{"_hold": true}` 让 turn 一直开着等客户端打断）。
+  `thread/inject_items` / `thread/resume` / `account/read` 的行为和真的一致（被接受的 `turn/steer` 立刻回一对 `userMessage` 条目，带着 `clientUserMessageId` 作 `clientId`；`FAKE_CODEX_STEER_NO_ECHO=1` 模拟被丢掉的 steer），日志记录收到的每条请求；`FAKE_CODEX_*` 开关见脚本头；fixture 里的 `{"_hold": true}` 让 turn 一直开着等客户端打断）。
 - `tests/codex_probe.rs`、`tests/codex_process.rs`、`tests/codex_translate.rs`：探测（含 `account/read` 判定、cheap 探测沿用、`account/read` 失败时沿用上一次权威判定）、进程级（握手、参数、审批、取消 / 转向 / 插话、不阻塞、超长行、设置、续接与 `agent_context_reset`、崩溃、关闭）、翻译。
   不阻塞用例：fake 连续输出 5000 条 delta 且不读 `events()` 时，`cancel()` / 插话 / `set_settings` 都要在 5 秒内返回，随后读到全部 5000 条和 `turn_done { cancelled }`。
 - `fake-codex` 的 fixture 里，带 `"_nowait": true` 的服务端请求发出去不等答复（后面跟一条 `serverRequest/resolved` = Codex 自己了结了它）：`exec_approval_resolved_by_codex.jsonl`（由 `real_exec_approval` 改出来）
@@ -388,6 +394,7 @@ MCP 用一个只靠标准库的 stdio MCP server（一个工具在 `tools/call` 
   thread / turn id → `FIXTURE_THREAD` / `FIXTURE_TURN`，去掉主机名 / 安装 id（`recordings_carry_no_local_environment` 兜底）。
   `real_subagent_spawn`、`real_subagent_command`、`real_mcp_elicitation`、`real_mcp_tool_declined`、`real_context_compaction`、`real_startup_notices` 是 **`codex-cli 0.164.0` 的真实录制**
   （这几个的模型输出也是真模型的一次很短的调用，不是脚本；模型名 → `fixture-model*`，子 thread / turn → `FIXTURE_CHILD` / `FIXTURE_CHILD_TURN`，item id → `call_1` / `exec_1` / `msg_1`…）。
+  `real_steer_merged` 是 **`codex-cli 0.167.0` 的真实录制**（同上，本地假模型服务；一个 turn 里 `turn/steer` 一条带 `clientUserMessageId` 的消息，回放的是通知，不含请求的响应）。
   其余（`tools_and_plan`、`command_failed`、`reconnecting`、`unsupported_requests`、`long_text`、`two_turns`、`account_read_chatgpt`、`subagent_collab`（`collabAgentToolCall` 的 `spawnAgent` / `wait`、被打断的子 agent）、
   `notices`（每种提示各一条，含重复的）、`mcp_elicitation_forms`（各种类型的表单、非法 URL、`openai/form`、只有 `session` 持久化的审批、空表单））按 schema 手写，`unknown_things` 故意带着不认识的东西。
 - `tests/real_codex.rs`（`#[ignore]` + `ANYCON_REAL_AGENT_TESTS=1`）：
@@ -399,6 +406,8 @@ MCP 用一个只靠标准库的 stdio MCP server（一个工具在 `tools/call` 
   - `real_custom_provider_is_ready_and_survives_a_huge_patch` / `real_cancel_under_heavy_command_output_returns_promptly`：真 app-server + `tests/bin/fake-responses` + 临时 `CODEX_HOME`（**不走用户配置的提供方**，不联网）：
     自定义提供方 `login status` 说未登录、`account/read` 说不需要 → ready，cheap 探测沿用；11 MB 的补丁（真实 codex 会产生 11 MB 的 `item/started` / `item/completed`）不弄死会话；
     命令输出很密（`yes`）时 `cancel()` 毫秒级返回、随后读到 `turn_done { cancelled }`。
+  - `real_a_steered_message_is_reported_as_read_when_it_is_merged`：模型请求在途时 `turn/steer`，turn 正常走完，收到 `InterjectionRead { message_id }`，那条消息也出现在随后的模型请求里；
+    `real_a_steered_message_is_lost_when_the_turn_is_then_interrupted` 里被丢掉的 steer 则没有（固定「并入历史才有 `userMessage` 条目」这个信号，codex 改了行为它们会失败）；
   - `real_a_steered_message_is_lost_when_the_turn_is_then_interrupted`：模型请求在途时 `turn/steer` 一条消息、再 `cancel`，下一个 turn 的请求历史里没有那条消息（把「会丢」固定下来，codex 改了行为它会失败）；
     假服务（`tests/bin/fake-responses`）可以把收到的每个模型请求写进日志文件。
   - `real_a_provider_change_is_an_agent_config_error_and_reverting_it_recovers` / `real_a_turn_after_an_idle_pause_still_completes_with_immediate_unloading`：见「0.165 / 0.166 的变化」
@@ -426,6 +435,8 @@ ANYCON_REAL_AGENT_TESTS=1 cargo test -p anycon-adapters --test real_codex -- --i
 - 事件的内部队列无界（不阻塞约定的代价，见上）。
 - 超长（> 8 MiB）的 `item/*` 通知只留「内容没显示」的调用 / 结果；补丁的 `file_changed` 事件和 diff 在这种情况下没有。
 - `login status` 没变而 `config.toml` 改了提供方时，cheap 探测不会发现（见「认证判定」），要等完整探测。
-- 一条已经被 `turn/steer` 接受、但模型还没读到的插话，如果随后用户 `cancel`，会被 codex 连同 turn 一起丢掉（上面「steer 之后 interrupt」）。adapter 没有办法事后知道，
-  也不能重发（可能已经并入了历史）；只有 `cancel` 之后才到的插话会被退回队列。
+- 一条已经被 `turn/steer` 接受、但模型还没读到的插话，如果随后用户 `cancel`，会被 codex 连同 turn 一起丢掉（上面「steer 之后 interrupt」）。codex 不会把它找回来，adapter 也不重发（可能已经并入了历史）；
+  adapter 发 `InterjectionRead` 说明哪些读到了，daemon 把取消时还没读到的标成 `message_delivery { uncertain }`，由用户决定要不要重发。只有 `cancel` 之后才到的插话会被退回队列、作为下一个 turn 发出。
+  `userMessage` 通知和 `turn/completed` 在同一个有序通道里、由 daemon 的 driver 逐条处理，确认一定先于 `turn_done` 被处理，所以不会因为通知还没处理而误标。
+  不会标的情况：turn 以 `error` 收尾（比如接受之后进程崩溃）、daemon 在 turn 收尾前重启；确认丢失的情况（超过 8 MiB 被丢弃的 `userMessage` 通知）会多标。
 - 完整探测里 `account/read` 失败、而 `login status` 没变时，沿用的是同一个二进制上一次的权威判定：如果 `config.toml` 在这期间改了提供方而 `account/read` 又一直失败，要等它恢复才会更新（`login status` 看不出提供方）。

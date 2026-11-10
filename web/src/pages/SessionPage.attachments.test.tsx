@@ -304,6 +304,59 @@ describe('SessionPage: retrying a turn and exporting', () => {
     expect(sends()[0]).toMatchObject({ content: 'why is this broken?', attachments: [ref] })
   })
 
+  it('“Send again” on a message marked as possibly undelivered sends the same text and image references under a new message id, once', async () => {
+    seed({
+      events: [
+        { type: 'user_message', message_id: 'm1', content: 'why is this broken?', by_device: 'me', attachments: [ref] },
+        { type: 'turn_start', turn_id: 1, message_id: 'm1' },
+        { type: 'message_delivery', message_id: 'm1', state: 'uncertain' },
+        { type: 'turn_done', turn_id: 1, reason: 'cancelled' },
+      ],
+    })
+    render(<SessionPage sessionId={SID} />)
+    await userEvent.click(await screen.findByTestId('message-resend'))
+    await waitFor(() => expect(sends()).toHaveLength(1))
+    expect(sends()[0]).toMatchObject({ content: 'why is this broken?', attachments: [ref] })
+    expect(sends()[0]!.message_id).not.toBe('m1')
+    // 点过之后换成「已重发」，不能再点第二次
+    expect(await screen.findByTestId('message-resent')).toHaveTextContent('Sent again')
+    expect(screen.queryByTestId('message-resend')).toBeNull()
+  })
+
+  it('a rejected resend leaves one place to retry: the original stays “Sent again”, the failed new message has its own Retry', async () => {
+    seed({ events: [{ type: 'user_message', message_id: 'm1', content: 'hello', by_device: 'me' }, { type: 'message_delivery', message_id: 'm1', state: 'uncertain' }] })
+    rpc.handlers['session.send'] = () => {
+      throw rpcError('invalid')
+    }
+    render(<SessionPage sessionId={SID} />)
+    await userEvent.click(await screen.findByTestId('message-resend'))
+    await waitFor(() => expect(useUi.getState().toasts.length).toBeGreaterThan(0))
+    expect(await screen.findByTestId('message-unsent-badge')).toBeInTheDocument()
+    expect(screen.getAllByTestId('message-retry')).toHaveLength(1)
+    expect(screen.queryByTestId('message-resend')).toBeNull()
+    expect(screen.getByTestId('message-resent')).toBeInTheDocument()
+  })
+
+  it('a resend that could not reach the node ends up in the unsent list once; the original does not offer a second send', async () => {
+    seed({ events: [{ type: 'user_message', message_id: 'm1', content: 'hello', by_device: 'me' }, { type: 'message_delivery', message_id: 'm1', state: 'uncertain' }] })
+    rpc.handlers['session.send'] = () => {
+      throw new Error('connection lost')
+    }
+    render(<SessionPage sessionId={SID} />)
+    await userEvent.click(await screen.findByTestId('message-resend'))
+    await waitFor(() => expect(screen.getAllByTestId('message-unsent-badge')).toHaveLength(1))
+    expect(screen.getAllByTestId('message-retry')).toHaveLength(1)
+    expect(screen.queryByTestId('message-resend')).toBeNull()
+    expect(screen.getByTestId('message-resent')).toBeInTheDocument()
+  })
+
+  it('no “Send again” while the node is offline', async () => {
+    seed({ conn: 'peer_offline', events: [{ type: 'user_message', message_id: 'm1', content: 'hello', by_device: 'me' }, { type: 'message_delivery', message_id: 'm1', state: 'uncertain' }] })
+    render(<SessionPage sessionId={SID} />)
+    expect(await screen.findByTestId('message-delivery-uncertain')).toBeInTheDocument()
+    expect(screen.queryByTestId('message-resend')).toBeNull()
+  })
+
   it('the Markdown export lists images as [image: name] and other files as [file: name], in the UI language', async () => {
     seed({ events: [{ type: 'user_message', message_id: 'm1', content: 'why is this broken?', by_device: 'me', attachments: [ref, { blob_id: 'f'.repeat(32), name: 'trace.log', mime: 'text/plain', bytes: 99 }] }] })
     usePrefs.setState({ infoPanelOpen: true })

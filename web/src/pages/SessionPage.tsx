@@ -15,7 +15,7 @@ import { describeAttachmentFailure, describeAttachNotice } from '@/features/atta
 import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, unarchiveSession, type SendOutcome } from '@/features/session/actions'
 import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
-import { latestSyncBlock, pendingPermissions } from '@/features/session/reducer'
+import { latestSyncBlock, pendingPermissions, type UserBlock } from '@/features/session/reducer'
 import { backgroundCommands, isTurnActive, subagentRows } from '@/features/session/subagents'
 import { backgroundTaskCount, runningTasks, tasksLive } from '@/features/session/tasks'
 import { previewAvailable, usePreviewTemplate } from '@/features/preview/availability'
@@ -84,6 +84,8 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
   // permission_resolved（by_device: daemon），卡片换成「已被 anycon 自动拒绝」；别的 not_found（`gone`：请求已不存在）就停在说明上
   const [settled, setSettled] = useState<ReadonlyMap<string, SettledReason>>(new Map())
   const [loadingOlder, setLoadingOlder] = useState(false)
+  // 已经重发过的「可能没有送达」的消息（原消息的 id）
+  const [resent, setResent] = useState<ReadonlySet<string>>(new Set())
   const [renameOpen, setRenameOpen] = useState(false)
   const [focusToken, setFocusToken] = useState(0)
   const [scrollTo, setScrollTo] = useState<string | null>(null)
@@ -191,6 +193,20 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
       if (r.state === 'failed') toast.error(failedText(r.reason, t))
     })
   }, [nodeId, sessionId, view?.blocks, t])
+
+  // 「可能没有送达」的消息上的「重发」：用新的 message_id 把同样的内容和附件引用再发一遍（附件已经属于这个会话，daemon 允许在同一个会话里复用）。
+  // 不会自动重发（可能重复），由用户点。交给 sendMessage 之后原消息就固定显示「已重发」：发送失败或没发出去时，新消息自己有
+  // 「失败 / 未发送」气泡和它的「重试」，不在原消息上再给第二个入口（两边都点会发两遍）
+  const onResendMessage = useCallback(
+    (block: UserBlock) => {
+      if (!nodeId) return
+      setResent((s) => new Set(s).add(block.messageId))
+      void sendMessage(nodeId, sessionId, block.content, block.attachments).then((r) => {
+        if (r.state === 'failed') toast.error(failedText(r.reason, t))
+      })
+    },
+    [nodeId, sessionId, t],
+  )
 
   const onRespond = useCallback(
     (params: PermissionRespondParams) => {
@@ -471,6 +487,8 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
               modeLabel={modeLabel}
               isDangerousMode={isDangerousMode}
               onRetryTurn={running || offline || archived ? undefined : onRetryTurn}
+              onResendMessage={offline || archived ? undefined : onResendMessage}
+              resentMessageIds={resent}
               activity={isTurnActive(status) ? view?.activity : null}
               tasksLive={tasksMayProgress}
               scrollToRequest={scrollTo}

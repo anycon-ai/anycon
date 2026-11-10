@@ -148,6 +148,12 @@ pub enum AgentEvent {
     /// 两者理顺（Claude Code：等这一轮结束再把消息写进去，见 `crates/adapters/src/claude_code/README.md`），
     /// daemon 已经有 turn 时收到它直接忽略。
     TurnStarted,
+    /// 一条插话（[`UserInput::interject`]，按 `message_id`）已经被 agent 并入当前 turn 的历史，模型一定读到了它。
+    /// 只有能确认这件事的 adapter 才发（Codex：`turn/steer` 的 `clientUserMessageId` 在对应的 `userMessage` 条目里原样回来）。
+    /// daemon 据此在 turn 被取消时区分「已经读到」和「可能丢了」：交给 adapter 之后还没收到它就取消的插话，
+    /// daemon 记 `message_delivery { state: uncertain }`（docs/spec/daemon.md § 7.5）。
+    /// `capabilities.interject = true` 却不发它的 adapter，在 turn 取消时被接受的插话一律算不确定（偏保守）。
+    InterjectionRead { message_id: String },
     /// 进程里还在跑的后台任务数（变化时发，含降到 0）。大于 0 时 daemon 不按 `idle_timeout` 回收进程——
     /// 回收会连同这些任务一起杀掉（docs/spec/daemon.md § 7.3）。进程退出后 daemon 自己清零，adapter 不用补发。
     Background { tasks: u32 },

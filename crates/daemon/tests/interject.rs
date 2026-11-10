@@ -7,6 +7,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use anycon_agent_api::AgentEvent;
 use anycon_daemon::testutil::{eventually, InterjectFailure, TestClient, TestDaemon};
 use anycon_protocol::*;
 use serde_json::json;
@@ -73,6 +74,7 @@ fn trace(evs: &[SessionEvent]) -> Vec<String> {
             Event::TurnStart { turn_id, message_id, .. } => Some(format!("turn_start:{turn_id}:{message_id}")),
             Event::TurnDone { turn_id, .. } => Some(format!("turn_done:{turn_id}")),
             Event::Error { code, .. } => Some(format!("error:{code}")),
+            Event::MessageDelivery { message_id, state } => Some(format!("delivery:{message_id}:{state:?}")),
             _ => None,
         })
         .collect()
@@ -256,5 +258,151 @@ async fn a_message_that_arrives_while_a_cancel_is_pending_is_queued_not_interjec
         vec!["user:m1", "turn_start:1:m1", "user:m2", "queued:1", "turn_done:1", "turn_start:2:m2", "turn_done:2"],
         "{t:?}"
     );
+    td.shutdown().await;
+}
+
+/// 插话被 adapter 接受（并入当前 turn）之后 turn 被取消，adapter 又没确认模型读到它：消息可能被 agent 丢了，
+/// 记 `message_delivery { uncertain }`，排在 `turn_done` 之前。daemon 不自动重发（可能重复）。
+#[tokio::test]
+async fn an_accepted_interjection_that_was_never_confirmed_is_marked_uncertain_when_the_turn_is_cancelled() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    let r = send(&td, &mut a, &s.id, "m2", "steer please").await;
+    assert_eq!((r.turn_id, r.queued), (Some(1), false));
+    assert!(eventually(T, || async { delivered(&td, "steer please").len() == 1 }).await);
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert_eq!(t, vec!["user:m1", "turn_start:1:m1", "user:m2", "delivery:m2:Uncertain", "turn_done:1"], "{t:?}");
+    // 没有重发：agent 只收到过这一次，而且是插话
+    assert_eq!(delivered(&td, "steer please"), vec![(true, "steer please".to_string())]);
+    td.shutdown().await;
+}
+
+/// adapter 确认读到了（`InterjectionRead`）的插话，之后 turn 再被取消也不标。重复的确认无害。
+#[tokio::test]
+async fn a_confirmed_interjection_is_not_marked_when_the_turn_is_cancelled() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    send(&td, &mut a, &s.id, "m2", "read me").await;
+    // 有插话还没结果时后来的消息只入队、不插话：先等 m2 的结果落地，m3 才会是第二条插话
+    assert!(eventually(T, || async { td.ctx.sessions.in_flight_interjections(&s.id).await == 0 }).await);
+    send(&td, &mut a, &s.id, "m3", "lost one").await;
+    assert!(eventually(T, || async { delivered(&td, "lost one").len() == 1 }).await);
+    let h = td.fake.last_handle();
+    h.inject(AgentEvent::InterjectionRead { message_id: "m2".into() }).await;
+    h.inject(AgentEvent::InterjectionRead { message_id: "m2".into() }).await;
+    h.inject(AgentEvent::InterjectionRead { message_id: "no-such-message".into() }).await;
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    // 只有 m3 没被确认
+    assert_eq!(
+        t,
+        vec!["user:m1", "turn_start:1:m1", "user:m2", "user:m3", "delivery:m3:Uncertain", "turn_done:1"],
+        "{t:?}"
+    );
+    td.shutdown().await;
+}
+
+/// 接受之后 turn 正常结束：不标（标记只和取消有关）。
+#[tokio::test]
+async fn an_unconfirmed_interjection_is_not_marked_when_the_turn_completes() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    send(&td, &mut a, &s.id, "m2", "steer please").await;
+    assert!(eventually(T, || async { delivered(&td, "steer please").len() == 1 }).await);
+    td.fake.last_handle().release();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert_eq!(t, vec!["user:m1", "turn_start:1:m1", "user:m2", "turn_done:1"], "{t:?}");
+    td.shutdown().await;
+}
+
+/// `send` 还没返回（driver 卡在 adapter 里）时 daemon 自己结束了 turn（这里是 `session.restart`；取消宽限到期同理）：
+/// 进程随后被收掉，这条消息不会有人读到，但它还没被登记为「已接受」。它要在这个 turn 收尾时就被标上；
+/// 旧 driver 迟到的结果不能碰新 turn 和新 driver 的计数。
+#[tokio::test]
+async fn an_interjection_in_flight_when_the_daemon_ends_the_turn_is_marked_and_its_late_result_is_ignored() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    *td.fake.interject_failure.lock().unwrap() = Some(InterjectFailure::Hang);
+    send(&td, &mut a, &s.id, "m2", "stuck in flight").await;
+    // 让 driver 先走进 adapter 的 send 并卡住（插话才算「在途」）
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(delivered(&td, "stuck in flight").is_empty());
+    let sessions = td.ctx.sessions.clone();
+    let sid = s.id.clone();
+    let restart = tokio::spawn(async move { sessions.restart(&sid).await });
+    assert!(wait_trace(&td, &mut a, &s.id, |t| t.contains(&"turn_done:1".to_string())).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert_eq!(t, vec!["user:m1", "turn_start:1:m1", "user:m2", "delivery:m2:Uncertain", "turn_done:1"], "{t:?}");
+    // 旧 driver 的 send 现在才返回 Ok；它晚到的结果什么都不碰
+    *td.fake.interject_failure.lock().unwrap() = None;
+    td.fake.interject_gate.notify_one();
+    restart.await.unwrap().unwrap();
+    // 新进程上的新 turn：没有带过来的标记
+    send(&td, &mut a, &s.id, "m3", "hold again").await;
+    assert!(wait_trace(&td, &mut a, &s.id, |t| t.contains(&"turn_start:2:m3".to_string())).await);
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert_eq!(t.iter().filter(|x| x.starts_with("delivery:")).count(), 1, "{t:?}");
+    td.shutdown().await;
+}
+
+/// 被拒的插话退回队列、作为下一个 turn 发出：从来没被接受过，取消也不标。标记不会跨 turn 带过去。
+#[tokio::test]
+async fn a_rejected_interjection_that_goes_back_to_the_queue_is_never_marked() {
+    let td = start().await;
+    td.fake.interject_folds_into_turn.store(true, Ordering::SeqCst);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    *td.fake.interject_failure.lock().unwrap() = Some(InterjectFailure::TurnEnded);
+    send(&td, &mut a, &s.id, "m2", "hold that thought").await;
+    assert!(wait_trace(&td, &mut a, &s.id, |t| t.contains(&"queued:1".to_string())).await);
+    *td.fake.interject_failure.lock().unwrap() = None;
+    // 取消第一个 turn：m2 作为第二个 turn 开始（也是 hold），再取消一次
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_trace(&td, &mut a, &s.id, |t| t.contains(&"turn_start:2:m2".to_string())).await);
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert!(!t.iter().any(|x| x.starts_with("delivery:")), "{t:?}");
+    assert!(t.contains(&"turn_done:2".to_string()), "{t:?}");
+    td.shutdown().await;
+}
+
+/// `message_delivery` 是 daemon 生成的事件：adapter 自己发的会被丢掉，不进事件日志（不能让 adapter 往用户消息上乱贴标记）。
+#[tokio::test]
+async fn a_message_delivery_event_from_the_adapter_is_dropped() {
+    let td = start().await;
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold this", "m1").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    td.fake
+        .last_handle()
+        .inject(AgentEvent::Event(Event::MessageDelivery {
+            message_id: "m1".into(),
+            state: MessageDeliveryState::Uncertain,
+        }))
+        .await;
+    td.fake.last_handle().release();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let t = trace(&history(&td, &mut a, &s.id).await);
+    assert!(!t.iter().any(|x| x.starts_with("delivery:")), "{t:?}");
     td.shutdown().await;
 }

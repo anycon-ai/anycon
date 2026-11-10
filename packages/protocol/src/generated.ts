@@ -492,6 +492,11 @@ export type Event =
       reason?: string | null;
       state: ActivityState;
       type: "activity";
+    }
+  | {
+      message_id: string;
+      state: MessageDeliveryState;
+      type: "message_delivery";
     };
 export type ToolCategory = "shell" | "file_edit" | "file_read" | "search" | "web" | "subagent" | "mcp" | "other";
 export type EditKind = "edit" | "write" | "delete" | "move";
@@ -542,6 +547,10 @@ export type NoticeLevel = "info" | "warning";
  * `Event::Activity` 的状态。
  */
 export type ActivityState = "none" | "retrying" | "compacting";
+/**
+ * `Event::MessageDelivery` 的状态。目前只有 `uncertain`；未来如有别的取值，客户端把不认识的当成没有标记。
+ */
+export type MessageDeliveryState = "uncertain";
 /**
  * `fs.read` 返回内容的方式。
  */

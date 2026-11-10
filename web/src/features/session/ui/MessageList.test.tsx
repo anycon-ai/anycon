@@ -493,4 +493,41 @@ describe('shell command block', () => {
       expect(screen.queryByTestId('activity')).toBeNull()
     })
   })
+
+  describe('possibly undelivered messages', () => {
+    const view = () =>
+      buildView(
+        evs([
+          { type: 'user_message', message_id: 'm1', content: 'first', by_device: 'me' },
+          { type: 'user_message', message_id: 'm2', content: 'steer it', by_device: 'me' },
+          { type: 'message_delivery', message_id: 'm2', state: 'uncertain' },
+        ]),
+      )
+
+    it('marks only that message and offers “Send again”, which hands over that message', async () => {
+      const user = userEvent.setup()
+      const onResendMessage = vi.fn()
+      render(<MessageList {...props({ blocks: view().blocks, onResendMessage })} />)
+      const bubbles = screen.getAllByTestId('message-user')
+      expect(bubbles.map((b) => b.getAttribute('data-delivery'))).toEqual([null, 'uncertain'])
+      expect(within(bubbles[0]!).queryByTestId('message-delivery-uncertain')).toBeNull()
+      const note = within(bubbles[1]!).getByTestId('message-delivery-uncertain')
+      expect(note).toHaveTextContent('May not have been delivered')
+      await user.click(within(note).getByRole('button', { name: 'Send again' }))
+      expect(onResendMessage).toHaveBeenCalledTimes(1)
+      expect(onResendMessage.mock.calls[0]![0]).toMatchObject({ messageId: 'm2', content: 'steer it' })
+    })
+
+    it('after it was sent again the button is replaced by “Sent again”', () => {
+      render(<MessageList {...props({ blocks: view().blocks, onResendMessage: vi.fn(), resentMessageIds: new Set(['m2']) })} />)
+      expect(screen.queryByTestId('message-resend')).toBeNull()
+      expect(screen.getByTestId('message-resent')).toHaveTextContent('Sent again')
+    })
+
+    it('without a resend handler (offline, archived) only the note is shown', () => {
+      render(<MessageList {...props({ blocks: view().blocks })} />)
+      expect(screen.getByTestId('message-delivery-uncertain')).toHaveTextContent('May not have been delivered')
+      expect(screen.queryByTestId('message-resend')).toBeNull()
+    })
+  })
 })

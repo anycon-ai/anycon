@@ -872,6 +872,22 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// 一条用户消息的送达状态不确定：它是 turn 进行中的插话，agent 接受了，但在确认读到它之前 turn 就被取消了
+    /// （Codex 会把还没并入历史的插话连同 turn 一起丢掉，见 docs/spec/daemon.md § 7.5）。事件流只追加，所以
+    /// 不改 `user_message`，客户端按 `message_id` 把标记挂到那条消息上。daemon 不会自动重发（可能重复），
+    /// 由用户决定。
+    MessageDelivery {
+        message_id: String,
+        state: MessageDeliveryState,
+    },
+}
+
+/// `Event::MessageDelivery` 的状态。目前只有 `uncertain`；未来如有别的取值，客户端把不认识的当成没有标记。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageDeliveryState {
+    /// 可能没有送达：agent 接受了这条插话，但 turn 在确认它被读到之前被取消。可能已经被读到，也可能丢了。
+    Uncertain,
 }
 
 /// `Event::Task` 的任务种类。
@@ -1244,6 +1260,15 @@ mod tests {
         let compacting = serde_json::json!({"type": "activity", "state": "compacting"});
         let e: Event = serde_json::from_value(compacting).unwrap();
         assert!(matches!(e, Event::Activity { state: ActivityState::Compacting, attempt: None, .. }));
+    }
+
+    #[test]
+    fn message_delivery_event_wire_shape() {
+        let e = Event::MessageDelivery { message_id: "m1".into(), state: MessageDeliveryState::Uncertain };
+        assert_eq!(
+            roundtrip(&e),
+            serde_json::json!({"type": "message_delivery", "message_id": "m1", "state": "uncertain"})
+        );
     }
 
     #[test]

@@ -30,12 +30,13 @@ use anycon_agent_api::{
     AdapterError, AgentEvent, AgentHandle, PermissionDecision, ResumeHandle, SettingsApply, SpawnRequest, UserInput,
 };
 use anycon_protocol::{
-    methods, AgentStatus, AttachmentRef, ErrorCode, Event, ModeRisk, PermissionKind, PermissionListParams,
-    PermissionListResult, PermissionOptionKind, PermissionRequest, PermissionResolved, PermissionRespondParams,
-    RpcError, SearchHit, SessionChanged, SessionCounts, SessionCreateParams, SessionEvent, SessionHistoryParams,
-    SessionHistoryResult, SessionListParams, SessionListResult, SessionPromoteParams, SessionSearchParams,
-    SessionSendParams, SessionSendResult, SessionSetSettingsParams, SessionSetSettingsResult, SessionSettings,
-    SessionStatus, SessionSummary, SessionWorkspace, TaskStatus, TurnDoneReason, UsageTotals, WorktreeState,
+    methods, AgentStatus, AttachmentRef, ErrorCode, Event, MessageDeliveryState, ModeRisk, PermissionKind,
+    PermissionListParams, PermissionListResult, PermissionOptionKind, PermissionRequest, PermissionResolved,
+    PermissionRespondParams, RpcError, SearchHit, SessionChanged, SessionCounts, SessionCreateParams, SessionEvent,
+    SessionHistoryParams, SessionHistoryResult, SessionListParams, SessionListResult, SessionPromoteParams,
+    SessionSearchParams, SessionSendParams, SessionSendResult, SessionSetSettingsParams, SessionSetSettingsResult,
+    SessionSettings, SessionStatus, SessionSummary, SessionWorkspace, TaskStatus, TurnDoneReason, UsageTotals,
+    WorktreeState,
 };
 use futures::future::{BoxFuture, FutureExt, Shared};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
@@ -176,6 +177,11 @@ struct TurnRt {
     preparing: bool,
     /// agent 自己开始的 turn（adapter 的 `TurnStarted`，没有用户消息，daemon.md § 7.5）。
     by_agent: bool,
+    /// 已交给 adapter、还没确认模型读到的插话（`message_id`，按派发顺序）：派发时记下，adapter 报 `InterjectionRead` 或者
+    /// 插话被拒（退回队列）时划掉。turn 以 `cancelled` 收尾时仍在这里的，记 `message_delivery { uncertain }`（daemon.md § 7.5）；
+    /// 别的收尾方式直接丢掉。派发时就记，是因为 turn 可能在 `send` 还没返回时由 daemon 自己判定为取消（取消宽限到期、
+    /// `session.restart`）：进程随后被收掉，这条消息即使 adapter 已经接受也不会有人读到。
+    unread_interjections: Vec<String>,
 }
 
 struct PendingPerm {
@@ -566,6 +572,16 @@ impl Sessions {
             }
             // 注意：重启后不给已经 idle 的会话设 `idle_since`——否则 `session_idle_after` 之后会对所有会话（含已归档）批量发通知
             self.map.write().unwrap().insert(id.clone(), Arc::new(Session { id, st: AsyncMutex::new(st) }));
+        }
+    }
+
+    /// 已交给 driver、还没有结果的插话条数（测试用：等上一条插话的结果落地再发下一条，否则后一条会因为
+    /// 「有插话没结果时只入队」进队列，而不是插话）。会话不存在返回 0。
+    #[doc(hidden)]
+    pub async fn in_flight_interjections(&self, id: &str) -> u32 {
+        match self.get(id) {
+            Ok(sess) => sess.st.lock().await.interjecting,
+            Err(_) => 0,
         }
     }
 
@@ -1131,6 +1147,9 @@ impl Sessions {
                     let (input, place) =
                         self.user_input(st, cwd, &msg.message_id, msg.content.clone(), msg.attachments.iter(), true);
                     st.interjecting += 1;
+                    if let Some(t) = st.turn.as_mut() {
+                        t.unread_interjections.push(msg.message_id.clone());
+                    }
                     if let Some(d) = &st.driver {
                         let _ = d.tx.send(DriverCmd::Send { input, retry: Some(msg), place });
                     }
@@ -1215,6 +1234,7 @@ impl Sessions {
             cancel_requested_at: None,
             preparing: !wt_ready,
             by_agent: false,
+            unread_interjections: Vec::new(),
         });
         self.set_status(st, SessionStatus::Starting, None).await;
         self.emit(st, Event::TurnStart { turn_id, message_id: first_msg.clone() }).await;
@@ -1779,8 +1799,16 @@ impl Sessions {
         let Some(turn) = st.turn.as_ref() else { return };
         let turn_id = turn.turn_id;
         let by_agent = turn.by_agent;
+        let unread = st.turn.as_mut().map(|t| std::mem::take(&mut t.unread_interjections)).unwrap_or_default();
         self.deny_all_inner(st, "turn ended", false).await;
         self.flush_text(st).await;
+        // 取消时 adapter 已经接受、却没确认读到的插话：agent 可能把它连同 turn 一起丢了（Codex），也可能已经读到。
+        // 标成「送达不确定」，由用户决定要不要重发；不自动重发（可能重复）。别的收尾方式（正常结束、出错）不标
+        if reason == TurnDoneReason::Cancelled {
+            for message_id in unread {
+                self.emit(st, Event::MessageDelivery { message_id, state: MessageDeliveryState::Uncertain }).await;
+            }
+        }
         self.emit(st, Event::TurnDone { turn_id, reason, usage: usage.clone() }).await;
         let reason_s = match reason {
             TurnDoneReason::Completed => "completed",
@@ -1957,6 +1985,12 @@ impl Sessions {
                 self.mark_first_event(&mut st).await;
                 self.on_event(&mut st, e).await;
             }
+            AgentEvent::InterjectionRead { message_id } => {
+                // 模型读到了：不再可疑。没有 turn / 不认识的 id（重复的通知、已经收尾的 turn）什么都不做
+                if let Some(turn) = st.turn.as_mut() {
+                    turn.unread_interjections.retain(|m| m != &message_id);
+                }
+            }
             AgentEvent::TurnStarted => {
                 self.begin_agent_turn(&mut st).await;
             }
@@ -1989,6 +2023,7 @@ impl Sessions {
             cancel_requested_at: None,
             preparing: false,
             by_agent: true,
+            unread_interjections: Vec::new(),
         });
         self.set_status(st, SessionStatus::Running, None).await;
         self.emit(st, Event::TurnStart { turn_id, message_id: String::new() }).await;
@@ -2041,7 +2076,8 @@ impl Sessions {
             | Event::Permission { .. }
             | Event::PermissionResolved { .. }
             | Event::SettingsChanged { .. }
-            | Event::TitleChanged { .. } => {
+            | Event::TitleChanged { .. }
+            | Event::MessageDelivery { .. } => {
                 tracing::warn!(session = %st.row.id, "adapter emitted a daemon-owned event type; dropped");
             }
             Event::TurnDone { reason, usage, .. } => {
@@ -2318,9 +2354,15 @@ impl Sessions {
 
     /// driver 报告一次**插话**送进去了（`send` 返回 `Ok`）。如果这期间 turn 已经结束、积压里有消息在等它的结果
     /// （有插话没结果时后来的消息只入队），现在可以接着开下一个 turn 了。
-    async fn on_interject_done(self: &Arc<Self>, sid: &str) {
+    ///
+    /// 这条插话在派发时已经记在 turn 的 `unread_interjections` 上，等 adapter 的 `InterjectionRead` 确认；这里只收「有一条插话有结果了」。
+    /// `gen` 是派发时的 driver 代号：driver 已经被摘掉（`detach` 把 `interjecting` 清零了）时，迟到的结果不碰现在的计数和 turn。
+    async fn on_interject_done(self: &Arc<Self>, sid: &str, gen: u64) {
         let Ok(sess) = self.get(sid) else { return };
         let mut st = sess.st.lock().await;
+        if st.driver_gen != gen {
+            return;
+        }
         st.interjecting = st.interjecting.saturating_sub(1);
         if !st.deleted && st.turn.is_none() && st.interjecting == 0 && !st.backlog.is_empty() {
             self.requeue_for_backlog(&mut st).await;
@@ -2333,9 +2375,16 @@ impl Sessions {
     async fn on_interject_failed(self: &Arc<Self>, sid: &str, gen: u64, msg: Backlog, e: AdapterError) {
         let Ok(sess) = self.get(sid) else { return };
         let mut st = sess.st.lock().await;
-        st.interjecting = st.interjecting.saturating_sub(1);
+        // driver 已经被摘掉时 `detach` 把计数清零了，迟到的结果不能再减一次现在这个 driver 的计数
+        if st.driver_gen == gen {
+            st.interjecting = st.interjecting.saturating_sub(1);
+        }
         if st.deleted {
             return;
+        }
+        // 被拒的插话没有被 agent 接受过，不会有「送达不确定」；它退回队列，作为下一个 turn 发出
+        if let Some(turn) = st.turn.as_mut() {
+            turn.unread_interjections.retain(|m| m != &msg.message_id);
         }
         tracing::debug!(session = %sid, driver_current = st.driver_gen == gen, error = %e, "interjection was not delivered; queueing the message");
         let at = st.backlog.partition_point(|b| b.ord < msg.ord);
@@ -3782,7 +3831,7 @@ async fn driver_loop(
                             }
                         }
                         match (handle.send(input).await, retry) {
-                            (Ok(()), Some(_)) => sessions.on_interject_done(&sid).await,
+                            (Ok(()), Some(_)) => sessions.on_interject_done(&sid, gen).await,
                             (Ok(()), None) => {}
                             (Err(e), Some(msg)) => sessions.on_interject_failed(&sid, gen, msg, e).await,
                             (Err(e), None) => sessions.on_send_failed(&sid, gen, e).await,
@@ -3993,12 +4042,46 @@ mod interject_order_tests {
         send(&td, &mut c, &s.id, "m4", "fourth message").await;
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(td.fake.last_handle().inputs.lock().unwrap().len(), n, "still waiting for the interjection result");
-        sessions.on_interject_done(&s.id).await;
+        sessions.on_interject_done(&s.id, gen).await;
         let t = std::time::Instant::now();
         while td.fake.last_handle().inputs.lock().unwrap().len() == n {
             assert!(t.elapsed() < Duration::from_secs(10), "the queued message never started a turn");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        td.shutdown().await;
+    }
+
+    /// 旧 driver 被摘掉后（`detach` 把计数清零、代号 +1），它迟到的插话结果（成功或失败）不能再减现在这个 driver 的计数。
+    #[tokio::test]
+    async fn a_late_interjection_result_from_a_detached_driver_leaves_the_current_count_alone() {
+        let td = TestDaemon::start().await;
+        td.fake.interject.store(true, std::sync::atomic::Ordering::SeqCst);
+        td.ctx.agents.refresh_all().await;
+        let mut c = td.client("a");
+        let s: SessionSummary = c
+            .call(&td, methods::SESSION_CREATE, json!({ "agent": "fake", "prompt": "hi", "message_id": "m1" }))
+            .await
+            .unwrap();
+        let t = std::time::Instant::now();
+        while c.call::<SessionSummary>(&td, methods::SESSION_GET, json!({ "session_id": s.id })).await.unwrap().status
+            != SessionStatus::Idle
+        {
+            assert!(t.elapsed() < Duration::from_secs(10));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let sessions = td.ctx.sessions.clone();
+        let sess = sessions.get(&s.id).unwrap();
+        let gen = {
+            let mut st = sess.st.lock().await;
+            st.interjecting = 1; // 现在这个 driver 自己有一条插话没有结果
+            st.driver_gen
+        };
+        let old = gen - 1;
+        sessions.on_interject_done(&s.id, old).await;
+        assert_eq!(sess.st.lock().await.interjecting, 1, "a stale success must not be counted");
+        let m2 = Backlog { message_id: "m2".into(), content: "x".into(), ts_ms: now_ms(), ord: 0, attachments: vec![] };
+        sessions.on_interject_failed(&s.id, old, m2, AdapterError::Io(std::io::Error::other("gone"))).await;
+        assert_eq!(sess.st.lock().await.interjecting, 1, "a stale failure must not be counted either");
         td.shutdown().await;
     }
 }

@@ -733,11 +733,37 @@ async fn send_during_a_turn_steers_it() {
     assert_eq!(steer["threadId"], "thr-0001");
     assert_eq!(steer["expectedTurnId"], "turn-0001");
     assert_eq!(steer["input"], json!([{"type": "text", "text": "actually, be brief"}]));
+    // message_id 作为 clientUserMessageId 送出，codex 并入历史时原样带回
+    assert_eq!(steer["clientUserMessageId"], "m");
     // 没有开第二个 turn
     assert_eq!(h.requests("turn/start").len(), 1);
     assert!(handle.is_busy());
     handle.cancel().await.unwrap();
-    collect_until(&mut handle, is_turn_done).await;
+    let evs = collect_until(&mut handle, is_turn_done).await;
+    // 假 codex 把被接受的 steer 立刻并入历史（item/started + item/completed）：adapter 报告模型读到了这条插话，
+    // 两条通知各一次（daemon 对重复的忽略）；`turn/start` 的消息不带 id，不报
+    let read: Vec<String> = names(&evs).into_iter().filter(|n| n.starts_with("INTERJECTION_READ")).collect();
+    assert_eq!(read, vec!["INTERJECTION_READ:m"; 2], "{:?}", names(&evs));
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_steer_that_codex_never_merges_into_the_history_is_never_reported_as_read() {
+    // codex 接受了 steer（响应 `{turnId}`），但 turn 被打断时把还没并入历史的消息丢了：没有 userMessage 条目，也就没有 InterjectionRead
+    let h = CodexHarness::new()
+        .script("long_text.jsonl")
+        .var("FAKE_CODEX_DELAY_MS", "40")
+        .var("FAKE_CODEX_STEER_NO_ECHO", "1");
+    let mut handle = h.spawn(SessionSettings::default(), None).await;
+    started(&mut handle).await;
+    handle.send(input("write a lot")).await.unwrap();
+    collect_until(&mut handle, is_text_delta).await;
+    handle.send(interject("will be lost")).await.unwrap();
+    assert_eq!(h.requests("turn/steer").len(), 1);
+    handle.cancel().await.unwrap();
+    let evs = collect_until(&mut handle, is_turn_done).await;
+    assert_eq!(turn_done(&evs).1, TurnDoneReason::Cancelled);
+    assert!(!names(&evs).iter().any(|n| n.starts_with("INTERJECTION_READ")), "{:?}", names(&evs));
     handle.shutdown().await.unwrap();
 }
 

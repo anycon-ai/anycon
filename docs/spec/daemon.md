@@ -412,7 +412,12 @@ ACP：resume 时 adapter 先看进程里还有没有这个会话（之前脱离�
 - 积压消息合并规则见 [protocol.md § 7.3](../protocol.md#73-daemon-侧突发消息合并)
 - 带附件的积压合并时按顺序收消息，附件累计超过 20 个或 20 MiB 就停（第一条总是收），剩下的留在队列里，本 turn 结束后作为下一个 turn 发出，并立刻发 `status { queued_messages }`（§ 7.10）。合并后的文字末尾只有一段附件清单，列出这一轮所有要落到工作目录的文件（按消息顺序）；agent 原生收的附件照旧拼进 `UserInput.attachments`
 - turn 进行中收到的 `send`：`capabilities.interject` 为 true 的 agent 直接送入（`UserInput.interject = true`）；否则入队，turn 结束后作为下一 turn 发出，事件 `status { state: running, queued_messages: n }` 让客户端显示「1 条待发送」
-- **已知限制**（Codex 实测）：插话被 `turn/steer` 接受之后、turn 又被取消的，这条消息 agent 看不到，也不会出现在下一个 turn 里；daemon 无法区分它是已经被模型读到还是丢了，所以不重发（避免重复）。客户端上标出「可能没有送达」在 v0.1.x
+- **插话被接受之后 turn 又被取消**（Codex 实测，ADR-50）：`turn/steer` 返回 `{turnId}` 只说明被接受，消息要等 Codex 把它并入历史才算数。在这之前 turn 被取消（实测：steer 之后紧接着 interrupt），这条消息会连同 turn 一起丢掉，既不进下一个 turn 的请求，也不会变成历史里的用户消息条目。0.167.0 实测，模型请求正在流式输出时 Codex 收到 steer 会放弃在途的请求、带上插话重新发一次，所以接受到并入历史之间的窗口在流式阶段是毫秒级；工具执行期间会不会更长，没有验证。daemon 不重发（可能已经被读到，重发会重复），而是**标记「送达不确定」并让用户决定**：
+  - adapter 能确认「模型读到了」时发 `AgentEvent::InterjectionRead { message_id }`（Codex：`turn/steer` 带 `clientUserMessageId = message_id`，并入历史时 app-server 发的 `userMessage` 条目原样带回它作 `clientId`，`item/started` 和 `item/completed` 各一次）。daemon 对重复的和不认识的 id 忽略；
+  - daemon 在把插话交给 adapter 时就把它记在当前 turn 上（`TurnRt.unread_interjections`），收到 `InterjectionRead` 或者插话被拒（退回队列）就划掉。turn 以 `cancelled` 收尾时，仍在的每条各发一个 `message_delivery { message_id, state: uncertain }`，排在 `turn_done` 之前，进事件日志（历史回放时标记还在）。派发时就登记，是因为 turn 可能在 `send` 还没返回时由 daemon 自己判定为取消（取消宽限到期、`session.restart`）：进程随后被收掉，那条消息不会有人读到。旧 driver 迟到的插话**成功**结果按 driver 代号丢弃，不碰新 driver 的计数和新 turn；迟到的**失败**结果照旧把消息插回队列（计数仍不碰）：它在新 turn 进行中发 `status { queued_messages }`，新 turn 结束后作为下一个 turn 发出，所以这条消息可能已经标过「送达不确定」又被自动重发一次（见 ADR-50「代价 / 限制」）；
+  - 不标的情况：turn 正常结束或以 `error` 收尾（比如进程崩溃）；被拒绝而退回队列的插话（从来没被接受过）；daemon 在 turn 收尾之前重启（记录在内存里，不持久化）；
+  - 事件流只追加，所以这是新事件，不改已经写下的 `user_message`；客户端按 `message_id` 把标记挂到那条消息上。Web 在那条消息上显示「可能没有送达」和「重发」（用新的 `message_id` 发同样的内容和附件引用，附件已经属于这个会话，daemon 允许复用），CLI 打印一行警告；
+  - 不发 `InterjectionRead` 的 adapter（`capabilities.interject = true` 却没法确认）就是保守判断：取消时每条被接受的插话都标不确定，哪怕其实已经被读到。目前 Codex 是唯一支持插话的 adapter，它能确认。`userMessage` 通知和 `turn/completed` 走同一个有序通道、由同一个 driver 逐条处理，`InterjectionRead` 一定先于 adapter 报的 `turn_done` 被处理，所以「读到了却被标上」只会出在确认丢失的情况（比如超过 8 MiB 被 adapter 丢弃的 `userMessage` 通知）；这时重发的代价只是一次重复，不会丢消息
 - 关联项目的会话在插话之前、放行权限请求之前，以及每 2 秒（共享的周期任务，覆盖有 turn 在跑的会话和**没有 turn 但 agent 进程还活着**的会话）都复核一次项目目录（ADR-33 第 5 条）。目录变了：
   - 插话不送出，消息退回队列。队列在项目解析失败时**保留**（不清掉）：目录恢复之后再发消息，退回的和新的一起作为下一个 turn 发出；目录没恢复时再发，新消息也进队列、turn 以 `not_found` 失败，队列仍保留；`session.cancel` 清空队列；
   - `permission.respond` 放行时：这个请求被消耗，按拒绝答复 agent，发 `permission_resolved { by_device: "daemon", 拒绝选项 }`；发起答复的客户端得到 `not_found`，`data.reason = "project_dir_changed"`（不要重试，再答复是 `already_resolved`）；
@@ -512,6 +517,7 @@ error             { code, message, recoverable, resets_at_ms?, limit_scope? }   
 task              { id, kind, tool_id?, title, status, usage?, last_tool?, summary?, phases?, agents? }   // 后台任务的状态快照，整条取代同 id 的上一条；§ 8.3
 notice            { code, level, message, model_from?, model_to?, resets_at_ms? }                          // 给用户的提示，不是错误；§ 8.3
 activity          { state: none | retrying | compacting, attempt?, max_attempts?, delay_ms?, reason? }     // turn 进行中的临时状态；§ 8.3
+message_delivery  { message_id, state: uncertain }                                                         // 这条用户消息（插话）可能没有送达；daemon 生成，§ 7.5
 ```
 
 `detail` 让客户端不用认识每个 agent 的工具参数名就能画出像样的块：

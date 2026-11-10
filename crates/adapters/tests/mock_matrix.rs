@@ -132,6 +132,7 @@ fn type_names(evs: &[AgentEvent]) -> Vec<String> {
             AgentEvent::Started { .. } => "STARTED".to_string(),
             AgentEvent::Title(_) => "TITLE".to_string(),
             AgentEvent::TurnStarted => "TURN_STARTED".to_string(),
+            AgentEvent::InterjectionRead { message_id } => format!("INTERJECTION_READ:{message_id}"),
             AgentEvent::Background { tasks } => format!("BACKGROUND:{tasks}"),
             AgentEvent::Exited { .. } => "EXITED".to_string(),
         })

@@ -104,7 +104,12 @@ pub struct FileUpdateChange {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ThreadItem {
-    UserMessage {},
+    /// `client_id`：`turn/steer`（和 `turn/start`）的 `clientUserMessageId` 原样回来；我们只在 steer 里带 `message_id`。
+    #[serde(rename_all = "camelCase")]
+    UserMessage {
+        #[serde(default)]
+        client_id: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
     AgentMessage {
         id: String,
@@ -221,9 +226,7 @@ pub enum ThreadItem {
     },
     /// 上下文压缩：开始 / 结束各一条，没有内容。
     #[serde(rename_all = "camelCase")]
-    ContextCompaction {
-        id: String,
-    },
+    ContextCompaction { id: String },
     #[serde(rename_all = "camelCase")]
     WebSearch {
         id: String,

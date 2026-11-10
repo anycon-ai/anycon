@@ -13,7 +13,7 @@ thinking 块的 `signature` 换成短占位，`/context` 输出里的技能名�
 | 模块 | 职责 |
 |---|---|
 | `probe.rs` | 找二进制（config → `which -a` → 已知目录，逐个 `--version`）、版本门槛（≥ 2.1.0）、`claude auth status`、诊断字段 |
-| `models.rs` | 内置模型表（按模型挂思考等级）+ `~/.claude/settings.json` / 环境里的模型 + `additional_models` |
+| `models.rs` | `initialize` 的 `models[]` → 模型表（按模型挂思考等级），内置表兜底 + `~/.claude/settings.json` / 环境里的模型 + `additional_models` |
 | `process.rs` | 会话设置 → 启动参数（`--flag=value` + 值校验）/ 环境；找要执行的程序 |
 | `translate.rs` | stream-json 一行 → `AgentEvent`（纯同步状态机，直接回放 JSONL 测试） |
 | `permissions.rs` | `can_use_tool` ↔ `PendingPermission`，`PermissionDecision` → `control_response` |
@@ -122,12 +122,15 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 2. 版本：从输出里抠 semver（`2.1.293 (Claude Code)`），< 2.1.0 → `unsupported_version`（hint `claude update`）；解析不出来只警告，不挡。
 3. 认证：`claude auth status`，退出码 0 已登录 / 1 未登录，stdout JSON 的 `loggedIn` / `authMethod` / `email` 尽力解析。
    未登录 → `not_authenticated`（hint ``run `claude` on the machine to log in``）。环境里有 API key / Bedrock / Vertex / Foundry 凭证时，`auth status` 说未登录也不挡（当 unknown）。超时 / 其它退出码 = unknown，不阻塞。
-4. 模型：内置表 → 用户配置的（`ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_*_MODEL`、`~/.claude/settings.json` 的 `model` 与 `env`，用 `ctx.env`）→ `additional_models`，按 id 去重；`allow_custom_model = true`。
+4. 模型（ADR-51）：CLI 的清单 → 用户配置的（`ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_*_MODEL`、`~/.claude/settings.json` 的 `model` 与 `env`，用 `ctx.env`）→ `additional_models`，按 id 去重；`allow_custom_model = true`。
+   CLI 的清单：完整探测起一个 `claude`（会话的固定参数 + `--strict-mcp-config`、`--settings={"disableAllHooks":true}`、`--no-session-persistence`，cwd 是临时目录）发 `initialize`，
+   `models::from_cli` 转换（每个模型以完整 id 列一次、别名排后面、`default` 行指向的标默认、`disabled` 不列，见 [下面](#initialize-控制请求)）。cheap 探测不起进程，沿用 adapter 实例里同一路径、同一版本上一次的结果。
+   问不到（报错 / 超时 / 没有 `models` / 进程退出）就沿用上一次的，没有就用内置表；`anycon doctor` 的 `models source` 字段写明用的是哪个、为什么。
    内置表不列 `opus[1m]` / `sonnet[1m]`：5.x 默认就是 1M 上下文，2.1.311 起 CLI 对不起作用的 `[1m]` 后缀直接去掉（2.1.316 实测 `sonnet` 和 `sonnet[1m]`、`opus[1m]` 的
    `modelUsage.contextWindow` 都是 1 000 000，`system/init.model` 里也没有后缀；`initialize` 的 `models[]` 不列任何 `[1m]`）。4.6 的 `[1m]` 仍然有效，保留。用户自己写的 `xxx[1m]` 照常当自定义模型接受。
-   用户 / 配置追加的模型没有思考选项（等级因模型而异，不瞎猜）。没有慢步骤，所以 `cheap` 与否结果一样。整个探测遵守 `ctx.deadline`，超时错误里列出没跑完的步骤。
+   用户 / 配置追加的模型没有思考选项（等级因模型而异，不瞎猜）。整个探测遵守 `ctx.deadline`（`initialize` 这一步最多 20 秒），超时错误里列出没跑完的步骤。
 
-诊断：`anycon_adapters::diagnose("claude-code", &ctx)`（或 `ClaudeCodeAdapter::diagnose`）返回 `(文本, 字段)`：命令来源、daemon PATH / shell、`which -a`、`$SHELL -lc 'type -a claude'`、各候选的 `--version` 结果、解析路径、版本、认证、模型数、状态、issue。
+诊断：`anycon_adapters::diagnose("claude-code", &ctx)`（或 `ClaudeCodeAdapter::diagnose`）返回 `(文本, 字段)`：命令来源、daemon PATH / shell、`which -a`、`$SHELL -lc 'type -a claude'`、各候选的 `--version` 结果、解析路径、版本、认证、模型数、模型来源、状态、issue。
 
 ## 事件翻译（实测要点）
 
@@ -332,7 +335,14 @@ MCP server 在工具调用中途可以向用户要输入（`elicitation/create`�
 
 - **不需要。** CLI 启动后到第一条用户消息之前什么都不发，但 `interrupt` / `set_model` / `set_permission_mode` / `can_use_tool` 都不依赖 `initialize`（只依赖 `--permission-prompt-tool stdio`）。
 - 发了也能用：`{"type":"control_request","request_id":"…","request":{"subtype":"initialize"}}` 约 5 秒后返回 `control_response`，`response` 里有 `commands`、`agents`、`output_style`、`models[]`（`value` / `resolvedModel` / `displayName` / `description` / `supportsEffort` / `supportedEffortLevels` / `supportsFastMode` / `supportsAutoMode`）、`account`、`pid`、`current_permission_mode`、`fast_mode_state`、`capabilities`。
-- 其中 `models[]` 其实就是 CLI 自己的模型清单（规格里「CLI 没有列模型的命令」已经过时）。**没有用它做探测**：要起完整的 CLI（会拉起用户配置的 MCP server / 插件），对「周期性探测」太重。如果以后要用，可以在非 cheap 探测里发一次 `initialize` 并合并 `models[]`；`supportedEffortLevels` 可以直接校准内置表。
+- 其中 `models[]` 就是 CLI 自己的模型清单（和终端里 `/model` 一致）。**探测用它**（ADR-51）：只在完整探测时起一个进程发一次，周期探测沿用。
+  2.1.311 实测（录制在 `tests/fixtures/claude/real_initialize.json`，只留了 `models` 和 `claude_code_version`；账号、commands 等删掉了）：
+  - 第一行 `value: "default"`，`displayName: "Default (recommended)"`，`resolvedModel` 是这个账号的默认模型（实测 `claude-sonnet-5-5`）；
+  - 别名行 `opus` / `sonnet` / `haiku` / `fable` 的 `resolvedModel` 是当前指向的完整 id；`fable` 指向 Fable 5.1，同时清单里另有 `claude-fable-5-2` 一行，所以别名不等于「最新」；
+  - 老模型以完整 id 出现（`claude-opus-4-6`、`claude-haiku-4-5-20251001`…），`value` 和 `resolvedModel` 相同；
+  - `supportedEffortLevels` 和内置表一致（4.6 没有 `xhigh`）；`supportsThinkingOff` 在 5.5、Fable 5.1 / 5.2、`claude-fable-5` 上是 `false`，在 4.x、`claude-opus-5`、`claude-sonnet-5` 上是 `true`；Haiku 4.5 没有 `supportsEffort`；
+  - 任何一行都不带 `[1m]`。
+- 探测进程带 `--strict-mcp-config`、`--no-session-persistence`、`--settings={"disableAllHooks":true}` 时照样约 3.8 秒回执，关 stdin 后约 2 秒退出，`~/.claude/projects/` 下不留会话目录。
 - 冷启动：进程起来到能回应控制请求约 4–5 秒；第一个 turn 的 `duration_ms` 也因此偏大。
 
 ## 未验证 / 假设

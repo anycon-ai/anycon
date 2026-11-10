@@ -126,6 +126,10 @@ async fn real_probe_is_ready() {
     let (text, fields) = anycon_adapters::diagnose("claude-code", &ctx).await.unwrap();
     eprintln!("{text}");
     assert!(fields.iter().any(|f| f.label == "status" && f.value == "ready"));
+    // 模型清单来自 CLI 的 `initialize`，不是内置表
+    let source = fields.iter().find(|f| f.label == "models source").map(|f| f.value.as_str()).unwrap_or("");
+    assert!(source.ends_with("models from initialize"), "{source}");
+    assert_eq!(info.models.iter().filter(|m| m.default).count(), 1);
 }
 
 #[tokio::test]

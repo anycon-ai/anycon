@@ -1208,3 +1208,39 @@ ADR-1 拆成两层来看：
 - `userMessage` 通知和 `turn/completed` 走同一个有序通道、由同一个 driver 逐条处理，`InterjectionRead` 一定先于 adapter 报的 `turn_done` 被处理，所以「读到了却被标上」只会出在 adapter 没法确认的情况（比如超过 8 MiB 被 adapter 丢弃的 `userMessage` 通知）。
 - 取消在 `send` 还没返回时由 daemon 自己判定（取消宽限到期、`session.restart`）：进程随后被收掉，那条消息即使被 adapter 接受也没有人读到，所以派发时就登记，turn 收尾时一并标上。
 - 上一条的残留不一致：steer 卡在 adapter 里（Codex 的请求上限是 30 秒）期间 daemon 取消宽限（10 秒）到期或者 `session.restart`，消息被标为不确定；随后 steer 超时或被拒，`on_interject_failed` 又把它插回 backlog，在新进程上自动作为下一个 turn 发出。用户看到「可能没有送达」而消息其实已经重发，再点「重发」就是第二遍。后果是重复一次、不丢消息；触发需要 steer 卡住超过 10 秒，或者恰好在毫秒窗口里 restart。另外 restart 和宽限到期本身会清空 backlog，唯独这条迟到失败的消息会回来，这是已知的不一致，这次不改（改法：记下已标过的 id，迟到的失败对已标的跳过退回；留作后续）。
+
+---
+
+## ADR-51 Claude Code 的模型表来自 CLI 的 `initialize`，内置表只兜底
+
+**背景**：Claude Code adapter 的模型表原来是代码里的一张内置表，随 adapter 发版维护。新模型出来（比如 Fable 5.2），要等 anycon 发版才出现在下拉框里，重启 daemon、「重新检测」都没用。CLI 没有列模型的子命令，但 stream-json 的 `initialize` 控制请求回的 `models[]` 就是 CLI 自己的模型清单（和终端里 `/model` 看到的一致，随账号、组织设置、CLI 版本变），每项有 `value`、`resolvedModel`（别名实际指向的完整 id）、`displayName`、`description`、`supportedEffortLevels`、`supportsThinkingOff`、`disabled`。原来不用它，是因为要起完整的 CLI，对每 10 分钟一次的周期探测太重。
+
+**决定**（实现在 `crates/adapters/src/claude_code/probe.rs`、`models.rs`，规格见 [spec/daemon.md § 5.4](spec/daemon.md#54-各-agent-的探测方法)）：
+
+1. **什么时候问**：只在完整探测（daemon 启动、`agent.list { refresh: true }`、二进制路径或版本变了、`agents.claude-code` 配置变了）时起一个 `claude` 进程发 `initialize`。cheap 探测不起进程，沿用 adapter 实例里记下的上一次清单（同一路径、同一版本才沿用）。
+2. **探测进程**：会话的固定参数，加 `--strict-mcp-config`（不拉起用户的 MCP server）、`--settings={"disableAllHooks":true}`（不跑 hooks）、`--no-session-persistence`（不写会话记录）；cwd 是 workspace 之外的临时目录；这一步最多 20 秒，同时受探测总超时约束。不用 `--bare`：它不读 OAuth 登录，问到的清单会和用户实际能用的不一样。
+3. **怎么转换**：每个模型以**完整 id** 列一次（别名行取 `resolvedModel`），别名（`opus`、`fable`…）排在后面，描述里写它当前指向谁；`default` 行不单列，它指向的模型标为默认、排第一；`disabled` 的不列。思考等级取 `supportedEffortLevels`，`supportsThinkingOff` 时前面加 `off`；CLI 不给默认等级，就沿用内置表里同一模型或同系列别名的默认，都没有用 `medium`。
+4. **问不到**（报错、超时、回执里没有 `models`、进程退出）：本进程里问到过就沿用上一次的，否则用内置表。用户配置的模型（`~/.claude/settings.json`、环境变量）和 `additional_models` 照旧追加在后面，`allow_custom_model` 不变。
+
+**原因**：
+
+- CLI 是权威来源。哪些模型能用取决于账号、组织设置（零数据保留排除的模型标 `disabled`）和 CLI 版本，内置表只能猜。
+- 新模型通常跟着 CLI 的新版本出来：用户升级 CLI，cheap 探测发现版本变了，daemon 补一次完整探测，新模型就出现了，anycon 不用发版。服务端放出、CLI 没升级的，点「重新检测」或重启 daemon。
+- 以完整 id 列出、而不是照搬 CLI 的行：以前存下来的 `claude-opus-5-5` 之类（会话设置、`default_model`、客户端记住的上次选择）仍然对得上，思考等级照常可选。CLI 给 `resolvedModel` 就是为了让调用方做这种对应。
+- 开销可以接受：一次约 4 秒（2.1.311 实测冷启动 3.8 秒），只发生在完整探测时。
+
+**否掉**：
+
+- **把模型表放进 JSON 文件**：打包进二进制，和写在代码里一样要发版；放在用户机器上让用户自己改，`agents.claude-code.additional_models` 已经是这个（完整的 `ModelInfo`，含思考等级）；从远端（anycon.ai 或 hub）下发，daemon 要多一条对外连接，要处理离线和来源可信的问题，还要有人维护这份表，结果也不如 CLI 自己给的准。
+- **照搬 CLI 的行**（`default`、`opus` 当 id）：存下来的完整 id 都会变成「自定义模型」，没有思考等级可选；`default` 也不是一个模型。
+- **周期探测也发 `initialize`**：每 10 分钟起一次完整的 CLI，太重。
+- **用 `--bare` 起探测进程**：见上。
+
+**代价 / 限制**：
+
+- 完整探测多 4 秒左右，再加关进程的时间。
+- 探测进程仍会加载用户的插件和 skills。插件里的 hooks 被 `disableAllHooks` 关掉了；插件带的 MCP server 会不会也被 `--strict-mcp-config` 挡住，没有逐个验证。
+- 服务端新放出的模型，CLI 版本没变时要等下一次完整探测（重新检测、重启、改配置）。
+- daemon 重启后第一次完整探测问不到时用内置表，不读 `agent_cache` 里上一次的结果：那里存的是合并后的列表，分不出哪些来自 CLI。
+- CLI 清单里没有 `[1m]` 变体，4.6 的 `[1m]` 不再出现在下拉框里，仍可作为自定义模型填写。
+- 默认模型跟着 CLI 走（不同账号可能是 Sonnet 或 Opus），不再固定是 Opus 5.5。

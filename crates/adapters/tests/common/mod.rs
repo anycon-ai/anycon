@@ -68,9 +68,20 @@ impl Harness {
         self.var("FAKE_CLAUDE_SCRIPT", &p.to_string_lossy())
     }
 
+    /// 探测用的上下文。探测起的 `claude` 进程（发 `initialize` 问模型）只认探测相关的 `FAKE_CLAUDE_*`，不写日志、不起后台进程，
+    /// 日志里只有会话进程。会话测试照内置表写（默认 Opus 5.5），所以 `initialize` 默认答失败、模型用内置表；
+    /// CLI 清单那条路在 `claude_probe.rs` 里测。
     pub fn probe_ctx(&self) -> ProbeContext {
+        let mut env = self.env.clone();
+        env.retain(|k, _| {
+            !k.starts_with("FAKE_CLAUDE_")
+                || k.starts_with("FAKE_CLAUDE_VERSION")
+                || k == "FAKE_CLAUDE_AUTH"
+                || k.starts_with("FAKE_CLAUDE_INIT")
+        });
+        env.entry("FAKE_CLAUDE_INIT".to_string()).or_insert_with(|| "error".to_string());
         ProbeContext {
-            env: Arc::new(self.env.clone()),
+            env: Arc::new(env),
             config: self.config.clone(),
             deadline: Duration::from_secs(20),
             cheap: false,

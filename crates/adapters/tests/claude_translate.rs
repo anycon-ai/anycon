@@ -2335,6 +2335,13 @@ fn blocking_limit_prompt_too_long_and_rapid_refill_breaker_are_context_limits() 
 }
 
 #[test]
+fn a_usage_limit_message_earlier_in_the_turn_does_not_turn_a_later_529_into_a_usage_limit() {
+    // CLI 等限额恢复后继续，随后又以 529 收尾：最终的 `result` 状态说了算
+    let r = Replay::run("usage_limit_api_error_then_529.jsonl");
+    assert_eq!(limit_errors(&r), [("overloaded".to_string(), None, None)]);
+}
+
+#[test]
 fn a_529_result_is_overloaded() {
     let r = Replay::run("result_overloaded.jsonl");
     let errs = events_of_type(&r, "error");

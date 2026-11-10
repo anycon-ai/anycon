@@ -1097,18 +1097,19 @@ impl Translator {
 
     /// 这个 turn 的 `usage_limit` 错误要带的 `(恢复时间 Unix 秒, 范围)`；不是用量耗尽返回 `None`。
     ///
-    /// 首选信号：这个 turn 里带 `api_error = usage_limit_reached` 的 API 错误消息（上游说明：只有账号自己的用量限额
+    /// 只在 `result` 的 `api_error_status` 是 429 时采用。首选信号：这个 turn 里带 `api_error = usage_limit_reached` 的 API 错误消息（上游说明：只有账号自己的用量限额
     /// 才带它，临时节流、容量关闭、API key 的 429 都不带），限额类型和恢复时间取它的 `api_error_params.rate_limit_info`。
     /// 回退：429 的 `result`，而且最近一条 `rate_limit_event` 是 `rejected`、恢复时间没过。
     /// 恢复时间已经过去的不用（过期记录），错误码仍按信号判定。
     fn usage_limit_info(&self, status: Option<u64>) -> Option<(Option<u64>, Option<LimitScope>)> {
         let now_s = (self.now_ms)() / 1000;
         let live = |r: Option<u64>| r.filter(|t| *t > now_s);
-        if let Some((kind, resets)) = &self.api_usage_limit {
-            return Some((live(*resets), kind.as_deref().and_then(limit_scope)));
-        }
+        // 两条路径都只看 429：CLI 等限额恢复后继续、随后又以别的状态（529…）收尾时，不能还报用量耗尽
         if status != Some(429) {
             return None;
+        }
+        if let Some((kind, resets)) = &self.api_usage_limit {
+            return Some((live(*resets), kind.as_deref().and_then(limit_scope)));
         }
         let (kind, resets) = self.limit_now.as_ref()?;
         if resets.is_some_and(|t| t <= now_s) {

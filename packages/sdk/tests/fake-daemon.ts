@@ -287,6 +287,9 @@ export class FakeDaemon {
   historyLateMs = 0
   /** 大于 0 时 `session.history` 一页最多这么多条（`has_more` 照常），用来测分页。 */
   historyPageCap = 0
+  /** 每次 `session.history` 取好快照之后、答复之前调用（参数是第几次调用）；测试用它在补历史的往返里制造事件和断线。 */
+  historyHook: ((call: number) => void | Promise<void>) | undefined
+  #historyCalls = 0
   /** 为 true 时 `session.history` 在 `historyLateMs` 之后答 `internal`。 */
   historyFail = false
   /** anycon 建的 worktree（`workspace.worktrees` 的数据源），测试里可以直接改（比如把 `uncommitted` 设成非 0）。 */
@@ -1457,6 +1460,7 @@ export class FakeDaemon {
         const after = p.after_seq ?? 0
         const limit = this.historyPageCap > 0 ? this.historyPageCap : (p.limit ?? 200)
         const events = rec.events.filter((e) => e.seq > after)
+        await this.historyHook?.(++this.#historyCalls)
         if (this.historyLateMs > 0) await wait(this.historyLateMs)
         if (this.historyFail) throw AnyconRpcError.of('internal', 'history is unavailable')
         return { events: events.slice(0, limit), has_more: events.length > limit }

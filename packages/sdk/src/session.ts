@@ -31,7 +31,7 @@ import type {
 } from '@anycon/protocol'
 
 import { AsyncQueue } from './async-queue.js'
-import { AnyconError, NodeOffline } from './errors.js'
+import { AnyconError, ConnectionError, NodeOffline } from './errors.js'
 import type { Node } from './node.js'
 import type { PermissionPolicy } from './permissions.js'
 
@@ -163,6 +163,12 @@ class ReplayGate {
   live(se: SessionEvent): void {
     if (this.#replaying) this.#held.push(se)
     else this.#emit(se)
+  }
+
+  /** 补历史没有补完而放弃：扣住的实时事件丢掉（不放出），之后的实时事件直接放行。 */
+  discard(): void {
+    this.#replaying = false
+    this.#held.length = 0
   }
 
   /** 补历史结束：按 seq 放出扣住的实时事件，之后的实时事件直接放行。 */
@@ -544,8 +550,15 @@ export class Session {
    * 补历史（`session.history`，分页）期间到达的实时事件先扣住（和 `events({ fromSeq })` 同一个闸门），补完之后
    * 按 seq 接在历史后面，所以订阅者看到的 seq 严格递增、每个只有一次，不会因为较新的实时事件先到而丢掉较旧的历史事件。
    * `since` 在重新 watch 之前取，补的是「断线前最后一次看到的 seq」之后的全部。
-   * 补历史失败（`watch` 或 `history` 抛错）时：扣住的实时事件照样按序放出（不丢、不乱序、不重复），没补上的历史
-   * 留下一个空档，错误向上抛；调用方之后用 `history({ afterSeq })` 取回。同一个会话的多次 `resync()` 排队执行。
+   * 补历史没补完（`watch` 或 `history` 抛错）时，看通道还在不在：
+   * - 通道没了（节点不在线，或错误是 `ConnectionError` / `NodeOffline`；最常见的原因是补历史期间又断了一次）：
+   *   扣住的实时事件**丢掉**，`lastSeq` 停在已经交付的地方。daemon 持久化事件，下一次 `ready` 的 `resync()`
+   *   从这里补，补回的历史把丢掉的实时事件也带上，仍然按序、每个一次。如果放出它们，`lastSeq` 会越过还没补到的历史，
+   *   那段历史永远补不回来；
+   * - 通道还在、是别的原因失败（比如 `history` 答 `internal`）：扣住的实时事件照样按序放出（不丢、不乱序、不重复），
+   *   没补上的历史留下一个空档，调用方之后用 `history({ afterSeq })` 取回。
+   * 错误向上抛（`Node` 吞掉它）。丢掉的 `permission` 事件会随下一次补历史重新交付并交给权限策略（`permission.request`
+   * 通知不经过会话的事件分发，`Node` 直接处理，不受影响）。同一个会话的多次 `resync()` 排队执行。
    */
   resync(): Promise<void> {
     const run = this.#resyncChain.then(() => this.#resyncOnce())
@@ -562,10 +575,15 @@ export class Session {
       this.#watched = false
       await this.#ensureWatching()
       await this.#replay((se) => this.#deliver(se), since)
-    } finally {
+    } catch (err) {
       this.#resyncGate = undefined
-      gate.release()
+      if (!this.node.online || err instanceof ConnectionError || err instanceof NodeOffline) {
+        gate.discard()
+      } else gate.release()
+      throw err
     }
+    this.#resyncGate = undefined
+    gate.release()
   }
 
   #subscribe(sub: Subscriber): () => void {

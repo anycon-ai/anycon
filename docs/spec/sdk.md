@@ -104,6 +104,8 @@ Node 用 `ws`，浏览器用原生 WebSocket，同构；事件类型从 `package
 
 **事件**：`Node` 是 `EventEmitter` 风格，除 `online` / `offline` / `permission` / `session_changed` 外有两个报问题的事件：`permission_error`（上面）和 `error`（非致命的通道问题，payload 是 `AnyconError`）。hub 的 `dropped { seq, reason }` 每连接每秒至多一条，是「发错东西」的信号，**不据此逐条重发**：`error` 事件收到 `envelope_too_large`（分片之后仍超限，说明 hub 的 `ANYCON_MAX_ENVELOPE_BYTES` 比一片还小）时进行中的请求失败、通道重新握手；`not_paired` 变成 `NodeRejected`。
 
+**重连后补事件**：通道重新建立（`ready`）后，`Node` 对每个有订阅者（进行中的 `send()` / `events()`）的会话重新 `session.watch`，再用 `session.history`（分页）补上「最后一次交付的 seq」之后的事件。补历史期间到达的实时事件先扣住（和 `events({ fromSeq })` 同一个闸门），补完后按 seq 接在历史后面，所以订阅者看到的 seq 严格递增、每个一次。补历史没补完时看通道还在不在：通道没了（节点不在线，或错误是 `ConnectionError` / `NodeOffline`，最常见的是补历史期间又断了一次）→ 扣住的实时事件**丢掉**，已交付的最后一个 seq 不动，下一次 `ready` 的补历史从那里补起，丢掉的和断线期间错过的一起补回（daemon 持久化事件）；通道还在、别的原因失败（比如 `history` 答 `internal`）→ 扣住的事件照样按序放出，没补上的历史留下一个空档，之后用 `session.history({ afterSeq })` 取回。补历史的错误 `Node` 不向外报。`session.event` 里被丢掉的 `permission` 事件会随下一次补历史重新交付并交给权限策略；`permission.request` 通知由 `Node` 直接处理，不经过会话的事件分发，不受影响。
+
 **设备 token 轮换**（策略见 § 2）：`Client` 的事件除 `connected` / `disconnected` / `error` 外有 `tokenRotated(rotation)`，`rotation` 是 `{ deviceToken, issuedAtMs, persisted, persistError? }`，每次轮换成功（自动的，或 `client.rotateToken({ timeoutMs? })` 触发的）各一次。`ClientOptions.onTokenRotated` 是同一时刻的回调：在 `connect()` / `Client.open()` 里直接传，不会错过 `open` 返回之前就发生的轮换；回调抛错或返回被拒的 promise 都被吞掉，不影响连接。
 
 ```ts

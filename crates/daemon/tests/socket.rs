@@ -431,3 +431,47 @@ async fn an_oversized_request_line_closes_the_connection_without_buffering_it_al
     let _: NodeInfo = ok.call(methods::NODE_INFO, json!({})).await.unwrap();
     td.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_local_client_can_declare_its_kind_from_a_fixed_set_and_the_audit_shows_it() {
+    let td = TestDaemon::start_with(&[], true).await;
+    let mut cli = Sock::connect(&td).await;
+    let mut mcp = Sock::connect(&td).await;
+
+    // 固定枚举：别的值（含自由文本、别人的名字）一律 invalid，身份不变
+    for bad in [json!("web"), json!("local-mcp"), json!("anything I like"), json!(""), json!(7), Value::Null] {
+        let e = mcp.call::<Value>("local.set_client", json!({ "client": bad })).await.unwrap_err();
+        assert_eq!(e.stable_code(), Some(ErrorCode::Invalid), "{bad}");
+    }
+    let e = mcp.call::<Value>("local.set_client", json!({})).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::Invalid));
+    let e = mcp.call::<Value>("local.set_client", json!({ "client": "mcp", "name": "evil" })).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::Invalid), "no extra fields");
+
+    let r: Value = mcp.call("local.set_client", json!({ "client": "mcp" })).await.unwrap();
+    assert_eq!(r, json!({ "client": "mcp" }));
+
+    // 两条连接各做一次有审计的操作
+    let _: SessionSummary = cli.call(methods::SESSION_CREATE, json!({ "agent": "fake" })).await.unwrap();
+    let _: SessionSummary = mcp.call(methods::SESSION_CREATE, json!({ "agent": "fake" })).await.unwrap();
+    let audit: NodeAuditResult = cli.call(methods::NODE_AUDIT, json!({ "limit": 50 })).await.unwrap();
+    let names: Vec<(&str, &str)> = audit
+        .entries
+        .iter()
+        .filter(|e| e.action == "session.create")
+        .map(|e| (e.device_id.as_str(), e.device_name.as_str()))
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.contains(&("local", "local-cli")) && names.contains(&("local", "local-mcp")), "{names:?}");
+
+    // 声明可以改回来；重连之后是新连接，身份回到缺省
+    let _: Value = mcp.call("local.set_client", json!({ "client": "cli" })).await.unwrap();
+    let _: SessionSummary = mcp.call(methods::SESSION_CREATE, json!({ "agent": "fake" })).await.unwrap();
+    let mut again = Sock::connect(&td).await;
+    let _: SessionSummary = again.call(methods::SESSION_CREATE, json!({ "agent": "fake" })).await.unwrap();
+    let audit: NodeAuditResult = cli.call(methods::NODE_AUDIT, json!({ "limit": 50 })).await.unwrap();
+    let mcp_entries = audit.entries.iter().filter(|e| e.device_name == "local-mcp").count();
+    assert_eq!(mcp_entries, 1, "only the create made while the connection said `mcp`");
+    assert!(audit.entries.iter().all(|e| e.device_id == "local"));
+    td.shutdown().await;
+}

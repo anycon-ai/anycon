@@ -271,7 +271,8 @@ launchd / systemd 起的 daemon 没有用户 shell 的 `PATH`，`nvm`、`bun`、
 
 - 启动时执行 `$SHELL -ilc 'printenv -0 2>/dev/null || env -0'`（15 秒超时；失败再试一次非交互的 `-lc`），把结果作为 **daemon 环境**：找 agent、拉起 agent 都用它。macOS 自带的 BSD `printenv` 没有 `-0`（报 `illegal option`，整个解析会失败），所以回落到 `env -0`。两次都失败则退回进程自身环境并在日志和 `doctor` 里警告。桌面应用通常在壳层做这件事，anycon 没有桌面壳，所以放在 daemon 里。用户的 rc 文件重时这一步要 1–4 秒、期间 socket 还没开；测试 / CI 里可设 `agents.env_from_login_shell = false`（环境变量 `ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL=false`）跳过
 - **Windows** 上不跑登录 shell，直接用进程环境：用户的环境变量在注册表里，进程（包括计划任务拉起的 daemon）启动时就拿到了；从 Git Bash 里启动时的 `SHELL` 是 MSYS 路径，不用它。Windows 的变量名不区分大小写，daemon 环境里的键统一大写（`Path` 存成 `PATH`），叠加配置和会话 env 时同名变量互相覆盖，不会以两种写法并存
-- 从 daemon 环境里**剔除** `CLAUDECODE`、`CLAUDE_CODE_ENTRYPOINT`、`CLAUDE_CODE_SSE_PORT`、`CLAUDE_AGENT_SDK_VERSION` 这类「我正在某个 agent 会话里」的标记：用户常在 Claude Code 的终端里敲 `anycon daemon`，不剔除的话拉起的 Claude Code 会拒绝嵌套启动。剔除只在 daemon 构造环境时做一次，adapter 不再重复剔除
+- 从 daemon 环境里**剔除** `CLAUDECODE`、`CLAUDE_CODE_ENTRYPOINT`、`CLAUDE_CODE_SSE_PORT`、`CLAUDE_AGENT_SDK_VERSION`、`ANYCON_AGENT`（见下一条，拉起 agent 时再放回去）这类「我正在某个 agent 会话里」的标记：用户常在 Claude Code 的终端里敲 `anycon daemon`，不剔除的话拉起的 Claude Code 会拒绝嵌套启动。剔除只在 daemon 构造环境时做一次，adapter 不再重复剔除
+- **拉起 agent 时最后一步**往环境里放 `ANYCON_AGENT=1`（`DaemonEnv::for_session`），标记「这个进程是 anycon 拉起的 agent，或它的子进程」。它在 daemon 环境、`agents.env`、会话 `env` 都叠加完之后才写，所以谁也覆盖不了（会话 env 里 `ANYCON_` 前缀本来也在黑名单里）。`anycon mcp` 看到它就默认拒绝会改状态的工具，防止 agent 在 anycon 会话里经 MCP 再开会话（[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）；这只是防误用的护栏，agent 能改自己的环境。探测（`agent.list` 的探测、`doctor`）用的环境不带它
 - `config.agents.env` 和 `agents.<id>.env` 追加 / 覆盖。这是运维配的环境，**最高优先级**：会话 `env` 不能覆盖里面出现的键
 - 每会话可再传 `env`（`session.create.settings.env`），但**默认整体被拒绝**（`permissions.allow_session_env = false`，ADR-31）。开启之后一个键要同时满足三条才接受，拒绝时返回 `invalid_settings { field: "env.<KEY>", reason }`（实现按 2 → 1 → 3 的顺序检查，所以黑名单键即使写进了允许列表也先按「黑名单」报错；配置加载时对这种允许项会 warn）：
   1. 在运维配置的**允许列表** `permissions.session_env_allow` 里（`anycon_agent_api::env_key_in_allowlist`：每项是精确键名或 `PREFIX_*`，大小写敏感（Windows 上不区分），裸 `*` 不是通配；默认空，所以只开开关不配列表等于什么都不放行）
@@ -837,6 +838,8 @@ SQLite（WAL）。全部表：
 
 本地 `audit` 表，`anycon audit` 和 `node.audit` RPC 读。每条：ts、device_id、device_name、action、target、detail(JSON)。
 
+本机 socket 上的调用方 `device_id` 是 `local`，`device_name` 默认 `local-cli`。连接可以用 `local.set_client { client: "cli" | "mcp" }` 自报客户端种类（固定枚举，别的值 `invalid`；只在本机通道有，经 hub 调用 `forbidden`，经 hub 的连接身份由配对的设备决定），自报 `mcp` 之后这条连接的审计设备名是 `local-mcp`（`anycon mcp` 连上就声明，[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）。它只用来在审计里分清「人敲的命令」和「agent 经 MCP 发的」：自报的，不改变任何权限，对故意不声明的本机进程没有约束力。
+
 记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close`。
 
 `fs.read` 的 target 是请求里的 `path`，detail 是 `bytes`（文件总长）。一个大文件要分很多块读（`encoding = "base64"`，每块 512 KiB），逐块记会把审计表灌满、盖掉有意义的行，所以**同一台设备对同一路径的读，5 分钟内只记第一次**。窗口按（设备，路径）算而不是按「第 0 块」算：只读后面的块也会留下一条，不能靠跳过第 0 块绕开审计。窗口只在真正写了一行时刷新，持续读一个文件，每 5 分钟至少有一行；去重表只在内存里，daemon 重启就清空。
@@ -915,6 +918,7 @@ SQLite（WAL）。全部表：
 - 配对：短码本地生成、不发给 hub；joiner 要等 `pair.ack` 才落盘（§ 15）
 - 账号内接入（§ 15.1）：daemon 是唯一的验证点，hub 的限速不算数。口令只存 Argon2id 派生值；口令失败计数在发出 CPace 份额**之前**先写库；同时最多一个口令尝试、3 个接入会话；接入码和扫码密钥只在内存里，不落盘、不进日志和审计
 - 导出 / 导入（§ 20）：`local.export` / `local.import` 只在本机 socket 上，经 hub 一律 `forbidden`——它们读写 daemon 所在机器上调用方指定的路径。压缩包里是明文的会话内容（消息、工具输出、附件、会话 `env` 的值），输出文件 0600，要和数据目录一样保管。导入把压缩包当不可信输入：不按压缩包里的路径解压（附件只会写成 `blobs/<blob_id>.<扩展名>`，文件名是校验过格式再拼出来的）、条目名 / 符号链接 / 大小 / SHA-256 / 每个字段都校验，写进库里的 `settings` 在每次拉起 agent 前照常按当前配置复核（危险模式、会话 `env` 策略），`launch_args` 不收
+- `anycon mcp`（ADR-49）是本机 socket 上的又一个客户端：只暴露九个映射到已有 RPC 的工具，没有批准 / 拒绝权限请求的工具（等待审批时调用立即返回 `waiting_permission`），`create_session` 拒绝选 `risk = dangerous` 的模式、`send_message` 拒绝向已处在这类模式的会话发消息（除非 `--allow-dangerous-modes`，`permissions.allow_dangerous_modes` 仍是上限）、没有会话 `env`，在 anycon 拉起的 agent 里（环境有 `ANYCON_AGENT`）默认拒绝会改状态的工具。这些约束在 MCP 这个接口上，daemon 对它没有额外的业务接口，也不能区分它和别的本机客户端，除了自报的审计身份 `local-mcp`；它不是对 agent 的隔离（有 shell 能力的 agent 本来就能直接用 CLI），上限是 `sessions.max_concurrent`、审批和 `config.toml`
 - 本机 socket 0600；CLI 不需要再认证。Windows 上是命名管道：属主和 DACL 都是当前用户、拒绝远程客户端、第一个实例独占名字；管道名字是全局的，客户端连上之后核对管道属主是当前用户，防别的本机用户抢先建同名管道冒充 daemon（ADR-42）
 - dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
 - 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes` 和 `preview.enabled` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.*`、`enroll.*` 不在名单里；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界

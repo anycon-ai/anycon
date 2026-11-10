@@ -5,10 +5,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use anycon_protocol::{DeviceKind, RpcNotification};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// 调用方身份，审计用（docs/spec/daemon.md § 13）。
 #[derive(Debug, Clone)]
@@ -27,7 +27,40 @@ impl Caller {
     }
 
     pub fn local_cli() -> Self {
-        Caller { device_id: "local".into(), device_name: "local-cli".into(), kind: DeviceKind::Cli, local: true }
+        Self::local(LocalClientKind::Cli)
+    }
+
+    /// 本机通道上的调用方。`device_id` 固定是 `local`，`device_name` 随自报的客户端种类变（审计里分得出来）。
+    pub fn local(kind: LocalClientKind) -> Self {
+        Caller { device_id: "local".into(), device_name: kind.device_name().into(), kind: DeviceKind::Cli, local: true }
+    }
+}
+
+/// 本机通道上的客户端自报的种类（`local.set_client`）。固定枚举，不接受自由文本：审计里的设备名只会是下面几个值之一，
+/// 一个本机进程没法把自己写成别的名字。这只是「谁在用本机通道」的标注，不是权限：本机 socket 的权限由文件属主决定（ADR-27）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalClientKind {
+    /// 人敲的 `anycon` 命令（缺省，不声明就是它）。
+    Cli,
+    /// `anycon mcp`：别的 agent 经 MCP 工具在操作这个节点（ADR-49）。
+    Mcp,
+}
+
+impl LocalClientKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LocalClientKind::Cli => "cli",
+            LocalClientKind::Mcp => "mcp",
+        }
+    }
+
+    /// 审计里的设备名。
+    pub fn device_name(self) -> &'static str {
+        match self {
+            LocalClientKind::Cli => "local-cli",
+            LocalClientKind::Mcp => "local-mcp",
+        }
     }
 }
 
@@ -41,7 +74,8 @@ pub const MAX_WATCHES: usize = 5;
 
 pub struct ClientHandle {
     pub conn_id: u64,
-    pub caller: Caller,
+    /// 本机连接可以用 `local.set_client` 改自己的审计身份，所以放在锁里；读用 [`ClientHandle::caller`]。
+    caller: RwLock<Caller>,
     sink: Box<dyn ClientSink>,
     watching: Mutex<HashSet<String>>,
     /// 连接已经断开（[`Clients::unregister`] 置位）。长请求（导出 / 导入）据此取消。
@@ -54,6 +88,21 @@ pub enum WatchError {
 }
 
 impl ClientHandle {
+    /// 当前的调用方身份（一份拷贝）。
+    pub fn caller(&self) -> Caller {
+        self.caller.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 本机连接声明自己的客户端种类。非本机连接返回 `false`，身份不变：经 hub 的连接身份由配对的设备决定。
+    pub fn set_local_kind(&self, kind: LocalClientKind) -> bool {
+        let mut c = self.caller.write().unwrap_or_else(|e| e.into_inner());
+        if !c.local || c.kind == DeviceKind::Daemon {
+            return false;
+        }
+        *c = Caller::local(kind);
+        true
+    }
+
     pub fn notify(&self, n: &RpcNotification) {
         self.sink.send(n.clone());
     }
@@ -100,7 +149,7 @@ impl Clients {
         let conn_id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let h = Arc::new(ClientHandle {
             conn_id,
-            caller,
+            caller: RwLock::new(caller),
             sink,
             watching: Mutex::new(HashSet::new()),
             gone: AtomicBool::new(false),
@@ -117,13 +166,22 @@ impl Clients {
 
     /// 经 hub 的对端（非本机）按设备 id 取。
     pub fn by_device(&self, device_id: &str) -> Option<Arc<ClientHandle>> {
-        self.map.lock().unwrap().values().find(|c| !c.caller.local && c.caller.device_id == device_id).cloned()
+        self.map
+            .lock()
+            .unwrap()
+            .values()
+            .find(|c| {
+                let caller = c.caller();
+                !caller.local && caller.device_id == device_id
+            })
+            .cloned()
     }
 
     /// 注销某设备的所有（非本机）连接。
     pub fn unregister_device(&self, device_id: &str) {
         self.map.lock().unwrap().retain(|_, c| {
-            let keep = c.caller.local || c.caller.device_id != device_id;
+            let caller = c.caller();
+            let keep = caller.local || caller.device_id != device_id;
             if !keep {
                 c.gone.store(true, Ordering::SeqCst);
             }
@@ -236,5 +294,38 @@ mod tests {
         assert!(!clients.has_watchers("s1"));
         clients.unregister(b.conn_id);
         assert_eq!(clients.len(), 1);
+    }
+
+    #[test]
+    fn local_kind_changes_only_the_device_name_and_only_for_local_connections() {
+        let clients = Clients::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let local = clients.register(Caller::local_cli(), Box::new(ChanSink(tx)));
+        assert_eq!(local.caller().device_name, "local-cli");
+        assert!(local.set_local_kind(LocalClientKind::Mcp));
+        let c = local.caller();
+        assert_eq!((c.device_id.as_str(), c.device_name.as_str(), c.local), ("local", "local-mcp", true));
+        assert!(local.set_local_kind(LocalClientKind::Cli));
+        assert_eq!(local.caller().device_name, "local-cli");
+
+        // 经 hub 的连接：身份由配对的设备决定，声明被拒绝，身份不变
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let remote = clients.register(
+            Caller { device_id: "dev1".into(), device_name: "Phone".into(), kind: DeviceKind::Web, local: false },
+            Box::new(ChanSink(tx)),
+        );
+        assert!(!remote.set_local_kind(LocalClientKind::Mcp));
+        assert_eq!((remote.caller().device_id.as_str(), remote.caller().device_name.as_str()), ("dev1", "Phone"));
+    }
+
+    #[test]
+    fn local_kind_is_a_closed_set() {
+        for (text, kind) in [("cli", LocalClientKind::Cli), ("mcp", LocalClientKind::Mcp)] {
+            assert_eq!(serde_json::from_value::<LocalClientKind>(serde_json::json!(text)).unwrap(), kind);
+            assert_eq!(kind.as_str(), text);
+        }
+        for bad in ["", "CLI", "local-mcp", "web", "anything I like"] {
+            assert!(serde_json::from_value::<LocalClientKind>(serde_json::json!(bad)).is_err(), "{bad:?}");
+        }
     }
 }

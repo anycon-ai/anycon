@@ -185,6 +185,7 @@ dependencies = [
  "clap_complete",
  "futures",
  "hex",
+ "jsonschema",
  "libc",
  "qrcode",
  "rand 0.8.8",

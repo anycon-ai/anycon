@@ -83,22 +83,32 @@ impl DaemonEnv {
             if !session_env.is_empty() {
                 tracing::warn!("session env ignored: permissions.allow_session_env is false");
             }
-            return Arc::new(m);
-        }
-        for (k, v) in session_env {
-            if anycon_agent_api::env_key_allowed(k).is_err()
-                || !anycon_agent_api::env_key_in_allowlist(k, &cfg.permissions.session_env_allow)
-                || operator_sets(cfg, agent_id, k)
-                || v.contains('\0')
-            {
-                tracing::warn!(key = %k, "dropping a session env variable that is not allowed");
-                continue;
+        } else {
+            for (k, v) in session_env {
+                if anycon_agent_api::env_key_allowed(k).is_err()
+                    || !anycon_agent_api::env_key_in_allowlist(k, &cfg.permissions.session_env_allow)
+                    || operator_sets(cfg, agent_id, k)
+                    || v.contains('\0')
+                {
+                    tracing::warn!(key = %k, "dropping a session env variable that is not allowed");
+                    continue;
+                }
+                m.insert(env_key_canonical(k).into_owned(), v.clone());
             }
-            m.insert(env_key_canonical(k).into_owned(), v.clone());
         }
+        // 最后一步：不管 daemon 自己的环境、运维配置还是会话 env 里有什么，拉起的 agent 进程都带这个标记（ADR-49）
+        m.insert(env_key_canonical(AGENT_MARKER_ENV).into_owned(), AGENT_MARKER_VALUE.to_string());
         Arc::new(m)
     }
 }
+
+/// 标记「这个进程是 daemon 拉起的 agent，或它的子进程」的环境变量。`anycon mcp` 看到它就默认拒绝会改状态的工具，防止 agent 在
+/// anycon 会话里再经 MCP 开会话（ADR-49）。它是防误用的护栏，不是安全边界：agent 能改自己的环境。
+/// 在 [`DaemonEnv::for_session`] 的最后一步注入，所以会话 `env`、`agents.env` 都覆盖不了它（`ANYCON_` 前缀本来也在
+/// `ENV_DENY_PREFIXES` 里，会话 env 设不了）。
+pub const AGENT_MARKER_ENV: &str = "ANYCON_AGENT";
+/// [`AGENT_MARKER_ENV`] 的值。
+pub const AGENT_MARKER_VALUE: &str = "1";
 
 /// 运维是否在配置里设置过这个环境变量（`agents.env` 或 `agents.<id>.env`；Windows 上不区分大小写）。
 fn operator_sets(cfg: &Config, agent_id: &str, key: &str) -> bool {
@@ -313,7 +323,7 @@ mod tests {
         let ok = fake_shell(
             d.path(),
             "shell-ok",
-            r#"if [ "$1" = "-ilc" ]; then printf 'PATH=/fake/bin:/usr/bin\0FOO=from-shell\0CLAUDECODE=1\0CLAUDE_CODE_ENTRYPOINT=cli\0'; else exit 1; fi"#,
+            r#"if [ "$1" = "-ilc" ]; then printf 'PATH=/fake/bin:/usr/bin\0FOO=from-shell\0CLAUDECODE=1\0CLAUDE_CODE_ENTRYPOINT=cli\0ANYCON_AGENT=1\0'; else exit 1; fi"#,
         );
         std::env::set_var("SHELL", &ok);
         let e = resolve(true, Duration::from_secs(5)).await;
@@ -322,6 +332,12 @@ mod tests {
         assert_eq!(e.path(), "/fake/bin:/usr/bin");
         assert!(!e.base.contains_key("CLAUDECODE"));
         assert!(!e.base.contains_key("CLAUDE_CODE_ENTRYPOINT"));
+        // 从 anycon 会话里前台启动的 daemon，自身环境里的 ANYCON_AGENT 也不进 daemon 环境（探测用的环境不带它）；
+        // 拉起 agent 时 `for_session` 再放回去
+        assert!(!e.base.contains_key("ANYCON_AGENT"));
+        let cfg = Config::default();
+        assert!(!e.for_agent(&cfg, "x").contains_key("ANYCON_AGENT"), "probes do not get the marker");
+        assert_eq!(e.for_session(&cfg, "x", &BTreeMap::new())["ANYCON_AGENT"], "1", "spawned agents do");
 
         // 2) -ilc 失败、-lc 成功
         let second = fake_shell(
@@ -467,5 +483,37 @@ mod tests {
         assert!(validate_session_env(&cfg, "x", &e).is_err());
         let many: BTreeMap<String, String> = (0..65).map(|i| (format!("K{i}"), "v".to_string())).collect();
         assert_eq!(validate_session_env(&cfg, "x", &many).unwrap_err().0, "env");
+    }
+
+    /// 拉起 agent 的环境里有 `ANYCON_AGENT=1`，而且谁都覆盖不了：daemon 自己的环境、`agents.env`、`agents.<id>.env`、会话 env
+    /// （含运维把 `ANYCON_*` 写进允许列表的情形）。
+    #[test]
+    fn spawned_agents_carry_the_marker_and_nothing_can_override_it() {
+        let base: HashMap<String, String> =
+            [("PATH".to_string(), "/usr/bin".to_string()), (AGENT_MARKER_ENV.to_string(), "from-parent".to_string())]
+                .into();
+        let env = DaemonEnv { base: Arc::new(base), source: EnvSource::Process, shell: None, warning: None };
+        let mut cfg = Config::default();
+        let none = BTreeMap::new();
+        assert_eq!(env.for_session(&cfg, "x", &none)[AGENT_MARKER_ENV], AGENT_MARKER_VALUE, "daemon env");
+
+        cfg.agents.env.insert(AGENT_MARKER_ENV.into(), "0".into());
+        let mut ac = anycon_agent_api::AdapterConfig { enabled: true, ..Default::default() };
+        ac.env.insert(AGENT_MARKER_ENV.into(), "0".into());
+        cfg.agents.agent.insert("x".into(), ac);
+        assert_eq!(env.for_session(&cfg, "x", &none)[AGENT_MARKER_ENV], AGENT_MARKER_VALUE, "agents.env");
+
+        // 会话 env：默认关闭、开启后也不过黑名单
+        let sess: BTreeMap<String, String> = [(AGENT_MARKER_ENV.to_string(), "0".to_string())].into();
+        assert_eq!(env.for_session(&cfg, "x", &sess)[AGENT_MARKER_ENV], AGENT_MARKER_VALUE, "env disabled");
+        cfg.permissions.allow_session_env = true;
+        cfg.permissions.session_env_allow = vec![AGENT_MARKER_ENV.into(), "ANYCON_*".into()];
+        assert!(validate_session_env(&cfg, "other", &sess).is_err(), "ANYCON_ is on the denylist");
+        assert_eq!(
+            env.for_session(&cfg, "x", &sess)[AGENT_MARKER_ENV],
+            AGENT_MARKER_VALUE,
+            "even if it slipped through"
+        );
+        assert_eq!(env.for_session(&cfg, "other", &sess)[AGENT_MARKER_ENV], AGENT_MARKER_VALUE);
     }
 }

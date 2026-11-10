@@ -6,8 +6,10 @@
 
 | 类别 | 例子 | 通道 |
 |---|---|---|
-| **本机管理** | `init` `daemon` `service` `pair` `passwd` `doctor` `devices` `audit` `export` `import` | 本机 Unix socket `~/.anycon/daemon.sock`（Windows：命名管道 `\\.\pipe\anycon-<hash>`，ADR-42），JSON-RPC，和内层协议同一套方法，另加几个只在本机可用的方法（`local.status`、`local.rename_device`、`local.config_reload`、`local.pair_outcome`、`local.export`、`local.import`，经 hub 调用一律 `forbidden`）。socket 权限 0600（命名管道：属主和 DACL 都是当前用户，客户端连上后核对属主），不需要 Noise，不经过 hub |
-| **客户端** | `nodes` `agents` `projects` `ls` `new` `send` `attach` `approve` | 作为一台设备经 hub 连到目标 daemon，Noise E2E，和 Web / SDK 完全一样 |
+| **本机管理** | `init` `daemon` `service` `pair` `passwd` `doctor` `devices` `audit` `export` `import` | 本机 Unix socket `~/.anycon/daemon.sock`（Windows：命名管道 `\\.\pipe\anycon-<hash>`，ADR-42），JSON-RPC，和内层协议同一套方法，另加几个只在本机可用的方法（`local.status`、`local.rename_device`、`local.config_reload`、`local.pair_outcome`、`local.export`、`local.import`、`local.set_client`，经 hub 调用一律 `forbidden`）。socket 权限 0600（命名管道：属主和 DACL 都是当前用户，客户端连上后核对属主），不需要 Noise，不经过 hub |
+| **客户端** | `nodes` `agents` `projects` `ls` `new` `send` `attach` `approve` `mcp` | 作为一台设备经 hub 连到目标 daemon，Noise E2E，和 Web / SDK 完全一样 |
+
+`local.set_client { client: "cli" | "mcp" }`：本机连接自报客户端种类（固定枚举，别的值 `invalid`），daemon 据此把这条连接之后的审计设备名记成 `local-cli`（缺省）或 `local-mcp`（`anycon mcp` 用，§ 3.7）；只影响这一条连接，只是标注、不改变权限。
 
 客户端命令的目标节点恰好是本机 daemon 时（`--node` 省略且本机有 daemon，或 `--local`），自动走 socket，不绕 hub。这样在 Mac mini 上 `anycon send "跑测试"` 在断网时也能用。
 
@@ -162,6 +164,38 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
   - 导入的会话**没有 agent 进程**，也不带原来的 agent 会话 id：之后发消息开一个新的 agent 会话（历史仍在、仍可搜索，但 agent 不记得之前的对话），原因见 daemon.md § 20.5。有 worktree 的会话，worktree 目录不在本机，下一条消息按分支重建（重建不了会报错，历史照样能看）。
 - **隐私**：压缩包里是会话的**明文**内容（消息、工具输出、附件）和会话设置（含会话 `env` 的值），权限 0600，和数据目录一样要妥善保管；不含节点密钥、配对设备、配置和审计日志。hub 不参与。审计记 `export` / `import`，只记数量和压缩包的文件名（不含目录），不记内容。
 
+### 3.7 `anycon mcp`
+
+`anycon mcp [--allow-dangerous-modes] [--allow-nested]`：stdio 上的 [MCP](https://modelcontextprotocol.io) server，让别的 agent 通过 MCP 工具查看和驱动这个节点上的会话。设计和边界见 [ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)。
+
+- **传输**：换行分隔的 JSON-RPC 2.0，一行一条消息；stdout 只写协议消息，日志和提示走 stderr；stdin EOF 即退出（还在跑的调用最多再等 10 秒）。只实现 tools（`initialize`、`ping`、`tools/list`、`tools/call` 和通知）；协议版本 `2025-06-18`、`2025-03-26`、`2024-11-05`，客户端请求的版本在列表里就回它，否则回 `2025-06-18`。没有 resources / prompts / sampling，不收 JSON-RPC 批量。手写实现，没有 MCP SDK 依赖。
+- **连接**：用 CLI 的连接层，全局选项 `--hub` / `--node` / `--local` / `--timeout` 的含义和其它客户端命令一样（默认连本机 daemon 的 socket）。daemon 没在跑不会让 server 退出：`initialize` 和 `tools/list` 照常，工具调用返回错误，daemon 起来之后下一次调用就能用。连上本机 daemon 后先发 `local.set_client { client: "mcp" }`，审计里这条连接的操作记为 `local-mcp`（人敲的命令是 `local-cli`）；经 hub 连远程节点时不发，审计里是配对的设备。
+- **标志**：
+  - `--allow-dangerous-modes`：`create_session` 可以选节点标为 `dangerous` 的权限模式，`send_message` 可以向已经处在这类模式的会话发消息。缺省两者都拒绝：包括 `create_session` 没指定 `mode` 而 agent 的默认模式是危险的，以及模式不在节点的 `agent.list` 里、风险判断不了的（未知就不放行）；`cancel_turn` 和只读工具不受这个限制。节点自己的 `permissions.allow_dangerous_modes` 仍是上限，两道都要过
+  - `--allow-nested`：在 anycon 拉起的 agent 里启动（环境里有 `ANYCON_AGENT`）时，缺省 `create_session`、`send_message`、`cancel_turn` 返回错误，只读工具照常；带这个标志放开。这是防误用的护栏，不是安全边界（[daemon.md § 5.5](daemon.md#55-子进程环境)）
+- **工具**（名字 snake_case，参数用 JSON Schema 声明，多传的参数被拒绝；结果是一个文字块，内容是紧凑 JSON，`get_diff` 带 `path` 时多一个补丁文字块；失败时 `isError: true`）：
+
+| 工具 | 映射到 | 说明 |
+|---|---|---|
+| `list_agents` | `agent.list` | 每个 agent 的状态、模型（含思考等级）、权限模式及其 `risk`；模式带 `selectable`（本次启动能不能选） |
+| `list_projects` | `workspace.list` | 项目名、路径、git 分支和是否有改动、活动会话数 |
+| `list_sessions` | `session.list` | 可按 `project`、`status`（`running` / `waiting` / `idle` / `ended` / `error` / `queued`）过滤，`include_archived`，`limit`（缺省 20，上限 100） |
+| `read_session` | `session.get` + `session.history` | 会话状态加最近 `limit` 条（缺省 20，上限 100）用户 / 助手消息的文字，每条 ≤ 4 000 字符、总共约 60 000 字符；不含工具输出。`next_before_seq` 传给 `before_seq` 往前翻。等待审批的会话带 `waiting_permission`（请求的标题和种类） |
+| `search_sessions` | `session.search` | 全文搜索（`query`、可选 `project`、`limit` 缺省 20 上限 50）；命中词用 `**` 包住 |
+| `create_session` | `agent.list` + `session.create` | `prompt`（必填）、`project`（省略 = scratch）、`agent`（只有一个 ready 时可省）、`model`、`thinking`、`mode`、`worktree`（省略 = 按节点的 `worktree.default`，项目开不了就退回项目目录，同 `anycon new`），再加 `wait` / `timeout_seconds`。**没有** `env` 和别的会话设置。拒绝危险模式和风险未知的模式（见标志） |
+| `send_message` | `session.send` | `session`（id、前缀或 `last`）、`message`、`wait`（缺省 true）、`timeout_seconds`（缺省 50，范围 1–600）。会话处在危险模式时拒绝（见标志） |
+| `cancel_turn` | `session.cancel` | 中断当前 turn |
+| `get_diff` | `session.diff` | `session`、可选 `uncommitted`、`path`；不带 `path` 列文件和行数（≤ 200 个），带 `path` 给补丁（≤ 10 万字符）。在项目目录本身工作的会话只有未提交的改动 |
+
+  `wait` 为 true（`create_session` 和 `send_message` 缺省）时，调用等到**这条消息触发的那一轮**结束（会话忙时消息先排队，等的是排在它后面的那个 turn，不是正在跑的这一个；插话进了正在跑的 turn 就等这个 turn），返回 `outcome`：`completed`（`text` 是这一轮助手的文字，工具调用前后的几段之间留一个空行，上限 30 000 字符、超出保留末尾；`usage` 有这一轮和会话累计的用量；`session_status`）、`cancelled`、`failed`（带 `error`）、**`waiting_permission`**（带请求的 `kind` 和 `title`，立即返回，不等超时）、**`still_running`**（超时：`note` 按实际情况说是 turn 还在跑、排在别的 turn 后面，还是因 `sessions.max_concurrent` 在排队；之后用 `read_session` 查）、**`dropped`**（排队的消息没被处理：会话闲着、这条消息没开过 turn，比如有人在它排队时 `anycon cancel` 清了队列，需要的话重发）。`wait: false` 时返回消息已被接受（`send_message`：`sent`、`queued`；`create_session`：新会话的摘要）。**没有任何批准或拒绝权限请求的工具**：`waiting_permission` 要由人在已配对设备上、或用 `anycon approve` / `anycon deny` 处理。
+- **在 MCP 客户端里配置**：server 命令是 `anycon`，参数是 `mcp`。通用写法（各客户端的配置文件格式不同，字段名大同小异）：
+
+  ```json
+  { "mcpServers": { "anycon": { "command": "anycon", "args": ["mcp"] } } }
+  ```
+
+  连别的节点、放开危险模式等都写在 `args` 里：`["mcp", "--node", "mac-mini"]`、`["mcp", "--allow-dangerous-modes"]`。多数 MCP 客户端有自己的工具调用超时（常见 60 秒），长任务把 `timeout_seconds` 留在缺省，超时返回 `still_running` 后用 `read_session` 查，或者调大客户端的超时。`anycon` 要在客户端启动 server 时的 `PATH` 上，否则写绝对路径；`ANYCON_HOME` 非缺省时用 `env` 传。
+
 ## 4. 输出约定
 
 - 默认人类可读；`--json` 输出机器可读。流式命令（`attach`、`new`、`clone`）的 `--json` 是 NDJSON，每行一个事件，和 `session.event` 同结构
@@ -204,5 +238,6 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 ## 7. 不做的
 
 - 不做交互式 TUI（全屏界面）。`attach` 是流式打印，不是终端模拟器（[ADR-1](../decisions.md#adr-1-定位连接层不是开发环境)）
+- `anycon mcp` 不暴露权限审批，也不做多 agent 编排：它只给调用方和 CLI / SDK 同等的原语（§ 3.7，[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）
 - 不做 `anycon shell` 之类远程执行任意命令的功能。想执行命令，让 agent 做，经过权限审批
 - 不在 CLI 里常驻账号登录。CLI 是设备，不是账号：只在账号内接入时临时登录一次，用完就退出（§ 3.3）。账号管理（登录方式、设备列表、邀请）和批准别的设备的接入请求都在 Web UI 里做

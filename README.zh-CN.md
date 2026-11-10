@@ -105,6 +105,8 @@ anycon new --project my-app "跑一下测试，把失败的修了"
 
 输出实时流式显示，权限请求直接在终端里答复。
 
+**MCP server**：`anycon mcp` 在 stdio 上跑一个 [MCP](https://modelcontextprotocol.io) server，让别的 agent 查看、搜索、驱动你节点上的会话（在 MCP 客户端里配成命令 `anycon`、参数 `["mcp"]`）。它没有批准权限请求的工具，审批仍然在你手里；默认拒绝危险权限模式（启动时带 `--allow-dangerous-modes` 才放开），也默认拒绝在 anycon 会话里再开会话或发消息（`--allow-nested` 放开）。见 [ADR-49](docs/decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排) 和 [CLI 规格](docs/spec/cli.md#37-anycon-mcp)。
+
 **TypeScript SDK**（[`@anycon/sdk`](packages/sdk)）：
 
 ```ts
@@ -140,6 +142,7 @@ for await (const ev of session.send('跑一下测试，把失败的修了')) {
 - 配对短码在 daemon 本地生成，不发给 hub；两端用 Argon2id 从短码派生预共享密钥。默认的 16 位短码即使面对恶意 hub 也扛得住离线穷举；8 位的 `anycon pair --short` 只在自建 hub 上用
 - 浏览器里的密钥和缓存以明文存在 IndexedDB。公用电脑上请用「退出并移除本设备」，不要只点「退出登录」
 - **dev server 预览**跑在单独的域名上（公共 hub 是 `*.aiplace.app`），经自己的 Noise 隧道到 daemon。hub 看得到有一个预览开着、流量多大，看不到页面内容。预览的加载代码同样由 hub 下发，信任前提和 Web UI 一样。daemon 默认只转发 agent 会话自己起的服务所监听的端口
+- **把 `anycon mcp` 配置给某个 agent，它就能以你的 CLI 的权限操作节点上的会话**（默认连本机 socket；用 `--node` / `--hub` 时是这台机器上已配对的 CLI 设备）。 这个 MCP server 只暴露九个映射到已有请求的工具，约束在这个接口上：没有批准或拒绝权限请求的工具（调用碰到权限请求会返回 `waiting_permission`，由人在已配对设备上处理）；`create_session` 拒绝选标为 dangerous 的权限模式、`send_message` 拒绝向已处在这类模式的会话发消息，除非启动时带 `--allow-dangerous-modes`（节点的 `permissions.allow_dangerous_modes` 仍然生效）；没有会话 `env`；在 anycon 拉起的 agent 里，创建、驱动和取消会话默认被拒绝，除非带 `--allow-nested`。这些是接口上的护栏，不是隔离：agent 能改自己的环境和 MCP 配置，能执行 shell 命令的 agent 本来就能直接运行 `anycon`。经它做的操作在审计里记为 `local-mcp`。
 - Anycon 不是沙箱（见上面的「代价」）
 
 完整的威胁模型见 [docs/architecture.md § 5.6](docs/architecture.md#56-威胁模型) 和 [SECURITY.md](SECURITY.md)。

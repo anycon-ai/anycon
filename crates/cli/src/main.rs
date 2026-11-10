@@ -9,6 +9,7 @@ mod enroll;
 mod enroll_tests;
 mod error;
 mod follow;
+mod mcp;
 mod output;
 mod passwd;
 mod remote;
@@ -66,6 +67,7 @@ async fn run(cli: Cli) -> Result<u8> {
         Command::Promote { session, project_name } => commands::promote(&app, session, project_name).await,
         Command::Export(a) => transfer_cmds::export(&app, a).await,
         Command::Import(a) => transfer_cmds::import(&app, a).await,
+        Command::Mcp(a) => mcp::run(&app, a).await,
         Command::Audit(a) => commands::audit(&app, a).await,
         Command::Config(c) => commands::config(&app, c).await,
         Command::Logs(a) => commands::logs(&app, a).await,

@@ -14,6 +14,7 @@ use crate::follow::{follow, FollowEnd, FollowOpts};
 use crate::output::{ago, short_id, table, visible, Out};
 use crate::remote::{self, HubState, NodeEntry};
 
+#[derive(Clone)]
 pub struct App {
     pub out: Out,
     pub hub: Option<String>,

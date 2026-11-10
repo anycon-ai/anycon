@@ -104,6 +104,9 @@ pub enum Command {
     /// Import the sessions in a zip file made by `anycon export`; sessions that already exist are skipped, never
     /// overwritten (the local daemon does the work)
     Import(ImportArgs),
+    /// Run an MCP server on stdio so other agents can look at and drive this node's sessions through MCP tools
+    /// (use `anycon mcp` as the server command in an MCP client's config)
+    Mcp(McpArgs),
     /// Show the local audit log
     Audit(AuditArgs),
     /// Read and write config.toml
@@ -123,6 +126,22 @@ pub enum Command {
     Nodes,
     /// Forget this machine's pairing with a node
     Disconnect { node: String },
+}
+
+#[derive(Args, Debug)]
+pub struct McpArgs {
+    /// Let `create_session` choose permission modes the node marks as dangerous (modes that run tools without
+    /// asking a person), and let `send_message` write to sessions that are already in such a mode. Off by default:
+    /// an agent using this server could otherwise start or drive sessions nobody supervises. The node's own
+    /// `permissions.allow_dangerous_modes` must be on as well
+    #[arg(long)]
+    pub allow_dangerous_modes: bool,
+    /// Allow `create_session`, `send_message` and `cancel_turn` even when this server was started inside an anycon
+    /// agent session (the environment has ANYCON_AGENT set). By default an agent that runs in an anycon session
+    /// cannot start or drive other sessions through this server; this is a guard against accidents, not a security
+    /// boundary, and `sessions.max_concurrent` on the node remains the real limit
+    #[arg(long)]
+    pub allow_nested: bool,
 }
 
 #[derive(Args, Debug)]

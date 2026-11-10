@@ -24,6 +24,7 @@
 - `multi` 的开放注册：能否绕过账号配额（设备数、daemon 数、在线连接数、每日配对次数）和验证码限速
 - 删账号：能否在没有最近登录（10 分钟内）的情况下删掉别人的账号或自己的账号，能否借别的路径让已删账号的设备继续连接，或删除后仍留下账号的设备、身份、审计数据
 - 已配对客户端能否绕过 `allow_dangerous_modes`、会话 `env` 策略或 workspace 边界，在 daemon 机器上不经审批执行代码；能否经 `node.set_config`（ADR-43：只有一张热加载键的白名单，`allow_dangerous_modes` 和 `preview.enabled` 只能收紧）改到名单之外的键、放宽只能收紧的开关，或在被环境变量覆盖的键上写出不一致的状态；`node.logs` 能否带出会话内容
+- `anycon mcp`（ADR-49）：能否经它的工具批准或拒绝权限请求、在未带 `--allow-dangerous-modes` 时选 dangerous 模式或向已处在这类模式的会话发消息、绕过 `allow_dangerous_modes`、设置会话 `env`，能否让经 hub 的连接改写审计身份（`local.set_client` 只在本机通道，固定枚举），能否让 daemon 拉起的 agent 环境里没有或被改写 `ANYCON_AGENT`
 - 被提示注入的 agent 能否借 Web UI 把数据发往第三方
 - dev server 预览（ADR-39）：预览页里的代码能否读到 Web UI 的密钥或登录态；hub 能否在不持有票据的情况下打开隧道或看到隧道内容；能否经预览访问 daemon 机器上不该放行的端口（会话之外、`preview.allow_ports` 之外、本机 hub）；吊销设备或关闭预览后隧道是否仍能使用
 
@@ -58,5 +59,7 @@
 **不是沙箱。** agent 以 daemon 用户的身份运行，anycon 提供审批和 workspace 路径边界，不提供 OS 级隔离。已配对设备等于能在那台机器上让 agent 干活。**关联的本机目录**（`workspace.link`，ADR-33）同样交给了已配对设备：里面的文件可以不经审批读取（`fs.read`，进审计），agent 在里面按所选权限模式改文件（normal 风险的模式不逐个审批）。daemon 拒绝关联隐藏目录、常见的系统 / 凭证 / 自启动目录和 anycon 数据目录，但这张拒绝表是启发式的，挡不住所有「写进去就会被执行」的位置；显式放行一个拒绝项会放开它下面的一切。**建议把 `workspace.link_roots` 收窄到代码目录**（比如 `["~/work"]`），设成 `[]` 就关闭关联。 已知窗口：turn 进行中关联目录被换掉（比如换成指向别处的符号链接），daemon 每约 2 秒复核一次、发现后收掉 agent 进程，在这之前 agent 不经审批执行的动作仍可能落到新目标上；报告时请说明是否超出了这个窗口。
 
 **dev server 预览。** 预览运行时（引导页、service worker、shim）同样由 hub 下发，和 Web UI 同一个信任前提。预览 origin 的 IndexedDB 里存着这个预览的 hub 令牌和票据密钥，预览页里的 dev app（agent 写的代码和它的依赖）读得到它们：拿到的人在过期前（默认 24 小时）能访问这一个端口，关闭预览（`preview.close`）或吊销签发它的设备立即失效。dev app 里写死的 `localhost` 地址、自己的 service worker 在预览里不工作。见 [ADR-39](docs/decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。
+
+**`anycon mcp` 的护栏约束的是接口，不是那个 agent。** 把 `anycon mcp` 配置给某个 agent 的本机用户，等于让它以本机 CLI 的权限操作节点上的会话，只受接口上的约束：没有批准 / 拒绝权限请求的工具、默认拒绝 dangerous 权限模式（选这类模式，或向已经处在这类模式的会话发消息）、没有会话 `env`、在 anycon 拉起的 agent 里默认拒绝会改状态的工具（环境变量 `ANYCON_AGENT`）。这四条里有开关或标记的是第二条（`--allow-dangerous-modes`）和第四条（`ANYCON_AGENT` / `--allow-nested`），它们都在 agent 能碰到的地方：它能改自己的环境和 MCP 配置，有些 MCP 客户端启动 stdio server 时也只传精简的环境，这时标记传不到 `anycon mcp`，嵌套护栏就不起作用；有 shell 能力的 agent 本来就能直接运行 `anycon`（包括 `anycon approve`）。审计里的 `local-mcp` 是客户端自报的。真正的上限是 `sessions.max_concurrent`、审批、`permissions.allow_dangerous_modes` 和 `config.toml`。见 [ADR-49](docs/decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)。
 
 **元数据。** hub 看得到谁连谁、什么时候、多大的信封、设备名和账号标识（显示名、绑定的邮箱，以及关联的 GitHub / Google 身份的提供方和稳定用户 ID——不存用户名、头像和 access token）、账号的配额用量；开着预览时还有预览 label、令牌的申请和预览连接的流量。anycon 不做流量混淆。账号被删除后，hub 上与它有关的设备、身份和审计记录一并删除，只留一条没有 IP 的删除记录。

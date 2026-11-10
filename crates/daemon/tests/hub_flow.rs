@@ -161,6 +161,11 @@ async fn first_pairing_issues_a_device_token_and_then_ik_rpc_works() {
     // 本机管理方法不能经 hub 调用（导出 / 导入读写 daemon 机器上的任意路径，更不行）
     let e = web.call::<Value>("local.status", json!({})).await.unwrap_err();
     assert_eq!(e.stable_code(), Some(ErrorCode::Forbidden));
+    // 本机客户端的自报种类同样只在本机通道生效：经 hub 的连接被拒绝，审计里仍然是配对的设备
+    let e = web.call::<Value>(anycon_daemon::local_methods::SET_CLIENT, json!({ "client": "mcp" })).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::Forbidden));
+    let audit: NodeAuditResult = web.call(methods::NODE_AUDIT, json!({ "limit": 50 })).await.unwrap();
+    assert!(audit.entries.iter().all(|e| e.device_name != "local-mcp"), "{audit:?}");
     for (method, params) in [
         (anycon_daemon::local_methods::EXPORT, json!({ "out": td.dir.path().join("remote.zip") })),
         (anycon_daemon::local_methods::IMPORT, json!({ "file": td.dir.path().join("remote.zip") })),

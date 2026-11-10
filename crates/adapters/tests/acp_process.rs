@@ -192,7 +192,7 @@ async fn settings_the_agent_cannot_take_are_reported_but_do_not_fail_the_session
     let mut handle = h.spawn(settings(|s| s.thinking = Some("high".into())), None).await;
     started(&mut handle).await;
     match next_event(&mut handle).await {
-        AgentEvent::Event(Event::Error { code, message, recoverable }) => {
+        AgentEvent::Event(Event::Error { code, message, recoverable, .. }) => {
             assert_eq!(code, "agent_setting_failed");
             assert!(recoverable && message.contains("thinking"), "{message}");
         }
@@ -839,7 +839,7 @@ async fn a_session_that_is_gone_is_replaced_and_the_user_is_told() {
     let s = started(&mut handle).await;
     assert_ne!(s.agent_session_id, "fake-old-1");
     match next_event(&mut handle).await {
-        AgentEvent::Event(Event::Error { code, message, recoverable }) => {
+        AgentEvent::Event(Event::Error { code, message, recoverable, .. }) => {
             assert_eq!(code, "agent_context_reset");
             assert!(recoverable && message.contains("Resource not found"), "{message}");
         }

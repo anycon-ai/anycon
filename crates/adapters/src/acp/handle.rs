@@ -369,6 +369,8 @@ impl AgentHandle for AcpHandle {
                 code: "elicitation_invalid_answer".to_string(),
                 message: format!("The agent's form was declined because {problem}."),
                 recoverable: true,
+                resets_at_ms: None,
+                limit_scope: None,
             });
         }
         if !self.conn.rpc.reply(&native.rpc_id, result) {

@@ -528,6 +528,8 @@ impl AgentHandle for FakeHandle {
                             code: "agent_exited".into(),
                             message: "claude exited unexpectedly".into(),
                             recoverable: true,
+                            resets_at_ms: None,
+                            limit_scope: None,
                         }))
                         .await;
                 }
@@ -723,6 +725,8 @@ impl AgentHandle for FakeHandle {
                         code: "fake_error".into(),
                         message: "something failed".into(),
                         recoverable: true,
+                        resets_at_ms: None,
+                        limit_scope: None,
                     }))
                     .await;
                 reason = TurnDoneReason::Error;

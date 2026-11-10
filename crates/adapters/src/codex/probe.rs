@@ -263,13 +263,9 @@ pub type AuthMemoCell = Mutex<Option<AuthMemo>>;
 
 /// 不需要的、而且可能很大的通知，让 app-server 别发（`initialize.capabilities.optOutNotificationMethods`）：
 /// `turn/diff/updated` 是整个 turn 的累计 diff，每改一次文件就重发一次（实测 11 MB 的新文件补丁产生 3 条 11 MB 的行）；
-/// 其余是频繁但我们不用的。
-pub const OPT_OUT_NOTIFICATIONS: &[&str] = &[
-    "turn/diff/updated",
-    "item/fileChange/patchUpdated",
-    "account/rateLimits/updated",
-    "remoteControl/status/changed",
-];
+/// 其余是频繁但我们不用的。`account/rateLimits/updated` **不在这里**：它很小，`usage_limit` 错误要用它里面的恢复时间。
+pub const OPT_OUT_NOTIFICATIONS: &[&str] =
+    &["turn/diff/updated", "item/fileChange/patchUpdated", "remoteControl/status/changed"];
 
 /// 一次 `initialize` 的参数。
 pub fn initialize_params() -> Value {
@@ -827,6 +823,7 @@ mod tests {
             "item/agentMessage/delta",
             "item/commandExecution/outputDelta",
             "thread/tokenUsage/updated",
+            "account/rateLimits/updated",
             "error",
             "serverRequest/resolved",
             "turn/plan/updated",

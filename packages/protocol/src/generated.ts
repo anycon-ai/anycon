@@ -403,8 +403,18 @@ export type Event =
     }
   | {
       code: string;
+      /**
+       * `code = usage_limit`：触到的是账号级的窗口还是特定模型的窗口。只有上游明确给出限额类型时才有；
+       * 缺省 = 不知道。
+       */
+      limit_scope?: LimitScope | null;
       message: string;
       recoverable: boolean;
+      /**
+       * 限额类错误（`usage_limit`，有时 `rate_limited`）：限额恢复的时间。和 `Notice.resets_at_ms` 同语义；
+       * 上游没给就缺省，不估算。
+       */
+      resets_at_ms?: number | null;
       type: "error";
     }
   | {
@@ -506,6 +516,10 @@ export type GitAction =
   | "worktree_kept"
   | "worktree_restored"
   | "worktree_missing";
+/**
+ * `Event::Error.limit_scope`：用量限额的范围。
+ */
+export type LimitScope = "account" | "model";
 /**
  * workflow 里一个 agent 的状态。
  */

@@ -139,6 +139,8 @@ impl Adapter for AcpAdapter {
                 code: "agent_setting_failed".to_string(),
                 message: format!("{} could not be applied ({}); the agent keeps its own value", p.field, p.reason),
                 recoverable: true,
+                resets_at_ms: None,
+                limit_scope: None,
             });
         }
         if let conn::Opened::ContextReset(why) = opened {
@@ -150,6 +152,8 @@ impl Adapter for AcpAdapter {
                     self.label
                 ),
                 recoverable: true,
+                resets_at_ms: None,
+                limit_scope: None,
             });
         }
         Ok(Box::new(handle))

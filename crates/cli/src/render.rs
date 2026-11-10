@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 
 use anycon_protocol::{
-    ActivityState, AttachmentRef, Event, GitAction, NoticeLevel, PermissionKind, PermissionOption,
+    ActivityState, AttachmentRef, Event, GitAction, LimitScope, NoticeLevel, PermissionKind, PermissionOption,
     PermissionOptionKind, PermissionRequest, SessionEvent, TaskKind, TaskStatus, TaskUsage, ToolCategory,
     TurnDoneReason, Usage,
 };
@@ -182,6 +182,28 @@ pub fn notice_text(
         (false, true) => label,
         (false, false) => format!("{label}: {message}"),
     }
+}
+
+/// `error` 的文字：`error: <code>: <message>`，限额类的错误在后面带恢复时间（UTC，和 `notice` 一致）；
+/// 只有某个模型的窗口用完时提示换模型；`recoverable = false` 的加 `(fatal)`。全部经过「可见化」。
+pub fn error_text(
+    code: &str,
+    message: &str,
+    recoverable: bool,
+    resets_at_ms: Option<u64>,
+    limit_scope: Option<LimitScope>,
+) -> String {
+    let mut s = format!("error: {}: {}", visible(code), visible(message));
+    if let Some(ms) = resets_at_ms {
+        s.push_str(&format!(" (resets {} UTC)", anycon_daemon::util::fmt_utc(ms)));
+    }
+    if limit_scope == Some(LimitScope::Model) {
+        s.push_str(" (this limit is for one model; another model may still work)");
+    }
+    if !recoverable {
+        s.push_str(" (fatal)");
+    }
+    s
 }
 
 /// `activity` 的文字；`none`（临时状态结束）没有。
@@ -433,12 +455,14 @@ impl Renderer {
                     eprintln!("{}", self.out.err_dim(&format!("[{text}]")));
                 }
             }
-            Event::Error { code, message, recoverable } => {
+            Event::Error { code, message, recoverable, resets_at_ms, limit_scope } => {
                 if !self.at_line_start {
                     self.write("\n");
                 }
-                let tag = if *recoverable { "" } else { " (fatal)" };
-                eprintln!("{}", self.out.err_red(&format!("error: {}: {}{tag}", visible(code), visible(message))));
+                eprintln!(
+                    "{}",
+                    self.out.err_red(&error_text(code, message, *recoverable, *resets_at_ms, *limit_scope))
+                );
             }
         }
     }
@@ -1364,6 +1388,20 @@ mod tests {
         r.event(&notice("command_output", NoticeLevel::Info, "Context: 12%\nfree: 88%\x1b[2K\n"));
         let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
         assert_eq!(out, "• context compacted: done\nContext: 12%\nfree: 88%\\x1b[2K\n");
+    }
+
+    #[test]
+    fn errors_name_the_code_and_say_when_a_limit_resets() {
+        assert_eq!(error_text("agent_error", "boom", true, None, None), "error: agent_error: boom");
+        assert_eq!(error_text("auth_failed", "log in", false, None, None), "error: auth_failed: log in (fatal)");
+        assert_eq!(
+            error_text("usage_limit", "Usage limit reached", true, Some(1_800_000_000_000), Some(LimitScope::Account)),
+            "error: usage_limit: Usage limit reached (resets 2027-01-15 08:00:00 UTC)"
+        );
+        assert_eq!(
+            error_text("usage_limit", "hit\x1b[2K", true, Some(1_800_000_000_000), Some(LimitScope::Model)),
+            "error: usage_limit: hit\\x1b[2K (resets 2027-01-15 08:00:00 UTC) (this limit is for one model; another model may still work)"
+        );
     }
 
     #[test]

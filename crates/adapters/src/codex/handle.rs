@@ -236,6 +236,8 @@ impl CodexHandle {
                     "Codex could not restore this conversation ({why}), so it started a new thread: the agent can no longer see what was said before."
                 ),
                 recoverable: true,
+                resets_at_ms: None,
+                limit_scope: None,
             }));
         }
         Ok(handle)
@@ -568,6 +570,8 @@ async fn read_loop(
             code: "agent_exited".to_string(),
             message,
             recoverable: true,
+            resets_at_ms: None,
+            limit_scope: None,
         }));
     }
     let _ = events.send(AgentEvent::Exited { code: exit.code, error });
@@ -623,6 +627,8 @@ impl AgentHandle for CodexHandle {
                     code: "elicitation_invalid_answer".to_string(),
                     message: format!("The MCP server's form was declined because {problem}."),
                     recoverable: true,
+                    resets_at_ms: None,
+                    limit_scope: None,
                 }));
             }
         }

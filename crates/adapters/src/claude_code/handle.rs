@@ -375,8 +375,13 @@ async fn read_loop(
         } else {
             format!("Claude Code exited in the middle of a turn ({detail})")
         };
-        let _ =
-            tx.send(AgentEvent::Event(Event::Error { code: "agent_exited".to_string(), message, recoverable: true }));
+        let _ = tx.send(AgentEvent::Event(Event::Error {
+            code: "agent_exited".to_string(),
+            message,
+            recoverable: true,
+            resets_at_ms: None,
+            limit_scope: None,
+        }));
     }
     let _ = tx.send(AgentEvent::Exited { code: exit.code, error });
 }
@@ -458,7 +463,13 @@ impl AgentHandle for ClaudeHandle {
             return Err(AdapterError::Exited("claude is not running".into()));
         }
         if let (Some(message), Some(tx)) = (problem, self.events_tx.upgrade()) {
-            let ev = Event::Error { code: "elicitation_invalid_answer".to_string(), message, recoverable: true };
+            let ev = Event::Error {
+                code: "elicitation_invalid_answer".to_string(),
+                message,
+                recoverable: true,
+                resets_at_ms: None,
+                limit_scope: None,
+            };
             let _ = tx.send(AgentEvent::Event(ev));
         }
         Ok(())

@@ -490,7 +490,7 @@ async fn real_app_server_handshake() {
     assert_ne!(b.agent_session_id, a.agent_session_id);
     // 可见的提示：之前的上下文 agent 看不到了
     match next_event(&mut h2).await {
-        AgentEvent::Event(Event::Error { code, recoverable, message }) => {
+        AgentEvent::Event(Event::Error { code, recoverable, message, .. }) => {
             assert_eq!((code.as_str(), recoverable), ("agent_context_reset", true));
             assert!(message.contains("no rollout found"), "{message}");
         }

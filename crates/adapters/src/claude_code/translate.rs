@@ -34,8 +34,8 @@ use std::time::Instant;
 
 use anycon_agent_api::{AgentEvent, PendingPermission, ResumeHandle};
 use anycon_protocol::{
-    ActivityState, Event, FileChangeKind, NoticeLevel, PlanEntry, PlanStatus, TaskAgent, TaskAgentState, TaskKind,
-    TaskPhase, TaskStatus, TaskUsage, ToolCategory, ToolResultDetail, TurnDoneReason, Usage,
+    ActivityState, Event, FileChangeKind, LimitScope, NoticeLevel, PlanEntry, PlanStatus, TaskAgent, TaskAgentState,
+    TaskKind, TaskPhase, TaskStatus, TaskUsage, ToolCategory, ToolResultDetail, TurnDoneReason, Usage,
 };
 use serde_json::{json, Value};
 
@@ -190,7 +190,16 @@ pub struct Translator {
     /// 正在发 `Activity { retrying }`（下一次响应开始流式输出时发 `none`）。
     retrying: bool,
     /// `rate_limit_event` 已经通知过的状态：按限额类型记（状态，恢复时间），同一状态同一恢复时间只发一次。
+    /// 只管 `Notice` 的去重；`usage_limit` 错误看的是下面的 `limit_now`。
     rate_limit_seen: HashMap<String, (String, Option<u64>)>,
+    /// 最近一条 `rate_limit_event` 顶层状态描述的、眼下起限制作用的窗口：`(限额类型, 恢复时间 Unix 秒)`。
+    /// 上游的模型里同一时刻只有一个这样的窗口，所以只记最后一条：`rejected` 记下，`allowed` / `allowed_warning` 清掉
+    /// （真实录制里 `allowed` 的类型一律是 `five_hour`，按类型记的话 `seven_day` 之类的拒绝永远清不掉）。
+    limit_now: Option<(String, Option<u64>)>,
+    /// 本 turn 里带 `api_error = usage_limit_reached` 的 API 错误消息报告的限额：`(限额类型, 恢复时间 Unix 秒)`。
+    api_usage_limit: Option<(Option<String>, Option<u64>)>,
+    /// 现在的 Unix 毫秒；测试里换成固定时间。
+    now_ms: fn() -> u64,
     /// 已经为它发过 `mcp_server_failed` 的 server（每个进程每个 server 一次）。
     mcp_failed: HashSet<String>,
     /// 本 turn 已经发过的 `notification`（key + 文本）。
@@ -370,6 +379,21 @@ fn notice_event(code: &str, level: NoticeLevel, message: impl Into<String>) -> E
     }
 }
 
+/// 现在的 Unix 毫秒。
+fn system_now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// `rateLimitType` → 限额范围。只有 CLI 明确区分的才报：`seven_day_opus` / `seven_day_sonnet` 是单个模型系列的周窗口，
+/// `five_hour`、`seven_day`、`overage` 这些是账号级的；不认识的类型不猜。
+fn limit_scope(kind: &str) -> Option<LimitScope> {
+    match kind {
+        "seven_day_opus" | "seven_day_sonnet" => Some(LimitScope::Model),
+        "five_hour" | "seven_day" | "seven_day_overage_included" | "overage" => Some(LimitScope::Account),
+        _ => None,
+    }
+}
+
 /// 限额类型 → 给人看的窗口名。
 fn rate_limit_window(kind: Option<&str>) -> &str {
     match kind {
@@ -482,6 +506,9 @@ impl Translator {
             compacting: false,
             retrying: false,
             rate_limit_seen: HashMap::new(),
+            limit_now: None,
+            api_usage_limit: None,
+            now_ms: system_now_ms,
             mcp_failed: HashSet::new(),
             notified: HashSet::new(),
             context_tokens: None,
@@ -493,6 +520,12 @@ impl Translator {
     /// 否则 daemon 存下的快照里还是被清除之前的值（resume 路径不读它，但快照不该过期）。
     pub fn set_launch_args(&mut self, launch_args: Value) {
         self.launch_args = launch_args;
+    }
+
+    /// 换掉墙上时钟（过滤已过去的恢复时间用），测试注入固定时间。
+    pub fn with_clock(mut self, now_ms: fn() -> u64) -> Self {
+        self.now_ms = now_ms;
+        self
     }
 
     /// `send` 之前调用：开始新 turn。
@@ -536,6 +569,7 @@ impl Translator {
         self.notified.clear();
         self.context_tokens = None;
         self.last_model = None;
+        self.api_usage_limit = None;
         if self.bg_tasks.is_empty() {
             self.seen_tool_use.clear();
             self.tools.clear();
@@ -1028,6 +1062,7 @@ impl Translator {
         let Some(status) = info["status"].as_str() else { return };
         let kind = info["rateLimitType"].as_str();
         let slot = kind.unwrap_or("").to_string();
+        self.limit_now = (status == "rejected").then(|| (slot.clone(), info["resetsAt"].as_u64()));
         if status == "allowed" {
             self.rate_limit_seen.remove(&slot);
             return;
@@ -1058,6 +1093,29 @@ impl Translator {
                 resets_at_ms: resets_at.map(|s| s.saturating_mul(1000)),
             },
         );
+    }
+
+    /// 这个 turn 的 `usage_limit` 错误要带的 `(恢复时间 Unix 秒, 范围)`；不是用量耗尽返回 `None`。
+    ///
+    /// 只在 `result` 的 `api_error_status` 是 429 时采用。首选信号：这个 turn 里带 `api_error = usage_limit_reached` 的 API 错误消息（上游说明：只有账号自己的用量限额
+    /// 才带它，临时节流、容量关闭、API key 的 429 都不带），限额类型和恢复时间取它的 `api_error_params.rate_limit_info`。
+    /// 回退：429 的 `result`，而且最近一条 `rate_limit_event` 是 `rejected`、恢复时间没过。
+    /// 恢复时间已经过去的不用（过期记录），错误码仍按信号判定。
+    fn usage_limit_info(&self, status: Option<u64>) -> Option<(Option<u64>, Option<LimitScope>)> {
+        let now_s = (self.now_ms)() / 1000;
+        let live = |r: Option<u64>| r.filter(|t| *t > now_s);
+        // 两条路径都只看 429：CLI 等限额恢复后继续、随后又以别的状态（529…）收尾时，不能还报用量耗尽
+        if status != Some(429) {
+            return None;
+        }
+        if let Some((kind, resets)) = &self.api_usage_limit {
+            return Some((live(*resets), kind.as_deref().and_then(limit_scope)));
+        }
+        let (kind, resets) = self.limit_now.as_ref()?;
+        if resets.is_some_and(|t| t <= now_s) {
+            return None;
+        }
+        Some((*resets, limit_scope(kind)))
     }
 
     /// `system/notification`（REPL 通知队列的文本）。`color` 为 `warning` / `error` 的当警告；
@@ -1241,6 +1299,15 @@ impl Translator {
         let top = parent.is_none();
         let msg = &v["message"];
         let mid = msg["id"].as_str().unwrap_or("").to_string();
+        // API 错误消息（`@internal` 字段，版本变化时可能没有）：账号自己的用量限额拒绝了请求
+        if top
+            && v["is_api_error_message"].as_bool() == Some(true)
+            && v["api_error"].as_str() == Some("usage_limit_reached")
+        {
+            let info = &v["api_error_params"]["rate_limit_info"];
+            self.api_usage_limit =
+                Some((info["rateLimitType"].as_str().map(str::to_string), info["resetsAt"].as_u64()));
+        }
         let Some(blocks) = msg["content"].as_array() else { return };
         // 本地斜杠命令（`/context`、`/cost`）的输出：`-p` 下是一条模型为 `<synthetic>`、带 `local_command_source` 的 assistant 消息
         // （`<local-command-stdout>…` 原文），不是模型说的话
@@ -1429,9 +1496,27 @@ impl Translator {
 
         if reason == TurnDoneReason::Error {
             let status = u64_of(v, "api_error_status");
+            // `blocking_limit` / `prompt_too_long` / `rapid_refill_breaker` 是同一个情形：上下文超限（"Prompt is too long"），
+            // 和用量无关
+            let context_limit = matches!(
+                v["terminal_reason"].as_str(),
+                Some("blocking_limit" | "prompt_too_long" | "rapid_refill_breaker")
+            );
+            let usage = self.usage_limit_info(status);
+            let mut resets_at_ms = None;
+            let mut limit_scope = None;
             let code = match status {
                 Some(401) | Some(403) => "auth_failed",
+                _ if usage.is_some() => {
+                    if let Some((resets, scope)) = usage {
+                        resets_at_ms = resets.map(|s| s.saturating_mul(1000));
+                        limit_scope = scope;
+                    }
+                    "usage_limit"
+                }
+                _ if context_limit => "context_window_exceeded",
                 Some(429) => "rate_limited",
+                Some(529) => "overloaded",
                 _ if subtype == "error_max_structured_output_retries" => "structured_output_failed",
                 _ => "agent_error",
             };
@@ -1446,7 +1531,16 @@ impl Translator {
                         .filter(|s| !s.is_empty())
                 })
                 .unwrap_or_else(|| format!("Claude Code reported {subtype}"));
-            Self::push(out, Event::Error { code: code.to_string(), message, recoverable: code != "auth_failed" });
+            Self::push(
+                out,
+                Event::Error {
+                    code: code.to_string(),
+                    message,
+                    recoverable: code != "auth_failed",
+                    resets_at_ms,
+                    limit_scope,
+                },
+            );
         }
 
         if !self.busy {
@@ -1529,7 +1623,13 @@ impl Translator {
                     out.push(Out::Reply(permissions::control_response(request_id, json!({ "action": "decline" }))));
                     Self::push(
                         out,
-                        Event::Error { code: "elicitation_rejected".to_string(), message: why, recoverable: true },
+                        Event::Error {
+                            code: "elicitation_rejected".to_string(),
+                            message: why,
+                            recoverable: true,
+                            resets_at_ms: None,
+                            limit_scope: None,
+                        },
                     );
                 }
             },

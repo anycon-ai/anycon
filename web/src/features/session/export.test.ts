@@ -51,6 +51,15 @@ describe('exportMarkdown: notices', () => {
     expect(out).toContain('> **Warning** (deprecation): deprecation\n')
   })
 
+  it('writes the reset time after a limit error, and nothing extra when there is none', () => {
+    const out = md([
+      { type: 'error', code: 'usage_limit', message: 'Usage limit reached (5-hour)', recoverable: true, resets_at_ms: Date.UTC(2026, 9, 26, 12, 0, 0), limit_scope: 'account' },
+      { type: 'error', code: 'rate_limited', message: 'slow down', recoverable: true },
+    ])
+    expect(out).toContain('> **Error** (usage_limit): Usage limit reached (5-hour) (resets 2026-10-26T12:00:00.000Z)\n')
+    expect(out).toContain('> **Error** (rate_limited): slow down\n')
+  })
+
   it('keeps a very long notice to one clipped line', () => {
     const out = md([{ type: 'notice', code: 'agent_notice', level: 'info', message: 'x'.repeat(5000) }])
     const line = out.split('\n').find((l) => l.includes('(agent_notice)'))!

@@ -15,6 +15,7 @@ import type {
   Event,
   FileChangeKind,
   GitAction,
+  LimitScope,
   NoticeLevel,
   PermissionDetail,
   PermissionKind,
@@ -154,6 +155,10 @@ export interface ErrorBlock extends BlockBase {
   code: string
   message: string
   recoverable: boolean
+  /** 限额类错误：恢复时间（Unix 毫秒）。上游没给就没有。 */
+  resetsAtMs?: number
+  /** `usage_limit`：账号级窗口还是某个模型的窗口；没有 = 不知道。 */
+  limitScope?: LimitScope
 }
 export type SettingField = 'model' | 'thinking' | 'mode' | 'option'
 export interface SettingChange {
@@ -625,7 +630,7 @@ function applyOne(w: Work, se: SessionEvent): void {
     case 'error': {
       w.closeOpen()
       w.activity = null
-      w.push({ ...base, key: `err-${se.seq}`, type: 'error', code: ev.code, message: ev.message, recoverable: ev.recoverable })
+      w.push({ ...base, key: `err-${se.seq}`, type: 'error', code: ev.code, message: ev.message, recoverable: ev.recoverable, resetsAtMs: ev.resets_at_ms ?? undefined, limitScope: ev.limit_scope ?? undefined })
       return
     }
     case 'task': {

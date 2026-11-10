@@ -22,6 +22,11 @@ fn fixture(name: &str) -> Vec<String> {
         .collect()
 }
 
+/// 回放用的“现在”：2026-10-01（Unix 毫秒）。
+fn fixed_now_ms() -> u64 {
+    1_790_800_000_000
+}
+
 #[derive(Default)]
 struct Replay {
     outs: Vec<Out>,
@@ -30,7 +35,7 @@ struct Replay {
 impl Replay {
     /// 回放全文。第一行之前、以及每个 `result` 之后的下一行之前开一个新 turn。
     fn run(name: &str) -> Self {
-        let mut t = Translator::new(CWD, json!({"model": "m"}), None);
+        let mut t = Translator::new(CWD, json!({"model": "m"}), None).with_clock(fixed_now_ms);
         Self::run_with(&mut t, name, true)
     }
 
@@ -106,7 +111,7 @@ impl Replay {
         self.events()
             .into_iter()
             .filter_map(|e| {
-                if let Event::Error { code, message, recoverable } = e {
+                if let Event::Error { code, message, recoverable, .. } = e {
                     Some((code.clone(), message.clone(), *recoverable))
                 } else {
                     None
@@ -443,8 +448,11 @@ fn result_subtypes_map_to_reasons() {
     assert_eq!(r.errors(), vec![("auth_failed".to_string(), "Invalid API key · Please run /login".to_string(), false)]);
     assert_eq!(r.turn_dones()[0].1, TurnDoneReason::Error);
 
+    // 429 且之前没有 rejected 的限额事件：短时限流
     let r = Replay::run("result_rate_limited.jsonl");
     assert_eq!(r.errors()[0].0, "rate_limited");
+    assert_eq!(events_of_type(&r, "error")[0]["recoverable"], true);
+    assert!(events_of_type(&r, "error")[0].get("resets_at_ms").is_none());
 }
 
 #[test]
@@ -2232,6 +2240,111 @@ fn rate_limit_stream_warns_once_per_state_and_the_turn_ends_with_the_429() {
         ]
     );
     assert!(ns.iter().all(|n| n["resets_at_ms"] == 1_791_721_200_000u64));
-    assert_eq!(r.errors()[0].0, "rate_limited");
+    // 见过 rejected：turn 的错误是用量耗尽，带上同一个恢复时间；5 小时窗口是账号级的
+    let errs = events_of_type(&r, "error");
+    assert_eq!(errs.len(), 1);
+    assert_eq!(errs[0]["code"], "usage_limit");
+    assert_eq!(errs[0]["recoverable"], true);
+    assert_eq!(errs[0]["resets_at_ms"], 1_791_721_200_000u64);
+    assert_eq!(errs[0]["limit_scope"], "account");
     assert_eq!(r.turn_dones()[0].1, TurnDoneReason::Error);
+}
+
+// 限额类错误的 fixture 全是手写的（没有真实录制）：事件形状来自 2.1.311 二进制里的 SDK schema；
+// `rate_limit_event` 的类型 / 状态、`result` 的 `terminal_reason` / `api_error_status` 按各个用例改。
+// 回放用的时钟固定在 2026-10-01，fixture 里的恢复时间（1791721200 起）都在它之后。
+
+/// `error` 事件的 `(code, resets_at_ms, limit_scope)`。
+fn limit_errors(r: &Replay) -> Vec<(String, Option<u64>, Option<String>)> {
+    events_of_type(r, "error")
+        .iter()
+        .map(|e| {
+            (
+                e["code"].as_str().unwrap().to_string(),
+                e["resets_at_ms"].as_u64(),
+                e["limit_scope"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn an_api_error_marked_usage_limit_reached_is_the_preferred_usage_limit_signal() {
+    // assistant 消息带 `api_error: usage_limit_reached` 和 `rate_limit_info`，没有 `rate_limit_event`：
+    // 码、恢复时间、范围都从它取
+    let r = Replay::run("usage_limit_api_error.jsonl");
+    assert_eq!(limit_errors(&r), [("usage_limit".to_string(), Some(1_792_076_400_000), Some("model".to_string()))]);
+    assert_eq!(events_of_type(&r, "error")[0]["recoverable"], true);
+}
+
+#[test]
+fn a_429_api_error_without_usage_limit_reached_stays_rate_limited() {
+    // 同样的 API 错误消息，但没有 `api_error`（临时节流、API key 的 429 …）：不是用量耗尽
+    let r = Replay::run("rate_limit_api_error_without_usage_limit.jsonl");
+    assert_eq!(limit_errors(&r), [("rate_limited".to_string(), None, None)]);
+}
+
+#[test]
+fn a_429_after_a_rejected_rate_limit_event_is_the_usage_limit_fallback() {
+    let r = Replay::run("rate_limit_rejected_model.jsonl");
+    assert_eq!(limit_errors(&r), [("usage_limit".to_string(), Some(1_792_076_400_000), Some("model".to_string()))]);
+}
+
+#[test]
+fn only_the_last_rate_limit_status_counts() {
+    // 上游同一时刻只有一个起限制作用的窗口：five_hour 之后的 seven_day_opus 取代它，不是几个窗口的并集
+    let r = Replay::run("rate_limit_rejected_multi.jsonl");
+    assert_eq!(limit_errors(&r), [("usage_limit".to_string(), Some(1_793_000_000_000), Some("model".to_string()))]);
+}
+
+#[test]
+fn a_later_allowed_or_allowed_warning_clears_the_rejection_whatever_its_type() {
+    // 真实录制里 `allowed` 的类型一律是 five_hour：不能指望它清掉同类型的槽位
+    let r = Replay::run("rate_limit_cleared_by_later_status.jsonl");
+    assert_eq!(
+        limit_errors(&r),
+        [
+            ("usage_limit".to_string(), Some(1_792_076_400_000), Some("model".to_string())),
+            ("rate_limited".to_string(), None, None),
+            ("usage_limit".to_string(), Some(1_792_076_400_000), Some("account".to_string())),
+            ("rate_limited".to_string(), None, None),
+        ]
+    );
+}
+
+#[test]
+fn a_rejection_whose_reset_time_has_passed_is_not_a_usage_limit_any_more() {
+    let r = Replay::run("rate_limit_rejected_expired.jsonl");
+    assert_eq!(limit_errors(&r), [("rate_limited".to_string(), None, None)]);
+}
+
+#[test]
+fn blocking_limit_prompt_too_long_and_rapid_refill_breaker_are_context_limits() {
+    // 二进制里这三个是同一个 case（"Prompt is too long"），和用量无关
+    for reason in ["blocking_limit", "prompt_too_long", "rapid_refill_breaker"] {
+        let mut t = Translator::new(CWD, json!({"model": "m"}), None).with_clock(fixed_now_ms);
+        t.begin_turn();
+        let mut outs = Vec::new();
+        for line in fixture("result_context_limit.jsonl") {
+            outs.extend(t.feed_line(&line.replace("blocking_limit", reason)));
+        }
+        let r = Replay { outs };
+        assert_eq!(limit_errors(&r), [("context_window_exceeded".to_string(), None, None)], "{reason}");
+        assert_eq!(events_of_type(&r, "error")[0]["recoverable"], true);
+    }
+}
+
+#[test]
+fn a_usage_limit_message_earlier_in_the_turn_does_not_turn_a_later_529_into_a_usage_limit() {
+    // CLI 等限额恢复后继续，随后又以 529 收尾：最终的 `result` 状态说了算
+    let r = Replay::run("usage_limit_api_error_then_529.jsonl");
+    assert_eq!(limit_errors(&r), [("overloaded".to_string(), None, None)]);
+}
+
+#[test]
+fn a_529_result_is_overloaded() {
+    let r = Replay::run("result_overloaded.jsonl");
+    let errs = events_of_type(&r, "error");
+    assert_eq!((errs[0]["code"].as_str(), errs[0]["recoverable"].as_bool()), (Some("overloaded"), Some(true)));
+    assert!(errs[0].get("resets_at_ms").is_none());
 }

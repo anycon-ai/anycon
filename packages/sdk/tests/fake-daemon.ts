@@ -280,6 +280,15 @@ export class FakeDaemon {
   scriptDelayMs = 0
   /** 让 `session.history` 的答复晚一点（毫秒）：制造「watch 之后、补历史之前又来了实时事件」的竞争。 */
   historyDelayMs = 0
+  /**
+   * `session.history` 的答复在取好快照**之后**再晚多久发出（毫秒）：快照之后才发生的事件不在这一页里，
+   * 但会作为实时事件先到客户端（和真 daemon 读库、再经网络回复一样）。
+   */
+  historyLateMs = 0
+  /** 大于 0 时 `session.history` 一页最多这么多条（`has_more` 照常），用来测分页。 */
+  historyPageCap = 0
+  /** 为 true 时 `session.history` 在 `historyLateMs` 之后答 `internal`。 */
+  historyFail = false
   /** anycon 建的 worktree（`workspace.worktrees` 的数据源），测试里可以直接改（比如把 `uncommitted` 设成非 0）。 */
   readonly worktrees = new Map<string, WorktreeInfo>()
   /** 预置 `session.sync_base` 的答复（先进先出）：结果对象 = 成功，`AnyconRpcError` = 抛出；队列空 = `up_to_date`。 */
@@ -394,6 +403,13 @@ export class FakeDaemon {
     const { background_tasks: _previous, ...rest } = rec.summary
     rec.summary = count === undefined ? rest : { ...rest, background_tasks: count }
     this.#notifyChanged(rec)
+  }
+
+  /** 测试用：在会话里发生一个事件（记进历史，并通知 watcher），返回它的 seq。 */
+  emitEvent(sessionId: string, event: Event): number {
+    const rec = this.#session(sessionId)
+    this.#emit(rec, event)
+    return rec.events.length
   }
 
   /** 非正常断线（模拟 daemon 崩溃 / 网络断）。 */
@@ -1439,8 +1455,10 @@ export class FakeDaemon {
         const rec = this.#session(p.session_id)
         if (this.historyDelayMs > 0) await wait(this.historyDelayMs)
         const after = p.after_seq ?? 0
-        const limit = p.limit ?? 200
+        const limit = this.historyPageCap > 0 ? this.historyPageCap : (p.limit ?? 200)
         const events = rec.events.filter((e) => e.seq > after)
+        if (this.historyLateMs > 0) await wait(this.historyLateMs)
+        if (this.historyFail) throw AnyconRpcError.of('internal', 'history is unavailable')
         return { events: events.slice(0, limit), has_more: events.length > limit }
       },
     )

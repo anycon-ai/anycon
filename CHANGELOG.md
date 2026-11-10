@@ -96,6 +96,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Hub: keep peer offline and online notifications in order when a device disconnects and immediately reconnects, preventing clients from discarding the new session.
 - Daemon: changing enrollment settings through RPC no longer produces duplicate audit entries and security events when configuration monitoring runs at the same time.
+- `@anycon/sdk`: after a reconnect, a session's `send()` / `events()` stream could miss events. When the SDK reconnected (a hub connection drop, the node going offline and back), it re-watched each session and fetched the history after the last seq it had seen. If a live event of that session arrived while the history request was still in flight, the SDK counted it as seen and then discarded the older history events as duplicates, so those seqs were never delivered; this happened when the session was producing events during the reconnect. Live events are now held until the history has been delivered and then follow it in seq order, so every seq arrives once and in order. If the history request itself fails, the held live events are still delivered in order; the events that could not be fetched leave a gap that `session.history({ afterSeq })` fills.
 
 ## [0.3.1] - 2026-11-14
 

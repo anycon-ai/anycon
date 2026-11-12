@@ -26,30 +26,46 @@ impl ReceivedMail {
 
     /// 取一个头的值（不区分大小写，不处理折行）。
     pub fn header(&self, name: &str) -> Option<String> {
-        let prefix = format!("{}:", name.to_ascii_lowercase());
-        self.headers()
-            .split("\r\n")
-            .find(|l| l.to_ascii_lowercase().starts_with(&prefix))
-            .map(|l| l[prefix.len()..].trim().to_string())
+        header_in(self.headers(), name)
     }
 
-    /// 解开传输编码之后的正文文本。
-    pub fn text(&self) -> String {
-        let body = self.data.split_once("\r\n\r\n").map_or("", |(_, b)| b);
-        match self.header("content-transfer-encoding").unwrap_or_default().to_ascii_lowercase().as_str() {
-            "base64" => {
-                let joined: String = body.split("\r\n").collect();
-                String::from_utf8_lossy(
-                    &base64::engine::general_purpose::STANDARD.decode(joined.trim()).unwrap_or_default(),
-                )
-                .into_owned()
-            }
-            "quoted-printable" => decode_qp(body),
-            _ => body.to_string(),
+    /// 信里的 MIME 部分（头，还没解码的正文）。不是 multipart 的信整封算一个部分。
+    fn parts(&self) -> Vec<(&str, &str)> {
+        let (headers, body) = self.data.split_once("\r\n\r\n").unwrap_or((self.data.as_str(), ""));
+        if !content_type_in(headers).starts_with("multipart/") {
+            return vec![(headers, body)];
         }
+        // lettre 不写前言，正文的第一行就是 `--<boundary>`：直接拿它当分隔，不去解析（会折行的）Content-Type 头。
+        let delimiter = body.split("\r\n").next().unwrap_or("");
+        body[delimiter.len()..]
+            .split(&format!("\r\n{delimiter}"))
+            // 结尾的 `--<boundary>--` 切出来是 `--\r\n`，不是一个部分
+            .filter_map(|piece| piece.strip_prefix("\r\n"))
+            .map(|part| part.split_once("\r\n\r\n").unwrap_or((part, "")))
+            .collect()
     }
 
-    /// 正文里的 6 位验证码（`123 456`）。
+    /// 类型是 `mime`（如 `text/html`）的那个部分。
+    fn part(&self, mime: &str) -> Option<(&str, &str)> {
+        self.parts().into_iter().find(|(headers, _)| content_type_in(headers).starts_with(mime))
+    }
+
+    /// `mime` 那个部分自己的头（`multipart/alternative` 里传输编码、字符集写在每个部分上）。
+    pub fn part_header(&self, mime: &str, name: &str) -> Option<String> {
+        self.part(mime).and_then(|(headers, _)| header_in(headers, name))
+    }
+
+    /// 解开传输编码之后的纯文本正文（`multipart/alternative` 里的 `text/plain` 那份）。
+    pub fn text(&self) -> String {
+        self.part("text/plain").map(|(headers, body)| decode_body(headers, body)).unwrap_or_default()
+    }
+
+    /// 解开传输编码之后的 HTML 正文；没有 HTML 那份返回 `None`。
+    pub fn html(&self) -> Option<String> {
+        self.part("text/html").map(|(headers, body)| decode_body(headers, body))
+    }
+
+    /// 纯文本正文里的 6 位验证码（`123 456`）。
     pub fn code(&self) -> String {
         let text = self.text();
         let b = text.as_bytes();
@@ -60,6 +76,35 @@ impl ReceivedMail {
             }
         }
         panic!("no code in {text:?}");
+    }
+}
+
+/// 一段头里某个头的值（不区分大小写，不处理折行）。
+fn header_in(headers: &str, name: &str) -> Option<String> {
+    let prefix = format!("{}:", name.to_ascii_lowercase());
+    headers
+        .split("\r\n")
+        .find(|l| l.to_ascii_lowercase().starts_with(&prefix))
+        .map(|l| l[prefix.len()..].trim().to_string())
+}
+
+/// 小写的 `Content-Type` 值；没写就是 `text/plain`（RFC 2045 的默认值）。
+fn content_type_in(headers: &str) -> String {
+    header_in(headers, "content-type").map_or_else(|| "text/plain".into(), |v| v.to_ascii_lowercase())
+}
+
+/// 按这一部分的 `Content-Transfer-Encoding` 解出正文。
+fn decode_body(headers: &str, body: &str) -> String {
+    match header_in(headers, "content-transfer-encoding").unwrap_or_default().to_ascii_lowercase().as_str() {
+        "base64" => {
+            let joined: String = body.split("\r\n").collect();
+            String::from_utf8_lossy(
+                &base64::engine::general_purpose::STANDARD.decode(joined.trim()).unwrap_or_default(),
+            )
+            .into_owned()
+        }
+        "quoted-printable" => decode_qp(body),
+        _ => body.to_string(),
     }
 }
 

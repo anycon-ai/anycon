@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Hub: the sign-in and email-confirmation code emails are easier to read. They are now sent as HTML with a plain-text alternative: larger text, and the code on a line of its own in large type. Both versions end with a footer that links to [anycon.ai](https://anycon.ai) (the Chinese email links to the Chinese site); mail sent by a self-hosted hub has it too. The HTML loads nothing remote (no images, fonts or tracking pixels) and the footer link carries no parameters. Notification emails are unchanged.
 - Web UI: the Session card in the info panel shows each item (project, working directory, branch, created) as a label line and a value line. Long paths and branch names wrap instead of being cut off behind a hover tooltip, the text can be selected, and the working directory and branch each have a copy button. The working directory is opened in the file browser with the button next to its label instead of by clicking the path.
 
 ## [0.3.0] - 2026-11-11

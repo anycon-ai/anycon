@@ -224,7 +224,7 @@ async fn mail_account(
     let link = link_for(&state.config.public_url_str(), category, node, session);
     let Some((subject, body)) = notification_mail(category, node_name, &link) else { return };
     let tag = email_tag(&email);
-    match mailer.send(OutgoingMail { to: email.clone(), subject, body }).await {
+    match mailer.send(OutgoingMail { to: email.clone(), subject, body, html: None }).await {
         Ok(()) => tracing::info!(to = %tag, category = category_to_str(category), "notification email sent"),
         Err(e) => tracing::warn!(
             to = %tag,

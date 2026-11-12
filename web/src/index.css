@@ -372,14 +372,16 @@ html[data-font='lg'] {
   border-radius: var(--radius-md);
   animation: anycon-search-flash 2s ease-out both;
 }
-/* 信息面板的「Agent」卡片：token 数变动时背景从左到右扫过一道光。每次由组件重新挂载这个元素来重放，
-   时长和 InfoPanel 里的 PULSE_GAP_MS 对应；播完停在卡片右边界外面 */
+/* 信息面板的「Agent」卡片：token 数变动时一道光从左到右照过卡片背景里的蜂巢格。格子是固定不动的蒙版，
+   动的只是光（背景渐变的位置），所以看起来是光照过去，而不是纹理在滑。::before 是柔和的底光，
+   ::after 是被照亮的格线。每次由组件重新挂载这个元素来重放，时长和 InfoPanel 里的 PULSE_GAP_MS 对应；
+   渐变宽 300%，光带从卡片左边界外走到右边界外，播完不留痕 */
 @keyframes anycon-token-sweep {
   from {
-    transform: translateX(-100%);
+    background-position: 100% 0;
   }
   to {
-    transform: translateX(100%);
+    background-position: 0% 0;
   }
 }
 .token-sweep {
@@ -387,8 +389,26 @@ html[data-font='lg'] {
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  background: linear-gradient(100deg, transparent 15%, color-mix(in srgb, var(--accent) 16%, transparent) 50%, transparent 85%);
+}
+.token-sweep::before,
+.token-sweep::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
   animation: anycon-token-sweep 1.2s ease-in-out both;
+}
+.token-sweep::before {
+  background-image: linear-gradient(100deg, transparent 38%, color-mix(in srgb, var(--accent) 8%, transparent) 50%, transparent 62%);
+}
+.token-sweep::after {
+  background-image: linear-gradient(100deg, transparent 41%, color-mix(in srgb, var(--accent-text) 55%, transparent) 50%, transparent 59%);
+  /* 尖顶六边形的一个重复单元（外接圆半径 10）：中间一整格，加上下两段连到相邻行的竖边 */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17.32' height='30' viewBox='0 0 17.32 30'%3E%3Cpath d='M0 10L8.66 5L17.32 10V20L8.66 25L0 20ZM8.66 0V5M8.66 25V30' fill='none' stroke='black' stroke-width='1'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17.32' height='30' viewBox='0 0 17.32 30'%3E%3Cpath d='M0 10L8.66 5L17.32 10V20L8.66 25L0 20ZM8.66 0V5M8.66 25V30' fill='none' stroke='black' stroke-width='1'/%3E%3C/svg%3E");
+  -webkit-mask-size: 17.32px 30px;
+  mask-size: 17.32px 30px;
 }
 @media (prefers-reduced-motion: reduce) {
   .animate-pulse-soft,

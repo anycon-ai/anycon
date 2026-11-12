@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Archive, ArchiveRestore, Bot, Download, FolderOpen, Pencil, RotateCw, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
+import { Archive, ArchiveRestore, Bot, ChevronDown, Download, FolderOpen, Pencil, RotateCw, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { Collapsible } from 'radix-ui'
 import type { TFunction } from 'i18next'
 import type { SessionGitStatus, SessionStatus, SessionWorktree, UsageWindow, WorktreeDisposal } from '@/protocol'
 import { SessionStatusChip } from '@/components/SessionListItem'
 import { ArchiveWorktreeDialog, effectiveChoice, WorktreeDisposePicker, type DisposeChoice, type DisposeInfo } from '@/features/worktree/DisposeDialog'
 import { compactNumber, formatCost, formatDateTime } from '@/lib/format'
+import { usePrefs } from '@/stores/prefs'
 import type { PendingPermission } from '@/stores/sessions'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Overlay'
@@ -132,7 +134,7 @@ export function InfoPanel(p: InfoPanelProps) {
 
   const overview = (
     <div className="flex flex-col gap-3" data-testid="info-overview">
-      <Card title={t('info.session')}>
+      <Card title={t('info.session')} collapseKey="session" testId="info-session">
         {p.project ? (
           <Field label={t('info.project')} actions={p.workDir ? null : openWorkDir} testId="info-project">
             {p.project}
@@ -165,7 +167,7 @@ export function InfoPanel(p: InfoPanelProps) {
         <Field label={t('info.created')}>{formatDateTime(p.createdAt, i18n.language)}</Field>
       </Card>
 
-      <Card title={t('info.agents')} titleAside={working > 0 ? t('info.working', { count: working }) : undefined} testId="info-agents" pulse={pulse}>
+      <Card title={t('info.agents')} titleAside={working > 0 ? t('info.working', { count: working }) : undefined} testId="info-agents" pulse={pulse} collapseKey="agents">
         <AgentRow
           icon={Bot}
           label={p.agentLabel}
@@ -219,7 +221,7 @@ export function InfoPanel(p: InfoPanelProps) {
       </Card>
 
       {limits.length > 0 ? (
-        <Card title={t('info.limits')} titleAside={p.agentLabel} testId="info-limits">
+        <Card title={t('info.limits')} titleAside={p.agentLabel} testId="info-limits" collapseKey="limits">
           {limits.map((w) => (
             <LimitRow key={`${w.model ?? ''}:${w.window_minutes ?? ''}`} limit={w} now={now} />
           ))}
@@ -352,15 +354,55 @@ function usePulse(signal: string, gapMs: number): number {
 /**
  * 一张圆角卡片（信息面板的分组）：可选标题行，标题右侧可放计数之类的弱化文字。
  * `pulse` 每换一个非零的值，卡片背景扫过一道光（`.token-sweep`，换 key 重新挂载来重放）。
+ * 有 `collapseKey` 的带标题卡片可以收起：整个标题行是开关，收起后只剩标题行（右侧文字照常显示），
+ * 开合记在偏好里，所有会话共用。
  */
-function Card({ title, titleAside, testId, tone, pulse, children }: { title?: string; titleAside?: string; testId?: string; tone?: 'warning'; pulse?: number; children: ReactNode }) {
+function Card({
+  title,
+  titleAside,
+  testId,
+  tone,
+  pulse,
+  collapseKey,
+  children,
+}: {
+  title?: string
+  titleAside?: string
+  testId?: string
+  tone?: 'warning'
+  pulse?: number
+  collapseKey?: string
+  children: ReactNode
+}) {
+  const collapsed = usePrefs((s) => (collapseKey ? s.infoCollapsed.includes(collapseKey) : false))
+  const setCollapsed = usePrefs((s) => s.setInfoCollapsed)
+  const className = cn('rounded-xl border px-4 py-3', tone === 'warning' ? 'border-warning/40' : 'border-border', pulse !== undefined && 'relative isolate overflow-hidden')
+  const sweep = pulse ? <span key={pulse} className="token-sweep" aria-hidden /> : null
+  const aside = titleAside ? <span className="shrink-0 text-sm font-normal text-fg-subtle">{titleAside}</span> : null
+  if (title && collapseKey) {
+    return (
+      <Collapsible.Root asChild open={!collapsed} onOpenChange={(open) => setCollapsed(collapseKey, !open)}>
+        <section className={className} data-testid={testId} data-pulse={pulse} data-collapsed={collapsed || undefined}>
+          {sweep}
+          <h3 className={cn('text-[0.9375rem] font-medium', !collapsed && 'pb-1.5')}>
+            <Collapsible.Trigger className="group -mx-1 flex w-[calc(100%+0.5rem)] items-center gap-2 rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/40" data-testid={testId ? `${testId}-toggle` : undefined}>
+              <span className="min-w-0 flex-1 truncate">{title}</span>
+              {aside}
+              <ChevronDown className="size-4 shrink-0 text-fg-subtle transition-transform group-hover:text-fg-muted group-data-[state=closed]:-rotate-90" aria-hidden />
+            </Collapsible.Trigger>
+          </h3>
+          <Collapsible.Content>{children}</Collapsible.Content>
+        </section>
+      </Collapsible.Root>
+    )
+  }
   return (
-    <section className={cn('rounded-xl border px-4 py-3', tone === 'warning' ? 'border-warning/40' : 'border-border', pulse !== undefined && 'relative isolate overflow-hidden')} data-testid={testId} data-pulse={pulse}>
-      {pulse ? <span key={pulse} className="token-sweep" aria-hidden /> : null}
+    <section className={className} data-testid={testId} data-pulse={pulse}>
+      {sweep}
       {title ? (
         <h3 className="flex items-center justify-between gap-2 pb-1.5 text-[0.9375rem] font-medium">
           <span className="truncate">{title}</span>
-          {titleAside ? <span className="shrink-0 text-sm font-normal text-fg-subtle">{titleAside}</span> : null}
+          {aside}
         </h3>
       ) : null}
       {children}

@@ -36,6 +36,8 @@ export interface PrefsState {
   /** 文件浏览（`/n/:node/files`）是否显示以 `.` 开头的文件和目录。 */
   filesShowHidden: boolean
   infoPanelOpen: boolean
+  /** 信息面板里收起的卡片（卡片的 key，如 `session`、`agents`），所有会话共用。 */
+  infoCollapsed: string[]
   /** 宽屏左栏是否展开（手机上左栏是抽屉，不受影响）。 */
   sidebarOpen: boolean
   /** 宽屏左栏宽度（px），拖动左栏右缘调整。 */
@@ -51,10 +53,11 @@ export interface PrefsState {
   /** key = `${nodeId}:${project}`：这个浏览器在这个项目上次选的工作位置（ADR-34）。 */
   lastWorkspace: Record<string, SessionWorkspaceMode>
   customModels: Record<string, string[]>
-  set: (patch: Partial<Omit<PrefsState, 'set' | 'setLastUsed' | 'setLastWorkspace' | 'addCustomModel'>>) => void
+  set: (patch: Partial<Omit<PrefsState, 'set' | 'setLastUsed' | 'setLastWorkspace' | 'addCustomModel' | 'setInfoCollapsed'>>) => void
   setLastUsed: (key: string, value: Candidate) => void
   setLastWorkspace: (key: string, mode: SessionWorkspaceMode) => void
   addCustomModel: (key: string, model: string) => void
+  setInfoCollapsed: (key: string, collapsed: boolean) => void
 }
 
 function safeStorage(): Storage {
@@ -93,6 +96,7 @@ export const usePrefs = create<PrefsState>()(
       projectView: 'cards',
       filesShowHidden: false,
       infoPanelOpen: true,
+      infoCollapsed: [],
       sidebarOpen: true,
       sidebarWidth: SIDEBAR_DEFAULT,
       sidebarNodes: null,
@@ -111,6 +115,11 @@ export const usePrefs = create<PrefsState>()(
           if (cur.includes(model)) return s
           return { customModels: { ...s.customModels, [key]: [model, ...cur].slice(0, 8) } }
         }),
+      setInfoCollapsed: (key, collapsed) =>
+        set((s) => {
+          if (s.infoCollapsed.includes(key) === collapsed) return s
+          return { infoCollapsed: collapsed ? [...s.infoCollapsed, key] : s.infoCollapsed.filter((k) => k !== key) }
+        }),
     }),
     {
       name: 'anycon.prefs',
@@ -127,6 +136,7 @@ export const usePrefs = create<PrefsState>()(
         projectView: s.projectView,
         filesShowHidden: s.filesShowHidden,
         infoPanelOpen: s.infoPanelOpen,
+        infoCollapsed: s.infoCollapsed,
         sidebarOpen: s.sidebarOpen,
         sidebarWidth: s.sidebarWidth,
         sidebarNodes: s.sidebarNodes,

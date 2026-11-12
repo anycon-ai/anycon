@@ -14,6 +14,7 @@
 //!   这样 `input + cache_read` 不会重复计数），没有费用。`context_window` 取 `modelContextWindow`；`context_tokens` 取
 //!   **最近一次** `last` 的 `inputTokens`（已含缓存命中，所以不再加 `cachedInputTokens`）；压缩上下文后那条更新的 `inputTokens`
 //!   是 0、只有 `totalTokens` 带着压缩后的估计，此时取 `totalTokens`
+//! - `account/rateLimits/updated`（账号用量窗口）不发事件：记下来给 `usage_limit` 错误补恢复时间，turn 结束时填进 `Usage.limits`
 //! - **线程路由**：app-server 把子 agent（`subAgentActivity` / `collabAgentToolCall` 启动的 thread）的通知发在**同一条连接**上，
 //!   带各自的 `threadId`。主 thread 之外的通知**绝不**碰主 turn 的状态（子 agent 的 `turn/completed` 不会结束主 turn、
 //!   用量不进主 turn、`error` 不算主 turn 的错、`plan` 不覆盖主计划），它们的文本 / 思考不进主流（和 Claude Code 一致），
@@ -33,7 +34,7 @@ use std::time::Instant;
 use anycon_agent_api::{AgentEvent, PendingPermission, PermissionDecision};
 use anycon_protocol::{
     ActivityState, Event, FileChangeKind, NoticeLevel, PlanEntry, PlanStatus, TaskKind, TaskStatus, TaskUsage,
-    ToolCategory, ToolResultDetail, TurnDoneReason, Usage,
+    ToolCategory, ToolResultDetail, TurnDoneReason, Usage, UsageWindow,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -155,7 +156,8 @@ pub struct Translator {
     model: Option<String>,
     usage: UsageAcc,
     error_emitted: bool,
-    /// `account/rateLimits/updated` 报过的用量窗口，按计量桶（`limitId`）记最新的；只用来在 `usage_limit` 错误里补恢复时间。
+    /// `account/rateLimits/updated` 报过的用量窗口，按计量桶（`limitId`）记最新的：给 `usage_limit` 错误补恢复时间，
+    /// 给 `turn_done.usage.limits` 填占用。
     rate_limits: HashMap<String, RateLimitSnapshot>,
     /// 现在的 Unix 毫秒；测试里换成固定时间。
     now_ms: fn() -> u64,
@@ -774,6 +776,7 @@ impl Translator {
             model: self.model.clone(),
             context_window: self.context_window,
             context_tokens: self.context_tokens,
+            limits: self.usage_limits(),
         };
         self.busy = false;
         self.cancel_requested = false;
@@ -881,6 +884,39 @@ impl Translator {
         if n.secondary.is_some() {
             slot.secondary = n.secondary.take();
         }
+    }
+
+    /// `turn_done.usage.limits`：账号级计量桶（不带 `normalModelSlug`）的窗口，后面是当前会话模型自己的桶的窗口
+    /// （带上模型名）。账号级的桶不止一个时分不清哪个算数，不报它们；别的模型的桶和这个会话无关。每个桶里
+    /// `primary` 在前、`secondary` 在后；恢复时间已经过了的是上一个窗口的数，不报。
+    fn usage_limits(&self) -> Vec<UsageWindow> {
+        let now = (self.now_ms)();
+        let mut account = self.rate_limits.values().filter(|s| s.normal_model_slug.is_none());
+        let account = match (account.next(), account.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        };
+        let mine = self.model.as_deref().and_then(|m| {
+            self.rate_limits
+                .values()
+                .find(|s| s.normal_model_slug.as_deref().is_some_and(|slug| slug.eq_ignore_ascii_case(m)))
+        });
+        let mut limits = Vec::new();
+        for bucket in [account, mine].into_iter().flatten() {
+            for w in [bucket.primary.as_ref(), bucket.secondary.as_ref()].into_iter().flatten() {
+                let resets_at_ms = w.resets_at.filter(|t| *t > 0).map(|t| (t as u64).saturating_mul(1000));
+                if resets_at_ms.is_some_and(|t| t <= now) {
+                    continue;
+                }
+                limits.push(UsageWindow {
+                    window_minutes: w.window_duration_mins.filter(|m| *m > 0).map(|m| m as u64),
+                    used_percent: w.used_percent.clamp(0, i64::from(u32::MAX)) as u32,
+                    resets_at_ms,
+                    model: bucket.normal_model_slug.clone(),
+                });
+            }
+        }
+        limits
     }
 
     /// `usage_limit` 错误的恢复时间，毫秒。
@@ -2373,6 +2409,61 @@ mod tests {
         bucket(&mut t, "codex", None, full(later), ok.clone());
         bucket(&mut t, "codex_spark", Some("gpt-5.5-spark"), full(soon), ok);
         assert_eq!(failed_turn_resets(&mut t, "usageLimitExceeded"), None);
+    }
+
+    /// 一个正常结束的 turn 的 `turn_done.usage.limits`。
+    fn turn_limits(t: &mut Translator, tid: &str) -> Vec<UsageWindow> {
+        turn_started(t, tid);
+        match events(&completed(t, tid, "completed", json!({}))).last() {
+            Some(Event::TurnDone { usage: Some(u), .. }) => u.limits.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_done_reports_the_usage_windows_of_the_account_and_of_the_session_model() {
+        let (soon, later) = (1_791_721_200u64, 1_792_076_400u64);
+        let window = |used: u64, mins: Value, reset: u64| json!({"usedPercent": used, "windowDurationMins": mins, "resetsAt": reset});
+        let limit = |minutes: Option<u64>, used: u32, reset: u64, model: Option<&str>| UsageWindow {
+            window_minutes: minutes,
+            used_percent: used,
+            resets_at_ms: Some(reset * 1000),
+            model: model.map(str::to_string),
+        };
+
+        // 没有用量通知，或者窗口都是 null（API key 登录）：不报
+        let mut t = translator(None);
+        assert!(turn_limits(&mut t, "t0").is_empty());
+        bucket(&mut t, "codex", None, Value::Null, Value::Null);
+        assert!(turn_limits(&mut t, "t1").is_empty());
+
+        // 账号级的桶：primary 在前、secondary 在后；窗口长度上游没说就缺省
+        bucket(&mut t, "codex", None, window(42, json!(300), soon), window(7, Value::Null, later));
+        assert_eq!(turn_limits(&mut t, "t2"), [limit(Some(300), 42, soon, None), limit(None, 7, later, None)]);
+        // 稀疏更新：缺的窗口沿用之前的
+        bucket(&mut t, "codex", None, window(55, json!(300), soon), Value::Null);
+        assert_eq!(turn_limits(&mut t, "t3"), [limit(Some(300), 55, soon, None), limit(None, 7, later, None)]);
+
+        // 恢复时间已经过了的窗口是上一个窗口的数，不报
+        let mut t = translator(None);
+        bucket(&mut t, "codex", None, window(90, json!(300), 1_700_000_000), window(7, json!(10_080), later));
+        assert_eq!(turn_limits(&mut t, "t1"), [limit(Some(10_080), 7, later, None)]);
+
+        // 当前模型自己的桶跟在账号级的后面，带模型名；别的模型的桶不报
+        let mut t = translator(Some("gpt-5.5-spark"));
+        bucket(&mut t, "codex", None, window(10, json!(300), soon), Value::Null);
+        bucket(&mut t, "codex_spark", Some("gpt-5.5-spark"), window(80, json!(300), soon), Value::Null);
+        bucket(&mut t, "codex_other", Some("gpt-other"), window(99, json!(300), soon), Value::Null);
+        assert_eq!(
+            turn_limits(&mut t, "t1"),
+            [limit(Some(300), 10, soon, None), limit(Some(300), 80, soon, Some("gpt-5.5-spark"))]
+        );
+
+        // 账号级的桶不止一个：分不清哪个算数，不报它们
+        let mut t = translator(None);
+        bucket(&mut t, "codex", None, window(10, json!(300), soon), Value::Null);
+        bucket(&mut t, "codex_b", None, window(20, json!(300), soon), Value::Null);
+        assert!(turn_limits(&mut t, "t1").is_empty());
     }
 
     #[test]

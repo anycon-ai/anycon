@@ -7020,6 +7020,13 @@
             "null"
           ]
         },
+        "limits": {
+          "description": "turn 结束时 agent 报过的账号用量窗口（套餐的 5 小时窗口、周窗口…），先账号级后按模型的、短窗口在前。\n这是账号的状态，不是这个会话的：同一个账号的其它会话也在消耗它。agent 不报就为空。",
+          "items": {
+            "$ref": "#/definitions/UsageWindow"
+          },
+          "type": "array"
+        },
         "model": {
           "type": [
             "string",
@@ -7081,6 +7088,46 @@
         "cache_read_tokens",
         "cache_write_tokens",
         "turns"
+      ],
+      "type": "object"
+    },
+    "UsageWindow": {
+      "description": "`Usage.limits` 的一项：agent 报的一个用量窗口的占用。数字都来自上游，adapter 不估算。",
+      "properties": {
+        "model": {
+          "description": "只对某个模型（或模型系列）计的窗口：它的名字（Claude Code 的 `opus` / `sonnet`，Codex 计量桶的\n`normalModelSlug`）。缺省 = 账号级的窗口。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resets_at_ms": {
+          "description": "窗口恢复（清零）的时间。上游没给就缺省。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "used_percent": {
+          "description": "已用的百分比（四舍五入）。上游报的超过 100 时照报。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window_minutes": {
+          "description": "窗口长度（分钟）：300 = 5 小时，10080 = 一周。上游没说就缺省。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "used_percent"
       ],
       "type": "object"
     },

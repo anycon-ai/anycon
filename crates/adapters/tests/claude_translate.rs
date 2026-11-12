@@ -1834,6 +1834,90 @@ fn rate_limit_notices_are_sent_once_per_state() {
     assert_eq!(events_of_type(&feed(&mut t, bare), "notice")[0]["message"], "Approaching the usage limit (usage)");
 }
 
+/// 一个正常结束的 turn 的 `turn_done.usage.limits`（JSON 形式）。
+fn turn_limits(t: &mut Translator) -> Value {
+    t.begin_turn();
+    let r = Replay { outs: t.feed_line(&result(0.0, 1)) };
+    events_of_type(&r, "turn_done")[0]["usage"]["limits"].clone()
+}
+
+#[test]
+fn turn_done_reports_the_usage_windows_from_rate_limit_events() {
+    let rl = |info: Value| json!({"type": "rate_limit_event", "uuid": "u", "session_id": "s", "rate_limit_info": info});
+    let (soon, later) = (1_791_721_200u64, 1_792_076_400u64);
+    let mut t = Translator::new(CWD, json!({}), Some("s".into())).with_clock(fixed_now_ms);
+    // 没收到过：不带这个字段
+    assert_eq!(turn_limits(&mut t), Value::Null);
+
+    // `unifiedWindows` 是全部窗口的快照：账号级的在前、短窗口在前，按模型的周窗口带模型名；不认识的类型不报
+    feed(
+        &mut t,
+        rl(json!({"status": "allowed", "resetsAt": soon, "rateLimitType": "five_hour", "unifiedWindows": {
+            "seven_day_opus": {"utilization": 0.635, "resetsAt": later},
+            "seven_day": {"utilization": 0.1, "resetsAt": later},
+            "five_hour": {"utilization": 0.42, "resetsAt": soon},
+            "overage": {"utilization": 0.5, "resetsAt": later},
+        }})),
+    );
+    assert_eq!(
+        turn_limits(&mut t),
+        json!([
+            {"window_minutes": 300, "used_percent": 42, "resets_at_ms": soon * 1000},
+            {"window_minutes": 10_080, "used_percent": 10, "resets_at_ms": later * 1000},
+            {"window_minutes": 10_080, "used_percent": 64, "resets_at_ms": later * 1000, "model": "opus"},
+        ])
+    );
+
+    // 下一份快照整份换掉上一份
+    feed(
+        &mut t,
+        rl(json!({"status": "allowed", "resetsAt": soon, "rateLimitType": "five_hour", "unifiedWindows": {
+            "five_hour": {"utilization": 0.5, "resetsAt": soon},
+        }})),
+    );
+    assert_eq!(turn_limits(&mut t), json!([{"window_minutes": 300, "used_percent": 50, "resets_at_ms": soon * 1000}]));
+
+    // 没有 `unifiedWindows` 的事件只说 `rateLimitType` 那一个窗口，其余的沿用
+    feed(
+        &mut t,
+        rl(json!({"status": "allowed_warning", "resetsAt": later, "rateLimitType": "seven_day", "utilization": 0.8})),
+    );
+    assert_eq!(
+        turn_limits(&mut t),
+        json!([
+            {"window_minutes": 300, "used_percent": 50, "resets_at_ms": soon * 1000},
+            {"window_minutes": 10_080, "used_percent": 80, "resets_at_ms": later * 1000},
+        ])
+    );
+
+    // 恢复时间已经过了的窗口是上一个窗口的数，不报；没有占用数字的事件不改变记录
+    feed(
+        &mut t,
+        rl(json!({"status": "allowed", "resetsAt": 1_700_000_000, "rateLimitType": "five_hour", "utilization": 0.9})),
+    );
+    feed(&mut t, rl(json!({"status": "allowed", "rateLimitType": "seven_day"})));
+    assert_eq!(
+        turn_limits(&mut t),
+        json!([{"window_minutes": 10_080, "used_percent": 80, "resets_at_ms": later * 1000}])
+    );
+}
+
+#[test]
+fn a_recorded_turn_ends_with_the_five_hour_and_weekly_windows() {
+    let r = Replay::run("real_pong_and_bash.jsonl");
+    let (_, _, usage) = r.turn_dones().pop().unwrap();
+    let limits: Vec<_> = usage
+        .unwrap()
+        .limits
+        .iter()
+        .map(|w| (w.window_minutes, w.used_percent, w.resets_at_ms, w.model.clone()))
+        .collect();
+    assert_eq!(
+        limits,
+        [(Some(300), 10, Some(1_791_721_200_000), None), (Some(10_080), 10, Some(1_792_076_400_000), None)]
+    );
+}
+
 #[test]
 fn notifications_and_informational_lines_become_agent_notices() {
     let mut t = Translator::new(CWD, json!({}), Some("s".into()));

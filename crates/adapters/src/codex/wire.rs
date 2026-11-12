@@ -383,6 +383,9 @@ pub struct RateLimitSnapshot {
 pub struct RateLimitWindow {
     #[serde(default)]
     pub used_percent: i64,
+    /// 窗口长度，分钟。
+    #[serde(default)]
+    pub window_duration_mins: Option<i64>,
     /// 窗口恢复的时间，Unix 秒。
     #[serde(default)]
     pub resets_at: Option<i64>,

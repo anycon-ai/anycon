@@ -1333,8 +1333,35 @@ export interface Usage {
   cost_usd?: number | null;
   duration_ms: number;
   input_tokens?: number | null;
+  /**
+   * turn 结束时 agent 报过的账号用量窗口（套餐的 5 小时窗口、周窗口…），先账号级后按模型的、短窗口在前。
+   * 这是账号的状态，不是这个会话的：同一个账号的其它会话也在消耗它。agent 不报就为空。
+   */
+  limits?: UsageWindow[];
   model?: string | null;
   output_tokens?: number | null;
+}
+/**
+ * `Usage.limits` 的一项：agent 报的一个用量窗口的占用。数字都来自上游，adapter 不估算。
+ */
+export interface UsageWindow {
+  /**
+   * 只对某个模型（或模型系列）计的窗口：它的名字（Claude Code 的 `opus` / `sonnet`，Codex 计量桶的
+   * `normalModelSlug`）。缺省 = 账号级的窗口。
+   */
+  model?: string | null;
+  /**
+   * 窗口恢复（清零）的时间。上游没给就缺省。
+   */
+  resets_at_ms?: number | null;
+  /**
+   * 已用的百分比（四舍五入）。上游报的超过 100 时照报。
+   */
+  used_percent: number;
+  /**
+   * 窗口长度（分钟）：300 = 5 小时，10080 = 一周。上游没说就缺省。
+   */
+  window_minutes?: number | null;
 }
 /**
  * 会话设置。`session.create` 和 `session.set_settings` 都收它；值来自 `AgentInfo`。

@@ -426,6 +426,7 @@ async fn run_turn(
         model: Some(eff.model.clone()),
         context_window: Some(CONTEXT_WINDOW),
         context_tokens: Some(CONTEXT_BASE_TOKENS + in_chars + turn.out_chars),
+        limits: Vec::new(),
     };
     // 先清 busy 再发 TurnDone：消费者收到 TurnDone 后可以立刻 send 下一条。
     shared.busy.store(false, Ordering::SeqCst);

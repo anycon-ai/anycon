@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
+## [Unreleased]
+
+### Added
+
+- Plan usage limits in the session info panel. When Claude Code or Codex reports the usage windows of your plan (5-hour, weekly, weekly per model), the panel shows a "Usage limits" card with one bar per window: percent used and when it resets. The numbers are the ones the agent reported when the last turn of this session ended; other sessions on the same account use the same allowance, so a window whose reset time has passed is left out. Nothing is shown when the agent reports no windows (API-key sign-in, ACP agents). Protocol: `turn_done.usage.limits`, a list of `{ window_minutes?, used_percent, resets_at_ms?, model? }`, optional and omitted when empty ([docs/protocol.md § 6](docs/protocol.md#6-会话事件)). Claude Code's come from `rate_limit_event`, Codex's from `account/rateLimits/updated` (the account bucket, plus the bucket of the session's model).
+- Web UI: the Agents card in the session info panel sweeps a faint highlight across its background whenever a token count on it changes, and while a turn is running each time new output arrives, so you can see the agents working. It is off under `prefers-reduced-motion`.
+
+### Changed
+
+- Web UI: the Session card in the info panel shows each item (project, working directory, branch, created) as a label line and a value line. Long paths and branch names wrap instead of being cut off behind a hover tooltip, the text can be selected, and the working directory and branch each have a copy button. The working directory is opened in the file browser with the button next to its label instead of by clicking the path.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added

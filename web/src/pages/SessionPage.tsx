@@ -317,6 +317,8 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
       createdAt={summary?.created_at_ms ?? 0}
       usage={view?.usage ?? { turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null }}
       context={view?.context}
+      limits={view?.limits}
+      activitySeq={view?.lastSeq}
       usageTotals={summary?.usage}
       pending={allPending}
       onFocusPending={(id) => {

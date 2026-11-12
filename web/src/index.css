@@ -372,11 +372,32 @@ html[data-font='lg'] {
   border-radius: var(--radius-md);
   animation: anycon-search-flash 2s ease-out both;
 }
+/* 信息面板的「Agent」卡片：token 数变动时背景从左到右扫过一道光。每次由组件重新挂载这个元素来重放，
+   时长和 InfoPanel 里的 PULSE_GAP_MS 对应；播完停在卡片右边界外面 */
+@keyframes anycon-token-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.token-sweep {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 15%, color-mix(in srgb, var(--accent) 16%, transparent) 50%, transparent 85%);
+  animation: anycon-token-sweep 1.2s ease-in-out both;
+}
 @media (prefers-reduced-motion: reduce) {
   .animate-pulse-soft,
   .stream-caret::after,
   .animate-spin {
     animation: none !important;
+  }
+  .token-sweep {
+    display: none;
   }
   /* 不做淡出：底色一直在，直到组件去掉 class */
   .search-flash {

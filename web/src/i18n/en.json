@@ -767,7 +767,20 @@
     "deleteConfirm": "Delete session",
     "branch": "Branch",
     "context": "Context",
-    "contextValue": "{{percent}}% · {{used}} / {{window}}"
+    "contextValue": "{{percent}}% · {{used}} / {{window}}",
+    "project": "Project",
+    "limits": "Usage limits",
+    "limitUnknown": "Usage limit",
+    "limit5h": "5-hour limit",
+    "limitWeekly": "Weekly limit",
+    "limitDays_one": "{{count}}-day limit",
+    "limitDays_other": "{{count}}-day limit",
+    "limitHours_one": "{{count}}-hour limit",
+    "limitHours_other": "{{count}}-hour limit",
+    "limitMinutes_one": "{{count}}-minute limit",
+    "limitMinutes_other": "{{count}}-minute limit",
+    "limitValue": "{{percent}}% used",
+    "limitValueResets": "{{percent}}% · resets {{time}}"
   },
   "agent": {
     "noneReady": "No agent is ready on this node.",

@@ -45,14 +45,30 @@ async fn a_login_code_really_travels_over_smtp() {
     assert_eq!(mail.header("from").unwrap(), "Anycon <noreply@example.test>");
     assert_eq!(mail.header("to").unwrap(), "me@example.com");
     assert!(mail.header("subject").unwrap().contains("Confirm your email address"), "{:?}", mail.header("subject"));
-    assert!(mail.header("content-type").unwrap().starts_with("text/plain"), "{:?}", mail.header("content-type"));
+    // 验证码邮件是纯文本 + HTML 两份（`multipart/alternative`）
+    assert!(
+        mail.header("content-type").unwrap().starts_with("multipart/alternative"),
+        "{:?}",
+        mail.header("content-type")
+    );
     assert!(mail.header("message-id").unwrap().ends_with("@example.test>"), "{:?}", mail.header("message-id"));
     assert!(mail.header("date").is_some());
     let text = mail.text();
     assert!(text.contains("valid for 10 minutes") && text.contains("ignore this email"), "{text}");
-    // 英文验证码邮件原样发出（7bit），不会被 quoted-printable 的软换行从码中间切开
-    assert_eq!(mail.header("content-transfer-encoding").unwrap().to_ascii_lowercase(), "7bit", "{:?}", mail.headers());
-    assert!(mail.data.contains(&format!("is {} {}.", &mail.code()[..3], &mail.code()[3..])), "{}", mail.data);
+    assert!(text.ends_with("Talk to them from anywhere.\r\nhttps://anycon.ai\r\n"), "the footer: {text}");
+    // 英文验证码邮件的纯文本那份原样发出（7bit），不会被 quoted-printable 的软换行从码中间切开
+    assert_eq!(
+        mail.part_header("text/plain", "content-transfer-encoding").unwrap().to_ascii_lowercase(),
+        "7bit",
+        "{}",
+        mail.data
+    );
+    let grouped = format!("{} {}", &mail.code()[..3], &mail.code()[3..]);
+    assert!(mail.data.contains(&format!("is {grouped}.")), "{}", mail.data);
+    // HTML 那份：同一个码单独放大成一块，页脚链到项目主页
+    let html = mail.html().expect("an HTML alternative");
+    assert!(html.contains(&format!(">{grouped}</td>")) && html.contains("valid for 10 minutes"), "{html}");
+    assert!(html.contains(r#"href="https://anycon.ai""#), "{html}");
     let res = hub
         .send(Method::POST, "/api/me/email/verify", &admin, json!({ "email": "me@example.com", "code": mail.code() }))
         .await;
@@ -117,12 +133,13 @@ async fn chinese_mail_is_encoded_properly_and_decodes_back() {
         "{text}"
     );
     assert_eq!(mail.code().len(), 6);
-    assert!(
-        mail.header("content-type").unwrap().contains("utf-8")
-            || mail.header("content-type").unwrap().contains("UTF-8"),
-        "{:?}",
-        mail.header("content-type")
-    );
+    for part in ["text/plain", "text/html"] {
+        let content_type = mail.part_header(part, "content-type").unwrap();
+        assert!(content_type.to_ascii_lowercase().contains("utf-8"), "{part}: {content_type:?}");
+    }
+    let html = mail.html().expect("an HTML alternative");
+    assert!(html.contains("登录 Anycon") && html.contains("10 分钟内有效"), "{html}");
+    assert!(html.contains(r#"href="https://anycon.ai/zh""#) && html.contains("从任何地方和它对话。"), "{html}");
     assert!(
         mail.header("subject").unwrap().is_ascii(),
         "non-ASCII subjects are RFC 2047 encoded: {:?}",
@@ -142,6 +159,7 @@ async fn credentials_from_the_url_are_used_percent_decoded() {
             to: "you@example.com".into(),
             subject: "hello".into(),
             body: "Your code is 123 456.\n".into(),
+            html: None,
         })
         .await
         .unwrap();
@@ -164,7 +182,7 @@ async fn starttls_is_required_and_never_falls_back_to_plain_text() {
     };
     let mailer = SmtpMailer::new(&cfg, parse_email_from("noreply@example.test").unwrap().mailbox).unwrap();
     let err = mailer
-        .send(OutgoingMail { to: "you@example.com".into(), subject: "s".into(), body: "123 456".into() })
+        .send(OutgoingMail { to: "you@example.com".into(), subject: "s".into(), body: "123 456".into(), html: None })
         .await
         .unwrap_err();
     assert!(!err.to_string().contains("hunter2"));
@@ -178,7 +196,7 @@ async fn starttls_is_required_and_never_falls_back_to_plain_text() {
     let cfg2 = SmtpConfig { port: smtp2.port(), ..cfg };
     let mailer2 = SmtpMailer::new(&cfg2, parse_email_from("noreply@example.test").unwrap().mailbox).unwrap();
     assert!(mailer2
-        .send(OutgoingMail { to: "you@example.com".into(), subject: "s".into(), body: "b".into() })
+        .send(OutgoingMail { to: "you@example.com".into(), subject: "s".into(), body: "b".into(), html: None })
         .await
         .is_err());
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -198,7 +216,7 @@ async fn implicit_tls_to_a_plain_server_fails_cleanly() {
     let mailer = SmtpMailer::new(&cfg, parse_email_from("noreply@example.test").unwrap().mailbox).unwrap();
     let res = tokio::time::timeout(
         Duration::from_secs(40),
-        mailer.send(OutgoingMail { to: "you@example.com".into(), subject: "s".into(), body: "b".into() }),
+        mailer.send(OutgoingMail { to: "you@example.com".into(), subject: "s".into(), body: "b".into(), html: None }),
     )
     .await;
     assert!(res.expect("fails instead of hanging").is_err());
@@ -256,6 +274,7 @@ async fn notification_mail_travels_over_smtp_too() {
     assert_eq!(mail.rcpt_to, vec!["me@example.com"]);
     let subject = mail.header("subject").unwrap();
     assert!(subject.is_ascii(), "the Chinese half of the subject is encoded: {subject}");
+    assert!(mail.html().is_none(), "notification mail is plain text only");
     let text = mail.text();
     assert!(text.contains("build-box") && text.contains("asking to join") && text.contains("请求接入"), "{text}");
     assert!(text.contains(&format!("https://hub.test/n/{}/settings?tab=enroll", daemon.id)), "{text}");
@@ -335,6 +354,7 @@ fn mail() -> OutgoingMail {
         body: "Your code is 123 456.
 "
         .into(),
+        html: None,
     }
 }
 

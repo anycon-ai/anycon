@@ -164,28 +164,67 @@ function decodeQuotedPrintable(text: string): string {
   return Buffer.from(bytes).toString('utf8')
 }
 
-/** 头（DATA 里第一个空行之前）里某个头的值，大小写不拘，不处理折行；没有返回 undefined。 */
-export function mailHeader(mail: ReceivedMail, name: string): string | undefined {
-  const head = mail.data.split('\r\n\r\n')[0] ?? ''
+/** 一段头里某个头的值，大小写不拘，不处理折行；没有返回 undefined。 */
+function headerIn(head: string, name: string): string | undefined {
   const prefix = `${name.toLowerCase()}:`
   const line = head.split('\r\n').find((l) => l.toLowerCase().startsWith(prefix))
   return line?.slice(prefix.length).trim()
 }
 
-/** 解开传输编码之后的正文（英文邮件是 7bit，中文邮件是 base64 / quoted-printable）。 */
+/** 头（DATA 里第一个空行之前）里某个头的值，大小写不拘，不处理折行；没有返回 undefined。 */
+export function mailHeader(mail: ReceivedMail, name: string): string | undefined {
+  return headerIn(mail.data.split('\r\n\r\n')[0] ?? '', name)
+}
+
+/** 一个 MIME 部分：它自己的头，和还没解码的正文。 */
+interface MailPart {
+  head: string
+  body: string
+}
+
+function splitPart(raw: string): MailPart {
+  const [head = '', ...rest] = raw.split('\r\n\r\n')
+  return { head, body: rest.join('\r\n\r\n') }
+}
+
+/** 没写 `Content-Type` 就是 `text/plain`（RFC 2045 的默认值）。 */
+function contentTypeOf(part: MailPart): string {
+  return (headerIn(part.head, 'content-type') ?? 'text/plain').toLowerCase()
+}
+
+/**
+ * 信里的 MIME 部分。验证码邮件是 `multipart/alternative`（纯文本 + HTML），通知邮件只有纯文本，整封算一个部分。
+ * lettre 不写前言，multipart 正文的第一行就是 `--<boundary>`：直接拿它当分隔，不去解析（会折行的）Content-Type 头。
+ */
+function partsOf(mail: ReceivedMail): MailPart[] {
+  const whole = splitPart(mail.data)
+  if (!contentTypeOf(whole).startsWith('multipart/')) return [whole]
+  const delimiter = whole.body.split('\r\n')[0] ?? ''
+  return (
+    whole.body
+      .slice(delimiter.length)
+      .split(`\r\n${delimiter}`)
+      // 结尾的 `--<boundary>--` 切出来是 `--\r\n`，不是一个部分
+      .filter((piece) => piece.startsWith('\r\n'))
+      .map((piece) => splitPart(piece.slice(2)))
+  )
+}
+
+/** 解开传输编码之后的纯文本正文（英文邮件是 7bit，中文邮件是 base64 / quoted-printable）。 */
 export function mailText(mail: ReceivedMail): string {
-  const body = mail.data.split('\r\n\r\n').slice(1).join('\r\n\r\n')
-  switch ((mailHeader(mail, 'content-transfer-encoding') ?? '7bit').toLowerCase()) {
+  const part = partsOf(mail).find((p) => contentTypeOf(p).startsWith('text/plain'))
+  if (!part) return ''
+  switch ((headerIn(part.head, 'content-transfer-encoding') ?? '7bit').toLowerCase()) {
     case 'base64':
-      return Buffer.from(body.replace(/\s+/g, ''), 'base64').toString('utf8')
+      return Buffer.from(part.body.replace(/\s+/g, ''), 'base64').toString('utf8')
     case 'quoted-printable':
-      return decodeQuotedPrintable(body)
+      return decodeQuotedPrintable(part.body)
     default:
-      return body
+      return part.body
   }
 }
 
-/** 正文里的 6 位验证码（邮件里写成 `123 456`）。 */
+/** 纯文本正文里的 6 位验证码（邮件里写成 `123 456`）。 */
 export function codeOf(mail: ReceivedMail): string {
   const m = /(\d{3}) (\d{3})/.exec(mailText(mail))
   if (!m) throw new Error(`no verification code in the mail:\n${mailText(mail)}`)

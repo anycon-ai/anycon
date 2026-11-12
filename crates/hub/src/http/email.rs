@@ -105,9 +105,9 @@ async fn issue_code(state: &AppState, email: &str, purpose: EmailPurpose, accoun
         return;
     }
     let kind = if purpose == EmailPurpose::Login { CodeKind::Login } else { CodeKind::Bind };
-    let (subject, body) = code_mail(lang, kind, &code, (ttl.as_secs() / 60).max(1));
+    let (subject, body, html) = code_mail(lang, kind, &code, (ttl.as_secs() / 60).max(1));
     let tag = email_tag(email);
-    match mailer.send(OutgoingMail { to: email.to_string(), subject, body }).await {
+    match mailer.send(OutgoingMail { to: email.to_string(), subject, body, html: Some(html) }).await {
         Ok(()) => tracing::info!(to = %tag, purpose = purpose.as_str(), "email code sent"),
         Err(e) => tracing::warn!(
             to = %tag,

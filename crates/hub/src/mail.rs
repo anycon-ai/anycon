@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use lettre::message::header::ContentType;
-use lettre::message::Mailbox;
+use lettre::message::{Mailbox, MultiPart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::extension::ClientId;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -27,6 +27,8 @@ pub struct OutgoingMail {
     pub subject: String,
     /// 纯文本正文。
     pub body: String,
+    /// HTML 正文。有的话和纯文本一起作为 `multipart/alternative` 发出，不显示 HTML 的客户端用纯文本那份。
+    pub html: Option<String>,
 }
 
 impl std::fmt::Debug for OutgoingMail {
@@ -231,14 +233,13 @@ impl Mailer for SmtpMailer {
         let to: Mailbox = mail.to.parse().map_err(|_| MailError::BadAddress)?;
         // Message-ID 用发件人域名（没有它不少收件方会判成垃圾邮件）；Date 由 lettre 自己加。
         let message_id = format!("<{}@{}>", crate::util::random_hex(12), self.from.email.domain());
-        let message = Message::builder()
-            .message_id(Some(message_id))
-            .from(self.from.clone())
-            .to(to)
-            .subject(mail.subject)
-            .header(ContentType::TEXT_PLAIN)
-            .body(mail.body)
-            .map_err(|e| MailError::Build(e.to_string()))?;
+        let builder =
+            Message::builder().message_id(Some(message_id)).from(self.from.clone()).to(to).subject(mail.subject);
+        let message = match mail.html {
+            Some(html) => builder.multipart(MultiPart::alternative_plain_html(mail.body, html)),
+            None => builder.header(ContentType::TEXT_PLAIN).body(mail.body),
+        }
+        .map_err(|e| MailError::Build(e.to_string()))?;
         match &self.backend {
             Backend::Remote(transport) => transport.send(message).await.map(|_| ()).map_err(|e| smtp_error(&e)),
             Backend::Plain(relay) => relay.send(message).await,
@@ -345,34 +346,168 @@ pub fn format_code(code: &str) -> String {
     }
 }
 
-/// 验证码邮件（主题，正文）。`minutes` 是有效期。
+/// 页脚链接到的项目主页（中文邮件链到中文版）。
+const SITE_URL: &str = "https://anycon.ai";
+const SITE_URL_ZH: &str = "https://anycon.ai/zh";
+
+/// 验证码邮件（主题，纯文本正文，HTML 正文）。`minutes` 是有效期。
 ///
-/// 英文正文的每一行都压在 78 个字符以内、全是 ASCII：这样 lettre 用 7bit 原样发出，码不会被 quoted-printable 的软换行
+/// 两份正文说的是同一件事：HTML 那份字号大、码单独一行放大，纯文本那份给不显示 HTML 的客户端。页脚都带项目主页的链接。
+///
+/// 英文纯文本的每一行都压在 78 个字符以内、全是 ASCII：这样 lettre 用 7bit 原样发出，码不会被 quoted-printable 的软换行
 /// 从中间切开（e2e 里的假 SMTP 服务和各种邮件客户端的预览都更省事）。中文正文有非 ASCII 字符，lettre 会编码，收件方照常解码。
-pub fn code_mail(lang: Lang, kind: CodeKind, code: &str, minutes: u64) -> (String, String) {
+pub fn code_mail(lang: Lang, kind: CodeKind, code: &str, minutes: u64) -> (String, String, String) {
     let code = format_code(code);
-    match (lang, kind) {
+    let (validity, ignore, tagline, site) = match lang {
+        Lang::En => (
+            format!("It is valid for {minutes} minutes."),
+            "If you did not request it, ignore this email.",
+            "Run coding agents on your own machine. Talk to them from anywhere.",
+            SITE_URL,
+        ),
+        Lang::Zh => (
+            format!("{minutes} 分钟内有效。"),
+            "不是你本人操作就忽略这封邮件。",
+            "coding agent 跑在你自己的机器上，从任何地方和它对话。",
+            SITE_URL_ZH,
+        ),
+    };
+    // （主题，纯文本里带码的那一段，HTML 里码上面的一句话）
+    let (subject, text, lead) = match (lang, kind) {
         (Lang::En, CodeKind::Login) => (
-            "Your Anycon sign-in code".into(),
-            format!(
-                "Your Anycon sign-in code is {code}.\nIt is valid for {minutes} minutes.\n\nIf you did not request it, ignore this email.\n"
-            ),
+            "Your Anycon sign-in code",
+            format!("Your Anycon sign-in code is {code}.\n{validity}"),
+            "Enter this code to sign in to Anycon:",
         ),
         (Lang::En, CodeKind::Bind) => (
-            "Confirm your email address for Anycon".into(),
-            format!(
-                "Your code for confirming this email address in Anycon is {code}.\nIt is valid for {minutes} minutes.\n\nIf you did not request it, ignore this email.\n"
-            ),
+            "Confirm your email address for Anycon",
+            format!("Your code for confirming this email address in Anycon is {code}.\n{validity}"),
+            "Enter this code in Anycon to confirm this email address:",
         ),
         (Lang::Zh, CodeKind::Login) => (
-            "你的 Anycon 登录码".into(),
-            format!("你的 Anycon 登录码是 {code}，{minutes} 分钟内有效。\n\n不是你本人操作就忽略这封邮件。\n"),
+            "你的 Anycon 登录码",
+            format!("你的 Anycon 登录码是 {code}，{validity}"),
+            "输入下面的登录码，登录 Anycon：",
         ),
         (Lang::Zh, CodeKind::Bind) => (
-            "确认你的 Anycon 邮箱".into(),
-            format!("你正在为 Anycon 账号绑定这个邮箱，验证码是 {code}，{minutes} 分钟内有效。\n\n不是你本人操作就忽略这封邮件。\n"),
+            "确认你的 Anycon 邮箱",
+            format!("你正在为 Anycon 账号绑定这个邮箱，验证码是 {code}，{validity}"),
+            "输入下面的验证码，为你的 Anycon 账号绑定这个邮箱：",
         ),
+    };
+    let body = format!("{text}\n\n{ignore}\n\n--\nAnycon\n{tagline}\n{site}\n");
+    let html = code_mail_html(&CodeMailHtml {
+        lang,
+        title: subject,
+        lead,
+        code: &code,
+        validity: &validity,
+        ignore,
+        tagline,
+        site,
+    });
+    (subject.into(), body, html)
+}
+
+/// [`code_mail_html`] 要填进版式里的文字。
+struct CodeMailHtml<'a> {
+    lang: Lang,
+    title: &'a str,
+    /// 码上面的一句话。
+    lead: &'a str,
+    code: &'a str,
+    validity: &'a str,
+    ignore: &'a str,
+    /// 页脚的一句话介绍。
+    tagline: &'a str,
+    /// 页脚链接。
+    site: &'a str,
+}
+
+/// `&`、`<`、`>`、`"` 换成实体。现在填进版式的都是固定文字和数字，转义是为了以后填进别的东西时不出事。
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
     }
+    out
+}
+
+/// 验证码邮件的 HTML 版式：一张卡片（产品名、一句话、放大的码、有效期、「不是你就忽略」），下面是页脚。
+///
+/// 按邮件客户端认的写法来：表格布局、样式内联、字体写在每个单元格上（Outlook 不认 `div` 的内边距，也不把字体继承进表格）；
+/// `<style>` 里只有深色模式的覆盖（不认的客户端显示浅色版）。
+/// 不引用任何外部资源（图片、字体、样式表）：邮件客户端默认不加载远程图片，而且一加载就等于告诉发信方「这封信被打开了」。
+/// 唯一的链接是页脚的项目主页，不带任何参数。
+fn code_mail_html(t: &CodeMailHtml<'_>) -> String {
+    const SANS: &str = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,\
+        'PingFang SC','Microsoft YaHei',sans-serif";
+    const MONO: &str = "ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace";
+    let lang = match t.lang {
+        Lang::En => "en",
+        Lang::Zh => "zh-CN",
+    };
+    let title = html_escape(t.title);
+    let lead = html_escape(t.lead);
+    let code = html_escape(t.code);
+    let validity = html_escape(t.validity);
+    let ignore = html_escape(t.ignore);
+    let tagline = html_escape(t.tagline);
+    let site = html_escape(t.site);
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="{lang}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>{title}</title>
+<style>
+@media (prefers-color-scheme: dark) {{
+  .page {{ background-color: #121314 !important; }}
+  .card {{ background-color: #1e1f21 !important; }}
+  .text {{ color: #e6e6ea !important; }}
+  .muted {{ color: #9a9aa6 !important; }}
+  .code {{ background-color: #2b2c30 !important; color: #ffffff !important; }}
+  .link {{ color: #9d98ff !important; }}
+}}
+</style>
+</head>
+<body class="page" style="margin:0;padding:0;background-color:#f4f4f7;">
+<table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f4f7;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="520" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:520px;">
+<tr><td class="card" style="padding:36px 32px;border-radius:14px;background-color:#ffffff;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr><td class="text" style="font-family:{SANS};font-size:22px;line-height:28px;font-weight:700;color:#17171c;">Anycon</td></tr>
+<tr><td class="text" style="padding-top:24px;font-family:{SANS};font-size:18px;line-height:28px;color:#17171c;">{lead}</td></tr>
+<tr><td style="padding-top:20px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr><td class="code" align="center" style="padding:22px 12px;border-radius:12px;background-color:#eef0ff;white-space:nowrap;font-family:{MONO};font-size:40px;line-height:48px;font-weight:700;letter-spacing:2px;color:#17171c;">{code}</td></tr>
+</table>
+</td></tr>
+<tr><td class="text" style="padding-top:20px;font-family:{SANS};font-size:18px;line-height:28px;color:#17171c;">{validity}</td></tr>
+<tr><td class="muted" style="padding-top:8px;font-family:{SANS};font-size:16px;line-height:24px;color:#565662;">{ignore}</td></tr>
+</table>
+</td></tr>
+<tr><td class="muted" align="center" style="padding:24px 16px 0;font-family:{SANS};font-size:14px;line-height:22px;color:#565662;">
+{tagline}<br>
+<a class="link" href="{site}" style="font-weight:600;color:#4f46e5;text-decoration:none;">anycon.ai</a>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
+"#
+    )
 }
 
 /// 可以发邮件通知的类别（docs/spec/hub.md § 6.2）。
@@ -477,21 +612,21 @@ mod tests {
 
     #[test]
     fn code_mails_carry_the_grouped_code_and_the_lifetime() {
-        let (subject, body) = code_mail(Lang::En, CodeKind::Login, "123456", 10);
+        let (subject, body, _) = code_mail(Lang::En, CodeKind::Login, "123456", 10);
         assert!(subject.contains("sign-in code"));
         assert!(
             body.contains("123 456") && body.contains("10 minutes") && body.contains("ignore this email"),
             "{body}"
         );
-        let (subject, body) = code_mail(Lang::Zh, CodeKind::Login, "123456", 10);
+        let (subject, body, _) = code_mail(Lang::Zh, CodeKind::Login, "123456", 10);
         assert!(subject.contains("登录码"));
         assert!(
             body.contains("123 456") && body.contains("10 分钟内有效") && body.contains("不是你本人操作就忽略这封邮件"),
             "{body}"
         );
-        let (_, body) = code_mail(Lang::En, CodeKind::Bind, "000042", 10);
+        let (_, body, _) = code_mail(Lang::En, CodeKind::Bind, "000042", 10);
         assert!(body.contains("000 042") && body.contains("confirming this email"), "{body}");
-        let (_, body) = code_mail(Lang::Zh, CodeKind::Bind, "000042", 10);
+        let (_, body, _) = code_mail(Lang::Zh, CodeKind::Bind, "000042", 10);
         assert!(body.contains("000 042") && body.contains("绑定这个邮箱"), "{body}");
         assert_eq!(format_code("12345"), "12345", "only six-digit codes are grouped");
     }
@@ -499,11 +634,74 @@ mod tests {
     #[test]
     fn english_code_mails_stay_plain_ascii_with_short_lines() {
         for kind in [CodeKind::Login, CodeKind::Bind] {
-            let (subject, body) = code_mail(Lang::En, kind, "123456", 10);
+            let (subject, body, _) = code_mail(Lang::En, kind, "123456", 10);
             assert!(subject.is_ascii() && body.is_ascii());
             assert!(body.lines().all(|l| l.len() <= 76), "every line fits without a soft line break: {body:?}");
             assert!(body.lines().any(|l| l.contains("123 456")));
         }
+    }
+
+    #[test]
+    fn code_mails_end_with_a_footer_that_links_to_the_project_site() {
+        for kind in [CodeKind::Login, CodeKind::Bind] {
+            let (_, body, html) = code_mail(Lang::En, kind, "123456", 10);
+            let tagline = "Run coding agents on your own machine. Talk to them from anywhere.";
+            assert!(body.ends_with(&format!("\n--\nAnycon\n{tagline}\nhttps://anycon.ai\n")), "{body}");
+            assert!(html.contains(r#"href="https://anycon.ai""#) && html.contains(tagline), "{html}");
+            let (_, body, html) = code_mail(Lang::Zh, kind, "123456", 10);
+            assert!(body.ends_with("从任何地方和它对话。\nhttps://anycon.ai/zh\n"), "{body}");
+            assert!(html.contains(r#"href="https://anycon.ai/zh""#) && html.contains("从任何地方和它对话。"), "{html}");
+        }
+    }
+
+    #[test]
+    fn the_html_code_mail_says_the_same_as_the_text_one_with_the_code_on_its_own() {
+        let (subject, _, html) = code_mail(Lang::En, CodeKind::Login, "123456", 10);
+        assert!(html.contains(r#"<html lang="en">"#) && html.contains(&format!("<title>{subject}</title>")), "{html}");
+        assert!(html.contains(">123 456</td>"), "the code is an element of its own: {html}");
+        assert!(html.contains("sign in to Anycon") && html.contains("valid for 10 minutes"), "{html}");
+        assert!(html.contains("If you did not request it, ignore this email."), "{html}");
+        let (_, _, html) = code_mail(Lang::En, CodeKind::Bind, "000042", 10);
+        assert!(html.contains(">000 042</td>") && html.contains("confirm this email address"), "{html}");
+        let (_, _, html) = code_mail(Lang::Zh, CodeKind::Login, "123456", 10);
+        assert!(html.contains(r#"<html lang="zh-CN">"#) && html.contains(">123 456</td>"), "{html}");
+        assert!(html.contains("登录 Anycon") && html.contains("10 分钟内有效"), "{html}");
+        assert!(html.contains("不是你本人操作就忽略这封邮件"), "{html}");
+        let (_, _, html) = code_mail(Lang::Zh, CodeKind::Bind, "000042", 10);
+        assert!(html.contains(">000 042</td>") && html.contains("绑定这个邮箱"), "{html}");
+    }
+
+    #[test]
+    fn the_html_code_mail_loads_nothing_remote_and_has_one_link() {
+        for lang in [Lang::En, Lang::Zh] {
+            let (_, _, html) = code_mail(lang, CodeKind::Login, "123456", 10);
+            for remote in ["<img", "<link", "<script", "url(", "@import", "src=", "http://"] {
+                assert!(!html.contains(remote), "{remote}: {html}");
+            }
+            assert_eq!(html.matches("href=").count(), 1, "{html}");
+            assert_eq!(html.matches("https://").count(), 1, "{html}");
+        }
+    }
+
+    #[test]
+    fn text_put_into_the_html_mail_is_escaped() {
+        assert_eq!(
+            html_escape(r#"<a href="x">Tom & Jerry</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&lt;/a&gt;"
+        );
+        let html = code_mail_html(&CodeMailHtml {
+            lang: Lang::En,
+            title: "<t>",
+            lead: "a & b",
+            code: "<script>",
+            validity: "v",
+            ignore: "i",
+            tagline: "t",
+            site: "https://example.test/?a=1&b=\"2\"",
+        });
+        assert!(!html.contains("<script>") && html.contains("&lt;script&gt;"), "{html}");
+        assert!(html.contains("<title>&lt;t&gt;</title>") && html.contains("a &amp; b"), "{html}");
+        assert!(html.contains(r#"href="https://example.test/?a=1&amp;b=&quot;2&quot;""#), "{html}");
     }
 
     #[test]
@@ -552,7 +750,12 @@ mod tests {
 
     #[test]
     fn debug_output_of_mail_and_stored_rows_has_no_addresses_codes_or_endpoints() {
-        let mail = OutgoingMail { to: "alice@example.com".into(), subject: "s".into(), body: "code 123 456".into() };
+        let mail = OutgoingMail {
+            to: "alice@example.com".into(),
+            subject: "s".into(),
+            body: "code 123 456".into(),
+            html: Some("<b>123 456</b>".into()),
+        };
         let dump = format!("{mail:?}");
         assert!(!dump.contains("alice") && !dump.contains("123"), "{dump}");
         let row = crate::store::EmailCode {
@@ -579,7 +782,7 @@ mod tests {
     #[tokio::test]
     async fn the_recording_mailer_keeps_what_it_was_asked_to_send() {
         let m = RecordingMailer::default();
-        let mail = OutgoingMail { to: "a@b.c".into(), subject: "s".into(), body: "b".into() };
+        let mail = OutgoingMail { to: "a@b.c".into(), subject: "s".into(), body: "b".into(), html: None };
         m.send(mail.clone()).await.unwrap();
         m.fail_next(1);
         assert!(m.send(mail.clone()).await.is_err());

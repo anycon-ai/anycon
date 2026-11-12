@@ -152,7 +152,7 @@ pub struct SessionsConfig {
 impl Default for SessionsConfig {
     fn default() -> Self {
         Self {
-            max_concurrent: 3,
+            max_concurrent: 6,
             idle_timeout: "20m".into(),
             max_attachment_bytes: "10MiB".into(),
             history_retention: "forever".into(),
@@ -910,7 +910,7 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("# 根之间不能相同或嵌套，也不能包含 / 位于 anycon 数据目录里。目录不存在（例如外接盘没插）时跳过。改了要重启 daemon\n");
     s.push_str("# extra_roots = [\"/Volumes/work/projects\"]\n");
     s.push_str("trash_retention_days = 30\nscratch_retention_days = 7\n");
-    s.push_str("\n[sessions]\nmax_concurrent = 3\nidle_timeout = \"20m\"\n");
+    s.push_str("\n[sessions]\nmax_concurrent = 6\nidle_timeout = \"20m\"\n");
     s.push_str("# 单个图片附件的上限；一条消息的附件合计另有 20 MiB 的上限（固定，不可配置）\n");
     s.push_str("max_attachment_bytes = \"10MiB\"\nhistory_retention = \"forever\"\n");
     s.push_str("\n[permissions]\nallow_dangerous_modes = true\nrequest_timeout = \"0\"\nallow_session_env = false\n");
@@ -1044,7 +1044,7 @@ mod tests {
     fn loads_defaults_without_file() {
         let d = tempfile::tempdir().unwrap();
         let cfg = Config::load(&Paths::new(d.path())).unwrap();
-        assert_eq!(cfg.sessions.max_concurrent, 3);
+        assert_eq!(cfg.sessions.max_concurrent, 6);
         assert_eq!(cfg.idle_timeout(), Duration::from_secs(1200));
         assert!(cfg.request_timeout().is_none());
     }

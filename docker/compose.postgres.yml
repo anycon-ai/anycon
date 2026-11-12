@@ -40,7 +40,7 @@ services:
         condition: service_healthy
     ports:
       # 只绑回环，对外由反向代理暴露。
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8900:8900"
     environment:
       # 必填：公网地址。
       ANYCON_PUBLIC_URL: https://hub.example.com

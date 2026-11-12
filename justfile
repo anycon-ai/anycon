@@ -99,7 +99,7 @@ fmt:
 
 # ---------- 开发 ----------
 
-# 起 hub（:8080）+ daemon（mock agent）+ web dev server（:5173）。选项见 scripts/dev.sh 顶部注释。
+# 起 hub（:8900）+ daemon（mock agent）+ web dev server（:5173）。选项见 scripts/dev.sh 顶部注释。
 dev:
     ./scripts/dev.sh
 

@@ -31,7 +31,7 @@ mise install                 # 或自己装齐 mise.toml 里的版本
 bun install
 just gen-wasm                # crypto wasm → packages/protocol/wasm
 bun run --cwd web build      # hub 编译时嵌入 web/dist
-just dev                     # hub :8080 + daemon（mock agent）+ web :5173，终端打印 admin token
+just dev                     # hub :8900 + daemon（mock agent）+ web :5173，终端打印 admin token
 ```
 
 浏览器打开 `http://localhost:5173`（用 `localhost`，不要用 `127.0.0.1`），粘贴 token，另开终端 `ANYCON_HOME=.anycon-dev/daemon ./target/debug/anycon pair`，把短码输入网页。mock agent 的行为表在 [crates/adapters/src/mock/README.md](crates/adapters/src/mock/README.md)；`DEV_REAL_CLAUDE=1 just dev` 换成真实 Claude Code。`rm -rf .anycon-dev` 重置。

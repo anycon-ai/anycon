@@ -276,7 +276,7 @@
 - token 登录只在 `single` 模式；`multi` 不提供。模式管的三件事变为：注册是否开放、配额是否启用、是否允许 token 登录
 - 不再有「二次验证」概念。passkey 是免密登录方式之一，不是第二因素
 - `single` 模式下只用 token 的账号可以没有邮箱；邮箱在绑定邮箱验证码或 OAuth 身份时才需要
-- **局域网 IP 访问是一等场景**：hub 跑在家里，家里走 `http://<局域网 IP>:8080`，出门走公网域名。两个 origin 都要能用
+- **局域网 IP 访问是一等场景**：hub 跑在家里，家里走 `http://<局域网 IP>:8900`，出门走公网域名。两个 origin 都要能用
 - hub 侧对双 origin 的处理：cookie 的 `Secure` 按请求协议决定，不设 `Domain`；WebSocket Origin 校验接受 `ANYCON_PUBLIC_URL` 和请求自身的 Host；私有网段和 localhost 的 http 自动放行，不加配置项；`ANYCON_PUBLIC_URL` 仍是公网域名，OAuth 回调、配对链接、WebAuthn RP ID 只用它，Host 头不用于生成任何链接
 - 接受的代价：IndexedDB 按 origin 隔离，同一浏览器在两个 origin 上是两台设备，配对两次；passkey、GitHub、Google 只在 https 公网域名可用；PWA 和 Web Push 按 origin
 - 文档推荐家里也用公网域名（一个 origin），局域网 IP 作为支持但有代价的方式
@@ -337,7 +337,7 @@
 
 **否掉**：`codex exec --json`；经 `codex-acp` 封装走 ACP（少一层控制，多一个 npm 依赖）。
 
-**2026-10 修订（v0.1 实现）**：v0.1 改为**每个 anycon 会话一个 `codex app-server` 进程、进程里一个 thread**，生命周期和 Claude Code 的进程一样由 `sessions.idle_timeout` 管（空闲退出、下次 `thread/resume`）。原因：① 进程的 env 是整个进程共享的，共用进程就没法给每个会话不同的 env（`capabilities.env`）；② 一个会话的 app-server 卡死或崩溃不连累别的会话；③ 和现有 `AgentHandle` 一一对应，daemon 的并发上限、空闲回收、关停逻辑不用为 Codex 开特例。代价是多个会话同时活着时多占几个进程的内存（`sessions.max_concurrent` 默认 3）。共用进程留到确有需要时再做（adapter 内部的事，不影响协议）。
+**2026-10 修订（v0.1 实现）**：v0.1 改为**每个 anycon 会话一个 `codex app-server` 进程、进程里一个 thread**，生命周期和 Claude Code 的进程一样由 `sessions.idle_timeout` 管（空闲退出、下次 `thread/resume`）。原因：① 进程的 env 是整个进程共享的，共用进程就没法给每个会话不同的 env（`capabilities.env`）；② 一个会话的 app-server 卡死或崩溃不连累别的会话；③ 和现有 `AgentHandle` 一一对应，daemon 的并发上限、空闲回收、关停逻辑不用为 Codex 开特例。代价是多个会话同时活着时多占几个进程的内存（`sessions.max_concurrent` 默认 6）。共用进程留到确有需要时再做（adapter 内部的事，不影响协议）。
 
 ---
 
@@ -480,7 +480,7 @@ ADR-1 拆成两层来看：
 **原因**：
 
 - 用户要的是「在手机和浏览器里像用 Claude 桌面版一样用自己的机器」。hub 负责连通性，客户端体验是另一件事；ADR-1 把两者绑在一起，结果是客户端功能被「薄」这个连接层原则误伤
-- 手机上的典型用法是一口气派几个任务。`sessions.max_concurrent = 3` 允许同一项目同时跑多个会话，它们在同一个目录里互相踩；每会话一个 worktree 是 Claude 桌面版验证过的解法（它的分支前缀设置作用于新会话，说明「每会话一条分支」是默认形态）
+- 手机上的典型用法是一口气派几个任务。`sessions.max_concurrent`（默认 6）允许同一项目同时跑多个会话，它们在同一个目录里互相踩；每会话一个 worktree 是 Claude 桌面版验证过的解法（它的分支前缀设置作用于新会话，说明「每会话一条分支」是默认形态）
 - worktree、diff、git 操作都在 daemon 上执行，经 E2E 到浏览器，hub 照样只看到元数据，隐私模型不变
 - PR 交给 agent：daemon 里实现 push / PR 要处理凭证、PR 文本、各家 forge，等于在 daemon 里重写一遍 agent 已经会做的事
 

@@ -43,7 +43,7 @@ async fn exit_codes_before_and_after_init() {
     assert!(ids.contains(&"config") && ids.contains(&"daemon") && ids.contains(&"workspace"));
     assert!(j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "daemon").unwrap()["ok"] == false);
     // config 不需要 daemon
-    assert_eq!(anycon(&home, &["config", "get", "sessions.max_concurrent"], None, &[]).await.stdout.trim(), "3");
+    assert_eq!(anycon(&home, &["config", "get", "sessions.max_concurrent"], None, &[]).await.stdout.trim(), "6");
     let r = anycon(&home, &["config", "set", "sessions.max_concurrent", "5"], None, &[]).await;
     assert!(r.stdout.contains("daemon is not running"), "{}", r.stdout);
     assert_eq!(anycon(&home, &["config", "get", "sessions.max_concurrent"], None, &[]).await.stdout.trim(), "5");

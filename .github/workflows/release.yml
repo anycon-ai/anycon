@@ -135,15 +135,15 @@ jobs:
         env:
           REF: ${{ env.PUBLISH == 'true' && format('{0}@{1}', env.IMAGE, steps.build.outputs.digest) || 'anycon-hub:release-test' }}
         run: |
-          docker run -d --name hub -p 127.0.0.1:8080:8080 -e ANYCON_PUBLIC_URL=http://127.0.0.1:8080 "$REF"
+          docker run -d --name hub -p 127.0.0.1:8900:8900 -e ANYCON_PUBLIC_URL=http://127.0.0.1:8900 "$REF"
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            if curl -fsS http://127.0.0.1:8900/healthz; then break; fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:8080/healthz
+          curl -fsS http://127.0.0.1:8900/healthz
           echo
           # Web UI 里 npm 包的许可证随 Web UI 一起由 hub 下发（先存文件：管道里 grep -q 提前退出会让 curl 在 pipefail 下失败）
-          curl -fsS -o web-licenses.txt http://127.0.0.1:8080/THIRD-PARTY-LICENSES.txt
+          curl -fsS -o web-licenses.txt http://127.0.0.1:8900/THIRD-PARTY-LICENSES.txt
           grep -q 'THIRD-PARTY SOFTWARE NOTICES' web-licenses.txt
           docker cp hub:/usr/share/doc/anycon-hub ./doc
           ls -l doc

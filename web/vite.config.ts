@@ -8,7 +8,7 @@ import { defaultClientConditions, defineConfig, type Plugin } from 'vite'
 import { thirdPartyLicenses } from './scripts/third-party-licenses'
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
-const hub = process.env.ANYCON_HUB_URL ?? 'http://127.0.0.1:8080'
+const hub = process.env.ANYCON_HUB_URL ?? 'http://127.0.0.1:8900'
 
 /**
  * Noise wasm（`just gen-wasm` 的产物，gitignore）还没构建时，让 typecheck / lint / test / build 仍然能过：
@@ -33,7 +33,7 @@ function wasmFallback(): Plugin {
   }
 }
 
-// 开发时把 hub 的 HTTP / WS 表面代理到本地 hub（默认 :8080），浏览器只看到同一个 origin。
+// 开发时把 hub 的 HTTP / WS 表面代理到本地 hub（默认 :8900），浏览器只看到同一个 origin。
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),

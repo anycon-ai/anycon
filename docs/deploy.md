@@ -31,7 +31,7 @@ anycon-hub 容器**只做一件事**：在一个明文 HTTP 端口上提供服�
 ```bash
 docker run -d --name anycon-hub \
   --restart unless-stopped \
-  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:8900:8900 \
   -v ./anycon-data:/data \
   -e ANYCON_PUBLIC_URL=https://hub.example.com \
   ghcr.io/anycon-ai/hub:latest
@@ -40,7 +40,7 @@ docker run -d --name anycon-hub \
 首次启动，日志里会打印管理员 token：
 
 ```
-anycon-hub 0.1.0 listening on 0.0.0.0:8080
+anycon-hub 0.1.0 listening on 0.0.0.0:8900
 mode: single
 first run — admin token (also saved to /data/admin-token):
   7f3a9c…
@@ -60,7 +60,7 @@ hub 跑在家里、家里走局域网 IP 的部署方式见 § 4「家里跑 hub
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `ANYCON_PUBLIC_URL` | （必填） | 公网地址，必须是不带路径的 `http(s)://host[:port]`。WebSocket 的 Origin 校验、cookie 属性依赖它。局域网 IP 访问不用写在这里，hub 对私有网段和 localhost 的 http 自动放行。**配对链接不用它**：链接由 daemon 按自己配置里的 `hub.url` 生成（`${hub.url}/pair#code=…`），所以 `anycon init --hub` 填的地址要和用户浏览器访问的一致 |
-| `ANYCON_LISTEN` | `0.0.0.0:8080` | 监听地址 |
+| `ANYCON_LISTEN` | `0.0.0.0:8900` | 监听地址 |
 | `ANYCON_MODE` | `single` | `single` 或 `multi`（不区分大小写），其他值启动报错。`multi` 是开放注册 + 配额，没有 bootstrap token、token 登录和邀请，要求至少配一种登录途径（SMTP 或 OAuth），见 § 9 |
 | `ANYCON_ADMIN_TOKEN` | （首启自动生成） | 仅 `single`。管理员登录 token。不设则首次启动生成并写入 `/data/admin-token`。改它重启即重置登录。`multi` 里设了会被忽略（启动警告），也不生成、不读写 `admin-token` |
 | `ANYCON_ADMIN_EMAILS` | （空） | 仅 `multi`。逗号分隔的邮箱：账号邮箱在这个列表里的就是管理员（读取时判断，不写进库里，所以改了重启即生效，去掉就失去权限）。每一项必须是合法邮箱，不合法启动报错（错误里只说第几项，不回显地址）。`single` 里设了被忽略（警告）。`multi` 里留空会警告：这时只有库里已经被授予管理员的账号能管理 hub，而全新的库里没有这样的账号 |
@@ -80,7 +80,7 @@ hub 跑在家里、家里走局域网 IP 的部署方式见 § 4「家里跑 hub
 | `ANYCON_SMTP_URL` | （空 = 不发邮件） | 邮箱验证码登录和邮件通知（[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)）。`smtps://user:pass@smtp.example.com:465`（隐式 TLS）或 `smtp://user:pass@smtp.example.com:587`（STARTTLS，必须成功）；用户名密码里的特殊字符要百分号编码（`@` → `%40`）。`smtp+plain://host:25` 不加密，只允许本机和内网：`localhost`、`*.localhost`、回环 / 私有（RFC 1918）/ 链路本地 / `100.64.0.0/10`、IPv6 的 `::1` / `fc00::/7` / `fe80::/10`，写主机名也行（docker compose 里可以直接写服务名，`smtp+plain://mailpit:1025`）：hub 每次发信前自己解析它，解析出的地址必须**全部**是本机 / 内网，然后直接连这个 IP（不会被 DNS 搜索域或改解析骗到公网）。IP 字面量不在这些范围、或主机名解析出公网地址：IP 字面量启动就报错，主机名在发信时失败并记 warn（错误信息不带 URL，它含密码）——所以写错成公网主机名时，启动不会报错，要看第一封信的日志。配了它，登录页才出现「邮箱」，账号设置里才能绑定邮箱 |
 | `ANYCON_EMAIL_FROM` | （配了 SMTP 就必填） | 发件人，`Anycon <noreply@example.com>` 或裸地址。要是 SMTP 服务商允许的发件地址 |
 | `ANYCON_VAPID_SUBJECT` | `ANYCON_PUBLIC_URL`（https 时），否则 `mailto:` + 发件人，再没有就 `mailto:noreply@<PUBLIC_URL 的主机名>` | Web Push 的 VAPID `sub`：推送服务出问题时联系你的方式，`mailto:you@example.com` 或 https 地址。VAPID 密钥本身首次启动自动生成，存 `<DATA_DIR>/vapid.json`，**备份 `/data` 时一起备份**（丢了所有浏览器要重新开启推送） |
-| `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | dev server 预览的 origin 模板（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)），如 `https://*.preview-example.net`：`*` 是最左边的一整段，代表每个预览的 label。**预览域名必须和 `ANYCON_PUBLIC_URL` 不在同一个可注册域名下**（`hub.example.com` 配 `*.preview.example.com` 会启动报错），要单独的域名和泛域名证书，见 § 4「dev server 预览」。只有本机开发可以用 http：`http://*.preview.localhost:8080` |
+| `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | dev server 预览的 origin 模板（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)），如 `https://*.preview-example.net`：`*` 是最左边的一整段，代表每个预览的 label。**预览域名必须和 `ANYCON_PUBLIC_URL` 不在同一个可注册域名下**（`hub.example.com` 配 `*.preview.example.com` 会启动报错），要单独的域名和泛域名证书，见 § 4「dev server 预览」。只有本机开发可以用 http：`http://*.preview.localhost:8900` |
 | `ANYCON_PREVIEW_BYTES_PER_MIN` | `536870912`（512 MiB），最小 `205824` | 每个账号预览流量（两个方向合计）每分钟的预算。超了只暂停预览，不影响会话 |
 | `ANYCON_PREVIEW_MAX_CONNECTIONS` | `16` | 每个账号同时在线的预览连接数（一个预览域名的所有标签页共用一条） |
 | `ANYCON_TERMS_URL` / `ANYCON_PRIVACY_URL` | （空 = 不显示） | 服务条款、隐私政策的地址，两种模式都能用。配了的那个经 `/api/config` 的 `terms_url` / `privacy_url` 下发：登录页最下面显示「继续即表示你同意服务条款，并已阅读隐私政策」并链接过去（只配一个就只提那一个，新标签页打开），`anycon connect` 用邮箱验证码登录前也打印同一句话——这两处是账号被创建的地方（`multi` 的开放注册）。必须是 https：链接显示在登录页上，http 的地址在路上可以被换掉；只有 `localhost`、`*.localhost` 和本机 / 内网 IP 可以用 http（本机开发）。不能带用户名密码。不合法启动报错。开放注册的 hub（§ 9）应该配上；只给自己和邀请的人用的 hub 一般不需要 |
@@ -145,7 +145,7 @@ ANYCON_DATABASE_URL=postgres://anycon:密码@db.example.com:5432/anycon
 
 ```
 hub.example.com {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:8900
 }
 ```
 
@@ -160,7 +160,7 @@ server {
     # ssl_certificate …
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:8900;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -179,7 +179,7 @@ labels:
   - traefik.enable=true
   - traefik.http.routers.anycon.rule=Host(`hub.example.com`)
   - traefik.http.routers.anycon.tls.certresolver=letsencrypt
-  - traefik.http.services.anycon.loadbalancer.server.port=8080
+  - traefik.http.services.anycon.loadbalancer.server.port=8900
 ```
 
 ### Cloudflare Tunnel
@@ -190,7 +190,7 @@ hub 也可以放在家里，不一定要 VPS：
 # cloudflared config
 ingress:
   - hostname: hub.example.com
-    service: http://localhost:8080
+    service: http://localhost:8900
   - service: http_status:404
 ```
 
@@ -198,7 +198,7 @@ Cloudflare 免费版支持 WebSocket。注意 Cloudflare 会终止 TLS 并看到
 
 ### 家里跑 hub：局域网 + 公网
 
-hub 和 daemon 跑在同一台 Mac mini 上是常见配置：家里用 `http://192.168.1.10:8080` 直连，出门经 Cloudflare Tunnel 或端口转发走 `https://hub.example.com`。
+hub 和 daemon 跑在同一台 Mac mini 上是常见配置：家里用 `http://192.168.1.10:8900` 直连，出门经 Cloudflare Tunnel 或端口转发走 `https://hub.example.com`。
 
 - `ANYCON_PUBLIC_URL` 填公网域名。局域网 IP 不用配置，hub 对私有网段和 localhost 的 http 请求自动放行
 - 局域网上用 token（`single`）或邮箱验证码登录。GitHub、Google（以及将来的 passkey）只在公网域名可用
@@ -224,7 +224,7 @@ server {
     # ssl_certificate：*.preview-example.net 的泛域名证书
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:8900;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -448,7 +448,7 @@ Mac 睡眠后 daemon 会自动重连，但如果 Mac mini 要 7×24 可用，系
 ```bash
 docker run -d --name anycon-hub \
   --restart unless-stopped \
-  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:8900:8900 \
   -v ./anycon-data:/data \
   -e ANYCON_PUBLIC_URL=https://hub.example.com \
   -e ANYCON_MODE=multi \

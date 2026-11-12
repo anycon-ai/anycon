@@ -57,7 +57,7 @@ You need Docker for the hub. The `anycon` binary (daemon and CLI in one) runs on
 **1. Run a hub.** It can run on the same machine as the agents, or anywhere both sides can reach.
 
 ```bash
-docker run -d --name anycon-hub -p 8080:8080 -v anycon-data:/data \
+docker run -d --name anycon-hub -p 8900:8900 -v anycon-data:/data \
   -e ANYCON_PUBLIC_URL=https://hub.example.com ghcr.io/anycon-ai/hub:latest
 docker logs anycon-hub    # prints a one-time admin token on first start
 ```
@@ -167,7 +167,7 @@ Toolchain versions are pinned in [`mise.toml`](mise.toml) (Rust, bun, Node, just
 ```bash
 bun install
 just gen-wasm && bun run --cwd web build   # first time: Noise wasm + Web UI (embedded into the hub)
-just dev     # hub :8080 + daemon (mock agent) + Web dev server :5173
+just dev     # hub :8900 + daemon (mock agent) + Web dev server :5173
 just test    # Rust + TypeScript tests
 just lint    # fmt, clippy, oxlint, typecheck
 just e2e     # Playwright against a real hub + daemon + Web UI

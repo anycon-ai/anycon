@@ -757,7 +757,17 @@
     "deleteConfirm": "删除会话",
     "branch": "分支",
     "context": "上下文",
-    "contextValue": "{{percent}}% · {{used}} / {{window}}"
+    "contextValue": "{{percent}}% · {{used}} / {{window}}",
+    "project": "项目",
+    "limits": "账号额度",
+    "limitUnknown": "用量额度",
+    "limit5h": "5 小时额度",
+    "limitWeekly": "周额度",
+    "limitDays_other": "{{count}} 天额度",
+    "limitHours_other": "{{count}} 小时额度",
+    "limitMinutes_other": "{{count}} 分钟额度",
+    "limitValue": "已用 {{percent}}%",
+    "limitValueResets": "{{percent}}% · {{time}} 恢复"
   },
   "agent": {
     "noneReady": "这个节点上没有就绪的 agent。",

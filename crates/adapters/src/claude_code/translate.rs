@@ -27,6 +27,7 @@
 //!   `system/local_command_output` 都发 `Notice { code: command_output }`，不当作模型的文本
 //! - `result.modelUsage.<模型>.contextWindow` → `Usage.context_window`；`context_tokens` 取本 turn 最近一条顶层 assistant 消息的
 //!   `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+//! - `rate_limit_event` 里各个用量窗口的占用（`unifiedWindows`，没有时是顶层的 `utilization`）→ `Usage.limits`
 //! - `control_request { subtype: elicitation }`（MCP server 向用户要输入）→ 权限请求，见 `permissions::from_elicitation`
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -35,7 +36,7 @@ use std::time::Instant;
 use anycon_agent_api::{AgentEvent, PendingPermission, ResumeHandle};
 use anycon_protocol::{
     ActivityState, Event, FileChangeKind, LimitScope, NoticeLevel, PlanEntry, PlanStatus, TaskAgent, TaskAgentState,
-    TaskKind, TaskPhase, TaskStatus, TaskUsage, ToolCategory, ToolResultDetail, TurnDoneReason, Usage,
+    TaskKind, TaskPhase, TaskStatus, TaskUsage, ToolCategory, ToolResultDetail, TurnDoneReason, Usage, UsageWindow,
 };
 use serde_json::{json, Value};
 
@@ -196,6 +197,9 @@ pub struct Translator {
     /// 上游的模型里同一时刻只有一个这样的窗口，所以只记最后一条：`rejected` 记下，`allowed` / `allowed_warning` 清掉
     /// （真实录制里 `allowed` 的类型一律是 `five_hour`，按类型记的话 `seven_day` 之类的拒绝永远清不掉）。
     limit_now: Option<(String, Option<u64>)>,
+    /// `rate_limit_event` 报过的各个用量窗口：限额类型 → `(已用比例 0–1, 恢复时间 Unix 秒)`。只用来填
+    /// `turn_done.usage.limits`。
+    usage_windows: HashMap<String, (f64, Option<u64>)>,
     /// 本 turn 里带 `api_error = usage_limit_reached` 的 API 错误消息报告的限额：`(限额类型, 恢复时间 Unix 秒)`。
     api_usage_limit: Option<(Option<String>, Option<u64>)>,
     /// 现在的 Unix 毫秒；测试里换成固定时间。
@@ -243,6 +247,7 @@ fn merge_usage(a: Usage, b: Usage) -> Usage {
         model: b.model.or(a.model),
         context_window: b.context_window.or(a.context_window),
         context_tokens: b.context_tokens.or(a.context_tokens),
+        limits: if b.limits.is_empty() { a.limits } else { b.limits },
     }
 }
 
@@ -394,6 +399,18 @@ fn limit_scope(kind: &str) -> Option<LimitScope> {
     }
 }
 
+/// 限额类型 → `(窗口长度分钟, 只对它计的模型系列)`。只认上游明确是时间窗口的类型；`overage` 这类不是窗口的、
+/// 不认识的类型不报。
+fn usage_window_kind(kind: &str) -> Option<(u64, Option<&'static str>)> {
+    match kind {
+        "five_hour" => Some((300, None)),
+        "seven_day" => Some((10_080, None)),
+        "seven_day_opus" => Some((10_080, Some("opus"))),
+        "seven_day_sonnet" => Some((10_080, Some("sonnet"))),
+        _ => None,
+    }
+}
+
 /// 限额类型 → 给人看的窗口名。
 fn rate_limit_window(kind: Option<&str>) -> &str {
     match kind {
@@ -507,6 +524,7 @@ impl Translator {
             retrying: false,
             rate_limit_seen: HashMap::new(),
             limit_now: None,
+            usage_windows: HashMap::new(),
             api_usage_limit: None,
             now_ms: system_now_ms,
             mcp_failed: HashSet::new(),
@@ -1059,6 +1077,7 @@ impl Translator {
     /// 这个事件在用量每变一点就会发一次。
     fn on_rate_limit(&mut self, v: &Value, out: &mut Vec<Out>) {
         let info = &v["rate_limit_info"];
+        self.record_usage_windows(info);
         let Some(status) = info["status"].as_str() else { return };
         let kind = info["rateLimitType"].as_str();
         let slot = kind.unwrap_or("").to_string();
@@ -1093,6 +1112,43 @@ impl Translator {
                 resets_at_ms: resets_at.map(|s| s.saturating_mul(1000)),
             },
         );
+    }
+
+    /// 记下 `rate_limit_info` 里各个窗口的占用。`unifiedWindows` 是全部窗口的快照（类型 → `utilization` / `resetsAt`），
+    /// 有它就整份换掉；没有时顶层的 `utilization` 只说 `rateLimitType` 那一个窗口，其余的沿用之前记的。
+    fn record_usage_windows(&mut self, info: &Value) {
+        let window = |w: &Value| w["utilization"].as_f64().map(|u| (u, w["resetsAt"].as_u64()));
+        if let Some(all) = info["unifiedWindows"].as_object() {
+            self.usage_windows = all.iter().filter_map(|(kind, w)| Some((kind.clone(), window(w)?))).collect();
+        }
+        if let (Some(kind), Some(w)) = (info["rateLimitType"].as_str(), window(info)) {
+            self.usage_windows.insert(kind.to_string(), w);
+        }
+    }
+
+    /// `turn_done.usage.limits`：记下的用量窗口里认识的那些，先账号级后按模型的、短窗口在前。恢复时间已经过了的
+    /// 是上一个窗口的数，不报。
+    fn usage_limits(&self) -> Vec<UsageWindow> {
+        let now = (self.now_ms)();
+        let mut limits: Vec<UsageWindow> = self
+            .usage_windows
+            .iter()
+            .filter_map(|(kind, (used, resets_at))| {
+                let (minutes, model) = usage_window_kind(kind)?;
+                let resets_at_ms = resets_at.map(|s| s.saturating_mul(1000));
+                if resets_at_ms.is_some_and(|t| t <= now) {
+                    return None;
+                }
+                Some(UsageWindow {
+                    window_minutes: Some(minutes),
+                    used_percent: (used.max(0.0) * 100.0).round() as u32,
+                    resets_at_ms,
+                    model: model.map(str::to_string),
+                })
+            })
+            .collect();
+        limits.sort_by(|a, b| (&a.model, a.window_minutes).cmp(&(&b.model, b.window_minutes)));
+        limits
     }
 
     /// 这个 turn 的 `usage_limit` 错误要带的 `(恢复时间 Unix 秒, 范围)`；不是用量耗尽返回 `None`。
@@ -1567,6 +1623,7 @@ impl Translator {
             model: self.model.clone(),
             context_window: self.context_window_of(&v["modelUsage"]),
             context_tokens: self.context_tokens,
+            limits: self.usage_limits(),
         };
         let usage = match self.carry.take() {
             Some(c) => merge_usage(c, usage),

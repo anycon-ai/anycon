@@ -9,7 +9,7 @@
 // - task（后台任务快照）按 id 只留最新一条：有 tool_id 且对应的工具块已加载就挂在那个块上，否则在第一次出现的位置单独成块
 // - notice 生成一行提示（info / warning）；activity 是视图级的临时状态，内容事件 / turn_done / state none 时清掉
 // - message_delivery 把「可能没有送达」标在对应的用户消息块上（事件流只追加，不改 user_message）
-// - turn_done.usage 里的 context_window / context_tokens 记成视图的最新上下文占用
+// - turn_done.usage 里的 context_window / context_tokens 记成视图的最新上下文占用，limits 记成最新的账号用量窗口
 import type {
   AttachmentRef,
   EditKind,
@@ -35,6 +35,7 @@ import type {
   ToolResultDetail,
   TurnDoneReason,
   Usage,
+  UsageWindow,
 } from '@/protocol'
 
 interface BlockBase {
@@ -257,6 +258,8 @@ export interface SessionView {
   /** 当前的临时状态；收到内容事件 / `turn_done` / `state = none` 时是 null。显示时还要看会话是不是还在跑。 */
   activity: ActivityInfo | null
   context: ContextUsage | null
+  /** 最近一个带 `usage.limits` 的 `turn_done` 报的账号用量窗口（5 小时、周…）；agent 没报过是空数组。 */
+  limits: UsageWindow[]
 }
 
 export function emptyView(initialSettings: SessionSettings | null = null): SessionView {
@@ -280,6 +283,7 @@ export function emptyView(initialSettings: SessionSettings | null = null): Sessi
     usage: { turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null },
     activity: null,
     context: null,
+    limits: [],
   }
 }
 
@@ -318,6 +322,7 @@ class Work {
   usage: UsageSum
   activity: ActivityInfo | null
   context: ContextUsage | null
+  limits: UsageWindow[]
 
   constructor(v: SessionView) {
     this.blocks = v.blocks.slice()
@@ -339,6 +344,7 @@ class Work {
     this.usage = { ...v.usage }
     this.activity = v.activity
     this.context = v.context
+    this.limits = v.limits
   }
 
   freeze(): SessionView {
@@ -362,6 +368,7 @@ class Work {
       usage: this.usage,
       activity: this.activity,
       context: this.context,
+      limits: this.limits,
     }
   }
 
@@ -591,6 +598,8 @@ function applyOne(w: Work, se: SessionEvent): void {
         if (ev.usage.cost_usd != null) w.usage.costUsd = (w.usage.costUsd ?? 0) + ev.usage.cost_usd
         // 被取消 / 出错的 turn 常常没有这两个数：不覆盖上一次的
         if (ev.usage.context_window != null && ev.usage.context_tokens != null) w.context = { window: ev.usage.context_window, tokens: ev.usage.context_tokens }
+        // 同上：这个 turn 没报就留着上一次的
+        if (ev.usage.limits?.length) w.limits = ev.usage.limits
       }
       return
     }

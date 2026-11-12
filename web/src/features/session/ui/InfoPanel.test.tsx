@@ -1,7 +1,8 @@
-// 信息面板的「Agent」卡片：主 agent 的状态和 token，子 agent 的状态、token、调用数，在工作的个数；不再有选项和改动的文件。
-import { cleanup, render, screen, within } from '@testing-library/react'
+// 信息面板：「会话」卡片的各项（名称一行、值一行），「Agent」卡片（主 agent 的状态和 token，子 agent 的状态、token、调用数，
+// 在工作的个数，token 变动时的背景动画），上下文占用和账号用量窗口。
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Event, SessionStatus } from '@/protocol'
 import { evs, resetSeq } from '@/test/factories'
 import { buildView } from '../reducer'
@@ -189,20 +190,171 @@ describe('InfoPanel context usage', () => {
   })
 })
 
-describe('InfoPanel working directory', () => {
-  it('is plain text without a way to open it', () => {
+describe('InfoPanel session card', () => {
+  it('shows each value in full on its own line under its name, with a button to copy it', () => {
+    const workDir = '/Volumes/work/github/anycon/.anycon/worktrees/shiny-otter'
+    panel('idle', [], { project: 'anycon', workDir, worktree: { branch: 'anycon/shiny-otter', base: 'origin/main', state: 'active' } as InfoPanelProps['worktree'] })
+    expect(screen.getByTestId('info-project')).toHaveTextContent('Projectanycon')
+    const dir = screen.getByTestId('info-workdir')
+    expect(dir).toHaveTextContent(`Working directory${workDir}`)
+    // 不截断，也不靠悬停提示显示全文
+    expect(dir.querySelector('.truncate, [title]:not(button)')).toBeNull()
+    expect(within(dir).getByTestId('info-workdir-copy')).toHaveAccessibleName('Copy')
+    const branch = screen.getByTestId('info-branch')
+    expect(branch).toHaveTextContent('Branchanycon/shiny-otter ← origin/main')
+    expect(within(branch).getByTestId('info-branch-copy')).toBeInTheDocument()
+  })
+
+  it('copies the working directory', async () => {
+    const user = userEvent.setup()
     panel('idle', [], { project: 'app', workDir: '/ws/app' })
-    expect(screen.getByTestId('info-workdir')).toHaveTextContent('app · /ws/app')
+    await user.click(screen.getByTestId('info-workdir-copy'))
+    expect(await navigator.clipboard.readText()).toBe('/ws/app')
+  })
+
+  it('has no way to open the working directory unless the page gives it one', () => {
+    panel('idle', [], { project: 'app', workDir: '/ws/app' })
     expect(screen.queryByTestId('info-workdir-link')).toBeNull()
   })
 
-  it('is a button that opens the file browser when the page gives it one', async () => {
+  it('has a button that opens the file browser when the page gives it one', async () => {
     let opened = 0
     panel('idle', [], { project: 'app', workDir: '/ws/app', onOpenWorkDir: () => void opened++ })
-    const link = screen.getByTestId('info-workdir-link')
-    expect(link).toHaveTextContent('app · /ws/app')
+    const link = within(screen.getByTestId('info-workdir')).getByTestId('info-workdir-link')
+    expect(link).toHaveAccessibleName('Browse the files in the working directory')
     expect(link).toHaveAttribute('title', 'Browse the files in the working directory')
     await userEvent.setup().click(link)
     expect(opened).toBe(1)
+  })
+
+  it('names a session without a project or directory a temporary workspace', () => {
+    panel('idle', [], { onOpenWorkDir: () => {} })
+    expect(screen.queryByTestId('info-project')).toBeNull()
+    expect(screen.getByTestId('info-workdir')).toHaveTextContent('Temporary workspace')
+    expect(screen.getByTestId('info-workdir-link')).toBeInTheDocument()
+    expect(screen.queryByTestId('info-workdir-copy')).toBeNull()
+  })
+})
+
+describe('InfoPanel usage limits', () => {
+  const HOUR = 3_600_000
+
+  it('shows one bar per window the agent reported, with the reset time', () => {
+    const now = Date.now()
+    panel('idle', [], {
+      limits: [
+        { window_minutes: 300, used_percent: 42, resets_at_ms: now + 2 * HOUR },
+        { window_minutes: 10_080, used_percent: 91, resets_at_ms: now + 100 * HOUR },
+        { window_minutes: 10_080, used_percent: 130, model: 'opus' },
+      ],
+    })
+    const card = screen.getByTestId('info-limits')
+    expect(card).toHaveTextContent('Usage limits')
+    expect(card).toHaveTextContent('Claude Code')
+    const rows = screen.getAllByTestId('info-limit')
+    expect(rows.map((r) => r.dataset.percent)).toEqual(['42', '91', '130'])
+    expect(rows[0]).toHaveTextContent('5-hour limit')
+    expect(within(rows[0]!).getByTestId('info-limit-value')).toHaveTextContent(/^42% · resets .+/)
+    expect(within(rows[0]!).getByRole('progressbar', { name: '5-hour limit' })).toHaveAttribute('aria-valuenow', '42')
+    expect(rows[1]).toHaveTextContent('Weekly limit')
+    expect(within(rows[1]!).getByRole('progressbar').firstElementChild).toHaveClass('bg-danger')
+    // 按模型的窗口带模型名；没有恢复时间只写百分比；超过 100% 画满
+    expect(rows[2]).toHaveTextContent('Weekly limit · opus')
+    expect(within(rows[2]!).getByTestId('info-limit-value')).toHaveTextContent('130% used')
+    expect(within(rows[2]!).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
+  })
+
+  it('names other window lengths by their duration', () => {
+    panel('idle', [], { limits: [{ window_minutes: 1440, used_percent: 1 }, { window_minutes: 180, used_percent: 2 }, { window_minutes: 90, used_percent: 3 }, { used_percent: 4 }] })
+    expect(screen.getAllByTestId('info-limit').map((r) => within(r).getByRole('progressbar').getAttribute('aria-label'))).toEqual(['1-day limit', '3-hour limit', '90-minute limit', 'Usage limit'])
+  })
+
+  it('leaves out a window whose reset time has passed, and the card when nothing is left', () => {
+    const now = Date.now()
+    const { unmount } = panel('idle', [], { limits: [{ window_minutes: 300, used_percent: 80, resets_at_ms: now - HOUR }, { window_minutes: 10_080, used_percent: 5, resets_at_ms: now + HOUR }] })
+    expect(screen.getAllByTestId('info-limit')).toHaveLength(1)
+    expect(screen.getByTestId('info-limit')).toHaveTextContent('Weekly limit')
+    unmount()
+    panel('idle', [], { limits: [{ window_minutes: 300, used_percent: 80, resets_at_ms: now - HOUR }] })
+    expect(screen.queryByTestId('info-limits')).toBeNull()
+    cleanup()
+    panel('idle', [])
+    expect(screen.queryByTestId('info-limits')).toBeNull()
+  })
+
+  it('takes the windows from the latest turn_done that reported them', () => {
+    const view = buildView(
+      evs([
+        { type: 'turn_done', turn_id: 1, reason: 'completed', usage: { duration_ms: 1, limits: [{ window_minutes: 300, used_percent: 10 }] } },
+        { type: 'turn_done', turn_id: 2, reason: 'completed', usage: { duration_ms: 1, limits: [{ window_minutes: 300, used_percent: 20 }] } },
+        // 被取消的 turn 没报：留着上一次的
+        { type: 'turn_done', turn_id: 3, reason: 'cancelled', usage: { duration_ms: 1 } },
+      ]),
+    )
+    expect(view.limits).toEqual([{ window_minutes: 300, used_percent: 20 }])
+    expect(buildView(evs([])).limits).toEqual([])
+  })
+})
+
+describe('InfoPanel agents card activity', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const base = (over: Partial<InfoPanelProps>): InfoPanelProps => ({
+    agentLabel: 'Claude Code',
+    status: 'running',
+    subagents: [],
+    createdAt: 1,
+    usage: { turns: 1, inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null },
+    pending: [],
+    onFocusPending: () => {},
+    archived: false,
+    onRename: () => {},
+    onArchive: () => {},
+    onDelete: () => {},
+    onExport: () => {},
+    onRestart: () => {},
+    ...over,
+  })
+  const card = (): HTMLElement => screen.getByTestId('info-agents')
+  const sweeps = (): number => card().querySelectorAll('.token-sweep').length
+  const tick = (ms: number): void => void act(() => void vi.advanceTimersByTime(ms))
+
+  it('sweeps the background when the token numbers change, not on the first render', () => {
+    const { rerender } = render(<InfoPanel {...base({ status: 'idle' })} />)
+    tick(2000)
+    expect(sweeps()).toBe(0)
+    rerender(<InfoPanel {...base({ status: 'idle', usage: { turns: 2, inputTokens: 300, outputTokens: 90, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null } })} />)
+    tick(0)
+    expect(sweeps()).toBe(1)
+    expect(card().dataset.pulse).toBe('1')
+    // 别的 props 变了、token 没变：不动
+    rerender(<InfoPanel {...base({ status: 'idle', agentLabel: 'Codex', usage: { turns: 2, inputTokens: 300, outputTokens: 90, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null } })} />)
+    tick(2000)
+    expect(card().dataset.pulse).toBe('1')
+  })
+
+  it('sweeps while a turn is running and events keep arriving, one after another instead of all at once', () => {
+    const { rerender } = render(<InfoPanel {...base({ activitySeq: 10 })} />)
+    rerender(<InfoPanel {...base({ activitySeq: 11 })} />)
+    tick(0)
+    expect(card().dataset.pulse).toBe('1')
+    // 一道光还没扫完又来了很多事件：合并成扫完之后的一次
+    for (let seq = 12; seq < 40; seq++) rerender(<InfoPanel {...base({ activitySeq: seq })} />)
+    tick(600)
+    expect(card().dataset.pulse).toBe('1')
+    tick(600)
+    expect(card().dataset.pulse).toBe('2')
+    // 没有新事件就停下
+    tick(5000)
+    expect(card().dataset.pulse).toBe('2')
+    expect(sweeps()).toBe(1)
+  })
+
+  it('does not sweep for new events when no turn is running', () => {
+    const { rerender } = render(<InfoPanel {...base({ status: 'idle', activitySeq: 10 })} />)
+    rerender(<InfoPanel {...base({ status: 'idle', activitySeq: 11 })} />)
+    tick(2000)
+    expect(sweeps()).toBe(0)
   })
 })

@@ -668,6 +668,27 @@ pub struct Usage {
     /// 累计用量不同，它是「此刻窗口里有多少」，客户端拿它和 `context_window` 算占用比例。agent 不报就缺省。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
+    /// turn 结束时 agent 报过的账号用量窗口（套餐的 5 小时窗口、周窗口…），先账号级后按模型的、短窗口在前。
+    /// 这是账号的状态，不是这个会话的：同一个账号的其它会话也在消耗它。agent 不报就为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<UsageWindow>,
+}
+
+/// `Usage.limits` 的一项：agent 报的一个用量窗口的占用。数字都来自上游，adapter 不估算。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageWindow {
+    /// 窗口长度（分钟）：300 = 5 小时，10080 = 一周。上游没说就缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<u64>,
+    /// 已用的百分比（四舍五入）。上游报的超过 100 时照报。
+    pub used_percent: u32,
+    /// 窗口恢复（清零）的时间。上游没给就缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<TimestampMs>,
+    /// 只对某个模型（或模型系列）计的窗口：它的名字（Claude Code 的 `opus` / `sonnet`，Codex 计量桶的
+    /// `normalModelSlug`）。缺省 = 账号级的窗口。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// 会话事件。adapter 把各 agent 的原生事件翻译成这个集合（docs/spec/daemon.md § 8）。
@@ -1283,5 +1304,34 @@ mod tests {
         assert_eq!((v["context_window"].as_u64(), v["context_tokens"].as_u64()), (Some(200_000), Some(48_000)));
         let e = Event::TurnDone { turn_id: 1, reason: TurnDoneReason::Completed, usage: Some(u) };
         roundtrip(&e);
+    }
+
+    #[test]
+    fn usage_limits_are_optional_on_the_wire() {
+        let old: Usage = serde_json::from_value(serde_json::json!({"duration_ms": 5})).unwrap();
+        assert!(old.limits.is_empty());
+        assert!(serde_json::to_value(&old).unwrap().get("limits").is_none());
+
+        let five_hour = UsageWindow {
+            window_minutes: Some(300),
+            used_percent: 42,
+            resets_at_ms: Some(1_791_721_200_000),
+            model: None,
+        };
+        let opus = UsageWindow {
+            window_minutes: Some(10_080),
+            used_percent: 7,
+            resets_at_ms: None,
+            model: Some("opus".into()),
+        };
+        let u = Usage { limits: vec![five_hour, opus], ..Default::default() };
+        assert_eq!(
+            serde_json::to_value(&u).unwrap()["limits"],
+            serde_json::json!([
+                {"window_minutes": 300, "used_percent": 42, "resets_at_ms": 1_791_721_200_000u64},
+                {"window_minutes": 10_080, "used_percent": 7, "model": "opus"}
+            ])
+        );
+        roundtrip(&Event::TurnDone { turn_id: 1, reason: TurnDoneReason::Completed, usage: Some(u) });
     }
 }

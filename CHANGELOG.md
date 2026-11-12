@@ -4,9 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Plan usage limits in the session info panel. When Claude Code or Codex reports the usage windows of your plan (5-hour, weekly, weekly per model), the panel shows a "Usage limits" card with one bar per window: percent used and when it resets. The numbers are the ones the agent reported when the last turn of this session ended; other sessions on the same account use the same allowance, so a window whose reset time has passed is left out. Nothing is shown when the agent reports no windows (API-key sign-in, ACP agents). Protocol: `turn_done.usage.limits`, a list of `{ window_minutes?, used_percent, resets_at_ms?, model? }`, optional and omitted when empty ([docs/protocol.md § 6](docs/protocol.md#6-会话事件)). Claude Code's come from `rate_limit_event`, Codex's from `account/rateLimits/updated` (the account bucket, plus the bucket of the session's model).
+- Web UI: the Agents card in the session info panel sweeps a faint highlight across its background whenever a token count on it changes, and while a turn is running each time new output arrives, so you can see the agents working. It is off under `prefers-reduced-motion`.
+
 ### Changed
 
 - Hub: the sign-in and email-confirmation code emails are easier to read. They are now sent as HTML with a plain-text alternative: larger text, and the code on a line of its own in large type. Both versions end with a footer that links to [anycon.ai](https://anycon.ai) (the Chinese email links to the Chinese site); mail sent by a self-hosted hub has it too. The HTML loads nothing remote (no images, fonts or tracking pixels) and the footer link carries no parameters. Notification emails are unchanged.
+- Web UI: the Session card in the info panel shows each item (project, working directory, branch, created) as a label line and a value line. Long paths and branch names wrap instead of being cut off behind a hover tooltip, the text can be selected, and the working directory and branch each have a copy button. The working directory is opened in the file browser with the button next to its label instead of by clicking the path.
 
 ## [0.3.0] - 2026-11-11
 

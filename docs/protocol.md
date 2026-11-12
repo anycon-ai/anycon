@@ -386,6 +386,8 @@ Claude Code 的 `result.terminal_reason` 为 `blocking_limit`、`prompt_too_long
 
 **`turn_done.usage` 的上下文字段**：`context_window`（模型的上下文窗口大小）和 `context_tokens`（turn 结束时上下文已经占用的 token，即最近一次模型请求的输入加缓存读写）。`input_tokens` 等是累计用量，`context_tokens` 是「此刻窗口里有多少」，客户端拿它们算占用比例；agent 不报就缺省。
 
+**`turn_done.usage.limits`：账号的用量窗口。** agent 报过套餐的用量窗口（5 小时、一周、按模型的周窗口…）时，turn 结束带上它们此刻的占用：`limits: [{ window_minutes?, used_percent, resets_at_ms?, model? }]`。`window_minutes` 是窗口长度（300 = 5 小时，10080 = 一周），`used_percent` 是已用的百分比（四舍五入，上游报的超过 100 时照报），`resets_at_ms` 是窗口恢复的时间，`model` 只在窗口是对某个模型（或模型系列）计的时候有，缺省是账号级的窗口；上游没给的字段缺省，adapter 不估算。顺序是先账号级的、后按模型的，短窗口在前。这是**账号**的状态，不是这个会话的：同一个账号的其它会话（和 anycon 之外的使用）也在消耗它，所以它只说明「这个 turn 结束时是多少」，客户端显示时要把恢复时间已过的窗口去掉。字段可选、缺省为空数组（不上线路）：API key 登录、ACP agent 等没有这些窗口的情况不带；老客户端忽略它。各 agent 的来源见 [spec/daemon.md § 8.3](spec/daemon.md#83-task--notice--activity)。
+
 **`Question.optional`**：`kind = question` 的一道题可以不答（默认 `false` = 必答，所以 AskUserQuestion 这类每题都要答的请求不变）。MCP elicitation 表单里 schema 没列进 `required` 的属性就是 `optional`：客户端允许留空提交，`permission.respond` 的 `answers` 里没有这一题；adapter 把没答的可选项从 `content` 里省略，必答的题缺答案仍然不行。
 
 **`permission.detail.url`**：`kind = other` 的请求可以带一个要用户在浏览器里打开的链接（MCP server 的 URL 模式 elicitation：先去那个页面完成登录 / 授权，再回来确认）。只会是 `http` / `https`；客户端显示完整 URL，只对这两种协议提供「打开」入口。

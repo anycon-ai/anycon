@@ -98,7 +98,7 @@
 - **单选 / 复选** `RadioChoices` / `CheckboxField`（`ui/Choice.tsx`，Radix RadioGroup / Checkbox）：每项是一整行可点的标签（≥ 36px），可带一行小字说明；归档 / 删除 worktree 的确认框和节点设置的 worktree 删除框用它。
 - **卡片**：1px `border` + `surface` 底；需要强调时换 `border-warning/50`（待审批）或 `border-danger/50`。
 - **覆盖层**：居中对话框（`Dialog`）、侧边抽屉（`Drawer`，手机上的左栏、窄屏的右栏）、底部弹层（`Sheet`，手机上的选项面板）。都基于 Radix Dialog，焦点困住、Esc 关闭。
-- **无障碍**：所有可交互元素有可访问名称；状态不只靠颜色（带文字或图标）；流式输出区域不做 token 级播报，turn 结束时通过一个 `aria-live="polite"` 的隐藏区域播报一句；`prefers-reduced-motion` 下关闭脉冲 / 光标 / 转圈动画。
+- **无障碍**：所有可交互元素有可访问名称；状态不只靠颜色（带文字或图标）；流式输出区域不做 token 级播报，turn 结束时通过一个 `aria-live="polite"` 的隐藏区域播报一句；`prefers-reduced-motion` 下关闭脉冲 / 光标 / 转圈动画，信息面板「Agent」卡片的扫光（`.token-sweep`）不显示。
 - **动效**：只有三种——状态点的缓慢脉冲、流式文本末尾的光标、加载转圈。不做页面转场。
 
 ## 响应式断点

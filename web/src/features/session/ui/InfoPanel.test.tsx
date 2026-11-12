@@ -1,5 +1,5 @@
 // 信息面板：「会话」卡片的各项（名称一行、值一行），「Agent」卡片（主 agent 的状态和 token，子 agent 的状态、token、调用数，
-// 在工作的个数，token 变动时的背景动画），上下文占用和账号用量窗口。
+// 在工作的个数，token 变动时的背景动画），上下文占用和账号用量窗口，卡片的收起 / 展开。
 import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +7,7 @@ import type { Event, SessionStatus } from '@/protocol'
 import { evs, resetSeq } from '@/test/factories'
 import { buildView } from '../reducer'
 import { backgroundCommands, subagentRows } from '../subagents'
+import { usePrefs } from '@/stores/prefs'
 import { InfoPanel, type InfoPanelProps } from './InfoPanel'
 
 beforeEach(() => resetSeq())
@@ -356,5 +357,46 @@ describe('InfoPanel agents card activity', () => {
     rerender(<InfoPanel {...base({ status: 'idle', activitySeq: 11 })} />)
     tick(2000)
     expect(sweeps()).toBe(0)
+  })
+})
+
+describe('InfoPanel collapsible cards', () => {
+  beforeEach(() => usePrefs.setState({ infoCollapsed: [] }))
+
+  it('collapses a card to its title row and expands it again, keeping the title aside visible', async () => {
+    const user = userEvent.setup()
+    panel('running', [agent('a')], { workDir: '/w' })
+    const session = screen.getByTestId('info-session')
+    const toggle = screen.getByTestId('info-session-toggle')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(within(session).getByTestId('info-workdir')).toBeInTheDocument()
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(within(session).queryByTestId('info-workdir')).toBeNull()
+    expect(usePrefs.getState().infoCollapsed).toEqual(['session'])
+
+    await user.click(screen.getByTestId('info-agents-toggle'))
+    const agents = screen.getByTestId('info-agents')
+    expect(within(agents).queryByTestId('info-agent-main')).toBeNull()
+    expect(agents).toHaveTextContent('2 working')
+
+    await user.click(toggle)
+    expect(within(session).getByTestId('info-workdir')).toBeInTheDocument()
+    expect(usePrefs.getState().infoCollapsed).toEqual(['agents'])
+  })
+
+  it('remembers collapsed cards across sessions', () => {
+    usePrefs.setState({ infoCollapsed: ['agents'] })
+    panel('idle', [])
+    expect(screen.getByTestId('info-agents-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('info-agent-main')).toBeNull()
+    expect(screen.getByTestId('info-session-toggle')).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('keeps pending approvals always open', () => {
+    panel('waiting_permission', [], { pending: [{ request_id: 'r1', title: 'Run rm' } as InfoPanelProps['pending'][number]] })
+    expect(screen.queryByTestId('info-pending-toggle')).toBeNull()
+    expect(screen.getByTestId('info-pending')).toHaveTextContent('Run rm')
   })
 })

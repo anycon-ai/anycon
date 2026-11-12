@@ -545,7 +545,7 @@ mod tests {
         let p = plan(
             &cfg,
             &[
-                ch("sessions.max_concurrent", json!(3)),
+                ch("sessions.max_concurrent", json!(6)),
                 ch("log.level", json!("debug")),
                 ch("sessions.idle_timeout", json!("20m")),
             ],

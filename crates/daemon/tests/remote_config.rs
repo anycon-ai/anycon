@@ -89,7 +89,7 @@ async fn set_config_writes_the_file_applies_it_at_once_audits_and_returns_the_ne
     let td = TestDaemon::start().await;
     let mut c = td.client("Pixel 9");
     let before = td.ctx.config.get();
-    assert_eq!((before.sessions.max_concurrent, before.log.level.as_str()), (3, "info"));
+    assert_eq!((before.sessions.max_concurrent, before.log.level.as_str()), (6, "info"));
 
     let r: NodeConfigResult = c
         .call(
@@ -149,7 +149,7 @@ async fn set_config_writes_the_file_applies_it_at_once_audits_and_returns_the_ne
     );
     let e = entries.iter().find(|e| e.target.as_deref() == Some("sessions.max_concurrent")).unwrap();
     assert_eq!((e.device_name.as_str(), e.device_id.as_str()), ("Pixel 9", "dev-Pixel 9"));
-    assert_eq!(e.detail, json!({ "old": 3, "new": 8 }));
+    assert_eq!(e.detail, json!({ "old": 6, "new": 8 }));
     let e = entries.iter().find(|e| e.target.as_deref() == Some("log.level")).unwrap();
     assert_eq!(e.detail, json!({ "old": "info", "new": "debug" }));
     td.shutdown().await;
@@ -164,11 +164,11 @@ async fn a_noop_request_writes_nothing_and_audits_nothing() {
         .call(
             &td,
             methods::NODE_SET_CONFIG,
-            changes(&[("sessions.max_concurrent", json!(3)), ("log.level", json!("info"))]),
+            changes(&[("sessions.max_concurrent", json!(6)), ("log.level", json!("info"))]),
         )
         .await
         .unwrap();
-    assert_eq!(item(&r, "sessions.max_concurrent").value, json!(3));
+    assert_eq!(item(&r, "sessions.max_concurrent").value, json!(6));
     assert_eq!(file(&td), before);
     assert!(audit(&td).await.is_empty());
     td.shutdown().await;
@@ -180,7 +180,7 @@ async fn set_config_keeps_the_comments_and_the_rest_of_the_file_as_it_was() {
     let mut c = td.client("web");
     // 手写的注释：整行注释、行内注释、段落之间的空行
     let mut text = file(&td);
-    text = text.replace("max_concurrent = 3", "max_concurrent = 3 # keep this comment");
+    text = text.replace("max_concurrent = 6", "max_concurrent = 6 # keep this comment");
     text.push_str("\n# my own notes, do not touch\n");
     std::fs::write(td.paths.config_toml(), &text).unwrap();
     td.ctx.config.reload().unwrap();
@@ -189,14 +189,14 @@ async fn set_config_keeps_the_comments_and_the_rest_of_the_file_as_it_was() {
         .call(
             &td,
             methods::NODE_SET_CONFIG,
-            changes(&[("sessions.max_concurrent", json!(6)), ("log.level", json!("warn"))]),
+            changes(&[("sessions.max_concurrent", json!(7)), ("log.level", json!("warn"))]),
         )
         .await
         .unwrap();
 
     let after = file(&td);
     let expected = text
-        .replace("max_concurrent = 3 # keep this comment", "max_concurrent = 6 # keep this comment")
+        .replace("max_concurrent = 6 # keep this comment", "max_concurrent = 7 # keep this comment")
         .replace("level = \"info\"", "level = \"warn\"");
     assert_eq!(after, expected, "only the two values changed; comments and layout are untouched");
     assert!(after.contains("# my own notes, do not touch"));

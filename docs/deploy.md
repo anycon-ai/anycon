@@ -257,7 +257,7 @@ Web UI 的代码由 hub 下发，经你的反代 / 隧道 / CDN 到浏览器。E
 
 - 隐私敏感的使用**自建 hub**，并让 TLS 终止在你自己控制的反代上；用公共 hub 时，敏感操作走 CLI / SDK，不走浏览器
 - **不要覆盖或去掉 hub 发的安全头**，尤其是 `Content-Security-Policy`（`default-src 'self'`、`connect-src 'self'`、`img-src 'self' data: blob:`、`frame-ancestors 'none'`，完整策略见 [spec/hub.md § 2.1](spec/hub.md#21-静态与健康)）。反代自己再加头可以，但不要和它冲突
-- 钉住镜像版本（`ghcr.io/anycon-ai/hub:0.1.x` 或 digest），升级前读 changelog，别让 `latest` 在你不知道的时候换了前端代码
+- 钉住镜像的完整版本号（如 `ghcr.io/anycon-ai/hub:0.3.0`）或 digest，升级前读 changelog，别让 `latest` 或 `<主>.<次>` 标签在你不知道的时候换了前端代码
 
 ### docker compose 示例（含 Caddy）
 

@@ -46,7 +46,7 @@ const ENV_HELP: &str = "ENVIRONMENT (the ones that matter for a safe deployment)
                            The Web Push key pair is generated on first start into <data>/vapid.json: back it up.
   ANYCON_PREVIEW_URL       optional. Enables dev server preview: the origin template for previews, `*` being the
                            whole leftmost label, e.g. https://*.preview-example.net. https only (plain http just
-                           for localhost development: http://*.preview.localhost:8080). The preview domain must
+                           for localhost development: http://*.preview.localhost:8900). The preview domain must
                            NOT be in the same registrable domain as ANYCON_PUBLIC_URL (the hub refuses to start),
                            and needs its own wildcard DNS record and certificate. Unset = no preview.
   ANYCON_PREVIEW_BYTES_PER_MIN  preview traffic budget per account, both directions together, default 536870912
@@ -70,7 +70,7 @@ const ENV_HELP: &str = "ENVIRONMENT (the ones that matter for a safe deployment)
                            characters in the password. The URL is never logged. Postgres does not make the hub
                            multi-instance: run exactly one.
   ANYCON_DATA_DIR / ANYCON_LISTEN / ANYCON_LOG   data directory (/data: admin token, push keys, the SQLite file),
-                           bind address (0.0.0.0:8080), log filter (info).
+                           bind address (0.0.0.0:8900), log filter (info).
 ";
 
 #[tokio::main]
@@ -170,7 +170,7 @@ async fn healthcheck() -> ExitCode {
     let port = std::env::var("ANYCON_LISTEN")
         .ok()
         .and_then(|s| s.trim().parse::<std::net::SocketAddr>().ok())
-        .map_or(8080, |a| a.port());
+        .map_or(8900, |a| a.port());
     let probe = async {
         let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
         s.write_all(b"GET /healthz HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n").await?;

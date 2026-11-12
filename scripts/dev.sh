@@ -4,7 +4,7 @@
 #   ./scripts/dev.sh            # 或 `just dev`
 #
 # 数据都在 .anycon-dev/（hub 的数据目录、daemon 的 ANYCON_HOME、workspace、日志），删掉这个目录就是重置。
-# 可调：HUB_PORT（默认 8080）、DEV_NO_WEB=1（不起 vite，用 hub 嵌入的 web/dist）、DEV_REAL_CLAUDE=1 / DEV_REAL_CODEX=1（启用真实 Claude Code / Codex，和 mock 一起可选）。
+# 可调：HUB_PORT（默认 8900）、DEV_NO_WEB=1（不起 vite，用 hub 嵌入的 web/dist）、DEV_REAL_CLAUDE=1 / DEV_REAL_CODEX=1（启用真实 Claude Code / Codex，和 mock 一起可选）。
 # vite dev server 固定 :5173，监听 localhost（只有 IPv6 ::1 也可能），浏览器请用 http://localhost:5173。
 #
 # dev server 预览（ADR-39）：hub 带 ANYCON_PREVIEW_URL=http://*.preview.localhost:<HUB_PORT>（Chromium 自己把 *.localhost 解析到回环地址，
@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 DEV="$ROOT/.anycon-dev"
-HUB_PORT="${HUB_PORT:-8080}"
+HUB_PORT="${HUB_PORT:-8900}"
 HUB_URL="http://127.0.0.1:${HUB_PORT}"
 DAEMON_HOME="$DEV/daemon"
 WORKSPACE="$DEV/workspace"

@@ -276,7 +276,7 @@
 - token 登录只在 `single` 模式；`multi` 不提供。模式管的三件事变为：注册是否开放、配额是否启用、是否允许 token 登录
 - 不再有「二次验证」概念。passkey 是免密登录方式之一，不是第二因素
 - `single` 模式下只用 token 的账号可以没有邮箱；邮箱在绑定邮箱验证码或 OAuth 身份时才需要
-- **局域网 IP 访问是一等场景**：hub 跑在家里，家里走 `http://<局域网 IP>:8080`，出门走公网域名。两个 origin 都要能用
+- **局域网 IP 访问是一等场景**：hub 跑在家里，家里走 `http://<局域网 IP>:8900`，出门走公网域名。两个 origin 都要能用
 - hub 侧对双 origin 的处理：cookie 的 `Secure` 按请求协议决定，不设 `Domain`；WebSocket Origin 校验接受 `ANYCON_PUBLIC_URL` 和请求自身的 Host；私有网段和 localhost 的 http 自动放行，不加配置项；`ANYCON_PUBLIC_URL` 仍是公网域名，OAuth 回调、配对链接、WebAuthn RP ID 只用它，Host 头不用于生成任何链接
 - 接受的代价：IndexedDB 按 origin 隔离，同一浏览器在两个 origin 上是两台设备，配对两次；passkey、GitHub、Google 只在 https 公网域名可用；PWA 和 Web Push 按 origin
 - 文档推荐家里也用公网域名（一个 origin），局域网 IP 作为支持但有代价的方式

@@ -30,7 +30,7 @@
 # 运行时镜像是 distroless nonroot（uid 65532），没有 shell、没有包管理器；下面 `USER 65532:65532` 保持非 root。
 #
 # 运行：
-#   docker run -d --name anycon-hub -p 127.0.0.1:8080:8080 \
+#   docker run -d --name anycon-hub -p 127.0.0.1:8900:8900 \
 #     -v anycon-data:/data -e ANYCON_PUBLIC_URL=https://hub.example.com anycon-hub:dev
 #
 # 数据卷 /data 由 uid 65532（nonroot）写入。用命名卷即可开箱即用；
@@ -160,9 +160,9 @@ COPY --from=web /src/web/dist/THIRD-PARTY-LICENSES.txt /usr/share/doc/anycon-hub
 COPY --from=builder --chown=65532:65532 /empty-data /data
 
 ENV ANYCON_DATA_DIR=/data \
-    ANYCON_LISTEN=0.0.0.0:8080
+    ANYCON_LISTEN=0.0.0.0:8900
 VOLUME /data
-EXPOSE 8080
+EXPOSE 8900
 USER 65532:65532
 WORKDIR /data
 

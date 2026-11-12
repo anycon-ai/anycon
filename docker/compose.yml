@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
     ports:
       # 只绑回环，对外由反向代理暴露。
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8900:8900"
     environment:
       # 必填：公网地址（邀请链接、Origin 校验、cookie 属性用它；配对链接不用——那是 daemon 按自己配置的 hub.url 生成的）。
       ANYCON_PUBLIC_URL: https://hub.example.com

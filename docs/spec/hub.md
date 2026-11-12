@@ -451,7 +451,7 @@ device
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | 预览 origin 的模板：`https://*.<预览域名>[:端口]`，`*` 只能是最左边的一整段，代表 label。必须是 https；唯一的例外是本机开发和测试：主机是 `localhost` 或以 `.localhost` 结尾时可以是 http（如 `http://*.preview.localhost:8080`）。**预览域名不能和 `ANYCON_PUBLIC_URL` 的主机在同一个可注册域名下**（按 Public Suffix List 算 eTLD+1，`localhost` 一类除外），否则启动报错：同站的子域能往父域写 cookie。也拒绝：域名本身就是公共后缀（`*.com`、`*.co.uk`）、带用户名密码、端口 0、主机是 IP。二级泛域名（`*.preview.example.net`）可以，但 Cloudflare 的免费证书不覆盖它（[deploy.md](../deploy.md)）。公共 hub 是 `https://*.aiplace.app` |
+| `ANYCON_PREVIEW_URL` | （空 = 关闭预览） | 预览 origin 的模板：`https://*.<预览域名>[:端口]`，`*` 只能是最左边的一整段，代表 label。必须是 https；唯一的例外是本机开发和测试：主机是 `localhost` 或以 `.localhost` 结尾时可以是 http（如 `http://*.preview.localhost:8900`）。**预览域名不能和 `ANYCON_PUBLIC_URL` 的主机在同一个可注册域名下**（按 Public Suffix List 算 eTLD+1，`localhost` 一类除外），否则启动报错：同站的子域能往父域写 cookie。也拒绝：域名本身就是公共后缀（`*.com`、`*.co.uk`）、带用户名密码、端口 0、主机是 IP。二级泛域名（`*.preview.example.net`）可以，但 Cloudflare 的免费证书不覆盖它（[deploy.md](../deploy.md)）。公共 hub 是 `https://*.aiplace.app` |
 | `ANYCON_PREVIEW_BYTES_PER_MIN` | `536870912`（512 MiB），最小 `205824` | 每个账号预览流量（两个方向合计）每分钟的字节预算，令牌桶（§ 13.5） |
 | `ANYCON_PREVIEW_MAX_CONNECTIONS` | `16` | 每个账号同时在线的预览连接数上限 |
 

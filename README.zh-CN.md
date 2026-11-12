@@ -57,7 +57,7 @@ hub 需要 Docker。`anycon`（daemon 和 CLI 是同一个二进制）支持 mac
 **1. 启动 hub**（可以和 agent 在同一台机器上，也可以放在两边都能访问的任何地方）
 
 ```bash
-docker run -d --name anycon-hub -p 8080:8080 -v anycon-data:/data \
+docker run -d --name anycon-hub -p 8900:8900 -v anycon-data:/data \
   -e ANYCON_PUBLIC_URL=https://hub.example.com ghcr.io/anycon-ai/hub:latest
 docker logs anycon-hub    # 首次启动会打印一次管理员 token
 ```
@@ -165,7 +165,7 @@ for await (const ev of session.send('跑一下测试，把失败的修了')) {
 ```bash
 bun install
 just gen-wasm && bun run --cwd web build   # 首次：Noise wasm + Web UI（嵌入 hub）
-just dev     # hub :8080 + daemon（mock agent）+ Web dev server :5173
+just dev     # hub :8900 + daemon（mock agent）+ Web dev server :5173
 just test    # Rust + TypeScript 测试
 just lint    # fmt、clippy、oxlint、typecheck
 just e2e     # Playwright：真实 hub + daemon + Web UI

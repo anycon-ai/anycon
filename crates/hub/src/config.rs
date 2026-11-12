@@ -505,7 +505,7 @@ impl Config {
         let public_url = parse_public_url(public_url)?;
         Ok(Self {
             public_url,
-            listen: "0.0.0.0:8080".parse().expect("static addr"),
+            listen: "0.0.0.0:8900".parse().expect("static addr"),
             mode: Mode::Single,
             admin_token: None,
             admin_emails: Vec::new(),
@@ -1108,7 +1108,7 @@ pub fn parse_preview_url(s: &str, public_url: &Url) -> Result<PreviewUrl, Config
     let localhost = is_localhost_name(&domain);
     if scheme == "http" && !localhost {
         return Err(bad(
-            "must be https (plain http is only allowed for localhost development, e.g. http://*.preview.localhost:8080)",
+            "must be https (plain http is only allowed for localhost development, e.g. http://*.preview.localhost:8900)",
         ));
     }
     if !localhost && psl::domain_str(&domain).is_none() {
@@ -1290,7 +1290,7 @@ mod tests {
     fn defaults() {
         let c = Config::from_vars(vars(&[("ANYCON_PUBLIC_URL", "https://hub.example.com")])).unwrap();
         assert_eq!(c.public_url_str(), "https://hub.example.com");
-        assert_eq!(c.listen.to_string(), "0.0.0.0:8080");
+        assert_eq!(c.listen.to_string(), "0.0.0.0:8900");
         assert_eq!(c.data_dir, PathBuf::from("/data"));
         assert_eq!(c.max_envelope_bytes, 262_144);
         assert_eq!(c.trusted_proxies.len(), 1);

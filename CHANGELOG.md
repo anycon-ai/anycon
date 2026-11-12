@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
-## [Unreleased]
+## [0.3.0] - 2026-11-11
 
 ### Added
 
@@ -145,6 +145,7 @@ First public release.
 - `@anycon/protocol` and `@anycon/sdk` on npm, published with provenance.
 - Every artifact ships its third-party license notices.
 
+[0.3.0]: https://github.com/anycon-ai/anycon/releases/tag/v0.3.0
 [0.2.0]: https://github.com/anycon-ai/anycon/releases/tag/v0.2.0
 [0.1.1]: https://github.com/anycon-ai/anycon/releases/tag/v0.1.1
 [0.1.0]: https://github.com/anycon-ai/anycon/releases/tag/v0.1.0

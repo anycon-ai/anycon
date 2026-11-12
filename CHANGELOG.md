@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
+## [Unreleased]
+
+### Changed
+
+- Hub: the sign-in and email-confirmation code emails are easier to read. They are now sent as HTML with a plain-text alternative: larger text, and the code on a line of its own in large type. Both versions end with a footer that links to [anycon.ai](https://anycon.ai) (the Chinese email links to the Chinese site); mail sent by a self-hosted hub has it too. The HTML loads nothing remote (no images, fonts or tracking pixels) and the footer link carries no parameters. Notification emails are unchanged.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added

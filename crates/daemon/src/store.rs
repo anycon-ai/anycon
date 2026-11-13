@@ -188,7 +188,8 @@ pub struct WorktreeRow {
     /// 所属会话；会话删除之后为空。
     pub session_id: Option<String>,
     pub state: WorktreeState,
-    /// 创建完成时目录的 `(dev, ino)`；`creating` / `failed` 时为空。
+    /// 创建完成时目录的 `(dev, ino)`；`creating` / `failed` 时为空。复核只看它是否为空（这条记录建成过没有），
+    /// 不比较具体值：设备号跨重启不稳定（见 `worktree::verify`）。
     pub identity: Option<(u64, u64)>,
     /// 创建 / 重建完成时 worktree 根下 `.git` 指针文件的内容（项目目录的绝对路径换成了 `{project}`）；为空时不核对。
     pub git_pointer: Option<String>,

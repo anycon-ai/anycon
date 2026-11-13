@@ -1,11 +1,11 @@
 //! 每会话 git worktree 的磁盘与 git 部分（ADR-34，docs/spec/daemon.md § 10.1）。
 //!
 //! 本模块**不碰会话状态**：分配分支名 / 目录名、`git worktree add` / `remove`、`.worktreeinclude` 复制、`info/exclude`、
-//! 目录复核（逐段 `lstat` + `(dev, ino)` + `.git` 指针文件）、归档 / 删除时的处置、分支列表、`git worktree repair`。
+//! 目录复核（逐段 `lstat` + `.git` 指针文件）、归档 / 删除时的处置、分支列表、`git worktree repair`。
 //! 会话状态机怎么用它见 `sessions/wt.rs`。
 //!
 //! 安全约束（ADR-34 第 9 条）：
-//! - 只删 `worktrees` 表里记过的目录，删之前逐段 `lstat` 无符号链接且 `(dev, ino)` 与创建时记下的一致（[`verify`]）；
+//! - 只删 `worktrees` 表里记过、建成过的目录，删之前逐段 `lstat` 无符号链接、`.git` 指针仍指向创建时的管理目录（[`verify_full`]）；
 //!   `creating`（崩溃残局）的清理先确认没有别的记录用着同一个路径 / 分支，`failed` 的记录只改库；
 //! - 不把主仓库的 `.git` 加进 agent 的可写目录（本模块不涉及 agent）；
 //! - `.worktreeinclude` 只复制普通文件，不跟随符号链接，不执行任何脚本；
@@ -215,14 +215,14 @@ pub enum WtCheck {
     Ok { dir: PathBuf, identity: (u64, u64) },
     /// 路径（或链上某一段）不存在。
     Gone,
-    /// 路径存在但不是原来那个：符号链接、不是目录、`(dev, ino)` 不一致、`.git` 不是普通文件。
+    /// 路径存在但不能用：符号链接、不是目录、记录没有建成过、`.git` 不是普通文件。
     Replaced(String),
     /// 目录身份没变，只是 `.git` 指针文件指向的不再是记下的那个管理目录（改名后 `git worktree repair` 没跑成、被 agent 改了…）：
     /// 提示用户在项目目录里运行 `git worktree repair`，不是「把路径移走」。
     PointerChanged,
 }
 
-/// 从项目目录起逐段 `lstat`：任何一段是符号链接 / 不是目录 → `Replaced`；不存在 → `Gone`。不看 `(dev, ino)`。
+/// 从项目目录起逐段 `lstat`：任何一段是符号链接 / 不是目录 → `Replaced`；不存在 → `Gone`。
 pub fn inspect(project_dir: &Path, rel: &str) -> WtCheck {
     if !rel_path_ok(rel) {
         return WtCheck::Replaced("the recorded path is not a worktree path".into());
@@ -252,14 +252,16 @@ pub fn inspect(project_dir: &Path, rel: &str) -> WtCheck {
     WtCheck::Gone
 }
 
-/// [`inspect`] 之后再核对 `(dev, ino)` 等于创建时记下的。
+/// [`inspect`] 之后再确认这条记录建成过（`identity` 不为空）：没建成过的记录，路径上的目录不是 anycon 建的。
+///
+/// 不比较记下的 `(dev, ino)`：设备号只在一次挂载内稳定，非根卷（macOS 的 `/Volumes/…`、Linux 的 btrfs 子卷等）
+/// 重启或重新挂载后可能变，比较它会把原来的目录误判成「被换掉」。路径上换了一个真目录的情况由 [`verify_full`]
+/// 的 `.git` 指针核对挡住；越出项目边界的符号链接由 [`inspect`] 挡住。
 pub fn verify(project_dir: &Path, wt: &WorktreeRow) -> WtCheck {
     match inspect(project_dir, &wt.rel_path) {
-        WtCheck::Ok { dir, identity } => match wt.identity {
-            Some(rec) if rec == identity => WtCheck::Ok { dir, identity },
-            Some(_) => WtCheck::Replaced("the directory is not the one anycon created".into()),
-            None => WtCheck::Replaced("anycon has no record of creating this directory".into()),
-        },
+        WtCheck::Ok { .. } if wt.identity.is_none() => {
+            WtCheck::Replaced("anycon has no record of creating this directory".into())
+        }
         other => other,
     }
 }
@@ -1568,7 +1570,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_worktree_directory_is_verified_segment_by_segment_and_by_identity() {
+    fn a_worktree_directory_is_verified_segment_by_segment() {
         use std::os::unix::fs::symlink;
         let d = tempfile::tempdir().unwrap();
         let project = crate::sys::canonicalize(d.path()).unwrap();
@@ -1593,10 +1595,12 @@ mod tests {
             created_ms: 0,
         };
         assert!(matches!(verify(&project, &wt), WtCheck::Ok { .. }));
-        // 身份不一致：换了一个目录（删掉重建）
+        // 记下的 `(dev, ino)` 和现在的不同（重启后卷的设备号变了）：不当作被换掉
+        wt.identity = Some((identity.0 + 1, identity.1));
+        assert!(matches!(verify(&project, &wt), WtCheck::Ok { .. }));
         wt.identity = Some((identity.0, identity.1 + 12345));
-        assert!(matches!(verify(&project, &wt), WtCheck::Replaced(_)));
-        // 没记过身份：不认
+        assert!(matches!(verify(&project, &wt), WtCheck::Ok { .. }));
+        // 没建成过的记录：不认
         wt.identity = None;
         assert!(matches!(verify(&project, &wt), WtCheck::Replaced(_)));
         // 末段换成指向别处的符号链接

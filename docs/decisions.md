@@ -474,7 +474,7 @@ ADR-1 拆成两层来看：
 6. **同步 base**：`session.sync_base` = base 是远端跟踪分支时先 fetch，再 `git merge --no-edit`；有未提交改动、turn 在跑时拒绝；冲突时合并停在中途，客户端一键把「解决冲突」发给 agent，或 `abort`
 7. **归档 / 删除**：`WorktreeDisposal`。`auto`（默认）= 干净就删 worktree（分支上没有自己的提交时连分支一起删），有未提交改动就保留；`keep` / `remove` 显式。取消归档时按分支重建。删掉会话但保留下来的 worktree 进「没有会话的 worktree」列表，在节点设置里清理（`workspace.worktrees` / `remove_worktree`）
 8. **PR**：不在 daemon 里写 PR。「提交」「创建 PR」「解决冲突」是客户端发给 agent 的快捷消息——推送和 `gh pr create` 走 agent 的审批，提交信息和 PR 描述由 agent 写，正好守住「daemon 不调模型」。daemon 只用 `gh pr view` 读 PR 状态（`include_pr`），可选在 PR 合并 / 关闭后自动归档（`worktree.auto_archive_on_pr_close`，默认关）
-9. **安全**：worktree 目录和关联项目一样在每次拉起 / 每个 turn / 放行权限 / 插话前、以及周期检查里复核（逐段 `lstat` 不能有符号链接，`(dev, ino)` 等于创建时记下的）；不一致就当作 `missing`，会话停下，不自动重建（目录还在就不碰）；目录已经不存在时，下一次发消息按分支重建。**不把主仓库的 `.git` 加进 agent 的可写目录**：那样 agent 能不经审批写 hooks，用户之后在终端里 `git commit` 就会执行它们；Codex 在 worktree 里提交走它自己的提权审批
+9. **安全**：worktree 目录和关联项目一样在每次拉起 / 每个 turn / 放行权限 / 插话前、以及周期检查里复核（逐段 `lstat` 不能有符号链接，`.git` 指针仍指向创建时的管理目录；最初还要求 `(dev, ino)` 等于创建时记下的，见下面「2026-11 修订」）；不一致就当作 `missing`，会话停下，不自动重建（目录还在就不碰）；目录已经不存在时，下一次发消息按分支重建。**不把主仓库的 `.git` 加进 agent 的可写目录**：那样 agent 能不经审批写 hooks，用户之后在终端里 `git commit` 就会执行它们；Codex 在 worktree 里提交走它自己的提权审批
 10. **关联项目**：ADR-33 的「anycon 永远不移动、不删除关联目录里的文件」补一条例外：anycon 会在关联目录里建、删它自己的 `.anycon/worktrees/<slug>`（记在库里，只删记录过的），往 `info/exclude` 写一行，以及 `git worktree` / `git branch` 对仓库元数据的修改。其余文件仍然不动
 
 **原因**：
@@ -506,6 +506,10 @@ ADR-1 拆成两层来看：
 - 合并提交 `--no-gpg-sign`；`gh pr view` 用记录的分支名、参数前加 `--`
 
 **2026-10 修订**：等审批时也不能归档（`busy`），已归档的会话不开新 turn；daemon 自己发起的归档（PR 自动归档）遇到有 turn / 等审批 / 有排队消息的会话跳过。改名时先 repair 再让会话看到新名字；`.git` 指针按语义比较（接受相对路径）；处置时发现 worktree 被换掉不再报「已删除」。base 另存展示名，合并提交信息用展示名。
+
+**2026-11 修订**：复核不再比较 worktree 目录的 `(dev, ino)`，只要求记录建成过。设备号只在一次挂载内稳定：macOS 按挂载顺序给非根卷分配 `st_dev`（`/Volumes/…` 上的项目重启后常常换一个值），Linux 的 btrfs 子卷、LVM 也会变。结果是目录原封未动、inode 也没变，会话却被标成 `missing`（「被换掉」），而目录还在时既不重建也不处置，只能手改库恢复。去掉之后防护靠另外两层：逐段 `lstat`（挡住换成符号链接、越出项目边界），和 `.git` 指针核对（路径上换了一个真目录时，它的 `.git` 不指向这条记录的管理目录；`git worktree remove` 自己也会核对）。剩下的缺口是没记过指针的旧记录：路径上换成另一个真目录时会被当作原来的 worktree 用，但它仍在项目里面，不越过边界。
+
+**否掉**：只比较 inode、或要求设备号等于项目目录现在的设备号（多一层判断，换来的只是「同一卷上同一路径换了个真目录」这一种情况，`.git` 指针已经覆盖）；改存卷 UUID（按平台各写一套，还要迁移）。
 
 ---
 

@@ -150,10 +150,10 @@ impl Sessions {
 
     /// 拉起 agent 之前准备好会话的 worktree，返回它的目录（agent 的 cwd）。
     ///
-    /// - `active`：复核目录（逐段 `lstat` + `(dev, ino)`）；不满足就标 `missing` 并以 `not_found` 结束 turn；
+    /// - `active`：复核目录（逐段 `lstat` + `.git` 指针）；不满足就标 `missing` 并以 `not_found` 结束 turn；
     /// - `creating` / `failed`：`git worktree add` + `info/exclude` + `.worktreeinclude`；失败清理干净、`state = failed`、
     ///   发 `git { worktree_failed }` 和 `error { worktree_failed, recoverable: false }`；
-    /// - `missing`：目录又出现了（身份一致）就恢复；路径不存在就按分支重建（`worktree_restored`）；被换成别的东西就不重建；
+    /// - `missing`：目录又出现了（复核通过）就恢复；路径不存在就按分支重建（`worktree_restored`）；被换成别的东西就不重建；
     /// - `removed`：已经随归档删掉，要先取消归档。
     ///
     /// 失败时这个 turn 已经收尾（`Err(())`），调用方直接返回。git 操作不在会话锁里跑。
@@ -446,7 +446,7 @@ impl Sessions {
                 }
             }
             WorktreeState::Missing => {
-                // 目录自己回来了（身份一致）：恢复
+                // 目录自己回来了（复核通过）：恢复
                 let (Some(project), Some(wt)) = (st.row.project.clone(), st.wt.clone()) else { return };
                 let Ok(dir) = self.d.workspace.project_path(&project) else { return };
                 if let WtCheck::Ok { identity, .. } = verify_full(&dir, &wt) {

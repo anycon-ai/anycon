@@ -739,7 +739,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
    - 任何一步失败：`git worktree remove --force <path>`（目录已经建了的话）、`git branch -D <branch>`（分支已经建了的话）、`git worktree prune`，`state = failed`，发 `git { action: worktree_failed, note: 原因 }` 和 `error { code: "worktree_failed", recoverable: false }`，会话进入 `error`。带 prompt 的那条消息留在历史里
 3. 审计 `worktree.create`（`detail = { branch, base, path }`）
 
-**cwd 与复核**：会话的 cwd = 项目目录 + `SessionWorktree.path`（相对路径，所以项目改名、关联到新名字都不影响）。ADR-33 第 5 条列出的每个时机（`workspace.list` 除外：拉起 / 续接、每个 turn 开始前、放行权限请求前、插话前、周期检查——周期检查对所有有 turn 或 agent 进程的 worktree 会话做，不只关联项目，也不管是否归档），在原有的项目复核之后再复核 worktree（`active` 和 `kept` 都复核；拉起时 `kept` 复核通过就置回 `active`；周期检查覆盖所有没归档的 worktree 会话——没有进程也查——以及已归档但还有 turn / 进程的）：从项目目录起逐段 `lstat`（`.anycon`、`worktrees`、目录名都不能是符号链接），`(dev, ino)` 等于记下的；daemon 在 worktree 里跑 git 或动手的每个地方（拉起、每个 turn 开始前、状态 / 改动 / 同步、处置）再核对 worktree 根下的 `.git` 文件内容仍是创建时的 `gitdir: …`（agent 能改它，改了按「被换掉」处理）。比较按语义而不是字符串：解析 `gitdir:` 的值，相对路径按 worktree 目录解析后做词法规范化，要求等于 `<git common dir>/worktrees/<创建时记下的管理目录名>`——绝对 / 相对两种写法（git 的 `worktree.useRelativePaths`）都接受；改到别的目录的常见写法拦得住，但比较是词法的（见「限制」）。没有记下指针的旧记录不核对。只是指针不一致（目录身份没变）时的 `missing` 提示「在项目目录里运行 `git worktree repair`」，不是「把路径移走」。不满足：
+**cwd 与复核**：会话的 cwd = 项目目录 + `SessionWorktree.path`（相对路径，所以项目改名、关联到新名字都不影响）。ADR-33 第 5 条列出的每个时机（`workspace.list` 除外：拉起 / 续接、每个 turn 开始前、放行权限请求前、插话前、周期检查——周期检查对所有有 turn 或 agent 进程的 worktree 会话做，不只关联项目，也不管是否归档），在原有的项目复核之后再复核 worktree（`active` 和 `kept` 都复核；拉起时 `kept` 复核通过就置回 `active`；周期检查覆盖所有没归档的 worktree 会话——没有进程也查——以及已归档但还有 turn / 进程的）：从项目目录起逐段 `lstat`（`.anycon`、`worktrees`、目录名都不能是符号链接），且这条记录建成过（记下过目录身份；只看有没有，不比较 `(dev, ino)` 的值——设备号跨重启、重新挂载不稳定，非根卷上会把原来的目录误判成「被换掉」）；daemon 在 worktree 里跑 git 或动手的每个地方（拉起、每个 turn 开始前、状态 / 改动 / 同步、处置）再核对 worktree 根下的 `.git` 文件内容仍是创建时的 `gitdir: …`（agent 能改它，改了按「被换掉」处理）。比较按语义而不是字符串：解析 `gitdir:` 的值，相对路径按 worktree 目录解析后做词法规范化，要求等于 `<git common dir>/worktrees/<创建时记下的管理目录名>`——绝对 / 相对两种写法（git 的 `worktree.useRelativePaths`）都接受；改到别的目录的常见写法拦得住，但比较是词法的（见「限制」）。没有记下指针的旧记录不核对。只是指针不一致时的 `missing` 提示「在项目目录里运行 `git worktree repair`」，不是「把路径移走」。不满足：
 
 - 目录**不存在**：`state = missing`，发 `git { action: worktree_missing }`，turn 按 ADR-33 第 5 条的方式中止（`not_found`，`data.reason = "worktree_missing"`）。**下一次 `send`** 时如果路径仍然不存在，就 `git worktree prune` 后按分支重建（`git worktree add <path> <branch>`；分支也不在了就 `-b <branch> <path> <base_sha>`），并像创建时一样复制 `.worktreeinclude`，成功发 `worktree_restored` 再继续这个 turn。创建中途崩溃留下的残局（git 登记过、目录不完整）也在下一次 `send` 时清掉再重建
 - 路径存在但不是原来那个目录（被换成别的目录、符号链接）：`state = missing`，同样中止；**不自动重建**，`send` 一直返回 `not_found`（`worktree_missing`），消息说明「把那个路径移走后再发消息，或者归档 / 删除这个会话」
@@ -764,7 +764,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
 
 **归档、删除、取消归档**：
 
-- 处置时发现 worktree「被换掉」（目录身份或指针不一致）：**不写 `removed`、不发 `worktree_removed`**，记录保持 `missing`，磁盘不动；归档照常完成，事件 `worktree_missing` 说明「目录没有动过」；取消归档时保持 `missing`（会话照常取消归档，之后 `send` 按「cwd 与复核」的规则提示）
+- 处置时发现 worktree「被换掉」（路径上有符号链接、不是目录，或指针不一致）：**不写 `removed`、不发 `worktree_removed`**，记录保持 `missing`，磁盘不动；归档照常完成，事件 `worktree_missing` 说明「目录没有动过」；取消归档时保持 `missing`（会话照常取消归档，之后 `send` 按「cwd 与复核」的规则提示）
 - `failed` 的记录：失败当时已经清理过，之后的归档 / 删除 / `remove_worktree` **只改库，不碰磁盘和分支**：归档只归档（不发 `worktree_removed`），删除会话时记录一起删（名字随之释放），`remove_worktree` 只删记录。`creating`（崩溃残局）清理前核对没有别的记录（同项目、不同 id、非 `failed`）用同一路径或分支，判断「git 登记过这个路径」时不跟随符号链接（路径本身是符号链接就不认）
 - 重建（下一次 `send`）进行中删除会话：按删除请求的处置方式处理，不带 `delete_branch` 绝不 `-D` 已有分支；第一次创建进行中被删，分支是刚开的，照样清掉
 - `archive` / `delete` 先检查状态（queued / starting / running / waiting_permission 时 `archive` 返回 `busy`；`delete` 取消等审批的 turn，请求按拒绝处理），然后收掉 agent 进程（`retire_tracked`），再处理 worktree（会话标记为忙，git 不在会话锁里跑）：
@@ -780,7 +780,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
 
 - 列表来自 `worktrees` 表，每项现算 `uncommitted`、`ahead`（相对 `base_sha`）、`bytes`（目录遍历，整个调用 3 秒预算，超了的项 `bytes` 为空）；目录不在了的 `active` / `kept` 项按 `missing` 报
 - `remove_worktree`：所属会话存在且没归档，或者有 turn / agent 进程（哪怕已归档）→ `busy`；`failed` 的记录只删库；有未提交改动且没 `force` → `invalid`（`uncommitted_changes`）。删目录（`--force` 视参数）、按 `delete_branch` 删分支、`prune`；会话已删的连行一起删，会话还在（已归档）的置 `state = removed`
-- 只删 `worktrees` 表里记着的目录：路径从记录拼出，删之前逐段 `lstat` 并核对 `(dev, ino)`；不一致就只删记录、不碰磁盘（`git worktree prune` 由 git 自己判断）
+- 只删 `worktrees` 表里记着的目录：路径从记录拼出，删之前逐段 `lstat` 并核对 `.git` 指针；不一致就只删记录、不碰磁盘（`git worktree prune` 由 git 自己判断）
 
 **项目层面的联动**：
 

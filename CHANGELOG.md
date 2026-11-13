@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Agent detection: the periodic check (`agents.probe_interval`) now runs every 30 minutes instead of 10, and skips an agent while one of its sessions is in progress (running a turn, queued, starting, or waiting for a permission); the next round picks it up. Re-detect, daemon start, config changes and a session failing with `agent_not_found` / `auth_failed` still probe right away. An explicit `probe_interval` in your `config.toml` is kept as it is.
 - Hub: the sign-in and email-confirmation code emails are easier to read. They are now sent as HTML with a plain-text alternative: larger text, and the code on a line of its own in large type. Both versions end with a footer that links to [anycon.ai](https://anycon.ai) (the Chinese email links to the Chinese site); mail sent by a self-hosted hub has it too. The HTML loads nothing remote (no images, fonts or tracking pixels) and the footer link carries no parameters. Notification emails are unchanged.
 - Web UI: the Session card in the info panel shows each item (project, working directory, branch, created) as a label line and a value line. Long paths and branch names wrap instead of being cut off behind a hover tooltip, the text can be selected, and the working directory and branch each have a copy button. The working directory is opened in the file browser with the button next to its label instead of by clicking the path.
 

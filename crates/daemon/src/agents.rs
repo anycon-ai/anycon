@@ -2,14 +2,15 @@
 //!
 //! - 每个 agent 同一时间最多一个 probe 在跑，总超时 `agents.probe_timeout`（默认 60 秒）；
 //! - 周期（`probe_interval`）只跑 cheap 探测；首次 / `refresh` / 命令或版本变了 / 该 agent 的配置变了才跑完整探测；
+//! - 周期探测跳过有进行中会话的 agent（[`Agents::set_busy_agents`]）：会话在跑时不去动它的进程、版本和登录判定，下一个周期再补；
 //! - 结果缓存在 `agent_cache` 表；`etag` 是整张列表（忽略 `probed_at_ms`）的哈希；变化时向所有在线客户端推 `agent.changed`。
 //!
 //! 没有 `[agents.<id>]` 配置段的 adapter 不参与（不出现在列表里）。daemon 对具体 adapter 一无所知，只知道 ACP agent 的名字来自
 //! 配置（`[agents.acp.<name>]`）：配置增删了名字，adapter 集合跟着变（`AdapterFactory`），不用重启。注册表里的 ACP agent 没装、
 //! 用户也没动过它的配置时不出现在列表里（`Config::is_implicit_acp`）。
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, RwLock};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use anycon_agent_api::{reconcile_thinking, Adapter, AdapterConfig, ProbeContext};
@@ -17,6 +18,7 @@ use anycon_protocol::{
     methods, AgentDiagnoseResult, AgentInfo, AgentIssue, AgentListParams, AgentListResult, AgentStatus,
     ClearableSetting, DiagnosticField, ErrorCode, ModeRisk, RpcError, SessionSettings,
 };
+use futures::future::BoxFuture;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use tokio::sync::Mutex as AsyncMutex;
@@ -30,6 +32,9 @@ use crate::util::{now_ms, warn_err};
 /// 按名字造一个 ACP agent 的 adapter（`anycon_adapters::acp::adapter_for`）。daemon 用它在配置里出现新的 `[agents.acp.<name>]`
 /// 时补上 adapter；测试里用假的 adapter 集合时不给。
 pub type AdapterFactory = Arc<dyn Fn(&str) -> Arc<dyn Adapter> + Send + Sync>;
+
+/// 问「哪些 agent 现在有进行中的会话」。由 `Sessions` 提供，daemon 启动时接上。
+pub type BusyAgents = Arc<dyn Fn() -> BoxFuture<'static, HashSet<String>> + Send + Sync>;
 
 #[derive(Default)]
 struct State {
@@ -50,6 +55,8 @@ pub struct Agents {
     /// 每个 agent 上一次生效的「影响探测」的配置指纹。
     fingerprints: Mutex<HashMap<String, String>>,
     wake: tokio::sync::Notify,
+    /// 周期探测前用它排除有进行中会话的 agent；没接上（测试）就都探。
+    busy_agents: OnceLock<BusyAgents>,
     /// 上一次向客户端广播（或确认）的 etag。配置变化导致 etag 变了才再推 `agent.changed`。
     announced_etag: Mutex<String>,
 }
@@ -189,6 +196,7 @@ impl Agents {
             locks: Mutex::new(locks),
             fingerprints: Mutex::new(HashMap::new()),
             wake: tokio::sync::Notify::new(),
+            busy_agents: OnceLock::new(),
             announced_etag: Mutex::new(String::new()),
         });
         // 配置里的 ACP agent（注册表里的加用户自己加的）：工厂给的话在这里补上 adapter
@@ -458,6 +466,11 @@ impl Agents {
         });
     }
 
+    /// 接上「哪些 agent 有进行中的会话」。`Sessions` 持有 `Agents`，所以这里只能事后注入；只生效第一次。
+    pub fn set_busy_agents(&self, f: BusyAgents) {
+        let _ = self.busy_agents.set(f);
+    }
+
     /// 睡眠唤醒后：重跑探测（便宜的；之前不 ready 的做完整探测）。
     pub fn reprobe_all_soon(self: &Arc<Self>) {
         let this = self.clone();
@@ -479,7 +492,15 @@ impl Agents {
                 let interval = this.config.get().probe_interval();
                 tokio::select! {
                     _ = tokio::time::sleep(interval) => {
+                        let busy = match this.busy_agents.get() {
+                            Some(f) => f().await,
+                            None => HashSet::new(),
+                        };
                         for id in this.participating_ids() {
+                            if busy.contains(&id) {
+                                tracing::debug!(agent = %id, "periodic probe skipped: a session is in progress");
+                                continue;
+                            }
                             let this2 = this.clone();
                             tokio::spawn(async move { this2.probe(&id, true).await; });
                         }
@@ -1112,6 +1133,33 @@ mod tests {
         f.agents.probe("fake", true).await;
         assert_eq!(f.fake.full_probes.load(Ordering::SeqCst), 2);
         assert_eq!(f.agents.info("fake").unwrap().version.as_deref(), Some("3.0.0"));
+    }
+
+    #[tokio::test]
+    async fn periodic_probes_skip_agents_with_a_session_in_progress() {
+        let f = fx("[agents]\nprobe_interval = \"1s\"\n[agents.fake]\nenabled = true\n").await;
+        let busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = busy.clone();
+        f.agents.set_busy_agents(Arc::new(move || {
+            let on = flag.load(Ordering::SeqCst);
+            Box::pin(async move {
+                if on {
+                    HashSet::from(["fake".to_string()])
+                } else {
+                    HashSet::new()
+                }
+            })
+        }));
+        let _sched = f.agents.spawn_scheduler();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let after_first = f.fake.probe_calls.load(Ordering::SeqCst);
+        // 会话在进行：整整一个周期过去也不探
+        tokio::time::sleep(Duration::from_millis(1400)).await;
+        assert_eq!(f.fake.probe_calls.load(Ordering::SeqCst), after_first, "busy agent is not probed");
+        // 会话结束后下一个周期恢复
+        busy.store(false, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(1400)).await;
+        assert!(f.fake.probe_calls.load(Ordering::SeqCst) > after_first, "idle agent is probed again");
     }
 
     #[tokio::test]

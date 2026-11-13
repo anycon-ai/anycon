@@ -285,6 +285,19 @@ impl Daemon {
         });
         let rpc = Rpc::new(ctx.clone());
 
+        // 周期探测跳过有进行中会话的 agent；Weak 避免 Agents ↔ Sessions 互相持有
+        {
+            let sessions = Arc::downgrade(&sessions);
+            agents.set_busy_agents(Arc::new(move || {
+                let sessions = sessions.clone();
+                Box::pin(async move {
+                    match sessions.upgrade() {
+                        Some(s) => s.busy_agents().await,
+                        None => Default::default(),
+                    }
+                })
+            }));
+        }
         let mut tasks = vec![
             config.spawn_watcher(),
             agents.spawn_scheduler(),

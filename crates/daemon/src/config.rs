@@ -338,7 +338,7 @@ impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             env_from_login_shell: true,
-            probe_interval: "10m".into(),
+            probe_interval: "30m".into(),
             probe_timeout: "60s".into(),
             env: HashMap::new(),
             agent: builtin_agent_defaults(),
@@ -577,7 +577,7 @@ impl Config {
         parse_duration(&self.permissions.request_timeout).ok().filter(|d| !d.is_zero())
     }
     pub fn probe_interval(&self) -> Duration {
-        parse_duration(&self.agents.probe_interval).unwrap_or(Duration::from_secs(600)).max(Duration::from_secs(1))
+        parse_duration(&self.agents.probe_interval).unwrap_or(Duration::from_secs(1800)).max(Duration::from_secs(1))
     }
     pub fn probe_timeout(&self) -> Duration {
         parse_duration(&self.agents.probe_timeout).unwrap_or(Duration::from_secs(60))
@@ -916,7 +916,7 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("\n[permissions]\nallow_dangerous_modes = true\nrequest_timeout = \"0\"\nallow_session_env = false\n");
     s.push_str("# 客户端可以按会话设置哪些环境变量（精确名或 PREFIX_*；默认空 = 都不允许；还要 allow_session_env = true，且黑名单里的键永远不行）\n");
     s.push_str("# session_env_allow = [\"MY_FLAG\", \"FEATURE_*\"]\n");
-    s.push_str("\n[agents]\nenv_from_login_shell = true\nprobe_interval = \"10m\"\n");
+    s.push_str("\n[agents]\nenv_from_login_shell = true\nprobe_interval = \"30m\"\n");
     s.push_str("\n[agents.claude-code]\nenabled = true\n");
     s.push_str("\n# ACP agent（OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi）装了就会自动出现；\n");
     s.push_str("# 自己加一个或改命令（热加载；自己加的必须写 command）：\n# [agents.acp.my-agent]\n# command = \"my-agent --acp\"\n");

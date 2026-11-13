@@ -65,7 +65,7 @@ session_env_allow = []                # 开启后允许的键：精确键名或 
 
 [agents]
 env_from_login_shell = true           # 启动时用登录 shell 解析 PATH 等环境
-probe_interval = "10m"
+probe_interval = "30m"
 
 [agents.claude-code]
 enabled = true
@@ -220,7 +220,7 @@ AgentInfo {
 
 - 整个 `probe()` 跑在**一个总超时**下（默认 60 秒，`agents.probe_timeout`），超时错误提示运行 `anycon doctor`（错误里列出卡在哪一步——`version` / `auth` / `models`——还没做，见 roadmap）
 - 同一时间每个 agent 最多一个 probe 在跑；同时探测的 agent 数不限（彼此独立）
-- `probe_interval` 的周期性探测只跑第 1–3 步（便宜）；第 4 步只在首次、`refresh: true`、二进制路径或版本变了、`agents.<id>` 配置变了时跑。装了新 agent 几分钟内自动出现，而模型列表不会每 10 分钟拉起一次 agent 进程（`claude`、app-server）
+- `probe_interval` 的周期性探测只跑第 1–3 步（便宜）；第 4 步只在首次、`refresh: true`、二进制路径或版本变了、`agents.<id>` 配置变了时跑。装了新 agent 几分钟内自动出现，而模型列表不会每个周期拉起一次 agent 进程（`claude`、app-server）
 
 所有子进程调用都带超时、都在 workspace 根目录外的临时 cwd 执行（避免触发 agent 读项目配置）。
 

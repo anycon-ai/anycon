@@ -3219,6 +3219,30 @@ impl Sessions {
         false
     }
 
+    /// 有进行中会话（正在跑 turn，或 queued / starting / running / waiting_permission）的 agent id。
+    /// 周期探测据此跳过这些 agent，不在会话进行时去探它们。
+    pub async fn busy_agents(&self) -> HashSet<String> {
+        let mut out = HashSet::new();
+        for s in self.all() {
+            let st = s.st.lock().await;
+            if st.deleted {
+                continue;
+            }
+            if st.turn.is_some()
+                || matches!(
+                    st.row.status,
+                    SessionStatus::Queued
+                        | SessionStatus::Starting
+                        | SessionStatus::Running
+                        | SessionStatus::WaitingPermission
+                )
+            {
+                out.insert(st.row.agent.clone());
+            }
+        }
+        out
+    }
+
     /// 项目上有没有进行中（queued / starting / running / waiting_permission）的会话（解除关联前的保护）。
     pub async fn project_running(&self, project: &str) -> bool {
         for s in self.all() {

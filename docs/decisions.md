@@ -1248,3 +1248,22 @@ ADR-1 拆成两层来看：
 - daemon 重启后第一次完整探测问不到时用内置表，不读 `agent_cache` 里上一次的结果：那里存的是合并后的列表，分不出哪些来自 CLI。
 - CLI 清单里没有 `[1m]` 变体，4.6 的 `[1m]` 不再出现在下拉框里，仍可作为自定义模型填写。
 - 默认模型跟着 CLI 走（不同账号可能是 Sonnet 或 Opus），不再固定是 Opus 5.5。
+
+---
+
+## ADR-52 Claude Code advisor：做成 adapter 选项，不进协议，不判断是否生效
+
+**背景**：Claude Code 的 `--advisor <model>`（2.1.325 实测；`--help` 不列出）让主模型在关键决策点咨询一个更强的模型。流里因此多出两种 content block：`server_tool_use`（name `advisor`）和 `advisor_tool_result`。目前只有 Claude Code 有这个概念。
+
+**决定**（实现在 `crates/adapters/src/claude_code/`）：
+
+1. 做成 Claude Code adapter 声明的 `text` 选项 `advisor_model`，`choices` = `off` + 模型列表，默认 `off`，不加进 `SessionSettings`。别的 agent 以后有同类功能时各自声明选项。不用 `select`：daemon 在每个 turn 之前都会按当前 `AgentInfo` 重新校验已存的 select 值，而 Claude 的模型列表在两次探测之间会变（内置表 / CLI 的 `initialize`、账号变化、`additional_models` 被删），存着的 advisor 一旦掉出列表，会话就会一直 `invalid_settings`。
+2. 没有人校验值：daemon 对 `text` 只检查是字符串（最长 4096 字节；写入时和每个 turn 之前都一样），adapter 只检查选项的类型。`--advisor=<值>` 是单个 argv 元素，不会被解析成别的选项；CLI 不认的值让 CLI 启动时自己报错（走已有的启动失败报错）。列表只是给用户挑的，Web UI 在当前值不在列表里时仍显示它。不内置「执行模型 ↔ advisor」的配对表。
+3. 配对不合法时 CLI 只在 stderr 打一行警告，会话照常跑但不用 advisor（2.1.325 实测）。adapter 不捕获这行警告、不发通知、不判断 advisor 是否生效，因为这不是 CLI 承诺的稳定行为；用户从会话记录里有没有 Advisor 调用来判断。advisor 模型名无效时 CLI 启动即失败，走已有的启动失败报错；用户之后改掉选项再发消息就行，哪怕这是个全新的会话：第一次拉起没到 `system/init`，adapter 在 `launch_args.conversation_started` 里记着对话没建立过，下次用新的 `--session-id` 而不是 `--resume`（`docs/spec/daemon.md` § 7.4）。
+4. advisor 调用翻译成已有的 `tool_call` / `tool_result`（name `advisor`，category `other`）。建议内容多数是加密的（`advisor_redacted_result`），不进任何事件，结果为空；明文的（`advisor_result`）进 `output`，出错的（`advisor_tool_result_error`）以错误码作 `output` 并标 `is_error`。
+5. 改它 → `restart_required`（和别的启动参数一样）。
+
+**否掉**：
+- 通用的「按会话自由启动参数」：Codex 走 app-server RPC、ACP 走 `session/new`，都不经过 argv，所以并不通用；还会让远程客户端能塞任意 flag。
+- 协议一等字段：只有一个 agent 有这个概念，抽象容易定错。
+- 按 stderr 警告判断是否生效：见第 3 条。

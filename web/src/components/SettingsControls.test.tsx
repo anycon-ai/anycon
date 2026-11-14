@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { resolveDefaults, type Selection, type SettingsField } from '@/features/settings/resolve'
+import type { ConfigOption } from '@/protocol'
 import { mockAgent } from '@/test/factories'
 import { SettingsControls } from './SettingsControls'
 
@@ -128,5 +129,64 @@ describe('SettingsControls', () => {
     render(<Harness disabled />)
     expect(screen.getByTestId('option-model')).toBeDisabled()
     expect(screen.getByTestId('option-mode')).toBeDisabled()
+  })
+
+  describe('text options with choices', () => {
+    const advisor: ConfigOption = {
+      id: 'advisor_model',
+      label: 'Advisor model',
+      kind: 'text',
+      default: 'off',
+      choices: [
+        { id: 'off', label: 'Off' },
+        { id: 'opus', label: 'Opus' },
+      ],
+    }
+    function Opts({ option, initial, onChange }: { option: ConfigOption; initial?: unknown; onChange?: (s: Selection) => void }) {
+      const agent = mockAgent({ options: [option] })
+      const [sel, setSel] = useState<Selection>({ ...resolveDefaults(agent, []), options: { [option.id]: initial ?? option.default } })
+      return (
+        <SettingsControls
+          agent={agent}
+          value={sel}
+          onChange={(n) => {
+            setSel(n)
+            onChange?.(n)
+          }}
+          customKey="n:mock"
+          idPrefix="option"
+        />
+      )
+    }
+    async function openMore(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByTestId('option-more'))
+      return screen.findByLabelText('Advisor model')
+    }
+
+    it('renders a pick list and reports the chosen id', async () => {
+      const onChange = vi.fn()
+      const user = userEvent.setup()
+      render(<Opts option={advisor} onChange={onChange} />)
+      const select = await openMore(user)
+      expect(select.tagName).toBe('SELECT')
+      expect([...select.querySelectorAll('option')].map((o) => o.textContent)).toEqual(['Off', 'Opus'])
+      await user.selectOptions(select, 'opus')
+      expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ options: expect.objectContaining({ advisor_model: 'opus' }) }))
+    })
+
+    it('keeps a stored value that is no longer in the list, shown and selected', async () => {
+      const user = userEvent.setup()
+      render(<Opts option={advisor} initial="claude-gone-1" />)
+      const select = (await openMore(user)) as HTMLSelectElement
+      expect(select.value).toBe('claude-gone-1')
+      expect([...select.querySelectorAll('option')].map((o) => o.textContent)).toEqual(['claude-gone-1', 'Off', 'Opus'])
+    })
+
+    it('stays a plain input without choices', async () => {
+      const user = userEvent.setup()
+      render(<Opts option={{ ...advisor, choices: [] }} />)
+      const input = await openMore(user)
+      expect(input.tagName).toBe('INPUT')
+    })
   })
 })

@@ -399,6 +399,20 @@ describe('shell command block', () => {
       expect(screen.getByTestId('task-status')).toHaveTextContent('Completed')
     })
 
+    it('a tool call with no input and no output has nothing to expand; with input it shows it', async () => {
+      const call = { type: 'tool_call', id: 'srv_1', name: 'advisor', category: 'other', title: 'Advisor', input: {} } as const
+      const done = { type: 'tool_result', id: 'srv_1', output: null, is_error: false } as const
+      const { rerender } = render(<MessageList {...props({ blocks: buildView(evs([call, done])).blocks })} />)
+      const row = screen.getByTestId('tool-block')
+      expect(row).toHaveAttribute('data-state', 'done')
+      expect(within(row).getByRole('button')).toBeDisabled()
+      rerender(<MessageList {...props({ blocks: buildView(evs([{ ...call, input: { q: 1 } }, done])).blocks })} />)
+      const btn = within(screen.getByTestId('tool-block')).getByRole('button')
+      expect(btn).toBeEnabled()
+      await userEvent.setup().click(btn)
+      expect(screen.getByTestId('tool-block')).toHaveTextContent('"q": 1')
+    })
+
     // 真实录制里 Workflow 的调用结果是「Workflow launched in background. Task ID: …」、不带 background 标记
     const realWorkflowCall = { type: 'tool_call', id: 'toolu_wf', name: 'Workflow', category: 'other', title: 'Run workflow: alpha-beta', input: { script: 'x' } } as const
     const realLaunch = { type: 'tool_result', id: 'toolu_wf', output: 'Workflow launched in background. Task ID: whvf25gph', is_error: false } as const

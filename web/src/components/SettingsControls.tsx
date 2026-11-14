@@ -340,14 +340,19 @@ function OptionControl({ option, value, onChange }: { option: ConfigOption; valu
       </div>
     )
   }
-  if (option.kind === 'select') {
+  // 带 choices 的 text 选项（值不限于列表，如 Claude Code 的 advisor）：和 select 一样画成下拉；当前值不在列表里就补一项，别悄悄显示成别的
+  if (option.kind === 'select' || (option.kind === 'text' && (option.choices ?? []).length > 0)) {
+    const choices = option.choices ?? []
+    const current = typeof value === 'string' ? value : ''
+    const stale = option.kind === 'text' && current !== '' && !choices.some((c) => c.id === current)
     return (
       <div className="space-y-1" data-testid={`option-extra-${option.id}`}>
         <label htmlFor={id} className="text-sm font-medium">
           {label}
         </label>
-        <Select id={id} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(e.target.value)}>
-          {(option.choices ?? []).map((c) => (
+        <Select id={id} value={current} onChange={(e) => onChange(e.target.value)}>
+          {stale ? <option value={current}>{current}</option> : null}
+          {choices.map((c) => (
             <option key={c.id} value={c.id}>
               {c.label}
             </option>

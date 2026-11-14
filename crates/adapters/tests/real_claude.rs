@@ -186,8 +186,14 @@ async fn real_pong_permission_cancel_and_resume() {
     }
     let thinking_seen = evs.iter().any(|e| matches!(e, AgentEvent::Event(Event::ThinkingDelta { .. })));
     eprintln!("thinking deltas in turn 1: {thinking_seen}");
-    // 同一个进程里 CLI 回显我们给的 session id，不会多出第二个 Started
-    assert!(!names(&evs).contains(&"STARTED".to_string()));
+    // 第一条 `system/init` 到了：同一个 session id 再发一个 `Started`，`launch_args.conversation_started` 从 false 变成 true
+    // （之后同一进程里的 turn 不会再发）
+    assert_eq!(started.launch_args["conversation_started"], false);
+    let restarted: Vec<_> =
+        evs.iter().filter_map(|e| if let AgentEvent::Started { resume } = e { Some(resume) } else { None }).collect();
+    assert_eq!(restarted.len(), 1, "exactly one Started in turn 1: {:?}", names(&evs));
+    assert_eq!(restarted[0].agent_session_id, started.agent_session_id);
+    assert_eq!(restarted[0].launch_args["conversation_started"], true);
 
     // ---- 控制请求：改模式 / 改模型都能得到 CLI 的回执（不花 token）----
     // `set_settings` 收的是完整的目标设置（和 daemon 一样），从 spawn 时的设置出发改

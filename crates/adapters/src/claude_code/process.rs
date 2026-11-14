@@ -10,6 +10,8 @@
 //! **argv 安全**：每个带值的选项都写成单个 argv 元素 `--flag=value`，所以无论值长什么样（以 `-` 开头、含空格…）
 //! 都不可能被 CLI 解析成另一个选项。值本身也在 [`LaunchOptions::resolve`] / [`validate_settings_values`] 里校验：
 //! 模型 / 思考 / 会话 id 限字符集和长度，`--append-system-prompt` 限长且不含控制字符，预算必须是有限正数。
+//! 唯一例外是 `--advisor` 的值：没有人校验它（它是带 `choices` 的 text 选项，daemon 只检查是字符串（最长 4096 字节），adapter 只检查类型）。
+//! 它作为 argv 是安全的，因为它是单个元素 `--advisor=<值>`；CLI 不接受的值会让 CLI 启动时自己报错退出。
 //! 校验同时挂在 `Adapter::validate_settings` 上，daemon 在 `session.create` / `set_settings` 时就能拒绝。
 
 use std::collections::{BTreeMap, HashMap};
@@ -25,6 +27,9 @@ use super::probe::{self, DEFAULT_COMMAND};
 pub const MODE_BYPASS: &str = "bypassPermissions";
 /// 关思考：不传 `--effort`，改用环境变量。
 pub const THINKING_OFF: &str = "off";
+
+/// `launch_args` 里 adapter 私有的标记：CLI 是否为这个会话 id 发过 `system/init`。缺省（旧数据）按 `true` 处理。
+pub const MARKER_CONVERSATION_STARTED: &str = "conversation_started";
 
 /// 每个 `claude` 进程固定带的参数（带值的选项一律 `--flag=value`）。
 pub fn base_args() -> Vec<String> {
@@ -148,12 +153,18 @@ pub struct LaunchOptions {
     pub fast_mode: bool,
     /// `permissions.blockWritesOutsideWorkingDirectories`：Write / Edit / NotebookEdit 在任何权限模式下都不写工作目录以外的路径。
     pub block_outside_writes: bool,
+    /// `--advisor` 的值；`None` = 不开。
+    pub advisor_model: Option<String>,
     /// 会话设置里的 `env` 覆盖（进程环境本身由 daemon 合并好放在 `SpawnRequest.env`）。
     pub env: BTreeMap<String, String>,
     /// 续接：`--resume <id>`。
     pub resume_id: Option<String>,
     /// 新会话：`--session-id <uuid>`，这样不用等 `system/init` 就知道 agent 会话 id。
     pub session_id: Option<String>,
+    /// 这个进程启动时 CLI 是否已经为这个会话 id 发过 `system/init`（= 对话真的建立过）的**初值**，由 `resolve` 决定。
+    /// 进程拉起之后翻译器才是它的唯一所有者（`system/init` 是它看到的），这里的值不再更新。不是设置，不进 argv，也不参与
+    /// 「要不要重启」的比较；写进 `launch_args.conversation_started`，下次拉起时据此决定 `--resume` 还是新的 `--session-id`。
+    pub conversation_started: bool,
 }
 
 fn invalid(field: &str, reason: impl Into<String>) -> AdapterError {
@@ -164,22 +175,30 @@ impl LaunchOptions {
     /// 拉起（含 resume）时用：`settings` 是 daemon 传来的**完整目标设置**，没给的字段 = 清除，回到配置 /
     /// `AgentInfo` 的默认值（或「没有」），和 [`Self::resolve_desired`] 同一套语义。
     ///
-    /// **不读 `resume.launch_args`**：它只是上次进程启动时有效设置的快照，每一项（模型 / 思考 / 模式 /
-    /// `system_prompt_append` / `max_*` / `fast_mode`）在 `SessionSettings` 里都有对应字段，没有哪一项是只有进程才知道的。
+    /// **不把 `resume.launch_args` 当设置读**：它只是上次进程启动时有效设置的快照，每一项（模型 / 思考 / 模式 /
+    /// `system_prompt_append` / `max_*` / `fast_mode` / `block_outside_writes` / `advisor_model`）在 `SessionSettings` 里都有对应字段，没有哪一项是只有进程才知道的。
     /// daemon 在没有存活进程时（idle 关闭、daemon 重启、ended）改设置只会改库里的 `settings`，`launch_args` 可能已经过期；
     /// 要是在这里回落到它，用户清掉的系统提示追加 / 预算 / 轮数上限会在 resume 时悄悄复活。
-    /// 所以从 `resume` 里只取 `agent_session_id`（拼 `--resume=<id>`）；没有 `resume` 就生成新的 `--session-id`。
+    /// 所以设置一律不取自它；从 `resume` 里取 `agent_session_id`（拼 `--resume=<id>`），没有 `resume` 就生成新的 `--session-id`。
+    ///
+    /// 唯一的例外是私有标记 `conversation_started`：它不是设置，是只有 adapter 才知道的事实（CLI 有没有为这个会话 id 发过
+    /// `system/init`），不会被用户清掉，所以读它是安全的。标记为 `false` = 对话从没建立过（上次进程启动时就死了，比如 CLI
+    /// 不认某个启动参数），磁盘上没有这段对话，`--resume` 会失败，改成生成新的 `--session-id`；标记为 `true`、缺省（旧数据）
+    /// 或没有 `launch_args` 都照常 `--resume`。
     pub fn resolve(
         settings: &SessionSettings,
         config: &AdapterConfig,
         info: &AgentInfo,
         resume: Option<&ResumeHandle>,
     ) -> Result<Self> {
+        // 对话从没建立过（上次进程在 `system/init` 之前就死了）：`--resume` 会报 `No conversation found`，改用新的 `--session-id`
+        let never_started =
+            resume.is_some_and(|r| r.launch_args.get(MARKER_CONVERSATION_STARTED) == Some(&Value::Bool(false)));
         let (resume_id, session_id) = match resume {
-            Some(r) => (Some(r.agent_session_id.clone()), None),
-            None => (None, Some(uuid::Uuid::new_v4().to_string())),
+            Some(r) if !never_started => (Some(r.agent_session_id.clone()), None),
+            _ => (None, Some(uuid::Uuid::new_v4().to_string())),
         };
-        Self::build(settings, config, info, resume_id, session_id)
+        Self::build(settings, config, info, resume_id, session_id, !never_started && resume.is_some())
     }
 
     /// `AgentHandle::set_settings` 用：`settings` 是**完整的目标设置**（daemon 传的就是合并后的整份设置），
@@ -190,7 +209,14 @@ impl LaunchOptions {
         info: &AgentInfo,
         current: &LaunchOptions,
     ) -> Result<Self> {
-        Self::build(settings, config, info, current.resume_id.clone(), current.session_id.clone())
+        Self::build(
+            settings,
+            config,
+            info,
+            current.resume_id.clone(),
+            current.session_id.clone(),
+            current.conversation_started,
+        )
     }
 
     fn build(
@@ -199,6 +225,7 @@ impl LaunchOptions {
         info: &AgentInfo,
         resume_id: Option<String>,
         session_id: Option<String>,
+        conversation_started: bool,
     ) -> Result<Self> {
         validate_settings_values(settings)?;
 
@@ -250,6 +277,13 @@ impl LaunchOptions {
         let fast_mode = bool_option("fast_mode")?;
         let block_outside_writes = bool_option(probe::OPTION_BLOCK_OUTSIDE_WRITES)?;
 
+        let advisor_model = match settings.options.get(probe::OPTION_ADVISOR_MODEL) {
+            None => None,
+            Some(Value::String(s)) if s.is_empty() || s == probe::ADVISOR_OFF => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => return Err(invalid(&format!("options.{}", probe::OPTION_ADVISOR_MODEL), "expected a string")),
+        };
+
         let opts = Self {
             model,
             thinking,
@@ -259,15 +293,17 @@ impl LaunchOptions {
             max_budget_usd: settings.max_budget_usd,
             fast_mode,
             block_outside_writes,
+            advisor_model,
             env: settings.env.clone(),
             resume_id,
             session_id,
+            conversation_started,
         };
         opts.validate()?;
         Ok(opts)
     }
 
-    /// 检查最终要写进 argv 的每个值。`resolve*` 会调；`ClaudeHandle::start` 在拼 argv 前再调一次，
+    /// 检查要写进 argv 的值（`--advisor` 的值除外，它原样传，见模块文档）。`resolve*` 会调；`ClaudeHandle::start` 在拼 argv 前再调一次，
     /// 所以手工构造的 `LaunchOptions` 也过不了这一关。
     pub fn validate(&self) -> Result<()> {
         if let Some(m) = &self.model {
@@ -299,7 +335,7 @@ impl LaunchOptions {
         self.mode == MODE_BYPASS
     }
 
-    /// 可变参数（不含 [`base_args`]）。带值的选项一律是单个 `--flag=value` 元素；值须已通过 [`Self::validate`]。
+    /// 可变参数（不含 [`base_args`]）。带值的选项一律是单个 `--flag=value` 元素；除 `--advisor` 的值外，值须已通过 [`Self::validate`]。
     pub fn to_args(&self) -> Vec<String> {
         fn kv(a: &mut Vec<String>, k: &str, v: &str) {
             a.push(format!("{k}={v}"));
@@ -310,6 +346,9 @@ impl LaunchOptions {
         }
         if let Some(t) = self.thinking.as_ref().filter(|t| t.as_str() != THINKING_OFF) {
             kv(&mut a, "--effort", t);
+        }
+        if let Some(m) = &self.advisor_model {
+            kv(&mut a, "--advisor", m);
         }
         kv(&mut a, "--permission-mode", &self.mode);
         if self.dangerous() {
@@ -355,6 +394,8 @@ impl LaunchOptions {
             "max_budget_usd": self.max_budget_usd,
             "fast_mode": self.fast_mode,
             "block_outside_writes": self.block_outside_writes,
+            "advisor_model": self.advisor_model,
+            MARKER_CONVERSATION_STARTED: self.conversation_started,
         })
     }
 
@@ -399,10 +440,17 @@ mod tests {
             models: assemble(builtin_models(BUILTIN, None), vec![], &[]),
             allow_custom_model: true,
             modes: probe::modes(),
-            options: probe::options(),
+            options: probe::options(&[]),
             capabilities: AgentCapabilities::default(),
             probed_at_ms: 0,
         }
+    }
+
+    /// `to_json()`，且标成对话已经建立过（真实流程里是 CLI 发过 `system/init` 之后）。
+    fn started_args(o: &LaunchOptions) -> Value {
+        let mut v = o.to_json();
+        v[MARKER_CONVERSATION_STARTED] = json!(true);
+        v
     }
 
     fn resolve(settings: SessionSettings, resume: Option<ResumeHandle>) -> Result<LaunchOptions> {
@@ -450,6 +498,69 @@ mod tests {
             (o.model.as_deref(), o.thinking.as_deref(), o.mode.as_str()),
             (Some("claude-haiku-5-5"), Some("low"), "acceptEdits")
         );
+    }
+
+    #[test]
+    fn launch_args_use_settings_field_names_plus_the_private_marker() {
+        let o = resolve(SessionSettings::default(), None).unwrap();
+        assert!(!o.conversation_started, "a fresh session has no conversation until the CLI emits system/init");
+        let j = o.to_json();
+        assert_eq!(j["conversation_started"], false);
+        assert!(!o.to_args().iter().any(|a| a.contains("conversation")), "the marker never reaches argv");
+    }
+
+    #[test]
+    fn resume_follows_the_conversation_started_marker() {
+        let handle = |launch_args: Value| ResumeHandle { agent_session_id: "sid-1".into(), launch_args };
+        // true：照常 --resume
+        let o = resolve(SessionSettings::default(), Some(handle(json!({"conversation_started": true})))).unwrap();
+        assert_eq!((o.resume_id.as_deref(), o.session_id.as_deref()), (Some("sid-1"), None));
+        assert!(o.conversation_started);
+        // 缺省（旧数据）/ 没有 launch_args：同上
+        for args in [json!({"model": "m"}), Value::Null] {
+            let o = resolve(SessionSettings::default(), Some(handle(args))).unwrap();
+            assert_eq!(o.resume_id.as_deref(), Some("sid-1"));
+            assert!(o.conversation_started);
+        }
+        // false：对话从没建立过，不 --resume，换新的 --session-id
+        let o = resolve(SessionSettings::default(), Some(handle(json!({"conversation_started": false})))).unwrap();
+        assert_eq!(o.resume_id, None);
+        let sid = o.session_id.clone().unwrap();
+        assert_ne!(sid, "sid-1");
+        assert!(!o.conversation_started);
+        let args = o.to_args();
+        assert!(args.contains(&format!("--session-id={sid}")) && !args.iter().any(|a| a.starts_with("--resume")));
+    }
+
+    #[test]
+    fn advisor_model_becomes_one_advisor_arg() {
+        let with = |v: Option<Value>| SessionSettings {
+            options: v.into_iter().map(|v| ("advisor_model".to_string(), v)).collect(),
+            ..Default::default()
+        };
+        let advisor_args = |o: &LaunchOptions| -> Vec<String> {
+            o.to_args().into_iter().filter(|a| a.starts_with("--advisor")).collect()
+        };
+        let o = resolve(with(Some(json!("opus"))), None).unwrap();
+        assert_eq!(o.advisor_model.as_deref(), Some("opus"));
+        assert_eq!(advisor_args(&o), vec!["--advisor=opus".to_string()]);
+        assert_eq!(o.to_json()["advisor_model"], "opus");
+        // 关 / 空 / 没给：不带 `--advisor`
+        for v in [Some(json!("off")), Some(json!("")), None] {
+            let o = resolve(with(v), None).unwrap();
+            assert_eq!(o.advisor_model, None);
+            assert!(advisor_args(&o).is_empty());
+            assert_eq!(o.to_json()["advisor_model"], Value::Null);
+        }
+        // 不是字符串
+        let err = resolve(with(Some(json!(true))), None).unwrap_err();
+        assert!(
+            matches!(err, AdapterError::InvalidSettings { ref field, .. } if field == "options.advisor_model"),
+            "{err:?}"
+        );
+        // 值不检查（`check_model` 会拒绝的值原样进同一个 argv 元素）
+        let o = resolve(with(Some(json!("-x y"))), None).unwrap();
+        assert_eq!(advisor_args(&o), vec!["--advisor=-x y".to_string()]);
     }
 
     #[test]
@@ -643,13 +754,17 @@ mod tests {
                 max_turns: Some(3),
                 max_budget_usd: Some(2.0),
                 system_prompt_append: Some("hi".into()),
-                options: serde_json::Map::from_iter([("fast_mode".to_string(), json!(true))]),
+                options: serde_json::Map::from_iter([
+                    ("fast_mode".to_string(), json!(true)),
+                    ("advisor_model".to_string(), json!("opus")),
+                ]),
                 ..Default::default()
             },
             None,
         )
         .unwrap();
-        let resume = ResumeHandle { agent_session_id: "sid-1".into(), launch_args: first.to_json() };
+        assert!(first.to_json()["advisor_model"] == "opus");
+        let resume = ResumeHandle { agent_session_id: "sid-1".into(), launch_args: started_args(&first) };
         // daemon 传的是完整目标设置：什么都没给 = 全部清除 / 回到默认，上次的 launch_args 一项也不补回来
         let again = resolve(SessionSettings::default(), Some(resume.clone())).unwrap();
         let fresh = resolve(SessionSettings::default(), None).unwrap();
@@ -658,11 +773,12 @@ mod tests {
         assert_eq!(again.mode, "default");
         assert_eq!(again.system_prompt_append, None);
         assert_eq!((again.max_turns, again.max_budget_usd, again.fast_mode), (None, None, false));
+        assert_eq!(again.advisor_model, None);
         // 只有会话 id 取自 resume
         assert_eq!(again.resume_id.as_deref(), Some("sid-1"));
         assert_eq!(again.session_id, None);
         let args = again.to_args();
-        for flag in ["--append-system-prompt", "--max-turns", "--max-budget-usd", "--settings"] {
+        for flag in ["--append-system-prompt", "--max-turns", "--max-budget-usd", "--settings", "--advisor"] {
             assert!(!args.iter().any(|a| a.starts_with(flag)), "{flag} came back from launch_args: {args:?}");
         }
         assert!(args.contains(&"--resume=sid-1".to_string()));
@@ -895,7 +1011,7 @@ mod tests {
         // 会话 id 沿用
         assert_eq!(cleared.session_id, full.session_id);
         // resolve（spawn / resume 路径）同一套语义：不会用上次的 launch_args 补，只取会话 id
-        let resume = ResumeHandle { agent_session_id: "sid".into(), launch_args: full.to_json() };
+        let resume = ResumeHandle { agent_session_id: "sid".into(), launch_args: started_args(&full) };
         let respawned = resolve(SessionSettings::default(), Some(resume)).unwrap();
         assert_eq!(respawned.system_prompt_append, None);
         assert_eq!((respawned.max_turns, respawned.max_budget_usd), (None, None));

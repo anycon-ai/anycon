@@ -155,6 +155,7 @@ async fn ready_when_installed_and_logged_in() {
         vec![
             ("fast_mode", ConfigOptionKind::Bool, serde_json::json!(false)),
             ("block_outside_writes", ConfigOptionKind::Bool, serde_json::json!(false)),
+            ("advisor_model", ConfigOptionKind::Text, serde_json::json!("off")),
         ]
     );
 

@@ -1360,6 +1360,44 @@ mod tests {
         f.agents.set_defaults(&p(Some("yolo"), None)).await.unwrap();
     }
 
+    /// 带 `choices` 的 `text` 选项（Claude Code 的 advisor）：列表只是候选，值只要是字符串（最长 4096 字节）就收，
+    /// 所以列表之后变了，已存的值也不会让会话一直 `invalid_settings`。
+    #[test]
+    fn a_text_option_with_choices_accepts_any_string_up_to_the_limit() {
+        use anycon_protocol::{Choice, ConfigOption, ConfigOptionKind};
+        let mut info = AgentInfo {
+            id: "x".into(),
+            label: "x".into(),
+            driver: "x".into(),
+            enabled: true,
+            status: AgentStatus::Ready,
+            version: None,
+            path: None,
+            issue: None,
+            models: vec![],
+            allow_custom_model: true,
+            modes: vec![],
+            options: vec![],
+            capabilities: Default::default(),
+            probed_at_ms: 0,
+        };
+        info.options = vec![ConfigOption {
+            id: "advisor".into(),
+            label: "Advisor".into(),
+            description: None,
+            kind: ConfigOptionKind::Text,
+            choices: vec![Choice { id: "off".into(), label: "Off".into(), description: None }],
+            default: serde_json::json!("off"),
+        }];
+        let with = |v: serde_json::Value| serde_json::Map::from_iter([("advisor".to_string(), v)]);
+        assert!(validate_option_values(&info, &with(serde_json::json!("off"))).is_ok());
+        assert!(validate_option_values(&info, &with(serde_json::json!("not-in-the-list"))).is_ok());
+        assert!(validate_option_values(&info, &with(serde_json::json!("a".repeat(4096)))).is_ok());
+        assert!(validate_option_values(&info, &with(serde_json::json!("a".repeat(4097)))).is_err());
+        assert!(validate_option_values(&info, &with(serde_json::json!(true))).is_err());
+        assert!(validate_option_values(&info, &with(serde_json::json!(["off"]))).is_err());
+    }
+
     #[test]
     fn merge_settings_clear_list_resets_named_fields_after_the_merge() {
         let info = AgentInfo {

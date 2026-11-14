@@ -2826,8 +2826,9 @@ impl Sessions {
         if let Some(c) = closing {
             if let Some(r) = c.await {
                 let mut st = sess.st.lock().await;
-                adopt_closing_resume(&mut st, r);
-                self.persist(&st).await;
+                if adopt_closing_resume_if_same_session(&mut st, r) {
+                    self.persist(&st).await;
+                }
             }
         }
         Ok(())
@@ -3596,10 +3597,7 @@ impl Sessions {
                 // 旧进程关闭前报告的 resume 信息要存下来（下次 send 用它 resume）
                 if let Some(r) = closing.await {
                     let mut st = sess.st.lock().await;
-                    if st.row.agent_session_id.as_deref() == Some(r.agent_session_id.as_str())
-                        || st.row.agent_session_id.is_none()
-                    {
-                        adopt_closing_resume(&mut st, r);
+                    if adopt_closing_resume_if_same_session(&mut st, r) {
                         this.persist(&st).await;
                     }
                 }
@@ -3899,12 +3897,26 @@ async fn driver_loop(
 /// 旧进程关闭前报告的 resume 信息：记下它的 agent 会话 id 和 launch_args。这份 `launch_args` 是关闭那一刻的快照，可能比
 /// 现在的设置旧（关闭期间 / 关闭之后用户改过、清过设置），所以没有存活进程时再按**当前**设置同步一遍，
 /// 否则 `set_settings` 刚清掉的值会被这个迟到的快照写回来。
+///
+/// 无条件收下。发消息拉起新进程的路径用它：旧句柄是先等它关完才 spawn 的，期间没有更新的进程写过库；id 和库里不同只可能是
+/// 旧进程最后那个带新 id 的 `Started` 因为 `detach` 已经递增了 `driver_gen` 被丢了，这时关闭句柄的才是最新的。
 fn adopt_closing_resume(st: &mut St, r: ResumeHandle) {
     st.row.agent_session_id = Some(r.agent_session_id);
     st.row.launch_args = r.launch_args;
     if st.driver.is_none() {
         sync_launch_args(&mut st.row.launch_args, &st.row.settings);
     }
+}
+
+/// 同 [`adopt_closing_resume`]，但只收 agent 会话 id 和库里一致（或库里还没有）的，返回有没有收下。`restart()` 和空闲关闭用它：
+/// 这两处旧句柄是后台等着关完的，期间新进程可能已经用 `Started` 报了新的 id（比如第一次启动没建立对话、这次换了新 id），
+/// 旧句柄迟到的快照不能把它改回去。
+fn adopt_closing_resume_if_same_session(st: &mut St, r: ResumeHandle) -> bool {
+    if st.row.agent_session_id.as_deref().is_some_and(|id| id != r.agent_session_id) {
+        return false;
+    }
+    adopt_closing_resume(st, r);
+    true
 }
 
 /// `ResumeHandle.launch_args` 是 adapter 自己的 JSON（daemon 不解释它），但它按约定是「上次进程启动时有效设置」的快照，
@@ -3937,6 +3949,46 @@ fn sync_launch_args(args: &mut serde_json::Value, new: &SessionSettings) {
 mod launch_args_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_closing_handle_with_another_agent_session_id_is_not_adopted() {
+        let row = SessionRow {
+            id: "s".into(),
+            project: None,
+            project_loc: None,
+            agent: "fake".into(),
+            title: String::new(),
+            title_locked: false,
+            status: SessionStatus::Idle,
+            archived: false,
+            settings: SessionSettings::default(),
+            agent_session_id: Some("B".into()),
+            launch_args: json!({"conversation_started": false}),
+            created_ms: 0,
+            updated_ms: 0,
+            last_seq: 0,
+            next_turn_id: 1,
+            usage: UsageTotals::default(),
+            preview: None,
+            worktree_id: None,
+        };
+        let mut st = St::new(row);
+        let old = ResumeHandle { agent_session_id: "A".into(), launch_args: json!({"conversation_started": false}) };
+        assert!(!adopt_closing_resume_if_same_session(&mut st, old.clone()));
+        assert_eq!(st.row.agent_session_id.as_deref(), Some("B"));
+        // 发消息的路径无条件收下（那里旧句柄才是最新的）
+        adopt_closing_resume(&mut st, old);
+        assert_eq!(st.row.agent_session_id.as_deref(), Some("A"));
+        st.row.agent_session_id = Some("B".into());
+        // 同一个 id（或库里还没有）照常收下
+        let same = ResumeHandle { agent_session_id: "B".into(), launch_args: json!({"conversation_started": true}) };
+        assert!(adopt_closing_resume_if_same_session(&mut st, same));
+        assert_eq!(st.row.launch_args["conversation_started"], true);
+        st.row.agent_session_id = None;
+        let any = ResumeHandle { agent_session_id: "C".into(), launch_args: json!({}) };
+        assert!(adopt_closing_resume_if_same_session(&mut st, any));
+        assert_eq!(st.row.agent_session_id.as_deref(), Some("C"));
+    }
 
     #[test]
     fn cleared_settings_disappear_from_the_launch_args_snapshot_and_changed_ones_follow() {

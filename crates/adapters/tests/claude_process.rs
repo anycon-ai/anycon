@@ -46,7 +46,15 @@ async fn spawn_send_and_stream_text() {
     h.send(input("hello")).await.unwrap();
     assert!(h.is_busy());
     let evs = collect_until(&mut h, is_turn_done).await;
-    assert_eq!(names(&evs), vec!["text_delta", "text_delta", "text_delta", "text_done", "turn_done"]);
+    // 第一条 `system/init` 把 `conversation_started` 翻成 true，所以多一个 STARTED
+    assert_eq!(names(&evs), vec!["STARTED", "text_delta", "text_delta", "text_delta", "text_done", "turn_done"]);
+    match &evs[0] {
+        AgentEvent::Started { resume } => {
+            assert_eq!(resume.agent_session_id, sid);
+            assert_eq!(resume.launch_args["conversation_started"], true);
+        }
+        _ => unreachable!(),
+    }
     assert_eq!(text_of(&evs), "Hello  world");
     assert_eq!(turn_done(&evs), (1, TurnDoneReason::Completed));
     assert!(!h.is_busy(), "busy is cleared before TurnDone is delivered");
@@ -89,6 +97,12 @@ async fn spawn_send_and_stream_text() {
     }
     assert!(h.events().recv().await.is_none(), "channel closes after Exited");
     assert!(matches!(h.send(input("again")).await, Err(AdapterError::Exited(_))));
+}
+
+/// 把一个 `resume_handle()` 当成「对话已经建立过」的样子（真实流程里是跑过一个 turn 之后的）。
+fn started(mut r: ResumeHandle) -> ResumeHandle {
+    r.launch_args["conversation_started"] = json!(true);
+    r
 }
 
 fn uuid_like(s: &str) -> bool {
@@ -763,6 +777,10 @@ async fn set_settings_uses_control_requests() {
     let r = h.set_settings(&d).await.unwrap();
     assert!(r.restart_required);
     assert_eq!(h.resume_handle().unwrap().launch_args["block_outside_writes"], true);
+    d.options.insert("advisor_model".into(), json!("opus"));
+    let r = h.set_settings(&d).await.unwrap();
+    assert!(r.restart_required);
+    assert_eq!(h.resume_handle().unwrap().launch_args["advisor_model"], "opus");
 
     // CLI 拒绝的模型 → InvalidSettings
     d.model = Some("bogus-model".into());
@@ -777,6 +795,7 @@ async fn set_settings_can_clear_values_and_resume_does_not_bring_them_back() {
     let fx = Harness::new();
     let mut options = serde_json::Map::new();
     options.insert("fast_mode".into(), json!(true));
+    options.insert("advisor_model".into(), json!("opus"));
     let full = SessionSettings {
         model: Some("claude-sonnet-5-5".into()),
         thinking: Some("high".into()),
@@ -813,6 +832,7 @@ async fn set_settings_can_clear_values_and_resume_does_not_bring_them_back() {
         assert!(launch_args[k].is_null(), "{k} was cleared in launch_args: {launch_args}");
     }
     assert_eq!(launch_args["fast_mode"], false);
+    assert!(launch_args["advisor_model"].is_null(), "advisor_model was cleared: {launch_args}");
     assert_eq!(launch_args["model"], "claude-sonnet-5-5");
     // 同样的目标再设一次：没有变化，也不用重启
     let r = h.set_settings(&cleared).await.unwrap();
@@ -826,7 +846,7 @@ async fn set_settings_can_clear_values_and_resume_does_not_bring_them_back() {
         }
         other => panic!("{other:?}"),
     }
-    let resume = h.resume_handle().unwrap();
+    let resume = started(h.resume_handle().unwrap());
     h.shutdown().await.unwrap();
 
     // 重启：用新的完整设置 + resume_handle() 再拉起 → argv 里没有被清除的选项
@@ -936,6 +956,26 @@ async fn partial_set_settings_failure_keeps_state_consistent() {
 }
 
 #[tokio::test]
+async fn advisor_model_reaches_the_process_as_one_argument() {
+    let fx = Harness::new();
+    let mut options = serde_json::Map::new();
+    options.insert("advisor_model".into(), json!("opus"));
+    let mut h = fx.spawn(SessionSettings { options, ..Default::default() }, None).await;
+    fx.wait_stdin_or_argv().await;
+    assert!(fx.argv().contains(&"--advisor=opus".to_string()), "{:?}", fx.argv());
+    h.shutdown().await.unwrap();
+
+    // 关 = 不带 `--advisor`
+    let fx = Harness::new();
+    let mut options = serde_json::Map::new();
+    options.insert("advisor_model".into(), json!("off"));
+    let mut h = fx.spawn(SessionSettings { options, ..Default::default() }, None).await;
+    fx.wait_stdin_or_argv().await;
+    assert!(!fx.argv().iter().any(|a| a.starts_with("--advisor")), "{:?}", fx.argv());
+    h.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn switching_into_bypass_needs_a_dangerous_launch() {
     // 没带 --dangerously-skip-permissions 启动：切 bypassPermissions 要重启，而且根本不发控制请求
     let fx = Harness::new();
@@ -1041,7 +1081,7 @@ async fn resume_after_clear_does_not_resurrect_values_from_a_stale_launch_args()
     {
         assert!(first.contains(&want.to_string()), "{want} missing from {first:?}");
     }
-    let stale = h.resume_handle().unwrap();
+    let stale = started(h.resume_handle().unwrap());
     assert_eq!(stale.launch_args["system_prompt_append"], "Be terse.");
     assert_eq!(stale.launch_args["max_budget_usd"], 2.5);
     h.shutdown().await.unwrap();
@@ -1555,4 +1595,83 @@ async fn a_message_sent_during_the_clis_own_turn_is_written_after_that_turn_ends
     assert_eq!(order, ["stdin:go", "result", "result", "stdin:next", "result"]);
     assert!(!h.is_busy());
     h.shutdown().await.unwrap();
+}
+
+/// 第一次拉起就死了（没到 `system/init`）的会话：`launch_args.conversation_started` 一直是 false，
+/// 下次拉起不能 `--resume`（磁盘上没有这段对话），要换新的 `--session-id`。
+#[tokio::test]
+async fn a_session_that_never_reached_init_starts_fresh_next_time() {
+    let fx = Harness::new();
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    let first_id = match next_event(&mut h).await {
+        AgentEvent::Started { resume } => {
+            assert_eq!(resume.launch_args["conversation_started"], false);
+            resume.agent_session_id
+        }
+        other => panic!("{other:?}"),
+    };
+    // 在 init 之前改设置：补发的 Started 带的还是 false
+    let mut d = SessionSettings::default();
+    d.options.insert("fast_mode".into(), json!(true));
+    assert!(h.set_settings(&d).await.unwrap().restart_required);
+    match next_event(&mut h).await {
+        AgentEvent::Started { resume } => assert_eq!(resume.launch_args["conversation_started"], false),
+        other => panic!("{other:?}"),
+    }
+    let handle = h.resume_handle().unwrap();
+    assert_eq!(handle.launch_args["conversation_started"], false);
+    h.shutdown().await.unwrap();
+    let _ = collect_until(&mut h, is_exited).await;
+
+    // 即使 CLI 会拒绝 --resume，这次也不该带它
+    let fx2 = Harness::new().var("FAKE_CLAUDE_RESUME_FAIL", "1");
+    let mut h2 = fx2.spawn(SessionSettings::default(), Some(handle)).await;
+    fx2.wait_stdin_or_argv().await;
+    let argv = fx2.argv();
+    assert!(!argv.iter().any(|a| a.starts_with("--resume")), "{argv:?}");
+    let new_id = match next_event(&mut h2).await {
+        AgentEvent::Started { resume } => {
+            assert_eq!(resume.launch_args["conversation_started"], false);
+            resume.agent_session_id
+        }
+        other => panic!("{other:?}"),
+    };
+    assert_ne!(new_id, first_id);
+    assert!(argv.contains(&format!("--session-id={new_id}")), "{argv:?}");
+    h2.shutdown().await.unwrap();
+}
+
+/// 到过 `system/init` 之后：Started 带 true，之后改设置不把它翻回去，下次拉起 `--resume` 同一个 id。
+#[tokio::test]
+async fn a_session_that_reached_init_resumes_next_time() {
+    let fx = Harness::new().script("text_stream.jsonl");
+    let mut h = fx.spawn(SessionSettings::default(), None).await;
+    let id = match next_event(&mut h).await {
+        AgentEvent::Started { resume } => resume.agent_session_id,
+        other => panic!("{other:?}"),
+    };
+    h.send(input("hello")).await.unwrap();
+    let evs = collect_until(&mut h, is_turn_done).await;
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Started { resume } if resume.launch_args["conversation_started"] == true)));
+    assert_eq!(h.resume_handle().unwrap().launch_args["conversation_started"], true);
+
+    let mut d = SessionSettings::default();
+    d.options.insert("fast_mode".into(), json!(true));
+    assert!(h.set_settings(&d).await.unwrap().restart_required);
+    match next_event(&mut h).await {
+        AgentEvent::Started { resume } => assert_eq!(resume.launch_args["conversation_started"], true),
+        other => panic!("{other:?}"),
+    }
+    let handle = h.resume_handle().unwrap();
+    assert_eq!(handle.launch_args["conversation_started"], true);
+    h.shutdown().await.unwrap();
+    let _ = collect_until(&mut h, is_exited).await;
+
+    let fx2 = Harness::new();
+    let mut h2 = fx2.spawn(SessionSettings::default(), Some(handle)).await;
+    fx2.wait_stdin_or_argv().await;
+    assert!(fx2.argv().contains(&format!("--resume={id}")), "{:?}", fx2.argv());
+    h2.shutdown().await.unwrap();
 }

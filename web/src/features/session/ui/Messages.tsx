@@ -266,6 +266,8 @@ export function ToolView({ block }: { block: ToolBlock }) {
   const output = toolOutputText(block)
   const failed = block.result?.isError
   const exit = block.result?.detail?.exit_code
+  // 没有参数的调用（如 advisor 的 `{}`）不画空的输入框
+  const hasInput = block.input != null && !(typeof block.input === 'object' && !Array.isArray(block.input) && Object.keys(block.input).length === 0)
 
   switch (block.category) {
     case 'shell': {
@@ -331,10 +333,12 @@ export function ToolView({ block }: { block: ToolBlock }) {
     default:
       return (
         <ToolFrame block={block} summary={toolLabel(block)}>
-          <div className="space-y-2 p-3">
-            <pre className="scroll-thin max-h-60 overflow-auto font-mono text-xs">{safeJson(block.input)}</pre>
-            {output ? <Terminal text={output} error={failed} /> : null}
-          </div>
+          {hasInput || output ? (
+            <div className="space-y-2 p-3">
+              {hasInput ? <pre className="scroll-thin max-h-60 overflow-auto font-mono text-xs">{safeJson(block.input)}</pre> : null}
+              {output ? <Terminal text={output} error={failed} /> : null}
+            </div>
+          ) : undefined}
         </ToolFrame>
       )
   }

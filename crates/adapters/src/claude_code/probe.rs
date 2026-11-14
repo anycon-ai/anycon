@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use anycon_agent_api::ProbeContext;
 use anycon_protocol::{
-    AgentCapabilities, AgentInfo, AgentIssue, AgentStatus, ConfigOption, ConfigOptionKind, DiagnosticField, ModeInfo,
-    ModeRisk, ModelInfo,
+    AgentCapabilities, AgentInfo, AgentIssue, AgentStatus, Choice, ConfigOption, ConfigOptionKind, DiagnosticField,
+    ModeInfo, ModeRisk, ModelInfo,
 };
 use semver::Version;
 use serde_json::{json, Value};
@@ -123,7 +123,13 @@ pub fn modes() -> Vec<ModeInfo> {
     ]
 }
 
-pub fn options() -> Vec<ConfigOption> {
+pub fn options(models: &[ModelInfo]) -> Vec<ConfigOption> {
+    let mut advisor_choices = vec![Choice { id: ADVISOR_OFF.to_string(), label: "Off".to_string(), description: None }];
+    advisor_choices.extend(models.iter().map(|m| Choice {
+        id: m.id.clone(),
+        label: m.label.clone(),
+        description: m.description.clone(),
+    }));
     vec![
         ConfigOption {
             id: "fast_mode".to_string(),
@@ -147,11 +153,33 @@ pub fn options() -> Vec<ConfigOption> {
             choices: vec![],
             default: Value::Bool(false),
         },
+        // `--advisor <model>`（2.1.325 实测；`--help` 不列出）：主模型在关键决策点咨询更强的模型（ADR-52）。
+        // 声明成带 `choices` 的 `text` 而不是 `select`：模型列表每次探测都可能变，而 daemon 在每个 turn 之前都会按当前列表
+        // 重新校验已存的 select 值，存着的 advisor 一旦掉出列表会话就会一直 `invalid_settings`。`text` 只检查是字符串（最长 4096 字节），
+        // 列表只是给用户挑的；CLI 不认的值在启动时由 CLI 自己报错。
+        ConfigOption {
+            id: OPTION_ADVISOR_MODEL.to_string(),
+            label: "Advisor model".to_string(),
+            description: Some(
+                "A stronger model that the main model consults at key decisions. Claude Code decides which pairs it \
+                 accepts (the advisor generally has to be at least as capable as the main model); with a pair it does \
+                 not accept, it currently runs without an advisor. Needs a Claude Code version that has the --advisor \
+                 flag (verified on 2.1.325)."
+                    .to_string(),
+            ),
+            kind: ConfigOptionKind::Text,
+            choices: advisor_choices,
+            default: Value::String(ADVISOR_OFF.to_string()),
+        },
     ]
 }
 
 /// 选项 id：文件工具不许写工作目录以外的路径。
 pub const OPTION_BLOCK_OUTSIDE_WRITES: &str = "block_outside_writes";
+/// 选项 id：`--advisor` 的值。
+pub const OPTION_ADVISOR_MODEL: &str = "advisor_model";
+/// `advisor_model` 的「关」。
+pub const ADVISOR_OFF: &str = "off";
 
 pub fn capabilities() -> AgentCapabilities {
     AgentCapabilities {
@@ -379,7 +407,7 @@ pub async fn run_probe(ctx: &ProbeContext, probe_all: bool, memo: &CliModelsMemo
         &ctx.config.additional_models,
     );
     info.modes = modes();
-    info.options = options();
+    info.options = options(&info.models);
     info.capabilities = capabilities();
 
     if auth == AuthState::LoggedOut {
@@ -535,4 +563,33 @@ pub async fn diagnose_fields(ctx: &ProbeContext) -> Vec<DiagnosticField> {
         f.push(field("issue", s));
     }
     f
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.to_string(),
+            label: id.to_uppercase(),
+            description: Some(format!("about {id}")),
+            default: false,
+            thinking: None,
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn advisor_option_lists_off_then_the_models_in_order() {
+        let opts = options(&[model("sonnet"), model("opus")]);
+        let o = opts.iter().find(|o| o.id == OPTION_ADVISOR_MODEL).expect("advisor option");
+        assert_eq!(o.kind, ConfigOptionKind::Text);
+        assert_eq!(o.default, json!("off"));
+        let ids: Vec<&str> = o.choices.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["off", "sonnet", "opus"]);
+        assert_eq!(o.choices[2].label, "OPUS");
+        assert_eq!(o.choices[2].description.as_deref(), Some("about opus"));
+        assert!(o.choices.iter().any(|c| c.id == o.default.as_str().unwrap()));
+    }
 }

@@ -7,12 +7,16 @@
 //! - 每个 content block 会各自带一条 `assistant` 消息；文本已经流式发过的，不再从 `assistant` 重发
 //! - 思考内容在较新的 CLI 里是空串（只有 `estimated_tokens`）：每个思考块只发一条空的 `ThinkingDelta`
 //! - `result.total_cost_usd` 是**进程内累计值**，`usage` / `duration_ms` 是**本 turn 的**；这里把费用换成增量
-//! - `system/init` 每个 turn 都会再发一次；只在 `session_id` 变化时再发 `Started`
+//! - `system/init` 每个 turn 都会再发一次；`session_id` 变化时、以及这个会话的第一条 `system/init`（`launch_args.conversation_started`
+//!   从 false 翻成 true，让 daemon 记下对话已经建立）发 `Started`，其余不再发
 //! - 没有 turn 在跑时出现的 `system/init` = CLI **自己**开始了一轮（后台任务结束后处理结果）：发 `TurnStarted`，
 //!   这一轮照常以 `result` → `TurnDone` 结束。这一轮进行中到达的用户消息先暂存，`result` 之后以 [`Out::Write`] 交还
 //! - 后台任务（后台 subagent、后台命令）以 `system/background_tasks_changed` 为准，`task_started` / `task_notification` /
 //!   `task_updated` 兜底；数目变化时发 `Background`
 //! - `TodoWrite` → `Plan`；`ExitPlanMode` / `AskUserQuestion` 由权限请求表达，不再发 tool_call / tool_result
+//! - advisor（`--advisor`）：`server_tool_use { name: advisor }` → `ToolCall`（name `advisor`、title `Advisor`、category `other`），
+//!   `advisor_tool_result` → 同 id 的 `ToolResult`：明文建议（`advisor_result`）进 `output`，加密的（`advisor_redacted_result`）
+//!   `output` 为空且 `encrypted_content` 不进任何事件，`advisor_tool_result_error` 以错误码作 `output` 并标 `is_error`
 //! - 子 agent 内部的调用（`parent_tool_use_id` 非空）带 `parent_id`
 //! - 转到后台的调用（子 agent 的 `tool_use_result.status = async_launched`、Bash 的 `tool_use_result.backgroundTaskId`，
 //!   或者 `task_started { is_backgrounded }` 指向的调用）的结果标 `background`，等 `system/task_notification` 再给同一个 id
@@ -41,6 +45,7 @@ use anycon_protocol::{
 use serde_json::{json, Value};
 
 use super::permissions::{self, NativePending};
+use super::process::MARKER_CONVERSATION_STARTED as MARKER;
 use super::tools;
 
 /// 单个工具输出（文本）保留的上限。历史是唯一副本，但一次 `cat` 大文件不该撑爆事件流。
@@ -213,6 +218,9 @@ pub struct Translator {
     /// 本 turn 最近一条顶层 assistant 消息的模型：从 `result.modelUsage` 里挑主模型的依据。
     last_model: Option<String>,
 }
+
+/// advisor 工具的名字（`server_tool_use.name`）。
+const ADVISOR_TOOL: &str = "advisor";
 
 fn clip_text(s: &str) -> String {
     if s.len() <= MAX_TOOL_OUTPUT_BYTES {
@@ -492,7 +500,7 @@ fn created_diff(cwd: &str, path: &str, content: &str) -> String {
 
 impl Translator {
     /// `started_session_id`：spawn 时已经告诉上层的 agent 会话 id（`--session-id` / `--resume`），
-    /// `system/init` 带同一个 id 就不重复发 `Started`。
+    /// `system/init` 带同一个 id 就不重复发 `Started`（`launch_args.conversation_started` 为 false 时的第一条 init 例外，也会发）。
     pub fn new(cwd: impl Into<String>, launch_args: Value, started_session_id: Option<String>) -> Self {
         Self {
             cwd: cwd.into(),
@@ -535,8 +543,18 @@ impl Translator {
     }
 
     /// `set_settings` 改了启动参数之后更新：之后因 `system/init` 带出新会话 id 而发的 `Started` 要带最新的 `launch_args`，
+    /// 当前的 `launch_args`（含翻译器自己维护的 `conversation_started`）：`Started` 和 `resume_handle()` 都以它为准。
+    pub fn launch_args(&self) -> &Value {
+        &self.launch_args
+    }
+
+    /// `set_settings` 改了启动参数之后更新：之后因 `system/init` 带出新会话 id 而发的 `Started` 要带最新的 `launch_args`，
     /// 否则 daemon 存下的快照里还是被清除之前的值（resume 路径不读它，但快照不该过期）。
-    pub fn set_launch_args(&mut self, launch_args: Value) {
+    /// 私有标记 `conversation_started` 由翻译器自己维护（见 `on_init`），新的 `launch_args` 不会把它改回去。
+    pub fn set_launch_args(&mut self, mut launch_args: Value) {
+        if let (Some(m), Some(obj)) = (self.launch_args.get(MARKER).cloned(), launch_args.as_object_mut()) {
+            obj.insert(MARKER.to_string(), m);
+        }
         self.launch_args = launch_args;
     }
 
@@ -769,8 +787,14 @@ impl Translator {
         if let Some(m) = v.get("model").and_then(Value::as_str) {
             self.model = Some(m.to_string());
         }
+        // CLI 第一次为这个会话 id 发 `init`：对话从此存在，记下来让 daemon 落库（之后 `--resume` 才有东西可接）
+        // 只在真的发出 `Started` 时才翻：没带 `session_id` 的 init 不发 `Started`，翻了 daemon 的库里就永远是 false
+        let first_init = self.launch_args.get(MARKER) == Some(&Value::Bool(false));
         if let Some(sid) = v.get("session_id").and_then(Value::as_str) {
-            if self.started_session_id.as_deref() != Some(sid) {
+            if first_init || self.started_session_id.as_deref() != Some(sid) {
+                if first_init {
+                    self.launch_args[MARKER] = Value::Bool(true);
+                }
                 self.started_session_id = Some(sid.to_string());
                 out.push(Out::Event(AgentEvent::Started {
                     resume: ResumeHandle { agent_session_id: sid.to_string(), launch_args: self.launch_args.clone() },
@@ -1411,6 +1435,10 @@ impl Translator {
                     }
                 }
                 Some("tool_use") => self.on_tool_use(block, parent.clone(), out),
+                Some("server_tool_use") if block["name"] == ADVISOR_TOOL => {
+                    self.on_advisor_call(block, parent.clone(), out)
+                }
+                Some("advisor_tool_result") => self.on_advisor_result(block, out),
                 _ => {}
             }
         }
@@ -1461,6 +1489,48 @@ impl Translator {
                 );
             }
         }
+    }
+
+    /// advisor 的咨询调用。别的 `server_tool_use`（服务端工具）仍然不发事件。
+    fn on_advisor_call(&mut self, block: &Value, parent_id: Option<String>, out: &mut Vec<Out>) {
+        let id = block["id"].as_str().unwrap_or("").to_string();
+        if id.is_empty() || !self.seen_tool_use.insert(id.clone()) {
+            return;
+        }
+        self.tools.insert(id.clone(), ToolMeta { name: ADVISOR_TOOL.to_string(), path: None });
+        Self::push(
+            out,
+            Event::ToolCall {
+                id,
+                title: "Advisor".to_string(),
+                detail: None,
+                category: ToolCategory::Other,
+                name: ADVISOR_TOOL.to_string(),
+                input: block.get("input").cloned().unwrap_or_else(|| json!({})),
+                parent_id,
+            },
+        );
+    }
+
+    /// advisor 的结果；只回应上面登记过、还没有结果的调用。
+    fn on_advisor_result(&mut self, block: &Value, out: &mut Vec<Out>) {
+        let id = block["tool_use_id"].as_str().unwrap_or("");
+        if !self.tools.get(id).is_some_and(|m| m.name == ADVISOR_TOOL) {
+            return;
+        }
+        self.tools.remove(id);
+        let content = &block["content"];
+        let (output, is_error) = match content["type"].as_str() {
+            Some("advisor_result") => {
+                (content["text"].as_str().map(|t| Value::String(clip_text(t))).unwrap_or(Value::Null), false)
+            }
+            Some("advisor_tool_result_error") => {
+                (content["error_code"].as_str().map(|c| Value::String(c.to_string())).unwrap_or(Value::Null), true)
+            }
+            // `advisor_redacted_result` 的内容是加密的，不往外传
+            _ => (Value::Null, false),
+        };
+        Self::push(out, Event::ToolResult { id: id.to_string(), output, is_error, detail: None });
     }
 
     // ---------- user（tool_result） ----------
@@ -1714,6 +1784,141 @@ impl Translator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn advisor_events(lines: &[Value]) -> Vec<Event> {
+        let mut t = Translator::new("/w", json!({}), None);
+        t.begin_turn();
+        lines
+            .iter()
+            .flat_map(|l| t.feed(l))
+            .filter_map(|o| match o {
+                Out::Event(AgentEvent::Event(e)) => Some(e),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assistant(block: Value) -> Value {
+        json!({"type": "assistant", "message": {"id": "msg_1", "role": "assistant", "content": [block]}})
+    }
+
+    fn advisor_call(id: &str) -> Value {
+        assistant(json!({"type": "server_tool_use", "id": id, "name": "advisor", "input": {}}))
+    }
+
+    fn advisor_result(id: &str, content: Value) -> Value {
+        assistant(json!({"type": "advisor_tool_result", "tool_use_id": id, "content": content}))
+    }
+
+    #[test]
+    fn advisor_call_and_redacted_result_become_a_tool_call_and_result() {
+        let redacted =
+            json!({"type": "advisor_redacted_result", "encrypted_content": "SECRETBLOB", "stop_reason": null});
+        let lines = [advisor_call("srvtoolu_1"), advisor_result("srvtoolu_1", redacted)];
+        let events = advisor_events(&lines);
+        assert_eq!(events.len(), 2, "{events:?}");
+        match &events[0] {
+            Event::ToolCall { id, name, title, category, detail, input, parent_id } => {
+                assert_eq!((id.as_str(), name.as_str(), title.as_str()), ("srvtoolu_1", "advisor", "Advisor"));
+                assert_eq!(*category, ToolCategory::Other);
+                assert!(detail.is_none() && parent_id.is_none());
+                assert_eq!(input, &json!({}));
+            }
+            e => panic!("{e:?}"),
+        }
+        match &events[1] {
+            Event::ToolResult { id, output, is_error, detail } => {
+                assert_eq!(id, "srvtoolu_1");
+                assert_eq!(output, &Value::Null);
+                assert!(!is_error && detail.is_none());
+            }
+            e => panic!("{e:?}"),
+        }
+        assert!(!format!("{events:?}").contains("SECRETBLOB"));
+    }
+
+    #[test]
+    fn advisor_plaintext_and_error_results() {
+        let text = json!({"type": "advisor_result", "text": "use a queue", "stop_reason": "end_turn"});
+        let events = advisor_events(&[advisor_call("a"), advisor_result("a", text)]);
+        assert!(
+            matches!(&events[1], Event::ToolResult { output, is_error: false, .. } if output == &json!("use a queue")),
+            "{events:?}"
+        );
+        let err = json!({"type": "advisor_tool_result_error", "error_code": "max_uses_exceeded"});
+        let events = advisor_events(&[advisor_call("b"), advisor_result("b", err)]);
+        assert!(
+            matches!(&events[1], Event::ToolResult { output, is_error: true, .. } if output == &json!("max_uses_exceeded")),
+            "{events:?}"
+        );
+        let other = json!({"type": "something_new"});
+        let events = advisor_events(&[advisor_call("c"), advisor_result("c", other)]);
+        assert!(matches!(&events[1], Event::ToolResult { output, is_error: false, .. } if output.is_null()));
+    }
+
+    #[test]
+    fn first_init_flips_the_conversation_marker_once_and_set_launch_args_keeps_it() {
+        let init = json!({"type": "system", "subtype": "init", "session_id": "sid", "model": "m"});
+        let started = |outs: &[Out]| -> Vec<Value> {
+            outs.iter()
+                .filter_map(|o| match o {
+                    Out::Event(AgentEvent::Started { resume }) => Some(resume.launch_args.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut t = Translator::new("/w", json!({"conversation_started": false, "x": 1}), Some("sid".into()));
+        // init 之前换 launch_args：标记不被改回别的值
+        t.set_launch_args(json!({"conversation_started": false, "x": 2}));
+        t.begin_turn();
+        let first = started(&t.feed(&init));
+        assert_eq!(first, vec![json!({"conversation_started": true, "x": 2})]);
+        // 之后的 init 不再发
+        assert!(started(&t.feed(&init)).is_empty());
+        // 不变量：翻译器看过第一条 init 之后，不管调用方手里的旧值是什么，之后构造的 launch_args 都带 true
+        t.set_launch_args(json!({"conversation_started": false, "x": 3}));
+        assert_eq!(t.launch_args(), &json!({"conversation_started": true, "x": 3}));
+        // 没有标记的旧 launch_args：不多发
+        let mut t3 = Translator::new("/w", json!({}), Some("sid".into()));
+        t3.begin_turn();
+        assert!(started(&t3.feed(&init)).is_empty());
+    }
+
+    #[test]
+    fn an_init_without_session_id_neither_flips_the_marker_nor_emits() {
+        let mut t = Translator::new("/w", json!({"conversation_started": false}), Some("sid".into()));
+        t.begin_turn();
+        let outs = t.feed(&json!({"type": "system", "subtype": "init", "model": "m"}));
+        assert!(!outs.iter().any(|o| matches!(o, Out::Event(AgentEvent::Started { .. }))));
+        assert_eq!(t.launch_args()["conversation_started"], false);
+        let outs = t.feed(&json!({"type": "system", "subtype": "init", "session_id": "sid"}));
+        assert!(outs.iter().any(|o| matches!(o, Out::Event(AgentEvent::Started { .. }))));
+        assert_eq!(t.launch_args()["conversation_started"], true);
+    }
+
+    #[test]
+    fn advisor_call_inside_a_subagent_carries_the_parent_id() {
+        let mut line = advisor_call("a");
+        line["parent_tool_use_id"] = json!("toolu_parent");
+        let events = advisor_events(&[line]);
+        assert!(matches!(&events[0], Event::ToolCall { parent_id: Some(p), .. } if p == "toolu_parent"), "{events:?}");
+    }
+
+    #[test]
+    fn repeated_advisor_blocks_and_other_server_tools_emit_nothing() {
+        let redacted = json!({"type": "advisor_redacted_result", "encrypted_content": "x", "stop_reason": null});
+        let lines = [
+            advisor_call("a"),
+            advisor_call("a"),
+            advisor_result("a", redacted.clone()),
+            advisor_result("a", redacted.clone()),
+            // 没有对应调用的结果
+            advisor_result("zzz", redacted),
+            assistant(json!({"type": "server_tool_use", "id": "s", "name": "web_search", "input": {"query": "q"}})),
+        ];
+        let events = advisor_events(&lines);
+        assert_eq!(events.len(), 2, "{events:?}");
+    }
 
     #[test]
     fn exit_code_parsing() {

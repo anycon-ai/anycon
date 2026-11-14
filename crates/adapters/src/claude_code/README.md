@@ -74,8 +74,8 @@ stdout 只出 `system/permission_denied`，**根本不发 `can_use_tool`**。带
 和 `set_settings` 同一套语义（`LaunchOptions::resolve` 与 `resolve_desired` 共用 `build`）：`system_prompt_append` / `max_turns` / `max_budget_usd` 为 `None`、
 `options.fast_mode` 缺省 → 不传对应参数；模型 / 思考 / 模式缺省 → 配置默认 / `AgentInfo` 默认。**`ResumeHandle.launch_args` 不参与解析**：
 daemon 在没有存活进程时（idle 关闭、daemon 重启、ended）改设置只改库里的 `settings`，`launch_args` 可能是过期的快照；回落到它，用户清掉的系统提示追加 / 预算 / 轮数上限
-就会在 resume 时悄悄复活（系统提示的复活方向是不安全的）。`launch_args` 里每一项（模型 / 思考 / 模式 / `system_prompt_append` / `max_*` / `fast_mode`）在 `SessionSettings`
-里都有对应字段，没有「只有进程才知道」的东西，所以从 resume 里**只取 `agent_session_id`**（拼 `--resume=<id>`）。进程起来后 `Started.resume.launch_args` 是这次实际生效的设置，daemon 据此落库。
+就会在 resume 时悄悄复活（系统提示的复活方向是不安全的）。`launch_args` 里每一项设置（模型 / 思考 / 模式 / `system_prompt_append` / `max_*` / `fast_mode` / `block_outside_writes` / `advisor_model`）在 `SessionSettings`
+里都有对应字段，没有「只有进程才知道」的设置，所以从 resume 里取 `agent_session_id`（拼 `--resume=<id>`），设置一概不取。**唯一的例外是私有标记 `launch_args.conversation_started`**（不是设置，是只有 adapter 知道的事实：CLI 有没有为这个会话 id 发过 `system/init`）：拉起时是 `false`，第一条 `system/init` 到了翻译器把它改成 `true` 并补发一个 `Started` 让 daemon 落库；`set_settings` 补发的 `Started` 沿用当前值，不会把它翻回去。resume 时标记为 `false` = 对话从没建立过（第一次拉起就死在启动阶段，例如 CLI 不认某个启动参数；`--resume` 会报 `No conversation found`），改用新的 `--session-id`，`Started` 带新 id；`true`、缺省（旧数据）或 `launch_args` 为空照常 `--resume`。它不进 argv，也不参与 `restart_required` 的比较。进程起来后 `Started.resume.launch_args` 是这次实际生效的设置，daemon 据此落库。
 `set_settings` 在进程活着时也会更新句柄的 `launch_args`（见下面「取消、改设置、关闭」）。daemon 侧在 `driver == None` 时同步改写 `launch_args` 是另一条独立的保险，两边各自成立。
 
 | 设置 | 映射 |
@@ -85,6 +85,7 @@ daemon 在没有存活进程时（idle 关闭、daemon 重启、ended）改设�
 | `mode` | `--permission-mode`；`bypassPermissions` 另加 `--dangerously-skip-permissions`；会话中 `set_permission_mode` |
 | `options.fast_mode` | `--settings` 里的 `"fastMode": true`（2.1.316 实测生效：`initialize` 回 `fast_mode_state: on`；`result` 里的 `fast_mode_disabled_reason: sdk_opt_in_required` 只出现在没开的时候）；改它 → `restart_required` |
 | `options.block_outside_writes` | `--settings` 里的 `"permissions": {"blockWritesOutsideWorkingDirectories": true}`（ADR-48，默认关）：Write / Edit / NotebookEdit 在任何权限模式下都不写工作目录以外的路径，shell 命令不管。和 `fastMode` 合在**同一个** `--settings` 里（CLI 只取最后一个）。2.1.316 实测：被拦的写入不发 `can_use_tool`，直接 `system/permission_denied` + `is_error` 的 `tool_result`；CLI 自己的 plan 文件（`~/.claude/plans`）照常写；2.1.309 收下这个键但不生效。改它 → `restart_required` |
+| `options.advisor_model` | `--advisor=<模型>`（ADR-52，2.1.325 实测，`--help` 不列出）：主模型在关键决策点咨询更强的模型。text 选项，`choices` = `off` + 模型列表，默认 `off`（`off` / 空 = 不传）。不用 select：daemon 每个 turn 前按当前列表重检已存的 select 值，而模型列表每次探测都会变。没有人校验值（daemon 只检查是字符串（最长 4096 字节），adapter 只检查类型），它是单个 argv 元素。执行模型和 advisor 的搭配不合法时 CLI 在 stderr 打一行警告、会话不带 advisor 照常跑；advisor 模型名无效时 CLI 启动即退出（`Error: The model "…" cannot be used as an advisor.`）。改它 → `restart_required` |
 | `system_prompt_append` / `max_turns` / `max_budget_usd` | `--append-system-prompt` / `--max-turns` / `--max-budget-usd`；改它们 → `restart_required` |
 | `env` | 子进程环境（daemon 已合并进 `req.env`）；改它 → `restart_required` |
 | 附件 | 原生只收图片（ADR-35）：`capabilities.attachments = ["image/png", "image/jpeg", "image/gif", "image/webp"]`；其它附件由 daemon 落到工作目录、路径写在文字里（ADR-44），adapter 收不到。`send` 读 `attachment_paths[i]`（daemon 落盘的文件）→ base64 → stdin 消息 `content` 数组里的 `image` block，图在前、文字在后；见下面「图片附件」 |
@@ -135,10 +136,11 @@ stdin 上的用户消息，**没有附件时**和以前完全一样（`content` 
 ## 事件翻译（实测要点）
 
 - 非 `{` 开头的行忽略；不认识的 `type` / `subtype`（`commands_changed`、`thinking_tokens`、`task_summary`、`post_turn_summary`、`hook_started`…）忽略。认识的 `system/*`、`rate_limit_event` 见下面几节（Task / Activity / Notice）。
-- **`system/init` 每个 turn 都会再发一次，第一条用户消息之前不发。** 所以 `Started` 不等 init：新会话我们自己生成 `--session-id <uuid>`、续接用 `--resume <id>`，spawn 时就发 `Started`；init 带同一个 id 就不重复发，不同才再发一次。
+- **`system/init` 每个 turn 都会再发一次，第一条用户消息之前不发。** 所以 `Started` 不等 init：新会话我们自己生成 `--session-id <uuid>`、续接用 `--resume <id>`，spawn 时就发 `Started`；init 带同一个 id 就不重复发，不同才再发一次；例外是这个会话的第一条 `system/init`（`launch_args.conversation_started` 从 false 翻成 true），同一个 id 也会再发一个 `Started` 让 daemon 落库。
 - 文本 / 思考来自 `stream_event` 的 `content_block_delta`；每个 content block 另有一条自己的 `assistant` 消息（同一个 `message.id`）。文本已流式发过的不再从 `assistant` 重发（没开 partial messages 时才用 `assistant` 兜底）。
 - **思考内容是空的**：较新的 CLI 里 `thinking_delta.thinking` 是 `""`（只有 `estimated_tokens`，另有 `system/thinking_tokens`）。每个思考块发一条空的 `ThinkingDelta` 作「正在思考」标记，块结束发 `ThinkingDone`。`--effort low` 的简单问题往往根本没有思考块。
 - `tool_call` 在 `assistant` 消息里发（那里有完整 `input`）；`user` 消息里的 `tool_result` → `ToolResult`（`is_error` 取自块；Bash 失败时从 `Exit code N` 取退出码；Edit/Write 从 `tool_use_result.structuredPatch` / `create` 生成 unified diff；Glob/Grep 取 `numFiles` 作 `match_count`），成功的 file_edit 再发 `FileChanged`（`tool_use_result.type == "create"` → created，否则 modified）。工具输出文本超过 256 KiB 截断并加标记。
+- advisor（`--advisor`）：`assistant` 消息里的 `server_tool_use { name: "advisor", input: {} }` → `ToolCall`（name `advisor`、title `Advisor`、category `other`）；同 id 的 `advisor_tool_result` → `ToolResult`。`content.type`：`advisor_result`（明文 `text`）→ `output` 为文本；`advisor_redacted_result`（`encrypted_content`，读不了）→ `output` 为空，密文不进任何事件；`advisor_tool_result_error`（`error_code`）→ `output` 为错误码、`is_error`。其他名字的 `server_tool_use` 仍然忽略。`result.total_cost_usd` 已含 advisor 的费用，`modelUsage` 每个模型一项。
 - `TodoWrite` → `Plan`（不发 tool_call / tool_result）；`ExitPlanMode`、`AskUserQuestion` 由权限请求表达，也不发 tool_call / tool_result。
 - 子 agent（`parent_tool_use_id` 非空）的文本 / 思考不混进主流，它们内部的工具调用照常发，带 `parent_id = parent_tool_use_id`，客户端据此把它们收进子 agent 的块里。
 - 转到后台的调用：后台子 agent（`Agent` 的 `run_in_background`）马上返回 `tool_use_result.status = "async_launched"`；后台命令（Bash 的 `run_in_background`，或者跑着跑着被转到后台的）马上返回 `Command running in background with ID: …`，`tool_use_result.backgroundTaskId` 有值（实测 2.1.293）。另外 `system/task_started { is_backgrounded: true, tool_use_id }` 先于结果到达，也认。这些结果标 `detail.background`（后台命令不给 `exit_code`）；任务结束时 CLI 发 `system/task_notification { tool_use_id, status: completed | failed | stopped | killed, summary }`，翻译器给同一个调用补一条 `ToolResult`（`output` = `summary`；后台命令的 `summary` 形如 `Background command "…" completed (exit code 1)`，从中取 `exit_code`；`failed` 和退出码非 0 算错误，被停掉的不算）。前台子 agent 也会发这个通知，它不是 background 的，忽略。
@@ -312,9 +314,9 @@ MCP server 在工具调用中途可以向用户要输入（`elicitation/create`�
 - `cancel`：发 `control_request interrupt`（实测回执 `{still_queued: []}`），**3 秒内没有 `result` 就补 SIGINT**。实测的 interrupt 结果：一条 `user` 消息 `[Request interrupted by user]`，随后 `result { subtype: error_during_execution, is_error: true, terminal_reason: aborted_streaming }`，用量和费用都是 0；进程不退出，之后还能继续发消息。我们据此发 `TurnDone { reason: cancelled }`。SIGINT 兜底若让进程退了，补一个 cancelled 的 `TurnDone` 再 `Exited`（不带错误）。
 - `set_settings(settings)`：**`settings` 是完整的目标设置**（daemon 一直传合并后的整份设置，不是增量），没给的字段 = 清除、回到 `config.default_*` / `AgentInfo` 默认（或「没有」）：
   `model: None` → `set_model` 回默认模型（没有任何默认可回就发 `model: null`，让 CLI 用它自己的默认）；`thinking: None` → 配置默认 / 模型默认；`mode: None` → 配置默认 / `default`；
-  `system_prompt_append` / `max_turns` / `max_budget_usd` 为 `None`、`options.fast_mode` 缺省、`env` 为空 → 清除（`restart_required`）。步骤：
+  `system_prompt_append` / `max_turns` / `max_budget_usd` 为 `None`、`options.fast_mode` / `options.block_outside_writes` / `options.advisor_model` 缺省、`env` 为空 → 清除（`restart_required`）。步骤：
   1. 先把目标解析 + 校验（和 spawn 同一套规则，含上面的值校验）——非法就在发任何控制请求之前返回，不留半截状态；
-  2. 只能启动时给的字段（思考、`system_prompt_append`、`max_turns`、`max_budget_usd`、`fast_mode`、`env`）记进当前状态 → `restart_required`；
+  2. 只能启动时给的字段（思考、`system_prompt_append`、`max_turns`、`max_budget_usd`、`fast_mode`、`block_outside_writes`、`advisor_model`、`env`）记进当前状态 → `restart_required`；
   3. 可热生效的按固定顺序 **model → mode** 逐个发控制请求（`set_model` / `set_permission_mode`，等回执，上限 15 秒，CLI 冷启动要几秒），每成功一个就记进当前状态。
   中途失败就停：已应用的保留、失败的和后面的不动，错误信息里写明 `(applied: model; not applied: mode)`。模型被拒 → `InvalidSettings{model}`（回执 `error_code: catalog_unknown`）。
   切到 `bypassPermissions` 而启动时没带 `--dangerously-skip-permissions`（CLI 回 `bypass_not_launched`）→ 不发请求，直接 `restart_required`。
@@ -327,7 +329,7 @@ MCP server 在工具调用中途可以向用户要输入（`elicitation/create`�
 - **插话**：`capabilities.interject = false`，`UserInput.interject = true` 一律 `Unsupported`（也绝不借此开新 turn）；turn 进行中收到 `interject = false` 的消息同样 `Unsupported`（daemon 自己排队），只有 CLI 自己开的那一轮例外：消息暂存到这一轮结束（见「后台任务与 CLI 自己开的 turn」）。
 - `shutdown`：关 stdin → 等 300 ms → SIGINT → 5 秒 → SIGKILL（进程组）；claude 退出后残留在进程组里的进程也会被清掉。实测关 stdin 后有时 100 ms 内就退出，有时 1.5 秒还没退，所以需要后面两步。进行中的 turn 会先补 `TurnDone(cancelled)`。`Exited.error` 只在非预期退出时有值，带 stderr 末尾；预期内（我们要求关闭 / 取消）为空。turn 中途非预期退出会在 `Exited` 之前发一个 `Error { code: agent_exited, recoverable: true }`。
 - 句柄不经 `shutdown` 被丢弃时（`Drop`）会关 stdin 并对整个进程组 SIGKILL，不留孤儿。
-- `--resume` 一个不存在的会话：stderr `No conversation found with session ID: …`，stdout 一条 `error_during_execution` 的 `result`，退出码 1；对应 `Error` + `Exited{code: 1, error: …stderr…}`。
+- `--resume` 一个不存在的会话：stderr `No conversation found with session ID: …`，stdout 一条 `error_during_execution` 的 `result`，退出码 1；对应 `Error` + `Exited{code: 1, error: …stderr…}`。第一次 `--session-id` 拉起就在启动阶段退出的会话（2.1.325 实测：`--advisor=<无效模型>` 退出码 1）没有写下任何对话，之后 `--resume` 同一个 id 就是这个错误，所以靠 `launch_args.conversation_started` 避开（见上面「`launch_args` 不参与解析」）。
 
 ## `initialize` 控制请求
 

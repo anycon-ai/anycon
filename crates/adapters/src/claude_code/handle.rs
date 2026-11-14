@@ -102,7 +102,7 @@ impl ClaudeHandle {
         if !req.cwd.is_dir() {
             return Err(AdapterError::Spawn(format!("working directory does not exist: {}", req.cwd.display())));
         }
-        // 拼 argv 之前再验一次：不管 `opts` 怎么来的，进 argv 的值都是干净的
+        // 拼 argv 之前再验一次：不管 `opts` 怎么来的，进 argv 的值都过了检查（`--advisor` 的值除外，它原样传，见 process.rs 模块文档）
         opts.validate()?;
         let mut args = prefix_args;
         args.extend(process::base_args());
@@ -212,8 +212,12 @@ impl ClaudeHandle {
             return;
         }
         self.current = cur;
-        let launch_args = self.current.to_json();
-        self.shared.translator.lock().expect("translator lock").set_launch_args(launch_args.clone());
+        // `conversation_started` 只有翻译器知道（`system/init` 是它看到的），`current` 里的只是启动时的初值。
+        // 整个过程持翻译器锁（锁序：translator → resume，和 `read_loop` / `dispatch` 一致）：并发的第一条 init 要么整个在前
+        // （这里读到 true），要么整个在后（它自己会再发一个带新设置的 `Started`），不会被这里用 false 盖回去。
+        let mut t = self.shared.translator.lock().expect("translator lock");
+        t.set_launch_args(self.current.to_json());
+        let launch_args = t.launch_args().clone();
         let resume = {
             let mut r = self.shared.resume.lock().expect("resume lock");
             if r.launch_args == launch_args {
@@ -223,12 +227,13 @@ impl ClaudeHandle {
             r.clone()
         };
         // 补发一个 `Started`（daemon 收到会更新 launch_args 并落库）。尽力而为：通道满了就算了，
-        // daemon 在 shutdown 时还会用 `resume_handle()` 再取一次。
+        // daemon 在 shutdown 时还会用 `resume_handle()` 再取一次。事件在翻译器锁里入队，和读任务发的 `Started` 保持先后顺序。
         if let Some(tx) = self.events_tx.upgrade() {
             if tx.send(AgentEvent::Started { resume }).is_err() {
                 tracing::debug!("claude: could not announce the updated launch_args");
             }
         }
+        drop(t);
     }
 }
 
@@ -323,9 +328,13 @@ async fn read_loop(
     tx: mpsc::UnboundedSender<AgentEvent>,
 ) {
     while let Some(line) = lines.recv().await {
-        let outs = shared.translator.lock().expect("translator lock").feed_line(&line);
-        for out in outs {
-            dispatch(&shared, &child, &tx, out);
+        // 翻译 + 分发在同一把翻译器锁里（没有 await）：`Started` 写进 `shared.resume` 和 `commit` 改它互斥，
+        // 否则 `commit` 可能插在中间，用旧的标记把刚翻成 true 的 `resume` 盖回去
+        {
+            let mut t = shared.translator.lock().expect("translator lock");
+            for out in t.feed_line(&line) {
+                dispatch(&shared, &child, &tx, out);
+            }
         }
     }
 
@@ -489,6 +498,7 @@ impl AgentHandle for ClaudeHandle {
             || next.max_budget_usd != cur.max_budget_usd
             || next.fast_mode != cur.fast_mode
             || next.block_outside_writes != cur.block_outside_writes
+            || next.advisor_model != cur.advisor_model
             || next.env != cur.env
         {
             restart = true;
@@ -499,6 +509,7 @@ impl AgentHandle for ClaudeHandle {
         cur.max_budget_usd = next.max_budget_usd;
         cur.fast_mode = next.fast_mode;
         cur.block_outside_writes = next.block_outside_writes;
+        cur.advisor_model = next.advisor_model.clone();
         cur.env = next.env.clone();
 
         // 3. 能热生效的字段，固定顺序 model → mode，逐个应用。每成功一个就记进 `cur`；

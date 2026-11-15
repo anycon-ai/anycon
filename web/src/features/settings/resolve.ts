@@ -105,6 +105,28 @@ export function agentDefaultOptions(agent: AgentInfo): Record<string, unknown> {
   return out
 }
 
+/** 会话里不是默认值的一个 agent 选项（信息面板显示用）。`text` 是选项值的文字：选项列表里有的用选项名，否则原样。 */
+export interface ActiveOption {
+  id: string
+  label: string
+  value: boolean | string
+  text?: string
+}
+
+/**
+ * 会话 settings 里不是 agent 默认值的选项，按 agent 声明的顺序。类型不对的值、`text` 的空串不算（adapter 当成没设）。
+ */
+export function activeOptions(agent: AgentInfo, s: SessionSettings | null | undefined): ActiveOption[] {
+  const out: ActiveOption[] = []
+  for (const o of agent.options ?? []) {
+    const v = s?.options?.[o.id]
+    if ((typeof v !== 'boolean' && typeof v !== 'string') || v === '' || !validOption(o, v) || v === optionDefault(o)) continue
+    const text = typeof v === 'string' ? ((o.choices ?? []).find((c) => c.id === v)?.label ?? v) : undefined
+    out.push({ id: o.id, label: o.label, value: v, text })
+  }
+  return out
+}
+
 export interface DefaultsResolution {
   selection: Selection
   /** 某个来源（上次用的 / 节点默认 / agent 默认标记）指向了危险模式，被跳过了：UI 据此给个提示。 */

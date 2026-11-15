@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { mockAgent } from '@/test/factories'
+import { mockAgent, codexAgent } from '@/test/factories'
 import {
+  activeOptions,
   agentDefaultMode,
   defaultThinking,
   reconcileThinking,
@@ -216,5 +217,31 @@ describe('clearing settings (session.set_settings.clear)', () => {
   it('applyUpdate reflects queued changes in the controls', () => {
     const a = resolveDefaults(agent, [])
     expect(applyUpdate(a, { settings: { mode: 'plan', options: { verbose: true } }, clear: ['thinking'] })).toMatchObject({ mode: 'plan', thinking: null, options: { verbose: true } })
+  })
+})
+
+describe('activeOptions', () => {
+  const codex = codexAgent()
+  const withAdvisor = {
+    ...agent,
+    options: [
+      ...(agent.options ?? []),
+      { id: 'advisor', kind: 'text' as const, label: 'Advisor model', default: 'off', choices: [{ id: 'off', label: 'Off' }, { id: 'opus', label: 'Opus' }] },
+    ],
+  }
+
+  it('lists only the options that differ from the agent default, in declaration order', () => {
+    expect(activeOptions(codex, { options: { model_reasoning_summary: 'detailed', fast_mode: true, plan_mode: false } })).toEqual([
+      { id: 'fast_mode', label: 'Fast mode', value: true, text: undefined },
+      { id: 'model_reasoning_summary', label: 'Reasoning summary', value: 'detailed', text: 'detailed' },
+    ])
+    expect(activeOptions(codex, {})).toEqual([])
+    expect(activeOptions(codex, null)).toEqual([])
+  })
+
+  it('names a text value by its choice label, shows other text as is, and skips blanks and wrong types', () => {
+    expect(activeOptions(withAdvisor, { options: { advisor: 'opus' } })).toEqual([{ id: 'advisor', label: 'Advisor model', value: 'opus', text: 'Opus' }])
+    expect(activeOptions(withAdvisor, { options: { advisor: 'claude-x' } })[0]?.text).toBe('claude-x')
+    for (const v of ['off', '', 1, null]) expect(activeOptions(withAdvisor, { options: { advisor: v, verbose: 'yes' } })).toEqual([])
   })
 })

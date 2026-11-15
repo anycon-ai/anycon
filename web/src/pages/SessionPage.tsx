@@ -15,6 +15,7 @@ import { describeAttachmentFailure, describeAttachNotice } from '@/features/atta
 import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, unarchiveSession, type SendOutcome } from '@/features/session/actions'
 import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
+import { activeOptions } from '@/features/settings/resolve'
 import { latestSyncBlock, pendingPermissions, type UserBlock } from '@/features/session/reducer'
 import { backgroundCommands, isTurnActive, subagentRows } from '@/features/session/subagents'
 import { backgroundTaskCount, runningTasks, tasksLive } from '@/features/session/tasks'
@@ -315,6 +316,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
       project={project}
       onOpenWorkDir={workDirFiles === null ? undefined : () => void navigate({ to: '/n/$node/files/$', params: { node: nodeParam, _splat: workDirFiles } })}
       createdAt={summary?.created_at_ms ?? 0}
+      options={agent ? activeOptions(agent, baseSettings) : undefined}
       usage={view?.usage ?? { turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null }}
       context={view?.context}
       limits={view?.limits}

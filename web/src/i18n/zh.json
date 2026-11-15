@@ -727,6 +727,8 @@
     "workdir": "工作目录",
     "scratch": "临时工作区",
     "created": "创建于",
+    "optionOn": "开",
+    "optionOff": "关",
     "turns": "轮数",
     "cost": "费用",
     "agents": "Agent",

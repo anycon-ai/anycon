@@ -6,6 +6,7 @@ import type { TFunction } from 'i18next'
 import type { SessionGitStatus, SessionStatus, SessionWorktree, UsageWindow, WorktreeDisposal } from '@/protocol'
 import { SessionStatusChip } from '@/components/SessionListItem'
 import { ArchiveWorktreeDialog, effectiveChoice, WorktreeDisposePicker, type DisposeChoice, type DisposeInfo } from '@/features/worktree/DisposeDialog'
+import type { ActiveOption } from '@/features/settings/resolve'
 import { compactNumber, formatCost, formatDateTime } from '@/lib/format'
 import { usePrefs } from '@/stores/prefs'
 import type { PendingPermission } from '@/stores/sessions'
@@ -32,6 +33,8 @@ export interface InfoPanelProps {
   /** 打开工作目录的文件浏览（`/n/:node/files/*`）；没有能打开的目录（项目目录不在了）时不传，工作目录就是普通文字。 */
   onOpenWorkDir?: () => void
   createdAt: number
+  /** 会话里不是默认值的 agent 选项（如 Claude Code 的 Advisor model），在「会话」卡片里各占一行。 */
+  options?: ActiveOption[]
   usage: UsageSum
   /** 最近一个 turn 结束时的上下文占用（`turn_done.usage.context_*`）；agent 不报就没有，不显示这一行。 */
   context?: ContextUsage | null
@@ -165,6 +168,11 @@ export function InfoPanel(p: InfoPanelProps) {
           </Field>
         ) : null}
         <Field label={t('info.created')}>{formatDateTime(p.createdAt, i18n.language)}</Field>
+        {(p.options ?? []).map((o) => (
+          <Field key={o.id} label={o.label} testId={`info-option-${o.id}`}>
+            {typeof o.value === 'boolean' ? t(o.value ? 'info.optionOn' : 'info.optionOff') : <span className="break-all">{o.text}</span>}
+          </Field>
+        ))}
       </Card>
 
       <Card title={t('info.agents')} titleAside={working > 0 ? t('info.working', { count: working }) : undefined} testId="info-agents" pulse={pulse} collapseKey="agents">

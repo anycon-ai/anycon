@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/). While on 0.x, any minor release may contain breaking protocol or API changes.
 
+## [Unreleased]
+
+### Changed
+
+- Web UI: the session info panel lists the agent options that are not at their default in the Session card, so a session started with an advisor shows "Advisor model" and the chosen model there. The panel only shows them; they are still changed under "More" below the input.
+- Claude Code adapter: the "Advisor model" option has a shorter description.
+
 ## [0.3.1] - 2026-11-14
 
 ### Added
@@ -163,6 +170,7 @@ First public release.
 - `@anycon/protocol` and `@anycon/sdk` on npm, published with provenance.
 - Every artifact ships its third-party license notices.
 
+[Unreleased]: https://github.com/anycon-ai/anycon/compare/v0.3.1...HEAD
 [0.3.1]: https://github.com/anycon-ai/anycon/releases/tag/v0.3.1
 [0.3.0]: https://github.com/anycon-ai/anycon/releases/tag/v0.3.0
 [0.2.0]: https://github.com/anycon-ai/anycon/releases/tag/v0.2.0

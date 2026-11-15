@@ -49,13 +49,13 @@
   },
   "dependencies": {
     "@anycon/protocol": "workspace:*",
-    "ws": "^8.22.1"
+    "ws": "^8.22.2"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.1",
-    "fake-indexeddb": "^6.2.7",
+    "fake-indexeddb": "^6.2.8",
     "tsx": "^4.23.15",
     "typescript": "~5.9.3"
   },

@@ -733,6 +733,8 @@
     "workdir": "Working directory",
     "scratch": "Temporary workspace",
     "created": "Created",
+    "optionOn": "On",
+    "optionOff": "Off",
     "turns": "Turns",
     "cost": "Cost",
     "agents": "Agents",

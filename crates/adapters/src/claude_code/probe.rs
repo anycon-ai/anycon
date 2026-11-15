@@ -161,10 +161,8 @@ pub fn options(models: &[ModelInfo]) -> Vec<ConfigOption> {
             id: OPTION_ADVISOR_MODEL.to_string(),
             label: "Advisor model".to_string(),
             description: Some(
-                "A stronger model that the main model consults at key decisions. Claude Code decides which pairs it \
-                 accepts (the advisor generally has to be at least as capable as the main model); with a pair it does \
-                 not accept, it currently runs without an advisor. Needs a Claude Code version that has the --advisor \
-                 flag (verified on 2.1.325)."
+                "A stronger model the main model consults at key decisions. Ignored if Claude Code does not accept \
+                 the pair."
                     .to_string(),
             ),
             kind: ConfigOptionKind::Text,

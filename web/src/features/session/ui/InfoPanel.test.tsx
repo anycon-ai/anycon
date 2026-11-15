@@ -228,6 +228,17 @@ describe('InfoPanel session card', () => {
     expect(opened).toBe(1)
   })
 
+  it('lists the agent options that are not at their default, one line each', () => {
+    panel('idle', [], {
+      options: [
+        { id: 'advisor_model', label: 'Advisor model', value: 'opus', text: 'Opus' },
+        { id: 'fast_mode', label: 'Fast mode', value: true },
+      ],
+    })
+    expect(screen.getByTestId('info-option-advisor_model')).toHaveTextContent('Advisor modelOpus')
+    expect(screen.getByTestId('info-option-fast_mode')).toHaveTextContent('Fast modeOn')
+  })
+
   it('names a session without a project or directory a temporary workspace', () => {
     panel('idle', [], { onOpenWorkDir: () => {} })
     expect(screen.queryByTestId('info-project')).toBeNull()

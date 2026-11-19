@@ -60,21 +60,30 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   // 通知点进来：定位并展开那一条。节点还没同步完（请求还没到）时等一等；同步完了还没有，说明已经被处理了
   const nodeId = locate ? resolveNodeParam(locate.node, order) : undefined
   const nodeSynced = useNodes((s) => (nodeId ? s.byId[nodeId]?.synced : false))
+  const handled = useRef<string | null>(null)
+  const { choose } = sel
   useEffect(() => {
-    if (!locate || !active) return
+    if (!locate) {
+      handled.current = null
+      return
+    }
+    const id = `${locate.node}:${locate.session}`
+    if (!active || handled.current === id) return
     const hit = items
       .filter((i) => (i.kind === 'permission' || i.kind === 'plan' || i.kind === 'question') && i.sessionId === locate.session && i.nodeId === nodeId)
       .sort((a, b) => a.sinceMs - b.sinceMs)[0]
     if (hit) {
-      sel.choose(hit.key)
+      handled.current = id
+      choose(hit.key)
       setGone(null)
       onLocateDone?.()
       requestAnimationFrame(() => document.querySelector(`[data-inbox-row="${CSS.escape(hit.key)}"]`)?.scrollIntoView?.({ block: 'nearest' }))
     } else if (!nodeId || nodeSynced) {
+      handled.current = id
       setGone(locate)
       onLocateDone?.()
     }
-  }, [locate, active, items, nodeId, nodeSynced, sel, onLocateDone])
+  }, [locate, active, items, nodeId, nodeSynced, choose, onLocateDone])
 
   const showNode = pickedNodes.length > 1
   const selectedItem = items.find((i) => i.key === sel.selected) ?? null

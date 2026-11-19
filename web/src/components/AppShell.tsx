@@ -82,36 +82,39 @@ export function AppShell() {
   return (
     <div className="flex h-screen-dvh overflow-hidden bg-bg">
       {/* z-30：浮出的左栏盖住页面，但在菜单 / 对话框（z-40 起）下面 */}
-      <div className="relative z-30 hidden shrink-0 md:flex" data-testid="sidebar-dock">
-        {sidebarOpen ? null : <SidebarRail nodeId={activeNode} onSearch={search} onPin={togglePin} {...railProps} />}
-        {/* 最宽不超过半个窗口，窄窗口里中栏不会被挤没。没钉住时从窄条后面滑出，收回时只是藏起来（不卸载），
-            从左栏里打开的对话框、项目的展开状态都还在 */}
-        <aside
-          ref={flyout}
-          className={cn(
-            'max-w-[50vw] shrink-0 border-r border-border',
-            sidebarOpen
-              ? 'relative'
-              : cn(
-                  'absolute inset-y-0 left-full shadow-pop transition-[translate,visibility] duration-200 ease-out motion-reduce:transition-none',
-                  peek ? 'visible translate-x-0' : 'invisible -translate-x-full',
-                ),
-          )}
-          style={{ width: sidebarWidth }}
-          data-testid="sidebar-aside"
-          data-state={sidebarOpen ? 'pinned' : peek ? 'peek' : 'hidden'}
-        >
-          <Sidebar nodeId={activeNode} onNavigate={sidebarOpen ? undefined : closePeek} onSearch={search} pin={{ pinned: sidebarOpen, onToggle: togglePin }} />
-          <SidebarResizeHandle
-            width={sidebarWidth}
-            onResize={setDragWidth}
-            onCommit={(w) => {
-              setDragWidth(null)
-              setPrefs({ sidebarWidth: w })
-            }}
-          />
-        </aside>
-      </div>
+      {/* 手机上根本不挂载左栏：它的节点下拉、搜索等会和「会话」标签页里的重复 */}
+      {wide ? (
+        <div className="relative z-30 flex shrink-0" data-testid="sidebar-dock">
+          {sidebarOpen ? null : <SidebarRail nodeId={activeNode} onSearch={search} onPin={togglePin} {...railProps} />}
+          {/* 最宽不超过半个窗口，窄窗口里中栏不会被挤没。没钉住时从窄条后面滑出，收回时只是藏起来（不卸载），
+              从左栏里打开的对话框、项目的展开状态都还在 */}
+          <aside
+            ref={flyout}
+            className={cn(
+              'max-w-[50vw] shrink-0 border-r border-border',
+              sidebarOpen
+                ? 'relative'
+                : cn(
+                    'absolute inset-y-0 left-full shadow-pop transition-[translate,visibility] duration-200 ease-out motion-reduce:transition-none',
+                    peek ? 'visible translate-x-0' : 'invisible -translate-x-full',
+                  ),
+            )}
+            style={{ width: sidebarWidth }}
+            data-testid="sidebar-aside"
+            data-state={sidebarOpen ? 'pinned' : peek ? 'peek' : 'hidden'}
+          >
+            <Sidebar nodeId={activeNode} onNavigate={sidebarOpen ? undefined : closePeek} onSearch={search} pin={{ pinned: sidebarOpen, onToggle: togglePin }} />
+            <SidebarResizeHandle
+              width={sidebarWidth}
+              onResize={setDragWidth}
+              onCommit={(w) => {
+                setDragWidth(null)
+                setPrefs({ sidebarWidth: w })
+              }}
+            />
+          </aside>
+        </div>
+      ) : null}
       <div className="flex min-w-0 flex-1 flex-col">
         <StatusBannerForNode nodeId={nodeId} />
         {/* 手机上标签页常驻在这里（绝对定位叠在页面区上，切走时只是藏起来）；二级页照常走 Outlet */}

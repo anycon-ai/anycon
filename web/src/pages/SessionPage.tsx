@@ -389,7 +389,6 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
           ...(project ? [{ label: project, to: { to: '/n/$node/p/$project', params: { node: nodeParam, project } } }] : []),
           { label: title, onClick: () => setRenameOpen(true), actionLabel: t('info.rename'), testId: 'session-title' },
         ]}
-        onBack={goBack}
         meta={
           <>
             {viewOptions.length > 1 ? (

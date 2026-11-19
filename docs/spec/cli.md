@@ -186,7 +186,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `send_message` | `session.send` | `session`（id、前缀或 `last`）、`message`、`wait`（缺省 true）、`timeout_seconds`（缺省 50，范围 1–600）。会话处在危险模式时拒绝（见标志） |
 | `cancel_turn` | `session.cancel` | 中断当前 turn |
 | `get_diff` | `session.diff` | `session`、可选 `uncommitted`、`path`；不带 `path` 列文件和行数（≤ 200 个），带 `path` 给补丁（≤ 10 万字符）。在项目目录本身工作的会话只有未提交的改动 |
-| `list_todos` | `todo.list` | 只读。可选 `project`、`include_closed`（缺省不含 `done` / `dropped`）、`limit`（缺省 50，上限 200）；每项带 id、标题、正文（≤ 2 000 字符）、项目、状态、截止时间、来源（`source.kind`）和 `unreviewed`；有没给出的项时 `has_more` 为 true |
+| `list_todos` | `todo.list` | 只读。可选 `project`、`include_closed`（缺省不含 `done` / `dropped`）、`limit`（缺省 50，上限 200）、`before`（`{ updated_ms, id }`，取上一页最后一项的这两个值，翻下一页）；每项带 id、标题、正文（≤ 2 000 字符）、项目、状态、截止时间、来源（`source.kind`）和 `unreviewed`；有没给出的项时 `has_more` 为 true |
 | `add_todo` | `todo.add` | `title`（必填，单行 ≤ 200 字符）、`body`、`project`。**总是带 `agent: true`**，连的是本机 socket 还是经 hub 都一样；环境里有 `ANYCON_SESSION_ID`（在 anycon 拉起的 agent 里）时带上 `origin_session`。写进去的项标着 agent 加的、`unreviewed`，节点上这类项最多 100 个（满了得到明确的错误）。**在 anycon 拉起的 agent 里不需要 `--allow-nested`**。**没有**修改、关闭、删除清单项的工具，也不能指定截止时间 |
 
   `wait` 为 true（`create_session` 和 `send_message` 缺省）时，调用等到**这条消息触发的那一轮**结束（会话忙时消息先排队，等的是排在它后面的那个 turn，不是正在跑的这一个；插话进了正在跑的 turn 就等这个 turn），返回 `outcome`：`completed`（`text` 是这一轮助手的文字，工具调用前后的几段之间留一个空行，上限 30 000 字符、超出保留末尾；`usage` 有这一轮和会话累计的用量；`session_status`）、`cancelled`、`failed`（带 `error`）、**`waiting_permission`**（带请求的 `kind` 和 `title`，立即返回，不等超时）、**`still_running`**（超时：`note` 按实际情况说是 turn 还在跑、排在别的 turn 后面，还是因 `sessions.max_concurrent` 在排队；之后用 `read_session` 查）、**`dropped`**（排队的消息没被处理：会话闲着、这条消息没开过 turn，比如有人在它排队时 `anycon cancel` 清了队列，需要的话重发）。`wait: false` 时返回消息已被接受（`send_message`：`sent`、`queued`；`create_session`：新会话的摘要）。**没有任何批准或拒绝权限请求的工具**：`waiting_permission` 要由人在已配对设备上、或用 `anycon approve` / `anycon deny` 处理。
@@ -209,7 +209,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `anycon todo done <id>` · `drop <id>` · `reopen <id>` | `todo.update { state }`：`done`、`dropped`、`open`。打印新状态和标题；`--json` 打印这一项 |
 | `anycon todo rm <id>` | `todo.delete`（物理删除） |
 
-`<id>` 接受唯一前缀（UUID 的前几位，不区分大小写），和会话 id 一样：先 `todo.list { include_closed }` 翻全再匹配；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2，提示用更长的前缀。
+`<id>` 接受唯一前缀（UUID 的前几位，不区分大小写；id 本身是小写 UUID），和会话 id 一样：完整的 UUID 直接用，不列清单；前缀先在没关闭的项里找，找不到再翻已关闭的（`reopen` 的目标本来就是已关闭的项，一次翻全部）；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2，提示用更长的前缀。`done` / `drop` / `reopen` 用前缀时，遇到已经是目标状态的项，打印 `nothing changed: … is already …`，不说改了；用完整 UUID 时没列过清单、不知道原来的状态，只打印现在的状态（`<id> is done`）。
 
 **在 anycon 拉起的 agent 里**（环境里有 `ANYCON_AGENT` 且不是空串或 `0`，和 `anycon mcp` 是同一个判断）：
 
@@ -217,7 +217,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 - `ls` 照常
 - `done` / `drop` / `reopen` / `rm` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做。和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线
 
-这是**护栏，不是安全边界**：`ANYCON_AGENT` 是 agent 能改的环境变量，能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单，对存心隐藏来源的本机进程没有约束力；daemon 只把「带了 `agent: true`」的项标成 agent 加的。
+这是**护栏，不是安全边界**：`ANYCON_AGENT` 是 agent 能改的环境变量，能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单，对存心隐藏来源的本机进程没有约束力；daemon 把「带了 `agent: true`」的项、以及来自自报了 `local.set_client { client: "mcp" }` 的本机连接的项标成 agent 加的（后者同样是连接自报的）。
 
 ## 4. 输出约定
 

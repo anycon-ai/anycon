@@ -161,7 +161,7 @@ if (acceptsAttachment(agent, doc.mime)) {
 Each node keeps a personal to-do list (see [docs/spec/daemon.md § 21](../../docs/spec/daemon.md#21-清单)). `node.todos` is a thin wrapper over `todo.*`; a node reports support in `(await node.info()).capabilities.todo`, and an older node answers with `RpcError('unsupported')`. The SDK keeps no offline cache and replays nothing: when the node is offline these calls fail like any other request.
 
 ```ts
-const todo = await node.todos.add({ title: 'Review the release notes', project: 'app' }) // an id (UUID) is generated for you
+const todo = await node.todos.add({ title: 'Review the release notes', project: 'app' }) // an id (a lowercase hyphenated UUID) is generated for you; an id you pass yourself must have that form too
 const { todos, has_more } = await node.todos.list() // open items, newest change first; { include_closed?, project?, limit?, before? }
 await node.todos.update({ id: todo.id, state: 'done' }) // only the fields you pass change; `clear: ['project', 'due_ms']` empties optional fields
 await node.todos.delete(todo.id)

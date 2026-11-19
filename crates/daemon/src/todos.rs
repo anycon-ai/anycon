@@ -61,16 +61,18 @@ fn not_found(id: &str) -> RpcError {
 
 // ---------------- 校验 ----------------
 
-/// `id` 必须是带连字符的 UUID（客户端生成，`todo.add` 按它幂等）。
+/// `id` 必须是小写带连字符的 UUID（客户端生成，`todo.add` 按它幂等）。不做规范化：客户端自己留着一份 id，
+/// 悄悄改写会让它对不上；`todo.add` / `todo.update` / `todo.delete` 对不规范的 id 一律 `invalid`（`data.field = "id"`）。
 fn check_id(id: &str) -> RpcResult<()> {
-    if id.len() == 36 && uuid::Uuid::parse_str(id).is_ok() {
+    let canonical = uuid::Uuid::parse_str(id).is_ok_and(|u| u.hyphenated().to_string() == id);
+    if canonical {
         Ok(())
     } else {
-        Err(invalid("id", None, "id must be a UUID".into()))
+        Err(invalid("id", None, "id must be a lowercase hyphenated UUID".into()))
     }
 }
 
-/// 标题：去掉首尾空白之后 1–200 个字符，单行（不含换行和别的控制字符）。返回去掉空白后的标题。
+/// 标题：去掉首尾空白之后 1–200 个 Unicode 码点，单行（不含控制字符，也不含 U+2028 / U+2029 这两个行分隔符）。返回去掉空白后的标题。
 fn check_title(title: &str) -> RpcResult<String> {
     let t = title.trim();
     if t.is_empty() {
@@ -79,7 +81,7 @@ fn check_title(title: &str) -> RpcResult<String> {
     if t.chars().count() > MAX_TITLE_CHARS {
         return Err(invalid("title", None, format!("title must be at most {MAX_TITLE_CHARS} characters")));
     }
-    if t.chars().any(char::is_control) {
+    if t.chars().any(crate::config::is_line_break_or_control) {
         return Err(invalid("title", None, "title must be a single line".into()));
     }
     Ok(t.to_string())
@@ -94,7 +96,7 @@ fn check_body(body: &str) -> RpcResult<()> {
 
 fn check_project(project: &str) -> RpcResult<String> {
     let p = project.trim();
-    if p.is_empty() || p.chars().count() > MAX_PROJECT_CHARS || p.chars().any(char::is_control) {
+    if p.is_empty() || p.chars().count() > MAX_PROJECT_CHARS || p.chars().any(crate::config::is_line_break_or_control) {
         return Err(invalid(
             "project",
             None,
@@ -273,7 +275,9 @@ fn notify_changed(clients: &Clients, change: TodoChanged) {
 }
 
 /// `todo.list`。
-pub async fn list(c: &Ctx, p: TodoListParams) -> RpcResult<TodoListResult> {
+pub async fn list(c: &Ctx, mut p: TodoListParams) -> RpcResult<TodoListResult> {
+    // 项目名存的是去掉首尾空白之后的，过滤条件同样处理
+    p.project = p.project.map(|s| s.trim().to_string());
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
     c.store.todo_page(&p, limit).await.map_err(internal)
 }
@@ -409,6 +413,11 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     if fields.is_empty() {
         return Ok(old);
     }
+    // 把关闭的项重新打开，和新建一样占一个「没关闭」的名额
+    if old.state.is_closed() && !new.state.is_closed() && c.store.todo_count_open().await.map_err(internal)? >= MAX_OPEN
+    {
+        return Err(invalid("todos", Some("too_many"), format!("at most {MAX_OPEN} open todos")));
+    }
     // 进入 done / dropped 记 closed_ms；重新打开清掉；在两个关闭状态之间换（done → dropped）保持原来的关闭时间
     let now = now_ms();
     match (old.state.is_closed(), new.state.is_closed()) {
@@ -429,6 +438,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
 
 /// `todo.delete`：物理删除。
 pub async fn delete(c: &Ctx, caller: &Caller, id: &str) -> RpcResult<()> {
+    check_id(id)?;
     let _w = c.store.todo_lock().lock().await;
     if !c.store.todo_delete(id).await.map_err(internal)? {
         return Err(not_found(id));

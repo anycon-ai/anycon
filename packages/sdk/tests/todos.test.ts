@@ -94,7 +94,9 @@ for (const impl of cryptoImpls) {
 
         const done = await node.todos.update({ id: a.id, state: 'done', clear: ['project'] })
         assert.equal(done.state, 'done')
-        assert.deepEqual(paramsOf(env, 'todo.update'), [{ id: a.id, state: 'done', clear: ['project'] }])
+        assert.deepEqual(paramsOf(env, 'todo.update'), [
+          { id: a.id, state: 'done', clear: ['project'] },
+        ])
         assert.deepEqual(
           (await node.todos.list()).todos.map((t) => t.id),
           [b.id],
@@ -104,11 +106,11 @@ for (const impl of cryptoImpls) {
 
         assert.equal(await node.todos.delete(b.id), undefined)
         assert.deepEqual(paramsOf(env, 'todo.delete'), [{ id: b.id }])
-        for (const p of [
-          node.todos.update({ id: b.id, title: 'x' }),
-          node.todos.delete(b.id),
-        ]) {
-          await assert.rejects(p, (err: unknown) => err instanceof RpcError && err.code === 'not_found')
+        for (const p of [node.todos.update({ id: b.id, title: 'x' }), node.todos.delete(b.id)]) {
+          await assert.rejects(
+            p,
+            (err: unknown) => err instanceof RpcError && err.code === 'not_found',
+          )
         }
         await assert.rejects(
           node.todos.add({ title: '' }),

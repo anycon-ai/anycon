@@ -104,9 +104,18 @@ impl Paths {
 /// `hub.group` 的字符数上限。
 pub const NODE_GROUP_MAX_CHARS: u64 = 40;
 
-/// `hub.group` 的格式：单行文本，不含控制字符。
+/// 控制字符，或 U+2028 / U+2029（行分隔符，不算控制字符）。清单标题、项目名和分组名都按「单行」处理。
+pub fn is_line_break_or_control(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+/// `hub.group` 的格式：≤ [`NODE_GROUP_MAX_CHARS`] 个 Unicode 码点的单行文本，不含控制字符。远程写入、`config set` 和手写的
+/// `config.toml` 同一条规则（[`Config::validate`]）。
 pub fn validate_node_group(s: &str) -> Result<(), String> {
-    if s.chars().any(char::is_control) {
+    if s.chars().count() as u64 > NODE_GROUP_MAX_CHARS {
+        return Err(format!("at most {NODE_GROUP_MAX_CHARS} characters"));
+    }
+    if s.chars().any(is_line_break_or_control) {
         return Err("must be a single line without control characters".into());
     }
     Ok(())
@@ -527,6 +536,7 @@ impl Config {
             return Err(bad("worktree.default", "expected worktree | local".into()));
         }
         validate_branch_prefix(&self.worktree.branch_prefix).map_err(|e| bad("worktree.branch_prefix", e))?;
+        validate_node_group(&self.hub.group).map_err(|e| bad("hub.group", e))?;
         parse_size(&self.worktree.include_max_bytes).map_err(|e| bad("worktree.include_max_bytes", e))?;
         if !matches!(self.notify.turn_finished.as_str(), "always" | "when_unwatched" | "never") {
             return Err(bad("notify.turn_finished", "expected always | when_unwatched | never".into()));
@@ -1161,6 +1171,30 @@ dangerous_modes = ["yolo"]
         set_value(&paths, "sessions.max_attachment_bytes", "\"4MiB\"").unwrap();
         assert_eq!(Config::load(&paths).unwrap().max_attachment_bytes(), 4 * 1024 * 1024);
         assert!(set_value(&paths, "sessions.max_attachment_bytes", "\"lots\"").is_err());
+    }
+
+    #[test]
+    fn hub_group_is_validated_for_the_file_and_config_set_like_for_remote_writes() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path());
+        assert_eq!(Config::load(&paths).unwrap().hub.group, "");
+        // 40 个码点可以（按码点数，不是字节数），41 个不行；单行
+        set_value(&paths, "hub.group", &format!("\"{}\"", "组".repeat(40))).unwrap();
+        assert_eq!(Config::load(&paths).unwrap().hub.group.chars().count(), 40);
+        for bad in
+            [format!("\"{}\"", "a".repeat(41)), "\"a\\nb\"".into(), "\"a\\u0007b\"".into(), "\"a\\u2028b\"".into()]
+        {
+            assert!(set_value(&paths, "hub.group", &bad).is_err(), "{bad} must be rejected");
+        }
+        assert_eq!(Config::load(&paths).unwrap().hub.group.chars().count(), 40, "a rejected value is not written");
+        // 手写的文件同一条规则：加载失败
+        for bad in ["a".repeat(41), "a\\nb".into(), "a\\u2029b".into()] {
+            write(d.path(), &format!("[hub]\ngroup = \"{bad}\"\n"));
+            let e = Config::load(&paths).expect_err(&bad);
+            assert!(e.to_string().contains("hub.group"), "{e}");
+        }
+        write(d.path(), "[hub]\ngroup = \"team a\"\n");
+        assert_eq!(Config::load(&paths).unwrap().node_group().as_deref(), Some("team a"));
     }
 
     #[test]

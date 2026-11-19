@@ -1276,6 +1276,18 @@ async fn spawned_agents_get_their_own_session_id_and_nothing_can_override_it() {
         assert_eq!(rec.env["ANYCON_SESSION_ID"], s.id, "the session's own id, not the operator's value");
         assert_eq!(rec.env["ANYCON_AGENT"], "1");
     }
+    // 重启之后重新拉起的进程拿到的还是同一个会话 id
+    let _: serde_json::Value = a.call(&td, methods::SESSION_RESTART, json!({ "session_id": s1.id })).await.unwrap();
+    send(&td, &mut a, &s1.id, "again").await;
+    assert!(
+        eventually(T, || async {
+            td.fake.spawns.lock().unwrap().iter().filter(|r| r.session_id == s1.id).count() == 2
+        })
+        .await
+    );
+    for rec in td.fake.spawns.lock().unwrap().iter().filter(|r| r.session_id == s1.id) {
+        assert_eq!(rec.env["ANYCON_SESSION_ID"], s1.id);
+    }
     // 会话 env 想设它们：黑名单挡住（`ANYCON_` 前缀），即使运维把它写进了允许列表
     for key in ["ANYCON_SESSION_ID", "ANYCON_AGENT"] {
         let e = a

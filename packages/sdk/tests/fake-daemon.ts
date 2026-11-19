@@ -700,7 +700,8 @@ export class FakeDaemon {
     on<{ id: string; title: string; [k: string]: unknown }, unknown>('todo.add', (p) => {
       const existing = todos.get(p.id)
       if (existing) return existing
-      if (!p.title) throw new AnyconRpcError(-32602, 'invalid params', { code: 'invalid', field: 'title' })
+      if (!p.title)
+        throw new AnyconRpcError(-32602, 'invalid params', { code: 'invalid', field: 'title' })
       const todo = {
         id: p.id,
         title: p.title,
@@ -716,20 +717,20 @@ export class FakeDaemon {
       this.#notifyAll('todo.changed', { id: p.id, todo, deleted: false })
       return todo
     })
-    on<{ include_closed?: boolean; limit?: number; before?: { updated_ms: number; id: string } }, unknown>(
-      'todo.list',
-      (p) => {
-        const all = [...todos.values()]
-          .filter((t) => p.include_closed === true || (t.state !== 'done' && t.state !== 'dropped'))
-          .toSorted(
-            (a, b) =>
-              (b.updated_ms as number) - (a.updated_ms as number) ||
-              (b.id as string).localeCompare(a.id as string),
-          )
-        const limit = p.limit ?? 200
-        return { todos: all.slice(0, limit), has_more: all.length > limit }
-      },
-    )
+    on<
+      { include_closed?: boolean; limit?: number; before?: { updated_ms: number; id: string } },
+      unknown
+    >('todo.list', (p) => {
+      const all = [...todos.values()]
+        .filter((t) => p.include_closed === true || (t.state !== 'done' && t.state !== 'dropped'))
+        .toSorted(
+          (a, b) =>
+            (b.updated_ms as number) - (a.updated_ms as number) ||
+            (b.id as string).localeCompare(a.id as string),
+        )
+      const limit = p.limit ?? 200
+      return { todos: all.slice(0, limit), has_more: all.length > limit }
+    })
     on<{ id: string; [k: string]: unknown }, unknown>('todo.update', (p) => {
       const todo = todos.get(p.id)
       if (!todo) throw AnyconRpcError.of('not_found', 'no such todo')

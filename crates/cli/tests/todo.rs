@@ -286,3 +286,32 @@ async fn the_cli_help_documents_the_subcommands_in_english() {
     let r = anycon(&home, &["todo", "add", "--help"], None, &[]).await;
     assert!(r.stdout.contains("--due") && r.stdout.contains("RFC 3339") && r.stdout.contains("--body"), "{}", r.stdout);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_state_change_that_changes_nothing_says_so() {
+    let n = node().await;
+    let t = n.add("steady").await;
+    let id = t["id"].as_str().unwrap().to_string();
+    // 已经是 open：reopen 什么都没变
+    let r = n.cli(&["todo", "reopen", &id[..8]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.starts_with("nothing changed") && r.stdout.contains("already open"), "{}", r.stdout);
+    // done 一次：真的改了；再 done：没变；--json 照样给出这一项
+    let r = n.cli(&["todo", "done", &id[..8]]).await;
+    assert!(r.stdout.starts_with("done "), "{}", r.stdout);
+    let r = n.cli(&["todo", "done", &id[..8]]).await;
+    assert!(r.stdout.starts_with("nothing changed") && r.stdout.contains("already done"), "{}", r.stdout);
+    let r = n.cli(&["todo", "done", &id, "--json"]).await;
+    assert_eq!(r.json()["state"], "done");
+    // 前缀先在没关闭的项里找；找不到再找已关闭的（done 之后 drop 用前缀也行）
+    let r = n.cli(&["todo", "drop", &id[..8]]).await;
+    assert!(r.stdout.starts_with("dropped "), "{}", r.stdout);
+    // 完整 UUID 不用列清单，已关闭的项直接 reopen；没列过就不知道原来的状态，只报告现在的状态
+    let r = n.cli(&["todo", "reopen", &id]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains(" is open") && !r.stdout.contains("nothing changed"), "{}", r.stdout);
+    // 再来一次（daemon 当空操作）也是同一句话，不猜它变没变
+    let r = n.cli(&["todo", "reopen", &id]).await;
+    assert!(r.stdout.contains(" is open") && !r.stdout.contains("nothing changed"), "{}", r.stdout);
+    n.stop().await;
+}

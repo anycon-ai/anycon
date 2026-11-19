@@ -111,13 +111,27 @@ async fn add_validates_every_field() {
     let mut c = td.local_cli_client();
     let bad = |params: Value| bad_add(&td, params);
     // id：必须是带连字符的 UUID
-    for not_uuid in ["", "abc", "not-a-uuid-at-all-not-a-uuid-at-all-1234", "0123456789abcdef0123456789abcdef"] {
+    // 只收小写带连字符的 UUID：大写、花括号、没有连字符、urn 形式都是 `invalid`，不做规范化
+    for not_uuid in [
+        "",
+        "abc",
+        "not-a-uuid-at-all-not-a-uuid-at-all-1234",
+        "0123456789abcdef0123456789abcdef",
+        "7D1C1E5A-3B9F-4C2E-8A64-0F2B5D9E1A77",
+        "{7d1c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a77}",
+        "urn:uuid:7d1c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a77",
+        " 7d1c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a77",
+    ] {
         assert_eq!(invalid_field(&bad(json!({ "id": not_uuid, "title": "x" })).await), "id", "{not_uuid:?}");
     }
     // title：空、纯空白、超长（按字符数，去掉首尾空白之后）、多行、控制字符
-    for t in ["", "   \t ", &"a".repeat(201), "two\nlines", "cr\rhere", "esc\u{1b}[31m"] {
+    for t in
+        ["", "   \t ", &"a".repeat(201), "two\nlines", "cr\rhere", "esc\u{1b}[31m", "ls\u{2028}sep", "ps\u{2029}sep"]
+    {
         assert_eq!(invalid_field(&bad(json!({ "id": id(), "title": t })).await), "title", "{t:?}");
     }
+    // 项目名同样单行
+    assert_eq!(invalid_field(&bad(json!({ "id": id(), "title": "x", "project": "a\u{2028}b" })).await), "project");
     // 边界：200 个字符（含多字节字符）可以；两端的空白不算
     add(&td, &mut c, json!({ "id": id(), "title": "字".repeat(200) })).await.unwrap();
     add(&td, &mut c, json!({ "id": id(), "title": format!("  {}  ", "a".repeat(200)) })).await.unwrap();
@@ -189,7 +203,7 @@ async fn the_open_item_cap_counts_only_unclosed_items() {
     let e = add(&td, &mut c, json!({ "id": id(), "title": "x", "agent": true })).await.unwrap_err();
     assert_eq!(code(&e).2.as_deref(), Some("too_many"));
 
-    // 关掉一项就腾出一个名额；重新打开要受 `todo.update` 自己的规则，不在这里检查
+    // 关掉一项就腾出一个名额
     update(&td, &mut c, json!({ "id": ids[0], "state": "done" })).await.unwrap();
     add_ok(&td, &mut c, "fits now").await;
     assert_eq!(
@@ -810,5 +824,165 @@ async fn the_table_survives_a_restart() {
     td.restart().await;
     let mut c = td.local_cli_client();
     assert_eq!(list(&td, &mut c, json!({})).await.todos, vec![t]);
+    td.shutdown().await;
+}
+
+// ---------------------------------------------------------------- 评审后补充
+
+#[tokio::test]
+async fn update_and_delete_reject_ids_that_are_not_canonical() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let t = add_ok(&td, &mut c, "t").await;
+    let upper = t.id.to_uppercase();
+    let e = update(&td, &mut c, json!({ "id": upper, "title": "x" })).await.unwrap_err();
+    assert_eq!(invalid_field(&e), "id");
+    let e = c.call::<Value>(&td, methods::TODO_DELETE, json!({ "id": upper })).await.unwrap_err();
+    assert_eq!(invalid_field(&e), "id");
+    assert_eq!(list(&td, &mut c, json!({})).await.todos, vec![t], "nothing changed");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn reopening_a_closed_item_counts_against_the_open_cap() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let closed = id();
+    td.ctx.store.todo_insert(&row(&closed, 1_000, TodoState::Done)).await.unwrap();
+    let mut open_ids = Vec::new();
+    for _ in 0..1000 {
+        let i = id();
+        td.ctx.store.todo_insert(&row(&i, 1_000, TodoState::Open)).await.unwrap();
+        open_ids.push(i);
+    }
+    let e = update(&td, &mut c, json!({ "id": closed, "state": "open" })).await.unwrap_err();
+    assert_eq!(
+        (code(&e).0, code(&e).1.as_deref().map(str::to_string), code(&e).2),
+        (ErrorCode::Invalid, Some("todos".into()), Some("too_many".into()))
+    );
+    // 别的修改、关闭状态之间的转换、开着的状态之间的转换不受限制
+    update(&td, &mut c, json!({ "id": closed, "state": "dropped" })).await.unwrap();
+    update(&td, &mut c, json!({ "id": open_ids[1], "state": "working" })).await.unwrap();
+    assert_eq!(
+        td.ctx.store.todo_get(&closed).await.unwrap().unwrap().state,
+        TodoState::Dropped,
+        "a refused reopen changed nothing"
+    );
+    // 999 个没关闭：可以重新打开
+    update(&td, &mut c, json!({ "id": open_ids[0], "state": "done" })).await.unwrap();
+    let r = update(&td, &mut c, json!({ "id": closed, "state": "open" })).await.unwrap();
+    assert_eq!((r.state, r.closed_ms), (TodoState::Open, None));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_project_filter_is_trimmed_like_stored_names() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let t = add(&td, &mut c, json!({ "id": id(), "title": "t", "project": "  web " })).await.unwrap();
+    assert_eq!(t.project.as_deref(), Some("web"));
+    for filter in ["web", " web", "web \t", "  web  "] {
+        assert_eq!(list(&td, &mut c, json!({ "project": filter })).await.todos.len(), 1, "{filter:?}");
+    }
+    assert!(list(&td, &mut c, json!({ "project": "WEB" })).await.todos.is_empty());
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_cap_counts_use_the_partial_indexes() {
+    let td = TestDaemon::start().await;
+    for (plan_sql, index) in [
+        ("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM todos WHERE state NOT IN ('done','dropped')", "todos_open"),
+        ("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM todos WHERE unreviewed = 1", "todos_unreviewed"),
+    ] {
+        let rows = sqlx::query(plan_sql).fetch_all(td.ctx.store.pool()).await.unwrap();
+        let plan: Vec<String> = rows.iter().map(|r| sqlx::Row::get::<String, _>(r, "detail")).collect();
+        eprintln!("{plan_sql}\n  -> {plan:?}");
+        assert!(plan.iter().any(|d| d.contains(index)), "{plan_sql}: {plan:?}");
+    }
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_mcp_declaration_is_a_guard_rail_the_connection_can_lift_itself() {
+    let td = TestDaemon::start().await;
+    let mut agent = td.local_mcp_client();
+    let t = add(&td, &mut agent, json!({ "id": id(), "title": "from an agent" })).await.unwrap();
+    // 声明了 mcp：reviewed 不起作用
+    let r = update(&td, &mut agent, json!({ "id": t.id, "reviewed": true })).await.unwrap();
+    assert!(r.unreviewed);
+    // 同一条连接重新声明成 cli：和人敲的命令一样，能收下。这是接口上的护栏，不是边界（自报的）
+    assert!(agent.handle.set_local_kind(anycon_daemon::clients::LocalClientKind::Cli));
+    let r = update(&td, &mut agent, json!({ "id": t.id, "reviewed": true })).await.unwrap();
+    assert!(!r.unreviewed);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn parallel_adds_of_one_id_make_exactly_one_item() {
+    let td = TestDaemon::start().await;
+    let mut watcher = td.hub_client("dev-w", "W");
+    let new_id = id();
+    let mut clients: Vec<TestClient> = (0..8)
+        .map(|i| match i % 3 {
+            0 => td.local_cli_client(),
+            1 => td.local_mcp_client(),
+            _ => td.hub_client(&format!("dev-{i}"), "P"),
+        })
+        .collect();
+    let calls = clients.iter_mut().enumerate().map(|(i, c)| {
+        let p = json!({ "id": new_id, "title": format!("racer {i}") });
+        let td = &td;
+        async move { add(td, c, p).await }
+    });
+    let results = futures::future::join_all(calls).await;
+    let first = results[0].as_ref().unwrap().clone();
+    assert!(results.iter().all(|r| r.as_ref().unwrap() == &first), "every caller sees the one stored item");
+    let mut any = td.local_cli_client();
+    assert_eq!(list(&td, &mut any, json!({})).await.todos.len(), 1);
+    assert_eq!(audit(&td, "todo.add").await.len(), 1);
+    assert_eq!(changes(&mut watcher).len(), 1);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn parallel_adds_at_the_caps_let_exactly_one_through() {
+    // 999 个没关闭的
+    let td = TestDaemon::start().await;
+    for _ in 0..999 {
+        td.ctx.store.todo_insert(&row(&id(), 1_000, TodoState::Open)).await.unwrap();
+    }
+    let mut clients: Vec<TestClient> = (0..8).map(|_| td.local_cli_client()).collect();
+    let calls = clients.iter_mut().map(|c| {
+        let td = &td;
+        async move { add(td, c, json!({ "id": id(), "title": "racer" })).await }
+    });
+    let results = futures::future::join_all(calls).await;
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    for e in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert_eq!(code(e).2.as_deref(), Some("too_many"));
+    }
+    assert_eq!(td.ctx.store.todo_count_open().await.unwrap(), 1000);
+    td.shutdown().await;
+
+    // 99 个没被收下的
+    let td = TestDaemon::start().await;
+    for _ in 0..99 {
+        let mut t = row(&id(), 1_000, TodoState::Open);
+        t.unreviewed = true;
+        t.source.kind = TodoSourceKind::Agent;
+        td.ctx.store.todo_insert(&t).await.unwrap();
+    }
+    let mut clients: Vec<TestClient> = (0..8).map(|_| td.local_mcp_client()).collect();
+    let calls = clients.iter_mut().map(|c| {
+        let td = &td;
+        async move { add(td, c, json!({ "id": id(), "title": "racer" })).await }
+    });
+    let results = futures::future::join_all(calls).await;
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    for e in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert_eq!(code(e).2.as_deref(), Some("too_many_unreviewed"));
+    }
+    assert_eq!(td.ctx.store.todo_count_unreviewed().await.unwrap(), 100);
     td.shutdown().await;
 }

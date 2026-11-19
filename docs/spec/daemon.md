@@ -120,7 +120,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 
 | 键 | 类型与范围 | 远程 |
 |---|---|---|
-| `hub.group` | 文本，最多 40 个字符，单行（不含控制字符），缺省为空 | 任意改 |
+| `hub.group` | 文本，最多 40 个 Unicode 码点，单行（不含控制字符和 U+2028 / U+2029），缺省为空；`config set` 和手写的 `config.toml` 同一条规则（加载时校验，不合格加载失败，和 `worktree.branch_prefix` 一样） | 任意改 |
 | `sessions.max_concurrent` | 整数 1–32 | 任意改 |
 | `sessions.idle_timeout` | 时长 0–7d（`0` = 常驻） | 任意改 |
 | `permissions.request_timeout` | 时长 0–7d（`0` = 不超时） | 任意改 |
@@ -1174,10 +1174,10 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 ```
 Todo {
-  id:         string      // 客户端生成的 UUID；`todo.add` 按它幂等
-  title:      string      // 单行，1–200 字符（去掉首尾空白之后）
+  id:         string      // 客户端生成的小写带连字符 UUID；`todo.add` 按它幂等
+  title:      string      // 单行，1–200 个 Unicode 码点（去掉首尾空白之后；不含控制字符和 U+2028 / U+2029）
   body:       string      // Markdown，≤ 16 KiB，可以是空串
-  project?:   string      // 项目名（§ 10），1–200 个字符、不含控制字符；不校验项目存在，项目改名 / 删除后原样保留
+  project?:   string      // 项目名（§ 10），1–200 个 Unicode 码点、不含控制字符（去掉首尾空白后存）；不校验项目存在，项目改名 / 删除后原样保留
   state:      open | working | waiting | review | done | dropped
   due_ms?:    timestamp   // 想在什么时候之前处理；这一步只用于显示和排序
   source:     { kind: device | local | agent, device_id?, session_id? }   // daemon 填，调用方不能指定
@@ -1210,7 +1210,7 @@ Todo {
 
 `agent` 这个标记的用处是之后让分身不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
 
-`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。自报了 `mcp` 的本机连接发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 14.4](web.md#144-待处理)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
+`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。当前自报着 `mcp` 的本机连接发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。这只是接口上的护栏，不是边界：自报是这条连接自己的声明，同一条连接再发 `local.set_client { client: "cli" }` 就和人敲的命令一样了（有 shell 的 agent 本来也能直接这样做，和 `--allow-nested` 一样）。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 14.4](web.md#144-待处理)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
 
 `session_id` 是这一项从哪个会话里来的。daemon 拉起 agent 时在环境里注入 `ANYCON_SESSION_ID`（和 `ANYCON_AGENT` 一起，§ 5.5，同样不能被会话 `env` 覆盖；ACP agent 除外，见 § 5.5），`anycon mcp` 和 `anycon todo add` 读到就在 `todo.add` 里带上 `origin_session`；daemon 只在这一项记成 `kind: agent` 时才看它，并且核对这个会话存在才记，否则丢掉这个字段、照常建项。会话之后被删，`session_id` 原样留着，客户端按「会话已不存在」显示。
 
@@ -1220,9 +1220,9 @@ Todo {
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；`include_closed` 时也给已关闭的。按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 填上一页最后一项的这两个值，返回排在它后面的。`limit` 缺省 200、上限 1000。一页另有字节预算：各项序列化后的字节累计超过 1 MiB 就停（至少给一项），所以一页可能少于 `limit`；后面还有没给出的项时 `has_more = true` |
-| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是带连字符的 UUID、`title` 为空或超长（含换行等控制字符）、`body` 超长（按字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
-| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白）；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
+| `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；`include_closed` 时也给已关闭的。`project` 去掉首尾空白后按名字精确比较（和存的名字同样处理）。按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 填上一页最后一项的这两个值，返回排在它后面的。`limit` 缺省 200、上限 1000。一页另有字节预算：各项序列化后的字节累计超过 1 MiB 就停（至少给一项），所以一页可能少于 `limit`；后面还有没给出的项时 `has_more = true` |
+| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
+| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白；`id` 不是小写 UUID 同样 `invalid`，`todo.delete` 也是）；**把 `done` / `dropped` 的项改回没关闭的状态时，和新建一样占一个名额：已有 1000 个没关闭的项 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）**；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
 | `todo.delete` | C→D | `{ id }` → `{}`。物理删除。`id` 不存在 → `not_found`（重放时客户端把它当作已完成） |
 | `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
 
@@ -1262,7 +1262,7 @@ Todo {
 
 每个节点各有一份清单，daemon 之间不通信（ADR-54 第 12 条）。daemon 这边只多一样东西：**分组名**。
 
-- `[hub] group`：文本，≤ 40 字符，缺省为空，和节点显示名（`[hub] name`）放在一起。热加载，加进远程修改的白名单（§ 3，`hub.group`，任意改），所以已配对设备能改，改动照常进审计 `config.changed`；`node.info` 里给出 `group`（旧 daemon 没有这个字段，客户端按空处理）。
+- `[hub] group`：文本，≤ 40 个 Unicode 码点，单行（不含控制字符），缺省为空；这条规则对 `config set` 和手写的 `config.toml` 同样成立（加载时校验），和节点显示名（`[hub] name`）放在一起。热加载，加进远程修改的白名单（§ 3，`hub.group`，任意改），所以已配对设备能改，改动照常进审计 `config.changed`；`node.info` 里给出 `group`（旧 daemon 没有这个字段，客户端按空处理）。
 - 分组名相同（去掉首尾空白、区分大小写）的节点是一组；为空的节点自成一组。它是给客户端看的标签，daemon 不拿它做任何判断，不是访问控制。
 
 合并显示、按分组过滤、把一项移到另一个节点都是客户端的事：

@@ -18,3 +18,7 @@ CREATE TABLE todos (
 
 -- `todo.list` 的排序和翻页：(updated_ms, id) 从新到旧。
 CREATE INDEX todos_updated ON todos (updated_ms DESC, id DESC);
+
+-- 两个上限的计数（没关闭的项、没被收下的项）每次 `todo.add` 都要数一遍：部分索引只收这些行，计数不用扫全表。
+CREATE INDEX todos_open ON todos (state) WHERE state NOT IN ('done','dropped');
+CREATE INDEX todos_unreviewed ON todos (id) WHERE unreviewed = 1;

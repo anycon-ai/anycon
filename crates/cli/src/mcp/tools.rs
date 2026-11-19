@@ -256,6 +256,15 @@ struct ListTodosArgs {
     #[serde(default)]
     include_closed: bool,
     limit: Option<u32>,
+    before: Option<TodoCursorArg>,
+}
+
+/// `list_todos` 的翻页游标：上一页最后一项的 `updated_ms` 和 `id`。
+#[derive(Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct TodoCursorArg {
+    updated_ms: u64,
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -454,13 +463,24 @@ fn definitions() -> Vec<ToolDef> {
             title: "List to-dos",
             description: format!(
                 "List the items on the user's to-do list on this node, most recently changed first (up to {TODO_LIST_MAX}). Each has an id, title, body (clipped at {TODO_BODY_CHARS} characters), project, state (open, working, waiting, review, done, dropped), \
-                 due time, who added it (`source.kind`: device, local or agent) and `unreviewed` (an agent added it and the user has not looked at it yet). Closed items (done, dropped) are left out unless `include_closed` is true."
+                 due time, who added it (`source.kind`: device, local or agent) and `unreviewed` (an agent added it and the user has not looked at it yet). Closed items (done, dropped) are left out unless `include_closed` is true. \
+                 When `has_more` is true there are more items: call again with `before` set to the `updated_ms` and `id` of the last item returned."
             ),
             input_schema: obj(
                 json!({
                     "project": { "type": "string", "description": "Only items of this project." },
                     "include_closed": { "type": "boolean", "default": false, "description": "Also list done and dropped items." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": TODO_LIST_MAX, "default": TODO_LIST_DEFAULT, "description": "Maximum number of items." }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": TODO_LIST_MAX, "default": TODO_LIST_DEFAULT, "description": "Maximum number of items." },
+                    "before": {
+                        "type": "object",
+                        "description": "Next page: the `updated_ms` and `id` of the last item of the previous page.",
+                        "properties": {
+                            "updated_ms": { "type": "integer", "minimum": 0 },
+                            "id": { "type": "string" }
+                        },
+                        "required": ["updated_ms", "id"],
+                        "additionalProperties": false
+                    }
                 }),
                 vec![],
             ),
@@ -629,7 +649,7 @@ impl<N: Node> AnyconTools<N> {
         let r: TodoListResult = self
             .rpc(
                 methods::TODO_LIST,
-                json!({ "include_closed": a.include_closed, "project": a.project, "limit": limit }),
+                json!({ "include_closed": a.include_closed, "project": a.project, "limit": limit, "before": a.before }),
             )
             .await?;
         let todos: Vec<Value> = r
@@ -2419,6 +2439,33 @@ mod tests {
             assert!(r.is_error && r.blocks[0].contains("invalid arguments"), "{args}: {r:?}");
         }
         assert!(node.methods().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_todos_pages_with_the_cursor_of_the_last_item() {
+        let node = FakeNode::new(|_, p| {
+            assert_eq!(p["before"], json!({ "updated_ms": 42, "id": "a" }), "{p}");
+            Ok(json!({ "todos": [], "has_more": false }))
+        });
+        let t = tools(node.clone(), Options::default());
+        let r = t.call("list_todos", json!({ "before": { "updated_ms": 42, "id": "a" } })).await.unwrap();
+        assert!(!r.is_error, "{r:?}");
+        // 不带 before 时发 null（daemon 当作第一页）
+        let node = FakeNode::new(|_, p| {
+            assert!(p["before"].is_null(), "{p}");
+            Ok(json!({ "todos": [], "has_more": false }))
+        });
+        tools(node, Options::default()).call("list_todos", json!({})).await.unwrap();
+        // 游标不完整或带多余字段：在调用 daemon 之前拒绝
+        let node = FakeNode::new(|m, _| panic!("unexpected {m}"));
+        let t = tools(node, Options::default());
+        for bad in [json!({ "before": { "id": "a" } }), json!({ "before": { "updated_ms": 1, "id": "a", "x": 1 } })] {
+            let r = t.call("list_todos", bad.clone()).await.unwrap();
+            assert!(r.is_error && r.blocks[0].contains("invalid arguments"), "{bad}: {r:?}");
+        }
+        // 描述里说了怎么翻页
+        let d = definitions().into_iter().find(|d| d.name == "list_todos").unwrap();
+        assert!(d.description.contains("has_more") && d.description.contains("before"));
     }
 
     #[tokio::test]

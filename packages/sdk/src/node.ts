@@ -521,7 +521,7 @@ export class Node extends Emitter<NodeEvents> {
      */
     list: (params: TodoListParams = {}): Promise<TodoListResult> => this.call('todo.list', params),
     /**
-     * `todo.add`。`id` 缺省时 SDK 生成一个 UUID；超时后要重试就传同一个：`id` 已经存在时 daemon 原样返回已有的那一项，
+     * `todo.add`。`id` 缺省时 SDK 生成一个 UUID（小写带连字符；自己给的 id 必须是这个写法，daemon 不做规范化，别的写法 → `invalid`，`data.field = 'id'`）；超时后要重试就传同一个：`id` 已经存在时 daemon 原样返回已有的那一项，
      * 不会出现第二项。标题为空 / 超长、正文超长、`id` 不是 UUID、清单已满 → `RpcError`（`invalid`，见 `data.field` /
      * `data.reason`：`too_many` / `too_many_unreviewed`）。`source` 由 daemon 填；`agent: true` 表示这是 agent 加的。
      */

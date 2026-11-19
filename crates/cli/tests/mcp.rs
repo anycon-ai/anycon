@@ -439,7 +439,7 @@ async fn todos_can_be_listed_and_added_even_inside_an_agent_session_but_not_chan
     assert_eq!(m.ok("list_todos", json!({})).await["todos"].as_array().unwrap().len(), 2);
     let (err, v, _) = m.call("create_session", json!({ "agent": "mock", "prompt": "nested" })).await;
     assert!(err && v.as_str().unwrap().contains("--allow-nested"), "{v}");
-    // 同一个 daemon 上，CLI 在那个会话的环境里也改不了
+    // 两项都在清单里，CLI（不在 agent 环境里）读到同样的内容；agent 环境里 CLI 拒绝改动的部分由 tests/todo.rs 覆盖
     let cli_todos = n.cli(&["todo", "ls", "--json"]).await.json();
     assert_eq!(cli_todos["todos"].as_array().unwrap().len(), 2);
     assert_eq!(m.close().await, 0);

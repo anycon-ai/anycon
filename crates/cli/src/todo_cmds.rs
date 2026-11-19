@@ -100,19 +100,34 @@ async fn list_all(conn: &Conn, include_closed: bool, project: Option<&str>) -> R
     Ok(out)
 }
 
-/// `<id>`：完整 UUID 直接用，否则按前缀在全部项（含已关闭）里找，必须唯一。
-async fn resolve_todo(conn: &Conn, key: &str) -> Result<Todo> {
+/// 在已经列出的项里按前缀找：唯一匹配才算，0 个返回 `None`，多个报错。
+fn match_prefix<'a>(all: &'a [Todo], key: &str) -> Result<Option<&'a Todo>> {
+    let m: Vec<&Todo> = all.iter().filter(|t| t.id.starts_with(key)).collect();
+    match m.len() {
+        0 => Ok(None),
+        1 => Ok(Some(m[0])),
+        n => Err(CliError::usage(format!("{key:?} matches {n} to-dos; use a longer prefix"))),
+    }
+}
+
+/// `<id>`（唯一前缀，不区分大小写；id 本身是小写 UUID）。完整的 UUID 不用列清单，直接返回 `Err(id)` 让调用方拿它去调用。
+/// 前缀先在没关闭的项里找，找不到再翻已关闭的；`include_closed` 为 true（`reopen`：目标本来就是已关闭的项）时一次翻全部。
+/// 没有匹配 → 退出码 1（`not_found`），多个 → 2。
+async fn resolve_todo(conn: &Conn, key: &str, include_closed: bool) -> Result<std::result::Result<Todo, String>> {
     let key = key.trim().to_lowercase();
     if key.is_empty() {
         return Err(CliError::usage("the to-do id must not be empty"));
     }
-    let all = list_all(conn, true, None).await?;
-    let m: Vec<&Todo> = all.iter().filter(|t| t.id.starts_with(&key)).collect();
-    match m.len() {
-        1 => Ok(m[0].clone()),
-        0 => Err(CliError::new(EXIT_ERROR, "not_found", format!("no to-do matches {key:?}"))),
-        n => Err(CliError::usage(format!("{key:?} matches {n} to-dos; use a longer prefix"))),
+    if key.len() == 36 && uuid::Uuid::parse_str(&key).is_ok() {
+        return Ok(Err(key));
     }
+    let mut all = list_all(conn, include_closed, None).await?;
+    let mut found = match_prefix(&all, &key)?.cloned();
+    if found.is_none() && !include_closed {
+        all = list_all(conn, true, None).await?;
+        found = match_prefix(&all, &key)?.cloned();
+    }
+    found.map(Ok).ok_or_else(|| CliError::new(EXIT_ERROR, "not_found", format!("no to-do matches {key:?}")))
 }
 
 fn short(id: &str) -> String {
@@ -207,12 +222,30 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
 async fn set_state(app: &App, what: &str, key: &str, state: TodoState, done: &str) -> Result<u8> {
     refuse_inside_agent(what)?;
     let conn = app.conn().await?;
-    let found = resolve_todo(&conn, key).await?;
-    let t: Todo = conn
-        .call(methods::TODO_UPDATE, TodoUpdateParams { id: found.id, state: Some(state), ..empty_update() })
-        .await?;
+    let resolved = resolve_todo(&conn, key, state == TodoState::Open).await?;
+    // 已经是这个状态：daemon 当空操作，这里也如实说没变
+    let (id, known_state) = match &resolved {
+        Ok(t) => (t.id.clone(), Some(t.state)),
+        Err(id) => (id.clone(), None),
+    };
+    let unchanged_known = known_state == Some(state);
+    let t: Todo = if unchanged_known {
+        resolved.expect("known")
+    } else {
+        conn.call(methods::TODO_UPDATE, TodoUpdateParams { id, state: Some(state), ..empty_update() }).await?
+    };
     if app.json() {
         app.out.json_line(&t);
+    } else if known_state.is_none() {
+        // 完整 UUID 没列过清单，不知道原来的状态：只说现在是什么状态，不猜它变没变
+        println!("{} is {}  {}", short(&t.id), state_str(t.state), sanitize_label(&t.title, 80, ""));
+    } else if unchanged_known {
+        println!(
+            "nothing changed: {} is already {}  {}",
+            short(&t.id),
+            state_str(t.state),
+            sanitize_label(&t.title, 80, "")
+        );
     } else {
         println!("{done} {}  {}", short(&t.id), sanitize_label(&t.title, 80, ""));
     }
@@ -235,12 +268,19 @@ fn empty_update() -> TodoUpdateParams {
 async fn rm(app: &App, key: &str) -> Result<u8> {
     refuse_inside_agent("rm")?;
     let conn = app.conn().await?;
-    let found = resolve_todo(&conn, key).await?;
-    let _: Value = conn.call_raw(methods::TODO_DELETE, TodoIdParams { id: found.id.clone() }).await?;
+    let resolved = resolve_todo(&conn, key, false).await?;
+    let id = match &resolved {
+        Ok(t) => t.id.clone(),
+        Err(id) => id.clone(),
+    };
+    let _: Value = conn.call_raw(methods::TODO_DELETE, TodoIdParams { id: id.clone() }).await?;
     if app.json() {
-        app.out.json_line(&json!({ "id": found.id, "deleted": true }));
+        app.out.json_line(&json!({ "id": id, "deleted": true }));
     } else {
-        println!("removed {}  {}", short(&found.id), sanitize_label(&found.title, 80, ""));
+        match resolved {
+            Ok(t) => println!("removed {}  {}", short(&t.id), sanitize_label(&t.title, 80, "")),
+            Err(_) => println!("removed {}", short(&id)),
+        }
     }
     Ok(0)
 }

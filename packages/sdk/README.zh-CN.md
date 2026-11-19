@@ -133,7 +133,7 @@ if (acceptsAttachment(agent, doc.mime)) {                    // agent：node.age
 每个节点有一份个人清单（见 [docs/spec/daemon.md § 21](../../docs/spec/daemon.md#21-清单)）。`node.todos` 是 `todo.*` 的薄封装；节点是否支持看 `(await node.info()).capabilities.todo`，旧节点回 `RpcError('unsupported')`。SDK 不做离线缓存、也不重放：节点离线时这些调用和别的请求一样失败。
 
 ```ts
-const todo = await node.todos.add({ title: '看发布说明', project: 'app' }) // id（UUID）缺省由 SDK 生成
+const todo = await node.todos.add({ title: '看发布说明', project: 'app' }) // id（小写带连字符的 UUID）缺省由 SDK 生成，自己传的 id 也必须是这个写法
 const { todos, has_more } = await node.todos.list() // 没关闭的项，最近修改的在前；{ include_closed?, project?, limit?, before? }
 await node.todos.update({ id: todo.id, state: 'done' }) // 只改传了的字段；`clear: ['project', 'due_ms']` 清空可选字段
 await node.todos.delete(todo.id)

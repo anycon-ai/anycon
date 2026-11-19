@@ -103,7 +103,7 @@
 
 已完成（v0.3.0 发布，见 [CHANGELOG](../CHANGELOG.md#030---2026-11-11)）：
 
-- `anycon mcp`：stdio MCP server，让别的 agent 通过九个 MCP 工具（之后清单又加了两个，共十一个）查看和驱动节点上的会话；不暴露权限审批、默认拒绝危险模式和嵌套使用（[ADR-49](decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）
+- `anycon mcp`：stdio MCP server，让别的 agent 通过 MCP 工具（共十一个，其中 `list_todos` / `add_todo` 属于清单，[ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)，`add_todo` 不受 `--allow-nested` 限制）查看和驱动节点上的会话；不暴露权限审批、默认拒绝危险模式和嵌套使用（[ADR-49](decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）
 
 还没做：
 

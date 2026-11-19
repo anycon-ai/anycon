@@ -94,6 +94,8 @@ pub const SESSION_CHANGED: &str = "session.changed";
 pub const SESSION_RENAME: &str = "session.rename";
 pub const SESSION_ARCHIVE: &str = "session.archive";
 pub const SESSION_UNARCHIVE: &str = "session.unarchive";
+pub const SESSION_SET_MARKS: &str = "session.set_marks";
+pub const SESSION_MARK_READ: &str = "session.mark_read";
 pub const SESSION_DELETE: &str = "session.delete";
 pub const SESSION_RESTART: &str = "session.restart";
 pub const SESSION_SEARCH: &str = "session.search";
@@ -221,6 +223,8 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(SESSION_RENAME, Some("SessionRenameParams"), None),
     req(SESSION_ARCHIVE, Some("SessionArchiveParams"), None),
     req(SESSION_UNARCHIVE, Some("SessionIdParams"), None),
+    req(SESSION_SET_MARKS, Some("SessionSetMarksParams"), None),
+    req(SESSION_MARK_READ, Some("SessionMarkReadParams"), None),
     req(SESSION_DELETE, Some("SessionDeleteParams"), None),
     req(SESSION_RESTART, Some("SessionIdParams"), None),
     req(SESSION_SEARCH, Some("SessionSearchParams"), Some("SessionSearchResult")),

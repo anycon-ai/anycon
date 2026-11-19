@@ -177,6 +177,7 @@ async fn ttl_and_urgency_follow_the_category() {
     for (category, ttl, urgency, session) in [
         (NotifyCategory::EnrollRequested, "300", "high", None),
         (NotifyCategory::TurnFinished, "3600", "normal", Some("s2")),
+        (NotifyCategory::FollowUp, "3600", "normal", Some("s4")),
         (NotifyCategory::Error, "3600", "normal", Some("s3")),
         (NotifyCategory::Security, "3600", "normal", None),
     ] {
@@ -789,7 +790,7 @@ async fn the_test_push_checks_the_device_like_subscribing_does() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn preferences_default_to_the_spec_and_list_all_six_categories() {
+async fn preferences_default_to_the_spec_and_list_all_seven_categories() {
     let rig = Rig::new().await;
     let prefs = rig.prefs().await;
     assert_eq!(
@@ -799,6 +800,7 @@ async fn preferences_default_to_the_spec_and_list_all_six_categories() {
             { "category": "turn_finished", "push": true, "email": false },
             { "category": "error", "push": true, "email": true },
             { "category": "session_idle", "push": false, "email": false },
+            { "category": "follow_up", "push": true, "email": false },
             { "category": "enroll_requested", "push": true, "email": true },
             { "category": "security", "push": true, "email": true },
         ])
@@ -835,7 +837,7 @@ async fn put_updates_only_the_listed_categories_and_returns_the_full_result() {
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     let cats = body["categories"].as_array().unwrap();
-    assert_eq!(cats.len(), 6);
+    assert_eq!(cats.len(), 7);
     let pref = |c: &str| cats.iter().find(|p| p["category"] == c).unwrap().clone();
     assert_eq!(pref("turn_finished"), json!({ "category": "turn_finished", "push": false, "email": false }));
     assert_eq!(pref("session_idle"), json!({ "category": "session_idle", "push": true, "email": false }));
@@ -1142,7 +1144,7 @@ async fn no_email_without_a_bound_address_and_no_email_for_chatty_categories() {
     assert!(rig.mailer.sent().is_empty(), "no address bound");
 
     rig.bind_email("me@example.com").await;
-    // 就算把偏好直接写成 email = true，turn_finished / session_idle 也不发邮件
+    // 就算把偏好直接写成 email = true，turn_finished / session_idle / follow_up 也不发邮件
     rig.hub
         .handle
         .store()
@@ -1151,12 +1153,14 @@ async fn no_email_without_a_bound_address_and_no_email_for_chatty_categories() {
             &[
                 anycon_hub::store::NotificationPref { category: NotifyCategory::TurnFinished, push: true, email: true },
                 anycon_hub::store::NotificationPref { category: NotifyCategory::SessionIdle, push: true, email: true },
+                anycon_hub::store::NotificationPref { category: NotifyCategory::FollowUp, push: true, email: true },
             ],
         )
         .await
         .unwrap();
     rig.notify_offline(&web, NotifyCategory::TurnFinished, Some("s1")).await;
     rig.notify_offline(&web, NotifyCategory::SessionIdle, Some("s1")).await;
+    rig.notify_offline(&web, NotifyCategory::FollowUp, Some("s1")).await;
     assert!(rig.mailer.sent().is_empty());
 }
 

@@ -423,6 +423,52 @@ async fn export_then_import_round_trips_events_attachments_search_and_archive_st
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn follow_up_travels_with_an_export_and_imported_sessions_count_as_read() {
+    let a = TestDaemon::start().await;
+    let mut ca = a.client("a");
+    let marked = make_session(&a, &mut ca, None, "tell me about the zebra", &[]).await;
+    let plain = make_session(&a, &mut ca, None, "tell me about the giraffe", &[]).await;
+    let _: Empty =
+        ca.call(&a, methods::SESSION_SET_MARKS, json!({ "session_id": marked, "follow_up": true })).await.unwrap();
+    let out = a.dir.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let zip = out.join("marks.zip");
+    export(&a, &mut ca, json!({ "out": zip })).await.unwrap();
+    let entries = read_zip(&zip);
+    let sj =
+        |sid: &str| -> Value { serde_json::from_slice(&entries[&format!("sessions/{sid}/session.json")]).unwrap() };
+    assert_eq!(sj(&marked)["follow_up"], true);
+    assert!(sj(&marked).get("read_seq").is_none(), "the read watermark stays home");
+
+    let b = TestDaemon::start().await;
+    let mut cb = b.client("b");
+    import(&b, &mut cb, &zip, false).await.unwrap();
+    let got = list(&b, &mut cb).await;
+    let m = got.iter().find(|s| s.id == marked).unwrap();
+    let p = got.iter().find(|s| s.id == plain).unwrap();
+    assert!(m.follow_up && !p.follow_up);
+    for s in [m, p] {
+        assert!(s.last_seq > 0);
+        assert_eq!(s.read_seq, s.last_seq, "an import must not light up unread dots");
+    }
+
+    // 旧的导出包没有 follow_up：按没标处理
+    let old = out.join("old.zip");
+    let mut e = entries.clone();
+    edit_json(&mut e, &format!("sessions/{marked}/session.json"), |v| {
+        v.as_object_mut().unwrap().remove("follow_up");
+    });
+    write_zip(&old, &e);
+    let c = TestDaemon::start().await;
+    let mut cc = c.client("c");
+    import(&c, &mut cc, &old, false).await.unwrap();
+    assert!(list(&c, &mut cc).await.iter().all(|s| !s.follow_up));
+    for t in [a, b, c] {
+        t.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn importing_again_skips_sessions_that_exist_and_touches_nothing() {
     let fx = Fixture::new().await;
     let b = TestDaemon::start().await;
@@ -1099,6 +1145,8 @@ fn row(id: &str, project: Option<&str>, status: SessionStatus) -> SessionRow {
         title_locked: true,
         status,
         archived: false,
+        follow_up: false,
+        read_seq: 0,
         settings: SessionSettings { model: Some("fake-large".into()), ..Default::default() },
         agent_session_id: Some("native-session-id".into()),
         launch_args: json!({ "model": "fake-large", "mcp_config": "/home/other/.mcp.json" }),

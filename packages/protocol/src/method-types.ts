@@ -79,12 +79,14 @@ import type {
   SessionIdParams,
   SessionListParams,
   SessionListResult,
+  SessionMarkReadParams,
   SessionPromoteParams,
   SessionRenameParams,
   SessionSearchParams,
   SessionSearchResult,
   SessionSendParams,
   SessionSendResult,
+  SessionSetMarksParams,
   SessionSetSettingsParams,
   SessionSetSettingsResult,
   SessionSummary,
@@ -160,6 +162,8 @@ export interface RequestMethods {
   'session.rename': { params: SessionRenameParams; result: Empty }
   'session.archive': { params: SessionArchiveParams; result: Empty }
   'session.unarchive': { params: SessionIdParams; result: Empty }
+  'session.set_marks': { params: SessionSetMarksParams; result: Empty }
+  'session.mark_read': { params: SessionMarkReadParams; result: Empty }
   'session.delete': { params: SessionDeleteParams; result: Empty }
   'session.restart': { params: SessionIdParams; result: Empty }
   'session.search': { params: SessionSearchParams; result: SessionSearchResult }

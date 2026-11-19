@@ -634,6 +634,8 @@ impl Sessions {
             title: st.row.title.clone(),
             status: st.row.status,
             archived: st.row.archived,
+            follow_up: st.row.follow_up,
+            read_seq: st.row.read_seq,
             pending_permissions: st.perms.len() as u32,
             background_tasks: st.background_tasks,
             updated_at_ms: st.row.updated_ms,
@@ -839,6 +841,8 @@ impl Sessions {
             title_locked: false,
             status: SessionStatus::Idle,
             archived: false,
+            follow_up: false,
+            read_seq: 0,
             settings: settings.clone(),
             agent_session_id: None,
             launch_args: serde_json::Value::Null,
@@ -898,6 +902,8 @@ impl Sessions {
             title: st.row.title.clone(),
             status: st.row.status,
             archived: st.row.archived,
+            follow_up: st.row.follow_up,
+            read_seq: st.row.read_seq,
             settings: st.row.settings.clone(),
             created_at_ms: st.row.created_ms,
             updated_at_ms: st.row.updated_ms,
@@ -1858,7 +1864,7 @@ impl Sessions {
                 st.finish_notify_pending = true;
             } else if !by_agent || st.finish_notify_pending {
                 st.finish_notify_pending = false;
-                self.d.notifier.turn_finished(&st.row.id);
+                self.d.notifier.turn_finished(&st.row.id, st.row.follow_up);
             }
         }
         self.persist(st).await;
@@ -2880,6 +2886,43 @@ impl Sessions {
         Ok(())
     }
 
+    /// 局部更新用户标注（只改传了的字段）。不动 `updated_ms`：标注不是会话活动，不该改变「最近活跃」的排序。
+    pub async fn set_marks(self: &Arc<Self>, p: anycon_protocol::SessionSetMarksParams) -> RpcResult<()> {
+        let sess = self.get(&p.session_id)?;
+        let mut st = sess.st.lock().await;
+        if st.deleted {
+            return Err(err(ErrorCode::NotFound, "session was deleted"));
+        }
+        let mut changed = false;
+        if let Some(f) = p.follow_up {
+            if st.row.follow_up != f {
+                st.row.follow_up = f;
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist(&st).await;
+            self.push_changed(self.changed_payload(&st), true);
+        }
+        Ok(())
+    }
+
+    /// 已读水位推到 `seq`（不超过 `last_seq`，只增不减）。重复、乱序的调用无害。不动 `updated_ms`。
+    pub async fn mark_read(self: &Arc<Self>, session_id: &str, seq: u64) -> RpcResult<()> {
+        let sess = self.get(session_id)?;
+        let mut st = sess.st.lock().await;
+        if st.deleted {
+            return Err(err(ErrorCode::NotFound, "session was deleted"));
+        }
+        let to = seq.min(st.row.last_seq);
+        if to > st.row.read_seq {
+            st.row.read_seq = to;
+            self.persist(&st).await;
+            self.push_changed(self.changed_payload(&st), true);
+        }
+        Ok(())
+    }
+
     pub async fn set_archived(self: &Arc<Self>, session_id: &str, archived: bool) -> RpcResult<()> {
         let sess = self.get(session_id)?;
         let mut st = sess.st.lock().await;
@@ -3001,6 +3044,8 @@ impl Sessions {
                 title: String::new(),
                 status: SessionStatus::Ended,
                 archived: false,
+                follow_up: false,
+                read_seq: 0,
                 pending_permissions: 0,
                 background_tasks: 0,
                 updated_at_ms: now_ms(),
@@ -3542,7 +3587,7 @@ impl Sessions {
                 && st.background_drained_at.is_some_and(|t| t.elapsed() >= finish_grace)
             {
                 st.finish_notify_pending = false;
-                self.d.notifier.turn_finished(&st.row.id);
+                self.d.notifier.turn_finished(&st.row.id, st.row.follow_up);
             }
             // ended（回合数 / 预算用完）但进程还活着：和 idle 一样按 `idle_timeout` 回收，别让它一直占着进程
             if st.row.status == SessionStatus::Ended
@@ -3961,6 +4006,8 @@ mod launch_args_tests {
             title_locked: false,
             status: SessionStatus::Idle,
             archived: false,
+            follow_up: false,
+            read_seq: 0,
             settings: SessionSettings::default(),
             agent_session_id: Some("B".into()),
             launch_args: json!({"conversation_started": false}),

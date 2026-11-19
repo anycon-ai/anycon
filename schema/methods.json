@@ -355,6 +355,18 @@
   },
   {
     "direction": "request",
+    "name": "session.set_marks",
+    "params": "SessionSetMarksParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "session.mark_read",
+    "params": "SessionMarkReadParams",
+    "result": null
+  },
+  {
+    "direction": "request",
     "name": "session.delete",
     "params": "SessionDeleteParams",
     "result": null

@@ -589,6 +589,8 @@ fn apply(
         title_locked: file.title_locked,
         status: final_status,
         archived: file.archived,
+        follow_up: file.follow_up,
+        read_seq: 0, // 事件写完后 `finish_session` 把它推到 last_seq
         settings: file.settings.clone(),
         agent_session_id: None,
         launch_args: serde_json::Value::Null,

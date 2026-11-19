@@ -563,7 +563,7 @@ pub fn notification_mail(
             ),
             format!("节点「{node}」报告了一个安全事件（有新设备接入、口令连续输错或被锁定，或设置被修改）。"),
         ),
-        TurnFinished | SessionIdle => return None,
+        TurnFinished | SessionIdle | FollowUp => return None,
     };
     let subject = format!("[Anycon] {en_subject} / {zh_subject}");
     let body = format!(
@@ -718,7 +718,7 @@ mod tests {
             assert!(body.contains("my-laptop") && body.contains("https://hub.example.com/n/abc"), "{body}");
             assert!(is_email_category(cat));
         }
-        for cat in [NotifyCategory::TurnFinished, NotifyCategory::SessionIdle] {
+        for cat in [NotifyCategory::TurnFinished, NotifyCategory::SessionIdle, NotifyCategory::FollowUp] {
             assert!(notification_mail(cat, "n", "l").is_none() && !is_email_category(cat));
         }
     }

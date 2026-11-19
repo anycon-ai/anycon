@@ -91,7 +91,9 @@ export function useInboxSelection({ items, mode, active, root, empty }: { items:
       const index = Math.max(before.keys.indexOf(cur.key), 0)
       if (consumeHandled(cur.key)) {
         // 我在这里处理的：落到下一条（原来的位置，最后一条就是前一条）
-        const next = keys.length > 0 ? keys[clamp(index, keys.length)]! : null
+        // 前进到下一条有内容可看的：「等待审批（缓存）」没有详情；答复之后摘要还没更新的那一会儿它会冒出来，别落到它头上
+        const readable = items.filter((i) => i.kind !== 'waiting').map((i) => i.key)
+        const next = readable.length > 0 ? (readable.find((k) => keys.indexOf(k) >= index) ?? readable[readable.length - 1]!) : null
         const ae = document.activeElement
         // 被处理掉的那一行（或详情里的按钮）正有焦点：它消失后焦点会掉到 body 上
         const had = !ae || ae === document.body || !!root.current?.contains(ae) || !!ae.closest?.(`.${OVERLAY_CLASS}`)

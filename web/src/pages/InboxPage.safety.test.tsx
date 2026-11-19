@@ -229,6 +229,20 @@ describe('the arming delay', () => {
   })
 })
 
+describe('answering the last request of a session whose cached summary says it waits', () => {
+  it('does not show a “waiting (cached)” row or a placeholder afterwards: focus goes to the empty state', async () => {
+    const user = setup()
+    seed({ sessions: [sess({ id: 's-one', status: 'waiting_permission', pending_permissions: 1 })], pending: [req('one')] })
+    render(<InboxPage />)
+    arm()
+    await user.click(screen.getByTestId('permission-option-allow'))
+    await waitFor(() => expect(screen.getByTestId('inbox-empty')).toBeInTheDocument())
+    expect(rows()).toHaveLength(0)
+    expect(screen.queryByTestId('inbox-ghost')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Nothing is waiting for you' }))
+  })
+})
+
 describe('one answer per request', () => {
   it('a double click on “Allow once” sends one answer, and the next request that moves up is locked', async () => {
     const user = setup()

@@ -48,6 +48,11 @@ export interface PrefsState {
   sidebarRecent: boolean
   lastNode: string | null
   notifyBannerDismissed: boolean
+  /**
+   * 已经看过（或不需要看）「首页换成待处理」的说明（spec/web.md § 14.4）。第一次启动时 localStorage 里没有任何偏好的是新用户，
+   * 没有「原来的首页」可说，直接算看过；已经有偏好、但没有这一项的是升级上来的老用户，显示一次。
+   */
+  homeNoticeSeen: boolean
   /** key = `${nodeId}:${agentId}` */
   lastUsed: Record<string, Candidate>
   /** key = `${nodeId}:${project}`：这个浏览器在这个项目上次选的工作位置（ADR-34）。 */
@@ -58,6 +63,15 @@ export interface PrefsState {
   setLastWorkspace: (key: string, mode: SessionWorkspaceMode) => void
   addCustomModel: (key: string, model: string) => void
   setInfoCollapsed: (key: string, collapsed: boolean) => void
+}
+
+/** 这个浏览器在这次页面加载之前有没有存过偏好（有 = 老用户）。读不了 localStorage 时当作新用户：宁可不打扰。 */
+function hadStoredPrefs(): boolean {
+  try {
+    return localStorage.getItem('anycon.prefs') !== null
+  } catch {
+    return false
+  }
 }
 
 function safeStorage(): Storage {
@@ -103,6 +117,7 @@ export const usePrefs = create<PrefsState>()(
       sidebarRecent: true,
       lastNode: null,
       notifyBannerDismissed: false,
+      homeNoticeSeen: !hadStoredPrefs(),
       lastUsed: {},
       lastWorkspace: {},
       customModels: {},
@@ -143,6 +158,7 @@ export const usePrefs = create<PrefsState>()(
         sidebarRecent: s.sidebarRecent,
         lastNode: s.lastNode,
         notifyBannerDismissed: s.notifyBannerDismissed,
+        homeNoticeSeen: s.homeNoticeSeen,
         lastUsed: s.lastUsed,
         lastWorkspace: s.lastWorkspace,
         customModels: s.customModels,

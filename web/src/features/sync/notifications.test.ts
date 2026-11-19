@@ -6,6 +6,8 @@ import { setRpc } from '@/transport/instance'
 import { useHub } from '@/stores/hub'
 import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
+import { useUi } from '@/stores/ui'
+import { setNavigator } from '@/lib/navigate'
 import { handleNotification, refreshProjects } from './notifications'
 
 const NODE = 'n'.repeat(32)
@@ -114,6 +116,29 @@ describe('permission.resolved', () => {
     await flush()
     expect(useSessions.getState().pending['r7']).toBeUndefined()
     expect(rpc.methods()).toEqual([])
+  })
+})
+
+describe('permission.request toast', () => {
+  afterEach(() => setNavigator(null))
+
+  it('tells you, and its “View” goes to the inbox on that session (the same place a push notification lands)', () => {
+    const go = vi.fn()
+    setNavigator(go)
+    useUi.setState({ toasts: [] })
+    handleNotification(NODE, 'permission.request', perm('r9', 'sess_z'))
+    const t = useUi.getState().toasts
+    expect(t).toHaveLength(1)
+    expect(t[0]!.action?.label).toBeTruthy()
+    t[0]!.action!.run()
+    expect(go).toHaveBeenCalledWith(`/inbox?node=${NODE.slice(0, 8)}&session=sess_z`)
+  })
+
+  it('stays quiet while you are looking at that session', () => {
+    useUi.setState({ toasts: [] })
+    useSessions.setState({ open: { sess_z: { nodeId: NODE } as never } })
+    handleNotification(NODE, 'permission.request', perm('r9', 'sess_z'))
+    expect(useUi.getState().toasts).toHaveLength(0)
   })
 })
 

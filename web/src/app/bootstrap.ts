@@ -1,13 +1,15 @@
 // 登录后启动传输层，并把它的回调接到各个 store / 同步逻辑上。
 import * as db from '@/db'
-import { attentionCount } from '@/features/session/marks'
+import { inboxNowCountFromStores } from '@/features/inbox/useInbox'
 import { handleNotification } from '@/features/sync/notifications'
 import { hydrateNodeSessions, syncNode } from '@/features/sync/syncNode'
 import { showSystemNotification } from '@/features/sync/systemNotify'
 import { getClient } from '@/transport/instance'
 import { resetDrafts, useDrafts } from '@/stores/drafts'
 import { useHub } from '@/stores/hub'
+import { useEnroll } from '@/stores/enroll'
 import { useNodes } from '@/stores/nodes'
+import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import i18n from '@/i18n'
@@ -19,6 +21,8 @@ let currentAccount: string | null = null
 let unsubBadge: (() => void) | null = null
 /** 上一次写进标题和角标的计数。 */
 let badgeCount = 0
+/** 接入请求过期、出错会话的 7 天期限都靠时间推移，没有 store 变化触发：定时重算。 */
+const BADGE_REFRESH_MS = 15_000
 /** 页面在后台满 30 秒就断开 hub 连接（`./backgroundIdle.ts`）。 */
 const background: BackgroundWatcher = createBackgroundWatcher({
   client: getClient,
@@ -27,7 +31,7 @@ const background: BackgroundWatcher = createBackgroundWatcher({
   clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 })
 
-/** 需要你处理的总数（待审批 + 待处理，`attentionCount`）→ 标签页标题前缀 + PWA 图标角标（支持的平台上）。 */
+/** 「待处理」里「现在」段的条数（`inboxNowCountFromStores`）→ 标签页标题前缀 + PWA 图标角标（支持的平台上）。 */
 export function updateBadge(count: number): void {
   document.title = count > 0 ? `(${count}) Anycon` : 'Anycon'
   const nav = navigator as Navigator & { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> }
@@ -86,14 +90,20 @@ export function startTransport(accountId: string): Promise<void> {
     document.addEventListener('visibilitychange', onVisibility)
     background.arm() // 在后台标签页里打开的页面也算
     unsubBadge?.()
-    unsubBadge = useSessions.subscribe((s, prev) => {
-      if (s.pending === prev.pending && s.list === prev.list) return
+    // 数字来自会话、待答复的请求、接入请求、节点过滤器的勾选；接入请求会过期、出错的会话有 7 天的期限，所以另有一个定时器兜底
+    const refreshBadge = (): void => {
       // 会话列表每来一条 session.changed 都会变，计数没变就别去动标题和角标
-      const count = attentionCount(s.pending, Object.values(s.list))
+      const count = inboxNowCountFromStores()
       if (count === badgeCount) return
       badgeCount = count
       updateBadge(count)
-    })
+    }
+    const unsubs = [useSessions.subscribe(refreshBadge), useEnroll.subscribe(refreshBadge), useNodes.subscribe((s, prev) => s.order !== prev.order && refreshBadge()), usePrefs.subscribe((s, prev) => s.sidebarNodes !== prev.sidebarNodes && refreshBadge())]
+    const timer = setInterval(refreshBadge, BADGE_REFRESH_MS)
+    unsubBadge = () => {
+      for (const u of unsubs) u()
+      clearInterval(timer)
+    }
   })().catch((e: unknown) => {
     booting = null
     throw e

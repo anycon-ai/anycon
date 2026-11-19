@@ -27,11 +27,3 @@ export function isFollowUpReady(s: MarkFields): boolean {
 export function isUnread(s: MarkFields): boolean {
   return !s.archived && !isActiveStatus(s.status) && s.last_seq > (s.read_seq ?? s.last_seq)
 }
-
-/** 左栏角标和标签页标题的计数：待审批的请求数 + 待处理的会话数（已经在等审批的会话不重复算）。未读不计入，否则一天下来全是数字。 */
-export function attentionCount(pending: Readonly<Record<string, { session_id: string }>>, sessions: Iterable<MarkFields & { id: string; pending_permissions: number }>): number {
-  const waiting = new Set(Object.values(pending).map((p) => p.session_id))
-  let n = Object.keys(pending).length
-  for (const s of sessions) if (isFollowUpReady(s) && s.pending_permissions === 0 && !waiting.has(s.id)) n++
-  return n
-}

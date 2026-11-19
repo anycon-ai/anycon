@@ -15,6 +15,17 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
 }
 
+/** 权限请求卡片的 DOM 节点（会话页和「待处理」页的卡片是同一个组件，都带 `data-request`）。 */
+export function requestCardElement(requestId: string): Element | null {
+  return document.querySelector(`[data-request="${CSS.escape(requestId)}"]`)
+}
+
+/** 这张卡片现在是否（至少部分）在可见区域里。 */
+export function isRequestCardVisible(requestId: string): boolean {
+  const r = requestCardElement(requestId)?.getBoundingClientRect()
+  return !!r && r.bottom > 0 && r.top < window.innerHeight
+}
+
 export type ApproveAction = 'allow' | 'deny'
 
 export function shortcutTarget(pending: PermissionBlock[], action: ApproveAction): { block: PermissionBlock; optionId: string } | null {

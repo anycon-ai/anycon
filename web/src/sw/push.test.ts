@@ -30,7 +30,7 @@ describe('handlePush', () => {
     await handlePush(data({ category: 'permission_requested', node: NODE, session: 'sess_abc' }), deps)
     expect(shown).toHaveLength(1)
     expect(shown[0]!.title).toBe('“Fix login” is waiting for your approval')
-    expect(shown[0]!.options).toMatchObject({ body: 'On mac-mini', tag: 'session:sess_abc', renotify: true, icon: '/icon-192.png', lang: 'en', data: { url: '/n/nnnnnnnn/s/sess_abc' } })
+    expect(shown[0]!.options).toMatchObject({ body: 'On mac-mini', tag: 'session:sess_abc', renotify: true, icon: '/icon-192.png', lang: 'en', data: { url: '/inbox?node=nnnnnnnn&session=sess_abc' } })
   })
 
   it('asks the cache about exactly the node and session in the payload', async () => {

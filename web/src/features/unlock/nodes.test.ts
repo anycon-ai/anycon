@@ -48,18 +48,16 @@ describe('account nodes', () => {
 })
 
 describe('where "/" goes (spec/web.md § 2)', () => {
-  const base = { nodesLoaded: true, localOrder: [] as string[], lastNode: null as string | null, devices: [dev(A)] as ApiDevice[] | undefined, devicesFailed: false }
+  const base = { nodesLoaded: true, localOrder: [] as string[], devices: [dev(A)] as ApiDevice[] | undefined, devicesFailed: false }
 
   it('waits until the local nodes are loaded', () => {
     expect(homeTarget({ ...base, nodesLoaded: false })).toEqual({ to: 'wait' })
   })
 
-  it('this browser has paired nodes → the one opened last (or the first)', () => {
-    expect(homeTarget({ ...base, localOrder: [A, B], lastNode: B })).toEqual({ to: 'node', node: B })
-    expect(homeTarget({ ...base, localOrder: [A, B], lastNode: 'gone' })).toEqual({ to: 'node', node: A })
-    expect(homeTarget({ ...base, localOrder: [A], lastNode: null })).toEqual({ to: 'node', node: A })
+  it('this browser has paired nodes → the inbox', () => {
+    expect(homeTarget({ ...base, localOrder: [A, B] })).toEqual({ to: 'inbox' })
     // 有已配对的节点时根本不需要设备列表
-    expect(homeTarget({ ...base, localOrder: [A], devices: undefined })).toEqual({ to: 'node', node: A })
+    expect(homeTarget({ ...base, localOrder: [A], devices: undefined })).toEqual({ to: 'inbox' })
   })
 
   it('no local nodes but the account has some → /unlock', () => {

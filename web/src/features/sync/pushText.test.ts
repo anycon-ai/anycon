@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import i18n from '@/i18n'
-import { enrollPushText, genericPushText, nodeParam, pushText } from './pushText'
+import { enrollPushText, genericPushText, nodeParam, pushText, inboxUrl } from './pushText'
 
 describe('push texts for the two enrollment categories', () => {
   const en = i18n.getFixedT('en')
@@ -34,19 +34,27 @@ describe('push texts for the session categories and the test push', () => {
   const node = { id: 'n'.repeat(32), name: 'mac-mini' }
   const session = { id: 'sess_abc123', title: 'Fix login' }
 
-  it('permission_requested: names the session and the node, opens the session; one tag per session', () => {
+  it('permission_requested: names the session and the node, opens the inbox on that session; one tag per session', () => {
     const p = pushText(en, { category: 'permission_requested', node, session })
     expect(p.title).toBe('“Fix login” is waiting for your approval')
     expect(p.body).toBe('On mac-mini')
-    expect(p.url).toBe('/n/nnnnnnnn/s/sess_abc123')
+    expect(p.url).toBe('/inbox?node=nnnnnnnn&session=sess_abc123')
     expect(p.tag).toBe('session:sess_abc123')
     expect(pushText(zh, { category: 'permission_requested', node, session }).title).toBe('“Fix login” 在等你审批')
   })
 
-  it('the other four session categories have their own sentence but share the session tag', () => {
+  it('the inbox URL encodes the session id and uses the full node id when the short one is ambiguous', () => {
+    expect(inboxUrl('nnnnnnnn', 'a b&c')).toBe('/inbox?node=nnnnnnnn&session=a%20b%26c')
+    const clash = { id: `nnnnnnnn${'a'.repeat(24)}`, name: 'x', param: `nnnnnnnn${'a'.repeat(24)}` }
+    expect(pushText(en, { category: 'permission_requested', node: clash, session }).url).toBe(`/inbox?node=${clash.id}&session=sess_abc123`)
+  })
+
+  it('the other four session categories have their own sentence but share the session tag, and still open the session', () => {
     const titles = (['turn_finished', 'error', 'session_idle', 'follow_up'] as const).map((category) => pushText(en, { category, node, session }))
     expect(titles.map((p) => p.title)).toEqual(['“Fix login” finished', '“Fix login” ran into an error', '“Fix login” is idle', '“Fix login” is ready for follow-up'])
     expect(new Set(titles.map((p) => p.tag))).toEqual(new Set(['session:sess_abc123']))
+    // follow_up 照旧去会话页，不进待处理
+    expect(new Set(titles.map((p) => p.url))).toEqual(new Set(['/n/nnnnnnnn/s/sess_abc123']))
   })
 
   it('falls back to "a session" / "a node" when the cache has no names (and cleans hostile ones)', () => {

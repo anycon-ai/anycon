@@ -55,7 +55,8 @@ export function Dialog({ open, onOpenChange, title, description, children, hideT
 }
 
 /** 从侧边滑出的抽屉（左栏 / 右栏）。 */
-export function Drawer({ side, open, onOpenChange, title, children, closeLabel = 'Close', className }: Omit<Common, 'description' | 'hideTitle' | 'size'> & { side: 'left' | 'right'; className?: string }) {
+/** `width`：默认 22rem；「待处理」页在平板上从右边滑出的详情更宽。 */
+export function Drawer({ side, open, onOpenChange, title, children, closeLabel = 'Close', className, width = 'w-[min(22rem,88vw)]' }: Omit<Common, 'description' | 'hideTitle' | 'size'> & { side: 'left' | 'right'; className?: string; width?: string }) {
   return (
     <RDialog.Root open={open} onOpenChange={onOpenChange}>
       <RDialog.Portal>
@@ -63,7 +64,8 @@ export function Drawer({ side, open, onOpenChange, title, children, closeLabel =
         <RDialog.Content
           aria-describedby={undefined}
           className={cn(
-            'fixed inset-y-0 z-50 flex w-[min(22rem,88vw)] flex-col bg-bg shadow-pop focus:outline-none',
+            'fixed inset-y-0 z-50 flex flex-col bg-bg shadow-pop focus:outline-none',
+            width,
             side === 'left' ? 'left-0 border-r border-border' : 'right-0 border-l border-border',
             className,
           )}

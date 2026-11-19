@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionStatus } from '@/protocol'
-import { attentionCount, isFollowUp, isFollowUpArmed, isFollowUpReady, isUnread } from './marks'
+import { isFollowUp, isFollowUpArmed, isFollowUpReady, isUnread } from './marks'
 
 const s = (over: Partial<{ status: SessionStatus; archived: boolean; follow_up: boolean; read_seq: number; last_seq: number }> = {}) => ({ status: 'idle' as SessionStatus, archived: false, follow_up: false, last_seq: 10, read_seq: 10, ...over })
 
@@ -40,19 +40,5 @@ describe('isUnread', () => {
   it('treats a missing watermark as read', () => {
     const { read_seq: _drop, ...rest } = s({ last_seq: 50 })
     expect(isUnread(rest)).toBe(false)
-  })
-})
-
-describe('attentionCount', () => {
-  const item = (id: string, over: Parameters<typeof s>[0] = {}, pending = 0) => ({ id, pending_permissions: pending, ...s(over) })
-
-  it('adds approvals and ready follow-ups, without counting a session twice', () => {
-    const pending = { r1: { session_id: 'a' }, r2: { session_id: 'a' } }
-    const sessions = [item('a', { follow_up: true }, 2), item('b', { follow_up: true }), item('c', { follow_up: true, status: 'running' }), item('d'), item('e', { follow_up: true, archived: true })]
-    expect(attentionCount(pending, sessions)).toBe(3)
-  })
-
-  it('does not count unread sessions', () => {
-    expect(attentionCount({}, [item('a', { last_seq: 20, read_seq: 1 })])).toBe(0)
   })
 })

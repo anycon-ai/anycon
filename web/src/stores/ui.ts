@@ -18,15 +18,19 @@ interface UiState {
   /** 新版 service worker 已就绪，等用户点刷新（横幅优先级 5）。 */
   updateReady: boolean
   applyUpdate: (() => void) | null
-  leftDrawerOpen: boolean
   rightDrawerOpen: boolean
+  /** 命令面板（⌘K）：左栏的搜索按钮、手机「会话」页的搜索按钮和快捷键共用一个。 */
+  paletteOpen: boolean
+  setPalette: (v: boolean) => void
+  /** 最近一次在「会话」里（`/n/:node…`，不含节点设置）打开的位置：`G` 然后 `S` 回到这里。只在内存里。 */
+  lastSessionsPath: string | null
+  setLastSessionsPath: (path: string) => void
   /** 写 IndexedDB 失败过（草稿 / 缓存可能丢）：状态栏提示，用户可以关掉。 */
   storageError: boolean
   setStorageError: (v: boolean) => void
   push: (kind: ToastKind, text: string, action?: ToastAction) => void
   dismiss: (id: number) => void
   setUpdateReady: (apply: (() => void) | null) => void
-  setLeftDrawer: (v: boolean) => void
   setRightDrawer: (v: boolean) => void
 }
 
@@ -36,8 +40,11 @@ export const useUi = create<UiState>()((set, get) => ({
   toasts: [],
   updateReady: false,
   applyUpdate: null,
-  leftDrawerOpen: false,
   rightDrawerOpen: false,
+  paletteOpen: false,
+  setPalette: (paletteOpen) => set({ paletteOpen }),
+  lastSessionsPath: null,
+  setLastSessionsPath: (lastSessionsPath) => set({ lastSessionsPath }),
   storageError: false,
   setStorageError: (storageError) => set({ storageError }),
   push: (kind, text, action) => {
@@ -48,7 +55,6 @@ export const useUi = create<UiState>()((set, get) => ({
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   setUpdateReady: (apply) => set({ updateReady: apply !== null, applyUpdate: apply }),
-  setLeftDrawer: (leftDrawerOpen) => set({ leftDrawerOpen }),
   setRightDrawer: (rightDrawerOpen) => set({ rightDrawerOpen }),
 }))
 

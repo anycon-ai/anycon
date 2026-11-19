@@ -18,7 +18,21 @@ export function StubLink({ to, params, search, children, ...rest }: LinkProps) {
   )
 }
 
-/** 用在 `vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig(), navigate, params))`。 */
-export function mockRouter<T extends object>(actual: T, navigate: (opts: unknown) => unknown, params: Record<string, string> = {}): T {
-  return { ...actual, useNavigate: () => navigate, useParams: () => params, Link: StubLink }
+/**
+ * 用在 `vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig(), navigate, params))`。
+ * `pathname`：`useRouterState` 里的当前路径（高亮导航项、判断是不是标签页根页面）；`search`：`useSearch`。
+ * 返回按钮：`useCanGoBack` 恒为真，`router.history.back()` 记成 `navigate({ to: '-1' })`。
+ */
+export function mockRouter<T extends object>(actual: T, navigate: (opts: unknown) => unknown, params: Record<string, string> = {}, extra: { pathname?: string; search?: Record<string, unknown> } = {}): T {
+  const state = { location: { pathname: extra.pathname ?? '/', search: extra.search ?? {} } }
+  return {
+    ...actual,
+    useNavigate: () => navigate,
+    useParams: () => params,
+    useSearch: () => extra.search ?? {},
+    useRouterState: (o?: { select?: (s: typeof state) => unknown }) => (o?.select ? o.select(state) : state),
+    useCanGoBack: () => true,
+    useRouter: () => ({ history: { back: () => navigate({ to: '-1' }) } }),
+    Link: StubLink,
+  }
 }

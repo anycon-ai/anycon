@@ -1,9 +1,8 @@
 import type { ReactNode } from 'react'
-import { Link } from '@tanstack/react-router'
-import { ArrowLeft, ChevronRight, Menu, Pencil } from 'lucide-react'
+import { Link, useCanGoBack, useNavigate, useRouter } from '@tanstack/react-router'
+import { ArrowLeft, ChevronRight, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCurrentNode } from '@/lib/nav'
-import { useUi } from '@/stores/ui'
 import { Chip } from '@/ui/Misc'
 import { connectionLabel, connectionTone } from './useConnectionLabel'
 
@@ -18,23 +17,16 @@ export interface Crumb {
 }
 
 /**
- * 页面顶栏：手机上的菜单 / 返回按钮、面包屑、页面的状态（`meta`，比如会话页的「聊天 / 改动」和状态 chip）、
+ * 页面顶栏：手机上的返回按钮、面包屑、页面的状态（`meta`，比如会话页的「聊天 / 改动」和状态 chip）、
  * 节点状态 chip、页面自己的操作按钮。
  */
-export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBack }: { crumbs: Crumb[]; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void }) {
+export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBack, root }: { crumbs: Crumb[]; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void; root?: boolean }) {
   const { t } = useTranslation()
   const { entry } = useCurrentNode()
-  const setLeft = useUi((s) => s.setLeftDrawer)
   return (
     <header className="pt-safe flex min-h-12 shrink-0 items-center gap-2 border-b border-border bg-bg px-3">
-      <button type="button" aria-label={t('sidebar.menu')} className="rounded-md p-2 text-fg-muted hover:bg-bg-hover md:hidden" onClick={() => setLeft(true)} data-testid="menu-button">
-        <Menu className="size-5" />
-      </button>
-      {onBack ? (
-        <button type="button" onClick={onBack} className="rounded-md p-1.5 text-fg-subtle hover:bg-bg-hover md:hidden" aria-label={t('common.back')} data-testid="header-back">
-          <ArrowLeft className="size-4" />
-        </button>
-      ) : null}
+      {/* 手机没有左侧抽屉：底部标签栏页（root）没有返回，其余页面都是二级页，带返回（默认走浏览器历史） */}
+      {root ? null : <BackButton onBack={onBack} />}
       <nav aria-label={t('common.breadcrumb')} className="flex min-w-0 flex-1 items-center gap-1 text-sm">
         {crumbs.map((c, i) => (
           <span key={`${i}-${c.label}`} className={i === crumbs.length - 1 ? 'flex min-w-0 items-center gap-1' : 'hidden min-w-0 items-center gap-1 sm:flex'}>
@@ -62,5 +54,23 @@ export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBac
       ) : null}
       {actions}
     </header>
+  )
+}
+
+/** 手机上的返回按钮。默认走浏览器历史（手势返回也是同一条路）；没有上一页（从通知或书签直接进来）时回「待处理」。 */
+function BackButton({ onBack }: { onBack?: () => void }) {
+  const { t } = useTranslation()
+  const router = useRouter()
+  const canGoBack = useCanGoBack()
+  const navigate = useNavigate()
+  const back = (): void => {
+    if (onBack) onBack()
+    else if (canGoBack) router.history.back()
+    else void navigate({ to: '/inbox', replace: true })
+  }
+  return (
+    <button type="button" onClick={back} className="grid size-11 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-bg-hover md:hidden" aria-label={t('common.back')} data-testid="header-back">
+      <ArrowLeft className="size-5" />
+    </button>
   )
 }

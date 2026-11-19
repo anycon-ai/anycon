@@ -152,6 +152,8 @@
     "search": "Search (Ctrl+K)",
     "sessions": "Sessions",
     "waiting": "Needs approval",
+    "followUp": "Follow up",
+    "followUpCount": "{{count}} to follow up",
     "recent": "Recent",
     "scratch": "Temporary sessions",
     "empty": "No sessions yet.",
@@ -187,7 +189,21 @@
   },
   "toast": {
     "permission": "{{title}} is waiting for your approval.",
-    "aSession": "A session"
+    "aSession": "A session",
+    "followUp": "{{title}} finished and is waiting for you.",
+    "view": "View"
+  },
+  "followUp": {
+    "mark": "Mark for follow-up",
+    "unmark": "Remove follow-up mark",
+    "markHint": "Notify me when this session finishes, and keep it at the top of the sidebar until I mark it done",
+    "remindWhenDone": "Remind me when done",
+    "chipReady": "Follow up",
+    "chipArmed": "Will remind",
+    "barReady": "This session is waiting for you to follow up.",
+    "barArmed": "You will be notified when this session finishes.",
+    "done": "Mark done",
+    "cancel": "Remove mark"
   },
   "palette": {
     "title": "Command palette",
@@ -321,6 +337,8 @@
     "filterAll": "All",
     "filterActive": "Active",
     "filterWaiting": "Needs approval",
+    "filterFollowUp": "Follow up",
+    "filterFollowUpCount": "Follow up ({{count}})",
     "filterArchived": "Archived",
     "noSessions": "No sessions yet",
     "noSessionsHint": "Use “New session” to start the first one.",
@@ -470,6 +488,7 @@
     "view": { "label": "Session view", "chat": "Chat", "changes": "Changes", "preview": "Preview" },
     "pendingCount": "{{count}} waiting",
     "archived": "Archived",
+    "unread": "Unread output",
     "archivedHint": "Archived · unarchive to send messages",
     "promote": "Make project",
     "promoteTitle": "Turn into a project",
@@ -1586,6 +1605,7 @@
     "turnFinished": "{{title}} finished",
     "error": "{{title}} ran into an error",
     "sessionIdle": "{{title}} is idle",
+    "followUp": "{{title}} is ready for follow-up",
     "onNode": "On {{node}}",
     "test": "Anycon test push",
     "testBody": "Push notifications work on this browser."
@@ -1642,7 +1662,8 @@
         "enroll_requested": "A device asks to join a node",
         "security": "Security alerts for a node",
         "turn_finished": "A turn finished",
-        "session_idle": "A session went idle"
+        "session_idle": "A session went idle",
+        "follow_up": "A session marked Follow up is ready"
       },
       "emailNoSmtp": "This hub is not set up to send email.",
       "emailNoAddress": "Link an email address in Account settings to get alerts by email.",

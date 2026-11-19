@@ -1,5 +1,6 @@
 // 登录后启动传输层，并把它的回调接到各个 store / 同步逻辑上。
 import * as db from '@/db'
+import { attentionCount } from '@/features/session/marks'
 import { handleNotification } from '@/features/sync/notifications'
 import { hydrateNodeSessions, syncNode } from '@/features/sync/syncNode'
 import { showSystemNotification } from '@/features/sync/systemNotify'
@@ -16,6 +17,8 @@ import { watchForWipe } from './tabSync'
 let booting: Promise<void> | null = null
 let currentAccount: string | null = null
 let unsubBadge: (() => void) | null = null
+/** 上一次写进标题和角标的计数。 */
+let badgeCount = 0
 /** 页面在后台满 30 秒就断开 hub 连接（`./backgroundIdle.ts`）。 */
 const background: BackgroundWatcher = createBackgroundWatcher({
   client: getClient,
@@ -24,7 +27,7 @@ const background: BackgroundWatcher = createBackgroundWatcher({
   clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 })
 
-/** 待审批总数 → 标签页标题前缀 + PWA 图标角标（支持的平台上）。 */
+/** 需要你处理的总数（待审批 + 待处理，`attentionCount`）→ 标签页标题前缀 + PWA 图标角标（支持的平台上）。 */
 export function updateBadge(count: number): void {
   document.title = count > 0 ? `(${count}) Anycon` : 'Anycon'
   const nav = navigator as Navigator & { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> }
@@ -84,7 +87,12 @@ export function startTransport(accountId: string): Promise<void> {
     background.arm() // 在后台标签页里打开的页面也算
     unsubBadge?.()
     unsubBadge = useSessions.subscribe((s, prev) => {
-      if (s.pending !== prev.pending) updateBadge(Object.keys(s.pending).length)
+      if (s.pending === prev.pending && s.list === prev.list) return
+      // 会话列表每来一条 session.changed 都会变，计数没变就别去动标题和角标
+      const count = attentionCount(s.pending, Object.values(s.list))
+      if (count === badgeCount) return
+      badgeCount = count
+      updateBadge(count)
     })
   })().catch((e: unknown) => {
     booting = null
@@ -102,6 +110,7 @@ export function stopTransport(): void {
   background.dispose()
   unsubBadge?.()
   unsubBadge = null
+  badgeCount = 0
   updateBadge(0)
   getClient().stop()
   booting = null

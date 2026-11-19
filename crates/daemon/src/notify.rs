@@ -71,8 +71,13 @@ impl Notifier {
         self.fire(NotifyCategory::PermissionRequested, session_id);
     }
 
-    /// `turn_done`，按 `notify.turn_finished`。
-    pub fn turn_finished(&self, session_id: &str) {
+    /// `turn_done`，按 `notify.turn_finished`。标了「待处理」的会话只发 `follow_up`：标记是用户的明确要求，
+    /// 不受 `notify.turn_finished` 和有没有人在看的限制，也不再另发 `turn_finished`。
+    pub fn turn_finished(&self, session_id: &str, follow_up: bool) {
+        if follow_up {
+            self.fire(NotifyCategory::FollowUp, session_id);
+            return;
+        }
         match self.config.get().notify.turn_finished.as_str() {
             "never" => {}
             "always" => self.fire(NotifyCategory::TurnFinished, session_id),
@@ -181,13 +186,35 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let c = clients.register(Caller::local_cli(), Box::new(ChanSink(tx)));
         c.watch("s3").unwrap();
-        n.turn_finished("s3");
+        n.turn_finished("s3", false);
         assert_eq!(rec.0.lock().unwrap().len(), 2);
-        n.turn_finished("s4");
+        n.turn_finished("s4", false);
         let got = rec.0.lock().unwrap().clone();
         assert_eq!(got.len(), 3);
         assert_eq!(got[2].category, NotifyCategory::TurnFinished);
         assert_eq!(got[2].session_id.as_deref(), Some("s4"));
         assert!(got.iter().all(|b| b.detail.is_none()));
+    }
+
+    #[test]
+    fn a_follow_up_session_notifies_follow_up_only_whatever_the_turn_finished_setting() {
+        let d = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.notify.turn_finished = "never".into();
+        let config = ConfigStore::with_config(Paths::new(d.path()), cfg);
+        let clients = Clients::new();
+        let n = Notifier::new(config, clients.clone());
+        let rec = Arc::new(Recorder::default());
+        n.set_out(rec.clone());
+        // 有人在看也照发；`never` 也拦不住；不再另发 turn_finished
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let c = clients.register(Caller::local_cli(), Box::new(ChanSink(tx)));
+        c.watch("s1").unwrap();
+        n.turn_finished("s1", true);
+        n.turn_finished("s1", true); // 60 秒内同类别去重
+        n.turn_finished("s2", false); // 没标的照旧：never 不发
+        let got = rec.0.lock().unwrap().clone();
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].category, got[0].session_id.as_deref()), (NotifyCategory::FollowUp, Some("s1")));
     }
 }

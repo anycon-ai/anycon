@@ -151,6 +151,8 @@
     "search": "搜索（Ctrl+K）",
     "sessions": "会话",
     "waiting": "等待审批",
+    "followUp": "待处理",
+    "followUpCount": "{{count}} 个待处理",
     "recent": "运行中",
     "scratch": "临时会话",
     "empty": "还没有会话。",
@@ -185,7 +187,21 @@
   },
   "toast": {
     "permission": "{{title}} 在等你审批。",
-    "aSession": "有个会话"
+    "aSession": "有个会话",
+    "followUp": "{{title}} 已结束，等你处理。",
+    "view": "查看"
+  },
+  "followUp": {
+    "mark": "标记为待处理",
+    "unmark": "取消待处理标记",
+    "markHint": "会话结束后提醒我，并在我标记处理完之前一直置顶在左栏",
+    "remindWhenDone": "完成后提醒我",
+    "chipReady": "待处理",
+    "chipArmed": "完成后提醒",
+    "barReady": "这个会话在等你处理。",
+    "barArmed": "这个会话结束后会通知你。",
+    "done": "已处理",
+    "cancel": "取消标记"
   },
   "palette": {
     "title": "命令面板",
@@ -319,6 +335,8 @@
     "filterAll": "全部",
     "filterActive": "进行中",
     "filterWaiting": "等待审批",
+    "filterFollowUp": "待处理",
+    "filterFollowUpCount": "待处理（{{count}}）",
     "filterArchived": "已归档",
     "noSessions": "还没有会话",
     "noSessionsHint": "点「新会话」开始第一个会话。",
@@ -468,6 +486,7 @@
     "view": { "label": "会话视图", "chat": "聊天", "changes": "改动", "preview": "预览" },
     "pendingCount": "{{count}} 个待审批",
     "archived": "已归档",
+    "unread": "有未读输出",
     "archivedHint": "已归档 · 取消归档后才能发送消息",
     "promote": "转为项目",
     "promoteTitle": "转为项目",
@@ -1558,6 +1577,7 @@
     "turnFinished": "{{title}} 已完成",
     "error": "{{title}} 出错了",
     "sessionIdle": "{{title}} 空闲了",
+    "followUp": "{{title}} 完成了，等你处理",
     "onNode": "来自 {{node}}",
     "test": "Anycon 测试推送",
     "testBody": "这个浏览器可以收到推送通知。"
@@ -1614,7 +1634,8 @@
         "enroll_requested": "有设备请求接入节点",
         "security": "节点的安全提醒",
         "turn_finished": "一轮对话完成了",
-        "session_idle": "会话空闲了"
+        "session_idle": "会话空闲了",
+        "follow_up": "标了「待处理」的会话完成了"
       },
       "emailNoSmtp": "这个 hub 没有配置发邮件。",
       "emailNoAddress": "在账号设置里绑定邮箱，才能收到邮件提醒。",

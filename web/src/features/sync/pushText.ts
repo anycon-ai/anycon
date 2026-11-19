@@ -15,11 +15,11 @@ export interface PushText {
   url: string
 }
 
-/** 推送载荷的类别：六个 `NotifyCategory` 加上「测试推送」。 */
+/** 推送载荷的类别：全部 `NotifyCategory` 加上「测试推送」。 */
 export type PushCategory = NotifyCategory | 'test'
 
-/** 会话相关的四个类别：点开去会话页。 */
-export const SESSION_CATEGORIES = ['permission_requested', 'turn_finished', 'error', 'session_idle'] as const
+/** 会话相关的五个类别：点开去会话页。 */
+export const SESSION_CATEGORIES = ['permission_requested', 'turn_finished', 'error', 'session_idle', 'follow_up'] as const
 export type SessionCategory = (typeof SESSION_CATEGORIES)[number]
 
 const SESSION_TITLE_KEY: Record<SessionCategory, string> = {
@@ -27,6 +27,7 @@ const SESSION_TITLE_KEY: Record<SessionCategory, string> = {
   turn_finished: 'push.turnFinished',
   error: 'push.error',
   session_idle: 'push.sessionIdle',
+  follow_up: 'push.followUp',
 }
 
 /** 接入相关的两个类别：`enroll_requested` 和 `security`。 */

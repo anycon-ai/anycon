@@ -111,6 +111,8 @@ pub struct ProtocolSchema {
     pub session_worktree: SessionWorktree,
     pub worktree_disposal: WorktreeDisposal,
     pub session_archive_params: SessionArchiveParams,
+    pub session_set_marks_params: SessionSetMarksParams,
+    pub session_mark_read_params: SessionMarkReadParams,
     pub session_delete_params: SessionDeleteParams,
     pub session_git_status_params: SessionGitStatusParams,
     pub session_git_status: SessionGitStatus,

@@ -573,7 +573,7 @@ export type NodeLogLevel = "trace" | "debug" | "info" | "warn" | "error";
 export type SecurityEventKind =
   "device_enrolled" | "password_failures" | "password_locked" | "password_changed" | "settings_changed";
 export type NotifyCategory =
-  ("permission_requested" | "turn_finished" | "error" | "session_idle") | "enroll_requested" | "security";
+  ("permission_requested" | "turn_finished" | "error" | "session_idle") | "follow_up" | "enroll_requested" | "security";
 /**
  * 隧道里响应体的编码。`gzip`：`DATA` 帧拼起来是 gzip 流，预览页要先解压；`headers` 里已经去掉
  * `content-encoding` / `content-length`。
@@ -772,12 +772,14 @@ export interface ProtocolSchema {
   session_id_params: SessionIdParams;
   session_list_params: SessionListParams;
   session_list_result: SessionListResult;
+  session_mark_read_params: SessionMarkReadParams;
   session_promote_params: SessionPromoteParams;
   session_rename_params: SessionRenameParams;
   session_search_params: SessionSearchParams;
   session_search_result: SessionSearchResult;
   session_send_params: SessionSendParams;
   session_send_result: SessionSendResult;
+  session_set_marks_params: SessionSetMarksParams;
   session_set_settings_params: SessionSetSettingsParams;
   session_set_settings_result: SessionSetSettingsResult;
   session_settings: SessionSettings;
@@ -2212,8 +2214,16 @@ export interface SessionChanged {
    * 会话被删除。
    */
   deleted?: boolean;
+  /**
+   * 同 [`SessionSummary::follow_up`]。
+   */
+  follow_up?: boolean;
   last_seq: number;
   pending_permissions: number;
+  /**
+   * 同 [`SessionSummary::read_seq`]。
+   */
+  read_seq?: number;
   session_id: string;
   status: SessionStatus;
   title: string;
@@ -2422,6 +2432,11 @@ export interface SessionSummary {
    */
   background_tasks?: number;
   created_at_ms: number;
+  /**
+   * 用户标了「待处理」（docs/spec/web.md § 4.6.1）。纯标注，不影响会话的行为；只能由 `session.set_marks` 改，
+   * 改它不动 `updated_at_ms`。
+   */
+  follow_up?: boolean;
   id: string;
   /**
    * 最后一个事件的 seq；客户端据此决定要不要拉增量。
@@ -2440,6 +2455,11 @@ export interface SessionSummary {
    * 排队位置（status = queued 时）。
    */
   queue_position?: number | null;
+  /**
+   * 已读水位：用户已经看到的最大 seq（取最大值，只增不减；`session.mark_read` 改）。会话不在运行、且 `last_seq` 大于它时
+   * 客户端显示未读。改它不动 `updated_at_ms`。
+   */
+  read_seq?: number;
   settings: SessionSettings;
   status: SessionStatus;
   title: string;
@@ -2457,6 +2477,13 @@ export interface UsageTotals {
   input_tokens: number;
   output_tokens: number;
   turns: number;
+}
+/**
+ * `session.mark_read`：客户端已经把会话显示到 `seq`。daemon 取 `max(现有水位, min(seq, last_seq))`，所以重复、乱序都无害。
+ */
+export interface SessionMarkReadParams {
+  seq: number;
+  session_id: string;
 }
 export interface SessionPromoteParams {
   /**
@@ -2531,6 +2558,13 @@ export interface SessionSendResult {
    * 立即开始的 turn id；进入队列（turn 进行中且 agent 不支持插话）时为空。
    */
   turn_id?: number | null;
+}
+/**
+ * `session.set_marks`：局部更新会话上的用户标注，只改传了的字段。归档不在这里（它有自己的行为约束，见 `session.archive`）。
+ */
+export interface SessionSetMarksParams {
+  follow_up?: boolean | null;
+  session_id: string;
 }
 export interface SessionSetSettingsParams {
   /**

@@ -157,6 +157,9 @@ pub struct SessionFile {
     pub status: SessionStatus,
     #[serde(default)]
     pub archived: bool,
+    /// 「待处理」标记。旧的导出包没有这一项，按没标处理。已读水位不导出：导入的会话一律当作已读。
+    #[serde(default)]
+    pub follow_up: bool,
     #[serde(default)]
     pub settings: SessionSettings,
     /// agent 自己的会话 id。导出，但**导入时不收**：在别的机器上它对应的会话文件不存在，`--resume` 必然失败。

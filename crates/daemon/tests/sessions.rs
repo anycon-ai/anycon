@@ -2268,3 +2268,134 @@ async fn a_cleared_setting_does_not_come_back_through_launch_args_when_the_proce
     assert_eq!(resume.agent_session_id, "fake-agent-1", "the agent session id is still taken from the prior handle");
     td.shutdown().await;
 }
+
+#[tokio::test]
+async fn set_marks_flips_follow_up_without_touching_updated_at_and_tells_every_client() {
+    let td = TestDaemon::start().await;
+    let mut a = td.client("a");
+    let mut b = td.client("b");
+    let s = create(&td, &mut a, Some("hi")).await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let before = get(&td, &mut a, &s.id).await;
+    assert!(!before.follow_up);
+    let _ = b.drain_for(Duration::from_millis(1300)).await;
+
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id, "follow_up": true })).await.unwrap();
+    let ch = b
+        .wait_notification(T, |n| n.method == methods::SESSION_CHANGED && n.params["follow_up"] == json!(true))
+        .await
+        .expect("session.changed carries the new mark");
+    let ch: SessionChanged = serde_json::from_value(ch.params).unwrap();
+    assert_eq!((ch.session_id.as_str(), ch.follow_up), (s.id.as_str(), true));
+    let after = get(&td, &mut a, &s.id).await;
+    assert!(after.follow_up);
+    assert_eq!(after.updated_at_ms, before.updated_at_ms, "a mark is not session activity");
+
+    // 没传的字段不动；设成同样的值什么都不发
+    let _ = b.drain_for(Duration::from_millis(1300)).await;
+    let _: Empty = a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id })).await.unwrap();
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id, "follow_up": true })).await.unwrap();
+    assert!(b.drain_for(Duration::from_millis(500)).await.iter().all(|n| n.method != methods::SESSION_CHANGED));
+    assert!(get(&td, &mut a, &s.id).await.follow_up);
+
+    // 重启之后还在；取消也不动 updated_at_ms
+    let mut td = td;
+    td.restart().await;
+    let mut a = td.client("a");
+    assert!(get(&td, &mut a, &s.id).await.follow_up);
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id, "follow_up": false })).await.unwrap();
+    let off = get(&td, &mut a, &s.id).await;
+    assert!(!off.follow_up);
+    assert_eq!(off.updated_at_ms, before.updated_at_ms);
+
+    let e = a
+        .call::<Empty>(&td, methods::SESSION_SET_MARKS, json!({ "session_id": "nope", "follow_up": true }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::NotFound));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn mark_read_only_moves_forward_never_past_last_seq_and_survives_a_restart() {
+    let mut td = TestDaemon::start().await;
+    let mut a = td.client("a");
+    let mut b = td.client("b");
+    let s = create(&td, &mut a, Some("hi")).await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let sum = get(&td, &mut a, &s.id).await;
+    assert!(sum.last_seq > 3);
+    assert_eq!(sum.read_seq, 0, "nobody has read a session created over RPC yet");
+    let _ = b.drain_for(Duration::from_millis(1300)).await;
+
+    let mark = |seq: u64| json!({ "session_id": s.id, "seq": seq });
+    let _: Empty = a.call(&td, methods::SESSION_MARK_READ, mark(2)).await.unwrap();
+    assert_eq!(get(&td, &mut a, &s.id).await.read_seq, 2);
+    let ch = b.wait_notification(T, |n| n.method == methods::SESSION_CHANGED && n.params["read_seq"] == json!(2)).await;
+    assert!(ch.is_some(), "other devices learn the watermark moved");
+    // 乱序、重复：不后退
+    let _: Empty = a.call(&td, methods::SESSION_MARK_READ, mark(1)).await.unwrap();
+    let _: Empty = a.call(&td, methods::SESSION_MARK_READ, mark(2)).await.unwrap();
+    assert_eq!(get(&td, &mut a, &s.id).await.read_seq, 2);
+    // 超过 last_seq：停在 last_seq
+    let _: Empty = a.call(&td, methods::SESSION_MARK_READ, mark(u64::MAX)).await.unwrap();
+    let now = get(&td, &mut a, &s.id).await;
+    assert_eq!(now.read_seq, now.last_seq);
+    assert_eq!(now.updated_at_ms, sum.updated_at_ms, "reading is not session activity");
+
+    td.restart().await;
+    let mut a = td.client("a");
+    assert_eq!(get(&td, &mut a, &s.id).await.read_seq, now.last_seq);
+    let e =
+        a.call::<Empty>(&td, methods::SESSION_MARK_READ, json!({ "session_id": "nope", "seq": 1 })).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::NotFound));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_follow_up_session_sends_follow_up_instead_of_turn_finished_even_when_watched_and_turned_off() {
+    use anycon_daemon::notify::testing::Recorder;
+    let td = TestDaemon::start_with(&[("notify.turn_finished", "\"never\"")], false).await;
+    let rec = std::sync::Arc::new(Recorder::default());
+    td.ctx.notifier.set_out(rec.clone());
+    let mut a = td.client("a");
+    let count = |cat: NotifyCategory, sid: &str| {
+        rec.0.lock().unwrap().iter().filter(|b| b.category == cat && b.session_id.as_deref() == Some(sid)).count()
+    };
+
+    let marked = create(&td, &mut a, None).await;
+    let plain = create(&td, &mut a, None).await;
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": marked.id, "follow_up": true })).await.unwrap();
+    // 标了的会话有人 watch 着，也照发
+    let _: Empty = a.call(&td, methods::SESSION_WATCH, json!({ "session_id": marked.id })).await.unwrap();
+    send(&td, &mut a, &marked.id, "work").await;
+    send(&td, &mut a, &plain.id, "work").await;
+    assert!(wait_status(&td, &mut a, &marked.id, SessionStatus::Idle).await);
+    assert!(wait_status(&td, &mut a, &plain.id, SessionStatus::Idle).await);
+    assert!(eventually(T, || async { count(NotifyCategory::FollowUp, &marked.id) == 1 }).await);
+    assert_eq!(count(NotifyCategory::TurnFinished, &marked.id), 0, "follow_up replaces turn_finished");
+    // 没标的：notify.turn_finished = never 照旧什么都不发
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(count(NotifyCategory::FollowUp, &plain.id) + count(NotifyCategory::TurnFinished, &plain.id), 0);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unmarked_session_still_notifies_turn_finished_and_never_follow_up() {
+    use anycon_daemon::notify::testing::Recorder;
+    let td = TestDaemon::start_with(&[("notify.turn_finished", "\"always\"")], false).await;
+    let rec = std::sync::Arc::new(Recorder::default());
+    td.ctx.notifier.set_out(rec.clone());
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, Some("hi")).await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let cats = || -> Vec<NotifyCategory> {
+        rec.0.lock().unwrap().iter().filter(|b| b.session_id.as_deref() == Some(&s.id)).map(|b| b.category).collect()
+    };
+    assert!(eventually(T, || async { cats() == vec![NotifyCategory::TurnFinished] }).await, "{:?}", cats());
+    td.shutdown().await;
+}

@@ -117,11 +117,11 @@
 
 ## v0.4 — 清单与分身
 
-设计见 [ADR-53](decisions.md#adr-53-清单决策档案和分身都在-daemon-上分身不能批准权限)；Web UI 随之重排（「待处理」首页、手机底部标签栏、随手记一项、空间切换），见 [ADR-54](decisions.md#adr-54-web-ui-以待处理为首页手机用底部标签栏分身不是一个聊天窗口) 和 [spec/web.md § 14](spec/web.md#14-加入清单和分身之后的界面)，每一步的界面范围在 § 14.12。四步，每一步单独发布，都还没做：
+设计见 [ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)；Web UI 随之重排（「待处理」首页、手机底部标签栏、随手记一项、空间切换），见 [ADR-55](decisions.md#adr-55-web-ui-以待处理为首页手机用底部标签栏分身不是一个聊天窗口) 和 [spec/web.md § 14](spec/web.md#14-加入清单和分身之后的界面)，每一步的界面范围在 § 14.12。四步，每一步单独发布，都还没做：
 
 1. **清单**：按节点存的个人清单（[spec/daemon.md § 21](spec/daemon.md#21-清单)）
    - `todo.*` 方法、`capabilities.todo`、存储和审计；agent 环境里的 `ANYCON_SESSION_ID`
-   - Web：首页换成「待处理」（权限请求、计划、提问、接入请求、出错合成一个队列），手机用底部标签栏，随手记一项的各个入口，清单页和单项详情（本地缓存、节点离线时的改动回来后重放）
+   - Web：首页换成「待处理」（权限请求、计划、提问、接入请求、标了待处理的会话、出错合成一个队列），手机用底部标签栏，随手记一项的各个入口，清单页和单项详情（本地缓存、节点离线时的改动回来后重放）
    - 多个节点：节点分组名（比如「家里」「公司」）；节点过滤器升级为空间切换，待处理、清单、会话树都跟着它；把一项移到另一个节点
    - `anycon todo` 子命令
    - `anycon mcp` 的 `add_todo` / `list_todos`：会话里的 agent 能记下之后要处理的事
@@ -159,9 +159,9 @@
 - 只读分享会话
 - 同步 passkey 接入（ADR-36「后续」）：已配对设备把 passkey 公钥登记到 daemon，新设备对 daemon 的挑战签名，防钓鱼、不用输入；依赖 passkey 登录
 - 多账号 / 团队
-- 清单在 hub 上的密文副本（节点离线时各设备之间也能同步清单）：依赖 hub 离线队列，条件见 [ADR-53](decisions.md#adr-53-清单决策档案和分身都在-daemon-上分身不能批准权限)「否掉」
+- 清单在 hub 上的密文副本（节点离线时各设备之间也能同步清单）：依赖 hub 离线队列，条件见 [ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)「否掉」
 - 社区 adapter 仓库
 
 ## 明确不做
 
-通用的多 agent 编排框架（`anycon mcp` 只是又一个客户端入口，给调用方和 CLI / SDK 同等的原语，不调度、不在会话之间转发消息，[ADR-49](decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)；daemon 上唯一的调度者是 v0.4 的分身，它只处理用户自己的清单，[ADR-53](decisions.md#adr-53-清单决策档案和分身都在-daemon-上分身不能批准权限)）、让 agent 批准权限请求、IDE / 终端 / 远程 shell、经 hub 明文反代 dev server（预览走 Noise 隧道，[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）、issue 看板（标签、里程碑、看板视图、和外部 issue 系统同步；个人清单见 v0.4）、E2E 之外的任何加密选项。
+通用的多 agent 编排框架（`anycon mcp` 只是又一个客户端入口，给调用方和 CLI / SDK 同等的原语，不调度、不在会话之间转发消息，[ADR-49](decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)；daemon 上唯一的调度者是 v0.4 的分身，它只处理用户自己的清单，[ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)）、让 agent 批准权限请求、IDE / 终端 / 远程 shell、经 hub 明文反代 dev server（预览走 Noise 隧道，[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)）、issue 看板（标签、里程碑、看板视图、和外部 issue 系统同步；个人清单见 v0.4）、E2E 之外的任何加密选项。

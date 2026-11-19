@@ -238,7 +238,7 @@ export function Composer({ draftKey, onSend, attachments: attach, onStop, runnin
           // 排队提示靠左、分支 chip 靠右，放在同一行
           <div className="mb-1 flex min-w-0 items-center justify-between gap-3 px-1">
             {queued('')}
-            <div className="ml-auto flex min-w-0 justify-end" data-testid="composer-aside">
+            <div className="ml-auto flex min-w-0 items-center justify-end gap-2" data-testid="composer-aside">
               {aside}
             </div>
           </div>

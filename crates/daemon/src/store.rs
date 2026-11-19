@@ -46,6 +46,10 @@ pub struct SessionRow {
     pub title_locked: bool,
     pub status: SessionStatus,
     pub archived: bool,
+    /// 用户标了「待处理」。
+    pub follow_up: bool,
+    /// 已读水位：用户已经看到的最大事件 seq（只增不减）。
+    pub read_seq: u64,
     pub settings: SessionSettings,
     pub agent_session_id: Option<String>,
     pub launch_args: Value,
@@ -349,11 +353,12 @@ impl Store {
     pub async fn upsert_session(&self, s: &SessionRow) -> Result<()> {
         sqlx::query(
             "INSERT INTO sessions (id, project, agent, title, title_locked, status, archived, settings, agent_session_id, launch_args, \
-             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id, follow_up, read_seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
              ON CONFLICT(id) DO UPDATE SET project=excluded.project, project_loc=excluded.project_loc, title=excluded.title, title_locked=excluded.title_locked, \
              status=excluded.status, archived=excluded.archived, settings=excluded.settings, agent_session_id=excluded.agent_session_id, \
              launch_args=excluded.launch_args, updated_ms=excluded.updated_ms, last_seq=excluded.last_seq, \
-             next_turn_id=excluded.next_turn_id, usage=excluded.usage, preview=excluded.preview, worktree_id=excluded.worktree_id",
+             next_turn_id=excluded.next_turn_id, usage=excluded.usage, preview=excluded.preview, worktree_id=excluded.worktree_id, \
+             follow_up=excluded.follow_up, read_seq=excluded.read_seq",
         )
         .bind(&s.id)
         .bind(&s.project)
@@ -373,6 +378,8 @@ impl Store {
         .bind(&s.preview)
         .bind(&s.project_loc)
         .bind(&s.worktree_id)
+        .bind(s.follow_up)
+        .bind(s.read_seq as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -391,6 +398,8 @@ impl Store {
             title_locked: r.try_get("title_locked")?,
             status: parse_status(&r.try_get::<String, _>("status")?),
             archived: r.try_get("archived")?,
+            follow_up: r.try_get("follow_up")?,
+            read_seq: r.try_get::<i64, _>("read_seq")? as u64,
             settings: serde_json::from_str(&settings).unwrap_or_default(),
             agent_session_id: r.try_get("agent_session_id")?,
             launch_args: launch.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or(Value::Null),
@@ -1448,7 +1457,7 @@ impl ImportTx {
     pub async fn insert_session(&mut self, s: &SessionRow) -> Result<bool> {
         let n = sqlx::query(
             "INSERT INTO sessions (id, project, agent, title, title_locked, status, archived, settings, agent_session_id, launch_args, \
-             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id, follow_up, read_seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
              ON CONFLICT(id) DO NOTHING",
         )
         .bind(&s.id)
@@ -1469,6 +1478,8 @@ impl ImportTx {
         .bind(&s.preview)
         .bind(&s.project_loc)
         .bind(&s.worktree_id)
+        .bind(s.follow_up)
+        .bind(s.read_seq as i64)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();
@@ -1599,7 +1610,9 @@ impl ImportTx {
         next_turn_id: u64,
         status: SessionStatus,
     ) -> Result<()> {
-        sqlx::query("UPDATE sessions SET last_seq = ?, next_turn_id = ?, status = ? WHERE id = ?")
+        // 导入的会话当作已读：别让一次导入点亮一片未读
+        sqlx::query("UPDATE sessions SET last_seq = ?, read_seq = ?, next_turn_id = ?, status = ? WHERE id = ?")
+            .bind(last_seq as i64)
             .bind(last_seq as i64)
             .bind(next_turn_id as i64)
             .bind(status_str(status))
@@ -1692,6 +1705,8 @@ mod tests {
             title_locked: false,
             status: SessionStatus::Idle,
             archived: false,
+            follow_up: false,
+            read_seq: 0,
             settings: SessionSettings { model: Some("m".into()), ..Default::default() },
             agent_session_id: Some("agent-1".into()),
             launch_args: serde_json::json!({"a": 1}),
@@ -1767,6 +1782,34 @@ mod tests {
         assert_eq!(s.blobs_unreferenced_bytes().await.unwrap(), 20, "referenced blobs do not count against the quota");
         assert_eq!(s.blobs_bind("sess_b", &["free1".into()]).await.unwrap(), Ok(()));
         assert_eq!(s.blobs_unreferenced_bytes().await.unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn marks_roundtrip_and_existing_sessions_count_as_read_after_the_migration() {
+        let (_d, s) = temp_store().await;
+        let mut r = row("s1", Some("proj"));
+        r.follow_up = true;
+        r.read_seq = 3;
+        r.last_seq = 9;
+        s.upsert_session(&r).await.unwrap();
+        let back = s.get_session("s1").await.unwrap().unwrap();
+        assert_eq!((back.follow_up, back.read_seq), (true, 3));
+
+        // 迁移：升级前就在库里的会话 read_seq 追平 last_seq，follow_up 为 0
+        let pool = sqlx::sqlite::SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        for sql in [include_str!("../migrations/0001_init.sql"), include_str!("../migrations/0002_preview.sql")] {
+            sqlx::raw_sql(sql).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO sessions (id, agent, status, created_ms, updated_ms, last_seq) VALUES ('old', 'fake', 'idle', 1, 2, 42)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0003_session_marks.sql")).execute(&pool).await.unwrap();
+        let (follow_up, read_seq): (i64, i64) =
+            sqlx::query_as("SELECT follow_up, read_seq FROM sessions WHERE id = 'old'").fetch_one(&pool).await.unwrap();
+        assert_eq!((follow_up, read_seq), (0, 42));
     }
 
     #[tokio::test]

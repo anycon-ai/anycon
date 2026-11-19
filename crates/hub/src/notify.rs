@@ -27,30 +27,31 @@ const MAX_NOTIFY_FRAME: usize = 64 * 1024;
 const MAX_SESSION_ID: usize = 128;
 
 /// 全部类别，顺序同 [`NotifyCategory`] 的声明。
-pub const ALL_CATEGORIES: [NotifyCategory; 6] = [
+pub const ALL_CATEGORIES: [NotifyCategory; 7] = [
     NotifyCategory::PermissionRequested,
     NotifyCategory::TurnFinished,
     NotifyCategory::Error,
     NotifyCategory::SessionIdle,
+    NotifyCategory::FollowUp,
     NotifyCategory::EnrollRequested,
     NotifyCategory::Security,
 ];
 
 /// 偏好的默认值（docs/spec/hub.md § 6.3）：`permission_requested` / `error` / `enroll_requested` / `security`
-/// 推送和邮件都开，`turn_finished` 只开推送，`session_idle` 全关。
+/// 推送和邮件都开，`turn_finished` 和 `follow_up` 只开推送，`session_idle` 全关。
 pub fn default_pref(c: NotifyCategory) -> NotificationPref {
     let (push, email) = match c {
         NotifyCategory::PermissionRequested
         | NotifyCategory::Error
         | NotifyCategory::EnrollRequested
         | NotifyCategory::Security => (true, true),
-        NotifyCategory::TurnFinished => (true, false),
+        NotifyCategory::TurnFinished | NotifyCategory::FollowUp => (true, false),
         NotifyCategory::SessionIdle => (false, false),
     };
     NotificationPref { category: c, push, email }
 }
 
-/// 库里的偏好叠在默认值上，得到六个类别的完整结果。
+/// 库里的偏好叠在默认值上，得到全部类别的完整结果。
 pub fn effective_prefs(stored: &[NotificationPref]) -> Vec<NotificationPref> {
     ALL_CATEGORIES
         .iter()
@@ -247,6 +248,7 @@ mod tests {
             assert_eq!(default_pref(c), NotificationPref { category: c, push: true, email: true });
         }
         assert_eq!(default_pref(TurnFinished), NotificationPref { category: TurnFinished, push: true, email: false });
+        assert_eq!(default_pref(FollowUp), NotificationPref { category: FollowUp, push: true, email: false });
         assert_eq!(default_pref(SessionIdle), NotificationPref { category: SessionIdle, push: false, email: false });
     }
 
@@ -259,10 +261,10 @@ mod tests {
         ];
         let eff = effective_prefs(&stored);
         assert_eq!(eff.iter().map(|p| p.category).collect::<Vec<_>>(), ALL_CATEGORIES.to_vec());
-        assert_eq!(eff[5], stored[0]);
+        assert_eq!(eff[6], stored[0]);
         assert_eq!(eff[3], stored[1]);
         assert_eq!(eff[0], default_pref(PermissionRequested));
-        assert_eq!(effective_prefs(&[]).len(), 6);
+        assert_eq!(effective_prefs(&[]).len(), 7);
     }
 
     #[test]
@@ -270,7 +272,7 @@ mod tests {
         use NotifyCategory::*;
         assert_eq!(push_options(PermissionRequested), PushOptions { ttl: 3600, urgency: Urgency::High });
         assert_eq!(push_options(EnrollRequested), PushOptions { ttl: 300, urgency: Urgency::High });
-        for c in [TurnFinished, Error, SessionIdle, Security] {
+        for c in [TurnFinished, Error, SessionIdle, FollowUp, Security] {
             assert_eq!(push_options(c), PushOptions { ttl: 3600, urgency: Urgency::Normal }, "{c:?}");
         }
     }

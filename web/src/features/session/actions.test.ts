@@ -6,7 +6,7 @@ import { setRpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
 import { pendingMessages, resetDrafts, useDrafts } from '@/stores/drafts'
 import { useSessions } from '@/stores/sessions'
-import { archiveSession, ATTACHMENTS_TOO_LARGE, BLOB_EXPIRED, BLOB_IN_USE, catchUp, countUnsent, createSession, deleteSession, enqueueLive, flushLive, flushUnsent, FOCUS_MAX_PAGES, loadHistoryTo, loadOlder, openSession, reapEchoed, respondPermission, resendUnsent, sendMessage, setSessionSettings, unarchiveSession } from './actions'
+import { archiveSession, ATTACHMENTS_TOO_LARGE, BLOB_EXPIRED, BLOB_IN_USE, catchUp, countUnsent, createSession, deleteSession, enqueueLive, flushLive, flushUnsent, FOCUS_MAX_PAGES, loadHistoryTo, loadOlder, markRead, openSession, reapEchoed, respondPermission, resendUnsent, sendMessage, setFollowUp, setSessionSettings, unarchiveSession } from './actions'
 import { handleNotification } from '@/features/sync/notifications'
 import { diffSettings } from '@/features/settings/resolve'
 import type { AttachmentRef, SessionEvent } from '@/protocol'
@@ -663,5 +663,45 @@ describe('loadHistoryTo — jumping to a search hit far back in the history', ()
   it('does nothing for a session that is not open', async () => {
     expect(await loadHistoryTo('sess_none', 10)).toBe('reached')
     expect(rpc.calls).toEqual([])
+  })
+})
+
+describe('session marks', () => {
+  it('setFollowUp sends session.set_marks with only the follow_up field and updates the list at once', async () => {
+    rpc.handlers['session.set_marks'] = () => ({})
+    await setFollowUp(NODE, SID, true)
+    expect(rpc.calls.filter((c) => c.method === 'session.set_marks').map((c) => c.params)).toEqual([{ session_id: SID, follow_up: true }])
+    expect(useSessions.getState().list[SID]!.follow_up).toBe(true)
+    await setFollowUp(NODE, SID, false)
+    expect(useSessions.getState().list[SID]!.follow_up).toBe(false)
+  })
+
+  it('setFollowUp puts the old value back and rethrows when the node refuses', async () => {
+    rpc.handlers['session.set_marks'] = () => {
+      throw rpcError('not_found')
+    }
+    await expect(setFollowUp(NODE, SID, true)).rejects.toBeInstanceOf(RpcCallError)
+    expect(useSessions.getState().list[SID]!.follow_up).toBeFalsy()
+  })
+
+  it('markRead raises the local watermark first, reports it, and never lowers it', async () => {
+    rpc.handlers['session.mark_read'] = () => ({})
+    await markRead(NODE, SID, 3)
+    expect(useSessions.getState().list[SID]!.read_seq).toBe(3)
+    await markRead(NODE, SID, 2)
+    expect(useSessions.getState().list[SID]!.read_seq).toBe(3)
+    expect(rpc.calls.filter((c) => c.method === 'session.mark_read').map((c) => c.params)).toEqual([
+      { session_id: SID, seq: 3 },
+      { session_id: SID, seq: 2 },
+    ])
+  })
+
+  it('markRead only warns when the report fails: the dot has already gone', async () => {
+    rpc.ready = false
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await expect(markRead(NODE, SID, 3)).resolves.toBeUndefined()
+    expect(useSessions.getState().list[SID]!.read_seq).toBe(3)
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

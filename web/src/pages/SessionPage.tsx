@@ -12,9 +12,11 @@ import { attachmentSupport } from '@/features/attachments/support'
 import { sessionWorkDir } from '@/features/files/paths'
 import { discardRefs, restoreAttachments } from '@/features/attachments/composerUploads'
 import { describeAttachmentFailure, describeAttachNotice } from '@/features/attachments/errors'
-import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, unarchiveSession, type SendOutcome } from '@/features/session/actions'
+import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, setFollowUp, unarchiveSession, type SendOutcome } from '@/features/session/actions'
 import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
+import { isFollowUp } from '@/features/session/marks'
+import { useMarkRead } from '@/features/session/useMarkRead'
 import { activeOptions } from '@/features/settings/resolve'
 import { latestSyncBlock, pendingPermissions, type UserBlock } from '@/features/session/reducer'
 import { backgroundCommands, isTurnActive, subagentRows } from '@/features/session/subagents'
@@ -23,6 +25,7 @@ import { previewAvailable, usePreviewTemplate } from '@/features/preview/availab
 import { PreviewView } from '@/features/preview/PreviewView'
 import { ApprovalBanner } from '@/components/ApprovalBanner'
 import { ArchivedBar } from '@/features/session/ui/ArchivedBar'
+import { FollowUpBar, FollowUpChip, FollowUpToggle } from '@/features/session/ui/FollowUp'
 import { InfoPanel } from '@/features/session/ui/InfoPanel'
 import { BackgroundTasksChip } from '@/features/session/ui/Tasks'
 import { BranchChip } from '@/features/worktree/BranchChip'
@@ -153,6 +156,17 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
   // 已归档的会话不能 `send`（daemon 回 `invalid` / `archived`）：输入框换成「已归档 · 取消归档」，也不再给「重试这一轮」
   const archived = !!summary?.archived
   const agent = entry?.agents.find((a) => a.id === summary?.agent)
+  // 「待处理」标记（spec/web.md § 4.6.1）：开着会话页、会话停下来之后，把看到的位置报给 daemon（未读小红点据此消失）
+  const followUp = !!summary && isFollowUp(summary)
+  useMarkRead({ nodeId, sessionId, lastSeq: view?.lastSeq, settled: !running, ready: open?.phase === 'ready' && !offline })
+  const [followUpBusy, setFollowUpBusy] = useState(false)
+  const changeFollowUp = (on: boolean): void => {
+    if (!nodeId) return
+    setFollowUpBusy(true)
+    setFollowUp(nodeId, sessionId, on)
+      .catch((e: unknown) => toast.error(describeError(e, t)))
+      .finally(() => setFollowUpBusy(false))
+  }
 
   // git（ADR-34）：节点支持，并且会话在 worktree 里，或者它的项目是 git 仓库
   const worktree = summary?.worktree ?? null
@@ -429,9 +443,12 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
           </>
         }
         actions={
-          <Button variant="ghost" size="icon" aria-label={t('info.toggle')} onClick={() => (xl ? setPrefs({ infoPanelOpen: !panelOpen }) : setRightDrawer(true))} data-testid="info-toggle">
-            {xl && panelOpen ? <PanelRightClose className="size-4" /> : <PanelRight className="size-4" />}
-          </Button>
+          <>
+            <FollowUpToggle on={followUp} disabled={offline || followUpBusy} onToggle={() => changeFollowUp(!followUp)} />
+            <Button variant="ghost" size="icon" aria-label={t('info.toggle')} onClick={() => (xl ? setPrefs({ infoPanelOpen: !panelOpen }) : setRightDrawer(true))} data-testid="info-toggle">
+              {xl && panelOpen ? <PanelRightClose className="size-4" /> : <PanelRight className="size-4" />}
+            </Button>
+          </>
         }
       />
       <div className="flex min-h-0 flex-1">
@@ -541,6 +558,8 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
             {announce}
           </div>
 
+          {followUp && !showChanges && !showPreview && !archived ? <FollowUpBar ready={!running} busy={followUpBusy} disabled={offline} onClear={() => changeFollowUp(false)} /> : null}
+
           {showChanges ? (
             // 「改动」视图没有输入框：分支 chip 照样留在底部
             gitAvailable ? (
@@ -568,7 +587,14 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
               running={running}
               queueNotice={!agent?.capabilities?.interject}
               blockedReason={blockedReason}
-              aside={branchChip('inline')}
+              aside={
+                followUp && !gitAvailable ? null : (
+                  <>
+                    {followUp ? null : <FollowUpChip disabled={offline || followUpBusy} onMark={() => changeFollowUp(true)} />}
+                    {branchChip('inline')}
+                  </>
+                )
+              }
               options={agent ? options : undefined}
               attachments={attachSupport ? { nodeId, accept: attachSupport.images, files: attachSupport.files, limits: attachSupport.limits, disabledReason: offline ? t('composer.attachOffline') : undefined } : undefined}
               focusToken={focusToken}

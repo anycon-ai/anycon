@@ -13,12 +13,12 @@ use anycon_protocol::{
     NodeSetEnrollEnabledParams, NodeSetEnrollPasswordParams, NodeStats, NodeWorktreeSettings, PermissionListParams,
     PermissionRespondParams, PreviewCloseParams, PreviewOpenParams, PreviewPortsParams, RenamedProject, RpcError,
     RpcId, RpcMessage, RpcRequest, SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams,
-    SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionPromoteParams,
-    SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams, SessionSetSettingsParams,
-    SessionSyncBaseParams, SessionWorkspaceMode, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams,
-    WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams,
-    WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult,
-    WorkspaceWorktreesParams, PROTOCOL_VERSION,
+    SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionMarkReadParams,
+    SessionPromoteParams, SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams,
+    SessionSetMarksParams, SessionSetSettingsParams, SessionSyncBaseParams, SessionWorkspaceMode, TrashEntry,
+    WorkspaceBranchesParams, WorkspaceBrowseParams, WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams,
+    WorkspaceNameParams, WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams,
+    WorkspaceTrashListResult, WorkspaceWorktreesParams, PROTOCOL_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -424,6 +424,16 @@ impl Rpc {
             methods::SESSION_UNARCHIVE => {
                 let p: SessionIdParams = params(p)?;
                 Box::pin(c.sessions.unarchive(&p.session_id)).await?;
+                ok(Empty {})
+            }
+            methods::SESSION_SET_MARKS => {
+                let p: SessionSetMarksParams = params(p)?;
+                c.sessions.set_marks(p).await?;
+                ok(Empty {})
+            }
+            methods::SESSION_MARK_READ => {
+                let p: SessionMarkReadParams = params(p)?;
+                c.sessions.mark_read(&p.session_id, p.seq).await?;
                 ok(Empty {})
             }
             methods::SESSION_DELETE => {

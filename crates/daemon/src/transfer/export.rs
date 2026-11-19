@@ -518,6 +518,7 @@ fn session_file(
         title_locked: row.title_locked,
         status: row.status,
         archived: row.archived,
+        follow_up: row.follow_up,
         settings: row.settings.clone(),
         agent_session_id: row.agent_session_id.clone(),
         created_ms: row.created_ms,

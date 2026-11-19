@@ -48,6 +48,9 @@ describe('handlePush', () => {
     const nav = setup({ navLang: 'zh-CN' })
     await handlePush(data({ category: 'session_idle', node: NODE, session: 'sess_abc' }), nav.deps)
     expect(nav.shown[0]!.title).toBe('一个会话 空闲了')
+    await handlePush(data({ category: 'follow_up', node: NODE, session: 'sess_abc' }), nav.deps)
+    expect(nav.shown[1]!.title).toBe('一个会话 完成了，等你处理')
+    expect(nav.shown[1]!.options.tag).toBe('session:sess_abc')
   })
 
   it('falls back to "a session" / "a node" when nothing is cached', async () => {

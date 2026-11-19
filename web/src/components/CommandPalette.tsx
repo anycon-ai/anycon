@@ -1,11 +1,14 @@
 import { Fragment, useEffect, useId, useMemo, useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
-import { FolderGit2, FolderOpen, FolderPlus, GitFork, MessageSquare, MessageSquareText, Plus, Server } from 'lucide-react'
+import { useNavigate, useParams } from '@tanstack/react-router'
+import { Flag, FolderGit2, FolderOpen, FolderPlus, GitFork, MessageSquare, MessageSquareText, Plus, Server } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices } from '@/api/queries'
+import { setFollowUp } from '@/features/session/actions'
+import { isFollowUp } from '@/features/session/marks'
 import { useContentSearch, type ContentHit } from '@/features/search/contentSearch'
 import { lockedNodes } from '@/features/unlock/nodes'
 import { formatDateTime, formatRelative } from '@/lib/format'
+import { describeError } from '@/lib/errors'
 import { cleanHintText } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
 import { useCurrentNode } from '@/lib/nav'
@@ -13,6 +16,7 @@ import { useNodeFilter } from '@/lib/nodeFilter'
 import { useNewProject, type NewProjectMode } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
+import { toast } from '@/stores/ui'
 import { cn } from '@/ui/cn'
 import { Input } from '@/ui/Field'
 import { Spinner } from '@/ui/Misc'
@@ -59,6 +63,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const { nodeId } = useCurrentNode()
+  const currentSession = useParams({ strict: false }).session
   const nodes = useNodes((s) => s.byId)
   const order = useNodes((s) => s.order)
   const sessions = useSessions((s) => s.list)
@@ -84,6 +89,18 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       setQ('')
       fn()
     }
+    // 在会话页里：标 / 取消「待处理」（spec/web.md § 4.6.1）
+    const cur = currentSession ? sessions[currentSession] : undefined
+    if (cur && !cur.archived && nodes[cur.node_id]?.conn === 'ready') {
+      const marked = isFollowUp(cur)
+      out.push({
+        id: 'follow-up',
+        icon: <Flag className="size-4" />,
+        label: marked ? t('followUp.unmark') : t('followUp.mark'),
+        hint: cur.title || undefined,
+        run: go(() => void setFollowUp(cur.node_id, cur.id, !marked).catch((e: unknown) => toast.error(describeError(e, t)))),
+      })
+    }
     if (nodeId) {
       const param = shortNodeId(nodeId, order)
       out.push({ id: 'new', icon: <Plus className="size-4" />, label: t('palette.newSession'), run: go(() => void navigate({ to: '/n/$node/new', params: { node: param } })) })
@@ -108,7 +125,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       })
     }
     return out
-  }, [nodeId, nodes, order, sessions, navigate, onOpenChange, t])
+  }, [nodeId, currentSession, nodes, order, sessions, navigate, onOpenChange, t])
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()

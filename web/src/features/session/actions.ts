@@ -8,8 +8,10 @@ import type {
   SessionDeleteParams,
   SessionEvent,
   SessionHistoryResult,
+  SessionMarkReadParams,
   SessionSendParams,
   SessionSendResult,
+  SessionSetMarksParams,
   SessionSetSettingsParams,
   SessionSetSettingsResult,
   SessionSettings,
@@ -478,6 +480,42 @@ export async function archiveSession(nodeId: string, sessionId: string, archive:
 export async function unarchiveSession(nodeId: string, sessionId: string): Promise<void> {
   await rpc().request(nodeId, 'session.unarchive', { session_id: sessionId })
   patchArchived(nodeId, sessionId, false)
+}
+/** 只改本地列表里的 `follow_up` 标志（daemon 的 `session.changed` 随后会给出同样的结果）。 */
+function patchFollowUp(nodeId: string, sessionId: string, followUp: boolean): void {
+  useSessions.setState((s) => {
+    const item = s.list[sessionId]
+    if (!item || item.node_id !== nodeId || !!item.follow_up === followUp) return s
+    return { list: { ...s.list, [sessionId]: { ...item, follow_up: followUp } } }
+  })
+}
+/**
+ * 标 / 取消「待处理」（docs/spec/web.md § 4.6.1）。先改本地让按钮立刻有反应；请求失败就改回去并把错误抛给调用方。
+ * 标记不影响会话的行为，也不改 `updated_at_ms`。
+ */
+export async function setFollowUp(nodeId: string, sessionId: string, followUp: boolean): Promise<void> {
+  const before = !!useSessions.getState().list[sessionId]?.follow_up
+  patchFollowUp(nodeId, sessionId, followUp)
+  try {
+    await rpc().request(nodeId, 'session.set_marks', { session_id: sessionId, follow_up: followUp } satisfies SessionSetMarksParams)
+  } catch (e) {
+    patchFollowUp(nodeId, sessionId, before)
+    throw e
+  }
+}
+/**
+ * 告诉 daemon 这个会话已经看到 `seq`（已读水位，只增不减）。本地先把水位抬上去，红点马上消失；
+ * 失败只记一条警告：水位下次打开会话时还会再报。
+ */
+export async function markRead(nodeId: string, sessionId: string, seq: number): Promise<void> {
+  useSessions.setState((s) => {
+    const item = s.list[sessionId]
+    if (!item || item.node_id !== nodeId || (item.read_seq ?? 0) >= seq) return s
+    return { list: { ...s.list, [sessionId]: { ...item, read_seq: seq } } }
+  })
+  await rpc()
+    .request(nodeId, 'session.mark_read', { session_id: sessionId, seq } satisfies SessionMarkReadParams)
+    .catch(warnOnError('mark the session as read'))
 }
 /** 删除会话。`opts` 只在有 worktree 的会话上给：worktree 怎么处理、要不要同时删分支。 */
 export async function deleteSession(nodeId: string, sessionId: string, opts: { worktree?: WorktreeDisposal; deleteBranch?: boolean } = {}): Promise<void> {

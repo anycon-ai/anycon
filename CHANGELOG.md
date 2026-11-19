@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Follow up marker ([ADR-53](docs/decisions.md#adr-53-会话标注待处理是布尔标记未读是已读水位都和归档分开)): flag a session to be reminded when its turn finishes, or to come back to it later. Flag it from the session header, the "Remind me when done" button next to the input, a session row, or the command palette. A flagged session that has stopped is pinned in a "Follow up" group at the top of the sidebar (the one waiting longest first), counts in the tab title and app badge, and pops a toast when you are on the page; when you are away the node sends a new `follow_up` push notification, which you can switch on or off under Settings > Notifications. Opening the session or replying does not clear the flag, only "Mark done" does. The project page has a "Follow up" filter.
+- Unread dot: a session that has stopped with output you have not seen shows a red dot and a bold title in the session list and the sidebar. The node keeps a read position per session (`session.mark_read`), shared by all your devices.
+- Protocol and daemon: `SessionSummary` and `session.changed` carry `follow_up` and `read_seq`; new requests `session.set_marks` and `session.mark_read`; new notification category `follow_up`. The daemon database gets a forward migration (`0003_session_marks.sql`). The web UI needs a daemon with these requests, so upgrade both together.
+
 ### Changed
 
 - Web UI: the session info panel lists the agent options that are not at their default in the Session card, so a session started with an advisor shows "Advisor model" and the chosen model there. The panel only shows them; they are still changed under "More" below the input.

@@ -7,6 +7,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { ProjectBadges } from '@/components/ProjectCard'
 import { SessionListItem } from '@/components/SessionListItem'
 import { isActiveStatus } from '@/features/session/group'
+import { isFollowUp } from '@/features/session/marks'
 import { renameProject, trashProject, unlinkProject } from '@/features/workspace/actions'
 import { describeError, describeErrorIn } from '@/lib/errors'
 import { useCurrentNode, useNodeParam } from '@/lib/nav'
@@ -18,7 +19,7 @@ import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/ui/Menu'
 import { Chip, EmptyState, Segmented } from '@/ui/Misc'
 import { Dialog } from '@/ui/Overlay'
 
-type Filter = 'all' | 'active' | 'waiting' | 'archived'
+type Filter = 'all' | 'active' | 'waiting' | 'followUp' | 'archived'
 
 export function ProjectPage({ project }: { project: string }) {
   const { t } = useTranslation()
@@ -39,10 +40,11 @@ export function ProjectPage({ project }: { project: string }) {
       Object.values(list)
         .filter((s) => s.node_id === nodeId && s.project === project)
         .filter((s) => (filter === 'archived' ? s.archived : !s.archived))
-        .filter((s) => (filter === 'active' ? isActiveStatus(s.status) : filter === 'waiting' ? s.status === 'waiting_permission' || s.pending_permissions > 0 : true))
+        .filter((s) => (filter === 'active' ? isActiveStatus(s.status) : filter === 'waiting' ? s.status === 'waiting_permission' || s.pending_permissions > 0 : filter === 'followUp' ? isFollowUp(s) : true))
         .sort((a, b) => b.updated_at_ms - a.updated_at_ms),
     [list, nodeId, project, filter],
   )
+  const followUpCount = useMemo(() => Object.values(list).filter((s) => s.node_id === nodeId && s.project === project && isFollowUp(s)).length, [list, nodeId, project])
   if (!nodeId || !entry) return null
   const meta = entry.projects.find((p) => p.name === project)
   const offline = entry.conn !== 'ready'
@@ -182,6 +184,7 @@ export function ProjectPage({ project }: { project: string }) {
                 { value: 'all', label: t('project.filterAll') },
                 { value: 'active', label: t('project.filterActive') },
                 { value: 'waiting', label: t('project.filterWaiting') },
+                { value: 'followUp', label: followUpCount > 0 ? t('project.filterFollowUpCount', { count: followUpCount }) : t('project.filterFollowUp'), testId: 'project-filter-follow-up' },
                 { value: 'archived', label: t('project.filterArchived') },
               ]}
             />

@@ -98,12 +98,12 @@ describe('i18n', () => {
     const apiCodes = ['unauthorized', 'invalid_token', 'forbidden', 'csrf', 'not_found', 'invite_invalid', 'invite_expired', 'invite_used', 'bad_request', 'unsupported_media_type', 'payload_too_large', 'rate_limited', 'internal', 'network', 'email_taken', 'invalid_code', 'last_login_method', 'push_endpoint_not_allowed', 'device_not_found', 'subscription_not_found', 'invalid_email',
       // multi 模式（账号删除、管理员管理）
       'reauth_required', 'bootstrap_admin', 'cannot_modify_self', 'admin_by_config']
-    // Web Push / 邮箱通知（ADR-37）：浏览器不能推送的原因、推送动作的错误、六个通知类别、推送卡片的状态、推送文案
+    // Web Push / 邮箱通知（ADR-37）：浏览器不能推送的原因、推送动作的错误、七个通知类别、推送卡片的状态、推送文案
     const pushUnsupported: Record<UnsupportedReason, true> = { insecure: true, no_service_worker: true, no_push: true, ios_install: true }
     const pushErrors: Record<PushErrorCode, true> = { dismissed: true, denied: true, no_registration: true, subscribe_failed: true, unsubscribe_failed: true }
-    const notifyCategories: Record<NotifyCategory, true> = { permission_requested: true, turn_finished: true, error: true, session_idle: true, enroll_requested: true, security: true }
+    const notifyCategories: Record<NotifyCategory, true> = { permission_requested: true, turn_finished: true, error: true, session_idle: true, follow_up: true, enroll_requested: true, security: true }
     const pushStatus: Record<PushStatus, true> = { loading: true, unsupported: true, unavailable: true, denied: true, off: true, on: true }
-    const sessionPushKeys = ['permissionRequested', 'turnFinished', 'error', 'sessionIdle']
+    const sessionPushKeys = ['permissionRequested', 'turnFinished', 'error', 'sessionIdle', 'followUp']
     // 账号内接入（ADR-36）：失败原因、安全事件、审计动作、状态，全是拼 key 用的枚举
     const enrollMethod: Record<EnrollMethod, true> = { scan: true, code: true, password: true }
     const securityKind: Record<SecurityEventKind, true> = { device_enrolled: true, password_failures: true, password_locked: true, password_changed: true, settings_changed: true }

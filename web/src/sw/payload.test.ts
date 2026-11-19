@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { isNodeId, isSessionId, parsePushPayload, readPushPayload } from './payload'
 
 describe('push payload', () => {
-  it('accepts the six categories and the test push', () => {
-    for (const category of ['permission_requested', 'turn_finished', 'error', 'session_idle', 'enroll_requested', 'security']) {
+  it('accepts every category and the test push', () => {
+    for (const category of ['permission_requested', 'turn_finished', 'error', 'session_idle', 'follow_up', 'enroll_requested', 'security']) {
       expect(parsePushPayload({ category, node: 'n'.repeat(32), session: null })).toEqual({ category, node: 'n'.repeat(32), session: null })
     }
     expect(parsePushPayload({ category: 'test' })).toEqual({ category: 'test', node: null, session: null })

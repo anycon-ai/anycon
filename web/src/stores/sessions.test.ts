@@ -63,3 +63,24 @@ describe('sessions store: background_tasks', () => {
     expect(item()?.background_tasks).toBeUndefined()
   })
 })
+
+describe('sessions store: follow_up and read_seq', () => {
+  it('takes follow_up and read_seq from session.list and session.changed', () => {
+    useSessions.getState().upsertSummaries(NODE, [summary({ id: SID, last_seq: 5, follow_up: true, read_seq: 2 })])
+    expect(item()).toMatchObject({ follow_up: true, read_seq: 2 })
+    useSessions.getState().applyChanged(NODE, changed({ last_seq: 8, follow_up: false, read_seq: 5 }))
+    expect(item()).toMatchObject({ follow_up: false, read_seq: 5 })
+  })
+
+  it('keeps the old values when a notification does not carry them', () => {
+    useSessions.getState().upsertSummaries(NODE, [summary({ id: SID, follow_up: true, read_seq: 4 })])
+    useSessions.getState().applyChanged(NODE, changed({ title: 'renamed' }))
+    expect(item()).toMatchObject({ follow_up: true, read_seq: 4, title: 'renamed' })
+  })
+
+  it('never lowers the read watermark, even when an older notification arrives late', () => {
+    useSessions.getState().upsertSummaries(NODE, [summary({ id: SID, read_seq: 9 })])
+    useSessions.getState().applyChanged(NODE, changed({ read_seq: 3 }))
+    expect(item()?.read_seq).toBe(9)
+  })
+})

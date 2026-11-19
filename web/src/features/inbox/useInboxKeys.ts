@@ -1,20 +1,41 @@
 // 「待处理」页自己的键（spec/web.md § 14.11）：J / K 上下移动、Enter 把焦点移进详情、⌘⇧A / ⌘⇧D 答复选中的权限请求。
 // 单字母键在输入框里、有对话框或菜单开着时都不生效。⌘⇧A / ⌘⇧D 的限制和会话页一样（`handleApproveShortcut`）：
-// 只处理 `tool` 类请求、只选一次性选项、卡片不在可见区域时只滚过去、按住不放只算第一下。
+// 只处理 `tool` 类请求、只选一次性选项、卡片不在可见区域时只滚过去、按住不放只算第一下；另外：有对话框或菜单开着不答复、
+// 节点不在线不答复（和禁用的按钮一致）、详情刚换到这条请求的头一小会儿（`ARM_DELAY_MS`）不答复。
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { answerFromShortcut } from '@/features/session/shortcutRespond'
 import { handleApproveShortcut, isRequestCardVisible, isTypingTarget, requestCardElement } from '@/features/session/shortcuts'
+import { useNodes } from '@/stores/nodes'
 import { toast } from '@/stores/ui'
-import type { InboxItem } from './derive'
 import { permissionBlock } from './block'
+import type { InboxItem } from './derive'
 
 /** 有对话框（不含「待处理」自己从右边滑出的详情）、菜单开着：键盘事件是它们的。 */
 export function overlayOpen(): boolean {
   return document.querySelector('[role="alertdialog"], [role="menu"], [role="dialog"]:not(.inbox-overlay)') !== null
 }
 
-export function useInboxKeys({ active, enter, items, selectedKey, move, focusDetail, choose }: { active: boolean; enter: boolean; items: readonly InboxItem[]; selectedKey: string | null; move: (delta: 1 | -1) => void; focusDetail: () => void; choose: (key: string) => void }): void {
+export function useInboxKeys({
+  active,
+  enter,
+  item,
+  armed,
+  selectedKey,
+  move,
+  focusDetail,
+  choose,
+}: {
+  active: boolean
+  enter: boolean
+  /** 详情里正显示的条目。 */
+  item: InboxItem | null
+  armed: boolean
+  selectedKey: string | null
+  move: (delta: 1 | -1) => void
+  focusDetail: () => void
+  choose: (key: string) => void
+}): void {
   const { t } = useTranslation()
   useEffect(() => {
     if (!active) return
@@ -22,8 +43,8 @@ export function useInboxKeys({ active, enter, items, selectedKey, move, focusDet
       const mod = e.metaKey || e.ctrlKey
       const key = e.key.toLowerCase()
       if (mod && e.shiftKey && (key === 'a' || key === 'd')) {
-        const item = items.find((i) => i.key === selectedKey)
-        if (item?.kind !== 'permission') return
+        if (item?.kind !== 'permission' || !armed || overlayOpen()) return
+        if (useNodes.getState().byId[item.nodeId]?.conn !== 'ready') return
         const nodeId = item.nodeId
         // handleApproveShortcut 自己只认 tool 类、只选 allow_once / reject_once、忽略 e.repeat、输入框里不触发
         handleApproveShortcut(e, {
@@ -58,5 +79,5 @@ export function useInboxKeys({ active, enter, items, selectedKey, move, focusDet
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, enter, items, selectedKey, move, focusDetail, choose, t])
+  }, [active, enter, item, armed, selectedKey, move, focusDetail, choose, t])
 }

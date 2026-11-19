@@ -3,6 +3,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { archiveSession, setFollowUp } from '@/features/session/actions'
+import { holdHandled, unmarkHandled } from '@/features/session/inflight'
 import { describeError } from '@/lib/errors'
 import { ArchiveWorktreeDialog, effectiveChoice, type DisposeInfo } from '@/features/worktree/DisposeDialog'
 import { describeArchiveError } from '@/features/worktree/errors'
@@ -29,7 +30,11 @@ export function useInboxActions(): { actions: InboxActions; dialogs: ReactNode }
     () => ({
       markDone: (s) => {
         // 先改本地（条目马上消失、焦点落到下一条），请求失败 `setFollowUp` 会改回去，这里只提示
-        setFollowUp(s.node_id, s.id, false).catch((e: unknown) => toast.error(t('inbox.markDoneFailed', { error: describeError(e, t) })))
+        holdHandled(`session:${s.id}`)
+        setFollowUp(s.node_id, s.id, false).catch((e: unknown) => {
+          unmarkHandled(`session:${s.id}`)
+          toast.error(t('inbox.markDoneFailed', { error: describeError(e, t) }))
+        })
       },
       archive: (s) => {
         const info = disposeInfo(s)
@@ -37,9 +42,17 @@ export function useInboxActions(): { actions: InboxActions; dialogs: ReactNode }
           setArchiving({ session: s, info })
           return
         }
-        archiveSession(s.node_id, s.id, true).catch((e: unknown) => toast.error(describeArchiveError(e, t)))
+        holdHandled(`session:${s.id}`)
+        archiveSession(s.node_id, s.id, true).catch((e: unknown) => {
+          unmarkHandled(`session:${s.id}`)
+          toast.error(describeArchiveError(e, t))
+        })
       },
-      reviewEnroll: (e) => useEnroll.getState().openDialog(e.nodeId, e.info.enroll_id),
+      reviewEnroll: (e) => {
+        // 批准 / 拒绝在对话框里做，条目随后消失：算在这里处理的
+        holdHandled(`enroll:${e.nodeId}:${e.info.enroll_id}`)
+        useEnroll.getState().openDialog(e.nodeId, e.info.enroll_id)
+      },
     }),
     [t],
   )
@@ -55,9 +68,13 @@ export function useInboxActions(): { actions: InboxActions; dialogs: ReactNode }
       onConfirm={(choice) => {
         const { session, info } = archiving
         setBusy(true)
+        holdHandled(`session:${session.id}`)
         archiveSession(session.node_id, session.id, true, { worktree: effectiveChoice(choice, info).worktree })
           .then(() => setArchiving(null))
-          .catch((e: unknown) => toast.error(describeArchiveError(e, t)))
+          .catch((e: unknown) => {
+            unmarkHandled(`session:${session.id}`)
+            toast.error(describeArchiveError(e, t))
+          })
           .finally(() => setBusy(false))
       }}
     />

@@ -9,7 +9,7 @@ import { resetClientState, signOut as signOutOfHub } from '@/app/session'
 import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { accountNodes, lockedNodes, removedNodes, unlockParam } from '@/features/unlock/nodes'
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
-import { useInboxNowCount } from '@/features/inbox/useInbox'
+import { useInboxNowCount, useInboxOutsideCount } from '@/features/inbox/useInbox'
 import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
 import { useEnroll } from '@/stores/enroll'
 import { cleanHintText } from '@/lib/hint'
@@ -376,6 +376,8 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
     devices.dataUpdatedAt ?? 0,
     order.map((id) => ({ id, pairedAt: nodes[id]?.pairedAt ?? Number.POSITIVE_INFINITY })),
   )
+  // 没勾选的节点上有等你的事：按钮上一个小点（带文字说明，不只靠颜色）
+  const outside = useInboxOutsideCount()
   const only = selected.length === 1 ? nodes[selected[0]!] : undefined
   const label = only ? only.name : selected.length === order.length && selected.length > 0 ? t('sidebar.allNodes') : selected.length > 0 ? t('sidebar.nodesSelected', { count: selected.length, total: order.length }) : t('sidebar.chooseNode')
   return (
@@ -385,6 +387,7 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
           <Server className="size-4 shrink-0 text-fg-subtle" />
           <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
           {only ? <Dot tone={connectionTone(only.conn)} /> : null}
+          {outside > 0 ? <span role="img" aria-label={t('sidebar.otherNodesWaiting', { count: outside })} title={t('sidebar.otherNodesWaiting', { count: outside })} className="size-2.5 shrink-0 rounded-full bg-warning ring-2 ring-bg" data-testid="node-filter-dot" /> : null}
           <ChevronDown className="size-4 shrink-0 text-fg-subtle" />
         </button>
       </MenuTrigger>

@@ -61,7 +61,9 @@ test.describe.serial('待处理', () => {
     await expect(page).toHaveURL(/\/inbox$/, { timeout: CONNECT_TIMEOUT })
     const nav = page.getByTestId('sidebar-inbox')
     await expect(nav).toHaveAttribute('aria-current', 'page')
-    await expect(page.getByTestId('sidebar-inbox-count')).toHaveText('1', { timeout: CONNECT_TIMEOUT })
+    await expect(page.getByTestId('sidebar-inbox-count')).toHaveText('1', {
+      timeout: CONNECT_TIMEOUT,
+    })
     await expect(page.getByTestId('sidebar-waiting')).toHaveCount(0)
     await expect(page.getByTestId('sidebar-follow-up')).toHaveCount(0)
     await expect(page).toHaveTitle(/^\(1\) Anycon/)
@@ -81,14 +83,19 @@ test.describe.serial('待处理', () => {
     await expect(card.getByTestId('permission-command')).toBeVisible()
     await expect(pane.getByTestId('inbox-detail-node')).toHaveText(/e2e-node/)
     await expect(pane.getByTestId('inbox-detail-session')).not.toHaveText('')
-    await expect(pane.getByTestId('inbox-open-session')).toHaveAttribute('href', new RegExp(`${sessions[0]}$`))
+    await expect(pane.getByTestId('inbox-open-session')).toHaveAttribute(
+      'href',
+      new RegExp(`${sessions[0]}$`),
+    )
 
     await card.getByTestId('permission-option-allow').click()
     await expect(page.getByTestId('inbox-empty')).toBeVisible({ timeout: 15_000 })
     await expect(rows()).toHaveCount(0)
     await expect(page.getByTestId('sidebar-inbox-count')).toHaveCount(0)
     // 清空之后焦点落在「没有等你的事」上
-    await expect(page.getByRole('heading', { name: /Nothing is waiting for you|没有等你的事/ })).toBeFocused()
+    await expect(
+      page.getByRole('heading', { name: /Nothing is waiting for you|没有等你的事/ }),
+    ).toBeFocused()
 
     // 会话那边：已由这台设备允许
     await page.goto(`${base}/s/${sessions[0]}`)
@@ -103,25 +110,21 @@ test.describe.serial('待处理', () => {
     const node = base.split('/').pop()!
     await page.goto(`/inbox?node=${node}&session=${second}`)
     await expect(rows()).toHaveCount(2, { timeout: CONNECT_TIMEOUT })
-    await expect(page.getByTestId('inbox-detail-pane').getByTestId('inbox-open-session')).toHaveAttribute(
-      'href',
-      new RegExp(`${second}$`),
-    )
+    await expect(
+      page.getByTestId('inbox-detail-pane').getByTestId('inbox-open-session'),
+    ).toHaveAttribute('href', new RegExp(`${second}$`))
     await expect(page).toHaveURL(/\/inbox$/)
-    // 键盘：K 回到上一条，详情换成另一个会话
-    await page.locator('body').click({ position: { x: 5, y: 5 } })
+    // 键盘：K 回到上一条，详情换成另一个会话（焦点在页面上、不在输入框里）
     await page.keyboard.press('k')
-    await expect(page.getByTestId('inbox-detail-pane').getByTestId('inbox-open-session')).toHaveAttribute(
-      'href',
-      new RegExp(`${first}$`),
-    )
-    // 答复选中的那条之后，选中落到剩下的那条
+    await expect(
+      page.getByTestId('inbox-detail-pane').getByTestId('inbox-open-session'),
+    ).toHaveAttribute('href', new RegExp(`${first}$`))
+    // 答复选中的那条（按钮在新显示的头一小会儿是禁用的，Playwright 会等它可用）：这是在这里处理的，所以选中落到剩下的那条
     await page.getByTestId('inbox-detail-pane').getByTestId('permission-option-allow').click()
     await expect(rows()).toHaveCount(1, { timeout: 15_000 })
-    await expect(page.getByTestId('inbox-detail-pane').getByTestId('inbox-open-session')).toHaveAttribute(
-      'href',
-      new RegExp(`${second}$`),
-    )
+    await expect(
+      page.getByTestId('inbox-detail-pane').getByTestId('inbox-open-session'),
+    ).toHaveAttribute('href', new RegExp(`${second}$`))
   })
 
   test('d. 手机宽度：底栏取代抽屉；第一条默认展开，在行内答复；会话页收起底栏、返回后恢复', async () => {
@@ -150,7 +153,10 @@ test.describe.serial('待处理', () => {
     await expect(page).toHaveURL(/\/sessions$/)
     await expect(page.getByTestId('tab-sessions')).toHaveAttribute('aria-current', 'page')
     await expect(page.getByTestId('node-switcher')).toBeVisible()
-    await page.getByRole('link', { name: /run permission/i }).first().click()
+    await page
+      .getByRole('link', { name: /run permission/i })
+      .first()
+      .click()
     await expect(page).toHaveURL(/\/s\/sess_[0-9A-Za-z]+$/)
     await expect(page.getByTestId('tab-bar')).toBeHidden()
     await page.getByTestId('header-back').click()

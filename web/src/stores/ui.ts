@@ -23,6 +23,9 @@ interface UiState {
   paletteOpen: boolean
   setPalette: (v: boolean) => void
   /** 最近一次在「会话」里（`/n/:node…`，不含节点设置）打开的位置：`G` 然后 `S` 回到这里。只在内存里。 */
+  /** 「待处理」页正显示着从通知点进来的那条请求：升级说明先不弹，免得盖住它。 */
+  deferHomeNotice: boolean
+  setDeferHomeNotice: (v: boolean) => void
   lastSessionsPath: string | null
   setLastSessionsPath: (path: string) => void
   /** 写 IndexedDB 失败过（草稿 / 缓存可能丢）：状态栏提示，用户可以关掉。 */
@@ -43,6 +46,8 @@ export const useUi = create<UiState>()((set, get) => ({
   rightDrawerOpen: false,
   paletteOpen: false,
   setPalette: (paletteOpen) => set({ paletteOpen }),
+  deferHomeNotice: false,
+  setDeferHomeNotice: (deferHomeNotice) => set({ deferHomeNotice }),
   lastSessionsPath: null,
   setLastSessionsPath: (lastSessionsPath) => set({ lastSessionsPath }),
   storageError: false,

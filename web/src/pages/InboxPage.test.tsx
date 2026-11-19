@@ -2,14 +2,17 @@
 // 离线节点的缓存要标明、三种布局（桌面分栏 / 平板滑出 / 手机展开）、通知点进来的定位、键盘。
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionOption, PermissionKind } from '@/protocol'
 import { nodeEntry, summary } from '@/test/factories'
 import { mockRouter } from '@/test/routerMock'
 import { resetViewport, setViewport } from '@/test/viewport'
 import { useEnroll } from '@/stores/enroll'
+import { ARM_DELAY_MS } from '@/features/inbox/arming'
+import { useInflight } from '@/features/session/inflight'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
+import { useUi } from '@/stores/ui'
 import { useSessions, type PendingPermission, type SessionItem } from '@/stores/sessions'
 
 const h = vi.hoisted(() => ({
@@ -47,10 +50,19 @@ const req = (id: string, over: Partial<PendingPermission> = {}): PendingPermissi
   expires_at_ms: null,
   ...over,
 })
+/** 详情里换到一条新请求后，答复按钮先锁 `ARM_DELAY_MS`：测试里推进假时钟让它解锁。 */
+const arm = (): void => {
+  act(() => {
+    vi.advanceTimersByTime(ARM_DELAY_MS + 10)
+  })
+}
+const setup = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
 const seed = (o: { sessions?: SessionItem[]; pending?: PendingPermission[] }): void =>
   useSessions.setState({ list: Object.fromEntries((o.sessions ?? []).map((s) => [s.id, s])), pending: Object.fromEntries((o.pending ?? []).map((p) => [p.request_id, p])), open: {} })
 
 beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  useInflight.setState({ ids: new Set(), handled: new Set() })
   h.navigate.mockReset()
   h.respond.mockReset().mockImplementation(async (nodeId: string, p: { request_id: string }) => {
     useSessions.getState().resolvePending(nodeId, p.request_id)
@@ -74,6 +86,8 @@ beforeEach(() => {
   })
   seed({})
 })
+
+afterEach(() => vi.useRealTimers())
 
 const rows = (): HTMLElement[] => screen.queryAllByTestId('inbox-row')
 const rowTitles = (): string[] => rows().map((r) => within(r).getByTestId('inbox-row-main').textContent ?? '')
@@ -111,7 +125,7 @@ describe('list', () => {
   })
 
   it('shows the empty state when nothing waits, and “In progress” as a collapsed row that expands', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ sessions: [sess({ id: 'run', title: 'Long job', status: 'running' }), sess({ id: 'armed', title: 'Flagged job', status: 'running', follow_up: true })] })
     render(<InboxPage />)
     expect(screen.getByTestId('inbox-empty')).toHaveTextContent('Nothing is waiting for you')
@@ -161,7 +175,7 @@ describe('permission requests', () => {
   })
 
   it('selecting another row swaps the card', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ pending: [req('one', { created_at_ms: 1 }), req('two', { created_at_ms: 2 })] })
     render(<InboxPage />)
     await user.click(within(rows()[1]!).getByTestId('inbox-row-main'))
@@ -170,9 +184,10 @@ describe('permission requests', () => {
   })
 
   it('answering sends the option the card offers, and focus lands on the next row', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ pending: [req('one', { created_at_ms: 1 }), req('two', { created_at_ms: 2 }), req('three', { created_at_ms: 3 })] })
     render(<InboxPage />)
+    arm()
     await user.click(screen.getByTestId('permission-option-allow'))
     expect(h.respond).toHaveBeenCalledWith(A, { request_id: 'one', option_id: 'allow', message: undefined })
     await waitFor(() => expect(rows()).toHaveLength(2))
@@ -182,19 +197,21 @@ describe('permission requests', () => {
   })
 
   it('after the last item is handled, focus moves to the “nothing waiting” heading', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ pending: [req('only')] })
     render(<InboxPage />)
+    arm()
     await user.click(screen.getByTestId('permission-option-deny'))
     await waitFor(() => expect(screen.getByTestId('inbox-empty')).toBeInTheDocument())
     expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Nothing is waiting for you' }))
   })
 
   it('when the handled item was the last in the list, focus goes to the one before it', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ pending: [req('one', { created_at_ms: 1 }), req('two', { created_at_ms: 2 })] })
     render(<InboxPage />)
     await user.click(within(rows()[1]!).getByTestId('inbox-row-main'))
+    arm()
     await user.click(screen.getByTestId('permission-option-allow'))
     await waitFor(() => expect(rows()).toHaveLength(1))
     expect(document.activeElement).toBe(within(rows()[0]!).getByTestId('inbox-row-main'))
@@ -227,13 +244,14 @@ describe('permission requests', () => {
     seed({ pending: [req('one')] })
     render(<InboxPage />)
     expect(screen.queryByTestId('inbox-cached')).toBeNull()
+    arm()
     expect(screen.getByTestId('permission-option-allow')).toBeEnabled()
   })
 })
 
 describe('sessions and device requests', () => {
   it('“Done” on a follow-up row clears the mark, and focus goes to the next item', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ sessions: [sess({ id: 'f1', title: 'First', follow_up: true, status: 'idle', updated_at_ms: 1_000 }), sess({ id: 'f2', title: 'Second', follow_up: true, status: 'idle', updated_at_ms: 2_000 })] })
     render(<InboxPage />)
     expect(rowTitles()[0]).toContain('First')
@@ -251,7 +269,7 @@ describe('sessions and device requests', () => {
   })
 
   it('an errored session offers open and archive; archive calls the session action', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ sessions: [sess({ id: 'bad', title: 'Broken', status: 'error' })] })
     render(<InboxPage />)
     expect(within(rows()[0]!).queryByTestId('inbox-done')).toBeNull()
@@ -261,7 +279,7 @@ describe('sessions and device requests', () => {
   })
 
   it('archiving a session that has a worktree asks what to do with it first', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ sessions: [sess({ id: 'wt', status: 'error', worktree: { state: 'active', branch: 'anycon/x', path: '.anycon/worktrees/x', base: 'main' } as SessionItem['worktree'] })] })
     render(<InboxPage />)
     await user.click(within(rows()[0]!).getByTestId('inbox-archive'))
@@ -272,7 +290,7 @@ describe('sessions and device requests', () => {
   })
 
   it('an enroll request has a “Review” action that opens the approval dialog', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     useEnroll.setState({ items: { [`${A}:x`]: { nodeId: A, info: { enroll_id: 'x', expires_at_ms: Date.now() + 60_000, created_at_ms: Date.now(), status: 'wait_approval', method: 'code', approval: true }, expiresAt: Date.now() + 60_000, receivedAt: Date.now(), createdAt: Date.now() } } })
     render(<InboxPage />)
     await user.click(screen.getByTestId('inbox-review'))
@@ -298,7 +316,7 @@ describe('phone', () => {
   })
 
   it('tapping another row expands it, tapping the open one collapses it, and it stays collapsed', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ pending: [req('one', { created_at_ms: 1 }), req('two', { created_at_ms: 2 })] })
     render(<InboxPage />)
     await user.click(within(rows()[1]!).getByTestId('inbox-row-main'))
@@ -316,9 +334,10 @@ describe('phone', () => {
   })
 
   it('after answering the expanded one, the next one is expanded and focused', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ pending: [req('one', { created_at_ms: 1 }), req('two', { created_at_ms: 2 })] })
     render(<InboxPage />)
+    arm()
     await user.click(screen.getByTestId('permission-option-allow'))
     await waitFor(() => expect(rows()).toHaveLength(1))
     expect(within(rows()[0]!).getByTestId('permission-card')).toHaveAttribute('data-request', 'two')
@@ -330,7 +349,7 @@ describe('tablet', () => {
   beforeEach(() => setViewport('tablet'))
 
   it('has no detail until a row is tapped; then it slides over from the right and can be closed', async () => {
-    const user = userEvent.setup()
+    const user = setup()
     seed({ pending: [req('one')] })
     render(<InboxPage />)
     expect(screen.queryByTestId('permission-card')).toBeNull()
@@ -367,15 +386,56 @@ describe('from a notification', () => {
     expect(within(note).getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/n/aaaaaaaa/s/S')
   })
 
-  it('waits while the node has not finished syncing, because the request may not have arrived yet', () => {
-    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', synced: false }), [B]: nodeEntry({ id: B }) } })
+  it('reads the parameters at once (so they do not stay in the URL) and waits while the node has not finished syncing', () => {
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', synced: false, conn: 'noise_handshaking' }), [B]: nodeEntry({ id: B }) } })
     const done = vi.fn()
     render(<InboxPage locate={{ node: 'aaaaaaaa', session: 'S' }} onLocateDone={done} />)
+    expect(done).toHaveBeenCalledTimes(1)
     expect(screen.queryByTestId('inbox-gone')).toBeNull()
-    expect(done).not.toHaveBeenCalled()
+    expect(screen.getByTestId('inbox-connecting')).toHaveTextContent('Waiting for alpha to connect…')
     act(() => seed({ pending: [req('late', { session_id: 'S' })] }))
     expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'late')
-    expect(done).toHaveBeenCalled()
+    expect(screen.queryByTestId('inbox-connecting')).toBeNull()
+  })
+
+  it('once the node has synced and there is nothing, says already handled', () => {
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', synced: false }), [B]: nodeEntry({ id: B }) } })
+    render(<InboxPage locate={{ node: 'aaaaaaaa', session: 'S' }} />)
+    expect(screen.queryByTestId('inbox-gone')).toBeNull()
+    act(() => useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', synced: true }), [B]: nodeEntry({ id: B }) } }))
+    expect(screen.getByTestId('inbox-gone')).toBeInTheDocument()
+  })
+
+  it('a node this browser does not know is not “already handled”: it offers unlock and pair', () => {
+    render(<InboxPage locate={{ node: 'zzzzzzzz', session: 'S' }} />)
+    expect(screen.queryByTestId('inbox-gone')).toBeNull()
+    const note = screen.getByTestId('inbox-unknown-node')
+    expect(within(note).getByTestId('inbox-unlock')).toHaveAttribute('href', '/unlock/zzzzzzzz')
+    expect(within(note).getByRole('link', { name: 'Pair a node' })).toHaveAttribute('href', '/pair')
+  })
+
+  it('shows a request on a node outside the node filter anyway, with a note and a button that ticks the node; it does not switch by itself', async () => {
+    const user = setup()
+    usePrefs.setState({ sidebarNodes: [B] })
+    seed({ pending: [req('hidden', { session_id: 'S', node_id: A }), req('mine', { node_id: B, session_id: 's-mine', created_at_ms: 1 })] })
+    render(<InboxPage locate={{ node: 'aaaaaaaa', session: 'S' }} />)
+    const located = screen.getByTestId('inbox-located')
+    expect(within(located).getAllByTestId('inbox-row')).toHaveLength(1)
+    expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'hidden')
+    expect(screen.getByTestId('inbox-outside-note')).toHaveTextContent('alpha is not ticked in your node filter')
+    // 数字仍然只算勾选的节点
+    expect(screen.getByTestId('inbox-count-now')).toHaveTextContent('1')
+    expect(usePrefs.getState().sidebarNodes).toEqual([B])
+    await user.click(screen.getByTestId('inbox-show-node'))
+    expect(usePrefs.getState().sidebarNodes).toBeNull()
+  })
+
+  it('holds the home notice back while the located request is shown', () => {
+    seed({ pending: [req('one', { session_id: 'S' })] })
+    const { unmount } = render(<InboxPage locate={{ node: 'aaaaaaaa', session: 'S' }} />)
+    expect(useUi.getState().deferHomeNotice).toBe(true)
+    unmount()
+    expect(useUi.getState().deferHomeNotice).toBe(false)
   })
 })
 
@@ -432,6 +492,7 @@ describe('keyboard', () => {
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ top: 10, bottom: 60, left: 0, right: 10, width: 10, height: 50, x: 0, y: 10, toJSON: () => ({}) })
     seed({ pending: [req('one', { created_at_ms: 1, options: [ALWAYS, ALLOW, DENY] })] })
     render(<InboxPage />)
+    arm()
     key({ key: 'A', metaKey: true, shiftKey: true })
     expect(h.respond).toHaveBeenCalledWith(A, { request_id: 'one', option_id: 'allow' })
   })
@@ -440,20 +501,23 @@ describe('keyboard', () => {
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ top: 10, bottom: 60, left: 0, right: 10, width: 10, height: 50, x: 0, y: 10, toJSON: () => ({}) })
     seed({ pending: [req('one', { created_at_ms: 1 })] })
     const { unmount } = render(<InboxPage />)
+    arm()
     key({ key: 'D', metaKey: true, shiftKey: true })
     expect(h.respond).toHaveBeenCalledWith(A, { request_id: 'one', option_id: 'deny' })
     unmount()
     h.respond.mockClear()
     seed({ pending: [req('two', { options: [ALWAYS] })] })
     render(<InboxPage />)
+    arm()
     key({ key: 'A', metaKey: true, shiftKey: true })
     expect(h.respond).not.toHaveBeenCalled()
   })
 
-  it('⌘⇧A does not answer plans, questions or mode changes, and not from the input', () => {
+  it('⌘⇧A does not answer a plan (questions, mode changes and other requests: InboxPage.safety.test.tsx)', () => {
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ top: 10, bottom: 60, left: 0, right: 10, width: 10, height: 50, x: 0, y: 10, toJSON: () => ({}) })
     seed({ pending: [req('plan', { kind: 'plan', options: [ALLOW] })] })
     render(<InboxPage />)
+    arm()
     key({ key: 'A', metaKey: true, shiftKey: true })
     expect(h.respond).not.toHaveBeenCalled()
   })
@@ -462,6 +526,7 @@ describe('keyboard', () => {
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ top: 5000, bottom: 5050, left: 0, right: 10, width: 10, height: 50, x: 0, y: 5000, toJSON: () => ({}) })
     seed({ pending: [req('one')] })
     render(<InboxPage />)
+    arm()
     key({ key: 'A', metaKey: true, shiftKey: true })
     expect(h.respond).not.toHaveBeenCalled()
   })

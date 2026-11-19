@@ -14,8 +14,8 @@ interface TabDef {
 }
 
 /**
- * 手机底部标签栏的位置（spec/web.md § 14.2）。位置从第一版起固定：之后加「清单」和正中的「＋」，是往这个数组里插两项，
- * 不挪现有的三个。
+ * 手机底部标签栏的位置（spec/web.md § 14.2）。现在是待处理 / 会话 / 更多；最终是 待处理 / 清单 / ＋ / 会话 / 更多，清单和正中的「＋」
+ * 到时插在「待处理」和「会话」之间，做完之前不渲染（不放点了没反应的入口）。
  */
 export const TABS: readonly TabDef[] = [
   { id: 'inbox', to: '/inbox', labelKey: 'tabs.inbox', icon: Inbox },

@@ -16,7 +16,7 @@ export const ERROR_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 export const SECTIONS = ['now'] as const
 export type InboxSectionId = (typeof SECTIONS)[number]
 
-export type InboxItemKind = 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error'
+export type InboxItemKind = 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error' | 'waiting'
 
 interface ItemBase {
   /** 稳定的 key：列表、选中、焦点都靠它。 */
@@ -41,7 +41,11 @@ export interface EnrollInboxItem extends ItemBase {
 }
 
 export interface SessionInboxItem extends ItemBase {
-  kind: 'follow_up' | 'error'
+  /**
+   * `waiting`：会话摘要说它在等审批，但这个页面还没有那条请求（刷新后还没同步完、节点离线）：来自缓存的摘要，
+   * 没有请求详情、没有答复按钮，只能打开会话；请求到了之后由真正的请求条目取代。
+   */
+  kind: 'follow_up' | 'error' | 'waiting'
   sessionId: string
   session: SessionItem
 }
@@ -124,12 +128,18 @@ export function deriveInbox(i: InboxInputs): InboxModel {
   const inProgress: SessionItem[] = []
   for (const s of Object.values(i.sessions)) {
     if (!picked.has(s.node_id) || s.archived) continue
+    // 已经以权限请求列在「现在」里了：不重复列，也不算「进行中」或「待处理」
+    if (requested.has(s.id)) continue
+    if (isWaiting(s)) {
+      now.push({ key: `waiting:${s.id}`, section: 'now', kind: 'waiting', nodeId: s.node_id, sessionId: s.id, session: s, sinceMs: s.updated_at_ms, expiresAtMs: null })
+      continue
+    }
     if (isActiveStatus(s.status)) {
-      if (!requested.has(s.id)) inProgress.push(s)
+      inProgress.push(s)
       continue
     }
     // 标了「待处理」又出错的会话只列一次，按「待处理」算：用户明确标过它；清掉标记后它仍在 7 天内就以出错的身份回来
-    if (isFollowUpReady(s) && !isWaiting(s) && !requested.has(s.id)) {
+    if (isFollowUpReady(s)) {
       now.push({ key: `session:${s.id}`, section: 'now', kind: 'follow_up', nodeId: s.node_id, sessionId: s.id, session: s, sinceMs: s.updated_at_ms, expiresAtMs: null })
     } else if (isRecentError(s, i.now)) {
       now.push({ key: `session:${s.id}`, section: 'now', kind: 'error', nodeId: s.node_id, sessionId: s.id, session: s, sinceMs: s.updated_at_ms, expiresAtMs: null })

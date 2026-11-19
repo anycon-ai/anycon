@@ -34,6 +34,7 @@ export function useItemInfo(item: InboxItem): ItemInfo {
     case 'plan':
     case 'question':
       return { ...base, title: item.request.title, sessionTitle: listed?.title || item.sessionId, sessionId: item.sessionId, project: listed?.project ?? undefined, since: t('inbox.waitingSince', { time }) }
+    case 'waiting':
     case 'follow_up':
     case 'error':
       return {
@@ -41,7 +42,7 @@ export function useItemInfo(item: InboxItem): ItemInfo {
         title: item.session.title || item.session.id,
         sessionId: item.session.id,
         project: item.session.project ?? undefined,
-        since: t(item.kind === 'error' || item.session.status === 'error' ? 'inbox.erroredSince' : 'inbox.stoppedSince', { time }),
+        since: t(item.kind === 'waiting' ? 'inbox.waitingSince' : item.kind === 'error' || item.session.status === 'error' ? 'inbox.erroredSince' : 'inbox.stoppedSince', { time }),
       }
     case 'enroll':
       return { ...base, title: t('inbox.enrollTitle', { node: cleanHintText(nodeName) || nodeName }), since: t('inbox.requestedSince', { time }) }

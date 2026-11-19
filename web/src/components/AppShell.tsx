@@ -45,6 +45,8 @@ export function AppShell() {
   const wide = useIsWide()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const tab = tabOfPath(pathname)
+  // 地址带着 `?node=&session=` 的 `/inbox`：从通知点进来的，升级说明先不弹
+  const deepLink = useRouterState({ select: (s) => s.location.pathname === '/inbox' && !!(s.location.search as { node?: string; session?: string } | undefined)?.node })
   const inboxCount = useInboxNowCount()
   const setLastSessionsPath = useUi((s) => s.setLastSessionsPath)
   const flyout = useRef<HTMLElement>(null)
@@ -127,7 +129,7 @@ export function AppShell() {
       </div>
       <CommandPalette open={palette} onOpenChange={setPalette} />
       <InboxAnnouncer />
-      <HomeNotice />
+      <HomeNotice deferred={deepLink} />
       <NewProjectHost />
       {/* 别的设备请求接入时的批准对话框、应用内扫码（ADR-36）：任何页面都能打开 */}
       <EnrollApprovalDialog />

@@ -93,3 +93,27 @@ describe('node menu', () => {
     expect(navigate).toHaveBeenCalledWith({ to: '/n/$node', params: { node: 'nnnnnnnn' } })
   })
 })
+
+describe('node filter dot', () => {
+  const other = 'o'.repeat(32)
+  beforeEach(() => {
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'alpha' }), [other]: nodeEntry({ id: other, name: 'beta' }) }, order: [NODE, other], loaded: true })
+  })
+
+  it('shows a labelled dot on the node filter button when nodes outside the filter have things waiting, while the nav count stays on the ticked nodes', () => {
+    useSessions.getState().addPending(NODE, { request_id: 'r1', session_id: 'x', kind: 'tool', title: 't', detail: {}, options: [], created_at_ms: 1 })
+    useSessions.getState().addPending(other, { request_id: 'r2', session_id: 'y', kind: 'tool', title: 't', detail: {}, options: [], created_at_ms: 1 })
+    useSessions.getState().addPending(other, { request_id: 'r3', session_id: 'z', kind: 'tool', title: 't', detail: {}, options: [], created_at_ms: 1 })
+    usePrefs.setState({ sidebarNodes: [NODE] })
+    wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.getByTestId('sidebar-inbox-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('node-filter-dot')).toHaveAccessibleName('2 waiting on nodes outside the filter')
+  })
+
+  it('has no dot when everything is ticked or nothing waits elsewhere', () => {
+    useSessions.getState().addPending(other, { request_id: 'r2', session_id: 'y', kind: 'tool', title: 't', detail: {}, options: [], created_at_ms: 1 })
+    wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.queryByTestId('node-filter-dot')).toBeNull()
+  })
+})
+

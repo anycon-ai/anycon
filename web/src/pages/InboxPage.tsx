@@ -4,8 +4,9 @@ import { CheckCircle2, ChevronRight, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { PageHeader } from '@/components/PageHeader'
 import { SessionDot } from '@/components/StatusDot'
-import { SECTIONS, isArmed, nowItems, type InboxSectionId } from '@/features/inbox/derive'
-import { InboxDetail, InboxRow } from '@/features/inbox/ui/InboxItems'
+import { useArmed } from '@/features/inbox/arming'
+import { SECTIONS, deriveInbox, isArmed, nowItems, type InboxItem, type InboxSectionId, type RequestItem } from '@/features/inbox/derive'
+import { GhostDetail, InboxDetail, InboxRow } from '@/features/inbox/ui/InboxItems'
 import { useInboxActions } from '@/features/inbox/ui/useInboxActions'
 import { OVERLAY_CLASS, useInboxSelection, type InboxMode } from '@/features/inbox/useSelection'
 import { useInbox } from '@/features/inbox/useInbox'
@@ -15,7 +16,8 @@ import { resolveNodeParam, shortNodeId } from '@/lib/ids'
 import { useNodeFilter } from '@/lib/nodeFilter'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { useNodes } from '@/stores/nodes'
-import type { SessionItem } from '@/stores/sessions'
+import { useSessions, type SessionItem } from '@/stores/sessions'
+import { useUi } from '@/stores/ui'
 import { Chip } from '@/ui/Misc'
 import { Drawer } from '@/ui/Overlay'
 import { cn } from '@/ui/cn'
@@ -36,58 +38,111 @@ function useInboxMode(): InboxMode {
   return xl ? 'split' : md ? 'overlay' : 'inline'
 }
 
+const isRequest = (i: InboxItem): i is RequestItem => i.kind === 'permission' || i.kind === 'plan' || i.kind === 'question'
+
 /**
- * 「待处理」（`/inbox`，应用的首页，spec/web.md § 14.4）：所有等用户的事，跨左栏节点过滤器勾选的节点。
+ * 「待处理」（`/inbox`，应用的首页，spec/web.md § 4.11）：所有等用户的事，跨左栏节点过滤器勾选的节点。
  * `active`：页面此刻是否在眼前。手机上三个标签页常驻、只是藏起来（保留各自的滚动位置和没发出去的输入），藏着时不处理快捷键和焦点。
+ * `locate`：从通知点进来的目标；页面读到它就调 `onLocateDone`（把地址里的参数去掉），之后靠自己的状态跟着走。
  */
 export function InboxPage({ active = true, locate, onLocateDone }: { active?: boolean; locate?: InboxLocate; onLocateDone?: () => void }) {
   const { t } = useTranslation()
   const model = useInbox()
-  const items = useMemo(() => nowItems(model), [model])
-  const keys = useMemo(() => items.map((i) => i.key), [items])
+  const mainItems = useMemo(() => nowItems(model), [model])
   const mode = useInboxMode()
   const root = useRef<HTMLDivElement>(null)
   const empty = useRef<HTMLHeadingElement>(null)
-  const sel = useInboxSelection({ keys, mode, active, root, empty })
   const { actions, dialogs } = useInboxActions()
-  const { selected: pickedNodes } = useNodeFilter()
+  const { selected: pickedNodes, toggle } = useNodeFilter()
   const order = useNodes((s) => s.order)
+  const setDefer = useUi((s) => s.setDeferHomeNotice)
+
+  // ---- 通知的目标：不受节点过滤器限制（§ 14.3：不在当前勾选里的内容照常显示，写明它属于哪里，不自动切换） ----
+  const [target, setTarget] = useState<InboxLocate | null>(null)
   const [gone, setGone] = useState<InboxLocate | null>(null)
-
-  // 手机上没有「详情」：Enter 就是点那一行（展开 / 收起），照常
-  useInboxKeys({ active, enter: mode !== 'inline', items, selectedKey: sel.selected, move: sel.move, focusDetail: sel.focusDetail, choose: sel.choose })
-
-  // 通知点进来：定位并展开那一条。节点还没同步完（请求还没到）时等一等；同步完了还没有，说明已经被处理了
-  const nodeId = locate ? resolveNodeParam(locate.node, order) : undefined
-  const nodeSynced = useNodes((s) => (nodeId ? s.byId[nodeId]?.synced : false))
-  const handled = useRef<string | null>(null)
-  const { choose } = sel
+  const seen = useRef<string | null>(null)
+  const resolvedKey = useRef<string | null>(null)
   useEffect(() => {
     if (!locate) {
-      handled.current = null
+      seen.current = null
       return
     }
     const id = `${locate.node}:${locate.session}`
-    if (!active || handled.current === id) return
-    const hit = items
-      .filter((i) => (i.kind === 'permission' || i.kind === 'plan' || i.kind === 'question') && i.sessionId === locate.session && i.nodeId === nodeId)
-      .sort((a, b) => a.sinceMs - b.sinceMs)[0]
-    if (hit) {
-      handled.current = id
-      choose(hit.key)
-      setGone(null)
-      onLocateDone?.()
-      requestAnimationFrame(() => document.querySelector(`[data-inbox-row="${CSS.escape(hit.key)}"]`)?.scrollIntoView?.({ block: 'nearest' }))
-    } else if (!nodeId || nodeSynced) {
-      handled.current = id
-      setGone(locate)
-      onLocateDone?.()
+    if (!active || seen.current === id) return
+    seen.current = id
+    resolvedKey.current = null
+    setTarget(locate)
+    setGone(null)
+    // 参数一读到就从地址里去掉，不管请求有没有到
+    onLocateDone?.()
+  }, [locate, active, onLocateDone])
+
+  const nodeId = target ? resolveNodeParam(target.node, order) : undefined
+  const targetNode = useNodes((s) => (nodeId ? s.byId[nodeId] : undefined))
+  const sessions = useSessions((s) => s.list)
+  const pending = useSessions((s) => s.pending)
+  const located = useMemo<RequestItem | null>(() => {
+    if (!target || !nodeId) return null
+    const m = deriveInbox({ sessions, pending, enroll: { items: {}, resolved: {} }, selected: [nodeId], now: Date.now() })
+    return nowItems(m).filter(isRequest).filter((i) => i.sessionId === target.session).sort((a, b) => a.sinceMs - b.sinceMs)[0] ?? null
+  }, [target, nodeId, sessions, pending])
+  // 过滤器之外的节点上的那条：放在列表最前面，带说明
+  const outside = located && !mainItems.some((i) => i.key === located.key) ? located : null
+  const items = useMemo(() => (outside ? [outside, ...mainItems] : mainItems), [outside, mainItems])
+
+  const sel = useInboxSelection({ items, mode, active, root, empty })
+  const { choose } = sel
+  const shown = sel.ghost ? null : (items.find((i) => i.key === sel.selected) ?? null)
+  // 平板上详情只在用户操作（点一行、深链接）之后才滑出；窗口缩放带来的自动选中不弹
+  const overlayOpen = mode === 'overlay' && sel.explicit && sel.selected !== null
+  const detailShown = mode === 'overlay' ? overlayOpen : mode === 'split' ? !!shown : !!shown
+  const armed = useArmed(detailShown && shown ? shown.key : null)
+
+  useInboxKeys({ active, enter: mode !== 'inline', item: shown, armed, selectedKey: sel.selected, move: sel.move, focusDetail: sel.focusDetail, choose })
+
+  useEffect(() => {
+    if (!target || resolvedKey.current !== null || !nodeId) return
+    if (located) {
+      resolvedKey.current = located.key
+      choose(located.key)
+      requestAnimationFrame(() => document.querySelector(`[data-inbox-row="${CSS.escape(located.key)}"]`)?.scrollIntoView?.({ block: 'nearest' }))
+    } else if (targetNode?.synced) {
+      resolvedKey.current = 'gone'
+      setGone(target)
+      setTarget(null)
     }
-  }, [locate, active, items, nodeId, nodeSynced, choose, onLocateDone])
+  }, [target, nodeId, located, targetNode?.synced, choose])
+  // 用户离开了那条请求（选了别的、它没了）：目标放掉。要先看到它被选中过（`choose` 到选中之间隔着一次渲染）
+  const reached = useRef(false)
+  useEffect(() => {
+    const key = resolvedKey.current
+    if (!target || !key || key === 'gone') {
+      reached.current = false
+      return
+    }
+    if (sel.selected === key) reached.current = true
+    else if (reached.current) setTarget(null)
+  }, [target, sel.selected])
+  // 升级说明先不弹，免得盖住从通知点进来的请求
+  useEffect(() => {
+    setDefer(!!target || !!gone)
+    return () => setDefer(false)
+  }, [target, gone, setDefer])
 
   const showNode = pickedNodes.length > 1
-  const selectedItem = items.find((i) => i.key === sel.selected) ?? null
-  const total = items.length
+  const total = mainItems.length
+  const outsideNote = outside ? { onShow: () => toggle(outside.nodeId, true) } : undefined
+  const detail = sel.ghost ? <GhostDetail item={sel.ghost.item} hasNext={items.length > 0} onNext={sel.next} /> : shown ? <InboxDetail key={shown.key} item={shown} armed={armed} outside={shown.key === outside?.key ? outsideNote : undefined} /> : null
+
+  const renderRow = (item: InboxItem) => (
+    <InboxRow key={item.key} item={item} mode={mode} selected={sel.selected === item.key && !sel.ghost} showNode={showNode || item.key === outside?.key} actions={actions} onSelect={sel.select}>
+      {mode === 'inline' && sel.selected === item.key && !sel.ghost ? (
+        <div className="border-t border-border px-3 py-3" data-testid="inbox-inline-detail">
+          {detail}
+        </div>
+      ) : null}
+    </InboxRow>
+  )
 
   return (
     <div ref={root} className="flex min-h-0 flex-1 flex-col" data-testid="inbox-page" data-mode={mode}>
@@ -96,45 +151,46 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
         <div className={cn('scroll-thin min-h-0 min-w-0 flex-1 overflow-y-auto', mode === 'split' && 'max-w-[26rem] shrink-0 border-r border-border xl:w-[360px] xl:flex-none')} data-testid="inbox-list">
           <div className="mx-auto max-w-3xl space-y-4 p-3 sm:p-4">
             {gone ? <GoneNotice locate={gone} onDismiss={() => setGone(null)} /> : null}
+            {target && !located ? <PendingTarget target={target} nodeId={nodeId} onDismiss={() => setTarget(null)} /> : null}
+            {outside ? (
+              <section aria-label={t('inbox.title')} data-testid="inbox-located">
+                <ul className="space-y-2">{renderRow(outside)}</ul>
+              </section>
+            ) : null}
             {SECTIONS.map((id) => {
               const section = model.sections.find((s) => s.id === id)
-              if (!section || section.items.length === 0) return null
+              const rows = section?.items ?? []
+              const ghostAt = mode === 'inline' && sel.ghost ? Math.min(Math.max(sel.ghost.index - (outside ? 1 : 0), 0), rows.length) : -1
+              if (rows.length === 0 && ghostAt < 0) return null
               return (
                 <section key={id} aria-labelledby={`inbox-${id}`} data-testid={`inbox-section-${id}`}>
                   <h2 id={`inbox-${id}`} className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold tracking-wide text-fg-muted uppercase">
                     {t(SECTION_TITLE[id])}
                     <span className="rounded-full bg-bg-muted px-1.5 py-0.5 text-[0.6875rem] font-medium normal-case text-fg-muted" data-testid={`inbox-count-${id}`}>
-                      {section.items.length}
+                      {rows.length}
                     </span>
                   </h2>
                   <ul className="space-y-2" aria-label={t('inbox.list')}>
-                    {section.items.map((item) => (
-                      <InboxRow key={item.key} item={item} mode={mode} selected={sel.selected === item.key} showNode={showNode} actions={actions} onSelect={sel.select}>
-                        {mode === 'inline' && sel.selected === item.key ? (
-                          <div className="border-t border-border px-3 py-3" data-testid="inbox-inline-detail">
-                            <InboxDetail item={item} />
-                          </div>
-                        ) : null}
-                      </InboxRow>
-                    ))}
+                    {rows.flatMap((item, n) => [...(ghostAt === n && sel.ghost ? [<li key="ghost" className="rounded-lg border border-border">{detail}</li>] : []), renderRow(item)])}
+                    {ghostAt >= rows.length && sel.ghost ? <li key="ghost" className="rounded-lg border border-border">{detail}</li> : null}
                   </ul>
                 </section>
               )
             })}
-            {total === 0 ? <EmptyInbox ref={empty} /> : null}
+            {total === 0 && !outside && !(mode === 'inline' && sel.ghost) ? <EmptyInbox ref={empty} /> : null}
             <InProgress sessions={model.inProgress} showNode={showNode} />
           </div>
         </div>
         {mode === 'split' ? (
           <div className="scroll-thin min-w-0 flex-1 overflow-y-auto p-6" data-testid="inbox-detail-pane">
-            <div className="mx-auto max-w-2xl">{selectedItem ? <InboxDetail key={selectedItem.key} item={selectedItem} /> : <p className="text-sm text-fg-subtle">{total > 0 ? t('inbox.pickOne') : ''}</p>}</div>
+            <div className="mx-auto max-w-2xl">{detail ?? <p className="text-sm text-fg-subtle">{items.length > 0 ? t('inbox.pickOne') : ''}</p>}</div>
           </div>
         ) : null}
       </div>
       {mode === 'overlay' ? (
-        <Drawer side="right" open={!!selectedItem} onOpenChange={(open) => !open && sel.clear()} title={t('inbox.title')} closeLabel={t('inbox.closeDetail')} className={OVERLAY_CLASS} width="w-[min(36rem,92vw)]">
+        <Drawer side="right" open={overlayOpen} onOpenChange={(open) => !open && sel.clear()} title={t('inbox.title')} closeLabel={t('inbox.closeDetail')} className={OVERLAY_CLASS} width="w-[min(36rem,92vw)]">
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4 pt-12" data-testid="inbox-overlay">
-            {selectedItem ? <InboxDetail key={selectedItem.key} item={selectedItem} /> : null}
+            {detail}
           </div>
         </Drawer>
       ) : null}
@@ -156,6 +212,15 @@ function EmptyInbox({ ref }: { ref: Ref<HTMLHeadingElement> }) {
   )
 }
 
+function DismissButton({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation()
+  return (
+    <button type="button" onClick={onClick} aria-label={t('common.dismiss')} className="grid size-8 shrink-0 place-items-center rounded-md text-fg-subtle hover:bg-bg-hover max-md:size-11">
+      <X className="size-4" aria-hidden />
+    </button>
+  )
+}
+
 function GoneNotice({ locate, onDismiss }: { locate: InboxLocate; onDismiss: () => void }) {
   const { t } = useTranslation()
   const order = useNodes((s) => s.order)
@@ -171,9 +236,38 @@ function GoneNotice({ locate, onDismiss }: { locate: InboxLocate; onDismiss: () 
           </Link>
         ) : null}
       </div>
-      <button type="button" onClick={onDismiss} aria-label={t('common.dismiss')} className="grid size-8 shrink-0 place-items-center rounded-md text-fg-subtle hover:bg-bg-hover">
-        <X className="size-4" aria-hidden />
-      </button>
+      <DismissButton onClick={onDismiss} />
+    </div>
+  )
+}
+
+/**
+ * 通知的目标还没找到：节点这个浏览器不认识 / 还没解锁（给解锁和配对的入口，不是「已处理」）；认识但还没连上、没同步完（等它，
+ * 同步完之后要么找到、要么说已经处理了）。
+ */
+function PendingTarget({ target, nodeId, onDismiss }: { target: InboxLocate; nodeId: string | undefined; onDismiss: () => void }) {
+  const { t } = useTranslation()
+  const name = useNodes((s) => (nodeId ? s.byId[nodeId]?.name : undefined))
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-border bg-bg-subtle px-3 py-2.5 text-sm" role="status" data-testid={nodeId ? 'inbox-connecting' : 'inbox-unknown-node'}>
+      <div className="min-w-0 flex-1">
+        {nodeId ? (
+          <p>{t('inbox.connecting', { node: name ?? target.node })}</p>
+        ) : (
+          <>
+            <p>{t('inbox.unknownNode')}</p>
+            <p className="mt-1 flex flex-wrap gap-x-4">
+              <Link to="/unlock/$node" params={{ node: target.node }} className="inline-flex min-h-8 items-center font-medium text-accent-text hover:underline max-md:min-h-11" data-testid="inbox-unlock">
+                {t('inbox.unlockNode')}
+              </Link>
+              <Link to="/pair" className="inline-flex min-h-8 items-center font-medium text-accent-text hover:underline max-md:min-h-11">
+                {t('inbox.pairNode')}
+              </Link>
+            </p>
+          </>
+        )}
+      </div>
+      <DismissButton onClick={onDismiss} />
     </div>
   )
 }
@@ -190,7 +284,7 @@ function InProgress({ sessions, showNode }: { sessions: SessionItem[]; showNode:
       <button
         type="button"
         aria-expanded={open}
-        aria-controls="inbox-in-progress-list"
+        aria-controls={open ? 'inbox-in-progress-list' : undefined}
         onClick={() => setOpen((v) => !v)}
         className="flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-fg-muted hover:bg-bg-hover"
         data-testid="inbox-in-progress-toggle"

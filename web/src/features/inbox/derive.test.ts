@@ -80,7 +80,7 @@ describe('inbox items', () => {
     expect(nowItems(m).every((i) => i.kind === 'follow_up')).toBe(true)
   })
 
-  it('does not list a follow-up session again when it is already waiting for approval', () => {
+  it('a follow-up session that is waiting for approval is not listed as follow-up: with its request it is the request, without one it is the cached “waiting” item', () => {
     const m = derive({
       sessions: [
         session({ id: 'w', follow_up: true, status: 'idle', pending_permissions: 1 }),
@@ -89,12 +89,35 @@ describe('inbox items', () => {
       ],
       pending: [request('q', { session_id: 'r' })],
     })
-    expect(keys(m)).toEqual(['request:q'])
+    expect(keys(m).sort()).toEqual(['request:q', 'waiting:w', 'waiting:w2'])
   })
 
   it('unread sessions are not items', () => {
     const m = derive({ sessions: [session({ id: 'u', status: 'idle', last_seq: 9, read_seq: 1 })] })
     expect(nowItems(m)).toEqual([])
+  })
+})
+
+describe('sessions waiting for approval without a request in memory', () => {
+  it('are listed from the cached summary, labelled waiting, whatever the status says', () => {
+    const m = derive({ sessions: [session({ id: 'a', status: 'waiting_permission', updated_at_ms: 5 }), session({ id: 'b', status: 'idle', pending_permissions: 2, updated_at_ms: 3 }), session({ id: 'arch', status: 'waiting_permission', archived: true })] })
+    expect(nowItems(m).map((i) => [i.key, i.kind])).toEqual([['waiting:b', 'waiting'], ['waiting:a', 'waiting']])
+    expect(inboxNowCount(m)).toBe(2)
+  })
+
+  it('are not in progress, and not counted twice once their real requests arrive: the requests replace the placeholder', () => {
+    const waiting = session({ id: 'w', status: 'waiting_permission', pending_permissions: 2 })
+    const before = derive({ sessions: [waiting] })
+    expect(keys(before)).toEqual(['waiting:w'])
+    expect(before.inProgress).toEqual([])
+    const after = derive({ sessions: [waiting], pending: [request('r1', { session_id: 'w' }), request('r2', { session_id: 'w' })] })
+    expect(keys(after).sort()).toEqual(['request:r1', 'request:r2'])
+    expect(after.inProgress).toEqual([])
+    expect(inboxNowCount(after)).toBe(2)
+  })
+
+  it('follow the node filter', () => {
+    expect(keys(derive({ selected: [B], sessions: [session({ id: 'w', status: 'waiting_permission' })] }))).toEqual([])
   })
 })
 

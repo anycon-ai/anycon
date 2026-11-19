@@ -9,6 +9,7 @@ import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import { applyUpdate, buildSettingsUpdate, isEmptyUpdate, mergeUpdates, pendingFields, selectionFromSettings, selectionKey, type SettingsField, type SettingsUpdate, type Selection } from '@/features/settings/resolve'
 import { RpcCallError } from '@/transport/rpcClient'
+import { beginAnswer, endAnswer, useInflight } from './inflight'
 import { respondPermission, setSessionSettings } from './actions'
 import type { SettledReason } from './ui/PermissionCard'
 
@@ -106,8 +107,8 @@ export function useSessionData(sessionId: string) {
 }
 
 /**
- * 答复权限请求（会话页和「待处理」页共用，所以两处的卡片行为一致）：答复期间记着哪些请求在等 daemon 确认（按钮禁用），
- * daemon 回 `not_found` 的请求定格成说明（`settled`：目录变了 / 请求已不存在，不再给按钮、不重试），失败弹 toast。
+ * 答复权限请求（会话页和「待处理」页共用，所以两处的卡片行为一致）：同一个请求已经在答复时第二次答复直接丢掉（`inflight.ts`，
+ * 和 ⌘⇧A / ⌘⇧D 共用）；daemon 回 `not_found` 的请求定格成说明（`settled`：目录变了 / 请求已不存在，不再给按钮、不重试），失败弹 toast。
  */
 export function useRespondPermission(nodeId: string | undefined): {
   respond: (params: PermissionRespondParams) => void
@@ -115,32 +116,29 @@ export function useRespondPermission(nodeId: string | undefined): {
   settled: ReadonlyMap<string, SettledReason>
 } {
   const { t } = useTranslation()
-  const [responding, setResponding] = useState<ReadonlySet<string>>(new Set())
+  const responding = useInflight((s) => s.ids)
   // 原因是目录变了（`folder_changed`）时随后会来 permission_resolved（by_device: daemon），卡片换成「已被 anycon 自动拒绝」；
   // 别的 not_found（`gone`：请求已不存在）就停在说明上
   const [settled, setSettled] = useState<ReadonlyMap<string, SettledReason>>(new Map())
   const respond = useCallback(
     (params: PermissionRespondParams) => {
-      if (!nodeId) return
-      setResponding((s) => new Set(s).add(params.request_id))
+      if (!nodeId || !beginAnswer(params.request_id)) return
+      let ok = false
       respondPermission(nodeId, params)
         .then((outcome) => {
+          ok = true
           if (outcome === 'answered') return
           const reason: SettledReason = outcome === 'denied_folder_changed' ? 'folder_changed' : 'gone'
           setSettled((s) => new Map(s).set(params.request_id, reason))
           toast.info(t(outcome === 'denied_folder_changed' ? 'permission.deniedFolderChanged' : 'permission.requestGone'))
         })
         .catch((e: unknown) => {
-          if (e instanceof RpcCallError && e.kind === 'rpc' && e.code === 'already_resolved') toast.info(t('permission.alreadyResolved'))
-          else toast.error(describeError(e, t))
+          if (e instanceof RpcCallError && e.kind === 'rpc' && e.code === 'already_resolved') {
+            ok = true
+            toast.info(t('permission.alreadyResolved'))
+          } else toast.error(describeError(e, t))
         })
-        .finally(() =>
-          setResponding((s) => {
-            const n = new Set(s)
-            n.delete(params.request_id)
-            return n
-          }),
-        )
+        .finally(() => endAnswer(params.request_id, ok))
     },
     [nodeId, t],
   )

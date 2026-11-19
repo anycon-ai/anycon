@@ -2,9 +2,10 @@
 // 权限请求、计划、提问在详情里用的是会话页同一个 `PermissionCard`，按钮只在详情里：行上没有任何不看内容就能答复的入口。
 import { useMemo, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, ChevronRight, ClipboardList, ExternalLink, Flag, HelpCircle, ShieldQuestion, Smartphone } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ShieldQuestion, Smartphone } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { displayHint } from '@/lib/hint'
+import { shortNodeId } from '@/lib/ids'
 import { useDeviceLabel, useRespondPermission } from '@/features/session/hooks'
 import { PermissionCard } from '@/features/session/ui/PermissionCard'
 import { useNodes } from '@/stores/nodes'
@@ -33,6 +34,7 @@ const KIND_ICON: Record<InboxItemKind, typeof Flag> = {
   enroll: Smartphone,
   follow_up: Flag,
   error: AlertTriangle,
+  waiting: Hourglass,
 }
 
 /** 不靠颜色分辨：每种都有文字标签。 */
@@ -43,6 +45,7 @@ const KIND_TONE: Record<InboxItemKind, 'warning' | 'info' | 'danger'> = {
   enroll: 'info',
   follow_up: 'info',
   error: 'danger',
+  waiting: 'warning',
 }
 
 export function CachedChip({ nodeName }: { nodeName: string }) {
@@ -101,7 +104,7 @@ export function InboxRow({
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="min-w-0 flex-1 truncate font-medium [overflow-wrap:anywhere]">{info.title}</span>
             <Chip tone={KIND_TONE[item.kind]}>{t(`inbox.kind.${item.kind}`)}</Chip>
-            {info.online ? null : <CachedChip nodeName={info.nodeName} />}
+            {info.online && item.kind !== 'waiting' ? null : <CachedChip nodeName={info.nodeName} />}
           </span>
           {meta ? <span className="mt-0.5 block truncate text-xs text-fg-subtle">{meta}</span> : null}
         </span>
@@ -130,6 +133,7 @@ function RowActions({ item, actions, online, sessionId, nodeParam }: { item: Inb
           </Button>
         </div>
       )
+    case 'waiting':
     case 'follow_up':
     case 'error':
       return (
@@ -139,7 +143,7 @@ function RowActions({ item, actions, online, sessionId, nodeParam }: { item: Inb
               {t('inbox.open')}
             </Link>
           ) : null}
-          {item.kind === 'follow_up' ? (
+          {item.kind === 'waiting' ? null : item.kind === 'follow_up' ? (
             <Button size="sm" variant="primary" className={small} disabled={!online} onClick={() => actions.markDone(item.session)} data-testid="inbox-done">
               {t('inbox.markDone')}
             </Button>
@@ -154,14 +158,14 @@ function RowActions({ item, actions, online, sessionId, nodeParam }: { item: Inb
 }
 
 /** 详情。`data-inbox-detail`：Enter 把焦点移进来时找它。 */
-export function InboxDetail({ item }: { item: InboxItem }) {
+export function InboxDetail({ item, armed, outside }: { item: InboxItem; /** 答复按钮已经解锁（刚换到这条请求的头一小会儿是锁着的，`ARM_DELAY_MS`）。 */ armed: boolean; /** 这条在左栏节点过滤器之外（从通知点进来的）：显示说明和「显示这个节点」。 */ outside?: { onShow: () => void } }) {
   switch (item.kind) {
     case 'permission':
     case 'plan':
     case 'question':
-      return <RequestDetail item={item} />
+      return <RequestDetail item={item} armed={armed} outside={outside} />
     default:
-      return <PlainDetail item={item} />
+      return <PlainDetail item={item} outside={outside} />
   }
 }
 
@@ -207,7 +211,7 @@ function DetailHeader({ item }: { item: InboxItem }) {
   )
 }
 
-function RequestDetail({ item }: { item: RequestItem }) {
+function RequestDetail({ item, armed, outside }: { item: RequestItem; armed: boolean; outside?: { onShow: () => void } }) {
   const { respond, responding, settled } = useRespondPermission(item.nodeId)
   const deviceLabel = useDeviceLabel(item.nodeId)
   const info = useItemInfo(item)
@@ -218,18 +222,20 @@ function RequestDetail({ item }: { item: RequestItem }) {
   const targetMode = block.kind === 'mode_change' && block.detail.mode ? { label: mode?.label ?? block.detail.mode, dangerous: mode?.risk === 'dangerous' } : undefined
   return (
     <div className="space-y-3" data-inbox-detail data-testid="inbox-detail" data-kind={item.kind}>
+      <OutsideNote outside={outside} item={item} />
       <DetailHeader item={item} />
       {/* 和会话页同一个卡片：命令、工作目录、全部选项。节点连不上时按钮禁用（答复发不出去） */}
-      <PermissionCard block={block} deviceLabel={deviceLabel} onRespond={respond} busy={responding.has(item.request.request_id) || !info.online} settled={settled.get(item.request.request_id)} targetMode={targetMode} />
+      <PermissionCard block={block} deviceLabel={deviceLabel} onRespond={respond} busy={!armed || responding.has(item.request.request_id) || !info.online} settled={settled.get(item.request.request_id)} targetMode={targetMode} />
     </div>
   )
 }
 
-function PlainDetail({ item }: { item: Exclude<InboxItem, RequestItem> }) {
+function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem>; outside?: { onShow: () => void } }) {
   const { t } = useTranslation()
   const info = useItemInfo(item)
   return (
     <div className="space-y-3" data-inbox-detail data-testid="inbox-detail" data-kind={item.kind}>
+      <OutsideNote outside={outside} item={item} />
       <h3 className="text-base font-semibold [overflow-wrap:anywhere]">{info.title}</h3>
       <DetailHeader item={item} />
       {item.kind === 'follow_up' ? (
@@ -239,6 +245,7 @@ function PlainDetail({ item }: { item: Exclude<InboxItem, RequestItem> }) {
         </p>
       ) : null}
       {item.kind === 'error' ? <p className="text-sm text-fg-muted">{t('inbox.errorBody')}</p> : null}
+      {item.kind === 'waiting' ? <p className="text-sm text-fg-muted">{t('inbox.waitingBody')}</p> : null}
       {item.kind === 'enroll' ? <EnrollSummary item={item.enroll} nodeName={info.nodeName} /> : null}
     </div>
   )
@@ -251,6 +258,46 @@ function EnrollSummary({ item, nodeName }: { item: EnrollItem; nodeName: string 
     <div className="space-y-1 text-sm text-fg-muted">
       <p>{t('inbox.enrollBody', { node: nodeName })}</p>
       <p className="text-xs text-fg-subtle">{[hint.name ?? t('inbox.enrollUnknown'), hint.platform].filter(Boolean).join(' · ')}</p>
+    </div>
+  )
+}
+
+/** 从通知点进来、但不在左栏节点过滤器勾选里的条目：照常显示，写明它属于哪里，给一个把这个节点勾上的按钮（不自动切换）。 */
+function OutsideNote({ outside, item }: { outside?: { onShow: () => void }; item: InboxItem }) {
+  const { t } = useTranslation()
+  const info = useItemInfo(item)
+  if (!outside) return null
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-sm" data-testid="inbox-outside-note">
+      <span className="min-w-0 flex-1">{t('inbox.outsideFilter', { node: info.nodeName })}</span>
+      <Button size="sm" variant="outline" className="max-md:min-h-11" onClick={outside.onShow} data-testid="inbox-show-node">
+        {t('inbox.showNode')}
+      </Button>
+    </div>
+  )
+}
+
+/** 选中的条目在别处被处理掉了：不替用户挑下一条，留一个占位（`data-inbox-detail`，Enter 能把焦点移进来）。 */
+export function GhostDetail({ item, hasNext, onNext }: { item: InboxItem | null; hasNext: boolean; onNext: () => void }) {
+  const { t } = useTranslation()
+  const sessionId = item && 'sessionId' in item ? item.sessionId : undefined
+  const order = useNodes((s) => s.order)
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-bg-subtle p-3" role="status" data-inbox-detail data-testid="inbox-ghost">
+      <p className="text-sm font-medium">{t('inbox.handledElsewhere')}</p>
+      <p className="text-sm text-fg-muted">{t('inbox.handledElsewhereBody')}</p>
+      <div className="flex flex-wrap gap-2">
+        {hasNext ? (
+          <Button size="sm" variant="primary" className="max-md:min-h-11" onClick={onNext} data-testid="inbox-ghost-next">
+            {t('inbox.next')}
+          </Button>
+        ) : null}
+        {item && sessionId ? (
+          <Link to="/n/$node/s/$session" params={{ node: shortNodeId(item.nodeId, order), session: sessionId }} className="inline-flex min-h-8 items-center text-sm font-medium text-accent-text hover:underline max-md:min-h-11" data-testid="inbox-ghost-open">
+            {t('inbox.openSession')}
+          </Link>
+        ) : null}
+      </div>
     </div>
   )
 }

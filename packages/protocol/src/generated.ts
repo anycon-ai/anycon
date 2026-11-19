@@ -9,6 +9,10 @@ export type AgentStatus =
  * 一个目录为什么不能关联为项目（ADR-33 修订，daemon.md § 10）。
  */
 export type LinkBlock = "hidden" | "sensitive" | "workspace" | "data_dir" | "filesystem_root";
+/**
+ * `todo.update` 的 `clear` 可以清空的可选字段。
+ */
+export type ClearableTodoField = "project" | "due_ms";
 export type DeviceKind = "daemon" | "web" | "cli" | "sdk";
 /**
  * 一项配置能不能被远程客户端改（ADR-43）。
@@ -643,6 +647,14 @@ export type SessionWorkspace =
 export type ClearableSetting =
   ("thinking" | "mode" | "system_prompt_append" | "max_turns" | "max_budget_usd") | "model" | "env";
 export type SyncOutcome = "up_to_date" | "merged" | "conflicts" | "aborted";
+/**
+ * 一项是谁记的。
+ */
+export type TodoSourceKind = "device" | "local" | "agent";
+/**
+ * 清单项的状态。这一步 daemon 不限制状态之间怎么转。
+ */
+export type TodoState = "open" | "working" | "waiting" | "review" | "done" | "dropped";
 
 /**
  * 仅用于导出 schema，不在线上传输。字段名即 TS / Python 的类型名。
@@ -661,6 +673,7 @@ export interface ProtocolSchema {
   blob_put_begin_result: BlobPutBeginResult;
   blob_put_chunk_params: BlobPutChunkParams;
   browse_entry: BrowseEntry;
+  clearable_todo_field: ClearableTodoField;
   client_info: ClientInfo;
   config_change: ConfigChange;
   config_editable: ConfigEditable;
@@ -790,6 +803,17 @@ export interface ProtocolSchema {
   session_workspace_mode: SessionWorkspaceMode;
   session_worktree: SessionWorktree;
   sync_outcome: SyncOutcome;
+  todo: Todo;
+  todo_add_params: TodoAddParams;
+  todo_changed: TodoChanged;
+  todo_cursor: TodoCursor;
+  todo_id_params: TodoIdParams;
+  todo_list_params: TodoListParams;
+  todo_list_result: TodoListResult;
+  todo_source: TodoSource;
+  todo_source_kind: TodoSourceKind;
+  todo_state: TodoState;
+  todo_update_params: TodoUpdateParams;
   trash_entry: TrashEntry;
   workspace_branches_params: WorkspaceBranchesParams;
   workspace_branches_result: WorkspaceBranchesResult;
@@ -1637,6 +1661,10 @@ export interface NodeInfo {
    */
   attachment_limits?: NodeAttachmentLimits | null;
   capabilities: NodeCapabilities;
+  /**
+   * 分组名（`[hub] group`）：名字相同的节点客户端合并显示；是标签，不是访问控制。为空或旧 daemon 时不给。
+   */
+  group?: string | null;
   name: string;
   node_id: string;
   platform: string;
@@ -1687,6 +1715,10 @@ export interface NodeCapabilities {
    */
   preview?: boolean;
   search: boolean;
+  /**
+   * 支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。
+   */
+  todo?: boolean;
   /**
    * 有 workspace（文件夹即项目）。SDK 节点可能没有。
    */
@@ -2603,6 +2635,128 @@ export interface SessionSyncBaseResult {
    */
   conflicts?: string[];
   outcome: SyncOutcome;
+}
+export interface Todo {
+  /**
+   * Markdown，≤ 16 KiB，可以是空串。
+   */
+  body: string;
+  /**
+   * 进入 `done` / `dropped` 的时间；重新打开时清掉。
+   */
+  closed_ms?: number | null;
+  created_ms: number;
+  /**
+   * 想在什么时候之前处理；只用于显示和排序。
+   */
+  due_ms?: number | null;
+  /**
+   * 客户端生成的 UUID；`todo.add` 按它幂等。
+   */
+  id: string;
+  /**
+   * 项目名；不校验项目存在，项目改名 / 删除后原样保留。
+   */
+  project?: string | null;
+  source: TodoSource;
+  state: TodoState;
+  /**
+   * 单行，1–200 字符（去掉首尾空白之后）。
+   */
+  title: string;
+  /**
+   * agent 记的、还没有人收下的项。
+   */
+  unreviewed: boolean;
+  updated_ms: number;
+}
+export interface TodoSource {
+  /**
+   * 经 hub 来的调用带上发起设备的 id。
+   */
+  device_id?: string | null;
+  kind: TodoSourceKind;
+  /**
+   * 这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。
+   */
+  session_id?: string | null;
+}
+export interface TodoAddParams {
+  /**
+   * 调用方自报「这是 agent 加的」。只会让这一项更不被信任，所以不需要校验。
+   */
+  agent?: boolean | null;
+  body?: string | null;
+  due_ms?: number | null;
+  /**
+   * UUID。已经存在时原样返回已有的那一项（幂等）。
+   */
+  id: string;
+  /**
+   * 这一项从哪个会话里来；daemon 只在这一项记成 `kind = agent`、且这个会话存在时才记。
+   */
+  origin_session?: string | null;
+  project?: string | null;
+  title: string;
+}
+/**
+ * `todo.changed` 通知：新建、修改、删除后发给所有在线客户端（包括发起的那一台）。
+ */
+export interface TodoChanged {
+  deleted?: boolean;
+  id: string;
+  /**
+   * `deleted = true` 时没有。
+   */
+  todo?: Todo | null;
+}
+/**
+ * `todo.list` 的翻页游标：上一页最后一项的这两个值。
+ */
+export interface TodoCursor {
+  id: string;
+  updated_ms: number;
+}
+export interface TodoIdParams {
+  id: string;
+}
+export interface TodoListParams {
+  /**
+   * 返回排在这个游标后面的项（按 `(updated_ms, id)` 从新到旧）。
+   */
+  before?: TodoCursor | null;
+  /**
+   * 缺省只给没关闭的；`true` 时也给 `done` / `dropped`。
+   */
+  include_closed?: boolean | null;
+  /**
+   * 缺省 200，上限 1000。
+   */
+  limit?: number | null;
+  project?: string | null;
+}
+export interface TodoListResult {
+  /**
+   * 后面还有没给出的项（一页另有 1 MiB 的字节预算，可能少于 `limit`）。
+   */
+  has_more: boolean;
+  todos: Todo[];
+}
+export interface TodoUpdateParams {
+  body?: string | null;
+  /**
+   * 要清空的可选字段，在合并之后生效。
+   */
+  clear?: ClearableTodoField[];
+  due_ms?: number | null;
+  id: string;
+  project?: string | null;
+  /**
+   * `true`：把 `unreviewed` 清掉（`false` 或对已经收下的项会被忽略）。
+   */
+  reviewed?: boolean | null;
+  state?: TodoState | null;
+  title?: string | null;
 }
 export interface TrashEntry {
   bytes: number;

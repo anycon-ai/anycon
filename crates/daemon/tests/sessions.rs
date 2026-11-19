@@ -1250,6 +1250,47 @@ async fn interject_capable_agents_receive_messages_during_a_turn() {
     td.shutdown().await;
 }
 
+/// 拉起的 agent 环境里有 `ANYCON_AGENT=1` 和自己会话的 `ANYCON_SESSION_ID`，运维配置和会话 env 都覆盖不了
+/// （docs/spec/daemon.md § 5.5、§ 21.2）；每个会话拿到的是自己的 id，resume 之后还是同一个。
+#[tokio::test]
+async fn spawned_agents_get_their_own_session_id_and_nothing_can_override_it() {
+    let td = TestDaemon::start_with(
+        &[
+            ("permissions.allow_session_env", "true"),
+            ("permissions.session_env_allow", "[\"ANYCON_SESSION_ID\", \"ANYCON_AGENT\", \"ANYCON_*\"]"),
+            ("agents.env", "{ ANYCON_SESSION_ID = \"from-operator\" }"),
+            ("agents.fake.env", "{ ANYCON_AGENT = \"0\" }"),
+        ],
+        false,
+    )
+    .await;
+    let mut a = td.client("a");
+    let s1 = create(&td, &mut a, Some("one")).await;
+    let s2 = create(&td, &mut a, Some("two")).await;
+    assert!(wait_status(&td, &mut a, &s1.id, SessionStatus::Idle).await);
+    assert!(wait_status(&td, &mut a, &s2.id, SessionStatus::Idle).await);
+    let spawns = td.fake.spawns.lock().unwrap().clone();
+    assert_eq!(spawns.len(), 2);
+    for s in [&s1, &s2] {
+        let rec = spawns.iter().find(|r| r.session_id == s.id).unwrap();
+        assert_eq!(rec.env["ANYCON_SESSION_ID"], s.id, "the session's own id, not the operator's value");
+        assert_eq!(rec.env["ANYCON_AGENT"], "1");
+    }
+    // 会话 env 想设它们：黑名单挡住（`ANYCON_` 前缀），即使运维把它写进了允许列表
+    for key in ["ANYCON_SESSION_ID", "ANYCON_AGENT"] {
+        let e = a
+            .call::<SessionSummary>(
+                &td,
+                methods::SESSION_CREATE,
+                json!({ "agent": "fake", "settings": { "env": { key: "x" } } }),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.data.unwrap().field.as_deref(), Some(format!("env.{key}").as_str()), "{key}");
+    }
+    td.shutdown().await;
+}
+
 #[tokio::test]
 async fn spawn_environment_layers_config_and_session_env() {
     let td = TestDaemon::start_with(

@@ -107,6 +107,15 @@ pub const SESSION_DIFF: &str = "session.diff";
 /// 把 base 合并进 worktree 分支。
 pub const SESSION_SYNC_BASE: &str = "session.sync_base";
 
+// todo（清单，docs/spec/daemon.md § 21）
+pub const TODO_LIST: &str = "todo.list";
+/// 按 `id` 幂等：已存在时原样返回已有的那一项。
+pub const TODO_ADD: &str = "todo.add";
+pub const TODO_UPDATE: &str = "todo.update";
+pub const TODO_DELETE: &str = "todo.delete";
+/// D→C notification，params = TodoChanged
+pub const TODO_CHANGED: &str = "todo.changed";
+
 // blob（附件，ADR-35）
 /// 开始上传一个附件。
 pub const BLOB_PUT_BEGIN: &str = "blob.put_begin";
@@ -232,6 +241,11 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(SESSION_GIT_STATUS, Some("SessionGitStatusParams"), Some("SessionGitStatus")),
     req(SESSION_DIFF, Some("SessionDiffParams"), Some("SessionDiffResult")),
     req(SESSION_SYNC_BASE, Some("SessionSyncBaseParams"), Some("SessionSyncBaseResult")),
+    req(TODO_LIST, Some("TodoListParams"), Some("TodoListResult")),
+    req(TODO_ADD, Some("TodoAddParams"), Some("Todo")),
+    req(TODO_UPDATE, Some("TodoUpdateParams"), Some("Todo")),
+    req(TODO_DELETE, Some("TodoIdParams"), None),
+    notif(TODO_CHANGED, "TodoChanged"),
     req(BLOB_PUT_BEGIN, Some("BlobPutBeginParams"), Some("BlobPutBeginResult")),
     req(BLOB_PUT_CHUNK, Some("BlobPutChunkParams"), None),
     req(BLOB_PUT_END, Some("BlobIdParams"), Some("AttachmentRef")),

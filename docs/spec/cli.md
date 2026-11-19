@@ -7,7 +7,7 @@
 | 类别 | 例子 | 通道 |
 |---|---|---|
 | **本机管理** | `init` `daemon` `service` `pair` `passwd` `doctor` `devices` `audit` `export` `import` | 本机 Unix socket `~/.anycon/daemon.sock`（Windows：命名管道 `\\.\pipe\anycon-<hash>`，ADR-42），JSON-RPC，和内层协议同一套方法，另加几个只在本机可用的方法（`local.status`、`local.rename_device`、`local.config_reload`、`local.pair_outcome`、`local.export`、`local.import`、`local.set_client`，经 hub 调用一律 `forbidden`）。socket 权限 0600（命名管道：属主和 DACL 都是当前用户，客户端连上后核对属主），不需要 Noise，不经过 hub |
-| **客户端** | `nodes` `agents` `projects` `ls` `new` `send` `attach` `approve` `mcp` | 作为一台设备经 hub 连到目标 daemon，Noise E2E，和 Web / SDK 完全一样 |
+| **客户端** | `nodes` `agents` `projects` `ls` `new` `send` `attach` `approve` `todo` `mcp` | 作为一台设备经 hub 连到目标 daemon，Noise E2E，和 Web / SDK 完全一样 |
 
 `local.set_client { client: "cli" | "mcp" }`：本机连接自报客户端种类（固定枚举，别的值 `invalid`），daemon 据此把这条连接之后的审计设备名记成 `local-cli`（缺省）或 `local-mcp`（`anycon mcp` 用，§ 3.7）；只影响这一条连接，只是标注、不改变权限。
 
@@ -172,7 +172,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 - **连接**：用 CLI 的连接层，全局选项 `--hub` / `--node` / `--local` / `--timeout` 的含义和其它客户端命令一样（默认连本机 daemon 的 socket）。daemon 没在跑不会让 server 退出：`initialize` 和 `tools/list` 照常，工具调用返回错误，daemon 起来之后下一次调用就能用。连上本机 daemon 后先发 `local.set_client { client: "mcp" }`，审计里这条连接的操作记为 `local-mcp`（人敲的命令是 `local-cli`）；经 hub 连远程节点时不发，审计里是配对的设备。
 - **标志**：
   - `--allow-dangerous-modes`：`create_session` 可以选节点标为 `dangerous` 的权限模式，`send_message` 可以向已经处在这类模式的会话发消息。缺省两者都拒绝：包括 `create_session` 没指定 `mode` 而 agent 的默认模式是危险的，以及模式不在节点的 `agent.list` 里、风险判断不了的（未知就不放行）；`cancel_turn` 和只读工具不受这个限制。节点自己的 `permissions.allow_dangerous_modes` 仍是上限，两道都要过
-  - `--allow-nested`：在 anycon 拉起的 agent 里启动（环境里有 `ANYCON_AGENT`）时，缺省 `create_session`、`send_message`、`cancel_turn` 返回错误，只读工具照常；带这个标志放开。这是防误用的护栏，不是安全边界（[daemon.md § 5.5](daemon.md#55-子进程环境)）
+  - `--allow-nested`：在 anycon 拉起的 agent 里启动（环境里有 `ANYCON_AGENT`）时，缺省 `create_session`、`send_message`、`cancel_turn` 返回错误，只读工具照常；带这个标志放开。`add_todo` 不在其内：它不开会话、不触发 turn，只往清单里记一项，在 anycon 拉起的 agent 里也能用，不需要这个标志（见下表和 [§ 3.8](#38-anycon-todo)）。这是防误用的护栏，不是安全边界（[daemon.md § 5.5](daemon.md#55-子进程环境)）
 - **工具**（名字 snake_case，参数用 JSON Schema 声明，多传的参数被拒绝；结果是一个文字块，内容是紧凑 JSON，`get_diff` 带 `path` 时多一个补丁文字块；失败时 `isError: true`）：
 
 | 工具 | 映射到 | 说明 |
@@ -186,6 +186,8 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `send_message` | `session.send` | `session`（id、前缀或 `last`）、`message`、`wait`（缺省 true）、`timeout_seconds`（缺省 50，范围 1–600）。会话处在危险模式时拒绝（见标志） |
 | `cancel_turn` | `session.cancel` | 中断当前 turn |
 | `get_diff` | `session.diff` | `session`、可选 `uncommitted`、`path`；不带 `path` 列文件和行数（≤ 200 个），带 `path` 给补丁（≤ 10 万字符）。在项目目录本身工作的会话只有未提交的改动 |
+| `list_todos` | `todo.list` | 只读。可选 `project`、`include_closed`（缺省不含 `done` / `dropped`）、`limit`（缺省 50，上限 200）；每项带 id、标题、正文（≤ 2 000 字符）、项目、状态、截止时间、来源（`source.kind`）和 `unreviewed`；有没给出的项时 `has_more` 为 true |
+| `add_todo` | `todo.add` | `title`（必填，单行 ≤ 200 字符）、`body`、`project`。**总是带 `agent: true`**，连的是本机 socket 还是经 hub 都一样；环境里有 `ANYCON_SESSION_ID`（在 anycon 拉起的 agent 里）时带上 `origin_session`。写进去的项标着 agent 加的、`unreviewed`，节点上这类项最多 100 个（满了得到明确的错误）。**在 anycon 拉起的 agent 里不需要 `--allow-nested`**。**没有**修改、关闭、删除清单项的工具，也不能指定截止时间 |
 
   `wait` 为 true（`create_session` 和 `send_message` 缺省）时，调用等到**这条消息触发的那一轮**结束（会话忙时消息先排队，等的是排在它后面的那个 turn，不是正在跑的这一个；插话进了正在跑的 turn 就等这个 turn），返回 `outcome`：`completed`（`text` 是这一轮助手的文字，工具调用前后的几段之间留一个空行，上限 30 000 字符、超出保留末尾；`usage` 有这一轮和会话累计的用量；`session_status`）、`cancelled`、`failed`（带 `error`）、**`waiting_permission`**（带请求的 `kind` 和 `title`，立即返回，不等超时）、**`still_running`**（超时：`note` 按实际情况说是 turn 还在跑、排在别的 turn 后面，还是因 `sessions.max_concurrent` 在排队；之后用 `read_session` 查）、**`dropped`**（排队的消息没被处理：会话闲着、这条消息没开过 turn，比如有人在它排队时 `anycon cancel` 清了队列，需要的话重发）。`wait: false` 时返回消息已被接受（`send_message`：`sent`、`queued`；`create_session`：新会话的摘要）。**没有任何批准或拒绝权限请求的工具**：`waiting_permission` 要由人在已配对设备上、或用 `anycon approve` / `anycon deny` 处理。
 - **在 MCP 客户端里配置**：server 命令是 `anycon`，参数是 `mcp`。通用写法（各客户端的配置文件格式不同，字段名大同小异）：
@@ -195,6 +197,27 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
   ```
 
   连别的节点、放开危险模式等都写在 `args` 里：`["mcp", "--node", "mac-mini"]`、`["mcp", "--allow-dangerous-modes"]`。多数 MCP 客户端有自己的工具调用超时（常见 60 秒），长任务把 `timeout_seconds` 留在缺省，超时返回 `still_running` 后用 `read_session` 查，或者调大客户端的超时。`anycon` 要在客户端启动 server 时的 `PATH` 上，否则写绝对路径；`ANYCON_HOME` 非缺省时用 `env` 传。
+
+### 3.8 `anycon todo`
+
+节点上的个人清单（[daemon.md § 21](daemon.md#21-清单)，[ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)）。客户端命令：走 `--hub` / `--node` / `--local` 选出的连接，和 `anycon ls` 一样；节点是旧 daemon（没有 `capabilities.todo`）时得到 `unsupported`。
+
+| 命令 | 说明 |
+|---|---|
+| `anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]` | `todo.add`，id 由 CLI 生成（UUID）。打印 `added <id 前 8 位>  <title>`；`--json` 打印这一项。`--body` 是 Markdown（≤ 16 KiB），`--project` 不校验项目是否存在。**`--due`**：`YYYY-MM-DD`（当天 00:00 UTC），或 RFC 3339 时刻（`2026-12-01T09:00:00Z`、`2026-12-01T17:00+08:00`；秒可省，不收小数秒）；别的写法 → 退出码 2。标题为空 / 超过 200 字符 / 含换行、清单已满（1 000 个没关闭的项）也是错误（退出码 2，说明原因） |
+| `anycon todo ls [--all] [--project <name>] [--json]` | `todo.list`，**一页页翻到 `has_more = false`**，按 `id` 去重。缺省只列没关闭的，`--all` 加上 `done` / `dropped`；按最近修改从新到旧。列：ID（前 8 位）、STATE、DUE（UTC）、PROJECT、BY（agent 加的项写 `agent`，没被收下的写 `agent (unreviewed)`）、TITLE；没有项时打印 `no to-dos`。`--json` 是 `{ "todos": [Todo] }` |
+| `anycon todo done <id>` · `drop <id>` · `reopen <id>` | `todo.update { state }`：`done`、`dropped`、`open`。打印新状态和标题；`--json` 打印这一项 |
+| `anycon todo rm <id>` | `todo.delete`（物理删除） |
+
+`<id>` 接受唯一前缀（UUID 的前几位，不区分大小写），和会话 id 一样：先 `todo.list { include_closed }` 翻全再匹配；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2，提示用更长的前缀。
+
+**在 anycon 拉起的 agent 里**（环境里有 `ANYCON_AGENT` 且不是空串或 `0`，和 `anycon mcp` 是同一个判断）：
+
+- `add` 带 `agent: true`，并把环境里的 `ANYCON_SESSION_ID` 作为 `origin_session`（会话存在才会被记下，[daemon.md § 21.2](daemon.md#212-todo)）。会话里的 agent 不需要配置 MCP 就能跑 `anycon` 命令，这是它记「之后要处理」最顺手的写法
+- `ls` 照常
+- `done` / `drop` / `reopen` / `rm` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做。和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线
+
+这是**护栏，不是安全边界**：`ANYCON_AGENT` 是 agent 能改的环境变量，能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单，对存心隐藏来源的本机进程没有约束力；daemon 只把「带了 `agent: true`」的项标成 agent 加的。
 
 ## 4. 输出约定
 

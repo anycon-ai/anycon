@@ -101,11 +101,25 @@ impl Paths {
     }
 }
 
+/// `hub.group` 的字符数上限。
+pub const NODE_GROUP_MAX_CHARS: u64 = 40;
+
+/// `hub.group` 的格式：单行文本，不含控制字符。
+pub fn validate_node_group(s: &str) -> Result<(), String> {
+    if s.chars().any(char::is_control) {
+        return Err("must be a single line without control characters".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HubConfig {
     pub url: Option<String>,
     pub name: Option<String>,
+    /// 分组名（docs/spec/daemon.md § 21.7）：≤ [`NODE_GROUP_MAX_CHARS`] 个字符，缺省为空。客户端把分组名相同的节点合并显示，
+    /// 它是标签，不是访问控制。热加载，可以远程改。
+    pub group: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -625,6 +639,11 @@ impl Config {
     pub fn is_implicit_acp(&self, id: &str) -> bool {
         anycon_adapters::acp::registry_entry(id).is_some() && self.agents.acp.get(id) == Some(&acp_default())
     }
+    /// `node.info.group`：去掉首尾空白，空 = 不分组。
+    pub fn node_group(&self) -> Option<String> {
+        let g = self.hub.group.trim();
+        (!g.is_empty()).then(|| g.to_string())
+    }
     pub fn node_name(&self) -> String {
         if let Some(n) = self.hub.name.as_ref().filter(|n| !n.is_empty()) {
             return n.clone();
@@ -888,7 +907,7 @@ pub fn set_toml_values(paths: &Paths, edits: Vec<(String, toml_edit::Value)>) ->
 /// 默认的 `config.toml` 文本（`anycon init` 用）。
 pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, workspace_root: &str) -> String {
     let mut s = String::new();
-    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots sessions.* permissions.* notify.* worktree.* enroll.* preview.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
+    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
     s.push_str("[hub]\n");
     match hub_url {
         Some(u) => s.push_str(&format!("url = {}\n", toml_str(u))),
@@ -898,6 +917,7 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
         Some(n) => s.push_str(&format!("name = {}\n", toml_str(n))),
         None => s.push_str("# name = \"my-machine\"\n"),
     }
+    s.push_str("# 分组名：名字相同的节点在客户端的清单里合并显示（只是标签，不是访问控制）\n# group = \"\"\n");
     s.push_str("\n[workspace]\n");
     s.push_str(&format!("root = {}\n", toml_str(workspace_root)));
     s.push_str("# 可以关联为项目（workspace.link）/ 浏览的本机目录范围；绝对路径或 ~/…；[] = 关闭。关联的目录不会被移动或删除。\n");
@@ -963,6 +983,7 @@ fn toml_str(s: &str) -> String {
 /// 某个配置键是否支持热加载（`config set` 提示用）。
 pub fn is_hot_key(key: &str) -> bool {
     if key == "workspace.link_roots"
+        || key == "hub.group"
         || key.starts_with("sessions.")
         || key.starts_with("permissions.")
         || key.starts_with("notify.")

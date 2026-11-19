@@ -1742,7 +1742,9 @@ impl Sessions {
             .ok_or_else(|| AdapterError::NotInstalled(format!("agent {agent} has no probe result")))?;
         let cfg = self.d.config.get();
         let ac = cfg.adapter_config(agent).cloned().unwrap_or_default();
-        let env = self.d.env.for_session(&cfg, agent, &settings.env);
+        // ACP agent 是一个进程服务多个会话，没有「这个会话的 id」可放（见 `DaemonEnv::for_session`）
+        let env_session_id = (info.driver != "acp").then_some(session_id);
+        let env = self.d.env.for_session(&cfg, agent, env_session_id, &settings.env);
         let req = SpawnRequest {
             session_id: session_id.to_string(),
             cwd,
@@ -3697,7 +3699,7 @@ impl Sessions {
         }
     }
 
-    /// 保留期清理：`history_retention` 到期的会话整条删，过期的 scratch 目录清掉，回收站超期条目清掉，
+    /// 保留期清理：`history_retention` 到期的会话整条删，已关闭的清单项（从关闭时间算）一并清，过期的 scratch 目录清掉，回收站超期条目清掉，
     /// 完成后 24 小时仍没被消息引用的附件（blob）删掉。
     pub async fn cleanup(self: &Arc<Self>) {
         let cfg = self.d.config.get();
@@ -3716,6 +3718,8 @@ impl Sessions {
                 }
             }
             warn_err("prune audit log", self.d.store.prune_audit(cutoff).await);
+            // 已关闭的清单项按同一个期限清理，从 `closed_ms` 起算（docs/spec/daemon.md § 21.4）
+            crate::todos::purge_closed(&self.d.store, &self.d.clients, cutoff).await;
         }
         let days = cfg.workspace.scratch_retention_days;
         if days > 0 {

@@ -43,6 +43,7 @@ launchd / systemd / 计划任务 ──► anycon daemon
 [hub]
 url = "https://hub.example.com"
 name = "mac-mini"                     # 节点显示名，可在客户端改
+group = ""                            # 分组名，≤ 40 字符，缺省为空；名字相同的节点在客户端的清单里合并显示（§ 21.7）。热加载，可以远程改
 
 [workspace]
 root = "~/anycon"                     # 主根：放 .scratch/，新项目缺省建在这里（ADR-9）
@@ -113,12 +114,13 @@ level = "info"
 retention_days = 7                     # 只在 daemon 启动时清理一次，长期不重启会累积
 ```
 
-`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
+`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
 **远程修改**（`node.get_config` / `node.set_config`，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）：客户端（Web 的节点设置「限制」标签、SDK）可以读写下面这张白名单里的键，其余一律不行。只收热加载的键，改完不用重启。
 
 | 键 | 类型与范围 | 远程 |
 |---|---|---|
+| `hub.group` | 文本，最多 40 个字符，单行（不含控制字符），缺省为空 | 任意改 |
 | `sessions.max_concurrent` | 整数 1–32 | 任意改 |
 | `sessions.idle_timeout` | 时长 0–7d（`0` = 常驻） | 任意改 |
 | `permissions.request_timeout` | 时长 0–7d（`0` = 不超时） | 任意改 |
@@ -132,7 +134,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 | `permissions.allow_dangerous_modes` | 布尔 | **只能收紧**：`true` → `false` |
 | `preview.enabled` | 布尔 | **只能收紧**：`true` → `false` |
 
-- **名单之外**的键既不出现在 `node.get_config` 里，也不接受（`forbidden`，`data.reason = not_editable`）：尤其是 `agents.*`（`command` / `env` 等于远程执行任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.*`、`enroll.*`（有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`。想放宽权限，或改这些键，只能在机器上 `anycon config set`
+- **名单之外**的键既不出现在 `node.get_config` 里，也不接受（`forbidden`，`data.reason = not_editable`）：尤其是 `agents.*`（`command` / `env` 等于远程执行任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*`（有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`。想放宽权限，或改这些键，只能在机器上 `anycon config set`
 - **只能收紧**的开关远程想从 `false` 改成 `true`，回 `forbidden`（`data.reason = tighten_only`，同一请求里别的改动也不写）。Web 上这两个开关在关着时禁用，并提示在机器上运行 `anycon config set <键> true`
 - **环境变量覆盖的键只读**：`node.get_config` 里 `env_override = true`、`editable = no`（`log.level` 还包括被 `ANYCON_LOG` / `RUST_LOG` 接管），`node.set_config` 回 `forbidden`（`data.reason = env_override`）。判断和加载配置时用同一个环境变量层，不会各说各话
 - **`node.get_config`** → `{ items: [{ key, value, kind, editable, env_override, options?, min?, max? }] }`：`value` 是当前生效值（默认值 → 文件 → 环境变量合并后）；`kind` 是 `bool` \| `int` \| `duration` \| `enum` \| `text`；`editable` 是 `any` \| `tighten_only` \| `no`；`options`（`enum`）、`min` / `max`（`int` 是数值，`duration` 是毫秒，`text` 的 `max` 是字符数）给客户端渲染控件和做本地校验用。顺序固定，按配置段分组
@@ -271,8 +273,9 @@ launchd / systemd 起的 daemon 没有用户 shell 的 `PATH`，`nvm`、`bun`、
 
 - 启动时执行 `$SHELL -ilc 'printenv -0 2>/dev/null || env -0'`（15 秒超时；失败再试一次非交互的 `-lc`），把结果作为 **daemon 环境**：找 agent、拉起 agent 都用它。macOS 自带的 BSD `printenv` 没有 `-0`（报 `illegal option`，整个解析会失败），所以回落到 `env -0`。两次都失败则退回进程自身环境并在日志和 `doctor` 里警告。桌面应用通常在壳层做这件事，anycon 没有桌面壳，所以放在 daemon 里。用户的 rc 文件重时这一步要 1–4 秒、期间 socket 还没开；测试 / CI 里可设 `agents.env_from_login_shell = false`（环境变量 `ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL=false`）跳过
 - **Windows** 上不跑登录 shell，直接用进程环境：用户的环境变量在注册表里，进程（包括计划任务拉起的 daemon）启动时就拿到了；从 Git Bash 里启动时的 `SHELL` 是 MSYS 路径，不用它。Windows 的变量名不区分大小写，daemon 环境里的键统一大写（`Path` 存成 `PATH`），叠加配置和会话 env 时同名变量互相覆盖，不会以两种写法并存
-- 从 daemon 环境里**剔除** `CLAUDECODE`、`CLAUDE_CODE_ENTRYPOINT`、`CLAUDE_CODE_SSE_PORT`、`CLAUDE_AGENT_SDK_VERSION`、`ANYCON_AGENT`（见下一条，拉起 agent 时再放回去）这类「我正在某个 agent 会话里」的标记：用户常在 Claude Code 的终端里敲 `anycon daemon`，不剔除的话拉起的 Claude Code 会拒绝嵌套启动。剔除只在 daemon 构造环境时做一次，adapter 不再重复剔除
+- 从 daemon 环境里**剔除** `CLAUDECODE`、`CLAUDE_CODE_ENTRYPOINT`、`CLAUDE_CODE_SSE_PORT`、`CLAUDE_AGENT_SDK_VERSION`、`ANYCON_AGENT`、`ANYCON_SESSION_ID`（见下一条，拉起 agent 时再放回去）这类「我正在某个 agent 会话里」的标记：用户常在 Claude Code 的终端里敲 `anycon daemon`，不剔除的话拉起的 Claude Code 会拒绝嵌套启动。剔除只在 daemon 构造环境时做一次，adapter 不再重复剔除
 - **拉起 agent 时最后一步**往环境里放 `ANYCON_AGENT=1`（`DaemonEnv::for_session`），标记「这个进程是 anycon 拉起的 agent，或它的子进程」。它在 daemon 环境、`agents.env`、会话 `env` 都叠加完之后才写，所以谁也覆盖不了（会话 env 里 `ANYCON_` 前缀本来也在黑名单里）。`anycon mcp` 看到它就默认拒绝会改状态的工具，防止 agent 在 anycon 会话里经 MCP 再开会话（[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）；这只是防误用的护栏，agent 能改自己的环境。探测（`agent.list` 的探测、`doctor`）用的环境不带它
+- 同一步还放 `ANYCON_SESSION_ID=<这个会话的 id>`（`DaemonEnv::for_session` 的 `session_id` 参数）：`anycon mcp` 的 `add_todo` 和 `anycon todo add` 读到它，在 `todo.add` 里带上 `origin_session`，让清单项记下从哪个会话来（§ 21.2）。和 `ANYCON_AGENT` 一样写在最后，daemon 环境、`agents.env`、会话 `env` 都覆盖不了，探测环境里也没有。**ACP agent 例外**：它是一个进程服务多个会话（[ADR-47](../decisions.md#adr-47-acp-adapter每个-agent-一个-adapter一个进程服务它的所有会话)），进程环境里放某一个会话的 id 对别的会话是错的，而且 ACP 按环境区分连接池，放了就成了一个会话一个进程；所以 ACP agent 拿不到 `ANYCON_SESSION_ID`（`ANYCON_AGENT` 照放），它里面的 `anycon todo add` / `add_todo` 照常能用，只是这一项没有来源会话
 - `config.agents.env` 和 `agents.<id>.env` 追加 / 覆盖。这是运维配的环境，**最高优先级**：会话 `env` 不能覆盖里面出现的键
 - 每会话可再传 `env`（`session.create.settings.env`），但**默认整体被拒绝**（`permissions.allow_session_env = false`，ADR-31）。开启之后一个键要同时满足三条才接受，拒绝时返回 `invalid_settings { field: "env.<KEY>", reason }`（实现按 2 → 1 → 3 的顺序检查，所以黑名单键即使写进了允许列表也先按「黑名单」报错；配置加载时对这种允许项会 warn）：
   1. 在运维配置的**允许列表** `permissions.session_env_allow` 里（`anycon_agent_api::env_key_in_allowlist`：每项是精确键名或 `PREFIX_*`，大小写敏感（Windows 上不区分），裸 `*` 不是通配；默认空，所以只开开关不配列表等于什么都不放行）
@@ -841,13 +844,14 @@ SQLite（WAL）。全部表：
 | `agent_cache` | agent id、AgentInfo(JSON)、diagnose 文本、probed_at |
 | `preview_labels` | 预览 label（§ 19.2）：port（主键）、label（唯一）、created_at_ms |
 | `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
+| `todos` | 清单（§ 21.4）：id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
 
 事件表按会话删除；`history_retention` 到期的会话整条删。`VACUUM` 不自动跑，`anycon stats` 显示可回收空间并给命令。
 
-**备份**（见 [§ 4](#4-数据目录)）：`sessions` / `events` / `turns` / `messages_fts` / `blobs` / `worktrees` 里属于某个会话的行，加上 `blobs/` 下的附件文件，就是这个会话的全部历史；`anycon export` 把它们按 [§ 20](#20-导出文件格式anycon-export--import) 的格式打成 zip，`anycon import` 在一个事务里还原一个会话（事件、附件记录、worktree 记录、全文索引、turn 汇总）。`peers`、`enroll_password`、`agent_cache`、`preview_*`、`audit`、`jobs`、`kv`、`linked_projects` 不进导出：它们是这台节点自己的状态，不是会话历史。
+**备份**（见 [§ 4](#4-数据目录)）：`sessions` / `events` / `turns` / `messages_fts` / `blobs` / `worktrees` 里属于某个会话的行，加上 `blobs/` 下的附件文件，就是这个会话的全部历史；`anycon export` 把它们按 [§ 20](#20-导出文件格式anycon-export--import) 的格式打成 zip，`anycon import` 在一个事务里还原一个会话（事件、附件记录、worktree 记录、全文索引、turn 汇总）。`peers`、`enroll_password`、`agent_cache`、`preview_*`、`audit`、`jobs`、`kv`、`linked_projects`、`todos` 不进导出：它们是这台节点自己的状态，不是会话历史。
 
 ## 12. 多客户端
 
@@ -867,7 +871,7 @@ SQLite（WAL）。全部表：
 
 本机 socket 上的调用方 `device_id` 是 `local`，`device_name` 默认 `local-cli`。连接可以用 `local.set_client { client: "cli" | "mcp" }` 自报客户端种类（固定枚举，别的值 `invalid`；只在本机通道有，经 hub 调用 `forbidden`，经 hub 的连接身份由配对的设备决定），自报 `mcp` 之后这条连接的审计设备名是 `local-mcp`（`anycon mcp` 连上就声明，[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）。它只用来在审计里分清「人敲的命令」和「agent 经 MCP 发的」：自报的，不改变任何权限，对故意不声明的本机进程没有约束力。
 
-记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close`。
+记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）。
 
 `fs.read` 的 target 是请求里的 `path`，detail 是 `bytes`（文件总长）。一个大文件要分很多块读（`encoding = "base64"`，每块 512 KiB），逐块记会把审计表灌满、盖掉有意义的行，所以**同一台设备对同一路径的读，5 分钟内只记第一次**。窗口按（设备，路径）算而不是按「第 0 块」算：只读后面的块也会留下一条，不能靠跳过第 0 块绕开审计。窗口只在真正写了一行时刷新，持续读一个文件，每 5 分钟至少有一行；去重表只在内存里，daemon 重启就清空。
 
@@ -946,10 +950,10 @@ SQLite（WAL）。全部表：
 - 配对：短码本地生成、不发给 hub；joiner 要等 `pair.ack` 才落盘（§ 15）
 - 账号内接入（§ 15.1）：daemon 是唯一的验证点，hub 的限速不算数。口令只存 Argon2id 派生值；口令失败计数在发出 CPace 份额**之前**先写库；同时最多一个口令尝试、3 个接入会话；接入码和扫码密钥只在内存里，不落盘、不进日志和审计
 - 导出 / 导入（§ 20）：`local.export` / `local.import` 只在本机 socket 上，经 hub 一律 `forbidden`——它们读写 daemon 所在机器上调用方指定的路径。压缩包里是明文的会话内容（消息、工具输出、附件、会话 `env` 的值），输出文件 0600，要和数据目录一样保管。导入把压缩包当不可信输入：不按压缩包里的路径解压（附件只会写成 `blobs/<blob_id>.<扩展名>`，文件名是校验过格式再拼出来的）、条目名 / 符号链接 / 大小 / SHA-256 / 每个字段都校验，写进库里的 `settings` 在每次拉起 agent 前照常按当前配置复核（危险模式、会话 `env` 策略），`launch_args` 不收
-- `anycon mcp`（ADR-49）是本机 socket 上的又一个客户端：只暴露九个映射到已有 RPC 的工具，没有批准 / 拒绝权限请求的工具（等待审批时调用立即返回 `waiting_permission`），`create_session` 拒绝选 `risk = dangerous` 的模式、`send_message` 拒绝向已处在这类模式的会话发消息（除非 `--allow-dangerous-modes`，`permissions.allow_dangerous_modes` 仍是上限）、没有会话 `env`，在 anycon 拉起的 agent 里（环境有 `ANYCON_AGENT`）默认拒绝会改状态的工具。这些约束在 MCP 这个接口上，daemon 对它没有额外的业务接口，也不能区分它和别的本机客户端，除了自报的审计身份 `local-mcp`；它不是对 agent 的隔离（有 shell 能力的 agent 本来就能直接用 CLI），上限是 `sessions.max_concurrent`、审批和 `config.toml`
+- `anycon mcp`（ADR-49）是本机 socket 上的又一个客户端：只暴露十一个映射到已有 RPC 的工具，没有批准 / 拒绝权限请求的工具（等待审批时调用立即返回 `waiting_permission`），`create_session` 拒绝选 `risk = dangerous` 的模式、`send_message` 拒绝向已处在这类模式的会话发消息（除非 `--allow-dangerous-modes`，`permissions.allow_dangerous_modes` 仍是上限）、没有会话 `env`，在 anycon 拉起的 agent 里（环境有 `ANYCON_AGENT`）默认拒绝会改状态的工具。其中 `add_todo` 例外：它能往节点的清单里加项（不开会话、不触发 turn，不需要 `--allow-nested`），加的项标着 agent 加的、没被收下，数量有上限（§ 21.2、§ 21.3）；没有任何修改、关闭、删除清单项的工具。这些约束在 MCP 这个接口上，daemon 对它没有额外的业务接口，也不能区分它和别的本机客户端，除了自报的审计身份 `local-mcp`（清单据此把它加的项记成 agent 加的、并且不让它清掉「未收下」，同样是自报的标注）；它不是对 agent 的隔离（有 shell 能力的 agent 本来就能直接用 CLI），上限是 `sessions.max_concurrent`、审批和 `config.toml`
 - 本机 socket 0600；CLI 不需要再认证。Windows 上是命名管道：属主和 DACL 都是当前用户、拒绝远程客户端、第一个实例独占名字；管道名字是全局的，客户端连上之后核对管道属主是当前用户，防别的本机用户抢先建同名管道冒充 daemon（ADR-42）
 - dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
-- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes` 和 `preview.enabled` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.*`、`enroll.*` 不在名单里；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
+- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes` 和 `preview.enabled` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*` 不在名单里（`hub.group` 在，它只是客户端显示用的标签）；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
 - `--add-dir` 之类扩大 agent 文件范围的参数不暴露给客户端
 - worktree（§ 10.1）：目录在项目里面，复核规则同关联项目；不把主仓库 `.git` 加进 agent 的可写目录；`.worktreeinclude` 只复制、不执行，不跟随符号链接；daemon 的 git 关掉 fsmonitor / hooks / 外部 diff / textconv / 合并签名，仓库配置里的 filter / merge driver / sshCommand / askPass / credential helper / uploadpack 仍会被执行（已知限制，§ 10.1「限制」）
 
@@ -1158,7 +1162,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 ## 21. 清单
 
-> **尚未实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发、决策档案和分身自动唤醒各自实现时再补规格。
+> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条）尚未实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发、决策档案和分身自动唤醒各自实现时再补规格。
 
 ### 21.1 范围
 
@@ -1173,14 +1177,14 @@ Todo {
   id:         string      // 客户端生成的 UUID；`todo.add` 按它幂等
   title:      string      // 单行，1–200 字符（去掉首尾空白之后）
   body:       string      // Markdown，≤ 16 KiB，可以是空串
-  project?:   string      // 项目名（§ 10）；不校验项目存在，项目改名 / 删除后原样保留
+  project?:   string      // 项目名（§ 10），1–200 个字符、不含控制字符；不校验项目存在，项目改名 / 删除后原样保留
   state:      open | working | waiting | review | done | dropped
   due_ms?:    timestamp   // 想在什么时候之前处理；这一步只用于显示和排序
   source:     { kind: device | local | agent, device_id?, session_id? }   // daemon 填，调用方不能指定
   unreviewed: bool        // agent 记的、还没有人收下的项；见下
   created_ms: timestamp
   updated_ms: timestamp
-  closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉
+  closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉；在 done 和 dropped 之间换时保持原来的
 }
 ```
 
@@ -1208,7 +1212,7 @@ Todo {
 
 `unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。自报了 `mcp` 的本机连接发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 14.4](web.md#144-待处理)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
 
-`session_id` 是这一项从哪个会话里来的。daemon 拉起 agent 时在环境里注入 `ANYCON_SESSION_ID`（和 `ANYCON_AGENT` 一起，§ 5.5，同样不能被会话 `env` 覆盖），`anycon mcp` 和 `anycon todo add` 读到就在 `todo.add` 里带上 `origin_session`；daemon 只在这一项记成 `kind: agent` 时才看它，并且核对这个会话存在才记，否则丢掉这个字段、照常建项。会话之后被删，`session_id` 原样留着，客户端按「会话已不存在」显示。
+`session_id` 是这一项从哪个会话里来的。daemon 拉起 agent 时在环境里注入 `ANYCON_SESSION_ID`（和 `ANYCON_AGENT` 一起，§ 5.5，同样不能被会话 `env` 覆盖；ACP agent 除外，见 § 5.5），`anycon mcp` 和 `anycon todo add` 读到就在 `todo.add` 里带上 `origin_session`；daemon 只在这一项记成 `kind: agent` 时才看它，并且核对这个会话存在才记，否则丢掉这个字段、照常建项。会话之后被删，`session_id` 原样留着，客户端按「会话已不存在」显示。
 
 ### 21.3 RPC
 
@@ -1217,8 +1221,8 @@ Todo {
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；`include_closed` 时也给已关闭的。按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 填上一页最后一项的这两个值，返回排在它后面的。`limit` 缺省 200、上限 1000。一页另有字节预算：各项序列化后的字节累计超过 1 MiB 就停（至少给一项），所以一页可能少于 `limit`；后面还有没给出的项时 `has_more = true` |
-| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是 UUID、`title` 为空或超长、`body` 超长 → `invalid`（`data.field`）；未关闭的项已满 1000 → `invalid`（`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.reason = "too_many_unreviewed"`）。`agent` 和 `origin_session` 见 § 21.2 |
-| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计。`id` 不存在 → `not_found` |
+| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是带连字符的 UUID、`title` 为空或超长（含换行等控制字符）、`body` 超长（按字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
+| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白）；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
 | `todo.delete` | C→D | `{ id }` → `{}`。物理删除。`id` 不存在 → `not_found`（重放时客户端把它当作已完成） |
 | `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
 
@@ -1242,7 +1246,7 @@ Todo {
 
 ### 21.5 审计
 
-`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len, body_len, project?, source_kind }`；`update` 记变了的字段名，`state` 变了另记 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
+`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state`，`unreviewed` 被清掉时也列上），`state` 变了另记 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
 
 ### 21.6 节点离线
 
@@ -1269,6 +1273,6 @@ Todo {
 ### 21.8 客户端入口
 
 - **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；显示哪些节点的清单跟随空间切换；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
-- **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格实现时写进 [cli.md](cli.md)。
+- **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
 - **`anycon mcp`**：两个新工具。`list_todos`（`todo.list`，只读）；`add_todo`（`todo.add`：`title`、`body`、`project`；总是带 `agent: true`，连的是本机还是经 hub 都一样）。**`add_todo` 在 anycon 拉起的 agent 里也能用**，不需要 `--allow-nested`：会话里的 agent 记下「之后要处理」正是它的用途，它不开会话、不触发任何 turn，写进去的项标着 `source.kind = agent`。agent 没有修改、关闭、删除清单项的工具。
 - **SDK**：`@anycon/sdk` 的节点对象上有 `todo.*` 的薄封装和 `todo.changed` 事件，类型来自生成的协议类型；不替调用方做离线缓存和重放。Python SDK 不动。

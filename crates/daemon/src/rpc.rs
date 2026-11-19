@@ -15,10 +15,11 @@ use anycon_protocol::{
     RpcId, RpcMessage, RpcRequest, SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams,
     SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionMarkReadParams,
     SessionPromoteParams, SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams,
-    SessionSetMarksParams, SessionSetSettingsParams, SessionSyncBaseParams, SessionWorkspaceMode, TrashEntry,
-    WorkspaceBranchesParams, WorkspaceBrowseParams, WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams,
-    WorkspaceNameParams, WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams,
-    WorkspaceTrashListResult, WorkspaceWorktreesParams, PROTOCOL_VERSION,
+    SessionSetMarksParams, SessionSetSettingsParams, SessionSyncBaseParams, SessionWorkspaceMode, TodoAddParams,
+    TodoIdParams, TodoListParams, TodoUpdateParams, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams,
+    WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams,
+    WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult,
+    WorkspaceWorktreesParams, PROTOCOL_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -480,6 +481,25 @@ impl Rpc {
                 ok(Empty {})
             }
 
+            // ---------------- 清单（daemon.md § 21）：title / body 是用户内容，不进日志和审计 ----------------
+            methods::TODO_LIST => {
+                let p: TodoListParams = params(p)?;
+                ok(crate::todos::list(c, p).await?)
+            }
+            methods::TODO_ADD => {
+                let p: TodoAddParams = params(p)?;
+                ok(crate::todos::add(c, caller, p).await?)
+            }
+            methods::TODO_UPDATE => {
+                let p: TodoUpdateParams = params(p)?;
+                ok(crate::todos::update(c, caller, p).await?)
+            }
+            methods::TODO_DELETE => {
+                let p: TodoIdParams = params(p)?;
+                crate::todos::delete(c, caller, &p.id).await?;
+                ok(Empty {})
+            }
+
             // ---------------- 预览（ADR-39，daemon.md § 19）----------------
             methods::PREVIEW_OPEN => {
                 let p: PreviewOpenParams = params(p)?;
@@ -660,6 +680,7 @@ impl Rpc {
         NodeInfo {
             node_id: self.node_id(),
             name: c.config.get().node_name(),
+            group: c.config.get().node_group(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol_version: PROTOCOL_VERSION,
             platform: crate::hub::platform(),
@@ -674,6 +695,7 @@ impl Rpc {
                 audit: true,
                 worktree: c.worktrees.available(),
                 preview: c.preview.enabled(),
+                todo: true,
             },
             started_at_ms: c.started_at_ms,
             attachment_limits: Some(NodeAttachmentLimits {

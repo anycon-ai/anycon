@@ -32,6 +32,8 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 pub struct Store {
     pool: SqlitePool,
     path: PathBuf,
+    /// 清单的写入（读-改-写、上限检查）串行化：同一个库里一次只有一个 `todo.*` 写操作（`todos.rs`）。
+    todo_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 /// `sessions` 表的一行。
@@ -306,11 +308,16 @@ impl Store {
             .busy_timeout(Duration::from_secs(10));
         let pool = SqlitePoolOptions::new().max_connections(8).connect_with(opts).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Store { pool, path: path.to_path_buf() })
+        Ok(Store { pool, path: path.to_path_buf(), todo_lock: Default::default() })
     }
 
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// 清单写入的锁（见 `todos.rs`）。
+    pub fn todo_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.todo_lock
     }
 
     pub async fn close(&self) {

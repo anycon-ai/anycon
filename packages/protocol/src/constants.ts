@@ -138,6 +138,18 @@ export const METHODS = {
   /** params = SessionSyncBaseParams → SessionSyncBaseResult */
   SESSION_SYNC_BASE: 'session.sync_base',
 
+  // todo（清单）
+  /** params = TodoListParams → TodoListResult */
+  TODO_LIST: 'todo.list',
+  /** params = TodoAddParams → Todo；按 `id` 幂等：已存在时原样返回已有的那一项 */
+  TODO_ADD: 'todo.add',
+  /** params = TodoUpdateParams → Todo */
+  TODO_UPDATE: 'todo.update',
+  /** params = TodoIdParams */
+  TODO_DELETE: 'todo.delete',
+  /** D→C notification，params = TodoChanged */
+  TODO_CHANGED: 'todo.changed',
+
   // blob（附件，ADR-35）
   /** params = BlobPutBeginParams → BlobPutBeginResult */
   BLOB_PUT_BEGIN: 'blob.put_begin',

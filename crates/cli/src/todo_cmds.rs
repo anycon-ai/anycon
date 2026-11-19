@@ -111,9 +111,9 @@ fn match_prefix<'a>(all: &'a [Todo], key: &str) -> Result<Option<&'a Todo>> {
 }
 
 /// `<id>`（唯一前缀，不区分大小写；id 本身是小写 UUID）。完整的 UUID 不用列清单，直接返回 `Err(id)` 让调用方拿它去调用。
-/// 前缀先在没关闭的项里找，找不到再翻已关闭的；`include_closed` 为 true（`reopen`：目标本来就是已关闭的项）时一次翻全部。
+/// 前缀先在没关闭的项里找，找不到再翻已关闭的；`closed_first`（`reopen`）反过来先找已关闭的（一次翻全部），所以一个前缀同时匹配一个没关闭的和一个已关闭的项时不算歧义。
 /// 没有匹配 → 退出码 1（`not_found`），多个 → 2。
-async fn resolve_todo(conn: &Conn, key: &str, include_closed: bool) -> Result<std::result::Result<Todo, String>> {
+async fn resolve_todo(conn: &Conn, key: &str, closed_first: bool) -> Result<std::result::Result<Todo, String>> {
     let key = key.trim().to_lowercase();
     if key.is_empty() {
         return Err(CliError::usage("the to-do id must not be empty"));
@@ -121,12 +121,25 @@ async fn resolve_todo(conn: &Conn, key: &str, include_closed: bool) -> Result<st
     if key.len() == 36 && uuid::Uuid::parse_str(&key).is_ok() {
         return Ok(Err(key));
     }
-    let mut all = list_all(conn, include_closed, None).await?;
-    let mut found = match_prefix(&all, &key)?.cloned();
-    if found.is_none() && !include_closed {
-        all = list_all(conn, true, None).await?;
-        found = match_prefix(&all, &key)?.cloned();
-    }
+    let found = if closed_first {
+        // reopen：只有已关闭的项能被重新打开，先在它们里找；没有匹配才看没关闭的（它会得到「没变」的回答）
+        let all = list_all(conn, true, None).await?;
+        let (closed, open): (Vec<Todo>, Vec<Todo>) = all.into_iter().partition(|t| t.state.is_closed());
+        match match_prefix(&closed, &key)?.cloned() {
+            Some(t) => Some(t),
+            None => match_prefix(&open, &key)?.cloned(),
+        }
+    } else {
+        // 先在没关闭的项里找，找不到再翻已关闭的
+        let open = list_all(conn, false, None).await?;
+        match match_prefix(&open, &key)?.cloned() {
+            Some(t) => Some(t),
+            None => {
+                let all = list_all(conn, true, None).await?;
+                match_prefix(&all, &key)?.cloned()
+            }
+        }
+    };
     found.map(Ok).ok_or_else(|| CliError::new(EXIT_ERROR, "not_found", format!("no to-do matches {key:?}")))
 }
 

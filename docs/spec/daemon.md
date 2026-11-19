@@ -1177,7 +1177,7 @@ Todo {
   id:         string      // 客户端生成的小写带连字符 UUID；`todo.add` 按它幂等
   title:      string      // 单行，1–200 个 Unicode 码点（去掉首尾空白之后；不含控制字符和 U+2028 / U+2029）
   body:       string      // Markdown，≤ 16 KiB，可以是空串
-  project?:   string      // 项目名（§ 10），1–200 个 Unicode 码点、不含控制字符（去掉首尾空白后存）；不校验项目存在，项目改名 / 删除后原样保留
+  project?:   string      // 项目名（§ 10），1–200 个 Unicode 码点、不含控制字符和 U+2028 / U+2029（去掉首尾空白后存）；不校验项目存在，项目改名 / 删除后原样保留
   state:      open | working | waiting | review | done | dropped
   due_ms?:    timestamp   // 想在什么时候之前处理；这一步只用于显示和排序
   source:     { kind: device | local | agent, device_id?, session_id? }   // daemon 填，调用方不能指定
@@ -1253,7 +1253,7 @@ Todo {
 清单的唯一副本在 daemon。客户端把最近一次拿到的清单放在本地缓存里，节点离线时照常显示；离线期间的新建、修改、删除留在客户端本地，标成「未同步」，收到 `peer_online` 后按原顺序重放：
 
 - `todo.add` 按 `id` 幂等，重放多少次都只有一项
-- `todo.update` 重放的是当时改的那几个字段；离线期间别的设备也改了同一个字段的，后重放的覆盖先到的；得到 `not_found`（这一项在别处被删了）就丢掉这一条
+- `todo.update` 重放的是当时改的那几个字段；离线期间别的设备也改了同一个字段的，后重放的覆盖先到的；得到 `not_found`（这一项在别处被删了）就丢掉这一条；把已关闭的项重新打开的那一条得到 `invalid` / `too_many`（没关闭的项已满 1000 个）时，同样丢掉这一条改动，这一项保持 daemon 上的样子（仍是关闭的），并告诉用户「清单已满，没能重新打开」
 - `todo.delete` 得到 `not_found` 视为已完成
 
 重放结束后客户端再 `todo.list` 一次，以 daemon 的结果为准。
@@ -1262,7 +1262,7 @@ Todo {
 
 每个节点各有一份清单，daemon 之间不通信（ADR-54 第 12 条）。daemon 这边只多一样东西：**分组名**。
 
-- `[hub] group`：文本，≤ 40 个 Unicode 码点，单行（不含控制字符），缺省为空；这条规则对 `config set` 和手写的 `config.toml` 同样成立（加载时校验），和节点显示名（`[hub] name`）放在一起。热加载，加进远程修改的白名单（§ 3，`hub.group`，任意改），所以已配对设备能改，改动照常进审计 `config.changed`；`node.info` 里给出 `group`（旧 daemon 没有这个字段，客户端按空处理）。
+- `[hub] group`：文本，≤ 40 个 Unicode 码点，单行（不含控制字符和 U+2028 / U+2029），缺省为空；这条规则对 `config set` 和手写的 `config.toml` 同样成立（加载时校验），和节点显示名（`[hub] name`）放在一起。热加载，加进远程修改的白名单（§ 3，`hub.group`，任意改），所以已配对设备能改，改动照常进审计 `config.changed`；`node.info` 里给出 `group`（旧 daemon 没有这个字段，客户端按空处理）。
 - 分组名相同（去掉首尾空白、区分大小写）的节点是一组；为空的节点自成一组。它是给客户端看的标签，daemon 不拿它做任何判断，不是访问控制。
 
 合并显示、按分组过滤、把一项移到另一个节点都是客户端的事：

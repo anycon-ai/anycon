@@ -209,7 +209,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `anycon todo done <id>` · `drop <id>` · `reopen <id>` | `todo.update { state }`：`done`、`dropped`、`open`。打印新状态和标题；`--json` 打印这一项 |
 | `anycon todo rm <id>` | `todo.delete`（物理删除） |
 
-`<id>` 接受唯一前缀（UUID 的前几位，不区分大小写；id 本身是小写 UUID），和会话 id 一样：完整的 UUID 直接用，不列清单；前缀先在没关闭的项里找，找不到再翻已关闭的（`reopen` 的目标本来就是已关闭的项，一次翻全部）；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2，提示用更长的前缀。`done` / `drop` / `reopen` 用前缀时，遇到已经是目标状态的项，打印 `nothing changed: … is already …`，不说改了；用完整 UUID 时没列过清单、不知道原来的状态，只打印现在的状态（`<id> is done`）。
+`<id>` 接受唯一前缀（UUID 的前几位，不区分大小写；id 本身是小写 UUID），和会话 id 一样：完整的 UUID 直接用，不列清单；前缀先在没关闭的项里找，找不到再翻已关闭的（`reopen` 反过来：先在已关闭的项里找，只有它们里没有匹配才看没关闭的，所以已经是 open 的项仍得到 `nothing changed`；一个前缀同时匹配一个没关闭的和一个已关闭的项时，`reopen` 用已关闭的，`done` / `drop` 用没关闭的，不算歧义）；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2，提示用更长的前缀。`done` / `drop` / `reopen` 用前缀时，遇到已经是目标状态的项，打印 `nothing changed: … is already …`，不说改了；用完整 UUID 时没列过清单、不知道原来的状态，只打印现在的状态（`<id> is done`）。
 
 **在 anycon 拉起的 agent 里**（环境里有 `ANYCON_AGENT` 且不是空串或 `0`，和 `anycon mcp` 是同一个判断）：
 

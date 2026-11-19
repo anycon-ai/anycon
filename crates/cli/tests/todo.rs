@@ -315,3 +315,44 @@ async fn a_state_change_that_changes_nothing_says_so() {
     assert!(r.stdout.contains(" is open") && !r.stdout.contains("nothing changed"), "{}", r.stdout);
     n.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_prefix_matching_an_open_and_a_closed_item_picks_by_what_the_command_can_act_on() {
+    let n = node().await;
+    // 17 个 id 的首字符只有 16 种取值，必有两项共享；把共享同一个首字符的项收拾成「一个没关闭 + 一个已关闭」
+    for i in 0..17 {
+        n.add(&format!("item {i}")).await;
+    }
+    let all = n.todos(false).await;
+    let ids: Vec<String> = all.iter().map(|t| t["id"].as_str().unwrap().to_string()).collect();
+    let c = ids
+        .iter()
+        .map(|i| i.chars().next().unwrap())
+        .find(|c| ids.iter().filter(|i| i.starts_with(*c)).count() > 1)
+        .unwrap();
+    let group: Vec<&String> = ids.iter().filter(|i| i.starts_with(c)).collect();
+    let (open_id, closed_id) = (group[0].clone(), group[1].clone());
+    for extra in &group[2..] {
+        assert_eq!(n.cli(&["todo", "rm", extra]).await.code, 0);
+    }
+    assert_eq!(n.cli(&["todo", "done", &closed_id]).await.code, 0);
+    let prefix = c.to_string();
+
+    // reopen：用已关闭的那一项，不报歧义
+    let r = n.cli(&["todo", "reopen", &prefix, "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.json()["id"], closed_id.as_str());
+    assert_eq!(r.json()["state"], "open");
+
+    // done：用没关闭的那一项
+    assert_eq!(n.cli(&["todo", "done", &closed_id]).await.code, 0);
+    let r = n.cli(&["todo", "done", &prefix, "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.json()["id"], open_id.as_str());
+    assert_eq!(r.json()["state"], "done");
+
+    // 两项都已关闭时，done 用前缀就有歧义；reopen 同理
+    let r = n.cli(&["todo", "reopen", &prefix]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    n.stop().await;
+}

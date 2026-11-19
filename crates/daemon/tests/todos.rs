@@ -827,7 +827,7 @@ async fn the_table_survives_a_restart() {
     td.shutdown().await;
 }
 
-// ---------------------------------------------------------------- 评审后补充
+// ---------------------------------------------------------------- id 规范、重开上限、并发
 
 #[tokio::test]
 async fn update_and_delete_reject_ids_that_are_not_canonical() {

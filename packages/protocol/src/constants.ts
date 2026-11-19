@@ -125,6 +125,8 @@ export const METHODS = {
   SESSION_RENAME: 'session.rename',
   SESSION_ARCHIVE: 'session.archive',
   SESSION_UNARCHIVE: 'session.unarchive',
+  SESSION_SET_MARKS: 'session.set_marks',
+  SESSION_MARK_READ: 'session.mark_read',
   SESSION_DELETE: 'session.delete',
   SESSION_RESTART: 'session.restart',
   SESSION_SEARCH: 'session.search',

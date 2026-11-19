@@ -368,12 +368,25 @@ describe('sessions waiting for approval without a request', () => {
     expect(rows()[0]).toHaveAttribute('data-kind', 'permission')
   })
 
-  it('when it is the selected row and the real request replaces it, the page does not jump to the request: it shows the placeholder', () => {
+  it('is not auto-selected (there is nothing to read), so the request that replaces it is what gets selected by default', () => {
     seed({ sessions: [waiting()] })
     render(<InboxPage />)
-    expect(rows()[0]).toHaveAttribute('data-selected', 'true')
+    expect(rows()[0]).not.toHaveAttribute('data-selected')
     act(() => seed({ sessions: [waiting()], pending: [req('r', { session_id: 'w' })] }))
-    expect(screen.getByTestId('inbox-ghost')).toBeInTheDocument()
+    expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'r')
+    expect(screen.queryByTestId('inbox-ghost')).toBeNull()
+  })
+
+  it('when the user had picked it and the real request replaces it, the page does not jump to the request: it offers “Show request”', async () => {
+    const user = setup()
+    seed({ sessions: [waiting()] })
+    render(<InboxPage />)
+    await user.click(within(rows()[0]!).getByTestId('inbox-row-main'))
+    act(() => seed({ sessions: [waiting()], pending: [req('r', { session_id: 'w' })] }))
+    expect(screen.getByTestId('inbox-ghost')).toHaveTextContent('The request details have arrived')
     expect(screen.queryByTestId('permission-card')).toBeNull()
+    await user.click(screen.getByTestId('inbox-ghost-show'))
+    expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'r')
+    expect(screen.getByTestId('permission-option-allow')).toBeDisabled()
   })
 })

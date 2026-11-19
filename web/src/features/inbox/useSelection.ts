@@ -34,6 +34,8 @@ export interface Ghost {
   index: number
   /** 它的快照：占位上要写「打开会话」。 */
   item: InboxItem | null
+  /** 它是「等待审批（缓存）」，现在同一个会话的真正的请求到了：占位上给「显示请求」（用户自己点了才选中，没看过内容就不能答复）。 */
+  replacedBy: string | null
 }
 
 export interface InboxSelection {
@@ -96,15 +98,19 @@ export function useInboxSelection({ items, mode, active, root, empty }: { items:
         apply({ key: next, explicit: cur.explicit, ghost: null })
         if (had && active) pendingFocus.current = next ?? 'empty'
       } else {
-        apply({ key: cur.key, explicit: cur.explicit, ghost: { key: cur.key, index, item: before.items.get(cur.key) ?? null } })
+        const gone = before.items.get(cur.key) ?? null
+        const replacement = gone?.kind === 'waiting' ? items.find((i) => (i.kind === 'permission' || i.kind === 'plan' || i.kind === 'question') && i.sessionId === gone.sessionId) : undefined
+        apply({ key: cur.key, explicit: cur.explicit, ghost: { key: cur.key, index, item: gone, replacedBy: replacement?.key ?? null } })
       }
       return
     }
-    if (cur.key === null && keys.length > 0) {
-      if (mode === 'split') apply({ key: keys[0]!, explicit: false, ghost: null })
-      else if (mode === 'inline' && !defaulted.current) apply({ key: keys[0]!, explicit: false, ghost: null })
+    // 默认选中第一条有内容可看的：「等待审批（缓存）」没有详情，不当默认（等真正的请求到了再选，免得先选中占位、再被请求替换）
+    const first = items.find((i) => i.kind !== 'waiting')
+    if (cur.key === null && first) {
+      if (mode === 'split') apply({ key: first.key, explicit: false, ghost: null })
+      else if (mode === 'inline' && !defaulted.current) apply({ key: first.key, explicit: false, ghost: null })
     }
-    if (keys.length > 0) defaulted.current = true
+    if (first) defaulted.current = true
     // keySig 代表 keys 的内容
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keySig, mode, active, apply, root])

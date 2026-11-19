@@ -278,17 +278,22 @@ function OutsideNote({ outside, item }: { outside?: { onShow: () => void }; item
 }
 
 /** 选中的条目在别处被处理掉了：不替用户挑下一条，留一个占位（`data-inbox-detail`，Enter 能把焦点移进来）。 */
-export function GhostDetail({ item, hasNext, onNext }: { item: InboxItem | null; hasNext: boolean; onNext: () => void }) {
+export function GhostDetail({ item, hasNext, onNext, replacedBy, onShow }: { item: InboxItem | null; hasNext: boolean; onNext: () => void; /** 占位是被同一个会话的真正请求取代的。 */ replacedBy: boolean; onShow: () => void }) {
   const { t } = useTranslation()
   const sessionId = item && 'sessionId' in item ? item.sessionId : undefined
   const order = useNodes((s) => s.order)
   return (
     <div className="space-y-2 rounded-lg border border-border bg-bg-subtle p-3" role="status" data-inbox-detail data-testid="inbox-ghost">
-      <p className="text-sm font-medium">{t('inbox.handledElsewhere')}</p>
-      <p className="text-sm text-fg-muted">{t('inbox.handledElsewhereBody')}</p>
+      <p className="text-sm font-medium">{replacedBy ? t('inbox.detailsArrived') : t('inbox.handledElsewhere')}</p>
+      <p className="text-sm text-fg-muted">{replacedBy ? t('inbox.detailsArrivedBody') : t('inbox.handledElsewhereBody')}</p>
       <div className="flex flex-wrap gap-2">
+        {replacedBy ? (
+          <Button size="sm" variant="primary" className="max-md:min-h-11" onClick={onShow} data-testid="inbox-ghost-show">
+            {t('inbox.showRequest')}
+          </Button>
+        ) : null}
         {hasNext ? (
-          <Button size="sm" variant="primary" className="max-md:min-h-11" onClick={onNext} data-testid="inbox-ghost-next">
+          <Button size="sm" variant={replacedBy ? 'outline' : 'primary'} className="max-md:min-h-11" onClick={onNext} data-testid="inbox-ghost-next">
             {t('inbox.next')}
           </Button>
         ) : null}

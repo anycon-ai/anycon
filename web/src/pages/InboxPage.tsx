@@ -132,7 +132,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const showNode = pickedNodes.length > 1
   const total = mainItems.length
   const outsideNote = outside ? { onShow: () => toggle(outside.nodeId, true) } : undefined
-  const detail = sel.ghost ? <GhostDetail item={sel.ghost.item} hasNext={items.length > 0} onNext={sel.next} /> : shown ? <InboxDetail key={shown.key} item={shown} armed={armed} outside={shown.key === outside?.key ? outsideNote : undefined} /> : null
+  const detail = sel.ghost ? <GhostDetail item={sel.ghost.item} hasNext={items.length > 0} onNext={sel.next} replacedBy={!!sel.ghost.replacedBy} onShow={() => sel.ghost?.replacedBy && choose(sel.ghost.replacedBy)} /> : shown ? <InboxDetail key={shown.key} item={shown} armed={armed} outside={shown.key === outside?.key ? outsideNote : undefined} /> : null
 
   const renderRow = (item: InboxItem) => (
     <InboxRow key={item.key} item={item} mode={mode} selected={sel.selected === item.key && !sel.ghost} showNode={showNode || item.key === outside?.key} actions={actions} onSelect={sel.select}>

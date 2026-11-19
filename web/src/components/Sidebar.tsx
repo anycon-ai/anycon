@@ -1,7 +1,7 @@
 import { useMemo, useState, type HTMLAttributes } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, ChevronRight, FolderGit2, FolderPlus, Lock, LogOut, Pin, PinOff, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Flag, FolderGit2, FolderPlus, Lock, LogOut, Pin, PinOff, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices, useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
@@ -9,12 +9,14 @@ import { resetClientState, signOut as signOutOfHub } from '@/app/session'
 import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { accountNodes, lockedNodes, removedNodes, unlockParam } from '@/features/unlock/nodes'
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
+import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
 import { useEnroll } from '@/stores/enroll'
 import { cleanHintText } from '@/lib/hint'
+import { formatRelative } from '@/lib/format'
 import { shortNodeId } from '@/lib/ids'
 import { useNodeFilter } from '@/lib/nodeFilter'
 import { connectionTone } from './useConnectionLabel'
-import { SessionDot } from './StatusDot'
+import { SessionDot, UnreadDot } from './StatusDot'
 import { useHub } from '@/stores/hub'
 import { useNewProject } from '@/stores/newProject'
 import { useNodes } from '@/stores/nodes'
@@ -58,6 +60,26 @@ function useWaitingSessions(selected: string[]) {
         .sort((a, b) => b.updated_at_ms - a.updated_at_ms),
     [list, selected],
   )
+}
+
+/**
+ * 标了「待处理」、已经停下来的会话（只算勾选的节点）：左栏第二个置顶组（spec/web.md § 4.6.1）。等得最久的在最上面——
+ * 排最前的是最容易被忘掉的。待审批的会话已经在上面那一组里，这里不重复列。
+ */
+function useFollowUpSessions(selected: string[]) {
+  const list = useSessions((s) => s.list)
+  return useMemo(
+    () =>
+      Object.values(list)
+        .filter((x) => selected.includes(x.node_id) && isFollowUpReady(x) && !isWaiting(x))
+        .sort((a, b) => a.updated_at_ms - b.updated_at_ms),
+    [list, selected],
+  )
+}
+
+/** 一行上和标注有关的两个字段：未读小红点、「待处理」状态（还在跑 = armed，停下来 = ready）。 */
+function marksOf(s: SessionItem): { unread: boolean; followUp?: 'armed' | 'ready' } {
+  return { unread: isUnread(s), ...(isFollowUp(s) ? { followUp: isFollowUpReady(s) ? ('ready' as const) : ('armed' as const) } : {}) }
 }
 
 /**
@@ -114,6 +136,8 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
   )
 
   const waiting = useWaitingSessions(selected)
+  const followUps = useFollowUpSessions(selected)
+  const lang = useTranslation().i18n.language
   const showRecent = usePrefs((s) => s.sidebarRecent)
   const recent = useRecentSessions(selected, showRecent)
 
@@ -149,7 +173,15 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
               <div className="mb-2" data-testid="sidebar-waiting">
                 <p className="px-2 py-1 text-xs font-semibold tracking-wide text-warning uppercase">{t('sidebar.waiting')}</p>
                 {waiting.map((s) => (
-                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
+                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
+                ))}
+              </div>
+            ) : null}
+            {followUps.length > 0 ? (
+              <div className="mb-2" data-testid="sidebar-follow-up">
+                <p className="px-2 py-1 text-xs font-semibold tracking-wide text-info uppercase">{t('sidebar.followUp')}</p>
+                {followUps.map((s) => (
+                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} project={s.project ?? undefined} since={formatRelative(s.updated_at_ms, lang)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
                 ))}
               </div>
             ) : null}
@@ -157,7 +189,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
               <div className="mb-2" data-testid="sidebar-recent">
                 <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.recent')}</p>
                 {recent.map((s) => (
-                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} project={s.project ?? undefined} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
+                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} project={s.project ?? undefined} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
                 ))}
               </div>
             ) : null}
@@ -181,7 +213,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
               <div className="mt-2">
                 <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.scratch')}</p>
                 {grouped.scratch.map((s) => (
-                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} />
+                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
                 ))}
               </div>
             ) : null}
@@ -218,6 +250,7 @@ export function SidebarRail({ nodeId, onSearch, onPeek, onPin, ...rest }: { node
   const { selected } = useNodeFilter()
   const newProject = useNewProjectAction(nodeId, selected)
   const waiting = useWaitingSessions(selected)
+  const followUps = useFollowUpSessions(selected)
   const icon = 'rounded-md p-2 text-fg-subtle hover:bg-bg-hover hover:text-fg'
   return (
     <div {...rest} className="relative z-10 flex w-12 shrink-0 flex-col items-center gap-1 border-r border-border bg-bg-subtle pt-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]" data-testid="sidebar-rail">
@@ -237,6 +270,11 @@ export function SidebarRail({ nodeId, onSearch, onPeek, onPin, ...rest }: { node
       {waiting.length > 0 ? (
         <button type="button" aria-label={t('sidebar.waitingCount', { count: waiting.length })} title={t('sidebar.waitingCount', { count: waiting.length })} className="mt-1 rounded-full" onClick={onPeek} data-testid="sidebar-rail-waiting">
           <Chip tone="warning">{waiting.length}</Chip>
+        </button>
+      ) : null}
+      {followUps.length > 0 ? (
+        <button type="button" aria-label={t('sidebar.followUpCount', { count: followUps.length })} title={t('sidebar.followUpCount', { count: followUps.length })} className="mt-1 rounded-full" onClick={onPeek} data-testid="sidebar-rail-follow-up">
+          <Chip tone="info">{followUps.length}</Chip>
         </button>
       ) : null}
       <PinButton pinned={false} onToggle={onPin} className="mt-auto p-2" />
@@ -279,7 +317,7 @@ function ProjectBranch({ nodeParam, nodeName, group, activeNode, activeSession, 
       {open ? (
         <div className="ml-3 pl-1">
           {shown.map((s) => (
-            <SessionRow key={s.id} nodeParam={nodeParam} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={activeSession === s.id} onNavigate={onNavigate} />
+            <SessionRow key={s.id} nodeParam={nodeParam} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={activeSession === s.id} onNavigate={onNavigate} {...marksOf(s)} />
           ))}
           {!all && group.sessions.length > RECENT_PER_PROJECT ? (
             <button type="button" className="px-2 py-1 text-xs text-fg-subtle hover:text-fg" onClick={() => setAll(true)}>
@@ -292,9 +330,13 @@ function ProjectBranch({ nodeParam, nodeName, group, activeNode, activeSession, 
   )
 }
 
-/** `project`：不在项目树里的行（Recent）带上所属项目，不然看不出这个会话是哪个项目的。 */
-function SessionRow({ nodeParam, nodeName, project, id, title, status, pending, branch, active, onNavigate }: { nodeParam: string; nodeName?: string; project?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; onNavigate?: () => void }) {
-  const meta = [project, nodeName].filter(Boolean).join(' · ')
+/**
+ * `project`：不在项目树里的行（Recent）带上所属项目，不然看不出这个会话是哪个项目的。
+ * `since`：「待处理」组里写会话停下来多久了。`unread`：未读小红点。`followUp`：标了「待处理」（空心 = 还在跑，实心 = 在等你）。
+ */
+function SessionRow({ nodeParam, nodeName, project, since, id, title, status, pending, branch, active, unread, followUp, onNavigate }: { nodeParam: string; nodeName?: string; project?: string; since?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; unread?: boolean; followUp?: 'armed' | 'ready'; onNavigate?: () => void }) {
+  const { t } = useTranslation()
+  const meta = [project, nodeName, since].filter(Boolean).join(' · ')
   return (
     <Link
       // 分支名放在悬停提示里（左栏窄，不占位置）
@@ -307,8 +349,10 @@ function SessionRow({ nodeParam, nodeName, project, id, title, status, pending, 
       className={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-bg-hover', active && 'bg-accent-subtle font-medium')}
     >
       <SessionDot status={status} />
-      <span className="min-w-0 flex-1 truncate">{title || id}</span>
+      <span className={cn('min-w-0 flex-1 truncate', unread && !active && 'font-semibold')}>{title || id}</span>
       {meta ? <span className="max-w-[40%] shrink-0 truncate text-xs text-fg-subtle">{meta}</span> : null}
+      {followUp ? <Flag className={cn('size-3 shrink-0 text-info', followUp === 'ready' && 'fill-current')} aria-label={followUp === 'ready' ? t('followUp.chipReady') : t('followUp.chipArmed')} data-testid="sidebar-follow-up-flag" /> : null}
+      {unread && !active ? <UnreadDot /> : null}
       {pending > 0 ? <Chip tone="warning">{pending}</Chip> : null}
     </Link>
   )

@@ -100,7 +100,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | `GET /api/invites` · `POST` · `DELETE /:id` | 邀请链接。仅 `single`，管理员专用（`multi` 里 `404 not_found`，开放注册没有邀请）。单次使用、默认 7 天过期、可附备注。受邀者用链接兑换（`/auth/invite`），或者带着邀请码走 OAuth 登录（§ 2.2.1） |
 | `GET /api/push/subscriptions` · `POST` · `DELETE /:id` | Web Push 订阅，按设备（浏览器）存（§ 6.1）。`POST { device_id, endpoint, keys: { p256dh, auth } }`：`device_id` 必须是本账号未吊销的 web 设备（否则 `404 device_not_found`）；endpoint 必须是 https 且主机在白名单里（否则 `400 push_endpoint_not_allowed`）；同一设备只留一条。`POST` 回 `200` 和这一行；`GET` 的行是 `{ id, device_id, device_name, endpoint_host, created_at_ms }`（endpoint 本身和密钥不回显）|
 | `POST /api/push/test` | `{ device_id }`：给这台设备的订阅发一条测试推送（载荷 `{ "category": "test" }`），同步等推送服务的结果（最多 10 秒），回 `{ result: ok | gone | error, status? }`（`gone` 时顺手删了订阅）；设备没有订阅 `404 subscription_not_found`；`TTL: 60` |
-| `GET /api/me/notifications` · `PUT` | 通知偏好：每个 `category` 走哪些渠道（push / email），见 § 6.3。`GET` → `{ categories: [{ category, push, email }]（六个，顺序固定）, email_available（配了 SMTP 且账号绑定了邮箱）, push_available }`；`PUT { categories }` 可以只带要改的类别，回完整结果 |
+| `GET /api/me/notifications` · `PUT` | 通知偏好：每个 `category` 走哪些渠道（push / email），见 § 6.3。`GET` → `{ categories: [{ category, push, email }]（每个类别一行，顺序固定：`permission_requested`、`turn_finished`、`error`、`session_idle`、`follow_up`、`enroll_requested`、`security`）, email_available（配了 SMTP 且账号绑定了邮箱）, push_available }`；`PUT { categories }` 可以只带要改的类别，回完整结果 |
 | `GET /api/quota` | 本账号的用量和上限：`{ devices, devices_max, daemons, daemons_max, connections, connections_max, daily_pairings, daily_pairings_max }`。`*_max` 为 `null` 表示不限，`single` 里恒为 `null`；计数是真的（`daily_pairings` 在 `single` 里不计，恒为 0）。怎么数、在哪里检查见 § 7.1 |
 | `DELETE /api/me` | 删自己的账号，两种模式都有。要求最近登录过：当前浏览器会话**创建**于 10 分钟之内（看创建时间，不看滑动续期后的过期时间），否则 `403 reauth_required`，客户端让用户退出再登录一次。`single` 的 bootstrap 管理员 → `409 bootstrap_admin`（先于 `reauth_required` 判断）。成功 `204` 并清 cookie。删除的内容和顺序见 § 2.6 |
 
@@ -295,7 +295,7 @@ device
 
 ### 6.3 偏好
 
-`notification_prefs(account_id, category, push bool, email bool)`，默认 `permission_requested`、`error`、`enroll_requested`、`security` 全开，`turn_finished` 只开 push，`session_idle` 全关。`security` 的邮件在手边没有任何已配对设备时最有用（比如口令接入被锁定）。`PUT` 的数组可以只带要改的类别（没出现的不动，重复的取最后一个），回完整结果；未知类别 / 缺字段 `400 bad_request` 且整个请求不生效；`turn_finished` / `session_idle` 的 `email` 一律存成 `false`（只有四类会发邮件）。
+`notification_prefs(account_id, category, push bool, email bool)`，默认 `permission_requested`、`error`、`enroll_requested`、`security` 全开，`turn_finished` 和 `follow_up` 只开 push，`session_idle` 全关。`security` 的邮件在手边没有任何已配对设备时最有用（比如口令接入被锁定）。`PUT` 的数组可以只带要改的类别（没出现的不动，重复的取最后一个），回完整结果；未知类别 / 缺字段 `400 bad_request` 且整个请求不生效；`turn_finished` / `session_idle` / `follow_up` 的 `email` 一律存成 `false`（只有四类会发邮件）。
 
 ## 7. 配额与限速
 

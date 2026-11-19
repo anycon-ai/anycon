@@ -43,9 +43,9 @@ describe('push texts for the session categories and the test push', () => {
     expect(pushText(zh, { category: 'permission_requested', node, session }).title).toBe('“Fix login” 在等你审批')
   })
 
-  it('the other three session categories have their own sentence but share the session tag', () => {
-    const titles = (['turn_finished', 'error', 'session_idle'] as const).map((category) => pushText(en, { category, node, session }))
-    expect(titles.map((p) => p.title)).toEqual(['“Fix login” finished', '“Fix login” ran into an error', '“Fix login” is idle'])
+  it('the other four session categories have their own sentence but share the session tag', () => {
+    const titles = (['turn_finished', 'error', 'session_idle', 'follow_up'] as const).map((category) => pushText(en, { category, node, session }))
+    expect(titles.map((p) => p.title)).toEqual(['“Fix login” finished', '“Fix login” ran into an error', '“Fix login” is idle', '“Fix login” is ready for follow-up'])
     expect(new Set(titles.map((p) => p.tag))).toEqual(new Set(['session:sess_abc123']))
   })
 

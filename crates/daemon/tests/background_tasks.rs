@@ -287,3 +287,33 @@ async fn the_count_resets_when_the_process_goes_away() {
     assert!(wait_for(&td, &mut a, &s.id, |s| s.background_tasks == 0 && s.status == SessionStatus::Ended).await);
     td.shutdown().await;
 }
+
+#[tokio::test]
+async fn follow_up_waits_for_background_tasks_like_turn_finished_does() {
+    let td = TestDaemon::start_with(&[("notify.turn_finished", "\"never\"")], false).await;
+    let rec = Arc::new(Recorder::default());
+    td.ctx.notifier.set_out(rec.clone());
+    let mut a = td.client("a");
+    let follow_ups = |sid: &str| {
+        rec.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| b.category == NotifyCategory::FollowUp && b.session_id.as_deref() == Some(sid))
+            .count()
+    };
+    let s = create(&td, &mut a, "hold while launching").await;
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id, "follow_up": true })).await.unwrap();
+    assert!(wait_for(&td, &mut a, &s.id, |s| s.status == SessionStatus::Running).await);
+    let h0 = td.fake.handle(0);
+    h0.inject(AgentEvent::Background { tasks: 1 }).await;
+    h0.release();
+    assert!(wait_for(&td, &mut a, &s.id, |s| s.status == SessionStatus::Idle).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(follow_ups(&s.id), 0, "background work is still going on");
+    h0.inject(AgentEvent::Background { tasks: 0 }).await;
+    agent_turn(&td, 0, "all done").await;
+    assert!(eventually(T, || async { follow_ups(&s.id) == 1 }).await);
+    td.shutdown().await;
+}

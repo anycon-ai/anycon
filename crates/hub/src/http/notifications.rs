@@ -208,7 +208,7 @@ pub struct PrefView {
 
 #[derive(Serialize)]
 pub struct NotificationsView {
-    /// 六个类别各一行，顺序固定。
+    /// 每个类别一行，顺序固定。
     categories: Vec<PrefView>,
     /// 邮件通知可用：hub 配了 SMTP，而且账号绑定了邮箱。
     email_available: bool,
@@ -245,9 +245,9 @@ pub struct PutPrefs {
     categories: Vec<PrefInput>,
 }
 
-/// `PUT /api/me/notifications { categories: [{ category, push, email }] }`：只认六个已知类别（未知类别 `400`），
+/// `PUT /api/me/notifications { categories: [{ category, push, email }] }`：只认已知类别（未知类别 `400`），
 /// 数组里没出现的类别保持原样。邮件只对 `permission_requested` / `error` / `enroll_requested` / `security` 有意义，
-/// 其余两个类别的 `email` 一律存成 `false`。返回完整的结果（和 `GET` 一样）。
+/// 其余三个类别的 `email` 一律存成 `false`。返回完整的结果（和 `GET` 一样）。
 pub async fn put_prefs(
     State(state): State<Arc<AppState>>,
     auth: Authed,

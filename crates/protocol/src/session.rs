@@ -66,6 +66,14 @@ pub struct SessionSummary {
     pub status: SessionStatus,
     #[serde(default)]
     pub archived: bool,
+    /// 用户标了「待处理」（docs/spec/web.md § 4.6.1）。纯标注，不影响会话的行为；只能由 `session.set_marks` 改，
+    /// 改它不动 `updated_at_ms`。
+    #[serde(default)]
+    pub follow_up: bool,
+    /// 已读水位：用户已经看到的最大 seq（取最大值，只增不减；`session.mark_read` 改）。会话不在运行、且 `last_seq` 大于它时
+    /// 客户端显示未读。改它不动 `updated_at_ms`。
+    #[serde(default)]
+    pub read_seq: u64,
     pub settings: SessionSettings,
     pub created_at_ms: TimestampMs,
     pub updated_at_ms: TimestampMs,
@@ -481,6 +489,21 @@ pub struct SessionRenameParams {
     pub title: String,
 }
 
+/// `session.set_marks`：局部更新会话上的用户标注，只改传了的字段。归档不在这里（它有自己的行为约束，见 `session.archive`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SessionSetMarksParams {
+    pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<bool>,
+}
+
+/// `session.mark_read`：客户端已经把会话显示到 `seq`。daemon 取 `max(现有水位, min(seq, last_seq))`，所以重复、乱序都无害。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SessionMarkReadParams {
+    pub session_id: SessionId,
+    pub seq: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionSearchParams {
     /// 空白分隔的若干个词，每个词按前缀匹配、都要出现在同一段文字里；不能为空（`invalid`）。
@@ -528,6 +551,12 @@ pub struct SessionChanged {
     pub status: SessionStatus,
     #[serde(default)]
     pub archived: bool,
+    /// 同 [`SessionSummary::follow_up`]。
+    #[serde(default)]
+    pub follow_up: bool,
+    /// 同 [`SessionSummary::read_seq`]。
+    #[serde(default)]
+    pub read_seq: u64,
     pub pending_permissions: u32,
     /// 同 [`SessionSummary::background_tasks`]。
     #[serde(default)]

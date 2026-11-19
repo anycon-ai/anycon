@@ -156,6 +156,9 @@ export const useSessions = create<SessionsState>()((set, get) => ({
         title: ch.title,
         status: ch.status,
         archived: ch.archived ?? prev.archived,
+        follow_up: ch.follow_up ?? prev.follow_up,
+        // 已读水位只增不减：别的设备更早发来的通知晚到时不能把它拉回去
+        read_seq: Math.max(prev.read_seq ?? 0, ch.read_seq ?? 0),
         last_seq: ch.last_seq,
         pending_permissions: ch.pending_permissions,
         // 通知是后台任务数的完整快照；旧 daemon 不发这个字段，按 0 处理

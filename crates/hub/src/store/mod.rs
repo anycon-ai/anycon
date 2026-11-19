@@ -393,6 +393,7 @@ pub fn category_to_str(c: NotifyCategory) -> &'static str {
         NotifyCategory::TurnFinished => "turn_finished",
         NotifyCategory::Error => "error",
         NotifyCategory::SessionIdle => "session_idle",
+        NotifyCategory::FollowUp => "follow_up",
         NotifyCategory::EnrollRequested => "enroll_requested",
         NotifyCategory::Security => "security",
     }
@@ -404,6 +405,7 @@ pub fn category_from_str(s: &str) -> Option<NotifyCategory> {
         "turn_finished" => NotifyCategory::TurnFinished,
         "error" => NotifyCategory::Error,
         "session_idle" => NotifyCategory::SessionIdle,
+        "follow_up" => NotifyCategory::FollowUp,
         "enroll_requested" => NotifyCategory::EnrollRequested,
         "security" => NotifyCategory::Security,
         _ => return None,

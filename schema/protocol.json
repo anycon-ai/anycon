@@ -4048,6 +4048,11 @@
           "type": "string"
         },
         {
+          "const": "follow_up",
+          "description": "用户标了「待处理」的会话这一轮结束了。比 `turn_finished` 优先：标了的会话只发这一类，不再发 `turn_finished`，\n也不受 `notify.turn_finished` 的 `when_unwatched` / `never` 限制（标记本身就是用户的明确要求）。",
+          "type": "string"
+        },
+        {
           "const": "enroll_requested",
           "description": "有设备请求批准接入（ADR-36）。没有 `session_id`。",
           "type": "string"
@@ -5511,6 +5516,11 @@
           "description": "会话被删除。",
           "type": "boolean"
         },
+        "follow_up": {
+          "default": false,
+          "description": "同 [`SessionSummary::follow_up`]。",
+          "type": "boolean"
+        },
         "last_seq": {
           "format": "uint64",
           "minimum": 0,
@@ -5518,6 +5528,13 @@
         },
         "pending_permissions": {
           "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "read_seq": {
+          "default": 0,
+          "description": "同 [`SessionSummary::read_seq`]。",
+          "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
@@ -5992,6 +6009,24 @@
       ],
       "type": "object"
     },
+    "SessionMarkReadParams": {
+      "description": "`session.mark_read`：客户端已经把会话显示到 `seq`。daemon 取 `max(现有水位, min(seq, last_seq))`，所以重复、乱序都无害。",
+      "properties": {
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq"
+      ],
+      "type": "object"
+    },
     "SessionPromoteParams": {
       "properties": {
         "name": {
@@ -6115,6 +6150,24 @@
       },
       "required": [
         "queued"
+      ],
+      "type": "object"
+    },
+    "SessionSetMarksParams": {
+      "description": "`session.set_marks`：局部更新会话上的用户标注，只改传了的字段。归档不在这里（它有自己的行为约束，见 `session.archive`）。",
+      "properties": {
+        "follow_up": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
       ],
       "type": "object"
     },
@@ -6274,6 +6327,11 @@
           "minimum": 0,
           "type": "integer"
         },
+        "follow_up": {
+          "default": false,
+          "description": "用户标了「待处理」（docs/spec/web.md § 4.6.1）。纯标注，不影响会话的行为；只能由 `session.set_marks` 改，\n改它不动 `updated_at_ms`。",
+          "type": "boolean"
+        },
         "id": {
           "type": "string"
         },
@@ -6310,6 +6368,13 @@
             "integer",
             "null"
           ]
+        },
+        "read_seq": {
+          "default": 0,
+          "description": "已读水位：用户已经看到的最大 seq（取最大值，只增不减；`session.mark_read` 改）。会话不在运行、且 `last_seq` 大于它时\n客户端显示未读。改它不动 `updated_at_ms`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "settings": {
           "$ref": "#/definitions/SessionSettings"
@@ -8012,6 +8077,9 @@
     "session_list_result": {
       "$ref": "#/definitions/SessionListResult"
     },
+    "session_mark_read_params": {
+      "$ref": "#/definitions/SessionMarkReadParams"
+    },
     "session_promote_params": {
       "$ref": "#/definitions/SessionPromoteParams"
     },
@@ -8029,6 +8097,9 @@
     },
     "session_send_result": {
       "$ref": "#/definitions/SessionSendResult"
+    },
+    "session_set_marks_params": {
+      "$ref": "#/definitions/SessionSetMarksParams"
     },
     "session_set_settings_params": {
       "$ref": "#/definitions/SessionSetSettingsParams"
@@ -8221,6 +8292,8 @@
     "session_worktree",
     "worktree_disposal",
     "session_archive_params",
+    "session_set_marks_params",
+    "session_mark_read_params",
     "session_delete_params",
     "session_git_status_params",
     "session_git_status",
@@ -8642,6 +8715,18 @@
       "direction": "request",
       "name": "session.unarchive",
       "params": "SessionIdParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.set_marks",
+      "params": "SessionSetMarksParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "session.mark_read",
+      "params": "SessionMarkReadParams",
       "result": null
     },
     {

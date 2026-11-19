@@ -2,10 +2,13 @@
 import type { AgentListResult, JobDone, JobProgress, NodeDevicesResult, NodeEnrollResolved, PermissionRequest, PermissionResolved, SessionChanged, SessionEvent, SessionSummary, WorkspaceChanged, WorkspaceListResult } from '@/protocol'
 import { rpc } from '@/transport/instance'
 import { enqueueLive } from '@/features/session/actions'
+import { isActiveStatus } from '@/features/session/group'
+import { shortNodeId } from '@/lib/ids'
+import { navigateTo } from '@/lib/navigate'
 import { parseEnrollInfo, useEnroll } from '@/stores/enroll'
 import { useHub } from '@/stores/hub'
 import { useNodes } from '@/stores/nodes'
-import { useSessions } from '@/stores/sessions'
+import { useSessions, type SessionItem } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import i18n from '@/i18n'
 import { handleSecurityEvent } from './securityEvent'
@@ -31,6 +34,7 @@ export function handleNotification(nodeId: string, method: string, params: unkno
         return
       }
       useSessions.getState().applyChanged(nodeId, ch)
+      if (known && !ch.deleted) toastIfFollowUpReady(nodeId, known, ch)
       if (!known && !ch.deleted) {
         // 别的设备新建的会话：补一次元数据
         void rpc()
@@ -105,6 +109,24 @@ export function handleNotification(nodeId: string, method: string, params: unkno
       return
     }
   }
+}
+
+/**
+ * 标了「待处理」的会话从运行变成停下来：页面在前台时弹一条 toast（点「查看」去那个会话）。页面在后台时由 daemon 的
+ * `follow_up` 通知变成系统通知；正在看着这个会话时不打扰。
+ */
+function toastIfFollowUpReady(nodeId: string, before: SessionItem, ch: SessionChanged): void {
+  const marked = ch.follow_up ?? before.follow_up
+  if (!marked || before.archived || (ch.archived ?? before.archived)) return
+  if (!isActiveStatus(before.status) || isActiveStatus(ch.status)) return
+  const st = useSessions.getState()
+  if (st.open[ch.session_id] && document.visibilityState === 'visible') return
+  const order = useNodes.getState().order
+  const title = ch.title || before.title
+  toast.info(i18n.t('toast.followUp', { title: title ? `“${title}”` : i18n.t('toast.aSession') }), {
+    label: i18n.t('toast.view'),
+    run: () => navigateTo(`/n/${shortNodeId(nodeId, order)}/s/${ch.session_id}`),
+  })
 }
 
 export async function refreshDevices(nodeId: string): Promise<void> {

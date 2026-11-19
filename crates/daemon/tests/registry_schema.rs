@@ -246,6 +246,8 @@ async fn walk_session(w: &mut Walk<'_>) {
     w.call(methods::SESSION_UNWATCH, json!({ "session_id": sid })).await;
     w.call(methods::SESSION_CANCEL, json!({ "session_id": sid })).await;
     w.call(methods::SESSION_RESTART, json!({ "session_id": sid })).await;
+    w.call(methods::SESSION_SET_MARKS, json!({ "session_id": sid, "follow_up": true })).await;
+    w.call(methods::SESSION_MARK_READ, json!({ "session_id": sid, "seq": 1 })).await;
     w.call(methods::SESSION_ARCHIVE, json!({ "session_id": sid })).await;
     w.call(methods::SESSION_UNARCHIVE, json!({ "session_id": sid })).await;
     w.call(methods::SESSION_DELETE, json!({ "session_id": sid })).await;

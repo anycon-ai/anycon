@@ -49,7 +49,7 @@ Envelope {
 | `notify` | `{ category: enum, session_id? }` 明文 + 可选密文详情 | 转发 + 按 category 触发 Web Push（收件设备离线时，[ADR-37](decisions.md#adr-37-web-push邮箱验证码登录和邮件通知)；daemon 只发 `category` + `session_id`，`detail` 为空——Transport 是有状态计数器，带外的密文详情会打乱数据流，要等有单独的封装密钥再做） |
 | `control` | hub ↔ 设备的控制消息（见 §8） | hub 自己处理，不转发 |
 
-`notify.category` 是外层**唯一一个有语义的明文字段**（另有一个不透明的 `session_id`），枚举值：`permission_requested` / `turn_finished` / `error` / `session_idle`，以及账号内接入的 `enroll_requested` / `security`（[ADR-36](decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)，这两类没有 `session_id`）。（离线、溢出等由 hub 自己发出的是 `control` 消息，见 §8。）
+`notify.category` 是外层**唯一一个有语义的明文字段**（另有一个不透明的 `session_id`），枚举值：`permission_requested` / `turn_finished` / `error` / `session_idle` / `follow_up`（标了「待处理」的会话这一轮结束），以及账号内接入的 `enroll_requested` / `security`（[ADR-36](decisions.md#adr-36-账号内接入账号负责路由daemon-负责开门)，这两类没有 `session_id`）。（离线、溢出等由 hub 自己发出的是 `control` 消息，见 §8。）
 
 ### 3.1 消息大小
 
@@ -244,8 +244,9 @@ daemon                      hub                        新客户端
 | `session.watch` / `session.unwatch` | C→D | 订阅 / 退订该会话的 `session.event`。未 watch 的会话只收列表级 `session.changed` |
 | `session.history` | C→D | `{ session_id, after_seq?, limit?, before_seq? }` → `{ events, has_more }`。`after_seq` 拉增量；`before_seq` 向上翻页（返回 seq 小于它的最近 `limit` 条）；`limit` 默认 200、上限 1000。**一页还受字节上限约束**：编码后超过 192 KiB 就在这里截断并置 `has_more = true`（单个事件本身超限也单独成页），客户端按返回的最后一个 seq 继续拉 |
 | `session.event` | D→C notification | 会话事件流，见 §6。只发给 watcher |
-| `session.changed` | D→C notification | `{ session_id, title, status, archived, pending_permissions, background_tasks, updated_at_ms, last_seq, deleted, worktree? }`，发给所有在线客户端；`deleted = true` 表示会话已被删除；`worktree` 带 worktree 的当前状态；`background_tasks` 是 agent 进程里还在跑的后台任务数（缺省 = 0，和 `SessionSummary` 的同名字段一样只反映 daemon 内存里的当前状态，见 [daemon.md § 7.3](spec/daemon.md#73-进程保活与-idle_timeout)） |
+| `session.changed` | D→C notification | `{ session_id, title, status, archived, follow_up, read_seq, pending_permissions, background_tasks, updated_at_ms, last_seq, deleted, worktree? }`，发给所有在线客户端；`deleted = true` 表示会话已被删除；`worktree` 带 worktree 的当前状态；`background_tasks` 是 agent 进程里还在跑的后台任务数（缺省 = 0，和 `SessionSummary` 的同名字段一样只反映 daemon 内存里的当前状态，见 [daemon.md § 7.3](spec/daemon.md#73-进程保活与-idle_timeout)） |
 | `session.rename` / `archive` / `unarchive` / `delete` / `restart` | C→D | 见 [spec/daemon.md § 7.8](spec/daemon.md#78-归档删除重启)。`archive` 的参数是 `{ session_id, worktree? }`（会话 queued / starting / running / waiting_permission 时返回 `busy`），`delete` 是 `{ session_id, worktree?, delete_branch? }`；`worktree` 取 `auto`（缺省）/ `keep` / `remove`，只带 `session_id` 的旧请求照旧合法 |
+| `session.set_marks` / `mark_read` | C→D | `set_marks { session_id, follow_up? }` 局部更新用户标注（「待处理」）；`mark_read { session_id, seq }` 把已读水位推到 `seq`（只增不减，不超过 `last_seq`）。两者都不改 `updated_at_ms`，变化经 `session.changed`（带 `follow_up`、`read_seq`）发给所有在线客户端。见 [spec/daemon.md § 7.8](spec/daemon.md#78-归档删除重启) |
 | `session.git_status` | C→D | `{ session_id, include_pr? }` → `SessionGitStatus`：分支、HEAD、（worktree 会话）base / ahead / behind、未提交和冲突的文件数、是否在合并、上游和未推送数；`include_pr` 时用 `gh pr view` 查 PR（拿不到时 `pr_error`）。会话不在 git 仓库里 → `invalid`（`data.reason = "not_git"`） |
 | `session.diff` | C→D | `{ session_id, against?, path? }` → `{ from_sha, files, truncated }`：只读。`against = base`（缺省，只有 worktree 会话）从 merge-base 到工作区，`uncommitted` 从 HEAD 到工作区；都含未跟踪的文件。不带 `path` 只给文件列表和行数（≤ 1000 个文件），带 `path` 只给那一个文件和它的 unified diff（≤ 256 KiB） |
 | `session.sync_base` | C→D | `{ session_id, abort? }` → `{ outcome, commits, conflicts }`：把 base 合并进 worktree 分支（远端跟踪分支先 fetch）。turn 在跑 → `busy`；有未提交改动 → `invalid`（`data.reason = "uncommitted_changes"`）；上次合并还停在冲突里 → `invalid`（`merge_in_progress`，用 `abort` 或让 agent 解决）；fetch / merge 本身失败 → `internal`（`data.reason = "fetch_failed"` / `"git_failed"`，消息里带 git 的输出尾部） |

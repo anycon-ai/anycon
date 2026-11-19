@@ -11,11 +11,11 @@ import { forgetSystemNotifyPrefs } from './prefsCache'
 import type { NotifyCategory } from '@/protocol'
 
 /** 界面上的顺序：要人马上处理的在前。 */
-export const CATEGORY_ORDER: readonly NotifyCategory[] = ['permission_requested', 'error', 'enroll_requested', 'security', 'turn_finished', 'session_idle']
-/** 能发邮件的四个类别（ADR-37）；另外两个只有推送。 */
+export const CATEGORY_ORDER: readonly NotifyCategory[] = ['permission_requested', 'error', 'enroll_requested', 'security', 'follow_up', 'turn_finished', 'session_idle']
+/** 能发邮件的四个类别（ADR-37）；另外三个只有推送。 */
 export const EMAIL_CATEGORIES: ReadonlySet<NotifyCategory> = new Set<NotifyCategory>(['permission_requested', 'error', 'enroll_requested', 'security'])
 
-/** hub 没回的类别按「全关」补上，界面总是六行。 */
+/** hub 没回的类别按「全关」补上，界面每个类别一行。 */
 export function withAllCategories(rows: readonly ApiNotificationPref[]): ApiNotificationPref[] {
   return CATEGORY_ORDER.map((category) => rows.find((r) => r.category === category) ?? { category, push: false, email: false })
 }

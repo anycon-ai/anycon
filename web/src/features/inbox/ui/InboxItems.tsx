@@ -93,7 +93,6 @@ export function InboxRow({
         // 手机：展开 / 收起；桌面：当前显示在右边的那一条
         aria-expanded={mode === 'inline' ? expanded : undefined}
         aria-current={mode === 'split' && selected ? 'true' : undefined}
-        aria-label={mode === 'inline' ? `${info.title}. ${expanded ? t('inbox.collapse') : t('inbox.expand')}` : undefined}
         onClick={() => onSelect(item.key)}
         className="flex min-h-11 w-full min-w-0 items-start gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-bg-hover"
       >

@@ -8,7 +8,7 @@ import { Button } from '@/ui/Button'
 import { Spinner } from '@/ui/Misc'
 
 /**
- * `/`：这个浏览器有已配对的节点 → `/inbox`（首页是「待处理」，spec/web.md § 14）；没有，但账号下有节点 → `/unlock`；账号下也没有 → `/setup`
+ * `/`：这个浏览器有已配对的节点 → `/inbox`（首页是「待处理」，spec/web.md § 2、§ 4.11）；没有，但账号下有节点 → `/unlock`；账号下也没有 → `/setup`
  * （spec/web.md § 2；判定在 `homeTarget`）。
  */
 export function HomeRedirect() {

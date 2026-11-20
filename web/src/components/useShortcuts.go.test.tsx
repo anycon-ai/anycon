@@ -1,4 +1,4 @@
-// `G` 然后 `I` / `S`（spec/web.md § 14.11）：去「待处理」/ 回到上次的会话；单字母键在输入框里、有对话框开着时都不生效，
+// `G` 然后 `I` / `S`（spec/web.md § 9）：去「待处理」/ 回到上次的会话；单字母键在输入框里、有对话框开着时都不生效，
 // 隔太久或中间按了别的键就取消。
 import { fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

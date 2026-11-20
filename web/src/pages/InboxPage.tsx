@@ -19,6 +19,7 @@ import { resolveNodeParam, shortNodeId } from '@/lib/ids'
 import { useNodeFilter } from '@/lib/nodeFilter'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { useNodes } from '@/stores/nodes'
+import { usePrefs } from '@/stores/prefs'
 import { useSessions, type SessionItem } from '@/stores/sessions'
 import { useUi } from '@/stores/ui'
 import { Chip } from '@/ui/Misc'
@@ -98,7 +99,8 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const items = useMemo(() => (outside ? [outside, ...mainItems] : mainItems), [outside, mainItems])
 
   const ready = useNodesSettled()
-  const sel = useInboxSelection({ items, picked: pickedNodes, mode, active, ready, root, empty })
+  const filterKey = usePrefs((s) => `${s.sidebarSpace ?? ''}\u0000${s.sidebarNodes ? s.sidebarNodes.join(',') : '*'}`)
+  const sel = useInboxSelection({ items, picked: pickedNodes, filterKey, mode, active, ready, root, empty })
   const { choose } = sel
   versionNow.current = sel.version
   const shown = sel.ghost ? null : (items.find((i) => i.key === sel.selected) ?? null)

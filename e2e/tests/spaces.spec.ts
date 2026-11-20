@@ -32,8 +32,7 @@ test.describe.serial('空间', () => {
   })
 
   test.afterAll(async () => {
-    if (readState().daemonStarted)
-      await runCli(readState(), ['config', 'set', 'hub.group', '']).catch(() => undefined)
+    if (readState().daemonStarted) await runCli(readState(), ['config', 'set', 'hub.group', ''])
     await device?.context.close()
   })
 
@@ -82,7 +81,8 @@ test.describe.serial('空间', () => {
       'changed',
     )
     await page.keyboard.press('Escape')
-    // 偏好里存的是旧名字：这个空间已经没有节点，退回「全部」；新名字的空间在切换器里
+    // 选中的正是这个空间：选择跟着改名走，按钮上显示新名字
+    await expect(page.getByTestId('space-label')).toHaveText(RENAMED)
     await openSwitcher()
     await expect(page.getByTestId('space-item')).toContainText(RENAMED)
     await expect(page.getByTestId('space-item')).not.toContainText(SPACE)

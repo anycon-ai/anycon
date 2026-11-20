@@ -1,5 +1,5 @@
 /**
- * 清单 `/todos`（docs/spec/web.md § 4.12、§ 14.5）：真实 hub + daemon + web。
+ * 清单 `/todos`（docs/spec/web.md § 4.12、§ 4.12.1）：真实 hub + daemon + web。
  *
  *   a. 桌面输入条（侧栏「＋」）记一项，出现在清单页；第二个浏览器上下文经 `todo.changed` 看到
  *   b. 手机宽度：底栏中间的「＋」打开底部弹层，记一项

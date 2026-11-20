@@ -11,7 +11,7 @@ import { Dot } from '@/ui/Misc'
 const ROW = 'flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium hover:bg-bg-hover'
 
 /**
- * 手机「更多」标签页（`/more`，spec/web.md § 14.2）：节点（每台已配对节点的首页和设置）和设置；账号菜单（退出、扫码批准新设备、
+ * 手机「更多」标签页（`/more`，spec/web.md § 3.3）：节点（每台已配对节点的首页和设置）和设置；账号菜单（退出、扫码批准新设备、
  * 管理）在最下面——手机没有左栏了，它们不能没有入口。
  */
 export function MorePage() {

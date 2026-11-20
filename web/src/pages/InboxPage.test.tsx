@@ -1,4 +1,4 @@
-// 「待处理」页（spec/web.md § 14.4）：合并多个节点、权限请求用会话页同一个卡片、详情展开了才有按钮、处理完焦点落到下一条、
+// 「待处理」页（spec/web.md § 4.11）：合并多个节点、权限请求用会话页同一个卡片、详情展开了才有按钮、处理完焦点落到下一条、
 // 离线节点的缓存要标明、三种布局（桌面分栏 / 平板滑出 / 手机展开）、通知点进来的定位、键盘。
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -557,4 +557,58 @@ describe('keyboard', () => {
     expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'one')
   })
 
+})
+
+describe('a group change made on another device while a request is being read', () => {
+  const group = (g: string) => ({ group: g, capabilities: { todo: true } }) as never
+  const setupGroups = (): void => {
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', info: group('Work') }), [B]: nodeEntry({ id: B, name: 'beta', info: group('Work') }) }, order: [A, B], loaded: true })
+    usePrefs.setState({ sidebarNodes: null, sidebarSpace: 'Work' })
+    seed({ pending: [req('one', { node_id: A, session_id: 's-one' })] })
+  }
+  const regroup = (): void => void act(() => useNodes.getState().setInfo(A, group('Home')))
+  afterEach(() => usePrefs.setState({ sidebarSpace: null, sidebarNodes: null }))
+
+  it('desktop: the card being read is replaced by the “no longer waiting” placeholder that says where it went and offers to switch; nothing else is selected for the user', async () => {
+    const user = setup()
+    setupGroups()
+    render(<InboxPage />)
+    expect(screen.getByTestId('permission-card')).toBeInTheDocument()
+    regroup()
+    const ghost = screen.getByTestId('inbox-ghost')
+    expect(ghost).toHaveTextContent('now in the space “Home”')
+    expect(screen.queryByTestId('permission-card')).toBeNull()
+    expect(usePrefs.getState().sidebarSpace).toBe('Work') // 不自动切换
+    await user.click(screen.getByTestId('inbox-ghost-switch-space'))
+    expect(usePrefs.getState().sidebarSpace).toBe('Home')
+  })
+
+  it('phone: the expanded request leaves a placeholder in its row, not a silent disappearance', () => {
+    setViewport('phone')
+    setupGroups()
+    render(<InboxPage />)
+    expect(screen.getByTestId('permission-card')).toBeInTheDocument()
+    regroup()
+    expect(screen.getByTestId('inbox-ghost')).toBeInTheDocument()
+    expect(screen.getByTestId('inbox-ghost-moved')).toHaveTextContent('Home')
+  })
+
+  it('the user’s own filter change in this tab still just clears the selection, with no placeholder', async () => {
+    setupGroups()
+    render(<InboxPage />)
+    expect(screen.getByTestId('permission-card')).toBeInTheDocument()
+    act(() => usePrefs.setState({ sidebarSpace: null, sidebarNodes: [B] }))
+    expect(screen.queryByTestId('inbox-ghost')).toBeNull()
+    expect(screen.queryByTestId('permission-card')).toBeNull()
+  })
+
+  it('a node that is forgotten while its request is open also leaves a placeholder', () => {
+    setupGroups()
+    render(<InboxPage />)
+    act(() => {
+      useNodes.setState({ byId: { [B]: useNodes.getState().byId[B]! }, order: [B] })
+      useSessions.getState().resolvePending(A, 'one')
+    })
+    expect(screen.getByTestId('inbox-ghost')).toBeInTheDocument()
+  })
 })

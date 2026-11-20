@@ -1,4 +1,4 @@
-// 外壳在三种宽度下的导航（spec/web.md § 3、§ 14.2）：手机没有左栏、底部标签栏只在标签页的根页面出现（进二级页收起、返回恢复）；
+// 外壳在三种宽度下的导航（spec/web.md § 3）：手机没有左栏、底部标签栏只在标签页的根页面出现（进二级页收起、返回恢复）；
 // 宽屏有左栏、没有标签栏。
 import type { ReactNode } from 'react'
 import { render as rtlRender, screen } from '@testing-library/react'

@@ -13,6 +13,7 @@ import { useSessions, type SessionItem } from '@/stores/sessions'
 import type { EnrollItem } from '@/stores/enroll'
 import type { ViewTodo } from '@/features/todos/types'
 import { Markdown } from '@/components/Markdown'
+import { useNodeFilter } from '@/lib/nodeFilter'
 import { useSwitchToNode } from '@/lib/useSwitchToNode'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
@@ -336,11 +337,25 @@ export function GhostDetail({ item, hasNext, onNext, replacedBy, onShow }: { ite
   const { t } = useTranslation()
   const sessionId = item && 'sessionId' in item ? item.sessionId : undefined
   const order = useNodes((s) => s.order)
+  // 节点还在、只是现在在别的空间里（别的设备改了它的分组）：说它去了哪里，给「切换到这个空间」
+  const { selected } = useNodeFilter()
+  const sw = useSwitchToNode(item?.nodeId ?? '')
+  const moved = item !== null && !selected.includes(item.nodeId) && sw.spaceLabel !== ''
   return (
     <div className="space-y-2 rounded-lg border border-border bg-bg-subtle p-3" role="status" data-inbox-detail data-testid="inbox-ghost">
       <p className="text-sm font-medium">{replacedBy ? t('inbox.detailsArrived') : t('inbox.noLongerWaiting')}</p>
       <p className="text-sm text-fg-muted">{replacedBy ? t('inbox.detailsArrivedBody') : t('inbox.noLongerWaitingBody')}</p>
+      {moved ? (
+        <p className="text-sm text-fg-muted" data-testid="inbox-ghost-moved">
+          {t('spaces.movedTo', { space: sw.spaceLabel })}
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-2">
+        {moved ? (
+          <Button size="sm" variant="outline" className="max-md:min-h-11" onClick={sw.switchTo} data-testid="inbox-ghost-switch-space">
+            {t('spaces.switchToSpace')}
+          </Button>
+        ) : null}
         {replacedBy ? (
           <Button size="sm" variant="primary" className="max-md:min-h-11" onClick={onShow} data-testid="inbox-ghost-show">
             {t('inbox.showRequest')}

@@ -9,6 +9,7 @@ import { FakeRpc, rpcError } from '@/test/fakeRpc'
 import { setRpc } from '@/transport/instance'
 import { useManageSpaces } from '@/stores/manageSpaces'
 import { useNodes } from '@/stores/nodes'
+import { usePrefs } from '@/stores/prefs'
 import { ManageSpacesDialog } from './ManageSpacesDialog'
 
 const HOME = 'h'.repeat(32)
@@ -147,6 +148,9 @@ describe('renaming a space', () => {
     // 回来之后再试一次：只剩它没改
     useNodes.getState().patch(WORK2, { conn: 'ready' })
     await user.click(screen.getByTestId('rename-apply'))
+    // 「Office」已经是（改成功的那个节点的）空间：再改一次就是并进去，先确认
+    expect(screen.getByTestId('merge-confirm')).toBeInTheDocument()
+    await user.click(screen.getByTestId('rename-apply'))
     await waitFor(() => expect(useNodes.getState().byId[WORK2]!.info!.group).toBe('Office'))
   })
 
@@ -168,5 +172,106 @@ describe('renaming a space', () => {
     const list = await screen.findByTestId('rename-results')
     await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(2))
     expect(within(list).getByText(/office: .*environment variable/)).toBeInTheDocument()
+  })
+})
+
+describe('renaming and the current selection', () => {
+  async function rename(user: ReturnType<typeof userEvent.setup>, from: string, to: string): Promise<void> {
+    await user.selectOptions(screen.getByTestId('rename-space'), from)
+    await user.clear(screen.getByTestId('rename-to'))
+    await user.type(screen.getByTestId('rename-to'), to)
+    await user.click(screen.getByTestId('rename-apply'))
+  }
+
+  it('renaming the selected space moves the selection to the new name (it does not fall back to “All”)', async () => {
+    const user = userEvent.setup()
+    usePrefs.setState({ sidebarSpace: 'Work', sidebarNodes: null })
+    render(<ManageSpacesDialog />)
+    await rename(user, 'Work', 'Office')
+    await waitFor(() => expect(usePrefs.getState().sidebarSpace).toBe('Office'))
+  })
+
+  it('renaming a space that is not the selected one leaves the selection alone', async () => {
+    const user = userEvent.setup()
+    usePrefs.setState({ sidebarSpace: 'Home', sidebarNodes: null })
+    render(<ManageSpacesDialog />)
+    await rename(user, 'Work', 'Office')
+    await waitFor(() => expect(useNodes.getState().byId[WORK1]!.info!.group).toBe('Office'))
+    expect(usePrefs.getState().sidebarSpace).toBe('Home')
+  })
+
+  it('a partial rename: the selection follows the renamed nodes and the dialog says which nodes are still under the old name', async () => {
+    const user = userEvent.setup()
+    useNodes.getState().patch(WORK2, { conn: 'peer_offline' })
+    usePrefs.setState({ sidebarSpace: 'Work', sidebarNodes: null })
+    render(<ManageSpacesDialog />)
+    await rename(user, 'Work', 'Office')
+    await waitFor(() => expect(usePrefs.getState().sidebarSpace).toBe('Office'))
+    expect(await screen.findByTestId('rename-note')).toHaveTextContent('Still under the old name “Work”: lab')
+  })
+
+  it('nothing renamed (everything offline or refused): the selection is left alone', async () => {
+    const user = userEvent.setup()
+    useNodes.getState().patch(WORK1, { conn: 'peer_offline' })
+    useNodes.getState().patch(WORK2, { conn: 'peer_offline' })
+    usePrefs.setState({ sidebarSpace: 'Work' })
+    render(<ManageSpacesDialog />)
+    await rename(user, 'Work', 'Office')
+    await screen.findByTestId('rename-results')
+    expect(usePrefs.getState().sidebarSpace).toBe('Work')
+  })
+
+  it('renaming into the name of another existing space asks first, naming who ends up where; nothing is sent until it is confirmed', async () => {
+    const user = userEvent.setup()
+    render(<ManageSpacesDialog />)
+    await user.selectOptions(screen.getByTestId('rename-space'), 'Work')
+    await user.type(screen.getByTestId('rename-to'), 'Home')
+    await user.click(screen.getByTestId('rename-apply'))
+    expect(screen.getByTestId('merge-confirm')).toHaveTextContent('merges “Work” into “Home”: office, lab, house will all be in “Home”')
+    expect(rpc.calls).toEqual([])
+    expect(screen.getByTestId('rename-apply')).toHaveTextContent('Merge')
+    await user.click(screen.getByTestId('rename-apply'))
+    await waitFor(() => expect([useNodes.getState().byId[WORK1]!.info!.group, useNodes.getState().byId[WORK2]!.info!.group]).toEqual(['Home', 'Home']))
+  })
+
+  it('changing the typed name takes the merge confirmation back', async () => {
+    const user = userEvent.setup()
+    render(<ManageSpacesDialog />)
+    await user.selectOptions(screen.getByTestId('rename-space'), 'Work')
+    await user.type(screen.getByTestId('rename-to'), 'Home')
+    await user.click(screen.getByTestId('rename-apply'))
+    expect(screen.getByTestId('merge-confirm')).toBeInTheDocument()
+    await user.type(screen.getByTestId('rename-to'), 's')
+    expect(screen.queryByTestId('merge-confirm')).toBeNull()
+  })
+
+  it('a space that disappeared while the dialog was open says so instead of doing nothing', async () => {
+    const user = userEvent.setup()
+    render(<ManageSpacesDialog />)
+    await user.selectOptions(screen.getByTestId('rename-space'), 'Work')
+    await user.type(screen.getByTestId('rename-to'), 'Office')
+    // 别的设备把 Work 的两个节点都改到 Home 去了
+    useNodes.getState().setInfo(WORK1, info('Home'))
+    useNodes.getState().setInfo(WORK2, info('Home'))
+    await user.click(screen.getByTestId('rename-apply'))
+    expect(await screen.findByTestId('rename-note')).toHaveTextContent('no longer exists')
+    expect(rpc.calls.filter((c) => c.method === 'node.set_config')).toEqual([])
+  })
+})
+
+describe('telling similar spaces apart', () => {
+  it('lists each space with the names of its nodes, so identical-looking names can be told apart', () => {
+    render(<ManageSpacesDialog />)
+    const items = screen.getAllByTestId('space-overview-item').map((li) => li.textContent)
+    expect(items).toEqual([expect.stringContaining('Home: house'), expect.stringContaining('Work: office, lab')])
+  })
+
+  it('a name with invisible characters is flagged, and the suggestion shows the cleaned text while its value stays the raw name', () => {
+    useNodes.getState().setInfo(HOME, info(`Ho${String.fromCharCode(0x200b)}me`))
+    const { container } = render(<ManageSpacesDialog />)
+    expect(screen.getAllByTestId('space-overview-odd')).toHaveLength(1)
+    const option = [...document.querySelectorAll('datalist option')].find((o) => o.getAttribute('value')?.includes(String.fromCharCode(0x200b)))!
+    expect(option.getAttribute('label')).toBe('Home')
+    void container
   })
 })

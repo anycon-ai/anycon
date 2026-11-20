@@ -206,11 +206,11 @@ describe('phone top bar', () => {
 
 describe('untrusted group names', () => {
   it('control and bidi characters never reach the label and a long name is cut', () => {
-    setup({ h: `Ho‮me${'x'.repeat(100)}`, w: 'Work', x: 'Work' })
-    usePrefs.setState({ sidebarSpace: `Ho‮me${'x'.repeat(100)}` })
+    setup({ h: `Ho\u202Eme${'x'.repeat(100)}`, w: 'Work', x: 'Work' })
+    usePrefs.setState({ sidebarSpace: `Ho\u202Eme${'x'.repeat(100)}` })
     wrap(<Sidebar nodeId={HOME} />)
     const label = within(screen.getByTestId('node-switcher')).getByTestId('space-label').textContent ?? ''
-    expect(label).not.toContain('‮')
+    expect(label).not.toContain('\u202E')
     expect([...label].length).toBeLessThanOrEqual(40)
   })
 })

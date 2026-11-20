@@ -1,6 +1,7 @@
 // 空间的推导和选择语义（spec/web.md § 4.13）：分组去掉首尾空白、区分大小写；显示用清理过的文字、身份用原文；
 // 选一个空间是「这个空间」这个概念，它的节点集合跟着分组走；手点的一组节点就是手点的一组；没有分组时和旧的节点过滤器一模一样。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanHintText } from './hint'
 import { deriveSpaces, groupError, groupOf, resolveSelection, spaceLabelOf } from './spaces'
 
 const info = (group?: string | null) => ({ info: { group } as never })
@@ -36,7 +37,7 @@ describe('deriveSpaces', () => {
     expect(deriveSpaces([A, B, C], { a: info('Z'), b: info('A'), c: info('Z') }).spaces.map((s) => s.key)).toEqual(['Z', 'A'])
   })
 
-  it('the identity is the raw trimmed text, the label is cleaned: control and bidi characters never reach the display, and two names that clean to the same text stay two spaces with distinct labels', () => {
+  it('the identity is the raw trimmed text, the label is cleaned: control and bidi characters never reach the display, and names that look the same stay separate spaces with distinct labels', () => {
     const m = deriveSpaces([A, B, C], { a: info('Ho\u202Eme'), b: info('Ho\u0007me'), c: info('Home') })
     expect(m.spaces.map((s) => s.key)).toEqual(['Ho\u202Eme', 'Ho\u0007me', 'Home'])
     const labels = m.spaces.map((s) => s.label)
@@ -45,7 +46,7 @@ describe('deriveSpaces', () => {
       expect(l).not.toContain('\u202E')
       expect(l).not.toContain('\u0007')
     }
-    expect(labels[0]).toBe('Ho me')
+    expect(labels).toContain('Ho me') // 控制字符换成空格
   })
 
   it('a very long name is truncated for display only', () => {
@@ -154,5 +155,59 @@ describe('the stored preference', () => {
     vi.resetModules()
     const second = await import('@/stores/prefs')
     expect(second.usePrefs.getState().sidebarSpace).toBe('Work')
+  })
+})
+
+describe('display collisions between different names', () => {
+  const labelsOf = (groups: Record<string, string>, order: string[]): Record<string, string> => {
+    const byId = Object.fromEntries(Object.entries(groups).map(([id, g]) => [id, info(g)]))
+    return Object.fromEntries(deriveSpaces(order, byId).spaces.map((s) => [s.key, s.label]))
+  }
+  const INVISIBLE_CHARS = ['\u200B', '\u200D', '\u2060', '\uFEFF', '\uFE0F', '\u061C']
+  const hasInvisible = (label: string): boolean => INVISIBLE_CHARS.some((c) => label.includes(c))
+
+  it('invisible characters (zero-width space / joiner, word joiner, variation selector) do not make a name look different: identical-looking names get distinct labels, and no label contains an invisible character', () => {
+    const names = ['Home', 'Ho\u200Bme', 'Ho\u200Dme', 'Ho\u2060me', 'Home\uFE0F']
+    const labels = labelsOf(Object.fromEntries(names.map((n, i) => [`n${i}`, n])), names.map((_, i) => `n${i}`))
+    expect(Object.keys(labels)).toHaveLength(names.length) // 身份都是各自的原文
+    const shown = Object.values(labels)
+    expect(new Set(shown).size).toBe(names.length)
+    for (const l of shown) expect(hasInvisible(l)).toBe(false)
+  })
+
+  it('a BOM at the edge is whitespace for the identity (trimmed), like the other edge whitespace', () => {
+    expect(groupOf({ group: '\uFEFFHome' })).toBe('Home')
+  })
+
+  it('the Arabic letter mark U+061C is a bidi control: removed from the label like the other invisible controls, and cleaned (to a space) by the shared text cleaner', () => {
+    const labels = labelsOf({ a: 'Wo\u061Crk' }, ['a'])
+    expect(labels['Wo\u061Crk']).toBe('Work')
+    expect(cleanHintText('a\u061Cb')).toBe('a b')
+  })
+
+  it('canonically equivalent names (NFC and NFD “Café”) are different identities but never look identical', () => {
+    const nfc = 'Café'
+    const nfd = 'Café'
+    const labels = labelsOf({ a: nfc, b: nfd }, ['a', 'b'])
+    expect(Object.keys(labels).sort()).toEqual([nfc, nfd].sort())
+    expect(new Set(Object.values(labels)).size).toBe(2)
+    for (const l of Object.values(labels)) expect(l.normalize('NFC').startsWith('Café')).toBe(true)
+  })
+
+  it('a generated suffix can never equal an existing label: with a space literally named “Home (2)”, the second “Home” becomes “Home (3)”', () => {
+    const labels = labelsOf({ a: 'Home', b: 'Ho\u200Bme', c: 'Home (2)' }, ['a', 'b', 'c'])
+    expect(labels['Home (2)']).toBe('Home (2)')
+    expect(Object.values(labels).sort()).toEqual(['Home', 'Home (2)', 'Home (3)'])
+  })
+
+  it('which name gets the suffix depends only on the names, not on the order the nodes were paired in', () => {
+    const groups = { a: 'Home', b: 'Ho\u200Bme', c: 'Ho\u200Dme' }
+    expect(labelsOf(groups, ['c', 'b', 'a'])).toEqual(labelsOf(groups, ['a', 'b', 'c']))
+  })
+
+  it('selecting by identity still works for names that look the same: each raw name selects only its own nodes', () => {
+    const byId = { a: info('Home'), b: info('Ho\u200Bme') }
+    expect(resolveSelection(['a', 'b'], byId, null, 'Home')).toEqual(['a'])
+    expect(resolveSelection(['a', 'b'], byId, null, 'Ho\u200Bme')).toEqual(['b'])
   })
 })

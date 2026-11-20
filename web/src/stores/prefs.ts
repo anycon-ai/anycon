@@ -58,7 +58,7 @@ export interface PrefsState {
   lastTodoNodeBySpace: Record<string, string>
   notifyBannerDismissed: boolean
   /**
-   * 已经看过（或不需要看）「首页换成待处理」的说明（spec/web.md § 14.4）。第一次启动时 localStorage 里没有任何偏好的是新用户，
+   * 已经看过（或不需要看）「首页换成待处理」的说明（spec/web.md § 4.11）。第一次启动时 localStorage 里没有任何偏好的是新用户，
    * 没有「原来的首页」可说，直接算看过；已经有偏好、但没有这一项的是升级上来的老用户，显示一次。
    */
   homeNoticeSeen: boolean

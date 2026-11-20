@@ -91,6 +91,9 @@ export async function hydrateTodos(nodeIds: readonly string[]): Promise<void> {
 
 /** 节点被忘记：缓存和还没同步的改动一起丢掉。返回丢掉的待发改动数（调用方可以告诉用户）。 */
 export async function forgetNodeTodos(nodeId: string): Promise<number> {
+  cancelRetry(nodeId)
+  retryCounts.delete(nodeId)
+  closedWalks.delete(nodeId)
   useTodos.getState().removeNode(nodeId)
   try {
     const n = await db.dropNodeTodos(nodeId)
@@ -104,6 +107,10 @@ export async function forgetNodeTodos(nodeId: string): Promise<number> {
 
 /** 退出登录：内存里的清单清掉（IndexedDB 保留，同一账号再登录还能用；「退出并移除本设备」才删库）。 */
 export function resetTodosMemory(): void {
+  for (const id of [...retryTimers.keys()]) cancelRetry(id)
+  retryCounts.clear()
+  closedWalks.clear()
+  paging.clear()
   useTodos.setState({ nodes: {}, outbox: [], outboxLoaded: false })
 }
 
@@ -129,8 +136,11 @@ const PAGE = 200
 
 /** 翻页期间变过的项：`todo.changed` 和本地动作记在这里（`null` = 删掉了，墓碑），翻完时它们比翻到的旧页新，不被盖掉、不被加回来。 */
 const paging = new Map<string, Map<string, Todo | null>>()
+/** 「已关闭」从头翻到尾的一趟：翻到过的 id，和这一趟期间变过 / 删掉的项。翻完时用它修剪缓存里已关闭的项。 */
+const closedWalks = new Map<string, { seen: Set<string>; touched: Map<string, Todo | null> }>()
 function noteTouched(nodeId: string, id: string, todo: Todo | null): void {
   paging.get(nodeId)?.set(id, todo)
+  closedWalks.get(nodeId)?.touched.set(id, todo)
 }
 
 /**
@@ -156,26 +166,31 @@ function listOpen(nodeId: string): Promise<void> {
     paging.set(nodeId, touched)
     useTodos.getState().patchNode(nodeId, (n) => ({ ...n, syncing: true }))
     try {
-      const result = new Map<string, Todo>()
-      for (const t of await listPages(nodeId)) result.set(t.id, t)
-      for (const [id, t] of touched) {
-        if (t === null) result.delete(id)
-        else {
-          const fetched = result.get(id)
-          if (!fetched || fetched.updated_ms <= t.updated_ms) result.set(id, t)
+      const fetched = await listPages(nodeId)
+      // 翻到的页和翻页期间变过的项合并：墓碑删掉、期间新建 / 更新的（不比翻到的旧）保留
+      const merge = (): Todo[] => {
+        const result = new Map<string, Todo>()
+        for (const t of fetched) result.set(t.id, t)
+        for (const [id, t] of touched) {
+          if (t === null) result.delete(id)
+          else {
+            const f = result.get(id)
+            if (!f || f.updated_ms <= t.updated_ms) result.set(id, t)
+          }
         }
+        return [...result.values()]
       }
       const now = Date.now()
-      const keep = [...result.values()]
-      useTodos.getState().replaceOpen(nodeId, keep, now)
-      announce(nodeId)
+      // 先写盘（一个事务里读—改—写，`todo.changed` 自己的写入排在它后面，不会被旧的覆盖），再换内存，最后才通知别的标签页：
+      // 别的标签页收到通知时盘上已经是新的，不会读到旧内容把已删除的项又带回来
       try {
-        const cached = await db.listTodoRecords(nodeId)
-        const gone = cached.todos.filter((t) => !isClosed(t.state) && !result.has(t.id)).map((t) => t.id)
-        await db.applyTodoCache(nodeId, { put: keep, remove: gone, syncedAt: now })
+        await db.commitOpenList(nodeId, merge, now)
       } catch (e) {
         storageFailed('cache the to-do list')(e)
       }
+      // 写盘期间又到的变更（它们各自的写入在后面）也要进内存里的结果
+      useTodos.getState().replaceOpen(nodeId, merge(), now)
+      announce(nodeId)
     } finally {
       paging.delete(nodeId)
       useTodos.getState().patchNode(nodeId, (n) => ({ ...n, syncing: false }))
@@ -206,34 +221,55 @@ export async function refreshAfterReplay(nodeId: string): Promise<void> {
   }
 }
 
-/** 用户展开「已关闭」：向节点要已关闭的项，一页页往下翻（`more` = 继续翻下一页）。 */
+/**
+ * 用户展开「已关闭」：向节点要已关闭的项，一页页往下翻（`more` = 继续翻下一页）。从头翻到尾翻完一趟，缓存里（内存和 IndexedDB）
+ * 这一趟没翻到的已关闭的项（别处删了）修剪掉；这一趟期间删掉的项不会被翻到的页加回来，期间新关闭的保留。
+ */
 export async function loadClosed(nodeId: string, opts: { more?: boolean } = {}): Promise<void> {
   const st = useTodos.getState().nodes[nodeId]
   if (!st || st.closed.loading || !nodeSupportsTodo(nodeId)) return
   if (opts.more ? !st.closed.hasMore : st.closed.complete) return
   const { patchNode, mergeItems } = useTodos.getState()
   patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: true, failed: false } }))
+  if (!opts.more || !closedWalks.has(nodeId)) closedWalks.set(nodeId, { seen: new Set(), touched: new Map() })
+  const walk = closedWalks.get(nodeId)!
   try {
     const cursor = opts.more ? st.closed.cursor : undefined
     const res = await rpc().request<TodoListResult>(nodeId, 'todo.list', { include_closed: true, limit: PAGE, ...(cursor ? { before: cursor } : {}) })
-    // 翻页期间在本地或经 `todo.changed` 删掉的项不能被这一页加回来
-    const live = res.todos.filter((t) => !tombstoned(nodeId, t.id))
+    // 这一趟期间在本地或经 `todo.changed` 删掉的项不能被这一页加回来
+    const live = res.todos.filter((t) => walk.touched.get(t.id) !== null)
+    for (const t of live) walk.seen.add(t.id)
     mergeItems(nodeId, live)
-    void db.applyTodoCache(nodeId, { put: live.filter((t) => isClosed(t.state)) }).catch(storageFailed('cache the closed to-dos'))
     const last = res.todos.at(-1)
+    const finished = !res.has_more || !last
+    let prune: string[] = []
+    if (finished) {
+      const items = useTodos.getState().nodes[nodeId]?.items ?? {}
+      prune = Object.values(items)
+        .filter((t) => isClosed(t.state) && !walk.seen.has(t.id) && !walk.touched.has(t.id))
+        .map((t) => t.id)
+      if (prune.length > 0) useTodos.getState().removeItems(nodeId, prune)
+      closedWalks.delete(nodeId)
+    }
+    try {
+      await db.applyTodoCache(nodeId, { put: live.filter((t) => isClosed(t.state)), remove: prune })
+      if (finished) await db.pruneClosedCache(nodeId, walk.seen, walk.touched)
+    } catch (e) {
+      storageFailed('cache the closed to-dos')(e)
+    }
     patchNode(nodeId, (n) => ({
       ...n,
-      closed: { ...n.closed, loading: false, hasMore: res.has_more && !!last, complete: !res.has_more || !last, ...(last ? { cursor: { updated_ms: last.updated_ms, id: last.id } } : {}) },
+      closed: { ...n.closed, loading: false, hasMore: res.has_more && !!last, complete: finished, ...(last ? { cursor: { updated_ms: last.updated_ms, id: last.id } } : {}) },
     }))
   } catch (e) {
     console.warn('anycon: could not load the closed to-dos', e)
     patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: false, failed: true } }))
   }
 }
-const tombstoned = (nodeId: string, id: string): boolean => paging.get(nodeId)?.get(id) === null
 
 export function setClosedExpanded(nodeId: string, expanded: boolean): void {
-  useTodos.getState().patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, expanded } }))
+  // 每次展开都从头翻一趟：翻完才能把缓存里别处已经删掉的已关闭的项修剪掉（翻的过程中先显示缓存里的）
+  useTodos.getState().patchNode(nodeId, (n) => ({ ...n, closed: expanded ? { ...n.closed, expanded, complete: false, hasMore: false, failed: false } : { ...n.closed, expanded } }))
   if (expanded) void loadClosed(nodeId)
 }
 
@@ -262,9 +298,12 @@ const STORAGE_ERROR: FieldError = { field: 'storage', reason: 'failed' }
  * 追加一条。写库失败（配额、库被别的标签页删掉 / 升级了）返回错误，什么都没入队，调用方保留用户的输入；
  * 写成功之后的任何一步出错都不再报错（记录已经在队列里了，再报错会让用户重发一份）。
  */
-async function enqueue(nodeId: string, id: string, op: OutboxOp): Promise<FieldError | null> {
+async function enqueue(nodeId: string, id: string, op: OutboxOp, opts: { discardFailed?: boolean } = {}): Promise<FieldError | null> {
   try {
-    await db.appendOutbox({ node_id: nodeId, id, op, created_at: Date.now(), state: 'pending', ...(nodeReady(nodeId) ? {} : { queued_offline: true }) })
+    const rec: OutboxRecord = { node_id: nodeId, id, op, created_at: Date.now(), state: 'pending', ...(nodeReady(nodeId) ? {} : { queued_offline: true }) }
+    // 删除一项时，它已有的失败记录和排在它们后面的记录一起丢掉再追加删除：不能留着发不出去的记录、又把项藏起来
+    if (opts.discardFailed) await db.appendDelete(rec)
+    else await db.appendOutbox(rec)
   } catch (e) {
     storageFailed('queue a to-do change')(e)
     return STORAGE_ERROR
@@ -281,6 +320,7 @@ async function enqueue(nodeId: string, id: string, op: OutboxOp): Promise<FieldE
 
 /** 后台重放；有入队时节点连不上的记录才在重放完之后重新列一次。 */
 function kickReplay(nodeId: string): void {
+  cancelRetry(nodeId)
   void runReplay(nodeId)
     .then((r) => (r.result === 'done' && r.relist ? refreshAfterReplay(nodeId) : undefined))
     .catch((e: unknown) => console.warn('anycon: replaying the to-do changes failed', e))
@@ -319,7 +359,7 @@ export async function updateTodo(nodeId: string, id: string, fields: UpdateField
 
 /** 删一项。返回是否入队了（失败时已经提示用户，不抛）。 */
 export async function deleteTodo(nodeId: string, id: string): Promise<boolean> {
-  const failed = await enqueue(nodeId, id, { kind: 'delete' })
+  const failed = await enqueue(nodeId, id, { kind: 'delete' }, { discardFailed: true })
   if (failed) toast.error(i18n.t('todos.errors.storage.failed'))
   return !failed
 }
@@ -382,16 +422,43 @@ export type ReplayVerdict =
   | { kind: 'link' }
   | { kind: 'offline' }
 
-export function classifyReplayError(op: OutboxOp, e: unknown): ReplayVerdict {
+/**
+ * `ready`：出错的时候节点是不是还连着。对端或 hub 掉线引起的错误（`offline`、`closed`、`undeliverable`，以及节点已经不在线时的超时）
+ * 算「离线」：留着这一条、不记失败次数，等重连。只有节点连着时的超时才记一次，和节点真正的错误答复。
+ */
+export function classifyReplayError(op: OutboxOp, e: unknown, ready = true): ReplayVerdict {
   if (!(e instanceof RpcCallError)) return { kind: 'failed', error: { code: 'unknown' } }
-  if (e.kind === 'offline') return { kind: 'offline' }
+  if (e.kind === 'offline' || e.kind === 'closed' || e.kind === 'undeliverable') return { kind: 'offline' }
   if (e.kind === 'too_large') return { kind: 'failed', error: { code: 'too_large' } }
-  // 链路问题（超时、断开、没送达）：这一条没有结果，留着下次再发，连续失败几次就标成失败
-  if (e.kind !== 'rpc') return { kind: 'link' }
+  if (e.kind !== 'rpc') return ready ? { kind: 'link' } : { kind: 'offline' }
   const code = e.code
   if (code === 'not_found' && op.kind !== 'add') return { kind: 'drop' }
   if (code === 'invalid' && op.kind === 'update' && e.reason === 'too_many' && op.fields.state !== undefined && !isClosed(op.fields.state)) return { kind: 'drop_full' }
   return { kind: 'failed', error: { code: code ?? 'unknown', ...(e.field ? { field: e.field } : {}), ...(e.reason ? { reason: e.reason } : {}) } }
+}
+
+// 节点连着、请求却超时 / 因对端波动失败时，过一会儿自己再试（退避），不用等别的事来触发
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const retryCounts = new Map<string, number>()
+export const RETRY_BASE_MS = 2_000
+export const RETRY_MAX_MS = 30_000
+function cancelRetry(nodeId: string): void {
+  const t = retryTimers.get(nodeId)
+  if (t) clearTimeout(t)
+  retryTimers.delete(nodeId)
+}
+function scheduleRetry(nodeId: string): void {
+  cancelRetry(nodeId)
+  const n = retryCounts.get(nodeId) ?? 0
+  retryCounts.set(nodeId, n + 1)
+  retryTimers.set(
+    nodeId,
+    setTimeout(() => {
+      retryTimers.delete(nodeId)
+      // 这时节点又不在线了：不再排，重连之后的同步会重放
+      if (rpc().isReady(nodeId)) kickReplay(nodeId)
+    }, Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** n)),
+  )
 }
 
 async function sendOp(nodeId: string, rec: OutboxRecord): Promise<Todo | null> {
@@ -401,6 +468,9 @@ async function sendOp(nodeId: string, rec: OutboxRecord): Promise<Todo | null> {
   await rpc().request(nodeId, 'todo.delete', { id: rec.id })
   return null
 }
+
+/** 只改自己认领的记录：认领已经被别的实例接手（租约过期）时，不去动别人正在发的那条。 */
+const mine = (f: (stored: OutboxRecord) => OutboxRecord | null) => (stored: OutboxRecord): OutboxRecord | null => (stored.claimed_by !== undefined && stored.claimed_by !== OWNER ? stored : f(stored))
 
 const release = (r: OutboxRecord): OutboxRecord => {
   const { claimed_at: _c, claimed_by: _b, ...rest } = r
@@ -419,6 +489,7 @@ export async function replayOutbox(nodeId: string): Promise<ReplayResult> {
 
 async function runReplay(nodeId: string): Promise<{ result: ReplayResult; relist: boolean }> {
   if (!nodeSupportsTodo(nodeId)) return { result: 'blocked', relist: false }
+  cancelRetry(nodeId)
   return withNodeLock(nodeId, async () => {
     let relist = false
     try {
@@ -448,8 +519,9 @@ async function runReplay(nodeId: string): Promise<{ result: ReplayResult; relist
           }
           await db.deleteOutbox([seq])
           if (rec.queued_offline) relist = true
+          retryCounts.delete(nodeId)
         } else {
-          const v = classifyReplayError(rec.op, error)
+          const v = classifyReplayError(rec.op, error, rpc().isReady(nodeId))
           if (v.kind === 'drop') {
             await db.deleteOutbox([seq])
             // not_found：这一项已经不在 daemon 上了（别处删了）：缓存里也去掉，不等下一次整份列表
@@ -459,25 +531,26 @@ async function runReplay(nodeId: string): Promise<{ result: ReplayResult; relist
             // 重新打开被拒：项留在关闭状态；这条改动里别的字段照常发，只去掉 `state`
             const { state: _s, ...rest } = (rec.op as Extract<OutboxOp, { kind: 'update' }>).fields
             if (Object.keys(rest).length > 0) {
-              await db.patchOutbox(seq, (stored) => ({ ...release(stored), op: { kind: 'update', fields: rest } }))
+              await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), op: { kind: 'update', fields: rest } })))
               toast.error(i18n.t('todos.replay.fullKept'))
             } else {
               await db.deleteOutbox([seq])
               toast.error(i18n.t('todos.replay.full'))
             }
           } else if (v.kind === 'failed') {
-            await db.patchOutbox(seq, (stored) => ({ ...release(stored), state: 'failed', error: v.error }))
+            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), state: 'failed', error: v.error })))
             await reloadOutbox().catch(() => undefined)
             announceRejected(nodeId, rec, v.error)
           } else if (v.kind === 'link' && (rec.attempts ?? 0) + 1 >= MAX_LINK_FAILURES) {
-            await db.patchOutbox(seq, (stored) => ({ ...release(stored), state: 'failed', error: { code: 'link' }, attempts: (stored.attempts ?? 0) + 1 }))
+            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), state: 'failed', error: { code: 'link' }, attempts: (stored.attempts ?? 0) + 1 })))
             await reloadOutbox().catch(() => undefined)
             announceRejected(nodeId, rec, { code: 'link' })
           } else {
-            // 纯链路 / 离线错误：这一条留着（link 记一次失败），这一轮结束
-            await db.patchOutbox(seq, (stored) => ({ ...release(stored), ...(v.kind === 'link' ? { attempts: (stored.attempts ?? 0) + 1 } : {}) }))
+            // 纯链路 / 离线错误：这一条留着（节点连着时的超时记一次失败），这一轮结束；节点还连着就过一会儿自己再试
+            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), ...(v.kind === 'link' ? { attempts: (stored.attempts ?? 0) + 1 } : {}) })))
             await reloadOutbox().catch(() => undefined)
             announce(nodeId)
+            if (rpc().isReady(nodeId)) scheduleRetry(nodeId)
             return { result: 'offline' as const, relist }
           }
         }

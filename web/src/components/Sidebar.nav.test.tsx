@@ -118,7 +118,7 @@ describe('node filter dot', () => {
 })
 
 
-describe('to-do entries need a node that supports to-dos (U12)', () => {
+describe('to-do entries need a node that supports to-dos', () => {
   it('without one the sidebar has no To-dos item and no +; with one it has both', () => {
     const { unmount } = wrap(<Sidebar nodeId={NODE} />)
     expect(screen.queryByTestId('sidebar-todos')).toBeNull()

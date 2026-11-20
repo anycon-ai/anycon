@@ -8,7 +8,7 @@ import { useCapture } from '@/features/todos/capture'
 import { flatOrder, groupTodos, NO_FILTERS, projectsOf, type SourceFilter, type TodoFilters } from '@/features/todos/list'
 import { deleteTodo, loadClosed, setClosedExpanded } from '@/features/todos/service'
 import { useSupportingNodes, useTodoView, useTodos } from '@/features/todos/store'
-import { dirtyFields, draftKey, hasDirtyDrafts, useDrafts } from '@/features/todos/drafts'
+import { dirtyFields, draftKey, useDrafts } from '@/features/todos/drafts'
 import { TodoDetailPane, resolveTodoRoute } from '@/features/todos/ui/TodoDetailPane'
 import { TodoRow } from '@/features/todos/ui/TodoRow'
 import { isTypingTarget } from '@/features/session/shortcuts'
@@ -64,19 +64,9 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
     const d = drafts[draftKey(item.node_id, item.id)]
     return !!d && dirtyFields(d).length > 0
   }
-  const online = (id: string): boolean => nodes[id]?.conn === 'ready'
 
   const open = (item: ViewTodo): void => void navigate({ to: '/todos/$node/$todo', params: { node: shortNodeId(item.node_id, order), todo: item.id } })
   const targets = (item: ViewTodo): ViewTodo[] => (multi && checked.size > 0 ? flat.filter((x) => checked.has(key(x))) : [item])
-
-  // 有没保存的编辑时，关标签页 / 刷新要先问一声（草稿在内存里，页面一刷新就没了）
-  useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent): void => {
-      if (hasDirtyDrafts(useDrafts.getState().drafts)) e.preventDefault()
-    }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [])
 
   // 键盘（桌面，spec/web.md § 14.11）：J / K 移动，E 完成，Enter 打开，X 多选
   useEffect(() => {
@@ -155,7 +145,6 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
     <TodoRow
       key={key(item)}
       item={item}
-      online={online(item.node_id)}
       {...(showNode ? { nodeName: cleanHintText(nodes[item.node_id]?.name) || item.node_id.slice(0, 8) } : {})}
       selected={selectedKey ? selectedKey === key(item) : cursor === key(item)}
       hasDraft={hasDraft(item)}

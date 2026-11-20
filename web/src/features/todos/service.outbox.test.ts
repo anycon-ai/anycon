@@ -1,11 +1,13 @@
 // 待发队列是只追加的有序日志（outbox.ts 头部）：不合并、不取消；认领是一个事务；一项一队；失败只挡本项；
 // 同步翻页期间的删除和变更不被旧页盖掉；没有 Web Locks 时用租约；入队写失败的处理。
-// 前半（B1–B5）只用公开的行为（addTodo / updateTodo / deleteTodo / syncTodos / replayOutbox + 假 daemon），不依赖库的内部形状。
+// 前半只用公开的行为（addTodo / updateTodo / deleteTodo / syncTodos / replayOutbox + 假 daemon），不依赖库的内部形状。
 import { deleteDB, openDB } from 'idb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeInfo } from '@/protocol'
 import * as db from '@/db'
+import { forgetNode } from '@/features/devices/removeNode'
 import { setNavigator } from '@/lib/navigate'
+import * as client from '@/transport/instance'
 import { storeShared } from '@/sw/shareStore'
 import { SHARE_DB } from '@/sw/shareStore'
 import { nodeEntry, todoItem } from '@/test/factories'
@@ -14,7 +16,7 @@ import { FakeTodoDaemon, linkError } from '@/test/fakeTodoDaemon'
 import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { useUi } from '@/stores/ui'
-import { addTodo, deleteTodo, discardOp, handleTodoChanged, hydrateTodos, MAX_LINK_FAILURES, refreshAfterReplay, replayOutbox, resetTodosMemory, retryOp, syncTodos, updateTodo } from './service'
+import { addTodo, classifyReplayError, deleteTodo, discardOp, handleTodoChanged, hydrateTodos, loadClosed, MAX_LINK_FAILURES, refreshAfterReplay, replayOutbox, resetTodosMemory, RETRY_BASE_MS, RETRY_MAX_MS, retryOp, setClosedExpanded, syncTodos, updateTodo } from './service'
 import { useTodos, viewOf } from './store'
 
 const NODE = 'n'.repeat(32)
@@ -68,8 +70,8 @@ async function addWithLostReply(title: string): Promise<string> {
   return r.id
 }
 
-describe('B1 / B2: the add reply was lost, the daemon already has the item', () => {
-  it('B1: a later edit is sent as its own update, so the daemon gets the new title', async () => {
+describe('the add reply was lost, the daemon already has the item', () => {
+  it('a later edit is sent as its own update, so the daemon gets the new title', async () => {
     const id = await addWithLostReply('draft')
     expect((await updateTodo(NODE, id, { title: 'final' })).ok).toBe(true)
     await flush()
@@ -77,7 +79,7 @@ describe('B1 / B2: the add reply was lost, the daemon already has the item', () 
     expect(await db.listOutbox(NODE)).toEqual([])
   })
 
-  it('B2: a later delete (also the capture toast’s Undo) is sent, so the daemon ends without the item', async () => {
+  it('a later delete (also the capture toast’s Undo) is sent, so the daemon ends without the item', async () => {
     const id = await addWithLostReply('oops')
     await deleteTodo(NODE, id)
     await flush()
@@ -86,7 +88,7 @@ describe('B1 / B2: the add reply was lost, the daemon already has the item', () 
   })
 })
 
-describe('B3: reopening when the list is full', () => {
+describe('reopening when the list is full', () => {
   it('re-sends the same update without the state, so the other fields are kept; the item stays closed and the user is told', async () => {
     daemon.seed(todoItem({ id: 'c', title: 'old', state: 'done' }))
     daemon.openLimit = 0
@@ -102,7 +104,7 @@ describe('B3: reopening when the list is full', () => {
     expect(useUi.getState().toasts.some((t) => /full/i.test(t.text))).toBe(true)
   })
 
-  it('B3: separate edits ({state} then {title}) are separate records, so a refused reopen never takes the title with it', async () => {
+  it('separate edits ({state} then {title}) are separate records, so a refused reopen never takes the title with it', async () => {
     daemon.seed(todoItem({ id: 'c', title: 'old', state: 'done' }))
     daemon.openLimit = 0
     await syncTodos(NODE)
@@ -115,7 +117,7 @@ describe('B3: reopening when the list is full', () => {
   })
 })
 
-describe('B4: edits made while a replay is running', () => {
+describe('edits made while a replay is running', () => {
   it('an edit queued while another one is in flight is not overwritten by a stale snapshot: all of them arrive in order', async () => {
     daemon.seed(todoItem({ id: 'e', title: 'orig', body: 'orig' }))
     await syncTodos(NODE)
@@ -171,7 +173,7 @@ describe('per-item ordering and blocking', () => {
     expect((await db.listOutbox(NODE)).map((r) => `${r.op.kind}:${r.state}`)).toEqual(['add:failed', 'update:pending'])
   })
 
-  it('S3: an unknown error and a not_found on an add mark only that record failed, with Retry available; other items are not blocked', async () => {
+  it('an unknown error and a not_found on an add mark only that record failed, with Retry available; other items are not blocked', async () => {
     goOffline()
     await addTodo(NODE, { title: 'one', body: '' })
     await addTodo(NODE, { title: 'two', body: '' })
@@ -229,7 +231,7 @@ describe('per-item ordering and blocking', () => {
   })
 })
 
-describe('B5 / S1: the list is paged while things change', () => {
+describe('the list is paged while things change', () => {
   /** 第一页回来之后、翻页还没结束时，执行 `during`（模拟别的设备 / 本地动作在这期间做了事）。 */
   function duringPaging(during: () => void): void {
     const original = rpc.handlers['todo.list']!
@@ -244,7 +246,7 @@ describe('B5 / S1: the list is paged while things change', () => {
     }
   }
 
-  it('B5: an item deleted while the initial sync pages does not come back, in memory or in IndexedDB', async () => {
+  it('an item deleted while the initial sync pages does not come back, in memory or in IndexedDB', async () => {
     daemon.seed(todoItem({ id: 'a', title: 'doomed' }), todoItem({ id: 'b', title: 'stays' }))
     duringPaging(() => handleTodoChanged(NODE, { id: 'a', deleted: true }))
     await syncTodos(NODE)
@@ -253,7 +255,7 @@ describe('B5 / S1: the list is paged while things change', () => {
     expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id)).toEqual(['b'])
   })
 
-  it('B5: an item deleted by the user while the refresh after a replay pages does not come back either', async () => {
+  it('an item deleted by the user while the refresh after a replay pages does not come back either', async () => {
     daemon.seed(todoItem({ id: 'a', title: 'doomed' }), todoItem({ id: 'b' }))
     await syncTodos(NODE)
     duringPaging(() => void deleteTodo(NODE, 'a'))
@@ -263,7 +265,7 @@ describe('B5 / S1: the list is paged while things change', () => {
     expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id)).toEqual(['b'])
   })
 
-  it('S1: the refresh keeps an item created during paging, does not replace a newer version with an older page, and removes vanished items from IndexedDB', async () => {
+  it('the refresh keeps an item created during paging, does not replace a newer version with an older page, and removes vanished items from IndexedDB', async () => {
     daemon.seed(todoItem({ id: 'a', title: 'old', updated_ms: 10 }))
     await db.applyTodoCache(NODE, { put: [todoItem({ id: 'vanished' })] })
     await hydrateTodos([NODE])
@@ -277,7 +279,7 @@ describe('B5 / S1: the list is paged while things change', () => {
     expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id).sort()).toEqual(['a', 'late'])
   })
 
-  it('S1: two pagings of the same node never run at once', async () => {
+  it('two pagings of the same node never run at once', async () => {
     daemon.seed(todoItem({ id: 'a' }))
     let active = 0
     let max = 0
@@ -294,7 +296,7 @@ describe('B5 / S1: the list is paged while things change', () => {
   })
 })
 
-describe('S2: no full re-list per edit', () => {
+describe('no full re-list per edit', () => {
   it('an edit made online relies on the returned Todo and todo.changed: no todo.list', async () => {
     daemon.seed(todoItem({ id: 'a' }))
     await syncTodos(NODE)
@@ -316,9 +318,10 @@ describe('S2: no full re-list per edit', () => {
   })
 })
 
-describe('S5: errors while enqueueing', () => {
+describe('errors while enqueueing', () => {
   it('a failed write shows an error result, queues nothing, and does not throw', async () => {
     vi.spyOn(db, 'appendOutbox').mockRejectedValue(new DOMException('quota', 'QuotaExceededError'))
+    vi.spyOn(db, 'appendDelete').mockRejectedValue(new DOMException('quota', 'QuotaExceededError'))
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const r = await addTodo(NODE, { title: 'x', body: '' })
     expect(r).toEqual({ ok: false, error: { field: 'storage', reason: 'failed' } })
@@ -340,7 +343,7 @@ describe('S5: errors while enqueueing', () => {
   })
 })
 
-describe('S4: no Web Locks (two realms, a lease)', () => {
+describe('no Web Locks (two realms, a lease)', () => {
   // 第二个实例：重新加载模块，得到各自的内存状态和实例 id，共用同一个（假的）IndexedDB 和同一个假 daemon
   async function secondRealm() {
     vi.resetModules()
@@ -431,7 +434,7 @@ describe('v1 → v2 migration', () => {
   })
 })
 
-describe('S7: switching accounts', () => {
+describe('switching accounts', () => {
   it('wipeAll also deletes the share stash, so a share made under account A does not pre-fill for account B', async () => {
     await storeShared({ title: 'for A', text: 'secret', url: '', at: Date.now() })
     expect((await indexedDB.databases()).map((d) => d.name)).toContain(SHARE_DB)
@@ -440,7 +443,7 @@ describe('S7: switching accounts', () => {
   })
 })
 
-describe('U10: a rejected queued change is announced', () => {
+describe('a rejected queued change is announced', () => {
   it('after reconnecting, a change the node refuses gives an error toast naming the item, with an action that opens it (Retry / Discard live there)', async () => {
     const go = vi.fn()
     setNavigator(go)
@@ -456,5 +459,294 @@ describe('U10: a rejected queued change is announced', () => {
     toast.action!.run()
     expect(go).toHaveBeenCalledWith(`/todos/nnnnnnnn/${r.id}`)
     setNavigator(null)
+  })
+})
+
+describe('a delete behind a failed record', () => {
+  it('discards the failed record and what was queued after it, then sends the delete: the item is never hidden while something unsendable is queued', async () => {
+    daemon.seed(todoItem({ id: 'x', title: 'keep?' }))
+    await syncTodos(NODE)
+    goOffline()
+    await updateTodo(NODE, 'x', { title: 'refused' })
+    await updateTodo(NODE, 'x', { body: 'later' })
+    await goOnline()
+    daemon.failNext('todo.update', rpcError('invalid', 'title'))
+    await replayOutbox(NODE)
+    expect((await db.listOutbox(NODE)).map((r) => r.state)).toEqual(['failed', 'pending'])
+    await deleteTodo(NODE, 'x')
+    await vi.waitFor(() => expect(daemon.todos.has('x')).toBe(false))
+    expect(await db.listOutbox(NODE)).toEqual([])
+  })
+
+  it('a failed add whose item is then deleted leaves nothing queued and nothing hidden behind it', async () => {
+    goOffline()
+    const r = await addTodo(NODE, { title: 'bad', body: '' })
+    if (!r.ok) throw new Error()
+    await goOnline()
+    daemon.failNext('todo.add', rpcError('invalid', 'title'))
+    await replayOutbox(NODE)
+    expect((await db.listOutbox(NODE))[0]).toMatchObject({ state: 'failed' })
+    await deleteTodo(NODE, r.id)
+    await flush()
+    expect(await db.listOutbox(NODE)).toEqual([])
+    expect(view()).toEqual([])
+  })
+})
+
+describe('retrying while the node stays ready', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+  /** 第 n 次尝试之后（失败次数记下、退避的定时器排好了）。 */
+  const afterAttempt = (n: number) => vi.waitFor(async () => expect((await db.listOutbox(NODE))[0]?.attempts).toBe(n))
+
+  it('a request that times out is sent again after a backoff, without anything else having to happen', async () => {
+    await syncTodos(NODE)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    daemon.failNext('todo.add', linkError('timeout'))
+    const r = await addTodo(NODE, { title: 'slow', body: '' })
+    if (!r.ok) throw new Error()
+    await afterAttempt(1)
+    expect(daemon.todos.size).toBe(0)
+    expect(byTitle('slow')).toMatchObject({ unsynced: true })
+    await vi.advanceTimersByTimeAsync(RETRY_BASE_MS + 50)
+    await vi.waitFor(() => expect(daemon.todos.size).toBe(1))
+    await vi.waitFor(async () => expect(await db.listOutbox(NODE)).toEqual([]))
+  })
+
+  it('the retry is cancelled when the node goes away: nothing is sent while it is not ready', async () => {
+    await syncTodos(NODE)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    daemon.failNext('todo.add', linkError('timeout'))
+    await addTodo(NODE, { title: 'slow', body: '' })
+    await afterAttempt(1)
+    goOffline()
+    daemon.log = []
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 2)
+    expect(daemon.log).toEqual([])
+    expect(await db.listOutbox(NODE)).toHaveLength(1)
+  })
+
+  it('the backoff doubles between attempts and is capped', async () => {
+    await syncTodos(NODE)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const delays: number[] = []
+    const real = globalThis.setTimeout
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      if (ms === RETRY_BASE_MS || ms === RETRY_BASE_MS * 2) delays.push(ms)
+      return real(fn, ms)
+    }) as typeof setTimeout)
+    daemon.failNext('todo.add', linkError('timeout'))
+    daemon.failNext('todo.add', linkError('timeout'))
+    await addTodo(NODE, { title: 'slow', body: '' })
+    await afterAttempt(1)
+    await vi.advanceTimersByTimeAsync(RETRY_BASE_MS + 50)
+    await afterAttempt(2)
+    expect(delays).toEqual([RETRY_BASE_MS, RETRY_BASE_MS * 2])
+    expect(RETRY_BASE_MS * 2 ** 10).toBeGreaterThan(RETRY_MAX_MS)
+  })
+})
+
+describe('which errors count as a failed attempt', () => {
+  const add = { kind: 'add', params: { title: 't', body: '' } } as const
+
+  it('the peer or the hub going away is offline, not a strike; only a timeout while the node is ready, or a real error reply, counts', () => {
+    for (const kind of ['offline', 'closed', 'undeliverable'] as const) expect(classifyReplayError(add, linkError(kind))).toEqual({ kind: 'offline' })
+    expect(classifyReplayError(add, linkError('timeout'), true)).toEqual({ kind: 'link' })
+    expect(classifyReplayError(add, linkError('timeout'), false)).toEqual({ kind: 'offline' })
+    expect(classifyReplayError(add, rpcError('invalid', 'title'))).toMatchObject({ kind: 'failed' })
+    expect(classifyReplayError(add, rpcError('internal'))).toMatchObject({ kind: 'failed' })
+    expect(classifyReplayError({ kind: 'delete' }, rpcError('not_found'))).toEqual({ kind: 'drop' })
+    expect(classifyReplayError(add, rpcError('not_found'))).toMatchObject({ kind: 'failed' })
+  })
+
+  it('a flaky connection (closed / undeliverable many times) never marks a record failed', async () => {
+    await syncTodos(NODE)
+    daemon.failNext('todo.add', linkError('closed'))
+    daemon.failNext('todo.add', linkError('undeliverable'))
+    daemon.failNext('todo.add', linkError('closed'))
+    daemon.failNext('todo.add', linkError('undeliverable'))
+    goOffline()
+    await addTodo(NODE, { title: 'flaky', body: '' })
+    await goOnline()
+    for (let i = 0; i < 4; i++) await replayOutbox(NODE)
+    const rec = (await db.listOutbox(NODE))[0]
+    expect(rec).toMatchObject({ state: 'pending' })
+    expect(rec!.attempts ?? 0).toBe(0)
+    await replayOutbox(NODE)
+    expect(ids()).toEqual(['flaky'])
+  })
+})
+
+describe('the claim belongs to whoever made it', () => {
+  it('after a timeout, a record that another instance took over is not touched (its claim and attempt count stay)', async () => {
+    goOffline()
+    await addTodo(NODE, { title: 'x', body: '' })
+    await goOnline()
+    const original = rpc.handlers['todo.add']!
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    rpc.handlers['todo.add'] = async (p, n) => {
+      await gate
+      void original(p, n)
+      throw linkError('timeout')
+    }
+    const running = replayOutbox(NODE)
+    await vi.waitFor(async () => expect((await db.listOutbox(NODE))[0]?.claimed_by).toBeDefined())
+    const [rec] = await db.listOutbox(NODE)
+    await db.patchOutbox(rec!.seq!, (r) => ({ ...r, claimed_by: 'someone-else', claimed_at: Date.now() }))
+    release()
+    await running
+    const after = (await db.listOutbox(NODE))[0]!
+    expect(after.claimed_by).toBe('someone-else')
+    expect(after.attempts ?? 0).toBe(0)
+  })
+
+  it('a claim stamped in the future (the clock went back) is not taken over', async () => {
+    goOffline()
+    await addTodo(NODE, { title: 'x', body: '' })
+    const [rec] = await db.listOutbox(NODE)
+    await db.patchOutbox(rec!.seq!, (r) => ({ ...r, claimed_by: 'other', claimed_at: Date.now() + 3_600_000 }))
+    expect(await db.claimNextOutbox(NODE, 'me', Date.now(), 35_000)).toBeNull()
+  })
+})
+
+describe('the sync writes the disk before it announces, and does not lose a change that arrives while writing', () => {
+  it('other tabs are told only after the list has been written', async () => {
+    daemon.seed(todoItem({ id: 'a' }))
+    const order: string[] = []
+    const post = vi.spyOn(BroadcastChannel.prototype, 'postMessage').mockImplementation(() => void order.push('announce'))
+    const commit = db.commitOpenList
+    vi.spyOn(db, 'commitOpenList').mockImplementation(async (...args) => {
+      await commit(...args)
+      order.push('written')
+    })
+    await syncTodos(NODE)
+    expect(order.indexOf('written')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('announce', order.indexOf('written'))).toBeGreaterThan(order.indexOf('written'))
+    expect(order.slice(0, order.indexOf('written')).includes('announce')).toBe(false)
+    post.mockRestore()
+  })
+
+  it('a todo.changed that arrives while the list is being written is neither lost on disk nor in memory', async () => {
+    daemon.seed(todoItem({ id: 'a', title: 'old', updated_ms: 10 }))
+    const commit = db.commitOpenList
+    vi.spyOn(db, 'commitOpenList').mockImplementation(async (...args) => {
+      const p = commit(...args)
+      handleTodoChanged(NODE, { id: 'a', todo: todoItem({ id: 'a', title: 'newer', updated_ms: 50 }) })
+      await p
+    })
+    await syncTodos(NODE)
+    await flush()
+    expect(byTitle('newer')).toBeDefined()
+    expect((await db.listTodoRecords(NODE)).todos.map((t) => t.title)).toEqual(['newer'])
+  })
+
+  it('an item deleted by todo.changed while the list is being written does not come back from disk', async () => {
+    daemon.seed(todoItem({ id: 'a' }), todoItem({ id: 'b' }))
+    const commit = db.commitOpenList
+    vi.spyOn(db, 'commitOpenList').mockImplementation(async (...args) => {
+      const p = commit(...args)
+      handleTodoChanged(NODE, { id: 'a', deleted: true })
+      await p
+    })
+    await syncTodos(NODE)
+    await flush()
+    expect(view().map((v) => v.id)).toEqual(['b'])
+    expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id)).toEqual(['b'])
+  })
+
+  it('a replayed delete that completes between two pages of the refresh is not undone by the stale first page', async () => {
+    daemon.pageSize = 1
+    daemon.seed(todoItem({ id: 'a', updated_ms: 30 }), todoItem({ id: 'b', updated_ms: 20 }), todoItem({ id: 'c', updated_ms: 10 }))
+    await syncTodos(NODE)
+    const original = rpc.handlers['todo.list']!
+    let pages = 0
+    rpc.handlers['todo.list'] = async (p, n) => {
+      pages++
+      if (pages === 2) {
+        await deleteTodo(NODE, 'a')
+        await vi.waitFor(() => expect(daemon.todos.has('a')).toBe(false))
+      }
+      return original(p, n)
+    }
+    await refreshAfterReplay(NODE)
+    await flush()
+    expect(view().map((v) => v.id).sort()).toEqual(['b', 'c'])
+    expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id).sort()).toEqual(['b', 'c'])
+  })
+})
+
+describe('closed items that were deleted elsewhere', () => {
+  it('a full walk of the closed list prunes the cached ones the node no longer has, in memory and on disk', async () => {
+    daemon.seed(todoItem({ id: 'c1', state: 'done', updated_ms: 2 }), todoItem({ id: 'c2', state: 'done', updated_ms: 1 }))
+    await syncTodos(NODE)
+    await loadClosed(NODE)
+    expect(Object.keys(useTodos.getState().nodes[NODE]!.items).sort()).toEqual(['c1', 'c2'])
+    daemon.todos.delete('c2')
+    setClosedExpanded(NODE, false)
+    setClosedExpanded(NODE, true)
+    await vi.waitFor(() => expect(Object.keys(useTodos.getState().nodes[NODE]!.items)).toEqual(['c1']))
+    expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id)).toEqual(['c1'])
+  })
+
+  it('a closed item deleted while the closed list is requested is not added back by that page', async () => {
+    daemon.seed(todoItem({ id: 'c1', state: 'done', updated_ms: 2 }), todoItem({ id: 'c2', state: 'done', updated_ms: 1 }))
+    await syncTodos(NODE)
+    const original = rpc.handlers['todo.list']!
+    rpc.handlers['todo.list'] = async (p, n) => {
+      const r = await original(p, n)
+      handleTodoChanged(NODE, { id: 'c2', deleted: true })
+      return r
+    }
+    await loadClosed(NODE)
+    await flush()
+    expect(Object.keys(useTodos.getState().nodes[NODE]!.items)).toEqual(['c1'])
+    expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id)).toEqual(['c1'])
+  })
+
+  it('an item closed elsewhere during the walk is kept', async () => {
+    daemon.seed(todoItem({ id: 'c1', state: 'done', updated_ms: 2 }))
+    await syncTodos(NODE)
+    const original = rpc.handlers['todo.list']!
+    rpc.handlers['todo.list'] = async (p, n) => {
+      const r = await original(p, n)
+      handleTodoChanged(NODE, { id: 'late', todo: todoItem({ id: 'late', state: 'done', updated_ms: 9 }) })
+      return r
+    }
+    await loadClosed(NODE)
+    expect(Object.keys(useTodos.getState().nodes[NODE]!.items).sort()).toEqual(['c1', 'late'])
+  })
+})
+
+describe('the “list is full” notice', () => {
+  const fullToasts = () => useUi.getState().toasts.filter((t) => /full/i.test(t.text))
+
+  it('is shown exactly once for a refused reopen (alone, or with other fields kept)', async () => {
+    daemon.seed(todoItem({ id: 'c', state: 'done' }), todoItem({ id: 'd', state: 'done' }))
+    daemon.openLimit = 0
+    await syncTodos(NODE)
+    await updateTodo(NODE, 'c', { state: 'open' })
+    await vi.waitFor(async () => expect(await db.listOutbox(NODE)).toEqual([]))
+    expect(fullToasts()).toHaveLength(1)
+    useUi.setState({ toasts: [] })
+    await updateTodo(NODE, 'd', { state: 'open', title: 'renamed' })
+    await vi.waitFor(async () => expect(await db.listOutbox(NODE)).toEqual([]))
+    expect(fullToasts()).toHaveLength(1)
+    expect(daemon.todos.get('d')).toMatchObject({ title: 'renamed', state: 'done' })
+  })
+})
+
+describe('forgetting a node also forgets its to-dos in memory', () => {
+  it('the forget-node path drops the cached items and the queued changes from the store and tells the user', async () => {
+    goOffline()
+    await addTodo(NODE, { title: 'unsent', body: '' })
+    useTodos.getState().setCache(NODE, [todoItem({ id: 'c' })])
+    vi.spyOn(client, 'getClient').mockReturnValue({ removeNode: vi.fn(async () => undefined) } as never)
+    await forgetNode(NODE)
+    expect(useTodos.getState().nodes[NODE]).toBeUndefined()
+    expect(useTodos.getState().outbox.filter((r) => r.node_id === NODE)).toEqual([])
+    expect(useUi.getState().toasts.some((t) => /unsynced/i.test(t.text))).toBe(true)
   })
 })

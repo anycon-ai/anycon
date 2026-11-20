@@ -22,7 +22,7 @@ beforeEach(async () => {
 afterEach(async () => deleteDB(SHARE_DB))
 
 describe('CapturePage', () => {
-  it('S6: under StrictMode (effects run twice) the shared text still lands in the box, and the stash is taken once', async () => {
+  it('under StrictMode (effects run twice) the shared text still lands in the box, and the stash is taken once', async () => {
     await storeShared({ title: 'Page', text: 'quote', url: 'https://a.test', at: Date.now() })
     render(
       <StrictMode>

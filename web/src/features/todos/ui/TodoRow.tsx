@@ -13,8 +13,6 @@ export interface TodoRowProps {
   item: ViewTodo
   /** 勾了多个节点时标出节点名。 */
   nodeName?: string
-  /** 这个节点现在连得上：连不上时「未同步」的标记才有意义（在线时队列几乎是立刻发完的）。 */
-  online: boolean
   selected: boolean
   /** 这一项有没保存的编辑（详情里写了一半）。 */
   hasDraft?: boolean
@@ -32,7 +30,7 @@ export interface TodoRowProps {
  * 清单页的一行。点一下打开详情；手机上向左滑 = 完成（5 秒撤销），长按（和右边的「⋯」按钮）= 同样的动作菜单：每个滑动动作都有按钮。
  * 多选（`X`）时行首是勾选框。标题是用户 / agent 的文字，一律按文本显示（去掉控制字符和双向控制符）。
  */
-export function TodoRow({ item, nodeName, online, selected, hasDraft, multi, checked, onOpen, onToggleCheck, onDone, onReopen, onDrop, onDelete }: TodoRowProps) {
+export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, onOpen, onToggleCheck, onDone, onReopen, onDrop, onDelete }: TodoRowProps) {
   const { t, i18n } = useTranslation()
   const [dx, setDx] = useState(0)
   const [menu, setMenu] = useState(false)
@@ -124,7 +122,7 @@ export function TodoRow({ item, nodeName, online, selected, hasDraft, multi, che
             <Chip tone="danger" testId="todo-failed">
               {t('todos.notSaved')}
             </Chip>
-          ) : item.unsynced && !online ? (
+          ) : item.unsynced ? (
             <Chip tone="warning" icon={<CircleDashed className="size-3" aria-hidden />} testId="todo-unsynced">
               {t('todos.notSynced')}
             </Chip>

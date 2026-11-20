@@ -47,6 +47,8 @@ interface TodosState {
   /** 并入一批项（翻页、已关闭的翻页），按 id 去重，`updated_ms` 新的赢。 */
   mergeItems: (nodeId: string, todos: readonly Todo[]) => void
   applyChanged: (nodeId: string, ch: TodoChanged) => void
+  /** 从内存里去掉这些项（修剪已经不在节点上的缓存）。 */
+  removeItems: (nodeId: string, ids: readonly string[]) => void
   removeNode: (nodeId: string) => void
   setOutbox: (records: OutboxRecord[]) => void
 }
@@ -86,6 +88,14 @@ export const useTodos = create<TodosState>()((set) => ({
       if (ch.deleted) delete items[ch.id]
       else if (ch.todo && ch.todo.id === ch.id) items[ch.id] = ch.todo
       else return s
+      return { nodes: { ...s.nodes, [nodeId]: { ...cur, items } } }
+    }),
+  removeItems: (nodeId, ids) =>
+    set((s) => {
+      const cur = s.nodes[nodeId]
+      if (!cur) return s
+      const items = { ...cur.items }
+      for (const id of ids) delete items[id]
       return { nodes: { ...s.nodes, [nodeId]: { ...cur, items } } }
     }),
   removeNode: (nodeId) =>

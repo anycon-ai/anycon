@@ -57,7 +57,7 @@ export function SelectionCapture() {
       type="button"
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
-        openCaptureFromMessage(sel.text, route.node, route.session, sel.seq)
+        openCaptureFromMessage(sel.text, nodeId, route.session, sel.seq)
         window.getSelection()?.removeAllRanges()
         setSel(null)
       }}

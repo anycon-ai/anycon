@@ -2,7 +2,7 @@
 import { deleteShareDb } from '@/sw/shareStore'
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { AgentInfo, AttachmentRef, NodeInfo, Project, SessionEvent, SessionSummary, Todo } from '@/protocol'
-import type { OutboxRecord } from '@/features/todos/types'
+import { isClosed, type OutboxRecord } from '@/features/todos/types'
 import { bytesEqual } from '@/lib/bytes'
 
 export interface IdentityRecord {
@@ -430,6 +430,46 @@ export async function applyTodoCache(nodeId: string, change: { put?: readonly To
   await Promise.all(ops)
 }
 
+/**
+ * 一次同步（翻完没关闭的项）的结果落盘：在**一个**读写事务里读出这个节点缓存里没关闭的项、删掉不在 `keep` 里的、写入 `keep`。
+ * 事务一开始就建（前面没有 await），`todo.changed` 自己的写入排在它后面，不会被这里较旧的 `keep` 覆盖。
+ */
+export async function commitOpenList(nodeId: string, keepNow: () => readonly Todo[], syncedAt: number): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction(['todos', 'todo_meta'], 'readwrite')
+  // 事务建好的这一刻才算要写的内容：在这之前到的变更已经并进来，在这之后到的，它们自己的写入排在这个事务后面
+  const keep = keepNow()
+  const store = tx.objectStore('todos')
+  const keepIds = new Set(keep.map((t) => t.id))
+  const existing = await store.index('by_node').getAll(nodeId)
+  const ops: Promise<unknown>[] = [tx.done]
+  for (const r of existing) if (!isClosed(r.todo.state) && !keepIds.has(r.todo.id)) ops.push(store.delete(r.key))
+  for (const t of keep) ops.push(store.put({ key: `${nodeId}:${t.id}`, node_id: nodeId, todo: t }))
+  ops.push(tx.objectStore('todo_meta').put({ node_id: nodeId, synced_at: syncedAt }))
+  await Promise.all(ops)
+}
+
+/** 「已关闭」从头翻到尾之后：缓存里已关闭、这一趟没翻到、期间也没变过的项（别处删了）删掉。 */
+export async function pruneClosedCache(nodeId: string, seen: ReadonlySet<string>, touched: ReadonlyMap<string, unknown>): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction('todos', 'readwrite')
+  const existing = await tx.store.index('by_node').getAll(nodeId)
+  const ops: Promise<unknown>[] = [tx.done]
+  for (const r of existing) if (isClosed(r.todo.state) && !seen.has(r.todo.id) && !touched.has(r.todo.id)) ops.push(tx.store.delete(r.key))
+  await Promise.all(ops)
+}
+
+/** 追加一条删除；这一项已有的失败记录和排在它们后面的记录一起丢掉（发不出去的记录不能留着、同时又把项藏起来）。 */
+export async function appendDelete(rec: OutboxRecord): Promise<number> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const mine = (await tx.store.index('by_node').getAll(rec.node_id)).filter((r) => r.id === rec.id).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+  const firstFailed = mine.find((r) => r.state === 'failed')
+  if (firstFailed) for (const r of mine) if ((r.seq ?? 0) >= (firstFailed.seq ?? 0)) await tx.store.delete(r.seq!)
+  const seq = Number(await tx.store.add(rec))
+  await tx.done
+  return seq
+}
+
 export async function listOutbox(nodeId?: string): Promise<OutboxRecord[]> {
   const db = await getDb()
   const all = nodeId ? await db.getAllFromIndex('todo_outbox', 'by_node', nodeId) : await db.getAll('todo_outbox')
@@ -461,6 +501,7 @@ export async function claimNextOutbox(nodeId: string, owner: string, now: number
     if (seen.has(r.id)) continue
     seen.add(r.id)
     if (r.state !== 'pending') continue
+    // 时钟往回拨过（认领的时刻在「现在」之后）时差是负数，同样不接手：宁可多等一会儿，也不把别人正在发的那条抢过来发两遍
     if (r.claimed_at !== undefined && r.claimed_by !== owner && now - r.claimed_at < takeoverMs) continue
     const claimed: OutboxRecord = { ...r, claimed_at: now, claimed_by: owner }
     await tx.store.put(claimed)

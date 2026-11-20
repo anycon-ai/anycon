@@ -12,6 +12,7 @@ import { useUi } from '@/stores/ui'
 import { EnrollApprovalDialog } from '@/features/approve/EnrollApprovalDialog'
 import { ScanApproveDialog } from '@/features/approve/ScanApproveDialog'
 import { ApprovalBanner } from './ApprovalBanner'
+import { useUnsavedDraftsGuard } from '@/features/todos/drafts'
 import { CaptureHost } from './CaptureHost'
 import { HomeNotice } from './HomeNotice'
 import { InboxAnnouncer } from './InboxAnnouncer'
@@ -51,6 +52,7 @@ export function AppShell() {
   const deepLink = useRouterState({ select: (s) => s.location.pathname === '/inbox' && !!(s.location.search as { node?: string; session?: string } | undefined)?.node })
   const inboxCount = useInboxNowCount()
   const todoCount = useOpenTodoCount()
+  useUnsavedDraftsGuard()
   const setLastSessionsPath = useUi((s) => s.setLastSessionsPath)
   const flyout = useRef<HTMLElement>(null)
   const { peek, close: closePeek, railProps } = useSidebarPeek(!sidebarOpen, flyout)

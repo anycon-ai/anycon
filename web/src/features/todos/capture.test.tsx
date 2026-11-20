@@ -14,6 +14,7 @@ import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
+import { Markdown } from '@/components/Markdown'
 import { captureFromQuote, useCapture } from './capture'
 import { CaptureForm } from './ui/CaptureForm'
 import { messageLink, openCaptureFromMessage } from './ui/MessageTodoMenu'
@@ -202,13 +203,29 @@ describe('from a session', () => {
     const evil = captureFromQuote('[Approve here](https://evil.example/x) <script>alert(1)</script>', '/n/a/s/b?seq=1')
     expect(evil.split('\n')[0]).toBe('Approve here (https://evil.example/x) <script>alert(1)</script>')
     const body = evil.split('\n').slice(1).join('\n')
-    expect(body).toContain('> \\[Approve here\\](https://evil.example/x) \\<script>alert(1)\\</script>')
+    expect(body.replaceAll('\u200b', '')).toContain('> \\[Approve here\\](https://evil.example/x) \\<script>alert(1)\\</script>')
     expect(body).not.toMatch(/(^|\n)\[Approve here\]\(/)
     // 代码块：用比里面任何一串反引号都长的围栏，里面的内容原样
     const code = captureFromQuote('```\n[x](https://evil.example)\n```\n', '/n/a/s/b?seq=1')
     expect(code).toContain('````\n```\n[x](https://evil.example)\n```\n````')
     // 只有记号的文字有个像样的标题
     expect(captureFromQuote('---').split('\n')[0]).not.toBe('')
+  })
+
+  it('a quoted excerpt renders with no clickable link except “open the message”: bare URLs, www hosts, email addresses and escaped link syntax are all inert', () => {
+    const quote = 'see https://evil.example/x and www.evil.example or mail a@evil.example, also \\[a\\](http://x.example) and [b](https://y.example)'
+    const body = captureFromQuote(quote, messageLink('a'.repeat(32), 'sess_1', 3)).split('\n').slice(1).join('\n')
+    const { container } = render(<Markdown text={body} />)
+    const links = [...container.querySelectorAll('a')]
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([`/n/${'a'.repeat(32)}/s/sess_1?seq=3`])
+    // 原文还在、能读（零宽空格不影响显示）
+    expect(container.textContent?.replaceAll('\u200b', '')).toContain('https://evil.example/x')
+  })
+
+  it('the back link uses the full node id and encodes both ids, so nothing can break out of the Markdown link', () => {
+    expect(messageLink('node id', 'a)b](c', 5)).toBe('/n/node%20id/s/a)b%5D(c?seq=5')
+    const body = captureFromQuote('x', messageLink('n', 'a b)', 5))
+    expect(body).toContain('(/n/n/s/a%20b)?seq=5)')
   })
 
   it('the message menu pre-fills the bar and does not add anything by itself', () => {
@@ -229,7 +246,7 @@ describe('waitFor sanity', () => {
   })
 })
 
-describe('sending is guarded (U4)', () => {
+describe('sending is guarded', () => {
   it('two quick Enters create one item, and the box is read-only while the write is in flight', async () => {
     const user = userEvent.setup()
     render(<CaptureHost />)

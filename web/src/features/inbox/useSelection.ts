@@ -80,12 +80,15 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
   // 手机上「默认展开第一条」只决定一次：页面在眼前，并且已经有条目、或者勾选的节点都同步完了仍然没有；之后列表怎么变都不替用户展开
   const defaulted = useRef(false)
   const focusOwned = useRef(false)
+  // 处理完最后一条「稍后」之后：不再替用户默认选中（不跳进「现在」的请求），直到用户自己点 / 按键选了什么
+  const noDefault = useRef(false)
   const prevPicked = useRef(picked)
   // 最近一次选中的条目：抽屉关掉时焦点要回到它那一行
   const lastKey = useRef<string | null>(null)
   const pendingFocus = useRef<string | 'empty' | null>(null)
 
   const apply = useCallback((next: { key: string | null; explicit: boolean; ghost: Ghost | null }, user = false) => {
+    if (user) noDefault.current = false
     const full = { ...next, version: current.current.version + (user ? 1 : 0) }
     if (next.key !== null) lastKey.current = next.key
     current.current = full
@@ -125,6 +128,7 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
         // 被处理掉的那一行（或详情里的按钮）正有焦点：它消失后焦点会掉到 body 上
         const had = !ae || ae === document.body || !!root.current?.contains(ae) || !!ae.closest?.(`.${OVERLAY_CLASS}`)
         apply({ key: next, explicit: cur.explicit, ghost: null })
+        if (next === null && gone?.section === 'later') noDefault.current = true
         if (had && active) pendingFocus.current = next ?? 'empty'
       } else {
         const replacement = gone?.kind === 'waiting' ? items.find((i) => (i.kind === 'permission' || i.kind === 'plan' || i.kind === 'question') && i.sessionId === gone.sessionId) : undefined
@@ -136,7 +140,7 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
     // 默认选中第一条有内容可看的：「等待审批（缓存）」没有详情，不当默认（等真正的请求到了再选，免得先选中占位、再被请求替换）
     // 「稍后」里的条目不当默认（不是在等人答复，不该替用户展开 / 选中）
     const first = items.find((i) => i.kind !== 'waiting' && i.section !== 'later')
-    if (cur.key === null && first) {
+    if (cur.key === null && first && !noDefault.current) {
       if (mode === 'split') apply({ key: first.key, explicit: false, ghost: null })
       else if (mode === 'inline' && !defaulted.current) apply({ key: first.key, explicit: false, ghost: null })
     }

@@ -32,7 +32,7 @@ describe('message menu', () => {
     const { open, text } = useCapture.getState()
     expect(open).toBe(true)
     expect(text.split('\n')[0]).toBe('rotate the key')
-    expect(text).toContain('](/n/aaaaaaaa/s/sess_1?seq=7)')
+    expect(text).toContain(`](/n/${A}/s/sess_1?seq=7)`)
     expect(text).not.toContain(location.origin)
   })
 

@@ -192,7 +192,7 @@ describe('a rejected operation', () => {
   })
 })
 
-describe('editing against a stale draft (U2, U5)', () => {
+describe('editing against a stale draft', () => {
   const live = (over: Parameters<typeof todoItem>[0]) => handleTodoChanged(A, { id: over.id, todo: todoItem(over) })
   const lastUpdate = () => daemon.log.filter((l) => l.method === 'todo.update').at(-1)?.params
 
@@ -276,7 +276,7 @@ describe('editing against a stale draft (U2, U5)', () => {
     expect(screen.getByTestId('todo-title')).toHaveTextContent('old')
   })
 
-  it('U5: saving without touching the due time never sends due_ms (seconds and milliseconds set elsewhere survive); changing it does', async () => {
+  it('saving without touching the due time never sends due_ms (seconds and milliseconds set elsewhere survive); changing it does', async () => {
     const user = userEvent.setup()
     const due = new Date('2031-05-06T07:08:09.123').getTime()
     await show({ id: 't', title: 'old', due_ms: due })
@@ -295,7 +295,7 @@ describe('editing against a stale draft (U2, U5)', () => {
   })
 })
 
-describe('an unreviewed agent item (U7)', () => {
+describe('an unreviewed agent item', () => {
   it('shows Accept / Dismiss instead of the edit and state controls', async () => {
     const user = userEvent.setup()
     await show({ id: 't', title: 'agent thing', source: { kind: 'agent' }, unreviewed: true })

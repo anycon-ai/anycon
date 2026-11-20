@@ -58,6 +58,7 @@ beforeEach(async () => {
   usePrefs.setState({ sidebarNodes: null })
   useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', info: info(true), conn: 'ready' }), [C]: nodeEntry({ id: C, name: 'gamma', info: info(false), conn: 'ready' }) }, order: [A, C], loaded: true })
   resetTodosMemory()
+  useDrafts.setState({ drafts: {} })
   useUi.setState({ toasts: [] })
   useCapture.setState({ open: false, text: '' })
 })
@@ -252,7 +253,7 @@ describe('agent text is untrusted', () => {
   })
 })
 
-describe('keyboard safety (U3)', () => {
+describe('keyboard safety', () => {
   const press = (key: string, init: KeyboardEventInit = {}): void => void fireEvent.keyDown(window, { key, ...init })
 
   it('E, X and Enter do nothing when no row has the cursor (they used to act on the first row)', async () => {
@@ -306,7 +307,7 @@ describe('keyboard safety (U3)', () => {
   })
 })
 
-describe('the detail from the address (U7)', () => {
+describe('the detail from the address', () => {
   it('opens from the full node id as well as the short one, and shows a loading state until the cache is read', async () => {
     daemon.seed(todoItem({ id: 'a', title: 'from url' }))
     useTodos.setState({ nodes: {} })
@@ -352,20 +353,49 @@ describe('the detail from the address (U7)', () => {
   })
 })
 
-describe('unsaved edits (U2)', () => {
-  it('a row with a half-written edit says so, and closing the tab asks first', async () => {
+describe('unsaved edits', () => {
+  it('a row with a half-written edit says so', async () => {
     daemon.seed(todoItem({ id: 'a', title: 'first' }))
     await syncTodos(A)
     render(<TodosPage selected={{ node: A, todo: 'a' }} />)
     await userEvent.click(await screen.findByTestId('todo-edit'))
     await userEvent.type(screen.getByTestId('todo-edit-title'), ' more')
     expect(within(row('a')).getByTestId('todo-draft')).toBeInTheDocument()
-    const ev = new Event('beforeunload', { cancelable: true })
-    window.dispatchEvent(ev)
-    expect(ev.defaultPrevented).toBe(true)
-    useDrafts.setState({ drafts: {} })
-    const ev2 = new Event('beforeunload', { cancelable: true })
-    window.dispatchEvent(ev2)
-    expect(ev2.defaultPrevented).toBe(false)
+  })
+
+  it('an item deleted elsewhere while you edit it does not take your text with it: it is shown with Copy, Save as a new to-do and Discard', async () => {
+    daemon.seed(todoItem({ id: 'a', title: 'first', body: 'my long note' }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    await userEvent.click(await screen.findByTestId('todo-edit'))
+    await userEvent.type(screen.getByTestId('todo-edit-body'), ' plus more')
+    await act(async () => handleTodoChanged(A, { id: 'a', deleted: true }))
+    expect(await screen.findByTestId('todo-orphan')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-orphan-text')).toHaveTextContent('my long note plus more')
+    await userEvent.click(screen.getByTestId('todo-orphan-save'))
+    await waitFor(() => expect([...daemon.todos.values()].some((t) => t.title === 'first' && t.body === 'my long note plus more')).toBe(true))
+    await waitFor(() => expect(useDrafts.getState().drafts).toEqual({}))
+  })
+
+  it('discarding the orphaned text clears the draft, so nothing keeps asking before the tab closes', async () => {
+    daemon.seed(todoItem({ id: 'a', title: 'first' }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    await userEvent.click(await screen.findByTestId('todo-edit'))
+    await userEvent.type(screen.getByTestId('todo-edit-title'), '!')
+    await act(async () => handleTodoChanged(A, { id: 'a', deleted: true }))
+    await userEvent.click(await screen.findByTestId('todo-orphan-discard'))
+    expect(useDrafts.getState().drafts).toEqual({})
+    expect(await screen.findByTestId('todo-gone')).toBeInTheDocument()
+  })
+
+  it('an untouched draft for an item that is gone is dropped silently', async () => {
+    daemon.seed(todoItem({ id: 'a', title: 'first' }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    await userEvent.click(await screen.findByTestId('todo-edit'))
+    await act(async () => handleTodoChanged(A, { id: 'a', deleted: true }))
+    expect(await screen.findByTestId('todo-gone')).toBeInTheDocument()
+    await waitFor(() => expect(useDrafts.getState().drafts).toEqual({}))
   })
 })

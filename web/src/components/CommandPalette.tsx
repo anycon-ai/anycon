@@ -200,7 +200,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   }
 
   const rowClass = (id: string): string => cn('flex w-full rounded-md px-2 py-2 text-left text-sm', active?.id === id && 'bg-bg-hover')
-  const rowProps = (id: string) => ({ id: domId(id), 'aria-current': active?.id === id ? ('true' as const) : undefined, onMouseMove: () => setActiveId(id) })
+  const rowProps = (id: string) => ({ id: domId(id), 'aria-current': active?.id === id ? ('true' as const) : undefined, onMouseMove: () => id !== 'add-todo' && setActiveId(id) })
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title={t('palette.title')} hideTitle closeLabel={t('common.close')} size="lg" placement="top">

@@ -130,7 +130,7 @@ describe('Later section', () => {
   })
 })
 
-describe('Later items are never selected or expanded on the user’s behalf (U9)', () => {
+describe('Later items are never selected or expanded on the user’s behalf', () => {
   const permission = (): PendingPermission => ({
     request_id: 'r1',
     session_id: 's-r1',
@@ -235,7 +235,7 @@ describe('Later items are never selected or expanded on the user’s behalf (U9)
     expect(document.querySelector('[aria-current="true"]')).toBeNull()
   })
 
-  it('U8: the detail links back to the session it came from when it still exists, and says so when it does not', async () => {
+  it('the detail links back to the session it came from when it still exists, and says so when it does not', async () => {
     const user = userEvent.setup()
     await load(agent('u1'))
     await user.click(within(laterRows()[0]!).getByTestId('inbox-row-main'))
@@ -243,5 +243,35 @@ describe('Later items are never selected or expanded on the user’s behalf (U9)
     useSessions.setState({ list: { s1: { ...summary({ id: 's1', title: 'origin' }), node_id: A, cached_seq: 0 } } })
     await flush()
     expect(screen.getByTestId('inbox-later-open-session').getAttribute('href')).toMatch(/\/n\/aaaaaaaa\/s\/s1$/)
+  })
+})
+
+describe('after the last Later item is handled', () => {
+  it('no default selection comes back when the list changes later (new request arrives); the next user action ends that', async () => {
+    const user = userEvent.setup()
+    const req = (id: string): PendingPermission => ({
+      request_id: id,
+      session_id: `s-${id}`,
+      node_id: A,
+      kind: 'tool',
+      title: `Run ${id}`,
+      detail: { tool: { tool: 'Bash', category: 'shell', input: { command: `echo ${id}` }, cwd: `/w/${id}`, detail: { command: `echo ${id}` } } },
+      options: [{ id: 'allow', label: 'Allow once', kind: 'allow_once' }],
+      created_at: Date.now() - 60_000,
+      created_at_ms: Date.now() - 60_000,
+      expires_at_ms: null,
+    } as unknown as PendingPermission)
+    const sessionFor = (id: string) => ({ ...summary({ id: `s-${id}`, title: `s-${id}`, project: 'app' }), node_id: A, cached_seq: 0 })
+    useSessions.setState({ list: { 's-r1': sessionFor('r1') }, pending: { r1: req('r1') }, open: {} })
+    await load(agent('u1'))
+    await user.click(within(laterRows()[0]!).getByTestId('inbox-row-main'))
+    await user.click(await within(laterRows()[0]!).findByTestId('inbox-accept'))
+    await waitFor(() => expect(screen.queryByTestId('inbox-section-later')).toBeNull())
+    expect(screen.queryByTestId('permission-card')).toBeNull()
+    act(() => useSessions.setState({ list: { 's-r1': sessionFor('r1'), 's-r2': sessionFor('r2') }, pending: { r1: req('r1'), r2: req('r2') }, open: {} }))
+    await flush()
+    expect(screen.queryByTestId('permission-card')).toBeNull()
+    await user.click(screen.getAllByTestId('inbox-row-main')[0]!)
+    expect(await screen.findByTestId('permission-card')).toBeInTheDocument()
   })
 })

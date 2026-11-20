@@ -2,6 +2,7 @@
 // 详情组件会卸载重建，没存的修改不能因此悄悄丢掉。保存、明确丢弃、项被删之后才清掉。
 // 每份草稿带着开始编辑时那一项的样子（`base`）：保存时只发用户改过的字段（草稿对 base 的差），不是对「现在的」项比较——
 // 编辑期间别的设备改了别的字段，不会被这里旧的草稿值盖回去。
+import { useEffect } from 'react'
 import { create } from 'zustand'
 
 export const EDIT_FIELDS = ['title', 'body', 'project', 'due'] as const
@@ -64,3 +65,14 @@ export function changedElsewhere(d: EditDraft, current: EditValues): EditField[]
 export const draftKey = (nodeId: string, id: string): string => `${nodeId}:${id}`
 
 export const hasDirtyDrafts = (drafts: Record<string, EditDraft>): boolean => Object.values(drafts).some((d) => dirtyFields(d).length > 0)
+
+/** 有没保存的编辑时，关标签页 / 刷新要先问一声（草稿在内存里，页面一刷新就没了）。装在应用外壳上：不管当前在哪一页都有效。 */
+export function useUnsavedDraftsGuard(): void {
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent): void => {
+      if (hasDirtyDrafts(useDrafts.getState().drafts)) e.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+}

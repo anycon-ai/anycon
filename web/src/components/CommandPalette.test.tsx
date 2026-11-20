@@ -379,7 +379,7 @@ describe('command palette — add a to-do', () => {
 })
 
 
-describe('command palette — Enter never records a to-do by accident (U1)', () => {
+describe('command palette — Enter never records a to-do by accident', () => {
   let rpc: FakeRpc
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
@@ -435,5 +435,15 @@ describe('command palette — Enter never records a to-do by accident (U1)', () 
     expect(screen.queryByText(/Add to to-dos/)).toBeNull()
     press('Enter', { metaKey: true })
     expect(quick).not.toHaveBeenCalled()
+  })
+
+  it('hovering the to-do row does not select it: a resting pointer plus Enter never records', () => {
+    render(<CommandPalette open onOpenChange={() => {}} />)
+    typeQuery('q')
+    const addRow = screen.getByText(/Add to to-dos/).closest('button')!
+    fireEvent.mouseMove(addRow)
+    press('Enter')
+    expect(quick).not.toHaveBeenCalled()
+    expect(addRow).not.toHaveAttribute('aria-current')
   })
 })

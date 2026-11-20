@@ -4,6 +4,7 @@ import * as db from '@/db'
 import { revokeDeviceOnNode } from '@/features/devices/revoke'
 import { dropLocalPushState, dropPushOnSignOut } from '@/features/push/cleanup'
 import { forgetSystemNotifyPrefs } from '@/features/push/prefsCache'
+import { useDrafts } from '@/features/todos/drafts'
 import { resetTodosMemory } from '@/features/todos/service'
 import { deleteShareDb } from '@/sw/shareStore'
 import { getClient, rpc } from '@/transport/instance'
@@ -32,6 +33,8 @@ export async function resetClientState(): Promise<void> {
   useNodes.setState({ byId: {}, order: [], loaded: false })
   useSessions.setState({ list: {}, pending: {}, open: {} })
   resetTodosMemory()
+  // 没存的清单编辑是上一个账号 / 这台设备上的：退出、移除设备、换账号之后不能留着
+  useDrafts.setState({ drafts: {} })
 }
 
 /** 清掉这个浏览器里的一切：停传输层、删 IndexedDB、清 localStorage / sessionStorage。 */

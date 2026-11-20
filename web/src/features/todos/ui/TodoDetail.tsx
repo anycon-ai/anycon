@@ -111,7 +111,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             {t('todos.byAgent')}
           </Chip>
         ) : null}
-        {item.failed ? <Chip tone="danger">{t('todos.notSaved')}</Chip> : item.unsynced && !online ? <Chip tone="warning">{t('todos.notSynced')}</Chip> : null}
+        {item.failed ? <Chip tone="danger">{t('todos.notSaved')}</Chip> : item.unsynced ? <Chip tone="warning">{t('todos.notSynced')}</Chip> : null}
         <span className="text-xs text-fg-subtle">{nodeName}</span>
       </div>
 

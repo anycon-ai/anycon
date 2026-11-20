@@ -3,6 +3,7 @@
 import { getClient } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
+import { forgetNodeTodos } from '@/features/todos/service'
 import { useTodos } from '@/features/todos/store'
 import { toast } from '@/stores/ui'
 import i18n from '@/i18n'
@@ -12,7 +13,8 @@ export async function forgetNode(nodeId: string): Promise<void> {
   // 这台节点上还没同步的清单改动（库里的缓存和队列由 `removeNode` 一起删）：丢掉之前数一数，告诉用户
   const unsynced = useTodos.getState().outbox.filter((r) => r.node_id === nodeId).length
   await getClient().removeNode(nodeId)
-  useTodos.getState().removeNode(nodeId)
+  // 内存里的清单和待发改动一起忘掉（库里的已经随节点记录删了）；别的标签页收到通知也会放掉
+  await forgetNodeTodos(nodeId)
   if (unsynced > 0) toast.info(i18n.t('todos.forgotUnsynced', { count: unsynced }))
   const sessions = Object.values(useSessions.getState().list)
     .filter((s) => s.node_id === nodeId)

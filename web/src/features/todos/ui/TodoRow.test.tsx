@@ -16,7 +16,7 @@ afterEach(() => vi.useRealTimers())
 describe('TodoRow touch behaviour', () => {
   it('a long press opens the action menu, and the click that follows the lift does not also open the item', () => {
     const h = handlers()
-    render(<TodoRow item={item()} online selected={false} multi={false} checked={false} {...h} />)
+    render(<TodoRow item={item()} selected={false} multi={false} checked={false} {...h} />)
     const strip = screen.getByTestId('todo-main').parentElement!
     touch(strip, 'Down', 100)
     act(() => void vi.advanceTimersByTime(LONG_PRESS_MS + 20))
@@ -28,14 +28,14 @@ describe('TodoRow touch behaviour', () => {
 
   it('an ordinary tap still opens the item', () => {
     const h = handlers()
-    render(<TodoRow item={item()} online selected={false} multi={false} checked={false} {...h} />)
+    render(<TodoRow item={item()} selected={false} multi={false} checked={false} {...h} />)
     fireEvent.click(screen.getByTestId('todo-main'))
     expect(h.onOpen).toHaveBeenCalledTimes(1)
   })
 
   it('in multi-select mode a swipe or a long press does nothing (the row is a checkbox); a tap toggles it', () => {
     const h = handlers()
-    render(<TodoRow item={item()} online selected={false} multi checked={false} {...h} />)
+    render(<TodoRow item={item()} selected={false} multi checked={false} {...h} />)
     const strip = screen.getByTestId('todo-main').parentElement!
     touch(strip, 'Down', 300)
     touch(strip, 'Move', 100)
@@ -50,12 +50,12 @@ describe('TodoRow touch behaviour', () => {
   })
 
   it('the row does not let the text be selected (select-none)', () => {
-    render(<TodoRow item={item()} online selected={false} multi={false} checked={false} {...handlers()} />)
+    render(<TodoRow item={item()} selected={false} multi={false} checked={false} {...handlers()} />)
     expect(screen.getByTestId('todo-row').className).toMatch(/select-none/)
   })
 
   it('a row with a half-written edit carries a visible chip', () => {
-    render(<TodoRow item={item()} online selected={false} hasDraft multi={false} checked={false} {...handlers()} />)
+    render(<TodoRow item={item()} selected={false} hasDraft multi={false} checked={false} {...handlers()} />)
     expect(screen.getByTestId('todo-draft')).toHaveTextContent('Unsaved edit')
   })
 })

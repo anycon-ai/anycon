@@ -4,9 +4,11 @@ import { CheckCircle2, ChevronRight, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { PageHeader } from '@/components/PageHeader'
 import { SessionDot } from '@/components/StatusDot'
+import { InboxActiveContext } from '@/features/inbox/active'
 import { useArmed } from '@/features/inbox/arming'
 import { SECTIONS, deriveInbox, isArmed, nowItems, type InboxItem, type InboxSectionId, type RequestItem } from '@/features/inbox/derive'
 import { GhostDetail, InboxDetail, InboxRow } from '@/features/inbox/ui/InboxItems'
+import { useMinute } from '@/features/inbox/ui/info'
 import { useInboxActions } from '@/features/inbox/ui/useInboxActions'
 import { OVERLAY_CLASS, useInboxSelection, type InboxMode } from '@/features/inbox/useSelection'
 import { useInbox } from '@/features/inbox/useInbox'
@@ -62,6 +64,9 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const [gone, setGone] = useState<InboxLocate | null>(null)
   const seen = useRef<string | null>(null)
   const resolvedKey = useRef<string | null>(null)
+  // 链接打开时的选中版本：节点晚点同步完时，用户在这期间自己选过别的，就不再抢走他的选中
+  const versionAtLink = useRef(0)
+  const versionNow = useRef(0)
   useEffect(() => {
     if (!locate) {
       seen.current = null
@@ -71,6 +76,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
     if (!active || seen.current === id) return
     seen.current = id
     resolvedKey.current = null
+    versionAtLink.current = versionNow.current
     setTarget(locate)
     setGone(null)
     // 参数一读到就从地址里去掉，不管请求有没有到
@@ -90,13 +96,15 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const outside = located && !mainItems.some((i) => i.key === located.key) ? located : null
   const items = useMemo(() => (outside ? [outside, ...mainItems] : mainItems), [outside, mainItems])
 
-  const sel = useInboxSelection({ items, mode, active, root, empty })
+  const sel = useInboxSelection({ items, picked: pickedNodes, mode, active, root, empty })
   const { choose } = sel
+  versionNow.current = sel.version
   const shown = sel.ghost ? null : (items.find((i) => i.key === sel.selected) ?? null)
   // 平板上详情只在用户操作（点一行、深链接）之后才滑出；窗口缩放带来的自动选中不弹
   const overlayOpen = mode === 'overlay' && sel.explicit && sel.selected !== null
   const detailShown = mode === 'overlay' ? overlayOpen : mode === 'split' ? !!shown : !!shown
-  const armed = useArmed(detailShown && shown ? shown.key : null)
+  // 页面藏在后面（手机上切到别的标签页）时不计时：回到眼前也算「显示的请求换了」，重新锁一小会儿
+  const armed = useArmed(active && detailShown && shown ? shown.key : null)
 
   useInboxKeys({ active, enter: mode !== 'inline', item: shown, armed, selectedKey: sel.selected, move: sel.move, focusDetail: sel.focusDetail, choose })
 
@@ -104,6 +112,11 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
     if (!target || resolvedKey.current !== null || !nodeId) return
     if (located) {
       resolvedKey.current = located.key
+      // 用户在链接打开之后自己选了别的：不抢走他的选中（条目还在列表里，他想看随时能点）
+      if (versionNow.current !== versionAtLink.current) {
+        setTarget(null)
+        return
+      }
       choose(located.key)
       requestAnimationFrame(() => document.querySelector(`[data-inbox-row="${CSS.escape(located.key)}"]`)?.scrollIntoView?.({ block: 'nearest' }))
     } else if (targetNode?.synced) {
@@ -129,6 +142,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
     return () => setDefer(false)
   }, [target, gone, setDefer])
 
+  useMinute()
   const showNode = pickedNodes.length > 1
   const total = mainItems.length
   const outsideNote = outside ? { onShow: () => toggle(outside.nodeId, true) } : undefined
@@ -145,6 +159,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   )
 
   return (
+    <InboxActiveContext.Provider value={active}>
     <div ref={root} className="flex min-h-0 flex-1 flex-col" data-testid="inbox-page" data-mode={mode}>
       <PageHeader root crumbs={[{ label: t('inbox.title') }]} showNodeStatus={false} />
       <div className="flex min-h-0 flex-1">
@@ -188,7 +203,19 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
         ) : null}
       </div>
       {mode === 'overlay' ? (
-        <Drawer side="right" open={overlayOpen} onOpenChange={(open) => !open && sel.clear()} title={t('inbox.title')} closeLabel={t('inbox.closeDetail')} className={OVERLAY_CLASS} width="w-[min(36rem,92vw)]">
+        <Drawer
+          side="right"
+          open={overlayOpen}
+          onOpenChange={(open) => !open && sel.clear()}
+          title={t('inbox.title')}
+          closeLabel={t('inbox.closeDetail')}
+          className={OVERLAY_CLASS}
+          width="w-[min(36rem,92vw)]"
+          // 处理完之后焦点由页面自己放（下一条、「没有等你的事」）：别让 Radix 把它还给已经不在的那一行
+          onCloseAutoFocus={(e) => {
+            if (sel.focusOwned.current) e.preventDefault()
+          }}
+        >
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4 pt-12" data-testid="inbox-overlay">
             {detail}
           </div>
@@ -196,6 +223,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
       ) : null}
       {dialogs}
     </div>
+    </InboxActiveContext.Provider>
   )
 }
 
@@ -248,11 +276,19 @@ function GoneNotice({ locate, onDismiss }: { locate: InboxLocate; onDismiss: () 
 function PendingTarget({ target, nodeId, onDismiss }: { target: InboxLocate; nodeId: string | undefined; onDismiss: () => void }) {
   const { t } = useTranslation()
   const name = useNodes((s) => (nodeId ? s.byId[nodeId]?.name : undefined))
+  const conn = useNodes((s) => (nodeId ? s.byId[nodeId]?.conn : undefined))
   return (
     <div className="flex items-start gap-2 rounded-lg border border-border bg-bg-subtle px-3 py-2.5 text-sm" role="status" data-testid={nodeId ? 'inbox-connecting' : 'inbox-unknown-node'}>
       <div className="min-w-0 flex-1">
         {nodeId ? (
-          <p>{t('inbox.connecting', { node: name ?? target.node })}</p>
+          <>
+            <p>{conn === 'peer_offline' ? t('inbox.nodeOffline', { node: name ?? target.node }) : conn === 'noise_failed' ? t('inbox.nodeNeedsPairing', { node: name ?? target.node }) : t('inbox.connecting', { node: name ?? target.node })}</p>
+            {conn === 'noise_failed' ? (
+              <Link to="/unlock/$node" params={{ node: target.node }} className="inline-flex min-h-8 items-center font-medium text-accent-text hover:underline max-md:min-h-11">
+                {t('inbox.unlockNode')}
+              </Link>
+            ) : null}
+          </>
         ) : (
           <>
             <p>{t('inbox.unknownNode')}</p>
@@ -275,6 +311,7 @@ function PendingTarget({ target, nodeId, onDismiss }: { target: InboxLocate; nod
 /** 「进行中」：平时折叠成一行（数量），不和等用户的事抢位置；展开列出还在跑的会话。标了「完成后提醒」的写明。 */
 function InProgress({ sessions, showNode }: { sessions: SessionItem[]; showNode: boolean }) {
   const { t, i18n } = useTranslation()
+  useMinute()
   const [open, setOpen] = useState(false)
   const nodes = useNodes((s) => s.byId)
   const order = useNodes((s) => s.order)

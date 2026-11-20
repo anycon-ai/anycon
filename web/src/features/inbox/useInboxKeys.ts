@@ -49,7 +49,7 @@ export function useInboxKeys({
         // handleApproveShortcut 自己只认 tool 类、只选 allow_once / reject_once、忽略 e.repeat、输入框里不触发
         handleApproveShortcut(e, {
           pending: [permissionBlock(item.request)],
-          respond: (p) => void answerFromShortcut(nodeId, p, t),
+          respond: (p) => void answerFromShortcut(nodeId, p, t, true),
           isVisible: isRequestCardVisible,
           reveal: (id) => {
             requestCardElement(id)?.scrollIntoView({ block: 'center', behavior: 'smooth' })

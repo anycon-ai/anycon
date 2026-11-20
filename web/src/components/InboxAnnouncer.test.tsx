@@ -6,7 +6,7 @@ import { useEnroll } from '@/stores/enroll'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions, type PendingPermission } from '@/stores/sessions'
-import { InboxAnnouncer } from './InboxAnnouncer'
+import { InboxAnnouncer, SETTLE_TIMEOUT_MS } from './InboxAnnouncer'
 
 const A = 'a'.repeat(32)
 const req = (id: string): PendingPermission => ({ request_id: id, session_id: `s-${id}`, node_id: A, kind: 'tool', title: id, detail: {}, options: [], created_at_ms: 1, expires_at_ms: null })
@@ -106,6 +106,25 @@ describe('boot and reconnect', () => {
     act(() => setPending('1'))
     act(() => void vi.advanceTimersByTime(700))
     expect(live()).toHaveTextContent('1 thing is waiting for you')
+  })
+
+  it('nodes that will never sync (needs re-pairing, version mismatch) count as settled', () => {
+    setNode({ conn: 'noise_failed', synced: false })
+    render(<InboxAnnouncer />)
+    act(() => setPending('1'))
+    act(() => void vi.advanceTimersByTime(700))
+    expect(live()).toHaveTextContent('1 thing is waiting for you')
+  })
+
+  it('a node whose first sync never finishes does not keep the region silent for ever: after a while the baseline is taken anyway', () => {
+    setNode({ conn: 'ready', synced: false, syncing: false })
+    render(<InboxAnnouncer />)
+    act(() => setPending('1', '2'))
+    act(() => void vi.advanceTimersByTime(SETTLE_TIMEOUT_MS + 100))
+    expect(live()).toHaveTextContent('')
+    act(() => setPending('1', '2', '3'))
+    act(() => void vi.advanceTimersByTime(700))
+    expect(live()).toHaveTextContent('3 things are waiting for you')
   })
 })
 

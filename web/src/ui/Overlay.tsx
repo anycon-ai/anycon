@@ -56,13 +56,14 @@ export function Dialog({ open, onOpenChange, title, description, children, hideT
 
 /** 从侧边滑出的抽屉（左栏 / 右栏）。 */
 /** `width`：默认 22rem；「待处理」页在平板上从右边滑出的详情更宽。 */
-export function Drawer({ side, open, onOpenChange, title, children, closeLabel = 'Close', className, width = 'w-[min(22rem,88vw)]' }: Omit<Common, 'description' | 'hideTitle' | 'size'> & { side: 'left' | 'right'; className?: string; width?: string }) {
+export function Drawer({ side, open, onOpenChange, title, children, closeLabel = 'Close', className, width = 'w-[min(22rem,88vw)]', onCloseAutoFocus }: Omit<Common, 'description' | 'hideTitle' | 'size'> & { side: 'left' | 'right'; className?: string; width?: string; /** 关掉时的焦点归还：调用方自己放焦点时 `preventDefault()`。 */ onCloseAutoFocus?: (e: Event) => void }) {
   return (
     <RDialog.Root open={open} onOpenChange={onOpenChange}>
       <RDialog.Portal>
         <RDialog.Overlay className={overlay} />
         <RDialog.Content
           aria-describedby={undefined}
+          onCloseAutoFocus={onCloseAutoFocus}
           className={cn(
             'fixed inset-y-0 z-50 flex flex-col bg-bg shadow-pop focus:outline-none',
             width,

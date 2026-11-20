@@ -7,8 +7,9 @@ import { toast } from '@/stores/ui'
 import { respondPermission } from './actions'
 import { beginAnswer, endAnswer } from './inflight'
 
-export function answerFromShortcut(nodeId: string, params: PermissionRespondParams, t: TFunction): Promise<void> {
-  if (!beginAnswer(params.request_id)) return Promise.resolve()
+/** `handledHere`：「待处理」页在眼前时发起的（见 `beginAnswer`）。 */
+export function answerFromShortcut(nodeId: string, params: PermissionRespondParams, t: TFunction, handledHere = false): Promise<void> {
+  if (!beginAnswer(params.request_id, handledHere)) return Promise.resolve()
   let ok = false
   return respondPermission(nodeId, params)
     .then(

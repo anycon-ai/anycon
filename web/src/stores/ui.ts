@@ -22,10 +22,10 @@ interface UiState {
   /** 命令面板（⌘K）：左栏的搜索按钮、手机「会话」页的搜索按钮和快捷键共用一个。 */
   paletteOpen: boolean
   setPalette: (v: boolean) => void
-  /** 最近一次在「会话」里（`/n/:node…`，不含节点设置）打开的位置：`G` 然后 `S` 回到这里。只在内存里。 */
   /** 「待处理」页正显示着从通知点进来的那条请求：升级说明先不弹，免得盖住它。 */
   deferHomeNotice: boolean
   setDeferHomeNotice: (v: boolean) => void
+  /** 最近一次在「会话」里（`/n/:node…`，不含节点设置）打开的位置：`G` 然后 `S` 回到这里。只在内存里。 */
   lastSessionsPath: string | null
   setLastSessionsPath: (path: string) => void
   /** 写 IndexedDB 失败过（草稿 / 缓存可能丢）：状态栏提示，用户可以关掉。 */

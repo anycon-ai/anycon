@@ -15,6 +15,7 @@ import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Chip } from '@/ui/Misc'
 import type { InboxItem, InboxItemKind, RequestItem } from '../derive'
+import { useInboxActive } from '../active'
 import { permissionBlock } from '../block'
 import { useItemInfo } from './info'
 
@@ -212,7 +213,8 @@ function DetailHeader({ item }: { item: InboxItem }) {
 }
 
 function RequestDetail({ item, armed, outside }: { item: RequestItem; armed: boolean; outside?: { onShow: () => void } }) {
-  const { respond, responding, settled } = useRespondPermission(item.nodeId)
+  // 只有「待处理」是眼前的页面时发起的答复才算「在这里处理的」
+  const { respond, responding, settled } = useRespondPermission(item.nodeId, { handledHere: useInboxActive() })
   const deviceLabel = useDeviceLabel(item.nodeId)
   const info = useItemInfo(item)
   const sessionAgent = useSessions((s) => s.list[item.sessionId]?.agent)
@@ -284,8 +286,8 @@ export function GhostDetail({ item, hasNext, onNext, replacedBy, onShow }: { ite
   const order = useNodes((s) => s.order)
   return (
     <div className="space-y-2 rounded-lg border border-border bg-bg-subtle p-3" role="status" data-inbox-detail data-testid="inbox-ghost">
-      <p className="text-sm font-medium">{replacedBy ? t('inbox.detailsArrived') : t('inbox.handledElsewhere')}</p>
-      <p className="text-sm text-fg-muted">{replacedBy ? t('inbox.detailsArrivedBody') : t('inbox.handledElsewhereBody')}</p>
+      <p className="text-sm font-medium">{replacedBy ? t('inbox.detailsArrived') : t('inbox.noLongerWaiting')}</p>
+      <p className="text-sm text-fg-muted">{replacedBy ? t('inbox.detailsArrivedBody') : t('inbox.noLongerWaitingBody')}</p>
       <div className="flex flex-wrap gap-2">
         {replacedBy ? (
           <Button size="sm" variant="primary" className="max-md:min-h-11" onClick={onShow} data-testid="inbox-ghost-show">

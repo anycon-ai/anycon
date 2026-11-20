@@ -183,4 +183,34 @@ test.describe.serial('待处理', () => {
     await expect(page.getByTestId('tab-inbox-count')).toHaveCount(0)
     await page.setViewportSize({ width: 1280, height: 720 })
   })
+
+  test('e. 手机：展开一条请求、进它的会话在那里答复、返回——「待处理」显示占位，没有别的请求被展开或能点', async () => {
+    await page.setViewportSize({ width: 1280, height: 720 })
+    sessions.push(await startPermissionSession())
+    const first = sessions[sessions.length - 1]!
+    sessions.push(await startPermissionSession())
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/inbox')
+    await expect(rows()).toHaveCount(2, { timeout: CONNECT_TIMEOUT })
+    // 最早的那条默认展开，是第一个会话的请求
+    const open = rows().first().getByTestId('inbox-open-session')
+    await expect(open).toHaveAttribute('href', new RegExp(`${first}$`))
+    await open.click()
+    await expect(page).toHaveURL(new RegExp(`/s/${first}$`))
+    await expect(page.getByTestId('tab-bar')).toBeHidden()
+    // 在会话页答复它（会话页的卡片没有锁）
+    await pendingCard(page).getByTestId('permission-option-allow').click()
+    await expect(resolvedCards(page)).toHaveCount(1, { timeout: 15_000 })
+    await page.goBack()
+    await expect(page).toHaveURL(/\/inbox$/)
+    // 占位，剩下的那条没有被替用户展开，页面上没有任何可点的答复按钮
+    await expect(page.getByTestId('inbox-ghost')).toBeVisible()
+    await expect(rows()).toHaveCount(1)
+    await expect(rows().first().getByTestId('inbox-row-main')).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    await expect(page.locator('[data-testid^="permission-option-"]:visible')).toHaveCount(0)
+    await page.setViewportSize({ width: 1280, height: 720 })
+  })
 })

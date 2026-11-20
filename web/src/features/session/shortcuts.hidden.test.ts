@@ -40,9 +40,22 @@ describe('request card lookup', () => {
 
   it('skips an element that checkVisibility says is not visible', () => {
     const el = card(document.body, 'r1', 10)
-    ;(el as unknown as { checkVisibility: () => boolean }).checkVisibility = () => false
+    const seen: unknown[] = []
+    ;(el as unknown as { checkVisibility: (o?: unknown) => boolean }).checkVisibility = (o) => {
+      seen.push(o)
+      return false
+    }
     const live = card(document.body, 'r1', 20)
     expect(requestCardElement('r1')).toBe(live)
+    expect(isRequestCardVisible('r1')).toBe(true)
+    // 要求把 `visibility: hidden` 也算作看不见
+    expect(seen).toContainEqual({ visibilityProperty: true })
+  })
+
+  it('without checkVisibility (older browsers, jsdom) it falls back to the plain lookup', () => {
+    const el = card(document.body, 'r1', 10)
+    expect('checkVisibility' in el).toBe(false)
+    expect(requestCardElement('r1')).toBe(el)
     expect(isRequestCardVisible('r1')).toBe(true)
   })
 })

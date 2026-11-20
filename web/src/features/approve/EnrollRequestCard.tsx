@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { Check, Clock, ShieldAlert, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { describeError } from '@/lib/errors'
-import { formatCountdown, localExpiry } from '@/lib/expiry'
+import { ENROLL_WINDOW_MS, formatCountdown, localExpiry } from '@/lib/expiry'
 import { formatRelative } from '@/lib/format'
 import { displayHint } from '@/lib/hint'
 import { useNow } from '@/lib/useNow'
+import { holdHandled, unmarkHandled } from '@/features/session/inflight'
 import { enrollKey, useEnroll, type EnrollItem, type EnrollResolution } from '@/stores/enroll'
 import { useHub } from '@/stores/hub'
 import { useNodes } from '@/stores/nodes'
@@ -52,6 +53,9 @@ export function EnrollRequestCard({ nodeId, enrollId, onScan }: { nodeId: string
 
   const run = async (action: 'approve' | 'deny'): Promise<void> => {
     setLocal({ kind: 'busy', action })
+    // 「待处理」页据此区分「我在这里批准 / 拒绝的」和「别处处理的」；批准之后条目要等新设备用掉码才消失，所以留一个有效期那么久
+    const handledKey = `enroll:${nodeId}:${enrollId}`
+    holdHandled(handledKey, ENROLL_WINDOW_MS)
     try {
       if (action === 'approve') {
         const res = await approveCode(nodeId, enrollId)
@@ -63,6 +67,7 @@ export function EnrollRequestCard({ nodeId, enrollId, onScan }: { nodeId: string
         useEnroll.getState().remove(nodeId, enrollId)
       }
     } catch (e) {
+      unmarkHandled(handledKey)
       if (isAlreadyResolved(e)) {
         // 别的设备先处理了：以 daemon 的列表为准，收起成一行
         setLocal({ kind: 'taken' })

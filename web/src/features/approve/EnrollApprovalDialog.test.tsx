@@ -204,3 +204,31 @@ describe('keys', () => {
     expect(enrollKey(NODE, ENROLL)).not.toBe(enrollKey('x'.repeat(32), ENROLL))
   })
 })
+
+describe('marking the request as handled from the inbox’s point of view', () => {
+  const KEY = `enroll:${NODE}:${ENROLL}`
+
+  it('opening the dialog does not mark it; clicking Approve does', async () => {
+    const { useInflight } = await import('@/features/session/inflight')
+    useInflight.setState({ handled: new Set() })
+    const user = userEvent.setup()
+    rpc.handlers['node.enroll_approve'] = () => ({ code: '123456', expires_at_ms: Date.now() + 300_000 })
+    openRequest()
+    expect(useInflight.getState().handled.has(KEY)).toBe(false)
+    await user.click(await screen.findByRole('button', { name: /Approve|批准/ }))
+    await waitFor(() => expect(useInflight.getState().handled.has(KEY)).toBe(true))
+  })
+
+  it('a failed answer unmarks it again', async () => {
+    const { useInflight } = await import('@/features/session/inflight')
+    useInflight.setState({ handled: new Set() })
+    const user = userEvent.setup()
+    rpc.handlers['node.enroll_approve'] = () => {
+      throw rpcError('internal', 'boom')
+    }
+    openRequest()
+    await user.click(await screen.findByRole('button', { name: /Approve|批准/ }))
+    await waitFor(() => expect(rpc.methods()).toContain('node.enroll_approve'))
+    await waitFor(() => expect(useInflight.getState().handled.has(KEY)).toBe(false))
+  })
+})

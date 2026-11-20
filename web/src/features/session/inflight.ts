@@ -46,11 +46,15 @@ export function consumeHandled(itemKey: string): boolean {
   return had
 }
 
-/** 开始答复这个请求。已经在答复就返回 false（调用方什么都不发）。 */
-export function beginAnswer(requestId: string): boolean {
+/**
+ * 开始答复这个请求。已经在答复就返回 false（调用方什么都不发）。
+ * `handledHere`：是「待处理」页（并且它此刻是眼前的页面）发起的才为真，之后条目消失才算「在那个页面上处理的」。
+ * 会话页、藏在后面的「待处理」标签页发起的答复，对「待处理」来说是「别处处理的」。「正在答复」的记录不分页面，全局一份。
+ */
+export function beginAnswer(requestId: string, handledHere = false): boolean {
   if (useInflight.getState().ids.has(requestId)) return false
   useInflight.setState((s) => ({ ids: new Set(s.ids).add(requestId) }))
-  markHandled(requestItemKey(requestId))
+  if (handledHere) markHandled(requestItemKey(requestId))
   return true
 }
 
@@ -58,6 +62,7 @@ export function beginAnswer(requestId: string): boolean {
 export function endAnswer(requestId: string, ok: boolean): void {
   useInflight.setState((s) => ({ ids: without(s.ids, requestId) }))
   const key = requestItemKey(requestId)
+  if (!useInflight.getState().handled.has(key)) return
   if (!ok) {
     unmarkHandled(key)
     return
@@ -69,10 +74,10 @@ export function endAnswer(requestId: string, ok: boolean): void {
 }
 
 /** 标记「这个条目是在这个页面上处理的」，请求没发完就不用等：过一会儿自己清掉（没被消费也不留着）。 */
-export function holdHandled(itemKey: string): void {
+export function holdHandled(itemKey: string, ttlMs: number = HANDLED_TTL_MS): void {
   markHandled(itemKey)
   timers.set(
     itemKey,
-    setTimeout(() => unmarkHandled(itemKey), HANDLED_TTL_MS),
+    setTimeout(() => unmarkHandled(itemKey), ttlMs),
   )
 }

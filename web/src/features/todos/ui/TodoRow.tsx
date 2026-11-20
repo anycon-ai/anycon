@@ -1,5 +1,5 @@
 import { useRef, useState, type PointerEvent } from 'react'
-import { ArrowRightLeft, Bot, Check, ChevronRight, CircleDashed, MoreHorizontal, RotateCcw, Trash2, X } from 'lucide-react'
+import { Bot, Check, ChevronRight, CircleDashed, MoreHorizontal, RotateCcw, Trash2, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatDateTime } from '@/lib/format'
 import { Chip } from '@/ui/Misc'
@@ -24,15 +24,13 @@ export interface TodoRowProps {
   onReopen: () => void
   onDrop: () => void
   onDelete: () => void
-  /** 有别的支持清单的节点时才给：菜单里的「移到另一个节点…」。 */
-  onMove?: () => void
 }
 
 /**
  * 清单页的一行。点一下打开详情；手机上向左滑 = 完成（5 秒撤销），长按（和右边的「⋯」按钮）= 同样的动作菜单：每个滑动动作都有按钮。
  * 多选（`X`）时行首是勾选框。标题是用户 / agent 的文字，一律按文本显示（去掉控制字符和双向控制符）。
  */
-export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, onOpen, onToggleCheck, onDone, onReopen, onDrop, onDelete, onMove }: TodoRowProps) {
+export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, onOpen, onToggleCheck, onDone, onReopen, onDrop, onDelete }: TodoRowProps) {
   const { t, i18n } = useTranslation()
   const [dx, setDx] = useState(0)
   const [menu, setMenu] = useState(false)
@@ -154,11 +152,6 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
                 </MenuItem>
               </>
             )}
-            {onMove ? (
-              <MenuItem icon={<ArrowRightLeft className="size-4" />} onSelect={onMove} testId="todo-act-move">
-                {t('spaces.move.title')}
-              </MenuItem>
-            ) : null}
             <MenuSeparator />
             <MenuItem icon={<Trash2 className="size-4" />} danger onSelect={onDelete} testId="todo-act-delete">
               {t('todos.delete')}

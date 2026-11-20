@@ -656,21 +656,6 @@ function announceRejected(nodeId: string, rec: OutboxRecord, error: OutboxError)
   )
 }
 
-/** 节点已经确认了的一项（直接发给节点的请求，不经待发队列，比如「移到另一个节点」）：并进缓存和界面。 */
-export async function applyConfirmedTodo(nodeId: string, todo: Todo): Promise<void> {
-  useTodos.getState().mergeItems(nodeId, [todo])
-  noteTouched(nodeId, todo.id, todo)
-  await db.applyTodoCache(nodeId, { put: [todo] }).catch(storageFailed('cache a to-do'))
-  announce(nodeId)
-}
-
-/** 节点已经确认删掉了的一项（同上）：从缓存和界面去掉。 */
-export async function applyConfirmedDelete(nodeId: string, id: string): Promise<void> {
-  dropFromView(nodeId, id)
-  await db.applyTodoCache(nodeId, { remove: [id] }).catch(storageFailed('cache a to-do deletion'))
-  announce(nodeId)
-}
-
 /** 节点现在能发请求（界面上「未同步」的标记据此）。 */
 export function nodeReady(nodeId: string): boolean {
   return useNodes.getState().byId[nodeId]?.conn === 'ready'

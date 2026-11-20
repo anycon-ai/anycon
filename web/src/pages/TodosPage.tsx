@@ -11,7 +11,6 @@ import { useSupportingNodes, useTodoView, useTodos } from '@/features/todos/stor
 import { dirtyFields, draftKey, splitDraftKey, useDrafts } from '@/features/todos/drafts'
 import { completeClosedWalk } from '@/features/todos/service'
 import { TodoDetailPane, resolveTodoRoute } from '@/features/todos/ui/TodoDetailPane'
-import { MoveTodoDialog } from '@/features/todos/ui/MoveTodoDialog'
 import { TodoRow } from '@/features/todos/ui/TodoRow'
 import { isTypingTarget } from '@/features/session/shortcuts'
 import { overlayOpen } from '@/features/inbox/useInboxKeys'
@@ -50,9 +49,6 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
   const [checked, setChecked] = useState<ReadonlySet<string>>(new Set())
   const [cursor, setCursor] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<ViewTodo | null>(null)
-  const [moving, setMoving] = useState<ViewTodo | null>(null)
-  // 有别的支持清单的节点（不论选没选中）：才有「移到另一个节点…」
-  const canMove = (item: ViewTodo): boolean => order.some((id) => id !== item.node_id && nodes[id]?.info?.capabilities.todo === true)
 
   const groups = useMemo(() => groupTodos(view, filters), [view, filters])
   const closedExpanded = supporting.some((id) => nodeState[id]?.closed.expanded)
@@ -192,7 +188,6 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
       onReopen={() => void setTodoState(item, 'open')}
       onDrop={() => void setTodoState(item, 'dropped', { undo: true })}
       onDelete={() => setDeleting(item)}
-      {...(canMove(item) && !(item.unreviewed && item.source.kind === 'agent') ? { onMove: () => setMoving(item) } : {})}
     />
   )
 
@@ -320,7 +315,6 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
           </div>
         ) : null}
       </div>
-      {moving ? <MoveTodoDialog item={moving} open onOpenChange={(o) => !o && setMoving(null)} /> : null}
       <Dialog open={!!deleting} onOpenChange={(o) => !o && setDeleting(null)} title={t('todos.deleteTitle')} description={deleting ? t('todos.deleteBody', { title: cleanOneLine(deleting.title, 80) }) : ''} closeLabel={t('common.close')} testId="todo-delete-dialog">
         <div className="flex justify-end gap-2">
           <Button onClick={() => setDeleting(null)}>{t('common.cancel')}</Button>

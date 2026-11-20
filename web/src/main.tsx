@@ -28,7 +28,7 @@ const router = createAppRouter(queryClient)
 
 installUnauthorizedHandler(router, queryClient)
 // 通知处理 / toast 的动作按钮这类非 React 代码要跳转页面时走这里（比如安全提醒 → 节点设置的「接入」标签）
-setNavigator((to, opts) => (opts?.replace ? router.history.replace(to) : router.history.push(to)))
+setNavigator((to) => router.history.push(to))
 // 点了系统通知：service worker 聚焦这个窗口并让它做站内跳转（ADR-37）
 listenForSwMessages(navigateTo)
 

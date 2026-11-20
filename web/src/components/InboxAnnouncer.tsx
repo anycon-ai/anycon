@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useInboxNowCount } from '@/features/inbox/useInbox'
-import { selectedNodes } from '@/lib/nodeFilter'
-import { useNodes } from '@/stores/nodes'
-import { usePrefs } from '@/stores/prefs'
+import { SETTLE_TIMEOUT_MS, useNodesSettled } from '@/features/inbox/useSettled'
 
 /**
  * 「待处理」的数字一变，用状态播报区读出完整的一句话（「3 件事在等你」），不只是读一个数字（spec/web.md § 14.10）。
@@ -13,24 +11,7 @@ import { usePrefs } from '@/stores/prefs'
 export function InboxAnnouncer({ delayMs = 600 }: { delayMs?: number }) {
   const { t } = useTranslation()
   const count = useInboxNowCount()
-  const byId = useNodes((st) => st.byId)
-  const order = useNodes((st) => st.order)
-  const saved = usePrefs((st) => st.sidebarNodes)
-  const settledNow = selectedNodes(order, saved).every((id) => {
-    const n = byId[id]
-    return !!n && isSettled(n.conn, n.synced, n.syncing, n.versionMismatch)
-  })
-  // 有节点一直定不下来（第一次同步失败、卡在连接上）：等一阵子之后也取基线，不然这个播报区永远不出声
-  const [gaveUp, setGaveUp] = useState(false)
-  useEffect(() => {
-    if (settledNow) {
-      setGaveUp(false)
-      return
-    }
-    const id = setTimeout(() => setGaveUp(true), SETTLE_TIMEOUT_MS)
-    return () => clearTimeout(id)
-  }, [settledNow])
-  const settled = settledNow || gaveUp
+  const settled = useNodesSettled()
   const [text, setText] = useState('')
   const prev = useRef<number | null>(null)
   useEffect(() => {
@@ -54,11 +35,4 @@ export function InboxAnnouncer({ delayMs = 600 }: { delayMs?: number }) {
   )
 }
 
-/** 等一个节点同步完最多等这么久（毫秒），之后不管它了、照常取基线。 */
-export const SETTLE_TIMEOUT_MS = 15_000
-
-/** 节点这一轮同步做完了（`synced`），或者确认它不会有同步：离线、不认识这个浏览器（`noise_failed`）、协议版本不兼容。还在连、正在同步都不算。 */
-function isSettled(conn: string, synced: boolean, syncing: boolean, versionMismatch: boolean): boolean {
-  if (conn === 'peer_offline' || conn === 'noise_failed' || versionMismatch) return true
-  return conn === 'ready' && synced && !syncing
-}
+export { SETTLE_TIMEOUT_MS }

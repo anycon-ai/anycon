@@ -12,6 +12,7 @@ import { useMinute } from '@/features/inbox/ui/info'
 import { useInboxActions } from '@/features/inbox/ui/useInboxActions'
 import { OVERLAY_CLASS, useInboxSelection, type InboxMode } from '@/features/inbox/useSelection'
 import { useInbox } from '@/features/inbox/useInbox'
+import { useNodesSettled } from '@/features/inbox/useSettled'
 import { useInboxKeys } from '@/features/inbox/useInboxKeys'
 import { formatRelative } from '@/lib/format'
 import { resolveNodeParam, shortNodeId } from '@/lib/ids'
@@ -96,7 +97,8 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const outside = located && !mainItems.some((i) => i.key === located.key) ? located : null
   const items = useMemo(() => (outside ? [outside, ...mainItems] : mainItems), [outside, mainItems])
 
-  const sel = useInboxSelection({ items, picked: pickedNodes, mode, active, root, empty })
+  const ready = useNodesSettled()
+  const sel = useInboxSelection({ items, picked: pickedNodes, mode, active, ready, root, empty })
   const { choose } = sel
   versionNow.current = sel.version
   const shown = sel.ghost ? null : (items.find((i) => i.key === sel.selected) ?? null)

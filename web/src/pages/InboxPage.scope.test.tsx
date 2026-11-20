@@ -132,6 +132,17 @@ describe('phone default expansion', () => {
     expect(within(rows()[0]!).getByTestId('inbox-row-main')).toHaveAttribute('aria-expanded', 'false')
   })
 
+  it('but a cold start still expands the first item: while the nodes are still syncing the page has not “opened” yet', () => {
+    setViewport('phone')
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', conn: 'noise_handshaking', synced: false }), [B]: nodeEntry({ id: B, name: 'beta', conn: 'noise_handshaking', synced: false }) } })
+    render(<InboxPage active />)
+    act(() => seed({ pending: [req('arrives', { created_at_ms: 1 })] }))
+    expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'arrives')
+    // 同步完之后才到的不再展开
+    act(() => seed({ pending: [req('arrives', { created_at_ms: 1 }), req('later', { created_at_ms: 2 })] }))
+    expect(screen.getAllByTestId('permission-card')).toHaveLength(1)
+  })
+
   it('and not while the tab is hidden', () => {
     setViewport('phone')
     seed({ pending: [req('one')] })

@@ -65,7 +65,7 @@ export interface InboxSelection {
  * `items`：列表里的条目，按显示顺序。`active`：页面此刻是否在眼前（手机上标签页常驻、只是藏起来，藏着的时候不抢焦点）。
  * `empty`：一条都没有时，焦点落到的元素（「没有等你的事」那个标题）。
  */
-export function useInboxSelection({ items, picked, mode, active, root, empty }: { items: readonly InboxItem[]; /** 左栏节点过滤器勾选的节点。 */ picked: readonly string[]; mode: InboxMode; active: boolean; root: RefObject<HTMLElement | null>; empty: RefObject<HTMLElement | null> }): InboxSelection {
+export function useInboxSelection({ items, picked, mode, active, ready, root, empty }: { items: readonly InboxItem[]; /** 左栏节点过滤器勾选的节点。 */ picked: readonly string[]; mode: InboxMode; active: boolean; /** 勾选的节点这一轮同步都定下来了：刚打开页面时条目还在路上，要等它。 */ ready: boolean; root: RefObject<HTMLElement | null>; empty: RefObject<HTMLElement | null> }): InboxSelection {
   const keys = items.map((i) => i.key)
   const keySig = keys.join('\u0000')
   const [state, setState] = useState<{ key: string | null; explicit: boolean; ghost: Ghost | null; version: number }>({ key: null, explicit: false, ghost: null, version: 0 })
@@ -124,11 +124,12 @@ export function useInboxSelection({ items, picked, mode, active, root, empty }: 
       if (mode === 'split') apply({ key: first.key, explicit: false, ghost: null })
       else if (mode === 'inline' && !defaulted.current) apply({ key: first.key, explicit: false, ghost: null })
     }
-    // 手机上这个决定只做一次：页面第一次在眼前时，不管有没有条目
-    defaulted.current = true
+    // 手机上这个决定只做一次：页面第一次在眼前、并且数据到了（有条目，或者节点都同步完了仍然没有）的时候。
+    // 刚打开页面、同步还没完时先等，不然冷启动时（条目晚到）永远不会默认展开
+    if (first || ready) defaulted.current = true
     // keySig 代表 keys 的内容
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keySig, mode, active, apply, root, picked])
+  }, [keySig, mode, active, ready, apply, root, picked])
 
   useEffect(() => {
     const target = pendingFocus.current

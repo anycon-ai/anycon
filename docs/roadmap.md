@@ -103,7 +103,7 @@
 
 已完成（v0.3.0 发布，见 [CHANGELOG](../CHANGELOG.md#030---2026-11-11)）：
 
-- `anycon mcp`：stdio MCP server，让别的 agent 通过九个 MCP 工具查看和驱动节点上的会话；不暴露权限审批、默认拒绝危险模式和嵌套使用（[ADR-49](decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）
+- `anycon mcp`：stdio MCP server，让别的 agent 通过 MCP 工具（共十一个，其中 `list_todos` / `add_todo` 属于清单，[ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)，`add_todo` 不受 `--allow-nested` 限制）查看和驱动节点上的会话；不暴露权限审批、默认拒绝危险模式和嵌套使用（[ADR-49](decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）
 
 还没做：
 
@@ -119,7 +119,7 @@
 
 设计见 [ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)；Web UI 随之重排（「待处理」首页、手机底部标签栏、随手记一项、空间切换），见 [ADR-55](decisions.md#adr-55-web-ui-以待处理为首页手机用底部标签栏分身不是一个聊天窗口) 和 [spec/web.md § 14](spec/web.md#14-加入清单和分身之后的界面)，每一步的界面范围在 § 14.12。四步，每一步单独发布，都还没做：
 
-1. **清单**：按节点存的个人清单（[spec/daemon.md § 21](spec/daemon.md#21-清单)）
+1. **清单**：按节点存的个人清单（[spec/daemon.md § 21](spec/daemon.md#21-清单)）。已实现：daemon、`anycon todo`、`anycon mcp` 的两个工具和 TS SDK；Web 部分还没做
    - `todo.*` 方法、`capabilities.todo`、存储和审计；agent 环境里的 `ANYCON_SESSION_ID`
    - Web：首页换成「待处理」（权限请求、计划、提问、接入请求、标了待处理的会话、出错合成一个队列），手机用底部标签栏，随手记一项的各个入口，清单页和单项详情（本地缓存、节点离线时的改动回来后重放）
    - 多个节点：节点分组名（比如「家里」「公司」）；节点过滤器升级为空间切换，待处理、清单、会话树都跟着它；把一项移到另一个节点

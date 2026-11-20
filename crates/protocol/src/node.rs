@@ -21,6 +21,9 @@ pub struct NodeCapabilities {
     /// 支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。
     #[serde(default)]
     pub preview: bool,
+    /// 支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。
+    #[serde(default)]
+    pub todo: bool,
 }
 
 /// 节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。
@@ -60,6 +63,9 @@ pub struct NodeAttachmentLimits {
 pub struct NodeInfo {
     pub node_id: DeviceId,
     pub name: String,
+    /// 分组名（`[hub] group`）：名字相同的节点客户端合并显示；是标签，不是访问控制。为空或旧 daemon 时不给。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub version: String,
     pub protocol_version: u32,
     pub platform: String,

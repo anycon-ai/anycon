@@ -1,0 +1,358 @@
+//! `anycon todo` 对真实 daemon 的端到端：增删改查、id 前缀、`--due`、退出码，以及在 anycon 拉起的 agent 里的行为。
+
+mod common;
+
+use common::*;
+use serde_json::Value;
+
+struct Node {
+    _dir: tempfile::TempDir,
+    home: std::path::PathBuf,
+    daemon: Option<DaemonProc>,
+}
+
+async fn node() -> Node {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    init(&home, &d.path().join("ws"), "box", None).await;
+    assert_eq!(anycon(&home, &["config", "set", "agents.claude-code.enabled", "false"], None, &[]).await.code, 0);
+    assert_eq!(anycon(&home, &["config", "set", "agents.codex.enabled", "false"], None, &[]).await.code, 0);
+    let daemon = start_daemon(&home, &[("ANYCON_MOCK_AGENT", "1")]).await;
+    Node { _dir: d, home, daemon: Some(daemon) }
+}
+
+impl Node {
+    async fn cli(&self, args: &[&str]) -> Run {
+        anycon(&self.home, args, None, &[]).await
+    }
+
+    async fn cli_env(&self, args: &[&str], env: &[(&str, &str)]) -> Run {
+        anycon(&self.home, args, None, env).await
+    }
+
+    async fn stop(mut self) {
+        if let Some(d) = self.daemon.take() {
+            d.stop().await;
+        }
+    }
+
+    async fn todos(&self, all: bool) -> Vec<Value> {
+        let mut args = vec!["todo", "ls", "--json"];
+        if all {
+            args.push("--all");
+        }
+        let r = self.cli(&args).await;
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        r.json()["todos"].as_array().unwrap().clone()
+    }
+
+    async fn add(&self, title: &str) -> Value {
+        let r = self.cli(&["todo", "add", title, "--json"]).await;
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        r.json()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_ls_and_state_changes_by_id_prefix() {
+    let n = node().await;
+    assert_eq!(n.todos(false).await.len(), 0);
+    let empty = n.cli(&["todo", "ls"]).await;
+    assert_eq!((empty.code, empty.stdout.trim()), (0, "no to-dos"));
+
+    // add：标题、正文、项目、截止时间；人在本机敲的，来源是 local，不是 unreviewed
+    let r = n
+        .cli(&[
+            "todo",
+            "add",
+            "Write the report",
+            "--body",
+            "# notes",
+            "--project",
+            "web",
+            "--due",
+            "2026-12-01",
+            "--json",
+        ])
+        .await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let t = r.json();
+    assert_eq!(t["title"], "Write the report");
+    assert_eq!(
+        (t["body"].as_str(), t["project"].as_str(), t["state"].as_str()),
+        (Some("# notes"), Some("web"), Some("open"))
+    );
+    assert_eq!(t["due_ms"], 1_796_083_200_000u64);
+    assert_eq!(t["source"]["kind"], "local");
+    assert_eq!(t["unreviewed"], false);
+    let id = t["id"].as_str().unwrap().to_string();
+    assert_eq!(id.len(), 36);
+    // 人类可读的输出：短 id 和标题
+    let r = n.cli(&["todo", "add", "Second item"]).await;
+    assert!(r.stdout.starts_with("added ") && r.stdout.contains("Second item"), "{}", r.stdout);
+    let second = n.todos(false).await.into_iter().find(|t| t["title"] == "Second item").unwrap();
+
+    // ls 表格
+    let r = n.cli(&["todo", "ls"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    for want in [
+        "ID",
+        "STATE",
+        "DUE",
+        "PROJECT",
+        "TITLE",
+        "Write the report",
+        "web",
+        "2026-12-01 00:00",
+        "Second item",
+        &id[..8],
+    ] {
+        assert!(r.stdout.contains(want), "{want:?} in:\n{}", r.stdout);
+    }
+    // --project 过滤
+    let r = n.cli(&["todo", "ls", "--project", "web", "--json"]).await;
+    assert_eq!(r.json()["todos"].as_array().unwrap().len(), 1);
+
+    // done：用前缀；默认的 ls 不再列出，--all 才有
+    let r = n.cli(&["todo", "done", &id[..6]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.starts_with("done ") && r.stdout.contains("Write the report"), "{}", r.stdout);
+    let open = n.todos(false).await;
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0]["id"], second["id"]);
+    let all = n.todos(true).await;
+    assert_eq!(all.len(), 2);
+    let done = all.iter().find(|t| t["id"] == id.as_str()).unwrap();
+    assert_eq!(done["state"], "done");
+    assert!(done["closed_ms"].is_u64());
+    // 已关闭的项也能用前缀找到：reopen 清掉 closed_ms
+    let r = n.cli(&["todo", "reopen", &id, "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let j = r.json();
+    assert_eq!((j["state"].as_str(), j["closed_ms"].is_null()), (Some("open"), true));
+    // drop
+    let r = n.cli(&["todo", "drop", &id[..8]]).await;
+    assert!(r.stdout.starts_with("dropped "), "{}", r.stdout);
+    assert_eq!(n.todos(true).await.iter().find(|t| t["id"] == id.as_str()).unwrap()["state"], "dropped");
+    // rm：物理删除，再删找不到
+    let r = n.cli(&["todo", "rm", &id[..8]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.starts_with("removed "), "{}", r.stdout);
+    assert_eq!(n.todos(true).await.len(), 1);
+    let r = n.cli(&["todo", "rm", &id]).await;
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(r.stderr.contains("not_found"), "{}", r.stderr);
+    // 前缀不区分大小写
+    let up = second["id"].as_str().unwrap()[..8].to_uppercase();
+    assert_eq!(n.cli(&["todo", "done", &up]).await.code, 0);
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bad_input_and_ambiguous_ids_are_reported_with_the_right_exit_codes() {
+    let n = node().await;
+    // 标题为空 / 太长 / 多行、不合法的 --due：退出码 2
+    for args in [
+        vec!["todo", "add", "   "],
+        vec!["todo", "add", "x\ny"],
+        vec!["todo", "add", "title", "--due", "tomorrow"],
+        vec!["todo", "add", "title", "--due", "2026-12-01 09:00"],
+    ] {
+        let r = n.cli(&args).await;
+        assert_eq!(r.code, 2, "{args:?}: {}", r.stderr);
+    }
+    let long = "a".repeat(201);
+    assert_eq!(n.cli(&["todo", "add", &long]).await.code, 2);
+    assert!(n.todos(true).await.is_empty(), "nothing was added");
+    // --due 的几种写法
+    for (due, ms) in [
+        ("2026-12-01T09:00:00Z", 1_796_115_600_000u64),
+        ("2026-12-01T17:00:00+08:00", 1_796_115_600_000u64),
+        ("2026-12-01T09:00Z", 1_796_115_600_000u64),
+    ] {
+        let r = n.cli(&["todo", "add", due, "--due", due, "--json"]).await;
+        assert_eq!(r.code, 0, "{due}: {}", r.stderr);
+        assert_eq!(r.json()["due_ms"], ms, "{due}");
+    }
+    // 没有匹配
+    let r = n.cli(&["todo", "done", "zzzz"]).await;
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(r.stderr.contains("not_found"), "{}", r.stderr);
+    // 前缀不唯一：17 个 id 的首字符只有 16 种取值，必有两项共享
+    for i in 0..14 {
+        n.add(&format!("item {i}")).await;
+    }
+    let all = n.todos(true).await;
+    assert_eq!(all.len(), 17);
+    let first_chars: Vec<char> = all.iter().map(|t| t["id"].as_str().unwrap().chars().next().unwrap()).collect();
+    let dup = first_chars.iter().find(|c| first_chars.iter().filter(|x| x == c).count() > 1).unwrap().to_string();
+    let r = n.cli(&["todo", "done", &dup]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(r.stderr.contains("matches") && r.stderr.contains("longer prefix"), "{}", r.stderr);
+    assert!(n.todos(false).await.len() == 17, "an ambiguous prefix changes nothing");
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ls_pages_until_it_has_everything() {
+    let n = node().await;
+    // 把每项的正文填满，让一页被 1 MiB 的字节预算截断（约 60 多项），再多加一些
+    let body = "x".repeat(16 * 1024);
+    for i in 0..75 {
+        let r = n.cli(&["todo", "add", &format!("big {i}"), "--body", &body]).await;
+        assert_eq!(r.code, 0, "{}", r.stderr);
+    }
+    let all = n.todos(false).await;
+    assert_eq!(all.len(), 75, "ls follows has_more instead of stopping at the first page");
+    let mut ids: Vec<&str> = all.iter().map(|t| t["id"].as_str().unwrap()).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 75, "no duplicates");
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inside_an_agent_session_add_is_marked_and_the_rest_is_refused() {
+    let n = node().await;
+    let created = n.cli(&["new", "--agent", "mock", "--no-wait", "--json", "hello"]).await;
+    assert_eq!(created.code, 0, "{}", created.stderr);
+    let sid = created.json()["id"].as_str().unwrap().to_string();
+    let agent_env = [("ANYCON_AGENT", "1"), ("ANYCON_SESSION_ID", sid.as_str())];
+
+    // add：带 agent 标记和来源会话
+    let r = n.cli_env(&["todo", "add", "from the agent", "--json"], &agent_env).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let t = r.json();
+    assert_eq!(t["source"]["kind"], "agent");
+    assert_eq!(t["source"]["session_id"], sid.as_str());
+    assert_eq!(t["unreviewed"], true);
+    let id = t["id"].as_str().unwrap().to_string();
+    // 没有 ANYCON_SESSION_ID，或者会话不存在：照样是 agent 项，只是没有来源会话
+    let r = n.cli_env(&["todo", "add", "no session", "--json"], &[("ANYCON_AGENT", "1")]).await;
+    assert_eq!(
+        (r.json()["source"]["kind"].as_str(), r.json()["source"]["session_id"].is_null()),
+        (Some("agent"), true)
+    );
+    let r = n
+        .cli_env(
+            &["todo", "add", "gone", "--json"],
+            &[("ANYCON_AGENT", "1"), ("ANYCON_SESSION_ID", "sess_doesnotexist0000000000")],
+        )
+        .await;
+    assert_eq!(
+        (r.json()["source"]["kind"].as_str(), r.json()["source"]["session_id"].is_null()),
+        (Some("agent"), true)
+    );
+
+    // ls 照常（表格上标出 agent 项）
+    let r = n.cli_env(&["todo", "ls"], &agent_env).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains("from the agent") && r.stdout.contains("agent (unreviewed)"), "{}", r.stdout);
+
+    // done / drop / reopen / rm：拒绝，退出码 5，说明原因，什么都不改
+    for sub in ["done", "drop", "reopen", "rm"] {
+        let r = n.cli_env(&["todo", sub, &id[..8]], &agent_env).await;
+        assert_eq!(r.code, 5, "{sub}: {}", r.stderr);
+        assert!(
+            r.stderr.contains("not available inside an anycon agent session") && r.stderr.contains("ANYCON_AGENT"),
+            "{sub}: {}",
+            r.stderr
+        );
+    }
+    let after = n.todos(true).await;
+    assert_eq!(after.len(), 3);
+    let kept = after.iter().find(|t| t["id"] == id.as_str()).unwrap();
+    assert_eq!((kept["state"].as_str(), kept["unreviewed"].as_bool()), (Some("open"), Some(true)));
+
+    // 空值和 "0" 不算「在 agent 里」（和 `anycon mcp` 是同一个判断）：和人敲的一样
+    for off in ["", "0"] {
+        let r = n.cli_env(&["todo", "add", "typed by a person", "--json"], &[("ANYCON_AGENT", off)]).await;
+        assert_eq!(r.json()["source"]["kind"], "local", "ANYCON_AGENT={off:?}");
+        assert_eq!(n.cli_env(&["todo", "done", &id[..8]], &[("ANYCON_AGENT", off)]).await.code, 0);
+        assert_eq!(n.cli_env(&["todo", "reopen", &id[..8]], &[("ANYCON_AGENT", off)]).await.code, 0);
+    }
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cli_help_documents_the_subcommands_in_english() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let r = anycon(&home, &["todo", "--help"], None, &[]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    for want in ["add", "ls", "done", "drop", "reopen", "rm"] {
+        assert!(r.stdout.contains(want), "{want}: {}", r.stdout);
+    }
+    let r = anycon(&home, &["todo", "add", "--help"], None, &[]).await;
+    assert!(r.stdout.contains("--due") && r.stdout.contains("RFC 3339") && r.stdout.contains("--body"), "{}", r.stdout);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_state_change_that_changes_nothing_says_so() {
+    let n = node().await;
+    let t = n.add("steady").await;
+    let id = t["id"].as_str().unwrap().to_string();
+    // 已经是 open：reopen 什么都没变
+    let r = n.cli(&["todo", "reopen", &id[..8]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.starts_with("nothing changed") && r.stdout.contains("already open"), "{}", r.stdout);
+    // done 一次：真的改了；再 done：没变；--json 照样给出这一项
+    let r = n.cli(&["todo", "done", &id[..8]]).await;
+    assert!(r.stdout.starts_with("done "), "{}", r.stdout);
+    let r = n.cli(&["todo", "done", &id[..8]]).await;
+    assert!(r.stdout.starts_with("nothing changed") && r.stdout.contains("already done"), "{}", r.stdout);
+    let r = n.cli(&["todo", "done", &id, "--json"]).await;
+    assert_eq!(r.json()["state"], "done");
+    // 前缀先在没关闭的项里找；找不到再找已关闭的（done 之后 drop 用前缀也行）
+    let r = n.cli(&["todo", "drop", &id[..8]]).await;
+    assert!(r.stdout.starts_with("dropped "), "{}", r.stdout);
+    // 完整 UUID 不用列清单，已关闭的项直接 reopen；没列过就不知道原来的状态，只报告现在的状态
+    let r = n.cli(&["todo", "reopen", &id]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains(" is open") && !r.stdout.contains("nothing changed"), "{}", r.stdout);
+    // 再来一次（daemon 当空操作）也是同一句话，不猜它变没变
+    let r = n.cli(&["todo", "reopen", &id]).await;
+    assert!(r.stdout.contains(" is open") && !r.stdout.contains("nothing changed"), "{}", r.stdout);
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_prefix_matching_an_open_and_a_closed_item_picks_by_what_the_command_can_act_on() {
+    let n = node().await;
+    // 17 个 id 的首字符只有 16 种取值，必有两项共享；把共享同一个首字符的项收拾成「一个没关闭 + 一个已关闭」
+    for i in 0..17 {
+        n.add(&format!("item {i}")).await;
+    }
+    let all = n.todos(false).await;
+    let ids: Vec<String> = all.iter().map(|t| t["id"].as_str().unwrap().to_string()).collect();
+    let c = ids
+        .iter()
+        .map(|i| i.chars().next().unwrap())
+        .find(|c| ids.iter().filter(|i| i.starts_with(*c)).count() > 1)
+        .unwrap();
+    let group: Vec<&String> = ids.iter().filter(|i| i.starts_with(c)).collect();
+    let (open_id, closed_id) = (group[0].clone(), group[1].clone());
+    for extra in &group[2..] {
+        assert_eq!(n.cli(&["todo", "rm", extra]).await.code, 0);
+    }
+    assert_eq!(n.cli(&["todo", "done", &closed_id]).await.code, 0);
+    let prefix = c.to_string();
+
+    // reopen：用已关闭的那一项，不报歧义
+    let r = n.cli(&["todo", "reopen", &prefix, "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.json()["id"], closed_id.as_str());
+    assert_eq!(r.json()["state"], "open");
+
+    // done：用没关闭的那一项
+    assert_eq!(n.cli(&["todo", "done", &closed_id]).await.code, 0);
+    let r = n.cli(&["todo", "done", &prefix, "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.json()["id"], open_id.as_str());
+    assert_eq!(r.json()["state"], "done");
+
+    // 两项都已关闭时，done 用前缀就有歧义；reopen 同理
+    let r = n.cli(&["todo", "reopen", &prefix]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    n.stop().await;
+}

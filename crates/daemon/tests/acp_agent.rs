@@ -108,6 +108,38 @@ async fn agent_list(td: &TestDaemon, c: &mut TestClient) -> Vec<AgentInfo> {
     l.agents
 }
 
+/// 一个进程服务 ACP agent 的所有会话，进程环境里放某一个会话的 id 是错的：ACP 进程拿到 `ANYCON_AGENT` 但没有
+/// `ANYCON_SESSION_ID`（别的 agent 两个都有，见 `sessions.rs`）。
+#[tokio::test]
+async fn an_acp_agent_process_gets_the_agent_marker_but_no_session_id() {
+    let (td, dir) = start(&[]).await;
+    let mut c = td.client("a");
+    for (i, msg) in ["first", "second"].iter().enumerate() {
+        let s: SessionSummary = c
+            .call(
+                &td,
+                methods::SESSION_CREATE,
+                json!({ "agent": "fakeacp", "prompt": msg, "message_id": format!("m{i}") }),
+            )
+            .await
+            .unwrap();
+        wait_idle(&td, &mut c, &s.id).await;
+    }
+    let starts: Vec<Value> = log_entries(&dir).into_iter().filter(|e| e["kind"] == "argv").collect();
+    assert!(!starts.is_empty());
+    // 会话的进程（开了 session/new 的那个）：有 ANYCON_AGENT，没有 ANYCON_SESSION_ID；探测进程两个都没有
+    let session_pids = session_pids(&dir, &td);
+    assert!(!session_pids.is_empty());
+    for e in &starts {
+        assert!(e["anycon_env"]["ANYCON_SESSION_ID"].is_null(), "no session id in an ACP process: {e}");
+        if session_pids.contains(&e["pid"].as_u64().unwrap()) {
+            assert_eq!(e["anycon_env"]["ANYCON_AGENT"], "1", "{e}");
+        }
+    }
+    assert_eq!(session_pids.windows(2).filter(|w| w[0] != w[1]).count(), 0, "still one shared process");
+    td.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_acp_agent_is_listed_like_any_other_and_runs_sessions() {
     let (td, dir) = start(&[("sessions.idle_timeout", "\"2s\"")]).await;

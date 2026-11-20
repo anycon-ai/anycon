@@ -409,6 +409,36 @@
   },
   {
     "direction": "request",
+    "name": "todo.list",
+    "params": "TodoListParams",
+    "result": "TodoListResult"
+  },
+  {
+    "direction": "request",
+    "name": "todo.add",
+    "params": "TodoAddParams",
+    "result": "Todo"
+  },
+  {
+    "direction": "request",
+    "name": "todo.update",
+    "params": "TodoUpdateParams",
+    "result": "Todo"
+  },
+  {
+    "direction": "request",
+    "name": "todo.delete",
+    "params": "TodoIdParams",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "todo.changed",
+    "params": "TodoChanged",
+    "result": null
+  },
+  {
+    "direction": "request",
     "name": "blob.put_begin",
     "params": "BlobPutBeginParams",
     "result": "BlobPutBeginResult"

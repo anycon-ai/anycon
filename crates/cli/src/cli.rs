@@ -104,6 +104,9 @@ pub enum Command {
     /// Import the sessions in a zip file made by `anycon export`; sessions that already exist are skipped, never
     /// overwritten (the local daemon does the work)
     Import(ImportArgs),
+    /// Your to-do list on this node: add, list, close, reopen and remove items
+    #[command(subcommand)]
+    Todo(TodoCmd),
     /// Run an MCP server on stdio so other agents can look at and drive this node's sessions through MCP tools
     /// (use `anycon mcp` as the server command in an MCP client's config)
     Mcp(McpArgs),
@@ -126,6 +129,61 @@ pub enum Command {
     Nodes,
     /// Forget this machine's pairing with a node
     Disconnect { node: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TodoCmd {
+    /// Add an item to the node's to-do list. Inside an agent session that anycon started, the item is marked as added by
+    /// an agent and waits for you to review it
+    Add(TodoAddArgs),
+    /// List open items, newest change first
+    Ls(TodoLsArgs),
+    /// Mark an item done (not available inside an anycon agent session)
+    Done {
+        /// To-do id (a prefix is enough)
+        id: String,
+    },
+    /// Mark an item dropped, meaning you will not do it (not available inside an anycon agent session)
+    Drop {
+        /// To-do id (a prefix is enough)
+        id: String,
+    },
+    /// Open a done or dropped item again (not available inside an anycon agent session)
+    Reopen {
+        /// To-do id (a prefix is enough)
+        id: String,
+    },
+    /// Remove an item for good (not available inside an anycon agent session)
+    Rm {
+        /// To-do id (a prefix is enough)
+        id: String,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct TodoAddArgs {
+    /// One line, at most 200 characters
+    pub title: String,
+    /// Longer notes in Markdown (at most 16 KiB)
+    #[arg(long)]
+    pub body: Option<String>,
+    /// Project name (not checked against the node's projects)
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Do it before this time: a date like 2026-12-01 (midnight UTC), or an RFC 3339 time like 2026-12-01T09:00:00Z or
+    /// 2026-12-01T17:00+08:00
+    #[arg(long, value_name = "TIME")]
+    pub due: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct TodoLsArgs {
+    /// Include done and dropped items
+    #[arg(long)]
+    pub all: bool,
+    /// Only items of this project
+    #[arg(long)]
+    pub project: Option<String>,
 }
 
 #[derive(Args, Debug)]

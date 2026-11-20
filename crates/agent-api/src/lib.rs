@@ -573,10 +573,16 @@ pub fn env_key_allowed(key: &str) -> std::result::Result<(), String> {
 }
 
 /// 从 daemon 环境里剔除「我正在某个 agent 会话里」的标记，避免拉起的 agent 拒绝嵌套启动。
-/// 含 anycon 自己的 `ANYCON_AGENT`：从 anycon 会话里前台启动的 daemon 不该把它带进探测的环境；
-/// 真正拉起 agent 时 daemon 会在最后一步重新放进去（ADR-49）。
-pub const ENV_STRIP: &[&str] =
-    &["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_AGENT_SDK_VERSION", "ANYCON_AGENT"];
+/// 含 anycon 自己的 `ANYCON_AGENT` 和 `ANYCON_SESSION_ID`：从 anycon 会话里前台启动的 daemon 不该把它们带进探测的环境；
+/// 真正拉起 agent 时 daemon 会在最后一步重新放进去（ADR-49，docs/spec/daemon.md § 21.2）。
+pub const ENV_STRIP: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_AGENT_SDK_VERSION",
+    "ANYCON_AGENT",
+    "ANYCON_SESSION_ID",
+];
 
 #[cfg(test)]
 mod env_tests {

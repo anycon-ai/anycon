@@ -30,6 +30,12 @@ impl Caller {
         Self::local(LocalClientKind::Cli)
     }
 
+    /// 这是不是一条自报了 `local.set_client { client: "mcp" }` 的本机连接（`anycon mcp`）。自报的，只是标注：
+    /// 清单据此把它加的项记成 agent 加的，并且它清不掉 `unreviewed`（docs/spec/daemon.md § 21.2）。
+    pub fn is_mcp(&self) -> bool {
+        self.local && self.kind == DeviceKind::Cli && self.device_name == LocalClientKind::Mcp.device_name()
+    }
+
     /// 本机通道上的调用方。`device_id` 固定是 `local`，`device_name` 随自报的客户端种类变（审计里分得出来）。
     pub fn local(kind: LocalClientKind) -> Self {
         Caller { device_id: "local".into(), device_name: kind.device_name().into(), kind: DeviceKind::Cli, local: true }

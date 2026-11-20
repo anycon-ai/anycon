@@ -101,11 +101,34 @@ impl Paths {
     }
 }
 
+/// `hub.group` 的字符数上限。
+pub const NODE_GROUP_MAX_CHARS: u64 = 40;
+
+/// 控制字符，或 U+2028 / U+2029（行分隔符，不算控制字符）。清单标题、项目名和分组名都按「单行」处理。
+pub fn is_line_break_or_control(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+/// `hub.group` 的格式：≤ [`NODE_GROUP_MAX_CHARS`] 个 Unicode 码点的单行文本，不含控制字符。远程写入、`config set` 和手写的
+/// `config.toml` 同一条规则（[`Config::validate`]）。
+pub fn validate_node_group(s: &str) -> Result<(), String> {
+    if s.chars().count() as u64 > NODE_GROUP_MAX_CHARS {
+        return Err(format!("at most {NODE_GROUP_MAX_CHARS} characters"));
+    }
+    if s.chars().any(is_line_break_or_control) {
+        return Err("must be a single line without control characters".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HubConfig {
     pub url: Option<String>,
     pub name: Option<String>,
+    /// 分组名（docs/spec/daemon.md § 21.7）：≤ [`NODE_GROUP_MAX_CHARS`] 个字符，缺省为空。客户端把分组名相同的节点合并显示，
+    /// 它是标签，不是访问控制。热加载，可以远程改。
+    pub group: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -513,6 +536,7 @@ impl Config {
             return Err(bad("worktree.default", "expected worktree | local".into()));
         }
         validate_branch_prefix(&self.worktree.branch_prefix).map_err(|e| bad("worktree.branch_prefix", e))?;
+        validate_node_group(&self.hub.group).map_err(|e| bad("hub.group", e))?;
         parse_size(&self.worktree.include_max_bytes).map_err(|e| bad("worktree.include_max_bytes", e))?;
         if !matches!(self.notify.turn_finished.as_str(), "always" | "when_unwatched" | "never") {
             return Err(bad("notify.turn_finished", "expected always | when_unwatched | never".into()));
@@ -624,6 +648,11 @@ impl Config {
     /// 用户写过它的段（关掉、改了命令、设了默认值…）或者它是用户自己加的，就照常列出。
     pub fn is_implicit_acp(&self, id: &str) -> bool {
         anycon_adapters::acp::registry_entry(id).is_some() && self.agents.acp.get(id) == Some(&acp_default())
+    }
+    /// `node.info.group`：去掉首尾空白，空 = 不分组。
+    pub fn node_group(&self) -> Option<String> {
+        let g = self.hub.group.trim();
+        (!g.is_empty()).then(|| g.to_string())
     }
     pub fn node_name(&self) -> String {
         if let Some(n) = self.hub.name.as_ref().filter(|n| !n.is_empty()) {
@@ -888,7 +917,7 @@ pub fn set_toml_values(paths: &Paths, edits: Vec<(String, toml_edit::Value)>) ->
 /// 默认的 `config.toml` 文本（`anycon init` 用）。
 pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, workspace_root: &str) -> String {
     let mut s = String::new();
-    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots sessions.* permissions.* notify.* worktree.* enroll.* preview.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
+    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
     s.push_str("[hub]\n");
     match hub_url {
         Some(u) => s.push_str(&format!("url = {}\n", toml_str(u))),
@@ -898,6 +927,7 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
         Some(n) => s.push_str(&format!("name = {}\n", toml_str(n))),
         None => s.push_str("# name = \"my-machine\"\n"),
     }
+    s.push_str("# 分组名：名字相同的节点在客户端的清单里合并显示（只是标签，不是访问控制）\n# group = \"\"\n");
     s.push_str("\n[workspace]\n");
     s.push_str(&format!("root = {}\n", toml_str(workspace_root)));
     s.push_str("# 可以关联为项目（workspace.link）/ 浏览的本机目录范围；绝对路径或 ~/…；[] = 关闭。关联的目录不会被移动或删除。\n");
@@ -963,6 +993,7 @@ fn toml_str(s: &str) -> String {
 /// 某个配置键是否支持热加载（`config set` 提示用）。
 pub fn is_hot_key(key: &str) -> bool {
     if key == "workspace.link_roots"
+        || key == "hub.group"
         || key.starts_with("sessions.")
         || key.starts_with("permissions.")
         || key.starts_with("notify.")
@@ -1140,6 +1171,30 @@ dangerous_modes = ["yolo"]
         set_value(&paths, "sessions.max_attachment_bytes", "\"4MiB\"").unwrap();
         assert_eq!(Config::load(&paths).unwrap().max_attachment_bytes(), 4 * 1024 * 1024);
         assert!(set_value(&paths, "sessions.max_attachment_bytes", "\"lots\"").is_err());
+    }
+
+    #[test]
+    fn hub_group_is_validated_for_the_file_and_config_set_like_for_remote_writes() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path());
+        assert_eq!(Config::load(&paths).unwrap().hub.group, "");
+        // 40 个码点可以（按码点数，不是字节数），41 个不行；单行
+        set_value(&paths, "hub.group", &format!("\"{}\"", "组".repeat(40))).unwrap();
+        assert_eq!(Config::load(&paths).unwrap().hub.group.chars().count(), 40);
+        for bad in
+            [format!("\"{}\"", "a".repeat(41)), "\"a\\nb\"".into(), "\"a\\u0007b\"".into(), "\"a\\u2028b\"".into()]
+        {
+            assert!(set_value(&paths, "hub.group", &bad).is_err(), "{bad} must be rejected");
+        }
+        assert_eq!(Config::load(&paths).unwrap().hub.group.chars().count(), 40, "a rejected value is not written");
+        // 手写的文件同一条规则：加载失败
+        for bad in ["a".repeat(41), "a\\nb".into(), "a\\u2029b".into()] {
+            write(d.path(), &format!("[hub]\ngroup = \"{bad}\"\n"));
+            let e = Config::load(&paths).expect_err(&bad);
+            assert!(e.to_string().contains("hub.group"), "{e}");
+        }
+        write(d.path(), "[hub]\ngroup = \"team a\"\n");
+        assert_eq!(Config::load(&paths).unwrap().node_group().as_deref(), Some("team a"));
     }
 
     #[test]

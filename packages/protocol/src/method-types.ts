@@ -92,6 +92,13 @@ import type {
   SessionSummary,
   SessionSyncBaseParams,
   SessionSyncBaseResult,
+  Todo,
+  TodoAddParams,
+  TodoChanged,
+  TodoIdParams,
+  TodoListParams,
+  TodoListResult,
+  TodoUpdateParams,
   TrashEntry,
   WorkspaceBranchesParams,
   WorkspaceBranchesResult,
@@ -171,6 +178,10 @@ export interface RequestMethods {
   'session.git_status': { params: SessionGitStatusParams; result: SessionGitStatus }
   'session.diff': { params: SessionDiffParams; result: SessionDiffResult }
   'session.sync_base': { params: SessionSyncBaseParams; result: SessionSyncBaseResult }
+  'todo.list': { params: TodoListParams; result: TodoListResult }
+  'todo.add': { params: TodoAddParams; result: Todo }
+  'todo.update': { params: TodoUpdateParams; result: Todo }
+  'todo.delete': { params: TodoIdParams; result: Empty }
   'blob.put_begin': { params: BlobPutBeginParams; result: BlobPutBeginResult }
   'blob.put_chunk': { params: BlobPutChunkParams; result: Empty }
   'blob.put_end': { params: BlobIdParams; result: AttachmentRef }
@@ -196,6 +207,7 @@ export interface NotificationMethods {
   'job.done': { params: JobDone }
   'session.event': { params: SessionEvent }
   'session.changed': { params: SessionChanged }
+  'todo.changed': { params: TodoChanged }
   'permission.request': { params: PermissionRequest }
   'permission.resolved': { params: PermissionResolved }
 }

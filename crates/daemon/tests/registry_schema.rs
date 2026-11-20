@@ -330,6 +330,22 @@ async fn walk_permission(w: &mut Walk<'_>) -> String {
     psid
 }
 
+/// 清单（docs/spec/daemon.md § 21）：每个方法的结果和 `todo.changed` 通知都按注册表里的类型校验。
+async fn walk_todo(w: &mut Walk<'_>) {
+    let id = "7d1c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a77";
+    let t = w
+        .call(
+            methods::TODO_ADD,
+            json!({ "id": id, "title": "write it down", "body": "b", "project": "p", "due_ms": 5 }),
+        )
+        .await;
+    assert_eq!(t["id"], id);
+    w.call(methods::TODO_LIST, json!({})).await;
+    w.call(methods::TODO_LIST, json!({ "include_closed": true, "limit": 1 })).await;
+    w.call(methods::TODO_UPDATE, json!({ "id": id, "state": "done", "clear": ["project", "due_ms"] })).await;
+    w.call(methods::TODO_DELETE, json!({ "id": id })).await;
+}
+
 async fn walk_preview(w: &mut Walk<'_>, td: &TestDaemon, psid: &str) {
     // ---- 预览（ADR-39）：端口写进 allow_ports（热加载），签发、列出、列端口、作废
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -373,6 +389,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
 
     Box::pin(walk_workspace(&mut w, &td)).await;
     Box::pin(walk_session(&mut w)).await;
+    Box::pin(walk_todo(&mut w)).await;
     Box::pin(walk_worktree(&mut w, &td)).await;
     let psid = Box::pin(walk_permission(&mut w)).await;
     Box::pin(walk_preview(&mut w, &td, &psid)).await;
@@ -401,6 +418,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         methods::NODE_ENROLL_REQUESTED,
         methods::NODE_ENROLL_RESOLVED,
         methods::NODE_SECURITY_EVENT,
+        methods::TODO_CHANGED,
     ] {
         assert!(seen.contains(want), "the walk should have produced {want}: {seen:?}");
     }

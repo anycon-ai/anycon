@@ -15,6 +15,7 @@ mod passwd;
 mod remote;
 mod render;
 mod service;
+mod todo_cmds;
 mod transfer_cmds;
 mod worktree_cmds;
 
@@ -67,6 +68,7 @@ async fn run(cli: Cli) -> Result<u8> {
         Command::Promote { session, project_name } => commands::promote(&app, session, project_name).await,
         Command::Export(a) => transfer_cmds::export(&app, a).await,
         Command::Import(a) => transfer_cmds::import(&app, a).await,
+        Command::Todo(c) => todo_cmds::todo(&app, c).await,
         Command::Mcp(a) => mcp::run(&app, a).await,
         Command::Audit(a) => commands::audit(&app, a).await,
         Command::Config(c) => commands::config(&app, c).await,

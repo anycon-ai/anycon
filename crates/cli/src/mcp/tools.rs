@@ -11,12 +11,16 @@
 //! | `send_message` | `session.send`（同上） |
 //! | `cancel_turn` | `session.cancel` |
 //! | `get_diff` | `session.diff` |
+//! | `list_todos` | `todo.list` |
+//! | `add_todo` | `todo.add`（总是带 `agent: true`） |
 //!
 //! 安全边界（ADR-49）：
 //! - **没有任何批准 / 拒绝权限请求的工具**。等待中的会话进入等待审批就立即返回 `waiting_permission`，由人在已配对设备上处理；
 //! - `create_session` 拒绝 `risk = dangerous` 的权限模式（包括没指定模式、默认模式恰好是危险的情形），除非启动时带了
 //!   `--allow-dangerous-modes`；schema 里没有会话级 `env`；
 //! - 在 anycon 会话里启动的（环境里有 `ANYCON_AGENT`）默认拒绝会改状态的工具，`--allow-nested` 放开；
+//!   `add_todo` 不在其内（它不开会话、不触发 turn，只往清单里记一项，项目标着 agent 加的、等人收下），不需要 `--allow-nested`；
+//!   没有修改、关闭、删除清单项的工具（docs/spec/daemon.md § 21.8）；
 //! - 这里不保存任何状态、不调度、不在会话之间转发消息：每个工具调用都只是一次对 daemon 的查询或操作。
 //!
 //! 等一轮结束靠轮询 `session.history`（按 seq 增量）而不是 `session.watch`：watch 数有上限（每个连接 5 个），而一个 MCP 客户端
@@ -28,8 +32,8 @@ use std::time::{Duration, Instant};
 use anycon_protocol::{
     methods, AgentInfo, AgentListResult, AgentStatus, DiffAgainst, DiffFile, Event, ModeRisk, NodeInfo, PermissionKind,
     PermissionListResult, SearchHit, SessionDiffResult, SessionEvent, SessionHistoryResult, SessionListResult,
-    SessionSearchResult, SessionSendResult, SessionStatus, SessionSummary, SessionWorkspaceMode, TurnDoneReason, Usage,
-    WorkspaceListResult,
+    SessionSearchResult, SessionSendResult, SessionStatus, SessionSummary, SessionWorkspaceMode, Todo, TodoListResult,
+    TurnDoneReason, Usage, WorkspaceListResult,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -69,12 +73,14 @@ pub trait Node: Send + Sync + 'static {
 }
 
 /// 启动选项。
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     /// `--allow-dangerous-modes`。
     pub allow_dangerous_modes: bool,
     /// 会改状态的工具被拒绝（在 anycon 会话里启动、且没有 `--allow-nested`）。
     pub block_mutations: bool,
+    /// `add_todo` 记下的来源会话（环境里的 `ANYCON_SESSION_ID`；不在 anycon 拉起的 agent 里时为空）。
+    pub origin_session: Option<String>,
 }
 
 pub struct AnyconTools<N: Node> {
@@ -96,7 +102,19 @@ pub const TOOL_NAMES: &[&str] = &[
     "send_message",
     "cancel_turn",
     "get_diff",
+    "list_todos",
+    "add_todo",
 ];
+
+/// 会写东西、但不在 `--allow-nested` 的限制之内的工具：`add_todo` 不开会话、不触发 turn，写进去的项标着 agent 加的。
+#[cfg(test)]
+const ADDITIVE: &[&str] = &["add_todo"];
+
+/// `list_todos` 的 `limit`。
+const TODO_LIST_DEFAULT: u32 = 50;
+const TODO_LIST_MAX: u32 = 200;
+/// `list_todos` 里每项正文最多这么多字符。
+const TODO_BODY_CHARS: usize = 2_000;
 
 fn clip(s: &str, max: usize) -> (String, bool) {
     if s.chars().count() <= max {
@@ -229,6 +247,32 @@ struct SendArgs {
 #[serde(deny_unknown_fields)]
 struct CancelArgs {
     session: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListTodosArgs {
+    project: Option<String>,
+    #[serde(default)]
+    include_closed: bool,
+    limit: Option<u32>,
+    before: Option<TodoCursorArg>,
+}
+
+/// `list_todos` 的翻页游标：上一页最后一项的 `updated_ms` 和 `id`。
+#[derive(Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct TodoCursorArg {
+    updated_ms: u64,
+    id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddTodoArgs {
+    title: String,
+    body: Option<String>,
+    project: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -414,6 +458,51 @@ fn definitions() -> Vec<ToolDef> {
             ),
             read_only: true,
         },
+        ToolDef {
+            name: "list_todos",
+            title: "List to-dos",
+            description: format!(
+                "List the items on the user's to-do list on this node, most recently changed first (up to {TODO_LIST_MAX}). Each has an id, title, body (clipped at {TODO_BODY_CHARS} characters), project, state (open, working, waiting, review, done, dropped), \
+                 due time, who added it (`source.kind`: device, local or agent) and `unreviewed` (an agent added it and the user has not looked at it yet). Closed items (done, dropped) are left out unless `include_closed` is true. \
+                 When `has_more` is true there are more items: call again with `before` set to the `updated_ms` and `id` of the last item returned."
+            ),
+            input_schema: obj(
+                json!({
+                    "project": { "type": "string", "description": "Only items of this project." },
+                    "include_closed": { "type": "boolean", "default": false, "description": "Also list done and dropped items." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": TODO_LIST_MAX, "default": TODO_LIST_DEFAULT, "description": "Maximum number of items." },
+                    "before": {
+                        "type": "object",
+                        "description": "Next page: the `updated_ms` and `id` of the last item of the previous page.",
+                        "properties": {
+                            "updated_ms": { "type": "integer", "minimum": 0 },
+                            "id": { "type": "string" }
+                        },
+                        "required": ["updated_ms", "id"],
+                        "additionalProperties": false
+                    }
+                }),
+                vec![],
+            ),
+            read_only: true,
+        },
+        ToolDef {
+            name: "add_todo",
+            title: "Add a to-do",
+            description: "Add an item to the user's to-do list on this node, for something that needs the user's attention later. \
+                 The item is marked as added by an agent and shows as unreviewed until the user looks at it; the node keeps only a limited number of unreviewed items. \
+                 It does not start a session. There is no tool to change, close or delete items: the user does that."
+                .into(),
+            input_schema: obj(
+                json!({
+                    "title": { "type": "string", "minLength": 1, "maxLength": 200, "description": "One line, at most 200 characters." },
+                    "body": { "type": "string", "description": "Details in Markdown, at most 16 KiB." },
+                    "project": { "type": "string", "description": "Project name (see list_projects) this is about." }
+                }),
+                vec!["title"],
+            ),
+            read_only: false,
+        },
     ]
 }
 
@@ -453,6 +542,8 @@ impl<N: Node> AnyconTools<N> {
             "send_message" => self.send_message(parse(args)?).await,
             "cancel_turn" => self.cancel_turn(parse(args)?).await,
             "get_diff" => self.get_diff(parse(args)?).await,
+            "list_todos" => self.list_todos(parse(args)?).await,
+            "add_todo" => self.add_todo(parse(args)?).await,
             other => Err(format!("unknown tool: {other}")),
         }
     }
@@ -551,6 +642,68 @@ impl<N: Node> AnyconTools<N> {
             })
             .collect();
         Ok(ToolOutput::json(&json!({ "projects": projects })))
+    }
+
+    async fn list_todos(&self, a: ListTodosArgs) -> std::result::Result<ToolOutput, String> {
+        let limit = a.limit.unwrap_or(TODO_LIST_DEFAULT).clamp(1, TODO_LIST_MAX);
+        let r: TodoListResult = self
+            .rpc(
+                methods::TODO_LIST,
+                json!({ "include_closed": a.include_closed, "project": a.project, "limit": limit, "before": a.before }),
+            )
+            .await?;
+        let todos: Vec<Value> = r
+            .todos
+            .iter()
+            .map(|t| {
+                let mut v = json!({
+                    "id": t.id,
+                    "title": t.title,
+                    "body": clip_marked(&t.body, TODO_BODY_CHARS),
+                    "state": t.state.as_str(),
+                    "source": t.source,
+                    "unreviewed": t.unreviewed,
+                    "created_ms": t.created_ms,
+                    "updated_ms": t.updated_ms,
+                });
+                if let Some(p) = &t.project {
+                    v["project"] = json!(p);
+                }
+                if let Some(d) = t.due_ms {
+                    v["due_ms"] = json!(d);
+                }
+                if let Some(c) = t.closed_ms {
+                    v["closed_ms"] = json!(c);
+                }
+                v
+            })
+            .collect();
+        Ok(ToolOutput::json(&json!({ "todos": todos, "has_more": r.has_more })))
+    }
+
+    async fn add_todo(&self, a: AddTodoArgs) -> std::result::Result<ToolOutput, String> {
+        // 总是带 `agent: true`，连的是本机 socket 还是经 hub 都一样：经 hub 时 daemon 分不出这是不是 MCP，只能靠这个参数
+        let params = json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "title": a.title,
+            "body": a.body,
+            "project": a.project,
+            "agent": true,
+            "origin_session": self.opts.origin_session,
+        });
+        let v = self.node.call(methods::TODO_ADD, params).await.map_err(|e| match e.reason.as_deref() {
+            Some("too_many") => "invalid: the to-do list is full (1000 open items); the user has to close or remove some first".to_string(),
+            Some("too_many_unreviewed") => "invalid: too many agent-added to-dos are waiting for the user to review (100); no more can be added until the user reviews or removes some".to_string(),
+            _ => fmt_err(e),
+        })?;
+        let t: Todo = serde_json::from_value(v).map_err(|e| format!("unexpected response to todo.add: {e}"))?;
+        Ok(ToolOutput::json(&json!({
+            "id": t.id,
+            "title": t.title,
+            "state": t.state.as_str(),
+            "unreviewed": t.unreviewed,
+            "source": t.source,
+        })))
     }
 
     async fn list_sessions(&self, a: ListSessionsArgs) -> std::result::Result<ToolOutput, String> {
@@ -1387,6 +1540,7 @@ impl<N: Node> ToolHost for AnyconTools<N> {
         Some(
             "Tools to look at and drive coding-agent sessions on an anycon node (the user's machine). \
              Use list_agents / list_projects to see what is available, create_session to start work and send_message to continue it. \
+             list_todos and add_todo read and add to the user's to-do list. \
              Waiting for a turn is bounded by timeout_seconds; a long turn keeps running on the node, check it with read_session. \
              Permission requests raised by those agents can only be decided by a person on a paired device: there is no tool for it, \
              and a call that hits one returns waiting_permission."
@@ -1508,10 +1662,12 @@ mod tests {
                 "{n}"
             );
         }
-        // 会改状态的工具和 MUTATING 一致，其余都是只读
+        // 会改状态的工具是 MUTATING 加上 ADDITIVE，其余都是只读
         for d in &defs {
-            assert_eq!(!d.read_only, MUTATING.contains(&d.name), "{}", d.name);
+            assert_eq!(!d.read_only, MUTATING.contains(&d.name) || ADDITIVE.contains(&d.name), "{}", d.name);
         }
+        // 没有修改、关闭、删除清单项的工具
+        assert!(names.iter().filter(|n| n.contains("todo")).eq(["list_todos", "add_todo"].iter()));
     }
 
     #[test]
@@ -2193,6 +2349,161 @@ mod tests {
             &t.call("send_message", json!({ "session": SID, "message": "hi", "timeout_seconds": 30 })).await.unwrap(),
         );
         assert_eq!(v["outcome"], "dropped", "{v}");
+    }
+
+    fn todo_json(id: &str, title: &str, body: &str, unreviewed: bool) -> Value {
+        json!({
+            "id": id, "title": title, "body": body, "state": "open",
+            "source": { "kind": "agent", "session_id": SID },
+            "unreviewed": unreviewed, "created_ms": 1, "updated_ms": 2
+        })
+    }
+
+    #[tokio::test]
+    async fn add_todo_always_marks_the_item_as_an_agent_s_and_is_allowed_nested() {
+        let node = FakeNode::new(|m, p| match m {
+            "todo.add" => {
+                let mut t = todo_json(p["id"].as_str().unwrap(), p["title"].as_str().unwrap(), "details", true);
+                t["project"] = p["project"].clone();
+                Ok(t)
+            }
+            other => panic!("unexpected {other}"),
+        });
+        // 在 anycon 拉起的 agent 里（会改状态的工具被拦）也能用，不需要 --allow-nested；来源会话来自环境
+        let opts = Options { block_mutations: true, origin_session: Some(SID.to_string()), ..Default::default() };
+        let t = tools(node.clone(), opts);
+        let r =
+            t.call("add_todo", json!({ "title": "Review the PR", "body": "details", "project": "web" })).await.unwrap();
+        assert!(!r.is_error, "{r:?}");
+        let v = text_of(&r);
+        assert_eq!(
+            (v["title"].as_str(), v["unreviewed"].as_bool(), v["state"].as_str()),
+            (Some("Review the PR"), Some(true), Some("open"))
+        );
+        assert!(v.get("body").is_none(), "the result is a summary: {v}");
+        let calls = node.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        let (method, p) = &calls[0];
+        assert_eq!(method, "todo.add");
+        assert_eq!(p["agent"], true, "always sent, whatever the connection");
+        assert_eq!(p["origin_session"], SID);
+        assert_eq!(
+            (p["title"].as_str(), p["body"].as_str(), p["project"].as_str()),
+            (Some("Review the PR"), Some("details"), Some("web"))
+        );
+        let id = p["id"].as_str().unwrap();
+        assert!(id.len() == 36 && uuid::Uuid::parse_str(id).is_ok(), "a fresh UUID: {id}");
+        // 每次调用一个新的 id
+        t.call("add_todo", json!({ "title": "again" })).await.unwrap();
+        let calls = node.calls.lock().unwrap().clone();
+        assert_ne!(calls[0].1["id"], calls[1].1["id"]);
+
+        // 不在 anycon 拉起的 agent 里：没有来源会话，agent 标记照样带
+        let node = FakeNode::new(|_, p| Ok(todo_json(p["id"].as_str().unwrap(), "t", "", true)));
+        let t = tools(node.clone(), Options::default());
+        t.call("add_todo", json!({ "title": "t" })).await.unwrap();
+        let calls = node.calls.lock().unwrap().clone();
+        assert_eq!((calls[0].1["agent"].clone(), calls[0].1["origin_session"].clone()), (json!(true), Value::Null));
+    }
+
+    #[tokio::test]
+    async fn add_todo_reports_the_caps_in_plain_words_and_rejects_unknown_arguments() {
+        let node = FakeNode::new(|_, _| {
+            let mut e = CliError::usage("todos: too_many_unreviewed");
+            e.reason = Some("too_many_unreviewed".into());
+            Err(e)
+        });
+        let t = tools(node.clone(), Options::default());
+        let r = t.call("add_todo", json!({ "title": "x" })).await.unwrap();
+        assert!(r.is_error && r.blocks[0].contains("review"), "{r:?}");
+        let node = FakeNode::new(|_, _| {
+            let mut e = CliError::usage("todos: too_many");
+            e.reason = Some("too_many".into());
+            Err(e)
+        });
+        let r = tools(node, Options::default()).call("add_todo", json!({ "title": "x" })).await.unwrap();
+        assert!(r.is_error && r.blocks[0].contains("full"), "{r:?}");
+        // 别的错误原样带出错误码
+        let node = FakeNode::new(|_, _| Err(CliError::usage("title: must not be empty")));
+        let r = tools(node, Options::default()).call("add_todo", json!({ "title": "x" })).await.unwrap();
+        assert!(r.is_error && r.blocks[0].starts_with("invalid:"), "{r:?}");
+        // 多余的参数（没有 id / state / due 这类）和缺 title 都在调用 daemon 之前被拒绝
+        let node = FakeNode::new(|m, _| panic!("unexpected {m}"));
+        let t = tools(node.clone(), Options::default());
+        for args in [
+            json!({ "title": "x", "state": "done" }),
+            json!({ "title": "x", "id": "abc" }),
+            json!({ "body": "no title" }),
+        ] {
+            let r = t.call("add_todo", args.clone()).await.unwrap();
+            assert!(r.is_error && r.blocks[0].contains("invalid arguments"), "{args}: {r:?}");
+        }
+        assert!(node.methods().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_todos_pages_with_the_cursor_of_the_last_item() {
+        let node = FakeNode::new(|_, p| {
+            assert_eq!(p["before"], json!({ "updated_ms": 42, "id": "a" }), "{p}");
+            Ok(json!({ "todos": [], "has_more": false }))
+        });
+        let t = tools(node.clone(), Options::default());
+        let r = t.call("list_todos", json!({ "before": { "updated_ms": 42, "id": "a" } })).await.unwrap();
+        assert!(!r.is_error, "{r:?}");
+        // 不带 before 时发 null（daemon 当作第一页）
+        let node = FakeNode::new(|_, p| {
+            assert!(p["before"].is_null(), "{p}");
+            Ok(json!({ "todos": [], "has_more": false }))
+        });
+        tools(node, Options::default()).call("list_todos", json!({})).await.unwrap();
+        // 游标不完整或带多余字段：在调用 daemon 之前拒绝
+        let node = FakeNode::new(|m, _| panic!("unexpected {m}"));
+        let t = tools(node, Options::default());
+        for bad in [json!({ "before": { "id": "a" } }), json!({ "before": { "updated_ms": 1, "id": "a", "x": 1 } })] {
+            let r = t.call("list_todos", bad.clone()).await.unwrap();
+            assert!(r.is_error && r.blocks[0].contains("invalid arguments"), "{bad}: {r:?}");
+        }
+        // 描述里说了怎么翻页
+        let d = definitions().into_iter().find(|d| d.name == "list_todos").unwrap();
+        assert!(d.description.contains("has_more") && d.description.contains("before"));
+    }
+
+    #[tokio::test]
+    async fn list_todos_is_read_only_and_clips_long_bodies() {
+        let long = "b".repeat(TODO_BODY_CHARS + 500);
+        let node = FakeNode::new(move |m, p| match m {
+            "todo.list" => {
+                assert_eq!(p["include_closed"], true, "{p}");
+                assert_eq!(p["project"], "web");
+                assert_eq!(p["limit"], 7);
+                Ok(
+                    json!({ "todos": [todo_json("a", "one", &long, true), todo_json("b", "two", "", false)], "has_more": true }),
+                )
+            }
+            other => panic!("unexpected {other}"),
+        });
+        // 在 anycon 拉起的 agent 里照样能读
+        let t = tools(node.clone(), Options { block_mutations: true, ..Default::default() });
+        let r = t.call("list_todos", json!({ "project": "web", "include_closed": true, "limit": 7 })).await.unwrap();
+        assert!(!r.is_error, "{r:?}");
+        let v = text_of(&r);
+        assert_eq!(v["has_more"], true);
+        let todos = v["todos"].as_array().unwrap();
+        assert_eq!(todos.len(), 2);
+        assert_eq!((todos[0]["id"].as_str(), todos[0]["unreviewed"].as_bool()), (Some("a"), Some(true)));
+        assert_eq!(todos[0]["source"]["kind"], "agent");
+        let body = todos[0]["body"].as_str().unwrap();
+        assert!(body.contains("500 more characters") && body.len() < TODO_BODY_CHARS + 100, "{}", body.len());
+        assert_eq!(node.methods(), vec!["todo.list"]);
+        // limit 被夹在范围里；缺省值
+        let node = FakeNode::new(|_, p| {
+            assert!(p["limit"] == TODO_LIST_MAX || p["limit"] == TODO_LIST_DEFAULT, "{p}");
+            assert_eq!(p["include_closed"], false);
+            Ok(json!({ "todos": [], "has_more": false }))
+        });
+        let t = tools(node, Options::default());
+        t.call("list_todos", json!({ "limit": 100000 })).await.unwrap();
+        t.call("list_todos", json!({})).await.unwrap();
     }
 
     #[test]

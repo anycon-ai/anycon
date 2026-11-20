@@ -23,6 +23,12 @@ import {
   type SessionSettings,
   type SessionSummary,
   type SessionWorkspace,
+  type Todo,
+  type TodoAddParams,
+  type TodoChanged,
+  type TodoListParams,
+  type TodoListResult,
+  type TodoUpdateParams,
   type WorkspaceBranchesResult,
   type WorkspaceBrowseResult,
   type WorkspaceChanged,
@@ -80,6 +86,8 @@ export interface NodeEvents {
   permission_error: [error: unknown, request: PermissionRequest]
   agent_changed: [AgentListResult]
   workspace_changed: [WorkspaceChanged]
+  /** 清单有项被新建、修改或删除（`todo.changed`，发给所有在线客户端，包括发起的那一个）。 */
+  todo_changed: [TodoChanged]
 }
 
 export interface NodeOptions {
@@ -191,6 +199,9 @@ export class Node extends Emitter<NodeEvents> {
     })
     rpc.onNotification<WorkspaceChanged>(METHODS.WORKSPACE_CHANGED, (c) => {
       this.emit('workspace_changed', c)
+    })
+    rpc.onNotification<TodoChanged>(METHODS.TODO_CHANGED, (c) => {
+      this.emit('todo_changed', c)
     })
     rpc.onNotification<JobProgress>(METHODS.JOB_PROGRESS, (p) => {
       const rec = this.#job(p.job_id)
@@ -496,6 +507,32 @@ export class Node extends Emitter<NodeEvents> {
   async discardAttachment(attachment: AttachmentRef | string): Promise<void> {
     const blobId = typeof attachment === 'string' ? attachment : attachment.blob_id
     await this.call('blob.discard', { blob_id: blobId })
+  }
+
+  /**
+   * 节点上的清单（`todo.*`，节点 `capabilities.todo` 为 true 才有；旧节点 → `RpcError`，`unsupported`）。薄封装：不做离线缓存，
+   * 也不重放；节点离线时这些调用和别的请求一样失败。
+   */
+  readonly todos = {
+    /**
+     * `todo.list`：缺省只给没关闭的项，按 `(updated_ms, id)` 从新到旧；一页最多 `limit`（缺省 200、上限 1000）项，
+     * 并受 1 MiB 的字节预算限制，所以可能更少。`has_more` 时用最后一项的 `{ updated_ms, id }` 作为 `before` 取下一页，
+     * 翻页期间被改过的项可能出现两次（按 `id` 去重）或被跳过（`todo_changed` 会补上）。
+     */
+    list: (params: TodoListParams = {}): Promise<TodoListResult> => this.call('todo.list', params),
+    /**
+     * `todo.add`。`id` 缺省时 SDK 生成一个 UUID（小写带连字符；自己给的 id 必须是这个写法，daemon 不做规范化，别的写法 → `invalid`，`data.field = 'id'`）；超时后要重试就传同一个：`id` 已经存在时 daemon 原样返回已有的那一项，
+     * 不会出现第二项。标题为空 / 超长、正文超长、`id` 不是 UUID、清单已满 → `RpcError`（`invalid`，见 `data.field` /
+     * `data.reason`：`too_many` / `too_many_unreviewed`）。`source` 由 daemon 填；`agent: true` 表示这是 agent 加的。
+     */
+    add: (params: Omit<TodoAddParams, 'id'> & { id?: string }): Promise<Todo> =>
+      this.call('todo.add', { ...params, id: params.id ?? randomId() }),
+    /** `todo.update`：只带要改的字段；`clear` 列出要清空的可选字段（`project` / `due_ms`）。项不存在 → `RpcError`（`not_found`）。 */
+    update: (params: TodoUpdateParams): Promise<Todo> => this.call('todo.update', params),
+    /** `todo.delete`：物理删除。项不存在 → `RpcError`（`not_found`）。 */
+    delete: async (id: string): Promise<void> => {
+      await this.call('todo.delete', { id })
+    },
   }
 
   readonly permissions = {

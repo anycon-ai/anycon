@@ -864,6 +864,7 @@
       "rangeInt": "{{min}} to {{max}}",
       "rangeDuration": "{{min}} to {{max}}, written like 30s, 20m or 2h",
       "sections": {
+        "hub": "Node",
         "sessions": "Sessions",
         "permissions": "Permissions",
         "worktree": "Worktrees",
@@ -872,6 +873,12 @@
         "log": "Logging"
       },
       "keys": {
+        "hub": {
+          "group": {
+            "label": "Group",
+            "hint": "A name such as “Home” or “Work”. Nodes with the same group are shown together. Up to 40 characters; leave empty for no group."
+          }
+        },
         "sessions": {
           "max_concurrent": {
             "label": "Concurrent sessions",

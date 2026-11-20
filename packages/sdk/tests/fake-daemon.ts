@@ -597,6 +597,7 @@ export class FakeDaemon {
         blobs: true,
         file_attachments: true,
         audit: false,
+        todo: true,
       },
       attachment_limits: {
         max_bytes: this.maxAttachmentBytes,
@@ -691,6 +692,58 @@ export class FakeDaemon {
         this.#notify(peerId, 'job.done', { job_id: jobId, ok: true })
       })()
       return { job_id: jobId }
+    })
+
+    // 清单：内存里的最小实现（按 id 幂等的 add、(updated_ms, id) 倒序的 list、update / delete 的 not_found、todo.changed 广播）。
+    const todos = new Map<string, Record<string, unknown>>()
+    let todoClock = 1000
+    on<{ id: string; title: string; [k: string]: unknown }, unknown>('todo.add', (p) => {
+      const existing = todos.get(p.id)
+      if (existing) return existing
+      if (!p.title)
+        throw new AnyconRpcError(-32602, 'invalid params', { code: 'invalid', field: 'title' })
+      const todo = {
+        id: p.id,
+        title: p.title,
+        body: (p.body as string | undefined) ?? '',
+        ...(p.project !== undefined ? { project: p.project } : {}),
+        state: 'open',
+        source: p.agent ? { kind: 'agent' } : { kind: 'device', device_id: peerId },
+        unreviewed: p.agent === true,
+        created_ms: ++todoClock,
+        updated_ms: todoClock,
+      }
+      todos.set(p.id, todo)
+      this.#notifyAll('todo.changed', { id: p.id, todo, deleted: false })
+      return todo
+    })
+    on<
+      { include_closed?: boolean; limit?: number; before?: { updated_ms: number; id: string } },
+      unknown
+    >('todo.list', (p) => {
+      const all = [...todos.values()]
+        .filter((t) => p.include_closed === true || (t.state !== 'done' && t.state !== 'dropped'))
+        .toSorted(
+          (a, b) =>
+            (b.updated_ms as number) - (a.updated_ms as number) ||
+            (b.id as string).localeCompare(a.id as string),
+        )
+      const limit = p.limit ?? 200
+      return { todos: all.slice(0, limit), has_more: all.length > limit }
+    })
+    on<{ id: string; [k: string]: unknown }, unknown>('todo.update', (p) => {
+      const todo = todos.get(p.id)
+      if (!todo) throw AnyconRpcError.of('not_found', 'no such todo')
+      const { id: _id, clear, ...patch } = p
+      Object.assign(todo, patch, { updated_ms: ++todoClock })
+      for (const f of (clear as string[] | undefined) ?? []) delete todo[f]
+      this.#notifyAll('todo.changed', { id: p.id, todo, deleted: false })
+      return todo
+    })
+    on<{ id: string }, unknown>('todo.delete', (p) => {
+      if (!todos.delete(p.id)) throw AnyconRpcError.of('not_found', 'no such todo')
+      this.#notifyAll('todo.changed', { id: p.id, deleted: true })
+      return {}
     })
 
     on<SessionCreateParams, SessionSummary>('session.create', (p) => {

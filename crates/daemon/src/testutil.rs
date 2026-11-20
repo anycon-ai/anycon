@@ -1094,6 +1094,33 @@ impl TestDaemon {
         TestClient { handle, rx, next_id: 0 }
     }
 
+    /// 指定调用方身份的客户端（清单测试要分「本机 CLI」「自报了 mcp 的本机连接」「经 hub 的设备」）。
+    pub fn client_as(&self, caller: Caller) -> TestClient {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = self.ctx.clients.register(caller, Box::new(ChanSink(tx)));
+        TestClient { handle, rx, next_id: 0 }
+    }
+
+    /// 本机 socket 上的 CLI 连接（没声明种类，审计设备名 `local-cli`）。
+    pub fn local_cli_client(&self) -> TestClient {
+        self.client_as(Caller::local_cli())
+    }
+
+    /// 本机 socket 上自报了 `local.set_client { client: "mcp" }` 的连接。
+    pub fn local_mcp_client(&self) -> TestClient {
+        self.client_as(Caller::local(crate::clients::LocalClientKind::Mcp))
+    }
+
+    /// 经 hub 来的已配对设备（非本机连接）。
+    pub fn hub_client(&self, device_id: &str, name: &str) -> TestClient {
+        self.client_as(Caller {
+            device_id: device_id.into(),
+            device_name: name.into(),
+            kind: anycon_protocol::DeviceKind::Web,
+            local: false,
+        })
+    }
+
     pub fn rpc(&self) -> Arc<crate::rpc::Rpc> {
         self.daemon.as_ref().unwrap().rpc.clone()
     }

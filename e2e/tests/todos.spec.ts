@@ -26,29 +26,33 @@ interface DaemonTodo {
 
 const RUN = Date.now().toString(36)
 const t = (name: string): string => `e2e-${RUN}-${name}`
+const state = () => readState()
+const row = (p: Page, title: string) =>
+  p.locator('[data-testid="todo-row"]').filter({ hasText: title })
+
+/** daemon 里现在的全部项（含已关闭）。 */
+async function daemonTodos(): Promise<DaemonTodo[]> {
+  const out = await runCli(state(), ['todo', 'ls', '--all', '--json'])
+  return (JSON.parse(out.trim().split('\n').at(-1)!) as { todos: DaemonTodo[] }).todos
+}
+async function daemonTodo(title: string): Promise<DaemonTodo | undefined> {
+  return (await daemonTodos()).find((x) => x.title === title)
+}
 
 test.describe.serial('清单', () => {
   let device: PairedBrowser
   let second: PairedBrowser
   let page: Page
-  const state = () => readState()
-
-  /** daemon 里现在的全部项（含已关闭）。 */
-  async function daemonTodos(): Promise<DaemonTodo[]> {
-    const out = await runCli(state(), ['todo', 'ls', '--all', '--json'])
-    return (JSON.parse(out.trim().split('\n').at(-1)!) as { todos: DaemonTodo[] }).todos
-  }
-  async function daemonTodo(title: string): Promise<DaemonTodo | undefined> {
-    return (await daemonTodos()).find((x) => x.title === title)
-  }
-  const row = (p: Page, title: string) =>
-    p.locator('[data-testid="todo-row"]').filter({ hasText: title })
-
   test.beforeAll(async ({ browser }) => {
     test.skip(!readState().daemonStarted, 'needs the e2e daemon (E2E_SKIP_DAEMON=1 was set)')
     device = await pairNewBrowser(browser, readState(), { deviceName: 'e2e-todos' })
     page = device.page
     second = await pairNewBrowser(browser, readState(), { deviceName: 'e2e-todos-2' })
+  })
+
+  // b 把视口缩成手机大小：不管它失败在哪一步，后面的用例都回到桌面宽度
+  test.afterEach(async () => {
+    await page?.setViewportSize({ width: 1280, height: 800 })
   })
 
   test.afterAll(async () => {
@@ -123,24 +127,24 @@ test.describe.serial('清单', () => {
     await runCli(state(), ['todo', 'add', t('agent')], { env: { ANYCON_AGENT: '1' } })
     expect((await daemonTodo(t('agent')))?.unreviewed).toBe(true)
 
-    const navBefore = await page
-      .getByTestId('sidebar-todos-count')
-      .textContent()
-      .catch(() => null)
+    // 先等清单真的读到了（有一项已知的行、导航上有数字）再取基线：不然「没有」可能只是还没加载
+    await page.goto('/todos')
+    await expect(row(page, t('sheet'))).toBeVisible({ timeout: CONNECT_TIMEOUT })
+    const count = page.getByTestId('sidebar-todos-count')
+    await expect(count).toHaveText(/^\d+$/)
+    const navBefore = await count.textContent()
+    expect(Number(navBefore)).toBeGreaterThan(0)
     await page.goto('/inbox')
     const later = page.getByTestId('inbox-section-later')
     await expect(later).toBeVisible({ timeout: CONNECT_TIMEOUT })
     await expect(
       later.locator('[data-testid="inbox-row"]').filter({ hasText: t('agent') }),
     ).toBeVisible()
-    // 不进导航数字
-    expect(
-      await page
-        .getByTestId('sidebar-todos-count')
-        .textContent()
-        .catch(() => null),
-    ).toBe(navBefore)
+    // 不进导航数字（清单读到了，数字还是原来的）
+    await expect(count).toHaveText(/^\d+$/)
+    expect(await count.textContent()).toBe(navBefore)
     await page.goto('/todos')
+    await expect(row(page, t('sheet'))).toBeVisible({ timeout: CONNECT_TIMEOUT })
     await expect(row(page, t('agent'))).toHaveCount(0)
 
     await page.goto('/inbox')

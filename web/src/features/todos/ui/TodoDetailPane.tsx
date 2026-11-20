@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { cleanHintText } from '@/lib/hint'
 import { resolveNodeParam } from '@/lib/ids'
 import { useNodeFilter } from '@/lib/nodeFilter'
+import { useSwitchToNode } from '@/lib/useSwitchToNode'
 import { useNodes } from '@/stores/nodes'
 import { Button } from '@/ui/Button'
 import { Spinner } from '@/ui/Misc'
@@ -34,7 +35,8 @@ export function TodoDetailPane({ node, todo }: { node: string; todo: string }) {
   const entry = useNodes((s) => (nodeId ? s.byId[nodeId] : undefined))
   const supported = useNodes((s) => (nodeId ? nodeSupportsTodo(nodeId) : false) && !!s.byId[nodeId ?? ''])
   const hydrated = useTodos((s) => (nodeId ? s.nodes[nodeId]?.hydrated === true : false))
-  const { selected, toggle } = useNodeFilter()
+  const { selected } = useNodeFilter()
+  const sw = useSwitchToNode(nodeId ?? '')
   const ids = useMemo(() => (nodeId ? [nodeId] : []), [nodeId])
   const item = useTodoView(ids).find((v) => v.id === todo)
   const online = entry?.conn === 'ready'
@@ -50,9 +52,9 @@ export function TodoDetailPane({ node, todo }: { node: string; todo: string }) {
     <div className="space-y-3">
       {!selected.includes(nodeId) ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-sm" data-testid="todo-outside-note">
-          <span className="min-w-0 flex-1">{t('todos.outsideFilter', { node: cleanHintText(entry.name) || nodeId.slice(0, 8) })}</span>
-          <Button size="sm" variant="outline" className="max-md:min-h-11" onClick={() => toggle(nodeId, true)} data-testid="todo-show-node">
-            {t('inbox.showNode')}
+          <span className="min-w-0 flex-1">{sw.spaceLabel ? t('spaces.outsideSpace', { space: sw.spaceLabel }) : t('todos.outsideFilter', { node: cleanHintText(entry.name) || nodeId.slice(0, 8) })}</span>
+          <Button size="sm" variant="outline" className="max-md:min-h-11" onClick={sw.switchTo} data-testid={sw.spaceLabel ? 'todo-switch-space' : 'todo-show-node'}>
+            {sw.spaceLabel ? t('spaces.switchToSpace') : t('inbox.showNode')}
           </Button>
         </div>
       ) : null}

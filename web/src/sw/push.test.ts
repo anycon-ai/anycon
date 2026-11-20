@@ -24,6 +24,17 @@ function setup(over: Partial<PushDeps> & { dir?: PushDirectory; stored?: string;
 }
 const data = (payload: unknown) => ({ json: () => payload })
 
+describe('handlePush with a space', () => {
+  it('the cached group of the node is on the second line next to the node name; an older cache simply omits it', async () => {
+    const withGroup = setup({ dir: { nodeName: 'mac-mini', nodeGroup: 'Work', sessionTitle: 'Fix login', nodeIds: [NODE] } })
+    await handlePush(data({ category: 'turn_finished', node: NODE, session: 'sess_abc' }), withGroup.deps)
+    expect(withGroup.shown[0]!.options.body).toBe('On mac-mini · Work')
+    const without = setup({ dir: { nodeName: 'mac-mini', sessionTitle: 'Fix login', nodeIds: [NODE] } })
+    await handlePush(data({ category: 'turn_finished', node: NODE, session: 'sess_abc' }), without.deps)
+    expect(without.shown[0]!.options.body).toBe('On mac-mini')
+  })
+})
+
 describe('handlePush', () => {
   it('builds the notification from the cached node name and session title (text, tag, click URL)', async () => {
     const { deps, shown } = setup({ dir: { nodeName: 'mac-mini', sessionTitle: 'Fix login', nodeIds: [NODE] } })

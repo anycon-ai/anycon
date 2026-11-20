@@ -3,6 +3,8 @@ import { Send } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cleanHintText } from '@/lib/hint'
 import { useNodeFilter } from '@/lib/nodeFilter'
+import { spaceLabelOf } from '@/lib/spaces'
+import { pickDefaultNode, rememberTodoNode } from '../defaultNode'
 import { useIsTouch } from '@/lib/useMediaQuery'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
@@ -32,10 +34,10 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   const text = useCapture((s) => s.text)
   const setText = useCapture((s) => s.setText)
   const focusTick = useCapture((s) => s.focusTick)
-  const { selected } = useNodeFilter()
+  const { selected, space, spaces } = useNodeFilter()
   const supporting = useSupportingNodes(selected)
   const lastNode = usePrefs((s) => s.lastTodoNode)
-  const setPrefs = usePrefs((s) => s.set)
+  const lastBySpace = usePrefs((s) => s.lastTodoNodeBySpace)
   const nodes = useNodes((s) => s.byId)
   const touch = useIsTouch()
   const nodeLabel = (id: string): string => cleanHintText(nodes[id]?.name) || id.slice(0, 8)
@@ -50,7 +52,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   const errorId = useId()
 
   // 缺省节点：选中的、支持清单的节点里上次用过的，没有就第一个
-  const nodeId = (pickedNode && supporting.includes(pickedNode) ? pickedNode : null) ?? (lastNode && supporting.includes(lastNode) ? lastNode : null) ?? supporting[0] ?? null
+  const nodeId = (pickedNode && supporting.includes(pickedNode) ? pickedNode : null) ?? pickDefaultNode(supporting, space, lastNode, lastBySpace)
   const projects = useMemo(() => (nodeId ? (nodes[nodeId]?.projects ?? []).map((p) => p.name) : []), [nodes, nodeId])
 
   useEffect(() => {
@@ -85,7 +87,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
       return
     }
     setError(null)
-    setPrefs({ lastTodoNode: nodeId })
+    rememberTodoNode(nodeId)
     toast.info(t('todos.added', { title: title.length > 60 ? `${[...title].slice(0, 60).join('')}…` : title }), { label: t('todos.undo'), run: () => void deleteTodo(nodeId, r.id) })
     area.current?.focus()
   }
@@ -150,11 +152,23 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
           <label className="flex items-center gap-1.5">
             <span>{t('todos.toNode')}</span>
             <Select value={nodeId ?? ''} onChange={(e) => setPickedNode(e.target.value)} className="!h-9 w-auto max-w-40" data-testid="capture-node">
-              {supporting.map((id) => (
-                <option key={id} value={id}>
-                  {nodeLabel(id)}
-                </option>
-              ))}
+              {spaces.hasGroups
+                ? [...spaces.spaces.map((sp) => ({ label: sp.label, ids: sp.nodeIds.filter((id) => supporting.includes(id)) })), { label: '', ids: spaces.ungrouped.filter((id) => supporting.includes(id)) }]
+                    .filter((g) => g.ids.length > 0)
+                    .map((g) => (
+                      <optgroup key={g.label || 'none'} label={g.label || t('spaces.noSpace')}>
+                        {g.ids.map((id) => (
+                          <option key={id} value={id}>
+                            {nodeLabel(id)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))
+                : supporting.map((id) => (
+                    <option key={id} value={id}>
+                      {nodeLabel(id)}
+                    </option>
+                  ))}
             </Select>
           </label>
         ) : null}
@@ -174,7 +188,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
       </div>
       {supporting.length > 1 && nodeId ? (
         <p className="text-xs text-fg-subtle" data-testid="capture-target">
-          {t('todos.willGoTo', { node: nodeLabel(nodeId) })}
+          {spaceLabelOf(spaces, nodeId) ? t('todos.willGoToSpace', { node: nodeLabel(nodeId), space: spaceLabelOf(spaces, nodeId) }) : t('todos.willGoTo', { node: nodeLabel(nodeId) })}
         </p>
       ) : null}
     </form>

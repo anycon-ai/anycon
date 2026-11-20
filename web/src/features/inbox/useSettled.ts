@@ -1,6 +1,6 @@
 // 左栏勾选的节点这一轮同步是不是都做完了：状态播报取基线、手机「待处理」决定要不要默认展开第一条，都等它。
 import { useEffect, useState } from 'react'
-import { selectedNodes } from '@/lib/nodeFilter'
+import { resolveSelection } from '@/lib/spaces'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 
@@ -17,7 +17,8 @@ export function useNodesSettled(): boolean {
   const byId = useNodes((st) => st.byId)
   const order = useNodes((st) => st.order)
   const saved = usePrefs((st) => st.sidebarNodes)
-  const unsettled = selectedNodes(order, saved).filter((id) => {
+  const space = usePrefs((st) => st.sidebarSpace)
+  const unsettled = resolveSelection(order, byId, saved, space).filter((id) => {
     const n = byId[id]
     return !n || !isSettled(n.conn, n.synced, n.syncing, n.versionMismatch)
   })

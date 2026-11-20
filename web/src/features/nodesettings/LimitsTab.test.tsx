@@ -78,6 +78,29 @@ describe('node settings: the Limits tab', () => {
     expect(screen.getByLabelText('Concurrent sessions')).toBe(ctl('sessions.max_concurrent'))
   })
 
+  it('changing the group (or the name) refreshes node.info afterwards, so the space switcher follows without a reconnect', async () => {
+    const user = userEvent.setup()
+    items = [...items, { key: 'hub.group', value: '', kind: 'text', editable: 'any', env_override: false, max: 40 }]
+    rpc.handlers['node.info'] = () => ({ group: 'Garage', name: 'n', capabilities: {} })
+    render(<LimitsTab nodeId={NODE} />)
+    await screen.findByTestId('limits-section-sessions')
+    await user.type(ctl('hub.group'), 'Garage')
+    await user.click(screen.getByTestId('limits-save'))
+    await waitFor(() => expect(useNodes.getState().byId[NODE]!.info?.group).toBe('Garage'))
+    expect(rpc.methods()).toContain('node.info')
+  })
+
+  it('other settings do not trigger a node.info refresh', async () => {
+    const user = userEvent.setup()
+    rpc.handlers['node.info'] = () => ({ capabilities: {} })
+    render(<LimitsTab nodeId={NODE} />)
+    await screen.findByTestId('limits-section-sessions')
+    await user.selectOptions(ctl('log.level'), 'debug')
+    await user.click(screen.getByTestId('limits-save'))
+    await waitFor(() => expect(setCalls()).toHaveLength(1))
+    expect(rpc.methods()).not.toContain('node.info')
+  })
+
   it('has nothing to save until something changes', async () => {
     const user = userEvent.setup()
     render(<LimitsTab nodeId={NODE} />)

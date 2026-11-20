@@ -17,6 +17,13 @@ export class FakeTodoDaemon {
   /** 给 `todo.changed` 用：每次改动都会调。 */
   onChange: ((id: string, todo: Todo | null) => void) | null = null
 
+  /** 只取某一个方法的处理函数（多个假 daemon 按节点路由时用）。 */
+  routeFor(method: string): (p: unknown, nodeId: string) => unknown {
+    const bag = { handlers: {} as Record<string, (p: unknown, n: string) => unknown> }
+    this.install(bag as unknown as FakeRpc)
+    return bag.handlers[method]!
+  }
+
   install(rpc: FakeRpc): void {
     rpc.handlers['todo.list'] = (p) => this.list(p as TodoListParams)
     rpc.handlers['todo.add'] = (p) => this.handle('todo.add', p, () => this.add(p as TodoAddParams))

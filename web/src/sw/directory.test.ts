@@ -110,3 +110,21 @@ describe('language store', () => {
     expect(await databaseNames()).not.toContain('anycon-sw')
   })
 })
+
+describe('the node group in the notification directory', () => {
+  const withInfo = (id: string, name: string, group?: unknown): NodeRecord => ({ ...node(id, name), info: { group } as never })
+
+  it('reads the cached group of the payload’s node; a cache without it (older page version, no group set) simply omits it', async () => {
+    await putNode(withInfo('a'.repeat(32), 'mac-mini', ' Work '))
+    await putNode(withInfo('b'.repeat(32), 'nas', ''))
+    await putNode(node('c'.repeat(32), 'old'))
+    expect(await readPushDirectory('a'.repeat(32), null)).toMatchObject({ nodeName: 'mac-mini', nodeGroup: 'Work' })
+    expect((await readPushDirectory('b'.repeat(32), null)).nodeGroup).toBeUndefined()
+    expect((await readPushDirectory('c'.repeat(32), null)).nodeGroup).toBeUndefined()
+  })
+
+  it('a malformed group in the cache is ignored', async () => {
+    await putNode(withInfo('a'.repeat(32), 'mac-mini', { not: 'text' }))
+    expect((await readPushDirectory('a'.repeat(32), null)).nodeGroup).toBeUndefined()
+  })
+})

@@ -106,6 +106,21 @@ describe('showSystemNotification — when', () => {
   })
 })
 
+describe('textForNotify with a space', () => {
+  it('puts the node’s group next to its name on the second line when the page knows one', () => {
+    const { env } = fakeEnv({ nodeGroup: () => 'Home' })
+    expect(textForNotify(env, NODE, body()).body).toBe('On mac-mini · Home')
+    expect(textForNotify(fakeEnv().env, NODE, body()).body).toBe('On mac-mini')
+  })
+
+  it('the real environment reads the group from the cached node.info', () => {
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'mac-mini', info: { group: ' Home ' } as never }) }, order: [NODE], loaded: true })
+    expect(defaultEnv().nodeGroup?.(NODE)).toBe('Home')
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'mac-mini' }) }, order: [NODE], loaded: true })
+    expect(defaultEnv().nodeGroup?.(NODE)).toBeUndefined()
+  })
+})
+
 describe('textForNotify', () => {
   const env = fakeEnv().env
 

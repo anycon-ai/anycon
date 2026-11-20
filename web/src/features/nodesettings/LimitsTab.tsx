@@ -6,6 +6,7 @@ import { describeError } from '@/lib/errors'
 import { warnOnError } from '@/lib/log'
 import { rpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
+import { refreshNodeInfo } from '@/features/spaces/manage'
 import { useNodes } from '@/stores/nodes'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
@@ -88,6 +89,8 @@ export function LimitsTab({ nodeId }: { nodeId: string }) {
       setLoad({ status: 'ready', items: res.items })
       setDrafts(initialDrafts(res.items))
       toast.success(t('nodeSettings.limits.saved'))
+      // 分组、名字变了没有通知：刷新 node.info，空间切换才会跟着变
+      if (changes.some((c) => c.key === 'hub.group' || c.key === 'hub.name')) refreshNodeInfo(nodeId).catch(warnOnError('refresh node.info after changing the group or name'))
     } catch (e) {
       const rpcError = e instanceof RpcCallError && e.kind === 'rpc' && (e.code === 'invalid' || e.code === 'forbidden') ? e : null
       const bad = rpcError ? items.find((i) => i.key === rpcError.field) : undefined

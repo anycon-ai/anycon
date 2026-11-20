@@ -53,7 +53,7 @@ export function enrollPushText(t: TFunction, category: Extract<NotifyCategory, '
 export interface PushTextInput {
   category: PushCategory
   /** 节点（daemon）的设备 id；`test` 没有。 */
-  node?: { id: string; name?: string | null; param?: string } | null
+  node?: { id: string; name?: string | null; param?: string; /** 节点的分组（空间名）：缓存的 `node.info` 里没有、或旧缓存没这个字段就是没有，第二行就不带空间。 */ group?: string | null } | null
   /** 会话相关类别的 `session`（不透明 id）和本地缓存里的标题。 */
   session?: { id: string; title?: string | null } | null
 }
@@ -75,10 +75,12 @@ export function pushText(t: TFunction, input: PushTextInput): PushText {
   if (category === 'enroll_requested' || category === 'security') return enrollPushText(t, category, node)
   const param = node.param ?? node.id.slice(0, 8)
   const nodeName = cleanHintText(node.name)
+  // 空间名是任何已配对设备都能写到节点上的文字：和节点名一样清理，缺了就不带
+  const space = cleanHintText(typeof node.group === 'string' ? node.group.trim() : '', 40)
   const sessionTitle = cleanHintText(session?.title, 80)
   return {
     title: t(SESSION_TITLE_KEY[category], { title: sessionTitle ? `“${sessionTitle}”` : t('push.aSession') }),
-    body: t('push.onNode', { node: nodeName || t('push.aNode') }),
+    body: space ? t('push.onNodeSpace', { node: nodeName || t('push.aNode'), space }) : t('push.onNode', { node: nodeName || t('push.aNode') }),
     tag: session ? `session:${session.id}` : `${category}:${node.id}`,
     url: session ? (category === 'permission_requested' ? inboxUrl(param, session.id) : `/n/${param}/s/${encodeURIComponent(session.id)}`) : `/n/${param}`,
   }

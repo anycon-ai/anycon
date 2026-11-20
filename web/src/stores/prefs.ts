@@ -44,11 +44,18 @@ export interface PrefsState {
   sidebarWidth: number
   /** 左栏显示哪些节点上的项目（节点 id）；null = 全部节点（之后配对的新节点也在内）。 */
   sidebarNodes: string[] | null
+  /**
+   * 选中的空间（分组名去掉首尾空白的原文）；null = 没选空间（看 `sidebarNodes`：手点的节点或全部）。选的是「这个空间」这个概念：
+   * 它的节点集合跟着节点的分组走。旧版本只存 `sidebarNodes`，那个含义不变，所以不需要迁移：没有这一项就是 null。
+   */
+  sidebarSpace: string | null
   /** 左栏顶部是否列出进行中的会话（Recent）；默认开，外观设置里可以关。 */
   sidebarRecent: boolean
   lastNode: string | null
   /** 「记一项」上次记到哪个节点（多个节点支持清单时的缺省，spec/web.md § 14.5）。 */
   lastTodoNode: string | null
+  /** 每个空间（key = 分组名）里「记一项」上次记到的节点。 */
+  lastTodoNodeBySpace: Record<string, string>
   notifyBannerDismissed: boolean
   /**
    * 已经看过（或不需要看）「首页换成待处理」的说明（spec/web.md § 14.4）。第一次启动时 localStorage 里没有任何偏好的是新用户，
@@ -116,9 +123,11 @@ export const usePrefs = create<PrefsState>()(
       sidebarOpen: true,
       sidebarWidth: SIDEBAR_DEFAULT,
       sidebarNodes: null,
+      sidebarSpace: null,
       sidebarRecent: true,
       lastNode: null,
       lastTodoNode: null,
+      lastTodoNodeBySpace: {},
       notifyBannerDismissed: false,
       homeNoticeSeen: !hadStoredPrefs(),
       lastUsed: {},
@@ -158,9 +167,11 @@ export const usePrefs = create<PrefsState>()(
         sidebarOpen: s.sidebarOpen,
         sidebarWidth: s.sidebarWidth,
         sidebarNodes: s.sidebarNodes,
+        sidebarSpace: s.sidebarSpace,
         sidebarRecent: s.sidebarRecent,
         lastNode: s.lastNode,
         lastTodoNode: s.lastTodoNode,
+        lastTodoNodeBySpace: s.lastTodoNodeBySpace,
         notifyBannerDismissed: s.notifyBannerDismissed,
         homeNoticeSeen: s.homeNoticeSeen,
         lastUsed: s.lastUsed,

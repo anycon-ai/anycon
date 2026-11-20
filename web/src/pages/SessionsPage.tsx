@@ -20,7 +20,7 @@ export function SessionsPage() {
   const activeNode = nodeId ?? (lastNode && byId[lastNode] ? lastNode : order[0])
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg-subtle" data-testid="sessions-page">
-      <PageHeader root crumbs={[{ label: t('tabs.sessions') }]} showNodeStatus={false} />
+      <PageHeader root crumbs={[{ label: t('tabs.sessions') }]} showNodeStatus={false} spaceSwitcher={false} />
       <div className="flex min-h-0 flex-1 flex-col pt-3">
         <SessionsPanel nodeId={activeNode} onSearch={() => setPalette(true)} />
       </div>

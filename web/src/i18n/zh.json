@@ -290,6 +290,7 @@
     "undo": "撤销",
     "toNode": "节点",
     "willGoTo": "会记到 {{node}} 上。",
+    "willGoToSpace": "会记到 {{node}} 上（空间 {{space}}）。",
     "project": "项目",
     "due": "期望时间",
     "none": "无",
@@ -412,6 +413,61 @@
       "link": "试了几次都没能发出这个改动。",
       "storage": {
         "failed": "没能存在这台设备上（存储已满或不可用），什么都没有改动。"
+      }
+    }
+  },
+  "spaces": {
+    "title": "空间",
+    "all": "全部",
+    "manage": "管理空间…",
+    "nodeCount_other": "{{count}} 个节点",
+    "switchLabel": "空间：{{space}}。切换空间",
+    "otherWaiting_other": "别的空间里有 {{count}} 件在等（{{where}}）",
+    "manageTitle": "管理空间",
+    "manageHint": "分组名相同的节点是一个空间。分组名存在每个节点上，所以你的其他设备也看得到。",
+    "nodesSection": "节点",
+    "renameSection": "给空间改名",
+    "pickSpace": "选一个空间",
+    "newName": "新名字",
+    "rename": "改名",
+    "noGroup": "没有分组",
+    "noSpace": "没有空间",
+    "groupOf": "{{node}} 的分组",
+    "outsideSpace": "它属于空间「{{space}}」，这个空间没有选中。",
+    "switchToSpace": "切换到这个空间",
+    "result": {
+      "changed": "已修改。",
+      "unchanged": "本来就是这个名字。",
+      "offline": "不在线，没改。它回来之后再试。"
+    },
+    "errors": {
+      "too_long": "分组名太长了（最多 40 个字符）。",
+      "control": "分组名只能是一行，不能有控制字符。",
+      "invalid": "节点没有接受这个分组名。",
+      "envOverride": "这个节点的分组由环境变量设定，请在那台机器上改。",
+      "other": "没能修改。"
+    },
+    "move": {
+      "title": "移到另一个节点…",
+      "dialogTitle": "把这一项移到另一个节点",
+      "pick": "选要移到哪个节点",
+      "noTarget": "没有别的支持清单的节点可选。",
+      "confirmSpace": "「{{node}}」在另一个空间（{{space}}）里。还要移过去吗？",
+      "confirmSpaceNone": "「{{node}}」不在任何空间里。还要移过去吗？",
+      "agentNote": "另一个节点上的这一份会记成你自己记的，不再是 agent 加的。",
+      "projectNote": "项目不会带过去：项目名在另一个节点上不一定是同一个项目。",
+      "action": "移动",
+      "moving": "正在移动…",
+      "moved": "已移到 {{node}}。",
+      "stuck": "已经复制到 {{node}}，但移动没能做完。现在两个节点上各有一份，请自己删掉多余的那份。",
+      "failedAdd": "没能移动：{{node}} 没有接受它（{{reason}}）。什么都没变。",
+      "failedLink": "没能移动：到 {{node}} 的连接失败了。它可能已经在两个节点上各有一份，再移之前先看一下。",
+      "blocked": {
+        "offlineSource": "这个节点不在线，现在不能移动。",
+        "offlineTarget": "{{node}} 不在线，现在不能移到那里。",
+        "queued": "这一项有还没发出去的改动。等同步完再试。",
+        "unreviewed": "这一项是 agent 加的、你还没收下。先收下（移过去的那份会记成你自己记的）。",
+        "draft": "这一项有没保存的编辑。先保存或丢掉。"
       }
     }
   },
@@ -1818,6 +1874,7 @@
     "sessionIdle": "{{title}} 空闲了",
     "followUp": "{{title}} 完成了，等你处理",
     "onNode": "来自 {{node}}",
+    "onNodeSpace": "来自 {{node}} · {{space}}",
     "test": "Anycon 测试推送",
     "testBody": "这个浏览器可以收到推送通知。"
   },

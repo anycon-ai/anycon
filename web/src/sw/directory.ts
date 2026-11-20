@@ -13,6 +13,8 @@ const SW_DB = 'anycon-sw'
 export interface PushDirectory {
   /** 载荷里那个节点的名字（本地缓存，不是 hub 说的）。 */
   nodeName?: string
+  /** 那个节点的分组（空间名，缓存的 `node.info.group`）；旧缓存、没设分组都是没有。 */
+  nodeGroup?: string
   /** 载荷里那个会话的标题。 */
   sessionTitle?: string
   /** 这个浏览器已配对的全部节点 id（算路由里的节点短 id 要用，冲突时回退全长）。 */
@@ -59,6 +61,9 @@ export async function readPushDirectory(nodeId: string | null, sessionId: string
       if (nodeId) {
         const name = str(await db.get('nodes', nodeId), 'name')
         if (name) out.nodeName = name
+        const info = await db.get('nodes', nodeId)
+        const group = str(typeof info === 'object' && info !== null ? (info as Record<string, unknown>).info : undefined, 'group')
+        if (group && group.trim() !== '') out.nodeGroup = group.trim()
       }
       // 会话必须属于载荷里的这个节点：hub 说什么都不能让别的节点的会话标题出现在这条通知里（页面一侧的 `sessionTitle(nodeId, sessionId)` 同样核对）
       if (sessionId && nodeId) {

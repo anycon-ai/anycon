@@ -291,6 +291,7 @@
     "undo": "Undo",
     "toNode": "Node",
     "willGoTo": "Will be added on {{node}}.",
+    "willGoToSpace": "Will be added on {{node}} (space {{space}}).",
     "project": "Project",
     "due": "Due",
     "none": "None",
@@ -417,6 +418,63 @@
       "link": "This change could not be sent after several tries.",
       "storage": {
         "failed": "Could not save this on this device (storage is full or unavailable). Nothing was changed."
+      }
+    }
+  },
+  "spaces": {
+    "title": "Space",
+    "all": "All",
+    "manage": "Manage spaces…",
+    "nodeCount_one": "{{count}} node",
+    "nodeCount_other": "{{count}} nodes",
+    "switchLabel": "Space: {{space}}. Switch space",
+    "otherWaiting_one": "{{count}} waiting in other spaces ({{where}})",
+    "otherWaiting_other": "{{count}} waiting in other spaces ({{where}})",
+    "manageTitle": "Manage spaces",
+    "manageHint": "A space is the set of nodes with the same group name. The group is stored on each node, so your other devices see it too.",
+    "nodesSection": "Nodes",
+    "renameSection": "Rename a space",
+    "pickSpace": "Choose a space",
+    "newName": "New name",
+    "rename": "Rename",
+    "noGroup": "No group",
+    "noSpace": "No space",
+    "groupOf": "Group of {{node}}",
+    "outsideSpace": "This belongs to the space “{{space}}”, which is not selected.",
+    "switchToSpace": "Switch to this space",
+    "result": {
+      "changed": "Changed.",
+      "unchanged": "Already set.",
+      "offline": "Offline: not changed. Try again when it is back."
+    },
+    "errors": {
+      "too_long": "The group name is too long (at most 40 characters).",
+      "control": "The group name must be a single line without control characters.",
+      "invalid": "The node did not accept this group name.",
+      "envOverride": "The group is set by an environment variable on that node; change it there.",
+      "other": "Could not change it."
+    },
+    "move": {
+      "title": "Move to another node…",
+      "dialogTitle": "Move to-do to another node",
+      "pick": "Choose the node to move it to",
+      "noTarget": "No other node that supports to-dos is available.",
+      "confirmSpace": "“{{node}}” is in a different space ({{space}}). Move it there?",
+      "confirmSpaceNone": "“{{node}}” is in no space. Move it there?",
+      "agentNote": "The copy on the other node will be recorded as added by you, not by an agent.",
+      "projectNote": "The project is not carried over: a project name on another node is not necessarily the same project.",
+      "action": "Move",
+      "moving": "Moving…",
+      "moved": "Moved to {{node}}.",
+      "stuck": "The to-do was copied to {{node}}, but the move could not be finished. It now exists on both nodes; delete the extra copy yourself.",
+      "failedAdd": "Could not move it: {{node}} did not accept it ({{reason}}). Nothing changed.",
+      "failedLink": "Could not move it: the connection to {{node}} failed. It may now exist on both nodes; check before moving again.",
+      "blocked": {
+        "offlineSource": "This node is offline, so the to-do cannot be moved now.",
+        "offlineTarget": "{{node}} is offline, so the to-do cannot be moved there now.",
+        "queued": "This to-do has changes that are not sent yet. Wait until they are synced, then try again.",
+        "unreviewed": "An agent added this to-do and you have not accepted it. Accept it first (a moved copy would be recorded as added by you).",
+        "draft": "You have unsaved edits to this to-do. Save or discard them first."
       }
     }
   },
@@ -1849,6 +1907,7 @@
     "sessionIdle": "{{title}} is idle",
     "followUp": "{{title}} is ready for follow-up",
     "onNode": "On {{node}}",
+    "onNodeSpace": "On {{node}} · {{space}}",
     "test": "Anycon test push",
     "testBody": "Push notifications work on this browser."
   },

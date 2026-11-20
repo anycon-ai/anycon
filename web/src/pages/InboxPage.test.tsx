@@ -29,6 +29,8 @@ vi.mock('@/features/session/actions', async (orig) => ({
   archiveSession: h.archive,
 }))
 
+vi.mock('@/api/queries', async (orig) => ({ ...(await orig<object>()), useDevices: () => ({ data: undefined, dataUpdatedAt: 0 }) }))
+
 import { InboxPage } from './InboxPage'
 
 const A = 'a'.repeat(32)
@@ -428,6 +430,21 @@ describe('from a notification', () => {
     expect(usePrefs.getState().sidebarNodes).toEqual([B])
     await user.click(screen.getByTestId('inbox-show-node'))
     expect(usePrefs.getState().sidebarNodes).toBeNull()
+  })
+
+  it('with spaces: the note names the space the request belongs to and offers to switch to it; it does not switch by itself, and the numbers stay on the selected space', async () => {
+    const user = setup()
+    const group = (g: string) => ({ group: g, capabilities: { todo: true } }) as never
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', info: group('Home') }), [B]: nodeEntry({ id: B, name: 'beta', info: group('Work') }) }, order: [A, B], loaded: true })
+    usePrefs.setState({ sidebarNodes: null, sidebarSpace: 'Work' })
+    seed({ pending: [req('hidden', { session_id: 'S', node_id: A }), req('mine', { node_id: B, session_id: 's-mine', created_at_ms: 1 })] })
+    render(<InboxPage locate={{ node: 'aaaaaaaa', session: 'S' }} />)
+    expect(screen.getByTestId('inbox-outside-note')).toHaveTextContent('belongs to the space “Home”, which is not selected')
+    expect(screen.getByTestId('inbox-count-now')).toHaveTextContent('1')
+    expect(usePrefs.getState().sidebarSpace).toBe('Work')
+    await user.click(screen.getByTestId('inbox-switch-space'))
+    expect(usePrefs.getState().sidebarSpace).toBe('Home')
+    usePrefs.setState({ sidebarSpace: null })
   })
 
   it('holds the home notice back while the located request is shown', () => {

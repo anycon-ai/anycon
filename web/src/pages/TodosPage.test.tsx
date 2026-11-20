@@ -22,6 +22,8 @@ import { useUi } from '@/stores/ui'
 const h = vi.hoisted(() => ({ navigate: vi.fn() }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), h.navigate, {}, { pathname: '/todos' }))
 
+vi.mock('@/api/queries', async (orig) => ({ ...(await orig<object>()), useDevices: () => ({ data: undefined, dataUpdatedAt: 0 }) }))
+
 import { TodosPage } from './TodosPage'
 
 const A = 'a'.repeat(32)
@@ -525,5 +527,65 @@ describe('an item that left the open list is not necessarily deleted', () => {
     await userEvent.click(await screen.findByTestId('todo-delete-confirm'))
     await waitFor(() => expect(useDrafts.getState().drafts[`${A}:a`]).toBeUndefined())
     expect(screen.queryByTestId('todos-orphans')).toBeNull()
+  })
+})
+
+describe('spaces', () => {
+  const H = 'h'.repeat(32)
+  const W = 'w'.repeat(32)
+  const grouped = (group: string): NodeInfo => ({ group, capabilities: { todo: true } }) as unknown as NodeInfo
+
+  beforeEach(() => {
+    useNodes.setState({ byId: { [H]: nodeEntry({ id: H, name: 'house', info: grouped('Home'), conn: 'ready' }), [W]: nodeEntry({ id: W, name: 'office', info: grouped('Work'), conn: 'ready' }) }, order: [H, W], loaded: true })
+    useTodos.getState().setCache(H, [todoItem({ id: 'ha', title: 'at home' })])
+    useTodos.getState().setCache(W, [todoItem({ id: 'wa', title: 'at work' }), todoItem({ id: 'wb', title: 'also work', updated_ms: 5 })])
+    usePrefs.setState({ sidebarNodes: null, sidebarSpace: null })
+  })
+
+  it('the list shows only the selected space’s nodes; with “All” it shows everything and names the node on each row', () => {
+    usePrefs.setState({ sidebarSpace: 'Work' })
+    const { unmount } = render(<TodosPage />)
+    expect(titles().sort()).toEqual(['also work', 'at work'])
+    unmount()
+    usePrefs.setState({ sidebarSpace: null })
+    render(<TodosPage />)
+    expect(titles().join('|')).toMatch(/at home.*house|house.*at home/)
+    expect(rows()).toHaveLength(3)
+  })
+
+  it('the open-to-do count (sidebar, tab bar) counts only the selected space', async () => {
+    const { renderHook } = await import('@testing-library/react')
+    const { useOpenTodoCount } = await import('@/features/todos/useOpenTodoCount')
+    usePrefs.setState({ sidebarSpace: 'Work' })
+    expect(renderHook(() => useOpenTodoCount()).result.current).toBe(2)
+    usePrefs.setState({ sidebarSpace: 'Home' })
+    expect(renderHook(() => useOpenTodoCount()).result.current).toBe(1)
+  })
+
+  it('a to-do opened by a link from outside the selected space is shown, with a note naming its space and a button to switch (never switching by itself)', async () => {
+    usePrefs.setState({ sidebarSpace: 'Home' })
+    render(<TodosPage selected={{ node: W, todo: 'wa' }} />)
+    expect(await screen.findByTestId('todo-title')).toHaveTextContent('at work')
+    expect(screen.getByTestId('todo-outside-note')).toHaveTextContent('belongs to the space “Work”, which is not selected')
+    expect(usePrefs.getState().sidebarSpace).toBe('Home')
+    await userEvent.click(screen.getByTestId('todo-switch-space'))
+    expect(usePrefs.getState().sidebarSpace).toBe('Work')
+  })
+
+  it('a node with no group keeps the old note and button (“show this node”)', async () => {
+    useNodes.getState().setInfo(W, grouped(''))
+    useNodes.setState({ byId: { ...useNodes.getState().byId, [W]: { ...useNodes.getState().byId[W]!, info: { capabilities: { todo: true } } as unknown as NodeInfo } } })
+    usePrefs.setState({ sidebarNodes: [H], sidebarSpace: null })
+    render(<TodosPage selected={{ node: W, todo: 'wa' }} />)
+    await screen.findByTestId('todo-outside-note')
+    expect(screen.getByTestId('todo-show-node')).toBeInTheDocument()
+    expect(screen.queryByTestId('todo-switch-space')).toBeNull()
+  })
+
+  it('the row menu offers “Move to another node…” when another node supports to-dos', async () => {
+    usePrefs.setState({ sidebarSpace: 'Work' })
+    render(<TodosPage />)
+    await userEvent.click(within(row('wa')).getByTestId('todo-menu'))
+    expect(await screen.findByTestId('todo-act-move')).toHaveTextContent('Move to another node…')
   })
 })

@@ -351,6 +351,8 @@
     "sourceMine": "Added by me",
     "sourceAgent": "Added by agents",
     "messageActions": "Message actions",
+    "orphans_one": "{{count}} unsaved edit to a to-do that was deleted elsewhere",
+    "orphans_other": "{{count}} unsaved edits to to-dos that were deleted elsewhere",
     "orphanTitle": "This to-do no longer exists, but you had unsaved changes.",
     "orphanBody": "It was deleted elsewhere while you were editing. Your text is kept here until you decide.",
     "copyText": "Copy text",

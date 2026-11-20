@@ -12,9 +12,10 @@ import { useNodes } from '@/stores/nodes'
 
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), vi.fn(), {}, { pathname: '/capture' }))
 
-import { CapturePage } from './CapturePage'
+import { CapturePage, resetCaptureTake } from './CapturePage'
 
 beforeEach(async () => {
+  resetCaptureTake()
   await deleteDB(SHARE_DB)
   useNodes.setState({ byId: { n1: nodeEntry({ id: 'n1', info: { capabilities: { todo: true } } as unknown as NodeInfo }) }, order: ['n1'], loaded: true })
   useCapture.setState({ open: false, text: '', inline: false })
@@ -47,5 +48,32 @@ describe('CapturePage', () => {
     unmount()
     act(() => useCapture.getState().openCapture())
     expect(useCapture.getState().open).toBe(true)
+  })
+
+  it('the take is once per share, not once per module lifetime: opening /capture again later gives an empty box, and a new share is picked up', async () => {
+    await storeShared({ title: 'first', text: '', url: '', at: Date.now() })
+    const one = render(<CapturePage />)
+    expect(await screen.findByTestId('capture-input')).toHaveValue('first')
+    one.unmount()
+    await Promise.resolve()
+    useCapture.getState().setText('')
+    // 窗口还开着，之后又进了一次 /capture（主屏快捷方式、侧栏「＋」、C）：没有新的分享，是空的
+    const two = render(<CapturePage />)
+    expect(await screen.findByTestId('capture-input')).toHaveValue('')
+    two.unmount()
+    await Promise.resolve()
+    // 又来了一次分享，之后再进来：取得到新的这一次
+    await storeShared({ title: 'second', text: '', url: '', at: Date.now() })
+    render(<CapturePage />)
+    expect(await screen.findByTestId('capture-input')).toHaveValue('second')
+  })
+
+  it('is independent of the order the tests run in: a stash left by an earlier test is not shown here', async () => {
+    render(
+      <StrictMode>
+        <CapturePage />
+      </StrictMode>,
+    )
+    expect(await screen.findByTestId('capture-input')).toHaveValue('')
   })
 })

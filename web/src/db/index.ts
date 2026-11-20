@@ -491,7 +491,8 @@ export async function deleteOutbox(seqs: readonly number[]): Promise<void> {
  * 认领下一条要发的：在**一个**读写事务里选出来并写上认领（只改库里现在的这条记录，不写回之前读到的快照，
  * 所以事务之间入队 / 重试的改动不会被盖掉）。
  *   - 每一项只有它最前面的那一条有资格（同一项内保持顺序）；最前面的是 `failed`，这一项就等着，别的项照常；
- *   - 被别的实例认领、而且认领还没过期（`takeoverMs` 内）的跳过；`takeoverMs = 0`：持有 Web Lock 的实例独占，库里留的认领都是死掉的实例留下的。
+ *   - 被别的实例认领、而且认领还没过期（`takeoverMs` 内）的跳过；`takeoverMs = 0`：持有 Web Lock 的实例独占，库里留的认领都是死掉的实例留下的，
+ *     不论年龄一律接手（时钟回拨留下的「未来」时间戳也一样）；只有租约（没有 Web Locks）才用下面那条保守的年龄规则。
  */
 export async function claimNextOutbox(nodeId: string, owner: string, now: number, takeoverMs: number): Promise<OutboxRecord | null> {
   const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
@@ -502,7 +503,8 @@ export async function claimNextOutbox(nodeId: string, owner: string, now: number
     seen.add(r.id)
     if (r.state !== 'pending') continue
     // 时钟往回拨过（认领的时刻在「现在」之后）时差是负数，同样不接手：宁可多等一会儿，也不把别人正在发的那条抢过来发两遍
-    if (r.claimed_at !== undefined && r.claimed_by !== owner && now - r.claimed_at < takeoverMs) continue
+    // `takeoverMs = 0`（持有 Web Lock）：别的实例的认领一律是死掉的，不管它盖的是什么时刻
+    if (r.claimed_at !== undefined && r.claimed_by !== owner && takeoverMs > 0 && now - r.claimed_at < takeoverMs) continue
     const claimed: OutboxRecord = { ...r, claimed_at: now, claimed_by: owner }
     await tx.store.put(claimed)
     await tx.done
@@ -510,6 +512,39 @@ export async function claimNextOutbox(nodeId: string, owner: string, now: number
   }
   await tx.done
   return null
+}
+
+/**
+ * 把一条记录标成失败（`f` 拿到库里现在的样子，返回标了失败的新样子；返回的不是 `failed` 就原样写回）。同一个事务里：这一项排在它后面的
+ * 已经有一条删除时，失败的这条和夹在中间的记录一起丢掉，让删除能发出去（不能留着一条发不出去的失败记录挡在删除前面）。
+ * 返回丢掉了几条记录（0 = 只是标了失败）。
+ */
+export async function failOutbox(seq: number, f: (stored: OutboxRecord) => OutboxRecord): Promise<number> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const stored = await tx.store.get(seq)
+  if (!stored) {
+    await tx.done
+    return 0
+  }
+  const next = f(stored)
+  let dropped = 0
+  if (next.state === 'failed') {
+    const mine = (await tx.store.index('by_node').getAll(stored.node_id)).filter((r) => r.id === stored.id).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+    const del = mine.find((r) => (r.seq ?? 0) > seq && r.op.kind === 'delete')
+    if (del) {
+      for (const r of mine) {
+        if ((r.seq ?? 0) >= seq && (r.seq ?? 0) < (del.seq ?? 0)) {
+          await tx.store.delete(r.seq!)
+          dropped++
+        }
+      }
+      await tx.done
+      return dropped
+    }
+  }
+  await tx.store.put(next)
+  await tx.done
+  return 0
 }
 
 /** 读—改—写一条记录（`f` 拿到库里现在的样子；返回 `null` 删掉）。记录已经不在了（被丢弃 / 别处发完了）返回 `false`。 */

@@ -33,7 +33,11 @@ import { cleanOneLine, draftError, newTodoId, tabsToSpaces, projectError, titleE
 // 多标签页：库是唯一的真相，别的标签页改了就重读
 // ---------------------------------------------------------------------------------------------------------------------
 let channel: BroadcastChannel | null | undefined
+/** 本地库已经被禁用（别的标签页移除了这台设备 / 升级了库）：这个页面不会再读写它，别的标签页的缓存通知也不再理会。 */
+let dbGone = false
+const isDbGone = (e: unknown): boolean => e instanceof db.DbDisabledError
 function bc(): BroadcastChannel | null {
+  if (dbGone) return null
   if (channel === undefined) {
     try {
       channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('anycon-todos')
@@ -43,6 +47,11 @@ function bc(): BroadcastChannel | null {
     }
   }
   return channel
+}
+/** 关掉跨标签页的通知通道（测试收尾用；库被禁用时内部也会调用）。 */
+export function closeTodoChannel(): void {
+  channel?.close()
+  channel = undefined
 }
 const announce = (nodeId: string): void => {
   try {
@@ -58,6 +67,7 @@ async function reloadOutbox(): Promise<void> {
 
 /** 从库里重读（别的标签页改了缓存或队列）。 */
 export async function reloadFromDb(nodeId?: string): Promise<void> {
+  if (dbGone) return
   try {
     await reloadOutbox()
     if (nodeId) {
@@ -65,6 +75,13 @@ export async function reloadFromDb(nodeId?: string): Promise<void> {
       useTodos.getState().patchNode(nodeId, (n) => ({ ...n, items: Object.fromEntries(todos.map((t) => [t.id, t])), hydrated: true, ...(synced_at !== undefined ? { syncedAt: synced_at } : {}) }))
     }
   } catch (e) {
+    if (isDbGone(e)) {
+      // 预期的状态：只提一次，之后不再理会别的标签页的缓存通知
+      dbGone = true
+      closeTodoChannel()
+      console.debug('anycon: the local database is disabled (removed or upgraded in another tab); to-do cache announcements are ignored from now on')
+      return
+    }
     console.warn('anycon: could not re-read the to-do cache', e)
   }
 }
@@ -93,6 +110,7 @@ export async function hydrateTodos(nodeIds: readonly string[]): Promise<void> {
 export async function forgetNodeTodos(nodeId: string): Promise<number> {
   cancelRetry(nodeId)
   retryCounts.delete(nodeId)
+  retryFor.delete(nodeId)
   closedWalks.delete(nodeId)
   useTodos.getState().removeNode(nodeId)
   try {
@@ -100,15 +118,18 @@ export async function forgetNodeTodos(nodeId: string): Promise<number> {
     announce(nodeId)
     return n
   } catch (e) {
-    storageFailed('drop the to-dos of a forgotten node')(e)
+    if (!isDbGone(e)) storageFailed('drop the to-dos of a forgotten node')(e)
     return 0
   }
 }
 
 /** 退出登录：内存里的清单清掉（IndexedDB 保留，同一账号再登录还能用；「退出并移除本设备」才删库）。 */
 export function resetTodosMemory(): void {
+  dbGone = false
+  closeTodoChannel()
   for (const id of [...retryTimers.keys()]) cancelRetry(id)
   retryCounts.clear()
+  retryFor.clear()
   closedWalks.clear()
   paging.clear()
   useTodos.setState({ nodes: {}, outbox: [], outboxLoaded: false })
@@ -149,6 +170,13 @@ function noteTouched(nodeId: string, id: string, todo: Todo | null): void {
  */
 export async function syncTodos(nodeId: string): Promise<void> {
   if (!nodeSupportsTodo(nodeId)) return
+  // 新的一次连接：上一次连接里翻到一半的「已关闭」作废（断线期间别处改过的项没有 `todo.changed`，不能让半趟的记录修剪它们）；展开着就重新翻
+  closedWalks.delete(nodeId)
+  const st = useTodos.getState().nodes[nodeId]
+  if (st && (st.closed.loading || st.closed.hasMore || st.closed.complete)) {
+    useTodos.getState().patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: false, complete: false, hasMore: false, cursor: undefined } }))
+    if (st.closed.expanded) void loadClosed(nodeId)
+  }
   await reloadOutbox().catch(() => undefined)
   const replay = await replayOutbox(nodeId)
   // 重放被打断（节点又掉线）就不列了：队列还在，下次连上接着来
@@ -231,12 +259,19 @@ export async function loadClosed(nodeId: string, opts: { more?: boolean } = {}):
   if (opts.more ? !st.closed.hasMore : st.closed.complete) return
   const { patchNode, mergeItems } = useTodos.getState()
   patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: true, failed: false } }))
-  if (!opts.more || !closedWalks.has(nodeId)) closedWalks.set(nodeId, { seen: new Set(), touched: new Map() })
+  // 一趟只在同一次连接里走完才修剪：没有这一趟的记录（断线重连清掉了）就从头翻
+  const fresh = !opts.more || !closedWalks.has(nodeId)
+  if (fresh) closedWalks.set(nodeId, { seen: new Set(), touched: new Map() })
   const walk = closedWalks.get(nodeId)!
   try {
-    const cursor = opts.more ? st.closed.cursor : undefined
+    const cursor = fresh ? undefined : st.closed.cursor
     const res = await rpc().request<TodoListResult>(nodeId, 'todo.list', { include_closed: true, limit: PAGE, ...(cursor ? { before: cursor } : {}) })
     // 这一趟期间在本地或经 `todo.changed` 删掉的项不能被这一页加回来
+    // 这一趟已经作废（断线重连清掉了、或者被新的一趟取代）：迟到的结果不用
+    if (closedWalks.get(nodeId) !== walk) {
+      patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: false } }))
+      return
+    }
     const live = res.todos.filter((t) => walk.touched.get(t.id) !== null)
     for (const t of live) walk.seen.add(t.id)
     mergeItems(nodeId, live)
@@ -263,7 +298,9 @@ export async function loadClosed(nodeId: string, opts: { more?: boolean } = {}):
     }))
   } catch (e) {
     console.warn('anycon: could not load the closed to-dos', e)
-    patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: false, failed: true } }))
+    // 翻到一半失败：这一趟作废（不修剪），下次从头翻
+    if (closedWalks.get(nodeId) === walk) closedWalks.delete(nodeId)
+    patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: false, failed: true, complete: false, hasMore: false, cursor: undefined } }))
   }
 }
 
@@ -401,6 +438,8 @@ export type ReplayResult = 'done' | 'offline' | 'blocked'
 
 /** 链路错误连续失败这么多次，这一条标成失败（用户重试或丢弃），不再一直占着这一项。 */
 export const MAX_LINK_FAILURES = 3
+/** 同一条记录在飞的时候连接被掐断这么多次，就标成失败（毒记录）。比超时的次数宽：手机网络本来就会掉线。 */
+export const MAX_DROPS = 5
 /** 别的实例的认领超过「一次请求的超时 + 这个余量」就算死了，可以接手（没有 Web Locks 时）。 */
 export const LEASE_MARGIN_MS = 5_000
 /** 这个实例（模块）的 id，写在它认领的记录上。 */
@@ -447,8 +486,12 @@ function cancelRetry(nodeId: string): void {
   if (t) clearTimeout(t)
   retryTimers.delete(nodeId)
 }
-function scheduleRetry(nodeId: string): void {
+/** 退避是按记录算的：换了一条（上一条成功 / 失败了）就从头开始。 */
+const retryFor = new Map<string, number>()
+function scheduleRetry(nodeId: string, seq: number): void {
   cancelRetry(nodeId)
+  if (retryFor.get(nodeId) !== seq) retryCounts.delete(nodeId)
+  retryFor.set(nodeId, seq)
   const n = retryCounts.get(nodeId) ?? 0
   retryCounts.set(nodeId, n + 1)
   retryTimers.set(
@@ -471,6 +514,11 @@ async function sendOp(nodeId: string, rec: OutboxRecord): Promise<Todo | null> {
 
 /** 只改自己认领的记录：认领已经被别的实例接手（租约过期）时，不去动别人正在发的那条。 */
 const mine = (f: (stored: OutboxRecord) => OutboxRecord | null) => (stored: OutboxRecord): OutboxRecord | null => (stored.claimed_by !== undefined && stored.claimed_by !== OWNER ? stored : f(stored))
+
+/** 标成失败（只动自己认领的）；这一项后面已经排了删除时，失败的记录和夹在中间的一起丢掉，删除才发得出去。 */
+async function markFailed(seq: number, f: (stored: OutboxRecord) => OutboxRecord): Promise<number> {
+  return db.failOutbox(seq, (stored) => (stored.claimed_by !== undefined && stored.claimed_by !== OWNER ? stored : f(stored)))
+}
 
 const release = (r: OutboxRecord): OutboxRecord => {
   const { claimed_at: _c, claimed_by: _b, ...rest } = r
@@ -538,19 +586,24 @@ async function runReplay(nodeId: string): Promise<{ result: ReplayResult; relist
               toast.error(i18n.t('todos.replay.full'))
             }
           } else if (v.kind === 'failed') {
-            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), state: 'failed', error: v.error })))
+            const dropped = await markFailed(seq, (stored) => ({ ...release(stored), state: 'failed', error: v.error }))
             await reloadOutbox().catch(() => undefined)
-            announceRejected(nodeId, rec, v.error)
+            if (dropped === 0) announceRejected(nodeId, rec, v.error)
           } else if (v.kind === 'link' && (rec.attempts ?? 0) + 1 >= MAX_LINK_FAILURES) {
-            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), state: 'failed', error: { code: 'link' }, attempts: (stored.attempts ?? 0) + 1 })))
+            const dropped = await markFailed(seq, (stored) => ({ ...release(stored), state: 'failed', error: { code: 'link' }, attempts: (stored.attempts ?? 0) + 1 }))
             await reloadOutbox().catch(() => undefined)
-            announceRejected(nodeId, rec, { code: 'link' })
+            if (dropped === 0) announceRejected(nodeId, rec, { code: 'link' })
+          } else if (v.kind === 'offline' && error instanceof RpcCallError && error.kind === 'closed' && (rec.drops ?? 0) + 1 >= MAX_DROPS) {
+            // 毒记录：发这一条的时候连接一次次被掐断（比如 daemon 一收到它就崩）：标成失败，别无声地一直循环
+            const dropped = await markFailed(seq, (stored) => ({ ...release(stored), state: 'failed', error: { code: 'link' }, drops: (stored.drops ?? 0) + 1 }))
+            await reloadOutbox().catch(() => undefined)
+            if (dropped === 0) announceRejected(nodeId, rec, { code: 'link' })
           } else {
             // 纯链路 / 离线错误：这一条留着（节点连着时的超时记一次失败），这一轮结束；节点还连着就过一会儿自己再试
-            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), ...(v.kind === 'link' ? { attempts: (stored.attempts ?? 0) + 1 } : {}) })))
+            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), ...(v.kind === 'link' ? { attempts: (stored.attempts ?? 0) + 1 } : {}), ...(error instanceof RpcCallError && error.kind === 'closed' ? { drops: (stored.drops ?? 0) + 1 } : {}) })))
             await reloadOutbox().catch(() => undefined)
             announce(nodeId)
-            if (rpc().isReady(nodeId)) scheduleRetry(nodeId)
+            if (rpc().isReady(nodeId)) scheduleRetry(nodeId, seq)
             return { result: 'offline' as const, relist }
           }
         }

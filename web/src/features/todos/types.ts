@@ -42,6 +42,8 @@ export interface OutboxRecord {
   error?: OutboxError
   /** 链路错误（超时、没送达）连续失败的次数，持久化：到 `MAX_LINK_FAILURES` 就标成失败。 */
   attempts?: number
+  /** 这条记录在飞的时候连接被掐断（`closed`）的次数，持久化：到 `MAX_DROPS` 次就标成失败（毒记录：发它就让对端崩 / 断线）。 */
+  drops?: number
   /** 正在被某个实例发送：认领的时间和实例 id。没有 Web Locks 时靠它防止两个标签页同时发（租约，见 `service.ts`）。 */
   claimed_at?: number
   claimed_by?: string

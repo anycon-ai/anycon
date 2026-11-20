@@ -41,12 +41,13 @@ export function plainTitle(line: string): string {
 
 /**
  * GFM 会把裸的 `https://…`、`www.…`、邮箱地址自动变成能点的链接：在触发它们的地方插一个零宽空格（协议名和 `:` 之间、`www` 和 `.` 之间、`@` 前面）。
- * 看起来一样，复制出来也能用，只是渲染时不再被认成链接。
+ * 渲染时不再被认成链接（连 `_https://…` 这种紧跟在单词字符后面的也不会，所以匹配不加词边界）。零宽空格是存进正文里的：从引用块里
+ * 复制一个网址再粘贴，可能带着它、不一定能直接用——这是为了不让不可信的文字变成能点的链接付的代价。
  */
 export function breakAutolinks(line: string): string {
   return line
-    .replace(/\b(https?|ftps?|mailto|xmpp)(?=:)/gi, '$&\u200b')
-    .replace(/\bwww(?=\.)/gi, '$&\u200b')
+    .replace(/(https?|ftps?|mailto|xmpp)(?=:)/gi, '$&\u200b')
+    .replace(/www(?=\.)/gi, '$&\u200b')
     .replace(/@/g, '\u200b@')
 }
 

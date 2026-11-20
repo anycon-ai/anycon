@@ -213,7 +213,7 @@ describe('from a session', () => {
   })
 
   it('a quoted excerpt renders with no clickable link except “open the message”: bare URLs, www hosts, email addresses and escaped link syntax are all inert', () => {
-    const quote = 'see https://evil.example/x and www.evil.example or mail a@evil.example, also \\[a\\](http://x.example) and [b](https://y.example)'
+    const quote = 'see https://evil.example/x and www.evil.example or mail a@evil.example, also \\[a\\](http://x.example) and [b](https://y.example); _https://evil.example/u foo_https://evil.example/v _www.evil.example/w'
     const body = captureFromQuote(quote, messageLink('a'.repeat(32), 'sess_1', 3)).split('\n').slice(1).join('\n')
     const { container } = render(<Markdown text={body} />)
     const links = [...container.querySelectorAll('a')]

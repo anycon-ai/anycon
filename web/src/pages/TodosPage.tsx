@@ -8,7 +8,7 @@ import { useCapture } from '@/features/todos/capture'
 import { flatOrder, groupTodos, NO_FILTERS, projectsOf, type SourceFilter, type TodoFilters } from '@/features/todos/list'
 import { deleteTodo, loadClosed, setClosedExpanded } from '@/features/todos/service'
 import { useSupportingNodes, useTodoView, useTodos } from '@/features/todos/store'
-import { dirtyFields, draftKey, useDrafts } from '@/features/todos/drafts'
+import { dirtyFields, draftKey, splitDraftKey, useDrafts } from '@/features/todos/drafts'
 import { TodoDetailPane, resolveTodoRoute } from '@/features/todos/ui/TodoDetailPane'
 import { TodoRow } from '@/features/todos/ui/TodoRow'
 import { isTypingTarget } from '@/features/session/shortcuts'
@@ -60,6 +60,19 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
   const selectedNode = selected ? resolveTodoRoute(selected.node, order) : undefined
   const selectedKey = selected && selectedNode ? `${selectedNode}:${selected.todo}` : null
   const drafts = useDrafts((s) => s.drafts)
+  // 编辑到一半、项却已经不在了（别处删了）的草稿：不在这一页的详情上时也要找得到，不然文字只有凭地址才够得着
+  const outbox = useTodos((s) => s.outbox)
+  const orphans = useMemo(() => {
+    const out: Array<{ key: string; nodeId: string; id: string; title: string }> = []
+    for (const [key, d] of Object.entries(drafts)) {
+      if (dirtyFields(d).length === 0) continue
+      const { nodeId, id } = splitDraftKey(key)
+      const n = nodeState[nodeId]
+      if (!n?.hydrated || n.items[id] || outbox.some((r) => r.node_id === nodeId && r.id === id)) continue
+      out.push({ key, nodeId, id, title: d.values.title })
+    }
+    return out
+  }, [drafts, nodeState, outbox])
   const hasDraft = (item: ViewTodo): boolean => {
     const d = drafts[draftKey(item.node_id, item.id)]
     return !!d && dirtyFields(d).length > 0
@@ -226,6 +239,21 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
             </Button>
           ))}
         </div>
+      ) : null}
+      {orphans.length > 0 ? (
+        <section className="space-y-2 rounded-md border border-warning/40 bg-warning-subtle p-3 text-sm" role="status" data-testid="todos-orphans">
+          <p className="font-medium">{t('todos.orphans', { count: orphans.length })}</p>
+          <ul className="space-y-1">
+            {orphans.map((o) => (
+              <li key={o.key} className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate">{cleanOneLine(o.title, 80)}</span>
+                <Button size="sm" onClick={() => void navigate({ to: '/todos/$node/$todo', params: { node: shortNodeId(o.nodeId, order), todo: o.id } })} data-testid="todos-orphan-open">
+                  {t('todos.open')}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
       {!hydrated ? <Spinner className="mx-auto my-8 size-6" /> : null}
       {hydrated && empty ? (

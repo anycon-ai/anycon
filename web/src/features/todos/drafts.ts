@@ -23,6 +23,8 @@ interface DraftsState {
   /** 把 `fields` 的 base 换成「现在的」值（接受别处的改动 / 选了「保留我的」）；`take` 时草稿值也换成现在的。 */
   rebase: (key: string, fields: readonly EditField[], current: EditValues, take: boolean) => void
   clear: (key: string) => void
+  /** 忘记一个节点：它的草稿一起放掉。 */
+  clearNode: (nodeId: string) => void
 }
 
 export const useDrafts = create<DraftsState>()((set) => ({
@@ -50,6 +52,7 @@ export const useDrafts = create<DraftsState>()((set) => ({
       const { [key]: _gone, ...drafts } = s.drafts
       return { drafts }
     }),
+  clearNode: (nodeId) => set((s) => ({ drafts: Object.fromEntries(Object.entries(s.drafts).filter(([k]) => !k.startsWith(`${nodeId}:`))) })),
 }))
 
 /** 草稿里用户改过的字段（值和 base 不一样的）。 */
@@ -75,4 +78,10 @@ export function useUnsavedDraftsGuard(): void {
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [])
+}
+
+/** `draftKey` 拆回节点 id 和项 id（节点 id 里没有冒号）。 */
+export function splitDraftKey(key: string): { nodeId: string; id: string } {
+  const i = key.indexOf(':')
+  return { nodeId: key.slice(0, i), id: key.slice(i + 1) }
 }

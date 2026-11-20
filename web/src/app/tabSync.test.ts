@@ -85,6 +85,29 @@ describe('handleWipedElsewhere', () => {
     vi.doUnmock('@/transport/instance')
   })
 
+  it('also drops unsaved to-do edits, so the unload prompt does not ask about text nobody can reach on the way to /login', async () => {
+    vi.doMock('@/transport/instance', () => ({ getClient: () => ({ stop: vi.fn() }), rpc: () => ({}) }))
+    const drafts = await import('@/features/todos/drafts')
+    const { handleWipedElsewhere } = await import('./bootstrap')
+    const stopGuard = (() => {
+      const onUnload = (e: Event): void => {
+        if (drafts.hasDirtyDrafts(drafts.useDrafts.getState().drafts)) e.preventDefault()
+      }
+      window.addEventListener('beforeunload', onUnload)
+      return () => window.removeEventListener('beforeunload', onUnload)
+    })()
+    drafts.useDrafts.getState().start('n:a', { title: 'old', body: '', project: '', due: '' })
+    drafts.useDrafts.getState().set('n:a', 'title', 'unsaved')
+    handleWipedElsewhere(() => {
+      const ev = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(false)
+    })
+    expect(drafts.useDrafts.getState().drafts).toEqual({})
+    stopGuard()
+    vi.doUnmock('@/transport/instance')
+  })
+
   it('an IndexedDB versionchange (another tab deleting the database) also triggers it, even without the broadcast', async () => {
     const dbMod = await import('@/db')
     const handler = vi.fn()

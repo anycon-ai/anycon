@@ -1,4 +1,5 @@
 // 登录后启动传输层，并把它的回调接到各个 store / 同步逻辑上。
+import { useDrafts as useTodoDrafts } from '@/features/todos/drafts'
 import * as db from '@/db'
 import { inboxNowCountFromStores, subscribeInbox } from '@/features/inbox/model'
 import { hydrateTodos } from '@/features/todos/service'
@@ -49,6 +50,8 @@ export function handleWipedElsewhere(goToLogin: () => void = () => location.repl
   db.disableDb()
   stopTransport()
   resetDrafts()
+  // 没存的清单编辑也放掉：本地库已经被清了，整页马上跳走，卸载时的确认框问的是够不着的文字
+  useTodoDrafts.setState({ drafts: {} })
   goToLogin()
 }
 

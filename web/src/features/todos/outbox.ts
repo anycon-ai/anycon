@@ -69,18 +69,21 @@ export function overlayOutbox(nodeId: string, base: ReadonlyMap<string, Todo>, o
 export function overlayItem(nodeId: string, id: string, base: Todo | undefined, ops: readonly OutboxRecord[]): ViewTodo | null {
   let cur: ViewTodo | undefined = base ? { ...base, node_id: nodeId, unsynced: false } : undefined
   let failed: ViewTodo['failed']
+  // 这一项前面已经有发不出去的（失败的）记录：排在它后面的删除也发不出去，不能把项藏起来
+  let blocked = false
   for (const r of [...ops].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
     if (r.op.kind === 'add') {
       // add 幂等：daemon 那边已经有这一项（重放中途断了）就保留它的样子，只标未同步
       cur = cur ? { ...cur, unsynced: true } : NEW_TODO(nodeId, id, r.op.params, r.created_at)
     } else if (r.op.kind === 'delete') {
-      // 被拒的删除：项还在，标「未保存」
-      if (r.state === 'failed') {
+      // 被拒的删除、或者前面有失败记录挡着的删除：项还在，标「未保存」
+      if (r.state === 'failed' || blocked) {
         if (cur) cur = { ...cur, unsynced: true }
       } else cur = undefined
     } else if (cur) {
       cur = { ...applyUpdate(cur, r.op.fields, r.created_at), unsynced: true }
     }
+    if (r.state === 'failed') blocked = true
     if (cur && r.state === 'failed' && r.error) failed = r.error
   }
   if (!cur) return null

@@ -16,7 +16,8 @@ import { FakeTodoDaemon, linkError } from '@/test/fakeTodoDaemon'
 import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { useUi } from '@/stores/ui'
-import { addTodo, classifyReplayError, deleteTodo, discardOp, handleTodoChanged, hydrateTodos, loadClosed, MAX_LINK_FAILURES, refreshAfterReplay, replayOutbox, resetTodosMemory, RETRY_BASE_MS, RETRY_MAX_MS, retryOp, setClosedExpanded, syncTodos, updateTodo } from './service'
+import { addTodo, classifyReplayError, forgetNodeTodos, MAX_DROPS, reloadFromDb, deleteTodo, discardOp, handleTodoChanged, hydrateTodos, loadClosed, MAX_LINK_FAILURES, refreshAfterReplay, replayOutbox, resetTodosMemory, RETRY_BASE_MS, RETRY_MAX_MS, retryOp, setClosedExpanded, syncTodos, updateTodo } from './service'
+import { useDrafts } from './drafts'
 import { useTodos, viewOf } from './store'
 
 const NODE = 'n'.repeat(32)
@@ -345,9 +346,14 @@ describe('errors while enqueueing', () => {
 
 describe('no Web Locks (two realms, a lease)', () => {
   // 第二个实例：重新加载模块，得到各自的内存状态和实例 id，共用同一个（假的）IndexedDB 和同一个假 daemon
+  const realms: Array<{ closeTodoChannel: () => void }> = []
+  afterEach(() => {
+    for (const r of realms.splice(0)) r.closeTodoChannel() // 别让这些模块的 BroadcastChannel 留到下一个用例 / 文件里
+  })
   async function secondRealm() {
     vi.resetModules()
     const svc = await import('./service')
+    realms.push(svc)
     const inst = await import('@/transport/instance')
     const nodes = await import('@/stores/nodes')
     const store = await import('./store')
@@ -750,3 +756,214 @@ describe('forgetting a node also forgets its to-dos in memory', () => {
     expect(useUi.getState().toasts.some((t) => /unsynced/i.test(t.text))).toBe(true)
   })
 })
+
+describe('a delete issued while a doomed request is in flight', () => {
+  /** 第一条 `todo.update` 卡在 gate 上（已认领、在飞），放开之后用 `outcome` 失败。 */
+  async function inFlightUpdate(outcome: unknown): Promise<{ release: () => void; running: Promise<unknown> }> {
+    daemon.seed(todoItem({ id: 'x', title: 'orig' }))
+    await syncTodos(NODE)
+    const original = rpc.handlers['todo.update']!
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let first = true
+    rpc.handlers['todo.update'] = async (p, n) => {
+      if (first) {
+        first = false
+        await gate
+        throw outcome
+      }
+      return original(p, n)
+    }
+    const running = updateTodo(NODE, 'x', { title: 'doomed' })
+    await vi.waitFor(async () => expect((await db.listOutbox(NODE))[0]?.claimed_by).toBeDefined())
+    return { release, running }
+  }
+
+  it('the update then fails with an error reply: the failed record and the ones in between go, the delete is sent, the item is gone', async () => {
+    const { release } = await inFlightUpdate(rpcError('invalid', 'title'))
+    await deleteTodo(NODE, 'x')
+    expect(view()).toEqual([])
+    release()
+    await vi.waitFor(() => expect(daemon.todos.has('x')).toBe(false))
+    await vi.waitFor(async () => expect(await db.listOutbox(NODE)).toEqual([]))
+    expect(useUi.getState().toasts.some((t) => t.kind === 'error' && /not saved/i.test(t.text))).toBe(false)
+  })
+
+  it('the update then times out for the third time while the node is ready: same outcome', async () => {
+    daemon.seed(todoItem({ id: 'x', title: 'orig' }))
+    await syncTodos(NODE)
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    rpc.handlers['todo.update'] = async () => {
+      await gate
+      throw linkError('timeout')
+    }
+    await db.appendOutbox({ node_id: NODE, id: 'x', op: { kind: 'update', fields: { title: 'doomed' } }, created_at: 1, state: 'pending', attempts: MAX_LINK_FAILURES - 1 })
+    await reloadFromDb(NODE)
+    const running = replayOutbox(NODE)
+    await vi.waitFor(async () => expect((await db.listOutbox(NODE))[0]?.claimed_by).toBeDefined())
+    await deleteTodo(NODE, 'x')
+    release()
+    await running
+    await vi.waitFor(() => expect(daemon.todos.has('x')).toBe(false))
+    await vi.waitFor(async () => expect(await db.listOutbox(NODE)).toEqual([]))
+  })
+
+  it('failOutbox leaves a plain failure alone when no delete is queued behind it', async () => {
+    const seq = await db.appendOutbox({ node_id: NODE, id: 'y', op: { kind: 'update', fields: { title: 't' } }, created_at: 1, state: 'pending' })
+    expect(await db.failOutbox(seq, (r) => ({ ...r, state: 'failed', error: { code: 'invalid' } }))).toBe(0)
+    expect((await db.listOutbox(NODE))[0]).toMatchObject({ state: 'failed' })
+  })
+})
+
+describe('a closed-list walk that spans a reconnect', () => {
+  it('does not prune an item the node still has: a new connection starts the walk over', async () => {
+    daemon.pageSize = 1
+    daemon.seed(todoItem({ id: 'c1', state: 'done', updated_ms: 30 }), todoItem({ id: 'c2', state: 'done', updated_ms: 20 }), todoItem({ id: 'c3', state: 'done', updated_ms: 10 }))
+    await syncTodos(NODE)
+    setClosedExpanded(NODE, true)
+    await vi.waitFor(() => expect(useTodos.getState().nodes[NODE]!.closed.hasMore).toBe(true))
+    await loadClosed(NODE, { more: true })
+    // 断线期间 c3 在别处改过：没有 todo.changed，它的 updated_ms 排到游标前面去了
+    daemon.todos.set('c3', { ...daemon.todos.get('c3')!, title: 'edited while away', updated_ms: 99 })
+    await syncTodos(NODE)
+    // 新的一次连接重新从头翻（展开着，自动开始）；一页页翻到底
+    for (let i = 0; i < 6 && !useTodos.getState().nodes[NODE]!.closed.complete; i++) {
+      await vi.waitFor(() => expect(useTodos.getState().nodes[NODE]!.closed.loading).toBe(false))
+      await loadClosed(NODE, { more: true })
+    }
+    expect(useTodos.getState().nodes[NODE]!.closed.complete).toBe(true)
+    expect(Object.keys(useTodos.getState().nodes[NODE]!.items).sort()).toEqual(['c1', 'c2', 'c3'])
+    expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id).sort()).toEqual(['c1', 'c2', 'c3'])
+  })
+
+  it('a walk that fails half way prunes nothing and starts over next time', async () => {
+    daemon.pageSize = 1
+    daemon.seed(todoItem({ id: 'c1', state: 'done', updated_ms: 20 }), todoItem({ id: 'c2', state: 'done', updated_ms: 10 }))
+    await syncTodos(NODE)
+    await db.applyTodoCache(NODE, { put: [todoItem({ id: 'stale', state: 'done', updated_ms: 1 })] })
+    await hydrateTodos([NODE])
+    const original = rpc.handlers['todo.list']!
+    let calls = 0
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    rpc.handlers['todo.list'] = async (p, n) => {
+      calls++
+      if (calls === 2) throw linkError('closed')
+      return original(p, n)
+    }
+    await loadClosed(NODE)
+    await loadClosed(NODE, { more: true })
+    expect(useTodos.getState().nodes[NODE]!.closed).toMatchObject({ failed: true, complete: false })
+    expect(Object.keys(useTodos.getState().nodes[NODE]!.items)).toContain('stale')
+    expect((await db.listTodoRecords(NODE)).todos.map((t) => t.id)).toContain('stale')
+  })
+})
+
+describe('claims with the Web Lock held', () => {
+  it('a leftover claim by a dead instance is taken over whatever time it carries, even one stamped in the future', async () => {
+    goOffline()
+    await addTodo(NODE, { title: 'x', body: '' })
+    const [rec] = await db.listOutbox(NODE)
+    await db.patchOutbox(rec!.seq!, (r) => ({ ...r, claimed_by: 'dead', claimed_at: Date.now() + 3_600_000 }))
+    expect(await db.claimNextOutbox(NODE, 'me', Date.now(), 0)).toMatchObject({ claimed_by: 'me' })
+  })
+})
+
+describe('a poison record and the retry bookkeeping', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('a record whose sending keeps getting the connection cut ends as failed after MAX_DROPS, not silently looping', async () => {
+    goOffline()
+    await addTodo(NODE, { title: 'poison', body: '' })
+    await goOnline()
+    for (let i = 1; i < MAX_DROPS; i++) {
+      daemon.failNext('todo.add', linkError('closed'))
+      await replayOutbox(NODE)
+      expect((await db.listOutbox(NODE))[0]).toMatchObject({ state: 'pending', drops: i })
+    }
+    daemon.failNext('todo.add', linkError('closed'))
+    await replayOutbox(NODE)
+    expect((await db.listOutbox(NODE))[0]).toMatchObject({ state: 'failed', error: { code: 'link' } })
+  })
+
+  it('the backoff starts over for the next record instead of continuing from the previous one', async () => {
+    await syncTodos(NODE)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const delays: number[] = []
+    const real = globalThis.setTimeout
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      if (ms !== undefined && ms >= RETRY_BASE_MS && ms <= RETRY_MAX_MS) delays.push(ms)
+      return real(fn, ms)
+    }) as typeof setTimeout)
+    daemon.failNext('todo.add', linkError('timeout'))
+    await addTodo(NODE, { title: 'one', body: '' })
+    await vi.waitFor(async () => expect((await db.listOutbox(NODE))[0]?.attempts).toBe(1))
+    await vi.advanceTimersByTimeAsync(RETRY_BASE_MS + 50)
+    await vi.waitFor(() => expect(daemon.todos.size).toBe(1))
+    await vi.waitFor(async () => expect(await db.listOutbox(NODE)).toEqual([]))
+    daemon.failNext('todo.add', linkError('timeout'))
+    await addTodo(NODE, { title: 'two', body: '' })
+    await vi.waitFor(async () => expect((await db.listOutbox(NODE))[0]?.attempts).toBe(1))
+    expect(delays.filter((d) => d === RETRY_BASE_MS)).toHaveLength(2)
+    expect(delays).not.toContain(RETRY_BASE_MS * 2)
+  })
+
+  it('resetTodosMemory (sign-out) cancels pending retries: nothing is sent afterwards', async () => {
+    await syncTodos(NODE)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    daemon.failNext('todo.add', linkError('timeout'))
+    await addTodo(NODE, { title: 'slow', body: '' })
+    await vi.waitFor(async () => expect((await db.listOutbox(NODE))[0]?.attempts).toBe(1))
+    resetTodosMemory()
+    daemon.log = []
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 2)
+    expect(daemon.log).toEqual([])
+  })
+})
+
+describe('forgetting a node also drops its unsaved edits', () => {
+  it('drafts of that node go, drafts of other nodes stay', async () => {
+    const v = { title: 'a', body: '', project: '', due: '' }
+    useDrafts.getState().start(`${NODE}:a`, v)
+    useDrafts.getState().start('other:b', v)
+    vi.spyOn(client, 'getClient').mockReturnValue({ removeNode: vi.fn(async () => undefined) } as never)
+    await forgetNode(NODE)
+    expect(Object.keys(useDrafts.getState().drafts)).toEqual(['other:b'])
+    useDrafts.setState({ drafts: {} })
+  })
+})
+
+describe('a disabled local database is an expected state, not an error', () => {
+  it('after the first occurrence the page stops reacting to the other tabs’ cache announcements and logs no warning each time', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    db.disableDb()
+    await reloadFromDb(NODE)
+    await reloadFromDb(NODE)
+    await reloadFromDb(NODE)
+    expect(warn).not.toHaveBeenCalled()
+    expect(debug).toHaveBeenCalledTimes(1)
+    // 通道关掉了：别的标签页的通知到不了这里
+    const other = new BroadcastChannel('anycon-todos')
+    other.postMessage(NODE)
+    await new Promise((r) => setTimeout(r, 20))
+    other.close()
+    expect(warn).not.toHaveBeenCalled()
+    await db.resetDb()
+    resetTodosMemory()
+  })
+
+  it('forgetting a node while the database is disabled does not raise a storage error either', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    useUi.setState({ storageError: false })
+    db.disableDb()
+    await forgetNodeTodos(NODE)
+    expect(warn).not.toHaveBeenCalled()
+    expect(useUi.getState().storageError).toBe(false)
+    await db.resetDb()
+  })
+})
+

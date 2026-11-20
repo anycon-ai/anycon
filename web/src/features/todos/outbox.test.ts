@@ -31,6 +31,13 @@ describe('overlay', () => {
     expect(overlayOutbox(N, b, [rec(1, 'a', { kind: 'delete' }, { state: 'failed', error: { code: 'invalid' } })]).get('a')).toMatchObject({ failed: { code: 'invalid' } })
   })
 
+  it('a pending delete that sits behind a failed record does not hide the item: it shows as not saved', () => {
+    const b = base(todoItem({ id: 'a' }))
+    const v = overlayItem(N, 'a', b.get('a'), [rec(1, 'a', { kind: 'update', fields: { title: 'x' } }, { state: 'failed', error: { code: 'invalid', field: 'title' } }), rec(2, 'a', { kind: 'delete' })])
+    expect(v).not.toBeNull()
+    expect(v).toMatchObject({ unsynced: true, failed: { field: 'title' } })
+  })
+
   it('a failed record flags the item; an update for an item that is not there is ignored', () => {
     expect(overlayItem(N, 'a', todoItem({ id: 'a' }), [rec(1, 'a', { kind: 'update', fields: { title: 'x' } }, { state: 'failed', error: { code: 'invalid', field: 'title' } })])).toMatchObject({ failed: { field: 'title' } })
     expect(overlayItem(N, 'zz', undefined, [rec(1, 'zz', { kind: 'update', fields: { title: 'x' } })])).toBeNull()

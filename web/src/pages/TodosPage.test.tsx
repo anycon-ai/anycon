@@ -256,7 +256,7 @@ describe('agent text is untrusted', () => {
 describe('keyboard safety', () => {
   const press = (key: string, init: KeyboardEventInit = {}): void => void fireEvent.keyDown(window, { key, ...init })
 
-  it('E, X and Enter do nothing when no row has the cursor (they used to act on the first row)', async () => {
+  it('E, X and Enter do nothing when no row has the cursor', async () => {
     await load({ id: 'a', title: 'first', updated_ms: 30 }, { id: 'b', title: 'second', updated_ms: 20 })
     press('e')
     press('x')
@@ -399,3 +399,47 @@ describe('unsaved edits', () => {
     await waitFor(() => expect(useDrafts.getState().drafts).toEqual({}))
   })
 })
+
+describe('orphaned edits are findable from the list', () => {
+  const vals = { title: 'my unsaved note', body: 'details', project: '', due: '' }
+
+  it('a dirty draft for an item that is gone shows up above the list with an Open button, even when you are not on its detail', async () => {
+    await load({ id: 'a', title: 'still here' })
+    act(() => {
+      useDrafts.getState().start(`${A}:gone`, { ...vals, title: 'x' })
+      useDrafts.getState().set(`${A}:gone`, 'title', vals.title)
+    })
+    expect(await screen.findByTestId('todos-orphans')).toHaveTextContent('1 unsaved edit')
+    await userEvent.click(screen.getByTestId('todos-orphan-open'))
+    expect(h.navigate).toHaveBeenCalledWith(expect.objectContaining({ to: '/todos/$node/$todo', params: expect.objectContaining({ todo: 'gone' }) }))
+  })
+
+  it('drafts of items that exist, untouched drafts, and a not-yet-sent new item are not listed', async () => {
+    await load({ id: 'a', title: 'still here' })
+    act(() => {
+      useDrafts.getState().start(`${A}:a`, vals)
+      useDrafts.getState().set(`${A}:a`, 'title', 'edited')
+      useDrafts.getState().start(`${A}:untouched`, vals)
+    })
+    expect(screen.queryByTestId('todos-orphans')).toBeNull()
+  })
+
+  it('“Save as a new to-do” works while the node is offline: the add is queued, the draft is cleared and nothing is sent yet', async () => {
+    daemon.seed(todoItem({ id: 'a', title: 'first', body: 'my note' }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    await userEvent.click(await screen.findByTestId('todo-edit'))
+    await userEvent.type(screen.getByTestId('todo-edit-body'), ' more')
+    await act(async () => handleTodoChanged(A, { id: 'a', deleted: true }))
+    useNodes.getState().patch(A, { conn: 'peer_offline' })
+    rpc.ready = false
+    daemon.log = []
+    await userEvent.click(await screen.findByTestId('todo-orphan-save'))
+    await waitFor(() => expect(useDrafts.getState().drafts).toEqual({}))
+    expect(daemon.log).toEqual([])
+    const queued = await db.listOutbox(A)
+    expect(queued).toHaveLength(1)
+    expect(queued[0]!.op).toMatchObject({ kind: 'add', params: { title: 'first', body: 'my note more' } })
+  })
+})
+

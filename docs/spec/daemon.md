@@ -1155,3 +1155,120 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 - 导出是每个会话各一个只读快照，不是整个数据库的快照：导出过程中新来的事件、新建的会话可能在、也可能不在文件里；导出过程中被删除的会话（或附件文件）记一条 warning、不在文件里。
 - 导入是「补进去」，不是合并：已经存在的会话不会被覆盖或补齐（比如先导入了一个旧的导出，再导入同一个会话的新导出，新的那份被跳过）。要用新的导出覆盖，先 `anycon delete` 那个会话。
 - 文件是明文，没有加密、没有签名；防篡改靠每个附件的 SHA-256 之外没有别的（压缩包本身来自谁，由用户自己判断）。
+
+## 21. 清单
+
+> **尚未实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发、决策档案和分身自动唤醒各自实现时再补规格。
+
+### 21.1 范围
+
+清单记的是「现在或之后要处理的事」，一项一条。它属于这台节点：存在 daemon 的 SQLite 里，所有已配对设备看到同一份，hub 不存也不转存（节点离线时的行为见 § 21.6）。
+
+不做：标签、里程碑、看板视图、子项、排序拖拽、和外部 issue 系统同步、到期提醒的推送（新的通知类别要改外层信封和 hub，这一步不加）。周期性的项在分身那一步才有（ADR-54 第 10 条），到时 `Todo` 多一个可选字段，这一步的客户端不用为它做准备。
+
+### 21.2 `Todo`
+
+```
+Todo {
+  id:         string      // 客户端生成的 UUID；`todo.add` 按它幂等
+  title:      string      // 单行，1–200 字符（去掉首尾空白之后）
+  body:       string      // Markdown，≤ 16 KiB，可以是空串
+  project?:   string      // 项目名（§ 10）；不校验项目存在，项目改名 / 删除后原样保留
+  state:      open | working | waiting | review | done | dropped
+  due_ms?:    timestamp   // 想在什么时候之前处理；这一步只用于显示和排序
+  source:     { kind: device | local | agent, device_id?, session_id? }   // daemon 填，调用方不能指定
+  unreviewed: bool        // agent 记的、还没有人收下的项；见下
+  created_ms: timestamp
+  updated_ms: timestamp
+  closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉
+}
+```
+
+`state`：
+
+| 值 | 含义 | 这一步谁会写 |
+|---|---|---|
+| `open` | 还没人处理 | 新建时的初值 |
+| `working` | 正在处理 | 人手动 |
+| `waiting` | 等用户回答或决定 | 人手动 |
+| `review` | 做完了，等用户验收 | 人手动 |
+| `done` | 完成 | 人手动 |
+| `dropped` | 不做了 | 人手动 |
+
+六个值现在就定下来，是因为 `working` / `waiting` / `review` 之后由手动派发和分身来写（ADR-54 第 8 条），那时不必再改协议的枚举。这一步 daemon 不限制状态之间怎么转。
+
+`source`：一项是 agent 加的（`kind: agent`），当 `todo.add` 带了 `agent: true`，或者它来自本机 socket 上自报了 `local.set_client { client: "mcp" }` 的连接（§ 13）；这时经 hub 来的调用另带 `device_id`。其余的，经 hub 来的调用是 `{ kind: device, device_id }`，本机 socket 是 `{ kind: local }`。
+
+`agent: true` 是调用方自报的，任何连接都能带，它只会让这一项更不被信任，所以不需要校验。两个入口总是带它：
+
+- `anycon mcp` 的 `add_todo`，不管连的是本机 socket 还是经 hub（`--hub` / `--node`）。经 hub 时连接的身份是这台机器上已配对的 CLI 设备，daemon 分不出它是不是 MCP，只能靠这个参数。
+- `anycon todo add` 在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`，§ 5.5）。会话里的 agent 不需要配置 MCP 就能跑 `anycon` 命令，这是它最顺手的写法。
+
+`agent` 这个标记的用处是之后让分身不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
+
+`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。自报了 `mcp` 的本机连接发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 14.4](web.md#144-待处理)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
+
+`session_id` 是这一项从哪个会话里来的。daemon 拉起 agent 时在环境里注入 `ANYCON_SESSION_ID`（和 `ANYCON_AGENT` 一起，§ 5.5，同样不能被会话 `env` 覆盖），`anycon mcp` 和 `anycon todo add` 读到就在 `todo.add` 里带上 `origin_session`；daemon 只在这一项记成 `kind: agent` 时才看它，并且核对这个会话存在才记，否则丢掉这个字段、照常建项。会话之后被删，`session_id` 原样留着，客户端按「会话已不存在」显示。
+
+### 21.3 RPC
+
+节点支持这一组方法时 `node.info.capabilities.todo = true`；旧 daemon 没有这个字段，客户端不显示清单入口。实现时方法进 `crates/protocol` 和 [protocol.md § 5](../protocol.md#5-内层json-rpc-20)。
+
+| 方法 | 方向 | 说明 |
+|---|---|---|
+| `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；`include_closed` 时也给已关闭的。按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 填上一页最后一项的这两个值，返回排在它后面的。`limit` 缺省 200、上限 1000。一页另有字节预算：各项序列化后的字节累计超过 1 MiB 就停（至少给一项），所以一页可能少于 `limit`；后面还有没给出的项时 `has_more = true` |
+| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是 UUID、`title` 为空或超长、`body` 超长 → `invalid`（`data.field`）；未关闭的项已满 1000 → `invalid`（`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.reason = "too_many_unreviewed"`）。`agent` 和 `origin_session` 见 § 21.2 |
+| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计。`id` 不存在 → `not_found` |
+| `todo.delete` | C→D | `{ id }` → `{}`。物理删除。`id` 不存在 → `not_found`（重放时客户端把它当作已完成） |
+| `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
+
+并发：同一项的两次 `todo.update` 按到达顺序各自生效，后到的覆盖先到的同名字段，不做版本检查。清单是一个人的，冲突的代价是丢一次自己的编辑，不值得为它引入版本号和冲突界面。
+
+翻页：客户端连上节点后一页页翻到 `has_more = false`，拿全没关闭的项；已关闭的在用户展开「已关闭」时才按需翻页。翻页用字节预算而不只是条数，是因为经 hub 的一条响应有上限（重组后的密文 ≤ 16 MiB，[protocol.md § 3.1](../protocol.md#31-消息大小)；超了整条换成错误），1000 项各带 16 KiB 正文会超过它。翻页期间被改过的项会移到最前面，可能在两页里各出现一次或者被跳过：客户端按 `id` 去重，被跳过的由那次修改的 `todo.changed` 补上。
+
+两个上限分开算，是为了让 agent 占不满清单：会话里的 agent 经 `add_todo` 最多留下 100 个没被收下的项，之后它的 `todo.add` 失败，人照常能记。
+
+### 21.4 存储
+
+新迁移 `0004_todos.sql`：
+
+| 表 | 内容 |
+|---|---|
+| `todos` | id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
+
+已关闭的项按 `history_retention`（§ 3）清理，从 `closed_ms` 起算；没关闭的不清理。`title` / `body` 是用户内容：不进日志（§ 17），不进审计。
+
+`anycon export` / `import`（§ 20）的版本 1 只有会话，不含清单；备份清单靠复制数据目录。
+
+### 21.5 审计
+
+`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len, body_len, project?, source_kind }`；`update` 记变了的字段名，`state` 变了另记 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
+
+### 21.6 节点离线
+
+清单的唯一副本在 daemon。客户端把最近一次拿到的清单放在本地缓存里，节点离线时照常显示；离线期间的新建、修改、删除留在客户端本地，标成「未同步」，收到 `peer_online` 后按原顺序重放：
+
+- `todo.add` 按 `id` 幂等，重放多少次都只有一项
+- `todo.update` 重放的是当时改的那几个字段；离线期间别的设备也改了同一个字段的，后重放的覆盖先到的；得到 `not_found`（这一项在别处被删了）就丢掉这一条
+- `todo.delete` 得到 `not_found` 视为已完成
+
+重放结束后客户端再 `todo.list` 一次，以 daemon 的结果为准。
+
+### 21.7 多个节点
+
+每个节点各有一份清单，daemon 之间不通信（ADR-54 第 12 条）。daemon 这边只多一样东西：**分组名**。
+
+- `[hub] group`：文本，≤ 40 字符，缺省为空，和节点显示名（`[hub] name`）放在一起。热加载，加进远程修改的白名单（§ 3，`hub.group`，任意改），所以已配对设备能改，改动照常进审计 `config.changed`；`node.info` 里给出 `group`（旧 daemon 没有这个字段，客户端按空处理）。
+- 分组名相同（去掉首尾空白、区分大小写）的节点是一组；为空的节点自成一组。它是给客户端看的标签，daemon 不拿它做任何判断，不是访问控制。
+
+合并显示、按分组过滤、把一项移到另一个节点都是客户端的事：
+
+- 合并：对所选的、此刻在线的节点各发 `todo.list`，并成一个列表，每项标着节点；离线的节点用本地缓存，并标明是缓存。
+- 移动：在目标节点 `todo.add`（新的 `id`，内容照搬，`project` 清空——项目名在另一个节点上不一定是同一个项目），成功后在原节点 `todo.delete`。两步之间失败时宁可留下两份，不丢。有来源会话（`source.session_id`）的项移过去之后不带这个字段。目标节点和原节点不同组时，客户端先让用户确认。
+
+### 21.8 客户端入口
+
+- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；显示哪些节点的清单跟随空间切换；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
+- **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格实现时写进 [cli.md](cli.md)。
+- **`anycon mcp`**：两个新工具。`list_todos`（`todo.list`，只读）；`add_todo`（`todo.add`：`title`、`body`、`project`；总是带 `agent: true`，连的是本机还是经 hub 都一样）。**`add_todo` 在 anycon 拉起的 agent 里也能用**，不需要 `--allow-nested`：会话里的 agent 记下「之后要处理」正是它的用途，它不开会话、不触发任何 turn，写进去的项标着 `source.kind = agent`。agent 没有修改、关闭、删除清单项的工具。
+- **SDK**：`@anycon/sdk` 的节点对象上有 `todo.*` 的薄封装和 `todo.changed` 事件，类型来自生成的协议类型；不替调用方做离线缓存和重放。Python SDK 不动。

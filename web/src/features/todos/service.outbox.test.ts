@@ -875,18 +875,62 @@ describe('a poison record and the retry bookkeeping', () => {
     vi.useRealTimers()
   })
 
-  it('a record whose sending keeps getting the connection cut ends as failed after MAX_DROPS, not silently looping', async () => {
+  /** 一条离线时记下的新增，上线后依次用 `reason` 让它的请求被掐断 `n` 次。 */
+  async function dropped(n: number, reason: 'hub_lost' | 'peer_offline' | 'peer_reconnected' | 'noise_reset'): Promise<void> {
+    goOffline()
+    await addTodo(NODE, { title: 'poison', body: '' })
+    await goOnline()
+    for (let i = 0; i < n; i++) {
+      daemon.failNext('todo.add', linkError('closed', reason))
+      await replayOutbox(NODE)
+    }
+  }
+
+  it('a record in flight while the node side keeps changing state (peer reconnected / noise reset) ends as failed after MAX_DROPS, not silently looping', async () => {
     goOffline()
     await addTodo(NODE, { title: 'poison', body: '' })
     await goOnline()
     for (let i = 1; i < MAX_DROPS; i++) {
-      daemon.failNext('todo.add', linkError('closed'))
+      daemon.failNext('todo.add', linkError('closed', i % 2 ? 'peer_reconnected' : 'noise_reset'))
       await replayOutbox(NODE)
       expect((await db.listOutbox(NODE))[0]).toMatchObject({ state: 'pending', drops: i })
     }
-    daemon.failNext('todo.add', linkError('closed'))
+    daemon.failNext('todo.add', linkError('closed', 'peer_reconnected'))
     await replayOutbox(NODE)
     expect((await db.listOutbox(NODE))[0]).toMatchObject({ state: 'failed', error: { code: 'link' } })
+  })
+
+  it('losing the hub connection or the peer going offline (coverage, a sleeping laptop) is never counted, however often it happens', async () => {
+    await dropped(MAX_DROPS, 'hub_lost')
+    await dropped(0, 'peer_offline')
+    daemon.failNext('todo.add', linkError('closed', 'peer_offline'))
+    await replayOutbox(NODE)
+    daemon.failNext('todo.add', linkError('closed', 'peer_offline'))
+    await replayOutbox(NODE)
+    const rec = (await db.listOutbox(NODE))[0]!
+    expect(rec).toMatchObject({ state: 'pending' })
+    expect(rec.drops ?? 0).toBe(0)
+  })
+
+  it('Retry starts from zero: a record failed as poison is not failed again by one more ordinary drop', async () => {
+    await dropped(MAX_DROPS, 'peer_reconnected')
+    const failed = (await db.listOutbox(NODE))[0]!
+    expect(failed).toMatchObject({ state: 'failed', drops: MAX_DROPS })
+    daemon.failNext('todo.add', linkError('closed', 'peer_reconnected'))
+    await retryOp(failed)
+    await vi.waitFor(async () => expect((await db.listOutbox(NODE))[0]).toMatchObject({ state: 'pending', drops: 1 }))
+  })
+
+  it('the transport tells why it cut an in-flight request', async () => {
+    const { RpcClient } = await import('@/transport/rpcClient')
+    const client = new RpcClient(() => [1])
+    const reasons: Array<string | undefined> = []
+    for (const [msg, reason] of [['a', 'hub_lost'], ['b', 'peer_reconnected']] as const) {
+      const p = client.request('x').catch((e: { closeReason?: string }) => reasons.push(e.closeReason))
+      client.rejectAll('closed', msg, reason)
+      await p
+    }
+    expect(reasons).toEqual(['hub_lost', 'peer_reconnected'])
   })
 
   it('the backoff starts over for the next record instead of continuing from the previous one', async () => {
@@ -967,3 +1011,50 @@ describe('a disabled local database is an expected state, not an error', () => {
   })
 })
 
+
+describe('closed walks and reconnects', () => {
+  it('an expanded group that ended as “failed” starts over after a reconnect instead of sitting on the failure', async () => {
+    daemon.seed(todoItem({ id: 'c1', state: 'done' }))
+    await syncTodos(NODE)
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const original = rpc.handlers['todo.list']!
+    let failOnce = true
+    rpc.handlers['todo.list'] = async (p, n) => {
+      if ((p as { include_closed?: boolean }).include_closed && failOnce) {
+        failOnce = false
+        throw linkError('timeout')
+      }
+      return original(p, n)
+    }
+    setClosedExpanded(NODE, true)
+    await vi.waitFor(() => expect(useTodos.getState().nodes[NODE]!.closed.failed).toBe(true))
+    await syncTodos(NODE)
+    await vi.waitFor(() => expect(useTodos.getState().nodes[NODE]!.closed).toMatchObject({ complete: true, failed: false }))
+    expect(Object.keys(useTodos.getState().nodes[NODE]!.items)).toContain('c1')
+  })
+
+  it('a stale walk that fails late does not overwrite the state of the newer walk', async () => {
+    daemon.seed(todoItem({ id: 'c1', state: 'done' }))
+    await syncTodos(NODE)
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const original = rpc.handlers['todo.list']!
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let first = true
+    rpc.handlers['todo.list'] = async (p, n) => {
+      if ((p as { include_closed?: boolean }).include_closed && first) {
+        first = false
+        await gate
+        throw linkError('closed', 'peer_offline')
+      }
+      return original(p, n)
+    }
+    setClosedExpanded(NODE, true) // 第一趟：卡在 gate 上
+    await vi.waitFor(() => expect(useTodos.getState().nodes[NODE]!.closed.loading).toBe(true))
+    await syncTodos(NODE) // 重连：第一趟作废，展开着，重新翻
+    await vi.waitFor(() => expect(useTodos.getState().nodes[NODE]!.closed.complete).toBe(true))
+    release() // 第一趟现在才失败
+    await flush()
+    expect(useTodos.getState().nodes[NODE]!.closed).toMatchObject({ complete: true, failed: false, loading: false })
+  })
+})

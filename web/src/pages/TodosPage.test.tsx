@@ -369,7 +369,10 @@ describe('unsaved edits', () => {
     render(<TodosPage selected={{ node: A, todo: 'a' }} />)
     await userEvent.click(await screen.findByTestId('todo-edit'))
     await userEvent.type(screen.getByTestId('todo-edit-body'), ' plus more')
-    await act(async () => handleTodoChanged(A, { id: 'a', deleted: true }))
+    await act(async () => {
+      daemon.todos.delete('a')
+      handleTodoChanged(A, { id: 'a', deleted: true })
+    })
     expect(await screen.findByTestId('todo-orphan')).toBeInTheDocument()
     expect(screen.getByTestId('todo-orphan-text')).toHaveTextContent('my long note plus more')
     await userEvent.click(screen.getByTestId('todo-orphan-save'))
@@ -383,7 +386,10 @@ describe('unsaved edits', () => {
     render(<TodosPage selected={{ node: A, todo: 'a' }} />)
     await userEvent.click(await screen.findByTestId('todo-edit'))
     await userEvent.type(screen.getByTestId('todo-edit-title'), '!')
-    await act(async () => handleTodoChanged(A, { id: 'a', deleted: true }))
+    await act(async () => {
+      daemon.todos.delete('a')
+      handleTodoChanged(A, { id: 'a', deleted: true })
+    })
     await userEvent.click(await screen.findByTestId('todo-orphan-discard'))
     expect(useDrafts.getState().drafts).toEqual({})
     expect(await screen.findByTestId('todo-gone')).toBeInTheDocument()
@@ -394,7 +400,10 @@ describe('unsaved edits', () => {
     await syncTodos(A)
     render(<TodosPage selected={{ node: A, todo: 'a' }} />)
     await userEvent.click(await screen.findByTestId('todo-edit'))
-    await act(async () => handleTodoChanged(A, { id: 'a', deleted: true }))
+    await act(async () => {
+      daemon.todos.delete('a')
+      handleTodoChanged(A, { id: 'a', deleted: true })
+    })
     expect(await screen.findByTestId('todo-gone')).toBeInTheDocument()
     await waitFor(() => expect(useDrafts.getState().drafts).toEqual({}))
   })
@@ -409,7 +418,7 @@ describe('orphaned edits are findable from the list', () => {
       useDrafts.getState().start(`${A}:gone`, { ...vals, title: 'x' })
       useDrafts.getState().set(`${A}:gone`, 'title', vals.title)
     })
-    expect(await screen.findByTestId('todos-orphans')).toHaveTextContent('1 unsaved edit')
+    await waitFor(() => expect(screen.getByTestId('todos-orphans')).toHaveTextContent('1 unsaved edit'))
     await userEvent.click(screen.getByTestId('todos-orphan-open'))
     expect(h.navigate).toHaveBeenCalledWith(expect.objectContaining({ to: '/todos/$node/$todo', params: expect.objectContaining({ todo: 'gone' }) }))
   })
@@ -430,7 +439,10 @@ describe('orphaned edits are findable from the list', () => {
     render(<TodosPage selected={{ node: A, todo: 'a' }} />)
     await userEvent.click(await screen.findByTestId('todo-edit'))
     await userEvent.type(screen.getByTestId('todo-edit-body'), ' more')
-    await act(async () => handleTodoChanged(A, { id: 'a', deleted: true }))
+    await act(async () => {
+      daemon.todos.delete('a')
+      handleTodoChanged(A, { id: 'a', deleted: true })
+    })
     useNodes.getState().patch(A, { conn: 'peer_offline' })
     rpc.ready = false
     daemon.log = []
@@ -443,3 +455,75 @@ describe('orphaned edits are findable from the list', () => {
   })
 })
 
+
+describe('an item that left the open list is not necessarily deleted', () => {
+  async function editThenLeaveOpenList(change: () => void): Promise<void> {
+    daemon.seed(todoItem({ id: 'a', title: 'first', body: 'note' }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    await userEvent.click(await screen.findByTestId('todo-edit'))
+    await userEvent.type(screen.getByTestId('todo-edit-body'), ' mine')
+    // 断线期间在别处改的：没有 todo.changed，重新连上之后同步才发现它不在没关闭的列表里了
+    change()
+    await act(async () => {
+      await syncTodos(A)
+    })
+  }
+
+  it('closed elsewhere while away: the draft stays attached to the closed item, there is no orphan entry and no “save as a new to-do”', async () => {
+    await editThenLeaveOpenList(() => daemon.todos.set('a', { ...daemon.todos.get('a')!, state: 'done', closed_ms: 5, updated_ms: 50 }))
+    await waitFor(() => expect(screen.getByTestId('todo-edit-body')).toHaveValue('note mine'))
+    expect(screen.queryByTestId('todo-orphan')).toBeNull()
+    expect(screen.queryByTestId('todo-orphan-save')).toBeNull()
+    expect(screen.queryByTestId('todos-orphans')).toBeNull()
+    // 项是关闭的：可以重新打开、保存
+    expect(screen.getByTestId('todo-state')).toHaveValue('done')
+    expect(useDrafts.getState().drafts[`${A}:a`]).toBeDefined()
+  })
+
+  it('while that is being checked the page says so and offers no way to create a duplicate', async () => {
+    const original = rpc.handlers['todo.list']!
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    daemon.seed(todoItem({ id: 'a', title: 'first', body: 'note' }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    await userEvent.click(await screen.findByTestId('todo-edit'))
+    await userEvent.type(screen.getByTestId('todo-edit-body'), ' mine')
+    rpc.handlers['todo.list'] = async (p, n) => {
+      if ((p as { include_closed?: boolean }).include_closed) await gate
+      return original(p, n)
+    }
+    daemon.todos.set('a', { ...daemon.todos.get('a')!, state: 'done', closed_ms: 5, updated_ms: 50 })
+    await act(async () => {
+      await syncTodos(A)
+    })
+    expect(await screen.findByTestId('todo-checking')).toBeInTheDocument()
+    expect(await screen.findByTestId('todos-orphans-checking')).toBeInTheDocument()
+    expect(screen.queryByTestId('todo-orphan-save')).toBeNull()
+    release()
+    await waitFor(() => expect(screen.queryByTestId('todo-checking')).toBeNull())
+    expect(screen.getByTestId('todo-edit-body')).toHaveValue('note mine')
+  })
+
+  it('really deleted: after the closed walk completes without finding it, the orphan panel and the list entry appear', async () => {
+    await editThenLeaveOpenList(() => daemon.todos.delete('a'))
+    expect(await screen.findByTestId('todo-orphan')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-orphan-text')).toHaveTextContent('note mine')
+    expect(await screen.findByTestId('todos-orphans')).toBeInTheDocument()
+    expect(screen.queryByTestId('todos-orphans-checking')).toBeNull()
+  })
+
+  it('deleting from the list row drops that item’s draft, so it never shows up later as deleted elsewhere', async () => {
+    await load({ id: 'a', title: 'first' }, { id: 'b', title: 'second', updated_ms: 5 })
+    act(() => {
+      useDrafts.getState().start(`${A}:a`, { title: 'first', body: '', project: '', due: '' })
+      useDrafts.getState().set(`${A}:a`, 'title', 'first!')
+    })
+    await userEvent.click(within(row('a')).getByTestId('todo-menu'))
+    await userEvent.click(await screen.findByTestId('todo-act-delete'))
+    await userEvent.click(await screen.findByTestId('todo-delete-confirm'))
+    await waitFor(() => expect(useDrafts.getState().drafts[`${A}:a`]).toBeUndefined())
+    expect(screen.queryByTestId('todos-orphans')).toBeNull()
+  })
+})

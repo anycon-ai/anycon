@@ -9,6 +9,7 @@ import { flatOrder, groupTodos, NO_FILTERS, projectsOf, type SourceFilter, type 
 import { deleteTodo, loadClosed, setClosedExpanded } from '@/features/todos/service'
 import { useSupportingNodes, useTodoView, useTodos } from '@/features/todos/store'
 import { dirtyFields, draftKey, splitDraftKey, useDrafts } from '@/features/todos/drafts'
+import { completeClosedWalk } from '@/features/todos/service'
 import { TodoDetailPane, resolveTodoRoute } from '@/features/todos/ui/TodoDetailPane'
 import { TodoRow } from '@/features/todos/ui/TodoRow'
 import { isTypingTarget } from '@/features/session/shortcuts'
@@ -63,16 +64,24 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
   // 编辑到一半、项却已经不在了（别处删了）的草稿：不在这一页的详情上时也要找得到，不然文字只有凭地址才够得着
   const outbox = useTodos((s) => s.outbox)
   const orphans = useMemo(() => {
-    const out: Array<{ key: string; nodeId: string; id: string; title: string }> = []
+    const out: Array<{ key: string; nodeId: string; id: string; title: string; confirmed: boolean }> = []
     for (const [key, d] of Object.entries(drafts)) {
       if (dirtyFields(d).length === 0) continue
       const { nodeId, id } = splitDraftKey(key)
       const n = nodeState[nodeId]
       if (!n?.hydrated || n.items[id] || outbox.some((r) => r.node_id === nodeId && r.id === id)) continue
-      out.push({ key, nodeId, id, title: d.values.title })
+      // 没关闭的列表里没有它：翻完已关闭的也没有才算「别处删了」；还没翻完时只是「正在确认」
+      out.push({ key, nodeId, id, title: d.values.title, confirmed: n.closed.complete })
     }
     return out
   }, [drafts, nodeState, outbox])
+  // 还没确认的（没关闭的列表里没有）：去把已关闭的翻一遍。每次同步之后试一次，翻不完（离线）下次连上再试
+  const unconfirmed = useMemo(() => [...new Set(orphans.filter((o) => !o.confirmed).map((o) => o.nodeId))], [orphans])
+  const syncSig = unconfirmed.map((id) => `${id}:${nodeState[id]?.syncedAt ?? 0}`).join('|')
+  useEffect(() => {
+    for (const id of unconfirmed) void completeClosedWalk(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncSig])
   const hasDraft = (item: ViewTodo): boolean => {
     const d = drafts[draftKey(item.node_id, item.id)]
     return !!d && dirtyFields(d).length > 0
@@ -242,7 +251,8 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
       ) : null}
       {orphans.length > 0 ? (
         <section className="space-y-2 rounded-md border border-warning/40 bg-warning-subtle p-3 text-sm" role="status" data-testid="todos-orphans">
-          <p className="font-medium">{t('todos.orphans', { count: orphans.length })}</p>
+          {orphans.some((o) => o.confirmed) ? <p className="font-medium">{t('todos.orphans', { count: orphans.filter((o) => o.confirmed).length })}</p> : null}
+          {orphans.some((o) => !o.confirmed) ? <p className="font-medium" data-testid="todos-orphans-checking">{t('todos.orphansChecking', { count: orphans.filter((o) => !o.confirmed).length })}</p> : null}
           <ul className="space-y-1">
             {orphans.map((o) => (
               <li key={o.key} className="flex items-center gap-2">
@@ -311,7 +321,11 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
           <Button
             variant="danger"
             onClick={() => {
-              if (deleting) void deleteTodo(deleting.node_id, deleting.id)
+              if (deleting) {
+                // 详情里删除也是这样：删了的项不留着草稿，不然它之后会冒充「别处删了」
+                useDrafts.getState().clear(draftKey(deleting.node_id, deleting.id))
+                void deleteTodo(deleting.node_id, deleting.id)
+              }
               setDeleting(null)
             }}
             data-testid="todo-delete-confirm"

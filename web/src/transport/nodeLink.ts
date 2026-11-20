@@ -101,7 +101,7 @@ export class NodeLink {
 
   hubDown(): void {
     this.teardownNoise()
-    this.rpc.rejectAll('closed', 'hub connection lost')
+    this.rpc.rejectAll('closed', 'hub connection lost', 'hub_lost')
     this.dispatch({ type: 'hub_down' })
   }
 
@@ -127,7 +127,7 @@ export class NodeLink {
   /** 丢掉当前这一轮（传输和在途握手），当作一次新的 peer_online 重新握手。 */
   private restartHandshake(): void {
     this.teardownNoise()
-    this.rpc.rejectAll('closed', 'peer reconnected')
+    this.rpc.rejectAll('closed', 'peer reconnected', 'peer_reconnected')
     this.machine = nodeReduce(this.machine, { type: 'peer_online' })
     this.ctx.onChange(this.nodeId)
     this.startHandshake()
@@ -135,7 +135,7 @@ export class NodeLink {
 
   peerOffline(): void {
     this.teardownNoise()
-    this.rpc.rejectAll('closed', 'peer offline')
+    this.rpc.rejectAll('closed', 'peer offline', 'peer_offline')
     this.dispatch({ type: 'peer_offline' })
   }
 
@@ -266,7 +266,7 @@ export class NodeLink {
   resetTransport(reason: string): void {
     console.warn(`anycon: noise transport with node ${this.nodeId.slice(0, 8)} reset (${reason}); re-handshaking`)
     this.teardownNoise()
-    this.rpc.rejectAll('closed', 'noise session reset')
+    this.rpc.rejectAll('closed', 'noise session reset', 'noise_reset')
     this.dispatch({ type: 'reset' })
     this.startHandshake()
   }
@@ -282,6 +282,6 @@ export class NodeLink {
 
   dispose(): void {
     this.teardownNoise()
-    this.rpc.rejectAll('closed', 'link disposed')
+    this.rpc.rejectAll('closed', 'link disposed', 'disposed')
   }
 }

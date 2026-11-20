@@ -3,7 +3,7 @@
 import type { Todo, TodoListParams, TodoUpdateParams, TodoAddParams } from '@/protocol'
 import type { FakeRpc } from '@/test/fakeRpc'
 import { rpcError } from '@/test/fakeRpc'
-import { RpcCallError } from '@/transport/rpcClient'
+import { RpcCallError, type RpcCloseReason } from '@/transport/rpcClient'
 
 export class FakeTodoDaemon {
   todos = new Map<string, Todo>()
@@ -98,4 +98,4 @@ export class FakeTodoDaemon {
   }
 }
 
-export const linkError = (kind: 'offline' | 'timeout' | 'closed' | 'undeliverable' = 'timeout'): RpcCallError => new RpcCallError(kind, `link: ${kind}`)
+export const linkError = (kind: 'offline' | 'timeout' | 'closed' | 'undeliverable' = 'timeout', closeReason?: RpcCloseReason): RpcCallError => new RpcCallError(kind, `link: ${kind}`, undefined, closeReason)

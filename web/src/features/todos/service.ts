@@ -173,8 +173,8 @@ export async function syncTodos(nodeId: string): Promise<void> {
   // 新的一次连接：上一次连接里翻到一半的「已关闭」作废（断线期间别处改过的项没有 `todo.changed`，不能让半趟的记录修剪它们）；展开着就重新翻
   closedWalks.delete(nodeId)
   const st = useTodos.getState().nodes[nodeId]
-  if (st && (st.closed.loading || st.closed.hasMore || st.closed.complete)) {
-    useTodos.getState().patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: false, complete: false, hasMore: false, cursor: undefined } }))
+  if (st && (st.closed.loading || st.closed.hasMore || st.closed.complete || st.closed.failed)) {
+    useTodos.getState().patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: false, failed: false, complete: false, hasMore: false, cursor: undefined } }))
     if (st.closed.expanded) void loadClosed(nodeId)
   }
   await reloadOutbox().catch(() => undefined)
@@ -298,9 +298,28 @@ export async function loadClosed(nodeId: string, opts: { more?: boolean } = {}):
     }))
   } catch (e) {
     console.warn('anycon: could not load the closed to-dos', e)
+    // 这一趟已经被取代（重连、新的一趟）：它的失败不能盖掉新一趟的状态
+    if (closedWalks.get(nodeId) !== walk) {
+      return
+    }
     // 翻到一半失败：这一趟作废（不修剪），下次从头翻
-    if (closedWalks.get(nodeId) === walk) closedWalks.delete(nodeId)
+    closedWalks.delete(nodeId)
     patchNode(nodeId, (n) => ({ ...n, closed: { ...n.closed, loading: false, failed: true, complete: false, hasMore: false, cursor: undefined } }))
+  }
+}
+
+/**
+ * 把「已关闭」从头到尾翻完一趟（不需要用户展开）。「不在没关闭的列表里」不等于「被删了」：别处关掉的项也不在里面，
+ * 只有翻完已关闭的也没找到，才能说它被删了。翻到一半失败（离线）就停下，`closed.complete` 仍是假。
+ */
+export async function completeClosedWalk(nodeId: string): Promise<void> {
+  let more = false
+  for (let i = 0; i < 1000; i++) {
+    for (let w = 0; w < 200 && useTodos.getState().nodes[nodeId]?.closed.loading; w++) await new Promise((r) => setTimeout(r, 10))
+    await loadClosed(nodeId, { more })
+    const c = useTodos.getState().nodes[nodeId]?.closed
+    if (!c || c.failed || c.complete || !c.hasMore) return
+    more = true
   }
 }
 
@@ -406,7 +425,7 @@ export async function retryOp(rec: OutboxRecord): Promise<void> {
   if (rec.seq === undefined) return
   try {
     await db.patchOutbox(rec.seq, (stored) => {
-      const { error: _e, claimed_at: _c, claimed_by: _b, attempts: _a, ...rest } = stored
+      const { error: _e, claimed_at: _c, claimed_by: _b, attempts: _a, drops: _d, ...rest } = stored
       return { ...rest, state: 'pending' }
     })
     await reloadOutbox()
@@ -438,7 +457,7 @@ export type ReplayResult = 'done' | 'offline' | 'blocked'
 
 /** 链路错误连续失败这么多次，这一条标成失败（用户重试或丢弃），不再一直占着这一项。 */
 export const MAX_LINK_FAILURES = 3
-/** 同一条记录在飞的时候连接被掐断这么多次，就标成失败（毒记录）。比超时的次数宽：手机网络本来就会掉线。 */
+/** 同一条记录在飞的时候，节点那一侧出了状态变化（对端又上线 / 加密会话重建，见 `isNodeSideDrop`）这么多次，就标成失败（毒记录）。hub 连接断了、对端下线不算。 */
 export const MAX_DROPS = 5
 /** 别的实例的认领超过「一次请求的超时 + 这个余量」就算死了，可以接手（没有 Web Locks 时）。 */
 export const LEASE_MARGIN_MS = 5_000
@@ -452,6 +471,9 @@ async function withNodeLock<T>(nodeId: string, fn: () => Promise<T>): Promise<T>
   if (hasLocks()) return navigator.locks.request(`anycon-todo-replay:${nodeId}`, () => fn())
   return serial(`replay:${nodeId}`, fn)
 }
+
+/** 请求在途时节点那一侧出了状态变化（对端又上线了 / 加密会话重建）：算「毒记录」的一次。hub 连接断了、对端下线（手机没信号、笔记本合盖）不算。 */
+const isNodeSideDrop = (e: unknown): boolean => e instanceof RpcCallError && e.kind === 'closed' && (e.closeReason === 'peer_reconnected' || e.closeReason === 'noise_reset')
 
 /** 一条重放得到的错误该怎么办。 */
 export type ReplayVerdict =
@@ -593,14 +615,14 @@ async function runReplay(nodeId: string): Promise<{ result: ReplayResult; relist
             const dropped = await markFailed(seq, (stored) => ({ ...release(stored), state: 'failed', error: { code: 'link' }, attempts: (stored.attempts ?? 0) + 1 }))
             await reloadOutbox().catch(() => undefined)
             if (dropped === 0) announceRejected(nodeId, rec, { code: 'link' })
-          } else if (v.kind === 'offline' && error instanceof RpcCallError && error.kind === 'closed' && (rec.drops ?? 0) + 1 >= MAX_DROPS) {
+          } else if (v.kind === 'offline' && isNodeSideDrop(error) && (rec.drops ?? 0) + 1 >= MAX_DROPS) {
             // 毒记录：发这一条的时候连接一次次被掐断（比如 daemon 一收到它就崩）：标成失败，别无声地一直循环
             const dropped = await markFailed(seq, (stored) => ({ ...release(stored), state: 'failed', error: { code: 'link' }, drops: (stored.drops ?? 0) + 1 }))
             await reloadOutbox().catch(() => undefined)
             if (dropped === 0) announceRejected(nodeId, rec, { code: 'link' })
           } else {
             // 纯链路 / 离线错误：这一条留着（节点连着时的超时记一次失败），这一轮结束；节点还连着就过一会儿自己再试
-            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), ...(v.kind === 'link' ? { attempts: (stored.attempts ?? 0) + 1 } : {}), ...(error instanceof RpcCallError && error.kind === 'closed' ? { drops: (stored.drops ?? 0) + 1 } : {}) })))
+            await db.patchOutbox(seq, mine((stored) => ({ ...release(stored), ...(v.kind === 'link' ? { attempts: (stored.attempts ?? 0) + 1 } : {}), ...(isNodeSideDrop(error) ? { drops: (stored.drops ?? 0) + 1 } : {}) })))
             await reloadOutbox().catch(() => undefined)
             announce(nodeId)
             if (rpc().isReady(nodeId)) scheduleRetry(nodeId, seq)

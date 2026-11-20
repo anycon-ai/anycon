@@ -1,6 +1,6 @@
 // 「记一项」的入口和输入条（spec/web.md § 14.5）：第一行标题、其余正文；发送后留着条并清空；撤销（离线也行）；校验提示；
 // 多个节点时的缺省；命令面板的快速记；会话页的引用预填。
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeInfo } from '@/protocol'
@@ -345,4 +345,55 @@ describe('names are cleaned (nit)', () => {
     expect(text).not.toContain(String.fromCharCode(0x202e))
     expect(text).not.toContain(String.fromCharCode(7))
   })
+})
+
+describe('a quoted excerpt can never become a link, an image or raw HTML (character references and a randomized hostile search)', () => {
+  const backLink = messageLink('a'.repeat(32), 'sess_1', 3)
+  const renderBody = (quote: string) => {
+    const body = captureFromQuote(quote, backLink).split('\n').slice(1).join('\n')
+    return render(<Markdown text={body} />).container
+  }
+  // （代码块自己的界面——复制按钮和它的图标——不算原文里冒出来的元素）
+  const FORBIDDEN = 'img, script, iframe, style, object, embed, form, input, video, audio, textarea, select, link, meta, base'
+  const onlyBackLink = (container: HTMLElement, quote: string): void => {
+    const hrefs = [...container.querySelectorAll('a')].map((a) => a.getAttribute('href'))
+    expect(hrefs, `links from ${JSON.stringify(quote)}`).toEqual([backLink])
+    expect([...container.querySelectorAll(FORBIDDEN)].map((e) => e.tagName), `raw elements from ${JSON.stringify(quote)}`).toEqual([])
+  }
+
+  it.each([
+    'http&#115;://evil.example/x',
+    '&#104;ttps://evil.example/x',
+    'h&#x74;tps://evil.example/x',
+    'www&#46;evil.example',
+    'user&#64;evil.example',
+    'https&colon;//evil.example',
+    '&lt;a href="https://evil.example"&gt;x&lt;/a&gt;',
+  ])('character reference trick %s stays inert', (quote) => {
+    onlyBackLink(renderBody(quote), quote)
+  })
+
+  it('400 generated hostile strings (fixed seed): the only link is the back link, no image, no raw element', () => {
+    // mulberry32：固定种子，每次跑出同样的 400 个字符串
+    let a = 20241120
+    const rnd = (): number => {
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+    const alphabet = [...'abcxyzHTPSW0123456789:/.@_&#;\\[]()<>*~` \n-!=|']
+    const fragments = ['http', 'https', 'www', 'mailto', 'ftp', '&#', '&#x', '](', '<', '[x]:', '://', 'evil.example', 'a@b.co', '![', '```', '~~~', '> ', '1. ', '# ', '<http://x.test>', '[a]: http://r.test', '[^1]', '\n\n', '    ', '&#104;', '&#x74;', '&#115;', '&#58;', '&#46;', '&#64;', '&colon;', '&commat;', '&period;', '&#x2f;']
+    let cases = 0
+    for (let i = 0; i < 400; i++) {
+      const len = 5 + Math.floor(rnd() * 55)
+      let quote = ''
+      for (let k = 0; k < len; k++) quote += rnd() < 0.3 ? fragments[Math.floor(rnd() * fragments.length)]! : alphabet[Math.floor(rnd() * alphabet.length)]!
+      const container = renderBody(quote)
+      onlyBackLink(container, quote)
+      cleanup()
+      cases++
+    }
+    expect(cases).toBe(400)
+  }, 60_000)
 })

@@ -350,6 +350,8 @@
     "sourceMine": "我记的",
     "sourceAgent": "agent 记的",
     "messageActions": "消息操作",
+    "checking": "它已经不在没关闭的列表里了。正在确认是在别处被关掉了还是被删了……",
+    "orphansChecking_other": "有 {{count}} 项带着没保存的修改，已经不在没关闭的列表里了。正在确认是被关掉了还是被删了……",
     "orphans_other": "有 {{count}} 处没保存的修改，对应的清单项已在别处被删",
     "orphanTitle": "这一项已经不在了，但你有没保存的修改。",
     "orphanBody": "你编辑期间它在别处被删了。你写的文字先留在这里，由你决定怎么办。",

@@ -121,6 +121,14 @@ async fn post_capture_redirects_and_discards_the_body_without_parsing_storing_or
 
 #[tokio::test]
 async fn a_body_above_the_drain_cap_gets_a_303_or_an_aborted_connection_and_the_server_keeps_working() {
+    let capture = Capture::default();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("trace"))
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish(),
+    );
     let hub = TestHub::start().await;
     // 5 MiB：超过丢弃的上限（1 MiB），hub 读到上限就回答；客户端可能收到 303，也可能在还在发的时候看到连接中止（接受）
     let big = format!("{MARKER}{}", "x".repeat(5 * 1024 * 1024));
@@ -140,4 +148,13 @@ async fn a_body_above_the_drain_cap_gets_a_303_or_an_aborted_connection_and_the_
     assert_eq!(res.status(), 303);
     let page = no_redirect_client().get(hub.url("/capture")).send().await.unwrap();
     assert_eq!(page.status(), 200);
+    // 这个超过上限的请求体同样没有进日志、没有进数据目录
+    let log = String::from_utf8_lossy(&capture.0.lock().unwrap()).to_string();
+    assert!(!log.contains(MARKER), "the shared text must not be logged");
+    let mut files = Vec::new();
+    files_under(hub.dir.path(), &mut files);
+    for f in files {
+        let bytes = std::fs::read(&f).unwrap_or_default();
+        assert!(!String::from_utf8_lossy(&bytes).contains(MARKER), "{} must not contain the shared text", f.display());
+    }
 }

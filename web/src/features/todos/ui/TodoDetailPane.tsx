@@ -8,7 +8,7 @@ import { useNodes } from '@/stores/nodes'
 import { Button } from '@/ui/Button'
 import { Spinner } from '@/ui/Misc'
 import { draftKey, dirtyFields, useDrafts } from '../drafts'
-import { addTodo } from '../service'
+import { addTodo, completeClosedWalk } from '../service'
 import { fieldErrorText } from './errors'
 import { dueFromInput } from './CaptureForm'
 import type { FieldError } from '../validate'
@@ -84,10 +84,23 @@ function Gone({ nodeId, todo }: { nodeId: string; todo: string }) {
   const draft = useDrafts((s) => s.drafts[key])
   const dirty = draft ? dirtyFields(draft).length > 0 : false
   const [error, setError] = useState<FieldError | null>(null)
+  // 「不在没关闭的列表里」不等于「被删了」（别处关掉的项也不在里面）：先把已关闭的翻一遍，翻完还没有才算被删；
+  // 找到了（是关闭的）它就出现在详情里，草稿跟着它。翻不完（离线）就一直是「正在确认」
+  const checked = useTodos((s) => s.nodes[nodeId]?.closed.complete === true)
+  const syncedAt = useTodos((s) => s.nodes[nodeId]?.syncedAt)
+  useEffect(() => {
+    if (!checked) void completeClosedWalk(nodeId)
+  }, [checked, nodeId, syncedAt])
   // 没有要保住的文字：草稿不留着（不然 `beforeunload` 永远在问）
   useEffect(() => {
     if (draft && !dirty) useDrafts.getState().clear(key)
   }, [draft, dirty, key])
+  if (!checked)
+    return (
+      <p className="text-sm text-fg-subtle" role="status" data-testid="todo-checking">
+        {t('todos.checking')}
+      </p>
+    )
   if (!draft || !dirty) return <Note testId="todo-gone">{t('todos.gone')}</Note>
   const v = draft.values
   const all = [v.title, v.body].filter(Boolean).join('\n\n')

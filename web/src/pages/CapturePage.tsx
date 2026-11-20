@@ -17,6 +17,8 @@ import { takeShared } from '@/sw/shareStore'
 // 新的一次分享也取得到。
 let pending: ReturnType<typeof takeShared> | null = null
 let users = 0
+// 取出来的内容有没有被一个挂载着的页面用上：页面在 `takeShared` 回来之前就卸载了（暂存已经删了），内容不能丢，留给下一次挂载
+let consumed = false
 function acquire(): ReturnType<typeof takeShared> {
   users++
   pending ??= takeShared()
@@ -25,7 +27,10 @@ function acquire(): ReturnType<typeof takeShared> {
 function release(): void {
   users--
   queueMicrotask(() => {
-    if (users === 0) pending = null
+    if (users === 0 && consumed) {
+      pending = null
+      consumed = false
+    }
   })
 }
 
@@ -33,6 +38,7 @@ function release(): void {
 export function resetCaptureTake(): void {
   pending = null
   users = 0
+  consumed = false
 }
 
 export function CapturePage() {
@@ -47,6 +53,7 @@ export function CapturePage() {
     let live = true
     void acquire().then((shared) => {
       if (!live) return
+      consumed = true
       if (shared) {
         const text = composeSharedText(shared)
         if (text) useCapture.getState().setText(text)

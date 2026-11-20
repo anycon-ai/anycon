@@ -51,7 +51,7 @@ export function breakAutolinks(line: string): string {
     .replace(/@/g, '\u200b@')
 }
 
-/** 引用的原文放进正文：普通文字做成引用块（`[` `]` `<` `\` 转义，里面的链接不会变成能点的链接）；本身带代码围栏的用更长的围栏包住。 */
+/** 引用的原文放进正文：普通文字做成引用块（`[` `]` `<` `&` `\` 转义，里面的链接不会变成能点的链接）；本身带代码围栏的用更长的围栏包住。 */
 export function quoteBlock(clean: string): string {
   if (/^\s*(?:`{3,}|~{3,})/m.test(clean)) {
     const longest = Math.max(2, ...[...clean.matchAll(/`+/g)].map((m) => m[0].length))
@@ -60,7 +60,7 @@ export function quoteBlock(clean: string): string {
   }
   return clean
     .split('\n')
-    .map((l) => `> ${breakAutolinks(l.replace(/[\\[\]<]/g, (c) => `\\${c}`))}`.trimEnd())
+    .map((l) => `> ${breakAutolinks(l.replace(/[\\[\]<&]/g, (c) => `\\${c}`))}`.trimEnd())
     .join('\n')
 }
 

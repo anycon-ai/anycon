@@ -76,4 +76,13 @@ describe('CapturePage', () => {
     )
     expect(await screen.findByTestId('capture-input')).toHaveValue('')
   })
+
+  it('a page that goes away before the stash has been read does not lose the text: the next mount gets it', async () => {
+    await storeShared({ title: 'kept', text: '', url: '', at: Date.now() })
+    const first = render(<CapturePage />)
+    first.unmount() // takeShared 还没回来
+    await Promise.resolve()
+    render(<CapturePage />)
+    expect(await screen.findByTestId('capture-input')).toHaveValue('kept')
+  })
 })

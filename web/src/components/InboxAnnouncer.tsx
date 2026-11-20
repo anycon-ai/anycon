@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useInboxNowCount } from '@/features/inbox/useInbox'
-import { selectedNodes } from '@/lib/nodeFilter'
-import { useNodes } from '@/stores/nodes'
-import { usePrefs } from '@/stores/prefs'
+import { SETTLE_TIMEOUT_MS, useNodesSettled } from '@/features/inbox/useSettled'
 
 /**
  * 「待处理」的数字一变，用状态播报区读出完整的一句话（「3 件事在等你」），不只是读一个数字（spec/web.md § 14.10）。
@@ -13,13 +11,7 @@ import { usePrefs } from '@/stores/prefs'
 export function InboxAnnouncer({ delayMs = 600 }: { delayMs?: number }) {
   const { t } = useTranslation()
   const count = useInboxNowCount()
-  const byId = useNodes((st) => st.byId)
-  const order = useNodes((st) => st.order)
-  const saved = usePrefs((st) => st.sidebarNodes)
-  const settled = selectedNodes(order, saved).every((id) => {
-    const n = byId[id]
-    return !!n && isSettled(n.conn, n.synced, n.syncing)
-  })
+  const settled = useNodesSettled()
   const [text, setText] = useState('')
   const prev = useRef<number | null>(null)
   useEffect(() => {
@@ -43,8 +35,4 @@ export function InboxAnnouncer({ delayMs = 600 }: { delayMs?: number }) {
   )
 }
 
-/** 节点这一轮同步做完了（`synced`），或者确认它离线（不会有同步）。还在连、正在同步都不算。 */
-function isSettled(conn: string, synced: boolean, syncing: boolean): boolean {
-  if (conn === 'peer_offline') return true
-  return conn === 'ready' && synced && !syncing
-}
+export { SETTLE_TIMEOUT_MS }

@@ -103,5 +103,22 @@ describe('resolving a pending request keeps the cached summary coherent', () => 
     useSessions.getState().resolvePending(NODE, 'r1')
     expect(useSessions.getState().list.s).toMatchObject({ pending_permissions: 1, status: 'waiting_permission' })
   })
+
+  it('summary behind memory: the summary says 1 but two requests are in memory, answering one keeps the session waiting with the count of what remains', () => {
+    useSessions.setState({ list: { s: { ...summary({ id: 's', status: 'waiting_permission', pending_permissions: 1 }), node_id: NODE, cached_seq: 0 } }, pending: {}, open: {} })
+    useSessions.getState().addPending(NODE, request('r1', 's'))
+    useSessions.getState().addPending(NODE, request('r2', 's'))
+    useSessions.getState().resolvePending(NODE, 'r1')
+    expect(useSessions.getState().list.s).toMatchObject({ pending_permissions: 1, status: 'waiting_permission' })
+    useSessions.getState().resolvePending(NODE, 'r2')
+    expect(useSessions.getState().list.s).toMatchObject({ pending_permissions: 0, status: 'running' })
+  })
+
+  it('leaves a session without a cached count, and requests of other sessions, alone', () => {
+    useSessions.setState({ list: { s: { ...summary({ id: 's', status: 'idle', pending_permissions: 0 }), node_id: NODE, cached_seq: 0 } }, pending: {}, open: {} })
+    useSessions.getState().addPending(NODE, request('r1', 's'))
+    useSessions.getState().resolvePending(NODE, 'r1')
+    expect(useSessions.getState().list.s).toMatchObject({ pending_permissions: 0, status: 'idle' })
+  })
 })
 

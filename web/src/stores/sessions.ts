@@ -203,8 +203,9 @@ export const useSessions = create<SessionsState>()((set, get) => ({
       const item = s.list[p.session_id]
       if (!item || item.pending_permissions === 0) return { pending: rest }
       const remaining = Object.values(rest).filter((r) => r.session_id === p.session_id).length
-      const count = remaining === 0 ? 0 : Math.min(item.pending_permissions - 1, remaining)
-      const status = count === 0 && item.status === 'waiting_permission' ? 'running' : item.status
+      // 本地一条请求都不剩了才离开「等审批」；还有的话计数不能低于本地剩下的（`session.changed` 有节流，摘要的计数可能落后）
+      const count = remaining === 0 ? 0 : Math.max(remaining, item.pending_permissions - 1)
+      const status = remaining === 0 && item.status === 'waiting_permission' ? 'running' : item.status
       return { pending: rest, list: { ...s.list, [p.session_id]: { ...item, pending_permissions: count, status } } }
     }),
 

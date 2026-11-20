@@ -5,8 +5,8 @@
 // 选中跟着条目的 key，不跟位置：前面插进来一条新的，用户正在看的不变。
 // 选中的条目从列表里消失时分两种：
 //   在这个页面上处理的（答复、已处理、归档）→ 选中和焦点落到下一条；
-//   别处处理的（别的设备答复了、过期了）→ 不替用户挑下一条（它的按钮会立刻变成可点的，用户没看过内容），
-//   留一个「已在别处处理」的占位（`ghost`），带「下一条」按钮。
+//   别的方式离开的（别的设备答复了、在会话页答复了、过期了、标记清掉了）→ 不替用户挑下一条（它的按钮会立刻变成可点的，用户没看过内容），
+//   留一个「这一条已经不在等你了」的占位（`ghost`），带「下一条」按钮；用户自己改了节点过滤器导致它离开的，直接清掉选中，不留占位。
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { consumeHandled } from '@/features/session/inflight'
 import type { InboxItem } from './derive'
@@ -39,6 +39,10 @@ export interface Ghost {
 }
 
 export interface InboxSelection {
+  /** 每次用户（或深链接）改选中就加一：深链接晚到的定位据此判断用户有没有在这期间自己选过别的。 */
+  version: number
+  /** 页面在自己放焦点（处理完前进、清空）：平板的抽屉关掉时 Radix 不要把焦点抢回已经不在的触发元素。 */
+  focusOwned: RefObject<boolean>
   selected: string | null
   /** 选中是用户自己做的（点了一行、深链接）：平板上只有这时才滑出详情，窗口缩放带来的自动选中不弹。 */
   explicit: boolean
@@ -55,32 +59,45 @@ export interface InboxSelection {
   next: () => void
   /** 把焦点移进详情（Enter）。 */
   focusDetail: () => void
+  /**
+   * 平板抽屉关掉时的焦点归还（接到 `Drawer` 的 `onCloseAutoFocus`）：Radix 默认把焦点还给打开它的那一行，那一行可能早就没了。
+   * 这里总是自己放：页面刚把焦点放好了（没有条目了）就不动，否则放到当前选中的那一行，没有选中的就放到列表标题上。
+   */
+  onDrawerCloseFocus: (e: { preventDefault: () => void }) => void
 }
 
 /**
  * `items`：列表里的条目，按显示顺序。`active`：页面此刻是否在眼前（手机上标签页常驻、只是藏起来，藏着的时候不抢焦点）。
  * `empty`：一条都没有时，焦点落到的元素（「没有等你的事」那个标题）。
  */
-export function useInboxSelection({ items, mode, active, root, empty }: { items: readonly InboxItem[]; mode: InboxMode; active: boolean; root: RefObject<HTMLElement | null>; empty: RefObject<HTMLElement | null> }): InboxSelection {
+export function useInboxSelection({ items, picked, mode, active, ready, root, empty }: { items: readonly InboxItem[]; /** 左栏节点过滤器勾选的节点。 */ picked: readonly string[]; mode: InboxMode; active: boolean; /** 勾选的节点这一轮同步都定下来了：刚打开页面时条目还在路上，要等它。 */ ready: boolean; root: RefObject<HTMLElement | null>; empty: RefObject<HTMLElement | null> }): InboxSelection {
   const keys = items.map((i) => i.key)
   const keySig = keys.join('\u0000')
-  const [state, setState] = useState<{ key: string | null; explicit: boolean; ghost: Ghost | null }>({ key: null, explicit: false, ghost: null })
+  const [state, setState] = useState<{ key: string | null; explicit: boolean; ghost: Ghost | null; version: number }>({ key: null, explicit: false, ghost: null, version: 0 })
   const current = useRef(state)
   current.current = state
   const prev = useRef<{ keys: readonly string[]; items: ReadonlyMap<string, InboxItem> }>({ keys, items: new Map(items.map((i) => [i.key, i])) })
-  // 手机上「默认展开第一条」只在页面打开时做一次；之后列表怎么变都不替用户展开
+  // 手机上「默认展开第一条」只决定一次：页面在眼前，并且已经有条目、或者勾选的节点都同步完了仍然没有；之后列表怎么变都不替用户展开
   const defaulted = useRef(false)
+  const focusOwned = useRef(false)
+  const prevPicked = useRef(picked)
+  // 最近一次选中的条目：抽屉关掉时焦点要回到它那一行
+  const lastKey = useRef<string | null>(null)
   const pendingFocus = useRef<string | 'empty' | null>(null)
 
-  const apply = useCallback((next: { key: string | null; explicit: boolean; ghost: Ghost | null }) => {
-    current.current = next
-    setState(next)
+  const apply = useCallback((next: { key: string | null; explicit: boolean; ghost: Ghost | null }, user = false) => {
+    const full = { ...next, version: current.current.version + (user ? 1 : 0) }
+    if (next.key !== null) lastKey.current = next.key
+    current.current = full
+    setState(full)
   }, [])
 
   useEffect(() => {
     const before = prev.current
     prev.current = { keys, items: new Map(items.map((i) => [i.key, i])) }
     const cur = current.current
+    const beforePicked = prevPicked.current
+    prevPicked.current = picked
     if (cur.ghost && keys.includes(cur.ghost.key)) {
       // 占位上的条目又回来了（比如请求在重连后重新到了）：占位撤掉
       apply({ ...cur, ghost: null })
@@ -89,7 +106,15 @@ export function useInboxSelection({ items, mode, active, root, empty }: { items:
     if (cur.key !== null && !keys.includes(cur.key)) {
       if (cur.ghost?.key === cur.key) return
       const index = Math.max(before.keys.indexOf(cur.key), 0)
-      if (consumeHandled(cur.key)) {
+      const gone = before.items.get(cur.key) ?? null
+      if (gone && beforePicked.includes(gone.nodeId) && !picked.includes(gone.nodeId)) {
+        // 用户自己改了节点过滤器（这一次从勾上变成没勾），它才从列表里离开：不是「没了」，清掉选中就行。
+        // 从通知点进来的、本来就在过滤器之外的那一条不算：它和别的条目一样走占位 / 前进
+        apply({ key: null, explicit: cur.explicit, ghost: null })
+        return
+      }
+      // 页面藏在后面时什么都不替用户选、不前进、不消费「在这里处理」的记录：一律占位，等用户回来自己点
+      if (active && consumeHandled(cur.key)) {
         // 我在这里处理的：落到下一条（原来的位置，最后一条就是前一条）
         // 前进到下一条有内容可看的：「等待审批（缓存）」没有详情；答复之后摘要还没更新的那一会儿它会冒出来，别落到它头上
         const readable = items.filter((i) => i.kind !== 'waiting').map((i) => i.key)
@@ -100,40 +125,43 @@ export function useInboxSelection({ items, mode, active, root, empty }: { items:
         apply({ key: next, explicit: cur.explicit, ghost: null })
         if (had && active) pendingFocus.current = next ?? 'empty'
       } else {
-        const gone = before.items.get(cur.key) ?? null
         const replacement = gone?.kind === 'waiting' ? items.find((i) => (i.kind === 'permission' || i.kind === 'plan' || i.kind === 'question') && i.sessionId === gone.sessionId) : undefined
         apply({ key: cur.key, explicit: cur.explicit, ghost: { key: cur.key, index, item: gone, replacedBy: replacement?.key ?? null } })
       }
       return
     }
+    if (!active) return
     // 默认选中第一条有内容可看的：「等待审批（缓存）」没有详情，不当默认（等真正的请求到了再选，免得先选中占位、再被请求替换）
     const first = items.find((i) => i.kind !== 'waiting')
     if (cur.key === null && first) {
       if (mode === 'split') apply({ key: first.key, explicit: false, ghost: null })
       else if (mode === 'inline' && !defaulted.current) apply({ key: first.key, explicit: false, ghost: null })
     }
-    if (first) defaulted.current = true
+    // 手机上这个决定只做一次：页面第一次在眼前、并且数据到了（有条目，或者节点都同步完了仍然没有）的时候。
+    // 刚打开页面、同步还没完时先等，不然冷启动时（条目晚到）永远不会默认展开
+    if (first || ready) defaulted.current = true
     // keySig 代表 keys 的内容
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keySig, mode, active, apply, root])
+  }, [keySig, mode, active, ready, apply, root, picked])
 
   useEffect(() => {
     const target = pendingFocus.current
     if (target === null) return
     pendingFocus.current = null
-    const focus = (): void => {
-      if (target === 'empty') empty.current?.focus()
-      else if (mode === 'overlay') (detailFocusable() ?? rowButton(target))?.focus()
-      else rowButton(target)?.focus()
+    // 平板的抽屉关掉时 Radix 默认会把焦点还给触发它的元素（已经不在了）：抽屉的 `onCloseAutoFocus` 看这个标记，由页面自己同步地放
+    // 抽屉要关了（没有下一条）才算页面在自己放焦点；前进到下一条时抽屉还开着，不占着
+    if (mode === 'overlay' && target === 'empty') {
+      focusOwned.current = true
+      setTimeout(() => (focusOwned.current = false), 200)
     }
-    // 弹出详情关掉时 Radix 会在下一个 tick 把焦点还给触发它的元素（已经不在了）：等它做完再放
-    if (mode === 'overlay') setTimeout(focus, 50)
-    else focus()
+    if (target === 'empty') empty.current?.focus()
+    else if (mode === 'overlay') (detailFocusable() ?? rowButton(target))?.focus()
+    else rowButton(target)?.focus()
   }, [state, mode, empty])
 
   const choose = useCallback(
     (key: string, opts: { focus?: boolean } = {}) => {
-      apply({ key, explicit: true, ghost: null })
+      apply({ key, explicit: true, ghost: null }, true)
       if (opts.focus) rowButton(key)?.focus()
     },
     [apply],
@@ -141,20 +169,20 @@ export function useInboxSelection({ items, mode, active, root, empty }: { items:
   const select = useCallback(
     (key: string) => {
       const c = current.current
-      if (mode === 'inline' && c.key === key && !c.ghost) apply({ key: null, explicit: true, ghost: null })
-      else apply({ key, explicit: true, ghost: null })
+      if (mode === 'inline' && c.key === key && !c.ghost) apply({ key: null, explicit: true, ghost: null }, true)
+      else apply({ key, explicit: true, ghost: null }, true)
     },
     [apply, mode],
   )
-  const clear = useCallback(() => apply({ key: null, explicit: true, ghost: null }), [apply])
+  const clear = useCallback(() => apply({ key: null, explicit: true, ghost: null }, true), [apply])
   const next = useCallback(() => {
     const g = current.current.ghost
     if (!g || keys.length === 0) {
-      apply({ key: null, explicit: true, ghost: null })
+      apply({ key: null, explicit: true, ghost: null }, true)
       return
     }
     const key = keys[clamp(g.index, keys.length)]!
-    apply({ key, explicit: true, ghost: null })
+    apply({ key, explicit: true, ghost: null }, true)
     pendingFocus.current = key
   }, [apply, keys])
   const move = useCallback(
@@ -174,5 +202,19 @@ export function useInboxSelection({ items, mode, active, root, empty }: { items:
     detailFocusable()?.focus()
   }, [])
 
-  return { selected: state.key, explicit: state.explicit, ghost: state.ghost, select, clear, choose, move, next, focusDetail }
+  const onDrawerCloseFocus = useCallback(
+    (e: { preventDefault: () => void }) => {
+      e.preventDefault()
+      if (focusOwned.current) {
+        focusOwned.current = false
+        return
+      }
+      const key = current.current.key ?? lastKey.current
+      const row = key ? rowButton(key) : null
+      ;(row ?? empty.current)?.focus()
+    },
+    [empty],
+  )
+
+  return { onDrawerCloseFocus, version: state.version, focusOwned, selected: state.key, explicit: state.explicit, ghost: state.ghost, select, clear, choose, move, next, focusDetail }
 }

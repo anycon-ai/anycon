@@ -294,7 +294,7 @@ describe('sessions and device requests', () => {
     useEnroll.setState({ items: { [`${A}:x`]: { nodeId: A, info: { enroll_id: 'x', expires_at_ms: Date.now() + 60_000, created_at_ms: Date.now(), status: 'wait_approval', method: 'code', approval: true }, expiresAt: Date.now() + 60_000, receivedAt: Date.now(), createdAt: Date.now() } } })
     render(<InboxPage />)
     await user.click(screen.getByTestId('inbox-review'))
-    expect(useEnroll.getState().dialog).toEqual({ nodeId: A, enrollId: 'x' })
+    expect(useEnroll.getState().dialog).toEqual({ nodeId: A, enrollId: 'x', fromInbox: true })
   })
 })
 
@@ -533,8 +533,11 @@ describe('keyboard', () => {
 
   it('does nothing while the page is hidden behind another tab', () => {
     seed({ pending: [req('one', { created_at_ms: 1 }), req('two', { created_at_ms: 2 })] })
-    render(<InboxPage active={false} />)
+    const { rerender } = render(<InboxPage active />)
+    rerender(<InboxPage active={false} />)
     key({ key: 'j' })
+    rerender(<InboxPage active />)
     expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'one')
   })
+
 })

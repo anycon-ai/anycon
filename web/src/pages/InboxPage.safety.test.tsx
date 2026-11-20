@@ -81,7 +81,7 @@ describe('a request that goes away without being handled here', () => {
     arm()
     resolveElsewhere('one')
     const ghost = screen.getByTestId('inbox-ghost')
-    expect(ghost).toHaveTextContent('Handled elsewhere')
+    expect(ghost).toHaveTextContent('No longer waiting for you')
     expect(within(ghost).getByTestId('inbox-ghost-open')).toHaveAttribute('href', '/n/aaaaaaaa/s/s-one')
     expect(screen.queryByTestId('permission-card')).toBeNull()
     expect(rows()[0]).not.toHaveAttribute('data-selected')

@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { Check, Clock, ShieldAlert, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { describeError } from '@/lib/errors'
-import { formatCountdown, localExpiry } from '@/lib/expiry'
+import { ENROLL_WINDOW_MS, formatCountdown, localExpiry } from '@/lib/expiry'
 import { formatRelative } from '@/lib/format'
 import { displayHint } from '@/lib/hint'
 import { useNow } from '@/lib/useNow'
+import { holdHandled, unmarkHandled } from '@/features/session/inflight'
 import { enrollKey, useEnroll, type EnrollItem, type EnrollResolution } from '@/stores/enroll'
 import { useHub } from '@/stores/hub'
 import { useNodes } from '@/stores/nodes'
@@ -39,7 +40,11 @@ function useDeviceLabel(nodeId: string): (id: string | null | undefined) => stri
  * 一条接入请求的批准卡片（批准对话框和节点设置的「待批准的接入请求」共用，spec/web.md § 4.3.2）。
  * 设备信息是新设备自报的、没有经过认证：写明「只批准你眼前这台设备」。批准后的 6 位码只显示在这里，关掉就看不到了。
  */
-export function EnrollRequestCard({ nodeId, enrollId, onScan }: { nodeId: string; enrollId: string; onScan?: () => void }) {
+/**
+ * `handledHere`：这张卡片是从「待处理」页（在眼前时）打开的批准对话框里的：批准 / 拒绝之后才算「在待处理里处理的」。
+ * 状态横幅打开的对话框、节点设置里内联的卡片都不传，那时「待处理」（可能藏在后面）看到的是「别处处理的」。
+ */
+export function EnrollRequestCard({ nodeId, enrollId, onScan, handledHere = false }: { nodeId: string; enrollId: string; onScan?: () => void; handledHere?: boolean }) {
   const { t, i18n } = useTranslation()
   const key = enrollKey(nodeId, enrollId)
   const item: EnrollItem | undefined = useEnroll((s) => s.items[key])
@@ -52,6 +57,9 @@ export function EnrollRequestCard({ nodeId, enrollId, onScan }: { nodeId: string
 
   const run = async (action: 'approve' | 'deny'): Promise<void> => {
     setLocal({ kind: 'busy', action })
+    // 「待处理」页据此区分「我在这里批准 / 拒绝的」和「别处处理的」；批准之后条目要等新设备用掉码才消失，所以留一个有效期那么久
+    const handledKey = `enroll:${nodeId}:${enrollId}`
+    if (handledHere) holdHandled(handledKey, ENROLL_WINDOW_MS)
     try {
       if (action === 'approve') {
         const res = await approveCode(nodeId, enrollId)
@@ -63,6 +71,7 @@ export function EnrollRequestCard({ nodeId, enrollId, onScan }: { nodeId: string
         useEnroll.getState().remove(nodeId, enrollId)
       }
     } catch (e) {
+      if (handledHere) unmarkHandled(handledKey)
       if (isAlreadyResolved(e)) {
         // 别的设备先处理了：以 daemon 的列表为准，收起成一行
         setLocal({ kind: 'taken' })

@@ -77,7 +77,7 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
   const current = useRef(state)
   current.current = state
   const prev = useRef<{ keys: readonly string[]; items: ReadonlyMap<string, InboxItem> }>({ keys, items: new Map(items.map((i) => [i.key, i])) })
-  // 手机上「默认展开第一条」只在页面第一次出现在眼前时决定一次（有没有条目都算）；之后列表怎么变都不替用户展开
+  // 手机上「默认展开第一条」只决定一次：页面在眼前，并且已经有条目、或者勾选的节点都同步完了仍然没有；之后列表怎么变都不替用户展开
   const defaulted = useRef(false)
   const focusOwned = useRef(false)
   const prevPicked = useRef(picked)

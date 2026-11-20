@@ -189,7 +189,8 @@
     "navCount": "{{count}} waiting",
     "navLabel": "Inbox, {{count}} waiting",
     "sections": {
-      "now": "Now"
+      "now": "Now",
+      "later": "Later"
     },
     "inProgress": "In progress",
     "inProgressHint": "Sessions that are still running. Ones you flagged will remind you when they finish.",
@@ -204,7 +205,8 @@
       "enroll": "Device request",
       "follow_up": "Follow up",
       "error": "Error",
-      "waiting": "Waiting for approval (cached)"
+      "waiting": "Waiting for approval (cached)",
+      "later": "Agent to-do"
     },
     "cached": "Cached",
     "cachedHint": "{{node}} is offline. This is what it last reported.",
@@ -229,6 +231,10 @@
     "unknownNode": "This request is on a node this browser has not unlocked or does not know.",
     "unlockNode": "Unlock it",
     "pairNode": "Pair a node",
+    "accept": "Accept",
+    "dismiss": "Dismiss",
+    "addedSince": "Added {{time}}",
+    "laterBody": "An agent added this to your to-do list. Accept it to put it on the list, or dismiss it.",
     "closeDetail": "Close details",
     "node": "Node",
     "session": "Session",
@@ -253,6 +259,7 @@
   "tabs": {
     "label": "Main navigation",
     "inbox": "Inbox",
+    "todos": "To-dos",
     "sessions": "Sessions",
     "more": "More"
   },
@@ -273,6 +280,110 @@
     "wherePhone": "The node home page is under More > Nodes. The menu on the left is replaced by the bar at the bottom: Inbox, Sessions and More.",
     "ok": "Got it"
   },
+  "todos": {
+    "title": "To-dos",
+    "navLabel": "To-dos, {{count}} open",
+    "addTitle": "Add a to-do",
+    "addToTodos": "Add to to-dos",
+    "capturePlaceholder": "Add a to-do. The first line is the title, the rest is the note.",
+    "send": "Add",
+    "added": "Added “{{title}}”",
+    "undo": "Undo",
+    "toNode": "Node",
+    "willGoTo": "Will be added on {{node}}.",
+    "project": "Project",
+    "due": "Due",
+    "none": "None",
+    "dueAt": "due {{time}}",
+    "noSupport": "None of the selected nodes keeps a to-do list. Update the node’s daemon, or tick a node that does, to use to-dos.",
+    "unsupportedTitle": "To-dos are not available here",
+    "empty": "No to-dos",
+    "emptyBody": "Add one with the + button, or press C.",
+    "pickOne": "Select a to-do to see its details.",
+    "gone": "This to-do no longer exists.",
+    "cached": "Showing the last known to-dos of {{nodes}} (cached). Changes you make are kept and sent when the node is back.",
+    "notSynced": "Not synced",
+    "notSaved": "Not saved",
+    "byAgent": "Added by an agent",
+    "byAgentNoSession": "Added by an agent.",
+    "fromSession": "Open the session it came from",
+    "sessionGone": "The session it came from no longer exists.",
+    "groups": {
+      "working": "In progress",
+      "open": "Not started",
+      "closed": "Closed"
+    },
+    "states": {
+      "open": "Not started",
+      "working": "In progress",
+      "waiting": "Waiting",
+      "review": "To review",
+      "done": "Done",
+      "dropped": "Dropped"
+    },
+    "state": "State",
+    "done": "Done",
+    "drop": "Drop",
+    "reopen": "Reopen",
+    "open": "Open",
+    "delete": "Delete",
+    "edit": "Edit",
+    "retry": "Retry",
+    "discard": "Discard",
+    "loadMore": "Load more",
+    "fieldTitle": "Title",
+    "fieldBody": "Notes",
+    "noBody": "No notes.",
+    "deleteTitle": "Delete this to-do?",
+    "deleteBody": "“{{title}}” will be deleted from the node. This cannot be undone.",
+    "markedDone": "“{{title}}” marked done",
+    "markedDropped": "“{{title}}” dropped",
+    "moved": "“{{title}}” updated",
+    "actions": "Actions for “{{title}}”",
+    "select": "Select “{{title}}”",
+    "select_": "Select",
+    "selectedCount": "{{count}} selected",
+    "bulk": "Change the state of the selected to-dos",
+    "filterProject": "Filter by project",
+    "filterSource": "Filter by source",
+    "allProjects": "All projects",
+    "sourceAll": "All",
+    "sourceMine": "Added by me",
+    "sourceAgent": "Added by agents",
+    "messageActions": "Message actions",
+    "forgotUnsynced_one": "{{count}} unsynced to-do change was discarded with the node.",
+    "forgotUnsynced_other": "{{count}} unsynced to-do changes were discarded with the node.",
+    "replay": {
+      "full": "The to-do list is full, so a to-do could not be reopened. It stays closed."
+    },
+    "errors": {
+      "title": {
+        "empty": "The title cannot be empty.",
+        "too_long": "The title is too long (at most 200 characters).",
+        "control": "The title must be a single line.",
+        "invalid": "The title is not valid.",
+        "rejected": "The node did not accept this title."
+      },
+      "body": {
+        "too_long": "The notes are too long (at most 16 KiB).",
+        "rejected": "The node did not accept these notes."
+      },
+      "project": {
+        "empty": "The project name cannot be empty.",
+        "too_long": "The project name is too long (at most 200 characters).",
+        "control": "The project name must be a single line.",
+        "invalid": "The project name is not valid.",
+        "rejected": "The node did not accept this project name."
+      },
+      "due_ms": {
+        "invalid": "The due time is not valid.",
+        "rejected": "The node did not accept this due time."
+      },
+      "full": "The to-do list is full (1000 open to-dos). Close or delete some first.",
+      "fullUnreviewed": "Too many to-dos added by agents are waiting to be accepted.",
+      "rejected": "The node did not accept this change."
+    }
+  },
   "toast": {
     "permission": "{{title}} is waiting for your approval.",
     "aSession": "A session",
@@ -292,6 +403,8 @@
     "cancel": "Remove mark"
   },
   "palette": {
+    "addTodo": "Add to to-dos: {{text}}",
+    "addTodoEmpty": "Add a to-do…",
     "title": "Command palette",
     "placeholder": "Search messages, sessions, projects, nodes…",
     "newSession": "New session",

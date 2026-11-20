@@ -1,11 +1,13 @@
 import { Fragment, useEffect, useId, useMemo, useState } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { Flag, FolderGit2, FolderOpen, FolderPlus, GitFork, MessageSquare, MessageSquareText, Plus, Server } from 'lucide-react'
+import { Flag, FolderGit2, ListPlus, FolderOpen, FolderPlus, GitFork, MessageSquare, MessageSquareText, Plus, Server } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices } from '@/api/queries'
 import { setFollowUp } from '@/features/session/actions'
 import { isFollowUp } from '@/features/session/marks'
 import { useContentSearch, type ContentHit } from '@/features/search/contentSearch'
+import { quickAdd } from '@/features/todos/quickAdd'
+import { useCapture } from '@/features/todos/capture'
 import { lockedNodes } from '@/features/unlock/nodes'
 import { formatDateTime, formatRelative } from '@/lib/format'
 import { describeError } from '@/lib/errors'
@@ -127,10 +129,25 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     return out
   }, [nodeId, currentSession, nodes, order, sessions, navigate, onOpenChange, t])
 
+  // 第一行始终是「记到清单：<输入的文字>」（spec/web.md § 14.5）：不管输入什么都在，不参与过滤；输入为空时打开记一项的输入条
+  const addTodoItem = useMemo<Item>(() => {
+    const text = q.trim()
+    return {
+      id: 'add-todo',
+      icon: <ListPlus className="size-4" />,
+      label: text ? t('palette.addTodo', { text: [...text.split('\n')[0]!].slice(0, 80).join('') }) : t('palette.addTodoEmpty'),
+      run: () => {
+        onOpenChange(false)
+        setQ('')
+        if (text) void quickAdd(q)
+        else useCapture.getState().openCapture()
+      },
+    }
+  }, [q, t, onOpenChange])
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
-    return (needle ? items.filter((i) => i.label.toLowerCase().includes(needle) || i.hint?.toLowerCase().includes(needle)) : items).slice(0, 30)
-  }, [items, q])
+    return [addTodoItem, ...(needle ? items.filter((i) => i.label.toLowerCase().includes(needle) || i.hint?.toLowerCase().includes(needle)) : items)].slice(0, 31)
+  }, [items, q, addTodoItem])
 
   const hitItems = useMemo<HitItem[]>(
     () =>
@@ -148,7 +165,8 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
 
   // ↑ ↓ 在本地结果和内容命中之间移动；还没动过（或选中的那条没了）就是第一条
   const selectable = useMemo<Array<{ id: string; run: () => void }>>(() => [...filtered, ...hitItems], [filtered, hitItems])
-  const active = selectable.find((r) => r.id === activeId) ?? selectable[0]
+  // 没动过时默认选中第一条真正的结果（不是「记到清单」那一行：敲个字按 Enter 不该悄悄记下一项；要记用 ⌘Enter 或 ↑ 选那一行）
+  const active = selectable.find((r) => r.id === activeId) ?? selectable.find((r) => r.id !== 'add-todo') ?? selectable[0]
   const domId = (id: string): string => `${idBase}-${id}`
 
   const nodeName = (id: string): string => cleanHintText(nodes[id]?.name) || id.slice(0, 8)
@@ -167,6 +185,10 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       const next = selectable[(at + (e.key === 'ArrowDown' ? 1 : selectable.length - 1)) % selectable.length]!
       setActiveId(next.id)
       document.getElementById(domId(next.id))?.scrollIntoView({ block: 'nearest' })
+    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      // ⌘Enter：把输入的文字记成一项（没输入就什么都不做）
+      e.preventDefault()
+      if (q.trim()) addTodoItem.run()
     } else if (e.key === 'Enter') {
       active?.run()
     }

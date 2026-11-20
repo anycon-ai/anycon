@@ -2,7 +2,7 @@
 // 权限请求、计划、提问在详情里用的是会话页同一个 `PermissionCard`，按钮只在详情里：行上没有任何不看内容就能答复的入口。
 import { useMemo, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, ChevronRight, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ShieldQuestion, Smartphone } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ShieldQuestion, Smartphone } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { displayHint } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
@@ -11,6 +11,8 @@ import { PermissionCard } from '@/features/session/ui/PermissionCard'
 import { useNodes } from '@/stores/nodes'
 import { useSessions, type SessionItem } from '@/stores/sessions'
 import type { EnrollItem } from '@/stores/enroll'
+import type { ViewTodo } from '@/features/todos/types'
+import { Markdown } from '@/components/Markdown'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Chip } from '@/ui/Misc'
@@ -26,6 +28,9 @@ export interface InboxActions {
   archive: (s: SessionItem) => void
   /** 打开接入请求的批准对话框（spec/web.md § 4.3.2）。 */
   reviewEnroll: (e: EnrollItem) => void
+  /** 「稍后」：收下（`reviewed`）/ 丢掉（`dropped`，不是删除）。 */
+  acceptLater: (t: ViewTodo) => void
+  dismissLater: (t: ViewTodo) => void
 }
 
 const KIND_ICON: Record<InboxItemKind, typeof Flag> = {
@@ -36,6 +41,7 @@ const KIND_ICON: Record<InboxItemKind, typeof Flag> = {
   follow_up: Flag,
   error: AlertTriangle,
   waiting: Hourglass,
+  later: ListPlus,
 }
 
 /** 不靠颜色分辨：每种都有文字标签。 */
@@ -47,6 +53,7 @@ const KIND_TONE: Record<InboxItemKind, 'warning' | 'info' | 'danger'> = {
   follow_up: 'info',
   error: 'danger',
   waiting: 'warning',
+  later: 'info',
 }
 
 export function CachedChip({ nodeName }: { nodeName: string }) {
@@ -131,6 +138,17 @@ function RowActions({ item, actions, online, sessionId, nodeParam }: { item: Inb
         <div className="flex gap-2 px-3 pb-2.5 pl-10">
           <Button size="sm" variant="primary" className={small} onClick={() => actions.reviewEnroll(item.enroll)} data-testid="inbox-review">
             {t('inbox.review')}
+          </Button>
+        </div>
+      )
+    case 'later':
+      return (
+        <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-10">
+          <Button size="sm" variant="primary" className={small} disabled={!online} onClick={() => actions.acceptLater(item.todo)} data-testid="inbox-accept">
+            {t('inbox.accept')}
+          </Button>
+          <Button size="sm" variant="secondary" className={small} disabled={!online} onClick={() => actions.dismissLater(item.todo)} data-testid="inbox-dismiss">
+            {t('inbox.dismiss')}
           </Button>
         </div>
       )
@@ -249,6 +267,17 @@ function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem>;
       {item.kind === 'error' ? <p className="text-sm text-fg-muted">{t('inbox.errorBody')}</p> : null}
       {item.kind === 'waiting' ? <p className="text-sm text-fg-muted">{t('inbox.waitingBody')}</p> : null}
       {item.kind === 'enroll' ? <EnrollSummary item={item.enroll} nodeName={info.nodeName} /> : null}
+      {item.kind === 'later' ? (
+        <div className="space-y-2 text-sm">
+          <p className="text-fg-muted">{t('inbox.laterBody')}</p>
+          {item.todo.body ? (
+            <div className="rounded-md border border-border p-3" data-testid="inbox-later-body">
+              <Markdown text={item.todo.body} />
+            </div>
+          ) : null}
+          {item.todo.source.session_id ? <p className="text-xs text-fg-subtle">{t('todos.fromSession')}</p> : null}
+        </div>
+      ) : null}
     </div>
   )
 }

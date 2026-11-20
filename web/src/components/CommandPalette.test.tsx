@@ -325,8 +325,8 @@ describe('command palette — conversation search', () => {
     expect(active()).toHaveTextContent('title of h1')
     press('ArrowDown')
     press('ArrowDown')
-    // 到底了，回到第一条
-    expect(active()).toHaveTextContent('needle in a title')
+    // 到底了，回到第一行：始终在最前面的「记到清单：…」
+    expect(active()).toHaveTextContent('Add to to-dos: needle')
     press('ArrowUp')
     expect(active()).toHaveTextContent('title of h2')
     expect(screen.getAllByRole('button').filter((b) => b.getAttribute('aria-current') === 'true')).toHaveLength(1)
@@ -355,3 +355,23 @@ describe('command palette — conversation search', () => {
     expect(input()).toHaveValue('')
   })
 })
+
+describe('command palette — add a to-do', () => {
+  it('the first row is always “Add to to-dos: <text>” and is not filtered out; with nothing typed it opens the capture bar', async () => {
+    setupTwoNodes()
+    render(<CommandPalette open onOpenChange={() => {}} />)
+    const rows = () => screen.getAllByRole('button')
+    expect(rows()[0]).toHaveTextContent('Add a to-do…')
+    typeQuery('zzz nothing matches')
+    expect(screen.getAllByRole('button')[0]).toHaveTextContent('Add to to-dos: zzz nothing matches')
+  })
+
+  it('the default selection is the first real result, not the to-do row, so Enter never records by accident', async () => {
+    useSessions.setState({ list: { sess_t: { ...summary({ id: 'sess_t', title: 'needle in a title' }), node_id: NODE, cached_seq: 0 } }, pending: {}, open: {} })
+    render(<CommandPalette open onOpenChange={() => {}} />)
+    typeQuery('needle')
+    const active = document.getElementById(input().getAttribute('aria-activedescendant')!)!
+    expect(active).toHaveTextContent('needle in a title')
+  })
+})
+

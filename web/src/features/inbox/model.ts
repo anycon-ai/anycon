@@ -7,7 +7,8 @@ import { useEnroll, type EnrollItem } from '@/stores/enroll'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions, type SessionItem } from '@/stores/sessions'
-import { deriveInbox, inboxNowCount, nowItems, type InboxModel } from './derive'
+import { nodeSupportsTodo, useTodos, viewOf } from '@/features/todos/store'
+import { allItems, deriveInbox, inboxNowCount, nowItems, type InboxModel } from './derive'
 
 export interface InboxSnapshot {
   /** 左栏节点过滤器勾选的节点上的待处理。 */
@@ -23,12 +24,14 @@ interface Inputs {
   enrollResolved: ReturnType<typeof useEnroll.getState>['resolved']
   order: string[]
   saved: string[] | null
+  todoNodes: ReturnType<typeof useTodos.getState>['nodes']
+  todoOutbox: ReturnType<typeof useTodos.getState>['outbox']
 }
 
 function readInputs(): Inputs {
   const s = useSessions.getState()
   const e = useEnroll.getState()
-  return { list: s.list, pending: s.pending, enrollItems: e.items, enrollResolved: e.resolved, order: useNodes.getState().order, saved: usePrefs.getState().sidebarNodes }
+  return { list: s.list, pending: s.pending, enrollItems: e.items, enrollResolved: e.resolved, order: useNodes.getState().order, saved: usePrefs.getState().sidebarNodes, todoNodes: useTodos.getState().nodes, todoOutbox: useTodos.getState().outbox }
 }
 
 /** 一个会话摘要里和待处理有关的字段是否变了（`cached_seq`、`last_seq`、设置等不算）。 */
@@ -60,12 +63,13 @@ function listRelevantChanged(a: Record<string, SessionItem>, b: Record<string, S
 }
 
 function inputsChanged(a: Inputs, b: Inputs): boolean {
-  return listRelevantChanged(a.list, b.list) || a.pending !== b.pending || a.enrollItems !== b.enrollItems || a.enrollResolved !== b.enrollResolved || a.order !== b.order || a.saved !== b.saved
+  return listRelevantChanged(a.list, b.list) || a.pending !== b.pending || a.enrollItems !== b.enrollItems || a.enrollResolved !== b.enrollResolved || a.order !== b.order || a.saved !== b.saved || a.todoNodes !== b.todoNodes || a.todoOutbox !== b.todoOutbox
 }
 
 function compute(i: Inputs, now: number): InboxSnapshot {
   const selected = selectedNodes(i.order, i.saved)
-  const base = { sessions: i.list, pending: i.pending, enroll: { items: i.enrollItems, resolved: i.enrollResolved }, now }
+  const todos = viewOf({ nodes: i.todoNodes, outbox: i.todoOutbox }, selected.filter(nodeSupportsTodo))
+  const base = { sessions: i.list, pending: i.pending, enroll: { items: i.enrollItems, resolved: i.enrollResolved }, now, todos }
   const outsideNodes = i.order.filter((id) => !selected.includes(id))
   return {
     model: deriveInbox({ ...base, selected }),
@@ -74,8 +78,8 @@ function compute(i: Inputs, now: number): InboxSnapshot {
 }
 
 function sameKeys(a: InboxSnapshot, b: InboxSnapshot): boolean {
-  const ka = nowItems(a.model).map((x) => x.key)
-  const kb = nowItems(b.model).map((x) => x.key)
+  const ka = allItems(a.model).map((x) => x.key)
+  const kb = allItems(b.model).map((x) => x.key)
   return a.outside === b.outside && ka.length === kb.length && ka.every((k, n) => k === kb[n]) && a.model.inProgress.length === b.model.inProgress.length && a.model.inProgress.every((s, n) => s.id === b.model.inProgress[n]!.id)
 }
 
@@ -127,7 +131,7 @@ function onStoreChange(): void {
 
 export function subscribeInbox(listener: () => void): () => void {
   if (listeners.size === 0) {
-    unsubs = [useSessions.subscribe(onStoreChange), useEnroll.subscribe(onStoreChange), useNodes.subscribe((s, prev) => s.order !== prev.order && onStoreChange()), usePrefs.subscribe((s, prev) => s.sidebarNodes !== prev.sidebarNodes && onStoreChange())]
+    unsubs = [useTodos.subscribe(onStoreChange), useSessions.subscribe(onStoreChange), useEnroll.subscribe(onStoreChange), useNodes.subscribe((s, prev) => s.order !== prev.order && onStoreChange()), usePrefs.subscribe((s, prev) => s.sidebarNodes !== prev.sidebarNodes && onStoreChange())]
     schedule()
   }
   listeners.add(listener)

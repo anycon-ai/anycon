@@ -8,6 +8,7 @@ import { setNavigator } from '@/lib/navigate'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
+import { useCapture } from '@/features/todos/capture'
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, {}))
@@ -120,6 +121,38 @@ describe('G then I / S', () => {
     render(<Harness />)
     press('g', { repeat: true })
     press('i')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+})
+
+describe('to-dos: G T and C', () => {
+  it('G T goes to the to-do list', () => {
+    render(<Harness />)
+    press('g')
+    press('t')
+    expect(navigate).toHaveBeenCalledWith({ to: '/todos' })
+  })
+
+  it('T on its own does nothing', () => {
+    render(<Harness />)
+    press('t')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('C opens the capture bar without leaving the page, but not while typing, with a modifier, or over a dialog', () => {
+    useCapture.setState({ open: false })
+    const { getByLabelText } = render(<Harness />)
+    press('c', { metaKey: true })
+    press('c', {}, getByLabelText('box'))
+    expect(useCapture.getState().open).toBe(false)
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    document.body.append(dialog)
+    press('c')
+    expect(useCapture.getState().open).toBe(false)
+    dialog.remove()
+    press('c')
+    expect(useCapture.getState().open).toBe(true)
     expect(navigate).not.toHaveBeenCalled()
   })
 })

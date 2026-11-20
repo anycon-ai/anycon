@@ -7,6 +7,7 @@ import { handleApproveShortcut, isRequestCardVisible, isTypingTarget, requestCar
 import { shortNodeId } from '@/lib/ids'
 import { useCurrentNode } from '@/lib/nav'
 import { navigateTo } from '@/lib/navigate'
+import { useCapture } from '@/features/todos/capture'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
@@ -19,7 +20,7 @@ export const GO_TIMEOUT_MS = 1500
 /**
  * 全局快捷键（spec/web.md § 9）：
  * ⌘. 开合右栏 · ⌘B 开合左栏 · ⌘N 当前项目新建会话 · [ / ] 上 / 下一个会话 · ⌘⇧A / ⌘⇧D 允许 / 拒绝最近一条待审批 ·
- * `G` 然后 `I` / `S` 去「待处理」/「会话」（单字母键在输入框里、有对话框或菜单开着时都不生效）。
+ * `G` 然后 `I` / `T` / `S` 去「待处理」/「清单」/「会话」· `C` 记一项（单字母键在输入框里、有对话框或菜单开着时都不生效）。
  * ⌘K（命令面板）和 Esc（停止）在各自的组件里；「待处理」页自己的 J / K / Enter / ⌘⇧A / ⌘⇧D 在 `features/inbox/useInboxKeys.ts`。
  */
 export function useShortcuts(): void {
@@ -42,6 +43,17 @@ export function useShortcuts(): void {
       if (!mod && !e.altKey && !e.shiftKey && !e.repeat && !isTypingTarget(e.target) && !overlayOpen()) {
         if (key === 'g') {
           goAt.current = Date.now()
+          return
+        }
+        if (key === 'c') {
+          // 记一项：任何页面一个键，输入，回车；不离开当前页面（spec/web.md § 14.5）
+          e.preventDefault()
+          useCapture.getState().openCapture()
+          return
+        }
+        if (waiting && key === 't') {
+          e.preventDefault()
+          void navigate({ to: '/todos' })
           return
         }
         if (waiting && key === 'i') {

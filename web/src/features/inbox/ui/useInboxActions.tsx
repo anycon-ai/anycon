@@ -7,6 +7,7 @@ import { holdHandled, unmarkHandled } from '@/features/session/inflight'
 import { describeError } from '@/lib/errors'
 import { ArchiveWorktreeDialog, effectiveChoice, type DisposeInfo } from '@/features/worktree/DisposeDialog'
 import { describeArchiveError } from '@/features/worktree/errors'
+import { updateTodo } from '@/features/todos/service'
 import { useEnroll } from '@/stores/enroll'
 import { useGit } from '@/stores/git'
 import type { SessionItem } from '@/stores/sessions'
@@ -47,6 +48,14 @@ export function useInboxActions(): { actions: InboxActions; dialogs: ReactNode }
           unmarkHandled(`session:${s.id}`)
           toast.error(describeArchiveError(e, t))
         })
+      },
+      acceptLater: (todo) => {
+        holdHandled(`later:${todo.node_id}:${todo.id}`)
+        void updateTodo(todo.node_id, todo.id, { reviewed: true })
+      },
+      dismissLater: (todo) => {
+        holdHandled(`later:${todo.node_id}:${todo.id}`)
+        void updateTodo(todo.node_id, todo.id, { state: 'dropped' })
       },
       // 批准 / 拒绝在对话框里做（点了才标「在这里处理的」，而且只有从这里打开的对话框才标，见 `EnrollRequestCard`）；只是打开又取消不算
       reviewEnroll: (e) => useEnroll.getState().openDialog(e.nodeId, e.info.enroll_id, { fromInbox: true }),

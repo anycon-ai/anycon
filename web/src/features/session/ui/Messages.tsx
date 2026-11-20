@@ -11,6 +11,7 @@ import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Chip, CopyButton } from '@/ui/Misc'
+import { MessageTodoMenu } from '@/features/todos/ui/MessageTodoMenu'
 import { errorExplanation, errorExtras, errorSeverity } from '../errors'
 import { gitEventText } from '@/features/worktree/eventText'
 import { describeAttachmentFailure } from '@/features/attachments/errors'
@@ -31,13 +32,14 @@ const DiffView = lazy(() => import('./DiffView').then((m) => ({ default: m.DiffV
 export function UserBubble({ block, nodeId, onResend, resent }: { block: UserBlock; nodeId?: string; onResend?: () => void; resent?: boolean }) {
   const { t } = useTranslation()
   return (
-    <div className="flex flex-col items-end gap-1.5" data-testid="message-user" data-delivery={block.deliveryUncertain ? 'uncertain' : undefined}>
+    <div className="group relative flex flex-col items-end gap-1.5" data-seq={block.seq} data-testid="message-user" data-delivery={block.deliveryUncertain ? 'uncertain' : undefined}>
       <MessageAttachments nodeId={nodeId} attachments={block.attachments} />
       {block.content || block.attachments.length === 0 ? (
         <div className={cn('max-w-[min(85%,56rem)] rounded-2xl px-4 py-2.5 text-fg', block.deliveryUncertain ? 'border border-dashed border-warning bg-warning-subtle' : 'bg-bg-muted')}>
           <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{block.content}</p>
         </div>
       ) : null}
+      {block.content ? <MessageTodoMenu text={block.content} seq={block.seq} className="absolute -left-9 top-1" /> : null}
       {block.deliveryUncertain ? (
         <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-fg-subtle" data-testid="message-delivery-uncertain">
           <Chip tone="warning">{t('message.deliveryUncertain')}</Chip>
@@ -117,8 +119,9 @@ export function AssistantMessage({ block }: { block: AssistantBlock }) {
   const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
   return (
-    <div className="group relative" data-testid="message-assistant" data-done={block.done}>
+    <div className="group relative" data-seq={block.seq} data-testid="message-assistant" data-done={block.done}>
       <Markdown text={block.text} streaming={!block.done} />
+      <MessageTodoMenu text={block.text} seq={block.seq} className="absolute -top-1 right-9" />
       <button
         type="button"
         aria-label={t('message.copyMarkdown')}

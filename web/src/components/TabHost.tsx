@@ -7,6 +7,8 @@ import { Navigate, useNavigate, useRouterState, useSearch } from '@tanstack/reac
 import { InboxPage } from '@/pages/InboxPage'
 import { MorePage } from '@/pages/MorePage'
 import { SessionsPage } from '@/pages/SessionsPage'
+import { TodoDetailPage } from '@/pages/TodoDetailPage'
+import { TodosPage } from '@/pages/TodosPage'
 import { useIsWide } from '@/lib/useMediaQuery'
 import { cn } from '@/ui/cn'
 import { TABS, tabOfPath, type TabId } from './TabBar'
@@ -28,10 +30,23 @@ export function InboxHost() {
   return <InboxPage active={active} locate={locate} onLocateDone={done} />
 }
 
+/** `/todos`：手机上标签页常驻，藏在后面时不处理键。 */
+function TodosHost() {
+  return <TodosPage active={usePathname().replace(/\/+$/, '') === '/todos'} />
+}
+
+/** `/todos/:node/:todo`：宽屏在清单页右半边显示详情；手机是全屏的二级页（标签栏收起）。 */
+export function TodoRoute({ node, todo }: { node: string; todo: string }) {
+  const wide = useIsWide()
+  return wide ? <TodosPage selected={{ node, todo }} /> : <TodoDetailPage node={node} todo={todo} />
+}
+
 function PageOf({ tab }: { tab: TabId }): ReactNode {
   switch (tab) {
     case 'inbox':
       return <InboxHost />
+    case 'todos':
+      return <TodosHost />
     case 'sessions':
       return <SessionsPage />
     case 'more':
@@ -44,6 +59,7 @@ export function TabRoute({ tab }: { tab: TabId }) {
   const wide = useIsWide()
   if (!wide) return null
   if (tab === 'inbox') return <InboxHost />
+  if (tab === 'todos') return <TodosHost />
   return <Navigate to="/inbox" replace />
 }
 

@@ -133,10 +133,11 @@ test.describe.serial('待处理', () => {
     await expect(page.getByTestId('inbox-page')).toHaveAttribute('data-mode', 'inline', {
       timeout: CONNECT_TIMEOUT,
     })
-    // 底部标签栏：待处理 / 会话 / 更多，没有左栏、没有抽屉的菜单按钮
+    // 底部标签栏：待处理 / 清单 / ＋ / 会话 / 更多（＋是按钮不是链接），没有左栏、没有抽屉的菜单按钮
     const bar = page.getByTestId('tab-bar')
     await expect(bar).toBeVisible()
-    await expect(bar.getByRole('link')).toHaveCount(3)
+    await expect(bar.getByRole('link')).toHaveCount(4)
+    await expect(bar.getByTestId('tab-capture')).toBeVisible()
     await expect(page.getByTestId('tab-inbox')).toHaveAttribute('aria-current', 'page')
     await expect(page.getByTestId('tab-inbox-count')).toHaveText('1', { timeout: CONNECT_TIMEOUT })
     await expect(page.getByTestId('sidebar')).toBeHidden()

@@ -17,10 +17,13 @@ export function cliEnv(state: Pick<E2EState, 'daemonHome'>): NodeJS.ProcessEnv {
 export async function runCli(
   state: Pick<E2EState, 'daemonHome'>,
   args: string[],
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
+  // 测试进程自己可能跑在 agent 会话里（环境里有 ANYCON_AGENT）：CLI 会因此拒绝改清单状态的命令，所以默认清掉，要的用例显式传
+  const env = { ...cliEnv(state), ...options.env }
+  if (!options.env?.ANYCON_AGENT) delete env.ANYCON_AGENT
   const { stdout } = await execFileAsync(cliBin, args, {
-    env: cliEnv(state),
+    env,
     timeout: options.timeoutMs ?? 30_000,
   })
   return stdout

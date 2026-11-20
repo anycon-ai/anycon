@@ -73,6 +73,18 @@ export default defineConfig({
           { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
           { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
+        // 主屏图标长按（spec/web.md § 8、§ 14.5）。manifest 没有按语言切换的机制，名字用英文
+        shortcuts: [
+          { name: 'Add a to-do', short_name: 'Add', url: '/capture' },
+          { name: 'Inbox', url: '/inbox' },
+        ],
+        // 「分享到 anycon」：service worker 拦下这个 POST，内容不进 URL（`src/sw/share.ts`）。没有接管时由 hub 回 303（hub.md § 2.1）
+        share_target: {
+          action: '/capture',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: { title: 'title', text: 'text', url: 'url' },
+        },
       },
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,svg,png,wasm,webmanifest}'],

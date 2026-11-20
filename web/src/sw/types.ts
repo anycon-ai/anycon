@@ -53,7 +53,13 @@ export interface WindowClientLike {
   postMessage(message: unknown): void
 }
 
+export interface FetchEventLike extends ExtendableEventLike {
+  readonly request: { readonly method: string; readonly url: string; formData(): Promise<{ get(name: string): unknown }> }
+  respondWith(response: Promise<unknown>): void
+}
+
 export interface SwEventMap {
+  fetch: FetchEventLike
   push: PushEventLike
   notificationclick: NotificationEventLike
   pushsubscriptionchange: SubscriptionChangeEventLike

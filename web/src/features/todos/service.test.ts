@@ -154,7 +154,7 @@ describe('todo.changed', () => {
 describe('cache', () => {
   it('is read from IndexedDB on start, so an offline node still shows its last list (and the outbox with it)', async () => {
     await db.applyTodoCache(NODE, { put: [todoItem({ id: 'c1', title: 'cached one' })], syncedAt: 777 })
-    await db.mutateOutbox(NODE, 'new', () => ({ put: [{ node_id: NODE, id: 'new', op: { kind: 'add', params: { title: 'typed offline', body: '' } }, created_at: 5, state: 'pending' }] }))
+    await db.appendOutbox({ node_id: NODE, id: 'new', op: { kind: 'add', params: { title: 'typed offline', body: '' } }, created_at: 5, state: 'pending' })
     goOffline()
     await hydrateTodos([NODE])
     const st = useTodos.getState()
@@ -192,44 +192,49 @@ describe('offline outbox and replay — scenario table', () => {
     expect(r.ok && r.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
   })
 
-  it('add then edit the title offline: coalesced, one todo.add with the final title', async () => {
+  it('add then edit the title offline: two requests in order, nothing is merged', async () => {
     goOffline()
     const r = await addTodo(NODE, { title: 'draft', body: '' })
     if (!r.ok) throw new Error('add failed')
     await updateTodo(NODE, r.id, { title: 'final', body: 'b' })
-    expect(await db.listOutbox(NODE)).toHaveLength(1)
+    expect(await db.listOutbox(NODE)).toHaveLength(2)
     await goOnline()
     await replayOutbox(NODE)
-    expect(sent()).toEqual(['todo.add:final'])
+    expect(sent()).toEqual(['todo.add:draft', 'todo.update:final'])
     expect(daemon.todos.get(r.id)).toMatchObject({ title: 'final', body: 'b' })
   })
 
-  it('edit an existing item several times offline: one todo.update carrying only the fields that were changed', async () => {
+  it('edit an existing item several times offline: one todo.update per edit, each carrying only the fields that were changed', async () => {
     daemon.seed(todoItem({ id: 'e1', title: 'orig', body: 'keep me', project: 'p' }))
     await syncTodos(NODE)
     goOffline()
     await updateTodo(NODE, 'e1', { title: 'a' })
     await updateTodo(NODE, 'e1', { title: 'b' })
     await updateTodo(NODE, 'e1', { state: 'working' })
-    expect(await db.listOutbox(NODE)).toHaveLength(1)
+    expect(await db.listOutbox(NODE)).toHaveLength(3)
     expect(byTitle('b')).toMatchObject({ state: 'working', unsynced: true, body: 'keep me' })
     await goOnline()
     daemon.log = []
     await replayOutbox(NODE)
-    expect(daemon.log).toEqual([{ method: 'todo.update', params: { id: 'e1', title: 'b', state: 'working' } }])
+    expect(daemon.log).toEqual([
+      { method: 'todo.update', params: { id: 'e1', title: 'a' } },
+      { method: 'todo.update', params: { id: 'e1', title: 'b' } },
+      { method: 'todo.update', params: { id: 'e1', state: 'working' } },
+    ])
     expect(daemon.todos.get('e1')).toMatchObject({ title: 'b', state: 'working', body: 'keep me', project: 'p' })
   })
 
-  it('add then delete offline: nothing is ever sent', async () => {
+  it('add then delete offline: both are sent in order (nothing is cancelled), the daemon ends with nothing', async () => {
     goOffline()
     const r = await addTodo(NODE, { title: 'oops', body: '' })
     if (!r.ok) throw new Error('add failed')
     await deleteTodo(NODE, r.id)
     expect(view()).toEqual([])
-    expect(await db.listOutbox(NODE)).toEqual([])
+    expect(await db.listOutbox(NODE)).toHaveLength(2)
     await goOnline()
     await replayOutbox(NODE)
-    expect(daemon.log).toEqual([])
+    expect(sent()).toEqual(['todo.add:oops', 'todo.delete'])
+    expect(daemon.todos.size).toBe(0)
   })
 
   it('edits to different items are replayed in the order they were made', async () => {
@@ -414,13 +419,16 @@ describe('offline outbox and replay — scenario table', () => {
     expect(byTitle('orig')!.unsynced).toBe(false)
   })
 
-  it('an unknown error stops the replay and keeps the operation, without marking it failed', async () => {
+  it('an unknown error marks that operation failed (Retry / Discard); the other items go on', async () => {
     goOffline()
     await addTodo(NODE, { title: 'x', body: '' })
+    await addTodo(NODE, { title: 'y', body: '' })
     await goOnline()
     daemon.failNext('todo.add', rpcError('internal'))
-    expect(await replayOutbox(NODE)).toBe('blocked')
-    expect((await db.listOutbox(NODE))[0]).toMatchObject({ state: 'pending' })
+    expect(await replayOutbox(NODE)).toBe('done')
+    expect((await db.listOutbox(NODE)).map((r) => `${r.op.kind}:${r.state}`)).toEqual(['add:failed'])
+    expect(byTitle('x')).toMatchObject({ failed: { code: 'internal' } })
+    expect([...daemon.todos.values()].map((t) => t.title)).toEqual(['y'])
   })
 
   it('goes through the outbox even online: the same path, replayed immediately, ending with the daemon’s copy', async () => {
@@ -523,7 +531,7 @@ describe('two tabs', () => {
 
   it('the other tab’s changes are picked up from the database', async () => {
     goOffline()
-    await db.mutateOutbox(NODE, 'zz', () => ({ put: [{ node_id: NODE, id: 'zz', op: { kind: 'add', params: { title: 'from tab 2', body: '' } }, created_at: 1, state: 'pending' }] }))
+    await db.appendOutbox({ node_id: NODE, id: 'zz', op: { kind: 'add', params: { title: 'from tab 2', body: '' } }, created_at: 1, state: 'pending' })
     expect(byTitle('from tab 2')).toBeUndefined()
     await reloadFromDb(NODE)
     expect(byTitle('from tab 2')).toBeDefined()
@@ -533,7 +541,7 @@ describe('two tabs', () => {
     goOffline()
     await addTodo(NODE, { title: 'x', body: '' })
     const [r] = await db.listOutbox(NODE)
-    await db.putOutbox({ ...r!, claimed_at: 1 })
+    await db.patchOutbox(r!.seq!, (x) => ({ ...x, claimed_at: 1, claimed_by: 'dead-tab' }))
     await goOnline()
     expect(await replayOutbox(NODE)).toBe('done')
     expect(daemon.methods()).toEqual(['todo.add'])
@@ -573,7 +581,7 @@ describe('removing this device', () => {
     expect(await db.listOutbox()).toEqual([])
     expect((await db.listTodoRecords(NODE)).todos).toEqual([])
     await db.applyTodoCache(NODE, { put: [todoItem({ id: 'c2' })], syncedAt: 5 })
-    await db.mutateOutbox(NODE, 'q', () => ({ put: [{ node_id: NODE, id: 'q', op: { kind: 'delete' }, created_at: 1, state: 'pending' }] }))
+    await db.appendOutbox({ node_id: NODE, id: 'q', op: { kind: 'delete' }, created_at: 1, state: 'pending' })
     await db.resetDb()
     expect(await db.listOutbox()).toEqual([])
     expect(await db.listTodoRecords(NODE)).toEqual({ todos: [] })

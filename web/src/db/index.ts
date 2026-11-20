@@ -1,4 +1,5 @@
 // IndexedDB（idb）。schema 见 spec/web.md § 6.2。按 origin 隔离，这是 ADR-23 接受的代价。
+import { deleteShareDb } from '@/sw/shareStore'
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { AgentInfo, AttachmentRef, NodeInfo, Project, SessionEvent, SessionSummary, Todo } from '@/protocol'
 import type { OutboxRecord } from '@/features/todos/types'
@@ -219,6 +220,8 @@ export async function wipeAll(): Promise<void> {
     tx.objectStore('blobs').clear(),
     tx.done,
   ])
+  // 换账号：账号 A 分享进来、还没被取走的内容不能在账号 B 的输入条里冒出来
+  await deleteShareDb().catch((e: unknown) => console.warn('anycon: could not delete the share stash', e))
 }
 
 // ---- keys ----
@@ -433,8 +436,9 @@ export async function listOutbox(nodeId?: string): Promise<OutboxRecord[]> {
   return all.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
 }
 
-export async function putOutbox(rec: OutboxRecord): Promise<void> {
-  await (await getDb()).put('todo_outbox', rec)
+/** 追加一条待发改动（排在最后）。不合并、不取消：重放就是按这个日志的顺序一条条发。返回 `seq`。 */
+export async function appendOutbox(rec: OutboxRecord): Promise<number> {
+  return Number(await (await getDb()).add('todo_outbox', rec))
 }
 
 export async function deleteOutbox(seqs: readonly number[]): Promise<void> {
@@ -444,20 +448,51 @@ export async function deleteOutbox(seqs: readonly number[]): Promise<void> {
 }
 
 /**
- * 读—改—写这个节点上同一项的待发改动，在一个事务里（两个标签页同时入队也不会各自看到旧的）：
- * `plan` 拿到这一项现有的改动（按顺序），返回要删的、要写的（没有 `seq` 的是新增）。
- * 返回事务之后这一项的全部改动。
+ * 认领下一条要发的：在**一个**读写事务里选出来并写上认领（只改库里现在的这条记录，不写回之前读到的快照，
+ * 所以事务之间入队 / 重试的改动不会被盖掉）。
+ *   - 每一项只有它最前面的那一条有资格（同一项内保持顺序）；最前面的是 `failed`，这一项就等着，别的项照常；
+ *   - 被别的实例认领、而且认领还没过期（`takeoverMs` 内）的跳过；`takeoverMs = 0`：持有 Web Lock 的实例独占，库里留的认领都是死掉的实例留下的。
  */
-export async function mutateOutbox(nodeId: string, id: string, plan: (existing: OutboxRecord[]) => { remove?: number[]; put?: OutboxRecord[] }): Promise<OutboxRecord[]> {
-  const db = await getDb()
-  const tx = db.transaction('todo_outbox', 'readwrite')
-  const existing = (await tx.store.index('by_node').getAll(nodeId)).filter((r) => r.id === id).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
-  const { remove = [], put = [] } = plan(existing)
-  for (const q of remove) await tx.store.delete(q)
-  for (const r of put) await tx.store.put(r)
-  const after = (await tx.store.index('by_node').getAll(nodeId)).filter((r) => r.id === id).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+export async function claimNextOutbox(nodeId: string, owner: string, now: number, takeoverMs: number): Promise<OutboxRecord | null> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const recs = (await tx.store.index('by_node').getAll(nodeId)).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+  const seen = new Set<string>()
+  for (const r of recs) {
+    if (seen.has(r.id)) continue
+    seen.add(r.id)
+    if (r.state !== 'pending') continue
+    if (r.claimed_at !== undefined && r.claimed_by !== owner && now - r.claimed_at < takeoverMs) continue
+    const claimed: OutboxRecord = { ...r, claimed_at: now, claimed_by: owner }
+    await tx.store.put(claimed)
+    await tx.done
+    return claimed
+  }
   await tx.done
-  return after
+  return null
+}
+
+/** 读—改—写一条记录（`f` 拿到库里现在的样子；返回 `null` 删掉）。记录已经不在了（被丢弃 / 别处发完了）返回 `false`。 */
+export async function patchOutbox(seq: number, f: (stored: OutboxRecord) => OutboxRecord | null): Promise<boolean> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const stored = await tx.store.get(seq)
+  if (!stored) {
+    await tx.done
+    return false
+  }
+  const next = f(stored)
+  if (next) await tx.store.put(next)
+  else await tx.store.delete(seq)
+  await tx.done
+  return true
+}
+
+/** 丢掉这一项从 `fromSeq` 起（含）的全部待发改动，返回丢掉了几条。 */
+export async function discardOutboxFrom(nodeId: string, id: string, fromSeq: number): Promise<number> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const mine = (await tx.store.index('by_node').getAll(nodeId)).filter((r) => r.id === id && (r.seq ?? 0) >= fromSeq)
+  for (const r of mine) await tx.store.delete(r.seq!)
+  await tx.done
+  return mine.length
 }
 
 /** 这台节点上的待发改动和缓存一起清掉（节点被忘记）。返回丢掉的待发改动数。 */

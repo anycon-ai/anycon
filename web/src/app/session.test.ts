@@ -51,7 +51,7 @@ describe('wipeLocalData', () => {
 
   it('also deletes the cached to-dos, the not-yet-sent to-do operations and a share that was never taken (plaintext titles must not stay on a removed device)', async () => {
     await db.applyTodoCache('n1', { put: [todoItem({ id: 't1', title: 'secret title' })], syncedAt: 1 })
-    await db.putOutbox({ node_id: 'n1', id: 't2', op: { kind: 'add', params: { title: 'pending secret', body: '' } }, state: 'pending', created_at: 1 })
+    await db.appendOutbox({ node_id: 'n1', id: 't2', op: { kind: 'add', params: { title: 'pending secret', body: '' } }, state: 'pending', created_at: 1 })
     await storeShared({ title: 'shared secret', text: '', url: '', at: Date.now() })
     expect((await db.listTodoRecords('n1')).todos).toHaveLength(1)
     expect(await db.listOutbox('n1')).toHaveLength(1)

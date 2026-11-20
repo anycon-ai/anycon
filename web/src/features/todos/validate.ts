@@ -18,8 +18,9 @@ export function utf8Bytes(s: string): number {
 
 export type TodoField = 'title' | 'body' | 'project' | 'due_ms'
 export interface FieldError {
-  field: TodoField
-  reason: 'empty' | 'too_long' | 'control' | 'invalid'
+  /** `storage`：本地库写不进去（配额、库被别的标签页关掉），改动没有入队。 */
+  field: TodoField | 'storage'
+  reason: 'empty' | 'too_long' | 'control' | 'invalid' | 'failed'
 }
 
 /** 单行字段：去掉首尾空白，1–`max` 个码点，没有控制字符。返回错误，或 null。 */

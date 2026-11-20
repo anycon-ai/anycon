@@ -4,7 +4,7 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { Todo, TodoChanged, TodoCursor } from '@/protocol'
 import { useNodes } from '@/stores/nodes'
-import { overlayOutbox } from './outbox'
+import { overlayItem } from './outbox'
 import type { OutboxRecord, ViewTodo } from './types'
 import { isClosed } from './types'
 
@@ -25,16 +25,15 @@ export interface NodeTodos {
   hydrated: boolean
   /** 这一次连接的同步做完了。 */
   synced: boolean
-  /** 同步进行中：期间 `todo.changed` 碰过的项不能被「整份替换」删掉。 */
+  /** 同步（翻页）进行中。期间被 `todo.changed` 或本地动作碰过的项由 `service.ts` 记下来，翻完时不被旧的一页盖掉。 */
   syncing: boolean
-  touched: Record<string, true>
   /** 最近一次同步（本机时钟）。 */
   syncedAt?: number
   closed: ClosedState
 }
 
 const emptyClosed = (): ClosedState => ({ expanded: false, loading: false, complete: false, hasMore: false, failed: false })
-const emptyNode = (): NodeTodos => ({ items: {}, hydrated: false, synced: false, syncing: false, touched: {}, closed: emptyClosed() })
+const emptyNode = (): NodeTodos => ({ items: {}, hydrated: false, synced: false, syncing: false, closed: emptyClosed() })
 
 interface TodosState {
   nodes: Record<string, NodeTodos>
@@ -43,7 +42,7 @@ interface TodosState {
   patchNode: (nodeId: string, f: (n: NodeTodos) => NodeTodos) => void
   /** 读完缓存。 */
   setCache: (nodeId: string, todos: readonly Todo[], syncedAt?: number) => void
-  /** 全量翻完之后的结果：没关闭的项以它为准（同步期间被 `todo.changed` 碰过的除外）；缓存里已关闭的保留。 */
+  /** 全量翻完之后的结果（`service.ts` 已经把翻页期间变过的项并进来）：没关闭的项以它为准；缓存里已关闭的保留。 */
   replaceOpen: (nodeId: string, fetched: readonly Todo[], syncedAt: number) => void
   /** 并入一批项（翻页、已关闭的翻页），按 id 去重，`updated_ms` 新的赢。 */
   mergeItems: (nodeId: string, todos: readonly Todo[]) => void
@@ -69,9 +68,9 @@ export const useTodos = create<TodosState>()((set) => ({
     set((s) => {
       const cur = s.nodes[nodeId] ?? emptyNode()
       const items: Record<string, Todo> = {}
-      for (const t of Object.values(cur.items)) if (isClosed(t.state) || cur.touched[t.id]) items[t.id] = t
+      for (const t of Object.values(cur.items)) if (isClosed(t.state)) items[t.id] = t
       for (const t of fetched) if (!items[t.id] || items[t.id]!.updated_ms <= t.updated_ms) items[t.id] = t
-      return { nodes: { ...s.nodes, [nodeId]: { ...cur, items, hydrated: true, synced: true, syncing: false, touched: {}, syncedAt } } }
+      return { nodes: { ...s.nodes, [nodeId]: { ...cur, items, hydrated: true, synced: true, syncing: false, syncedAt } } }
     }),
   mergeItems: (nodeId, todos) =>
     set((s) => {
@@ -87,7 +86,7 @@ export const useTodos = create<TodosState>()((set) => ({
       if (ch.deleted) delete items[ch.id]
       else if (ch.todo && ch.todo.id === ch.id) items[ch.id] = ch.todo
       else return s
-      return { nodes: { ...s.nodes, [nodeId]: { ...cur, items, touched: cur.syncing ? { ...cur.touched, [ch.id]: true } : cur.touched } } }
+      return { nodes: { ...s.nodes, [nodeId]: { ...cur, items } } }
     }),
   removeNode: (nodeId) =>
     set((s) => {
@@ -107,14 +106,43 @@ export function useSupportingNodes(nodeIds: readonly string[]): string[] {
   return useMemo(() => nodeIds.filter((id) => byId[id]?.info?.capabilities.todo === true), [nodeIds, byId])
 }
 
-/** 这些节点上的清单（缓存叠上待发改动），不排序、不分组。 */
+/** 没有待发改动的项的界面形状：按缓存里那个对象记住，缓存没变的项不重新生成（一千项、每项 16 KiB 也不会每次改动都重建）。 */
+const baseViews = new WeakMap<Todo, ViewTodo>()
+function baseView(nodeId: string, t: Todo): ViewTodo {
+  let v = baseViews.get(t)
+  if (!v || v.node_id !== nodeId) {
+    v = { ...t, node_id: nodeId, unsynced: false }
+    baseViews.set(t, v)
+  }
+  return v
+}
+
+/** 这些节点上的清单（缓存叠上待发改动），不排序、不分组。只有带待发改动的项才重新叠，其余复用上一次的对象。 */
 export function viewOf(state: Pick<TodosState, 'nodes' | 'outbox'>, nodeIds: readonly string[]): ViewTodo[] {
   const out: ViewTodo[] = []
-  for (const id of nodeIds) {
-    const n = state.nodes[id]
-    const base = new Map(Object.entries(n?.items ?? {}))
-    const ops = state.outbox.filter((r) => r.node_id === id)
-    out.push(...overlayOutbox(id, base, ops).values())
+  for (const nodeId of nodeIds) {
+    const items = state.nodes[nodeId]?.items ?? {}
+    const pending = new Map<string, OutboxRecord[]>()
+    for (const r of state.outbox) {
+      if (r.node_id !== nodeId) continue
+      const list = pending.get(r.id)
+      if (list) list.push(r)
+      else pending.set(r.id, [r])
+    }
+    for (const t of Object.values(items)) {
+      const ops = pending.get(t.id)
+      if (!ops) {
+        out.push(baseView(nodeId, t))
+        continue
+      }
+      const v = overlayItem(nodeId, t.id, t, ops)
+      if (v) out.push(v)
+    }
+    for (const [id, ops] of pending) {
+      if (id in items) continue
+      const v = overlayItem(nodeId, id, undefined, ops)
+      if (v) out.push(v)
+    }
   }
   return out
 }

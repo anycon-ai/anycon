@@ -351,8 +351,10 @@
     "sourceAgent": "agent 记的",
     "messageActions": "消息操作",
     "forgotUnsynced_other": "有 {{count}} 条没同步的清单改动随节点一起丢掉了。",
+    "discardedMore_other": "同一项后面的 {{count}} 条改动一起丢掉了。",
     "replay": {
-      "full": "清单已满，没能重新打开这一项，它仍是关闭的。"
+      "full": "清单已满，没能重新打开这一项，它仍是关闭的。",
+      "fullKept": "清单已满，没能重新打开这一项，它仍是关闭的；对它的其他改动已保留。"
     },
     "errors": {
       "title": {
@@ -379,7 +381,11 @@
       },
       "full": "清单已满（1000 项没关闭的）。先关闭或删除一些。",
       "fullUnreviewed": "agent 记的、等着收下的项太多了。",
-      "rejected": "节点没有接受这个改动。"
+      "rejected": "节点没有接受这个改动。",
+      "link": "试了几次都没能发出这个改动。",
+      "storage": {
+        "failed": "没能存在这台设备上（存储已满或不可用），什么都没有改动。"
+      }
     }
   },
   "toast": {

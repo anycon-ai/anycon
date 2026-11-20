@@ -123,7 +123,7 @@ describe('capture bar and sheet', () => {
     expect(screen.getByTestId('capture-input')).toHaveValue('x'.repeat(201))
   })
 
-  it('works while the node is offline: the item waits in the outbox and undo cancels it without sending anything', async () => {
+  it('works while the node is offline: the item waits in the outbox; undo is queued behind it and the daemon ends without the item', async () => {
     const user = userEvent.setup()
     useNodes.getState().patch(A, { conn: 'peer_offline' })
     rpc.ready = false
@@ -138,7 +138,7 @@ describe('capture bar and sheet', () => {
     useNodes.getState().patch(A, { conn: 'ready' })
     const { replayOutbox } = await import('./service')
     await replayOutbox(A)
-    expect(daemon.methods().filter((m) => m !== 'todo.list')).toEqual([])
+    expect(daemon.methods().filter((m) => m !== 'todo.list')).toEqual(['todo.add', 'todo.delete'])
     expect(added()).toHaveLength(0)
   })
 

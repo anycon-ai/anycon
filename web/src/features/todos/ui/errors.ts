@@ -9,6 +9,7 @@ export function fieldErrorText(t: TFunction, e: FieldError): string {
 
 /** daemon 拒绝一条改动的原因（`invalid` + `data.field` / `data.reason`）→ 一句话。 */
 export function outboxErrorText(t: TFunction, e: OutboxError): string {
+  if (e.code === 'link') return t('todos.errors.link')
   if (e.reason === 'too_many') return t('todos.errors.full')
   if (e.reason === 'too_many_unreviewed') return t('todos.errors.fullUnreviewed')
   if (e.field === 'title' || e.field === 'body' || e.field === 'project' || e.field === 'due_ms') return t(`todos.errors.${e.field}.rejected`)

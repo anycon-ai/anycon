@@ -36,11 +36,19 @@ export interface FormDataLike {
   get(name: string): unknown
 }
 
+/** 截到 `FIELD_MAX` 个码元，不把一个代理对（emoji 之类）从中间劈开：落在高位代理上就多去掉那一个码元。 */
+export function cut(v: string): string {
+  if (v.length <= FIELD_MAX) return v
+  const end = FIELD_MAX
+  const last = v.charCodeAt(end - 1)
+  return v.slice(0, last >= 0xd800 && last <= 0xdbff ? end - 1 : end)
+}
+
 /** 表单里的字符串字段（文件之类的不收）；超长截断。 */
 export function readFields(form: FormDataLike, now: number): SharedFields {
   const str = (name: string): string => {
     const v = form.get(name)
-    return typeof v === 'string' ? v.slice(0, FIELD_MAX) : ''
+    return typeof v === 'string' ? cut(v) : ''
   }
   return { title: str('title'), text: str('text'), url: str('url'), at: now }
 }

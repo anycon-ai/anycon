@@ -35,11 +35,16 @@ export interface OutboxRecord {
   id: string
   op: OutboxOp
   created_at: number
-  /** `pending` 等着重放；`failed` daemon 拒绝了（带 `error`），项留在界面上标成失败，用户选重试或丢弃。 */
+  /** 入队时节点连不上：重放完之后要重新列一次（在线时的改动靠返回的 `Todo` 和 `todo.changed`，不用整份重列）。 */
+  queued_offline?: boolean
+  /** `pending` 等着重放；`failed` 被拒或反复发不出去（带 `error`），项留在界面上标成失败，用户选重试或丢弃，这一项后面的改动等着。 */
   state: 'pending' | 'failed'
   error?: OutboxError
-  /** 正在被某个标签页重放（不再合并新的改动进来）。 */
+  /** 链路错误（超时、没送达）连续失败的次数，持久化：到 `MAX_LINK_FAILURES` 就标成失败。 */
+  attempts?: number
+  /** 正在被某个实例发送：认领的时间和实例 id。没有 Web Locks 时靠它防止两个标签页同时发（租约，见 `service.ts`）。 */
   claimed_at?: number
+  claimed_by?: string
 }
 
 /** 界面上用的一项：daemon 的 `Todo` 叠上本地还没同步的改动。 */

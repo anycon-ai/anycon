@@ -1,105 +1,68 @@
-// 离线改动的入队合并和叠到界面上（纯函数）。每个场景：给定现有的待发改动 + 新的一条 → 期望留下什么。
+// 待发队列叠到界面上的纯函数（队列本身是只追加的日志，不合并，见 outbox.ts 头部）。
 import { describe, expect, it } from 'vitest'
+import type { Todo } from '@/protocol'
 import { todoItem } from '@/test/factories'
-import { mergeUpdate, overlayOutbox, planEnqueue } from './outbox'
-import type { OutboxOp, OutboxRecord } from './types'
+import { groupOf, overlayItem, overlayOutbox } from './outbox'
+import { useTodos, viewOf } from './store'
+import type { OutboxRecord } from './types'
 
-const N = 'n'.repeat(32)
-const ID = '11111111-1111-4111-8111-111111111111'
-const rec = (seq: number, op: OutboxOp, over: Partial<OutboxRecord> = {}): OutboxRecord => ({ seq, node_id: N, id: ID, op, created_at: seq * 10, state: 'pending', ...over })
-const add = (title = 'a'): OutboxOp => ({ kind: 'add', params: { title, body: '' } })
-const upd = (fields: Extract<OutboxOp, { kind: 'update' }>['fields']): OutboxOp => ({ kind: 'update', fields })
+const N = 'n1'
+const rec = (seq: number, id: string, op: OutboxRecord['op'], over: Partial<OutboxRecord> = {}): OutboxRecord => ({ seq, node_id: N, id, op, created_at: 100 + seq, state: 'pending', ...over })
+const base = (...ts: Todo[]): Map<string, Todo> => new Map(ts.map((t) => [t.id, t]))
 
-describe('mergeUpdate', () => {
-  it('later fields overwrite earlier ones; clear and set cancel each other', () => {
-    expect(mergeUpdate({ title: 'a', state: 'working' }, { title: 'b' })).toEqual({ title: 'b', state: 'working' })
-    expect(mergeUpdate({ project: 'p' }, { clear: ['project'] })).toEqual({ clear: ['project'] })
-    expect(mergeUpdate({ clear: ['due_ms'] }, { due_ms: 5 })).toEqual({ due_ms: 5 })
-    expect(mergeUpdate({ title: 'a' }, { state: 'done', reviewed: true })).toEqual({ title: 'a', state: 'done', reviewed: true })
+describe('overlay', () => {
+  it('applies the log in order on top of the daemon’s copy and marks the item unsynced', () => {
+    const out = overlayOutbox(N, base(todoItem({ id: 'a', title: 'orig', project: 'p' })), [
+      rec(2, 'a', { kind: 'update', fields: { title: 'second' } }),
+      rec(1, 'a', { kind: 'update', fields: { title: 'first', clear: ['project'] } }),
+    ])
+    expect(out.get('a')).toMatchObject({ title: 'second', unsynced: true })
+    expect(out.get('a')!.project).toBeUndefined()
+  })
+
+  it('an add that has no cached copy shows the new item; an add the daemon already has keeps the daemon’s version', () => {
+    expect(overlayOutbox(N, base(), [rec(1, 'x', { kind: 'add', params: { title: 'new', body: 'b' } })]).get('x')).toMatchObject({ title: 'new', body: 'b', state: 'open', unsynced: true })
+    expect(overlayOutbox(N, base(todoItem({ id: 'x', title: 'daemon' })), [rec(1, 'x', { kind: 'add', params: { title: 'mine', body: '' } })]).get('x')).toMatchObject({ title: 'daemon', unsynced: true })
+  })
+
+  it('a delete hides the item; a failed delete keeps it visible as failed', () => {
+    const b = base(todoItem({ id: 'a' }))
+    expect(overlayOutbox(N, b, [rec(1, 'a', { kind: 'delete' })]).has('a')).toBe(false)
+    expect(overlayOutbox(N, b, [rec(1, 'a', { kind: 'delete' }, { state: 'failed', error: { code: 'invalid' } })]).get('a')).toMatchObject({ failed: { code: 'invalid' } })
+  })
+
+  it('a failed record flags the item; an update for an item that is not there is ignored', () => {
+    expect(overlayItem(N, 'a', todoItem({ id: 'a' }), [rec(1, 'a', { kind: 'update', fields: { title: 'x' } }, { state: 'failed', error: { code: 'invalid', field: 'title' } })])).toMatchObject({ failed: { field: 'title' } })
+    expect(overlayItem(N, 'zz', undefined, [rec(1, 'zz', { kind: 'update', fields: { title: 'x' } })])).toBeNull()
+  })
+
+  it('a human edit makes an agent item reviewed', () => {
+    const t = todoItem({ id: 'a', unreviewed: true, source: { kind: 'agent' } })
+    expect(overlayItem(N, 'a', t, [rec(1, 'a', { kind: 'update', fields: { reviewed: true } })])!.unreviewed).toBe(false)
+  })
+
+  it('closing records closed_ms, reopening removes it', () => {
+    const open = overlayItem(N, 'a', todoItem({ id: 'a' }), [rec(1, 'a', { kind: 'update', fields: { state: 'done' } })])!
+    expect(open.closed_ms).toBeDefined()
+    const back = overlayItem(N, 'a', open, [rec(2, 'a', { kind: 'update', fields: { state: 'open' } })])!
+    expect(back.closed_ms).toBeUndefined()
   })
 })
 
-describe('planEnqueue (scenario → plan)', () => {
-  it('two edits of the same field offline: the second merges into the first update, one request on replay', () => {
-    const p = planEnqueue(N, ID, [rec(1, upd({ title: 'one' }))], upd({ title: 'two', body: 'x' }), 99)
-    expect(p.remove).toEqual([])
-    expect(p.put).toEqual([rec(1, upd({ title: 'two', body: 'x' }))])
-  })
-
-  it('an update after a claimed (in-flight) update is appended, not merged into it', () => {
-    const p = planEnqueue(N, ID, [rec(1, upd({ title: 'one' }), { claimed_at: 5 })], upd({ title: 'two' }), 99)
-    expect(p.put).toHaveLength(1)
-    expect(p.put[0]!.seq).toBeUndefined()
-    expect(p.put[0]!.op).toEqual(upd({ title: 'two' }))
-  })
-
-  it('edits of the text fields while the add is still queued go into the add; a state change stays a separate update after it', () => {
-    const p = planEnqueue(N, ID, [rec(1, add('old'))], upd({ title: 'new', state: 'working' }), 99)
-    expect(p.put).toHaveLength(2)
-    expect(p.put[0]).toMatchObject({ seq: 1, op: { kind: 'add', params: { title: 'new' } } })
-    expect(p.put[1]!.op).toEqual(upd({ state: 'working' }))
-  })
-
-  it('editing an add that was rejected re-queues it (the user is fixing it)', () => {
-    const failed = rec(1, add('bad'), { state: 'failed', error: { code: 'invalid', field: 'title' } })
-    const p = planEnqueue(N, ID, [failed], upd({ title: 'fixed' }), 99)
-    expect(p.put).toHaveLength(1)
-    expect(p.put[0]).toMatchObject({ seq: 1, state: 'pending', op: { params: { title: 'fixed' } } })
-    expect(p.put[0]!.error).toBeUndefined()
-  })
-
-  it('add then delete offline: the daemon never saw it, so everything for the item is cancelled and nothing is sent', () => {
-    const p = planEnqueue(N, ID, [rec(1, add()), rec(2, upd({ state: 'done' }))], { kind: 'delete' }, 99)
-    expect(p.remove).toEqual([1, 2])
-    expect(p.put).toEqual([])
-  })
-
-  it('delete when the add is already in flight: pending updates are dropped and a delete is queued (not_found counts as done)', () => {
-    const p = planEnqueue(N, ID, [rec(1, add(), { claimed_at: 5 }), rec(2, upd({ title: 'x' }))], { kind: 'delete' }, 99)
-    expect(p.remove).toEqual([2])
-    expect(p.put).toHaveLength(1)
-    expect(p.put[0]!.op).toEqual({ kind: 'delete' })
-  })
-
-  it('delete of an item the daemon already has queues just the delete', () => {
-    const p = planEnqueue(N, ID, [], { kind: 'delete' }, 99)
-    expect(p).toMatchObject({ remove: [], put: [{ op: { kind: 'delete' }, state: 'pending' }] })
+describe('groups', () => {
+  it('open, closed, everything else is “working”', () => {
+    expect([groupOf('open'), groupOf('done'), groupOf('dropped'), groupOf('working'), groupOf('waiting'), groupOf('review')]).toEqual(['open', 'closed', 'closed', 'working', 'working', 'working'])
   })
 })
 
-describe('overlayOutbox', () => {
-  const base = new Map([[ID, todoItem({ id: ID, title: 'from daemon', updated_ms: 100 })]])
-
-  it('shows local adds, applies updates in order, hides locally deleted items, and marks them unsynced', () => {
-    const view = overlayOutbox(N, base, [rec(1, upd({ title: 'edited', state: 'done' })), rec(2, { kind: 'add', params: { title: 'new one', body: 'b', project: 'p' } }, { id: 'other' })])
-    expect(view.get(ID)).toMatchObject({ title: 'edited', state: 'done', unsynced: true })
-    expect(view.get(ID)!.closed_ms).toBeDefined()
-    expect(view.get('other')).toMatchObject({ title: 'new one', project: 'p', state: 'open', unsynced: true, source: { kind: 'device' } })
-    expect(overlayOutbox(N, base, [rec(1, { kind: 'delete' })]).has(ID)).toBe(false)
-  })
-
-  it('reopening clears closed_ms; a human edit clears unreviewed', () => {
-    const closed = new Map([[ID, todoItem({ id: ID, state: 'done', closed_ms: 5, unreviewed: true, source: { kind: 'agent' } })]])
-    const v = overlayOutbox(N, closed, [rec(1, upd({ state: 'open' }))]).get(ID)!
-    expect(v.state).toBe('open')
-    expect(v.closed_ms).toBeUndefined()
-    expect(v.unreviewed).toBe(false)
-  })
-
-  it('a rejected change is visible as failed and keeps the item on screen', () => {
-    const v = overlayOutbox(N, new Map(), [rec(1, add('kept'), { state: 'failed', error: { code: 'invalid', reason: 'too_many' } })]).get(ID)!
-    expect(v).toMatchObject({ title: 'kept', failed: { reason: 'too_many' }, unsynced: true })
-  })
-
-  it('an add whose item the daemon already has (replay cut off after the reply) keeps the daemon version, marked unsynced', () => {
-    expect(overlayOutbox(N, base, [rec(1, add('local title'))]).get(ID)).toMatchObject({ title: 'from daemon', unsynced: true })
-  })
-
-  it('updates for an item that is not in the cache (and has no add) show nothing', () => {
-    expect(overlayOutbox(N, new Map(), [rec(1, upd({ title: 'x' }))]).size).toBe(0)
-  })
-
-  it('only applies the ops of its own node', () => {
-    expect(overlayOutbox(N, base, [rec(1, upd({ title: 'x' }), { node_id: 'other-node' })]).get(ID)).toMatchObject({ title: 'from daemon', unsynced: false })
+describe('viewOf is incremental', () => {
+  it('items without queued changes keep the same object across rebuilds; only the item with a change is rebuilt', () => {
+    const a = todoItem({ id: 'a' })
+    const b = todoItem({ id: 'b' })
+    const nodes = { [N]: { items: { a, b }, hydrated: true, synced: true, syncing: false, closed: { expanded: false, loading: false, complete: false, hasMore: false, failed: false } } } as unknown as ReturnType<typeof useTodos.getState>['nodes']
+    const v1 = viewOf({ nodes, outbox: [] }, [N])
+    const v2 = viewOf({ nodes, outbox: [rec(1, 'b', { kind: 'update', fields: { title: 'x' } })] }, [N])
+    expect(v2.find((v) => v.id === 'a')).toBe(v1.find((v) => v.id === 'a'))
+    expect(v2.find((v) => v.id === 'b')).toMatchObject({ title: 'x', unsynced: true })
   })
 })

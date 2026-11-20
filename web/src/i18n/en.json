@@ -354,8 +354,11 @@
     "forgotUnsynced_one": "{{count}} unsynced to-do change was discarded with the node.",
     "forgotUnsynced_other": "{{count}} unsynced to-do changes were discarded with the node.",
     "replay": {
-      "full": "The to-do list is full, so a to-do could not be reopened. It stays closed."
+      "full": "The to-do list is full, so a to-do could not be reopened. It stays closed.",
+      "fullKept": "The to-do list is full, so a to-do could not be reopened. It stays closed; your other changes to it were kept."
     },
+    "discardedMore_one": "{{count}} later change to the same to-do was discarded with it.",
+    "discardedMore_other": "{{count}} later changes to the same to-do were discarded with it.",
     "errors": {
       "title": {
         "empty": "The title cannot be empty.",
@@ -381,7 +384,11 @@
       },
       "full": "The to-do list is full (1000 open to-dos). Close or delete some first.",
       "fullUnreviewed": "Too many to-dos added by agents are waiting to be accepted.",
-      "rejected": "The node did not accept this change."
+      "rejected": "The node did not accept this change.",
+      "link": "This change could not be sent after several tries.",
+      "storage": {
+        "failed": "Could not save this on this device (storage is full or unavailable). Nothing was changed."
+      }
     }
   },
   "toast": {

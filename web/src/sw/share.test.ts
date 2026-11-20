@@ -1,7 +1,7 @@
 // 分享目标的纯逻辑和暂存库（spec/web.md § 8、§ 14.5）。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deleteDB, openDB } from 'idb'
-import { CAPTURE_PATH, FIELD_MAX, STASH_TTL_MS, composeSharedText, handleShare, isShareRequest, readFields } from './share'
+import { CAPTURE_PATH, FIELD_MAX, cut, STASH_TTL_MS, composeSharedText, handleShare, isShareRequest, readFields } from './share'
 import { SHARE_DB, deleteShareDb, storeShared, takeShared } from './shareStore'
 
 const ORIGIN = 'https://hub.example'
@@ -28,6 +28,17 @@ describe('readFields', () => {
     expect(f).toMatchObject({ url: 'https://a.test', at: 42 })
     expect(Object.keys(f).sort()).toEqual(['at', 'text', 'title', 'url'])
     expect(readFields(form({ title: new Blob(['x']) }), 1).title).toBe('')
+  })
+})
+
+describe('truncation', () => {
+  it('never splits a surrogate pair: an emoji straddling the limit is dropped whole', () => {
+    const v = `${'a'.repeat(FIELD_MAX - 1)}\u{1F600}tail`
+    const out = cut(v)
+    expect(out).toBe('a'.repeat(FIELD_MAX - 1))
+    expect(out.charCodeAt(out.length - 1)).toBe(97)
+    expect(cut(`${'a'.repeat(FIELD_MAX - 2)}\u{1F600}x`)).toBe(`${'a'.repeat(FIELD_MAX - 2)}\u{1F600}`)
+    expect(cut('short')).toBe('short')
   })
 })
 

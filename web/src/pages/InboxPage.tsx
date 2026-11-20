@@ -60,7 +60,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const order = useNodes((s) => s.order)
   const setDefer = useUi((s) => s.setDeferHomeNotice)
 
-  // ---- 通知的目标：不受节点过滤器限制（§ 14.3：不在当前勾选里的内容照常显示，写明它属于哪里，不自动切换） ----
+  // ---- 通知的目标：不受节点过滤器限制（§ 4.13：不在当前选择里的内容照常显示，写明它属于哪里，不自动切换） ----
   const [target, setTarget] = useState<InboxLocate | null>(null)
   const [gone, setGone] = useState<InboxLocate | null>(null)
   const seen = useRef<string | null>(null)

@@ -52,7 +52,7 @@ export interface PrefsState {
   /** 左栏顶部是否列出进行中的会话（Recent）；默认开，外观设置里可以关。 */
   sidebarRecent: boolean
   lastNode: string | null
-  /** 「记一项」上次记到哪个节点（多个节点支持清单时的缺省，spec/web.md § 14.5）。 */
+  /** 「记一项」上次记到哪个节点（多个节点支持清单时的缺省，spec/web.md § 4.12.1）。 */
   lastTodoNode: string | null
   /** 每个空间（key = 分组名）里「记一项」上次记到的节点。 */
   lastTodoNodeBySpace: Record<string, string>

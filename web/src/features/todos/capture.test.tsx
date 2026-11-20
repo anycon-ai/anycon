@@ -1,4 +1,4 @@
-// 「记一项」的入口和输入条（spec/web.md § 14.5）：第一行标题、其余正文；发送后留着条并清空；撤销（离线也行）；校验提示；
+// 「记一项」的入口和输入条（spec/web.md § 4.12.1）：第一行标题、其余正文；发送后留着条并清空；撤销（离线也行）；校验提示；
 // 多个节点时的缺省；命令面板的快速记；会话页的引用预填。
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

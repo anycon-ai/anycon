@@ -130,7 +130,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     return out
   }, [nodeId, currentSession, nodes, order, sessions, navigate, onOpenChange, t])
 
-  // 第一行始终是「记到清单：<输入的文字>」（spec/web.md § 14.5）：不管输入什么都在，不参与过滤；输入为空时打开记一项的输入条
+  // 第一行始终是「记到清单：<输入的文字>」（spec/web.md § 4.12.1）：不管输入什么都在，不参与过滤；输入为空时打开记一项的输入条
   const addTodoItem = useMemo<Item>(() => {
     const text = q.trim()
     return {

@@ -1,4 +1,4 @@
-// 分享目标（PWA `share_target`，spec/web.md § 8、§ 14.5）：从别的应用「分享到 anycon」会向 `/capture` POST 一份 multipart 表单
+// 分享目标（PWA `share_target`，spec/web.md § 8、§ 4.12.1）：从别的应用「分享到 anycon」会向 `/capture` POST 一份 multipart 表单
 // （`title` / `text` / `url`）。分享的内容是用户的东西，**不能进 URL**（URL 会留在 hub 和它前面反代的访问日志里），
 // 所以 service worker 在页面之前拦下这个 POST：把三个字段存进它自己的小库（`anycon-share`，只有这一份、页面读完就删），
 // 回 303 到 `/capture`（没有 query），页面取出来填进输入条，用户按了发送才会记下来；没有任何东西被自动添加。

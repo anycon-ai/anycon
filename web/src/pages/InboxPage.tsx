@@ -213,10 +213,8 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
           closeLabel={t('inbox.closeDetail')}
           className={OVERLAY_CLASS}
           width="w-[min(36rem,92vw)]"
-          // 处理完之后焦点由页面自己放（下一条、「没有等你的事」）：别让 Radix 把它还给已经不在的那一行
-          onCloseAutoFocus={(e) => {
-            if (sel.focusOwned.current) e.preventDefault()
-          }}
+          // 关掉时焦点由页面自己放（当前选中的那一行、「没有等你的事」）：别让 Radix 把它还给已经不在的那一行
+          onCloseAutoFocus={sel.onDrawerCloseFocus}
         >
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4 pt-12" data-testid="inbox-overlay">
             {detail}
@@ -279,12 +277,13 @@ function PendingTarget({ target, nodeId, onDismiss }: { target: InboxLocate; nod
   const { t } = useTranslation()
   const name = useNodes((s) => (nodeId ? s.byId[nodeId]?.name : undefined))
   const conn = useNodes((s) => (nodeId ? s.byId[nodeId]?.conn : undefined))
+  const mismatch = useNodes((s) => (nodeId ? s.byId[nodeId]?.versionMismatch : false))
   return (
     <div className="flex items-start gap-2 rounded-lg border border-border bg-bg-subtle px-3 py-2.5 text-sm" role="status" data-testid={nodeId ? 'inbox-connecting' : 'inbox-unknown-node'}>
       <div className="min-w-0 flex-1">
         {nodeId ? (
           <>
-            <p>{conn === 'peer_offline' ? t('inbox.nodeOffline', { node: name ?? target.node }) : conn === 'noise_failed' ? t('inbox.nodeNeedsPairing', { node: name ?? target.node }) : t('inbox.connecting', { node: name ?? target.node })}</p>
+            <p>{mismatch ? t('errors.rpc.protocol_mismatch') : conn === 'peer_offline' ? t('inbox.nodeOffline', { node: name ?? target.node }) : conn === 'noise_failed' ? t('inbox.nodeNeedsPairing', { node: name ?? target.node }) : t('inbox.connecting', { node: name ?? target.node })}</p>
             {conn === 'noise_failed' ? (
               <Link to="/unlock/$node" params={{ node: target.node }} className="inline-flex min-h-8 items-center font-medium text-accent-text hover:underline max-md:min-h-11">
                 {t('inbox.unlockNode')}

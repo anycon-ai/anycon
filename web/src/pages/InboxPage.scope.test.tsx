@@ -201,7 +201,7 @@ describe('device requests', () => {
   it('approving or denying in the dialog (which marks it) advances, even long after the dialog opened', () => {
     useEnroll.setState({ items: { [`${A}:x`]: enroll(), [`${A}:y`]: { ...enroll(), info: { ...enroll().info, enroll_id: 'y' }, createdAt: Date.now() + 1 } } })
     render(<InboxPage />)
-    act(() => holdHandled(`enroll:${A}:x`, 300_000))
+    act(() => holdHandled(`enroll:${A}:x`, 300_000)) // 对话框里点了批准 / 拒绝（从这里打开的）会这样标
     act(() => void vi.advanceTimersByTime(60_000))
     act(() => useEnroll.setState((s) => ({ items: { [`${A}:y`]: s.items[`${A}:y`]! } })))
     expect(screen.queryByTestId('inbox-ghost')).toBeNull()

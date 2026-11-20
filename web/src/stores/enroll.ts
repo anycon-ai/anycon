@@ -48,7 +48,7 @@ interface EnrollState {
   items: Record<string, EnrollItem>
   resolved: Record<string, EnrollResolution>
   /** 批准对话框正在看的请求。 */
-  dialog: { nodeId: string; enrollId: string } | null
+  dialog: { nodeId: string; enrollId: string; /** 是从「待处理」页（在眼前时）点「查看」打开的。 */ fromInbox?: boolean } | null
   scannerOpen: boolean
   /** `node.security_event` 的计数：节点设置的「接入」标签据此重新读状态。 */
   securityTick: Record<string, number>
@@ -57,7 +57,7 @@ interface EnrollState {
   replaceNode: (nodeId: string, infos: EnrollInfo[], now?: number) => void
   resolve: (nodeId: string, enrollId: string, result: EnrollResult, byDevice: string | null, now?: number) => void
   remove: (nodeId: string, enrollId: string) => void
-  openDialog: (nodeId: string, enrollId: string) => void
+  openDialog: (nodeId: string, enrollId: string, opts?: { fromInbox?: boolean }) => void
   closeDialog: () => void
   openScanner: () => void
   closeScanner: () => void
@@ -110,7 +110,7 @@ export const useEnroll = create<EnrollState>()((set) => ({
       const { [key]: _res, ...resolved } = s.resolved
       return { items, resolved }
     }),
-  openDialog: (nodeId, enrollId) => set({ dialog: { nodeId, enrollId } }),
+  openDialog: (nodeId, enrollId, opts) => set({ dialog: { nodeId, enrollId, ...(opts?.fromInbox ? { fromInbox: true } : {}) } }),
   closeDialog: () =>
     set((s) => {
       // 看完就清：已经处理掉的请求不再留着

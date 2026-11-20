@@ -24,7 +24,7 @@ export function EnrollApprovalDialog() {
     <Dialog open={open} onOpenChange={(o) => !o && close()} title={t('approve.title', { node: cleanHintText(nodeName) || t('security.thisNode') })} closeLabel={t('common.close')} testId="approve-dialog">
       {dialog ? (
         <div className="space-y-4">
-          <EnrollRequestCard key={enrollKey(dialog.nodeId, dialog.enrollId)} nodeId={dialog.nodeId} enrollId={dialog.enrollId} onScan={() => {
+          <EnrollRequestCard key={enrollKey(dialog.nodeId, dialog.enrollId)} nodeId={dialog.nodeId} enrollId={dialog.enrollId} handledHere={!!dialog.fromInbox} onScan={() => {
             close()
             useEnroll.getState().openScanner()
           }} />

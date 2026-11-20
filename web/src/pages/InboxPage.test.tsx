@@ -294,7 +294,7 @@ describe('sessions and device requests', () => {
     useEnroll.setState({ items: { [`${A}:x`]: { nodeId: A, info: { enroll_id: 'x', expires_at_ms: Date.now() + 60_000, created_at_ms: Date.now(), status: 'wait_approval', method: 'code', approval: true }, expiresAt: Date.now() + 60_000, receivedAt: Date.now(), createdAt: Date.now() } } })
     render(<InboxPage />)
     await user.click(screen.getByTestId('inbox-review'))
-    expect(useEnroll.getState().dialog).toEqual({ nodeId: A, enrollId: 'x' })
+    expect(useEnroll.getState().dialog).toEqual({ nodeId: A, enrollId: 'x', fromInbox: true })
   })
 })
 

@@ -126,5 +126,28 @@ describe('boot and reconnect', () => {
     act(() => void vi.advanceTimersByTime(700))
     expect(live()).toHaveTextContent('3 things are waiting for you')
   })
+
+  it('the 15 s fallback is per node: a stuck node A is not waited for, but another node syncing still holds the announcements back', () => {
+    const B = 'b'.repeat(32)
+    const both = (a: Partial<ReturnType<typeof nodeEntry>>, b: Partial<ReturnType<typeof nodeEntry>>): void => useNodes.setState({ byId: { [A]: nodeEntry({ id: A, ...a }), [B]: nodeEntry({ id: B, ...b }) }, order: [A, B], loaded: true })
+    both({ conn: 'ready', synced: false }, { conn: 'ready', synced: true })
+    render(<InboxAnnouncer />)
+    act(() => void vi.advanceTimersByTime(SETTLE_TIMEOUT_MS + 100))
+    // A 卡住超时了，B 是定下来的：基线已取，真实变化照播
+    act(() => setPending('1'))
+    act(() => void vi.advanceTimersByTime(700))
+    expect(live()).toHaveTextContent('1 thing is waiting for you')
+    // B 开始重连同步：数字怎么变都不播，直到 B 定下来（A 仍然卡着，也不再等它）
+    act(() => both({ conn: 'ready', synced: false }, { conn: 'noise_handshaking', synced: false, syncing: false }))
+    act(() => setPending('1', '2', '3'))
+    act(() => void vi.advanceTimersByTime(2000))
+    expect(live()).toHaveTextContent('1 thing is waiting for you')
+    act(() => both({ conn: 'ready', synced: false }, { conn: 'ready', synced: true }))
+    act(() => void vi.advanceTimersByTime(2000))
+    expect(live()).toHaveTextContent('1 thing is waiting for you')
+    act(() => setPending())
+    act(() => void vi.advanceTimersByTime(700))
+    expect(live()).toHaveTextContent('Nothing is waiting for you now')
+  })
 })
 

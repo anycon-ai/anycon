@@ -59,6 +59,11 @@ export interface InboxSelection {
   next: () => void
   /** 把焦点移进详情（Enter）。 */
   focusDetail: () => void
+  /**
+   * 平板抽屉关掉时的焦点归还（接到 `Drawer` 的 `onCloseAutoFocus`）：Radix 默认把焦点还给打开它的那一行，那一行可能早就没了。
+   * 这里总是自己放：页面刚把焦点放好了（没有条目了）就不动，否则放到当前选中的那一行，没有选中的就放到列表标题上。
+   */
+  onDrawerCloseFocus: (e: { preventDefault: () => void }) => void
 }
 
 /**
@@ -75,10 +80,14 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
   // 手机上「默认展开第一条」只在页面第一次出现在眼前时决定一次（有没有条目都算）；之后列表怎么变都不替用户展开
   const defaulted = useRef(false)
   const focusOwned = useRef(false)
+  const prevPicked = useRef(picked)
+  // 最近一次选中的条目：抽屉关掉时焦点要回到它那一行
+  const lastKey = useRef<string | null>(null)
   const pendingFocus = useRef<string | 'empty' | null>(null)
 
   const apply = useCallback((next: { key: string | null; explicit: boolean; ghost: Ghost | null }, user = false) => {
     const full = { ...next, version: current.current.version + (user ? 1 : 0) }
+    if (next.key !== null) lastKey.current = next.key
     current.current = full
     setState(full)
   }, [])
@@ -87,6 +96,8 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
     const before = prev.current
     prev.current = { keys, items: new Map(items.map((i) => [i.key, i])) }
     const cur = current.current
+    const beforePicked = prevPicked.current
+    prevPicked.current = picked
     if (cur.ghost && keys.includes(cur.ghost.key)) {
       // 占位上的条目又回来了（比如请求在重连后重新到了）：占位撤掉
       apply({ ...cur, ghost: null })
@@ -96,12 +107,14 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
       if (cur.ghost?.key === cur.key) return
       const index = Math.max(before.keys.indexOf(cur.key), 0)
       const gone = before.items.get(cur.key) ?? null
-      if (gone && !picked.includes(gone.nodeId)) {
-        // 用户自己改了节点过滤器，它才从列表里离开：不是「没了」，清掉选中就行
+      if (gone && beforePicked.includes(gone.nodeId) && !picked.includes(gone.nodeId)) {
+        // 用户自己改了节点过滤器（这一次从勾上变成没勾），它才从列表里离开：不是「没了」，清掉选中就行。
+        // 从通知点进来的、本来就在过滤器之外的那一条不算：它和别的条目一样走占位 / 前进
         apply({ key: null, explicit: cur.explicit, ghost: null })
         return
       }
-      if (consumeHandled(cur.key)) {
+      // 页面藏在后面时什么都不替用户选、不前进、不消费「在这里处理」的记录：一律占位，等用户回来自己点
+      if (active && consumeHandled(cur.key)) {
         // 我在这里处理的：落到下一条（原来的位置，最后一条就是前一条）
         // 前进到下一条有内容可看的：「等待审批（缓存）」没有详情；答复之后摘要还没更新的那一会儿它会冒出来，别落到它头上
         const readable = items.filter((i) => i.kind !== 'waiting').map((i) => i.key)
@@ -136,7 +149,8 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
     if (target === null) return
     pendingFocus.current = null
     // 平板的抽屉关掉时 Radix 默认会把焦点还给触发它的元素（已经不在了）：抽屉的 `onCloseAutoFocus` 看这个标记，由页面自己同步地放
-    if (mode === 'overlay') {
+    // 抽屉要关了（没有下一条）才算页面在自己放焦点；前进到下一条时抽屉还开着，不占着
+    if (mode === 'overlay' && target === 'empty') {
       focusOwned.current = true
       setTimeout(() => (focusOwned.current = false), 200)
     }
@@ -188,5 +202,19 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
     detailFocusable()?.focus()
   }, [])
 
-  return { version: state.version, focusOwned, selected: state.key, explicit: state.explicit, ghost: state.ghost, select, clear, choose, move, next, focusDetail }
+  const onDrawerCloseFocus = useCallback(
+    (e: { preventDefault: () => void }) => {
+      e.preventDefault()
+      if (focusOwned.current) {
+        focusOwned.current = false
+        return
+      }
+      const key = current.current.key ?? lastKey.current
+      const row = key ? rowButton(key) : null
+      ;(row ?? empty.current)?.focus()
+    },
+    [empty],
+  )
+
+  return { onDrawerCloseFocus, version: state.version, focusOwned, selected: state.key, explicit: state.explicit, ghost: state.ghost, select, clear, choose, move, next, focusDetail }
 }

@@ -17,19 +17,24 @@ export function useNodesSettled(): boolean {
   const byId = useNodes((st) => st.byId)
   const order = useNodes((st) => st.order)
   const saved = usePrefs((st) => st.sidebarNodes)
-  const settledNow = selectedNodes(order, saved).every((id) => {
+  const unsettled = selectedNodes(order, saved).filter((id) => {
     const n = byId[id]
-    return !!n && isSettled(n.conn, n.synced, n.syncing, n.versionMismatch)
+    return !n || !isSettled(n.conn, n.synced, n.syncing, n.versionMismatch)
   })
-  // 有节点一直定不下来（第一次同步失败、卡在连接上）：等一阵子之后也算定下来，不然依赖它的东西永远不动
-  const [gaveUp, setGaveUp] = useState(false)
+  // 某个节点一直定不下来（第一次同步失败、卡在连接上）：只对它不再等（每个节点自己计时），别的节点同步时照样等。
+  // 不然一个卡住的节点会让别的节点重连同步期间的数字变化也被读出来
+  const [gaveUp, setGaveUp] = useState<ReadonlySet<string>>(new Set())
+  const sig = unsettled.join('\u0000')
   useEffect(() => {
-    if (settledNow) {
-      setGaveUp(false)
-      return
-    }
-    const id = setTimeout(() => setGaveUp(true), SETTLE_TIMEOUT_MS)
-    return () => clearTimeout(id)
-  }, [settledNow])
-  return settledNow || gaveUp
+    // 已经定下来的节点从放弃名单里去掉：下次再卡住重新计时
+    setGaveUp((prev) => {
+      const next = new Set([...prev].filter((id) => unsettled.includes(id)))
+      return next.size === prev.size ? prev : next
+    })
+    const timers = unsettled.filter((id) => !gaveUp.has(id)).map((id) => setTimeout(() => setGaveUp((p) => new Set(p).add(id)), SETTLE_TIMEOUT_MS))
+    return () => timers.forEach(clearTimeout)
+    // sig 代表 unsettled 的内容；gaveUp 只在这里读一次，不当依赖（它变了不用重排计时）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig])
+  return unsettled.every((id) => gaveUp.has(id))
 }

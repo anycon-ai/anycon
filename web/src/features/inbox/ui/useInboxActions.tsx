@@ -48,8 +48,8 @@ export function useInboxActions(): { actions: InboxActions; dialogs: ReactNode }
           toast.error(describeArchiveError(e, t))
         })
       },
-      // 批准 / 拒绝在对话框里做（点了才标「在这里处理的」，见 `EnrollRequestCard`）；只是打开又取消不算
-      reviewEnroll: (e) => useEnroll.getState().openDialog(e.nodeId, e.info.enroll_id),
+      // 批准 / 拒绝在对话框里做（点了才标「在这里处理的」，而且只有从这里打开的对话框才标，见 `EnrollRequestCard`）；只是打开又取消不算
+      reviewEnroll: (e) => useEnroll.getState().openDialog(e.nodeId, e.info.enroll_id, { fromInbox: true }),
     }),
     [t],
   )

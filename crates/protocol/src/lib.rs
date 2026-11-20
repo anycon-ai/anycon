@@ -3,7 +3,7 @@
 //! 分两层（见 docs/protocol.md）：
 //! - 外层 [`envelope::Envelope`]：hub 可见，MessagePack 编码。`kind = control` 的 body 是 [`control::Control`]。
 //! - 内层 [`rpc`]：客户端 ↔ daemon 的 JSON-RPC 2.0，Noise 密文里。方法名常量在 [`methods`]，
-//!   每个方法的 params / result 类型按域分布在 [`node`]、[`agent`]、[`workspace`]、[`session`]、[`permission`]、[`blob`]、[`enroll`]。
+//!   每个方法的 params / result 类型按域分布在 [`node`]、[`agent`]、[`workspace`]、[`session`]、[`todo`]、[`permission`]、[`blob`]、[`enroll`]。
 //! - 账号内接入（ADR-36）期间 `handshake` 信封的 body 是 [`enroll::EnrollFrame`]。
 //! - dev server 预览（ADR-39）走单独的 Noise 隧道，不是 JSON-RPC：格式在 [`preview::tunnel`]。
 //!
@@ -23,6 +23,7 @@ pub mod preview;
 pub mod rpc;
 pub mod schema;
 pub mod session;
+pub mod todo;
 pub mod workspace;
 
 pub use agent::*;
@@ -36,6 +37,7 @@ pub use permission::*;
 pub use preview::*;
 pub use rpc::*;
 pub use session::*;
+pub use todo::*;
 pub use workspace::*;
 
 /// 内层 JSON-RPC 协议版本。相邻 minor 兼容，0.x 阶段可 break。

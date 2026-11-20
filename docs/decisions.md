@@ -1158,7 +1158,7 @@ ADR-1 拆成两层来看：
 **决定**（实现在 `crates/cli/src/mcp/`，用法见 [spec/cli.md § 3.7](spec/cli.md#37-anycon-mcp)）：
 
 1. **形态**：`anycon mcp` 子命令（ADR-17，同一个二进制，不新增二进制、不引入 Node），MCP 的 stdio 传输：换行分隔的 JSON-RPC 2.0，stdout 只写协议消息，日志走 stderr，stdin EOF 即退出。连接层复用 CLI 的（`App::conn`）：默认连本机 daemon（Unix socket / 命名管道，ADR-27），`--hub` / `--node` / `--local` 和其它子命令一致，不发明新的选择方式。**手写最小实现**：`initialize`（版本协商：请求的版本在支持列表 `2025-06-18` / `2025-03-26` / `2024-11-05` 里就回它，否则回最新的）、`notifications/initialized`、`notifications/cancelled`、`ping`、`tools/list`、`tools/call`；未知方法 `-32601`，通知不回复，工具执行失败用结果里的 `isError: true`，协议错误才用 JSON-RPC error。只有 tools：不做 resources / prompts / sampling，也不收 JSON-RPC 批量（2025-06-18 起规范里没有了）。
-2. **九个工具，全部映射到已有的 RPC**，daemon 没有为 MCP 增加任何业务接口：`list_agents`（`agent.list`）、`list_projects`（`workspace.list`）、`list_sessions`（`session.list`）、`read_session`（`session.get` + `session.history`）、`search_sessions`（`session.search`）、`create_session`（`agent.list` + `session.create`）、`send_message`（`session.send`）、`cancel_turn`（`session.cancel`）、`get_diff`（`session.diff`）。agent、模型、思考等级、权限模式及其风险全部来自 daemon 的 `agent.list`，工具里不内置任何 agent 知识（ADR-24）。
+2. **十一个工具，全部映射到已有的 RPC**，daemon 没有为 MCP 增加任何业务接口（其中 `list_todos`（`todo.list`）和 `add_todo`（`todo.add`）属于清单，见 ADR-54；`add_todo` 不受 `--allow-nested` 限制，见 [daemon.md § 21.8](spec/daemon.md#218-客户端入口)）。前九个：`list_agents`（`agent.list`）、`list_projects`（`workspace.list`）、`list_sessions`（`session.list`）、`read_session`（`session.get` + `session.history`）、`search_sessions`（`session.search`）、`create_session`（`agent.list` + `session.create`）、`send_message`（`session.send`）、`cancel_turn`（`session.cancel`）、`get_diff`（`session.diff`）。agent、模型、思考等级、权限模式及其风险全部来自 daemon 的 `agent.list`，工具里不内置任何 agent 知识（ADR-24）。
 3. **`send_message` / `create_session` 的等待**：参数 `wait`（缺省 true）和 `timeout_seconds`（缺省 50，上限 600）。等待靠轮询 `session.history`（按 seq 增量）加 `session.get`，直到**这条消息触发的那一轮**的 `turn_done`：会话忙时 daemon 在 `send` 时就写了 `user_message`、消息进队列，等当前 turn 结束才开新 turn，所以「我的消息之后第一个 `turn_done`」可能是上一轮的；认法是 `session.send` 返回的 `turn_id`（新 turn 立刻开了，或插话进了正在跑的 turn），否则是我的 `user_message` 之后第一个 `turn_start`（插话失败退回队列的，跟到真正处理它的那个 turn）。返回这一轮的文字（上限 30 000 字符，超出保留末尾；工具调用前后的几段之间留一个空行）、会话状态和用量摘要；超时返回 `still_running`，`note` 按实际情况说是 turn 在跑、排在别的 turn 后面还是因 `sessions.max_concurrent` 排队，调用方之后用 `read_session` 查；消息排队时被清掉（会话闲着、它没开过 turn）返回 `dropped`。不用 `session.watch`：一个连接最多 watch 5 个会话，而 MCP 客户端可以并发调用；轮询没有这个限制，也没有断线后要恢复的订阅状态。`read_session` 返回会话状态和最近若干条用户 / 助手消息的文字（每条 4 000 字符、总共约 60 000 字符封顶，不含工具输出），`before_seq` 往前翻页；`get_diff` 只给文件列表和行数，带 `path` 才给那个文件的补丁（10 万字符封顶）。
 4. **安全边界**（逐条有测试）：
    - **不暴露权限审批。** 没有批准 / 拒绝权限请求的工具。等待期间会话进入等待审批，立即返回 `waiting_permission`，附请求的标题和种类，并说明要由人在已配对设备上处理。否则一个 agent 可以替另一个 agent 批准权限，审批就从「人在回路」变成「agent 自己点头」。
@@ -1323,6 +1323,7 @@ ADR-1 拆成两层来看：
    - 后端按任务分开配：分拣、提炼、顾问三个位置各选各的，缺省都跟随分拣。分拣跑得最频繁，适合便宜的模型；顾问只在拿不准时被问到，不带任何工具，只回答问题。
    - API 的地址和密钥只写在那台机器的 `config.toml` 里，不能远程设置（和 `agents.*` 同一条理由，ADR-43）；在已经配好的后端之间选哪一个，可以在已配对设备上改。
    - 每次唤醒不依赖上一次的对话上下文：状态在清单和档案里。
+   - 几个会话接力做同一件事也围着清单项转，不靠续接上一个会话：每个会话一轮结束时，daemon 把 agent 的最后一段话记进这一项的「经过」（只追加）；在同一项上再派会话时，第一条消息带上正文和之前各次的结果。会话用完即弃，清单项是那份一直在的文档，用户看得见、改得了。agent 没有往清单项里写的工具，这份记录由 daemon 从事件流里取。
 5. **分身自己不能批准权限；无人值守靠 agent 自己的自动审批模式。**
    - 分身没有批准 / 拒绝的工具，两种后端都一样；anycon 不新增任何自动答复权限请求的路径。
    - 它派出的会话默认用 agent 自带的自动审批模式：adapter 在 `AgentInfo` 的权限模式上声明一个 `unattended` 标记（ADR-24，daemon 和客户端不内置「哪个模式叫 auto」），取第一个带这个标记、风险不是 `dangerous` 的模式。现在是 Claude Code 的 `auto` 和 Codex 的 `auto_review`，都由 agent 自己的审查器放行常规操作，风险是 `normal`。用户可以换成任何非危险模式；危险模式不能选。agent 没有这样的模式、或者它当前不可选时，退回 agent 的默认模式，那就是每个请求都等人。
@@ -1381,6 +1382,7 @@ ADR-1 拆成两层来看：
 - **在 daemon 或客户端里写死「Claude Code 用 `auto`、Codex 用 `auto_review`」**：违反 ADR-24，agent 改了模式名或多了一个 agent 就要发版。
 - **提炼成一段自由文本的人设**：没有出处就没法确认、没法撤销某一条，也分不清哪句话来自被注入的内容。
 - **把分身做成一直不结束的长会话**：见「无状态唤醒」。
+- **给 agent 一个往清单项里写的工具（中途记笔记、改正文）**：交接需要的是每一轮的结果，daemon 从事件流里就能取到；多一个写工具就多一个被注入的会话改写清单的入口。之后真要 agent 中途记笔记，再定它怎么标识自己是哪一项派出的会话（ACP agent 一个进程服务所有会话，拿不到按会话的环境变量）。
 - **让分身自己写「技能」（做某类事的步骤）并在之后自动加载**：各个编码 agent 已经有自己的技能和项目说明文件，anycon 再做一层是重复，而且自动加载的、由模型写的指令是又一个注入面。「这类事该怎么做」写成一条规则，走确认。
 - **聊天软件里的入口（在 IM 里记一项、回答分身的问题）**：需求是真的，但消息会以明文经过那个平台，和「内容只在 daemon 和客户端之间」不一致。要做也是 daemon 侧自己连出去的可选项，单独立 ADR、单独写清楚谁能看到什么。
 - **分身在节点之间移动**：分身每次唤醒不带上下文（第 4 条），它的全部状态就是清单和规则；项目不会跟着移动，移过去也只能处理那台机器上的活。要换机器用的是数据目录的备份和恢复。
@@ -1399,6 +1401,7 @@ ADR-1 拆成两层来看：
 - 同组节点的规则可能暂时不一致：某个节点长期离线，或者确认规则的那台设备没和同组的全部节点配对。靠回来后的重放和「对齐」补上。
 - 清单按节点存：有几台节点就有几份清单；节点离线时只能看缓存、改动要等它回来；离线期间两台设备改了同一项，后重放的覆盖先重放的。
 - 判断后端选 `api` 时，清单、档案和会话摘录由 daemon 直接发给配置的那个模型服务，不经 hub；选 `agent` 时发给那个 agent 自己的模型服务，和普通会话一样。README 的隐私模型要写明这一点。
+- `ANYCON_SESSION_ID` 只注入 `driver` 不是 `acp` 的 agent：ACP agent 是一个进程服务它的所有会话（[ADR-47](#adr-47-acp-adapter每个-agent-一个-adapter一个进程服务它的所有会话)），进程环境里放某一个会话的 id 对别的会话是错的，而且 ACP 按环境区分连接池，放了就成了一个会话一个进程。所以从 ACP agent 里加的项没有来源会话（`ANYCON_AGENT` 照放，项照样标成 agent 加的）。
 - 分身和用户自己的会话共用 `sessions.max_concurrent` 和 agent 的用量限额，第 4 步要有预算、给人留名额、能一键暂停。
 - 自动审批的质量是 agent 的，不是 anycon 的：审查器放过了不该放的动作，anycon 没有第二道闸，只有 worktree 的路径边界、审计和事后的 diff。哪些 agent、哪些账号能用自动审批模式也由 agent 决定。
 - 每一步都改变威胁模型（第 1 步：anycon 拉起的 agent 多了一个不用 `--allow-nested` 的写工具，清单的内容进了 daemon 的数据库和浏览器的本地缓存，分享入口在 service worker 没接管时会让分享的文字经过 hub；之后：规则会进系统提示、daemon 自己发起会话），到那一步要同时改 [architecture.md § 5.6](architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。

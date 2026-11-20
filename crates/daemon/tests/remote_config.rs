@@ -39,6 +39,7 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
     assert_eq!(
         keys,
         vec![
+            "hub.group",
             "sessions.max_concurrent",
             "sessions.idle_timeout",
             "permissions.allow_dangerous_modes",
@@ -72,7 +73,8 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
     for hidden in [
         "agents",
         "workspace",
-        "hub.",
+        "hub.url",
+        "hub.name",
         "enroll",
         "allow_session_env",
         "allow_ports",
@@ -462,5 +464,50 @@ async fn node_logs_returns_the_tail_of_the_daemon_log_file() {
     // 级别不是已知的值：invalid
     let e = c.call::<Value>(&td, methods::NODE_LOGS, json!({ "level": "loud" })).await.unwrap_err();
     assert_eq!(e.data.unwrap().code, ErrorCode::Invalid);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn hub_group_is_set_remotely_audited_and_shown_in_node_info() {
+    let td = TestDaemon::start().await;
+    let mut c = td.client("Pixel 9");
+    let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
+    assert_eq!(info.group, None);
+
+    let r: NodeConfigResult =
+        c.call(&td, methods::NODE_SET_CONFIG, changes(&[("hub.group", json!("  Team A "))])).await.unwrap();
+    let g = item(&r, "hub.group");
+    assert_eq!(
+        (g.value.clone(), g.kind, g.editable, g.max),
+        (json!("  Team A "), ConfigValueKind::Text, ConfigEditable::Any, Some(40))
+    );
+    // 写进文件、热加载；node.info 给的是去掉首尾空白的分组名
+    assert!(file(&td).contains("group = \"  Team A \""), "{}", file(&td));
+    assert_eq!(td.ctx.config.get().hub.group, "  Team A ");
+    let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
+    assert_eq!(info.group.as_deref(), Some("Team A"));
+    // 审计：和别的键一样记 config.changed，带旧值和新值
+    let e = audit(&td).await;
+    assert_eq!(e.len(), 1);
+    assert_eq!((e[0].target.as_deref(), &e[0].detail), (Some("hub.group"), &json!({ "old": "", "new": "  Team A " })));
+    assert_eq!(e[0].device_name, "Pixel 9");
+
+    // 清空：又回到没有分组
+    let _: NodeConfigResult =
+        c.call(&td, methods::NODE_SET_CONFIG, changes(&[("hub.group", json!(""))])).await.unwrap();
+    let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
+    assert_eq!(info.group, None);
+    assert_eq!(audit(&td).await.len(), 2);
+
+    // 不合格的值：超过 40 个字符、含换行、类型不对；hub.url / hub.name 仍然不在名单里
+    for (v, reason) in [(json!("a".repeat(41)), "range"), (json!("a\nb"), "format"), (json!(1), "type")] {
+        let e = c.call::<Value>(&td, methods::NODE_SET_CONFIG, changes(&[("hub.group", v.clone())])).await.unwrap_err();
+        assert_eq!(code(&e), (ErrorCode::Invalid, Some("hub.group".into()), Some(reason.into())), "{v}");
+    }
+    for key in ["hub.url", "hub.name"] {
+        let e = c.call::<Value>(&td, methods::NODE_SET_CONFIG, changes(&[(key, json!("x"))])).await.unwrap_err();
+        assert_eq!(code(&e), (ErrorCode::Forbidden, Some(key.into()), Some("not_editable".into())), "{key}");
+    }
+    assert_eq!(audit(&td).await.len(), 2, "refused changes are not audited");
     td.shutdown().await;
 }

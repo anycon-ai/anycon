@@ -2,7 +2,7 @@
 //!
 //! `config.toml` 是机器主人的最后一道边界，而配对过的客户端可能被盗用，所以远程能碰的只有一张白名单（[`SPECS`]）：
 //! 只收热加载、不扩大攻击面的键；安全相关的两个开关（`permissions.allow_dangerous_modes`、`preview.enabled`）只能从 `true`
-//! 改成 `false`，要放宽得在机器上 `anycon config set`。白名单之外的键（`agents.*`、`workspace.*`、`hub.*`、`enroll.*`……）
+//! 改成 `false`，要放宽得在机器上 `anycon config set`。白名单之外的键（`agents.*`、`workspace.*`、`hub.url` / `hub.name`、`enroll.*`……）
 //! 既不会返回，也不接受。
 //!
 //! 写入、热加载、审计复用本机 CLI 的同一套逻辑：[`crate::config::set_toml_values`]（保留注释和格式、整份配置校验通过才原子替换）
@@ -18,7 +18,10 @@ use anycon_protocol::{
 use serde_json::{json, Value};
 
 use crate::clients::Caller;
-use crate::config::{validate_branch_prefix, Config, ConfigError, ConfigStore, PREVIEW_TTL_MAX, PREVIEW_TTL_MIN};
+use crate::config::{
+    validate_branch_prefix, validate_node_group, Config, ConfigError, ConfigStore, NODE_GROUP_MAX_CHARS,
+    PREVIEW_TTL_MAX, PREVIEW_TTL_MIN,
+};
 use crate::daemon::Ctx;
 use crate::util::parse_duration;
 
@@ -56,9 +59,14 @@ struct Spec {
 /// 可以远程查看 / 修改的键，也是 `node.get_config` 返回的顺序（按配置段分组）。
 ///
 /// 只放热加载的键（`config::is_hot_key`），所以改完不需要重启 daemon。刻意**不**在这里的：`agents.*`（`command` / `env` 等于远程执行
-/// 任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.*`、`enroll.*`
+/// 任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*`
 /// （已有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`。
 const SPECS: &[Spec] = &[
+    Spec {
+        key: "hub.group",
+        rule: Rule::Text { max_chars: NODE_GROUP_MAX_CHARS, check: validate_node_group },
+        editable: ConfigEditable::Any,
+    },
     Spec { key: "sessions.max_concurrent", rule: Rule::Int { min: 1, max: 32 }, editable: ConfigEditable::Any },
     Spec {
         key: "sessions.idle_timeout",
@@ -350,10 +358,13 @@ mod tests {
     #[test]
     fn the_whitelist_leaves_out_everything_that_widens_the_attack_surface() {
         let keys: Vec<_> = whitelisted_keys().collect();
+        assert!(keys.contains(&"hub.group"));
         for k in &keys {
-            for banned in ["agents", "workspace", "hub", "enroll"] {
+            for banned in ["agents", "workspace", "enroll"] {
                 assert!(!k.starts_with(&format!("{banned}.")), "{k}");
             }
+            // `hub.group` 是显示用的标签，在名单里；`hub.url` / `hub.name` 不在
+            assert!(!matches!(*k, "hub.url" | "hub.name"), "{k}");
         }
         for banned in [
             "permissions.allow_session_env",
@@ -520,6 +531,27 @@ mod tests {
             "'/' is not in the allowed set"
         );
         assert!(plan(&cfg, &[ch("worktree.branch_prefix", json!("123"))], &no_env).is_ok());
+    }
+
+    #[test]
+    fn the_group_name_is_a_short_single_line_text() {
+        let cfg = Config::default();
+        let g = items(&cfg, &no_env).into_iter().find(|i| i.key == "hub.group").unwrap();
+        assert_eq!(
+            (g.value, g.kind, g.editable, g.max),
+            (json!(""), ConfigValueKind::Text, ConfigEditable::Any, Some(40))
+        );
+        let bad = |v: Value| err_of(plan(&cfg, &[ch("hub.group", v)], &no_env));
+        assert_eq!(bad(json!("a".repeat(41))).2.as_deref(), Some("range"));
+        assert_eq!(bad(json!("a\nb")).2.as_deref(), Some("format"));
+        assert_eq!(bad(json!(3)).2.as_deref(), Some("type"));
+        assert_eq!(plan(&cfg, &[ch("hub.group", json!("a".repeat(40)))], &no_env).unwrap().len(), 1);
+        assert_eq!(plan(&cfg, &[ch("hub.group", json!("团队"))], &no_env).unwrap()[0].new, json!("团队"));
+        // 和缺省值（空）相同：空操作
+        assert!(plan(&cfg, &[ch("hub.group", json!(""))], &no_env).unwrap().is_empty());
+        for key in ["hub.url", "hub.name"] {
+            assert_eq!(err_of(plan(&cfg, &[ch(key, json!("x"))], &no_env)).2.as_deref(), Some("not_editable"));
+        }
     }
 
     #[test]

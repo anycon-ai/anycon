@@ -938,6 +938,7 @@
       "rangeInt": "{{min}} 到 {{max}}",
       "rangeDuration": "{{min}} 到 {{max}}，写法如 30s、20m、2h",
       "sections": {
+        "hub": "节点",
         "sessions": "会话",
         "permissions": "权限",
         "worktree": "Worktree",
@@ -946,6 +947,12 @@
         "log": "日志"
       },
       "keys": {
+        "hub": {
+          "group": {
+            "label": "分组",
+            "hint": "比如「家里」「公司」。分组名相同的节点会放在一起显示。最多 40 个字符；留空表示不分组。"
+          }
+        },
         "sessions": {
           "max_concurrent": {
             "label": "同时运行的会话数",

@@ -4,7 +4,7 @@
 //! 把 MCP 工具调用翻译成 daemon 已有的 RPC。不调度、不在会话之间转发消息、不保存状态；编排逻辑在调用方。
 //!
 //! - [`protocol`]：MCP 的 JSON-RPC 2.0 协议层（手写，没有 SDK 依赖）；
-//! - [`tools`]：九个工具和安全边界（不暴露权限审批、拒绝危险权限模式、防递归）。
+//! - [`tools`]：十一个工具和安全边界（不暴露权限审批、拒绝危险权限模式、防递归）。
 //!
 //! stdout 只写协议消息，其余输出一律走 stderr。daemon 连不上不会让 server 退出：工具调用返回错误，下一次调用重连。
 //! 本机连接连上之后先 `local.set_client { client: "mcp" }`，daemon 的审计里据此记成 `local-mcp`（和人敲的 `local-cli` 分开）。
@@ -14,7 +14,7 @@ pub mod tools;
 
 use std::sync::Arc;
 
-use anycon_daemon::env::AGENT_MARKER_ENV;
+use anycon_daemon::env::{AGENT_MARKER_ENV, SESSION_ID_ENV};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
@@ -71,13 +71,17 @@ impl Node for ConnNode {
 }
 
 /// 这个进程是不是在 anycon 拉起的 agent 里（环境里有 `ANYCON_AGENT`）。
-fn started_inside_a_session() -> bool {
+pub(crate) fn started_inside_a_session() -> bool {
     std::env::var_os(AGENT_MARKER_ENV).is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 pub async fn run(app: &App, a: McpArgs) -> Result<u8> {
     let nested = started_inside_a_session();
-    let opts = Options { allow_dangerous_modes: a.allow_dangerous_modes, block_mutations: nested && !a.allow_nested };
+    let opts = Options {
+        allow_dangerous_modes: a.allow_dangerous_modes,
+        block_mutations: nested && !a.allow_nested,
+        origin_session: std::env::var(SESSION_ID_ENV).ok().filter(|s| !s.is_empty()),
+    };
     if opts.block_mutations {
         eprintln!(
             "anycon mcp: running inside an anycon agent session ({AGENT_MARKER_ENV} is set): create_session, send_message and cancel_turn are disabled; pass --allow-nested to allow them"

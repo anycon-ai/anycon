@@ -150,7 +150,7 @@ async fn tools_work_end_to_end_against_a_real_daemon() {
     assert!(commit.status.success(), "{}", String::from_utf8_lossy(&commit.stderr));
     let mut m = Mcp::start(&n.home, &[], &[]).await;
 
-    // tools/list：九个工具，没有任何批准 / 拒绝权限的工具，create_session 的 schema 里没有 env
+    // tools/list：十一个工具，没有任何批准 / 拒绝权限的工具，create_session 的 schema 里没有 env
     let list = m.request("tools/list", json!({})).await;
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -165,7 +165,9 @@ async fn tools_work_end_to_end_against_a_real_daemon() {
             "create_session",
             "send_message",
             "cancel_turn",
-            "get_diff"
+            "get_diff",
+            "list_todos",
+            "add_todo"
         ]
     );
     let create = tools.iter().find(|t| t["name"] == "create_session").unwrap();
@@ -392,6 +394,54 @@ async fn inside_an_anycon_session_the_mutating_tools_are_refused_unless_allowed(
     let mut m = Mcp::start(&n.home, &["--allow-nested"], &[("ANYCON_AGENT", "1")]).await;
     let r = m.ok("send_message", json!({ "session": &sid, "message": "allowed now" })).await;
     assert_eq!(r["outcome"], "completed", "{r}");
+    assert_eq!(m.close().await, 0);
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn todos_can_be_listed_and_added_even_inside_an_agent_session_but_not_changed() {
+    let n = node().await;
+    let mut m = Mcp::start(&n.home, &[], &[]).await;
+    let r = m
+        .ok("add_todo", json!({ "title": "Check the release notes", "body": "see CHANGELOG", "project": "web" }))
+        .await;
+    assert_eq!((r["unreviewed"].as_bool(), r["source"]["kind"].as_str()), (Some(true), Some("agent")), "{r}");
+    let id = r["id"].as_str().unwrap().to_string();
+    let l = m.ok("list_todos", json!({})).await;
+    let items = l["todos"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{l}");
+    assert_eq!(
+        (items[0]["id"].as_str(), items[0]["title"].as_str(), items[0]["body"].as_str()),
+        (Some(id.as_str()), Some("Check the release notes"), Some("see CHANGELOG"))
+    );
+    assert_eq!(items[0]["project"], "web");
+    // 没有改 / 关 / 删的工具
+    for name in ["update_todo", "complete_todo", "delete_todo", "close_todo"] {
+        let r = m.request("tools/call", json!({ "name": name, "arguments": { "id": &id } })).await;
+        assert_eq!(r["error"]["code"], -32602, "{name}: {r}");
+    }
+    assert_eq!(m.close().await, 0);
+
+    // 审计：MCP 的写入记成 local-mcp，只有长度没有内容
+    let audit = n.cli(&["audit", "--json", "-n", "100"]).await.json();
+    let entries = audit["entries"].as_array().unwrap();
+    let add = entries.iter().find(|e| e["action"] == "todo.add").expect("todo.add is audited");
+    assert_eq!(add["device_name"], "local-mcp");
+    assert_eq!(add["detail"]["source_kind"], "agent");
+    assert!(!audit.to_string().contains("Check the release notes") && !audit.to_string().contains("CHANGELOG"));
+
+    // 在 anycon 拉起的 agent 里：不加 --allow-nested 也能 add_todo / list_todos，来源会话来自环境；会开会话的工具照旧被拒
+    let seed = n.cli(&["new", "--agent", "mock", "--no-wait", "--json", "seed"]).await.json();
+    let sid = seed["id"].as_str().unwrap().to_string();
+    let mut m = Mcp::start(&n.home, &[], &[("ANYCON_AGENT", "1"), ("ANYCON_SESSION_ID", &sid)]).await;
+    let r = m.ok("add_todo", json!({ "title": "From inside a session" })).await;
+    assert_eq!(r["source"]["session_id"], sid.as_str(), "{r}");
+    assert_eq!(m.ok("list_todos", json!({})).await["todos"].as_array().unwrap().len(), 2);
+    let (err, v, _) = m.call("create_session", json!({ "agent": "mock", "prompt": "nested" })).await;
+    assert!(err && v.as_str().unwrap().contains("--allow-nested"), "{v}");
+    // 两项都在清单里，CLI（不在 agent 环境里）读到同样的内容；agent 环境里 CLI 拒绝改动的部分由 tests/todo.rs 覆盖
+    let cli_todos = n.cli(&["todo", "ls", "--json"]).await.json();
+    assert_eq!(cli_todos["todos"].as_array().unwrap().len(), 2);
     assert_eq!(m.close().await, 0);
     n.stop().await;
 }

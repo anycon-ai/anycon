@@ -635,6 +635,14 @@
         }
       ]
     },
+    "ClearableTodoField": {
+      "description": "`todo.update` 的 `clear` 可以清空的可选字段。",
+      "enum": [
+        "project",
+        "due_ms"
+      ],
+      "type": "string"
+    },
     "ClientInfo": {
       "description": "设备自报信息。配对和每次 `auth` 都带。",
       "properties": {
@@ -3422,6 +3430,11 @@
         "search": {
           "type": "boolean"
         },
+        "todo": {
+          "default": false,
+          "description": "支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。",
+          "type": "boolean"
+        },
         "workspace": {
           "description": "有 workspace（文件夹即项目）。SDK 节点可能没有。",
           "type": "boolean"
@@ -3624,6 +3637,13 @@
         },
         "capabilities": {
           "$ref": "#/definitions/NodeCapabilities"
+        },
+        "group": {
+          "description": "分组名（`[hub] group`）：名字相同的节点客户端合并显示；是标签，不是访问控制。为空或旧 daemon 时不给。",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "name": {
           "type": "string"
@@ -6813,6 +6833,382 @@
       ],
       "type": "object"
     },
+    "Todo": {
+      "properties": {
+        "body": {
+          "description": "Markdown，≤ 16 KiB，可以是空串。",
+          "type": "string"
+        },
+        "closed_ms": {
+          "description": "进入 `done` / `dropped` 的时间；重新打开时清掉。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "created_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "due_ms": {
+          "description": "想在什么时候之前处理；只用于显示和排序。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "客户端生成的 UUID；`todo.add` 按它幂等。",
+          "type": "string"
+        },
+        "project": {
+          "description": "项目名；不校验项目存在，项目改名 / 删除后原样保留。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/TodoSource"
+        },
+        "state": {
+          "$ref": "#/definitions/TodoState"
+        },
+        "title": {
+          "description": "单行，1–200 字符（去掉首尾空白之后）。",
+          "type": "string"
+        },
+        "unreviewed": {
+          "description": "agent 记的、还没有人收下的项。",
+          "type": "boolean"
+        },
+        "updated_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "body",
+        "state",
+        "source",
+        "unreviewed",
+        "created_ms",
+        "updated_ms"
+      ],
+      "type": "object"
+    },
+    "TodoAddParams": {
+      "properties": {
+        "agent": {
+          "description": "调用方自报「这是 agent 加的」。只会让这一项更不被信任，所以不需要校验。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "due_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "UUID。已经存在时原样返回已有的那一项（幂等）。",
+          "type": "string"
+        },
+        "origin_session": {
+          "description": "这一项从哪个会话里来；daemon 只在这一项记成 `kind = agent`、且这个会话存在时才记。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "type": "object"
+    },
+    "TodoChanged": {
+      "description": "`todo.changed` 通知：新建、修改、删除后发给所有在线客户端（包括发起的那一台）。",
+      "properties": {
+        "deleted": {
+          "default": false,
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "todo": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Todo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`deleted = true` 时没有。"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "TodoCursor": {
+      "description": "`todo.list` 的翻页游标：上一页最后一项的这两个值。",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "updated_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "updated_ms",
+        "id"
+      ],
+      "type": "object"
+    },
+    "TodoIdParams": {
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "TodoListParams": {
+      "properties": {
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "返回排在这个游标后面的项（按 `(updated_ms, id)` 从新到旧）。"
+        },
+        "include_closed": {
+          "description": "缺省只给没关闭的；`true` 时也给 `done` / `dropped`。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "缺省 200，上限 1000。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TodoListResult": {
+      "properties": {
+        "has_more": {
+          "description": "后面还有没给出的项（一页另有 1 MiB 的字节预算，可能少于 `limit`）。",
+          "type": "boolean"
+        },
+        "todos": {
+          "items": {
+            "$ref": "#/definitions/Todo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "todos",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "TodoSource": {
+      "properties": {
+        "device_id": {
+          "description": "经 hub 来的调用带上发起设备的 id。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/TodoSourceKind"
+        },
+        "session_id": {
+          "description": "这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "TodoSourceKind": {
+      "description": "一项是谁记的。",
+      "oneOf": [
+        {
+          "const": "device",
+          "description": "经 hub 来的已配对设备。",
+          "type": "string"
+        },
+        {
+          "const": "local",
+          "description": "本机 socket 上的 CLI。",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "agent 加的（`todo.add` 带了 `agent: true`，或来自自报了 `mcp` 的本机连接）。",
+          "type": "string"
+        }
+      ]
+    },
+    "TodoState": {
+      "description": "清单项的状态。这一步 daemon 不限制状态之间怎么转。",
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "还没人处理（新建时的初值）。",
+          "type": "string"
+        },
+        {
+          "const": "working",
+          "description": "正在处理。",
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "等用户回答或决定。",
+          "type": "string"
+        },
+        {
+          "const": "review",
+          "description": "做完了，等用户验收。",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "description": "完成（关闭）。",
+          "type": "string"
+        },
+        {
+          "const": "dropped",
+          "description": "不做了（关闭）。",
+          "type": "string"
+        }
+      ]
+    },
+    "TodoUpdateParams": {
+      "properties": {
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clear": {
+          "description": "要清空的可选字段，在合并之后生效。",
+          "items": {
+            "$ref": "#/definitions/ClearableTodoField"
+          },
+          "type": "array"
+        },
+        "due_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewed": {
+          "description": "`true`：把 `unreviewed` 清掉（`false` 或对已经收下的项会被忽略）。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "ToolCallDetail": {
       "description": "按 category 归一化的渲染字段。全部可选；`input` 仍原样保留。",
       "properties": {
@@ -7744,6 +8140,9 @@
     "browse_entry": {
       "$ref": "#/definitions/BrowseEntry"
     },
+    "clearable_todo_field": {
+      "$ref": "#/definitions/ClearableTodoField"
+    },
     "client_info": {
       "$ref": "#/definitions/ClientInfo"
     },
@@ -8131,6 +8530,39 @@
     "sync_outcome": {
       "$ref": "#/definitions/SyncOutcome"
     },
+    "todo": {
+      "$ref": "#/definitions/Todo"
+    },
+    "todo_add_params": {
+      "$ref": "#/definitions/TodoAddParams"
+    },
+    "todo_changed": {
+      "$ref": "#/definitions/TodoChanged"
+    },
+    "todo_cursor": {
+      "$ref": "#/definitions/TodoCursor"
+    },
+    "todo_id_params": {
+      "$ref": "#/definitions/TodoIdParams"
+    },
+    "todo_list_params": {
+      "$ref": "#/definitions/TodoListParams"
+    },
+    "todo_list_result": {
+      "$ref": "#/definitions/TodoListResult"
+    },
+    "todo_source": {
+      "$ref": "#/definitions/TodoSource"
+    },
+    "todo_source_kind": {
+      "$ref": "#/definitions/TodoSourceKind"
+    },
+    "todo_state": {
+      "$ref": "#/definitions/TodoState"
+    },
+    "todo_update_params": {
+      "$ref": "#/definitions/TodoUpdateParams"
+    },
     "trash_entry": {
       "$ref": "#/definitions/TrashEntry"
     },
@@ -8327,6 +8759,18 @@
     "session_changed",
     "session_event",
     "event",
+    "todo_state",
+    "todo_source_kind",
+    "todo_source",
+    "todo",
+    "todo_cursor",
+    "todo_list_params",
+    "todo_list_result",
+    "todo_add_params",
+    "clearable_todo_field",
+    "todo_update_params",
+    "todo_id_params",
+    "todo_changed",
     "attachment_ref",
     "blob_put_begin_params",
     "blob_put_begin_result",
@@ -8770,6 +9214,36 @@
       "name": "session.sync_base",
       "params": "SessionSyncBaseParams",
       "result": "SessionSyncBaseResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.list",
+      "params": "TodoListParams",
+      "result": "TodoListResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.add",
+      "params": "TodoAddParams",
+      "result": "Todo"
+    },
+    {
+      "direction": "request",
+      "name": "todo.update",
+      "params": "TodoUpdateParams",
+      "result": "Todo"
+    },
+    {
+      "direction": "request",
+      "name": "todo.delete",
+      "params": "TodoIdParams",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "todo.changed",
+      "params": "TodoChanged",
+      "result": null
     },
     {
       "direction": "request",

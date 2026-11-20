@@ -22,7 +22,7 @@ What the agent does with a prompt depends on the first text block (a keyword any
   (anything else) echoes the text as a message
 
 Environment (all optional)
-  FAKE_ACP_LOG             append JSON lines: argv at start, every message received on stdin (`in`) and written to stdout (`out`)
+  FAKE_ACP_LOG             append JSON lines: argv at start (with the ANYCON_AGENT / ANYCON_SESSION_ID the process was started with), every message received on stdin (`in`) and written to stdout (`out`)
   FAKE_ACP_STATE           directory where sessions are kept between processes (needed for resume / load across restarts)
   FAKE_ACP_CAPS            comma list of: resume, load, close, image   (default: resume,close,image)
   FAKE_ACP_CONFIG          options (default) | legacy (only `modes`) | none | nomodel (config options without a model selector)
@@ -59,7 +59,7 @@ if "--version" in args:
     sys.exit(int(env.get("FAKE_ACP_VERSION_EXIT", "0")))
 
 signal.signal(signal.SIGINT, lambda *a: sys.exit(0))
-log({"kind": "argv", "args": args, "cwd": os.getcwd()})
+log({"kind": "argv", "args": args, "cwd": os.getcwd(), "anycon_env": {k: env.get(k) for k in ("ANYCON_AGENT", "ANYCON_SESSION_ID")}})
 
 FLAGS = set(filter(None, env.get("FAKE_ACP_CAPS", "resume,close,image").split(",")))
 CONFIG = env.get("FAKE_ACP_CONFIG", "options")

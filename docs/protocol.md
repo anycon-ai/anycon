@@ -172,7 +172,7 @@ daemon                      hub                        新客户端
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `node.info` | C→D | 版本、能力、workspace 根（`workspace_root` 是主根；`workspace_roots: [{ path, primary, available }]` 列出所有根，主根在最前、额外根按配置顺序，`available = false` 是暂时用不了的根，ADR-45；老 daemon 不给 `workspace_roots`，客户端当作只有主根）、已安装 adapter 列表；`capabilities.worktree` 为 true 时带 `worktree { default_mode, branch_prefix }`（节点配置 `[worktree]`，ADR-34）；`capabilities.blobs` 为 true 时带 `attachment_limits { max_bytes, max_per_message, max_message_bytes }`，`capabilities.file_attachments` 表示能收任意文件（§ 5.6，ADR-44） |
+| `node.info` | C→D | 版本、能力、workspace 根（`workspace_root` 是主根；`workspace_roots: [{ path, primary, available }]` 列出所有根，主根在最前、额外根按配置顺序，`available = false` 是暂时用不了的根，ADR-45；老 daemon 不给 `workspace_roots`，客户端当作只有主根）、已安装 adapter 列表；`capabilities.worktree` 为 true 时带 `worktree { default_mode, branch_prefix }`（节点配置 `[worktree]`，ADR-34）；`capabilities.blobs` 为 true 时带 `attachment_limits { max_bytes, max_per_message, max_message_bytes }`，`capabilities.file_attachments` 表示能收任意文件（§ 5.6，ADR-44）；`capabilities.todo` 表示支持清单（§ 5.8，旧 daemon 没有这个字段，按 false）；`group` 是节点的分组名（`[hub] group`，去掉首尾空白；为空或旧 daemon 时不给，客户端按空处理，[spec/daemon.md § 21.7](spec/daemon.md#217-多个节点)） |
 | `node.devices` | C→D | 已配对设备列表 |
 | `node.revoke_device` | C→D | 吊销一台设备（daemon 删公钥，并通过 control 通知 hub 删路由） |
 | `node.pair_begin` | C→D | `{ long? }` → `{ code, expires_at_ms, link }`：让 daemon 本地生成短码并向 hub 登记 `match_id`；`long` 缺省为 `true`，生成 16 位；`long = false` 生成 8 位（`anycon pair --short`，只适合自建 hub，ADR-29）。`link = ${hub}/pair#code=<code>`。错误：daemon 没连上 hub → `unsupported`；hub 拒绝登记（回 `pair_failed`）→ `busy` 且 `data.reason` 是 `quota`（账号今天的配对名额用完了，`multi`）或 `rate_limited`，`forbidden` 且 `data.reason = "forbidden"`（约定同 `blob.put_begin` 的 `busy` + `quota`）；hub 没有确认登记 → `internal`。登记之后的失败不在这里返回，见 [spec/daemon.md § 15](spec/daemon.md#15-连接与可靠性) 的 `local.pair_outcome` |
@@ -292,6 +292,20 @@ daemon                      hub                        新客户端
 | `preview.ports` | C→D | `{ session_id? }` → `{ ports: [{ port, source, session_id?, pid?, process? }], detection }`。`source`：`session`（监听进程在会话的 agent 进程树 / 进程组里）、`workspace`（监听进程的工作目录在会话的工作目录里）、`config`（`preview.allow_ports`）。带 `session_id` 只列这个会话的（外加 `config` 的）。`detection = unavailable`：这台机器上没有可用的探测手段，只列 `config` 的 |
 
 票据密钥、令牌和预览 URL 都不写日志；`preview.open` / `preview.close` 记本地审计（不含密钥）。
+
+### 5.8 清单（[ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)）
+
+`node.info.capabilities.todo = true` 表示 daemon 支持这一组方法；旧 daemon 没有这个字段（按 false），客户端不显示清单入口。每个节点一份个人清单，存在 daemon 的 SQLite 里，规格见 [spec/daemon.md § 21](spec/daemon.md#21-清单)。`title` / `body` 是用户内容，和会话内容一样只在 E2E 通道里走。
+
+| 方法 | 方向 | 说明 |
+|---|---|---|
+| `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 是上一页最后一项的这两个值；`limit` 缺省 200、上限 1000；一页另有 1 MiB 的字节预算（至少给一项），所以可能少于 `limit`，后面还有没给出的项时 `has_more = true` |
+| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, agent?, origin_session? }` → `Todo`。`id`（小写带连字符的 UUID，其它写法 `invalid`，不做规范化）已存在时原样返回已有的那一项（幂等，不改、不报错）；`agent: true` 是调用方自报「这是 agent 加的」，来自自报了 `mcp` 的本机连接的调用总是 agent 加的；`source` 和 `unreviewed` 由 daemon 填。参数不合法 → `invalid`（`data.field`）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；未收下的 agent 项已满 100 → `invalid`（`data.reason = "too_many_unreviewed"`） |
+| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。缺省的字段保持不变；`clear`（`project` / `due_ms`）在合并之后清空；`reviewed: true` 清掉 `unreviewed`；没有字段真的变了就是空操作（不改 `updated_ms`、不通知）；把已关闭的项改回没关闭的状态时和新建一样受 1000 个的上限（`invalid`，`data.reason = "too_many"`）。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
+| `todo.delete` | C→D | `{ id }` → `{}`，物理删除。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
+| `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
+
+`Todo { id, title, body, project?, state, due_ms?, source { kind: device \| local \| agent, device_id?, session_id? }, unreviewed, created_ms, updated_ms, closed_ms? }`，`state` 取 `open` / `working` / `waiting` / `review` / `done` / `dropped`。`title`（≤ 200）、`project`（≤ 200）和 `[hub] group`（≤ 40）的长度都按 Unicode 码点数，`body`（≤ 16 KiB）按 UTF-8 字节。
 
 ## 6. 会话事件
 

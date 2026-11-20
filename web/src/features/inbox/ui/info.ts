@@ -2,6 +2,7 @@
 import { useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cleanHintText } from '@/lib/hint'
+import { cleanOneLine } from '@/features/todos/validate'
 import { formatRelative } from '@/lib/format'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes } from '@/stores/nodes'
@@ -67,6 +68,8 @@ export function useItemInfo(item: InboxItem): ItemInfo {
         project: item.session.project ?? undefined,
         since: t(item.kind === 'waiting' ? 'inbox.waitingSince' : item.kind === 'error' || item.session.status === 'error' ? 'inbox.erroredSince' : 'inbox.stoppedSince', { time }),
       }
+    case 'later':
+      return { ...base, title: cleanOneLine(item.todo.title), project: item.todo.project ? cleanOneLine(item.todo.project) : undefined, since: t('inbox.addedSince', { time }) }
     case 'enroll':
       return { ...base, title: t('inbox.enrollTitle', { node: cleanHintText(nodeName) || nodeName }), since: t('inbox.requestedSince', { time }) }
   }

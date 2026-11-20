@@ -8,15 +8,16 @@ import { isActiveStatus } from '@/features/session/group'
 import { isFollowUp, isFollowUpReady } from '@/features/session/marks'
 import { pendingApprovals, type EnrollItem, type EnrollResolution } from '@/stores/enroll'
 import type { PendingPermission, SessionItem } from '@/stores/sessions'
+import { isClosed, type ViewTodo } from '@/features/todos/types'
 
 /** 出错的会话在「现在」里留多久（按 `updated_at_ms` 算），超过就不再算等用户的事。 */
 export const ERROR_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 
 /** 页面上的段，从上到下。目前只有「现在」；「待验收」「稍后」的数据到了再加。 */
-export const SECTIONS = ['now'] as const
+export const SECTIONS = ['now', 'later'] as const
 export type InboxSectionId = (typeof SECTIONS)[number]
 
-export type InboxItemKind = 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error' | 'waiting'
+export type InboxItemKind = 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error' | 'waiting' | 'later'
 
 interface ItemBase {
   /** 稳定的 key：列表、选中、焦点都靠它。 */
@@ -50,7 +51,13 @@ export interface SessionInboxItem extends ItemBase {
   session: SessionItem
 }
 
-export type InboxItem = RequestItem | EnrollInboxItem | SessionInboxItem
+/** 「稍后」段：agent 记的、还没人收下的清单项（`unreviewed`）。动作：收下、丢掉（不是删除）。不计入数字，不推送。 */
+export interface LaterInboxItem extends ItemBase {
+  kind: 'later'
+  todo: ViewTodo
+}
+
+export type InboxItem = RequestItem | EnrollInboxItem | SessionInboxItem | LaterInboxItem
 
 export interface InboxInputs {
   sessions: Readonly<Record<string, SessionItem>>
@@ -59,6 +66,8 @@ export interface InboxInputs {
   /** 左栏节点过滤器勾选的节点。 */
   selected: readonly string[]
   now: number
+  /** 勾选的、支持清单的节点上的清单项（缓存叠上待发改动）。 */
+  todos?: readonly ViewTodo[]
 }
 
 export interface InboxModel {
@@ -148,7 +157,12 @@ export function deriveInbox(i: InboxInputs): InboxModel {
 
   now.sort(compareNow)
   inProgress.sort((a, b) => b.updated_at_ms - a.updated_at_ms)
-  return { sections: [{ id: 'now', items: now }], inProgress }
+  // 稍后：agent 记的、还没人收下的项，等得最久的在前。收下或丢掉之后它们就不在这里了（丢掉 = 状态 dropped，不物理删除）
+  const later: InboxItem[] = (i.todos ?? [])
+    .filter((t) => t.unreviewed && !isClosed(t.state) && picked.has(t.node_id))
+    .map((t): InboxItem => ({ key: `later:${t.node_id}:${t.id}`, section: 'later', kind: 'later', nodeId: t.node_id, todo: t, sinceMs: t.created_ms, expiresAtMs: null }))
+    .sort(compareNow)
+  return { sections: [{ id: 'now', items: now }, { id: 'later', items: later }], inProgress }
 }
 
 /** 「现在」段的条目。 */
@@ -156,7 +170,12 @@ export function nowItems(model: InboxModel): InboxItem[] {
   return model.sections.find((s) => s.id === 'now')?.items ?? []
 }
 
-/** 导航项、应用角标和标签页标题的数字：只算「现在」段。 */
+/** 所有段里的条目，按段的顺序：键盘移动、选中和焦点都在这一串上。 */
+export function allItems(model: InboxModel): InboxItem[] {
+  return model.sections.flatMap((s) => s.items)
+}
+
+/** 导航项、应用角标和标签页标题的数字：只算「现在」段（「稍后」不计入：它们不卡着正在跑的活）。 */
 export function inboxNowCount(model: InboxModel): number {
   return nowItems(model).length
 }

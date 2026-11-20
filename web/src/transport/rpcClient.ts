@@ -6,6 +6,12 @@ import { decodeRpc, encodeRpc, isRpcNotification, isRpcResponse, makeRequest, ty
 
 export type RpcFailKind = 'rpc' | 'timeout' | 'undeliverable' | 'offline' | 'closed' | 'too_large'
 
+/**
+ * `closed` 的原因（在途请求是怎么被掐断的）：`hub_lost` 到 hub 的连接断了、`peer_offline` 对端下线了——这两种是链路 / 对端那一侧的事，
+ * 和这条请求本身无关；`peer_reconnected` 对端在请求在途时又上线了、`noise_reset` 加密会话作废重建——节点那一侧在这条请求在途时出了状态变化
+ * （比如 daemon 一收到它就崩了重启）；`disposed` 本端拆掉了链路。
+ */
+export type RpcCloseReason = 'hub_lost' | 'peer_offline' | 'peer_reconnected' | 'noise_reset' | 'disposed'
 /** 单条请求（明文）的上限。接收端重组上限是 16 MiB 密文，留足余量。 */
 export const MAX_REQUEST_BYTES = 8 * 1024 * 1024
 
@@ -14,6 +20,7 @@ export class RpcCallError extends Error {
     public readonly kind: RpcFailKind,
     message: string,
     public readonly rpc?: RpcError,
+    public readonly closeReason?: RpcCloseReason,
   ) {
     super(message)
     this.name = 'RpcCallError'
@@ -100,8 +107,8 @@ export class RpcClient {
     return true
   }
 
-  rejectAll(kind: RpcFailKind, message: string): void {
-    for (const id of [...this.pending.keys()]) this.settle(id, new RpcCallError(kind, message))
+  rejectAll(kind: RpcFailKind, message: string, closeReason?: RpcCloseReason): void {
+    for (const id of [...this.pending.keys()]) this.settle(id, new RpcCallError(kind, message, undefined, closeReason))
   }
 
   private settle(id: number, err?: RpcCallError, value?: unknown): void {

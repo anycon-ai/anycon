@@ -1,0 +1,59 @@
+import type { Todo, TodoState } from '@/protocol'
+
+/** 这一步界面上有的四个状态（`waiting` / `review` 由别的客户端写，归在「处理中」里显示，spec/web.md § 4.12）。 */
+export const UI_STATES = ['open', 'working', 'done', 'dropped'] as const satisfies readonly TodoState[]
+export const isClosed = (s: TodoState): boolean => s === 'done' || s === 'dropped'
+
+/** `todo.update` 里用户改了的字段（只带改了的）。 */
+export interface UpdateFields {
+  title?: string
+  body?: string
+  project?: string | null
+  due_ms?: number | null
+  state?: TodoState
+  reviewed?: boolean
+  clear?: Array<'project' | 'due_ms'>
+}
+
+/** 离线期间留在本地的一条改动（spec/web.md § 4.12、daemon.md § 21.6）。 */
+export type OutboxOp =
+  | { kind: 'add'; params: { title: string; body: string; project?: string | null; due_ms?: number | null } }
+  | { kind: 'update'; fields: UpdateFields }
+  | { kind: 'delete' }
+
+export interface OutboxError {
+  code: string
+  field?: string
+  reason?: string
+}
+
+export interface OutboxRecord {
+  /** 入队顺序（IndexedDB 自增）：重放按它的顺序。 */
+  seq?: number
+  node_id: string
+  /** 项的 id（客户端生成）。 */
+  id: string
+  op: OutboxOp
+  created_at: number
+  /** 入队时节点连不上：重放完之后要重新列一次（在线时的改动靠返回的 `Todo` 和 `todo.changed`，不用整份重列）。 */
+  queued_offline?: boolean
+  /** `pending` 等着重放；`failed` 被拒或反复发不出去（带 `error`），项留在界面上标成失败，用户选重试或丢弃，这一项后面的改动等着。 */
+  state: 'pending' | 'failed'
+  error?: OutboxError
+  /** 链路错误（超时、没送达）连续失败的次数，持久化：到 `MAX_LINK_FAILURES` 就标成失败。 */
+  attempts?: number
+  /** 这条记录在飞的时候连接被掐断（`closed`）的次数，持久化：到 `MAX_DROPS` 次就标成失败（毒记录：发它就让对端崩 / 断线）。 */
+  drops?: number
+  /** 正在被某个实例发送：认领的时间和实例 id。没有 Web Locks 时靠它防止两个标签页同时发（租约，见 `service.ts`）。 */
+  claimed_at?: number
+  claimed_by?: string
+}
+
+/** 界面上用的一项：daemon 的 `Todo` 叠上本地还没同步的改动。 */
+export interface ViewTodo extends Todo {
+  node_id: string
+  /** 有没同步的改动（离线期间做的，或正在发）。 */
+  unsynced: boolean
+  /** 有被 daemon 拒绝的改动，等用户处理。 */
+  failed?: OutboxError
+}

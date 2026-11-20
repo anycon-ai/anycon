@@ -2,12 +2,14 @@
 // 隔太久或中间按了别的键就取消。
 import { fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { NodeInfo } from '@/protocol'
 import { nodeEntry } from '@/test/factories'
 import { mockRouter } from '@/test/routerMock'
 import { setNavigator } from '@/lib/navigate'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
+import { useCapture } from '@/features/todos/capture'
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, {}))
@@ -33,7 +35,7 @@ beforeEach(() => {
   setNavigator(go)
   useUi.setState({ lastSessionsPath: null })
   usePrefs.setState({ lastNode: null })
-  useNodes.setState({ byId: { [A]: nodeEntry({ id: A }), [B]: nodeEntry({ id: B }) }, order: [A, B], loaded: true })
+  useNodes.setState({ byId: { [A]: nodeEntry({ id: A, info: { capabilities: { todo: true } } as unknown as NodeInfo }), [B]: nodeEntry({ id: B }) }, order: [A, B], loaded: true })
 })
 afterEach(() => {
   setNavigator(null)
@@ -120,6 +122,49 @@ describe('G then I / S', () => {
     render(<Harness />)
     press('g', { repeat: true })
     press('i')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+})
+
+describe('to-dos: G T and C', () => {
+  it('G T goes to the to-do list', () => {
+    render(<Harness />)
+    press('g')
+    press('t')
+    expect(navigate).toHaveBeenCalledWith({ to: '/todos' })
+  })
+
+  it('with no node that supports to-dos, C and G T do nothing (there is no entry to offer)', () => {
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A }), [B]: nodeEntry({ id: B }) }, order: [A, B], loaded: true })
+    useCapture.setState({ open: false })
+    render(<Harness />)
+    press('c')
+    press('g')
+    press('t')
+    expect(useCapture.getState().open).toBe(false)
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('T on its own does nothing', () => {
+    render(<Harness />)
+    press('t')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('C opens the capture bar without leaving the page, but not while typing, with a modifier, or over a dialog', () => {
+    useCapture.setState({ open: false })
+    const { getByLabelText } = render(<Harness />)
+    press('c', { metaKey: true })
+    press('c', {}, getByLabelText('box'))
+    expect(useCapture.getState().open).toBe(false)
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    document.body.append(dialog)
+    press('c')
+    expect(useCapture.getState().open).toBe(false)
+    dialog.remove()
+    press('c')
+    expect(useCapture.getState().open).toBe(true)
     expect(navigate).not.toHaveBeenCalled()
   })
 })

@@ -23,6 +23,7 @@ import { backgroundTaskCount, runningTasks, tasksLive } from '@/features/session
 import { previewAvailable, usePreviewTemplate } from '@/features/preview/availability'
 import { PreviewView } from '@/features/preview/PreviewView'
 import { ApprovalBanner } from '@/components/ApprovalBanner'
+import { SelectionCapture } from '@/features/todos/ui/SelectionCapture'
 import { ArchivedBar } from '@/features/session/ui/ArchivedBar'
 import { FollowUpBar, FollowUpChip, FollowUpToggle } from '@/features/session/ui/FollowUp'
 import { InfoPanel } from '@/features/session/ui/InfoPanel'
@@ -383,6 +384,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
 
   return (
     <>
+      <SelectionCapture />
       <PageHeader
         crumbs={[
           { label: entry.name, to: { to: '/n/$node', params: { node: nodeParam } } },

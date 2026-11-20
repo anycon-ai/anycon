@@ -30,20 +30,24 @@ function handlers(over: Partial<Handlers> = {}) {
   const show = vi.fn(async () => undefined)
   const openWindow = vi.fn(async () => undefined)
   const win: WindowClientLike = { url: 'https://hub.example/', focus: vi.fn(async () => undefined), postMessage: vi.fn() }
+  const stored: unknown[] = []
   const h: Handlers = {
+    redirect: (url) => ({ status: 303, location: url }),
+    storeShared: async (f) => void stored.push(f),
+    now: () => 1000,
     push: { directory: async () => ({ nodeName: 'mac-mini', nodeIds: [] }), language: async () => 'en', navigatorLanguage: () => 'en', translator: pushTranslator, show },
     click: { origin: 'https://hub.example', windows: async () => [win], openWindow },
     resubscribe: { deviceId: async () => 'dev1', vapidKey: async () => 'K', subscribe: vi.fn(), upload: vi.fn(async () => 'ok' as const) },
     ...over,
   }
-  return { h, show, openWindow, win }
+  return { h, show, openWindow, win, stored }
 }
 
 describe('installHandlers', () => {
-  it('registers exactly message, push, notificationclick and pushsubscriptionchange — no install / activate takeover', () => {
+  it('registers exactly fetch (share target only), message, push, notificationclick and pushsubscriptionchange — no install / activate takeover', () => {
     const { scope, listeners } = fakeScope()
     installHandlers(scope, handlers().h)
-    expect([...listeners.keys()].sort()).toEqual(['message', 'notificationclick', 'push', 'pushsubscriptionchange'])
+    expect([...listeners.keys()].sort()).toEqual(['fetch', 'message', 'notificationclick', 'push', 'pushsubscriptionchange'])
   })
 
   it('SKIP_WAITING from the page makes the new version take over; other messages do not', async () => {
@@ -121,3 +125,47 @@ describe('navigation fallback', () => {
     for (const path of ['/', '/settings/notifications', '/n/abcd1234/s/sess_1', '/login']) expect(NAVIGATION_DENYLIST.some((r) => r.test(path))).toBe(false)
   })
 })
+
+describe('share target (POST /capture)', () => {
+  const form = (o: Record<string, unknown>) => ({ get: (n: string) => o[n] ?? null })
+  const fetchEvent = (method: string, url: string, fields: Record<string, unknown> = {}) => {
+    let responded: Promise<unknown> | undefined
+    return {
+      event: { request: { method, url, formData: async () => form(fields) }, waitUntil: () => undefined, respondWith: (p: Promise<unknown>) => void (responded = p) },
+      responded: () => responded,
+    }
+  }
+
+  it('intercepts the same-origin POST, stashes the three fields and answers 303 to /capture without a query', async () => {
+    const { scope, fire } = fakeScope()
+    const { h, stored } = handlers()
+    installHandlers(scope, h)
+    const { event, responded } = fetchEvent('POST', 'https://hub.example/capture', { title: 'T', text: 'secret text', url: 'https://x.test/a?b=c' })
+    fire('fetch', event)
+    const res = (await responded()) as { status: number; location: string }
+    expect(res).toEqual({ status: 303, location: 'https://hub.example/capture' })
+    expect(res.location).not.toContain('?')
+    expect(res.location).not.toContain('secret')
+    expect(stored).toEqual([{ title: 'T', text: 'secret text', url: 'https://x.test/a?b=c', at: 1000 }])
+  })
+
+  it('still redirects when storing fails (the content is lost, the page opens empty)', async () => {
+    const { scope, fire } = fakeScope()
+    const { h } = handlers({ storeShared: async () => Promise.reject(new Error('quota')) })
+    installHandlers(scope, h)
+    const { event, responded } = fetchEvent('POST', 'https://hub.example/capture', { text: 'x' })
+    fire('fetch', event)
+    expect(await responded()).toEqual({ status: 303, location: 'https://hub.example/capture' })
+  })
+
+  it('ignores everything else: GETs, other paths, other origins', () => {
+    const { scope, fire } = fakeScope()
+    installHandlers(scope, handlers().h)
+    for (const [m, u] of [['GET', 'https://hub.example/capture'], ['POST', 'https://hub.example/api/x'], ['POST', 'https://evil.example/capture'], ['POST', 'https://hub.example/capture/x']] as const) {
+      const { event, responded } = fetchEvent(m, u)
+      fire('fetch', event)
+      expect(responded()).toBeUndefined()
+    }
+  })
+})
+

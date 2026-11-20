@@ -1,4 +1,4 @@
-import type { AgentInfo, DiffFile, EnrollInfo, Event, NodeInfo, Project, PullRequestInfo, SessionEvent, SessionGitStatus, SessionSummary, SessionWorktree, WorktreeInfo } from '@/protocol'
+import type { AgentInfo, DiffFile, EnrollInfo, Event, NodeInfo, Project, PullRequestInfo, SessionEvent, SessionGitStatus, SessionSummary, SessionWorktree, Todo, WorktreeInfo } from '@/protocol'
 import type { NodeEntry } from '@/stores/nodes'
 
 let seq = 0
@@ -246,4 +246,9 @@ export function enrollInfo(over: Partial<EnrollInfo> = {}): EnrollInfo {
     expires_at_ms: now + 300_000,
     ...over,
   }
+}
+
+/** 一个清单项（`Todo`）。默认：人记的、没关闭、没有项目。 */
+export function todoItem(over: Partial<Todo> & { id: string }): Todo {
+  return { title: `todo ${over.id}`, body: '', state: 'open', source: { kind: 'device', device_id: 'dev' }, unreviewed: false, created_ms: 1_000, updated_ms: 1_000, ...over }
 }

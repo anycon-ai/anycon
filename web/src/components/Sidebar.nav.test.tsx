@@ -117,3 +117,16 @@ describe('node filter dot', () => {
   })
 })
 
+
+describe('to-do entries need a node that supports to-dos', () => {
+  it('without one the sidebar has no To-dos item and no +; with one it has both', () => {
+    const { unmount } = wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.queryByTestId('sidebar-todos')).toBeNull()
+    expect(screen.queryByTestId('sidebar-capture')).toBeNull()
+    unmount()
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'alpha', info: { capabilities: { todo: true } } as never, agents: [mockAgent()], projects: [project({ name: 'app' })] }) }, order: [NODE], loaded: true })
+    wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.getByTestId('sidebar-todos')).toBeInTheDocument()
+    expect(screen.getByTestId('sidebar-capture')).toBeInTheDocument()
+  })
+})

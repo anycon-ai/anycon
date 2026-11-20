@@ -6,7 +6,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { SessionDot } from '@/components/StatusDot'
 import { InboxActiveContext } from '@/features/inbox/active'
 import { useArmed } from '@/features/inbox/arming'
-import { SECTIONS, deriveInbox, isArmed, nowItems, type InboxItem, type InboxSectionId, type RequestItem } from '@/features/inbox/derive'
+import { SECTIONS, allItems, deriveInbox, isArmed, nowItems, type InboxItem, type InboxSectionId, type RequestItem } from '@/features/inbox/derive'
 import { GhostDetail, InboxDetail, InboxRow } from '@/features/inbox/ui/InboxItems'
 import { useMinute } from '@/features/inbox/ui/info'
 import { useInboxActions } from '@/features/inbox/ui/useInboxActions'
@@ -26,7 +26,7 @@ import { Drawer } from '@/ui/Overlay'
 import { cn } from '@/ui/cn'
 
 /** 每一段的标题（i18n key）。加新的段时在这里加一行，页面骨架不用动。 */
-const SECTION_TITLE: Record<InboxSectionId, string> = { now: 'inbox.sections.now' }
+const SECTION_TITLE: Record<InboxSectionId, string> = { now: 'inbox.sections.now', later: 'inbox.sections.later' }
 
 /** 从通知点进来：定位这个会话最早的一条待答复请求（推送只带类别、节点和会话，不带请求 id）。 */
 export interface InboxLocate {
@@ -51,7 +51,7 @@ const isRequest = (i: InboxItem): i is RequestItem => i.kind === 'permission' ||
 export function InboxPage({ active = true, locate, onLocateDone }: { active?: boolean; locate?: InboxLocate; onLocateDone?: () => void }) {
   const { t } = useTranslation()
   const model = useInbox()
-  const mainItems = useMemo(() => nowItems(model), [model])
+  const mainItems = useMemo(() => allItems(model), [model])
   const mode = useInboxMode()
   const root = useRef<HTMLDivElement>(null)
   const empty = useRef<HTMLHeadingElement>(null)
@@ -146,9 +146,19 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
 
   useMinute()
   const showNode = pickedNodes.length > 1
-  const total = mainItems.length
+  const total = nowItems(model).length
   const outsideNote = outside ? { onShow: () => toggle(outside.nodeId, true) } : undefined
   const detail = sel.ghost ? <GhostDetail item={sel.ghost.item} hasNext={items.length > 0} onNext={sel.next} replacedBy={!!sel.ghost.replacedBy} onShow={() => sel.ghost?.replacedBy && choose(sel.ghost.replacedBy)} /> : shown ? <InboxDetail key={shown.key} item={shown} armed={armed} outside={shown.key === outside?.key ? outsideNote : undefined} /> : null
+
+  // 手机上占位出现在选中的那一条原来的位置：序号是在全部条目里的，占位放进它原来所在的那一段（「稍后」的占位不放在「现在」段的末尾）
+  const ghostPlace = (() => {
+    if (!sel.ghost) return null
+    const section = Math.max(0, SECTIONS.indexOf(sel.ghost.item?.section ?? 'now'))
+    let offset = outside ? 1 : 0
+    for (let n = 0; n < section; n++) offset += model.sections.find((x) => x.id === SECTIONS[n])?.items.length ?? 0
+    const len = model.sections.find((x) => x.id === SECTIONS[section])?.items.length ?? 0
+    return { section, at: Math.min(Math.max(sel.ghost.index - offset, 0), len) }
+  })()
 
   const renderRow = (item: InboxItem) => (
     <InboxRow key={item.key} item={item} mode={mode} selected={sel.selected === item.key && !sel.ghost} showNode={showNode || item.key === outside?.key} actions={actions} onSelect={sel.select}>
@@ -174,10 +184,10 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
                 <ul className="space-y-2">{renderRow(outside)}</ul>
               </section>
             ) : null}
-            {SECTIONS.map((id) => {
+            {SECTIONS.map((id, sectionIndex) => {
               const section = model.sections.find((s) => s.id === id)
               const rows = section?.items ?? []
-              const ghostAt = mode === 'inline' && sel.ghost ? Math.min(Math.max(sel.ghost.index - (outside ? 1 : 0), 0), rows.length) : -1
+              const ghostAt = mode === 'inline' && sel.ghost && ghostPlace?.section === sectionIndex ? ghostPlace.at : -1
               if (rows.length === 0 && ghostAt < 0) return null
               return (
                 <section key={id} aria-labelledby={`inbox-${id}`} data-testid={`inbox-section-${id}`}>

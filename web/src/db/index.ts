@@ -1,6 +1,8 @@
 // IndexedDB（idb）。schema 见 spec/web.md § 6.2。按 origin 隔离，这是 ADR-23 接受的代价。
+import { deleteShareDb } from '@/sw/shareStore'
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { AgentInfo, AttachmentRef, NodeInfo, Project, SessionEvent, SessionSummary } from '@/protocol'
+import type { AgentInfo, AttachmentRef, NodeInfo, Project, SessionEvent, SessionSummary, Todo } from '@/protocol'
+import { isClosed, type OutboxRecord } from '@/features/todos/types'
 import { bytesEqual } from '@/lib/bytes'
 
 export interface IdentityRecord {
@@ -92,6 +94,20 @@ export interface BlobRecord {
   last_used_ms: number
 }
 
+/** 清单的本地缓存：daemon 最近一次给的那一份（`Todo` 原样），不含还没同步的本地改动（那些在 `todo_outbox`）。明文，和会话缓存同样的暴露面。 */
+export interface TodoRecord {
+  /** `${node_id}:${todo.id}` */
+  key: string
+  node_id: string
+  todo: Todo
+}
+
+/** 每个节点上一次同步清单的时间（界面上「缓存于 …」）。 */
+export interface TodoMetaRecord {
+  node_id: string
+  synced_at: number
+}
+
 interface AnyconDB extends DBSchema {
   keys: { key: string; value: IdentityRecord }
   nodes: { key: string; value: NodeRecord }
@@ -99,10 +115,14 @@ interface AnyconDB extends DBSchema {
   events: { key: [string, number]; value: EventRecord }
   drafts: { key: string; value: DraftRecord }
   blobs: { key: string; value: BlobRecord }
+  todos: { key: string; value: TodoRecord; indexes: { by_node: string } }
+  todo_meta: { key: string; value: TodoMetaRecord }
+  todo_outbox: { key: number; value: OutboxRecord; indexes: { by_node: string } }
 }
 
 export const DB_NAME = 'anycon'
-export const DB_VERSION = 1
+/** 2：清单（`todos` / `todo_meta` / `todo_outbox`）。升级只新增仓，不动已有的。 */
+export const DB_VERSION = 2
 
 let dbPromise: Promise<IDBPDatabase<AnyconDB>> | null = null
 
@@ -136,14 +156,23 @@ export function setBlockedHandler(fn: (() => void) | null): void {
 export function getDb(): Promise<IDBPDatabase<AnyconDB>> {
   if (disabled) return Promise.reject(new DbDisabledError())
   dbPromise ??= openDB<AnyconDB>(DB_NAME, DB_VERSION, {
-    upgrade(db) {
-      db.createObjectStore('keys', { keyPath: 'id' })
-      db.createObjectStore('nodes', { keyPath: 'node_id' })
-      const sessions = db.createObjectStore('sessions', { keyPath: 'session_id' })
-      sessions.createIndex('by_node', 'node_id')
-      db.createObjectStore('events', { keyPath: ['session_id', 'seq'] })
-      db.createObjectStore('drafts', { keyPath: 'session_id' })
-      db.createObjectStore('blobs', { keyPath: 'blob_id' })
+    upgrade(db, oldVersion) {
+      if (oldVersion < 1) {
+        db.createObjectStore('keys', { keyPath: 'id' })
+        db.createObjectStore('nodes', { keyPath: 'node_id' })
+        const sessions = db.createObjectStore('sessions', { keyPath: 'session_id' })
+        sessions.createIndex('by_node', 'node_id')
+        db.createObjectStore('events', { keyPath: ['session_id', 'seq'] })
+        db.createObjectStore('drafts', { keyPath: 'session_id' })
+        db.createObjectStore('blobs', { keyPath: 'blob_id' })
+      }
+      if (oldVersion < 2) {
+        const todos = db.createObjectStore('todos', { keyPath: 'key' })
+        todos.createIndex('by_node', 'node_id')
+        db.createObjectStore('todo_meta', { keyPath: 'node_id' })
+        const outbox = db.createObjectStore('todo_outbox', { keyPath: 'seq', autoIncrement: true })
+        outbox.createIndex('by_node', 'node_id')
+      }
     },
     terminated() {
       dbPromise = null
@@ -178,8 +207,11 @@ export async function resetDb(): Promise<void> {
 /** 清空全部本地数据（换账号登录时）。 */
 export async function wipeAll(): Promise<void> {
   const db = await getDb()
-  const tx = db.transaction(['keys', 'nodes', 'sessions', 'events', 'drafts', 'blobs'], 'readwrite')
+  const tx = db.transaction(['keys', 'nodes', 'sessions', 'events', 'drafts', 'blobs', 'todos', 'todo_meta', 'todo_outbox'], 'readwrite')
   await Promise.all([
+    tx.objectStore('todos').clear(),
+    tx.objectStore('todo_meta').clear(),
+    tx.objectStore('todo_outbox').clear(),
     tx.objectStore('keys').clear(),
     tx.objectStore('nodes').clear(),
     tx.objectStore('sessions').clear(),
@@ -188,6 +220,8 @@ export async function wipeAll(): Promise<void> {
     tx.objectStore('blobs').clear(),
     tx.done,
   ])
+  // 换账号：账号 A 分享进来、还没被取走的内容不能在账号 B 的输入条里冒出来
+  await deleteShareDb().catch((e: unknown) => console.warn('anycon: could not delete the share stash', e))
 }
 
 // ---- keys ----
@@ -259,8 +293,12 @@ export async function putNode(rec: NodeRecord): Promise<void> {
 export async function deleteNode(nodeId: string): Promise<void> {
   const db = await getDb()
   const sessions = await db.getAllFromIndex('sessions', 'by_node', nodeId)
-  const tx = db.transaction(['nodes', 'sessions', 'events', 'drafts'], 'readwrite')
+  const tx = db.transaction(['nodes', 'sessions', 'events', 'drafts', 'todos', 'todo_meta', 'todo_outbox'], 'readwrite')
   await tx.objectStore('nodes').delete(nodeId)
+  // 这台节点的清单缓存和还没同步的改动一起删（节点被忘记 / 取消配对之后它们没有地方可发了）
+  await tx.objectStore('todo_meta').delete(nodeId)
+  for (const k of await tx.objectStore('todos').index('by_node').getAllKeys(nodeId)) await tx.objectStore('todos').delete(k)
+  for (const k of await tx.objectStore('todo_outbox').index('by_node').getAllKeys(nodeId)) await tx.objectStore('todo_outbox').delete(k)
   for (const s of sessions) {
     await tx.objectStore('sessions').delete(s.session_id)
     await tx.objectStore('events').delete(IDBKeyRange.bound([s.session_id, 0], [s.session_id, Number.MAX_SAFE_INTEGER]))
@@ -371,4 +409,176 @@ export async function scanBlobRecords(): Promise<BlobScan> {
   }
   await tx.done
   return out
+}
+
+// ---- todos（清单，docs/spec/daemon.md § 21） ----
+
+export async function listTodoRecords(nodeId: string): Promise<{ todos: Todo[]; synced_at?: number }> {
+  const db = await getDb()
+  const [recs, meta] = await Promise.all([db.getAllFromIndex('todos', 'by_node', nodeId), db.get('todo_meta', nodeId)])
+  return { todos: recs.map((r) => r.todo), ...(meta ? { synced_at: meta.synced_at } : {}) }
+}
+
+/** 写入 / 删除一批缓存的项；`syncedAt` 给了就同时记下同步时间。一个事务。 */
+export async function applyTodoCache(nodeId: string, change: { put?: readonly Todo[]; remove?: readonly string[]; syncedAt?: number }): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction(['todos', 'todo_meta'], 'readwrite')
+  const ops: Promise<unknown>[] = [tx.done]
+  for (const t of change.put ?? []) ops.push(tx.objectStore('todos').put({ key: `${nodeId}:${t.id}`, node_id: nodeId, todo: t }))
+  for (const id of change.remove ?? []) ops.push(tx.objectStore('todos').delete(`${nodeId}:${id}`))
+  if (change.syncedAt !== undefined) ops.push(tx.objectStore('todo_meta').put({ node_id: nodeId, synced_at: change.syncedAt }))
+  await Promise.all(ops)
+}
+
+/**
+ * 一次同步（翻完没关闭的项）的结果落盘：在**一个**读写事务里读出这个节点缓存里没关闭的项、删掉不在 `keep` 里的、写入 `keep`。
+ * 事务一开始就建（前面没有 await），`todo.changed` 自己的写入排在它后面，不会被这里较旧的 `keep` 覆盖。
+ */
+export async function commitOpenList(nodeId: string, keepNow: () => readonly Todo[], syncedAt: number): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction(['todos', 'todo_meta'], 'readwrite')
+  // 事务建好的这一刻才算要写的内容：在这之前到的变更已经并进来，在这之后到的，它们自己的写入排在这个事务后面
+  const keep = keepNow()
+  const store = tx.objectStore('todos')
+  const keepIds = new Set(keep.map((t) => t.id))
+  const existing = await store.index('by_node').getAll(nodeId)
+  const ops: Promise<unknown>[] = [tx.done]
+  for (const r of existing) if (!isClosed(r.todo.state) && !keepIds.has(r.todo.id)) ops.push(store.delete(r.key))
+  for (const t of keep) ops.push(store.put({ key: `${nodeId}:${t.id}`, node_id: nodeId, todo: t }))
+  ops.push(tx.objectStore('todo_meta').put({ node_id: nodeId, synced_at: syncedAt }))
+  await Promise.all(ops)
+}
+
+/** 「已关闭」从头翻到尾之后：缓存里已关闭、这一趟没翻到、期间也没变过的项（别处删了）删掉。 */
+export async function pruneClosedCache(nodeId: string, seen: ReadonlySet<string>, touched: ReadonlyMap<string, unknown>): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction('todos', 'readwrite')
+  const existing = await tx.store.index('by_node').getAll(nodeId)
+  const ops: Promise<unknown>[] = [tx.done]
+  for (const r of existing) if (isClosed(r.todo.state) && !seen.has(r.todo.id) && !touched.has(r.todo.id)) ops.push(tx.store.delete(r.key))
+  await Promise.all(ops)
+}
+
+/** 追加一条删除；这一项已有的失败记录和排在它们后面的记录一起丢掉（发不出去的记录不能留着、同时又把项藏起来）。 */
+export async function appendDelete(rec: OutboxRecord): Promise<number> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const mine = (await tx.store.index('by_node').getAll(rec.node_id)).filter((r) => r.id === rec.id).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+  const firstFailed = mine.find((r) => r.state === 'failed')
+  if (firstFailed) for (const r of mine) if ((r.seq ?? 0) >= (firstFailed.seq ?? 0)) await tx.store.delete(r.seq!)
+  const seq = Number(await tx.store.add(rec))
+  await tx.done
+  return seq
+}
+
+export async function listOutbox(nodeId?: string): Promise<OutboxRecord[]> {
+  const db = await getDb()
+  const all = nodeId ? await db.getAllFromIndex('todo_outbox', 'by_node', nodeId) : await db.getAll('todo_outbox')
+  return all.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+}
+
+/** 追加一条待发改动（排在最后）。不合并、不取消：重放就是按这个日志的顺序一条条发。返回 `seq`。 */
+export async function appendOutbox(rec: OutboxRecord): Promise<number> {
+  return Number(await (await getDb()).add('todo_outbox', rec))
+}
+
+export async function deleteOutbox(seqs: readonly number[]): Promise<void> {
+  if (seqs.length === 0) return
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  await Promise.all([...seqs.map((q) => tx.store.delete(q)), tx.done])
+}
+
+/**
+ * 认领下一条要发的：在**一个**读写事务里选出来并写上认领（只改库里现在的这条记录，不写回之前读到的快照，
+ * 所以事务之间入队 / 重试的改动不会被盖掉）。
+ *   - 每一项只有它最前面的那一条有资格（同一项内保持顺序）；最前面的是 `failed`，这一项就等着，别的项照常；
+ *   - 被别的实例认领、而且认领还没过期（`takeoverMs` 内）的跳过；`takeoverMs = 0`：持有 Web Lock 的实例独占，库里留的认领都是死掉的实例留下的，
+ *     不论年龄一律接手（时钟回拨留下的「未来」时间戳也一样）；只有租约（没有 Web Locks）才用下面那条保守的年龄规则。
+ */
+export async function claimNextOutbox(nodeId: string, owner: string, now: number, takeoverMs: number): Promise<OutboxRecord | null> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const recs = (await tx.store.index('by_node').getAll(nodeId)).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+  const seen = new Set<string>()
+  for (const r of recs) {
+    if (seen.has(r.id)) continue
+    seen.add(r.id)
+    if (r.state !== 'pending') continue
+    // 时钟往回拨过（认领的时刻在「现在」之后）时差是负数，同样不接手：宁可多等一会儿，也不把别人正在发的那条抢过来发两遍
+    // `takeoverMs = 0`（持有 Web Lock）：别的实例的认领一律是死掉的，不管它盖的是什么时刻
+    if (r.claimed_at !== undefined && r.claimed_by !== owner && takeoverMs > 0 && now - r.claimed_at < takeoverMs) continue
+    const claimed: OutboxRecord = { ...r, claimed_at: now, claimed_by: owner }
+    await tx.store.put(claimed)
+    await tx.done
+    return claimed
+  }
+  await tx.done
+  return null
+}
+
+/**
+ * 把一条记录标成失败（`f` 拿到库里现在的样子，返回标了失败的新样子；返回的不是 `failed` 就原样写回）。同一个事务里：这一项排在它后面的
+ * 已经有一条删除时，失败的这条和夹在中间的记录一起丢掉，让删除能发出去（不能留着一条发不出去的失败记录挡在删除前面）。
+ * 返回丢掉了几条记录（0 = 只是标了失败）。
+ */
+export async function failOutbox(seq: number, f: (stored: OutboxRecord) => OutboxRecord): Promise<number> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const stored = await tx.store.get(seq)
+  if (!stored) {
+    await tx.done
+    return 0
+  }
+  const next = f(stored)
+  let dropped = 0
+  if (next.state === 'failed') {
+    const mine = (await tx.store.index('by_node').getAll(stored.node_id)).filter((r) => r.id === stored.id).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+    const del = mine.find((r) => (r.seq ?? 0) > seq && r.op.kind === 'delete')
+    if (del) {
+      for (const r of mine) {
+        if ((r.seq ?? 0) >= seq && (r.seq ?? 0) < (del.seq ?? 0)) {
+          await tx.store.delete(r.seq!)
+          dropped++
+        }
+      }
+      await tx.done
+      return dropped
+    }
+  }
+  await tx.store.put(next)
+  await tx.done
+  return 0
+}
+
+/** 读—改—写一条记录（`f` 拿到库里现在的样子；返回 `null` 删掉）。记录已经不在了（被丢弃 / 别处发完了）返回 `false`。 */
+export async function patchOutbox(seq: number, f: (stored: OutboxRecord) => OutboxRecord | null): Promise<boolean> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const stored = await tx.store.get(seq)
+  if (!stored) {
+    await tx.done
+    return false
+  }
+  const next = f(stored)
+  if (next) await tx.store.put(next)
+  else await tx.store.delete(seq)
+  await tx.done
+  return true
+}
+
+/** 丢掉这一项从 `fromSeq` 起（含）的全部待发改动，返回丢掉了几条。 */
+export async function discardOutboxFrom(nodeId: string, id: string, fromSeq: number): Promise<number> {
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  const mine = (await tx.store.index('by_node').getAll(nodeId)).filter((r) => r.id === id && (r.seq ?? 0) >= fromSeq)
+  for (const r of mine) await tx.store.delete(r.seq!)
+  await tx.done
+  return mine.length
+}
+
+/** 这台节点上的待发改动和缓存一起清掉（节点被忘记）。返回丢掉的待发改动数。 */
+export async function dropNodeTodos(nodeId: string): Promise<number> {
+  const db = await getDb()
+  const tx = db.transaction(['todos', 'todo_meta', 'todo_outbox'], 'readwrite')
+  const pending = await tx.objectStore('todo_outbox').index('by_node').getAllKeys(nodeId)
+  for (const k of pending) await tx.objectStore('todo_outbox').delete(k)
+  for (const k of await tx.objectStore('todos').index('by_node').getAllKeys(nodeId)) await tx.objectStore('todos').delete(k)
+  await tx.objectStore('todo_meta').delete(nodeId)
+  await tx.done
+  return pending.length
 }

@@ -1,7 +1,7 @@
 import { useMemo, useState, type HTMLAttributes } from 'react'
 import { Link, useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, ChevronRight, Flag, FolderGit2, FolderPlus, Home, Inbox, Lock, LogOut, Pin, PinOff, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Flag, ListChecks, FolderGit2, FolderPlus, Home, Inbox, Lock, LogOut, Pin, PinOff, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices, useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
@@ -10,6 +10,9 @@ import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { accountNodes, lockedNodes, removedNodes, unlockParam } from '@/features/unlock/nodes'
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
 import { useInboxNowCount, useInboxOutsideCount } from '@/features/inbox/useInbox'
+import { useCapture } from '@/features/todos/capture'
+import { useTodoAvailable } from '@/features/todos/store'
+import { useOpenTodoCount } from '@/features/todos/useOpenTodoCount'
 import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
 import { useEnroll } from '@/stores/enroll'
 import { cleanHintText } from '@/lib/hint'
@@ -108,17 +111,22 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { t } = useTranslation()
   const count = useInboxNowCount()
+  const todoCount = useOpenTodoCount()
+  const todoAvailable = useTodoAvailable()
+  const openCapture = useCapture((s) => s.openCapture)
   const here = useRouterState({ select: (s) => s.location.pathname })
   const current = here === '/inbox'
+  const todosHere = here === '/todos' || here.startsWith('/todos/')
+  const row = 'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-bg-hover'
   return (
-    <nav className="px-2 pb-2" aria-label={t('sidebar.nav')} data-testid="sidebar-nav">
+    <nav className="space-y-0.5 px-2 pb-2" aria-label={t('sidebar.nav')} data-testid="sidebar-nav">
       <Link
         to="/inbox"
         onClick={onNavigate}
         aria-current={current ? 'page' : undefined}
         aria-label={count > 0 ? t('inbox.navLabel', { count }) : t('inbox.title')}
         data-testid="sidebar-inbox"
-        className={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-bg-hover', current && 'bg-accent-subtle')}
+        className={cn(row, current && 'bg-accent-subtle')}
       >
         <Inbox className="size-4 shrink-0 text-fg-muted" aria-hidden />
         <span className="min-w-0 flex-1 truncate">{t('inbox.title')}</span>
@@ -128,6 +136,29 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           </span>
         ) : null}
       </Link>
+      {todoAvailable ? (
+      <div className="flex items-center gap-1">
+        <Link
+          to="/todos"
+          onClick={onNavigate}
+          aria-current={todosHere ? 'page' : undefined}
+          aria-label={todoCount > 0 ? t('todos.navLabel', { count: todoCount }) : t('todos.title')}
+          data-testid="sidebar-todos"
+          className={cn(row, 'min-w-0 flex-1', todosHere && 'bg-accent-subtle')}
+        >
+          <ListChecks className="size-4 shrink-0 text-fg-muted" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{t('todos.title')}</span>
+          {todoCount > 0 ? (
+            <span className="rounded-full bg-bg-muted px-2 py-0.5 text-xs font-medium text-fg-muted" data-testid="sidebar-todos-count" aria-hidden>
+              {todoCount}
+            </span>
+          ) : null}
+        </Link>
+        <button type="button" onClick={() => openCapture()} aria-label={t('todos.addTitle')} title={`${t('todos.addTitle')} (C)`} className="grid place-items-center rounded-md p-1.5 text-fg-subtle hover:bg-bg-hover hover:text-fg [@media(pointer:coarse)]:size-11" data-testid="sidebar-capture">
+          <Plus className="size-4" aria-hidden />
+        </button>
+      </div>
+      ) : null}
     </nav>
   )
 }
@@ -240,6 +271,7 @@ export function SessionsPanel({ nodeId, onNavigate, onSearch }: { nodeId: string
  */
 export function SidebarRail({ nodeId, onSearch, onPin, ...rest }: { nodeId: string | undefined; onSearch: () => void; onPin: () => void } & Omit<HTMLAttributes<HTMLDivElement>, 'children'>) {
   const { t } = useTranslation()
+  const todoAvailable = useTodoAvailable()
   const hasNodes = useNodes((s) => s.order.length > 0)
   const { selected } = useNodeFilter()
   const newProject = useNewProjectAction(nodeId, selected)
@@ -277,6 +309,16 @@ export function SidebarRail({ nodeId, onSearch, onPin, ...rest }: { nodeId: stri
             </span>
           ) : null}
         </Link>
+      ) : null}
+      {hasNodes && todoAvailable ? (
+        <>
+          <Link to="/todos" aria-label={t('todos.title')} title={t('todos.title')} className={icon} data-testid="sidebar-rail-todos">
+            <ListChecks className="size-4" aria-hidden />
+          </Link>
+          <button type="button" aria-label={t('todos.addTitle')} title={t('todos.addTitle')} className={icon} onClick={() => useCapture.getState().openCapture()} data-testid="sidebar-rail-capture">
+            <Plus className="size-4" aria-hidden />
+          </button>
+        </>
       ) : null}
       <PinButton pinned={false} onToggle={onPin} className="mt-auto p-2" />
     </div>

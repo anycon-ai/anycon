@@ -5,6 +5,8 @@ import { handleNotificationClick, type ClickDeps } from './click'
 import { readDeviceId, readPushDirectory, readSwLanguage } from './directory'
 import { handlePush, type PushDeps } from './push'
 import { handleSubscriptionChange, type ResubscribeDeps } from './resubscribe'
+import { handleShare, isShareRequest } from './share'
+import { storeShared } from './shareStore'
 import type { SwScope } from './types'
 
 /** 导航回退不碰的路径：hub 的 API、认证、WebSocket、健康检查（和旧的 generateSW 配置一致）。 */
@@ -14,6 +16,10 @@ export const NAVIGATION_DENYLIST: readonly RegExp[] = [/^\/api\//, /^\/auth\//, 
 export const SKIP_WAITING = 'SKIP_WAITING'
 
 export interface Handlers {
+  /** 分享目标的 POST 回 303 用的响应（测试里换成假的）。 */
+  redirect(url: string): unknown
+  storeShared: typeof storeShared
+  now(): number
   push: PushDeps
   click: ClickDeps
   resubscribe: ResubscribeDeps
@@ -27,6 +33,9 @@ function fail(what: string): (e: unknown) => void {
 export function realHandlers(scope: SwScope): Handlers {
   const origin = scope.location.origin
   return {
+    redirect: (url) => Response.redirect(url, 303),
+    storeShared,
+    now: () => Date.now(),
     push: {
       directory: readPushDirectory,
       language: readSwLanguage,
@@ -68,6 +77,15 @@ export function installHandlers(scope: SwScope, handlers: Handlers = realHandler
   scope.addEventListener('message', (event) => {
     const data = event.data
     if (typeof data === 'object' && data !== null && (data as Record<string, unknown>).type === SKIP_WAITING) event.waitUntil(scope.skipWaiting())
+  })
+
+  // 分享目标：同源 POST /capture 在页面之前拦下，内容存进 service worker 自己的库，回 303 到 `/capture`（没有 query）。
+  // 分享的内容不进 URL，也不经过 hub（spec/web.md § 8）。别的请求一概不管，交给 workbox 的路由。
+  scope.addEventListener('fetch', (event) => {
+    if (!isShareRequest(event.request.method, event.request.url, scope.location.origin)) return
+    event.respondWith(
+      handleShare({ formData: () => event.request.formData(), store: handlers.storeShared, now: handlers.now }).then((path) => handlers.redirect(new URL(path, scope.location.origin).href)),
+    )
   })
 
   scope.addEventListener('push', (event) => {

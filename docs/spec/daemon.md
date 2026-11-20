@@ -1162,7 +1162,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 ## 21. 清单
 
-> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条）尚未实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发、决策档案和分身自动唤醒各自实现时再补规格。
+> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)）也已实现，空间切换除外。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发、决策档案和分身自动唤醒各自实现时再补规格。
 
 ### 21.1 范围
 
@@ -1250,13 +1250,14 @@ Todo {
 
 ### 21.6 节点离线
 
-清单的唯一副本在 daemon。客户端把最近一次拿到的清单放在本地缓存里，节点离线时照常显示；离线期间的新建、修改、删除留在客户端本地，标成「未同步」，收到 `peer_online` 后按原顺序重放：
+清单的唯一副本在 daemon。客户端把最近一次拿到的清单放在本地缓存里，节点离线时照常显示；新建、修改、删除先记在客户端本地的待发日志里（离线时标成「未同步」），连得上时按原顺序重放。对 daemon 的要求只有下面几条；Web 客户端自己的队列规则（不合并、一项一队、失败的处理、重新列表的时机）见 [web.md § 4.12](web.md#412-清单-todos)：
 
 - `todo.add` 按 `id` 幂等，重放多少次都只有一项
-- `todo.update` 重放的是当时改的那几个字段；离线期间别的设备也改了同一个字段的，后重放的覆盖先到的；得到 `not_found`（这一项在别处被删了）就丢掉这一条；把已关闭的项重新打开的那一条得到 `invalid` / `too_many`（没关闭的项已满 1000 个）时，同样丢掉这一条改动，这一项保持 daemon 上的样子（仍是关闭的），并告诉用户「清单已满，没能重新打开」
+- `todo.update` 重放的是当时改的那几个字段；离线期间别的设备也改了同一个字段的，后重放的覆盖先到的；得到 `not_found`（这一项在别处被删了）就丢掉这一条
+- 把已关闭的项重新打开的 `todo.update` 得到 `invalid` / `too_many`（没关闭的项已满 1000 个）：Web 客户端把这一条里的 `state` 去掉再发（只剩 `state` 就丢掉），这一项保持 daemon 上的样子（仍是关闭的），并告诉用户「清单已满」；别的 `invalid` 和别的错误答复让这一条标成失败，由用户重试或丢弃，同一项后面的改动等着
 - `todo.delete` 得到 `not_found` 视为已完成
-
-重放结束后客户端再 `todo.list` 一次，以 daemon 的结果为准。
+- 每次连上节点，客户端先重放待发记录、再整份 `todo.list` 一次（以 daemon 的结果为准）。连上之后，重放**之后**只有在重放了入队时节点连不上的记录时才再列一次；在线时的改动靠请求返回的 `Todo` 和 `todo.changed`，不整份重列
+- 固有的情形：回执丢了、客户端重发的 `todo.add`，如果这一项在这期间已经在别的设备上被删了，会把它重新建出来——daemon 不留墓碑，没法分辨「第一次的 add 到了又被删」和「第一次的 add 没到」
 
 ### 21.7 多个节点
 
@@ -1272,7 +1273,7 @@ Todo {
 
 ### 21.8 客户端入口
 
-- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；显示哪些节点的清单跟随空间切换；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
+- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；显示哪些节点的清单跟随空间切换（空间切换还没做，现在 Web 跟随左栏的节点过滤器）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
 - **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
 - **`anycon mcp`**：两个新工具。`list_todos`（`todo.list`，只读）；`add_todo`（`todo.add`：`title`、`body`、`project`；总是带 `agent: true`，连的是本机还是经 hub 都一样）。**`add_todo` 在 anycon 拉起的 agent 里也能用**，不需要 `--allow-nested`：会话里的 agent 记下「之后要处理」正是它的用途，它不开会话、不触发任何 turn，写进去的项标着 `source.kind = agent`。agent 没有修改、关闭、删除清单项的工具。
 - **SDK**：`@anycon/sdk` 的节点对象上有 `todo.*` 的薄封装和 `todo.changed` 事件，类型来自生成的协议类型；不替调用方做离线缓存和重放。Python SDK 不动。

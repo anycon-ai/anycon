@@ -91,6 +91,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/ws", get(ws::ws_upgrade))
+        .route("/capture", get(assets::serve).post(capture_redirect))
         .nest("/api", api)
         .nest("/auth", auth)
         .fallback(assets::serve)
@@ -179,6 +180,44 @@ async fn log_requests(req: Request, next: Next) -> Response {
     } else {
         tracing::debug!(%method, route = %route, status, elapsed_ms, "http");
     }
+    res
+}
+
+/// `POST /capture` 丢弃请求体时最多读这么多字节（1 MiB）；再多就不读了，直接回答。
+const CAPTURE_DRAIN_CAP: usize = 1024 * 1024;
+/// 丢弃请求体的总时限：对端发得太慢就不等了。
+const CAPTURE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Web UI 的「分享到 anycon」（PWA `share_target`，`POST /capture`，multipart）：有这个处理的 service worker 接管时它自己拦下这个 POST，
+/// 请求到不了这里。没有这个处理的 service worker 接管时（还没有已激活的、升级后旧版本仍在管、service worker 不可用）这一次 POST 会发到 hub：
+/// 回 `303 See Other` 到 `/capture`。
+///
+/// 请求体的字节会经过 hub 进程（在它前面还经过终止 TLS 的反代），hub **不解析、不存、不进日志地把它丢掉**：这里只按帧读出来、立刻丢弃，
+/// 不缓冲、不解析（没有 `Multipart` / `Bytes` / `String` 这类提取器，也不受 `DefaultBodyLimit` 管），最多读 `CAPTURE_DRAIN_CAP`，读完（或到上限、
+/// 超时、出错）再回 303。为什么要读：回应之后 hyper 会自己丢弃很小的、没读的请求体，大一点的它就直接关连接，对端还在发的时候连接被关，
+/// 有的平台上（Windows）客户端会丢掉已经收到的响应、只看到连接中止——浏览器分享一大段文字时就看不到重定向。读掉 1 MiB 以内的就不会这样；
+/// 超过上限的我们不再读就回答，对端可能看到连接中止，这是接受的（分享的内容这一次本来就丢了）。日志里（`log_requests`）只有方法、路由和状态码。
+/// 不在 `/api` / `/auth` 下面，所以也不过 CSRF 头检查：跨站表单 POST 到这里只会得到一个重定向（docs/spec/hub.md § 2.1）。
+async fn capture_redirect(body: axum::body::Body) -> Response {
+    use http_body_util::BodyExt;
+    let mut body = body;
+    let drain = async {
+        let mut seen = 0usize;
+        while let Some(frame) = body.frame().await {
+            match frame {
+                Ok(f) => {
+                    seen += f.data_ref().map_or(0, |d| d.len());
+                    if seen > CAPTURE_DRAIN_CAP {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    };
+    let _ = tokio::time::timeout(CAPTURE_DRAIN_TIMEOUT, drain).await;
+    let mut res = StatusCode::SEE_OTHER.into_response();
+    res.headers_mut().insert(header::LOCATION, HeaderValue::from_static("/capture"));
     res
 }
 

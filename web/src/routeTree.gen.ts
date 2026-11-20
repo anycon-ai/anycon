@@ -17,6 +17,7 @@ import { Route as AppPairRouteImport } from './routes/_app/pair'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
 import { Route as InviteCodeRouteImport } from './routes/invite.$code'
 import { Route as AppShellAdminRouteImport } from './routes/_app/_shell/admin'
+import { Route as AppShellCaptureRouteImport } from './routes/_app/_shell/capture'
 import { Route as AppShellInboxRouteImport } from './routes/_app/_shell/inbox'
 import { Route as AppShellMoreRouteImport } from './routes/_app/_shell/more'
 import { Route as AppShellSessionsRouteImport } from './routes/_app/_shell/sessions'
@@ -31,9 +32,11 @@ import { Route as AppShellSettingsLoginRouteImport } from './routes/_app/_shell/
 import { Route as AppShellSettingsNotificationsRouteImport } from './routes/_app/_shell/settings.notifications'
 import { Route as AppShellSettingsQuotaRouteImport } from './routes/_app/_shell/settings.quota'
 import { Route as AppShellSettingsSessionsRouteImport } from './routes/_app/_shell/settings.sessions'
+import { Route as AppShellTodosIndexRouteImport } from './routes/_app/_shell/todos.index'
 import { Route as AppShellNNodeIndexRouteImport } from './routes/_app/_shell/n.$node.index'
 import { Route as AppShellNNodeNewRouteImport } from './routes/_app/_shell/n.$node.new'
 import { Route as AppShellNNodeSettingsRouteImport } from './routes/_app/_shell/n.$node.settings'
+import { Route as AppShellTodosNodeTodoRouteImport } from './routes/_app/_shell/todos.$node.$todo'
 import { Route as AppShellNNodeFilesSplatRouteImport } from './routes/_app/_shell/n.$node.files.$'
 import { Route as AppShellNNodePProjectRouteImport } from './routes/_app/_shell/n.$node.p.$project'
 import { Route as AppShellNNodeSSessionRouteImport } from './routes/_app/_shell/n.$node.s.$session'
@@ -74,6 +77,11 @@ const InviteCodeRoute = InviteCodeRouteImport.update({
 const AppShellAdminRoute = AppShellAdminRouteImport.update({
   id: '/admin',
   path: '/admin',
+  getParentRoute: () => AppShellRoute,
+} as any)
+const AppShellCaptureRoute = AppShellCaptureRouteImport.update({
+  id: '/capture',
+  path: '/capture',
   getParentRoute: () => AppShellRoute,
 } as any)
 const AppShellInboxRoute = AppShellInboxRouteImport.update({
@@ -149,6 +157,11 @@ const AppShellSettingsSessionsRoute =
     path: '/sessions',
     getParentRoute: () => AppShellSettingsRoute,
   } as any)
+const AppShellTodosIndexRoute = AppShellTodosIndexRouteImport.update({
+  id: '/todos/',
+  path: '/todos/',
+  getParentRoute: () => AppShellRoute,
+} as any)
 const AppShellNNodeIndexRoute = AppShellNNodeIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -163,6 +176,11 @@ const AppShellNNodeSettingsRoute = AppShellNNodeSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
   getParentRoute: () => AppShellNNodeRoute,
+} as any)
+const AppShellTodosNodeTodoRoute = AppShellTodosNodeTodoRouteImport.update({
+  id: '/todos/$node/$todo',
+  path: '/todos/$node/$todo',
+  getParentRoute: () => AppShellRoute,
 } as any)
 const AppShellNNodeFilesSplatRoute = AppShellNNodeFilesSplatRouteImport.update({
   id: '/files/$',
@@ -187,6 +205,7 @@ export interface FileRoutesByFullPath {
   '/setup': typeof AppSetupRoute
   '/invite/$code': typeof InviteCodeRoute
   '/admin': typeof AppShellAdminRoute
+  '/capture': typeof AppShellCaptureRoute
   '/inbox': typeof AppShellInboxRoute
   '/more': typeof AppShellMoreRoute
   '/sessions': typeof AppShellSessionsRoute
@@ -201,8 +220,10 @@ export interface FileRoutesByFullPath {
   '/settings/quota': typeof AppShellSettingsQuotaRoute
   '/settings/sessions': typeof AppShellSettingsSessionsRoute
   '/settings/': typeof AppShellSettingsIndexRoute
+  '/todos/': typeof AppShellTodosIndexRoute
   '/n/$node/new': typeof AppShellNNodeNewRoute
   '/n/$node/settings': typeof AppShellNNodeSettingsRoute
+  '/todos/$node/$todo': typeof AppShellTodosNodeTodoRoute
   '/n/$node/': typeof AppShellNNodeIndexRoute
   '/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/n/$node/p/$project': typeof AppShellNNodePProjectRoute
@@ -215,6 +236,7 @@ export interface FileRoutesByTo {
   '/setup': typeof AppSetupRoute
   '/invite/$code': typeof InviteCodeRoute
   '/admin': typeof AppShellAdminRoute
+  '/capture': typeof AppShellCaptureRoute
   '/inbox': typeof AppShellInboxRoute
   '/more': typeof AppShellMoreRoute
   '/sessions': typeof AppShellSessionsRoute
@@ -227,8 +249,10 @@ export interface FileRoutesByTo {
   '/settings/quota': typeof AppShellSettingsQuotaRoute
   '/settings/sessions': typeof AppShellSettingsSessionsRoute
   '/settings': typeof AppShellSettingsIndexRoute
+  '/todos': typeof AppShellTodosIndexRoute
   '/n/$node/new': typeof AppShellNNodeNewRoute
   '/n/$node/settings': typeof AppShellNNodeSettingsRoute
+  '/todos/$node/$todo': typeof AppShellTodosNodeTodoRoute
   '/n/$node': typeof AppShellNNodeIndexRoute
   '/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/n/$node/p/$project': typeof AppShellNNodePProjectRoute
@@ -244,6 +268,7 @@ export interface FileRoutesById {
   '/invite/$code': typeof InviteCodeRoute
   '/_app/': typeof AppIndexRoute
   '/_app/_shell/admin': typeof AppShellAdminRoute
+  '/_app/_shell/capture': typeof AppShellCaptureRoute
   '/_app/_shell/inbox': typeof AppShellInboxRoute
   '/_app/_shell/more': typeof AppShellMoreRoute
   '/_app/_shell/sessions': typeof AppShellSessionsRoute
@@ -258,8 +283,10 @@ export interface FileRoutesById {
   '/_app/_shell/settings/quota': typeof AppShellSettingsQuotaRoute
   '/_app/_shell/settings/sessions': typeof AppShellSettingsSessionsRoute
   '/_app/_shell/settings/': typeof AppShellSettingsIndexRoute
+  '/_app/_shell/todos/': typeof AppShellTodosIndexRoute
   '/_app/_shell/n/$node/new': typeof AppShellNNodeNewRoute
   '/_app/_shell/n/$node/settings': typeof AppShellNNodeSettingsRoute
+  '/_app/_shell/todos/$node/$todo': typeof AppShellTodosNodeTodoRoute
   '/_app/_shell/n/$node/': typeof AppShellNNodeIndexRoute
   '/_app/_shell/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/_app/_shell/n/$node/p/$project': typeof AppShellNNodePProjectRoute
@@ -274,6 +301,7 @@ export interface FileRouteTypes {
     | '/setup'
     | '/invite/$code'
     | '/admin'
+    | '/capture'
     | '/inbox'
     | '/more'
     | '/sessions'
@@ -288,8 +316,10 @@ export interface FileRouteTypes {
     | '/settings/quota'
     | '/settings/sessions'
     | '/settings/'
+    | '/todos/'
     | '/n/$node/new'
     | '/n/$node/settings'
+    | '/todos/$node/$todo'
     | '/n/$node/'
     | '/n/$node/files/$'
     | '/n/$node/p/$project'
@@ -302,6 +332,7 @@ export interface FileRouteTypes {
     | '/setup'
     | '/invite/$code'
     | '/admin'
+    | '/capture'
     | '/inbox'
     | '/more'
     | '/sessions'
@@ -314,8 +345,10 @@ export interface FileRouteTypes {
     | '/settings/quota'
     | '/settings/sessions'
     | '/settings'
+    | '/todos'
     | '/n/$node/new'
     | '/n/$node/settings'
+    | '/todos/$node/$todo'
     | '/n/$node'
     | '/n/$node/files/$'
     | '/n/$node/p/$project'
@@ -330,6 +363,7 @@ export interface FileRouteTypes {
     | '/invite/$code'
     | '/_app/'
     | '/_app/_shell/admin'
+    | '/_app/_shell/capture'
     | '/_app/_shell/inbox'
     | '/_app/_shell/more'
     | '/_app/_shell/sessions'
@@ -344,8 +378,10 @@ export interface FileRouteTypes {
     | '/_app/_shell/settings/quota'
     | '/_app/_shell/settings/sessions'
     | '/_app/_shell/settings/'
+    | '/_app/_shell/todos/'
     | '/_app/_shell/n/$node/new'
     | '/_app/_shell/n/$node/settings'
+    | '/_app/_shell/todos/$node/$todo'
     | '/_app/_shell/n/$node/'
     | '/_app/_shell/n/$node/files/$'
     | '/_app/_shell/n/$node/p/$project'
@@ -414,6 +450,13 @@ declare module '@tanstack/react-router' {
       path: '/admin'
       fullPath: '/admin'
       preLoaderRoute: typeof AppShellAdminRouteImport
+      parentRoute: typeof AppShellRoute
+    }
+    '/_app/_shell/capture': {
+      id: '/_app/_shell/capture'
+      path: '/capture'
+      fullPath: '/capture'
+      preLoaderRoute: typeof AppShellCaptureRouteImport
       parentRoute: typeof AppShellRoute
     }
     '/_app/_shell/inbox': {
@@ -514,6 +557,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppShellSettingsSessionsRouteImport
       parentRoute: typeof AppShellSettingsRoute
     }
+    '/_app/_shell/todos/': {
+      id: '/_app/_shell/todos/'
+      path: '/todos'
+      fullPath: '/todos/'
+      preLoaderRoute: typeof AppShellTodosIndexRouteImport
+      parentRoute: typeof AppShellRoute
+    }
     '/_app/_shell/n/$node/': {
       id: '/_app/_shell/n/$node/'
       path: '/'
@@ -534,6 +584,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/n/$node/settings'
       preLoaderRoute: typeof AppShellNNodeSettingsRouteImport
       parentRoute: typeof AppShellNNodeRoute
+    }
+    '/_app/_shell/todos/$node/$todo': {
+      id: '/_app/_shell/todos/$node/$todo'
+      path: '/todos/$node/$todo'
+      fullPath: '/todos/$node/$todo'
+      preLoaderRoute: typeof AppShellTodosNodeTodoRouteImport
+      parentRoute: typeof AppShellRoute
     }
     '/_app/_shell/n/$node/files/$': {
       id: '/_app/_shell/n/$node/files/$'
@@ -606,20 +663,26 @@ const AppShellNNodeRouteWithChildren = AppShellNNodeRoute._addFileChildren(
 
 interface AppShellRouteChildren {
   AppShellAdminRoute: typeof AppShellAdminRoute
+  AppShellCaptureRoute: typeof AppShellCaptureRoute
   AppShellInboxRoute: typeof AppShellInboxRoute
   AppShellMoreRoute: typeof AppShellMoreRoute
   AppShellSessionsRoute: typeof AppShellSessionsRoute
   AppShellSettingsRoute: typeof AppShellSettingsRouteWithChildren
   AppShellNNodeRoute: typeof AppShellNNodeRouteWithChildren
+  AppShellTodosIndexRoute: typeof AppShellTodosIndexRoute
+  AppShellTodosNodeTodoRoute: typeof AppShellTodosNodeTodoRoute
 }
 
 const AppShellRouteChildren: AppShellRouteChildren = {
   AppShellAdminRoute: AppShellAdminRoute,
+  AppShellCaptureRoute: AppShellCaptureRoute,
   AppShellInboxRoute: AppShellInboxRoute,
   AppShellMoreRoute: AppShellMoreRoute,
   AppShellSessionsRoute: AppShellSessionsRoute,
   AppShellSettingsRoute: AppShellSettingsRouteWithChildren,
   AppShellNNodeRoute: AppShellNNodeRouteWithChildren,
+  AppShellTodosIndexRoute: AppShellTodosIndexRoute,
+  AppShellTodosNodeTodoRoute: AppShellTodosNodeTodoRoute,
 }
 
 const AppShellRouteWithChildren = AppShellRoute._addFileChildren(

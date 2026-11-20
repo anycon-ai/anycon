@@ -4,6 +4,7 @@ import { shortNodeId } from '@/lib/ids'
 import { useInboxNowCount } from '@/features/inbox/useInbox'
 import { useCurrentNode } from '@/lib/nav'
 import { useIsWide } from '@/lib/useMediaQuery'
+import { useOpenTodoCount } from '@/features/todos/useOpenTodoCount'
 import { useSessions } from '@/stores/sessions'
 import { useNodes } from '@/stores/nodes'
 import { clampSidebarWidth, usePrefs } from '@/stores/prefs'
@@ -11,6 +12,8 @@ import { useUi } from '@/stores/ui'
 import { EnrollApprovalDialog } from '@/features/approve/EnrollApprovalDialog'
 import { ScanApproveDialog } from '@/features/approve/ScanApproveDialog'
 import { ApprovalBanner } from './ApprovalBanner'
+import { useUnsavedDraftsGuard } from '@/features/todos/drafts'
+import { CaptureHost } from './CaptureHost'
 import { HomeNotice } from './HomeNotice'
 import { InboxAnnouncer } from './InboxAnnouncer'
 import { CommandPalette } from './CommandPalette'
@@ -48,6 +51,8 @@ export function AppShell() {
   // 地址带着 `?node=&session=` 的 `/inbox`：从通知点进来的，升级说明先不弹
   const deepLink = useRouterState({ select: (s) => s.location.pathname === '/inbox' && !!(s.location.search as { node?: string; session?: string } | undefined)?.node })
   const inboxCount = useInboxNowCount()
+  const todoCount = useOpenTodoCount()
+  useUnsavedDraftsGuard()
   const setLastSessionsPath = useUi((s) => s.setLastSessionsPath)
   const flyout = useRef<HTMLElement>(null)
   const { peek, close: closePeek, railProps } = useSidebarPeek(!sidebarOpen, flyout)
@@ -117,7 +122,8 @@ export function AppShell() {
           </aside>
         </div>
       ) : null}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        {wide ? <CaptureHost /> : null}
         <StatusBannerForNode nodeId={nodeId} />
         {/* 手机上标签页常驻在这里（绝对定位叠在页面区上，切走时只是藏起来）；二级页照常走 Outlet */}
         <div className="relative flex min-h-0 flex-1 flex-col">
@@ -125,9 +131,10 @@ export function AppShell() {
           {wide || !tab ? <Outlet /> : null}
         </div>
         <PendingApprovalBanner nodeId={nodeId} />
-        {wide || !tab ? null : <TabBar current={tab} inboxCount={inboxCount} />}
+        {wide || !tab ? null : <TabBar current={tab} inboxCount={inboxCount} todoCount={todoCount} />}
       </div>
       <CommandPalette open={palette} onOpenChange={setPalette} />
+      {wide ? null : <CaptureHost />}
       <InboxAnnouncer />
       <HomeNotice deferred={deepLink} />
       <NewProjectHost />

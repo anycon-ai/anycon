@@ -275,3 +275,39 @@ describe('telling similar spaces apart', () => {
     void container
   })
 })
+
+describe('renaming into a name that only looks like an existing space', () => {
+  const ZWSP = String.fromCharCode(0x200b)
+
+  it('warns that it would create a second space that looks the same, and offers the existing name (which then goes through the merge confirmation)', async () => {
+    const user = userEvent.setup()
+    render(<ManageSpacesDialog />)
+    await user.selectOptions(screen.getByTestId('rename-space'), 'Work')
+    await user.type(screen.getByTestId('rename-to'), `Ho${ZWSP}me`)
+    const warn = await screen.findByTestId('lookalike-warning')
+    expect(warn).toHaveTextContent('looks the same as the existing space “Home”')
+    await user.click(screen.getByTestId('lookalike-use-existing'))
+    expect(screen.getByTestId('rename-to')).toHaveValue('Home')
+    expect(screen.queryByTestId('lookalike-warning')).toBeNull()
+    await user.click(screen.getByTestId('rename-apply'))
+    expect(screen.getByTestId('merge-confirm')).toHaveTextContent('merges “Work” into “Home”')
+    expect(rpc.calls).toEqual([])
+  })
+
+  it('an unrelated new name, and the exact name of an existing space, show no look-alike warning', async () => {
+    const user = userEvent.setup()
+    render(<ManageSpacesDialog />)
+    await user.selectOptions(screen.getByTestId('rename-space'), 'Work')
+    await user.type(screen.getByTestId('rename-to'), 'Office')
+    expect(screen.queryByTestId('lookalike-warning')).toBeNull()
+    await user.clear(screen.getByTestId('rename-to'))
+    await user.type(screen.getByTestId('rename-to'), 'Home')
+    expect(screen.queryByTestId('lookalike-warning')).toBeNull()
+  })
+
+  it('the odd-name flag also fires for an unusual encoding or spacing, and its text says so', () => {
+    useNodes.getState().setInfo(HOME, info('Cafe\u0301 Bar'))
+    render(<ManageSpacesDialog />)
+    expect(screen.getAllByTestId('space-overview-odd')[0]).toHaveTextContent(/unusual spacing or a non-standard encoding/)
+  })
+})

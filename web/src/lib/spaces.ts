@@ -17,7 +17,7 @@ export function displayName(raw: string): string {
 }
 
 /**
- * 每个空间（身份 = 原文）的显示名。清理之后显示相同的名字（`Home` 和 `Ho[ZWSP]me`、NFC 和 NFD 的 `Café`）按原文排序、第一个用原样，
+ * 每个空间（身份 = 原文）的显示名。清理之后显示相同的名字（`Home` 和 `Ho[ZWSP]me`、NFC 和 NFD 的 `Café`）按原文排序、第一个用原样（原文就等于显示文字的优先，再按原文排），
  * 其余加序号（`Home (2)`）：序号只由名字本身决定，和节点的配对顺序无关；序号不会撞上别的显示名（有个空间真叫 `Home (2)` 时跳过它）。
  */
 function assignLabels(keys: readonly string[]): Map<string, string> {
@@ -31,9 +31,10 @@ function assignLabels(keys: readonly string[]): Map<string, string> {
   const out = new Map<string, string>()
   const used = new Set<string>()
   const groups = [...byClean.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-  // 第一轮：每个显示名的第一个（按原文排序）用原样，先把所有原样的占住
+  // 第一轮：每个显示名的第一个用原样，先把所有原样的占住
   for (const [clean, list] of groups) {
-    list.sort()
+    // 原文本来就等于显示文字的名字用原样；清理之后才一样的（不可见字符、NFD……）让位加序号；同一类里按原文排，顺序是稳定的
+    list.sort((a, b) => Number(a !== clean) - Number(b !== clean) || (a < b ? -1 : a > b ? 1 : 0))
     out.set(list[0]!, clean)
     used.add(clean)
   }

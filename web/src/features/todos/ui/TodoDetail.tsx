@@ -289,7 +289,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </div>
       ))}
 
-      <MoveTodoDialog item={item} open={moving} onOpenChange={setMoving} onMoved={onDeleted} />
+      <MoveTodoDialog item={item} open={moving} onOpenChange={setMoving} />
 
       <Dialog open={confirmDiscard} onOpenChange={setConfirmDiscard} title={t('todos.discardEditTitle')} description={t('todos.discardEditBody')} closeLabel={t('common.close')} testId="todo-discard-edit-dialog">
         <div className="flex justify-end gap-2">

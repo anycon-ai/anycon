@@ -1,81 +1,100 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { cleanHintText } from '@/lib/hint'
 import { useNodeFilter } from '@/lib/nodeFilter'
 import { spaceLabelOf } from '@/lib/spaces'
 import { useNodes } from '@/stores/nodes'
-import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Select } from '@/ui/Field'
 import { Dialog } from '@/ui/Overlay'
-import { crossesSpace, moveBlock, moveText, moveTodo, newMoveProgress, wasAgentAdded, type MoveProgress, type MoveResult } from '../move'
+import { abandonMove, crossesSpace, isRunning, isTouched, moveBlock, moveKey, moveText, moveTodo, removeCopy, useMoves, wasAgentAdded } from '../move'
 import type { ViewTodo } from '../types'
 
 /**
  * 「移到另一个节点…」（spec/web.md § 4.13）：选目标节点（按空间分组），跨空间先确认；两个节点都要在线、这一项没有没发出去的改动。
- * 移动进行中对话框关不掉（取消、Esc、×、点外面都不行，写明原因）：结果要在这里看到，半途停下的结果另外还有一条提示。
- * 同一次移动的重试共用进度：目标上的 id 不变、做完的步骤不重做；补状态失败 / 原节点删不掉之后只给能接着做的那一步，不给「再移一次」。
+ * 这里只显示 `move.ts` 里这一项的那次移动、向它发命令：进度不在对话框里，关掉、重新挂载之后打开仍然是同一次移动，不会再起第二次。
+ * 移动进行中对话框关不掉（取消、Esc、×、点外面都不行，写明原因）；半途停下的结果另外还有一条提示。
+ * 目标上已经有了一份之后目标不能再换，只给能接着做的那一步，外加「删掉目标上的那一份」和「两份都留着」。
+ * 内容和检查对着打开对话框那一刻的样子（已经开始的移动对着它确认时的样子），不对着界面现在拿到的那一份。
  */
-export function MoveTodoDialog({ item, open, onOpenChange, onMoved }: { item: ViewTodo; open: boolean; onOpenChange: (o: boolean) => void; onMoved?: () => void }) {
+export function MoveTodoDialog({ item, open, onOpenChange }: { item: ViewTodo; open: boolean; onOpenChange: (o: boolean) => void }) {
   const { t } = useTranslation()
   const order = useNodes((s) => s.order)
   const byId = useNodes((s) => s.byId)
   const { spaces } = useNodeFilter()
-  const [target, setTarget] = useState('')
+  const entry = useMoves((s) => s.moves[moveKey(item.node_id, item.id)])
+  // 打开那一刻的样子：之后界面上的这一项变了，移动对着的还是这一份，原节点变了就停下
+  const [snap, setSnap] = useState({ item, open })
+  if (open !== snap.open) setSnap({ item: open ? item : snap.item, open })
+  const base = entry?.base ?? snap.item
+  const [pick, setPick] = useState('')
   const [confirming, setConfirming] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [failure, setFailure] = useState<MoveResult | null>(null)
-  const progress = useRef<MoveProgress>(newMoveProgress())
+  const touched = isTouched(entry)
+  const target = touched ? entry!.targetNode : pick !== '' ? pick : (entry?.targetNode ?? '')
+  const busy = isRunning(entry)
+  const failure = !busy && entry?.outcome && !entry.outcome.ok ? entry.outcome : null
   const name = (id: string): string => cleanHintText(byId[id]?.name) || id.slice(0, 8)
   // 目标：别的、支持清单的节点（不论有没有选中：空间只管看什么，不管能移到哪）
   const targets = useMemo(() => order.filter((id) => id !== item.node_id && byId[id]?.info?.capabilities.todo === true), [order, item.node_id, byId])
-  const own = moveBlock(item, target || undefined)
+  const own = moveBlock(base, target || undefined)
+  const sourceBlock = moveBlock(base)
   const groups = spaces.hasGroups
     ? [...spaces.spaces.map((sp) => ({ label: sp.label, ids: sp.nodeIds.filter((id) => targets.includes(id)) })), { label: t('spaces.noSpace'), ids: spaces.ungrouped.filter((id) => targets.includes(id)) }].filter((g) => g.ids.length > 0)
     : [{ label: '', ids: targets }]
   const cross = target !== '' && crossesSpace(item.node_id, target)
-  // 目标上已经有了一份：目标就不能再换，这次移动只能接着做下去（或放着不管）
-  const started = progress.current.added !== null
-  const lastStage = failure && !failure.ok ? failure.stage : null
-  const changed = lastStage === 'changed'
-  const actionLabel = busy ? t('spaces.move.moving') : lastStage === 'state' ? t('spaces.move.retryState') : lastStage === 'stuck' ? t('spaces.move.retryDelete') : t('spaces.move.action')
+  const stage = failure ? failure.stage : null
+  const dead = stage === 'changed' || stage === 'copyGone'
+  const actionLabel = busy
+    ? t('spaces.move.moving')
+    : touched
+      ? stage === 'state'
+        ? t('spaces.move.retryState')
+        : stage === 'stuck' || (failure?.stage === 'link' && failure.at === 'delete')
+          ? t('spaces.move.retryDelete')
+          : t('spaces.move.resume')
+      : t('spaces.move.action')
+  const hasCopy = entry !== undefined && (entry.copy === 'open' || entry.copy === 'full' || entry.copy === 'maybe')
+
+  // 在跑的移动结束、记录没了（成功，或者删掉了目标上的那一份）：对话框也该关了，不管它是不是中途重新挂载的
+  const wasRunning = useRef(false)
+  useEffect(() => {
+    if (busy) wasRunning.current = true
+    else if (wasRunning.current && !entry) {
+      wasRunning.current = false
+      onOpenChange(false)
+    } else if (entry) wasRunning.current = false
+  }, [busy, entry, onOpenChange])
 
   const close = (o: boolean): void => {
     if (busy) return // 移动进行中不能关
     onOpenChange(o)
   }
 
-  const run = async (): Promise<void> => {
+  const run = (): void => {
     if (!target) return
     // 跨空间：先让用户确认一次（接着做下去的重试不再问：目标已经定了）
-    if (cross && !confirming && !started) {
+    if (cross && !confirming && !touched) {
       setConfirming(true)
       return
     }
-    setBusy(true)
-    setFailure(null)
-    const r = await moveTodo(item, target, progress.current)
-    setBusy(false)
-    if (r.ok) {
-      if (!r.sourceAlreadyGone) toast.success(t('spaces.move.moved', { node: name(target) }))
-      onOpenChange(false)
-      onMoved?.()
-    } else {
-      setFailure(r)
-      setConfirming(false)
-    }
+    setConfirming(false)
+    void moveTodo(base, target)
   }
 
-  const sourceBlock = moveBlock(item)
+  const leave = (): void => {
+    if (busy) return
+    abandonMove(item.node_id, item.id)
+    onOpenChange(false)
+  }
 
   return (
-    <Dialog open={open} onOpenChange={close} title={t('spaces.move.dialogTitle')} description={cleanHintText(item.title, 80)} closeLabel={t('common.close')} testId="move-todo-dialog">
+    <Dialog open={open} onOpenChange={close} title={t('spaces.move.dialogTitle')} description={cleanHintText(base.title, 80)} closeLabel={t('common.close')} testId="move-todo-dialog">
       <div className="space-y-3 text-sm">
-        {sourceBlock && !started ? (
+        {sourceBlock && !touched ? (
           <p role="alert" className="text-danger" data-testid="move-blocked">
             {t(`spaces.move.blocked.${sourceBlock}`)}
           </p>
-        ) : targets.length === 0 ? (
+        ) : targets.length === 0 && !touched ? (
           <p className="text-fg-muted">{t('spaces.move.noTarget')}</p>
         ) : (
           <>
@@ -83,12 +102,10 @@ export function MoveTodoDialog({ item, open, onOpenChange, onMoved }: { item: Vi
               {t('spaces.move.pick')}
               <Select
                 value={target}
-                disabled={busy || started}
+                disabled={busy || touched}
                 onChange={(e) => {
-                  setTarget(e.target.value)
+                  setPick(e.target.value)
                   setConfirming(false)
-                  setFailure(null)
-                  progress.current = newMoveProgress()
                 }}
                 data-testid="move-target"
               >
@@ -105,8 +122,8 @@ export function MoveTodoDialog({ item, open, onOpenChange, onMoved }: { item: Vi
               </Select>
             </label>
             <p className="text-fg-muted">{t('spaces.move.projectNote')}</p>
-            {wasAgentAdded(item) ? <p className="text-fg-muted">{t('spaces.move.agentNote')}</p> : null}
-            {target && own && !failure && !started ? (
+            {wasAgentAdded(base) ? <p className="text-fg-muted">{t('spaces.move.agentNote')}</p> : null}
+            {target && own && !failure && !touched ? (
               <p role="alert" className="text-danger" data-testid="move-blocked">
                 {t(`spaces.move.blocked.${own === 'unsupported' ? 'offlineTarget' : own}`, { node: name(target) })}
               </p>
@@ -116,9 +133,9 @@ export function MoveTodoDialog({ item, open, onOpenChange, onMoved }: { item: Vi
                 {spaceLabelOf(spaces, target) ? t('spaces.move.confirmSpace', { node: name(target), space: spaceLabelOf(spaces, target) }) : t('spaces.move.confirmSpaceNone', { node: name(target) })}
               </p>
             ) : null}
-            {failure && !failure.ok ? (
+            {failure ? (
               <p role="alert" className="text-danger" data-testid="move-failure">
-                {moveText(failure, name(target), item.state)}
+                {moveText(failure, name(target), base.state)}
               </p>
             ) : null}
             {busy ? (
@@ -128,11 +145,16 @@ export function MoveTodoDialog({ item, open, onOpenChange, onMoved }: { item: Vi
             ) : null}
           </>
         )}
-        <div className="flex justify-end gap-2">
-          <Button disabled={busy} onClick={() => close(false)} data-testid="move-cancel">
-            {started ? t('spaces.move.leave') : t('common.cancel')}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button disabled={busy} onClick={leave} data-testid="move-cancel">
+            {touched ? t('spaces.move.leaveBoth') : t('common.cancel')}
           </Button>
-          <Button variant="primary" disabled={busy || !target || changed || (!started && (!!own || !!sourceBlock))} onClick={() => void run()} data-testid="move-confirm">
+          {hasCopy && !busy && failure ? (
+            <Button onClick={() => void removeCopy(item.node_id, item.id)} data-testid="move-delete-copy">
+              {t('spaces.move.deleteCopy', { node: name(target) })}
+            </Button>
+          ) : null}
+          <Button variant="primary" disabled={busy || !target || dead || (!touched && (!!own || !!sourceBlock))} onClick={run} data-testid="move-confirm">
             {actionLabel}
           </Button>
         </div>

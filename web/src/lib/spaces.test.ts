@@ -211,3 +211,36 @@ describe('display collisions between different names', () => {
     expect(resolveSelection(['a', 'b'], byId, null, 'Ho\u200Bme')).toEqual(['b'])
   })
 })
+
+describe('which of several look-alike names keeps the plain label', () => {
+  const labelsOf = (names: string[]): Record<string, string> => {
+    const byId = Object.fromEntries(names.map((n, i) => [`n${i}`, info(n)]))
+    return Object.fromEntries(deriveSpaces(names.map((_, i) => `n${i}`), byId).spaces.map((s) => [s.key, s.label]))
+  }
+
+  it('a name that already equals its display form keeps the plain label; the variant that only looks the same gets the suffix (NFC wins over NFD)', () => {
+    const nfc = 'Caf\u00E9'
+    const nfd = 'Cafe\u0301'
+    for (const order of [[nfc, nfd], [nfd, nfc]]) {
+      const labels = labelsOf(order)
+      expect(labels[nfc]).toBe('Caf\u00E9')
+      expect(labels[nfd]).toBe('Caf\u00E9 (2)')
+    }
+  })
+
+  it('adding the plain name later gives it the plain label (the look-alike with an invisible character takes the suffix), whatever the order', () => {
+    const odd = 'Ho\u200Bme'
+    expect(labelsOf([odd])[odd]).toBe('Home')
+    for (const order of [[odd, 'Home'], ['Home', odd]]) {
+      const labels = labelsOf(order)
+      expect(labels['Home']).toBe('Home')
+      expect(labels[odd]).toBe('Home (2)')
+    }
+  })
+
+  it('when no name is plain the order is stable (by the raw text), not by when the nodes were paired', () => {
+    const a = 'Ho\u200Bme'
+    const b = 'Ho\u200Dme'
+    expect(labelsOf([a, b])).toEqual(labelsOf([b, a]))
+  })
+})

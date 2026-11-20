@@ -1,7 +1,16 @@
 import { useMemo } from 'react'
+import { create } from 'zustand'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { deriveSpaces, resolveSelection, type SpaceModel } from './spaces'
+
+/**
+ * 用户自己改了节点过滤器（切换器里的选择、「显示这个节点」、「切换到这个空间」）的次数。
+ * 「待处理」据此区分「用户改的」和「别的原因让节点离开了当前选择」（别的设备改了分组、改名、节点被忘记）：只有前者才清掉正在看的那一条，
+ * 后者走占位。程序自己改偏好（比如改名之后让选择跟着走）不算，所以不能拿偏好的值变没变来判断。
+ */
+export const useFilterMarks = create<{ n: number }>(() => ({ n: 0 }))
+const markUserFilterChange = (): void => useFilterMarks.setState((s) => ({ n: s.n + 1 }))
 
 /** 现在选中哪些节点（不在 React 里的调用方——应用角标、快速记一项——用这个）：口径见 `resolveSelection`。 */
 export function currentSelection(): string[] {
@@ -46,11 +55,18 @@ export function useNodeFilter(): {
   const toggle = (id: string, on: boolean): void => {
     const next = order.filter((x) => (x === id ? on : selected.includes(x)))
     if (next.length === 0) return
+    markUserFilterChange()
     // 手点节点：不再是「一个空间」，成了手点的一组
     setPrefs({ sidebarSpace: null, sidebarNodes: next.length === order.length ? null : next })
   }
-  const selectSpace = (key: string): void => setPrefs({ sidebarSpace: key, sidebarNodes: null })
-  const selectAll = (): void => setPrefs({ sidebarSpace: null, sidebarNodes: null })
+  const selectSpace = (key: string): void => {
+    markUserFilterChange()
+    setPrefs({ sidebarSpace: key, sidebarNodes: null })
+  }
+  const selectAll = (): void => {
+    markUserFilterChange()
+    setPrefs({ sidebarSpace: null, sidebarNodes: null })
+  }
   return { selected, space, spaces, toggle, selectSpace, selectAll }
 }
 

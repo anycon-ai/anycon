@@ -65,6 +65,8 @@ export function ManageSpacesDialog() {
   const fromSpace = spaces.spaces.find((s) => s.key === renameKey)
   // 改成一个已经存在的、别的空间的名字：两个空间会合并，先说清楚谁会进哪里，让用户确认
   const mergeInto = fromSpace && target !== '' && target !== renameKey ? spaces.spaces.find((s) => s.key === target) : undefined
+  // 看起来和一个已有的空间一样、原文却不一样（不可见字符、NFD、多余的空格）：改完会多出一个长得一样的空间
+  const lookalike = fromSpace && target !== '' && !mergeInto && target !== renameKey ? spaces.spaces.find((s) => s.key !== fromSpace.key && displayName(s.key) === displayName(target)) : undefined
 
   const doRename = async (): Promise<void> => {
     if (!fromSpace) {
@@ -167,6 +169,14 @@ export function ManageSpacesDialog() {
                 {mergeInto && mergeConfirmed ? t('spaces.mergeAction') : t('spaces.rename')}
               </Button>
             </div>
+            {lookalike ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning-subtle p-2 text-xs" role="alert" data-testid="lookalike-warning">
+                <span className="min-w-0 flex-1">{t('spaces.lookalike', { name: displayName(target), existing: lookalike.label })}</span>
+                <Button size="sm" onClick={() => { setRenameTo(lookalike.key); setMergeConfirmed(false) }} data-testid="lookalike-use-existing">
+                  {t('spaces.useExisting')}
+                </Button>
+              </div>
+            ) : null}
             {mergeInto && mergeConfirmed && fromSpace ? (
               <p role="alert" className="rounded-md border border-warning/40 bg-warning-subtle p-2" data-testid="merge-confirm">
                 {t('spaces.mergeConfirm', { from: fromSpace.label, to: mergeInto.label, nodes: [...fromSpace.nodeIds, ...mergeInto.nodeIds].map(nodeName).join(', ') })}

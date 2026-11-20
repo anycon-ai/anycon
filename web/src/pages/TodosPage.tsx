@@ -320,7 +320,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
           </div>
         ) : null}
       </div>
-      {moving ? <MoveTodoDialog item={moving} open onOpenChange={(o) => !o && setMoving(null)} onMoved={() => void navigate({ to: '/todos' })} /> : null}
+      {moving ? <MoveTodoDialog item={moving} open onOpenChange={(o) => !o && setMoving(null)} /> : null}
       <Dialog open={!!deleting} onOpenChange={(o) => !o && setDeleting(null)} title={t('todos.deleteTitle')} description={deleting ? t('todos.deleteBody', { title: cleanOneLine(deleting.title, 80) }) : ''} closeLabel={t('common.close')} testId="todo-delete-dialog">
         <div className="flex justify-end gap-2">
           <Button onClick={() => setDeleting(null)}>{t('common.cancel')}</Button>

@@ -1,6 +1,6 @@
 // 「待处理」页（spec/web.md § 4.11）：合并多个节点、权限请求用会话页同一个卡片、详情展开了才有按钮、处理完焦点落到下一条、
 // 离线节点的缓存要标明、三种布局（桌面分栏 / 平板滑出 / 手机展开）、通知点进来的定位、键盘。
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionOption, PermissionKind } from '@/protocol'
@@ -31,6 +31,7 @@ vi.mock('@/features/session/actions', async (orig) => ({
 
 vi.mock('@/api/queries', async (orig) => ({ ...(await orig<object>()), useDevices: () => ({ data: undefined, dataUpdatedAt: 0 }) }))
 
+import { useNodeFilter } from '@/lib/nodeFilter'
 import { InboxPage } from './InboxPage'
 
 const A = 'a'.repeat(32)
@@ -576,7 +577,7 @@ describe('a group change made on another device while a request is being read', 
     expect(screen.getByTestId('permission-card')).toBeInTheDocument()
     regroup()
     const ghost = screen.getByTestId('inbox-ghost')
-    expect(ghost).toHaveTextContent('now in the space “Home”')
+    expect(ghost).toHaveTextContent('“alpha” is now in the space “Home”')
     expect(screen.queryByTestId('permission-card')).toBeNull()
     expect(usePrefs.getState().sidebarSpace).toBe('Work') // 不自动切换
     await user.click(screen.getByTestId('inbox-ghost-switch-space'))
@@ -593,13 +594,50 @@ describe('a group change made on another device while a request is being read', 
     expect(screen.getByTestId('inbox-ghost-moved')).toHaveTextContent('Home')
   })
 
-  it('the user’s own filter change in this tab still just clears the selection, with no placeholder', async () => {
+  it('the user’s own filter change in this tab (the switcher) still just clears the selection, with no placeholder', async () => {
+    setupGroups()
+    render(<InboxPage />)
+    const filter = renderHook(() => useNodeFilter())
+    expect(screen.getByTestId('permission-card')).toBeInTheDocument()
+    act(() => filter.result.current.toggle(A, false))
+    expect(usePrefs.getState().sidebarNodes).toEqual([B])
+    expect(screen.queryByTestId('inbox-ghost')).toBeNull()
+    expect(screen.queryByTestId('permission-card')).toBeNull()
+  })
+
+  it('a preference change the user did not make with a switcher action (for example a rename moving the selection) goes through the placeholder, never a silent clear', () => {
     setupGroups()
     render(<InboxPage />)
     expect(screen.getByTestId('permission-card')).toBeInTheDocument()
-    act(() => usePrefs.setState({ sidebarSpace: null, sidebarNodes: [B] }))
-    expect(screen.queryByTestId('inbox-ghost')).toBeNull()
+    // 改名只改了 B；A 还留在旧名字 Work 下，选择被程序改到新名字 Office
+    act(() => {
+      useNodes.getState().setInfo(B, group('Office'))
+      usePrefs.getState().set({ sidebarSpace: 'Office', sidebarNodes: null })
+    })
+    expect(screen.getByTestId('inbox-ghost-moved')).toHaveTextContent('“alpha” is now in the space “Work”')
     expect(screen.queryByTestId('permission-card')).toBeNull()
+  })
+
+  it('another device clears the node’s group: the placeholder says it left the selected space (not that it ended or expired) and offers to show the node', async () => {
+    const user = setup()
+    setupGroups()
+    render(<InboxPage />)
+    act(() => useNodes.getState().setInfo(A, { capabilities: { todo: true } } as never))
+    const ghost = screen.getByTestId('inbox-ghost')
+    expect(ghost).toHaveTextContent('Outside the current selection')
+    expect(screen.getByTestId('inbox-ghost-moved')).toHaveTextContent('“alpha” is no longer in any space')
+    expect(ghost).not.toHaveTextContent(/ended or expired/)
+    await user.click(screen.getByTestId('inbox-ghost-show-node'))
+    expect(usePrefs.getState().sidebarSpace).toBeNull()
+    expect(usePrefs.getState().sidebarNodes).toBeNull() // 两个节点都勾上了就是「全部」
+  })
+
+  it('a request that was handled somewhere else (its node never left the selection) keeps the plain wording, not the “moved” one', () => {
+    setupGroups()
+    render(<InboxPage />)
+    act(() => useSessions.getState().resolvePending(A, 'one'))
+    expect(screen.getByTestId('inbox-ghost')).toHaveTextContent('No longer waiting for you')
+    expect(screen.queryByTestId('inbox-ghost-moved')).toBeNull()
   })
 
   it('a node that is forgotten while its request is open also leaves a placeholder', () => {

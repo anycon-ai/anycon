@@ -1,7 +1,7 @@
 // 「在这个页面上处理的」只算「待处理」页在眼前时自己发起的；藏在后面时（手机上切到会话页）别处的答复是「别处处理的」。
 // 另外：重新显示时重新计时、页面打开时是空的就不替用户展开后来的条目、过滤器改了不留占位、非请求条目的占位、
 // 接入请求在对话框里点了才算、平板抽屉的焦点、深链接晚到不抢选中、相对时间每分钟走。
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionKind, PermissionOption } from '@/protocol'
@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({ navigate: vi.fn(), respond: vi.fn() }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), h.navigate, {}, { pathname: '/inbox' }))
 vi.mock('@/features/session/actions', async (orig) => ({ ...(await orig<object>()), respondPermission: h.respond }))
 
+import { useNodeFilter } from '@/lib/nodeFilter'
 import { InboxPage } from './InboxPage'
 
 const A = 'a'.repeat(32)
@@ -160,7 +161,8 @@ describe('when an item leaves', () => {
     seed({ pending: [req('one', { created_at_ms: 1 }), req('b1', { node_id: B, session_id: 's-b1', created_at_ms: 2 })] })
     render(<InboxPage />)
     expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'one')
-    act(() => usePrefs.setState({ sidebarNodes: [B] }))
+    const filter = renderHook(() => useNodeFilter())
+    act(() => filter.result.current.toggle(A, false)) // 用户在切换器里取消勾选
     expect(screen.queryByTestId('inbox-ghost')).toBeNull()
     expect(rows()).toHaveLength(1)
   })

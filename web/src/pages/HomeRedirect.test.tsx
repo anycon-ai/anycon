@@ -5,7 +5,6 @@ import type { ApiDevice } from '@/api/types'
 import { mockRouter } from '@/test/routerMock'
 import { nodeEntry } from '@/test/factories'
 import { useNodes } from '@/stores/nodes'
-import { usePrefs } from '@/stores/prefs'
 
 const h = vi.hoisted(() => ({ navigate: vi.fn(), devices: { data: undefined as unknown, isError: false, refetch: vi.fn() }, enabled: [] as Array<boolean | undefined> }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), h.navigate, {}))
@@ -27,16 +26,15 @@ beforeEach(() => {
   h.enabled = []
   h.devices.data = undefined
   h.devices.isError = false
-  usePrefs.setState({ lastNode: null })
   useNodes.setState({ byId: {}, order: [], loaded: true })
 })
 
 describe('"/"', () => {
-  it('this browser has paired nodes → the one opened last', () => {
+  it('this browser has paired nodes → /inbox, whichever node was opened last', () => {
     useNodes.setState({ byId: { [A]: nodeEntry({ id: A }), [B]: nodeEntry({ id: B }) }, order: [A, B], loaded: true })
-    usePrefs.setState({ lastNode: B })
     render(<HomeRedirect />)
-    expect(h.navigate).toHaveBeenCalledWith({ to: '/n/$node', params: { node: 'bbbbbbbb' }, replace: true })
+    expect(h.navigate).toHaveBeenCalledTimes(1)
+    expect(h.navigate).toHaveBeenCalledWith({ to: '/inbox', replace: true })
     // 有已配对的节点就不用去问 hub 账号下有什么
     expect(h.enabled.every((e) => e === false)).toBe(true)
   })

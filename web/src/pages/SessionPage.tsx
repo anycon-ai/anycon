@@ -3,7 +3,6 @@ import { useNavigate } from '@tanstack/react-router'
 import { FileDiff, Globe, MessageSquare, PanelRight, PanelRightClose, ShieldAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
-import type { PermissionRespondParams } from '@/protocol'
 import { SettingsControls } from '@/components/SettingsControls'
 import { Composer } from '@/components/Composer'
 import { PageHeader } from '@/components/PageHeader'
@@ -12,9 +11,9 @@ import { attachmentSupport } from '@/features/attachments/support'
 import { sessionWorkDir } from '@/features/files/paths'
 import { discardRefs, restoreAttachments } from '@/features/attachments/composerUploads'
 import { describeAttachmentFailure, describeAttachNotice } from '@/features/attachments/errors'
-import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, respondPermission, restartSession, resendUnsent, sendMessage, setFollowUp, unarchiveSession, type SendOutcome } from '@/features/session/actions'
+import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, restartSession, resendUnsent, sendMessage, setFollowUp, unarchiveSession, type SendOutcome } from '@/features/session/actions'
 import { downloadText, exportMarkdown } from '@/features/session/export'
-import { isRunning, useDeviceLabel, useSessionData, useSessionSettings } from '@/features/session/hooks'
+import { isRunning, useDeviceLabel, useRespondPermission, useSessionData, useSessionSettings } from '@/features/session/hooks'
 import { isFollowUp } from '@/features/session/marks'
 import { useMarkRead } from '@/features/session/useMarkRead'
 import { activeOptions } from '@/features/settings/resolve'
@@ -36,11 +35,9 @@ import { resolveConflictsMessage } from '@/features/worktree/messages'
 import { sendQuickMessage } from '@/features/worktree/quick'
 import { useGitRefresh } from '@/features/worktree/useGitRefresh'
 import { MessageList } from '@/features/session/ui/MessageList'
-import type { SettledReason } from '@/features/session/ui/PermissionCard'
 import { describeError } from '@/lib/errors'
 import { useCurrentNode, useNodeParam } from '@/lib/nav'
 import { useMediaQuery } from '@/lib/useMediaQuery'
-import { RpcCallError } from '@/transport/rpcClient'
 import { pendingMessages, useDrafts } from '@/stores/drafts'
 import { useGitEntry } from '@/stores/git'
 import { usePrefs } from '@/stores/prefs'
@@ -83,10 +80,6 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
   const loadDraft = useDrafts((s) => s.load)
   const deviceLabel = useDeviceLabel(nodeId)
   const pendingReqs = useSessions((s) => s.pending)
-  const [responding, setResponding] = useState<ReadonlySet<string>>(new Set())
-  // 答复时 daemon 回了 not_found 的请求：卡片定格成说明、不再给按钮。原因是目录变了（`folder_changed`）时随后会来
-  // permission_resolved（by_device: daemon），卡片换成「已被 anycon 自动拒绝」；别的 not_found（`gone`：请求已不存在）就停在说明上
-  const [settled, setSettled] = useState<ReadonlyMap<string, SettledReason>>(new Map())
   const [loadingOlder, setLoadingOlder] = useState(false)
   // 已经重发过的「可能没有送达」的消息（原消息的 id）
   const [resent, setResent] = useState<ReadonlySet<string>>(new Set())
@@ -223,31 +216,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
     [nodeId, sessionId, t],
   )
 
-  const onRespond = useCallback(
-    (params: PermissionRespondParams) => {
-      if (!nodeId) return
-      setResponding((s) => new Set(s).add(params.request_id))
-      respondPermission(nodeId, params)
-        .then((outcome) => {
-          if (outcome === 'answered') return
-          const reason: SettledReason = outcome === 'denied_folder_changed' ? 'folder_changed' : 'gone'
-          setSettled((s) => new Map(s).set(params.request_id, reason))
-          toast.info(t(outcome === 'denied_folder_changed' ? 'permission.deniedFolderChanged' : 'permission.requestGone'))
-        })
-        .catch((e: unknown) => {
-          if (e instanceof RpcCallError && e.kind === 'rpc' && e.code === 'already_resolved') toast.info(t('permission.alreadyResolved'))
-          else toast.error(describeError(e, t))
-        })
-        .finally(() =>
-          setResponding((s) => {
-            const n = new Set(s)
-            n.delete(params.request_id)
-            return n
-          }),
-        )
-    },
-    [nodeId, t],
-  )
+  const { respond: onRespond, responding, settled } = useRespondPermission(nodeId)
 
   if (!nodeId || !entry) return null
 
@@ -420,7 +389,6 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
           ...(project ? [{ label: project, to: { to: '/n/$node/p/$project', params: { node: nodeParam, project } } }] : []),
           { label: title, onClick: () => setRenameOpen(true), actionLabel: t('info.rename'), testId: 'session-title' },
         ]}
-        onBack={goBack}
         meta={
           <>
             {viewOptions.length > 1 ? (

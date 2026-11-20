@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { AgentInfo, SessionSettings, SessionStatus } from '@/protocol'
+import type { AgentInfo, PermissionRespondParams, SessionSettings, SessionStatus } from '@/protocol'
 import { describeError, isDangerousModeRejection } from '@/lib/errors'
 import { useHub } from '@/stores/hub'
 import { useNodes } from '@/stores/nodes'
@@ -8,7 +8,10 @@ import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import { applyUpdate, buildSettingsUpdate, isEmptyUpdate, mergeUpdates, pendingFields, selectionFromSettings, selectionKey, type SettingsField, type SettingsUpdate, type Selection } from '@/features/settings/resolve'
-import { setSessionSettings } from './actions'
+import { RpcCallError } from '@/transport/rpcClient'
+import { beginAnswer, endAnswer, useInflight } from './inflight'
+import { respondPermission, setSessionSettings } from './actions'
+import type { SettledReason } from './ui/PermissionCard'
 
 const NO_PENDING: ReadonlySet<SettingsField> = new Set()
 
@@ -101,4 +104,43 @@ export function useSessionData(sessionId: string) {
   const summary = useSessions((s) => s.list[sessionId])
   const open = useSessions((s) => s.open[sessionId])
   return { summary, open }
+}
+
+/**
+ * 答复权限请求（会话页和「待处理」页共用，所以两处的卡片行为一致）：同一个请求已经在答复时第二次答复直接丢掉（`inflight.ts`，
+ * 和 ⌘⇧A / ⌘⇧D 共用）；daemon 回 `not_found` 的请求定格成说明（`settled`：目录变了 / 请求已不存在，不再给按钮、不重试），失败弹 toast。
+ */
+export function useRespondPermission(nodeId: string | undefined): {
+  respond: (params: PermissionRespondParams) => void
+  responding: ReadonlySet<string>
+  settled: ReadonlyMap<string, SettledReason>
+} {
+  const { t } = useTranslation()
+  const responding = useInflight((s) => s.ids)
+  // 原因是目录变了（`folder_changed`）时随后会来 permission_resolved（by_device: daemon），卡片换成「已被 anycon 自动拒绝」；
+  // 别的 not_found（`gone`：请求已不存在）就停在说明上
+  const [settled, setSettled] = useState<ReadonlyMap<string, SettledReason>>(new Map())
+  const respond = useCallback(
+    (params: PermissionRespondParams) => {
+      if (!nodeId || !beginAnswer(params.request_id)) return
+      let ok = false
+      respondPermission(nodeId, params)
+        .then((outcome) => {
+          ok = true
+          if (outcome === 'answered') return
+          const reason: SettledReason = outcome === 'denied_folder_changed' ? 'folder_changed' : 'gone'
+          setSettled((s) => new Map(s).set(params.request_id, reason))
+          toast.info(t(outcome === 'denied_folder_changed' ? 'permission.deniedFolderChanged' : 'permission.requestGone'))
+        })
+        .catch((e: unknown) => {
+          if (e instanceof RpcCallError && e.kind === 'rpc' && e.code === 'already_resolved') {
+            ok = true
+            toast.info(t('permission.alreadyResolved'))
+          } else toast.error(describeError(e, t))
+        })
+        .finally(() => endAnswer(params.request_id, ok))
+    },
+    [nodeId, t],
+  )
+  return { respond, responding, settled }
 }

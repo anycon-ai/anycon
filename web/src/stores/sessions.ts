@@ -198,7 +198,14 @@ export const useSessions = create<SessionsState>()((set, get) => ({
       const p = s.pending[requestId]
       if (!p || p.node_id !== nodeId) return s
       const { [requestId]: _gone, ...rest } = s.pending
-      return { pending: rest }
+      // 摘要里「等审批」的计数跟着本地的请求走：不然答复之后、`session.changed` 到之前的这一会儿，
+      // 「待处理」会把这个会话当成「等待审批（缓存）」又列出来一次
+      const item = s.list[p.session_id]
+      if (!item || item.pending_permissions === 0) return { pending: rest }
+      const remaining = Object.values(rest).filter((r) => r.session_id === p.session_id).length
+      const count = remaining === 0 ? 0 : Math.min(item.pending_permissions - 1, remaining)
+      const status = count === 0 && item.status === 'waiting_permission' ? 'running' : item.status
+      return { pending: rest, list: { ...s.list, [p.session_id]: { ...item, pending_permissions: count, status } } }
     }),
 
   openStart: (nodeId, sessionId, cached, baseline = null) => {

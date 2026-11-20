@@ -1,6 +1,6 @@
 // 登录后启动传输层，并把它的回调接到各个 store / 同步逻辑上。
 import * as db from '@/db'
-import { attentionCount } from '@/features/session/marks'
+import { inboxNowCountFromStores, subscribeInbox } from '@/features/inbox/model'
 import { handleNotification } from '@/features/sync/notifications'
 import { hydrateNodeSessions, syncNode } from '@/features/sync/syncNode'
 import { showSystemNotification } from '@/features/sync/systemNotify'
@@ -8,7 +8,6 @@ import { getClient } from '@/transport/instance'
 import { resetDrafts, useDrafts } from '@/stores/drafts'
 import { useHub } from '@/stores/hub'
 import { useNodes } from '@/stores/nodes'
-import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import i18n from '@/i18n'
 import { createBackgroundWatcher, type BackgroundWatcher } from './backgroundIdle'
@@ -27,7 +26,7 @@ const background: BackgroundWatcher = createBackgroundWatcher({
   clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 })
 
-/** 需要你处理的总数（待审批 + 待处理，`attentionCount`）→ 标签页标题前缀 + PWA 图标角标（支持的平台上）。 */
+/** 「待处理」里「现在」段的条数（`inboxNowCountFromStores`）→ 标签页标题前缀 + PWA 图标角标（支持的平台上）。 */
 export function updateBadge(count: number): void {
   document.title = count > 0 ? `(${count}) Anycon` : 'Anycon'
   const nav = navigator as Navigator & { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> }
@@ -86,14 +85,16 @@ export function startTransport(accountId: string): Promise<void> {
     document.addEventListener('visibilitychange', onVisibility)
     background.arm() // 在后台标签页里打开的页面也算
     unsubBadge?.()
-    unsubBadge = useSessions.subscribe((s, prev) => {
-      if (s.pending === prev.pending && s.list === prev.list) return
-      // 会话列表每来一条 session.changed 都会变，计数没变就别去动标题和角标
-      const count = attentionCount(s.pending, Object.values(s.list))
+    // 数字和导航项是同一份模型（`features/inbox/model.ts`）：只在它的输入变了或定时器到了才重算
+    const refreshBadge = (): void => {
+      const count = inboxNowCountFromStores()
       if (count === badgeCount) return
       badgeCount = count
       updateBadge(count)
-    })
+    }
+    const unsubModel = subscribeInbox(refreshBadge)
+    refreshBadge()
+    unsubBadge = unsubModel
   })().catch((e: unknown) => {
     booting = null
     throw e

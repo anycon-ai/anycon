@@ -35,7 +35,7 @@ describe('showSystemNotification — when', () => {
     expect(await showSystemNotification(NODE, body(), env)).toBe(true)
     expect(shown).toHaveLength(1)
     expect(shown[0]!.title).toBe('“Fix login” is waiting for your approval')
-    expect(shown[0]!.options).toMatchObject({ body: 'On mac-mini', tag: 'session:sess_abc', renotify: true, icon: '/icon-192.png', data: { url: '/n/nnnnnnnn/s/sess_abc' } })
+    expect(shown[0]!.options).toMatchObject({ body: 'On mac-mini', tag: 'session:sess_abc', renotify: true, icon: '/icon-192.png', data: { url: '/inbox?node=nnnnnnnn&session=sess_abc' } })
   })
 
   it('page in the foreground: no system notification (the toast / banner covers it)', async () => {
@@ -121,7 +121,7 @@ describe('textForNotify', () => {
   it('uses the full node id in the URL when two paired nodes share the first 8 characters', () => {
     const other = `nnnnnnnn${'z'.repeat(24)}`
     const clash = fakeEnv({ nodeIds: () => [NODE, other] }).env
-    expect(textForNotify(clash, NODE, body()).url).toBe(`/n/${NODE}/s/sess_abc`)
+    expect(textForNotify(clash, NODE, body()).url).toBe(`/inbox?node=${NODE}&session=sess_abc`)
   })
 })
 
@@ -147,7 +147,7 @@ describe('defaultEnv — real stores, real service worker registration', () => {
     expect(await showSystemNotification(NODE, body(), defaultEnv())).toBe(true)
     expect(push.shown).toHaveLength(1)
     expect(push.shown[0]!.title).toBe('“Fix login” is waiting for your approval')
-    expect(push.shown[0]!.options).toMatchObject({ body: 'On mac-mini', tag: 'session:sess_abc', data: { url: '/n/nnnnnnnn/s/sess_abc' } })
+    expect(push.shown[0]!.options).toMatchObject({ body: 'On mac-mini', tag: 'session:sess_abc', data: { url: '/inbox?node=nnnnnnnn&session=sess_abc' } })
   })
 
   it('respects the account’s push switch for the category', async () => {

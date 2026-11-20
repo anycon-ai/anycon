@@ -11,6 +11,7 @@ import { useNodes } from '@/stores/nodes'
 import { useSessions, type SessionItem } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import i18n from '@/i18n'
+import { inboxUrl } from './pushText'
 import { handleSecurityEvent } from './securityEvent'
 
 export function handleNotification(nodeId: string, method: string, params: unknown): void {
@@ -50,7 +51,12 @@ export function handleNotification(nodeId: string, method: string, params: unkno
       // 页面在前台：不弹系统通知，改为应用内 toast（正在看那个会话时不打扰）
       if (!useSessions.getState().open[req.session_id]) {
         const title = useSessions.getState().list[req.session_id]?.title
-        toast.info(i18n.t('toast.permission', { title: title ? `“${title}”` : i18n.t('toast.aSession') }))
+        // 点「查看」去「待处理」，定位并展开这个会话最早的一条请求（和点推送通知落在同一处）
+        const order = useNodes.getState().order
+        toast.info(i18n.t('toast.permission', { title: title ? `“${title}”` : i18n.t('toast.aSession') }), {
+          label: i18n.t('toast.view'),
+          run: () => navigateTo(inboxUrl(shortNodeId(nodeId, order), req.session_id)),
+        })
       }
       return
     }

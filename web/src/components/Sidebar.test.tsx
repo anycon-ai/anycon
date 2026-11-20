@@ -113,13 +113,13 @@ describe('Recent group (running sessions)', () => {
     expect(group.compareDocumentPosition(screen.getAllByTestId('sidebar-project-new')[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('does not repeat a session that is already pinned under “Needs approval”', () => {
+  it('does not repeat a session that is waiting for approval: it is in the inbox', () => {
     setSessions({
       ask: { project: 'app', status: 'waiting_permission', pending_permissions: 1, updated_at_ms: 20 },
       busy: { project: 'app', status: 'running', updated_at_ms: 10 },
     })
     wrap(<Sidebar nodeId={NODE} />)
-    expect(screen.getByTestId('sidebar-waiting')).toHaveTextContent('ask')
+    expect(screen.queryByTestId('sidebar-waiting')).toBeNull()
     expect(screen.getByTestId('sidebar-recent')).not.toHaveTextContent('ask')
     expect(screen.getByTestId('sidebar-recent')).toHaveTextContent('busy')
   })
@@ -165,26 +165,25 @@ describe('unpinned wide-screen sidebar rail', () => {
     const user = userEvent.setup()
     const onSearch = vi.fn()
     const onPin = vi.fn()
-    wrap(<SidebarRail nodeId={NODE} onSearch={onSearch} onPeek={() => {}} onPin={onPin} />)
+    wrap(<SidebarRail nodeId={NODE} onSearch={onSearch} onPin={onPin} />)
     await user.click(screen.getByRole('button', { name: /Search/ }))
     expect(onSearch).toHaveBeenCalledTimes(1)
     await user.click(screen.getByRole('button', { name: 'New project' }))
     expect(useNewProject.getState().request).toEqual({ nodeId: NODE, mode: 'empty', then: 'project', pickNode: true })
     await user.click(screen.getByTestId('sidebar-pin'))
     expect(onPin).toHaveBeenCalledTimes(1)
-    expect(screen.queryByTestId('sidebar-rail-waiting')).toBeNull()
+    expect(screen.queryByTestId('sidebar-rail-inbox-count')).toBeNull()
   })
 
-  it('shows how many sessions wait for approval; clicking it slides the sidebar out', async () => {
-    const user = userEvent.setup()
+  it('shows the inbox with how many things wait, and the link goes to /inbox', async () => {
     const a = useSessions.getState().list.a!
     useSessions.setState({ list: { ...useSessions.getState().list, a: { ...a, pending_permissions: 1 } } })
-    const onPeek = vi.fn()
-    wrap(<SidebarRail nodeId={NODE} onSearch={() => {}} onPeek={onPeek} onPin={() => {}} />)
-    const badge = screen.getByTestId('sidebar-rail-waiting')
-    expect(badge).toHaveAccessibleName('1 session needs approval')
-    await user.click(badge)
-    expect(onPeek).toHaveBeenCalledTimes(1)
+    useSessions.getState().addPending(NODE, { request_id: 'r1', session_id: 'a', kind: 'tool', title: 't', detail: {}, options: [], created_at_ms: 1 })
+    wrap(<SidebarRail nodeId={NODE} onSearch={() => {}} onPin={() => {}} />)
+    const link = screen.getByTestId('sidebar-rail-inbox')
+    expect(link).toHaveAccessibleName('Inbox, 1 waiting')
+    expect(link).toHaveAttribute('href', '/inbox')
+    expect(screen.getByTestId('sidebar-rail-inbox-count')).toHaveTextContent('1')
   })
 })
 

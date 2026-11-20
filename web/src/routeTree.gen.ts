@@ -17,6 +17,9 @@ import { Route as AppPairRouteImport } from './routes/_app/pair'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
 import { Route as InviteCodeRouteImport } from './routes/invite.$code'
 import { Route as AppShellAdminRouteImport } from './routes/_app/_shell/admin'
+import { Route as AppShellInboxRouteImport } from './routes/_app/_shell/inbox'
+import { Route as AppShellMoreRouteImport } from './routes/_app/_shell/more'
+import { Route as AppShellSessionsRouteImport } from './routes/_app/_shell/sessions'
 import { Route as AppShellSettingsRouteImport } from './routes/_app/_shell/settings'
 import { Route as AppUnlockIndexRouteImport } from './routes/_app/unlock.index'
 import { Route as AppUnlockNodeRouteImport } from './routes/_app/unlock.$node'
@@ -71,6 +74,21 @@ const InviteCodeRoute = InviteCodeRouteImport.update({
 const AppShellAdminRoute = AppShellAdminRouteImport.update({
   id: '/admin',
   path: '/admin',
+  getParentRoute: () => AppShellRoute,
+} as any)
+const AppShellInboxRoute = AppShellInboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
+  getParentRoute: () => AppShellRoute,
+} as any)
+const AppShellMoreRoute = AppShellMoreRouteImport.update({
+  id: '/more',
+  path: '/more',
+  getParentRoute: () => AppShellRoute,
+} as any)
+const AppShellSessionsRoute = AppShellSessionsRouteImport.update({
+  id: '/sessions',
+  path: '/sessions',
   getParentRoute: () => AppShellRoute,
 } as any)
 const AppShellSettingsRoute = AppShellSettingsRouteImport.update({
@@ -169,6 +187,9 @@ export interface FileRoutesByFullPath {
   '/setup': typeof AppSetupRoute
   '/invite/$code': typeof InviteCodeRoute
   '/admin': typeof AppShellAdminRoute
+  '/inbox': typeof AppShellInboxRoute
+  '/more': typeof AppShellMoreRoute
+  '/sessions': typeof AppShellSessionsRoute
   '/settings': typeof AppShellSettingsRouteWithChildren
   '/unlock/$node': typeof AppUnlockNodeRoute
   '/unlock/': typeof AppUnlockIndexRoute
@@ -194,6 +215,9 @@ export interface FileRoutesByTo {
   '/setup': typeof AppSetupRoute
   '/invite/$code': typeof InviteCodeRoute
   '/admin': typeof AppShellAdminRoute
+  '/inbox': typeof AppShellInboxRoute
+  '/more': typeof AppShellMoreRoute
+  '/sessions': typeof AppShellSessionsRoute
   '/unlock/$node': typeof AppUnlockNodeRoute
   '/unlock': typeof AppUnlockIndexRoute
   '/settings/appearance': typeof AppShellSettingsAppearanceRoute
@@ -220,6 +244,9 @@ export interface FileRoutesById {
   '/invite/$code': typeof InviteCodeRoute
   '/_app/': typeof AppIndexRoute
   '/_app/_shell/admin': typeof AppShellAdminRoute
+  '/_app/_shell/inbox': typeof AppShellInboxRoute
+  '/_app/_shell/more': typeof AppShellMoreRoute
+  '/_app/_shell/sessions': typeof AppShellSessionsRoute
   '/_app/_shell/settings': typeof AppShellSettingsRouteWithChildren
   '/_app/unlock/$node': typeof AppUnlockNodeRoute
   '/_app/unlock/': typeof AppUnlockIndexRoute
@@ -247,6 +274,9 @@ export interface FileRouteTypes {
     | '/setup'
     | '/invite/$code'
     | '/admin'
+    | '/inbox'
+    | '/more'
+    | '/sessions'
     | '/settings'
     | '/unlock/$node'
     | '/unlock/'
@@ -272,6 +302,9 @@ export interface FileRouteTypes {
     | '/setup'
     | '/invite/$code'
     | '/admin'
+    | '/inbox'
+    | '/more'
+    | '/sessions'
     | '/unlock/$node'
     | '/unlock'
     | '/settings/appearance'
@@ -297,6 +330,9 @@ export interface FileRouteTypes {
     | '/invite/$code'
     | '/_app/'
     | '/_app/_shell/admin'
+    | '/_app/_shell/inbox'
+    | '/_app/_shell/more'
+    | '/_app/_shell/sessions'
     | '/_app/_shell/settings'
     | '/_app/unlock/$node'
     | '/_app/unlock/'
@@ -378,6 +414,27 @@ declare module '@tanstack/react-router' {
       path: '/admin'
       fullPath: '/admin'
       preLoaderRoute: typeof AppShellAdminRouteImport
+      parentRoute: typeof AppShellRoute
+    }
+    '/_app/_shell/inbox': {
+      id: '/_app/_shell/inbox'
+      path: '/inbox'
+      fullPath: '/inbox'
+      preLoaderRoute: typeof AppShellInboxRouteImport
+      parentRoute: typeof AppShellRoute
+    }
+    '/_app/_shell/more': {
+      id: '/_app/_shell/more'
+      path: '/more'
+      fullPath: '/more'
+      preLoaderRoute: typeof AppShellMoreRouteImport
+      parentRoute: typeof AppShellRoute
+    }
+    '/_app/_shell/sessions': {
+      id: '/_app/_shell/sessions'
+      path: '/sessions'
+      fullPath: '/sessions'
+      preLoaderRoute: typeof AppShellSessionsRouteImport
       parentRoute: typeof AppShellRoute
     }
     '/_app/_shell/settings': {
@@ -549,12 +606,18 @@ const AppShellNNodeRouteWithChildren = AppShellNNodeRoute._addFileChildren(
 
 interface AppShellRouteChildren {
   AppShellAdminRoute: typeof AppShellAdminRoute
+  AppShellInboxRoute: typeof AppShellInboxRoute
+  AppShellMoreRoute: typeof AppShellMoreRoute
+  AppShellSessionsRoute: typeof AppShellSessionsRoute
   AppShellSettingsRoute: typeof AppShellSettingsRouteWithChildren
   AppShellNNodeRoute: typeof AppShellNNodeRouteWithChildren
 }
 
 const AppShellRouteChildren: AppShellRouteChildren = {
   AppShellAdminRoute: AppShellAdminRoute,
+  AppShellInboxRoute: AppShellInboxRoute,
+  AppShellMoreRoute: AppShellMoreRoute,
+  AppShellSessionsRoute: AppShellSessionsRoute,
   AppShellSettingsRoute: AppShellSettingsRouteWithChildren,
   AppShellNNodeRoute: AppShellNNodeRouteWithChildren,
 }

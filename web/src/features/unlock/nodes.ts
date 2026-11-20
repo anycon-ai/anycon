@@ -37,15 +37,15 @@ export function unlockParam(node: ApiDevice, nodes: readonly ApiDevice[]): strin
   return shortNodeId(node.id, nodes.map((d) => d.id))
 }
 
-export type HomeTarget = { to: 'wait' } | { to: 'node'; node: string } | { to: 'unlock' } | { to: 'setup' }
+export type HomeTarget = { to: 'wait' } | { to: 'inbox' } | { to: 'unlock' } | { to: 'setup' }
 
 /**
- * `/` 去哪（spec/web.md § 2）：这个浏览器有已配对的节点 → 上次打开的；没有，但账号下有节点 → `/unlock`；账号下也没有 → `/setup`。
+ * `/` 去哪（spec/web.md § 2）：这个浏览器有已配对的节点 → `/inbox`；没有，但账号下有节点 → `/unlock`；账号下也没有 → `/setup`。
  * 设备列表拉不到（hub 不可达）时回落到 `/setup`——和以前没有 `/unlock` 时一样，那里能手输短码。
  */
-export function homeTarget(i: { nodesLoaded: boolean; localOrder: readonly string[]; lastNode: string | null; devices: readonly ApiDevice[] | undefined; devicesFailed: boolean }): HomeTarget {
+export function homeTarget(i: { nodesLoaded: boolean; localOrder: readonly string[]; devices: readonly ApiDevice[] | undefined; devicesFailed: boolean }): HomeTarget {
   if (!i.nodesLoaded) return { to: 'wait' }
-  if (i.localOrder.length > 0) return { to: 'node', node: i.lastNode && i.localOrder.includes(i.lastNode) ? i.lastNode : i.localOrder[0]! }
+  if (i.localOrder.length > 0) return { to: 'inbox' }
   if (i.devices === undefined) return i.devicesFailed ? { to: 'setup' } : { to: 'wait' }
   return accountNodes(i.devices).length > 0 ? { to: 'unlock' } : { to: 'setup' }
 }

@@ -146,11 +146,11 @@ test.describe.serial('会话内容搜索', () => {
     }
   })
 
-  test('c. 手机宽度：抽屉里的搜索按钮打开同一个面板，面板贴近顶部', async () => {
+  test('c. 手机宽度：「会话」标签页里的搜索按钮打开同一个面板，面板贴近顶部', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.goto(shortSessionUrl)
-    await expect(page.getByTestId('menu-button')).toBeVisible({ timeout: CONNECT_TIMEOUT })
-    await page.getByTestId('menu-button').click()
+    // 手机没有左侧抽屉：底部标签栏的「会话」页就是原来抽屉里的内容，搜索按钮在它上面
+    await page.goto('/sessions')
+    await expect(page.getByTestId('tab-bar')).toBeVisible({ timeout: CONNECT_TIMEOUT })
     await page.getByRole('button', { name: /Search|搜索/ }).click()
     const input = page.getByRole('textbox', { name: /Search|搜索/ })
     await expect(input).toBeFocused()

@@ -84,3 +84,24 @@ describe('sessions store: follow_up and read_seq', () => {
     expect(item()?.read_seq).toBe(9)
   })
 })
+
+describe('resolving a pending request keeps the cached summary coherent', () => {
+  const NODE = 'n'.repeat(32)
+  const request = (id: string, session: string) => ({ request_id: id, session_id: session, kind: 'tool' as const, title: id, detail: {}, options: [], created_at_ms: 1 })
+
+  it('counts the session down, and a session that only waited for that request is running again until session.changed says otherwise', () => {
+    useSessions.setState({ list: { s: { ...summary({ id: 's', status: 'waiting_permission', pending_permissions: 1 }), node_id: NODE, cached_seq: 0 } }, pending: {}, open: {} })
+    useSessions.getState().addPending(NODE, request('r1', 's'))
+    useSessions.getState().resolvePending(NODE, 'r1')
+    expect(useSessions.getState().list.s).toMatchObject({ pending_permissions: 0, status: 'running' })
+  })
+
+  it('keeps waiting while other requests of the session remain', () => {
+    useSessions.setState({ list: { s: { ...summary({ id: 's', status: 'waiting_permission', pending_permissions: 2 }), node_id: NODE, cached_seq: 0 } }, pending: {}, open: {} })
+    useSessions.getState().addPending(NODE, request('r1', 's'))
+    useSessions.getState().addPending(NODE, request('r2', 's'))
+    useSessions.getState().resolvePending(NODE, 'r1')
+    expect(useSessions.getState().list.s).toMatchObject({ pending_permissions: 1, status: 'waiting_permission' })
+  })
+})
+

@@ -18,7 +18,7 @@ export interface PushText {
 /** 推送载荷的类别：全部 `NotifyCategory` 加上「测试推送」。 */
 export type PushCategory = NotifyCategory | 'test'
 
-/** 会话相关的五个类别：点开去会话页。 */
+/** 会话相关的五个类别：点开去会话页；`permission_requested` 例外，去「待处理」里定位那一条（spec/web.md § 7）。 */
 export const SESSION_CATEGORIES = ['permission_requested', 'turn_finished', 'error', 'session_idle', 'follow_up'] as const
 export type SessionCategory = (typeof SESSION_CATEGORIES)[number]
 
@@ -28,6 +28,14 @@ const SESSION_TITLE_KEY: Record<SessionCategory, string> = {
   error: 'push.error',
   session_idle: 'push.sessionIdle',
   follow_up: 'push.followUp',
+}
+
+/**
+ * 点开「权限请求」通知落在哪：`/inbox`，带上节点和会话，页面定位这个会话最早的一条待答复请求并展开。推送载荷只有类别、节点和会话，
+ * 没有请求 id（ADR-55 的限制），所以同一个会话同时有几条请求时，定位到的可能不是触发这条通知的那一条。
+ */
+export function inboxUrl(nodeParamValue: string, sessionId: string): string {
+  return `/inbox?node=${encodeURIComponent(nodeParamValue)}&session=${encodeURIComponent(sessionId)}`
 }
 
 /** 接入相关的两个类别：`enroll_requested` 和 `security`。 */
@@ -72,7 +80,7 @@ export function pushText(t: TFunction, input: PushTextInput): PushText {
     title: t(SESSION_TITLE_KEY[category], { title: sessionTitle ? `“${sessionTitle}”` : t('push.aSession') }),
     body: t('push.onNode', { node: nodeName || t('push.aNode') }),
     tag: session ? `session:${session.id}` : `${category}:${node.id}`,
-    url: session ? `/n/${param}/s/${encodeURIComponent(session.id)}` : `/n/${param}`,
+    url: session ? (category === 'permission_requested' ? inboxUrl(param, session.id) : `/n/${param}/s/${encodeURIComponent(session.id)}`) : `/n/${param}`,
   }
 }
 

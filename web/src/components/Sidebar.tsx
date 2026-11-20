@@ -1,7 +1,7 @@
 import { useMemo, useState, type HTMLAttributes } from 'react'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, ChevronRight, Flag, FolderGit2, FolderPlus, Lock, LogOut, Pin, PinOff, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Flag, FolderGit2, FolderPlus, Home, Inbox, Lock, LogOut, Pin, PinOff, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useDevices, useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
@@ -9,10 +9,10 @@ import { resetClientState, signOut as signOutOfHub } from '@/app/session'
 import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { accountNodes, lockedNodes, removedNodes, unlockParam } from '@/features/unlock/nodes'
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
+import { useInboxNowCount, useInboxOutsideCount } from '@/features/inbox/useInbox'
 import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
 import { useEnroll } from '@/stores/enroll'
 import { cleanHintText } from '@/lib/hint'
-import { formatRelative } from '@/lib/format'
 import { shortNodeId } from '@/lib/ids'
 import { useNodeFilter } from '@/lib/nodeFilter'
 import { connectionTone } from './useConnectionLabel'
@@ -50,33 +50,6 @@ function isWaiting(s: SessionItem): boolean {
   return s.pending_permissions > 0 || s.status === 'waiting_permission'
 }
 
-/** 待审批的会话（只算勾选的节点），最近的在前：左栏置顶（spec/web.md § 7），没固定时窄条上显示个数。 */
-function useWaitingSessions(selected: string[]) {
-  const list = useSessions((s) => s.list)
-  return useMemo(
-    () =>
-      Object.values(list)
-        .filter((x) => selected.includes(x.node_id) && !x.archived && isWaiting(x))
-        .sort((a, b) => b.updated_at_ms - a.updated_at_ms),
-    [list, selected],
-  )
-}
-
-/**
- * 标了「待处理」、已经停下来的会话（只算勾选的节点）：左栏第二个置顶组（spec/web.md § 4.6.1）。等得最久的在最上面——
- * 排最前的是最容易被忘掉的。待审批的会话已经在上面那一组里，这里不重复列。
- */
-function useFollowUpSessions(selected: string[]) {
-  const list = useSessions((s) => s.list)
-  return useMemo(
-    () =>
-      Object.values(list)
-        .filter((x) => selected.includes(x.node_id) && isFollowUpReady(x) && !isWaiting(x))
-        .sort((a, b) => a.updated_at_ms - b.updated_at_ms),
-    [list, selected],
-  )
-}
-
 /** 一行上和标注有关的两个字段：未读小红点、「待处理」状态（还在跑 = armed，停下来 = ready）。 */
 function marksOf(s: SessionItem): { unread: boolean; followUp?: 'armed' | 'ready' } {
   return { unread: isUnread(s), ...(isFollowUp(s) ? { followUp: isFollowUpReady(s) ? ('ready' as const) : ('armed' as const) } : {}) }
@@ -84,7 +57,7 @@ function marksOf(s: SessionItem): { unread: boolean; followUp?: 'armed' | 'ready
 
 /**
  * 进行中的会话（只算勾选的节点），最近的在前：左栏「Recent」分组，省得挨个项目去找。
- * 「进行中」和项目页的筛选同一个口径（`isActiveStatus`）；待审批的已经在上面的置顶组里，这里不重复列。
+ * 「进行中」和项目页的筛选同一个口径（`isActiveStatus`）；等审批的会话在「待处理」页里，这里不重复列。
  */
 function useRecentSessions(selected: string[], enabled: boolean) {
   const list = useSessions((s) => s.list)
@@ -112,9 +85,58 @@ function PinButton({ pinned, onToggle, className }: { pinned: boolean; onToggle:
 
 /**
  * `nodeId`：页面当前所在的节点，只用于下拉里的「节点设置」；左栏显示哪些节点由下拉里的勾选决定。
- * `pin`：宽屏左栏才传，Logo 旁边多一个钉住 / 取消钉住按钮（手机抽屉自己有关闭按钮）。
+ * `pin`：宽屏左栏才传，Logo 旁边多一个钉住 / 取消钉住按钮。
+ * 自上而下：Logo、导航（「待处理」带「现在」的个数）、节点过滤和搜索、会话树、账号菜单。手机没有左栏，用底部标签栏（`TabBar`）。
  */
 export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void; pin?: { pinned: boolean; onToggle: () => void } }) {
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-bg-subtle" data-testid="sidebar">
+      <div className="flex items-center gap-2 px-3 pb-2 pt-3">
+        <Link to="/" onClick={onNavigate} className="mr-auto rounded-md px-1 py-1">
+          <Logo />
+        </Link>
+        {pin ? <PinButton pinned={pin.pinned} onToggle={pin.onToggle} /> : null}
+      </div>
+      <SidebarNav onNavigate={onNavigate} />
+      <SessionsPanel nodeId={nodeId} onNavigate={onNavigate} onSearch={onSearch} />
+      <AccountFooter onNavigate={onNavigate} />
+    </div>
+  )
+}
+
+/** 顶层导航。目前只有「待处理」；之后的去处（清单…）加在这里。 */
+function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
+  const { t } = useTranslation()
+  const count = useInboxNowCount()
+  const here = useRouterState({ select: (s) => s.location.pathname })
+  const current = here === '/inbox'
+  return (
+    <nav className="px-2 pb-2" aria-label={t('sidebar.nav')} data-testid="sidebar-nav">
+      <Link
+        to="/inbox"
+        onClick={onNavigate}
+        aria-current={current ? 'page' : undefined}
+        aria-label={count > 0 ? t('inbox.navLabel', { count }) : t('inbox.title')}
+        data-testid="sidebar-inbox"
+        className={cn('flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-bg-hover', current && 'bg-accent-subtle')}
+      >
+        <Inbox className="size-4 shrink-0 text-fg-muted" aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{t('inbox.title')}</span>
+        {count > 0 ? (
+          <span className="rounded-full bg-warning-subtle px-2 py-0.5 text-xs font-medium text-warning" data-testid="sidebar-inbox-count" aria-hidden>
+            {count}
+          </span>
+        ) : null}
+      </Link>
+    </nav>
+  )
+}
+
+/**
+ * 会话树和它上面的一排（节点过滤、新建项目、搜索）：桌面左栏的中间部分，也是手机「会话」标签页的内容。
+ * Recent、项目树（带「待处理」小旗和未读小红点）、临时会话照旧。
+ */
+export function SessionsPanel({ nodeId, onNavigate, onSearch }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void }) {
   const { t } = useTranslation()
   const nodes = useNodes((s) => s.byId)
   const order = useNodes((s) => s.order)
@@ -123,7 +145,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
   const { selected } = useNodeFilter()
   const newProject = useNewProjectAction(nodeId, selected, onNavigate)
   const paramOf = (id: string): string => shortNodeId(id, order)
-  // 勾了多个节点时，项目行和置顶行要标出各自属于哪个节点
+  // 勾了多个节点时，项目行和 Recent 行要标出各自属于哪个节点
   const nodeLabel = (id: string): string | undefined => (selected.length > 1 ? nodes[id]?.name : undefined)
 
   const grouped = useMemo(
@@ -135,21 +157,11 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
     [list, selected, nodes],
   )
 
-  const waiting = useWaitingSessions(selected)
-  const followUps = useFollowUpSessions(selected)
-  const lang = useTranslation().i18n.language
   const showRecent = usePrefs((s) => s.sidebarRecent)
   const recent = useRecentSessions(selected, showRecent)
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-bg-subtle" data-testid="sidebar">
-      <div className="flex items-center gap-2 px-3 pb-2 pt-3">
-        <Link to="/" onClick={onNavigate} className="mr-auto rounded-md px-1 py-1">
-          <Logo />
-        </Link>
-        {pin ? <PinButton pinned={pin.pinned} onToggle={pin.onToggle} /> : null}
-      </div>
-
+    <>
       <div className="flex items-stretch gap-2 px-3 pb-2">
         <div className="min-w-0 flex-1">
           <NodeSwitcher nodeId={nodeId} onNavigate={onNavigate} />
@@ -169,22 +181,6 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
       <nav className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label={t('sidebar.sessions')}>
         {selected.length > 0 ? (
           <>
-            {waiting.length > 0 ? (
-              <div className="mb-2" data-testid="sidebar-waiting">
-                <p className="px-2 py-1 text-xs font-semibold tracking-wide text-warning uppercase">{t('sidebar.waiting')}</p>
-                {waiting.map((s) => (
-                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
-                ))}
-              </div>
-            ) : null}
-            {followUps.length > 0 ? (
-              <div className="mb-2" data-testid="sidebar-follow-up">
-                <p className="px-2 py-1 text-xs font-semibold tracking-wide text-info uppercase">{t('sidebar.followUp')}</p>
-                {followUps.map((s) => (
-                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} project={s.project ?? undefined} since={formatRelative(s.updated_at_ms, lang)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
-                ))}
-              </div>
-            ) : null}
             {recent.length > 0 ? (
               <div className="mb-2" data-testid="sidebar-recent">
                 <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.recent')}</p>
@@ -234,23 +230,21 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
           <p className="px-2 py-6 text-center text-sm text-fg-subtle">{t('sidebar.noNode')}</p>
         )}
       </nav>
-
-      <AccountFooter onNavigate={onNavigate} />
-    </div>
+    </>
   )
 }
 
 /**
- * 宽屏左栏没钉住时留在左边的窄条（像 VS Code 的活动栏）：Logo、搜索、新建项目、待审批个数，底部是钉住按钮。
- * 悬停 / 点空白处浮出整个左栏的事件由调用方挂上（`useSidebarPeek` 的 `railProps`）；点待审批个数也浮出，置顶的就是它们。
+ * 宽屏左栏没钉住时留在左边的窄条（像 VS Code 的活动栏）：Logo、搜索、新建项目、「待处理」（带「现在」的个数），底部是钉住按钮。
+ * 悬停 / 点空白处浮出整个左栏的事件由调用方挂上（`useSidebarPeek` 的 `railProps`）。
  */
-export function SidebarRail({ nodeId, onSearch, onPeek, onPin, ...rest }: { nodeId: string | undefined; onSearch: () => void; onPeek: () => void; onPin: () => void } & Omit<HTMLAttributes<HTMLDivElement>, 'children'>) {
+export function SidebarRail({ nodeId, onSearch, onPin, ...rest }: { nodeId: string | undefined; onSearch: () => void; onPin: () => void } & Omit<HTMLAttributes<HTMLDivElement>, 'children'>) {
   const { t } = useTranslation()
   const hasNodes = useNodes((s) => s.order.length > 0)
   const { selected } = useNodeFilter()
   const newProject = useNewProjectAction(nodeId, selected)
-  const waiting = useWaitingSessions(selected)
-  const followUps = useFollowUpSessions(selected)
+  const count = useInboxNowCount()
+  const here = useRouterState({ select: (s) => s.location.pathname })
   const icon = 'rounded-md p-2 text-fg-subtle hover:bg-bg-hover hover:text-fg'
   return (
     <div {...rest} className="relative z-10 flex w-12 shrink-0 flex-col items-center gap-1 border-r border-border bg-bg-subtle pt-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]" data-testid="sidebar-rail">
@@ -267,15 +261,22 @@ export function SidebarRail({ nodeId, onSearch, onPeek, onPin, ...rest }: { node
           <FolderPlus className="size-4" />
         </button>
       ) : null}
-      {waiting.length > 0 ? (
-        <button type="button" aria-label={t('sidebar.waitingCount', { count: waiting.length })} title={t('sidebar.waitingCount', { count: waiting.length })} className="mt-1 rounded-full" onClick={onPeek} data-testid="sidebar-rail-waiting">
-          <Chip tone="warning">{waiting.length}</Chip>
-        </button>
-      ) : null}
-      {followUps.length > 0 ? (
-        <button type="button" aria-label={t('sidebar.followUpCount', { count: followUps.length })} title={t('sidebar.followUpCount', { count: followUps.length })} className="mt-1 rounded-full" onClick={onPeek} data-testid="sidebar-rail-follow-up">
-          <Chip tone="info">{followUps.length}</Chip>
-        </button>
+      {hasNodes ? (
+        <Link
+          to="/inbox"
+          aria-label={count > 0 ? t('inbox.navLabel', { count }) : t('inbox.title')}
+          aria-current={here === '/inbox' ? 'page' : undefined}
+          title={t('inbox.title')}
+          className={cn('relative', icon, here === '/inbox' && 'bg-accent-subtle')}
+          data-testid="sidebar-rail-inbox"
+        >
+          <Inbox className="size-4" aria-hidden />
+          {count > 0 ? (
+            <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-warning px-1 text-center text-[0.625rem] leading-4 font-semibold text-accent-fg" data-testid="sidebar-rail-inbox-count" aria-hidden>
+              {count > 99 ? '99+' : count}
+            </span>
+          ) : null}
+        </Link>
       ) : null}
       <PinButton pinned={false} onToggle={onPin} className="mt-auto p-2" />
     </div>
@@ -332,11 +333,11 @@ function ProjectBranch({ nodeParam, nodeName, group, activeNode, activeSession, 
 
 /**
  * `project`：不在项目树里的行（Recent）带上所属项目，不然看不出这个会话是哪个项目的。
- * `since`：「待处理」组里写会话停下来多久了。`unread`：未读小红点。`followUp`：标了「待处理」（空心 = 还在跑，实心 = 在等你）。
+ * `unread`：未读小红点。`followUp`：标了「待处理」（空心 = 还在跑，实心 = 在等你）。
  */
-function SessionRow({ nodeParam, nodeName, project, since, id, title, status, pending, branch, active, unread, followUp, onNavigate }: { nodeParam: string; nodeName?: string; project?: string; since?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; unread?: boolean; followUp?: 'armed' | 'ready'; onNavigate?: () => void }) {
+function SessionRow({ nodeParam, nodeName, project, id, title, status, pending, branch, active, unread, followUp, onNavigate }: { nodeParam: string; nodeName?: string; project?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; unread?: boolean; followUp?: 'armed' | 'ready'; onNavigate?: () => void }) {
   const { t } = useTranslation()
-  const meta = [project, nodeName, since].filter(Boolean).join(' · ')
+  const meta = [project, nodeName].filter(Boolean).join(' · ')
   return (
     <Link
       // 分支名放在悬停提示里（左栏窄，不占位置）
@@ -375,6 +376,8 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
     devices.dataUpdatedAt ?? 0,
     order.map((id) => ({ id, pairedAt: nodes[id]?.pairedAt ?? Number.POSITIVE_INFINITY })),
   )
+  // 没勾选的节点上有等你的事：按钮上一个小点（带文字说明，不只靠颜色）
+  const outside = useInboxOutsideCount()
   const only = selected.length === 1 ? nodes[selected[0]!] : undefined
   const label = only ? only.name : selected.length === order.length && selected.length > 0 ? t('sidebar.allNodes') : selected.length > 0 ? t('sidebar.nodesSelected', { count: selected.length, total: order.length }) : t('sidebar.chooseNode')
   return (
@@ -384,6 +387,7 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
           <Server className="size-4 shrink-0 text-fg-subtle" />
           <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
           {only ? <Dot tone={connectionTone(only.conn)} /> : null}
+          {outside > 0 ? <span role="img" aria-label={t('sidebar.otherNodesWaiting', { count: outside })} title={t('sidebar.otherNodesWaiting', { count: outside })} className="size-2.5 shrink-0 rounded-full bg-warning ring-2 ring-bg" data-testid="node-filter-dot" /> : null}
           <ChevronDown className="size-4 shrink-0 text-fg-subtle" />
         </button>
       </MenuTrigger>
@@ -441,6 +445,20 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
         <MenuSeparator />
         {nodeId ? (
           <MenuItem
+            icon={<Home className="size-4" />}
+            testId="node-home"
+            // 节点首页（项目、临时会话、最近会话）：首页换成「待处理」之后从这里进
+            hint={order.length > 1 ? nodes[nodeId]?.name : undefined}
+            onSelect={() => {
+              onNavigate?.()
+              void navigate({ to: '/n/$node', params: { node: shortNodeId(nodeId, order) } })
+            }}
+          >
+            {t('sidebar.nodeHome')}
+          </MenuItem>
+        ) : null}
+        {nodeId ? (
+          <MenuItem
             icon={<Settings className="size-4" />}
             // 设置属于某一个节点：勾了几个节点时写明是哪个（页面当前所在的那个）
             hint={order.length > 1 ? nodes[nodeId]?.name : undefined}
@@ -467,7 +485,7 @@ function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNa
   )
 }
 
-function AccountFooter({ onNavigate }: { onNavigate?: () => void }) {
+export function AccountFooter({ onNavigate }: { onNavigate?: () => void }) {
   const { t } = useTranslation()
   const me = useMe()
   const navigate = useNavigate()

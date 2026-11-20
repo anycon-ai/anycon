@@ -1,25 +1,26 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
-import { respondPermission } from '@/features/session/actions'
 import { pendingPermissions } from '@/features/session/reducer'
-import { handleApproveShortcut, isTypingTarget } from '@/features/session/shortcuts'
-import { describeError } from '@/lib/errors'
+import { answerFromShortcut } from '@/features/session/shortcutRespond'
+import { handleApproveShortcut, isRequestCardVisible, isTypingTarget, requestCardElement } from '@/features/session/shortcuts'
 import { shortNodeId } from '@/lib/ids'
 import { useCurrentNode } from '@/lib/nav'
+import { navigateTo } from '@/lib/navigate'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
-import { toast } from '@/stores/ui'
+import { toast, useUi } from '@/stores/ui'
+import { overlayOpen } from '@/features/inbox/useInboxKeys'
 
-function requestCard(requestId: string): Element | null {
-  return document.querySelector(`[data-request="${CSS.escape(requestId)}"]`)
-}
+/** `G` 之后等多久还认第二个键（`G` 然后 `I` / `S`）。 */
+export const GO_TIMEOUT_MS = 1500
 
 /**
  * 全局快捷键（spec/web.md § 9）：
- * ⌘. 开合右栏 · ⌘B 开合左栏 · ⌘N 当前项目新建会话 · [ / ] 上 / 下一个会话 · ⌘⇧A / ⌘⇧D 允许 / 拒绝最近一条待审批。
- * ⌘K（命令面板）和 Esc（停止）在各自的组件里。
+ * ⌘. 开合右栏 · ⌘B 开合左栏 · ⌘N 当前项目新建会话 · [ / ] 上 / 下一个会话 · ⌘⇧A / ⌘⇧D 允许 / 拒绝最近一条待审批 ·
+ * `G` 然后 `I` / `S` 去「待处理」/「会话」（单字母键在输入框里、有对话框或菜单开着时都不生效）。
+ * ⌘K（命令面板）和 Esc（停止）在各自的组件里；「待处理」页自己的 J / K / Enter / ⌘⇧A / ⌘⇧D 在 `features/inbox/useInboxKeys.ts`。
  */
 export function useShortcuts(): void {
   const { t } = useTranslation()
@@ -27,11 +28,40 @@ export function useShortcuts(): void {
   const { nodeId } = useCurrentNode()
   const nodeOrder = useNodes((x) => x.order)
   const params = useParams({ strict: false }) as { session?: string; project?: string }
+  // 按过 `G` 的时刻（毫秒）；0 = 没有在等第二个键
+  const goAt = useRef(0)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       const mod = e.metaKey || e.ctrlKey
       const key = e.key.toLowerCase()
+
+      // `G` 然后 `I` / `S`：先按 G，GO_TIMEOUT_MS 内再按 I（待处理）或 S（会话，回到上次的会话）；别的键取消
+      const waiting = goAt.current !== 0 && Date.now() - goAt.current < GO_TIMEOUT_MS
+      if (e.key.length === 1 && !['Shift', 'Meta', 'Control', 'Alt'].includes(e.key)) goAt.current = 0
+      if (!mod && !e.altKey && !e.shiftKey && !e.repeat && !isTypingTarget(e.target) && !overlayOpen()) {
+        if (key === 'g') {
+          goAt.current = Date.now()
+          return
+        }
+        if (waiting && key === 'i') {
+          e.preventDefault()
+          void navigate({ to: '/inbox' })
+          return
+        }
+        if (waiting && key === 's') {
+          e.preventDefault()
+          const last = useUi.getState().lastSessionsPath
+          if (last) navigateTo(last)
+          else {
+            const nodes = useNodes.getState()
+            const node = usePrefs.getState().lastNode
+            const target = node && nodes.byId[node] ? node : nodes.order[0]
+            if (target) navigateTo(`/n/${shortNodeId(target, nodes.order)}`)
+          }
+          return
+        }
+      }
       const st = useSessions.getState()
       const order = nodeId ? Object.values(st.list).filter((s) => s.node_id === nodeId && !s.archived).sort((a, b) => b.updated_at_ms - a.updated_at_ms) : []
 
@@ -62,21 +92,10 @@ export function useShortcuts(): void {
           // handleApproveShortcut 自己忽略 e.repeat
           handleApproveShortcut(e, {
             pending: pendingPermissions(open.view),
-            respond: (p) =>
-              respondPermission(nodeId, p).then(
-                (outcome) => {
-                  // not_found：目录变了（请求已被拒绝、本轮已中止）或请求已不存在——说明一下，不是失败，也不重试
-                  if (outcome === 'denied_folder_changed') toast.info(t('permission.deniedFolderChanged'))
-                  else if (outcome === 'request_gone') toast.info(t('permission.requestGone'))
-                },
-                (err: unknown) => toast.error(describeError(err, t)),
-              ),
-            isVisible: (id) => {
-              const r = requestCard(id)?.getBoundingClientRect()
-              return !!r && r.bottom > 0 && r.top < window.innerHeight
-            },
+            respond: (p) => answerFromShortcut(nodeId, p, t),
+            isVisible: isRequestCardVisible,
             reveal: (id) => {
-              requestCard(id)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+              requestCardElement(id)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
               toast.info(t('shortcut.reviewFirst'))
             },
           })

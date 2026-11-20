@@ -1,6 +1,7 @@
 // IndexedDB（idb）。schema 见 spec/web.md § 6.2。按 origin 隔离，这是 ADR-23 接受的代价。
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { AgentInfo, AttachmentRef, NodeInfo, Project, SessionEvent, SessionSummary } from '@/protocol'
+import type { AgentInfo, AttachmentRef, NodeInfo, Project, SessionEvent, SessionSummary, Todo } from '@/protocol'
+import type { OutboxRecord } from '@/features/todos/types'
 import { bytesEqual } from '@/lib/bytes'
 
 export interface IdentityRecord {
@@ -92,6 +93,20 @@ export interface BlobRecord {
   last_used_ms: number
 }
 
+/** 清单的本地缓存：daemon 最近一次给的那一份（`Todo` 原样），不含还没同步的本地改动（那些在 `todo_outbox`）。明文，和会话缓存同样的暴露面。 */
+export interface TodoRecord {
+  /** `${node_id}:${todo.id}` */
+  key: string
+  node_id: string
+  todo: Todo
+}
+
+/** 每个节点上一次同步清单的时间（界面上「缓存于 …」）。 */
+export interface TodoMetaRecord {
+  node_id: string
+  synced_at: number
+}
+
 interface AnyconDB extends DBSchema {
   keys: { key: string; value: IdentityRecord }
   nodes: { key: string; value: NodeRecord }
@@ -99,10 +114,14 @@ interface AnyconDB extends DBSchema {
   events: { key: [string, number]; value: EventRecord }
   drafts: { key: string; value: DraftRecord }
   blobs: { key: string; value: BlobRecord }
+  todos: { key: string; value: TodoRecord; indexes: { by_node: string } }
+  todo_meta: { key: string; value: TodoMetaRecord }
+  todo_outbox: { key: number; value: OutboxRecord; indexes: { by_node: string } }
 }
 
 export const DB_NAME = 'anycon'
-export const DB_VERSION = 1
+/** 2：清单（`todos` / `todo_meta` / `todo_outbox`）。升级只新增仓，不动已有的。 */
+export const DB_VERSION = 2
 
 let dbPromise: Promise<IDBPDatabase<AnyconDB>> | null = null
 
@@ -136,14 +155,23 @@ export function setBlockedHandler(fn: (() => void) | null): void {
 export function getDb(): Promise<IDBPDatabase<AnyconDB>> {
   if (disabled) return Promise.reject(new DbDisabledError())
   dbPromise ??= openDB<AnyconDB>(DB_NAME, DB_VERSION, {
-    upgrade(db) {
-      db.createObjectStore('keys', { keyPath: 'id' })
-      db.createObjectStore('nodes', { keyPath: 'node_id' })
-      const sessions = db.createObjectStore('sessions', { keyPath: 'session_id' })
-      sessions.createIndex('by_node', 'node_id')
-      db.createObjectStore('events', { keyPath: ['session_id', 'seq'] })
-      db.createObjectStore('drafts', { keyPath: 'session_id' })
-      db.createObjectStore('blobs', { keyPath: 'blob_id' })
+    upgrade(db, oldVersion) {
+      if (oldVersion < 1) {
+        db.createObjectStore('keys', { keyPath: 'id' })
+        db.createObjectStore('nodes', { keyPath: 'node_id' })
+        const sessions = db.createObjectStore('sessions', { keyPath: 'session_id' })
+        sessions.createIndex('by_node', 'node_id')
+        db.createObjectStore('events', { keyPath: ['session_id', 'seq'] })
+        db.createObjectStore('drafts', { keyPath: 'session_id' })
+        db.createObjectStore('blobs', { keyPath: 'blob_id' })
+      }
+      if (oldVersion < 2) {
+        const todos = db.createObjectStore('todos', { keyPath: 'key' })
+        todos.createIndex('by_node', 'node_id')
+        db.createObjectStore('todo_meta', { keyPath: 'node_id' })
+        const outbox = db.createObjectStore('todo_outbox', { keyPath: 'seq', autoIncrement: true })
+        outbox.createIndex('by_node', 'node_id')
+      }
     },
     terminated() {
       dbPromise = null
@@ -178,8 +206,11 @@ export async function resetDb(): Promise<void> {
 /** 清空全部本地数据（换账号登录时）。 */
 export async function wipeAll(): Promise<void> {
   const db = await getDb()
-  const tx = db.transaction(['keys', 'nodes', 'sessions', 'events', 'drafts', 'blobs'], 'readwrite')
+  const tx = db.transaction(['keys', 'nodes', 'sessions', 'events', 'drafts', 'blobs', 'todos', 'todo_meta', 'todo_outbox'], 'readwrite')
   await Promise.all([
+    tx.objectStore('todos').clear(),
+    tx.objectStore('todo_meta').clear(),
+    tx.objectStore('todo_outbox').clear(),
     tx.objectStore('keys').clear(),
     tx.objectStore('nodes').clear(),
     tx.objectStore('sessions').clear(),
@@ -259,8 +290,12 @@ export async function putNode(rec: NodeRecord): Promise<void> {
 export async function deleteNode(nodeId: string): Promise<void> {
   const db = await getDb()
   const sessions = await db.getAllFromIndex('sessions', 'by_node', nodeId)
-  const tx = db.transaction(['nodes', 'sessions', 'events', 'drafts'], 'readwrite')
+  const tx = db.transaction(['nodes', 'sessions', 'events', 'drafts', 'todos', 'todo_meta', 'todo_outbox'], 'readwrite')
   await tx.objectStore('nodes').delete(nodeId)
+  // 这台节点的清单缓存和还没同步的改动一起删（节点被忘记 / 取消配对之后它们没有地方可发了）
+  await tx.objectStore('todo_meta').delete(nodeId)
+  for (const k of await tx.objectStore('todos').index('by_node').getAllKeys(nodeId)) await tx.objectStore('todos').delete(k)
+  for (const k of await tx.objectStore('todo_outbox').index('by_node').getAllKeys(nodeId)) await tx.objectStore('todo_outbox').delete(k)
   for (const s of sessions) {
     await tx.objectStore('sessions').delete(s.session_id)
     await tx.objectStore('events').delete(IDBKeyRange.bound([s.session_id, 0], [s.session_id, Number.MAX_SAFE_INTEGER]))
@@ -371,4 +406,68 @@ export async function scanBlobRecords(): Promise<BlobScan> {
   }
   await tx.done
   return out
+}
+
+// ---- todos（清单，docs/spec/daemon.md § 21） ----
+
+export async function listTodoRecords(nodeId: string): Promise<{ todos: Todo[]; synced_at?: number }> {
+  const db = await getDb()
+  const [recs, meta] = await Promise.all([db.getAllFromIndex('todos', 'by_node', nodeId), db.get('todo_meta', nodeId)])
+  return { todos: recs.map((r) => r.todo), ...(meta ? { synced_at: meta.synced_at } : {}) }
+}
+
+/** 写入 / 删除一批缓存的项；`syncedAt` 给了就同时记下同步时间。一个事务。 */
+export async function applyTodoCache(nodeId: string, change: { put?: readonly Todo[]; remove?: readonly string[]; syncedAt?: number }): Promise<void> {
+  const db = await getDb()
+  const tx = db.transaction(['todos', 'todo_meta'], 'readwrite')
+  const ops: Promise<unknown>[] = [tx.done]
+  for (const t of change.put ?? []) ops.push(tx.objectStore('todos').put({ key: `${nodeId}:${t.id}`, node_id: nodeId, todo: t }))
+  for (const id of change.remove ?? []) ops.push(tx.objectStore('todos').delete(`${nodeId}:${id}`))
+  if (change.syncedAt !== undefined) ops.push(tx.objectStore('todo_meta').put({ node_id: nodeId, synced_at: change.syncedAt }))
+  await Promise.all(ops)
+}
+
+export async function listOutbox(nodeId?: string): Promise<OutboxRecord[]> {
+  const db = await getDb()
+  const all = nodeId ? await db.getAllFromIndex('todo_outbox', 'by_node', nodeId) : await db.getAll('todo_outbox')
+  return all.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+}
+
+export async function putOutbox(rec: OutboxRecord): Promise<void> {
+  await (await getDb()).put('todo_outbox', rec)
+}
+
+export async function deleteOutbox(seqs: readonly number[]): Promise<void> {
+  if (seqs.length === 0) return
+  const tx = (await getDb()).transaction('todo_outbox', 'readwrite')
+  await Promise.all([...seqs.map((q) => tx.store.delete(q)), tx.done])
+}
+
+/**
+ * 读—改—写这个节点上同一项的待发改动，在一个事务里（两个标签页同时入队也不会各自看到旧的）：
+ * `plan` 拿到这一项现有的改动（按顺序），返回要删的、要写的（没有 `seq` 的是新增）。
+ * 返回事务之后这一项的全部改动。
+ */
+export async function mutateOutbox(nodeId: string, id: string, plan: (existing: OutboxRecord[]) => { remove?: number[]; put?: OutboxRecord[] }): Promise<OutboxRecord[]> {
+  const db = await getDb()
+  const tx = db.transaction('todo_outbox', 'readwrite')
+  const existing = (await tx.store.index('by_node').getAll(nodeId)).filter((r) => r.id === id).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+  const { remove = [], put = [] } = plan(existing)
+  for (const q of remove) await tx.store.delete(q)
+  for (const r of put) await tx.store.put(r)
+  const after = (await tx.store.index('by_node').getAll(nodeId)).filter((r) => r.id === id).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+  await tx.done
+  return after
+}
+
+/** 这台节点上的待发改动和缓存一起清掉（节点被忘记）。返回丢掉的待发改动数。 */
+export async function dropNodeTodos(nodeId: string): Promise<number> {
+  const db = await getDb()
+  const tx = db.transaction(['todos', 'todo_meta', 'todo_outbox'], 'readwrite')
+  const pending = await tx.objectStore('todo_outbox').index('by_node').getAllKeys(nodeId)
+  for (const k of pending) await tx.objectStore('todo_outbox').delete(k)
+  for (const k of await tx.objectStore('todos').index('by_node').getAllKeys(nodeId)) await tx.objectStore('todos').delete(k)
+  await tx.objectStore('todo_meta').delete(nodeId)
+  await tx.done
+  return pending.length
 }

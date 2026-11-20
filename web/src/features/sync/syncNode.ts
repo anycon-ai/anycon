@@ -17,6 +17,7 @@ import { describeError } from '@/lib/errors'
 import { timed } from '@/lib/timing'
 import i18n from '@/i18n'
 import { flushUnsent, syncOpenSession } from '@/features/session/actions'
+import { syncTodos } from '@/features/todos/service'
 import { planSessionSync } from './plan'
 
 /** 协议版本：相邻一个 minor 兼容（plan/protocol.md § 9）。 */
@@ -81,6 +82,8 @@ export async function syncNode(nodeId: string): Promise<void> {
       step('node.devices', () => rpc().request<NodeDevicesResult>(nodeId, 'node.devices', {})).then((devices) => {
         if (devices) useNodes.getState().setDevices(nodeId, devices.devices)
       }),
+      // 清单（只有支持的节点）：先重放离线期间的改动，再翻页（spec/web.md § 4.12）
+      info.capabilities.todo ? step('todo.sync', () => syncTodos(nodeId)) : undefined,
       // 还在等批准的接入请求（打开页面 / 重连后补齐；之后靠 node.enroll_requested / enroll_resolved 增量）
       step('node.enroll_list', () => rpc().request<NodeEnrollListResult>(nodeId, 'node.enroll_list', {})).then((enrolls) => {
         if (enrolls) useEnroll.getState().replaceNode(nodeId, enrolls.enrolls.map(parseEnrollInfo).filter((i) => i !== null))

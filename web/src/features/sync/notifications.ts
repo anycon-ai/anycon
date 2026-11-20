@@ -11,6 +11,7 @@ import { useNodes } from '@/stores/nodes'
 import { useSessions, type SessionItem } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import i18n from '@/i18n'
+import { handleTodoChanged } from '@/features/todos/service'
 import { inboxUrl } from './pushText'
 import { handleSecurityEvent } from './securityEvent'
 
@@ -71,6 +72,9 @@ export function handleNotification(nodeId: string, method: string, params: unkno
       }
       return
     }
+    case 'todo.changed':
+      handleTodoChanged(nodeId, params)
+      return
     case 'node.enroll_requested': {
       // 有设备请求接入（ADR-36）：存进 store，StatusBanner 的横幅（§ 3.4）据此出现，点「查看」打开批准对话框
       const info = parseEnrollInfo(params)

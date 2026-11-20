@@ -47,6 +47,8 @@ export interface PrefsState {
   /** 左栏顶部是否列出进行中的会话（Recent）；默认开，外观设置里可以关。 */
   sidebarRecent: boolean
   lastNode: string | null
+  /** 「记一项」上次记到哪个节点（多个节点支持清单时的缺省，spec/web.md § 14.5）。 */
+  lastTodoNode: string | null
   notifyBannerDismissed: boolean
   /**
    * 已经看过（或不需要看）「首页换成待处理」的说明（spec/web.md § 14.4）。第一次启动时 localStorage 里没有任何偏好的是新用户，
@@ -116,6 +118,7 @@ export const usePrefs = create<PrefsState>()(
       sidebarNodes: null,
       sidebarRecent: true,
       lastNode: null,
+      lastTodoNode: null,
       notifyBannerDismissed: false,
       homeNoticeSeen: !hadStoredPrefs(),
       lastUsed: {},
@@ -157,6 +160,7 @@ export const usePrefs = create<PrefsState>()(
         sidebarNodes: s.sidebarNodes,
         sidebarRecent: s.sidebarRecent,
         lastNode: s.lastNode,
+        lastTodoNode: s.lastTodoNode,
         notifyBannerDismissed: s.notifyBannerDismissed,
         homeNoticeSeen: s.homeNoticeSeen,
         lastUsed: s.lastUsed,

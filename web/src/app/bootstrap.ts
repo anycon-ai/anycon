@@ -1,6 +1,7 @@
 // 登录后启动传输层，并把它的回调接到各个 store / 同步逻辑上。
 import * as db from '@/db'
 import { inboxNowCountFromStores, subscribeInbox } from '@/features/inbox/model'
+import { hydrateTodos } from '@/features/todos/service'
 import { handleNotification } from '@/features/sync/notifications'
 import { hydrateNodeSessions, syncNode } from '@/features/sync/syncNode'
 import { showSystemNotification } from '@/features/sync/systemNotify'
@@ -65,6 +66,7 @@ export function startTransport(accountId: string): Promise<void> {
     nodesLoaded: (nodes) => {
       useNodes.getState().hydrate(nodes)
       for (const n of nodes) void hydrateNodeSessions(n.node_id)
+      void hydrateTodos(nodes.map((n) => n.node_id))
     },
     nodeAdded: (rec) => useNodes.getState().add(rec),
     nodeReady: (id) => void syncNode(id),

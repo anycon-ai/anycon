@@ -4,6 +4,8 @@ import * as db from '@/db'
 import { FakeRpc, rpcError } from '@/test/fakeRpc'
 import { installFakePush, uninstallFakePush } from '@/test/fakePush'
 import { writeSwLanguage } from '@/sw/directory'
+import { SHARE_DB, storeShared, takeShared } from '@/sw/shareStore'
+import { todoItem } from '@/test/factories'
 import { useDrafts } from '@/stores/drafts'
 import { useNodes } from '@/stores/nodes'
 import { setRpc } from '@/transport/instance'
@@ -45,6 +47,21 @@ describe('wipeLocalData', () => {
     expect(await db.getIdentity()).toBeUndefined()
     expect(await db.listNodes()).toEqual([])
     expect(await db.listDrafts()).toEqual([])
+  })
+
+  it('also deletes the cached to-dos, the not-yet-sent to-do operations and a share that was never taken (plaintext titles must not stay on a removed device)', async () => {
+    await db.applyTodoCache('n1', { put: [todoItem({ id: 't1', title: 'secret title' })], syncedAt: 1 })
+    await db.putOutbox({ node_id: 'n1', id: 't2', op: { kind: 'add', params: { title: 'pending secret', body: '' } }, state: 'pending', created_at: 1 })
+    await storeShared({ title: 'shared secret', text: '', url: '', at: Date.now() })
+    expect((await db.listTodoRecords('n1')).todos).toHaveLength(1)
+    expect(await db.listOutbox('n1')).toHaveLength(1)
+
+    await wipeLocalData()
+
+    expect((await db.listTodoRecords('n1')).todos).toEqual([])
+    expect(await db.listOutbox('n1')).toEqual([])
+    expect((await indexedDB.databases()).map((d) => d.name)).not.toContain(SHARE_DB)
+    expect(await takeShared()).toBeNull()
   })
 
   it('also cancels this browser’s push subscription and forgets the notification language (a shared computer must not keep notifying)', async () => {

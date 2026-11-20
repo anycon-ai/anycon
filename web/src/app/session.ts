@@ -4,6 +4,8 @@ import * as db from '@/db'
 import { revokeDeviceOnNode } from '@/features/devices/revoke'
 import { dropLocalPushState, dropPushOnSignOut } from '@/features/push/cleanup'
 import { forgetSystemNotifyPrefs } from '@/features/push/prefsCache'
+import { resetTodosMemory } from '@/features/todos/service'
+import { deleteShareDb } from '@/sw/shareStore'
 import { getClient, rpc } from '@/transport/instance'
 import { resetDrafts } from '@/stores/drafts'
 import { useNodes } from '@/stores/nodes'
@@ -29,6 +31,7 @@ export async function resetClientState(): Promise<void> {
   forgetSystemNotifyPrefs() // 偏好是账号的：换个账号登录不能沿用上一个账号缓存的开关
   useNodes.setState({ byId: {}, order: [], loaded: false })
   useSessions.setState({ list: {}, pending: {}, open: {} })
+  resetTodosMemory()
 }
 
 /** 清掉这个浏览器里的一切：停传输层、删 IndexedDB、清 localStorage / sessionStorage。 */
@@ -38,6 +41,8 @@ export async function wipeLocalData(): Promise<void> {
   resetDrafts()
   await dropLocalPushState() // 浏览器里的推送订阅也退掉（hub 吊销设备时已经删了它那边的）
   await db.resetDb()
+  // 分享暂存的库（service worker 写的、可能还没被取走的那一次分享）也一起删
+  await deleteShareDb().catch((e: unknown) => console.warn('anycon: could not delete the share stash', e))
   for (const store of [localStorage, sessionStorage]) {
     try {
       store.clear()

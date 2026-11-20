@@ -8,6 +8,7 @@ import { shortNodeId } from '@/lib/ids'
 import { useCurrentNode } from '@/lib/nav'
 import { navigateTo } from '@/lib/navigate'
 import { useCapture } from '@/features/todos/capture'
+import { useTodoAvailable } from '@/features/todos/store'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
@@ -31,6 +32,9 @@ export function useShortcuts(): void {
   const params = useParams({ strict: false }) as { session?: string; project?: string }
   // 按过 `G` 的时刻（毫秒）；0 = 没有在等第二个键
   const goAt = useRef(0)
+  // `C`、`G` `T` 只在有节点支持清单时生效（没有入口就没有快捷键）
+  const todoAvailable = useRef(false)
+  todoAvailable.current = useTodoAvailable()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -45,13 +49,13 @@ export function useShortcuts(): void {
           goAt.current = Date.now()
           return
         }
-        if (key === 'c') {
+        if (key === 'c' && todoAvailable.current) {
           // 记一项：任何页面一个键，输入，回车；不离开当前页面（spec/web.md § 14.5）
           e.preventDefault()
           useCapture.getState().openCapture()
           return
         }
-        if (waiting && key === 't') {
+        if (waiting && key === 't' && todoAvailable.current) {
           e.preventDefault()
           void navigate({ to: '/todos' })
           return

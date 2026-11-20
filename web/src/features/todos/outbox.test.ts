@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { Todo } from '@/protocol'
 import { todoItem } from '@/test/factories'
 import { groupOf, overlayItem, overlayOutbox } from './outbox'
-import { useTodos, viewOf } from './store'
+import { viewOf, type useTodos } from './store'
 import type { OutboxRecord } from './types'
 
 const N = 'n1'

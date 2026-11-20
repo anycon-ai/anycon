@@ -275,10 +275,30 @@ function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem>;
               <Markdown text={item.todo.body} />
             </div>
           ) : null}
-          {item.todo.source.session_id ? <p className="text-xs text-fg-subtle">{t('todos.fromSession')}</p> : null}
+          <LaterSource todo={item.todo} />
         </div>
       ) : null}
     </div>
+  )
+}
+
+/** 「稍后」详情里的来源：会话还在就是回到它的链接，不在了就说明（不留一句没法点的话）。 */
+function LaterSource({ todo }: { todo: ViewTodo }) {
+  const { t } = useTranslation()
+  const order = useNodes((s) => s.order)
+  const sessionId = todo.source.session_id
+  const known = useSessions((s) => (sessionId ? !!s.list[sessionId] : false))
+  if (!sessionId) return null
+  return (
+    <p className="text-xs text-fg-muted" data-testid="inbox-later-source">
+      {known ? (
+        <Link to="/n/$node/s/$session" params={{ node: shortNodeId(todo.node_id, order), session: sessionId }} className="inline-flex min-h-8 items-center font-medium text-accent-text hover:underline max-md:min-h-11" data-testid="inbox-later-open-session">
+          {t('todos.fromSession')}
+        </Link>
+      ) : (
+        t('todos.sessionGone')
+      )}
+    </p>
   )
 }
 

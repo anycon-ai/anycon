@@ -12,7 +12,9 @@ import { mockRouter } from '@/test/routerMock'
 import { resetViewport, setViewport } from '@/test/viewport'
 import { setRpc } from '@/transport/instance'
 import { useCapture } from '@/features/todos/capture'
-import { resetTodosMemory, syncTodos } from '@/features/todos/service'
+import { useDrafts } from '@/features/todos/drafts'
+import { handleTodoChanged, resetTodosMemory, syncTodos } from '@/features/todos/service'
+import { useTodos } from '@/features/todos/store'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
@@ -247,5 +249,123 @@ describe('agent text is untrusted', () => {
     expect(text).not.toContain('\u0007')
     expect(text).toContain('<img src=x onerror=alert(1)>')
     expect(row('a').querySelector('img')).toBeNull()
+  })
+})
+
+describe('keyboard safety (U3)', () => {
+  const press = (key: string, init: KeyboardEventInit = {}): void => void fireEvent.keyDown(window, { key, ...init })
+
+  it('E, X and Enter do nothing when no row has the cursor (they used to act on the first row)', async () => {
+    await load({ id: 'a', title: 'first', updated_ms: 30 }, { id: 'b', title: 'second', updated_ms: 20 })
+    press('e')
+    press('x')
+    press('Enter')
+    await flush()
+    expect([...daemon.todos.values()].every((t) => t.state === 'open')).toBe(true)
+    expect(screen.queryByTestId('todos-bulk')).toBeNull()
+    expect(h.navigate).not.toHaveBeenCalled()
+  })
+
+  it('a held key (repeat) is ignored: holding E completes one item, not three', async () => {
+    await load({ id: 'a', title: 'first', updated_ms: 30 }, { id: 'b', title: 'second', updated_ms: 20 }, { id: 'c', title: 'third', updated_ms: 10 })
+    press('j')
+    press('e')
+    press('e', { repeat: true })
+    press('e', { repeat: true })
+    await flush()
+    expect([...daemon.todos.values()].filter((t) => t.state === 'done').map((t) => t.id)).toEqual(['a'])
+  })
+
+  it('after E the cursor moves to the next row, so pressing E again completes the next one', async () => {
+    await load({ id: 'a', title: 'first', updated_ms: 30 }, { id: 'b', title: 'second', updated_ms: 20 }, { id: 'c', title: 'third', updated_ms: 10 })
+    press('j')
+    press('e')
+    await waitFor(() => expect(daemon.todos.get('a')!.state).toBe('done'))
+    await waitFor(() => expect(row('b')).toHaveAttribute('data-selected', 'true'))
+    press('e')
+    await waitFor(() => expect(daemon.todos.get('b')!.state).toBe('done'))
+  })
+
+  it('a cursor whose row has gone from the list is not silently replaced by the first row', async () => {
+    await load({ id: 'a', title: 'first', updated_ms: 30 }, { id: 'b', title: 'second', updated_ms: 20 })
+    press('j')
+    press('j')
+    expect(row('b')).toHaveAttribute('data-selected', 'true')
+    await act(async () => handleTodoChanged(A, { id: 'b', deleted: true }))
+    press('e')
+    press('Enter')
+    await flush()
+    expect(daemon.todos.get('a')!.state).toBe('open')
+    expect(h.navigate).not.toHaveBeenCalled()
+  })
+
+  it('the row with the cursor has a non-colour marker', async () => {
+    await load({ id: 'a', title: 'first' })
+    press('j')
+    expect(within(row('a')).getByTestId('todo-cursor')).toBeInTheDocument()
+  })
+})
+
+describe('the detail from the address (U7)', () => {
+  it('opens from the full node id as well as the short one, and shows a loading state until the cache is read', async () => {
+    daemon.seed(todoItem({ id: 'a', title: 'from url' }))
+    useTodos.setState({ nodes: {} })
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    expect(await screen.findByTestId('todo-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('todo-gone')).toBeNull()
+    await act(async () => {
+      await syncTodos(A)
+    })
+    expect(await screen.findByTestId('todo-title')).toHaveTextContent('from url')
+    expect(screen.queryByTestId('todo-gone')).toBeNull()
+  })
+
+  it('says why there is nothing: unknown node, a node without to-do support, an item that does not exist', async () => {
+    daemon.seed(todoItem({ id: 'a' }))
+    await syncTodos(A)
+    const { rerender } = render(<TodosPage selected={{ node: 'zzzzzzzz', todo: 'a' }} />)
+    expect(await screen.findByTestId('todo-unknown-node')).toBeInTheDocument()
+    rerender(<TodosPage selected={{ node: C, todo: 'a' }} />)
+    expect(await screen.findByTestId('todo-unsupported-node')).toBeInTheDocument()
+    rerender(<TodosPage selected={{ node: A, todo: 'missing' }} />)
+    expect(await screen.findByTestId('todo-gone')).toBeInTheDocument()
+  })
+
+  it('an item on a node that is not ticked in the filter is shown with the “not in your node filter” note and a button to show the node', async () => {
+    useNodes.setState({ byId: { ...useNodes.getState().byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true), conn: 'ready' }) }, order: [A, B, C] })
+    daemon.seed(todoItem({ id: 'a', title: 'on alpha' }))
+    await syncTodos(A)
+    usePrefs.setState({ sidebarNodes: [B] })
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    expect(await screen.findByTestId('todo-outside-note')).toHaveTextContent('alpha')
+    expect(screen.getByTestId('todo-title')).toHaveTextContent('on alpha')
+    await userEvent.click(screen.getByTestId('todo-show-node'))
+    expect(usePrefs.getState().sidebarNodes).toEqual(expect.arrayContaining([A, B]))
+  })
+
+  it('an unreviewed agent item opened by address offers Accept / Dismiss, not the edit controls', async () => {
+    daemon.seed(todoItem({ id: 'a', source: { kind: 'agent' }, unreviewed: true }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    expect(await screen.findByTestId('todo-accept')).toBeInTheDocument()
+    expect(screen.queryByTestId('todo-edit')).toBeNull()
+  })
+})
+
+describe('unsaved edits (U2)', () => {
+  it('a row with a half-written edit says so, and closing the tab asks first', async () => {
+    daemon.seed(todoItem({ id: 'a', title: 'first' }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    await userEvent.click(await screen.findByTestId('todo-edit'))
+    await userEvent.type(screen.getByTestId('todo-edit-title'), ' more')
+    expect(within(row('a')).getByTestId('todo-draft')).toBeInTheDocument()
+    const ev = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+    useDrafts.setState({ drafts: {} })
+    const ev2 = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(ev2)
+    expect(ev2.defaultPrevented).toBe(false)
   })
 })

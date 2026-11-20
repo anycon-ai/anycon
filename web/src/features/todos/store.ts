@@ -101,6 +101,11 @@ export function nodeSupportsTodo(nodeId: string): boolean {
   return useNodes.getState().byId[nodeId]?.info?.capabilities.todo === true
 }
 
+/** 有没有任何已配对的节点支持清单：没有就不提供清单的入口（侧栏、标签栏、「＋」、`C`、命令面板、会话页菜单）。 */
+export function useTodoAvailable(): boolean {
+  return useNodes((s) => s.order.some((id) => s.byId[id]?.info?.capabilities.todo === true))
+}
+
 export function useSupportingNodes(nodeIds: readonly string[]): string[] {
   const byId = useNodes((s) => s.byId)
   return useMemo(() => nodeIds.filter((id) => byId[id]?.info?.capabilities.todo === true), [nodeIds, byId])

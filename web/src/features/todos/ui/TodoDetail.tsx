@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Bot, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -12,9 +12,11 @@ import { Input, Select, Textarea } from '@/ui/Field'
 import { Dialog } from '@/ui/Overlay'
 import { Chip } from '@/ui/Misc'
 import { setTodoState } from '../actions'
+import { changedElsewhere, dirtyFields, draftKey, useDrafts, type EditField, type EditValues } from '../drafts'
 import { deleteTodo, discardOp, retryOp, updateTodo } from '../service'
 import { useTodos } from '../store'
 import { isClosed, UI_STATES, type UpdateFields, type ViewTodo } from '../types'
+import { cleanHintText } from '@/lib/hint'
 import { cleanOneLine, type FieldError } from '../validate'
 import { dueFromInput } from './CaptureForm'
 import { fieldErrorText, outboxErrorText } from './errors'
@@ -32,54 +34,73 @@ export function dueToInput(ms: number | null | undefined): string {
  * 消毒管线，从不当 HTML）、项目、期望时间、状态（打开 / 处理中 / 完成 / 不做了）、删除（二次确认）；agent 记的项有回到来源会话的链接。
  * 这一步没有「让 agent 处理」「交给分身」。
  */
+/** 草稿里的字段值（和 `datetime-local` 的格式）：从一项现在的样子读出来。 */
+export function valuesOf(item: Pick<ViewTodo, 'title' | 'body' | 'project' | 'due_ms'>): EditValues {
+  return { title: item.title, body: item.body, project: item.project ?? '', due: dueToInput(item.due_ms) }
+}
+
 export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online: boolean; onDeleted?: () => void }) {
   const { t, i18n } = useTranslation()
-  const nodeName = useNodes((s) => s.byId[item.node_id]?.name ?? item.node_id.slice(0, 8))
+  const nodeName = useNodes((s) => cleanHintText(s.byId[item.node_id]?.name) || item.node_id.slice(0, 8))
   const order = useNodes((s) => s.order)
   const sessionKnown = useSessions((s) => (item.source.session_id ? !!s.list[item.source.session_id] : false))
   const outbox = useTodos((s) => s.outbox)
   const failedOps = useMemo(() => outbox.filter((r) => r.node_id === item.node_id && r.id === item.id && r.state === 'failed'), [outbox, item.node_id, item.id])
-  const [editing, setEditing] = useState(false)
-  const [title, setTitle] = useState(item.title)
-  const [body, setBody] = useState(item.body)
-  const [project, setProject] = useState(item.project ?? '')
-  const [due, setDue] = useState(dueToInput(item.due_ms))
+  const key = draftKey(item.node_id, item.id)
+  const draft = useDrafts((s) => s.drafts[key])
+  const editing = draft !== undefined
   const [error, setError] = useState<FieldError | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const { title, body, project, due_ms } = item
+  const current = useMemo(() => valuesOf({ title, body, project, due_ms }), [title, body, project, due_ms])
 
-  // 换了一项、或者别处改了它（`todo.changed`）而这里没在编辑：表单跟着
-  useEffect(() => {
-    if (editing) return
-    setTitle(item.title)
-    setBody(item.body)
-    setProject(item.project ?? '')
-    setDue(dueToInput(item.due_ms))
-  }, [item.id, item.title, item.body, item.project, item.due_ms, editing])
+  const dirty = draft ? dirtyFields(draft) : []
+  // 编辑期间别处改了的字段：没改过的字段不会被发出去（保存只发用户改过的），在这里告诉用户；两边都改了的字段让用户选
+  const elsewhere = draft ? changedElsewhere(draft, current) : []
+  const conflicts = elsewhere.filter((f) => dirty.includes(f))
+  const quiet = elsewhere.filter((f) => !dirty.includes(f))
+  const fieldName = (f: EditField): string => t(f === 'title' ? 'todos.fieldTitle' : f === 'body' ? 'todos.fieldBody' : f === 'project' ? 'todos.project' : 'todos.due')
+
+  const setField = (f: EditField, v: string): void => useDrafts.getState().set(key, f, v)
 
   const save = async (): Promise<void> => {
+    if (!draft || saving || conflicts.length > 0) return
+    // 只发用户改过的字段（草稿对开始编辑时那一项的差）；期望时间只有改了输入才发（输入只到分钟，没碰就不能把秒和毫秒抹掉）
     const fields: UpdateFields = {}
-    if (title.trim() !== item.title) fields.title = title
-    if (body !== item.body) fields.body = body
-    const p = project.trim()
-    if (p !== (item.project ?? '')) {
+    if (dirty.includes('title')) fields.title = draft.values.title
+    if (dirty.includes('body')) fields.body = draft.values.body
+    if (dirty.includes('project')) {
+      const p = draft.values.project.trim()
       if (p) fields.project = p
       else fields.clear = ['project']
     }
-    const d = dueFromInput(due)
-    if ((d ?? null) !== (item.due_ms ?? null)) {
+    if (dirty.includes('due')) {
+      const d = dueFromInput(draft.values.due)
       if (d != null) fields.due_ms = d
       else fields.clear = [...(fields.clear ?? []), 'due_ms']
     }
     if (Object.keys(fields).length > 0) {
+      setSaving(true)
       const r = await updateTodo(item.node_id, item.id, fields)
+      setSaving(false)
       if (!r.ok) {
         setError(r.error)
         return
       }
     }
     setError(null)
-    setEditing(false)
+    useDrafts.getState().clear(key)
   }
+
+  const cancel = (): void => {
+    if (dirty.length > 0) setConfirmDiscard(true)
+    else useDrafts.getState().clear(key)
+  }
+
+  // 单击「收下」的 agent 项：没有编辑控件，只有收下 / 丢掉（spec/web.md § 4.11、§ 4.12）
+  const pendingReview = item.unreviewed && item.source.kind === 'agent'
 
   const states = item.state === 'waiting' || item.state === 'review' ? [...UI_STATES, item.state] : UI_STATES
   return (
@@ -104,36 +125,61 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         >
           <label className="block space-y-1 text-sm font-medium">
             {t('todos.fieldTitle')}
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} data-testid="todo-edit-title" />
+            <Input value={draft?.values.title ?? ''} onChange={(e) => setField('title', e.target.value)} data-testid="todo-edit-title" />
           </label>
           <label className="block space-y-1 text-sm font-medium">
             {t('todos.fieldBody')}
-            <Textarea rows={8} value={body} onChange={(e) => setBody(e.target.value)} data-testid="todo-edit-body" />
+            <Textarea rows={8} value={draft?.values.body ?? ''} onChange={(e) => setField('body', e.target.value)} data-testid="todo-edit-body" />
           </label>
           <div className="flex flex-wrap gap-3">
             <label className="space-y-1 text-sm font-medium">
               {t('todos.project')}
-              <Input value={project} onChange={(e) => setProject(e.target.value)} className="w-44" data-testid="todo-edit-project" />
+              <Input value={draft?.values.project ?? ''} onChange={(e) => setField('project', e.target.value)} className="w-44" data-testid="todo-edit-project" />
             </label>
             <label className="space-y-1 text-sm font-medium">
               {t('todos.due')}
-              <Input type="datetime-local" value={due} onChange={(e) => setDue(e.target.value)} className="w-auto" data-testid="todo-edit-due" />
+              <Input type="datetime-local" value={draft?.values.due ?? ''} onChange={(e) => setField('due', e.target.value)} className="w-auto" data-testid="todo-edit-due" />
             </label>
           </div>
+          {quiet.length > 0 ? (
+            <div className="space-y-1 rounded-md border border-warning/40 bg-warning-subtle p-3 text-sm" role="status" data-testid="todo-changed-elsewhere">
+              <p>{t('todos.editedElsewhere', { fields: quiet.map(fieldName).join(', ') })}</p>
+              <Button size="sm" onClick={() => draft && useDrafts.getState().rebase(key, quiet, current, true)} data-testid="todo-show-theirs">
+                {t('todos.showTheirs')}
+              </Button>
+            </div>
+          ) : null}
+          {conflicts.map((f) => (
+            <div key={f} className="space-y-2 rounded-md border border-danger/40 bg-danger-subtle p-3 text-sm" role="alert" data-testid="todo-conflict" data-field={f}>
+              <p className="font-medium">{t('todos.conflict', { field: fieldName(f) })}</p>
+              <p className="text-fg-muted">
+                {t('todos.theirs')}: <span className="whitespace-pre-wrap [overflow-wrap:anywhere]" data-testid="todo-conflict-theirs">{current[f] || t('todos.none')}</span>
+              </p>
+              <div className="flex gap-2">
+                <Button size="sm" onClick={() => useDrafts.getState().rebase(key, [f], current, false)} data-testid="todo-keep-mine">
+                  {t('todos.keepMine')}
+                </Button>
+                <Button size="sm" onClick={() => useDrafts.getState().rebase(key, [f], current, true)} data-testid="todo-use-theirs">
+                  {t('todos.useTheirs')}
+                </Button>
+              </div>
+            </div>
+          ))}
           {error ? (
             <p role="alert" className="text-sm text-danger" data-testid="todo-edit-error">
               {fieldErrorText(t, error)}
             </p>
           ) : null}
           <div className="flex gap-2">
-            <Button type="submit" variant="primary" data-testid="todo-save">
+            <Button type="submit" variant="primary" disabled={saving || conflicts.length > 0} data-testid="todo-save">
               {t('common.save')}
             </Button>
             <Button
               onClick={() => {
-                setEditing(false)
                 setError(null)
+                cancel()
               }}
+              data-testid="todo-cancel-edit"
             >
               {t('common.cancel')}
             </Button>
@@ -145,9 +191,11 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             <h2 className="min-w-0 flex-1 text-lg font-semibold [overflow-wrap:anywhere]" data-testid="todo-title">
               {cleanOneLine(item.title)}
             </h2>
-            <Button size="sm" onClick={() => setEditing(true)} icon={<Pencil className="size-3.5" aria-hidden />} data-testid="todo-edit">
-              {t('todos.edit')}
-            </Button>
+            {pendingReview ? null : (
+              <Button size="sm" onClick={() => useDrafts.getState().start(key, current)} icon={<Pencil className="size-3.5" aria-hidden />} data-testid="todo-edit">
+                {t('todos.edit')}
+              </Button>
+            )}
           </div>
           {item.body ? (
             <div className="rounded-md border border-border p-3" data-testid="todo-body">
@@ -165,6 +213,17 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </>
       )}
 
+      {pendingReview ? (
+        <div className="flex flex-wrap items-center gap-2" data-testid="todo-review">
+          <p className="w-full text-sm text-fg-muted">{t('inbox.laterBody')}</p>
+          <Button variant="primary" disabled={!online} onClick={() => void updateTodo(item.node_id, item.id, { reviewed: true })} data-testid="todo-accept">
+            {t('inbox.accept')}
+          </Button>
+          <Button disabled={!online} onClick={() => void updateTodo(item.node_id, item.id, { state: 'dropped' })} data-testid="todo-dismiss">
+            {t('inbox.dismiss')}
+          </Button>
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm font-medium">
           {t('todos.state')}
@@ -189,6 +248,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           {t('todos.delete')}
         </Button>
       </div>
+      )}
 
       {item.source.kind === 'agent' ? (
         <p className="text-sm text-fg-muted" data-testid="todo-source">
@@ -220,6 +280,22 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </div>
       ))}
 
+      <Dialog open={confirmDiscard} onOpenChange={setConfirmDiscard} title={t('todos.discardEditTitle')} description={t('todos.discardEditBody')} closeLabel={t('common.close')} testId="todo-discard-edit-dialog">
+        <div className="flex justify-end gap-2">
+          <Button onClick={() => setConfirmDiscard(false)}>{t('todos.keepEditing')}</Button>
+          <Button
+            variant="danger"
+            onClick={() => {
+              setConfirmDiscard(false)
+              useDrafts.getState().clear(key)
+            }}
+            data-testid="todo-discard-edit-confirm"
+          >
+            {t('todos.discardEdit')}
+          </Button>
+        </div>
+      </Dialog>
+
       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete} title={t('todos.deleteTitle')} description={t('todos.deleteBody', { title: cleanOneLine(item.title, 80) })} closeLabel={t('common.close')} testId="todo-delete-dialog">
         <div className="flex justify-end gap-2">
           <Button onClick={() => setConfirmDelete(false)}>{t('common.cancel')}</Button>
@@ -227,7 +303,8 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             variant="danger"
             onClick={() => {
               setConfirmDelete(false)
-              void deleteTodo(item.node_id, item.id).then(() => onDeleted?.())
+              useDrafts.getState().clear(key)
+              void deleteTodo(item.node_id, item.id).then((ok) => ok && onDeleted?.())
             }}
             data-testid="todo-delete-confirm"
           >

@@ -3,6 +3,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { NodeInfo } from '@/protocol'
 import { nodeEntry, summary } from '@/test/factories'
 import { FakeRpc, rpcError } from '@/test/fakeRpc'
 import { mockRouter } from '@/test/routerMock'
@@ -13,6 +14,8 @@ import { usePrefs } from '@/stores/prefs'
 import { useSessions } from '@/stores/sessions'
 
 const navigate = vi.hoisted(() => vi.fn())
+const quick = vi.hoisted(() => vi.fn(async () => true))
+vi.mock('@/features/todos/quickAdd', () => ({ quickAdd: quick }))
 const devices = vi.hoisted(() => ({ data: undefined as unknown, dataUpdatedAt: 0 }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn' }))
 vi.mock('@/api/queries', () => ({ useDevices: () => devices }))
@@ -26,7 +29,7 @@ beforeEach(() => {
   devices.data = undefined
   usePrefs.setState({ sidebarNodes: null })
   useNewProject.setState({ request: null })
-  useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE }) }, order: [NODE], loaded: true })
+  useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, info: { capabilities: { todo: true } } as unknown as NodeInfo }) }, order: [NODE], loaded: true })
   useSessions.setState({ list: {}, pending: {}, open: {} })
 })
 
@@ -84,7 +87,7 @@ async function settle(ms = 0): Promise<void> {
 
 function setupTwoNodes(): void {
   useNodes.setState({
-    byId: { [NODE]: nodeEntry({ id: NODE, name: 'laptop' }), [NODE_B]: nodeEntry({ id: NODE_B, name: 'desktop' }) },
+    byId: { [NODE]: nodeEntry({ id: NODE, name: 'laptop', info: { capabilities: { todo: true } } as unknown as NodeInfo }), [NODE_B]: nodeEntry({ id: NODE_B, name: 'desktop' }) },
     order: [NODE, NODE_B],
     loaded: true,
   })
@@ -375,3 +378,62 @@ describe('command palette — add a to-do', () => {
   })
 })
 
+
+describe('command palette — Enter never records a to-do by accident (U1)', () => {
+  let rpc: FakeRpc
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    quick.mockClear()
+    rpc = new FakeRpc()
+    setRpc(rpc)
+    rpc.handlers['session.search'] = () => ({ hits: [] })
+  })
+  afterEach(() => {
+    setRpc(null)
+    vi.useRealTimers()
+  })
+
+  it('a query with no local match: Enter does nothing, and the “Nothing found” text is shown under the to-do row', () => {
+    render(<CommandPalette open onOpenChange={() => {}} />)
+    typeQuery('q') // 一个字符：不触发内容搜索，只看本地
+    expect(document.getElementById(input().getAttribute('aria-activedescendant') ?? 'none')).toBeNull()
+    press('Enter')
+    expect(quick).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(screen.getByText('Nothing found.')).toBeInTheDocument()
+  })
+
+  it('pressing Enter before the debounced content hits arrive does nothing', async () => {
+    const onOpenChange = vi.fn()
+    render(<CommandPalette open onOpenChange={onOpenChange} />)
+    typeQuery('zzzzqqq')
+    press('Enter')
+    await settle(100)
+    press('Enter')
+    expect(quick).not.toHaveBeenCalled()
+    expect(onOpenChange).not.toHaveBeenCalledWith(false)
+  })
+
+  it('⌘Enter records the typed text; plain Enter after ↑ / ↓ onto the to-do row records it too; empty input + ⌘Enter does nothing', () => {
+    render(<CommandPalette open onOpenChange={() => {}} />)
+    press('Enter', { metaKey: true })
+    expect(quick).not.toHaveBeenCalled()
+    typeQuery('zzzzqqq')
+    press('Enter', { metaKey: true })
+    expect(quick).toHaveBeenCalledWith('zzzzqqq')
+    quick.mockClear()
+    typeQuery('zzzzqqq')
+    press('ArrowDown') // 唯一的一行就是「记到清单」
+    press('Enter')
+    expect(quick).toHaveBeenCalledWith('zzzzqqq')
+  })
+
+  it('there is no to-do row when no node supports to-dos', () => {
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE }) }, order: [NODE], loaded: true })
+    render(<CommandPalette open onOpenChange={() => {}} />)
+    typeQuery('zzzzqqq')
+    expect(screen.queryByText(/Add to to-dos/)).toBeNull()
+    press('Enter', { metaKey: true })
+    expect(quick).not.toHaveBeenCalled()
+  })
+})

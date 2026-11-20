@@ -150,17 +150,14 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const outsideNote = outside ? { onShow: () => toggle(outside.nodeId, true) } : undefined
   const detail = sel.ghost ? <GhostDetail item={sel.ghost.item} hasNext={items.length > 0} onNext={sel.next} replacedBy={!!sel.ghost.replacedBy} onShow={() => sel.ghost?.replacedBy && choose(sel.ghost.replacedBy)} /> : shown ? <InboxDetail key={shown.key} item={shown} armed={armed} outside={shown.key === outside?.key ? outsideNote : undefined} /> : null
 
-  // 手机上占位出现在选中的那一条原来的位置：序号是在全部条目里的，换算成所在的段和段内的位置（第一个放得下的段）
+  // 手机上占位出现在选中的那一条原来的位置：序号是在全部条目里的，占位放进它原来所在的那一段（「稍后」的占位不放在「现在」段的末尾）
   const ghostPlace = (() => {
     if (!sel.ghost) return null
+    const section = Math.max(0, SECTIONS.indexOf(sel.ghost.item?.section ?? 'now'))
     let offset = outside ? 1 : 0
-    for (let n = 0; n < SECTIONS.length; n++) {
-      const len = model.sections.find((x) => x.id === SECTIONS[n])?.items.length ?? 0
-      const local = sel.ghost.index - offset
-      if (local >= 0 && local <= len) return { section: n, at: local }
-      offset += len
-    }
-    return { section: SECTIONS.length - 1, at: model.sections.at(-1)?.items.length ?? 0 }
+    for (let n = 0; n < section; n++) offset += model.sections.find((x) => x.id === SECTIONS[n])?.items.length ?? 0
+    const len = model.sections.find((x) => x.id === SECTIONS[section])?.items.length ?? 0
+    return { section, at: Math.min(Math.max(sel.ghost.index - offset, 0), len) }
   })()
 
   const renderRow = (item: InboxItem) => (

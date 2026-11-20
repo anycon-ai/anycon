@@ -7,9 +7,9 @@ import { cn } from '@/ui/cn'
 import { captureFromQuote, useCapture } from '../capture'
 import { nodeSupportsTodo } from '../store'
 
-/** 回到这条消息的链接（`?seq=` 会话页据此定位那条消息，spec/web.md § 4.6）。 */
+/** 回到这条消息的站内路径（相对地址：换了一个 origin / 设备打开同一项也有效；`?seq=` 会话页据此定位那条消息，spec/web.md § 4.6）。 */
 export function messageLink(node: string, session: string, seq: number): string {
-  return `${location.origin}/n/${node}/s/${session}?seq=${seq}`
+  return `/n/${node}/s/${session}?seq=${seq}`
 }
 
 /** 当前地址是不是某个会话页：返回节点短 id、会话 id。不用路由 hook：消息组件在没有路由的测试和预览里也要能渲染。 */
@@ -34,7 +34,7 @@ export function MessageTodoMenu({ text, seq, className }: { text: string; seq: n
   return (
     <Menu>
       <MenuTrigger asChild>
-        <button type="button" aria-label={t('todos.messageActions')} className={cn('rounded-md border border-border bg-surface p-1.5 text-fg-subtle opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100', className)} data-testid="message-menu">
+        <button type="button" aria-label={t('todos.messageActions')} className={cn('rounded-md border border-border bg-surface p-1.5 text-fg-subtle opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:size-11 [@media(pointer:coarse)]:place-items-center', className)} data-testid="message-menu">
           <MoreHorizontal className="size-3.5" aria-hidden />
         </button>
       </MenuTrigger>

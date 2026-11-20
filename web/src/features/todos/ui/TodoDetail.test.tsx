@@ -13,7 +13,8 @@ import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
 import { useUi } from '@/stores/ui'
-import { replayOutbox, resetTodosMemory, syncTodos } from '../service'
+import { handleTodoChanged, replayOutbox, resetTodosMemory, syncTodos } from '../service'
+import { useDrafts } from '../drafts'
 import { useTodoView } from '../store'
 import { TodoDetail } from './TodoDetail'
 import { summary } from '@/test/factories'
@@ -52,6 +53,7 @@ beforeEach(async () => {
   useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', info, conn: 'ready' }) }, order: [A], loaded: true })
   useSessions.setState({ list: {}, pending: {}, open: {} })
   resetTodosMemory()
+  useDrafts.setState({ drafts: {} })
   useUi.setState({ toasts: [] })
 })
 afterEach(() => {
@@ -187,5 +189,120 @@ describe('a rejected operation', () => {
     await flush()
     expect(screen.getByTestId('todo-title')).toHaveTextContent('orig')
     expect(daemon.todos.get('t')!.title).toBe('orig')
+  })
+})
+
+describe('editing against a stale draft (U2, U5)', () => {
+  const live = (over: Parameters<typeof todoItem>[0]) => handleTodoChanged(A, { id: over.id, todo: todoItem(over) })
+  const lastUpdate = () => daemon.log.filter((l) => l.method === 'todo.update').at(-1)?.params
+
+  it('another device changing the body while you edit the title: only the title is sent, the other change survives, and you are told', async () => {
+    const user = userEvent.setup()
+    await show({ id: 't', title: 'old', body: 'orig body', updated_ms: 10 })
+    await user.click(screen.getByTestId('todo-edit'))
+    daemon.seed(todoItem({ id: 't', title: 'old', body: 'theirs', updated_ms: 50 }))
+    await act(async () => live({ id: 't', title: 'old', body: 'theirs', updated_ms: 50 }))
+    expect(screen.getByTestId('todo-changed-elsewhere')).toHaveTextContent(/Notes|Body/i)
+    await user.clear(screen.getByTestId('todo-edit-title'))
+    await user.type(screen.getByTestId('todo-edit-title'), 'new')
+    await user.click(screen.getByTestId('todo-save'))
+    await flush()
+    expect(lastUpdate()).toEqual({ id: 't', title: 'new' })
+    expect(daemon.todos.get('t')).toMatchObject({ title: 'new', body: 'theirs' })
+  })
+
+  it('both sides changed the same field: you see theirs, choose, and Save is blocked until you do (no silent overwrite)', async () => {
+    const user = userEvent.setup()
+    await show({ id: 't', title: 'old', body: 'orig', updated_ms: 10 })
+    await user.click(screen.getByTestId('todo-edit'))
+    await user.clear(screen.getByTestId('todo-edit-body'))
+    await user.type(screen.getByTestId('todo-edit-body'), 'mine')
+    daemon.seed(todoItem({ id: 't', title: 'old', body: 'theirs', updated_ms: 50 }))
+    await act(async () => live({ id: 't', title: 'old', body: 'theirs', updated_ms: 50 }))
+    expect(screen.getByTestId('todo-conflict')).toHaveAttribute('data-field', 'body')
+    expect(screen.getByTestId('todo-conflict-theirs')).toHaveTextContent('theirs')
+    expect(screen.getByTestId('todo-save')).toBeDisabled()
+    await user.click(screen.getByTestId('todo-keep-mine'))
+    expect(screen.getByTestId('todo-save')).toBeEnabled()
+    await user.click(screen.getByTestId('todo-save'))
+    await flush()
+    expect(daemon.todos.get('t')!.body).toBe('mine')
+  })
+
+  it('“Use theirs” takes their version into the draft and nothing is sent for that field', async () => {
+    const user = userEvent.setup()
+    await show({ id: 't', title: 'old', body: 'orig', updated_ms: 10 })
+    await user.click(screen.getByTestId('todo-edit'))
+    await user.type(screen.getByTestId('todo-edit-body'), ' plus mine')
+    daemon.seed(todoItem({ id: 't', title: 'old', body: 'theirs', updated_ms: 50 }))
+    await act(async () => live({ id: 't', title: 'old', body: 'theirs', updated_ms: 50 }))
+    await user.click(screen.getByTestId('todo-use-theirs'))
+    expect(screen.getByTestId('todo-edit-body')).toHaveValue('theirs')
+    await user.click(screen.getByTestId('todo-save'))
+    await flush()
+    expect(daemon.log.filter((l) => l.method === 'todo.update')).toHaveLength(0)
+    expect(daemon.todos.get('t')!.body).toBe('theirs')
+  })
+
+  it('the draft survives the detail being remounted (resizing across the breakpoint, switching rows, leaving the page and coming back)', async () => {
+    const user = userEvent.setup()
+    daemon.seed(todoItem({ id: 't', title: 'old' }))
+    await syncTodos(A)
+    const first = render(<Live id="t" />)
+    await flush()
+    await user.click(screen.getByTestId('todo-edit'))
+    await user.type(screen.getByTestId('todo-edit-title'), ' typed')
+    first.unmount()
+    render(<Live id="t" />)
+    await flush()
+    expect(screen.getByTestId('todo-edit-title')).toHaveValue('old typed')
+    expect(Object.keys(useDrafts.getState().drafts)).toHaveLength(1)
+  })
+
+  it('Cancel with unsaved text asks first: Keep editing keeps the draft, Discard drops it; Cancel on an untouched form just closes', async () => {
+    const user = userEvent.setup()
+    await show({ id: 't', title: 'old' })
+    await user.click(screen.getByTestId('todo-edit'))
+    await user.click(screen.getByTestId('todo-cancel-edit'))
+    expect(screen.queryByTestId('todo-edit-title')).toBeNull()
+    await user.click(screen.getByTestId('todo-edit'))
+    await user.type(screen.getByTestId('todo-edit-title'), '!')
+    await user.click(screen.getByTestId('todo-cancel-edit'))
+    await user.click(await screen.findByText('Keep editing'))
+    expect(screen.getByTestId('todo-edit-title')).toHaveValue('old!')
+    await user.click(screen.getByTestId('todo-cancel-edit'))
+    await user.click(await screen.findByTestId('todo-discard-edit-confirm'))
+    expect(screen.queryByTestId('todo-edit-title')).toBeNull()
+    expect(screen.getByTestId('todo-title')).toHaveTextContent('old')
+  })
+
+  it('U5: saving without touching the due time never sends due_ms (seconds and milliseconds set elsewhere survive); changing it does', async () => {
+    const user = userEvent.setup()
+    const due = new Date('2031-05-06T07:08:09.123').getTime()
+    await show({ id: 't', title: 'old', due_ms: due })
+    await user.click(screen.getByTestId('todo-edit'))
+    await user.type(screen.getByTestId('todo-edit-title'), '!')
+    await user.click(screen.getByTestId('todo-save'))
+    await flush()
+    expect(lastUpdate()).toEqual({ id: 't', title: 'old!' })
+    expect(daemon.todos.get('t')!.due_ms).toBe(due)
+    await user.click(screen.getByTestId('todo-edit'))
+    await user.clear(screen.getByTestId('todo-edit-due'))
+    await user.type(screen.getByTestId('todo-edit-due'), '2032-01-02T03:04')
+    await user.click(screen.getByTestId('todo-save'))
+    await flush()
+    expect(lastUpdate()).toEqual({ id: 't', due_ms: new Date('2032-01-02T03:04').getTime() })
+  })
+})
+
+describe('an unreviewed agent item (U7)', () => {
+  it('shows Accept / Dismiss instead of the edit and state controls', async () => {
+    const user = userEvent.setup()
+    await show({ id: 't', title: 'agent thing', source: { kind: 'agent' }, unreviewed: true })
+    expect(screen.queryByTestId('todo-edit')).toBeNull()
+    expect(screen.queryByTestId('todo-state')).toBeNull()
+    await user.click(screen.getByTestId('todo-accept'))
+    await flush()
+    expect(daemon.todos.get('t')!.unreviewed).toBe(false)
   })
 })

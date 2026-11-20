@@ -19,12 +19,15 @@ import { storageFailed } from '@/lib/log'
 import { rpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
 import { useNodes } from '@/stores/nodes'
-import { toast } from '@/stores/ui'
+import { navigateTo } from '@/lib/navigate'
+import { shortNodeId } from '@/lib/ids'
+import { toast, useUi } from '@/stores/ui'
 import i18n from '@/i18n'
-import { nodeSupportsTodo, useTodos } from './store'
+import { nodeSupportsTodo, useTodos, viewOf } from './store'
+import { outboxErrorText } from './ui/errors'
 import type { OutboxError, OutboxOp, OutboxRecord, UpdateFields } from './types'
 import { isClosed } from './types'
-import { draftError, newTodoId, projectError, titleError, bodyError, dueError, type DraftTodo, type FieldError } from './validate'
+import { cleanOneLine, draftError, newTodoId, tabsToSpaces, projectError, titleError, bodyError, dueError, type DraftTodo, type FieldError } from './validate'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // 多标签页：库是唯一的真相，别的标签页改了就重读
@@ -285,6 +288,7 @@ function kickReplay(nodeId: string): void {
 
 /** 新建一项（`todo.add`，id 由客户端生成）。校验不过返回错误，什么都不入队。节点离线也照常记。 */
 export async function addTodo(nodeId: string, draft: DraftTodo): Promise<ActionResult> {
+  draft = { ...draft, title: tabsToSpaces(draft.title), ...(draft.project != null ? { project: tabsToSpaces(draft.project) } : {}) }
   const error = draftError(draft)
   if (error) return { ok: false, error }
   const id = newTodoId()
@@ -296,6 +300,8 @@ export async function addTodo(nodeId: string, draft: DraftTodo): Promise<ActionR
 
 /** 改一项里的几个字段（只带改了的）。校验同新建。 */
 export async function updateTodo(nodeId: string, id: string, fields: UpdateFields): Promise<ActionResult> {
+  if (fields.title !== undefined) fields = { ...fields, title: tabsToSpaces(fields.title) }
+  if (typeof fields.project === 'string') fields = { ...fields, project: tabsToSpaces(fields.project) }
   const error = (fields.title !== undefined ? titleError(fields.title) : null) ?? (fields.body !== undefined ? bodyError(fields.body) : null) ?? projectError(fields.project) ?? dueError(fields.due_ms)
   if (error) return { ok: false, error }
   const f: UpdateFields = { ...fields }
@@ -461,8 +467,12 @@ async function runReplay(nodeId: string): Promise<{ result: ReplayResult; relist
             }
           } else if (v.kind === 'failed') {
             await db.patchOutbox(seq, (stored) => ({ ...release(stored), state: 'failed', error: v.error }))
+            await reloadOutbox().catch(() => undefined)
+            announceRejected(nodeId, rec, v.error)
           } else if (v.kind === 'link' && (rec.attempts ?? 0) + 1 >= MAX_LINK_FAILURES) {
             await db.patchOutbox(seq, (stored) => ({ ...release(stored), state: 'failed', error: { code: 'link' }, attempts: (stored.attempts ?? 0) + 1 }))
+            await reloadOutbox().catch(() => undefined)
+            announceRejected(nodeId, rec, { code: 'link' })
           } else {
             // 纯链路 / 离线错误：这一条留着（link 记一次失败），这一轮结束
             await db.patchOutbox(seq, (stored) => ({ ...release(stored), ...(v.kind === 'link' ? { attempts: (stored.attempts ?? 0) + 1 } : {}) }))
@@ -480,6 +490,22 @@ async function runReplay(nodeId: string): Promise<{ result: ReplayResult; relist
       return { result: 'blocked' as const, relist }
     }
   })
+}
+
+/**
+ * 排队的改动被节点拒绝了（重连之后才发现的那种）：不只是行上的「未保存」标记，弹一条错误提示（`role="alert"`）说是哪一项、为什么，
+ * 带「查看」直达那一项的详情，「重试」和「丢弃」就在那里。
+ */
+function announceRejected(nodeId: string, rec: OutboxRecord, error: OutboxError): void {
+  const view = viewOf(useTodos.getState(), [nodeId]).find((v) => v.id === rec.id)
+  const title = view?.title ?? (rec.op.kind === 'add' ? rec.op.params.title : rec.id.slice(0, 8))
+  const order = useNodes.getState().order
+  useUi.getState().push(
+    'error',
+    i18n.t('todos.rejectedToast', { title: cleanOneLine(title, 60), reason: outboxErrorText(i18n.t.bind(i18n), error) }),
+    { label: i18n.t('todos.review'), run: () => navigateTo(`/todos/${shortNodeId(nodeId, order)}/${rec.id}`) },
+    12_000,
+  )
 }
 
 /** 节点现在能发请求（界面上「未同步」的标记据此）。 */

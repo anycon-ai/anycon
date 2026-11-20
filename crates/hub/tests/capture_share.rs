@@ -1,4 +1,4 @@
-//! `POST /capture`（PWA 分享目标，docs/spec/hub.md § 2.1）：service worker 没接管时分享的那一次 POST 到了 hub。
+//! `POST /capture`（PWA 分享目标，docs/spec/hub.md § 2.1）：没有这个处理的 service worker 接管时分享的那一次 POST 到了 hub。
 //! hub 只回 `303 See Other` → `/capture`：不读请求体、不存、不进日志。这里发一个带标记的 multipart 请求体，
 //! 断言重定向，并且标记没有出现在 hub 的 trace 级日志和数据目录里的任何文件里。
 

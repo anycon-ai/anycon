@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCapture } from '@/features/todos/capture'
+import { overlayOpen } from '@/features/inbox/useInboxKeys'
 import { CaptureForm } from '@/features/todos/ui/CaptureForm'
 import { useIsWide } from '@/lib/useMediaQuery'
 import { Sheet } from '@/ui/Overlay'
@@ -21,6 +22,16 @@ export function CaptureHost() {
     else if (opener.current instanceof HTMLElement && document.activeElement === document.body) opener.current.focus()
   }, [open])
 
+  // 桌面的输入条：不管焦点在哪里，开着的时候 Esc 关掉（有对话框 / 菜单开着时 Esc 先属于它们）
+  useEffect(() => {
+    if (!open || !wide) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape' && !e.defaultPrevented && !overlayOpen()) close()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, wide, close])
+
   if (!open) return null
   if (!wide) {
     return (
@@ -30,7 +41,7 @@ export function CaptureHost() {
     )
   }
   return (
-    <div className="border-b border-border bg-bg-subtle px-3 py-2" role="region" aria-label={t('todos.addTitle')} data-testid="capture-bar">
+    <div className="absolute inset-x-0 top-0 z-30 border-b border-border bg-bg-subtle px-3 py-2 shadow-pop" role="region" aria-label={t('todos.addTitle')} data-testid="capture-bar">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <CaptureForm onEscape={close} compact />

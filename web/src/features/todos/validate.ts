@@ -68,10 +68,13 @@ function fallbackUuid(): string {
  * 记一项的输入：第一行是标题，换行之后是正文（「只要求一行字」，spec/web.md § 14.5）。
  * 标题去掉首尾空白；正文去掉开头的空行和结尾的空白。
  */
+/** 单行字段里粘进来的制表符按一个空格算（不是「必须是一行」的错误）。 */
+export const tabsToSpaces = (s: string): string => s.replace(/\t/g, ' ')
+
 export function parseCapture(text: string): { title: string; body: string } {
   const normalized = text.replace(/\r\n?/g, '\n')
   const nl = normalized.indexOf('\n')
-  const title = (nl < 0 ? normalized : normalized.slice(0, nl)).trim()
+  const title = tabsToSpaces(nl < 0 ? normalized : normalized.slice(0, nl)).trim()
   const body = nl < 0 ? '' : normalized.slice(nl + 1).replace(/^(?:[ \t]*\n)+/, '').trimEnd()
   return { title, body }
 }

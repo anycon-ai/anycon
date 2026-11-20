@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { Inbox, LayoutList, ListChecks, Menu, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCapture } from '@/features/todos/capture'
+import { useTodoAvailable } from '@/features/todos/store'
 import { cn } from '@/ui/cn'
 
 export type TabId = 'inbox' | 'todos' | 'sessions' | 'more'
@@ -40,6 +41,8 @@ const LINK = 'flex min-h-14 flex-col items-center justify-center gap-0.5 px-1 te
 export function TabBar({ current, inboxCount, todoCount = 0 }: { current: TabId | null; inboxCount: number; todoCount?: number }) {
   const { t } = useTranslation()
   const openCapture = useCapture((s) => s.openCapture)
+  // 没有任何节点支持清单：不放「清单」和「＋」（点了只会得到一句「不支持」）
+  const todoAvailable = useTodoAvailable()
   const tab = (def: TabDef) => {
     const Icon = def.icon
     const label = t(def.labelKey)
@@ -66,14 +69,16 @@ export function TabBar({ current, inboxCount, todoCount = 0 }: { current: TabId 
     <nav aria-label={t('tabs.label')} className="pb-safe shrink-0 border-t border-border bg-bg md:hidden" data-testid="tab-bar">
       <ul className="flex">
         {tab(TABS[0]!)}
-        {tab(TABS[1]!)}
-        <li className="min-w-0 flex-1">
-          <button type="button" onClick={() => openCapture()} aria-label={t('todos.addTitle')} data-testid="tab-capture" className={cn(LINK, 'w-full')}>
-            <span className="grid size-9 place-items-center rounded-full bg-accent text-accent-fg">
-              <Plus className="size-5" aria-hidden />
-            </span>
-          </button>
-        </li>
+        {todoAvailable ? tab(TABS[1]!) : null}
+        {todoAvailable ? (
+          <li className="min-w-0 flex-1">
+            <button type="button" onClick={() => openCapture()} aria-label={t('todos.addTitle')} data-testid="tab-capture" className={cn(LINK, 'w-full')}>
+              <span className="grid size-9 place-items-center rounded-full bg-accent text-accent-fg">
+                <Plus className="size-5" aria-hidden />
+              </span>
+            </button>
+          </li>
+        ) : null}
         {tab(TABS[2]!)}
         {tab(TABS[3]!)}
       </ul>

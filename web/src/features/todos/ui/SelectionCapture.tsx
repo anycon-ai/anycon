@@ -34,10 +34,19 @@ export function SelectionCapture() {
       const el = (range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement)?.closest('[data-seq]')
       const seq = Number(el?.getAttribute('data-seq'))
       const r = range.getBoundingClientRect()
-      setSel({ text, seq: Number.isFinite(seq) && seq > 0 ? seq : undefined, x: r.left + r.width / 2, y: r.top })
+      // 放在选区下面：系统自己的「复制 / 查询」菜单（iOS）出现在选区上面，不要叠在一起
+      setSel({ text, seq: Number.isFinite(seq) && seq > 0 ? seq : undefined, x: r.left + r.width / 2, y: r.bottom })
     }
+    // 按选区的位置摆的：一滚动位置就不对了，直接收起（选区还在，再选一下就又出来）
+    const hide = (): void => setSel(null)
     document.addEventListener('selectionchange', read)
-    return () => document.removeEventListener('selectionchange', read)
+    window.addEventListener('scroll', hide, true)
+    window.addEventListener('resize', hide)
+    return () => {
+      document.removeEventListener('selectionchange', read)
+      window.removeEventListener('scroll', hide, true)
+      window.removeEventListener('resize', hide)
+    }
   }, [])
 
   const route = sessionRoute()
@@ -52,7 +61,7 @@ export function SelectionCapture() {
         window.getSelection()?.removeAllRanges()
         setSel(null)
       }}
-      style={{ position: 'fixed', left: Math.max(8, sel.x - 60), top: Math.max(8, sel.y - 40) }}
+      style={{ position: 'fixed', left: Math.max(8, sel.x - 60), top: sel.y + 8 }}
       className="z-40 inline-flex min-h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-sm font-medium shadow-pop hover:bg-bg-hover"
       data-testid="selection-add-todo"
     >

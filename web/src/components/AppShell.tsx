@@ -120,7 +120,7 @@ export function AppShell() {
           </aside>
         </div>
       ) : null}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-w-0 flex-1 flex-col">
         {wide ? <CaptureHost /> : null}
         <StatusBannerForNode nodeId={nodeId} />
         {/* 手机上标签页常驻在这里（绝对定位叠在页面区上，切走时只是藏起来）；二级页照常走 Outlet */}

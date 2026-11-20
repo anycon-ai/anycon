@@ -1,7 +1,10 @@
 // 手机底部标签栏（spec/web.md § 14.2）：三个标签、当前页标 `aria-current`、「待处理」带个数、标签栏只在标签页的根页面出现。
 import { render, screen, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { NodeInfo } from '@/protocol'
+import { nodeEntry } from '@/test/factories'
 import { mockRouter } from '@/test/routerMock'
+import { useNodes } from '@/stores/nodes'
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate))
@@ -22,7 +25,20 @@ describe('tabOfPath', () => {
   })
 })
 
+const withTodo = (todo: boolean): void =>
+  useNodes.setState({ byId: { n1: nodeEntry({ id: 'n1', info: { capabilities: { todo } } as unknown as NodeInfo }) }, order: ['n1'], loaded: true })
+
 describe('TabBar', () => {
+  beforeEach(() => withTodo(true))
+
+  it('without a node that supports to-dos there is no To-dos tab and no +: Inbox, Sessions, More', () => {
+    withTodo(false)
+    render(<TabBar current="inbox" inboxCount={0} />)
+    expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual(['Inbox', 'Sessions', 'More'])
+    expect(screen.queryByTestId('tab-capture')).toBeNull()
+    expect(screen.queryByTestId('tab-todos')).toBeNull()
+  })
+
   it('is a labelled navigation with the five final positions: Inbox, To-dos, + (an action), Sessions, More', () => {
     render(<TabBar current="sessions" inboxCount={0} />)
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })

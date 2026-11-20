@@ -5,6 +5,7 @@ import { deleteDB, openDB } from 'idb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeInfo } from '@/protocol'
 import * as db from '@/db'
+import { setNavigator } from '@/lib/navigate'
 import { storeShared } from '@/sw/shareStore'
 import { SHARE_DB } from '@/sw/shareStore'
 import { nodeEntry, todoItem } from '@/test/factories'
@@ -436,5 +437,24 @@ describe('S7: switching accounts', () => {
     expect((await indexedDB.databases()).map((d) => d.name)).toContain(SHARE_DB)
     await db.wipeAll()
     expect((await indexedDB.databases()).map((d) => d.name)).not.toContain(SHARE_DB)
+  })
+})
+
+describe('U10: a rejected queued change is announced', () => {
+  it('after reconnecting, a change the node refuses gives an error toast naming the item, with an action that opens it (Retry / Discard live there)', async () => {
+    const go = vi.fn()
+    setNavigator(go)
+    goOffline()
+    const r = await addTodo(NODE, { title: 'refused one', body: '' })
+    if (!r.ok) throw new Error()
+    await goOnline()
+    daemon.failNext('todo.add', rpcError('invalid', 'title'))
+    await replayOutbox(NODE)
+    const toast = useUi.getState().toasts.find((x) => x.kind === 'error')!
+    expect(toast.text).toContain('refused one')
+    expect(toast.action).toBeDefined()
+    toast.action!.run()
+    expect(go).toHaveBeenCalledWith(`/todos/nnnnnnnn/${r.id}`)
+    setNavigator(null)
   })
 })

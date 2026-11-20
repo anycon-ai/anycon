@@ -11,6 +11,7 @@ import { accountNodes, lockedNodes, removedNodes, unlockParam } from '@/features
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
 import { useInboxNowCount, useInboxOutsideCount } from '@/features/inbox/useInbox'
 import { useCapture } from '@/features/todos/capture'
+import { useTodoAvailable } from '@/features/todos/store'
 import { useOpenTodoCount } from '@/features/todos/useOpenTodoCount'
 import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
 import { useEnroll } from '@/stores/enroll'
@@ -111,6 +112,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { t } = useTranslation()
   const count = useInboxNowCount()
   const todoCount = useOpenTodoCount()
+  const todoAvailable = useTodoAvailable()
   const openCapture = useCapture((s) => s.openCapture)
   const here = useRouterState({ select: (s) => s.location.pathname })
   const current = here === '/inbox'
@@ -134,6 +136,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           </span>
         ) : null}
       </Link>
+      {todoAvailable ? (
       <div className="flex items-center gap-1">
         <Link
           to="/todos"
@@ -151,10 +154,11 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             </span>
           ) : null}
         </Link>
-        <button type="button" onClick={() => openCapture()} aria-label={t('todos.addTitle')} title={`${t('todos.addTitle')} (C)`} className="rounded-md p-1.5 text-fg-subtle hover:bg-bg-hover hover:text-fg" data-testid="sidebar-capture">
+        <button type="button" onClick={() => openCapture()} aria-label={t('todos.addTitle')} title={`${t('todos.addTitle')} (C)`} className="grid place-items-center rounded-md p-1.5 text-fg-subtle hover:bg-bg-hover hover:text-fg [@media(pointer:coarse)]:size-11" data-testid="sidebar-capture">
           <Plus className="size-4" aria-hidden />
         </button>
       </div>
+      ) : null}
     </nav>
   )
 }
@@ -267,6 +271,7 @@ export function SessionsPanel({ nodeId, onNavigate, onSearch }: { nodeId: string
  */
 export function SidebarRail({ nodeId, onSearch, onPin, ...rest }: { nodeId: string | undefined; onSearch: () => void; onPin: () => void } & Omit<HTMLAttributes<HTMLDivElement>, 'children'>) {
   const { t } = useTranslation()
+  const todoAvailable = useTodoAvailable()
   const hasNodes = useNodes((s) => s.order.length > 0)
   const { selected } = useNodeFilter()
   const newProject = useNewProjectAction(nodeId, selected)
@@ -305,7 +310,7 @@ export function SidebarRail({ nodeId, onSearch, onPin, ...rest }: { nodeId: stri
           ) : null}
         </Link>
       ) : null}
-      {hasNodes ? (
+      {hasNodes && todoAvailable ? (
         <>
           <Link to="/todos" aria-label={t('todos.title')} title={t('todos.title')} className={icon} data-testid="sidebar-rail-todos">
             <ListChecks className="size-4" aria-hidden />

@@ -32,7 +32,8 @@ describe('message menu', () => {
     const { open, text } = useCapture.getState()
     expect(open).toBe(true)
     expect(text.split('\n')[0]).toBe('rotate the key')
-    expect(text).toContain(`${location.origin}/n/aaaaaaaa/s/sess_1?seq=7`)
+    expect(text).toContain('](/n/aaaaaaaa/s/sess_1?seq=7)')
+    expect(text).not.toContain(location.origin)
   })
 
   it('is not offered when the node does not support to-dos, outside a session, or for empty text', () => {
@@ -89,5 +90,37 @@ describe('selection', () => {
     )
     selectIn(screen.getByTestId('elsewhere'))
     expect(screen.queryByTestId('selection-add-todo')).toBeNull()
+  })
+})
+
+describe('selection button placement (nits)', () => {
+  it('scrolling or resizing hides the floating button (it was positioned on the selection and would drift); it sits below the selection, not under the system callout', () => {
+    render(
+      <>
+        <SelectionCapture />
+        <div data-testid="message-list">
+          <div data-seq="3">
+            <p data-testid="p">some words</p>
+          </div>
+        </div>
+      </>,
+    )
+    const range = document.createRange()
+    range.selectNodeContents(screen.getByTestId('p'))
+    range.getBoundingClientRect = () => ({ left: 10, top: 50, width: 40, height: 10, right: 50, bottom: 60, x: 10, y: 50, toJSON: () => ({}) })
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    act(() => void document.dispatchEvent(new Event('selectionchange')))
+    const button = screen.getByTestId('selection-add-todo')
+    expect(Number.parseInt(button.style.top, 10)).toBeGreaterThan(60)
+    act(() => void window.dispatchEvent(new Event('scroll')))
+    expect(screen.queryByTestId('selection-add-todo')).toBeNull()
+  })
+})
+
+describe('message menu on touch devices (nits)', () => {
+  it('is not hidden behind a hover: it is shown whenever the device cannot hover', () => {
+    render(<MessageTodoMenu text="x" seq={1} />)
+    expect(screen.getByTestId('message-menu').className).toMatch(/\[@media\(hover:none\)\]:opacity-100/)
   })
 })

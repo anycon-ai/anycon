@@ -183,8 +183,8 @@ async fn log_requests(req: Request, next: Next) -> Response {
     res
 }
 
-/// Web UI 的「分享到 anycon」（PWA `share_target`，`POST /capture`，multipart）：service worker 接管时它自己拦下这个 POST，
-/// 请求到不了这里。没接管时（刚安装还没激活、被浏览器回收）这一次 POST 会发到 hub：回 `303 See Other` 到 `/capture`，
+/// Web UI 的「分享到 anycon」（PWA `share_target`，`POST /capture`，multipart）：有这个处理的 service worker 接管时它自己拦下这个 POST，
+/// 请求到不了这里。没有这个处理的 service worker 接管时（还没有已激活的、升级后旧版本仍在管、service worker 不可用）这一次 POST 会发到 hub：回 `303 See Other` 到 `/capture`，
 /// **不读请求体**（这个处理器没有任何提取器，body 不会被消费，也不受 `DefaultBodyLimit` 管）、不存、不进日志
 /// （`log_requests` 只记方法、路由和状态码）。不在 `/api` / `/auth` 下面，所以也不过 CSRF 头检查：跨站表单 POST 到这里
 /// 只会得到一个重定向，什么都不会发生。分享的内容这一次就丢了（docs/spec/hub.md § 2.1）。

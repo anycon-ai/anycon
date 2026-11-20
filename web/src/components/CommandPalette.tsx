@@ -6,6 +6,7 @@ import { useDevices } from '@/api/queries'
 import { setFollowUp } from '@/features/session/actions'
 import { isFollowUp } from '@/features/session/marks'
 import { useContentSearch, type ContentHit } from '@/features/search/contentSearch'
+import { useTodoAvailable } from '@/features/todos/store'
 import { quickAdd } from '@/features/todos/quickAdd'
 import { useCapture } from '@/features/todos/capture'
 import { lockedNodes } from '@/features/unlock/nodes'
@@ -144,10 +145,13 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       },
     }
   }, [q, t, onOpenChange])
-  const filtered = useMemo(() => {
+  const todoAvailable = useTodoAvailable()
+  const matches = useMemo(() => {
     const needle = q.trim().toLowerCase()
-    return [addTodoItem, ...(needle ? items.filter((i) => i.label.toLowerCase().includes(needle) || i.hint?.toLowerCase().includes(needle)) : items)].slice(0, 31)
-  }, [items, q, addTodoItem])
+    return (needle ? items.filter((i) => i.label.toLowerCase().includes(needle) || i.hint?.toLowerCase().includes(needle)) : items).slice(0, 30)
+  }, [items, q])
+  // 没有节点支持清单时不提供「记到清单」（spec/daemon.md § 21.3：客户端不给不支持的节点显示入口）
+  const filtered = useMemo(() => (todoAvailable ? [addTodoItem, ...matches] : matches), [todoAvailable, addTodoItem, matches])
 
   const hitItems = useMemo<HitItem[]>(
     () =>
@@ -166,7 +170,8 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   // ↑ ↓ 在本地结果和内容命中之间移动；还没动过（或选中的那条没了）就是第一条
   const selectable = useMemo<Array<{ id: string; run: () => void }>>(() => [...filtered, ...hitItems], [filtered, hitItems])
   // 没动过时默认选中第一条真正的结果（不是「记到清单」那一行：敲个字按 Enter 不该悄悄记下一项；要记用 ⌘Enter 或 ↑ 选那一行）
-  const active = selectable.find((r) => r.id === activeId) ?? selectable.find((r) => r.id !== 'add-todo') ?? selectable[0]
+  // 没有别的结果（输入没有匹配的、内容命中还没到）时没有默认选中：Enter 什么都不做，记到清单只能先用 ↑ ↓ 移到那一行或按 ⌘Enter
+  const active = selectable.find((r) => r.id === activeId) ?? selectable.find((r) => r.id !== 'add-todo')
   const domId = (id: string): string => `${idBase}-${id}`
 
   const nodeName = (id: string): string => cleanHintText(nodes[id]?.name) || id.slice(0, 8)
@@ -188,7 +193,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       // ⌘Enter：把输入的文字记成一项（没输入就什么都不做）
       e.preventDefault()
-      if (q.trim()) addTodoItem.run()
+      if (q.trim() && todoAvailable) addTodoItem.run()
     } else if (e.key === 'Enter') {
       active?.run()
     }
@@ -223,7 +228,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
             </button>
           </li>
         ))}
-        {filtered.length === 0 && !search.active ? <li className="px-2 py-6 text-center text-sm text-fg-subtle">{t('palette.empty')}</li> : null}
+        {matches.length === 0 && !search.active ? <li className="px-2 py-6 text-center text-sm text-fg-subtle">{t('palette.empty')}</li> : null}
         {search.active ? (
           <>
             <li role="presentation" className="px-2 pb-1 pt-3 text-xs font-medium text-fg-subtle" data-testid="palette-content-group">

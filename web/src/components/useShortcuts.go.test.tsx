@@ -2,6 +2,7 @@
 // 隔太久或中间按了别的键就取消。
 import { fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { NodeInfo } from '@/protocol'
 import { nodeEntry } from '@/test/factories'
 import { mockRouter } from '@/test/routerMock'
 import { setNavigator } from '@/lib/navigate'
@@ -34,7 +35,7 @@ beforeEach(() => {
   setNavigator(go)
   useUi.setState({ lastSessionsPath: null })
   usePrefs.setState({ lastNode: null })
-  useNodes.setState({ byId: { [A]: nodeEntry({ id: A }), [B]: nodeEntry({ id: B }) }, order: [A, B], loaded: true })
+  useNodes.setState({ byId: { [A]: nodeEntry({ id: A, info: { capabilities: { todo: true } } as unknown as NodeInfo }), [B]: nodeEntry({ id: B }) }, order: [A, B], loaded: true })
 })
 afterEach(() => {
   setNavigator(null)
@@ -131,6 +132,17 @@ describe('to-dos: G T and C', () => {
     press('g')
     press('t')
     expect(navigate).toHaveBeenCalledWith({ to: '/todos' })
+  })
+
+  it('with no node that supports to-dos, C and G T do nothing (there is no entry to offer)', () => {
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A }), [B]: nodeEntry({ id: B }) }, order: [A, B], loaded: true })
+    useCapture.setState({ open: false })
+    render(<Harness />)
+    press('c')
+    press('g')
+    press('t')
+    expect(useCapture.getState().open).toBe(false)
+    expect(navigate).not.toHaveBeenCalled()
   })
 
   it('T on its own does nothing', () => {

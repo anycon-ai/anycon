@@ -151,8 +151,7 @@ describe('capture bar and sheet', () => {
     expect(screen.getByTestId('capture-target')).toHaveTextContent('beta')
     expect(screen.queryByText('gamma')).toBeNull() // 不支持清单的节点不在选项里
     await user.type(screen.getByTestId('capture-input'), 'to beta{Enter}')
-    await flush()
-    expect(usePrefs.getState().lastTodoNode).toBe(B)
+    await waitFor(() => expect(usePrefs.getState().lastTodoNode).toBe(B))
     expect(defaultTodoNode()).toBe(B)
   })
 
@@ -185,18 +184,39 @@ describe('quickAdd (command palette)', () => {
 })
 
 describe('from a session', () => {
-  it('quoted text: the first line is the title, the body has the quote and a link back to the message', () => {
-    expect(captureFromQuote('fix the flaky test\nit fails on CI', 'https://h/n/a/s/b?seq=4')).toBe('fix the flaky test\nfix the flaky test\nit fails on CI\n\nhttps://h/n/a/s/b?seq=4')
-    expect(captureFromQuote('short')).toBe('short')
-    const long = 'w'.repeat(300)
-    expect([...captureFromQuote(long).split('\n')[0]!].length).toBeLessThanOrEqual(121)
+  it('quoted text: the title is the first line without Markdown markers; the body says where it came from, quotes the text and links back with a relative path', () => {
+    const out = captureFromQuote('fix the flaky test\nit fails on CI', '/n/a/s/b?seq=4')
+    const [title, ...rest] = out.split('\n')
+    expect(title).toBe('fix the flaky test')
+    const body = rest.join('\n')
+    expect(body).toContain('Quoted from a session message:')
+    expect(body).toContain('> fix the flaky test\n> it fails on CI')
+    expect(body).toContain('[Open the message](/n/a/s/b?seq=4)')
+    expect([...captureFromQuote('w'.repeat(300)).split('\n')[0]!].length).toBeLessThanOrEqual(121)
+  })
+
+  it('hostile text: titles never start with a heading marker or a fence, injected links are neutralised, markup stays quoted', () => {
+    expect(captureFromQuote('## Summary\nbody').split('\n')[0]).toBe('Summary')
+    expect(captureFromQuote('```ts\nconst x = 1\n```').split('\n')[0]).toBe('const x = 1')
+    expect(captureFromQuote('- [ ] **bold** item').split('\n')[0]).toBe('[ ] bold item')
+    const evil = captureFromQuote('[Approve here](https://evil.example/x) <script>alert(1)</script>', '/n/a/s/b?seq=1')
+    expect(evil.split('\n')[0]).toBe('Approve here (https://evil.example/x) <script>alert(1)</script>')
+    const body = evil.split('\n').slice(1).join('\n')
+    expect(body).toContain('> \\[Approve here\\](https://evil.example/x) \\<script>alert(1)\\</script>')
+    expect(body).not.toMatch(/(^|\n)\[Approve here\]\(/)
+    // 代码块：用比里面任何一串反引号都长的围栏，里面的内容原样
+    const code = captureFromQuote('```\n[x](https://evil.example)\n```\n', '/n/a/s/b?seq=1')
+    expect(code).toContain('````\n```\n[x](https://evil.example)\n```\n````')
+    // 只有记号的文字有个像样的标题
+    expect(captureFromQuote('---').split('\n')[0]).not.toBe('')
   })
 
   it('the message menu pre-fills the bar and does not add anything by itself', () => {
     openCaptureFromMessage('check the migration', 'aaaaaaaa', 'sess_1', 7)
     const { open, text } = useCapture.getState()
     expect(open).toBe(true)
-    expect(text).toContain(messageLink('aaaaaaaa', 'sess_1', 7))
+    expect(text).toContain(`](${messageLink('aaaaaaaa', 'sess_1', 7)})`)
+    expect(messageLink('aaaaaaaa', 'sess_1', 7)).toBe('/n/aaaaaaaa/s/sess_1?seq=7')
     expect(text.split('\n')[0]).toBe('check the migration')
     expect(added()).toHaveLength(0)
   })
@@ -206,5 +226,106 @@ describe('waitFor sanity', () => {
   it('has a defined default node when the last used one is no longer selected', async () => {
     usePrefs.setState({ lastTodoNode: B })
     await waitFor(() => expect(defaultTodoNode()).toBe(A))
+  })
+})
+
+describe('sending is guarded (U4)', () => {
+  it('two quick Enters create one item, and the box is read-only while the write is in flight', async () => {
+    const user = userEvent.setup()
+    render(<CaptureHost />)
+    act(() => useCapture.getState().openCapture())
+    const input = screen.getByTestId('capture-input')
+    await user.type(input, 'only once')
+    await user.keyboard('{Enter}{Enter}')
+    await waitFor(() => expect(added()).toHaveLength(1))
+    await flush()
+    expect(added()).toHaveLength(1)
+  })
+
+  it('text typed right after sending is a new draft: it is not wiped by the previous send finishing', async () => {
+    const user = userEvent.setup()
+    render(<CaptureHost />)
+    act(() => useCapture.getState().openCapture())
+    await user.type(screen.getByTestId('capture-input'), 'first{Enter}')
+    await waitFor(() => expect(screen.getByTestId('capture-input')).not.toHaveAttribute('readonly'))
+    await user.type(screen.getByTestId('capture-input'), 'second')
+    await flush()
+    expect(screen.getByTestId('capture-input')).toHaveValue('second')
+  })
+
+  it('a failed write keeps the text, the project and the due time, and shows the reason; sending again then creates exactly one item', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const append = vi.spyOn(db, 'appendOutbox').mockRejectedValueOnce(new DOMException('quota', 'QuotaExceededError'))
+    render(<CaptureHost />)
+    act(() => useCapture.getState().openCapture())
+    await user.type(screen.getByTestId('capture-input'), 'keep me')
+    await user.type(screen.getByTestId('capture-project'), 'api')
+    await user.click(screen.getByTestId('capture-send'))
+    expect(await screen.findByTestId('capture-error')).toHaveTextContent(/storage|device/i)
+    expect(screen.getByTestId('capture-input')).toHaveValue('keep me')
+    expect(screen.getByTestId('capture-project')).toHaveValue('api')
+    expect(added()).toHaveLength(0)
+    await user.click(screen.getByTestId('capture-send'))
+    await waitFor(() => expect(added()).toHaveLength(1))
+    expect(append).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('capture-input')).toHaveValue('')
+  })
+
+  it('a tab in the first line becomes a space instead of an error', async () => {
+    render(<CaptureHost />)
+    act(() => useCapture.getState().openCapture({ text: 'one\ttwo' }))
+    await userEvent.click(screen.getByTestId('capture-send'))
+    await waitFor(() => expect(added()).toHaveLength(1))
+    expect(added()[0]!.title).toBe('one two')
+  })
+})
+
+describe('the capture bar and the /capture page (nits)', () => {
+  it('Esc closes the desktop bar wherever the focus is, but leaves a dialog’s Esc alone', async () => {
+    const user = userEvent.setup()
+    render(
+      <>
+        <button data-testid="elsewhere">elsewhere</button>
+        <CaptureHost />
+      </>,
+    )
+    act(() => useCapture.getState().openCapture())
+    screen.getByTestId('elsewhere').focus()
+    await user.keyboard('{Escape}')
+    expect(useCapture.getState().open).toBe(false)
+    act(() => useCapture.getState().openCapture())
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    document.body.append(dialog)
+    screen.getByTestId('elsewhere').focus()
+    await user.keyboard('{Escape}')
+    expect(useCapture.getState().open).toBe(true)
+    dialog.remove()
+  })
+
+  it('the bar floats over the page instead of pushing it down', () => {
+    render(<CaptureHost />)
+    act(() => useCapture.getState().openCapture())
+    expect(screen.getByTestId('capture-bar').className).toMatch(/absolute/)
+  })
+
+  it('while the /capture page is showing its own form, openCapture does not open a second one', () => {
+    useCapture.getState().setInline(true)
+    render(<CaptureHost />)
+    act(() => useCapture.getState().openCapture({ text: 'x' }))
+    expect(screen.queryByTestId('capture-bar')).toBeNull()
+    expect(useCapture.getState().text).toBe('x')
+    useCapture.getState().setInline(false)
+  })
+})
+
+describe('names are cleaned (nit)', () => {
+  it('node names in the select and the “will go to” line lose control and bidi characters', () => {
+    useNodes.setState({ byId: { ...useNodes.getState().byId, [B]: nodeEntry({ id: B, name: `be${String.fromCharCode(0x202e)}ta${String.fromCharCode(7)}`, info: info(true), conn: 'ready' }) }, order: [A, B, C] })
+    render(<CaptureForm />)
+    const text = screen.getByTestId('capture-target').textContent ?? ''
+    expect(text).not.toContain(String.fromCharCode(0x202e))
+    expect(text).not.toContain(String.fromCharCode(7))
   })
 })

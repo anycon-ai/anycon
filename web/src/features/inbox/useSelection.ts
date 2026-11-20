@@ -117,7 +117,9 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
       if (active && consumeHandled(cur.key)) {
         // 我在这里处理的：落到下一条（原来的位置，最后一条就是前一条）
         // 前进到下一条有内容可看的：「等待审批（缓存）」没有详情；答复之后摘要还没更新的那一会儿它会冒出来，别落到它头上
-        const readable = items.filter((i) => i.kind !== 'waiting').map((i) => i.key)
+        // 「稍后」里的条目从来不替用户选中：处理完一条「现在」里的，不会落到「稍后」；处理完一条「稍后」里的，只落到「稍后」里的下一条
+        // （没有了就不选，桌面上随后由默认选中落到「现在」的第一条，那时详情换了，答复按钮照常先锁一会儿）
+        const readable = items.filter((i) => i.kind !== 'waiting' && (gone?.section === 'later') === (i.section === 'later')).map((i) => i.key)
         const next = readable.length > 0 ? (readable.find((k) => keys.indexOf(k) >= index) ?? readable[readable.length - 1]!) : null
         const ae = document.activeElement
         // 被处理掉的那一行（或详情里的按钮）正有焦点：它消失后焦点会掉到 body 上
@@ -132,7 +134,8 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
     }
     if (!active) return
     // 默认选中第一条有内容可看的：「等待审批（缓存）」没有详情，不当默认（等真正的请求到了再选，免得先选中占位、再被请求替换）
-    const first = items.find((i) => i.kind !== 'waiting')
+    // 「稍后」里的条目不当默认（不是在等人答复，不该替用户展开 / 选中）
+    const first = items.find((i) => i.kind !== 'waiting' && i.section !== 'later')
     if (cur.key === null && first) {
       if (mode === 'split') apply({ key: first.key, explicit: false, ghost: null })
       else if (mode === 'inline' && !defaulted.current) apply({ key: first.key, explicit: false, ghost: null })

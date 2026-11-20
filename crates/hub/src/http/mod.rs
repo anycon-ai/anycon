@@ -91,6 +91,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/ws", get(ws::ws_upgrade))
+        .route("/capture", get(assets::serve).post(capture_redirect))
         .nest("/api", api)
         .nest("/auth", auth)
         .fallback(assets::serve)
@@ -179,6 +180,17 @@ async fn log_requests(req: Request, next: Next) -> Response {
     } else {
         tracing::debug!(%method, route = %route, status, elapsed_ms, "http");
     }
+    res
+}
+
+/// Web UI 的「分享到 anycon」（PWA `share_target`，`POST /capture`，multipart）：service worker 接管时它自己拦下这个 POST，
+/// 请求到不了这里。没接管时（刚安装还没激活、被浏览器回收）这一次 POST 会发到 hub：回 `303 See Other` 到 `/capture`，
+/// **不读请求体**（这个处理器没有任何提取器，body 不会被消费，也不受 `DefaultBodyLimit` 管）、不存、不进日志
+/// （`log_requests` 只记方法、路由和状态码）。不在 `/api` / `/auth` 下面，所以也不过 CSRF 头检查：跨站表单 POST 到这里
+/// 只会得到一个重定向，什么都不会发生。分享的内容这一次就丢了（docs/spec/hub.md § 2.1）。
+async fn capture_redirect() -> Response {
+    let mut res = StatusCode::SEE_OTHER.into_response();
+    res.headers_mut().insert(header::LOCATION, HeaderValue::from_static("/capture"));
     res
 }
 

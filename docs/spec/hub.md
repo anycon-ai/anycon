@@ -29,6 +29,7 @@ hub 的每个功能都要能回答一个问题：**这个功能需要看消息�
 | 路径 | 说明 |
 |---|---|
 | `/`、`/assets/*`、`/manifest.webmanifest`、`/sw.js`、`/THIRD-PARTY-LICENSES.txt` | 嵌入的 Web UI（最后一个是 Web UI 里 npm 包的许可证清单，构建时生成）。所有不匹配 `/api`、`/auth`、`/v1` 的路径回退到 `index.html`（SPA 路由） |
+| `POST /capture` | Web UI 的「分享到 anycon」（PWA `share_target`，multipart，[web.md § 8](web.md#8-pwa)）。**只在 service worker 没接管页面时**才会到这里（刚安装还没激活、被浏览器回收）：接管时 service worker 自己拦下这个 POST，分享的内容留在浏览器里。hub 回 `303 See Other`，`Location: /capture`，**不读请求体**（处理器没有任何提取器，body 不会被消费，请求体大小不触发 4xx）、不存、不进日志（请求日志只有方法、路由模板和状态码）。不在 `/api`、`/auth` 下，所以没有 CSRF 头检查：跨站表单 POST 到这里只会得到一个重定向。那一次分享的文字经过了 hub 和它前面的反代（反代可能记请求体以外的东西，比如请求行；内容本身在 TLS 之后），但 hub 没有读它，页面打开的是空的输入条，那一次分享丢了（[architecture.md § 5.6](../architecture.md#56-威胁模型)）。`GET /capture` 是 SPA 的页面 |
 | `GET /healthz` | 进程活着。返回版本号，不查库 |
 | `GET /readyz` | 数据库可用、migration 已跑完。反代和容器编排用这个 |
 | `GET /api/config` | 公开配置：`mode`、`public_url`、启用的登录方式 `login_methods`（顺序固定：`github`、`google`（配了对应的 OAuth 凭据）、`email`（配了 SMTP）、`token`（仅 `single`）；只有 `single` 且配了 SMTP 时是 `["email","token"]`）、是否开启队列、`vapid_public_key`（恒有值）、`push_available`（恒 `true`：VAPID 密钥缺失 hub 起不来）、协议版本、`preview_origin_template`（配了预览时如 `"https://{label}.aiplace.app"`，否则 `null`，§ 13）、`terms_url` / `privacy_url`（`ANYCON_TERMS_URL` / `ANYCON_PRIVACY_URL`，服务条款和隐私政策的地址，登录页据此显示链接；没配的那个不出现在响应里）。登录页和客户端启动时拉一次，不需要认证 |

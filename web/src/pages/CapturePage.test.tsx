@@ -1,4 +1,4 @@
-// `/capture`（spec/web.md § 14.5）：分享的内容取一次就删、StrictMode 里 effect 跑两遍也不丢；页面自己带表单时别的入口不再另开一个。
+// `/capture`（spec/web.md § 4.12.1）：分享的内容取一次就删、StrictMode 里 effect 跑两遍也不丢；页面自己带表单时别的入口不再另开一个。
 import { StrictMode } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import { deleteDB } from 'idb'

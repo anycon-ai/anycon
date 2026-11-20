@@ -217,6 +217,7 @@
     "archive": "Archive",
     "review": "Review",
     "waitingBody": "This session is waiting for approval. The request details are only available while its node is connected; open the session to answer.",
+    "leftSelection": "Outside the current selection",
     "noLongerWaiting": "No longer waiting for you",
     "noLongerWaitingBody": "This item is gone from the list: it may have been handled somewhere else, ended or expired. Nothing was selected for you, so no other request can be answered by accident.",
     "detailsArrived": "The request details have arrived",
@@ -291,6 +292,7 @@
     "undo": "Undo",
     "toNode": "Node",
     "willGoTo": "Will be added on {{node}}.",
+    "willGoToSpace": "Will be added on {{node}} (space {{space}}).",
     "project": "Project",
     "due": "Due",
     "none": "None",
@@ -418,6 +420,50 @@
       "storage": {
         "failed": "Could not save this on this device (storage is full or unavailable). Nothing was changed."
       }
+    }
+  },
+  "spaces": {
+    "title": "Space",
+    "all": "All",
+    "manage": "Manage spaces…",
+    "nodeCount_one": "{{count}} node",
+    "nodeCount_other": "{{count}} nodes",
+    "switchLabel": "Space: {{space}}. Switch space",
+    "otherWaiting_one": "{{count}} waiting in other spaces ({{where}})",
+    "otherWaiting_other": "{{count}} waiting in other spaces ({{where}})",
+    "manageTitle": "Manage spaces",
+    "manageHint": "A space is the set of nodes with the same group name. The group is stored on each node, so your other devices see it too.",
+    "nodesSection": "Nodes",
+    "renameSection": "Rename a space",
+    "pickSpace": "Choose a space",
+    "newName": "New name",
+    "rename": "Rename",
+    "overview": "Spaces",
+    "mergeAction": "Merge",
+    "mergeConfirm": "This merges “{{from}}” into “{{to}}”: {{nodes}} will all be in “{{to}}”. Press Merge to continue.",
+    "stillOld": "Still under the old name “{{old}}”: {{nodes}}. Rename them again when they are back.",
+    "renameGone": "That space no longer exists (its nodes were regrouped elsewhere). Nothing was changed.",
+    "oddName": "This name has invisible or control characters, unusual spacing or a non-standard encoding, so it can look the same as another name.",
+    "lookalike": "“{{name}}” looks the same as the existing space “{{existing}}” but is a different name. Renaming would create a second space that looks identical.",
+    "useExisting": "Use the existing name",
+    "noGroup": "No group",
+    "noSpace": "No space",
+    "groupOf": "Group of {{node}}",
+    "outsideSpace": "This belongs to the space “{{space}}”, which is not selected.",
+    "movedTo": "“{{node}}” is now in the space “{{space}}”, which is not selected. The request may still be waiting there.",
+    "movedToNone": "“{{node}}” is no longer in any space, so it is outside the current selection. The request may still be waiting there.",
+    "switchToSpace": "Switch to this space",
+    "result": {
+      "changed": "Changed.",
+      "unchanged": "Already set.",
+      "offline": "Offline: not changed. Try again when it is back."
+    },
+    "errors": {
+      "too_long": "The group name is too long (at most 40 characters).",
+      "control": "The group name must be a single line without control characters.",
+      "invalid": "The node did not accept this group name.",
+      "envOverride": "The group is set by an environment variable on that node; change it there.",
+      "other": "Could not change it."
     }
   },
   "toast": {
@@ -1849,6 +1895,7 @@
     "sessionIdle": "{{title}} is idle",
     "followUp": "{{title}} is ready for follow-up",
     "onNode": "On {{node}}",
+    "onNodeSpace": "On {{node}} · {{space}}",
     "test": "Anycon test push",
     "testBody": "Push notifications work on this browser."
   },

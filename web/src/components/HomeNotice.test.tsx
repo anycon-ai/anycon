@@ -1,4 +1,4 @@
-// 升级后第一次打开的说明（spec/web.md § 14.4）：老用户看一次，新用户不看，关掉就记住。
+// 升级后第一次打开的说明（spec/web.md § 4.11）：老用户看一次，新用户不看，关掉就记住。
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'

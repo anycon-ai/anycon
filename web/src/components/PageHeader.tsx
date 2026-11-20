@@ -3,6 +3,8 @@ import { Link, useCanGoBack, useNavigate, useRouter } from '@tanstack/react-rout
 import { ArrowLeft, ChevronRight, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCurrentNode } from '@/lib/nav'
+import { useNodeFilter } from '@/lib/nodeFilter'
+import { SpaceSwitcher } from './SpaceSwitcher'
 import { Chip } from '@/ui/Misc'
 import { connectionLabel, connectionTone } from './useConnectionLabel'
 
@@ -20,13 +22,15 @@ export interface Crumb {
  * 页面顶栏：手机上的返回按钮、面包屑、页面的状态（`meta`，比如会话页的「聊天 / 改动」和状态 chip）、
  * 节点状态 chip、页面自己的操作按钮。
  */
-export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBack, root }: { crumbs: Crumb[]; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void; root?: boolean }) {
+export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBack, root, spaceSwitcher = true }: { crumbs: Crumb[]; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void; root?: boolean; /** 手机上标签页根页面的顶栏带当前空间的切换按钮（只在有分组时；「会话」页自己页面里就有切换器，不重复）。 */ spaceSwitcher?: boolean }) {
   const { t } = useTranslation()
-  const { entry } = useCurrentNode()
+  const { entry, nodeId } = useCurrentNode()
+  const hasGroups = useNodeFilter().spaces.hasGroups
   return (
     <header className="pt-safe flex min-h-12 shrink-0 items-center gap-2 border-b border-border bg-bg px-3">
       {/* 手机没有左侧抽屉：底部标签栏页（root）没有返回，其余页面都是二级页，带返回（默认走浏览器历史） */}
       {root ? null : <BackButton onBack={onBack} />}
+      {root && spaceSwitcher && hasGroups ? <SpaceSwitcher nodeId={nodeId} variant="topbar" /> : null}
       <nav aria-label={t('common.breadcrumb')} className="flex min-w-0 flex-1 items-center gap-1 text-sm">
         {crumbs.map((c, i) => (
           <span key={`${i}-${c.label}`} className={i === crumbs.length - 1 ? 'flex min-w-0 items-center gap-1' : 'hidden min-w-0 items-center gap-1 sm:flex'}>

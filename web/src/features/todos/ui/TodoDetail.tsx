@@ -280,6 +280,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </div>
       ))}
 
+
       <Dialog open={confirmDiscard} onOpenChange={setConfirmDiscard} title={t('todos.discardEditTitle')} description={t('todos.discardEditBody')} closeLabel={t('common.close')} testId="todo-discard-edit-dialog">
         <div className="flex justify-end gap-2">
           <Button onClick={() => setConfirmDiscard(false)}>{t('todos.keepEditing')}</Button>

@@ -7,7 +7,7 @@ import { composeSharedText } from '@/sw/share'
 import { takeShared } from '@/sw/shareStore'
 
 /**
- * `/capture`（spec/web.md § 14.5）：主屏图标的「记一项」快捷方式、从别的应用分享、hub 回的 303 都落在这里。
+ * `/capture`（spec/web.md § 4.12.1）：主屏图标的「记一项」快捷方式、从别的应用分享、hub 回的 303 都落在这里。
  * 分享的内容由 service worker 存在它自己的库里（`src/sw/share.ts`），这里取出来（取出就删）填进输入框——**不会自动添加**，
  * 用户按了发送才记下。分享的内容从来不在地址里。没有这个处理的 service worker 接管时那次 POST 经过 hub、内容丢了，这里就是空的输入条。
  */

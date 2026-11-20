@@ -1,4 +1,4 @@
-// 「待处理」页的选中和焦点（spec/web.md § 14.2、§ 14.4、§ 4.11）：
+// 「待处理」页的选中和焦点（spec/web.md § 4.11）：
 //   split（≥ 1200px）  选中的条目显示在右半边，默认选中第一条；
 //   overlay（平板）     选中 = 详情从右侧滑出，只在用户操作（点一行、深链接）之后才滑出；
 //   inline（手机）      选中 = 展开，页面打开时默认展开第一条，再点一下收起。
@@ -6,7 +6,8 @@
 // 选中的条目从列表里消失时分两种：
 //   在这个页面上处理的（答复、已处理、归档）→ 选中和焦点落到下一条；
 //   别的方式离开的（别的设备答复了、在会话页答复了、过期了、标记清掉了）→ 不替用户挑下一条（它的按钮会立刻变成可点的，用户没看过内容），
-//   留一个「这一条已经不在等你了」的占位（`ghost`），带「下一条」按钮；用户自己改了节点过滤器导致它离开的，直接清掉选中，不留占位。
+//   留一个「这一条已经不在等你了」的占位（`ghost`），带「下一条」按钮；用户自己改了节点过滤器（切换器、「显示这个节点」「切换到这个空间」）导致它离开的，直接清掉选中，不留占位；
+// 别的原因让它的节点离开当前选择（别的设备改了分组、改名）的，留占位，写明它去了哪里（请求可能还在那个节点上等着）。
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { consumeHandled } from '@/features/session/inflight'
 import type { InboxItem } from './derive'
@@ -34,6 +35,8 @@ export interface Ghost {
   index: number
   /** 它的快照：占位上要写「打开会话」。 */
   item: InboxItem | null
+  /** 它离开列表是因为它的节点离开了当前选择（别的设备改了分组、改名），不是因为它被处理了：请求可能还在那个节点上等着。 */
+  leftSelection: boolean
   /** 它是「等待审批（缓存）」，现在同一个会话的真正的请求到了：占位上给「显示请求」（用户自己点了才选中，没看过内容就不能答复）。 */
   replacedBy: string | null
 }
@@ -70,7 +73,7 @@ export interface InboxSelection {
  * `items`：列表里的条目，按显示顺序。`active`：页面此刻是否在眼前（手机上标签页常驻、只是藏起来，藏着的时候不抢焦点）。
  * `empty`：一条都没有时，焦点落到的元素（「没有等你的事」那个标题）。
  */
-export function useInboxSelection({ items, picked, mode, active, ready, root, empty }: { items: readonly InboxItem[]; /** 左栏节点过滤器勾选的节点。 */ picked: readonly string[]; mode: InboxMode; active: boolean; /** 勾选的节点这一轮同步都定下来了：刚打开页面时条目还在路上，要等它。 */ ready: boolean; root: RefObject<HTMLElement | null>; empty: RefObject<HTMLElement | null> }): InboxSelection {
+export function useInboxSelection({ items, picked, filterMark, mode, active, ready, root, empty }: { items: readonly InboxItem[]; /** 左栏当前选中的节点（空间 / 勾选的节点）。 */ picked: readonly string[]; /** 用户在这个标签页里改节点过滤器的次数（`useFilterMarks`）：变了才算「用户改了过滤器」；别处改了分组、改名、节点被忘记让节点离开选中的集合不算。 */ filterMark: number; mode: InboxMode; active: boolean; /** 勾选的节点这一轮同步都定下来了：刚打开页面时条目还在路上，要等它。 */ ready: boolean; root: RefObject<HTMLElement | null>; empty: RefObject<HTMLElement | null> }): InboxSelection {
   const keys = items.map((i) => i.key)
   const keySig = keys.join('\u0000')
   const [state, setState] = useState<{ key: string | null; explicit: boolean; ghost: Ghost | null; version: number }>({ key: null, explicit: false, ghost: null, version: 0 })
@@ -83,6 +86,7 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
   // 处理完最后一条「稍后」之后：不再替用户默认选中（不跳进「现在」的请求），直到用户自己点 / 按键选了什么
   const noDefault = useRef(false)
   const prevPicked = useRef(picked)
+  const prevFilterMark = useRef(filterMark)
   // 最近一次选中的条目：抽屉关掉时焦点要回到它那一行
   const lastKey = useRef<string | null>(null)
   const pendingFocus = useRef<string | 'empty' | null>(null)
@@ -101,6 +105,8 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
     const cur = current.current
     const beforePicked = prevPicked.current
     prevPicked.current = picked
+    const userChangedFilter = prevFilterMark.current !== filterMark
+    prevFilterMark.current = filterMark
     if (cur.ghost && keys.includes(cur.ghost.key)) {
       // 占位上的条目又回来了（比如请求在重连后重新到了）：占位撤掉
       apply({ ...cur, ghost: null })
@@ -110,8 +116,9 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
       if (cur.ghost?.key === cur.key) return
       const index = Math.max(before.keys.indexOf(cur.key), 0)
       const gone = before.items.get(cur.key) ?? null
-      if (gone && beforePicked.includes(gone.nodeId) && !picked.includes(gone.nodeId)) {
-        // 用户自己改了节点过滤器（这一次从勾上变成没勾），它才从列表里离开：不是「没了」，清掉选中就行。
+      if (gone && userChangedFilter && beforePicked.includes(gone.nodeId) && !picked.includes(gone.nodeId)) {
+        // 用户自己在这个标签页里改了过滤器（切了空间、取消勾选），它才从列表里离开：不是「没了」，清掉选中就行。
+        // 别处改了节点的分组、节点被忘记也会让节点离开选中的集合，那不是用户改的：走下面的占位，占位上写明它去了哪里。
         // 从通知点进来的、本来就在过滤器之外的那一条不算：它和别的条目一样走占位 / 前进
         apply({ key: null, explicit: cur.explicit, ghost: null })
         return
@@ -132,7 +139,7 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
         if (had && active) pendingFocus.current = next ?? 'empty'
       } else {
         const replacement = gone?.kind === 'waiting' ? items.find((i) => (i.kind === 'permission' || i.kind === 'plan' || i.kind === 'question') && i.sessionId === gone.sessionId) : undefined
-        apply({ key: cur.key, explicit: cur.explicit, ghost: { key: cur.key, index, item: gone, replacedBy: replacement?.key ?? null } })
+        apply({ key: cur.key, explicit: cur.explicit, ghost: { key: cur.key, index, item: gone, replacedBy: replacement?.key ?? null, leftSelection: !!gone && beforePicked.includes(gone.nodeId) && !picked.includes(gone.nodeId) } })
       }
       return
     }
@@ -149,7 +156,7 @@ export function useInboxSelection({ items, picked, mode, active, ready, root, em
     if (first || ready) defaulted.current = true
     // keySig 代表 keys 的内容
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keySig, mode, active, ready, apply, root, picked])
+  }, [keySig, mode, active, ready, apply, root, picked, filterMark])
 
   useEffect(() => {
     const target = pendingFocus.current

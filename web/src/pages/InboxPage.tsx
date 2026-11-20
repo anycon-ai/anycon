@@ -16,7 +16,7 @@ import { useNodesSettled } from '@/features/inbox/useSettled'
 import { useInboxKeys } from '@/features/inbox/useInboxKeys'
 import { formatRelative } from '@/lib/format'
 import { resolveNodeParam, shortNodeId } from '@/lib/ids'
-import { useNodeFilter } from '@/lib/nodeFilter'
+import { useFilterMarks, useNodeFilter } from '@/lib/nodeFilter'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { useNodes } from '@/stores/nodes'
 import { useSessions, type SessionItem } from '@/stores/sessions'
@@ -60,7 +60,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const order = useNodes((s) => s.order)
   const setDefer = useUi((s) => s.setDeferHomeNotice)
 
-  // ---- 通知的目标：不受节点过滤器限制（§ 14.3：不在当前勾选里的内容照常显示，写明它属于哪里，不自动切换） ----
+  // ---- 通知的目标：不受节点过滤器限制（§ 4.13：不在当前选择里的内容照常显示，写明它属于哪里，不自动切换） ----
   const [target, setTarget] = useState<InboxLocate | null>(null)
   const [gone, setGone] = useState<InboxLocate | null>(null)
   const seen = useRef<string | null>(null)
@@ -98,7 +98,8 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const items = useMemo(() => (outside ? [outside, ...mainItems] : mainItems), [outside, mainItems])
 
   const ready = useNodesSettled()
-  const sel = useInboxSelection({ items, picked: pickedNodes, mode, active, ready, root, empty })
+  const filterMark = useFilterMarks((s) => s.n)
+  const sel = useInboxSelection({ items, picked: pickedNodes, filterMark, mode, active, ready, root, empty })
   const { choose } = sel
   versionNow.current = sel.version
   const shown = sel.ghost ? null : (items.find((i) => i.key === sel.selected) ?? null)
@@ -148,7 +149,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const showNode = pickedNodes.length > 1
   const total = nowItems(model).length
   const outsideNote = outside ? { onShow: () => toggle(outside.nodeId, true) } : undefined
-  const detail = sel.ghost ? <GhostDetail item={sel.ghost.item} hasNext={items.length > 0} onNext={sel.next} replacedBy={!!sel.ghost.replacedBy} onShow={() => sel.ghost?.replacedBy && choose(sel.ghost.replacedBy)} /> : shown ? <InboxDetail key={shown.key} item={shown} armed={armed} outside={shown.key === outside?.key ? outsideNote : undefined} /> : null
+  const detail = sel.ghost ? <GhostDetail item={sel.ghost.item} hasNext={items.length > 0} onNext={sel.next} replacedBy={!!sel.ghost.replacedBy} leftSelection={sel.ghost.leftSelection} onShow={() => sel.ghost?.replacedBy && choose(sel.ghost.replacedBy)} /> : shown ? <InboxDetail key={shown.key} item={shown} armed={armed} outside={shown.key === outside?.key ? outsideNote : undefined} /> : null
 
   // 手机上占位出现在选中的那一条原来的位置：序号是在全部条目里的，占位放进它原来所在的那一段（「稍后」的占位不放在「现在」段的末尾）
   const ghostPlace = (() => {

@@ -90,7 +90,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
   const open = (item: ViewTodo): void => void navigate({ to: '/todos/$node/$todo', params: { node: shortNodeId(item.node_id, order), todo: item.id } })
   const targets = (item: ViewTodo): ViewTodo[] => (multi && checked.size > 0 ? flat.filter((x) => checked.has(key(x))) : [item])
 
-  // 键盘（桌面，spec/web.md § 14.11）：J / K 移动，E 完成，Enter 打开，X 多选
+  // 键盘（桌面，spec/web.md § 9）：J / K 移动，E 完成，Enter 打开，X 多选
   useEffect(() => {
     if (!active) return
     const onKey = (e: KeyboardEvent): void => {

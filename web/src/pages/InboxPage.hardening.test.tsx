@@ -1,7 +1,7 @@
 // 「待处理」页的加固（spec/web.md § 4.11）：从通知点进来的、在过滤器之外的条目和别的条目走同样的占位 / 前进规则；
 // 页面藏在后面时什么都不选、不前进、不展开；冷启动的默认展开不在藏着的时候发生；答复的「在这里处理」只认眼前的「待处理」；
 // 平板抽屉关掉时焦点回到存在的东西上。
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionKind, PermissionOption } from '@/protocol'
@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({ navigate: vi.fn(), respond: vi.fn() }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), h.navigate, {}, { pathname: '/inbox' }))
 vi.mock('@/features/session/actions', async (orig) => ({ ...(await orig<object>()), respondPermission: h.respond }))
 
+import { useNodeFilter } from '@/lib/nodeFilter'
 import { InboxPage } from './InboxPage'
 
 const A = 'a'.repeat(32)
@@ -95,7 +96,8 @@ describe('the located item above the list (its node is not ticked)', () => {
     seedPending(req('one', { created_at_ms: 1 }), req('b1', { node_id: B, session_id: 's-b1', created_at_ms: 2 }))
     render(<InboxPage />)
     expect(screen.getByTestId('permission-card')).toHaveAttribute('data-request', 'one')
-    act(() => usePrefs.setState({ sidebarNodes: [B] }))
+    const filter = renderHook(() => useNodeFilter())
+    act(() => filter.result.current.toggle(A, false)) // 用户在切换器里取消勾选
     expect(screen.queryByTestId('inbox-ghost')).toBeNull()
   })
 })
@@ -121,7 +123,8 @@ describe('while the page is hidden (phone) nothing is advanced, selected or expa
     seedPending(req('one', { created_at_ms: 1 }), req('b1', { node_id: B, session_id: 's-b1', created_at_ms: 2 }))
     const { rerender } = render(<InboxPage active />)
     rerender(<InboxPage active={false} />)
-    act(() => usePrefs.setState({ sidebarNodes: [B] }))
+    const filter = renderHook(() => useNodeFilter())
+    act(() => filter.result.current.toggle(A, false)) // 用户在切换器里取消勾选
     rerender(<InboxPage active />)
     expect(screen.queryByTestId('permission-card')).toBeNull()
     expect(screen.queryByTestId('inbox-ghost')).toBeNull()

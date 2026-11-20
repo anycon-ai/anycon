@@ -1,4 +1,4 @@
-// 「记一项」的入口和输入条（spec/web.md § 14.5）：第一行标题、其余正文；发送后留着条并清空；撤销（离线也行）；校验提示；
+// 「记一项」的入口和输入条（spec/web.md § 4.12.1）：第一行标题、其余正文；发送后留着条并清空；撤销（离线也行）；校验提示；
 // 多个节点时的缺省；命令面板的快速记；会话页的引用预填。
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -16,6 +16,7 @@ import { usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
 import { Markdown } from '@/components/Markdown'
 import { captureFromQuote, useCapture } from './capture'
+import { pickDefaultNode } from './defaultNode'
 import { CaptureForm } from './ui/CaptureForm'
 import { messageLink, openCaptureFromMessage } from './ui/MessageTodoMenu'
 import { defaultTodoNode, quickAdd } from './quickAdd'
@@ -396,4 +397,78 @@ describe('a quoted excerpt can never become a link, an image or raw HTML (charac
     }
     expect(cases).toBe(400)
   }, 60_000)
+})
+
+describe('the default node follows the space', () => {
+  const H = 'h'.repeat(32)
+  const W1 = 'w'.repeat(32)
+  const W2 = 'x'.repeat(32)
+  const grouped = (group?: string): NodeInfo => ({ group, capabilities: { todo: true } }) as unknown as NodeInfo
+
+  beforeEach(() => {
+    useNodes.setState({
+      byId: {
+        [H]: nodeEntry({ id: H, name: 'house', info: grouped('Home'), conn: 'ready' }),
+        [W1]: nodeEntry({ id: W1, name: 'office', info: grouped('Work'), conn: 'ready' }),
+        [W2]: nodeEntry({ id: W2, name: 'lab', info: grouped('Work'), conn: 'ready' }),
+      },
+      order: [H, W1, W2],
+      loaded: true,
+    })
+    usePrefs.setState({ sidebarNodes: null, sidebarSpace: null, lastTodoNode: null, lastTodoNodeBySpace: {} })
+  })
+
+  it('pickDefaultNode: the space’s own last node, else the global last if it is selectable, else the first', () => {
+    expect(pickDefaultNode([W1, W2], 'Work', H, { Work: W2 })).toBe(W2)
+    expect(pickDefaultNode([W1, W2], 'Work', H, {})).toBe(W1) // 全局上次的家里节点不在这个空间里
+    expect(pickDefaultNode([W1, W2], 'Work', W2, {})).toBe(W2)
+    expect(pickDefaultNode([H, W1, W2], null, W2, { Work: W1 })).toBe(W2) // 「全部」：上次记到的
+    expect(pickDefaultNode([], 'Work', null, {})).toBeNull()
+  })
+
+  it('in a space the bar defaults to the node last used in that space, and says which node and which space it will go to', () => {
+    usePrefs.setState({ sidebarSpace: 'Work', lastTodoNode: H, lastTodoNodeBySpace: { Work: W2 } })
+    render(<CaptureForm />)
+    expect(screen.getByTestId('capture-node')).toHaveValue(W2)
+    expect(screen.getByTestId('capture-target')).toHaveTextContent('Will be added on lab (space Work).')
+  })
+
+  it('with “All” it is the node last used anywhere; the select is grouped by space', () => {
+    usePrefs.setState({ lastTodoNode: H, lastTodoNodeBySpace: { Work: W2 } })
+    render(<CaptureForm />)
+    const select = screen.getByTestId('capture-node')
+    expect(select).toHaveValue(H)
+    expect([...select.querySelectorAll('optgroup')].map((g) => [g.getAttribute('label'), [...g.querySelectorAll('option')].map((o) => o.textContent)])).toEqual([
+      ['Home', ['house']],
+      ['Work', ['office', 'lab']],
+    ])
+  })
+
+  it('sending remembers the node for its space and globally; the next time in that space it is the default', async () => {
+    const user = userEvent.setup()
+    usePrefs.setState({ sidebarSpace: 'Work' })
+    render(<CaptureForm />)
+    await user.selectOptions(screen.getByTestId('capture-node'), W2)
+    await user.type(screen.getByTestId('capture-input'), 'on the lab{Enter}')
+    await waitFor(() => expect(usePrefs.getState().lastTodoNodeBySpace).toEqual({ Work: W2 }))
+    expect(usePrefs.getState().lastTodoNode).toBe(W2)
+  })
+
+  it('the quick add of the command palette goes to the space’s default node too', async () => {
+    usePrefs.setState({ sidebarSpace: 'Work', lastTodoNodeBySpace: { Work: W2 } })
+    expect(defaultTodoNode()).toBe(W2)
+    usePrefs.setState({ sidebarSpace: 'Home' })
+    expect(defaultTodoNode()).toBe(H)
+  })
+
+  it('without any group nothing about spaces is shown: a flat select and the plain “Will be added on …” line', () => {
+    useNodes.setState({
+      byId: { [H]: nodeEntry({ id: H, name: 'house', info: grouped(), conn: 'ready' }), [W1]: nodeEntry({ id: W1, name: 'office', info: grouped(), conn: 'ready' }) },
+      order: [H, W1],
+      loaded: true,
+    })
+    render(<CaptureForm />)
+    expect(screen.getByTestId('capture-node').querySelectorAll('optgroup')).toHaveLength(0)
+    expect(screen.getByTestId('capture-target')).toHaveTextContent(/^Will be added on house\.$/)
+  })
 })

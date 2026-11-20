@@ -1162,7 +1162,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 ## 21. 清单
 
-> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)）也已实现，空间切换除外。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发、决策档案和分身自动唤醒各自实现时再补规格。
+> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发、决策档案和分身自动唤醒各自实现时再补规格。
 
 ### 21.1 范围
 
@@ -1210,7 +1210,7 @@ Todo {
 
 `agent` 这个标记的用处是之后让分身不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
 
-`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。当前自报着 `mcp` 的本机连接发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。这只是接口上的护栏，不是边界：自报是这条连接自己的声明，同一条连接再发 `local.set_client { client: "cli" }` 就和人敲的命令一样了（有 shell 的 agent 本来也能直接这样做，和 `--allow-nested` 一样）。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 14.4](web.md#144-待处理)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
+`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。当前自报着 `mcp` 的本机连接发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。这只是接口上的护栏，不是边界：自报是这条连接自己的声明，同一条连接再发 `local.set_client { client: "cli" }` 就和人敲的命令一样了（有 shell 的 agent 本来也能直接这样做，和 `--allow-nested` 一样）。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 4.11](web.md#411-待处理-inbox)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
 
 `session_id` 是这一项从哪个会话里来的。daemon 拉起 agent 时在环境里注入 `ANYCON_SESSION_ID`（和 `ANYCON_AGENT` 一起，§ 5.5，同样不能被会话 `env` 覆盖；ACP agent 除外，见 § 5.5），`anycon mcp` 和 `anycon todo add` 读到就在 `todo.add` 里带上 `origin_session`；daemon 只在这一项记成 `kind: agent` 时才看它，并且核对这个会话存在才记，否则丢掉这个字段、照常建项。会话之后被删，`session_id` 原样留着，客户端按「会话已不存在」显示。
 
@@ -1263,17 +1263,17 @@ Todo {
 
 每个节点各有一份清单，daemon 之间不通信（ADR-54 第 12 条）。之后的分身连接（[ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定)，还没实现）会让一个节点的 daemon 作为另一个节点的受限设备，在它的清单里记项并派发；清单仍然按节点各有一份。daemon 这边只多一样东西：**分组名**。
 
-- `[hub] group`：文本，≤ 40 个 Unicode 码点，单行（不含控制字符和 U+2028 / U+2029），缺省为空；这条规则对 `config set` 和手写的 `config.toml` 同样成立（加载时校验），和节点显示名（`[hub] name`）放在一起。热加载，加进远程修改的白名单（§ 3，`hub.group`，任意改），所以已配对设备能改，改动照常进审计 `config.changed`；`node.info` 里给出 `group`（旧 daemon 没有这个字段，客户端按空处理）。
+- `[hub] group`：文本，≤ 40 个 Unicode 码点，单行（不含控制字符和 U+2028 / U+2029），缺省为空；这条规则对 `config set` 和手写的 `config.toml` 同样成立（加载时校验），和节点显示名（`[hub] name`）放在一起。热加载，加进远程修改的白名单（§ 3，`hub.group`，任意改），所以已配对设备能改，改动照常进审计 `config.changed`；`node.info` 里给出 `group`（旧 daemon 没有这个字段，客户端按空处理）。配置改变没有通知，别的设备在下一次刷新 `node.info` 之前仍显示旧的分组。
 - 分组名相同（去掉首尾空白、区分大小写）的节点是一组；为空的节点自成一组。它是给客户端看的标签，daemon 不拿它做任何判断，不是访问控制。
 
 合并显示、按分组过滤、把一项移到另一个节点都是客户端的事：
 
 - 合并：对所选的、此刻在线的节点各发 `todo.list`，并成一个列表，每项标着节点；离线的节点用本地缓存，并标明是缓存。
-- 移动：在目标节点 `todo.add`（新的 `id`，内容照搬，`project` 清空——项目名在另一个节点上不一定是同一个项目），成功后在原节点 `todo.delete`。两步之间失败时宁可留下两份，不丢。有来源会话（`source.session_id`）的项移过去之后不带这个字段。目标节点和原节点不同组时，客户端先让用户确认。
+- 移动（**还没实现**，下面是设计）：在目标节点 `todo.add`（新的 `id`，内容照搬，`project` 清空——项目名在另一个节点上不一定是同一个项目），成功后在原节点 `todo.delete`。两步之间失败时宁可留下两份，不丢。有来源会话（`source.session_id`）的项移过去之后不带这个字段。目标节点和原节点不同组时，客户端先让用户确认。只靠客户端缓存判断「目标上的那一份还在」「原节点那一项没变」不可靠（已关闭的项重连后不会重新列、别的标签页可能有没发出去的改动、目标上那一份可能被改过），所以这一项要等 daemon 提供读取单个项（`todo.get`）、带条件的删除（`todo.delete` 带 `if_updated_ms`，对不上就拒绝）和严格递增的 `updated_ms`，再由客户端在节点上做这两个检查。
 
 ### 21.8 客户端入口
 
-- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；显示哪些节点的清单跟随空间切换（空间切换还没做，现在 Web 跟随左栏的节点过滤器）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
+- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；显示哪些节点的清单跟随空间切换（[web.md § 4.13](web.md#413-空间)）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
 - **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
 - **`anycon mcp`**：两个新工具。`list_todos`（`todo.list`，只读）；`add_todo`（`todo.add`：`title`、`body`、`project`；总是带 `agent: true`，连的是本机还是经 hub 都一样）。**`add_todo` 在 anycon 拉起的 agent 里也能用**，不需要 `--allow-nested`：会话里的 agent 记下「之后要处理」正是它的用途，它不开会话、不触发任何 turn，写进去的项标着 `source.kind = agent`。agent 没有修改、关闭、删除清单项的工具。
 - **SDK**：`@anycon/sdk` 的节点对象上有 `todo.*` 的薄封装和 `todo.changed` 事件，类型来自生成的协议类型；不替调用方做离线缓存和重放。Python SDK 不动。

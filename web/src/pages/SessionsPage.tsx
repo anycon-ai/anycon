@@ -7,7 +7,7 @@ import { usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
 
 /**
- * 手机「会话」标签页（`/sessions`，spec/web.md § 14.2）：原来左侧抽屉里的东西——节点过滤、新建项目、搜索、Recent、
+ * 手机「会话」标签页（`/sessions`，spec/web.md § 3.3）：原来左侧抽屉里的东西——节点过滤、新建项目、搜索、Recent、
  * 项目树、临时会话——铺满一屏。桌面上这些就在左栏里，这个页面只给手机用。
  */
 export function SessionsPage() {
@@ -20,7 +20,7 @@ export function SessionsPage() {
   const activeNode = nodeId ?? (lastNode && byId[lastNode] ? lastNode : order[0])
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg-subtle" data-testid="sessions-page">
-      <PageHeader root crumbs={[{ label: t('tabs.sessions') }]} showNodeStatus={false} />
+      <PageHeader root crumbs={[{ label: t('tabs.sessions') }]} showNodeStatus={false} spaceSwitcher={false} />
       <div className="flex min-h-0 flex-1 flex-col pt-3">
         <SessionsPanel nodeId={activeNode} onSearch={() => setPalette(true)} />
       </div>

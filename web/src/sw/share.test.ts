@@ -1,4 +1,4 @@
-// 分享目标的纯逻辑和暂存库（spec/web.md § 8、§ 14.5）。
+// 分享目标的纯逻辑和暂存库（spec/web.md § 8、§ 4.12.1）。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deleteDB, openDB } from 'idb'
 import { CAPTURE_PATH, FIELD_MAX, cut, STASH_TTL_MS, composeSharedText, handleShare, isShareRequest, readFields } from './share'

@@ -4,7 +4,7 @@ import { useMemo, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, ChevronRight, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ShieldQuestion, Smartphone } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { displayHint } from '@/lib/hint'
+import { cleanHintText, displayHint } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
 import { useDeviceLabel, useRespondPermission } from '@/features/session/hooks'
 import { PermissionCard } from '@/features/session/ui/PermissionCard'
@@ -13,6 +13,7 @@ import { useSessions, type SessionItem } from '@/stores/sessions'
 import type { EnrollItem } from '@/stores/enroll'
 import type { ViewTodo } from '@/features/todos/types'
 import { Markdown } from '@/components/Markdown'
+import { useSwitchToNode } from '@/lib/useSwitchToNode'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Chip } from '@/ui/Misc'
@@ -317,27 +318,45 @@ function EnrollSummary({ item, nodeName }: { item: EnrollItem; nodeName: string 
 function OutsideNote({ outside, item }: { outside?: { onShow: () => void }; item: InboxItem }) {
   const { t } = useTranslation()
   const info = useItemInfo(item)
+  const sw = useSwitchToNode(item.nodeId)
   if (!outside) return null
+  // 节点有分组：说它属于哪个空间、「切换到这个空间」；没有分组：原来的「显示这个节点」
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-sm" data-testid="inbox-outside-note">
-      <span className="min-w-0 flex-1">{t('inbox.outsideFilter', { node: info.nodeName })}</span>
-      <Button size="sm" variant="outline" className="max-md:min-h-11" onClick={outside.onShow} data-testid="inbox-show-node">
-        {t('inbox.showNode')}
+      <span className="min-w-0 flex-1">{sw.spaceLabel ? t('spaces.outsideSpace', { space: sw.spaceLabel }) : t('inbox.outsideFilter', { node: info.nodeName })}</span>
+      <Button size="sm" variant="outline" className="max-md:min-h-11" onClick={sw.spaceLabel ? sw.switchTo : outside.onShow} data-testid={sw.spaceLabel ? 'inbox-switch-space' : 'inbox-show-node'}>
+        {sw.spaceLabel ? t('spaces.switchToSpace') : t('inbox.showNode')}
       </Button>
     </div>
   )
 }
 
-/** 选中的条目在别处被处理掉了：不替用户挑下一条，留一个占位（`data-inbox-detail`，Enter 能把焦点移进来）。 */
-export function GhostDetail({ item, hasNext, onNext, replacedBy, onShow }: { item: InboxItem | null; hasNext: boolean; onNext: () => void; /** 占位是被同一个会话的真正请求取代的。 */ replacedBy: boolean; onShow: () => void }) {
+/** 选中的条目不在列表里了：被处理掉了，或者它的节点离开了当前选择（别的设备改了分组）。不替用户挑下一条，留一个占位（`data-inbox-detail`，Enter 能把焦点移进来）。 */
+export function GhostDetail({ item, hasNext, onNext, replacedBy, leftSelection, onShow }: { item: InboxItem | null; hasNext: boolean; onNext: () => void; /** 占位是被同一个会话的真正请求取代的。 */ replacedBy: boolean; /** 它离开是因为它的节点离开了当前选择，不是因为被处理了。 */ leftSelection: boolean; onShow: () => void }) {
   const { t } = useTranslation()
   const sessionId = item && 'sessionId' in item ? item.sessionId : undefined
   const order = useNodes((s) => s.order)
+  // 节点还在（仍然配对着）、只是现在不在当前选择里：请求可能还在那边等着。说它离开了选择、节点叫什么、现在在哪个空间（没有空间就说没有），给切换过去的按钮
+  const entry = useNodes((s) => (item ? s.byId[item.nodeId] : undefined))
+  const sw = useSwitchToNode(item?.nodeId ?? '')
+  const moved = leftSelection && item !== null && entry !== undefined
+  const nodeName = cleanHintText(entry?.name) || (item?.nodeId.slice(0, 8) ?? '')
   return (
     <div className="space-y-2 rounded-lg border border-border bg-bg-subtle p-3" role="status" data-inbox-detail data-testid="inbox-ghost">
-      <p className="text-sm font-medium">{replacedBy ? t('inbox.detailsArrived') : t('inbox.noLongerWaiting')}</p>
-      <p className="text-sm text-fg-muted">{replacedBy ? t('inbox.detailsArrivedBody') : t('inbox.noLongerWaitingBody')}</p>
+      <p className="text-sm font-medium">{moved ? t('inbox.leftSelection') : replacedBy ? t('inbox.detailsArrived') : t('inbox.noLongerWaiting')}</p>
+      {moved ? (
+        <p className="text-sm text-fg-muted" data-testid="inbox-ghost-moved">
+          {sw.spaceLabel ? t('spaces.movedTo', { node: nodeName, space: sw.spaceLabel }) : t('spaces.movedToNone', { node: nodeName })}
+        </p>
+      ) : (
+        <p className="text-sm text-fg-muted">{replacedBy ? t('inbox.detailsArrivedBody') : t('inbox.noLongerWaitingBody')}</p>
+      )}
       <div className="flex flex-wrap gap-2">
+        {moved ? (
+          <Button size="sm" variant="outline" className="max-md:min-h-11" onClick={sw.switchTo} data-testid={sw.spaceLabel ? 'inbox-ghost-switch-space' : 'inbox-ghost-show-node'}>
+            {sw.spaceLabel ? t('spaces.switchToSpace') : t('inbox.showNode')}
+          </Button>
+        ) : null}
         {replacedBy ? (
           <Button size="sm" variant="primary" className="max-md:min-h-11" onClick={onShow} data-testid="inbox-ghost-show">
             {t('inbox.showRequest')}

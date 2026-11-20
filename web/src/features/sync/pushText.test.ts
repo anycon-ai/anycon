@@ -97,3 +97,24 @@ describe('push texts for the session categories and the test push', () => {
     expect(genericPushText(en)).toEqual({ title: 'Anycon has something new', tag: 'anycon', url: '/' })
   })
 })
+
+describe('the space name on the second line', () => {
+  const en = i18n.getFixedT('en')
+  const zh = i18n.getFixedT('zh')
+  const session = { id: 'sess_abc123', title: 'Fix login' }
+  const node = { id: 'n'.repeat(32), name: 'mac-mini' }
+
+  it('a node with a group: the space is next to the node name; without a group (or a blank one, or a cache that has none) it is just the node name', () => {
+    expect(pushText(en, { category: 'turn_finished', node: { ...node, group: 'Work' }, session }).body).toBe('On mac-mini · Work')
+    expect(pushText(zh, { category: 'turn_finished', node: { ...node, group: 'Work' }, session }).body).toBe('来自 mac-mini · Work')
+    for (const group of [undefined, null, '', '   ']) expect(pushText(en, { category: 'turn_finished', node: { ...node, group }, session }).body).toBe('On mac-mini')
+    expect(pushText(en, { category: 'turn_finished', node, session }).body).toBe('On mac-mini')
+  })
+
+  it('the group is untrusted text: control and bidi characters are cleaned and it is truncated', () => {
+    const body = pushText(en, { category: 'error', node: { ...node, group: `Wo\u202Er\u0007k${'x'.repeat(80)}` }, session }).body ?? ''
+    expect(body).not.toContain('\u202E')
+    expect(body).not.toContain('\u0007')
+    expect([...body].length).toBeLessThan(80)
+  })
+})

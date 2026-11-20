@@ -1,4 +1,4 @@
-// 手机上标签页常驻（spec/web.md § 14.2）：切走再切回来，滚动位置和没发出去的输入还在；进二级页时藏起来、不能被读屏 / 键盘够到。
+// 手机上标签页常驻（spec/web.md § 3.3）：切走再切回来，滚动位置和没发出去的输入还在；进二级页时藏起来、不能被读屏 / 键盘够到。
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'

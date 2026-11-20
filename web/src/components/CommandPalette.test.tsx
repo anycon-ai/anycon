@@ -447,3 +447,41 @@ describe('command palette — Enter never records a to-do by accident', () => {
     expect(addRow).not.toHaveAttribute('aria-current')
   })
 })
+
+describe('command palette — content search follows the space', () => {
+  const W1 = 'w'.repeat(32)
+  const W2 = 'x'.repeat(32)
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    rpc = new FakeRpc()
+    setRpc(rpc)
+    rpc.handlers['session.search'] = () => ({ hits: [] })
+    const grouped = (group: string): NodeInfo => ({ group, capabilities: { todo: true } }) as unknown as NodeInfo
+    useNodes.setState({
+      byId: { [NODE]: nodeEntry({ id: NODE, name: 'house', info: grouped('Home') }), [W1]: nodeEntry({ id: W1, name: 'office', info: grouped('Work') }), [W2]: nodeEntry({ id: W2, name: 'lab', info: grouped('Work') }) },
+      order: [NODE, W1, W2],
+      loaded: true,
+    })
+  })
+  afterEach(() => {
+    setRpc(null)
+    vi.useRealTimers()
+    usePrefs.setState({ sidebarSpace: null })
+  })
+
+  it('only the selected space’s online nodes are searched', async () => {
+    usePrefs.setState({ sidebarNodes: null, sidebarSpace: 'Work' })
+    render(<CommandPalette open onOpenChange={() => {}} />)
+    typeQuery('parser')
+    await settle(400)
+    expect(searches().map((c) => c.nodeId).sort()).toEqual([W1, W2].sort())
+  })
+
+  it('“All” searches every node', async () => {
+    usePrefs.setState({ sidebarNodes: null, sidebarSpace: null })
+    render(<CommandPalette open onOpenChange={() => {}} />)
+    typeQuery('parser')
+    await settle(400)
+    expect(searches().map((c) => c.nodeId).sort()).toEqual([NODE, W1, W2].sort())
+  })
+})

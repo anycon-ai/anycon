@@ -17,7 +17,7 @@ interface TabDef {
   icon: Icon
 }
 
-/** 手机底部标签栏里的导航标签（spec/web.md § 14.2）。正中的「＋」不是标签，是一个动作，见 `TabBar`。 */
+/** 手机底部标签栏里的导航标签（spec/web.md § 3.3）。正中的「＋」不是标签，是一个动作，见 `TabBar`。 */
 export const TABS: readonly TabDef[] = [
   { id: 'inbox', to: '/inbox', labelKey: 'tabs.inbox', icon: Inbox },
   { id: 'todos', to: '/todos', labelKey: 'tabs.todos', icon: ListChecks },

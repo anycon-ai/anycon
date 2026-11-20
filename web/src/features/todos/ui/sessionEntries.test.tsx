@@ -1,4 +1,4 @@
-// 会话页的两个入口（spec/web.md § 14.5）：消息「⋯」菜单里的「记到清单」、选中文字后浮出的按钮。只预填输入条，不直接记。
+// 会话页的两个入口（spec/web.md § 4.12.1）：消息「⋯」菜单里的「记到清单」、选中文字后浮出的按钮。只预填输入条，不直接记。
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

@@ -1,4 +1,4 @@
-// 桌面左栏顶部的导航（spec/web.md § 3.1、§ 14.2）：「待处理」带「现在」的个数，在会话树上面；节点菜单里有「节点首页」。
+// 桌面左栏顶部的导航（spec/web.md § 3.1）：「待处理」带「现在」的个数，在会话树上面；节点菜单里有「节点首页」。
 import type { ReactNode } from 'react'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

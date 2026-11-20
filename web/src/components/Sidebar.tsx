@@ -1,24 +1,21 @@
 import { useMemo, useState, type HTMLAttributes } from 'react'
 import { Link, useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, ChevronRight, Flag, ListChecks, FolderGit2, FolderPlus, Home, Inbox, Lock, LogOut, Pin, PinOff, Plus, ScanLine, Search, Server, ServerOff, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Flag, ListChecks, FolderGit2, FolderPlus, Inbox, LogOut, Pin, PinOff, Plus, ScanLine, Search, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { useDevices, useMe } from '@/api/queries'
+import { useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
 import { resetClientState, signOut as signOutOfHub } from '@/app/session'
 import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
-import { accountNodes, lockedNodes, removedNodes, unlockParam } from '@/features/unlock/nodes'
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
-import { useInboxNowCount, useInboxOutsideCount } from '@/features/inbox/useInbox'
+import { useInboxNowCount } from '@/features/inbox/useInbox'
 import { useCapture } from '@/features/todos/capture'
 import { useTodoAvailable } from '@/features/todos/store'
 import { useOpenTodoCount } from '@/features/todos/useOpenTodoCount'
 import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
 import { useEnroll } from '@/stores/enroll'
-import { cleanHintText } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
 import { useNodeFilter } from '@/lib/nodeFilter'
-import { connectionTone } from './useConnectionLabel'
 import { SessionDot, UnreadDot } from './StatusDot'
 import { useHub } from '@/stores/hub'
 import { useNewProject } from '@/stores/newProject'
@@ -28,9 +25,10 @@ import { useSessions, type SessionItem } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
-import { Menu, MenuCheckboxItem, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '@/ui/Menu'
-import { Chip, Dot } from '@/ui/Misc'
+import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/ui/Menu'
+import { Chip } from '@/ui/Misc'
 import { Logo } from './Logo'
+import { SpaceSwitcher } from './SpaceSwitcher'
 import { RemoveDeviceDialog } from './RemoveDeviceDialog'
 import { SignOutDialog } from './SignOutDialog'
 
@@ -195,7 +193,7 @@ export function SessionsPanel({ nodeId, onNavigate, onSearch }: { nodeId: string
     <>
       <div className="flex items-stretch gap-2 px-3 pb-2">
         <div className="min-w-0 flex-1">
-          <NodeSwitcher nodeId={nodeId} onNavigate={onNavigate} />
+          <SpaceSwitcher nodeId={nodeId} onNavigate={onNavigate} />
         </div>
         {newProject ? (
           <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('project.new')} title={t('project.new')} onClick={newProject} data-testid="sidebar-new-project-button">
@@ -398,132 +396,6 @@ function SessionRow({ nodeParam, nodeName, project, id, title, status, pending, 
       {unread && !active ? <UnreadDot /> : null}
       {pending > 0 ? <Chip tone="warning">{pending}</Chip> : null}
     </Link>
-  )
-}
-
-/** 节点过滤：勾选哪些节点，左栏就显示这些节点上的所有项目；多选，点一下只切换勾选，菜单不关。 */
-function NodeSwitcher({ nodeId, onNavigate }: { nodeId: string | undefined; onNavigate?: () => void }) {
-  const { t } = useTranslation()
-  const nodes = useNodes((s) => s.byId)
-  const order = useNodes((s) => s.order)
-  const navigate = useNavigate()
-  const { selected, toggle } = useNodeFilter()
-  // 账号下、这个浏览器还没解锁的节点（ADR-36）：列在下拉底部，带锁图标，点了去 /unlock/:node
-  const devices = useDevices()
-  const account = accountNodes(devices.data)
-  const locked = lockedNodes(devices.data, order)
-  // 这个浏览器里有、账号下已经没有的节点（在别的设备上被移除了）：点了去它的页面，那里可以忘记它
-  const removed = removedNodes(
-    devices.data,
-    devices.dataUpdatedAt ?? 0,
-    order.map((id) => ({ id, pairedAt: nodes[id]?.pairedAt ?? Number.POSITIVE_INFINITY })),
-  )
-  // 没勾选的节点上有等你的事：按钮上一个小点（带文字说明，不只靠颜色）
-  const outside = useInboxOutsideCount()
-  const only = selected.length === 1 ? nodes[selected[0]!] : undefined
-  const label = only ? only.name : selected.length === order.length && selected.length > 0 ? t('sidebar.allNodes') : selected.length > 0 ? t('sidebar.nodesSelected', { count: selected.length, total: order.length }) : t('sidebar.chooseNode')
-  return (
-    <Menu>
-      <MenuTrigger asChild>
-        <button type="button" data-testid="node-switcher" className="flex w-full items-center gap-2 rounded-md border border-border-strong bg-bg px-2.5 py-2 text-left text-sm hover:bg-bg-hover">
-          <Server className="size-4 shrink-0 text-fg-subtle" />
-          <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
-          {only ? <Dot tone={connectionTone(only.conn)} /> : null}
-          {outside > 0 ? <span role="img" aria-label={t('sidebar.otherNodesWaiting', { count: outside })} title={t('sidebar.otherNodesWaiting', { count: outside })} className="size-2.5 shrink-0 rounded-full bg-warning ring-2 ring-bg" data-testid="node-filter-dot" /> : null}
-          <ChevronDown className="size-4 shrink-0 text-fg-subtle" />
-        </button>
-      </MenuTrigger>
-      <MenuContent className="w-[var(--radix-dropdown-menu-trigger-width)]">
-        <MenuLabel>{t('sidebar.nodes')}</MenuLabel>
-        {order.map((id) => {
-          const n = nodes[id]
-          if (!n) return null
-          return (
-            <MenuCheckboxItem key={id} testId="node-filter-item" checked={selected.includes(id)} onCheckedChange={(on) => toggle(id, on)} icon={<Dot tone={connectionTone(n.conn)} className="mt-1.5" />}>
-              <span className="truncate">{n.name}</span>
-            </MenuCheckboxItem>
-          )
-        })}
-        {locked.length > 0 ? (
-          <>
-            <MenuSeparator />
-            <MenuLabel>{t('sidebar.locked')}</MenuLabel>
-            {locked.map((n) => (
-              <MenuItem
-                key={n.id}
-                testId="node-locked"
-                icon={<Lock className="mt-0.5 size-4 text-fg-subtle" aria-hidden />}
-                hint={t('sidebar.lockedHint')}
-                onSelect={() => {
-                  onNavigate?.()
-                  void navigate({ to: '/unlock/$node', params: { node: unlockParam(n, account) } })
-                }}
-              >
-                <span className="truncate">{cleanHintText(n.name) || n.id.slice(0, 8)}</span>
-              </MenuItem>
-            ))}
-          </>
-        ) : null}
-        {removed.length > 0 ? (
-          <>
-            <MenuSeparator />
-            <MenuLabel>{t('sidebar.removed')}</MenuLabel>
-            {removed.map((id) => (
-              <MenuItem
-                key={id}
-                testId="node-removed"
-                icon={<ServerOff className="mt-0.5 size-4 text-fg-subtle" aria-hidden />}
-                hint={t('sidebar.removedHint')}
-                onSelect={() => {
-                  onNavigate?.()
-                  void navigate({ to: '/n/$node', params: { node: shortNodeId(id, order) } })
-                }}
-              >
-                <span className="truncate">{nodes[id]?.name ?? id.slice(0, 8)}</span>
-              </MenuItem>
-            ))}
-          </>
-        ) : null}
-        <MenuSeparator />
-        {nodeId ? (
-          <MenuItem
-            icon={<Home className="size-4" />}
-            testId="node-home"
-            // 节点首页（项目、临时会话、最近会话）：首页换成「待处理」之后从这里进
-            hint={order.length > 1 ? nodes[nodeId]?.name : undefined}
-            onSelect={() => {
-              onNavigate?.()
-              void navigate({ to: '/n/$node', params: { node: shortNodeId(nodeId, order) } })
-            }}
-          >
-            {t('sidebar.nodeHome')}
-          </MenuItem>
-        ) : null}
-        {nodeId ? (
-          <MenuItem
-            icon={<Settings className="size-4" />}
-            // 设置属于某一个节点：勾了几个节点时写明是哪个（页面当前所在的那个）
-            hint={order.length > 1 ? nodes[nodeId]?.name : undefined}
-            onSelect={() => {
-              onNavigate?.()
-              void navigate({ to: '/n/$node/settings', params: { node: shortNodeId(nodeId, order) } })
-            }}
-          >
-            {t('sidebar.nodeSettings')}
-          </MenuItem>
-        ) : null}
-        <MenuItem
-          icon={<Plus className="size-4" />}
-          onSelect={() => {
-            onNavigate?.()
-            void navigate({ to: '/pair' })
-          }}
-          testId="node-add"
-        >
-          {t('sidebar.addNode')}
-        </MenuItem>
-      </MenuContent>
-    </Menu>
   )
 }
 

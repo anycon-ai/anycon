@@ -50,7 +50,7 @@ export function useShortcuts(): void {
           return
         }
         if (key === 'c' && todoAvailable.current) {
-          // 记一项：任何页面一个键，输入，回车；不离开当前页面（spec/web.md § 14.5）
+          // 记一项：任何页面一个键，输入，回车；不离开当前页面（spec/web.md § 4.12.1）
           e.preventDefault()
           useCapture.getState().openCapture()
           return

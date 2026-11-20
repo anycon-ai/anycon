@@ -3,6 +3,7 @@
 // `registration.showNotification` 弹一条和 push 同样的通知（同样的文案、同样的 `tag`，点击也由 service worker 的 `notificationclick` 处理）。
 // 页面在前台时不弹：那是应用内的 toast / 横幅。没开推送也不弹：在设置里点了「关闭」、或退出登录时退订了，就是「这台浏览器不要通知」，
 // 通知权限还在不算数——否则公用电脑上退出登录之后，下一个人还会看到你的会话标题。
+import { groupOf } from '@/lib/spaces'
 import type { TFunction } from 'i18next'
 import type { NotifyBody, NotifyCategory } from '@/protocol'
 import { shortNodeId } from '@/lib/ids'
@@ -29,6 +30,8 @@ export interface SystemNotifyEnv {
   t: TFunction
   /** 本地已知的节点名 / 会话标题 / 全部节点 id。会话不属于这个节点就当不认识（别拿别的节点的标题）。 */
   nodeName(nodeId: string): string | undefined
+  /** 节点的分组（空间名）；没有就是 undefined。 */
+  nodeGroup?(nodeId: string): string | undefined
   sessionTitle(nodeId: string, sessionId: string): string | undefined
   nodeIds(): readonly string[]
 }
@@ -41,6 +44,7 @@ export function defaultEnv(): SystemNotifyEnv {
     pushEnabled: (category) => pushEnabledFor(category),
     t: i18n.t.bind(i18n),
     nodeName: (id) => useNodes.getState().byId[id]?.name,
+    nodeGroup: (id) => groupOf(useNodes.getState().byId[id]?.info) || undefined,
     sessionTitle: (nodeId, sessionId) => {
       const s = useSessions.getState().list[sessionId]
       return s && s.node_id === nodeId ? s.title : undefined
@@ -60,11 +64,11 @@ async function hasSubscription(reg: NotificationTarget): Promise<boolean> {
 }
 
 /** `notify` 信封 → 通知文案（纯函数，和 service worker 里用的是同一个 `pushText`）。 */
-export function textForNotify(env: Pick<SystemNotifyEnv, 't' | 'nodeName' | 'sessionTitle' | 'nodeIds'>, nodeId: string, body: NotifyBody): PushText {
+export function textForNotify(env: Pick<SystemNotifyEnv, 't' | 'nodeName' | 'sessionTitle' | 'nodeIds'> & Partial<Pick<SystemNotifyEnv, 'nodeGroup'>>, nodeId: string, body: NotifyBody): PushText {
   const sessionId = body.session_id ?? null
   return pushText(env.t, {
     category: body.category,
-    node: { id: nodeId, name: env.nodeName(nodeId), param: shortNodeId(nodeId, env.nodeIds()) },
+    node: { id: nodeId, name: env.nodeName(nodeId), group: env.nodeGroup?.(nodeId) ?? null, param: shortNodeId(nodeId, env.nodeIds()) },
     session: sessionId ? { id: sessionId, title: env.sessionTitle(nodeId, sessionId) } : null,
   })
 }

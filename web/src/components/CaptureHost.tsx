@@ -8,7 +8,7 @@ import { useIsWide } from '@/lib/useMediaQuery'
 import { Sheet } from '@/ui/Overlay'
 
 /**
- * 「记一项」的输入条（spec/web.md § 14.5）：手机上是底部弹层（输入框已聚焦、键盘已弹起），桌面是页面顶部的一行输入条——
+ * 「记一项」的输入条（spec/web.md § 4.12.1）：手机上是底部弹层（输入框已聚焦、键盘已弹起），桌面是页面顶部的一行输入条——
  * 在内容列的最上面占一行，不遮当前页面，`Esc` 关掉。两种样子里是同一个表单。`/capture` 页面里直接内联同一个表单，不经过这里。
  */
 export function CaptureHost() {

@@ -216,6 +216,7 @@
     "archive": "归档",
     "review": "查看",
     "waitingBody": "这个会话在等审批。请求的详情只有节点连着的时候才有；打开会话去答复。",
+    "leftSelection": "不在当前选择里了",
     "noLongerWaiting": "这一条已经不在等你了",
     "noLongerWaitingBody": "这一条已经不在列表里了：可能在别处处理了、结束了或过期了。没有替你选中别的条目，免得误答复另一条请求。",
     "detailsArrived": "请求的详情到了",
@@ -290,6 +291,7 @@
     "undo": "撤销",
     "toNode": "节点",
     "willGoTo": "会记到 {{node}} 上。",
+    "willGoToSpace": "会记到 {{node}} 上（空间 {{space}}）。",
     "project": "项目",
     "due": "期望时间",
     "none": "无",
@@ -413,6 +415,48 @@
       "storage": {
         "failed": "没能存在这台设备上（存储已满或不可用），什么都没有改动。"
       }
+    }
+  },
+  "spaces": {
+    "title": "空间",
+    "all": "全部",
+    "manage": "管理空间…",
+    "nodeCount_other": "{{count}} 个节点",
+    "switchLabel": "空间：{{space}}。切换空间",
+    "otherWaiting_other": "别的空间里有 {{count}} 件在等（{{where}}）",
+    "manageTitle": "管理空间",
+    "manageHint": "分组名相同的节点是一个空间。分组名存在每个节点上，所以你的其他设备也看得到。",
+    "nodesSection": "节点",
+    "renameSection": "给空间改名",
+    "pickSpace": "选一个空间",
+    "newName": "新名字",
+    "rename": "改名",
+    "overview": "空间",
+    "mergeAction": "合并",
+    "mergeConfirm": "这会把「{{from}}」合并进「{{to}}」：{{nodes}} 都会在「{{to}}」里。点「合并」继续。",
+    "stillOld": "还在旧名字「{{old}}」下面的：{{nodes}}。它们回来之后再改一次。",
+    "renameGone": "这个空间已经不存在了（它的节点在别处被改了分组）。什么都没改。",
+    "oddName": "这个名字里有看不见的字符或控制符、不常见的空格或编码，可能和另一个名字看起来一样。",
+    "lookalike": "「{{name}}」和已有的空间「{{existing}}」看起来一样，但其实是不同的名字。这样改会多出第二个看起来一模一样的空间。",
+    "useExisting": "用已有的名字",
+    "noGroup": "没有分组",
+    "noSpace": "没有空间",
+    "groupOf": "{{node}} 的分组",
+    "outsideSpace": "它属于空间「{{space}}」，这个空间没有选中。",
+    "movedTo": "「{{node}}」现在在空间「{{space}}」里，这个空间没有选中。这条请求可能还在那边等着。",
+    "movedToNone": "「{{node}}」现在不在任何空间里，所以不在当前选择之内。这条请求可能还在那边等着。",
+    "switchToSpace": "切换到这个空间",
+    "result": {
+      "changed": "已修改。",
+      "unchanged": "本来就是这个名字。",
+      "offline": "不在线，没改。它回来之后再试。"
+    },
+    "errors": {
+      "too_long": "分组名太长了（最多 40 个字符）。",
+      "control": "分组名只能是一行，不能有控制字符。",
+      "invalid": "节点没有接受这个分组名。",
+      "envOverride": "这个节点的分组由环境变量设定，请在那台机器上改。",
+      "other": "没能修改。"
     }
   },
   "toast": {
@@ -1818,6 +1862,7 @@
     "sessionIdle": "{{title}} 空闲了",
     "followUp": "{{title}} 完成了，等你处理",
     "onNode": "来自 {{node}}",
+    "onNodeSpace": "来自 {{node}} · {{space}}",
     "test": "Anycon 测试推送",
     "testBody": "这个浏览器可以收到推送通知。"
   },

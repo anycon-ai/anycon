@@ -1,4 +1,4 @@
-// 「待处理」个数变化的状态播报（spec/web.md § 14.10）：读一整句话，不是只读数字；第一次不播；连着变几次只读最后一句。
+// 「待处理」个数变化的状态播报（spec/web.md § 7）：读一整句话，不是只读数字；第一次不播；连着变几次只读最后一句。
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nodeEntry } from '@/test/factories'

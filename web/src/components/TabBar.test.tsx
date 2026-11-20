@@ -1,4 +1,4 @@
-// 手机底部标签栏（spec/web.md § 14.2）：三个标签、当前页标 `aria-current`、「待处理」带个数、标签栏只在标签页的根页面出现。
+// 手机底部标签栏（spec/web.md § 3.3）：三个标签、当前页标 `aria-current`、「待处理」带个数、标签栏只在标签页的根页面出现。
 import { render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeInfo } from '@/protocol'

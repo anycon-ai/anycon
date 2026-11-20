@@ -14,6 +14,7 @@ import { ScanApproveDialog } from '@/features/approve/ScanApproveDialog'
 import { ApprovalBanner } from './ApprovalBanner'
 import { useUnsavedDraftsGuard } from '@/features/todos/drafts'
 import { CaptureHost } from './CaptureHost'
+import { ManageSpacesDialog } from './ManageSpacesDialog'
 import { HomeNotice } from './HomeNotice'
 import { InboxAnnouncer } from './InboxAnnouncer'
 import { CommandPalette } from './CommandPalette'
@@ -138,6 +139,7 @@ export function AppShell() {
       <InboxAnnouncer />
       <HomeNotice deferred={deepLink} />
       <NewProjectHost />
+      <ManageSpacesDialog />
       {/* 别的设备请求接入时的批准对话框、应用内扫码（ADR-36）：任何页面都能打开 */}
       <EnrollApprovalDialog />
       <ScanApproveDialog />

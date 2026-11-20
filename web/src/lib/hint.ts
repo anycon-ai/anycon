@@ -2,7 +2,7 @@ import type { EnrollHint } from '@/protocol'
 
 // 控制字符（C0 / DEL / C1）、双向控制符和行 / 段分隔符：新设备自报的名字可以带着它们把界面上的文字顺序改掉
 // eslint-disable-next-line no-control-regex
-const UNSAFE = /[\u{0}-\u{1f}\u{7f}-\u{9f}\u{200e}\u{200f}\u{202a}-\u{202e}\u{2066}-\u{2069}\u{2028}\u{2029}]/gu
+const UNSAFE = /[\u{0}-\u{1f}\u{7f}-\u{9f}\u{200e}\u{200f}\u{202a}-\u{202e}\u{2066}-\u{2069}\u{2028}\u{2029}\u{61c}]/gu
 
 /** 把控制字符和双向控制符换成空格（不动其他空白、不截断）：会话里的文字显示前用，不让它改写周围界面文字的顺序。 */
 export function stripUnsafe(value: string): string {

@@ -199,7 +199,8 @@ test.describe.serial('待处理', () => {
     await expect(page).toHaveURL(new RegExp(`/s/${first}$`))
     await expect(page.getByTestId('tab-bar')).toBeHidden()
     // 在会话页答复它（会话页的卡片没有锁）
-    await pendingCard(page).getByTestId('permission-option-allow').click()
+    // 藏在后面的「待处理」标签页里还有同一张卡片（不可见、不可点）：只认看得见的那张
+    await pendingCard(page).filter({ visible: true }).getByTestId('permission-option-allow').click()
     await expect(resolvedCards(page)).toHaveCount(1, { timeout: 15_000 })
     await page.goBack()
     await expect(page).toHaveURL(/\/inbox$/)

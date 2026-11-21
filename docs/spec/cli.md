@@ -186,7 +186,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `send_message` | `session.send` | `session`（id、前缀或 `last`）、`message`、`wait`（缺省 true）、`timeout_seconds`（缺省 50，范围 1–600）。会话处在危险模式时拒绝（见标志） |
 | `cancel_turn` | `session.cancel` | 中断当前 turn |
 | `get_diff` | `session.diff` | `session`、可选 `uncommitted`、`path`；不带 `path` 列文件和行数（≤ 200 个），带 `path` 给补丁（≤ 10 万字符）。在项目目录本身工作的会话只有未提交的改动 |
-| `list_todos` | `todo.list` | 只读。可选 `project`、`include_closed`（缺省不含 `done` / `dropped`）、`limit`（缺省 50，上限 200）、`before`（`{ updated_ms, id }`，取上一页最后一项的这两个值，翻下一页）；每项带 id、标题、正文（≤ 2 000 字符）、项目、状态、截止时间、来源（`source.kind`）和 `unreviewed`；有没给出的项时 `has_more` 为 true |
+| `list_todos` | `todo.list` | 只读。可选 `project`、`include_closed`（缺省不含 `done` / `dropped`）、`limit`（缺省 50，上限 200）、`before`（`{ updated_ms, id }`，取上一页最后一项的这两个值，翻下一页）；每项带 id、标题、正文（≤ 2 000 字符）、项目、状态、截止时间、来源（`source.kind`）和 `unreviewed`；有没给出的项时 `has_more` 为 true（这个版本不认识的来源输出成 `unknown`） |
 | `add_todo` | `todo.add` | `title`（必填，单行 ≤ 200 字符）、`body`、`project`。**总是带 `agent: true`**，连的是本机 socket 还是经 hub 都一样；环境里有 `ANYCON_SESSION_ID`（在 anycon 拉起的 agent 里）时带上 `origin_session`。写进去的项标着 agent 加的、`unreviewed`，节点上这类项最多 100 个（满了得到明确的错误）。**在 anycon 拉起的 agent 里不需要 `--allow-nested`**。**没有**修改、关闭、删除清单项的工具，也不能指定截止时间 |
 
   `wait` 为 true（`create_session` 和 `send_message` 缺省）时，调用等到**这条消息触发的那一轮**结束（会话忙时消息先排队，等的是排在它后面的那个 turn，不是正在跑的这一个；插话进了正在跑的 turn 就等这个 turn），返回 `outcome`：`completed`（`text` 是这一轮助手的文字，工具调用前后的几段之间留一个空行，上限 30 000 字符、超出保留末尾；`usage` 有这一轮和会话累计的用量；`session_status`）、`cancelled`、`failed`（带 `error`）、**`waiting_permission`**（带请求的 `kind` 和 `title`，立即返回，不等超时）、**`still_running`**（超时：`note` 按实际情况说是 turn 还在跑、排在别的 turn 后面，还是因 `sessions.max_concurrent` 在排队；之后用 `read_session` 查）、**`dropped`**（排队的消息没被处理：会话闲着、这条消息没开过 turn，比如有人在它排队时 `anycon cancel` 清了队列，需要的话重发）。`wait: false` 时返回消息已被接受（`send_message`：`sent`、`queued`；`create_session`：新会话的摘要）。**没有任何批准或拒绝权限请求的工具**：`waiting_permission` 要由人在已配对设备上、或用 `anycon approve` / `anycon deny` 处理。
@@ -205,7 +205,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | 命令 | 说明 |
 |---|---|
 | `anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]` | `todo.add`，id 由 CLI 生成（UUID）。打印 `added <id 前 8 位>  <title>`；`--json` 打印这一项。`--body` 是 Markdown（≤ 16 KiB），`--project` 不校验项目是否存在。**`--due`**：`YYYY-MM-DD`（当天 00:00 UTC），或 RFC 3339 时刻（`2026-12-01T09:00:00Z`、`2026-12-01T17:00+08:00`；秒可省，不收小数秒）；别的写法 → 退出码 2。标题为空 / 超过 200 字符 / 含换行、清单已满（1 000 个没关闭的项）也是错误（退出码 2，说明原因） |
-| `anycon todo ls [--all] [--project <name>] [--json]` | `todo.list`，**一页页翻到 `has_more = false`**，按 `id` 去重。缺省只列没关闭的，`--all` 加上 `done` / `dropped`；按最近修改从新到旧。列：ID（前 8 位）、STATE、DUE（UTC）、PROJECT、BY（agent 加的项写 `agent`，没被收下的写 `agent (unreviewed)`）、TITLE；没有项时打印 `no to-dos`。`--json` 是 `{ "todos": [Todo] }` |
+| `anycon todo ls [--all] [--project <name>] [--json]` | `todo.list`，**一页页翻到 `has_more = false`**，按 `id` 去重。缺省只列没关闭的，`--all` 加上 `done` / `dropped`；按最近修改从新到旧。列：ID（前 8 位）、STATE、DUE（UTC）、PROJECT、BY（agent 加的项写 `agent`，没被收下的写 `agent (unreviewed)`；这个版本不认识的来源写 `other`，没被收下的写 `other (unreviewed)`）、TITLE；没有项时打印 `no to-dos`。`--json` 是 `{ "todos": [Todo] }`（CLI 解析之后再输出，不是 daemon 的原始 JSON：这个版本不认识的 `source.kind` 输出成 `"unknown"`） |
 | `anycon todo done <id>` · `drop <id>` · `reopen <id>` | `todo.update { state }`：`done`、`dropped`、`open`。打印新状态和标题；`--json` 打印这一项 |
 | `anycon todo rm <id>` | `todo.delete`（物理删除） |
 

@@ -1,3 +1,4 @@
+import { TodoOriginLink } from '@/features/todos/ui/TodoOrigin'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Archive, ArchiveRestore, Bot, ChevronDown, Download, FolderOpen, Pencil, RotateCw, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -30,6 +31,9 @@ export interface InfoPanelProps {
   backgroundTasks?: number
   workDir?: string
   project?: string | null
+  /** 这个会话是从哪一项清单派出的（`SessionSummary.todo_id`）：概览里列出那一项。 */
+  todoId?: string | null
+  nodeId?: string
   /** 打开工作目录的文件浏览（`/n/:node/files/*`）；没有能打开的目录（项目目录不在了）时不传，工作目录就是普通文字。 */
   onOpenWorkDir?: () => void
   createdAt: number
@@ -161,6 +165,11 @@ export function InfoPanel(p: InfoPanelProps) {
             {t('info.scratch')}
           </Field>
         )}
+        {p.todoId && p.nodeId ? (
+          <Field label={t('info.todo')} testId="info-todo">
+            <TodoOriginLink nodeId={p.nodeId} todoId={p.todoId} className="inline-flex min-w-0 items-center gap-1 font-medium text-accent-text hover:underline" />
+          </Field>
+        ) : null}
         {p.worktree ? (
           <Field label={t('info.branch')} actions={<CopyButton text={p.worktree.branch} iconOnly testId="info-branch-copy" />} testId="info-branch">
             <span className="font-mono text-[0.8125rem] break-all">{p.worktree.branch}</span>

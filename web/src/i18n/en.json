@@ -166,6 +166,8 @@
     "collapse": "Collapse",
     "expand": "Expand",
     "showMore": "Show {{count}} more",
+    "fromTodo": "From the to-do list: {{count}}",
+    "fromTodoRunning": "Running",
     "accountSettings": "Account settings",
     "admin": "Admin",
     "signOut": "Sign out",
@@ -950,6 +952,8 @@
   "session": {
     "view": { "label": "Session view", "chat": "Chat", "changes": "Changes", "preview": "Preview" },
     "pendingCount": "{{count}} waiting",
+    "fromTodo": "From to-do: {{title}}",
+    "todoDeleted": "Its to-do was deleted",
     "archived": "Archived",
     "unread": "Unread output",
     "archivedHint": "Archived · unarchive to send messages",
@@ -1208,6 +1212,7 @@
     "modelAgentDefault": "Agent default"
   },
   "info": {
+    "todo": "To-do",
     "title": "Session info",
     "toggle": "Toggle info panel",
     "session": "Session",
@@ -1620,6 +1625,8 @@
     "compactHint": "Tighter spacing between messages.",
     "sidebarRecent": "Recent sessions in the sidebar",
     "sidebarRecentHint": "List the sessions that are running at the top of the sidebar, so you do not have to look through each project.",
+    "sidebarFoldTodo": "Fold to-do sessions in the sidebar",
+    "sidebarFoldTodoHint": "Under each project, sessions that were started from a to-do collapse into one row. Sessions that need you still show up in the Inbox.",
     "blockZoom": "Block page zoom",
     "blockZoomHintIos": "Tapping a text box no longer zooms the page in. Pinch and double-tap zoom are blocked too.",
     "blockZoomHintAndroid": "Blocks pinch and double-tap zoom. Android's \"Force enable zoom\" accessibility setting still overrides this.",

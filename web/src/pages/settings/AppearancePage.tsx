@@ -66,6 +66,9 @@ export function AppearancePage() {
         <Row label={t('appearance.sidebarRecent')} hint={t('appearance.sidebarRecentHint')}>
           <Switch label={t('appearance.sidebarRecent')} checked={p.sidebarRecent} onCheckedChange={(v) => p.set({ sidebarRecent: v })} testId="sidebar-recent-switch" />
         </Row>
+        <Row label={t('appearance.sidebarFoldTodo')} hint={t('appearance.sidebarFoldTodoHint')}>
+          <Switch label={t('appearance.sidebarFoldTodo')} checked={p.sidebarFoldTodo} onCheckedChange={(v) => p.set({ sidebarFoldTodo: v })} testId="sidebar-fold-todo-switch" />
+        </Row>
         {zoom ? (
           <Row label={t('appearance.blockZoom')} hint={t(zoom === 'ios' ? 'appearance.blockZoomHintIos' : 'appearance.blockZoomHintAndroid')}>
             <Switch label={t('appearance.blockZoom')} checked={p.blockZoom} onCheckedChange={(v) => p.set({ blockZoom: v })} testId="block-zoom" />

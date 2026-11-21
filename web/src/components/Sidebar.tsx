@@ -328,7 +328,14 @@ function ProjectBranch({ nodeParam, nodeName, group, activeNode, activeSession, 
   const { name } = group
   const [open, setOpen] = useState(true)
   const [all, setAll] = useState(false)
-  const shown = all ? group.sessions : group.sessions.slice(0, RECENT_PER_PROJECT)
+  // 从清单项派出的会话收成一行「来自清单 N」（可展开）；外观设置里可以关掉。手动开的会话照旧逐条列
+  const fold = usePrefs((s) => s.sidebarFoldTodo)
+  const fromTodo = fold ? group.sessions.filter((s) => !!s.todo_id) : []
+  const plain = fold ? group.sessions.filter((s) => !s.todo_id) : group.sessions
+  const [foldOpen, setFoldOpen] = useState(false)
+  // 正看着的会话在折叠里时展开它：不能让当前会话从列表里消失
+  const activeInFold = !!activeSession && fromTodo.some((s) => s.id === activeSession)
+  const shown = all ? plain : plain.slice(0, RECENT_PER_PROJECT)
   return (
     <div>
       <div className={cn('group flex items-center rounded-md', activeNode === nodeParam && activeProject === name && !activeSession && 'bg-bg-hover')}>
@@ -357,12 +364,29 @@ function ProjectBranch({ nodeParam, nodeName, group, activeNode, activeSession, 
       </div>
       {open ? (
         <div className="ml-3 pl-1">
+          {fromTodo.length > 0 ? (
+            <div data-testid="sidebar-todo-fold" data-count={fromTodo.length}>
+              <button type="button" aria-expanded={foldOpen || activeInFold} onClick={() => setFoldOpen((v) => !v)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-fg-muted hover:bg-bg-hover" data-testid="sidebar-todo-fold-toggle">
+                {foldOpen || activeInFold ? <ChevronDown className="size-3.5 shrink-0" aria-hidden /> : <ChevronRight className="size-3.5 shrink-0" aria-hidden />}
+                <span className="min-w-0 flex-1 truncate">{t('sidebar.fromTodo', { count: fromTodo.length })}</span>
+                {fromTodo.some((s) => isActiveStatus(s.status)) ? <span className="size-2 shrink-0 rounded-full bg-accent" role="img" aria-label={t('sidebar.fromTodoRunning')} /> : null}
+                {fromTodo.reduce((n, s) => n + s.pending_permissions, 0) > 0 ? <Chip tone="warning">{fromTodo.reduce((n, s) => n + s.pending_permissions, 0)}</Chip> : null}
+              </button>
+              {foldOpen || activeInFold ? (
+                <div className="ml-3 pl-1">
+                  {fromTodo.map((s) => (
+                    <SessionRow key={s.id} nodeParam={nodeParam} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={activeSession === s.id} onNavigate={onNavigate} {...marksOf(s)} />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {shown.map((s) => (
             <SessionRow key={s.id} nodeParam={nodeParam} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={activeSession === s.id} onNavigate={onNavigate} {...marksOf(s)} />
           ))}
-          {!all && group.sessions.length > RECENT_PER_PROJECT ? (
+          {!all && plain.length > RECENT_PER_PROJECT ? (
             <button type="button" className="px-2 py-1 text-xs text-fg-subtle hover:text-fg" onClick={() => setAll(true)}>
-              {t('sidebar.showMore', { count: group.sessions.length - RECENT_PER_PROJECT })}
+              {t('sidebar.showMore', { count: plain.length - RECENT_PER_PROJECT })}
             </button>
           ) : null}
         </div>

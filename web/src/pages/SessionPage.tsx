@@ -28,6 +28,7 @@ import { ArchivedBar } from '@/features/session/ui/ArchivedBar'
 import { FollowUpBar, FollowUpChip, FollowUpToggle } from '@/features/session/ui/FollowUp'
 import { InfoPanel } from '@/features/session/ui/InfoPanel'
 import { BackgroundTasksChip } from '@/features/session/ui/Tasks'
+import { TodoOriginLink } from '@/features/todos/ui/TodoOrigin'
 import { BranchChip } from '@/features/worktree/BranchChip'
 import { ChangesTab } from '@/features/worktree/ChangesTab'
 import { describeArchiveError, describeGitError, describeUnarchiveError } from '@/features/worktree/errors'
@@ -306,6 +307,8 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
       backgroundTasks={backgroundTasks}
       workDir={workDir}
       project={project}
+      todoId={summary?.todo_id ?? null}
+      nodeId={nodeId}
       onOpenWorkDir={workDirFiles === null ? undefined : () => void navigate({ to: '/n/$node/files/$', params: { node: nodeParam, _splat: workDirFiles } })}
       createdAt={summary?.created_at_ms ?? 0}
       options={agent ? activeOptions(agent, baseSettings) : undefined}
@@ -404,6 +407,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
             {viewOptions.length > 1 ? (
               <Segmented size="sm" ariaLabel={t('session.view.label')} value={mainView} onChange={(v) => setMainChoice({ sessionId, view: v })} testId="main-view" options={viewOptions} />
             ) : null}
+            {summary?.todo_id ? <TodoOriginLink nodeId={nodeId} todoId={summary.todo_id} className="inline-flex min-w-0 max-w-40 shrink items-center gap-1 rounded-full bg-bg-muted px-2 py-0.5 text-xs font-medium text-fg-muted hover:text-fg max-sm:hidden" /> : null}
             {dangerousMode ? (
               <Chip tone="danger" testId="mode-chip-dangerous" icon={<ShieldAlert className="size-3" aria-hidden />} className="shrink-0">
                 {dangerousMode.label}

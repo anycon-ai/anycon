@@ -165,6 +165,8 @@
     "collapse": "折叠",
     "expand": "展开",
     "showMore": "再显示 {{count}} 个",
+    "fromTodo": "来自清单 {{count}}",
+    "fromTodoRunning": "运行中",
     "accountSettings": "账号设置",
     "admin": "管理",
     "signOut": "退出登录",
@@ -943,6 +945,8 @@
   "session": {
     "view": { "label": "会话视图", "chat": "聊天", "changes": "改动", "preview": "预览" },
     "pendingCount": "{{count}} 个待审批",
+    "fromTodo": "来自清单项：{{title}}",
+    "todoDeleted": "它来自的清单项已被删除",
     "archived": "已归档",
     "unread": "有未读输出",
     "archivedHint": "已归档 · 取消归档后才能发送消息",
@@ -1197,6 +1201,7 @@
     "modelAgentDefault": "agent 默认"
   },
   "info": {
+    "todo": "清单项",
     "title": "会话信息",
     "toggle": "开合信息面板",
     "session": "会话",
@@ -1602,6 +1607,8 @@
     "compactHint": "缩小消息之间的间距。",
     "sidebarRecent": "侧栏显示运行中的会话",
     "sidebarRecentHint": "在侧栏顶部列出正在运行的会话，不用再到每个项目里去找。",
+    "sidebarFoldTodo": "侧栏里折叠来自清单的会话",
+    "sidebarFoldTodoHint": "每个项目下面，从清单项派出的会话收成一行。有等你的事的会话仍然会出现在「待处理」里。",
     "blockZoom": "禁止页面缩放",
     "blockZoomHintIos": "点输入框时页面不再自动放大，双指和双击缩放也一并禁止。",
     "blockZoomHintAndroid": "禁止双指和双击缩放。系统无障碍里的「强制启用缩放」仍会生效。",

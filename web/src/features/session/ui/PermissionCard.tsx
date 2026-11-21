@@ -3,7 +3,6 @@ import { AlertTriangle, ChevronRight, Clock, ExternalLink, FileEdit, FileText, G
 import { useTranslation } from 'react-i18next'
 import type { PermissionOption, PermissionOptionKind, PermissionRespondParams, Question, ToolCategory } from '@/protocol'
 import { Markdown } from '@/components/Markdown'
-import { TodoOriginLink } from '@/features/todos/ui/TodoOrigin'
 import { isRecord } from '@/lib/guards'
 import { safeHttpUrl } from '@/lib/url'
 import { useNow } from '@/lib/useNow'
@@ -60,8 +59,8 @@ export interface PermissionCardProps {
   settled?: SettledReason
   /** kind = mode_change：目标模式的显示名，以及它是不是危险模式（危险的要醒目警示）。 */
   targetMode?: { label: string; dangerous: boolean }
-  /** 这个会话是从清单项派出的：卡片上写明是哪一项（标题当链接，清理成单行）。 */
-  todoOrigin?: { nodeId: string; todoId: string }
+  /** 这个会话是从清单项派出的：到那一项的链接（`TodoOriginLink`，标题清理成单行），由调用方给；卡片只负责写在哪一行。 */
+  todoOrigin?: ReactNode
 }
 
 /** 权限卡片：三种 kind（tool / plan / question）+ mode_change / other；按钮完全由 options[] 渲染。 */
@@ -160,7 +159,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
         {todoOrigin ? (
           <p className="flex min-w-0 items-center gap-1 text-xs text-fg-muted" data-testid="permission-todo">
             <span className="shrink-0">{t('permission.fromTodo')}</span>
-            <TodoOriginLink nodeId={todoOrigin.nodeId} todoId={todoOrigin.todoId} className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" />
+            {todoOrigin}
           </p>
         ) : null}
         {block.expiresAtMs ? <ExpiryNote at={block.expiresAtMs} /> : null}

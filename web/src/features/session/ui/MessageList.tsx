@@ -21,8 +21,8 @@ const FOLLOW_THRESHOLD_PX = 96
 export interface MessageListProps {
   /** 拉历史里图片附件用的节点（`blob.get`）；不给就只能显示缓存里有的。 */
   nodeId?: string
-  /** 这个会话是从哪一项清单派出的：权限卡片上写明。 */
-  todoId?: string | null
+  /** 这个会话是从哪一项清单派出的：到那一项的链接，权限卡片上写明（会话页给）。 */
+  todoOrigin?: ReactNode
   blocks: Block[]
   pending: PendingMessage[]
   hasMoreOlder: boolean
@@ -160,7 +160,7 @@ function buildRows(p: MessageListProps): Row[] {
               onRespond={p.onRespond}
               busy={p.respondingIds.has(b.requestId)}
               settled={p.settledIds?.get(b.requestId)}
-              todoOrigin={p.nodeId && p.todoId ? { nodeId: p.nodeId, todoId: p.todoId } : undefined}
+              todoOrigin={p.todoOrigin}
               targetMode={b.kind === 'mode_change' && b.detail.mode ? { label: p.modeLabel(b.detail.mode), dangerous: p.isDangerousMode?.(b.detail.mode) ?? false } : undefined}
             />
           ),

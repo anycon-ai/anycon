@@ -9,6 +9,7 @@ import { resetTodosMemory } from '@/features/todos/service'
 import { useTodos } from '@/features/todos/store'
 import { useNodes } from '@/stores/nodes'
 import type { PermissionBlock } from '../reducer'
+import { TodoOriginLink } from '@/features/todos/ui/TodoOrigin'
 import { PermissionCard } from './PermissionCard'
 
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), vi.fn(), {}))
@@ -25,7 +26,7 @@ const block: PermissionBlock = {
   detail: { tool: { tool: 'Bash', category: 'shell', input: { command: 'echo hi' }, cwd: '/work', detail: { command: 'echo hi' } } },
   options: [{ id: 'allow', label: 'Allow', kind: 'allow_once' }],
 }
-const render1 = (todo = true) => render(<PermissionCard block={block} deviceLabel={() => 'you'} onRespond={() => {}} todoOrigin={todo ? { nodeId: N, todoId: 't1' } : undefined} />)
+const render1 = (todo = true) => render(<PermissionCard block={block} deviceLabel={() => 'you'} onRespond={() => {}} todoOrigin={todo ? <TodoOriginLink nodeId={N} todoId="t1" /> : undefined} />)
 
 beforeEach(() => {
   setRpc(new FakeRpc())

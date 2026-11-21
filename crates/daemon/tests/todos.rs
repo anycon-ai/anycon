@@ -597,7 +597,7 @@ async fn a_conditional_delete_of_a_missing_item_is_not_found_and_without_the_con
     let mut c = td.local_cli_client();
     let e = c.call::<Value>(&td, methods::TODO_DELETE, json!({ "id": id(), "if_updated_ms": 1 })).await.unwrap_err();
     assert_eq!(code(&e).0, ErrorCode::NotFound);
-    // 没有条件时和以前一样：不管 updated_ms 是多少都删
+    // 没有给条件时无条件地删：不管 updated_ms 是多少
     let t = add_ok(&td, &mut c, "t").await;
     let _: Value = c.call(&td, methods::TODO_DELETE, json!({ "id": t.id })).await.unwrap();
     td.shutdown().await;
@@ -1112,5 +1112,15 @@ async fn parallel_adds_at_the_caps_let_exactly_one_through() {
         assert_eq!(code(e).2.as_deref(), Some("too_many_unreviewed"));
     }
     assert_eq!(td.ctx.store.todo_count_unreviewed().await.unwrap(), 100);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unknown_source_kind_is_never_written_to_the_store() {
+    let td = TestDaemon::start().await;
+    let mut t = row(&id(), 5, TodoState::Open);
+    t.source.kind = TodoSourceKind::Unknown;
+    assert!(td.ctx.store.todo_insert(&t).await.is_err());
+    assert!(td.ctx.store.todo_get(&t.id).await.unwrap().is_none(), "nothing was stored");
     td.shutdown().await;
 }

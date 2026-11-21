@@ -116,6 +116,8 @@ fn check_due(due_ms: u64) -> RpcResult<u64> {
 // ---------------- 存储 ----------------
 
 fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
+    // 库里不认识的 `source_kind` 字符串（比如降级到旧版本之后读到更新版本写的种类）按 `local` 读：这是一个已知的降级行为，
+    // 旧版本不知道那个种类，更新的版本会把它读回原样。这里不改它。
     let kind = match r.get::<String, _>("source_kind").as_str() {
         "device" => TodoSourceKind::Device,
         "agent" => TodoSourceKind::Agent,
@@ -149,8 +151,9 @@ fn source_kind_str(k: TodoSourceKind) -> &'static str {
         TodoSourceKind::Device => "device",
         TodoSourceKind::Local => "local",
         TodoSourceKind::Agent => "agent",
-        // daemon 自己不产生 `Unknown`（它只在客户端解析更新版本的数据时出现），这里只是让匹配保持完整
-        TodoSourceKind::Unknown => "local",
+        // daemon 自己不产生 `Unknown`（它只在客户端解析更新版本的数据时出现），`todo_insert` 也拒绝写它；
+        // 这里只是让匹配保持完整，并且绝不能落到人的来源上
+        TodoSourceKind::Unknown => "unknown",
     }
 }
 
@@ -180,6 +183,13 @@ impl Store {
     }
 
     pub async fn todo_insert(&self, t: &Todo) -> Result<(), StoreError> {
+        // `Unknown` 只存在于客户端的解析里：daemon 不能把它写进库（读回去会变成别的种类）
+        if t.source.kind == TodoSourceKind::Unknown {
+            return Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a todo cannot have an unknown source kind",
+            )));
+        }
         sqlx::query(
             "INSERT INTO todos (id, title, body, project, state, due_ms, source_kind, source_device, source_session, \
              unreviewed, created_ms, updated_ms, closed_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",

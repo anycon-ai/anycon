@@ -209,7 +209,9 @@ test.describe.serial('规则', () => {
     const detail = page.locator('[data-testid="inbox-detail"][data-kind="rule"]')
     await expect(detail.getByTestId('inbox-rule-text')).toHaveText(RULE_B)
     await expect(detail.getByTestId('rule-source')).toHaveAttribute('data-kind', 'agent')
-    // 刚换到这一条的头一小会儿动作锁着，之后才能点
+    // 刚换到这一条的头一小会儿动作锁着（点开之后立刻是禁用的），之后才能点
+    await expect(detail.getByTestId('inbox-rule-confirm')).toBeDisabled({ timeout: 300 })
+    await expect(detail.getByTestId('inbox-rule-reject')).toBeDisabled({ timeout: 300 })
     await expect(detail.getByTestId('inbox-rule-confirm')).toBeEnabled()
     await detail.getByTestId('inbox-rule-confirm').click()
     await expect.poll(async () => (await ruleWith(RULE_B))?.status).toBe('active')
@@ -253,6 +255,12 @@ test.describe.serial('规则', () => {
     await expect(pane.getByTestId('permission-card')).toHaveAttribute('data-state', 'pending')
     // 清理：答复它（允许一次）
     await pane.getByTestId('permission-option-allow').click()
-    await expect(page.getByTestId('inbox-empty')).toBeVisible({ timeout: 15_000 })
+    // 只看这一条自己：它的卡片不再等答复（共用的 daemon 上别的请求还在不在，和这一步无关）
+    await expect(pane.locator('[data-testid="permission-card"][data-state="pending"]')).toHaveCount(
+      0,
+      {
+        timeout: 15_000,
+      },
+    )
   })
 })

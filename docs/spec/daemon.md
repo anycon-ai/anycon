@@ -1445,7 +1445,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ## 23. 决策档案
 
-> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 客户端。Web 客户端的界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）也已实现。还没有：从会话里自动提炼规则和判断后端（§ 23.9，只有提纲）、同组节点之间的同步（§ 23.8，单独实现）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话。这一半没有任何模型调用。
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。还没有：从会话里自动提炼规则和判断后端（§ 23.9，只有提纲）、同组节点之间的同步（§ 23.8，单独实现）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话。这一半没有任何模型调用。
 
 ### 23.1 范围
 

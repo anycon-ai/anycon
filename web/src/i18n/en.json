@@ -243,7 +243,7 @@
     "addedSince": "Added {{time}}",
     "proposedSince": "Proposed {{time}}",
     "ruleTitle": "A rule is waiting for you",
-    "ruleBody": "This rule will be added to the system prompt of every session a to-do is handed to, exactly as written, once you confirm it. Read it through first.",
+    "ruleBody": "Once you confirm it, this rule is added exactly as written to the system prompt of every session a to-do is handed to, and of the sessions you start yourself if the node is set to do that. Read it through first.",
     "reviewSince": "Ready {{time}}",
     "openChanges": "Open the changes",
     "openReviewPage": "Open the review page",
@@ -330,7 +330,8 @@
       "noAgent": "No agent is ready on this node.",
       "noProject": "Choose a project first: the agent needs somewhere to work.",
       "gitPending": "The node is still reading this project’s git state. Try again in a moment.",
-      "noPush": "{{agent}} cannot block pushes and pull requests: untick “No push, no pull request” to hand it over anyway."
+      "noPush": "{{agent}} cannot block pushes and pull requests: untick “No push, no pull request” to hand it over anyway.",
+      "rulesLoading": "Reading the rules that will be added for this project…"
     },
     "errors": {
       "closed": "This to-do is closed. Reopen it first.",
@@ -1260,7 +1261,8 @@
   },
   "info": {
     "rules": "Rules given to the agent",
-    "rulesNote": "Added to the system prompt when the session was created ({{count}}). Later changes to the rules do not affect this session.",
+    "rulesNote": "Found at the start of this session’s system prompt ({{count}}). A running session does not pick up later changes to the rules.",
+    "rulesUnconfirmed": "Could not confirm that these are the rules the node recorded for this session; its settings may have been changed. This is what its system prompt starts with.",
     "todo": "To-do",
     "title": "Session info",
     "toggle": "Toggle info panel",
@@ -1335,7 +1337,8 @@
   },
   "rules": {
     "title": "Rules",
-    "intro": "Rules tell agents how you work. Active rules are added to the system prompt of the sessions you hand a to-do to. A rule does not approve or deny anything: permission requests still come to you.",
+    "intro": "Rules tell agents how you work. Active rules are added to the system prompt of the sessions you hand a to-do to, and of the sessions you start yourself if the node is set to do that (Settings > Limits). A rule does not approve or deny anything: permission requests still come to you.",
+    "changedWhileSelected": "This rule changed after you selected it, so it is no longer selected. Read it again and select it again.",
     "add": "Add a rule",
     "select": "Select this rule",
     "selectAll": "Select all",
@@ -1424,6 +1427,7 @@
     "errors": {
       "offline": "The node is offline. Rules can be changed when it is back.",
       "changed": "This rule was changed elsewhere while you were looking at it. The new version is shown; check it and try again.",
+      "changedReadAgain": "This rule was changed elsewhere. It is shown as it is now: read it again before you confirm.",
       "changedGone": "This rule was deleted elsewhere. Nothing was saved.",
       "overBudget": "The active rules would take {{bytes}} bytes in one session, and a session gets at most {{cap}}. Merge some rules or disable some first.",
       "overBudgetPlain": "The active rules would be too long for one session. Merge some rules or disable some first.",
@@ -1451,6 +1455,8 @@
       "note": "A rule does not approve anything. It only tells the agent how you work; the next request still comes to you. This request is not answered by saving it.",
       "agentWrote": "The agent wrote",
       "yourChoice": "Your choice",
+      "howYouWouldAnswer": "How you would answer. This only fills in the rule text.",
+      "editFirst": "Put it in your own words first: change the text before saving.",
       "noAnswer": "Nothing chosen yet. Choose in the request first, or write the rule yourself.",
       "notAnswered": "This does not answer the request.",
       "prefillQuestion": "When asked “{{question}}”, my answer is: {{answer}}.",

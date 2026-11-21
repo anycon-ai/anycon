@@ -1,5 +1,6 @@
 // 清单页的分组、过滤、排序（spec/web.md § 4.12）。纯函数。
 import { groupOf, type TodoGroup } from './outbox'
+import { isHumanSource } from './source'
 import type { ViewTodo } from './types'
 
 export type SourceFilter = 'all' | 'mine' | 'agent'
@@ -20,7 +21,8 @@ export const inList = (t: ViewTodo): boolean => !t.unreviewed
 export function matches(t: ViewTodo, f: TodoFilters): boolean {
   if (f.project !== null && (t.project ?? null) !== f.project) return false
   if (f.source === 'agent' && t.source.kind !== 'agent') return false
-  if (f.source === 'mine' && t.source.kind === 'agent') return false
+  // 「我记的」只算人记的：不认识的来源不算
+  if (f.source === 'mine' && !isHumanSource(t.source)) return false
   return true
 }
 

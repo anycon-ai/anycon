@@ -15,6 +15,7 @@ import { setTodoState } from '../actions'
 import { changedElsewhere, dirtyFields, draftKey, useDrafts, type EditField, type EditValues } from '../drafts'
 import { deleteTodo, discardOp, retryOp, updateTodo } from '../service'
 import { useTodos } from '../store'
+import { isAgentSource, isHumanSource, isOtherSource } from '../source'
 import { isClosed, UI_STATES, type UpdateFields, type ViewTodo } from '../types'
 import { cleanHintText } from '@/lib/hint'
 import { cleanOneLine, type FieldError } from '../validate'
@@ -104,15 +105,20 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   }
 
   // 单击「收下」的 agent 项：没有编辑控件，只有收下 / 丢掉（spec/web.md § 4.11、§ 4.12）
-  const pendingReview = item.unreviewed && item.source.kind === 'agent'
+  // 只有 agent 项、或自己带着 `unreviewed` 的不认识的来源，才走「收下 / 丢掉」；人记的 `unreviewed` 恒为 false
+  const pendingReview = item.unreviewed && !isHumanSource(item.source)
 
   const states = item.state === 'waiting' || item.state === 'review' ? [...UI_STATES, item.state] : UI_STATES
   return (
     <div className="space-y-4" data-testid="todo-detail" data-id={item.id}>
       <div className="flex flex-wrap items-center gap-2">
-        {item.source.kind === 'agent' ? (
+        {isAgentSource(item.source) ? (
           <Chip tone="info" icon={<Bot className="size-3" aria-hidden />}>
             {t('todos.byAgent')}
+          </Chip>
+        ) : isOtherSource(item.source) ? (
+          <Chip tone="info" icon={<Bot className="size-3" aria-hidden />} testId="todo-auto">
+            {t('todos.byOther')}
           </Chip>
         ) : null}
         {item.failed ? <Chip tone="danger">{t('todos.notSaved')}</Chip> : item.unsynced ? <Chip tone="warning">{t('todos.notSynced')}</Chip> : null}
@@ -259,7 +265,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
       </div>
       )}
 
-      {item.source.kind === 'agent' ? (
+      {isAgentSource(item.source) ? (
         <p className="text-sm text-fg-muted" data-testid="todo-source">
           {item.source.session_id ? (
             sessionKnown ? (

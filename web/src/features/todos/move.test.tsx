@@ -1,5 +1,6 @@
 // 把一项移到另一个节点（docs/spec/daemon.md § 21.7）：先在目标 `todo.add`（新 id、项目清掉、不带来源会话），目标确认了才在原节点 `todo.delete`；
-// 中间失败宁可留两份；两个节点都要在线、这一项没有没发出去的改动、没收下的 agent 项和有没存编辑的项不能移；跨空间先确认。
+// 「原节点那一项没变」「目标上的那一份还在」都在节点上检查（`todo.get`、带 `if_updated_ms` 的删除），不看这个标签页的缓存。
+// 所以这里的测试让假 daemon 和浏览器缓存分叉：节点上的状态变了、缓存还是旧的。
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,7 +13,7 @@ import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { useUi } from '@/stores/ui'
 import { useDrafts } from './drafts'
-import { abandonMove, crossesSpace, moveBlock, moveKey, moveTodo, removeCopy, resetMoves, resumeMove, useMoves } from './move'
+import { abandonMove, canDeleteCopy, crossesSpace, moveBlock, moveKey, moveTodo, removeCopy, resetMoves, resumeMove, useMoves } from './move'
 import { resetTodosMemory, syncTodos } from './service'
 import { useTodos, viewOf } from './store'
 import { MoveTodoDialog } from './ui/MoveTodoDialog'
@@ -24,7 +25,7 @@ const info = (group?: string, todo = true): NodeInfo => ({ group, capabilities: 
 
 let rpc: FakeRpc
 const daemons: Record<string, FakeTodoDaemon> = {}
-/** 两个节点共用一条总的请求日志（带节点），断言「先 add 后 delete」。 */
+/** 两个节点共用一条总的请求日志（带节点），断言请求的顺序。 */
 let log: string[] = []
 
 function install(): void {
@@ -38,11 +39,15 @@ function install(): void {
     log.push(`${nodeId[0]}:${method}`)
     return daemons[nodeId]!.routeFor(method)(p, nodeId)
   }
-  for (const m of ['todo.list', 'todo.add', 'todo.update', 'todo.delete']) rpc.handlers[m] = route(m)
+  for (const m of ['todo.list', 'todo.get', 'todo.add', 'todo.update', 'todo.delete']) rpc.handlers[m] = route(m)
 }
 
 const view = (node: string) => viewOf(useTodos.getState(), [node])
 const itemOnSrc = (): ReturnType<typeof view>[number] => view(SRC).find((v) => v.id === 'it')!
+const entryOf = () => useMoves.getState().moves[moveKey(SRC, 'it')]
+/** 这个请求日志里发给原节点 / 目标的 `todo.delete` 的参数。 */
+const deleteCalls = (node: string) => rpc.calls.filter((c) => c.nodeId === node && c.method === 'todo.delete').map((c) => c.params)
+const errorToasts = () => useUi.getState().toasts.filter((x) => x.kind === 'error')
 
 beforeEach(async () => {
   await db.resetDb()
@@ -65,6 +70,7 @@ beforeEach(async () => {
   useUi.setState({ toasts: [] })
   daemons[SRC]!.seed(todoItem({ id: 'it', title: 'move me', body: 'some **body**', project: 'api', due_ms: 1_800_000_000_000, source: { kind: 'device', device_id: 'd', session_id: 'sess-1' } as never, updated_ms: 5 }))
   await syncTodos(SRC)
+  rpc.calls = []
   log = []
 })
 afterEach(() => {
@@ -72,11 +78,22 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** 让原节点那一项变成「已关闭」，缓存和节点一致。 */
+async function closeOnSource(state: 'done' | 'dropped' = 'done'): Promise<void> {
+  daemons[SRC]!.todos.set('it', { ...daemons[SRC]!.todos.get('it')!, state, closed_ms: 9 })
+  await syncTodos(SRC)
+  useTodos.getState().mergeItems(SRC, [daemons[SRC]!.todos.get('it')!])
+  log = []
+  rpc.calls = []
+}
+
 describe('moving', () => {
-  it('adds on the target first (new id, same title / body / due, no project, no source session) and deletes on the source only after the target confirmed', async () => {
-    const r = await moveTodo(itemOnSrc(), SAME)
+  it('reads the source, adds on the target (new id, same title / body / due, no project, no source session), reads the copy, and deletes the source only with the confirmed updated_ms', async () => {
+    const base = itemOnSrc()
+    const r = await moveTodo(base, SAME)
     expect(r.ok).toBe(true)
-    expect(log).toEqual(['m:todo.add', 's:todo.delete'])
+    expect(log).toEqual(['s:todo.get', 'm:todo.add', 'm:todo.get', 's:todo.delete'])
+    expect(deleteCalls(SRC)).toEqual([{ id: 'it', if_updated_ms: base.updated_ms }])
     const moved = [...daemons[SAME]!.todos.values()][0]!
     expect(moved.id).not.toBe('it')
     expect(r.ok && moved.id).toBe(r.ok ? r.newId : '')
@@ -85,93 +102,163 @@ describe('moving', () => {
     expect(moved.source.kind).toBe('device')
     expect((moved.source as { session_id?: string }).session_id).toBeUndefined()
     expect(daemons[SRC]!.todos.has('it')).toBe(false)
-    // 界面上：原节点的没了，目标上有了
     expect(view(SRC)).toEqual([])
     expect(view(SAME).map((v) => v.title)).toEqual(['move me'])
+    expect(entryOf()).toBeUndefined()
   })
 
   it('a closed item stays closed on the target (the state is carried with an update after the add)', async () => {
-    daemons[SRC]!.todos.set('it', { ...daemons[SRC]!.todos.get('it')!, state: 'done', closed_ms: 9 })
-    await syncTodos(SRC)
-    useTodos.getState().mergeItems(SRC, [daemons[SRC]!.todos.get('it')!])
-    log = []
+    await closeOnSource()
     const r = await moveTodo(itemOnSrc(), SAME)
     expect(r.ok).toBe(true)
-    expect(log).toEqual(['m:todo.add', 'm:todo.update', 's:todo.delete'])
+    expect(log).toEqual(['s:todo.get', 'm:todo.add', 'm:todo.update', 'm:todo.get', 's:todo.delete'])
     expect([...daemons[SAME]!.todos.values()][0]).toMatchObject({ state: 'done' })
   })
 
-  it('the target refuses (list full): nothing changed, no delete is sent, the item stays', async () => {
+  it('the target refuses (list full): nothing changed, nothing is deleted, the item stays', async () => {
     daemons[SAME]!.openLimit = 0
     const r = await moveTodo(itemOnSrc(), SAME)
-    expect(r).toMatchObject({ ok: false, stage: 'rejected', reason: 'too_many' })
-    expect(log).toEqual(['m:todo.add'])
+    expect(r).toMatchObject({ ok: false, stage: 'rejected', reason: 'too_many', copy: 'none' })
+    expect(log).toEqual(['s:todo.get', 'm:todo.add'])
     expect(daemons[SRC]!.todos.has('it')).toBe(true)
-    expect(view(SRC)).toHaveLength(1)
   })
 
-  it('the connection fails during the add: no delete is sent, the item stays on the source, and the result says it may exist on both', async () => {
+  it('the connection fails during the add: nothing is deleted, the result says the copy may exist', async () => {
     daemons[SAME]!.failNext('todo.add', linkError('timeout'), { after: true })
     const r = await moveTodo(itemOnSrc(), SAME)
-    expect(r).toMatchObject({ ok: false, stage: 'link' })
-    expect(log).toEqual(['m:todo.add'])
+    expect(r).toMatchObject({ ok: false, stage: 'link', at: 'add', copy: 'maybe' })
+    expect(log).toEqual(['s:todo.get', 'm:todo.add'])
     expect(daemons[SRC]!.todos.has('it')).toBe(true)
   })
 
-  it('the delete on the source fails after the target has the item: both copies are kept and the result says so', async () => {
+  it('the delete on the source is refused: both copies are kept and the result says so', async () => {
     daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
     const r = await moveTodo(itemOnSrc(), SAME)
     expect(r).toMatchObject({ ok: false, stage: 'stuck', copy: 'full' })
-    expect(log).toEqual(['m:todo.add', 's:todo.delete'])
     expect(daemons[SAME]!.todos.size).toBe(1)
     expect(daemons[SRC]!.todos.has('it')).toBe(true)
-    expect(view(SRC)).toHaveLength(1)
   })
 
   it('a source that was deleted elsewhere in the meantime (not_found on the delete) is not a clean success: the target copy exists and the user is told so', async () => {
     daemons[SRC]!.failNext('todo.delete', rpcError('not_found'))
     const r = await moveTodo(itemOnSrc(), SAME)
     expect(r).toMatchObject({ ok: true, sourceAlreadyGone: true })
-    const toast = useUi.getState().toasts.find((x) => x.kind === 'error')!
+    const toast = errorToasts()[0]!
     expect(toast.text).toMatch(/already been deleted on the source node/)
+    expect(toast.text).toMatch(/second copy may now exist/)
     expect(toast.text).toContain('garage')
   })
 })
 
-describe('a stale copy is never moved', () => {
-  it('the item was edited on another device after the dialog was opened: nothing is sent and the user is told to check it and move again', async () => {
+describe('the checks happen on the nodes, not in this tab’s cache', () => {
+  it('the source was edited on the node but this tab still holds the old copy: nothing is added, the user is told', async () => {
     const stale = itemOnSrc()
-    useTodos.getState().mergeItems(SRC, [{ ...daemons[SRC]!.todos.get('it')!, title: 'edited elsewhere', updated_ms: 99 }])
-    log = []
+    daemons[SRC]!.editBehindTheBrowser('it', { title: 'edited elsewhere' })
+    expect(itemOnSrc().title).toBe('move me') // 缓存还是旧的
     const r = await moveTodo(stale, SAME)
-    expect(r).toMatchObject({ ok: false, stage: 'changed', gone: false })
-    expect(log).toEqual([])
-    expect(useUi.getState().toasts.find((x) => x.kind === 'error')!.text).toMatch(/changed since you opened the dialog/)
+    expect(r).toMatchObject({ ok: false, stage: 'changed', gone: false, copy: 'none' })
+    expect(log).toEqual(['s:todo.get'])
+    expect(daemons[SAME]!.todos.size).toBe(0)
+    expect(errorToasts()[0]!.text).toMatch(/changed since you opened the dialog/)
   })
 
-  it('the item was deleted elsewhere after the dialog was opened: it is not re-created on the target', async () => {
+  it('the source was deleted on the node but this tab still shows it: it is not re-created on the target', async () => {
     const stale = itemOnSrc()
-    useTodos.getState().applyChanged(SRC, { id: 'it', deleted: true })
-    log = []
+    daemons[SRC]!.deleteBehindTheBrowser('it')
+    expect(view(SRC)).toHaveLength(1)
     const r = await moveTodo(stale, SAME)
-    expect(r).toMatchObject({ ok: false, stage: 'changed', gone: true })
-    expect(log).toEqual([])
+    expect(r).toMatchObject({ ok: false, stage: 'changed', gone: true, copy: 'none' })
+    expect(log).toEqual(['s:todo.get'])
     expect(daemons[SAME]!.todos.size).toBe(0)
   })
 
-  it('the source changing between the copy and the delete keeps the source (both copies exist) instead of deleting the newer edit', async () => {
-    const item = itemOnSrc()
-    // add 完成之后、删除之前，原节点那一项在别处变了
+  it('the source is edited on the node between the copy and the delete (the cache never learns of it): the conditional delete is refused, the source is kept, and the copy is reported as outdated', async () => {
     const original = rpc.handlers['todo.add']!
     rpc.handlers['todo.add'] = async (p, n) => {
       const out = await original(p, n)
-      useTodos.getState().mergeItems(SRC, [{ ...daemons[SRC]!.todos.get('it')!, title: 'edited meanwhile', updated_ms: 77 }])
+      daemons[SRC]!.editBehindTheBrowser('it', { title: 'edited meanwhile' })
       return out
     }
-    const r = await moveTodo(item, SAME)
+    const r = await moveTodo(itemOnSrc(), SAME)
     expect(r).toMatchObject({ ok: false, stage: 'changed', gone: false, copy: 'full' })
+    expect(log).toEqual(['s:todo.get', 'm:todo.add', 'm:todo.get', 's:todo.delete'])
+    expect(daemons[SRC]!.todos.get('it')!.title).toBe('edited meanwhile')
+    expect([...daemons[SAME]!.todos.values()][0]!.title).toBe('move me')
+    const text = errorToasts()[0]!.text
+    expect(text).toMatch(/changed here after it was copied to garage/)
+    expect(text).toMatch(/nothing was deleted here/)
+    expect(text).not.toMatch(/Nothing was moved/)
+  })
+
+  it('the cache still holds the copy but the node no longer has it: nothing is deleted on the source', async () => {
+    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
+    await moveTodo(itemOnSrc(), SAME)
+    const copyId = entryOf()!.targetId
+    daemons[SAME]!.deleteBehindTheBrowser(copyId)
+    expect(useTodos.getState().nodes[SAME]!.items[copyId]).toBeDefined() // 缓存还以为在
+    log = []
+    const r = await moveTodo(itemOnSrc(), SAME)
+    expect(r).toMatchObject({ ok: false, stage: 'copyGone', copy: 'gone' })
+    expect(log).toEqual(['m:todo.get'])
     expect(daemons[SRC]!.todos.has('it')).toBe(true)
-    expect(log.filter((l) => l.endsWith('todo.delete'))).toEqual([])
+    expect(errorToasts().pop()!.text).toMatch(/copy on garage is no longer there. Nothing was deleted here/)
+  })
+
+  it('a retry right after a reconnect, before the node finished syncing, sends nothing', async () => {
+    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
+    await moveTodo(itemOnSrc(), SAME)
+    useNodes.getState().patch(SRC, { synced: false })
+    log = []
+    expect(await moveTodo(itemOnSrc(), SAME)).toMatchObject({ ok: false, stage: 'blocked', block: 'syncingSource' })
+    expect(log).toEqual([])
+    useNodes.getState().patch(SRC, { synced: true })
+    useNodes.getState().patch(SAME, { synced: false })
+    expect(await moveTodo(itemOnSrc(), SAME)).toMatchObject({ ok: false, stage: 'blocked', block: 'syncingTarget' })
+    expect(log).toEqual([])
+    expect(moveBlock(itemOnSrc(), SAME)).toBe('syncingTarget')
+    expect(errorToasts().pop()!.text).toMatch(/garage is still syncing/)
+  })
+
+  it('another tab’s edit that is queued right before the delete stops the delete', async () => {
+    const original = rpc.handlers['todo.get']!
+    rpc.handlers['todo.get'] = async (p, n) => {
+      const out = await original(p, n)
+      if (n === SAME) {
+        // 读目标的这一个来回里，别的标签页把一条对原节点这一项的改动放进了待发队列
+        useTodos.setState((s) => ({ outbox: [...s.outbox, { node_id: SRC, id: 'it', op: { kind: 'update', fields: { title: 'queued elsewhere' } }, created_at: 1, state: 'pending' }] }))
+      }
+      return out
+    }
+    const r = await moveTodo(itemOnSrc(), SAME)
+    expect(r).toMatchObject({ ok: false, stage: 'blocked', block: 'queued', copy: 'full' })
+    expect(deleteCalls(SRC)).toEqual([])
+    expect(daemons[SRC]!.todos.has('it')).toBe(true)
+  })
+
+  it('a closed source that this tab never re-listed is still checked on the node', async () => {
+    await closeOnSource()
+    const stale = itemOnSrc()
+    // 别处把它重新打开了；这个标签页的缓存里它还是「已关闭」
+    daemons[SRC]!.editBehindTheBrowser('it', { state: 'open' })
+    expect(await moveTodo(stale, SAME)).toMatchObject({ ok: false, stage: 'changed', gone: false })
+    expect(daemons[SAME]!.todos.size).toBe(0)
+  })
+
+  it('an unreadable source or target (a link error on the read) stops the move without changing anything', async () => {
+    daemons[SRC]!.failNext('todo.get', linkError('timeout'))
+    expect(await moveTodo(itemOnSrc(), SAME)).toMatchObject({ ok: false, stage: 'unreadable', side: 'source', copy: 'none' })
+    expect(daemons[SAME]!.todos.size).toBe(0)
+    expect(errorToasts().pop()!.text).toMatch(/Could not read this to-do on its node/)
+    daemons[SAME]!.failNext('todo.get', linkError('timeout'))
+    expect(await moveTodo(itemOnSrc(), SAME)).toMatchObject({ ok: false, stage: 'unreadable', side: 'target', copy: 'full' })
+    expect(deleteCalls(SRC)).toEqual([])
+    expect(daemons[SRC]!.todos.has('it')).toBe(true)
+  })
+
+  it('the source changing before the first run is checked against what the user confirmed, not the live item: the same item with a different updated_ms is a different version', async () => {
+    const confirmed = itemOnSrc()
+    daemons[SRC]!.editBehindTheBrowser('it', { body: 'other' })
+    expect(await moveTodo({ ...confirmed }, SAME)).toMatchObject({ ok: false, stage: 'changed' })
   })
 })
 
@@ -181,7 +268,7 @@ describe('retrying the same move', () => {
     const first = await moveTodo(itemOnSrc(), SAME)
     expect(first).toMatchObject({ ok: false, stage: 'link', at: 'add', copy: 'maybe' })
     expect(daemons[SAME]!.todos.size).toBe(1)
-    const newId = useMoves.getState().moves[moveKey(SRC, 'it')]!.targetId
+    const newId = entryOf()!.targetId
     const second = await moveTodo(itemOnSrc(), SAME)
     expect(second).toMatchObject({ ok: true })
     expect(daemons[SAME]!.todos.size).toBe(1)
@@ -190,39 +277,220 @@ describe('retrying the same move', () => {
   })
 
   it('restoring the closed state failed: its own stage (the copy is open on the target, the source untouched); the retry only restores the state, then deletes — no second add', async () => {
-    daemons[SRC]!.todos.set('it', { ...daemons[SRC]!.todos.get('it')!, state: 'done', closed_ms: 9 })
-    await syncTodos(SRC)
-    useTodos.getState().mergeItems(SRC, [daemons[SRC]!.todos.get('it')!])
+    await closeOnSource()
     daemons[SAME]!.failNext('todo.update', rpcError('invalid', 'state'))
     const first = await moveTodo(itemOnSrc(), SAME)
     expect(first).toMatchObject({ ok: false, stage: 'state', maybe: false })
     expect([...daemons[SAME]!.todos.values()][0]!.state).toBe('open')
     expect(daemons[SRC]!.todos.has('it')).toBe(true)
-    expect(useUi.getState().toasts.some((x) => /open there, not “Done”/.test(x.text))).toBe(true)
+    expect(errorToasts().some((x) => /open there, not “Done”/.test(x.text))).toBe(true)
     log = []
     const second = await moveTodo(itemOnSrc(), SAME)
     expect(second.ok).toBe(true)
-    expect(log).toEqual(['m:todo.update', 's:todo.delete'])
+    expect(log).toEqual(['m:todo.update', 'm:todo.get', 's:todo.delete'])
     expect(daemons[SAME]!.todos.size).toBe(1)
     expect([...daemons[SAME]!.todos.values()][0]!.state).toBe('done')
   })
 
-  it('a link error while restoring the state says it may or may not have been applied', async () => {
+  it('a link error while restoring the state says it may or may not have been applied, and the copy is not offered for deletion until the move was resumed', async () => {
     daemons[SRC]!.todos.set('it', { ...daemons[SRC]!.todos.get('it')!, state: 'dropped', closed_ms: 9 })
+    await syncTodos(SRC)
     useTodos.getState().mergeItems(SRC, [daemons[SRC]!.todos.get('it')!])
     daemons[SAME]!.failNext('todo.update', linkError('timeout'), { after: true })
     const r = await moveTodo(itemOnSrc(), SAME)
     expect(r).toMatchObject({ ok: false, stage: 'state', maybe: true })
-    expect(useUi.getState().toasts.some((x) => /may or may not have been applied/.test(x.text))).toBe(true)
+    expect(errorToasts().some((x) => /may or may not have been applied/.test(x.text))).toBe(true)
+    expect(canDeleteCopy(entryOf())).toBe(false)
+    expect((await moveTodo(itemOnSrc(), SAME)).ok).toBe(true)
   })
 
-  it('a delete that failed after the copy is retried alone (no second add)', async () => {
+  it('a delete that was refused after the copy is retried alone (no second add)', async () => {
     daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
     expect(await moveTodo(itemOnSrc(), SAME)).toMatchObject({ ok: false, stage: 'stuck' })
     log = []
     expect((await moveTodo(itemOnSrc(), SAME)).ok).toBe(true)
-    expect(log).toEqual(['s:todo.delete'])
+    expect(log).toEqual(['m:todo.get', 's:todo.delete'])
     expect(daemons[SAME]!.todos.size).toBe(1)
+  })
+
+  it('a link error on the delete says it may or may not have been deleted (not “exists on both”); the retry then finds the source gone and says so', async () => {
+    daemons[SRC]!.failNext('todo.delete', linkError('timeout'), { after: true })
+    const r = await moveTodo(itemOnSrc(), SAME)
+    expect(r).toMatchObject({ ok: false, stage: 'link', at: 'delete', copy: 'full' })
+    const text = errorToasts()[0]!.text
+    expect(text).toMatch(/may or may not have been deleted/)
+    expect(text).not.toMatch(/exists on both nodes/)
+    const again = await moveTodo(itemOnSrc(), SAME)
+    expect(again).toMatchObject({ ok: true, sourceAlreadyGone: true })
+    expect(daemons[SAME]!.todos.size).toBe(1)
+  })
+
+  it('a refused retry after an unknown add mentions the earlier attempt', async () => {
+    daemons[SAME]!.failNext('todo.add', linkError('timeout'))
+    await moveTodo(itemOnSrc(), SAME)
+    daemons[SAME]!.openLimit = 0
+    const r = await moveTodo(itemOnSrc(), SAME)
+    expect(r).toMatchObject({ ok: false, stage: 'rejected', copy: 'maybe' })
+    expect(errorToasts().pop()!.text).toMatch(/earlier attempt/)
+  })
+})
+
+describe('deleting the copy and leaving both', () => {
+  /** 一次删原节点被拒的移动：两份都在，复制的 updated_ms 已知。 */
+  async function stuck(): Promise<string> {
+    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
+    await moveTodo(itemOnSrc(), SAME)
+    return entryOf()!.targetId
+  }
+
+  it('deletes the copy with the updated_ms it last got, only after reading the source; the source is kept and the move forgotten', async () => {
+    const copyId = await stuck()
+    const copyMs = entryOf()!.copyUpdatedMs
+    expect(copyMs).not.toBeNull()
+    log = []
+    expect(await removeCopy(SRC, 'it')).toEqual({ stage: 'done' })
+    expect(log).toEqual(['s:todo.get', 'm:todo.delete'])
+    expect(deleteCalls(SAME)).toEqual([{ id: copyId, if_updated_ms: copyMs }])
+    expect(daemons[SAME]!.todos.size).toBe(0)
+    expect(view(SAME)).toEqual([])
+    expect(daemons[SRC]!.todos.has('it')).toBe(true)
+    expect(entryOf()).toBeUndefined()
+    expect(useUi.getState().toasts.some((x) => /Deleted the copy on garage/.test(x.text))).toBe(true)
+  })
+
+  it('refuses when the source was already deleted on the node (the cache still shows it): the copy could be the only one left', async () => {
+    const copyId = await stuck()
+    daemons[SRC]!.deleteBehindTheBrowser('it')
+    expect(view(SRC)).toHaveLength(1)
+    log = []
+    expect(await removeCopy(SRC, 'it')).toMatchObject({ stage: 'sourceGone' })
+    expect(log).toEqual(['s:todo.get'])
+    expect(daemons[SAME]!.todos.has(copyId)).toBe(true)
+    expect(entryOf()!.copyOutcome).toMatchObject({ stage: 'sourceGone' })
+    expect(entryOf()!.outcome).toMatchObject({ stage: 'stuck' }) // 移动本身的结果没被盖掉
+    expect(errorToasts().pop()!.text).toMatch(/could be the only one left/)
+  })
+
+  it('refuses when the source node cannot be read or is not ready', async () => {
+    await stuck()
+    daemons[SRC]!.failNext('todo.get', linkError('timeout'))
+    expect(await removeCopy(SRC, 'it')).toMatchObject({ stage: 'sourceGone' })
+    useNodes.getState().patch(SRC, { conn: 'peer_offline' })
+    expect(await removeCopy(SRC, 'it')).toMatchObject({ stage: 'blocked', block: 'offlineSource' })
+    expect(daemons[SAME]!.todos.size).toBe(1)
+  })
+
+  it('refuses when the copy was edited on the target meanwhile (the cache never learns of it)', async () => {
+    const copyId = await stuck()
+    daemons[SAME]!.editBehindTheBrowser(copyId, { title: 'edited over there' })
+    expect(await removeCopy(SRC, 'it')).toMatchObject({ stage: 'copyChanged' })
+    expect(daemons[SAME]!.todos.get(copyId)!.title).toBe('edited over there')
+    expect(errorToasts().pop()!.text).toMatch(/edited there, so it was not deleted/)
+  })
+
+  it('is not offered after a link error on the source delete (the source may be gone) and removeCopy does nothing', async () => {
+    daemons[SRC]!.failNext('todo.delete', linkError('timeout'), { after: true })
+    await moveTodo(itemOnSrc(), SAME)
+    expect(canDeleteCopy(entryOf())).toBe(false)
+    expect(await removeCopy(SRC, 'it')).toBeNull()
+    expect(daemons[SAME]!.todos.size).toBe(1)
+  })
+
+  it('is not offered when the source is known gone, the copy is unreadable, or the copy’s version is unknown', async () => {
+    await stuck()
+    expect(canDeleteCopy(entryOf())).toBe(true)
+    useMoves.setState((s) => ({ moves: { ...s.moves, [moveKey(SRC, 'it')]: { ...entryOf()!, copyUpdatedMs: null } } }))
+    expect(canDeleteCopy(entryOf())).toBe(false)
+  })
+
+  it('the copy already gone on the target counts as deleted (nothing left to remove)', async () => {
+    const copyId = await stuck()
+    daemons[SAME]!.deleteBehindTheBrowser(copyId)
+    expect(await removeCopy(SRC, 'it')).toEqual({ stage: 'done' })
+    expect(entryOf()).toBeUndefined()
+  })
+
+  it('a failed delete of the copy is kept apart from the move result: refused, then a link error says it may have been deleted', async () => {
+    await stuck()
+    daemons[SAME]!.failNext('todo.delete', rpcError('internal'))
+    expect(await removeCopy(SRC, 'it')).toMatchObject({ stage: 'failed', maybe: false })
+    expect(entryOf()!.outcome).toMatchObject({ stage: 'stuck' })
+    daemons[SAME]!.failNext('todo.delete', linkError('timeout'))
+    expect(await removeCopy(SRC, 'it')).toMatchObject({ stage: 'failed', maybe: true })
+    expect(errorToasts().pop()!.text).toMatch(/may or may not have been deleted/)
+    expect(canDeleteCopy(entryOf())).toBe(false) // 那一份现在的版本不知道了
+  })
+
+  it('abandoning a stopped move forgets it', async () => {
+    await stuck()
+    abandonMove(SRC, 'it')
+    expect(entryOf()).toBeUndefined()
+  })
+})
+
+describe('an unexpected error never leaves the move busy or reports “nothing changed” after a copy exists', () => {
+  it('a plain exception while the add is in flight ends the stage as an unknown add (the copy may exist) with a toast, and the move can be resumed', async () => {
+    const original = rpc.handlers['todo.add']!
+    rpc.handlers['todo.add'] = async (p, n) => {
+      await original(p, n)
+      throw new Error('boom')
+    }
+    const r = await moveTodo(itemOnSrc(), SAME)
+    expect(r).toMatchObject({ ok: false, stage: 'link', at: 'add', copy: 'maybe' })
+    expect(entryOf()!.stage).toBe('failed')
+    expect(errorToasts()).toHaveLength(1)
+    rpc.handlers['todo.add'] = original
+    expect((await moveTodo(itemOnSrc(), SAME)).ok).toBe(true)
+    expect(daemons[SAME]!.todos.size).toBe(1)
+  })
+
+  it('a plain exception while the delete is in flight is reported as “may or may not have been deleted”, not as a refusal', async () => {
+    const original = rpc.handlers['todo.delete']!
+    rpc.handlers['todo.delete'] = async (p, n) => {
+      if (n === SRC) throw new Error('boom')
+      return original(p, n)
+    }
+    const r = await moveTodo(itemOnSrc(), SAME)
+    expect(r).toMatchObject({ ok: false, stage: 'link', at: 'delete', copy: 'full' })
+    expect(entryOf()!.stage).toBe('failed')
+  })
+
+  it('a plain exception in a read before anything was sent says nothing was copied; the dialog is not stuck busy', async () => {
+    const user = userEvent.setup()
+    rpc.handlers['todo.get'] = () => {
+      throw new Error('boom')
+    }
+    render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
+    await user.selectOptions(await screen.findByTestId('move-target'), SAME)
+    await user.click(screen.getByTestId('move-confirm'))
+    expect(await screen.findByTestId('move-failure')).toHaveTextContent('Could not read this to-do on its node')
+    expect(screen.queryByTestId('move-busy')).toBeNull()
+    expect(screen.getByTestId('move-confirm')).toBeEnabled()
+  })
+})
+
+describe('two tabs moving the same item', () => {
+  it('the second tab finds the source already gone: nothing is copied and the text says it may have been moved elsewhere', async () => {
+    const second = itemOnSrc()
+    expect((await moveTodo(itemOnSrc(), SAME)).ok).toBe(true)
+    resetMoves() // 第二个标签页是另一份内存
+    useUi.setState({ toasts: [] })
+    const r = await moveTodo(second, OTHER)
+    expect(r).toMatchObject({ ok: false, stage: 'changed', gone: true, copy: 'none' })
+    expect(daemons[OTHER]!.todos.size).toBe(0)
+    expect(errorToasts()[0]!.text).toMatch(/moved from another tab or device, it is on the other node now/)
+  })
+
+  it('the second tab’s conditional delete finds the source gone: it says a second copy may now exist', async () => {
+    const original = rpc.handlers['todo.get']!
+    rpc.handlers['todo.get'] = async (p, n) => {
+      const out = await original(p, n)
+      if (n === SAME) daemons[SRC]!.deleteBehindTheBrowser('it') // 另一个标签页的移动刚好删掉了原节点那一项
+      return out
+    }
+    const r = await moveTodo(itemOnSrc(), SAME)
+    expect(r).toMatchObject({ ok: true, sourceAlreadyGone: true })
+    expect(errorToasts()[0]!.text).toMatch(/second copy may now exist/)
   })
 })
 
@@ -233,27 +501,39 @@ describe('reporting without the dialog', () => {
     setNavigator(go)
     daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
     await moveTodo(itemOnSrc(), SAME)
-    const t1 = useUi.getState().toasts.find((x) => x.kind === 'error')!
+    const t1 = errorToasts()[0]!
     expect(t1.text).toMatch(/exists on both nodes/)
     t1.action!.run()
     expect(go).toHaveBeenCalledWith('/todos/ssssssss/it')
-    // 干净的成功只有一条普通提示（对话框里），这里没有错误提示
     useUi.setState({ toasts: [] })
     daemons[SRC]!.seed(todoItem({ id: 'it2', title: 'second' }))
     await syncTodos(SRC)
-    log = []
+    abandonMove(SRC, 'it')
     const r = await moveTodo(view(SRC).find((v) => v.id === 'it2')!, SAME)
     expect(r.ok).toBe(true)
-    expect(useUi.getState().toasts.filter((x) => x.kind === 'error')).toEqual([])
+    expect(errorToasts()).toEqual([])
     setNavigator(null)
   })
 
   it('a refusal is explained in words, not with a code', async () => {
     daemons[SAME]!.openLimit = 0
     await moveTodo(itemOnSrc(), SAME)
-    const text = useUi.getState().toasts.find((x) => x.kind === 'error')!.text
+    const text = errorToasts()[0]!.text
     expect(text).toMatch(/list is full/i)
     expect(text).not.toMatch(/too_many/)
+  })
+
+  it('a blocked move is also reported by a toast', async () => {
+    useNodes.getState().patch(OTHER, { conn: 'peer_offline' })
+    await moveTodo(itemOnSrc(), OTHER)
+    expect(errorToasts()[0]!.text).toMatch(/office is offline/)
+  })
+
+  it('a changed source before any copy says nothing was copied; after a copy it says the copy exists and nothing was deleted', async () => {
+    const stale = itemOnSrc()
+    daemons[SRC]!.editBehindTheBrowser('it', { title: 'x' })
+    await moveTodo(stale, SAME)
+    expect(errorToasts()[0]!.text).not.toMatch(/copied/)
   })
 })
 
@@ -265,6 +545,14 @@ describe('when it cannot be moved', () => {
     useNodes.getState().patch(SRC, { conn: 'peer_offline' })
     expect(moveBlock(itemOnSrc())).toBe('offlineSource')
     expect(log).toEqual([])
+  })
+
+  it('a node that has not finished syncing after a reconnect', () => {
+    useNodes.getState().patch(SRC, { synced: false })
+    expect(moveBlock(itemOnSrc())).toBe('syncingSource')
+    useNodes.getState().patch(SRC, { synced: true })
+    useNodes.getState().patch(OTHER, { synced: false })
+    expect(moveBlock(itemOnSrc(), OTHER)).toBe('syncingTarget')
   })
 
   it('a target that does not support to-dos', () => {
@@ -283,7 +571,7 @@ describe('when it cannot be moved', () => {
     expect(moveBlock(view(SRC)[0]!, SAME)).toBe('queued')
     log = []
     expect(await moveTodo(view(SRC)[0]!, SAME)).toMatchObject({ stage: 'blocked', block: 'queued' })
-    expect(log.filter((l) => l.endsWith('todo.add') || l.endsWith('todo.delete'))).toEqual([])
+    expect(log).toEqual([])
   })
 
   it('an unreviewed agent-added item (it would lose its agent marking)', () => {
@@ -300,8 +588,7 @@ describe('when it cannot be moved', () => {
 })
 
 describe('the dialog stays open while a move is running', () => {
-  it('Cancel is disabled, Escape and a click outside do nothing, the reason is visible; when the move is done it closes', async () => {
-    const user = userEvent.setup()
+  const gateAdd = (): { release: () => void } => {
     const original = rpc.handlers['todo.add']!
     let release!: () => void
     const gate = new Promise<void>((r) => (release = r))
@@ -309,6 +596,12 @@ describe('the dialog stays open while a move is running', () => {
       await gate
       return original(p, n)
     }
+    return { release }
+  }
+
+  it('Cancel is disabled, Escape and a click outside do nothing, the reason is visible; when the move is done it closes', async () => {
+    const user = userEvent.setup()
+    const { release } = gateAdd()
     const onOpenChange = vi.fn()
     render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={onOpenChange} />)
     await user.selectOptions(await screen.findByTestId('move-target'), SAME)
@@ -335,7 +628,49 @@ describe('the dialog stays open while a move is running', () => {
     await user.click(screen.getByTestId('move-confirm'))
     await waitFor(() => expect(daemons[SRC]!.todos.has('it')).toBe(false))
     expect(daemons[SAME]!.todos.size).toBe(1)
-    expect(onOpenChange).not.toHaveBeenCalledWith(true)
+  })
+
+  it('closing and reopening the dialog mid-move shows the running move: busy, target fixed, no second move can be started', async () => {
+    const user = userEvent.setup()
+    const { release } = gateAdd()
+    const first = render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
+    await user.selectOptions(await screen.findByTestId('move-target'), SAME)
+    await user.click(screen.getByTestId('move-confirm'))
+    await screen.findByTestId('move-busy')
+    first.unmount()
+    const onOpenChange = vi.fn()
+    render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={onOpenChange} />)
+    expect(await screen.findByTestId('move-busy')).toBeInTheDocument()
+    expect(screen.getByTestId('move-confirm')).toBeDisabled()
+    expect(screen.getByTestId('move-target')).toHaveValue(SAME)
+    release()
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+    expect(log.filter((l) => l.endsWith('todo.add'))).toHaveLength(1)
+    expect(daemons[SAME]!.todos.size).toBe(1)
+  })
+
+  it('starting the same item twice while it runs gives the same move: one add, one delete', async () => {
+    const { release } = gateAdd()
+    const a = moveTodo(itemOnSrc(), SAME)
+    const b = moveTodo(itemOnSrc(), OTHER)
+    release()
+    expect(await b).toBe(await a)
+    expect(log.filter((l) => l.endsWith('todo.add'))).toHaveLength(1)
+    expect(daemons[OTHER]!.todos.size).toBe(0)
+  })
+
+  it('a half-done move is still there after the dialog was unmounted; reopening offers the step that can continue', async () => {
+    const user = userEvent.setup()
+    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
+    const first = render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
+    await user.selectOptions(await screen.findByTestId('move-target'), SAME)
+    await user.click(screen.getByTestId('move-confirm'))
+    await screen.findByTestId('move-failure')
+    first.unmount()
+    render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
+    expect(await screen.findByTestId('move-failure')).toHaveTextContent('exists on both nodes')
+    expect(screen.getByTestId('move-confirm')).toHaveTextContent('Retry removing it here')
+    expect(screen.getByTestId('move-target')).toBeDisabled()
   })
 })
 
@@ -379,7 +714,7 @@ describe('the dialog', () => {
     expect(onOpenChange).not.toHaveBeenCalled()
     await user.click(screen.getByTestId('move-confirm'))
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
-    expect(log).toEqual(['o:todo.add', 's:todo.delete'])
+    expect(log).toEqual(['s:todo.get', 'o:todo.add', 'o:todo.get', 's:todo.delete'])
   })
 
   it('says exactly why it cannot be moved now, and what happened when it failed halfway', async () => {
@@ -408,151 +743,26 @@ describe('the dialog', () => {
     expect(await screen.findByTestId('move-blocked')).toHaveTextContent('Accept it first')
     expect(screen.queryByTestId('move-target')).toBeNull()
   })
-})
 
-describe('entry points', () => {
-  it('the detail has “Move to another node…” only when another node supports to-dos', async () => {
-    const { TodoDetail } = await import('./ui/TodoDetail')
-    const item = itemOnSrc()
-    const first = render(<TodoDetail item={item} online />)
-    expect(screen.getByTestId('todo-move')).toHaveTextContent('Move to another node…')
-    first.unmount()
-    useNodes.getState().setInfo(SAME, info('Home', false))
-    useNodes.getState().setInfo(OTHER, info('Work', false))
-    render(<TodoDetail item={item} online />)
-    expect(screen.queryByTestId('todo-move')).toBeNull()
-  })
-})
-
-describe('one move per item, kept outside the dialog', () => {
-  const gateAdd = (): { release: () => void } => {
-    const original = rpc.handlers['todo.add']!
-    let release!: () => void
-    const gate = new Promise<void>((r) => (release = r))
-    rpc.handlers['todo.add'] = async (p, n) => {
-      await gate
-      return original(p, n)
-    }
-    return { release }
-  }
-
-  it('starting the same item twice while it runs gives the same move: one add, one delete', async () => {
-    const { release } = gateAdd()
-    const a = moveTodo(itemOnSrc(), SAME)
-    const b = moveTodo(itemOnSrc(), OTHER)
-    release()
-    expect(await b).toBe(await a)
-    expect(log.filter((l) => l.endsWith('todo.add'))).toHaveLength(1)
-    expect(daemons[OTHER]!.todos.size).toBe(0)
-  })
-
-  it('closing and reopening the dialog mid-move shows the running move: busy, target fixed, no second move can be started', async () => {
-    const user = userEvent.setup()
-    const { release } = gateAdd()
-    const first = render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
-    await user.selectOptions(await screen.findByTestId('move-target'), SAME)
-    await user.click(screen.getByTestId('move-confirm'))
-    await screen.findByTestId('move-busy')
-    first.unmount()
-    const onOpenChange = vi.fn()
-    render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={onOpenChange} />)
-    expect(await screen.findByTestId('move-busy')).toBeInTheDocument()
-    expect(screen.getByTestId('move-confirm')).toBeDisabled()
-    expect(screen.getByTestId('move-target')).toHaveValue(SAME)
-    release()
-    // 重新挂载的对话框也知道这次移动结束了，自己关上
-    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
-    expect(log.filter((l) => l.endsWith('todo.add'))).toHaveLength(1)
-    expect(daemons[SAME]!.todos.size).toBe(1)
-  })
-
-  it('a half-done move is still there after the dialog was unmounted; reopening offers the step that can continue', async () => {
-    const user = userEvent.setup()
-    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
-    const first = render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
-    await user.selectOptions(await screen.findByTestId('move-target'), SAME)
-    await user.click(screen.getByTestId('move-confirm'))
-    await screen.findByTestId('move-failure')
-    first.unmount()
-    render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
-    expect(await screen.findByTestId('move-failure')).toHaveTextContent('exists on both nodes')
-    expect(screen.getByTestId('move-confirm')).toHaveTextContent('Retry removing it here')
-    expect(screen.getByTestId('move-target')).toBeDisabled()
-  })
-})
-
-describe('the source is checked against what was confirmed, before every later step', () => {
-  it('from the detail page (the dialog gets the live item): editing the source after a half-done move stops “Retry removing it here”; nothing is deleted and the copy keeps the old content', async () => {
+  it('from the detail page (the dialog gets the live item): the source edited on the node stops “Retry removing it here”; nothing is deleted, the copy keeps the old content and can be deleted', async () => {
     const user = userEvent.setup()
     daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
     const view1 = render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
     await user.selectOptions(await screen.findByTestId('move-target'), SAME)
     await user.click(screen.getByTestId('move-confirm'))
     await screen.findByTestId('move-failure')
-    // 别的设备改了原节点这一项；详情页把「现在的」这一份传给对话框
-    useTodos.getState().mergeItems(SRC, [{ ...daemons[SRC]!.todos.get('it')!, title: 'edited elsewhere', updated_ms: 99 }])
+    daemons[SRC]!.editBehindTheBrowser('it', { title: 'edited elsewhere' })
     log = []
     view1.rerender(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={vi.fn()} />)
     await user.click(screen.getByTestId('move-confirm'))
     await waitFor(() => expect(screen.getByTestId('move-failure')).toHaveTextContent('changed here after it was copied to garage'))
-    expect(log).toEqual([])
     expect(daemons[SRC]!.todos.has('it')).toBe(true)
     expect([...daemons[SAME]!.todos.values()][0]!.title).toBe('move me')
-    // 不能再接着移；可以删掉那一份旧的
     expect(screen.getByTestId('move-confirm')).toBeDisabled()
     expect(screen.getByTestId('move-delete-copy')).toHaveTextContent('Delete the copy on garage')
   })
 
-  it('the first run copies what the user confirmed, not what the item became in the meantime', async () => {
-    const confirmed = itemOnSrc()
-    const original = rpc.handlers['todo.add']!
-    rpc.handlers['todo.add'] = async (p, n) => {
-      const out = await original(p, n)
-      useTodos.getState().mergeItems(SRC, [{ ...daemons[SRC]!.todos.get('it')!, title: 'edited while copying', updated_ms: 50 }])
-      return out
-    }
-    const r = await moveTodo(confirmed, SAME)
-    expect(r).toMatchObject({ ok: false, stage: 'changed', copy: 'full' })
-    expect([...daemons[SAME]!.todos.values()][0]!.title).toBe('move me')
-    expect(log.filter((l) => l.endsWith('todo.delete'))).toEqual([])
-  })
-
-  it('the source disappeared from the cache after the copy: stop, say so, delete nothing', async () => {
-    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
-    await moveTodo(itemOnSrc(), SAME)
-    useTodos.getState().applyChanged(SRC, { id: 'it', deleted: true })
-    log = []
-    const r = resumeMove(SRC, 'it')
-    expect(await r).toMatchObject({ ok: false, stage: 'changed', gone: true, copy: 'full' })
-    expect(log).toEqual([])
-    expect(useUi.getState().toasts.filter((x) => x.kind === 'error').pop()!.text).toMatch(/no longer here/)
-  })
-})
-
-describe('the copy must still exist before the source is deleted', () => {
-  it('the copy was deleted after the failed delete: retrying does not delete the source (that would leave neither), and says so', async () => {
-    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
-    await moveTodo(itemOnSrc(), SAME)
-    const id = useMoves.getState().moves[moveKey(SRC, 'it')]!.targetId
-    useTodos.getState().applyChanged(SAME, { id, deleted: true })
-    log = []
-    const r = await moveTodo(itemOnSrc(), SAME)
-    expect(r).toMatchObject({ ok: false, stage: 'copyGone', copy: 'gone' })
-    expect(log).toEqual([])
-    expect(daemons[SRC]!.todos.has('it')).toBe(true)
-    expect(useUi.getState().toasts.some((x) => /copy on garage is no longer there. Nothing was deleted here/.test(x.text))).toBe(true)
-  })
-
-  it('a target whose list is not loaded cannot confirm the copy: nothing is deleted', async () => {
-    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
-    await moveTodo(itemOnSrc(), SAME)
-    useTodos.setState((s) => ({ nodes: { ...s.nodes, [SAME]: { ...s.nodes[SAME]!, items: {} } } }))
-    log = []
-    expect(await moveTodo(itemOnSrc(), SAME)).toMatchObject({ ok: false, stage: 'copyGone' })
-    expect(log).toEqual([])
-  })
-
-  it('in the dialog the next step is not offered; “Leave both” forgets the move', async () => {
+  it('“Delete the copy on …” removes it, keeps the source and closes the dialog; when it is refused the reason is shown next to the move result', async () => {
     const user = userEvent.setup()
     daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
     const onOpenChange = vi.fn()
@@ -560,65 +770,38 @@ describe('the copy must still exist before the source is deleted', () => {
     await user.selectOptions(await screen.findByTestId('move-target'), SAME)
     await user.click(screen.getByTestId('move-confirm'))
     await screen.findByTestId('move-failure')
-    const id = useMoves.getState().moves[moveKey(SRC, 'it')]!.targetId
-    useTodos.getState().applyChanged(SAME, { id, deleted: true })
-    await user.click(screen.getByTestId('move-confirm'))
-    await waitFor(() => expect(screen.getByTestId('move-failure')).toHaveTextContent('no longer there'))
-    expect(screen.getByTestId('move-confirm')).toBeDisabled()
-    await user.click(screen.getByTestId('move-cancel'))
-    expect(useMoves.getState().moves[moveKey(SRC, 'it')]).toBeUndefined()
-    expect(onOpenChange).toHaveBeenCalledWith(false)
-  })
-})
-
-describe('every failure says what exists where', () => {
-  it('a link error on the delete is not reported as “exists on both”: it may or may not have been deleted here', async () => {
-    daemons[SRC]!.failNext('todo.delete', linkError('timeout'), { after: true })
-    const r = await moveTodo(itemOnSrc(), SAME)
-    expect(r).toMatchObject({ ok: false, stage: 'link', at: 'delete', copy: 'full' })
-    const text = useUi.getState().toasts.find((x) => x.kind === 'error')!.text
-    expect(text).toMatch(/may or may not have been deleted/)
-    expect(text).not.toMatch(/exists on both nodes/)
-    // 删其实成功了：再试一次，原节点那一项已经没了，报告成「已经被删了」，不再重复建一份
-    const again = await moveTodo(itemOnSrc(), SAME)
-    expect(again).toMatchObject({ ok: true, sourceAlreadyGone: true })
+    // 先在原节点那边把它删了（缓存不知道）：删那一份被拒，两条结果并排显示
+    daemons[SRC]!.deleteBehindTheBrowser('it')
+    await user.click(screen.getByTestId('move-delete-copy'))
+    expect(await screen.findByTestId('move-copy-failure')).toHaveTextContent('could be the only one left')
+    expect(screen.getByTestId('move-failure')).toHaveTextContent('exists on both nodes')
     expect(daemons[SAME]!.todos.size).toBe(1)
+    expect(onOpenChange).not.toHaveBeenCalled()
   })
 
-  it('a changed source before any copy says nothing was moved; after a copy it says the copy exists and nothing was deleted', async () => {
-    const stale = itemOnSrc()
-    useTodos.getState().mergeItems(SRC, [{ ...daemons[SRC]!.todos.get('it')!, updated_ms: 99 }])
-    await moveTodo(stale, SAME)
-    expect(useUi.getState().toasts.find((x) => x.kind === 'error')!.text).not.toMatch(/copied/)
-    useUi.setState({ toasts: [] })
-    resetMoves()
-    const fresh = itemOnSrc()
-    const original = rpc.handlers['todo.add']!
-    rpc.handlers['todo.add'] = async (p, n) => {
-      const out = await original(p, n)
-      useTodos.getState().mergeItems(SRC, [{ ...daemons[SRC]!.todos.get('it')!, updated_ms: 120 }])
-      return out
-    }
-    await moveTodo(fresh, SAME)
-    const text = useUi.getState().toasts.find((x) => x.kind === 'error')!.text
-    expect(text).toMatch(/copied to garage/)
-    expect(text).toMatch(/nothing was deleted here/)
-    expect(text).not.toMatch(/Nothing was moved/)
+  it('“Delete the copy on …” succeeds when the source is still there: the dialog closes', async () => {
+    const user = userEvent.setup()
+    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
+    const onOpenChange = vi.fn()
+    render(<MoveTodoDialog item={itemOnSrc()} open onOpenChange={onOpenChange} />)
+    await user.selectOptions(await screen.findByTestId('move-target'), SAME)
+    await user.click(screen.getByTestId('move-confirm'))
+    await screen.findByTestId('move-failure')
+    await user.click(screen.getByTestId('move-delete-copy'))
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+    expect(daemons[SAME]!.todos.size).toBe(0)
+    expect(daemons[SRC]!.todos.has('it')).toBe(true)
+    expect(entryOf()).toBeUndefined()
   })
 
-  it('a refused retry after an unknown add mentions the earlier attempt', async () => {
-    daemons[SAME]!.failNext('todo.add', linkError('timeout'))
-    await moveTodo(itemOnSrc(), SAME)
-    daemons[SAME]!.openLimit = 0
-    const r = await moveTodo(itemOnSrc(), SAME)
-    expect(r).toMatchObject({ ok: false, stage: 'rejected', copy: 'maybe' })
-    expect(useUi.getState().toasts.filter((x) => x.kind === 'error').pop()!.text).toMatch(/earlier attempt/)
-  })
-
-  it('a blocked move is also reported by a toast', async () => {
-    useNodes.getState().patch(OTHER, { conn: 'peer_offline' })
-    await moveTodo(itemOnSrc(), OTHER)
-    expect(useUi.getState().toasts.find((x) => x.kind === 'error')!.text).toMatch(/office is offline/)
+  it('after a link error on the source delete the dialog does not offer to delete the copy', async () => {
+    const user = userEvent.setup()
+    daemons[SRC]!.failNext('todo.delete', linkError('timeout'), { after: true })
+    open()
+    await user.selectOptions(await screen.findByTestId('move-target'), SAME)
+    await user.click(screen.getByTestId('move-confirm'))
+    expect(await screen.findByTestId('move-failure')).toHaveTextContent('may or may not have been deleted')
+    expect(screen.queryByTestId('move-delete-copy')).toBeNull()
   })
 
   it('after a resume was blocked the button says “Resume the move”, not “Move”', async () => {
@@ -634,10 +817,8 @@ describe('every failure says what exists where', () => {
     expect(screen.getByTestId('move-confirm')).toHaveTextContent('Resume the move')
     expect(screen.getByTestId('move-confirm')).toBeEnabled()
   })
-})
 
-describe('deleting the copy and leaving both', () => {
-  it('“Delete the copy on …” removes the target copy, keeps the source and forgets the move; the dialog closes', async () => {
+  it('in the dialog the next step is not offered after the copy is gone; “Leave both” forgets the move', async () => {
     const user = userEvent.setup()
     daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
     const onOpenChange = vi.fn()
@@ -645,31 +826,13 @@ describe('deleting the copy and leaving both', () => {
     await user.selectOptions(await screen.findByTestId('move-target'), SAME)
     await user.click(screen.getByTestId('move-confirm'))
     await screen.findByTestId('move-failure')
-    await user.click(screen.getByTestId('move-delete-copy'))
-    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
-    expect(daemons[SAME]!.todos.size).toBe(0)
-    expect(view(SAME)).toEqual([])
-    expect(daemons[SRC]!.todos.has('it')).toBe(true)
-    expect(useMoves.getState().moves[moveKey(SRC, 'it')]).toBeUndefined()
-    expect(useUi.getState().toasts.some((x) => /Deleted the copy on garage/.test(x.text))).toBe(true)
-  })
-
-  it('a failed delete of the copy keeps the move and says the copy is still there; a link error says it may have been deleted', async () => {
-    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
-    await moveTodo(itemOnSrc(), SAME)
-    daemons[SAME]!.failNext('todo.delete', rpcError('internal'))
-    expect(await removeCopy(SRC, 'it')).toMatchObject({ ok: false, stage: 'copyDelete', maybe: false })
-    expect(useMoves.getState().moves[moveKey(SRC, 'it')]).toBeDefined()
-    daemons[SAME]!.failNext('todo.delete', linkError('timeout'))
-    expect(await removeCopy(SRC, 'it')).toMatchObject({ ok: false, stage: 'copyDelete', maybe: true })
-    expect(useUi.getState().toasts.filter((x) => x.kind === 'error').pop()!.text).toMatch(/may or may not have been deleted/)
-  })
-
-  it('abandoning a stopped move forgets it', async () => {
-    daemons[SRC]!.failNext('todo.delete', rpcError('internal'))
-    await moveTodo(itemOnSrc(), SAME)
-    abandonMove(SRC, 'it')
-    expect(useMoves.getState().moves[moveKey(SRC, 'it')]).toBeUndefined()
+    daemons[SAME]!.deleteBehindTheBrowser(entryOf()!.targetId)
+    await user.click(screen.getByTestId('move-confirm'))
+    await waitFor(() => expect(screen.getByTestId('move-failure')).toHaveTextContent('no longer there'))
+    expect(screen.getByTestId('move-confirm')).toBeDisabled()
+    await user.click(screen.getByTestId('move-cancel'))
+    expect(entryOf()).toBeUndefined()
+    expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 })
 
@@ -686,15 +849,50 @@ describe('after a successful move', () => {
     window.history.pushState({}, '', '/')
   })
 
-  it('still on that item’s page: back to the list, replacing the entry', async () => {
+  it('still on that item’s page (8-character node id): back to the list, replacing the entry', async () => {
     window.history.pushState({}, '', '/todos/ssssssss/it')
     expect((await moveTodo(itemOnSrc(), SAME)).ok).toBe(true)
     expect(go).toHaveBeenCalledWith('/todos', { replace: true })
   })
 
-  it('the user went somewhere else meanwhile: they are not pulled away', async () => {
+  it('the route may carry the full node id or any unique prefix, resolved the way the router does', async () => {
+    window.history.pushState({}, '', `/todos/${SRC}/it`)
+    expect((await moveTodo(itemOnSrc(), SAME)).ok).toBe(true)
+    expect(go).toHaveBeenCalledTimes(1)
+    go.mockClear()
+    daemons[SRC]!.seed(todoItem({ id: 'it3', title: 'third' }))
+    await syncTodos(SRC)
+    window.history.pushState({}, '', '/todos/ss/it3')
+    expect((await moveTodo(view(SRC).find((v) => v.id === 'it3')!, SAME)).ok).toBe(true)
+    expect(go).toHaveBeenCalledTimes(1)
+  })
+
+  it('the user went somewhere else meanwhile (another page, or another item): they are not pulled away', async () => {
     window.history.pushState({}, '', '/inbox')
     expect((await moveTodo(itemOnSrc(), SAME)).ok).toBe(true)
     expect(go).not.toHaveBeenCalled()
+    daemons[SRC]!.seed(todoItem({ id: 'it4', title: 'fourth' }))
+    await syncTodos(SRC)
+    window.history.pushState({}, '', '/todos/ssssssss/it')
+    expect((await moveTodo(view(SRC).find((v) => v.id === 'it4')!, SAME)).ok).toBe(true)
+    expect(go).not.toHaveBeenCalled()
+  })
+})
+
+describe('entry points', () => {
+  it('the detail has “Move to another node…” only when another node supports to-dos', async () => {
+    const { TodoDetail } = await import('./ui/TodoDetail')
+    const item = itemOnSrc()
+    const first = render(<TodoDetail item={item} online />)
+    expect(screen.getByTestId('todo-move')).toHaveTextContent('Move to another node…')
+    first.unmount()
+    useNodes.getState().setInfo(SAME, info('Home', false))
+    useNodes.getState().setInfo(OTHER, info('Work', false))
+    render(<TodoDetail item={item} online />)
+    expect(screen.queryByTestId('todo-move')).toBeNull()
+  })
+
+  it('resuming a move that does not exist does nothing', () => {
+    expect(resumeMove(SRC, 'nope')).toBeNull()
   })
 })

@@ -11,6 +11,7 @@ import { useSupportingNodes, useTodoView, useTodos } from '@/features/todos/stor
 import { dirtyFields, draftKey, splitDraftKey, useDrafts } from '@/features/todos/drafts'
 import { completeClosedWalk } from '@/features/todos/service'
 import { TodoDetailPane, resolveTodoRoute } from '@/features/todos/ui/TodoDetailPane'
+import { isHumanSource } from '@/features/todos/source'
 import { MoveTodoDialog } from '@/features/todos/ui/MoveTodoDialog'
 import { TodoRow } from '@/features/todos/ui/TodoRow'
 import { isTypingTarget } from '@/features/session/shortcuts'
@@ -192,7 +193,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
       onReopen={() => void setTodoState(item, 'open')}
       onDrop={() => void setTodoState(item, 'dropped', { undo: true })}
       onDelete={() => setDeleting(item)}
-      {...(canMove(item) && !(item.unreviewed && item.source.kind === 'agent') ? { onMove: () => setMoving(item) } : {})}
+      {...(canMove(item) && !(item.unreviewed && !isHumanSource(item.source)) ? { onMove: () => setMoving(item) } : {})}
     />
   )
 

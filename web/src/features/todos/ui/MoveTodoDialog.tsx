@@ -7,7 +7,7 @@ import { useNodes } from '@/stores/nodes'
 import { Button } from '@/ui/Button'
 import { Select } from '@/ui/Field'
 import { Dialog } from '@/ui/Overlay'
-import { abandonMove, crossesSpace, isRunning, isTouched, moveBlock, moveKey, moveText, moveTodo, removeCopy, useMoves, wasAgentAdded } from '../move'
+import { abandonMove, canDeleteCopy, copyText, crossesSpace, isRunning, isTouched, moveBlock, moveKey, moveText, moveTodo, removeCopy, useMoves, wasAgentAdded } from '../move'
 import type { ViewTodo } from '../types'
 
 /**
@@ -53,7 +53,8 @@ export function MoveTodoDialog({ item, open, onOpenChange }: { item: ViewTodo; o
           ? t('spaces.move.retryDelete')
           : t('spaces.move.resume')
       : t('spaces.move.action')
-  const hasCopy = entry !== undefined && (entry.copy === 'open' || entry.copy === 'full' || entry.copy === 'maybe')
+  const hasCopy = canDeleteCopy(entry)
+  const copyFailure = !busy && entry?.copyOutcome ? entry.copyOutcome : null
 
   // 在跑的移动结束、记录没了（成功，或者删掉了目标上的那一份）：对话框也该关了，不管它是不是中途重新挂载的
   const wasRunning = useRef(false)
@@ -138,6 +139,11 @@ export function MoveTodoDialog({ item, open, onOpenChange }: { item: ViewTodo; o
                 {moveText(failure, name(target), base.state)}
               </p>
             ) : null}
+            {copyFailure ? (
+              <p role="alert" className="text-danger" data-testid="move-copy-failure">
+                {copyText(copyFailure, name(target))}
+              </p>
+            ) : null}
             {busy ? (
               <p role="status" className="text-fg-muted" data-testid="move-busy">
                 {t('spaces.move.cannotClose')}
@@ -149,7 +155,7 @@ export function MoveTodoDialog({ item, open, onOpenChange }: { item: ViewTodo; o
           <Button disabled={busy} onClick={leave} data-testid="move-cancel">
             {touched ? t('spaces.move.leaveBoth') : t('common.cancel')}
           </Button>
-          {hasCopy && !busy && failure ? (
+          {hasCopy ? (
             <Button onClick={() => void removeCopy(item.node_id, item.id)} data-testid="move-delete-copy">
               {t('spaces.move.deleteCopy', { node: name(target) })}
             </Button>

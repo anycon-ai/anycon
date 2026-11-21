@@ -6,6 +6,7 @@ import { Chip } from '@/ui/Misc'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/ui/Menu'
 import { cn } from '@/ui/cn'
 import { LONG_PRESS_MS, LONG_PRESS_SLOP, swipeOffset, swipeVerdict } from '../swipe'
+import { isAgentSource, isOtherSource } from '../source'
 import { isClosed, type ViewTodo } from '../types'
 import { cleanOneLine } from '../validate'
 
@@ -40,7 +41,8 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
   const longPressed = useRef(false)
   const start = useRef<{ x: number; y: number; timer: ReturnType<typeof setTimeout> | null; id: number } | null>(null)
   const closed = isClosed(item.state)
-  const agent = item.source.kind === 'agent'
+  const agent = isAgentSource(item.source)
+  const other = isOtherSource(item.source)
 
   const clearTimer = (): void => {
     if (start.current?.timer) clearTimeout(start.current.timer)
@@ -113,6 +115,11 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
           {agent ? (
             <Chip tone="info" icon={<Bot className="size-3" aria-hidden />} testId="todo-agent">
               {t('todos.byAgent')}
+            </Chip>
+          ) : null}
+          {other ? (
+            <Chip tone="info" icon={<Bot className="size-3" aria-hidden />} testId="todo-auto">
+              {t('todos.byOther')}
             </Chip>
           ) : null}
           {hasDraft ? (

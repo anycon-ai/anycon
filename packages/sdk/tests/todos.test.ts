@@ -140,6 +140,29 @@ for (const impl of cryptoImpls) {
       })
     })
 
+    it('dispatchPreview：参数原样发出，no_push 缺省由 daemon 定，错误映射成 RpcError', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const t = await node.todos.add({ title: 'ship it', project: 'app' })
+        assert.deepEqual(await node.todos.dispatchPreview({ id: t.id }), {
+          first_message: 'ship it\n\nLeave your changes on the branch.',
+        })
+        assert.deepEqual(paramsOf(env, 'todo.dispatch_preview')[0], { id: t.id })
+        assert.deepEqual(await node.todos.dispatchPreview({ id: t.id, no_push: false }), {
+          first_message: 'ship it',
+        })
+        await assert.rejects(
+          node.todos.dispatchPreview({ id: '00000000-0000-4000-8000-000000000000' }),
+          (err: unknown) => err instanceof RpcError && err.code === 'not_found',
+        )
+        await node.todos.update({ id: t.id, state: 'done' })
+        await assert.rejects(
+          node.todos.dispatchPreview({ id: t.id }),
+          (err: unknown) =>
+            err instanceof RpcError && err.code === 'invalid' && err.reason === 'closed',
+        )
+      })
+    })
+
     it('dispatch / history：参数原样发出，返回值带类型，错误映射成 RpcError，todo_event 带「经过」的新条目', async () => {
       await withNode(await impl.load(), async (node, env) => {
         const t = await node.todos.add({ title: 'ship it', project: 'app' })

@@ -353,6 +353,28 @@ async fn run(app: &App, a: TodoRunArgs) -> Result<u8> {
         Ok(t) => t.id,
         Err(id) => id,
     };
+    if a.dry_run {
+        // 只读：问 daemon 此刻会发什么，不开会话、不记任何东西（不需要选 agent）
+        let r: TodoDispatchPreviewResult = conn
+            .call(
+                methods::TODO_DISPATCH_PREVIEW,
+                TodoDispatchPreviewParams { id, no_push: a.allow_push.then_some(false) },
+            )
+            .await
+            .map_err(|e| friendly_dispatch(e, ""))?;
+        if app.json() {
+            app.out.json_line(&r);
+        } else {
+            // 这是要发给 agent 的全文，不加装饰；之前的报告是 agent 写的，终端转义和控制字符显示成转义形式（普通文字原样），
+            // 要拿到一字不差的原文用 `--json`
+            let text = visible(&r.first_message);
+            print!("{text}");
+            if !text.ends_with('\n') {
+                println!();
+            }
+        }
+        return Ok(0);
+    }
     let agent = crate::commands::pick_agent(&conn, a.agent).await?;
     let allow_push = a.allow_push;
     let params = TodoDispatchParams {

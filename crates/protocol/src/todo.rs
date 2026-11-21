@@ -250,6 +250,21 @@ pub struct TodoDispatchResult {
     pub session: SessionSummary,
 }
 
+/// `todo.dispatch_preview`：这一项现在派发的话，第一条消息会是什么。只读。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoDispatchPreviewParams {
+    pub id: String,
+    /// 同 `todo.dispatch` 的 `no_push`，缺省 `true`（决定第一条消息里有没有「不 push、不开 PR」那一行）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_push: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoDispatchPreviewResult {
+    /// 此刻派发会发出的第一条消息，一字不差（同一个组装函数、同一套「之前的结果」的选法）。
+    pub first_message: String,
+}
+
 /// `todo.history` 的参数。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoHistoryParams {

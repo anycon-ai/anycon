@@ -1688,3 +1688,86 @@ async fn history_skips_rows_it_cannot_read_instead_of_failing_the_page() {
     dispatch(&td, &mut c, &t.id, json!({})).await;
     td.shutdown().await;
 }
+
+// ---------------------------------------------------------------- todo.dispatch_preview
+
+async fn preview(td: &TestDaemon, c: &mut TestClient, todo: &str, no_push: Option<bool>) -> Result<String, RpcError> {
+    let mut p = json!({ "id": todo });
+    if let Some(n) = no_push {
+        p["no_push"] = json!(n);
+    }
+    c.call::<TodoDispatchPreviewResult>(td, methods::TODO_DISPATCH_PREVIEW, p).await.map(|r| r.first_message)
+}
+
+#[tokio::test]
+async fn the_preview_is_exactly_what_the_agent_receives_on_the_following_dispatch() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    declare_no_push(&td, &mut c).await;
+    let t = new_todo(&td, &mut c, "Write docs", "Body text", Some("proj")).await;
+    // 缺省 no_push = true：有那一行；明确 false：没有
+    let on = preview(&td, &mut c, &t.id, None).await.unwrap();
+    let off = preview(&td, &mut c, &t.id, Some(false)).await.unwrap();
+    assert!(on.ends_with("do not push and do not open a pull request."), "{on}");
+    assert_eq!(on, preview(&td, &mut c, &t.id, Some(true)).await.unwrap());
+    assert_eq!(off, "Write docs\n\nBody text");
+    // 只读：什么都没留下
+    assert_eq!(session_count(&td, &mut c).await, 0);
+    assert!(history(&td, &mut c, &t.id).await.is_empty());
+    assert!(audit(&td, "todo.dispatch").await.is_empty());
+    // 接着派发：agent 收到的就是预览
+    let a = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake" })).await.unwrap();
+    wait_session(&td, &mut c, &a.session.id, SessionStatus::Idle).await;
+    assert_eq!(td.fake.handle(0).input_texts(), vec![on.clone()]);
+    // 第二次也一样：预览带着第一次的 result，和 agent 收到的逐字相同
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    let again = preview(&td, &mut c, &t.id, Some(false)).await.unwrap();
+    assert!(again.contains("Earlier work on this task"), "{again}");
+    let b = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false })).await.unwrap();
+    wait_session(&td, &mut c, &b.session.id, SessionStatus::Idle).await;
+    assert_eq!(td.fake.handle(1).input_texts(), vec![again]);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_preview_includes_a_result_that_was_only_just_recorded() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let t = new_todo(&td, &mut c, "Recent work", "", Some("proj")).await;
+    let r = dispatch(&td, &mut c, &t.id, json!({})).await;
+    wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
+    wait_results(&td, &mut c, &t.id, 1).await;
+    // 又一轮刚结束，立刻问预览（不等它被记下来）：预览和派发一样先记下排着的结果，带的是这一轮的
+    send(&td, &mut c, &r.session.id, "next round").await;
+    wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
+    let p = preview(&td, &mut c, &t.id, Some(false)).await.unwrap();
+    assert_eq!(p, format!("Recent work\n\n{}", earlier_section(&[(&r.session.id, "echo: next round")])));
+    assert_eq!(results(&history(&td, &mut c, &t.id).await).len(), 2, "the preview recorded the queued result");
+    assert_eq!(session_count(&td, &mut c).await, 1, "a preview opens no session");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_preview_refuses_closed_missing_malformed_and_mcp_without_side_effects() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let t = new_todo(&td, &mut c, "Soon done", "", Some("proj")).await;
+    let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "done" })).await.unwrap();
+    let e = preview(&td, &mut c, &t.id, None).await.unwrap_err();
+    assert_eq!((code(&e), field_reason(&e)), (ErrorCode::Invalid, (Some("id".into()), Some("closed".into()))));
+    let e = preview(&td, &mut c, &id(), None).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::NotFound);
+    let e = preview(&td, &mut c, "NOT-A-UUID", None).await.unwrap_err();
+    assert_eq!((code(&e), field_reason(&e).0.as_deref()), (ErrorCode::Invalid, Some("id")));
+    let open = new_todo(&td, &mut c, "Still open", "", Some("proj")).await;
+    let mut mcp = td.local_mcp_client();
+    let e = preview(&td, &mut mcp, &open.id, None).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::Forbidden);
+    assert_eq!(session_count(&td, &mut c).await, 0);
+    assert!(history(&td, &mut c, &open.id).await.is_empty());
+    assert!(audit(&td, "todo.dispatch").await.is_empty());
+    td.shutdown().await;
+}

@@ -7156,6 +7156,37 @@
       ],
       "type": "object"
     },
+    "TodoDispatchPreviewParams": {
+      "description": "`todo.dispatch_preview`：这一项现在派发的话，第一条消息会是什么。只读。",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "no_push": {
+          "description": "同 `todo.dispatch` 的 `no_push`，缺省 `true`（决定第一条消息里有没有「不 push、不开 PR」那一行）。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "TodoDispatchPreviewResult": {
+      "properties": {
+        "first_message": {
+          "description": "此刻派发会发出的第一条消息，一字不差（同一个组装函数、同一套「之前的结果」的选法）。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "first_message"
+      ],
+      "type": "object"
+    },
     "TodoDispatchResult": {
       "properties": {
         "session": {
@@ -9001,6 +9032,12 @@
     "todo_dispatch_params": {
       "$ref": "#/definitions/TodoDispatchParams"
     },
+    "todo_dispatch_preview_params": {
+      "$ref": "#/definitions/TodoDispatchPreviewParams"
+    },
+    "todo_dispatch_preview_result": {
+      "$ref": "#/definitions/TodoDispatchPreviewResult"
+    },
     "todo_dispatch_result": {
       "$ref": "#/definitions/TodoDispatchResult"
     },
@@ -9250,6 +9287,8 @@
     "todo_delete_params",
     "todo_changed",
     "todo_dispatch_params",
+    "todo_dispatch_preview_params",
+    "todo_dispatch_preview_result",
     "todo_dispatch_result",
     "todo_history_params",
     "todo_history_result",
@@ -9737,6 +9776,12 @@
       "name": "todo.changed",
       "params": "TodoChanged",
       "result": null
+    },
+    {
+      "direction": "request",
+      "name": "todo.dispatch_preview",
+      "params": "TodoDispatchPreviewParams",
+      "result": "TodoDispatchPreviewResult"
     },
     {
       "direction": "request",

@@ -27,6 +27,8 @@ import {
   type TodoAddParams,
   type TodoChanged,
   type TodoDispatchParams,
+  type TodoDispatchPreviewParams,
+  type TodoDispatchPreviewResult,
   type TodoDispatchResult,
   type TodoEventNotice,
   type TodoHistoryParams,
@@ -565,6 +567,12 @@ export class Node extends Emitter<NodeEvents> {
       params: Omit<TodoDispatchParams, 'message_id'> & { message_id?: string },
     ): Promise<TodoDispatchResult> =>
       this.call('todo.dispatch', { ...params, message_id: params.message_id ?? randomId() }),
+    /**
+     * `todo.dispatch_preview`：此刻 `dispatch` 会发出的第一条消息，一字不差（只读：不开会话、不记「经过」、不审计、不通知）。
+     * `no_push` 缺省 `true`。项不存在 → `not_found`，已关闭 → `invalid`（`data.reason = 'closed'`），自报了 `mcp` 的本机连接 → `forbidden`。
+     */
+    dispatchPreview: (params: TodoDispatchPreviewParams): Promise<TodoDispatchPreviewResult> =>
+      this.call('todo.dispatch_preview', params),
     /** `todo.history`：这一项的「经过」，按 `seq` 从新到旧；`has_more` 时用最后一条的 `seq` 作为 `before_seq` 取下一页（`limit` 缺省 50、上限 200）。 */
     history: (params: TodoHistoryParams): Promise<TodoHistoryResult> =>
       this.call('todo.history', params),

@@ -481,3 +481,34 @@ async fn run_is_refused_inside_an_agent_session_but_history_is_not() {
     }
     n.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_dry_run_prints_the_first_message_and_sends_nothing() {
+    let n = node().await;
+    std::fs::create_dir_all(n.ws.join("proj")).unwrap();
+    let r = n
+        .cli(&["todo", "add", "Tidy the changelog", "--body", "Keep a Changelog format", "--project", "proj", "--json"])
+        .await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    // 缺省有「不 push」那一行；--allow-push 没有。不需要选 agent、不需要 agent 声明了什么
+    let r = n.cli(&["todo", "run", &id[..8], "--dry-run"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        r.stdout,
+        "Tidy the changelog\n\nKeep a Changelog format\n\nLeave your changes on the branch: do not push and do not open a pull request.\n"
+    );
+    let r = n.cli(&["todo", "run", &id[..8], "--dry-run", "--allow-push", "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.json()["first_message"], "Tidy the changelog\n\nKeep a Changelog format");
+    // 什么都没发生：没有会话、「经过」是空的、这一项没有关联
+    let t = &n.todos(false).await[0];
+    assert!(t["sessions"].as_array().is_none_or(|s| s.is_empty()), "{t}");
+    let h = n.cli(&["todo", "history", &id[..8], "--json"]).await;
+    assert_eq!(h.code, 0, "{}", h.stderr);
+    assert!(h.json()["events"].as_array().unwrap().is_empty(), "{}", h.stdout);
+    // 没有的项：和别处一样的错误
+    let r = n.cli(&["todo", "run", "ffffffff", "--dry-run"]).await;
+    assert_ne!(r.code, 0);
+    n.stop().await;
+}

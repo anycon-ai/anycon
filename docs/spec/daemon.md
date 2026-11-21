@@ -1303,6 +1303,7 @@ Todo {
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `todo.dispatch` | C→D | `{ id, agent, project?, workspace?, settings?, no_push?, message_id? }` → `{ todo: Todo, session: SessionSummary }` |
+| `todo.dispatch_preview` | C→D | `{ id, no_push? }` → `{ first_message }`：此刻派发会发出的第一条消息，一字不差。和 `todo.dispatch` 用同一个组装函数（`compose_first_message`）和同一套「之前的结果」的选法，同样先把这一项排着的结果记下来（持清单的锁），`no_push` 缺省 `true`。只读：不开会话、不记「经过」、不审计、不通知。`id` 不是小写 UUID → `invalid`；不存在 → `not_found`；已关闭 → `invalid`（`data.reason = "closed"`）；自报了 `mcp` 的本机连接 → `forbidden`。两次调用之间有新的结果记进来时，之后派发发出的会和预览不同（预览里写明「可能有变」）。客户端不自己拼这条消息 |
 | `todo.history` | C→D | `{ id, before_seq?, limit? }` → `{ events: [TodoEvent], has_more }`；按 `seq` 从新到旧，`limit` 缺省 50、上限 200（0 按 1）；`before_seq` 只给 `seq` 更小的，翻页用上一页最后一条的 `seq`。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
 | `todo.event` | D→C notification | `{ todo_id, event: TodoEvent }`：「经过」多了一条，发给所有在线客户端 |
 
@@ -1405,8 +1406,8 @@ Leave your changes on the branch: do not push and do not open a pull request.   
   - 这一项没有项目时先选一个，派发成功后写回这一项。
   - 项目不能开 worktree 时写明「直接在项目目录里改，没有隔离」。
   - 「不 push、不开 PR」缺省勾上；所选 agent 没有这个选项时，勾选框显示为做不到，要派发必须手动取消勾选。
-  - 能展开看 daemon 将要发出的完整第一条消息（包括带过去的之前的结果）。
-- **CLI**：`anycon todo run <id> [--agent <id>] [--model <id>] [--mode <id>] [--project <name>] [--local] [--allow-push]`、`anycon todo history <id> [--json]`（[cli.md § 3.8](cli.md#38-anycon-todo)）。在 anycon 拉起的 agent 里 `run` 拒绝执行，和 `done` / `drop` 一样（§ 21.8）；`history` 只读，照常。
+  - 能展开看 daemon 将要发出的完整第一条消息（包括带过去的之前的结果）：用 `todo.dispatch_preview`，换了 agent 以外的参数（`no_push`）或这一项变了时重新取；派发之前又有结果记进来的话，真正发出的可能和预览不同，对话框里这样标注。
+- **CLI**：`anycon todo run <id> [--agent <id>] [--model <id>] [--mode <id>] [--project <name>] [--local] [--allow-push] [--dry-run]`（`--dry-run`：用 `todo.dispatch_preview` 打印此刻会发出的第一条消息，什么都不发；终端转义显示成转义形式，`--json` 给原文）、`anycon todo history <id> [--json]`（[cli.md § 3.8](cli.md#38-anycon-todo)）。在 anycon 拉起的 agent 里 `run` 拒绝执行，和 `done` / `drop` 一样（§ 21.8）；`history` 只读，照常。
 - **`anycon mcp`**：不加派发的工具（ADR-49：`anycon mcp` 不做编排）。MCP 的工具都是固定映射到具体 RPC 的，没有通用的转发，所以经它够不着 `todo.dispatch`；自报了 `mcp` 的连接直接发 `todo.dispatch` 得到 `forbidden`。
 - **SDK**：`node.todos.dispatch` / `history` 和 `todo_event` 事件。
 

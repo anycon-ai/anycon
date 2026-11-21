@@ -761,6 +761,24 @@ export class FakeDaemon {
 
     // 派发和「经过」：和真 daemon 一样的形状，内容是写死的（SDK 只是薄封装）
     const todoEvents = new Map<string, Array<Record<string, unknown>>>()
+    on<{ id: string; no_push?: boolean }, { first_message: string }>(
+      'todo.dispatch_preview',
+      (p) => {
+        const todo = todos.get(p.id)
+        if (!todo) throw AnyconRpcError.of('not_found', 'no such todo')
+        if (todo.state === 'done' || todo.state === 'dropped') {
+          throw new AnyconRpcError(-32602, 'invalid params', {
+            code: 'invalid',
+            field: 'id',
+            reason: 'closed',
+          })
+        }
+        const noPush = p.no_push ?? true
+        return {
+          first_message: `${todo.title as string}${noPush ? '\n\nLeave your changes on the branch.' : ''}`,
+        }
+      },
+    )
     on<
       { id: string; agent: string; project?: string; no_push?: boolean },
       { todo: Record<string, unknown>; session: Record<string, unknown> }

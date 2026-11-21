@@ -119,6 +119,8 @@ pub const TODO_DELETE: &str = "todo.delete";
 /// D→C notification，params = TodoChanged
 pub const TODO_CHANGED: &str = "todo.changed";
 /// 从一项开一个会话并关联（docs/spec/daemon.md § 22）。
+/// 只读：此刻派发会发出的第一条消息（`{ id, no_push? }` → `{ first_message }`），不开会话、不记「经过」、不审计、不通知。
+pub const TODO_DISPATCH_PREVIEW: &str = "todo.dispatch_preview";
 pub const TODO_DISPATCH: &str = "todo.dispatch";
 /// 一项的「经过」，按 `seq` 从新到旧翻页。
 pub const TODO_HISTORY: &str = "todo.history";
@@ -256,6 +258,7 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(TODO_UPDATE, Some("TodoUpdateParams"), Some("Todo")),
     req(TODO_DELETE, Some("TodoDeleteParams"), None),
     notif(TODO_CHANGED, "TodoChanged"),
+    req(TODO_DISPATCH_PREVIEW, Some("TodoDispatchPreviewParams"), Some("TodoDispatchPreviewResult")),
     req(TODO_DISPATCH, Some("TodoDispatchParams"), Some("TodoDispatchResult")),
     req(TODO_HISTORY, Some("TodoHistoryParams"), Some("TodoHistoryResult")),
     notif(TODO_EVENT, "TodoEventNotice"),

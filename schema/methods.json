@@ -445,6 +445,12 @@
   },
   {
     "direction": "request",
+    "name": "todo.dispatch_preview",
+    "params": "TodoDispatchPreviewParams",
+    "result": "TodoDispatchPreviewResult"
+  },
+  {
+    "direction": "request",
     "name": "todo.dispatch",
     "params": "TodoDispatchParams",
     "result": "TodoDispatchResult"

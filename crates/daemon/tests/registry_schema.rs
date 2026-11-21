@@ -349,6 +349,7 @@ async fn walk_todo(w: &mut Walk<'_>) {
     w.call(methods::WORKSPACE_CREATE, json!({ "name": "todoproj" })).await;
     let id2 = "0b9c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a78";
     w.call(methods::TODO_ADD, json!({ "id": id2, "title": "hand it over", "project": "todoproj" })).await;
+    w.call(methods::TODO_DISPATCH_PREVIEW, json!({ "id": id2, "no_push": false })).await;
     let r = w.call(methods::TODO_DISPATCH, json!({ "id": id2, "agent": "fake", "no_push": false })).await;
     // `state` 只由人设置；会话在跑，`activity` 是 working
     assert_eq!(r["todo"]["state"], "open");

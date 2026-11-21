@@ -54,8 +54,9 @@ pub struct RpcErrorData {
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    // 装在 `Box` 里：`RpcError` 是几乎每个函数的 `Err` 类型，太大会让 clippy 的 `result_large_err` 在一路上的函数都报警。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data: Option<RpcErrorData>,
+    pub data: Option<Box<RpcErrorData>>,
 }
 
 impl RpcError {
@@ -63,7 +64,7 @@ impl RpcError {
         Self {
             code: code.rpc_code(),
             message: message.into(),
-            data: Some(RpcErrorData {
+            data: Some(Box::new(RpcErrorData {
                 code,
                 field: None,
                 reason: None,
@@ -71,7 +72,7 @@ impl RpcError {
                 updated_ms: None,
                 bytes: None,
                 cap: None,
-            }),
+            })),
         }
     }
     pub fn invalid_settings(field: impl Into<String>, reason: impl Into<String>) -> Self {
@@ -162,6 +163,12 @@ impl From<&str> for RpcId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `RpcError` 是几乎每个函数的 `Err` 类型：超过 clippy 的 `result_large_err` 门槛（128 字节）会让一路上的函数都被警告。
+    #[test]
+    fn an_rpc_error_stays_small_enough_to_be_returned_everywhere() {
+        assert!(std::mem::size_of::<RpcError>() < 128, "{}", std::mem::size_of::<RpcError>());
+    }
 
     #[test]
     fn classify() {

@@ -1837,7 +1837,7 @@ mod tests {
         use anycon_protocol::{ErrorCode, RpcError, RpcErrorData};
         let rpc = |code, reason: Option<&str>| {
             let mut e = RpcError::new(code, "the hub refused the pairing request");
-            e.data = Some(RpcErrorData {
+            e.data = Some(Box::new(RpcErrorData {
                 code,
                 field: None,
                 reason: reason.map(str::to_string),
@@ -1845,7 +1845,7 @@ mod tests {
                 updated_ms: None,
                 bytes: None,
                 cap: None,
-            });
+            }));
             CliError::from(e)
         };
         // 每日配对次数用完 / 被限速：busy + data.reason → 退出码 1；forbidden → 5

@@ -72,7 +72,7 @@ fn friendly(e: CliError) -> CliError {
 }
 
 async fn list_all(conn: &Conn) -> Result<RuleListResult> {
-    Ok(conn.call(methods::RULE_LIST, RuleListParams::default()).await?)
+    conn.call(methods::RULE_LIST, RuleListParams::default()).await
 }
 
 /// `<id>`（唯一前缀，不区分大小写；id 本身是小写 UUID）。完整的 UUID 不用列表，直接返回 `Err(id)` 让调用方拿它去调用。

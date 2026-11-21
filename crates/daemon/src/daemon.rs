@@ -302,6 +302,7 @@ impl Daemon {
             config.spawn_watcher(),
             agents.spawn_scheduler(),
             sessions.spawn_sweeper(),
+            sessions.spawn_todo_worker(),
             enroll.spawn_sweeper(),
             enroll.spawn_config_watcher(),
         ];

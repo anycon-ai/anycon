@@ -70,6 +70,8 @@ fn row(id: &str, updated_ms: u64, state: TodoState) -> Todo {
         created_ms: updated_ms,
         updated_ms,
         closed_ms: state.is_closed().then_some(updated_ms),
+        sessions: vec![],
+        activity: None,
     }
 }
 

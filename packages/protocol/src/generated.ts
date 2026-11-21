@@ -648,6 +648,10 @@ export type ClearableSetting =
   ("thinking" | "mode" | "system_prompt_append" | "max_turns" | "max_budget_usd") | "model" | "env";
 export type SyncOutcome = "up_to_date" | "merged" | "conflicts" | "aborted";
 /**
+ * 清单项派出的会话现在的情况（算出来的，不存；`Todo.activity`）。
+ */
+export type TodoActivity = "working" | "waiting" | "review";
+/**
  * 一项是谁记的。
  */
 export type TodoSourceKind = "device" | "local" | "agent" | "unknown";
@@ -655,6 +659,63 @@ export type TodoSourceKind = "device" | "local" | "agent" | "unknown";
  * 清单项的状态。这一步 daemon 不限制状态之间怎么转。
  */
 export type TodoState = "open" | "working" | "waiting" | "review" | "done" | "dropped";
+/**
+ * 「经过」里的一条：只追加，没有修改、删除一条的方法；删除这一项时一起删。
+ */
+export type TodoEvent = {
+  /**
+   * 这一项内从 1 递增。
+   */
+  seq: number;
+  ts_ms: number;
+} & TodoEvent1;
+export type TodoEvent1 =
+  | {
+      agent: string;
+      by: TodoActor;
+      kind: "dispatched";
+      no_push: boolean;
+      session_id: string;
+      workspace_mode: SessionWorkspaceMode;
+    }
+  | {
+      kind: "result";
+      session_id: string;
+      text: string;
+      truncated: boolean;
+      turn: number;
+    }
+  | {
+      by: TodoActor;
+      from: TodoState;
+      kind: "state";
+      to: TodoState;
+    };
+/**
+ * 「经过」里的一条的内容；`kind` 是线路上的标签。
+ */
+export type TodoEventData =
+  | {
+      agent: string;
+      by: TodoActor;
+      kind: "dispatched";
+      no_push: boolean;
+      session_id: string;
+      workspace_mode: SessionWorkspaceMode;
+    }
+  | {
+      kind: "result";
+      session_id: string;
+      text: string;
+      truncated: boolean;
+      turn: number;
+    }
+  | {
+      by: TodoActor;
+      from: TodoState;
+      kind: "state";
+      to: TodoState;
+    };
 
 /**
  * 仅用于导出 schema，不在线上传输。字段名即 TS / Python 的类型名。
@@ -804,10 +865,19 @@ export interface ProtocolSchema {
   session_worktree: SessionWorktree;
   sync_outcome: SyncOutcome;
   todo: Todo;
+  todo_activity: TodoActivity;
+  todo_actor: TodoActor;
   todo_add_params: TodoAddParams;
   todo_changed: TodoChanged;
   todo_cursor: TodoCursor;
   todo_delete_params: TodoDeleteParams;
+  todo_dispatch_params: TodoDispatchParams;
+  todo_dispatch_result: TodoDispatchResult;
+  todo_event: TodoEvent;
+  todo_event_data: TodoEventData;
+  todo_event_notice: TodoEventNotice;
+  todo_history_params: TodoHistoryParams;
+  todo_history_result: TodoHistoryResult;
   todo_id_params: TodoIdParams;
   todo_list_params: TodoListParams;
   todo_list_result: TodoListResult;
@@ -2500,6 +2570,10 @@ export interface SessionSummary {
   settings: SessionSettings;
   status: SessionStatus;
   title: string;
+  /**
+   * 会话从哪一项派出（`todo.dispatch`，docs/spec/daemon.md § 22.3）。这一项被删除后原样留着，客户端按「来源已删除」显示。
+   */
+  todo_id?: string | null;
   updated_at_ms: number;
   usage?: UsageTotals;
   /**
@@ -2643,6 +2717,11 @@ export interface SessionSyncBaseResult {
 }
 export interface Todo {
   /**
+   * 派出的会话现在的情况，daemon 每次返回这一项时按会话此刻的状态算出来（docs/spec/daemon.md § 22.3）：不存储、不动
+   * `updated_ms`、不进审计。已关闭（`done` / `dropped`）或者没有派发过的项没有这个字段。`state` 只由人设置。
+   */
+  activity?: TodoActivity | null;
+  /**
    * Markdown，≤ 16 KiB，可以是空串。
    */
   body: string;
@@ -2663,6 +2742,10 @@ export interface Todo {
    * 项目名；不校验项目存在，项目改名 / 删除后原样保留。
    */
   project?: string | null;
+  /**
+   * 这一项派出的会话（`todo.dispatch`，docs/spec/daemon.md § 22.3），按派发的先后，最多 20 个。会话被删除后关联留着。
+   */
+  sessions?: string[];
   source: TodoSource;
   state: TodoState;
   /**
@@ -2685,6 +2768,13 @@ export interface TodoSource {
    * 这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。
    */
   session_id?: string | null;
+}
+/**
+ * 谁做了这件事（审计里的「发起者」，不含会话内容）。
+ */
+export interface TodoActor {
+  device_id?: string | null;
+  kind: TodoSourceKind;
 }
 export interface TodoAddParams {
   /**
@@ -2729,6 +2819,69 @@ export interface TodoCursor {
 export interface TodoDeleteParams {
   id: string;
   if_updated_ms?: number | null;
+}
+/**
+ * `todo.dispatch`：从一项开一个会话，把会话和这一项关联。
+ */
+export interface TodoDispatchParams {
+  /**
+   * 同 `session.create`。
+   */
+  agent: string;
+  id: string;
+  /**
+   * 幂等：和 `session.create` 的 `message_id` 一样。同一个值重试（比如回执丢了）返回第一次的结果，不再开第二个会话、
+   * 不多记关联和「经过」；它同时是会话第一条消息的 id。缺省由 daemon 生成（那样就没有幂等）。
+   */
+  message_id?: string | null;
+  /**
+   * 「不 push、不开 PR」（agent 的 `no_push` 选项）。缺省 `true`；所选 agent 没有声明这个选项而它为 `true` → `unsupported`。
+   */
+  no_push?: boolean | null;
+  /**
+   * 缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。给了而且和这一项的不同，派发成功时写回这一项。
+   */
+  project?: string | null;
+  /**
+   * 同 `session.create`。
+   */
+  settings?: SessionSettings;
+  /**
+   * 同 `session.create`。缺省：项目能开 worktree 就用新的 worktree，否则在项目目录里（不看 `worktree.default`）。
+   */
+  workspace?: SessionWorkspace | null;
+}
+export interface TodoDispatchResult {
+  session: SessionSummary;
+  todo: Todo;
+}
+/**
+ * `todo.event` 通知：这一项的「经过」多了一条，发给所有在线客户端。
+ */
+export interface TodoEventNotice {
+  event: TodoEvent;
+  todo_id: string;
+}
+/**
+ * `todo.history` 的参数。
+ */
+export interface TodoHistoryParams {
+  /**
+   * 只给 `seq` 小于它的事件（翻页用：上一页最后一条的 `seq`）。
+   */
+  before_seq?: number | null;
+  id: string;
+  /**
+   * 缺省 50，上限 200。
+   */
+  limit?: number | null;
+}
+export interface TodoHistoryResult {
+  /**
+   * 按 `seq` 从新到旧。
+   */
+  events: TodoEvent[];
+  has_more: boolean;
 }
 export interface TodoIdParams {
   id: string;

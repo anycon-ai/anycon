@@ -759,6 +759,76 @@ export class FakeDaemon {
       return {}
     })
 
+    // 派发和「经过」：和真 daemon 一样的形状，内容是写死的（SDK 只是薄封装）
+    const todoEvents = new Map<string, Array<Record<string, unknown>>>()
+    on<
+      { id: string; agent: string; project?: string; no_push?: boolean },
+      { todo: Record<string, unknown>; session: Record<string, unknown> }
+    >('todo.dispatch', (p) => {
+      const todo = todos.get(p.id)
+      if (!todo) throw AnyconRpcError.of('not_found', 'no such todo')
+      if (todo.state === 'done' || todo.state === 'dropped') {
+        throw new AnyconRpcError(-32602, 'invalid params', {
+          code: 'invalid',
+          field: 'id',
+          reason: 'closed',
+        })
+      }
+      if (p.agent !== 'mock') throw AnyconRpcError.of('not_found', `unknown agent ${p.agent}`)
+      if (p.no_push !== false) {
+        throw new AnyconRpcError(-32009, 'unsupported', {
+          code: 'unsupported',
+          field: 'no_push',
+          reason: 'no_push',
+        })
+      }
+      const project = p.project ?? (todo.project as string | undefined)
+      if (project === undefined) {
+        throw new AnyconRpcError(-32602, 'invalid params', { code: 'invalid', field: 'project' })
+      }
+      const sessionId = `sess_dispatch${todoClock}`
+      todo.project = project
+      todo.activity = 'working'
+      todo.sessions = [...((todo.sessions as string[] | undefined) ?? []), sessionId]
+      todo.updated_ms = ++todoClock
+      const events = todoEvents.get(p.id) ?? []
+      const event = {
+        seq: events.length + 1,
+        ts_ms: todoClock,
+        kind: 'dispatched',
+        session_id: sessionId,
+        agent: p.agent,
+        workspace_mode: 'local',
+        no_push: false,
+        by: { kind: 'device', device_id: peerId },
+      }
+      todoEvents.set(p.id, [...events, event])
+      this.#notifyAll('todo.changed', { id: p.id, todo, deleted: false })
+      this.#notifyAll('todo.event', { todo_id: p.id, event })
+      const session = {
+        id: sessionId,
+        project,
+        agent: p.agent,
+        title: todo.title,
+        status: 'running',
+        settings: {},
+        created_at_ms: todoClock,
+        updated_at_ms: todoClock,
+        last_seq: 0,
+        pending_permissions: 0,
+        todo_id: p.id,
+      } as unknown as Record<string, unknown>
+      return { todo, session }
+    })
+    on<{ id: string; before_seq?: number; limit?: number }, unknown>('todo.history', (p) => {
+      if (!todos.has(p.id)) throw AnyconRpcError.of('not_found', 'no such todo')
+      const all = (todoEvents.get(p.id) ?? [])
+        .filter((e) => p.before_seq === undefined || (e.seq as number) < p.before_seq)
+        .toSorted((a, b) => (b.seq as number) - (a.seq as number))
+      const limit = p.limit ?? 50
+      return { events: all.slice(0, limit), has_more: all.length > limit }
+    })
+
     on<SessionCreateParams, SessionSummary>('session.create', (p) => {
       if (p.agent === 'missing') {
         throw new AnyconRpcError(-32002, 'agent unavailable', {

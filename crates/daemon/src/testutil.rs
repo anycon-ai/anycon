@@ -141,6 +141,8 @@ pub struct FakeAdapter {
     pub pid: Mutex<Option<u32>>,
     /// `Adapter::driver()` / `AgentInfo.driver`；默认 `mock`。
     pub driver: Mutex<&'static str>,
+    /// 声明 `no_push` 选项（「不 push、不开 PR」，docs/spec/daemon.md § 22.5）；默认不声明（改了要 `agent.list { refresh: true }` 重新探测）。
+    pub declare_no_push: AtomicBool,
 }
 
 /// 假 adapter 对**插话**（`UserInput.interject = true`）的失败方式。
@@ -197,6 +199,7 @@ impl FakeAdapter {
             order: Arc::new(Mutex::new(Vec::new())),
             pid: Mutex::new(None),
             driver: Mutex::new("mock"),
+            declare_no_push: AtomicBool::new(false),
         })
     }
 
@@ -322,6 +325,16 @@ impl FakeAdapter {
                     choices: vec![],
                     default: serde_json::json!(false),
                 }];
+                if self.declare_no_push.load(Ordering::SeqCst) {
+                    info.options.push(ConfigOption {
+                        id: "no_push".into(),
+                        label: "No push".into(),
+                        description: None,
+                        kind: ConfigOptionKind::Bool,
+                        choices: vec![],
+                        default: serde_json::json!(false),
+                    });
+                }
             }
         }
         info

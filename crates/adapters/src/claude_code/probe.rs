@@ -153,6 +153,19 @@ pub fn options(models: &[ModelInfo]) -> Vec<ConfigOption> {
             choices: vec![],
             default: Value::Bool(false),
         },
+        // 「不 push、不开 PR」（docs/spec/daemon.md § 22.5）：`--settings` 的 `permissions.deny`。默认关；清单派发时 daemon 默认打开
+        ConfigOption {
+            id: OPTION_NO_PUSH.to_string(),
+            label: "No push, no pull requests".to_string(),
+            description: Some(
+                "Deny `git push`, `gh pr create` and `gh pr merge` (permission rules in the launch settings). \
+                 A guard rail against routine pushes, not a boundary: a script that pushes still gets through."
+                    .to_string(),
+            ),
+            kind: ConfigOptionKind::Bool,
+            choices: vec![],
+            default: Value::Bool(false),
+        },
         // `--advisor <model>`（2.1.325 实测；`--help` 不列出）：主模型在关键决策点咨询更强的模型（ADR-52）。
         // 声明成带 `choices` 的 `text` 而不是 `select`：模型列表每次探测都可能变，而 daemon 在每个 turn 之前都会按当前列表
         // 重新校验已存的 select 值，存着的 advisor 一旦掉出列表会话就会一直 `invalid_settings`。`text` 只检查是字符串（最长 4096 字节），
@@ -174,6 +187,8 @@ pub fn options(models: &[ModelInfo]) -> Vec<ConfigOption> {
 
 /// 选项 id：文件工具不许写工作目录以外的路径。
 pub const OPTION_BLOCK_OUTSIDE_WRITES: &str = "block_outside_writes";
+/// 选项 id：不 push、不开 PR。
+pub const OPTION_NO_PUSH: &str = "no_push";
 /// 选项 id：`--advisor` 的值。
 pub const OPTION_ADVISOR_MODEL: &str = "advisor_model";
 /// `advisor_model` 的「关」。
@@ -576,6 +591,14 @@ mod tests {
             thinking: None,
             tags: vec![],
         }
+    }
+
+    #[test]
+    fn no_push_is_a_boolean_option_that_defaults_to_off() {
+        let opts = options(&[]);
+        let o = opts.iter().find(|o| o.id == OPTION_NO_PUSH).expect("no_push option");
+        assert_eq!((o.id.as_str(), o.kind, o.default.clone()), ("no_push", ConfigOptionKind::Bool, json!(false)));
+        assert!(o.choices.is_empty());
     }
 
     #[test]

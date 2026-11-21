@@ -245,6 +245,10 @@ struct St {
     tasks: HashMap<String, TaskTrack>,
     /// 下一个 [`TaskTrack::order`]。
     next_task_order: u64,
+    /// 从清单派出的会话（`row.todo_id`）：这一轮 agent 的最后一段文字（docs/spec/daemon.md § 22.4）。别的会话不收集。
+    last_text: crate::todo_dispatch::LastText,
+    /// 已结束、但「turn 完成」被后台任务推迟了的轮次的结果：和推迟的 `turn_finished` 同一个时机交给清单（§ 22.4）。
+    pending_results: Vec<crate::todo_dispatch::PendingResult>,
 }
 
 /// 一个后台任务的节流状态。
@@ -316,6 +320,8 @@ impl St {
             deleted_with: None,
             tasks: HashMap::new(),
             next_task_order: 0,
+            last_text: Default::default(),
+            pending_results: Vec::new(),
         }
     }
 }
@@ -434,6 +440,8 @@ pub struct Sessions {
     agent_pids: Mutex<HashMap<String, (u64, u32)>>,
     /// 落到工作目录的附件（ADR-44）：复制、清单、删除。
     workfiles: WorkFiles,
+    /// 从清单派出的会话的状态变化和每轮结果，交给清单的后台任务（`todo_dispatch.rs`）：会话锁里只入队，不碰清单的锁。
+    todo_signal: Arc<crate::todo_dispatch::TodoSignal>,
 }
 
 /// 「同一时刻只有一个」的标记：拿到它的人跑，drop 时放回去（任务 panic 也会放）。
@@ -491,6 +499,7 @@ impl Sessions {
             pr_round_every: std::sync::atomic::AtomicU32::new(PR_ROUND_EVERY),
             agent_pids: Mutex::new(HashMap::new()),
             workfiles: WorkFiles::new(),
+            todo_signal: Default::default(),
         });
         this.load().await;
         this
@@ -594,6 +603,37 @@ impl Sessions {
             .ok_or_else(|| err(ErrorCode::NotFound, format!("session {id} not found")))
     }
 
+    pub(crate) fn store(&self) -> &Store {
+        &self.d.store
+    }
+
+    pub(crate) fn clients(&self) -> &Arc<Clients> {
+        &self.d.clients
+    }
+
+    /// 会话现在的状态；会话不存在（已删除）返回 `None`。清单的回写用（在清单锁里调，只取会话锁一小会儿）。
+    pub(crate) async fn status_of(&self, id: &str) -> Option<(SessionStatus, u32)> {
+        let sess = self.get(id).ok()?;
+        let st = sess.st.lock().await;
+        (!st.deleted).then_some((st.row.status, st.background_tasks))
+    }
+
+    pub(crate) fn todo_signal(&self) -> &Arc<crate::todo_dispatch::TodoSignal> {
+        &self.todo_signal
+    }
+
+    /// 会话从哪一项派出（删除会话时要通知那一项重新算）。
+    async fn todo_of(&self, id: &str) -> Option<String> {
+        let sess = self.get(id).ok()?;
+        let st = sess.st.lock().await;
+        st.row.todo_id.clone()
+    }
+
+    /// 后台任务：把从清单派出的会话的每轮结果记进「经过」、把状态变化回写到清单项（docs/spec/daemon.md § 22）。
+    pub fn spawn_todo_worker(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(crate::todo_dispatch::run_worker(Arc::downgrade(self), self.todo_signal.clone()))
+    }
+
     fn all(&self) -> Vec<Arc<Session>> {
         self.map.read().unwrap().values().cloned().collect()
     }
@@ -693,6 +733,7 @@ impl Sessions {
             return;
         }
         let was_idle = st.row.status == SessionStatus::Idle;
+        let status_changed = st.row.status != new;
         st.row.status = new;
         st.last_position = position;
         // 只有 turn 已经交给 agent 之后积压的消息才算「待发送」；还没 dispatch 的会并入当前 turn
@@ -715,6 +756,25 @@ impl Sessions {
         }
         self.persist(st).await;
         self.notify_changed(st);
+        // 从清单派出的会话：状态变了，让清单重新算这一项该是什么状态（§ 22.3）
+        // （只在状态真的变了时：排队位置变了不算）
+        if let (true, Some(todo_id)) = (status_changed, &st.row.todo_id) {
+            self.todo_signal.status_changed(todo_id, &st.row.id);
+        }
+    }
+
+    /// 把推迟的各轮结果交给清单（和推迟的 `turn_finished` 同一个时机，§ 22.4）。
+    fn release_pending_results(&self, st: &mut St) {
+        if st.pending_results.is_empty() {
+            return;
+        }
+        let Some(todo_id) = st.row.todo_id.clone() else {
+            st.pending_results.clear();
+            return;
+        };
+        for r in std::mem::take(&mut st.pending_results) {
+            self.todo_signal.push_result(&todo_id, &st.row.id, r);
+        }
     }
 
     async fn flush_text(&self, st: &mut St) {
@@ -731,6 +791,16 @@ impl Sessions {
     // ============================================================ 创建
 
     pub async fn create(self: &Arc<Self>, caller: &Caller, p: SessionCreateParams) -> RpcResult<SessionSummary> {
+        self.create_for_todo(caller, p, None).await
+    }
+
+    /// [`Sessions::create`]；`todo_id` 是 `todo.dispatch` 要关联的清单项（只在创建时写进会话行，之后不变）。
+    pub(crate) async fn create_for_todo(
+        self: &Arc<Self>,
+        caller: &Caller,
+        p: SessionCreateParams,
+        todo_id: Option<String>,
+    ) -> RpcResult<SessionSummary> {
         let agents = &self.d.agents;
         let info = agents
             .info(&p.agent)
@@ -825,7 +895,9 @@ impl Sessions {
                     project_dir: &project_dir,
                     base: base.as_deref(),
                     branch: branch.as_deref(),
-                    prompt: p.prompt.as_deref(),
+                    // 清单派发的会话：分支名不从第一条消息（标题和正文）里取，用清单项 id 的前 8 位，免得标题的字词进审计和日志
+                    prompt: if todo_id.is_some() { None } else { p.prompt.as_deref() },
+                    slug: todo_id.as_deref().map(|t| format!("todo-{}", t.chars().take(8).collect::<String>())),
                 }))
                 .await?;
                 Some(plan)
@@ -853,6 +925,7 @@ impl Sessions {
             usage: UsageTotals::default(),
             preview: None,
             worktree_id: wt_plan.as_ref().map(|(w, _)| w.id.clone()),
+            todo_id,
         };
         let mut st = St::new(row);
         st.idle_since = Some(Instant::now());
@@ -919,6 +992,7 @@ impl Sessions {
             preview: st.row.preview.clone(),
             agent_session_id: st.row.agent_session_id.clone(),
             worktree: st.wt.as_ref().map(session_worktree),
+            todo_id: st.row.todo_id.clone(),
         }
     }
 
@@ -1230,6 +1304,8 @@ impl Sessions {
         st.delta_budgets.clear();
         // 用户又发消息了：之前推迟的「turn 完成」通知不再补发，这个 turn 结束时按当时的后台任务重新判断
         st.finish_notify_pending = false;
+        self.release_pending_results(st);
+        st.last_text.reset();
         // worktree 还没建好 / 不见了的会话：拉起流程里先建（重建）它，期间 `starting` 的超时不算
         let wt_ready = st.wt.as_ref().is_none_or(|w| w.state == WorktreeState::Active);
         st.turn = Some(TurnRt {
@@ -1405,9 +1481,15 @@ impl Sessions {
         st.interjecting = 0;
         st.spawn_dir = None;
         // 后台任务和进程同生死；摘掉进程之后也不会再有推迟的「turn 完成」可补（进程是被 daemon 收掉或出错了）
+        let had_tasks = st.background_tasks > 0;
         st.background_tasks = 0;
         st.background_drained_at = None;
         st.finish_notify_pending = false;
+        self.release_pending_results(st);
+        // 任务数被清零（进程摘掉了）：算 `activity` 看的是任务数，通知一下
+        if let (true, Some(todo_id)) = (had_tasks, &st.row.todo_id) {
+            self.todo_signal.status_changed(todo_id, &st.row.id);
+        }
         st.driver.take()
     }
 
@@ -1841,6 +1923,19 @@ impl Sessions {
             }
         }
         st.row.usage.turns += 1;
+        // 从清单派出的会话：这一轮结束了，把 agent 的最后一段话交给清单（§ 22.4）。时机和 `turn_finished` 一样：
+        // 正常结束的一轮在后台任务还在跑时推迟，到推迟的通知发出（或作废）时一起交；取消、出错的立即交
+        if st.row.todo_id.is_some() {
+            let (text, truncated) = st.last_text.take();
+            st.pending_results.push(crate::todo_dispatch::PendingResult { turn: turn_id, text, truncated });
+            // 在结果记进「经过」之前，这一项的 `activity` 算 `working`（§ 22.3）
+            self.todo_signal.hold(&st.row.id);
+            let completed =
+                matches!(reason, TurnDoneReason::Completed | TurnDoneReason::MaxTurns | TurnDoneReason::Budget);
+            if !(completed && st.background_tasks > 0) {
+                self.release_pending_results(st);
+            }
+        }
         st.turn = None;
         st.delta_budgets.clear();
         self.release_slot(st);
@@ -2045,6 +2140,7 @@ impl Sessions {
         if st.background_tasks == tasks {
             return;
         }
+        let crossed_zero = (st.background_tasks == 0) != (tasks == 0);
         st.background_tasks = tasks;
         if tasks == 0 {
             let now = Instant::now();
@@ -2062,6 +2158,10 @@ impl Sessions {
             st.background_drained_at = None;
         }
         self.notify_changed(st);
+        // 空闲的会话还有后台任务在跑，对清单项来说就还在 `working`（§ 22.3）：任务数在 0 和非 0 之间变化时重新算
+        if let (true, Some(todo_id)) = (crossed_zero, &st.row.todo_id) {
+            self.todo_signal.status_changed(todo_id, &st.row.id);
+        }
     }
 
     /// dispatch 之后的第一个 agent 事件：starting → running。
@@ -2099,6 +2199,9 @@ impl Sessions {
                     st.text_buf_seq = st.row.last_seq + 1;
                 }
                 st.text_buf.push_str(&text);
+                if st.row.todo_id.is_some() {
+                    st.last_text.push(&text);
+                }
                 let flush = st.text_buf.len() >= FTS_FLUSH_BYTES;
                 self.emit(st, Event::TextDelta { text }).await;
                 if flush {
@@ -2106,6 +2209,7 @@ impl Sessions {
                 }
             }
             Event::TextDone {} => {
+                st.last_text.done();
                 self.flush_text(st).await;
                 self.emit(st, Event::TextDone {}).await;
             }
@@ -2972,6 +3076,7 @@ impl Sessions {
     ) -> RpcResult<()> {
         let session_id = p.session_id.as_str();
         let sess = self.get(session_id)?;
+        let todo_of_deleted = self.todo_of(session_id).await;
         let (old, was_scratch, wt, attach_site) = {
             let mut st = sess.st.lock().await;
             if st.deleted {
@@ -3036,6 +3141,10 @@ impl Sessions {
             self.d.workspace.remove_scratch(session_id);
         }
         self.map.write().unwrap().remove(session_id);
+        // 从清单派出的会话被删了：清单项重新算（§ 22.3）
+        if let Some(todo_id) = &todo_of_deleted {
+            self.todo_signal.status_changed(todo_id, session_id);
+        }
         self.throttle.lock().unwrap().remove(session_id);
         self.d.notifier.forget(session_id);
         self.d.clients.forget_session(session_id);
@@ -3589,6 +3698,7 @@ impl Sessions {
                 && st.background_drained_at.is_some_and(|t| t.elapsed() >= finish_grace)
             {
                 st.finish_notify_pending = false;
+                self.release_pending_results(&mut st);
                 self.d.notifier.turn_finished(&st.row.id, st.row.follow_up);
             }
             // ended（回合数 / 预算用完）但进程还活着：和 idle 一样按 `idle_timeout` 回收，别让它一直占着进程
@@ -3814,7 +3924,7 @@ fn stable_code_str(e: &RpcError) -> String {
         .unwrap_or_else(|| "error".into())
 }
 
-fn unavailable(status: &AgentStatus, agent: &str) -> RpcError {
+pub(crate) fn unavailable(status: &AgentStatus, agent: &str) -> RpcError {
     let mut e = err(ErrorCode::AgentUnavailable, format!("agent {agent} is not available ({status:?})"));
     if let Some(d) = e.data.as_mut() {
         d.reason = Some(format!("{status:?}").to_lowercase());
@@ -4022,6 +4132,7 @@ mod launch_args_tests {
             usage: UsageTotals::default(),
             preview: None,
             worktree_id: None,
+            todo_id: None,
         };
         let mut st = St::new(row);
         let old = ResumeHandle { agent_session_id: "A".into(), launch_args: json!({"conversation_started": false}) };

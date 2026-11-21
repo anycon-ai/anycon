@@ -63,6 +63,8 @@ pub struct SessionRow {
     pub preview: Option<String>,
     /// 会话在 anycon 建的 worktree 里工作时，`worktrees` 表里那一行的 id（ADR-34）。
     pub worktree_id: Option<String>,
+    /// 会话从哪一项派出（`todo.dispatch`，docs/spec/daemon.md § 22.3）。只在创建时写，之后不变；这一项被删除后原样留着。
+    pub todo_id: Option<String>,
 }
 
 impl SessionRow {
@@ -360,7 +362,7 @@ impl Store {
     pub async fn upsert_session(&self, s: &SessionRow) -> Result<()> {
         sqlx::query(
             "INSERT INTO sessions (id, project, agent, title, title_locked, status, archived, settings, agent_session_id, launch_args, \
-             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id, follow_up, read_seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id, follow_up, read_seq, todo_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
              ON CONFLICT(id) DO UPDATE SET project=excluded.project, project_loc=excluded.project_loc, title=excluded.title, title_locked=excluded.title_locked, \
              status=excluded.status, archived=excluded.archived, settings=excluded.settings, agent_session_id=excluded.agent_session_id, \
              launch_args=excluded.launch_args, updated_ms=excluded.updated_ms, last_seq=excluded.last_seq, \
@@ -387,6 +389,7 @@ impl Store {
         .bind(&s.worktree_id)
         .bind(s.follow_up)
         .bind(s.read_seq as i64)
+        .bind(&s.todo_id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -417,6 +420,7 @@ impl Store {
             usage: serde_json::from_str(&usage).unwrap_or_default(),
             preview: r.try_get("preview")?,
             worktree_id: r.try_get("worktree_id")?,
+            todo_id: r.try_get("todo_id")?,
         })
     }
 
@@ -1464,7 +1468,7 @@ impl ImportTx {
     pub async fn insert_session(&mut self, s: &SessionRow) -> Result<bool> {
         let n = sqlx::query(
             "INSERT INTO sessions (id, project, agent, title, title_locked, status, archived, settings, agent_session_id, launch_args, \
-             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id, follow_up, read_seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+             created_ms, updated_ms, last_seq, next_turn_id, usage, preview, project_loc, worktree_id, follow_up, read_seq, todo_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
              ON CONFLICT(id) DO NOTHING",
         )
         .bind(&s.id)
@@ -1487,6 +1491,7 @@ impl ImportTx {
         .bind(&s.worktree_id)
         .bind(s.follow_up)
         .bind(s.read_seq as i64)
+        .bind(&s.todo_id)
         .execute(&mut *self.tx)
         .await?
         .rows_affected();
@@ -1724,6 +1729,7 @@ mod tests {
             usage: UsageTotals::default(),
             preview: None,
             worktree_id: None,
+            todo_id: None,
         }
     }
 

@@ -3,22 +3,23 @@
 //! 和别的客户端命令一样走 [`App::conn`]（本机 socket，或 `--hub` / `--node` 经 hub）。`<id>` 接受唯一前缀。
 //!
 //! 在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`，和 `anycon mcp` 是同一个判断）：`add` 带 `agent: true` 和
-//! `origin_session`（读 `ANYCON_SESSION_ID`），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行。
+//! `origin_session`（读 `ANYCON_SESSION_ID`），`ls` / `history` 照常，`done` / `drop` / `reopen` / `rm` / `run` 拒绝执行。
 //! 这是和 `anycon mcp` 不给 agent 修改清单的工具同一条界线的**护栏，不是安全边界**：agent 能改自己的环境
 //! （比如先清掉 `ANYCON_AGENT` 再运行），能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单。
 //!
-//! 清单项的标题和正文可能来自 agent，表格输出经 [`table`] 可见化；`--json` 输出原始内容。
+//! 清单项的标题和正文可能来自 agent，表格输出经 [`table`] 可见化；`--json` 输出原始内容。`history` 里的 `result` 文字是 agent 写的
+//! （可能被注入），经 [`visible`] 之后缩进显示，终端转义不会被解释。
 
 use anycon_daemon::env::{AGENT_MARKER_ENV, SESSION_ID_ENV};
 use anycon_daemon::util::{fmt_utc, parse_utc};
 use anycon_protocol::*;
 use serde_json::{json, Value};
 
-use crate::cli::{TodoAddArgs, TodoCmd, TodoLsArgs};
+use crate::cli::{TodoAddArgs, TodoCmd, TodoHistoryArgs, TodoLsArgs, TodoRunArgs};
 use crate::commands::App;
 use crate::conn::Conn;
 use crate::error::{CliError, Result, EXIT_ERROR};
-use crate::output::{sanitize_label, table};
+use crate::output::{sanitize_label, table, visible};
 
 /// 这个进程是不是在 anycon 拉起的 agent 里。
 fn inside_agent() -> bool {
@@ -28,14 +29,19 @@ fn inside_agent() -> bool {
 /// 在 agent 里拒绝会改动清单的子命令。
 fn refuse_inside_agent(what: &str) -> Result<()> {
     if inside_agent() {
-        return Err(CliError::denied(
-            "forbidden",
+        let message = if what == "run" {
+            format!(
+                "`anycon todo run` is not available inside an anycon agent session ({AGENT_MARKER_ENV} is set): handing \
+                 a to-do to an agent is left to you. Run it from your own terminal."
+            )
+        } else {
             format!(
                 "`anycon todo {what}` is not available inside an anycon agent session ({AGENT_MARKER_ENV} is set): \
                  an agent can add to the to-do list and read it, but closing, reopening and removing items is left to \
                  you. Run it from your own terminal."
-            ),
-        ));
+            )
+        };
+        return Err(CliError::denied("forbidden", message));
     }
     Ok(())
 }
@@ -170,6 +176,8 @@ pub async fn todo(app: &App, cmd: TodoCmd) -> Result<u8> {
         TodoCmd::Drop { id } => set_state(app, "drop", &id, TodoState::Dropped, "dropped").await,
         TodoCmd::Reopen { id } => set_state(app, "reopen", &id, TodoState::Open, "reopened").await,
         TodoCmd::Rm { id } => rm(app, &id).await,
+        TodoCmd::Run(a) => run(app, a).await,
+        TodoCmd::History(a) => history(app, a).await,
     }
 }
 
@@ -194,6 +202,14 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
         println!("added {}  {}", short(&t.id), sanitize_label(&t.title, 80, ""));
     }
     Ok(0)
+}
+
+fn activity_str(a: TodoActivity) -> &'static str {
+    match a {
+        TodoActivity::Working => "working",
+        TodoActivity::Waiting => "waiting",
+        TodoActivity::Review => "review",
+    }
 }
 
 fn state_str(s: TodoState) -> &'static str {
@@ -224,6 +240,7 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
         rows.push(vec![
             short(&t.id),
             state_str(t.state).to_string(),
+            t.activity.map(activity_str).unwrap_or_default().to_string(),
             t.due_ms.map(|d| fmt_utc(d)[..16].to_string()).unwrap_or_default(),
             t.project.clone().unwrap_or_default(),
             by,
@@ -295,6 +312,161 @@ async fn rm(app: &App, key: &str) -> Result<u8> {
         match resolved {
             Ok(t) => println!("removed {}  {}", short(&t.id), sanitize_label(&t.title, 80, "")),
             Err(_) => println!("removed {}", short(&id)),
+        }
+    }
+    Ok(0)
+}
+
+/// 把 `todo.dispatch` 的几个错误换成人话。
+fn friendly_dispatch(e: CliError, agent: &str) -> CliError {
+    match (e.code.as_str(), e.reason.as_deref()) {
+        ("unsupported", Some("no_push")) => CliError::new(
+            e.exit,
+            e.code,
+            format!(
+                "agent {agent} has no way to block pushes and pull requests; add --allow-push to dispatch anyway (the \
+                 agent may then push and open pull requests)"
+            ),
+        ),
+        ("invalid", Some("closed")) => CliError::new(
+            e.exit,
+            e.code,
+            "this to-do is closed (done or dropped); reopen it with `anycon todo reopen` first",
+        ),
+        ("invalid", Some("too_many_sessions")) => CliError::new(
+            e.exit,
+            e.code,
+            "this to-do has already been handed to an agent 20 times; add a new item for what is left",
+        ),
+        _ => e,
+    }
+}
+
+async fn run(app: &App, a: TodoRunArgs) -> Result<u8> {
+    refuse_inside_agent("run")?;
+    let conn = app.conn().await?;
+    let id = match resolve_todo(&conn, &a.id, false).await? {
+        Ok(t) => t.id,
+        Err(id) => id,
+    };
+    let agent = crate::commands::pick_agent(&conn, a.agent).await?;
+    let allow_push = a.allow_push;
+    let params = TodoDispatchParams {
+        id,
+        agent: agent.clone(),
+        project: a.project,
+        // 缺省由 daemon 定（项目能开 worktree 就开）；`--local` 明确在项目目录里
+        workspace: a.local.then_some(SessionWorkspace::Local),
+        settings: SessionSettings { model: a.model, mode: a.mode, ..Default::default() },
+        no_push: a.allow_push.then_some(false),
+        // 一次命令一个：回执丢了、重发时 daemon 返回第一次的结果，不开第二个会话
+        message_id: Some(uuid::Uuid::new_v4().to_string()),
+    };
+    let r: TodoDispatchResult =
+        conn.call(methods::TODO_DISPATCH, params).await.map_err(|e| friendly_dispatch(e, &agent))?;
+    if app.json() {
+        app.out.json_line(&r);
+        return Ok(0);
+    }
+    let place = match &r.session.worktree {
+        Some(w) => format!("in a new worktree on branch {}", sanitize_label(&w.branch, 120, "?")),
+        None => "in the project directory (no worktree, no isolation)".to_string(),
+    };
+    println!(
+        "dispatched {}  {}\nsession {} ({}) {place}",
+        short(&r.todo.id),
+        sanitize_label(&r.todo.title, 80, ""),
+        r.session.id,
+        sanitize_label(&r.session.agent, 40, "?"),
+    );
+    // 没有 `--allow-push` 时，daemon 只在 agent 声明了选项并打开它时才派发成功，所以这里不用再查
+    println!(
+        "{}",
+        if allow_push {
+            "the agent may push and open pull requests"
+        } else {
+            "the agent is not to push or open pull requests"
+        }
+    );
+    println!(
+        "follow it with `anycon attach {}`; see the item's history with `anycon todo history {}`",
+        r.session.id,
+        short(&r.todo.id)
+    );
+    Ok(0)
+}
+
+fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
+    let by = |a: &TodoActor| match (&a.kind, &a.device_id) {
+        (TodoSourceKind::Device, Some(d)) => format!("device {}", sanitize_label(d, 40, "?")),
+        (TodoSourceKind::Local, _) => "this machine".to_string(),
+        (TodoSourceKind::Agent, _) => "an agent".to_string(),
+        (TodoSourceKind::Device, None) => "a device".to_string(),
+        (TodoSourceKind::Unknown, _) => "someone".to_string(),
+    };
+    match &e.data {
+        TodoEventData::Dispatched { session_id, agent, workspace_mode, no_push, by: who } => (
+            format!(
+                "dispatched to {} (session {}, {}{}) by {}",
+                sanitize_label(agent, 40, "?"),
+                session_id,
+                match workspace_mode {
+                    SessionWorkspaceMode::Worktree => "worktree",
+                    SessionWorkspaceMode::Local => "project directory",
+                },
+                if *no_push { ", no push" } else { ", push allowed" },
+                by(who)
+            ),
+            vec![],
+        ),
+        TodoEventData::Result { session_id, turn, text, truncated } => (
+            format!("report from session {session_id}, turn {turn}{}", if *truncated { " (cut at 4 KiB)" } else { "" }),
+            if text.is_empty() {
+                vec!["(no text)".to_string()]
+            } else {
+                visible(text).lines().map(str::to_string).collect()
+            },
+        ),
+        TodoEventData::State { from, to, by: who } => {
+            (format!("{} -> {} by {}", from.as_str(), to.as_str(), by(who)), vec![])
+        }
+    }
+}
+
+async fn history(app: &App, a: TodoHistoryArgs) -> Result<u8> {
+    let conn = app.conn().await?;
+    let id = match resolve_todo(&conn, &a.id, false).await? {
+        Ok(t) => t.id,
+        Err(id) => id,
+    };
+    let mut events: Vec<TodoEvent> = Vec::new();
+    let mut before: Option<u64> = None;
+    loop {
+        let r: TodoHistoryResult = conn
+            .call(methods::TODO_HISTORY, TodoHistoryParams { id: id.clone(), before_seq: before, limit: Some(200) })
+            .await?;
+        let Some(last) = r.events.last() else { break };
+        let next = last.seq;
+        events.extend(r.events);
+        // 游标没有前进（不该发生）就停，不死循环
+        if !r.has_more || before == Some(next) {
+            break;
+        }
+        before = Some(next);
+    }
+    if app.json() {
+        app.out.json_line(&json!({ "events": events }));
+        return Ok(0);
+    }
+    if events.is_empty() {
+        println!("nothing has happened on this item yet");
+        return Ok(0);
+    }
+    for e in &events {
+        let (head, body) = describe_event(e);
+        println!("#{}  {} UTC  {head}", e.seq, &fmt_utc(e.ts_ms)[..19]);
+        for line in body {
+            println!("    {line}");
         }
     }
     Ok(0)

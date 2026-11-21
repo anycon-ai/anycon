@@ -112,6 +112,8 @@ leader 一退出就清整个进程组。
 
 ## 会话选项（`configOptions` / `modes`）
 
+**没有 `no_push`**（「不 push、不开 PR」，docs/spec/daemon.md § 22.5）：ACP 里没有按命令模式拒绝的统一机制，选项又全部来自 agent 自己声明的 `configOptions`，adapter 不替它加。agent 自己给的 id 为 `no_push` 的选项被忽略（`options.rs` 的保留 id），免得 daemon 把一个含义不明的选项当成限制。`todo.dispatch` 派给 ACP agent 时必须明确 `no_push: false`。
+
 模型、思考等级、模式、其余选项全部来自 agent 在 `session/new`（`session/load`、`session/resume`、`session/set_config_option`）响应里给的 `configOptions`，每个会话有自己的一份状态，
 agent 随时可以用 `config_option_update` / `current_mode_update` 改它。同一个类别有多个选项时取排在前面的（规格要求按数组顺序）。
 

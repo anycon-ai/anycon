@@ -126,6 +126,8 @@ leader 一退出就清整个进程组——都来自 `common/child.rs`，和 Cla
 
 **没有声明的**（本机 0.157.1 的稳定版 schema 不支持）：
 
+- `no_push`（「不 push、不开 PR」，docs/spec/daemon.md § 22.5）：在本机 0.169.0 上核实过，没有能验证的、按会话生效的「拒绝某类命令」的办法。`generate-json-schema` 的输出里和 execpolicy 沾边的只有审批请求里的 `proposedExecpolicyAmendment`（agent 提出「放行类似命令」，只能放行不能禁止）；`codex app-server -c` 能覆盖的是配置项，沙箱模式是文件和网络的粗粒度开关而不是命令模式；往用户的 Codex 目录里写规则文件不是 adapter 该做的事，也没法限定只对这一个会话生效。所以不声明，`todo.dispatch` 派给 Codex 时必须明确 `no_push: false`。
+
 - `plan_mode`：`turn/start.collaborationMode` 只出现在 `generate-json-schema --experimental` 的输出里，用它要在 `initialize` 里声明
   `experimentalApi: true`。v0.1 只用稳定版接口，不声明；`kind = plan` 的权限请求因此也不会出现。`item/tool/requestUserInput` 本来只在 plan 模式下可用，
   但仍然按 `question` 实现了（实测打开 `default_mode_request_user_input` 特性时在默认模式下也会来）。

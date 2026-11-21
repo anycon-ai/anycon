@@ -118,6 +118,12 @@ pub const TODO_UPDATE: &str = "todo.update";
 pub const TODO_DELETE: &str = "todo.delete";
 /// D→C notification，params = TodoChanged
 pub const TODO_CHANGED: &str = "todo.changed";
+/// 从一项开一个会话并关联（docs/spec/daemon.md § 22）。
+pub const TODO_DISPATCH: &str = "todo.dispatch";
+/// 一项的「经过」，按 `seq` 从新到旧翻页。
+pub const TODO_HISTORY: &str = "todo.history";
+/// D→C notification，params = TodoEventNotice：「经过」多了一条。
+pub const TODO_EVENT: &str = "todo.event";
 
 // blob（附件，ADR-35）
 /// 开始上传一个附件。
@@ -250,6 +256,9 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(TODO_UPDATE, Some("TodoUpdateParams"), Some("Todo")),
     req(TODO_DELETE, Some("TodoDeleteParams"), None),
     notif(TODO_CHANGED, "TodoChanged"),
+    req(TODO_DISPATCH, Some("TodoDispatchParams"), Some("TodoDispatchResult")),
+    req(TODO_HISTORY, Some("TodoHistoryParams"), Some("TodoHistoryResult")),
+    notif(TODO_EVENT, "TodoEventNotice"),
     req(BLOB_PUT_BEGIN, Some("BlobPutBeginParams"), Some("BlobPutBeginResult")),
     req(BLOB_PUT_CHUNK, Some("BlobPutChunkParams"), None),
     req(BLOB_PUT_END, Some("BlobIdParams"), Some("AttachmentRef")),

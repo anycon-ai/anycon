@@ -601,6 +601,8 @@ fn apply(
         usage: file.usage.clone(),
         preview: file.preview.clone(),
         worktree_id: wt_row.as_ref().map(|w| w.id.clone()),
+        // 导入的会话不属于这台节点上的任何清单项
+        todo_id: None,
     };
     let mut tx = rt.block_on(env.store.begin_import())?;
     let body = (|| -> Result<Done, Fail> {

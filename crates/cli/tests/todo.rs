@@ -8,6 +8,7 @@ use serde_json::Value;
 struct Node {
     _dir: tempfile::TempDir,
     home: std::path::PathBuf,
+    ws: std::path::PathBuf,
     daemon: Option<DaemonProc>,
 }
 
@@ -18,7 +19,8 @@ async fn node() -> Node {
     assert_eq!(anycon(&home, &["config", "set", "agents.claude-code.enabled", "false"], None, &[]).await.code, 0);
     assert_eq!(anycon(&home, &["config", "set", "agents.codex.enabled", "false"], None, &[]).await.code, 0);
     let daemon = start_daemon(&home, &[("ANYCON_MOCK_AGENT", "1")]).await;
-    Node { _dir: d, home, daemon: Some(daemon) }
+    let ws = d.path().join("ws");
+    Node { _dir: d, home, ws, daemon: Some(daemon) }
 }
 
 impl Node {
@@ -280,7 +282,7 @@ async fn the_cli_help_documents_the_subcommands_in_english() {
     let home = d.path().join("home");
     let r = anycon(&home, &["todo", "--help"], None, &[]).await;
     assert_eq!(r.code, 0, "{}", r.stderr);
-    for want in ["add", "ls", "done", "drop", "reopen", "rm"] {
+    for want in ["add", "ls", "done", "drop", "reopen", "rm", "run", "history"] {
         assert!(r.stdout.contains(want), "{want}: {}", r.stdout);
     }
     let r = anycon(&home, &["todo", "add", "--help"], None, &[]).await;
@@ -354,5 +356,118 @@ async fn a_prefix_matching_an_open_and_a_closed_item_picks_by_what_the_command_c
     // 两项都已关闭时，done 用前缀就有歧义；reopen 同理
     let r = n.cli(&["todo", "reopen", &prefix]).await;
     assert_eq!(r.code, 2, "{}", r.stderr);
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_hands_an_item_to_an_agent_and_history_shows_what_happened() {
+    let n = node().await;
+    std::fs::create_dir_all(n.ws.join("proj")).unwrap();
+    let t = n.add("Tidy the changelog").await;
+    let id = t["id"].as_str().unwrap().to_string();
+
+    // 没有项目：说清楚缺什么
+    let r = n.cli(&["todo", "run", &id[..8], "--agent", "mock", "--allow-push"]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(r.stderr.contains("project"), "{}", r.stderr);
+    // 不存在的项目 → not_found
+    let r = n.cli(&["todo", "run", &id[..8], "--agent", "mock", "--project", "nope", "--allow-push"]).await;
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(r.stderr.contains("not_found"), "{}", r.stderr);
+    // 缺省要「不 push、不开 PR」：mock agent 没有这个选项 → 拒绝，并告诉怎么办；这一项没动
+    let r = n.cli(&["todo", "run", &id[..8], "--agent", "mock", "--project", "proj"]).await;
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(r.stderr.contains("--allow-push") && r.stderr.contains("mock"), "{}", r.stderr);
+    assert_eq!(n.todos(false).await[0]["state"], "open");
+
+    // --allow-push --local：派发成功，项目写回这一项
+    let r = n
+        .cli(&["todo", "run", &id[..8], "--agent", "mock", "--project", "proj", "--allow-push", "--local", "--json"])
+        .await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let j = r.json();
+    assert_eq!(j["todo"]["state"], "open");
+    assert!(j["todo"]["activity"].is_string());
+    assert_eq!(j["todo"]["project"], "proj");
+    assert_eq!(j["session"]["todo_id"], id.as_str());
+    let sid = j["session"]["id"].as_str().unwrap().to_string();
+    assert_eq!(j["todo"]["sessions"][0], sid.as_str());
+    // 文字输出
+    let r = n.cli(&["todo", "run", &id[..8], "--agent", "mock", "--allow-push", "--local"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        r.stdout.starts_with("dispatched ")
+            && r.stdout.contains("project directory")
+            && r.stdout.contains("may push and open"),
+        "{}",
+        r.stdout
+    );
+
+    // history：dispatched 和这一轮的 result 最终都在（--json 是原始事件，newest first）
+    let mut events = vec![];
+    for _ in 0..200 {
+        let r = n.cli(&["todo", "history", &id[..8], "--json"]).await;
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        events = r.json()["events"].as_array().unwrap().clone();
+        if events.iter().filter(|e| e["kind"] == "result").count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let kinds: Vec<&str> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "dispatched").count(), 2, "{kinds:?}");
+    assert!(kinds.iter().filter(|k| **k == "result").count() >= 2, "{kinds:?}");
+    let seqs: Vec<u64> = events.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert!(seqs.windows(2).all(|w| w[0] > w[1]), "newest first: {seqs:?}");
+    let text = n.cli(&["todo", "history", &id[..8]]).await;
+    assert_eq!(text.code, 0, "{}", text.stderr);
+    assert!(
+        text.stdout.contains("dispatched to mock") && text.stdout.contains("report from session"),
+        "{}",
+        text.stdout
+    );
+    // 没有发生过什么的项
+    let other = n.add("Untouched").await;
+    let r = n.cli(&["todo", "history", other["id"].as_str().unwrap()]).await;
+    assert!(r.stdout.contains("nothing has happened"), "{}", r.stdout);
+    // 不存在的前缀
+    assert_eq!(n.cli(&["todo", "history", "zzzz"]).await.code, 1);
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_is_refused_inside_an_agent_session_but_history_is_not() {
+    let n = node().await;
+    std::fs::create_dir_all(n.ws.join("proj")).unwrap();
+    let t = n.add("Guarded").await;
+    let id = t["id"].as_str().unwrap().to_string();
+    let agent_env = [("ANYCON_AGENT", "1")];
+    let r =
+        n.cli_env(&["todo", "run", &id[..8], "--agent", "mock", "--project", "proj", "--allow-push"], &agent_env).await;
+    assert_eq!(r.code, 5, "{}", r.stderr);
+    assert!(
+        r.stderr.contains("not available inside an anycon agent session") && r.stderr.contains("ANYCON_AGENT"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("handing a to-do to an agent") && !r.stderr.contains("closing, reopening"),
+        "{}",
+        r.stderr
+    );
+    let after = n.todos(false).await;
+    assert_eq!((after[0]["state"].as_str(), after[0]["sessions"].as_array().map(Vec::len)), (Some("open"), Some(0)));
+    // history 只读，照常
+    assert_eq!(n.cli_env(&["todo", "history", &id[..8]], &agent_env).await.code, 0);
+    // 空值和 "0" 不算在 agent 里
+    for off in ["", "0"] {
+        let r = n
+            .cli_env(
+                &["todo", "run", &id[..8], "--agent", "mock", "--project", "proj", "--allow-push", "--local"],
+                &[("ANYCON_AGENT", off)],
+            )
+            .await;
+        assert_eq!(r.code, 0, "ANYCON_AGENT={off:?}: {}", r.stderr);
+    }
     n.stop().await;
 }

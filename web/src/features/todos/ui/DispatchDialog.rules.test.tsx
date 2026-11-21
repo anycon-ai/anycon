@@ -9,6 +9,7 @@ import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
 import { useUi } from '@/stores/ui'
+import { handleRuleChanged } from '@/features/rules/service'
 import { resetTodosMemory } from '../service'
 import { useTodos } from '../store'
 import { useTodoHistory } from '../history'
@@ -111,5 +112,53 @@ describe('rules in the dispatch dialog', () => {
       await new Promise((r) => setTimeout(r, 20))
     })
     expect(previewCalls()).toEqual([])
+  })
+})
+
+describe('the rules text always belongs to the project that is selected', () => {
+  it('after a project change the old project’s text is hidden and sending is held until the new one has been read', async () => {
+    const user = userEvent.setup()
+    render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await screen.findByTestId('dispatch-rules-text')
+    await waitFor(() => expect(screen.getByTestId('dispatch-send')).toBeEnabled())
+    let release: (v: unknown) => void = () => {}
+    rpc.handlers['todo.dispatch_preview'] = () => new Promise((r) => (release = r))
+    await user.selectOptions(screen.getByTestId('dispatch-project'), 'other')
+    expect(screen.queryByTestId('dispatch-rules-text')).toBeNull()
+    expect(screen.queryByText(/Write the failing test first/)).toBeNull()
+    expect(screen.getByTestId('dispatch-send')).toBeDisabled()
+    expect(screen.getByTestId('dispatch-blocked')).toHaveAttribute('data-reason', 'rulesLoading')
+    await act(async () => release({ first_message: 'x', rules_text: 'Standing rules from the user. The user wrote or confirmed each of them; follow them in this work:\n- Only for the other project.' }))
+    await waitFor(() => expect(screen.getByTestId('dispatch-rules-text')).toHaveTextContent('Only for the other project.'))
+    await waitFor(() => expect(screen.getByTestId('dispatch-send')).toBeEnabled())
+  })
+
+  it('a failed read does not hold sending forever: the error is shown in the rules block', async () => {
+    rpc.handlers['todo.dispatch_preview'] = () => {
+      throw new Error('boom')
+    }
+    render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await screen.findByTestId('dispatch-rules-error')
+    expect(screen.queryByTestId('dispatch-blocked')).toBeNull()
+  })
+
+  it('reads again when a rule changes while the dialog is open', async () => {
+    render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await screen.findByTestId('dispatch-rules-text')
+    const before = previewCalls().length
+    rpc.handlers['todo.dispatch_preview'] = () => ({ first_message: 'x', rules_text: 'Standing rules from the user. The user wrote or confirmed each of them; follow them in this work:\n- A rule added a moment ago.' })
+    act(() => handleRuleChanged(N, { id: 'new1', rule: { id: 'new1', text: 'A rule added a moment ago.', status: 'active', sync: 'node', source: { kind: 'manual' }, created_ms: 5, updated_ms: 5 }, deleted: false }))
+    await waitFor(() => expect(screen.getByTestId('dispatch-rules-text')).toHaveTextContent('A rule added a moment ago.'))
+    expect(previewCalls().length).toBeGreaterThan(before)
+  })
+
+  it('with no agent picked yet there is no note about an agent with an empty name', async () => {
+    setup([])
+    render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20))
+    })
+    expect(screen.queryByTestId('dispatch-rules-unsupported')).toBeNull()
+    expect(document.body.textContent).not.toMatch(/ does not receive rules/)
   })
 })

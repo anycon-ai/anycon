@@ -25,13 +25,26 @@ const RULES = `${RULES_HEADER}\n- Write the failing test first.\n- Ask first.\n 
 
 describe('the rules a session was given', () => {
   it('shows them as plain text with their count, under their own heading', () => {
-    render(<InfoPanel {...props({ injectedRules: RULES })} />)
+    render(<InfoPanel {...props({ injectedRules: { text: RULES, verdict: 'ok' } })} />)
     const field = screen.getByTestId('info-rules')
     expect(field).toHaveTextContent('Rules given to the agent')
     expect(field).toHaveTextContent('(2)')
     const text = screen.getByTestId('info-rules-text')
     expect(text.textContent).toBe(RULES)
     expect(text.querySelector('b')).toBeNull()
+  })
+
+  it('says it could not confirm the rules when they do not match what the node recorded, and does not call them the created-time rules', () => {
+    render(<InfoPanel {...props({ injectedRules: { text: RULES, verdict: 'mismatch' } })} />)
+    expect(screen.getByTestId('info-rules-unconfirmed')).toHaveTextContent('Could not confirm')
+    expect(screen.getByTestId('info-rules-text').textContent).toBe(RULES)
+  })
+
+  it('while the check is still running it only says where the text was found', () => {
+    render(<InfoPanel {...props({ injectedRules: { text: RULES, verdict: 'checking' } })} />)
+    expect(screen.queryByTestId('info-rules-unconfirmed')).toBeNull()
+    expect(screen.getByTestId('info-rules')).toHaveTextContent('Found at the start of this session’s system prompt')
+    expect(screen.getByTestId('info-rules')).not.toHaveTextContent('when the session was created')
   })
 
   it('has no such item when none were injected', () => {

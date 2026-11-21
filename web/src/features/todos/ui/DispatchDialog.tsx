@@ -14,6 +14,7 @@ import { Button } from '@/ui/Button'
 import { Select } from '@/ui/Field'
 import { Dialog } from '@/ui/Overlay'
 import { countRules, declaresNoPush, describeDispatchError, dispatchTodo, previewDispatch, previewRules } from '../dispatch'
+import { useRules } from '@/features/rules/store'
 import { useTodoHistory, historyKey } from '../history'
 import { RpcCallError } from '@/transport/rpcClient'
 import { isHumanSource } from '../source'
@@ -21,7 +22,7 @@ import type { ViewTodo } from '../types'
 import { cleanOneLine } from '../validate'
 
 /** 缺了哪个条件就不能派发：给按钮旁边的说明用。 */
-export type DispatchBlock = 'offline' | 'noAgent' | 'noProject' | 'gitPending' | 'noPushUnsupported'
+export type DispatchBlock = 'offline' | 'noAgent' | 'noProject' | 'gitPending' | 'noPushUnsupported' | 'rulesLoading'
 
 /**
  * 「让 agent 处理」（spec/web.md § 4.12，docs/spec/daemon.md § 22.6）：agent / 模型 / 权限模式（和新建会话页同一套控件和缺省值）、
@@ -65,7 +66,7 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
   const declared = declaresNoPush(agent)
   const [noPush, setNoPush] = useState(true)
   // 派发有没有带「不 push」：勾着但 agent 做不到时不能发（要先取消勾选，agent 就可以 push 和开 PR）
-  const block: DispatchBlock | null = offline ? 'offline' : agents.length === 0 ? 'noAgent' : project === '' ? 'noProject' : gitPending ? 'gitPending' : noPush && !declared ? 'noPushUnsupported' : null
+  const baseBlock: DispatchBlock | null = offline ? 'offline' : agents.length === 0 ? 'noAgent' : project === '' ? 'noProject' : gitPending ? 'gitPending' : noPush && !declared ? 'noPushUnsupported' : null
 
   // ---- 完整的第一条消息（`todo.dispatch_preview`）：展开时取，这一项变了 / 勾选变了 / 有新结果记进来就重新取 ----
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -87,22 +88,28 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
   // ---- 会注入的规则（`todo.dispatch_preview` 的 `rules_text`）：项目定了就取，换了项目重新取；纯文字显示 ----
   const rulesSupported = entry?.info?.capabilities.rules === true
   const receivesRules = agent?.capabilities?.system_prompt === true
-  const [rules, setRules] = useState<{ text: string | null; error: string | null; loading: boolean }>({ text: null, error: null, loading: false })
+  // `project`：这份文字是为哪个项目取的。换了项目之后新的没到之前，旧项目的规则文字不显示（它不是这次派发会注入的），也不能发
+  const [rules, setRules] = useState<{ text: string | null; error: string | null; loading: boolean; project: string }>({ text: null, error: null, loading: false, project: '' })
   const rulesSeq = useRef(0)
+  // 规则在这期间变了（`rule.changed`、本机改的）也要重新取：对话框开着时规则页之外的改动同样算
+  const ruleItems = useRules((s) => s.nodes[nodeId]?.items)
   useEffect(() => {
     if (!open || !rulesSupported || offline || project === '') {
-      setRules({ text: null, error: null, loading: false })
+      setRules({ text: null, error: null, loading: false, project: '' })
       return
     }
     const seq = ++rulesSeq.current
-    setRules((r) => ({ ...r, loading: true, error: null }))
+    setRules((r) => ({ text: r.project === project ? r.text : null, error: null, loading: true, project }))
     previewRules(nodeId, item.id, project).then(
-      (text) => seq === rulesSeq.current && setRules({ text, error: null, loading: false }),
-      (e) => seq === rulesSeq.current && setRules({ text: null, error: describeDispatchError(e, t, false), loading: false }),
+      (text) => seq === rulesSeq.current && setRules({ text, error: null, loading: false, project }),
+      (e) => seq === rulesSeq.current && setRules({ text: null, error: describeDispatchError(e, t, false), loading: false, project }),
     )
-    // 项目换了、或者这一项变了
+    // 项目换了、这一项变了、规则变了
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, rulesSupported, offline, nodeId, item.id, item.project, project])
+  }, [open, rulesSupported, offline, nodeId, item.id, item.project, project, ruleItems])
+  // 会注入的规则还没取到：先别发（发出去的和对话框里写的不一定是同一份）。取失败了不挡：失败原因就写在那一块里
+  const rulesWaiting = rulesSupported && receivesRules && !offline && project !== '' && open && rules.error === null && (rules.text === null || rules.project !== project)
+  const block: DispatchBlock | null = baseBlock ?? (rulesWaiting ? 'rulesLoading' : null)
 
   // ---- 发送：`message_id` ----
   // 只有「回执丢了」（链路断了 / 超时，不知道这次派发有没有成功）之后的重试才沿用上一次的 id（同一个 id 不会开第二个会话）。
@@ -174,7 +181,7 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
     }
   }
 
-  const blockText = block === 'offline' ? t('dispatch.blocked.offline') : block === 'noAgent' ? t('dispatch.blocked.noAgent') : block === 'noProject' ? t('dispatch.blocked.noProject') : block === 'gitPending' ? t('dispatch.blocked.gitPending') : block === 'noPushUnsupported' ? t('dispatch.blocked.noPush', { agent: cleanHintText(agent?.label) || agent?.id || '' }) : null
+  const blockText = block === 'offline' ? t('dispatch.blocked.offline') : block === 'noAgent' ? t('dispatch.blocked.noAgent') : block === 'noProject' ? t('dispatch.blocked.noProject') : block === 'gitPending' ? t('dispatch.blocked.gitPending') : block === 'noPushUnsupported' ? t('dispatch.blocked.noPush', { agent: cleanHintText(agent?.label) || agent?.id || '' }) : block === 'rulesLoading' ? t('dispatch.blocked.rulesLoading') : null
   const unreviewed = item.unreviewed && !isHumanSource(item.source)
 
   return (
@@ -278,7 +285,7 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
         {rulesSupported && project !== '' ? (
           <div className="space-y-1" data-testid="dispatch-rules">
             <p className="text-sm font-medium">{t('dispatch.rules.title')}</p>
-            {!receivesRules ? (
+            {!agent ? null : !receivesRules ? (
               <p className="rounded-md border border-warning/40 bg-warning-subtle p-2 text-fg-muted" role="note" data-testid="dispatch-rules-unsupported">
                 {t('dispatch.rules.unsupported', { agent: agent ? cleanHintText(agent.label) || agent.id : '' })}
               </p>
@@ -286,7 +293,7 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
               <p className="text-danger" role="alert" data-testid="dispatch-rules-error">
                 {rules.error}
               </p>
-            ) : rules.text === null ? (
+            ) : rules.text === null || rules.project !== project ? (
               <p className="text-fg-muted" role="status">
                 {t('dispatch.rules.loading')}
               </p>

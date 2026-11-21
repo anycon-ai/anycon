@@ -35,7 +35,7 @@ export interface InfoPanelProps {
   /** 这个会话是从哪一项清单派出的（`SessionSummary.todo_id`）：概览里列出那一项。 */
   todoId?: string | null
   /** 这个会话的系统提示里注入的规则文字（`system_prompt_append` 开头那一段，docs/spec/daemon.md § 23.5）：只读，纯文字。 */
-  injectedRules?: string | null
+  injectedRules?: { text: string; verdict: 'ok' | 'checking' | 'mismatch' } | null
   nodeId?: string
   /** 打开工作目录的文件浏览（`/n/:node/files/*`）；没有能打开的目录（项目目录不在了）时不传，工作目录就是普通文字。 */
   onOpenWorkDir?: () => void
@@ -175,9 +175,15 @@ export function InfoPanel(p: InfoPanelProps) {
         ) : null}
         {p.injectedRules ? (
           <Field label={t('info.rules')} testId="info-rules">
-            <p className="mb-1 text-xs text-fg-subtle">{t('info.rulesNote', { count: injectedRuleCount(p.injectedRules) })}</p>
+            {p.injectedRules.verdict === 'mismatch' ? (
+              <p className="mb-1 rounded-md border border-warning/40 bg-warning-subtle px-2 py-1 text-xs text-warning" role="status" data-testid="info-rules-unconfirmed">
+                {t('info.rulesUnconfirmed')}
+              </p>
+            ) : (
+              <p className="mb-1 text-xs text-fg-subtle">{t('info.rulesNote', { count: injectedRuleCount(p.injectedRules.text) })}</p>
+            )}
             <pre className="scroll-thin max-h-60 overflow-auto rounded-md border border-border bg-bg-subtle p-2 font-sans text-xs whitespace-pre-wrap [overflow-wrap:anywhere]" data-testid="info-rules-text">
-              {p.injectedRules}
+              {p.injectedRules.text}
             </pre>
           </Field>
         ) : null}

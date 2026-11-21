@@ -372,6 +372,13 @@ async fn run(app: &App, a: TodoRunArgs) -> Result<u8> {
             if !text.ends_with('\n') {
                 println!();
             }
+            // 规则不在消息里，在会话的系统提示里（`anycon rule`）；有生效的规则时单独列出来
+            if !r.rules_text.is_empty() {
+                println!(
+                    "\n--- Rules for the system prompt (see `anycon rule ls`); agents that cannot take a system prompt do not get them ---"
+                );
+                println!("{}", visible(&r.rules_text));
+            }
         }
         return Ok(0);
     }
@@ -431,7 +438,7 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         (TodoSourceKind::Unknown, _) => "someone".to_string(),
     };
     match &e.data {
-        TodoEventData::Dispatched { session_id, agent, workspace_mode, no_push, by: who } => (
+        TodoEventData::Dispatched { session_id, agent, workspace_mode, no_push, by: who, rules, rules_skipped } => (
             format!(
                 "dispatched to {} (session {}, {}{}) by {}",
                 sanitize_label(agent, 40, "?"),
@@ -443,7 +450,14 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
                 if *no_push { ", no push" } else { ", push allowed" },
                 by(who)
             ),
-            vec![],
+            // 规则（`anycon rule`）：注入了几条，或者这个 agent 收不到
+            match (rules.len(), rules_skipped) {
+                (_, Some(RulesSkipped::Unsupported)) => {
+                    vec!["rules: not given, this agent cannot take a system prompt".to_string()]
+                }
+                (0, _) => vec![],
+                (n, _) => vec![format!("rules: {n} given in the system prompt")],
+            },
         ),
         TodoEventData::Result { session_id, turn, text, truncated } => (
             format!("report from session {session_id}, turn {turn}{}", if *truncated { " (cut at 4 KiB)" } else { "" }),

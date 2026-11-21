@@ -1843,6 +1843,8 @@ mod tests {
                 reason: reason.map(str::to_string),
                 retry_after_ms: None,
                 updated_ms: None,
+                bytes: None,
+                cap: None,
             });
             CliError::from(e)
         };

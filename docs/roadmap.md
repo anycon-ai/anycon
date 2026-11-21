@@ -117,7 +117,7 @@
 
 ## v0.4 — 清单与分身
 
-设计见 [ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)；Web UI 随之重排（「待处理」首页、手机底部标签栏、随手记一项、空间切换），见 [ADR-55](decisions.md#adr-55-web-ui-以待处理为首页手机用底部标签栏分身不是一个聊天窗口) 和 [spec/web.md § 14](spec/web.md#14-加入清单和分身之后的界面)，每一步的界面范围在 § 14.12。四步，每一步单独发布，第 1 步已实现，后三步还没做；之后的第 5 步（分身使用别的节点）见 [ADR-56](decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定)：
+设计见 [ADR-54](decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)；Web UI 随之重排（「待处理」首页、手机底部标签栏、随手记一项、空间切换），见 [ADR-55](decisions.md#adr-55-web-ui-以待处理为首页手机用底部标签栏分身不是一个聊天窗口) 和 [spec/web.md § 14](spec/web.md#14-加入清单和分身之后的界面)，每一步的界面范围在 § 14.12。四步，每一步单独发布，第 1、2 步已实现，后两步还没做；之后的第 5 步（分身使用别的节点）见 [ADR-56](decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定)：
 
 1. **清单**：按节点存的个人清单（[spec/daemon.md § 21](spec/daemon.md#21-清单)）。已实现：daemon、`anycon todo`、`anycon mcp` 的两个工具、TS SDK 和 Web
    - `todo.*` 方法、`capabilities.todo`、存储和审计；agent 环境里的 `ANYCON_SESSION_ID`
@@ -125,12 +125,12 @@
    - 多个节点：节点分组名（比如「家里」「公司」）；节点过滤器升级为空间切换，待处理、清单、会话树都跟着它；把一项移到另一个节点（原节点那一项有没有变、目标上的那一份还在不在，靠 daemon 的 `todo.get` 和带条件的 `todo.delete` 在节点上检查）
    - `anycon todo` 子命令
    - `anycon mcp` 的 `add_todo` / `list_todos`：会话里的 agent 能记下之后要处理的事
-2. **手动派发**：在清单的某一项上让 agent 处理（规格见 [spec/daemon.md § 22](spec/daemon.md#22-派发)；daemon、CLI 和 SDK 已经做了，Web 界面还没有）
+2. **手动派发**：在清单的某一项上让 agent 处理（规格见 [spec/daemon.md § 22](spec/daemon.md#22-派发)）。已实现：daemon、CLI、TS SDK 和 Web
    - 从一项开一个 worktree 会话（标题和正文作为第一条消息），一项可以关联多个会话；也能反过来把会话里的一段话记成一项
    - 派发是 daemon 的一个方法（开会话、关联、算 `activity`、套用「不 push、不开 PR」都在 daemon 里），不由客户端拼 `session.create`：第 5 步里别的节点的分身调用的是同一个方法（[ADR-56](decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条）
    - 会话的情况是 daemon 每次返回这一项时算出来的 `activity`，不写进 `state`：在跑 → `working`，等审批 / 出错 / 被打断 / 被取消 → `waiting`，最近一轮正常结束且结果已记下 → `review`；`state` 只由人设置，`done` 由人点
    - 清单项是交接文档：每个会话一轮结束时，daemon 把 agent 的最后一段话记进这一项的「经过」；在同一项上再派会话，第一条消息除了标题和正文，还带上之前各次的结果。agent 没有往清单项里写的工具
-   - 单项详情里看这件事的全部经过和关联会话的状态；验收页先给结论再给 diff，通过 / 再改改 / 不要了
+   - 单项详情里看这件事的全部经过和关联会话的状态；派发对话框能展开看要发出的完整第一条消息（`todo.dispatch_preview`，CLI 的 `anycon todo run --dry-run` 是同一份）；验收页先给结论再给 diff，通过 / 再改改 / 不要了；「待处理」里有「待验收」段，会话页有来源 chip，左栏把来自清单的会话收成一行
    - 会话选项「不 push、不开 PR」（adapter 声明，翻译成 agent 自己的拒绝规则）：改动停在 worktree 的分支上等验收
 3. **决策档案**：带出处的规则
    - 手写规则；回答权限请求和问答时「记成规则」；规则页（待确认 / 已生效）

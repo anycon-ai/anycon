@@ -1288,7 +1288,7 @@ Todo {
 
 ## 22. 派发
 
-> **已实现：daemon（`todo.dispatch` / `todo.history` / `todo.event`、关联、算出来的 `activity`、「经过」、`no_push` 选项）、CLI（`anycon todo run` / `history`）和 TS SDK（`node.todos.dispatch` / `history`、`todo_event`）。Web 客户端的界面（[web.md § 14.6–14.10](web.md#146-清单和单项)）还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 8 条的第 2 步：在清单的一项上让 agent 处理。决定见 ADR-54 第 4、5 条和 [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条；界面见 web.md § 14.6、§ 14.7、§ 14.9、§ 14.10。没有单独的 capability：`node.info.capabilities.todo` 为 true 而 daemon 没有这一节的方法时，`todo.dispatch` / `todo.history` 得到 `unsupported`（`method not found`），客户端据此不显示入口。
+> **已实现：daemon（`todo.dispatch` / `todo.history` / `todo.event`、关联、算出来的 `activity`、「经过」、`no_push` 选项）、CLI（`anycon todo run` / `history`）和 TS SDK（`node.todos.dispatch` / `dispatchPreview` / `history`、`todo_event`）。Web 客户端的界面（派发对话框、「经过」、验收页、「待验收」段、会话页的来源 chip、左栏的折叠、通知，[web.md § 4.12](web.md#412-清单-todos)）也已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 8 条的第 2 步：在清单的一项上让 agent 处理。决定见 ADR-54 第 4、5 条和 [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条；界面见 [web.md § 4.12](web.md#412-清单-todos)、§ 4.11、§ 4.6、§ 7。没有单独的 capability：`node.info.capabilities.todo` 为 true 而 daemon 没有这一节的方法时，`todo.dispatch` / `todo.history` 得到 `unsupported`（`method not found`），客户端据此不显示入口。
 
 ### 22.1 范围
 
@@ -1343,7 +1343,7 @@ Todo {
 - **`result` 先于 `review`**：一轮结束时它的 `result` 先「扣留」（计数），记进「经过」之后才放掉；扣留期间算 `working`。所以 `activity = review` 意味着这一轮的 `result` 已经在「经过」里，在 `review` 上立刻再派发也带得上它。记 `result` 是按项、持清单锁做的（先取走这一项排着的结果，逐条记下，再清扣留，再重新算）。
 - **通知是尽力而为，对错不靠它**：关联会话的状态真的变了（排队位置变了不算）、后台任务数在 0 和非 0 之间变化（1 → 2 这样的不算）、`result` 的扣留清掉、会话被删除、进程被摘掉（任务数被清零）时，daemon 重新算这一项的 `activity`，和上一次发出去的不同就发 `todo.changed`（带 `activity`）。漏发或多发一条都不影响对错，因为每次读都是现算的；daemon 启动时不用写什么（客户端连上会重新列清单），只用当前值把「上一次发出去的」填上，避免启动后重复通知。
 - **会话的情况不是修改**：它不写进 `state`、不动 `updated_ms`、不进审计，「经过」里也没有对应的条目。人在派发过的项上改 `state` 是一次普通的修改（`updated_ms` 照常变，审计记 `todo.update`），「经过」里记一条 `state`（§ 22.4）。
-- 通知（`turn_finished`）：关联会话的 `turn_finished` 通知照常发（§ 14），客户端把文案换成「<这一项的标题> 做完了，等你验收」（[web.md § 14.10](web.md#1410-通知)）；不新增通知类别。
+- 通知（`turn_finished`）：关联会话的 `turn_finished` 通知照常发（§ 14），客户端把文案换成「<这一项的标题> 做完了，等你验收」并落在验收页（[web.md § 7](web.md#7-通知)）；不新增通知类别。
 
 ### 22.4 交接：「经过」和第一条消息
 
@@ -1402,7 +1402,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ### 22.6 客户端入口
 
-- **Web**：单项详情的「让 agent 处理」、「经过」、验收页、「待处理」的待验收段、会话页的来源 chip、左栏的「来自清单」折叠（[web.md § 14.6–14.9](web.md#146-清单和单项)）。**还没有实现。** 派发对话框：
+- **Web**：单项详情的「让 agent 处理」、「经过」、验收页、「待处理」的待验收段、会话页的来源 chip、左栏的「来自清单」折叠（[web.md § 4.12](web.md#412-清单-todos)）。派发对话框：
   - 这一项没有项目时先选一个，派发成功后写回这一项。
   - 项目不能开 worktree 时写明「直接在项目目录里改，没有隔离」。
   - 「不 push、不开 PR」缺省勾上；所选 agent 没有这个选项时，勾选框显示为做不到，要派发必须手动取消勾选。
@@ -1413,7 +1413,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ### 22.7 代价 / 限制
 
-- 交接把前几次 agent 的输出放进下一次的第一条消息：一个被注入的会话写下的话，会进到下一个 agent 的输入里。消息里标明那是之前的报告、不是指令，对话框里能看到要发出的全文（Web 还没有，CLI 和 SDK 的调用方可以先读 `todo.history`）；但这只是提示，挡不住注入。这一步同时改了 [architecture.md § 5.6](../architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。
+- 交接把前几次 agent 的输出放进下一次的第一条消息：一个被注入的会话写下的话，会进到下一个 agent 的输入里。消息里标明那是之前的报告、不是指令，对话框里能看到要发出的全文（Web 的派发对话框能展开看要发出的全文，CLI 的 `--dry-run` 同样；SDK 的调用方用 `dispatchPreview` 或读 `todo.history`）；但这只是提示，挡不住注入。这一步同时改了 [architecture.md § 5.6](../architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。
 - 「不 push、不开 PR」只在声明了它的 agent（现在只有 Claude Code）上有效；没有声明的 agent 要派发，调用方必须明确放弃它。
 - `activity` 看的是会话状态，不看 agent 说了什么：agent 说「没做完」也会是 `review`，由人验收时判断。
 - `activity` 是读的时候现算的，和 `state` 互不影响：人把 `state` 改成 `done`，它就没有 `activity`；改回 `open`，又按会话此刻的情况有。通知是尽力而为，客户端在连上和打开一项时用 `todo.list` / `todo.get` 取到的值才是准的。

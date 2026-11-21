@@ -73,3 +73,22 @@ describe('viewOf is incremental', () => {
     expect(v2.find((v) => v.id === 'b')).toMatchObject({ title: 'x', unsynced: true })
   })
 })
+
+describe('the daemon-computed fields (sessions, activity) in the overlay', () => {
+  const dispatched = todoItem({ id: 'a', title: 'orig', activity: 'review' as never, sessions: ['s1', 's2'] as never })
+
+  it('an optimistic edit keeps what the daemon computed and never invents an activity', () => {
+    const v = overlayOutbox(N, base(dispatched), [rec(1, 'a', { kind: 'update', fields: { title: 'edited' } })]).get('a')!
+    expect(v).toMatchObject({ title: 'edited', activity: 'review', sessions: ['s1', 's2'], unsynced: true })
+    expect(overlayOutbox(N, base(todoItem({ id: 'b' })), [rec(1, 'b', { kind: 'update', fields: { title: 'edited' } })]).get('b')!.activity).toBeUndefined()
+    expect(overlayOutbox(N, base(), [rec(1, 'x', { kind: 'add', params: { title: 'new', body: '' } })]).get('x')!.activity).toBeUndefined()
+  })
+
+  it('closing an item offline drops its activity (a closed item has none), reopening does not bring it back', () => {
+    const closed = overlayOutbox(N, base(dispatched), [rec(1, 'a', { kind: 'update', fields: { state: 'done' } })]).get('a')!
+    expect(closed.activity).toBeUndefined()
+    expect(closed.sessions).toEqual(['s1', 's2']) // 关联还在
+    const reopened = overlayOutbox(N, base(dispatched), [rec(1, 'a', { kind: 'update', fields: { state: 'done' } }), rec(2, 'a', { kind: 'update', fields: { state: 'open' } })]).get('a')!
+    expect(reopened.activity).toBeUndefined()
+  })
+})

@@ -293,7 +293,7 @@ test.describe('页面在后台', () => {
 
       // 断开期间 daemon 那边发生了事：CLI 新建一个会话（页面此刻收不到任何东西）
       const sessionId = (
-        await runCli(state, ['new', 'created while the page slept', '--no-wait'])
+        await runCli(state, ['new', '--agent', 'mock', 'created while the page slept', '--no-wait'])
       ).trim()
       expect(sessionId).toMatch(/^[0-9A-Za-z_-]+$/)
       const row = page.locator(`a[href$="/s/${sessionId}"]`)

@@ -228,12 +228,15 @@ impl Store {
 
     /// 物理删除。返回有没有这一项。
     pub async fn todo_delete(&self, id: &str) -> Result<bool, StoreError> {
+        // 项和它的关联、「经过」在同一个事务里删（§ 22.3）
+        let mut tx = self.pool().begin().await?;
         let deleted =
-            sqlx::query("DELETE FROM todos WHERE id = ?").bind(id).execute(self.pool()).await?.rows_affected() > 0;
-        // 关联和「经过」一起删，会话不动（§ 22.3）
+            sqlx::query("DELETE FROM todos WHERE id = ?").bind(id).execute(&mut *tx).await?.rows_affected() > 0;
         if deleted {
-            self.todo_purge_dispatch(id).await?;
+            sqlx::query("DELETE FROM todo_sessions WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
+            sqlx::query("DELETE FROM todo_events WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
         }
+        tx.commit().await?;
         Ok(deleted)
     }
 
@@ -457,7 +460,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     }
     c.audit.record(caller, "todo.update", Some(&new.id), detail).await;
     // 派发过的项：状态是人改的，「经过」里记一条（§ 22.4）
-    crate::todo_dispatch::record_manual_state(&c.store, &c.clients, caller, &new, old.state).await;
+    crate::todo_dispatch::record_manual_state(c, caller, &new, old.state).await;
     notify_changed(&c.clients, TodoChanged { id: new.id.clone(), todo: Some(new.clone()), deleted: false });
     Ok(new)
 }

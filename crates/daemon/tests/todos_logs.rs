@@ -48,7 +48,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
 
 #[tokio::test]
 async fn titles_and_bodies_never_reach_the_logs_including_on_error_paths() {
-    let td = TestDaemon::start().await;
+    let td = TestDaemon::start_git(&[]).await;
     let mut c = td.local_cli_client();
     let logs = LogBuf::default();
     let sub = tracing_subscriber::fmt()
@@ -85,7 +85,8 @@ async fn titles_and_bodies_never_reach_the_logs_including_on_error_paths() {
     let _ = c.call::<Value>(&td, methods::TODO_DELETE, json!({ "id": t.id })).await;
 
     // 派发和「经过」（§ 22）：第一条消息、agent 的复述（result）、各条错误路径
-    std::fs::create_dir_all(td.workspace.join("proj")).unwrap();
+    // git 项目：派发的会话在 worktree 里，分支名和路径也要不带标题的字词
+    td.new_repo("proj");
     let dt: Todo = c
         .call(
             &td,
@@ -144,6 +145,16 @@ async fn titles_and_bodies_never_reach_the_logs_including_on_error_paths() {
 
     let out = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     assert!(out.contains("rpc handled"), "the capture works: {out:?}");
-    assert!(!out.contains("LOGSECRET"), "content reached the logs:\n{out}");
+    // 不区分大小写：分支名的 slug 是小写的，大小写敏感的比较抓不到它
+    assert!(!out.to_lowercase().contains("logsecret"), "content reached the logs:\n{out}");
+    let audit = serde_json::to_string(&td.ctx.audit.query(None, None, 1000).await).unwrap();
+    assert!(audit.contains("worktree.create") && audit.contains("todo.dispatch"), "{audit}");
+    // 项目名本来就在审计里（`todo.add` 的 `project`），所以按内容（标题、正文、结果）的写法找，不找 `logsecret` 本身
+    let audit = audit.to_lowercase();
+    for needle in
+        ["logsecret-title", "logsecret-body", "logsecret-new", "logsecret-ok", "logsecret-x", "logsecret-model"]
+    {
+        assert!(!audit.contains(needle), "{needle} reached the audit log:\n{audit}");
+    }
     td.shutdown().await;
 }

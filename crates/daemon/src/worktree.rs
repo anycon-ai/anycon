@@ -380,6 +380,8 @@ pub struct PlanInput<'a> {
     pub branch: Option<&'a str>,
     /// 第一条消息，生成 slug 用。
     pub prompt: Option<&'a str>,
+    /// 指定 slug（`branch` 没给时用它，而不是从 `prompt` 里取）：清单派发用内容无关的名字，标题的字词不进分支名、审计和日志。
+    pub slug: Option<String>,
 }
 
 /// 创建成功的结果。
@@ -730,7 +732,11 @@ impl WorktreeMgr {
                 (b.to_string(), dedupe_name(&dir_name_for_branch(b), dir_taken))
             }
             None => {
-                let slug = i.prompt.and_then(slug_from_prompt).unwrap_or_else(|| random_slug(&mut rand::thread_rng()));
+                let slug = i
+                    .slug
+                    .clone()
+                    .or_else(|| i.prompt.and_then(slug_from_prompt))
+                    .unwrap_or_else(|| random_slug(&mut rand::thread_rng()));
                 let mut chosen = None;
                 for n in 1..200u32 {
                     let s = if n == 1 { slug.clone() } else { format!("{slug}-{n}") };

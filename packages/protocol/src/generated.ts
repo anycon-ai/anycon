@@ -2816,6 +2816,11 @@ export interface TodoDispatchParams {
   agent: string;
   id: string;
   /**
+   * 幂等：和 `session.create` 的 `message_id` 一样。同一个值重试（比如回执丢了）返回第一次的结果，不再开第二个会话、
+   * 不多记关联和「经过」；它同时是会话第一条消息的 id。缺省由 daemon 生成（那样就没有幂等）。
+   */
+  message_id?: string | null;
+  /**
    * 「不 push、不开 PR」（agent 的 `no_push` 选项）。缺省 `true`；所选 agent 没有声明这个选项而它为 `true` → `unsupported`。
    */
   no_push?: boolean | null;

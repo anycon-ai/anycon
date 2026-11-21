@@ -616,10 +616,21 @@ impl Sessions {
     }
 
     /// 会话现在的状态；会话不存在（已删除）返回 `None`。清单的回写用（在清单锁里调，只取会话锁一小会儿）。
-    pub(crate) async fn status_of(&self, id: &str) -> Option<SessionStatus> {
+    pub(crate) async fn status_of(&self, id: &str) -> Option<(SessionStatus, u32)> {
         let sess = self.get(id).ok()?;
         let st = sess.st.lock().await;
-        (!st.deleted).then_some(st.row.status)
+        (!st.deleted).then_some((st.row.status, st.background_tasks))
+    }
+
+    pub(crate) fn todo_signal(&self) -> &Arc<crate::todo_dispatch::TodoSignal> {
+        &self.todo_signal
+    }
+
+    /// 会话从哪一项派出（删除会话时要通知那一项重新算）。
+    async fn todo_of(&self, id: &str) -> Option<String> {
+        let sess = self.get(id).ok()?;
+        let st = sess.st.lock().await;
+        st.row.todo_id.clone()
     }
 
     /// 后台任务：把从清单派出的会话的每轮结果记进「经过」、把状态变化回写到清单项（docs/spec/daemon.md § 22）。
@@ -726,6 +737,7 @@ impl Sessions {
             return;
         }
         let was_idle = st.row.status == SessionStatus::Idle;
+        let status_changed = st.row.status != new;
         st.row.status = new;
         st.last_position = position;
         // 只有 turn 已经交给 agent 之后积压的消息才算「待发送」；还没 dispatch 的会并入当前 turn
@@ -749,7 +761,8 @@ impl Sessions {
         self.persist(st).await;
         self.notify_changed(st);
         // 从清单派出的会话：状态变了，让清单重新算这一项该是什么状态（§ 22.3）
-        if let Some(todo_id) = &st.row.todo_id {
+        // （只在状态真的变了时：排队位置变了不算）
+        if let (true, Some(todo_id)) = (status_changed, &st.row.todo_id) {
             self.todo_signal.status_changed(todo_id, &st.row.id);
         }
     }
@@ -886,7 +899,9 @@ impl Sessions {
                     project_dir: &project_dir,
                     base: base.as_deref(),
                     branch: branch.as_deref(),
-                    prompt: p.prompt.as_deref(),
+                    // 清单派发的会话：分支名不从第一条消息（标题和正文）里取，用清单项 id 的前 8 位，免得标题的字词进审计和日志
+                    prompt: if todo_id.is_some() { None } else { p.prompt.as_deref() },
+                    slug: todo_id.as_deref().map(|t| format!("todo-{}", t.chars().take(8).collect::<String>())),
                 }))
                 .await?;
                 Some(plan)
@@ -2139,6 +2154,10 @@ impl Sessions {
             st.background_drained_at = None;
         }
         self.notify_changed(st);
+        // 空闲的会话还有后台任务在跑，对清单项来说就还在 `working`（§ 22.3）：任务数在 0 和非 0 之间变化时重新算
+        if let Some(todo_id) = &st.row.todo_id {
+            self.todo_signal.status_changed(todo_id, &st.row.id);
+        }
     }
 
     /// dispatch 之后的第一个 agent 事件：starting → running。
@@ -3053,6 +3072,7 @@ impl Sessions {
     ) -> RpcResult<()> {
         let session_id = p.session_id.as_str();
         let sess = self.get(session_id)?;
+        let todo_of_deleted = self.todo_of(session_id).await;
         let (old, was_scratch, wt, attach_site) = {
             let mut st = sess.st.lock().await;
             if st.deleted {
@@ -3117,6 +3137,10 @@ impl Sessions {
             self.d.workspace.remove_scratch(session_id);
         }
         self.map.write().unwrap().remove(session_id);
+        // 从清单派出的会话被删了：清单项重新算（§ 22.3）
+        if let Some(todo_id) = &todo_of_deleted {
+            self.todo_signal.status_changed(todo_id, session_id);
+        }
         self.throttle.lock().unwrap().remove(session_id);
         self.d.notifier.forget(session_id);
         self.d.clients.forget_session(session_id);
@@ -3896,7 +3920,7 @@ fn stable_code_str(e: &RpcError) -> String {
         .unwrap_or_else(|| "error".into())
 }
 
-fn unavailable(status: &AgentStatus, agent: &str) -> RpcError {
+pub(crate) fn unavailable(status: &AgentStatus, agent: &str) -> RpcError {
     let mut e = err(ErrorCode::AgentUnavailable, format!("agent {agent} is not available ({status:?})"));
     if let Some(d) = e.data.as_mut() {
         d.reason = Some(format!("{status:?}").to_lowercase());

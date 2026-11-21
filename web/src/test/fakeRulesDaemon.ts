@@ -60,7 +60,7 @@ export class FakeRulesDaemon {
     const cur = this.rules.get(p.id)
     if (!cur) throw ruleError('not_found')
     if (p.if_updated_ms !== undefined && p.if_updated_ms !== cur.updated_ms) throw ruleError('invalid', { field: 'if_updated_ms', reason: 'changed', updated_ms: cur.updated_ms })
-    const next: Rule = { ...cur, ...(p.text !== undefined ? { text: p.text } : {}), ...(p.project !== undefined ? { project: p.project } : {}), ...(p.status ? { status: p.status } : {}) }
+    const next: Rule = { ...cur, ...(typeof p.text === 'string' ? { text: p.text } : {}), ...(p.project !== undefined ? { project: p.project } : {}), ...(p.status ? { status: p.status } : {}) }
     if (p.clear?.includes('project')) delete next.project
     if (JSON.stringify(next) === JSON.stringify(cur)) return cur
     next.updated_ms = ++this.clock

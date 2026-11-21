@@ -9,7 +9,7 @@ import { deleteRule, updateRule, type RuleFail } from '../service'
 import type { ViewRule } from '../store'
 import { failText } from './errors'
 import { RuleEditor, type EditorMode } from './RuleEditor'
-import { RuleText } from './RuleParts'
+import { RuleText } from './RuleText'
 
 export interface RuleOps {
   /** `status` 之间的转换：确认（`pending` → `active`）、否决、停用、启用。成功返回 true。 */

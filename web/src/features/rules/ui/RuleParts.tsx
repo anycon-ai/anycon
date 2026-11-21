@@ -12,14 +12,7 @@ import { Chip, type Tone } from '@/ui/Misc'
 import { useMinute } from '@/features/inbox/ui/info'
 import { sourceOf, statusOf, type ViewRule } from '../store'
 
-/** 规则的全文：纯文字，换行照原样，长词折行。 */
-export function RuleText({ text, testId = 'rule-text' }: { text: string; testId?: string }) {
-  return (
-    <p className="text-sm whitespace-pre-wrap [overflow-wrap:anywhere] select-text" data-testid={testId}>
-      {text}
-    </p>
-  )
-}
+export { RuleText } from './RuleText'
 
 const STATUS_TONE: Record<ReturnType<typeof statusOf>, Tone> = { pending: 'warning', active: 'success', disabled: 'neutral', rejected: 'neutral', unknown: 'neutral' }
 

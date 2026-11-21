@@ -12,7 +12,7 @@ import { addRule, updateRule, type NewRule, type RuleFail } from '../service'
 import { useRules, type ViewRule } from '../store'
 import { codePoints, newRuleId, normalizeRuleText, ruleTextError, TEXT_MAX } from '../validate'
 import { failText, textErrorText } from './errors'
-import { RuleText } from './RuleParts'
+import { RuleText } from './RuleText'
 
 export type EditorMode =
   /** 新写一条：从 `nodeIds` 里选节点（只有一个就不问），`project` 是预选的范围。 */

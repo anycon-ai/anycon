@@ -193,3 +193,50 @@ describe('writing', () => {
     expect(daemon.rules.get('b')!.status).toBe('pending')
   })
 })
+
+describe('a full list that was requested before a change does not undo it', () => {
+  const NN = 'n'.repeat(32)
+  const mk = (id: string, ms: number, text = id) => ({ id, text, status: 'active' as const, sync: 'node' as const, source: { kind: 'manual' as const }, created_ms: 1, updated_ms: ms })
+  const budget = { cap: 4096, node_bytes: 0, projects: {} }
+
+  it('keeps a rule changed by a notification while the list was on its way, and does not bring back one deleted meanwhile', () => {
+    useRules.getState().reset()
+    useRules.getState().replaceAll(NN, [mk('a', 1), mk('b', 1), mk('c', 1)], budget)
+    const since = useRules.getState().tick
+    useRules.getState().applyChanged(NN, { id: 'a', rule: mk('a', 5, 'edited'), deleted: false })
+    useRules.getState().applyChanged(NN, { id: 'b', deleted: true })
+    useRules.getState().applyChanged(NN, { id: 'd', rule: mk('d', 6), deleted: false })
+    useRules.getState().replaceAll(NN, [mk('a', 1), mk('b', 1), mk('c', 1)], budget, since)
+    const items = useRules.getState().nodes[NN]!.items
+    expect(items.a!.text).toBe('edited')
+    expect(items.b).toBeUndefined()
+    expect(items.c).toBeDefined()
+    expect(items.d).toBeDefined()
+  })
+
+  it('a list that is newer than the local copy wins, and without a since the list is taken as it is', () => {
+    useRules.getState().reset()
+    useRules.getState().replaceAll(NN, [mk('a', 1)], budget)
+    const since = useRules.getState().tick
+    useRules.getState().applyChanged(NN, { id: 'a', rule: mk('a', 5, 'edited'), deleted: false })
+    useRules.getState().replaceAll(NN, [mk('a', 9, 'newer on the node')], budget, since)
+    expect(useRules.getState().nodes[NN]!.items.a!.text).toBe('newer on the node')
+    useRules.getState().replaceAll(NN, [], budget)
+    expect(Object.keys(useRules.getState().nodes[NN]!.items)).toEqual([])
+  })
+
+  it('syncRules drops what a notification deleted while its request was pending', async () => {
+    useRules.getState().reset()
+    const rpc = new FakeRpc()
+    let release: (v: unknown) => void = () => {}
+    rpc.handlers['rule.list'] = () => new Promise((res) => (release = res))
+    setRpc(rpc)
+    const pending = syncRules(NN)
+    await Promise.resolve()
+    handleRuleChanged(NN, { id: 'x', deleted: true })
+    release({ rules: [mk('x', 1)], budget })
+    await pending
+    expect(useRules.getState().nodes[NN]!.items.x).toBeUndefined()
+    setRpc(null)
+  })
+})

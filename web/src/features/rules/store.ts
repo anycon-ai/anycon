@@ -8,19 +8,23 @@ import { useNodes } from '@/stores/nodes'
 export interface NodeRules {
   items: Record<string, Rule>
   budget: RuleBudget | null
+  /** 每条规则最近一次被通知 / 写的回执改动的序号（`tick`）和是不是删除：整表的结果比它们早发出，就不能盖掉它们（见 `replaceAll`）。 */
+  touched: Record<string, { tick: number; deleted: boolean }>
   /** 这个节点至少读到过一次（没读到之前不要说「没有规则」）。 */
   loaded: boolean
   /** 最近一次读失败了。 */
   failed: boolean
 }
 
-const emptyNode = (): NodeRules => ({ items: {}, budget: null, loaded: false, failed: false })
+const emptyNode = (): NodeRules => ({ items: {}, budget: null, touched: {}, loaded: false, failed: false })
 
 interface RulesState {
   nodes: Record<string, NodeRules>
+  /** 单调递增：每次改动加一。读整表之前取一次（`since`），回来时只有在那之后没被改过的规则才以整表为准。 */
+  tick: number
   patchNode: (nodeId: string, f: (n: NodeRules) => NodeRules) => void
   /** 整份 `rule.list` 的结果：以它为准。 */
-  replaceAll: (nodeId: string, rules: readonly Rule[], budget: RuleBudget) => void
+  replaceAll: (nodeId: string, rules: readonly Rule[], budget: RuleBudget, since?: number) => void
   applyChanged: (nodeId: string, ch: RuleChanged) => void
   removeNode: (nodeId: string) => void
   reset: () => void
@@ -28,12 +32,33 @@ interface RulesState {
 
 export const useRules = create<RulesState>()((set) => ({
   nodes: {},
+  tick: 0,
   patchNode: (nodeId, f) => set((s) => ({ nodes: { ...s.nodes, [nodeId]: f(s.nodes[nodeId] ?? emptyNode()) } })),
-  replaceAll: (nodeId, rules, budget) => set((s) => ({ nodes: { ...s.nodes, [nodeId]: { items: Object.fromEntries(rules.map((r) => [r.id, r])), budget, loaded: true, failed: false } } })),
+  // 整表是请求发出那一刻的样子；回来之前收到的 `rule.changed` 或写的回执（`since` 之后改过的规则）更新，不能被它盖掉，也不能让删掉的规则复活
+  replaceAll: (nodeId, rules, budget, since) =>
+    set((s) => {
+      const cur = s.nodes[nodeId] ?? emptyNode()
+      const newer = (id: string): { tick: number; deleted: boolean } | undefined => {
+        const t = cur.touched[id]
+        return since !== undefined && t && t.tick > since ? t : undefined
+      }
+      const items: Record<string, Rule> = {}
+      for (const r of rules) {
+        const t = newer(r.id)
+        if (t?.deleted) continue
+        const local = cur.items[r.id]
+        // 请求发出之后改过的：本地的不比整表旧就留本地的；没改过的：本地的比整表新（不该发生）也留本地的
+        items[r.id] = local && (t ? local.updated_ms >= r.updated_ms : local.updated_ms > r.updated_ms) ? local : r
+      }
+      // 整表里没有、但请求发出之后才出现的（新建的）规则：保留
+      for (const [id, local] of Object.entries(cur.items)) if (!(id in items) && newer(id) && !newer(id)!.deleted) items[id] = local
+      return { nodes: { ...s.nodes, [nodeId]: { ...cur, items, budget, loaded: true, failed: false } } }
+    }),
   applyChanged: (nodeId, ch) =>
     set((s) => {
       const cur = s.nodes[nodeId] ?? emptyNode()
       const items = { ...cur.items }
+      const touched = { ...cur.touched, [ch.id]: { tick: s.tick + 1, deleted: !!ch.deleted } }
       if (ch.deleted) delete items[ch.id]
       else if (ch.rule && ch.rule.id === ch.id) {
         // `updated_ms` 严格递增：旧的通知不能盖掉新的（`last_injected_ms` 不动 `updated_ms`，所以同一个值也接受）
@@ -41,14 +66,14 @@ export const useRules = create<RulesState>()((set) => ({
         if (old && old.updated_ms > ch.rule.updated_ms) return s
         items[ch.id] = ch.rule
       } else return s
-      return { nodes: { ...s.nodes, [nodeId]: { ...cur, items } } }
+      return { tick: s.tick + 1, nodes: { ...s.nodes, [nodeId]: { ...cur, items, touched } } }
     }),
   removeNode: (nodeId) =>
     set((s) => {
       const { [nodeId]: _gone, ...nodes } = s.nodes
       return { nodes }
     }),
-  reset: () => set({ nodes: {} }),
+  reset: () => set({ nodes: {}, tick: 0 }),
 }))
 
 /** 节点支持决策档案（`node.info.capabilities.rules`）。旧 daemon 没有这个字段；还没拿到过 `node.info` 的节点按不支持算。 */

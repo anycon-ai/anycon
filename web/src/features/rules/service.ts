@@ -16,8 +16,9 @@ const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
 /** 读一份整表。失败只记 `failed`，界面给「重试」。 */
 export async function syncRules(nodeId: string): Promise<void> {
   try {
+    const since = useRules.getState().tick
     const res = await rpc().request<RuleListResult>(nodeId, 'rule.list', {})
-    useRules.getState().replaceAll(nodeId, res.rules, res.budget)
+    useRules.getState().replaceAll(nodeId, res.rules, res.budget, since)
   } catch (e) {
     useRules.getState().patchNode(nodeId, (n) => ({ ...n, failed: true }))
     // 链路断了是常态（连上之后会再同步一次）

@@ -4,6 +4,7 @@ import { useNodes } from '@/stores/nodes'
 import { Spinner } from '@/ui/Misc'
 import { nodeSupportsTodo, useTodoView, useTodos } from '../store'
 import { resolveTodoRoute } from './TodoDetailPane'
+import { useOriginTodo } from './TodoOrigin'
 import { TodoReview } from './TodoReview'
 import { useMemo } from 'react'
 
@@ -17,6 +18,8 @@ export function TodoReviewPane({ node, todo }: { node: string; todo: string }) {
   const hydrated = useTodos((s) => (nodeId ? s.nodes[nodeId]?.hydrated === true : false))
   const ids = useMemo(() => (nodeId ? [nodeId] : []), [nodeId])
   const item = useTodoView(ids).find((v) => v.id === todo)
+  // 已经关闭的项（刚通过的、刷新之后再打开的）不在没关闭的清单缓存里：缓存里没有就向节点要一次，要到的并进缓存
+  const asked = useOriginTodo(nodeId ?? '', todo)
   const note = (text: string, testId: string) => (
     <p className="p-4 text-sm text-fg-subtle" role="status" data-testid={testId}>
       {text}
@@ -32,6 +35,6 @@ export function TodoReviewPane({ node, todo }: { node: string; todo: string }) {
   if (!entry.info) return loading
   if (!nodeSupportsTodo(nodeId)) return note(t('todos.nodeUnsupported', { node: cleanHintText(entry.name) || nodeId.slice(0, 8) }), 'review-unsupported-node')
   if (!hydrated) return loading
-  if (!item) return note(t('todos.gone'), 'review-gone')
+  if (!item) return asked.state === 'deleted' || asked.state === 'unknown' ? note(t('todos.gone'), 'review-gone') : loading
   return <TodoReview key={`${item.node_id}:${item.id}`} item={item} online={entry.conn === 'ready'} />
 }

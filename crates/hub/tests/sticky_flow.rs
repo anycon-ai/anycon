@@ -324,8 +324,7 @@ async fn run_flow(hub: TestHub, spec: FlowSpec) -> Flow {
     let b = hub.seed_device(spec.receiver_kind, "receiver").await;
     hub.seed_paired(&a, &b).await;
     let mut da = FakeDevice::connect(&hub, Some(&a.token), spec.sender_kind, "sender").await;
-    // 接收缓冲定死（64 KiB）：慢接收方不读的时候，内核吞不下几 MiB，hub 的 4 MiB 出站缓冲一定会满、一定会退回
-    let db = FakeDevice::connect_small_recv_buffer(&hub, Some(&b.token), spec.receiver_kind, "receiver", 64 * 1024).await;
+    let db = FakeDevice::connect(&hub, Some(&b.token), spec.receiver_kind, "receiver").await;
     assert!(matches!(da.recv_control().await, Control::PeerOnline { .. }));
 
     let messages: Vec<Vec<u8>> = spec.sizes.iter().enumerate().map(|(i, n)| message(*n, i as u64 + 1)).collect();

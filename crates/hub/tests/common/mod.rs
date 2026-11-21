@@ -366,34 +366,6 @@ impl FakeDevice {
         }
     }
 
-    /// 同 [`FakeDevice::connect`]，但把 socket 的接收缓冲（`SO_RCVBUF`）定死在 `recv_buffer` 字节。定死之后内核不再自动调大，
-    /// 读得慢的接收方不读时，内核里能积压的字节有上限，hub 的出站缓冲才一定会满（Linux / Windows 会把它调到几 MiB 甚至更大，
-    /// 慢读也没有任何背压，「慢读者必然被退回」就不成立）。
-    pub async fn connect_small_recv_buffer(
-        hub: &TestHub,
-        token: Option<&str>,
-        kind: DeviceKind,
-        name: &str,
-        recv_buffer: u32,
-    ) -> Self {
-        let addr: SocketAddr = ([127, 0, 0, 1], hub.handle.addr.port()).into();
-        let sock = tokio::net::TcpSocket::new_v4().expect("tcp socket");
-        sock.set_recv_buffer_size(recv_buffer).expect("SO_RCVBUF");
-        let tcp = sock.connect(addr).await.expect("tcp connects");
-        let req = hub.ws_url().into_client_request().unwrap();
-        let (ws, _) = tokio_tungstenite::client_async(req, MaybeTlsStream::Plain(tcp)).await.expect("ws upgrade");
-        let mut raw = Self { ws, id: String::new(), seq: 0, peers_online: Vec::new() };
-        raw.send_auth(token, kind, name).await;
-        match raw.recv_control().await {
-            Control::AuthOk { device_id, peers_online, .. } => {
-                raw.id = device_id;
-                raw.peers_online = peers_online;
-                raw
-            }
-            other => panic!("expected auth_ok, got {other:?}"),
-        }
-    }
-
     /// 在预览域名上连接并用预览令牌认证，要求成功（`Origin` 是这个预览页的 origin）。
     pub async fn connect_preview(hub: &TestHub, label: &str, token: &str) -> Self {
         let mut raw = Self::open_preview(hub, label).await.expect("preview ws upgrade");

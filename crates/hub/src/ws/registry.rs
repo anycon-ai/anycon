@@ -399,6 +399,24 @@ impl Registry {
         Ok(Registered { superseded, peers_online })
     }
 
+    /// 配对完成：持路由表写锁更新双方对端缓存，再依次给双方发各自的 `PairDone`。
+    /// 对方仍是路由表登记的那条连接时才通知上线，与移除时的下线通知定序；对方已断开也照常发 `PairDone`。
+    pub fn link_paired(&self, host: &Arc<Conn>, joiner: &Arc<Conn>, host_done: Control, joiner_done: Control) {
+        let t = self.table.write().expect("registry");
+        let host_id = host.device_id();
+        let joiner_id = joiner.device_id();
+        host.add_peer(&joiner_id);
+        joiner.add_peer(&host_id);
+        host.send_control(&host_done);
+        joiner.send_control(&joiner_done);
+        if t.conns.get(&joiner_id).is_some_and(|c| c.id == joiner.id) {
+            host.send_control(&Control::PeerOnline { device: joiner_id });
+        }
+        if t.conns.get(&host_id).is_some_and(|c| c.id == host.id) {
+            joiner.send_control(&Control::PeerOnline { device: host_id });
+        }
+    }
+
     /// 登记一条预览连接（`conn.preview` 必须是 `Some`）。账号的预览连接已经到 `max` 个返回 `Err`，什么都不登记。
     ///
     /// 节点在线时：`auth_ok` 的 `peers_online` 是 `[节点]`，节点的对端集合加上它，并给节点发 `preview_peer { peer, label }`
@@ -768,6 +786,81 @@ mod tests {
             peers: HashSet::new(),
             preview: None,
         }))
+    }
+
+    fn pair_done(peer: &str) -> Control {
+        Control::PairDone { peer: peer.into(), device_id: None, device_token: None }
+    }
+
+    /// 配对完成先发双方各自的凭据，再通知在线；随后断开仍能通知对端下线。
+    #[test]
+    fn pairing_notifies_both_online_connections_after_pair_done() {
+        let r = Registry::default();
+        let (host, mut host_rx) = device(&r, "host", DeviceKind::Daemon);
+        let (joiner, mut joiner_rx) = device(&r, "joiner", DeviceKind::Web);
+        r.register(&host, auth_ok("host"));
+        r.register(&joiner, auth_ok("joiner"));
+        drain(&mut host_rx);
+        drain(&mut joiner_rx);
+        let host_done = pair_done("joiner");
+        let joiner_done = Control::PairDone {
+            peer: "host".into(),
+            device_id: Some("joiner".into()),
+            device_token: Some("joiner-token".into()),
+        };
+
+        r.link_paired(&host, &joiner, host_done.clone(), joiner_done.clone());
+
+        assert!(host.has_peer("joiner"));
+        assert!(joiner.has_peer("host"));
+        assert_eq!(drain(&mut host_rx), [host_done, Control::PeerOnline { device: "joiner".into() }]);
+        assert_eq!(drain(&mut joiner_rx), [joiner_done, Control::PeerOnline { device: "host".into() }]);
+        assert!(r.unregister("joiner", joiner.id));
+        assert_eq!(drain(&mut host_rx), [Control::PeerOffline { device: "joiner".into() }]);
+    }
+
+    /// 对端已移除仍完成配对并缓存关系，但等到它重连后才能通知上线。
+    #[test]
+    fn pairing_does_not_announce_an_unregistered_joiner_until_it_reconnects() {
+        let r = Registry::default();
+        let (host, mut host_rx) = device(&r, "host", DeviceKind::Daemon);
+        let (joiner, mut joiner_rx) = device(&r, "joiner", DeviceKind::Web);
+        r.register(&host, auth_ok("host"));
+        r.register(&joiner, auth_ok("joiner"));
+        drain(&mut host_rx);
+        drain(&mut joiner_rx);
+        assert!(r.unregister("joiner", joiner.id));
+
+        let host_done = pair_done("joiner");
+        let joiner_done = pair_done("host");
+        r.link_paired(&host, &joiner, host_done.clone(), joiner_done.clone());
+
+        assert_eq!(drain(&mut host_rx), [host_done]);
+        assert_eq!(drain(&mut joiner_rx), [joiner_done, Control::PeerOnline { device: "host".into() }]);
+        assert!(host.has_peer("joiner"));
+        assert!(joiner.has_peer("host"));
+        let (new, _new_rx) = device(&r, "joiner", DeviceKind::Web);
+        new.add_peer("host");
+        r.register(&new, auth_ok("joiner"));
+        assert_eq!(drain(&mut host_rx), [Control::PeerOnline { device: "joiner".into() }]);
+    }
+
+    /// 同设备的新连接已经登记时，旧连接的配对收尾不能把旧传输宣告为在线。
+    #[test]
+    fn pairing_does_not_announce_a_superseded_joiner() {
+        let r = Registry::default();
+        let (host, mut host_rx) = device(&r, "host", DeviceKind::Daemon);
+        let (joiner, _joiner_rx) = device(&r, "joiner", DeviceKind::Web);
+        r.register(&host, auth_ok("host"));
+        r.register(&joiner, auth_ok("joiner"));
+        let (new, _new_rx) = device(&r, "joiner", DeviceKind::Web);
+        r.register(&new, auth_ok("joiner"));
+        drain(&mut host_rx);
+
+        let host_done = pair_done("joiner");
+        r.link_paired(&host, &joiner, host_done.clone(), pair_done("host"));
+
+        assert_eq!(drain(&mut host_rx), [host_done]);
     }
 
     /// 移除返回时下线通知已经入队，重连的上线通知只能排在它之后。

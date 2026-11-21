@@ -1445,7 +1445,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ## 23. 决策档案
 
-> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）和 TS SDK（`node.rules`、`rule_changed`）。还没有：Web 客户端的界面（§ 23.10 的 Web 一条，[web.md § 14.8](web.md#148-分身和规则)）、从会话里自动提炼规则和判断后端（§ 23.9，只有提纲）、同组节点之间的同步（§ 23.8，单独实现）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话。这一半没有任何模型调用。
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 客户端。Web 客户端的界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）也已实现。还没有：从会话里自动提炼规则和判断后端（§ 23.9，只有提纲）、同组节点之间的同步（§ 23.8，单独实现）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话。这一半没有任何模型调用。
 
 ### 23.1 范围
 
@@ -1583,7 +1583,7 @@ daemon 从不自动删除有用的规则（ADR-54 第 3 条）：待确认、生
 
 ### 23.10 客户端入口
 
-- **Web**：规则页 `/rules`（待确认 / 已生效，显示已用字数和上限）；「待处理」稍后段里的待确认规则；审批卡片和答复框旁的「记成规则」；派发对话框里显示将注入的规则；「更多」里出现「规则」。见 [web.md § 14.8](web.md#148-分身和规则)。
+- **Web**（已实现，[web.md § 4.14](web.md#414-规则-rules)）：规则页 `/rules`（待确认 / 已生效，显示已用字数和上限，新建、编辑、确认、否决、停用、启用、删除，多选）；「待处理」稍后段里的待确认规则（一条一行，确认只在显示着全文的详情里）；审批卡片和提问卡片的答复按钮旁的「记成规则」（不答复请求）；派发对话框里显示将注入的规则（`todo.dispatch_preview` 的 `rules_text`，换项目重新取）和「这个 agent 收不到规则」；会话信息面板里的「交给 agent 的规则」；「更多」、左栏和命令面板里出现「规则」。回答框的「以后都这样」勾选没有做（只有「记成规则」按钮）。
 - **CLI**：`anycon rule add <text> [--project <name>]`、`anycon rule ls [--all] [--json]`、`anycon rule show <id>`、`anycon rule confirm | reject | disable | enable <id>`、`anycon rule rm <id>`；`<id>` 接受前缀。在 anycon 拉起的 agent 里（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true`（记成待确认），`ls` 和 `show`（只读）照常，其余拒绝执行（同 § 21.8，护栏，不是边界）；`add` 带 `ANYCON_SESSION_ID` 作为 `origin_session`。`show` 用 `visible()` 打印一条规则的全文、状态、项目和来源（`ls` 把规则截成一行，不够审阅）；`confirm` / `enable` 打印被激活的那条规则的全文。`ls` 缺省给 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；`--json` 给 `{ rules, budget }`。`confirm` / `enable` 把状态改成 `active`，`reject` 改成 `rejected`，`disable` 改成 `disabled`（都是 `rule.update`；经前缀列过表的带 `if_updated_ms`，所以列出之后别处改过这条规则就不确认；已经是这个状态就如实说没变）。`anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则。子命令规格见 [cli.md § 3.9](cli.md#39-anycon-rule)。
 - **`anycon mcp`**：不加工具。MCP 的工具都是固定映射到具体 RPC 的，没有通用的转发，所以经它够不着 `rule.*`；自报了 `mcp` 的连接直接发 `rule.add` 只能记待确认的，发 `rule.update` / `rule.delete` 得到 `forbidden`。
 - **SDK**：`node.rules.*` 和 `rule_changed` 事件。

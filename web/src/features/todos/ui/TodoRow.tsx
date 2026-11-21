@@ -6,6 +6,7 @@ import { Chip } from '@/ui/Misc'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/ui/Menu'
 import { cn } from '@/ui/cn'
 import { LONG_PRESS_MS, LONG_PRESS_SLOP, swipeOffset, swipeVerdict } from '../swipe'
+import { HandlerChip, LinkedStatus } from './ActivityBits'
 import { isAgentSource, isOtherSource } from '../source'
 import { isClosed, type ViewTodo } from '../types'
 import { cleanOneLine } from '../validate'
@@ -112,6 +113,8 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
             <span className={cn('block truncate font-medium [overflow-wrap:anywhere]', closed && 'line-through')}>{cleanOneLine(item.title)}</span>
             {meta ? <span className="mt-0.5 block truncate text-xs text-fg-subtle">{meta}</span> : null}
           </span>
+          <LinkedStatus item={item} />
+          <HandlerChip item={item} />
           {agent ? (
             <Chip tone="info" icon={<Bot className="size-3" aria-hidden />} testId="todo-agent">
               {t('todos.byAgent')}

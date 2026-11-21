@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { PageHeader } from '@/components/PageHeader'
 import { setTodoState } from '@/features/todos/actions'
 import { useCapture } from '@/features/todos/capture'
-import { flatOrder, groupTodos, NO_FILTERS, projectsOf, type SourceFilter, type TodoFilters } from '@/features/todos/list'
+import { flatOrder, groupTodos, NO_FILTERS, projectsOf, type HandlerFilter, type SourceFilter, type TodoFilters } from '@/features/todos/list'
 import { deleteTodo, loadClosed, setClosedExpanded } from '@/features/todos/service'
 import { useSupportingNodes, useTodoView, useTodos } from '@/features/todos/store'
 import { dirtyFields, draftKey, splitDraftKey, useDrafts } from '@/features/todos/drafts'
@@ -32,7 +32,7 @@ import type { ViewTodo } from '@/features/todos/types'
 const key = (t: Pick<ViewTodo, 'node_id' | 'id'>): string => `${t.node_id}:${t.id}`
 
 /**
- * 清单页（`/todos`、`/todos/:node/:todo`，spec/web.md § 4.12）：勾选的、支持清单的节点合在一个列表里，分三组——处理中、还没开始、
+ * 清单页（`/todos`、`/todos/:node/:todo`，spec/web.md § 4.12）：勾选的、支持清单的节点合在一个列表里，分五组——等你决定、待验收、处理中、还没开始、
  * 已关闭（折叠，展开才向节点要，一页页往下翻）。桌面左边列表右边详情；手机上是列表，点一行进二级页。
  * `selected`：地址里的那一项。`active`：页面此刻在眼前（手机上标签页常驻、藏起来时不处理键）。
  */
@@ -197,7 +197,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
     />
   )
 
-  const section = (id: 'working' | 'open', label: string) =>
+  const section = (id: 'decide' | 'review' | 'working' | 'open', label: string) =>
     groups[id].length > 0 ? (
       <section aria-labelledby={`todos-${id}`} data-testid={`todos-group-${id}`}>
         <h2 id={`todos-${id}`} className="mb-2 flex items-center gap-2 px-1 text-xs font-semibold tracking-wide text-fg-muted uppercase">
@@ -231,6 +231,11 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
           <option value="all">{t('todos.sourceAll')}</option>
           <option value="mine">{t('todos.sourceMine')}</option>
           <option value="agent">{t('todos.sourceAgent')}</option>
+        </Select>
+        <Select aria-label={t('todos.filterHandler')} value={filters.handler ?? 'all'} onChange={(e) => setFilters((f) => ({ ...f, handler: e.target.value as HandlerFilter }))} className="w-auto" data-testid="todos-filter-handler">
+          <option value="all">{t('todos.handlerAll')}</option>
+          <option value="me">{t('todos.handler.me')}</option>
+          <option value="agent">{t('todos.handler.agent')}</option>
         </Select>
         <Button size="sm" variant={multi ? 'primary' : 'outline'} aria-pressed={multi} onClick={() => { setMulti((m) => !m); setChecked(new Set()) }} data-testid="todos-multi">
           {t('todos.select_')}
@@ -277,6 +282,8 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
           {t('todos.emptyBody')}
         </EmptyState>
       ) : null}
+      {section('decide', t('todos.groups.decide'))}
+      {section('review', t('todos.groups.review'))}
       {section('working', t('todos.groups.working'))}
       {section('open', t('todos.groups.open'))}
       <section data-testid="todos-group-closed">

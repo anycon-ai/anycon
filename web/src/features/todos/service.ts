@@ -23,6 +23,7 @@ import { navigateTo } from '@/lib/navigate'
 import { shortNodeId } from '@/lib/ids'
 import { toast, useUi } from '@/stores/ui'
 import i18n from '@/i18n'
+import { useTodoHistory } from './history'
 import { nodeSupportsTodo, useTodos, viewOf } from './store'
 import { outboxErrorText } from './ui/errors'
 import type { OutboxError, OutboxOp, OutboxRecord, UpdateFields } from './types'
@@ -113,6 +114,7 @@ export async function forgetNodeTodos(nodeId: string): Promise<number> {
   retryFor.delete(nodeId)
   closedWalks.delete(nodeId)
   useTodos.getState().removeNode(nodeId)
+  useTodoHistory.getState().dropNode(nodeId)
   try {
     const n = await db.dropNodeTodos(nodeId)
     announce(nodeId)
@@ -126,6 +128,7 @@ export async function forgetNodeTodos(nodeId: string): Promise<number> {
 /** 退出登录：内存里的清单清掉（IndexedDB 保留，同一账号再登录还能用；「退出并移除本设备」才删库）。 */
 export function resetTodosMemory(): void {
   dbGone = false
+  useTodoHistory.getState().reset()
   closeTodoChannel()
   for (const id of [...retryTimers.keys()]) cancelRetry(id)
   retryCounts.clear()

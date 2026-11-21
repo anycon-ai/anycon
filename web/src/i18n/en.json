@@ -284,6 +284,10 @@
     "ok": "Got it"
   },
   "todos": {
+    "handler": { "me": "Me", "agent": "Agent" },
+    "handlerAll": "Everyone",
+    "filterHandler": "Filter by who is handling it",
+    "activity": { "working": "Agent is working", "waiting": "Waiting for your decision", "review": "Ready to review" },
     "title": "To-dos",
     "navLabel": "To-dos, {{count}} open",
     "addTitle": "Add a to-do",
@@ -314,6 +318,8 @@
     "fromSession": "Open the session it came from",
     "sessionGone": "The session it came from no longer exists.",
     "groups": {
+      "decide": "Waiting for your decision",
+      "review": "To review",
       "working": "In progress",
       "open": "Not started",
       "closed": "Closed"

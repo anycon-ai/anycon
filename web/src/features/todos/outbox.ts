@@ -35,6 +35,8 @@ function applyUpdate(t: ViewTodo, f: UpdateFields, at: number): ViewTodo {
     out.state = f.state
     if (isClosed(f.state)) {
       if (!isClosed(t.state)) out.closed_ms = at
+      // 已关闭的项没有 `activity`（daemon 也不给）；打开的项的 `activity` 是 daemon 算的，这里不编
+      delete out.activity
     } else delete out.closed_ms
   }
   // 人改了它（任何字段）就不再是「待收下」（和 daemon 的规则一样）

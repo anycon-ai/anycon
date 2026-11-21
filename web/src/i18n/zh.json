@@ -283,6 +283,10 @@
     "ok": "知道了"
   },
   "todos": {
+    "handler": { "me": "我", "agent": "agent" },
+    "handlerAll": "不限",
+    "filterHandler": "按谁在处理过滤",
+    "activity": { "working": "agent 在处理", "waiting": "等你决定", "review": "待验收" },
     "title": "清单",
     "navLabel": "清单，{{count}} 项未关闭",
     "addTitle": "记一项",
@@ -313,6 +317,8 @@
     "fromSession": "打开它来自的会话",
     "sessionGone": "它来自的会话已经不存在了。",
     "groups": {
+      "decide": "等你决定",
+      "review": "待验收",
       "working": "处理中",
       "open": "还没开始",
       "closed": "已关闭"

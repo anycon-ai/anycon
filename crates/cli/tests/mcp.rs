@@ -489,14 +489,14 @@ async fn a_message_sent_while_the_session_is_busy_gets_its_own_answer() {
         .ok("create_session", json!({ "agent": "mock", "prompt": "slow answer please, first turn", "wait": false }))
         .await;
     let sid = r["session"]["id"].as_str().unwrap().to_string();
-    let started = Instant::now();
+    // 等第一轮真的在跑再发第二条：`wait: false` 一返回，会话可能还没开始跑（慢的机器上启动要好一阵），那时发的消息不是「忙的时候发的」
+    wait_status(&n, &sid, "running").await;
     let r = m.ok("send_message", json!({ "session": &sid, "message": "SECOND message" })).await;
     assert_eq!(r["outcome"], "completed", "{r}");
     let text = r["text"].as_str().unwrap();
     assert!(text.contains("You said: SECOND message"), "{r}");
     assert!(!text.contains("first turn"), "the answer of the previous turn must not come back: {r}");
     assert_eq!(r["usage"]["session_total"]["turns"], 2, "both turns were over when it returned: {r}");
-    assert!(started.elapsed() > Duration::from_millis(500), "it waited for the first turn to end first");
     assert_eq!(m.close().await, 0);
     n.stop().await;
 }

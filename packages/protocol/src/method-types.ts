@@ -65,6 +65,15 @@ import type {
   PreviewPortsResult,
   Project,
   RenamedProject,
+  Rule,
+  RuleAddParams,
+  RuleChanged,
+  RuleDeleteParams,
+  RuleListParams,
+  RuleListResult,
+  RulePreviewParams,
+  RulePreviewResult,
+  RuleUpdateParams,
   SessionArchiveParams,
   SessionChanged,
   SessionCreateParams,
@@ -194,6 +203,11 @@ export interface RequestMethods {
   'todo.dispatch_preview': { params: TodoDispatchPreviewParams; result: TodoDispatchPreviewResult }
   'todo.dispatch': { params: TodoDispatchParams; result: TodoDispatchResult }
   'todo.history': { params: TodoHistoryParams; result: TodoHistoryResult }
+  'rule.list': { params: RuleListParams; result: RuleListResult }
+  'rule.add': { params: RuleAddParams; result: Rule }
+  'rule.update': { params: RuleUpdateParams; result: Rule }
+  'rule.delete': { params: RuleDeleteParams; result: Empty }
+  'rule.preview': { params: RulePreviewParams; result: RulePreviewResult }
   'blob.put_begin': { params: BlobPutBeginParams; result: BlobPutBeginResult }
   'blob.put_chunk': { params: BlobPutChunkParams; result: Empty }
   'blob.put_end': { params: BlobIdParams; result: AttachmentRef }
@@ -221,6 +235,7 @@ export interface NotificationMethods {
   'session.changed': { params: SessionChanged }
   'todo.changed': { params: TodoChanged }
   'todo.event': { params: TodoEventNotice }
+  'rule.changed': { params: RuleChanged }
   'permission.request': { params: PermissionRequest }
   'permission.resolved': { params: PermissionResolved }
 }

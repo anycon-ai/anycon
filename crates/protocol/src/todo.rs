@@ -263,6 +263,21 @@ pub struct TodoDispatchPreviewParams {
 pub struct TodoDispatchPreviewResult {
     /// 此刻派发会发出的第一条消息，一字不差（同一个组装函数、同一套「之前的结果」的选法）。
     pub first_message: String,
+    /// 此刻开一个这一项的项目的会话会注入的规则文字（docs/spec/daemon.md § 23.5，和 `rule.preview` 同一个函数）；这一项没有项目时
+    /// 只有全节点规则；没有生效的规则时为空串。不看所选的 agent：它收不收得到由 `AgentInfo.capabilities.system_prompt` 说了算。
+    #[serde(default)]
+    pub rules_text: String,
+}
+
+/// 派发时生效的规则没有注入的原因（`TodoEventData::Dispatched.rules_skipped`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RulesSkipped {
+    /// 所选 agent 收不到 `system_prompt_append`（`AgentInfo.capabilities.system_prompt = false`）。
+    Unsupported,
+    /// 这个版本不认识的原因；daemon 自己不产生它。
+    #[serde(other)]
+    Unknown,
 }
 
 /// `todo.history` 的参数。
@@ -303,6 +318,12 @@ pub enum TodoEventData {
         workspace_mode: crate::SessionWorkspaceMode,
         no_push: bool,
         by: TodoActor,
+        /// 注入这个会话的系统提示的规则（`rule.*`，docs/spec/daemon.md § 23.5），按在文字里的顺序。没有注入时缺省（旧 daemon 的记录也没有）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rules: Vec<String>,
+        /// 有生效的规则、但没有注入的原因。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rules_skipped: Option<RulesSkipped>,
     },
     /// 关联会话的一轮结束了：agent 这一轮的最后一段话（≤ 4 KiB，在码点边界截断）。这一轮没有文字时 `text` 为空。
     /// `text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。

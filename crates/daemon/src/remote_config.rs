@@ -92,6 +92,7 @@ const SPECS: &[Spec] = &[
         rule: Rule::Duration { min: PREVIEW_TTL_MIN, max: PREVIEW_TTL_MAX },
         editable: ConfigEditable::Any,
     },
+    Spec { key: "rules.inject_manual_sessions", rule: Rule::Bool, editable: ConfigEditable::Any },
     Spec {
         key: "notify.turn_finished",
         rule: Rule::Enum(&["always", "when_unwatched", "never"]),

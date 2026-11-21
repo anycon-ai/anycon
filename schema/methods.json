@@ -469,6 +469,42 @@
   },
   {
     "direction": "request",
+    "name": "rule.list",
+    "params": "RuleListParams",
+    "result": "RuleListResult"
+  },
+  {
+    "direction": "request",
+    "name": "rule.add",
+    "params": "RuleAddParams",
+    "result": "Rule"
+  },
+  {
+    "direction": "request",
+    "name": "rule.update",
+    "params": "RuleUpdateParams",
+    "result": "Rule"
+  },
+  {
+    "direction": "request",
+    "name": "rule.delete",
+    "params": "RuleDeleteParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "rule.preview",
+    "params": "RulePreviewParams",
+    "result": "RulePreviewResult"
+  },
+  {
+    "direction": "notification",
+    "name": "rule.changed",
+    "params": "RuleChanged",
+    "result": null
+  },
+  {
+    "direction": "request",
     "name": "blob.put_begin",
     "params": "BlobPutBeginParams",
     "result": "BlobPutBeginResult"

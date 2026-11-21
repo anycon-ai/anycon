@@ -144,6 +144,8 @@ pub fn capabilities() -> AgentCapabilities {
         structured_output: false,
         env: true,
         rewind: false,
+        // `thread/start` 的 `developerInstructions`
+        system_prompt: true,
     }
 }
 

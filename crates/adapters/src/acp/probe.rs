@@ -72,6 +72,8 @@ pub fn capabilities(caps: &AgentCaps) -> AgentCapabilities {
         // 进程按 agent 共享，没有会话级的环境
         env: false,
         rewind: false,
+        // ACP 没有系统提示的入口：不声明，规则注入不到
+        system_prompt: false,
     }
 }
 

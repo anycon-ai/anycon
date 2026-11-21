@@ -82,6 +82,8 @@ function canonicalError(err: RpcError): RpcError {
     if (isSet(data.reason)) d.reason = data.reason
     if (isSet(data.retry_after_ms)) d.retry_after_ms = data.retry_after_ms
     if (isSet(data.updated_ms)) d.updated_ms = data.updated_ms
+    if (isSet(data.bytes)) d.bytes = data.bytes
+    if (isSet(data.cap)) d.cap = data.cap
     out.data = d
   }
   return out
@@ -159,6 +161,14 @@ export class AnyconRpcError extends Error {
   /** 带条件的写被拒（`todo.delete` 的 `ifUpdatedMs` 对不上，`reason = 'changed'`）时，那一项现在的 `updated_ms`。 */
   get updatedMs(): number | undefined {
     return this.data?.updated_ms ?? undefined
+  }
+  /** 规则超出注入的字数上限（`reason = 'over_budget'`）时，这次改动之后一个会话拿到的规则文字的字节数。 */
+  get bytes(): number | undefined {
+    return this.data?.bytes ?? undefined
+  }
+  /** 同上：上限。 */
+  get cap(): number | undefined {
+    return this.data?.cap ?? undefined
   }
 
   static fromWire(err: RpcError): AnyconRpcError {

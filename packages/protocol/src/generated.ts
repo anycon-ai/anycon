@@ -10,6 +10,10 @@ export type AgentStatus =
  */
 export type LinkBlock = "hidden" | "sensitive" | "workspace" | "data_dir" | "filesystem_root";
 /**
+ * `rule.update` 的 `clear` 可以清空的可选字段。
+ */
+export type ClearableRuleField = "project";
+/**
  * `todo.update` 的 `clear` 可以清空的可选字段。
  */
 export type ClearableTodoField = "project" | "due_ms";
@@ -610,6 +614,30 @@ export type PullRequestState = "open" | "draft" | "merged" | "closed";
 export type RpcMessage = RpcRequest | RpcNotification | RpcResponse;
 export type RpcId = number | string;
 /**
+ * 规则是怎么来的。
+ */
+export type RuleSourceKind = "manual" | "answer" | "extracted" | "agent" | "unknown";
+/**
+ * 规则的状态。
+ */
+export type RuleStatus = "pending" | "active" | "disabled" | "rejected" | "unknown";
+/**
+ * 规则在节点之间的同步范围。这一半恒为 `node`（docs/spec/daemon.md § 23.8）。
+ */
+export type RuleSync = "node" | "group" | "unknown";
+/**
+ * `rule.add` 的调用方可以声明的来源种类（`extracted` 只有 daemon 自己提炼时才有，`agent` 由 `agent: true` 决定）。
+ */
+export type RuleAddSourceKind = "manual" | "answer";
+/**
+ * `rule.add` 可以直接给的状态。
+ */
+export type RuleAddStatus = "active" | "pending";
+/**
+ * 派发时生效的规则没有注入的原因（`TodoEventData::Dispatched.rules_skipped`）。
+ */
+export type RulesSkipped = "unsupported" | "unknown";
+/**
  * 归档 / 删除会话时怎么处理它的 worktree。
  */
 export type WorktreeDisposal = "auto" | "keep" | "remove";
@@ -675,6 +703,14 @@ export type TodoEvent1 =
       by: TodoActor;
       kind: "dispatched";
       no_push: boolean;
+      /**
+       * 注入这个会话的系统提示的规则（`rule.*`，docs/spec/daemon.md § 23.5），按在文字里的顺序。没有注入时缺省（旧 daemon 的记录也没有）。
+       */
+      rules?: string[];
+      /**
+       * 有生效的规则、但没有注入的原因。
+       */
+      rules_skipped?: RulesSkipped | null;
       session_id: string;
       workspace_mode: SessionWorkspaceMode;
     }
@@ -700,6 +736,14 @@ export type TodoEventData =
       by: TodoActor;
       kind: "dispatched";
       no_push: boolean;
+      /**
+       * 注入这个会话的系统提示的规则（`rule.*`，docs/spec/daemon.md § 23.5），按在文字里的顺序。没有注入时缺省（旧 daemon 的记录也没有）。
+       */
+      rules?: string[];
+      /**
+       * 有生效的规则、但没有注入的原因。
+       */
+      rules_skipped?: RulesSkipped | null;
       session_id: string;
       workspace_mode: SessionWorkspaceMode;
     }
@@ -734,6 +778,7 @@ export interface ProtocolSchema {
   blob_put_begin_result: BlobPutBeginResult;
   blob_put_chunk_params: BlobPutChunkParams;
   browse_entry: BrowseEntry;
+  clearable_rule_field: ClearableRuleField;
   clearable_todo_field: ClearableTodoField;
   client_info: ClientInfo;
   config_change: ConfigChange;
@@ -831,6 +876,24 @@ export interface ProtocolSchema {
   quota: Quota;
   rpc_error: RpcError;
   rpc_message: RpcMessage;
+  rule: Rule;
+  rule_add_params: RuleAddParams;
+  rule_add_source: RuleAddSource;
+  rule_add_source_kind: RuleAddSourceKind;
+  rule_add_status: RuleAddStatus;
+  rule_budget: RuleBudget;
+  rule_changed: RuleChanged;
+  rule_delete_params: RuleDeleteParams;
+  rule_list_params: RuleListParams;
+  rule_list_result: RuleListResult;
+  rule_preview_params: RulePreviewParams;
+  rule_preview_result: RulePreviewResult;
+  rule_source: RuleSource;
+  rule_source_kind: RuleSourceKind;
+  rule_status: RuleStatus;
+  rule_sync: RuleSync;
+  rule_update_params: RuleUpdateParams;
+  rules_skipped: RulesSkipped;
   security_event_kind: SecurityEventKind;
   session_archive_params: SessionArchiveParams;
   session_changed: SessionChanged;
@@ -970,6 +1033,11 @@ export interface AgentCapabilities {
   resume: boolean;
   rewind: boolean;
   structured_output: boolean;
+  /**
+   * 会话的 `system_prompt_append` 真的会交给 agent（docs/spec/daemon.md § 6.3）。为 false（ACP agent、旧 daemon）时，
+   * 决策档案里的规则注入不到它的会话里（§ 23.5）。
+   */
+  system_prompt?: boolean;
   /**
    * 会不会发 `thinking_delta`。
    */
@@ -1787,6 +1855,10 @@ export interface NodeCapabilities {
    * 支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。
    */
   preview?: boolean;
+  /**
+   * 支持决策档案（`rule.*`，docs/spec/daemon.md § 23）。旧 daemon 没有这个字段，读作 false。
+   */
+  rules?: boolean;
   search: boolean;
   /**
    * 支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。
@@ -2274,6 +2346,12 @@ export interface RpcError {
   message: string;
 }
 export interface RpcErrorData {
+  /**
+   * 规则超出注入的字数上限（`rule.add` / `rule.update` 的 `invalid`，`reason = "over_budget"`）时，这次改动之后一个会话拿到的
+   * 规则文字的字节数，和上限（`cap`）。
+   */
+  bytes?: number | null;
+  cap?: number | null;
   code: ErrorCode;
   /**
    * `invalid_settings` 时的字段名等补充信息。
@@ -2302,6 +2380,167 @@ export interface RpcResponse {
   id: RpcId;
   jsonrpc: string;
   result?: unknown;
+}
+export interface Rule {
+  created_ms: number;
+  /**
+   * 客户端生成的小写带连字符的 UUID；`rule.add` 按它幂等。
+   */
+  id: string;
+  /**
+   * 最近一次被注入某个会话；改它不动 `updated_ms`，也不发 `rule.changed`。
+   */
+  last_injected_ms?: number | null;
+  /**
+   * 只进这个项目的会话；缺省 = 这个节点上所有项目的会话。
+   */
+  project?: string | null;
+  source: RuleSource;
+  status: RuleStatus;
+  sync: RuleSync;
+  /**
+   * 1–600 个 Unicode 码点，可以多行；除换行外不含控制字符，不含 U+2028 / U+2029。
+   */
+  text: string;
+  /**
+   * 每次真正的修改严格递增，也是版本号（`if_updated_ms`）。
+   */
+  updated_ms: number;
+}
+export interface RuleSource {
+  /**
+   * 经 hub 来的调用带上发起设备的 id（daemon 填）。
+   */
+  device_id?: string | null;
+  kind: RuleSourceKind;
+  /**
+   * `answer`：出自哪个权限请求或提问。
+   */
+  request_id?: string | null;
+  /**
+   * `extracted`：出自会话的哪个事件。
+   */
+  seq?: number | null;
+  /**
+   * `answer` / `extracted`：规则出自哪个会话。
+   */
+  session_id?: string | null;
+}
+export interface RuleAddParams {
+  /**
+   * 调用方自报「这是 agent 写的」：状态强制为 `pending`，来源强制为 `agent`。只会让这条规则更不被信任，所以不需要校验。
+   */
+  agent?: boolean | null;
+  /**
+   * UUID。已经存在时原样返回已有的那一条（幂等）。
+   */
+  id: string;
+  project?: string | null;
+  /**
+   * 缺省 `{ kind: manual }`。
+   */
+  source?: RuleAddSource | null;
+  /**
+   * 缺省 `active`。
+   */
+  status?: RuleAddStatus | null;
+  text: string;
+}
+export interface RuleAddSource {
+  kind: RuleAddSourceKind;
+  request_id?: string | null;
+  session_id?: string | null;
+}
+/**
+ * 注入的字数预算（docs/spec/daemon.md § 23.4）：字节数按**生效**的规则算，不受 `rule.list` 的过滤条件影响。
+ */
+export interface RuleBudget {
+  /**
+   * 一个会话拿到的规则文字（含模板）的字节上限。
+   */
+  cap: number;
+  /**
+   * 模板的开头加上全节点生效规则的字节数：一个没有项目规则的会话拿到的文字的大小。
+   */
+  node_bytes: number;
+  /**
+   * 每个项目的生效规则的字节数（不含 `node_bytes`），键是项目名。一个这个项目的会话拿到的文字是 `node_bytes + projects[项目]`。
+   */
+  projects: {
+    [k: string]: number;
+  };
+}
+/**
+ * `rule.changed` 通知：新建、修改、删除后发给所有在线客户端（包括发起的那一台）。`last_injected_ms` 的变化不通知。
+ */
+export interface RuleChanged {
+  deleted?: boolean;
+  id: string;
+  /**
+   * `deleted = true` 时没有。
+   */
+  rule?: Rule | null;
+}
+/**
+ * `rule.delete`：`if_updated_ms` 的语义同 `rule.update`。
+ */
+export interface RuleDeleteParams {
+  id: string;
+  if_updated_ms?: number | null;
+}
+export interface RuleListParams {
+  /**
+   * 只给 `project` 等于它的规则（去掉首尾空白后比较；不含全节点规则）。
+   */
+  project?: string | null;
+  /**
+   * 只给这个状态的规则。
+   */
+  status?: RuleStatus | null;
+}
+export interface RuleListResult {
+  budget: RuleBudget;
+  /**
+   * 按 `created_ms`（再按 `id`）从早到晚。
+   */
+  rules: Rule[];
+}
+export interface RulePreviewParams {
+  /**
+   * 缺省：不属于任何项目的会话（只有全节点规则）。
+   */
+  project?: string | null;
+}
+/**
+ * `rule.preview`：现在开一个这个项目的会话会注入的那段文字，和它用到的规则。只读。
+ */
+export interface RulePreviewResult {
+  /**
+   * `text` 的 UTF-8 字节数。
+   */
+  bytes: number;
+  /**
+   * 写进 `text` 的规则，按它们在 `text` 里的顺序。
+   */
+  rule_ids: string[];
+  /**
+   * 没有生效的规则时为空串。
+   */
+  text: string;
+}
+export interface RuleUpdateParams {
+  /**
+   * 要清空的可选字段，在合并之后生效。
+   */
+  clear?: ClearableRuleField[];
+  id: string;
+  /**
+   * 给了而和这条规则现在的 `updated_ms` 不同：什么都不改，`invalid`（`data.reason = "changed"`，`data.updated_ms` 是现在的值）。
+   */
+  if_updated_ms?: number | null;
+  project?: string | null;
+  status?: RuleStatus | null;
+  text?: string | null;
 }
 /**
  * `session.archive`。没有 worktree 的会话只看 `session_id`。
@@ -2868,6 +3107,11 @@ export interface TodoDispatchPreviewResult {
    * 此刻派发会发出的第一条消息，一字不差（同一个组装函数、同一套「之前的结果」的选法）。
    */
   first_message: string;
+  /**
+   * 此刻开一个这一项的项目的会话会注入的规则文字（docs/spec/daemon.md § 23.5，和 `rule.preview` 同一个函数）；这一项没有项目时
+   * 只有全节点规则；没有生效的规则时为空串。不看所选的 agent：它收不收得到由 `AgentInfo.capabilities.system_prompt` 说了算。
+   */
+  rules_text?: string;
 }
 export interface TodoDispatchResult {
   session: SessionSummary;

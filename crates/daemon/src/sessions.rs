@@ -791,15 +791,35 @@ impl Sessions {
     // ============================================================ 创建
 
     pub async fn create(self: &Arc<Self>, caller: &Caller, p: SessionCreateParams) -> RpcResult<SessionSummary> {
-        self.create_for_todo(caller, p, None).await
+        let rules = self.manual_rules(&p).await?;
+        self.create_for_todo(caller, p, None, rules).await
+    }
+
+    /// 手动开的会话要不要注入规则（§ 23.5）：节点配置 `rules.inject_manual_sessions = true`、agent 收得到 `system_prompt_append`、
+    /// 而且有生效的规则。agent 不存在这类错误留给 `create_for_todo` 报。
+    async fn manual_rules(&self, p: &SessionCreateParams) -> RpcResult<Option<crate::rules::Injection>> {
+        if !self.d.config.get().rules.inject_manual_sessions {
+            return Ok(None);
+        }
+        if !self.d.agents.info(&p.agent).is_some_and(|i| i.capabilities.system_prompt) {
+            return Ok(None);
+        }
+        let project =
+            p.project.as_deref().filter(|n| !n.is_empty()).map(|n| self.d.workspace.canonical_project_name(n));
+        crate::rules::injection_for(&self.d.store, &self.d.workspace, project.as_deref())
+            .await
+            .map_err(|e| err(ErrorCode::Internal, format!("cannot read the rules: {e}")))
     }
 
     /// [`Sessions::create`]；`todo_id` 是 `todo.dispatch` 要关联的清单项（只在创建时写进会话行，之后不变）。
+    /// `rules` 是要注入的规则（§ 23.5）：放在 `settings.system_prompt_append` 的最前面，调用方自己给的接在后面空一行；
+    /// agent 收不到 `system_prompt_append` 时忽略。会话真的建出来（不是按 `message_id` 返回已有的那个）之后记下规则的 `last_injected_ms`。
     pub(crate) async fn create_for_todo(
         self: &Arc<Self>,
         caller: &Caller,
         p: SessionCreateParams,
         todo_id: Option<String>,
+        rules: Option<crate::rules::Injection>,
     ) -> RpcResult<SessionSummary> {
         let agents = &self.d.agents;
         let info = agents
@@ -859,7 +879,13 @@ impl Sessions {
                 }
             }
         }
-        let settings = agents.apply_defaults(&p.agent, &info, p.settings.clone());
+        let mut settings = agents.apply_defaults(&p.agent, &info, p.settings.clone());
+        let rules = rules.filter(|_| info.capabilities.system_prompt);
+        if let Some(inj) = &rules {
+            settings.system_prompt_append =
+                Some(crate::rules::prepend_to_append(&inj.text, settings.system_prompt_append.as_deref()));
+        }
+        // 合起来的长度同样受 16 KiB 的限制（超了 → `invalid_settings`）
         agents.validate_settings(&p.agent, &info, &settings)?;
 
         let id = new_session_id();
@@ -952,6 +978,9 @@ impl Sessions {
         let mut guard = sess.st.lock().await;
         self.map.write().unwrap().insert(id.clone(), sess.clone());
         self.push_changed(self.changed_payload(&guard), true);
+        if let Some(inj) = &rules {
+            crate::rules::mark_injected(&self.d.store, &inj.rule_ids).await;
+        }
         if has_message {
             let message_id = p.message_id.clone().unwrap_or_default();
             self.send_locked(

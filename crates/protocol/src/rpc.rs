@@ -42,6 +42,12 @@ pub struct RpcErrorData {
     /// 带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = "changed"`）时，那一项现在的 `updated_ms`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_ms: Option<u64>,
+    /// 规则超出注入的字数上限（`rule.add` / `rule.update` 的 `invalid`，`reason = "over_budget"`）时，这次改动之后一个会话拿到的
+    /// 规则文字的字节数，和上限（`cap`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -57,7 +63,15 @@ impl RpcError {
         Self {
             code: code.rpc_code(),
             message: message.into(),
-            data: Some(RpcErrorData { code, field: None, reason: None, retry_after_ms: None, updated_ms: None }),
+            data: Some(RpcErrorData {
+                code,
+                field: None,
+                reason: None,
+                retry_after_ms: None,
+                updated_ms: None,
+                bytes: None,
+                cap: None,
+            }),
         }
     }
     pub fn invalid_settings(field: impl Into<String>, reason: impl Into<String>) -> Self {

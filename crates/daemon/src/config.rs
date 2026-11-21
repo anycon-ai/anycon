@@ -295,6 +295,14 @@ impl Default for PreviewConfig {
 pub const PREVIEW_TTL_MIN: Duration = Duration::from_secs(5 * 60);
 pub const PREVIEW_TTL_MAX: Duration = Duration::from_secs(7 * 24 * 3600);
 
+/// `[rules]`：决策档案的规则注入（docs/spec/daemon.md § 3 / § 23.5）。整段热加载。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RulesConfig {
+    /// `true` = 手动开的会话（`session.create`）也注入生效的规则；缺省 `false`，只有清单派发的会话注入。
+    pub inject_manual_sessions: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
@@ -451,6 +459,7 @@ pub struct Config {
     pub worktree: WorktreeConfig,
     pub enroll: EnrollConfig,
     pub preview: PreviewConfig,
+    pub rules: RulesConfig,
     pub notify: NotifyConfig,
     pub log: LogConfig,
 }
@@ -917,7 +926,7 @@ pub fn set_toml_values(paths: &Paths, edits: Vec<(String, toml_edit::Value)>) ->
 /// 默认的 `config.toml` 文本（`anycon init` 用）。
 pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, workspace_root: &str) -> String {
     let mut s = String::new();
-    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
+    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* rules.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
     s.push_str("[hub]\n");
     match hub_url {
         Some(u) => s.push_str(&format!("url = {}\n", toml_str(u))),
@@ -971,6 +980,9 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("allow_ports = []\n");
     s.push_str("# 预览票据的有效期，5m–7d\n");
     s.push_str("ticket_ttl = \"24h\"\n");
+    s.push_str("\n[rules]\n");
+    s.push_str("# 决策档案的规则（热加载）。清单派发的会话总是带上生效的规则；inject_manual_sessions = true 时手动开的会话也带\n");
+    s.push_str("inject_manual_sessions = false\n");
     s.push_str("\n[notify]\nturn_finished = \"when_unwatched\"\nsession_idle_after = \"30m\"\n");
     s.push_str("\n[log]\nlevel = \"info\"\nretention_days = 7\n");
     s
@@ -1000,6 +1012,7 @@ pub fn is_hot_key(key: &str) -> bool {
         || key.starts_with("worktree.")
         || key.starts_with("enroll.")
         || key.starts_with("preview.")
+        || key.starts_with("rules.")
         || key == "log.level"
     {
         return true;

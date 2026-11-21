@@ -207,6 +207,8 @@ pub fn capabilities() -> AgentCapabilities {
         structured_output: true,
         env: true,
         rewind: false,
+        // `--append-system-prompt`
+        system_prompt: true,
     }
 }
 

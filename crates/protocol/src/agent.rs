@@ -123,6 +123,10 @@ pub struct AgentCapabilities {
     /// 支持每会话 env。
     pub env: bool,
     pub rewind: bool,
+    /// 会话的 `system_prompt_append` 真的会交给 agent（docs/spec/daemon.md § 6.3）。为 false（ACP agent、旧 daemon）时，
+    /// 决策档案里的规则注入不到它的会话里（§ 23.5）。
+    #[serde(default)]
+    pub system_prompt: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

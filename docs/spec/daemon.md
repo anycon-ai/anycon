@@ -1302,7 +1302,7 @@ Todo {
 
 - `id`：这一项。不存在 → `not_found`；已关闭（`done` / `dropped`）→ `invalid`（`data.reason = "closed"`）。`unreviewed` 的项由人派发，算一次人为修改，清掉 `unreviewed`（§ 21.2）。自报了 `mcp` 的本机连接、`todo.add` 时自报过 `agent` 的调用方式，都不能派发：`forbidden`（和 agent 不能修改清单项是同一条界线，§ 21.8；同样是护栏）。
 - `project`：缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。给了而且和这一项的不同 → 派发成功时把这一项的 `project` 改成它（同一次修改）。项目不存在 → `not_found`，和 `session.create` 一样。
-- `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。
+- `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。在项目目录里干没有隔离：agent 的改动直接落在用户的工作目录里，客户端在派发前写明。第 4 步的分身只派到 worktree。
 - `agent` / `settings`：同 `session.create`（§ 6），同样的校验，危险模式同样受 `permissions.allow_dangerous_modes` 约束。
 - `no_push`：「不 push、不开 PR」（§ 22.5）。缺省 `true`。所选 agent 没有声明这个选项而 `no_push = true` → `unsupported`（`data.reason = "no_push"`）：要派给这样的 agent，调用方得明确传 `false`。
 - 第一条消息由 daemon 生成（§ 22.4），调用方不能另给；不带附件。
@@ -1368,7 +1368,11 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ### 22.6 客户端入口
 
-- **Web**：单项详情的「让 agent 处理」、「经过」、验收页、「待处理」的待验收段、会话页的来源 chip、左栏的「来自清单」折叠（[web.md § 14.6–14.9](web.md#146-清单和单项)）。派发对话框里能展开看 daemon 将要发出的第一条消息。
+- **Web**：单项详情的「让 agent 处理」、「经过」、验收页、「待处理」的待验收段、会话页的来源 chip、左栏的「来自清单」折叠（[web.md § 14.6–14.9](web.md#146-清单和单项)）。派发对话框：
+  - 这一项没有项目时先选一个，派发成功后写回这一项。
+  - 项目不能开 worktree 时写明「直接在项目目录里改，没有隔离」。
+  - 「不 push、不开 PR」缺省勾上；所选 agent 没有这个选项时，勾选框显示为做不到，要派发必须手动取消勾选。
+  - 能展开看 daemon 将要发出的完整第一条消息（包括带过去的之前的结果）。
 - **CLI**：`anycon todo run <id> [--agent <id>] [--model <id>] [--mode <id>] [--project <name>] [--local] [--allow-push]`、`anycon todo history <id> [--json]`。在 anycon 拉起的 agent 里 `run` 拒绝执行，和 `done` / `drop` 一样（§ 21.8）。
 - **`anycon mcp`**：不加派发的工具（ADR-49：`anycon mcp` 不做编排）。
 - **SDK**：`node.todos.dispatch` / `history` 和 `todo_event` 事件。

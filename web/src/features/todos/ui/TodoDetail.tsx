@@ -225,7 +225,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
 
       {pendingReview ? (
         <div className="flex flex-wrap items-center gap-2" data-testid="todo-review">
-          <p className="w-full text-sm text-fg-muted">{t('inbox.laterBody')}</p>
+          <p className="w-full text-sm text-fg-muted">{t(isAgentSource(item.source) ? 'inbox.laterBody' : 'inbox.laterBodyOther')}</p>
           <Button variant="primary" disabled={!online} onClick={() => void updateTodo(item.node_id, item.id, { reviewed: true })} data-testid="todo-accept">
             {t('inbox.accept')}
           </Button>

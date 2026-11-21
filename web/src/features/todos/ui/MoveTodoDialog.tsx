@@ -8,6 +8,7 @@ import { Button } from '@/ui/Button'
 import { Select } from '@/ui/Field'
 import { Dialog } from '@/ui/Overlay'
 import { abandonMove, canDeleteCopy, copyText, crossesSpace, isRunning, isTouched, moveBlock, moveKey, moveText, moveTodo, removeCopy, useMoves, wasAgentAdded } from '../move'
+import { isAgentSource } from '../source'
 import type { ViewTodo } from '../types'
 
 /**
@@ -123,7 +124,7 @@ export function MoveTodoDialog({ item, open, onOpenChange }: { item: ViewTodo; o
               </Select>
             </label>
             <p className="text-fg-muted">{t('spaces.move.projectNote')}</p>
-            {wasAgentAdded(base) ? <p className="text-fg-muted">{t('spaces.move.agentNote')}</p> : null}
+            {wasAgentAdded(base) ? <p className="text-fg-muted">{t(isAgentSource(base.source) ? 'spaces.move.agentNote' : 'spaces.move.agentNoteOther')}</p> : null}
             {target && own && !failure && !touched ? (
               <p role="alert" className="text-danger" data-testid="move-blocked">
                 {t(`spaces.move.blocked.${own === 'unsupported' ? 'offlineTarget' : own}`, { node: name(target) })}

@@ -10,7 +10,12 @@
 //
 // 「目标上的那一份还在」「原节点那一项没变」都**在节点上检查**，不看这个标签页的缓存（缓存可能是旧的：已关闭的项重连后不会重新列、别的标签页
 // 有没发出去的改动、重连之后还没同步完）：动手前 `todo.get` 原节点、删原节点之前 `todo.get` 目标，删原节点用 `todo.delete { if_updated_ms }`，
-// 删目标上的那一份同样带条件。唯一剩下的窗口：删之前检查过目标那份还在、到删除请求到达原节点之间（一个来回）目标那份在别的设备上被删了。
+// 删目标上的那一份同样带条件。剩下两个对称的窗口（跨两个节点没有事务，只能缩到一个来回）：
+//   1. 删原节点：检查过目标那份还在、到删除请求到达原节点之间，目标那份在别的设备上被删了——原节点照删，两个节点上就都没有了；
+//   2. 删目标上的那一份：读过原节点那一项还在、到删除请求到达目标之间，原节点那一项在别的设备上被删了——两个节点上就都没有了。
+// 关掉页面时有正在进行的移动会先问一声（`useRunningMoveGuard`）；还是离开了，请求已经发出的步骤仍可能生效，刷新之后这次移动不会被记住，
+// 目标上可能留着一份（文档 § 4.13 写明）。
+import { useEffect } from 'react'
 import { create } from 'zustand'
 import type { Todo, TodoState } from '@/protocol'
 import { groupOf } from '@/lib/spaces'
@@ -30,7 +35,7 @@ import { cleanHintText } from '@/lib/hint'
 import { toast, useUi } from '@/stores/ui'
 import { outboxErrorText } from './ui/errors'
 
-export type MoveBlock = 'offlineSource' | 'offlineTarget' | 'syncingSource' | 'syncingTarget' | 'queued' | 'unreviewed' | 'draft' | 'unsupported'
+export type MoveBlock = 'offlineSource' | 'offlineTarget' | 'syncingSource' | 'syncingTarget' | 'queued' | 'unreviewed' | 'draft' | 'unsupported' | 'copyDeleting'
 
 /**
  * 现在能不能移：能返回 null，不能返回原因（界面据此说明为什么）。`target` 还没选时只查和这一项自己有关的。
@@ -83,6 +88,8 @@ export type MoveFailure =
   | { stage: 'stuck' }
   /** 删原节点之前，目标上的那一份已经不在了：什么都没删。 */
   | { stage: 'copyGone' }
+  /** 接着补状态之前，目标上的那一份在别处被改过（不是我们写的）：不去覆盖它，也不删原节点。 */
+  | { stage: 'copyEdited' }
   /** 没料到的错误：`copy` 和 `at` 说它出在哪一步之后（出在请求发出之后的，按「可能已经生效」算）。 */
   | { stage: 'unexpected' }
 
@@ -139,15 +146,32 @@ export function canDeleteCopy(e: MoveEntry | undefined): boolean {
   const o = e.outcome
   if (o.stage === 'link' && o.at === 'delete') return false
   if (o.stage === 'changed' && o.gone) return false
-  if (o.stage === 'unreadable' || o.stage === 'copyGone' || o.stage === 'unexpected') return false
+  if (o.stage === 'unreadable' || o.stage === 'copyGone' || o.stage === 'unexpected' || o.stage === 'copyEdited') return false
   return true
 }
 
 const inflight = new Map<string, Promise<MoveResult>>()
+/** 正在删目标上那一份的移动（这期间不能起新的、也不能接着做）。 */
+const copyBusy = new Set<string>()
+
+/** 有没有正在进行的移动（包括删目标上那一份）：关页面 / 刷新要先问一声。 */
+export const anyMoveRunning = (): boolean => copyBusy.size > 0 || Object.values(useMoves.getState().moves).some((e) => isRunning(e))
+
+/** 有移动在进行时，关标签页 / 刷新要先问一声（请求已经发出的步骤离开之后仍可能生效，这次移动不会被记住）。装在应用外壳上。 */
+export function useRunningMoveGuard(): void {
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent): void => {
+      if (anyMoveRunning()) e.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+}
 
 /** 测试用：丢掉所有移动的进度。 */
 export function resetMoves(): void {
   inflight.clear()
+  copyBusy.clear()
   useMoves.setState({ moves: {} })
 }
 
@@ -208,6 +232,8 @@ export function moveTodo(item: ViewTodo, target: string): Promise<MoveResult> {
   const running = inflight.get(key)
   if (running) return running
   const cur = useMoves.getState().moves[key]
+  // 正在删目标上的那一份：不起新的移动、也不接着做（结果不是「成功」，不能编一个）
+  if (copyBusy.has(key)) return Promise.resolve({ ok: false, copy: cur?.copy ?? 'none', stage: 'blocked', block: 'copyDeleting' })
   if (!isTouched(cur)) {
     const entry: MoveEntry = {
       key,
@@ -282,6 +308,7 @@ function unexpected(key: string, err: unknown): MoveResult {
 async function step(key: string): Promise<MoveResult> {
   patch(key, { copyOutcome: null })
   const { base, targetNode, targetId, sourceNode, sourceId } = get(key)
+  const copyAtStart = get(key).copy
 
   // 1. 目标上建一份（新 id）。动手前先向原节点读这一项：它必须在、而且和用户确认时一样。`maybe` 的重发同一条，幂等
   if (get(key).copy === 'none' || get(key).copy === 'maybe') {
@@ -290,8 +317,15 @@ async function step(key: string): Promise<MoveResult> {
     patch(key, { stage: 'checking' })
     const live = await readOn(sourceNode, sourceId)
     if (live === 'unreadable') return fail(key, { stage: 'unreadable', side: 'source' })
-    if (live === 'gone') return fail(key, { stage: 'changed', gone: true })
-    if (!sameAsBase(live, base)) return fail(key, { stage: 'changed', gone: false })
+    // 节点上的样子和缓存不一样：把节点上的写回缓存，不然「变了」会一直重复、详情里还是旧内容、没了的项留着空行
+    if (live === 'gone') {
+      await applyConfirmedDelete(sourceNode, sourceId)
+      return fail(key, { stage: 'changed', gone: true })
+    }
+    if (!sameAsBase(live, base)) {
+      await applyConfirmedTodo(sourceNode, live)
+      return fail(key, { stage: 'changed', gone: false })
+    }
     const g2 = gate(key)
     if (g2) return fail(key, g2)
     patch(key, { stage: 'adding' })
@@ -313,6 +347,31 @@ async function step(key: string): Promise<MoveResult> {
   if (get(key).copy === 'open') {
     const g = gate(key)
     if (g) return fail(key, g)
+    if (copyAtStart === 'open') {
+      // 接着做的补状态：先读目标上那一份。它在这期间被别处改过就不去覆盖（比如在别的设备上被改成了「处理中」）
+      patch(key, { stage: 'checking' })
+      const cur = await readOn(targetNode, targetId)
+      if (cur === 'unreadable') return fail(key, { stage: 'unreadable', side: 'target' })
+      if (cur === 'gone') {
+        await applyConfirmedDelete(targetNode, targetId)
+        patch(key, { copy: 'gone' })
+        return fail(key, { stage: 'copyGone' })
+      }
+      const known = get(key).copyUpdatedMs
+      if (known !== null ? cur.updated_ms !== known : cur.state !== 'open' && cur.state !== base.state) {
+        await applyConfirmedTodo(targetNode, cur)
+        return fail(key, { stage: 'copyEdited' })
+      }
+      if (known === null && cur.state === base.state) {
+        // 上一次的补状态其实已经生效了：不再发，记下它现在的版本
+        patch(key, { copy: 'full', copyUpdatedMs: cur.updated_ms })
+        await applyConfirmedTodo(targetNode, cur)
+      }
+    }
+  }
+  if (get(key).copy === 'open') {
+    const g = gate(key)
+    if (g) return fail(key, g)
     patch(key, { stage: 'restoring' })
     try {
       const updated = await rpc().request<Todo>(targetNode, 'todo.update', { id: targetId, state: base.state })
@@ -320,6 +379,12 @@ async function step(key: string): Promise<MoveResult> {
       await applyConfirmedTodo(targetNode, updated)
     } catch (err) {
       if (!(err instanceof RpcCallError)) throw err
+      // 目标上的那一份不在了：不是「状态没补成」，是那一份没了
+      if (isRpc(err, 'not_found')) {
+        await applyConfirmedDelete(targetNode, targetId)
+        patch(key, { copy: 'gone' })
+        return fail(key, { stage: 'copyGone' })
+      }
       // 请求断了：状态可能已经补上了，那一份现在的 `updated_ms` 不知道
       if (isLink(err)) patch(key, { copyUpdatedMs: null })
       return fail(key, { stage: 'state', maybe: isLink(err) })
@@ -333,6 +398,7 @@ async function step(key: string): Promise<MoveResult> {
   const copy = await readOn(targetNode, targetId)
   if (copy === 'unreadable') return fail(key, { stage: 'unreadable', side: 'target' })
   if (copy === 'gone') {
+    await applyConfirmedDelete(targetNode, targetId) // 缓存里还有它的话一起去掉，不留空行
     patch(key, { copy: 'gone' })
     return fail(key, { stage: 'copyGone' })
   }
@@ -349,6 +415,8 @@ async function step(key: string): Promise<MoveResult> {
       // 原节点那一项已经不在了（别处删了）：目标上有了，原节点没有，结果是想要的，但不是一次干净的移动，要说出来
       sourceAlreadyGone = true
     } else if (isChanged(err)) {
+      const live = await readOn(sourceNode, sourceId)
+      if (live !== 'gone' && live !== 'unreadable') await applyConfirmedTodo(sourceNode, live)
       return fail(key, { stage: 'changed', gone: false })
     } else if (isLink(err)) {
       return fail(key, { stage: 'link', at: 'delete' })
@@ -369,8 +437,9 @@ async function step(key: string): Promise<MoveResult> {
 export async function removeCopy(node: string, id: string): Promise<CopyDeleteOutcome | { stage: 'done' } | null> {
   const key = moveKey(node, id)
   const e0 = useMoves.getState().moves[key]
-  if (!e0 || isRunning(e0) || inflight.has(key)) return null
+  if (!e0 || isRunning(e0) || inflight.has(key) || copyBusy.has(key)) return null
   if (!canDeleteCopy(e0)) return null
+  copyBusy.add(key)
   const run = (async (): Promise<CopyDeleteOutcome | { stage: 'done' }> => {
     const refuse = (o: CopyDeleteOutcome): CopyDeleteOutcome => {
       patch(key, { stage: 'failed', copyOutcome: o })
@@ -384,6 +453,7 @@ export async function removeCopy(node: string, id: string): Promise<CopyDeleteOu
       }
       patch(key, { stage: 'checking', copyOutcome: null })
       const source = await readOn(e0.sourceNode, e0.sourceId)
+      if (source === 'gone') await applyConfirmedDelete(e0.sourceNode, e0.sourceId)
       if (source === 'gone' || source === 'unreadable') return refuse({ stage: 'sourceGone' })
       patch(key, { stage: 'removingCopy' })
       try {
@@ -405,10 +475,7 @@ export async function removeCopy(node: string, id: string): Promise<CopyDeleteOu
       return refuse({ stage: 'failed', maybe: true })
     }
   })()
-  const tracked = run.then(() => ({ ok: true, newId: e0.targetId, sourceAlreadyGone: false }) as MoveResult)
-  inflight.set(key, tracked)
-  void tracked.finally(() => inflight.delete(key))
-  const r = await run
+  const r = await run.finally(() => copyBusy.delete(key))
   if (r.stage !== 'done') reportCopy(get(key), r)
   return r
 }
@@ -419,15 +486,18 @@ const nodeName = (id: string): string => cleanHintText(useNodes.getState().byId[
 export function moveText(r: Exclude<MoveResult, { ok: true; sourceAlreadyGone: false }>, node: string, state?: TodoState): string {
   const t = i18n.t.bind(i18n)
   if (r.ok) return t('spaces.move.sourceGone', { node })
-  const copied = r.copy !== 'none'
+  // 目标上那一份的情形：没有 / 可能有（请求断了、不知道建没建）/ 有（一份在那儿，这里什么都没删）。每一句都说明白，不留「什么都没变」的错觉
+  const cls = r.copy === 'maybe' ? 'Maybe' : r.copy === 'open' || r.copy === 'full' ? 'Copy' : ''
+  const note = r.copy === 'maybe' ? t('spaces.move.noteMaybe', { node }) : cls === 'Copy' ? t('spaces.move.noteCopy', { node }) : ''
   switch (r.stage) {
     case 'blocked':
-      return t(`spaces.move.blocked.${r.block === 'unsupported' ? 'offlineTarget' : r.block}`, { node })
+      return [t(`spaces.move.blocked.${r.block === 'unsupported' ? 'offlineTarget' : r.block}`, { node }), note].filter(Boolean).join(' ')
     case 'changed':
-      if (r.gone) return t(copied ? 'spaces.move.changedGoneCopy' : 'spaces.move.changedGone', { node })
-      return t(copied ? 'spaces.move.changedCopy' : 'spaces.move.changed', { node })
+      return t(r.gone ? `spaces.move.changedGone${cls}` : `spaces.move.changed${cls}`, { node })
     case 'unreadable':
-      return t(r.side === 'source' ? (copied ? 'spaces.move.unreadableSourceCopy' : 'spaces.move.unreadableSource') : 'spaces.move.unreadableTarget', { node })
+      return t(r.side === 'source' ? `spaces.move.unreadableSource${cls}` : 'spaces.move.unreadableTarget', { node })
+    case 'copyEdited':
+      return t('spaces.move.copyEdited', { node })
     case 'rejected':
       return t(r.copy === 'maybe' ? 'spaces.move.failedAddMaybe' : 'spaces.move.failedAdd', { node, reason: outboxErrorText(t as never, { code: r.code, ...(r.field ? { field: r.field } : {}), ...(r.reason ? { reason: r.reason } : {}) }) })
     case 'link':
@@ -439,7 +509,7 @@ export function moveText(r: Exclude<MoveResult, { ok: true; sourceAlreadyGone: f
     case 'copyGone':
       return t('spaces.move.copyGone', { node })
     case 'unexpected':
-      return t(copied ? 'spaces.move.unexpectedCopy' : 'spaces.move.unexpected', { node })
+      return t(`spaces.move.unexpected${cls}`, { node })
   }
 }
 
@@ -493,7 +563,7 @@ function reportMove(e: MoveEntry, r: MoveResult): void {
   if (r.ok && !r.sourceAlreadyGone) return
   const order = useNodes.getState().order
   // 去哪里看：原节点的那一项还在就去它；已经没了（删了）就去目标上的那份
-  const openTarget = r.ok || (r.stage === 'changed' && r.gone && r.copy !== 'none')
+  const openTarget = r.ok || (r.stage === 'changed' && r.gone && (r.copy === 'open' || r.copy === 'full'))
   const url = openTarget ? `/todos/${shortNodeId(e.targetNode, order)}/${e.targetId}` : `/todos/${shortNodeId(e.sourceNode, order)}/${e.sourceId}`
   useUi.getState().push('error', moveText(r as never, nodeName(e.targetNode), e.base.state), { label: i18n.t('todos.review'), run: () => navigateTo(url) }, 15_000)
 }

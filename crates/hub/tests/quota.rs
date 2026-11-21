@@ -391,7 +391,13 @@ async fn concurrent_enrollments_never_exceed_the_device_limit() {
         .map(|(mut init, node_id, enroll_id)| {
             tokio::spawn(async move {
                 init.send_control(&Control::PairConfirm { peer: node_id }).await;
-                let result = init.recv_control().await;
+                // 别的接入收尾时，hub 会给同账号的每条连接推额度更新（`QuotaUpdate`）：它什么时候到不由测试决定，跳过去等结果
+                let result = loop {
+                    match init.recv_control().await {
+                        Control::QuotaUpdate { .. } | Control::PeerOnline { .. } => continue,
+                        other => break other,
+                    }
+                };
                 let succeeded = match result {
                     Control::PairDone { device_id: Some(_), .. } => true,
                     Control::EnrollFailed { enroll_id: Some(id), reason: EnrollFailReason::Quota } => {

@@ -1893,9 +1893,10 @@ mod tests {
     /// 从假 hub 交付的信封里取下一条完整的 RPC 消息（分片重组 + 解密）；解密失败 = 乱序 / 丢失 / 重复，直接 panic。
     async fn next_message(hub: &mut SimHub, client: &mut Transport, reasm: &mut frame::Reassembler) -> RpcMessage {
         loop {
-            let env = tokio::time::timeout(Duration::from_secs(20), hub.delivered.recv())
+            // 只是防卡死：debug 构建里 30 MiB 的加解密在满载的机器上要跑上一两分钟，一封都等不到才算卡住，所以给得宽
+            let env = tokio::time::timeout(Duration::from_secs(120), hub.delivered.recv())
                 .await
-                .expect("a delivery within 20 s")
+                .expect("a delivery within 120 s")
                 .expect("the sim hub is alive");
             let frame = frame::decode(&env.body).unwrap();
             assert!(!matches!(frame, frame::DataFrame::Reset), "no RESET placeholder expected (seq {})", env.seq);
@@ -2027,10 +2028,13 @@ mod tests {
         let outbox = HubOutbox::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         outbox.attach(&"d".repeat(32), tx);
-        outbox.set_in_flight_guard(Duration::from_millis(400));
+        let guard = Duration::from_millis(400);
+        outbox.set_in_flight_guard(guard);
         let sess = new_session(daemon_t);
         let id = sess.device_id.clone();
         tokio::spawn(sess.clone().writer(outbox.clone()));
+        // 计时从发出去之前开始：保护期是从每一封发出的时刻算的，所以「过了多久」永远不会比实际偏小
+        let t = Instant::now();
         // 刚刚发出去 20 MiB（批量传输中）：窗口（16 MiB）满了，而且全是可能还在路上的
         let chunk = vec![0u8; 100 * 1024];
         let filler: Vec<u64> =
@@ -2038,11 +2042,15 @@ mod tests {
         assert_eq!(drain(&outbox, &mut rx).len(), 200);
         // 一条大消息（> 256 KiB）：不开始写，等最早的那批老过保护期腾出位置——而不是把它们逐出
         sess.queue.push(ev(1, "s", Event::TextDelta { text: "x".repeat(400_000) }));
-        let t = Instant::now();
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(drain(&outbox, &mut rx).is_empty(), "nothing is written while the window is full");
-        assert!(filler.iter().all(|s| outbox.peer_of_seq(*s).is_some()), "and nothing in flight was evicted");
-        let mut got = Vec::new();
+        let early = drain(&outbox, &mut rx);
+        let intact = filler.iter().all(|s| outbox.peer_of_seq(*s).is_some());
+        // 机器忙的时候这一觉可能睡过了保护期：那时窗口本来就腾出来了，这两条不再能说明什么；只在还没过保护期时断言
+        if t.elapsed() < guard {
+            assert!(early.is_empty(), "nothing is written while the window is full");
+            assert!(intact, "and nothing in flight was evicted");
+        }
+        let mut got = early;
         while got.is_empty() && t.elapsed() < Duration::from_secs(5) {
             tokio::time::sleep(Duration::from_millis(20)).await;
             got = drain(&outbox, &mut rx);
@@ -2065,11 +2073,18 @@ mod tests {
         }
         let plain = client_t.decrypt(&ct.unwrap()).unwrap();
         assert_eq!(event_text(&plain).1.len(), 400_000);
-        // 窗口又满了：小消息（权限请求、状态之类）不用等，大文件传输不该把交互卡住
-        for _ in 0..200 {
+        // 窗口又满了：小消息（权限请求、状态之类）不用等，大文件传输不该把交互卡住。
+        // 先把能逐出的老信封清到窗口以内（保护期调成 0），再把保护期拉长到测试跑不完：之后发出的信封在这期间腾不出来，
+        // 窗口超出一点（3 MiB），大消息要等、小消息靠余量不用等；小消息出得来就说明它没有等，和机器快慢无关
+        outbox.set_in_flight_guard(Duration::ZERO);
+        outbox.has_room(&id, usize::MAX);
+        outbox.set_in_flight_guard(Duration::from_secs(600));
+        for _ in 0..30 {
             outbox.send_envelope(&id, Kind::Data, chunk.clone());
         }
         drain(&outbox, &mut rx);
+        assert!(!outbox.has_room(&id, 400_000), "the window is full for a big message");
+        assert!(outbox.has_room(&id, 1_000), "and has headroom for a small one");
         sess.queue.push(ev(2, "s", Event::TextDelta { text: "small".into() }));
         let t = Instant::now();
         let mut got = Vec::new();
@@ -2077,7 +2092,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
             got = drain(&outbox, &mut rx);
         }
-        assert!(!got.is_empty() && t.elapsed() < Duration::from_millis(300), "{:?}", t.elapsed());
+        assert!(!got.is_empty(), "the small message went out although the window is full of fresh envelopes");
         sess.stop();
     }
 

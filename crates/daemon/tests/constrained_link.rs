@@ -132,7 +132,11 @@ async fn scenario(rounds: usize) {
     let cookie = hub.admin_cookie().await;
     let mut local = td.client("cli");
     let begin: NodePairBeginResult = local.call(&td, methods::NODE_PAIR_BEGIN, json!({})).await.unwrap();
-    let mut web = FakeWeb::connect(&hub.url(), None, Some(&cookie), "Stalling Reader", Keypair::generate()).await;
+    // 接收缓冲定死：客户端停读时内核吞下的数据有上限，hub 的出站缓冲才一定会满（Linux 会把它自动调到几 MiB，
+    // 2.5 秒的停读灌不满，整个场景一次退回都没有）
+    let mut web =
+        FakeWeb::connect_with(&hub.url(), None, Some(&cookie), "Stalling Reader", Keypair::generate(), Some(64 * 1024))
+            .await;
     web.pair(&begin.code).await;
     assert!(eventually(T, || async { td.ctx.identity.device_token().is_some() }).await);
     web.ik().await.unwrap();

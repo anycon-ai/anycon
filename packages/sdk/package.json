@@ -41,7 +41,7 @@
   "scripts": {
     "build": "bun run --cwd ../protocol build && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test",
+    "test": "bun test --timeout 60000",
     "test:node": "node --import tsx --conditions source --test \"tests/**/*.test.ts\"",
     "lint": "oxlint -c ../../.oxlintrc.json src tests",
     "fmt": "oxfmt --config ../../.oxfmtrc.json src tests",

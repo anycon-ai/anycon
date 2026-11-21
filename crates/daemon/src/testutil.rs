@@ -226,6 +226,10 @@ impl FakeAdapter {
     pub fn handle(&self, idx: usize) -> Arc<HandleLog> {
         self.handles.lock().unwrap()[idx].clone()
     }
+    /// 已经拉起了几个 handle（`session.create` 一返回，agent 进程还不一定拉起来了：要用 `last_handle` 先等它大于 0）。
+    pub fn handle_count(&self) -> usize {
+        self.handles.lock().unwrap().len()
+    }
     pub fn last_handle(&self) -> Arc<HandleLog> {
         self.handles.lock().unwrap().last().cloned().expect("no handle spawned yet")
     }

@@ -581,7 +581,11 @@ mod tests {
 
     #[tokio::test]
     async fn sigint_when_stdin_close_is_ignored() {
-        // 忽略 EOF（不读 stdin），但 SIGINT 默认会杀掉 sleep 所在的 sh
+        // 忽略 EOF（不读 stdin），但 SIGINT 默认会杀掉 sleep 所在的 sh。
+        // 测试进程自己的 SIGINT 可能是被忽略的（从非交互 shell 里用 `&` 放到后台跑的进程就是这样），子进程会继承这个「忽略」，
+        // 而非交互的 sh 又改不回来：先把本进程的 SIGINT 恢复成默认，才是在测「SIGINT 能杀掉它」
+        unsafe { nix::sys::signal::signal(nix::sys::signal::Signal::SIGINT, nix::sys::signal::SigHandler::SigDfl) }
+            .unwrap();
         let (child, _rx) = JsonlChild::spawn(&spec("exec sleep 30")).unwrap();
         let started = std::time::Instant::now();
         let info = child

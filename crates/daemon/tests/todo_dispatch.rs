@@ -1273,9 +1273,17 @@ async fn detaching_the_process_clears_the_task_count_and_the_activity_follows() 
     let _ = w.drain_now();
     let _: Empty = c.call(&td, methods::SESSION_RESTART, json!({ "session_id": r.session.id })).await.unwrap();
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let seen = changed_of(&w.drain_now());
-    assert!(seen.iter().any(|(id, a, _)| id == &t.id && *a == Some(TodoActivity::Review)), "{seen:?}");
+    // 通知比 RPC 读到的状态晚到多久取决于机器：一直收到看见为止，而不是睡一个固定的时间再看一次
+    let mut seen = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        seen.extend(changed_of(&w.drain_now()));
+        if seen.iter().any(|(id, a, _)| id == &t.id && *a == Some(TodoActivity::Review)) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "no todo.changed with activity review: {seen:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     let cur = get_todo(&td, &mut c, &t.id).await;
     assert_eq!((cur.state, cur.updated_ms), (TodoState::Waiting, mine.updated_ms));
     td.shutdown().await;

@@ -7,7 +7,7 @@ import { describeCreateError } from '@/features/worktree/errors'
 import { rpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
 import { useSessions } from '@/stores/sessions'
-import { applyConfirmedTodo } from './service'
+import { applyConfirmedTodo, todoTickNow } from './service'
 
 /** agent 有没有声明「不 push、不开 PR」这个选项（`AgentInfo.options` 里 id 为 `no_push` 的布尔选项）。 */
 export const declaresNoPush = (agent: Pick<AgentInfo, 'options'> | undefined): boolean => (agent?.options ?? []).some((o) => o.id === 'no_push' && o.kind === 'bool')
@@ -34,8 +34,9 @@ export async function dispatchTodo(nodeId: string, a: DispatchArgs): Promise<Tod
     no_push: a.noPush,
     message_id: a.messageId,
   }
+  const sentAt = todoTickNow()
   const res = await rpc().request<TodoDispatchResult>(nodeId, 'todo.dispatch', params)
-  await applyConfirmedTodo(nodeId, res.todo)
+  await applyConfirmedTodo(nodeId, res.todo, sentAt)
   useSessions.getState().upsertSummaries(nodeId, [res.session])
   return res
 }

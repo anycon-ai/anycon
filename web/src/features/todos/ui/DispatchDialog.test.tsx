@@ -1,5 +1,5 @@
 // 「让 agent 处理」的对话框（spec/web.md § 4.12，docs/spec/daemon.md § 22.6）：缺的条件说清楚、「不 push」的规则、预览、幂等重试、错误映射。
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { gitProject, mockAgent, nodeEntry, nodeInfo, project, summary, todoItem } from '@/test/factories'
@@ -161,6 +161,20 @@ describe('the preview of the first message', () => {
     expect(screen.getByTestId('dispatch-preview-box')).toHaveTextContent(/may differ|differ/i)
   })
 
+  it('is fetched again when the item’s title or body changes while it is open', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    const view = render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-preview-toggle'))
+    await screen.findByTestId('dispatch-preview')
+    const count = () => rpc.calls.filter((c) => c.method === 'todo.dispatch_preview').length
+    const n0 = count()
+    view.rerender(<DispatchDialog item={item({ project: 'proj', title: 'A new title' })} open onOpenChange={vi.fn()} />)
+    await waitFor(() => expect(count()).toBe(n0 + 1))
+    view.rerender(<DispatchDialog item={item({ project: 'proj', title: 'A new title', body: 'a new body' })} open onOpenChange={vi.fn()} />)
+    await waitFor(() => expect(count()).toBe(n0 + 2))
+  })
+
   it('a refusal (the item is closed) is shown in words', async () => {
     const user = userEvent.setup()
     setup([claude()])
@@ -251,5 +265,96 @@ describe('sending', () => {
     expect(await screen.findByTestId('dispatch-error')).toHaveTextContent(text)
     expect(onOpenChange).not.toHaveBeenCalledWith(false)
     expect(screen.getByTestId('dispatch-send')).toBeEnabled()
+  })
+})
+
+describe('closing and reopening, and the message id', () => {
+  const ids = (): string[] => dispatchCalls().map((c) => c.message_id as string)
+
+  it('reopening starts over: “no push” is ticked again, the old error and the preview are gone', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    rpc.handlers['todo.dispatch'] = () => {
+      throw rpcError('agent_unavailable')
+    }
+    const it1 = item({ project: 'proj' })
+    const view = render(<DispatchDialog item={it1} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-no-push')) // 取消勾选
+    await user.click(screen.getByTestId('dispatch-preview-toggle'))
+    await screen.findByTestId('dispatch-preview')
+    await user.click(screen.getByTestId('dispatch-send'))
+    await screen.findByTestId('dispatch-error')
+    view.rerender(<DispatchDialog item={it1} open={false} onOpenChange={vi.fn()} />)
+    view.rerender(<DispatchDialog item={it1} open onOpenChange={vi.fn()} />)
+    expect(screen.getByTestId('dispatch-no-push')).toBeChecked()
+    expect(screen.queryByTestId('dispatch-error')).toBeNull()
+    expect(screen.queryByTestId('dispatch-preview')).toBeNull()
+    expect(screen.queryByTestId('dispatch-push-allowed')).toBeNull()
+  })
+
+  it('a lost reply keeps the id for the retry, even after closing and reopening the dialog', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    let n = 0
+    rpc.handlers['todo.dispatch'] = (p) => {
+      if (n++ === 0) throw linkError('timeout')
+      const q = p as { id: string }
+      return { todo: todoItem({ id: q.id, sessions: ['s-new'] as never }), session: summary({ id: 's-new', todo_id: q.id }) }
+    }
+    const it1 = item({ project: 'proj' })
+    const view = render(<DispatchDialog item={it1} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-send'))
+    await screen.findByTestId('dispatch-error')
+    view.rerender(<DispatchDialog item={it1} open={false} onOpenChange={vi.fn()} />)
+    view.rerender(<DispatchDialog item={it1} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-send'))
+    await waitFor(() => expect(dispatchCalls()).toHaveLength(2))
+    expect(ids()[1]).toBe(ids()[0])
+  })
+
+  it('once the item has gained a session after a lost reply (the first attempt did go through), the next send gets a new id', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    let n = 0
+    rpc.handlers['todo.dispatch'] = () => {
+      if (n++ === 0) throw linkError('timeout')
+      return { todo: todoItem({ id: 't1', sessions: ['s1', 's2'] as never }), session: summary({ id: 's2', todo_id: 't1' }) }
+    }
+    const view = render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-send'))
+    await screen.findByTestId('dispatch-error')
+    view.rerender(<DispatchDialog item={item({ project: 'proj', sessions: ['s1'] as never })} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-send'))
+    await waitFor(() => expect(dispatchCalls()).toHaveLength(2))
+    expect(ids()[1]).not.toBe(ids()[0])
+  })
+
+  it('after an error reply from the node (nothing was started) the next send gets a new id', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    rpc.handlers['todo.dispatch'] = () => {
+      throw rpcError('agent_unavailable')
+    }
+    render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-send'))
+    await screen.findByTestId('dispatch-error')
+    await user.click(screen.getByTestId('dispatch-send'))
+    await waitFor(() => expect(dispatchCalls()).toHaveLength(2))
+    expect(ids()[1]).not.toBe(ids()[0])
+  })
+
+  it('a deliberate re-dispatch with the same parameters after a success is a new request, not the first session again', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    const onOpenChange = vi.fn()
+    const view = render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={onOpenChange} />)
+    await user.click(screen.getByTestId('dispatch-send'))
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+    view.rerender(<DispatchDialog item={item({ project: 'proj', sessions: ['s-new'] as never })} open={false} onOpenChange={onOpenChange} />)
+    view.rerender(<DispatchDialog item={item({ project: 'proj', sessions: ['s-new'] as never })} open onOpenChange={onOpenChange} />)
+    await act(async () => undefined)
+    await user.click(screen.getByTestId('dispatch-send'))
+    await waitFor(() => expect(dispatchCalls()).toHaveLength(2))
+    expect(ids()[1]).not.toBe(ids()[0])
   })
 })

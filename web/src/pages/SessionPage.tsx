@@ -450,6 +450,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
           ) : (
             <MessageList
               nodeId={nodeId}
+              todoId={summary?.todo_id ?? null}
               blocks={view?.blocks ?? []}
               pending={pending}
               hasMoreOlder={open?.hasMoreOlder ?? false}

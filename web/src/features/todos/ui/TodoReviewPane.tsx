@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import { cleanHintText } from '@/lib/hint'
 import { useNodes } from '@/stores/nodes'
+import { Button } from '@/ui/Button'
 import { Spinner } from '@/ui/Misc'
 import { nodeSupportsTodo, useTodoView, useTodos } from '../store'
 import { resolveTodoRoute } from './TodoDetailPane'
@@ -32,9 +33,29 @@ export function TodoReviewPane({ node, todo }: { node: string; todo: string }) {
   )
   if (!loaded) return loading
   if (!nodeId || !entry) return note(t('todos.unknownNode'), 'review-unknown-node')
-  if (!entry.info) return loading
+  if (!entry.info) return entry.conn === 'ready' ? loading : note(t('todos.reviewPage.offlineNotCached'), 'review-offline')
   if (!nodeSupportsTodo(nodeId)) return note(t('todos.nodeUnsupported', { node: cleanHintText(entry.name) || nodeId.slice(0, 8) }), 'review-unsupported-node')
   if (!hydrated) return loading
-  if (!item) return asked.state === 'deleted' || asked.state === 'unknown' ? note(t('todos.gone'), 'review-gone') : loading
+  if (!item) {
+    // 只有节点明确说「没有这一项」才算没了；连不上、超时都说连不上（可以再试），节点离线又没缓存这一项就说明这一点，不转圈
+    switch (asked.state) {
+      case 'deleted':
+        return note(t('todos.gone'), 'review-gone')
+      case 'offline':
+        return note(t('todos.reviewPage.offlineNotCached'), 'review-offline')
+      case 'unreachable':
+      case 'unknown':
+        return (
+          <div className="space-y-2 p-4 text-sm text-fg-subtle" role="status" data-testid={asked.state === 'unreachable' ? 'review-unreachable' : 'review-load-failed'}>
+            <p>{asked.state === 'unreachable' ? t('todos.reviewPage.unreachable') : t('todos.reviewPage.loadFailed')}</p>
+            <Button size="sm" onClick={asked.retry} data-testid="review-retry">
+              {t('todos.reviewPage.retry')}
+            </Button>
+          </div>
+        )
+      default:
+        return loading
+    }
+  }
   return <TodoReview key={`${item.node_id}:${item.id}`} item={item} online={entry.conn === 'ready'} />
 }

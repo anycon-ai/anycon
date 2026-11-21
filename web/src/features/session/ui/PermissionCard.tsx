@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronRight, Clock, ExternalLink, FileEdit, FileText, G
 import { useTranslation } from 'react-i18next'
 import type { PermissionOption, PermissionOptionKind, PermissionRespondParams, Question, ToolCategory } from '@/protocol'
 import { Markdown } from '@/components/Markdown'
+import { TodoOriginLink } from '@/features/todos/ui/TodoOrigin'
 import { isRecord } from '@/lib/guards'
 import { safeHttpUrl } from '@/lib/url'
 import { useNow } from '@/lib/useNow'
@@ -59,10 +60,12 @@ export interface PermissionCardProps {
   settled?: SettledReason
   /** kind = mode_change：目标模式的显示名，以及它是不是危险模式（危险的要醒目警示）。 */
   targetMode?: { label: string; dangerous: boolean }
+  /** 这个会话是从清单项派出的：卡片上写明是哪一项（标题当链接，清理成单行）。 */
+  todoOrigin?: { nodeId: string; todoId: string }
 }
 
 /** 权限卡片：三种 kind（tool / plan / question）+ mode_change / other；按钮完全由 options[] 渲染。 */
-export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode, settled }: PermissionCardProps) {
+export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode, settled, todoOrigin }: PermissionCardProps) {
   const { t } = useTranslation()
   const [note, setNote] = useState('')
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({})
@@ -154,6 +157,12 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
           </div>
           <Chip tone={danger ? 'danger' : 'warning'}>{danger ? t('permission.dangerous') : t('permission.waiting')}</Chip>
         </div>
+        {todoOrigin ? (
+          <p className="flex min-w-0 items-center gap-1 text-xs text-fg-muted" data-testid="permission-todo">
+            <span className="shrink-0">{t('permission.fromTodo')}</span>
+            <TodoOriginLink nodeId={todoOrigin.nodeId} todoId={todoOrigin.todoId} className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" />
+          </p>
+        ) : null}
         {block.expiresAtMs ? <ExpiryNote at={block.expiresAtMs} /> : null}
         {unknown ? (
           <p className="flex items-start gap-2 rounded-md border border-danger/40 bg-danger-subtle px-2.5 py-2 text-sm font-medium text-danger" role="alert" data-testid="permission-unknown-content">

@@ -7,7 +7,7 @@ import type { NodeInfo } from '@/protocol'
 import * as db from '@/db'
 import { diffFile, nodeEntry, summary, todoItem, worktree } from '@/test/factories'
 import { FakeRpc } from '@/test/fakeRpc'
-import { FakeTodoDaemon } from '@/test/fakeTodoDaemon'
+import { FakeTodoDaemon, linkError } from '@/test/fakeTodoDaemon'
 import { mockRouter } from '@/test/routerMock'
 import { resetViewport, setViewport } from '@/test/viewport'
 import { setRpc } from '@/transport/instance'
@@ -16,6 +16,7 @@ import { getInboxSnapshot, inboxNowCountFromStores } from '@/features/inbox/mode
 import { useReviewUi } from '@/features/inbox/ui/ReviewParts'
 import { useInflight } from '@/features/session/inflight'
 import { useTodoHistory } from '@/features/todos/history'
+import { useReworkDrafts } from '@/features/todos/reworkDraft'
 import { handleTodoChanged, resetTodosMemory, syncTodos } from '@/features/todos/service'
 import { useEnroll } from '@/stores/enroll'
 import { useNodes } from '@/stores/nodes'
@@ -64,6 +65,7 @@ beforeEach(async () => {
   useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', info, conn: 'ready' }) }, order: [A], loaded: true })
   useTodoHistory.getState().reset()
   useReviewUi.setState({ reworkKey: null })
+  useReworkDrafts.getState().reset()
   resetTodosMemory()
   useUi.setState({ toasts: [] })
 })
@@ -177,5 +179,99 @@ describe('selection stays safe', () => {
     await waitFor(() => expect(reviewRows()).toHaveLength(1))
     // 落到同一段里的下一条
     await waitFor(() => expect(screen.getByTestId('inbox-review-detail')).toBeInTheDocument())
+  })
+})
+
+describe('Needs more work from the Inbox', () => {
+  it('a link failure is not reported as sent: the text and the box stay, the item stays, and the toast says it was not sent', async () => {
+    rpc.handlers['session.send'] = () => {
+      throw linkError('timeout')
+    }
+    const user = userEvent.setup()
+    await load(reviewItem('r1'))
+    await user.click(screen.getByTestId('inbox-rework'))
+    await user.type(await screen.findByTestId('inbox-rework-input'), 'try again please')
+    await user.click(screen.getByTestId('inbox-rework-send'))
+    await waitFor(() => expect(useUi.getState().toasts.some((t) => /Not sent/.test(t.text))).toBe(true))
+    expect(useUi.getState().toasts.some((t) => /Sent to the agent/.test(t.text))).toBe(false)
+    expect(screen.getByTestId('inbox-rework-input')).toHaveValue('try again please')
+    expect(reviewRows()).toHaveLength(1)
+  })
+
+  it('once sent, the item leaving is “handled here”: selection moves to the next item in the section, no “no longer waiting for you” placeholder; the draft is cleared', async () => {
+    const user = userEvent.setup()
+    await load(reviewItem('r1', { updated_ms: 100 }), reviewItem('r2', { updated_ms: 200 }))
+    await user.click(reviewRows()[0]!.querySelector('[data-testid="inbox-row-main"]')!)
+    await user.click(await screen.findByTestId('inbox-detail-rework'))
+    await user.type(screen.getByTestId('inbox-rework-input'), 'one more thing')
+    await user.click(screen.getByTestId('inbox-rework-send'))
+    await waitFor(() => expect(rpc.calls.some((c) => c.method === 'session.send')).toBe(true))
+    // daemon 随会话把这一项改回处理中：它离开「待验收」
+    act(() => handleTodoChanged(A, { id: 'r1', todo: todoItem({ id: 'r1', title: 'review r1', activity: 'working' as never, sessions: ['s1'] as never, updated_ms: 100 }) }))
+    await flush()
+    expect(screen.queryByTestId('inbox-ghost')).toBeNull()
+    expect(reviewRows()).toHaveLength(1)
+    expect(screen.getByTestId('inbox-review-detail')).toBeInTheDocument()
+    expect(useReworkDrafts.getState().byKey).toEqual({})
+  })
+
+  it('the typed text survives selecting another item and coming back', async () => {
+    const user = userEvent.setup()
+    await load(reviewItem('r1', { updated_ms: 100 }), reviewItem('r2', { updated_ms: 200 }))
+    await user.click(reviewRows()[0]!.querySelector('[data-testid="inbox-row-main"]')!)
+    await user.click(await screen.findByTestId('inbox-detail-rework'))
+    await user.type(screen.getByTestId('inbox-rework-input'), 'keep this')
+    await user.click(reviewRows()[1]!.querySelector('[data-testid="inbox-row-main"]')!)
+    await user.click(reviewRows()[0]!.querySelector('[data-testid="inbox-row-main"]')!)
+    await user.click(await screen.findByTestId('inbox-detail-rework'))
+    expect(await screen.findByTestId('inbox-rework-input')).toHaveValue('keep this')
+  })
+
+  it('on a phone, “Needs more work…” on an already expanded row opens the input without collapsing the row', async () => {
+    setViewport('phone')
+    const user = userEvent.setup()
+    await load(reviewItem('r1'))
+    const row = reviewRows()[0]!
+    await user.click(row.querySelector('[data-testid="inbox-row-main"]')!)
+    expect(row.querySelector('[data-testid="inbox-row-main"]')).toHaveAttribute('aria-expanded', 'true')
+    await user.click(screen.getByTestId('inbox-rework'))
+    expect(row.querySelector('[data-testid="inbox-row-main"]')).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByTestId('inbox-rework-input')).toBeVisible()
+  })
+
+  it('is disabled with the reason while the session is still working', async () => {
+    useSessions.setState({ list: { s1: { ...useSessions.getState().list.s1!, status: 'running' } as never } })
+    await load(reviewItem('r1'))
+    expect(screen.getByTestId('inbox-rework')).toBeDisabled()
+    await userEvent.setup().click(reviewRows()[0]!.querySelector('[data-testid="inbox-row-main"]')!)
+    expect(await screen.findByTestId('inbox-rework-why')).toHaveTextContent('still working')
+  })
+
+  it('does not target an older session while the node has not finished syncing, and says why', async () => {
+    useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', info, conn: 'ready', synced: false }) } })
+    await load(reviewItem('r1', { sessions: ['s1', 's_not_loaded'] as never }))
+    expect(screen.getByTestId('inbox-approve')).toBeDisabled()
+    expect(screen.getByTestId('inbox-rework')).toBeDisabled()
+  })
+})
+
+describe('In progress lists the to-do items the agent is working on', () => {
+  it('shows them under “In progress” (count includes them), links to the item, and does not list their running session a second time', async () => {
+    const user = userEvent.setup()
+    useSessions.setState({ list: { s1: { ...summary({ id: 's1', status: 'running', todo_id: 'w1', title: 'agent session' }), node_id: A, cached_seq: 0 } as never, s2: { ...summary({ id: 's2', status: 'running', title: 'by hand' }), node_id: A, cached_seq: 0 } as never }, pending: {}, open: {} })
+    await load(todoItem({ id: 'w1', title: 'Work item', activity: 'working' as never, sessions: ['s1'] as never }), todoItem({ id: 'plain', title: 'plain' }))
+    expect(screen.getByTestId('inbox-in-progress-count')).toHaveTextContent('2')
+    await user.click(screen.getByTestId('inbox-in-progress-toggle'))
+    const todoRow = screen.getByTestId('inbox-in-progress-todo')
+    expect(todoRow).toHaveTextContent('Work item')
+    expect(todoRow).toHaveAttribute('href', expect.stringContaining('/todos/'))
+    const sessionRows = screen.getAllByTestId('inbox-in-progress-row')
+    expect(sessionRows).toHaveLength(1)
+    expect(sessionRows[0]).toHaveTextContent('by hand')
+  })
+
+  it('an item that is only “working” because a person set the state is not listed here (activity says what the agent is doing)', async () => {
+    await load(todoItem({ id: 'mine', title: 'Mine', state: 'working' as never }))
+    expect(screen.queryByTestId('inbox-in-progress')).toBeNull()
   })
 })

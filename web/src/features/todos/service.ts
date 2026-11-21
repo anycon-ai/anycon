@@ -25,6 +25,7 @@ import { toast, useUi } from '@/stores/ui'
 import i18n from '@/i18n'
 import { toastIfReady } from './reviewToast'
 import { useTodoHistory } from './history'
+import { useReworkDrafts } from './reworkDraft'
 import { nodeSupportsTodo, useTodos, viewOf } from './store'
 import { outboxErrorText } from './ui/errors'
 import type { OutboxError, OutboxOp, OutboxRecord, UpdateFields } from './types'
@@ -114,8 +115,10 @@ export async function forgetNodeTodos(nodeId: string): Promise<number> {
   retryCounts.delete(nodeId)
   retryFor.delete(nodeId)
   closedWalks.delete(nodeId)
+  for (const k of [...changeTicks.keys()]) if (k.startsWith(`${nodeId}:`)) changeTicks.delete(k)
   useTodos.getState().removeNode(nodeId)
   useTodoHistory.getState().dropNode(nodeId)
+  useReworkDrafts.getState().clearNode(nodeId)
   try {
     const n = await db.dropNodeTodos(nodeId)
     announce(nodeId)
@@ -130,12 +133,14 @@ export async function forgetNodeTodos(nodeId: string): Promise<number> {
 export function resetTodosMemory(): void {
   dbGone = false
   useTodoHistory.getState().reset()
+  useReworkDrafts.getState().reset()
   closeTodoChannel()
   for (const id of [...retryTimers.keys()]) cancelRetry(id)
   retryCounts.clear()
   retryFor.clear()
   closedWalks.clear()
   paging.clear()
+  changeTicks.clear()
   useTodos.setState({ nodes: {}, outbox: [], outboxLoaded: false })
 }
 
@@ -334,6 +339,16 @@ export function setClosedExpanded(nodeId: string, expanded: boolean): void {
 }
 
 /** `todo.changed`：并入缓存（同一个 id 只留一份；`deleted` 删掉），并落盘。 */
+/**
+ * `todo.changed` 的到达序号：每收到并入一条就加一，记在那一项上。直接发给节点的请求（派发、`todo.get`…）发出前取一次 `todoTickNow()`，
+ * 回执回来时 `applyConfirmedTodo` 用它判断「请求发出之后有没有收到过这一项的通知」。回执是请求处理那一刻的快照，
+ * 通知可能是它之后的状态（比如派发完、会话这一轮很快结束，`activity` 已经又变成 review）：这时回执不能盖掉通知带来的内容。
+ */
+let tickCounter = 0
+const changeTicks = new Map<string, number>()
+export const todoTickNow = (): number => tickCounter
+const todoChangeTick = (nodeId: string, id: string): number => changeTicks.get(`${nodeId}:${id}`) ?? 0
+
 export function handleTodoChanged(nodeId: string, raw: unknown): void {
   if (typeof raw !== 'object' || raw === null) return
   const ch = raw as Partial<TodoChanged>
@@ -342,6 +357,7 @@ export function handleTodoChanged(nodeId: string, raw: unknown): void {
   const valid: TodoChanged = { id: ch.id, ...(ch.deleted ? { deleted: true } : {}), ...(ch.todo ? { todo: ch.todo } : {}) }
   if (!valid.deleted && (!valid.todo || valid.todo.id !== valid.id)) return
   const before = useTodos.getState().nodes[nodeId]?.items[valid.id]
+  changeTicks.set(`${nodeId}:${valid.id}`, ++tickCounter)
   useTodos.getState().applyChanged(nodeId, valid)
   if (!valid.deleted) toastIfReady(nodeId, before, valid.todo!)
   noteTouched(nodeId, valid.id, valid.deleted ? null : valid.todo!)
@@ -662,8 +678,16 @@ function announceRejected(nodeId: string, rec: OutboxRecord, error: OutboxError)
   )
 }
 
-/** 节点已经确认了的一项（直接发给节点的请求，不经待发队列，比如「移到另一个节点」）：并进缓存和界面。 */
-export async function applyConfirmedTodo(nodeId: string, todo: Todo): Promise<void> {
+/**
+ * 节点已经确认了的一项（直接发给节点的请求，不经待发队列，比如「移到另一个节点」）：并进缓存和界面。
+ * `sentAtTick`：请求发出时的 `todoTickNow()`。之后收到过这一项的 `todo.changed`、而回执并不比缓存里的更新（`updated_ms` 不大于）时，
+ * 回执是旧快照，什么都不改（`activity` 的变化不动 `updated_ms`，所以光靠 `mergeItems` 的比较挡不住）。
+ */
+export async function applyConfirmedTodo(nodeId: string, todo: Todo, sentAtTick?: number): Promise<void> {
+  if (sentAtTick !== undefined && todoChangeTick(nodeId, todo.id) > sentAtTick) {
+    const cached = useTodos.getState().nodes[nodeId]?.items[todo.id]
+    if (cached && cached.updated_ms >= todo.updated_ms) return
+  }
   useTodos.getState().mergeItems(nodeId, [todo])
   noteTouched(nodeId, todo.id, todo)
   await db.applyTodoCache(nodeId, { put: [todo] }).catch(storageFailed('cache a to-do'))

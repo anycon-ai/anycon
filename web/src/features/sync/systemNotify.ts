@@ -11,6 +11,7 @@ import { getRegistration } from '@/features/push/browser'
 import { pushEnabledFor } from '@/features/push/prefsCache'
 import { useNodes } from '@/stores/nodes'
 import { useTodos } from '@/features/todos/store'
+import { isClosed } from '@/features/todos/types'
 import { useSessions } from '@/stores/sessions'
 import i18n from '@/i18n'
 import { pushText, type PushText } from './pushText'
@@ -55,8 +56,10 @@ export function defaultEnv(): SystemNotifyEnv {
     sessionTodo: (nodeId, sessionId) => {
       const s = useSessions.getState().list[sessionId]
       if (!s || s.node_id !== nodeId || !s.todo_id) return undefined
-      const title = useTodos.getState().nodes[nodeId]?.items[s.todo_id]?.title
-      return { id: s.todo_id, ...(title ? { title } : {}) }
+      const todo = useTodos.getState().nodes[nodeId]?.items[s.todo_id]
+      // 已经关闭的项：不走「待验收」的文案和落点，会话照原来的样子通知
+      if (todo && isClosed(todo.state)) return undefined
+      return { id: s.todo_id, ...(todo?.title ? { title: todo.title } : {}) }
     },
     nodeIds: () => useNodes.getState().order,
   }

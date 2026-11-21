@@ -15,6 +15,7 @@ import { Select } from '@/ui/Field'
 import { Dialog } from '@/ui/Overlay'
 import { declaresNoPush, describeDispatchError, dispatchTodo, previewDispatch } from '../dispatch'
 import { useTodoHistory, historyKey } from '../history'
+import { RpcCallError } from '@/transport/rpcClient'
 import { isHumanSource } from '../source'
 import type { ViewTodo } from '../types'
 import { cleanOneLine } from '../validate'
@@ -83,14 +84,31 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, previewOpen, offline, nodeId, item.id, item.title, item.body, item.updated_ms, item.sessions?.length, item.activity, noPush, historyLen])
 
-  // ---- 发送：`message_id` 按（agent、项目、不 push）定，参数变了就换一个；回执丢了重试用同一个 ----
+  // ---- 发送：`message_id` ----
+  // 只有「回执丢了」（链路断了 / 超时，不知道这次派发有没有成功）之后的重试才沿用上一次的 id（同一个 id 不会开第二个会话）。
+  // 节点回了错误、派发成功、或者这一项在这期间多了会话（说明上一次其实成功了），下一次发送都换新的：
+  // 之后同样参数的一次有意的重新派发不能悄悄返回第一次的会话。
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const idRef = useRef<{ sig: string; id: string } | null>(null)
+  const idRef = useRef<{ sig: string; id: string; sessions: number } | null>(null)
+  const sessionCount = item.sessions?.length ?? 0
   const messageIdFor = (sig: string): string => {
-    if (!idRef.current || idRef.current.sig !== sig) idRef.current = { sig, id: crypto.randomUUID() }
-    return idRef.current.id
+    const prev = idRef.current
+    const reuse = prev && prev.sig === sig && prev.sessions === sessionCount
+    const id = reuse ? prev.id : crypto.randomUUID()
+    idRef.current = { sig, id, sessions: sessionCount }
+    return id
   }
+
+  // 每次打开都从头来：「不 push」重新勾上、旧的错误和预览清掉（上一次关掉时的状态不带进下一次派发）
+  useEffect(() => {
+    if (!open) return
+    setNoPush(true)
+    setError(null)
+    setPreviewOpen(false)
+    setPreview({ text: null, error: null, loading: false })
+    setPickedMode('worktree')
+  }, [open])
 
   const send = async (): Promise<void> => {
     if (!agent || !selection || block || busy) return
@@ -108,6 +126,8 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
       const node = shortNodeId(nodeId, useNodes.getState().order)
       toast.info(t('dispatch.sent', { agent: cleanHintText(agent.label) || agent.id }), { label: t('dispatch.openSession'), run: () => navigateTo(`/n/${node}/s/${res.session.id}`) }, 10_000)
     } catch (e) {
+      // 节点明确回了错误（没有开会话）：下一次发送换新的 id；链路断了（不知道成没成）：留着 id，重试安全
+      if (e instanceof RpcCallError && e.kind === 'rpc') idRef.current = null
       setError(describeDispatchError(e, t, worktreeReady && mode === 'worktree'))
     } finally {
       setBusy(false)

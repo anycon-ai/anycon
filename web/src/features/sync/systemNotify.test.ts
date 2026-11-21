@@ -143,6 +143,23 @@ describe('textForNotify', () => {
     expect(textForNotify(fakeEnv({ sessionTodo: () => ({ id: 'td-1' }) }).env, NODE, { category: 'turn_finished', session_id: 'sess_abc' }).url).toBe('/n/nnnnnnnn/s/sess_abc')
   })
 
+  it('the page-side env: a closed to-do is not announced as “ready to review”; an open one is', async () => {
+    const { useTodos } = await import('@/features/todos/store')
+    const { todoItem } = await import('@/test/factories')
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'mac-mini' }) }, order: [NODE], loaded: true })
+    useSessions.setState({ list: { sess_abc: { ...summary({ id: 'sess_abc', title: 'agent chat', todo_id: 'td-1' }), node_id: NODE, cached_seq: 0 } as never }, pending: {}, open: {} })
+    const put = (state: 'open' | 'done' | 'dropped') => useTodos.setState({ nodes: { [NODE]: { items: { 'td-1': todoItem({ id: 'td-1', title: 'Fix the redirect', state }) }, hydrated: true, synced: true, syncing: false, closed: { expanded: false, loading: false, complete: false, hasMore: false, failed: false } } } })
+    put('open')
+    expect(textForNotify(defaultEnv(), NODE, { category: 'turn_finished', session_id: 'sess_abc' })).toMatchObject({ title: '“Fix the redirect” is ready to review', url: '/todos/nnnnnnnn/td-1/review' })
+    for (const state of ['done', 'dropped'] as const) {
+      put(state)
+      const t = textForNotify(defaultEnv(), NODE, { category: 'turn_finished', session_id: 'sess_abc' })
+      expect(t.url).toBe('/n/nnnnnnnn/s/sess_abc')
+      expect(t.tag).toBe('session:sess_abc')
+      expect(t.title).not.toMatch(/ready to review/)
+    }
+  })
+
   it('uses the full node id in the URL when two paired nodes share the first 8 characters', () => {
     const other = `nnnnnnnn${'z'.repeat(24)}`
     const clash = fakeEnv({ nodeIds: () => [NODE, other] }).env

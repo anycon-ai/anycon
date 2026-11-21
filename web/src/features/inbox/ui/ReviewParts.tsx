@@ -9,16 +9,16 @@ import { Markdown } from '@/components/Markdown'
 import { sendMessage } from '@/features/session/actions'
 import { setTodoState } from '@/features/todos/actions'
 import { latestResult, loadHistory, useHistoryEntry } from '@/features/todos/history'
-import { latestLinkedSession, loadChangeSummary, type ChangeSummary } from '@/features/todos/review'
+import { isSessionActive, loadChangeSummary, useLinkedSession, type ChangeSummary } from '@/features/todos/review'
+import { useReworkDraft } from '@/features/todos/reworkDraft'
 import type { ViewTodo } from '@/features/todos/types'
 import { cleanOneLine } from '@/features/todos/validate'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes } from '@/stores/nodes'
-import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Textarea } from '@/ui/Field'
-import { holdHandled } from '@/features/session/inflight'
+import { holdHandled, unmarkHandled } from '@/features/session/inflight'
 import type { ReviewInboxItem } from '../derive'
 
 /** 哪一条的「再改改」输入框开着（行上的按钮把它打开，详情里显示）。 */
@@ -48,7 +48,7 @@ export function useReviewBrief(todo: ViewTodo): ReviewBrief {
   const nodeId = todo.node_id
   const online = useNodes((s) => s.byId[nodeId]?.conn === 'ready')
   const history = useHistoryEntry(nodeId, todo.id)
-  const session = useSessions((s) => latestLinkedSession(todo.sessions, s.list))
+  const { session } = useLinkedSession(nodeId, todo.sessions)
   const sessionId = session?.id
   const lastSeq = session?.last_seq
   useEffect(() => {
@@ -84,22 +84,23 @@ export function ReviewBriefLine({ todo }: { todo: ViewTodo }) {
 }
 
 /** 行上的三个动作。「再改改…」只是打开详情里的输入框（要写点什么才发得出去）。 */
-export function ReviewRowActions({ item, online, onSelect, small }: { item: ReviewInboxItem; online: boolean; onSelect: (key: string) => void; small: string }) {
+export function ReviewRowActions({ item, online, selected, onSelect, small }: { item: ReviewInboxItem; online: boolean; /** 这一条已经选中（手机上已经展开）：再点「再改改…」只开输入框，不能因为 `select` 是开关而把它收起来。 */ selected: boolean; onSelect: (key: string) => void; small: string }) {
   const { t } = useTranslation()
   const order = useNodes((s) => s.order)
-  const session = useSessions((s) => latestLinkedSession(item.todo.sessions, s.list))
+  const { session, resolving } = useLinkedSession(item.nodeId, item.todo.sessions)
+  const busy = !!session && isSessionActive(session)
   return (
     <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-10">
-      <Button size="sm" variant="primary" className={small} disabled={!online} onClick={() => approve(item.todo)} data-testid="inbox-approve">
+      <Button size="sm" variant="primary" className={small} disabled={!online || resolving} onClick={() => approve(item.todo)} data-testid="inbox-approve">
         {t('todos.reviewPage.approve')}
       </Button>
       <Button
         size="sm"
         variant="secondary"
         className={small}
-        disabled={!online || !session || session.archived === true}
+        disabled={!online || !session || session.archived === true || busy || resolving}
         onClick={() => {
-          onSelect(item.key)
+          if (!selected) onSelect(item.key)
           useReviewUi.getState().open(item.key)
         }}
         data-testid="inbox-rework"
@@ -126,21 +127,31 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
   const { t } = useTranslation()
   const order = useNodes((s) => s.order)
   const b = useReviewBrief(item.todo)
-  const session = useSessions((s) => latestLinkedSession(item.todo.sessions, s.list))
+  const { session, resolving } = useLinkedSession(item.nodeId, item.todo.sessions)
+  const busy = !!session && isSessionActive(session)
   const reworkKey = useReviewUi((s) => s.reworkKey)
-  const [text, setText] = useState('')
+  const [text, setText, clearText] = useReworkDraft(item.nodeId, item.todo.id)
   const [sending, setSending] = useState(false)
-  const open = reworkKey === item.key
+  // 写了一半的话还在（切到别的条目再回来）时输入框也开着
+  const open = reworkKey === item.key || text.trim() !== ''
   const node = shortNodeId(item.nodeId, order)
   const send = async (): Promise<void> => {
     if (!session || text.trim() === '' || sending) return
     setSending(true)
+    // 发出去之后这一项会离开「待验收」：先标「在这里处理的」，选中和焦点落到这一段的下一条，不留「已经不在等你了」的占位
+    holdHandled(item.key)
     try {
       const r = await sendMessage(item.nodeId, session.id, text.trim())
-      if (r.state === 'failed') toast.error(r.reason === 'archived' ? t('session.archivedHint') : t('todos.reviewPage.reworkFailed'))
-      else {
+      // 没发出去（被拒绝、或链路断了记成「未发送」）：留着输入框和文字，说清楚，不当成已发送
+      if (r.state === 'failed') {
+        unmarkHandled(item.key)
+        toast.error(r.reason === 'archived' ? t('session.archivedHint') : t('todos.reviewPage.reworkFailed'))
+      } else if (r.state === 'unsent') {
+        unmarkHandled(item.key)
+        toast.error(t('todos.reviewPage.reworkUnsent'))
+      } else {
         toast.info(r.state === 'queued' ? t('todos.reviewPage.reworkQueued') : t('todos.reviewPage.reworkSent'))
-        setText('')
+        clearText()
         useReviewUi.getState().open(null)
       }
     } finally {
@@ -171,10 +182,10 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
         ) : null}
       </section>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" disabled={!online} onClick={() => approve(item.todo)} data-testid="inbox-detail-approve">
+        <Button variant="primary" disabled={!online || resolving} onClick={() => approve(item.todo)} data-testid="inbox-detail-approve">
           {t('todos.reviewPage.approve')}
         </Button>
-        <Button disabled={!online || !session || session.archived === true} onClick={() => useReviewUi.getState().open(open ? null : item.key)} aria-expanded={open} data-testid="inbox-detail-rework">
+        <Button disabled={!online || !session || session.archived === true || busy || resolving} onClick={() => useReviewUi.getState().open(open && text.trim() === '' ? null : item.key)} aria-expanded={open} data-testid="inbox-detail-rework">
           {t('todos.reviewPage.rework')}
         </Button>
         {session ? (
@@ -187,11 +198,25 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
           {t('inbox.openReviewPage')}
         </Link>
       </div>
+      {resolving || busy ? (
+        <p className="text-xs text-fg-muted" role="status" data-testid="inbox-rework-why">
+          {resolving ? t('todos.reviewPage.resolving') : t('todos.reviewPage.reworkActive')}
+        </p>
+      ) : null}
       {open ? (
         <div className="space-y-2" data-testid="inbox-rework-box">
           <Textarea rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder={t('todos.reviewPage.reworkPlaceholder')} aria-label={t('todos.reviewPage.reworkPlaceholder')} data-testid="inbox-rework-input" />
           <div className="flex justify-end gap-2">
-            <Button onClick={() => useReviewUi.getState().open(null)}>{t('common.cancel')}</Button>
+            <Button
+              onClick={() => {
+                // 取消 = 不发了：草稿一起丢掉
+                clearText()
+                useReviewUi.getState().open(null)
+              }}
+              data-testid="inbox-rework-cancel"
+            >
+              {t('common.cancel')}
+            </Button>
             <Button variant="primary" disabled={sending || text.trim() === ''} onClick={() => void send()} data-testid="inbox-rework-send">
               {t('todos.reviewPage.reworkSend')}
             </Button>

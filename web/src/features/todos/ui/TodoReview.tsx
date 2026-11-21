@@ -1,17 +1,14 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { DiffFile } from '@/protocol'
 import { Markdown } from '@/components/Markdown'
-import { archiveSession, deleteSession, sendMessage } from '@/features/session/actions'
-import { WorktreeDisposePicker, effectiveChoice, type DisposeChoice, type DisposeInfo } from '@/features/worktree/DisposeDialog'
+import { sendMessage } from '@/features/session/actions'
 import { loadDiffPatch } from '@/features/worktree/diff'
 import { describeGitError } from '@/features/worktree/errors'
 import { formatDateTime } from '@/lib/format'
-import { cleanHintText } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
-import { useGitEntry } from '@/stores/git'
 import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
@@ -22,9 +19,11 @@ import { Dialog } from '@/ui/Overlay'
 import { setTodoState } from '../actions'
 import { activityOf } from '../activity'
 import { latestResult, loadHistory, useHistoryEntry } from '../history'
-import { commitPushAndOpenPr, countDenials, diffAgainstFor, hasNoPush, latestLinkedSession, loadChangeSummary, type ChangeSummary } from '../review'
+import { commitPushAndOpenPr, countDenials, diffAgainstFor, hasNoPush, isSessionActive, loadChangeSummary, useLinkedSession, type ChangeSummary, type DenialCount } from '../review'
+import { useReworkDraft } from '../reworkDraft'
 import type { ViewTodo } from '../types'
 import { cleanOneLine } from '../validate'
+import { CleanupDialog } from './CleanupDialog'
 import { SessionRef } from './TodoHistory'
 
 const DiffView = lazy(() => import('@/features/session/ui/DiffView').then((m) => ({ default: m.DiffView })))
@@ -38,7 +37,7 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
   const { t, i18n } = useTranslation()
   const nodeId = item.node_id
   const order = useNodes((s) => s.order)
-  const session = useSessions((s) => latestLinkedSession(item.sessions, s.list))
+  const { session, resolving } = useLinkedSession(nodeId, item.sessions)
   const history = useHistoryEntry(nodeId, item.id)
   const result = latestResult(history.events)
   const activity = activityOf(item)
@@ -54,6 +53,10 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
   const sessionId = session?.id
   const lastSeq = session?.last_seq
   const worktree = session?.worktree
+  // 改动、diff、拒绝次数只在这几个时刻重新读：会话换了、这一轮结束 / 状态变了、worktree 状态变了，或用户点「刷新」。
+  // 不跟着 `last_seq`：agent 干活时每个事件都会让它变，那会让每个事件都触发一次 session.diff 和一次缓存全读
+  const [refreshTick, setRefreshTick] = useState(0)
+  const status = session?.status
   useEffect(() => {
     if (!session || !online) return
     let live = true
@@ -65,20 +68,22 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
     return () => {
       live = false
     }
-    // 会话有新事件（agent 又改了东西）就重新读；对象本身每次都是新的，用 id / last_seq / worktree 状态当依赖
+    // 对象本身每次都是新的，用 id / 状态 / worktree 状态当依赖
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [online, nodeId, sessionId, lastSeq, worktree?.state])
+  }, [online, nodeId, sessionId, status, refreshTick, worktree?.state])
 
   // ---- 审查器拒绝过几次：只数本地缓存的事件，没有就链接到会话 ----
-  const [denials, setDenials] = useState<number | null | undefined>(undefined)
+  const [denials, setDenials] = useState<DenialCount | null | undefined>(undefined)
   useEffect(() => {
     if (!sessionId) return
     let live = true
-    void countDenials(sessionId).then((n) => live && setDenials(n))
+    void countDenials(sessionId, lastSeq ?? 0).then((n) => live && setDenials(n))
     return () => {
       live = false
     }
-  }, [sessionId, lastSeq])
+    // 缓存里的事件是在这一轮结束时读的，不跟着每个事件重读
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, status, refreshTick])
 
   // ---- 文件：一次一个 ----
   const files = changes.summary?.files ?? []
@@ -100,26 +105,33 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
       live = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [online, nodeId, sessionId, lastSeq, file?.path, against])
+  }, [online, nodeId, sessionId, status, refreshTick, file?.path, against])
   const patch = file ? patches[file.path] : undefined
   const touch = useRef<number | null>(null)
   const go = (d: 1 | -1): void => setFileIdx(Math.min(files.length - 1, Math.max(0, idx + d)))
 
   // ---- 动作 ----
-  const [reworking, setReworking] = useState(false)
-  const [text, setText] = useState('')
+  const [text, setText, clearText] = useReworkDraft(nodeId, item.id)
+  // 离开页面再回来时，写了一半的话还在，输入框也跟着开着
+  const [reworking, setReworking] = useState(() => text.trim() !== '')
   const [sending, setSending] = useState(false)
   const archived = session?.archived === true
-  const canRework = !!session && !archived && online && !closed
+  // 最近的关联会话还没读到（节点这一轮同步没做完）时不替用户挑一个旧的；agent 这会儿还在干活时「再改改」要等这一轮结束
+  const working = !!session && isSessionActive(session)
+  const canRework = !!session && !archived && online && !closed && !working && !resolving
+  const actionsBlocked = resolving && !closed
+  const reworkWhy = resolving ? t('todos.reviewPage.resolving') : working && !closed ? t('todos.reviewPage.reworkActive') : null
   const rework = async (): Promise<void> => {
     if (!session || text.trim() === '' || sending) return
     setSending(true)
     try {
       const r = await sendMessage(nodeId, session.id, text.trim())
+      // 没发出去（`failed`：节点拒绝；`unsent`：链路断了，消息记在会话的「未发送」里）：留着输入框和文字，说清楚，不当成已发送
       if (r.state === 'failed') toast.error(r.reason === 'archived' ? t('session.archivedHint') : t('todos.reviewPage.reworkFailed'))
+      else if (r.state === 'unsent') toast.error(t('todos.reviewPage.reworkUnsent'))
       else {
         toast.info(r.state === 'queued' ? t('todos.reviewPage.reworkQueued') : t('todos.reviewPage.reworkSent'))
-        setText('')
+        clearText()
         setReworking(false)
       }
     } finally {
@@ -128,10 +140,15 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
   }
 
   const [dropCleanup, setDropCleanup] = useState(false)
+  // 这一项派出的每个会话里，干活的 worktree 还在的（不只最近的那一个）
+  const worktreeSessions = useSessions((s) => (item.sessions ?? []).filter((id) => {
+    const w = s.list[id]?.worktree
+    return w?.state === 'active' || w?.state === 'kept'
+  }).join(','))
   const drop = async (): Promise<void> => {
     await setTodoState(item, 'dropped')
-    // 干活的 worktree 还在：问一句要不要连它（和分支）一起清掉
-    if (session?.worktree && (session.worktree.state === 'active' || session.worktree.state === 'kept')) setDropCleanup(true)
+    // 问一句要不要连 worktree（和分支）一起清掉；会话和它的记录都留着
+    if (worktreeSessions !== '') setDropCleanup(true)
   }
 
   const [pushing, setPushing] = useState(false)
@@ -216,23 +233,28 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
                 ) : (
                   <Spinner className="size-4" />
                 )}
-                {denials === undefined ? null : denials === null ? (
+                {denials === undefined ? null : denials === null || (!denials.complete && denials.count === 0) ? (
                   <span className="text-fg-muted" data-testid="review-denials-unknown">
                     {t('todos.reviewPage.denialsUnknown')}
                   </span>
                 ) : (
-                  <span className={denials > 0 ? 'text-warning' : 'text-fg-muted'} data-testid="review-denials">
-                    {t('todos.reviewPage.denials', { count: denials })}
+                  <span className={denials.count > 0 ? 'text-warning' : 'text-fg-muted'} data-testid="review-denials" data-complete={denials.complete ? 'true' : 'false'}>
+                    {t(denials.complete ? 'todos.reviewPage.denials' : 'todos.reviewPage.denialsAtLeast', { count: denials.count })}
                   </span>
                 )}
                 <SessionRef nodeId={nodeId} sessionId={session.id} label={t('todos.reviewPage.openSession')} />
+                <button type="button" onClick={() => setRefreshTick((n) => n + 1)} disabled={!online} className="text-accent-text hover:underline disabled:opacity-50" data-testid="review-refresh">
+                  {t('todos.reviewPage.refresh')}
+                </button>
               </div>
+            ) : resolving ? (
+              <p className="text-sm text-fg-muted" role="status" data-testid="review-resolving">{t('todos.reviewPage.resolving')}</p>
             ) : (
               <p className="text-sm text-fg-muted" data-testid="review-no-session">{t('todos.reviewPage.noSession')}</p>
             )}
           </section>
 
-          {session && changes.phase === 'ready' && files.length > 0 ? (
+          {session && !resolving && changes.phase === 'ready' && files.length > 0 ? (
             <section className="space-y-2" aria-labelledby="review-files" data-testid="review-files">
               <h3 id="review-files" className="text-sm font-semibold">
                 {t('todos.reviewPage.files')}
@@ -305,7 +327,14 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
             <div className="space-y-2" data-testid="review-rework-box">
               <Textarea rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder={t('todos.reviewPage.reworkPlaceholder')} aria-label={t('todos.reviewPage.reworkPlaceholder')} data-testid="review-rework-input" />
               <div className="flex justify-end gap-2">
-                <Button onClick={() => setReworking(false)} data-testid="review-rework-cancel">
+                <Button
+                  onClick={() => {
+                    // 取消 = 不发了：草稿一起丢掉
+                    clearText()
+                    setReworking(false)
+                  }}
+                  data-testid="review-rework-cancel"
+                >
                   {t('common.cancel')}
                 </Button>
                 <Button variant="primary" disabled={sending || text.trim() === ''} onClick={() => void rework()} data-testid="review-rework-send">
@@ -322,14 +351,19 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
               </Button>
             </div>
           ) : null}
+          {reworkWhy ? (
+            <p className="text-right text-xs text-fg-muted" role="status" data-testid="review-rework-why">
+              {reworkWhy}
+            </p>
+          ) : null}
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="primary" disabled={closed} onClick={() => void setTodoState(item, 'done')} data-testid="review-approve">
+            <Button variant="primary" disabled={closed || actionsBlocked} onClick={() => void setTodoState(item, 'done')} data-testid="review-approve">
               {t('todos.reviewPage.approve')}
             </Button>
             <Button disabled={!canRework} onClick={() => setReworking((r) => !r)} aria-expanded={reworking} data-testid="review-rework">
               {t('todos.reviewPage.rework')}
             </Button>
-            <Button variant="outline-danger" disabled={closed} onClick={() => void drop()} data-testid="review-drop">
+            <Button variant="outline-danger" disabled={closed || actionsBlocked} onClick={() => void drop()} data-testid="review-drop">
               {t('todos.reviewPage.drop')}
             </Button>
           </div>
@@ -347,48 +381,7 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
         </div>
       </Dialog>
 
-      {session?.worktree ? <DropCleanupDialog open={dropCleanup} onOpenChange={setDropCleanup} nodeId={nodeId} sessionId={session.id} branch={session.worktree.branch} /> : null}
+      {dropCleanup ? <CleanupDialog open={dropCleanup} onOpenChange={setDropCleanup} nodeId={nodeId} sessionIds={(item.sessions ?? []).filter((id) => worktreeSessions.split(',').includes(id))} /> : null}
     </div>
-  )
-}
-
-/** 「不要了」之后：干活的 worktree（和分支）要不要一起清掉。复用归档 / 删除会话时的 worktree 处理选项。 */
-function DropCleanupDialog({ open, onOpenChange, nodeId, sessionId, branch }: { open: boolean; onOpenChange: (o: boolean) => void; nodeId: string; sessionId: string; branch: string }) {
-  const { t } = useTranslation()
-  const git = useGitEntry(sessionId)
-  const info: DisposeInfo = useMemo(() => ({ branch, uncommitted: git.status?.uncommitted ?? 0, ahead: git.status?.ahead ?? 0, unpushed: git.status?.unpushed ?? 0 }), [branch, git.status])
-  const [choice, setChoice] = useState<DisposeChoice>({ worktree: 'remove', deleteBranch: false })
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    if (open) setChoice({ worktree: 'remove', deleteBranch: false })
-  }, [open])
-  const confirm = async (): Promise<void> => {
-    const eff = effectiveChoice(choice, info)
-    setBusy(true)
-    try {
-      // 删分支只有删除会话时才能一起做；只清 worktree 就归档会话（会话和它的记录留着）
-      if (eff.deleteBranch) await deleteSession(nodeId, sessionId, { worktree: eff.worktree, deleteBranch: true })
-      else await archiveSession(nodeId, sessionId, true, { worktree: eff.worktree })
-      onOpenChange(false)
-    } catch (e) {
-      toast.error(describeGitError(e, t))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)} title={t('todos.reviewPage.cleanupTitle')} description={t('todos.reviewPage.cleanupBody', { branch: cleanHintText(branch) })} closeLabel={t('common.close')} testId="review-cleanup-dialog">
-      <div className="space-y-4">
-        <WorktreeDisposePicker idPrefix="review-cleanup" info={info} value={choice} onChange={setChoice} withBranch />
-        <div className="flex justify-end gap-2">
-          <Button onClick={() => onOpenChange(false)} disabled={busy} data-testid="review-cleanup-keep">
-            {t('todos.reviewPage.cleanupKeep')}
-          </Button>
-          <Button variant="danger" disabled={busy || choice.worktree === 'keep'} onClick={() => void confirm()} data-testid="review-cleanup-confirm">
-            {t('todos.reviewPage.cleanupDo')}
-          </Button>
-        </div>
-      </div>
-    </Dialog>
   )
 }

@@ -106,7 +106,7 @@ function compute(i: Inputs, now: number): InboxSnapshot {
 function sameKeys(a: InboxSnapshot, b: InboxSnapshot): boolean {
   const ka = allItems(a.model).map((x) => x.key)
   const kb = allItems(b.model).map((x) => x.key)
-  return a.outside === b.outside && JSON.stringify(a.outsideWhere) === JSON.stringify(b.outsideWhere) && ka.length === kb.length && ka.every((k, n) => k === kb[n]) && a.model.inProgress.length === b.model.inProgress.length && a.model.inProgress.every((s, n) => s.id === b.model.inProgress[n]!.id)
+  return a.outside === b.outside && JSON.stringify(a.outsideWhere) === JSON.stringify(b.outsideWhere) && ka.length === kb.length && ka.every((k, n) => k === kb[n]) && a.model.inProgress.length === b.model.inProgress.length && a.model.inProgress.every((s, n) => s.id === b.model.inProgress[n]!.id) && a.model.inProgressTodos.length === b.model.inProgressTodos.length && a.model.inProgressTodos.every((t, n) => t.id === b.model.inProgressTodos[n]!.id && t.node_id === b.model.inProgressTodos[n]!.node_id)
 }
 
 let cache: { inputs: Inputs; at: number; snap: InboxSnapshot } | null = null

@@ -10,49 +10,67 @@ import { shortNodeId } from '@/lib/ids'
 import { useNodes } from '@/stores/nodes'
 import { rpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
-import { applyConfirmedTodo } from '../service'
+import { applyConfirmedTodo, todoTickNow } from '../service'
 import { useTodos } from '../store'
 import { cleanOneLine } from '../validate'
 
 /** 在途的 `todo.get`：顶栏 chip 和信息面板同时要同一项时只问一次。 */
-const asking = new Map<string, Promise<Todo>>()
-function askNode(nodeId: string, todoId: string): Promise<Todo> {
+const asking = new Map<string, { promise: Promise<Todo>; sentAt: number }>()
+function askNode(nodeId: string, todoId: string): { promise: Promise<Todo>; sentAt: number } {
   const key = `${nodeId}:${todoId}`
-  let p = asking.get(key)
-  if (!p) {
-    p = rpc().request<Todo>(nodeId, 'todo.get', { id: todoId })
-    asking.set(key, p)
-    void p.then(
+  let a = asking.get(key)
+  if (!a) {
+    // 发出之前的通知序号：回执回来时如果这一项在这期间收到过 `todo.changed`，回执就不盖过它（`applyConfirmedTodo`）
+    a = { promise: rpc().request<Todo>(nodeId, 'todo.get', { id: todoId }), sentAt: todoTickNow() }
+    asking.set(key, a)
+    void a.promise.then(
       () => asking.delete(key),
       () => asking.delete(key),
     )
   }
-  return p
+  return a
 }
 
-export type Origin = { state: 'loading' } | { state: 'found'; todo: Todo } | { state: 'deleted' } | { state: 'unknown' }
+/**
+ * `deleted`：节点明确回了 `not_found`。`unreachable`：链路断了 / 超时（说不清有没有），`retry` 再问一次。
+ * `offline`：节点现在连不上而缓存里又没有这一项。`unknown`：节点回了别的错误。
+ */
+export type Origin = { state: 'loading' } | { state: 'found'; todo: Todo } | { state: 'deleted' } | { state: 'unreachable'; retry: () => void } | { state: 'offline' } | { state: 'unknown'; retry: () => void }
 
 export function useOriginTodo(nodeId: string, todoId: string): Origin {
   const cached = useTodos((s) => s.nodes[nodeId]?.items[todoId])
   const ready = useNodes((s) => s.byId[nodeId]?.conn === 'ready' && s.byId[nodeId]?.info?.capabilities.todo === true)
-  const [asked, setAsked] = useState<Origin | null>(null)
+  const [asked, setAsked] = useState<{ key: string; origin: Origin } | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const key = `${nodeId}:${todoId}`
   useEffect(() => {
     if (cached || !ready) return
     let live = true
-    askNode(nodeId, todoId).then(
-        (todo) => {
-          if (!live) return
-          setAsked({ state: 'found', todo })
-          void applyConfirmedTodo(nodeId, todo)
-        },
-        (e) => live && setAsked({ state: e instanceof RpcCallError && e.kind === 'rpc' && e.code === 'not_found' ? 'deleted' : 'unknown' }),
-      )
+    const retryAsk = (): void => {
+      setAsked(null)
+      setAttempt((n) => n + 1)
+    }
+    const a = askNode(nodeId, todoId)
+    a.promise.then(
+      (todo) => {
+        if (!live) return
+        setAsked({ key, origin: { state: 'found', todo } })
+        void applyConfirmedTodo(nodeId, todo, a.sentAt)
+      },
+      (e) => {
+        if (!live) return
+        if (e instanceof RpcCallError && e.kind === 'rpc' && e.code === 'not_found') setAsked({ key, origin: { state: 'deleted' } })
+        else if (e instanceof RpcCallError && e.kind !== 'rpc') setAsked({ key, origin: { state: 'unreachable', retry: () => retryAsk() } })
+        else setAsked({ key, origin: { state: 'unknown', retry: () => retryAsk() } })
+      },
+    )
     return () => {
       live = false
     }
-  }, [cached, ready, nodeId, todoId])
+  }, [cached, ready, nodeId, todoId, key, attempt])
   if (cached) return { state: 'found', todo: cached }
-  return asked ?? { state: 'loading' }
+  if (!ready) return { state: 'offline' }
+  return asked && asked.key === key ? asked.origin : { state: 'loading' }
 }
 
 /** 到那一项的链接（标题清理过）；项没了就写明，不留一个点了落空的链接。读不到（还没读完、节点连不上）时什么都不画。 */

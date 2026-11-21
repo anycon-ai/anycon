@@ -8,7 +8,7 @@ import { isActiveStatus } from '@/features/session/group'
 import { isFollowUp, isFollowUpReady } from '@/features/session/marks'
 import { pendingApprovals, type EnrollItem, type EnrollResolution } from '@/stores/enroll'
 import type { PendingPermission, SessionItem } from '@/stores/sessions'
-import { isReview } from '@/features/todos/activity'
+import { activityOf, isReview } from '@/features/todos/activity'
 import { isClosed, type ViewTodo } from '@/features/todos/types'
 
 /** 出错的会话在「现在」里留多久（按 `updated_at_ms` 算），超过就不再算等用户的事。 */
@@ -81,6 +81,8 @@ export interface InboxModel {
   sections: { id: InboxSectionId; items: InboxItem[] }[]
   /** 正在跑的会话（含「完成后提醒」的）：页面底部折叠成一行。 */
   inProgress: SessionItem[]
+  /** agent 正在处理的清单项（`activity = working`）：也在页面底部的「进行中」里，点进去是那一项。 */
+  inProgressTodos: ViewTodo[]
 }
 
 const REQUEST_KIND: Record<PermissionKind, RequestItem['kind']> = {
@@ -174,7 +176,8 @@ export function deriveInbox(i: InboxInputs): InboxModel {
     .filter((t) => t.unreviewed && !isClosed(t.state) && picked.has(t.node_id))
     .map((t): InboxItem => ({ key: `later:${t.node_id}:${t.id}`, section: 'later', kind: 'later', nodeId: t.node_id, todo: t, sinceMs: t.created_ms, expiresAtMs: null }))
     .sort(compareNow)
-  return { sections: [{ id: 'now', items: now }, { id: 'review', items: review }, { id: 'later', items: later }], inProgress }
+  const inProgressTodos = (i.todos ?? []).filter((t) => activityOf(t) === 'working' && picked.has(t.node_id)).sort((a, b) => b.updated_ms - a.updated_ms)
+  return { sections: [{ id: 'now', items: now }, { id: 'review', items: review }, { id: 'later', items: later }], inProgress, inProgressTodos }
 }
 
 /** 「现在」段的条目。 */

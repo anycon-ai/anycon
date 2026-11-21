@@ -124,14 +124,14 @@ export function InboxRow({
         </span>
         {mode === 'inline' ? <ChevronRight className={cn('mt-1 size-4 shrink-0 text-fg-subtle transition-transform', expanded && 'rotate-90')} aria-hidden /> : null}
       </button>
-      <RowActions item={item} actions={actions} online={info.online} sessionId={info.sessionId} nodeParam={info.nodeParam} onSelect={onSelect} />
+      <RowActions item={item} actions={actions} online={info.online} sessionId={info.sessionId} nodeParam={info.nodeParam} selected={selected} onSelect={onSelect} />
       {children}
     </li>
   )
 }
 
 /** 会话类和接入类条目的行内操作；权限请求、计划、提问没有（要先展开看详情）。 */
-function RowActions({ item, actions, online, sessionId, nodeParam, onSelect }: { item: InboxItem; actions: InboxActions; online: boolean; sessionId?: string; nodeParam: string; onSelect: (key: string) => void }) {
+function RowActions({ item, actions, online, sessionId, nodeParam, selected, onSelect }: { item: InboxItem; actions: InboxActions; online: boolean; sessionId?: string; nodeParam: string; selected: boolean; onSelect: (key: string) => void }) {
   const { t } = useTranslation()
   const small = 'max-md:min-h-11 max-md:px-4'
   switch (item.kind) {
@@ -148,7 +148,7 @@ function RowActions({ item, actions, online, sessionId, nodeParam, onSelect }: {
         </div>
       )
     case 'review':
-      return <ReviewRowActions item={item} online={online} onSelect={onSelect} small={small} />
+      return <ReviewRowActions item={item} online={online} selected={selected} onSelect={onSelect} small={small} />
     case 'later':
       return (
         <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-10">
@@ -244,6 +244,7 @@ function RequestDetail({ item, armed, outside }: { item: RequestItem; armed: boo
   const deviceLabel = useDeviceLabel(item.nodeId)
   const info = useItemInfo(item)
   const sessionAgent = useSessions((s) => s.list[item.sessionId]?.agent)
+  const todoId = useSessions((s) => s.list[item.sessionId]?.todo_id)
   const agent = useNodes((s) => s.byId[item.nodeId]?.agents.find((a) => a.id === sessionAgent))
   const block = useMemo(() => permissionBlock(item.request), [item.request])
   const mode = block.kind === 'mode_change' && block.detail.mode ? agent?.modes?.find((m) => m.id === block.detail.mode) : undefined
@@ -253,7 +254,7 @@ function RequestDetail({ item, armed, outside }: { item: RequestItem; armed: boo
       <OutsideNote outside={outside} item={item} />
       <DetailHeader item={item} />
       {/* 和会话页同一个卡片：命令、工作目录、全部选项。节点连不上时按钮禁用（答复发不出去） */}
-      <PermissionCard block={block} deviceLabel={deviceLabel} onRespond={respond} busy={!armed || responding.has(item.request.request_id) || !info.online} settled={settled.get(item.request.request_id)} targetMode={targetMode} />
+      <PermissionCard block={block} deviceLabel={deviceLabel} onRespond={respond} busy={!armed || responding.has(item.request.request_id) || !info.online} settled={settled.get(item.request.request_id)} targetMode={targetMode} todoOrigin={todoId ? { nodeId: item.nodeId, todoId } : undefined} />
     </div>
   )
 }

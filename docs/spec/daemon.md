@@ -237,7 +237,7 @@ AgentInfo {
 | 模型列表 | CLI 没有独立的列模型命令，但 stream-json 的 `initialize` 控制请求回的 `models[]` 就是它自己的模型清单（和终端里 `/model` 一致，随账号、组织设置、CLI 版本变；每项 `value / resolvedModel / displayName / description / supportedEffortLevels / supportsThinkingOff / disabled`）。完整探测起一个 `claude` 进程发一次（实测约 4 秒；进程带 `--strict-mcp-config`、`--settings={"disableAllHooks":true}`、`--no-session-persistence`，不拉起用户的 MCP server、不跑 hooks、不写会话记录；不用 `--bare`，它不读 OAuth 登录）；cheap 探测沿用同一二进制、同一版本上一次的清单（[ADR-51](../decisions.md#adr-51-claude-code-的模型表来自-cli-的-initialize内置表只兜底)）。转换：每个模型以**完整 id** 列一次（别名行取 `resolvedModel`，存下来的 `claude-opus-5-5` 之类照样对得上），别名（`opus` 等）排在后面、描述写当前指向；`default` 行不单列，它指向的模型标默认、排第一；`disabled` 的不列。问不到（报错、超时、老 CLI）就沿用本进程上一次问到的，没有就用 adapter 内置的兜底表（完整 id + 别名、`[1m]` 后缀，每项带 `min_cli_version`，按 `claude --version` 过滤）。再把用户 `~/.claude/settings.json` 的 `model` 和环境里 `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_*_MODEL` 的值追加为可选项（Bedrock / Vertex / 代理用户靠这个）；`allow_custom_model = true` 让用户填任意 id | `model/list` → 每项 `id / displayName / description / supportedReasoningEfforts[] / defaultReasoningEffort / isDefault / hidden / upgrade`；再 `config/read` 取用户 `~/.codex/config.toml` 里的 `model` 和 `model_reasoning_effort` 作为默认项（列表里没有这个模型——常见于自定义 `model_provider`——就追加一项，思考等级取列表里各模型共有的等级并上 `model_reasoning_effort`）。**不内置模型 id**（Codex 的模型淘汰很快，官方文档也说用返回值） | 在临时 cwd 下 `session/new`，取 `configOptions` 里 `category = "model"` 的 `options`（可能分组，组名放 `tags`）；没有就不提供模型选择（旧的 `models` 字段和 `session/set_model` 不在 v1 稳定 schema 里，不支持）；`allow_custom_model = false`，ACP 只接受列表里的值 | 节点声明 |
 | 思考等级 | `initialize` 里每个模型的 `supportedEffortLevels`（传给 Claude Code 的 `--effort`，`low / medium / high / xhigh / max` 的子集），`supportsThinkingOff` 时前面加 `off`（关思考用 `MAX_THINKING_TOKENS=0`）：4.6 系列没有 `xhigh`，Opus 5.5 / Sonnet 5.5 / Haiku 5.5 不能关；没有等级的模型（Haiku 4.5）不给思考选项。CLI 不给默认等级：沿用兜底表里同一模型或同系列别名的默认，否则 `medium`。这就是为什么**等级挂在模型上** | `model/list` 的 `supportedReasoningEfforts`，按模型（`low / medium / high / xhigh / max / ultra` 的子集） | `configOptions` 里 `category = "thought_level"`；没有就不提供。ACP 的等级不按模型区分：探测时看到的是默认模型的那一组，所有模型共用 | 节点声明 |
 | 权限模式 | `default`(Always Ask) / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions`；`bypassPermissions` 标 dangerous，`plan` 标 safe | adapter 把 `approvalPolicy × sandbox × approvals_reviewer` 收成四档：`read_only`（safe：`readOnly` + `on-request`）/ `workspace`（normal，默认：`workspaceWrite` + `on-request`，审批送客户端）/ `auto_review`（normal：`approvals_reviewer = auto_review`，Codex 自己的审查子代理放行）/ `full_access`（dangerous：`dangerFullAccess` + `never`） | `session/new` 返回的 `configOptions` 里 `category = "mode"`（优先），没有才用 `modes.availableModes`（v1，已标 deprecated）。ACP 不给风险等级：默认全部 `normal`，`config.agents.acp.<name>.dangerous_modes` 可标 dangerous | 节点声明 |
-| 其他选项 | `fast_mode`(bool，仅支持的模型)、`block_outside_writes`(bool，默认关：Write / Edit / NotebookEdit 在任何模式下都不写工作目录以外，shell 命令不管；需要 CLI ≥ 2.1.314，ADR-48)；两者合成一个 `--settings` JSON；`advisor_model`(text，带 `choices` = `off` + 模型列表，默认 `off` → `--advisor=<模型>`，ADR-52) | `fast_mode`(bool → `serviceTier`：开 `priority`、明确关 `default`、没指定不传)、`model_reasoning_summary`(select: auto / concise / detailed / none → `turn/start.summary`)。`plan_mode` v0.1 **不提供**：`collaborationMode` 只在 experimental schema 里（要 `experimentalApi`），v0.1 只用稳定接口，所以 Codex 也不会发 `kind = plan` 的权限请求 | 其余 `configOptions` 原样透传：`select` 和 `boolean` 两种 `type`，`category = model_config` 或自定义 | 节点声明 |
+| 其他选项 | `fast_mode`(bool，仅支持的模型)、`block_outside_writes`(bool，默认关：Write / Edit / NotebookEdit 在任何模式下都不写工作目录以外，shell 命令不管；需要 CLI ≥ 2.1.314，ADR-48)；两者合成一个 `--settings` JSON；`advisor_model`(text，带 `choices` = `off` + 模型列表，默认 `off` → `--advisor=<模型>`，ADR-52)；`no_push`(bool，默认关：`permissions.deny` 拒绝 `git push`、`gh pr create`、`gh pr merge` 这几条命令，合进同一个 `--settings`，§ 22.5) | `fast_mode`(bool → `serviceTier`：开 `priority`、明确关 `default`、没指定不传)、`model_reasoning_summary`(select: auto / concise / detailed / none → `turn/start.summary`)。`plan_mode` v0.1 **不提供**：`collaborationMode` 只在 experimental schema 里（要 `experimentalApi`），v0.1 只用稳定接口，所以 Codex 也不会发 `kind = plan` 的权限请求；也**不声明** `no_push`（没有能核实的按会话拒绝命令的办法，§ 22.5） | 其余 `configOptions` 原样透传：`select` 和 `boolean` 两种 `type`，`category = model_config` 或自定义（id 为 `no_push` 的忽略，§ 22.5） | 节点声明 |
 
 ACP 的 `initialize` 里声明的 client 能力：**不声明 `fs` 和 `terminal`**（agent 用它自己的工具读写文件、跑命令，权限走 `session/request_permission`；声明了就等于让 daemon 代 agent 读写文件、跑命令，违背 § 1）；声明 `elicitation`（form / url，§ 9.1）和 `session.configOptions.boolean`（否则 agent 不给布尔选项）；不声明终端登录（`auth.terminal`）、`session.notices`、`session.compaction`（ACP 不产生 notice / activity 事件，§ 8.3）。
 
@@ -845,13 +845,14 @@ SQLite（WAL）。全部表：
 | `preview_labels` | 预览 label（§ 19.2）：port（主键）、label（唯一）、created_at_ms |
 | `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
 | `todos` | 清单（§ 21.4）：id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
+| `todo_sessions` / `todo_events` | 清单项派出的会话和「经过」（§ 22.8）；`sessions.todo_id` 是会话的来源项 |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
 
 事件表按会话删除；`history_retention` 到期的会话整条删。`VACUUM` 不自动跑，`anycon stats` 显示可回收空间并给命令。
 
-**备份**（见 [§ 4](#4-数据目录)）：`sessions` / `events` / `turns` / `messages_fts` / `blobs` / `worktrees` 里属于某个会话的行，加上 `blobs/` 下的附件文件，就是这个会话的全部历史；`anycon export` 把它们按 [§ 20](#20-导出文件格式anycon-export--import) 的格式打成 zip，`anycon import` 在一个事务里还原一个会话（事件、附件记录、worktree 记录、全文索引、turn 汇总）。`peers`、`enroll_password`、`agent_cache`、`preview_*`、`audit`、`jobs`、`kv`、`linked_projects`、`todos` 不进导出：它们是这台节点自己的状态，不是会话历史。
+**备份**（见 [§ 4](#4-数据目录)）：`sessions` / `events` / `turns` / `messages_fts` / `blobs` / `worktrees` 里属于某个会话的行，加上 `blobs/` 下的附件文件，就是这个会话的全部历史；`anycon export` 把它们按 [§ 20](#20-导出文件格式anycon-export--import) 的格式打成 zip，`anycon import` 在一个事务里还原一个会话（事件、附件记录、worktree 记录、全文索引、turn 汇总）。`peers`、`enroll_password`、`agent_cache`、`preview_*`、`audit`、`jobs`、`kv`、`linked_projects`、`todos`、`todo_sessions`、`todo_events` 不进导出：它们是这台节点自己的状态，不是会话历史。
 
 ## 12. 多客户端
 
@@ -871,7 +872,7 @@ SQLite（WAL）。全部表：
 
 本机 socket 上的调用方 `device_id` 是 `local`，`device_name` 默认 `local-cli`。连接可以用 `local.set_client { client: "cli" | "mcp" }` 自报客户端种类（固定枚举，别的值 `invalid`；只在本机通道有，经 hub 调用 `forbidden`，经 hub 的连接身份由配对的设备决定），自报 `mcp` 之后这条连接的审计设备名是 `local-mcp`（`anycon mcp` 连上就声明，[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）。它只用来在审计里分清「人敲的命令」和「agent 经 MCP 发的」：自报的，不改变任何权限，对故意不声明的本机进程没有约束力。
 
-记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）。
+记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2）。派发的会话状态回写记成 `todo.update`，发起者是 `daemon`（`device_id = "daemon"`），`detail` 带 `by: "dispatch"` 和 `session_id`（§ 22.3）。
 
 `fs.read` 的 target 是请求里的 `path`，detail 是 `bytes`（文件总长）。一个大文件要分很多块读（`encoding = "base64"`，每块 512 KiB），逐块记会把审计表灌满、盖掉有意义的行，所以**同一台设备对同一路径的读，5 分钟内只记第一次**。窗口按（设备，路径）算而不是按「第 0 块」算：只读后面的块也会留下一条，不能靠跳过第 0 块绕开审计。窗口只在真正写了一行时刷新，持续读一个文件，每 5 分钟至少有一行；去重表只在内存里，daemon 重启就清空。
 
@@ -1162,7 +1163,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 ## 21. 清单
 
-> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发、决策档案和分身自动唤醒各自实现时再补规格。
+> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发（§ 22）已经实现；决策档案和分身自动唤醒各自实现时再补规格。
 
 ### 21.1 范围
 
@@ -1185,6 +1186,7 @@ Todo {
   created_ms: timestamp
   updated_ms: timestamp
   closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉；在 done 和 dropped 之间换时保持原来的
+  sessions: [session_id]  // 这一项派出的会话（§ 22.3）；旧 daemon 没有，按空读
 }
 ```
 
@@ -1242,6 +1244,8 @@ Todo {
 
 已关闭的项按 `history_retention`（§ 3）清理，从 `closed_ms` 起算；没关闭的不清理。`title` / `body` 是用户内容：不进日志（§ 17），不进审计。
 
+派发另有 `todo_sessions` 和 `todo_events` 两张表、`sessions.todo_id` 一列（迁移 `0005_todo_dispatch.sql`，§ 22.8）。
+
 `anycon export` / `import`（§ 20）的版本 1 只有会话，不含清单；备份清单靠复制数据目录。
 
 ### 21.5 审计
@@ -1280,13 +1284,13 @@ Todo {
 
 ## 22. 派发
 
-> **尚未实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 8 条的第 2 步：在清单的一项上让 agent 处理。决定见 ADR-54 第 4、5 条和 [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条；界面见 [web.md § 14.6](web.md#146-清单和单项)、§ 14.7、§ 14.9、§ 14.10。
+> **已实现：daemon（`todo.dispatch` / `todo.history` / `todo.event`、关联与回写、「经过」、`no_push` 选项）、CLI（`anycon todo run` / `history`）和 TS SDK（`node.todos.dispatch` / `history`、`todo_event`）。Web 客户端的界面（[web.md § 14.6–14.10](web.md#146-清单和单项)）还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 8 条的第 2 步：在清单的一项上让 agent 处理。决定见 ADR-54 第 4、5 条和 [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条；界面见 web.md § 14.6、§ 14.7、§ 14.9、§ 14.10。没有单独的 capability：`node.info.capabilities.todo` 为 true 而 daemon 没有这一节的方法时，`todo.dispatch` / `todo.history` 得到 `unsupported`（`method not found`），客户端据此不显示入口。
 
 ### 22.1 范围
 
 派发 = 从一项开一个会话，把会话和这一项关联，会话的状态回写到这一项，每一轮的结果记进这一项的「经过」。一项可以先后派发多次，每次一个新会话；之前各次的结果随下一次的第一条消息带过去（ADR-54 第 4 条的交接：会话用完即弃，清单项是一直在的那份文档）。
 
-这一步没有判断、没有模型调用：派给哪个 agent、用什么设置、在哪里工作，都由调用方决定。第 4 步的分身和第 5 步别的节点的分身调用的是同一个方法，所以派发的全部逻辑（开会话、关联、回写、「不 push、不开 PR」）都在 daemon 里，客户端不拼 `session.create` 再回写。
+这一步没有判断、没有模型调用：派给哪个 agent、用什么设置、在哪里工作，都由调用方决定。第 4 步的分身和第 5 步别的节点的分身调用的是同一个方法，所以派发的全部逻辑（开会话、关联、回写、「不 push、不开 PR」）都在 daemon 里，客户端不拼 `session.create` 再回写。发起者和审计身份都取自调用方（`Caller`），没有写死成「本机」：别的节点的分身以受限设备的身份调用时，「经过」和审计里记的就是那台设备。
 
 不做：把已有的会话关联到一项（会话从一项派出，才属于这一项）；一个会话属于多项；失败后自动重派（第 4 步的事）。
 
@@ -1295,51 +1299,59 @@ Todo {
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `todo.dispatch` | C→D | `{ id, agent, project?, workspace?, settings?, no_push? }` → `{ todo: Todo, session: SessionSummary }` |
-| `todo.history` | C→D | `{ id, before_seq?, limit? }` → `{ events: [TodoEvent], has_more }`；按 `seq` 从新到旧，`limit` 缺省 50、上限 200 |
-| `todo.event` | D→C notification | `{ todo_id, event: TodoEvent }`：「经过」多了一条 |
+| `todo.history` | C→D | `{ id, before_seq?, limit? }` → `{ events: [TodoEvent], has_more }`；按 `seq` 从新到旧，`limit` 缺省 50、上限 200（0 按 1）；`before_seq` 只给 `seq` 更小的，翻页用上一页最后一条的 `seq`。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
+| `todo.event` | D→C notification | `{ todo_id, event: TodoEvent }`：「经过」多了一条，发给所有在线客户端 |
 
 `todo.dispatch` 的参数：
 
-- `id`：这一项。不存在 → `not_found`；已关闭（`done` / `dropped`）→ `invalid`（`data.reason = "closed"`）。`unreviewed` 的项由人派发，算一次人为修改，清掉 `unreviewed`（§ 21.2）。自报了 `mcp` 的本机连接、`todo.add` 时自报过 `agent` 的调用方式，都不能派发：`forbidden`（和 agent 不能修改清单项是同一条界线，§ 21.8；同样是护栏）。
-- `project`：缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。给了而且和这一项的不同 → 派发成功时把这一项的 `project` 改成它（同一次修改）。项目不存在 → `not_found`，和 `session.create` 一样。
-- `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。在项目目录里干没有隔离：agent 的改动直接落在用户的工作目录里，客户端在派发前写明。第 4 步的分身只派到 worktree。
-- `agent` / `settings`：同 `session.create`（§ 6），同样的校验，危险模式同样受 `permissions.allow_dangerous_modes` 约束。
-- `no_push`：「不 push、不开 PR」（§ 22.5）。缺省 `true`。所选 agent 没有声明这个选项而 `no_push = true` → `unsupported`（`data.reason = "no_push"`）：要派给这样的 agent，调用方得明确传 `false`。
+- `id`：这一项。不是小写 UUID → `invalid`（`data.field = "id"`）；不存在 → `not_found`；已关闭（`done` / `dropped`）→ `invalid`（`data.field = "id"`，`data.reason = "closed"`）。`unreviewed` 的项由人派发，算一次人为修改，清掉 `unreviewed`（§ 21.2）。自报了 `mcp` 的本机连接不能派发：`forbidden`（和 agent 不能修改清单项是同一条界线，§ 21.8；同样是护栏，不是边界）。`todo.dispatch` 没有「自报是 agent」的参数（`agent` 是 agent 的 id）：anycon 拉起的 agent 里运行的 `anycon todo run` 在客户端一侧拒绝（§ 22.6），daemon 看不到那个环境变量。
+- `project`：缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。空白的 `project` 按没给处理。给了而且和这一项的不同（按项目名比较，大小写 / 规范化的写法和 `session.create` 一致）→ 派发成功时把这一项的 `project` 改成它（同一次修改）。项目不存在 → `not_found`，和 `session.create` 一样。
+- `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`，当场重新判断）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。在项目目录里干没有隔离：agent 的改动直接落在用户的工作目录里，客户端在派发前写明。第 4 步的分身只派到 worktree。明确给了 `workspace` 的，以它为准，校验同 `session.create`（比如不是 git 项目却要 worktree → 同样的错误，什么都不留下）。
+- `agent` / `settings`：同 `session.create`（§ 6），同样的校验，危险模式同样受 `permissions.allow_dangerous_modes` 约束。不认识的 agent → `agent_unavailable`。
+- `no_push`：「不 push、不开 PR」（§ 22.5）。缺省 `true`。所选 agent 没有声明这个选项（`AgentInfo.options` 里没有 id 为 `no_push` 的布尔选项）而 `no_push = true` → `unsupported`（`data.field = "no_push"`，`data.reason = "no_push"`）：要派给这样的 agent，调用方得明确传 `false`。声明了的 agent，daemon 把 `settings.options.no_push` 设成 `no_push` 的值（`true` 或 `false`，覆盖调用方在 `settings.options` 里给的同名值）；没声明的 agent 带 `false` 时不写这个选项。
 - 第一条消息由 daemon 生成（§ 22.4），调用方不能另给；不带附件。
+- 一项最多派发 20 次（含会话已被删除的），满了 → `invalid`（`data.field = "id"`，`data.reason = "too_many_sessions"`）。
 
-成功时：会话已经建立（排队、拉起和 `session.create` 一样），这一项的 `state` 变成 `working`，`sessions` 多一个，「经过」记一条 `dispatched`，`todo.changed`、`todo.event`、`session.changed` 照常发。失败时什么都不留下：会话建不起来就不改这一项、不记「经过」。
+校验的顺序：`id` 的写法、`forbidden`、项存在、已关闭、20 次上限、项目、`agent` 存在、`no_push`，然后才开会话（`session.create` 自己的校验：设置、危险模式、worktree、项目存在……）。
 
-审计 `todo.dispatch`：`target` 是项的 id，`detail` 是 `{ session_id, agent, workspace_mode, no_push }`，不记标题和正文。
+成功时：会话已经建立（排队、拉起和 `session.create` 一样，走的就是同一条路径，由 `Sessions::create_for_todo` 在会话行里记下 `todo_id`），这一项的 `state` 变成 `working`，`sessions` 多一个，「经过」记一条 `dispatched`，`todo.changed`、`todo.event`、`session.changed` 照常发。**全部或全无**：开会话之前的校验失败、会话建不起来，都不改这一项、不记「经过」、不留会话；会话建好之后才发现关联写不进库（极少见）时，把会话删掉再报 `internal`，不留下半截。会话建起来之后进程拉不起来这类异步的失败，和 `session.create` 一样表现为会话进入 `error`，由回写（§ 22.3）把这一项转成 `waiting`。
+
+整个派发持清单的锁（§ 21 的 `todo_lock`）：同一时刻只有一个清单写操作，派发期间别的 `todo.add` / `update` 等等它。清单的锁在会话锁之前取，会话那一侧只往队列里放东西（§ 22.3），所以两把锁不会互相等。
+
+审计 `todo.dispatch`：`target` 是项的 id，`detail` 是 `{ session_id, agent, workspace_mode, no_push }`（`workspace_mode` 是实际的 `local` / `worktree`），不记标题和正文。
 
 ### 22.3 关联和回写
 
-- `Todo` 多一个字段 `sessions: [session_id]`：这一项派出的会话，按派发的先后，最多 20 个（满了 → `invalid`，`data.reason = "too_many_sessions"`）。`SessionSummary` 多一个 `todo_id?`：会话从哪一项派出。
+- `Todo` 多一个字段 `sessions: [session_id]`：这一项派出的会话，按派发的先后，最多 20 个（满了 → `invalid`，`data.reason = "too_many_sessions"`；旧 daemon 没有这个字段，客户端按空读）。`SessionSummary` 多一个 `todo_id?`：会话从哪一项派出（创建时写下，不再变）。
 - 会话被删除，关联留着，客户端按「会话已不存在」显示；这一项被删除，关联和「经过」一起删，会话不动，它的 `todo_id` 指向一个已经不存在的项，客户端按「来源已删除」显示。
-- **回写**：关联会话的状态每变一次，daemon 按下面的规则算一次这一项该是什么状态，和当前不同才写：
+- **回写**：关联会话的状态每变一次，daemon 按下面的规则算一次这一项该是什么状态，和当前不同才写。算的时候看**每个关联会话此刻的状态**（已经删除的会话不算）和它最近结束的一轮（`turns` 表里 `ended_ms` 最晚的一轮的 `reason`）：
   - 任何一个关联会话在等审批（`waiting_permission`，包括计划和提问）或出错（`error`）→ `waiting`
   - 否则任何一个在排队、启动或运行（`queued` / `starting` / `running`）→ `working`
-  - 否则（都停下来了），最近结束的那一轮是正常结束的 → `review`
+  - 否则（都停下来了），看所有关联会话里**最近结束的那一轮**：正常结束（`completed` / `max_turns` / `budget`）→ `review`；以 `error` 结束（agent 报了错，会话回到 `idle`，没有进入 `error` 状态；daemon 重启时被打断的一轮也记成 `error`）也算出错 → `waiting`，不然这一项会一直停在 `working`；被取消的（`cancelled`）不写，保持原样，由人决定。没有任何结束过的轮次也不写。
   - 这一项已关闭（`done` / `dropped`）时不回写：人点的「完成」不会被一次迟到的状态变化改回去。重新打开之后，下一次状态变化照常回写。
-  - 人在中途手动改了状态，下一次会话状态变化时按规则重新算。`done` 只由人设置。
-  - 回写是一次普通的修改：`updated_ms` 照常变，`todo.changed` 照常发，审计记 `todo.update`，发起者是 daemon 自己（`device_id = "daemon"`，`detail` 带 `{ by: "dispatch", session_id }`）。
+  - 人在中途手动改了状态，下一次会话状态变化时按规则重新算。`done` 只由人设置，回写从不给出它。
+  - 回写是一次普通的修改：`updated_ms` 照常变，`todo.changed` 照常发，审计记 `todo.update`，发起者是 daemon 自己（`device_id = "daemon"`，`detail` 是 `{ fields: ["state"], state: { from, to }, by: "dispatch", session_id }`，`session_id` 是引起这次重算的会话）。
+  - 回写是异步的：会话锁里只记下「这一项的会话状态变了」，由 daemon 的后台任务取清单的锁、再读各会话的状态去算，所以它比状态变化晚几毫秒，连续的几次变化会合并成一次重算（只看最终状态）。同一个后台任务按「先 `result`、后状态」的顺序处理，一轮的 `result` 总在它引起的 `review` 之前记。
 - 回写和通知：关联会话的 `turn_finished` 通知照常发（§ 14），客户端把文案换成「<这一项的标题> 做完了，等你验收」（[web.md § 14.10](web.md#1410-通知)）；不新增通知类别。
 
 ### 22.4 交接：「经过」和第一条消息
 
-`TodoEvent`：
+`TodoEvent`（线路上 `kind` 是标签，和 `seq`、`ts_ms` 在同一层）：
 
 ```
 TodoEvent {
-  seq:   u64          // 这一项内从 1 递增
+  seq:   u64          // 这一项内从 1 递增，没有空洞
   ts_ms: timestamp
   kind:  dispatched | result | state
-  // dispatched：{ session_id, agent, workspace_mode, no_push, by: { kind, device_id? } }
+  // dispatched：{ session_id, agent, workspace_mode: local|worktree, no_push, by: { kind, device_id? } }
   // result：    { session_id, turn, text, truncated }   这一轮结束时 agent 的最后一段话
   // state：     { from, to, by: { kind, device_id? } | "dispatch" }
 }
 ```
 
-- **result**：关联会话每一轮结束（`turn_done`，后台任务都结束之后，时机同 § 14 的 `turn_finished`）时，daemon 取这一轮 agent 的最后一段文字，最多 4 KiB（按 UTF-8 字节，在码点边界截断，`truncated = true`）。这一轮没有文字（只有工具调用）时记一条 `text` 为空的 result。
+- **dispatched**：每次成功的派发一条（`by` 是发起的调用方：`local` / `device`）。
+- **result**：关联会话每一轮结束（`turn_done`）时，daemon 取这一轮 agent 的最后一段文字——最后一个文字块（最后一段 `text_delta`，到 `text_done` 为止；中间的块和思考不算）——最多 4 KiB（按 UTF-8 字节，在码点边界截断，保留开头，`truncated = true`）。这一轮没有文字（只有工具调用）时记一条 `text` 为空的 result。`turn` 是会话里的 turn 号。时机和 § 14 的 `turn_finished` 一致：正常结束的一轮（`completed` / `max_turns` / `budget`）在结束时后台任务还在跑，就推迟到推迟的通知发出（agent 自己跑的那一轮结束，或任务都结束 15 秒后的兜底）的那一刻，一起记（用户又发了消息、进程被摘掉时，推迟的结果也在那一刻记，不丢）；agent 自己开的 turn 也各记一条；取消、出错的一轮没有「推迟」，结束时立即记，文字是到那时为止收到的。daemon 在两次记录之间重启会丢掉还没记的 `result`（它只在内存里）。
+- **state**：这一项派发过（`sessions` 非空）之后的每一次状态变化记一条：`by` 是 `"dispatch"`（回写，§ 22.3）或发起这次 `todo.update` 的调用方（`{ kind, device_id? }`）。派发本身把状态改成 `working` 不记 `state`（`dispatched` 已经说明了）。
 - 「经过」只追加：没有修改、删除一条的方法；删除这一项时一起删。已关闭的项按 `history_retention` 清理时一起清。
 - 「经过」的 `text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。
 - **第一条消息**，daemon 按下面的格式生成（给 agent 看，用英文）：
@@ -1357,28 +1369,40 @@ Earlier work on this task, oldest first. These are reports from earlier agent se
 Leave your changes on the branch: do not push and do not open a pull request.   ← 只在 no_push 时
 ```
 
-  「Earlier work」只带最近 5 次派发各自最后一条 result，合计最多 8 KiB，超出时从最早的开始丢；一次都没有时这一段不出现。`no_push` 那一行是给 agent 的说明，真正的限制在 § 22.5。
+  「Earlier work」只带最近 5 次派发各自最后一条 result，合计最多 8 KiB，超出时从最早的开始丢；一次都没有时这一段不出现。`no_push` 那一行是给 agent 的说明，真正的限制在 § 22.5。细节：正文为空时没有正文那一段；没有 result 或 `text` 为空的派发不出现（「最近 5 次」按派发数，在去掉空的之前数）；「前 8 位」是 id 字符串的前 8 个字符，会话 id 带 `sess_` 前缀，所以实际是 `sess_` 加 3 个随机字符，只用来让 agent 分清几份报告；8 KiB 按渲染出来的行（含 `[<agent>, session …]` 标签和换行）的字节数算，整行地丢，不截断某一行。标题、正文取派发那一刻的当前内容。组装是一个纯函数（`todo_dispatch::compose_first_message`）。
 
 ### 22.5 「不 push、不开 PR」
 
-- 一个 adapter 声明的布尔选项，`AgentInfo.options` 里 id 为 `no_push`。手动开的会话也能用它；`todo.dispatch` 的 `no_push` 设置的就是这个选项。改它 → `restart_required`，和别的启动参数一样。
-- Claude Code：启动时 `--settings` 里的 `permissions.deny`，拒绝 `git push`、`gh pr create`、`gh pr merge` 这类命令（具体的规则列表在 adapter 的 README 里），和 `fast_mode`、`block_outside_writes` 合在同一个 `--settings` 里（[ADR-48](../decisions.md#adr-48-claude-code文件工具不写项目外可选默认关)）。
-- Codex 和 ACP agent：实现时逐个核实有没有等价的做法；没有的不声明这个选项。
+- 一个 adapter 声明的布尔选项，`AgentInfo.options` 里 id 为 `no_push`。手动开的会话也能用它（`settings.options.no_push`）；`todo.dispatch` 的 `no_push` 设置的就是这个选项。改它 → `restart_required`，和别的启动参数一样。
+- **Claude Code**（声明，缺省关）：启动时 `--settings` 里的 `permissions.deny`，和 `fast_mode`、`block_outside_writes` 合在同一个 `--settings` JSON 里（CLI 只取最后一个；[ADR-48](../decisions.md#adr-48-claude-code文件工具不写项目外可选默认关)），拒绝这八条规则：`Bash(git push)`、`Bash(git push *)`、`Bash(git -C * push)`、`Bash(git -C * push *)`、`Bash(gh pr create)`、`Bash(gh pr create *)`、`Bash(gh pr merge)`、`Bash(gh pr merge *)`。每条命令各写「不带参数」和「带参数」两种，不依赖 `*` 是否匹配空参数；`git -C <目录> push` 是 agent 常见的写法，也列上。2.1.325 上用真实的 CLI 实测过：打开选项后 `git push origin main`、`git push`、`git -C <目录> push origin main`、`cd <目录> && git push origin main`、`gh pr create …` 都被拒绝，远端没有收到任何东西；没有这个选项时同一条 `git push origin main` 推送成功（对照）。挡不住的：`git -c k=v push`、`git --git-dir … push` 这类把全局选项放在别处的写法，脚本里再调 `git`，`gh api` 直接调 REST，其它工具（`curl`、`hub`）。
+- **Codex 和 ACP agent：不声明这个选项。** Codex（本机 0.169.0）：app-server 的接口和 `-c` 配置里没有能核实的、按会话生效的「拒绝这类命令」的办法——协议 schema 里和 execpolicy 沾边的只有审批请求里 agent 提出的「放行类似命令」的修订；它的沙箱模式是文件和网络的粗粒度开关，不是命令模式。往用户的 Codex 配置目录里写规则文件不是 adapter 该做的事，也没法保证只对这一个会话生效。ACP agent：选项全部来自 agent 自己声明的 `configOptions`，adapter 不替它加；agent 自己声明的 id 为 `no_push` 的选项会被 adapter 忽略（保留 id，免得 daemon 把一个含义不明的选项当成限制）。所以派给这两类 agent 时，调用方必须明确传 `no_push: false`，界面上写明做不到。
 - 这是按命令模式匹配的规则：挡的是照常干活的 agent 顺手 push，挡不住存心绕开的（写个脚本再跑），不是边界（ADR-54 第 5 条）。
 
 ### 22.6 客户端入口
 
-- **Web**：单项详情的「让 agent 处理」、「经过」、验收页、「待处理」的待验收段、会话页的来源 chip、左栏的「来自清单」折叠（[web.md § 14.6–14.9](web.md#146-清单和单项)）。派发对话框：
+- **Web**：单项详情的「让 agent 处理」、「经过」、验收页、「待处理」的待验收段、会话页的来源 chip、左栏的「来自清单」折叠（[web.md § 14.6–14.9](web.md#146-清单和单项)）。**还没有实现。** 派发对话框：
   - 这一项没有项目时先选一个，派发成功后写回这一项。
   - 项目不能开 worktree 时写明「直接在项目目录里改，没有隔离」。
   - 「不 push、不开 PR」缺省勾上；所选 agent 没有这个选项时，勾选框显示为做不到，要派发必须手动取消勾选。
   - 能展开看 daemon 将要发出的完整第一条消息（包括带过去的之前的结果）。
-- **CLI**：`anycon todo run <id> [--agent <id>] [--model <id>] [--mode <id>] [--project <name>] [--local] [--allow-push]`、`anycon todo history <id> [--json]`。在 anycon 拉起的 agent 里 `run` 拒绝执行，和 `done` / `drop` 一样（§ 21.8）。
-- **`anycon mcp`**：不加派发的工具（ADR-49：`anycon mcp` 不做编排）。
+- **CLI**：`anycon todo run <id> [--agent <id>] [--model <id>] [--mode <id>] [--project <name>] [--local] [--allow-push]`、`anycon todo history <id> [--json]`（[cli.md § 3.8](cli.md#38-anycon-todo)）。在 anycon 拉起的 agent 里 `run` 拒绝执行，和 `done` / `drop` 一样（§ 21.8）；`history` 只读，照常。
+- **`anycon mcp`**：不加派发的工具（ADR-49：`anycon mcp` 不做编排）。MCP 的工具都是固定映射到具体 RPC 的，没有通用的转发，所以经它够不着 `todo.dispatch`；自报了 `mcp` 的连接直接发 `todo.dispatch` 得到 `forbidden`。
 - **SDK**：`node.todos.dispatch` / `history` 和 `todo_event` 事件。
 
 ### 22.7 代价 / 限制
 
-- 交接把前几次 agent 的输出放进下一次的第一条消息：一个被注入的会话写下的话，会进到下一个 agent 的输入里。消息里标明那是之前的报告、不是指令，对话框里能看到要发出的全文；但这只是提示，挡不住注入。实现这一步时要同时改 [architecture.md § 5.6](../architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。
-- 「不 push、不开 PR」只在声明了它的 agent 上有效；没有声明的 agent 要派发，调用方必须明确放弃它。
+- 交接把前几次 agent 的输出放进下一次的第一条消息：一个被注入的会话写下的话，会进到下一个 agent 的输入里。消息里标明那是之前的报告、不是指令，对话框里能看到要发出的全文（Web 还没有，CLI 和 SDK 的调用方可以先读 `todo.history`）；但这只是提示，挡不住注入。这一步同时改了 [architecture.md § 5.6](../architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。
+- 「不 push、不开 PR」只在声明了它的 agent（现在只有 Claude Code）上有效；没有声明的 agent 要派发，调用方必须明确放弃它。
 - 回写看的是会话状态，不看 agent 说了什么：agent 说「没做完」也会进 `review`，由人验收时判断。
+- 回写是异步的（几毫秒），并且只在会话状态变化时才重算：人手动改了状态之后，要等会话的下一次状态变化才会被重新对齐。
+- 最近结束的一轮被取消、而此刻没有会话在跑时，这一项停在 `working`，直到人处理或会话再动起来。
+
+### 22.8 存储
+
+迁移 `0005_todo_dispatch.sql`（只前进）：
+
+| 表 / 列 | 内容 |
+|---|---|
+| `sessions.todo_id` | 会话从哪一项派出（可空；创建时写，之后不变；导出 / 导入不带它，导入的会话没有来源项） |
+| `todo_sessions` | `(todo_id, session_id)` 主键、`seq`（这一项内的派发序号，从 1 起）。会话被删，这一行留着；这一项被删，这一项的行一起删 |
+| `todo_events` | `(todo_id, seq)` 主键、`ts_ms`、`kind`、`session_id`（可空，`dispatched` / `result` 才有，给「最近 5 次派发各自最后一条 result」用）、`data`（JSON，`TodoEvent` 去掉 `seq`、`ts_ms`；`result` 的 `text` 是会话内容）。删这一项和保留期清理都连带删它们 |

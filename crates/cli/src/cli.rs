@@ -158,6 +158,42 @@ pub enum TodoCmd {
         /// To-do id (a prefix is enough)
         id: String,
     },
+    /// Hand an item to an agent: opens a session for it (in a new git worktree when the project allows it), links the
+    /// session to the item and keeps the item's state in step with the session. Not available inside an anycon agent
+    /// session
+    Run(TodoRunArgs),
+    /// Show what happened on an item: each dispatch, the report each turn ended with, and state changes (newest first)
+    History(TodoHistoryArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TodoRunArgs {
+    /// To-do id (a prefix is enough)
+    pub id: String,
+    /// Agent id (as listed by `anycon agents`); defaults to the only ready agent
+    #[arg(long)]
+    pub agent: Option<String>,
+    #[arg(long)]
+    pub model: Option<String>,
+    #[arg(long)]
+    pub mode: Option<String>,
+    /// Project name; defaults to the item's project. When it differs from the item's, the item is moved to it
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Work in the project directory itself instead of a new git worktree. There is no isolation: the agent's changes
+    /// land in your working directory
+    #[arg(long)]
+    pub local: bool,
+    /// Let the agent push and open pull requests. By default the session is started with the agent's "no push, no pull
+    /// request" option on, and the dispatch is refused for an agent that does not have the option
+    #[arg(long)]
+    pub allow_push: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TodoHistoryArgs {
+    /// To-do id (a prefix is enough)
+    pub id: String,
 }
 
 #[derive(Args, Debug)]

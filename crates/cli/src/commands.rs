@@ -978,7 +978,7 @@ fn parse_options(items: &[String]) -> Result<serde_json::Map<String, Value>> {
     Ok(m)
 }
 
-async fn pick_agent(conn: &Conn, wanted: Option<String>) -> Result<String> {
+pub(crate) async fn pick_agent(conn: &Conn, wanted: Option<String>) -> Result<String> {
     if let Some(a) = wanted {
         return Ok(a);
     }

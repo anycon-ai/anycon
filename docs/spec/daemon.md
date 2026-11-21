@@ -1208,7 +1208,7 @@ Todo {
 - `anycon mcp` 的 `add_todo`，不管连的是本机 socket 还是经 hub（`--hub` / `--node`）。经 hub 时连接的身份是这台机器上已配对的 CLI 设备，daemon 分不出它是不是 MCP，只能靠这个参数。
 - `anycon todo add` 在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`，§ 5.5）。会话里的 agent 不需要配置 MCP 就能跑 `anycon` 命令，这是它最顺手的写法。
 
-`agent` 这个标记的用处是之后让分身不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
+`agent` 这个标记的用处是之后让分身不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。`kind` 之后会多出新的值（[ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的「某个节点的分身」）：客户端遇到不认识的值按「不是人加的」显示，解析时不能因此失败。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
 
 `unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。当前自报着 `mcp` 的本机连接发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。这只是接口上的护栏，不是边界：自报是这条连接自己的声明，同一条连接再发 `local.set_client { client: "cli" }` 就和人敲的命令一样了（有 shell 的 agent 本来也能直接这样做，和 `--allow-nested` 一样）。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 14.4](web.md#144-待处理)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
 

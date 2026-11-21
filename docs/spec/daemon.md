@@ -1315,7 +1315,7 @@ Todo {
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `todo.dispatch` | C→D | `{ id, agent, project?, workspace?, settings?, no_push?, message_id? }` → `{ todo: Todo, session: SessionSummary }` |
-| `todo.dispatch_preview` | C→D | `{ id, no_push? }` → `{ first_message, rules_text }`：此刻派发会发出的第一条消息，一字不差；`rules_text` 是此刻会注入这个会话的系统提示的规则文字（§ 23.5，没有生效的规则时为空串）。和 `todo.dispatch` 用同一个组装函数（`compose_first_message`）和同一套「之前的结果」的选法，同样先把这一项排着的结果记下来（持清单的锁），`no_push` 缺省 `true`。只有一个副作用：把这一项排着、还没记的结果先记进「经过」（有的话，和派发之前的那一步一样会广播 `todo.event`；这一项的 `activity` 因此变了才跟一条 `todo.changed`）；不开会话、不审计、不发推送通知；不改这一项的其余内容。`id` 不是小写 UUID → `invalid`；不存在 → `not_found`；已关闭 → `invalid`（`data.reason = "closed"`）；自报了 `mcp` 的本机连接 → `forbidden`。两次调用之间有新的结果记进来时，之后派发发出的会和预览不同（预览里写明「可能有变」）。客户端不自己拼这条消息 |
+| `todo.dispatch_preview` | C→D | `{ id, no_push?, project? }` → `{ first_message, rules_text }`（`project` 只影响 `rules_text`，§ 23.5）：此刻派发会发出的第一条消息，一字不差；`rules_text` 是此刻会注入这个会话的系统提示的规则文字（§ 23.5，没有生效的规则时为空串）。和 `todo.dispatch` 用同一个组装函数（`compose_first_message`）和同一套「之前的结果」的选法，同样先把这一项排着的结果记下来（持清单的锁），`no_push` 缺省 `true`。只有一个副作用：把这一项排着、还没记的结果先记进「经过」（有的话，和派发之前的那一步一样会广播 `todo.event`；这一项的 `activity` 因此变了才跟一条 `todo.changed`）；不开会话、不审计、不发推送通知；不改这一项的其余内容。`id` 不是小写 UUID → `invalid`；不存在 → `not_found`；已关闭 → `invalid`（`data.reason = "closed"`）；自报了 `mcp` 的本机连接 → `forbidden`。两次调用之间有新的结果记进来时，之后派发发出的会和预览不同（预览里写明「可能有变」）。客户端不自己拼这条消息 |
 | `todo.history` | C→D | `{ id, before_seq?, limit? }` → `{ events: [TodoEvent], has_more }`；按 `seq` 从新到旧，`limit` 缺省 50、上限 200（0 按 1）；`before_seq` 只给 `seq` 更小的，翻页用上一页最后一条的 `seq`。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
 | `todo.event` | D→C notification | `{ todo_id, event: TodoEvent }`：「经过」多了一条，发给所有在线客户端 |
 
@@ -1460,7 +1460,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 ```
 Rule {
   id:         string      // 客户端生成的小写带连字符的 UUID；`rule.add` 按它幂等
-  text:       string      // 1–600 个 Unicode 码点，可以多行；除换行外不含控制字符，不含 U+2028 / U+2029
+  text:       string      // 1–600 个 Unicode 码点，可以多行；除换行外不含控制字符，不含 U+2028 / U+2029，不含双向控制符和零宽字符（§ 23.2）
   project?:   string      // 只进这个项目的会话；缺省 = 这个节点上所有项目的会话
   status:     pending | active | disabled | rejected
   sync:       node | group        // 这一半恒为 node；group 见 § 23.8
@@ -1484,7 +1484,7 @@ Rule {
 
 客户端遇到不认识的 `status` 按「不生效」显示，遇到不认识的 `source.kind` 按「不是人写的」显示，解析不能因此失败（Rust 的协议类型里 `RuleStatus`、`RuleSourceKind`、`RuleSync` 各有一个 `Unknown` 变体接住它，用 `#[serde(other)]`）。daemon 自己从不产生也不接受 `Unknown`：`rule.update` 的 `status` 解析成不认识的值 → `invalid`（`data.field = "status"`）；库里读到不认识的字符串按 `Unknown` 读，不生效，也不会被写回成别的值。
 
-**字段的细节**：`text` 去掉首尾空白之后才计数和存（行内、行首的空白和空行照存）。`project` 的写法同 § 21.2（去掉首尾空白后存，空白按没给，1–200 个码点，不含控制字符和 U+2028 / U+2029，不校验项目存在）；和会话的项目比较、给字数分组时按项目名的等价规则（和 `todo.dispatch` 的 `project` 同一个比较：规范化，不区分大小写的文件系统上忽略大小写）。`source.session_id` / `request_id` 只有 `answer` 才记（`manual` 带了也不记），各 1–128 字节、不含控制字符。agent 写的规则没有 `source.session_id`（`rule.add` 没有 `origin_session`）。
+**字段的细节**：`text` 去掉首尾空白之后才计数和存（行内、行首的空白和空行照存）。`project` 的写法同 § 21.2（去掉首尾空白后存，空白按没给，1–200 个码点，不含控制字符和 U+2028 / U+2029，不校验项目存在）；和会话的项目比较、给字数分组时按项目名的等价规则（和 `todo.dispatch` 的 `project` 同一个比较：规范化，不区分大小写的文件系统上忽略大小写）。`source.session_id` / `request_id` 只有 `answer` 才记（`manual` 带了也不记），各 1–128 字节、不含控制字符。`text` 里不能有看不见的字符：双向文字控制符（U+202A–U+202E、U+2066–U+2069、U+200E、U+200F、U+061C）和零宽字符（U+200B–U+200D、U+2060、U+FEFF）一律 `invalid`（`data.field = "text"`，`data.reason = "invisible"`）——规则原样注入、要由人看过才生效，看不见的字符没法审阅。agent 提的规则可以带 `origin_session`（`rule.add`，同 `todo.add` 的同名参数，§ 21.2）：只在这条规则记成 agent 写的、并且这个会话存在时才记进 `source.session_id`，否则丢掉这个字段、照常建；人写的规则不记。
 
 **谁能写**（和清单同一条界线，§ 21.2）：
 
@@ -1499,8 +1499,8 @@ Rule {
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。一次给全（规则总数上限 300，不翻页）。`budget` 见 § 23.4 |
-| `rule.add` | C→D | `{ id, text, project?, status?: active \| pending, source?: { kind: manual \| answer, session_id?, request_id? }, agent? }` → `Rule`。`id` 已存在时原样返回已有的那一条。`status` 缺省 `active`。总数已满 300 → `invalid`（`data.reason = "too_many"`）；会让注入超出上限 → `invalid`（`data.reason = "over_budget"`，§ 23.4） |
+| `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。一次给全（不含 `rejected` 的规则总数上限 300，`rejected` 的另有 300，不翻页）。`budget` 见 § 23.4 |
+| `rule.add` | C→D | `{ id, text, project?, status?: active \| pending, source?: { kind: manual \| answer, session_id?, request_id? }, agent? }` → `Rule`。`id` 已存在时原样返回已有的那一条。`status` 缺省 `active`。`agent: true`（或自报了 `mcp` 的连接）时可另带 `origin_session`（§ 23.2）。不含 `rejected` 的规则已满 300 → `invalid`（`data.field = "rules"`，`data.reason = "too_many"`）；这是 agent 写的、而 agent 提的待确认规则（`source.kind` 是 `agent` 或 `extracted`，状态是 `pending`）已满 50 → `invalid`（`data.field = "rules"`，`data.reason = "too_many_pending"`），只拦 agent 的入口，人照常能写；文字里有看不见的字符 → `invalid`（`data.reason = "invisible"`）；会让注入超出上限 → `invalid`（`data.reason = "over_budget"`，§ 23.4） |
 | `rule.update` | C→D | `{ id, text?, project?, clear?, status?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget` |
 | `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除 |
 | `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话，会注入的那段文字（§ 23.5）。只读 |
@@ -1508,7 +1508,7 @@ Rule {
 
 细节：
 
-- **`rule.list`**：`status` 和 `project` 同时给是交集。`project` 去掉首尾空白后按项目名的等价规则比较，只给 `project` 等于它的规则，**不含全节点规则**（要看一个项目的会话会拿到什么，用 `rule.preview`）；空白按没给。`budget` 总是按全部生效的规则算，不随过滤条件变。规则按 `created_ms`、再按 `id` 从早到晚。
+- **`rule.list`**：`status` 和 `project` 同时给是交集。`project` 去掉首尾空白后按项目名的等价规则比较，只给 `project` 等于它的规则，**不含全节点规则**（要看一个项目的会话会拿到什么，用 `rule.preview`）；空白按没给。`budget` 总是按全部生效的规则算，不随过滤条件变。规则按 `created_ms` 从早到晚（同一毫秒的按写入先后）。
 - **校验的顺序**（`rule.update` / `rule.delete`）：`id` 的写法（小写带连字符的 UUID，同 `todo.add`，`invalid`，`data.field = "id"`）、`forbidden`、规则存在（`not_found`）、`if_updated_ms`、各字段的校验、空操作、字数上限。检查和写入在同一把锁里，中间没有别的规则写入。`rule.add`：`id` 的写法、已存在则原样返回、各字段、总数、字数上限。
 - **`data.field`**：文字 `text`、项目 `project`、状态 `status`、来源里的 id `source.session_id` / `source.request_id`、总数 `rules`（`reason = "too_many"`）、条件 `if_updated_ms`（`reason = "changed"`）。`over_budget` 的 `field` 是引起它的字段：新建时是 `text`；修改时状态变了就是 `status`，否则是第一个变了的字段（`text`、`project`）。
 - **`rule.preview`** 的 `project` 校验同 `rule.add`（不合法 → `invalid`），不校验项目存在，空白按没给。只读：不改 `last_injected_ms`。
@@ -1545,7 +1545,7 @@ Standing rules from the user. The user wrote or confirmed each of them; follow t
 ```
 
   顺序：全节点规则在前、项目规则在后，各按 `created_ms`。
-- **留痕**：这一项的「经过」里 `dispatched` 事件多一个 `rules: [id]`（§ 22.4），按它们在文字里的顺序（线路上空数组省略，旧 daemon 的记录也没有，按空读）；被注入的规则更新 `last_injected_ms`：会话建出来之后写，只写被注入的规则，不动 `updated_ms`、不发 `rule.changed`（客户端下次 `rule.list` 时看到）；按 `message_id` 重试返回已有的会话时不再写；派发在会话建好之后写不进关联而回滚时，已经写的不撤。`todo.dispatch_preview` 的结果多一个 `rules_text`，派发对话框里和第一条消息一起给用户看。`rules_text` 和 `rule.preview` 是同一个函数（和真正的注入也是）：用这一项自己的 `project`（没有项目 → 只有全节点规则），不看所选的 agent，也不看派发时另给的项目；客户端用 `capabilities.system_prompt` 判断某个 agent 收不收得到，要看另一个项目的用 `rule.preview { project }`。两个预览都是只读，不改 `last_injected_ms`。
+- **留痕**：这一项的「经过」里 `dispatched` 事件多一个 `rules: [id]`（§ 22.4），按它们在文字里的顺序（线路上空数组省略，旧 daemon 的记录也没有，按空读）；被注入的规则更新 `last_injected_ms`：会话建出来之后写，只写被注入的规则，不动 `updated_ms`、不发 `rule.changed`（客户端下次 `rule.list` 时看到）；按 `message_id` 重试返回已有的会话时不再写；派发在会话建好之后写不进关联而回滚时，已经写的不撤。`todo.dispatch_preview` 的结果多一个 `rules_text`，派发对话框里和第一条消息一起给用户看。`rules_text` 和 `rule.preview` 是同一个函数（和真正的注入也是）：用预览参数里的 `project`（给了就和 `todo.dispatch` 的 `project` 一样：去掉首尾空白、不合法 → `invalid`），缺省用这一项自己的（都没有 → 只有全节点规则），所以派发会选另一个项目时预览和注入一致；不看所选的 agent，客户端用 `capabilities.system_prompt` 判断某个 agent 收不收得到。两个预览都是只读，不改 `last_injected_ms`。
 - 跨节点派发（ADR-56）注入的是被使用的那个节点自己的规则。
 
 ### 23.6 「记成规则」
@@ -1561,7 +1561,9 @@ Standing rules from the user. The user wrote or confirmed each of them; follow t
 
 审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id。`add` 的 `detail` 是 `{ text_len（码点数）, source_kind, status, project? }`；`update` 的 `detail` 是 `{ fields }`（变了的字段名：`text` `project` `status`），文字变了另带 `text_len`，状态变了另带 `status: { from, to }`；`delete` 为空。不记文字（项目名和清单一样会记）。重复的 `rule.add`、空操作的 `rule.update` 和失败的调用不进审计。
 
-daemon 从不自动删除规则（ADR-54 第 3 条），`rejected` 和 `disabled` 的也一直留着，不受 `history_retention` 影响。`anycon export` / `import` 不含规则。
+**名额**：占 300 个名额的是不含 `rejected` 的规则（待确认、生效、停用）；agent 提的待确认规则另有 50 个（`MAX_AGENT_PENDING`：状态 `pending`、来源 `agent` 或 `extracted`），所以 agent 占不满 300 个名额、把人挡在外面（人写的、直接生效的规则不受这 50 个限制）。`rejected` 的规则留着是为了之后提炼时不再提同样的，它们不占那 300 个，但自己也有一个 300 的上限：再否决一条而 `rejected` 的超过 300 时，daemon 删掉最早否决的那条（`updated_ms` 最小的；记审计 `rule.delete`，`detail` 是 `{ "auto": "rejected_cap" }`，并发 `rule.changed`）。把 `rejected` 的规则改回别的状态和新建一样占一个名额（满了 → `too_many`）。
+
+daemon 从不自动删除有用的规则（ADR-54 第 3 条）：待确认、生效、停用的规则一直留着，不受 `history_retention` 影响；上面 `rejected` 满额时删最早的那条，是唯一的自动删除。`anycon export` / `import` 不含规则。
 
 ### 23.8 同组节点之间的同步（单独实现）
 
@@ -1582,7 +1584,7 @@ daemon 从不自动删除规则（ADR-54 第 3 条），`rejected` 和 `disabled
 ### 23.10 客户端入口
 
 - **Web**：规则页 `/rules`（待确认 / 已生效，显示已用字数和上限）；「待处理」稍后段里的待确认规则；审批卡片和答复框旁的「记成规则」；派发对话框里显示将注入的规则；「更多」里出现「规则」。见 [web.md § 14.8](web.md#148-分身和规则)。
-- **CLI**：`anycon rule add <text> [--project <name>]`、`anycon rule ls [--all] [--json]`、`anycon rule confirm | reject | disable | enable <id>`、`anycon rule rm <id>`；`<id>` 接受前缀。在 anycon 拉起的 agent 里（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true`（记成待确认），`ls` 照常，其余拒绝执行（同 § 21.8，护栏，不是边界）。`ls` 缺省给 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；`--json` 给 `{ rules, budget }`。`confirm` / `enable` 把状态改成 `active`，`reject` 改成 `rejected`，`disable` 改成 `disabled`（都是 `rule.update`；经前缀列过表的带 `if_updated_ms`，所以列出之后别处改过这条规则就不确认；已经是这个状态就如实说没变）。`anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则。子命令规格见 [cli.md § 3.9](cli.md#39-anycon-rule)。
+- **CLI**：`anycon rule add <text> [--project <name>]`、`anycon rule ls [--all] [--json]`、`anycon rule show <id>`、`anycon rule confirm | reject | disable | enable <id>`、`anycon rule rm <id>`；`<id>` 接受前缀。在 anycon 拉起的 agent 里（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true`（记成待确认），`ls` 和 `show`（只读）照常，其余拒绝执行（同 § 21.8，护栏，不是边界）；`add` 带 `ANYCON_SESSION_ID` 作为 `origin_session`。`show` 用 `visible()` 打印一条规则的全文、状态、项目和来源（`ls` 把规则截成一行，不够审阅）；`confirm` / `enable` 打印被激活的那条规则的全文。`ls` 缺省给 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；`--json` 给 `{ rules, budget }`。`confirm` / `enable` 把状态改成 `active`，`reject` 改成 `rejected`，`disable` 改成 `disabled`（都是 `rule.update`；经前缀列过表的带 `if_updated_ms`，所以列出之后别处改过这条规则就不确认；已经是这个状态就如实说没变）。`anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则。子命令规格见 [cli.md § 3.9](cli.md#39-anycon-rule)。
 - **`anycon mcp`**：不加工具。MCP 的工具都是固定映射到具体 RPC 的，没有通用的转发，所以经它够不着 `rule.*`；自报了 `mcp` 的连接直接发 `rule.add` 只能记待确认的，发 `rule.update` / `rule.delete` 得到 `forbidden`。
 - **SDK**：`node.rules.*` 和 `rule_changed` 事件。
 
@@ -1592,7 +1594,7 @@ daemon 从不自动删除规则（ADR-54 第 3 条），`rejected` 和 `disabled
 - ACP agent 收不到规则（没有系统提示的入口）。
 - 规则是建会话时的快照，改了规则不影响已经在跑的会话。
 - 上限按字节算，中文规则比英文的占得多。
-- agent 能把规则总数填满：待确认的规则也占 300 个名额，这一半没有像清单那样（§ 21.3 的 100 个未收下项）给 agent 单独的名额；人删掉或否决了也还占着名额，要删才腾出来。
+- agent 提的待确认规则最多 50 条（§ 23.7）：满了 agent 再提会被拒绝，直到人确认或否决一些；这 50 条也占 300 个总名额，所以人写满剩下的之后同样要先删。`rejected` 的不占 300 个名额、自己上限 300，满了自动删最早的，所以否决了的规则只能保证「大约最近 300 条」不会再被提炼出来。
 - `last_injected_ms` 记的是「被写进某个会话的设置」，不保证那个会话之后真的跑起来；派发回滚时已经写的不撤。
 - 这一半改了威胁模型，四份文档已经同步：[architecture.md § 5.6](../architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。
 

@@ -322,12 +322,19 @@ docker run -d --name anycon-hub …                 # 和 § 2 同样的参数�
 - hub 和 daemon 兼容相邻一个 minor 版本，daemon 比 hub 新或旧一个 minor 都能工作
 - 0.x 阶段不保证，升级前看 [CHANGELOG](../CHANGELOG.md)；拿不准时 hub、daemon、CLI、SDK 一起升
 
+**重启前看一眼有多少人在用。** 管理员在 `/admin` 的「hub 状态」（`GET /api/admin/status`，[spec/hub.md § 2.4](spec/hub.md#24-管理-apiadmin)）里能看到此刻的数字：在线设备、在线账号、开着客户端的账号（有浏览器、CLI 或 SDK 设备在线）、在线节点和客户端、最近一分钟有流量的连接、进行中的配对和接入、预览连接。只有数量，不含账号、设备和 IP；数字来自 hub 内存，重启后从零开始。重启会打断的东西（[spec/hub.md § 3.1](spec/hub.md#31-连接生命周期)）：
+
+- `docker stop`（SIGTERM）触发优雅关停：hub 不再接受新连接，给每条连接发 `4002 restarting`，最多等 5 秒再退出。daemon、Web UI 和 SDK 收到 `4002` 后在 1–3 秒的随机延迟后重连；新 hub 起来之前连不上的，按各自的退避继续重试
+- 进行中的配对和接入只在 hub 内存里，会失败，要重新发起
+- 预览连接一起断开，预览页按自己的退避（从 0.5 秒起）重连，断开时正在加载的请求失败
+- 转发中的信封随连接断掉，hub 不暂存它们；重连后两端重新握手，还没完成的请求和传输由客户端重试或报错
+
 ## 7. 健康检查与监控
 
 - `GET /healthz` → `200`，JSON `{ "status": "ok", "version": … }`，不查库
 - `GET /readyz` → 数据库可用时 `200`，否则 `503`（SQLite 和 Postgres 都是）
 - 镜像自带的 `HEALTHCHECK`（`anycon-hub healthcheck`）只探本机的 `/healthz`，不读 `ANYCON_DATABASE_URL`、不连库：用 Postgres 时它照样能用，Postgres 暂时不可用也不会让容器被判 unhealthy 而被重启（反代和编排要「数据库可用才接流量」的话用 `/readyz`）
-- `/metrics`（Prometheus 格式：在线设备数、信封转发速率、未送达数、握手失败数、队列深度）是 v0.3 的计划，v0.1 没有
+- `/metrics`（Prometheus 格式：在线设备数、信封转发速率、未送达数、握手失败数、队列深度）是 v0.3 的计划，v0.1 没有。在那之前，此刻的在线人数看 `/admin` 的「hub 状态」（§ 6）
 
 ### 7.1 探测什么
 
@@ -423,12 +430,19 @@ daemon 数据目录 `~/.anycon/`：
 ├── daemon.sock                 本机 CLI 通道，0600（Windows 上是命名管道 \\.\pipe\anycon-<hash>，不在这个目录里）
 ├── logs/                       daemon 日志，默认保留 7 天
 ├── client/<hub-host>/          CLI 作为客户端设备时的密钥和 token
+├── update-check.json           更新检查上次的时间和结果
 └── blobs/                      图片附件（ADR-35）
 ```
 
 完整说明见 [spec/cli.md § 2](spec/cli.md#2-目录与配置)。Windows 上 `~` 是 `%USERPROFILE%`；这个目录没有权限位，daemon 给它设一份只有当前用户、SYSTEM 和 Administrators 能访问的 DACL，里面的文件继承它。
 
 Mac 睡眠后 daemon 会自动重连，但如果 Mac mini 要 7×24 可用，系统设置里要关掉「允许电脑自动进入睡眠」。
+
+**更新检查**（[ADR-57](decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)，[spec/daemon.md § 24](spec/daemon.md#24-更新检查)）：缺省开着时，daemon 起来几分钟后、之后大约每 24 小时一次向 `https://anycon.ai/releases.json` 发一个请求，有更新的正式版本就在 `anycon doctor`、Web UI 节点设置的「关于」和 daemon 日志里提示。它不下载、不安装任何东西，升级照上面的做法自己来。请求里只有 `User-Agent: anycon/<版本> (<os>; <arch>)`，没有账号、设备、节点或安装的标识；anycon.ai 的服务器和它前面的网络服务商（目前是 Cloudflare）看得到请求的 IP 地址、时间和 User-Agent，项目把这些请求记在访问日志里最多 30 天，用来按国家、版本和平台数活跃的 daemon，之后只留计数。
+
+- 关掉：`anycon config set update.check false`（写进 `config.toml` 的 `[update] check`，热加载，不用重启），或在服务的环境里设 `ANYCON_UPDATE_CHECK=0`。已配对设备不能远程打开或关掉它
+- 出站防火墙只放行 hub 的机器：不用额外放行，检查失败是安静的（debug 日志，连续 3 次失败时一行 warn），不影响别的功能；不想要那行 warn 就关掉它
+- 自己从源码 `cargo build`（不带 `--release`）的二进制是开发构建，缺省不检查
 
 ## 9. 公共 hub 与 `multi` 模式
 
@@ -466,7 +480,7 @@ docker run -d --name anycon-hub \
 
 dev server 预览用 `aiplace.app`（`https://<label>.aiplace.app`），每个账号的预览流量另有限速；预览内容经 Noise 隧道，公共 hub 只转发密文。
 
-登录方式：邮箱验证码、GitHub、Google，取决于它配了哪些。不提供 token 登录，没有密码；passkey 还没实现。hub 数据库里关于你的有显示名、邮箱（你绑定的，或 GitHub / Google 声明已验证的）、关联的 GitHub / Google 账号的提供方和稳定用户 ID（不存用户名、头像和 access token）、设备列表和审计记录。
+登录方式：邮箱验证码、GitHub、Google，取决于它配了哪些。不提供 token 登录，没有密码；passkey 还没实现。hub 数据库里关于你的有显示名、邮箱（你绑定的，或 GitHub / Google 声明已验证的）、关联的 GitHub / Google 账号的提供方和稳定用户 ID（不存用户名、头像和 access token）、设备列表（每台设备最近一次被看到的时间，和那时连接来源 IP 的前缀：IPv4 的前 24 位、IPv6 的前 48 位，不是完整 IP，只留最近一次，在线时每 10 分钟更新）和审计记录。这个前缀随设备记录保留，吊销的设备也一样（不再更新），删除账号时一起删掉。
 
 **删除账号**：用户可以在「账号设置 → 个人资料」自己删（需要 10 分钟内登录过，否则先退出再登录一次），管理员可以在 `/admin` 删别人的。删除会立刻断开这个账号的所有连接，并从 hub 删掉它的设备、配对、登录方式、推送订阅和审计记录，只留一条没有 IP 的删除记录；节点上的会话历史不受影响，节点要接入别的账号或 hub 得重新配对。
 

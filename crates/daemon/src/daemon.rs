@@ -21,6 +21,7 @@ use crate::preview::{Preview, PreviewDeps};
 use crate::rpc::Rpc;
 use crate::sessions::{SessionDeps, Sessions};
 use crate::store::{Store, StoreError};
+use crate::update::{UpdateCheckOptions, UpdateChecker};
 use crate::util::now_ms;
 use crate::workspace::{WatchGuard, Workspace};
 use crate::worktree::WorktreeMgr;
@@ -69,6 +70,9 @@ pub struct DaemonOptions {
     pub env_extra: Vec<(String, String)>,
     /// 到 hub 的连接多久收不到任何帧就重连（默认 [`crate::hub::HUB_SILENCE_TIMEOUT`]，测试里调短）。
     pub hub_silence_timeout: Duration,
+    /// 更新检查去哪里（ADR-57）。缺省是 anycon.ai；测试夹具用 [`UpdateCheckOptions::off`] 或本机回环地址。
+    /// 没有对应的配置键和环境变量：用户不能借它把 daemon 指向任意主机。
+    pub update_check: UpdateCheckOptions,
 }
 
 impl Default for DaemonOptions {
@@ -81,6 +85,7 @@ impl Default for DaemonOptions {
             lock: true,
             env_extra: Vec::new(),
             hub_silence_timeout: crate::hub::HUB_SILENCE_TIMEOUT,
+            update_check: UpdateCheckOptions::default(),
         }
     }
 }
@@ -109,6 +114,8 @@ pub struct Ctx {
     pub identity: Arc<Identity>,
     /// `anycon export` / `import`：互斥和导入上限。
     pub transfer: crate::transfer::Transfer,
+    /// 更新检查（ADR-57）：`node.info.update_available` 和 doctor 读它。
+    pub updates: Arc<UpdateChecker>,
     pub started_at_ms: u64,
     pub started: Instant,
     pub shutdown_tx: watch::Sender<bool>,
@@ -259,6 +266,7 @@ impl Daemon {
         });
         peers.bind_preview(&preview);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let updates = UpdateChecker::new(&paths, config.clone(), opts.update_check.clone());
         let ctx = Arc::new(Ctx {
             paths: paths.clone(),
             config: config.clone(),
@@ -279,6 +287,7 @@ impl Daemon {
             outbox: outbox.clone(),
             identity: identity.clone(),
             transfer: Default::default(),
+            updates: updates.clone(),
             started_at_ms: now_ms(),
             started: Instant::now(),
             shutdown_tx,
@@ -307,6 +316,11 @@ impl Daemon {
             enroll.spawn_config_watcher(),
         ];
         tasks.extend(preview.spawn_background());
+        // 更新检查：第一次在几分钟之后，之后大约每天一次；关着时不发请求（ADR-57）
+        if let Some(off) = updates.off_reason() {
+            tracing::debug!(reason = off.describe(), "update check is off");
+        }
+        tasks.push(updates.spawn(shutdown_rx.clone()));
         // 出站保留缓冲里陈旧的信封（hub 早就不会再退回它们了）定期放掉，空闲的对端不占内存
         {
             let outbox = outbox.clone();

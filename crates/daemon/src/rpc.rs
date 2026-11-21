@@ -759,6 +759,7 @@ impl Rpc {
                     branch_prefix: cfg.worktree.branch_prefix.clone(),
                 }
             }),
+            update_available: c.updates.available(),
         }
     }
 

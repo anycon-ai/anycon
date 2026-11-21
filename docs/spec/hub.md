@@ -111,7 +111,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 
 | 路径 | 说明 |
 |---|---|
-| `GET /api/admin/status` | 模式、版本、启动时间、在线连接数、设备数、账号数、队列状态、数据库大小 |
+| `GET /api/admin/status` | 模式、版本、启动时间、运行时长、设备数、账号数、队列状态、数据库大小，加上此刻的在线计数：`online_connections`（全部连接，含配对用的临时连接和预览连接）、`online_devices`（永久连接）、`online_accounts`（有永久连接在线的账号）、`online_accounts_with_client`（有非 daemon 设备在线的账号，即有人开着客户端）、`online_daemons` / `online_clients`（永久连接按设备类型分）、`active_connections_1m`（最近 60 秒内转发过或收到过 `data` 信封的永久连接）、`pairing_in_progress`（进行中的配对撮合加接入会话；还在等人输入短码的登记不算）、`online_previews`（预览连接）。在线计数都从 hub 内存里的路由表、撮合表和接入会话表现算，**只有数量**：响应和日志里没有账号 id、设备 id 和 IP；重启后从零开始。重启前可以看它判断会打断多少人（会打断什么见 § 3.1「关停」） |
 | `GET /api/admin/accounts` | 账号列表（只读元数据）：`{ id, display_name, email?, is_admin, admin_by_config, created_at_ms }`，按创建时间从早到晚。`is_admin` 是有效值；`admin_by_config` 为真表示这个账号是靠 `ANYCON_ADMIN_EMAILS` 当上的（要取消只能改配置）。分页见 § 2.5。`?q=`：显示名或邮箱包含它，或者**正好**等于账号 id；首尾空白去掉，空白等于没给，超过 200 个字符 `400 bad_request`；带 `q` 时分页方式不变。过滤和分页都在 SQL 里做（`LIKE … ESCAPE`，`q` 里的 `%`、`_` 当字面字符），不把账号表读进内存。**只有 ASCII 字母不区分大小写**，两个存储后端一样（SQLite 的 `lower()` 只折叠 ASCII；Postgres 的 `lower()` 会随数据库的 locale 折叠非 ASCII 字符，所以那边用 `translate()` 只把 `A`–`Z` 换成 `a`–`z`；邮箱存的本来就是小写）：显示名里的非 ASCII 字符（`É`、`ü`）要大小写完全一致才命中，管理员搜索可以接受这个限制 |
 | `POST /api/admin/accounts/:id/admin` · `DELETE` | 授予 / 取消库里的管理员标记，回更新后的账号行（`200`）。幂等：已经是（不是）管理员也 `200`。标记真的变了才写审计 `admin_granted` / `admin_revoked`（`account_id` = 目标账号，`detail.by` = 操作者的账号 id）。错误：目标是自己 `400 cannot_modify_self`；取消的是靠 `ANYCON_ADMIN_EMAILS` 当上的管理员 `409 admin_by_config`（`DELETE` 只清库里的标记，改变不了配置）；取消 `single` 的 bootstrap 管理员 `409 bootstrap_admin`；目标不存在 `404 not_found` |
 | `DELETE /api/admin/accounts/:id` | 删账号，`204`。过程同 `DELETE /api/me`（§ 2.6），审计里 `detail.by = admin`。错误：目标是自己 `400 cannot_modify_self`（自己删走 `DELETE /api/me`）；`single` 的 bootstrap 管理员 `409 bootstrap_admin`；不存在 `404 not_found` |
@@ -155,7 +155,8 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | 单连接 | 一个设备同时只允许一条连接。新连接认证成功后旧连接收到 close code `4001 superseded`。手机切网时常见。顶掉自己的旧连接不算新增一条在线连接（§ 7.1） |
 | 上线通知 | 认证成功后，hub 向该设备发 `auth_ok { device_id, server_time_ms, peers_online, quota? }`（`peers_online` 是此刻在线的配对设备列表；`quota` 只在 `multi` 里对永久连接带，是账号的设备数 / daemon 数 / 在线连接数和各自的上限，`single`、临时连接和预览连接没有，§ 7.1），并向这些**在线的配对设备**发 `peer_online`。`multi` 里账号的设备数、daemon 数或在线连接数变了，hub 再向该账号此刻在线的其他永久连接发 `quota_update` |
 | 心跳 | hub 每 30 秒 ping；90 秒无 pong 断开。设备侧不需要自己发心跳，但可以靠这些 ping 判断连接是否还活着：daemon 75 秒收不到任何帧就断开重连（daemon.md § 15） |
-| 下线 | 连接关闭后向配对设备发 `peer_offline`。断线后 `last_seen` 更新 |
+| 在线期间 | 永久连接（带设备 token 认证的，或配对 / 接入后原地升级的）一直连着时，hub 每 10 分钟（`Timing::device_seen_refresh`，没有对应的环境变量，测试里调短）把此刻所有永久连接的 `last_seen` 和 `last_ip_prefix` 一批写进库（按设备 id 排序分块，每块一个事务；在后台任务里写，不挡任何连接的读循环；上一轮没写完就跳过这一轮）。所以「`last_seen` 在最近 15 分钟内」约等于「此刻在线或刚下线」，连了几天的设备也不会显得很久没出现。临时连接和预览连接不是设备，不写 |
+| 下线 | 连接关闭后向配对设备发 `peer_offline`。认证成功后（后台）和断线后各写一次 `last_seen`，同时写 `last_ip_prefix`（这条连接的对端 IP 的前缀，§ 5）。已吊销的设备不再写，留着吊销前的值 |
 | 关停 | hub 优雅关停时先发 close code `4002 restarting`，客户端据此用短退避（1–3 秒抖动）重连，而不是指数退避 |
 
 close code 全表（`auth_fail` 总是先于 close 发出）：
@@ -250,6 +251,8 @@ device
   prev_token_hash · prev_token_expires_at   轮换之前的那个 token 的哈希和它的宽限截止时间（没轮换过是空）
   token_rotated_at                          上一次轮换的时间（没轮换过是空）
   created_at · last_seen_at · revoked_at
+  last_ip_prefix  最近一次被看到（写 last_seen_at）时那条连接的对端 IP 前缀：IPv4 /24、IPv6 /48，
+                  和 web_sessions、hub_audit 的 ip_prefix 同一格式，不存完整 IP；每次覆盖，只有最近一次，不是历史
 ```
 
 - device token 是 32 字节随机数（64 位小写 hex），配对确认时签发，只传一次；客户端存在自己的配置目录 / IndexedDB。hub 只存哈希
@@ -263,6 +266,7 @@ device
   - **被别人抢先轮换的后果**：谁拿着当前有效的 token（泄露、旧备份）并抢在设备自己之前发了 `rotate_token`，新 token 归他，原持有者手里的 token 60 秒后失效（它下一次认证得到 `auth_fail { invalid }`，客户端提示需要重新配对）。这时要重新配对，并在设备列表里吊销原来的设备：在吊销之前，这个设备 id 和它的配对关系属于拿着新 token 的人。反过来，**旧** token 的持有者怎么都轮换不了：设备自己轮换之后，用旧 token（宽限内仍能连接）连上来的连接得不到新 token，哪怕过了 1 分钟、哪怕连接活过了宽限期，所以泄露的旧 token 最多在 60 秒宽限内能以这台设备的身份连 hub，之后就失效，抢不走设备。轮换不会让已经拿到**当前**有效 token 的人立刻失效，它限制的是泄露的 token 还能用多久
   - **已知限制：回执丢了又用旧 token 重连**：hub 写库成功之后才发 `token_rotated`。回执要是没送到客户端（连接在这之前断了），客户端手里还是旧 token，它在 60 秒宽限内用旧 token 重连能连上，但这条连接不是用当前 token 认证的，**不能再请求轮换**；宽限一过旧 token 就失效，这台设备只能重新配对（并吊销旧设备）。客户端的重发（75 秒后再发）在两种情形下有用：请求被当作「太频繁」忽略了，或者回执丢了而连接没断（hub 记着这条连接用的已经是新 token）。这条限制是故意的：放开它就等于让旧 token 的持有者也能轮换
 - 吊销 = `revoked_at` 置位，不物理删除，保留审计。连接立即断开，close code `4004 revoked`。吊销的设备不计入配额（§ 7.1）。删账号则是物理删除它名下的全部设备记录（§ 2.6）
+- `last_seen_at` 和 `last_ip_prefix` 在连接建立、在线期间每 10 分钟、断开时更新（§ 3.1）。`last_ip_prefix` 只在库里：不经任何 HTTP / WebSocket 接口返回，不进日志。它和设备行同生命周期：吊销后不再更新但留在行里（吊销的设备行本来就保留），删账号时随设备行一起删除。用途是运营者离线统计（比如按地区数用户），hub 自己不读它，也不做 GeoIP
 - hub **不存设备的 Noise 公钥**。配对关系只是一条 `(device_a, device_b)` 记录，用于路由判定
 
 ## 6. 通知
@@ -357,7 +361,7 @@ device
 | `email_codes` | 规范化的邮箱、用途（`login` / `bind`）、账号（`bind` 时）、码哈希、过期、尝试次数、创建时间。登录码每个邮箱最多同时有 3 个有效的（新码不让旧码作废，别人请求新码顶不掉你手里那个）；绑定码按（账号，邮箱）存，别的账号请求同一个邮箱的绑定码影响不到你；`accounts` 另有 `lower(email)` 的唯一索引兜底 |
 | `oauth_states` | state 的哈希（主键）、provider、用途（`login` / `link` / `invite`）、account_id（`link` 用途）、invite_hash（`invite` 用途）、next_path、PKCE verifier、创建和过期时间。10 分钟有效，回调时原子取走（单次使用），过期的行由每分钟的清理任务删除；随账号级联删除 |
 | `invites` | code 哈希、created_by、note、expires、used_by |
-| `devices` | 见 § 5（轮换用的 `prev_token_hash`、`prev_token_expires_at_ms`、`token_rotated_at_ms` 三列在迁移 `0004_token_rotation.sql`） |
+| `devices` | 见 § 5（轮换用的 `prev_token_hash`、`prev_token_expires_at_ms`、`token_rotated_at_ms` 三列在迁移 `0004_token_rotation.sql`；`last_ip_prefix`——最近一次被看到时的 IP 前缀，不是完整 IP——在 `0005_device_ip_prefix.sql`） |
 | `pairings` | device_a、device_b、created_at；无向，存归一化顺序 |
 | `push_subscriptions` | id、device_id（唯一：一台设备一条）、endpoint、p256dh、auth、created |
 | `notification_prefs` | 见 § 6.3 |
@@ -366,13 +370,13 @@ device
 | `preview_labels` · `preview_tokens` | 预览 label 绑定的节点、预览令牌哈希（§ 13.7） |
 | `kv` | schema 版本等杂项；`single` 的 bootstrap token 哈希（`admin_token_hash`）和 bootstrap 管理员的账号 id（`bootstrap_admin_id`，§ 2.4）（VAPID 密钥在 `${ANYCON_DATA_DIR}/vapid.json`，不在库里，§ 6.1） |
 
-进行中的配对（`match_id`、撮合状态）、进行中的接入会话、限速计数和每日配对次数**只在内存**，不落库。`identities` 和 `oauth_states` 在迁移 `0003_identities.sql` 里，设备 token 轮换的三列在 `0004_token_rotation.sql` 里；迁移只前进。
+进行中的配对（`match_id`、撮合状态）、进行中的接入会话、限速计数和每日配对次数**只在内存**，不落库。`identities` 和 `oauth_states` 在迁移 `0003_identities.sql` 里，设备 token 轮换的三列在 `0004_token_rotation.sql` 里，`devices.last_ip_prefix` 在 `0005_device_ip_prefix.sql` 里；迁移只前进。
 
 ### 8.1 存储后端：SQLite 和 Postgres
 
 `ANYCON_DATABASE_URL` 不设（或 `sqlite:…`）用 SQLite，`postgres://…` / `postgresql://…` 用 Postgres（[ADR-12](../decisions.md#adr-12-sqlx-双后端trait-抽象)）。hub 的其余代码只依赖 `Store` trait，两个实现的行为一致，由同一套测试（`crates/hub/src/store/conformance.rs`）验证。
 
-- **迁移**：两套，`crates/hub/migrations/sqlite/` 和 `crates/hub/migrations/postgres/`，编号和名字一一对应（`0001_init`、`0002_preview`、`0003_identities`、`0004_token_rotation`……），启动时跑当前后端那一套，只前进。以后加迁移两边按同一个编号各加一份（有测试检查两个目录的文件名一致）
+- **迁移**：两套，`crates/hub/migrations/sqlite/` 和 `crates/hub/migrations/postgres/`，编号和名字一一对应（`0001_init`、`0002_preview`、`0003_identities`、`0004_token_rotation`、`0005_device_ip_prefix`……），启动时跑当前后端那一套，只前进。以后加迁移两边按同一个编号各加一份（有测试检查两个目录的文件名一致）
 - **类型**：毫秒时间戳是 SQLite `INTEGER` / Postgres `BIGINT`（Rust 侧 `u64`，字段名以 `_ms` 结尾；`devices` 的 `prev_token_expires_at_ms`、`token_rotated_at_ms` 也是，`prev_token_hash` 是 `TEXT`）；布尔（`is_admin`、`push`、`email`）是 `INTEGER` 0/1 / `BOOLEAN`；自增 id（`email_codes.id`、`hub_audit.id`）是 `AUTOINCREMENT` / `GENERATED ALWAYS AS IDENTITY`；`hub_audit.detail` 是 JSON 文本，两边都是 `TEXT`（Postgres 不用 JSONB：hub 不解析它）。`preview_labels`、`preview_tokens` 在 Postgres 里多一个 `seq` 自增列：SQLite 靠隐含的 rowid 给同一毫秒写入的行排先后，Postgres 没有 rowid
 - **排序规则**：SQLite 的文本按字节比较，Postgres 的默认排序规则随数据库的 locale。需要和代码里一致的地方（`pairings` 的 `device_a < device_b`、`ORDER BY id`、keyset 分页的游标）在 Postgres 里显式用 `COLLATE "C"`，所以两边的排序和翻页结果相同
 
@@ -389,6 +393,7 @@ device
 | 预览 label 先到先得、每节点 label 数、每设备令牌数（`issue_preview_token`） | 先 `SELECT … FOR NO KEY UPDATE` 锁住节点和签发设备的 `devices` 行（按 id 排序）：同一节点 / 设备的并发签发排队；label 的先到先得靠主键上的 `ON CONFLICT DO NOTHING` |
 | 吊销设备（`revoke_device`） | 先 `SELECT … FOR UPDATE` 锁设备行：和并发的配对、令牌签发（外键检查拿 `FOR KEY SHARE`）互斥，之后的删除看得到它们已提交的行；并发的第二次吊销在新版本上看到已吊销，返回空 |
 | 设备 token 轮换（`rotate_device_token`） | 一条 `UPDATE`，`WHERE` 里带「没吊销、`token_hash` 还是请求方认证用的那个、距上次轮换够久」，和 SQLite 一样：并发的第二条等第一条提交（行锁），Postgres 在新版本的行上重新判断 `WHERE`，`token_hash` 已经变了，0 行，只有一个赢家；随后的 `SELECT` 区分 `Stale` / `TooSoon` / `Unavailable`。它和吊销（`FOR UPDATE`）互斥：吊销先提交就是 `Unavailable` |
+| 在线设备的 `last_seen` 定期刷新（`touch_devices_seen`） | 每块一个事务，行按设备 id 的字节序逐条 `UPDATE`（和别处锁 `devices` 行的顺序一致）；撞上死锁整块重试，更新本身是幂等的 |
 | 删账号（`delete_account`） | 先 `SELECT … FOR UPDATE` 锁账号行：并发的第二个删除等第一个提交，看不到这个账号，返回 `false`，不多写墓碑审计 |
 
 「移除登录方式」一类跨多条语句的读后改（解绑邮箱、解除 OAuth 绑定、删登录 token）靠 hub 进程内按账号的锁串行化，不在库里，和后端无关。每日配对名额、限速、在线连接数在内存里，不涉及存储。库里没有「最后一个管理员不能取消」这类规则：取消管理员只拦 `single` 的 bootstrap 管理员和 `ANYCON_ADMIN_EMAILS` 派生的管理员，两者都只看配置，不看库里的状态。

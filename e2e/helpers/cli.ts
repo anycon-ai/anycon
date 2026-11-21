@@ -10,7 +10,14 @@ import { waitFor } from './process.js'
 const execFileAsync = promisify(execFile)
 
 export function cliEnv(state: Pick<E2EState, 'daemonHome'>): NodeJS.ProcessEnv {
-  return { ...process.env, ANYCON_HOME: state.daemonHome, ANYCON_MOCK_AGENT: '1', NO_COLOR: '1' }
+  // ANYCON_UPDATE_CHECK=0：用例里重启 daemon 时也不做更新检查（ADR-57）
+  return {
+    ...process.env,
+    ANYCON_HOME: state.daemonHome,
+    ANYCON_MOCK_AGENT: '1',
+    ANYCON_UPDATE_CHECK: '0',
+    NO_COLOR: '1',
+  }
 }
 
 /** 跑一条 `anycon …` 到结束，返回 stdout。 */

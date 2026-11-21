@@ -323,7 +323,13 @@ async fn single_instance_lock_and_not_initialized() {
     let td = TestDaemon::start_with(&[], true).await;
     let second = Daemon::start(
         td.paths.clone(),
-        DaemonOptions { hub: false, socket: false, login_shell: Some(false), ..Default::default() },
+        DaemonOptions {
+            hub: false,
+            socket: false,
+            login_shell: Some(false),
+            update_check: anycon_daemon::update::UpdateCheckOptions::off(),
+            ..Default::default()
+        },
     )
     .await;
     match second {
@@ -337,7 +343,12 @@ async fn single_instance_lock_and_not_initialized() {
     let d = tempfile::tempdir().unwrap();
     let r = Daemon::start(
         anycon_daemon::config::Paths::new(d.path().join("nothing")),
-        DaemonOptions { hub: false, socket: false, ..Default::default() },
+        DaemonOptions {
+            hub: false,
+            socket: false,
+            update_check: anycon_daemon::update::UpdateCheckOptions::off(),
+            ..Default::default()
+        },
     )
     .await;
     assert!(matches!(r, Err(ref e) if e.is_not_initialized()), "{:?}", r.err());

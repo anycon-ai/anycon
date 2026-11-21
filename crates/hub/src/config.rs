@@ -295,6 +295,9 @@ pub struct Timing {
     pub token_grace: Duration,
     /// 同一设备两次轮换之间的最短间隔（docs/spec/hub.md § 5：1 分钟）；更早到达的 `rotate_token` 被忽略。
     pub token_rotate_min_interval: Duration,
+    /// 一直连着的设备多久刷新一次 `last_seen_ms` / `last_ip_prefix`（docs/spec/hub.md § 3.1：10 分钟）。
+    /// 所以「`last_seen` 在最近 15 分钟内」约等于「此刻在线或刚下线」。
+    pub device_seen_refresh: Duration,
 }
 
 impl Default for Timing {
@@ -319,6 +322,7 @@ impl Default for Timing {
             preview_token_ttl: Duration::from_secs(24 * 3600),
             token_grace: Duration::from_secs(60),
             token_rotate_min_interval: Duration::from_secs(60),
+            device_seen_refresh: Duration::from_secs(10 * 60),
         }
     }
 }

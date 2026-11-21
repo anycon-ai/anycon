@@ -251,18 +251,52 @@ fn build_mailer(config: &Config) -> Result<Option<Arc<dyn mail::Mailer>>, mail::
     Ok(Some(Arc::new(mail::SmtpMailer::new(smtp, from.mailbox.clone())?)))
 }
 
+/// 一直连着的设备刷新一次 `last_seen_ms` / `last_ip_prefix`（docs/spec/hub.md § 3.1）：对路由表里此刻的永久连接拍个快照，
+/// 一批写进库。连接上下线时各自写一次（`ws::conn`），这里只管「一直连着」的那些，所以连了几天的设备也不会显得很久没出现。
+/// 临时连接和预览连接不是设备，不在快照里。日志只记个数。
+async fn refresh_devices_seen(state: &AppState) {
+    let seen: Vec<store::DeviceSeen> = state
+        .registry
+        .permanent_endpoints()
+        .into_iter()
+        .map(|(id, ip)| store::DeviceSeen { id, ip_prefix: util::ip_prefix(ip) })
+        .collect();
+    if seen.is_empty() {
+        return;
+    }
+    match state.store.touch_devices_seen(&seen, now_ms()).await {
+        Ok(()) => tracing::debug!(devices = seen.len(), "refreshed last_seen of connected devices"),
+        Err(e) => tracing::warn!(error = %e, devices = seen.len(), "failed to refresh last_seen of connected devices"),
+    }
+}
+
 /// 定时清理：过期的配对登记 / 撮合和接入会话（每秒）、限速桶、过期会话、过期的邮箱验证码 / 预览令牌 / OAuth state（每分钟）、90 天前的审计（每小时）。
+/// 另外每 `timing.device_seen_refresh` 刷新一次在线设备的 `last_seen`（[`refresh_devices_seen`]）。
 async fn background_tasks(state: Arc<AppState>) {
     const AUDIT_RETENTION_MS: u64 = 90 * 24 * 3600 * 1000;
     let skip = tokio::time::MissedTickBehavior::Skip;
     let mut every_sec = tokio::time::interval(Duration::from_secs(1));
     let mut every_min = tokio::time::interval(Duration::from_secs(60));
     let mut every_hour = tokio::time::interval(Duration::from_secs(3600));
+    // 第一次在一个周期之后：刚启动时还没有连接，连上的设备在认证时已经写过一次。
+    let refresh_period = state.config.timing.device_seen_refresh.max(Duration::from_millis(10));
+    let mut seen_refresh = tokio::time::interval_at(tokio::time::Instant::now() + refresh_period, refresh_period);
     every_sec.set_missed_tick_behavior(skip);
     every_min.set_missed_tick_behavior(skip);
     every_hour.set_missed_tick_behavior(skip);
+    seen_refresh.set_missed_tick_behavior(skip);
+    // 刷新在自己的任务里写库，不挡住每秒的清理；上一轮还没写完（库很慢）就跳过这一轮。
+    let mut refreshing: Option<JoinHandle<()>> = None;
     loop {
         tokio::select! {
+            _ = seen_refresh.tick() => {
+                if refreshing.as_ref().is_none_or(|h| h.is_finished()) {
+                    let st = state.clone();
+                    refreshing = Some(tokio::spawn(async move { refresh_devices_seen(&st).await }));
+                } else {
+                    tracing::debug!("previous last_seen refresh still running, skipping this round");
+                }
+            }
             _ = every_sec.tick() => {
                 state.broker.sweep();
                 state.enrolls.sweep();

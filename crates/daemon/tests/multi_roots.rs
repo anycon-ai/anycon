@@ -287,6 +287,7 @@ async fn start_error(roots: impl FnOnce(&Path, &Path, &Path) -> Vec<PathBuf>) ->
             socket: false,
             login_shell: Some(false),
             lock: false,
+            update_check: anycon_daemon::update::UpdateCheckOptions::off(),
             ..Default::default()
         },
     )

@@ -187,6 +187,8 @@ jobs:
     env:
       # daemon 默认启动时要跑 `$SHELL -ilc` 解析登录环境；CI 里没有用户 rc，关掉省几秒（测试夹具也各自设了一遍）。
       ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL: "false"
+      # 不向 anycon.ai 做更新检查（ADR-57）：开发构建本来就不检查，夹具也各自关了，这里再兜一层
+      ANYCON_UPDATE_CHECK: "0"
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2

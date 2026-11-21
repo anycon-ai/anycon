@@ -48,6 +48,8 @@ export async function startExtraDaemon(
     ...process.env,
     ANYCON_HOME: home,
     ANYCON_MOCK_AGENT: '1',
+    // 和 global-setup 一样：不做更新检查（ADR-57）
+    ANYCON_UPDATE_CHECK: '0',
     // 和 global-setup 一样：不跑登录 shell 解析环境，socket 立刻就绪
     ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL: 'false',
     NO_COLOR: '1',

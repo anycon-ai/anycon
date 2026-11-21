@@ -43,6 +43,18 @@ impl PgSchema {
         sqlx::query(sql).execute(&pool).await.unwrap();
         pool.close().await;
     }
+
+    /// 这台设备的 `(last_seen_ms, last_ip_prefix)`；没有这一行是 `None`。
+    pub async fn device_seen(&self, id: &str) -> Option<(Option<i64>, Option<String>)> {
+        let pool = PgPoolOptions::new().max_connections(1).connect(&self.base_url).await.unwrap();
+        let sql = AssertSqlSafe(format!(
+            "SELECT last_seen_ms, last_ip_prefix FROM \"{}\".devices WHERE id = $1",
+            self.schema
+        ));
+        let row = sqlx::query_as(sql).bind(id).fetch_optional(&pool).await.unwrap();
+        pool.close().await;
+        row
+    }
 }
 
 impl Drop for PgSchema {

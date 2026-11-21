@@ -1,6 +1,6 @@
 // /admin：multi 里没有邀请（接口是 404，页面也不显示、不请求）；账号管理两种模式都有。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installFakeApi } from '@/test/fakeApi'
 
@@ -43,6 +43,53 @@ describe('AdminPage', () => {
     expect(screen.queryByTestId('admin-invites')).toBeNull()
     expect(screen.queryByTestId('invite-new')).toBeNull()
     expect(api.callsTo('GET /api/invites')).toHaveLength(0)
+  })
+
+  it('status: every field the hub reports has a label, and an unknown one is shown by its key', async () => {
+    const status = {
+      mode: 'multi',
+      online_connections: 9,
+      online_devices: 7,
+      online_accounts: 4,
+      online_accounts_with_client: 2,
+      online_daemons: 3,
+      online_clients: 4,
+      active_connections_1m: 5,
+      pairing_in_progress: 1,
+      online_previews: 2,
+      queue_enabled: false,
+      db_size_bytes: 2048,
+      from_a_newer_hub: 1,
+    }
+    installFakeApi({
+      'GET /api/config': () => ({ mode: 'multi', protocol_version: 1, version: '0.0.0', login_methods: ['email'] }),
+      'GET /api/me': () => ({ id: 'me', display_name: 'Root', is_admin: true, login_methods: ['email'] }),
+      'GET /api/admin/status': () => status,
+      'GET /api/admin/accounts': () => [],
+    })
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <AdminPage />
+      </QueryClientProvider>,
+    )
+    const card = await screen.findByTestId('admin-status')
+    for (const label of [
+      'Connections now (all kinds)',
+      'Devices online',
+      'Accounts online',
+      'Accounts with a client open',
+      'Nodes online',
+      'Clients online',
+      'Connections with traffic in the last minute',
+      'Pairings and enrollments in progress',
+      'Preview connections',
+      'Offline queue',
+      'Database size',
+    ]) {
+      expect(within(card).getByText(label)).toBeInTheDocument()
+    }
+    expect(within(card).getByText('from_a_newer_hub')).toBeInTheDocument()
+    expect(within(card).queryByText('online_accounts')).toBeNull()
   })
 
   it('a non-admin sees the "administrators only" page and the hub is not asked for accounts', async () => {

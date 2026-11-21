@@ -898,6 +898,8 @@ pub struct TestDaemon {
     ready_agent: &'static str,
     /// 叠加到 daemon 环境上的变量（git 夹具：`GIT_CONFIG_GLOBAL` 等）。
     env_extra: Vec<(String, String)>,
+    /// 更新检查（ADR-57）：缺省关；[`TestDaemon::start_with_update_check`] 指向本机回环地址上的假服务器。
+    update_check: crate::update::UpdateCheckOptions,
 }
 
 pub struct TestClient {
@@ -918,20 +920,31 @@ impl TestDaemon {
 
     /// 用 `anycon_adapters::all()` 里的真 mock adapter（`agents.mock.enabled = true`）。
     pub async fn start_mock(overrides: &[(&str, &str)], socket: bool) -> TestDaemon {
-        Self::start_inner(overrides, socket, None, Kit::Real, false, vec![]).await
+        Self::start_inner(overrides, socket, None, Kit::Real, false, vec![], crate::update::UpdateCheckOptions::off())
+            .await
     }
 
     /// 带 ACP agent 的 daemon：adapter 集合是 daemon 默认的（三个内置的加上配置里的 ACP agent），注册表里的 ACP agent 全部关掉
     /// （不碰机器上真装着的），要测的 agent 用 `overrides` 配（`agents.acp.<name>.command` …）。`ready_agent`：等它探测完成。
     pub async fn start_acp(overrides: &[(&str, &str)], ready_agent: &'static str) -> TestDaemon {
-        Self::start_inner(overrides, false, None, Kit::Acp(ready_agent), false, vec![]).await
+        Self::start_inner(
+            overrides,
+            false,
+            None,
+            Kit::Acp(ready_agent),
+            false,
+            vec![],
+            crate::update::UpdateCheckOptions::off(),
+        )
+        .await
     }
 
     /// 带 git 夹具的 daemon（假 adapter）：daemon 的环境里 `GIT_CONFIG_GLOBAL` 指向临时文件（`user.name` / `user.email` /
     /// `init.defaultBranch = main`），`GIT_CONFIG_NOSYSTEM=1`，`PATH` 前面放着一个假的 `gh`（见 [`TestDaemon::set_gh`]）——
     /// 不读开发机的 `~/.gitconfig`，不联网。
     pub async fn start_git(overrides: &[(&str, &str)]) -> TestDaemon {
-        Self::start_inner(overrides, false, None, Kit::Fake, true, vec![]).await
+        Self::start_inner(overrides, false, None, Kit::Fake, true, vec![], crate::update::UpdateCheckOptions::off())
+            .await
     }
 
     /// daemon 的 `PATH` 里没有 `git`（`NodeCapabilities.worktree` 为 false）。
@@ -943,18 +956,34 @@ impl TestDaemon {
             Kit::Fake,
             false,
             vec![("PATH".into(), "/nonexistent-anycon-test-dir".into())],
+            crate::update::UpdateCheckOptions::off(),
         )
         .await
     }
 
     /// [`TestDaemon::start_git`]，用真的 mock agent（`anycon_adapters::all()`，支持 `write` 关键词）。
     pub async fn start_mock_git(overrides: &[(&str, &str)]) -> TestDaemon {
-        Self::start_inner(overrides, false, None, Kit::Real, true, vec![]).await
+        Self::start_inner(overrides, false, None, Kit::Real, true, vec![], crate::update::UpdateCheckOptions::off())
+            .await
+    }
+
+    /// 更新检查打开、指向 `opts` 的 daemon（假 adapter，不连 hub）。只给本机回环地址上的假服务器用。
+    pub async fn start_with_update_check(opts: crate::update::UpdateCheckOptions) -> TestDaemon {
+        Self::start_inner(&[], false, None, Kit::Fake, false, vec![], opts).await
     }
 
     /// `hub_url` 为 Some 时写进 `hub.url` 并连接 hub。
     pub async fn start_full(overrides: &[(&str, &str)], socket: bool, hub_url: Option<&str>) -> TestDaemon {
-        Self::start_inner(overrides, socket, hub_url, Kit::Fake, false, vec![]).await
+        Self::start_inner(
+            overrides,
+            socket,
+            hub_url,
+            Kit::Fake,
+            false,
+            vec![],
+            crate::update::UpdateCheckOptions::off(),
+        )
+        .await
     }
 
     async fn start_inner(
@@ -964,6 +993,7 @@ impl TestDaemon {
         kit: Kit,
         git: bool,
         extra: Vec<(String, String)>,
+        update_check: crate::update::UpdateCheckOptions,
     ) -> TestDaemon {
         let dir = tempfile::tempdir().unwrap();
         let mut env_extra: Vec<(String, String)> = extra;
@@ -1027,7 +1057,7 @@ impl TestDaemon {
         let fake = FakeAdapter::new("fake");
         let hub = hub_url.is_some();
         let lock = DaemonLock::acquire(&paths).unwrap();
-        let (daemon, ctx) = Self::boot(&paths, &fake, socket, hub, kit, &env_extra).await;
+        let (daemon, ctx) = Self::boot(&paths, &fake, socket, hub, kit, &env_extra, &update_check).await;
         // 等首次探测完成
         let t = Instant::now();
         while ctx.agents.info(ready_agent).is_none_or(|i| i.status != AgentStatus::Ready)
@@ -1049,6 +1079,7 @@ impl TestDaemon {
             kit,
             ready_agent,
             env_extra,
+            update_check,
         }
     }
 
@@ -1059,6 +1090,7 @@ impl TestDaemon {
         hub: bool,
         kit: Kit,
         env_extra: &[(String, String)],
+        update_check: &crate::update::UpdateCheckOptions,
     ) -> (Daemon, Arc<Ctx>) {
         let daemon = Daemon::start(
             paths.clone(),
@@ -1074,6 +1106,8 @@ impl TestDaemon {
                 // 锁由夹具持有（见 `TestDaemon::_lock`）
                 lock: false,
                 env_extra: env_extra.to_vec(),
+                // 测试不联系 anycon.ai（ADR-57）：缺省关，打开时只指向本机回环地址
+                update_check: update_check.clone(),
                 ..Default::default()
             },
         )
@@ -1088,7 +1122,9 @@ impl TestDaemon {
         if let Some(d) = self.daemon.take() {
             d.shutdown().await;
         }
-        let (daemon, ctx) = Self::boot(&self.paths, &self.fake, self.socket, self.hub, self.kit, &self.env_extra).await;
+        let (daemon, ctx) =
+            Self::boot(&self.paths, &self.fake, self.socket, self.hub, self.kit, &self.env_extra, &self.update_check)
+                .await;
         let t = Instant::now();
         while ctx.agents.info(self.ready_agent).is_none_or(|i| i.status != AgentStatus::Ready)
             && t.elapsed() < Duration::from_secs(5)

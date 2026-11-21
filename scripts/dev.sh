@@ -125,6 +125,8 @@ curl -fsS "$HUB_URL/healthz" >/dev/null 2>&1 || { echo "[dev] the hub did not be
 
 # ---------------------------------------------------------------- daemon
 export ANYCON_HOME="$DAEMON_HOME"
+# 开发用的 daemon 不向 anycon.ai 做更新检查（ADR-57）。开发构建本来就不检查，这里对 ANYCON_BIN 指向正式构建时也成立
+export ANYCON_UPDATE_CHECK=0
 if [ ! -f "$DAEMON_HOME/config.toml" ]; then
   echo "[dev] initializing the dev daemon in $DAEMON_HOME"
   "$ANYCON_BIN" init --hub "$HUB_URL" --workspace "$WORKSPACE" --name dev-node --yes

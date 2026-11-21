@@ -23,8 +23,12 @@ use super::{
     NotificationPref, PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome,
     RotateOutcome, SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
 };
-use super::{CreateDevicesOutcome, DeviceLimits};
+use super::{touch_order, CreateDevicesOutcome, DeviceLimits, DeviceSeen, TOUCH_CHUNK};
 use super::{Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthState};
+
+/// 设备被看到：吊销了的不动（见 [`Store::touch_device_seen`]）。
+const TOUCH_DEVICE_SQL: &str =
+    "UPDATE devices SET last_seen_ms = ?, last_ip_prefix = ? WHERE id = ? AND revoked_at_ms IS NULL";
 
 fn be(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
@@ -1065,13 +1069,32 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn touch_device_seen(&self, id: &str, now_ms: u64) -> StoreResult<()> {
-        sqlx::query("UPDATE devices SET last_seen_ms = ? WHERE id = ?")
+    async fn touch_device_seen(&self, id: &str, ip_prefix: &str, now_ms: u64) -> StoreResult<()> {
+        sqlx::query(TOUCH_DEVICE_SQL)
             .bind(now_ms as i64)
+            .bind(ip_prefix)
             .bind(id)
             .execute(&self.pool)
             .await
             .map_err(be)?;
+        Ok(())
+    }
+
+    async fn touch_devices_seen(&self, seen: &[DeviceSeen], now_ms: u64) -> StoreResult<()> {
+        let ordered = touch_order(seen);
+        for chunk in ordered.chunks(TOUCH_CHUNK) {
+            let mut tx = self.pool.begin().await.map_err(be)?;
+            for s in chunk {
+                sqlx::query(TOUCH_DEVICE_SQL)
+                    .bind(now_ms as i64)
+                    .bind(&s.ip_prefix)
+                    .bind(&s.id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(be)?;
+            }
+            tx.commit().await.map_err(be)?;
+        }
         Ok(())
     }
 

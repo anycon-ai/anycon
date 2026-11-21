@@ -86,6 +86,21 @@ impl TestHub {
         sqlx::query(sql).execute(&mut conn).await.unwrap();
     }
 
+    /// 直接读库里这台设备的 `(last_seen_ms, last_ip_prefix)`（`last_ip_prefix` 不经任何 API 返回）。没有这一行是 `None`。
+    pub async fn device_seen(&self, id: &str) -> Option<(Option<i64>, Option<String>)> {
+        if let Some(pg) = &self.pg {
+            return pg.device_seen(id).await;
+        }
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::ConnectOptions;
+        let mut conn = SqliteConnectOptions::new().filename(self.dir.path().join("hub.db")).connect().await.unwrap();
+        sqlx::query_as("SELECT last_seen_ms, last_ip_prefix FROM devices WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut conn)
+            .await
+            .unwrap()
+    }
+
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.handle.base_url(), path)
     }

@@ -1273,3 +1273,129 @@ async fn permanent_host_with_tokenless_joiner_and_no_cookie_still_joins_the_host
     let store = hub.handle.store();
     assert_eq!(store.get_device(&new_id).await.unwrap().unwrap().account_id, hub.admin_account_id());
 }
+
+// ---------------------------------------------------------------------------
+// last_seen 的定期刷新、管理页的在线计数
+// ---------------------------------------------------------------------------
+
+/// 反复读库里设备的 `(last_seen_ms, last_ip_prefix)`，直到 `last_seen_ms` 满足 `ok`（写库在后台，是异步的）。
+async fn wait_seen(hub: &TestHub, id: &str, ok: impl Fn(Option<i64>) -> bool) -> (Option<i64>, Option<String>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let seen = hub.device_seen(id).await.expect("the device row exists");
+        if ok(seen.0) {
+            return seen;
+        }
+        assert!(std::time::Instant::now() < deadline, "last_seen never got there: {seen:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_device_that_stays_connected_has_its_last_seen_and_ip_prefix_refreshed() {
+    let hub = TestHub::start_with(|c| c.timing.device_seen_refresh = Duration::from_millis(400)).await;
+    let node = hub.seed_device(DeviceKind::Daemon, "node").await;
+    let never = hub.seed_device(DeviceKind::Web, "never connects").await;
+    assert_eq!(hub.device_seen(&node.id).await, Some((None, None)));
+
+    let _conn = FakeDevice::connect(&hub, Some(&node.token), DeviceKind::Daemon, "node").await;
+    // 认证之后写一次：时间和对端 IP 的前缀（测试直连 127.0.0.1，不是完整 IP）
+    let (first, prefix) = wait_seen(&hub, &node.id, |s| s.is_some()).await;
+    assert_eq!(prefix.as_deref(), Some("127.0.0.0/24"));
+    // 一直连着：过了刷新周期又写了（连接没断，所以不是收尾的那一次）
+    let (later, prefix) = wait_seen(&hub, &node.id, |s| s > first).await;
+    assert!(hub.handle.state.registry.is_online(&node.id), "the connection is still up");
+    assert_eq!(prefix.as_deref(), Some("127.0.0.0/24"));
+    let (again, _) = wait_seen(&hub, &node.id, |s| s > later).await;
+    assert!(again > later, "it keeps refreshing while connected");
+
+    // 临时连接不是设备，没连过的设备也不会被刷新
+    let _tmp = FakeDevice::connect(&hub, None, DeviceKind::Daemon, "tmp").await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(hub.device_seen(&never.id).await, Some((None, None)));
+}
+
+#[tokio::test]
+async fn a_revoked_device_keeps_the_last_seen_it_had_when_it_was_revoked() {
+    let hub = TestHub::start_with(|c| c.timing.device_seen_refresh = Duration::from_millis(200)).await;
+    let node = hub.seed_device(DeviceKind::Daemon, "node").await;
+    let mut conn = FakeDevice::connect(&hub, Some(&node.token), DeviceKind::Daemon, "node").await;
+    wait_seen(&hub, &node.id, |s| s.is_some()).await;
+    hub.handle.store().revoke_device(&node.id, anycon_hub::util::now_ms()).await.unwrap();
+    let frozen = hub.device_seen(&node.id).await;
+    // 连接还在（这里只改了库）：刷新照样跑，但不再动这一行
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(hub.device_seen(&node.id).await, frozen);
+    drop(conn.ws.close(None).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(hub.device_seen(&node.id).await, frozen, "nor does the disconnect");
+}
+
+#[tokio::test]
+async fn admin_status_counts_who_is_online_and_who_is_active_without_naming_anyone() {
+    let hub = TestHub::start_preview().await;
+    let cookie = hub.login_admin().await;
+    let status = || async { hub.get("/api/admin/status", &cookie).await.json::<Value>().await.unwrap() };
+    let online = |v: &Value| {
+        [
+            "online_connections",
+            "online_devices",
+            "online_accounts",
+            "online_accounts_with_client",
+            "online_daemons",
+            "online_clients",
+            "active_connections_1m",
+            "pairing_in_progress",
+            "online_previews",
+        ]
+        .map(|k| v[k].as_u64().unwrap_or_else(|| panic!("{k} missing in {v}")))
+    };
+    assert_eq!(online(&status().await), [0; 9]);
+
+    let node = hub.seed_device(DeviceKind::Daemon, "node").await;
+    let web = hub.seed_device(DeviceKind::Web, "web").await;
+    let spare = hub.seed_device(DeviceKind::Daemon, "spare").await;
+    hub.seed_paired(&node, &web).await;
+    let mut n = FakeDevice::connect(&hub, Some(&node.token), DeviceKind::Daemon, "node").await;
+    let mut w = FakeDevice::connect(&hub, Some(&web.token), DeviceKind::Web, "web").await;
+    let mut s = FakeDevice::connect(&hub, Some(&spare.token), DeviceKind::Daemon, "spare").await;
+    // 一条正在撮合的配对：spare 登记，临时连接加入
+    let (_, match_id) = new_code();
+    s.pair_begin(&match_id).await;
+    let mut joiner = FakeDevice::connect(&hub, None, DeviceKind::Cli, "joiner").await;
+    joiner.send_control(&Control::PairJoin { match_id }).await;
+    expect_matched(&mut s, &mut joiner).await;
+    // 一条预览连接（节点是 node）
+    let label = new_label();
+    let token = hub.preview_token(&web, &node, &label).await;
+    let _p = FakeDevice::connect_preview(&hub, &label, &token).await;
+
+    // 连接：3 台设备 + 1 条临时 + 1 条预览；只有一个账号，它开着浏览器
+    assert_eq!(online(&status().await), [5, 3, 1, 1, 2, 1, 0, 1, 1]);
+
+    // web → node 一封 data：两端都算「最近一分钟有流量」
+    w.send_env(&node.id, Kind::Data, vec![1, 2, 3]).await;
+    loop {
+        let env = n.recv_env().await;
+        if env.kind == Kind::Data {
+            break;
+        }
+    }
+    let v = status().await;
+    assert_eq!(online(&v), [5, 3, 1, 1, 2, 1, 2, 1, 1]);
+    // 只有数量：响应里没有任何设备 id 和账号 id
+    let text = v.to_string();
+    for id in [&node.id, &web.id, &spare.id, &joiner.id, &hub.admin_account_id()] {
+        assert!(!text.contains(id.as_str()), "{text}");
+    }
+
+    // 浏览器下线：账号还在线（有 daemon），但没人开着客户端
+    drop(w.ws.close(None).await);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while hub.handle.state.registry.is_online(&web.id) {
+        assert!(std::time::Instant::now() < deadline, "the browser never went offline");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let v = status().await;
+    assert_eq!((v["online_accounts"].as_u64(), v["online_accounts_with_client"].as_u64()), (Some(1), Some(0)));
+}

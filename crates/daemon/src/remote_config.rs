@@ -448,6 +448,8 @@ mod tests {
             "preview.allow_ports",
             "sessions.max_attachment_bytes",
             "sessions.history_retention",
+            // 更新检查是机器主人在 config.toml / 环境变量里的决定，不远程改（ADR-57）
+            "update.check",
             "no.such.key",
         ] {
             let e = plan(&cfg, &[ch(key, json!(true))], &no_env);

@@ -179,6 +179,8 @@ pub async fn init(app: &App, a: InitArgs) -> Result<u8> {
         println!();
         println!("Next: `anycon daemon` (foreground) or `anycon service install`, then `anycon pair`.");
         println!("Optional: once the daemon is running, `anycon passwd` sets a node password. With it you can unlock this node from a new device when none of your paired devices is at hand.");
+        // 更新检查的说明（ADR-57）：每次 init 都打印，免得用户不知道 daemon 会联系 anycon.ai
+        println!("Updates: the daemon asks anycon.ai once a day whether a newer release exists (it sends its version, OS and architecture; anycon.ai sees your IP address). To turn this off: `anycon config set update.check false` or ANYCON_UPDATE_CHECK=0.");
     }
     Ok(0)
 }

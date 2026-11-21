@@ -111,13 +111,32 @@ export interface ApiInviteCreated {
   url: string
   expires_at_ms: number
 }
+/**
+ * `GET /api/admin/status`。`online_*`、`active_connections_1m`、`pairing_in_progress` 是 hub 内存里此刻的计数（只有数量），
+ * 重启后从零开始。管理页按键名逐项显示，标签在 `admin.statusKeys.*`；不认识的键原样显示（较新的 hub 可能多给几项）。
+ */
 export interface ApiAdminStatus {
   mode?: string
   version?: string
   started_at_ms?: number
-  connections?: number
+  uptime_ms?: number
+  /** 全部连接：设备、配对用的临时连接、预览连接。 */
+  online_connections?: number
+  online_devices?: number
+  online_accounts?: number
+  /** 有至少一台非 daemon 设备在线的账号。 */
+  online_accounts_with_client?: number
+  online_daemons?: number
+  online_clients?: number
+  /** 最近 60 秒内转发过或收到过 `data` 信封的设备连接。 */
+  active_connections_1m?: number
+  /** 进行中的配对撮合加接入会话。 */
+  pairing_in_progress?: number
+  online_previews?: number
   devices?: number
   accounts?: number
+  queue_enabled?: boolean
+  db_size_bytes?: number
   [k: string]: unknown
 }
 

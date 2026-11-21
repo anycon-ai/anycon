@@ -172,6 +172,8 @@ async fn tools_work_end_to_end_against_a_real_daemon() {
     );
     let create = tools.iter().find(|t| t["name"] == "create_session").unwrap();
     assert!(create["inputSchema"]["properties"].get("env").is_none());
+    // 决策档案（`rule.*`）没有对应的工具：agent 只能经 `anycon rule add` 提议、不能经 MCP 读写规则（docs/spec/daemon.md § 23.10）
+    assert!(names.iter().all(|n| !n.contains("rule")), "{names:?}");
 
     // list_agents / list_projects：值来自 daemon
     let agents = m.ok("list_agents", json!({})).await;

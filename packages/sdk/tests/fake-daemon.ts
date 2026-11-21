@@ -83,6 +83,13 @@ import {
 import { createHash } from 'node:crypto'
 import { WebSocket } from 'ws'
 
+// 规则（§ 23）：假 daemon 用的小函数。一条规则占 `- ` 加文字加换行的字节数（和真 daemon 一样的形状，只是没有模板的开头）。
+const ruleBytes = (r: Record<string, unknown>): number => 3 + Buffer.byteLength(r.text as string)
+const rulesTextOf = (chosen: Array<Record<string, unknown>>): string =>
+  chosen.length === 0
+    ? ''
+    : `Standing rules:\n${chosen.map((r) => `- ${r.text as string}`).join('\n')}`
+
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 export interface Peer {
@@ -598,6 +605,7 @@ export class FakeDaemon {
         file_attachments: true,
         audit: false,
         todo: true,
+        rules: true,
       },
       attachment_limits: {
         max_bytes: this.maxAttachmentBytes,
@@ -759,9 +767,116 @@ export class FakeDaemon {
       return {}
     })
 
+    // 规则（§ 23）：内存里的最小实现（按 id 幂等的 add、agent 标记 → pending / agent、if_updated_ms 的条件、
+    // 超出字数上限时的 over_budget、rule.changed 广播）。字数上限写死成 300 字节，让测试容易触发。
+    const rules = new Map<string, Record<string, unknown>>()
+    let ruleClock = 5000
+    const RULE_CAP = 300
+    const activeBytes = (): number =>
+      [...rules.values()].filter((r) => r.status === 'active').reduce((n, r) => n + ruleBytes(r), 0)
+    const overBudget = (bytes: number): AnyconRpcError =>
+      AnyconRpcError.of('invalid', 'over budget', {
+        field: 'text',
+        reason: 'over_budget',
+        bytes,
+        cap: RULE_CAP,
+      })
+    on<
+      {
+        id: string
+        text: string
+        project?: string
+        status?: string
+        source?: { kind: string }
+        agent?: boolean
+      },
+      unknown
+    >('rule.add', (p) => {
+      const existing = rules.get(p.id)
+      if (existing) return existing
+      if (!p.text)
+        throw new AnyconRpcError(-32602, 'invalid params', { code: 'invalid', field: 'text' })
+      const agent = p.agent === true
+      const status = agent ? 'pending' : (p.status ?? 'active')
+      const rule = {
+        id: p.id,
+        text: p.text,
+        ...(p.project !== undefined ? { project: p.project } : {}),
+        status,
+        sync: 'node',
+        source: agent
+          ? { kind: 'agent', device_id: peerId }
+          : { kind: p.source?.kind ?? 'manual', device_id: peerId },
+        created_ms: ++ruleClock,
+        updated_ms: ruleClock,
+      }
+      if (status === 'active' && activeBytes() + ruleBytes(rule) > RULE_CAP) {
+        throw overBudget(activeBytes() + ruleBytes(rule))
+      }
+      rules.set(p.id, rule)
+      this.#notifyAll('rule.changed', { id: p.id, rule, deleted: false })
+      return rule
+    })
+    on<{ status?: string; project?: string }, unknown>('rule.list', (p) => ({
+      rules: [...rules.values()].filter(
+        (r) =>
+          (p.status === undefined || r.status === p.status) &&
+          (p.project === undefined || r.project === p.project),
+      ),
+      budget: { cap: RULE_CAP, node_bytes: activeBytes(), projects: {} },
+    }))
+    on<{ id: string; if_updated_ms?: number; [k: string]: unknown }, unknown>(
+      'rule.update',
+      (p) => {
+        const rule = rules.get(p.id)
+        if (!rule) throw AnyconRpcError.of('not_found', 'no such rule')
+        if (p.if_updated_ms !== undefined && rule.updated_ms !== p.if_updated_ms) {
+          throw AnyconRpcError.of('invalid', 'the rule changed since it was read', {
+            field: 'if_updated_ms',
+            reason: 'changed',
+            updated_ms: rule.updated_ms as number,
+          })
+        }
+        const { id: _id, clear, if_updated_ms: _cond, ...patch } = p
+        const next = { ...rule, ...patch }
+        for (const f of (clear as string[] | undefined) ?? []) delete next[f]
+        if (next.status === 'active') {
+          const others = activeBytes() - (rule.status === 'active' ? ruleBytes(rule) : 0)
+          if (others + ruleBytes(next) > RULE_CAP) throw overBudget(others + ruleBytes(next))
+        }
+        next.updated_ms = ++ruleClock
+        rules.set(p.id, next)
+        this.#notifyAll('rule.changed', { id: p.id, rule: next, deleted: false })
+        return next
+      },
+    )
+    on<{ id: string; if_updated_ms?: number }, unknown>('rule.delete', (p) => {
+      const cur = rules.get(p.id)
+      if (!cur) throw AnyconRpcError.of('not_found', 'no such rule')
+      if (p.if_updated_ms !== undefined && cur.updated_ms !== p.if_updated_ms) {
+        throw AnyconRpcError.of('invalid', 'the rule changed since it was read', {
+          field: 'if_updated_ms',
+          reason: 'changed',
+          updated_ms: cur.updated_ms as number,
+        })
+      }
+      rules.delete(p.id)
+      this.#notifyAll('rule.changed', { id: p.id, deleted: true })
+      return {}
+    })
+    const chosenFor = (project?: string): Array<Record<string, unknown>> =>
+      [...rules.values()].filter(
+        (r) => r.status === 'active' && (r.project === undefined || r.project === project),
+      )
+    on<{ project?: string }, unknown>('rule.preview', (p) => {
+      const chosen = chosenFor(p.project)
+      const text = rulesTextOf(chosen)
+      return { text, rule_ids: chosen.map((r) => r.id), bytes: Buffer.byteLength(text) }
+    })
+
     // 派发和「经过」：和真 daemon 一样的形状，内容是写死的（SDK 只是薄封装）
     const todoEvents = new Map<string, Array<Record<string, unknown>>>()
-    on<{ id: string; no_push?: boolean }, { first_message: string }>(
+    on<{ id: string; no_push?: boolean }, { first_message: string; rules_text: string }>(
       'todo.dispatch_preview',
       (p) => {
         const todo = todos.get(p.id)
@@ -776,6 +891,7 @@ export class FakeDaemon {
         const noPush = p.no_push ?? true
         return {
           first_message: `${todo.title as string}${noPush ? '\n\nLeave your changes on the branch.' : ''}`,
+          rules_text: rulesTextOf(chosenFor(todo.project as string | undefined)),
         }
       },
     )

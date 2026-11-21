@@ -359,6 +359,38 @@ async fn walk_todo(w: &mut Walk<'_>) {
     w.call(methods::TODO_HISTORY, json!({ "id": id2, "before_seq": 1, "limit": 5 })).await;
 }
 
+/// 决策档案（docs/spec/daemon.md § 23）：每个方法的结果、`rule.changed` 通知和带规则的 `dispatched` 事件都按注册表里的类型校验。
+async fn walk_rule(w: &mut Walk<'_>) {
+    let id = "5e1c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a90";
+    let r = w
+        .call(methods::RULE_ADD, json!({ "id": id, "text": "write the failing test first", "project": "todoproj" }))
+        .await;
+    assert_eq!((r["status"].as_str(), r["sync"].as_str()), (Some("active"), Some("node")));
+    let id2 = "5e1c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a91";
+    w.call(
+        methods::RULE_ADD,
+        json!({ "id": id2, "text": "ask before adding a dependency", "status": "pending", "agent": true }),
+    )
+    .await;
+    let l = w.call(methods::RULE_LIST, json!({})).await;
+    assert_eq!(l["rules"].as_array().unwrap().len(), 2);
+    w.call(methods::RULE_LIST, json!({ "status": "pending", "project": "todoproj" })).await;
+    let u = w.call(methods::RULE_UPDATE, json!({ "id": id2, "status": "active", "text": "ask first" })).await;
+    w.call(methods::RULE_UPDATE, json!({ "id": id, "clear": ["project"], "if_updated_ms": r["updated_ms"] })).await;
+    let p = w.call(methods::RULE_PREVIEW, json!({ "project": "todoproj" })).await;
+    assert_eq!(p["rule_ids"].as_array().unwrap().len(), 2);
+    // 派发：规则注入会话，`dispatched` 事件带着它们（`todo.history` 的结果按类型校验）
+    let tid = "0b9c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a79";
+    w.call(methods::TODO_ADD, json!({ "id": tid, "title": "use the rules", "project": "todoproj" })).await;
+    let pv = w.call(methods::TODO_DISPATCH_PREVIEW, json!({ "id": tid, "no_push": false })).await;
+    assert!(pv["rules_text"].as_str().unwrap().starts_with("Standing rules from the user."));
+    w.call(methods::TODO_DISPATCH, json!({ "id": tid, "agent": "fake", "no_push": false })).await;
+    let h = w.call(methods::TODO_HISTORY, json!({ "id": tid })).await;
+    assert_eq!(h["events"][0]["rules"].as_array().unwrap().len(), 2);
+    w.call(methods::RULE_DELETE, json!({ "id": id2, "if_updated_ms": u["updated_ms"] })).await;
+    w.call(methods::RULE_DELETE, json!({ "id": id })).await;
+}
+
 async fn walk_preview(w: &mut Walk<'_>, td: &TestDaemon, psid: &str) {
     // ---- 预览（ADR-39）：端口写进 allow_ports（热加载），签发、列出、列端口、作废
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -403,6 +435,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     Box::pin(walk_workspace(&mut w, &td)).await;
     Box::pin(walk_session(&mut w)).await;
     Box::pin(walk_todo(&mut w)).await;
+    Box::pin(walk_rule(&mut w)).await;
     Box::pin(walk_worktree(&mut w, &td)).await;
     let psid = Box::pin(walk_permission(&mut w)).await;
     Box::pin(walk_preview(&mut w, &td, &psid)).await;
@@ -433,6 +466,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         methods::NODE_SECURITY_EVENT,
         methods::TODO_CHANGED,
         methods::TODO_EVENT,
+        methods::RULE_CHANGED,
     ] {
         assert!(seen.contains(want), "the walk should have produced {want}: {seen:?}");
     }

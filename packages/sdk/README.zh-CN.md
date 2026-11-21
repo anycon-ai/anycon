@@ -144,6 +144,24 @@ node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)
 - `list` 按 `(updated_ms, id)` 翻页：`has_more` 为 true 时，把最后一项的 `{ updated_ms, id }` 作为 `before` 取下一页。一页可能少于 `limit`（每页 1 MiB 的字节预算）。翻页期间被改过的项可能出现两次（按 `id` 去重）或被跳过（`todo_changed` 会补上）。
 - 错误：`invalid`（`field` 是出问题的参数；清单满了时 `reason` 是 `too_many` / `too_many_unreviewed`）和 `not_found`，都是 `RpcError`。
 
+## 规则（ADR-54）
+
+每个节点有一份你的规则，一两句话的做法，比如「先写失败的测试再改实现」。生效的规则会写进清单派发出去的会话的系统提示（见 [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)）。规则不改任何权限。`node.rules` 是 `rule.*` 的薄封装；节点是否支持看 `(await node.info()).capabilities.rules`，旧节点回 `RpcError('unsupported')`。SDK 不做离线缓存，也不重放。
+
+```ts
+const rule = await node.rules.add({ text: '先写失败的测试再改实现。', project: 'app' }) // 直接生效；`id` 缺省由 SDK 生成；`status: 'pending'` 等人确认
+const { rules, budget } = await node.rules.list() // 最早的在前；{ status?, project? }；budget = { cap, node_bytes, projects }
+await node.rules.update({ id: rule.id, status: 'disabled', if_updated_ms: rule.updated_ms }) // 只改传了的字段；`clear: ['project']`
+const { text, rule_ids, bytes } = await node.rules.preview({ project: 'app' }) // 现在开一个这个项目的会话会拿到什么
+await node.rules.delete(rule.id, { ifUpdatedMs: rule.updated_ms })
+node.on('rule_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.rule)) // 所有客户端都会收到，包括发起的这一个
+```
+
+- `add` 按 `id` 幂等。`agent: true` 表示这次调用是替 agent 发的：规则记成 `pending`、来源是 `agent`，在人用 `update({ status: 'active' })` 确认之前不起作用。
+- 一条规则最多 600 个字符（可以换行）。一个会话拿到的生效规则合计（含模板）最多 4096 字节；会超出的 `add` / `update` 被拒绝，`RpcError` 是 `invalid`、`reason` 为 `over_budget`（`bytes` 和 `cap` 说明超了多少）。最多 300 条（不含已否决的，`reason` 为 `too_many`；已否决的另有一个 300 的上限，满了删最早的），agent 提的待确认规则最多 50 条（`too_many_pending`）。双向控制符和零宽字符会被拒绝（`reason` 为 `invisible`）。
+- `if_updated_ms`（`delete` 里是 `ifUpdatedMs`）：这条规则在你读到之后被改过就拒绝：`invalid`、`reason` 为 `changed`，`updatedMs` 是现在的值。
+- `todos.dispatchPreview` 也返回 `rules_text`：派发会写进会话系统提示的规则文字。
+
 ## API 速览
 
 - `pair(hubUrl, { code, name, storage?, profile?, headers?, ackTimeoutMs? })` — joiner。`code` 可以是 16 位（默认）或 8 位（`anycon pair --short`）短码（大小写、连字符随意），也可以是配对链接 `https://hub/pair#code=…` / 只有 `#code=…`（短码在 fragment 里，不会发给 hub）。流程：先在本地做**一次** `derivePairSecrets(code)`（Argon2id，64 MiB × 3 轮，Node 约 0.1–0.3 s、浏览器 wasm 约 0.1–1 s，同步占用线程；`match_id` 和 PSK 同出一次计算，用完 PSK 清零；所以配对测试里每次 `pair()` 要多算这么久，超时别设在 1 s 以下）→ 连 hub → `PairJoin { match_id }`（**hub 从头到尾看不到短码**）→ Noise XXpsk3（initiator，PSK 来自上面那次派生）→ `PairConfirm` → `PairDone`，然后**等 daemon 经新建立的 Noise 传输发来 `pair.ack`**（最多 `ackTimeoutMs`，默认 30 秒），校验 `peer_id` 是本设备的正式 id、`node_id == PairDone.peer`、`fingerprint` 等于握手得到的节点公钥的指纹，**全部通过才落盘**（设备身份 + 节点公钥）；超时 / 不符 → `PairingFailed`，什么都不留。节点名取自 `pair.ack`（已认证，控制字符被去掉）。握手第 3 条的 payload 带本设备的 `{ name, kind, platform, version }`，daemon 用它显示设备名。节点以 `PairDone.peer`（正式设备 id）为键。已有同 id 节点但公钥不同 → 抛 `NodeKeyChanged`，不覆盖（见下）。本地身份被 hub 作废（`auth_fail invalid | revoked` / close 4004）时 `pair()` 会清掉它并用全新身份重试。`headers` 见下面「账号归属」。

@@ -438,7 +438,7 @@ daemon 数据目录 `~/.anycon/`：
 
 Mac 睡眠后 daemon 会自动重连，但如果 Mac mini 要 7×24 可用，系统设置里要关掉「允许电脑自动进入睡眠」。
 
-**更新检查**（[ADR-57](decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)，[spec/daemon.md § 23](spec/daemon.md#23-更新检查)）：缺省开着时，daemon 起来几分钟后、之后大约每 24 小时一次向 `https://anycon.ai/releases.json` 发一个请求，有更新的正式版本就在 `anycon doctor`、Web UI 节点设置的「关于」和 daemon 日志里提示。它不下载、不安装任何东西，升级照上面的做法自己来。请求里只有 `User-Agent: anycon/<版本> (<os>; <arch>)`，没有账号、设备、节点或安装的标识；anycon.ai 的服务器和它前面的网络服务商（目前是 Cloudflare）看得到请求的 IP 地址、时间和 User-Agent，项目把这些请求记在访问日志里最多 30 天，用来按国家、版本和平台数活跃的 daemon，之后只留计数。
+**更新检查**（[ADR-57](decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)，[spec/daemon.md § 24](spec/daemon.md#24-更新检查)）：缺省开着时，daemon 起来几分钟后、之后大约每 24 小时一次向 `https://anycon.ai/releases.json` 发一个请求，有更新的正式版本就在 `anycon doctor`、Web UI 节点设置的「关于」和 daemon 日志里提示。它不下载、不安装任何东西，升级照上面的做法自己来。请求里只有 `User-Agent: anycon/<版本> (<os>; <arch>)`，没有账号、设备、节点或安装的标识；anycon.ai 的服务器和它前面的网络服务商（目前是 Cloudflare）看得到请求的 IP 地址、时间和 User-Agent，项目把这些请求记在访问日志里最多 30 天，用来按国家、版本和平台数活跃的 daemon，之后只留计数。
 
 - 关掉：`anycon config set update.check false`（写进 `config.toml` 的 `[update] check`，热加载，不用重启），或在服务的环境里设 `ANYCON_UPDATE_CHECK=0`。已配对设备不能远程打开或关掉它
 - 出站防火墙只放行 hub 的机器：不用额外放行，检查失败是安静的（debug 日志，连续 3 次失败时一行 warn），不影响别的功能；不想要那行 warn 就关掉它

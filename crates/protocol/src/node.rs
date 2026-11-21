@@ -24,6 +24,9 @@ pub struct NodeCapabilities {
     /// 支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。
     #[serde(default)]
     pub todo: bool,
+    /// 支持决策档案（`rule.*`，docs/spec/daemon.md § 23）。旧 daemon 没有这个字段，读作 false。
+    #[serde(default)]
+    pub rules: bool,
 }
 
 /// 节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。

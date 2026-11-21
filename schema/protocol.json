@@ -52,6 +52,11 @@
         "structured_output": {
           "type": "boolean"
         },
+        "system_prompt": {
+          "default": false,
+          "description": "会话的 `system_prompt_append` 真的会交给 agent（docs/spec/daemon.md § 6.3）。为 false（ACP agent、旧 daemon）时，\n决策档案里的规则注入不到它的会话里（§ 23.5）。",
+          "type": "boolean"
+        },
         "thinking_stream": {
           "description": "会不会发 `thinking_delta`。",
           "type": "boolean"
@@ -128,6 +133,7 @@
             "resume": false,
             "rewind": false,
             "structured_output": false,
+            "system_prompt": false,
             "thinking_stream": false,
             "usage": false
           }
@@ -609,6 +615,13 @@
         "label"
       ],
       "type": "object"
+    },
+    "ClearableRuleField": {
+      "description": "`rule.update` 的 `clear` 可以清空的可选字段。",
+      "enum": [
+        "project"
+      ],
+      "type": "string"
     },
     "ClearableSetting": {
       "description": "`session.set_settings` 里可以被「清除」的字段。`SessionSettings` 的 `Option` 字段在线路上\n缺省和 `null` 等价、都表示「保持不变」，所以要清掉一个值得在 `clear` 里点名；`options` 不在\n这里：它的键值为 `null` 就是删键。",
@@ -3427,6 +3440,11 @@
           "description": "支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。",
           "type": "boolean"
         },
+        "rules": {
+          "default": false,
+          "description": "支持决策档案（`rule.*`，docs/spec/daemon.md § 23）。旧 daemon 没有这个字段，读作 false。",
+          "type": "boolean"
+        },
         "search": {
           "type": "boolean"
         },
@@ -5343,6 +5361,23 @@
     },
     "RpcErrorData": {
       "properties": {
+        "bytes": {
+          "description": "规则超出注入的字数上限（`rule.add` / `rule.update` 的 `invalid`，`reason = \"over_budget\"`）时，这次改动之后一个会话拿到的\n规则文字的字节数，和上限（`cap`）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cap": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "code": {
           "$ref": "#/definitions/ErrorCode"
         },
@@ -5477,6 +5512,507 @@
         "id"
       ],
       "type": "object"
+    },
+    "Rule": {
+      "properties": {
+        "created_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "客户端生成的小写带连字符的 UUID；`rule.add` 按它幂等。",
+          "type": "string"
+        },
+        "last_injected_ms": {
+          "description": "最近一次被注入某个会话；改它不动 `updated_ms`，也不发 `rule.changed`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "只进这个项目的会话；缺省 = 这个节点上所有项目的会话。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/RuleSource"
+        },
+        "status": {
+          "$ref": "#/definitions/RuleStatus"
+        },
+        "sync": {
+          "$ref": "#/definitions/RuleSync"
+        },
+        "text": {
+          "description": "1–600 个 Unicode 码点，可以多行；除换行外不含控制字符，不含 U+2028 / U+2029。",
+          "type": "string"
+        },
+        "updated_ms": {
+          "description": "每次真正的修改严格递增，也是版本号（`if_updated_ms`）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "status",
+        "sync",
+        "source",
+        "created_ms",
+        "updated_ms"
+      ],
+      "type": "object"
+    },
+    "RuleAddParams": {
+      "properties": {
+        "agent": {
+          "description": "调用方自报「这是 agent 写的」：状态强制为 `pending`，来源强制为 `agent`。只会让这条规则更不被信任，所以不需要校验。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "UUID。已经存在时原样返回已有的那一条（幂等）。",
+          "type": "string"
+        },
+        "origin_session": {
+          "description": "这条规则是哪个会话里的 agent 提的；只在这条规则记成 agent 写的、并且这个会话存在时才记（同 `todo.add` 的 `origin_session`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuleAddSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "缺省 `{ kind: manual }`。"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuleAddStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "缺省 `active`。"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "RuleAddSource": {
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/RuleAddSourceKind"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "RuleAddSourceKind": {
+      "description": "`rule.add` 的调用方可以声明的来源种类（`extracted` 只有 daemon 自己提炼时才有，`agent` 由 `agent: true` 决定）。",
+      "enum": [
+        "manual",
+        "answer"
+      ],
+      "type": "string"
+    },
+    "RuleAddStatus": {
+      "description": "`rule.add` 可以直接给的状态。",
+      "enum": [
+        "active",
+        "pending"
+      ],
+      "type": "string"
+    },
+    "RuleBudget": {
+      "description": "注入的字数预算（docs/spec/daemon.md § 23.4）：字节数按**生效**的规则算，不受 `rule.list` 的过滤条件影响。",
+      "properties": {
+        "cap": {
+          "description": "一个会话拿到的规则文字（含模板）的字节上限。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "node_bytes": {
+          "description": "模板的开头加上全节点生效规则的字节数；一条生效的规则都没有时是 0。一个会话拿到的文字是它加上这个会话的项目的 `projects[项目]`\n（没有项目规则的会话就是它自己）。只有项目规则生效时，它只是模板的开头。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "projects": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "每个项目的生效规则的字节数（不含 `node_bytes`），键是项目名。一个这个项目的会话拿到的文字是 `node_bytes + projects[项目]`。",
+          "type": "object"
+        }
+      },
+      "required": [
+        "cap",
+        "node_bytes",
+        "projects"
+      ],
+      "type": "object"
+    },
+    "RuleChanged": {
+      "description": "`rule.changed` 通知：新建、修改、删除后发给所有在线客户端（包括发起的那一台）。`last_injected_ms` 的变化不通知。",
+      "properties": {
+        "deleted": {
+          "default": false,
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "rule": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Rule"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`deleted = true` 时没有。"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "RuleDeleteParams": {
+      "description": "`rule.delete`：`if_updated_ms` 的语义同 `rule.update`。",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "if_updated_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "RuleListParams": {
+      "properties": {
+        "project": {
+          "description": "只给 `project` 等于它的规则（去掉首尾空白后比较；不含全节点规则）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuleStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "只给这个状态的规则。"
+        }
+      },
+      "type": "object"
+    },
+    "RuleListResult": {
+      "properties": {
+        "budget": {
+          "$ref": "#/definitions/RuleBudget"
+        },
+        "rules": {
+          "description": "按 `created_ms` 从早到晚（同一毫秒的按写入先后）。",
+          "items": {
+            "$ref": "#/definitions/Rule"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "rules",
+        "budget"
+      ],
+      "type": "object"
+    },
+    "RulePreviewParams": {
+      "properties": {
+        "project": {
+          "description": "缺省：不属于任何项目的会话（只有全节点规则）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RulePreviewResult": {
+      "description": "`rule.preview`：现在开一个这个项目的会话会注入的那段文字，和它用到的规则。只读。",
+      "properties": {
+        "bytes": {
+          "description": "`text` 的 UTF-8 字节数。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rule_ids": {
+          "description": "写进 `text` 的规则，按它们在 `text` 里的顺序。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "没有生效的规则时为空串。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "rule_ids",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "RuleSource": {
+      "properties": {
+        "device_id": {
+          "description": "经 hub 来的调用带上发起设备的 id（daemon 填）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/RuleSourceKind"
+        },
+        "request_id": {
+          "description": "`answer`：出自哪个权限请求或提问。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "description": "`extracted`：出自会话的哪个事件。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "session_id": {
+          "description": "`answer` / `extracted`：规则出自哪个会话。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "RuleSourceKind": {
+      "description": "规则是怎么来的。",
+      "oneOf": [
+        {
+          "const": "manual",
+          "description": "人手写。",
+          "type": "string"
+        },
+        {
+          "const": "answer",
+          "description": "人在答复权限请求或提问时点了「记成规则」（带 `session_id`、`request_id`）。",
+          "type": "string"
+        },
+        {
+          "const": "extracted",
+          "description": "从会话里提炼出来的（带 `session_id`、`seq`；还没有这个来源，docs/spec/daemon.md § 23.9）。",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "调用方自报是 agent。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的来源。**daemon 自己从不产生它**；客户端按「不是人写的」显示，解析不能因此失败。",
+          "type": "string"
+        }
+      ]
+    },
+    "RuleStatus": {
+      "description": "规则的状态。",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "待确认：不是人直接写下的（agent 提的、之后提炼出来的）。不注入。",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "生效。注入。",
+          "type": "string"
+        },
+        {
+          "const": "disabled",
+          "description": "人停用了，留着，可以再打开。不注入。",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "人否决了。留着是为了之后提炼时不再提同样的。不注入。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的状态（更新的 daemon 加了新的值）。**daemon 自己从不产生它，也不接受它作为写入的值**；客户端按「不生效」\n显示，解析不能因此失败（docs/spec/daemon.md § 23.2）。",
+          "type": "string"
+        }
+      ]
+    },
+    "RuleSync": {
+      "description": "规则在节点之间的同步范围。这一半恒为 `node`（docs/spec/daemon.md § 23.8）。",
+      "oneOf": [
+        {
+          "const": "node",
+          "description": "只在这个节点。",
+          "type": "string"
+        },
+        {
+          "const": "group",
+          "description": "同组节点（由客户端同步，还没有实现）。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的范围；daemon 自己不产生它。",
+          "type": "string"
+        }
+      ]
+    },
+    "RuleUpdateParams": {
+      "properties": {
+        "clear": {
+          "description": "要清空的可选字段，在合并之后生效。",
+          "items": {
+            "$ref": "#/definitions/ClearableRuleField"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "if_updated_ms": {
+          "description": "给了而和这条规则现在的 `updated_ms` 不同：什么都不改，`invalid`（`data.reason = \"changed\"`，`data.updated_ms` 是现在的值）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuleStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "RulesSkipped": {
+      "description": "派发时生效的规则没有注入的原因（`TodoEventData::Dispatched.rules_skipped`）。",
+      "oneOf": [
+        {
+          "const": "unsupported",
+          "description": "所选 agent 收不到 `system_prompt_append`（`AgentInfo.capabilities.system_prompt = false`）。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的原因；daemon 自己不产生它。",
+          "type": "string"
+        }
+      ]
     },
     "SearchHit": {
       "properties": {
@@ -7204,6 +7740,13 @@
             "boolean",
             "null"
           ]
+        },
+        "project": {
+          "description": "同 `todo.dispatch` 的 `project`：只影响 `rules_text`（派发会选另一个项目时，那个项目的规则）；缺省用这一项自己的项目。",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -7215,6 +7758,11 @@
       "properties": {
         "first_message": {
           "description": "此刻派发会发出的第一条消息，一字不差（同一个组装函数、同一套「之前的结果」的选法）。",
+          "type": "string"
+        },
+        "rules_text": {
+          "default": "",
+          "description": "此刻开一个这一项的项目的会话会注入的规则文字（docs/spec/daemon.md § 23.5，和 `rule.preview` 同一个函数）；这一项没有项目时\n只有全节点规则；没有生效的规则时为空串。不看所选的 agent：它收不收得到由 `AgentInfo.capabilities.system_prompt` 说了算。",
           "type": "string"
         }
       },
@@ -7256,6 +7804,24 @@
             },
             "no_push": {
               "type": "boolean"
+            },
+            "rules": {
+              "description": "注入这个会话的系统提示的规则（`rule.*`，docs/spec/daemon.md § 23.5），按在文字里的顺序。没有注入时缺省（旧 daemon 的记录也没有）。",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "rules_skipped": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/RulesSkipped"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "有生效的规则、但没有注入的原因。"
             },
             "session_id": {
               "type": "string"
@@ -7368,6 +7934,24 @@
             },
             "no_push": {
               "type": "boolean"
+            },
+            "rules": {
+              "description": "注入这个会话的系统提示的规则（`rule.*`，docs/spec/daemon.md § 23.5），按在文字里的顺序。没有注入时缺省（旧 daemon 的记录也没有）。",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "rules_skipped": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/RulesSkipped"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "有生效的规则、但没有注入的原因。"
             },
             "session_id": {
               "type": "string"
@@ -8654,6 +9238,9 @@
     "browse_entry": {
       "$ref": "#/definitions/BrowseEntry"
     },
+    "clearable_rule_field": {
+      "$ref": "#/definitions/ClearableRuleField"
+    },
     "clearable_todo_field": {
       "$ref": "#/definitions/ClearableTodoField"
     },
@@ -8944,6 +9531,60 @@
     },
     "rpc_message": {
       "$ref": "#/definitions/RpcMessage"
+    },
+    "rule": {
+      "$ref": "#/definitions/Rule"
+    },
+    "rule_add_params": {
+      "$ref": "#/definitions/RuleAddParams"
+    },
+    "rule_add_source": {
+      "$ref": "#/definitions/RuleAddSource"
+    },
+    "rule_add_source_kind": {
+      "$ref": "#/definitions/RuleAddSourceKind"
+    },
+    "rule_add_status": {
+      "$ref": "#/definitions/RuleAddStatus"
+    },
+    "rule_budget": {
+      "$ref": "#/definitions/RuleBudget"
+    },
+    "rule_changed": {
+      "$ref": "#/definitions/RuleChanged"
+    },
+    "rule_delete_params": {
+      "$ref": "#/definitions/RuleDeleteParams"
+    },
+    "rule_list_params": {
+      "$ref": "#/definitions/RuleListParams"
+    },
+    "rule_list_result": {
+      "$ref": "#/definitions/RuleListResult"
+    },
+    "rule_preview_params": {
+      "$ref": "#/definitions/RulePreviewParams"
+    },
+    "rule_preview_result": {
+      "$ref": "#/definitions/RulePreviewResult"
+    },
+    "rule_source": {
+      "$ref": "#/definitions/RuleSource"
+    },
+    "rule_source_kind": {
+      "$ref": "#/definitions/RuleSourceKind"
+    },
+    "rule_status": {
+      "$ref": "#/definitions/RuleStatus"
+    },
+    "rule_sync": {
+      "$ref": "#/definitions/RuleSync"
+    },
+    "rule_update_params": {
+      "$ref": "#/definitions/RuleUpdateParams"
+    },
+    "rules_skipped": {
+      "$ref": "#/definitions/RulesSkipped"
     },
     "security_event_kind": {
       "$ref": "#/definitions/SecurityEventKind"
@@ -9333,6 +9974,25 @@
     "todo_event_data",
     "todo_event",
     "todo_event_notice",
+    "rule_status",
+    "rule_source_kind",
+    "rule_sync",
+    "rule_source",
+    "rule",
+    "rule_list_params",
+    "rule_budget",
+    "rule_list_result",
+    "rule_add_status",
+    "rule_add_source_kind",
+    "rule_add_source",
+    "rule_add_params",
+    "clearable_rule_field",
+    "rule_update_params",
+    "rule_delete_params",
+    "rule_preview_params",
+    "rule_preview_result",
+    "rule_changed",
+    "rules_skipped",
     "attachment_ref",
     "blob_put_begin_params",
     "blob_put_begin_result",
@@ -9835,6 +10495,42 @@
       "direction": "notification",
       "name": "todo.event",
       "params": "TodoEventNotice",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "rule.list",
+      "params": "RuleListParams",
+      "result": "RuleListResult"
+    },
+    {
+      "direction": "request",
+      "name": "rule.add",
+      "params": "RuleAddParams",
+      "result": "Rule"
+    },
+    {
+      "direction": "request",
+      "name": "rule.update",
+      "params": "RuleUpdateParams",
+      "result": "Rule"
+    },
+    {
+      "direction": "request",
+      "name": "rule.delete",
+      "params": "RuleDeleteParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "rule.preview",
+      "params": "RulePreviewParams",
+      "result": "RulePreviewResult"
+    },
+    {
+      "direction": "notification",
+      "name": "rule.changed",
+      "params": "RuleChanged",
       "result": null
     },
     {

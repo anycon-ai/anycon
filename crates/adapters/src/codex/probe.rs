@@ -144,6 +144,8 @@ pub fn capabilities() -> AgentCapabilities {
         structured_output: false,
         env: true,
         rewind: false,
+        // `thread/start` 的 `developerInstructions`
+        system_prompt: true,
     }
 }
 
@@ -777,6 +779,12 @@ pub async fn diagnose_fields(ctx: &ProbeContext) -> Vec<DiagnosticField> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_system_prompt_is_handed_to_the_agent() {
+        // `thread/start` 的 `developerInstructions`：决策档案的规则靠它注入（docs/spec/daemon.md § 23.5）
+        assert!(super::capabilities().system_prompt);
+    }
+
     use super::*;
 
     #[test]

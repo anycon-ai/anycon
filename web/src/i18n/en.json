@@ -1372,6 +1372,7 @@
         "permissions": "Permissions",
         "worktree": "Worktrees",
         "preview": "Preview",
+        "rules": "Rules",
         "notify": "Notifications",
         "log": "Logging"
       },
@@ -1424,6 +1425,12 @@
           "ticket_ttl": {
             "label": "Preview link lifetime",
             "hint": "How long a preview link stays valid."
+          }
+        },
+        "rules": {
+          "inject_manual_sessions": {
+            "label": "Rules in sessions you start yourself",
+            "hint": "Active rules are always added to the system prompt of the sessions that to-dos are handed to. Turn this on to add them to every other new session as well. Agents that cannot take a system prompt never get them."
           }
         },
         "notify": {

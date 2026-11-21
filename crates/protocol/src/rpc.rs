@@ -42,14 +42,21 @@ pub struct RpcErrorData {
     /// 带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = "changed"`）时，那一项现在的 `updated_ms`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_ms: Option<u64>,
+    /// 规则超出注入的字数上限（`rule.add` / `rule.update` 的 `invalid`，`reason = "over_budget"`）时，这次改动之后一个会话拿到的
+    /// 规则文字的字节数，和上限（`cap`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    // 装在 `Box` 里：`RpcError` 是几乎每个函数的 `Err` 类型，太大会让 clippy 的 `result_large_err` 在一路上的函数都报警。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data: Option<RpcErrorData>,
+    pub data: Option<Box<RpcErrorData>>,
 }
 
 impl RpcError {
@@ -57,7 +64,15 @@ impl RpcError {
         Self {
             code: code.rpc_code(),
             message: message.into(),
-            data: Some(RpcErrorData { code, field: None, reason: None, retry_after_ms: None, updated_ms: None }),
+            data: Some(Box::new(RpcErrorData {
+                code,
+                field: None,
+                reason: None,
+                retry_after_ms: None,
+                updated_ms: None,
+                bytes: None,
+                cap: None,
+            })),
         }
     }
     pub fn invalid_settings(field: impl Into<String>, reason: impl Into<String>) -> Self {
@@ -148,6 +163,12 @@ impl From<&str> for RpcId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `RpcError` 是几乎每个函数的 `Err` 类型：超过 clippy 的 `result_large_err` 门槛（128 字节）会让一路上的函数都被警告。
+    #[test]
+    fn an_rpc_error_stays_small_enough_to_be_returned_everywhere() {
+        assert!(std::mem::size_of::<RpcError>() < 128, "{}", std::mem::size_of::<RpcError>());
+    }
 
     #[test]
     fn classify() {

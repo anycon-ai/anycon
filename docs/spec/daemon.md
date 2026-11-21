@@ -14,7 +14,7 @@ daemon 做的事，一句话各一条：
 - 把会话历史、附件、审计存在本机 SQLite
 - 验证账号内接入（扫码批准、接入码、节点口令），自己限制在线猜测
 - 管 workspace：文件夹即项目
-- 大约每天问一次 anycon.ai 有没有新版本，有就提示；不下载、不安装，可以关（§ 23）
+- 大约每天问一次 anycon.ai 有没有新版本，有就提示；不下载、不安装，可以关（§ 24）
 
 daemon **不**做：自己调用任何模型 API（标题生成、摘要都不做）、沙箱、终端、文件编辑。
 
@@ -106,11 +106,14 @@ enabled = true                        # false = 不签发票据、断开全部�
 allow_ports = []                      # 会话之外额外允许预览的本机端口，如 [3000, 8000]
 ticket_ttl = "24h"                    # 预览票据的有效期，5m–7d
 
+[rules]                               # 决策档案的规则注入（§ 23.5）。整段热加载
+inject_manual_sessions = false        # true = 手动开的会话（session.create）也带上生效的规则；缺省 false，只有清单派发的会话带
+
 [notify]
 turn_finished = "when_unwatched"      # always | when_unwatched | never
 session_idle_after = "30m"
 
-[update]                              # 更新检查（ADR-57，§ 23）。热加载；不能远程改
+[update]                              # 更新检查（ADR-57，§ 24）。热加载；不能远程改
 check = true                          # 大约每天一次问 https://anycon.ai/releases.json 有没有新版本，只提示、不下载；false = 不检查
 
 [log]
@@ -118,7 +121,7 @@ level = "info"
 retention_days = 7                     # 只在 daemon 启动时清理一次，长期不重启会累积
 ```
 
-`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
+`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`rules.*`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
 **远程修改**（`node.get_config` / `node.set_config`，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）：客户端（Web 的节点设置「限制」标签、SDK）可以读写下面这张白名单里的键，其余一律不行。只收热加载的键，改完不用重启。
 
@@ -132,6 +135,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 | `worktree.branch_prefix` | 文本，最多 40 个字符，规则同 `validate_branch_prefix` | 任意改 |
 | `worktree.auto_archive_on_pr_close` | 布尔 | 任意改 |
 | `preview.ticket_ttl` | 时长 5m–7d | 任意改 |
+| `rules.inject_manual_sessions` | 布尔（缺省 `false`）：手动开的会话是否也注入生效的规则（§ 23.5） | 任意改 |
 | `notify.turn_finished` | `always` \| `when_unwatched` \| `never` | 任意改 |
 | `notify.session_idle_after` | 时长 0–7d | 任意改 |
 | `log.level` | `error` \| `warn` \| `info` \| `debug` \| `trace` | 任意改 |
@@ -197,6 +201,7 @@ AgentInfo {
     usage:             bool            // turn_done 带不带 usage
     structured_output: bool
     env:               bool            // 支持每会话 env
+    system_prompt:     bool            // `system_prompt_append` 真的会交给 agent（§ 6.3）；Claude Code、Codex、mock 为 true，ACP 为 false，旧 daemon 没有这个字段（按 false）。决策档案的规则靠它注入（§ 23.5）
   }
   probed_at: timestamp
 }
@@ -347,6 +352,8 @@ ConfigOption {
 | `max_turns` / `max_budget_usd` | `--max-turns` / `--max-budget-usd` | 不支持（带了 → `invalid_settings`） | 不支持（`invalid_settings`） |
 | 附件（只给原生收的；其它附件 daemon 落到工作目录，§ 7.10，ADR-44） | stdin 消息 `content` 数组里的 `image` block（`source: { type: "base64", media_type, data }`，adapter 读 daemon 的文件；图在前、文字在后） | `turn/start.input` / `turn/steer.input` 的 `{ type: "localImage", path }`（daemon 的文件，扩展名与 mime 一致） | `session/prompt` 的 image ContentBlock（`{ type: "image", data: base64, mimeType }`，图在前、文字在后；`promptCapabilities.image` 为 true 才行，`capabilities.attachments` 据此声明） |
 | 结构化输出 | `--json-schema` | `turn/start { outputSchema }` 存在，但 v0.1 的 `SessionSettings` 没有东西喂它，`capabilities.structured_output = false` | 不支持 |
+
+`system_prompt_append` 会不会真的交给 agent，由 `AgentInfo.capabilities.system_prompt` 声明（Claude Code、Codex、mock 为 true，ACP 为 false）；决策档案的规则靠它注入（§ 23.5）。
 
 ACP 的设置（模型 / 思考 / 模式 / 其余选项）全部**随时生效**（`applied_now`，不需要重启进程）：拉起时把完整设置和 agent 当前的值比、不一样的才发请求；会话中 `set_settings` 只发和**上一次请求的值**不一样的，所以 agent 自己切了模式（比如批准计划之后）不会被 daemon 记着的旧值冲掉。应用不上的：拉起时不让会话失败，发一条可恢复的 `error { agent_setting_failed }`，会话照常用 agent 当前的值；`set_settings` 返回 `invalid_settings`。
 
@@ -850,6 +857,7 @@ SQLite（WAL）。全部表：
 | `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
 | `todos` | 清单（§ 21.4）：id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 | `todo_sessions` / `todo_events` | 清单项派出的会话和「经过」（§ 22.8）；`sessions.todo_id` 是会话的来源项 |
+| `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms。不受 `history_retention` 影响 |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
@@ -876,7 +884,7 @@ SQLite（WAL）。全部表：
 
 本机 socket 上的调用方 `device_id` 是 `local`，`device_name` 默认 `local-cli`。连接可以用 `local.set_client { client: "cli" | "mcp" }` 自报客户端种类（固定枚举，别的值 `invalid`；只在本机通道有，经 hub 调用 `forbidden`，经 hub 的连接身份由配对的设备决定），自报 `mcp` 之后这条连接的审计设备名是 `local-mcp`（`anycon mcp` 连上就声明，[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）。它只用来在审计里分清「人敲的命令」和「agent 经 MCP 发的」：自报的，不改变任何权限，对故意不声明的本机进程没有约束力。
 
-记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2；派发开的会话另记一条 `session.create`）。会话引起的 `activity` 变化不进审计（它不是修改，§ 22.3）。
+记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2；派发开的会话另记一条 `session.create`）`rule.add` `rule.update` `rule.delete`（只记长度、字段名和状态，不记规则的文字，§ 23.7）。会话引起的 `activity` 变化不进审计（它不是修改，§ 22.3）。
 
 `fs.read` 的 target 是请求里的 `path`，detail 是 `bytes`（文件总长）。一个大文件要分很多块读（`encoding = "base64"`，每块 512 KiB），逐块记会把审计表灌满、盖掉有意义的行，所以**同一台设备对同一路径的读，5 分钟内只记第一次**。窗口按（设备，路径）算而不是按「第 0 块」算：只读后面的块也会留下一条，不能靠跳过第 0 块绕开审计。窗口只在真正写了一行时刷新，持续读一个文件，每 5 分钟至少有一行；去重表只在内存里，daemon 重启就清空。
 
@@ -1307,7 +1315,7 @@ Todo {
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `todo.dispatch` | C→D | `{ id, agent, project?, workspace?, settings?, no_push?, message_id? }` → `{ todo: Todo, session: SessionSummary }` |
-| `todo.dispatch_preview` | C→D | `{ id, no_push? }` → `{ first_message }`：此刻派发会发出的第一条消息，一字不差。和 `todo.dispatch` 用同一个组装函数（`compose_first_message`）和同一套「之前的结果」的选法，同样先把这一项排着的结果记下来（持清单的锁），`no_push` 缺省 `true`。只有一个副作用：把这一项排着、还没记的结果先记进「经过」（有的话，和派发之前的那一步一样会广播 `todo.event`；这一项的 `activity` 因此变了才跟一条 `todo.changed`）；不开会话、不审计、不发推送通知；不改这一项的其余内容。`id` 不是小写 UUID → `invalid`；不存在 → `not_found`；已关闭 → `invalid`（`data.reason = "closed"`）；自报了 `mcp` 的本机连接 → `forbidden`。两次调用之间有新的结果记进来时，之后派发发出的会和预览不同（预览里写明「可能有变」）。客户端不自己拼这条消息 |
+| `todo.dispatch_preview` | C→D | `{ id, no_push?, project? }` → `{ first_message, rules_text }`（`project` 只影响 `rules_text`，§ 23.5）：此刻派发会发出的第一条消息，一字不差；`rules_text` 是此刻会注入这个会话的系统提示的规则文字（§ 23.5，没有生效的规则时为空串）。和 `todo.dispatch` 用同一个组装函数（`compose_first_message`）和同一套「之前的结果」的选法，同样先把这一项排着的结果记下来（持清单的锁），`no_push` 缺省 `true`。只有一个副作用：把这一项排着、还没记的结果先记进「经过」（有的话，和派发之前的那一步一样会广播 `todo.event`；这一项的 `activity` 因此变了才跟一条 `todo.changed`）；不开会话、不审计、不发推送通知；不改这一项的其余内容。`id` 不是小写 UUID → `invalid`；不存在 → `not_found`；已关闭 → `invalid`（`data.reason = "closed"`）；自报了 `mcp` 的本机连接 → `forbidden`。两次调用之间有新的结果记进来时，之后派发发出的会和预览不同（预览里写明「可能有变」）。客户端不自己拼这条消息 |
 | `todo.history` | C→D | `{ id, before_seq?, limit? }` → `{ events: [TodoEvent], has_more }`；按 `seq` 从新到旧，`limit` 缺省 50、上限 200（0 按 1）；`before_seq` 只给 `seq` 更小的，翻页用上一页最后一条的 `seq`。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
 | `todo.event` | D→C notification | `{ todo_id, event: TodoEvent }`：「经过」多了一条，发给所有在线客户端 |
 
@@ -1358,7 +1366,7 @@ TodoEvent {
   seq:   u64          // 这一项内从 1 递增，没有空洞
   ts_ms: timestamp
   kind:  dispatched | result | state
-  // dispatched：{ session_id, agent, workspace_mode: local|worktree, no_push, by: { kind, device_id? } }
+  // dispatched：{ session_id, agent, workspace_mode: local|worktree, no_push, by: { kind, device_id? }, rules?: [规则 id], rules_skipped?: "unsupported" }   rules / rules_skipped 见 § 23.5
   // result：    { session_id, turn, text, truncated }   这一轮结束时 agent 的最后一段话
   // state：     { from, to, by: { kind, device_id? } }   人改了状态（会话引起的变化是 activity，不在这里）
 }
@@ -1435,17 +1443,172 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 | `todo_sessions` | `(todo_id, session_id)` 主键、`seq`（这一项内的派发序号，从 1 起）。会话被删，这一行留着；这一项被删，这一项的行一起删 |
 | `todo_events` | `(todo_id, seq)` 主键、`ts_ms`、`kind`、`session_id`（可空，`dispatched` / `result` 才有，给「最近 5 次派发各自最后一条 result」用）、`data`（JSON，`TodoEvent` 去掉 `seq`、`ts_ms`；`result` 的 `text` 是会话内容）。删这一项和保留期清理都连带删它们 |
 
-## 23. 更新检查
+## 23. 决策档案
+
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）和 TS SDK（`node.rules`、`rule_changed`）。还没有：Web 客户端的界面（§ 23.10 的 Web 一条，[web.md § 14.8](web.md#148-分身和规则)）、从会话里自动提炼规则和判断后端（§ 23.9，只有提纲）、同组节点之间的同步（§ 23.8，单独实现）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话。这一半没有任何模型调用。
+
+### 23.1 范围
+
+一条规则是用户自己的一个做法，一两句话，比如「先写失败的测试再改实现」「不要引入新的依赖，先问我」。生效的规则写进派发出去的会话的系统提示里。
+
+规则只影响 agent 怎么判断，**不影响任何权限**：不自动批准或拒绝权限请求，不改权限模式，不放宽「不 push、不开 PR」（ADR-54 第 3、5 条）。
+
+这一半不做：自动提炼和模型调用（§ 23.9）；同组节点之间的同步（§ 23.8）；「过期」标记（要有分身的运行记录里「按哪条规则」的引用才有依据，第 4 步）；让会话里的 agent 提规则的 MCP 工具。
+
+### 23.2 `Rule`
+
+```
+Rule {
+  id:         string      // 客户端生成的小写带连字符的 UUID；`rule.add` 按它幂等
+  text:       string      // 1–600 个 Unicode 码点，可以多行；除换行外不含控制字符，不含 U+2028 / U+2029，不含双向控制符和零宽字符（§ 23.2）
+  project?:   string      // 只进这个项目的会话；缺省 = 这个节点上所有项目的会话
+  status:     pending | active | disabled | rejected
+  sync:       node | group        // 这一半恒为 node；group 见 § 23.8
+  source:     { kind: manual | answer | extracted | agent, session_id?, seq?, request_id?, device_id? }
+  created_ms: timestamp
+  updated_ms: timestamp   // 每次真正的修改严格递增（同 § 21.3），也是版本号
+  last_injected_ms?: timestamp    // 最近一次被注入某个会话；改它不动 updated_ms
+}
+```
+
+`status`：
+
+| 值 | 含义 | 注入 |
+|---|---|---|
+| `pending` | 待确认：不是人直接写下的（agent 提的、之后提炼出来的） | 否 |
+| `active` | 生效 | 是 |
+| `disabled` | 人停用了，留着，可以再打开 | 否 |
+| `rejected` | 人否决了。留着是为了之后提炼时不再提同样的 | 否 |
+
+`source.kind`：`manual` 人手写；`answer` 人在答复权限请求或提问时点「记成规则」（带 `session_id`、`request_id`）；`extracted` 提炼出来的（带 `session_id`、`seq`，§ 23.9）；`agent` 调用方自报是 agent。daemon 填 `device_id`，调用方不能指定。
+
+客户端遇到不认识的 `status` 按「不生效」显示，遇到不认识的 `source.kind` 按「不是人写的」显示，解析不能因此失败（Rust 的协议类型里 `RuleStatus`、`RuleSourceKind`、`RuleSync` 各有一个 `Unknown` 变体接住它，用 `#[serde(other)]`）。daemon 自己从不产生也不接受 `Unknown`：`rule.update` 的 `status` 解析成不认识的值 → `invalid`（`data.field = "status"`）；库里读到不认识的字符串按 `Unknown` 读，不生效，也不会被写回成别的值。
+
+**字段的细节**：`text` 去掉首尾空白之后才计数和存（行内、行首的空白和空行照存）。`project` 的写法同 § 21.2（去掉首尾空白后存，空白按没给，1–200 个码点，不含控制字符和 U+2028 / U+2029，不校验项目存在）；和会话的项目比较、给字数分组时按项目名的等价规则（和 `todo.dispatch` 的 `project` 同一个比较：规范化，不区分大小写的文件系统上忽略大小写）。`source.session_id` / `request_id` 只有 `answer` 才记（`manual` 带了也不记），各 1–128 字节、不含控制字符。`text` 里不能有看不见的字符：双向文字控制符（U+202A–U+202E、U+2066–U+2069、U+200E、U+200F、U+061C）和零宽字符（U+200B–U+200D、U+2060、U+FEFF）一律 `invalid`（`data.field = "text"`，`data.reason = "invisible"`）——规则原样注入、要由人看过才生效，看不见的字符没法审阅。agent 提的规则可以带 `origin_session`（`rule.add`，同 `todo.add` 的同名参数，§ 21.2）：只在这条规则记成 agent 写的、并且这个会话存在时才记进 `source.session_id`，否则丢掉这个字段、照常建；人写的规则不记。
+
+**谁能写**（和清单同一条界线，§ 21.2）：
+
+- 人（已配对设备、本机 CLI）：新建时可以直接是 `active`；可以改文字、改状态、删除。
+- `rule.add` 带了 `agent: true`，或者来自自报了 `mcp` 的本机连接：只能新建，状态强制为 `pending`，`source.kind` 强制为 `agent`；`rule.update` / `rule.delete` → `forbidden`。这是自报的护栏，不是边界；真正的闸是「`pending` 要人确认才生效」。
+- `twin` 设备（ADR-56）：规则的读写都不在它的白名单里。
+- 细节：`rule.add` 的 `id` 已存在时先于一切别的校验原样返回（来自 agent 的调用也一样）；`rule.update` / `rule.delete` 的 `forbidden` 先于 `not_found`，自报了 `mcp` 的连接探测不出哪些 id 存在；`rule.list` 和 `rule.preview` 对它照常开放（读）。人确认一条 agent 提的规则（`pending` → `active`）不改它的 `source`，所以它仍然标着是 agent 提的。
+
+### 23.3 RPC
+
+节点支持这一组方法时 `node.info.capabilities.rules = true`。
+
+| 方法 | 方向 | 说明 |
+|---|---|---|
+| `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。一次给全（不含 `rejected` 的规则总数上限 300，`rejected` 的另有 300，不翻页）。`budget` 见 § 23.4 |
+| `rule.add` | C→D | `{ id, text, project?, status?: active \| pending, source?: { kind: manual \| answer, session_id?, request_id? }, agent? }` → `Rule`。`id` 已存在时原样返回已有的那一条。`status` 缺省 `active`。`agent: true`（或自报了 `mcp` 的连接）时可另带 `origin_session`（§ 23.2）。不含 `rejected` 的规则已满 300 → `invalid`（`data.field = "rules"`，`data.reason = "too_many"`）；这是 agent 写的、而 agent 提的待确认规则（`source.kind` 是 `agent` 或 `extracted`，状态是 `pending`）已满 50 → `invalid`（`data.field = "rules"`，`data.reason = "too_many_pending"`），只拦 agent 的入口，人照常能写；文字里有看不见的字符 → `invalid`（`data.reason = "invisible"`）；会让注入超出上限 → `invalid`（`data.reason = "over_budget"`，§ 23.4） |
+| `rule.update` | C→D | `{ id, text?, project?, clear?, status?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget` |
+| `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除 |
+| `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话，会注入的那段文字（§ 23.5）。只读 |
+| `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。新建、真正的修改、删除才发；空操作、重复的 `rule.add` 和 `last_injected_ms` 的变化（§ 23.5）不发 |
+
+细节：
+
+- **`rule.list`**：`status` 和 `project` 同时给是交集。`project` 去掉首尾空白后按项目名的等价规则比较，只给 `project` 等于它的规则，**不含全节点规则**（要看一个项目的会话会拿到什么，用 `rule.preview`）；空白按没给。`budget` 总是按全部生效的规则算，不随过滤条件变。规则按 `created_ms` 从早到晚（同一毫秒的按写入先后）。
+- **校验的顺序**（`rule.update` / `rule.delete`）：`id` 的写法（小写带连字符的 UUID，同 `todo.add`，`invalid`，`data.field = "id"`）、`forbidden`、规则存在（`not_found`）、`if_updated_ms`、各字段的校验、空操作、字数上限。检查和写入在同一把锁里，中间没有别的规则写入。`rule.add`：`id` 的写法、已存在则原样返回、各字段、总数、字数上限。
+- **`data.field`**：文字 `text`、项目 `project`、状态 `status`、来源里的 id `source.session_id` / `source.request_id`、总数 `rules`（`reason = "too_many"`）、条件 `if_updated_ms`（`reason = "changed"`）。`over_budget` 的 `field` 是引起它的字段：新建时是 `text`；修改时状态变了就是 `status`，否则是第一个变了的字段（`text`、`project`）。
+- **`rule.preview`** 的 `project` 校验同 `rule.add`（不合法 → `invalid`），不校验项目存在，空白按没给。只读：不改 `last_injected_ms`。
+
+### 23.4 上限：在生效的时候把关，注入时不截断
+
+一个会话拿到的规则 = 全节点的 `active` 规则 + 它所在项目的 `active` 规则。这段文字（含 § 23.5 的模板）最多 4 KiB（UTF-8 字节）。
+
+上限在规则**变成生效的那一刻**检查，不在注入的时候：
+
+- 全节点规则：全节点规则的总量 + 最大的那个项目的总量 ≤ 上限
+- 项目规则：全节点规则的总量 + 这个项目的总量 ≤ 上限
+
+超了就拒绝（`over_budget`，`data` 带现在的字节数和上限），由用户先合并或停用几条（ADR-54 第 3 条：不截断、不自动挑）。这样注入时一定放得下，不存在「有几条没生效而用户不知道」。
+
+**字节数怎么算**：注入的文字是模板的开头那一行（`TEMPLATE_HEADER`，不含换行），后面每条规则一段：`\n- ` 加文字，文字里每个换行换成 `\n` 加两个空格（空行也一样）；末尾没有换行。所以一条规则占 `1 + 2 + 文字的 UTF-8 字节数 + 2 × 文字里的换行数` 字节，一个会话拿到的文字的字节数就是开头的字节数加上它拿到的各条规则的字节数，一字不差（`rule.preview` 的 `bytes` 是同一个数）。
+
+`rule.list` 的 `budget`：`{ cap, node_bytes, projects: { <项目名>: bytes } }`，客户端据此显示「已用 / 上限」。`cap` 是 4096，固定，不可配置。`node_bytes` 是开头加上全节点生效规则的字节数（一条生效的规则都没有时是 0：那时不注入任何东西，也没有开头）；`projects[名字]` 只有这个项目的生效规则，不含 `node_bytes`；同一个项目的不同写法归在第一次出现的那个名字下。一个这个项目的会话拿到的文字是 `node_bytes + projects[名字]`，没有项目规则的会话是 `node_bytes`。
+
+**检查**：一条规则变成生效（新建时就是 `active`，或者 `pending` / `disabled` / `rejected` 改成 `active`），或者生效的规则的文字或项目变了，就用**改动之后**的生效规则算：全节点规则 → `node_bytes` 加上最大的项目；项目规则 → `node_bytes` 加上这个项目。超过 `cap` → `invalid`，`data.reason = "over_budget"`，`data.bytes` 是这个和（这次改动之后一个会话拿到的字节数），`data.cap` 是 4096；刚好 4096 可以。停用、否决、删除、把生效的规则改短、改不生效的规则都不检查，不会因为字数失败。
+
+### 23.5 注入
+
+- **哪些会话**：`todo.dispatch` 开的会话总是注入（有生效的规则、而且 agent 支持）；手动开的会话（`session.create`）只在节点配置 `rules.inject_manual_sessions = true` 时注入，缺省 `false`（热加载，进远程修改的白名单，任意改）。
+- **怎么注入**：daemon 在建会话时把规则写成一段文字，放进这个会话的 `settings.system_prompt_append`：规则在前，调用方自己给的 `system_prompt_append` 空一行接在后面；合起来仍受 16 KiB（按字节）的限制（§ 6.4 的校验），超了 → `invalid_settings`（`data.field = "system_prompt_append"`）。合并发生在套用 agent 的缺省设置（`agents.<id>.default_*`、`node.set_agent_defaults`）之后、校验设置之前，所以缺省里的那一段也接在规则后面；调用方给的是空串按没给。派发时这个错误和别的设置错误一样：什么都不留下（不开会话、不记「经过」、不改 `last_injected_ms`）。
+- **是一份快照**：之后规则改了，已经在跑的会话不变；下一次派发用新的。这段文字就在会话的设置里，用户在会话信息里看得到 agent 拿到了什么。重启会话、resume 用的也是存下来的这一份，不重读规则。它在会话里就是一段普通的 `system_prompt_append`，没有单独的标记：`session.set_settings` 改掉或清掉它，规则也就跟着没了。
+- **agent 不支持**：`AgentInfo.capabilities` 多一个 `system_prompt`（Claude Code、Codex、mock 为 true，ACP 为 false，§ 6.3；mock 把 `system_prompt_append` 回显出来，测试靠它看到注入）。不支持的 agent 不注入，不让派发失败；有会被注入的规则而 agent 不支持时，`dispatched` 事件里记 `rules_skipped: "unsupported"`，客户端在派发前写明「这个 agent 收不到规则」。没有生效的规则时没有什么被跳过：`rules` 缺省、没有 `rules_skipped`。手动开的会话没有「经过」，agent 不支持就静默不注入。
+- **模板**（给 agent 看，英文）：
+
+```
+Standing rules from the user. The user wrote or confirmed each of them; follow them in this work:
+- <规则 1>
+- <规则 2，多行的后续行缩进两格>
+```
+
+  顺序：全节点规则在前、项目规则在后，各按 `created_ms`。
+- **留痕**：这一项的「经过」里 `dispatched` 事件多一个 `rules: [id]`（§ 22.4），按它们在文字里的顺序（线路上空数组省略，旧 daemon 的记录也没有，按空读）；被注入的规则更新 `last_injected_ms`：会话建出来之后写，只写被注入的规则，不动 `updated_ms`、不发 `rule.changed`（客户端下次 `rule.list` 时看到）；按 `message_id` 重试返回已有的会话时不再写；派发在会话建好之后写不进关联而回滚时，已经写的不撤。`todo.dispatch_preview` 的结果多一个 `rules_text`，派发对话框里和第一条消息一起给用户看。`rules_text` 和 `rule.preview` 是同一个函数（和真正的注入也是）：用预览参数里的 `project`（给了就和 `todo.dispatch` 的 `project` 一样：去掉首尾空白、不合法 → `invalid`），缺省用这一项自己的（都没有 → 只有全节点规则），所以派发会选另一个项目时预览和注入一致；不看所选的 agent，客户端用 `capabilities.system_prompt` 判断某个 agent 收不收得到。两个预览都是只读，不改 `last_injected_ms`。
+- 跨节点派发（ADR-56）注入的是被使用的那个节点自己的规则。
+
+### 23.6 「记成规则」
+
+客户端的动作，daemon 没有专门的方法：用户答复一个权限请求或提问时，旁边有「记成规则」，打开一个编辑框，里面预填了这次的问题和选择，用户改成一句自己的话再保存（`rule.add`，`source.kind = answer`，带 `session_id` 和 `request_id`）。人写下的，所以直接是 `active`。
+
+- 预填的文字里有 agent 写的东西（提问的原文、命令）。它一旦保存就会进到之后每个会话的系统提示里，所以必须经过编辑框、由用户看过再存，不提供「一键记下」；编辑框里把来自 agent 的部分和用户的选择分开显示。
+- 界面写明：规则不会自动批准任何请求，它只是告诉 agent 你的做法。
+
+### 23.7 存储、审计、日志
+
+新迁移 `0006_rules.sql`，表 `rules`（列见 § 11；索引 `(created_ms, id)`）。规则的文字是用户内容：不进日志（包括各条错误路径），不进审计。写操作在 daemon 里串行（`Store::rule_lock`，不和别的锁嵌套）。
+
+审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id。`add` 的 `detail` 是 `{ text_len（码点数）, source_kind, status, project? }`；`update` 的 `detail` 是 `{ fields }`（变了的字段名：`text` `project` `status`），文字变了另带 `text_len`，状态变了另带 `status: { from, to }`；`delete` 为空。不记文字（项目名和清单一样会记）。重复的 `rule.add`、空操作的 `rule.update` 和失败的调用不进审计。
+
+**名额**：占 300 个名额的是不含 `rejected` 的规则（待确认、生效、停用）；agent 提的待确认规则另有 50 个（`MAX_AGENT_PENDING`：状态 `pending`、来源 `agent` 或 `extracted`），所以 agent 占不满 300 个名额、把人挡在外面（人写的、直接生效的规则不受这 50 个限制）。`rejected` 的规则留着是为了之后提炼时不再提同样的，它们不占那 300 个，但自己也有一个 300 的上限：再否决一条而 `rejected` 的超过 300 时，daemon 删掉最早否决的那条（`updated_ms` 最小的；记审计 `rule.delete`，`detail` 是 `{ "auto": "rejected_cap" }`，并发 `rule.changed`）。把 `rejected` 的规则改回别的状态和新建一样占一个名额（满了 → `too_many`）。
+
+daemon 从不自动删除有用的规则（ADR-54 第 3 条）：待确认、生效、停用的规则一直留着，不受 `history_retention` 影响；上面 `rejected` 满额时删最早的那条，是唯一的自动删除。`anycon export` / `import` 不含规则。
+
+### 23.8 同组节点之间的同步（单独实现）
+
+决定见 ADR-54 第 12 条。实现时的形状：
+
+- `sync = group` 的规则由**客户端**同步：用户在一台设备上确认、修改、停用、删除它时，这台设备把同一个操作发给同一个空间（[web.md § 4.13](web.md#413-空间与移到另一个节点)）里的每个节点；规则 id 在各节点上相同。离线的节点等它回来后重放。
+- 只有全节点规则能设成 `group`：项目名在另一个节点上不一定是同一个项目。
+- 各节点的 `updated_ms` 是各自的时钟，不能跨节点比较。「对齐」按内容比：同一个 id 在各节点上的文字和状态不一致、或者有的节点没有，就列出来由用户选一份发给其余节点。
+- `pending` 的规则不同步：它的出处指向提炼它的那个节点上的会话。
+
+### 23.9 提炼和判断后端（后一半，提纲）
+
+- **决策点**由 daemon 确定性地从事件流里挑出来，不靠模型：拒绝并写了理由的权限答复、提问的回答、计划的「继续规划」和修改意见、插话、取消之后紧接着的那条消息。
+- **归纳**交给判断后端：输入是一个会话的决策点摘录，输出是若干条 `pending` 规则（`source.kind = extracted`，带出处）。和已有的、被否决过的规则重复的不再提。
+- **判断后端**的配置只在 `config.toml`（ADR-54 第 4 条）：`agent`（一个 agent 会话）或 `api`（daemon 直接调用模型 API）；分拣、提炼、顾问三个位置分开选。实现这一半时 § 1 的「不调用任何模型 API」改为「只在配置了 `api` 判断后端时调用」，并同时改威胁模型的四份文档。
+- 什么时候跑、用哪种 API 格式、花费怎么限，在这一半的规格里定。
+
+### 23.10 客户端入口
+
+- **Web**：规则页 `/rules`（待确认 / 已生效，显示已用字数和上限）；「待处理」稍后段里的待确认规则；审批卡片和答复框旁的「记成规则」；派发对话框里显示将注入的规则；「更多」里出现「规则」。见 [web.md § 14.8](web.md#148-分身和规则)。
+- **CLI**：`anycon rule add <text> [--project <name>]`、`anycon rule ls [--all] [--json]`、`anycon rule show <id>`、`anycon rule confirm | reject | disable | enable <id>`、`anycon rule rm <id>`；`<id>` 接受前缀。在 anycon 拉起的 agent 里（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true`（记成待确认），`ls` 和 `show`（只读）照常，其余拒绝执行（同 § 21.8，护栏，不是边界）；`add` 带 `ANYCON_SESSION_ID` 作为 `origin_session`。`show` 用 `visible()` 打印一条规则的全文、状态、项目和来源（`ls` 把规则截成一行，不够审阅）；`confirm` / `enable` 打印被激活的那条规则的全文。`ls` 缺省给 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；`--json` 给 `{ rules, budget }`。`confirm` / `enable` 把状态改成 `active`，`reject` 改成 `rejected`，`disable` 改成 `disabled`（都是 `rule.update`；经前缀列过表的带 `if_updated_ms`，所以列出之后别处改过这条规则就不确认；已经是这个状态就如实说没变）。`anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则。子命令规格见 [cli.md § 3.9](cli.md#39-anycon-rule)。
+- **`anycon mcp`**：不加工具。MCP 的工具都是固定映射到具体 RPC 的，没有通用的转发，所以经它够不着 `rule.*`；自报了 `mcp` 的连接直接发 `rule.add` 只能记待确认的，发 `rule.update` / `rule.delete` 得到 `forbidden`。
+- **SDK**：`node.rules.*` 和 `rule_changed` 事件。
+
+### 23.11 代价 / 限制
+
+- 一条生效的规则是会进到之后每个派发会话里的指令。闸在两处：不是人直接写的规则要人确认才生效；「记成规则」必须经过编辑框。用户不看就确认，这道闸就没有了。
+- ACP agent 收不到规则（没有系统提示的入口）。
+- 规则是建会话时的快照，改了规则不影响已经在跑的会话。
+- 上限按字节算，中文规则比英文的占得多。
+- agent 提的待确认规则最多 50 条（§ 23.7）：满了 agent 再提会被拒绝，直到人确认或否决一些；这 50 条也占 300 个总名额，所以人写满剩下的之后同样要先删。`rejected` 的不占 300 个名额、自己上限 300，满了自动删最早的，所以否决了的规则只能保证「大约最近 300 条」不会再被提炼出来。
+- `last_injected_ms` 记的是「被写进某个会话的设置」，不保证那个会话之后真的跑起来；派发回滚时已经写的不撤。
+- 这一半改了威胁模型，四份文档已经同步：[architecture.md § 5.6](../architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。
+
+## 24. 更新检查
 
 决定和取舍见 [ADR-57](../decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)。daemon 大约每天问一次 anycon.ai 有没有新的正式版本，有就提示。**不下载、不安装**；自动更新是路线图上另一件事。只有 `anycon daemon` 做这件事：CLI 的其他子命令、`anycon mcp`、SDK、hub 和 Web UI 都不发这个请求。
 
-### 23.1 请求
+### 24.1 请求
 
 - `GET https://anycon.ai/releases.json`，只有两个头：`Host: anycon.ai` 和 `User-Agent: anycon/<版本> (<os>; <arch>)`，比如 `anycon/0.3.1 (linux; x86_64)`、`anycon/0.3.1 (macos; aarch64)`、`anycon/0.3.1 (windows; x86_64)`（`os` / `arch` 是 Rust 的 `std::env::consts::OS` / `ARCH`）。没有查询串、cookie、`Accept-Language` 之类的头，没有账号、设备、节点或安装的标识。anycon.ai 的统计按这个 User-Agent 数活跃的 daemon（国家、版本、平台），格式是对外的约定，不能随意改
 - 只用 HTTPS（webpki 根证书，和连 hub 同一份 TLS 配置）。整次请求（DNS、连接、TLS、读完回应）10 秒超时；回应体最多 16 KiB；**不跟随重定向**，不是 `200` 就算失败
 - 谁看得到什么：anycon.ai 的服务器和它前面的网络服务商（目前是 Cloudflare）看得到请求的 IP 地址、时间和 User-Agent（版本、系统、架构）；项目把这些请求记在访问日志里最多 30 天，用来按国家、版本和平台数活跃的 daemon，之后只留计数
 
-### 23.2 回应和校验
+### 24.2 回应和校验
 
 回应是 `{ "latest": "X.Y.Z", "url": "https://github.com/anycon-ai/anycon/releases/tag/vX.Y.Z", "published_at": "<ISO-8601>" }`，多出来的字段忽略。回应不可信：
 
@@ -1454,7 +1617,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 - 给用户看的链接由版本号拼成 `https://github.com/anycon-ai/anycon/releases/tag/v<latest>`。回应里的 `url` 和 `published_at` 不用
 - 日志里只有校验过的版本号和错误的种类（超时、HTTP 状态码、不是 JSON……），没有回应的内容
 
-### 23.3 开关
+### 24.3 开关
 
 | 设置 | 效果 |
 |---|---|
@@ -1464,14 +1627,14 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 `update.check` 不在远程修改的白名单里（`node.set_config` 回 `forbidden`，`data.reason = not_editable`），只能在机器上改：`anycon config set update.check false`。检查的地址没有配置键和环境变量；嵌入 daemon 的代码（测试）可以经 `DaemonOptions.update_check` 换成本机回环地址上的 `http://`，别的 `http://` 地址一律拒绝。
 
-### 23.4 时间和状态
+### 24.4 时间和状态
 
 - 第一次检查在 daemon 起来之后随机 2–10 分钟，不在启动时
 - 成功之后，下一次在 24 小时加随机 0–60 分钟之后。失败之后按 2 小时、4 小时、8 小时……退避，最多 24 小时；失败只记 debug 日志，连续第 3 次失败时打一行 warn（之后不再重复），没有面向用户的错误
 - 按墙上时钟算：等待时每次最多睡 30 分钟再看时间，机器睡眠醒来后不会推迟一整轮；记录的时间在「未来」（时钟被往回调过）时按现在算
 - 状态存在数据目录的 `update-check.json`（0600，原子替换）：`{ last_success_ms, latest, last_attempt_ms, failures }`。重启后从这里接着算，不会因为重启多发请求；文件坏了或 `latest` 不合格就当作没有记录
 
-### 23.5 提示在哪里
+### 24.5 提示在哪里
 
 - **`node.info.update_available { latest, url, checked_at_ms }`**：检查开着、最近一次成功的检查得到的版本比自己新时才有。没有更新、检查关着、还没成功过、旧 daemon 都不带这个字段，旧客户端不受影响
 - **Web UI**：节点设置「关于」里的「更新」一行（[web.md § 4.8](web.md#48-节点设置-nnodesettings)）

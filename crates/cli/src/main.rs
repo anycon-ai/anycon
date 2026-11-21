@@ -14,6 +14,7 @@ mod output;
 mod passwd;
 mod remote;
 mod render;
+mod rule_cmds;
 mod service;
 mod todo_cmds;
 mod transfer_cmds;
@@ -69,6 +70,7 @@ async fn run(cli: Cli) -> Result<u8> {
         Command::Export(a) => transfer_cmds::export(&app, a).await,
         Command::Import(a) => transfer_cmds::import(&app, a).await,
         Command::Todo(c) => todo_cmds::todo(&app, c).await,
+        Command::Rule(c) => rule_cmds::rule(&app, c).await,
         Command::Mcp(a) => mcp::run(&app, a).await,
         Command::Audit(a) => commands::audit(&app, a).await,
         Command::Config(c) => commands::config(&app, c).await,

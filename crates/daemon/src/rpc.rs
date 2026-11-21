@@ -12,7 +12,8 @@ use anycon_protocol::{
     NodeLogsParams, NodePairBeginParams, NodeRevokeDeviceParams, NodeSetAgentDefaultsParams, NodeSetConfigParams,
     NodeSetEnrollEnabledParams, NodeSetEnrollPasswordParams, NodeStats, NodeWorktreeSettings, PermissionListParams,
     PermissionRespondParams, PreviewCloseParams, PreviewOpenParams, PreviewPortsParams, RenamedProject, RpcError,
-    RpcId, RpcMessage, RpcRequest, SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams,
+    RpcId, RpcMessage, RpcRequest, RuleAddParams, RuleDeleteParams, RuleListParams, RulePreviewParams,
+    RuleUpdateParams, SessionArchiveParams, SessionCreateParams, SessionDeleteParams, SessionDiffParams,
     SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionMarkReadParams,
     SessionPromoteParams, SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams,
     SessionSetMarksParams, SessionSetSettingsParams, SessionSyncBaseParams, SessionWorkspaceMode, TodoAddParams,
@@ -519,6 +520,29 @@ impl Rpc {
                 ok(crate::todo_dispatch::history(c, p).await?)
             }
 
+            // ---------------- 决策档案（daemon.md § 23）：规则的 text 是用户内容，不进日志和审计 ----------------
+            methods::RULE_LIST => {
+                let p: RuleListParams = params(p)?;
+                ok(crate::rules::list(c, p).await?)
+            }
+            methods::RULE_ADD => {
+                let p: RuleAddParams = params(p)?;
+                ok(crate::rules::add(c, caller, p).await?)
+            }
+            methods::RULE_UPDATE => {
+                let p: RuleUpdateParams = params(p)?;
+                ok(crate::rules::update(c, caller, p).await?)
+            }
+            methods::RULE_DELETE => {
+                let p: RuleDeleteParams = params(p)?;
+                crate::rules::delete(c, caller, p).await?;
+                ok(Empty {})
+            }
+            methods::RULE_PREVIEW => {
+                let p: RulePreviewParams = params(p)?;
+                ok(crate::rules::preview(c, p).await?)
+            }
+
             // ---------------- 预览（ADR-39，daemon.md § 19）----------------
             methods::PREVIEW_OPEN => {
                 let p: PreviewOpenParams = params(p)?;
@@ -715,6 +739,7 @@ impl Rpc {
                 worktree: c.worktrees.available(),
                 preview: c.preview.enabled(),
                 todo: true,
+                rules: true,
             },
             started_at_ms: c.started_at_ms,
             attachment_limits: Some(NodeAttachmentLimits {

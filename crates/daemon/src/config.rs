@@ -296,6 +296,14 @@ impl Default for PreviewConfig {
 pub const PREVIEW_TTL_MIN: Duration = Duration::from_secs(5 * 60);
 pub const PREVIEW_TTL_MAX: Duration = Duration::from_secs(7 * 24 * 3600);
 
+/// `[rules]`：决策档案的规则注入（docs/spec/daemon.md § 3 / § 23.5）。整段热加载。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RulesConfig {
+    /// `true` = 手动开的会话（`session.create`）也注入生效的规则；缺省 `false`，只有清单派发的会话注入。
+    pub inject_manual_sessions: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
@@ -310,7 +318,7 @@ impl Default for NotifyConfig {
     }
 }
 
-/// `[update]`：更新检查（ADR-57，docs/spec/daemon.md § 23）。热加载。不在远程修改的白名单里：
+/// `[update]`：更新检查（ADR-57，docs/spec/daemon.md § 24）。热加载。不在远程修改的白名单里：
 /// 要不要联系 anycon.ai 是机器主人在 `config.toml` / 环境变量里的决定。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -467,6 +475,7 @@ pub struct Config {
     pub worktree: WorktreeConfig,
     pub enroll: EnrollConfig,
     pub preview: PreviewConfig,
+    pub rules: RulesConfig,
     pub notify: NotifyConfig,
     pub update: UpdateConfig,
     pub log: LogConfig,
@@ -934,7 +943,7 @@ pub fn set_toml_values(paths: &Paths, edits: Vec<(String, toml_edit::Value)>) ->
 /// 默认的 `config.toml` 文本（`anycon init` 用）。
 pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, workspace_root: &str) -> String {
     let mut s = String::new();
-    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* update.check log.level agents.<id>.default_* agents.<id>.enabled\n\n");
+    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* rules.* update.check log.level agents.<id>.default_* agents.<id>.enabled\n\n");
     s.push_str("[hub]\n");
     match hub_url {
         Some(u) => s.push_str(&format!("url = {}\n", toml_str(u))),
@@ -988,6 +997,9 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("allow_ports = []\n");
     s.push_str("# 预览票据的有效期，5m–7d\n");
     s.push_str("ticket_ttl = \"24h\"\n");
+    s.push_str("\n[rules]\n");
+    s.push_str("# 决策档案的规则（热加载）。清单派发的会话总是带上生效的规则；inject_manual_sessions = true 时手动开的会话也带\n");
+    s.push_str("inject_manual_sessions = false\n");
     s.push_str("\n[notify]\nturn_finished = \"when_unwatched\"\nsession_idle_after = \"30m\"\n");
     s.push_str("\n[update]\n");
     s.push_str("# 每天一次向 https://anycon.ai/releases.json 询问有没有新版本，有就在 anycon doctor 和 Web UI 的「关于」里提示；\n");
@@ -1022,6 +1034,7 @@ pub fn is_hot_key(key: &str) -> bool {
         || key.starts_with("worktree.")
         || key.starts_with("enroll.")
         || key.starts_with("preview.")
+        || key.starts_with("rules.")
         || key == "update.check"
         || key == "log.level"
     {
@@ -1327,6 +1340,23 @@ dangerous_modes = ["yolo"]
         assert_eq!(Config::load(&paths).unwrap().preview_allow_ports(), vec![3000, 8000]);
         // 整段热加载
         assert!(is_hot_key("preview.enabled") && is_hot_key("preview.allow_ports") && is_hot_key("preview.ticket_ttl"));
+    }
+
+    #[test]
+    fn the_rules_section_defaults_to_no_injection_into_manual_sessions_and_is_hot() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path());
+        let cfg = Config::load(&paths).unwrap();
+        assert_eq!(cfg.rules, RulesConfig { inject_manual_sessions: false });
+        // `anycon init` 写出的默认配置里有 [rules]，而且读得回来
+        let text = default_config_toml(None, None, "/tmp/ws");
+        assert!(text.contains("[rules]") && text.contains("inject_manual_sessions = false"));
+        write(d.path(), &text);
+        assert_eq!(Config::load(&paths).unwrap().rules, RulesConfig::default());
+        set_value(&paths, "rules.inject_manual_sessions", "true").unwrap();
+        assert!(Config::load(&paths).unwrap().rules.inject_manual_sessions);
+        assert!(set_value(&paths, "rules.inject_manual_sessions", "\"yes\"").is_err());
+        assert!(is_hot_key("rules.inject_manual_sessions"));
     }
 
     #[test]

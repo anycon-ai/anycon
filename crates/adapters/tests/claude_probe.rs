@@ -18,11 +18,19 @@ use anycon_agent_api::{Adapter, AdapterConfig, ProbeContext};
 use anycon_protocol::{AgentStatus, ConfigOptionKind, ModeRisk, ModelInfo};
 use common::fake_claude;
 
-/// 只含 python3 所在目录（假 CLI 是 python3 脚本）和系统目录；不含开发机上真实的 claude。
+/// 只含 python3（假 CLI 是 python3 脚本）和系统目录；不含开发机上真实的 claude。
+/// python3 不能把它所在的目录整个放进 PATH：那个目录（比如 `/opt/homebrew/bin`）里常常就装着真的 claude，
+/// 探测的回退搜索会找到它。所以单独建一个只放 python3 软链的目录。
 fn minimal_path() -> String {
-    let py = which::which("python3").ok().and_then(|p| p.parent().map(|d| d.to_string_lossy().into_owned()));
+    static PY_DIR: std::sync::OnceLock<Option<tempfile::TempDir>> = std::sync::OnceLock::new();
+    let py = PY_DIR.get_or_init(|| {
+        let real = which::which("python3").ok()?;
+        let dir = tempfile::tempdir().ok()?;
+        std::os::unix::fs::symlink(real, dir.path().join("python3")).ok()?;
+        Some(dir)
+    });
     match py {
-        Some(d) => format!("{d}:/usr/bin:/bin"),
+        Some(d) => format!("{}:/usr/bin:/bin", d.path().display()),
         None => "/usr/bin:/bin".to_string(),
     }
 }
@@ -332,6 +340,12 @@ async fn unparsable_version_does_not_block() {
 
 #[tokio::test]
 async fn command_that_does_not_run_is_an_error_with_stderr() {
+    // 已知安装位置里的 /opt/homebrew/bin、/usr/local/bin 不受临时 HOME 和 PATH 影响：探测会在假 claude 跑不起来之后
+    // 回退到那里真装着的 claude（没登录就报 NotAuthenticated），所以机器上真装在那里时跳过（`claude_code/process.rs` 的同类用例同样处理）
+    if Path::new("/opt/homebrew/bin/claude").exists() || Path::new("/usr/local/bin/claude").exists() {
+        eprintln!("skipped: a real claude is installed in a well-known directory the probe falls back to");
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     install_claude(&dir.path().join("bin"), Some("echo 'boom: bad install' >&2; exit 2"));
     let mut s = Setup::bare(dir);

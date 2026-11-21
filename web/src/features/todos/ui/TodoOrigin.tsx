@@ -1,7 +1,7 @@
 // 从清单项派出的会话（`SessionSummary.todo_id`）：会话页顶栏的 chip 和右栏信息面板里列出那一项（spec/web.md § 4.6、§ 4.12）。
 // 项的标题是用户 / agent 写的文字，一律清理成单行再显示。已经关闭的项不在没关闭的清单缓存里：缓存里没有就向节点要一次（`todo.get`），
 // 要不到（`not_found`）才说「来源清单项已被删除」；节点连不上时什么都不猜。
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ListChecks } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -21,7 +21,8 @@ function askNode(nodeId: string, todoId: string): { promise: Promise<Todo>; sent
   let a = asking.get(key)
   if (!a) {
     // 发出之前的通知序号：回执回来时如果这一项在这期间收到过 `todo.changed`，回执就不盖过它（`applyConfirmedTodo`）
-    a = { promise: rpc().request<Todo>(nodeId, 'todo.get', { id: todoId }), sentAt: todoTickNow() }
+    const sentAt = todoTickNow() // 要在 request 之前取：请求一发出，通知就可能随时到
+    a = { promise: rpc().request<Todo>(nodeId, 'todo.get', { id: todoId }), sentAt }
     asking.set(key, a)
     void a.promise.then(
       () => asking.delete(key),
@@ -53,9 +54,9 @@ export function useOriginTodo(nodeId: string, todoId: string): Origin {
     const a = askNode(nodeId, todoId)
     a.promise.then(
       (todo) => {
-        if (!live) return
-        setAsked({ key, origin: { state: 'found', todo } })
+        // 节点确认的内容不管这个组件还在不在都并进缓存（带发出时的序号：期间收到过通知就不盖过它）；只有「显示什么」跟着组件走
         void applyConfirmedTodo(nodeId, todo, a.sentAt)
+        if (live) setAsked({ key, origin: { state: 'found', todo } })
       },
       (e) => {
         if (!live) return
@@ -74,25 +75,34 @@ export function useOriginTodo(nodeId: string, todoId: string): Origin {
 }
 
 /** 到那一项的链接（标题清理过）；项没了就写明，不留一个点了落空的链接。读不到（还没读完、节点连不上）时什么都不画。 */
-export function TodoOriginLink({ nodeId, todoId, className }: { nodeId: string; todoId: string; className?: string }) {
+export function TodoOriginLink({ nodeId, todoId, className, label, testId }: { nodeId: string; todoId: string; className?: string; /** 给了就在前面带一句说明，整体包成一行（`testId`）；读不到那一项时连说明一起不画，不留一个光秃秃的标签。 */ label?: string; testId?: string }) {
   const { t } = useTranslation()
   const order = useNodes((s) => s.order)
   const o = useOriginTodo(nodeId, todoId)
+  const row = (inner: ReactNode): ReactNode =>
+    label ? (
+      <p className="flex min-w-0 items-center gap-1 text-xs text-fg-muted" data-testid={testId}>
+        <span className="shrink-0">{label}</span>
+        {inner}
+      </p>
+    ) : (
+      inner
+    )
   if (o.state === 'found') {
     const title = cleanOneLine(o.todo.title, 80)
-    return (
+    return row(
       <Link to="/todos/$node/$todo" params={{ node: shortNodeId(nodeId, order), todo: todoId }} title={title} aria-label={t('session.fromTodo', { title })} className={className} data-testid="session-todo-link">
         <ListChecks className="size-3.5 shrink-0" aria-hidden />
         <span className="truncate">{title}</span>
-      </Link>
+      </Link>,
     )
   }
   if (o.state === 'deleted') {
-    return (
+    return row(
       <span className={className} data-testid="session-todo-deleted">
         <ListChecks className="size-3.5 shrink-0" aria-hidden />
         <span className="truncate">{t('session.todoDeleted')}</span>
-      </span>
+      </span>,
     )
   }
   return null

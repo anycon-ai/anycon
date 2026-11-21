@@ -90,24 +90,40 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
   // 之后同样参数的一次有意的重新派发不能悄悄返回第一次的会话。
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const idRef = useRef<{ sig: string; id: string; sessions: number } | null>(null)
+  const idRef = useRef<{ sig: string; id: string; sessions: number; attempt: { agentId: string; project: string; noPush: boolean; mode: 'worktree' | 'local' } } | null>(null)
+  const [pendingNote, setPendingNote] = useState(false)
   const sessionCount = item.sessions?.length ?? 0
-  const messageIdFor = (sig: string): string => {
+  const messageIdFor = (sig: string, attempt: { agentId: string; project: string; noPush: boolean; mode: 'worktree' | 'local' }): string => {
     const prev = idRef.current
     const reuse = prev && prev.sig === sig && prev.sessions === sessionCount
     const id = reuse ? prev.id : crypto.randomUUID()
-    idRef.current = { sig, id, sessions: sessionCount }
+    idRef.current = { sig, id, sessions: sessionCount, attempt }
     return id
   }
 
-  // 每次打开都从头来：「不 push」重新勾上、旧的错误和预览清掉（上一次关掉时的状态不带进下一次派发）
+  // 每次打开都从头来：「不 push」重新勾上、旧的错误和预览清掉（上一次关掉时的状态不带进下一次派发）。
+  // 唯一的例外：上一次的回执丢了、那次可能已经成功（还留着它的 id）——恢复那次的参数（agent、项目、「不 push」、工作位置）并写明，
+  // 这样重试的是同一次尝试；要是这一项在这期间已经多了会话，那次就是成功了，不再沿用
   useEffect(() => {
     if (!open) return
-    setNoPush(true)
     setError(null)
     setPreviewOpen(false)
     setPreview({ text: null, error: null, loading: false })
-    setPickedMode('worktree')
+    const pending = idRef.current
+    if (pending && pending.sessions === sessionCount) {
+      setNoPush(pending.attempt.noPush)
+      setAgentId(pending.attempt.agentId)
+      setProject(pending.attempt.project)
+      setPickedMode(pending.attempt.mode)
+      setPendingNote(true)
+    } else {
+      idRef.current = null
+      setNoPush(true)
+      setPickedMode('worktree')
+      setPendingNote(false)
+    }
+    // 只在打开的那一刻做；之后会话数怎么变都不重置用户正在改的参数
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const send = async (): Promise<void> => {
@@ -119,15 +135,19 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
     const options = Object.fromEntries(Object.entries(selection.options).filter(([k]) => k !== 'no_push'))
     const settings = toSessionSettings({ ...selection, options })
     try {
-      const res = await dispatchTodo(nodeId, { id: item.id, agent: agent.id, project, ...(workspace ? { workspace } : {}), settings, noPush, messageId: messageIdFor(`${agent.id}\u0000${project}\u0000${noPush}`) })
+      const res = await dispatchTodo(nodeId, { id: item.id, agent: agent.id, project, ...(workspace ? { workspace } : {}), settings, noPush, messageId: messageIdFor(`${agent.id}\u0000${project}\u0000${noPush}\u0000${worktreeReady ? mode : 'default'}`, { agentId: agent.id, project, noPush, mode }) })
       idRef.current = null
+      setPendingNote(false)
       setLastUsed(selectionKey(nodeId, agent.id), { model: selection.model, thinking: selection.thinking, mode: selection.mode, options })
       onOpenChange(false)
       const node = shortNodeId(nodeId, useNodes.getState().order)
       toast.info(t('dispatch.sent', { agent: cleanHintText(agent.label) || agent.id }), { label: t('dispatch.openSession'), run: () => navigateTo(`/n/${node}/s/${res.session.id}`) }, 10_000)
     } catch (e) {
       // 节点明确回了错误（没有开会话）：下一次发送换新的 id；链路断了（不知道成没成）：留着 id，重试安全
-      if (e instanceof RpcCallError && e.kind === 'rpc') idRef.current = null
+      if (e instanceof RpcCallError && e.kind === 'rpc') {
+        idRef.current = null
+        setPendingNote(false)
+      }
       setError(describeDispatchError(e, t, worktreeReady && mode === 'worktree'))
     } finally {
       setBusy(false)
@@ -143,6 +163,12 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
         {unreviewed ? (
           <p className="rounded-md border border-border bg-bg-subtle p-2 text-fg-muted" data-testid="dispatch-accepts-note">
             {t('dispatch.acceptsNote')}
+          </p>
+        ) : null}
+
+        {pendingNote ? (
+          <p className="rounded-md border border-warning/40 bg-warning-subtle p-2" role="status" data-testid="dispatch-pending-note">
+            {t('dispatch.pendingAttempt')}
           </p>
         ) : null}
 

@@ -26,7 +26,7 @@ const block: PermissionBlock = {
   detail: { tool: { tool: 'Bash', category: 'shell', input: { command: 'echo hi' }, cwd: '/work', detail: { command: 'echo hi' } } },
   options: [{ id: 'allow', label: 'Allow', kind: 'allow_once' }],
 }
-const render1 = (todo = true) => render(<PermissionCard block={block} deviceLabel={() => 'you'} onRespond={() => {}} todoOrigin={todo ? <TodoOriginLink nodeId={N} todoId="t1" /> : undefined} />)
+const render1 = (todo = true) => render(<PermissionCard block={block} deviceLabel={() => 'you'} onRespond={() => {}} todoOrigin={todo ? <TodoOriginLink nodeId={N} todoId="t1" label="From to-do:" testId="permission-todo" /> : undefined} />)
 
 beforeEach(() => {
   setRpc(new FakeRpc())

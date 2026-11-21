@@ -34,6 +34,8 @@ export interface NodeEntry {
   /** 本次连接是否已完成同步（spec § 6.3）。 */
   synced: boolean
   syncing: boolean
+  /** 这一次同步因为链路以外的原因失败了（已经弹过错误）：列表可能不全，但等它「同步完」已经没有意义，界面按已经定下来处理。 */
+  syncFailed?: boolean
   /** daemon 的协议版本和我们不兼容。 */
   versionMismatch: boolean
   /** daemon 拒绝了危险模式：禁用这些项并说明（没有别的办法知道节点配置）。 */
@@ -135,7 +137,7 @@ export const useNodes = create<NodesState>()((set, get) => {
         const { [id]: _gone, ...rest } = s.byId
         return { byId: rest, order: s.order.filter((x) => x !== id) }
       }),
-    setConn: (id, conn) => update(id, (e) => (e.conn === conn ? e : { ...e, conn, ...(conn === 'ready' ? { lastSeen: Date.now() } : {}), ...(conn === 'ready' ? {} : { synced: false, syncing: false }) })),
+    setConn: (id, conn) => update(id, (e) => (e.conn === conn ? e : { ...e, conn, ...(conn === 'ready' ? { lastSeen: Date.now() } : {}), ...(conn === 'ready' ? {} : { synced: false, syncing: false, syncFailed: false }) })),
     patch: (id, patch) => update(id, (e) => ({ ...e, ...patch })),
     setInfo: (id, info) => update(id, (e) => ({ ...e, info, name: info.name || e.name }), true),
     setAgents: (id, agents, etag) => update(id, (e) => ({ ...e, agents, agentsEtag: etag, agentsLoaded: true }), true),

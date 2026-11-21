@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { refreshGitStatus } from '@/features/worktree/git'
-import { describeGitError } from '@/features/worktree/errors'
+import { dropGit, refreshGitStatus } from '@/features/worktree/git'
+import { describeArchiveError, describeGitError } from '@/features/worktree/errors'
+import { shortNodeId } from '@/lib/ids'
+import { navigateTo } from '@/lib/navigate'
+import { RpcCallError } from '@/transport/rpcClient'
+import { useNodes } from '@/stores/nodes'
 import { cleanHintText } from '@/lib/hint'
 import { useGit, useGitEntry } from '@/stores/git'
 import { useSessions, type SessionItem } from '@/stores/sessions'
-import { toast } from '@/stores/ui'
+import { toast, useUi } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { CheckboxField, RadioChoices } from '@/ui/Choice'
 import { Dialog } from '@/ui/Overlay'
-import { SAFE_CLEANUP, cleanUpWorktree, type CleanupChoice } from '../review'
+import { SAFE_CLEANUP, CleanupStepError, cleanUpWorktree, isSessionActive, type CleanupChoice } from '../review'
 
 type Kind = CleanupChoice['kind']
 interface RowChoice {
@@ -37,7 +41,11 @@ export function CleanupDialog({ open, onOpenChange, nodeId, sessionIds }: { open
   useEffect(() => {
     if (!open) return
     setChoices({})
-    for (const id of ids) void refreshGitStatus(nodeId, id)
+    // 只信打开之后读到的 git 状态：先丢掉会话页留下的旧状态（也让还在途的旧请求作废），再读
+    for (const id of ids) {
+      dropGit(id)
+      void refreshGitStatus(nodeId, id)
+    }
   }, [open, nodeId, ids])
   const set = (id: string, patch: Partial<RowChoice>): void => setChoices((c) => ({ ...c, [id]: { ...(c[id] ?? DEFAULT_ROW), ...patch } }))
   const bySession = useGit((s) => s.bySession)
@@ -45,26 +53,44 @@ export function CleanupDialog({ open, onOpenChange, nodeId, sessionIds }: { open
   const invalid = (id: string): boolean => {
     const c = choices[id]
     if (c?.kind !== 'remove') return false
-    const st = bySession[id]?.status
-    return !st || (st.uncommitted > 0 && !c.force)
+    const e = bySession[id]
+    // 最近一次读取失败时，手里的状态可能是旧的：当作不知道
+    return !e?.status || !!e.error || (e.status.uncommitted > 0 && !c.force)
   }
   const confirm = async (): Promise<void> => {
     setBusy(true)
     let failed = 0
+    let nothing = 0
     try {
       for (const s of sessions) {
         const c = choices[s.id] ?? DEFAULT_ROW
         try {
-          await cleanUpWorktree(nodeId, s, toChoice(c))
+          if ((await cleanUpWorktree(nodeId, s, toChoice(c))) === 'nothing') nothing++
         } catch (e) {
           failed++
-          toast.error(describeGitError(e, t))
+          reportFailure(e, s)
+          // 状态可能变了（比如这期间又有了未提交的改动）：失败之后都重读，「丢弃 N 个文件」的勾选才会出现
+          dropGit(s.id)
+          void refreshGitStatus(nodeId, s.id)
         }
       }
     } finally {
       setBusy(false)
     }
-    if (failed === 0) onOpenChange(false)
+    // 会话本来就归档了、选的又是「自动」/「留着」：什么都没删，照实说，对话框留着让用户改选「删除」
+    if (nothing > 0 && failed === 0) toast.info(t('todos.reviewPage.cleanupNothing', { count: nothing }))
+    else if (failed === 0) onOpenChange(false)
+  }
+  const reportFailure = (e: unknown, s: SessionItem): void => {
+    const cause = e instanceof CleanupStepError ? e.origin : e
+    const step = e instanceof CleanupStepError ? e.step : 'remove'
+    // 会话在等审批或还在跑，归档被拒绝（busy）：说清是它的原因，给一个打开它的入口
+    if (step === 'archive' && cause instanceof RpcCallError && cause.kind === 'rpc' && cause.code === 'busy' && (isSessionActive(s) || s.pending_permissions > 0)) {
+      const node = shortNodeId(nodeId, useNodes.getState().order)
+      useUi.getState().push('error', t('todos.reviewPage.cleanupBusy', { branch: cleanHintText(s.worktree?.branch), status: t(`status.session.${s.status}`) }), { label: t('inbox.openSession'), run: () => navigateTo(`/n/${node}/s/${s.id}`) }, 12_000)
+      return
+    }
+    toast.error(step === 'archive' ? describeArchiveError(cause, t) : describeGitError(cause, t))
   }
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)} title={t('todos.reviewPage.cleanupTitle')} description={t('todos.reviewPage.cleanupBody')} closeLabel={t('common.close')} testId="review-cleanup-dialog" size="lg">
@@ -92,7 +118,8 @@ function CleanupRow({ session, value, onChange }: { session: SessionItem; value:
   const { t } = useTranslation()
   const git = useGitEntry(session.id)
   const wt = session.worktree!
-  const known = git.status !== null
+  // 最近一次读取失败时手里的状态可能是旧的：错误比旧状态新，按「不知道」处理并显示错误
+  const known = git.status !== null && !git.error
   const uncommitted = git.status?.uncommitted ?? 0
   const ahead = git.status?.ahead ?? 0
   const unpushed = git.status?.unpushed ?? 0

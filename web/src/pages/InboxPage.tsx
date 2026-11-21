@@ -331,7 +331,10 @@ function InProgress({ sessions: allSessions, todos, showNode }: { sessions: Sess
   const order = useNodes((s) => s.order)
   // 清单项在这里有自己的一行：它派出的、还在跑的会话不再重复列（那一行点进去就是那一项，会话在它的「经过」里）
   const covered = new Set(todos.map((t) => `${t.node_id}:${t.id}`))
-  const sessions = allSessions.filter((s) => !(s.todo_id && covered.has(`${s.node_id}:${s.todo_id}`)))
+  const isCovered = (s: SessionItem): boolean => !!s.todo_id && covered.has(`${s.node_id}:${s.todo_id}`)
+  const sessions = allSessions.filter((s) => !isCovered(s))
+  // 被收进清单项那一行的会话如果标了「完成后提醒」，那个标记要留在那一行上
+  const armedTodos = new Set(allSessions.filter((s) => isCovered(s) && isArmed(s)).map((s) => `${s.node_id}:${s.todo_id}`))
   const count = sessions.length + todos.length
   if (count === 0) return null
   return (
@@ -365,6 +368,7 @@ function InProgress({ sessions: allSessions, todos, showNode }: { sessions: Sess
                   <span className="block truncate">{cleanOneLine(todo.title, 120)}</span>
                   <span className="block truncate text-xs text-fg-subtle">{[todo.project, showNode ? nodes[todo.node_id]?.name : undefined, t('todos.activity.working'), formatRelative(todo.updated_ms, i18n.language)].filter(Boolean).join(' · ')}</span>
                 </span>
+                {armedTodos.has(`${todo.node_id}:${todo.id}`) ? <Chip tone="info">{t('inbox.willRemind')}</Chip> : null}
               </Link>
             </li>
           ))}

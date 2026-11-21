@@ -59,7 +59,7 @@ export interface PermissionCardProps {
   settled?: SettledReason
   /** kind = mode_change：目标模式的显示名，以及它是不是危险模式（危险的要醒目警示）。 */
   targetMode?: { label: string; dangerous: boolean }
-  /** 这个会话是从清单项派出的：到那一项的链接（`TodoOriginLink`，标题清理成单行），由调用方给；卡片只负责写在哪一行。 */
+  /** 这个会话是从清单项派出的：「来自清单项：<标题>」那一行（`TodoOriginLink` 带 `label`，读不到那一项时它什么都不画），由调用方给。 */
   todoOrigin?: ReactNode
 }
 
@@ -156,12 +156,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
           </div>
           <Chip tone={danger ? 'danger' : 'warning'}>{danger ? t('permission.dangerous') : t('permission.waiting')}</Chip>
         </div>
-        {todoOrigin ? (
-          <p className="flex min-w-0 items-center gap-1 text-xs text-fg-muted" data-testid="permission-todo">
-            <span className="shrink-0">{t('permission.fromTodo')}</span>
-            {todoOrigin}
-          </p>
-        ) : null}
+        {todoOrigin}
         {block.expiresAtMs ? <ExpiryNote at={block.expiresAtMs} /> : null}
         {unknown ? (
           <p className="flex items-start gap-2 rounded-md border border-danger/40 bg-danger-subtle px-2.5 py-2 text-sm font-medium text-danger" role="alert" data-testid="permission-unknown-content">

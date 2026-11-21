@@ -450,7 +450,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
           ) : (
             <MessageList
               nodeId={nodeId}
-              todoOrigin={summary?.todo_id ? <TodoOriginLink nodeId={nodeId} todoId={summary.todo_id} className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" /> : undefined}
+              todoOrigin={summary?.todo_id ? <TodoOriginLink nodeId={nodeId} todoId={summary.todo_id} label={t('permission.fromTodo')} testId="permission-todo" className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" /> : undefined}
               blocks={view?.blocks ?? []}
               pending={pending}
               hasMoreOlder={open?.hasMoreOlder ?? false}

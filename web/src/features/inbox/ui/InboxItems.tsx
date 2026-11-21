@@ -240,6 +240,7 @@ function DetailHeader({ item }: { item: InboxItem }) {
 }
 
 function RequestDetail({ item, armed, outside }: { item: RequestItem; armed: boolean; outside?: { onShow: () => void } }) {
+  const { t } = useTranslation()
   // 只有「待处理」是眼前的页面时发起的答复才算「在这里处理的」
   const { respond, responding, settled } = useRespondPermission(item.nodeId, { handledHere: useInboxActive() })
   const deviceLabel = useDeviceLabel(item.nodeId)
@@ -255,7 +256,7 @@ function RequestDetail({ item, armed, outside }: { item: RequestItem; armed: boo
       <OutsideNote outside={outside} item={item} />
       <DetailHeader item={item} />
       {/* 和会话页同一个卡片：命令、工作目录、全部选项。节点连不上时按钮禁用（答复发不出去） */}
-      <PermissionCard block={block} deviceLabel={deviceLabel} onRespond={respond} busy={!armed || responding.has(item.request.request_id) || !info.online} settled={settled.get(item.request.request_id)} targetMode={targetMode} todoOrigin={todoId ? <TodoOriginLink nodeId={item.nodeId} todoId={todoId} className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" /> : undefined} />
+      <PermissionCard block={block} deviceLabel={deviceLabel} onRespond={respond} busy={!armed || responding.has(item.request.request_id) || !info.online} settled={settled.get(item.request.request_id)} targetMode={targetMode} todoOrigin={todoId ? <TodoOriginLink nodeId={item.nodeId} todoId={todoId} label={t('permission.fromTodo')} testId="permission-todo" className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" /> : undefined} />
     </div>
   )
 }

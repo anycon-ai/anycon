@@ -357,4 +357,51 @@ describe('closing and reopening, and the message id', () => {
     await waitFor(() => expect(dispatchCalls()).toHaveLength(2))
     expect(ids()[1]).not.toBe(ids()[0])
   })
+
+  it('reopening while a lost-reply id is pending restores that attempt’s parameters (no push, workspace) and says it may have gone through', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    rpc.handlers['todo.dispatch'] = () => {
+      throw linkError('timeout')
+    }
+    const it1 = item({ project: 'proj' })
+    const view = render(<DispatchDialog item={it1} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-workspace-local'))
+    await user.click(screen.getByTestId('dispatch-no-push')) // 取消勾选
+    await user.click(screen.getByTestId('dispatch-send'))
+    await screen.findByTestId('dispatch-error')
+    view.rerender(<DispatchDialog item={it1} open={false} onOpenChange={vi.fn()} />)
+    view.rerender(<DispatchDialog item={it1} open onOpenChange={vi.fn()} />)
+    expect(screen.getByTestId('dispatch-pending-note')).toHaveTextContent(/may have gone through/)
+    expect(screen.getByTestId('dispatch-no-push')).not.toBeChecked()
+    expect(screen.getByTestId('dispatch-workspace-local')).toBeChecked()
+    await user.click(screen.getByTestId('dispatch-send'))
+    await waitFor(() => expect(dispatchCalls()).toHaveLength(2))
+    expect(dispatchCalls()[1]).toMatchObject({ no_push: false, workspace: { mode: 'local' } })
+    expect(dispatchCalls()[1]!.message_id).toBe(dispatchCalls()[0]!.message_id)
+  })
+
+  it('a different workspace is a different attempt: it gets a new message id', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    rpc.handlers['todo.dispatch'] = () => {
+      throw linkError('timeout')
+    }
+    render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-send'))
+    await screen.findByTestId('dispatch-error')
+    await user.click(screen.getByTestId('dispatch-workspace-local'))
+    await user.click(screen.getByTestId('dispatch-send'))
+    await waitFor(() => expect(dispatchCalls()).toHaveLength(2))
+    expect(ids()[1]).not.toBe(ids()[0])
+  })
+
+  it('with no pending attempt, reopening shows no such note', async () => {
+    setup([claude()])
+    const it1 = item({ project: 'proj' })
+    const view = render(<DispatchDialog item={it1} open onOpenChange={vi.fn()} />)
+    view.rerender(<DispatchDialog item={it1} open={false} onOpenChange={vi.fn()} />)
+    view.rerender(<DispatchDialog item={it1} open onOpenChange={vi.fn()} />)
+    expect(screen.queryByTestId('dispatch-pending-note')).toBeNull()
+  })
 })

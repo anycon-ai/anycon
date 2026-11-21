@@ -34,7 +34,8 @@ export function resolveLinkedSession(sessions: readonly string[] | undefined, li
 
 /** 订阅版：节点是否同步完、会话列表一起读。返回的会话对象只在那个会话变了时才变。 */
 export function useLinkedSession(nodeId: string, sessions: readonly string[] | undefined): LinkedSession {
-  const synced = useNodes((s) => s.byId[nodeId]?.conn === 'ready' && s.byId[nodeId]?.synced === true)
+  // 同步做完了，或者因为链路以外的原因失败了（不能让「正在找」一直挂着）：都按「会话列表已经定下来」处理
+  const synced = useNodes((s) => s.byId[nodeId]?.conn === 'ready' && (s.byId[nodeId]?.synced === true || s.byId[nodeId]?.syncFailed === true))
   const session = useSessions((s) => resolveLinkedSession(sessions, s.list, synced).session)
   const resolving = useSessions((s) => resolveLinkedSession(sessions, s.list, synced).resolving)
   return { session, resolving }
@@ -80,8 +81,16 @@ export async function countDenials(sessionId: string, lastSeq: number): Promise<
     return null
   }
   if (events.length === 0) return null
-  const seqs = events.map((e) => e.seq)
-  const complete = Math.min(...seqs) <= 1 && Math.max(...seqs) >= lastSeq && new Set(seqs).size >= lastSeq
+  // 事件可能有几十万个：不能用 `Math.min(...seqs)`（展开成参数会爆栈），循环里算
+  let min = Infinity
+  let max = 0
+  const seen = new Set<number>()
+  for (const e of events) {
+    if (e.seq < min) min = e.seq
+    if (e.seq > max) max = e.seq
+    seen.add(e.seq)
+  }
+  const complete = min <= 1 && max >= lastSeq && seen.size >= lastSeq
   return { count: events.filter((e) => e.event.type === 'notice' && DENIAL_CODES.has(e.event.code)).length, complete }
 }
 
@@ -128,10 +137,34 @@ export type CleanupChoice = { kind: 'auto' } | { kind: 'keep' } | { kind: 'remov
 
 export const SAFE_CLEANUP: CleanupChoice = { kind: 'auto' }
 
-export async function cleanUpWorktree(nodeId: string, session: Pick<SessionItem, 'id' | 'archived' | 'worktree'>, choice: CleanupChoice): Promise<void> {
-  if (!session.worktree) return
+/** 清理某一步失败：`step` 说明是归档会话还是删 worktree 失败（两者的说法不一样）。 */
+export class CleanupStepError extends Error {
+  constructor(
+    readonly step: 'archive' | 'remove',
+    readonly origin: unknown,
+  ) {
+    super(`cleanup step ${step} failed`)
+  }
+}
+
+/**
+ * 返回 `done`，或 `nothing`：会话本来就已经归档、选的又是「自动」/「留着」——没有任何东西被删，调用方要照实说，不能当成清理过了。
+ */
+export async function cleanUpWorktree(nodeId: string, session: Pick<SessionItem, 'id' | 'archived' | 'worktree'>, choice: CleanupChoice): Promise<'done' | 'nothing'> {
+  if (!session.worktree) return 'nothing'
   // 归档要先于删除（daemon 对没归档的会话回 `busy`）；要自己删的时候归档只是把会话收起来，别让 daemon 顺手决定 worktree 的去留
-  if (session.archived !== true) await archiveSession(nodeId, session.id, true, { worktree: choice.kind === 'auto' ? 'auto' : 'keep' })
-  if (choice.kind !== 'remove') return
-  await rpc().request(nodeId, 'workspace.remove_worktree', { id: session.worktree.id, ...(choice.force ? { force: true } : {}), ...(choice.deleteBranch ? { delete_branch: true } : {}) })
+  if (session.archived !== true) {
+    try {
+      await archiveSession(nodeId, session.id, true, { worktree: choice.kind === 'auto' ? 'auto' : 'keep' })
+    } catch (e) {
+      throw new CleanupStepError('archive', e)
+    }
+  } else if (choice.kind !== 'remove') return 'nothing'
+  if (choice.kind !== 'remove') return 'done'
+  try {
+    await rpc().request(nodeId, 'workspace.remove_worktree', { id: session.worktree.id, ...(choice.force ? { force: true } : {}), ...(choice.deleteBranch ? { delete_branch: true } : {}) })
+  } catch (e) {
+    throw new CleanupStepError('remove', e)
+  }
+  return 'done'
 }

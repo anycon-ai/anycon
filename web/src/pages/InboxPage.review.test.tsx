@@ -183,7 +183,7 @@ describe('selection stays safe', () => {
 })
 
 describe('Needs more work from the Inbox', () => {
-  it('a link failure is not reported as sent: the text and the box stay, the item stays, and the toast says it was not sent', async () => {
+  it('a link failure says it was not delivered yet and will be sent automatically (it may have arrived): draft cleared, box closed, no second send offered, one session.send only', async () => {
     rpc.handlers['session.send'] = () => {
       throw linkError('timeout')
     }
@@ -192,9 +192,11 @@ describe('Needs more work from the Inbox', () => {
     await user.click(screen.getByTestId('inbox-rework'))
     await user.type(await screen.findByTestId('inbox-rework-input'), 'try again please')
     await user.click(screen.getByTestId('inbox-rework-send'))
-    await waitFor(() => expect(useUi.getState().toasts.some((t) => /Not sent/.test(t.text))).toBe(true))
+    await waitFor(() => expect(useUi.getState().toasts.some((t) => /Not delivered yet/.test(t.text) && /automatically/.test(t.text))).toBe(true))
     expect(useUi.getState().toasts.some((t) => /Sent to the agent/.test(t.text))).toBe(false)
-    expect(screen.getByTestId('inbox-rework-input')).toHaveValue('try again please')
+    expect(screen.queryByTestId('inbox-rework-input')).toBeNull()
+    expect(useReworkDrafts.getState().byKey).toEqual({})
+    expect(rpc.calls.filter((c) => c.method === 'session.send')).toHaveLength(1)
     expect(reviewRows()).toHaveLength(1)
   })
 
@@ -247,11 +249,22 @@ describe('Needs more work from the Inbox', () => {
     expect(await screen.findByTestId('inbox-rework-why')).toHaveTextContent('still working')
   })
 
-  it('does not target an older session while the node has not finished syncing, and says why', async () => {
+  it('does not target an older session while the node has not finished syncing: rework waits (Approve only needs the node)', async () => {
     useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', info, conn: 'ready', synced: false }) } })
     await load(reviewItem('r1', { sessions: ['s1', 's_not_loaded'] as never }))
-    expect(screen.getByTestId('inbox-approve')).toBeDisabled()
+    expect(screen.getByTestId('inbox-approve')).toBeEnabled()
     expect(screen.getByTestId('inbox-rework')).toBeDisabled()
+  })
+
+  it('Send in an open box has the same gate as the button that opens it (a restored draft opens the box on selecting the item)', async () => {
+    useReworkDrafts.getState().set(A, 'r1', 'restored')
+    useSessions.setState({ list: { s1: { ...useSessions.getState().list.s1!, status: 'running' } as never } })
+    const user = userEvent.setup()
+    await load(reviewItem('r1'))
+    await user.click(reviewRows()[0]!.querySelector('[data-testid="inbox-row-main"]')!)
+    expect(await screen.findByTestId('inbox-rework-input')).toHaveValue('restored')
+    expect(screen.getByTestId('inbox-rework-send')).toBeDisabled()
+    expect(screen.getByTestId('inbox-rework-why')).toBeInTheDocument()
   })
 })
 
@@ -268,6 +281,14 @@ describe('In progress lists the to-do items the agent is working on', () => {
     const sessionRows = screen.getAllByTestId('inbox-in-progress-row')
     expect(sessionRows).toHaveLength(1)
     expect(sessionRows[0]).toHaveTextContent('by hand')
+  })
+
+  it('keeps the “notify when done” marker of a session folded into its item’s row', async () => {
+    const user = userEvent.setup()
+    useSessions.setState({ list: { s1: { ...summary({ id: 's1', status: 'running', todo_id: 'w1', title: 'agent session', follow_up: true } as never), node_id: A, cached_seq: 0 } as never }, pending: {}, open: {} })
+    await load(todoItem({ id: 'w1', title: 'Work item', activity: 'working' as never, sessions: ['s1'] as never }))
+    await user.click(screen.getByTestId('inbox-in-progress-toggle'))
+    expect(screen.getByTestId('inbox-in-progress-todo')).toHaveTextContent(/notify|remind/i)
   })
 
   it('an item that is only “working” because a person set the state is not listed here (activity says what the agent is doing)', async () => {

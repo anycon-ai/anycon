@@ -119,17 +119,21 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
   // 最近的关联会话还没读到（节点这一轮同步没做完）时不替用户挑一个旧的；agent 这会儿还在干活时「再改改」要等这一轮结束
   const working = !!session && isSessionActive(session)
   const canRework = !!session && !archived && online && !closed && !working && !resolving
-  const actionsBlocked = resolving && !closed
-  const reworkWhy = resolving ? t('todos.reviewPage.resolving') : working && !closed ? t('todos.reviewPage.reworkActive') : null
+  // 通过 / 不要了只改这一项的 `state`（离线也进待发队列），不依赖那个会话；只有要用到会话的动作（再改改、diff、清理）才等它
+  const reworkWhy = closed ? null : !online ? t('todos.reviewPage.reworkOffline') : resolving ? t('todos.reviewPage.resolving') : archived ? t('session.archivedHint') : working ? t('todos.reviewPage.reworkActive') : null
   const rework = async (): Promise<void> => {
-    if (!session || text.trim() === '' || sending) return
+    if (!canRework || text.trim() === '' || sending || !session) return
     setSending(true)
     try {
       const r = await sendMessage(nodeId, session.id, text.trim())
-      // 没发出去（`failed`：节点拒绝；`unsent`：链路断了，消息记在会话的「未发送」里）：留着输入框和文字，说清楚，不当成已发送
+      // `failed`：节点拒绝了，留着输入框和文字。`unsent`：链路断了，消息已经在会话的「未发送」队列里，重连时会用同一个 id 自动重发
+      // （超时的话它也可能已经到了）：说清楚「还没送到、会自动发」，清掉草稿，不再邀请用户把同一段话再发一次
       if (r.state === 'failed') toast.error(r.reason === 'archived' ? t('session.archivedHint') : t('todos.reviewPage.reworkFailed'))
-      else if (r.state === 'unsent') toast.error(t('todos.reviewPage.reworkUnsent'))
-      else {
+      else if (r.state === 'unsent') {
+        toast.info(t('todos.reviewPage.reworkUnsent'))
+        clearText()
+        setReworking(false)
+      } else {
         toast.info(r.state === 'queued' ? t('todos.reviewPage.reworkQueued') : t('todos.reviewPage.reworkSent'))
         clearText()
         setReworking(false)
@@ -148,7 +152,8 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
   const drop = async (): Promise<void> => {
     await setTodoState(item, 'dropped')
     // 问一句要不要连 worktree（和分支）一起清掉；会话和它的记录都留着
-    if (worktreeSessions !== '') setDropCleanup(true)
+    // 会话列表还没定下来（正在找）时不知道有哪些 worktree：不问，用户可以之后在节点设置的 worktree 列表里清
+    if (worktreeSessions !== '' && !resolving) setDropCleanup(true)
   }
 
   const [pushing, setPushing] = useState(false)
@@ -159,6 +164,7 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
     try {
       const r = await commitPushAndOpenPr(nodeId, session, t, confirmed)
       if (r.ok) toast.info(t('todos.reviewPage.pushSent'))
+      else if (r.step === 'send' && r.reason === 'unsent') toast.info(t('todos.reviewPage.pushUnsent'))
       else toast.error(r.step === 'settings' ? t('todos.reviewPage.pushSettingsFailed') : t('todos.reviewPage.pushSendFailed'))
     } finally {
       setPushing(false)
@@ -233,9 +239,13 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
                 ) : (
                   <Spinner className="size-4" />
                 )}
-                {denials === undefined ? null : denials === null || (!denials.complete && denials.count === 0) ? (
+                {denials === undefined ? null : denials === null ? (
                   <span className="text-fg-muted" data-testid="review-denials-unknown">
                     {t('todos.reviewPage.denialsUnknown')}
+                  </span>
+                ) : !denials.complete && denials.count === 0 ? (
+                  <span className="text-fg-muted" data-testid="review-denials-none-loaded">
+                    {t('todos.reviewPage.denialsNoneLoaded')}
                   </span>
                 ) : (
                   <span className={denials.count > 0 ? 'text-warning' : 'text-fg-muted'} data-testid="review-denials" data-complete={denials.complete ? 'true' : 'false'}>
@@ -337,7 +347,7 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
                 >
                   {t('common.cancel')}
                 </Button>
-                <Button variant="primary" disabled={sending || text.trim() === ''} onClick={() => void rework()} data-testid="review-rework-send">
+                <Button variant="primary" disabled={sending || text.trim() === '' || !canRework} onClick={() => void rework()} data-testid="review-rework-send">
                   {t('todos.reviewPage.reworkSend')}
                 </Button>
               </div>
@@ -357,13 +367,13 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
             </p>
           ) : null}
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="primary" disabled={closed || actionsBlocked} onClick={() => void setTodoState(item, 'done')} data-testid="review-approve">
+            <Button variant="primary" disabled={closed} onClick={() => void setTodoState(item, 'done')} data-testid="review-approve">
               {t('todos.reviewPage.approve')}
             </Button>
             <Button disabled={!canRework} onClick={() => setReworking((r) => !r)} aria-expanded={reworking} data-testid="review-rework">
               {t('todos.reviewPage.rework')}
             </Button>
-            <Button variant="outline-danger" disabled={closed || actionsBlocked} onClick={() => void drop()} data-testid="review-drop">
+            <Button variant="outline-danger" disabled={closed} onClick={() => void drop()} data-testid="review-drop">
               {t('todos.reviewPage.drop')}
             </Button>
           </div>

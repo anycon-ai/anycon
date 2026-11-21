@@ -14,7 +14,7 @@ import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
 import { useUi } from '@/stores/ui'
 import { resetDrafts } from '@/stores/drafts'
-import { useGit } from '@/stores/git'
+import { EMPTY_GIT, useGit } from '@/stores/git'
 import { useTodoHistory } from '../history'
 import { useReworkDrafts } from '../reworkDraft'
 import { resetTodosMemory, syncTodos } from '../service'
@@ -368,7 +368,7 @@ describe('after approving: commit, push and open a pull request', () => {
 })
 
 describe('Needs more work: honest about what was sent', () => {
-  it('a link failure (unsent) is not reported as sent: the text and the box stay and the toast says it was not sent', async () => {
+  it('a link failure (unsent) says it was not delivered yet and will be sent automatically (it may have arrived), clears the draft and does not offer a second send', async () => {
     rpc.handlers['session.send'] = () => {
       throw linkError('timeout')
     }
@@ -377,10 +377,12 @@ describe('Needs more work: honest about what was sent', () => {
     await user.click(screen.getByTestId('review-rework'))
     await user.type(screen.getByTestId('review-rework-input'), 'try the other approach')
     await user.click(screen.getByTestId('review-rework-send'))
-    await waitFor(() => expect(useUi.getState().toasts.some((t) => /Not sent/.test(t.text))).toBe(true))
+    await waitFor(() => expect(useUi.getState().toasts.some((t) => /Not delivered yet/.test(t.text) && /automatically/.test(t.text) && /may already have arrived/.test(t.text))).toBe(true))
     expect(useUi.getState().toasts.some((t) => /Sent to the agent/.test(t.text))).toBe(false)
-    expect(screen.getByTestId('review-rework-input')).toHaveValue('try the other approach')
-    expect(useReworkDrafts.getState().byKey[`${N}:t1`]).toBe('try the other approach')
+    // 草稿清掉、输入框收起：没有再发一次的入口；只发过一次
+    expect(screen.queryByTestId('review-rework-input')).toBeNull()
+    expect(useReworkDrafts.getState().byKey).toEqual({})
+    expect(sent()).toHaveLength(1)
   })
 
   it('a sent message clears the draft and closes the box', async () => {
@@ -413,14 +415,14 @@ describe('Needs more work: honest about what was sent', () => {
     expect(screen.getByTestId('review-rework-why')).toHaveTextContent('still working')
   })
 
-  it('does not fall back to an older session while the node has not finished syncing: the actions wait and say why; once synced it uses the older one', async () => {
+  it('does not fall back to an older session while the node has not finished syncing: rework, diff and clean-up wait and say why, Approve and Drop do not; once synced it uses the older one', async () => {
     const user = userEvent.setup()
     useNodes.setState({ byId: { [N]: nodeEntry({ id: N, name: 'box', conn: 'ready', synced: false, info: { capabilities: { todo: true } } as never }) } })
     await mount({ id: 't1', sessions: [SID, 'sess_not_loaded_yet'] as never })
     expect(screen.getByTestId('review-resolving')).toBeInTheDocument()
-    expect(screen.getByTestId('review-approve')).toBeDisabled()
+    expect(screen.getByTestId('review-approve')).toBeEnabled()
+    expect(screen.getByTestId('review-drop')).toBeEnabled()
     expect(screen.getByTestId('review-rework')).toBeDisabled()
-    expect(screen.getByTestId('review-drop')).toBeDisabled()
     expect(screen.queryByTestId('review-files')).toBeNull()
     expect(rpc.calls.some((c) => c.method === 'session.diff')).toBe(false)
     // 同步完了、它仍然不在：才算被删掉，退到更早的那个
@@ -430,6 +432,41 @@ describe('Needs more work: honest about what was sent', () => {
     await user.type(screen.getByTestId('review-rework-input'), 'hi')
     await user.click(screen.getByTestId('review-rework-send'))
     await waitFor(() => expect(rpc.calls.find((c) => c.method === 'session.send')!.params).toMatchObject({ session_id: SID }))
+  })
+
+  it('a sync that failed for a reason other than the link does not leave “resolving” forever: it falls back as after a completed one', async () => {
+    useNodes.setState({ byId: { [N]: nodeEntry({ id: N, name: 'box', conn: 'ready', synced: false, syncFailed: true, info: { capabilities: { todo: true } } as never }) } })
+    await mount({ id: 't1', sessions: [SID, 'sess_not_loaded_yet'] as never })
+    expect(screen.queryByTestId('review-resolving')).toBeNull()
+    expect(screen.getByTestId('review-rework')).toBeEnabled()
+  })
+
+  it('Approve works offline even when the latest session is not in the local list (it only changes the state)', async () => {
+    useNodes.setState({ byId: { [N]: nodeEntry({ id: N, name: 'box', conn: 'peer_offline', synced: false, info: { capabilities: { todo: true } } as never }) } })
+    await mount({ id: 't1', sessions: [SID, 'sess_not_loaded_yet'] as never }, { online: false })
+    expect(screen.getByTestId('review-approve')).toBeEnabled()
+    expect(screen.getByTestId('review-drop')).toBeEnabled()
+    expect(screen.getByTestId('review-rework')).toBeDisabled()
+  })
+
+  it('the Send button of an open box (a restored draft opens it) has the same gate as the button that opens it: working, resolving, offline, archived', async () => {
+    useReworkDrafts.getState().set(N, 't1', 'restored text')
+    useSessions.setState({ list: { [SID]: { ...useSessions.getState().list[SID]!, status: 'running' } as never } })
+    await mount()
+    expect(screen.getByTestId('review-rework-input')).toHaveValue('restored text')
+    expect(screen.getByTestId('review-rework-send')).toBeDisabled()
+    await act(async () => useSessions.setState({ list: { [SID]: { ...useSessions.getState().list[SID]!, status: 'idle', archived: true } as never } }))
+    expect(screen.getByTestId('review-rework-send')).toBeDisabled()
+    expect(screen.getByTestId('review-rework-why')).toBeInTheDocument()
+    await act(async () => useSessions.setState({ list: { [SID]: { ...useSessions.getState().list[SID]!, archived: false } as never } }))
+    expect(screen.getByTestId('review-rework-send')).toBeEnabled()
+  })
+
+  it('offline: Send in the open box is disabled and the reason is shown', async () => {
+    useReworkDrafts.getState().set(N, 't1', 'restored text')
+    await mount({ id: 't1' }, { online: false })
+    expect(screen.getByTestId('review-rework-send')).toBeDisabled()
+    expect(screen.getByTestId('review-rework-why')).toHaveTextContent(/not reachable/)
   })
 })
 
@@ -457,12 +494,12 @@ describe('the denial count is only exact when the cache covers the whole session
     expect(el).toHaveTextContent('at least 2 actions')
   })
 
-  it('a partial cache with no denial in it is unknown, not “0”', async () => {
+  it('a partial cache with no denial in it says none in the loaded part, not “0” and not “unknown”', async () => {
     resetSeq()
     await db.putEvents(SID, [ev({ type: 'text_delta', text: 'x' } as never)])
     useSessions.setState({ list: { [SID]: { ...useSessions.getState().list[SID]!, last_seq: 50 } as never } })
     await mount()
-    expect(await screen.findByTestId('review-denials-unknown')).toBeInTheDocument()
+    expect(await screen.findByTestId('review-denials-none-loaded')).toHaveTextContent('No denials in the part of the session this browser has loaded')
     expect(screen.queryByTestId('review-denials')).toBeNull()
   })
 })
@@ -485,5 +522,129 @@ describe('the page does not re-read on every event', () => {
     await waitFor(() => expect(diffs()).toBe(before + 2))
     await user.click(screen.getByTestId('review-refresh'))
     await waitFor(() => expect(diffs()).toBe(before + 3))
+  })
+})
+
+describe('the push request after a link failure', () => {
+  it('says it is saved and will be sent automatically; it does not report a failure to send', async () => {
+    rpc.handlers['session.send'] = () => {
+      throw linkError('timeout')
+    }
+    const user = userEvent.setup()
+    await mount({ id: 't1', state: 'done' as never, activity: undefined })
+    useSessions.setState({ list: { [SID]: { ...useSessions.getState().list[SID]!, settings: { options: { no_push: false } } } as never } })
+    await user.click(screen.getByTestId('review-push'))
+    await waitFor(() => expect(useUi.getState().toasts.some((t) => /Not delivered yet/.test(t.text))).toBe(true))
+    expect(useUi.getState().toasts.some((t) => /Could not send/.test(t.text))).toBe(false)
+  })
+})
+
+describe('clean-up details', () => {
+  const called = (m: string) => rpc.calls.filter((c) => c.method === m).map((c) => c.params as Record<string, unknown>)
+  const open = async (user: ReturnType<typeof userEvent.setup>): Promise<void> => {
+    await user.click(screen.getByTestId('review-drop'))
+    await screen.findByTestId('review-cleanup-dialog')
+  }
+
+  it('switching a row’s option resets its “discard” and “delete the branch” ticks', async () => {
+    rpc.handlers['session.git_status'] = () => gitStatus({ uncommitted: 2, ahead: 1 })
+    const user = userEvent.setup()
+    await mount()
+    await open(user)
+    await waitFor(() => expect(screen.getByTestId('review-cleanup-status')).toHaveTextContent('2 uncommitted'))
+    await user.click(screen.getByTestId('review-cleanup-option-remove'))
+    await user.click(screen.getByTestId('review-cleanup-force'))
+    await user.click(screen.getByTestId('review-cleanup-delete-branch'))
+    expect(screen.getByTestId('review-cleanup-confirm')).toBeEnabled()
+    await user.click(screen.getByTestId('review-cleanup-auto'))
+    await user.click(screen.getByTestId('review-cleanup-option-remove'))
+    expect(screen.getByTestId('review-cleanup-force')).not.toBeChecked()
+    expect(screen.getByTestId('review-cleanup-delete-branch')).not.toBeChecked()
+    expect(screen.getByTestId('review-cleanup-confirm')).toBeDisabled()
+  })
+
+  it('only trusts the git status read after the dialog opened (an older one left by the session page is dropped)', async () => {
+    useGit.setState({ bySession: { [SID]: { ...EMPTY_GIT, status: gitStatus({ uncommitted: 0 }) } } })
+    let n = 0
+    rpc.handlers['session.git_status'] = () => (++n, gitStatus({ uncommitted: 5 }))
+    const user = userEvent.setup()
+    await mount()
+    await open(user)
+    await user.click(screen.getByTestId('review-cleanup-option-remove'))
+    // 旧状态（0 个未提交）不算数：要等新读的（5 个）出来，才出现「丢弃」的勾选
+    await waitFor(() => expect(screen.getByTestId('review-cleanup-force')).toBeInTheDocument())
+    expect(n).toBeGreaterThan(0)
+  })
+
+  it('a failed re-read is shown over the older status and blocks removing', async () => {
+    let fail = false
+    rpc.handlers['session.git_status'] = () => {
+      if (fail) throw rpcError('internal')
+      return gitStatus({ uncommitted: 0 })
+    }
+    const user = userEvent.setup()
+    await mount()
+    await open(user)
+    await waitFor(() => expect(screen.getByTestId('review-cleanup-status')).toHaveTextContent('No uncommitted'))
+    await user.click(screen.getByTestId('review-cleanup-option-remove'))
+    expect(screen.getByTestId('review-cleanup-confirm')).toBeEnabled()
+    fail = true
+    await act(async () => {
+      const { refreshGitStatus } = await import('@/features/worktree/git')
+      await refreshGitStatus(N, SID)
+    })
+    await waitFor(() => expect(screen.getByTestId('review-cleanup-confirm')).toBeDisabled())
+    expect(screen.getByTestId('review-cleanup-status')).not.toHaveTextContent('No uncommitted')
+  })
+
+  it('a refusal because of uncommitted changes re-reads the status so the “discard N files” tick appears', async () => {
+    let dirty = false
+    rpc.handlers['session.git_status'] = () => gitStatus({ uncommitted: dirty ? 3 : 0 })
+    rpc.handlers['workspace.remove_worktree'] = () => {
+      dirty = true
+      throw rpcError('invalid', undefined, 'uncommitted_changes')
+    }
+    const user = userEvent.setup()
+    await mount()
+    await open(user)
+    await waitFor(() => expect(screen.getByTestId('review-cleanup-status')).toHaveTextContent('No uncommitted'))
+    await user.click(screen.getByTestId('review-cleanup-option-remove'))
+    await user.click(screen.getByTestId('review-cleanup-confirm'))
+    await waitFor(() => expect(screen.getByTestId('review-cleanup-force')).toBeInTheDocument())
+    expect(screen.getByTestId('review-cleanup-confirm')).toBeDisabled()
+    expect(screen.getByTestId('review-cleanup-dialog')).toBeInTheDocument()
+  })
+
+  it('an archived session whose worktree is kept: auto / keep removes nothing and the dialog says so (and stays)', async () => {
+    useSessions.setState({ list: { [SID]: { ...useSessions.getState().list[SID]!, archived: true, worktree: worktree({ state: 'kept' }) } as never } })
+    const user = userEvent.setup()
+    await mount()
+    await open(user)
+    await user.click(screen.getByTestId('review-cleanup-confirm'))
+    await waitFor(() => expect(useUi.getState().toasts.some((t) => /Nothing was removed/.test(t.text))).toBe(true))
+    expect(called('session.archive')).toEqual([])
+    expect(called('workspace.remove_worktree')).toEqual([])
+    expect(screen.getByTestId('review-cleanup-dialog')).toBeInTheDocument()
+  })
+
+  it('archiving refused because the session is waiting for permission says so and offers to open it', async () => {
+    useSessions.setState({ list: { [SID]: { ...useSessions.getState().list[SID]!, status: 'waiting_permission' } as never } })
+    rpc.handlers['session.archive'] = () => {
+      throw rpcError('busy')
+    }
+    const user = userEvent.setup()
+    await mount()
+    await open(user)
+    await user.click(screen.getByTestId('review-cleanup-confirm'))
+    await waitFor(() => expect(useUi.getState().toasts.some((t) => /Cannot archive the session of anycon\/fix-login/.test(t.text))).toBe(true))
+    const toast = useUi.getState().toasts.find((t) => /Cannot archive/.test(t.text))!
+    expect(toast.action?.label).toMatch(/open/i)
+  })
+
+  it('the wording does not over-claim: a clean worktree still says the files git ignores go with it', async () => {
+    const user = userEvent.setup()
+    await mount()
+    await open(user)
+    await waitFor(() => expect(screen.getByTestId('review-cleanup-status')).toHaveTextContent(/files git ignores/))
   })
 })

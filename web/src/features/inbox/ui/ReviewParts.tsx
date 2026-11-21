@@ -91,7 +91,7 @@ export function ReviewRowActions({ item, online, selected, onSelect, small }: { 
   const busy = !!session && isSessionActive(session)
   return (
     <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-10">
-      <Button size="sm" variant="primary" className={small} disabled={!online || resolving} onClick={() => approve(item.todo)} data-testid="inbox-approve">
+      <Button size="sm" variant="primary" className={small} disabled={!online} onClick={() => approve(item.todo)} data-testid="inbox-approve">
         {t('todos.reviewPage.approve')}
       </Button>
       <Button
@@ -129,6 +129,7 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
   const b = useReviewBrief(item.todo)
   const { session, resolving } = useLinkedSession(item.nodeId, item.todo.sessions)
   const busy = !!session && isSessionActive(session)
+  const canRework = online && !!session && session.archived !== true && !busy && !resolving
   const reworkKey = useReviewUi((s) => s.reworkKey)
   const [text, setText, clearText] = useReworkDraft(item.nodeId, item.todo.id)
   const [sending, setSending] = useState(false)
@@ -136,7 +137,7 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
   const open = reworkKey === item.key || text.trim() !== ''
   const node = shortNodeId(item.nodeId, order)
   const send = async (): Promise<void> => {
-    if (!session || text.trim() === '' || sending) return
+    if (!canRework || !session || text.trim() === '' || sending) return
     setSending(true)
     // 发出去之后这一项会离开「待验收」：先标「在这里处理的」，选中和焦点落到这一段的下一条，不留「已经不在等你了」的占位
     holdHandled(item.key)
@@ -147,8 +148,11 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
         unmarkHandled(item.key)
         toast.error(r.reason === 'archived' ? t('session.archivedHint') : t('todos.reviewPage.reworkFailed'))
       } else if (r.state === 'unsent') {
+        // 链路断了：消息已经在会话的「未发送」队列里，重连时自动重发（超时的话它也可能已经到了）。说清楚、清掉草稿，不邀请再发一次
         unmarkHandled(item.key)
-        toast.error(t('todos.reviewPage.reworkUnsent'))
+        toast.info(t('todos.reviewPage.reworkUnsent'))
+        clearText()
+        useReviewUi.getState().open(null)
       } else {
         toast.info(r.state === 'queued' ? t('todos.reviewPage.reworkQueued') : t('todos.reviewPage.reworkSent'))
         clearText()
@@ -182,7 +186,7 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
         ) : null}
       </section>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" disabled={!online || resolving} onClick={() => approve(item.todo)} data-testid="inbox-detail-approve">
+        <Button variant="primary" disabled={!online} onClick={() => approve(item.todo)} data-testid="inbox-detail-approve">
           {t('todos.reviewPage.approve')}
         </Button>
         <Button disabled={!online || !session || session.archived === true || busy || resolving} onClick={() => useReviewUi.getState().open(open && text.trim() === '' ? null : item.key)} aria-expanded={open} data-testid="inbox-detail-rework">
@@ -198,9 +202,9 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
           {t('inbox.openReviewPage')}
         </Link>
       </div>
-      {resolving || busy ? (
+      {!online || resolving || busy || session?.archived === true ? (
         <p className="text-xs text-fg-muted" role="status" data-testid="inbox-rework-why">
-          {resolving ? t('todos.reviewPage.resolving') : t('todos.reviewPage.reworkActive')}
+          {!online ? t('todos.reviewPage.reworkOffline') : resolving ? t('todos.reviewPage.resolving') : session?.archived === true ? t('session.archivedHint') : t('todos.reviewPage.reworkActive')}
         </p>
       ) : null}
       {open ? (
@@ -217,7 +221,7 @@ export function ReviewDetail({ item, online }: { item: ReviewInboxItem; online: 
             >
               {t('common.cancel')}
             </Button>
-            <Button variant="primary" disabled={sending || text.trim() === ''} onClick={() => void send()} data-testid="inbox-rework-send">
+            <Button variant="primary" disabled={sending || text.trim() === '' || !canRework} onClick={() => void send()} data-testid="inbox-rework-send">
               {t('todos.reviewPage.reworkSend')}
             </Button>
           </div>

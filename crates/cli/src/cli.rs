@@ -188,6 +188,10 @@ pub struct TodoRunArgs {
     /// request" option on, and the dispatch is refused for an agent that does not have the option
     #[arg(long)]
     pub allow_push: bool,
+    /// Print the first message the agent would get right now (what `run` would send, including earlier reports) and
+    /// send nothing: no session is opened and nothing is recorded on the item
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]

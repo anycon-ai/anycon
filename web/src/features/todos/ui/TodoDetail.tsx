@@ -20,7 +20,11 @@ import { isClosed, UI_STATES, type UpdateFields, type ViewTodo } from '../types'
 import { cleanHintText } from '@/lib/hint'
 import { cleanOneLine, type FieldError } from '../validate'
 import { dueFromInput } from './CaptureForm'
+import { activityOf, isReview } from '../activity'
+import { DispatchDialog } from './DispatchDialog'
+import { HandlerChip, LinkedStatus } from './ActivityBits'
 import { MoveTodoDialog } from './MoveTodoDialog'
+import { TodoHistory } from './TodoHistory'
 import { fieldErrorText, outboxErrorText } from './errors'
 
 /** 毫秒 → `datetime-local` 的值（本地时间，到分钟）。 */
@@ -56,6 +60,8 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [saving, setSaving] = useState(false)
   const [moving, setMoving] = useState(false)
+  const [dispatching, setDispatching] = useState(false)
+  const activity = activityOf(item)
   // 有别的支持清单的节点才有「移到另一个节点…」
   const canMove = useNodes((s) => s.order.some((id) => id !== item.node_id && s.byId[id]?.info?.capabilities.todo === true))
   const { title, body, project, due_ms } = item
@@ -121,6 +127,13 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             {t('todos.byOther')}
           </Chip>
         ) : null}
+        {activity ? (
+          <Chip tone={activity === 'review' ? 'success' : activity === 'waiting' ? 'warning' : 'info'} testId="todo-activity" dataState={activity}>
+            {t(`todos.activity.${activity}`)}
+          </Chip>
+        ) : null}
+        <LinkedStatus item={item} />
+        <HandlerChip item={item} />
         {item.failed ? <Chip tone="danger">{t('todos.notSaved')}</Chip> : item.unsynced ? <Chip tone="warning">{t('todos.notSynced')}</Chip> : null}
         <span className="text-xs text-fg-subtle">{nodeName}</span>
       </div>
@@ -232,6 +245,9 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           <Button disabled={!online} onClick={() => void updateTodo(item.node_id, item.id, { state: 'dropped' })} data-testid="todo-dismiss">
             {t('inbox.dismiss')}
           </Button>
+          <Button disabled={!online} onClick={() => setDispatching(true)} data-testid="todo-dispatch">
+            {t('dispatch.action')}
+          </Button>
         </div>
       ) : (
       <div className="flex flex-wrap items-center gap-3">
@@ -254,6 +270,16 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             {t('todos.done')}
           </Button>
         )}
+        {!isClosed(item.state) ? (
+          <Button variant={isReview(item) ? 'outline' : 'primary'} disabled={!online} onClick={() => setDispatching(true)} title={online ? undefined : t('dispatch.blocked.offline')} data-testid="todo-dispatch">
+            {t('dispatch.action')}
+          </Button>
+        ) : null}
+        {isReview(item) ? (
+          <Link to="/todos/$node/$todo/review" params={{ node: shortNodeId(item.node_id, order), todo: item.id }} className="inline-flex min-h-9 items-center rounded-md border border-border-strong px-3 text-sm font-medium hover:bg-bg-hover max-md:min-h-11" data-testid="todo-review-link">
+            {t('todos.reviewPage.open')}
+          </Link>
+        ) : null}
         {canMove ? (
           <Button onClick={() => setMoving(true)} data-testid="todo-move">
             {t('spaces.move.title')}
@@ -295,6 +321,9 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </div>
       ))}
 
+      <TodoHistory item={item} />
+
+      <DispatchDialog item={item} open={dispatching} onOpenChange={setDispatching} />
       <MoveTodoDialog item={item} open={moving} onOpenChange={setMoving} />
 
       <Dialog open={confirmDiscard} onOpenChange={setConfirmDiscard} title={t('todos.discardEditTitle')} description={t('todos.discardEditBody')} closeLabel={t('common.close')} testId="todo-discard-edit-dialog">

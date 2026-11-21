@@ -17,6 +17,8 @@ export interface PushDirectory {
   nodeGroup?: string
   /** 载荷里那个会话的标题。 */
   sessionTitle?: string
+  /** 这个会话是从哪一项清单派出的（缓存里的 `todo_id`）和那一项的标题（缓存里没有那一项就没有标题）。 */
+  todo?: { id: string; title?: string }
   /** 这个浏览器已配对的全部节点 id（算路由里的节点短 id 要用，冲突时回退全长）。 */
   nodeIds: string[]
 }
@@ -71,6 +73,20 @@ export async function readPushDirectory(nodeId: string | null, sessionId: string
         if (str(rec, 'node_id') === nodeId) {
           const title = str(rec, 'title')
           if (title) out.sessionTitle = title
+          // 清单项派出的会话：会话记录里的摘要带 `todo_id`；那一项的标题在清单缓存里（只读，库是旧版本没有这个仓就当没有）
+          const todoId = str(typeof rec === 'object' && rec !== null ? (rec as Record<string, unknown>).summary : undefined, 'todo_id')
+          if (todoId) {
+            // 已经关闭的项（通过了、不要了）：不走「待验收」的文案和落点，会话照原来的样子通知。缓存里没有这一项就只有 id、没有标题，同样走原来的文案
+            try {
+              const todoRec = await db.get('todos', `${nodeId}:${todoId}`)
+              const todo = typeof todoRec === 'object' && todoRec !== null ? (todoRec as Record<string, unknown>).todo : undefined
+              const state = str(todo, 'state')
+              const todoTitle = str(todo, 'title')
+              if (state !== 'done' && state !== 'dropped') out.todo = { id: todoId, ...(todoTitle ? { title: todoTitle } : {}) }
+            } catch {
+              out.todo = { id: todoId }
+            }
+          }
         }
       }
     } catch {

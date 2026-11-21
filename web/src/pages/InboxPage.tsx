@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, ChevronRight, X } from 'lucide-react'
+import { CheckCircle2, ChevronRight, ListChecks, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { PageHeader } from '@/components/PageHeader'
 import { SessionDot } from '@/components/StatusDot'
@@ -14,6 +14,8 @@ import { OVERLAY_CLASS, useInboxSelection, type InboxMode } from '@/features/inb
 import { useInbox } from '@/features/inbox/useInbox'
 import { useNodesSettled } from '@/features/inbox/useSettled'
 import { useInboxKeys } from '@/features/inbox/useInboxKeys'
+import type { ViewTodo } from '@/features/todos/types'
+import { cleanOneLine } from '@/features/todos/validate'
 import { formatRelative } from '@/lib/format'
 import { resolveNodeParam, shortNodeId } from '@/lib/ids'
 import { useFilterMarks, useNodeFilter } from '@/lib/nodeFilter'
@@ -26,7 +28,7 @@ import { Drawer } from '@/ui/Overlay'
 import { cn } from '@/ui/cn'
 
 /** 每一段的标题（i18n key）。加新的段时在这里加一行，页面骨架不用动。 */
-const SECTION_TITLE: Record<InboxSectionId, string> = { now: 'inbox.sections.now', later: 'inbox.sections.later' }
+const SECTION_TITLE: Record<InboxSectionId, string> = { now: 'inbox.sections.now', review: 'inbox.sections.review', later: 'inbox.sections.later' }
 
 /** 从通知点进来：定位这个会话最早的一条待答复请求（推送只带类别、节点和会话，不带请求 id）。 */
 export interface InboxLocate {
@@ -206,7 +208,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
               )
             })}
             {total === 0 && !outside && !(mode === 'inline' && sel.ghost) ? <EmptyInbox ref={empty} /> : null}
-            <InProgress sessions={model.inProgress} showNode={showNode} />
+            <InProgress sessions={model.inProgress} todos={model.inProgressTodos} showNode={showNode} />
           </div>
         </div>
         {mode === 'split' ? (
@@ -321,13 +323,20 @@ function PendingTarget({ target, nodeId, onDismiss }: { target: InboxLocate; nod
 }
 
 /** 「进行中」：平时折叠成一行（数量），不和等用户的事抢位置；展开列出还在跑的会话。标了「完成后提醒」的写明。 */
-function InProgress({ sessions, showNode }: { sessions: SessionItem[]; showNode: boolean }) {
+function InProgress({ sessions: allSessions, todos, showNode }: { sessions: SessionItem[]; todos: ViewTodo[]; showNode: boolean }) {
   const { t, i18n } = useTranslation()
   useMinute()
   const [open, setOpen] = useState(false)
   const nodes = useNodes((s) => s.byId)
   const order = useNodes((s) => s.order)
-  if (sessions.length === 0) return null
+  // 清单项在这里有自己的一行：它派出的、还在跑的会话不再重复列（那一行点进去就是那一项，会话在它的「经过」里）
+  const covered = new Set(todos.map((t) => `${t.node_id}:${t.id}`))
+  const isCovered = (s: SessionItem): boolean => !!s.todo_id && covered.has(`${s.node_id}:${s.todo_id}`)
+  const sessions = allSessions.filter((s) => !isCovered(s))
+  // 被收进清单项那一行的会话如果标了「完成后提醒」，那个标记要留在那一行上
+  const armedTodos = new Set(allSessions.filter((s) => isCovered(s) && isArmed(s)).map((s) => `${s.node_id}:${s.todo_id}`))
+  const count = sessions.length + todos.length
+  if (count === 0) return null
   return (
     <section data-testid="inbox-in-progress" aria-label={t('inbox.inProgress')}>
       <button
@@ -341,11 +350,28 @@ function InProgress({ sessions, showNode }: { sessions: SessionItem[]; showNode:
         <ChevronRight className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')} aria-hidden />
         <span className="font-medium">{t('inbox.inProgress')}</span>
         <span className="rounded-full bg-bg-muted px-1.5 py-0.5 text-xs" data-testid="inbox-in-progress-count">
-          {sessions.length}
+          {count}
         </span>
       </button>
       {open ? (
         <ul id="inbox-in-progress-list" className="mt-1 space-y-1">
+          {todos.map((todo) => (
+            <li key={`todo:${todo.node_id}:${todo.id}`}>
+              <Link
+                to="/todos/$node/$todo"
+                params={{ node: shortNodeId(todo.node_id, order), todo: todo.id }}
+                className="flex min-h-11 items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-bg-hover"
+                data-testid="inbox-in-progress-todo"
+              >
+                <ListChecks className="size-4 shrink-0 text-fg-muted" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{cleanOneLine(todo.title, 120)}</span>
+                  <span className="block truncate text-xs text-fg-subtle">{[todo.project, showNode ? nodes[todo.node_id]?.name : undefined, t('todos.activity.working'), formatRelative(todo.updated_ms, i18n.language)].filter(Boolean).join(' · ')}</span>
+                </span>
+                {armedTodos.has(`${todo.node_id}:${todo.id}`) ? <Chip tone="info">{t('inbox.willRemind')}</Chip> : null}
+              </Link>
+            </li>
+          ))}
           {sessions.map((s) => (
             <li key={s.id}>
               <Link

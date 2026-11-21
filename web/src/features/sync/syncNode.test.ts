@@ -167,6 +167,21 @@ describe('syncNode', () => {
     }
     await syncNode(NODE)
     expect(useNodes.getState().byId[NODE]).toMatchObject({ synced: false, syncing: false })
+    // 链路断了是常态，会再同步一次：不算「同步失败」
+    expect(useNodes.getState().byId[NODE]!.syncFailed).toBeFalsy()
+  })
+
+  it('a failure other than the link is recorded (syncFailed) so the UI does not wait for “synced” forever; the next sync clears it', async () => {
+    rpc.handlers['node.info'] = () => {
+      throw new Error('boom')
+    }
+    await syncNode(NODE)
+    expect(useNodes.getState().byId[NODE]).toMatchObject({ synced: false, syncing: false, syncFailed: true })
+    rpc.handlers['node.info'] = () => info()
+    rpc.handlers['agent.list'] = () => ({ agents: [], etag: 'e' })
+    rpc.handlers['session.list'] = () => ({ sessions: [] })
+    await syncNode(NODE)
+    expect(useNodes.getState().byId[NODE]).toMatchObject({ synced: true, syncFailed: false })
   })
 })
 

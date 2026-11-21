@@ -14,8 +14,9 @@ use std::sync::{Arc, Mutex, Weak};
 
 use anycon_protocol::{
     methods, ErrorCode, RpcError, SessionCreateParams, SessionStatus, SessionSummary, SessionWorkspace,
-    SessionWorkspaceMode, Todo, TodoActivity, TodoActor, TodoChanged, TodoDispatchParams, TodoDispatchResult,
-    TodoEvent, TodoEventData, TodoEventNotice, TodoHistoryParams, TodoHistoryResult, TodoSourceKind, TodoState,
+    SessionWorkspaceMode, Todo, TodoActivity, TodoActor, TodoChanged, TodoDispatchParams, TodoDispatchPreviewParams,
+    TodoDispatchPreviewResult, TodoDispatchResult, TodoEvent, TodoEventData, TodoEventNotice, TodoHistoryParams,
+    TodoHistoryResult, TodoSourceKind, TodoState,
 };
 use serde_json::json;
 use sqlx::{Row, SqliteConnection};
@@ -742,6 +743,35 @@ pub async fn history(c: &Ctx, p: TodoHistoryParams) -> RpcResult<TodoHistoryResu
     }
     let limit = p.limit.unwrap_or(HISTORY_DEFAULT_LIMIT).clamp(1, HISTORY_MAX_LIMIT) as usize;
     c.store.todo_history_page(&p.id, p.before_seq, limit).await.map_err(internal)
+}
+
+/// `todo.dispatch_preview`（§ 22.2）：此刻派发会发出的第一条消息。和 `dispatch` 同一个组装函数、同一套「之前的结果」的选法，
+/// 同样先把这一项排着的结果记下来（持清单的锁；记了就广播 `todo.event`，`activity` 因此变了才跟一条 `todo.changed`）——这是唯一的副作用；
+/// 不改这一项、不开会话、不审计、不发推送通知。
+pub async fn dispatch_preview(
+    c: &Ctx,
+    caller: &Caller,
+    p: TodoDispatchPreviewParams,
+) -> RpcResult<TodoDispatchPreviewResult> {
+    crate::todos::check_id(&p.id)?;
+    if caller.is_mcp() {
+        return Err(forbidden());
+    }
+    let _w = c.store.todo_lock().lock().await;
+    let todo = c
+        .store
+        .todo_get(&p.id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| RpcError::new(ErrorCode::NotFound, format!("todo {} not found", p.id)))?;
+    flush_results_locked(&c.sessions, &p.id).await;
+    if todo.state.is_closed() {
+        return Err(invalid("id", Some("closed"), "a closed todo cannot be dispatched; reopen it first".into()));
+    }
+    let earlier = c.store.todo_earlier_results(&p.id).await.map_err(internal)?;
+    Ok(TodoDispatchPreviewResult {
+        first_message: compose_first_message(&todo.title, &todo.body, &earlier, p.no_push.unwrap_or(true)),
+    })
 }
 
 /// 没指定 `workspace` 时：能开 worktree 的项目用新的 worktree，否则在项目目录里。不看 `worktree.default`（§ 22.2）。

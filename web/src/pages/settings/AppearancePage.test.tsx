@@ -9,7 +9,7 @@ const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebK
 
 afterEach(() => {
   Reflect.deleteProperty(navigator, 'userAgent')
-  usePrefs.setState({ blockZoom: false, sidebarRecent: true })
+  usePrefs.setState({ blockZoom: false, sidebarRecent: true, sidebarFoldTodo: true })
 })
 
 describe('AppearancePage — block page zoom', () => {
@@ -39,5 +39,16 @@ describe('AppearancePage — sidebar Recent group', () => {
     await user.click(sw)
     expect(usePrefs.getState().sidebarRecent).toBe(false)
     expect(sw).toHaveAttribute('aria-checked', 'false')
+  })
+})
+
+describe('AppearancePage — folding to-do sessions in the sidebar', () => {
+  it('is on by default, and the switch saves the preference', async () => {
+    const user = userEvent.setup()
+    render(<AppearancePage />)
+    const sw = screen.getByTestId('sidebar-fold-todo-switch')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    await user.click(sw)
+    expect(usePrefs.getState().sidebarFoldTodo).toBe(false)
   })
 })

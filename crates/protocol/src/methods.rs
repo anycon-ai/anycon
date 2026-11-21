@@ -118,6 +118,10 @@ pub const TODO_UPDATE: &str = "todo.update";
 pub const TODO_DELETE: &str = "todo.delete";
 /// D→C notification，params = TodoChanged
 pub const TODO_CHANGED: &str = "todo.changed";
+/// 此刻派发会发出的第一条消息（`{ id, no_push? }` → `{ first_message }`，docs/spec/daemon.md § 22.2）。
+/// 不改这一项，也不开会话、不审计、不发推送通知；唯一的副作用是先把这一项排着、还没记的结果记进「经过」（和派发之前的那一步一样，
+/// 记了就广播 `todo.event`，`activity` 因此变了才跟一条 `todo.changed`），这样预览里带的「之前的结果」和随后派发带的一致。
+pub const TODO_DISPATCH_PREVIEW: &str = "todo.dispatch_preview";
 /// 从一项开一个会话并关联（docs/spec/daemon.md § 22）。
 pub const TODO_DISPATCH: &str = "todo.dispatch";
 /// 一项的「经过」，按 `seq` 从新到旧翻页。
@@ -256,6 +260,7 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(TODO_UPDATE, Some("TodoUpdateParams"), Some("Todo")),
     req(TODO_DELETE, Some("TodoDeleteParams"), None),
     notif(TODO_CHANGED, "TodoChanged"),
+    req(TODO_DISPATCH_PREVIEW, Some("TodoDispatchPreviewParams"), Some("TodoDispatchPreviewResult")),
     req(TODO_DISPATCH, Some("TodoDispatchParams"), Some("TodoDispatchResult")),
     req(TODO_HISTORY, Some("TodoHistoryParams"), Some("TodoHistoryResult")),
     notif(TODO_EVENT, "TodoEventNotice"),

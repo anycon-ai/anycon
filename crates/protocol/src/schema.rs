@@ -162,6 +162,8 @@ pub struct ProtocolSchema {
     pub todo_delete_params: TodoDeleteParams,
     pub todo_changed: TodoChanged,
     pub todo_dispatch_params: TodoDispatchParams,
+    pub todo_dispatch_preview_params: TodoDispatchPreviewParams,
+    pub todo_dispatch_preview_result: TodoDispatchPreviewResult,
     pub todo_dispatch_result: TodoDispatchResult,
     pub todo_history_params: TodoHistoryParams,
     pub todo_history_result: TodoHistoryResult,

@@ -40,6 +40,7 @@ import { Route as AppShellTodosNodeTodoRouteImport } from './routes/_app/_shell/
 import { Route as AppShellNNodeFilesSplatRouteImport } from './routes/_app/_shell/n.$node.files.$'
 import { Route as AppShellNNodePProjectRouteImport } from './routes/_app/_shell/n.$node.p.$project'
 import { Route as AppShellNNodeSSessionRouteImport } from './routes/_app/_shell/n.$node.s.$session'
+import { Route as AppShellTodosNodeTodoReviewRouteImport } from './routes/_app/_shell/todos.$node.$todo_.review'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -197,6 +198,12 @@ const AppShellNNodeSSessionRoute = AppShellNNodeSSessionRouteImport.update({
   path: '/s/$session',
   getParentRoute: () => AppShellNNodeRoute,
 } as any)
+const AppShellTodosNodeTodoReviewRoute =
+  AppShellTodosNodeTodoReviewRouteImport.update({
+    id: '/todos/$node/$todo_/review',
+    path: '/todos/$node/$todo/review',
+    getParentRoute: () => AppShellRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -228,6 +235,7 @@ export interface FileRoutesByFullPath {
   '/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/n/$node/p/$project': typeof AppShellNNodePProjectRoute
   '/n/$node/s/$session': typeof AppShellNNodeSSessionRoute
+  '/todos/$node/$todo/review': typeof AppShellTodosNodeTodoReviewRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -257,6 +265,7 @@ export interface FileRoutesByTo {
   '/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/n/$node/p/$project': typeof AppShellNNodePProjectRoute
   '/n/$node/s/$session': typeof AppShellNNodeSSessionRoute
+  '/todos/$node/$todo/review': typeof AppShellTodosNodeTodoReviewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -291,6 +300,7 @@ export interface FileRoutesById {
   '/_app/_shell/n/$node/files/$': typeof AppShellNNodeFilesSplatRoute
   '/_app/_shell/n/$node/p/$project': typeof AppShellNNodePProjectRoute
   '/_app/_shell/n/$node/s/$session': typeof AppShellNNodeSSessionRoute
+  '/_app/_shell/todos/$node/$todo_/review': typeof AppShellTodosNodeTodoReviewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -324,6 +334,7 @@ export interface FileRouteTypes {
     | '/n/$node/files/$'
     | '/n/$node/p/$project'
     | '/n/$node/s/$session'
+    | '/todos/$node/$todo/review'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -353,6 +364,7 @@ export interface FileRouteTypes {
     | '/n/$node/files/$'
     | '/n/$node/p/$project'
     | '/n/$node/s/$session'
+    | '/todos/$node/$todo/review'
   id:
     | '__root__'
     | '/_app'
@@ -386,6 +398,7 @@ export interface FileRouteTypes {
     | '/_app/_shell/n/$node/files/$'
     | '/_app/_shell/n/$node/p/$project'
     | '/_app/_shell/n/$node/s/$session'
+    | '/_app/_shell/todos/$node/$todo_/review'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -613,6 +626,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppShellNNodeSSessionRouteImport
       parentRoute: typeof AppShellNNodeRoute
     }
+    '/_app/_shell/todos/$node/$todo_/review': {
+      id: '/_app/_shell/todos/$node/$todo_/review'
+      path: '/todos/$node/$todo/review'
+      fullPath: '/todos/$node/$todo/review'
+      preLoaderRoute: typeof AppShellTodosNodeTodoReviewRouteImport
+      parentRoute: typeof AppShellRoute
+    }
   }
 }
 
@@ -671,6 +691,7 @@ interface AppShellRouteChildren {
   AppShellNNodeRoute: typeof AppShellNNodeRouteWithChildren
   AppShellTodosIndexRoute: typeof AppShellTodosIndexRoute
   AppShellTodosNodeTodoRoute: typeof AppShellTodosNodeTodoRoute
+  AppShellTodosNodeTodoReviewRoute: typeof AppShellTodosNodeTodoReviewRoute
 }
 
 const AppShellRouteChildren: AppShellRouteChildren = {
@@ -683,6 +704,7 @@ const AppShellRouteChildren: AppShellRouteChildren = {
   AppShellNNodeRoute: AppShellNNodeRouteWithChildren,
   AppShellTodosIndexRoute: AppShellTodosIndexRoute,
   AppShellTodosNodeTodoRoute: AppShellTodosNodeTodoRoute,
+  AppShellTodosNodeTodoReviewRoute: AppShellTodosNodeTodoReviewRoute,
 }
 
 const AppShellRouteWithChildren = AppShellRoute._addFileChildren(

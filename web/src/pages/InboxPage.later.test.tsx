@@ -162,6 +162,13 @@ describe('Later items are never selected or expanded on the user’s behalf', ()
     expect(screen.queryByTestId('inbox-inline-detail')).toBeNull()
   })
 
+  it('a request from a session that came from a to-do shows that item (title as a link) on the same card as the session page', async () => {
+    useSessions.setState({ list: { 's-r1': { ...summary({ id: 's-r1', title: 's-r1', project: 'app', todo_id: 'td1' }), node_id: A, cached_seq: 0 } }, pending: { r1: permission() }, open: {} })
+    await load(agent('u1'), todoItem({ id: 'td1', title: 'The origin item' }))
+    expect(await screen.findByTestId('permission-card')).toBeInTheDocument()
+    expect(screen.getByTestId('permission-todo')).toHaveTextContent('The origin item')
+  })
+
   it('with a request in “Now”, the default selection is the request, never a Later item', async () => {
     seedPermission()
     await load(agent('u1'))

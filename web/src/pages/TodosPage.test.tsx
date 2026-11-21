@@ -79,6 +79,42 @@ describe('groups', () => {
     expect(daemon.log.some((l) => (l.params as { include_closed?: boolean }).include_closed)).toBe(false)
   })
 
+  it('the five groups appear in order (waiting for you, to review, in progress, not started) and an unknown activity counts as none', async () => {
+    await load(
+      { id: 'o', title: 'not started' },
+      { id: 'w', title: 'agent busy', activity: 'working' as never, sessions: ['s1'] as never },
+      { id: 'r', title: 'review me', activity: 'review' as never, sessions: ['s2'] as never },
+      { id: 'd', title: 'decide me', activity: 'waiting' as never, sessions: ['s3'] as never },
+      { id: 'x', title: 'from the future', activity: 'something-new' as never },
+    )
+    const order = [...document.querySelectorAll('[data-testid^="todos-group-"]')].map((g) => g.getAttribute('data-testid')).filter((id) => id !== 'todos-group-closed')
+    expect(order).toEqual(['todos-group-decide', 'todos-group-review', 'todos-group-working', 'todos-group-open'])
+    expect(within(screen.getByTestId('todos-group-decide')).getAllByTestId('todo-row').map((r) => r.getAttribute('data-id'))).toEqual(['d'])
+    expect(within(screen.getByTestId('todos-group-review')).getAllByTestId('todo-row').map((r) => r.getAttribute('data-id'))).toEqual(['r'])
+    expect(within(screen.getByTestId('todos-group-open')).getAllByTestId('todo-row').map((r) => r.getAttribute('data-id')).sort()).toEqual(['o', 'x'])
+    // 谁在处理：agent 在跑的是 agent，等你决定 / 待验收是我
+    expect(within(row('w')).getByTestId('todo-handler')).toHaveAttribute('data-state', 'agent')
+    expect(within(row('r')).getByTestId('todo-handler')).toHaveAttribute('data-state', 'me')
+    expect(within(row('o')).queryByTestId('todo-handler')).toBeNull()
+  })
+
+  it('the “who is handling it” filter narrows the list', async () => {
+    await load({ id: 'w', title: 'agent busy', activity: 'working' as never }, { id: 'r', title: 'review me', activity: 'review' as never }, { id: 'o', title: 'later' })
+    await userEvent.selectOptions(screen.getByTestId('todos-filter-handler'), 'agent')
+    expect(rows().map((r) => r.getAttribute('data-id'))).toEqual(['w'])
+    await userEvent.selectOptions(screen.getByTestId('todos-filter-handler'), 'me')
+    expect(rows().map((r) => r.getAttribute('data-id')).sort()).toEqual(['o', 'r'])
+  })
+
+  it('an activity-only change (the same updated_ms) moves the row to its new group', async () => {
+    await load({ id: 'r', title: 'review me', activity: 'working' as never, updated_ms: 50 })
+    expect(within(screen.getByTestId('todos-group-working')).getAllByTestId('todo-row')).toHaveLength(1)
+    act(() => handleTodoChanged(A, { id: 'r', todo: todoItem({ id: 'r', title: 'review me', activity: 'review' as never, updated_ms: 50 }) }))
+    await flush()
+    expect(within(screen.getByTestId('todos-group-review')).getAllByTestId('todo-row')).toHaveLength(1)
+    expect(screen.queryByTestId('todos-group-working')).toBeNull()
+  })
+
   it('expanding “closed” fetches them page by page', async () => {
     daemon.pageSize = 2
     await load(...[1, 2, 3].map((n) => ({ id: `c${n}`, title: `closed ${n}`, state: 'done' as const, updated_ms: n * 10 })))

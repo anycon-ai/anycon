@@ -51,6 +51,8 @@ export interface PrefsState {
   sidebarSpace: string | null
   /** 左栏顶部是否列出进行中的会话（Recent）；默认开，外观设置里可以关。 */
   sidebarRecent: boolean
+  /** 左栏项目下面，从清单项派出的会话收成一行「来自清单 N」；默认开，外观设置里可以关（spec/web.md § 3）。 */
+  sidebarFoldTodo: boolean
   lastNode: string | null
   /** 「记一项」上次记到哪个节点（多个节点支持清单时的缺省，spec/web.md § 4.12.1）。 */
   lastTodoNode: string | null
@@ -125,6 +127,7 @@ export const usePrefs = create<PrefsState>()(
       sidebarNodes: null,
       sidebarSpace: null,
       sidebarRecent: true,
+      sidebarFoldTodo: true,
       lastNode: null,
       lastTodoNode: null,
       lastTodoNodeBySpace: {},
@@ -169,6 +172,7 @@ export const usePrefs = create<PrefsState>()(
         sidebarNodes: s.sidebarNodes,
         sidebarSpace: s.sidebarSpace,
         sidebarRecent: s.sidebarRecent,
+        sidebarFoldTodo: s.sidebarFoldTodo,
         lastNode: s.lastNode,
         lastTodoNode: s.lastTodoNode,
         lastTodoNodeBySpace: s.lastTodoNodeBySpace,

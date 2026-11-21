@@ -97,6 +97,8 @@ import type {
   TodoChanged,
   TodoDeleteParams,
   TodoDispatchParams,
+  TodoDispatchPreviewParams,
+  TodoDispatchPreviewResult,
   TodoDispatchResult,
   TodoEventNotice,
   TodoHistoryParams,
@@ -189,6 +191,7 @@ export interface RequestMethods {
   'todo.add': { params: TodoAddParams; result: Todo }
   'todo.update': { params: TodoUpdateParams; result: Todo }
   'todo.delete': { params: TodoDeleteParams; result: Empty }
+  'todo.dispatch_preview': { params: TodoDispatchPreviewParams; result: TodoDispatchPreviewResult }
   'todo.dispatch': { params: TodoDispatchParams; result: TodoDispatchResult }
   'todo.history': { params: TodoHistoryParams; result: TodoHistoryResult }
   'blob.put_begin': { params: BlobPutBeginParams; result: BlobPutBeginResult }

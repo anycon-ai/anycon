@@ -48,7 +48,7 @@ export async function hydrateNodeSessions(nodeId: string): Promise<void> {
 export async function syncNode(nodeId: string): Promise<void> {
   const nodes = useNodes.getState()
   if (!nodes.byId[nodeId]) return
-  nodes.patch(nodeId, { syncing: true })
+  nodes.patch(nodeId, { syncing: true, syncFailed: false })
   try {
     const info = await timed('rpc node.info', () => rpc().request<NodeInfo>(nodeId, 'node.info', {}))
     useNodes.getState().setInfo(nodeId, info)
@@ -90,12 +90,13 @@ export async function syncNode(nodeId: string): Promise<void> {
       }),
     ])
     await flushUnsent(nodeId)
-    useNodes.getState().patch(nodeId, { synced: true, syncing: false })
+    useNodes.getState().patch(nodeId, { synced: true, syncing: false, syncFailed: false })
   } catch (e) {
     // 链路断了是常态（会再同步一次）；其它错误让用户知道数据可能不是最新的
     console.warn(`anycon: syncing node ${nodeId.slice(0, 8)} failed`, e)
-    useNodes.getState().patch(nodeId, { syncing: false })
-    if (!(e instanceof RpcCallError && (e.kind === 'offline' || e.kind === 'closed' || e.kind === 'undeliverable'))) toast.error(i18n.t('errors.syncFailed', { error: describeError(e, i18n.t.bind(i18n)) }))
+    const linkDown = e instanceof RpcCallError && (e.kind === 'offline' || e.kind === 'closed' || e.kind === 'undeliverable')
+    useNodes.getState().patch(nodeId, { syncing: false, ...(linkDown ? {} : { syncFailed: true }) })
+    if (!linkDown) toast.error(i18n.t('errors.syncFailed', { error: describeError(e, i18n.t.bind(i18n)) }))
   }
 }
 

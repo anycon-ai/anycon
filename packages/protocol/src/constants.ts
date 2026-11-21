@@ -151,6 +151,8 @@ export const METHODS = {
   TODO_DELETE: 'todo.delete',
   /** D→C notification，params = TodoChanged */
   TODO_CHANGED: 'todo.changed',
+  /** params = TodoDispatchPreviewParams → TodoDispatchPreviewResult；只读：此刻派发会发出的第一条消息 */
+  TODO_DISPATCH_PREVIEW: 'todo.dispatch_preview',
   /** params = TodoDispatchParams → TodoDispatchResult */
   TODO_DISPATCH: 'todo.dispatch',
   /** params = TodoHistoryParams → TodoHistoryResult */

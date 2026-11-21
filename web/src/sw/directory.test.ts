@@ -128,3 +128,41 @@ describe('the node group in the notification directory', () => {
     expect((await readPushDirectory('a'.repeat(32), null)).nodeGroup).toBeUndefined()
   })
 })
+
+describe('readPushDirectory: the to-do a session came from', () => {
+  it('reads the todo id from the cached session summary and the title from the cached to-do (read-only)', async () => {
+    await putNode(node('a'.repeat(32), 'mac-mini'))
+    await putSessions([{ ...session('sess_1', 'a'.repeat(32), 'agent chat'), summary: { todo_id: 'td-1' } } as unknown as SessionRecord])
+    const db = await getDb()
+    await db.put('todos', { key: `${'a'.repeat(32)}:td-1`, node_id: 'a'.repeat(32), todo: { id: 'td-1', title: 'Fix the redirect' } } as never)
+    expect(await readPushDirectory('a'.repeat(32), 'sess_1')).toMatchObject({ todo: { id: 'td-1', title: 'Fix the redirect' } })
+  })
+
+  it.each(['done', 'dropped'])('a closed (%s) to-do: no to-do wording or landing, the session is notified the way it always was', async (state) => {
+    await putNode(node('a'.repeat(32), 'mac-mini'))
+    await putSessions([{ ...session('sess_1', 'a'.repeat(32), 'agent chat'), summary: { todo_id: 'td-1' } } as unknown as SessionRecord])
+    const db = await getDb()
+    await db.put('todos', { key: `${'a'.repeat(32)}:td-1`, node_id: 'a'.repeat(32), todo: { id: 'td-1', title: 'Fix the redirect', state } } as never)
+    const dir = await readPushDirectory('a'.repeat(32), 'sess_1')
+    expect(dir.todo).toBeUndefined()
+    expect(dir.sessionTitle).toBe('agent chat')
+  })
+
+  it('an open to-do keeps the to-do wording', async () => {
+    await putNode(node('a'.repeat(32), 'mac-mini'))
+    await putSessions([{ ...session('sess_1', 'a'.repeat(32), 'agent chat'), summary: { todo_id: 'td-1' } } as unknown as SessionRecord])
+    const db = await getDb()
+    await db.put('todos', { key: `${'a'.repeat(32)}:td-1`, node_id: 'a'.repeat(32), todo: { id: 'td-1', title: 'Fix the redirect', state: 'open' } } as never)
+    expect((await readPushDirectory('a'.repeat(32), 'sess_1')).todo).toEqual({ id: 'td-1', title: 'Fix the redirect' })
+  })
+
+  it('without the cached to-do there is only the id; a session that is not from a to-do has none; the to-do of another node is never read', async () => {
+    await putNode(node('a'.repeat(32), 'mac-mini'))
+    await putSessions([{ ...session('sess_1', 'a'.repeat(32), 'agent chat'), summary: { todo_id: 'td-9' } } as unknown as SessionRecord, session('sess_2', 'a'.repeat(32), 'by hand')])
+    expect((await readPushDirectory('a'.repeat(32), 'sess_1')).todo).toEqual({ id: 'td-9' })
+    expect((await readPushDirectory('a'.repeat(32), 'sess_2')).todo).toBeUndefined()
+    const db = await getDb()
+    await db.put('todos', { key: `${'b'.repeat(32)}:td-9`, node_id: 'b'.repeat(32), todo: { id: 'td-9', title: 'Secret of B' } } as never)
+    expect((await readPushDirectory('a'.repeat(32), 'sess_1')).todo).toEqual({ id: 'td-9' })
+  })
+})

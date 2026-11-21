@@ -16,10 +16,11 @@ use anycon_protocol::{
     SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionMarkReadParams,
     SessionPromoteParams, SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams,
     SessionSetMarksParams, SessionSetSettingsParams, SessionSyncBaseParams, SessionWorkspaceMode, TodoAddParams,
-    TodoDeleteParams, TodoDispatchParams, TodoHistoryParams, TodoIdParams, TodoListParams, TodoUpdateParams,
-    TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams, WorkspaceCloneParams, WorkspaceCreateParams,
-    WorkspaceLinkParams, WorkspaceNameParams, WorkspaceRemoveWorktreeParams, WorkspaceRenameParams,
-    WorkspaceTrashIdParams, WorkspaceTrashListResult, WorkspaceWorktreesParams, PROTOCOL_VERSION,
+    TodoDeleteParams, TodoDispatchParams, TodoDispatchPreviewParams, TodoHistoryParams, TodoIdParams, TodoListParams,
+    TodoUpdateParams, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams, WorkspaceCloneParams,
+    WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams, WorkspaceRemoveWorktreeParams,
+    WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult, WorkspaceWorktreesParams,
+    PROTOCOL_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -505,6 +506,10 @@ impl Rpc {
             }
 
             // ---------------- 派发（daemon.md § 22）：「经过」里的 text 是会话内容，不进日志和审计 ----------------
+            methods::TODO_DISPATCH_PREVIEW => {
+                let p: TodoDispatchPreviewParams = params(p)?;
+                ok(crate::todo_dispatch::dispatch_preview(c, caller, p).await?)
+            }
             methods::TODO_DISPATCH => {
                 let p: TodoDispatchParams = params(p)?;
                 ok(crate::todo_dispatch::dispatch(c, caller, p).await?)

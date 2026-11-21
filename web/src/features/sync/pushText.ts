@@ -54,8 +54,11 @@ export interface PushTextInput {
   category: PushCategory
   /** 节点（daemon）的设备 id；`test` 没有。 */
   node?: { id: string; name?: string | null; param?: string; /** 节点的分组（空间名）：缓存的 `node.info` 里没有、或旧缓存没这个字段就是没有，第二行就不带空间。 */ group?: string | null } | null
-  /** 会话相关类别的 `session`（不透明 id）和本地缓存里的标题。 */
-  session?: { id: string; title?: string | null } | null
+  /**
+   * 会话相关类别的 `session`（不透明 id）和本地缓存里的标题。`todo`：这个会话是从哪一项清单派出的（缓存里的 `todo_id`）和那一项的标题；
+   * `turn_finished` 有标题时文案改成「<标题> 做完了，等你验收」并落在验收页，没有标题（缓存里没有那一项）就照旧。
+   */
+  session?: { id: string; title?: string | null; todo?: { id: string; title?: string | null } | null } | null
 }
 
 /** 路由里节点参数的写法：前 8 位，冲突时回退全长（和 `shortNodeId` 一致，这里不依赖它，免得 service worker 多打包东西）。 */
@@ -78,6 +81,17 @@ export function pushText(t: TFunction, input: PushTextInput): PushText {
   // 空间名是任何已配对设备都能写到节点上的文字：和节点名一样清理，缺了就不带
   const space = cleanHintText(typeof node.group === 'string' ? node.group.trim() : '', 40)
   const sessionTitle = cleanHintText(session?.title, 80)
+  // 清单项派出的会话做完了一轮：「<项的标题> 做完了，等你验收」，点开落在那一项的验收页（spec/web.md § 4.12、§ 7）。
+  // 项的标题是用户 / agent 写的文字，和别的名字一样清理；缓存里没有标题就不猜，走下面原来的文案
+  const todoTitle = category === 'turn_finished' && session?.todo?.id ? cleanHintText(session.todo.title, 80) : ''
+  if (session?.todo && todoTitle) {
+    return {
+      title: t('push.todoReview', { title: `“${todoTitle}”` }),
+      body: space ? t('push.onNodeSpace', { node: nodeName || t('push.aNode'), space }) : t('push.onNode', { node: nodeName || t('push.aNode') }),
+      tag: `todo:${node.id}:${session.todo.id}`,
+      url: `/todos/${param}/${encodeURIComponent(session.todo.id)}/review`,
+    }
+  }
   return {
     title: t(SESSION_TITLE_KEY[category], { title: sessionTitle ? `“${sessionTitle}”` : t('push.aSession') }),
     body: space ? t('push.onNodeSpace', { node: nodeName || t('push.aNode'), space }) : t('push.onNode', { node: nodeName || t('push.aNode') }),

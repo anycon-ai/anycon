@@ -129,13 +129,13 @@ export function useInboxSelection({ items, picked, filterMark, mode, active, rea
         // 前进到下一条有内容可看的：「等待审批（缓存）」没有详情；答复之后摘要还没更新的那一会儿它会冒出来，别落到它头上
         // 「稍后」里的条目从来不替用户选中：处理完一条「现在」里的，不会落到「稍后」；处理完一条「稍后」里的，只落到「稍后」里的下一条
         // （没有了就不选，桌面上随后由默认选中落到「现在」的第一条，那时详情换了，答复按钮照常先锁一会儿）
-        const readable = items.filter((i) => i.kind !== 'waiting' && (gone?.section === 'later') === (i.section === 'later')).map((i) => i.key)
+        const readable = items.filter((i) => i.kind !== 'waiting' && i.section === (gone?.section ?? 'now')).map((i) => i.key)
         const next = readable.length > 0 ? (readable.find((k) => keys.indexOf(k) >= index) ?? readable[readable.length - 1]!) : null
         const ae = document.activeElement
         // 被处理掉的那一行（或详情里的按钮）正有焦点：它消失后焦点会掉到 body 上
         const had = !ae || ae === document.body || !!root.current?.contains(ae) || !!ae.closest?.(`.${OVERLAY_CLASS}`)
         apply({ key: next, explicit: cur.explicit, ghost: null })
-        if (next === null && gone?.section === 'later') noDefault.current = true
+        if (next === null && gone && gone.section !== 'now') noDefault.current = true
         if (had && active) pendingFocus.current = next ?? 'empty'
       } else {
         const replacement = gone?.kind === 'waiting' ? items.find((i) => (i.kind === 'permission' || i.kind === 'plan' || i.kind === 'question') && i.sessionId === gone.sessionId) : undefined
@@ -146,7 +146,8 @@ export function useInboxSelection({ items, picked, filterMark, mode, active, rea
     if (!active) return
     // 默认选中第一条有内容可看的：「等待审批（缓存）」没有详情，不当默认（等真正的请求到了再选，免得先选中占位、再被请求替换）
     // 「稍后」里的条目不当默认（不是在等人答复，不该替用户展开 / 选中）
-    const first = items.find((i) => i.kind !== 'waiting' && i.section !== 'later')
+    // 只有「现在」段的条目当默认：「待验收」「稍后」不是在等人答复，不该替用户选中 / 展开
+    const first = items.find((i) => i.kind !== 'waiting' && i.section === 'now')
     if (cur.key === null && first && !noDefault.current) {
       if (mode === 'split') apply({ key: first.key, explicit: false, ghost: null })
       else if (mode === 'inline' && !defaulted.current) apply({ key: first.key, explicit: false, ghost: null })

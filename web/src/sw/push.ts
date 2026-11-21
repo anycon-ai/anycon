@@ -25,7 +25,7 @@ export function notificationFor(t: TFunction, payload: PushPayload | null, dir: 
   return pushText(t, {
     category: payload.category,
     node: payload.node ? { id: payload.node, name: dir.nodeName, ...(dir.nodeGroup ? { group: dir.nodeGroup } : {}), param: nodeParam(payload.node, dir.nodeIds) } : null,
-    session: payload.session ? { id: payload.session, title: dir.sessionTitle } : null,
+    session: payload.session ? { id: payload.session, title: dir.sessionTitle, ...(dir.todo ? { todo: dir.todo } : {}) } : null,
   })
 }
 

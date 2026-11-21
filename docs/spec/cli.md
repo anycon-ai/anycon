@@ -29,6 +29,7 @@ CLI 作为客户端设备的密钥和 device token 存在 `~/.anycon/client/<hub
 ├── daemon.sock                 本机 CLI 通道（Windows 上是命名管道，不在这个目录里）
 ├── logs/daemon.log             滚动，默认保留 7 天
 ├── blobs/                      附件
+├── update-check.json           更新检查上次的时间和结果（daemon.md § 23），0600
 └── client/<hub-host>/          CLI 作为客户端设备时的密钥和 token
 ```
 
@@ -48,12 +49,12 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 | 命令 | 说明 |
 |---|---|
-| `anycon init --hub <url> --workspace <dir> [--name <node-name>]` | 生成 `config.toml` 和 Noise 密钥，创建 workspace 主根（含 `.trash/`、`.scratch/`）。额外的 workspace 根用 `anycon config set workspace.extra_roots '["/mnt/ext/projects"]'` 加（[ADR-45](../decisions.md#adr-45-多个-workspace-根)，启动时读，要重启）。交互式询问缺省项；`--yes` 全部用默认。已初始化则拒绝，除非 `--force`（会提示重新初始化将使所有已配对设备失效）。结束时提示一句：daemon 跑起来后可以用 `anycon passwd` 设节点口令，出门在外、手边没有已配对设备时用它解锁这台节点（ADR-36） |
+| `anycon init --hub <url> --workspace <dir> [--name <node-name>]` | 生成 `config.toml` 和 Noise 密钥，创建 workspace 主根（含 `.trash/`、`.scratch/`）。额外的 workspace 根用 `anycon config set workspace.extra_roots '["/mnt/ext/projects"]'` 加（[ADR-45](../decisions.md#adr-45-多个-workspace-根)，启动时读，要重启）。交互式询问缺省项；`--yes` 全部用默认。已初始化则拒绝，除非 `--force`（会提示重新初始化将使所有已配对设备失效）。结束时提示一句：daemon 跑起来后可以用 `anycon passwd` 设节点口令，出门在外、手边没有已配对设备时用它解锁这台节点（ADR-36）；再打印一行英文说明更新检查：daemon 每天问一次 anycon.ai 有没有新版本（发送版本、系统和架构，anycon.ai 看得到 IP 地址），以及关法 `anycon config set update.check false` 或 `ANYCON_UPDATE_CHECK=0`（[daemon.md § 23](daemon.md#23-更新检查)） |
 | `anycon daemon [--foreground]` | 前台运行。默认即前台，日志到 stderr；由 launchd / systemd / Windows 计划任务托管时也是这个命令。没有 daemonize 选项，后台化交给服务管理器。隐藏参数 `--home <dir>` 代替 `ANYCON_HOME`（Windows 计划任务设不了环境变量） |
 | `anycon service install \| uninstall \| start \| stop \| restart \| status` | 注册为用户级 launchd（macOS）/ systemd user unit（Linux）/ 当前用户的计划任务 `anycon`（Windows，登录时启动，不需要管理员权限，见下）。`install` 后自动 `start`，开机自启。`status` 显示进程状态和最近日志 |
 | `anycon doctor` | 诊断，见 § 5 |
 | `anycon version` | 版本、协议版本、平台 |
-| `anycon update [--check]` | v0.3。检查并替换二进制，之后 `service restart` |
+| `anycon update [--check]` | 还没做。检查并替换二进制，之后 `service restart`。现在只有 daemon 的更新检查提示新版本（`anycon doctor` 的 `update` 一项，daemon.md § 23），不替换二进制 |
 
 **Windows 的服务**（[ADR-42](../decisions.md#adr-42-windows命名管道job-object计划任务)）：`install` 注册当前用户的计划任务 `anycon`——登录时启动、失败后每分钟重试、不限运行时长、用电池时照常运行，以登录用户的交互令牌运行（agent 要用用户的凭据）。任务运行和 `anycon.exe` 同目录的 `anyconw.exe`（GUI 子系统的小启动器），它以隐藏的控制台运行 `anycon.exe daemon --foreground`；找不到 `anyconw.exe` 时直接运行 `anycon.exe` 并提示会有控制台窗口。`stop` / `restart` 先触发 daemon 的停止事件让它优雅退出，15 秒内没退出再 `schtasks /End`（强制结束，agent 随 job 一起被清掉）。`status` 不解析 `schtasks` 的输出（按系统语言本地化）：「已注册」看 `schtasks /Query` 的退出码，「在跑」看本机通道连不连得上。
 
@@ -253,6 +254,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | 节点口令（ADR-36）：是否设置、是否被锁定、连续失败次数 | 被锁定：先看 `anycon audit` 里的 `enroll.failed`，确认是自己输错的再 `anycon passwd --enable`；没设口令只是提示（可选），不算失败 |
 | 时钟偏差 < 60 秒 | Noise 不依赖时钟，但短码 TTL 和日志依赖 |
 | 附件（`blobs`，ADR-35）：文件数、字节数、进行中的上传；数据目录所在卷剩余空间 ≥ 1 GiB | 磁盘快满了：新的附件上传会被拒绝（`disk_full`），清理磁盘或删掉不用的会话 |
+| 更新检查（`update`，ADR-57）：开着还是关着（和原因）、上次成功检查的时间、有没有更新的版本（版本号和 GitHub 发布页链接）、连续失败的次数 | 总是通过，只是提示：有新版本时照 detail 里的链接升级；关掉用 `anycon config set update.check false`（[daemon.md § 23](daemon.md#23-更新检查)） |
 
 `--json` 输出每项的 `{ id, ok, detail, fix }`，Web 的节点设置页「关于」标签也调用同一个 RPC（`node.doctor`）。
 

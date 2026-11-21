@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
-import type { NodeStats } from '@/protocol'
+import type { NodeInfo, NodeStats } from '@/protocol'
 import { useRemoveNode } from '@/api/queries'
 import { describeError } from '@/lib/errors'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
@@ -50,10 +50,8 @@ export function AboutTab({ nodeId }: { nodeId: string }) {
             <AboutRow label={t('nodeSettings.aboutDisk')}>{formatBytes(stats.disk_free_bytes)}</AboutRow>
           </>
         ) : null}
+        <UpdateRow info={info} />
         <div className="flex flex-wrap gap-2 px-4 py-3">
-          <Button variant="outline" size="sm" disabled title={t('nodeSettings.updatesLater')}>
-            {t('nodeSettings.checkUpdates')}
-          </Button>
           <Button variant="outline" size="sm" disabled={entry.conn !== 'ready'} onClick={() => setLogsOpen(true)} data-testid="logs-open">
             {t('nodeSettings.logs.open')}
           </Button>
@@ -62,6 +60,41 @@ export function AboutTab({ nodeId }: { nodeId: string }) {
       {logsOpen ? <LogsDialog nodeId={nodeId} open={logsOpen} onOpenChange={setLogsOpen} /> : null}
       <RemoveNodeCard nodeId={nodeId} name={entry.name} />
     </div>
+  )
+}
+
+/** 给用户看的发布页链接只能在这个前缀下（ADR-57）；daemon 已经按版本号拼好，这里再核对一次。 */
+const RELEASE_PAGE_PREFIX = 'https://github.com/anycon-ai/anycon/releases/tag/v'
+
+/**
+ * `node.info.update_available` 里能显示的部分：`latest` 是 `X.Y.Z`，链接正好是那个版本的 GitHub 发布页。
+ * 不合格（旧的或出了错的 daemon）就当作没有，不显示任何来自回应的文字。
+ */
+function validUpdate(info: NodeInfo | undefined): { latest: string; url: string } | null {
+  const u = info?.update_available
+  if (!u) return null
+  if (!/^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/.test(u.latest)) return null
+  if (u.url !== `${RELEASE_PAGE_PREFIX}${u.latest}`) return null
+  return { latest: u.latest, url: u.url }
+}
+
+/**
+ * 「更新」一行：节点的更新检查（ADR-57）知道有更新的版本时，显示版本号和发布页链接。没有时不显示这一行：
+ * `node.info` 不区分「已是最新」和「检查关着」，详情在节点的 `anycon doctor` 里。
+ */
+function UpdateRow({ info }: { info: NodeInfo | undefined }) {
+  const { t } = useTranslation()
+  const u = validUpdate(info)
+  if (!u) return null
+  return (
+    <AboutRow label={t('nodeSettings.aboutUpdate')}>
+      <span data-testid="node-update">
+        {t('nodeSettings.updateAvailable', { version: u.latest })}{' '}
+        <a href={u.url} target="_blank" rel="noopener noreferrer" className="font-medium text-accent-text hover:underline" data-testid="node-update-link">
+          {t('nodeSettings.updateReleaseNotes')}
+        </a>
+      </span>
+    </AboutRow>
   )
 }
 

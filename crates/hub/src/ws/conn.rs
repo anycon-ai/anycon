@@ -302,10 +302,11 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
             }
         }
         if permanent {
-            // 写库放到后台：AuthOk 已经发出，对端马上会发握手，在这里等写库会让读循环晚开始
-            let (st, id) = (state.clone(), device_id.clone());
+            // 写库放到后台：AuthOk 已经发出，对端马上会发握手，在这里等写库会让读循环晚开始。
+            // 连着的这段时间里由后台任务定期刷新（`crate::refresh_devices_seen`），断开时下面收尾再写一次。
+            let (st, id, prefix) = (state.clone(), device_id.clone(), ip_prefix(conn.ip));
             tokio::spawn(async move {
-                if let Err(e) = st.store.touch_device_seen(&id, now_ms()).await {
+                if let Err(e) = st.store.touch_device_seen(&id, &prefix, now_ms()).await {
                     tracing::warn!(error = %e, "failed to update last_seen");
                 }
             });
@@ -413,7 +414,7 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
     state.broker.conn_closed(&conn);
     state.enrolls.conn_closed(&conn);
     if conn.is_permanent() {
-        if let Err(e) = state.store.touch_device_seen(&id, now_ms()).await {
+        if let Err(e) = state.store.touch_device_seen(&id, &ip_prefix(conn.ip), now_ms()).await {
             tracing::warn!(error = %e, "failed to update last_seen");
         }
         if removed {
@@ -852,6 +853,12 @@ fn forward(
         Ok(()) => {
             charge(cs);
             cs.limiter.note_progress();
+            if hdr.kind == Kind::Data {
+                // 管理页「最近一分钟有流量的连接」：两端各记一个时间戳（原子量，不拿锁）。
+                let now = now_ms();
+                conn.mark_forwarded(now);
+                target.mark_forwarded(now);
+            }
             if gate.is_some() {
                 // 集合的最小值重发成功：从集合去掉，下一个最小值轮到它。
                 let left = sticky.release(conn.id, &hdr.to, hdr.seq);

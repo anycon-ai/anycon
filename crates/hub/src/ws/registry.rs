@@ -74,6 +74,9 @@ pub struct Conn {
     credential: RwLock<Option<String>>,
     peers: RwLock<HashSet<String>>,
     seq: AtomicU64,
+    /// 最近一次转发了一封 `data`（作为发送方或目标）的时间，Unix 毫秒；`0` = 还没有过。只给 `/api/admin/status` 的
+    /// 「最近一分钟有流量的连接数」用，所以是一个原子量，转发路径上不拿任何锁（[`Conn::mark_forwarded`]）。
+    last_forward_ms: AtomicU64,
 }
 
 /// 构造 [`Conn`] 的参数。
@@ -107,7 +110,19 @@ impl Conn {
             credential: RwLock::new(None),
             peers: RwLock::new(init.peers),
             seq: AtomicU64::new(0),
+            last_forward_ms: AtomicU64::new(0),
         }
+    }
+
+    /// 记下这条连接此刻转发了（或收到了）一封 `data`。
+    pub fn mark_forwarded(&self, now_ms: u64) {
+        self.last_forward_ms.store(now_ms, Ordering::Relaxed);
+    }
+
+    /// 最近 `window_ms` 毫秒内有没有转发过 `data`（见 [`Conn::mark_forwarded`]）。
+    pub fn forwarded_within(&self, now_ms: u64, window_ms: u64) -> bool {
+        let last = self.last_forward_ms.load(Ordering::Relaxed);
+        last != 0 && now_ms.saturating_sub(last) < window_ms
     }
 
     /// 这条连接认证用的设备 token 的哈希，见 [`Conn::set_credential`]。
@@ -270,6 +285,27 @@ impl Table {
             }
         }
     }
+}
+
+/// 此刻在线情况的计数（`/api/admin/status`）。只有数量：不含账号 id、设备 id 和 IP。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OnlineStats {
+    /// 路由表里的全部连接：永久连接、临时连接、预览连接。
+    pub connections: usize,
+    /// 永久连接（带设备 token 认证的，或配对 / 接入后升级的）。
+    pub devices: usize,
+    /// 有至少一条永久连接在线的账号。
+    pub accounts: usize,
+    /// 有至少一台非 daemon 设备（web / cli / sdk）在线的账号：有人开着客户端。
+    pub accounts_with_client: usize,
+    /// 永久连接里 daemon 的。
+    pub daemons: usize,
+    /// 永久连接里非 daemon 的。
+    pub clients: usize,
+    /// 永久连接里最近 `window` 之内转发过（或收到过）`data` 的。
+    pub active: usize,
+    /// 预览连接。
+    pub previews: usize,
 }
 
 /// 账号的预览连接已经到上限。
@@ -536,6 +572,54 @@ impl Registry {
         self.table.read().expect("registry").conns.values().filter(|c| c.is_permanent()).count()
     }
 
+    /// 此刻的在线计数（[`OnlineStats`]）。`active_window_ms` 是「最近有流量」的窗口。扫一遍路由表，给低频的管理页用。
+    pub fn online_stats(&self, now_ms: u64, active_window_ms: u64) -> OnlineStats {
+        let t = self.table.read().expect("registry");
+        let mut stats = OnlineStats { connections: t.conns.len(), ..OnlineStats::default() };
+        let mut accounts = HashSet::new();
+        let mut accounts_with_client = HashSet::new();
+        for c in t.conns.values() {
+            if c.preview.is_some() {
+                stats.previews += 1;
+                continue;
+            }
+            if !c.is_permanent() {
+                continue;
+            }
+            stats.devices += 1;
+            let daemon = c.client.kind == DeviceKind::Daemon;
+            if daemon {
+                stats.daemons += 1;
+            } else {
+                stats.clients += 1;
+            }
+            if c.forwarded_within(now_ms, active_window_ms) {
+                stats.active += 1;
+            }
+            if let Some(account) = c.account_id() {
+                if !daemon {
+                    accounts_with_client.insert(account.clone());
+                }
+                accounts.insert(account);
+            }
+        }
+        stats.accounts = accounts.len();
+        stats.accounts_with_client = accounts_with_client.len();
+        stats
+    }
+
+    /// 此刻在线的永久连接的设备 id 和对端 IP（定期刷新 `last_seen` 用）。临时连接和预览连接不是设备，不在里面。
+    pub fn permanent_endpoints(&self) -> Vec<(String, IpAddr)> {
+        self.table
+            .read()
+            .expect("registry")
+            .conns
+            .iter()
+            .filter(|(_, c)| c.is_permanent())
+            .map(|(id, c)| (id.clone(), c.ip))
+            .collect()
+    }
+
     /// 向所有连接发 Close（优雅关停用 4002）。
     pub fn close_all(&self, code: u16, reason: &'static str) {
         let conns: Vec<Arc<Conn>> = self.table.read().expect("registry").conns.values().cloned().collect();
@@ -635,6 +719,77 @@ mod tests {
             }
         }
         out
+    }
+
+    /// 属于指定账号、指定类型的永久连接。
+    fn device_of(registry: &Registry, id: &str, account: &str, kind: DeviceKind) -> Arc<Conn> {
+        let (out, _rx) = OutQueue::new(1 << 20);
+        Arc::new(Conn::new(ConnInit {
+            id: registry.next_conn_id(),
+            ip: "203.0.113.7".parse().unwrap(),
+            client: client(kind),
+            out,
+            device_id: id.into(),
+            account_id: Some(account.into()),
+            permanent: true,
+            peers: HashSet::new(),
+            preview: None,
+        }))
+    }
+
+    #[test]
+    fn online_stats_count_accounts_kinds_activity_and_previews_without_temporary_connections() {
+        let r = Registry::default();
+        assert_eq!(r.online_stats(1_000, 60_000), OnlineStats::default());
+
+        // acc-1：一台 daemon、一个浏览器；acc-2：只有 daemon；acc-3：只有 CLI
+        let n1 = device_of(&r, "n1", "acc-1", DeviceKind::Daemon);
+        let w1 = device_of(&r, "w1", "acc-1", DeviceKind::Web);
+        let n2 = device_of(&r, "n2", "acc-2", DeviceKind::Daemon);
+        let c3 = device_of(&r, "c3", "acc-3", DeviceKind::Cli);
+        for c in [&n1, &w1, &n2, &c3] {
+            r.register(c, auth_ok("x"));
+        }
+        // 带登录 cookie 的临时连接和预览连接：不是设备
+        let (t, _t_rx) = conn_in(&r, "temp", "acc-2", false);
+        r.register(&t, auth_ok("temp"));
+        let (p, _p_rx) = preview(&r, "p", "acc-2", "n2", "label");
+        r.register_preview(&p, 16, auth_ok("p")).unwrap();
+
+        // 有流量：n1 ↔ w1 在 30 秒前，c3 在 2 分钟前（窗口外）；临时连接、预览连接的时间戳不计
+        let now = 10_000_000;
+        n1.mark_forwarded(now - 30_000);
+        w1.mark_forwarded(now - 30_000);
+        c3.mark_forwarded(now - 120_000);
+        t.mark_forwarded(now);
+        p.mark_forwarded(now);
+
+        let got = r.online_stats(now, 60_000);
+        assert_eq!(
+            got,
+            OnlineStats {
+                connections: 6,
+                devices: 4,
+                accounts: 3,
+                accounts_with_client: 2,
+                daemons: 2,
+                clients: 2,
+                active: 2,
+                previews: 1,
+            }
+        );
+        assert!(!n2.forwarded_within(now, 60_000), "never forwarded");
+
+        // 只剩 daemon 的账号不算「开着客户端」
+        assert!(r.unregister("w1", w1.id));
+        let got = r.online_stats(now, 60_000);
+        assert_eq!((got.accounts, got.accounts_with_client, got.clients, got.active), (3, 1, 1, 1));
+
+        // 刷新 last_seen 的快照只有永久连接，带着它们的 IP
+        let mut endpoints = r.permanent_endpoints();
+        endpoints.sort();
+        let ip: IpAddr = "203.0.113.7".parse().unwrap();
+        assert_eq!(endpoints, [("c3".to_string(), ip), ("n1".to_string(), ip), ("n2".to_string(), ip)]);
     }
 
     #[test]

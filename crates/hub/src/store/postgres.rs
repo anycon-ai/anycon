@@ -57,7 +57,7 @@ use super::{
     NotificationPref, PreviewIssueLimits, PreviewToken, PushSubscription, PushSubscriptionRow, RedeemOutcome,
     RotateOutcome, SetEmailOutcome, Store, StoreError, StoreResult, StoreStats, WebSession,
 };
-use super::{CreateDevicesOutcome, DeviceLimits};
+use super::{touch_order, CreateDevicesOutcome, DeviceLimits, DeviceSeen, TOUCH_CHUNK};
 use super::{Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAccount, NewOAuthState, OAuthState};
 
 /// 连接池上限。hub 是单实例，同一时刻的写入不多；这个数够一批并发请求，又远低于 Postgres 默认的 `max_connections = 100`。
@@ -66,6 +66,10 @@ const MAX_CONNECTIONS: u32 = 10;
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 /// 事务因死锁 / 串行化失败被 Postgres 中止时，整个事务最多跑几次。
 const TX_ATTEMPTS: u32 = 5;
+
+/// 设备被看到：吊销了的不动（见 [`Store::touch_device_seen`]）。
+const TOUCH_DEVICE_SQL: &str =
+    "UPDATE devices SET last_seen_ms = $1, last_ip_prefix = $2 WHERE id = $3 AND revoked_at_ms IS NULL";
 
 fn be(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
@@ -1057,13 +1061,22 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn touch_device_seen(&self, id: &str, now_ms: u64) -> StoreResult<()> {
-        sqlx::query("UPDATE devices SET last_seen_ms = $1 WHERE id = $2")
+    async fn touch_device_seen(&self, id: &str, ip_prefix: &str, now_ms: u64) -> StoreResult<()> {
+        sqlx::query(TOUCH_DEVICE_SQL)
             .bind(now_ms as i64)
+            .bind(ip_prefix)
             .bind(id)
             .execute(&self.pool)
             .await
             .map_err(be)?;
+        Ok(())
+    }
+
+    async fn touch_devices_seen(&self, seen: &[DeviceSeen], now_ms: u64) -> StoreResult<()> {
+        let ordered = touch_order(seen);
+        for chunk in ordered.chunks(TOUCH_CHUNK) {
+            with_retry(|| self.touch_devices_seen_tx(chunk, now_ms)).await?;
+        }
         Ok(())
     }
 
@@ -1461,6 +1474,16 @@ impl PostgresStore {
 
     /// 吊销：先 `FOR UPDATE` 锁住设备行。它和并发的配对 / 令牌签发（外键检查对设备行拿 `FOR KEY SHARE`）互斥：
     /// 要么那些事务先提交、下面的删除能看到它们写的行，要么它们等这里提交。已经吊销的设备在锁等待之后重新判断，返回空。
+    /// 一块设备的「被看到」，一个事务。行按 id 的字节序逐条更新：和别的事务锁 `devices` 行的顺序一致，撞上死锁时
+    /// 由 [`with_retry`] 整块重来（更新是幂等的）。
+    async fn touch_devices_seen_tx(&self, chunk: &[&DeviceSeen], now_ms: u64) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        for s in chunk {
+            sqlx::query(TOUCH_DEVICE_SQL).bind(now_ms as i64).bind(&s.ip_prefix).bind(&s.id).execute(&mut *tx).await?;
+        }
+        tx.commit().await
+    }
+
     async fn revoke_device_tx(&self, id: &str, now_ms: u64) -> Result<Vec<String>, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         let live: Option<i32> =

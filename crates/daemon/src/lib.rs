@@ -9,6 +9,7 @@
 //! - `todos` / `todo_dispatch`：清单（`todo.*`，每个节点一份个人待办，§ 21）和派发（`todo.dispatch`，从一项开会话、关联、`activity`、「经过」，§ 22）
 //! - `transfer`：`anycon export` / `import`（会话历史和附件的 zip 导出 / 导入，只走本机通道）
 //! - `preview`：dev server 预览（票据、端口探测、Noise 隧道里的 HTTP / WebSocket 转发）
+//! - `update`：更新检查（每天问一次 anycon.ai 有没有新版本，只提示、不下载，ADR-57）
 //! - `sys`：平台差异的小工具（只给属主访问、文件身份、规范路径……）
 
 pub mod agents;
@@ -43,6 +44,7 @@ pub mod sys;
 pub mod todo_dispatch;
 pub mod todos;
 pub mod transfer;
+pub mod update;
 pub mod util;
 pub mod workfiles;
 pub mod workspace;

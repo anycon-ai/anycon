@@ -259,6 +259,11 @@ impl Enrolls {
         }
     }
 
+    /// 进行中的接入会话数。只是个数，给 `/api/admin/status` 用。
+    pub fn in_progress(&self) -> usize {
+        self.lock().sessions.len()
+    }
+
     /// 清理超时的会话（到点没走到 `pair_done` → 双方 `timeout`），以及连接已经没了却没人通知到的会话（后台每秒调一次）。
     pub fn sweep(&self) {
         let now = Instant::now();

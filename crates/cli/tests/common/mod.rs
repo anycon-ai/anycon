@@ -41,7 +41,12 @@ pub fn base_command(home: &Path) -> Command {
             c.env_remove(k);
         }
     }
-    c.env("ANYCON_HOME", home).env("NO_COLOR", "1").env("ANYCON_LOG", "warn").kill_on_drop(true);
+    // 测试起的 daemon 不联系 anycon.ai（ADR-57）；开发构建本来就不检查，这里对 `--release` 的测试也成立
+    c.env("ANYCON_HOME", home)
+        .env("NO_COLOR", "1")
+        .env("ANYCON_LOG", "warn")
+        .env("ANYCON_UPDATE_CHECK", "0")
+        .kill_on_drop(true);
     c
 }
 

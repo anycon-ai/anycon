@@ -336,6 +336,8 @@ export async function startStack(options: StackOptions = {}): Promise<RealStack>
     const baseEnv = {
       ANYCON_HOME: home,
       ANYCON_MOCK_AGENT: '1',
+      // 测试起的 daemon 不向 anycon.ai 做更新检查（ADR-57）
+      ANYCON_UPDATE_CHECK: '0',
       // 默认启动时要跑 `$SHELL -ilc` 解析环境，用户的 rc 重的话要好几秒；测试不需要。
       ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL: 'false',
       ANYCON_LOG: logLevel,

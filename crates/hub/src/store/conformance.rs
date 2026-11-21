@@ -180,6 +180,23 @@ impl TestDb {
         }
     }
 
+    /// 设备行上的 `(last_seen_ms, last_ip_prefix)`；没有这一行是 `None`。`last_ip_prefix` 不经 [`Store`] 读出（它不进任何 API），
+    /// 所以直接看库。
+    pub async fn device_seen(&self, id: &str) -> Option<(Option<i64>, Option<String>)> {
+        match &self.raw {
+            Raw::Sqlite(p) => sqlx::query_as("SELECT last_seen_ms, last_ip_prefix FROM devices WHERE id = ?")
+                .bind(id)
+                .fetch_optional(p)
+                .await
+                .unwrap(),
+            Raw::Postgres(p) => sqlx::query_as("SELECT last_seen_ms, last_ip_prefix FROM devices WHERE id = $1")
+                .bind(id)
+                .fetch_optional(p)
+                .await
+                .unwrap(),
+        }
+    }
+
     /// 库里所有账号的显示名（不保证顺序）。
     pub async fn account_names(&self) -> Vec<String> {
         match &self.raw {
@@ -248,6 +265,8 @@ macro_rules! suite {
                 invites_are_single_use
                 invites_and_accounts_paginate_by_keyset_even_with_identical_timestamps
                 devices_pairings_revoke
+                seeing_a_device_records_the_time_and_ip_prefix_and_leaves_revoked_devices_alone
+                a_batch_of_seen_devices_is_written_in_chunks_and_the_last_entry_for_a_device_wins
                 rotating_a_device_token_keeps_only_the_previous_one_for_the_grace_period
                 only_a_request_made_with_the_current_token_can_rotate
                 a_revoked_or_unknown_device_cannot_rotate_and_both_tokens_still_identify_it_as_revoked
@@ -449,6 +468,68 @@ pub(crate) async fn devices_pairings_revoke(db: &TestDb) {
     assert!(s.get_device("aaaa").await.unwrap().unwrap().revoked_at_ms.is_some());
     assert_eq!(s.list_devices(&acc.id).await.unwrap().len(), 2);
     assert!(s.revoke_device("aaaa", now + 2).await.unwrap().is_empty());
+}
+
+pub(crate) async fn seeing_a_device_records_the_time_and_ip_prefix_and_leaves_revoked_devices_alone(db: &TestDb) {
+    let s = &db.store;
+    let now = now_ms();
+    let acc = s.create_account("alice", false, now).await.unwrap();
+    s.create_device(new_device(&acc.id, "aaaa", "t1"), now).await.unwrap();
+    s.create_device(new_device(&acc.id, "bbbb", "t2"), now).await.unwrap();
+    // 新设备还没被看到过
+    assert_eq!(db.device_seen("aaaa").await, Some((None, None)));
+
+    s.touch_device_seen("aaaa", "203.0.113.0/24", 100).await.unwrap();
+    assert_eq!(db.device_seen("aaaa").await, Some((Some(100), Some("203.0.113.0/24".into()))));
+    assert_eq!(s.get_device("aaaa").await.unwrap().unwrap().last_seen_ms, Some(100));
+    assert_eq!(db.device_seen("bbbb").await, Some((None, None)), "only the touched device changes");
+    // 覆盖，不是历史
+    s.touch_device_seen("aaaa", "2001:db8:1::/48", 200).await.unwrap();
+    assert_eq!(db.device_seen("aaaa").await, Some((Some(200), Some("2001:db8:1::/48".into()))));
+    // 不存在的设备：什么都不做，不报错
+    s.touch_device_seen("nope", "198.51.100.0/24", 300).await.unwrap();
+    assert_eq!(db.device_seen("nope").await, None);
+
+    // 吊销之后不再更新，吊销前的值原样留着
+    s.touch_device_seen("bbbb", "198.51.100.0/24", 300).await.unwrap();
+    s.revoke_device("bbbb", 400).await.unwrap();
+    s.touch_device_seen("bbbb", "192.0.2.0/24", 500).await.unwrap();
+    s.touch_devices_seen(&[DeviceSeen { id: "bbbb".into(), ip_prefix: "192.0.2.0/24".into() }], 600).await.unwrap();
+    assert_eq!(db.device_seen("bbbb").await, Some((Some(300), Some("198.51.100.0/24".into()))));
+
+    // 删账号：设备行（连同前缀）一起没了
+    let tombstone = NewAudit { event: "account_deleted", ..Default::default() };
+    assert!(s.delete_account(&acc.id, tombstone, 700).await.unwrap());
+    assert_eq!(db.device_seen("aaaa").await, None);
+    assert_eq!(db.device_seen("bbbb").await, None);
+}
+
+pub(crate) async fn a_batch_of_seen_devices_is_written_in_chunks_and_the_last_entry_for_a_device_wins(db: &TestDb) {
+    let s = &db.store;
+    let now = now_ms();
+    let acc = s.create_account("alice", false, now).await.unwrap();
+    // 比一块多几台，跨过分块的边界
+    let n = TOUCH_CHUNK + 3;
+    let ids: Vec<String> = (0..n).map(|i| format!("dev-{i:05}")).collect();
+    for id in &ids {
+        s.create_device(new_device(&acc.id, id, &format!("tok-{id}")), now).await.unwrap();
+    }
+    s.touch_devices_seen(&[], 50).await.unwrap();
+    assert_eq!(db.device_seen(&ids[0]).await, Some((None, None)), "an empty batch writes nothing");
+
+    // 倒序给、夹一台不存在的、同一台给两次（后一项算）
+    let mut batch: Vec<DeviceSeen> =
+        ids.iter().rev().map(|id| DeviceSeen { id: id.clone(), ip_prefix: "203.0.113.0/24".into() }).collect();
+    batch.push(DeviceSeen { id: "missing".into(), ip_prefix: "192.0.2.0/24".into() });
+    batch.push(DeviceSeen { id: ids[1].clone(), ip_prefix: "2001:db8::/48".into() });
+    s.touch_devices_seen(&batch, 100).await.unwrap();
+
+    for id in [&ids[0], &ids[TOUCH_CHUNK - 1], &ids[TOUCH_CHUNK], &ids[n - 1]] {
+        assert_eq!(db.device_seen(id).await, Some((Some(100), Some("203.0.113.0/24".into()))), "{id}");
+    }
+    assert_eq!(db.device_seen(&ids[1]).await, Some((Some(100), Some("2001:db8::/48".into()))));
+    assert_eq!(db.device_seen("missing").await, None);
+    assert_eq!(db.count("devices WHERE last_seen_ms = 100").await, n as i64);
 }
 
 pub(crate) async fn an_account_and_its_recorded_id_are_written_in_one_transaction(db: &TestDb) {

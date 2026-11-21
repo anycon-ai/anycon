@@ -56,7 +56,8 @@ pub fn ws_url(hub_url: &str) -> Result<(String, String), String> {
     Ok((format!("{ws_scheme}://{rest}/v1/ws"), format!("{http_scheme}://{authority}")))
 }
 
-fn tls_config() -> Arc<rustls::ClientConfig> {
+/// 校验 webpki 根证书的 rustls 客户端配置（ring）。hub 连接、doctor 的 `/healthz` 和更新检查（[`crate::update`]）共用。
+pub(crate) fn tls_config() -> Arc<rustls::ClientConfig> {
     static CFG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CFG.get_or_init(|| {
         let mut roots = rustls::RootCertStore::empty();
@@ -1589,6 +1590,7 @@ mod tests {
                 login_shell: Some(false),
                 lock: false,
                 hub_silence_timeout: silence,
+                update_check: crate::update::UpdateCheckOptions::off(),
                 ..Default::default()
             },
         )

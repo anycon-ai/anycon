@@ -141,6 +141,29 @@ pub struct NewDevice {
     pub token_hash: String,
 }
 
+/// 一台设备「此刻被看到了」：[`Store::touch_devices_seen`] 的一项。
+///
+/// `ip_prefix` 是这台设备当前连接的 IP 前缀（[`crate::util::ip_prefix`]：IPv4 /24、IPv6 /48），不是完整 IP。
+/// 它只写进 `devices.last_ip_prefix`，不经任何 API 返回、不进日志；所以这里不派生 `Debug`，免得被顺手打出来。
+#[derive(Clone)]
+pub struct DeviceSeen {
+    pub id: String,
+    pub ip_prefix: String,
+}
+
+/// [`Store::touch_devices_seen`] 每个事务最多写几行：SQLite 只有一个写者，一个事务太大会让别的写入等太久。
+const TOUCH_CHUNK: usize = 500;
+
+/// [`Store::touch_devices_seen`] 的写入顺序：按设备 id 的字节序（和 Postgres 里别的事务锁 `devices` 行的顺序一致，
+/// 不会互相死锁），同一设备只留最后一项。
+fn touch_order(seen: &[DeviceSeen]) -> Vec<&DeviceSeen> {
+    let mut by_id: std::collections::BTreeMap<&str, &DeviceSeen> = std::collections::BTreeMap::new();
+    for s in seen {
+        by_id.insert(&s.id, s);
+    }
+    by_id.into_values().collect()
+}
+
 /// [`Store::rotate_device_token`] 的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotateOutcome {
@@ -615,7 +638,12 @@ pub trait Store: Send + Sync + 'static {
     /// 账号下未吊销的设备。
     async fn list_devices(&self, account_id: &str) -> StoreResult<Vec<Device>>;
     async fn rename_device(&self, id: &str, name: &str) -> StoreResult<()>;
-    async fn touch_device_seen(&self, id: &str, now_ms: u64) -> StoreResult<()>;
+    /// 记下设备此刻被看到：`last_seen_ms = now_ms`，`last_ip_prefix = ip_prefix`（覆盖，只留最近一次）。
+    /// 已吊销的设备不动（吊销时留下的值原样保留）；设备不存在什么都不做。
+    async fn touch_device_seen(&self, id: &str, ip_prefix: &str, now_ms: u64) -> StoreResult<()>;
+    /// 同 [`Store::touch_device_seen`]，一次处理一批（连着的设备定期刷新用）。按设备 id 的字节序分块写，每块一个事务；
+    /// 中途失败时已经写完的块保留（刷新是幂等的，下一轮再写）。
+    async fn touch_devices_seen(&self, seen: &[DeviceSeen], now_ms: u64) -> StoreResult<()>;
     /// 置 `revoked_at_ms` 并删除其全部配对、push 订阅，以及它签发的预览令牌和（它是节点时）它的全部预览 label 与令牌；
     /// 返回被删配对的另一端。设备不存在或已吊销返回空。
     async fn revoke_device(&self, id: &str, now_ms: u64) -> StoreResult<Vec<String>>;

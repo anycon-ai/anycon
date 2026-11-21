@@ -112,7 +112,7 @@
 - 从模板创建项目
 - 多客户端同时在线的状态同步细节
 - TS SDK 节点方向（用 TS 写自定义 agent）
-- daemon 自动更新与回滚
+- daemon 自动更新与回滚（现在只有更新检查的提示，不下载不安装，[ADR-57](decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)）
 - Prometheus metrics
 
 ## v0.4 — 清单与分身

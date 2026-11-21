@@ -14,6 +14,7 @@ daemon 做的事，一句话各一条：
 - 把会话历史、附件、审计存在本机 SQLite
 - 验证账号内接入（扫码批准、接入码、节点口令），自己限制在线猜测
 - 管 workspace：文件夹即项目
+- 大约每天问一次 anycon.ai 有没有新版本，有就提示；不下载、不安装，可以关（§ 23）
 
 daemon **不**做：自己调用任何模型 API（标题生成、摘要都不做）、沙箱、终端、文件编辑。
 
@@ -109,12 +110,15 @@ ticket_ttl = "24h"                    # 预览票据的有效期，5m–7d
 turn_finished = "when_unwatched"      # always | when_unwatched | never
 session_idle_after = "30m"
 
+[update]                              # 更新检查（ADR-57，§ 23）。热加载；不能远程改
+check = true                          # 大约每天一次问 https://anycon.ai/releases.json 有没有新版本，只提示、不下载；false = 不检查
+
 [log]
 level = "info"
 retention_days = 7                     # 只在 daemon 启动时清理一次，长期不重启会累积
 ```
 
-`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
+`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
 **远程修改**（`node.get_config` / `node.set_config`，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）：客户端（Web 的节点设置「限制」标签、SDK）可以读写下面这张白名单里的键，其余一律不行。只收热加载的键，改完不用重启。
 
@@ -134,14 +138,14 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 | `permissions.allow_dangerous_modes` | 布尔 | **只能收紧**：`true` → `false` |
 | `preview.enabled` | 布尔 | **只能收紧**：`true` → `false` |
 
-- **名单之外**的键既不出现在 `node.get_config` 里，也不接受（`forbidden`，`data.reason = not_editable`）：尤其是 `agents.*`（`command` / `env` 等于远程执行任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*`（有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`。想放宽权限，或改这些键，只能在机器上 `anycon config set`
+- **名单之外**的键既不出现在 `node.get_config` 里，也不接受（`forbidden`，`data.reason = not_editable`）：尤其是 `agents.*`（`command` / `env` 等于远程执行任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*`（有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`、`update.check`（要不要联系 anycon.ai 是机器主人的决定，ADR-57）。想放宽权限，或改这些键，只能在机器上 `anycon config set`
 - **只能收紧**的开关远程想从 `false` 改成 `true`，回 `forbidden`（`data.reason = tighten_only`，同一请求里别的改动也不写）。Web 上这两个开关在关着时禁用，并提示在机器上运行 `anycon config set <键> true`
 - **环境变量覆盖的键只读**：`node.get_config` 里 `env_override = true`、`editable = no`（`log.level` 还包括被 `ANYCON_LOG` / `RUST_LOG` 接管），`node.set_config` 回 `forbidden`（`data.reason = env_override`）。判断和加载配置时用同一个环境变量层，不会各说各话
 - **`node.get_config`** → `{ items: [{ key, value, kind, editable, env_override, options?, min?, max? }] }`：`value` 是当前生效值（默认值 → 文件 → 环境变量合并后）；`kind` 是 `bool` \| `int` \| `duration` \| `enum` \| `text`；`editable` 是 `any` \| `tighten_only` \| `no`；`options`（`enum`）、`min` / `max`（`int` 是数值，`duration` 是毫秒，`text` 的 `max` 是字符数）给客户端渲染控件和做本地校验用。顺序固定，按配置段分组
 - **`node.set_config { changes: [{ key, value }] }`**：先校验**全部**改动，任何一项不合法就一项都不写——键重复、`changes` 为空、值的 JSON 类型和 `kind` 不符、超出范围、不在枚举里、时长写不出来都回 `invalid`（`data.field` 是键，`data.reason` 是 `duplicate` / `type` / `range` / `format`）；多个问题时报请求里的第一个。通过之后用 `anycon config set` 同一套逻辑写 `config.toml`（保留注释和格式、整份配置校验通过才原子替换，值按类型写——`branch_prefix = "123"` 写成字符串），再走同一条热加载路径，审计 `config.changed`（§ 13），返回新的 `node.get_config` 结果。和当前值相同的改动是空操作（不写、不审计）；全是空操作时直接返回当前结果。daemon 里同一时刻只处理一个 `node.set_config`（先重读一次文件，再算旧值、判断「只能收紧」），并发的两次不会互相覆盖成不一致的文件
 - 范围（并发 1–32、时长上限 7d 等）只约束远程写入；`config.toml` 里手写的越界值照常加载，`node.get_config` 照实显示
 
-环境变量覆盖文件里的值，写法是 `ANYCON_<段>__<键>`（双下划线表示层级），比如 `ANYCON_SESSIONS__MAX_CONCURRENT=2`；数组按 TOML 写：`ANYCON_WORKSPACE__LINK_ROOTS='["/abs/path"]'`、`ANYCON_WORKSPACE__EXTRA_ROOTS='["/mnt/ext/projects"]'`。键名里带连字符的（`agents.claude-code.*`）没法用环境变量设，用 `anycon config set`。`ANYCON_HOME`、`ANYCON_LOG`、`ANYCON_MOCK_AGENT` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`）。
+环境变量覆盖文件里的值，写法是 `ANYCON_<段>__<键>`（双下划线表示层级），比如 `ANYCON_SESSIONS__MAX_CONCURRENT=2`；数组按 TOML 写：`ANYCON_WORKSPACE__LINK_ROOTS='["/abs/path"]'`、`ANYCON_WORKSPACE__EXTRA_ROOTS='["/mnt/ext/projects"]'`。键名里带连字符的（`agents.claude-code.*`）没法用环境变量设，用 `anycon config set`。`ANYCON_HOME`、`ANYCON_LOG`、`ANYCON_MOCK_AGENT`、`ANYCON_UPDATE_CHECK` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`；`ANYCON_UPDATE_CHECK` 见 § 23）。
 
 ## 4. 数据目录
 
@@ -1430,3 +1434,47 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 | `sessions.todo_id` | 会话从哪一项派出（可空；创建时写，之后不变；导出 / 导入不带它，导入的会话没有来源项） |
 | `todo_sessions` | `(todo_id, session_id)` 主键、`seq`（这一项内的派发序号，从 1 起）。会话被删，这一行留着；这一项被删，这一项的行一起删 |
 | `todo_events` | `(todo_id, seq)` 主键、`ts_ms`、`kind`、`session_id`（可空，`dispatched` / `result` 才有，给「最近 5 次派发各自最后一条 result」用）、`data`（JSON，`TodoEvent` 去掉 `seq`、`ts_ms`；`result` 的 `text` 是会话内容）。删这一项和保留期清理都连带删它们 |
+
+## 23. 更新检查
+
+决定和取舍见 [ADR-57](../decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)。daemon 大约每天问一次 anycon.ai 有没有新的正式版本，有就提示。**不下载、不安装**；自动更新是路线图上另一件事。只有 `anycon daemon` 做这件事：CLI 的其他子命令、`anycon mcp`、SDK、hub 和 Web UI 都不发这个请求。
+
+### 23.1 请求
+
+- `GET https://anycon.ai/releases.json`，只有两个头：`Host: anycon.ai` 和 `User-Agent: anycon/<版本> (<os>; <arch>)`，比如 `anycon/0.3.1 (linux; x86_64)`、`anycon/0.3.1 (macos; aarch64)`、`anycon/0.3.1 (windows; x86_64)`（`os` / `arch` 是 Rust 的 `std::env::consts::OS` / `ARCH`）。没有查询串、cookie、`Accept-Language` 之类的头，没有账号、设备、节点或安装的标识。anycon.ai 的统计按这个 User-Agent 数活跃的 daemon（国家、版本、平台），格式是对外的约定，不能随意改
+- 只用 HTTPS（webpki 根证书，和连 hub 同一份 TLS 配置）。整次请求（DNS、连接、TLS、读完回应）10 秒超时；回应体最多 16 KiB；**不跟随重定向**，不是 `200` 就算失败
+- 谁看得到什么：anycon.ai 的服务器和它前面的网络服务商（目前是 Cloudflare）看得到请求的 IP 地址、时间和 User-Agent（版本、系统、架构）；项目把这些请求记在访问日志里最多 30 天，用来按国家、版本和平台数活跃的 daemon，之后只留计数
+
+### 23.2 回应和校验
+
+回应是 `{ "latest": "X.Y.Z", "url": "https://github.com/anycon-ai/anycon/releases/tag/vX.Y.Z", "published_at": "<ISO-8601>" }`，多出来的字段忽略。回应不可信：
+
+- `latest` 必须是严格的 `X.Y.Z`：三段十进制数字，不带 `v`、前导零、预发布或构建后缀，每段最多 9 位；不合格就算这次失败
+- 比运行的版本新才算「有更新」。运行的版本带预发布后缀时（`0.4.0-rc.1`），同一个 `X.Y.Z` 的正式版算更新的
+- 给用户看的链接由版本号拼成 `https://github.com/anycon-ai/anycon/releases/tag/v<latest>`。回应里的 `url` 和 `published_at` 不用
+- 日志里只有校验过的版本号和错误的种类（超时、HTTP 状态码、不是 JSON……），没有回应的内容
+
+### 23.3 开关
+
+| 设置 | 效果 |
+|---|---|
+| `config.toml` 的 `[update] check`（缺省 `true`） | `false` = 不检查。热加载：关掉之后不再发请求，`node.info` 不再带结果；打开之后最多 10 分钟内恢复 |
+| 环境变量 `ANYCON_UPDATE_CHECK` | `0` / `false` / `off` / `no` 关，`1` / `true` / `on` / `yes` 开。盖过 `config.toml`，和别的环境变量覆盖一样；认不出来的值忽略并打一行 warn。通用写法 `ANYCON_UPDATE__CHECK=false` 也行 |
+| 开发构建 | 带 `debug_assertions` 的构建（`cargo build` / `cargo test` 的默认 profile）缺省**不**联系 anycon.ai，只有 `ANYCON_UPDATE_CHECK=1` 才检查。`just dev`、e2e（默认用 `target/debug`）、Rust 测试都在这条规则下；它们另外还显式关掉（`scripts/dev.sh`、e2e 的 `global-setup.ts` 和 `helpers/*` 设 `ANYCON_UPDATE_CHECK=0`，Rust 夹具用 `UpdateCheckOptions::off()`），拿正式构建跑也不出网 |
+
+`update.check` 不在远程修改的白名单里（`node.set_config` 回 `forbidden`，`data.reason = not_editable`），只能在机器上改：`anycon config set update.check false`。检查的地址没有配置键和环境变量；嵌入 daemon 的代码（测试）可以经 `DaemonOptions.update_check` 换成本机回环地址上的 `http://`，别的 `http://` 地址一律拒绝。
+
+### 23.4 时间和状态
+
+- 第一次检查在 daemon 起来之后随机 2–10 分钟，不在启动时
+- 成功之后，下一次在 24 小时加随机 0–60 分钟之后。失败之后按 2 小时、4 小时、8 小时……退避，最多 24 小时；失败只记 debug 日志，连续第 3 次失败时打一行 warn（之后不再重复），没有面向用户的错误
+- 按墙上时钟算：等待时每次最多睡 30 分钟再看时间，机器睡眠醒来后不会推迟一整轮；记录的时间在「未来」（时钟被往回调过）时按现在算
+- 状态存在数据目录的 `update-check.json`（0600，原子替换）：`{ last_success_ms, latest, last_attempt_ms, failures }`。重启后从这里接着算，不会因为重启多发请求；文件坏了或 `latest` 不合格就当作没有记录
+
+### 23.5 提示在哪里
+
+- **`node.info.update_available { latest, url, checked_at_ms }`**：检查开着、最近一次成功的检查得到的版本比自己新时才有。没有更新、检查关着、还没成功过、旧 daemon 都不带这个字段，旧客户端不受影响
+- **Web UI**：节点设置「关于」里的「更新」一行（[web.md § 4.8](web.md#48-节点设置-nnodesettings)）
+- **`anycon doctor`**：`update` 一项，总是 `ok`（提示，不算失败）。内容是开关和原因（`off ([update] check = false in config.toml)`、`off (ANYCON_UPDATE_CHECK=0)`、`off in development builds (set ANYCON_UPDATE_CHECK=1 to check)`），或上次检查的结果（`up to date (checked anycon.ai 3h ago)`、`anycon 0.4.0 is available (this is 0.3.1): https://github.com/anycon-ai/anycon/releases/tag/v0.4.0 (checked 3h ago)`），连续失败时附上次数。daemon 没在跑时读状态文件，按 `anycon daemon` 的规则判断开关
+- **日志**：第一次看到某个新版本时一行 info：`a newer anycon release is available`，字段 `latest`、`running`、`url`
+- **`anycon init`** 结束时打印一行：daemon 每天问一次 anycon.ai、发送的是版本 / 系统 / 架构、anycon.ai 看得到 IP，以及怎么关

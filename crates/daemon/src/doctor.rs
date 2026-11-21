@@ -350,6 +350,9 @@ pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCh
             Err(e) => out.push(check("blobs", false, format!("cannot read the attachment records: {e}"), None)),
         }
     }
+
+    // 13. 更新检查（ADR-57）：开关和最近一次的结果；有新版本只是提示，不算失败
+    out.push(crate::update::doctor_check(paths, cfg, ctx.map(|c| c.updates.as_ref())));
     out
 }
 

@@ -26,6 +26,7 @@
 - 已配对客户端能否绕过 `allow_dangerous_modes`、会话 `env` 策略或 workspace 边界，在 daemon 机器上不经审批执行代码；能否经 `node.set_config`（ADR-43：只有一张热加载键的白名单，`allow_dangerous_modes` 和 `preview.enabled` 只能收紧）改到名单之外的键、放宽只能收紧的开关，或在被环境变量覆盖的键上写出不一致的状态；`node.logs` 能否带出会话内容
 - `anycon mcp`（ADR-49）：能否经它的工具批准或拒绝权限请求、在未带 `--allow-dangerous-modes` 时选 dangerous 模式或向已处在这类模式的会话发消息、绕过 `allow_dangerous_modes`、设置会话 `env`，能否让经 hub 的连接改写审计身份（`local.set_client` 只在本机通道，固定枚举），能否让 daemon 拉起的 agent 环境里没有或被改写 `ANYCON_AGENT` / `ANYCON_SESSION_ID`；清单（`todo.*`，ADR-54）：agent 经 `add_todo` 或 anycon 拉起的 agent 里的 `anycon todo add` 能否修改、关闭或删除清单项，经 `anycon mcp` 加的项、或 anycon 拉起的 agent 里 `anycon todo add` 加的项，能否在调用方没有刻意隐藏来源的情况下不被标成 agent 加的 / 未收下，能否经 MCP 工具或嵌套 CLI 的正常路径清掉 `unreviewed`（自报了 `mcp` 的连接重新自报成 `cli`、清掉 `ANYCON_AGENT` 这类刻意绕过是已声明的护栏边界，不算），能否绕过未收下的项的上限（100）或总上限（1 000），清单内容（标题、正文）能否进入 hub、日志或审计；派发（`todo.dispatch`，ADR-54）：自报了 `mcp` 的连接或 anycon 拉起的 agent 里的 `anycon todo run` 能否在没有刻意绕过护栏的情况下派发，第一条消息能否被调用方指定（不能），「经过」的文字（agent 写的结果）能否进入 hub、日志或审计，`no_push` 在声明了它的 agent 上能否被一次正常的 `git push` / `gh pr create` / `gh pr merge` 绕过（脚本、`git -c k=v push` 这类刻意的绕过是已声明的边界，不算）
 - 被提示注入的 agent 能否借 Web UI 把数据发往第三方
+- 更新检查（ADR-57）：请求里能否带出账号、设备、节点、安装的标识或会话内容；`[update] check = false` / `ANYCON_UPDATE_CHECK=0` 之后 daemon 是否仍联系 anycon.ai；已配对设备能否远程打开它；CLI 的其他命令、`anycon mcp`、SDK 是否发这个请求；伪造的回应能否让终端、日志或 Web UI 显示校验过的版本号以外的文字，或让提示里的链接指向 `https://github.com/anycon-ai/anycon/releases/` 以外的地方
 - dev server 预览（ADR-39）：预览页里的代码能否读到 Web UI 的密钥或登录态；hub 能否在不持有票据的情况下打开隧道或看到隧道内容；能否经预览访问 daemon 机器上不该放行的端口（会话之外、`preview.allow_ports` 之外、本机 hub）；吊销设备或关闭预览后隧道是否仍能使用
 
 ## 自建用户如何获知安全更新
@@ -33,6 +34,7 @@
 - 订阅本仓库的 Security Advisories
 - 关注 GitHub Releases（RSS：`https://github.com/anycon-ai/anycon/releases.atom`）
 - 安全修复会同时发布补丁版本并在 release note 顶部标注
+- daemon 的更新检查（缺省开，[ADR-57](docs/decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)）大约每天一次向 anycon.ai 询问最新版本，有新版本时 `anycon doctor` 和 Web UI 节点设置的「关于」里会提示，并附 GitHub 发布页的链接。它只告诉你有新版本，不说明是不是安全修复，也不下载、不安装；关掉了它的（关法见下面「已知限制」里的「更新检查让项目方看到你的 IP」），靠上面三条
 
 ## 威胁模型
 
@@ -66,4 +68,6 @@
 
 **`anycon mcp` 的护栏约束的是接口，不是那个 agent。** 把 `anycon mcp` 配置给某个 agent 的本机用户，等于让它以本机 CLI 的权限操作节点上的会话，只受接口上的约束：没有批准 / 拒绝权限请求的工具、默认拒绝 dangerous 权限模式（选这类模式，或向已经处在这类模式的会话发消息）、没有会话 `env`、在 anycon 拉起的 agent 里默认拒绝会改状态的工具（环境变量 `ANYCON_AGENT`）。这四条里有开关或标记的是第二条（`--allow-dangerous-modes`）和第四条（`ANYCON_AGENT` / `--allow-nested`），它们都在 agent 能碰到的地方：它能改自己的环境和 MCP 配置，有些 MCP 客户端启动 stdio server 时也只传精简的环境，这时标记传不到 `anycon mcp`，嵌套护栏就不起作用；有 shell 能力的 agent 本来就能直接运行 `anycon`（包括 `anycon approve`）。审计里的 `local-mcp` 是客户端自报的。**清单**（ADR-54）：`add_todo`（以及 anycon 拉起的 agent 里的 `anycon todo add`）不需要 `--allow-nested`，agent 能往节点的清单里加项；这样的项标成 agent 加的、未收下，最多 100 个，agent 经这些入口不能修改、关闭或删除清单项。「agent 加的」是调用方自报的标记（`todo.add` 的 `agent: true`；自报了 `mcp` 的本机连接由 daemon 直接标记），存心隐藏来源的本机进程（比如先清掉 `ANYCON_AGENT`）或这台机器上配对的 CLI 设备可以加出看起来像人加的项、也能改清单；自报了 `mcp` 的连接清不掉 `unreviewed` 也只到它再自报成 `cli` 为止。这是护栏不是边界。清单的标题和正文是明文存在 daemon 数据库里的用户内容，只在端到端通道里传输，hub 只看到元数据（消息大小和时间）。真正的上限是 `sessions.max_concurrent`、审批、`permissions.allow_dangerous_modes` 和 `config.toml`。见 [ADR-49](docs/decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)。
 
-**元数据。** hub 看得到谁连谁、什么时候、多大的信封、设备名和账号标识（显示名、绑定的邮箱，以及关联的 GitHub / Google 身份的提供方和稳定用户 ID——不存用户名、头像和 access token）、账号的配额用量；开着预览时还有预览 label、令牌的申请和预览连接的流量。anycon 不做流量混淆。账号被删除后，hub 上与它有关的设备、身份和审计记录一并删除，只留一条没有 IP 的删除记录。
+**元数据。** hub 看得到谁连谁、什么时候、多大的信封、连接来自哪个 IP（库里只存前缀：每台设备最近一次被看到时的 IPv4 /24 或 IPv6 /48，浏览器登录会话和审计记录里也是这种前缀）、设备名和账号标识（显示名、绑定的邮箱，以及关联的 GitHub / Google 身份的提供方和稳定用户 ID——不存用户名、头像和 access token）、账号的配额用量；开着预览时还有预览 label、令牌的申请和预览连接的流量。anycon 不做流量混淆。账号被删除后，hub 上与它有关的设备、身份和审计记录一并删除，只留一条没有 IP 的删除记录。
+
+**更新检查让项目方看到你的 IP。** 除了连 hub 和替用户做的事（克隆仓库、用 `gh` 查 PR 状态；agent 自己的网络请求不算 daemon 的），daemon 自己发起的请求只有更新检查（缺省开，ADR-57）：打开时每天一次 `GET https://anycon.ai/releases.json`，请求里只有 `User-Agent: anycon/<版本> (<os>; <arch>)`，没有账号、设备、节点或安装的标识，也没有会话内容。anycon.ai 的服务器和它前面的网络服务商（目前是 Cloudflare）看得到请求的 IP 地址、时间和 User-Agent（版本、系统、架构）；项目把这些请求记在访问日志里最多 30 天，用来按国家、版本和平台数活跃的 daemon，之后只留计数。自建用户想和 anycon.ai 零联系，要在 `config.toml` 里设 `[update] check = false` 或在 daemon 的环境里设 `ANYCON_UPDATE_CHECK=0`（不在远程修改的白名单里，已配对设备打不开它）。回应不可信：被入侵的 anycon.ai 能显示一条假的「有新版本」或压下真的那条，显示出来的只有校验过的 `X.Y.Z` 和由它拼出来的 GitHub 发布页链接，daemon 不会因此下载或运行任何东西。

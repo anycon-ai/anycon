@@ -1,7 +1,8 @@
 //! 配置：`config.toml`（figment：默认值 → 文件 → `ANYCON_*` 环境变量）与目录布局，以及热加载。
 //!
 //! 键见 docs/spec/daemon.md § 3。环境变量用双下划线表示层级：`ANYCON_SESSIONS__MAX_CONCURRENT=2`。
-//! `ANYCON_HOME` / `ANYCON_LOG` / `ANYCON_MOCK_AGENT` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`）。
+//! `ANYCON_HOME` / `ANYCON_LOG` / `ANYCON_MOCK_AGENT` / `ANYCON_UPDATE_CHECK` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于
+//! `agents.mock.enabled = true`；`ANYCON_UPDATE_CHECK` 由 [`crate::update`] 读，见 ADR-57）。
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -309,6 +310,21 @@ impl Default for NotifyConfig {
     }
 }
 
+/// `[update]`：更新检查（ADR-57，docs/spec/daemon.md § 23）。热加载。不在远程修改的白名单里：
+/// 要不要联系 anycon.ai 是机器主人在 `config.toml` / 环境变量里的决定。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// `false` = daemon 不向 anycon.ai 请求版本信息。环境变量 `ANYCON_UPDATE_CHECK=0` 同样关掉它（[`crate::update`]）。
+    pub check: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self { check: true }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogConfig {
@@ -452,12 +468,13 @@ pub struct Config {
     pub enroll: EnrollConfig,
     pub preview: PreviewConfig,
     pub notify: NotifyConfig,
+    pub update: UpdateConfig,
     pub log: LogConfig,
 }
 
 /// `ANYCON_<段>__<键>` 环境变量层。加载配置和判断「哪些键被环境变量覆盖」（[`env_overrides`]）用同一个构造，不会各说各话。
 fn env_provider() -> Env {
-    Env::prefixed("ANYCON_").ignore(&["HOME", "LOG", "MOCK_AGENT"]).split("__")
+    Env::prefixed("ANYCON_").ignore(&["HOME", "LOG", "MOCK_AGENT", "UPDATE_CHECK"]).split("__")
 }
 
 /// 当前进程环境里有没有 `ANYCON_<段>__<键>` 覆盖 `key`（点分隔的两段键，如 `sessions.max_concurrent`）。
@@ -917,7 +934,7 @@ pub fn set_toml_values(paths: &Paths, edits: Vec<(String, toml_edit::Value)>) ->
 /// 默认的 `config.toml` 文本（`anycon init` 用）。
 pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, workspace_root: &str) -> String {
     let mut s = String::new();
-    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* log.level agents.<id>.default_* agents.<id>.enabled\n\n");
+    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* update.check log.level agents.<id>.default_* agents.<id>.enabled\n\n");
     s.push_str("[hub]\n");
     match hub_url {
         Some(u) => s.push_str(&format!("url = {}\n", toml_str(u))),
@@ -972,6 +989,11 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("# 预览票据的有效期，5m–7d\n");
     s.push_str("ticket_ttl = \"24h\"\n");
     s.push_str("\n[notify]\nturn_finished = \"when_unwatched\"\nsession_idle_after = \"30m\"\n");
+    s.push_str("\n[update]\n");
+    s.push_str("# 每天一次向 https://anycon.ai/releases.json 询问有没有新版本，有就在 anycon doctor 和 Web UI 的「关于」里提示；\n");
+    s.push_str("# 不下载、不安装。请求只带 User-Agent（版本、系统、架构）；anycon.ai 和它前面的网络服务商看得到 IP 地址和时间。\n");
+    s.push_str("# false = 不检查（环境变量 ANYCON_UPDATE_CHECK=0 同样关掉）。热加载\n");
+    s.push_str("check = true\n");
     s.push_str("\n[log]\nlevel = \"info\"\nretention_days = 7\n");
     s
 }
@@ -1000,6 +1022,7 @@ pub fn is_hot_key(key: &str) -> bool {
         || key.starts_with("worktree.")
         || key.starts_with("enroll.")
         || key.starts_with("preview.")
+        || key == "update.check"
         || key == "log.level"
     {
         return true;

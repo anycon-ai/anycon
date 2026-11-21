@@ -30,6 +30,9 @@ async fn exit_codes_before_and_after_init() {
             .await;
     assert_eq!(forced.code, 0, "{}", forced.stderr);
     assert!(forced.stdout.contains("paired device must be paired again"));
+    // init 说明 daemon 每天向 anycon.ai 做一次更新检查，以及怎么关（ADR-57）
+    assert!(forced.stdout.contains("asks anycon.ai once a day"), "{}", forced.stdout);
+    assert!(forced.stdout.contains("update.check false") && forced.stdout.contains("ANYCON_UPDATE_CHECK=0"));
     // 已初始化但 daemon 没跑：3
     let r = anycon(&home, &["ls"], None, &[]).await;
     assert_eq!(r.code, 3, "{}", r.stderr);
@@ -42,6 +45,10 @@ async fn exit_codes_before_and_after_init() {
     let ids: Vec<&str> = j["checks"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
     assert!(ids.contains(&"config") && ids.contains(&"daemon") && ids.contains(&"workspace"));
     assert!(j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "daemon").unwrap()["ok"] == false);
+    // 更新检查一项：测试环境里 ANYCON_UPDATE_CHECK=0，报告为关着，不算失败
+    let upd = j["checks"].as_array().unwrap().iter().find(|c| c["id"] == "update").unwrap();
+    assert_eq!(upd["ok"], true);
+    assert!(upd["detail"].as_str().unwrap().contains("ANYCON_UPDATE_CHECK=0"), "{upd}");
     // config 不需要 daemon
     assert_eq!(anycon(&home, &["config", "get", "sessions.max_concurrent"], None, &[]).await.stdout.trim(), "6");
     let r = anycon(&home, &["config", "set", "sessions.max_concurrent", "5"], None, &[]).await;

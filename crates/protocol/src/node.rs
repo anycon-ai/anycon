@@ -83,6 +83,22 @@ pub struct NodeInfo {
     /// `capabilities.blobs` 为 true 时给出。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_limits: Option<NodeAttachmentLimits>,
+    /// 更新检查（ADR-57）知道有比这个 daemon 更新的正式版本时给出；没有更新的版本、检查关着、还没检查成功过，
+    /// 以及旧 daemon，都不给。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<NodeUpdateAvailable>,
+}
+
+/// 有更新的版本（`node.info.update_available`）。daemon 只在 `latest` 是严格的 `X.Y.Z` 且比自己的版本新时给出；
+/// `url` 由 daemon 用版本号拼出来，不取 anycon.ai 回应里的链接。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeUpdateAvailable {
+    /// 最新的正式版本，`X.Y.Z`，不带 `v`。
+    pub latest: String,
+    /// 这个版本的发布页：总是 `https://github.com/anycon-ai/anycon/releases/tag/v<latest>`。
+    pub url: String,
+    /// 得到这个结果的那次检查的时间。
+    pub checked_at_ms: TimestampMs,
 }
 
 /// 已配对的客户端设备（daemon 视角）。

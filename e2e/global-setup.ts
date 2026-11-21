@@ -349,6 +349,8 @@ async function startDaemon(
     ...process.env,
     ANYCON_HOME: dirs.daemonHome,
     ANYCON_MOCK_AGENT: '1',
+    // 不向 anycon.ai 做更新检查（ADR-57）：开发构建本来就不检查，ANYCON_BIN_DIR 指向正式构建时也成立
+    ANYCON_UPDATE_CHECK: '0',
     // 不跑 `$SHELL -ilc` 解析登录环境：用户 rc 重的话要 1–4 秒才开 socket，测试里没必要。
     ANYCON_AGENTS__ENV_FROM_LOGIN_SHELL: 'false',
     NO_COLOR: '1',

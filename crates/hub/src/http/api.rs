@@ -532,14 +532,32 @@ pub async fn delete_invite(
 // 管理
 // ---------------------------------------------------------------------------
 
+/// 「最近有流量」的窗口：`active_connections_1m`。
+const ACTIVE_WINDOW_MS: u64 = 60_000;
+
+/// `GET /api/admin/status`。`online_*`、`active_connections_1m`、`pairing_in_progress` 都是此刻 hub 内存里的计数
+/// （路由表、撮合表、接入会话表），只有数量，不含账号 id、设备 id 和 IP；重启后从零开始。
 #[derive(Serialize)]
 pub struct AdminStatus {
     mode: &'static str,
     version: &'static str,
     started_at_ms: u64,
     uptime_ms: u64,
+    /// 全部连接：永久连接、临时连接（配对用）、预览连接。
     online_connections: usize,
+    /// 永久连接（设备）。
     online_devices: usize,
+    /// 有至少一条永久连接在线的账号。
+    online_accounts: usize,
+    /// 有至少一台非 daemon 设备（web / cli / sdk）在线的账号。
+    online_accounts_with_client: usize,
+    online_daemons: usize,
+    online_clients: usize,
+    /// 最近 60 秒内转发过或收到过 `data` 信封的永久连接。
+    active_connections_1m: usize,
+    /// 进行中的配对撮合加接入会话（只在内存里，重启就没了）。
+    pairing_in_progress: usize,
+    online_previews: usize,
     devices: u64,
     accounts: u64,
     queue_enabled: bool,
@@ -549,13 +567,22 @@ pub struct AdminStatus {
 pub async fn admin_status(State(state): State<Arc<AppState>>, auth: Authed) -> ApiResult<Json<AdminStatus>> {
     auth.require_admin()?;
     let stats = state.store.stats().await?;
+    let now = now_ms();
+    let online = state.registry.online_stats(now, ACTIVE_WINDOW_MS);
     Ok(Json(AdminStatus {
         mode: state.config.mode.as_str(),
         version: VERSION,
         started_at_ms: state.started_at_ms,
-        uptime_ms: now_ms().saturating_sub(state.started_at_ms),
-        online_connections: state.registry.len(),
-        online_devices: state.registry.permanent_count(),
+        uptime_ms: now.saturating_sub(state.started_at_ms),
+        online_connections: online.connections,
+        online_devices: online.devices,
+        online_accounts: online.accounts,
+        online_accounts_with_client: online.accounts_with_client,
+        online_daemons: online.daemons,
+        online_clients: online.clients,
+        active_connections_1m: online.active,
+        pairing_in_progress: state.broker.matches_in_progress() + state.enrolls.in_progress(),
+        online_previews: online.previews,
         devices: stats.devices,
         accounts: stats.accounts,
         queue_enabled: false,

@@ -3664,6 +3664,17 @@
           "minimum": 0,
           "type": "integer"
         },
+        "update_available": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NodeUpdateAvailable"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "更新检查（ADR-57）知道有比这个 daemon 更新的正式版本时给出；没有更新的版本、检查关着、还没检查成功过，\n以及旧 daemon，都不给。"
+        },
         "version": {
           "type": "string"
         },
@@ -3997,6 +4008,31 @@
         "agent_processes",
         "db_bytes",
         "disk_free_bytes"
+      ],
+      "type": "object"
+    },
+    "NodeUpdateAvailable": {
+      "description": "有更新的版本（`node.info.update_available`）。daemon 只在 `latest` 是严格的 `X.Y.Z` 且比自己的版本新时给出；\n`url` 由 daemon 用版本号拼出来，不取 anycon.ai 回应里的链接。",
+      "properties": {
+        "checked_at_ms": {
+          "description": "得到这个结果的那次检查的时间。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "latest": {
+          "description": "最新的正式版本，`X.Y.Z`，不带 `v`。",
+          "type": "string"
+        },
+        "url": {
+          "description": "这个版本的发布页：总是 `https://github.com/anycon-ai/anycon/releases/tag/v<latest>`。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "latest",
+        "url",
+        "checked_at_ms"
       ],
       "type": "object"
     },

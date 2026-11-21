@@ -296,6 +296,12 @@ impl Broker {
         }
     }
 
+    /// 进行中的撮合数（双方已经对上、还没走到 `pair_done` 或失败的）。只是个数，给 `/api/admin/status` 用。
+    /// 还在等人输入短码的登记不算。
+    pub fn matches_in_progress(&self) -> usize {
+        self.lock().matches.len()
+    }
+
     /// 清理过期登记、超时撮合（后台每秒调一次）。
     pub fn sweep(&self) {
         let now = Instant::now();

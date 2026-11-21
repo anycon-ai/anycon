@@ -449,6 +449,11 @@ async fn run_is_refused_inside_an_agent_session_but_history_is_not() {
         "{}",
         r.stderr
     );
+    assert!(
+        r.stderr.contains("handing a to-do to an agent") && !r.stderr.contains("closing, reopening"),
+        "{}",
+        r.stderr
+    );
     let after = n.todos(false).await;
     assert_eq!((after[0]["state"].as_str(), after[0]["sessions"].as_array().map(Vec::len)), (Some("open"), Some(0)));
     // history 只读，照常

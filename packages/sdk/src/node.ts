@@ -548,12 +548,14 @@ export class Node extends Emitter<NodeEvents> {
      * `session.create`。成功得到更新后的项（`state: 'working'`、`sessions` 多一个）和会话。第一条消息由 daemon 生成，调用方不能另给。
      * `no_push` 缺省 `true`（「不 push、不开 PR」）：所选 agent 没有声明这个选项而它为 `true` → `RpcError`（`unsupported`，
      * `data.reason = 'no_push'`），要派给这样的 agent 必须明确传 `false`。别的错误：项已关闭 → `invalid`（`data.reason = 'closed'`）；
-     * 没有项目 → `invalid`（`data.field = 'project'`）；已派发 20 次 → `invalid`（`data.reason = 'too_many_sessions'`）；
+     * 没有项目 → `invalid`（`data.field = 'project'`）；`message_id` 缺省时 SDK 生成一个：超时后重试传同一个，daemon 返回第一次的结果、不开第二个会话；已派发 20 次 → `invalid`（`data.reason = 'too_many_sessions'`）；
      * 项目不存在 / 项不存在 → `not_found`；自报了 `mcp` 的本机连接 → `forbidden`；会话建不起来时这一项原样不变。
      * `workspace` 缺省时能开 worktree 的项目用新的 worktree，否则在项目目录里（没有隔离）。
      */
-    dispatch: (params: TodoDispatchParams): Promise<TodoDispatchResult> =>
-      this.call('todo.dispatch', params),
+    dispatch: (
+      params: Omit<TodoDispatchParams, 'message_id'> & { message_id?: string },
+    ): Promise<TodoDispatchResult> =>
+      this.call('todo.dispatch', { ...params, message_id: params.message_id ?? randomId() }),
     /** `todo.history`：这一项的「经过」，按 `seq` 从新到旧；`has_more` 时用最后一条的 `seq` 作为 `before_seq` 取下一页（`limit` 缺省 50、上限 200）。 */
     history: (params: TodoHistoryParams): Promise<TodoHistoryResult> =>
       this.call('todo.history', params),

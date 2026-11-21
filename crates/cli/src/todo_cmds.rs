@@ -29,14 +29,19 @@ fn inside_agent() -> bool {
 /// 在 agent 里拒绝会改动清单的子命令。
 fn refuse_inside_agent(what: &str) -> Result<()> {
     if inside_agent() {
-        return Err(CliError::denied(
-            "forbidden",
+        let message = if what == "run" {
+            format!(
+                "`anycon todo run` is not available inside an anycon agent session ({AGENT_MARKER_ENV} is set): handing \
+                 a to-do to an agent is left to you. Run it from your own terminal."
+            )
+        } else {
             format!(
                 "`anycon todo {what}` is not available inside an anycon agent session ({AGENT_MARKER_ENV} is set): \
                  an agent can add to the to-do list and read it, but closing, reopening and removing items is left to \
                  you. Run it from your own terminal."
-            ),
-        ));
+            )
+        };
+        return Err(CliError::denied("forbidden", message));
     }
     Ok(())
 }
@@ -343,6 +348,8 @@ async fn run(app: &App, a: TodoRunArgs) -> Result<u8> {
         workspace: a.local.then_some(SessionWorkspace::Local),
         settings: SessionSettings { model: a.model, mode: a.mode, ..Default::default() },
         no_push: a.allow_push.then_some(false),
+        // 一次命令一个：回执丢了、重发时 daemon 返回第一次的结果，不开第二个会话
+        message_id: Some(uuid::Uuid::new_v4().to_string()),
     };
     let r: TodoDispatchResult =
         conn.call(methods::TODO_DISPATCH, params).await.map_err(|e| friendly_dispatch(e, &agent))?;

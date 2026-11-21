@@ -133,7 +133,14 @@ for (const impl of cryptoImpls) {
           (err: unknown) =>
             err instanceof RpcError && err.code === 'unsupported' && err.reason === 'no_push',
         )
-        assert.deepEqual(paramsOf(env, 'todo.dispatch'), [{ id: t.id, agent: 'mock' }])
+        const first = paramsOf(env, 'todo.dispatch')[0]
+        assert.ok(first !== undefined)
+        // SDK 给每次调用生成一个 message_id（幂等）；别的字段原样
+        assert.match(String(first.message_id), UUID_V4)
+        assert.deepEqual(
+          { ...first, message_id: undefined },
+          { id: t.id, agent: 'mock', message_id: undefined },
+        )
 
         const r = await node.todos.dispatch({
           id: t.id,
@@ -141,12 +148,19 @@ for (const impl of cryptoImpls) {
           no_push: false,
           workspace: { mode: 'local' },
         })
-        assert.deepEqual(paramsOf(env, 'todo.dispatch')[1], {
-          id: t.id,
-          agent: 'mock',
-          no_push: false,
-          workspace: { mode: 'local' },
-        })
+        const second = paramsOf(env, 'todo.dispatch')[1]
+        assert.ok(second !== undefined)
+        assert.notEqual(second.message_id, first.message_id)
+        assert.deepEqual(
+          { ...second, message_id: undefined },
+          {
+            id: t.id,
+            agent: 'mock',
+            no_push: false,
+            workspace: { mode: 'local' },
+            message_id: undefined,
+          },
+        )
         assert.equal(r.todo.state, 'working')
         assert.deepEqual(r.todo.sessions, [r.session.id])
         assert.equal(r.session.todo_id, t.id)
@@ -179,6 +193,11 @@ for (const impl of cryptoImpls) {
           node.todos.history({ id: '11111111-2222-4333-8444-555555555555' }),
           (err: unknown) => err instanceof RpcError && err.code === 'not_found',
         )
+        // 自己给的 message_id 原样发出（重试用同一个）
+        const mid = '22222222-3333-4444-8555-666666666666'
+        const other = await node.todos.add({ title: 'retry me', project: 'app' })
+        await node.todos.dispatch({ id: other.id, agent: 'mock', no_push: false, message_id: mid })
+        assert.equal(paramsOf(env, 'todo.dispatch').at(-1)?.message_id, mid)
         const bare = await node.todos.add({ title: 'no project' })
         await assert.rejects(
           node.todos.dispatch({ id: bare.id, agent: 'mock', no_push: false }),

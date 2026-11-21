@@ -119,6 +119,75 @@ for (const impl of cryptoImpls) {
       })
     })
 
+    it('dispatch / history：参数原样发出，返回值带类型，错误映射成 RpcError，todo_event 带「经过」的新条目', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const t = await node.todos.add({ title: 'ship it', project: 'app' })
+        const seen: Array<{ todo_id: string; seq: number; kind: string }> = []
+        node.on('todo_event', (e) =>
+          seen.push({ todo_id: e.todo_id, seq: e.event.seq, kind: e.event.kind }),
+        )
+
+        // 不传 no_push：发出去的参数里就没有它（缺省值由 daemon 定），agent 没有这个选项 → unsupported / no_push
+        await assert.rejects(
+          node.todos.dispatch({ id: t.id, agent: 'mock' }),
+          (err: unknown) =>
+            err instanceof RpcError && err.code === 'unsupported' && err.reason === 'no_push',
+        )
+        assert.deepEqual(paramsOf(env, 'todo.dispatch'), [{ id: t.id, agent: 'mock' }])
+
+        const r = await node.todos.dispatch({
+          id: t.id,
+          agent: 'mock',
+          no_push: false,
+          workspace: { mode: 'local' },
+        })
+        assert.deepEqual(paramsOf(env, 'todo.dispatch')[1], {
+          id: t.id,
+          agent: 'mock',
+          no_push: false,
+          workspace: { mode: 'local' },
+        })
+        assert.equal(r.todo.state, 'working')
+        assert.deepEqual(r.todo.sessions, [r.session.id])
+        assert.equal(r.session.todo_id, t.id)
+
+        await until(() => seen.length === 1, 3000, 'one todo_event')
+        assert.deepEqual(seen, [{ todo_id: t.id, seq: 1, kind: 'dispatched' }])
+
+        const h = await node.todos.history({ id: t.id })
+        assert.equal(h.has_more, false)
+        assert.equal(h.events.length, 1)
+        const e = h.events[0]
+        assert.ok(e !== undefined && e.kind === 'dispatched')
+        if (e.kind === 'dispatched') {
+          assert.equal(e.session_id, r.session.id)
+          assert.equal(e.no_push, false)
+        }
+        assert.deepEqual(paramsOf(env, 'todo.history'), [{ id: t.id }])
+        const none = await node.todos.history({ id: t.id, before_seq: 1, limit: 5 })
+        assert.deepEqual(none, { events: [], has_more: false })
+        assert.deepEqual(paramsOf(env, 'todo.history')[1], { id: t.id, before_seq: 1, limit: 5 })
+
+        // 已关闭 → invalid / closed；不存在 → not_found；没有项目 → invalid / project
+        await node.todos.update({ id: t.id, state: 'done' })
+        await assert.rejects(
+          node.todos.dispatch({ id: t.id, agent: 'mock', no_push: false }),
+          (err: unknown) =>
+            err instanceof RpcError && err.code === 'invalid' && err.reason === 'closed',
+        )
+        await assert.rejects(
+          node.todos.history({ id: '11111111-2222-4333-8444-555555555555' }),
+          (err: unknown) => err instanceof RpcError && err.code === 'not_found',
+        )
+        const bare = await node.todos.add({ title: 'no project' })
+        await assert.rejects(
+          node.todos.dispatch({ id: bare.id, agent: 'mock', no_push: false }),
+          (err: unknown) =>
+            err instanceof RpcError && err.code === 'invalid' && err.field === 'project',
+        )
+      })
+    })
+
     it('todo_changed：每次新建 / 修改 / 删除都带事件，包括发起的这一个', async () => {
       await withNode(await impl.load(), async (node) => {
         const seen: Array<{ id: string; deleted: boolean; title?: string }> = []

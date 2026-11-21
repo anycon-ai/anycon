@@ -26,6 +26,11 @@ import {
   type Todo,
   type TodoAddParams,
   type TodoChanged,
+  type TodoDispatchParams,
+  type TodoDispatchResult,
+  type TodoEventNotice,
+  type TodoHistoryParams,
+  type TodoHistoryResult,
   type TodoListParams,
   type TodoListResult,
   type TodoUpdateParams,
@@ -88,6 +93,8 @@ export interface NodeEvents {
   workspace_changed: [WorkspaceChanged]
   /** 清单有项被新建、修改或删除（`todo.changed`，发给所有在线客户端，包括发起的那一个）。 */
   todo_changed: [TodoChanged]
+  /** 清单项的「经过」多了一条（`todo.event`，docs/spec/daemon.md § 22；发给所有在线客户端）。`text` 是 agent 写的，按不可信内容渲染。 */
+  todo_event: [TodoEventNotice]
 }
 
 export interface NodeOptions {
@@ -202,6 +209,9 @@ export class Node extends Emitter<NodeEvents> {
     })
     rpc.onNotification<TodoChanged>(METHODS.TODO_CHANGED, (c) => {
       this.emit('todo_changed', c)
+    })
+    rpc.onNotification<TodoEventNotice>(METHODS.TODO_EVENT, (e) => {
+      this.emit('todo_event', e)
     })
     rpc.onNotification<JobProgress>(METHODS.JOB_PROGRESS, (p) => {
       const rec = this.#job(p.job_id)
@@ -533,6 +543,20 @@ export class Node extends Emitter<NodeEvents> {
     delete: async (id: string): Promise<void> => {
       await this.call('todo.delete', { id })
     },
+    /**
+     * `todo.dispatch`（docs/spec/daemon.md § 22）：从一项开一个会话，关联、回写状态、记「经过」，全部由 daemon 做，不要自己拼
+     * `session.create`。成功得到更新后的项（`state: 'working'`、`sessions` 多一个）和会话。第一条消息由 daemon 生成，调用方不能另给。
+     * `no_push` 缺省 `true`（「不 push、不开 PR」）：所选 agent 没有声明这个选项而它为 `true` → `RpcError`（`unsupported`，
+     * `data.reason = 'no_push'`），要派给这样的 agent 必须明确传 `false`。别的错误：项已关闭 → `invalid`（`data.reason = 'closed'`）；
+     * 没有项目 → `invalid`（`data.field = 'project'`）；已派发 20 次 → `invalid`（`data.reason = 'too_many_sessions'`）；
+     * 项目不存在 / 项不存在 → `not_found`；自报了 `mcp` 的本机连接 → `forbidden`；会话建不起来时这一项原样不变。
+     * `workspace` 缺省时能开 worktree 的项目用新的 worktree，否则在项目目录里（没有隔离）。
+     */
+    dispatch: (params: TodoDispatchParams): Promise<TodoDispatchResult> =>
+      this.call('todo.dispatch', params),
+    /** `todo.history`：这一项的「经过」，按 `seq` 从新到旧；`has_more` 时用最后一条的 `seq` 作为 `before_seq` 取下一页（`limit` 缺省 50、上限 200）。 */
+    history: (params: TodoHistoryParams): Promise<TodoHistoryResult> =>
+      this.call('todo.history', params),
   }
 
   readonly permissions = {

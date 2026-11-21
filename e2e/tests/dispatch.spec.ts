@@ -9,7 +9,7 @@
  *      几十毫秒，所以这里等的是结果条数和最后的 `review`，不去抓中间那个瞬间）
  *   d. 「通过」：状态变成 done（CLI 对照 daemon），验收页写明已关闭，并出现「提交、推送并开 PR」（不点：真的推送要有远端）
  *
- * 共用一个 daemon：项目和标题都带运行标记，结束时删掉自己建的项。显式等待（data-testid / expect.poll），没有固定睡眠。
+ * 共用一个 daemon：项目和标题都带运行标记，结束时删掉自己建的项，和它派出的会话（连 worktree 和分支，`anycon delete --remove-worktree --delete-branch`）。显式等待（data-testid / expect.poll），没有固定睡眠。
  * 派发的标题里带 `write`：mock agent 看到这个关键词会在 cwd 里写 `anycon-mock.txt`（crates/adapters/src/mock/README.md）。
  */
 import { randomBytes } from 'node:crypto'
@@ -35,6 +35,11 @@ const TITLE = `e2e-${RUN} dispatch write the file`
 const state = () => readState()
 /** 工作树和第一次检查之间的冷缓存：项目的 git 信息可能要几秒才到。 */
 const READY_TIMEOUT = 45_000
+/** 左栏「待处理」旁边的数字（没有就是 0）：只算「现在」段。 */
+async function navInboxCount(page: Page): Promise<number> {
+  const el = page.getByTestId('sidebar-inbox-count')
+  return (await el.count()) === 0 ? 0 : Number((await el.textContent()) ?? '0')
+}
 
 async function daemonTodo(): Promise<DaemonTodo | undefined> {
   const out = await runCli(state(), ['todo', 'ls', '--all', '--json'])
@@ -54,6 +59,7 @@ test.describe.serial('让 agent 处理', () => {
   let device: PairedBrowser
   let page: Page
   let todoId = ''
+  let navBefore = 0
 
   test.beforeAll(async ({ browser }) => {
     test.skip(!readState().daemonStarted, 'needs the e2e daemon (E2E_SKIP_DAEMON=1 was set)')
@@ -76,7 +82,19 @@ test.describe.serial('让 agent 处理', () => {
   test.afterAll(async () => {
     if (readState().daemonStarted) {
       const t = await daemonTodo()
-      if (t) await runCli(state(), ['todo', 'rm', t.id.slice(0, 8)])
+      if (t) {
+        // 先删派出的会话、它的 worktree 和分支，再删这一项（删了项就找不到会话了）；清不掉不挡住别的清理
+        for (const sid of t.sessions ?? []) {
+          await runCli(state(), [
+            'delete',
+            sid.slice(0, 12),
+            '--remove-worktree',
+            '--delete-branch',
+            '--yes',
+          ]).catch(() => undefined)
+        }
+        await runCli(state(), ['todo', 'rm', t.id.slice(0, 8)])
+      }
     }
     await device?.context.close()
   })
@@ -85,6 +103,7 @@ test.describe.serial('让 agent 处理', () => {
     await page.goto('/todos')
     const row = page.locator('[data-testid="todo-row"]').filter({ hasText: TITLE })
     await expect(row).toBeVisible({ timeout: CONNECT_TIMEOUT })
+    navBefore = await navInboxCount(page)
     await row.getByTestId('todo-main').click()
     await expect(page.getByTestId('todo-detail')).toBeVisible()
     await page.getByTestId('todo-dispatch').click()
@@ -136,6 +155,8 @@ test.describe.serial('让 agent 处理', () => {
     const section = page.getByTestId('inbox-section-review')
     await expect(section).toBeVisible({ timeout: CONNECT_TIMEOUT })
     await expect(page.getByTestId('inbox-count-review')).toHaveText('1')
+    // 待验收的个数只在段标题上：导航上的数字（只算「现在」段）没有因为它变多
+    expect(await navInboxCount(page)).toBe(navBefore)
     await expect(section.getByTestId('inbox-review-brief')).toContainText('Mock reply', {
       timeout: 15_000,
     })

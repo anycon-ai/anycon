@@ -806,11 +806,16 @@ async fn stall_in_the_confirming_phase(td: &TestDaemon, hub: &TestHub) -> (FakeW
     let mut web = FakeWeb::connect(&hub.url(), None, Some(&cookie), "Staller", Keypair::generate()).await;
     let (host_temp, _pub, _transport) = web.pair_handshake(&begin.code).await;
     // daemon 处理完第 3 条握手消息后先登记（临时 id）再确认
-    assert!(
-        eventually(T, || async { !td.ctx.store.list_peers().await.unwrap().is_empty() }).await,
-        "the daemon registers the joiner before confirming"
-    );
-    let staged = td.ctx.store.list_peers().await.unwrap();
+    // 看到登记的那一次读取就是要用的快照：再读一遍的话，短超时的看门狗（400 ms）在机器忙时可能已经把它删了
+    let deadline = std::time::Instant::now() + T;
+    let staged = loop {
+        let staged = td.ctx.store.list_peers().await.unwrap();
+        if !staged.is_empty() {
+            break staged;
+        }
+        assert!(std::time::Instant::now() < deadline, "the daemon registers the joiner before confirming");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
     assert_eq!(staged.len(), 1);
     assert_ne!(staged[0].device_id, host_temp, "keyed by the joiner's temporary id, not the daemon's");
     (web, staged[0].device_id.clone())

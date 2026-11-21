@@ -650,7 +650,7 @@ export type SyncOutcome = "up_to_date" | "merged" | "conflicts" | "aborted";
 /**
  * 一项是谁记的。
  */
-export type TodoSourceKind = "device" | "local" | "agent";
+export type TodoSourceKind = "device" | "local" | "agent" | "unknown";
 /**
  * 清单项的状态。这一步 daemon 不限制状态之间怎么转。
  */
@@ -807,6 +807,7 @@ export interface ProtocolSchema {
   todo_add_params: TodoAddParams;
   todo_changed: TodoChanged;
   todo_cursor: TodoCursor;
+  todo_delete_params: TodoDeleteParams;
   todo_id_params: TodoIdParams;
   todo_list_params: TodoListParams;
   todo_list_result: TodoListResult;
@@ -2208,6 +2209,10 @@ export interface RpcErrorData {
   field?: string | null;
   reason?: string | null;
   retry_after_ms?: number | null;
+  /**
+   * 带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = "changed"`）时，那一项现在的 `updated_ms`。
+   */
+  updated_ms?: number | null;
 }
 export interface RpcRequest {
   id: RpcId;
@@ -2716,6 +2721,14 @@ export interface TodoChanged {
 export interface TodoCursor {
   id: string;
   updated_ms: number;
+}
+/**
+ * `todo.delete`：`if_updated_ms` 给了、而这一项现在的 `updated_ms` 不是它，就拒绝（`invalid`，`data.reason = "changed"`，
+ * `data.updated_ms` 是现在的值），什么都不删。
+ */
+export interface TodoDeleteParams {
+  id: string;
+  if_updated_ms?: number | null;
 }
 export interface TodoIdParams {
   id: string;

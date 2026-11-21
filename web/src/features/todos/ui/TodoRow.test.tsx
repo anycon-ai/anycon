@@ -59,3 +59,21 @@ describe('TodoRow touch behaviour', () => {
     expect(screen.getByTestId('todo-draft')).toHaveTextContent('Unsaved edit')
   })
 })
+
+describe('the source chip', () => {
+  const withSource = (kind: string): ViewTodo => ({ ...item(), source: { kind } as never })
+
+  it('an agent item has the agent chip; a source this version does not know is shown as added automatically; a person’s item has neither', () => {
+    vi.useRealTimers()
+    const h = handlers()
+    const { rerender } = render(<TodoRow item={withSource('agent')} selected={false} multi={false} checked={false} {...h} />)
+    expect(screen.getByTestId('todo-agent')).toBeInTheDocument()
+    expect(screen.queryByTestId('todo-auto')).toBeNull()
+    rerender(<TodoRow item={withSource('twin')} selected={false} multi={false} checked={false} {...h} />)
+    expect(screen.queryByTestId('todo-agent')).toBeNull()
+    expect(screen.getByTestId('todo-auto')).toHaveTextContent('Added automatically')
+    rerender(<TodoRow item={withSource('device')} selected={false} multi={false} checked={false} {...h} />)
+    expect(screen.queryByTestId('todo-agent')).toBeNull()
+    expect(screen.queryByTestId('todo-auto')).toBeNull()
+  })
+})

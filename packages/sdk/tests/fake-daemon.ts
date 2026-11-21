@@ -740,7 +740,20 @@ export class FakeDaemon {
       this.#notifyAll('todo.changed', { id: p.id, todo, deleted: false })
       return todo
     })
-    on<{ id: string }, unknown>('todo.delete', (p) => {
+    on<{ id: string }, unknown>('todo.get', (p) => {
+      const todo = todos.get(p.id)
+      if (!todo) throw AnyconRpcError.of('not_found', 'no such todo')
+      return todo
+    })
+    on<{ id: string; if_updated_ms?: number }, unknown>('todo.delete', (p) => {
+      const cur = todos.get(p.id)
+      if (cur && p.if_updated_ms !== undefined && cur.updated_ms !== p.if_updated_ms) {
+        throw AnyconRpcError.of('invalid', 'the todo changed since it was read', {
+          field: 'if_updated_ms',
+          reason: 'changed',
+          updated_ms: cur.updated_ms as number,
+        })
+      }
       if (!todos.delete(p.id)) throw AnyconRpcError.of('not_found', 'no such todo')
       this.#notifyAll('todo.changed', { id: p.id, deleted: true })
       return {}

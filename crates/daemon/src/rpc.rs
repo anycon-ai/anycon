@@ -16,8 +16,8 @@ use anycon_protocol::{
     SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionMarkReadParams,
     SessionPromoteParams, SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams,
     SessionSetMarksParams, SessionSetSettingsParams, SessionSyncBaseParams, SessionWorkspaceMode, TodoAddParams,
-    TodoIdParams, TodoListParams, TodoUpdateParams, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams,
-    WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams,
+    TodoDeleteParams, TodoIdParams, TodoListParams, TodoUpdateParams, TrashEntry, WorkspaceBranchesParams,
+    WorkspaceBrowseParams, WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams,
     WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult,
     WorkspaceWorktreesParams, PROTOCOL_VERSION,
 };
@@ -486,6 +486,10 @@ impl Rpc {
                 let p: TodoListParams = params(p)?;
                 ok(crate::todos::list(c, p).await?)
             }
+            methods::TODO_GET => {
+                let p: TodoIdParams = params(p)?;
+                ok(crate::todos::get(c, p).await?)
+            }
             methods::TODO_ADD => {
                 let p: TodoAddParams = params(p)?;
                 ok(crate::todos::add(c, caller, p).await?)
@@ -495,8 +499,8 @@ impl Rpc {
                 ok(crate::todos::update(c, caller, p).await?)
             }
             methods::TODO_DELETE => {
-                let p: TodoIdParams = params(p)?;
-                crate::todos::delete(c, caller, &p.id).await?;
+                let p: TodoDeleteParams = params(p)?;
+                crate::todos::delete(c, caller, p).await?;
                 ok(Empty {})
             }
 

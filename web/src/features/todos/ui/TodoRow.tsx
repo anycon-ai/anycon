@@ -1,11 +1,12 @@
 import { useRef, useState, type PointerEvent } from 'react'
-import { Bot, Check, ChevronRight, CircleDashed, MoreHorizontal, RotateCcw, Trash2, X } from 'lucide-react'
+import { ArrowRightLeft, Bot, Check, ChevronRight, CircleDashed, MoreHorizontal, RotateCcw, Trash2, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatDateTime } from '@/lib/format'
 import { Chip } from '@/ui/Misc'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/ui/Menu'
 import { cn } from '@/ui/cn'
 import { LONG_PRESS_MS, LONG_PRESS_SLOP, swipeOffset, swipeVerdict } from '../swipe'
+import { isAgentSource, isOtherSource } from '../source'
 import { isClosed, type ViewTodo } from '../types'
 import { cleanOneLine } from '../validate'
 
@@ -24,13 +25,15 @@ export interface TodoRowProps {
   onReopen: () => void
   onDrop: () => void
   onDelete: () => void
+  /** 有别的支持清单的节点时才给：菜单里的「移到另一个节点…」。 */
+  onMove?: () => void
 }
 
 /**
  * 清单页的一行。点一下打开详情；手机上向左滑 = 完成（5 秒撤销），长按（和右边的「⋯」按钮）= 同样的动作菜单：每个滑动动作都有按钮。
  * 多选（`X`）时行首是勾选框。标题是用户 / agent 的文字，一律按文本显示（去掉控制字符和双向控制符）。
  */
-export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, onOpen, onToggleCheck, onDone, onReopen, onDrop, onDelete }: TodoRowProps) {
+export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, onOpen, onToggleCheck, onDone, onReopen, onDrop, onDelete, onMove }: TodoRowProps) {
   const { t, i18n } = useTranslation()
   const [dx, setDx] = useState(0)
   const [menu, setMenu] = useState(false)
@@ -38,7 +41,8 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
   const longPressed = useRef(false)
   const start = useRef<{ x: number; y: number; timer: ReturnType<typeof setTimeout> | null; id: number } | null>(null)
   const closed = isClosed(item.state)
-  const agent = item.source.kind === 'agent'
+  const agent = isAgentSource(item.source)
+  const other = isOtherSource(item.source)
 
   const clearTimer = (): void => {
     if (start.current?.timer) clearTimeout(start.current.timer)
@@ -113,6 +117,11 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
               {t('todos.byAgent')}
             </Chip>
           ) : null}
+          {other ? (
+            <Chip tone="info" icon={<Bot className="size-3" aria-hidden />} testId="todo-auto">
+              {t('todos.byOther')}
+            </Chip>
+          ) : null}
           {hasDraft ? (
             <Chip tone="warning" testId="todo-draft">
               {t('todos.unsavedEdit')}
@@ -152,6 +161,11 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
                 </MenuItem>
               </>
             )}
+            {onMove ? (
+              <MenuItem icon={<ArrowRightLeft className="size-4" />} onSelect={onMove} testId="todo-act-move">
+                {t('spaces.move.title')}
+              </MenuItem>
+            ) : null}
             <MenuSeparator />
             <MenuItem icon={<Trash2 className="size-4" />} danger onSelect={onDelete} testId="todo-act-delete">
               {t('todos.delete')}

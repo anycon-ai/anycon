@@ -8,6 +8,7 @@ import { cleanHintText, displayHint } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
 import { useDeviceLabel, useRespondPermission } from '@/features/session/hooks'
 import { PermissionCard } from '@/features/session/ui/PermissionCard'
+import { isAgentSource } from '@/features/todos/source'
 import { useNodes } from '@/stores/nodes'
 import { useSessions, type SessionItem } from '@/stores/sessions'
 import type { EnrollItem } from '@/stores/enroll'
@@ -112,7 +113,7 @@ export function InboxRow({
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="min-w-0 flex-1 truncate font-medium [overflow-wrap:anywhere]">{info.title}</span>
-            <Chip tone={KIND_TONE[item.kind]}>{t(`inbox.kind.${item.kind}`)}</Chip>
+            <Chip tone={KIND_TONE[item.kind]}>{t(item.kind === 'later' && !isAgentSource(item.todo.source) ? 'inbox.kind.laterOther' : `inbox.kind.${item.kind}`)}</Chip>
             {info.online && item.kind !== 'waiting' ? null : <CachedChip nodeName={info.nodeName} />}
           </span>
           {meta ? <span className="mt-0.5 block truncate text-xs text-fg-subtle">{meta}</span> : null}
@@ -270,7 +271,7 @@ function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem>;
       {item.kind === 'enroll' ? <EnrollSummary item={item.enroll} nodeName={info.nodeName} /> : null}
       {item.kind === 'later' ? (
         <div className="space-y-2 text-sm">
-          <p className="text-fg-muted">{t('inbox.laterBody')}</p>
+          <p className="text-fg-muted">{t(isAgentSource(item.todo.source) ? 'inbox.laterBody' : 'inbox.laterBodyOther')}</p>
           {item.todo.body ? (
             <div className="rounded-md border border-border p-3" data-testid="inbox-later-body">
               <Markdown text={item.todo.body} />

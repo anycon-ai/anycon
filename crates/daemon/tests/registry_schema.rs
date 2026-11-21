@@ -342,8 +342,9 @@ async fn walk_todo(w: &mut Walk<'_>) {
     assert_eq!(t["id"], id);
     w.call(methods::TODO_LIST, json!({})).await;
     w.call(methods::TODO_LIST, json!({ "include_closed": true, "limit": 1 })).await;
-    w.call(methods::TODO_UPDATE, json!({ "id": id, "state": "done", "clear": ["project", "due_ms"] })).await;
-    w.call(methods::TODO_DELETE, json!({ "id": id })).await;
+    w.call(methods::TODO_GET, json!({ "id": id })).await;
+    let done = w.call(methods::TODO_UPDATE, json!({ "id": id, "state": "done", "clear": ["project", "due_ms"] })).await;
+    w.call(methods::TODO_DELETE, json!({ "id": id, "if_updated_ms": done["updated_ms"] })).await;
 }
 
 async fn walk_preview(w: &mut Walk<'_>, td: &TestDaemon, psid: &str) {

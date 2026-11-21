@@ -109,9 +109,12 @@ pub const SESSION_SYNC_BASE: &str = "session.sync_base";
 
 // todo（清单，docs/spec/daemon.md § 21）
 pub const TODO_LIST: &str = "todo.list";
+/// 读一项：不存在 → `not_found`。只读，不审计、不通知。
+pub const TODO_GET: &str = "todo.get";
 /// 按 `id` 幂等：已存在时原样返回已有的那一项。
 pub const TODO_ADD: &str = "todo.add";
 pub const TODO_UPDATE: &str = "todo.update";
+/// 物理删除；带 `if_updated_ms` 时只在这一项现在的 `updated_ms` 正是它时才删（否则 `invalid` / `changed`）。
 pub const TODO_DELETE: &str = "todo.delete";
 /// D→C notification，params = TodoChanged
 pub const TODO_CHANGED: &str = "todo.changed";
@@ -242,9 +245,10 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(SESSION_DIFF, Some("SessionDiffParams"), Some("SessionDiffResult")),
     req(SESSION_SYNC_BASE, Some("SessionSyncBaseParams"), Some("SessionSyncBaseResult")),
     req(TODO_LIST, Some("TodoListParams"), Some("TodoListResult")),
+    req(TODO_GET, Some("TodoIdParams"), Some("Todo")),
     req(TODO_ADD, Some("TodoAddParams"), Some("Todo")),
     req(TODO_UPDATE, Some("TodoUpdateParams"), Some("Todo")),
-    req(TODO_DELETE, Some("TodoIdParams"), None),
+    req(TODO_DELETE, Some("TodoDeleteParams"), None),
     notif(TODO_CHANGED, "TodoChanged"),
     req(BLOB_PUT_BEGIN, Some("BlobPutBeginParams"), Some("BlobPutBeginResult")),
     req(BLOB_PUT_CHUNK, Some("BlobPutChunkParams"), None),

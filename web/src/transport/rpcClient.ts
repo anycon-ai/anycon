@@ -35,6 +35,10 @@ export class RpcCallError extends Error {
   get reason(): string | undefined {
     return this.rpc?.data?.reason ?? undefined
   }
+  /** 带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上）时，那一项现在的 `updated_ms`。 */
+  get updatedMs(): number | undefined {
+    return this.rpc?.data?.updated_ms ?? undefined
+  }
 }
 
 /**

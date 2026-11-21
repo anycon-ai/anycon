@@ -140,6 +140,21 @@ pub fn validate_settings_values(settings: &SessionSettings) -> Result<()> {
     Ok(())
 }
 
+/// 「不 push、不开 PR」打开时写进 `--settings` 的 `permissions.deny`（docs/spec/daemon.md § 22.5）。Claude Code 的规则语法：
+/// `Bash(<命令>)` 精确匹配，`Bash(<命令> *)` 匹配带任意参数的同一条命令；复合命令（`a && b`、管道）按子命令逐个匹配。
+/// 每条命令各写「不带参数」和「带参数」两种，不依赖 `*` 是否匹配空参数；`git -C <目录> push` 是 agent 常见的写法，也列上。
+/// 这是按命令模式匹配的规则，不是边界：绕不开的写法（脚本里再调 `git`、`git -c k=v push`、`gh api` 直接调 REST）它挡不住。
+pub const NO_PUSH_DENY_RULES: &[&str] = &[
+    "Bash(git push)",
+    "Bash(git push *)",
+    "Bash(git -C * push)",
+    "Bash(git -C * push *)",
+    "Bash(gh pr create)",
+    "Bash(gh pr create *)",
+    "Bash(gh pr merge)",
+    "Bash(gh pr merge *)",
+];
+
 /// 一个 `claude` 进程启动时用的设置（也是 `ResumeHandle.launch_args` 的内容）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaunchOptions {
@@ -153,6 +168,8 @@ pub struct LaunchOptions {
     pub fast_mode: bool,
     /// `permissions.blockWritesOutsideWorkingDirectories`：Write / Edit / NotebookEdit 在任何权限模式下都不写工作目录以外的路径。
     pub block_outside_writes: bool,
+    /// 「不 push、不开 PR」（docs/spec/daemon.md § 22.5）：`permissions.deny` 里拒绝 [`NO_PUSH_DENY_RULES`]。
+    pub no_push: bool,
     /// `--advisor` 的值；`None` = 不开。
     pub advisor_model: Option<String>,
     /// 会话设置里的 `env` 覆盖（进程环境本身由 daemon 合并好放在 `SpawnRequest.env`）。
@@ -276,6 +293,7 @@ impl LaunchOptions {
         };
         let fast_mode = bool_option("fast_mode")?;
         let block_outside_writes = bool_option(probe::OPTION_BLOCK_OUTSIDE_WRITES)?;
+        let no_push = bool_option(probe::OPTION_NO_PUSH)?;
 
         let advisor_model = match settings.options.get(probe::OPTION_ADVISOR_MODEL) {
             None => None,
@@ -293,6 +311,7 @@ impl LaunchOptions {
             max_budget_usd: settings.max_budget_usd,
             fast_mode,
             block_outside_writes,
+            no_push,
             advisor_model,
             env: settings.env.clone(),
             resume_id,
@@ -369,8 +388,16 @@ impl LaunchOptions {
         if self.fast_mode {
             extra.insert("fastMode".into(), json!(true));
         }
+        // `permissions` 只有一个：两个开关各加自己的键
+        let mut permissions = serde_json::Map::new();
         if self.block_outside_writes {
-            extra.insert("permissions".into(), json!({ "blockWritesOutsideWorkingDirectories": true }));
+            permissions.insert("blockWritesOutsideWorkingDirectories".into(), json!(true));
+        }
+        if self.no_push {
+            permissions.insert("deny".into(), json!(NO_PUSH_DENY_RULES));
+        }
+        if !permissions.is_empty() {
+            extra.insert("permissions".into(), Value::Object(permissions));
         }
         if !extra.is_empty() {
             kv(&mut a, "--settings", &Value::Object(extra).to_string());
@@ -394,6 +421,7 @@ impl LaunchOptions {
             "max_budget_usd": self.max_budget_usd,
             "fast_mode": self.fast_mode,
             "block_outside_writes": self.block_outside_writes,
+            "no_push": self.no_push,
             "advisor_model": self.advisor_model,
             MARKER_CONVERSATION_STARTED: self.conversation_started,
         })
@@ -592,6 +620,78 @@ mod tests {
             matches!(err, AdapterError::InvalidSettings { ref field, .. } if field == "options.block_outside_writes"),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn no_push_adds_deny_rules_to_the_single_settings_json() {
+        let settings_args = |o: &LaunchOptions| -> Vec<String> {
+            o.to_args().into_iter().filter(|a| a.starts_with("--settings=")).collect()
+        };
+        let with = |pairs: &[(&str, Value)]| SessionSettings {
+            options: pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            ..Default::default()
+        };
+        let deny = json!(NO_PUSH_DENY_RULES);
+        // 只开 no_push
+        let o = resolve(with(&[("no_push", json!(true))]), None).unwrap();
+        let args = settings_args(&o);
+        assert_eq!(args.len(), 1);
+        let v: Value = serde_json::from_str(args[0].trim_start_matches("--settings=")).unwrap();
+        assert_eq!(v, json!({ "permissions": { "deny": deny } }));
+        assert_eq!(o.to_json()["no_push"], true);
+        // 和另外两个开关合在同一个 `--settings`、同一个 `permissions` 里
+        let o = resolve(
+            with(&[("fast_mode", json!(true)), ("block_outside_writes", json!(true)), ("no_push", json!(true))]),
+            None,
+        )
+        .unwrap();
+        let args = settings_args(&o);
+        assert_eq!(args.len(), 1);
+        let v: Value = serde_json::from_str(args[0].trim_start_matches("--settings=")).unwrap();
+        assert_eq!(
+            v,
+            json!({ "fastMode": true, "permissions": { "blockWritesOutsideWorkingDirectories": true, "deny": deny } })
+        );
+        // 关（显式 false / 没给）：没有 deny，也没有多余的 `--settings`
+        for opts in [with(&[("no_push", json!(false))]), SessionSettings::default()] {
+            let o = resolve(opts, None).unwrap();
+            assert!(!o.no_push && settings_args(&o).is_empty());
+            assert_eq!(o.to_json()["no_push"], false);
+        }
+        // 只开 no_push 之外的一个：deny 不出现
+        let o = resolve(with(&[("block_outside_writes", json!(true))]), None).unwrap();
+        assert!(!settings_args(&o)[0].contains("deny"));
+        // 续接（resume）时同样带上
+        let o = resolve(
+            with(&[("no_push", json!(true))]),
+            Some(ResumeHandle { agent_session_id: "abc-123".into(), launch_args: Value::Null }),
+        )
+        .unwrap();
+        assert!(
+            settings_args(&o)[0].contains("Bash(git push)") && o.to_args().contains(&"--resume=abc-123".to_string())
+        );
+        // 不是布尔
+        let err = resolve(with(&[("no_push", json!("yes"))]), None).unwrap_err();
+        assert!(
+            matches!(err, AdapterError::InvalidSettings { ref field, .. } if field == "options.no_push"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn no_push_rules_cover_push_and_pull_request_commands() {
+        for needle in ["git push", "gh pr create", "gh pr merge"] {
+            assert!(NO_PUSH_DENY_RULES.iter().any(|r| *r == format!("Bash({needle})")), "bare form of {needle}");
+            assert!(
+                NO_PUSH_DENY_RULES.iter().any(|r| *r == format!("Bash({needle} *)")),
+                "with arguments form of {needle}"
+            );
+        }
+        // 全是 Bash 规则，没有重复
+        let mut seen = std::collections::HashSet::new();
+        for r in NO_PUSH_DENY_RULES {
+            assert!(r.starts_with("Bash(") && r.ends_with(')') && seen.insert(*r), "{r}");
+        }
     }
 
     #[test]

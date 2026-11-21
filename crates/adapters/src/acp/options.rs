@@ -126,8 +126,15 @@ fn parse_choices(options: &Value) -> Vec<LiveChoice> {
     out
 }
 
+/// anycon 自己的选项 id：「不 push、不开 PR」（docs/spec/daemon.md § 22.5）只由 anycon 核实过的 adapter 声明。agent 自己给的
+/// 同名选项不能顶替它，否则 daemon 会以为派发的会话带着一道其实不存在的限制：忽略。
+const RESERVED_OPTION_NO_PUSH: &str = "no_push";
+
 fn parse_option(v: &Value) -> Option<LiveOption> {
     let id = non_empty(v.get("id"))?;
+    if id == RESERVED_OPTION_NO_PUSH {
+        return None;
+    }
     let name = non_empty(v.get("name")).unwrap_or_else(|| id.clone());
     let current = v.get("currentValue")?.clone();
     // `type` 缺省按 select；不认识的类型忽略（规格：收到不认识的 type 就当没有这个选项）
@@ -325,6 +332,17 @@ pub fn options(state: &ConfigState) -> Vec<ConfigOption> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_agent_cannot_declare_the_reserved_no_push_option() {
+        let mut state = ConfigState::default();
+        state.replace_options(&json!([
+            { "id": "no_push", "name": "No push", "type": "boolean", "currentValue": true },
+            { "id": "brave", "name": "Brave", "type": "boolean", "currentValue": false }
+        ]));
+        let ids: Vec<&str> = state.options.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, vec!["brave"]);
+    }
 
     fn sample() -> Value {
         json!({

@@ -498,6 +498,7 @@ impl AgentHandle for ClaudeHandle {
             || next.max_budget_usd != cur.max_budget_usd
             || next.fast_mode != cur.fast_mode
             || next.block_outside_writes != cur.block_outside_writes
+            || next.no_push != cur.no_push
             || next.advisor_model != cur.advisor_model
             || next.env != cur.env
         {
@@ -509,6 +510,7 @@ impl AgentHandle for ClaudeHandle {
         cur.max_budget_usd = next.max_budget_usd;
         cur.fast_mode = next.fast_mode;
         cur.block_outside_writes = next.block_outside_writes;
+        cur.no_push = next.no_push;
         cur.advisor_model = next.advisor_model.clone();
         cur.env = next.env.clone();
 

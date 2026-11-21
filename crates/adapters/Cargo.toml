@@ -28,7 +28,7 @@ jsonschema = { version = "0.61.1", default-features = false }
 tempfile = "3.27.0"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", features = ["signal", "process"] }
+nix = { version = "0.32.0", features = ["signal", "process"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

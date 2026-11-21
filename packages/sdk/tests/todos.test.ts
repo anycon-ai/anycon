@@ -120,7 +120,10 @@ for (const impl of cryptoImpls) {
         )
         assert.deepEqual((await node.todos.get(b.id)).id, b.id, 'a refused delete deletes nothing')
         assert.equal(await node.todos.delete(b.id, { ifUpdatedMs: b.updated_ms }), undefined)
-        assert.deepEqual(paramsOf(env, 'todo.delete').at(-1), { id: b.id, if_updated_ms: b.updated_ms })
+        assert.deepEqual(paramsOf(env, 'todo.delete').at(-1), {
+          id: b.id,
+          if_updated_ms: b.updated_ms,
+        })
         await node.todos.add({ id: b.id, title: 'again' })
         assert.equal(await node.todos.delete(b.id), undefined)
         assert.deepEqual(paramsOf(env, 'todo.delete').at(-1), { id: b.id })

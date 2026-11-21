@@ -8,6 +8,7 @@ import { useEnroll, type EnrollItem } from '@/stores/enroll'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useSessions, type SessionItem } from '@/stores/sessions'
+import { nodeSupportsRules, rulesOf, useRules } from '@/features/rules/store'
 import { nodeSupportsTodo, useTodos, viewOf } from '@/features/todos/store'
 import { allItems, deriveInbox, inboxNowCount, nowItems, type InboxModel } from './derive'
 
@@ -36,6 +37,7 @@ interface Inputs {
   byId: ReturnType<typeof useNodes.getState>['byId']
   todoNodes: ReturnType<typeof useTodos.getState>['nodes']
   todoOutbox: ReturnType<typeof useTodos.getState>['outbox']
+  ruleNodes: ReturnType<typeof useRules.getState>['nodes']
 }
 
 function groupsSig(s: ReturnType<typeof useNodes.getState>): string {
@@ -45,7 +47,7 @@ function groupsSig(s: ReturnType<typeof useNodes.getState>): string {
 function readInputs(): Inputs {
   const s = useSessions.getState()
   const e = useEnroll.getState()
-  return { list: s.list, pending: s.pending, enrollItems: e.items, enrollResolved: e.resolved, order: useNodes.getState().order, saved: usePrefs.getState().sidebarNodes, space: usePrefs.getState().sidebarSpace, byId: useNodes.getState().byId, groups: groupsSig(useNodes.getState()), todoNodes: useTodos.getState().nodes, todoOutbox: useTodos.getState().outbox }
+  return { list: s.list, pending: s.pending, enrollItems: e.items, enrollResolved: e.resolved, order: useNodes.getState().order, saved: usePrefs.getState().sidebarNodes, space: usePrefs.getState().sidebarSpace, byId: useNodes.getState().byId, groups: groupsSig(useNodes.getState()), todoNodes: useTodos.getState().nodes, todoOutbox: useTodos.getState().outbox, ruleNodes: useRules.getState().nodes }
 }
 
 /** 一个会话摘要里和待处理有关的字段是否变了（`cached_seq`、`last_seq`、设置等不算）。 */
@@ -77,13 +79,14 @@ function listRelevantChanged(a: Record<string, SessionItem>, b: Record<string, S
 }
 
 function inputsChanged(a: Inputs, b: Inputs): boolean {
-  return listRelevantChanged(a.list, b.list) || a.pending !== b.pending || a.enrollItems !== b.enrollItems || a.enrollResolved !== b.enrollResolved || a.order !== b.order || a.saved !== b.saved || a.space !== b.space || a.groups !== b.groups || a.todoNodes !== b.todoNodes || a.todoOutbox !== b.todoOutbox
+  return listRelevantChanged(a.list, b.list) || a.pending !== b.pending || a.enrollItems !== b.enrollItems || a.enrollResolved !== b.enrollResolved || a.order !== b.order || a.saved !== b.saved || a.space !== b.space || a.groups !== b.groups || a.todoNodes !== b.todoNodes || a.todoOutbox !== b.todoOutbox || a.ruleNodes !== b.ruleNodes
 }
 
 function compute(i: Inputs, now: number): InboxSnapshot {
   const selected = resolveSelection(i.order, i.byId, i.saved, i.space)
   const todos = viewOf({ nodes: i.todoNodes, outbox: i.todoOutbox }, selected.filter(nodeSupportsTodo))
-  const base = { sessions: i.list, pending: i.pending, enroll: { items: i.enrollItems, resolved: i.enrollResolved }, now, todos }
+  const rules = rulesOf(i.ruleNodes, selected.filter(nodeSupportsRules))
+  const base = { sessions: i.list, pending: i.pending, enroll: { items: i.enrollItems, resolved: i.enrollResolved }, now, todos, rules }
   const outsideNodes = i.order.filter((id) => !selected.includes(id))
   const spaces = deriveSpaces(i.order, i.byId)
   const outsideWhere: InboxSnapshot['outsideWhere'] = []
@@ -157,7 +160,7 @@ function onStoreChange(): void {
 
 export function subscribeInbox(listener: () => void): () => void {
   if (listeners.size === 0) {
-    unsubs = [useTodos.subscribe(onStoreChange), useSessions.subscribe(onStoreChange), useEnroll.subscribe(onStoreChange), useNodes.subscribe((s, prev) => (s.order !== prev.order || groupsSig(s) !== groupsSig(prev)) && onStoreChange()), usePrefs.subscribe((s, prev) => (s.sidebarNodes !== prev.sidebarNodes || s.sidebarSpace !== prev.sidebarSpace) && onStoreChange())]
+    unsubs = [useTodos.subscribe(onStoreChange), useRules.subscribe(onStoreChange), useSessions.subscribe(onStoreChange), useEnroll.subscribe(onStoreChange), useNodes.subscribe((s, prev) => (s.order !== prev.order || groupsSig(s) !== groupsSig(prev)) && onStoreChange()), usePrefs.subscribe((s, prev) => (s.sidebarNodes !== prev.sidebarNodes || s.sidebarSpace !== prev.sidebarSpace) && onStoreChange())]
     schedule()
   }
   listeners.add(listener)

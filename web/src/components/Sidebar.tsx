@@ -1,7 +1,7 @@
 import { useMemo, useState, type HTMLAttributes } from 'react'
 import { Link, useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, ChevronRight, Flag, ListChecks, FolderGit2, FolderPlus, Inbox, LogOut, Pin, PinOff, Plus, ScanLine, Search, Settings, Shield, Trash2, User } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Flag, ListChecks, FolderGit2, FolderPlus, Inbox, LogOut, Pin, PinOff, Plus, ScanLine, ScrollText, Search, Settings, Shield, Trash2, User } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useMe } from '@/api/queries'
 import { describeError } from '@/lib/errors'
@@ -10,6 +10,7 @@ import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
 import { useInboxNowCount } from '@/features/inbox/useInbox'
 import { useCapture } from '@/features/todos/capture'
+import { useRulesAvailable } from '@/features/rules/store'
 import { useTodoAvailable } from '@/features/todos/store'
 import { useOpenTodoCount } from '@/features/todos/useOpenTodoCount'
 import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
@@ -111,10 +112,12 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const count = useInboxNowCount()
   const todoCount = useOpenTodoCount()
   const todoAvailable = useTodoAvailable()
+  const rulesAvailable = useRulesAvailable()
   const openCapture = useCapture((s) => s.openCapture)
   const here = useRouterState({ select: (s) => s.location.pathname })
   const current = here === '/inbox'
   const todosHere = here === '/todos' || here.startsWith('/todos/')
+  const rulesHere = here === '/rules'
   const row = 'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-bg-hover'
   return (
     <nav className="space-y-0.5 px-2 pb-2" aria-label={t('sidebar.nav')} data-testid="sidebar-nav">
@@ -156,6 +159,12 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           <Plus className="size-4" aria-hidden />
         </button>
       </div>
+      ) : null}
+      {rulesAvailable ? (
+        <Link to="/rules" onClick={onNavigate} aria-current={rulesHere ? 'page' : undefined} data-testid="sidebar-rules" className={cn(row, rulesHere && 'bg-accent-subtle')}>
+          <ScrollText className="size-4 shrink-0 text-fg-muted" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">{t('rules.title')}</span>
+        </Link>
       ) : null}
     </nav>
   )

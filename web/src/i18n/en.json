@@ -211,7 +211,8 @@
       "waiting": "Waiting for approval (cached)",
       "review": "To review",
       "later": "Agent to-do",
-      "laterOther": "Automatic to-do"
+      "laterOther": "Automatic to-do",
+      "rule": "Rule to review"
     },
     "cached": "Cached",
     "cachedHint": "{{node}} is offline. This is what it last reported.",
@@ -240,6 +241,9 @@
     "accept": "Accept",
     "dismiss": "Dismiss",
     "addedSince": "Added {{time}}",
+    "proposedSince": "Proposed {{time}}",
+    "ruleTitle": "A rule is waiting for you",
+    "ruleBody": "Once you confirm it, this rule is added exactly as written to the system prompt of every session a to-do is handed to, and of the sessions you start yourself if the node is set to do that. Read it through first.",
     "reviewSince": "Ready {{time}}",
     "openChanges": "Open the changes",
     "openReviewPage": "Open the review page",
@@ -291,6 +295,13 @@
     "ok": "Got it"
   },
   "dispatch": {
+    "rules": {
+      "title": "Rules given to the agent",
+      "loading": "Reading the rules…",
+      "none": "No active rules.",
+      "count": "Active rules added to the system prompt: {{count}}",
+      "unsupported": "{{agent}} does not receive rules: it has no system prompt to add them to."
+    },
     "action": "Let an agent handle it",
     "title": "Let an agent handle this to-do",
     "pickProject": "Choose a project",
@@ -319,7 +330,8 @@
       "noAgent": "No agent is ready on this node.",
       "noProject": "Choose a project first: the agent needs somewhere to work.",
       "gitPending": "The node is still reading this project’s git state. Try again in a moment.",
-      "noPush": "{{agent}} cannot block pushes and pull requests: untick “No push, no pull request” to hand it over anyway."
+      "noPush": "{{agent}} cannot block pushes and pull requests: untick “No push, no pull request” to hand it over anyway.",
+      "rulesLoading": "Reading the rules that will be added for this project…"
     },
     "errors": {
       "closed": "This to-do is closed. Reopen it first.",
@@ -703,6 +715,7 @@
     "cancel": "Remove mark"
   },
   "palette": {
+    "rules": "Rules",
     "addTodo": "Add to to-dos: {{text}}",
     "addTodoEmpty": "Add a to-do…",
     "title": "Command palette",
@@ -1247,6 +1260,9 @@
     "modelAgentDefault": "Agent default"
   },
   "info": {
+    "rules": "Rules given to the agent",
+    "rulesNote": "Found at the start of this session’s system prompt ({{count}}). A running session does not pick up later changes to the rules.",
+    "rulesUnconfirmed": "Could not confirm that these are the rules the node recorded for this session; its settings may have been changed. This is what its system prompt starts with.",
     "todo": "To-do",
     "title": "Session info",
     "toggle": "Toggle info panel",
@@ -1317,6 +1333,134 @@
       "not_authenticated": "Not signed in",
       "unsupported_version": "Version too old",
       "error": "Error"
+    }
+  },
+  "rules": {
+    "title": "Rules",
+    "intro": "Rules tell agents how you work. Active rules are added to the system prompt of the sessions you hand a to-do to, and of the sessions you start yourself if the node is set to do that (Settings > Limits). A rule does not approve or deny anything: permission requests still come to you.",
+    "changedWhileSelected": "This rule changed after you selected it, so it is no longer selected. Read it again and select it again.",
+    "add": "Add a rule",
+    "select": "Select this rule",
+    "selectAll": "Select all",
+    "selected": "{{count}} selected",
+    "tabs": {
+      "label": "Rules",
+      "pending": "To review ({{count}})",
+      "active": "Active ({{count}})"
+    },
+    "pendingEmpty": "No rules are waiting for you.",
+    "activeEmpty": "No active rules yet. Add one, or confirm a rule that is waiting.",
+    "inactive": "Disabled and rejected ({{count}})",
+    "offline": "Cannot reach {{nodes}}. The rules shown are what it last reported; changes need the node to be online.",
+    "unsupported": {
+      "title": "No node here supports rules",
+      "body": "Update anycon on the node to a version that has rules."
+    },
+    "status": {
+      "pending": "To review",
+      "active": "Active",
+      "disabled": "Disabled",
+      "rejected": "Rejected",
+      "unknown": "Not active"
+    },
+    "scope": {
+      "node": "All projects",
+      "project": "Project: {{project}}"
+    },
+    "source": {
+      "manual": "Written by you",
+      "answer": "Recorded from an answer",
+      "extracted": "Extracted from a session",
+      "agent": "Proposed by an agent",
+      "other": "Not written by a person",
+      "session": "Open the session",
+      "sessionGone": "the session no longer exists"
+    },
+    "lastUsed": "Last used {{time}}",
+    "neverUsed": "Not used in a session yet",
+    "actions": {
+      "confirm": "Confirm",
+      "editConfirm": "Edit, then confirm",
+      "reject": "Reject",
+      "edit": "Edit",
+      "disable": "Disable",
+      "enable": "Enable",
+      "restore": "Activate",
+      "delete": "Delete"
+    },
+    "bulk": {
+      "confirmSelected": "Confirm selected",
+      "rejectSelected": "Reject selected",
+      "confirmed": "Confirmed: {{count}}",
+      "rejected": "Rejected: {{count}}",
+      "partial": "Done: {{done}}. Not done: {{failed}}. {{reason}}"
+    },
+    "budget": {
+      "note": "A session gets at most {{cap}} bytes of rules, the fixed opening line included. Text that is not Latin, such as Chinese, takes more bytes per character.",
+      "node": "Rules for every project",
+      "project": "Sessions of {{project}}",
+      "used": "{{used}} / {{cap}} bytes"
+    },
+    "editor": {
+      "addTitle": "Add a rule",
+      "editTitle": "Edit rule",
+      "confirmTitle": "Edit and confirm",
+      "note": "A rule only tells the agent how you work. It does not approve or deny anything, and it does not change permissions.",
+      "node": "Node",
+      "text": "Rule",
+      "textHint": "One or two sentences, in your own words. Line breaks are kept. It is added to the system prompt as written.",
+      "count": "{{count}} / {{max}} characters",
+      "scope": "Applies to",
+      "scopeHint": "Only sessions of the chosen project, or every project on this node.",
+      "budget": "A session gets at most {{cap}} bytes of rules in all.",
+      "confirmNote": "Saving also confirms the rule: from then on it is added to the system prompt of new sessions.",
+      "currentVersion": "The version on the node now:",
+      "saving": "Saving…",
+      "save": "Save",
+      "saveConfirm": "Save and confirm"
+    },
+    "delete": {
+      "title": "Delete this rule?",
+      "body": "It is removed for good. Sessions that already started keep what they were given.",
+      "confirm": "Delete"
+    },
+    "errors": {
+      "offline": "The node is offline. Rules can be changed when it is back.",
+      "changed": "This rule was changed elsewhere while you were looking at it. The new version is shown; check it and try again.",
+      "changedReadAgain": "This rule was changed elsewhere. It is shown as it is now: read it again before you confirm.",
+      "changedGone": "This rule was deleted elsewhere. Nothing was saved.",
+      "overBudget": "The active rules would take {{bytes}} bytes in one session, and a session gets at most {{cap}}. Merge some rules or disable some first.",
+      "overBudgetPlain": "The active rules would be too long for one session. Merge some rules or disable some first.",
+      "tooMany": "There are already 300 rules. Delete some first.",
+      "tooManyPending": "Too many rules proposed by agents are waiting for review. Confirm or reject some first.",
+      "invisible": "The rule contains invisible characters (text-direction controls or zero-width characters), which cannot be reviewed. Remove them.",
+      "project": "The project name is not valid.",
+      "text": "The rule text is not valid.",
+      "rejected": "The node did not accept this change.",
+      "notFound": "This rule is not on the node any more.",
+      "forbidden": "This connection is not allowed to do that.",
+      "unsupported": "This node does not support rules.",
+      "link": "The request did not get through. Check the connection and try again.",
+      "failed": "Something went wrong. Try again.",
+      "local": {
+        "empty": "Write the rule first.",
+        "too_long": "A rule can be at most 600 characters.",
+        "control": "A rule cannot contain control characters, except line breaks.",
+        "invisible": "A rule cannot contain invisible characters (text-direction controls or zero-width characters)."
+      }
+    },
+    "record": {
+      "button": "Record as a rule",
+      "title": "Record as a rule",
+      "note": "A rule does not approve anything. It only tells the agent how you work; the next request still comes to you. This request is not answered by saving it.",
+      "agentWrote": "The agent wrote",
+      "yourChoice": "Your choice",
+      "howYouWouldAnswer": "How you would answer. This only fills in the rule text.",
+      "editFirst": "Put it in your own words first: change the text before saving.",
+      "noAnswer": "Nothing chosen yet. Choose in the request first, or write the rule yourself.",
+      "notAnswered": "This does not answer the request.",
+      "prefillQuestion": "When asked “{{question}}”, my answer is: {{answer}}.",
+      "prefillOption": "When asked “{{what}}”, my answer is: {{choice}}."
     }
   },
   "nodeSettings": {

@@ -1,9 +1,10 @@
 import { Link } from '@tanstack/react-router'
-import { ChevronRight, Plus, Server, Settings } from 'lucide-react'
+import { ChevronRight, Plus, ScrollText, Server, Settings } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { AccountFooter } from '@/components/Sidebar'
 import { PageHeader } from '@/components/PageHeader'
 import { connectionLabel, connectionTone } from '@/components/useConnectionLabel'
+import { useRulesAvailable } from '@/features/rules/store'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes } from '@/stores/nodes'
 import { Dot } from '@/ui/Misc'
@@ -18,6 +19,7 @@ export function MorePage() {
   const { t } = useTranslation()
   const order = useNodes((s) => s.order)
   const byId = useNodes((s) => s.byId)
+  const rulesAvailable = useRulesAvailable()
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="more-page">
       <PageHeader root crumbs={[{ label: t('more.title') }]} showNodeStatus={false} />
@@ -59,6 +61,18 @@ export function MorePage() {
             {t('more.pair')}
           </Link>
         </section>
+        {rulesAvailable ? (
+          <section aria-labelledby="more-rules">
+            <h2 id="more-rules" className="mb-1 px-3 text-xs font-semibold tracking-wide text-fg-muted uppercase">
+              {t('rules.title')}
+            </h2>
+            <Link to="/rules" className={`${ROW} border border-border bg-surface`} data-testid="more-rules">
+              <ScrollText className="size-4 text-fg-subtle" aria-hidden />
+              <span className="flex-1">{t('rules.title')}</span>
+              <ChevronRight className="size-4 text-fg-subtle" aria-hidden />
+            </Link>
+          </section>
+        ) : null}
         <section aria-labelledby="more-settings">
           <h2 id="more-settings" className="mb-1 px-3 text-xs font-semibold tracking-wide text-fg-muted uppercase">
             {t('more.settings')}

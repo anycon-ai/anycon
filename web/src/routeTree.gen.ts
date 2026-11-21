@@ -20,6 +20,7 @@ import { Route as AppShellAdminRouteImport } from './routes/_app/_shell/admin'
 import { Route as AppShellCaptureRouteImport } from './routes/_app/_shell/capture'
 import { Route as AppShellInboxRouteImport } from './routes/_app/_shell/inbox'
 import { Route as AppShellMoreRouteImport } from './routes/_app/_shell/more'
+import { Route as AppShellRulesRouteImport } from './routes/_app/_shell/rules'
 import { Route as AppShellSessionsRouteImport } from './routes/_app/_shell/sessions'
 import { Route as AppShellSettingsRouteImport } from './routes/_app/_shell/settings'
 import { Route as AppUnlockIndexRouteImport } from './routes/_app/unlock.index'
@@ -93,6 +94,11 @@ const AppShellInboxRoute = AppShellInboxRouteImport.update({
 const AppShellMoreRoute = AppShellMoreRouteImport.update({
   id: '/more',
   path: '/more',
+  getParentRoute: () => AppShellRoute,
+} as any)
+const AppShellRulesRoute = AppShellRulesRouteImport.update({
+  id: '/rules',
+  path: '/rules',
   getParentRoute: () => AppShellRoute,
 } as any)
 const AppShellSessionsRoute = AppShellSessionsRouteImport.update({
@@ -215,6 +221,7 @@ export interface FileRoutesByFullPath {
   '/capture': typeof AppShellCaptureRoute
   '/inbox': typeof AppShellInboxRoute
   '/more': typeof AppShellMoreRoute
+  '/rules': typeof AppShellRulesRoute
   '/sessions': typeof AppShellSessionsRoute
   '/settings': typeof AppShellSettingsRouteWithChildren
   '/unlock/$node': typeof AppUnlockNodeRoute
@@ -247,6 +254,7 @@ export interface FileRoutesByTo {
   '/capture': typeof AppShellCaptureRoute
   '/inbox': typeof AppShellInboxRoute
   '/more': typeof AppShellMoreRoute
+  '/rules': typeof AppShellRulesRoute
   '/sessions': typeof AppShellSessionsRoute
   '/unlock/$node': typeof AppUnlockNodeRoute
   '/unlock': typeof AppUnlockIndexRoute
@@ -280,6 +288,7 @@ export interface FileRoutesById {
   '/_app/_shell/capture': typeof AppShellCaptureRoute
   '/_app/_shell/inbox': typeof AppShellInboxRoute
   '/_app/_shell/more': typeof AppShellMoreRoute
+  '/_app/_shell/rules': typeof AppShellRulesRoute
   '/_app/_shell/sessions': typeof AppShellSessionsRoute
   '/_app/_shell/settings': typeof AppShellSettingsRouteWithChildren
   '/_app/unlock/$node': typeof AppUnlockNodeRoute
@@ -314,6 +323,7 @@ export interface FileRouteTypes {
     | '/capture'
     | '/inbox'
     | '/more'
+    | '/rules'
     | '/sessions'
     | '/settings'
     | '/unlock/$node'
@@ -346,6 +356,7 @@ export interface FileRouteTypes {
     | '/capture'
     | '/inbox'
     | '/more'
+    | '/rules'
     | '/sessions'
     | '/unlock/$node'
     | '/unlock'
@@ -378,6 +389,7 @@ export interface FileRouteTypes {
     | '/_app/_shell/capture'
     | '/_app/_shell/inbox'
     | '/_app/_shell/more'
+    | '/_app/_shell/rules'
     | '/_app/_shell/sessions'
     | '/_app/_shell/settings'
     | '/_app/unlock/$node'
@@ -484,6 +496,13 @@ declare module '@tanstack/react-router' {
       path: '/more'
       fullPath: '/more'
       preLoaderRoute: typeof AppShellMoreRouteImport
+      parentRoute: typeof AppShellRoute
+    }
+    '/_app/_shell/rules': {
+      id: '/_app/_shell/rules'
+      path: '/rules'
+      fullPath: '/rules'
+      preLoaderRoute: typeof AppShellRulesRouteImport
       parentRoute: typeof AppShellRoute
     }
     '/_app/_shell/sessions': {
@@ -686,6 +705,7 @@ interface AppShellRouteChildren {
   AppShellCaptureRoute: typeof AppShellCaptureRoute
   AppShellInboxRoute: typeof AppShellInboxRoute
   AppShellMoreRoute: typeof AppShellMoreRoute
+  AppShellRulesRoute: typeof AppShellRulesRoute
   AppShellSessionsRoute: typeof AppShellSessionsRoute
   AppShellSettingsRoute: typeof AppShellSettingsRouteWithChildren
   AppShellNNodeRoute: typeof AppShellNNodeRouteWithChildren
@@ -699,6 +719,7 @@ const AppShellRouteChildren: AppShellRouteChildren = {
   AppShellCaptureRoute: AppShellCaptureRoute,
   AppShellInboxRoute: AppShellInboxRoute,
   AppShellMoreRoute: AppShellMoreRoute,
+  AppShellRulesRoute: AppShellRulesRoute,
   AppShellSessionsRoute: AppShellSessionsRoute,
   AppShellSettingsRoute: AppShellSettingsRouteWithChildren,
   AppShellNNodeRoute: AppShellNNodeRouteWithChildren,

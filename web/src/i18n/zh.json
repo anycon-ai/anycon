@@ -210,7 +210,8 @@
       "waiting": "等待审批（缓存）",
       "review": "待验收",
       "later": "agent 记的项",
-      "laterOther": "自动记的项"
+      "laterOther": "自动记的项",
+      "rule": "待确认的规则"
     },
     "cached": "缓存",
     "cachedHint": "{{node}} 离线，这是它上次报告的内容。",
@@ -239,6 +240,9 @@
     "accept": "收下",
     "dismiss": "丢掉",
     "addedSince": "{{time}}记的",
+    "proposedSince": "{{time}}提的",
+    "ruleTitle": "有一条规则等你确认",
+    "ruleBody": "你确认之后，这条规则会原样写进之后每个清单派发的会话的系统提示里；节点设成这样的话，你自己开的会话也会带上。先把它读完。",
     "reviewSince": "{{time}}做完的",
     "openChanges": "打开改动",
     "openReviewPage": "去验收页",
@@ -290,6 +294,13 @@
     "ok": "知道了"
   },
   "dispatch": {
+    "rules": {
+      "title": "交给 agent 的规则",
+      "loading": "正在读取规则…",
+      "none": "没有生效的规则。",
+      "count": "会写进系统提示的生效规则：{{count}} 条",
+      "unsupported": "{{agent}} 收不到规则：它没有可以放规则的系统提示。"
+    },
     "action": "让 agent 处理",
     "title": "让 agent 处理这一项",
     "pickProject": "选一个项目",
@@ -318,7 +329,8 @@
       "noAgent": "这个节点上没有可用的 agent。",
       "noProject": "先选一个项目：agent 得有地方干活。",
       "gitPending": "节点还在读这个项目的 git 状态，稍等一下再试。",
-      "noPush": "{{agent}} 做不到挡住 push 和开 PR：要交给它，先取消勾选「不 push、不开 PR」。"
+      "noPush": "{{agent}} 做不到挡住 push 和开 PR：要交给它，先取消勾选「不 push、不开 PR」。",
+      "rulesLoading": "正在读取这个项目会写进去的规则…"
     },
     "errors": {
       "closed": "这一项已经关闭了，先重新打开。",
@@ -696,6 +708,7 @@
     "cancel": "取消标记"
   },
   "palette": {
+    "rules": "规则",
     "addTodo": "记到清单：{{text}}",
     "addTodoEmpty": "记一项…",
     "title": "命令面板",
@@ -1236,6 +1249,9 @@
     "modelAgentDefault": "agent 默认"
   },
   "info": {
+    "rules": "交给 agent 的规则",
+    "rulesNote": "在这个会话的系统提示开头找到的（{{count}} 条）。在跑的会话不会跟着之后规则的修改变。",
+    "rulesUnconfirmed": "没法确认这些就是节点为这个会话记下的规则；它的设置可能被改过。下面是它的系统提示开头的内容。",
     "todo": "清单项",
     "title": "会话信息",
     "toggle": "开合信息面板",
@@ -1299,6 +1315,134 @@
       "not_authenticated": "未登录",
       "unsupported_version": "版本过低",
       "error": "异常"
+    }
+  },
+  "rules": {
+    "title": "规则",
+    "intro": "规则告诉 agent 你的做法。生效的规则会写进你交给 agent 处理的清单项开出的会话的系统提示里；节点设成这样的话（设置 > 限制），你自己开的会话也会带上。规则不批准也不拒绝任何东西：权限请求仍然来问你。",
+    "changedWhileSelected": "你勾选之后这条规则变了，所以它不再是选中的。重新读一遍再勾选。",
+    "add": "新建规则",
+    "select": "选中这条规则",
+    "selectAll": "全选",
+    "selected": "已选 {{count}} 条",
+    "tabs": {
+      "label": "规则",
+      "pending": "待确认（{{count}}）",
+      "active": "已生效（{{count}}）"
+    },
+    "pendingEmpty": "没有等你确认的规则。",
+    "activeEmpty": "还没有生效的规则。新建一条，或者确认一条等着的规则。",
+    "inactive": "已停用和已否决（{{count}}）",
+    "offline": "连不上 {{nodes}}。显示的是它上次报告的规则；要改动规则，节点得在线。",
+    "unsupported": {
+      "title": "这里没有节点支持规则",
+      "body": "把节点上的 anycon 升级到带规则的版本。"
+    },
+    "status": {
+      "pending": "待确认",
+      "active": "已生效",
+      "disabled": "已停用",
+      "rejected": "已否决",
+      "unknown": "未生效"
+    },
+    "scope": {
+      "node": "所有项目",
+      "project": "项目：{{project}}"
+    },
+    "source": {
+      "manual": "你写的",
+      "answer": "从一次答复里记下的",
+      "extracted": "从会话里提炼的",
+      "agent": "agent 提的",
+      "other": "不是人写的",
+      "session": "打开那个会话",
+      "sessionGone": "那个会话已经不在了"
+    },
+    "lastUsed": "最近用到：{{time}}",
+    "neverUsed": "还没有会话用过",
+    "actions": {
+      "confirm": "确认",
+      "editConfirm": "改一下再确认",
+      "reject": "否决",
+      "edit": "编辑",
+      "disable": "停用",
+      "enable": "启用",
+      "restore": "启用",
+      "delete": "删除"
+    },
+    "bulk": {
+      "confirmSelected": "确认所选",
+      "rejectSelected": "否决所选",
+      "confirmed": "已确认：{{count}} 条",
+      "rejected": "已否决：{{count}} 条",
+      "partial": "完成 {{done}} 条，没有完成 {{failed}} 条。{{reason}}"
+    },
+    "budget": {
+      "note": "一个会话最多拿到 {{cap}} 字节的规则，开头那一句固定的话也算在内。中文等非拉丁文字每个字占的字节更多。",
+      "node": "所有项目的会话",
+      "project": "{{project}} 的会话",
+      "used": "{{used}} / {{cap}} 字节"
+    },
+    "editor": {
+      "addTitle": "新建规则",
+      "editTitle": "编辑规则",
+      "confirmTitle": "编辑并确认",
+      "note": "规则只是告诉 agent 你的做法。它不批准也不拒绝任何东西，也不改权限。",
+      "node": "节点",
+      "text": "规则",
+      "textHint": "一两句话，用你自己的话。换行会保留。它会原样写进系统提示。",
+      "count": "{{count}} / {{max}} 个字符",
+      "scope": "适用于",
+      "scopeHint": "只在所选项目的会话里生效，或者这个节点上的所有项目。",
+      "budget": "一个会话合计最多拿到 {{cap}} 字节的规则。",
+      "confirmNote": "保存同时就确认了这条规则：之后新开的会话的系统提示里会带上它。",
+      "currentVersion": "节点上现在的版本：",
+      "saving": "正在保存…",
+      "save": "保存",
+      "saveConfirm": "保存并确认"
+    },
+    "delete": {
+      "title": "删除这条规则？",
+      "body": "删了就没有了。已经开始的会话保留它们拿到的内容。",
+      "confirm": "删除"
+    },
+    "errors": {
+      "offline": "节点离线。节点回来之后才能改规则。",
+      "changed": "你看着这条规则的时候，它在别处被改过了。下面显示的是新版本，看过之后再试一次。",
+      "changedReadAgain": "这条规则在别处被改过了。显示的是现在的样子：确认之前再读一遍。",
+      "changedGone": "这条规则在别处被删掉了。什么都没有保存。",
+      "overBudget": "生效的规则在一个会话里会占 {{bytes}} 字节，而一个会话最多拿到 {{cap}} 字节。先合并或停用几条。",
+      "overBudgetPlain": "生效的规则对一个会话来说太长了。先合并或停用几条。",
+      "tooMany": "规则已经有 300 条了。先删掉一些。",
+      "tooManyPending": "agent 提的、等着确认的规则太多了。先确认或否决几条。",
+      "invisible": "规则里有看不见的字符（文字方向控制符或零宽字符），没法审阅。请去掉它们。",
+      "project": "项目名不合法。",
+      "text": "规则的文字不合法。",
+      "rejected": "节点没有接受这次改动。",
+      "notFound": "节点上已经没有这条规则了。",
+      "forbidden": "这条连接不能做这件事。",
+      "unsupported": "这个节点不支持规则。",
+      "link": "请求没有送到。检查连接后再试。",
+      "failed": "出错了，再试一次。",
+      "local": {
+        "empty": "先写规则。",
+        "too_long": "一条规则最多 600 个字符。",
+        "control": "规则里不能有控制字符（换行除外）。",
+        "invisible": "规则里不能有看不见的字符（文字方向控制符或零宽字符）。"
+      }
+    },
+    "record": {
+      "button": "记成规则",
+      "title": "记成规则",
+      "note": "规则不批准任何东西。它只是告诉 agent 你的做法；下一次请求仍然来问你。保存规则不会答复这个请求。",
+      "agentWrote": "agent 写的",
+      "yourChoice": "你的选择",
+      "howYouWouldAnswer": "你会怎么答。这只是用来填规则的文字。",
+      "editFirst": "先改成你自己的话：改过文字才能保存。",
+      "noAnswer": "还没有选。先在请求里选，或者自己写这条规则。",
+      "notAnswered": "这不会答复这个请求。",
+      "prefillQuestion": "被问到“{{question}}”时，我的答案是：{{answer}}。",
+      "prefillOption": "被问到“{{what}}”时，我的答案是：{{choice}}。"
     }
   },
   "nodeSettings": {

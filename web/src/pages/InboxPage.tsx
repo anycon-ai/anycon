@@ -109,7 +109,8 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const overlayOpen = mode === 'overlay' && sel.explicit && sel.selected !== null
   const detailShown = mode === 'overlay' ? overlayOpen : mode === 'split' ? !!shown : !!shown
   // 页面藏在后面（手机上切到别的标签页）时不计时：回到眼前也算「显示的请求换了」，重新锁一小会儿
-  const armed = useArmed(active && detailShown && shown ? shown.key : null)
+  // 规则换了版本（`updated_ms`，别处改了文字）也要重新锁：用户确认的是他读过的那一版
+  const armed = useArmed(active && detailShown && shown ? (shown.kind === 'rule' ? `${shown.key}@${shown.rule.updated_ms}` : shown.key) : null)
 
   useInboxKeys({ active, enter: mode !== 'inline', item: shown, armed, selectedKey: sel.selected, move: sel.move, focusDetail: sel.focusDetail, choose })
 

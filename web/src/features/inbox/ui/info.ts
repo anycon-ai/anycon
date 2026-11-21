@@ -30,6 +30,12 @@ export function useMinute(): number {
   return useSyncExternalStore(subscribeMinute, minuteNow)
 }
 
+/** 行上的标题：规则的第一行（多行的把换行换成空格），截到 120 个字符；全文只在详情里。 */
+export function ruleTitle(text: string): string {
+  const one = cleanOneLine(text.split('\n').filter((l) => l.trim() !== '').join(' '))
+  return [...one].length > 120 ? `${[...one].slice(0, 119).join('')}…` : one
+}
+
 export interface ItemInfo {
   title: string
   /** 请求属于哪个会话（标题）；不是会话类的条目没有。 */
@@ -72,6 +78,8 @@ export function useItemInfo(item: InboxItem): ItemInfo {
       return { ...base, title: cleanOneLine(item.todo.title), project: item.todo.project ? cleanOneLine(item.todo.project) : undefined, since: t('inbox.reviewSince', { time }) }
     case 'later':
       return { ...base, title: cleanOneLine(item.todo.title), project: item.todo.project ? cleanOneLine(item.todo.project) : undefined, since: t('inbox.addedSince', { time }) }
+    case 'rule':
+      return { ...base, title: ruleTitle(item.rule.text), project: item.rule.project ? cleanOneLine(item.rule.project) : undefined, since: t('inbox.proposedSince', { time }) }
     case 'enroll':
       return { ...base, title: t('inbox.enrollTitle', { node: cleanHintText(nodeName) || nodeName }), since: t('inbox.requestedSince', { time }) }
   }

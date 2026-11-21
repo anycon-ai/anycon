@@ -26,6 +26,7 @@ import { ApprovalBanner } from '@/components/ApprovalBanner'
 import { SelectionCapture } from '@/features/todos/ui/SelectionCapture'
 import { ArchivedBar } from '@/features/session/ui/ArchivedBar'
 import { FollowUpBar, FollowUpChip, FollowUpToggle } from '@/features/session/ui/FollowUp'
+import { useInjectedRules } from '@/features/rules/useInjectedRules'
 import { InfoPanel } from '@/features/session/ui/InfoPanel'
 import { BackgroundTasksChip } from '@/features/session/ui/Tasks'
 import { TodoOriginLink } from '@/features/todos/ui/TodoOrigin'
@@ -187,6 +188,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
   }, [running, prevRunning, t])
 
   const baseSettings = view?.settings ?? summary?.settings
+  const injectedRules = useInjectedRules(nodeId, sessionId, summary?.todo_id, baseSettings?.system_prompt_append)
   const { selection, onChange, pending: pendingSettings } = useSessionSettings({ nodeId: nodeId ?? '', sessionId, agent, running, baseSettings, offline })
 
   const seen = useMemo(() => new Set(view?.blocks.filter((b) => b.type === 'user').map((b) => (b.type === 'user' ? b.messageId : '')) ?? []), [view?.blocks])
@@ -308,6 +310,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
       workDir={workDir}
       project={project}
       todoId={summary?.todo_id ?? null}
+      injectedRules={injectedRules}
       nodeId={nodeId}
       onOpenWorkDir={workDirFiles === null ? undefined : () => void navigate({ to: '/n/$node/files/$', params: { node: nodeParam, _splat: workDirFiles } })}
       createdAt={summary?.created_at_ms ?? 0}
@@ -450,6 +453,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
           ) : (
             <MessageList
               nodeId={nodeId}
+              sessionId={sessionId}
               todoOrigin={summary?.todo_id ? <TodoOriginLink nodeId={nodeId} todoId={summary.todo_id} label={t('permission.fromTodo')} testId="permission-todo" className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" /> : undefined}
               blocks={view?.blocks ?? []}
               pending={pending}

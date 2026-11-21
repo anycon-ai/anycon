@@ -356,4 +356,19 @@ describe('node settings: the Limits tab and an offline node', () => {
     expect(screen.getByTestId('limits-save')).toBeDisabled()
     expect(screen.getByTestId('limits-offline')).toBeInTheDocument()
   })
+
+  it('shows the rules setting in its own section with its label and hint, and saves it', async () => {
+    const user = userEvent.setup()
+    items = [...fresh(), { key: 'rules.inject_manual_sessions', value: false, kind: 'bool', editable: 'any', env_override: false }]
+    render(<LimitsTab nodeId={NODE} />)
+    expect(await screen.findByTestId('limits-section-rules')).toHaveTextContent('Rules')
+    expect(screen.getByTestId('limits-section-rules')).toHaveTextContent('Rules in sessions you start yourself')
+    expect(screen.getByTestId('limits-section-rules')).toHaveTextContent(/always added to the system prompt of the sessions that to-dos are handed to/)
+    expect(ctl('rules.inject_manual_sessions')).toHaveAttribute('aria-checked', 'false')
+    await user.click(ctl('rules.inject_manual_sessions'))
+    await user.click(screen.getByTestId('limits-save'))
+    await waitFor(() => expect(setCalls()).toHaveLength(1))
+    expect(setCalls()[0]!.changes).toEqual([{ key: 'rules.inject_manual_sessions', value: true }])
+    await waitFor(() => expect(ctl('rules.inject_manual_sessions')).toHaveAttribute('aria-checked', 'true'))
+  })
 })

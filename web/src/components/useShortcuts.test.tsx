@@ -1,6 +1,9 @@
 // ⌘⇧A / ⌘⇧D（允许 / 拒绝最近一条待审批）收到 `not_found` 时的提示，要和卡片上的按钮一致：
 // 带 `data.reason = project_dir_changed` 才说「目录变了」，别的 not_found 只说「请求已不存在」，都不算失败、不重试。
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { PermissionCard } from '@/features/session/ui/PermissionCard'
+import type { PermissionBlock } from '@/features/session/reducer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ev, mockAgent, nodeEntry, resetSeq, summary } from '@/test/factories'
 import { FakeRpc, rpcError } from '@/test/fakeRpc'
@@ -93,5 +96,36 @@ describe('useShortcuts: ⌘⇧A / ⌘⇧D answering a permission', () => {
     press('a')
     await waitToasts()
     expect(useUi.getState().toasts.map((t) => t.kind)).toEqual(['error'])
+  })
+})
+
+describe('useShortcuts: not while a dialog or menu is open', () => {
+  it.each([['dialog', 'dialog'], ['alertdialog', 'alertdialog'], ['menu', 'menu']])('%s open: ⌘⇧A and ⌘⇧D answer nothing, and the keys work again once it is gone', async (_n, role) => {
+    seed()
+    const overlay = document.createElement('div')
+    overlay.setAttribute('role', role)
+    const btn = document.createElement('button')
+    overlay.appendChild(btn)
+    document.body.appendChild(overlay)
+    btn.focus()
+    for (const key of ['a', 'd'] as const) fireEvent.keyDown(btn, { key, ctrlKey: true, shiftKey: true })
+    expect(rpc.calls.filter((c) => c.method === 'permission.respond')).toEqual([])
+    overlay.remove()
+    rpc.handlers['permission.respond'] = () => ({})
+    press('a')
+    await vi.waitFor(() => expect(rpc.calls.filter((c) => c.method === 'permission.respond')).toHaveLength(1))
+  })
+
+  it('the “Record as a rule” editor open on the session page: a dialog button in focus, ⌘⇧A still answers nothing', async () => {
+    const user = userEvent.setup()
+    seed()
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, agents: [mockAgent()], info: { capabilities: { rules: true } } as never }) }, order: [NODE], loaded: true })
+    const block: PermissionBlock = { type: 'permission', key: 'p', seq: 1, ts: 1, requestId: 'r1', kind: 'tool', title: 'Run', detail: { tool: { tool: 'Bash', category: 'shell', input: { command: 'ls' }, detail: { command: 'ls' } } }, options: [{ id: 'allow', label: 'Allow', kind: 'allow_once' }] }
+    render(<PermissionCard block={block} deviceLabel={() => 'you'} onRespond={() => {}} recordAsRule={{ nodeId: NODE, sessionId: SID }} />)
+    await user.click(screen.getByTestId('record-rule'))
+    screen.getByTestId('rule-editor-cancel').focus()
+    fireEvent.keyDown(screen.getByTestId('rule-editor-cancel'), { key: 'a', ctrlKey: true, shiftKey: true })
+    fireEvent.keyDown(screen.getByTestId('rule-editor-cancel'), { key: 'd', ctrlKey: true, shiftKey: true })
+    expect(rpc.calls.filter((c) => c.method === 'permission.respond')).toEqual([])
   })
 })

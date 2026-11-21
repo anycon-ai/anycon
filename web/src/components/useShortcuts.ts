@@ -104,7 +104,8 @@ export function useShortcuts(): void {
       }
       if (mod && e.shiftKey && (key === 'a' || key === 'd')) {
         const open = params.session && nodeId ? st.open[params.session] : undefined
-        if (open && nodeId) {
+        // 有对话框（比如「记成规则」的编辑框）或菜单开着：按键是它们的，不答复它们后面的请求（和「待处理」页一样）
+        if (open && nodeId && !overlayOpen()) {
           // handleApproveShortcut 自己忽略 e.repeat
           handleApproveShortcut(e, {
             pending: pendingPermissions(open.view),

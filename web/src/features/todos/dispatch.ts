@@ -74,3 +74,15 @@ export function describeDispatchError(e: unknown, t: TFunction, worktree: boolea
   }
   return describeCreateError(e, t, worktree)
 }
+
+/**
+ * 此刻开这一项的会话会注入的规则文字（`todo.dispatch_preview` 的 `rules_text`，docs/spec/daemon.md § 23.5；没有生效的规则时是空串）。
+ * `project` 是派发要用的项目（对话框里选的，和这一项自己的项目可能不同）。
+ */
+export async function previewRules(nodeId: string, id: string, project: string): Promise<string> {
+  const res = await rpc().request<TodoDispatchPreviewResult>(nodeId, 'todo.dispatch_preview', { id, no_push: false, ...(project ? { project } : {}) })
+  return res.rules_text ?? ''
+}
+
+/** 规则文字里的条数：每条规则一行 `- ` 开头，多行的后续行缩进两格，所以行首的 `- ` 就是一条。 */
+export const countRules = (text: string): number => (text.match(/^- /gm) ?? []).length

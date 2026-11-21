@@ -1,4 +1,4 @@
-//! 更新检查（ADR-57，docs/spec/daemon.md § 23）：大约每天一次 `GET https://anycon.ai/releases.json`，有更新的正式版本时
+//! 更新检查（ADR-57，docs/spec/daemon.md § 24）：大约每天一次 `GET https://anycon.ai/releases.json`，有更新的正式版本时
 //! 在 `node.info.update_available`、`anycon doctor` 和一行 info 日志里提示。不下载、不安装。
 //!
 //! - **请求**：只有 `Host` 和 `User-Agent: anycon/<版本> (<os>; <arch>)`，没有查询串、cookie 或任何账号 / 设备 / 节点 / 安装的标识。

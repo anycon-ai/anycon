@@ -23,6 +23,14 @@ import {
   type SessionSettings,
   type SessionSummary,
   type SessionWorkspace,
+  type Rule,
+  type RuleAddParams,
+  type RuleChanged,
+  type RuleListParams,
+  type RuleListResult,
+  type RulePreviewParams,
+  type RulePreviewResult,
+  type RuleUpdateParams,
   type Todo,
   type TodoAddParams,
   type TodoChanged,
@@ -97,6 +105,8 @@ export interface NodeEvents {
   todo_changed: [TodoChanged]
   /** 清单项的「经过」多了一条（`todo.event`，docs/spec/daemon.md § 22；发给所有在线客户端）。`text` 是 agent 写的，按不可信内容渲染。 */
   todo_event: [TodoEventNotice]
+  /** 规则有一条被新建、修改或删除（`rule.changed`，docs/spec/daemon.md § 23；发给所有在线客户端，包括发起的那一个）。`last_injected_ms` 的变化不通知。 */
+  rule_changed: [RuleChanged]
 }
 
 export interface NodeOptions {
@@ -214,6 +224,9 @@ export class Node extends Emitter<NodeEvents> {
     })
     rpc.onNotification<TodoEventNotice>(METHODS.TODO_EVENT, (e) => {
       this.emit('todo_event', e)
+    })
+    rpc.onNotification<RuleChanged>(METHODS.RULE_CHANGED, (c) => {
+      this.emit('rule_changed', c)
     })
     rpc.onNotification<JobProgress>(METHODS.JOB_PROGRESS, (p) => {
       const rec = this.#job(p.job_id)
@@ -576,6 +589,44 @@ export class Node extends Emitter<NodeEvents> {
     /** `todo.history`：这一项的「经过」，按 `seq` 从新到旧；`has_more` 时用最后一条的 `seq` 作为 `before_seq` 取下一页（`limit` 缺省 50、上限 200）。 */
     history: (params: TodoHistoryParams): Promise<TodoHistoryResult> =>
       this.call('todo.history', params),
+  }
+
+  /**
+   * 节点上的决策档案（`rule.*`，docs/spec/daemon.md § 23；节点 `capabilities.rules` 为 true 才有，旧节点 → `RpcError`，`unsupported`）：
+   * 用户自己的做法，生效的规则注入派发出去的会话的系统提示。规则只影响 agent 怎么判断，不影响任何权限。薄封装：不做离线缓存，也不重放。
+   * 规则的文字是用户内容，经过 `rule.add` 进来的、agent 写的文字会进之后每个会话的系统提示：生效之前要人确认。
+   */
+  readonly rules = {
+    /**
+     * `rule.list`：全部规则（总数上限 300，不翻页），按创建时间从早到晚；`status` / `project` 过滤（`project` 不含全节点规则）。
+     * `budget` 是注入的字数预算（只算生效的规则，不随过滤条件变）：一个这个项目的会话拿到的规则文字是 `node_bytes + projects[项目]`，上限 `cap`。
+     */
+    list: (params: RuleListParams = {}): Promise<RuleListResult> => this.call('rule.list', params),
+    /**
+     * `rule.add`。`id` 缺省时 SDK 生成一个 UUID（小写带连字符）；超时后要重试就传同一个：`id` 已经存在时 daemon 原样返回已有的那一条。
+     * `status` 缺省 `active`；`agent: true`（调用方自报是 agent）或来自自报了 `mcp` 的本机连接时，状态强制为 `pending`、来源强制为 `agent`。
+     * 文字为空 / 超过 600 个码点 / 含换行以外的控制字符、总数已满 300（`reason = 'too_many'`）、
+     * 生效后会超出注入的字数上限（`reason = 'over_budget'`，`bytes` 和 `cap` 是这次改动之后的字节数和上限）→ `RpcError`（`invalid`）。
+     */
+    add: (params: Omit<RuleAddParams, 'id'> & { id?: string }): Promise<Rule> =>
+      this.call('rule.add', { ...params, id: params.id ?? randomId() }),
+    /**
+     * `rule.update`：只带要改的字段；`clear` 列出要清空的可选字段（`project`）。没有任何字段真的变了就是空操作。
+     * `if_updated_ms` 给了而和现在的不同 → `RpcError`（`invalid`，`reason = 'changed'`，`updatedMs` 是现在的值）。
+     * 变成生效、或者改了生效的规则的文字 / 项目而超出字数上限 → `over_budget`。规则不存在 → `not_found`；
+     * 自报了 `mcp` 的本机连接 → `forbidden`。
+     */
+    update: (params: RuleUpdateParams): Promise<Rule> => this.call('rule.update', params),
+    /** `rule.delete`：物理删除；`ifUpdatedMs` 的语义同 `update`。规则不存在 → `not_found`；自报了 `mcp` 的本机连接 → `forbidden`。 */
+    delete: async (id: string, opts: { ifUpdatedMs?: number } = {}): Promise<void> => {
+      await this.call('rule.delete', {
+        id,
+        ...(opts.ifUpdatedMs !== undefined ? { if_updated_ms: opts.ifUpdatedMs } : {}),
+      })
+    },
+    /** `rule.preview`：现在开一个这个项目的会话（缺省：不属于任何项目的会话）会注入的那段文字、用到的规则和它的字节数。只读。 */
+    preview: (params: RulePreviewParams = {}): Promise<RulePreviewResult> =>
+      this.call('rule.preview', params),
   }
 
   readonly permissions = {

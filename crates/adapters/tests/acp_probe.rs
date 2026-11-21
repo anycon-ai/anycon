@@ -232,6 +232,8 @@ async fn capabilities_follow_what_the_agent_declares() {
         let info = h.info().await;
         assert_eq!(info.capabilities.resume, resume, "caps {caps:?}");
         assert_eq!(!info.capabilities.attachments.is_empty(), images, "caps {caps:?}");
+        // ACP 没有系统提示的入口：不管 agent 声明什么，决策档案的规则都注入不进去（docs/spec/daemon.md § 23.5）
+        assert!(!info.capabilities.system_prompt, "caps {caps:?}");
     }
 }
 

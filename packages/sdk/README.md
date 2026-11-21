@@ -172,6 +172,24 @@ node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)
 - `list` pages by `(updated_ms, id)`: while `has_more` is true, pass the last item's `{ updated_ms, id }` as `before`. A page can be shorter than `limit` (1 MiB budget per page). Items changed while you page can show up twice (de-duplicate by `id`) or be skipped (`todo_changed` tells you).
 - Errors: `invalid` (`field`: the parameter; `reason` `too_many` / `too_many_unreviewed` when the list is full) and `not_found`, as `RpcError`.
 
+## Rules (ADR-54)
+
+Each node keeps a list of your rules, short instructions such as "write the failing test first". The active ones are written into the system prompt of the sessions a to-do is dispatched to (see [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)). Rules never change permissions. `node.rules` is a thin wrapper over `rule.*`; a node reports support in `(await node.info()).capabilities.rules`, and an older node answers with `RpcError('unsupported')`. The SDK does no offline caching or replay.
+
+```ts
+const rule = await node.rules.add({ text: 'Write the failing test first.', project: 'app' }) // active at once; `id` is generated for you; `status: 'pending'` waits for confirmation
+const { rules, budget } = await node.rules.list() // oldest first; { status?, project? }; budget = { cap, node_bytes, projects }
+await node.rules.update({ id: rule.id, status: 'disabled', if_updated_ms: rule.updated_ms }) // only the fields you pass change; `clear: ['project']`
+const { text, rule_ids, bytes } = await node.rules.preview({ project: 'app' }) // what a new session of that project would get
+await node.rules.delete(rule.id, { ifUpdatedMs: rule.updated_ms })
+node.on('rule_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.rule)) // every client gets these, the caller too
+```
+
+- `add` is idempotent on `id`. `agent: true` says the call is made on behalf of an agent: the rule is stored as `pending` with source `agent` (pass `origin_session` to record the session it came from) and does nothing until a person confirms it with `update({ status: 'active' })`.
+- A rule is at most 600 characters (line breaks allowed). The rules that are active for one session take at most 4096 bytes in all, template included; an `add` or `update` that would go over is refused with `RpcError` `invalid`, `reason` `over_budget` (`bytes` and `cap` say how far). At most 300 rules not counting rejected ones (`reason` `too_many`; rejected ones have a cap of their own and the oldest is deleted when it is full), and at most 50 agent-proposed rules waiting for review (`too_many_pending`). Bidirectional controls and zero-width characters are refused (`reason` `invisible`).
+- `if_updated_ms` (`ifUpdatedMs` for `delete`) refuses the change when the rule was changed since you read it: `invalid`, `reason` `changed`, `updatedMs` is the current value.
+- `todos.dispatchPreview` also returns `rules_text`: the rules text the dispatch will put into the session's system prompt.
+
 ## API overview
 
 - `pair(hubUrl, { code, name, storage?, profile?, headers?, ackTimeoutMs? })`: the joiner. `code` can be a 16-character (default) or 8-character (`anycon pair --short`) pairing code (case and hyphens don't matter), or a pairing link `https://hub/pair#code=…` / just `#code=…` (the code is in the URL fragment, which is not sent to the hub). The flow:

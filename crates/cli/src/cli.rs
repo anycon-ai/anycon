@@ -107,6 +107,10 @@ pub enum Command {
     /// Your to-do list on this node: add, list, close, reopen and remove items
     #[command(subcommand)]
     Todo(TodoCmd),
+    /// Your standing rules on this node: how you want agents to work. Active rules are added to the system prompt of
+    /// the sessions that to-dos are handed to (and of other sessions when the node is set to do so)
+    #[command(subcommand)]
+    Rule(RuleCmd),
     /// Run an MCP server on stdio so other agents can look at and drive this node's sessions through MCP tools
     /// (use `anycon mcp` as the server command in an MCP client's config)
     Mcp(McpArgs),
@@ -166,6 +170,64 @@ pub enum TodoCmd {
     History(TodoHistoryArgs),
 }
 
+#[derive(Subcommand, Debug)]
+pub enum RuleCmd {
+    /// Add a rule: a sentence or two about how you want agents to work. It takes effect at once. Inside an agent
+    /// session that anycon started, the rule is marked as proposed by an agent and does nothing until you confirm it
+    Add(RuleAddArgs),
+    /// List the rules that are active or waiting for your confirmation
+    Ls(RuleLsArgs),
+    /// Show one rule in full: its whole text, status, project and where it came from. Look at a rule here before you
+    /// confirm it
+    Show {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
+    /// Confirm a rule that is waiting for you, so it takes effect; prints its full text (not available inside an anycon
+    /// agent session)
+    Confirm {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
+    /// Reject a rule: it is kept, so the same suggestion is not made again, but it never takes effect (not available
+    /// inside an anycon agent session)
+    Reject {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
+    /// Switch a rule off without removing it (not available inside an anycon agent session)
+    Disable {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
+    /// Switch a disabled rule on again; prints its full text (not available inside an anycon agent session)
+    Enable {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
+    /// Remove a rule for good (not available inside an anycon agent session)
+    Rm {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct RuleAddArgs {
+    /// One or two sentences, at most 600 characters; line breaks are allowed
+    pub text: String,
+    /// Only apply the rule to sessions of this project (default: every project on this node)
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct RuleLsArgs {
+    /// Include disabled and rejected rules
+    #[arg(long)]
+    pub all: bool,
+}
+
 #[derive(Args, Debug)]
 pub struct TodoRunArgs {
     /// To-do id (a prefix is enough)
@@ -189,7 +251,7 @@ pub struct TodoRunArgs {
     #[arg(long)]
     pub allow_push: bool,
     /// Print the first message the agent would get right now (what `run` would send, including earlier reports) and
-    /// send nothing: no session is opened and nothing is recorded on the item
+    /// send nothing: no session is opened and nothing is recorded on the item. Active rules are listed after it
     #[arg(long)]
     pub dry_run: bool,
 }

@@ -242,7 +242,7 @@ async fn dispatch_opens_a_worktree_session_and_links_it() {
     // 「经过」：dispatched，然后这一轮的 result
     let h = wait_history(&td, &mut c, &t.id, 2).await;
     match &h.last().unwrap().data {
-        TodoEventData::Dispatched { session_id, agent, workspace_mode, no_push, by } => {
+        TodoEventData::Dispatched { session_id, agent, workspace_mode, no_push, by, .. } => {
             assert_eq!((session_id.as_str(), agent.as_str()), (r.session.id.as_str(), "fake"));
             assert_eq!(*workspace_mode, SessionWorkspaceMode::Worktree);
             assert!(!no_push);

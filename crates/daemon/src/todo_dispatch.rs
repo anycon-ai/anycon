@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
 
 use anycon_protocol::{
-    methods, ErrorCode, RpcError, SessionCreateParams, SessionStatus, SessionSummary, SessionWorkspace,
+    methods, ErrorCode, RpcError, RulesSkipped, SessionCreateParams, SessionStatus, SessionSummary, SessionWorkspace,
     SessionWorkspaceMode, Todo, TodoActivity, TodoActor, TodoChanged, TodoDispatchParams, TodoDispatchPreviewParams,
     TodoDispatchPreviewResult, TodoDispatchResult, TodoEvent, TodoEventData, TodoEventNotice, TodoHistoryParams,
     TodoHistoryResult, TodoSourceKind, TodoState,
@@ -769,8 +769,19 @@ pub async fn dispatch_preview(
         return Err(invalid("id", Some("closed"), "a closed todo cannot be dispatched; reopen it first".into()));
     }
     let earlier = c.store.todo_earlier_results(&p.id).await.map_err(internal)?;
+    // 规则文字和真正的注入同一个函数（§ 23.5）；这一项没有项目时只有全节点规则
+    let preview_project = match p.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Some(crate::todos::check_project(s)?),
+        None => todo.project.clone(),
+    };
+    let rules_text = crate::rules::injection_for(&c.store, &c.workspace, preview_project.as_deref())
+        .await
+        .map_err(internal)?
+        .map(|i| i.text)
+        .unwrap_or_default();
     Ok(TodoDispatchPreviewResult {
         first_message: compose_first_message(&todo.title, &todo.body, &earlier, p.no_push.unwrap_or(true)),
+        rules_text,
     })
 }
 
@@ -908,6 +919,14 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
 
     let earlier = c.store.todo_earlier_results(&old.id).await.map_err(internal)?;
     let prompt = compose_first_message(&old.title, &old.body, &earlier, no_push);
+    // 生效的规则（§ 23.5）：派发的会话总是注入；agent 收不到 `system_prompt_append` 时不注入、不让派发失败，只在「经过」里记原因
+    let (rules, rules_skipped) =
+        match crate::rules::injection_for(&c.store, &c.workspace, Some(&project)).await.map_err(internal)? {
+            Some(inj) if info.capabilities.system_prompt => (Some(inj), None),
+            Some(_) => (None, Some(RulesSkipped::Unsupported)),
+            None => (None, None),
+        };
+    let rule_ids = rules.as_ref().map(|i| i.rule_ids.clone()).unwrap_or_default();
     let create = SessionCreateParams {
         project: Some(project.clone()),
         agent: p.agent.clone(),
@@ -918,7 +937,7 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
         workspace,
     };
     // 开会话：和 `session.create` 同一条路径。失败就整个失败，什么都没留下
-    let session: SessionSummary = c.sessions.create_for_todo(caller, create, Some(old.id.clone())).await?;
+    let session: SessionSummary = c.sessions.create_for_todo(caller, create, Some(old.id.clone()), rules).await?;
 
     // 会话已经在了：关联、「经过」、这一项的修改在同一个事务里。写不进去就把会话删掉
     let workspace_mode =
@@ -944,6 +963,8 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
         workspace_mode,
         no_push,
         by: actor_of(caller),
+        rules: rule_ids,
+        rules_skipped,
     };
     let committed: Result<TodoEvent, StoreError> = async {
         let mut tx = c.store.pool().begin().await?;

@@ -129,6 +129,20 @@ pub const TODO_HISTORY: &str = "todo.history";
 /// D→C notification，params = TodoEventNotice：「经过」多了一条。
 pub const TODO_EVENT: &str = "todo.event";
 
+// rule（决策档案，docs/spec/daemon.md § 23）
+/// `{ status?, project? }` → `{ rules, budget }`
+pub const RULE_LIST: &str = "rule.list";
+/// 按 `id` 幂等：已存在时原样返回已有的那一条。
+pub const RULE_ADD: &str = "rule.add";
+/// 带 `if_updated_ms` 时只在这条规则现在的 `updated_ms` 正是它时才改（否则 `invalid` / `changed`）。
+pub const RULE_UPDATE: &str = "rule.update";
+/// 物理删除；`if_updated_ms` 同 `rule.update`。
+pub const RULE_DELETE: &str = "rule.delete";
+/// 现在开一个这个项目的会话会注入的那段文字。只读。
+pub const RULE_PREVIEW: &str = "rule.preview";
+/// D→C notification，params = RuleChanged
+pub const RULE_CHANGED: &str = "rule.changed";
+
 // blob（附件，ADR-35）
 /// 开始上传一个附件。
 pub const BLOB_PUT_BEGIN: &str = "blob.put_begin";
@@ -264,6 +278,12 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(TODO_DISPATCH, Some("TodoDispatchParams"), Some("TodoDispatchResult")),
     req(TODO_HISTORY, Some("TodoHistoryParams"), Some("TodoHistoryResult")),
     notif(TODO_EVENT, "TodoEventNotice"),
+    req(RULE_LIST, Some("RuleListParams"), Some("RuleListResult")),
+    req(RULE_ADD, Some("RuleAddParams"), Some("Rule")),
+    req(RULE_UPDATE, Some("RuleUpdateParams"), Some("Rule")),
+    req(RULE_DELETE, Some("RuleDeleteParams"), None),
+    req(RULE_PREVIEW, Some("RulePreviewParams"), Some("RulePreviewResult")),
+    notif(RULE_CHANGED, "RuleChanged"),
     req(BLOB_PUT_BEGIN, Some("BlobPutBeginParams"), Some("BlobPutBeginResult")),
     req(BLOB_PUT_CHUNK, Some("BlobPutChunkParams"), None),
     req(BLOB_PUT_END, Some("BlobIdParams"), Some("AttachmentRef")),

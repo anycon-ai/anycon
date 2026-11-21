@@ -115,6 +115,8 @@ pub struct FakeAdapter {
     pub handles: Mutex<Vec<Arc<HandleLog>>>,
     pub resume_supported: AtomicBool,
     pub interject: AtomicBool,
+    /// `capabilities.system_prompt`（探测时读，默认 true；改了要 `agent.list { refresh: true }` 重新探测）。
+    pub system_prompt: AtomicBool,
     /// `capabilities.attachments`（探测时读；默认四种图片，改了要 `agent.list { refresh: true }` 重新探测）。
     pub attachments: Mutex<Vec<String>>,
     /// 设了就让 `send` 像真实 adapter（Claude Code）一样在送出那一刻读 `attachment_paths`：读不了返回 `AdapterError::Io`。
@@ -184,6 +186,7 @@ impl FakeAdapter {
             handles: Mutex::new(Vec::new()),
             resume_supported: AtomicBool::new(true),
             interject: AtomicBool::new(false),
+            system_prompt: AtomicBool::new(true),
             attachments: Mutex::new(
                 ["image/png", "image/jpeg", "image/gif", "image/webp"].iter().map(|m| m.to_string()).collect(),
             ),
@@ -254,6 +257,7 @@ impl FakeAdapter {
                 structured_output: false,
                 env: true,
                 rewind: false,
+                system_prompt: self.system_prompt.load(Ordering::SeqCst),
             },
             probed_at_ms: crate::util::now_ms(),
         };

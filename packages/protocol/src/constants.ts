@@ -160,6 +160,20 @@ export const METHODS = {
   /** D→C notification，params = TodoEventNotice */
   TODO_EVENT: 'todo.event',
 
+  // rule（决策档案，docs/spec/daemon.md § 23）
+  /** params = RuleListParams → RuleListResult */
+  RULE_LIST: 'rule.list',
+  /** params = RuleAddParams → Rule；按 `id` 幂等：已存在时原样返回已有的那一条 */
+  RULE_ADD: 'rule.add',
+  /** params = RuleUpdateParams → Rule；`if_updated_ms` 对不上 → `invalid`（`reason = 'changed'`，`data.updated_ms`） */
+  RULE_UPDATE: 'rule.update',
+  /** params = RuleDeleteParams；`if_updated_ms` 同 `rule.update` */
+  RULE_DELETE: 'rule.delete',
+  /** params = RulePreviewParams → RulePreviewResult；只读：现在开一个这个项目的会话会注入的那段文字 */
+  RULE_PREVIEW: 'rule.preview',
+  /** D→C notification，params = RuleChanged */
+  RULE_CHANGED: 'rule.changed',
+
   // blob（附件，ADR-35）
   /** params = BlobPutBeginParams → BlobPutBeginResult */
   BLOB_PUT_BEGIN: 'blob.put_begin',

@@ -434,9 +434,8 @@ async fn a_todo_takes_at_most_twenty_dispatches() {
 
     // 第 2 次只带 1 条，第 7 次起只带最近 5 次各自的最后一条 result（最早的不带）：和用历史里的结果按同一个格式拼出来的一样
     let h = history(&td, &mut c, &t.id).await;
-    let last_result = |sid: &str| -> String {
-        results(&h).into_iter().rfind(|r| r.0 == sid).map(|r| r.2).unwrap_or_default()
-    };
+    let last_result =
+        |sid: &str| -> String { results(&h).into_iter().rfind(|r| r.0 == sid).map(|r| r.2).unwrap_or_default() };
     let earlier = |from: usize, to: usize| -> Vec<anycon_daemon::todo_dispatch::EarlierResult> {
         ids[from..to]
             .iter()

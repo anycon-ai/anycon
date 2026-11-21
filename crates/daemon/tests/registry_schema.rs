@@ -344,6 +344,15 @@ async fn walk_todo(w: &mut Walk<'_>) {
     w.call(methods::TODO_LIST, json!({ "include_closed": true, "limit": 1 })).await;
     w.call(methods::TODO_UPDATE, json!({ "id": id, "state": "done", "clear": ["project", "due_ms"] })).await;
     w.call(methods::TODO_DELETE, json!({ "id": id })).await;
+    // 派发（§ 22）：开会话、关联、「经过」
+    w.call(methods::WORKSPACE_CREATE, json!({ "name": "todoproj" })).await;
+    let id2 = "0b9c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a78";
+    w.call(methods::TODO_ADD, json!({ "id": id2, "title": "hand it over", "project": "todoproj" })).await;
+    let r = w.call(methods::TODO_DISPATCH, json!({ "id": id2, "agent": "fake", "no_push": false })).await;
+    assert_eq!(r["todo"]["state"], "working");
+    assert_eq!(r["session"]["todo_id"], id2);
+    w.call(methods::TODO_HISTORY, json!({ "id": id2 })).await;
+    w.call(methods::TODO_HISTORY, json!({ "id": id2, "before_seq": 1, "limit": 5 })).await;
 }
 
 async fn walk_preview(w: &mut Walk<'_>, td: &TestDaemon, psid: &str) {
@@ -419,6 +428,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         methods::NODE_ENROLL_RESOLVED,
         methods::NODE_SECURITY_EVENT,
         methods::TODO_CHANGED,
+        methods::TODO_EVENT,
     ] {
         assert!(seen.contains(want), "the walk should have produced {want}: {seen:?}");
     }

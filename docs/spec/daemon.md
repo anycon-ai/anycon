@@ -1303,7 +1303,7 @@ Todo {
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `todo.dispatch` | C→D | `{ id, agent, project?, workspace?, settings?, no_push?, message_id? }` → `{ todo: Todo, session: SessionSummary }` |
-| `todo.dispatch_preview` | C→D | `{ id, no_push? }` → `{ first_message }`：此刻派发会发出的第一条消息，一字不差。和 `todo.dispatch` 用同一个组装函数（`compose_first_message`）和同一套「之前的结果」的选法，同样先把这一项排着的结果记下来（持清单的锁），`no_push` 缺省 `true`。只有一个副作用：把这一项排着、还没记的结果先记进「经过」（有的话，和派发之前的那一步一样会广播 `todo.event` / `todo.changed`）；不开会话、不审计、不发推送通知；不改这一项的其余内容。`id` 不是小写 UUID → `invalid`；不存在 → `not_found`；已关闭 → `invalid`（`data.reason = "closed"`）；自报了 `mcp` 的本机连接 → `forbidden`。两次调用之间有新的结果记进来时，之后派发发出的会和预览不同（预览里写明「可能有变」）。客户端不自己拼这条消息 |
+| `todo.dispatch_preview` | C→D | `{ id, no_push? }` → `{ first_message }`：此刻派发会发出的第一条消息，一字不差。和 `todo.dispatch` 用同一个组装函数（`compose_first_message`）和同一套「之前的结果」的选法，同样先把这一项排着的结果记下来（持清单的锁），`no_push` 缺省 `true`。只有一个副作用：把这一项排着、还没记的结果先记进「经过」（有的话，和派发之前的那一步一样会广播 `todo.event`；这一项的 `activity` 因此变了才跟一条 `todo.changed`）；不开会话、不审计、不发推送通知；不改这一项的其余内容。`id` 不是小写 UUID → `invalid`；不存在 → `not_found`；已关闭 → `invalid`（`data.reason = "closed"`）；自报了 `mcp` 的本机连接 → `forbidden`。两次调用之间有新的结果记进来时，之后派发发出的会和预览不同（预览里写明「可能有变」）。客户端不自己拼这条消息 |
 | `todo.history` | C→D | `{ id, before_seq?, limit? }` → `{ events: [TodoEvent], has_more }`；按 `seq` 从新到旧，`limit` 缺省 50、上限 200（0 按 1）；`before_seq` 只给 `seq` 更小的，翻页用上一页最后一条的 `seq`。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
 | `todo.event` | D→C notification | `{ todo_id, event: TodoEvent }`：「经过」多了一条，发给所有在线客户端 |
 

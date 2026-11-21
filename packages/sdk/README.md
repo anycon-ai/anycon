@@ -185,8 +185,8 @@ await node.rules.delete(rule.id, { ifUpdatedMs: rule.updated_ms })
 node.on('rule_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.rule)) // every client gets these, the caller too
 ```
 
-- `add` is idempotent on `id`. `agent: true` says the call is made on behalf of an agent: the rule is stored as `pending` with source `agent` and does nothing until a person confirms it with `update({ status: 'active' })`.
-- A rule is at most 600 characters (line breaks allowed). The rules that are active for one session take at most 4096 bytes in all, template included; an `add` or `update` that would go over is refused with `RpcError` `invalid`, `reason` `over_budget` (`bytes` and `cap` say how far). At most 300 rules (`reason` `too_many`).
+- `add` is idempotent on `id`. `agent: true` says the call is made on behalf of an agent: the rule is stored as `pending` with source `agent` (pass `origin_session` to record the session it came from) and does nothing until a person confirms it with `update({ status: 'active' })`.
+- A rule is at most 600 characters (line breaks allowed). The rules that are active for one session take at most 4096 bytes in all, template included; an `add` or `update` that would go over is refused with `RpcError` `invalid`, `reason` `over_budget` (`bytes` and `cap` say how far). At most 300 rules not counting rejected ones (`reason` `too_many`; rejected ones have a cap of their own and the oldest is deleted when it is full), and at most 50 agent-proposed rules waiting for review (`too_many_pending`). Bidirectional controls and zero-width characters are refused (`reason` `invisible`).
 - `if_updated_ms` (`ifUpdatedMs` for `delete`) refuses the change when the rule was changed since you read it: `invalid`, `reason` `changed`, `updatedMs` is the current value.
 - `todos.dispatchPreview` also returns `rules_text`: the rules text the dispatch will put into the session's system prompt.
 

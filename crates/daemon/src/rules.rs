@@ -26,8 +26,13 @@ use crate::workspace::Workspace;
 
 /// 规则文字的码点数上限。
 pub const MAX_TEXT_CHARS: usize = 600;
-/// 规则总数上限（所有状态合计）：`rule.list` 一次给全，不翻页。
+/// 规则总数上限（不含 `rejected` 的）：`rule.list` 一次给全，不翻页。
 pub const MAX_RULES: i64 = 300;
+/// `rejected` 的规则另有一个上限（留着是为了之后提炼时不再提同样的）：满了再否决一条，就删掉最早否决的那一条。
+/// 这是 daemon 唯一会自动删除的规则；它只删 `rejected` 的，从不动待确认、生效、停用的。
+pub const MAX_REJECTED: i64 = 300;
+/// agent 提的（`agent`、`extracted` 来源）、还在待确认的规则最多这么多：agent 占不满 300 个名额，把人挡在外面。
+pub const MAX_AGENT_PENDING: i64 = 50;
 /// 一个会话拿到的规则文字（含模板）的字节上限（§ 23.4）。
 pub const BUDGET_CAP: usize = 4 * 1024;
 /// 来源里 `session_id` / `request_id` 的字节上限。
@@ -90,7 +95,30 @@ fn check_text(text: &str) -> RpcResult<String> {
     if t.chars().any(|c| c != '\n' && crate::config::is_line_break_or_control(c)) {
         return Err(invalid("text", None, "text must not contain control characters other than line breaks".into()));
     }
+    // 规则原样注入、要由人看过才生效：看不见的字符（双向控制符、零宽字符）没法在界面上审阅，一律拒绝
+    if t.chars().any(is_invisible_format) {
+        return Err(invalid(
+            "text",
+            Some("invisible"),
+            "text must not contain bidirectional controls or zero-width characters".into(),
+        ));
+    }
     Ok(t.to_string())
+}
+
+/// 双向文字控制符（U+202A–U+202E、U+2066–U+2069、U+200E / U+200F、U+061C）和零宽字符（U+200B–U+200D、U+2060、U+FEFF）。
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{061C}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'
+            | '\u{FEFF}'
+    )
 }
 
 /// 来源里的 `session_id` / `request_id`：非空、≤ 128 字节、不含控制字符。
@@ -138,7 +166,7 @@ pub fn render_rules_text(texts: &[&str]) -> String {
     s
 }
 
-/// 一个会话拿到的规则：全节点规则在前，这个项目的在后，各按 `created_ms`（再按 `id`）。`active` 必须已经是按这个顺序排好的生效规则。
+/// 一个会话拿到的规则：全节点规则在前，这个项目的在后，各按 `created_ms`（同一毫秒的按写入先后）。`active` 必须已经是按这个顺序排好的生效规则。
 pub fn select_for_session<'a>(
     active: &[&'a Rule],
     project: Option<&str>,
@@ -274,9 +302,9 @@ fn check_writable(r: &Rule) -> Result<(), StoreError> {
 }
 
 impl Store {
-    /// 全部规则（≤ 300 条），按 `created_ms`、`id` 从早到晚。
+    /// 全部规则（≤ 300 条），按 `created_ms` 从早到晚（同一毫秒的按写入先后）。
     pub async fn rules_all(&self) -> Result<Vec<Rule>, StoreError> {
-        let rows = sqlx::query("SELECT * FROM rules ORDER BY created_ms, id").fetch_all(self.pool()).await?;
+        let rows = sqlx::query("SELECT * FROM rules ORDER BY created_ms, rowid").fetch_all(self.pool()).await?;
         Ok(rows.iter().map(row_to_rule).collect())
     }
 
@@ -285,8 +313,31 @@ impl Store {
         Ok(r.as_ref().map(row_to_rule))
     }
 
+    /// 占 [`MAX_RULES`] 名额的规则数（不含 `rejected`）。
     pub async fn rule_count(&self) -> Result<i64, StoreError> {
-        Ok(sqlx::query("SELECT COUNT(*) FROM rules").fetch_one(self.pool()).await?.get(0))
+        Ok(sqlx::query("SELECT COUNT(*) FROM rules WHERE status != 'rejected'").fetch_one(self.pool()).await?.get(0))
+    }
+
+    pub async fn rule_count_rejected(&self) -> Result<i64, StoreError> {
+        Ok(sqlx::query("SELECT COUNT(*) FROM rules WHERE status = 'rejected'").fetch_one(self.pool()).await?.get(0))
+    }
+
+    /// 待确认的、不是人写的（`agent` / `extracted`）规则数，[`MAX_AGENT_PENDING`] 的依据。
+    pub async fn rule_count_agent_pending(&self) -> Result<i64, StoreError> {
+        Ok(sqlx::query("SELECT COUNT(*) FROM rules WHERE status = 'pending' AND source_kind IN ('agent', 'extracted')")
+            .fetch_one(self.pool())
+            .await?
+            .get(0))
+    }
+
+    /// 最早否决的那条 `rejected` 规则（`updated_ms` 最小；`except` 是刚刚否决的那一条，不算）。
+    pub async fn rule_oldest_rejected(&self, except: &str) -> Result<Option<String>, StoreError> {
+        let r =
+            sqlx::query("SELECT id FROM rules WHERE status = 'rejected' AND id != ? ORDER BY updated_ms, id LIMIT 1")
+                .bind(except)
+                .fetch_optional(self.pool())
+                .await?;
+        Ok(r.map(|r| r.get(0)))
     }
 
     pub async fn rule_insert(&self, r: &Rule) -> Result<(), StoreError> {
@@ -431,9 +482,14 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
     let by_agent = p.agent.unwrap_or(false) || caller.is_mcp();
     let device_id = (!caller.local).then(|| caller.device_id.clone());
     let (status, source) = if by_agent {
+        // `origin_session` 只在这条规则记成 agent 写的、并且这个会话存在时才记，否则丢掉这个字段（同 `todo.add`，§ 21.2）
+        let session_id = match p.origin_session.as_deref() {
+            Some(s) if c.store.session_exists(s).await.map_err(internal)? => Some(s.to_string()),
+            _ => None,
+        };
         (
             RuleStatus::Pending,
-            RuleSource { kind: RuleSourceKind::Agent, session_id: None, seq: None, request_id: None, device_id },
+            RuleSource { kind: RuleSourceKind::Agent, session_id, seq: None, request_id: None, device_id },
         )
     } else {
         let status = match p.status.unwrap_or(RuleAddStatus::Active) {
@@ -458,6 +514,15 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
 
     if c.store.rule_count().await.map_err(internal)? >= MAX_RULES {
         return Err(invalid("rules", Some("too_many"), format!("at most {MAX_RULES} rules")));
+    }
+    if by_agent && c.store.rule_count_agent_pending().await.map_err(internal)? >= MAX_AGENT_PENDING {
+        return Err(invalid(
+            "rules",
+            Some("too_many_pending"),
+            format!(
+                "at most {MAX_AGENT_PENDING} agent-proposed rules can wait for review; confirm or reject some first"
+            ),
+        ));
     }
     let now = now_ms();
     let rule = Rule {
@@ -546,6 +611,13 @@ pub async fn update(c: &Ctx, caller: &Caller, p: RuleUpdateParams) -> RpcResult<
     if fields.is_empty() {
         return Ok(old);
     }
+    // 把否决的规则改回别的状态，和新建一样占一个名额
+    if old.status == RuleStatus::Rejected
+        && new.status != RuleStatus::Rejected
+        && c.store.rule_count().await.map_err(internal)? >= MAX_RULES
+    {
+        return Err(invalid("rules", Some("too_many"), format!("at most {MAX_RULES} rules")));
+    }
     // 变成生效、或者生效的规则改了文字 / 项目：检查字数上限（§ 23.4）
     if status_changes_to_active(Some(&old), &new) {
         let all = c.store.rules_all().await.map_err(internal)?;
@@ -563,7 +635,29 @@ pub async fn update(c: &Ctx, caller: &Caller, p: RuleUpdateParams) -> RpcResult<
     }
     c.audit.record(caller, "rule.update", Some(&new.id), detail).await;
     notify_changed(c, RuleChanged { id: new.id.clone(), rule: Some(new.clone()), deleted: false });
+    // `rejected` 的规则有自己的上限：满了就删掉最早否决的那条（§ 23.7）
+    if new.status == RuleStatus::Rejected && old.status != RuleStatus::Rejected {
+        evict_oldest_rejected(c, caller, &new.id).await;
+    }
     Ok(new)
+}
+
+/// `rejected` 的规则超过 [`MAX_REJECTED`] 时删掉最早否决的（`except` 是刚否决的那条）。调用方持规则锁。
+async fn evict_oldest_rejected(c: &Ctx, caller: &Caller, except: &str) {
+    while c.store.rule_count_rejected().await.is_ok_and(|n| n > MAX_REJECTED) {
+        let Ok(Some(oldest)) = c.store.rule_oldest_rejected(except).await else { return };
+        match c.store.rule_delete(&oldest).await {
+            Ok(true) => {
+                c.audit.record(caller, "rule.delete", Some(&oldest), json!({ "auto": "rejected_cap" })).await;
+                notify_changed(c, RuleChanged { id: oldest, rule: None, deleted: true });
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot delete an old rejected rule");
+                return;
+            }
+        }
+    }
 }
 
 /// `rule.delete`：物理删除。`if_updated_ms` 对不上什么都不删。检查和删除在同一把锁里。

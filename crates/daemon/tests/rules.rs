@@ -370,7 +370,7 @@ async fn update_merges_fields_and_clear_wins_after_the_merge() {
 async fn at_most_300_rules_in_any_status() {
     let td = TestDaemon::start().await;
     let mut c = td.local_cli_client();
-    let statuses = [RuleStatus::Pending, RuleStatus::Disabled, RuleStatus::Rejected, RuleStatus::Pending];
+    let statuses = [RuleStatus::Pending, RuleStatus::Disabled, RuleStatus::Active, RuleStatus::Disabled];
     for i in 0..300u64 {
         td.ctx.store.rule_insert(&row(&id(), "x", None, statuses[i as usize % 4], i + 1)).await.unwrap();
     }
@@ -379,13 +379,160 @@ async fn at_most_300_rules_in_any_status() {
     // 重发已有的 id 不受影响
     let existing = list(&td, &mut c, json!({})).await.rules[0].clone();
     assert_eq!(add(&td, &mut c, json!({ "id": existing.id, "text": "whatever" })).await.unwrap(), existing);
-    // agent 的待确认规则也占名额
+    // agent 的待确认规则也占名额（这里是总数先到）
     let e = add(&td, &mut c, json!({ "id": id(), "text": "x", "agent": true })).await.unwrap_err();
     assert_eq!(code(&e), invalid("rules", Some("too_many")));
     // 删一条就又能加
     delete(&td, &mut c, json!({ "id": existing.id })).await.unwrap();
     add_ok(&td, &mut c, "fits now").await;
     assert_eq!(list(&td, &mut c, json!({})).await.rules.len(), 300);
+    td.shutdown().await;
+}
+
+/// 直接写库的一条别的来源的规则。
+fn row_from(id: &str, status: RuleStatus, kind: RuleSourceKind, created_ms: u64) -> Rule {
+    let mut r = row(id, "x", None, status, created_ms);
+    r.source.kind = kind;
+    r
+}
+
+#[tokio::test]
+async fn agents_cannot_fill_the_list_with_pending_rules_and_lock_the_person_out() {
+    let td = TestDaemon::start().await;
+    let mut cli = td.local_cli_client();
+    let mut mcp = td.local_mcp_client();
+    // 50 条 agent 提的（一半是提炼出来的）待确认规则：到上限
+    for i in 0..50u64 {
+        let kind = if i % 2 == 0 { RuleSourceKind::Agent } else { RuleSourceKind::Extracted };
+        td.ctx.store.rule_insert(&row_from(&id(), RuleStatus::Pending, kind, i + 1)).await.unwrap();
+    }
+    for c in [&mut cli, &mut mcp] {
+        let e = add(&td, c, json!({ "id": id(), "text": "one more", "agent": true })).await.unwrap_err();
+        assert_eq!(code(&e), invalid("rules", Some("too_many_pending")));
+    }
+    // 人照常能写：待确认的也行（来源是 manual，不算）、直接生效的也行
+    add(&td, &mut cli, json!({ "id": id(), "text": "mine", "status": "pending" })).await.unwrap();
+    let mine = add_ok(&td, &mut cli, "mine too").await;
+    assert_eq!(mine.status, RuleStatus::Active);
+    // 重发已有的 id 不受影响
+    let existing = list(&td, &mut cli, json!({})).await.rules[0].clone();
+    assert_eq!(add(&td, &mut cli, json!({ "id": existing.id, "text": "x", "agent": true })).await.unwrap(), existing);
+    // 人否决、确认一条之后，agent 又有名额
+    update(&td, &mut cli, json!({ "id": existing.id, "status": "rejected" })).await.unwrap();
+    let a = add(&td, &mut mcp, json!({ "id": id(), "text": "fits again" })).await.unwrap();
+    assert_eq!(a.status, RuleStatus::Pending);
+    let e = add(&td, &mut mcp, json!({ "id": id(), "text": "full again" })).await.unwrap_err();
+    assert_eq!(code(&e), invalid("rules", Some("too_many_pending")));
+    // 总数还剩很多：人没被挡住
+    assert!(list(&td, &mut cli, json!({})).await.rules.len() < 300);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn rejected_rules_do_not_count_toward_the_300_and_have_a_cap_of_their_own() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let mut watcher = td.hub_client("dev-w", "W");
+    // 300 条否决的不占那 300 个名额
+    let mut rejected = Vec::new();
+    for i in 0..300u64 {
+        let r = row(&id(), "old", None, RuleStatus::Rejected, i + 1);
+        td.ctx.store.rule_insert(&r).await.unwrap();
+        rejected.push(r.id);
+    }
+    // 另有生效、停用、待确认的各一条，自动删除永远不能碰它们（它们的时间比否决的还早）
+    let keep_active = add_ok(&td, &mut c, "keep active").await;
+    let keep_off = add_ok(&td, &mut c, "keep disabled").await;
+    update(&td, &mut c, json!({ "id": keep_off.id, "status": "disabled" })).await.unwrap();
+    let keep_pending =
+        add(&td, &mut c, json!({ "id": id(), "text": "keep pending", "status": "pending" })).await.unwrap();
+    let _ = changes(&mut watcher);
+    let before = audit(&td, "rule.delete").await.len();
+
+    // 再否决一条：最早否决的（updated_ms 最小）被删掉，通知所有客户端，审计里记着是自动的
+    update(&td, &mut c, json!({ "id": keep_active.id, "status": "rejected" })).await.unwrap();
+    let ids: Vec<String> = list(&td, &mut c, json!({})).await.rules.into_iter().map(|r| r.id).collect();
+    assert!(!ids.contains(&rejected[0]), "the oldest rejected rule is gone");
+    assert!(ids.contains(&rejected[1]) && ids.contains(&keep_active.id));
+    assert!(ids.contains(&keep_off.id) && ids.contains(&keep_pending.id));
+    let rej = list(&td, &mut c, json!({ "status": "rejected" })).await.rules.len();
+    assert_eq!(rej, 300);
+    let gone: Vec<_> = changes(&mut watcher).into_iter().filter(|n| n.deleted).map(|n| n.id).collect();
+    assert_eq!(gone, vec![rejected[0].clone()]);
+    let d = audit(&td, "rule.delete").await;
+    assert_eq!(d.len(), before + 1);
+    assert_eq!(d[0].detail, json!({ "auto": "rejected_cap" }));
+    // 否决的和别的合计超过 300 也照样能加：只有不含否决的才占名额
+    for i in 0..10 {
+        add_ok(&td, &mut c, &format!("fine {i}")).await;
+    }
+    // 把否决的改回别的状态要占名额：名额满了就不行
+    td.shutdown().await;
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let r = row(&id(), "old", None, RuleStatus::Rejected, 1);
+    td.ctx.store.rule_insert(&r).await.unwrap();
+    for i in 0..300u64 {
+        td.ctx.store.rule_insert(&row(&id(), "x", None, RuleStatus::Disabled, i + 2)).await.unwrap();
+    }
+    let e = update(&td, &mut c, json!({ "id": r.id, "status": "disabled" })).await.unwrap_err();
+    assert_eq!(code(&e), invalid("rules", Some("too_many")));
+    assert_eq!(rule_of(&td, &mut c, &r.id).await.status, RuleStatus::Rejected);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn invisible_characters_are_refused_in_a_rule() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    for bad in [
+        "a\u{202A}b",
+        "a\u{202E}b",
+        "a\u{2066}b",
+        "a\u{2069}b",
+        "a\u{200E}b",
+        "a\u{200F}b",
+        "a\u{061C}b",
+        "a\u{200B}b",
+        "a\u{200C}b",
+        "a\u{200D}b",
+        "a\u{2060}b",
+        "a\u{FEFF}b",
+        "\u{200B}lead",
+        "tail\u{202E}",
+    ] {
+        let e = add(&td, &mut c, json!({ "id": id(), "text": bad })).await.unwrap_err();
+        assert_eq!(code(&e), invalid("text", Some("invisible")), "{bad:?}");
+    }
+    let r = add_ok(&td, &mut c, "ok 中文 emoji 🙂 and a normal line\nbreak").await;
+    let e = update(&td, &mut c, json!({ "id": r.id, "text": "now\u{200B}bad" })).await.unwrap_err();
+    assert_eq!(code(&e), invalid("text", Some("invisible")));
+    assert_eq!(rule_of(&td, &mut c, &r.id).await.text, r.text);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_rule_records_the_session_that_proposed_it_when_that_session_exists() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let s: SessionSummary = c
+        .call(&td, methods::SESSION_CREATE, json!({ "agent": "fake", "prompt": "hi", "message_id": "m1" }))
+        .await
+        .unwrap();
+    let r = add(&td, &mut c, json!({ "id": id(), "text": "t", "agent": true, "origin_session": s.id })).await.unwrap();
+    assert_eq!((r.source.kind, r.source.session_id.as_deref()), (RuleSourceKind::Agent, Some(s.id.as_str())));
+    // 没有这个会话：丢掉这个字段，照常建
+    let r = add(&td, &mut c, json!({ "id": id(), "text": "t", "agent": true, "origin_session": "sess_nope" }))
+        .await
+        .unwrap();
+    assert_eq!((r.source.kind, r.source.session_id), (RuleSourceKind::Agent, None));
+    // 自报了 mcp 的连接同样
+    let mut mcp = td.local_mcp_client();
+    let r = add(&td, &mut mcp, json!({ "id": id(), "text": "t", "origin_session": s.id })).await.unwrap();
+    assert_eq!(r.source.session_id.as_deref(), Some(s.id.as_str()));
+    // 人写的规则不记：它不是 agent 提的
+    let r = add(&td, &mut c, json!({ "id": id(), "text": "t", "origin_session": s.id })).await.unwrap();
+    assert_eq!((r.source.kind, r.source.session_id), (RuleSourceKind::Manual, None));
     td.shutdown().await;
 }
 
@@ -1285,6 +1432,26 @@ async fn the_dispatch_preview_shows_the_rules_text_the_dispatch_will_inject() {
         spawned_settings(&td, &r.session.id).await.system_prompt_append,
         Some(pv(&td, &with_project.id).await.rules_text)
     );
+    // `project` 给了就用它的规则：派发会选另一个项目时，预览和真正的注入一致
+    project_dir(&td, "api");
+    add_in(&td, &mut c, "api rule", "api").await;
+    let mut c2 = td.local_cli_client();
+    let other: TodoDispatchPreviewResult = c2
+        .call(
+            &td,
+            methods::TODO_DISPATCH_PREVIEW,
+            json!({ "id": with_project.id, "project": " api ", "no_push": false }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(other.rules_text, text_of(&["node rule", "api rule"]));
+    let r = dispatch(&td, &mut c, &with_project.id, json!({ "project": "api" })).await;
+    assert_eq!(spawned_settings(&td, &r.session.id).await.system_prompt_append, Some(other.rules_text));
+    let e = c2
+        .call::<Value>(&td, methods::TODO_DISPATCH_PREVIEW, json!({ "id": without.id, "project": "a\nb" }))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), invalid("project", None));
     // 预览不是注入：它不改 last_injected_ms（上面的派发之前没有任何规则被注入过）
     td.shutdown().await;
 }

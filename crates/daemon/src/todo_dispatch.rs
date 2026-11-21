@@ -770,7 +770,11 @@ pub async fn dispatch_preview(
     }
     let earlier = c.store.todo_earlier_results(&p.id).await.map_err(internal)?;
     // 规则文字和真正的注入同一个函数（§ 23.5）；这一项没有项目时只有全节点规则
-    let rules_text = crate::rules::injection_for(&c.store, &c.workspace, todo.project.as_deref())
+    let preview_project = match p.project.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Some(crate::todos::check_project(s)?),
+        None => todo.project.clone(),
+    };
+    let rules_text = crate::rules::injection_for(&c.store, &c.workspace, preview_project.as_deref())
         .await
         .map_err(internal)?
         .map(|i| i.text)

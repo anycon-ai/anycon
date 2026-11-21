@@ -133,7 +133,8 @@ pub struct RuleListParams {
 pub struct RuleBudget {
     /// 一个会话拿到的规则文字（含模板）的字节上限。
     pub cap: u64,
-    /// 模板的开头加上全节点生效规则的字节数：一个没有项目规则的会话拿到的文字的大小。
+    /// 模板的开头加上全节点生效规则的字节数；一条生效的规则都没有时是 0。一个会话拿到的文字是它加上这个会话的项目的 `projects[项目]`
+    /// （没有项目规则的会话就是它自己）。只有项目规则生效时，它只是模板的开头。
     pub node_bytes: u64,
     /// 每个项目的生效规则的字节数（不含 `node_bytes`），键是项目名。一个这个项目的会话拿到的文字是 `node_bytes + projects[项目]`。
     pub projects: BTreeMap<String, u64>,
@@ -141,7 +142,7 @@ pub struct RuleBudget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RuleListResult {
-    /// 按 `created_ms`（再按 `id`）从早到晚。
+    /// 按 `created_ms` 从早到晚（同一毫秒的按写入先后）。
     pub rules: Vec<Rule>,
     pub budget: RuleBudget,
 }
@@ -187,6 +188,9 @@ pub struct RuleAddParams {
     /// 调用方自报「这是 agent 写的」：状态强制为 `pending`，来源强制为 `agent`。只会让这条规则更不被信任，所以不需要校验。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
+    /// 这条规则是哪个会话里的 agent 提的；只在这条规则记成 agent 写的、并且这个会话存在时才记（同 `todo.add` 的 `origin_session`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session: Option<SessionId>,
 }
 
 /// `rule.update` 的 `clear` 可以清空的可选字段。

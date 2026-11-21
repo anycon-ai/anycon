@@ -10,7 +10,7 @@
 //!
 //! 规则的文字可能来自 agent（待确认的规则），表格输出经 [`sanitize_label`] 去掉控制字符；`--json` 输出原始内容。
 
-use anycon_daemon::env::AGENT_MARKER_ENV;
+use anycon_daemon::env::{AGENT_MARKER_ENV, SESSION_ID_ENV};
 use anycon_daemon::rules::BUDGET_CAP;
 use anycon_protocol::*;
 use serde_json::{json, Value};
@@ -19,7 +19,7 @@ use crate::cli::{RuleAddArgs, RuleCmd, RuleLsArgs};
 use crate::commands::App;
 use crate::conn::Conn;
 use crate::error::{CliError, Result, EXIT_ERROR};
-use crate::output::{sanitize_label, table};
+use crate::output::{sanitize_label, table, visible};
 
 /// 这个进程是不是在 anycon 拉起的 agent 里。
 fn inside_agent() -> bool {
@@ -56,6 +56,16 @@ fn friendly(e: CliError) -> CliError {
         Some("too_many") => {
             CliError::new(e.exit, e.code, "there are already 300 rules; remove some first (`anycon rule ls --all`)")
         }
+        Some("too_many_pending") => CliError::new(
+            e.exit,
+            e.code,
+            "too many agent-proposed rules are waiting for review (50); a person has to confirm or reject some first",
+        ),
+        Some("invisible") => CliError::new(
+            e.exit,
+            e.code,
+            "the rule contains bidirectional controls or zero-width characters, which cannot be reviewed; remove them",
+        ),
         Some("over_budget") => CliError::new(
             e.exit,
             e.code,
@@ -98,6 +108,7 @@ pub async fn rule(app: &App, cmd: RuleCmd) -> Result<u8> {
     match cmd {
         RuleCmd::Add(a) => add(app, a).await,
         RuleCmd::Ls(a) => ls(app, a).await,
+        RuleCmd::Show { id } => show(app, &id).await,
         RuleCmd::Confirm { id } => set_status(app, "confirm", &id, RuleStatus::Active, "confirmed").await,
         RuleCmd::Reject { id } => set_status(app, "reject", &id, RuleStatus::Rejected, "rejected").await,
         RuleCmd::Disable { id } => set_status(app, "disable", &id, RuleStatus::Disabled, "disabled").await,
@@ -116,6 +127,7 @@ async fn add(app: &App, a: RuleAddArgs) -> Result<u8> {
         status: None,
         source: None,
         agent: nested.then_some(true),
+        origin_session: nested.then(|| std::env::var(SESSION_ID_ENV).ok().filter(|s| !s.is_empty())).flatten(),
     };
     let conn = app.conn().await?;
     let r: Rule = conn.call(methods::RULE_ADD, params).await.map_err(friendly)?;
@@ -130,6 +142,45 @@ async fn add(app: &App, a: RuleAddArgs) -> Result<u8> {
         );
     } else {
         println!("added {}  {}", short(&r.id), one_line(&r.text));
+    }
+    Ok(0)
+}
+
+/// 一条规则的全部内容：文字经 [`visible`]（控制字符显示成转义，换行保留），缩进列在下面。
+fn print_full(r: &Rule) {
+    println!("    status:  {}", status_str(r.status));
+    println!("    project: {}", sanitize_label(r.project.as_deref().unwrap_or("(all projects)"), 200, "?"));
+    let by = match r.source.kind {
+        RuleSourceKind::Manual => "typed by a person".to_string(),
+        RuleSourceKind::Answer => "saved from an answer".to_string(),
+        RuleSourceKind::Extracted => "extracted from a session".to_string(),
+        RuleSourceKind::Agent => "proposed by an agent".to_string(),
+        RuleSourceKind::Unknown => "unknown source".to_string(),
+    };
+    let session = r.source.session_id.as_deref().map(|s| format!(", session {}", sanitize_label(s, 60, "?")));
+    println!("    source:  {by}{}", session.unwrap_or_default());
+    println!("    text:");
+    for line in visible(&r.text).lines() {
+        println!("      {line}");
+    }
+}
+
+async fn show(app: &App, key: &str) -> Result<u8> {
+    let conn = app.conn().await?;
+    let r = match resolve_rule(&conn, key).await? {
+        Ok(r) => r,
+        Err(id) => list_all(&conn)
+            .await?
+            .rules
+            .into_iter()
+            .find(|r| r.id == id)
+            .ok_or_else(|| CliError::new(EXIT_ERROR, "not_found", format!("no rule matches {id:?}")))?,
+    };
+    if app.json() {
+        app.out.json_line(&r);
+    } else {
+        println!("{}", r.id);
+        print_full(&r);
     }
     Ok(0)
 }
@@ -196,6 +247,9 @@ async fn set_status(app: &App, what: &str, key: &str, status: RuleStatus, done: 
             app.out.json_line(r);
         } else {
             println!("nothing changed: {} is already {}  {}", short(&r.id), status_str(status), one_line(&r.text));
+            if status == RuleStatus::Active {
+                print_full(r);
+            }
         }
         return Ok(0);
     }
@@ -211,10 +265,16 @@ async fn set_status(app: &App, what: &str, key: &str, status: RuleStatus, done: 
     let r: Rule = conn.call(methods::RULE_UPDATE, params).await.map_err(friendly)?;
     if app.json() {
         app.out.json_line(&r);
-    } else if known.is_none() {
-        println!("{} is {}  {}", short(&r.id), status_str(r.status), one_line(&r.text));
     } else {
-        println!("{done} {}  {}", short(&r.id), one_line(&r.text));
+        if known.is_none() {
+            println!("{} is {}  {}", short(&r.id), status_str(r.status), one_line(&r.text));
+        } else {
+            println!("{done} {}  {}", short(&r.id), one_line(&r.text));
+        }
+        // 生效的规则会原样进每个会话的系统提示：把确认的那条的全文给人看
+        if r.status == RuleStatus::Active {
+            print_full(&r);
+        }
     }
     Ok(0)
 }
@@ -258,6 +318,9 @@ mod tests {
         let mut e = CliError::usage("rules: too_many");
         e.reason = Some("too_many".into());
         assert!(friendly(e).message.contains("300"));
+        let mut e = CliError::usage("rules: too_many_pending");
+        e.reason = Some("too_many_pending".into());
+        assert!(friendly(e).message.contains("50"));
         let mut e = CliError::usage("text: over_budget");
         e.reason = Some("over_budget".into());
         assert!(friendly(e).message.contains("4096"));

@@ -158,7 +158,7 @@ node.on('rule_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.rule)
 ```
 
 - `add` 按 `id` 幂等。`agent: true` 表示这次调用是替 agent 发的：规则记成 `pending`、来源是 `agent`，在人用 `update({ status: 'active' })` 确认之前不起作用。
-- 一条规则最多 600 个字符（可以换行）。一个会话拿到的生效规则合计（含模板）最多 4096 字节；会超出的 `add` / `update` 被拒绝，`RpcError` 是 `invalid`、`reason` 为 `over_budget`（`bytes` 和 `cap` 说明超了多少）。最多 300 条（`reason` 为 `too_many`）。
+- 一条规则最多 600 个字符（可以换行）。一个会话拿到的生效规则合计（含模板）最多 4096 字节；会超出的 `add` / `update` 被拒绝，`RpcError` 是 `invalid`、`reason` 为 `over_budget`（`bytes` 和 `cap` 说明超了多少）。最多 300 条（不含已否决的，`reason` 为 `too_many`；已否决的另有一个 300 的上限，满了删最早的），agent 提的待确认规则最多 50 条（`too_many_pending`）。双向控制符和零宽字符会被拒绝（`reason` 为 `invisible`）。
 - `if_updated_ms`（`delete` 里是 `ifUpdatedMs`）：这条规则在你读到之后被改过就拒绝：`invalid`、`reason` 为 `changed`，`updatedMs` 是现在的值。
 - `todos.dispatchPreview` 也返回 `rules_text`：派发会写进会话系统提示的规则文字。
 

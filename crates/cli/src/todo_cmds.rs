@@ -358,7 +358,7 @@ async fn run(app: &App, a: TodoRunArgs) -> Result<u8> {
         let r: TodoDispatchPreviewResult = conn
             .call(
                 methods::TODO_DISPATCH_PREVIEW,
-                TodoDispatchPreviewParams { id, no_push: a.allow_push.then_some(false) },
+                TodoDispatchPreviewParams { id, no_push: a.allow_push.then_some(false), project: a.project.clone() },
             )
             .await
             .map_err(|e| friendly_dispatch(e, ""))?;

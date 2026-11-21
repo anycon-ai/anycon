@@ -272,7 +272,7 @@ async fn the_cli_help_documents_the_subcommands_in_english() {
     let home = d.path().join("home");
     let r = anycon(&home, &["rule", "--help"], None, &[]).await;
     assert_eq!(r.code, 0, "{}", r.stderr);
-    for want in ["add", "ls", "confirm", "reject", "disable", "enable", "rm"] {
+    for want in ["add", "ls", "show", "confirm", "reject", "disable", "enable", "rm"] {
         assert!(r.stdout.contains(want), "{want}: {}", r.stdout);
     }
     let r = anycon(&home, &["rule", "add", "--help"], None, &[]).await;
@@ -281,4 +281,65 @@ async fn the_cli_help_documents_the_subcommands_in_english() {
     assert!(r.stdout.contains("--all"), "{}", r.stdout);
     let r = anycon(&home, &["--help"], None, &[]).await;
     assert!(r.stdout.contains("rule"), "{}", r.stdout);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn show_prints_the_whole_rule_and_confirm_prints_the_text_it_activates() {
+    let n = node().await;
+    let long = format!("{} {}", "word".repeat(40), "END-OF-THE-RULE");
+    let r = n.cli_env(&["rule", "add", &format!("{long}\nsecond line"), "--json"], &[("ANYCON_AGENT", "1")]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    // ls 把规则截成一行；show 给全文、来源、项目、状态
+    let ls = n.cli(&["rule", "ls"]).await;
+    assert!(!ls.stdout.contains("END-OF-THE-RULE"), "{}", ls.stdout);
+    let r = n.cli(&["rule", "show", &id[..8]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    for want in ["END-OF-THE-RULE", "second line", "pending", "proposed by an agent", "(all projects)"] {
+        assert!(r.stdout.contains(want), "{want}: {}", r.stdout);
+    }
+    assert_eq!(n.cli(&["rule", "show", &id[..8], "--json"]).await.json()["id"], id.as_str());
+    // 在 agent 里也能看（只读）
+    assert_eq!(n.cli_env(&["rule", "show", &id[..8]], &[("ANYCON_AGENT", "1")]).await.code, 0);
+    assert_eq!(n.cli(&["rule", "show", "zzzz"]).await.code, 1);
+    // confirm 把全文给人看
+    let r = n.cli(&["rule", "confirm", &id[..8]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        r.stdout.starts_with("confirmed ") && r.stdout.contains("END-OF-THE-RULE") && r.stdout.contains("second line"),
+        "{}",
+        r.stdout
+    );
+    // enable 同样
+    n.cli(&["rule", "disable", &id[..8]]).await;
+    let r = n.cli(&["rule", "enable", &id[..8]]).await;
+    assert!(r.stdout.starts_with("enabled ") && r.stdout.contains("END-OF-THE-RULE"), "{}", r.stdout);
+    // 终端转义在 show 里显示成转义形式，不被解释（agent 写的待确认规则：控制字符进不来，但不可见字符也被拒绝）
+    let bad = n.cli(&["rule", "add", "sneaky\u{202E}text"]).await;
+    assert_eq!(bad.code, 2, "{}", bad.stderr);
+    assert!(bad.stderr.contains("cannot be reviewed"), "{}", bad.stderr);
+    n.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_rule_records_the_session_it_was_proposed_in() {
+    let n = node().await;
+    let created = n.cli(&["new", "--agent", "mock", "--no-wait", "--json", "hello"]).await;
+    assert_eq!(created.code, 0, "{}", created.stderr);
+    let sid = created.json()["id"].as_str().unwrap().to_string();
+    let r = n
+        .cli_env(
+            &["rule", "add", "proposed in a session", "--json"],
+            &[("ANYCON_AGENT", "1"), ("ANYCON_SESSION_ID", sid.as_str())],
+        )
+        .await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.json()["source"]["session_id"], sid.as_str());
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    let shown = n.cli(&["rule", "show", &id[..8]]).await;
+    assert!(shown.stdout.contains(&sid), "{}", shown.stdout);
+    // 没有 ANYCON_SESSION_ID：照常提议，只是没有来源会话
+    let r = n.cli_env(&["rule", "add", "no session", "--json"], &[("ANYCON_AGENT", "1")]).await;
+    assert!(r.json()["source"]["session_id"].is_null());
+    n.stop().await;
 }

@@ -177,7 +177,14 @@ pub enum RuleCmd {
     Add(RuleAddArgs),
     /// List the rules that are active or waiting for your confirmation
     Ls(RuleLsArgs),
-    /// Confirm a rule that is waiting for you, so it takes effect (not available inside an anycon agent session)
+    /// Show one rule in full: its whole text, status, project and where it came from. Look at a rule here before you
+    /// confirm it
+    Show {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
+    /// Confirm a rule that is waiting for you, so it takes effect; prints its full text (not available inside an anycon
+    /// agent session)
     Confirm {
         /// Rule id (a prefix is enough)
         id: String,
@@ -193,7 +200,7 @@ pub enum RuleCmd {
         /// Rule id (a prefix is enough)
         id: String,
     },
-    /// Switch a disabled rule on again (not available inside an anycon agent session)
+    /// Switch a disabled rule on again; prints its full text (not available inside an anycon agent session)
     Enable {
         /// Rule id (a prefix is enough)
         id: String,
@@ -244,7 +251,7 @@ pub struct TodoRunArgs {
     #[arg(long)]
     pub allow_push: bool,
     /// Print the first message the agent would get right now (what `run` would send, including earlier reports) and
-    /// send nothing: no session is opened and nothing is recorded on the item
+    /// send nothing: no session is opened and nothing is recorded on the item. Active rules are listed after it
     #[arg(long)]
     pub dry_run: bool,
 }

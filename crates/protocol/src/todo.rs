@@ -257,6 +257,9 @@ pub struct TodoDispatchPreviewParams {
     /// 同 `todo.dispatch` 的 `no_push`，缺省 `true`（决定第一条消息里有没有「不 push、不开 PR」那一行）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_push: Option<bool>,
+    /// 同 `todo.dispatch` 的 `project`：只影响 `rules_text`（派发会选另一个项目时，那个项目的规则）；缺省用这一项自己的项目。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

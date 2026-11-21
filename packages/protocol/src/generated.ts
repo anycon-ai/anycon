@@ -2458,6 +2458,10 @@ export interface RuleAddParams {
    * UUID。已经存在时原样返回已有的那一条（幂等）。
    */
   id: string;
+  /**
+   * 这条规则是哪个会话里的 agent 提的；只在这条规则记成 agent 写的、并且这个会话存在时才记（同 `todo.add` 的 `origin_session`）。
+   */
+  origin_session?: string | null;
   project?: string | null;
   /**
    * 缺省 `{ kind: manual }`。
@@ -2483,7 +2487,8 @@ export interface RuleBudget {
    */
   cap: number;
   /**
-   * 模板的开头加上全节点生效规则的字节数：一个没有项目规则的会话拿到的文字的大小。
+   * 模板的开头加上全节点生效规则的字节数；一条生效的规则都没有时是 0。一个会话拿到的文字是它加上这个会话的项目的 `projects[项目]`
+   * （没有项目规则的会话就是它自己）。只有项目规则生效时，它只是模板的开头。
    */
   node_bytes: number;
   /**
@@ -2524,7 +2529,7 @@ export interface RuleListParams {
 export interface RuleListResult {
   budget: RuleBudget;
   /**
-   * 按 `created_ms`（再按 `id`）从早到晚。
+   * 按 `created_ms` 从早到晚（同一毫秒的按写入先后）。
    */
   rules: Rule[];
 }
@@ -3124,6 +3129,10 @@ export interface TodoDispatchPreviewParams {
    * 同 `todo.dispatch` 的 `no_push`，缺省 `true`（决定第一条消息里有没有「不 push、不开 PR」那一行）。
    */
   no_push?: boolean | null;
+  /**
+   * 同 `todo.dispatch` 的 `project`：只影响 `rules_text`（派发会选另一个项目时，那个项目的规则）；缺省用这一项自己的项目。
+   */
+  project?: string | null;
 }
 export interface TodoDispatchPreviewResult {
   /**

@@ -143,6 +143,16 @@ for (const impl of cryptoImpls) {
       })
     })
 
+    it('origin_session 原样发出；dispatchPreview 的 project 原样发出', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        await node.rules.add({ text: 'proposed', agent: true, origin_session: 'sess_abc' })
+        assert.equal(paramsOf(env, 'rule.add')[0]?.origin_session, 'sess_abc')
+        const t = await node.todos.add({ title: 'ship it' })
+        await node.todos.dispatchPreview({ id: t.id, project: 'api' })
+        assert.deepEqual(paramsOf(env, 'todo.dispatch_preview')[0], { id: t.id, project: 'api' })
+      })
+    })
+
     it('超出字数上限：RpcError invalid / over_budget，带 bytes 和 cap', async () => {
       await withNode(await impl.load(), async (node) => {
         await node.rules.add({ text: 'x'.repeat(200) })

@@ -116,6 +116,7 @@ daemon                      hub                        新客户端
 已配对的双方用 `Noise_IK_25519_ChaChaPoly_BLAKE2s`：发起方已知对方静态公钥，一个往返建立会话，每次重连重新握手。
 
 - 客户端是 initiator，daemon 是 responder。客户端在 `auth_ok.peers_online` 里看到某台 daemon、以及之后每收到一条它的 `peer_online` 时，都丢掉对这台 daemon 的旧 Transport 重新握手
+- 同一设备断开后立即重连，hub 保证在线对端先收到旧连接的 `peer_offline`，再收到新连接的 `peer_online`；上下线通知与路由表的移除 / 登记在同一把写锁内定序。
 - 同一设备的新连接顶掉旧连接时，hub 只发 `peer_online`，不先发 `peer_offline`——所以收到 `peer_online` 时不能假设之前收到过下线通知
 - daemon 用配对时记下的公钥创建 responder：对方的静态公钥对不上，握手直接忽略并记日志
 - 收到 `peer_offline` 或和 hub 断线，丢掉对应的 Transport

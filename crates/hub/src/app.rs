@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anycon_protocol::{close_code, Control, NotifyCategory};
+use anycon_protocol::{close_code, NotifyCategory};
 use tokio_util::sync::CancellationToken;
 
 use crate::accounts::LoginMethodLocks;
@@ -221,17 +221,8 @@ impl AppState {
         self.broker.abort_device(device_id);
         self.enrolls.abort_device(device_id);
 
-        // 原来的对端：移除缓存里的对端、通知它该设备已离线（配对已删，之后不会再有 peer_offline）。
-        for peer in &former_peers {
-            if let Some(c) = self.registry.get(peer) {
-                c.remove_peer(device_id);
-                c.send_control(&Control::PeerOffline { device: device_id.to_string() });
-            }
-        }
-        // 被吊销设备自己的连接：清对端集合（这样它收尾时不会再扇出 peer_offline）、移出路由表、4004 断开。
-        if let Some(conn) = self.registry.get(device_id) {
-            conn.clear_peers();
-            self.registry.unregister(device_id, conn.id);
+        // 路由表写锁内通知原对端、清配对缓存并移除连接；收尾时 unregister 不会重复通知。
+        if let Some(conn) = self.registry.revoke_device(device_id, &former_peers) {
             conn.close(close_code::REVOKED, "revoked");
         }
         // 预览（docs/spec/hub.md § 13.6）：库里已经删了它签发的令牌（它是节点的话还有全部 label 和令牌），

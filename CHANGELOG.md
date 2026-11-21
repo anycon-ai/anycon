@@ -73,6 +73,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - Web UI: the session info panel lists the agent options that are not at their default in the Session card, so a session started with an advisor shows "Advisor model" and the chosen model there. The panel only shows them; they are still changed under "More" below the input.
 - Claude Code adapter: the "Advisor model" option has a shorter description.
 
+### Fixed
+
+- Hub: keep peer offline and online notifications in order when a device disconnects and immediately reconnects, preventing clients from discarding the new session.
+
 ## [0.3.1] - 2026-11-14
 
 ### Added

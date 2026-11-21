@@ -296,11 +296,6 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
             tracing::info!(device = %device_id, "superseding previous connection");
             old.close(close_code::SUPERSEDED, "superseded");
         }
-        for peer in &reg.peers_online {
-            if let Some(c) = state.registry.get(peer) {
-                c.send_control(&Control::PeerOnline { device: device_id.clone() });
-            }
-        }
         if permanent {
             // 写库放到后台：AuthOk 已经发出，对端马上会发握手，在这里等写库会让读循环晚开始。
             // 连着的这段时间里由后台任务定期刷新（`crate::refresh_devices_seen`），断开时下面收尾再写一次。
@@ -410,6 +405,7 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
         writer.abort();
     }
     let id = conn.device_id();
+    // 永久设备和预览连接的下线通知都在移除时持路由表写锁入队，先于写 last_seen。
     let removed = state.registry.unregister(&id, conn.id);
     state.broker.conn_closed(&conn);
     state.enrolls.conn_closed(&conn);
@@ -418,20 +414,14 @@ pub async fn run_socket(state: Arc<AppState>, mut socket: WebSocket, ctx: Upgrad
             tracing::warn!(error = %e, "failed to update last_seen");
         }
         if removed {
-            for peer in conn.peers_snapshot() {
-                if let Some(c) = state.registry.get(&peer) {
-                    c.send_control(&Control::PeerOffline { device: id.clone() });
-                }
-            }
-            // 账号少了一条在线连接：告诉它其余的永久连接（`multi`）。被吊销 / 顶掉 / 删账号时连接已经被移出路由表，
-            // `removed` 为 `false`，由发起方自己通知。
+            // 账号少了一条在线连接：告诉它其余的永久连接（`multi`）。被吊销 / 顶掉 / 删账号时已不再登记为当前连接，
+            // `removed` 为 `false`；配额变化由发起方广播，顶掉旧连接不改变连接数。
             if let Some(account) = conn.account_id() {
                 quota::broadcast(&state, &account, None).await;
             }
         }
         tracing::info!(device = %id, "device disconnected");
     } else if conn.preview.is_some() {
-        // 节点那边的 `peer_offline` 在 `Registry::unregister` 里、持着路由表的锁发出。
         tracing::info!(peer = %id, "preview disconnected");
     } else {
         tracing::debug!(temp_id = %id, "temporary connection closed");

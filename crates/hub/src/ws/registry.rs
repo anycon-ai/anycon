@@ -234,7 +234,7 @@ impl Conn {
 pub struct Registered {
     /// 被顶掉的旧连接（调用方负责以 4001 关闭它）。
     pub superseded: Option<Arc<Conn>>,
-    /// 已配对且在线的对端。
+    /// 已配对且在线的对端，已在登记的写锁内通知它们上线。
     pub peers_online: Vec<String>,
 }
 
@@ -337,6 +337,7 @@ impl Registry {
 
     /// 登记连接。`auth_ok` 在持锁期间收到「当前在线的对端」并生成 `AuthOk`，
     /// 保证它是该连接收到的第一条控制消息，且 `peers_online` 与登记原子一致。
+    /// 给在线对端的 `peer_online` 也在同一把写锁里入队，与移除时的 `peer_offline` 按路由表变更定序。
     ///
     /// 节点（重新）上线时，它名下在线的预览连接一并加回它的对端集合：逐条给节点发 `preview_peer`（不进 `peers_online`，
     /// 也不发 `peer_online`），给预览连接发 `peer_online { node }`（docs/spec/hub.md § 13.4）。
@@ -348,8 +349,8 @@ impl Registry {
     /// 同 [`Registry::register`]，另外管账号的永久连接数（`multi` 的连接配额）。
     ///
     /// - `max_connections = Some(n)`，而且 `conn` 是有账号的永久连接：账号**别的设备**已经有 `n` 条在线就返回
-    ///   `Err`，什么都不登记、不通知。同一设备的旧连接（正被这条顶掉）不算。检查、登记、生成 `auth_ok` 在同一把锁里，
-    ///   并发认证的两条连接不会一起冲过上限。
+    ///   `Err`，什么都不登记、不通知。同一设备的旧连接（正被这条顶掉）不算。
+    ///   检查、登记、生成 `auth_ok` 和通知在线对端都在同一把锁里，并发认证的两条连接不会一起冲过上限。
     /// - `auth_ok` 的第二个参数是登记之后这个账号的永久连接数（含这一条），给 `auth_ok.quota.connections` 用。
     pub fn register_counted(
         &self,
@@ -390,6 +391,11 @@ impl Registry {
                 preview.send_control(&Control::PeerOnline { device: device_id.clone() });
             }
         }
+        for peer in &peers_online {
+            if let Some(c) = t.conns.get(peer) {
+                c.send_control(&Control::PeerOnline { device: device_id.clone() });
+            }
+        }
         Ok(Registered { superseded, peers_online })
     }
 
@@ -428,12 +434,33 @@ impl Registry {
         self.table.read().expect("registry").conns.contains_key(device_id)
     }
 
-    /// 仅当登记的还是这条连接时才移除。返回是否真的移除了。
+    /// 仅当登记的还是这条连接时才移除。返回是否真的移除了；只有移除成功才在同一把写锁里通知在线对端下线。
     ///
     /// 无论是否移除，这条连接作为发送方留下的粘住记录都清掉；真的移除了（设备下线）的话，发给这个设备的记录也一并清掉。
     /// 移除的是预览连接时，同一把锁里把它从节点的对端集合去掉，并给在线的节点发 `peer_offline { 预览连接 }`。
     pub fn unregister(&self, device_id: &str, conn_id: u64) -> bool {
         let mut t = self.table.write().expect("registry");
+        self.unregister_locked(&mut t, device_id, conn_id)
+    }
+
+    /// 吊销设备：通知原对端、清配对缓存、移除连接都在同一把写锁里完成，返回的连接由调用方关闭。
+    /// 设备已经离线时仍通知原对端配对已失效；清空连接的对端集合后再移除，避免重复通知。
+    pub fn revoke_device(&self, device_id: &str, former_peers: &[String]) -> Option<Arc<Conn>> {
+        let mut t = self.table.write().expect("registry");
+        for peer in former_peers {
+            if let Some(c) = t.conns.get(peer) {
+                c.remove_peer(device_id);
+                c.send_control(&Control::PeerOffline { device: device_id.to_string() });
+            }
+        }
+        let conn = t.conns.get(device_id)?.clone();
+        conn.clear_peers();
+        self.unregister_locked(&mut t, device_id, conn.id);
+        Some(conn)
+    }
+
+    /// 调用方持路由表写锁，保证移除和上下线通知不会与重新登记交错。
+    fn unregister_locked(&self, t: &mut Table, device_id: &str, conn_id: u64) -> bool {
         self.sticky.forget_sender(conn_id);
         match t.conns.get(device_id) {
             Some(c) if c.id == conn_id => {
@@ -447,6 +474,12 @@ impl Registry {
                     if let Some(node) = t.conns.get(&meta.node_id) {
                         node.remove_peer(device_id);
                         node.send_control(&Control::PeerOffline { device: device_id.to_string() });
+                    }
+                } else if conn.is_permanent() {
+                    for peer in conn.peers_snapshot() {
+                        if let Some(c) = t.conns.get(&peer) {
+                            c.send_control(&Control::PeerOffline { device: device_id.to_string() });
+                        }
                     }
                 }
                 true
@@ -735,6 +768,50 @@ mod tests {
             peers: HashSet::new(),
             preview: None,
         }))
+    }
+
+    /// 移除返回时下线通知已经入队，重连的上线通知只能排在它之后。
+    #[test]
+    fn reconnect_notifies_peer_offline_before_peer_online() {
+        let r = Registry::default();
+        let (peer, mut peer_rx) = device(&r, "p", DeviceKind::Web);
+        let (old, _old_rx) = device(&r, "d", DeviceKind::Daemon);
+        peer.add_peer("d");
+        old.add_peer("p");
+        r.register(&peer, auth_ok("p"));
+        r.register(&old, auth_ok("d"));
+        drain(&mut peer_rx);
+
+        assert!(r.unregister("d", old.id));
+        let offline = drain(&mut peer_rx);
+        assert_eq!(offline, [Control::PeerOffline { device: "d".into() }]);
+        let (new, _new_rx) = device(&r, "d", DeviceKind::Daemon);
+        new.add_peer("p");
+        r.register(&new, auth_ok("d"));
+        let messages: Vec<_> = offline.into_iter().chain(drain(&mut peer_rx)).collect();
+        assert_eq!(messages, [Control::PeerOffline { device: "d".into() }, Control::PeerOnline { device: "d".into() }]);
+    }
+
+    /// 顶掉旧连接只通知重新上线，旧连接收尾不能再通知下线。
+    #[test]
+    fn superseding_notifies_peer_online_without_stale_peer_offline() {
+        let r = Registry::default();
+        let (peer, mut peer_rx) = device(&r, "p", DeviceKind::Web);
+        let (old, _old_rx) = device(&r, "d", DeviceKind::Daemon);
+        peer.add_peer("d");
+        old.add_peer("p");
+        r.register(&peer, auth_ok("p"));
+        r.register(&old, auth_ok("d"));
+        drain(&mut peer_rx);
+
+        let (new, _new_rx) = device(&r, "d", DeviceKind::Daemon);
+        new.add_peer("p");
+        let reg = r.register(&new, auth_ok("d"));
+        assert_eq!(reg.superseded.unwrap().id, old.id);
+        assert_eq!(reg.peers_online, ["p"]);
+        assert_eq!(drain(&mut peer_rx), [Control::PeerOnline { device: "d".into() }]);
+        assert!(!r.unregister("d", old.id));
+        assert!(drain(&mut peer_rx).is_empty());
     }
 
     #[test]

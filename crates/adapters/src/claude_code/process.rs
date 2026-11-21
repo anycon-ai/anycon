@@ -151,6 +151,8 @@ pub const NO_PUSH_DENY_RULES: &[&str] = &[
     "Bash(git -C * push *)",
     "Bash(gh pr create)",
     "Bash(gh pr create *)",
+    "Bash(gh pr new)",
+    "Bash(gh pr new *)",
     "Bash(gh pr merge)",
     "Bash(gh pr merge *)",
 ];
@@ -680,7 +682,7 @@ mod tests {
 
     #[test]
     fn no_push_rules_cover_push_and_pull_request_commands() {
-        for needle in ["git push", "gh pr create", "gh pr merge"] {
+        for needle in ["git push", "gh pr create", "gh pr new", "gh pr merge"] {
             assert!(NO_PUSH_DENY_RULES.iter().any(|r| *r == format!("Bash({needle})")), "bare form of {needle}");
             assert!(
                 NO_PUSH_DENY_RULES.iter().any(|r| *r == format!("Bash({needle} *)")),

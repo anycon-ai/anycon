@@ -144,8 +144,8 @@ function RowActions({ item, actions, online, sessionId, nodeParam, selected, onS
     case 'permission':
     case 'plan':
     case 'question':
-    // 待确认的规则和请求一样：行上没有任何动作，确认只在显示着全文的详情里
     case 'rule':
+      // 请求、计划、提问和待确认的规则：行上没有任何动作，答复 / 确认只在显示着全文的详情里
       return null
     case 'enroll':
       return (

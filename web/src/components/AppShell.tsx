@@ -13,6 +13,7 @@ import { EnrollApprovalDialog } from '@/features/approve/EnrollApprovalDialog'
 import { ScanApproveDialog } from '@/features/approve/ScanApproveDialog'
 import { ApprovalBanner } from './ApprovalBanner'
 import { useUnsavedDraftsGuard } from '@/features/todos/drafts'
+import { useRunningMoveGuard } from '@/features/todos/move'
 import { CaptureHost } from './CaptureHost'
 import { ManageSpacesDialog } from './ManageSpacesDialog'
 import { HomeNotice } from './HomeNotice'
@@ -54,6 +55,7 @@ export function AppShell() {
   const inboxCount = useInboxNowCount()
   const todoCount = useOpenTodoCount()
   useUnsavedDraftsGuard()
+  useRunningMoveGuard()
   const setLastSessionsPath = useUi((s) => s.setLastSessionsPath)
   const flyout = useRef<HTMLElement>(null)
   const { peek, close: closePeek, railProps } = useSidebarPeek(!sidebarOpen, flyout)

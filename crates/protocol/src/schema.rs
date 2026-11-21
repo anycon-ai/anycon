@@ -159,6 +159,7 @@ pub struct ProtocolSchema {
     pub clearable_todo_field: ClearableTodoField,
     pub todo_update_params: TodoUpdateParams,
     pub todo_id_params: TodoIdParams,
+    pub todo_delete_params: TodoDeleteParams,
     pub todo_changed: TodoChanged,
     pub todo_dispatch_params: TodoDispatchParams,
     pub todo_dispatch_result: TodoDispatchResult,

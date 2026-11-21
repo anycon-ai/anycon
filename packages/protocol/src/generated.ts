@@ -648,9 +648,13 @@ export type ClearableSetting =
   ("thinking" | "mode" | "system_prompt_append" | "max_turns" | "max_budget_usd") | "model" | "env";
 export type SyncOutcome = "up_to_date" | "merged" | "conflicts" | "aborted";
 /**
+ * 清单项派出的会话现在的情况（算出来的，不存；`Todo.activity`）。
+ */
+export type TodoActivity = "working" | "waiting" | "review";
+/**
  * 一项是谁记的。
  */
-export type TodoSourceKind = "device" | "local" | "agent";
+export type TodoSourceKind = "device" | "local" | "agent" | "unknown";
 /**
  * 清单项的状态。这一步 daemon 不限制状态之间怎么转。
  */
@@ -682,19 +686,11 @@ export type TodoEvent1 =
       turn: number;
     }
   | {
-      by: TodoStateBy;
+      by: TodoActor;
       from: TodoState;
       kind: "state";
       to: TodoState;
     };
-/**
- * `state` 事件是谁改的：回写是字符串 `"dispatch"`，别的是发起的客户端。
- */
-export type TodoStateBy = DispatchMarker | TodoActor;
-/**
- * `TodoStateBy::Dispatch` 序列化成的字符串 `"dispatch"`。
- */
-export type DispatchMarker = "dispatch";
 /**
  * 「经过」里的一条的内容；`kind` 是线路上的标签。
  */
@@ -715,7 +711,7 @@ export type TodoEventData =
       turn: number;
     }
   | {
-      by: TodoStateBy;
+      by: TodoActor;
       from: TodoState;
       kind: "state";
       to: TodoState;
@@ -869,10 +865,12 @@ export interface ProtocolSchema {
   session_worktree: SessionWorktree;
   sync_outcome: SyncOutcome;
   todo: Todo;
+  todo_activity: TodoActivity;
   todo_actor: TodoActor;
   todo_add_params: TodoAddParams;
   todo_changed: TodoChanged;
   todo_cursor: TodoCursor;
+  todo_delete_params: TodoDeleteParams;
   todo_dispatch_params: TodoDispatchParams;
   todo_dispatch_result: TodoDispatchResult;
   todo_event: TodoEvent;
@@ -886,7 +884,6 @@ export interface ProtocolSchema {
   todo_source: TodoSource;
   todo_source_kind: TodoSourceKind;
   todo_state: TodoState;
-  todo_state_by: TodoStateBy;
   todo_update_params: TodoUpdateParams;
   trash_entry: TrashEntry;
   workspace_branches_params: WorkspaceBranchesParams;
@@ -2282,6 +2279,10 @@ export interface RpcErrorData {
   field?: string | null;
   reason?: string | null;
   retry_after_ms?: number | null;
+  /**
+   * 带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = "changed"`）时，那一项现在的 `updated_ms`。
+   */
+  updated_ms?: number | null;
 }
 export interface RpcRequest {
   id: RpcId;
@@ -2716,6 +2717,11 @@ export interface SessionSyncBaseResult {
 }
 export interface Todo {
   /**
+   * 派出的会话现在的情况，daemon 每次返回这一项时按会话此刻的状态算出来（docs/spec/daemon.md § 22.3）：不存储、不动
+   * `updated_ms`、不进审计。已关闭（`done` / `dropped`）或者没有派发过的项没有这个字段。`state` 只由人设置。
+   */
+  activity?: TodoActivity | null;
+  /**
    * Markdown，≤ 16 KiB，可以是空串。
    */
   body: string;
@@ -2805,6 +2811,14 @@ export interface TodoChanged {
 export interface TodoCursor {
   id: string;
   updated_ms: number;
+}
+/**
+ * `todo.delete`：`if_updated_ms` 给了、而这一项现在的 `updated_ms` 不是它，就拒绝（`invalid`，`data.reason = "changed"`，
+ * `data.updated_ms` 是现在的值），什么都不删。
+ */
+export interface TodoDeleteParams {
+  id: string;
+  if_updated_ms?: number | null;
 }
 /**
  * `todo.dispatch`：从一项开一个会话，把会话和这一项关联。

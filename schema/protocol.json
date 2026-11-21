@@ -1552,16 +1552,6 @@
       ],
       "type": "string"
     },
-    "DispatchMarker": {
-      "description": "`TodoStateBy::Dispatch` 序列化成的字符串 `\"dispatch\"`。",
-      "oneOf": [
-        {
-          "const": "dispatch",
-          "description": "关联会话的状态回写（docs/spec/daemon.md § 22.3）。",
-          "type": "string"
-        }
-      ]
-    },
     "DoctorCheck": {
       "properties": {
         "detail": {
@@ -5340,6 +5330,15 @@
             "integer",
             "null"
           ]
+        },
+        "updated_ms": {
+          "description": "带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = \"changed\"`）时，那一项现在的 `updated_ms`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -6852,6 +6851,17 @@
     },
     "Todo": {
       "properties": {
+        "activity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoActivity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "派出的会话现在的情况，daemon 每次返回这一项时按会话此刻的状态算出来（docs/spec/daemon.md § 22.3）：不存储、不动\n`updated_ms`、不进审计。已关闭（`done` / `dropped`）或者没有派发过的项没有这个字段。`state` 只由人设置。"
+        },
         "body": {
           "description": "Markdown，≤ 16 KiB，可以是空串。",
           "type": "string"
@@ -6929,6 +6939,26 @@
         "updated_ms"
       ],
       "type": "object"
+    },
+    "TodoActivity": {
+      "description": "清单项派出的会话现在的情况（算出来的，不存；`Todo.activity`）。",
+      "oneOf": [
+        {
+          "const": "working",
+          "description": "有会话在跑、排队、还有后台任务，或者刚结束的一轮的结果还没记下。",
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "在等审批、出错、被打断、被取消，或者会话都没有了：要人来决定。",
+          "type": "string"
+        },
+        {
+          "const": "review",
+          "description": "最近的会话最近一轮正常结束，等人验收。",
+          "type": "string"
+        }
+      ]
     },
     "TodoActor": {
       "description": "谁做了这件事（审计里的「发起者」，不含会话内容）。",
@@ -7039,6 +7069,26 @@
       },
       "required": [
         "updated_ms",
+        "id"
+      ],
+      "type": "object"
+    },
+    "TodoDeleteParams": {
+      "description": "`todo.delete`：`if_updated_ms` 给了、而这一项现在的 `updated_ms` 不是它，就拒绝（`invalid`，`data.reason = \"changed\"`，\n`data.updated_ms` 是现在的值），什么都不删。",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "if_updated_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
         "id"
       ],
       "type": "object"
@@ -7184,10 +7234,10 @@
           "type": "object"
         },
         {
-          "description": "状态变了（这一项有过派发之后才记）。",
+          "description": "人改了状态（这一项有过派发之后才记）。会话引起的变化不在这里：它是算出来的 `activity`，不存、不进「经过」。",
           "properties": {
             "by": {
-              "$ref": "#/definitions/TodoStateBy"
+              "$ref": "#/definitions/TodoActor"
             },
             "from": {
               "$ref": "#/definitions/TodoState"
@@ -7296,10 +7346,10 @@
           "type": "object"
         },
         {
-          "description": "状态变了（这一项有过派发之后才记）。",
+          "description": "人改了状态（这一项有过派发之后才记）。会话引起的变化不在这里：它是算出来的 `activity`，不存、不进「经过」。",
           "properties": {
             "by": {
-              "$ref": "#/definitions/TodoStateBy"
+              "$ref": "#/definitions/TodoActor"
             },
             "from": {
               "$ref": "#/definitions/TodoState"
@@ -7497,6 +7547,11 @@
           "const": "agent",
           "description": "agent 加的（`todo.add` 带了 `agent: true`，或来自自报了 `mcp` 的本机连接）。",
           "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的来源（更新的 daemon 加了新的种类）。**daemon 自己从不产生它**，只是让旧客户端解析更新的 daemon 发来的数据时\n不报错：客户端把它当作「不是某个人记的」（docs/spec/daemon.md § 21.2）。daemon 内部对真正的三种来源逐个处理。",
+          "type": "string"
         }
       ]
     },
@@ -7534,17 +7589,6 @@
           "type": "string"
         }
       ]
-    },
-    "TodoStateBy": {
-      "anyOf": [
-        {
-          "$ref": "#/definitions/DispatchMarker"
-        },
-        {
-          "$ref": "#/definitions/TodoActor"
-        }
-      ],
-      "description": "`state` 事件是谁改的：回写是字符串 `\"dispatch\"`，别的是发起的客户端。"
     },
     "TodoUpdateParams": {
       "properties": {
@@ -8931,6 +8975,9 @@
     "todo": {
       "$ref": "#/definitions/Todo"
     },
+    "todo_activity": {
+      "$ref": "#/definitions/TodoActivity"
+    },
     "todo_actor": {
       "$ref": "#/definitions/TodoActor"
     },
@@ -8942,6 +8989,9 @@
     },
     "todo_cursor": {
       "$ref": "#/definitions/TodoCursor"
+    },
+    "todo_delete_params": {
+      "$ref": "#/definitions/TodoDeleteParams"
     },
     "todo_dispatch_params": {
       "$ref": "#/definitions/TodoDispatchParams"
@@ -8981,9 +9031,6 @@
     },
     "todo_state": {
       "$ref": "#/definitions/TodoState"
-    },
-    "todo_state_by": {
-      "$ref": "#/definitions/TodoStateBy"
     },
     "todo_update_params": {
       "$ref": "#/definitions/TodoUpdateParams"
@@ -9195,13 +9242,14 @@
     "clearable_todo_field",
     "todo_update_params",
     "todo_id_params",
+    "todo_delete_params",
     "todo_changed",
     "todo_dispatch_params",
     "todo_dispatch_result",
     "todo_history_params",
     "todo_history_result",
     "todo_actor",
-    "todo_state_by",
+    "todo_activity",
     "todo_event_data",
     "todo_event",
     "todo_event_notice",
@@ -9657,6 +9705,12 @@
     },
     {
       "direction": "request",
+      "name": "todo.get",
+      "params": "TodoIdParams",
+      "result": "Todo"
+    },
+    {
+      "direction": "request",
       "name": "todo.add",
       "params": "TodoAddParams",
       "result": "Todo"
@@ -9670,7 +9724,7 @@
     {
       "direction": "request",
       "name": "todo.delete",
-      "params": "TodoIdParams",
+      "params": "TodoDeleteParams",
       "result": null
     },
     {

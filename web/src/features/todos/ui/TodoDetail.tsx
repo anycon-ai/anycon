@@ -15,10 +15,12 @@ import { setTodoState } from '../actions'
 import { changedElsewhere, dirtyFields, draftKey, useDrafts, type EditField, type EditValues } from '../drafts'
 import { deleteTodo, discardOp, retryOp, updateTodo } from '../service'
 import { useTodos } from '../store'
+import { isAgentSource, isHumanSource, isOtherSource } from '../source'
 import { isClosed, UI_STATES, type UpdateFields, type ViewTodo } from '../types'
 import { cleanHintText } from '@/lib/hint'
 import { cleanOneLine, type FieldError } from '../validate'
 import { dueFromInput } from './CaptureForm'
+import { MoveTodoDialog } from './MoveTodoDialog'
 import { fieldErrorText, outboxErrorText } from './errors'
 
 /** 毫秒 → `datetime-local` 的值（本地时间，到分钟）。 */
@@ -53,6 +55,9 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [moving, setMoving] = useState(false)
+  // 有别的支持清单的节点才有「移到另一个节点…」
+  const canMove = useNodes((s) => s.order.some((id) => id !== item.node_id && s.byId[id]?.info?.capabilities.todo === true))
   const { title, body, project, due_ms } = item
   const current = useMemo(() => valuesOf({ title, body, project, due_ms }), [title, body, project, due_ms])
 
@@ -100,15 +105,20 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   }
 
   // 单击「收下」的 agent 项：没有编辑控件，只有收下 / 丢掉（spec/web.md § 4.11、§ 4.12）
-  const pendingReview = item.unreviewed && item.source.kind === 'agent'
+  // 只有 agent 项、或自己带着 `unreviewed` 的不认识的来源，才走「收下 / 丢掉」；人记的 `unreviewed` 恒为 false
+  const pendingReview = item.unreviewed && !isHumanSource(item.source)
 
   const states = item.state === 'waiting' || item.state === 'review' ? [...UI_STATES, item.state] : UI_STATES
   return (
     <div className="space-y-4" data-testid="todo-detail" data-id={item.id}>
       <div className="flex flex-wrap items-center gap-2">
-        {item.source.kind === 'agent' ? (
+        {isAgentSource(item.source) ? (
           <Chip tone="info" icon={<Bot className="size-3" aria-hidden />}>
             {t('todos.byAgent')}
+          </Chip>
+        ) : isOtherSource(item.source) ? (
+          <Chip tone="info" icon={<Bot className="size-3" aria-hidden />} testId="todo-auto">
+            {t('todos.byOther')}
           </Chip>
         ) : null}
         {item.failed ? <Chip tone="danger">{t('todos.notSaved')}</Chip> : item.unsynced ? <Chip tone="warning">{t('todos.notSynced')}</Chip> : null}
@@ -215,7 +225,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
 
       {pendingReview ? (
         <div className="flex flex-wrap items-center gap-2" data-testid="todo-review">
-          <p className="w-full text-sm text-fg-muted">{t('inbox.laterBody')}</p>
+          <p className="w-full text-sm text-fg-muted">{t(isAgentSource(item.source) ? 'inbox.laterBody' : 'inbox.laterBodyOther')}</p>
           <Button variant="primary" disabled={!online} onClick={() => void updateTodo(item.node_id, item.id, { reviewed: true })} data-testid="todo-accept">
             {t('inbox.accept')}
           </Button>
@@ -244,13 +254,18 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             {t('todos.done')}
           </Button>
         )}
+        {canMove ? (
+          <Button onClick={() => setMoving(true)} data-testid="todo-move">
+            {t('spaces.move.title')}
+          </Button>
+        ) : null}
         <Button variant="outline-danger" onClick={() => setConfirmDelete(true)} data-testid="todo-delete">
           {t('todos.delete')}
         </Button>
       </div>
       )}
 
-      {item.source.kind === 'agent' ? (
+      {isAgentSource(item.source) ? (
         <p className="text-sm text-fg-muted" data-testid="todo-source">
           {item.source.session_id ? (
             sessionKnown ? (
@@ -280,6 +295,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </div>
       ))}
 
+      <MoveTodoDialog item={item} open={moving} onOpenChange={setMoving} />
 
       <Dialog open={confirmDiscard} onOpenChange={setConfirmDiscard} title={t('todos.discardEditTitle')} description={t('todos.discardEditBody')} closeLabel={t('common.close')} testId="todo-discard-edit-dialog">
         <div className="flex justify-end gap-2">

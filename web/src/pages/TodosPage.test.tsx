@@ -581,4 +581,11 @@ describe('spaces', () => {
     expect(screen.getByTestId('todo-show-node')).toBeInTheDocument()
     expect(screen.queryByTestId('todo-switch-space')).toBeNull()
   })
+
+  it('the row menu offers “Move to another node…” when another node supports to-dos', async () => {
+    usePrefs.setState({ sidebarSpace: 'Work' })
+    render(<TodosPage />)
+    await userEvent.click(within(row('wa')).getByTestId('todo-menu'))
+    expect(await screen.findByTestId('todo-act-move')).toHaveTextContent('Move to another node…')
+  })
 })

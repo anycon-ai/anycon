@@ -6,8 +6,8 @@
  *   c. 「管理空间…」里给空间改名：节点在线，改成功；切换器跟着变
  *   d. 清掉分组：回到只有节点过滤器的样子，偏好里存的空间不再生效
  *
- * 多个节点之间的行为（合并、每个空间各自的缺省节点、离线节点改名）需要第二个 daemon，e2e 环境里只有一个，
- * 它们由单元测试覆盖（`SpaceSwitcher.test.tsx`、`ManageSpacesDialog.test.tsx`），这里不假装。
+ * 多个节点之间的行为（合并、移动、每个空间各自的缺省节点、离线节点改名）需要第二个 daemon，e2e 环境里只有一个，
+ * 它们由单元测试覆盖（`SpaceSwitcher.test.tsx`、`ManageSpacesDialog.test.tsx`、`features/todos/move.test.tsx`），这里不假装。
  * 共用一个 daemon：用例结束时把分组清掉。
  */
 import { expect, test, type Page } from '@playwright/test'

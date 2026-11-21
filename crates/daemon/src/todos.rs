@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use anycon_protocol::{
-    methods, ClearableTodoField, ErrorCode, RpcError, Todo, TodoAddParams, TodoChanged, TodoListParams, TodoListResult,
-    TodoSource, TodoSourceKind, TodoState, TodoUpdateParams,
+    methods, ClearableTodoField, ErrorCode, RpcError, Todo, TodoAddParams, TodoChanged, TodoDeleteParams, TodoIdParams,
+    TodoListParams, TodoListResult, TodoSource, TodoSourceKind, TodoState, TodoUpdateParams,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -116,6 +116,8 @@ fn check_due(due_ms: u64) -> RpcResult<u64> {
 // ---------------- 存储 ----------------
 
 fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
+    // 库里不认识的 `source_kind` 字符串（比如降级到旧版本之后读到更新版本写的种类）按 `local` 读：这是一个已知的降级行为，
+    // 旧版本不知道那个种类，更新的版本会把它读回原样。这里不改它。
     let kind = match r.get::<String, _>("source_kind").as_str() {
         "device" => TodoSourceKind::Device,
         "agent" => TodoSourceKind::Agent,
@@ -152,6 +154,9 @@ fn source_kind_str(k: TodoSourceKind) -> &'static str {
         TodoSourceKind::Device => "device",
         TodoSourceKind::Local => "local",
         TodoSourceKind::Agent => "agent",
+        // daemon 自己不产生 `Unknown`（它只在客户端解析更新版本的数据时出现），`todo_insert` 也拒绝写它；
+        // 这里只是让匹配保持完整，并且绝不能落到人的来源上
+        TodoSourceKind::Unknown => "unknown",
     }
 }
 
@@ -178,6 +183,12 @@ where
     Ok(())
 }
 
+/// 每次真正的修改把 `updated_ms` 设成 `max(现在, 旧值 + 1)`：同一毫秒里的两次写、或者时钟往回拨，都不会让内容变了而 `updated_ms` 不变。
+/// 客户端靠 `updated_ms` 判断「这一项自从我读到之后有没有被改过」（`todo.delete` 的 `if_updated_ms`），所以它对同一项必须严格递增。
+pub(crate) fn next_updated_ms(now: u64, old: u64) -> u64 {
+    now.max(old.saturating_add(1))
+}
+
 impl Store {
     pub async fn todo_get(&self, id: &str) -> Result<Option<Todo>, StoreError> {
         let r = sqlx::query("SELECT * FROM todos WHERE id = ?").bind(id).fetch_optional(self.pool()).await?;
@@ -200,6 +211,13 @@ impl Store {
     }
 
     pub async fn todo_insert(&self, t: &Todo) -> Result<(), StoreError> {
+        // `Unknown` 只存在于客户端的解析里：daemon 不能把它写进库（读回去会变成别的种类）
+        if t.source.kind == TodoSourceKind::Unknown {
+            return Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a todo cannot have an unknown source kind",
+            )));
+        }
         sqlx::query(
             "INSERT INTO todos (id, title, body, project, state, due_ms, source_kind, source_device, source_session, \
              unreviewed, created_ms, updated_ms, closed_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -459,7 +477,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
         (true, false) => new.closed_ms = None,
         _ => {}
     }
-    new.updated_ms = now;
+    new.updated_ms = next_updated_ms(now, old.updated_ms);
     c.store.todo_save(&new).await.map_err(internal)?;
     let mut detail = json!({ "fields": fields });
     if new.state != old.state {
@@ -474,10 +492,30 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     Ok(new)
 }
 
-/// `todo.delete`：物理删除。
-pub async fn delete(c: &Ctx, caller: &Caller, id: &str) -> RpcResult<()> {
+/// `todo.get`：读一项。只读：不审计、不通知。
+pub async fn get(c: &Ctx, p: TodoIdParams) -> RpcResult<Todo> {
+    check_id(&p.id)?;
+    let mut t = c.store.todo_get(&p.id).await.map_err(internal)?.ok_or_else(|| not_found(&p.id))?;
+    t.activity = crate::todo_dispatch::compute_activity(&c.sessions, &t).await;
+    Ok(t)
+}
+
+/// `todo.delete`：物理删除。给了 `if_updated_ms`，而这一项现在的 `updated_ms` 不是它：什么都不删，`invalid`（`reason = "changed"`，
+/// `data.updated_ms` 是现在的值），不审计、不通知。检查和删除在同一把锁里，中间没有别的写入。
+pub async fn delete(c: &Ctx, caller: &Caller, p: TodoDeleteParams) -> RpcResult<()> {
+    let id = p.id.as_str();
     check_id(id)?;
     let _w = c.store.todo_lock().lock().await;
+    if let Some(expected) = p.if_updated_ms {
+        let cur = c.store.todo_get(id).await.map_err(internal)?.ok_or_else(|| not_found(id))?;
+        if cur.updated_ms != expected {
+            let mut e = invalid("if_updated_ms", Some("changed"), "the todo changed since it was read".into());
+            if let Some(d) = e.data.as_mut() {
+                d.updated_ms = Some(cur.updated_ms);
+            }
+            return Err(e);
+        }
+    }
     if !c.store.todo_delete(id).await.map_err(internal)? {
         return Err(not_found(id));
     }
@@ -502,5 +540,18 @@ pub async fn purge_closed(store: &Store, clients: &Arc<Clients>, cutoff_ms: u64)
             Ok(false) => {}
             Err(e) => tracing::warn!(error = %e, "cannot delete an expired todo"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_updated_ms;
+
+    #[test]
+    fn updated_ms_is_the_clock_unless_that_would_not_move_it_forward() {
+        assert_eq!(next_updated_ms(200, 100), 200, "the clock is ahead: use it");
+        assert_eq!(next_updated_ms(100, 100), 101, "the same millisecond: one more");
+        assert_eq!(next_updated_ms(50, 100), 101, "the clock stepped back: one more than the stored value");
+        assert_eq!(next_updated_ms(0, u64::MAX), u64::MAX, "no overflow");
     }
 }

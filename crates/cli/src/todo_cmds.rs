@@ -204,6 +204,14 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
     Ok(0)
 }
 
+fn activity_str(a: TodoActivity) -> &'static str {
+    match a {
+        TodoActivity::Working => "working",
+        TodoActivity::Waiting => "waiting",
+        TodoActivity::Review => "review",
+    }
+}
+
 fn state_str(s: TodoState) -> &'static str {
     s.as_str()
 }
@@ -225,11 +233,14 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
         let by = match (t.source.kind, t.unreviewed) {
             (TodoSourceKind::Agent, true) => app.out.yellow("agent (unreviewed)"),
             (TodoSourceKind::Agent, false) => "agent".to_string(),
+            (TodoSourceKind::Unknown, true) => app.out.yellow("other (unreviewed)"),
+            (TodoSourceKind::Unknown, false) => "other".to_string(),
             _ => String::new(),
         };
         rows.push(vec![
             short(&t.id),
             state_str(t.state).to_string(),
+            t.activity.map(activity_str).unwrap_or_default().to_string(),
             t.due_ms.map(|d| fmt_utc(d)[..16].to_string()).unwrap_or_default(),
             t.project.clone().unwrap_or_default(),
             by,
@@ -391,6 +402,7 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         (TodoSourceKind::Local, _) => "this machine".to_string(),
         (TodoSourceKind::Agent, _) => "an agent".to_string(),
         (TodoSourceKind::Device, None) => "a device".to_string(),
+        (TodoSourceKind::Unknown, _) => "someone".to_string(),
     };
     match &e.data {
         TodoEventData::Dispatched { session_id, agent, workspace_mode, no_push, by: who } => (
@@ -415,18 +427,9 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
                 visible(text).lines().map(str::to_string).collect()
             },
         ),
-        TodoEventData::State { from, to, by: who } => (
-            format!(
-                "{} -> {} by {}",
-                from.as_str(),
-                to.as_str(),
-                match who {
-                    TodoStateBy::Dispatch(_) => "the session (automatic)".to_string(),
-                    TodoStateBy::Actor(a) => by(a),
-                }
-            ),
-            vec![],
-        ),
+        TodoEventData::State { from, to, by: who } => {
+            (format!("{} -> {} by {}", from.as_str(), to.as_str(), by(who)), vec![])
+        }
     }
 }
 

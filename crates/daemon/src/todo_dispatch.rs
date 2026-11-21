@@ -833,11 +833,17 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
     let now = now_ms();
     let mut new = old.clone();
     // `state` 不动：会话的情况是算出来的 `activity`，不是写进 `state` 的
-    new.unreviewed = false;
-    if given.as_deref().is_some_and(|g| old.project.as_deref().is_none_or(|o| !c.workspace.same_project_name(g, o))) {
+    let project_changed =
+        given.as_deref().is_some_and(|g| old.project.as_deref().is_none_or(|o| !c.workspace.same_project_name(g, o)));
+    if project_changed {
         new.project = given.clone();
     }
-    new.updated_ms = now;
+    let unreviewed_cleared = old.unreviewed;
+    new.unreviewed = false;
+    // `updated_ms` 只在派发自己真的改了这一项（项目、收下）时动；多一条关联不算修改内容
+    if project_changed || unreviewed_cleared {
+        new.updated_ms = crate::todos::next_updated_ms(now, old.updated_ms);
+    }
     new.sessions.push(session.id.clone());
     let data = TodoEventData::Dispatched {
         session_id: session.id.clone(),

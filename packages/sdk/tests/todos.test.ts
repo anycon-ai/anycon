@@ -104,8 +104,29 @@ for (const impl of cryptoImpls) {
         )
         assert.equal((await node.todos.list({ include_closed: true })).todos.length, 2)
 
+        assert.deepEqual(await node.todos.get(b.id), b)
+        assert.deepEqual(paramsOf(env, 'todo.get'), [{ id: b.id }])
+        await assert.rejects(
+          node.todos.get('00000000-0000-4000-8000-000000000000'),
+          (err: unknown) => err instanceof RpcError && err.code === 'not_found',
+        )
+        await assert.rejects(
+          node.todos.delete(b.id, { ifUpdatedMs: b.updated_ms - 1 }),
+          (err: unknown) =>
+            err instanceof RpcError &&
+            err.code === 'invalid' &&
+            err.reason === 'changed' &&
+            err.updatedMs === b.updated_ms,
+        )
+        assert.deepEqual((await node.todos.get(b.id)).id, b.id, 'a refused delete deletes nothing')
+        assert.equal(await node.todos.delete(b.id, { ifUpdatedMs: b.updated_ms }), undefined)
+        assert.deepEqual(paramsOf(env, 'todo.delete').at(-1), {
+          id: b.id,
+          if_updated_ms: b.updated_ms,
+        })
+        await node.todos.add({ id: b.id, title: 'again' })
         assert.equal(await node.todos.delete(b.id), undefined)
-        assert.deepEqual(paramsOf(env, 'todo.delete'), [{ id: b.id }])
+        assert.deepEqual(paramsOf(env, 'todo.delete').at(-1), { id: b.id })
         for (const p of [node.todos.update({ id: b.id, title: 'x' }), node.todos.delete(b.id)]) {
           await assert.rejects(
             p,

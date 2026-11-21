@@ -306,3 +306,18 @@ describe('an unreviewed agent item', () => {
     expect(daemon.todos.get('t')!.unreviewed).toBe(false)
   })
 })
+
+describe('an item with a source kind this version does not know', () => {
+  it('is shown as added automatically and keeps the normal edit controls: the agent-only Accept / Dismiss path is not taken', async () => {
+    await show({ id: 'u', title: 'from somewhere new', source: { kind: 'twin' } as never })
+    expect(screen.getByTestId('todo-auto')).toHaveTextContent('Added automatically')
+    expect(screen.queryByTestId('todo-accept')).toBeNull()
+    expect(screen.queryByTestId('todo-source')).toBeNull()
+    expect(screen.getByTestId('todo-edit')).toBeInTheDocument()
+  })
+
+  it('goes through Accept / Dismiss only when it carries unreviewed itself', async () => {
+    await show({ id: 'u2', title: 'waiting for a person', source: { kind: 'twin' } as never, unreviewed: true })
+    expect(screen.getByTestId('todo-accept')).toBeInTheDocument()
+  })
+})

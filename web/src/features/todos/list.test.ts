@@ -78,3 +78,14 @@ describe('swipe', () => {
     expect(LONG_PRESS_MS).toBeGreaterThan(300)
   })
 })
+
+describe('an item with a source kind this version does not know', () => {
+  const unknown = v({ id: 'u', source: { kind: 'twin' } as never })
+  const items = [v({ id: 'a' }), unknown]
+
+  it('is not “mine”, is not an agent’s, and still shows under “all”', () => {
+    expect(groupTodos(items, { project: null, source: 'mine' }).open.map((t) => t.id)).toEqual(['a'])
+    expect(groupTodos(items, { project: null, source: 'agent' }).open.map((t) => t.id)).toEqual([])
+    expect(groupTodos(items, { project: null, source: 'all' }).open.map((t) => t.id).sort()).toEqual(['a', 'u'])
+  })
+})

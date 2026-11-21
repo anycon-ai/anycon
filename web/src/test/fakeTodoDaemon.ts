@@ -26,9 +26,10 @@ export class FakeTodoDaemon {
 
   install(rpc: FakeRpc): void {
     rpc.handlers['todo.list'] = (p) => this.list(p as TodoListParams)
+    rpc.handlers['todo.get'] = (p) => this.handle('todo.get', p, () => this.get((p as { id: string }).id))
     rpc.handlers['todo.add'] = (p) => this.handle('todo.add', p, () => this.add(p as TodoAddParams))
     rpc.handlers['todo.update'] = (p) => this.handle('todo.update', p, () => this.update(p as TodoUpdateParams))
-    rpc.handlers['todo.delete'] = (p) => this.handle('todo.delete', p, () => this.delete((p as { id: string }).id))
+    rpc.handlers['todo.delete'] = (p) => this.handle('todo.delete', p, () => this.delete(p as { id: string; if_updated_ms?: number }))
   }
 
   seed(...todos: Todo[]): void {
@@ -98,10 +99,36 @@ export class FakeTodoDaemon {
     return next
   }
 
-  private delete(id: string): Record<string, never> {
-    if (!this.todos.delete(id)) throw rpcError('not_found')
-    this.onChange?.(id, null)
+  private get(id: string): Todo {
+    const t = this.todos.get(id)
+    if (!t) throw rpcError('not_found')
+    return t
+  }
+
+  private delete(p: { id: string; if_updated_ms?: number }): Record<string, never> {
+    const cur = this.todos.get(p.id)
+    if (!cur) throw rpcError('not_found')
+    // 带条件的删除（docs/spec/daemon.md § 21.3）：现在的 updated_ms 对不上就拒绝，什么都不删
+    if (p.if_updated_ms !== undefined && cur.updated_ms !== p.if_updated_ms) {
+      throw new RpcCallError('rpc', 'changed', { code: -32602, message: 'changed', data: { code: 'invalid', field: 'if_updated_ms', reason: 'changed', updated_ms: cur.updated_ms } })
+    }
+    this.todos.delete(p.id)
+    this.onChange?.(p.id, null)
     return {}
+  }
+
+  /** 直接改节点上的一项（别的设备 / 别的标签页改的）：`updated_ms` 照规则加一，**不**通知这个浏览器标签页，缓存因此会是旧的。 */
+  editBehindTheBrowser(id: string, patch: Partial<Todo>): Todo {
+    const cur = this.todos.get(id)
+    if (!cur) throw new Error(`no such todo ${id}`)
+    const next = { ...cur, ...patch, updated_ms: ++this.now }
+    this.todos.set(id, next)
+    return next
+  }
+
+  /** 直接从节点上删掉一项，不通知这个浏览器标签页。 */
+  deleteBehindTheBrowser(id: string): void {
+    this.todos.delete(id)
   }
 }
 

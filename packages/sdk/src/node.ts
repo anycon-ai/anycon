@@ -530,6 +530,8 @@ export class Node extends Emitter<NodeEvents> {
      * 翻页期间被改过的项可能出现两次（按 `id` 去重）或被跳过（`todo_changed` 会补上）。
      */
     list: (params: TodoListParams = {}): Promise<TodoListResult> => this.call('todo.list', params),
+    /** `todo.get`：读一项（只读，不审计、不通知）。项不存在 → `RpcError`（`not_found`），`id` 不是小写 UUID → `invalid`（`data.field = 'id'`）。 */
+    get: (id: string): Promise<Todo> => this.call('todo.get', { id }),
     /**
      * `todo.add`。`id` 缺省时 SDK 生成一个 UUID（小写带连字符；自己给的 id 必须是这个写法，daemon 不做规范化，别的写法 → `invalid`，`data.field = 'id'`）；超时后要重试就传同一个：`id` 已经存在时 daemon 原样返回已有的那一项，
      * 不会出现第二项。标题为空 / 超长、正文超长、`id` 不是 UUID、清单已满 → `RpcError`（`invalid`，见 `data.field` /
@@ -539,9 +541,16 @@ export class Node extends Emitter<NodeEvents> {
       this.call('todo.add', { ...params, id: params.id ?? randomId() }),
     /** `todo.update`：只带要改的字段；`clear` 列出要清空的可选字段（`project` / `due_ms`）。项不存在 → `RpcError`（`not_found`）。 */
     update: (params: TodoUpdateParams): Promise<Todo> => this.call('todo.update', params),
-    /** `todo.delete`：物理删除。项不存在 → `RpcError`（`not_found`）。 */
-    delete: async (id: string): Promise<void> => {
-      await this.call('todo.delete', { id })
+    /**
+     * `todo.delete`：物理删除。项不存在 → `RpcError`（`not_found`）。给了 `ifUpdatedMs`，而这一项现在的 `updated_ms` 不是它：
+     * 什么都不删，`RpcError`（`invalid`，`reason = 'changed'`，`updatedMs` 是现在的值）。同一项的 `updated_ms` 每次修改都严格递增，
+     * 所以「读到之后没被改过」可以用它来判断。
+     */
+    delete: async (id: string, opts: { ifUpdatedMs?: number } = {}): Promise<void> => {
+      await this.call('todo.delete', {
+        id,
+        ...(opts.ifUpdatedMs !== undefined ? { if_updated_ms: opts.ifUpdatedMs } : {}),
+      })
     },
     /**
      * `todo.dispatch`（docs/spec/daemon.md § 22）：从一项开一个会话，关联、回写状态、记「经过」，全部由 daemon 做，不要自己拼

@@ -361,6 +361,50 @@ describe('multi-select', () => {
     expect(useUi.getState().toasts.at(-1)!.text).toMatch(/Done: 2\. Not done: 1/)
   })
 
+  it('only the ticked rules are confirmed or rejected; the others are not touched', async () => {
+    const user = userEvent.setup()
+    await load(agentRule('p1'), agentRule('p2'), agentRule('p3'))
+    const box = (id: string): HTMLElement => within(cards().find((c) => c.getAttribute('data-rule') === id)!).getByTestId('rule-select')
+    await user.click(box('p1'))
+    await user.click(box('p3'))
+    expect(screen.getByTestId('rules-bulk')).toHaveTextContent('2 selected')
+    await user.click(screen.getByTestId('rules-bulk-confirm'))
+    await flush()
+    expect(daemon.calls('rule.update').map((c) => c.id).sort()).toEqual(['p1', 'p3'])
+    expect(daemon.rules.get('p2')!.status).toBe('pending')
+    // reject: just the one that is ticked now
+    await user.click(box('p2'))
+    await user.click(screen.getByTestId('rules-bulk-reject'))
+    await flush()
+    expect(daemon.rules.get('p2')!.status).toBe('rejected')
+    expect(daemon.calls('rule.update')).toHaveLength(3)
+  })
+
+  it('a rule that changes after it was ticked is unticked and marked; the bulk action does not send it, and ticking again sends the new version', async () => {
+    const user = userEvent.setup()
+    await load(agentRule('p1'), agentRule('p2'))
+    const card = (id: string): HTMLElement => cards().find((c) => c.getAttribute('data-rule') === id)!
+    await user.click(screen.getByTestId('rules-select-all'))
+    expect(screen.getByTestId('rules-bulk')).toHaveTextContent('2 selected')
+    const changed = daemon.changeElsewhere('p2', { text: 'now it says something else' })
+    await flush()
+    expect(within(card('p2')).getByTestId('rule-select')).not.toBeChecked()
+    expect(within(card('p2')).getByTestId('rule-stale')).toBeInTheDocument()
+    expect(within(card('p1')).queryByTestId('rule-stale')).toBeNull()
+    expect(screen.getByTestId('rules-bulk')).toHaveTextContent('1 selected')
+    await user.click(screen.getByTestId('rules-bulk-confirm'))
+    await flush()
+    expect(daemon.calls('rule.update').map((c) => c.id)).toEqual(['p1'])
+    expect(daemon.rules.get('p2')!.status).toBe('pending')
+    // read again, tick again: the new version goes out
+    await user.click(within(card('p2')).getByTestId('rule-select'))
+    expect(within(card('p2')).queryByTestId('rule-stale')).toBeNull()
+    await user.click(screen.getByTestId('rules-bulk-confirm'))
+    await flush()
+    expect(daemon.calls('rule.update')[1]).toMatchObject({ id: 'p2', if_updated_ms: changed.updated_ms })
+    expect(daemon.rules.get('p2')!.status).toBe('active')
+  })
+
   it('the bulk buttons need a selection', async () => {
     await load(agentRule('p1'))
     expect(screen.getByTestId('rules-bulk-confirm')).toBeDisabled()

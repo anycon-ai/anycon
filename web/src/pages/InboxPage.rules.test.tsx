@@ -167,6 +167,36 @@ describe('the details of a rule', () => {
     await waitFor(() => expect(screen.queryByTestId('inbox-section-later')).toBeNull())
   })
 
+  it('a rule changed elsewhere while it is open locks the buttons again, says so, and confirms only the new version', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await load(proposed('r1', 'as first read'))
+    await user.click(within(laterRows()[0]!).getByTestId('inbox-row-main'))
+    arm()
+    expect(screen.getByTestId('inbox-rule-confirm')).toBeEnabled()
+    const changed = daemon.changeElsewhere('r1', { text: 'quietly rewritten' })
+    await flush()
+    expect(screen.getByTestId('inbox-rule-text')).toHaveTextContent('quietly rewritten')
+    expect(screen.getByTestId('inbox-rule-changed')).toBeInTheDocument()
+    expect(screen.getByTestId('inbox-rule-confirm')).toBeDisabled()
+    expect(screen.getByTestId('inbox-rule-reject')).toBeDisabled()
+    expect(daemon.calls('rule.update')).toHaveLength(0)
+    arm()
+    expect(screen.getByTestId('inbox-rule-confirm')).toBeEnabled()
+    await user.click(screen.getByTestId('inbox-rule-confirm'))
+    await flush()
+    expect(daemon.calls('rule.update')[0]).toEqual({ id: 'r1', status: 'active', if_updated_ms: changed.updated_ms })
+  })
+
+  it('switching from one rule to another starts the lock and the “as you first read it” baseline over', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await load(proposed('r1', 'one', 1_000), proposed('r2', 'two', 2_000))
+    await user.click(within(laterRows()[0]!).getByTestId('inbox-row-main'))
+    arm()
+    await user.click(within(laterRows()[1]!).getByTestId('inbox-row-main'))
+    expect(screen.getByTestId('inbox-rule-confirm')).toBeDisabled()
+    expect(screen.queryByTestId('inbox-rule-changed')).toBeNull()
+  })
+
   it('reject keeps the rule on the node but takes it out of the list', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     await load(proposed('r1'))

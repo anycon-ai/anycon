@@ -7,7 +7,7 @@ import { statusOf, type ViewRule } from '../store'
 import { RuleMeta, RuleText } from './RuleParts'
 import { ruleKey, type RuleOps } from './useRuleOps'
 
-export function RuleCard({ rule, showNode, online, ops, check }: { rule: ViewRule; showNode: boolean; online: boolean; ops: RuleOps; check?: { checked: boolean; onChange: (v: boolean) => void } }) {
+export function RuleCard({ rule, showNode, online, ops, check }: { rule: ViewRule; showNode: boolean; online: boolean; ops: RuleOps; check?: { checked: boolean; /** 勾选之后这条规则变了：勾选作废，要读过新版本重新勾。 */ stale?: boolean; onChange: (v: boolean) => void } }) {
   const { t } = useTranslation()
   const status = statusOf(rule)
   const busy = ops.busy.has(ruleKey(rule))
@@ -27,6 +27,11 @@ export function RuleCard({ rule, showNode, online, ops, check }: { rule: ViewRul
           />
         ) : null}
         <div className="min-w-0 flex-1 space-y-2">
+          {check?.stale ? (
+            <p className="rounded-md border border-warning/40 bg-warning-subtle px-2.5 py-1.5 text-sm text-warning" role="status" data-testid="rule-stale">
+              {t('rules.changedWhileSelected')}
+            </p>
+          ) : null}
           <RuleText text={rule.text} />
           <RuleMeta rule={rule} showNode={showNode} />
           <div className="flex flex-wrap gap-2 pt-1" data-testid="rule-actions">

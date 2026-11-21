@@ -1,6 +1,6 @@
 // 「待处理」页里一个条目的两种样子：列表里的一行（`InboxRow`）和展开后的详情（`InboxDetail`）。
 // 权限请求、计划、提问在详情里用的是会话页同一个 `PermissionCard`，按钮只在详情里：行上没有任何不看内容就能答复的入口。
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, ChevronRight, ClipboardCheck, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ScrollText, ShieldQuestion, Smartphone } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -200,7 +200,7 @@ export function InboxDetail({ item, armed, outside }: { item: InboxItem; /** 答
     case 'question':
       return <RequestDetail item={item} armed={armed} outside={outside} />
     case 'rule':
-      return <RuleDetail item={item} armed={armed} outside={outside} />
+      return <RuleDetail key={item.key} item={item} armed={armed} outside={outside} />
     default:
       return <PlainDetail item={item} outside={outside} />
   }
@@ -312,10 +312,18 @@ function RuleDetail({ item, armed, outside }: { item: RuleInboxItem; armed: bool
   const info = useItemInfo(item)
   const { ops, dialogs } = useRuleOps({ hold: () => holdHandled(item.key), release: () => unmarkHandled(item.key) })
   const off = !armed || !info.online || ops.busy.has(ruleKey(item.rule))
+  // 打开这一条时看到的版本：之后变了（别处改了）就说明，动作重新锁一会儿，确认的是新的这一版
+  const [firstSeen] = useState(item.rule.updated_ms)
+  const changed = item.rule.updated_ms !== firstSeen
   return (
     <div className="space-y-3" data-inbox-detail data-testid="inbox-detail" data-kind="rule">
       <OutsideNote outside={outside} item={item} />
       <h3 className="text-base font-semibold">{t('inbox.ruleTitle')}</h3>
+      {changed ? (
+        <p className="rounded-md border border-warning/40 bg-warning-subtle px-2.5 py-1.5 text-sm text-warning" role="status" data-testid="inbox-rule-changed">
+          {t('rules.errors.changedReadAgain')}
+        </p>
+      ) : null}
       <div className="rounded-md border border-border bg-bg-subtle p-3">
         <RuleText text={item.rule.text} testId="inbox-rule-text" />
       </div>

@@ -38,17 +38,19 @@ export function RulesPage() {
   const active = useMemo(() => all.filter((r) => statusOf(r) === 'active'), [all])
   const other = useMemo(() => all.filter((r) => !['pending', 'active'].includes(statusOf(r))), [all])
   const [tab, setTab] = useState<Tab>(() => (pending.length > 0 ? 'pending' : 'active'))
-  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set())
+  // 勾选时记下那一刻看到的版本（`updated_ms`）：批量确认 / 否决发的就是它；规则在这之后变了，勾选作废（卡片上标出来，要重新勾）
+  const [checked, setChecked] = useState<ReadonlyMap<string, number>>(new Map())
   const [bulkBusy, setBulkBusy] = useState(false)
   const loaded = supporting.every((id) => state[id]?.loaded)
   const offline = supporting.filter((id) => nodes[id]?.conn !== 'ready')
   const onlineAll = offline.length === 0
 
-  const checkedRules = pending.filter((r) => checked.has(ruleKey(r)))
+  const checkedRules = pending.filter((r) => checked.get(ruleKey(r)) === r.updated_ms)
+  const staleKeys = new Set(pending.filter((r) => checked.has(ruleKey(r)) && checked.get(ruleKey(r)) !== r.updated_ms).map(ruleKey))
   const toggle = (r: ViewRule, on: boolean): void =>
     setChecked((s) => {
-      const n = new Set(s)
-      if (on) n.add(ruleKey(r))
+      const n = new Map(s)
+      if (on) n.set(ruleKey(r), r.updated_ms)
       else n.delete(ruleKey(r))
       return n
     })
@@ -59,7 +61,7 @@ export function RulesPage() {
     setBulkBusy(true)
     const res = await setStatusMany(targets, status)
     setBulkBusy(false)
-    setChecked(new Set())
+    setChecked(new Map())
     if (res.failed.length === 0) toast.success(t(status === 'active' ? 'rules.bulk.confirmed' : 'rules.bulk.rejected', { count: res.done }))
     else toast.error(t('rules.bulk.partial', { done: res.done, failed: res.failed.length, reason: failText(t, res.failed[0]!.fail) }))
   }
@@ -73,7 +75,7 @@ export function RulesPage() {
           {showNode ? <h3 className="text-xs font-semibold tracking-wide text-fg-muted uppercase">{cleanHintText(nodes[nodeId]?.name) || nodeId.slice(0, 8)}</h3> : null}
           <ul className="space-y-2">
             {here.map((r) => (
-              <RuleCard key={ruleKey(r)} rule={r} showNode={showNode} online={nodes[r.node_id]?.conn === 'ready'} ops={ops} check={withCheck ? { checked: checked.has(ruleKey(r)), onChange: (v) => toggle(r, v) } : undefined} />
+              <RuleCard key={ruleKey(r)} rule={r} showNode={showNode} online={nodes[r.node_id]?.conn === 'ready'} ops={ops} check={withCheck ? { checked: checked.get(ruleKey(r)) === r.updated_ms, stale: staleKeys.has(ruleKey(r)), onChange: (v) => toggle(r, v) } : undefined} />
             ))}
           </ul>
         </section>
@@ -146,7 +148,7 @@ export function RulesPage() {
                             ref={(el) => {
                               if (el) el.indeterminate = checkedRules.length > 0 && checkedRules.length < pending.length
                             }}
-                            onChange={(e) => setChecked(e.target.checked ? new Set(pending.map(ruleKey)) : new Set())}
+                            onChange={(e) => setChecked(e.target.checked ? new Map(pending.map((r) => [ruleKey(r), r.updated_ms])) : new Map())}
                             className={cn('size-4 accent-[var(--accent)] [@media(pointer:coarse)]:size-5')}
                             data-testid="rules-select-all"
                           />

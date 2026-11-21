@@ -76,6 +76,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - Hub: keep peer offline and online notifications in order when a device disconnects and immediately reconnects, preventing clients from discarding the new session.
+- Daemon: changing enrollment settings through RPC no longer produces duplicate audit entries and security events when configuration monitoring runs at the same time.
 
 ## [0.3.1] - 2026-11-14
 

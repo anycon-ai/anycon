@@ -133,6 +133,16 @@ describe('textForNotify', () => {
     expect(textForNotify(env, NODE, body({ session_id: 'sess_unknown' })).title).toBe('A session is waiting for your approval')
   })
 
+  it('turn_finished of a session from a to-do: the item title and the review page; the default env reads them from the local stores', () => {
+    const e = fakeEnv({ sessionTodo: () => ({ id: 'td-1', title: 'Fix the redirect' }) }).env
+    const t = textForNotify(e, NODE, { category: 'turn_finished', session_id: 'sess_abc' })
+    expect(t.title).toBe('“Fix the redirect” is ready to review')
+    expect(t.url).toBe('/todos/nnnnnnnn/td-1/review')
+    // 别的类别不受影响；缓存里没有那一项的标题就照旧
+    expect(textForNotify(e, NODE, { category: 'error', session_id: 'sess_abc' }).url).toBe('/n/nnnnnnnn/s/sess_abc')
+    expect(textForNotify(fakeEnv({ sessionTodo: () => ({ id: 'td-1' }) }).env, NODE, { category: 'turn_finished', session_id: 'sess_abc' }).url).toBe('/n/nnnnnnnn/s/sess_abc')
+  })
+
   it('uses the full node id in the URL when two paired nodes share the first 8 characters', () => {
     const other = `nnnnnnnn${'z'.repeat(24)}`
     const clash = fakeEnv({ nodeIds: () => [NODE, other] }).env

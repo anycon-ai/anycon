@@ -118,3 +118,32 @@ describe('the space name on the second line', () => {
     expect([...body].length).toBeLessThan(80)
   })
 })
+
+describe('turn_finished for a session that came from a to-do', () => {
+  const en = i18n.getFixedT('en')
+  const zh = i18n.getFixedT('zh')
+  const node = { id: 'n'.repeat(32), name: 'mac-mini' }
+
+  it('reads “<title> is ready to review”, lands on the review page, and is merged per item', () => {
+    const p = pushText(en, { category: 'turn_finished', node, session: { id: 'sess_a', title: 'agent chat', todo: { id: 'td-1', title: 'Fix the redirect' } } })
+    expect(p.title).toBe('“Fix the redirect” is ready to review')
+    expect(p.body).toBe('On mac-mini')
+    expect(p.url).toBe('/todos/nnnnnnnn/td-1/review')
+    expect(p.tag).toBe(`todo:${node.id}:td-1`)
+    expect(pushText(zh, { category: 'turn_finished', node, session: { id: 'sess_a', todo: { id: 'td-1', title: 'Fix the redirect' } } }).title).toBe('“Fix the redirect” 做完了，等你验收')
+  })
+
+  it('cleans the item title like every other name; with no cached title the existing text and landing are used', () => {
+    expect(pushText(en, { category: 'turn_finished', node, session: { id: 's', todo: { id: 't', title: 'a\u{202e}b' } } }).title).toBe('“a b” is ready to review')
+    const plain = pushText(en, { category: 'turn_finished', node, session: { id: 'sess_a', title: 'agent chat', todo: { id: 'td-1' } } })
+    expect(plain.title).toBe('“agent chat” finished')
+    expect(plain.url).toBe('/n/nnnnnnnn/s/sess_a')
+    expect(plain.tag).toBe('session:sess_a')
+  })
+
+  it('only turn_finished changes: an error or a permission request in such a session keeps its own text and landing', () => {
+    const session = { id: 'sess_a', title: 'agent chat', todo: { id: 'td-1', title: 'Fix the redirect' } }
+    expect(pushText(en, { category: 'error', node, session }).title).toBe('“agent chat” ran into an error')
+    expect(pushText(en, { category: 'permission_requested', node, session }).url).toBe('/inbox?node=nnnnnnnn&session=sess_a')
+  })
+})

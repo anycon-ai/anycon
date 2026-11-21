@@ -10,6 +10,7 @@ import { shortNodeId } from '@/lib/ids'
 import { getRegistration } from '@/features/push/browser'
 import { pushEnabledFor } from '@/features/push/prefsCache'
 import { useNodes } from '@/stores/nodes'
+import { useTodos } from '@/features/todos/store'
 import { useSessions } from '@/stores/sessions'
 import i18n from '@/i18n'
 import { pushText, type PushText } from './pushText'
@@ -33,6 +34,8 @@ export interface SystemNotifyEnv {
   /** 节点的分组（空间名）；没有就是 undefined。 */
   nodeGroup?(nodeId: string): string | undefined
   sessionTitle(nodeId: string, sessionId: string): string | undefined
+  /** 这个会话是从哪一项清单派出的和那一项的标题（本地缓存）；不是清单派出的就是 undefined。 */
+  sessionTodo?(nodeId: string, sessionId: string): { id: string; title?: string } | undefined
   nodeIds(): readonly string[]
 }
 
@@ -49,6 +52,12 @@ export function defaultEnv(): SystemNotifyEnv {
       const s = useSessions.getState().list[sessionId]
       return s && s.node_id === nodeId ? s.title : undefined
     },
+    sessionTodo: (nodeId, sessionId) => {
+      const s = useSessions.getState().list[sessionId]
+      if (!s || s.node_id !== nodeId || !s.todo_id) return undefined
+      const title = useTodos.getState().nodes[nodeId]?.items[s.todo_id]?.title
+      return { id: s.todo_id, ...(title ? { title } : {}) }
+    },
     nodeIds: () => useNodes.getState().order,
   }
 }
@@ -64,12 +73,12 @@ async function hasSubscription(reg: NotificationTarget): Promise<boolean> {
 }
 
 /** `notify` 信封 → 通知文案（纯函数，和 service worker 里用的是同一个 `pushText`）。 */
-export function textForNotify(env: Pick<SystemNotifyEnv, 't' | 'nodeName' | 'sessionTitle' | 'nodeIds'> & Partial<Pick<SystemNotifyEnv, 'nodeGroup'>>, nodeId: string, body: NotifyBody): PushText {
+export function textForNotify(env: Pick<SystemNotifyEnv, 't' | 'nodeName' | 'sessionTitle' | 'nodeIds'> & Partial<Pick<SystemNotifyEnv, 'nodeGroup' | 'sessionTodo'>>, nodeId: string, body: NotifyBody): PushText {
   const sessionId = body.session_id ?? null
   return pushText(env.t, {
     category: body.category,
     node: { id: nodeId, name: env.nodeName(nodeId), group: env.nodeGroup?.(nodeId) ?? null, param: shortNodeId(nodeId, env.nodeIds()) },
-    session: sessionId ? { id: sessionId, title: env.sessionTitle(nodeId, sessionId) } : null,
+    session: sessionId ? { id: sessionId, title: env.sessionTitle(nodeId, sessionId), todo: env.sessionTodo?.(nodeId, sessionId) ?? null } : null,
   })
 }
 

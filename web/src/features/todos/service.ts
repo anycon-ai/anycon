@@ -23,6 +23,7 @@ import { navigateTo } from '@/lib/navigate'
 import { shortNodeId } from '@/lib/ids'
 import { toast, useUi } from '@/stores/ui'
 import i18n from '@/i18n'
+import { toastIfReady } from './reviewToast'
 import { useTodoHistory } from './history'
 import { nodeSupportsTodo, useTodos, viewOf } from './store'
 import { outboxErrorText } from './ui/errors'
@@ -340,7 +341,9 @@ export function handleTodoChanged(nodeId: string, raw: unknown): void {
   if (!nodeSupportsTodo(nodeId)) return
   const valid: TodoChanged = { id: ch.id, ...(ch.deleted ? { deleted: true } : {}), ...(ch.todo ? { todo: ch.todo } : {}) }
   if (!valid.deleted && (!valid.todo || valid.todo.id !== valid.id)) return
+  const before = useTodos.getState().nodes[nodeId]?.items[valid.id]
   useTodos.getState().applyChanged(nodeId, valid)
+  if (!valid.deleted) toastIfReady(nodeId, before, valid.todo!)
   noteTouched(nodeId, valid.id, valid.deleted ? null : valid.todo!)
   const write = valid.deleted ? db.applyTodoCache(nodeId, { remove: [valid.id] }) : db.applyTodoCache(nodeId, { put: [valid.todo!] })
   write.catch(storageFailed('cache a to-do change'))

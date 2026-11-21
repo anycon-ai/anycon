@@ -647,6 +647,9 @@
     "permission": "{{title}} 在等你审批。",
     "aSession": "有个会话",
     "followUp": "{{title}} 已结束，等你处理。",
+    "todoReview": "{{title}} 做完了，等你验收。",
+    "aTodo": "一项清单",
+    "review": "去验收",
     "view": "查看"
   },
   "followUp": {
@@ -2050,6 +2053,7 @@
     "error": "{{title}} 出错了",
     "sessionIdle": "{{title}} 空闲了",
     "followUp": "{{title}} 完成了，等你处理",
+    "todoReview": "{{title}} 做完了，等你验收",
     "onNode": "来自 {{node}}",
     "onNodeSpace": "来自 {{node}} · {{space}}",
     "test": "Anycon 测试推送",

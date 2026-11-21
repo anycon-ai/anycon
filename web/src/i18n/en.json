@@ -654,6 +654,9 @@
     "permission": "{{title}} is waiting for your approval.",
     "aSession": "A session",
     "followUp": "{{title}} finished and is waiting for you.",
+    "todoReview": "{{title}} is ready to review.",
+    "aTodo": "A to-do",
+    "review": "Review",
     "view": "View"
   },
   "followUp": {
@@ -2083,6 +2086,7 @@
     "error": "{{title}} ran into an error",
     "sessionIdle": "{{title}} is idle",
     "followUp": "{{title}} is ready for follow-up",
+    "todoReview": "{{title}} is ready to review",
     "onNode": "On {{node}}",
     "onNodeSpace": "On {{node}} · {{space}}",
     "test": "Anycon test push",

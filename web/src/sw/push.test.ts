@@ -133,3 +133,19 @@ describe('handlePush', () => {
     expect(shown[0]!.options.data).toEqual({ url: '/n/nnnnnnnn' })
   })
 })
+
+describe('handlePush for a session that came from a to-do', () => {
+  it('the cached item title makes it “<title> is ready to review” and the click opens the review page', async () => {
+    const { deps, shown } = setup({ dir: { nodeName: 'mac-mini', sessionTitle: 'agent chat', todo: { id: 'td-1', title: 'Fix the redirect' }, nodeIds: [NODE] } })
+    await handlePush(data({ category: 'turn_finished', node: NODE, session: 'sess_abc' }), deps)
+    expect(shown[0]!.title).toBe('“Fix the redirect” is ready to review')
+    expect(shown[0]!.options).toMatchObject({ body: 'On mac-mini', tag: `todo:${NODE}:td-1`, data: { url: '/todos/nnnnnnnn/td-1/review' } })
+  })
+
+  it('no cached title for the item: the existing text and the session page', async () => {
+    const { deps, shown } = setup({ dir: { nodeName: 'mac-mini', sessionTitle: 'agent chat', todo: { id: 'td-1' }, nodeIds: [NODE] } })
+    await handlePush(data({ category: 'turn_finished', node: NODE, session: 'sess_abc' }), deps)
+    expect(shown[0]!.title).toBe('“agent chat” finished')
+    expect(shown[0]!.options.data).toEqual({ url: '/n/nnnnnnnn/s/sess_abc' })
+  })
+})

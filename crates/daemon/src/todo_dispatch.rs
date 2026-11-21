@@ -197,6 +197,8 @@ pub struct LinkedSession {
     pub held_result: bool,
     /// 这个会话最近一轮（按 turn 号）的结局；还没有轮次为 `None`。
     pub last_turn: Option<TurnOutcome>,
+    /// 最近一轮的 `result` 已经在「经过」里（读库得到，不靠内存）。
+    pub result_recorded: bool,
 }
 
 /// 一项派出的会话（按派发的先后，只含还存在的）算出这一项的 `activity`（§ 22.3）。
@@ -218,8 +220,9 @@ pub fn activity_of(sessions: &[LinkedSession]) -> TodoActivity {
     if matches!(latest.status, SessionStatus::Error | SessionStatus::Interrupted) {
         return TodoActivity::Waiting;
     }
+    // `review` 要看记录：这一轮的 `result` 不在「经过」里（重启时没来得及记）就不是可以验收的状态
     match latest.last_turn {
-        Some(TurnOutcome::Normal) => TodoActivity::Review,
+        Some(TurnOutcome::Normal) if latest.result_recorded => TodoActivity::Review,
         _ => TodoActivity::Waiting,
     }
 }
@@ -243,18 +246,25 @@ pub async fn compute_activity(sessions: &Arc<Sessions>, todo: &Todo) -> Option<T
     for sid in &todo.sessions {
         let Some((status, background_tasks)) = sessions.status_of(sid).await else { continue };
         let held_result = signal.is_held(sid);
-        linked.push((sid.clone(), LinkedSession { status, background_tasks, held_result, last_turn: None }));
+        linked.push((
+            sid.clone(),
+            LinkedSession { status, background_tasks, held_result, last_turn: None, result_recorded: false },
+        ));
     }
     // 最近一轮的结局只有最近派发的那个会话要看，而且只在它停下来之后
     if let Some((sid, last)) = linked.last_mut() {
         if !matches!(last.status, SessionStatus::Queued | SessionStatus::Starting | SessionStatus::Running) {
-            last.last_turn = match sessions.store().last_turn_end(sid).await {
-                Ok(v) => v.map(|(_, reason)| turn_outcome(&reason)),
-                Err(e) => {
-                    tracing::warn!(error = %e, "cannot read the last turn of a linked session");
-                    None
+            match sessions.store().last_turn_end(sid).await {
+                Ok(Some((turn, _, reason))) => {
+                    last.last_turn = Some(turn_outcome(&reason));
+                    if last.last_turn == Some(TurnOutcome::Normal) {
+                        last.result_recorded =
+                            sessions.store().todo_result_recorded(&todo.id, sid, turn).await.unwrap_or(false);
+                    }
                 }
-            };
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = %e, "cannot read the last turn of a linked session"),
+            }
         }
     }
     let list: Vec<LinkedSession> = linked.into_iter().map(|(_, l)| l).collect();
@@ -286,6 +296,8 @@ struct SignalInner {
     results: VecDeque<QueuedResult>,
     /// 会话 → 已经产生、还没记进「经过」的结果数（被推迟的和在队列里的）。
     held: HashMap<String, u32>,
+    /// 清单项 → 最近一次发出去的 `todo.changed` 里的 `activity`（所有发 `todo.changed` 的地方都在清单锁里更新它）。
+    last_sent: HashMap<String, Option<TodoActivity>>,
 }
 
 /// `(todo_id, session_id, 结果)`。
@@ -301,6 +313,20 @@ impl TodoSignal {
     /// 会话刚结束的一轮产生了一条结果（还没记下）：在记下之前这一项算 `working`。
     pub fn hold(&self, session_id: &str) {
         *self.inner.lock().unwrap_or_else(|e| e.into_inner()).held.entry(session_id.to_string()).or_default() += 1;
+    }
+
+    /// 一条带着这个 `activity` 的 `todo.changed` 发出去了（调用方持清单锁）。
+    pub fn note_sent(&self, todo_id: &str, activity: Option<TodoActivity>) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).last_sent.insert(todo_id.to_string(), activity);
+    }
+
+    /// 这一项没了（删除、保留期清理）。
+    pub fn forget(&self, todo_id: &str) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).last_sent.remove(todo_id);
+    }
+
+    fn last_sent(&self, todo_id: &str) -> Option<Option<TodoActivity>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).last_sent.get(todo_id).copied()
     }
 
     pub fn is_held(&self, session_id: &str) -> bool {
@@ -349,14 +375,13 @@ impl TodoSignal {
 /// 后台任务：把会话交来的结果记进「经过」；某一项的 `activity` 变了就发 `todo.changed`（尽力而为，不影响对错）。
 /// `Sessions` 没了就结束。
 pub async fn run_worker(sessions: Weak<Sessions>, signal: Arc<TodoSignal>) {
-    // 上一次发出去的 `activity`：只用来不重复通知。启动时用当前值填上，不发通知（客户端连上时会重新列清单）
-    let mut last_sent: HashMap<String, Option<TodoActivity>> = HashMap::new();
+    // 启动时用当前值填上「上一次发出去的 `activity`」，不发通知（客户端连上时会重新列清单）
     if let Some(s) = sessions.upgrade() {
         match s.store().todo_open_with_links().await {
             Ok(items) => {
                 for (todo_id, _) in items {
                     if let Ok(Some(t)) = s.store().todo_get(&todo_id).await {
-                        last_sent.insert(todo_id, compute_activity(&s, &t).await);
+                        signal.note_sent(&todo_id, compute_activity(&s, &t).await);
                     }
                 }
             }
@@ -374,21 +399,19 @@ pub async fn run_worker(sessions: Weak<Sessions>, signal: Arc<TodoSignal>) {
             dirty.insert(todo_id);
         }
         for todo_id in dirty {
-            notify_activity(&sessions, &mut last_sent, &todo_id).await;
+            notify_activity(&sessions, &todo_id).await;
         }
     }
 }
 
-/// 重新算这一项的 `activity`，和上一次发出去的不同就发 `todo.changed`。
-async fn notify_activity(
-    sessions: &Arc<Sessions>,
-    last_sent: &mut HashMap<String, Option<TodoActivity>>,
-    todo_id: &str,
-) {
+/// 重新算这一项的 `activity`，和上一次发出去的（任何地方发的）不同就发 `todo.changed`。读、算、发都在清单锁里：不会有一份
+/// 旧的快照排在更新的 `todo.update` / 派发 / 删除的通知后面发出去。
+async fn notify_activity(sessions: &Arc<Sessions>, todo_id: &str) {
+    let _w = sessions.store().todo_lock().lock().await;
     let mut todo = match sessions.store().todo_get(todo_id).await {
         Ok(Some(t)) => t,
         Ok(None) => {
-            last_sent.remove(todo_id);
+            sessions.todo_signal().forget(todo_id);
             return;
         }
         Err(e) => {
@@ -397,10 +420,10 @@ async fn notify_activity(
         }
     };
     todo.activity = compute_activity(sessions, &todo).await;
-    if last_sent.get(todo_id) == Some(&todo.activity) {
+    if sessions.todo_signal().last_sent(todo_id) == Some(todo.activity) {
         return;
     }
-    last_sent.insert(todo_id.to_string(), todo.activity);
+    sessions.todo_signal().note_sent(todo_id, todo.activity);
     sessions
         .clients()
         .broadcast(methods::TODO_CHANGED, TodoChanged { id: todo.id.clone(), todo: Some(todo), deleted: false });
@@ -428,6 +451,16 @@ async fn record_result_locked(sessions: &Arc<Sessions>, todo_id: &str, session_i
         Ok(ev) => broadcast_event(sessions.clients(), todo_id, ev),
         Err(e) => tracing::warn!(error = %e, "cannot record a todo result"),
     }
+}
+
+/// 退出前：把所有排着、还没记的结果记下来（每一项取自己的锁）。
+pub async fn flush_all_results(sessions: &Arc<Sessions>) {
+    for todo_id in sessions.todo_signal().todos_with_results() {
+        let _w = sessions.store().todo_lock().lock().await;
+        flush_results_locked(sessions, &todo_id).await;
+    }
+    // 工作任务可能已经取走了一部分、正在记：等它放锁（取走和记都在锁里）再往下走，不然停工作任务会把半截的写入取消
+    drop(sessions.store().todo_lock().lock().await);
 }
 
 /// 把这一项排着、还没记的结果先记下来，记完再清「扣留」（调用方持清单锁）：先记后清，所以 `activity` 不再是 `working` 时结果
@@ -577,16 +610,35 @@ impl Store {
     }
 
     /// 一个会话最近一轮的结局：`(结束时间, reason)`；最近一轮还没结束的是 `(u64::MAX, "interrupted")`。
-    pub async fn last_turn_end(&self, session_id: &str) -> Result<Option<(u64, String)>, StoreError> {
+    pub async fn last_turn_end(&self, session_id: &str) -> Result<Option<(u64, u64, String)>, StoreError> {
         // 最近开始的一轮：还没结束（进程被打断、daemon 重启前停在半路）的不能被当成「上一轮正常结束」，记成 `interrupted`
-        let r = sqlx::query("SELECT ended_ms, reason FROM turns WHERE session_id = ? ORDER BY turn_id DESC LIMIT 1")
-            .bind(session_id)
-            .fetch_optional(self.pool())
-            .await?;
-        Ok(r.map(|r| match r.get::<Option<i64>, _>(0) {
-            Some(ended) => (ended as u64, r.get::<Option<String>, _>(1).unwrap_or_default()),
-            None => (u64::MAX, "interrupted".to_string()),
+        let r = sqlx::query(
+            "SELECT ended_ms, reason, turn_id FROM turns WHERE session_id = ? ORDER BY turn_id DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(r.map(|r| {
+            let turn = r.get::<i64, _>(2) as u64;
+            match r.get::<Option<i64>, _>(0) {
+                Some(ended) => (turn, ended as u64, r.get::<Option<String>, _>(1).unwrap_or_default()),
+                None => (turn, u64::MAX, "interrupted".to_string()),
+            }
         }))
+    }
+
+    /// 这个会话这一轮的 `result` 已经在「经过」里了。
+    pub async fn todo_result_recorded(&self, todo_id: &str, session_id: &str, turn: u64) -> Result<bool, StoreError> {
+        Ok(sqlx::query(
+            "SELECT 1 FROM todo_events WHERE todo_id = ? AND session_id = ? AND kind = 'result' \
+             AND json_extract(data, '$.turn') = ? LIMIT 1",
+        )
+        .bind(todo_id)
+        .bind(session_id)
+        .bind(turn as i64)
+        .fetch_optional(self.pool())
+        .await?
+        .is_some())
     }
 
     /// 最近 [`EARLIER_DISPATCHES`] 次派发各自最后一条 `result`，最早的在前（第一条消息用）。没有 `result` 的派发 `text` 为空。
@@ -605,13 +657,13 @@ impl Store {
         for r in rows {
             let session_id: String = r.try_get("session_id")?;
             let ddata: String = r.try_get("ddata")?;
-            let agent = match serde_json::from_str::<TodoEventData>(&ddata)? {
-                TodoEventData::Dispatched { agent, .. } => agent,
+            let agent = match serde_json::from_str::<TodoEventData>(&ddata) {
+                Ok(TodoEventData::Dispatched { agent, .. }) => agent,
                 _ => String::new(),
             };
             let text = match r.try_get::<Option<String>, _>("rdata")? {
-                Some(d) => match serde_json::from_str::<TodoEventData>(&d)? {
-                    TodoEventData::Result { text, .. } => text,
+                Some(d) => match serde_json::from_str::<TodoEventData>(&d) {
+                    Ok(TodoEventData::Result { text, .. }) => text,
                     _ => String::new(),
                 },
                 None => String::new(),
@@ -660,7 +712,18 @@ impl Store {
         .fetch_all(self.pool())
         .await?;
         let has_more = rows.len() > limit;
-        let events = rows.iter().take(limit).map(event_from_row).collect::<Result<Vec<_>, _>>()?;
+        // 读不懂的行（更早的版本留下的、或者更新的版本写的）跳过，不让整页失败
+        let events = rows
+            .iter()
+            .take(limit)
+            .filter_map(|r| match event_from_row(r) {
+                Ok(e) => Some(e),
+                Err(_) => {
+                    tracing::warn!("skipping an unreadable todo history row");
+                    None
+                }
+            })
+            .collect();
         Ok(TodoHistoryResult { events, has_more })
     }
 }
@@ -913,6 +976,7 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
         .await;
     let mut announced = new.clone();
     announced.activity = compute_activity(&c.sessions, &announced).await;
+    c.sessions.todo_signal().note_sent(&new.id, announced.activity);
     c.clients
         .broadcast(methods::TODO_CHANGED, TodoChanged { id: new.id.clone(), todo: Some(announced), deleted: false });
     broadcast_event(&c.clients, &new.id, ev);
@@ -926,7 +990,7 @@ mod tests {
     use super::*;
 
     fn ls(status: SessionStatus, last: Option<TurnOutcome>) -> LinkedSession {
-        LinkedSession { status, background_tasks: 0, held_result: false, last_turn: last }
+        LinkedSession { status, background_tasks: 0, held_result: false, last_turn: last, result_recorded: true }
     }
 
     #[test]
@@ -979,6 +1043,33 @@ mod tests {
             ),
             ("the latest session's status error", vec![ls(Idle, Some(Normal)), ls(Error, Some(Normal))], Waiting),
             ("the latest session cancelled", vec![ls(Idle, Some(Normal)), ls(Idle, Some(Other))], Waiting),
+            (
+                "a normal last turn whose result is not in the history is not reviewable",
+                vec![LinkedSession { result_recorded: false, ..ls(Idle, Some(Normal)) }],
+                Waiting,
+            ),
+            (
+                "waiting_permission earlier beats a latest idle one",
+                vec![ls(WaitingPermission, None), ls(Idle, Some(Normal))],
+                Waiting,
+            ),
+            (
+                "waiting_permission latest beats an earlier idle one",
+                vec![ls(Idle, Some(Normal)), ls(WaitingPermission, None)],
+                Waiting,
+            ),
+            ("running earlier beats a latest idle one", vec![ls(Running, None), ls(Idle, Some(Normal))], Working),
+            ("queued earlier beats a latest idle one", vec![ls(Queued, None), ls(Idle, Some(Normal))], Working),
+            (
+                "background tasks earlier beat a latest idle one",
+                vec![bg(Idle, Some(Normal), 1), ls(Idle, Some(Normal))],
+                Working,
+            ),
+            (
+                "a held result earlier beats a latest idle one",
+                vec![held(Idle, Some(Normal)), ls(Idle, Some(Normal))],
+                Working,
+            ),
         ];
         for (name, input, want) in cases {
             assert_eq!(activity_of(&input), want, "{name}");
@@ -1003,6 +1094,18 @@ mod tests {
                 assert!(l.starts_with("> "), "{nl:?}: unprefixed line {l:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_last_sent_activity_is_shared_and_forgotten_with_the_item() {
+        let sig = TodoSignal::default();
+        assert_eq!(sig.last_sent("t"), None);
+        sig.note_sent("t", Some(TodoActivity::Working));
+        assert_eq!(sig.last_sent("t"), Some(Some(TodoActivity::Working)));
+        sig.note_sent("t", None);
+        assert_eq!(sig.last_sent("t"), Some(None));
+        sig.forget("t");
+        assert_eq!(sig.last_sent("t"), None);
     }
 
     #[test]

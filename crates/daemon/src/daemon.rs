@@ -378,6 +378,8 @@ impl Daemon {
         let _ = self.ctx.shutdown_tx.send(true);
         self.ctx.preview.shutdown().await;
         self.ctx.sessions.shutdown_all().await;
+        // 摘掉 agent 进程时被扣留的 `result` 交给了队列，工作任务停之前把它们记进「经过」
+        crate::todo_dispatch::flush_all_results(&self.ctx.sessions).await;
         for t in &self.tasks {
             t.abort();
         }

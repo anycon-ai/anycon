@@ -787,10 +787,13 @@ export class FakeDaemon {
         throw new AnyconRpcError(-32602, 'invalid params', { code: 'invalid', field: 'project' })
       }
       const sessionId = `sess_dispatch${todoClock}`
+      // `updated_ms` 只在派发真的改了这一项的内容时动（改了项目、清掉 unreviewed），多一条关联和 activity 不算
+      const changed = todo.project !== project || todo.unreviewed === true
       todo.project = project
+      todo.unreviewed = false
       todo.activity = 'working'
       todo.sessions = [...((todo.sessions as string[] | undefined) ?? []), sessionId]
-      todo.updated_ms = ++todoClock
+      if (changed) todo.updated_ms = ++todoClock
       const events = todoEvents.get(p.id) ?? []
       const event = {
         seq: events.length + 1,

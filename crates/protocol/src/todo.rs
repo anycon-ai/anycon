@@ -109,8 +109,11 @@ pub enum TodoActivity {
     Working,
     /// 在等审批、出错、被打断、被取消，或者会话都没有了：要人来决定。
     Waiting,
-    /// 最近的会话最近一轮正常结束，等人验收。
+    /// 最近的会话最近一轮正常结束、结果也已经记下，等人验收。
     Review,
+    /// 更新版本的 daemon 给了一个这里不认识的值：客户端按「没有 activity」处理，不能因此解析失败。daemon 自己不产生它。
+    #[serde(other)]
+    Unknown,
 }
 
 /// `todo.list` 的翻页游标：上一页最后一项的这两个值。
@@ -412,6 +415,16 @@ mod tests {
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["kind"], "result");
         assert_eq!(serde_json::from_value::<TodoEvent>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn an_unknown_activity_from_a_newer_daemon_still_parses() {
+        let t: Todo = serde_json::from_value(serde_json::json!({
+            "id": "a", "title": "t", "body": "", "state": "open", "source": { "kind": "local" },
+            "unreviewed": false, "created_ms": 1, "updated_ms": 1, "activity": "paused"
+        }))
+        .unwrap();
+        assert_eq!(t.activity, Some(TodoActivity::Unknown));
     }
 
     #[test]

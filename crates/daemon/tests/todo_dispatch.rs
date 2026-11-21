@@ -1,5 +1,5 @@
 //! 派发（`todo.dispatch` / `todo.history` / `todo.event`，docs/spec/daemon.md § 22）端到端：校验与错误码、全部或全无、
-//! 会话状态回写、每轮的 `result`、第一条消息的内容、「经过」翻页、删除与保留期、审计、`no_push`。
+//! 算出来的 `activity`、每轮的 `result`、第一条消息的内容、「经过」翻页、删除与保留期、审计、`no_push`。
 //! 用测试里的假 adapter（`fake`）：它按第一条消息里的关键字决定这一轮怎么走（`hold` 一直跑到测试放行，`permission` 等审批，
 //! `error` 以错误收尾，`bigtext` 回一段很长的话，`bigresult` 只有工具调用没有文字），所以标题里要避开这些词，除非就是要触发它。
 
@@ -179,6 +179,18 @@ fn earlier_section(reports: &[(&str, &str)]) -> String {
     out
 }
 
+/// 收到的 `todo.changed`：`(项 id, activity, 是不是删除)`，按到达顺序。
+fn changed_of(notes: &[anycon_protocol::RpcNotification]) -> Vec<(String, Option<TodoActivity>, bool)> {
+    notes
+        .iter()
+        .filter(|n| n.method == methods::TODO_CHANGED)
+        .map(|n| {
+            let c: TodoChanged = serde_json::from_value(n.params.clone()).unwrap();
+            (c.id, c.todo.and_then(|t| t.activity), c.deleted)
+        })
+        .collect()
+}
+
 async fn send(td: &TestDaemon, c: &mut TestClient, sid: &str, text: &str) {
     let _: SessionSendResult = c
         .call(td, methods::SESSION_SEND, json!({ "session_id": sid, "message_id": id(), "content": text }))
@@ -272,7 +284,7 @@ async fn a_project_that_cannot_hold_a_worktree_works_in_the_project_directory() 
     assert!(h
         .iter()
         .any(|e| matches!(&e.data, TodoEventData::Dispatched { workspace_mode: SessionWorkspaceMode::Local, .. })));
-    // 回写之后（review）再看：不看 `worktree.default`，也没有 worktree
+    // 跑完之后（review）再看：不看 `worktree.default`，也没有 worktree
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     td.shutdown().await;
 }
@@ -367,7 +379,7 @@ async fn dispatch_validations() {
         let h: TodoHistoryResult = c.call(&td, methods::TODO_HISTORY, json!({ "id": t.id })).await.unwrap();
         assert!(h.events.is_empty());
     }
-    // 项目都没有的项，参数里给了就行；这一项的项目被写回
+    // 项目都没有的项，参数里给了就行；派发把这一项的项目改成了它
     let r = dispatch(&td, &mut c, &bare.id, json!({ "project": "plain" })).await;
     assert_eq!(r.todo.project.as_deref(), Some("plain"));
     td.shutdown().await;
@@ -500,7 +512,7 @@ async fn a_session_that_cannot_be_created_leaves_nothing_behind() {
     assert!(history(&td, &mut c, &t.id).await.is_empty());
     assert_eq!(session_count(&td, &mut c).await, 0);
     assert!(audit(&td, "todo.dispatch").await.is_empty());
-    // 进程拉不起来的情况：会话建起来了（和 `session.create` 一样，拉起是异步的），这一项照常 working，随后回写成 waiting
+    // 进程拉不起来的情况：会话建起来了（和 `session.create` 一样，拉起是异步的），这一项照常 working，随后 activity 变成 waiting
     *td.fake.fail_spawn.lock().unwrap() = Some(anycon_daemon::testutil::AdapterErrorKind::NotInstalled);
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
@@ -537,7 +549,7 @@ async fn a_failure_after_the_session_exists_removes_it_again() {
     td.shutdown().await;
 }
 
-// ---------------------------------------------------------------- 回写
+// ---------------------------------------------------------------- activity
 
 #[tokio::test]
 async fn activity_follows_running_waiting_permission_running_idle_and_state_stays_the_persons() {
@@ -551,7 +563,10 @@ async fn activity_follows_running_waiting_permission_running_idle_and_state_stay
     // 等审批
     wait_session(&td, &mut c, &sid, SessionStatus::WaitingPermission).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
-    let _ = w.drain_now();
+    // 等审批时就通知了 waiting
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let early = changed_of(&w.drain_now());
+    assert!(early.iter().any(|(id, a, _)| id == &t.id && *a == Some(TodoActivity::Waiting)), "{early:?}");
     // 批准之后继续跑，最后 idle → review
     let req: PermissionListResult = c.call(&td, methods::PERMISSION_LIST, json!({})).await.unwrap();
     let _: Empty = c
@@ -588,10 +603,14 @@ async fn an_error_in_the_session_moves_the_item_to_waiting_and_a_fix_moves_it_on
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
     let t = new_todo(&td, &mut c, "This will error out", "", Some("proj")).await;
+    let mut w = td.hub_client("dev-w", "W");
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     // agent 报了错、这一轮以 error 收尾，会话回到 idle：最近结束的一轮出错 → waiting
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let seen = changed_of(&w.drain_now());
+    assert!(seen.iter().any(|(id, a, _)| id == &t.id && *a == Some(TodoActivity::Waiting)), "{seen:?}");
     // 用户接着发一条正常的消息：running → working，结束 → review
     send(&td, &mut c, &r.session.id, "carry on").await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
@@ -765,7 +784,7 @@ async fn dispatched_with_a_deferred_result(td: &TestDaemon, c: &mut TestClient) 
     }
     send(td, c, &r.session.id, "next round").await;
     wait_session(td, c, &r.session.id, SessionStatus::Idle).await;
-    // 状态回写已经发生过了；result 要等后台任务结束之后
+    // activity 已经是 working；result 要等后台任务结束之后
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(results(&history(td, c, &t.id).await).len(), 1, "the second result is held back");
     (t, r.session.id)
@@ -923,7 +942,7 @@ async fn history_pages_from_newest_to_oldest() {
         send(&td, &mut c, &r.session.id, &format!("round {i}")).await;
         wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
     }
-    // dispatched + 5 个 result + state 回写；都落定之后再取
+    // dispatched + 5 个 result；都落定之后再取
     wait_results(&td, &mut c, &t.id, 5).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -986,7 +1005,7 @@ async fn deleting_the_item_drops_links_and_history_and_deleting_a_session_keeps_
     let cur = get_todo(&td, &mut c, &t.id).await;
     assert_eq!(cur.sessions, vec![a.session.id.clone(), b.session.id.clone()]);
     assert!(results(&history(&td, &mut c, &t.id).await).iter().any(|r| r.0 == a.session.id));
-    // 已删除的会话不参与回写：只剩 b（idle，最近一轮正常）→ review
+    // 已删除的会话不参与 activity：只剩 b（idle，最近一轮正常）→ review
     assert_eq!(cur.activity, Some(TodoActivity::Review));
 
     // 删这一项：关联和「经过」一起删，会话不动，它的 todo_id 原样留着
@@ -1159,9 +1178,15 @@ async fn activity_is_right_after_a_crash() {
     let t = new_todo(&td, &mut c, "Crash test", "", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    let mut w = td.hub_client("dev-w", "W");
+    let _ = w.drain_now();
     send(&td, &mut c, &r.session.id, "crash now").await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Error).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
+    // 会话进入 error 时通知了 waiting
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let seen = changed_of(&w.drain_now());
+    assert!(seen.iter().any(|(id, a, _)| id == &t.id && *a == Some(TodoActivity::Waiting)), "{seen:?}");
     // 人修好之后接着发：新的一轮正常结束 → review
     send(&td, &mut c, &r.session.id, "fixed now").await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
@@ -1244,8 +1269,13 @@ async fn detaching_the_process_clears_the_task_count_and_the_activity_follows() 
     td.fake.last_handle().inject(anycon_agent_api::AgentEvent::Background { tasks: 2 }).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Working).await;
     // 进程被摘掉（`session.restart`）：任务数清零，进程里的后台任务没了，这一项不再是 working
+    let mut w = td.hub_client("dev-w", "W");
+    let _ = w.drain_now();
     let _: Empty = c.call(&td, methods::SESSION_RESTART, json!({ "session_id": r.session.id })).await.unwrap();
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let seen = changed_of(&w.drain_now());
+    assert!(seen.iter().any(|(id, a, _)| id == &t.id && *a == Some(TodoActivity::Review)), "{seen:?}");
     let cur = get_todo(&td, &mut c, &t.id).await;
     assert_eq!((cur.state, cur.updated_ms), (TodoState::Waiting, mine.updated_ms));
     td.shutdown().await;
@@ -1284,8 +1314,14 @@ async fn deleting_the_only_linked_session_leaves_the_decision_to_a_person() {
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Running).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Working).await;
+    let mut w = td.hub_client("dev-w", "W");
+    let _ = w.drain_now();
     let _: Empty = c.call(&td, methods::SESSION_DELETE, json!({ "session_id": r.session.id })).await.unwrap();
     let cur = wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
+    // 删除会话时通知了 waiting
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let seen = changed_of(&w.drain_now());
+    assert!(seen.iter().any(|(id, a, _)| id == &t.id && *a == Some(TodoActivity::Waiting)), "{seen:?}");
     assert_eq!(cur.sessions, vec![r.session.id.clone()], "the link stays");
     // 还有别的会话时，删掉一个不影响：由剩下的算
     let t2 = new_todo(&td, &mut c, "Two sessions", "", Some("proj")).await;
@@ -1493,5 +1529,162 @@ async fn a_message_id_retry_is_refused_when_the_parameters_differ_or_the_item_wa
         .await
         .unwrap_err();
     assert!(e.message.contains("control characters"), "{}", e.message);
+    td.shutdown().await;
+}
+
+// ---------------------------------------------------------------- 扣留的 result、重启、通知的一致性
+
+#[tokio::test]
+async fn activity_is_working_while_a_result_is_held_and_review_comes_with_the_record() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let (t, sid) = dispatched_with_a_deferred_result(&td, &mut c).await;
+    // 任务都结束了，但推迟的 result 还没放（等下一轮或兜底）：这一项还是 working，不是 review
+    td.fake.last_handle().inject(anycon_agent_api::AgentEvent::Background { tasks: 0 }).await;
+    let t0 = Instant::now();
+    while session(&td, &mut c, &sid).await.background_tasks != 0 {
+        assert!(t0.elapsed() < T);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(results(&history(&td, &mut c, &t.id).await).len(), 1, "still held");
+    assert_eq!(get_todo(&td, &mut c, &t.id).await.activity, Some(TodoActivity::Working));
+    // 兜底放出：result 记下来之后才是 review
+    td.ctx.sessions.set_finish_notify_grace(Duration::from_millis(100));
+    let t1 = Instant::now();
+    loop {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        td.ctx.sessions.sweep().await;
+        let cur = get_todo(&td, &mut c, &t.id).await;
+        if cur.activity == Some(TodoActivity::Review) {
+            assert_eq!(results(&history(&td, &mut c, &t.id).await).len(), 2, "review implies the result is recorded");
+            break;
+        }
+        assert!(t1.elapsed() < T, "never released: {:?}", cur.activity);
+    }
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_deferred_result_is_recorded_by_a_graceful_restart() {
+    let mut td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let (t, sid) = dispatched_with_a_deferred_result(&td, &mut c).await;
+    td.restart().await;
+    let mut c = td.local_cli_client();
+    // 退出时被扣留的 result 先记下来了；记录在，所以是 review，不是缺了一轮
+    let h = wait_results(&td, &mut c, &t.id, 2).await;
+    assert_eq!(results(&h).iter().map(|r| r.2.clone()).collect::<Vec<_>>().last().unwrap(), "echo: next round");
+    let cur = get_todo(&td, &mut c, &t.id).await;
+    assert_eq!(
+        cur.activity,
+        Some(TodoActivity::Review),
+        "{:?} {:?}",
+        cur.activity,
+        session(&td, &mut c, &sid).await.status
+    );
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_result_that_never_got_recorded_is_not_reviewable_and_is_not_made_up() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let t = new_todo(&td, &mut c, "Lost result", "", Some("proj")).await;
+    let r = dispatch(&td, &mut c, &t.id, json!({})).await;
+    wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    // 崩溃时内存里的 result 没来得及记：库里只有 dispatched、没有这一轮的 result
+    sqlx::query("DELETE FROM todo_events WHERE kind = 'result'").execute(td.ctx.store.pool()).await.unwrap();
+    assert_eq!(get_todo(&td, &mut c, &t.id).await.activity, Some(TodoActivity::Waiting));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(results(&history(&td, &mut c, &t.id).await).is_empty(), "nothing is made up");
+    // 人再发一轮：新的一轮和它的 result 正常记下，又是 review
+    send(&td, &mut c, &r.session.id, "again").await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    assert_eq!(results(&history(&td, &mut c, &t.id).await).len(), 1);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_last_notification_matches_the_computed_activity_after_a_fast_failing_redispatch() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let mut w = td.hub_client("dev-w", "W");
+    let t = new_todo(&td, &mut c, "Fail fast", "", Some("proj")).await;
+    dispatch(&td, &mut c, &t.id, json!({})).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    *td.fake.fail_spawn.lock().unwrap() = Some(anycon_daemon::testutil::AdapterErrorKind::NotInstalled);
+    for round in 0..3 {
+        let _ = w.drain_now();
+        // 再派发：派发的通知是 working，新会话马上失败，算出来是 waiting，最后一条通知必须是 waiting
+        dispatch(&td, &mut c, &t.id, json!({})).await;
+        wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let seen = changed_of(&w.drain_now());
+        let last = seen
+            .iter()
+            .rev()
+            .find(|(id, _, _)| id == &t.id)
+            .unwrap_or_else(|| panic!("round {round}: no notification"));
+        assert_eq!(last.1, Some(TodoActivity::Waiting), "round {round}: {seen:?}");
+    }
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn no_stale_activity_notification_follows_a_delete() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let mut w = td.hub_client("dev-w", "W");
+    let t = new_todo(&td, &mut c, "Keep it on hold", "", Some("proj")).await;
+    let r = dispatch(&td, &mut c, &t.id, json!({})).await;
+    wait_session(&td, &mut c, &r.session.id, SessionStatus::Running).await;
+    let _ = w.drain_now();
+    let _: Empty = c.call(&td, methods::TODO_DELETE, json!({ "id": t.id })).await.unwrap();
+    // 会话之后的状态变化不会再为这一项发 `todo.changed`
+    td.fake.last_handle().release();
+    wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let seen = changed_of(&w.drain_now());
+    let mine: Vec<_> = seen.iter().filter(|(id, _, _)| id == &t.id).collect();
+    assert_eq!(mine.last().map(|m| m.2), Some(true), "the delete is the last word: {seen:?}");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn history_skips_rows_it_cannot_read_instead_of_failing_the_page() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let t = new_todo(&td, &mut c, "Old rows", "", Some("proj")).await;
+    dispatch(&td, &mut c, &t.id, json!({})).await;
+    wait_results(&td, &mut c, &t.id, 1).await;
+    // 这个分支更早的版本留下的 `by: "dispatch"`，和不认识的 kind
+    for (seq, data) in [
+        (100, r#"{"kind":"state","from":"working","to":"review","by":"dispatch"}"#),
+        (101, r#"{"kind":"something_new","x":1}"#),
+    ] {
+        sqlx::query(
+            "INSERT INTO todo_events (todo_id, seq, ts_ms, kind, session_id, data) VALUES (?, ?, 1, 'state', NULL, ?)",
+        )
+        .bind(&t.id)
+        .bind(seq)
+        .bind(data)
+        .execute(td.ctx.store.pool())
+        .await
+        .unwrap();
+    }
+    let h = history(&td, &mut c, &t.id).await;
+    assert_eq!(h.len(), 2, "the readable rows are still there: {h:?}");
+    assert!(h.iter().all(|e| e.seq < 100));
+    // 带着这样的行再派发也不会失败
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    dispatch(&td, &mut c, &t.id, json!({})).await;
     td.shutdown().await;
 }

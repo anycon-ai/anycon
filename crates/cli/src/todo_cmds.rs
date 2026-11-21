@@ -209,6 +209,8 @@ fn activity_str(a: TodoActivity) -> &'static str {
         TodoActivity::Working => "working",
         TodoActivity::Waiting => "waiting",
         TodoActivity::Review => "review",
+        // 更新版本的 daemon 给的值：不显示
+        TodoActivity::Unknown => "",
     }
 }
 
@@ -227,8 +229,10 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
         println!("no to-dos");
         return Ok(0);
     }
-    let mut rows =
-        vec![["ID", "STATE", "DUE", "PROJECT", "BY", "TITLE"].iter().map(|h| h.to_string()).collect::<Vec<_>>()];
+    let mut rows = vec![["ID", "STATE", "ACTIVITY", "DUE", "PROJECT", "BY", "TITLE"]
+        .iter()
+        .map(|h| h.to_string())
+        .collect::<Vec<_>>()];
     for t in &todos {
         let by = match (t.source.kind, t.unreviewed) {
             (TodoSourceKind::Agent, true) => app.out.yellow("agent (unreviewed)"),

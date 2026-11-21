@@ -611,7 +611,7 @@ impl Sessions {
         &self.d.clients
     }
 
-    /// 会话现在的状态；会话不存在（已删除）返回 `None`。清单的回写用（在清单锁里调，只取会话锁一小会儿）。
+    /// 会话现在的状态；会话不存在（已删除）返回 `None`。算清单项的 `activity` 用（在清单锁里调，只取会话锁一小会儿）。
     pub(crate) async fn status_of(&self, id: &str) -> Option<(SessionStatus, u32)> {
         let sess = self.get(id).ok()?;
         let st = sess.st.lock().await;
@@ -629,7 +629,7 @@ impl Sessions {
         st.row.todo_id.clone()
     }
 
-    /// 后台任务：把从清单派出的会话的每轮结果记进「经过」、把状态变化回写到清单项（docs/spec/daemon.md § 22）。
+    /// 后台任务：把从清单派出的会话的每轮结果记进「经过」、某一项的 `activity` 变了就发 `todo.changed`（docs/spec/daemon.md § 22）。
     pub fn spawn_todo_worker(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(crate::todo_dispatch::run_worker(Arc::downgrade(self), self.todo_signal.clone()))
     }
@@ -3829,7 +3829,7 @@ impl Sessions {
             }
             warn_err("prune audit log", self.d.store.prune_audit(cutoff).await);
             // 已关闭的清单项按同一个期限清理，从 `closed_ms` 起算（docs/spec/daemon.md § 21.4）
-            crate::todos::purge_closed(&self.d.store, &self.d.clients, cutoff).await;
+            crate::todos::purge_closed(&self.d.store, &self.d.clients, &self.todo_signal, cutoff).await;
         }
         let days = cfg.workspace.scratch_retention_days;
         if days > 0 {

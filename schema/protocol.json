@@ -6955,7 +6955,12 @@
         },
         {
           "const": "review",
-          "description": "最近的会话最近一轮正常结束，等人验收。",
+          "description": "最近的会话最近一轮正常结束、结果也已经记下，等人验收。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "更新版本的 daemon 给了一个这里不认识的值：客户端按「没有 activity」处理，不能因此解析失败。daemon 自己不产生它。",
           "type": "string"
         }
       ]

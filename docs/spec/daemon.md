@@ -1187,7 +1187,7 @@ Todo {
   updated_ms: timestamp
   closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉；在 done 和 dropped 之间换时保持原来的
   sessions: [session_id]  // 这一项派出的会话（§ 22.3）；旧 daemon 没有，按空读
-  activity?: working | waiting | review   // 派出的会话现在的情况，每次返回这一项时算出来，不存（§ 22.3）；已关闭或没派发过的项没有
+  activity?: working | waiting | review   // 派出的会话现在的情况，每次返回这一项时算出来，不存（§ 22.3）；已关闭或没派发过的项没有。之后可能多出新的值：解析时落到 `unknown`（Rust 的 `TodoActivity::Unknown`），客户端按「不显示 activity」处理，不能因此失败；daemon 自己不产生它
 }
 ```
 
@@ -1337,10 +1337,11 @@ Todo {
   1. 一个关联会话也没有了（都被删了）→ `waiting`：由人决定接下来怎么办
   2. 任何一个关联会话在等审批（`waiting_permission`，包括计划和提问）→ `waiting`
   3. 任何一个在排队、启动或运行（`queued` / `starting` / `running`），或者空闲（`idle` / `ended`）但还有后台任务在跑（`background_tasks > 0`），或者刚结束的一轮的 `result` 还没记进「经过」（被 § 14 的推迟扣着，或者还在队列里）→ `working`
-  4. 否则由**最近派发的那个还存在的会话**说了算：它的状态是 `error` 或 `interrupted`（daemon 重启时它在跑），或者它最近一轮（按 turn 号）不是正常结束的——`error`、被取消、没有结束（进程被打断时的那一轮，没有 `ended_ms`）、没有任何轮次——→ `waiting`；最近一轮正常结束（`completed` / `max_turns` / `budget`）→ `review`。更早的会话出过错、被取消不再拖着这一项：它们只在 2、3 里出现（还在等审批、还在跑）。
+  4. 否则由**最近派发的那个还存在的会话**说了算：它的状态是 `error` 或 `interrupted`（daemon 重启时它在跑），或者它最近一轮（按 turn 号）不是正常结束的——`error`、被取消、没有结束（进程被打断时的那一轮，没有 `ended_ms`）、没有任何轮次——→ `waiting`；最近一轮正常结束（`completed` / `max_turns` / `budget`）且这一轮的 `result` 已经在「经过」里 → `review`（不在 → `waiting`）。更早的会话出过错、被取消不再拖着这一项：它们只在 2、3 里出现（还在等审批、还在跑）。
+- **`review` 看记录**：最近一轮正常结束还不够，这一轮的 `result` 必须已经在「经过」里（按会话和 turn 号查 `todo_events`）；不在（崩溃时来不及记）→ `waiting`，由人看一眼，不会补一条编的 `result`。
 - **`result` 先于 `review`**：一轮结束时它的 `result` 先「扣留」（计数），记进「经过」之后才放掉；扣留期间算 `working`。所以 `activity = review` 意味着这一轮的 `result` 已经在「经过」里，在 `review` 上立刻再派发也带得上它。记 `result` 是按项、持清单锁做的（先取走这一项排着的结果，逐条记下，再清扣留，再重新算）。
 - **通知是尽力而为，对错不靠它**：关联会话的状态真的变了（排队位置变了不算）、后台任务数在 0 和非 0 之间变化（1 → 2 这样的不算）、`result` 的扣留清掉、会话被删除、进程被摘掉（任务数被清零）时，daemon 重新算这一项的 `activity`，和上一次发出去的不同就发 `todo.changed`（带 `activity`）。漏发或多发一条都不影响对错，因为每次读都是现算的；daemon 启动时不用写什么（客户端连上会重新列清单），只用当前值把「上一次发出去的」填上，避免启动后重复通知。
-- **回写已取消**：daemon 不再把会话的情况写进 `state`，没有 `todo.update` 的审计、没有「状态由 dispatch 改的」这种历史。人在派发过的项上改 `state`，是一次普通的修改（`updated_ms` 照常变），「经过」里记一条 `state`（§ 22.4）。
+- **会话的情况不是修改**：它不写进 `state`、不动 `updated_ms`、不进审计，「经过」里也没有对应的条目。人在派发过的项上改 `state` 是一次普通的修改（`updated_ms` 照常变，审计记 `todo.update`），「经过」里记一条 `state`（§ 22.4）。
 - 通知（`turn_finished`）：关联会话的 `turn_finished` 通知照常发（§ 14），客户端把文案换成「<这一项的标题> 做完了，等你验收」（[web.md § 14.10](web.md#1410-通知)）；不新增通知类别。
 
 ### 22.4 交接：「经过」和第一条消息
@@ -1416,7 +1417,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 - `activity` 看的是会话状态，不看 agent 说了什么：agent 说「没做完」也会是 `review`，由人验收时判断。
 - `activity` 是读的时候现算的，和 `state` 互不影响：人把 `state` 改成 `done`，它就没有 `activity`；改回 `open`，又按会话此刻的情况有。通知是尽力而为，客户端在连上和打开一项时用 `todo.list` / `todo.get` 取到的值才是准的。
 - 每次读都要看各关联会话的内存状态（取会话锁，一项最多 20 个），最近派发的那个停下来时还多读一次 `turns` 表；`todo.list` 一页里没派发过的项不花这个代价。
-- 重启时没有记完的东西会丢：还在内存队列里的 `result`。`activity` 不受影响（现算）：重启时被打断的会话是 `interrupted`，这一项算 `waiting`。
+- 退出时 daemon 先把内存里排着的 `result`（包括被后台任务推迟、摘掉进程时放出来的）记进「经过」，再停；崩溃时来不及记的会丢。`review` 看记录而不看内存：最近一轮正常结束、但这一轮的 `result` 不在「经过」里，算 `waiting`（不会补一条编的 `result`）。
 - `message_id` 的幂等靠会话的第一条消息查，第一次派发出的会话被删掉之后，用同一个 `message_id` 重试会开新的会话。
 
 ### 22.8 存储

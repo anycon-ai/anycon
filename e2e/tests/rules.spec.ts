@@ -17,7 +17,14 @@ import { expect, test, type Page } from '@playwright/test'
 import { runCli } from '../helpers/cli.js'
 import { makeRepoProject } from '../helpers/git.js'
 import { readState } from '../helpers/state.js'
-import { CONNECT_TIMEOUT, TURN_TIMEOUT, nodeBase, pairNewBrowser, pendingCard, type PairedBrowser } from '../helpers/ui.js'
+import {
+  CONNECT_TIMEOUT,
+  TURN_TIMEOUT,
+  nodeBase,
+  pairNewBrowser,
+  pendingCard,
+  type PairedBrowser,
+} from '../helpers/ui.js'
 
 interface DaemonRule {
   id: string
@@ -46,11 +53,14 @@ async function daemonRules(): Promise<DaemonRule[]> {
   const out = await runCli(state(), ['rule', 'ls', '--all', '--json'])
   return (JSON.parse(out.trim().split('\n').at(-1)!) as { rules: DaemonRule[] }).rules
 }
-const ruleWith = async (text: string): Promise<DaemonRule | undefined> => (await daemonRules()).find((r) => r.text === text)
+const ruleWith = async (text: string): Promise<DaemonRule | undefined> =>
+  (await daemonRules()).find((r) => r.text === text)
 
 async function daemonTodo(): Promise<DaemonTodo | undefined> {
   const out = await runCli(state(), ['todo', 'ls', '--all', '--json'])
-  return (JSON.parse(out.trim().split('\n').at(-1)!) as { todos: DaemonTodo[] }).todos.find((x) => x.title === TITLE)
+  return (JSON.parse(out.trim().split('\n').at(-1)!) as { todos: DaemonTodo[] }).todos.find(
+    (x) => x.title === TITLE,
+  )
 }
 
 async function navInboxCount(page: Page): Promise<number> {
@@ -67,7 +77,15 @@ test.describe.serial('规则', () => {
   test.beforeAll(async ({ browser }) => {
     test.skip(!readState().daemonStarted, 'needs the e2e daemon (E2E_SKIP_DAEMON=1 was set)')
     makeRepoProject(readState(), PROJECT)
-    await runCli(state(), ['todo', 'add', TITLE, '--project', PROJECT, '--body', 'Nothing to write.'])
+    await runCli(state(), [
+      'todo',
+      'add',
+      TITLE,
+      '--project',
+      PROJECT,
+      '--body',
+      'Nothing to write.',
+    ])
     device = await pairNewBrowser(browser, readState(), { deviceName: 'e2e-rules' })
     page = device.page
     base = nodeBase(page)
@@ -75,13 +93,25 @@ test.describe.serial('规则', () => {
 
   test.afterAll(async () => {
     if (readState().daemonStarted) {
-      for (const r of await daemonRules()) if (r.text.includes(`e2e-${RUN}`)) await runCli(state(), ['rule', 'rm', r.id.slice(0, 8)]).catch(() => undefined)
+      for (const r of await daemonRules())
+        if (r.text.includes(`e2e-${RUN}`))
+          await runCli(state(), ['rule', 'rm', r.id.slice(0, 8)]).catch(() => undefined)
       const t = await daemonTodo()
       if (t) {
-        for (const sid of t.sessions ?? []) await runCli(state(), ['delete', sid.slice(0, 12), '--remove-worktree', '--delete-branch', '--yes']).catch(() => undefined)
+        for (const sid of t.sessions ?? [])
+          await runCli(state(), [
+            'delete',
+            sid.slice(0, 12),
+            '--remove-worktree',
+            '--delete-branch',
+            '--yes',
+          ]).catch(() => undefined)
         await runCli(state(), ['todo', 'rm', t.id.slice(0, 8)]).catch(() => undefined)
       }
-      if (permissionSession) await runCli(state(), ['delete', permissionSession.slice(0, 12), '--yes']).catch(() => undefined)
+      if (permissionSession)
+        await runCli(state(), ['delete', permissionSession.slice(0, 12), '--yes']).catch(
+          () => undefined,
+        )
     }
     await device?.context.close()
   })
@@ -113,25 +143,38 @@ test.describe.serial('规则', () => {
     await row.getByTestId('todo-main').click()
     await page.getByTestId('todo-dispatch').click()
     await expect(page.getByTestId('dispatch-dialog')).toBeVisible()
-    if ((await page.getByTestId('dispatch-agent').count()) > 0) await page.getByTestId('dispatch-agent').selectOption('mock')
+    if ((await page.getByTestId('dispatch-agent').count()) > 0)
+      await page.getByTestId('dispatch-agent').selectOption('mock')
     await page.getByTestId('dispatch-no-push').uncheck()
     await expect(page.getByTestId('dispatch-send')).toBeEnabled({ timeout: 45_000 })
     // mock agent 声明了能收系统提示：列出规则文字（纯文字）和条数
-    await expect(page.getByTestId('dispatch-rules-text')).toContainText(RULE_A, { timeout: CONNECT_TIMEOUT })
-    await expect(page.getByTestId('dispatch-rules-text')).toContainText('Standing rules from the user.')
+    await expect(page.getByTestId('dispatch-rules-text')).toContainText(RULE_A, {
+      timeout: CONNECT_TIMEOUT,
+    })
+    await expect(page.getByTestId('dispatch-rules-text')).toContainText(
+      'Standing rules from the user.',
+    )
     await expect(page.getByTestId('dispatch-rules-count')).toBeVisible()
     await expect(page.getByTestId('dispatch-rules-unsupported')).toHaveCount(0)
 
     await page.getByTestId('dispatch-send').click()
     await expect(page.getByTestId('dispatch-dialog')).toHaveCount(0)
-    await expect.poll(async () => (await daemonTodo())?.activity, { timeout: TURN_TIMEOUT }).toBe('review')
+    await expect
+      .poll(async () => (await daemonTodo())?.activity, { timeout: TURN_TIMEOUT })
+      .toBe('review')
     const todo = (await daemonTodo())!
 
     // 「经过」里 dispatched 记着给了几条；mock 回显系统提示的前 32 个字符
     const out = await runCli(state(), ['todo', 'history', todo.id.slice(0, 8), '--json'])
-    const events = (JSON.parse(out.trim().split('\n').at(-1)!) as { events: Array<{ kind: string; rules?: string[]; text?: string }> }).events
+    const events = (
+      JSON.parse(out.trim().split('\n').at(-1)!) as {
+        events: Array<{ kind: string; rules?: string[]; text?: string }>
+      }
+    ).events
     expect(events.find((e) => e.kind === 'dispatched')?.rules?.length).toBeGreaterThanOrEqual(1)
-    expect(events.find((e) => e.kind === 'result')?.text).toContain('prompt_append=Standing rules from the user. Th')
+    expect(events.find((e) => e.kind === 'result')?.text).toContain(
+      'prompt_append=Standing rules from the user. Th',
+    )
 
     // 会话页：信息面板里「交给 agent 的规则」是只读的全文
     await page.goto(`${base}/s/${todo.sessions![0]}`)
@@ -145,7 +188,9 @@ test.describe.serial('规则', () => {
       await expect(page.getByTestId('inbox-page')).toBeVisible({ timeout: CONNECT_TIMEOUT })
       return navInboxCount(page)
     })()
-    const out = await runCli(state(), ['rule', 'add', RULE_B, '--json'], { env: { ANYCON_AGENT: '1' } })
+    const out = await runCli(state(), ['rule', 'add', RULE_B, '--json'], {
+      env: { ANYCON_AGENT: '1' },
+    })
     const added = JSON.parse(out.trim().split('\n').at(-1)!) as DaemonRule
     expect(added).toMatchObject({ status: 'pending', source: { kind: 'agent' } })
 
@@ -154,7 +199,9 @@ test.describe.serial('规则', () => {
     const row = section.locator('[data-kind="rule"]').filter({ hasText: RULE_B })
     await expect(row).toBeVisible()
     // 行上没有任何动作；不自动选中、不展开；导航上的数字没有变
-    await expect(row.locator('[data-testid="inbox-rule-confirm"], [data-testid="inbox-accept"]')).toHaveCount(0)
+    await expect(
+      row.locator('[data-testid="inbox-rule-confirm"], [data-testid="inbox-accept"]'),
+    ).toHaveCount(0)
     await expect(page.locator('[data-testid="inbox-detail"][data-kind="rule"]')).toHaveCount(0)
     expect(await navInboxCount(page)).toBe(before)
 
@@ -178,9 +225,14 @@ test.describe.serial('规则', () => {
     await expect(pendingCard(page)).toBeVisible({ timeout: TURN_TIMEOUT })
     permissionSession = new URL(page.url()).pathname.split('/').pop()!
 
-    await page.goto('/inbox')
+    // 共用的 daemon 上别的用例可能还留着等答复的请求：按会话定位到这一条（和通知点进来的地址一样）
+    await page.goto(`/inbox?node=${base.split('/').pop()}&session=${permissionSession}`)
     const pane = page.getByTestId('inbox-detail-pane')
     await expect(pane.getByTestId('permission-card')).toBeVisible({ timeout: CONNECT_TIMEOUT })
+    await expect(pane.getByTestId('inbox-open-session')).toHaveAttribute(
+      'href',
+      new RegExp(`${permissionSession}$`),
+    )
     await pane.getByTestId('record-rule').click()
     const editor = page.getByTestId('rule-editor')
     await expect(editor.getByTestId('record-agent')).toBeVisible()

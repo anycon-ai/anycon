@@ -159,10 +159,15 @@ impl Sender {
             // 等的同时继续收回执（飞行中的信封还会陆续被退回）
             self.pump(until.saturating_duration_since(Instant::now())).await?;
             let batch = std::mem::take(&mut self.returned);
+            let n = batch.len();
             for seq in batch {
                 self.stats.resent += 1;
                 self.dev.send_raw(self.retained[&seq].clone()).await;
             }
+            // 信封数的预算（每条连接每秒 500 封）把重发也算进去：接收方慢的时候（Windows 上 3 ms 的 sleep 实际是 15 ms）
+            // 每一轮要重发上百封，一秒里好几轮就会超，hub 回 `rate_limited`，和这里要测的字节预算无关。
+            // 重发按 400 封 / 秒的节奏摊开，期间照常收回执
+            self.pump(Duration::from_millis(n as u64 * 5 / 2)).await?;
         }
     }
 }

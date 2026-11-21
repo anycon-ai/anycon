@@ -486,7 +486,6 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     c.audit.record(caller, "todo.update", Some(&new.id), detail).await;
     // 派发过的项：状态是人改的，「经过」里记一条（§ 22.4）
     crate::todo_dispatch::record_manual_state(c, caller, &new, old.state).await;
-    let mut new = new;
     new.activity = crate::todo_dispatch::compute_activity(&c.sessions, &new).await;
     notify_changed(&c.clients, TodoChanged { id: new.id.clone(), todo: Some(new.clone()), deleted: false });
     Ok(new)

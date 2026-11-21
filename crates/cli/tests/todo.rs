@@ -386,7 +386,8 @@ async fn run_hands_an_item_to_an_agent_and_history_shows_what_happened() {
         .await;
     assert_eq!(r.code, 0, "{}", r.stderr);
     let j = r.json();
-    assert_eq!(j["todo"]["state"], "working");
+    assert_eq!(j["todo"]["state"], "open");
+    assert!(j["todo"]["activity"].is_string());
     assert_eq!(j["todo"]["project"], "proj");
     assert_eq!(j["session"]["todo_id"], id.as_str());
     let sid = j["session"]["id"].as_str().unwrap().to_string();

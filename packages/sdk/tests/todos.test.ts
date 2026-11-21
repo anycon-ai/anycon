@@ -182,7 +182,8 @@ for (const impl of cryptoImpls) {
             message_id: undefined,
           },
         )
-        assert.equal(r.todo.state, 'working')
+        assert.equal(r.todo.state, 'open')
+        assert.equal(r.todo.activity, 'working')
         assert.deepEqual(r.todo.sessions, [r.session.id])
         assert.equal(r.session.todo_id, t.id)
 

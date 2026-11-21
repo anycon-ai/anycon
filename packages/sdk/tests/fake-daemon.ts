@@ -788,7 +788,7 @@ export class FakeDaemon {
       }
       const sessionId = `sess_dispatch${todoClock}`
       todo.project = project
-      todo.state = 'working'
+      todo.activity = 'working'
       todo.sessions = [...((todo.sessions as string[] | undefined) ?? []), sessionId]
       todo.updated_ms = ++todoClock
       const events = todoEvents.get(p.id) ?? []

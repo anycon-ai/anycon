@@ -613,18 +613,18 @@ async fn several_linked_sessions_are_aggregated() {
     wait_session(&td, &mut c, &b.session.id, SessionStatus::Running).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Working).await;
     assert_eq!(session(&td, &mut c, &a.session.id).await.status, SessionStatus::Idle);
-    // 第一个会话又开一轮、进程崩了（会话进入 error），第二个仍在跑：waiting 优先
+    // 第一个会话又开一轮、进程崩了（会话进入 error），第二个仍在跑：还是 working（更早的会话出错不会让这一项停在 waiting）
     send(&td, &mut c, &a.session.id, "crash now").await;
     wait_session(&td, &mut c, &a.session.id, SessionStatus::Error).await;
-    wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
-    // 第二个跑完：第一个还是 error → 仍 waiting
-    td.fake.handle(1).release();
-    wait_session(&td, &mut c, &b.session.id, SessionStatus::Idle).await;
     tokio::time::sleep(Duration::from_millis(250)).await;
-    assert_eq!(get_todo(&td, &mut c, &t.id).await.state, TodoState::Waiting);
-    // 第一个修好（再一轮正常结束）→ 都停了，最近结束的一轮正常 → review
-    send(&td, &mut c, &a.session.id, "fixed now").await;
-    wait_session(&td, &mut c, &a.session.id, SessionStatus::Idle).await;
+    assert_eq!(get_todo(&td, &mut c, &t.id).await.activity, Some(TodoActivity::Working));
+    // 第二个（最近派发的）跑完：由它说了算，正常结束 → review；第一个的错误不再拖着它
+    td.fake.handle(1).release();
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    // 最近派发的那个又出错 → waiting
+    send(&td, &mut c, &b.session.id, "an error please").await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
+    send(&td, &mut c, &b.session.id, "fixed now").await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     td.shutdown().await;
 }
@@ -826,7 +826,7 @@ async fn the_second_dispatch_carries_the_earlier_results_exactly() {
     let first =
         "Write docs\n\nBody text\n\nLeave your changes on the branch: do not push and do not open a pull request.";
     assert_eq!(td.fake.handle(0).input_texts(), vec![first.to_string()]);
-    wait_history(&td, &mut c, &t.id, 3).await;
+    wait_history(&td, &mut c, &t.id, 2).await;
     // 第二次：带着第一次最后一条 result（echo 出来的整条第一条消息）；这次明确不要「不 push」
     let b = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false })).await.unwrap();
     wait_session(&td, &mut c, &b.session.id, SessionStatus::Idle).await;
@@ -836,7 +836,7 @@ async fn the_second_dispatch_carries_the_earlier_results_exactly() {
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     let _: Todo =
         c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "title": "Write more docs", "body": "" })).await.unwrap();
-    wait_history(&td, &mut c, &t.id, 6).await;
+    wait_history(&td, &mut c, &t.id, 4).await;
     let third = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false })).await.unwrap();
     wait_session(&td, &mut c, &third.session.id, SessionStatus::Idle).await;
     let m = td.fake.handle(2).input_texts().remove(0);
@@ -979,7 +979,7 @@ async fn deleting_the_item_drops_links_and_history_and_deleting_a_session_keeps_
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     let b = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &b.session.id, SessionStatus::Idle).await;
-    wait_history(&td, &mut c, &t.id, 5).await;
+    wait_history(&td, &mut c, &t.id, 4).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     // 删会话：关联留着，「经过」留着
     let _: Empty = c.call(&td, methods::SESSION_DELETE, json!({ "session_id": a.session.id })).await.unwrap();
@@ -1021,7 +1021,7 @@ async fn retention_of_a_closed_item_removes_its_history_too() {
         let r = dispatch(&td, &mut c, &t.id, json!({})).await;
         wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
         wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
-        wait_history(&td, &mut c, &t.id, 3).await;
+        wait_history(&td, &mut c, &t.id, 2).await;
     }
     let now = anycon_daemon::util::now_ms();
     for (t, closed) in [(&old, now - 5 * 3_600_000), (&recent, now - 60_000)] {
@@ -1066,7 +1066,7 @@ async fn list_shows_the_linked_sessions_and_links_survive_a_restart() {
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
-    wait_history(&td, &mut c, &t.id, 3).await;
+    wait_history(&td, &mut c, &t.id, 2).await;
     let page: TodoListResult = c.call(&td, methods::TODO_LIST, json!({})).await.unwrap();
     let by_id = |id: &str| page.todos.iter().find(|t| t.id == id).unwrap().clone();
     assert_eq!(by_id(&t.id).sessions, vec![r.session.id.clone()]);
@@ -1076,7 +1076,7 @@ async fn list_shows_the_linked_sessions_and_links_survive_a_restart() {
     let cur = get_todo(&td, &mut c, &t.id).await;
     assert_eq!((cur.sessions.clone(), cur.activity), (vec![r.session.id.clone()], Some(TodoActivity::Review)));
     assert_eq!(session(&td, &mut c, &r.session.id).await.todo_id.as_deref(), Some(t.id.as_str()));
-    assert_eq!(history(&td, &mut c, &t.id).await.len(), 3);
+    assert_eq!(history(&td, &mut c, &t.id).await.len(), 2);
     td.shutdown().await;
 }
 
@@ -1091,7 +1091,7 @@ async fn audit_has_no_titles_bodies_or_agent_text() {
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
-    wait_history(&td, &mut c, &t.id, 3).await;
+    wait_history(&td, &mut c, &t.id, 2).await;
     let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "waiting" })).await.unwrap();
     let all = td.ctx.audit.query(None, None, 1000).await;
     let text = serde_json::to_string(&all).unwrap();
@@ -1397,5 +1397,101 @@ async fn a_dispatched_worktree_branch_name_carries_no_title_words() {
         assert!(!all.contains(w), "{w} reached the audit log: {all}");
     }
     assert!(all.contains("worktree.create"));
+    td.shutdown().await;
+}
+
+// ---------------------------------------------------------------- activity 的读取、updated_ms、message_id 的边界
+
+#[tokio::test]
+async fn todo_get_returns_the_computed_activity_and_dispatch_only_bumps_updated_ms_for_real_changes() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "one");
+    project_dir(&td, "two");
+    let mut c = td.local_cli_client();
+    let t = new_todo(&td, &mut c, "Plain work first", "", Some("one")).await;
+    // 同项目、不是 agent 记的：派发没有改这一项的内容，`updated_ms` 不动，`activity` 却有了
+    let r = dispatch(&td, &mut c, &t.id, json!({})).await;
+    assert_eq!(r.todo.updated_ms, t.updated_ms);
+    assert!(r.todo.activity.is_some(), "a dispatched item has an activity");
+    let got: Todo = c.call(&td, methods::TODO_GET, json!({ "id": t.id })).await.unwrap();
+    assert_eq!((got.updated_ms, got.state), (t.updated_ms, TodoState::Open));
+    assert!(got.activity.is_some());
+    // 会话的活动也不动它
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    let got: Todo = c.call(&td, methods::TODO_GET, json!({ "id": t.id })).await.unwrap();
+    assert_eq!((got.activity, got.updated_ms), (Some(TodoActivity::Review), t.updated_ms));
+    // 派发改了项目：这是真的修改，`updated_ms` 严格递增（先把标题换掉，免得第二个会话又挂住）
+    let base: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "title": "Plain work" })).await.unwrap();
+    let r2 = dispatch(&td, &mut c, &t.id, json!({ "project": "two" })).await;
+    assert!(r2.todo.updated_ms > base.updated_ms);
+    assert_eq!(r2.todo.project.as_deref(), Some("two"));
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    // 收下一项 agent 记的：派发清掉 unreviewed，也是真的修改
+    let added: Todo = c
+        .call(&td, methods::TODO_ADD, json!({ "id": id(), "title": "From an agent", "project": "one", "agent": true }))
+        .await
+        .unwrap();
+    let r3 = dispatch(&td, &mut c, &added.id, json!({})).await;
+    assert!(!r3.todo.unreviewed && r3.todo.updated_ms > added.updated_ms);
+    wait_activity(&td, &mut c, &added.id, TodoActivity::Review).await;
+    let cur = get_todo(&td, &mut c, &added.id).await;
+    assert_eq!(cur.updated_ms, r3.todo.updated_ms, "the session finishing does not touch it");
+    // 现在的 `updated_ms` 够用来做条件删除：会话在跑也不会让它「变了」
+    let _: Empty =
+        c.call(&td, methods::TODO_DELETE, json!({ "id": added.id, "if_updated_ms": cur.updated_ms })).await.unwrap();
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_message_id_retry_is_refused_when_the_parameters_differ_or_the_item_was_recreated() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "one");
+    project_dir(&td, "two");
+    let mut c = td.local_cli_client();
+    let t = new_todo(&td, &mut c, "Only once", "", Some("one")).await;
+    let mid = id();
+    let first = dispatch(&td, &mut c, &t.id, json!({ "message_id": mid })).await;
+    wait_session(&td, &mut c, &first.session.id, SessionStatus::Idle).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    let before = session_count(&td, &mut c).await;
+    // 参数不一样：agent、项目、no_push 各试一个，都是 invalid / message_id，什么都没开
+    for params in [
+        json!({ "id": t.id, "agent": "other", "no_push": false, "message_id": mid }),
+        json!({ "id": t.id, "agent": "fake", "no_push": false, "project": "two", "message_id": mid }),
+        json!({ "id": t.id, "agent": "fake", "no_push": true, "message_id": mid }),
+    ] {
+        let e = dispatch_raw(&td, &mut c, params.clone()).await.unwrap_err();
+        assert!(
+            matches!(code(&e), ErrorCode::Invalid | ErrorCode::AgentUnavailable | ErrorCode::Unsupported),
+            "{params} -> {e:?}"
+        );
+    }
+    let e = dispatch_raw(
+        &td,
+        &mut c,
+        json!({ "id": t.id, "agent": "fake", "no_push": false, "project": "two", "message_id": mid }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!((code(&e), field_reason(&e).0.as_deref()), (ErrorCode::Invalid, Some("message_id")));
+    assert_eq!(session_count(&td, &mut c).await, before);
+    // 项被删了又用同一个 id 建了回来：旧会话不在新项的 sessions 里，这是新的派发（第一条消息用新的 id），不是重试
+    let _: Empty = c.call(&td, methods::TODO_DELETE, json!({ "id": t.id })).await.unwrap();
+    let again: Todo =
+        c.call(&td, methods::TODO_ADD, json!({ "id": t.id, "title": "Only once", "project": "one" })).await.unwrap();
+    assert!(again.sessions.is_empty());
+    let fresh = dispatch(&td, &mut c, &t.id, json!({ "message_id": mid })).await;
+    assert_ne!(fresh.session.id, first.session.id);
+    assert_eq!(fresh.todo.sessions, vec![fresh.session.id.clone()]);
+    // message_id 的写法：太长、控制字符各有自己的说明
+    let long = "m".repeat(129);
+    let e = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false, "message_id": long }))
+        .await
+        .unwrap_err();
+    assert!(e.message.contains("128 bytes"), "{}", e.message);
+    let e = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false, "message_id": "a\nb" }))
+        .await
+        .unwrap_err();
+    assert!(e.message.contains("control characters"), "{}", e.message);
     td.shutdown().await;
 }

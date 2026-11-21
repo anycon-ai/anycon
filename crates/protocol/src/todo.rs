@@ -91,6 +91,22 @@ pub struct Todo {
     /// 这一项派出的会话（`todo.dispatch`，docs/spec/daemon.md § 22.3），按派发的先后，最多 20 个。会话被删除后关联留着。
     #[serde(default)]
     pub sessions: Vec<SessionId>,
+    /// 派出的会话现在的情况，daemon 每次返回这一项时按会话此刻的状态算出来（docs/spec/daemon.md § 22.3）：不存储、不动
+    /// `updated_ms`、不进审计。已关闭（`done` / `dropped`）或者没有派发过的项没有这个字段。`state` 只由人设置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<TodoActivity>,
+}
+
+/// 清单项派出的会话现在的情况（算出来的，不存；`Todo.activity`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoActivity {
+    /// 有会话在跑、排队、还有后台任务，或者刚结束的一轮的结果还没记下。
+    Working,
+    /// 在等审批、出错、被打断、被取消，或者会话都没有了：要人来决定。
+    Waiting,
+    /// 最近的会话最近一轮正常结束，等人验收。
+    Review,
 }
 
 /// `todo.list` 的翻页游标：上一页最后一项的这两个值。
@@ -245,22 +261,6 @@ pub struct TodoActor {
     pub device_id: Option<DeviceId>,
 }
 
-/// `TodoStateBy::Dispatch` 序列化成的字符串 `"dispatch"`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum DispatchMarker {
-    /// 关联会话的状态回写（docs/spec/daemon.md § 22.3）。
-    Dispatch,
-}
-
-/// `state` 事件是谁改的：回写是字符串 `"dispatch"`，别的是发起的客户端。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
-pub enum TodoStateBy {
-    Dispatch(DispatchMarker),
-    Actor(TodoActor),
-}
-
 /// 「经过」里的一条的内容；`kind` 是线路上的标签。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -276,8 +276,8 @@ pub enum TodoEventData {
     /// 关联会话的一轮结束了：agent 这一轮的最后一段话（≤ 4 KiB，在码点边界截断）。这一轮没有文字时 `text` 为空。
     /// `text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。
     Result { session_id: SessionId, turn: u64, text: String, truncated: bool },
-    /// 状态变了（这一项有过派发之后才记）。
-    State { from: TodoState, to: TodoState, by: TodoStateBy },
+    /// 人改了状态（这一项有过派发之后才记）。会话引起的变化不在这里：它是算出来的 `activity`，不存、不进「经过」。
+    State { from: TodoState, to: TodoState, by: TodoActor },
 }
 
 /// 「经过」里的一条：只追加，没有修改、删除一条的方法；删除这一项时一起删。
@@ -316,6 +316,7 @@ mod tests {
             updated_ms: 2,
             closed_ms: None,
             sessions: vec![],
+            activity: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["state"], "waiting");
@@ -355,22 +356,18 @@ mod tests {
             seq: 3,
             ts_ms: 9,
             data: TodoEventData::State {
-                from: TodoState::Working,
-                to: TodoState::Review,
-                by: TodoStateBy::Dispatch(DispatchMarker::Dispatch),
+                from: TodoState::Open,
+                to: TodoState::Waiting,
+                by: TodoActor { kind: TodoSourceKind::Device, device_id: Some("d1".into()) },
             },
         };
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({ "seq": 3, "ts_ms": 9, "kind": "state", "from": "working", "to": "review", "by": "dispatch" })
+            serde_json::json!({ "seq": 3, "ts_ms": 9, "kind": "state", "from": "open", "to": "waiting",
+                "by": { "kind": "device", "device_id": "d1" } })
         );
         assert_eq!(serde_json::from_value::<TodoEvent>(v).unwrap(), ev);
-        let by_device = serde_json::json!({ "kind": "device", "device_id": "d1" });
-        assert_eq!(
-            serde_json::from_value::<TodoStateBy>(by_device).unwrap(),
-            TodoStateBy::Actor(TodoActor { kind: TodoSourceKind::Device, device_id: Some("d1".into()) })
-        );
         let r = TodoEvent {
             seq: 1,
             ts_ms: 1,
@@ -379,6 +376,18 @@ mod tests {
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["kind"], "result");
         assert_eq!(serde_json::from_value::<TodoEvent>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn activity_is_left_out_when_absent_and_snake_case_when_present() {
+        let mut t: Todo = serde_json::from_value(serde_json::json!({
+            "id": "a", "title": "t", "body": "", "state": "open", "source": { "kind": "local" },
+            "unreviewed": false, "created_ms": 1, "updated_ms": 1
+        }))
+        .unwrap();
+        assert!(t.activity.is_none() && serde_json::to_value(&t).unwrap().get("activity").is_none());
+        t.activity = Some(TodoActivity::Review);
+        assert_eq!(serde_json::to_value(&t).unwrap()["activity"], "review");
     }
 
     #[test]

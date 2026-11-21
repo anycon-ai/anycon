@@ -141,8 +141,9 @@ fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
         created_ms: r.get::<i64, _>("created_ms") as u64,
         updated_ms: r.get::<i64, _>("updated_ms") as u64,
         closed_ms: r.get::<Option<i64>, _>("closed_ms").map(|v| v as u64),
-        // 关联的会话不在 `todos` 表里，读出来之后由 `todo_get` / `todo_page` 补上
+        // 关联的会话不在 `todos` 表里，读出来之后由 `todo_get` / `todo_page` 补上；`activity` 是算出来的，不存
         sessions: Vec::new(),
+        activity: None,
     }
 }
 
@@ -305,7 +306,9 @@ pub async fn list(c: &Ctx, mut p: TodoListParams) -> RpcResult<TodoListResult> {
     // 项目名存的是去掉首尾空白之后的，过滤条件同样处理
     p.project = p.project.map(|s| s.trim().to_string());
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
-    c.store.todo_page(&p, limit).await.map_err(internal)
+    let mut page = c.store.todo_page(&p, limit).await.map_err(internal)?;
+    crate::todo_dispatch::fill_activity(&c.sessions, &mut page.todos).await;
+    Ok(page)
 }
 
 /// 这一项是谁记的（§ 21.2）。`agent` 是调用方自报的；自报了 `mcp` 的本机连接总是算 agent。
@@ -330,7 +333,8 @@ async fn source_of(c: &Ctx, caller: &Caller, agent: bool, origin_session: Option
 pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> {
     check_id(&p.id)?;
     let _w = c.store.todo_lock().lock().await;
-    if let Some(existing) = c.store.todo_get(&p.id).await.map_err(internal)? {
+    if let Some(mut existing) = c.store.todo_get(&p.id).await.map_err(internal)? {
+        existing.activity = crate::todo_dispatch::compute_activity(&c.sessions, &existing).await;
         return Ok(existing);
     }
     let title = check_title(&p.title)?;
@@ -370,6 +374,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         updated_ms: now,
         closed_ms: None,
         sessions: Vec::new(),
+        activity: None,
     };
     c.store.todo_insert(&todo).await.map_err(internal)?;
     // 只记长度（标题按字符、正文按字节）和项目名，不记内容
@@ -438,6 +443,8 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
         fields.push("unreviewed");
     }
     if fields.is_empty() {
+        let mut old = old;
+        old.activity = crate::todo_dispatch::compute_activity(&c.sessions, &old).await;
         return Ok(old);
     }
     // 把关闭的项重新打开，和新建一样占一个「没关闭」的名额
@@ -461,6 +468,8 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     c.audit.record(caller, "todo.update", Some(&new.id), detail).await;
     // 派发过的项：状态是人改的，「经过」里记一条（§ 22.4）
     crate::todo_dispatch::record_manual_state(c, caller, &new, old.state).await;
+    let mut new = new;
+    new.activity = crate::todo_dispatch::compute_activity(&c.sessions, &new).await;
     notify_changed(&c.clients, TodoChanged { id: new.id.clone(), todo: Some(new.clone()), deleted: false });
     Ok(new)
 }

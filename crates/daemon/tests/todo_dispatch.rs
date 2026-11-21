@@ -63,16 +63,17 @@ async fn wait_todo(td: &TestDaemon, c: &mut TestClient, todo: &str, what: &str, 
         }
         assert!(
             t.elapsed() < T,
-            "timed out waiting for {what}; the todo is {:?} with sessions {:?}",
+            "timed out waiting for {what}; the todo is {:?}/{:?} with sessions {:?}",
             cur.state,
+            cur.activity,
             cur.sessions
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
-async fn wait_state(td: &TestDaemon, c: &mut TestClient, todo: &str, want: TodoState) -> Todo {
-    wait_todo(td, c, todo, &format!("state {want:?}"), |t| t.state == want).await
+async fn wait_activity(td: &TestDaemon, c: &mut TestClient, todo: &str, want: TodoActivity) -> Todo {
+    wait_todo(td, c, todo, &format!("activity {want:?}"), |t| t.activity == Some(want)).await
 }
 
 async fn session(td: &TestDaemon, c: &mut TestClient, sid: &str) -> SessionSummary {
@@ -143,7 +144,7 @@ fn results(h: &[TodoEvent]) -> Vec<(String, u64, String, bool)> {
     v
 }
 
-fn states(h: &[TodoEvent]) -> Vec<(TodoState, TodoState, TodoStateBy)> {
+fn states(h: &[TodoEvent]) -> Vec<(TodoState, TodoState, TodoActor)> {
     h.iter()
         .rev()
         .filter_map(|e| match &e.data {
@@ -211,10 +212,14 @@ async fn dispatch_opens_a_worktree_session_and_links_it() {
     assert_eq!(r.session.project.as_deref(), Some("proj"));
     assert!(r.session.worktree.is_some(), "a git project gets a worktree by default");
     assert_eq!(r.session.todo_id.as_deref(), Some(t.id.as_str()));
-    // 这一项 working，关联上了
-    assert_eq!((r.todo.state, r.todo.sessions.clone()), (TodoState::Working, vec![r.session.id.clone()]));
+    // 关联上了；`state` 不动（只由人设置），会话在跑所以 `activity` 是 working
+    assert_eq!(
+        (r.todo.state, r.todo.activity, r.todo.sessions.clone()),
+        (TodoState::Open, Some(TodoActivity::Working), vec![r.session.id.clone()])
+    );
     assert!(r.todo.updated_ms >= t.updated_ms);
-    assert_eq!(get_todo(&td, &mut c, &t.id).await, r.todo);
+    let listed = get_todo(&td, &mut c, &t.id).await;
+    assert_eq!((listed.state, listed.sessions.clone()), (r.todo.state, r.todo.sessions.clone()));
     // 第一条消息是标题 + 正文（没有「不 push」那一行，没有之前的结果）
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
     assert_eq!(td.fake.last_handle().input_texts(), vec!["Write docs\n\nBody text".to_string()]);
@@ -241,7 +246,9 @@ async fn dispatch_opens_a_worktree_session_and_links_it() {
         .filter(|n| n.method == methods::TODO_CHANGED)
         .map(|n| serde_json::from_value(n.params.clone()).unwrap())
         .collect();
-    assert!(changed.iter().any(|c| c.id == t.id && c.todo.as_ref().is_some_and(|x| x.state == TodoState::Working)));
+    assert!(changed
+        .iter()
+        .any(|c| c.id == t.id && c.todo.as_ref().is_some_and(|x| x.activity == Some(TodoActivity::Working))));
     let events: Vec<TodoEventNotice> = notes
         .iter()
         .filter(|n| n.method == methods::TODO_EVENT)
@@ -266,7 +273,7 @@ async fn a_project_that_cannot_hold_a_worktree_works_in_the_project_directory() 
         .iter()
         .any(|e| matches!(&e.data, TodoEventData::Dispatched { workspace_mode: SessionWorkspaceMode::Local, .. })));
     // 回写之后（review）再看：不看 `worktree.default`，也没有 worktree
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     td.shutdown().await;
 }
 
@@ -279,7 +286,7 @@ async fn the_default_workspace_ignores_worktree_default_and_an_explicit_one_wins
     // `worktree.default = local`，派发仍然缺省用 worktree
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     assert!(r.session.worktree.is_some());
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     // 明确要在项目目录里
     let r2 = dispatch(&td, &mut c, &t.id, json!({ "workspace": { "mode": "local" } })).await;
     assert!(r2.session.worktree.is_none());
@@ -376,7 +383,7 @@ async fn a_different_project_is_written_back_and_the_same_one_is_left_alone() {
     let r = dispatch(&td, &mut c, &t.id, json!({ "project": "two" })).await;
     assert_eq!(r.todo.project.as_deref(), Some("two"));
     assert_eq!(r.session.project.as_deref(), Some("two"));
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     // 给的和这一项的相同（空白不算）：不变
     let r = dispatch(&td, &mut c, &t.id, json!({ "project": " two " })).await;
     assert_eq!(r.todo.project.as_deref(), Some("two"));
@@ -440,7 +447,7 @@ async fn a_todo_takes_at_most_twenty_dispatches() {
         let r = dispatch(&td, &mut c, &t.id, json!({})).await;
         assert_eq!(r.todo.sessions.len(), i + 1);
         wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-        wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+        wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
         ids.push(r.session.id);
     }
     assert_eq!(get_todo(&td, &mut c, &t.id).await.sessions, ids);
@@ -496,7 +503,7 @@ async fn a_session_that_cannot_be_created_leaves_nothing_behind() {
     // 进程拉不起来的情况：会话建起来了（和 `session.create` 一样，拉起是异步的），这一项照常 working，随后回写成 waiting
     *td.fake.fail_spawn.lock().unwrap() = Some(anycon_daemon::testutil::AdapterErrorKind::NotInstalled);
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Waiting).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
     assert_eq!(session(&td, &mut c, &r.session.id).await.status, SessionStatus::Error);
     td.shutdown().await;
 }
@@ -533,7 +540,7 @@ async fn a_failure_after_the_session_exists_removes_it_again() {
 // ---------------------------------------------------------------- 回写
 
 #[tokio::test]
-async fn write_back_follows_running_waiting_permission_running_idle() {
+async fn activity_follows_running_waiting_permission_running_idle_and_state_stays_the_persons() {
     let td = TestDaemon::start_git(&[]).await;
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
@@ -543,7 +550,7 @@ async fn write_back_follows_running_waiting_permission_running_idle() {
     let sid = r.session.id.clone();
     // 等审批
     wait_session(&td, &mut c, &sid, SessionStatus::WaitingPermission).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Waiting).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
     let _ = w.drain_now();
     // 批准之后继续跑，最后 idle → review
     let req: PermissionListResult = c.call(&td, methods::PERMISSION_LIST, json!({})).await.unwrap();
@@ -556,34 +563,22 @@ async fn write_back_follows_running_waiting_permission_running_idle() {
         .await
         .unwrap();
     wait_session(&td, &mut c, &sid, SessionStatus::Idle).await;
-    let done = wait_state(&td, &mut c, &t.id, TodoState::Review).await;
-    assert!(done.updated_ms >= r.todo.updated_ms);
-
-    // 「经过」里的 state：working → waiting，waiting → (working →) review，都是 dispatch 回写的
-    let h = wait_history(&td, &mut c, &t.id, 4).await;
-    let st = states(&h);
-    assert_eq!(st.first().unwrap().0, TodoState::Working);
-    assert_eq!(st.first().unwrap().1, TodoState::Waiting);
-    assert_eq!(st.last().unwrap().1, TodoState::Review);
-    assert!(st.iter().all(|s| s.2 == TodoStateBy::Dispatch(DispatchMarker::Dispatch)));
-    // 每一步都通知了
+    let done = wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    // 会话的活动不碰 `state`、`updated_ms`，也不进审计
+    assert_eq!((done.state, done.updated_ms), (TodoState::Open, r.todo.updated_ms));
+    assert!(audit(&td, "todo.update").await.is_empty());
+    // 「经过」里没有会话引起的状态变化：dispatched 和 result
+    let h = wait_results(&td, &mut c, &t.id, 1).await;
+    assert!(states(&h).is_empty(), "{h:?}");
+    // 每一次变化都通知了（带着算好的 activity）
     let notes = w.drain_for(Duration::from_millis(300)).await;
-    assert!(notes.iter().any(|n| n.method == methods::TODO_CHANGED
-        && serde_json::from_value::<TodoChanged>(n.params.clone())
-            .unwrap()
-            .todo
-            .is_some_and(|x| x.state == TodoState::Review)));
-    // 审计：todo.update，发起者是 daemon，detail 带 by 和 session_id；没有内容
-    let upd = audit(&td, "todo.update").await;
-    assert!(!upd.is_empty());
-    for a in &upd {
-        assert_eq!((a.device_id.as_str(), a.target.as_deref()), ("daemon", Some(t.id.as_str())));
-        assert_eq!(a.detail["by"], "dispatch");
-        assert_eq!(a.detail["session_id"], sid.as_str());
-        assert_eq!(a.detail["fields"], json!(["state"]));
-    }
-    assert!(upd.iter().any(|a| a.detail["state"]["to"] == "review"));
-    assert!(upd.iter().any(|a| a.detail["state"] == json!({ "from": "working", "to": "waiting" })));
+    let seen: Vec<Option<TodoActivity>> = notes
+        .iter()
+        .filter(|n| n.method == methods::TODO_CHANGED)
+        .filter_map(|n| serde_json::from_value::<TodoChanged>(n.params.clone()).unwrap().todo)
+        .map(|x| x.activity)
+        .collect();
+    assert!(seen.contains(&Some(TodoActivity::Review)), "{seen:?}");
     td.shutdown().await;
 }
 
@@ -596,11 +591,11 @@ async fn an_error_in_the_session_moves_the_item_to_waiting_and_a_fix_moves_it_on
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     // agent 报了错、这一轮以 error 收尾，会话回到 idle：最近结束的一轮出错 → waiting
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Waiting).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
     // 用户接着发一条正常的消息：running → working，结束 → review
     send(&td, &mut c, &r.session.id, "carry on").await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     td.shutdown().await;
 }
 
@@ -611,17 +606,17 @@ async fn several_linked_sessions_are_aggregated() {
     let mut c = td.local_cli_client();
     let t = new_todo(&td, &mut c, "Round one", "", Some("proj")).await;
     let a = dispatch(&td, &mut c, &t.id, json!({})).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     // 同一项再派一个，这次让它挂住：整体 working（第一个 idle 不影响）
     let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "body": "hold on" })).await.unwrap();
     let b = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &b.session.id, SessionStatus::Running).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Working).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Working).await;
     assert_eq!(session(&td, &mut c, &a.session.id).await.status, SessionStatus::Idle);
     // 第一个会话又开一轮、进程崩了（会话进入 error），第二个仍在跑：waiting 优先
     send(&td, &mut c, &a.session.id, "crash now").await;
     wait_session(&td, &mut c, &a.session.id, SessionStatus::Error).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Waiting).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
     // 第二个跑完：第一个还是 error → 仍 waiting
     td.fake.handle(1).release();
     wait_session(&td, &mut c, &b.session.id, SessionStatus::Idle).await;
@@ -630,7 +625,7 @@ async fn several_linked_sessions_are_aggregated() {
     // 第一个修好（再一轮正常结束）→ 都停了，最近结束的一轮正常 → review
     send(&td, &mut c, &a.session.id, "fixed now").await;
     wait_session(&td, &mut c, &a.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     td.shutdown().await;
 }
 
@@ -646,7 +641,7 @@ async fn a_cancelled_last_turn_leaves_the_item_for_a_person_to_decide() {
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     // 最近结束的一轮是取消的，而且没有东西在跑：要由人决定接下来怎么办 → waiting
-    wait_state(&td, &mut c, &t.id, TodoState::Waiting).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
     // 取消的一轮也记 result（有多少文字记多少）
     let h = wait_results(&td, &mut c, &t.id, 1).await;
     assert_eq!(results(&h).len(), 1);
@@ -654,58 +649,59 @@ async fn a_cancelled_last_turn_leaves_the_item_for_a_person_to_decide() {
 }
 
 #[tokio::test]
-async fn a_closed_item_is_not_written_back_and_reopening_resumes_it() {
+async fn a_closed_item_has_no_activity_and_reopening_shows_it_again() {
     let td = TestDaemon::start_git(&[]).await;
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
     let t = new_todo(&td, &mut c, "Keep it on hold", "", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Running).await;
-    // 人在中途点了「完成」，之后会话才跑完：不被改回去
+    // 人在中途点了「完成」：没有 activity，之后会话跑完也不动它
     let done: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "done" })).await.unwrap();
+    assert_eq!(done.activity, None);
     td.fake.last_handle().release();
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
     tokio::time::sleep(Duration::from_millis(250)).await;
     let cur = get_todo(&td, &mut c, &t.id).await;
-    assert_eq!((cur.state, cur.closed_ms, cur.updated_ms), (TodoState::Done, done.closed_ms, done.updated_ms));
-    // `result` 仍然记（它是这一轮的事实，不是状态）
+    assert_eq!(
+        (cur.state, cur.closed_ms, cur.updated_ms, cur.activity),
+        (TodoState::Done, done.closed_ms, done.updated_ms, None)
+    );
+    // `result` 仍然记（它是这一轮的事实）
     assert_eq!(results(&wait_results(&td, &mut c, &t.id, 1).await).len(), 1);
-    // 重新打开之后，下一次状态变化照常回写
-    let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "open" })).await.unwrap();
-    send(&td, &mut c, &r.session.id, "once more").await;
-    wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    // 重新打开之后又有 activity
+    let reopened: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "open" })).await.unwrap();
+    assert_eq!(reopened.activity, Some(TodoActivity::Review));
     td.shutdown().await;
 }
 
 #[tokio::test]
-async fn a_manual_change_in_between_is_re_evaluated_at_the_next_status_change() {
+async fn a_persons_state_is_never_changed_by_session_activity() {
     let td = TestDaemon::start_git(&[]).await;
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
     let t = new_todo(&td, &mut c, "Keep it on hold", "", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Running).await;
-    // 让之前那些状态变化的回写先落定（回写是异步的）
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    // 人手动把它改成 waiting：不会立刻被改回去（没有状态变化），也记在「经过」里（发起者是这个客户端）
-    let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "waiting" })).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(get_todo(&td, &mut c, &t.id).await.state, TodoState::Waiting);
-    // 下一次状态变化（跑完）：按规则重新算 → review
+    // 人把状态改成 waiting；会话照常跑完、再来一轮、后台任务起落，`state` 和 `updated_ms` 都不动
+    let mine: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "waiting" })).await.unwrap();
     td.fake.last_handle().release();
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
-    let h = wait_history(&td, &mut c, &t.id, 4).await;
-    let st = states(&h);
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    send(&td, &mut c, &r.session.id, "once more").await;
+    wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
+    for n in [2, 1, 0] {
+        td.fake.last_handle().inject(anycon_agent_api::AgentEvent::Background { tasks: n }).await;
+    }
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let cur = get_todo(&td, &mut c, &t.id).await;
+    assert_eq!((cur.state, cur.updated_ms), (TodoState::Waiting, mine.updated_ms));
+    // 「经过」里只有人改的那一条 state
+    let h = wait_results(&td, &mut c, &t.id, 2).await;
     assert_eq!(
-        st[0],
-        (
-            TodoState::Working,
-            TodoState::Waiting,
-            TodoStateBy::Actor(TodoActor { kind: TodoSourceKind::Local, device_id: None })
-        )
+        states(&h),
+        vec![(TodoState::Open, TodoState::Waiting, TodoActor { kind: TodoSourceKind::Local, device_id: None })]
     );
-    assert_eq!(st[1], (TodoState::Waiting, TodoState::Review, TodoStateBy::Dispatch(DispatchMarker::Dispatch)));
     td.shutdown().await;
 }
 
@@ -826,7 +822,7 @@ async fn the_second_dispatch_carries_the_earlier_results_exactly() {
     // 第一次：「不 push」缺省开
     let a = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake" })).await.unwrap();
     wait_session(&td, &mut c, &a.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     let first =
         "Write docs\n\nBody text\n\nLeave your changes on the branch: do not push and do not open a pull request.";
     assert_eq!(td.fake.handle(0).input_texts(), vec![first.to_string()]);
@@ -837,7 +833,7 @@ async fn the_second_dispatch_carries_the_earlier_results_exactly() {
     let want = format!("Write docs\n\nBody text\n\n{}", earlier_section(&[(&a.session.id, &format!("echo: {first}"))]));
     assert_eq!(td.fake.handle(1).input_texts(), vec![want]);
     // 手动改过正文再派：带的是当前的标题和正文
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     let _: Todo =
         c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "title": "Write more docs", "body": "" })).await.unwrap();
     wait_history(&td, &mut c, &t.id, 6).await;
@@ -893,7 +889,7 @@ async fn no_push_is_a_session_option_and_defaults_to_on_when_declared() {
     assert!(td.fake.last_handle().input_texts()[0].ends_with("do not push and do not open a pull request."));
     assert_eq!(audit(&td, "todo.dispatch").await[0].detail["no_push"], true);
     // 声明了也可以明确关掉：选项记成 false，没有那一行
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     let r2 = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false })).await.unwrap();
     assert_eq!(r2.session.settings.options.get("no_push"), Some(&json!(false)));
     wait_session(&td, &mut c, &r2.session.id, SessionStatus::Idle).await;
@@ -929,7 +925,7 @@ async fn history_pages_from_newest_to_oldest() {
     }
     // dispatched + 5 个 result + state 回写；都落定之后再取
     wait_results(&td, &mut c, &t.id, 5).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     let all = history(&td, &mut c, &t.id).await;
     let total = all.len();
@@ -980,18 +976,18 @@ async fn deleting_the_item_drops_links_and_history_and_deleting_a_session_keeps_
     let t = new_todo(&td, &mut c, "Link me", "", Some("proj")).await;
     let a = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &a.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     let b = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &b.session.id, SessionStatus::Idle).await;
     wait_history(&td, &mut c, &t.id, 5).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     // 删会话：关联留着，「经过」留着
     let _: Empty = c.call(&td, methods::SESSION_DELETE, json!({ "session_id": a.session.id })).await.unwrap();
     let cur = get_todo(&td, &mut c, &t.id).await;
     assert_eq!(cur.sessions, vec![a.session.id.clone(), b.session.id.clone()]);
     assert!(results(&history(&td, &mut c, &t.id).await).iter().any(|r| r.0 == a.session.id));
     // 已删除的会话不参与回写：只剩 b（idle，最近一轮正常）→ review
-    assert_eq!(cur.state, TodoState::Review);
+    assert_eq!(cur.activity, Some(TodoActivity::Review));
 
     // 删这一项：关联和「经过」一起删，会话不动，它的 todo_id 原样留着
     let _: Empty = c.call(&td, methods::TODO_DELETE, json!({ "id": t.id })).await.unwrap();
@@ -1024,7 +1020,7 @@ async fn retention_of_a_closed_item_removes_its_history_too() {
     for t in [&old, &recent] {
         let r = dispatch(&td, &mut c, &t.id, json!({})).await;
         wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-        wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+        wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
         wait_history(&td, &mut c, &t.id, 3).await;
     }
     let now = anycon_daemon::util::now_ms();
@@ -1069,7 +1065,7 @@ async fn list_shows_the_linked_sessions_and_links_survive_a_restart() {
     let none = new_todo(&td, &mut c, "Not dispatched", "", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     wait_history(&td, &mut c, &t.id, 3).await;
     let page: TodoListResult = c.call(&td, methods::TODO_LIST, json!({})).await.unwrap();
     let by_id = |id: &str| page.todos.iter().find(|t| t.id == id).unwrap().clone();
@@ -1078,7 +1074,7 @@ async fn list_shows_the_linked_sessions_and_links_survive_a_restart() {
     td.restart().await;
     let mut c = td.local_cli_client();
     let cur = get_todo(&td, &mut c, &t.id).await;
-    assert_eq!((cur.sessions.clone(), cur.state), (vec![r.session.id.clone()], TodoState::Review));
+    assert_eq!((cur.sessions.clone(), cur.activity), (vec![r.session.id.clone()], Some(TodoActivity::Review)));
     assert_eq!(session(&td, &mut c, &r.session.id).await.todo_id.as_deref(), Some(t.id.as_str()));
     assert_eq!(history(&td, &mut c, &t.id).await.len(), 3);
     td.shutdown().await;
@@ -1094,7 +1090,7 @@ async fn audit_has_no_titles_bodies_or_agent_text() {
     let t = new_todo(&td, &mut c, "AUDITSECRET title", "AUDITSECRET body", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     wait_history(&td, &mut c, &t.id, 3).await;
     let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "waiting" })).await.unwrap();
     let all = td.ctx.audit.query(None, None, 1000).await;
@@ -1112,7 +1108,7 @@ async fn audit_has_no_titles_bodies_or_agent_text() {
 // ---------------------------------------------------------------- 重启、顺序、后台任务、删除、幂等
 
 #[tokio::test]
-async fn a_graceful_restart_while_a_session_runs_moves_the_item_to_waiting() {
+async fn activity_is_right_after_a_graceful_restart_and_the_state_is_untouched() {
     let mut td = TestDaemon::start_git(&[]).await;
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
@@ -1120,117 +1116,161 @@ async fn a_graceful_restart_while_a_session_runs_moves_the_item_to_waiting() {
     let t = new_todo(&td, &mut c, "Keep it on hold", "", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Running).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Working).await;
-    // 第一轮正常结束、第二轮在跑
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Working).await;
+    // 第一轮正常结束、第二轮在跑；人设了一个状态
     let t2 = new_todo(&td, &mut c, "Restart me", "", Some("proj")).await;
     let r2 = dispatch(&td, &mut c, &t2.id, json!({})).await;
     wait_session(&td, &mut c, &r2.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t2.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t2.id, TodoActivity::Review).await;
     send(&td, &mut c, &r2.session.id, "keep it on hold now").await;
     wait_session(&td, &mut c, &r2.session.id, SessionStatus::Running).await;
-    wait_state(&td, &mut c, &t2.id, TodoState::Working).await;
-    // 已经关闭的项不动
+    wait_activity(&td, &mut c, &t2.id, TodoActivity::Working).await;
+    let mine: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t2.id, "state": "waiting" })).await.unwrap();
+    // 已经关闭的项没有 activity
     let t3 = new_todo(&td, &mut c, "Closed meanwhile", "", Some("proj")).await;
     dispatch(&td, &mut c, &t3.id, json!({})).await;
-    wait_state(&td, &mut c, &t3.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t3.id, TodoActivity::Review).await;
     let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t3.id, "state": "done" })).await.unwrap();
 
     td.restart().await;
     let mut c = td.local_cli_client();
     assert_eq!(session(&td, &mut c, &r.session.id).await.status, SessionStatus::Interrupted);
-    wait_state(&td, &mut c, &t.id, TodoState::Waiting).await;
-    wait_state(&td, &mut c, &t2.id, TodoState::Waiting).await;
-    assert_eq!(get_todo(&td, &mut c, &t3.id).await.state, TodoState::Done);
+    // 不需要任何写入：读的时候现算
+    let a = get_todo(&td, &mut c, &t.id).await;
+    let b = get_todo(&td, &mut c, &t2.id).await;
+    assert_eq!((a.activity, b.activity), (Some(TodoActivity::Waiting), Some(TodoActivity::Waiting)));
+    assert_eq!((a.state, a.updated_ms), (TodoState::Open, t.updated_ms.max(a.updated_ms)));
+    assert_eq!((b.state, b.updated_ms), (TodoState::Waiting, mine.updated_ms), "a person's state survives a restart");
+    let c3 = get_todo(&td, &mut c, &t3.id).await;
+    assert_eq!((c3.state, c3.activity), (TodoState::Done, None));
     // 人接着发一条消息：重新对齐
     send(&td, &mut c, &r2.session.id, "carry on after the restart").await;
     wait_session(&td, &mut c, &r2.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t2.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t2.id, TodoActivity::Review).await;
+    assert_eq!(get_todo(&td, &mut c, &t2.id).await.state, TodoState::Waiting);
     td.shutdown().await;
 }
 
 #[tokio::test]
-async fn a_result_comes_before_the_review_it_causes_and_a_dispatch_on_review_carries_it() {
+async fn activity_is_right_after_a_crash() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let t = new_todo(&td, &mut c, "Crash test", "", Some("proj")).await;
+    let r = dispatch(&td, &mut c, &t.id, json!({})).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    send(&td, &mut c, &r.session.id, "crash now").await;
+    wait_session(&td, &mut c, &r.session.id, SessionStatus::Error).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
+    // 人修好之后接着发：新的一轮正常结束 → review
+    send(&td, &mut c, &r.session.id, "fixed now").await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_implies_the_result_is_recorded_and_a_dispatch_on_review_carries_it() {
     let td = TestDaemon::start_git(&[]).await;
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
     let t = new_todo(&td, &mut c, "Quick rounds", "", Some("proj")).await;
     let mut sids: Vec<String> = vec![];
-    for _ in 0..8 {
-        // 一见 review 马上再派：第一条消息要带上刚结束的那一轮
-        if !sids.is_empty() {
-            wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    for i in 0..8 {
+        // 一见 review 马上再派：此刻「经过」里一定已经有前面每一轮的 result，第一条消息要带上最近的
+        if i > 0 {
+            wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+            assert_eq!(results(&history(&td, &mut c, &t.id).await).len(), i, "review before the result of round {i}");
         }
         let r = dispatch(&td, &mut c, &t.id, json!({})).await;
         sids.push(r.session.id);
     }
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
-    let h = wait_results(&td, &mut c, &t.id, 8).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    assert_eq!(results(&history(&td, &mut c, &t.id).await).len(), 8);
     for i in 1..sids.len() {
         let m = td.fake.handle(i).input_texts().remove(0);
         let prev = anycon_daemon::todo_dispatch::short_session_id(&sids[i - 1]);
         assert!(m.contains(&format!("[fake, session {prev}]\n> echo: ")), "dispatch {i} misses the latest result: {m}");
     }
-    // 每个 `review` 前面紧挨着的是一条 result
-    let mut asc = h.clone();
-    asc.reverse();
-    for (i, e) in asc.iter().enumerate() {
-        if matches!(&e.data, TodoEventData::State { to: TodoState::Review, .. }) {
-            assert!(i > 0 && kind_of(&asc[i - 1]) == "result", "a review without its result before it: {asc:?}");
-        }
-    }
     td.shutdown().await;
 }
 
 #[tokio::test]
-async fn the_item_stays_working_while_background_tasks_run() {
+async fn the_item_stays_working_while_background_tasks_run_and_only_zero_crossings_notify() {
     let td = TestDaemon::start_git(&[]).await;
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
+    let mut w = td.hub_client("dev-w", "W");
     let t = new_todo(&td, &mut c, "Background and review", "", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
-    // 空闲但后台任务在跑：还在做
-    td.fake.last_handle().inject(anycon_agent_api::AgentEvent::Background { tasks: 2 }).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Working).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _ = w.drain_now();
+    let activities = |notes: Vec<anycon_protocol::RpcNotification>| -> Vec<Option<TodoActivity>> {
+        notes
+            .iter()
+            .filter(|n| n.method == methods::TODO_CHANGED)
+            .filter_map(|n| serde_json::from_value::<TodoChanged>(n.params.clone()).unwrap().todo)
+            .map(|x| x.activity)
+            .collect()
+    };
+    let handle = td.fake.last_handle();
+    // 0 → 2：working；2 → 1 → 3：没有跨过 0，不再通知
+    handle.inject(anycon_agent_api::AgentEvent::Background { tasks: 2 }).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Working).await;
+    for n in [1, 3] {
+        handle.inject(anycon_agent_api::AgentEvent::Background { tasks: n }).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(activities(w.drain_now()), vec![Some(TodoActivity::Working)], "only the 0 -> non-0 crossing notifies");
     // 任务都结束：停下来了，最近一轮正常结束 → review
-    td.fake.last_handle().inject(anycon_agent_api::AgentEvent::Background { tasks: 0 }).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    handle.inject(anycon_agent_api::AgentEvent::Background { tasks: 0 }).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(activities(w.drain_now()), vec![Some(TodoActivity::Review)]);
     td.shutdown().await;
 }
 
 #[tokio::test]
-async fn a_signal_raised_before_a_persons_change_does_not_override_it() {
+async fn detaching_the_process_clears_the_task_count_and_the_activity_follows() {
     let td = TestDaemon::start_git(&[]).await;
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
-    let mut c2 = td.hub_client("dev-person", "Person");
-    let t = new_todo(&td, &mut c, "Keep it on hold", "", Some("proj")).await;
+    let t = new_todo(&td, &mut c, "Restart the process", "", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
-    wait_session(&td, &mut c, &r.session.id, SessionStatus::Running).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Working).await;
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    // 清单的锁被占着（比如另一个派发在跑 git）：人的修改先排上队，随后会话才结束，回写排在后面
-    let guard = td.ctx.store.todo_lock().lock().await;
-    let sid = r.session.id.clone();
-    let handle = td.fake.last_handle();
-    let update = c2.call::<Todo>(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "waiting" }));
-    let rest = async {
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        handle.release();
-        wait_session(&td, &mut c, &sid, SessionStatus::Idle).await;
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        drop(guard);
-    };
-    let (u, ()) = tokio::join!(update, rest);
-    assert_eq!(u.unwrap().state, TodoState::Waiting);
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    // 那个更早的信号不会把人改的状态改回 review
-    assert_eq!(get_todo(&td, &mut c, &t.id).await.state, TodoState::Waiting);
-    // 下一次状态变化才重新对齐
-    send(&td, &mut c, &r.session.id, "once more").await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    let mine: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": t.id, "state": "waiting" })).await.unwrap();
+    td.fake.last_handle().inject(anycon_agent_api::AgentEvent::Background { tasks: 2 }).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Working).await;
+    // 进程被摘掉（`session.restart`）：任务数清零，进程里的后台任务没了，这一项不再是 working
+    let _: Empty = c.call(&td, methods::SESSION_RESTART, json!({ "session_id": r.session.id })).await.unwrap();
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
+    let cur = get_todo(&td, &mut c, &t.id).await;
+    assert_eq!((cur.state, cur.updated_ms), (TodoState::Waiting, mine.updated_ms));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_dispatch_leaves_every_item_as_it_was() {
+    let td = TestDaemon::start_git(&[]).await;
+    project_dir(&td, "proj");
+    let mut c = td.local_cli_client();
+    let a = new_todo(&td, &mut c, "Earlier item", "", Some("proj")).await;
+    dispatch(&td, &mut c, &a.id, json!({})).await;
+    wait_activity(&td, &mut c, &a.id, TodoActivity::Review).await;
+    let mine: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": a.id, "state": "dropped" })).await.unwrap();
+    let b = new_todo(&td, &mut c, "Doomed item", "", Some("proj")).await;
+    sqlx::query("CREATE TRIGGER no_links BEFORE INSERT ON todo_sessions BEGIN SELECT RAISE(ABORT, 'boom'); END")
+        .execute(td.ctx.store.pool())
+        .await
+        .unwrap();
+    let _ = dispatch_raw(&td, &mut c, json!({ "id": b.id, "agent": "fake", "no_push": false })).await.unwrap_err();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let a2 = get_todo(&td, &mut c, &a.id).await;
+    assert_eq!((a2.state, a2.updated_ms), (TodoState::Dropped, mine.updated_ms));
+    let b2 = get_todo(&td, &mut c, &b.id).await;
+    assert_eq!((b2.state, b2.updated_ms, b2.activity), (TodoState::Open, b.updated_ms, None));
     td.shutdown().await;
 }
 
@@ -1243,23 +1283,23 @@ async fn deleting_the_only_linked_session_leaves_the_decision_to_a_person() {
     let t = new_todo(&td, &mut c, "Keep it on hold", "", Some("proj")).await;
     let r = dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Running).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Working).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Working).await;
     let _: Empty = c.call(&td, methods::SESSION_DELETE, json!({ "session_id": r.session.id })).await.unwrap();
-    let cur = wait_state(&td, &mut c, &t.id, TodoState::Waiting).await;
+    let cur = wait_activity(&td, &mut c, &t.id, TodoActivity::Waiting).await;
     assert_eq!(cur.sessions, vec![r.session.id.clone()], "the link stays");
     // 还有别的会话时，删掉一个不影响：由剩下的算
     let t2 = new_todo(&td, &mut c, "Two sessions", "", Some("proj")).await;
     let a = dispatch(&td, &mut c, &t2.id, json!({})).await;
-    wait_state(&td, &mut c, &t2.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t2.id, TodoActivity::Review).await;
     let b = dispatch(&td, &mut c, &t2.id, json!({})).await;
     wait_session(&td, &mut c, &b.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t2.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t2.id, TodoActivity::Review).await;
     let _: Empty = c.call(&td, methods::SESSION_DELETE, json!({ "session_id": a.session.id })).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(get_todo(&td, &mut c, &t2.id).await.state, TodoState::Review);
+    assert_eq!(get_todo(&td, &mut c, &t2.id).await.activity, Some(TodoActivity::Review));
     // 最后一个也删了（已经在 review）：waiting
     let _: Empty = c.call(&td, methods::SESSION_DELETE, json!({ "session_id": b.session.id })).await.unwrap();
-    wait_state(&td, &mut c, &t2.id, TodoState::Waiting).await;
+    wait_activity(&td, &mut c, &t2.id, TodoActivity::Waiting).await;
     td.shutdown().await;
 }
 
@@ -1296,7 +1336,7 @@ async fn a_retry_with_the_same_message_id_returns_the_first_result() {
     let mid = id();
     let first = dispatch(&td, &mut c, &t.id, json!({ "message_id": mid })).await;
     wait_session(&td, &mut c, &first.session.id, SessionStatus::Idle).await;
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     // 回执丢了的重发：同一个会话，没有第二个关联、第二条 dispatched、第二个会话
     let again = dispatch(&td, &mut c, &t.id, json!({ "message_id": mid })).await;
     assert_eq!(again.session.id, first.session.id);
@@ -1347,7 +1387,7 @@ async fn a_dispatched_worktree_branch_name_carries_no_title_words() {
     assert_eq!(wt.branch, want);
     assert!(wt.path.ends_with(&format!("todo-{short}")), "{}", wt.path);
     // 第二次派发：名字被占着，加数字后缀
-    wait_state(&td, &mut c, &t.id, TodoState::Review).await;
+    wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     let r2 = dispatch(&td, &mut c, &t.id, json!({})).await;
     assert_eq!(r2.session.worktree.unwrap().branch, format!("{want}-2"));
     // 审计里的 worktree.create 没有标题的字词

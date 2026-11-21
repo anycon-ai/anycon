@@ -165,7 +165,7 @@ pub struct ProtocolSchema {
     pub todo_history_params: TodoHistoryParams,
     pub todo_history_result: TodoHistoryResult,
     pub todo_actor: TodoActor,
-    pub todo_state_by: TodoStateBy,
+    pub todo_activity: TodoActivity,
     pub todo_event_data: TodoEventData,
     pub todo_event: TodoEvent,
     pub todo_event_notice: TodoEventNotice,

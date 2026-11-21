@@ -611,10 +611,6 @@ impl Sessions {
         &self.d.clients
     }
 
-    pub(crate) fn audit(&self) -> &Audit {
-        &self.d.audit
-    }
-
     /// 会话现在的状态；会话不存在（已删除）返回 `None`。清单的回写用（在清单锁里调，只取会话锁一小会儿）。
     pub(crate) async fn status_of(&self, id: &str) -> Option<(SessionStatus, u32)> {
         let sess = self.get(id).ok()?;
@@ -1485,10 +1481,15 @@ impl Sessions {
         st.interjecting = 0;
         st.spawn_dir = None;
         // 后台任务和进程同生死；摘掉进程之后也不会再有推迟的「turn 完成」可补（进程是被 daemon 收掉或出错了）
+        let had_tasks = st.background_tasks > 0;
         st.background_tasks = 0;
         st.background_drained_at = None;
         st.finish_notify_pending = false;
         self.release_pending_results(st);
+        // 任务数被清零（进程摘掉了）：算 `activity` 看的是任务数，通知一下
+        if let (true, Some(todo_id)) = (had_tasks, &st.row.todo_id) {
+            self.todo_signal.status_changed(todo_id, &st.row.id);
+        }
         st.driver.take()
     }
 
@@ -1927,6 +1928,8 @@ impl Sessions {
         if st.row.todo_id.is_some() {
             let (text, truncated) = st.last_text.take();
             st.pending_results.push(crate::todo_dispatch::PendingResult { turn: turn_id, text, truncated });
+            // 在结果记进「经过」之前，这一项的 `activity` 算 `working`（§ 22.3）
+            self.todo_signal.hold(&st.row.id);
             let completed =
                 matches!(reason, TurnDoneReason::Completed | TurnDoneReason::MaxTurns | TurnDoneReason::Budget);
             if !(completed && st.background_tasks > 0) {
@@ -2137,6 +2140,7 @@ impl Sessions {
         if st.background_tasks == tasks {
             return;
         }
+        let crossed_zero = (st.background_tasks == 0) != (tasks == 0);
         st.background_tasks = tasks;
         if tasks == 0 {
             let now = Instant::now();
@@ -2155,7 +2159,7 @@ impl Sessions {
         }
         self.notify_changed(st);
         // 空闲的会话还有后台任务在跑，对清单项来说就还在 `working`（§ 22.3）：任务数在 0 和非 0 之间变化时重新算
-        if let Some(todo_id) = &st.row.todo_id {
+        if let (true, Some(todo_id)) = (crossed_zero, &st.row.todo_id) {
             self.todo_signal.status_changed(todo_id, &st.row.id);
         }
     }

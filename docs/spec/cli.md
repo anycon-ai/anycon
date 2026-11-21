@@ -221,6 +221,31 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 这是**护栏，不是安全边界**：`ANYCON_AGENT` 是 agent 能改的环境变量，能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单，对存心隐藏来源的本机进程没有约束力；daemon 把「带了 `agent: true`」的项、以及来自自报了 `local.set_client { client: "mcp" }` 的本机连接的项标成 agent 加的（后者同样是连接自报的）。
 
+### 3.9 `anycon rule`
+
+节点上的决策档案（[daemon.md § 23](daemon.md#23-决策档案)，[ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)）：你自己的做法，生效的规则写进派发出去的会话的系统提示。客户端命令：走 `--hub` / `--node` / `--local` 选出的连接，和 `anycon todo` 一样；节点是旧 daemon（没有 `capabilities.rules`）时得到 `unsupported`。
+
+| 命令 | 说明 |
+|---|---|
+| `anycon rule add <text> [--project <name>]` | `rule.add`，id 由 CLI 生成（UUID）。`<text>` 一两句话，最多 600 个字符，可以含换行；`--project` 只让规则进这个项目的会话（不校验项目是否存在），缺省是节点上所有项目。人敲的命令直接生效：打印 `added <id 前 8 位>  <规则>`；`--json` 打印这条规则。超出注入的字数上限（一个会话最多 4096 字节的规则）→ 退出码 2，提示先合并或停用几条；总数已满 300 → 退出码 2 |
+| `anycon rule ls [--all] [--json]` | `rule.list`。缺省列 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；按创建时间从早到晚。列：ID（前 8 位）、STATUS、PROJECT、BY（agent 提的写 `agent`，待确认的写 `agent (needs review)`）、RULE（多行的用 ` / ` 连成一行，最多 100 个字符，控制字符去掉）；最后一行写一个会话最多拿到多少字节的规则（全节点的加上最大的项目的）。`--json` 是 `{ "rules": [Rule], "budget": RuleBudget }` |
+| `anycon rule confirm <id>` · `enable <id>` | `rule.update { status: active }`。`confirm` 用在待确认的规则上，`enable` 用在停用的上，效果一样。打印 `confirmed …` / `enabled …`；`--json` 打印这条规则 |
+| `anycon rule reject <id>` | `rule.update { status: rejected }`：留着，之后提炼时不再提同样的，但永远不生效 |
+| `anycon rule disable <id>` | `rule.update { status: disabled }`：停用，留着，可以再 `enable` |
+| `anycon rule rm <id>` | `rule.delete`（物理删除） |
+
+`<id>` 接受唯一前缀（UUID 的前几位，不区分大小写），和 `anycon todo` 一样：完整的 UUID 直接用，不列表；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2。经前缀找到的规则，`confirm` / `reject` / `disable` / `enable` / `rm` 都带它列出时的 `if_updated_ms`：这期间别处改过这条规则（比如改了文字）就不动它，提示重新 `anycon rule ls`。已经是目标状态时打印 `nothing changed: … is already …`。
+
+**在 anycon 拉起的 agent 里**（环境里有 `ANYCON_AGENT` 且不是空串或 `0`，和 `anycon mcp`、`anycon todo` 是同一个判断）：
+
+- `add` 带 `agent: true`：规则记成待确认、来源是 agent，打印 `proposed …` 并提示 `anycon rule confirm <id>`；它在你确认之前不生效
+- `ls` 照常
+- `confirm` / `reject` / `disable` / `enable` / `rm` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）
+
+这是**护栏，不是安全边界**（理由同 § 3.8）：真正的闸是「待确认的规则要人确认才生效」。`anycon mcp` 没有规则的工具。
+
+`anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（规则在会话的系统提示里，不在消息里；`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则，或者所选 agent 收不到规则。
+
 ## 4. 输出约定
 
 - 默认人类可读；`--json` 输出机器可读。流式命令（`attach`、`new`、`clone`）的 `--json` 是 NDJSON，每行一个事件，和 `session.event` 同结构

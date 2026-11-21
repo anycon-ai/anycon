@@ -568,7 +568,7 @@ export class Node extends Emitter<NodeEvents> {
     ): Promise<TodoDispatchResult> =>
       this.call('todo.dispatch', { ...params, message_id: params.message_id ?? randomId() }),
     /**
-     * `todo.dispatch_preview`：此刻 `dispatch` 会发出的第一条消息，一字不差（只读：不开会话、不记「经过」、不审计、不通知）。
+     * `todo.dispatch_preview`：此刻 `dispatch` 会发出的第一条消息，一字不差（不开会话、不审计、不发推送通知；唯一的副作用是先把排着的结果记进「经过」，和 `dispatch` 之前的那一步一样）。
      * `no_push` 缺省 `true`。项不存在 → `not_found`，已关闭 → `invalid`（`data.reason = 'closed'`），自报了 `mcp` 的本机连接 → `forbidden`。
      */
     dispatchPreview: (params: TodoDispatchPreviewParams): Promise<TodoDispatchPreviewResult> =>

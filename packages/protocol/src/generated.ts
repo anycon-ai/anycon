@@ -2854,7 +2854,7 @@ export interface TodoDispatchParams {
   workspace?: SessionWorkspace | null;
 }
 /**
- * `todo.dispatch_preview`：这一项现在派发的话，第一条消息会是什么。只读。
+ * `todo.dispatch_preview`：这一项现在派发的话，第一条消息会是什么。不改这一项、不开会话；唯一的副作用是先把排着的结果记进「经过」（§ 22.2）。
  */
 export interface TodoDispatchPreviewParams {
   id: string;

@@ -746,7 +746,8 @@ pub async fn history(c: &Ctx, p: TodoHistoryParams) -> RpcResult<TodoHistoryResu
 }
 
 /// `todo.dispatch_preview`（§ 22.2）：此刻派发会发出的第一条消息。和 `dispatch` 同一个组装函数、同一套「之前的结果」的选法，
-/// 同样先把这一项排着的结果记下来（持清单的锁）；只读：不开会话、不记「经过」、不审计、不通知。
+/// 同样先把这一项排着的结果记下来（持清单的锁；记了就广播 `todo.event` / `todo.changed`）——这是唯一的副作用；
+/// 不改这一项、不开会话、不审计、不发推送通知。
 pub async fn dispatch_preview(
     c: &Ctx,
     caller: &Caller,

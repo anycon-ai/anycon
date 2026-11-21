@@ -872,7 +872,7 @@ SQLite（WAL）。全部表：
 
 本机 socket 上的调用方 `device_id` 是 `local`，`device_name` 默认 `local-cli`。连接可以用 `local.set_client { client: "cli" | "mcp" }` 自报客户端种类（固定枚举，别的值 `invalid`；只在本机通道有，经 hub 调用 `forbidden`，经 hub 的连接身份由配对的设备决定），自报 `mcp` 之后这条连接的审计设备名是 `local-mcp`（`anycon mcp` 连上就声明，[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）。它只用来在审计里分清「人敲的命令」和「agent 经 MCP 发的」：自报的，不改变任何权限，对故意不声明的本机进程没有约束力。
 
-记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2；派发开的会话另记一条 `session.create`）。派发的会话状态回写记成 `todo.update`，发起者是 `daemon`（`device_id = "daemon"`），`detail` 带 `by: "dispatch"` 和 `session_id`（§ 22.3）。
+记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2；派发开的会话另记一条 `session.create`）。会话引起的 `activity` 变化不进审计（它不是修改，§ 22.3）。
 
 `fs.read` 的 target 是请求里的 `path`，detail 是 `bytes`（文件总长）。一个大文件要分很多块读（`encoding = "base64"`，每块 512 KiB），逐块记会把审计表灌满、盖掉有意义的行，所以**同一台设备对同一路径的读，5 分钟内只记第一次**。窗口按（设备，路径）算而不是按「第 0 块」算：只读后面的块也会留下一条，不能靠跳过第 0 块绕开审计。窗口只在真正写了一行时刷新，持续读一个文件，每 5 分钟至少有一行；去重表只在内存里，daemon 重启就清空。
 
@@ -1187,6 +1187,7 @@ Todo {
   updated_ms: timestamp
   closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉；在 done 和 dropped 之间换时保持原来的
   sessions: [session_id]  // 这一项派出的会话（§ 22.3）；旧 daemon 没有，按空读
+  activity?: working | waiting | review   // 派出的会话现在的情况，每次返回这一项时算出来，不存（§ 22.3）；已关闭或没派发过的项没有
 }
 ```
 
@@ -1196,12 +1197,12 @@ Todo {
 |---|---|---|
 | `open` | 还没人处理 | 新建时的初值 |
 | `working` | 正在处理 | 人手动 |
-| `waiting` | 等用户回答或决定 | 人手动 |
-| `review` | 做完了，等用户验收 | 人手动 |
+| `waiting` | 等用户回答或决定 | 人手动（daemon 从不写；旧客户端或人写过的值照常保留） |
+| `review` | 做完了，等用户验收 | 人手动（同上） |
 | `done` | 完成 | 人手动 |
 | `dropped` | 不做了 | 人手动 |
 
-六个值现在就定下来，是因为 `working` / `waiting` / `review` 之后由手动派发和分身来写（ADR-54 第 8 条），那时不必再改协议的枚举。这一步 daemon 不限制状态之间怎么转。
+**`state` 只由人设置**（和 `todo.add` 的初值 `open`），daemon 不限制状态之间怎么转，会话的运行不会写它：派发（§ 22）之后会话的情况是单独的、算出来的 `activity`（§ 22.3）。`waiting` / `review` 仍是合法的值（人和旧客户端可以写），daemon 自己从不写。
 
 `source`：一项是 agent 加的（`kind: agent`），当 `todo.add` 带了 `agent: true`，或者它来自本机 socket 上自报了 `local.set_client { client: "mcp" }` 的连接（§ 13）；这时经 hub 来的调用另带 `device_id`。其余的，经 hub 来的调用是 `{ kind: device, device_id }`，本机 socket 是 `{ kind: local }`。
 
@@ -1280,20 +1281,20 @@ Todo {
 
 ### 21.8 客户端入口
 
-- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；显示哪些节点的清单跟随空间切换（[web.md § 4.13](web.md#413-空间与移到另一个节点)）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
+- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；派发之后的界面用 `activity` 显示会话的情况；显示哪些节点的清单跟随空间切换（[web.md § 4.13](web.md#413-空间与移到另一个节点)）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
 - **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
 - **`anycon mcp`**：两个新工具。`list_todos`（`todo.list`，只读）；`add_todo`（`todo.add`：`title`、`body`、`project`；总是带 `agent: true`，连的是本机还是经 hub 都一样）。**`add_todo` 在 anycon 拉起的 agent 里也能用**，不需要 `--allow-nested`：会话里的 agent 记下「之后要处理」正是它的用途，它不开会话、不触发任何 turn，写进去的项标着 `source.kind = agent`。agent 没有修改、关闭、删除清单项的工具。
 - **SDK**：`@anycon/sdk` 的节点对象上有 `todo.*` 的薄封装和 `todo.changed` 事件，类型来自生成的协议类型；不替调用方做离线缓存和重放。Python SDK 不动。
 
 ## 22. 派发
 
-> **已实现：daemon（`todo.dispatch` / `todo.history` / `todo.event`、关联与回写、「经过」、`no_push` 选项）、CLI（`anycon todo run` / `history`）和 TS SDK（`node.todos.dispatch` / `history`、`todo_event`）。Web 客户端的界面（[web.md § 14.6–14.10](web.md#146-清单和单项)）还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 8 条的第 2 步：在清单的一项上让 agent 处理。决定见 ADR-54 第 4、5 条和 [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条；界面见 web.md § 14.6、§ 14.7、§ 14.9、§ 14.10。没有单独的 capability：`node.info.capabilities.todo` 为 true 而 daemon 没有这一节的方法时，`todo.dispatch` / `todo.history` 得到 `unsupported`（`method not found`），客户端据此不显示入口。
+> **已实现：daemon（`todo.dispatch` / `todo.history` / `todo.event`、关联、算出来的 `activity`、「经过」、`no_push` 选项）、CLI（`anycon todo run` / `history`）和 TS SDK（`node.todos.dispatch` / `history`、`todo_event`）。Web 客户端的界面（[web.md § 14.6–14.10](web.md#146-清单和单项)）还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 8 条的第 2 步：在清单的一项上让 agent 处理。决定见 ADR-54 第 4、5 条和 [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条；界面见 web.md § 14.6、§ 14.7、§ 14.9、§ 14.10。没有单独的 capability：`node.info.capabilities.todo` 为 true 而 daemon 没有这一节的方法时，`todo.dispatch` / `todo.history` 得到 `unsupported`（`method not found`），客户端据此不显示入口。
 
 ### 22.1 范围
 
-派发 = 从一项开一个会话，把会话和这一项关联，会话的状态回写到这一项，每一轮的结果记进这一项的「经过」。一项可以先后派发多次，每次一个新会话；之前各次的结果随下一次的第一条消息带过去（ADR-54 第 4 条的交接：会话用完即弃，清单项是一直在的那份文档）。
+派发 = 从一项开一个会话，把会话和这一项关联，每一轮的结果记进这一项的「经过」，会话现在的情况作为 `activity` 在每次返回这一项时算出来（不改 `state`）。一项可以先后派发多次，每次一个新会话；之前各次的结果随下一次的第一条消息带过去（ADR-54 第 4 条的交接：会话用完即弃，清单项是一直在的那份文档）。
 
-这一步没有判断、没有模型调用：派给哪个 agent、用什么设置、在哪里工作，都由调用方决定。第 4 步的分身和第 5 步别的节点的分身调用的是同一个方法，所以派发的全部逻辑（开会话、关联、回写、「不 push、不开 PR」）都在 daemon 里，客户端不拼 `session.create` 再回写。发起者和审计身份都取自调用方（`Caller`），没有写死成「本机」：别的节点的分身以受限设备的身份调用时，「经过」和审计里记的就是那台设备。
+这一步没有判断、没有模型调用：派给哪个 agent、用什么设置、在哪里工作，都由调用方决定。第 4 步的分身和第 5 步别的节点的分身调用的是同一个方法，所以派发的全部逻辑（开会话、关联、`activity`、「不 push、不开 PR」）都在 daemon 里，客户端不拼 `session.create` 再回写。发起者和审计身份都取自调用方（`Caller`），没有写死成「本机」：别的节点的分身以受限设备的身份调用时，「经过」和审计里记的就是那台设备。
 
 不做：把已有的会话关联到一项（会话从一项派出，才属于这一项）；一个会话属于多项；失败后自动重派（第 4 步的事）。
 
@@ -1312,35 +1313,35 @@ Todo {
 - `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`，当场重新判断）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。在项目目录里干没有隔离：agent 的改动直接落在用户的工作目录里，客户端在派发前写明。第 4 步的分身只派到 worktree。明确给了 `workspace` 的，以它为准，校验同 `session.create`（比如不是 git 项目却要 worktree → 同样的错误，什么都不留下）。
 - `agent` / `settings`：同 `session.create`（§ 6），同样的校验，危险模式同样受 `permissions.allow_dangerous_modes` 约束。不认识的 agent → `agent_unavailable`。
 - `no_push`：「不 push、不开 PR」（§ 22.5）。缺省 `true`。所选 agent 没有声明这个选项（`AgentInfo.options` 里没有 id 为 `no_push` 的布尔选项）而 `no_push = true` → `unsupported`（`data.field = "no_push"`，`data.reason = "no_push"`）：要派给这样的 agent，调用方得明确传 `false`。声明了的 agent，daemon 把 `settings.options.no_push` 设成 `no_push` 的值（`true` 或 `false`，覆盖调用方在 `settings.options` 里给的同名值）；没声明的 agent 带 `false` 时不写这个选项。
-- `message_id`：可选，幂等，语义同 `session.create` 的 `message_id`：同一个值的重试（比如回执丢了）返回第一次的结果（同一个会话，不多一条关联、不多一条 `dispatched`、不多一条审计），已经用在别的项或别的用途上 → `invalid`（`data.field = "message_id"`）。它同时是会话第一条消息的 id。缺省由 daemon 生成（没有幂等）；CLI 和 SDK 每次调用生成一个。第一次派发出的会话之后被删除的话，重试查不到它，会当成新的派发。
+- `message_id`：可选（≤ 128 字节，不含控制字符，否则 `invalid`），幂等，语义同 `session.create` 的 `message_id`：同一个值的重试（比如回执丢了）返回第一次的结果（同一个会话，不多一条关联、不多一条 `dispatched`、不多一条审计）。重试要求：找到的会话还在这一项的 `sessions` 里，并且 `agent`、`project`（有效的项目）、`no_push` 和第一次一样；不一样 → `invalid`（`data.field = "message_id"`）；已经用在别的项或别的用途上也是 `invalid`。会话属于这一项以前的派发（项被删了、又用同一个 id 建了回来）而不在现在的 `sessions` 里：当作新的派发，第一条消息用新的 id。它同时是会话第一条消息的 id。缺省由 daemon 生成（没有幂等）；CLI 和 SDK 每次调用生成一个。第一次派发出的会话之后被删除的话，重试查不到它，会当成新的派发。
 - 第一条消息由 daemon 生成（§ 22.4），调用方不能另给；不带附件。
 - 一项最多派发 20 次（含会话已被删除的），满了 → `invalid`（`data.field = "id"`，`data.reason = "too_many_sessions"`）。
 
 校验的顺序：`id` 的写法、`forbidden`、项存在、`message_id` 重试、已关闭、20 次上限、项目、`agent` 存在且可用（没装、没登录、没探测成功 → `agent_unavailable`，先于 `no_push`：这样的 agent 没有选项可看，不能让调用方去「放弃 no_push」）、`no_push`，然后才开会话（`session.create` 自己的校验：设置、危险模式、worktree、项目存在……）。
 
-成功时：会话已经建立（排队、拉起和 `session.create` 一样，走的就是同一条路径，由 `Sessions::create_for_todo` 在会话行里记下 `todo_id`），这一项的 `state` 变成 `working`，`sessions` 多一个，「经过」记一条 `dispatched`，`todo.changed`、`todo.event`、`session.changed` 照常发。**全部或全无**：开会话之前的校验失败、会话建不起来，都不改这一项、不记「经过」、不留会话；会话建好之后才发现关联写不进库（极少见）时，把会话删掉再报 `internal`，不留下半截。会话建起来之后进程拉不起来这类异步的失败，和 `session.create` 一样表现为会话进入 `error`，由回写（§ 22.3）把这一项转成 `waiting`。
+成功时：会话已经建立（排队、拉起和 `session.create` 一样，走的就是同一条路径，由 `Sessions::create_for_todo` 在会话行里记下 `todo_id`），`sessions` 多一个，「经过」记一条 `dispatched`，`todo.changed`（带 `activity`）、`todo.event`、`session.changed` 照常发。**派发不改 `state`**，也只在真的改了这一项的内容时才动 `updated_ms`：`project` 写回、`unreviewed` 清掉；多一条关联、`activity` 变了都不算（同 § 22.3 的理由）。**全部或全无**：开会话之前的校验失败、会话建不起来，都不改这一项、不记「经过」、不留会话；会话建好之后才发现关联写不进库（极少见）时，把会话删掉再报 `internal`，不留下半截。会话建起来之后进程拉不起来这类异步的失败，和 `session.create` 一样表现为会话进入 `error`，这一项的 `activity` 随之是 `waiting`（§ 22.3）。
 
-整个派发持清单的锁（§ 21 的 `todo_lock`）：同一时刻只有一个清单写操作，派发期间别的 `todo.add` / `update` 和会话状态的回写都要等它。**代价**：开会话里的同步部分（项目和 worktree 的校验、名字分配，会跑几次 git，各有超时）也在这把锁里，慢的仓库上这段时间清单的写入会排队；锁没有拆开，是因为「20 次上限」「全部或全无」「同一个 `message_id` 只有一次」都靠派发期间没有别的写入来保证。清单的锁在会话锁之前取，会话那一侧只往队列里放东西（§ 22.3），所以两把锁不会互相等。
+整个派发持清单的锁（§ 21 的 `todo_lock`）：同一时刻只有一个清单写操作，派发期间别的 `todo.add` / `update` 和记 `result` 都要等它。**代价**：开会话里的同步部分（项目和 worktree 的校验、名字分配，会跑几次 git，各有超时）也在这把锁里，慢的仓库上这段时间清单的写入会排队；锁没有拆开，是因为「20 次上限」「全部或全无」「同一个 `message_id` 只有一次」都靠派发期间没有别的写入来保证。清单的锁在会话锁之前取，会话那一侧只往队列里放东西（§ 22.3），所以两把锁不会互相等。
 
 审计 `todo.dispatch`：`target` 是项的 id，`detail` 是 `{ session_id, agent, workspace_mode, no_push }`（`workspace_mode` 是实际的 `local` / `worktree`），不记标题和正文。会话本身另记一条 `session.create`（`detail` 和 `session.create` RPC 一样：`agent`、`project`、`model`、`thinking`、`mode`、`dangerous`、`with_prompt`、`env_keys`，另带 `todo_dispatch: true`），在关联提交成功之后才写，失败的派发不留。
 
 **worktree 的分支名不含标题的字词**：`session.create` 缺省从第一条消息里取英文单词做分支名的 slug，派发的第一条消息以标题开头，会让标题的字词进 `worktree.create` 的审计（`branch`、`path`）和日志（§ 21.5 不允许）。所以派发的会话用 `<worktree.branch_prefix>/todo-<项 id 的前 8 个字符>`，被占着就加 `-2`、`-3`…（和别的缺省分支名同一套去重）。调用方自己给了 `workspace.branch` 的，用它给的名字。
 
-### 22.3 关联和回写
+### 22.3 关联和 activity
 
 - `Todo` 多一个字段 `sessions: [session_id]`：这一项派出的会话，按派发的先后，最多 20 个（满了 → `invalid`，`data.reason = "too_many_sessions"`；旧 daemon 没有这个字段，客户端按空读）。`SessionSummary` 多一个 `todo_id?`：会话从哪一项派出（创建时写下，不再变）。
-- 会话被删除，关联留着，客户端按「会话已不存在」显示；这一项被删除，关联和「经过」一起删，会话不动，它的 `todo_id` 指向一个已经不存在的项，客户端按「来源已删除」显示。
-- **回写**：关联会话的状态每变一次，daemon 按下面的规则算一次这一项该是什么状态，和当前不同才写。算的时候看**每个关联会话此刻的状态**（已经删除的会话不算）和它最近结束的一轮（`turns` 表里 `ended_ms` 最晚的一轮的 `reason`）：
-  - 一个关联会话也没有了（都被删了）→ `waiting`：由人决定接下来怎么办
-  - 否则任何一个在等审批（`waiting_permission`，包括计划和提问）、出错（`error`）或被打断（`interrupted`：daemon 重启时它在跑）→ `waiting`
-  - 否则任何一个在排队、启动或运行（`queued` / `starting` / `running`），或者空闲（`idle` / `ended`）但还有后台任务在跑（`background_tasks > 0`，和 `turn_finished`、`result` 一样等它们，§ 14）→ `working`
-  - 否则（都停下来了），看所有关联会话里**最近开始的那一轮里结束得最晚的**：正常结束（`completed` / `max_turns` / `budget`）→ `review`；以 `error` 结束、被取消（`cancelled`）、或者还没结束（进程被打断时的那一轮）→ `waiting`。出错和取消都要人来决定接下来怎么办，不然这一项会停在 `working`，而没有任何东西在跑；没结束的一轮不会被当成「上一轮正常结束」。没有任何轮次时不写。
-  - 这一项已关闭（`done` / `dropped`）时不回写：人点的「完成」不会被一次迟到的状态变化改回去。重新打开之后，下一次状态变化照常回写。
-  - 人在中途手动改了状态，下一次会话状态变化时按规则重新算。`done` 只由人设置，回写从不给出它。每个信号带一个递增的戳，人改状态时也取一个：在人改动**之前**发出的信号处理时被跳过，不会把人刚改的状态改回去（队列里排着的旧信号、回写在等清单的锁时都会遇到这种情况）；只有人改动之后的状态变化才重新对齐。
-  - 触发重算的：关联会话的状态真的变了（排队位置变了不算）、后台任务数变化、关联会话被删除、daemon 启动时对每个没关闭、派发过的项各算一次（重启时会话被置成 `interrupted` 不会产生「变化」，靠它补上：重启前停在 `working` 的项会变成 `waiting`）。
-  - 回写是一次普通的修改：`updated_ms` 照常变，`todo.changed` 照常发，审计记 `todo.update`，发起者是 daemon 自己（`device_id = "daemon"`，`detail` 是 `{ fields: ["state"], state: { from, to }, by: "dispatch", session_id }`，`session_id` 是引起这次重算的会话）。
-  - 回写是异步的：会话锁里只记下「这一项的会话状态变了」，由 daemon 的后台任务取清单的锁、再读各会话的状态去算，所以它比状态变化晚几毫秒，连续的几次变化会合并成一次重算（只看最终状态）。同一个后台任务按「先 `result`、后状态」的顺序处理；回写在读完各会话的状态之后、写状态之前，先把这一项排着的 `result` 记下来（读会话状态要等会话锁，而一轮结束时结果先于状态入队，所以读到「这一轮结束了」时它的结果一定已经排上了），派发也在读「之前各次的结果」之前先记下排着的：一轮的 `result` 总在它引起的 `review` 之前，在 `review` 上立刻再派发也带得上它。
-- 回写和通知：关联会话的 `turn_finished` 通知照常发（§ 14），客户端把文案换成「<这一项的标题> 做完了，等你验收」（[web.md § 14.10](web.md#1410-通知)）；不新增通知类别。
+- 会话被删除，关联留着，客户端按「会话已不存在」显示；这一项被删除，关联和「经过」一起删（同一个事务），会话不动，它的 `todo_id` 指向一个已经不存在的项，客户端按「来源已删除」显示。
+- **`Todo.activity`**（`working` / `waiting` / `review`，可缺）：派出的会话现在的情况。**不存储**：daemon 每次返回一项（`todo.list`、`todo.get`、`todo.add` / `todo.update` 的回复、`todo.dispatch`、`todo.changed`）时，按各关联会话此刻的状态现算。已关闭（`done` / `dropped`）或没有派发过的项没有这个字段。它不改 `updated_ms`、不进审计、不进「经过」。
+- **为什么算出来、不写进 `state`**：`state` 由人设置，会话的情况由会话决定，两个写入方写同一个字段，就得靠信号和时间戳去对账（人刚改的状态不能被迟到的信号改回去、重启之后要补写、后台任务数一跳就要判断一次……），而且每次写都会动 `updated_ms`，让 `todo.delete` 的 `if_updated_ms` 和「移到另一个节点」的检查（§ 21.7）在会话运行期间一直失败。每个字段一个写入方，就没有要对账的东西，重启之后读的时候现算就对。
+- **算法**（一个纯函数 `todo_dispatch::activity_of`，输入是还存在的关联会话，按派发的先后）：
+  1. 一个关联会话也没有了（都被删了）→ `waiting`：由人决定接下来怎么办
+  2. 任何一个关联会话在等审批（`waiting_permission`，包括计划和提问）→ `waiting`
+  3. 任何一个在排队、启动或运行（`queued` / `starting` / `running`），或者空闲（`idle` / `ended`）但还有后台任务在跑（`background_tasks > 0`），或者刚结束的一轮的 `result` 还没记进「经过」（被 § 14 的推迟扣着，或者还在队列里）→ `working`
+  4. 否则由**最近派发的那个还存在的会话**说了算：它的状态是 `error` 或 `interrupted`（daemon 重启时它在跑），或者它最近一轮（按 turn 号）不是正常结束的——`error`、被取消、没有结束（进程被打断时的那一轮，没有 `ended_ms`）、没有任何轮次——→ `waiting`；最近一轮正常结束（`completed` / `max_turns` / `budget`）→ `review`。更早的会话出过错、被取消不再拖着这一项：它们只在 2、3 里出现（还在等审批、还在跑）。
+- **`result` 先于 `review`**：一轮结束时它的 `result` 先「扣留」（计数），记进「经过」之后才放掉；扣留期间算 `working`。所以 `activity = review` 意味着这一轮的 `result` 已经在「经过」里，在 `review` 上立刻再派发也带得上它。记 `result` 是按项、持清单锁做的（先取走这一项排着的结果，逐条记下，再清扣留，再重新算）。
+- **通知是尽力而为，对错不靠它**：关联会话的状态真的变了（排队位置变了不算）、后台任务数在 0 和非 0 之间变化（1 → 2 这样的不算）、`result` 的扣留清掉、会话被删除、进程被摘掉（任务数被清零）时，daemon 重新算这一项的 `activity`，和上一次发出去的不同就发 `todo.changed`（带 `activity`）。漏发或多发一条都不影响对错，因为每次读都是现算的；daemon 启动时不用写什么（客户端连上会重新列清单），只用当前值把「上一次发出去的」填上，避免启动后重复通知。
+- **回写已取消**：daemon 不再把会话的情况写进 `state`，没有 `todo.update` 的审计、没有「状态由 dispatch 改的」这种历史。人在派发过的项上改 `state`，是一次普通的修改（`updated_ms` 照常变），「经过」里记一条 `state`（§ 22.4）。
+- 通知（`turn_finished`）：关联会话的 `turn_finished` 通知照常发（§ 14），客户端把文案换成「<这一项的标题> 做完了，等你验收」（[web.md § 14.10](web.md#1410-通知)）；不新增通知类别。
 
 ### 22.4 交接：「经过」和第一条消息
 
@@ -1353,13 +1354,13 @@ TodoEvent {
   kind:  dispatched | result | state
   // dispatched：{ session_id, agent, workspace_mode: local|worktree, no_push, by: { kind, device_id? } }
   // result：    { session_id, turn, text, truncated }   这一轮结束时 agent 的最后一段话
-  // state：     { from, to, by: { kind, device_id? } | "dispatch" }
+  // state：     { from, to, by: { kind, device_id? } }   人改了状态（会话引起的变化是 activity，不在这里）
 }
 ```
 
 - **dispatched**：每次成功的派发一条（`by` 是发起的调用方：`local` / `device`）。
 - **result**：关联会话每一轮结束（`turn_done`）时，daemon 取这一轮 agent 的最后一段文字——最后一个文字块（最后一段 `text_delta`，到 `text_done` 为止；中间的块和思考不算）——最多 4 KiB（按 UTF-8 字节，在码点边界截断，保留开头，`truncated = true`）。这一轮没有文字（只有工具调用）时记一条 `text` 为空的 result。`turn` 是会话里的 turn 号。时机和 § 14 的 `turn_finished` 一致：正常结束的一轮（`completed` / `max_turns` / `budget`）在结束时后台任务还在跑，就推迟到推迟的通知发出（agent 自己跑的那一轮结束，或任务都结束 15 秒后的兜底）的那一刻，一起记（用户又发了消息、进程被摘掉时，推迟的结果也在那一刻记，不丢）；agent 自己开的 turn 也各记一条；取消、出错的一轮没有「推迟」，结束时立即记，文字是到那时为止收到的。daemon 在两次记录之间重启会丢掉还没记的 `result`（它只在内存里）。
-- **state**：这一项派发过（`sessions` 非空）之后的每一次状态变化记一条：`by` 是 `"dispatch"`（回写，§ 22.3）或发起这次 `todo.update` 的调用方（`{ kind, device_id? }`）。派发本身把状态改成 `working` 不记 `state`（`dispatched` 已经说明了）。
+- **state**：这一项派发过（`sessions` 非空）之后，人每改一次 `state`（`todo.update`）记一条，`by` 是发起这次 `todo.update` 的调用方（`{ kind, device_id? }`）。会话引起的变化是算出来的 `activity`，不进「经过」；派发本身不改 `state`。
 - 「经过」只追加：没有修改、删除一条的方法；删除这一项时一起删。已关闭的项按 `history_retention` 清理时一起清。
 - 「经过」的 `text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。
 - **第一条消息**，daemon 按下面的格式生成（给 agent 看，用英文）：
@@ -1412,9 +1413,10 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 - 交接把前几次 agent 的输出放进下一次的第一条消息：一个被注入的会话写下的话，会进到下一个 agent 的输入里。消息里标明那是之前的报告、不是指令，对话框里能看到要发出的全文（Web 还没有，CLI 和 SDK 的调用方可以先读 `todo.history`）；但这只是提示，挡不住注入。这一步同时改了 [architecture.md § 5.6](../architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。
 - 「不 push、不开 PR」只在声明了它的 agent（现在只有 Claude Code）上有效；没有声明的 agent 要派发，调用方必须明确放弃它。
-- 回写看的是会话状态，不看 agent 说了什么：agent 说「没做完」也会进 `review`，由人验收时判断。
-- 回写是异步的（几毫秒），并且只在会话状态变化时才重算：人手动改了状态之后，要等会话的下一次状态变化才会被重新对齐。
-- 重启时没有记完的东西会丢：还在内存队列里的 `result`、没处理的状态信号（启动时的重算会补上状态，补不上 `result`）。
+- `activity` 看的是会话状态，不看 agent 说了什么：agent 说「没做完」也会是 `review`，由人验收时判断。
+- `activity` 是读的时候现算的，和 `state` 互不影响：人把 `state` 改成 `done`，它就没有 `activity`；改回 `open`，又按会话此刻的情况有。通知是尽力而为，客户端在连上和打开一项时用 `todo.list` / `todo.get` 取到的值才是准的。
+- 每次读都要看各关联会话的内存状态（取会话锁，一项最多 20 个），最近派发的那个停下来时还多读一次 `turns` 表；`todo.list` 一页里没派发过的项不花这个代价。
+- 重启时没有记完的东西会丢：还在内存队列里的 `result`。`activity` 不受影响（现算）：重启时被打断的会话是 `interrupted`，这一项算 `waiting`。
 - `message_id` 的幂等靠会话的第一条消息查，第一次派发出的会话被删掉之后，用同一个 `message_id` 重试会开新的会话。
 
 ### 22.8 存储

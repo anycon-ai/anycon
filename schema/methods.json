@@ -415,6 +415,12 @@
   },
   {
     "direction": "request",
+    "name": "todo.get",
+    "params": "TodoIdParams",
+    "result": "Todo"
+  },
+  {
+    "direction": "request",
     "name": "todo.add",
     "params": "TodoAddParams",
     "result": "Todo"
@@ -428,7 +434,7 @@
   {
     "direction": "request",
     "name": "todo.delete",
-    "params": "TodoIdParams",
+    "params": "TodoDeleteParams",
     "result": null
   },
   {

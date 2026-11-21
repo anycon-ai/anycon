@@ -217,6 +217,7 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
         let by = match (t.source.kind, t.unreviewed) {
             (TodoSourceKind::Agent, true) => app.out.yellow("agent (unreviewed)"),
             (TodoSourceKind::Agent, false) => "agent".to_string(),
+            (TodoSourceKind::Unknown, _) => "other".to_string(),
             _ => String::new(),
         };
         rows.push(vec![

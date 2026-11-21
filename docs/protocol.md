@@ -300,12 +300,13 @@ daemon                      hub                        新客户端
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 是上一页最后一项的这两个值；`limit` 缺省 200、上限 1000；一页另有 1 MiB 的字节预算（至少给一项），所以可能少于 `limit`，后面还有没给出的项时 `has_more = true` |
+| `todo.get` | C→D | `{ id }` → `Todo`。只读，不审计、不通知；`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
 | `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, agent?, origin_session? }` → `Todo`。`id`（小写带连字符的 UUID，其它写法 `invalid`，不做规范化）已存在时原样返回已有的那一项（幂等，不改、不报错）；`agent: true` 是调用方自报「这是 agent 加的」，来自自报了 `mcp` 的本机连接的调用总是 agent 加的；`source` 和 `unreviewed` 由 daemon 填。参数不合法 → `invalid`（`data.field`）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；未收下的 agent 项已满 100 → `invalid`（`data.reason = "too_many_unreviewed"`） |
-| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。缺省的字段保持不变；`clear`（`project` / `due_ms`）在合并之后清空；`reviewed: true` 清掉 `unreviewed`；没有字段真的变了就是空操作（不改 `updated_ms`、不通知）；把已关闭的项改回没关闭的状态时和新建一样受 1000 个的上限（`invalid`，`data.reason = "too_many"`）。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
-| `todo.delete` | C→D | `{ id }` → `{}`，物理删除。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
+| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。缺省的字段保持不变；`clear`（`project` / `due_ms`）在合并之后清空；`reviewed: true` 清掉 `unreviewed`；没有字段真的变了就是空操作（不改 `updated_ms`、不通知）；真的变了就把 `updated_ms` 设成 `max(现在, 旧值 + 1)`，对同一项严格递增；把已关闭的项改回没关闭的状态时和新建一样受 1000 个的上限（`invalid`，`data.reason = "too_many"`）。`id` 不存在 → `not_found`，不是小写 UUID → `invalid` |
+| `todo.delete` | C→D | `{ id, if_updated_ms? }` → `{}`，物理删除。`id` 不存在 → `not_found`，不是小写 UUID → `invalid`。给了 `if_updated_ms` 而这一项现在的 `updated_ms` 不是它：什么都不删，`invalid`（`data.field = "if_updated_ms"`，`data.reason = "changed"`，`data.updated_ms` 是现在的值） |
 | `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
 
-`Todo { id, title, body, project?, state, due_ms?, source { kind: device \| local \| agent, device_id?, session_id? }, unreviewed, created_ms, updated_ms, closed_ms? }`，`state` 取 `open` / `working` / `waiting` / `review` / `done` / `dropped`。`title`（≤ 200）、`project`（≤ 200）和 `[hub] group`（≤ 40）的长度都按 Unicode 码点数，`body`（≤ 16 KiB）按 UTF-8 字节。
+`Todo { id, title, body, project?, state, due_ms?, source { kind: device \| local \| agent（客户端遇到别的值按「不是人加的」处理，不报错）, device_id?, session_id? }, unreviewed, created_ms, updated_ms, closed_ms? }`，`state` 取 `open` / `working` / `waiting` / `review` / `done` / `dropped`。`title`（≤ 200）、`project`（≤ 200）和 `[hub] group`（≤ 40）的长度都按 Unicode 码点数，`body`（≤ 16 KiB）按 UTF-8 字节。
 
 ## 6. 会话事件
 

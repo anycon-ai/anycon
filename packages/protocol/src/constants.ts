@@ -141,11 +141,13 @@ export const METHODS = {
   // todo（清单）
   /** params = TodoListParams → TodoListResult */
   TODO_LIST: 'todo.list',
+  /** params = TodoIdParams → Todo；只读 */
+  TODO_GET: 'todo.get',
   /** params = TodoAddParams → Todo；按 `id` 幂等：已存在时原样返回已有的那一项 */
   TODO_ADD: 'todo.add',
   /** params = TodoUpdateParams → Todo */
   TODO_UPDATE: 'todo.update',
-  /** params = TodoIdParams */
+  /** params = TodoDeleteParams；`if_updated_ms` 对不上 → `invalid`（`reason = 'changed'`，`data.updated_ms`） */
   TODO_DELETE: 'todo.delete',
   /** D→C notification，params = TodoChanged */
   TODO_CHANGED: 'todo.changed',

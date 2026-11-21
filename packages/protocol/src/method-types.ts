@@ -95,6 +95,7 @@ import type {
   Todo,
   TodoAddParams,
   TodoChanged,
+  TodoDeleteParams,
   TodoIdParams,
   TodoListParams,
   TodoListResult,
@@ -179,9 +180,10 @@ export interface RequestMethods {
   'session.diff': { params: SessionDiffParams; result: SessionDiffResult }
   'session.sync_base': { params: SessionSyncBaseParams; result: SessionSyncBaseResult }
   'todo.list': { params: TodoListParams; result: TodoListResult }
+  'todo.get': { params: TodoIdParams; result: Todo }
   'todo.add': { params: TodoAddParams; result: Todo }
   'todo.update': { params: TodoUpdateParams; result: Todo }
-  'todo.delete': { params: TodoIdParams; result: Empty }
+  'todo.delete': { params: TodoDeleteParams; result: Empty }
   'blob.put_begin': { params: BlobPutBeginParams; result: BlobPutBeginResult }
   'blob.put_chunk': { params: BlobPutChunkParams; result: Empty }
   'blob.put_end': { params: BlobIdParams; result: AttachmentRef }

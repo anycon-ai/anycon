@@ -517,6 +517,134 @@ async fn delete_is_physical_and_reports_not_found() {
     td.shutdown().await;
 }
 
+// ---------------------------------------------------------------- todo.get
+
+#[tokio::test]
+async fn get_returns_one_item_and_is_read_only() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let mut other = td.hub_client("dev-phone", "Phone");
+    let t = add_ok(&td, &mut c, "read me").await;
+    changes(&mut other);
+    let audits_before = audit(&td, "todo.").await.len();
+    let got: Todo = c.call(&td, methods::TODO_GET, json!({ "id": t.id })).await.unwrap();
+    assert_eq!(got, t);
+    assert_eq!(audit(&td, "todo.").await.len(), audits_before, "a read is not audited");
+    assert!(changes(&mut other).is_empty(), "a read announces nothing");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_reports_not_found_and_rejects_ids_that_are_not_lowercase_uuids() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let e = c.call::<Todo>(&td, methods::TODO_GET, json!({ "id": id() })).await.unwrap_err();
+    assert_eq!(code(&e).0, ErrorCode::NotFound);
+    let t = add_ok(&td, &mut c, "t").await;
+    for bad in [t.id.to_uppercase(), "not-a-uuid".to_string(), String::new()] {
+        let e = c.call::<Todo>(&td, methods::TODO_GET, json!({ "id": bad })).await.unwrap_err();
+        assert_eq!(invalid_field(&e), "id", "{bad:?}");
+    }
+    td.shutdown().await;
+}
+
+// ---------------------------------------------------------------- todo.delete if_updated_ms
+
+#[tokio::test]
+async fn a_conditional_delete_with_the_current_updated_ms_deletes() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let mut other = td.hub_client("dev-phone", "Phone");
+    let t = add_ok(&td, &mut c, "t").await;
+    changes(&mut other);
+    let _: Value =
+        c.call(&td, methods::TODO_DELETE, json!({ "id": t.id, "if_updated_ms": t.updated_ms })).await.unwrap();
+    assert!(td.ctx.store.todo_get(&t.id).await.unwrap().is_none());
+    assert_eq!(changes(&mut other), vec![TodoChanged { id: t.id.clone(), todo: None, deleted: true }]);
+    assert_eq!(audit(&td, "todo.delete").await.len(), 1);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_conditional_delete_that_no_longer_matches_is_refused_with_the_current_updated_ms_and_changes_nothing() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let mut other = td.hub_client("dev-phone", "Phone");
+    let t = add_ok(&td, &mut c, "t").await;
+    let edited = update(&td, &mut c, json!({ "id": t.id, "title": "edited" })).await.unwrap();
+    assert!(edited.updated_ms > t.updated_ms);
+    changes(&mut other);
+    let audits_before = audit(&td, "todo.").await.len();
+    let e = c
+        .call::<Value>(&td, methods::TODO_DELETE, json!({ "id": t.id, "if_updated_ms": t.updated_ms }))
+        .await
+        .unwrap_err();
+    let (c0, field, reason) = code(&e);
+    assert_eq!((c0, field.as_deref(), reason.as_deref()), (ErrorCode::Invalid, Some("if_updated_ms"), Some("changed")));
+    assert_eq!(e.data.unwrap().updated_ms, Some(edited.updated_ms));
+    assert_eq!(td.ctx.store.todo_get(&t.id).await.unwrap().unwrap(), edited, "nothing was deleted or changed");
+    assert_eq!(audit(&td, "todo.").await.len(), audits_before, "a refused delete is not audited");
+    assert!(changes(&mut other).is_empty(), "a refused delete announces nothing");
+    // 用现在的值再来就删得掉
+    let _: Value =
+        c.call(&td, methods::TODO_DELETE, json!({ "id": t.id, "if_updated_ms": edited.updated_ms })).await.unwrap();
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_conditional_delete_of_a_missing_item_is_not_found_and_without_the_condition_nothing_changes() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let e = c.call::<Value>(&td, methods::TODO_DELETE, json!({ "id": id(), "if_updated_ms": 1 })).await.unwrap_err();
+    assert_eq!(code(&e).0, ErrorCode::NotFound);
+    // 没有条件时和以前一样：不管 updated_ms 是多少都删
+    let t = add_ok(&td, &mut c, "t").await;
+    let _: Value = c.call(&td, methods::TODO_DELETE, json!({ "id": t.id })).await.unwrap();
+    td.shutdown().await;
+}
+
+// ---------------------------------------------------------------- updated_ms 严格递增
+
+#[tokio::test]
+async fn updated_ms_strictly_increases_even_for_writes_in_the_same_millisecond() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let t = add_ok(&td, &mut c, "t").await;
+    let mut last = t.updated_ms;
+    for i in 0..8 {
+        // 紧挨着的几次写：多半落在同一毫秒里
+        let u = update(&td, &mut c, json!({ "id": t.id, "title": format!("v{i}") })).await.unwrap();
+        assert!(u.updated_ms > last, "update {i}: {} must be above {last}", u.updated_ms);
+        last = u.updated_ms;
+    }
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn updated_ms_still_increases_when_the_clock_is_behind_the_stored_value() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    // 库里的这一项的 updated_ms 在「未来」（时钟往回拨过）
+    let future = 4_000_000_000_000u64;
+    let i = id();
+    td.ctx.store.todo_insert(&row(&i, future, TodoState::Open)).await.unwrap();
+    let u = update(&td, &mut c, json!({ "id": i, "title": "after the clock stepped back" })).await.unwrap();
+    assert_eq!(u.updated_ms, future + 1);
+    let u2 = update(&td, &mut c, json!({ "id": i, "state": "done" })).await.unwrap();
+    assert_eq!(u2.updated_ms, future + 2);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_no_op_update_keeps_updated_ms() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let t = add_ok(&td, &mut c, "t").await;
+    let same = update(&td, &mut c, json!({ "id": t.id, "title": "t" })).await.unwrap();
+    assert_eq!(same.updated_ms, t.updated_ms);
+    td.shutdown().await;
+}
+
 // ---------------------------------------------------------------- todo.list
 
 #[tokio::test]

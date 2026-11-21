@@ -39,6 +39,9 @@ pub struct RpcErrorData {
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
+    /// 带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = "changed"`）时，那一项现在的 `updated_ms`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -54,7 +57,7 @@ impl RpcError {
         Self {
             code: code.rpc_code(),
             message: message.into(),
-            data: Some(RpcErrorData { code, field: None, reason: None, retry_after_ms: None }),
+            data: Some(RpcErrorData { code, field: None, reason: None, retry_after_ms: None, updated_ms: None }),
         }
     }
     pub fn invalid_settings(field: impl Into<String>, reason: impl Into<String>) -> Self {

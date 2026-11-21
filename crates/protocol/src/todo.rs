@@ -52,6 +52,10 @@ pub enum TodoSourceKind {
     Local,
     /// agent 加的（`todo.add` 带了 `agent: true`，或来自自报了 `mcp` 的本机连接）。
     Agent,
+    /// 这个版本不认识的来源（更新的 daemon 加了新的种类）。**daemon 自己从不产生它**，只是让旧客户端解析更新的 daemon 发来的数据时
+    /// 不报错：客户端把它当作「不是某个人记的」（docs/spec/daemon.md § 21.2）。daemon 内部对真正的三种来源逐个处理。
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -172,6 +176,15 @@ pub struct TodoIdParams {
     pub id: String,
 }
 
+/// `todo.delete`：`if_updated_ms` 给了、而这一项现在的 `updated_ms` 不是它，就拒绝（`invalid`，`data.reason = "changed"`，
+/// `data.updated_ms` 是现在的值），什么都不删。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoDeleteParams {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_updated_ms: Option<TimestampMs>,
+}
+
 /// `todo.changed` 通知：新建、修改、删除后发给所有在线客户端（包括发起的那一台）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoChanged {
@@ -216,6 +229,29 @@ mod tests {
         let p: TodoUpdateParams =
             serde_json::from_value(serde_json::json!({ "id": "x", "clear": ["project", "due_ms"] })).unwrap();
         assert_eq!(p.clear, vec![ClearableTodoField::Project, ClearableTodoField::DueMs]);
+    }
+
+    #[test]
+    fn an_unknown_source_kind_still_parses_and_is_not_one_of_the_known_three() {
+        let v = serde_json::json!({
+            "id": "a", "title": "t", "body": "", "state": "open", "unreviewed": false, "created_ms": 1, "updated_ms": 2,
+            "source": { "kind": "twin", "device_id": "d" }
+        });
+        let t: Todo = serde_json::from_value(v).unwrap();
+        assert_eq!(t.source.kind, TodoSourceKind::Unknown);
+        assert_eq!(t.source.device_id.as_deref(), Some("d"));
+    }
+
+    #[test]
+    fn delete_params_accept_a_bare_id_and_an_optional_condition() {
+        let p: TodoDeleteParams = serde_json::from_value(serde_json::json!({ "id": "x" })).unwrap();
+        assert_eq!(p.if_updated_ms, None);
+        let p: TodoDeleteParams = serde_json::from_value(serde_json::json!({ "id": "x", "if_updated_ms": 5 })).unwrap();
+        assert_eq!(p.if_updated_ms, Some(5));
+        assert!(serde_json::to_value(TodoDeleteParams { id: "x".into(), if_updated_ms: None })
+            .unwrap()
+            .get("if_updated_ms")
+            .is_none());
     }
 
     #[test]

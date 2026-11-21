@@ -81,6 +81,7 @@ function canonicalError(err: RpcError): RpcError {
     if (isSet(data.field)) d.field = data.field
     if (isSet(data.reason)) d.reason = data.reason
     if (isSet(data.retry_after_ms)) d.retry_after_ms = data.retry_after_ms
+    if (isSet(data.updated_ms)) d.updated_ms = data.updated_ms
     out.data = d
   }
   return out
@@ -154,6 +155,10 @@ export class AnyconRpcError extends Error {
   }
   get retryAfterMs(): number | undefined {
     return this.data?.retry_after_ms ?? undefined
+  }
+  /** 带条件的写被拒（`todo.delete` 的 `ifUpdatedMs` 对不上，`reason = 'changed'`）时，那一项现在的 `updated_ms`。 */
+  get updatedMs(): number | undefined {
+    return this.data?.updated_ms ?? undefined
   }
 
   static fromWire(err: RpcError): AnyconRpcError {

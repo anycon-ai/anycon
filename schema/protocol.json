@@ -5330,6 +5330,15 @@
             "integer",
             "null"
           ]
+        },
+        "updated_ms": {
+          "description": "带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = \"changed\"`）时，那一项现在的 `updated_ms`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -7000,6 +7009,26 @@
       ],
       "type": "object"
     },
+    "TodoDeleteParams": {
+      "description": "`todo.delete`：`if_updated_ms` 给了、而这一项现在的 `updated_ms` 不是它，就拒绝（`invalid`，`data.reason = \"changed\"`，\n`data.updated_ms` 是现在的值），什么都不删。",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "if_updated_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "TodoIdParams": {
       "properties": {
         "id": {
@@ -7109,6 +7138,11 @@
         {
           "const": "agent",
           "description": "agent 加的（`todo.add` 带了 `agent: true`，或来自自报了 `mcp` 的本机连接）。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的来源（更新的 daemon 加了新的种类）。**daemon 自己从不产生它**，只是让旧客户端解析更新的 daemon 发来的数据时\n不报错：客户端把它当作「不是某个人记的」（docs/spec/daemon.md § 21.2）。daemon 内部对真正的三种来源逐个处理。",
           "type": "string"
         }
       ]
@@ -8542,6 +8576,9 @@
     "todo_cursor": {
       "$ref": "#/definitions/TodoCursor"
     },
+    "todo_delete_params": {
+      "$ref": "#/definitions/TodoDeleteParams"
+    },
     "todo_id_params": {
       "$ref": "#/definitions/TodoIdParams"
     },
@@ -8770,6 +8807,7 @@
     "clearable_todo_field",
     "todo_update_params",
     "todo_id_params",
+    "todo_delete_params",
     "todo_changed",
     "attachment_ref",
     "blob_put_begin_params",
@@ -9223,6 +9261,12 @@
     },
     {
       "direction": "request",
+      "name": "todo.get",
+      "params": "TodoIdParams",
+      "result": "Todo"
+    },
+    {
+      "direction": "request",
       "name": "todo.add",
       "params": "TodoAddParams",
       "result": "Todo"
@@ -9236,7 +9280,7 @@
     {
       "direction": "request",
       "name": "todo.delete",
-      "params": "TodoIdParams",
+      "params": "TodoDeleteParams",
       "result": null
     },
     {

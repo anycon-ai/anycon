@@ -19,6 +19,7 @@ import { isClosed, UI_STATES, type UpdateFields, type ViewTodo } from '../types'
 import { cleanHintText } from '@/lib/hint'
 import { cleanOneLine, type FieldError } from '../validate'
 import { dueFromInput } from './CaptureForm'
+import { MoveTodoDialog } from './MoveTodoDialog'
 import { fieldErrorText, outboxErrorText } from './errors'
 
 /** 毫秒 → `datetime-local` 的值（本地时间，到分钟）。 */
@@ -53,6 +54,9 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [moving, setMoving] = useState(false)
+  // 有别的支持清单的节点才有「移到另一个节点…」
+  const canMove = useNodes((s) => s.order.some((id) => id !== item.node_id && s.byId[id]?.info?.capabilities.todo === true))
   const { title, body, project, due_ms } = item
   const current = useMemo(() => valuesOf({ title, body, project, due_ms }), [title, body, project, due_ms])
 
@@ -244,6 +248,11 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             {t('todos.done')}
           </Button>
         )}
+        {canMove ? (
+          <Button onClick={() => setMoving(true)} data-testid="todo-move">
+            {t('spaces.move.title')}
+          </Button>
+        ) : null}
         <Button variant="outline-danger" onClick={() => setConfirmDelete(true)} data-testid="todo-delete">
           {t('todos.delete')}
         </Button>
@@ -280,6 +289,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </div>
       ))}
 
+      <MoveTodoDialog item={item} open={moving} onOpenChange={setMoving} />
 
       <Dialog open={confirmDiscard} onOpenChange={setConfirmDiscard} title={t('todos.discardEditTitle')} description={t('todos.discardEditBody')} closeLabel={t('common.close')} testId="todo-discard-edit-dialog">
         <div className="flex justify-end gap-2">

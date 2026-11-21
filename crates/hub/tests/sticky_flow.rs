@@ -412,12 +412,15 @@ async fn thirty_mib_from_a_daemon_to_a_slow_reader_loses_nothing_and_stays_conne
     assert!(flow.sender.stats.backpressure > 0, "a slow reader must have pushed back");
     assert!(flow.sender.stats.rate_limited.is_empty(), "30 MiB is under the daemon budget of 100 MiB / min");
     // 节点仍在线：照常办事
+    let receiver_id = flow.sender.to;
     let mut d = flow.sender.dev;
     let (_, match_id) = new_code();
     assert!(d.try_send_control(&Control::PairBegin { match_id }).await);
     loop {
         match d.recv_control().await {
             Control::PairRegistered { .. } => break,
+            // 接收任务收齐后已经退出并断开，它的下线通知可能先于配对登记回包到达。
+            Control::PeerOffline { device } if device == receiver_id => continue,
             Control::Backpressure { .. } | Control::RateLimited { .. } => continue,
             other => panic!("{other:?}"),
         }

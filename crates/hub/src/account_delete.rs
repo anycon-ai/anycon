@@ -60,7 +60,7 @@ pub async fn delete_account(state: &AppState, account_id: &str, by: DeletedBy) -
         let id = conn.device_id();
         state.broker.abort_device(&id);
         state.enrolls.abort_device(&id);
-        // 同 `AppState::revoke_device`：清对端集合（收尾时不再扇出 peer_offline），先移出路由表，再 4004 断开。
+        // 配对双方属于同一账号，都会被关闭；清空对端集合，移除时不向这些连接扇出 peer_offline，再 4004 断开。
         conn.clear_peers();
         state.registry.unregister(&id, conn.id);
         conn.close(close_code::REVOKED, "revoked");

@@ -153,10 +153,10 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | 升级 | 校验 `Origin`（`ANYCON_PUBLIC_URL`、自身 Host、私有网段 http 自动放行）。失败 `403` |
 | 认证 | 第一帧必须是 `control.auth { device_token, protocol_version }`，5 秒内未收到则关闭。token 查哈希：当前 token，或轮换之后 60 秒宽限内的上一个 token 都认（§ 5）；设备被吊销则 `auth_fail { reason: revoked }`（新旧 token 都是）；`multi` 里账号的在线连接数已到上限则 `auth_fail { reason: quota }`（§ 7.1） |
 | 单连接 | 一个设备同时只允许一条连接。新连接认证成功后旧连接收到 close code `4001 superseded`。手机切网时常见。顶掉自己的旧连接不算新增一条在线连接（§ 7.1） |
-| 上线通知 | 认证成功后，hub 向该设备发 `auth_ok { device_id, server_time_ms, peers_online, quota? }`（`peers_online` 是此刻在线的配对设备列表；`quota` 只在 `multi` 里对永久连接带，是账号的设备数 / daemon 数 / 在线连接数和各自的上限，`single`、临时连接和预览连接没有，§ 7.1），并向这些**在线的配对设备**发 `peer_online`。`multi` 里账号的设备数、daemon 数或在线连接数变了，hub 再向该账号此刻在线的其他永久连接发 `quota_update` |
+| 上线通知 | 认证成功后，hub 向该设备发 `auth_ok { device_id, server_time_ms, peers_online, quota? }`（`peers_online` 是此刻在线的配对设备列表；`quota` 只在 `multi` 里对永久连接带，是账号的设备数 / daemon 数 / 在线连接数和各自的上限，`single`、临时连接和预览连接没有，§ 7.1），并向这些**在线的配对设备**发 `peer_online`。认证和配对完成时的 `peer_online` 都在路由表写锁内与下线通知定序；配对完成时先更新双方对端缓存，再给双方发 `pair_done`，只有对方此刻仍是路由表登记的那条连接才发 `peer_online`。`multi` 里账号的设备数、daemon 数或在线连接数变了，hub 再向该账号此刻在线的其他永久连接发 `quota_update` |
 | 心跳 | hub 每 30 秒 ping；90 秒无 pong 断开。设备侧不需要自己发心跳，但可以靠这些 ping 判断连接是否还活着：daemon 75 秒收不到任何帧就断开重连（daemon.md § 15） |
 | 在线期间 | 永久连接（带设备 token 认证的，或配对 / 接入后原地升级的）一直连着时，hub 每 10 分钟（`Timing::device_seen_refresh`，没有对应的环境变量，测试里调短）把此刻所有永久连接的 `last_seen` 和 `last_ip_prefix` 一批写进库（按设备 id 排序分块，每块一个事务；在后台任务里写，不挡任何连接的读循环；上一轮没写完就跳过这一轮）。所以「`last_seen` 在最近 15 分钟内」约等于「此刻在线或刚下线」，连了几天的设备也不会显得很久没出现。临时连接和预览连接不是设备，不写 |
-| 下线 | 连接关闭后向配对设备发 `peer_offline`。认证成功后（后台）和断线后各写一次 `last_seen`，同时写 `last_ip_prefix`（这条连接的对端 IP 的前缀，§ 5）。已吊销的设备不再写，留着吊销前的值 |
+| 下线 | 连接从路由表移除时，在同一把写锁内向在线配对设备发 `peer_offline`，先于断线后的 `last_seen` 写库；立即重连时，对端先收到 `peer_offline` 再收到 `peer_online`，新连接顶掉旧连接仍只发 `peer_online`。认证成功后（后台）和断线后各写一次 `last_seen`，同时写 `last_ip_prefix`（这条连接的对端 IP 的前缀，§ 5）。已吊销的设备不再写，留着吊销前的值 |
 | 关停 | hub 优雅关停时先发 close code `4002 restarting`，客户端据此用短退避（1–3 秒抖动）重连，而不是指数退避 |
 
 close code 全表（`auth_fail` 总是先于 close 发出）：

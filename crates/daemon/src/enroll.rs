@@ -409,7 +409,8 @@ pub struct Enroll {
     /// 口令行的读-改-写（设置、计数、重新启用）都在这把锁里。
     pw_lock: tokio::sync::Mutex<()>,
     /// 已经向已配对设备报告过的 `[enroll]`：配置文件被直接改了（`anycon config set`、手动编辑）时，和它比较决定要不要补报。
-    announced_cfg: Mutex<EnrollConfig>,
+    /// 异步锁覆盖 RPC 写盘、热加载和已报告值的更新；配置监视在同一把锁内读取、比较当前配置。
+    announced_cfg: tokio::sync::Mutex<EnrollConfig>,
     clock: Clock,
 }
 
@@ -428,7 +429,7 @@ impl Enroll {
             peers: OnceLock::new(),
             inner: Mutex::new(Inner::default()),
             pw_lock: tokio::sync::Mutex::new(()),
-            announced_cfg: Mutex::new(announced),
+            announced_cfg: tokio::sync::Mutex::new(announced),
             clock: Clock::default(),
         })
     }
@@ -1729,17 +1730,8 @@ impl Enroll {
         if let Some(a) = p.password {
             edits.push(("enroll.password".to_string(), a.to_string()));
         }
-        // 先登记「已经报告过」：下面的热加载会唤醒配置监视，它不能把这次改动再报一遍
-        {
-            let mut next = self.config.get().enroll.clone();
-            if let Some(a) = p.approval {
-                next.approval = a;
-            }
-            if let Some(a) = p.password {
-                next.password = a;
-            }
-            *self.announced_cfg.lock().unwrap() = next;
-        }
+        // 写盘到热加载成功期间，配置监视不能用旧配置比较已报告值；失败则保持原来的已报告值。
+        let mut announced = self.announced_cfg.lock().await;
         crate::config::set_values_blocking(paths, edits)
             .await
             .map_err(|e| RpcError::new(ErrorCode::Internal, format!("cannot write config.toml: {e}")))?;
@@ -1749,6 +1741,8 @@ impl Enroll {
             .await
             .map_err(|e| RpcError::new(ErrorCode::Internal, format!("cannot reload the config: {e}")))?
             .map_err(|e| RpcError::new(ErrorCode::Internal, format!("cannot reload the config: {e}")))?;
+        *announced = self.config.get().enroll.clone();
+        drop(announced);
         let mut reset = false;
         if p.password == Some(true) {
             let _g = self.pw_lock.lock().await;
@@ -1775,14 +1769,15 @@ impl Enroll {
     /// `[enroll]` 被直接改了（`anycon config set`、手动编辑 `config.toml`，由配置热加载发现）而不是经 `node.set_enroll_enabled`：
     /// 补报 `settings_changed` 并记审计（docs/spec/daemon.md § 14：`[enroll]` 被修改要通知已配对设备）。
     pub async fn on_config_changed(&self) {
-        let now = self.config.get().enroll.clone();
-        {
-            let mut known = self.announced_cfg.lock().unwrap();
+        let now = {
+            let mut known = self.announced_cfg.lock().await;
+            let now = self.config.get().enroll.clone();
             if *known == now {
                 return;
             }
             *known = now.clone();
-        }
+            now
+        };
         let editor =
             Caller { device_id: "local".into(), device_name: "config.toml".into(), kind: DeviceKind::Cli, local: true };
         self.audit

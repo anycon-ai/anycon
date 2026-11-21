@@ -5,6 +5,7 @@
 //! 重新启用、悲观计数、并发限制、接入码的次数 / 过期 / 一次性、批准 / 拒绝、`[enroll]` 开关、通知 / 安全事件 / 审计。
 //! 经真实 hub 的端到端见 `crates/cli/tests/enroll_real_hub.rs` 和 `e2e/tests/enroll.spec.ts`。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -690,6 +691,35 @@ async fn changing_the_password_discards_the_old_failures_and_the_old_password_st
     let (reason, _, _) = pw_rejected(&mut b, PW).await;
     assert_eq!(reason, EnrollRejectReason::WrongSecret);
     pw_joins(&mut b, "brand new password").await;
+    b.td.shutdown().await;
+}
+
+/// 配置监视与 RPC 写盘、热加载并行时，每次 RPC 只报告一次设置变化。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_config_checks_do_not_report_rpc_enroll_settings_twice() {
+    let mut b = Bench::new().await;
+    let enroll = b.td.ctx.enroll.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    let checker = tokio::spawn(async move {
+        while !stopped.load(Ordering::Relaxed) {
+            enroll.on_config_changed().await;
+            tokio::task::yield_now().await;
+        }
+    });
+    const CALLS: usize = 40;
+    for i in 0..CALLS {
+        let enabled = i % 2 != 0;
+        b.call_ok(methods::NODE_SET_ENROLL_ENABLED, json!({ "approval": enabled, "password": enabled })).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    checker.await.unwrap();
+    b.td.ctx.enroll.on_config_changed().await;
+    let audit = b.audit().await;
+    let settings: Vec<_> = audit.iter().filter(|e| e.action == "enroll.settings").collect();
+    assert_eq!(settings.len(), CALLS, "settings audit: {settings:?}");
+    assert!(settings.iter().all(|e| e.detail.get("source").is_none()), "settings audit: {settings:?}");
+    assert_eq!(b.security_kinds(), vec!["settings_changed"; CALLS]);
     b.td.shutdown().await;
 }
 

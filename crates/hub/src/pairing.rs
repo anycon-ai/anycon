@@ -558,7 +558,7 @@ async fn try_finalize(
     // 新建了设备：账号的设备数和连接数都变了（升级后的连接此刻已是永久连接），告诉它其余在线的永久连接。
     let created_any = issued_host.is_some() || issued_joiner.is_some();
 
-    // 运行时：先换身份、更新对端缓存，再发 PairDone，这样对方收到后立刻用新身份发的帧不会被丢。
+    // 运行时先换身份，再由注册表持写锁更新双方对端缓存、发 PairDone，这样收到后立刻用新身份发的帧不会被丢。
     for (issued, conn) in [(&issued_host, host), (&issued_joiner, joiner)] {
         if let Some(i) = issued {
             // 凭据先于身份：升级完成的瞬间这条连接就是永久连接，可能马上收到 `rotate_token`，它认的是配对时签发的这个 token
@@ -568,8 +568,6 @@ async fn try_finalize(
             }
         }
     }
-    host.add_peer(&joiner_id);
-    joiner.add_peer(&host_id);
     tracing::info!(
         host = %host_id,
         joiner = %joiner_id,
@@ -579,20 +577,21 @@ async fn try_finalize(
         "devices paired"
     );
 
-    // PairDone：新建了设备的一边带正式 id + token，另一边什么都不带。
-    host.send_control(&Control::PairDone {
-        peer: joiner_id.clone(),
-        device_id: issued_host.as_ref().map(|i| i.id.clone()),
-        device_token: issued_host.map(|i| i.token),
-    });
-    joiner.send_control(&Control::PairDone {
-        peer: host_id.clone(),
-        device_id: issued_joiner.as_ref().map(|i| i.id.clone()),
-        device_token: issued_joiner.map(|i| i.token),
-    });
-    // 两边此刻都在线（升级后的同一条连接）：互相发 peer_online，客户端据此直接开始 IK 握手，不用重连。
-    host.send_control(&Control::PeerOnline { device: joiner_id });
-    joiner.send_control(&Control::PeerOnline { device: host_id });
+    // 新设备的 PairDone 带正式 id 和 token；上线通知在同一把写锁内检查对方是否仍登记为当前连接。
+    state.registry.link_paired(
+        host,
+        joiner,
+        Control::PairDone {
+            peer: joiner_id,
+            device_id: issued_host.as_ref().map(|i| i.id.clone()),
+            device_token: issued_host.map(|i| i.token),
+        },
+        Control::PairDone {
+            peer: host_id,
+            device_id: issued_joiner.as_ref().map(|i| i.id.clone()),
+            device_token: issued_joiner.map(|i| i.token),
+        },
+    );
     if created_any {
         quota::broadcast(state, &account, None).await;
     }

@@ -189,6 +189,7 @@
     "navLabel": "待处理，{{count}} 件在等",
     "sections": {
       "now": "现在",
+      "review": "待验收",
       "later": "稍后"
     },
     "inProgress": "进行中",
@@ -205,6 +206,7 @@
       "follow_up": "待处理",
       "error": "出错",
       "waiting": "等待审批（缓存）",
+      "review": "待验收",
       "later": "agent 记的项",
       "laterOther": "自动记的项"
     },
@@ -235,6 +237,9 @@
     "accept": "收下",
     "dismiss": "丢掉",
     "addedSince": "{{time}}记的",
+    "reviewSince": "{{time}}做完的",
+    "openChanges": "打开改动",
+    "openReviewPage": "去验收页",
     "laterBody": "agent 把这一项记进了你的清单。收下它就进清单，不要就丢掉。",
     "laterBodyOther": "这一项是自动记进你的清单的。收下它就进清单，不要就丢掉。",
     "closeDetail": "关闭详情",

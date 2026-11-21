@@ -2,7 +2,7 @@
 // 权限请求、计划、提问在详情里用的是会话页同一个 `PermissionCard`，按钮只在详情里：行上没有任何不看内容就能答复的入口。
 import { useMemo, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, ChevronRight, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ShieldQuestion, Smartphone } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ClipboardCheck, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ShieldQuestion, Smartphone } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cleanHintText, displayHint } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
@@ -22,6 +22,7 @@ import type { InboxItem, InboxItemKind, RequestItem } from '../derive'
 import { useInboxActive } from '../active'
 import { permissionBlock } from '../block'
 import { useItemInfo } from './info'
+import { ReviewBriefLine, ReviewDetail, ReviewRowActions } from './ReviewParts'
 
 /** 行和详情里的操作（处理后的焦点转移由页面负责）。 */
 export interface InboxActions {
@@ -43,11 +44,12 @@ const KIND_ICON: Record<InboxItemKind, typeof Flag> = {
   follow_up: Flag,
   error: AlertTriangle,
   waiting: Hourglass,
+  review: ClipboardCheck,
   later: ListPlus,
 }
 
 /** 不靠颜色分辨：每种都有文字标签。 */
-const KIND_TONE: Record<InboxItemKind, 'warning' | 'info' | 'danger'> = {
+const KIND_TONE: Record<InboxItemKind, 'warning' | 'info' | 'danger' | 'success'> = {
   permission: 'warning',
   plan: 'warning',
   question: 'warning',
@@ -55,6 +57,7 @@ const KIND_TONE: Record<InboxItemKind, 'warning' | 'info' | 'danger'> = {
   follow_up: 'info',
   error: 'danger',
   waiting: 'warning',
+  review: 'success',
   later: 'info',
 }
 
@@ -117,17 +120,18 @@ export function InboxRow({
             {info.online && item.kind !== 'waiting' ? null : <CachedChip nodeName={info.nodeName} />}
           </span>
           {meta ? <span className="mt-0.5 block truncate text-xs text-fg-subtle">{meta}</span> : null}
+          {item.kind === 'review' ? <ReviewBriefLine todo={item.todo} /> : null}
         </span>
         {mode === 'inline' ? <ChevronRight className={cn('mt-1 size-4 shrink-0 text-fg-subtle transition-transform', expanded && 'rotate-90')} aria-hidden /> : null}
       </button>
-      <RowActions item={item} actions={actions} online={info.online} sessionId={info.sessionId} nodeParam={info.nodeParam} />
+      <RowActions item={item} actions={actions} online={info.online} sessionId={info.sessionId} nodeParam={info.nodeParam} onSelect={onSelect} />
       {children}
     </li>
   )
 }
 
 /** 会话类和接入类条目的行内操作；权限请求、计划、提问没有（要先展开看详情）。 */
-function RowActions({ item, actions, online, sessionId, nodeParam }: { item: InboxItem; actions: InboxActions; online: boolean; sessionId?: string; nodeParam: string }) {
+function RowActions({ item, actions, online, sessionId, nodeParam, onSelect }: { item: InboxItem; actions: InboxActions; online: boolean; sessionId?: string; nodeParam: string; onSelect: (key: string) => void }) {
   const { t } = useTranslation()
   const small = 'max-md:min-h-11 max-md:px-4'
   switch (item.kind) {
@@ -143,6 +147,8 @@ function RowActions({ item, actions, online, sessionId, nodeParam }: { item: Inb
           </Button>
         </div>
       )
+    case 'review':
+      return <ReviewRowActions item={item} online={online} onSelect={onSelect} small={small} />
     case 'later':
       return (
         <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-10">
@@ -269,6 +275,7 @@ function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem>;
       {item.kind === 'error' ? <p className="text-sm text-fg-muted">{t('inbox.errorBody')}</p> : null}
       {item.kind === 'waiting' ? <p className="text-sm text-fg-muted">{t('inbox.waitingBody')}</p> : null}
       {item.kind === 'enroll' ? <EnrollSummary item={item.enroll} nodeName={info.nodeName} /> : null}
+      {item.kind === 'review' ? <ReviewDetail item={item} online={info.online} /> : null}
       {item.kind === 'later' ? (
         <div className="space-y-2 text-sm">
           <p className="text-fg-muted">{t(isAgentSource(item.todo.source) ? 'inbox.laterBody' : 'inbox.laterBodyOther')}</p>

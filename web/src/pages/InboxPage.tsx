@@ -26,7 +26,7 @@ import { Drawer } from '@/ui/Overlay'
 import { cn } from '@/ui/cn'
 
 /** 每一段的标题（i18n key）。加新的段时在这里加一行，页面骨架不用动。 */
-const SECTION_TITLE: Record<InboxSectionId, string> = { now: 'inbox.sections.now', later: 'inbox.sections.later' }
+const SECTION_TITLE: Record<InboxSectionId, string> = { now: 'inbox.sections.now', review: 'inbox.sections.review', later: 'inbox.sections.later' }
 
 /** 从通知点进来：定位这个会话最早的一条待答复请求（推送只带类别、节点和会话，不带请求 id）。 */
 export interface InboxLocate {

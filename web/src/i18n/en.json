@@ -190,6 +190,7 @@
     "navLabel": "Inbox, {{count}} waiting",
     "sections": {
       "now": "Now",
+      "review": "To review",
       "later": "Later"
     },
     "inProgress": "In progress",
@@ -206,6 +207,7 @@
       "follow_up": "Follow up",
       "error": "Error",
       "waiting": "Waiting for approval (cached)",
+      "review": "To review",
       "later": "Agent to-do",
       "laterOther": "Automatic to-do"
     },
@@ -236,6 +238,9 @@
     "accept": "Accept",
     "dismiss": "Dismiss",
     "addedSince": "Added {{time}}",
+    "reviewSince": "Ready {{time}}",
+    "openChanges": "Open the changes",
+    "openReviewPage": "Open the review page",
     "laterBody": "An agent added this to your to-do list. Accept it to put it on the list, or dismiss it.",
     "laterBodyOther": "This to-do was added automatically. Accept it to put it on the list, or dismiss it.",
     "closeDetail": "Close details",

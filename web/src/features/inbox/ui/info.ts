@@ -68,6 +68,8 @@ export function useItemInfo(item: InboxItem): ItemInfo {
         project: item.session.project ?? undefined,
         since: t(item.kind === 'waiting' ? 'inbox.waitingSince' : item.kind === 'error' || item.session.status === 'error' ? 'inbox.erroredSince' : 'inbox.stoppedSince', { time }),
       }
+    case 'review':
+      return { ...base, title: cleanOneLine(item.todo.title), project: item.todo.project ? cleanOneLine(item.todo.project) : undefined, since: t('inbox.reviewSince', { time }) }
     case 'later':
       return { ...base, title: cleanOneLine(item.todo.title), project: item.todo.project ? cleanOneLine(item.todo.project) : undefined, since: t('inbox.addedSince', { time }) }
     case 'enroll':

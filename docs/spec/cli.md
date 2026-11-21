@@ -208,7 +208,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `anycon todo ls [--all] [--project <name>] [--json]` | `todo.list`，**一页页翻到 `has_more = false`**，按 `id` 去重。缺省只列没关闭的，`--all` 加上 `done` / `dropped`；按最近修改从新到旧。列：ID（前 8 位）、STATE、DUE（UTC）、PROJECT、BY（agent 加的项写 `agent`，没被收下的写 `agent (unreviewed)`）、TITLE；没有项时打印 `no to-dos`。`--json` 是 `{ "todos": [Todo] }` |
 | `anycon todo done <id>` · `drop <id>` · `reopen <id>` | `todo.update { state }`：`done`、`dropped`、`open`。打印新状态和标题；`--json` 打印这一项 |
 | `anycon todo rm <id>` | `todo.delete`（物理删除） |
-| `anycon todo run <id> [--agent <id>] [--model <id>] [--mode <id>] [--project <name>] [--local] [--allow-push]` | `todo.dispatch`（[daemon.md § 22](daemon.md#22-派发)）：把这一项交给 agent。`--agent` 缺省是唯一 ready 的 agent（和 `anycon new` 一样）；`--project` 缺省用这一项的，不同时这一项被改成它；缺省在新的 worktree 里（项目能开的话，不看 `worktree.default`），`--local` 明确在项目目录里（没有隔离，输出里写明）；缺省带「不 push、不开 PR」，所选 agent 没有这个选项时被拒绝（`unsupported`，退出码 1，提示加 `--allow-push`），`--allow-push` 放弃它。第一条消息由 daemon 生成，没有 `--prompt`。打印 `dispatched <id 前 8 位>  <title>`、会话 id 和工作位置（worktree 的分支，或「项目目录」）、有没有「不 push」，以及怎么接着看；`--json` 打印 `{ todo, session }`。已关闭 → 退出码 2（提示先 `reopen`），已派发 20 次、没有项目 → 退出码 2，项目不存在 → 1 |
+| `anycon todo run <id> [--agent <id>] [--model <id>] [--mode <id>] [--project <name>] [--local] [--allow-push]` | `todo.dispatch`（[daemon.md § 22](daemon.md#22-派发)）：把这一项交给 agent。`--agent` 缺省是唯一 ready 的 agent（和 `anycon new` 一样）；`--project` 缺省用这一项的，不同时这一项被改成它；缺省在新的 worktree 里（项目能开的话，不看 `worktree.default`），`--local` 明确在项目目录里（没有隔离，输出里写明）；缺省带「不 push、不开 PR」，所选 agent 没有这个选项时被拒绝（`unsupported`，退出码 1，提示加 `--allow-push`），`--allow-push` 放弃它。第一条消息由 daemon 生成，没有 `--prompt`；每次运行带一个新的 `message_id`（重发时 daemon 返回第一次的结果，不开第二个会话）。打印 `dispatched <id 前 8 位>  <title>`、会话 id 和工作位置（worktree 的分支，或「项目目录」）、有没有「不 push」，以及怎么接着看；`--json` 打印 `{ todo, session }`。已关闭 → 退出码 2（提示先 `reopen`），已派发 20 次、没有项目 → 退出码 2，项目不存在 → 1 |
 | `anycon todo history <id> [--json]` | `todo.history`，一页页翻到 `has_more = false`，**从新到旧**：`#<seq>  <UTC 时间>  <发生了什么>`，`result` 的文字（agent 写的，经 `visible` 把控制字符显示成转义）缩进列在下面；没有事件时打印 `nothing has happened on this item yet`。`--json` 是 `{ "events": [TodoEvent] }`（同样从新到旧） |
 
 `<id>` 接受唯一前缀（UUID 的前几位，不区分大小写；id 本身是小写 UUID），和会话 id 一样：完整的 UUID 直接用，不列清单；前缀先在没关闭的项里找，找不到再翻已关闭的（`reopen` 反过来：先在已关闭的项里找，只有它们里没有匹配才看没关闭的，所以已经是 open 的项仍得到 `nothing changed`；一个前缀同时匹配一个没关闭的和一个已关闭的项时，`reopen` 用已关闭的，`done` / `drop` 用没关闭的，不算歧义）；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2，提示用更长的前缀。`done` / `drop` / `reopen` 用前缀时，遇到已经是目标状态的项，打印 `nothing changed: … is already …`，不说改了；用完整 UUID 时没列过清单、不知道原来的状态，只打印现在的状态（`<id> is done`）。
@@ -217,7 +217,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 - `add` 带 `agent: true`，并把环境里的 `ANYCON_SESSION_ID` 作为 `origin_session`（会话存在才会被记下，[daemon.md § 21.2](daemon.md#212-todo)）。会话里的 agent 不需要配置 MCP 就能跑 `anycon` 命令，这是它记「之后要处理」最顺手的写法
 - `ls`、`history` 照常
-- `done` / `drop` / `reopen` / `rm` / `run` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做。和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线
+- `done` / `drop` / `reopen` / `rm` / `run` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做（`run` 的说明是「把清单项交给 agent 由你来做」，别的是「关闭、重新打开、删除由你来做」）。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）。和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线
 
 这是**护栏，不是安全边界**：`ANYCON_AGENT` 是 agent 能改的环境变量，能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单，对存心隐藏来源的本机进程没有约束力；daemon 把「带了 `agent: true`」的项、以及来自自报了 `local.set_client { client: "mcp" }` 的本机连接的项标成 agent 加的（后者同样是连接自报的）。
 

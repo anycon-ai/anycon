@@ -1941,12 +1941,21 @@ async fn the_retention_cleanup_removes_the_files_of_the_sessions_it_deletes() {
     let old = new_session(&td, &mut c).await;
     send(&td, &mut c, &old.id, "m1", "old", &[&old_img]).await.unwrap();
     wait_status(&td, &mut c, &old.id, SessionStatus::Idle).await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
     let fresh = new_session(&td, &mut c).await;
     send(&td, &mut c, &fresh.id, "m2", "new", &[&new_img]).await.unwrap();
     wait_status(&td, &mut c, &fresh.id, SessionStatus::Idle).await;
 
-    anycon_daemon::config::set_value(&td.paths, "sessions.history_retention", "\"1s\"").unwrap();
+    // 保留期取两个会话年龄的中点：老的一定超过、新的一定没到，两边的余量都是它们年龄差的一半（>= 1.5 秒），
+    // 不管这一步之前的操作在慢机器上花了多久
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let updated = |s: &SessionSummary| s.updated_at_ms;
+    let old_row: SessionSummary = c.call(&td, methods::SESSION_GET, json!({ "session_id": old.id })).await.unwrap();
+    let fresh_row: SessionSummary = c.call(&td, methods::SESSION_GET, json!({ "session_id": fresh.id })).await.unwrap();
+    let (old_age, fresh_age) = (now() - updated(&old_row), now() - updated(&fresh_row));
+    assert!(old_age > fresh_age + 2000, "{old_age} vs {fresh_age}");
+    let retention = format!("\"{}ms\"", (old_age + fresh_age) / 2);
+    anycon_daemon::config::set_value(&td.paths, "sessions.history_retention", &retention).unwrap();
     td.ctx.config.reload().unwrap();
     td.ctx.sessions.cleanup().await;
 

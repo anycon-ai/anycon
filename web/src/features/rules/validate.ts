@@ -47,3 +47,11 @@ export function newRuleId(): string {
   const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
+
+/**
+ * agent 写的东西要放进预填的规则文字时先清一遍：控制字符（含换行）换成空格，看不见的字符（文字方向控制符、零宽字符）去掉，
+ * 空白折成一个——这样预填的文字不会因为 daemon 拒绝而存不了，也不会带着没法审阅的内容进编辑框。
+ */
+export function cleanOneLine(s: string): string {
+  return s.replace(new RegExp(SINGLE_LINE_BAD.source, 'gu'), ' ').replace(new RegExp(INVISIBLE.source, 'gu'), '').replace(/\s+/g, ' ').trim()
+}

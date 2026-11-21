@@ -112,7 +112,7 @@ describe('the editor for a permission request', () => {
     expect(agent).toHaveTextContent('Run the migration')
     expect(agent).toHaveTextContent('pnpm db:migrate')
     const choice = screen.getByTestId('record-choice')
-    expect(choice).toHaveTextContent('Your choice')
+    expect(choice).toHaveTextContent('How you would answer. This only fills in the rule text.')
     expect(choice).not.toHaveTextContent('pnpm db:migrate')
     expect(agent).not.toContainElement(choice)
     expect(screen.getByTestId('rule-editor')).toHaveTextContent('A rule does not approve anything')
@@ -139,10 +139,11 @@ describe('the editor for a permission request', () => {
     await user.click(screen.getByTestId('record-rule'))
     expect(screen.getByTestId('rule-editor-scope')).toHaveValue('web')
     await user.click(screen.getByTestId('record-choice-allow'))
+    await user.type(screen.getByTestId('rule-editor-text'), ' Run it from the repo root.')
     await user.click(screen.getByTestId('rule-editor-save'))
     await flush()
     expect(daemon.calls('rule.add')).toHaveLength(1)
-    expect(daemon.calls('rule.add')[0]).toMatchObject({ text: 'When asked “Run the migration”, my answer is: Allow once.', project: 'web', status: 'active', source: { kind: 'answer', session_id: 's1', request_id: 'r1' } })
+    expect(daemon.calls('rule.add')[0]).toMatchObject({ text: 'When asked “Run the migration”, my answer is: Allow once. Run it from the repo root.', project: 'web', status: 'active', source: { kind: 'answer', session_id: 's1', request_id: 'r1' } })
     expect(onRespond).not.toHaveBeenCalled()
     expect(rpc.methods().filter((m) => m.startsWith('permission.'))).toEqual([])
     // the request card is still waiting for its answer
@@ -201,6 +202,7 @@ describe('the editor for a question', () => {
     expect(screen.getByTestId('record-agent')).toHaveTextContent('- npm')
     expect(screen.getByTestId('record-answers')).toHaveTextContent('pnpm')
     expect(screen.getByTestId('rule-editor-text')).toHaveValue('When asked “Which package manager should I use?”, my answer is: pnpm.')
+    await user.type(screen.getByTestId('rule-editor-text'), ' Always.')
     await user.click(screen.getByTestId('rule-editor-save'))
     await flush()
     expect(daemon.calls('rule.add')[0]).toMatchObject({ source: { kind: 'answer', session_id: 's1', request_id: 'q1' } })
@@ -233,4 +235,86 @@ it('keeps the rules store untouched until saving', async () => {
   render(card())
   await user.click(screen.getByTestId('record-rule'))
   expect(useRules.getState().nodes[N]).toBeUndefined()
+})
+
+describe('the unedited prefill cannot be saved', () => {
+  it('saving is off while the text is still exactly what was prefilled, with a hint, and on once it is changed', async () => {
+    const user = userEvent.setup()
+    render(card())
+    await user.click(screen.getByTestId('record-rule'))
+    await user.click(screen.getByTestId('record-choice-allow'))
+    expect(screen.getByTestId('rule-editor-text')).toHaveValue('When asked “Run the migration”, my answer is: Allow once.')
+    expect(screen.getByTestId('rule-editor-save')).toBeDisabled()
+    expect(screen.getByTestId('rule-editor-edit-first')).toBeInTheDocument()
+    await user.type(screen.getByTestId('rule-editor-text'), ' x')
+    expect(screen.getByTestId('rule-editor-save')).toBeEnabled()
+    expect(screen.queryByTestId('rule-editor-edit-first')).toBeNull()
+    // back to the prefill: off again
+    await user.type(screen.getByTestId('rule-editor-text'), '{Backspace}{Backspace}')
+    expect(screen.getByTestId('rule-editor-save')).toBeDisabled()
+  })
+
+  it('following a change of choice, the new prefill is also unsaved-as-is', async () => {
+    const user = userEvent.setup()
+    render(card())
+    await user.click(screen.getByTestId('record-rule'))
+    await user.click(screen.getByTestId('record-choice-allow'))
+    await user.click(screen.getByTestId('record-choice-deny'))
+    expect(screen.getByTestId('rule-editor-text')).toHaveValue('When asked “Run the migration”, my answer is: Deny.')
+    expect(screen.getByTestId('rule-editor-save')).toBeDisabled()
+  })
+
+  it('Enter in a radio button or the scope select does not save; only the Save button does', async () => {
+    const user = userEvent.setup()
+    render(card())
+    await user.click(screen.getByTestId('record-rule'))
+    await user.click(screen.getByTestId('record-choice-allow'))
+    await user.type(screen.getByTestId('rule-editor-text'), ' Edited.')
+    screen.getByTestId('record-choice-allow').focus()
+    await user.keyboard('{Enter}')
+    screen.getByTestId('rule-editor-scope').focus()
+    await user.keyboard('{Enter}')
+    await flush()
+    expect(daemon.calls('rule.add')).toHaveLength(0)
+    screen.getByTestId('rule-editor-save').focus()
+    await user.keyboard('{Enter}')
+    await flush()
+    expect(daemon.calls('rule.add')).toHaveLength(1)
+  })
+})
+
+describe('what the agent wrote is cleaned before it goes into the prefill', () => {
+  const dirty = `Run\u202Etxet\u200B the\nmigration\t\u0007 now`
+
+  it('control characters become spaces, invisible characters go, and the prefill can be saved without an invisible-characters error', async () => {
+    const user = userEvent.setup()
+    const block: PermissionBlock = { ...tool, title: dirty }
+    render(card(block))
+    await user.click(screen.getByTestId('record-rule'))
+    await user.click(screen.getByTestId('record-choice-allow'))
+    const value = (screen.getByTestId('rule-editor-text') as HTMLTextAreaElement).value
+    expect(value).toBe('When asked “Runtxet the migration now”, my answer is: Allow once.')
+    await user.type(screen.getByTestId('rule-editor-text'), ' Mine.')
+    await user.click(screen.getByTestId('rule-editor-save'))
+    await flush()
+    expect(screen.queryByTestId('rule-editor-error')).toBeNull()
+    expect(daemon.calls('rule.add')).toHaveLength(1)
+  })
+
+  it('option labels and the question’s choice labels are cleaned too, and a long agent title is clipped', async () => {
+    const user = userEvent.setup()
+    const opts: PermissionBlock = { ...tool, title: 'x'.repeat(500), options: [{ id: 'allow', label: 'Al\u202Elow\nonce', kind: 'allow_once' }] }
+    const { unmount } = render(card(opts))
+    await user.click(screen.getByTestId('record-rule'))
+    await user.click(screen.getByTestId('record-choice-allow'))
+    const value = (screen.getByTestId('rule-editor-text') as HTMLTextAreaElement).value
+    expect(value).toContain('my answer is: Allow once.')
+    expect([...value].length).toBeLessThan(220)
+    unmount()
+    const q: PermissionBlock = { ...question, detail: { questions: [{ id: 'pm', text: 'Which\u200B one?', choices: [{ id: 'a', label: 'p\u202Enpm\nx' }] }] } }
+    render(card(q))
+    await user.click(within(screen.getByTestId('permission-questions')).getByRole('radio'))
+    await user.click(screen.getByTestId('record-rule'))
+    expect((screen.getByTestId('rule-editor-text') as HTMLTextAreaElement).value).toBe('When asked “Which one?”, my answer is: pnpm x.')
+  })
 })

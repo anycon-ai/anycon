@@ -9,6 +9,7 @@ import type { PermissionBlock } from '@/features/session/reducer'
 import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
 import { Button } from '@/ui/Button'
+import { cleanOneLine } from '../validate'
 import { agentLines, chosenAnswers, whatWasAsked } from '../recordAsRule'
 import { nodeSupportsRules } from '../store'
 import { RuleEditor } from './RuleEditor'
@@ -31,7 +32,7 @@ export function RecordAsRule({ nodeId, sessionId, block, answers }: { nodeId: st
         .join('\n')
     }
     const opt = block.options.find((o) => o.id === optionId)
-    return opt ? t('rules.record.prefillOption', { what: whatWasAsked(block), choice: opt.label }) : ''
+    return opt ? t('rules.record.prefillOption', { what: whatWasAsked(block), choice: cleanOneLine(opt.label) }) : ''
   }
   const initial = prefillFor(choice)
 
@@ -65,6 +66,7 @@ export function RecordAsRule({ nodeId, sessionId, block, answers }: { nodeId: st
             source: { kind: 'answer', session_id: sessionId, request_id: block.requestId },
             title: t('rules.record.title'),
             note: t('rules.record.note'),
+            unchangedFrom: () => lastPrefill.current,
             renderContext: ({ text, setText }) => (
               <div className="space-y-3" data-testid="record-context">
                 <div className="space-y-1 rounded-md border border-dashed border-border-strong bg-bg-subtle p-2.5" data-testid="record-agent">
@@ -76,7 +78,7 @@ export function RecordAsRule({ nodeId, sessionId, block, answers }: { nodeId: st
                   ))}
                 </div>
                 <div className="space-y-1.5 rounded-md border border-border bg-surface p-2.5" data-testid="record-choice">
-                  <p className="text-xs font-medium text-fg-muted">{t('rules.record.yourChoice')}</p>
+                  <p className="text-xs font-medium text-fg-muted">{t(isQuestion ? 'rules.record.yourChoice' : 'rules.record.howYouWouldAnswer')}</p>
                   {isQuestion ? (
                     chosenAnswers(block, answers).length > 0 ? (
                       <ul className="space-y-0.5 text-sm" data-testid="record-answers">
@@ -92,7 +94,7 @@ export function RecordAsRule({ nodeId, sessionId, block, answers }: { nodeId: st
                       </p>
                     )
                   ) : (
-                    <div role="radiogroup" aria-label={t('rules.record.yourChoice')} className="space-y-1">
+                    <div role="radiogroup" aria-label={t('rules.record.howYouWouldAnswer')} className="space-y-1">
                       {block.options.map((o) => (
                         <label key={o.id} className="flex min-h-8 cursor-pointer items-center gap-2 text-sm">
                           <input

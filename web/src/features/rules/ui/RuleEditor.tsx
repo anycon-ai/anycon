@@ -27,6 +27,8 @@ export type EditorMode =
       /** 说明（缺省是「规则只是告诉 agent 你的做法」那句）。 */
       note?: string
       /** 文字框上面的一块（「记成规则」里：agent 写的话、用户的选择）；`setText` 可以改文字框的内容。 */
+      /** 返回现在预填的那句话：文字还和它一样（没有改过）就不让存，要用户自己改成自己的话（「记成规则」）。 */
+      unchangedFrom?: () => string
       renderContext?: (api: { text: string; setText: (t: string) => void }) => ReactNode
     }
   /** 改一条已有的；`confirm`：存的时候同时确认（状态改成生效）。 */
@@ -75,7 +77,8 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
   const gone = fail?.kind === 'changed' && fail.current === null
   const changed = base ? trimmed !== base.text || (project === ALL ? null : project) !== (base.project ?? null) : true
   const confirming = mode.kind === 'edit' && mode.confirm
-  const canSave = online && !busy && !gone && localError === null && (changed || confirming)
+  const untouched = mode.kind === 'add' && !!mode.unchangedFrom && trimmed !== '' && trimmed === normalizeRuleText(mode.unchangedFrom())
+  const canSave = online && !busy && !gone && localError === null && !untouched && (changed || confirming)
 
   const save = async (): Promise<void> => {
     if (!canSave) return
@@ -112,10 +115,8 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
     <Dialog open={open} onOpenChange={onOpenChange} title={title} description={mode.kind === 'add' && mode.note ? mode.note : t('rules.editor.note')} size="lg" testId="rule-editor" closeLabel={t('common.close')}>
       <form
         className="space-y-3 text-sm"
-        onSubmit={(e) => {
-          e.preventDefault()
-          void save()
-        }}
+        // 回车（在单选框、下拉里）不提交：只有「保存」按钮能存
+        onSubmit={(e) => e.preventDefault()}
       >
         {mode.kind === 'add' && mode.nodeIds.length > 1 ? (
           <Field label={t('rules.editor.node')} htmlFor="rule-node">
@@ -151,6 +152,11 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
           </Select>
         </Field>
         {budget ? <p className="text-xs text-fg-subtle">{t('rules.editor.budget', { cap: budget.cap })}</p> : null}
+        {untouched ? (
+          <p className="text-xs text-fg-muted" role="status" data-testid="rule-editor-edit-first">
+            {t('rules.record.editFirst')}
+          </p>
+        ) : null}
         {confirming ? <p className="text-xs text-fg-muted">{t('rules.editor.confirmNote')}</p> : null}
         {editing && fail?.kind === 'changed' && fail.current ? (
           <div className="space-y-1.5 rounded-md border border-warning/40 bg-warning-subtle p-2.5" role="alert" data-testid="rule-editor-conflict">
@@ -172,7 +178,7 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
           <Button type="button" onClick={() => onOpenChange(false)} disabled={busy} data-testid="rule-editor-cancel">
             {t('common.cancel')}
           </Button>
-          <Button type="submit" variant="primary" disabled={!canSave} data-testid="rule-editor-save">
+          <Button type="button" variant="primary" disabled={!canSave} onClick={() => void save()} data-testid="rule-editor-save">
             {busy ? t('rules.editor.saving') : confirming ? t('rules.editor.saveConfirm') : t('rules.editor.save')}
           </Button>
         </div>

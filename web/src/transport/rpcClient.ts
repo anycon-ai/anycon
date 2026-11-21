@@ -39,6 +39,13 @@ export class RpcCallError extends Error {
   get updatedMs(): number | undefined {
     return this.rpc?.data?.updated_ms ?? undefined
   }
+  /** 规则超出注入的字数上限（`reason = over_budget`）时，这次改动之后一个会话拿到的字节数和上限。 */
+  get bytes(): number | undefined {
+    return this.rpc?.data?.bytes ?? undefined
+  }
+  get cap(): number | undefined {
+    return this.rpc?.data?.cap ?? undefined
+  }
 }
 
 /**

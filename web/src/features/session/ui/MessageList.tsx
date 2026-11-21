@@ -23,6 +23,8 @@ export interface MessageListProps {
   nodeId?: string
   /** 这个会话是从哪一项清单派出的：到那一项的链接，权限卡片上写明（会话页给）。 */
   todoOrigin?: ReactNode
+  /** 这个会话的 id：权限卡片上的「记成规则」用它当出处（和 `nodeId` 一起给才有）。 */
+  sessionId?: string
   blocks: Block[]
   pending: PendingMessage[]
   hasMoreOlder: boolean
@@ -161,6 +163,7 @@ function buildRows(p: MessageListProps): Row[] {
               busy={p.respondingIds.has(b.requestId)}
               settled={p.settledIds?.get(b.requestId)}
               todoOrigin={p.todoOrigin}
+              recordAsRule={p.nodeId && p.sessionId ? { nodeId: p.nodeId, sessionId: p.sessionId } : undefined}
               targetMode={b.kind === 'mode_change' && b.detail.mode ? { label: p.modeLabel(b.detail.mode), dangerous: p.isDangerousMode?.(b.detail.mode) ?? false } : undefined}
             />
           ),

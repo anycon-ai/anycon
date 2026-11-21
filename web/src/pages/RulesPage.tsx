@@ -1,0 +1,196 @@
+import { useMemo, useState } from 'react'
+import { ChevronRight, Plus, ScrollText } from 'lucide-react'
+import { Collapsible } from 'radix-ui'
+import { useTranslation } from 'react-i18next'
+import { PageHeader } from '@/components/PageHeader'
+import { setStatusMany } from '@/features/rules/service'
+import { statusOf, useRuleView, useRules, useRulesNodes, type ViewRule } from '@/features/rules/store'
+import { BudgetSummary } from '@/features/rules/ui/BudgetSummary'
+import { failText } from '@/features/rules/ui/errors'
+import { RuleCard } from '@/features/rules/ui/RuleCard'
+import { ruleKey, useRuleOps } from '@/features/rules/ui/useRuleOps'
+import { cleanHintText } from '@/lib/hint'
+import { useNodeFilter } from '@/lib/nodeFilter'
+import { useNodes } from '@/stores/nodes'
+import { toast } from '@/stores/ui'
+import { Button } from '@/ui/Button'
+import { EmptyState, Segmented, Spinner } from '@/ui/Misc'
+import { cn } from '@/ui/cn'
+
+type Tab = 'pending' | 'active'
+
+/**
+ * 规则页（`/rules`，spec/web.md § 4.14，docs/spec/daemon.md § 23）：勾选的、支持规则的节点上的规则。两个标签：待确认、已生效；
+ * 停用和否决的（还有这个版本不认识状态的）收在「已生效」下面的折叠里。每条规则的全文（纯文字）都在卡片上；待确认的可以多选一起确认 / 否决。
+ * 写操作直接发给节点（没有离线队列）：节点不在线时按钮禁用并说明。
+ */
+export function RulesPage() {
+  const { t } = useTranslation()
+  const { selected } = useNodeFilter()
+  const supporting = useRulesNodes(selected)
+  const all = useRuleView(supporting)
+  const nodes = useNodes((s) => s.byId)
+  const state = useRules((s) => s.nodes)
+  const showNode = supporting.length > 1
+  const { ops, dialogs } = useRuleOps()
+
+  const pending = useMemo(() => all.filter((r) => statusOf(r) === 'pending'), [all])
+  const active = useMemo(() => all.filter((r) => statusOf(r) === 'active'), [all])
+  const other = useMemo(() => all.filter((r) => !['pending', 'active'].includes(statusOf(r))), [all])
+  const [tab, setTab] = useState<Tab>(() => (pending.length > 0 ? 'pending' : 'active'))
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const loaded = supporting.every((id) => state[id]?.loaded)
+  const offline = supporting.filter((id) => nodes[id]?.conn !== 'ready')
+  const onlineAll = offline.length === 0
+
+  const checkedRules = pending.filter((r) => checked.has(ruleKey(r)))
+  const toggle = (r: ViewRule, on: boolean): void =>
+    setChecked((s) => {
+      const n = new Set(s)
+      if (on) n.add(ruleKey(r))
+      else n.delete(ruleKey(r))
+      return n
+    })
+
+  const bulk = async (status: 'active' | 'rejected'): Promise<void> => {
+    const targets = checkedRules.filter((r) => nodes[r.node_id]?.conn === 'ready')
+    if (targets.length === 0) return
+    setBulkBusy(true)
+    const res = await setStatusMany(targets, status)
+    setBulkBusy(false)
+    setChecked(new Set())
+    if (res.failed.length === 0) toast.success(t(status === 'active' ? 'rules.bulk.confirmed' : 'rules.bulk.rejected', { count: res.done }))
+    else toast.error(t('rules.bulk.partial', { done: res.done, failed: res.failed.length, reason: failText(t, res.failed[0]!.fail) }))
+  }
+
+  const group = (rules: ViewRule[], withCheck: boolean) =>
+    supporting.map((nodeId) => {
+      const here = rules.filter((r) => r.node_id === nodeId)
+      if (here.length === 0) return null
+      return (
+        <section key={nodeId} className="space-y-2" data-testid="rules-node" data-node={nodeId}>
+          {showNode ? <h3 className="text-xs font-semibold tracking-wide text-fg-muted uppercase">{cleanHintText(nodes[nodeId]?.name) || nodeId.slice(0, 8)}</h3> : null}
+          <ul className="space-y-2">
+            {here.map((r) => (
+              <RuleCard key={ruleKey(r)} rule={r} showNode={showNode} online={nodes[r.node_id]?.conn === 'ready'} ops={ops} check={withCheck ? { checked: checked.has(ruleKey(r)), onChange: (v) => toggle(r, v) } : undefined} />
+            ))}
+          </ul>
+        </section>
+      )
+    })
+
+  const addNodes = supporting.filter((id) => nodes[id]?.conn === 'ready')
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="rules-page">
+      <PageHeader
+        crumbs={[{ label: t('rules.title') }]}
+        showNodeStatus={false}
+        actions={
+          <Button size="sm" variant="primary" disabled={addNodes.length === 0} onClick={() => ops.add(addNodes)} data-testid="rules-add" className="max-md:min-h-11">
+            <Plus className="size-4" aria-hidden />
+            {t('rules.add')}
+          </Button>
+        }
+      />
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl space-y-4 p-3 md:p-4">
+          <p className="text-sm text-fg-muted" data-testid="rules-intro">
+            {t('rules.intro')}
+          </p>
+          {supporting.length === 0 ? (
+            <EmptyState icon={<ScrollText className="size-6" />} title={t('rules.unsupported.title')}>
+              {t('rules.unsupported.body')}
+            </EmptyState>
+          ) : (
+            <>
+              {offline.length > 0 ? (
+                <p className="rounded-md border border-warning/40 bg-warning-subtle px-2.5 py-1.5 text-sm text-warning" role="status" data-testid="rules-offline">
+                  {t('rules.offline', { nodes: offline.map((id) => cleanHintText(nodes[id]?.name) || id.slice(0, 8)).join(', ') })}
+                </p>
+              ) : null}
+              {supporting.map((id) => (
+                <div key={id} className="space-y-1">
+                  {showNode ? <p className="text-xs font-medium text-fg-muted">{cleanHintText(nodes[id]?.name) || id.slice(0, 8)}</p> : null}
+                  <BudgetSummary budget={state[id]?.budget ?? null} />
+                </div>
+              ))}
+              <Segmented
+                value={tab}
+                onChange={setTab}
+                ariaLabel={t('rules.tabs.label')}
+                testId="rules-tabs"
+                options={[
+                  { value: 'pending', label: t('rules.tabs.pending', { count: pending.length }), testId: 'rules-tab-pending' },
+                  { value: 'active', label: t('rules.tabs.active', { count: active.length }), testId: 'rules-tab-active' },
+                ]}
+              />
+              {!loaded ? (
+                <div className="flex justify-center py-6">
+                  <Spinner />
+                </div>
+              ) : tab === 'pending' ? (
+                <div className="space-y-3" data-testid="rules-pending">
+                  {pending.length === 0 ? (
+                    <p className="py-6 text-center text-sm text-fg-subtle" data-testid="rules-pending-empty">
+                      {t('rules.pendingEmpty')}
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-subtle px-2.5 py-1.5" data-testid="rules-bulk">
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={checkedRules.length === pending.length}
+                            ref={(el) => {
+                              if (el) el.indeterminate = checkedRules.length > 0 && checkedRules.length < pending.length
+                            }}
+                            onChange={(e) => setChecked(e.target.checked ? new Set(pending.map(ruleKey)) : new Set())}
+                            className={cn('size-4 accent-[var(--accent)] [@media(pointer:coarse)]:size-5')}
+                            data-testid="rules-select-all"
+                          />
+                          {t('rules.selectAll')}
+                        </label>
+                        <span className="min-w-0 flex-1 text-xs text-fg-subtle" aria-live="polite">
+                          {t('rules.selected', { count: checkedRules.length })}
+                        </span>
+                        <Button size="sm" variant="primary" className="max-md:min-h-11" disabled={checkedRules.length === 0 || bulkBusy || !onlineAll} onClick={() => void bulk('active')} data-testid="rules-bulk-confirm">
+                          {t('rules.bulk.confirmSelected')}
+                        </Button>
+                        <Button size="sm" variant="secondary" className="max-md:min-h-11" disabled={checkedRules.length === 0 || bulkBusy || !onlineAll} onClick={() => void bulk('rejected')} data-testid="rules-bulk-reject">
+                          {t('rules.bulk.rejectSelected')}
+                        </Button>
+                      </div>
+                      {group(pending, true)}
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-4" data-testid="rules-active">
+                  {active.length === 0 ? (
+                    <p className="py-6 text-center text-sm text-fg-subtle" data-testid="rules-active-empty">
+                      {t('rules.activeEmpty')}
+                    </p>
+                  ) : (
+                    group(active, false)
+                  )}
+                  {other.length > 0 ? (
+                    <Collapsible.Root className="space-y-2" data-testid="rules-inactive">
+                      <Collapsible.Trigger className="group flex min-h-9 items-center gap-1.5 text-sm font-medium text-fg-muted hover:text-fg" data-testid="rules-inactive-toggle">
+                        <ChevronRight className="size-4 transition-transform group-data-[state=open]:rotate-90" aria-hidden />
+                        {t('rules.inactive', { count: other.length })}
+                      </Collapsible.Trigger>
+                      <Collapsible.Content className="space-y-3">{group(other, false)}</Collapsible.Content>
+                    </Collapsible.Root>
+                  ) : null}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+      {dialogs}
+    </div>
+  )
+}

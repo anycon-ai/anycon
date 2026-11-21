@@ -10,6 +10,7 @@ import { Button, type ButtonVariant } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Textarea } from '@/ui/Field'
 import { Card, Chip } from '@/ui/Misc'
+import { RecordAsRule } from '@/features/rules/ui/RecordAsRule'
 import type { PermissionBlock } from '../reducer'
 import { diffStats, syntheticDiff, toolFileChanges } from '../text'
 
@@ -61,10 +62,12 @@ export interface PermissionCardProps {
   targetMode?: { label: string; dangerous: boolean }
   /** 这个会话是从清单项派出的：「来自清单项：<标题>」那一行（`TodoOriginLink` 带 `label`，读不到那一项时它什么都不画），由调用方给。 */
   todoOrigin?: ReactNode
+  /** 「记成规则」（docs/spec/daemon.md § 23.6）：给了就在答复按钮旁边多一个小按钮。它不答复请求，也不影响答复按钮。 */
+  recordAsRule?: { nodeId: string; sessionId: string }
 }
 
 /** 权限卡片：三种 kind（tool / plan / question）+ mode_change / other；按钮完全由 options[] 渲染。 */
-export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode, settled, todoOrigin }: PermissionCardProps) {
+export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode, settled, todoOrigin, recordAsRule }: PermissionCardProps) {
   const { t } = useTranslation()
   const [note, setNote] = useState('')
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({})
@@ -256,6 +259,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
               {o.label}
             </Button>
           ))}
+          {recordAsRule ? <RecordAsRule nodeId={recordAsRule.nodeId} sessionId={recordAsRule.sessionId} block={block} answers={answers} /> : null}
         </div>
         </div>
       </Card>

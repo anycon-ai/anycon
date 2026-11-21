@@ -9,6 +9,7 @@ import { isFollowUp, isFollowUpReady } from '@/features/session/marks'
 import { pendingApprovals, type EnrollItem, type EnrollResolution } from '@/stores/enroll'
 import type { PendingPermission, SessionItem } from '@/stores/sessions'
 import { activityOf, isReview } from '@/features/todos/activity'
+import { isPendingRule, type ViewRule } from '@/features/rules/store'
 import { isClosed, type ViewTodo } from '@/features/todos/types'
 
 /** 出错的会话在「现在」里留多久（按 `updated_at_ms` 算），超过就不再算等用户的事。 */
@@ -18,7 +19,7 @@ export const ERROR_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 export const SECTIONS = ['now', 'review', 'later'] as const
 export type InboxSectionId = (typeof SECTIONS)[number]
 
-export type InboxItemKind = 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error' | 'waiting' | 'review' | 'later'
+export type InboxItemKind = 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error' | 'waiting' | 'review' | 'later' | 'rule'
 
 interface ItemBase {
   /** 稳定的 key：列表、选中、焦点都靠它。 */
@@ -64,7 +65,16 @@ export interface LaterInboxItem extends ItemBase {
   todo: ViewTodo
 }
 
-export type InboxItem = RequestItem | EnrollInboxItem | SessionInboxItem | ReviewInboxItem | LaterInboxItem
+/**
+ * 「稍后」段：待确认的规则（docs/spec/daemon.md § 23），一条规则一行（每条的全文要在眼前才能确认，合成一行就没法逐条看）。
+ * 动作：确认、改一下再确认、否决，都只在详情里（行上没有）。不计入数字，不推送，不当默认选中。
+ */
+export interface RuleInboxItem extends ItemBase {
+  kind: 'rule'
+  rule: ViewRule
+}
+
+export type InboxItem = RequestItem | EnrollInboxItem | SessionInboxItem | ReviewInboxItem | LaterInboxItem | RuleInboxItem
 
 export interface InboxInputs {
   sessions: Readonly<Record<string, SessionItem>>
@@ -75,6 +85,8 @@ export interface InboxInputs {
   now: number
   /** 勾选的、支持清单的节点上的清单项（缓存叠上待发改动）。 */
   todos?: readonly ViewTodo[]
+  /** 勾选的、支持规则的节点上的规则。 */
+  rules?: readonly ViewRule[]
 }
 
 export interface InboxModel {
@@ -175,7 +187,12 @@ export function deriveInbox(i: InboxInputs): InboxModel {
   const later: InboxItem[] = (i.todos ?? [])
     .filter((t) => t.unreviewed && !isClosed(t.state) && picked.has(t.node_id))
     .map((t): InboxItem => ({ key: `later:${t.node_id}:${t.id}`, section: 'later', kind: 'later', nodeId: t.node_id, todo: t, sinceMs: t.created_ms, expiresAtMs: null }))
-    .sort(compareNow)
+  // 待确认的规则也在这一段：等得最久的在前（按创建时间），和 agent 记的项合在一起排
+  const laterRules: InboxItem[] = (i.rules ?? [])
+    .filter((r) => isPendingRule(r) && picked.has(r.node_id))
+    .map((r): InboxItem => ({ key: `rule:${r.node_id}:${r.id}`, section: 'later', kind: 'rule', nodeId: r.node_id, rule: r, sinceMs: r.created_ms, expiresAtMs: null }))
+  later.push(...laterRules)
+  later.sort(compareNow)
   const inProgressTodos = (i.todos ?? []).filter((t) => activityOf(t) === 'working' && picked.has(t.node_id)).sort((a, b) => b.updated_ms - a.updated_ms)
   return { sections: [{ id: 'now', items: now }, { id: 'review', items: review }, { id: 'later', items: later }], inProgress, inProgressTodos }
 }

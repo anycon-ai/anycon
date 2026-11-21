@@ -13,7 +13,7 @@ import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Select } from '@/ui/Field'
 import { Dialog } from '@/ui/Overlay'
-import { declaresNoPush, describeDispatchError, dispatchTodo, previewDispatch } from '../dispatch'
+import { countRules, declaresNoPush, describeDispatchError, dispatchTodo, previewDispatch, previewRules } from '../dispatch'
 import { useTodoHistory, historyKey } from '../history'
 import { RpcCallError } from '@/transport/rpcClient'
 import { isHumanSource } from '../source'
@@ -83,6 +83,26 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
     // 这一项的内容（标题、正文、派发次数、activity）和已知的「经过」条数任何一个变了，第一条消息可能就变了
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, previewOpen, offline, nodeId, item.id, item.title, item.body, item.updated_ms, item.sessions?.length, item.activity, noPush, historyLen])
+
+  // ---- 会注入的规则（`todo.dispatch_preview` 的 `rules_text`）：项目定了就取，换了项目重新取；纯文字显示 ----
+  const rulesSupported = entry?.info?.capabilities.rules === true
+  const receivesRules = agent?.capabilities?.system_prompt === true
+  const [rules, setRules] = useState<{ text: string | null; error: string | null; loading: boolean }>({ text: null, error: null, loading: false })
+  const rulesSeq = useRef(0)
+  useEffect(() => {
+    if (!open || !rulesSupported || offline || project === '') {
+      setRules({ text: null, error: null, loading: false })
+      return
+    }
+    const seq = ++rulesSeq.current
+    setRules((r) => ({ ...r, loading: true, error: null }))
+    previewRules(nodeId, item.id, project).then(
+      (text) => seq === rulesSeq.current && setRules({ text, error: null, loading: false }),
+      (e) => seq === rulesSeq.current && setRules({ text: null, error: describeDispatchError(e, t, false), loading: false }),
+    )
+    // 项目换了、或者这一项变了
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, rulesSupported, offline, nodeId, item.id, item.project, project])
 
   // ---- 发送：`message_id` ----
   // 只有「回执丢了」（链路断了 / 超时，不知道这次派发有没有成功）之后的重试才沿用上一次的 id（同一个 id 不会开第二个会话）。
@@ -254,6 +274,38 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
             <p className="text-xs text-fg-muted">{t('dispatch.noPushHint')}</p>
           )}
         </div>
+
+        {rulesSupported && project !== '' ? (
+          <div className="space-y-1" data-testid="dispatch-rules">
+            <p className="text-sm font-medium">{t('dispatch.rules.title')}</p>
+            {!receivesRules ? (
+              <p className="rounded-md border border-warning/40 bg-warning-subtle p-2 text-fg-muted" role="note" data-testid="dispatch-rules-unsupported">
+                {t('dispatch.rules.unsupported', { agent: agent ? cleanHintText(agent.label) || agent.id : '' })}
+              </p>
+            ) : rules.error ? (
+              <p className="text-danger" role="alert" data-testid="dispatch-rules-error">
+                {rules.error}
+              </p>
+            ) : rules.text === null ? (
+              <p className="text-fg-muted" role="status">
+                {t('dispatch.rules.loading')}
+              </p>
+            ) : rules.text === '' ? (
+              <p className="text-fg-muted" data-testid="dispatch-rules-none">
+                {t('dispatch.rules.none')}
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-fg-muted" data-testid="dispatch-rules-count">
+                  {t('dispatch.rules.count', { count: countRules(rules.text) })}
+                </p>
+                <pre className="scroll-thin max-h-48 overflow-auto rounded-md border border-border bg-bg-subtle p-2 text-xs whitespace-pre-wrap [overflow-wrap:anywhere]" data-testid="dispatch-rules-text" aria-busy={rules.loading}>
+                  {rules.text}
+                </pre>
+              </>
+            )}
+          </div>
+        ) : null}
 
         <div className="space-y-1">
           <button type="button" aria-expanded={previewOpen} onClick={() => setPreviewOpen((o) => !o)} className="text-sm font-medium text-accent-text hover:underline" data-testid="dispatch-preview-toggle">

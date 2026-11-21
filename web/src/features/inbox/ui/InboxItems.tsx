@@ -2,7 +2,7 @@
 // 权限请求、计划、提问在详情里用的是会话页同一个 `PermissionCard`，按钮只在详情里：行上没有任何不看内容就能答复的入口。
 import { useMemo, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, ChevronRight, ClipboardCheck, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ShieldQuestion, Smartphone } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ClipboardCheck, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ScrollText, ShieldQuestion, Smartphone } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cleanHintText, displayHint } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
@@ -19,7 +19,10 @@ import { useSwitchToNode } from '@/lib/useSwitchToNode'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { Chip } from '@/ui/Misc'
-import type { InboxItem, InboxItemKind, RequestItem } from '../derive'
+import { holdHandled, unmarkHandled } from '@/features/session/inflight'
+import { RuleMeta, RuleText } from '@/features/rules/ui/RuleParts'
+import { ruleKey, useRuleOps } from '@/features/rules/ui/useRuleOps'
+import type { InboxItem, InboxItemKind, RequestItem, RuleInboxItem } from '../derive'
 import { useInboxActive } from '../active'
 import { permissionBlock } from '../block'
 import { useItemInfo } from './info'
@@ -47,6 +50,7 @@ const KIND_ICON: Record<InboxItemKind, typeof Flag> = {
   waiting: Hourglass,
   review: ClipboardCheck,
   later: ListPlus,
+  rule: ScrollText,
 }
 
 /** 不靠颜色分辨：每种都有文字标签。 */
@@ -60,6 +64,7 @@ const KIND_TONE: Record<InboxItemKind, 'warning' | 'info' | 'danger' | 'success'
   waiting: 'warning',
   review: 'success',
   later: 'info',
+  rule: 'info',
 }
 
 export function CachedChip({ nodeName }: { nodeName: string }) {
@@ -139,6 +144,8 @@ function RowActions({ item, actions, online, sessionId, nodeParam, selected, onS
     case 'permission':
     case 'plan':
     case 'question':
+    // 待确认的规则和请求一样：行上没有任何动作，确认只在显示着全文的详情里
+    case 'rule':
       return null
     case 'enroll':
       return (
@@ -192,6 +199,8 @@ export function InboxDetail({ item, armed, outside }: { item: InboxItem; /** 答
     case 'plan':
     case 'question':
       return <RequestDetail item={item} armed={armed} outside={outside} />
+    case 'rule':
+      return <RuleDetail item={item} armed={armed} outside={outside} />
     default:
       return <PlainDetail item={item} outside={outside} />
   }
@@ -256,12 +265,12 @@ function RequestDetail({ item, armed, outside }: { item: RequestItem; armed: boo
       <OutsideNote outside={outside} item={item} />
       <DetailHeader item={item} />
       {/* 和会话页同一个卡片：命令、工作目录、全部选项。节点连不上时按钮禁用（答复发不出去） */}
-      <PermissionCard block={block} deviceLabel={deviceLabel} onRespond={respond} busy={!armed || responding.has(item.request.request_id) || !info.online} settled={settled.get(item.request.request_id)} targetMode={targetMode} todoOrigin={todoId ? <TodoOriginLink nodeId={item.nodeId} todoId={todoId} label={t('permission.fromTodo')} testId="permission-todo" className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" /> : undefined} />
+      <PermissionCard block={block} deviceLabel={deviceLabel} onRespond={respond} busy={!armed || responding.has(item.request.request_id) || !info.online} settled={settled.get(item.request.request_id)} targetMode={targetMode} recordAsRule={{ nodeId: item.nodeId, sessionId: item.sessionId }} todoOrigin={todoId ? <TodoOriginLink nodeId={item.nodeId} todoId={todoId} label={t('permission.fromTodo')} testId="permission-todo" className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" /> : undefined} />
     </div>
   )
 }
 
-function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem>; outside?: { onShow: () => void } }) {
+function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem | RuleInboxItem>; outside?: { onShow: () => void } }) {
   const { t } = useTranslation()
   const info = useItemInfo(item)
   return (
@@ -290,6 +299,47 @@ function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem>;
           <LaterSource todo={item.todo} />
         </div>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * 待确认的规则的详情：全文（纯文字）、范围、来源、状态都在眼前，确认的按钮在它们下面。和请求一样，刚换到这一条的头一小会儿按钮是锁着的
+ * （`armed`），不会在没看清的时候被点到；动作只对在线的节点可用。确认 = 它会原样进之后每个会话的系统提示。
+ */
+function RuleDetail({ item, armed, outside }: { item: RuleInboxItem; armed: boolean; outside?: { onShow: () => void } }) {
+  const { t } = useTranslation()
+  const info = useItemInfo(item)
+  const { ops, dialogs } = useRuleOps({ hold: () => holdHandled(item.key), release: () => unmarkHandled(item.key) })
+  const off = !armed || !info.online || ops.busy.has(ruleKey(item.rule))
+  return (
+    <div className="space-y-3" data-inbox-detail data-testid="inbox-detail" data-kind="rule">
+      <OutsideNote outside={outside} item={item} />
+      <h3 className="text-base font-semibold">{t('inbox.ruleTitle')}</h3>
+      <div className="rounded-md border border-border bg-bg-subtle p-3">
+        <RuleText text={item.rule.text} testId="inbox-rule-text" />
+      </div>
+      <RuleMeta rule={item.rule} showNode={false} />
+      <p className="text-sm text-fg-muted">{t('inbox.ruleBody')}</p>
+      <p className="text-xs text-fg-subtle">{info.since}</p>
+      {info.online ? null : (
+        <p className="flex items-start gap-1.5 rounded-md border border-warning/40 bg-warning-subtle px-2.5 py-1.5 text-sm text-warning" role="status" data-testid="inbox-cached-note">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+          {t('inbox.cachedBody', { node: info.nodeName })}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="primary" className="max-md:min-h-11" disabled={off} onClick={() => void ops.setStatus(item.rule, 'active')} data-testid="inbox-rule-confirm">
+          {t('rules.actions.confirm')}
+        </Button>
+        <Button size="sm" variant="secondary" className="max-md:min-h-11" disabled={off} onClick={() => ops.edit(item.rule, true)} data-testid="inbox-rule-edit">
+          {t('rules.actions.editConfirm')}
+        </Button>
+        <Button size="sm" variant="secondary" className="max-md:min-h-11" disabled={off} onClick={() => void ops.setStatus(item.rule, 'rejected')} data-testid="inbox-rule-reject">
+          {t('rules.actions.reject')}
+        </Button>
+      </div>
+      {dialogs}
     </div>
   )
 }

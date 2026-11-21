@@ -1354,6 +1354,7 @@
         "permissions": "权限",
         "worktree": "Worktree",
         "preview": "预览",
+        "rules": "规则",
         "notify": "通知",
         "log": "日志"
       },
@@ -1406,6 +1407,12 @@
           "ticket_ttl": {
             "label": "预览链接有效期",
             "hint": "预览链接多久之后失效。"
+          }
+        },
+        "rules": {
+          "inject_manual_sessions": {
+            "label": "自己开的会话也带上规则",
+            "hint": "生效的规则总会写进清单派发出去的会话的系统提示。打开后，其它新开的会话也会带上。不能接收系统提示的 agent 收不到规则。"
           }
         },
         "notify": {

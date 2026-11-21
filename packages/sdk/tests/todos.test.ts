@@ -145,10 +145,12 @@ for (const impl of cryptoImpls) {
         const t = await node.todos.add({ title: 'ship it', project: 'app' })
         assert.deepEqual(await node.todos.dispatchPreview({ id: t.id }), {
           first_message: 'ship it\n\nLeave your changes on the branch.',
+          rules_text: '',
         })
         assert.deepEqual(paramsOf(env, 'todo.dispatch_preview')[0], { id: t.id })
         assert.deepEqual(await node.todos.dispatchPreview({ id: t.id, no_push: false }), {
           first_message: 'ship it',
+          rules_text: '',
         })
         await assert.rejects(
           node.todos.dispatchPreview({ id: '00000000-0000-4000-8000-000000000000' }),

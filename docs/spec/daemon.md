@@ -1430,3 +1430,140 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 | `sessions.todo_id` | 会话从哪一项派出（可空；创建时写，之后不变；导出 / 导入不带它，导入的会话没有来源项） |
 | `todo_sessions` | `(todo_id, session_id)` 主键、`seq`（这一项内的派发序号，从 1 起）。会话被删，这一行留着；这一项被删，这一项的行一起删 |
 | `todo_events` | `(todo_id, seq)` 主键、`ts_ms`、`kind`、`session_id`（可空，`dispatched` / `result` 才有，给「最近 5 次派发各自最后一条 result」用）、`data`（JSON，`TodoEvent` 去掉 `seq`、`ts_ms`；`result` 的 `text` 是会话内容）。删这一项和保留期清理都连带删它们 |
+
+## 23. 决策档案
+
+> **尚未实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节先定前一半：规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话。这一半没有任何模型调用。从会话里自动提炼规则和判断后端是后一半，§ 23.9 只有提纲；同组节点之间的同步在 § 23.8，单独实现。界面见 [web.md § 14.8](web.md#148-分身和规则)。
+
+### 23.1 范围
+
+一条规则是用户自己的一个做法，一两句话，比如「先写失败的测试再改实现」「不要引入新的依赖，先问我」。生效的规则写进派发出去的会话的系统提示里。
+
+规则只影响 agent 怎么判断，**不影响任何权限**：不自动批准或拒绝权限请求，不改权限模式，不放宽「不 push、不开 PR」（ADR-54 第 3、5 条）。
+
+这一半不做：自动提炼和模型调用（§ 23.9）；同组节点之间的同步（§ 23.8）；「过期」标记（要有分身的运行记录里「按哪条规则」的引用才有依据，第 4 步）；让会话里的 agent 提规则的 MCP 工具。
+
+### 23.2 `Rule`
+
+```
+Rule {
+  id:         string      // 客户端生成的小写带连字符的 UUID；`rule.add` 按它幂等
+  text:       string      // 1–600 个 Unicode 码点，可以多行；除换行外不含控制字符，不含 U+2028 / U+2029
+  project?:   string      // 只进这个项目的会话；缺省 = 这个节点上所有项目的会话
+  status:     pending | active | disabled | rejected
+  sync:       node | group        // 这一半恒为 node；group 见 § 23.8
+  source:     { kind: manual | answer | extracted | agent, session_id?, seq?, request_id?, device_id? }
+  created_ms: timestamp
+  updated_ms: timestamp   // 每次真正的修改严格递增（同 § 21.3），也是版本号
+  last_injected_ms?: timestamp    // 最近一次被注入某个会话；改它不动 updated_ms
+}
+```
+
+`status`：
+
+| 值 | 含义 | 注入 |
+|---|---|---|
+| `pending` | 待确认：不是人直接写下的（agent 提的、之后提炼出来的） | 否 |
+| `active` | 生效 | 是 |
+| `disabled` | 人停用了，留着，可以再打开 | 否 |
+| `rejected` | 人否决了。留着是为了之后提炼时不再提同样的 | 否 |
+
+`source.kind`：`manual` 人手写；`answer` 人在答复权限请求或提问时点「记成规则」（带 `session_id`、`request_id`）；`extracted` 提炼出来的（带 `session_id`、`seq`，§ 23.9）；`agent` 调用方自报是 agent。daemon 填 `device_id`，调用方不能指定。
+
+客户端遇到不认识的 `status` 按「不生效」显示，遇到不认识的 `source.kind` 按「不是人写的」显示，解析不能因此失败。
+
+**谁能写**（和清单同一条界线，§ 21.2）：
+
+- 人（已配对设备、本机 CLI）：新建时可以直接是 `active`；可以改文字、改状态、删除。
+- `rule.add` 带了 `agent: true`，或者来自自报了 `mcp` 的本机连接：只能新建，状态强制为 `pending`，`source.kind` 强制为 `agent`；`rule.update` / `rule.delete` → `forbidden`。这是自报的护栏，不是边界；真正的闸是「`pending` 要人确认才生效」。
+- `twin` 设备（ADR-56）：规则的读写都不在它的白名单里。
+
+### 23.3 RPC
+
+节点支持这一组方法时 `node.info.capabilities.rules = true`。
+
+| 方法 | 方向 | 说明 |
+|---|---|---|
+| `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。一次给全（规则总数上限 300，不翻页）。`budget` 见 § 23.4 |
+| `rule.add` | C→D | `{ id, text, project?, status?: active \| pending, source?: { kind: manual \| answer, session_id?, request_id? }, agent? }` → `Rule`。`id` 已存在时原样返回已有的那一条。`status` 缺省 `active`。总数已满 300 → `invalid`（`data.reason = "too_many"`）；会让注入超出上限 → `invalid`（`data.reason = "over_budget"`，§ 23.4） |
+| `rule.update` | C→D | `{ id, text?, project?, clear?, status?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget` |
+| `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除 |
+| `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话，会注入的那段文字（§ 23.5）。只读 |
+| `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端 |
+
+### 23.4 上限：在生效的时候把关，注入时不截断
+
+一个会话拿到的规则 = 全节点的 `active` 规则 + 它所在项目的 `active` 规则。这段文字（含 § 23.5 的模板）最多 4 KiB（UTF-8 字节）。
+
+上限在规则**变成生效的那一刻**检查，不在注入的时候：
+
+- 全节点规则：全节点规则的总量 + 最大的那个项目的总量 ≤ 上限
+- 项目规则：全节点规则的总量 + 这个项目的总量 ≤ 上限
+
+超了就拒绝（`over_budget`，`data` 带现在的字节数和上限），由用户先合并或停用几条（ADR-54 第 3 条：不截断、不自动挑）。这样注入时一定放得下，不存在「有几条没生效而用户不知道」。
+
+`rule.list` 的 `budget`：`{ cap, node_bytes, projects: { <项目名>: bytes } }`，客户端据此显示「已用 / 上限」。
+
+### 23.5 注入
+
+- **哪些会话**：`todo.dispatch` 开的会话总是注入（有生效的规则、而且 agent 支持）；手动开的会话（`session.create`）只在节点配置 `rules.inject_manual_sessions = true` 时注入，缺省 `false`（热加载，进远程修改的白名单，任意改）。
+- **怎么注入**：daemon 在建会话时把规则写成一段文字，放进这个会话的 `settings.system_prompt_append`：规则在前，调用方自己给的 `system_prompt_append` 空一行接在后面；合起来仍受 16 KiB 的限制（§ 6.4），超了 → `invalid_settings`。
+- **是一份快照**：之后规则改了，已经在跑的会话不变；下一次派发用新的。这段文字就在会话的设置里，用户在会话信息里看得到 agent 拿到了什么。
+- **agent 不支持**：`AgentInfo.capabilities` 多一个 `system_prompt`（Claude Code、Codex 为 true，ACP 为 false，§ 6.3）。不支持的 agent 不注入，不让派发失败；`dispatched` 事件里记 `rules_skipped: "unsupported"`，客户端在派发前写明「这个 agent 收不到规则」。
+- **模板**（给 agent 看，英文）：
+
+```
+Standing rules from the user. The user wrote or confirmed each of them; follow them in this work:
+- <规则 1>
+- <规则 2，多行的后续行缩进两格>
+```
+
+  顺序：全节点规则在前、项目规则在后，各按 `created_ms`。
+- **留痕**：这一项的「经过」里 `dispatched` 事件多一个 `rules: [id]`（§ 22.4）；被注入的规则更新 `last_injected_ms`。`todo.dispatch_preview` 的结果多一个 `rules_text`，派发对话框里和第一条消息一起给用户看。
+- 跨节点派发（ADR-56）注入的是被使用的那个节点自己的规则。
+
+### 23.6 「记成规则」
+
+客户端的动作，daemon 没有专门的方法：用户答复一个权限请求或提问时，旁边有「记成规则」，打开一个编辑框，里面预填了这次的问题和选择，用户改成一句自己的话再保存（`rule.add`，`source.kind = answer`，带 `session_id` 和 `request_id`）。人写下的，所以直接是 `active`。
+
+- 预填的文字里有 agent 写的东西（提问的原文、命令）。它一旦保存就会进到之后每个会话的系统提示里，所以必须经过编辑框、由用户看过再存，不提供「一键记下」；编辑框里把来自 agent 的部分和用户的选择分开显示。
+- 界面写明：规则不会自动批准任何请求，它只是告诉 agent 你的做法。
+
+### 23.7 存储、审计、日志
+
+新迁移 `0006_rules.sql`，表 `rules`。规则的文字是用户内容：不进日志，不进审计。
+
+审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id，`detail` 记 `{ text_len, project?, source_kind }`、变了的字段名、状态的 `{ from, to }`，不记文字。
+
+daemon 从不自动删除规则（ADR-54 第 3 条），`rejected` 和 `disabled` 的也一直留着，不受 `history_retention` 影响。`anycon export` / `import` 不含规则。
+
+### 23.8 同组节点之间的同步（单独实现）
+
+决定见 ADR-54 第 12 条。实现时的形状：
+
+- `sync = group` 的规则由**客户端**同步：用户在一台设备上确认、修改、停用、删除它时，这台设备把同一个操作发给同一个空间（[web.md § 4.13](web.md#413-空间与移到另一个节点)）里的每个节点；规则 id 在各节点上相同。离线的节点等它回来后重放。
+- 只有全节点规则能设成 `group`：项目名在另一个节点上不一定是同一个项目。
+- 各节点的 `updated_ms` 是各自的时钟，不能跨节点比较。「对齐」按内容比：同一个 id 在各节点上的文字和状态不一致、或者有的节点没有，就列出来由用户选一份发给其余节点。
+- `pending` 的规则不同步：它的出处指向提炼它的那个节点上的会话。
+
+### 23.9 提炼和判断后端（后一半，提纲）
+
+- **决策点**由 daemon 确定性地从事件流里挑出来，不靠模型：拒绝并写了理由的权限答复、提问的回答、计划的「继续规划」和修改意见、插话、取消之后紧接着的那条消息。
+- **归纳**交给判断后端：输入是一个会话的决策点摘录，输出是若干条 `pending` 规则（`source.kind = extracted`，带出处）。和已有的、被否决过的规则重复的不再提。
+- **判断后端**的配置只在 `config.toml`（ADR-54 第 4 条）：`agent`（一个 agent 会话）或 `api`（daemon 直接调用模型 API）；分拣、提炼、顾问三个位置分开选。实现这一半时 § 1 的「不调用任何模型 API」改为「只在配置了 `api` 判断后端时调用」，并同时改威胁模型的四份文档。
+- 什么时候跑、用哪种 API 格式、花费怎么限，在这一半的规格里定。
+
+### 23.10 客户端入口
+
+- **Web**：规则页 `/rules`（待确认 / 已生效，显示已用字数和上限）；「待处理」稍后段里的待确认规则；审批卡片和答复框旁的「记成规则」；派发对话框里显示将注入的规则；「更多」里出现「规则」。见 [web.md § 14.8](web.md#148-分身和规则)。
+- **CLI**：`anycon rule add <text> [--project <name>]`、`anycon rule ls [--all] [--json]`、`anycon rule confirm | reject | disable | enable <id>`、`anycon rule rm <id>`。在 anycon 拉起的 agent 里：`add` 带 `agent: true`（记成待确认），其余拒绝执行（同 § 21.8，护栏）。
+- **`anycon mcp`**：不加工具。
+- **SDK**：`node.rules.*` 和 `rule_changed` 事件。
+
+### 23.11 代价 / 限制
+
+- 一条生效的规则是会进到之后每个派发会话里的指令。闸在两处：不是人直接写的规则要人确认才生效；「记成规则」必须经过编辑框。用户不看就确认，这道闸就没有了。
+- ACP agent 收不到规则（没有系统提示的入口）。
+- 规则是建会话时的快照，改了规则不影响已经在跑的会话。
+- 上限按字节算，中文规则比英文的占得多。
+- 实现时要同时改 [architecture.md § 5.6](../architecture.md#56-威胁模型)、两份 README 的隐私模型和 `SECURITY.md`。

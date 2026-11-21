@@ -1320,6 +1320,23 @@ dangerous_modes = ["yolo"]
     }
 
     #[test]
+    fn the_rules_section_defaults_to_no_injection_into_manual_sessions_and_is_hot() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path());
+        let cfg = Config::load(&paths).unwrap();
+        assert_eq!(cfg.rules, RulesConfig { inject_manual_sessions: false });
+        // `anycon init` 写出的默认配置里有 [rules]，而且读得回来
+        let text = default_config_toml(None, None, "/tmp/ws");
+        assert!(text.contains("[rules]") && text.contains("inject_manual_sessions = false"));
+        write(d.path(), &text);
+        assert_eq!(Config::load(&paths).unwrap().rules, RulesConfig::default());
+        set_value(&paths, "rules.inject_manual_sessions", "true").unwrap();
+        assert!(Config::load(&paths).unwrap().rules.inject_manual_sessions);
+        assert!(set_value(&paths, "rules.inject_manual_sessions", "\"yes\"").is_err());
+        assert!(is_hot_key("rules.inject_manual_sessions"));
+    }
+
+    #[test]
     fn hot_keys() {
         assert!(is_hot_key("sessions.max_concurrent"));
         assert!(is_hot_key("agents.claude-code.default_model"));

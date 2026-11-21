@@ -1,4 +1,4 @@
-//! 清单的标题和正文、派发的第一条消息和 agent 写的结果（「经过」里的 `text`）不进日志（docs/spec/daemon.md § 21.4、§ 22.4、§ 17）。单独一个测试进程：用全局 tracing 订阅者收集输出，
+//! 清单的标题和正文、派发的第一条消息和 agent 写的结果（「经过」里的 `text`）、规则的文字不进日志（docs/spec/daemon.md § 21.4、§ 22.4、§ 23.7、§ 17）。单独一个测试进程：用全局 tracing 订阅者收集输出，
 //! 不会和别的测试线程互相干扰。
 
 use std::time::{Duration, Instant};
@@ -65,6 +65,59 @@ async fn titles_and_bodies_never_reach_the_logs_including_on_error_paths() {
     )
     .await
     .unwrap();
+    // 规则（§ 23）：文字、出错路径、预览、注入（下面的派发会把它们写进会话的系统提示）都不进日志
+    let mut mcp = td.local_mcp_client();
+    let rule_id = id();
+    let r: Rule = c
+        .call(&td, methods::RULE_ADD, json!({ "id": rule_id, "text": "LOGSECRET-rule", "project": "proj" }))
+        .await
+        .unwrap();
+    let _: Rule =
+        c.call(&td, methods::RULE_ADD, json!({ "id": id(), "text": "LOGSECRET-node", "agent": true })).await.unwrap();
+    let _: Rule = mcp.call(&td, methods::RULE_ADD, json!({ "id": id(), "text": "LOGSECRET-mcp" })).await.unwrap();
+    let _: Rule = c
+        .call(&td, methods::RULE_ADD, json!({ "id": id(), "text": "LOGSECRET-other", "project": "LOGSECRET-rproj" }))
+        .await
+        .unwrap();
+    for bad in [
+        json!({ "id": id(), "text": format!("LOGSECRET-{}", "x".repeat(700)) }),
+        json!({ "id": id(), "text": "LOGSECRET\u{2028}x" }),
+        json!({ "id": id(), "text": "LOGSECRET-ok", "project": "LOGSECRET\nnl" }),
+        json!({ "id": "LOGSECRET", "text": "LOGSECRET-ok" }),
+        json!({ "id": id(), "text": "LOGSECRET-ok", "status": "LOGSECRET" }),
+        json!({ "id": id(), "text": 7 }),
+    ] {
+        let _ = c.call::<Rule>(&td, methods::RULE_ADD, bad).await;
+    }
+    // 超出字数上限的错误路径（里面带着文字的长度，不带文字）
+    for i in 0..7 {
+        let _ = c
+            .call::<Rule>(
+                &td,
+                methods::RULE_ADD,
+                json!({ "id": id(), "text": format!("LOGSECRET-big-{i}-{}", "y".repeat(570)), "project": "LOGSECRET-pj" }),
+            )
+            .await;
+    }
+    let u: Rule =
+        c.call(&td, methods::RULE_UPDATE, json!({ "id": rule_id, "text": "LOGSECRET-rule-edited" })).await.unwrap();
+    let _ = c.call::<Rule>(&td, methods::RULE_UPDATE, json!({ "id": rule_id, "text": "LOGSECRET\u{0}" })).await;
+    let _ = c
+        .call::<Rule>(
+            &td,
+            methods::RULE_UPDATE,
+            json!({ "id": rule_id, "text": "LOGSECRET-stale", "if_updated_ms": 1 }),
+        )
+        .await;
+    let _ = mcp.call::<Rule>(&td, methods::RULE_UPDATE, json!({ "id": rule_id, "text": "LOGSECRET-mcp-edit" })).await;
+    let _ = mcp.call::<Empty>(&td, methods::RULE_DELETE, json!({ "id": rule_id })).await;
+    let _ = c.call::<Rule>(&td, methods::RULE_UPDATE, json!({ "id": id(), "text": "LOGSECRET-x" })).await;
+    let _: RuleListResult =
+        c.call(&td, methods::RULE_LIST, json!({ "project": "LOGSECRET-rproj", "status": "active" })).await.unwrap();
+    let _: RulePreviewResult = c.call(&td, methods::RULE_PREVIEW, json!({ "project": "proj" })).await.unwrap();
+    let _ = c.call::<RulePreviewResult>(&td, methods::RULE_PREVIEW, json!({ "project": "LOGSECRET\nx" })).await;
+    assert_eq!(u.text, "LOGSECRET-rule-edited");
+    assert_eq!(r.id, rule_id);
     // 错误路径：标题超长（里面带着标记）、不合法的 project、不存在的项、不规范的 id、类型不对的参数
     let _ = add_t(&td, &mut c, json!({ "id": id(), "title": format!("LOGSECRET-{}", "x".repeat(300)) })).await;
     let _ = add_t(&td, &mut c, json!({ "id": id(), "title": "LOGSECRET-ok", "project": "LOGSECRET\nnl" })).await;
@@ -149,11 +202,23 @@ async fn titles_and_bodies_never_reach_the_logs_including_on_error_paths() {
     assert!(!out.to_lowercase().contains("logsecret"), "content reached the logs:\n{out}");
     let audit = serde_json::to_string(&td.ctx.audit.query(None, None, 1000).await).unwrap();
     assert!(audit.contains("worktree.create") && audit.contains("todo.dispatch"), "{audit}");
+    assert!(audit.contains("rule.add") && audit.contains("rule.update"), "{audit}");
     // 项目名本来就在审计里（`todo.add` 的 `project`），所以按内容（标题、正文、结果）的写法找，不找 `logsecret` 本身
     let audit = audit.to_lowercase();
-    for needle in
-        ["logsecret-title", "logsecret-body", "logsecret-new", "logsecret-ok", "logsecret-x", "logsecret-model"]
-    {
+    for needle in [
+        "logsecret-title",
+        "logsecret-body",
+        "logsecret-new",
+        "logsecret-ok",
+        "logsecret-x",
+        "logsecret-model",
+        "logsecret-rule",
+        "logsecret-node",
+        "logsecret-mcp",
+        "logsecret-other",
+        "logsecret-big",
+        "logsecret-stale",
+    ] {
         assert!(!audit.contains(needle), "{needle} reached the audit log:\n{audit}");
     }
     td.shutdown().await;

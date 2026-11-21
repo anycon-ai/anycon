@@ -49,6 +49,7 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
             "worktree.auto_archive_on_pr_close",
             "preview.enabled",
             "preview.ticket_ttl",
+            "rules.inject_manual_sessions",
             "notify.turn_finished",
             "notify.session_idle_after",
             "log.level",
@@ -60,6 +61,12 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
     assert_eq!(item(&r, "sessions.idle_timeout").value, json!("20m"));
     assert_eq!(item(&r, "worktree.default").value, json!("worktree"));
     assert_eq!(item(&r, "preview.enabled").value, json!(true));
+    // 规则注入手动开的会话：缺省关，布尔，任意改
+    let inject = item(&r, "rules.inject_manual_sessions");
+    assert_eq!(
+        (&inject.value, inject.kind, inject.editable),
+        (&json!(false), ConfigValueKind::Bool, ConfigEditable::Any)
+    );
     // 可改程度和约束
     let dangerous = item(&r, "permissions.allow_dangerous_modes");
     assert_eq!((dangerous.editable, dangerous.kind), (ConfigEditable::TightenOnly, ConfigValueKind::Bool));
@@ -104,6 +111,7 @@ async fn set_config_writes_the_file_applies_it_at_once_audits_and_returns_the_ne
                 ("worktree.branch_prefix", json!("team")),
                 ("worktree.auto_archive_on_pr_close", json!(true)),
                 ("notify.turn_finished", json!("never")),
+                ("rules.inject_manual_sessions", json!(true)),
                 // 和现在一样的值：空操作，不写、不审计
                 ("worktree.default", json!("worktree")),
             ]),
@@ -133,6 +141,7 @@ async fn set_config_writes_the_file_applies_it_at_once_audits_and_returns_the_ne
     assert_eq!(now.worktree.branch_prefix, "team");
     assert!(now.worktree.auto_archive_on_pr_close);
     assert_eq!(now.notify.turn_finished, "never");
+    assert!(now.rules.inject_manual_sessions);
 
     // 审计：每个真正变了的键一条 config.changed，带旧值、新值和发起的设备
     let entries = audit(&td).await;
@@ -143,6 +152,7 @@ async fn set_config_writes_the_file_applies_it_at_once_audits_and_returns_the_ne
         vec![
             "log.level",
             "notify.turn_finished",
+            "rules.inject_manual_sessions",
             "sessions.idle_timeout",
             "sessions.max_concurrent",
             "worktree.auto_archive_on_pr_close",

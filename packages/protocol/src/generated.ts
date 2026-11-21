@@ -650,7 +650,7 @@ export type SyncOutcome = "up_to_date" | "merged" | "conflicts" | "aborted";
 /**
  * 清单项派出的会话现在的情况（算出来的，不存；`Todo.activity`）。
  */
-export type TodoActivity = "working" | "waiting" | "review";
+export type TodoActivity = "working" | "waiting" | "review" | "unknown";
 /**
  * 一项是谁记的。
  */

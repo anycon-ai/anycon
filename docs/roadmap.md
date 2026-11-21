@@ -125,10 +125,10 @@
    - 多个节点：节点分组名（比如「家里」「公司」）；节点过滤器升级为空间切换，待处理、清单、会话树都跟着它；把一项移到另一个节点（原节点那一项有没有变、目标上的那一份还在不在，靠 daemon 的 `todo.get` 和带条件的 `todo.delete` 在节点上检查）
    - `anycon todo` 子命令
    - `anycon mcp` 的 `add_todo` / `list_todos`：会话里的 agent 能记下之后要处理的事
-2. **手动派发**：在清单的某一项上让 agent 处理（规格见 [spec/daemon.md § 22](spec/daemon.md#22-派发)，还没做）
+2. **手动派发**：在清单的某一项上让 agent 处理（规格见 [spec/daemon.md § 22](spec/daemon.md#22-派发)；daemon、CLI 和 SDK 已经做了，Web 界面还没有）
    - 从一项开一个 worktree 会话（标题和正文作为第一条消息），一项可以关联多个会话；也能反过来把会话里的一段话记成一项
-   - 派发是 daemon 的一个方法（开会话、关联、回写、套用「不 push、不开 PR」都在 daemon 里），不由客户端拼 `session.create` 再回写：第 5 步里别的节点的分身调用的是同一个方法（[ADR-56](decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条）
-   - daemon 按会话状态回写：在跑 → `working`，等审批 / 等回答 / 出错 → `waiting`，这一轮结束 → `review`；`done` 由人点
+   - 派发是 daemon 的一个方法（开会话、关联、算 `activity`、套用「不 push、不开 PR」都在 daemon 里），不由客户端拼 `session.create`：第 5 步里别的节点的分身调用的是同一个方法（[ADR-56](decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条）
+   - 会话的情况是 daemon 每次返回这一项时算出来的 `activity`，不写进 `state`：在跑 → `working`，等审批 / 出错 / 被打断 / 被取消 → `waiting`，最近一轮正常结束且结果已记下 → `review`；`state` 只由人设置，`done` 由人点
    - 清单项是交接文档：每个会话一轮结束时，daemon 把 agent 的最后一段话记进这一项的「经过」；在同一项上再派会话，第一条消息除了标题和正文，还带上之前各次的结果。agent 没有往清单项里写的工具
    - 单项详情里看这件事的全部经过和关联会话的状态；验收页先给结论再给 diff，通过 / 再改改 / 不要了
    - 会话选项「不 push、不开 PR」（adapter 声明，翻译成 agent 自己的拒绝规则）：改动停在 worktree 的分支上等验收

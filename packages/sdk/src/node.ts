@@ -553,7 +553,7 @@ export class Node extends Emitter<NodeEvents> {
       })
     },
     /**
-     * `todo.dispatch`（docs/spec/daemon.md § 22）：从一项开一个会话，关联、回写状态、记「经过」，全部由 daemon 做，不要自己拼
+     * `todo.dispatch`（docs/spec/daemon.md § 22）：从一项开一个会话，关联、记「经过」、算 `activity`，全部由 daemon 做，不要自己拼
      * `session.create`。成功得到更新后的项（`state: 'working'`、`sessions` 多一个）和会话。第一条消息由 daemon 生成，调用方不能另给。
      * `no_push` 缺省 `true`（「不 push、不开 PR」）：所选 agent 没有声明这个选项而它为 `true` → `RpcError`（`unsupported`，
      * `data.reason = 'no_push'`），要派给这样的 agent 必须明确传 `false`。别的错误：项已关闭 → `invalid`（`data.reason = 'closed'`）；

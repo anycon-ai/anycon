@@ -426,6 +426,16 @@ async fn run_hands_an_item_to_an_agent_and_history_shows_what_happened() {
         "{}",
         text.stdout
     );
+    // `ls` 的表头有 ACTIVITY 列，派发过的项在这一列里有值，列对得上
+    let ls = n.cli(&["todo", "ls"]).await;
+    assert_eq!(ls.code, 0, "{}", ls.stderr);
+    let mut lines = ls.stdout.lines();
+    let header = lines.next().unwrap();
+    let col = header.find("ACTIVITY").expect("an ACTIVITY column in the header");
+    assert!(header.find("STATE").unwrap() < col && col < header.find("DUE").unwrap(), "{header}");
+    let row = lines.find(|l| l.starts_with(&id[..8])).expect("the dispatched item is listed");
+    let cell = &row[col..];
+    assert!(["working", "waiting", "review"].iter().any(|w| cell.starts_with(w)), "{header}\n{row}");
     // 没有发生过什么的项
     let other = n.add("Untouched").await;
     let r = n.cli(&["todo", "history", other["id"].as_str().unwrap()]).await;

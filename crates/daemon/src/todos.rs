@@ -319,6 +319,23 @@ fn notify_changed(clients: &Clients, change: TodoChanged) {
     clients.broadcast(methods::TODO_CHANGED, change);
 }
 
+/// 一页的各项序列化之后合计超过 `budget` 字节就少给几项（至少一项），并且 `has_more = true`。
+fn trim_to_budget(page: &mut TodoListResult, budget: usize) {
+    let (mut bytes, mut keep) = (0usize, 0usize);
+    for t in &page.todos {
+        let size = serde_json::to_vec(t).map(|v| v.len()).unwrap_or(0);
+        if keep > 0 && bytes + size > budget {
+            break;
+        }
+        bytes += size;
+        keep += 1;
+    }
+    if keep < page.todos.len() {
+        page.todos.truncate(keep);
+        page.has_more = true;
+    }
+}
+
 /// `todo.list`。
 pub async fn list(c: &Ctx, mut p: TodoListParams) -> RpcResult<TodoListResult> {
     // 项目名存的是去掉首尾空白之后的，过滤条件同样处理
@@ -326,6 +343,8 @@ pub async fn list(c: &Ctx, mut p: TodoListParams) -> RpcResult<TodoListResult> {
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
     let mut page = c.store.todo_page(&p, limit).await.map_err(internal)?;
     crate::todo_dispatch::fill_activity(&c.sessions, &mut page.todos).await;
+    // 字节预算按实际发出去的样子量（带着 `sessions` 和 `activity`）
+    trim_to_budget(&mut page, PAGE_BYTE_BUDGET);
     Ok(page)
 }
 
@@ -405,6 +424,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         detail["project"] = json!(project);
     }
     c.audit.record(caller, "todo.add", Some(&todo.id), detail).await;
+    c.sessions.todo_signal().note_sent(&todo.id, todo.activity);
     notify_changed(&c.clients, TodoChanged { id: todo.id.clone(), todo: Some(todo.clone()), deleted: false });
     Ok(todo)
 }
@@ -487,6 +507,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     // 派发过的项：状态是人改的，「经过」里记一条（§ 22.4）
     crate::todo_dispatch::record_manual_state(c, caller, &new, old.state).await;
     new.activity = crate::todo_dispatch::compute_activity(&c.sessions, &new).await;
+    c.sessions.todo_signal().note_sent(&new.id, new.activity);
     notify_changed(&c.clients, TodoChanged { id: new.id.clone(), todo: Some(new.clone()), deleted: false });
     Ok(new)
 }
@@ -519,12 +540,18 @@ pub async fn delete(c: &Ctx, caller: &Caller, p: TodoDeleteParams) -> RpcResult<
         return Err(not_found(id));
     }
     c.audit.record(caller, "todo.delete", Some(id), json!({})).await;
+    c.sessions.todo_signal().forget(id);
     notify_changed(&c.clients, TodoChanged { id: id.to_string(), todo: None, deleted: true });
     Ok(())
 }
 
 /// 保留期清理（和会话的 `history_retention` 在同一轮里）：关闭时间早于 `cutoff_ms` 的项删掉并通知客户端；没关闭的不动。
-pub async fn purge_closed(store: &Store, clients: &Arc<Clients>, cutoff_ms: u64) {
+pub async fn purge_closed(
+    store: &Store,
+    clients: &Arc<Clients>,
+    signal: &crate::todo_dispatch::TodoSignal,
+    cutoff_ms: u64,
+) {
     let _w = store.todo_lock().lock().await;
     let ids = match store.todos_closed_before(cutoff_ms).await {
         Ok(ids) => ids,
@@ -535,7 +562,10 @@ pub async fn purge_closed(store: &Store, clients: &Arc<Clients>, cutoff_ms: u64)
     };
     for id in ids {
         match store.todo_delete(&id).await {
-            Ok(true) => notify_changed(clients, TodoChanged { id, todo: None, deleted: true }),
+            Ok(true) => {
+                signal.forget(&id);
+                notify_changed(clients, TodoChanged { id, todo: None, deleted: true })
+            }
             Ok(false) => {}
             Err(e) => tracing::warn!(error = %e, "cannot delete an expired todo"),
         }
@@ -544,6 +574,42 @@ pub async fn purge_closed(store: &Store, clients: &Arc<Clients>, cutoff_ms: u64)
 
 #[cfg(test)]
 mod tests {
+    use super::trim_to_budget;
+    use anycon_protocol::{Todo, TodoListResult};
+
+    #[test]
+    fn the_page_budget_counts_what_is_sent_including_sessions_and_activity() {
+        use anycon_protocol::{TodoActivity, TodoSource, TodoSourceKind, TodoState};
+        let item = |n: usize| Todo {
+            id: format!("id-{n}"),
+            title: "t".into(),
+            body: String::new(),
+            project: None,
+            state: TodoState::Open,
+            due_ms: None,
+            source: TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None },
+            unreviewed: false,
+            created_ms: 1,
+            updated_ms: 1,
+            closed_ms: None,
+            sessions: (0..20).map(|i| format!("sess_{n}_{i:020}")).collect(),
+            activity: Some(TodoActivity::Working),
+        };
+        let one = serde_json::to_vec(&item(0)).unwrap().len();
+        let mut page = TodoListResult { todos: (0..10).map(item).collect(), has_more: false };
+        // 预算只够三项半：留三项
+        trim_to_budget(&mut page, one * 3 + one / 2);
+        assert_eq!((page.todos.len(), page.has_more), (3, true));
+        // 一项都放不下也至少给一项
+        let mut page = TodoListResult { todos: (0..4).map(item).collect(), has_more: false };
+        trim_to_budget(&mut page, 1);
+        assert_eq!((page.todos.len(), page.has_more), (1, true));
+        // 放得下就不动
+        let mut page = TodoListResult { todos: (0..4).map(item).collect(), has_more: false };
+        trim_to_budget(&mut page, one * 10);
+        assert_eq!((page.todos.len(), page.has_more), (4, false));
+    }
+
     use super::next_updated_ms;
 
     #[test]

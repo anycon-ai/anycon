@@ -183,6 +183,8 @@ for (const impl of cryptoImpls) {
           },
         )
         assert.equal(r.todo.state, 'open')
+        // 同一个项目、不是 agent 记的：派发没有改这一项，updated_ms 不动
+        assert.equal(r.todo.updated_ms, t.updated_ms)
         assert.equal(r.todo.activity, 'working')
         assert.deepEqual(r.todo.sessions, [r.session.id])
         assert.equal(r.session.todo_id, t.id)

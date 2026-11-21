@@ -61,7 +61,7 @@ function failedText(reason: SendOutcome['reason'], t: TFunction): string {
  * `focusSeq`：URL 的 `?seq=`，搜索命中带来的事件 seq（spec/web.md § 9）。会话第一次同步完之后，把历史往前加载到那个 seq、
  * 切回「聊天」视图、滚到那条消息并高亮，然后把 `?seq=` 从地址里去掉（刷新或重新渲染不会再滚一遍）。
  */
-export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: string; focusSeq?: number }) {
+export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sessionId: string; focusSeq?: number; /** URL 的 `?view=changes`：直接打开「改动」视图。 */ openView?: 'changes' }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { nodeId, entry } = useCurrentNode()
@@ -97,6 +97,14 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq }: { sessionId: str
   const [unarchiving, setUnarchiving] = useState(false)
   const gitEntry = useGitEntry(sessionId)
   const previewTemplate = usePreviewTemplate()
+
+  // `?view=changes`：打开「改动」视图，然后把参数从地址里去掉（刷新不会再切一遍）
+  useEffect(() => {
+    if (!openView || !nodeId) return
+    setMainChoice({ sessionId, view: openView })
+    void navigate({ to: '/n/$node/s/$session', params: { node: nodeParam, session: sessionId }, search: {}, replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openView, nodeId, sessionId])
 
   useEffect(() => {
     if (!nodeId) return

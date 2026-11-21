@@ -1833,6 +1833,8 @@ async fn a_create_retried_after_a_timeout_returns_the_session_the_first_attempt_
     let again: SessionSummary =
         c.call(&td, methods::SESSION_CREATE, first.clone()).await.expect("a retry gets the session, not blob_in_use");
     assert_eq!(again.id, s1.id);
+    // `session.create` 返回时 agent 不一定已经拉起来了：等第一个 handle 出现再放行它
+    assert!(eventually(Duration::from_secs(10), || async { td.fake.handle_count() > 0 }).await, "the agent is spawned");
     td.fake.last_handle().release();
     wait_status(&td, &mut c, &s1.id, SessionStatus::Idle).await;
     // turn 结束以后才重试，同样

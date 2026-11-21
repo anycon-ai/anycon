@@ -1157,6 +1157,7 @@ fn row(id: &str, project: Option<&str>, status: SessionStatus) -> SessionRow {
         usage: UsageTotals::default(),
         preview: Some("hi".into()),
         worktree_id: None,
+        todo_id: None,
     }
 }
 

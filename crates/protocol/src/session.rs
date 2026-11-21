@@ -98,6 +98,9 @@ pub struct SessionSummary {
     /// 会话在 anycon 建的 worktree 里工作时给出（ADR-34）；在项目目录本身工作时为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<SessionWorktree>,
+    /// 会话从哪一项派出（`todo.dispatch`，docs/spec/daemon.md § 22.3）。这一项被删除后原样留着，客户端按「来源已删除」显示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_id: Option<String>,
 }
 
 /// 会话在哪里工作。`session.create` 不带时是 `local`（线路上不猜默认值；客户端按节点的

@@ -63,7 +63,7 @@ fn not_found(id: &str) -> RpcError {
 
 /// `id` 必须是小写带连字符的 UUID（客户端生成，`todo.add` 按它幂等）。不做规范化：客户端自己留着一份 id，
 /// 悄悄改写会让它对不上；`todo.add` / `todo.update` / `todo.delete` 对不规范的 id 一律 `invalid`（`data.field = "id"`）。
-fn check_id(id: &str) -> RpcResult<()> {
+pub(crate) fn check_id(id: &str) -> RpcResult<()> {
     let canonical = uuid::Uuid::parse_str(id).is_ok_and(|u| u.hyphenated().to_string() == id);
     if canonical {
         Ok(())
@@ -94,7 +94,7 @@ fn check_body(body: &str) -> RpcResult<()> {
     Ok(())
 }
 
-fn check_project(project: &str) -> RpcResult<String> {
+pub(crate) fn check_project(project: &str) -> RpcResult<String> {
     let p = project.trim();
     if p.is_empty() || p.chars().count() > MAX_PROJECT_CHARS || p.chars().any(crate::config::is_line_break_or_control) {
         return Err(invalid(
@@ -141,6 +141,8 @@ fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
         created_ms: r.get::<i64, _>("created_ms") as u64,
         updated_ms: r.get::<i64, _>("updated_ms") as u64,
         closed_ms: r.get::<Option<i64>, _>("closed_ms").map(|v| v as u64),
+        // 关联的会话不在 `todos` 表里，读出来之后由 `todo_get` / `todo_page` 补上
+        sessions: Vec::new(),
     }
 }
 
@@ -152,10 +154,35 @@ fn source_kind_str(k: TodoSourceKind) -> &'static str {
     }
 }
 
+/// [`Store::todo_save`]，可以在事务里用（派发把这一项的修改、关联和「经过」放在同一个事务里）。
+pub(crate) async fn save_todo_on<'e, E>(db: E, t: &Todo) -> Result<(), StoreError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query(
+        "UPDATE todos SET title = ?, body = ?, project = ?, state = ?, due_ms = ?, unreviewed = ?, \
+         updated_ms = ?, closed_ms = ? WHERE id = ?",
+    )
+    .bind(&t.title)
+    .bind(&t.body)
+    .bind(&t.project)
+    .bind(t.state.as_str())
+    .bind(t.due_ms.map(|v| v as i64))
+    .bind(t.unreviewed as i64)
+    .bind(t.updated_ms as i64)
+    .bind(t.closed_ms.map(|v| v as i64))
+    .bind(&t.id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 impl Store {
     pub async fn todo_get(&self, id: &str) -> Result<Option<Todo>, StoreError> {
         let r = sqlx::query("SELECT * FROM todos WHERE id = ?").bind(id).fetch_optional(self.pool()).await?;
-        Ok(r.as_ref().map(row_to_todo))
+        let Some(mut t) = r.as_ref().map(row_to_todo) else { return Ok(None) };
+        t.sessions = self.todo_links(id).await?;
+        Ok(Some(t))
     }
 
     /// 没关闭的项数。
@@ -196,27 +223,18 @@ impl Store {
 
     /// 写回可以变的字段（来源和创建时间不变）。
     pub async fn todo_save(&self, t: &Todo) -> Result<(), StoreError> {
-        sqlx::query(
-            "UPDATE todos SET title = ?, body = ?, project = ?, state = ?, due_ms = ?, unreviewed = ?, \
-             updated_ms = ?, closed_ms = ? WHERE id = ?",
-        )
-        .bind(&t.title)
-        .bind(&t.body)
-        .bind(&t.project)
-        .bind(t.state.as_str())
-        .bind(t.due_ms.map(|v| v as i64))
-        .bind(t.unreviewed as i64)
-        .bind(t.updated_ms as i64)
-        .bind(t.closed_ms.map(|v| v as i64))
-        .bind(&t.id)
-        .execute(self.pool())
-        .await?;
-        Ok(())
+        save_todo_on(self.pool(), t).await
     }
 
     /// 物理删除。返回有没有这一项。
     pub async fn todo_delete(&self, id: &str) -> Result<bool, StoreError> {
-        Ok(sqlx::query("DELETE FROM todos WHERE id = ?").bind(id).execute(self.pool()).await?.rows_affected() > 0)
+        let deleted =
+            sqlx::query("DELETE FROM todos WHERE id = ?").bind(id).execute(self.pool()).await?.rows_affected() > 0;
+        // 关联和「经过」一起删，会话不动（§ 22.3）
+        if deleted {
+            self.todo_purge_dispatch(id).await?;
+        }
+        Ok(deleted)
     }
 
     /// 关闭时间早于 `before_ms` 的项 id（`history_retention`）。
@@ -263,6 +281,11 @@ impl Store {
             }
             bytes += size;
             todos.push(t);
+        }
+        drop(rows);
+        let links = self.todo_links_of(&todos.iter().map(|t| t.id.clone()).collect::<Vec<_>>()).await?;
+        for t in &mut todos {
+            t.sessions = links.get(&t.id).cloned().unwrap_or_default();
         }
         Ok(TodoListResult { todos, has_more })
     }
@@ -343,6 +366,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         created_ms: now,
         updated_ms: now,
         closed_ms: None,
+        sessions: Vec::new(),
     };
     c.store.todo_insert(&todo).await.map_err(internal)?;
     // 只记长度（标题按字符、正文按字节）和项目名，不记内容
@@ -432,6 +456,8 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
         detail["state"] = json!({ "from": old.state, "to": new.state });
     }
     c.audit.record(caller, "todo.update", Some(&new.id), detail).await;
+    // 派发过的项：状态是人改的，「经过」里记一条（§ 22.4）
+    crate::todo_dispatch::record_manual_state(&c.store, &c.clients, caller, &new, old.state).await;
     notify_changed(&c.clients, TodoChanged { id: new.id.clone(), todo: Some(new.clone()), deleted: false });
     Ok(new)
 }

@@ -1,5 +1,7 @@
-//! 清单的标题和正文不进日志（docs/spec/daemon.md § 21.4、§ 17）。单独一个测试进程：用全局 tracing 订阅者收集输出，
+//! 清单的标题和正文、派发的第一条消息和 agent 写的结果（「经过」里的 `text`）不进日志（docs/spec/daemon.md § 21.4、§ 22.4、§ 17）。单独一个测试进程：用全局 tracing 订阅者收集输出，
 //! 不会和别的测试线程互相干扰。
+
+use std::time::{Duration, Instant};
 
 use anycon_daemon::testutil::TestDaemon;
 use anycon_protocol::*;
@@ -81,6 +83,64 @@ async fn titles_and_bodies_never_reach_the_logs_including_on_error_paths() {
     let _ = list_t(&td, &mut c, json!({ "project": "LOGSECRET-proj", "include_closed": true })).await;
     let _: Value = c.call(&td, methods::TODO_DELETE, json!({ "id": t.id })).await.unwrap();
     let _ = c.call::<Value>(&td, methods::TODO_DELETE, json!({ "id": t.id })).await;
+
+    // 派发和「经过」（§ 22）：第一条消息、agent 的复述（result）、各条错误路径
+    std::fs::create_dir_all(td.workspace.join("proj")).unwrap();
+    let dt: Todo = c
+        .call(
+            &td,
+            methods::TODO_ADD,
+            json!({ "id": uuid::Uuid::new_v4().to_string(), "title": "LOGSECRET-title", "body": "LOGSECRET-body", "project": "proj" }),
+        )
+        .await
+        .unwrap();
+    // 成功的派发：第一条消息里有标题和正文，agent 复述它们（result 里也有）
+    let dr: TodoDispatchResult =
+        c.call(&td, methods::TODO_DISPATCH, json!({ "id": dt.id, "agent": "fake", "no_push": false })).await.unwrap();
+    let t0 = Instant::now();
+    loop {
+        let h: TodoHistoryResult = c.call(&td, methods::TODO_HISTORY, json!({ "id": dt.id })).await.unwrap();
+        if h.events.iter().any(|e| matches!(&e.data, TodoEventData::Result { text, .. } if text.contains("LOGSECRET")))
+        {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(20), "the result never arrived");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // 第二次派发（带着第一次的结果）、各种错误路径：不支持 no_push、项目不存在、设置不合法、不存在的项、不规范的 id、已关闭
+    let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": dt.id, "state": "review" })).await.unwrap();
+    let _: TodoDispatchResult =
+        c.call(&td, methods::TODO_DISPATCH, json!({ "id": dt.id, "agent": "fake", "no_push": false })).await.unwrap();
+    let _ = c.call::<Value>(&td, methods::TODO_DISPATCH, json!({ "id": dt.id, "agent": "fake" })).await;
+    let _ = c
+        .call::<Value>(
+            &td,
+            methods::TODO_DISPATCH,
+            json!({ "id": dt.id, "agent": "fake", "project": "LOGSECRET-proj", "no_push": false }),
+        )
+        .await;
+    let _ = c
+        .call::<Value>(
+            &td,
+            methods::TODO_DISPATCH,
+            json!({ "id": dt.id, "agent": "fake", "no_push": false, "settings": { "model": "LOGSECRET-model" } }),
+        )
+        .await;
+    let _ = c
+        .call::<Value>(&td, methods::TODO_DISPATCH, json!({ "id": uuid::Uuid::new_v4().to_string(), "agent": "fake" }))
+        .await;
+    let _ = c.call::<Value>(&td, methods::TODO_DISPATCH, json!({ "id": "LOGSECRET", "agent": "fake" })).await;
+    let _ = c.call::<Value>(&td, methods::TODO_DISPATCH, json!({ "id": 7 })).await;
+    let _ = c.call::<Value>(&td, methods::TODO_HISTORY, json!({ "id": "LOGSECRET" })).await;
+    let _ = c.call::<Value>(&td, methods::TODO_HISTORY, json!({ "id": dt.id, "before_seq": "LOGSECRET" })).await;
+    let _: Todo = c.call(&td, methods::TODO_UPDATE, json!({ "id": dt.id, "state": "dropped" })).await.unwrap();
+    let _ =
+        c.call::<Value>(&td, methods::TODO_DISPATCH, json!({ "id": dt.id, "agent": "fake", "no_push": false })).await;
+    let hh: TodoHistoryResult = c.call(&td, methods::TODO_HISTORY, json!({ "id": dt.id, "limit": 200 })).await.unwrap();
+    assert!(hh.events.len() >= 3);
+    let _: Empty = c.call(&td, methods::SESSION_DELETE, json!({ "session_id": dr.session.id })).await.unwrap();
+    let _: Empty = c.call(&td, methods::TODO_DELETE, json!({ "id": dt.id })).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     let out = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     assert!(out.contains("rpc handled"), "the capture works: {out:?}");

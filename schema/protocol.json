@@ -1552,6 +1552,16 @@
       ],
       "type": "string"
     },
+    "DispatchMarker": {
+      "description": "`TodoStateBy::Dispatch` 序列化成的字符串 `\"dispatch\"`。",
+      "oneOf": [
+        {
+          "const": "dispatch",
+          "description": "关联会话的状态回写（docs/spec/daemon.md § 22.3）。",
+          "type": "string"
+        }
+      ]
+    },
     "DoctorCheck": {
       "properties": {
         "detail": {
@@ -6405,6 +6415,13 @@
         "title": {
           "type": "string"
         },
+        "todo_id": {
+          "description": "会话从哪一项派出（`todo.dispatch`，docs/spec/daemon.md § 22.3）。这一项被删除后原样留着，客户端按「来源已删除」显示。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "updated_at_ms": {
           "format": "uint64",
           "minimum": 0,
@@ -6873,6 +6890,14 @@
             "null"
           ]
         },
+        "sessions": {
+          "default": [],
+          "description": "这一项派出的会话（`todo.dispatch`，docs/spec/daemon.md § 22.3），按派发的先后，最多 20 个。会话被删除后关联留着。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "source": {
           "$ref": "#/definitions/TodoSource"
         },
@@ -6902,6 +6927,24 @@
         "unreviewed",
         "created_ms",
         "updated_ms"
+      ],
+      "type": "object"
+    },
+    "TodoActor": {
+      "description": "谁做了这件事（审计里的「发起者」，不含会话内容）。",
+      "properties": {
+        "device_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/TodoSourceKind"
+        }
+      },
+      "required": [
+        "kind"
       ],
       "type": "object"
     },
@@ -6997,6 +7040,343 @@
       "required": [
         "updated_ms",
         "id"
+      ],
+      "type": "object"
+    },
+    "TodoDispatchParams": {
+      "description": "`todo.dispatch`：从一项开一个会话，把会话和这一项关联。",
+      "properties": {
+        "agent": {
+          "description": "同 `session.create`。",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "no_push": {
+          "description": "「不 push、不开 PR」（agent 的 `no_push` 选项）。缺省 `true`；所选 agent 没有声明这个选项而它为 `true` → `unsupported`。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = \"project\"`）。给了而且和这一项的不同，派发成功时写回这一项。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "settings": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionSettings"
+            }
+          ],
+          "default": {},
+          "description": "同 `session.create`。"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionWorkspace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "同 `session.create`。缺省：项目能开 worktree 就用新的 worktree，否则在项目目录里（不看 `worktree.default`）。"
+        }
+      },
+      "required": [
+        "id",
+        "agent"
+      ],
+      "type": "object"
+    },
+    "TodoDispatchResult": {
+      "properties": {
+        "session": {
+          "$ref": "#/definitions/SessionSummary"
+        },
+        "todo": {
+          "$ref": "#/definitions/Todo"
+        }
+      },
+      "required": [
+        "todo",
+        "session"
+      ],
+      "type": "object"
+    },
+    "TodoEvent": {
+      "description": "「经过」里的一条：只追加，没有修改、删除一条的方法；删除这一项时一起删。",
+      "oneOf": [
+        {
+          "description": "派发了一次。",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "by": {
+              "$ref": "#/definitions/TodoActor"
+            },
+            "kind": {
+              "const": "dispatched",
+              "type": "string"
+            },
+            "no_push": {
+              "type": "boolean"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "workspace_mode": {
+              "$ref": "#/definitions/SessionWorkspaceMode"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "agent",
+            "workspace_mode",
+            "no_push",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "关联会话的一轮结束了：agent 这一轮的最后一段话（≤ 4 KiB，在码点边界截断）。这一轮没有文字时 `text` 为空。\n`text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。",
+          "properties": {
+            "kind": {
+              "const": "result",
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "turn": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "turn",
+            "text",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "状态变了（这一项有过派发之后才记）。",
+          "properties": {
+            "by": {
+              "$ref": "#/definitions/TodoStateBy"
+            },
+            "from": {
+              "$ref": "#/definitions/TodoState"
+            },
+            "kind": {
+              "const": "state",
+              "type": "string"
+            },
+            "to": {
+              "$ref": "#/definitions/TodoState"
+            }
+          },
+          "required": [
+            "kind",
+            "from",
+            "to",
+            "by"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "seq": {
+          "description": "这一项内从 1 递增。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ts_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "ts_ms"
+      ],
+      "type": "object"
+    },
+    "TodoEventData": {
+      "description": "「经过」里的一条的内容；`kind` 是线路上的标签。",
+      "oneOf": [
+        {
+          "description": "派发了一次。",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "by": {
+              "$ref": "#/definitions/TodoActor"
+            },
+            "kind": {
+              "const": "dispatched",
+              "type": "string"
+            },
+            "no_push": {
+              "type": "boolean"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "workspace_mode": {
+              "$ref": "#/definitions/SessionWorkspaceMode"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "agent",
+            "workspace_mode",
+            "no_push",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "关联会话的一轮结束了：agent 这一轮的最后一段话（≤ 4 KiB，在码点边界截断）。这一轮没有文字时 `text` 为空。\n`text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。",
+          "properties": {
+            "kind": {
+              "const": "result",
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "turn": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "turn",
+            "text",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "状态变了（这一项有过派发之后才记）。",
+          "properties": {
+            "by": {
+              "$ref": "#/definitions/TodoStateBy"
+            },
+            "from": {
+              "$ref": "#/definitions/TodoState"
+            },
+            "kind": {
+              "const": "state",
+              "type": "string"
+            },
+            "to": {
+              "$ref": "#/definitions/TodoState"
+            }
+          },
+          "required": [
+            "kind",
+            "from",
+            "to",
+            "by"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TodoEventNotice": {
+      "description": "`todo.event` 通知：这一项的「经过」多了一条，发给所有在线客户端。",
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/TodoEvent"
+        },
+        "todo_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "todo_id",
+        "event"
+      ],
+      "type": "object"
+    },
+    "TodoHistoryParams": {
+      "description": "`todo.history` 的参数。",
+      "properties": {
+        "before_seq": {
+          "description": "只给 `seq` 小于它的事件（翻页用：上一页最后一条的 `seq`）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "limit": {
+          "description": "缺省 50，上限 200。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "TodoHistoryResult": {
+      "properties": {
+        "events": {
+          "description": "按 `seq` 从新到旧。",
+          "items": {
+            "$ref": "#/definitions/TodoEvent"
+          },
+          "type": "array"
+        },
+        "has_more": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "events",
+        "has_more"
       ],
       "type": "object"
     },
@@ -7147,6 +7527,17 @@
           "type": "string"
         }
       ]
+    },
+    "TodoStateBy": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DispatchMarker"
+        },
+        {
+          "$ref": "#/definitions/TodoActor"
+        }
+      ],
+      "description": "`state` 事件是谁改的：回写是字符串 `\"dispatch\"`，别的是发起的客户端。"
     },
     "TodoUpdateParams": {
       "properties": {
@@ -8533,6 +8924,9 @@
     "todo": {
       "$ref": "#/definitions/Todo"
     },
+    "todo_actor": {
+      "$ref": "#/definitions/TodoActor"
+    },
     "todo_add_params": {
       "$ref": "#/definitions/TodoAddParams"
     },
@@ -8541,6 +8935,27 @@
     },
     "todo_cursor": {
       "$ref": "#/definitions/TodoCursor"
+    },
+    "todo_dispatch_params": {
+      "$ref": "#/definitions/TodoDispatchParams"
+    },
+    "todo_dispatch_result": {
+      "$ref": "#/definitions/TodoDispatchResult"
+    },
+    "todo_event": {
+      "$ref": "#/definitions/TodoEvent"
+    },
+    "todo_event_data": {
+      "$ref": "#/definitions/TodoEventData"
+    },
+    "todo_event_notice": {
+      "$ref": "#/definitions/TodoEventNotice"
+    },
+    "todo_history_params": {
+      "$ref": "#/definitions/TodoHistoryParams"
+    },
+    "todo_history_result": {
+      "$ref": "#/definitions/TodoHistoryResult"
     },
     "todo_id_params": {
       "$ref": "#/definitions/TodoIdParams"
@@ -8559,6 +8974,9 @@
     },
     "todo_state": {
       "$ref": "#/definitions/TodoState"
+    },
+    "todo_state_by": {
+      "$ref": "#/definitions/TodoStateBy"
     },
     "todo_update_params": {
       "$ref": "#/definitions/TodoUpdateParams"
@@ -8771,6 +9189,15 @@
     "todo_update_params",
     "todo_id_params",
     "todo_changed",
+    "todo_dispatch_params",
+    "todo_dispatch_result",
+    "todo_history_params",
+    "todo_history_result",
+    "todo_actor",
+    "todo_state_by",
+    "todo_event_data",
+    "todo_event",
+    "todo_event_notice",
     "attachment_ref",
     "blob_put_begin_params",
     "blob_put_begin_result",
@@ -9243,6 +9670,24 @@
       "direction": "notification",
       "name": "todo.changed",
       "params": "TodoChanged",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "todo.dispatch",
+      "params": "TodoDispatchParams",
+      "result": "TodoDispatchResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.history",
+      "params": "TodoHistoryParams",
+      "result": "TodoHistoryResult"
+    },
+    {
+      "direction": "notification",
+      "name": "todo.event",
+      "params": "TodoEventNotice",
       "result": null
     },
     {

@@ -149,6 +149,12 @@ export const METHODS = {
   TODO_DELETE: 'todo.delete',
   /** D→C notification，params = TodoChanged */
   TODO_CHANGED: 'todo.changed',
+  /** params = TodoDispatchParams → TodoDispatchResult */
+  TODO_DISPATCH: 'todo.dispatch',
+  /** params = TodoHistoryParams → TodoHistoryResult */
+  TODO_HISTORY: 'todo.history',
+  /** D→C notification，params = TodoEventNotice */
+  TODO_EVENT: 'todo.event',
 
   // blob（附件，ADR-35）
   /** params = BlobPutBeginParams → BlobPutBeginResult */

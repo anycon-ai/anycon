@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceId, SessionId, TimestampMs};
+use crate::{DeviceId, SessionId, SessionSettings, SessionSummary, SessionWorkspace, TimestampMs};
 
 /// 清单项的状态。这一步 daemon 不限制状态之间怎么转。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -88,6 +88,9 @@ pub struct Todo {
     /// 进入 `done` / `dropped` 的时间；重新打开时清掉。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_ms: Option<TimestampMs>,
+    /// 这一项派出的会话（`todo.dispatch`，docs/spec/daemon.md § 22.3），按派发的先后，最多 20 个。会话被删除后关联留着。
+    #[serde(default)]
+    pub sessions: Vec<SessionId>,
 }
 
 /// `todo.list` 的翻页游标：上一页最后一项的这两个值。
@@ -183,6 +186,113 @@ pub struct TodoChanged {
     pub deleted: bool,
 }
 
+// ---------------- 派发（docs/spec/daemon.md § 22） ----------------
+
+/// `todo.dispatch`：从一项开一个会话，把会话和这一项关联。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoDispatchParams {
+    pub id: String,
+    /// 同 `session.create`。
+    pub agent: String,
+    /// 缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。给了而且和这一项的不同，派发成功时写回这一项。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// 同 `session.create`。缺省：项目能开 worktree 就用新的 worktree，否则在项目目录里（不看 `worktree.default`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<SessionWorkspace>,
+    /// 同 `session.create`。
+    #[serde(default)]
+    pub settings: SessionSettings,
+    /// 「不 push、不开 PR」（agent 的 `no_push` 选项）。缺省 `true`；所选 agent 没有声明这个选项而它为 `true` → `unsupported`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_push: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoDispatchResult {
+    pub todo: Todo,
+    pub session: SessionSummary,
+}
+
+/// `todo.history` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoHistoryParams {
+    pub id: String,
+    /// 只给 `seq` 小于它的事件（翻页用：上一页最后一条的 `seq`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_seq: Option<u64>,
+    /// 缺省 50，上限 200。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoHistoryResult {
+    /// 按 `seq` 从新到旧。
+    pub events: Vec<TodoEvent>,
+    pub has_more: bool,
+}
+
+/// 谁做了这件事（审计里的「发起者」，不含会话内容）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoActor {
+    pub kind: TodoSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<DeviceId>,
+}
+
+/// `TodoStateBy::Dispatch` 序列化成的字符串 `"dispatch"`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchMarker {
+    /// 关联会话的状态回写（docs/spec/daemon.md § 22.3）。
+    Dispatch,
+}
+
+/// `state` 事件是谁改的：回写是字符串 `"dispatch"`，别的是发起的客户端。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum TodoStateBy {
+    Dispatch(DispatchMarker),
+    Actor(TodoActor),
+}
+
+/// 「经过」里的一条的内容；`kind` 是线路上的标签。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TodoEventData {
+    /// 派发了一次。
+    Dispatched {
+        session_id: SessionId,
+        agent: String,
+        workspace_mode: crate::SessionWorkspaceMode,
+        no_push: bool,
+        by: TodoActor,
+    },
+    /// 关联会话的一轮结束了：agent 这一轮的最后一段话（≤ 4 KiB，在码点边界截断）。这一轮没有文字时 `text` 为空。
+    /// `text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。
+    Result { session_id: SessionId, turn: u64, text: String, truncated: bool },
+    /// 状态变了（这一项有过派发之后才记）。
+    State { from: TodoState, to: TodoState, by: TodoStateBy },
+}
+
+/// 「经过」里的一条：只追加，没有修改、删除一条的方法；删除这一项时一起删。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoEvent {
+    /// 这一项内从 1 递增。
+    pub seq: u64,
+    pub ts_ms: TimestampMs,
+    #[serde(flatten)]
+    pub data: TodoEventData,
+}
+
+/// `todo.event` 通知：这一项的「经过」多了一条，发给所有在线客户端。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoEventNotice {
+    pub todo_id: String,
+    pub event: TodoEvent,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +311,7 @@ mod tests {
             created_ms: 1,
             updated_ms: 2,
             closed_ms: None,
+            sessions: vec![],
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["state"], "waiting");
@@ -232,5 +343,46 @@ mod tests {
         .filter(|s| s.is_closed())
         .collect();
         assert_eq!(closed, vec![TodoState::Done, TodoState::Dropped]);
+    }
+
+    #[test]
+    fn todo_event_wire_shape() {
+        let ev = TodoEvent {
+            seq: 3,
+            ts_ms: 9,
+            data: TodoEventData::State {
+                from: TodoState::Working,
+                to: TodoState::Review,
+                by: TodoStateBy::Dispatch(DispatchMarker::Dispatch),
+            },
+        };
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "seq": 3, "ts_ms": 9, "kind": "state", "from": "working", "to": "review", "by": "dispatch" })
+        );
+        assert_eq!(serde_json::from_value::<TodoEvent>(v).unwrap(), ev);
+        let by_device = serde_json::json!({ "kind": "device", "device_id": "d1" });
+        assert_eq!(
+            serde_json::from_value::<TodoStateBy>(by_device).unwrap(),
+            TodoStateBy::Actor(TodoActor { kind: TodoSourceKind::Device, device_id: Some("d1".into()) })
+        );
+        let r = TodoEvent {
+            seq: 1,
+            ts_ms: 1,
+            data: TodoEventData::Result { session_id: "s".into(), turn: 2, text: String::new(), truncated: false },
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["kind"], "result");
+        assert_eq!(serde_json::from_value::<TodoEvent>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn todo_without_sessions_field_reads_as_empty() {
+        let v = serde_json::json!({
+            "id": "a", "title": "t", "body": "", "state": "open", "source": { "kind": "local" },
+            "unreviewed": false, "created_ms": 1, "updated_ms": 1
+        });
+        assert!(serde_json::from_value::<Todo>(v).unwrap().sessions.is_empty());
     }
 }

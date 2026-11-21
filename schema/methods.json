@@ -439,6 +439,24 @@
   },
   {
     "direction": "request",
+    "name": "todo.dispatch",
+    "params": "TodoDispatchParams",
+    "result": "TodoDispatchResult"
+  },
+  {
+    "direction": "request",
+    "name": "todo.history",
+    "params": "TodoHistoryParams",
+    "result": "TodoHistoryResult"
+  },
+  {
+    "direction": "notification",
+    "name": "todo.event",
+    "params": "TodoEventNotice",
+    "result": null
+  },
+  {
+    "direction": "request",
     "name": "blob.put_begin",
     "params": "BlobPutBeginParams",
     "result": "BlobPutBeginResult"

@@ -16,10 +16,10 @@ use anycon_protocol::{
     SessionGitStatusParams, SessionHistoryParams, SessionIdParams, SessionListParams, SessionMarkReadParams,
     SessionPromoteParams, SessionRenameParams, SessionSearchParams, SessionSearchResult, SessionSendParams,
     SessionSetMarksParams, SessionSetSettingsParams, SessionSyncBaseParams, SessionWorkspaceMode, TodoAddParams,
-    TodoIdParams, TodoListParams, TodoUpdateParams, TrashEntry, WorkspaceBranchesParams, WorkspaceBrowseParams,
-    WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams, WorkspaceNameParams,
-    WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams, WorkspaceTrashListResult,
-    WorkspaceWorktreesParams, PROTOCOL_VERSION,
+    TodoDispatchParams, TodoHistoryParams, TodoIdParams, TodoListParams, TodoUpdateParams, TrashEntry,
+    WorkspaceBranchesParams, WorkspaceBrowseParams, WorkspaceCloneParams, WorkspaceCreateParams, WorkspaceLinkParams,
+    WorkspaceNameParams, WorkspaceRemoveWorktreeParams, WorkspaceRenameParams, WorkspaceTrashIdParams,
+    WorkspaceTrashListResult, WorkspaceWorktreesParams, PROTOCOL_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -498,6 +498,16 @@ impl Rpc {
                 let p: TodoIdParams = params(p)?;
                 crate::todos::delete(c, caller, &p.id).await?;
                 ok(Empty {})
+            }
+
+            // ---------------- 派发（daemon.md § 22）：「经过」里的 text 是会话内容，不进日志和审计 ----------------
+            methods::TODO_DISPATCH => {
+                let p: TodoDispatchParams = params(p)?;
+                ok(crate::todo_dispatch::dispatch(c, caller, p).await?)
+            }
+            methods::TODO_HISTORY => {
+                let p: TodoHistoryParams = params(p)?;
+                ok(crate::todo_dispatch::history(c, p).await?)
             }
 
             // ---------------- 预览（ADR-39，daemon.md § 19）----------------

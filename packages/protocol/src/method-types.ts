@@ -95,6 +95,11 @@ import type {
   Todo,
   TodoAddParams,
   TodoChanged,
+  TodoDispatchParams,
+  TodoDispatchResult,
+  TodoEventNotice,
+  TodoHistoryParams,
+  TodoHistoryResult,
   TodoIdParams,
   TodoListParams,
   TodoListResult,
@@ -182,6 +187,8 @@ export interface RequestMethods {
   'todo.add': { params: TodoAddParams; result: Todo }
   'todo.update': { params: TodoUpdateParams; result: Todo }
   'todo.delete': { params: TodoIdParams; result: Empty }
+  'todo.dispatch': { params: TodoDispatchParams; result: TodoDispatchResult }
+  'todo.history': { params: TodoHistoryParams; result: TodoHistoryResult }
   'blob.put_begin': { params: BlobPutBeginParams; result: BlobPutBeginResult }
   'blob.put_chunk': { params: BlobPutChunkParams; result: Empty }
   'blob.put_end': { params: BlobIdParams; result: AttachmentRef }
@@ -208,6 +215,7 @@ export interface NotificationMethods {
   'session.event': { params: SessionEvent }
   'session.changed': { params: SessionChanged }
   'todo.changed': { params: TodoChanged }
+  'todo.event': { params: TodoEventNotice }
   'permission.request': { params: PermissionRequest }
   'permission.resolved': { params: PermissionResolved }
 }

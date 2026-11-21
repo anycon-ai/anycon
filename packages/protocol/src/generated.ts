@@ -655,6 +655,71 @@ export type TodoSourceKind = "device" | "local" | "agent";
  * 清单项的状态。这一步 daemon 不限制状态之间怎么转。
  */
 export type TodoState = "open" | "working" | "waiting" | "review" | "done" | "dropped";
+/**
+ * 「经过」里的一条：只追加，没有修改、删除一条的方法；删除这一项时一起删。
+ */
+export type TodoEvent = {
+  /**
+   * 这一项内从 1 递增。
+   */
+  seq: number;
+  ts_ms: number;
+} & TodoEvent1;
+export type TodoEvent1 =
+  | {
+      agent: string;
+      by: TodoActor;
+      kind: "dispatched";
+      no_push: boolean;
+      session_id: string;
+      workspace_mode: SessionWorkspaceMode;
+    }
+  | {
+      kind: "result";
+      session_id: string;
+      text: string;
+      truncated: boolean;
+      turn: number;
+    }
+  | {
+      by: TodoStateBy;
+      from: TodoState;
+      kind: "state";
+      to: TodoState;
+    };
+/**
+ * `state` 事件是谁改的：回写是字符串 `"dispatch"`，别的是发起的客户端。
+ */
+export type TodoStateBy = DispatchMarker | TodoActor;
+/**
+ * `TodoStateBy::Dispatch` 序列化成的字符串 `"dispatch"`。
+ */
+export type DispatchMarker = "dispatch";
+/**
+ * 「经过」里的一条的内容；`kind` 是线路上的标签。
+ */
+export type TodoEventData =
+  | {
+      agent: string;
+      by: TodoActor;
+      kind: "dispatched";
+      no_push: boolean;
+      session_id: string;
+      workspace_mode: SessionWorkspaceMode;
+    }
+  | {
+      kind: "result";
+      session_id: string;
+      text: string;
+      truncated: boolean;
+      turn: number;
+    }
+  | {
+      by: TodoStateBy;
+      from: TodoState;
+      kind: "state";
+      to: TodoState;
+    };
 
 /**
  * 仅用于导出 schema，不在线上传输。字段名即 TS / Python 的类型名。
@@ -804,15 +869,24 @@ export interface ProtocolSchema {
   session_worktree: SessionWorktree;
   sync_outcome: SyncOutcome;
   todo: Todo;
+  todo_actor: TodoActor;
   todo_add_params: TodoAddParams;
   todo_changed: TodoChanged;
   todo_cursor: TodoCursor;
+  todo_dispatch_params: TodoDispatchParams;
+  todo_dispatch_result: TodoDispatchResult;
+  todo_event: TodoEvent;
+  todo_event_data: TodoEventData;
+  todo_event_notice: TodoEventNotice;
+  todo_history_params: TodoHistoryParams;
+  todo_history_result: TodoHistoryResult;
   todo_id_params: TodoIdParams;
   todo_list_params: TodoListParams;
   todo_list_result: TodoListResult;
   todo_source: TodoSource;
   todo_source_kind: TodoSourceKind;
   todo_state: TodoState;
+  todo_state_by: TodoStateBy;
   todo_update_params: TodoUpdateParams;
   trash_entry: TrashEntry;
   workspace_branches_params: WorkspaceBranchesParams;
@@ -2495,6 +2569,10 @@ export interface SessionSummary {
   settings: SessionSettings;
   status: SessionStatus;
   title: string;
+  /**
+   * 会话从哪一项派出（`todo.dispatch`，docs/spec/daemon.md § 22.3）。这一项被删除后原样留着，客户端按「来源已删除」显示。
+   */
+  todo_id?: string | null;
   updated_at_ms: number;
   usage?: UsageTotals;
   /**
@@ -2658,6 +2736,10 @@ export interface Todo {
    * 项目名；不校验项目存在，项目改名 / 删除后原样保留。
    */
   project?: string | null;
+  /**
+   * 这一项派出的会话（`todo.dispatch`，docs/spec/daemon.md § 22.3），按派发的先后，最多 20 个。会话被删除后关联留着。
+   */
+  sessions?: string[];
   source: TodoSource;
   state: TodoState;
   /**
@@ -2680,6 +2762,13 @@ export interface TodoSource {
    * 这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。
    */
   session_id?: string | null;
+}
+/**
+ * 谁做了这件事（审计里的「发起者」，不含会话内容）。
+ */
+export interface TodoActor {
+  device_id?: string | null;
+  kind: TodoSourceKind;
 }
 export interface TodoAddParams {
   /**
@@ -2716,6 +2805,64 @@ export interface TodoChanged {
 export interface TodoCursor {
   id: string;
   updated_ms: number;
+}
+/**
+ * `todo.dispatch`：从一项开一个会话，把会话和这一项关联。
+ */
+export interface TodoDispatchParams {
+  /**
+   * 同 `session.create`。
+   */
+  agent: string;
+  id: string;
+  /**
+   * 「不 push、不开 PR」（agent 的 `no_push` 选项）。缺省 `true`；所选 agent 没有声明这个选项而它为 `true` → `unsupported`。
+   */
+  no_push?: boolean | null;
+  /**
+   * 缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。给了而且和这一项的不同，派发成功时写回这一项。
+   */
+  project?: string | null;
+  /**
+   * 同 `session.create`。
+   */
+  settings?: SessionSettings;
+  /**
+   * 同 `session.create`。缺省：项目能开 worktree 就用新的 worktree，否则在项目目录里（不看 `worktree.default`）。
+   */
+  workspace?: SessionWorkspace | null;
+}
+export interface TodoDispatchResult {
+  session: SessionSummary;
+  todo: Todo;
+}
+/**
+ * `todo.event` 通知：这一项的「经过」多了一条，发给所有在线客户端。
+ */
+export interface TodoEventNotice {
+  event: TodoEvent;
+  todo_id: string;
+}
+/**
+ * `todo.history` 的参数。
+ */
+export interface TodoHistoryParams {
+  /**
+   * 只给 `seq` 小于它的事件（翻页用：上一页最后一条的 `seq`）。
+   */
+  before_seq?: number | null;
+  id: string;
+  /**
+   * 缺省 50，上限 200。
+   */
+  limit?: number | null;
+}
+export interface TodoHistoryResult {
+  /**
+   * 按 `seq` 从新到旧。
+   */
+  events: TodoEvent[];
+  has_more: boolean;
 }
 export interface TodoIdParams {
   id: string;

@@ -6,6 +6,8 @@
 //! `translate`（stream-json → 事件，纯同步）、`permissions`（权限请求 ↔ 答复）、`tools`（工具分类与渲染字段）、
 //! `input`（用户输入 → stream-json 用户消息，含图片附件）、`handle`（`AgentHandle`）。
 
+mod oneshot;
+
 pub mod handle;
 pub mod input;
 pub mod models;
@@ -64,6 +66,13 @@ impl Adapter for ClaudeCodeAdapter {
     fn validate_settings(&self, info: &AgentInfo, settings: &SessionSettings) -> Result<()> {
         default_validate(info, settings)?;
         process::validate_settings_values(settings)
+    }
+
+    async fn oneshot(
+        &self,
+        req: anycon_agent_api::OneshotRequest,
+    ) -> std::result::Result<anycon_agent_api::OneshotReply, anycon_agent_api::OneshotError> {
+        oneshot::call(req).await
     }
 
     async fn spawn(&self, req: SpawnRequest) -> Result<Box<dyn AgentHandle>> {

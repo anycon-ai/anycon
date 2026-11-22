@@ -2,6 +2,9 @@
 //!
 //! 只用运行时查询（不用 `query!` 宏），编译不依赖数据库。所有时间是 Unix 毫秒。
 
+mod judge;
+pub use judge::{ExtractAttempts, ExtractRunFinish, JudgeCallFinish, JudgeCallStart};
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -433,6 +436,15 @@ impl Store {
 
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>> {
         let rows = sqlx::query("SELECT * FROM sessions ORDER BY created_ms").fetch_all(&self.pool).await?;
+        rows.iter().map(Self::row_to_session).collect()
+    }
+
+    /// 自动提炼先按会话更新时间缩小范围，再检查最后事件时间。
+    pub(crate) async fn sessions_updated_since(&self, since_ms: u64) -> Result<Vec<SessionRow>> {
+        let rows = sqlx::query("SELECT * FROM sessions WHERE updated_ms >= ?")
+            .bind(since_ms as i64)
+            .fetch_all(&self.pool)
+            .await?;
         rows.iter().map(Self::row_to_session).collect()
     }
 

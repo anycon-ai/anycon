@@ -564,3 +564,13 @@ async fn diagnose_when_missing_shows_empty_lookups() {
     assert_eq!(get("resolved from"), "(not found)");
     assert_eq!(get("status"), "not_installed");
 }
+
+#[tokio::test]
+async fn oneshot_requires_a_verified_version() {
+    for (version, supported) in [("2.1.324", false), ("2.1.325", true), ("2.2.0", true), ("dev", false)] {
+        let s = Setup::with_claude_on_path().var("FAKE_CLAUDE_VERSION_TEXT", version);
+        let info = ClaudeCodeAdapter::new().probe(&s.ctx()).await;
+        assert_eq!(info.status, AgentStatus::Ready);
+        assert_eq!(info.capabilities.oneshot, supported, "{version}");
+    }
+}

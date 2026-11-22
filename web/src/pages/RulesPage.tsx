@@ -1,3 +1,4 @@
+import { ExtractHistory } from '@/features/rules/ui/ExtractHistory'
 import { useMemo, useState } from 'react'
 import { ChevronRight, Plus, ScrollText } from 'lucide-react'
 import { Collapsible } from 'radix-ui'
@@ -24,7 +25,7 @@ type Tab = 'pending' | 'active'
  * 停用和否决的（还有这个版本不认识状态的）收在「已生效」下面的折叠里。每条规则的全文（纯文字）都在卡片上；待确认的可以多选一起确认 / 否决。
  * 写操作直接发给节点（没有离线队列）：节点不在线时按钮禁用并说明。
  */
-export function RulesPage() {
+export function RulesPage({ initialTab }: { initialTab?: Tab } = {}) {
   const { t } = useTranslation()
   const { selected } = useNodeFilter()
   const supporting = useRulesNodes(selected)
@@ -37,7 +38,7 @@ export function RulesPage() {
   const pending = useMemo(() => all.filter((r) => statusOf(r) === 'pending'), [all])
   const active = useMemo(() => all.filter((r) => statusOf(r) === 'active'), [all])
   const other = useMemo(() => all.filter((r) => !['pending', 'active'].includes(statusOf(r))), [all])
-  const [tab, setTab] = useState<Tab>(() => (pending.length > 0 ? 'pending' : 'active'))
+  const [tab, setTab] = useState<Tab>(() => initialTab ?? (pending.length > 0 ? 'pending' : 'active'))
   // 勾选时记下那一刻看到的版本（`updated_ms`）：批量确认 / 否决发的就是它；规则在这之后变了，勾选作废（卡片上标出来，要重新勾）
   const [checked, setChecked] = useState<ReadonlyMap<string, number>>(new Map())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -190,6 +191,7 @@ export function RulesPage() {
               )}
             </>
           )}
+          <ExtractHistory nodeIds={selected} />
         </div>
       </div>
       {dialogs}

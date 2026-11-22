@@ -5,6 +5,9 @@
 //! （回显里报文件大小和 SHA-256 前缀，证明 daemon 给的路径对）；其它关键词（`echo hi` 之类）只发事件，
 //! 不执行任何东西。
 
+//! 一次性调用：prompt 中第一个 `MOCK_ONESHOT:` 后紧接一个标准 base64 词（到空白为止），
+//! 解码为 UTF-8 回答；没有标记时返回 `{"rules":[]}`。非法编码返回固定的 Failed。
+
 mod session;
 
 /// `big` 关键词产生的确定性大输出文本（测试 / e2e 用来对照）。
@@ -171,8 +174,30 @@ impl Adapter for MockAdapter {
             rewind: false,
             // 回显里能看到 `system_prompt_append`（README 的「回显」一节）
             system_prompt: true,
+            oneshot: true,
         };
         info
+    }
+
+    async fn oneshot(
+        &self,
+        req: anycon_agent_api::OneshotRequest,
+    ) -> std::result::Result<anycon_agent_api::OneshotReply, anycon_agent_api::OneshotError> {
+        use anycon_agent_api::{OneshotError, OneshotReply};
+        use base64::Engine;
+        if !req.config.enabled {
+            return Err(OneshotError::Unsupported);
+        }
+        let text = if let Some((_, script)) = req.prompt.split_once("MOCK_ONESHOT:") {
+            let encoded = script.split_whitespace().next().ok_or(OneshotError::Failed)?;
+            String::from_utf8(
+                base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| OneshotError::Failed)?,
+            )
+            .map_err(|_| OneshotError::Failed)?
+        } else {
+            r#"{"rules":[]}"#.into()
+        };
+        Ok(OneshotReply { text, input_tokens: Some(0), output_tokens: Some(0), cost_usd: Some(0.0) })
     }
 
     async fn spawn(&self, req: SpawnRequest) -> Result<Box<dyn AgentHandle>> {

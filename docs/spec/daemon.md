@@ -218,7 +218,7 @@ AgentInfo {
     structured_output: bool
     env:               bool            // 支持每会话 env
     system_prompt:     bool            // `system_prompt_append` 真的会交给 agent（§ 6.3）；Claude Code、Codex、mock 为 true，ACP 为 false，旧 daemon 没有这个字段（按 false）。决策档案的规则靠它注入（§ 23.5）
-    oneshot:           bool            // 能做一次性调用（不开会话、没有工具，§ 25.1 的 agent 判断后端）；Claude Code、Codex（装的版本支持那些参数时）、mock 为 true，ACP 为 false，旧 daemon 没有这个字段（按 false）
+    oneshot:           bool            // 能做一次性调用（不开会话；Claude Code 无工具，Codex 仍有只读工具，§ 25.1 的 agent 判断后端）；Claude Code、Codex（装的版本支持那些参数时）、mock 为 true，ACP 为 false，旧 daemon 没有这个字段（按 false）
   }
   probed_at: timestamp
 }
@@ -876,7 +876,7 @@ SQLite（WAL）。全部表：
 | `todo_sessions` / `todo_events` | 清单项派出的会话和「经过」（§ 22.8）；`sessions.todo_id` 是会话的来源项 |
 | `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms。不受 `history_retention` 影响 |
 | `judge_calls` | 判断后端的每次调用（§ 25.2，迁移 `0007_judge.sql`）：id、position、backend、kind、model、started_ms、finished_ms、status（`ok` 或错误码）、input_bytes、output_bytes、input_tokens、output_tokens、cost_usd。不存提示和回应，保留 90 天 |
-| `rule_extract_runs` | 每次提炼（§ 23.9，同一个迁移）：id、session_id、trigger、device_id、status、started_ms、finished_ms、points、from_seq、to_seq、added(JSON)、dropped(JSON)、backend、error_code、error_status、call_id。保留 90 天 |
+| `rule_extract_runs` | 每次提炼（§ 23.9，同一个迁移）：id、session_id、trigger、device_id、status、started_ms、finished_ms、points、from_seq、to_seq、added(JSON)、dropped(JSON)、backend、error_code、error_status、call_id。保留 90 天，但每个会话最新的 `done` 始终保留以维持水位 |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
@@ -903,7 +903,7 @@ SQLite（WAL）。全部表：
 
 本机 socket 上的调用方 `device_id` 是 `local`，`device_name` 默认 `local-cli`。连接可以用 `local.set_client { client: "cli" | "mcp" }` 自报客户端种类（固定枚举，别的值 `invalid`；只在本机通道有，经 hub 调用 `forbidden`，经 hub 的连接身份由配对的设备决定），自报 `mcp` 之后这条连接的审计设备名是 `local-mcp`（`anycon mcp` 连上就声明，[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）。它只用来在审计里分清「人敲的命令」和「agent 经 MCP 发的」：自报的，不改变任何权限，对故意不声明的本机进程没有约束力。
 
-记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2；派发开的会话另记一条 `session.create`）`rule.add` `rule.update` `rule.delete`（只记长度、字段名和状态，不记规则的文字，§ 23.7）。会话引起的 `activity` 变化不进审计（它不是修改，§ 22.3）。
+记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2；派发开的会话另记一条 `session.create`）`rule.add` `rule.update` `rule.delete`（只记长度、字段名和状态，不记规则的文字，§ 23.7）`rule.extract`（只记触发方式、结果、数量和后端，不记摘录或回应，§ 23.7）。会话引起的 `activity` 变化不进审计（它不是修改，§ 22.3）。
 
 `fs.read` 的 target 是请求里的 `path`，detail 是 `bytes`（文件总长）。一个大文件要分很多块读（`encoding = "base64"`，每块 512 KiB），逐块记会把审计表灌满、盖掉有意义的行，所以**同一台设备对同一路径的读，5 分钟内只记第一次**。窗口按（设备，路径）算而不是按「第 0 块」算：只读后面的块也会留下一条，不能靠跳过第 0 块绕开审计。窗口只在真正写了一行时刷新，持续读一个文件，每 5 分钟至少有一行；去重表只在内存里，daemon 重启就清空。
 
@@ -1464,7 +1464,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ## 23. 决策档案
 
-> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半（从会话里提炼规则，§ 23.9；判断后端，§ 25）是规格，还没实现；同组节点之间的同步（§ 23.8）单独实现，也还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）单独实现，还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
 
 ### 23.1 范围
 
@@ -1524,8 +1524,8 @@ Rule {
 | `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除 |
 | `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话，会注入的那段文字（§ 23.5）。只读 |
 | `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。新建、真正的修改、删除才发；空操作、重复的 `rule.add` 和 `last_injected_ms` 的变化（§ 23.5）不发 |
-| `rule.extract` | C→D | `{ session_id }` → `{ run?: ExtractRun, points }`（§ 23.9）。`points` 是这次会带上的决策点数（水位之后的，最多 40 个）：0 时不调用后端、不留记录，也没有 `run`。否则开始一次提炼，立即返回 `status = running` 的 `run`，结束时发 `rule.extract_done`。正在跑的就是这个会话时返回那一次。会话不存在 → `not_found`；没配提炼用的后端或者它现在不能用 → `invalid`（`data.reason = "not_configured"`）；今天的调用次数用完 → `invalid`（`data.reason = "budget"`，带 `used`、`limit`）；另一个会话的提炼正在跑 → `invalid`（`data.reason = "busy"`）。自报了 `mcp` 的连接 → `forbidden`：提炼花钱，输入是会话内容，只由人发起 |
-| `rule.extract_runs` | C→D | `{ session_id?, limit? }` → `{ runs: [ExtractRun], used_today, daily_calls }`。从新到旧，`limit` 缺省 20，最多 100。`used_today` 是今天所有位置合计已经调用的次数 |
+| `rule.extract` | C→D | `{ session_id }` → `{ run?: ExtractRun, points }`（§ 23.9）。`points` 是这次会带上的决策点数（水位之后的，最多 40 个）：0 时不调用后端、不留记录，也没有 `run`。否则开始一次提炼，立即返回 `status = running` 的 `run`，结束时发 `rule.extract_done`。正在跑的就是这个会话时返回那一次。会话不存在 → `not_found`；没配提炼用的后端或者它现在不能用 → `invalid`（`data.reason = "not_configured"`）；另一个会话的提炼正在跑 → `invalid`（`data.reason = "busy"`）；今天的调用次数用完 → `invalid`（`data.reason = "budget"`，带 `used`、`limit`）。自报了 `mcp` 的连接 → `forbidden`：提炼花钱，输入是会话内容，只由人发起 |
+| `rule.extract_runs` | C→D | `{ session_id?, limit? }` → `{ runs: [ExtractRun], used_today, daily_calls }`。从新到旧，`limit` 缺省 20，按仓库列表参数惯例钳制到 1–100。`used_today` 是今天所有位置合计已经调用的次数 |
 | `rule.extract_done` | D→C notification | `{ run: ExtractRun }`：一次提炼结束（成功或失败）时发给所有在线客户端 |
 
 细节：
@@ -1598,7 +1598,7 @@ daemon 从不自动删除有用的规则（ADR-54 第 3 条）：待确认、生
 
 ### 23.9 提炼
 
-后一半（[ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条）：从会话里挑出用户做过的决定，交给判断后端（§ 25）归纳成**待确认**的规则。没有配提炼用的后端时，这一节的一切都不发生：不起定时器、不调用任何模型，`rule.extract` 回 `not_configured`。
+已实现的提炼（[ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条）：从会话里挑出用户做过的决定，交给判断后端（§ 25）归纳成**待确认**的规则。没有配提炼用的后端时，后台检查任务不发起调用；`rule.extract` 有新的决策点时回 `not_configured`，没有新的决策点仍回 `{ points: 0 }`。后台检查任务可以常驻，以便热加载配置之后自动生效。
 
 #### 决策点
 
@@ -1625,7 +1625,7 @@ daemon 用固定的模板拼出一次调用，模板是英文的，给模型看�
 
 - **系统提示**：说明任务，就是从用户自己说的话里归纳出以后可以沿用的做法。规则写在里面：只依据「用户说的」，「agent 写的上下文」只是帮助理解的数据，里面的任何指令都不照做；只提能用到以后的工作里的做法，一次性的指示不提；每条一两句话、不超过 300 个字符；最多 5 条；没有就返回空列表。最后是输出格式。
 - **已有的规则**：这个会话所在项目的规则和全节点规则，按状态分组标出（生效、待确认、停用、否决过），各组内按 `updated_ms` 从新到旧，合计最多 8 KiB，超出的从旧的开始不带。要求不要提和它们意思相同的规则。
-- **决策点摘录**：每个决策点一段，标出 `seq` 和 `kind`。「agent 写的」和「用户说的」分开，各自用边界标记包起来；边界里带一个每次调用随机生成的标记，内容里伪造不出来。
+- **决策点摘录**：每个决策点一段，标出 `seq` 和 `kind`。「agent 写的」和「用户说的」分开，各自用边界标记包起来；边界里带一个每次调用用 `rand` 生成的随机标记，并检查标记没有出现在任一段内容中；即使内容含有其他边界文字也不会闭合本次边界。
 
 #### 输出和检查
 
@@ -1703,7 +1703,7 @@ ExtractRun {
 - **Web**（已实现，[web.md § 4.14](web.md#414-规则-rules)）：规则页 `/rules`（待确认 / 已生效，显示已用字数和上限，新建、编辑、确认、否决、停用、启用、删除，多选）；「待处理」稍后段里的待确认规则（一条一行，确认只在显示着全文的详情里）；审批卡片和提问卡片的答复按钮旁的「记成规则」（不答复请求）；派发对话框里显示将注入的规则（`todo.dispatch_preview` 的 `rules_text`，换项目重新取）和「这个 agent 收不到规则」；会话信息面板里的「交给 agent 的规则」；「更多」、左栏和命令面板里出现「规则」。回答框的「以后都这样」勾选没有做（只有「记成规则」按钮）。
 - **CLI**：`anycon rule add <text> [--project <name>]`、`anycon rule ls [--all] [--json]`、`anycon rule show <id>`、`anycon rule confirm | reject | disable | enable <id>`、`anycon rule rm <id>`；`<id>` 接受前缀。在 anycon 拉起的 agent 里（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true`（记成待确认），`ls` 和 `show`（只读）照常，其余拒绝执行（同 § 21.8，护栏，不是边界）；`add` 带 `ANYCON_SESSION_ID` 作为 `origin_session`。`show` 用 `visible()` 打印一条规则的全文、状态、项目和来源（`ls` 把规则截成一行，不够审阅）；`confirm` / `enable` 打印被激活的那条规则的全文。`ls` 缺省给 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；`--json` 给 `{ rules, budget }`。`confirm` / `enable` 把状态改成 `active`，`reject` 改成 `rejected`，`disable` 改成 `disabled`（都是 `rule.update`；经前缀列过表的带 `if_updated_ms`，所以列出之后别处改过这条规则就不确认；已经是这个状态就如实说没变）。`anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则。子命令规格见 [cli.md § 3.9](cli.md#39-anycon-rule)。
 - **`anycon mcp`**：不加工具。MCP 的工具都是固定映射到具体 RPC 的，没有通用的转发，所以经它够不着 `rule.*`；自报了 `mcp` 的连接直接发 `rule.add` 只能记待确认的，发 `rule.update` / `rule.delete` 得到 `forbidden`。
-- **提炼**（§ 23.9）：Web 会话页「更多」里的「提炼规则」、规则页里提炼出的规则的出处和「提炼记录」、节点设置里的 `rules.extract_auto` 和 `judge.*`（[web.md § 4.14](web.md#414-规则-rules)）；CLI 的 `anycon rule extract <session>` 和 `anycon rule runs`（[cli.md § 3.9](cli.md#39-anycon-rule)），在 anycon 拉起的 agent 里拒绝执行；`anycon doctor` 的「判断后端」一项（§ 25）。
+- **提炼**（§ 23.9）：Web 会话页「更多」里的「提炼规则」、规则页里提炼出的规则的出处和「提炼记录」、节点设置里的 `rules.extract_auto` 和 `judge.*`（[web.md § 4.14](web.md#414-规则-rules)）；CLI 的 `anycon rule extract <session>` 和 `anycon rule runs`（[cli.md § 3.9](cli.md#39-anycon-rule)），其中 `extract` 在 anycon 拉起的 agent 里拒绝执行，`runs` 只读、照常可用；`anycon doctor` 的「判断后端」一项（§ 25）。
 - **SDK**：`node.rules.*`（含 `extract`、`extractRuns`）、`rule_changed` 和 `rule_extract_done` 事件。
 
 ### 23.11 代价 / 限制
@@ -1765,7 +1765,7 @@ ExtractRun {
 
 ## 25. 判断后端
 
-> **规格，还没实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。现在用到它的只有提炼规则（§ 23.9）；分拣和顾问在第 4 步。
+> **已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。现在用到它的只有提炼规则（§ 23.9）；分拣和顾问在第 4 步。
 
 ### 25.1 配置
 
@@ -1800,25 +1800,25 @@ timeout = "5m"
 - **`format`**（必填），两种：
   - `anthropic`：Messages API，`POST {base_url}/v1/messages`，头里带 `x-api-key` 和 `anthropic-version: 2023-06-01`。`base_url` 缺省 `https://api.anthropic.com`。
   - `openai`：Chat Completions，也兼容这个格式的网关和本地模型服务。`POST {base_url}/chat/completions`，头里带 `Authorization: Bearer`。`base_url` 缺省 `https://api.openai.com/v1`。
-- **`base_url`** 只能是 `https://`。`http://` 只接受回环地址（`127.0.0.1`、`[::1]`、`localhost`），给本机的网关用。不跟随重定向。
+- **`base_url`** 只能是 `https://`。`http://` 只接受回环地址（`127.0.0.1`、`[::1]`、`localhost`），给本机的网关用。加载时去掉末尾的 `/`；拒绝 URL 内的用户名 / 密码、查询参数和 fragment，避免把凭据混进地址，也保证追加 API 路径的含义确定。不跟随重定向。
 - **`model`**（必填）原样传给服务。
 - **密钥**二选一：
   - `api_key_env = "NAME"`：从 daemon 给 agent 用的那份环境里读（§ 5.5：daemon 的进程环境，`agents.env_from_login_shell = true` 时还有登录 shell 解析出来的变量），每次调用时读。
   - `api_key = "…"`：直接写在文件里。
 
   两个都没给，或者环境变量是空的，这个后端就不能用（`problem = no_key`）。回环地址上的 `http://` 后端可以不要密钥。
-- **`max_output_tokens`**：1–16 384，缺省 2 048。
+- **`max_output_tokens`**：1–16 384，缺省 2 048。Messages API 用 `max_tokens`；Chat Completions 在主机是 `api.openai.com` 时用 `max_completion_tokens`（官方新模型不接受 `max_tokens`），别的主机（兼容网关、本地服务）用 `max_tokens`。
 - **`timeout`**：整次请求的时限，10s–10m，缺省 2m。
-- **请求**：不用流式，不带工具，不设 temperature。系统提示和用户消息各一段（Messages API 的 `system` 字段；Chat Completions 是一条 `system` 消息）。
-- **回应**：回应体最多 1 MiB。取第一段文字：Messages API 是 `content[]` 里第一个 `type = text` 的；Chat Completions 是 `choices[0].message.content`。
-  - usage：Messages API 取 `usage.input_tokens` / `output_tokens`，Chat Completions 取 `usage.prompt_tokens` / `completion_tokens`。
+- **请求**：不用流式，不带工具，不设 temperature。系统提示和用户消息各一段（Messages API 的 `system` 字段；Chat Completions 是一条 `system` 消息）。`Content-Type: application/json`；`User-Agent: anycon/<版本>`，不带平台或别的标识；没有密钥时不带认证头。调用时再次拒绝非回环的明文 HTTP（`internal`）和缺少密钥的非回环地址（`auth`），均不连接。
+- **回应**：回应体最多 1 MiB。取第一段文字：Messages API 是 `content[]` 里第一个 `type = text` 的；Chat Completions 是 `choices[0].message.content`，字符串直接取，一组 part 则按顺序拼接其中 `type = text` 的文字。
+  - usage：Messages API 取 `usage.input_tokens` / `output_tokens`，Chat Completions 取 `usage.prompt_tokens` / `completion_tokens`；缺少的留空，不填 `cost_usd`。
 - **错误**：
-  - 连不上、TLS 失败 → `network`
+  - 连不上、DNS / TLS 失败、连接中途断开 → `network`
   - 401 / 403 → `auth`
   - 429 → `rate_limited`
   - 别的非 2xx → `http`（带状态码）
   - 超时 → `timeout`
-  - 回应解析不了 → `bad_output`
+  - 回应体超过 1 MiB、JSON 解析不了或没有文字 → `bad_output`
 
   错误里只有这个码和状态码，不带回应的内容。
 
@@ -1833,29 +1833,30 @@ timeout = "5m"
 - **`timeout`**：10s–15m，缺省 5m。
 - **怎么调**：每次在一个新建的空临时目录里拉起 agent 的非交互模式，提示从 stdin 给，结束后删掉这个目录。
   - 不写会话，不出现在会话列表里；agent 自己的会话记录能关的都关掉。
-  - 子进程环境同 § 5.5（`agents.<id>.env` 照用）。
-  - 超时就杀掉进程树，算 `timeout`。
+  - 子进程环境复用 § 5.5 的会话环境构造（`agents.<id>.env` 照用，带 `ANYCON_AGENT=1`；没有会话级 env 和 `ANYCON_SESSION_ID`）。
+  - 超时就杀掉进程树，算 `timeout`；调用被取消、输出超限、leader 退出时也清理进程树。stdout / stderr 各最多读取 1 MiB，超过算 `agent_failed`，不把 stderr 或任何内容带进错误信息。
 - **各 agent 的调法**：
   - **Claude Code**：`claude -p --output-format json --tools "" --no-session-persistence --strict-mcp-config --system-prompt <系统提示> [--model <m>]`。没有任何工具，不加载 MCP server。
     - 取 JSON 里的 `result`；`is_error = true` 算 `agent_failed`。
-    - usage 取 `usage.input_tokens` / `output_tokens` 和 `total_cost_usd`。
-  - **Codex**：`codex exec --skip-git-repo-check --ephemeral --sandbox read-only --color never -o <临时文件> [-m <m>] -`。
-    - Codex 没有单独的系统提示参数，系统提示拼在提示的开头。
+    - 输入用量 = `usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens`：Anthropic 的 `input_tokens` 不含缓存读写。缺失的缓存字段按 0；嵌套 `cache_creation` 是创建用量的明细，不重复加。输出取 `usage.output_tokens`，费用取 `total_cost_usd`；缺失的用量留空。
+  - **Codex**：`codex exec --skip-git-repo-check --ephemeral --sandbox read-only --color never --json -o <临时文件> [-m <m>] -`。
+    - Codex 没有单独的系统提示参数，系统提示拼在提示的开头；用 `=== SYSTEM INSTRUCTIONS ===` / `=== END SYSTEM INSTRUCTIONS ===` 和 `=== USER PROMPT ===` / `=== END USER PROMPT ===` 分隔。这只是文本分隔，不构成指令隔离边界。
     - Codex 关不掉全部工具：它在只读沙箱里还能跑只读的命令（§ 25.4）。
-    - 取 `-o` 写下的最后一条消息。
+    - 取 `-o` 写下的最后一条消息（普通文件，最多读取 1 MiB）。`--json` 的 `turn.completed.usage` 提供 `input_tokens` / `output_tokens`，缺失留空；`cached_input_tokens` 已包含在输入总数中，不重复加。成功要求退出码为 0 并且出现过 `turn.completed`；`turn.failed` 算 `agent_failed`；`error` 事件只在之后没有 `turn.completed` 时才算失败（Codex 在可以重试的情况下也发 `error`）。事件流里有解析不了的行同样算失败。
   - 两种都是：退出码非 0 算 `agent_failed`。
-- **核实**：这些参数要在真实的 CLI 上核实（测试放在 `ANYCON_REAL_AGENT_TESTS=1` 后面）。装的版本不支持时，adapter 不声明 `oneshot`。
+- **版本界线**：Claude Code 从 **2.1.325**、Codex 从 **0.169.0** 起声明 `oneshot`；版本解析不了或更低时不声明。这两个版本上核实过上面全部参数，更早的版本没有核实，不代表它们不支持。mock 声明，ACP 不声明。真实 CLI 的测试（`real_oneshot`：回答和用量；Claude Code 读不到临时目录外的文件；Codex 调用成功）要 `ANYCON_REAL_AGENT_TESTS=1` 和 `--ignored`。
 
 ### 25.2 次数和记录
 
 - **`judge.daily_calls`**：所有位置合计，每个本地日最多调用后端几次。本地日按 daemon 所在机器的时区算，0 点重置。
   - 失败的调用也算，因为多半也花了钱。0 = 不调用。
   - 到了上限，手动的请求回 `invalid`（`data.reason = "budget"`，带 `used` 和 `limit`）；自动的等到第二天。
-- **同时只有一次**：一个节点同时只有一次调用在进行。
+- **同时只有一次**：一个节点同时只有一次调用在进行。`Judge::begin` 依次检查没配或后端不能用（`not_configured`）→ 拿不到节点调用锁（`busy`）→ 今天次数用完（`budget`）。预算在拿到锁之后查询，避免并发请求同时通过。
+  - 检查通过返回 `Permit`，持有锁和按当时配置构造的后端；提炼先预留再插入 `running` 记录，失败的调用同样关联 `call_id`；检查及预留不写记录。直接丢弃只释放锁；调用 `Permit::call` 才开始记账和后台调用，之后的配置热加载不改变这次调用。
 - **`judge_calls` 表**：每次调用留一行，记时间、位置（`extract`，之后还有 `triage`、`advisor`）、后端名、种类、模型、结果（`ok` 或错误码）、输入和输出的字节数、usage。
   - **不存提示和回应的内容**，日志里也没有：日志只记位置、后端名、结果、耗时和字节数。
-  - 记录保留 90 天，`rule_extract_runs` 也一样。
-- **daemon 停下时**：正在进行的调用被取消，记成 `cancelled`。
+  - 记录保留 90 天。`rule_extract_runs` 同样清理 90 天前的已结束记录，但保留每个会话最新的 `done`（按 `started_ms`、同毫秒的插入顺序确定，不论多旧），避免水位丢失后重复提炼。
+- **daemon 停下时**：正在进行的调用被取消，记成 `cancelled`。下次启动时，未结束的调用也补记 `cancelled`，仍为 `running` 的提炼改为 `failed` / `cancelled`。已开始的调用独立于 RPC 调用方的连接存活，断线不丢掉记账收尾；关库前等待收尾完成。
 
 ### 25.3 `node.info.judge`
 
@@ -1872,7 +1873,19 @@ judge?: {                     // 旧 daemon 没有这个字段
 }
 ```
 
+daemon 总是给出 `judge`：什么都没配时 `backends = []`，没有两个位置的字段，`daily_calls` 照给。旧 daemon 没有这个字段。
+
 不含 `base_url`、密钥和环境变量名。客户端靠它决定「提炼规则」能不能点，以及没配时怎么说明。`node.info.capabilities.rule_extract = true` 表示 daemon 支持 `rule.extract`。
+
+#### doctor 的 judge 检查
+
+`anycon doctor` / `node.doctor` 增加 `judge` 项。例如：
+
+```text
+ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc (agent=claude-code model=sonnet: ready); extract: haiku (ready); triage: not configured; today: 3 / 20 calls
+```
+
+列出每个后端的名字、种类、模型 / agent 及 `no_key` / `agent_missing` / `agent_unsupported`；密钥只报告 `key found` 或 `key not found`，回环 HTTP 无密钥时另说明可选。不含地址、密钥或环境变量名。两个位置都列出生效选择，提炼选择包含跟随分拣的结果；名字不存在时写 `backend does not exist`。没有任何配置是 `ok`、`not configured`；任一位置指向不存在或不可用的后端是 `warn`，未被选择的坏后端只列出问题。`warn` 在诊断协议里也是 `ok = false`，所以 `anycon doctor` 的退出码非 0。最后是今天的调用次数和上限；daemon 没在运行时只读地查数据库，读不了就写 `unavailable`，不修复、不迁移数据库。
 
 ### 25.4 威胁模型
 

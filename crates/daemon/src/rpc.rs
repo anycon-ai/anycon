@@ -521,6 +521,11 @@ impl Rpc {
             }
 
             // ---------------- 决策档案（daemon.md § 23）：规则的 text 是用户内容，不进日志和审计 ----------------
+            methods::RULE_EXTRACT => {
+                let p: anycon_protocol::RuleExtractParams = params(p)?;
+                ok(c.extractor.start(c, caller, &p.session_id, anycon_protocol::ExtractTrigger::Manual).await?)
+            }
+            methods::RULE_EXTRACT_RUNS => ok(crate::rule_extract::runs(c, params(p)?).await?),
             methods::RULE_LIST => {
                 let p: RuleListParams = params(p)?;
                 ok(crate::rules::list(c, p).await?)
@@ -740,6 +745,7 @@ impl Rpc {
                 preview: c.preview.enabled(),
                 todo: true,
                 rules: true,
+                rule_extract: true,
             },
             started_at_ms: c.started_at_ms,
             attachment_limits: Some(NodeAttachmentLimits {
@@ -760,6 +766,7 @@ impl Rpc {
                 }
             }),
             update_available: c.updates.available(),
+            judge: Some(c.judge.info()),
         }
     }
 

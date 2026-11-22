@@ -50,6 +50,10 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
             "preview.enabled",
             "preview.ticket_ttl",
             "rules.inject_manual_sessions",
+            "rules.extract_auto",
+            "judge.extract",
+            "judge.triage",
+            "judge.daily_calls",
             "notify.turn_finished",
             "notify.session_idle_after",
             "log.level",
@@ -519,5 +523,60 @@ async fn hub_group_is_set_remotely_audited_and_shown_in_node_info() {
         assert_eq!(code(&e), (ErrorCode::Forbidden, Some(key.into()), Some("not_editable".into())), "{key}");
     }
     assert_eq!(audit(&td).await.len(), 2, "refused changes are not audited");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn judge_config_rpc_is_hot_and_keeps_backend_secrets_local() {
+    let td = TestDaemon::start_with(
+        &[(
+            "judge.backends",
+            "{ z = { kind = 'agent', agent = 'fake' }, \
+             a = { kind = 'api', format = 'openai', model = 'm', api_key = 'PRIVATE-KEY' } }",
+        )],
+        false,
+    )
+    .await;
+    let mut c = td.client("web");
+    let r: NodeConfigResult = c.call(&td, methods::NODE_GET_CONFIG, json!({})).await.unwrap();
+    for key in ["judge.extract", "judge.triage"] {
+        assert_eq!(item(&r, key).options, vec!["", "a", "z"]);
+    }
+    let text = serde_json::to_string(&r).unwrap();
+    assert!(!text.contains("PRIVATE-KEY") && !text.contains("judge.backends"));
+    for key in ["judge.backends", "judge.backends.a.api_key", "judge.backends.a.base_url", "judge.backends.z.agent"] {
+        let err =
+            c.call::<Value>(&td, methods::NODE_SET_CONFIG, changes(&[(key, json!("anything"))])).await.unwrap_err();
+        assert_eq!(code(&err), (ErrorCode::Forbidden, Some(key.into()), Some("not_editable".into())));
+    }
+    let err = c
+        .call::<Value>(&td, methods::NODE_SET_CONFIG, changes(&[("judge.extract", json!("absent"))]))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err).0, ErrorCode::Invalid);
+    let _: NodeConfigResult = c
+        .call(
+            &td,
+            methods::NODE_SET_CONFIG,
+            changes(&[
+                ("judge.triage", json!("a")),
+                ("judge.daily_calls", json!(7)),
+                ("rules.extract_auto", json!(true)),
+            ]),
+        )
+        .await
+        .unwrap();
+    let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
+    assert!(info.capabilities.rule_extract);
+    let judge = info.judge.unwrap();
+    assert_eq!(judge.extract.as_deref(), Some("a"));
+    assert_eq!(judge.triage.as_deref(), Some("a"));
+    assert_eq!(judge.daily_calls, 7);
+    assert!(td.ctx.config.get().rules.extract_auto);
+    assert_eq!(td.ctx.judge.daily_calls(), 7);
+    let doctor: NodeDoctorResult = c.call(&td, methods::NODE_DOCTOR, json!({})).await.unwrap();
+    let judge = doctor.checks.iter().find(|i| i.id == "judge").unwrap();
+    assert!(judge.ok && judge.detail.contains("today: 0 / 7 calls"));
+    assert!(!judge.detail.contains("PRIVATE-KEY"));
     td.shutdown().await;
 }

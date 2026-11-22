@@ -522,7 +522,13 @@ pub async fn doctor(app: &App) -> Result<u8> {
         app.out.json_line(&json!({ "ok": failed == 0, "checks": checks }));
     } else {
         for c in &checks {
-            let mark = if c.ok { app.out.green("ok  ") } else { app.out.red("FAIL") };
+            let mark = if c.ok {
+                app.out.green("ok  ")
+            } else if c.id == "judge" {
+                app.out.yellow("warn")
+            } else {
+                app.out.red("FAIL")
+            };
             println!("{mark} {:<18} {}", c.id, c.detail);
             if let Some(f) = &c.fix {
                 println!("     {}", app.out.yellow(&format!("fix: {f}")));
@@ -1847,6 +1853,8 @@ mod tests {
                 updated_ms: None,
                 bytes: None,
                 cap: None,
+                used: None,
+                limit: None,
             }));
             CliError::from(e)
         };

@@ -15,6 +15,9 @@ use figment::Figment;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
+pub mod judge;
+pub use judge::{JudgeBackendConfig, JudgeConfig};
+
 use crate::util::{expand_tilde, home_dir, parse_duration, parse_size};
 
 /// 目录布局（docs/spec/cli.md § 2）。
@@ -302,6 +305,8 @@ pub const PREVIEW_TTL_MAX: Duration = Duration::from_secs(7 * 24 * 3600);
 pub struct RulesConfig {
     /// `true` = 手动开的会话（`session.create`）也注入生效的规则；缺省 `false`，只有清单派发的会话注入。
     pub inject_manual_sessions: bool,
+    /// 空闲会话的自动提炼开关。
+    pub extract_auto: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -476,6 +481,7 @@ pub struct Config {
     pub enroll: EnrollConfig,
     pub preview: PreviewConfig,
     pub rules: RulesConfig,
+    pub judge: JudgeConfig,
     pub notify: NotifyConfig,
     pub update: UpdateConfig,
     pub log: LogConfig,
@@ -521,7 +527,21 @@ impl Config {
             fig = fig.merge(Toml::file(file));
         }
         fig = fig.merge(env_provider());
-        let mut cfg: Config = fig.extract().map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let mut cfg: Config = fig.extract().map_err(|e| {
+            // 后端校验的自定义错误由本模块构造，不带值；保留具体字段说明。
+            if e.path.first().is_some_and(|p| p == "judge") && e.path.get(1).is_some_and(|p| p == "backends") {
+                if let figment::error::Kind::Message(message) = &e.kind {
+                    return ConfigError::Parse(format!("judge.backends: {message}"));
+                }
+            }
+            let sensitive = e.path.first().is_some_and(|p| p == "judge")
+                || std::fs::read_to_string(file).is_ok_and(|text| text.contains("api_key"));
+            ConfigError::Parse(if sensitive {
+                "invalid judge configuration; check field types, required fields and bounds (values omitted)".into()
+            } else {
+                e.to_string()
+            })
+        })?;
         if matches!(std::env::var("ANYCON_MOCK_AGENT").as_deref(), Ok("1") | Ok("true")) {
             let e = cfg
                 .agents
@@ -543,6 +563,7 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         let bad = |k: &str, e: String| ConfigError::Invalid(format!("{k}: {e}"));
+        self.judge.validate().map_err(|e| bad("judge", e))?;
         parse_duration(&self.sessions.idle_timeout).map_err(|e| bad("sessions.idle_timeout", e))?;
         parse_size(&self.sessions.max_attachment_bytes).map_err(|e| bad("sessions.max_attachment_bytes", e))?;
         if self.sessions.history_retention != "forever" {
@@ -903,7 +924,13 @@ pub fn set_toml_values(paths: &Paths, edits: Vec<(String, toml_edit::Value)>) ->
     let _flock = ConfigFileLock::acquire(&paths.home)?;
     let file = paths.config_toml();
     let text = if file.exists() { std::fs::read_to_string(&file)? } else { String::new() };
-    let mut doc: DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))?;
+    let mut doc: DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| {
+        ConfigError::Parse(if text.contains("api_key") {
+            "invalid TOML (values omitted)".into()
+        } else {
+            e.to_string()
+        })
+    })?;
     for (key, mut value) in edits {
         let segs: Vec<&str> = key.split('.').collect();
         if segs.is_empty() || segs.iter().any(|s| s.is_empty()) {
@@ -1035,6 +1062,7 @@ pub fn is_hot_key(key: &str) -> bool {
         || key.starts_with("enroll.")
         || key.starts_with("preview.")
         || key.starts_with("rules.")
+        || key.starts_with("judge.")
         || key == "update.check"
         || key == "log.level"
     {
@@ -1347,7 +1375,7 @@ dangerous_modes = ["yolo"]
         let d = tempfile::tempdir().unwrap();
         let paths = Paths::new(d.path());
         let cfg = Config::load(&paths).unwrap();
-        assert_eq!(cfg.rules, RulesConfig { inject_manual_sessions: false });
+        assert_eq!(cfg.rules, RulesConfig { inject_manual_sessions: false, extract_auto: false });
         // `anycon init` 写出的默认配置里有 [rules]，而且读得回来
         let text = default_config_toml(None, None, "/tmp/ws");
         assert!(text.contains("[rules]") && text.contains("inject_manual_sessions = false"));

@@ -36,6 +36,46 @@ const paramsOf = (env: Env, method: string): Array<Record<string, unknown>> =>
 
 for (const impl of cryptoImpls) {
   describe(`决策档案（${impl.label}）`, () => {
+    it('extract / extractRuns：字段转换、空决策点、完成通知和拒绝原因', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        assert.equal((await node.info()).capabilities.rule_extract, true)
+        const seen: string[] = []
+        const off = node.on('rule_extract_done', ({ run }) => seen.push(run.id))
+        assert.deepEqual(await node.rules.extract('empty'), { points: 0 })
+        const result = await node.rules.extract('session-1')
+        assert.equal(result.points, 2)
+        assert.equal(result.run?.status, 'running')
+        await until(() => seen.length === 1, 3000, 'rule_extract_done')
+        assert.deepEqual(seen, [result.run?.id])
+        assert.deepEqual(await node.rules.extractRuns(), {
+          runs: [{ ...result.run, status: 'done', finished_ms: 2 }],
+          usedToday: 1,
+          dailyCalls: 20,
+        })
+        assert.deepEqual(await node.rules.extractRuns({ sessionId: 'other', limit: 5 }), {
+          runs: [],
+          usedToday: 1,
+          dailyCalls: 20,
+        })
+        assert.deepEqual(paramsOf(env, 'rule.extract_runs'), [
+          {},
+          { session_id: 'other', limit: 5 },
+        ])
+        assert.deepEqual(paramsOf(env, 'rule.extract').slice(0, 2), [
+          { session_id: 'empty' },
+          { session_id: 'session-1' },
+        ])
+        for (const reason of ['budget', 'busy', 'not_configured']) {
+          await assert.rejects(
+            node.rules.extract(reason),
+            (error: unknown) =>
+              error instanceof RpcError && error.code === 'invalid' && error.reason === reason,
+          )
+        }
+        off()
+      })
+    })
+
     it('node.info 带 capabilities.rules', async () => {
       await withNode(await impl.load(), async (node) => {
         assert.equal((await node.info()).capabilities.rules, true)

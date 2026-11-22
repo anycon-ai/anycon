@@ -37,7 +37,7 @@ export function RuleSourceLine({ rule }: { rule: ViewRule }) {
   const { t } = useTranslation()
   const order = useNodes((s) => s.order)
   const sessionId = rule.source.session_id ?? undefined
-  const sessionKnown = useSessions((s) => (sessionId ? !!s.list[sessionId] : false))
+  const sessionKnown = useSessions((s) => (sessionId ? s.list[sessionId]?.node_id === rule.node_id : false))
   const kind = sourceOf(rule)
   const label = t(`rules.source.${kind}`)
   return (
@@ -47,7 +47,7 @@ export function RuleSourceLine({ rule }: { rule: ViewRule }) {
         <>
           {' · '}
           {sessionKnown ? (
-            <Link to="/n/$node/s/$session" params={{ node: shortNodeId(rule.node_id, order), session: sessionId }} className="font-medium text-accent-text hover:underline" data-testid="rule-source-session">
+            <Link to="/n/$node/s/$session" params={{ node: shortNodeId(rule.node_id, order), session: sessionId }} search={kind === 'extracted' && rule.source.seq != null ? { seq: rule.source.seq } : {}} className="font-medium text-accent-text hover:underline" data-testid="rule-source-session">
               {t('rules.source.session')}
             </Link>
           ) : (

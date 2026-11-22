@@ -706,3 +706,13 @@ async fn skips_a_broken_shim_earlier_on_the_path() {
     assert_eq!(info.status, AgentStatus::Ready, "{:?}", info.issue);
     assert_eq!(info.path.as_deref(), Some(good.join("codex").to_str().unwrap()));
 }
+
+#[tokio::test]
+async fn oneshot_requires_a_verified_version() {
+    for (version, supported) in [("0.168.0", false), ("0.169.0", true), ("0.170.0", true), ("dev", false)] {
+        let h = CodexHarness::new().var("FAKE_CODEX_VERSION_TEXT", version);
+        let info = probe_with(&h).await;
+        assert_eq!(info.status, AgentStatus::Ready);
+        assert_eq!(info.capabilities.oneshot, supported, "{version}");
+    }
+}

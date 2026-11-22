@@ -42,6 +42,7 @@ enum Rule {
         max: Duration,
     },
     Enum(&'static [&'static str]),
+    JudgeBackend,
     /// 字符数上限，外加这个键自己的格式规则。
     Text {
         max_chars: u64,
@@ -93,6 +94,10 @@ const SPECS: &[Spec] = &[
         editable: ConfigEditable::Any,
     },
     Spec { key: "rules.inject_manual_sessions", rule: Rule::Bool, editable: ConfigEditable::Any },
+    Spec { key: "rules.extract_auto", rule: Rule::Bool, editable: ConfigEditable::Any },
+    Spec { key: "judge.extract", rule: Rule::JudgeBackend, editable: ConfigEditable::Any },
+    Spec { key: "judge.triage", rule: Rule::JudgeBackend, editable: ConfigEditable::Any },
+    Spec { key: "judge.daily_calls", rule: Rule::Int { min: 0, max: 1000 }, editable: ConfigEditable::Any },
     Spec {
         key: "notify.turn_finished",
         rule: Rule::Enum(&["always", "when_unwatched", "never"]),
@@ -130,7 +135,7 @@ fn kind_of(rule: &Rule) -> ConfigValueKind {
         Rule::Bool => ConfigValueKind::Bool,
         Rule::Int { .. } => ConfigValueKind::Int,
         Rule::Duration { .. } => ConfigValueKind::Duration,
-        Rule::Enum(_) => ConfigValueKind::Enum,
+        Rule::Enum(_) | Rule::JudgeBackend => ConfigValueKind::Enum,
         Rule::Text { .. } => ConfigValueKind::Text,
     }
 }
@@ -148,6 +153,9 @@ pub fn items(cfg: &Config, env_overridden: &dyn Fn(&str) -> bool) -> Vec<ConfigI
                 Rule::Int { min: lo, max: hi } => (min, max) = (Some(lo), Some(hi)),
                 Rule::Duration { min: lo, max: hi } => {
                     (min, max) = (Some(lo.as_millis() as u64), Some(hi.as_millis() as u64));
+                }
+                Rule::JudgeBackend => {
+                    options = std::iter::once(String::new()).chain(cfg.judge.backends.keys().cloned()).collect()
                 }
                 Rule::Enum(values) => options = values.iter().map(|v| (*v).to_string()).collect(),
                 Rule::Text { max_chars, .. } => max = Some(max_chars),
@@ -193,7 +201,7 @@ fn invalid(key: &str, reason: &str, message: String) -> RpcError {
 }
 
 /// 按规则检查一个新值；通过时返回（规范化后的 JSON 值，要写进 TOML 的值）。出错返回（`data.reason`，英文说明）。
-fn check(rule: &Rule, value: &Value) -> Result<(Value, toml_edit::Value), (&'static str, String)> {
+fn check(cfg: &Config, rule: &Rule, value: &Value) -> Result<(Value, toml_edit::Value), (&'static str, String)> {
     match rule {
         Rule::Bool => {
             let b = value.as_bool().ok_or(("type", "expected true or false".to_string()))?;
@@ -214,6 +222,13 @@ fn check(rule: &Rule, value: &Value) -> Result<(Value, toml_edit::Value), (&'sta
             let d = parse_duration(s).map_err(|e| ("format", e))?;
             if d < *min || d > *max {
                 return Err(("range", format!("must be between {}ms and {}ms", min.as_millis(), max.as_millis())));
+            }
+            Ok((json!(s), toml_edit::Value::from(s)))
+        }
+        Rule::JudgeBackend => {
+            let s = value.as_str().ok_or(("type", "expected a string".to_string()))?;
+            if !s.is_empty() && !cfg.judge.backends.contains_key(s) {
+                return Err(("format", "expected an empty string or a configured backend name".into()));
             }
             Ok((json!(s), toml_edit::Value::from(s)))
         }
@@ -265,7 +280,7 @@ pub fn plan(
                 "is set by an environment variable, which overrides config.toml",
             ));
         }
-        let (new, toml) = check(&spec.rule, &ch.value).map_err(|(reason, msg)| invalid(spec.key, reason, msg))?;
+        let (new, toml) = check(cfg, &spec.rule, &ch.value).map_err(|(reason, msg)| invalid(spec.key, reason, msg))?;
         let old = lookup(&root, spec.key).cloned().unwrap_or(Value::Null);
         // 只能收紧的开关：新值是 `false`，或者和现在一样（空操作），才放行
         if spec.editable == ConfigEditable::TightenOnly && new != json!(false) && new != old {
@@ -342,6 +357,35 @@ mod tests {
         let e = r.expect_err("expected an error");
         let d = e.data.expect("error data");
         (d.code, d.field, d.reason)
+    }
+
+    #[test]
+    fn judge_options_are_sorted_and_backend_details_are_never_editable() {
+        let cfg: Config = serde_json::from_value(json!({"judge":{"backends":{
+            "z":{"kind":"agent","agent":"fake"},
+            "a":{"kind":"api","format":"openai","model":"m","api_key":"SECRET"}
+        }}}))
+        .unwrap();
+        let items = items(&cfg, &no_env);
+        for key in ["judge.extract", "judge.triage"] {
+            let item = items.iter().find(|i| i.key == key).unwrap();
+            assert_eq!(item.kind, ConfigValueKind::Enum);
+            assert_eq!(item.options, vec!["", "a", "z"]);
+            for name in ["", "a", "z"] {
+                assert!(plan(&cfg, &[ch(key, json!(name))], &no_env).is_ok());
+            }
+            assert_eq!(err_of(plan(&cfg, &[ch(key, json!("missing"))], &no_env)).0, ErrorCode::Invalid);
+            assert_eq!(err_of(plan(&cfg, &[ch(key, json!("a"))], &|_| true)).2.as_deref(), Some("env_override"));
+        }
+        let serialized = serde_json::to_string(&items).unwrap();
+        assert!(!serialized.contains("SECRET") && !serialized.contains("judge.backends"));
+        for value in [0, 1000] {
+            assert!(plan(&cfg, &[ch("judge.daily_calls", json!(value))], &no_env).is_ok());
+        }
+        for value in [-1, 1001] {
+            assert_eq!(err_of(plan(&cfg, &[ch("judge.daily_calls", json!(value))], &no_env)).0, ErrorCode::Invalid);
+        }
+        assert!(plan(&cfg, &[ch("rules.extract_auto", json!(true))], &no_env).is_ok());
     }
 
     #[test]
@@ -439,6 +483,8 @@ mod tests {
         for key in [
             "agents.claude-code.command",
             "agents.env",
+            "judge.backends.local.api_key",
+            "judge.backends.local.kind",
             "workspace.root",
             "workspace.link_roots",
             "hub.url",

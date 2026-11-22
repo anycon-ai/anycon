@@ -1,3 +1,5 @@
+//! 节点状态、能力、诊断及可远程编辑的配置协议。
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,6 +29,9 @@ pub struct NodeCapabilities {
     /// 支持决策档案（`rule.*`，docs/spec/daemon.md § 23）。旧 daemon 没有这个字段，读作 false。
     #[serde(default)]
     pub rules: bool,
+    /// 支持规则提炼 RPC；没有该字段时按不支持处理。
+    #[serde(default)]
+    pub rule_extract: bool,
 }
 
 /// 节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。
@@ -90,6 +95,9 @@ pub struct NodeInfo {
     /// 以及旧 daemon，都不给。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_available: Option<NodeUpdateAvailable>,
+    /// 判断后端的脱敏状态。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<crate::JudgeInfo>,
 }
 
 /// 有更新的版本（`node.info.update_available`）。daemon 只在 `latest` 是严格的 `X.Y.Z` 且比自己的版本新时给出；

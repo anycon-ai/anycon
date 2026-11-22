@@ -264,6 +264,14 @@ impl Agents {
         self.adapters.read().unwrap().iter().find(|a| a.id() == id).cloned()
     }
 
+    /// 一次性调用使用同一份配置快照和会话环境；没有会话 id，也没有会话级 env。
+    pub(crate) fn oneshot_context(&self, id: &str) -> Option<(AdapterConfig, Arc<HashMap<String, String>>)> {
+        let cfg = self.config.get();
+        let ac = cfg.adapter_config(id)?.clone();
+        let env = self.env.for_session(&cfg, id, None, &Default::default());
+        Some((ac, env))
+    }
+
     pub fn info(&self, id: &str) -> Option<Arc<AgentInfo>> {
         self.state.read().unwrap().infos.get(id).cloned()
     }

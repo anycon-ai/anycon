@@ -146,6 +146,7 @@ pub fn capabilities() -> AgentCapabilities {
         rewind: false,
         // `thread/start` 的 `developerInstructions`
         system_prompt: true,
+        oneshot: false,
     }
 }
 
@@ -581,6 +582,8 @@ pub async fn run_probe(ctx: &ProbeContext, probe_all: bool, memo: &AuthMemoCell)
     report.info.modes = modes();
     report.info.options = options();
     report.info.capabilities = capabilities();
+    report.info.capabilities.oneshot =
+        version.as_ref().is_some_and(|v| version_at_least(v, super::oneshot::MIN_VERSION));
     let program = resolution.path().expect("chosen candidate").to_path_buf();
     let mut account: Option<AccountInfo> = None;
     let mut account_error: Option<String> = None;

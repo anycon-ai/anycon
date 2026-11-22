@@ -27,6 +27,7 @@ import { SelectionCapture } from '@/features/todos/ui/SelectionCapture'
 import { ArchivedBar } from '@/features/session/ui/ArchivedBar'
 import { FollowUpBar, FollowUpChip, FollowUpToggle } from '@/features/session/ui/FollowUp'
 import { useInjectedRules } from '@/features/rules/useInjectedRules'
+import { ExtractMenu } from '@/features/rules/ui/ExtractMenu'
 import { InfoPanel } from '@/features/session/ui/InfoPanel'
 import { BackgroundTasksChip } from '@/features/session/ui/Tasks'
 import { TodoOriginLink } from '@/features/todos/ui/TodoOrigin'
@@ -429,6 +430,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
         }
         actions={
           <>
+            <ExtractMenu key={`${nodeId}:${sessionId}`} nodeId={nodeId} sessionId={sessionId} />
             <FollowUpToggle on={followUp} disabled={offline || followUpBusy} onToggle={() => changeFollowUp(!followUp)} />
             <Button variant="ghost" size="icon" aria-label={t('info.toggle')} onClick={() => (xl ? setPrefs({ infoPanelOpen: !panelOpen }) : setRightDrawer(true))} data-testid="info-toggle">
               {xl && panelOpen ? <PanelRightClose className="size-4" /> : <PanelRight className="size-4" />}

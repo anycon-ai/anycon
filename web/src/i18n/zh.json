@@ -1443,6 +1443,50 @@
       "notAnswered": "这不会答复这个请求。",
       "prefillQuestion": "被问到“{{question}}”时，我的答案是：{{answer}}。",
       "prefillOption": "被问到“{{what}}”时，我的答案是：{{choice}}。"
+    },
+    "extract": {
+      "action": "提炼规则",
+      "more": "更多",
+      "docs": "判断后端配置文档",
+      "not_configured": "在这台机器的 config.toml 里配置判断后端。",
+      "offline": "节点已离线。",
+      "running": "正在提炼…",
+      "empty": "这个会话里没有新的决策点。",
+      "noRules": "没有提炼出新的规则。",
+      "added_other": "提炼出 {{count}} 条待确认的规则。",
+      "dropped": "丢掉了 {{reasons}}。",
+      "droppedSeparator": "、",
+      "droppedReasons": {
+        "duplicate_other": "{{count}} 条重复",
+        "invalid_other": "{{count}} 条不合格",
+        "full_other": "{{count}} 条因为待确认的规则太多没加"
+      },
+      "view": "去看看",
+      "busy": "正在提炼另一个会话，结束后再试。",
+      "budget": "今天的调用次数已用完：{{used}} / {{limit}} 次。",
+      "interrupted": "已停止等待结果，重新连接后可到提炼记录查看。",
+      "history": "提炼记录",
+      "usage": "今天用了 {{used}} / {{limit}} 次",
+      "manual": "手动",
+      "auto": "自动",
+      "unknownTrigger": "未知触发方式",
+      "succeeded": "成功",
+      "failed": "失败",
+      "counts": "新增 {{added}} 条 · 丢掉 {{dropped}} 条",
+      "loadFailed": "无法读取提炼记录。",
+      "noHistory": "还没有提炼记录。",
+      "errors": {
+        "auth": "判断后端的密钥不对。",
+        "rate_limited": "判断后端的服务正在限流。",
+        "timeout": "提炼超时。",
+        "network": "连不上判断后端。",
+        "http": "判断后端服务出错（HTTP {{status}}）。",
+        "bad_output": "判断后端回答的格式不对。",
+        "agent_failed": "agent 出错。",
+        "cancelled": "提炼被中断。",
+        "internal": "提炼失败，请稍后重试。"
+      },
+      "retry": "重试"
     }
   },
   "nodeSettings": {
@@ -1500,7 +1544,8 @@
         "preview": "预览",
         "rules": "规则",
         "notify": "通知",
-        "log": "日志"
+        "log": "日志",
+        "judge": "判断后端"
       },
       "keys": {
         "hub": {
@@ -1557,6 +1602,10 @@
           "inject_manual_sessions": {
             "label": "自己开的会话也带上规则",
             "hint": "生效的规则总会写进清单派发出去的会话的系统提示。打开后，其它新开的会话也会带上。不能接收系统提示的 agent 收不到规则。"
+          },
+          "extract_auto": {
+            "label": "自动提炼规则",
+            "hint": "配置判断后端后，从空闲会话里自动提炼待确认的规则。"
           }
         },
         "notify": {
@@ -1572,6 +1621,20 @@
           "level": {
             "label": "日志级别",
             "hint": "节点往日志里写多少内容。日志可以在「关于」里的「查看日志」读到。"
+          }
+        },
+        "judge": {
+          "extract": {
+            "label": "提炼用的判断后端",
+            "hint": "选择提炼规则的后端；空值跟随分拣后端。"
+          },
+          "triage": {
+            "label": "分拣用的判断后端",
+            "hint": "选择分拣后端；提炼没有单独选择时也使用它。"
+          },
+          "daily_calls": {
+            "label": "每天的判断调用次数",
+            "hint": "这台节点所有判断任务每天合计的调用上限；失败也算，0 表示不调用。"
           }
         }
       },
@@ -1608,7 +1671,9 @@
         "envOverride": "由环境变量 {{name}} 设置，不能在这里修改。",
         "tightenOnly": "在这里只能关闭。要打开，请在节点上运行 `{{command}}`。",
         "notEditable": "这个设置不能在这里修改。"
-      }
+      },
+      "judgeNone": "不使用",
+      "judgeLocal": "后端要在这台机器的 config.toml 里配置。"
     },
     "logs": {
       "open": "查看日志",

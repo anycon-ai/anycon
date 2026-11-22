@@ -130,7 +130,13 @@ pub const TODO_HISTORY: &str = "todo.history";
 pub const TODO_EVENT: &str = "todo.event";
 
 // rule（决策档案，docs/spec/daemon.md § 23）
-/// `{ status?, project? }` → `{ rules, budget }`
+/// `{ session_id }` → `{ run?, points }`
+pub const RULE_EXTRACT: &str = "rule.extract";
+/// params = RuleExtractRunsParams → RuleExtractRunsResult
+pub const RULE_EXTRACT_RUNS: &str = "rule.extract_runs";
+/// D→C notification，params = RuleExtractDone
+pub const RULE_EXTRACT_DONE: &str = "rule.extract_done";
+/// params = RuleListParams → RuleListResult
 pub const RULE_LIST: &str = "rule.list";
 /// 按 `id` 幂等：已存在时原样返回已有的那一条。
 pub const RULE_ADD: &str = "rule.add";
@@ -284,6 +290,9 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(RULE_DELETE, Some("RuleDeleteParams"), None),
     req(RULE_PREVIEW, Some("RulePreviewParams"), Some("RulePreviewResult")),
     notif(RULE_CHANGED, "RuleChanged"),
+    req(RULE_EXTRACT, Some("RuleExtractParams"), Some("RuleExtractResult")),
+    req(RULE_EXTRACT_RUNS, Some("RuleExtractRunsParams"), Some("RuleExtractRunsResult")),
+    notif(RULE_EXTRACT_DONE, "RuleExtractDone"),
     req(BLOB_PUT_BEGIN, Some("BlobPutBeginParams"), Some("BlobPutBeginResult")),
     req(BLOB_PUT_CHUNK, Some("BlobPutChunkParams"), None),
     req(BLOB_PUT_END, Some("BlobIdParams"), Some("AttachmentRef")),

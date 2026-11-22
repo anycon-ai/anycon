@@ -501,5 +501,160 @@
         "turn_id": 3
       }
     }
+  },
+  {
+    "name": "rpc_rule_extract",
+    "type": "rpc",
+    "value": {
+      "id": 20,
+      "jsonrpc": "2.0",
+      "method": "rule.extract",
+      "params": {
+        "session_id": "sess_abc"
+      }
+    }
+  },
+  {
+    "name": "rpc_rule_extract_done",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "rule.extract_done",
+      "params": {
+        "run": {
+          "added": [],
+          "backend": "local",
+          "device_id": "0123456789abcdef0123456789abcdef",
+          "dropped": {
+            "duplicate": 0,
+            "full": 0,
+            "invalid": 1
+          },
+          "error": {
+            "code": "http",
+            "status": 503
+          },
+          "finished_ms": 1700000000100,
+          "from_seq": 3,
+          "id": "run-1",
+          "points": 2,
+          "session_id": "sess_abc",
+          "started_ms": 1700000000000,
+          "status": "failed",
+          "to_seq": 8,
+          "trigger": "manual",
+          "usage": {
+            "cost_usd": 0.001,
+            "input_tokens": 10,
+            "output_tokens": 3
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "rpc_rule_extract_empty",
+    "type": "rpc",
+    "value": {
+      "id": 21,
+      "jsonrpc": "2.0",
+      "result": {
+        "points": 0
+      }
+    }
+  },
+  {
+    "name": "rpc_rule_extract_result",
+    "type": "rpc",
+    "value": {
+      "id": 20,
+      "jsonrpc": "2.0",
+      "result": {
+        "points": 2,
+        "run": {
+          "added": [],
+          "backend": "local",
+          "device_id": "0123456789abcdef0123456789abcdef",
+          "dropped": {
+            "duplicate": 0,
+            "full": 0,
+            "invalid": 1
+          },
+          "error": {
+            "code": "http",
+            "status": 503
+          },
+          "finished_ms": 1700000000100,
+          "from_seq": 3,
+          "id": "run-1",
+          "points": 2,
+          "session_id": "sess_abc",
+          "started_ms": 1700000000000,
+          "status": "failed",
+          "to_seq": 8,
+          "trigger": "manual",
+          "usage": {
+            "cost_usd": 0.001,
+            "input_tokens": 10,
+            "output_tokens": 3
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "rpc_rule_extract_runs",
+    "type": "rpc",
+    "value": {
+      "id": 22,
+      "jsonrpc": "2.0",
+      "method": "rule.extract_runs",
+      "params": {
+        "limit": 10,
+        "session_id": "sess_abc"
+      }
+    }
+  },
+  {
+    "name": "rpc_rule_extract_runs_result",
+    "type": "rpc",
+    "value": {
+      "id": 22,
+      "jsonrpc": "2.0",
+      "result": {
+        "daily_calls": 20,
+        "runs": [
+          {
+            "added": [],
+            "backend": "local",
+            "device_id": "0123456789abcdef0123456789abcdef",
+            "dropped": {
+              "duplicate": 0,
+              "full": 0,
+              "invalid": 1
+            },
+            "error": {
+              "code": "http",
+              "status": 503
+            },
+            "finished_ms": 1700000000100,
+            "from_seq": 3,
+            "id": "run-1",
+            "points": 2,
+            "session_id": "sess_abc",
+            "started_ms": 1700000000000,
+            "status": "failed",
+            "to_seq": 8,
+            "trigger": "manual",
+            "usage": {
+              "cost_usd": 0.001,
+              "input_tokens": 10,
+              "output_tokens": 3
+            }
+          }
+        ],
+        "used_today": 1
+      }
+    }
   }
 ]

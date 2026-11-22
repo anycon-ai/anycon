@@ -209,6 +209,7 @@ pub fn capabilities() -> AgentCapabilities {
         rewind: false,
         // `--append-system-prompt`
         system_prompt: true,
+        oneshot: false,
     }
 }
 
@@ -424,6 +425,7 @@ pub async fn run_probe(ctx: &ProbeContext, probe_all: bool, memo: &CliModelsMemo
     info.modes = modes();
     info.options = options(&info.models);
     info.capabilities = capabilities();
+    info.capabilities.oneshot = version.as_ref().is_some_and(|v| version_at_least(v, super::oneshot::MIN_VERSION));
 
     if auth == AuthState::LoggedOut {
         fail(

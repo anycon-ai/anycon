@@ -1461,6 +1461,54 @@
       "notAnswered": "This does not answer the request.",
       "prefillQuestion": "When asked “{{question}}”, my answer is: {{answer}}.",
       "prefillOption": "When asked “{{what}}”, my answer is: {{choice}}."
+    },
+    "extract": {
+      "action": "Extract rules",
+      "more": "More",
+      "docs": "Judgment backend documentation",
+      "not_configured": "Configure a judgment backend in config.toml on this machine.",
+      "offline": "This node is offline.",
+      "running": "Extracting…",
+      "empty": "There are no new decision points in this session.",
+      "noRules": "No new rules were extracted.",
+      "added_one": "Extracted {{count}} rule to review.",
+      "added_other": "Extracted {{count}} rules to review.",
+      "dropped": "Dropped: {{reasons}}.",
+      "droppedSeparator": ", ",
+      "droppedReasons": {
+        "duplicate_one": "{{count}} duplicate",
+        "duplicate_other": "{{count}} duplicates",
+        "invalid_one": "{{count}} invalid rule",
+        "invalid_other": "{{count}} invalid rules",
+        "full_one": "{{count}} rule because there are too many pending rules",
+        "full_other": "{{count}} rules because there are too many pending rules"
+      },
+      "view": "Review them",
+      "busy": "Another session is being processed. Try again when it finishes.",
+      "budget": "Today’s call limit has been reached: {{used}} / {{limit}}.",
+      "interrupted": "Stopped waiting for the result. Check extraction history after reconnecting.",
+      "history": "Extraction history",
+      "usage": "Used {{used}} / {{limit}} calls today",
+      "manual": "Manual",
+      "auto": "Automatic",
+      "unknownTrigger": "Unknown trigger",
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "counts": "Added {{added}} · Dropped {{dropped}}",
+      "loadFailed": "Could not load extraction history.",
+      "noHistory": "No extraction runs yet.",
+      "errors": {
+        "auth": "The backend rejected its API key.",
+        "rate_limited": "The backend is rate limiting requests.",
+        "timeout": "The extraction timed out.",
+        "network": "Could not connect to the backend.",
+        "http": "The backend returned HTTP {{status}}.",
+        "bad_output": "The backend returned an invalid response format.",
+        "agent_failed": "The agent failed.",
+        "cancelled": "The extraction was interrupted.",
+        "internal": "The extraction failed. Try again later."
+      },
+      "retry": "Retry"
     }
   },
   "nodeSettings": {
@@ -1518,7 +1566,8 @@
         "preview": "Preview",
         "rules": "Rules",
         "notify": "Notifications",
-        "log": "Logging"
+        "log": "Logging",
+        "judge": "Judgment backends"
       },
       "keys": {
         "hub": {
@@ -1575,6 +1624,10 @@
           "inject_manual_sessions": {
             "label": "Rules in sessions you start yourself",
             "hint": "Active rules are always added to the system prompt of the sessions that to-dos are handed to. Turn this on to add them to every other new session as well. Agents that cannot take a system prompt never get them."
+          },
+          "extract_auto": {
+            "label": "Extract rules automatically",
+            "hint": "Extract rules from idle sessions when a judgment backend is configured."
           }
         },
         "notify": {
@@ -1590,6 +1643,20 @@
           "level": {
             "label": "Log level",
             "hint": "How much the node writes to its log. You can read the log under About, View logs."
+          }
+        },
+        "judge": {
+          "extract": {
+            "label": "Extraction backend",
+            "hint": "Choose the backend for extracting rules; an empty choice follows the triage backend."
+          },
+          "triage": {
+            "label": "Triage backend",
+            "hint": "Choose the backend for triage and for extraction when no separate backend is selected."
+          },
+          "daily_calls": {
+            "label": "Daily judgment calls",
+            "hint": "Limit calls across all judgment tasks per day on this node; failed calls count, and 0 disables calls."
           }
         }
       },
@@ -1626,7 +1693,9 @@
         "envOverride": "Set by the environment variable {{name}}; it cannot be changed from here.",
         "tightenOnly": "From here this can only be turned off. Run `{{command}}` on the node to turn it on.",
         "notEditable": "This setting cannot be changed from here."
-      }
+      },
+      "judgeNone": "Do not use",
+      "judgeLocal": "Configure backends in config.toml on this machine."
     },
     "logs": {
       "open": "View logs",

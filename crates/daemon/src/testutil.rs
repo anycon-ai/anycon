@@ -117,6 +117,12 @@ pub struct FakeAdapter {
     pub interject: AtomicBool,
     /// `capabilities.system_prompt`（探测时读，默认 true；改了要 `agent.list { refresh: true }` 重新探测）。
     pub system_prompt: AtomicBool,
+    /// 一次性调用能力开关（默认 false，修改后重新探测）。
+    pub oneshot: AtomicBool,
+    /// 一次性调用的预设返回值、延迟和收到的请求（Debug 不输出内容）。
+    pub oneshot_result: Mutex<Result<anycon_agent_api::OneshotReply, anycon_agent_api::OneshotError>>,
+    pub oneshot_delay: Mutex<Duration>,
+    pub oneshot_requests: Mutex<Vec<anycon_agent_api::OneshotRequest>>,
     /// `capabilities.attachments`（探测时读；默认四种图片，改了要 `agent.list { refresh: true }` 重新探测）。
     pub attachments: Mutex<Vec<String>>,
     /// 设了就让 `send` 像真实 adapter（Claude Code）一样在送出那一刻读 `attachment_paths`：读不了返回 `AdapterError::Io`。
@@ -187,6 +193,13 @@ impl FakeAdapter {
             resume_supported: AtomicBool::new(true),
             interject: AtomicBool::new(false),
             system_prompt: AtomicBool::new(true),
+            oneshot: AtomicBool::new(false),
+            oneshot_result: Mutex::new(Ok(anycon_agent_api::OneshotReply {
+                text: r#"{"rules":[]}"#.into(),
+                ..Default::default()
+            })),
+            oneshot_delay: Mutex::new(Duration::ZERO),
+            oneshot_requests: Mutex::new(Vec::new()),
             attachments: Mutex::new(
                 ["image/png", "image/jpeg", "image/gif", "image/webp"].iter().map(|m| m.to_string()).collect(),
             ),
@@ -262,6 +275,7 @@ impl FakeAdapter {
                 env: true,
                 rewind: false,
                 system_prompt: self.system_prompt.load(Ordering::SeqCst),
+                oneshot: self.oneshot.load(Ordering::SeqCst),
             },
             probed_at_ms: crate::util::now_ms(),
         };
@@ -372,6 +386,19 @@ impl Adapter for FakeAdapter {
         let info = self.info(if ctx.cheap { ctx.previous.as_ref() } else { None });
         self.cur_probes.fetch_sub(1, Ordering::SeqCst);
         info
+    }
+
+    async fn oneshot(
+        &self,
+        req: anycon_agent_api::OneshotRequest,
+    ) -> Result<anycon_agent_api::OneshotReply, anycon_agent_api::OneshotError> {
+        if !self.oneshot.load(Ordering::SeqCst) {
+            return Err(anycon_agent_api::OneshotError::Unsupported);
+        }
+        let delay = *self.oneshot_delay.lock().unwrap();
+        self.oneshot_requests.lock().unwrap().push(req);
+        tokio::time::sleep(delay).await;
+        self.oneshot_result.lock().unwrap().clone()
     }
 
     async fn spawn(&self, req: SpawnRequest) -> anycon_agent_api::Result<Box<dyn AgentHandle>> {
@@ -2167,5 +2194,40 @@ impl FakeHubLink {
     pub fn pending(&mut self) -> Vec<LinkOut> {
         self.pump();
         self.log.iter().cloned().collect()
+    }
+}
+
+/// 可编排的判断后端：记录收到的请求，按顺序回答；没有预设结果时返回 Internal。
+/// 不实现 Debug，避免测试失败的诊断意外打印内容。
+#[derive(Default)]
+pub struct FakeJudgeBackend {
+    replies: Mutex<std::collections::VecDeque<Result<crate::judge::JudgeReply, crate::judge::CallError>>>,
+    pub requests: Mutex<Vec<crate::judge::JudgeRequest>>,
+    pub delay: Mutex<Duration>,
+}
+
+impl FakeJudgeBackend {
+    pub fn new(
+        replies: impl IntoIterator<Item = Result<crate::judge::JudgeReply, crate::judge::CallError>>,
+    ) -> Arc<Self> {
+        Arc::new(Self { replies: Mutex::new(replies.into_iter().collect()), ..Default::default() })
+    }
+
+    pub fn push(&self, reply: Result<crate::judge::JudgeReply, crate::judge::CallError>) {
+        self.replies.lock().unwrap().push_back(reply);
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::judge::Backend for FakeJudgeBackend {
+    async fn call(
+        &self,
+        req: &crate::judge::JudgeRequest,
+    ) -> Result<crate::judge::JudgeReply, crate::judge::CallError> {
+        self.requests.lock().unwrap().push(req.clone());
+        let reply = self.replies.lock().unwrap().pop_front().unwrap_or(Err(crate::judge::CallError::Internal));
+        let delay = *self.delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
+        reply
     }
 }

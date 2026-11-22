@@ -18,13 +18,25 @@ fn changes(pairs: &[(&str, Value)]) -> Value {
 async fn keys_set_by_the_environment_are_read_only_remotely() {
     std::env::set_var("ANYCON_SESSIONS__MAX_CONCURRENT", "2");
     std::env::set_var("ANYCON_PREVIEW__ENABLED", "true");
+    std::env::set_var("ANYCON_JUDGE__EXTRACT", "absent");
+    std::env::set_var("ANYCON_JUDGE__TRIAGE", "absent");
+    std::env::set_var("ANYCON_JUDGE__DAILY_CALLS", "7");
+    std::env::set_var("ANYCON_RULES__EXTRACT_AUTO", "true");
     // `ANYCON_LOG` 接管日志过滤：`log.level` 改了也不生效
     std::env::set_var("ANYCON_LOG", "debug");
 
     let td = TestDaemon::start().await;
     let mut c = td.client("web");
     let r: NodeConfigResult = c.call(&td, methods::NODE_GET_CONFIG, json!({})).await.unwrap();
-    for key in ["sessions.max_concurrent", "preview.enabled", "log.level"] {
+    for key in [
+        "sessions.max_concurrent",
+        "preview.enabled",
+        "log.level",
+        "judge.extract",
+        "judge.triage",
+        "judge.daily_calls",
+        "rules.extract_auto",
+    ] {
         let i = item(&r, key);
         assert!(i.env_override, "{key}");
         assert_eq!(i.editable, ConfigEditable::No, "{key}");
@@ -41,9 +53,15 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
 
     // 改被覆盖的键：forbidden，同一请求里别的合法改动也不写
     let before = std::fs::read_to_string(td.paths.config_toml()).unwrap();
-    for (key, value) in
-        [("sessions.max_concurrent", json!(5)), ("preview.enabled", json!(false)), ("log.level", json!("warn"))]
-    {
+    for (key, value) in [
+        ("sessions.max_concurrent", json!(5)),
+        ("preview.enabled", json!(false)),
+        ("log.level", json!("warn")),
+        ("judge.extract", json!("")),
+        ("judge.triage", json!("")),
+        ("judge.daily_calls", json!(2)),
+        ("rules.extract_auto", json!(false)),
+    ] {
         let e = c
             .call::<Value>(
                 &td,
@@ -72,6 +90,11 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
     std::env::remove_var("ANYCON_SESSIONS__MAX_CONCURRENT");
     std::env::remove_var("ANYCON_PREVIEW__ENABLED");
     std::env::remove_var("ANYCON_LOG");
+    for key in
+        ["ANYCON_JUDGE__EXTRACT", "ANYCON_JUDGE__TRIAGE", "ANYCON_JUDGE__DAILY_CALLS", "ANYCON_RULES__EXTRACT_AUTO"]
+    {
+        std::env::remove_var(key);
+    }
     let r: NodeConfigResult = c
         .call(
             &td,

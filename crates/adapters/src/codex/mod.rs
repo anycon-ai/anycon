@@ -1,4 +1,4 @@
-//! Codex adapter：驱动 `codex app-server`（stdio，换行分隔的 JSON-RPC，省略 `jsonrpc` 头）。**不用 `codex exec`**：
+//! Codex adapter：驱动 `codex app-server`（stdio，换行分隔的 JSON-RPC，省略 `jsonrpc` 头）。普通会话**不用 `codex exec`**：
 //! 它在无头模式下写死 `approval_policy = never`，无法把审批交给人（ADR-26）。细节与对真实 CLI 的观察见 README.md。
 //!
 //! v0.1 每个 anycon 会话一个 `codex app-server` 子进程、一个 thread（ADR-26 修订）。
@@ -6,6 +6,8 @@
 //! 模块：`probe`（找二进制、版本、认证、取模型、诊断）、`models`（`model/list` → 模型表）、`process`（会话设置 → 请求参数）、
 //! `rpc`（JSON-RPC 行分类与请求 / 响应对应）、`wire`（线上格式的 serde 子集）、`translate`（通知 → 事件，纯同步）、
 //! `permissions`（审批 / 提问 ↔ 权限请求）、`tools`（item → category / 标题 / 渲染字段）、`handle`（`AgentHandle`）。
+
+mod oneshot;
 
 pub mod handle;
 pub mod models;
@@ -66,6 +68,13 @@ impl Adapter for CodexAdapter {
     fn validate_settings(&self, info: &AgentInfo, settings: &SessionSettings) -> Result<()> {
         default_validate(info, settings)?;
         process::validate_settings_values(settings)
+    }
+
+    async fn oneshot(
+        &self,
+        req: anycon_agent_api::OneshotRequest,
+    ) -> std::result::Result<anycon_agent_api::OneshotReply, anycon_agent_api::OneshotError> {
+        oneshot::call(req).await
     }
 
     async fn spawn(&self, req: SpawnRequest) -> Result<Box<dyn AgentHandle>> {

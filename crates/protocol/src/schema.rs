@@ -192,6 +192,11 @@ pub struct ProtocolSchema {
     pub rule_preview_result: RulePreviewResult,
     pub rule_changed: RuleChanged,
     pub rules_skipped: RulesSkipped,
+    pub rule_extract_params: RuleExtractParams,
+    pub rule_extract_result: RuleExtractResult,
+    pub rule_extract_runs_params: RuleExtractRunsParams,
+    pub rule_extract_runs_result: RuleExtractRunsResult,
+    pub rule_extract_done: RuleExtractDone,
     // blob（ADR-35）
     pub attachment_ref: AttachmentRef,
     pub blob_put_begin_params: BlobPutBeginParams,

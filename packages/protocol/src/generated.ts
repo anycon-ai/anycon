@@ -567,6 +567,9 @@ export type FsReadEncoding = "text" | "base64";
  * 信封种类。hub 对每种的处理见 docs/protocol.md § 3。
  */
 export type Kind = "handshake" | "data" | "notify" | "control";
+export type JudgeApiFormat = "anthropic" | "openai" | "unknown";
+export type JudgeBackendKind = "api" | "agent" | "unknown";
+export type JudgeProblem = "no_key" | "agent_missing" | "agent_unsupported" | "unknown";
 /**
  * 节点配置 `worktree.default` 的取值，也是 `SessionWorkspace` 的两种模式。
  */
@@ -633,6 +636,19 @@ export type RuleAddSourceKind = "manual" | "answer";
  * `rule.add` 可以直接给的状态。
  */
 export type RuleAddStatus = "active" | "pending";
+export type JudgeErrorCode =
+  | "timeout"
+  | "network"
+  | "http"
+  | "auth"
+  | "rate_limited"
+  | "bad_output"
+  | "agent_failed"
+  | "cancelled"
+  | "internal"
+  | "unknown";
+export type ExtractRunStatus = "running" | "done" | "failed" | "unknown";
+export type ExtractTrigger = "manual" | "auto" | "unknown";
 /**
  * 派发时生效的规则没有注入的原因（`TodoEventData::Dispatched.rules_skipped`）。
  */
@@ -884,6 +900,11 @@ export interface ProtocolSchema {
   rule_budget: RuleBudget;
   rule_changed: RuleChanged;
   rule_delete_params: RuleDeleteParams;
+  rule_extract_done: RuleExtractDone;
+  rule_extract_params: RuleExtractParams;
+  rule_extract_result: RuleExtractResult;
+  rule_extract_runs_params: RuleExtractRunsParams;
+  rule_extract_runs_result: RuleExtractRunsResult;
   rule_list_params: RuleListParams;
   rule_list_result: RuleListResult;
   rule_preview_params: RulePreviewParams;
@@ -1811,6 +1832,10 @@ export interface NodeInfo {
    * 分组名（`[hub] group`）：名字相同的节点客户端合并显示；是标签，不是访问控制。为空或旧 daemon 时不给。
    */
   group?: string | null;
+  /**
+   * 判断后端的脱敏状态。
+   */
+  judge?: JudgeInfo | null;
   name: string;
   node_id: string;
   platform: string;
@@ -1866,6 +1891,10 @@ export interface NodeCapabilities {
    */
   preview?: boolean;
   /**
+   * 支持规则提炼 RPC；没有该字段时按不支持处理。
+   */
+  rule_extract?: boolean;
+  /**
    * 支持决策档案（`rule.*`，docs/spec/daemon.md § 23）。旧 daemon 没有这个字段，读作 false。
    */
   rules?: boolean;
@@ -1882,6 +1911,20 @@ export interface NodeCapabilities {
    * 支持每会话 worktree、`session.git_status` / `diff` / `sync_base`（ADR-34）。daemon 找不到 `git` 时为 false。
    */
   worktree?: boolean;
+}
+export interface JudgeInfo {
+  backends: JudgeBackendInfo[];
+  daily_calls: number;
+  extract?: string | null;
+  triage?: string | null;
+}
+export interface JudgeBackendInfo {
+  agent?: string | null;
+  format?: JudgeApiFormat | null;
+  kind: JudgeBackendKind;
+  model?: string | null;
+  name: string;
+  problem?: JudgeProblem | null;
 }
 /**
  * 有更新的版本（`node.info.update_available`）。daemon 只在 `latest` 是严格的 `X.Y.Z` 且比自己的版本新时给出；
@@ -2520,6 +2563,56 @@ export interface RuleChanged {
 export interface RuleDeleteParams {
   id: string;
   if_updated_ms?: number | null;
+}
+export interface RuleExtractDone {
+  run: ExtractRun;
+}
+export interface ExtractRun {
+  added: string[];
+  backend: string;
+  device_id?: string | null;
+  dropped: ExtractDropped;
+  error?: JudgeError | null;
+  finished_ms?: number | null;
+  from_seq: number;
+  id: string;
+  points: number;
+  session_id: string;
+  started_ms: number;
+  status: ExtractRunStatus;
+  to_seq: number;
+  trigger: ExtractTrigger;
+  usage?: JudgeUsage | null;
+}
+export interface ExtractDropped {
+  duplicate: number;
+  full: number;
+  invalid: number;
+}
+export interface JudgeError {
+  code: JudgeErrorCode;
+  status?: number | null;
+}
+export interface JudgeUsage {
+  cost_usd?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+}
+export interface RuleExtractParams {
+  session_id: string;
+}
+export interface RuleExtractResult {
+  points: number;
+  run?: ExtractRun | null;
+}
+export interface RuleExtractRunsParams {
+  limit?: number | null;
+  session_id?: string | null;
+}
+export interface RuleExtractRunsResult {
+  daily_calls: number;
+  runs: ExtractRun[];
+  used_today: number;
 }
 export interface RuleListParams {
   /**

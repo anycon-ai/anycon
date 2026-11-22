@@ -326,3 +326,84 @@ mod tests {
         assert_eq!(p.if_updated_ms, None);
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractTrigger {
+    Manual,
+    Auto,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractRunStatus {
+    Running,
+    Done,
+    Failed,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ExtractDropped {
+    pub invalid: u32,
+    pub duplicate: u32,
+    pub full: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ExtractRun {
+    pub id: String,
+    pub session_id: SessionId,
+    pub trigger: ExtractTrigger,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<DeviceId>,
+    pub status: ExtractRunStatus,
+    pub started_ms: TimestampMs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_ms: Option<TimestampMs>,
+    pub points: u32,
+    pub from_seq: u64,
+    pub to_seq: u64,
+    pub added: Vec<String>,
+    pub dropped: ExtractDropped,
+    pub backend: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<crate::JudgeError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::JudgeUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RuleExtractParams {
+    pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RuleExtractResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<ExtractRun>,
+    pub points: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RuleExtractRunsParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RuleExtractRunsResult {
+    pub runs: Vec<ExtractRun>,
+    pub used_today: u32,
+    pub daily_calls: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RuleExtractDone {
+    pub run: ExtractRun,
+}

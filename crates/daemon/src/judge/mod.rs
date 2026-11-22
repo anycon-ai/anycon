@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod service;
 
 use std::collections::HashMap;
 use std::time::Duration;

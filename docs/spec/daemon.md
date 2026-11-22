@@ -876,7 +876,7 @@ SQLite（WAL）。全部表：
 | `todo_sessions` / `todo_events` | 清单项派出的会话和「经过」（§ 22.8）；`sessions.todo_id` 是会话的来源项 |
 | `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms。不受 `history_retention` 影响 |
 | `judge_calls` | 判断后端的每次调用（§ 25.2，迁移 `0007_judge.sql`）：id、position、backend、kind、model、started_ms、finished_ms、status（`ok` 或错误码）、input_bytes、output_bytes、input_tokens、output_tokens、cost_usd。不存提示和回应，保留 90 天 |
-| `rule_extract_runs` | 每次提炼（§ 23.9，同一个迁移）：id、session_id、trigger、device_id、status、started_ms、finished_ms、points、from_seq、to_seq、added(JSON)、dropped(JSON)、backend、error_code、error_status、call_id。保留 90 天 |
+| `rule_extract_runs` | 每次提炼（§ 23.9，同一个迁移）：id、session_id、trigger、device_id、status、started_ms、finished_ms、points、from_seq、to_seq、added(JSON)、dropped(JSON)、backend、error_code、error_status、call_id。保留 90 天，但每个会话最新的 `done` 始终保留以维持水位 |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
@@ -1524,7 +1524,7 @@ Rule {
 | `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除 |
 | `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话，会注入的那段文字（§ 23.5）。只读 |
 | `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。新建、真正的修改、删除才发；空操作、重复的 `rule.add` 和 `last_injected_ms` 的变化（§ 23.5）不发 |
-| `rule.extract` | C→D | `{ session_id }` → `{ run?: ExtractRun, points }`（§ 23.9）。`points` 是这次会带上的决策点数（水位之后的，最多 40 个）：0 时不调用后端、不留记录，也没有 `run`。否则开始一次提炼，立即返回 `status = running` 的 `run`，结束时发 `rule.extract_done`。正在跑的就是这个会话时返回那一次。会话不存在 → `not_found`；没配提炼用的后端或者它现在不能用 → `invalid`（`data.reason = "not_configured"`）；今天的调用次数用完 → `invalid`（`data.reason = "budget"`，带 `used`、`limit`）；另一个会话的提炼正在跑 → `invalid`（`data.reason = "busy"`）。自报了 `mcp` 的连接 → `forbidden`：提炼花钱，输入是会话内容，只由人发起 |
+| `rule.extract` | C→D | `{ session_id }` → `{ run?: ExtractRun, points }`（§ 23.9）。`points` 是这次会带上的决策点数（水位之后的，最多 40 个）：0 时不调用后端、不留记录，也没有 `run`。否则开始一次提炼，立即返回 `status = running` 的 `run`，结束时发 `rule.extract_done`。正在跑的就是这个会话时返回那一次。会话不存在 → `not_found`；没配提炼用的后端或者它现在不能用 → `invalid`（`data.reason = "not_configured"`）；另一个会话的提炼正在跑 → `invalid`（`data.reason = "busy"`）；今天的调用次数用完 → `invalid`（`data.reason = "budget"`，带 `used`、`limit`）。自报了 `mcp` 的连接 → `forbidden`：提炼花钱，输入是会话内容，只由人发起 |
 | `rule.extract_runs` | C→D | `{ session_id?, limit? }` → `{ runs: [ExtractRun], used_today, daily_calls }`。从新到旧，`limit` 缺省 20，最多 100。`used_today` 是今天所有位置合计已经调用的次数 |
 | `rule.extract_done` | D→C notification | `{ run: ExtractRun }`：一次提炼结束（成功或失败）时发给所有在线客户端 |
 
@@ -1765,7 +1765,7 @@ ExtractRun {
 
 ## 25. 判断后端
 
-> **规格，还没实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。现在用到它的只有提炼规则（§ 23.9）；分拣和顾问在第 4 步。
+> **基础服务（协议、配置、存储、调度和诊断）已实现；具体后端调用和规则提炼尚未接入。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。现在用到它的只有提炼规则（§ 23.9）；分拣和顾问在第 4 步。
 
 ### 25.1 配置
 
@@ -1800,7 +1800,7 @@ timeout = "5m"
 - **`format`**（必填），两种：
   - `anthropic`：Messages API，`POST {base_url}/v1/messages`，头里带 `x-api-key` 和 `anthropic-version: 2023-06-01`。`base_url` 缺省 `https://api.anthropic.com`。
   - `openai`：Chat Completions，也兼容这个格式的网关和本地模型服务。`POST {base_url}/chat/completions`，头里带 `Authorization: Bearer`。`base_url` 缺省 `https://api.openai.com/v1`。
-- **`base_url`** 只能是 `https://`。`http://` 只接受回环地址（`127.0.0.1`、`[::1]`、`localhost`），给本机的网关用。不跟随重定向。
+- **`base_url`** 只能是 `https://`。`http://` 只接受回环地址（`127.0.0.1`、`[::1]`、`localhost`），给本机的网关用。加载时去掉末尾的 `/`；拒绝 URL 内的用户名 / 密码、查询参数和 fragment，避免把凭据混进地址，也保证追加 API 路径的含义确定。不跟随重定向。
 - **`model`**（必填）原样传给服务。
 - **密钥**二选一：
   - `api_key_env = "NAME"`：从 daemon 给 agent 用的那份环境里读（§ 5.5：daemon 的进程环境，`agents.env_from_login_shell = true` 时还有登录 shell 解析出来的变量），每次调用时读。
@@ -1851,11 +1851,12 @@ timeout = "5m"
 - **`judge.daily_calls`**：所有位置合计，每个本地日最多调用后端几次。本地日按 daemon 所在机器的时区算，0 点重置。
   - 失败的调用也算，因为多半也花了钱。0 = 不调用。
   - 到了上限，手动的请求回 `invalid`（`data.reason = "budget"`，带 `used` 和 `limit`）；自动的等到第二天。
-- **同时只有一次**：一个节点同时只有一次调用在进行。
+- **同时只有一次**：一个节点同时只有一次调用在进行。`Judge::begin` 依次检查没配或后端不能用（`not_configured`）→ 拿不到节点调用锁（`busy`）→ 今天次数用完（`budget`）。预算在拿到锁之后查询，避免并发请求同时通过。
+  - 检查通过返回 `Permit`，持有锁和按当时配置构造的后端；检查及预留不写记录。直接丢弃只释放锁；调用 `Permit::call` 才开始记账和后台调用，之后的配置热加载不改变这次调用。
 - **`judge_calls` 表**：每次调用留一行，记时间、位置（`extract`，之后还有 `triage`、`advisor`）、后端名、种类、模型、结果（`ok` 或错误码）、输入和输出的字节数、usage。
   - **不存提示和回应的内容**，日志里也没有：日志只记位置、后端名、结果、耗时和字节数。
-  - 记录保留 90 天，`rule_extract_runs` 也一样。
-- **daemon 停下时**：正在进行的调用被取消，记成 `cancelled`。
+  - 记录保留 90 天。`rule_extract_runs` 同样清理 90 天前的已结束记录，但保留每个会话最新的 `done`（按 `started_ms`、同毫秒的插入顺序确定，不论多旧），避免水位丢失后重复提炼。
+- **daemon 停下时**：正在进行的调用被取消，记成 `cancelled`。下次启动时，未结束的调用也补记 `cancelled`，仍为 `running` 的提炼改为 `failed` / `cancelled`。已开始的调用独立于 RPC 调用方的连接存活，断线不丢掉记账收尾；关库前等待收尾完成。
 
 ### 25.3 `node.info.judge`
 
@@ -1872,7 +1873,19 @@ judge?: {                     // 旧 daemon 没有这个字段
 }
 ```
 
+daemon 始终给出 `judge`（全未配置时 `backends = []`、省略两个位置，仍给出 `daily_calls`）；旧 daemon 可以省略。当前基础服务已接入，但提炼 RPC 尚未接入，因此 `capabilities.rule_extract = false`。
+
 不含 `base_url`、密钥和环境变量名。客户端靠它决定「提炼规则」能不能点，以及没配时怎么说明。`node.info.capabilities.rule_extract = true` 表示 daemon 支持 `rule.extract`。
+
+#### doctor 的 judge 检查
+
+`anycon doctor` / `node.doctor` 增加 `judge` 项。例如：
+
+```text
+ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc (agent=claude-code model=sonnet: ready); extract: haiku (ready); triage: not configured; today: 3 / 20 calls
+```
+
+列出每个后端的名字、种类、模型 / agent 及 `no_key` / `agent_missing` / `agent_unsupported`；密钥只报告 `key found` 或 `key not found`，回环 HTTP 无密钥时另说明可选。不含地址、密钥或环境变量名。两个位置都列出生效选择，提炼选择包含跟随分拣的结果；名字不存在时写 `backend does not exist`。没有任何配置是 `ok`、`not configured`；任一位置指向不存在或不可用的后端是 `warn`，未被选择的坏后端只列出问题。`warn` 在现有诊断协议中仍是 `ok = false`，沿用 CLI 的非零退出码约定。显示今天的调用次数和上限；daemon 未运行时以只读方式查询数据库，读不了时显示 `unavailable`，不修复或迁移数据库。
 
 ### 25.4 威胁模型
 

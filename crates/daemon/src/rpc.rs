@@ -740,6 +740,7 @@ impl Rpc {
                 preview: c.preview.enabled(),
                 todo: true,
                 rules: true,
+                rule_extract: false,
             },
             started_at_ms: c.started_at_ms,
             attachment_limits: Some(NodeAttachmentLimits {
@@ -760,6 +761,7 @@ impl Rpc {
                 }
             }),
             update_available: c.updates.available(),
+            judge: Some(c.judge.info()),
         }
     }
 

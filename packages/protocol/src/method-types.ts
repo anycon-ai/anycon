@@ -69,6 +69,11 @@ import type {
   RuleAddParams,
   RuleChanged,
   RuleDeleteParams,
+  RuleExtractDone,
+  RuleExtractParams,
+  RuleExtractResult,
+  RuleExtractRunsParams,
+  RuleExtractRunsResult,
   RuleListParams,
   RuleListResult,
   RulePreviewParams,
@@ -208,6 +213,8 @@ export interface RequestMethods {
   'rule.update': { params: RuleUpdateParams; result: Rule }
   'rule.delete': { params: RuleDeleteParams; result: Empty }
   'rule.preview': { params: RulePreviewParams; result: RulePreviewResult }
+  'rule.extract': { params: RuleExtractParams; result: RuleExtractResult }
+  'rule.extract_runs': { params: RuleExtractRunsParams; result: RuleExtractRunsResult }
   'blob.put_begin': { params: BlobPutBeginParams; result: BlobPutBeginResult }
   'blob.put_chunk': { params: BlobPutChunkParams; result: Empty }
   'blob.put_end': { params: BlobIdParams; result: AttachmentRef }
@@ -236,6 +243,7 @@ export interface NotificationMethods {
   'todo.changed': { params: TodoChanged }
   'todo.event': { params: TodoEventNotice }
   'rule.changed': { params: RuleChanged }
+  'rule.extract_done': { params: RuleExtractDone }
   'permission.request': { params: PermissionRequest }
   'permission.resolved': { params: PermissionResolved }
 }

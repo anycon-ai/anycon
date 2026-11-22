@@ -173,6 +173,12 @@ export const METHODS = {
   RULE_PREVIEW: 'rule.preview',
   /** D→C notification，params = RuleChanged */
   RULE_CHANGED: 'rule.changed',
+  /** params = RuleExtractParams → RuleExtractResult */
+  RULE_EXTRACT: 'rule.extract',
+  /** params = RuleExtractRunsParams → RuleExtractRunsResult */
+  RULE_EXTRACT_RUNS: 'rule.extract_runs',
+  /** D→C notification，params = RuleExtractDone */
+  RULE_EXTRACT_DONE: 'rule.extract_done',
 
   // blob（附件，ADR-35）
   /** params = BlobPutBeginParams → BlobPutBeginResult */

@@ -238,6 +238,71 @@ fn main() {
         ),
     ];
 
+    let run = ExtractRun {
+        id: "run-1".into(),
+        session_id: "sess_abc".into(),
+        trigger: ExtractTrigger::Manual,
+        device_id: Some(DEVICE_A.into()),
+        status: ExtractRunStatus::Failed,
+        started_ms: 1700000000000,
+        finished_ms: Some(1700000000100),
+        points: 2,
+        from_seq: 3,
+        to_seq: 8,
+        added: vec![],
+        dropped: ExtractDropped { invalid: 1, duplicate: 0, full: 0 },
+        backend: "local".into(),
+        error: Some(JudgeError { code: JudgeErrorCode::Http, status: Some(503) }),
+        usage: Some(JudgeUsage { input_tokens: Some(10), output_tokens: Some(3), cost_usd: Some(0.001) }),
+    };
+    v.extend([
+        rpc(
+            "rule_extract",
+            RpcMessage::request(
+                20u64,
+                methods::RULE_EXTRACT,
+                serde_json::to_value(RuleExtractParams { session_id: "sess_abc".into() }).unwrap(),
+            ),
+        ),
+        rpc(
+            "rule_extract_result",
+            RpcMessage::result(
+                RpcId::Num(20),
+                serde_json::to_value(RuleExtractResult { run: Some(run.clone()), points: 2 }).unwrap(),
+            ),
+        ),
+        rpc(
+            "rule_extract_empty",
+            RpcMessage::result(
+                RpcId::Num(21),
+                serde_json::to_value(RuleExtractResult { run: None, points: 0 }).unwrap(),
+            ),
+        ),
+        rpc(
+            "rule_extract_runs",
+            RpcMessage::request(
+                22u64,
+                methods::RULE_EXTRACT_RUNS,
+                serde_json::to_value(RuleExtractRunsParams { session_id: Some("sess_abc".into()), limit: Some(10) })
+                    .unwrap(),
+            ),
+        ),
+        rpc(
+            "rule_extract_runs_result",
+            RpcMessage::result(
+                RpcId::Num(22),
+                serde_json::to_value(RuleExtractRunsResult { runs: vec![run.clone()], used_today: 1, daily_calls: 20 })
+                    .unwrap(),
+            ),
+        ),
+        rpc(
+            "rule_extract_done",
+            RpcMessage::notification(
+                methods::RULE_EXTRACT_DONE,
+                serde_json::to_value(RuleExtractDone { run }).unwrap(),
+            ),
+        ),
+    ]);
     v.sort_by(|a, b| a.name.cmp(&b.name));
 
     // 清掉旧的 .hex，避免 Control 变体改名后留下过期文件（只动 .hex 和 manifest / frames）。

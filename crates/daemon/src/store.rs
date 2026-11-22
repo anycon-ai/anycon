@@ -2,6 +2,9 @@
 //!
 //! 只用运行时查询（不用 `query!` 宏），编译不依赖数据库。所有时间是 Unix 毫秒。
 
+mod judge;
+pub use judge::{ExtractAttempts, ExtractRunFinish, JudgeCallFinish, JudgeCallStart};
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

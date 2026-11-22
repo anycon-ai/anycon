@@ -2170,3 +2170,38 @@ impl FakeHubLink {
         self.log.iter().cloned().collect()
     }
 }
+
+/// 可编排的判断后端：记录收到的请求，按顺序回答；没有预设结果时返回 Internal。
+/// 不实现 Debug，避免测试失败的诊断意外打印内容。
+#[derive(Default)]
+pub struct FakeJudgeBackend {
+    replies: Mutex<std::collections::VecDeque<Result<crate::judge::JudgeReply, crate::judge::CallError>>>,
+    pub requests: Mutex<Vec<crate::judge::JudgeRequest>>,
+    pub delay: Mutex<Duration>,
+}
+
+impl FakeJudgeBackend {
+    pub fn new(
+        replies: impl IntoIterator<Item = Result<crate::judge::JudgeReply, crate::judge::CallError>>,
+    ) -> Arc<Self> {
+        Arc::new(Self { replies: Mutex::new(replies.into_iter().collect()), ..Default::default() })
+    }
+
+    pub fn push(&self, reply: Result<crate::judge::JudgeReply, crate::judge::CallError>) {
+        self.replies.lock().unwrap().push_back(reply);
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::judge::Backend for FakeJudgeBackend {
+    async fn call(
+        &self,
+        req: &crate::judge::JudgeRequest,
+    ) -> Result<crate::judge::JudgeReply, crate::judge::CallError> {
+        self.requests.lock().unwrap().push(req.clone());
+        let reply = self.replies.lock().unwrap().pop_front().unwrap_or(Err(crate::judge::CallError::Internal));
+        let delay = *self.delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
+        reply
+    }
+}

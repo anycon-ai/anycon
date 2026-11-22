@@ -2883,6 +2883,144 @@
         }
       ]
     },
+    "ExtractDropped": {
+      "properties": {
+        "duplicate": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "full": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "invalid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "invalid",
+        "duplicate",
+        "full"
+      ],
+      "type": "object"
+    },
+    "ExtractRun": {
+      "properties": {
+        "added": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "backend": {
+          "type": "string"
+        },
+        "device_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dropped": {
+          "$ref": "#/definitions/ExtractDropped"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finished_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "from_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "points": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "started_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/definitions/ExtractRunStatus"
+        },
+        "to_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "trigger": {
+          "$ref": "#/definitions/ExtractTrigger"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "session_id",
+        "trigger",
+        "status",
+        "started_ms",
+        "points",
+        "from_seq",
+        "to_seq",
+        "added",
+        "dropped",
+        "backend"
+      ],
+      "type": "object"
+    },
+    "ExtractRunStatus": {
+      "enum": [
+        "running",
+        "done",
+        "failed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "ExtractTrigger": {
+      "enum": [
+        "manual",
+        "auto",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "FileChangeKind": {
       "enum": [
         "created",
@@ -3182,6 +3320,173 @@
       ],
       "type": "object"
     },
+    "JudgeApiFormat": {
+      "enum": [
+        "anthropic",
+        "openai",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "JudgeBackendInfo": {
+      "properties": {
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeApiFormat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/JudgeBackendKind"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeProblem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "JudgeBackendKind": {
+      "enum": [
+        "api",
+        "agent",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "JudgeError": {
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/JudgeErrorCode"
+        },
+        "status": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "JudgeErrorCode": {
+      "enum": [
+        "timeout",
+        "network",
+        "http",
+        "auth",
+        "rate_limited",
+        "bad_output",
+        "agent_failed",
+        "cancelled",
+        "internal",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "JudgeInfo": {
+      "properties": {
+        "backends": {
+          "items": {
+            "$ref": "#/definitions/JudgeBackendInfo"
+          },
+          "type": "array"
+        },
+        "daily_calls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "extract": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "triage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "backends",
+        "daily_calls"
+      ],
+      "type": "object"
+    },
+    "JudgeProblem": {
+      "enum": [
+        "no_key",
+        "agent_missing",
+        "agent_unsupported",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "JudgeUsage": {
+      "properties": {
+        "cost_usd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Kind": {
       "description": "信封种类。hub 对每种的处理见 docs/protocol.md § 3。",
       "oneOf": [
@@ -3446,6 +3751,11 @@
           "description": "支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。",
           "type": "boolean"
         },
+        "rule_extract": {
+          "default": false,
+          "description": "支持规则提炼 RPC；没有该字段时按不支持处理。",
+          "type": "boolean"
+        },
         "rules": {
           "default": false,
           "description": "支持决策档案（`rule.*`，docs/spec/daemon.md § 23）。旧 daemon 没有这个字段，读作 false。",
@@ -3668,6 +3978,17 @@
             "string",
             "null"
           ]
+        },
+        "judge": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "判断后端的脱敏状态。"
         },
         "name": {
           "type": "string"
@@ -5750,6 +6071,96 @@
       },
       "required": [
         "id"
+      ],
+      "type": "object"
+    },
+    "RuleExtractDone": {
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/ExtractRun"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "type": "object"
+    },
+    "RuleExtractParams": {
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "RuleExtractResult": {
+      "properties": {
+        "points": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExtractRun"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "points"
+      ],
+      "type": "object"
+    },
+    "RuleExtractRunsParams": {
+      "properties": {
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RuleExtractRunsResult": {
+      "properties": {
+        "daily_calls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runs": {
+          "items": {
+            "$ref": "#/definitions/ExtractRun"
+          },
+          "type": "array"
+        },
+        "used_today": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runs",
+        "used_today",
+        "daily_calls"
       ],
       "type": "object"
     },
@@ -9562,6 +9973,21 @@
     "rule_delete_params": {
       "$ref": "#/definitions/RuleDeleteParams"
     },
+    "rule_extract_done": {
+      "$ref": "#/definitions/RuleExtractDone"
+    },
+    "rule_extract_params": {
+      "$ref": "#/definitions/RuleExtractParams"
+    },
+    "rule_extract_result": {
+      "$ref": "#/definitions/RuleExtractResult"
+    },
+    "rule_extract_runs_params": {
+      "$ref": "#/definitions/RuleExtractRunsParams"
+    },
+    "rule_extract_runs_result": {
+      "$ref": "#/definitions/RuleExtractRunsResult"
+    },
     "rule_list_params": {
       "$ref": "#/definitions/RuleListParams"
     },
@@ -9999,6 +10425,11 @@
     "rule_preview_result",
     "rule_changed",
     "rules_skipped",
+    "rule_extract_params",
+    "rule_extract_result",
+    "rule_extract_runs_params",
+    "rule_extract_runs_result",
+    "rule_extract_done",
     "attachment_ref",
     "blob_put_begin_params",
     "blob_put_begin_result",
@@ -10537,6 +10968,24 @@
       "direction": "notification",
       "name": "rule.changed",
       "params": "RuleChanged",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "rule.extract",
+      "params": "RuleExtractParams",
+      "result": "RuleExtractResult"
+    },
+    {
+      "direction": "request",
+      "name": "rule.extract_runs",
+      "params": "RuleExtractRunsParams",
+      "result": "RuleExtractRunsResult"
+    },
+    {
+      "direction": "notification",
+      "name": "rule.extract_done",
+      "params": "RuleExtractDone",
       "result": null
     },
     {

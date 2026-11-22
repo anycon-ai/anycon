@@ -505,6 +505,24 @@
   },
   {
     "direction": "request",
+    "name": "rule.extract",
+    "params": "RuleExtractParams",
+    "result": "RuleExtractResult"
+  },
+  {
+    "direction": "request",
+    "name": "rule.extract_runs",
+    "params": "RuleExtractRunsParams",
+    "result": "RuleExtractRunsResult"
+  },
+  {
+    "direction": "notification",
+    "name": "rule.extract_done",
+    "params": "RuleExtractDone",
+    "result": null
+  },
+  {
+    "direction": "request",
     "name": "blob.put_begin",
     "params": "BlobPutBeginParams",
     "result": "BlobPutBeginResult"

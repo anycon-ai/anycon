@@ -239,6 +239,16 @@ pub async fn run(paths: &Paths, cfg: &Config, ctx: Option<&Ctx>) -> Vec<DoctorCh
         out.push(DoctorCheck { id: format!("agent:{}", i.id), ok, detail, fix: if ok { None } else { fix } });
     }
 
+    let judge_info = match ctx {
+        Some(c) => c.judge.info(),
+        None => crate::judge::service::describe(cfg, &env.base, &infos),
+    };
+    let used = match ctx {
+        Some(c) => c.judge.used_today().await.ok(),
+        None => offline_judge_usage(paths).await,
+    };
+    out.push(judge_check(cfg, &judge_info, &env.base, used));
+
     // 8. 登录 shell 的 PATH
     {
         use crate::env::EnvSource;
@@ -655,5 +665,152 @@ mod tests {
         for c in checks.iter().filter(|c| !c.ok) {
             assert!(c.fix.is_some(), "check {} failed without a fix: {c:?}", c.id);
         }
+    }
+}
+
+/// 离线诊断只读已有数据库，不运行迁移、不改变调用记录。
+async fn offline_judge_usage(paths: &Paths) -> Option<u32> {
+    if !paths.db().exists() {
+        return Some(0);
+    }
+    let start = crate::judge::service::local_day_start(crate::util::now_ms())?;
+    let opts = sqlx::sqlite::SqliteConnectOptions::new().filename(paths.db()).read_only(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.ok()?;
+    let count: Result<i64, _> = sqlx::query_scalar("SELECT COUNT(*) FROM judge_calls WHERE started_ms >= ?")
+        .bind(start as i64)
+        .fetch_one(&pool)
+        .await;
+    pool.close().await;
+    count.ok().map(|n| n.min(u32::MAX as i64) as u32)
+}
+
+fn judge_check(
+    cfg: &Config,
+    info: &anycon_protocol::JudgeInfo,
+    env: &std::collections::HashMap<String, String>,
+    used: Option<u32>,
+) -> DoctorCheck {
+    use crate::config::JudgeBackendConfig;
+    use anycon_protocol::JudgeProblem;
+    let mut lines = Vec::new();
+    if cfg.judge.backends.is_empty() && cfg.judge.extract.is_empty() && cfg.judge.triage.is_empty() {
+        lines.push("not configured".into());
+    }
+    for backend in &info.backends {
+        let problem = match backend.problem {
+            None => "ready",
+            Some(JudgeProblem::NoKey) => "no_key",
+            Some(JudgeProblem::AgentMissing) => "agent_missing",
+            Some(JudgeProblem::AgentUnsupported) => "agent_unsupported",
+            Some(JudgeProblem::Unknown) => "unknown",
+        };
+        let detail = match cfg.judge.backends.get(&backend.name) {
+            Some(JudgeBackendConfig::Api(c)) => {
+                let key = if crate::judge::resolve_api_key(&c.api_key, env).is_some() {
+                    "key found"
+                } else if crate::config::judge::is_loopback_http(&c.base_url) {
+                    "key not found (optional for loopback HTTP)"
+                } else {
+                    "key not found"
+                };
+                format!("api model={}: {problem}; {key}", c.model)
+            }
+            Some(JudgeBackendConfig::Agent(c)) => {
+                format!("agent={} model={}: {problem}", c.agent, backend.model.as_deref().unwrap_or("default"))
+            }
+            None => "unknown".into(),
+        };
+        lines.push(format!("{} ({detail})", backend.name));
+    }
+    let mut ok = true;
+    let extract = if cfg.judge.extract.is_empty() { &cfg.judge.triage } else { &cfg.judge.extract };
+    for (position, name) in [("extract", extract), ("triage", &cfg.judge.triage)] {
+        let state = if name.is_empty() {
+            "not configured"
+        } else if let Some(b) = info.backends.iter().find(|b| &b.name == name) {
+            if b.problem.is_some() {
+                ok = false;
+                "unavailable"
+            } else {
+                "ready"
+            }
+        } else {
+            ok = false;
+            "backend does not exist"
+        };
+        lines.push(if name.is_empty() {
+            format!("{position}: {state}")
+        } else {
+            format!("{position}: {name} ({state})")
+        });
+    }
+    lines.push(format!(
+        "today: {} / {} calls",
+        used.map(|n| n.to_string()).unwrap_or_else(|| "unavailable".into()),
+        info.daily_calls
+    ));
+    check("judge", ok, lines.join("; "), Some("check [judge] and its backends in config.toml"))
+}
+
+#[cfg(test)]
+mod judge_tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn judge_output_distinguishes_missing_keys_missing_targets_and_unused_backends() {
+        let env = HashMap::new();
+        let mut cfg = Config::default();
+        let make = |cfg: &Config| judge_check(cfg, &crate::judge::service::describe(cfg, &env, &[]), &env, Some(3));
+        let empty = make(&cfg);
+        assert!(empty.ok && empty.detail.contains("not configured") && empty.detail.contains("3 / 20"));
+        cfg = serde_json::from_value(json!({"judge":{"backends":{
+            "cloud":{
+                "kind":"api","format":"openai","model":"m",
+                "api_key_env":"PRIVATE_ENV","base_url":"https://PRIVATE_HOST"
+            },
+            "local":{"kind":"api","format":"anthropic","model":"n","api_key":"PRIVATE_KEY"},
+            "cli":{"kind":"agent","agent":"fake","model":"fast"}
+        }}}))
+        .unwrap();
+        let unused = make(&cfg);
+        assert!(unused.ok);
+        assert!(unused.detail.contains("cloud (api model=m: no_key; key not found)"));
+        assert!(unused.detail.contains("local (api model=n: ready; key found)"));
+        assert!(unused.detail.contains("cli (agent=fake model=fast: agent_missing)"));
+        for secret in ["PRIVATE_ENV", "PRIVATE_HOST", "PRIVATE_KEY"] {
+            assert!(!unused.detail.contains(secret));
+        }
+        cfg.judge.triage = "cloud".into();
+        let bad = make(&cfg);
+        assert!(!bad.ok && bad.detail.contains("extract: cloud (unavailable)"));
+        cfg.judge.triage = "absent".into();
+        let absent = make(&cfg);
+        assert!(!absent.ok && absent.detail.contains("triage: absent (backend does not exist)"));
+        cfg.judge.triage = "local".into();
+        assert!(make(&cfg).ok);
+    }
+
+    #[tokio::test]
+    async fn offline_judge_usage_reads_existing_records_without_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        assert_eq!(offline_judge_usage(&paths).await, Some(0));
+        let store = crate::store::Store::open(&paths.db()).await.unwrap();
+        store
+            .start_judge_call(&crate::store::JudgeCallStart {
+                position: "triage",
+                backend: "a",
+                kind: "api",
+                model: None,
+                started_ms: crate::util::now_ms(),
+                input_bytes: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(offline_judge_usage(&paths).await, Some(1));
+        assert_eq!(store.cancel_unfinished_judge_calls(crate::util::now_ms()).await.unwrap(), 1);
+        store.close().await;
     }
 }

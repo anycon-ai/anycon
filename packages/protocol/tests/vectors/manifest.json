@@ -699,6 +699,20 @@
     }
   },
   {
+    "name": "rpc_rule_update_restore",
+    "type": "rpc",
+    "value": {
+      "id": 903,
+      "jsonrpc": "2.0",
+      "method": "rule.update",
+      "params": {
+        "id": "11111111-2222-4333-8444-555555555555",
+        "if_updated_ms": 1700000000000,
+        "stale": false
+      }
+    }
+  },
+  {
     "name": "rpc_todo_handler",
     "type": "rpc",
     "value": {

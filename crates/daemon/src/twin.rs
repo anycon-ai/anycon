@@ -535,10 +535,16 @@ async fn request(c: &Ctx, s: &TwinScope, todos: &[Todo], advisor: Option<&str>) 
         prompt.push_str(&format!("\n<DATA_{marker}>\n{chunk}\n</DATA_{marker}>\n"));
     }
     let status = get(c).await?;
+    let node_rules = crate::rules::injection_for(&c.store, &c.workspace, None).await.map_err(internal)?;
+    let node_rule_ids = node_rules.as_ref().map(|r| r.rule_ids.clone()).unwrap_or_default();
     let mut projects = vec![];
     for project in &s.projects {
         let rules = crate::rules::injection_for(&c.store, &c.workspace, Some(project)).await.map_err(internal)?;
-        projects.push(json!({"project":project,"rules":rules.map(|r|r.text).unwrap_or_default()}));
+        // 给模型看规则的 id，决定里的 `rules` 才引用得到（§ 26.4）；全节点规则的 id 在系统提示里，这里只列项目自己的
+        let (text, rule_ids) = rules.map(|r| (r.text, r.rule_ids)).unwrap_or_default();
+        let node_ids = node_rule_ids.iter().collect::<HashSet<_>>();
+        let own: Vec<&String> = rule_ids.iter().filter(|id| !node_ids.contains(id)).collect();
+        projects.push(json!({"project":project,"rules":text,"project_rule_ids":own}));
     }
     let resources = json!({
         "projects": projects,
@@ -548,9 +554,13 @@ async fn request(c: &Ctx, s: &TwinScope, todos: &[Todo], advisor: Option<&str>) 
     });
     prompt.push_str(&format!("\nAvailable resources: {resources}"));
     let mut system = SYSTEM.to_string();
-    if let Some(rules) = crate::rules::injection_for(&c.store, &c.workspace, None).await.map_err(internal)? {
+    if let Some(rules) = node_rules {
         system.push_str("\n\n");
         system.push_str(&rules.text);
+        system.push_str(&format!(
+            "\n\nThe rule ids above, in order: {}. When a decision relies on a rule, list its id in \"rules\".",
+            json!(rules.rule_ids)
+        ));
     }
     Ok((JudgeRequest { system, prompt }, ids))
 }
@@ -963,6 +973,10 @@ async fn record_decision(c: &Ctx, run: &mut TwinRun, d: TwinDecision) -> Result<
                 json!({"run_id":run.id,"action":d.action,"outcome":d.outcome,"skip_reason":d.skip_reason}),
             )
             .await;
+    }
+    // 决定被执行（试跑不算）才算引用了它依据的规则（§ 26.10）
+    if !run.dry_run && d.outcome == TwinDecisionOutcome::Executed {
+        crate::rules::mark_referenced(&c.store, &d.rules, c.judge.clock().now()).await;
     }
     run.decisions.push(d);
     c.store.save_twin_run(run).await.map_err(internal)

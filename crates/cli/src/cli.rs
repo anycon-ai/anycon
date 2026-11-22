@@ -232,6 +232,12 @@ pub enum RuleCmd {
         /// Rule id (a prefix is enough)
         id: String,
     },
+    /// Give a stale rule back to agents (a rule goes stale after 60 days without being used); prints its full text (not
+    /// available inside an anycon agent session)
+    Restore {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
     /// Remove a rule for good (not available inside an anycon agent session)
     Rm {
         /// Rule id (a prefix is enough)

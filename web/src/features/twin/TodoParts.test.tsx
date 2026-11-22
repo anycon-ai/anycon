@@ -22,6 +22,8 @@ import { HandlerChip } from '@/features/todos/ui/ActivityBits'
 import { historyKey, useTodoHistory } from '@/features/todos/history'
 import { TodoHistory } from '@/features/todos/ui/TodoHistory'
 import { TodoDetail } from '@/features/todos/ui/TodoDetail'
+import { FollowUpRuleHost } from '@/features/rules/ui/AlwaysDoThis'
+import { useFollowUp } from '@/features/rules/followUp'
 import { TwinHandlerButton, TwinReviewReason } from './TodoParts'
 import { useTwin } from './store'
 import { syncTwin } from './service'
@@ -144,6 +146,40 @@ describe('Twin in to-dos', () => {
     const links = screen.getAllByRole('link', { name: 'Open the pull request' })
     expect(links).toHaveLength(1)
     expect(links[0]).toHaveAttribute('href', 'https://github.com/o/r/pull/1')
+  })
+
+  it('answering inline with “Always do this” ticked opens the rule editor only after the answer succeeded', async () => {
+    useFollowUp.getState().close()
+    useNodes.getState().patch(A, { info: { ...info, capabilities: { ...info.capabilities, rules: true } } })
+    twin.questions = [twinQuestion()]
+    await syncTwin(A)
+    rpc.handlers['todo.history'] = () => ({ events: [{ seq: 1, ts_ms: 1, kind: 'twin_question', question_id: 'q1' }], has_more: false })
+    const item = { ...todoItem({ id: 't1', handler: 'twin' }), node_id: A, unsynced: false }
+    render(
+      <>
+        <TodoHistory item={item} />
+        <FollowUpRuleHost />
+      </>,
+    )
+    await screen.findByTestId('twin-question')
+    // not ticked: no editor
+    await userEvent.click(screen.getByRole('button', { name: 'Web' }))
+    await waitFor(() => expect(rpc.calls.filter((c) => c.method === 'twin.answer')).toHaveLength(1))
+    expect(screen.queryByTestId('rule-editor')).not.toBeInTheDocument()
+    // ticked, and the answer is refused: no editor
+    twin.questions = [twinQuestion()]
+    await syncTwin(A)
+    rpc.handlers['twin.answer'] = () => { throw new Error('offline') }
+    await userEvent.click(await screen.findByTestId('always-do-this-box'))
+    await userEvent.click(screen.getByRole('button', { name: 'API' }))
+    await waitFor(() => expect(rpc.calls.filter((c) => c.method === 'twin.answer')).toHaveLength(2))
+    expect(screen.queryByTestId('rule-editor')).not.toBeInTheDocument()
+    // ticked, and it works: the editor opens with the model’s question apart from your answer
+    rpc.handlers['twin.answer'] = (p) => ({ ...twinQuestion(), status: 'answered', answer: (p as { answer: string }).answer })
+    await userEvent.click(screen.getByRole('button', { name: 'API' }))
+    expect(await screen.findByTestId('rule-editor')).toBeInTheDocument()
+    expect(screen.getByTestId('record-agent')).toHaveTextContent('Which project?')
+    expect(screen.getByTestId('rule-editor-save')).toBeDisabled()
   })
   it('shows the Twin reason in acceptance, and emits no handler entry without capability', () => {
     const item = { ...todoItem({ id: 't1' }), node_id: A, unsynced: false }

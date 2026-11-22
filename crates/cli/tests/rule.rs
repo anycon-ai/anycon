@@ -203,7 +203,7 @@ async fn inside_an_agent_session_add_proposes_and_the_rest_is_refused() {
     );
 
     // confirm / reject / disable / enable / rm：拒绝，退出码 5，说明原因，什么都不改
-    for sub in ["confirm", "reject", "disable", "enable", "rm"] {
+    for sub in ["confirm", "reject", "disable", "enable", "restore", "rm"] {
         for target in [&id[..8], &hid[..8]] {
             let r = n.cli_env(&["rule", sub, target], &[("ANYCON_AGENT", "1")]).await;
             assert_eq!(r.code, 5, "{sub}: {}", r.stderr);
@@ -272,7 +272,7 @@ async fn the_cli_help_documents_the_subcommands_in_english() {
     let home = d.path().join("home");
     let r = anycon(&home, &["rule", "--help"], None, &[]).await;
     assert_eq!(r.code, 0, "{}", r.stderr);
-    for want in ["add", "ls", "show", "confirm", "reject", "disable", "enable", "rm"] {
+    for want in ["add", "ls", "show", "confirm", "reject", "disable", "enable", "restore", "rm"] {
         assert!(r.stdout.contains(want), "{want}: {}", r.stdout);
     }
     let r = anycon(&home, &["rule", "add", "--help"], None, &[]).await;
@@ -361,5 +361,62 @@ async fn group_flag_marks_one_node_and_scope_is_visible() {
     let agent = n.cli_env(&["rule", "add", "agent", "--group", "--json"], &[("ANYCON_AGENT", "1")]).await;
     assert_eq!(agent.json()["sync"], "node");
     assert_eq!(agent.json()["status"], "pending");
+    n.stop().await;
+}
+
+/// 停掉 daemon，直接把这条规则标成过期（过期由 daemon 每天标，没有客户端入口），再起 daemon。
+async fn mark_stale_offline(n: &mut Node, id: &str) {
+    n.daemon.take().unwrap().stop().await;
+    let store = anycon_daemon::store::Store::open(&anycon_daemon::config::Paths::new(&n.home).db()).await.unwrap();
+    let mut rule = store.rule_get(id).await.unwrap().unwrap();
+    rule.stale = true;
+    rule.updated_ms += 1;
+    store.rule_save(&rule).await.unwrap();
+    store.pool().close().await;
+    n.daemon = Some(start_daemon(&n.home, &[("ANYCON_MOCK_AGENT", "1")]).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_rule_is_marked_in_ls_and_restore_gives_it_back() {
+    let mut n = node().await;
+    let keep = n.add("keep this one").await["id"].as_str().unwrap().to_string();
+    let old = n.add("a forgotten habit").await["id"].as_str().unwrap().to_string();
+    mark_stale_offline(&mut n, &old).await;
+
+    // ls：过期的标 STALE，不算进一个会话拿到的字节数；--json 带 stale
+    let r = n.cli(&["rule", "ls"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let line = |id: &str| r.stdout.lines().find(|l| l.contains(&id[..8])).unwrap_or_default().to_string();
+    assert!(line(&old).contains("STALE"), "{}", r.stdout);
+    assert!(!line(&keep).contains("STALE"), "{}", r.stdout);
+    let rules = n.rules(false).await;
+    assert_eq!(rules.iter().find(|r| r["id"] == old.as_str()).unwrap()["stale"], true);
+    assert!(rules.iter().find(|r| r["id"] == keep.as_str()).unwrap().get("stale").is_none());
+    let budget = n.cli(&["rule", "ls", "--json"]).await.json()["budget"]["node_bytes"].as_u64().unwrap();
+    let header = anycon_daemon::rules::TEMPLATE_HEADER.len() as u64;
+    assert_eq!(budget, header + 3 + "keep this one".len() as u64, "only the rule that is not stale counts");
+    // show 写明它为什么不再交给 agent
+    let r = n.cli(&["rule", "show", &old[..8]]).await;
+    assert!(r.stdout.contains("STALE") && r.stdout.contains("restore"), "{}", r.stdout);
+
+    // 在 agent 里：拒绝，退出码 5，什么都不改
+    let r = n.cli_env(&["rule", "restore", &old[..8]], &[("ANYCON_AGENT", "1")]).await;
+    assert_eq!(r.code, 5, "{}", r.stderr);
+    assert!(r.stderr.contains("not available inside an anycon agent session"), "{}", r.stderr);
+    assert!(n.rules(false).await.iter().find(|r| r["id"] == old.as_str()).unwrap()["stale"] == true);
+
+    // 不是过期的：什么都不改
+    let r = n.cli(&["rule", "restore", &keep[..8]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.starts_with("nothing changed") && r.stdout.contains("not stale"), "{}", r.stdout);
+
+    // 恢复：前缀就行，打印全文
+    let r = n.cli(&["rule", "restore", &old[..8]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.starts_with("restored ") && r.stdout.contains("a forgotten habit"), "{}", r.stdout);
+    let rules = n.rules(false).await;
+    assert!(rules.iter().find(|r| r["id"] == old.as_str()).unwrap().get("stale").is_none());
+    let r = n.cli(&["rule", "ls"]).await;
+    assert!(!r.stdout.contains("STALE"), "{}", r.stdout);
     n.stop().await;
 }

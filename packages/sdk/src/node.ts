@@ -119,7 +119,7 @@ export interface NodeEvents {
   todo_changed: [TodoChanged]
   /** 清单项的「经过」多了一条（`todo.event`，docs/spec/daemon.md § 22；发给所有在线客户端）。`text` 是 agent 写的，按不可信内容渲染。 */
   todo_event: [TodoEventNotice]
-  /** 规则有一条被新建、修改或删除（`rule.changed`，docs/spec/daemon.md § 23；发给所有在线客户端，包括发起的那一个）。`last_injected_ms` 的变化不通知。 */
+  /** 规则有一条被新建、修改或删除（`rule.changed`，docs/spec/daemon.md § 23；发给所有在线客户端，包括发起的那一个）。`last_injected_ms` 和 `last_referenced_ms` 的变化不通知；daemon 标过期、人恢复时通知。 */
   rule_changed: [RuleChanged]
   /** 一次提炼结束，按 run.id 对应发起的调用；所有在线客户端都会收到。 */
   rule_extract_done: [RuleExtractDone]
@@ -657,6 +657,8 @@ export class Node extends Emitter<NodeEvents> {
      * `if_updated_ms` 给了而和现在的不同 → `RpcError`（`invalid`，`reason = 'changed'`，`updatedMs` 是现在的值）。
      * 变成生效、或者改了生效的规则的文字 / 项目而超出字数上限 → `over_budget`。规则不存在 → `not_found`；
      * 自报了 `mcp` 的本机连接 → `forbidden`。
+     * `stale: false` 恢复一条过期的规则（`Rule.stale`：生效的规则 60 天没被用到，daemon 标上它；过期的不注入、不计字数预算），
+     * 和变成生效一样过字数检查，超出 → `over_budget`；`stale: true` → `invalid`（`field = 'stale'`），过期只由 daemon 标。
      */
     update: (params: RuleUpdateParams): Promise<Rule> => this.call('rule.update', params),
     /** `rule.delete`：物理删除；`ifUpdatedMs` 的语义同 `update`。规则不存在 → `not_found`；自报了 `mcp` 的本机连接 → `forbidden`。 */

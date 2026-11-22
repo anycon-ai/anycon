@@ -882,7 +882,7 @@ SQLite（WAL）。全部表：
 | `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
 | `todos` | 清单（§ 21.4）：id（主键）、title、body、project、state、handler（缺省 me）、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 | `todo_sessions` / `todo_events` | 清单项派出的会话和「经过」（§ 22.8）；`sessions.todo_id` 是会话的来源项 |
-| `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms。不受 `history_retention` 影响 |
+| `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms、last_referenced_ms、stale、active_since_ms（`0012_rule_stale.sql`）。不受 `history_retention` 影响 |
 | `judge_calls` | 判断后端的每次调用（§ 25.2，迁移 `0007_judge.sql`）：id、position、backend、kind、model、started_ms、finished_ms、status（`ok` 或错误码）、input_bytes、output_bytes、input_tokens、output_tokens、cost_usd。不存提示和回应，保留 90 天 |
 | `rule_extract_runs` | 每次提炼（§ 23.9，同一个迁移）：id、session_id、trigger、device_id、status、started_ms、finished_ms、points、from_seq、to_seq、added(JSON)、dropped(JSON)、backend、error_code、error_status、call_id。保留 90 天，但每个会话最新的 `done` 始终保留以维持水位 |
 | `audit` | § 13 |
@@ -1488,7 +1488,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ## 23. 决策档案
 
-> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）已实现，由 Web 持久化和重放。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）已实现，由 Web 持久化和重放。规则的「过期」和回答时的「以后都这样」（§ 26.10）也已实现：daemon、CLI、TS SDK 和 Web 都有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
 
 ### 23.1 范围
 
@@ -1496,7 +1496,9 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 规则只影响 agent 怎么判断，**不影响任何权限**：不自动批准或拒绝权限请求，不改权限模式，不放宽「不 push、不开 PR」（ADR-54 第 3、5 条）。
 
-不做：「过期」标记（要有分身的运行记录里「按哪条规则」的引用才有依据，第 4 步）；让会话里的 agent 提规则的 MCP 工具。
+「过期」（§ 23.2、§ 26.10）：生效的规则 60 天里没被用到，daemon 标上，不再注入，留在档案里等人恢复。
+
+不做：让会话里的 agent 提规则的 MCP 工具。
 
 ### 23.2 `Rule`
 
@@ -1511,6 +1513,8 @@ Rule {
   created_ms: timestamp
   updated_ms: timestamp   // 每次真正的修改严格递增（同 § 21.3），也是版本号
   last_injected_ms?: timestamp    // 最近一次被注入某个会话；改它不动 updated_ms
+  last_referenced_ms?: timestamp  // 最近一次被分拣的决定引用并且这个决定被执行（§ 26.4）；改它不动 updated_ms
+  stale?: bool            // 过期（缺省 false，线路上 false 省略）：status 仍是 active，但不注入、不计字数预算（§ 26.10）
 }
 ```
 
@@ -1523,7 +1527,9 @@ Rule {
 | `disabled` | 人停用了，留着，可以再打开 | 否 |
 | `rejected` | 人否决了。留着是为了之后提炼时不再提同样的 | 否 |
 
-`source.kind`：`manual` 人手写；`answer` 人在答复权限请求或提问时点「记成规则」（带 `session_id`、`request_id`）；`extracted` 提炼出来的（带 `session_id`、`seq`，§ 23.9）；`agent` 调用方自报是 agent。daemon 填 `device_id`，调用方不能指定。
+**过期**（`stale`）：只对 `active` 的规则有意义。过期的规则还是 `active`，规则页另起一段显示；但它**不注入**（派发的会话、分拣的系统提示、`rule.preview` 和 `todo.dispatch_preview` 的 `rules_text` 都不含它），**不计字数预算**（§ 23.4 的 `budget` 和生效时的检查都把它当成不生效）。daemon 每天看一次（§ 26.10）；人用 `rule.update { stale: false }` 恢复；客户端不能自己标过期（`stale: true` → `invalid`，`data.field = "stale"`）。规则离开 `active`（停用、否决、改回待确认）时 `stale` 清掉，之后再生效就是一条新的生效规则。
+
+`source.kind`：`manual` 人手写；`answer` 人在答复权限请求、agent 的提问或分身的问题时点「记成规则」或勾「以后都这样」（§ 23.6；权限请求和 agent 的提问带 `session_id`、`request_id`；分身的问题没有会话，只带 `request_id`，是 `twin_questions` 里那个问题的 id）；`extracted` 提炼出来的（带 `session_id`、`seq`，§ 23.9）；`agent` 调用方自报是 agent。daemon 填 `device_id`，调用方不能指定。
 
 客户端遇到不认识的 `status` 按「不生效」显示，遇到不认识的 `source.kind` 按「不是人写的」显示，解析不能因此失败（Rust 的协议类型里 `RuleStatus`、`RuleSourceKind`、`RuleSync` 各有一个 `Unknown` 变体接住它，用 `#[serde(other)]`）。daemon 自己从不产生也不接受 `Unknown`：`rule.update` 的 `status` 解析成不认识的值 → `invalid`（`data.field = "status"`）；库里读到不认识的字符串按 `Unknown` 读，不生效，也不会被写回成别的值。
 
@@ -1542,12 +1548,12 @@ Rule {
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。一次给全（不含 `rejected` 的规则总数上限 300，`rejected` 的另有 300，不翻页）。`budget` 见 § 23.4 |
+| `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。`status = active` 时包含过期的（客户端自己按 `stale` 分段）。一次给全（不含 `rejected` 的规则总数上限 300，`rejected` 的另有 300，不翻页）。`budget` 见 § 23.4 |
 | `rule.add` | C→D | `{ id, text, project?, status?: active \| pending \| disabled \| rejected, sync?: node \| group, source?: { kind: manual \| answer, session_id?, request_id? }, agent? }` → `Rule`。`id` 已存在时原样返回已有的那一条。`status` 缺省 `active`，`sync` 缺省 `node`。`agent: true`（或自报了 `mcp` 的连接）时可另带 `origin_session`（§ 23.2）。不含 `rejected` 的规则已满 300 → `invalid`（`data.field = "rules"`，`data.reason = "too_many"`）；这是 agent 写的、而 agent 提的待确认规则（`source.kind` 是 `agent` 或 `extracted`，状态是 `pending`）已满 50 → `invalid`（`data.field = "rules"`，`data.reason = "too_many_pending"`），只拦 agent 的入口，人照常能写；文字里有看不见的字符 → `invalid`（`data.reason = "invisible"`）；会让注入超出上限 → `invalid`（`data.reason = "over_budget"`，§ 23.4） |
-| `rule.update` | C→D | `{ id, text?, project?, clear?, status?, sync?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget` |
+| `rule.update` | C→D | `{ id, text?, project?, clear?, status?, sync?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget`。`stale?: false` 恢复一条过期的规则（和「变成生效」一样过字数检查，超出 → `over_budget`，`data.field = "stale"`；成功后「最近一次变成生效的时间」是现在，60 天从头算，§ 26.10）；规则不是过期的就不算改动；`stale: true` → `invalid`（`data.field = "stale"`）；自报了 `mcp` 的连接照旧 `forbidden` |
 | `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除 |
 | `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话，会注入的那段文字（§ 23.5）。只读 |
-| `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。新建、真正的修改、删除才发；空操作、重复的 `rule.add` 和 `last_injected_ms` 的变化（§ 23.5）不发 |
+| `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。新建、真正的修改、删除、daemon 标过期和人恢复才发；空操作、重复的 `rule.add`、`last_injected_ms` 和 `last_referenced_ms` 的变化（§ 23.5、§ 26.10）不发 |
 | `rule.extract` | C→D | `{ session_id }` → `{ run?: ExtractRun, points }`（§ 23.9）。`points` 是这次会带上的决策点数（水位之后的，最多 40 个）：0 时不调用后端、不留记录，也没有 `run`。否则开始一次提炼，立即返回 `status = running` 的 `run`，结束时发 `rule.extract_done`。正在跑的就是这个会话时返回那一次。会话不存在 → `not_found`；没配提炼用的后端或者它现在不能用 → `invalid`（`data.reason = "not_configured"`）；另一个会话的提炼正在跑 → `invalid`（`data.reason = "busy"`）；今天的调用次数用完 → `invalid`（`data.reason = "budget"`，带 `used`、`limit`）。自报了 `mcp` 的连接 → `forbidden`：提炼花钱，输入是会话内容，只由人发起 |
 | `rule.extract_runs` | C→D | `{ session_id?, limit? }` → `{ runs: [ExtractRun], used_today, daily_calls }`。从新到旧，`limit` 缺省 20，按仓库列表参数惯例钳制到 1–100。`used_today` 是今天所有位置合计已经调用的次数 |
 | `rule.extract_done` | D→C notification | `{ run: ExtractRun }`：一次提炼结束（成功或失败）时发给所有在线客户端 |
@@ -1562,7 +1568,7 @@ Rule {
 
 ### 23.4 上限：在生效的时候把关，注入时不截断
 
-一个会话拿到的规则 = 全节点的 `active` 规则 + 它所在项目的 `active` 规则。这段文字（含 § 23.5 的模板）最多 4 KiB（UTF-8 字节）。
+一个会话拿到的规则 = 全节点的生效规则 + 它所在项目的生效规则（`active` 且没有过期，§ 23.2）。这段文字（含 § 23.5 的模板）最多 4 KiB（UTF-8 字节）。
 
 上限在规则**变成生效的那一刻**检查，不在注入的时候：
 
@@ -1575,7 +1581,7 @@ Rule {
 
 `rule.list` 的 `budget`：`{ cap, node_bytes, projects: { <项目名>: bytes } }`，客户端据此显示「已用 / 上限」。`cap` 是 4096，固定，不可配置。`node_bytes` 是开头加上全节点生效规则的字节数（一条生效的规则都没有时是 0：那时不注入任何东西，也没有开头）；`projects[名字]` 只有这个项目的生效规则，不含 `node_bytes`；同一个项目的不同写法归在第一次出现的那个名字下。一个这个项目的会话拿到的文字是 `node_bytes + projects[名字]`，没有项目规则的会话是 `node_bytes`。
 
-**检查**：一条规则变成生效（新建时就是 `active`，或者 `pending` / `disabled` / `rejected` 改成 `active`），或者生效的规则的文字或项目变了，就用**改动之后**的生效规则算：全节点规则 → `node_bytes` 加上最大的项目；项目规则 → `node_bytes` 加上这个项目。超过 `cap` → `invalid`，`data.reason = "over_budget"`，`data.bytes` 是这个和（这次改动之后一个会话拿到的字节数），`data.cap` 是 4096；刚好 4096 可以。停用、否决、删除、把生效的规则改短、改不生效的规则都不检查，不会因为字数失败。
+**检查**：一条规则变成生效（新建时就是 `active`，或者 `pending` / `disabled` / `rejected` 改成 `active`），或者生效的规则的文字或项目变了，就用**改动之后**的生效规则算：全节点规则 → `node_bytes` 加上最大的项目；项目规则 → `node_bytes` 加上这个项目。超过 `cap` → `invalid`，`data.reason = "over_budget"`，`data.bytes` 是这个和（这次改动之后一个会话拿到的字节数），`data.cap` 是 4096；刚好 4096 可以。停用、否决、删除、把生效的规则改短、改不生效的规则（含过期的规则）都不检查，不会因为字数失败；把过期的规则恢复算「变成生效」，要检查。
 
 ### 23.5 注入
 
@@ -1601,16 +1607,17 @@ Standing rules from the user. The user wrote or confirmed each of them; follow t
 
 - 预填的文字里有 agent 写的东西（提问的原文、命令）。它一旦保存就会进到之后每个会话的系统提示里，所以必须经过编辑框、由用户看过再存，不提供「一键记下」；编辑框里把来自 agent 的部分和用户的选择分开显示。
 - 界面写明：规则不会自动批准任何请求，它只是告诉 agent 你的做法。
+- **「以后都这样」**（回答时的勾选，§ 26.10）是进同一个编辑框的另一个入口，不是另一条路：回答**分身的问题**（`twin.answer`）或 **agent 的提问**（`permission.respond` 带 `answers`）的地方，答复按钮旁多一个勾选；勾上并且答复**成功之后**才打开「记成规则」的编辑框（答复失败、请求已不存在、已被别处答复都不打开），预填同上，由用户改成自己的话再存，预填原样不能保存。勾选本身不进答复的参数，不改答复的内容，也不碰答复按钮的锁和键盘快捷键。出处同「记成规则」：agent 的提问是 `{ kind: answer, session_id, request_id }`；分身的问题没有会话，记 `{ kind: answer, request_id: <问题 id> }`（`request_id` 本来就是「出自哪个权限请求或提问」，不需要新字段，也不记会话）。
 
 ### 23.7 存储、审计、日志
 
-新迁移 `0006_rules.sql`，表 `rules`（列见 § 11；索引 `(created_ms, id)`）。规则的文字是用户内容：不进日志（包括各条错误路径），不进审计。写操作在 daemon 里串行（`Store::rule_lock`，不和别的锁嵌套）。
+新迁移 `0006_rules.sql`，表 `rules`（列见 § 11；索引 `(created_ms, id)`）；`0012_rule_stale.sql` 加 `last_referenced_ms`、`stale` 和 `active_since_ms`（最近一次变成生效的时间：新建时就生效的取 `created_ms`，状态后来改成 `active` 或者从过期恢复的取那次修改的 `updated_ms`；它不在线路上，只用来算过期，已有的规则迁移时记成迁移的那一刻，升级不会让它们立刻过期）。规则的文字是用户内容：不进日志（包括各条错误路径），不进审计。写操作在 daemon 里串行（`Store::rule_lock`，不和别的锁嵌套）。
 
-审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id。`add` 的 `detail` 是 `{ text_len（码点数）, source_kind, status, sync, project? }`；`update` 的 `detail` 是 `{ fields }`（变了的字段名：`text` `project` `status` `sync`），文字变了另带 `text_len`，状态变了另带 `status: { from, to }`；`delete` 为空。不记文字（项目名和清单一样会记）。重复的 `rule.add`、空操作的 `rule.update` 和失败的调用不进审计。每次提炼结束记一条 `rule.extract`：`target` 是会话 id，`detail` 是 `{ trigger, status, points, added（条数）, dropped, backend, error? }`；提炼建出的每条规则另记 `rule.add`（`source_kind = extracted`）。
+审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id。`add` 的 `detail` 是 `{ text_len（码点数）, source_kind, status, sync, project? }`；`update` 的 `detail` 是 `{ fields }`（变了的字段名：`text` `project` `status` `sync` `stale`），文字变了另带 `text_len`，状态变了另带 `status: { from, to }`；daemon 每天标过期时 `detail` 是 `{ auto: "stale" }`（操作者是 daemon，没有 `fields`）；`delete` 为空。不记文字（项目名和清单一样会记）。重复的 `rule.add`、空操作的 `rule.update` 和失败的调用不进审计。每次提炼结束记一条 `rule.extract`：`target` 是会话 id，`detail` 是 `{ trigger, status, points, added（条数）, dropped, backend, error? }`；提炼建出的每条规则另记 `rule.add`（`source_kind = extracted`）。
 
 **名额**：占 300 个名额的是不含 `rejected` 的规则（待确认、生效、停用）；agent 提的待确认规则另有 50 个（`MAX_AGENT_PENDING`：状态 `pending`、来源 `agent` 或 `extracted`），所以 agent 占不满 300 个名额、把人挡在外面（人写的、直接生效的规则不受这 50 个限制）。`rejected` 的规则留着是为了之后提炼时不再提同样的，它们不占那 300 个，但自己也有一个 300 的上限：再否决一条而 `rejected` 的超过 300 时，daemon 删掉最早否决的那条（`updated_ms` 最小的；记审计 `rule.delete`，`detail` 是 `{ "auto": "rejected_cap" }`，并发 `rule.changed`）。把 `rejected` 的规则改回别的状态和新建一样占一个名额（满了 → `too_many`）。
 
-daemon 从不自动删除有用的规则（ADR-54 第 3 条）：待确认、生效、停用的规则一直留着，不受 `history_retention` 影响；上面 `rejected` 满额时删最早的那条，是唯一的自动删除。`anycon export` / `import` 不含规则。
+daemon 从不自动删除有用的规则（ADR-54 第 3 条；过期只是不再注入，不删除）：待确认、生效、停用的规则一直留着，不受 `history_retention` 影响；上面 `rejected` 满额时删最早的那条，是唯一的自动删除。`anycon export` / `import` 不含规则。
 
 ### 23.8 同组节点之间的同步
 
@@ -1933,7 +1940,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 ## 26. 分身
 
-> **4a 已实现（§ 26.1–§ 26.8：daemon、CLI、TS SDK 和 Web）；4b 已实现（§ 26.9：周期项和 PR 事件）；4c 还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
+> **已实现：4a（§ 26.1–§ 26.8）、4b（§ 26.9，周期项和 PR 事件）和 4c（§ 26.10，规则的「过期」和「以后都这样」），daemon、CLI、TS SDK 和 Web 都有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
 
 分身是 daemon 里的一个调度者：被事件唤醒，看清单里交给它的项，决定每一项怎么办，再用第 2 步的派发（§ 22）开会话去做。它自己不干活，也不批准权限。
 
@@ -2016,7 +2023,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 | `done` | — | 它认为做完了：`handler` 改回 `me`，「经过」里记一条「分身认为做完了」和理由。**不写 `state`**（§ 21.2：`state` 只由人设置）；这一项照常靠 `activity = review` 出现在「待验收」里，验收由人做 |
 
 - **`reason`** 必填，≤ 500 个字符，写进运行记录和这一项的「经过」。
-- **`rules?`**：可以带它所依据的规则 id 列表，只记录，4c 用来判断规则是否过期。
+- **`rules?`**：可以带它所依据的规则 id 列表。它进运行记录，决定被执行时（试跑不算）还会更新这些规则的 `last_referenced_ms`（§ 26.10）。模型靠系统提示里规则文字后面的一行「规则 id，按上面的顺序」和每个项目的 `project_rule_ids` 知道每条规则的 id（过期的规则不在其中）。
 - **逐条校验**：这一项还符合 § 26.1、动作合法、附带的字段合法、名额和次数都还有。不合格的这一条不执行，在运行记录里写明原因（`invalid` / `out_of_scope` / `no_capacity` / `budget`）。
 - **整份输出解析不了**：这次唤醒算失败（`bad_output`），什么都不执行。
 
@@ -2072,7 +2079,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget`、`session_id?`、`question_id?`、`project?`、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
 
-`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 已实现，§ 26.10 尚未实现。
+`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 和 § 26.10 也已实现。
 
 除了读的方法（`twin.get`、`twin.runs`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
 
@@ -2100,7 +2107,15 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 ### 26.10 规则的「过期」和「以后都这样」（4c）
 
-- **过期**：规则多一个 `last_referenced_ms`，在分拣输出的 `rules` 引用了它时更新。生效的规则 60 天里既没被引用、也没被注入（`last_injected_ms`），就标成过期（`stale = true`）。
-  - 过期的规则不再注入，但留在档案里，一键恢复。
-  - daemon 从不因为过期删除规则。
-- **「以后都这样」**：回答分身或 agent 的问题时的勾选。勾上之后打开「记成规则」的同一个编辑框，由人改成自己的话再存（§ 23.6），不提供一键生成。
+**已实现**（daemon、CLI、TS SDK、Web）。
+
+- **`last_referenced_ms`**：分拣的决定里的 `rules` 引用了这条规则、并且这个决定被**执行**时更新（`outcome = executed`；试跑、被跳过的决定不算）。只更新存在的、生效的规则（`active` 且没有过期）：不存在的 id、停用 / 待确认 / 否决的、过期的都不报错，也不更新。和 `last_injected_ms` 一样不动 `updated_ms`、不发 `rule.changed`。
+- **标过期**：daemon 启动一分钟后看一次，之后每天一次（时钟取判断后端那只可替换的时钟，测试直接调用）。`status = active`、`stale = false`，并且下面三个时间里**最晚的一个早于 60 天前**（严格早于，刚好 60 天不算）的规则标成 `stale = true`：
+  - `last_injected_ms`（被注入某个会话）；
+  - `last_referenced_ms`（被分拣的决定引用）；
+  - 最近一次变成生效的时间（`active_since_ms`，§ 23.7）：新建时就生效的取 `created_ms`；`pending` / `disabled` / `rejected` 后来改成 `active` 的取那次修改的时间；从过期恢复的取恢复的时间。这个时间不在线路上，所以多存一列：从 `updated_ms` 推不出来（之后改文字也会动它）。
+
+  待确认、停用、否决的规则不标。每条标记是一次真正的修改：`updated_ms` 递增（带着旧版本 `if_updated_ms` 的写会被拒），发 `rule.changed`，记审计 `rule.update`（`detail = { auto: "stale" }`，操作者是 daemon）。**daemon 从不因为过期删除规则。**
+- **过期的效果**：不注入（派发的会话、分拣系统提示里的规则、`rule.preview`、`todo.dispatch_preview` 的 `rules_text`）；不计字数预算（`rule.list` 的 `budget`、生效时的检查）。它仍是 `active`：`rule.list { status: active }` 包含它，客户端按 `stale` 自己分段（规则页另起一段「过期」，[web.md § 4.14](web.md#414-规则-rules)）。
+- **恢复**：`rule.update { stale: false }`，只由人做（自报了 `mcp` 的连接 → `forbidden`，CLI 在 agent 环境里拒绝 `anycon rule restore`）。恢复和「变成生效」一样过字数检查（§ 23.4，超出 → `over_budget`，`data.field = "stale"`），成功后「最近一次变成生效的时间」是现在，60 天从头算。`stale: true` 不能由客户端设（`invalid`，`data.field = "stale"`）。规则停用、否决、改回待确认时 `stale` 清掉；之后再启用就是一条新的生效规则，从启用那刻算起。
+- **「以后都这样」**：回答**分身的问题**（清单项「经过」里就地回答、「待处理」里的分身提问）和 **agent 的提问**（会话权限卡片里 `kind = question` 的回答）时，答复按钮旁边的勾选。勾上并且答复**成功之后**，打开「记成规则」的同一个编辑框，由人改成自己的话再存（§ 23.6），不提供一键生成：预填原样不能保存，答复失败不打开，不勾和以前一样。勾选不改答复的内容，也不碰答复按钮的锁（600 ms）和 `⌘⇧A` / `⌘⇧D`。节点不支持规则时不出现。出处记法见 § 23.6：agent 的提问 `{ kind: answer, session_id, request_id }`，分身的问题 `{ kind: answer, request_id: <问题 id> }`（没有会话）。

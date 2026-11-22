@@ -5944,6 +5944,15 @@
             "null"
           ]
         },
+        "last_referenced_ms": {
+          "description": "最近一次被分拣的决定引用、并且这个决定被执行；改它不动 `updated_ms`，也不发 `rule.changed`（§ 26.10）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "project": {
           "description": "只进这个项目的会话；缺省 = 这个节点上所有项目的会话。",
           "type": [
@@ -5953,6 +5962,10 @@
         },
         "source": {
           "$ref": "#/definitions/RuleSource"
+        },
+        "stale": {
+          "description": "过期：生效的规则 60 天里没被注入也没被引用，daemon 标上它。过期的规则仍是 `active`，但不注入、不计字数预算；\n只有人能用 `rule.update { stale: false }` 恢复（docs/spec/daemon.md § 23.2、§ 26.10）。缺省 `false`。",
+          "type": "boolean"
         },
         "status": {
           "$ref": "#/definitions/RuleStatus"
@@ -6488,6 +6501,13 @@
         "project": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "stale": {
+          "description": "只能给 `false`：恢复一条过期的规则（和「变成生效」一样过字数检查）。给 `true` → `invalid`（`data.field = \"stale\"`）。",
+          "type": [
+            "boolean",
             "null"
           ]
         },

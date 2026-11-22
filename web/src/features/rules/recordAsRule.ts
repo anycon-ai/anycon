@@ -49,3 +49,8 @@ export function chosenAnswers(block: PermissionBlock, answers: Readonly<Record<s
   }
   return out
 }
+
+/** 回答分身的问题之后「以后都这样」要用的上下文：模型写的问题（单独显示）和用户的回答，各截成预填那句话能用的长度。 */
+export function twinAnswerContext(question: string, answer: string): { asked: string[]; answers: Array<{ question: string; answer: string }> } {
+  return { asked: [clip(question.trim(), AGENT_TEXT_MAX)], answers: [{ question: clip(cleanOneLine(question), WHAT_MAX), answer: clip(cleanOneLine(answer), WHAT_MAX) }] }
+}

@@ -3,6 +3,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { PermissionCard } from '@/features/session/ui/PermissionCard'
+import { FollowUpRuleHost } from '@/features/rules/ui/AlwaysDoThis'
 import type { PermissionBlock } from '@/features/session/reducer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ev, mockAgent, nodeEntry, resetSeq, summary } from '@/test/factories'
@@ -127,5 +128,27 @@ describe('useShortcuts: not while a dialog or menu is open', () => {
     fireEvent.keyDown(screen.getByTestId('rule-editor-cancel'), { key: 'a', ctrlKey: true, shiftKey: true })
     fireEvent.keyDown(screen.getByTestId('rule-editor-cancel'), { key: 'd', ctrlKey: true, shiftKey: true })
     expect(rpc.calls.filter((c) => c.method === 'permission.respond')).toEqual([])
+  })
+})
+
+describe('useShortcuts: the “Always do this” box on a question card', () => {
+  it('ticked, it changes nothing about ⌘⇧A / ⌘⇧D: the same single tool request is answered with the same option, and no editor opens', async () => {
+    const user = userEvent.setup()
+    rpc.handlers['permission.respond'] = () => ({})
+    seed()
+    useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, agents: [mockAgent()], info: { capabilities: { rules: true } } as never }) }, order: [NODE], loaded: true })
+    const q: PermissionBlock = { type: 'permission', key: 'q', seq: 2, ts: 1, requestId: 'q1', kind: 'question', title: 'Which?', detail: { questions: [{ id: 'a', text: 'Which?', choices: [{ id: 'x', label: 'X' }] }] }, options: [{ id: 'submit', label: 'Submit', kind: 'allow_once' }] }
+    render(
+      <>
+        <PermissionCard block={q} deviceLabel={() => 'you'} onRespond={() => {}} recordAsRule={{ nodeId: NODE, sessionId: SID }} />
+        <FollowUpRuleHost />
+      </>,
+    )
+    await user.click(screen.getByTestId('always-do-this-box'))
+    press('a')
+    await vi.waitFor(() => expect(rpc.calls.filter((c) => c.method === 'permission.respond')).toHaveLength(1))
+    expect(rpc.calls.find((c) => c.method === 'permission.respond')!.params).toEqual({ request_id: 'r1', option_id: 'allow' })
+    expect(screen.queryByTestId('rule-editor')).toBeNull()
+    expect(screen.getByTestId('always-do-this-box')).toBeChecked()
   })
 })

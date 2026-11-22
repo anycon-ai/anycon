@@ -111,7 +111,8 @@ export function useSessionData(sessionId: string) {
  * 和 ⌘⇧A / ⌘⇧D 共用）；daemon 回 `not_found` 的请求定格成说明（`settled`：目录变了 / 请求已不存在，不再给按钮、不重试），失败弹 toast。
  */
 export function useRespondPermission(nodeId: string | undefined, opts: { handledHere?: boolean } = {}): {
-  respond: (params: PermissionRespondParams) => void
+  /** `onAnswered`：答复真的成功了（不是目录变了 / 请求已不存在 / 已被别处答复）才调用（「以后都这样」）。 */
+  respond: (params: PermissionRespondParams, onAnswered?: () => void) => void
   responding: ReadonlySet<string>
   settled: ReadonlyMap<string, SettledReason>
 } {
@@ -122,13 +123,16 @@ export function useRespondPermission(nodeId: string | undefined, opts: { handled
   // 别的 not_found（`gone`：请求已不存在）就停在说明上
   const [settled, setSettled] = useState<ReadonlyMap<string, SettledReason>>(new Map())
   const respond = useCallback(
-    (params: PermissionRespondParams) => {
+    (params: PermissionRespondParams, onAnswered?: () => void) => {
       if (!nodeId || !beginAnswer(params.request_id, handledHere)) return
       let ok = false
       respondPermission(nodeId, params)
         .then((outcome) => {
           ok = true
-          if (outcome === 'answered') return
+          if (outcome === 'answered') {
+            onAnswered?.()
+            return
+          }
           const reason: SettledReason = outcome === 'denied_folder_changed' ? 'folder_changed' : 'gone'
           setSettled((s) => new Map(s).set(params.request_id, reason))
           toast.info(t(outcome === 'denied_folder_changed' ? 'permission.deniedFolderChanged' : 'permission.requestGone'))

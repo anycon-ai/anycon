@@ -1393,6 +1393,15 @@
     "pendingEmpty": "No rules are waiting for you.",
     "activeEmpty": "No active rules yet. Add one, or confirm a rule that is waiting.",
     "inactive": "Disabled and rejected ({{count}})",
+    "stale": {
+      "title": "Stale ({{count}})",
+      "note": "Not used in 60 days, so these are no longer given to agents and do not count toward the size limit. They stay here until you restore or delete them."
+    },
+    "always": {
+      "label": "Always do this",
+      "hint": "After you answer, you write this down as a rule. Nothing is saved until you edit and save it.",
+      "title": "Always do this"
+    },
     "offline": "Cannot reach {{nodes}}. The rules shown are what it last reported; changes need the node to be online.",
     "unsupported": {
       "title": "No node here supports rules",
@@ -1403,6 +1412,7 @@
       "active": "Active",
       "disabled": "Disabled",
       "rejected": "Rejected",
+      "stale": "Stale",
       "unknown": "Not active"
     },
     "scope": {
@@ -1428,6 +1438,7 @@
       "disable": "Disable",
       "enable": "Enable",
       "restore": "Activate",
+      "restoreStale": "Restore",
       "delete": "Delete"
     },
     "bulk": {

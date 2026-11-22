@@ -4,7 +4,7 @@
 //! 和别的客户端命令一样走 [`App::conn`]（本机 socket，或 `--hub` / `--node` 经 hub）。`<id>` 接受唯一前缀。
 //!
 //! 在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`，和 `anycon mcp`、`anycon todo` 是同一个判断）：`add` 带 `agent: true`
-//! （规则记成待确认，要人确认才生效），`ls` 照常，`confirm` / `reject` / `disable` / `enable` / `rm` 拒绝执行。
+//! （规则记成待确认，要人确认才生效），`ls` 照常，`confirm` / `reject` / `disable` / `enable` / `restore` / `rm` 拒绝执行。
 //! 这是**护栏，不是安全边界**：agent 能改自己的环境（比如先清掉 `ANYCON_AGENT` 再运行），能执行 shell 的 agent 本来也能直接发 RPC；
 //! 真正的闸是「待确认的规则要人确认才生效」。
 //!
@@ -115,6 +115,7 @@ pub async fn rule(app: &App, cmd: RuleCmd) -> Result<u8> {
         RuleCmd::Reject { id } => set_status(app, "reject", &id, RuleStatus::Rejected, "rejected").await,
         RuleCmd::Disable { id } => set_status(app, "disable", &id, RuleStatus::Disabled, "disabled").await,
         RuleCmd::Enable { id } => set_status(app, "enable", &id, RuleStatus::Active, "enabled").await,
+        RuleCmd::Restore { id } => restore(app, &id).await,
         RuleCmd::Rm { id } => rm(app, &id).await,
     }
 }
@@ -156,7 +157,11 @@ async fn add(app: &App, a: RuleAddArgs) -> Result<u8> {
 
 /// 一条规则的全部内容：文字经 [`visible`]（控制字符显示成转义，换行保留），缩进列在下面。
 fn print_full(r: &Rule) {
-    println!("    status:  {}", status_str(r.status));
+    if r.stale {
+        println!("    status:  active, STALE (60 days without use; not given to agents until you restore it)");
+    } else {
+        println!("    status:  {}", status_str(r.status));
+    }
     println!("    sync:    {}", sync_str(r.sync));
     println!("    project: {}", sanitize_label(r.project.as_deref().unwrap_or("(all projects)"), 200, "?"));
     let by = match r.source.kind {
@@ -225,6 +230,7 @@ async fn ls(app: &App, a: RuleLsArgs) -> Result<u8> {
             _ => String::new(),
         };
         let status = match r.status {
+            RuleStatus::Active if r.stale => app.out.yellow("STALE"),
             RuleStatus::Pending => app.out.yellow(status_str(r.status)),
             s => status_str(s).to_string(),
         };
@@ -271,6 +277,7 @@ async fn set_status(app: &App, what: &str, key: &str, status: RuleStatus, done: 
         project: None,
         clear: Vec::new(),
         status: Some(status),
+        stale: None,
         // 列过表的，只改我们看到的那个版本：这期间别的设备改过它（比如改了文字）就不确认
         if_updated_ms: known.as_ref().map(|r| r.updated_ms),
     };
@@ -287,6 +294,45 @@ async fn set_status(app: &App, what: &str, key: &str, status: RuleStatus, done: 
         if r.status == RuleStatus::Active {
             print_full(&r);
         }
+    }
+    Ok(0)
+}
+
+/// `anycon rule restore`：恢复一条过期的规则（`rule.update { stale: false }`，要过字数检查）。
+async fn restore(app: &App, key: &str) -> Result<u8> {
+    refuse_inside_agent("restore")?;
+    let conn = app.conn().await?;
+    let resolved = resolve_rule(&conn, key).await?;
+    let (id, known) = match &resolved {
+        Ok(r) => (r.id.clone(), Some(r.clone())),
+        Err(id) => (id.clone(), None),
+    };
+    // 不是过期的：daemon 当空操作，这里也如实说没变
+    if let Some(r) = known.as_ref().filter(|r| !r.stale) {
+        if app.json() {
+            app.out.json_line(r);
+        } else {
+            println!("nothing changed: {} is not stale  {}", short(&r.id), one_line(&r.text));
+        }
+        return Ok(0);
+    }
+    let params = RuleUpdateParams {
+        id,
+        text: None,
+        project: None,
+        clear: Vec::new(),
+        status: None,
+        sync: None,
+        stale: Some(false),
+        if_updated_ms: known.as_ref().map(|r| r.updated_ms),
+    };
+    let r: Rule = conn.call(methods::RULE_UPDATE, params).await.map_err(friendly)?;
+    if app.json() {
+        app.out.json_line(&r);
+    } else {
+        println!("restored {}  {}", short(&r.id), one_line(&r.text));
+        // 恢复的规则又会原样进每个会话的系统提示：给人看全文
+        print_full(&r);
     }
     Ok(0)
 }

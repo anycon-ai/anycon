@@ -2607,10 +2607,19 @@ export interface Rule {
    */
   last_injected_ms?: number | null;
   /**
+   * 最近一次被分拣的决定引用、并且这个决定被执行；改它不动 `updated_ms`，也不发 `rule.changed`（§ 26.10）。
+   */
+  last_referenced_ms?: number | null;
+  /**
    * 只进这个项目的会话；缺省 = 这个节点上所有项目的会话。
    */
   project?: string | null;
   source: RuleSource;
+  /**
+   * 过期：生效的规则 60 天里没被注入也没被引用，daemon 标上它。过期的规则仍是 `active`，但不注入、不计字数预算；
+   * 只有人能用 `rule.update { stale: false }` 恢复（docs/spec/daemon.md § 23.2、§ 26.10）。缺省 `false`。
+   */
+  stale?: boolean;
   status: RuleStatus;
   sync: RuleSync;
   /**
@@ -2813,6 +2822,10 @@ export interface RuleUpdateParams {
    */
   if_updated_ms?: number | null;
   project?: string | null;
+  /**
+   * 只能给 `false`：恢复一条过期的规则（和「变成生效」一样过字数检查）。给 `true` → `invalid`（`data.field = "stale"`）。
+   */
+  stale?: boolean | null;
   status?: RuleStatus | null;
   /**
    * 同组范围仅接受全节点、非待确认的规则。

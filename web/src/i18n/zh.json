@@ -1375,6 +1375,15 @@
     "pendingEmpty": "没有等你确认的规则。",
     "activeEmpty": "还没有生效的规则。新建一条，或者确认一条等着的规则。",
     "inactive": "已停用和已否决（{{count}}）",
+    "stale": {
+      "title": "已过期（{{count}}）",
+      "note": "60 天里没有被用到，不再交给 agent，也不占字数上限。恢复或删除之前它们一直留在这里。"
+    },
+    "always": {
+      "label": "以后都这样",
+      "hint": "答复之后，把这次的做法写成一条规则。你改完并保存之前不会存下任何东西。",
+      "title": "以后都这样"
+    },
     "offline": "连不上 {{nodes}}。显示的是它上次报告的规则；要改动规则，节点得在线。",
     "unsupported": {
       "title": "这里没有节点支持规则",
@@ -1385,6 +1394,7 @@
       "active": "已生效",
       "disabled": "已停用",
       "rejected": "已否决",
+      "stale": "已过期",
       "unknown": "未生效"
     },
     "scope": {
@@ -1410,6 +1420,7 @@
       "disable": "停用",
       "enable": "启用",
       "restore": "启用",
+      "restoreStale": "恢复",
       "delete": "删除"
     },
     "bulk": {

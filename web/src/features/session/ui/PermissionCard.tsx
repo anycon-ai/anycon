@@ -11,6 +11,8 @@ import { cn } from '@/ui/cn'
 import { Textarea } from '@/ui/Field'
 import { Card, Chip } from '@/ui/Misc'
 import { RecordAsRule } from '@/features/rules/ui/RecordAsRule'
+import { AlwaysDoThis } from '@/features/rules/ui/AlwaysDoThis'
+import { openAfterAgentAnswer } from '@/features/rules/followUp'
 import type { PermissionBlock } from '../reducer'
 import { diffStats, syntheticDiff, toolFileChanges } from '../text'
 
@@ -49,7 +51,8 @@ export interface PermissionCardProps {
   block: PermissionBlock
   /** 把 device id 翻成显示名；本机返回「你」。 */
   deviceLabel: (deviceId: string) => string
-  onRespond: (params: PermissionRespondParams) => void
+  /** `onAnswered`：答复成功之后调用（勾了「以后都这样」时才给）。 */
+  onRespond: (params: PermissionRespondParams, onAnswered?: () => void) => void
   /** 已经发出答复、等 daemon 确认中。 */
   busy?: boolean
   /**
@@ -71,6 +74,8 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
   const { t } = useTranslation()
   const [note, setNote] = useState('')
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({})
+  // 「以后都这样」：只是本地的一个勾，不进答复的参数、不碰按钮的锁；答复成功之后才用得上
+  const [always, setAlways] = useState(false)
   const needsNote = block.options.some((o) => o.needs_message)
 
   if (block.resolved) {
@@ -129,13 +134,24 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
   const submitted = (): Record<string, string | string[]> => Object.fromEntries(Object.entries(answers).filter(([id]) => questions.some((q) => q.id === id && given(q))))
   const complete = questions.every((q) => q.optional || given(q))
 
+  // 勾了「以后都这样」、提交的是回答（不是跳过 / 拒绝）：答复成功之后打开「记成规则」的编辑框
+  const afterAnswer = (): (() => void) | undefined => {
+    if (!always || !recordAsRule) return undefined
+    const snapshot = submitted()
+    return () => openAfterAgentAnswer(recordAsRule.nodeId, recordAsRule.sessionId, block, snapshot)
+  }
+  // 没勾「以后都这样」时和以前一样只带一个参数
+  const send = (params: PermissionRespondParams, after: (() => void) | undefined): void => (after ? onRespond(params, after) : onRespond(params))
   const respond = (opt: PermissionOption): void => {
-    onRespond({
-      request_id: block.requestId,
-      option_id: opt.id,
-      message: opt.needs_message && note.trim() ? note.trim() : undefined,
-      answers: submitsAnswers(opt) ? submitted() : undefined,
-    })
+    send(
+      {
+        request_id: block.requestId,
+        option_id: opt.id,
+        message: opt.needs_message && note.trim() ? note.trim() : undefined,
+        answers: submitsAnswers(opt) ? submitted() : undefined,
+      },
+      submitsAnswers(opt) ? afterAnswer() : undefined,
+    )
   }
   // adapter 没给 allow 类选项时才用自带的提交按钮，否则会出现两个「Submit answers」
   const ownSubmit = isQuestion && !block.options.some(submitsAnswers)
@@ -242,7 +258,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
 
         <div className="flex flex-wrap gap-2">
           {ownSubmit ? (
-            <Button variant="primary" size="sm" disabled={busy || !complete} onClick={() => onRespond({ request_id: block.requestId, answers: submitted() })} data-testid="permission-submit-answers">
+            <Button variant="primary" size="sm" disabled={busy || !complete} onClick={() => send({ request_id: block.requestId, answers: submitted() }, afterAnswer())} data-testid="permission-submit-answers">
               {t('permission.submitAnswers')}
             </Button>
           ) : null}
@@ -259,6 +275,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
               {o.label}
             </Button>
           ))}
+          {recordAsRule && isQuestion ? <AlwaysDoThis nodeId={recordAsRule.nodeId} checked={always} onChange={setAlways} /> : null}
           {recordAsRule ? <RecordAsRule nodeId={recordAsRule.nodeId} sessionId={recordAsRule.sessionId} block={block} answers={answers} /> : null}
         </div>
         </div>

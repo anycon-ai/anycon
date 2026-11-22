@@ -1032,3 +1032,83 @@ async fn triage_input_has_the_pr_state_and_never_a_review_or_comment_body() {
     }
     td.shutdown().await;
 }
+
+async fn rule_with(td: &TestDaemon, text: &str, project: Option<&str>) -> Rule {
+    let mut c = td.local_cli_client();
+    let mut p = json!({"id":uuid::Uuid::new_v4().to_string(),"text":text});
+    if let Some(project) = project {
+        p["project"] = json!(project);
+    }
+    c.call(td, methods::RULE_ADD, p).await.unwrap()
+}
+
+async fn rule_row(td: &TestDaemon, id: &str) -> Rule {
+    td.ctx.store.rule_get(id).await.unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn executed_decisions_stamp_the_rules_they_cite_and_nothing_else_does() {
+    let (td, fake) = fixture(false).await;
+    let mut w = td.hub_client("dev-w", "W");
+    let cited = rule_with(&td, "cited", None).await;
+    let skipped = rule_with(&td, "cited by a skipped decision", None).await;
+    let dry = rule_with(&td, "cited in a dry run", None).await;
+    let disabled = rule_with(&td, "disabled", None).await;
+    let mut c = td.local_cli_client();
+    c.call::<Value>(&td, methods::RULE_UPDATE, json!({"id":disabled.id,"status":"disabled"})).await.unwrap();
+    let stale = rule_with(&td, "stale", None).await;
+    sqlx::query("UPDATE rules SET stale = 1 WHERE id = ?").bind(&stale.id).execute(td.ctx.store.pool()).await.unwrap();
+    let before = list_updated(&td).await;
+    let _ = w.drain_now();
+
+    let t = todo(&td, "work").await;
+    // 试跑不算
+    reply(&fake, json!([{"id":t.id,"action":"wait","reason":"r","rules":[dry.id]}]));
+    run_now(&td, true).await;
+    assert_eq!(rule_row(&td, &dry.id).await.last_referenced_ms, None);
+    // 没被执行的决定（不合法）不算
+    reply(&fake, json!([{"id":t.id,"action":"ask_user","reason":"r","rules":[skipped.id]}]));
+    let run = run_now(&td, false).await;
+    assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Skipped);
+    assert_eq!(rule_row(&td, &skipped.id).await.last_referenced_ms, None);
+    // 执行了的：只更新存在的、生效的规则；不存在的、停用的、过期的 id 不报错也不更新
+    reply(
+        &fake,
+        json!([{"id":t.id,"action":"wait","reason":"r","rules":[cited.id, disabled.id, stale.id, "no-such-rule"]}]),
+    );
+    let at = crate::util::now_ms() + 12_345;
+    td.ctx.judge.clock().set(at);
+    let run = run_now(&td, false).await;
+    assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed);
+    let cited_row = rule_row(&td, &cited.id).await;
+    assert_eq!(cited_row.last_referenced_ms, Some(at));
+    // 不动 `updated_ms`，不发 `rule.changed`
+    assert_eq!(cited_row.updated_ms, cited.updated_ms);
+    assert!(w.drain_now().iter().all(|n| n.method != methods::RULE_CHANGED));
+    assert_eq!(rule_row(&td, &disabled.id).await.last_referenced_ms, None);
+    assert_eq!(rule_row(&td, &stale.id).await.last_referenced_ms, None);
+    assert_eq!(rule_row(&td, &skipped.id).await.last_referenced_ms, None);
+    assert_eq!(before.len(), 5);
+    td.shutdown().await;
+}
+
+async fn list_updated(td: &TestDaemon) -> Vec<(String, u64)> {
+    td.ctx.store.rules_all().await.unwrap().into_iter().map(|r| (r.id, r.updated_ms)).collect()
+}
+
+#[tokio::test]
+async fn the_triage_input_names_the_rule_ids_and_leaves_stale_rules_out() {
+    let (td, _) = fixture(false).await;
+    let node = rule_with(&td, "Always explain the tradeoff", None).await;
+    let project = rule_with(&td, "Use the project's formatter", Some("p")).await;
+    let old = rule_with(&td, "A forgotten habit", None).await;
+    sqlx::query("UPDATE rules SET stale = 1 WHERE id = ?").bind(&old.id).execute(td.ctx.store.pool()).await.unwrap();
+    let t = todo(&td, "work").await;
+    let scope = get(&td.ctx).await.unwrap().scope;
+    let (req, _) = request(&td.ctx, &scope, std::slice::from_ref(&t), None).await.unwrap();
+    assert!(req.system.contains("Always explain the tradeoff") && req.system.contains(&node.id));
+    assert!(req.prompt.contains("Use the project's formatter") && req.prompt.contains(&project.id));
+    assert!(!req.system.contains("A forgotten habit") && !req.prompt.contains("A forgotten habit"));
+    assert!(!req.system.contains(&old.id) && !req.prompt.contains(&old.id));
+    td.shutdown().await;
+}

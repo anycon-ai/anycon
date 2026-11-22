@@ -6,6 +6,9 @@
 //! 注入时的读（[`injection_for`]）不取这把锁：一条 `SELECT` 看到的就是一份一致的快照；`last_injected_ms` 只由
 //! [`Store::rules_mark_injected`] 写，`rule_save` 不碰那一列，所以两边互不覆盖。
 //!
+//! 过期（§ 26.10）：每天一次，[`mark_stale`] 把 60 天里既没被注入、没被分拣引用、也没被重新变成生效的生效规则标成 `stale`。
+//! 过期的规则还是 `active`，但不注入、不计字数预算（[`active_of`] 只取生效且没过期的）；只有人能用 `rule.update { stale: false }` 恢复。
+//!
 //! 规则的 `text` 是用户内容：不进日志，不进审计（审计只记长度和字段名）。
 
 use std::collections::HashSet;
@@ -121,6 +124,8 @@ fn is_invisible_format(c: char) -> bool {
     )
 }
 
+/// 生效的规则 60 天里没被用到就标成过期（§ 26.10）。
+pub const STALE_AFTER_MS: u64 = 60 * 24 * 60 * 60 * 1000;
 /// 来源里的 `session_id` / `request_id`：非空、≤ 128 字节、不含控制字符。
 fn check_source_id(field: &str, v: &str) -> RpcResult<String> {
     if v.is_empty() || v.len() > MAX_SOURCE_ID_BYTES || v.chars().any(char::is_control) {
@@ -306,6 +311,8 @@ fn row_to_rule(r: &sqlx::sqlite::SqliteRow) -> Rule {
         created_ms: r.get::<i64, _>("created_ms") as u64,
         updated_ms: r.get::<i64, _>("updated_ms") as u64,
         last_injected_ms: r.get::<Option<i64>, _>("last_injected_ms").map(|v| v as u64),
+        last_referenced_ms: r.get::<Option<i64>, _>("last_referenced_ms").map(|v| v as u64),
+        stale: r.get::<i64, _>("stale") != 0,
     }
 }
 
@@ -363,7 +370,8 @@ impl Store {
         check_writable(r)?;
         sqlx::query(
             "INSERT INTO rules (id, text, project, status, sync, source_kind, source_session, source_seq, \
-             source_request, source_device, created_ms, updated_ms, last_injected_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             source_request, source_device, created_ms, updated_ms, last_injected_ms, last_referenced_ms, stale, \
+             active_since_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&r.id)
         .bind(&r.text)
@@ -381,29 +389,72 @@ impl Store {
         .bind(r.created_ms as i64)
         .bind(r.updated_ms as i64)
         .bind(r.last_injected_ms.map(|v| v as i64))
+        .bind(r.last_referenced_ms.map(|v| v as i64))
+        .bind(r.stale as i64)
+        // 新建时就生效的，从创建时算起
+        .bind((r.status == RuleStatus::Active).then_some(r.created_ms as i64))
         .execute(self.pool())
         .await?;
         Ok(())
     }
 
-    /// 写回可以变的字段（来源和创建时间不变；`last_injected_ms` 只由 [`Store::rules_mark_injected`] 写）。
+    /// 写回可以变的字段（来源和创建时间不变；`last_injected_ms` 只由 [`Store::rules_mark_injected`] 写，`last_referenced_ms` 只由
+    /// [`Store::rules_mark_referenced`] 写）。「最近一次变成生效的时间」（`active_since_ms`）在这里维护：状态从别的变成 `active`、
+    /// 或者从过期恢复，就记成这次修改的时间 `updated_ms`；`UPDATE` 右边读到的是改之前的行。
     pub async fn rule_save(&self, r: &Rule) -> Result<(), StoreError> {
         check_writable(r)?;
-        sqlx::query("UPDATE rules SET text = ?, project = ?, status = ?, sync = ?, updated_ms = ? WHERE id = ?")
-            .bind(&r.text)
-            .bind(&r.project)
-            .bind(r.status.as_str())
-            .bind(sync_str(r.sync))
-            .bind(r.updated_ms as i64)
-            .bind(&r.id)
-            .execute(self.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE rules SET text = ?, project = ?, \
+             active_since_ms = CASE WHEN (? = 'active' AND status != 'active') OR (stale = 1 AND ? = 0) \
+                 THEN ? ELSE active_since_ms END, \
+             status = ?, sync = ?, stale = ?, updated_ms = ? WHERE id = ?",
+        )
+        .bind(&r.text)
+        .bind(&r.project)
+        .bind(r.status.as_str())
+        .bind(r.stale as i64)
+        .bind(r.updated_ms as i64)
+        .bind(r.status.as_str())
+        .bind(sync_str(r.sync))
+        .bind(r.stale as i64)
+        .bind(r.updated_ms as i64)
+        .bind(&r.id)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 
     /// 物理删除。返回有没有这一条。
     pub async fn rule_delete(&self, id: &str) -> Result<bool, StoreError> {
         Ok(sqlx::query("DELETE FROM rules WHERE id = ?").bind(id).execute(self.pool()).await?.rows_affected() > 0)
+    }
+
+    /// 这些规则被一个已执行的分拣决定引用了：记下时间，只更新存在、生效的（`active` 且没过期；过期的不再交给 agent，不该被引用，引用了也不改变它过期）。
+    /// 不动 `updated_ms`，也不通知。
+    pub async fn rules_mark_referenced(&self, ids: &[String], at_ms: u64) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin().await?;
+        for id in ids {
+            sqlx::query("UPDATE rules SET last_referenced_ms = ? WHERE id = ? AND status = 'active' AND stale = 0")
+                .bind(at_ms as i64)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 该标过期的规则（生效、没过期，而且注入、引用、变成生效的时间里最晚的一个早于 `cutoff_ms`），按创建顺序。
+    pub async fn rules_stale_candidates(&self, cutoff_ms: u64) -> Result<Vec<String>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id FROM rules WHERE status = 'active' AND stale = 0 AND \
+             MAX(COALESCE(last_injected_ms, 0), COALESCE(last_referenced_ms, 0), \
+                 COALESCE(active_since_ms, created_ms)) < ? ORDER BY created_ms, rowid",
+        )
+        .bind(cutoff_ms as i64)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
     }
 
     /// 这些规则刚被注入了一个会话：记下时间。不动 `updated_ms`（它是版本号），也不通知。
@@ -421,8 +472,13 @@ impl Store {
     }
 }
 
+/// 生效的规则：`active` 且没过期。过期的不注入、不计字数预算（§ 26.10）。
+fn effective(r: &Rule) -> bool {
+    r.status == RuleStatus::Active && !r.stale
+}
+
 fn active_of(all: &[Rule]) -> Vec<&Rule> {
-    all.iter().filter(|r| r.status == RuleStatus::Active).collect()
+    all.iter().filter(|r| effective(r)).collect()
 }
 
 // ====================================================================== 注入
@@ -458,16 +514,18 @@ fn notify_changed(c: &Ctx, change: RuleChanged) {
     c.clients.broadcast(methods::RULE_CHANGED, change);
 }
 
+/// 这次改动让一条规则（重新）进入生效、或者让生效的规则变长 / 换项目：要过字数检查。过期的规则不生效，改它的文字不检查。
 fn status_changes_to_active(old: Option<&Rule>, new: &Rule) -> bool {
-    new.status == RuleStatus::Active
-        && old.is_none_or(|o| o.status != RuleStatus::Active || o.text != new.text || o.project != new.project)
+    effective(new) && old.is_none_or(|o| !effective(o) || o.text != new.text || o.project != new.project)
 }
 
 /// 改动之后的生效规则会不会超出字数上限（`new` 是改动之后的这一条，`all` 里是改动之前的全部规则）。
 fn check_after(c: &Ctx, all: &[Rule], new: &Rule, field: &str) -> RpcResult<()> {
     let same = |a: &str, b: &str| c.workspace.same_project_name(a, b);
-    let mut active: Vec<&Rule> = all.iter().filter(|r| r.status == RuleStatus::Active && r.id != new.id).collect();
-    active.push(new);
+    let mut active: Vec<&Rule> = all.iter().filter(|r| effective(r) && r.id != new.id).collect();
+    if effective(new) {
+        active.push(new);
+    }
     let after = budget_of(&active, &same);
     check_budget(&after, new.project.as_deref(), &same).map_err(|bytes| over_budget(field, bytes))
 }
@@ -550,6 +608,8 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
         created_ms: now,
         updated_ms: now,
         last_injected_ms: None,
+        last_referenced_ms: None,
+        stale: false,
     };
     if rule.status == RuleStatus::Active {
         let all = c.store.rules_all().await.map_err(internal)?;
@@ -634,6 +694,14 @@ pub async fn update(c: &Ctx, caller: &Caller, p: RuleUpdateParams) -> RpcResult<
         }
         new.status = s;
     }
+    // 只能恢复，不能由客户端标成过期（那是 daemon 每天做的）
+    match p.stale {
+        Some(true) => {
+            return Err(invalid("stale", None, "stale can only be set to false; the daemon marks rules stale".into()))
+        }
+        Some(false) => new.stale = false,
+        None => {}
+    }
     for f in &p.clear {
         match f {
             ClearableRuleField::Project => new.project = None,
@@ -642,6 +710,10 @@ pub async fn update(c: &Ctx, caller: &Caller, p: RuleUpdateParams) -> RpcResult<
 
     if let Some(sync) = p.sync {
         new.sync = sync;
+    }
+    // 过期只对生效的规则有意义：停用、否决、改回待确认之后，再生效时就是一条新的生效规则
+    if new.status != RuleStatus::Active {
+        new.stale = false;
     }
     check_sync(new.sync, new.project.as_deref(), new.status)?;
 
@@ -657,6 +729,10 @@ pub async fn update(c: &Ctx, caller: &Caller, p: RuleUpdateParams) -> RpcResult<
     }
     if new.sync != old.sync {
         fields.push("sync");
+    }
+    let restored = old.stale && !new.stale && new.status == RuleStatus::Active;
+    if restored {
+        fields.push("stale");
     }
     if fields.is_empty() {
         return Ok(old);
@@ -740,6 +816,69 @@ pub async fn preview(c: &Ctx, p: RulePreviewParams) -> RpcResult<RulePreviewResu
     })
 }
 
+/// 这些规则被一个已执行的分拣决定引用了（§ 26.4、§ 26.10）。失败只记日志：它只是个「最近用到」的标记。
+pub async fn mark_referenced(store: &Store, ids: &[String], at_ms: u64) {
+    if ids.is_empty() {
+        return;
+    }
+    let unique: HashSet<&String> = ids.iter().collect();
+    let ids: Vec<String> = unique.into_iter().cloned().collect();
+    if let Err(e) = store.rules_mark_referenced(&ids, at_ms).await {
+        tracing::warn!(error = %e, "cannot record that rules were referenced");
+    }
+}
+
+/// 每天一次的过期检查（§ 26.10）：注入、引用、变成生效的时间里最晚的一个早于 `now_ms` 之前 60 天的生效规则，标成 `stale`。
+/// 标记是一次真正的修改：`updated_ms` 递增（客户端带着旧版本的 `if_updated_ms` 写会被拒），发 `rule.changed`，
+/// 写审计 `rule.update`（`detail = { auto: "stale" }`）。返回标了多少条。daemon 从不因为过期删除规则。
+pub async fn mark_stale(c: &Ctx, now_ms: u64) -> usize {
+    let _w = c.store.rule_lock().lock().await;
+    let ids = match c.store.rules_stale_candidates(now_ms.saturating_sub(STALE_AFTER_MS)).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot look for stale rules");
+            return 0;
+        }
+    };
+    let caller = Caller::daemon();
+    let mut marked = 0;
+    for id in ids {
+        let Ok(Some(mut rule)) = c.store.rule_get(&id).await else { continue };
+        rule.stale = true;
+        rule.updated_ms = crate::todos::next_updated_ms(now_ms, rule.updated_ms);
+        if let Err(e) = c.store.rule_save(&rule).await {
+            tracing::warn!(error = %e, "cannot mark a rule stale");
+            continue;
+        }
+        c.audit.record(&caller, "rule.update", Some(&rule.id), json!({ "auto": "stale" })).await;
+        notify_changed(c, RuleChanged { id: rule.id.clone(), rule: Some(rule), deleted: false });
+        marked += 1;
+    }
+    marked
+}
+
+/// 后台任务：启动一分钟后检查一次，之后每天一次。时间取判断后端的可替换时钟（测试直接调用 [`mark_stale`]）。
+pub fn spawn_stale_sweeper(c: &std::sync::Arc<Ctx>) -> tokio::task::JoinHandle<()> {
+    let c = c.clone();
+    tokio::spawn(async move {
+        let mut shutdown = c.shutdown_tx.subscribe();
+        let day = std::time::Duration::from_secs(24 * 60 * 60);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + std::time::Duration::from_secs(60), day);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = async { let _ = shutdown.wait_for(|stop| *stop).await; } => break,
+                _ = tick.tick() => {
+                    let n = mark_stale(&c, c.judge.clock().now()).await;
+                    if n > 0 {
+                        tracing::info!(count = n, "rules marked stale");
+                    }
+                }
+            }
+        }
+    })
+}
+
 /// 这些规则刚被注入了一个会话（建会话时调用）。失败只记日志：它只是个「最近用到」的标记。
 pub async fn mark_injected(store: &Store, ids: &[String]) {
     if ids.is_empty() {
@@ -773,6 +912,8 @@ mod tests {
             created_ms,
             updated_ms: created_ms,
             last_injected_ms: None,
+            last_referenced_ms: None,
+            stale: false,
         }
     }
 

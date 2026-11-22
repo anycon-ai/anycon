@@ -181,6 +181,8 @@ await node.rules.delete(rule.id, { ifUpdatedMs: rule.updated_ms })
 node.on('rule_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.rule)) // 所有客户端都会收到，包括发起的这一个
 ```
 
+生效的规则 60 天没被注入也没被引用，daemon 会标成 `stale: true`：过期的不注入、不占 4096 字节的字数预算，状态仍是 `active`。只有人能恢复：`update({ id, stale: false })`（和变成生效一样检查字数，放不下是 `over_budget`）；`stale: true` 会被拒（`invalid`，`field` 为 `stale`）。
+
 提炼要求 `capabilities.rule_extract`，并配置 `node.info.judge.extract`。`node.rules.extract(sessionId)` 返回 `{ run?, points }`：0 个决策点时不调用后端、没有 run；否则按返回的 `run.id` 匹配 `rule_extract_done` 的 `{ run }`（先订阅再调用，快的后端可能在响应之前结束）。事件发给所有在线客户端，提炼出的规则都待确认。`node.rules.extractRuns({ sessionId?, limit? })` 返回 `{ runs, usedToday, dailyCalls }`，最新的在前，默认 20 次、最多 100 次；每条 run 的字段保持协议命名。请求被拒是 `RpcError`，code 为 `invalid`，reason 为 `budget`、`busy` 或 `not_configured`。断线不取消节点上的提炼，重连后可以读记录。
 
 - `add` 按 `id` 幂等。`agent: true` 表示这次调用是替 agent 发的：规则记成 `pending`、来源是 `agent`，在人用 `update({ status: 'active' })` 确认之前不起作用。

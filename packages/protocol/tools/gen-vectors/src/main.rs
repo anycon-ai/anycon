@@ -269,6 +269,12 @@ fn main() {
             })),
         ),
         rpc(
+            "rule_update_restore",
+            RpcMessage::request(903u64, methods::RULE_UPDATE, json!({
+                "id": "11111111-2222-4333-8444-555555555555", "stale": false, "if_updated_ms": 1700000000000u64
+            })),
+        ),
+        rpc(
             "rule_extract",
             RpcMessage::request(
                 20u64,

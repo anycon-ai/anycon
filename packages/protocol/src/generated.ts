@@ -1028,6 +1028,11 @@ export interface AgentCapabilities {
   interject: boolean;
   interrupt: boolean;
   /**
+   * 能做一次性调用：不开会话、没有工具，给 `kind = "agent"` 的判断后端用（docs/spec/daemon.md § 25.1）。
+   * 旧 daemon 没有这个字段，按 false。
+   */
+  oneshot?: boolean;
+  /**
    * 进程退出后能否续接。
    */
   resume: boolean;

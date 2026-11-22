@@ -127,6 +127,10 @@ pub struct AgentCapabilities {
     /// 决策档案里的规则注入不到它的会话里（§ 23.5）。
     #[serde(default)]
     pub system_prompt: bool,
+    /// 能做一次性调用：不开会话、没有工具，给 `kind = "agent"` 的判断后端用（docs/spec/daemon.md § 25.1）。
+    /// 旧 daemon 没有这个字段，按 false。
+    #[serde(default)]
+    pub oneshot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

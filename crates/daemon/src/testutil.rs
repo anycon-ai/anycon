@@ -262,6 +262,7 @@ impl FakeAdapter {
                 env: true,
                 rewind: false,
                 system_prompt: self.system_prompt.load(Ordering::SeqCst),
+                oneshot: false,
             },
             probed_at_ms: crate::util::now_ms(),
         };

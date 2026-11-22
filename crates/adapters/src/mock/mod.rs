@@ -171,6 +171,7 @@ impl Adapter for MockAdapter {
             rewind: false,
             // 回显里能看到 `system_prompt_append`（README 的「回显」一节）
             system_prompt: true,
+            oneshot: false,
         };
         info
     }

@@ -146,6 +146,7 @@ pub fn capabilities() -> AgentCapabilities {
         rewind: false,
         // `thread/start` 的 `developerInstructions`
         system_prompt: true,
+        oneshot: false,
     }
 }
 

@@ -42,6 +42,11 @@
         "interrupt": {
           "type": "boolean"
         },
+        "oneshot": {
+          "default": false,
+          "description": "能做一次性调用：不开会话、没有工具，给 `kind = \"agent\"` 的判断后端用（docs/spec/daemon.md § 25.1）。\n旧 daemon 没有这个字段，按 false。",
+          "type": "boolean"
+        },
         "resume": {
           "description": "进程退出后能否续接。",
           "type": "boolean"
@@ -130,6 +135,7 @@
             "env": false,
             "interject": false,
             "interrupt": false,
+            "oneshot": false,
             "resume": false,
             "rewind": false,
             "structured_output": false,

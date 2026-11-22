@@ -74,6 +74,7 @@ pub fn capabilities(caps: &AgentCaps) -> AgentCapabilities {
         rewind: false,
         // ACP 没有系统提示的入口：不声明，规则注入不到
         system_prompt: false,
+        oneshot: false,
     }
 }
 

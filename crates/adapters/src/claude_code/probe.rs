@@ -209,6 +209,7 @@ pub fn capabilities() -> AgentCapabilities {
         rewind: false,
         // `--append-system-prompt`
         system_prompt: true,
+        oneshot: false,
     }
 }
 

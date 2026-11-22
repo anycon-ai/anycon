@@ -75,7 +75,14 @@ async fn all_twin_commands_and_todo_assignment() {
     let dry = anycon(&td.paths.home, &["twin", "dry-run"], None, &[]).await;
     assert_eq!(dry.code, 0, "{}", dry.stderr);
     assert!(dry.stdout.contains("wait") && dry.stdout.contains("Wait for the result"));
-    fake.push(Ok(JudgeReply {text:json!({"items":[{"id":id,"action":"ask_user","reason":"Preference","question":"Which?","options":["A","B"]}]}).to_string(),..Default::default()}));
+    let question = json!({
+        "id": id,
+        "action": "ask_user",
+        "reason": "Preference",
+        "question": "Which?",
+        "options": ["A", "B"],
+    });
+    fake.push(Ok(JudgeReply { text: json!({"items": [question]}).to_string(), ..Default::default() }));
     let wake = anycon(&td.paths.home, &["twin", "wake"], None, &[]).await;
     assert_eq!(wake.code, 0, "{}", wake.stderr);
     td.ctx.judge.clock().set(anycon_daemon::util::now_ms() + 61_000);

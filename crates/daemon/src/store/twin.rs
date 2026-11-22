@@ -34,27 +34,59 @@ impl Store {
     }
 
     pub async fn save_twin_scope(&self, requester: &str, s: &TwinScope) -> Result<()> {
-        sqlx::query("INSERT INTO twin_scopes VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(requester) DO UPDATE SET paused=excluded.paused, projects=excluded.projects, agent=excluded.agent, model=excluded.model, mode=excluded.mode, max_sessions=excluded.max_sessions, daily_dispatches=excluded.daily_dispatches")
-            .bind(requester).bind(s.paused).bind(serde_json::to_string(&s.projects)?)
-            .bind(&s.agent).bind(&s.model).bind(&s.mode).bind(s.max_sessions).bind(s.daily_dispatches)
-            .execute(self.pool()).await?;
+        sqlx::query(
+            "INSERT INTO twin_scopes VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(requester) DO UPDATE SET paused=excluded.paused, projects=excluded.projects, \
+             agent=excluded.agent, model=excluded.model, mode=excluded.mode, \
+             max_sessions=excluded.max_sessions, daily_dispatches=excluded.daily_dispatches",
+        )
+        .bind(requester)
+        .bind(s.paused)
+        .bind(serde_json::to_string(&s.projects)?)
+        .bind(&s.agent)
+        .bind(&s.model)
+        .bind(&s.mode)
+        .bind(s.max_sessions)
+        .bind(s.daily_dispatches)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 
     pub async fn save_twin_run(&self, r: &TwinRun) -> Result<()> {
-        sqlx::query("INSERT INTO twin_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET finished_ms=excluded.finished_ms, result=excluded.result, items=excluded.items, judge_calls=excluded.judge_calls, decisions=excluded.decisions, error=excluded.error")
-            .bind(&r.id).bind(&r.requester).bind(r.started_ms as i64).bind(r.finished_ms.map(|v| v as i64))
-            .bind(serde_json::to_string(&r.triggers)?).bind(r.dry_run).bind(serde_json::to_string(&r.result)?)
-            .bind(serde_json::to_string(&r.items)?).bind(serde_json::to_string(&r.judge_calls)?)
-            .bind(serde_json::to_string(&r.decisions)?).bind(r.error.as_ref().map(serde_json::to_string).transpose()?)
-            .execute(self.pool()).await?;
+        sqlx::query(
+            "INSERT INTO twin_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET finished_ms=excluded.finished_ms, result=excluded.result, \
+             items=excluded.items, judge_calls=excluded.judge_calls, \
+             decisions=excluded.decisions, error=excluded.error",
+        )
+        .bind(&r.id)
+        .bind(&r.requester)
+        .bind(r.started_ms as i64)
+        .bind(r.finished_ms.map(|v| v as i64))
+        .bind(serde_json::to_string(&r.triggers)?)
+        .bind(r.dry_run)
+        .bind(serde_json::to_string(&r.result)?)
+        .bind(serde_json::to_string(&r.items)?)
+        .bind(serde_json::to_string(&r.judge_calls)?)
+        .bind(serde_json::to_string(&r.decisions)?)
+        .bind(r.error.as_ref().map(serde_json::to_string).transpose()?)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 
     pub async fn twin_runs(&self, requester: &str, p: TwinRunsParams) -> Result<Vec<TwinRun>> {
-        let rows = sqlx::query("SELECT * FROM twin_runs WHERE requester=? AND (? IS NULL OR started_ms < ?) ORDER BY started_ms DESC, id DESC LIMIT ?")
-            .bind(requester).bind(p.before_ms.map(|v| v as i64)).bind(p.before_ms.map(|v| v as i64))
-            .bind(p.limit.unwrap_or(20).clamp(1,100)).fetch_all(self.pool()).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM twin_runs WHERE requester=? AND (? IS NULL OR started_ms < ?) \
+             ORDER BY started_ms DESC, id DESC LIMIT ?",
+        )
+        .bind(requester)
+        .bind(p.before_ms.map(|v| v as i64))
+        .bind(p.before_ms.map(|v| v as i64))
+        .bind(p.limit.unwrap_or(20).clamp(1, 100))
+        .fetch_all(self.pool())
+        .await?;
         rows.iter()
             .map(|r| {
                 Ok(TwinRun {
@@ -101,11 +133,23 @@ impl Store {
 
     pub async fn save_twin_question(&self, requester: &str, q: &TwinQuestion) -> Result<()> {
         let status = serde_json::to_value(q.status)?.as_str().unwrap().to_string();
-        sqlx::query("INSERT INTO twin_questions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, answered_ms=excluded.answered_ms, answer=excluded.answer, answered_by=excluded.answered_by")
-            .bind(&q.id).bind(&q.todo_id).bind(requester).bind(&q.question).bind(serde_json::to_string(&q.options)?)
-            .bind(q.created_ms as i64).bind(q.answered_ms.map(|v|v as i64)).bind(&q.answer)
-            .bind(q.answered_by.as_ref().map(serde_json::to_string).transpose()?).bind(status)
-            .execute(self.pool()).await?;
+        sqlx::query(
+            "INSERT INTO twin_questions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET status=excluded.status, answered_ms=excluded.answered_ms, \
+             answer=excluded.answer, answered_by=excluded.answered_by",
+        )
+        .bind(&q.id)
+        .bind(&q.todo_id)
+        .bind(requester)
+        .bind(&q.question)
+        .bind(serde_json::to_string(&q.options)?)
+        .bind(q.created_ms as i64)
+        .bind(q.answered_ms.map(|v| v as i64))
+        .bind(&q.answer)
+        .bind(q.answered_by.as_ref().map(serde_json::to_string).transpose()?)
+        .bind(status)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 
@@ -125,8 +169,12 @@ impl Store {
     }
 
     pub async fn twin_todos(&self) -> Result<Vec<Todo>> {
-        let ids=sqlx::query_scalar::<_,String>("SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 AND state NOT IN ('done','dropped') ORDER BY updated_ms, id")
-            .fetch_all(self.pool()).await?;
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 \
+             AND state NOT IN ('done','dropped') ORDER BY updated_ms, id",
+        )
+        .fetch_all(self.pool())
+        .await?;
         let mut out = vec![];
         for id in ids {
             if let Some(t) = self.todo_get(&id).await? {
@@ -154,8 +202,13 @@ impl Store {
     }
 
     pub async fn cancel_twin_runs(&self, now: u64) -> Result<()> {
-        sqlx::query("UPDATE twin_runs SET finished_ms=?, result='\"cancelled\"', error='{\"code\":\"cancelled\"}' WHERE finished_ms IS NULL")
-            .bind(now as i64).execute(self.pool()).await?;
+        sqlx::query(
+            "UPDATE twin_runs SET finished_ms=?, result='\"cancelled\"', error='{\"code\":\"cancelled\"}' \
+             WHERE finished_ms IS NULL",
+        )
+        .bind(now as i64)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 }

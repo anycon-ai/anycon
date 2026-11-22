@@ -12,7 +12,8 @@ fn write_allowed() -> Result<()> {
     if crate::mcp::started_inside_a_session() {
         return Err(CliError::denied(
             "forbidden",
-            "twin write commands are not available inside an anycon agent session (ANYCON_AGENT is set); run them from your own terminal",
+            "twin write commands are not available inside an anycon agent session (ANYCON_AGENT is set); \
+             run them from your own terminal",
         ));
     }
     Ok(())
@@ -127,7 +128,21 @@ fn print_status(app: &App, r: &TwinGetResult) {
         app.out.json_line(r);
         return;
     }
-    println!("{}\nprojects: {}\nagent: {}  model: {}  mode: {}\nworking: {}/{}  dispatches today: {}/{}  judge calls today: {}\nwaiting: {}",label(r.state),sanitize_label(&r.scope.projects.join(", "),1000,""),sanitize_label(r.scope.agent.as_deref().unwrap_or("default"),100,""),sanitize_label(r.scope.model.as_deref().unwrap_or("default"),100,""),sanitize_label(r.scope.mode.as_deref().unwrap_or("unattended or default"),100,""),r.working.len(),r.scope.max_sessions,r.today.dispatches,r.scope.daily_dispatches,r.today.judge_calls,r.waiting.len());
+    println!(
+        "{}\nprojects: {}\nagent: {}  model: {}  mode: {}\n\
+         working: {}/{}  dispatches today: {}/{}  judge calls today: {}\nwaiting: {}",
+        label(r.state),
+        sanitize_label(&r.scope.projects.join(", "), 1000, ""),
+        sanitize_label(r.scope.agent.as_deref().unwrap_or("default"), 100, ""),
+        sanitize_label(r.scope.model.as_deref().unwrap_or("default"), 100, ""),
+        sanitize_label(r.scope.mode.as_deref().unwrap_or("unattended or default"), 100, ""),
+        r.working.len(),
+        r.scope.max_sessions,
+        r.today.dispatches,
+        r.scope.daily_dispatches,
+        r.today.judge_calls,
+        r.waiting.len(),
+    );
 }
 fn print_run(r: &TwinRun) {
     println!("{}  {}{}", r.id, label(r.result), if r.dry_run { " (dry run)" } else { "" });

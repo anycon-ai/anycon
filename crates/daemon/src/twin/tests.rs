@@ -256,10 +256,12 @@ async fn input_is_bounded_ordered_random_and_injects_rules() {
 async fn invalid_entries_are_independent_and_unknown_ids_cannot_touch_other_todos() {
     let (td, fake) = fixture(false).await;
     let t = todo(&td, "work").await;
-    reply(
-        &fake,
-        json!([{"id":t.id,"action":"wait","reason":"r","note":"illegal"},{"id":"other","action":"wait","reason":"r"},{"id":t.id,"action":"wait","reason":"r"}]),
-    );
+    let plans = json!([
+        {"id":t.id,"action":"wait","reason":"r","note":"illegal"},
+        {"id":"other","action":"wait","reason":"r"},
+        {"id":t.id,"action":"wait","reason":"r"},
+    ]);
+    reply(&fake, plans);
     let run = run_now(&td, false).await;
     assert_eq!(run.decisions[0].skip_reason, Some(TwinSkipReason::Invalid));
     assert_eq!(run.decisions[1].skip_reason, Some(TwinSkipReason::OutOfScope));
@@ -268,6 +270,21 @@ async fn invalid_entries_are_independent_and_unknown_ids_cannot_touch_other_todo
     let bad = run_now(&td, false).await;
     assert_eq!(bad.error.unwrap().code, JudgeErrorCode::BadOutput);
     assert_eq!(td.ctx.store.todo_get(&t.id).await.unwrap().unwrap().handler, TodoHandler::Twin);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn unknown_candidate_fields_are_ignored() {
+    let (td, fake) = fixture(false).await;
+    let t = todo(&td, "work").await;
+    reply(&fake, json!([{"id":t.id,"action":"done","reason":"Finished","confidence":0.9}]));
+    let run = run_now(&td, false).await;
+    assert_eq!(run.result, TwinRunResult::Done);
+    assert_eq!(run.decisions.len(), 1);
+    assert_eq!(run.decisions[0].action, TwinAction::Done);
+    assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed);
+    assert_eq!(run.decisions[0].skip_reason, None);
+    assert_eq!(td.ctx.store.todo_get(&t.id).await.unwrap().unwrap().handler, TodoHandler::Me);
     td.shutdown().await;
 }
 
@@ -316,7 +333,11 @@ async fn hand_back_and_done_leave_state_and_audit_every_decision() {
         assert_eq!(saved.state, TodoState::Open);
         let events = td.ctx.store.todo_history_page(&t.id, None, 200).await.unwrap().events;
         assert!(events.iter().any(|e| matches!(&e.data,TodoEventData::TwinDecision {run_id,..} if run_id==&run.id)));
-        assert!(events.iter().any(|e|matches!(&e.data,TodoEventData::HandedBack {reason,..} if action!="done"||reason.contains("believes this is done"))));
+        assert!(events.iter().any(|e| matches!(
+            &e.data,
+            TodoEventData::HandedBack { reason, .. }
+                if action != "done" || reason.contains("believes this is done")
+        )));
     }
     let audit = td.ctx.audit.query(None, None, 100).await;
     assert!(audit
@@ -363,6 +384,65 @@ async fn advisor_retriages_only_that_item_and_only_once() {
 }
 
 #[tokio::test]
+async fn advisor_retriage_failure_skips_only_that_item() {
+    for next in [
+        Err(CallError::Network),
+        Ok(JudgeReply { text: "not a plan".into(), ..Default::default() }),
+        Ok(JudgeReply { text: "{\"items\":{}}".into(), ..Default::default() }),
+    ] {
+        let (td, fake) = fixture(false).await;
+        let t = todo(&td, "needs advice").await;
+        let other = todo(&td, "finished").await;
+        let plans = json!([
+            {"id":t.id,"action":"ask_advisor","reason":"r","question":"How?"},
+            {"id":other.id,"action":"done","reason":"Finished"},
+        ]);
+        reply(&fake, plans);
+        fake.push(Ok(JudgeReply { text: "Use approach A".into(), ..Default::default() }));
+        fake.push(next);
+        let run = run_now(&td, false).await;
+        assert_eq!(run.result, TwinRunResult::Done);
+        assert!(run.error.is_none());
+        assert_eq!(run.judge_calls.len(), 3);
+        assert_eq!(run.decisions.len(), 3);
+        assert_eq!(run.decisions[0].action, TwinAction::AskAdvisor);
+        assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed);
+        assert_eq!(run.decisions[1].todo_id, t.id);
+        assert_eq!(run.decisions[1].outcome, TwinDecisionOutcome::Skipped);
+        assert_eq!(run.decisions[1].skip_reason, Some(TwinSkipReason::Invalid));
+        assert_eq!(run.decisions[2].todo_id, other.id);
+        assert_eq!(run.decisions[2].action, TwinAction::Done);
+        assert_eq!(run.decisions[2].outcome, TwinDecisionOutcome::Executed);
+        assert_eq!(td.ctx.store.todo_get(&t.id).await.unwrap().unwrap().handler, TodoHandler::Twin);
+        assert_eq!(td.ctx.store.todo_get(&other.id).await.unwrap().unwrap().handler, TodoHandler::Me);
+        td.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn advisor_retriage_cancellation_ends_the_wake() {
+    let (td, fake) = fixture(false).await;
+    let t = todo(&td, "needs advice").await;
+    let other = todo(&td, "finished").await;
+    let plans = json!([
+        {"id":t.id,"action":"ask_advisor","reason":"r","question":"How?"},
+        {"id":other.id,"action":"done","reason":"Finished"},
+    ]);
+    reply(&fake, plans);
+    fake.push(Ok(JudgeReply { text: "Use approach A".into(), ..Default::default() }));
+    fake.push(Err(CallError::Cancelled));
+    let run = run_now(&td, false).await;
+    assert_eq!(run.result, TwinRunResult::Cancelled);
+    assert_eq!(run.error.unwrap().code, JudgeErrorCode::Cancelled);
+    assert_eq!(run.judge_calls.len(), 3);
+    assert_eq!(run.decisions.len(), 1);
+    assert_eq!(run.decisions[0].action, TwinAction::AskAdvisor);
+    assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed);
+    assert_eq!(td.ctx.store.todo_get(&other.id).await.unwrap().unwrap().handler, TodoHandler::Twin);
+    td.shutdown().await;
+}
+
+#[tokio::test]
 async fn dispatch_reuses_worktree_no_push_mode_note_and_takeover() {
     let (td, fake) = fixture(true).await;
     td.new_repo("p");
@@ -376,7 +456,8 @@ async fn dispatch_reuses_worktree_no_push_mode_note_and_takeover() {
     assert_eq!(session.settings.options["no_push"], true);
     assert_eq!(session.settings.mode.as_deref(), Some("ask"));
     let events = td.ctx.store.events_after(sid, 0, 100).await.unwrap();
-    assert!(events.iter().any(|e|matches!(&e.event,Event::UserMessage {content,..} if content.contains("Twin note (written by the twin):\nKeep the change small"))));
+    let note = "Twin note (written by the twin):\nKeep the change small";
+    assert!(events.iter().any(|e| matches!(&e.event, Event::UserMessage { content, .. } if content.contains(note))));
     assert_eq!(get(&td.ctx).await.unwrap().today.dispatches, 1);
     assert_eq!(get(&td.ctx).await.unwrap().working, vec![t.id.clone()]);
     let mut c = td.local_cli_client();

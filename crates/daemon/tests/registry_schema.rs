@@ -567,7 +567,17 @@ async fn walk_twin(w: &mut Walk<'_>) {
     w.call(methods::TWIN_SET, json!({"projects":["todoproj"],"agent":"fake","mode":"ask"})).await;
     let id = uuid::Uuid::new_v4().to_string();
     w.call(methods::TODO_ADD, json!({"id":id,"title":"a preference","project":"todoproj","handler":"twin"})).await;
-    let backend=FakeJudgeBackend::new([Ok(JudgeReply {text:json!({"items":[{"id":id,"action":"ask_user","reason":"Need your preference","question":"Which approach?","options":["A","B"]}]}).to_string(),..Default::default()}),Ok(JudgeReply {text:"{\"items\":[]}".into(),..Default::default()})]);
+    let question = json!({
+        "id": id,
+        "action": "ask_user",
+        "reason": "Need your preference",
+        "question": "Which approach?",
+        "options": ["A", "B"],
+    });
+    let backend = FakeJudgeBackend::new([
+        Ok(JudgeReply { text: json!({"items": [question]}).to_string(), ..Default::default() }),
+        Ok(JudgeReply { text: "{\"items\":[]}".into(), ..Default::default() }),
+    ]);
     w.td.ctx.judge.set_backend_factory(Arc::new(move |_| backend.clone()));
     w.call(methods::TWIN_WAKE, json!({})).await;
     w.td.ctx.judge.clock().set(anycon_daemon::util::now_ms() + 61_000);

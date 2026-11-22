@@ -333,7 +333,9 @@ impl Daemon {
         tasks.extend(preview.spawn_background());
         tasks.push(judge.spawn_cleanup());
         tasks.push(crate::rule_extract::spawn(&ctx));
+        tasks.push(crate::rules::spawn_stale_sweeper(&ctx));
         tasks.push(crate::twin::spawn(&ctx));
+        tasks.push(crate::todo_repeat::spawn(&ctx));
         // 更新检查：第一次在几分钟之后，之后大约每天一次；关着时不发请求（ADR-57）
         if let Some(off) = updates.off_reason() {
             tracing::debug!(reason = off.describe(), "update check is off");

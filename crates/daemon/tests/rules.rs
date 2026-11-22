@@ -1,6 +1,6 @@
 //! 决策档案（`rule.*`，docs/spec/daemon.md § 23）端到端：校验与错误码、幂等、空操作、`if_updated_ms`、条数和字数上限、
 //! 谁能写、`rule.changed`、审计、保留期、注入（派发的会话、手动的会话、agent 不支持、16 KiB、快照、`last_injected_ms`）、
-//! `dispatched` 事件、`dispatch_preview.rules_text`、`rule.preview`。规则的文字不进日志的检查在 `rules_logs.rs`。
+//! `dispatched` 事件、`dispatch_preview.rules_text`、`rule.preview`、过期（§ 26.10）。规则的文字不进日志的检查在 `rules_logs.rs`。
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -91,6 +91,8 @@ fn row(id: &str, text: &str, project: Option<&str>, status: RuleStatus, created_
         created_ms,
         updated_ms: created_ms,
         last_injected_ms: None,
+        last_referenced_ms: None,
+        stale: false,
     }
 }
 
@@ -1624,5 +1626,219 @@ async fn group_scope_validation_precedes_capacity_and_budget() {
         .await
         .unwrap_err();
     assert_eq!(code(&budget), invalid("status", Some("over_budget")));
+    td.shutdown().await;
+}
+
+// ---------------------------------------------------------------- 过期（§ 26.10）
+
+const DAY: u64 = 24 * 60 * 60 * 1000;
+const STALE: u64 = 60 * DAY;
+
+#[tokio::test]
+async fn a_rule_goes_stale_when_the_latest_of_injected_referenced_and_active_since_is_over_60_days_old() {
+    let td = TestDaemon::start().await;
+    let t0 = 1_700_000_000_000u64;
+    let store = &td.ctx.store;
+    // 只有创建时间（新建就生效，从创建时算起）
+    store.rule_insert(&row("created", "c", None, RuleStatus::Active, t0)).await.unwrap();
+    // 注入、引用各自把计时往后推
+    store.rule_insert(&row("injected", "i", None, RuleStatus::Active, t0)).await.unwrap();
+    store.rules_mark_injected(&["injected".into()], t0 + 30 * DAY).await.unwrap();
+    store.rule_insert(&row("referenced", "r", None, RuleStatus::Active, t0)).await.unwrap();
+    store.rules_mark_referenced(&["referenced".into()], t0 + 40 * DAY).await.unwrap();
+    // 别的状态的不标
+    store.rule_insert(&row("pending", "p", None, RuleStatus::Pending, t0)).await.unwrap();
+    store.rule_insert(&row("disabled", "d", None, RuleStatus::Disabled, t0)).await.unwrap();
+    store.rule_insert(&row("rejected", "x", None, RuleStatus::Rejected, t0)).await.unwrap();
+    let stale_ids = || async {
+        let mut v: Vec<String> =
+            store.rules_all().await.unwrap().into_iter().filter(|r| r.stale).map(|r| r.id).collect();
+        v.sort();
+        v
+    };
+    // 刚好 60 天：不算「早于」
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + STALE).await, 0);
+    assert!(stale_ids().await.is_empty());
+    // 差一毫秒超过：只有从没被用到的那条
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + STALE + 1).await, 1);
+    assert_eq!(stale_ids().await, vec!["created".to_string()]);
+    // 注入过的（30 天）、引用过的（40 天）各自晚一些
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + 90 * DAY).await, 0);
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + 90 * DAY + 1).await, 1);
+    assert_eq!(stale_ids().await, vec!["created".to_string(), "injected".to_string()]);
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + 100 * DAY + 1).await, 1);
+    assert_eq!(stale_ids().await, vec!["created".to_string(), "injected".to_string(), "referenced".to_string()]);
+    // 待确认、停用、否决的永远不标；再跑一遍没有新的
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + 1000 * DAY).await, 0);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn becoming_active_again_restarts_the_clock() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let late = id();
+    let late = late.as_str();
+    let t0 = 1_700_000_000_000u64;
+    td.ctx.store.rule_insert(&row(late, "late", None, RuleStatus::Disabled, t0)).await.unwrap();
+    // 创建时间很早，但是现在才改成生效：从现在算起
+    let r = update(&td, &mut c, json!({ "id": late, "status": "active" })).await.unwrap();
+    let now = r.updated_ms;
+    anycon_daemon::rules::mark_stale(&td.ctx, now + STALE - 1).await;
+    assert!(!rule_of(&td, &mut c, late).await.stale);
+    anycon_daemon::rules::mark_stale(&td.ctx, now + STALE + 1).await;
+    assert!(rule_of(&td, &mut c, late).await.stale);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn marking_stale_notifies_audits_and_never_deletes() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let mut w = td.hub_client("dev-w", "W");
+    let t0 = 1_700_000_000_000u64;
+    let old = id();
+    let old = old.as_str();
+    td.ctx.store.rule_insert(&row(old, "old", None, RuleStatus::Active, t0)).await.unwrap();
+    let _ = changes(&mut w);
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + STALE + 1).await, 1);
+    let n = changes(&mut w);
+    assert_eq!(n.len(), 1);
+    let rule = n[0].rule.clone().unwrap();
+    assert!(rule.stale && rule.status == RuleStatus::Active);
+    assert!(rule.updated_ms > t0, "a real change: the version moves on");
+    let a = audit(&td, "rule.update").await;
+    assert_eq!(a.len(), 1);
+    assert_eq!((a[0].target.as_deref(), a[0].detail.clone()), (Some(old), json!({ "auto": "stale" })));
+    // 还在，还是 active；`rule.list` 的 `status = active` 过滤包含它
+    let l = list(&td, &mut c, json!({ "status": "active" })).await;
+    assert_eq!(l.rules.len(), 1);
+    assert!(l.rules[0].stale);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stale_rule_is_neither_injected_nor_counted_in_the_budget() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    project_dir(&td, "web");
+    let keep = add_ok(&td, &mut c, "keep me").await;
+    let old = add_in(&td, &mut c, "old one", "web").await;
+    let old_node = add_ok(&td, &mut c, "old node").await;
+    let t0 = 1_700_000_000_000u64;
+    for id in [&old.id, &old_node.id] {
+        sqlx::query("UPDATE rules SET active_since_ms = ?, last_injected_ms = NULL WHERE id = ?")
+            .bind(t0 as i64)
+            .bind(id)
+            .execute(td.ctx.store.pool())
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE rules SET active_since_ms = ? WHERE id = ?")
+        .bind((t0 + 100 * DAY) as i64)
+        .bind(&keep.id)
+        .execute(td.ctx.store.pool())
+        .await
+        .unwrap();
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + STALE + 1).await, 2);
+    // 预算：只算 keep
+    let b = list(&td, &mut c, json!({})).await.budget;
+    assert_eq!(b.node_bytes as usize, text_of(&["keep me"]).len());
+    assert!(b.projects.is_empty());
+    // `rule.preview`、`dispatch_preview` 的 `rules_text`
+    assert_eq!(preview(&td, &mut c, Some("web")).await.text, text_of(&["keep me"]));
+    let todo = new_todo(&td, &mut c, "w", Some("web")).await;
+    let pv: TodoDispatchPreviewResult =
+        c.call(&td, methods::TODO_DISPATCH_PREVIEW, json!({ "id": todo.id, "no_push": false })).await.unwrap();
+    assert_eq!(pv.rules_text, text_of(&["keep me"]));
+    // 派发出去的会话
+    let r = dispatch(&td, &mut c, &todo.id, json!({})).await;
+    assert_eq!(spawned_settings(&td, &r.session.id).await.system_prompt_append, Some(text_of(&["keep me"])));
+    let (ids, _) = dispatched_rules(&history(&td, &mut c, &todo.id).await, &r.session.id);
+    assert_eq!(ids, vec![keep.id.clone()]);
+    // 过期的没有被记成注入过
+    let stale = rule_of(&td, &mut c, &old.id).await;
+    assert!(stale.stale && stale.last_injected_ms.is_none());
+    // 过期的规则不占预算：另一条放得下原本放不下的文字
+    let big = "z".repeat(600);
+    for _ in 0..6 {
+        add_in(&td, &mut c, &big, "web").await;
+    }
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn restoring_checks_the_budget_restarts_the_clock_and_only_a_person_can_do_it() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let mut mcp = td.local_mcp_client();
+    let t0 = 1_700_000_000_000u64;
+    let big = "x".repeat(600);
+    let stale = add_in(&td, &mut c, &big, "p").await;
+    sqlx::query("UPDATE rules SET active_since_ms = ? WHERE id = ?")
+        .bind(t0 as i64)
+        .bind(&stale.id)
+        .execute(td.ctx.store.pool())
+        .await
+        .unwrap();
+    assert_eq!(anycon_daemon::rules::mark_stale(&td.ctx, t0 + STALE + 1).await, 1);
+    // 过期的不占预算：同一个项目里可以再放 6 条
+    for _ in 0..6 {
+        add_in(&td, &mut c, &big, "p").await;
+    }
+    let cur = rule_of(&td, &mut c, &stale.id).await;
+    // 客户端不能标成过期
+    let e = update(&td, &mut c, json!({ "id": stale.id, "stale": true })).await.unwrap_err();
+    assert_eq!(code(&e), invalid("stale", None));
+    // agent 不能恢复，先于一切
+    let e = update(&td, &mut mcp, json!({ "id": stale.id, "stale": false })).await.unwrap_err();
+    assert_eq!(code(&e).0, ErrorCode::Forbidden);
+    // 恢复和「变成生效」一样过字数检查
+    let e = update(&td, &mut c, json!({ "id": stale.id, "stale": false })).await.unwrap_err();
+    assert_eq!(code(&e), invalid("stale", Some("over_budget")));
+    assert!(rule_of(&td, &mut c, &stale.id).await.stale);
+    // 停掉一条之后可以，带 `if_updated_ms`
+    let other = list(&td, &mut c, json!({})).await.rules.into_iter().find(|r| r.id != stale.id).unwrap();
+    update(&td, &mut c, json!({ "id": other.id, "status": "disabled" })).await.unwrap();
+    let cur = rule_of(&td, &mut c, &stale.id).await.updated_ms.max(cur.updated_ms);
+    let e = update(&td, &mut c, json!({ "id": stale.id, "stale": false, "if_updated_ms": cur - 1 })).await.unwrap_err();
+    assert_eq!(code(&e), invalid("if_updated_ms", Some("changed")));
+    let _ = changes(&mut c);
+    let r = update(&td, &mut c, json!({ "id": stale.id, "stale": false, "if_updated_ms": cur })).await.unwrap();
+    assert!(!r.stale && r.status == RuleStatus::Active && r.updated_ms > cur);
+    let n = changes(&mut c);
+    assert_eq!(n.len(), 1);
+    assert_eq!(n[0].rule.as_ref(), Some(&r));
+    let a = audit(&td, "rule.update").await;
+    assert!(a.iter().any(|e| e.target.as_deref() == Some(stale.id.as_str()) && e.detail["fields"] == json!(["stale"])));
+    // 重新开始算 60 天
+    anycon_daemon::rules::mark_stale(&td.ctx, r.updated_ms + STALE - 1).await;
+    assert!(!rule_of(&td, &mut c, &stale.id).await.stale);
+    anycon_daemon::rules::mark_stale(&td.ctx, r.updated_ms + STALE + 1).await;
+    assert!(rule_of(&td, &mut c, &stale.id).await.stale);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn restoring_a_rule_that_is_not_stale_is_a_no_op_and_disabling_clears_the_mark() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let r = add_ok(&td, &mut c, "fresh").await;
+    assert_eq!(update(&td, &mut c, json!({ "id": r.id, "stale": false })).await.unwrap(), r);
+    let t0 = 1_700_000_000_000u64;
+    let old = id();
+    let old = old.as_str();
+    td.ctx.store.rule_insert(&row(old, "old", None, RuleStatus::Active, t0)).await.unwrap();
+    anycon_daemon::rules::mark_stale(&td.ctx, t0 + STALE + 1).await;
+    assert!(rule_of(&td, &mut c, old).await.stale);
+    // 停用之后不再是过期，再打开是一条新的生效规则
+    let d = update(&td, &mut c, json!({ "id": old, "status": "disabled" })).await.unwrap();
+    assert!(!d.stale);
+    let e = update(&td, &mut c, json!({ "id": old, "status": "active" })).await.unwrap();
+    assert!(!e.stale);
+    anycon_daemon::rules::mark_stale(&td.ctx, e.updated_ms + STALE - 1).await;
+    assert!(!rule_of(&td, &mut c, old).await.stale);
+    anycon_daemon::rules::mark_stale(&td.ctx, e.updated_ms + STALE + 1).await;
+    assert!(rule_of(&td, &mut c, old).await.stale);
     td.shutdown().await;
 }

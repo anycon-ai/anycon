@@ -30,7 +30,7 @@ import { nodeSupportsTodo, useTodos, viewOf } from './store'
 import { outboxErrorText } from './ui/errors'
 import type { OutboxError, OutboxOp, OutboxRecord, UpdateFields } from './types'
 import { isClosed } from './types'
-import { cleanOneLine, draftError, newTodoId, tabsToSpaces, projectError, titleError, bodyError, dueError, type DraftTodo, type FieldError } from './validate'
+import { cleanOneLine, draftError, newTodoId, tabsToSpaces, projectError, titleError, bodyError, dueError, repeatFieldError, type DraftTodo, type FieldError } from './validate'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // 多标签页：库是唯一的真相，别的标签页改了就重读
@@ -411,7 +411,7 @@ export async function addTodo(nodeId: string, draft: DraftTodo): Promise<ActionR
   if (error) return { ok: false, error }
   const id = newTodoId()
   const project = draft.project?.trim()
-  const params = { ...(draft.handler ? { handler: draft.handler } : {}), title: draft.title.trim(), body: draft.body, ...(project ? { project } : {}), ...(draft.due_ms != null ? { due_ms: draft.due_ms } : {}) }
+  const params = { ...(draft.handler ? { handler: draft.handler } : {}), title: draft.title.trim(), body: draft.body, ...(project ? { project } : {}), ...(draft.due_ms != null ? { due_ms: draft.due_ms } : {}), ...(draft.repeat ? { repeat: draft.repeat } : {}) }
   const failed = await enqueue(nodeId, id, { kind: 'add', params })
   return failed ? { ok: false, error: failed } : { ok: true, id }
 }
@@ -420,7 +420,7 @@ export async function addTodo(nodeId: string, draft: DraftTodo): Promise<ActionR
 export async function updateTodo(nodeId: string, id: string, fields: UpdateFields): Promise<ActionResult> {
   if (fields.title !== undefined) fields = { ...fields, title: tabsToSpaces(fields.title) }
   if (typeof fields.project === 'string') fields = { ...fields, project: tabsToSpaces(fields.project) }
-  const error = (fields.title !== undefined ? titleError(fields.title) : null) ?? (fields.body !== undefined ? bodyError(fields.body) : null) ?? projectError(fields.project) ?? dueError(fields.due_ms)
+  const error = (fields.title !== undefined ? titleError(fields.title) : null) ?? (fields.body !== undefined ? bodyError(fields.body) : null) ?? projectError(fields.project) ?? dueError(fields.due_ms) ?? repeatFieldError(fields.repeat)
   if (error) return { ok: false, error }
   const f: UpdateFields = { ...fields }
   if (f.title !== undefined) f.title = f.title.trim()
@@ -550,7 +550,7 @@ function scheduleRetry(nodeId: string, seq: number): void {
 
 async function sendOp(nodeId: string, rec: OutboxRecord): Promise<Todo | null> {
   const op = rec.op
-  if (op.kind === 'add') return rpc().request<Todo>(nodeId, 'todo.add', { ...(op.params.handler ? { handler: op.params.handler } : {}), id: rec.id, title: op.params.title, body: op.params.body, ...(op.params.project ? { project: op.params.project } : {}), ...(op.params.due_ms != null ? { due_ms: op.params.due_ms } : {}) })
+  if (op.kind === 'add') return rpc().request<Todo>(nodeId, 'todo.add', { ...(op.params.handler ? { handler: op.params.handler } : {}), id: rec.id, title: op.params.title, body: op.params.body, ...(op.params.project ? { project: op.params.project } : {}), ...(op.params.due_ms != null ? { due_ms: op.params.due_ms } : {}), ...(op.params.repeat ? { repeat: op.params.repeat } : {}) })
   if (op.kind === 'update') return rpc().request<Todo>(nodeId, 'todo.update', { id: rec.id, ...op.fields })
   await rpc().request(nodeId, 'todo.delete', { id: rec.id })
   return null

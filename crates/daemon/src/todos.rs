@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use anycon_protocol::{
     methods, ClearableTodoField, ErrorCode, RpcError, Todo, TodoAddParams, TodoChanged, TodoDeleteParams,
-    TodoEventData, TodoHandler, TodoIdParams, TodoListParams, TodoListResult, TodoSource, TodoSourceKind, TodoState,
-    TodoUpdateParams,
+    TodoEventData, TodoHandler, TodoIdParams, TodoListParams, TodoListResult, TodoRepeat, TodoRepeatKind, TodoSource,
+    TodoSourceKind, TodoState, TodoUpdateParams,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -121,6 +121,31 @@ fn check_handler(caller: &Caller, agent: bool, handler: Option<TodoHandler>, unr
     }
 }
 
+/// 周期规则：`at` 是 `HH:MM`（00:00–23:59），`weekly` 必须带 1–7 的 `weekday`，另外两种不能带。
+fn check_repeat(r: &TodoRepeat) -> RpcResult<()> {
+    if r.kind == TodoRepeatKind::Unknown {
+        return Err(invalid("repeat", Some("kind"), "unknown repeat kind".into()));
+    }
+    if crate::todo_repeat::parse_at(&r.at).is_none() {
+        return Err(invalid("repeat", Some("at"), "repeat.at must be HH:MM between 00:00 and 23:59".into()));
+    }
+    match (r.kind, r.weekday) {
+        (TodoRepeatKind::Weekly, Some(1..=7)) | (TodoRepeatKind::Daily | TodoRepeatKind::Weekdays, None) => Ok(()),
+        (TodoRepeatKind::Weekly, _) => {
+            Err(invalid("repeat", Some("weekday"), "a weekly repeat needs weekday 1 (Monday) to 7 (Sunday)".into()))
+        }
+        _ => Err(invalid("repeat", Some("weekday"), "only a weekly repeat takes a weekday".into())),
+    }
+}
+
+/// 周期规则只由人设置：自报 `mcp` 的连接或 `agent: true` 的写入不能设置、也不能清掉它。
+fn check_repeat_actor(caller: &Caller, agent: bool) -> RpcResult<()> {
+    if caller.is_mcp() || agent {
+        return Err(RpcError::new(ErrorCode::Forbidden, "agents cannot set or clear a todo's repeat rule"));
+    }
+    Ok(())
+}
+
 fn check_due(due_ms: u64) -> RpcResult<u64> {
     if due_ms > i64::MAX as u64 {
         return Err(invalid("due_ms", None, "due_ms is out of range".into()));
@@ -130,13 +155,14 @@ fn check_due(due_ms: u64) -> RpcResult<u64> {
 
 // ---------------- 存储 ----------------
 
-fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
+pub(crate) fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
     // 库里不认识的 `source_kind` 字符串（比如降级到旧版本之后读到更新版本写的种类）按 `local` 读：这是一个已知的降级行为，
     // 旧版本不知道那个种类，更新的版本会把它读回原样。这里不改它。
     let kind = match r.get::<String, _>("source_kind").as_str() {
         "device" => TodoSourceKind::Device,
         "agent" => TodoSourceKind::Agent,
         "twin" => TodoSourceKind::Twin,
+        "repeat" => TodoSourceKind::Repeat,
         _ => TodoSourceKind::Local,
     };
     let state = match r.get::<String, _>("state").as_str() {
@@ -159,7 +185,12 @@ fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
             _ => TodoHandler::Unknown,
         },
         due_ms: r.get::<Option<i64>, _>("due_ms").map(|v| v as u64),
-        source: TodoSource { kind, device_id: r.get("source_device"), session_id: r.get("source_session") },
+        source: TodoSource {
+            kind,
+            device_id: r.get("source_device"),
+            session_id: r.get("source_session"),
+            todo_id: r.get("source_todo"),
+        },
         unreviewed: r.get::<i64, _>("unreviewed") != 0,
         created_ms: r.get::<i64, _>("created_ms") as u64,
         updated_ms: r.get::<i64, _>("updated_ms") as u64,
@@ -167,7 +198,24 @@ fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
         // 关联的会话不在 `todos` 表里，读出来之后由 `todo_get` / `todo_page` 补上；`activity` 是算出来的，不存
         sessions: Vec::new(),
         activity: None,
+        repeat: repeat_of_row(r),
     }
+}
+
+/// 库里的周期规则；种类字符串不认识（更新版本写的）读成 `Unknown`，调度器不处理它。
+fn repeat_of_row(r: &sqlx::sqlite::SqliteRow) -> Option<TodoRepeat> {
+    let kind = r.get::<Option<String>, _>("repeat_kind")?;
+    Some(TodoRepeat {
+        kind: match kind.as_str() {
+            "daily" => TodoRepeatKind::Daily,
+            "weekdays" => TodoRepeatKind::Weekdays,
+            "weekly" => TodoRepeatKind::Weekly,
+            _ => TodoRepeatKind::Unknown,
+        },
+        at: r.get::<Option<String>, _>("repeat_at").unwrap_or_default(),
+        weekday: r.get::<Option<i64>, _>("repeat_weekday").map(|v| v as u8),
+        next_ms: None,
+    })
 }
 
 fn source_kind_str(k: TodoSourceKind) -> &'static str {
@@ -176,6 +224,7 @@ fn source_kind_str(k: TodoSourceKind) -> &'static str {
         TodoSourceKind::Local => "local",
         TodoSourceKind::Agent => "agent",
         TodoSourceKind::Twin => "twin",
+        TodoSourceKind::Repeat => "repeat",
         // daemon 自己不产生 `Unknown`（它只在客户端解析更新版本的数据时出现），`todo_insert` 也拒绝写它；
         // 这里只是让匹配保持完整，并且绝不能落到人的来源上
         TodoSourceKind::Unknown => "unknown",
@@ -189,7 +238,7 @@ where
 {
     sqlx::query(
         "UPDATE todos SET title = ?, body = ?, project = ?, state = ?, due_ms = ?, unreviewed = ?, \
-         updated_ms = ?, closed_ms = ?, handler = ? WHERE id = ?",
+         updated_ms = ?, closed_ms = ?, handler = ?, repeat_kind = ?, repeat_at = ?, repeat_weekday = ? WHERE id = ?",
     )
     .bind(&t.title)
     .bind(&t.body)
@@ -200,6 +249,9 @@ where
     .bind(t.updated_ms as i64)
     .bind(t.closed_ms.map(|v| v as i64))
     .bind(t.handler.as_str())
+    .bind(t.repeat.as_ref().map(|r| r.kind.as_str()))
+    .bind(t.repeat.as_ref().map(|r| r.at.clone()))
+    .bind(t.repeat.as_ref().and_then(|r| r.weekday).map(i64::from))
     .bind(&t.id)
     .execute(db)
     .await?;
@@ -207,7 +259,7 @@ where
 }
 
 /// 新建清单项，可与处理人「经过」放在同一个事务里。
-async fn insert_todo_on<'e, E>(db: E, t: &Todo) -> Result<(), StoreError>
+pub(crate) async fn insert_todo_on<'e, E>(db: E, t: &Todo) -> Result<(), StoreError>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
@@ -220,7 +272,8 @@ where
     }
     sqlx::query(
         "INSERT INTO todos (id, title, body, project, state, due_ms, source_kind, source_device, source_session, \
-         unreviewed, created_ms, updated_ms, closed_ms, handler) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+         unreviewed, created_ms, updated_ms, closed_ms, handler, repeat_kind, repeat_at, repeat_weekday, source_todo) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&t.id)
     .bind(&t.title)
@@ -236,6 +289,10 @@ where
     .bind(t.updated_ms as i64)
     .bind(t.closed_ms.map(|v| v as i64))
     .bind(t.handler.as_str())
+    .bind(t.repeat.as_ref().map(|r| r.kind.as_str()))
+    .bind(t.repeat.as_ref().map(|r| r.at.clone()))
+    .bind(t.repeat.as_ref().and_then(|r| r.weekday).map(i64::from))
+    .bind(&t.source.todo_id)
     .execute(db)
     .await?;
     Ok(())
@@ -347,7 +404,7 @@ impl Store {
 
 // ---------------- RPC ----------------
 
-fn notify_changed(clients: &Clients, change: TodoChanged) {
+pub(crate) fn notify_changed(clients: &Clients, change: TodoChanged) {
     clients.broadcast(methods::TODO_CHANGED, change);
 }
 
@@ -375,6 +432,7 @@ pub async fn list(c: &Ctx, mut p: TodoListParams) -> RpcResult<TodoListResult> {
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
     let mut page = c.store.todo_page(&p, limit).await.map_err(internal)?;
     crate::todo_dispatch::fill_activity(&c.sessions, &mut page.todos).await;
+    page.todos.iter_mut().for_each(|t| crate::todo_repeat::fill_next(c, t));
     // 字节预算按实际发出去的样子量（带着 `sessions` 和 `activity`）
     trim_to_budget(&mut page, PAGE_BYTE_BUDGET);
     Ok(page)
@@ -389,12 +447,17 @@ async fn source_of(c: &Ctx, caller: &Caller, agent: bool, origin_session: Option
             _ => None,
         };
         let device_id = (!caller.local).then(|| caller.device_id.clone());
-        return Ok(TodoSource { kind: TodoSourceKind::Agent, device_id, session_id });
+        return Ok(TodoSource { kind: TodoSourceKind::Agent, device_id, session_id, todo_id: None });
     }
     if caller.local {
-        Ok(TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None })
+        Ok(TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None, todo_id: None })
     } else {
-        Ok(TodoSource { kind: TodoSourceKind::Device, device_id: Some(caller.device_id.clone()), session_id: None })
+        Ok(TodoSource {
+            kind: TodoSourceKind::Device,
+            device_id: Some(caller.device_id.clone()),
+            session_id: None,
+            todo_id: None,
+        })
     }
 }
 
@@ -404,6 +467,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
     let _w = c.store.todo_lock().lock().await;
     if let Some(mut existing) = c.store.todo_get(&p.id).await.map_err(internal)? {
         existing.activity = crate::todo_dispatch::compute_activity(&c.sessions, &existing).await;
+        crate::todo_repeat::fill_next(c, &mut existing);
         return Ok(existing);
     }
     let title = check_title(&p.title)?;
@@ -418,6 +482,10 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
     let source = source_of(c, caller, p.agent.unwrap_or(false), p.origin_session.as_deref()).await?;
     let unreviewed = source.kind == TodoSourceKind::Agent;
     check_handler(caller, p.agent.unwrap_or(false), p.handler, unreviewed)?;
+    if let Some(r) = &p.repeat {
+        check_repeat_actor(caller, p.agent.unwrap_or(false))?;
+        check_repeat(r)?;
+    }
 
     if c.store.todo_count_open().await.map_err(internal)? >= MAX_OPEN {
         return Err(invalid("todos", Some("too_many"), format!("at most {MAX_OPEN} open todos")));
@@ -431,7 +499,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
     }
 
     let now = now_ms();
-    let todo = Todo {
+    let mut todo = Todo {
         id: p.id,
         title,
         body,
@@ -446,9 +514,13 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         closed_ms: None,
         sessions: Vec::new(),
         activity: None,
+        repeat: p.repeat.as_ref().map(crate::todo_repeat::normalized),
     };
     let mut tx = c.store.pool().begin().await.map_err(StoreError::from).map_err(internal)?;
     insert_todo_on(&mut *tx, &todo).await.map_err(internal)?;
+    if todo.repeat.is_some() {
+        crate::todo_repeat::set_last_on(&mut tx, &todo.id, Some(c.judge.clock().now())).await.map_err(internal)?;
+    }
     let handler_event = if todo.handler != TodoHandler::Me {
         Some(
             crate::todo_dispatch::event_append_on(
@@ -481,8 +553,12 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
     if let Some(project) = &todo.project {
         detail["project"] = json!(project);
     }
+    if todo.repeat.is_some() {
+        detail["repeat"] = json!(true);
+    }
     c.audit.record(caller, "todo.add", Some(&todo.id), detail).await;
     c.sessions.todo_signal().note_sent(&todo.id, todo.activity);
+    crate::todo_repeat::fill_next(c, &mut todo);
     notify_changed(&c.clients, TodoChanged { id: todo.id.clone(), todo: Some(todo.clone()), deleted: false });
     if todo.handler == TodoHandler::Twin {
         c.twin.trigger(c, anycon_protocol::TwinTrigger::Todo).await?;
@@ -496,9 +572,19 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     let _w = c.store.todo_lock().lock().await;
     let old = c.store.todo_get(&p.id).await.map_err(internal)?.ok_or_else(|| not_found(&p.id))?;
     check_handler(caller, p.agent.unwrap_or(false), p.handler, old.unreviewed && p.reviewed != Some(true))?;
+    let wants_repeat = p.repeat.is_some() || p.clear.contains(&ClearableTodoField::Repeat);
+    if wants_repeat {
+        check_repeat_actor(caller, p.agent.unwrap_or(false))?;
+    }
+    if let Some(r) = &p.repeat {
+        check_repeat(r)?;
+    }
     let mut new = old.clone();
     if let Some(handler) = p.handler {
         new.handler = handler;
+    }
+    if let Some(r) = &p.repeat {
+        new.repeat = Some(crate::todo_repeat::normalized(r));
     }
     if let Some(t) = &p.title {
         new.title = check_title(t)?;
@@ -520,6 +606,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
         match f {
             ClearableTodoField::Project => new.project = None,
             ClearableTodoField::DueMs => new.due_ms = None,
+            ClearableTodoField::Repeat => new.repeat = None,
         }
     }
 
@@ -542,6 +629,9 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     if new.handler != old.handler {
         fields.push("handler");
     }
+    if new.repeat != old.repeat {
+        fields.push("repeat");
+    }
     // `unreviewed` 从 true 变 false：人收下它（`reviewed: true`），或者对它做了任何别的修改。
     // 自报了 `mcp` 的本机连接两条都不算：`reviewed` 被忽略，它做的修改也不算「人改过」。
     if old.unreviewed && !caller.is_mcp() && p.agent != Some(true) && (p.reviewed == Some(true) || !fields.is_empty()) {
@@ -551,6 +641,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     if fields.is_empty() {
         let mut old = old;
         old.activity = crate::todo_dispatch::compute_activity(&c.sessions, &old).await;
+        crate::todo_repeat::fill_next(c, &mut old);
         return Ok(old);
     }
     // 把关闭的项重新打开，和新建一样占一个「没关闭」的名额
@@ -568,6 +659,11 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     new.updated_ms = next_updated_ms(now, old.updated_ms);
     let mut tx = c.store.pool().begin().await.map_err(StoreError::from).map_err(internal)?;
     save_todo_on(&mut *tx, &new).await.map_err(internal)?;
+    if new.repeat != old.repeat || (new.repeat.is_some() && old.state.is_closed() && !new.state.is_closed()) {
+        // 规则变了、或关闭的模板重新打开：从现在起重新算下一次，不补设置（重开）之前的时间点
+        let last = new.repeat.is_some().then(|| c.judge.clock().now());
+        crate::todo_repeat::set_last_on(&mut tx, &new.id, last).await.map_err(internal)?;
+    }
     if new.handler == TodoHandler::Twin && old.handler != TodoHandler::Twin {
         // 人重新交给分身时允许重试；保留会话结局水位，避免把旧的失败再计一次。
         sqlx::query("UPDATE twin_items SET failures=0 WHERE todo_id=?")
@@ -610,6 +706,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     // 派发过的项：状态是人改的，「经过」里记一条（§ 22.4）
     crate::todo_dispatch::record_manual_state(c, caller, &new, old.state).await;
     new.activity = crate::todo_dispatch::compute_activity(&c.sessions, &new).await;
+    crate::todo_repeat::fill_next(c, &mut new);
     c.sessions.todo_signal().note_sent(&new.id, new.activity);
     notify_changed(&c.clients, TodoChanged { id: new.id.clone(), todo: Some(new.clone()), deleted: false });
     if new.handler != TodoHandler::Twin || new.state.is_closed() {
@@ -626,6 +723,7 @@ pub async fn get(c: &Ctx, p: TodoIdParams) -> RpcResult<Todo> {
     check_id(&p.id)?;
     let mut t = c.store.todo_get(&p.id).await.map_err(internal)?.ok_or_else(|| not_found(&p.id))?;
     t.activity = crate::todo_dispatch::compute_activity(&c.sessions, &t).await;
+    crate::todo_repeat::fill_next(c, &mut t);
     Ok(t)
 }
 
@@ -698,13 +796,14 @@ mod tests {
             state: TodoState::Open,
             handler: Default::default(),
             due_ms: None,
-            source: TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None },
+            source: TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None, todo_id: None },
             unreviewed: false,
             created_ms: 1,
             updated_ms: 1,
             closed_ms: None,
             sessions: (0..20).map(|i| format!("sess_{n}_{i:020}")).collect(),
             activity: Some(TodoActivity::Working),
+            repeat: None,
         };
         let one = serde_json::to_vec(&item(0)).unwrap().len();
         let mut page = TodoListResult { todos: (0..10).map(item).collect(), has_more: false };

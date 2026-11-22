@@ -163,12 +163,13 @@ Each node keeps a personal to-do list (see [docs/spec/daemon.md § 21](../../doc
 ```ts
 const todo = await node.todos.add({ title: 'Review the release notes', project: 'app' }) // an id (a lowercase hyphenated UUID) is generated for you; an id you pass yourself must have that form too
 const { todos, has_more } = await node.todos.list() // open items, newest change first; { include_closed?, project?, limit?, before? }
-await node.todos.update({ id: todo.id, state: 'done' }) // only the fields you pass change; `clear: ['project', 'due_ms']` empties optional fields
+await node.todos.update({ id: todo.id, state: 'done' }) // only the fields you pass change; `clear: ['project', 'due_ms', 'repeat']` empties optional fields
 await node.todos.delete(todo.id)
 node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)) // every client gets these, the caller too
 ```
 
 - `add` is idempotent on `id`: after a timeout, retry with the same `id` and the node returns the existing item instead of creating a second one. The node fills in `source` and `unreviewed`; pass `agent: true` if the call is made on behalf of an agent (the item is then marked as added by an agent and unreviewed until a person reviews it, and the node keeps at most 100 such items).
+- `repeat: { kind: 'daily' | 'weekdays' | 'weekly', at: 'HH:MM', weekday?: 1-7 }` (Monday = 1, node-local time) makes an item a repeating template that the node copies at each time (docs/spec/daemon.md § 26.9; check `capabilities.todo_repeat`). Only a person sets it: a connection that reports as `mcp`, or a write with `agent: true`, gets `forbidden`. The returned `repeat.next_ms` is computed by the node.
 - `list` pages by `(updated_ms, id)`: while `has_more` is true, pass the last item's `{ updated_ms, id }` as `before`. A page can be shorter than `limit` (1 MiB budget per page). Items changed while you page can show up twice (de-duplicate by `id`) or be skipped (`todo_changed` tells you).
 - Errors: `invalid` (`field`: the parameter; `reason` `too_many` / `too_many_unreviewed` when the list is full) and `not_found`, as `RpcError`.
 
@@ -193,6 +194,8 @@ await node.todos.update({ id: todo.id, handler: 'me' })
 
 `set` merges fields; `clear` resets agent / model / mode to node defaults. `dryRun()` waits up to 16 minutes by default, covering the maximum 15-minute judgment backend timeout; standard `RequestOptions` (`timeoutMs` / `signal`) can override it. A dry run consumes a judgment call and leaves a run record, executing no plan. Decisions preserve optional `note`, `question`, and `options`: supplementary agent instructions, questions, and answer choices. Render this model output as plain text. `wake()` returns `void`; execution still follows daemon coalescing, pause and budget limits. `runs` / `questions` preserve protocol result shapes and default to `{}`; paginate runs with `before_ms`. `twin_changed` delivers `{ state, run? }` and `twin_question` delivers `{ question }`, including answers and voided questions; subscribe before initiating operations. `todos.add` / `update` accept `handler: me | twin`. In a UI, let the person read and accept an agent item first with `update({ id, reviewed: true })`, then offer `update({ id, handler: 'twin' })`. The daemon also accepts explicitly requested atomic acceptance and handover; the SDK never accepts items automatically.
 
+Twin runs can be triggered by `pr` (a pull request of a session the twin dispatched changed), and a to-do's history can contain `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }` entries; the types follow the protocol, and clients must tolerate unknown values. `pr_event` carries no review text.
+
 ## Rules (ADR-54)
 
 Each node keeps a list of your rules, short instructions such as "write the failing test first". The active ones are written into the system prompt of the sessions a to-do is dispatched to (see [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)). Rules never change permissions. `node.rules` is a thin wrapper over `rule.*`; a node reports support in `(await node.info()).capabilities.rules`, and an older node answers with `RpcError('unsupported')`. The SDK does no offline caching or replay.
@@ -210,6 +213,7 @@ Extraction requires `capabilities.rule_extract` and a configured `node.info.judg
 
 - `add` is idempotent on `id`. `agent: true` says the call is made on behalf of an agent: the rule is stored as `pending` with source `agent` (pass `origin_session` to record the session it came from) and does nothing until a person confirms it with `update({ status: 'active' })`.
 - A rule is at most 600 characters (line breaks allowed). The rules that are active for one session take at most 4096 bytes in all, template included; an `add` or `update` that would go over is refused with `RpcError` `invalid`, `reason` `over_budget` (`bytes` and `cap` say how far). At most 300 rules not counting rejected ones (`reason` `too_many`; rejected ones have a cap of their own and the oldest is deleted when it is full), and at most 50 agent-proposed rules waiting for review (`too_many_pending`). Bidirectional controls and zero-width characters are refused (`reason` `invisible`).
+- A rule that is active but unused for 60 days is marked `stale: true` by the daemon. A stale rule is not injected and does not count toward the 4096 bytes; it stays `active`. Only a person restores it: `update({ id, stale: false })` (the same byte check as activating; `over_budget` if it does not fit). `stale: true` is refused (`invalid`, `field` `stale`).
 - `if_updated_ms` (`ifUpdatedMs` for `delete`) refuses the change when the rule was changed since you read it: `invalid`, `reason` `changed`, `updatedMs` is the current value.
 - `todos.dispatchPreview` also returns `rules_text`: the rules text the dispatch will put into the session's system prompt.
 

@@ -3,18 +3,19 @@
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
-import { statusOf, type ViewRule } from '../store'
+import { isStaleRule, statusOf, type ViewRule } from '../store'
 import { RuleMeta, RuleText } from './RuleParts'
 import { ruleKey, type RuleOps } from './useRuleOps'
 
 export function RuleCard({ rule, showNode, online, ops, check }: { rule: ViewRule; showNode: boolean; online: boolean; ops: RuleOps; check?: { checked: boolean; /** 勾选之后这条规则变了：勾选作废，要读过新版本重新勾。 */ stale?: boolean; onChange: (v: boolean) => void } }) {
   const { t } = useTranslation()
   const status = statusOf(rule)
+  const stale = isStaleRule(rule)
   const busy = ops.busy.has(ruleKey(rule))
   const off = !online || busy
   const small = 'max-md:min-h-11 max-md:px-4'
   return (
-    <li className={cn('rounded-lg border bg-surface p-3', status === 'pending' ? 'border-warning/50' : 'border-border')} data-testid="rule-card" data-rule={rule.id} data-status={status}>
+    <li className={cn('rounded-lg border bg-surface p-3', status === 'pending' ? 'border-warning/50' : 'border-border')} data-testid="rule-card" data-rule={rule.id} data-status={status} data-stale={stale ? 'true' : undefined}>
       <div className="flex items-start gap-3">
         {check ? (
           <input
@@ -47,6 +48,11 @@ export function RuleCard({ rule, showNode, online, ops, check }: { rule: ViewRul
                   {t('rules.actions.reject')}
                 </Button>
               </>
+            ) : null}
+            {stale ? (
+              <Button size="sm" variant="primary" className={small} disabled={off} onClick={() => void ops.restore(rule)} data-testid="rule-restore-stale">
+                {t('rules.actions.restoreStale')}
+              </Button>
             ) : null}
             {status === 'active' ? (
               <>

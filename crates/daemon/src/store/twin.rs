@@ -3,6 +3,8 @@
 use anycon_protocol::*;
 use sqlx::Row;
 
+use crate::gitops::{pr_state_parse, PrChecks, PrSnapshot};
+
 use super::{Result, Store};
 
 impl Store {
@@ -170,7 +172,7 @@ impl Store {
 
     pub async fn twin_todos(&self) -> Result<Vec<Todo>> {
         let ids = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 \
+            "SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 AND repeat_kind IS NULL \
              AND state NOT IN ('done','dropped') ORDER BY updated_ms, id",
         )
         .fetch_all(self.pool())
@@ -182,6 +184,54 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// 要轮询 PR 的会话：分身派出的、所属的项还交给分身处理且没关闭。返回 `(session_id, todo_id)`。
+    pub async fn twin_pr_targets(&self) -> Result<Vec<(String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT ts.session_id, ts.todo_id FROM twin_sessions ts JOIN todos t ON t.id = ts.todo_id \
+             WHERE t.handler = 'twin' AND t.unreviewed = 0 AND t.state NOT IN ('done','dropped') \
+             ORDER BY ts.created_ms, ts.session_id",
+        )
+        .fetch_all(self.pool())
+        .await?)
+    }
+
+    pub async fn twin_pr_get(&self, session_id: &str) -> Result<Option<PrSnapshot>> {
+        let row = sqlx::query("SELECT * FROM twin_pr WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.map(|r| snapshot_of(&r)))
+    }
+
+    /// 一项关联的会话里已有基线的 PR 状态，新的在前，最多 3 个。
+    pub async fn twin_pr_of_todo(&self, todo_id: &str) -> Result<Vec<PrSnapshot>> {
+        let rows = sqlx::query(
+            "SELECT p.* FROM twin_pr p JOIN twin_sessions ts ON ts.session_id = p.session_id \
+             WHERE ts.todo_id = ? ORDER BY ts.created_ms DESC, ts.session_id LIMIT 3",
+        )
+        .bind(todo_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(snapshot_of).collect())
+    }
+
+    pub async fn twin_pr_save(&self, session_id: &str, s: &PrSnapshot) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO twin_pr VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(session_id) DO UPDATE SET number=excluded.number, state=excluded.state, \
+             checks=excluded.checks, reviews=excluded.reviews, last_review=excluded.last_review",
+        )
+        .bind(session_id)
+        .bind(s.number as i64)
+        .bind(crate::gitops::pr_state_str(s.state))
+        .bind(s.checks.as_str())
+        .bind(s.reviews as i64)
+        .bind(&s.last_review)
+        .execute(self.pool())
+        .await?;
+        Ok(())
     }
 
     pub async fn prune_twin(&self, before: u64) -> Result<()> {
@@ -197,6 +247,9 @@ impl Store {
             .bind(before as i64)
             .execute(self.pool())
             .await?;
+        sqlx::query("DELETE FROM twin_pr WHERE session_id NOT IN (SELECT id FROM sessions)")
+            .execute(self.pool())
+            .await?;
         sqlx::query("DELETE FROM twin_items WHERE todo_id NOT IN (SELECT id FROM todos)").execute(self.pool()).await?;
         Ok(())
     }
@@ -210,5 +263,15 @@ impl Store {
         .execute(self.pool())
         .await?;
         Ok(())
+    }
+}
+
+fn snapshot_of(r: &sqlx::sqlite::SqliteRow) -> PrSnapshot {
+    PrSnapshot {
+        number: r.get::<i64, _>("number") as u64,
+        state: pr_state_parse(r.get("state")),
+        checks: PrChecks::parse(r.get("checks")),
+        reviews: r.get::<i64, _>("reviews") as u32,
+        last_review: r.get("last_review"),
     }
 }

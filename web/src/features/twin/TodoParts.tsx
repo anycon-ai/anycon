@@ -31,7 +31,7 @@ export function TwinHandlerButton({ item }: { item: ViewTodo }) {
             .finally(() => setBusy(false))
         }}
       >
-        {t(item.handler === 'twin' ? 'twin.me' : 'twin.give')}
+        {t(item.repeat ? (item.handler === 'twin' ? 'twin.meEach' : 'twin.giveEach') : item.handler === 'twin' ? 'twin.me' : 'twin.give')}
       </Button>
       {failed ? <p role="alert">{t('twin.saveFailed')}</p> : null}
     </div>
@@ -77,6 +77,23 @@ export function TwinHistoryEvent({ nodeId, event }: { nodeId: string; event: Tod
           })}
         </p>
       )
+    case 'pr_event': {
+      // 只给 GitHub 的地址做链接：地址来自 gh 的输出，别的不当作链接
+      const href = event.url?.startsWith('https://github.com/') ? event.url : null
+      return (
+        <p>
+          {t(`twin.prEvent.${event.event}`, { defaultValue: t('twin.prEvent.unknown') })}
+          {href ? (
+            <>
+              {' '}
+              <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent-text">
+                {t('twin.prEvent.open')}
+              </a>
+            </>
+          ) : null}
+        </p>
+      )
+    }
     case 'twin_question': {
       const q = questions?.find((x) => x.id === event.question_id)
       return q && supported ? <TwinQuestionForm key={q.id} nodeId={nodeId} question={q} /> : <p>{t('twin.questionLoading')}</p>

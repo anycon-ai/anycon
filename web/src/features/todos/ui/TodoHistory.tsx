@@ -43,15 +43,18 @@ export function SessionRef({ nodeId, sessionId, label }: { nodeId: string; sessi
  */
 export function TodoHistory({ item }: { item: ViewTodo }) {
   const { t, i18n } = useTranslation()
+  const order = useNodes((s) => s.order)
   const entry = useHistoryEntry(item.node_id, item.id)
   const ready = useNodes((s) => s.byId[item.node_id]?.conn === 'ready')
   const synced = useNodes((s) => s.byId[item.node_id]?.synced === true)
   const dispatched = wasDispatched(item)
+  // 周期项（模板）的「经过」里有每次复制和跳过
+  const isTemplate = !!item.repeat
   const twinSupported = useNodes((s) => s.byId[item.node_id]?.info?.capabilities.twin === true)
   // 打开时读第一页；节点重连并同步完之后再读一次（断线期间的事件没有通知）
   useEffect(() => {
-    if ((dispatched || twinSupported) && ready && synced) void loadHistory(item.node_id, item.id)
-  }, [dispatched, twinSupported, ready, synced, item.node_id, item.id])
+    if ((dispatched || twinSupported || isTemplate) && ready && synced) void loadHistory(item.node_id, item.id)
+  }, [dispatched, twinSupported, isTemplate, ready, synced, item.node_id, item.id])
   const chronological = useMemo(() => [...entry.events].reverse(), [entry.events])
   // 每个会话是派给哪个 agent 的（`result` 行用）
   const agentOf = useMemo(() => {
@@ -106,7 +109,23 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
       case 'taken_over':
       case 'handler':
       case 'twin_question':
+      case 'pr_event':
         return <li key={e.seq} data-testid="history-row" data-kind={e.kind}><span className="text-fg-subtle">{when(e.ts_ms)}</span><TwinHistoryEvent nodeId={item.node_id} event={e} /></li>
+      case 'repeat_created':
+        return (
+          <li key={e.seq} data-testid="history-row" data-kind="repeat_created">
+            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {t('todos.history.repeatCreated', { time: when(e.at_ms) })}{' '}
+            <Link to="/todos/$node/$todo" params={{ node: shortNodeId(item.node_id, order), todo: e.todo_id }} className="font-medium text-accent-text hover:underline" data-testid="history-repeat-copy">
+              {t('todos.history.openCopy')}
+            </Link>
+          </li>
+        )
+      case 'repeat_skipped':
+        return (
+          <li key={e.seq} data-testid="history-row" data-kind="repeat_skipped">
+            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {t('todos.history.repeatSkipped', { time: when(e.at_ms) })}
+          </li>
+        )
       default:
         // 更新的 daemon 加的种类：这个版本不认识，不画
         return null

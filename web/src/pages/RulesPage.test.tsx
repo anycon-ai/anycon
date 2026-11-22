@@ -452,3 +452,85 @@ it('opens a referenced rule outside the current selection and explains a deleted
   view.rerender(<RulesPage focus={{ node: A, rule: 'gone' }} />)
   expect(screen.getByText('This rule is no longer available.')).toBeInTheDocument()
 })
+
+describe('stale rules', () => {
+  const stale = (id: string, text = `old habit ${id}`) => ruleItem({ id, text, stale: true, last_injected_ms: 5 })
+  const openStale = async (user: ReturnType<typeof userEvent.setup>): Promise<void> => {
+    await user.click(screen.getByTestId('rules-stale-toggle'))
+  }
+
+  it('sets them apart in a section of their own, collapsed, with why and a count; they are not in the Active count', async () => {
+    const user = userEvent.setup()
+    await load(ruleItem({ id: 'a1' }), stale('s1'), stale('s2'))
+    expect(screen.getByTestId('rules-tab-active')).toHaveTextContent('Active (1)')
+    expect(screen.getByTestId('rules-stale-toggle')).toHaveTextContent('Stale (2)')
+    expect(cards()).toHaveLength(1)
+    await openStale(user)
+    expect(screen.getByTestId('rules-stale-note')).toHaveTextContent('Not used in 60 days')
+    expect(screen.getByTestId('rules-stale-note')).toHaveTextContent('no longer given to agents')
+    const staleCards = cards().filter((c) => c.getAttribute('data-stale') === 'true')
+    expect(staleCards).toHaveLength(2)
+    expect(within(staleCards[0]!).getByTestId('rule-status')).toHaveTextContent('Stale')
+    expect(within(staleCards[0]!).getByTestId('rule-restore-stale')).toBeEnabled()
+    // the active rule in the Active list has no such mark
+    expect(cards().find((c) => c.getAttribute('data-rule') === 'a1')!.getAttribute('data-stale')).toBeNull()
+  })
+
+  it('has no stale section when nothing is stale, and the empty note shows only when nothing is active or stale', async () => {
+    await load(ruleItem({ id: 'a1' }))
+    expect(screen.queryByTestId('rules-stale')).toBeNull()
+  })
+
+  it('a page with only stale rules is not "no active rules yet"', async () => {
+    await load(stale('s1'))
+    expect(screen.queryByTestId('rules-active-empty')).toBeNull()
+    expect(screen.getByTestId('rules-stale')).toBeInTheDocument()
+  })
+
+  it('restore sends rule.update { stale: false } with the version it saw, and the rule moves to the active list', async () => {
+    const user = userEvent.setup()
+    await load(stale('s1'))
+    await openStale(user)
+    await user.click(within(cards()[0]!).getByTestId('rule-restore-stale'))
+    await flush()
+    expect(daemon.calls('rule.update')).toEqual([{ id: 's1', stale: false, if_updated_ms: 1_000 }])
+    await waitFor(() => expect(screen.queryByTestId('rules-stale')).toBeNull())
+    expect(screen.getByTestId('rules-tab-active')).toHaveTextContent('Active (1)')
+    expect(cards()[0]!.getAttribute('data-stale')).toBeNull()
+  })
+
+  it('restoring that would go over the size limit says so in plain words and the rule stays stale', async () => {
+    const user = userEvent.setup()
+    await load(stale('s1'))
+    await openStale(user)
+    daemon.failNext('rule.update', ruleError('invalid', { field: 'stale', reason: 'over_budget', bytes: 4300, cap: 4096 }))
+    await user.click(within(cards()[0]!).getByTestId('rule-restore-stale'))
+    await flush()
+    const msg = useUi.getState().toasts.at(-1)!.text
+    expect(msg).toContain('4300')
+    expect(msg).toContain('4096')
+    expect(msg).toMatch(/Merge some rules or disable some/)
+    expect(daemon.rules.get('s1')!.stale).toBe(true)
+    expect(within(cards()[0]!).getByTestId('rule-status')).toHaveTextContent('Stale')
+  })
+
+  it('a rule changed elsewhere is not restored over the new version', async () => {
+    const user = userEvent.setup()
+    await load(stale('s1'))
+    await openStale(user)
+    daemon.onChange = null
+    daemon.changeElsewhere('s1', { text: 'edited elsewhere' })
+    await user.click(within(cards()[0]!).getByTestId('rule-restore-stale'))
+    await flush()
+    expect(daemon.rules.get('s1')!.stale).toBe(true)
+    expect(useUi.getState().toasts.some((t) => /changed elsewhere/.test(t.text))).toBe(true)
+  })
+
+  it('restore is disabled while the node is offline', async () => {
+    const user = userEvent.setup()
+    await load(stale('s1'))
+    await openStale(user)
+    act(() => setNode({ conn: 'peer_offline' }))
+    expect(within(cards()[0]!).getByTestId('rule-restore-stale')).toBeDisabled()
+  })
+})

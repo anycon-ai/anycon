@@ -835,6 +835,7 @@ export class FakeDaemon {
         body: (p.body as string | undefined) ?? '',
         handler: p.handler ?? 'me',
         ...(p.project !== undefined ? { project: p.project } : {}),
+        ...(p.repeat !== undefined ? { repeat: p.repeat } : {}),
         state: 'open',
         source: p.agent ? { kind: 'agent' } : { kind: 'device', device_id: peerId },
         unreviewed: p.agent === true,

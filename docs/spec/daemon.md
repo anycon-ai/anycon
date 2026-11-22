@@ -833,7 +833,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
 - `workspace.branches`：`git for-each-ref --sort=-committerdate --format=%(refname:short) refs/heads refs/remotes`，去掉 `*/HEAD` 和 `<branch_prefix>/` 开头的本地分支，各取前 200 个
 - 关联项目（ADR-33 补充）：上面所有写操作只发生在 `.anycon/worktrees/` 里 anycon 自己建的目录、`info/exclude` 的那一行，以及 git 的 worktree / 分支元数据；另外会话的附件落在 `<工作目录>/.anycon/attachments/<session_id>/`（§ 7.10，ADR-44；worktree 会话落在它自己的 worktree 里，不是项目目录），这个目录同样是 anycon 自己建、自己删的，`info/exclude` 里的 `/.anycon/` 一并覆盖它
 
-**PR 自动归档**（`worktree.auto_archive_on_pr_close = true`）：周期任务每 10 分钟一次，**不在 sweeper 的同步路径上跑**（单独 `tokio::spawn`，原子标记保证同一时刻只有一轮；每小时的 `cleanup` 同样移出），挑没归档、没有 turn 在跑、有上游的 worktree 会话（每次最多 20 个），`gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档；归档前在会话锁里重新检查，这时有 turn、在等审批或有排队消息就跳过、留到下一轮。`gh` 不可用就整轮跳过。
+**PR 自动归档**（`worktree.auto_archive_on_pr_close = true`）：周期任务每 10 分钟一次，**不在 sweeper 的同步路径上跑**（单独 `tokio::spawn`，原子标记保证同一时刻只有一轮；每小时的 `cleanup` 同样移出），挑没归档、没有 turn 在跑、有上游的 worktree 会话（每次最多 20 个），`gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档；归档前在会话锁里重新检查，这时有 turn、在等审批或有排队消息就跳过、留到下一轮。`gh` 不可用就整轮跳过。**同一轮也轮询分身派出的会话**（§ 26.9）：所属的项交给分身处理且没关闭的会话，不论这个开关开没开，筛选条件和频率相同；开关没开时只记 PR 状态和事件，不归档。没有第二套轮询。
 
 **错误原因**（`data.reason`，客户端据此显示说明；未知的按错误码显示通用说明）：
 
@@ -882,7 +882,7 @@ SQLite（WAL）。全部表：
 | `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
 | `todos` | 清单（§ 21.4）：id（主键）、title、body、project、state、handler（缺省 me）、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 | `todo_sessions` / `todo_events` | 清单项派出的会话和「经过」（§ 22.8）；`sessions.todo_id` 是会话的来源项 |
-| `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms。不受 `history_retention` 影响 |
+| `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms、last_referenced_ms、stale、active_since_ms（`0012_rule_stale.sql`）。不受 `history_retention` 影响 |
 | `judge_calls` | 判断后端的每次调用（§ 25.2，迁移 `0007_judge.sql`）：id、position、backend、kind、model、started_ms、finished_ms、status（`ok` 或错误码）、input_bytes、output_bytes、input_tokens、output_tokens、cost_usd。不存提示和回应，保留 90 天 |
 | `rule_extract_runs` | 每次提炼（§ 23.9，同一个迁移）：id、session_id、trigger、device_id、status、started_ms、finished_ms、points、from_seq、to_seq、added(JSON)、dropped(JSON)、backend、error_code、error_status、call_id。保留 90 天，但每个会话最新的 `done` 始终保留以维持水位 |
 | `audit` | § 13 |
@@ -1208,7 +1208,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 清单记的是「现在或之后要处理的事」，一项一条。它属于这台节点：存在 daemon 的 SQLite 里，所有已配对设备看到同一份，hub 不存也不转存（节点离线时的行为见 § 21.6）。
 
-不做：标签、里程碑、看板视图、子项、排序拖拽、和外部 issue 系统同步、到期提醒的推送（新的通知类别要改外层信封和 hub，这一步不加）。周期性的项在分身那一步才有（ADR-54 第 10 条），到时 `Todo` 多一个可选字段，这一步的客户端不用为它做准备。
+不做：标签、里程碑、看板视图、子项、排序拖拽、和外部 issue 系统同步、到期提醒的推送（新的通知类别要改外层信封和 hub，这一步不加）。周期性的项（ADR-54 第 10 条）是 `Todo` 的一个可选字段 `repeat`，见 [§ 26.9](#269-周期项和-pr-事件4b)；不带它的项和没有这个字段的旧客户端都不受影响。
 
 ### 21.2 `Todo`
 
@@ -1221,12 +1221,13 @@ Todo {
   state:      open | working | waiting | review | done | dropped
   handler:    me | twin   // 缺省 me；旧 daemon 没给时按 me 读，未知值也按 me 显示
   due_ms?:    timestamp   // 想在什么时候之前处理；这一步只用于显示和排序
-  source:     { kind: device | local | agent | twin, device_id?, session_id? }   // daemon 填，调用方不能指定
+  source:     { kind: device | local | agent | twin | repeat, device_id?, session_id?, todo_id? }   // daemon 填，调用方不能指定；`todo_id` 只有 `kind = repeat` 才有（§ 26.9）
   unreviewed: bool        // agent 记的、还没有人收下的项；见下
   created_ms: timestamp
   updated_ms: timestamp
   closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉；在 done 和 dropped 之间换时保持原来的
   sessions: [session_id]  // 这一项派出的会话（§ 22.3）；旧 daemon 没有，按空读
+  repeat?:    { kind: daily | weekdays | weekly, at: "HH:MM", weekday?: 1..7, next_ms? }   // 周期规则：带它的项是模板（§ 26.9）；只由人设置
   activity?: working | waiting | review   // 派出的会话现在的情况，每次返回这一项时算出来，不存（§ 22.3）；已关闭或没派发过的项没有。之后可能多出新的值：解析时落到 `unknown`（Rust 的 `TodoActivity::Unknown`），客户端按「不显示 activity」处理，不能因此失败；daemon 自己不产生它
 }
 ```
@@ -1267,8 +1268,8 @@ Todo {
 |---|---|---|
 | `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；`include_closed` 时也给已关闭的。`project` 去掉首尾空白后按名字精确比较（和存的名字同样处理）。按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 填上一页最后一项的这两个值，返回排在它后面的。`limit` 缺省 200、上限 1000。一页另有字节预算：各项序列化后的字节累计超过 1 MiB 就停（至少给一项），所以一页可能少于 `limit`；后面还有没给出的项时 `has_more = true` |
 | `todo.get` | C→D | `{ id }` → `Todo`。读一项；只读，不审计、不通知。`id` 不存在 → `not_found`，不是小写带连字符的 UUID → `invalid`（`data.field = "id"`，同 `todo.add`）。客户端用它在做破坏性的动作之前向节点确认「这一项现在是什么样」，而不是信缓存 |
-| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, handler?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
-| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, handler?, reviewed?, agent?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白；`id` 不是小写 UUID 同样 `invalid`，`todo.delete` 也是）；**把 `done` / `dropped` 的项改回没关闭的状态时，和新建一样占一个名额：已有 1000 个没关闭的项 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）**；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
+| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, handler?, agent?, origin_session?, repeat? }` → `Todo`。`repeat` 见 § 26.9：`kind` 不认识、`at` 不是 `00:00`–`23:59` 的 `HH:MM`、`weekly` 没有 1–7 的 `weekday` 或别的种类带了 `weekday` → `invalid`（`data.field = "repeat"`，`data.reason` 是 `kind` / `at` / `weekday`）；自报 `mcp` 的连接或 `agent: true` 的写入带 `repeat` → `forbidden`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
+| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, handler?, reviewed?, agent?, repeat?, clear? }` → `Todo`。`repeat` 设置或替换周期规则（规则变了，下一次从现在起算，不补设置之前的时间点），校验和错误同 `todo.add`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白；`id` 不是小写 UUID 同样 `invalid`，`todo.delete` 也是）；**把 `done` / `dropped` 的项改回没关闭的状态时，和新建一样占一个名额：已有 1000 个没关闭的项 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）**；`clear` 列出要清空的可选字段（`project` `due_ms` `repeat`；清掉 `repeat` 的限制同设置它：agent 不能清），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
 | `todo.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除。`id` 不存在 → `not_found`（重放时客户端把它当作已完成）。给了 `if_updated_ms`、而这一项现在的 `updated_ms` 不是它：什么都不删，`invalid`（`data.field = "if_updated_ms"`，`data.reason = "changed"`，`data.updated_ms` 是现在的值），不审计、不通知；检查和删除在同一把锁里，中间没有别的写入。没给就无条件删 |
 | `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
 
@@ -1288,7 +1289,7 @@ Todo {
 |---|---|
 | `todos` | id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 
-迁移 `0008_todo_handler.sql` 为 `todos` 增加 `handler TEXT NOT NULL DEFAULT 'me'`，已有项保持由人处理。
+迁移 `0008_todo_handler.sql` 为 `todos` 增加 `handler TEXT NOT NULL DEFAULT 'me'`，已有项保持由人处理。迁移 `0010_todo_repeat.sql` 为 `todos` 增加 `repeat_kind`、`repeat_at`、`repeat_weekday`（周期规则）、`repeat_last_ms`（这个模板最近处理过的规则时间，§ 26.9）和 `source_todo`（复制出来的项记着模板的 id），都可以为空。
 
 已关闭的项按 `history_retention`（§ 3）清理，从 `closed_ms` 起算；没关闭的不清理。`title` / `body` 是用户内容：不进日志（§ 17），不进审计。
 
@@ -1298,7 +1299,7 @@ Todo {
 
 ### 21.5 审计
 
-`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind, handler }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state` `handler`，`unreviewed` 被清掉时也列上），`state` 或 `handler` 变了另记相应的 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
+`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind, handler }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state` `handler` `repeat`，`unreviewed` 被清掉时也列上）；`add` 带周期规则时另记 `repeat: true`。周期项到点复制出一项记 `todo.repeat`（发起者是 `daemon`），`target` 是新项的 id，`detail` 是 `{ template, at_ms }`，不记标题和正文，`state` 或 `handler` 变了另记相应的 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
 
 ### 21.6 节点离线
 
@@ -1328,7 +1329,7 @@ Todo {
 ### 21.8 客户端入口
 
 - **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；派发之后的界面用 `activity` 显示会话的情况；显示哪些节点的清单跟随空间切换（[web.md § 4.13](web.md#413-空间与移到另一个节点)）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
-- **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
+- **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>] [--repeat <spec>]`、`anycon todo edit <id> --repeat <spec> | --no-repeat`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
 - **`anycon mcp`**：两个新工具。`list_todos`（`todo.list`，只读）；`add_todo`（`todo.add`：`title`、`body`、`project`；总是带 `agent: true`，连的是本机还是经 hub 都一样）。**`add_todo` 在 anycon 拉起的 agent 里也能用**，不需要 `--allow-nested`：会话里的 agent 记下「之后要处理」正是它的用途，它不开会话、不触发任何 turn，写进去的项标着 `source.kind = agent`。agent 没有修改、关闭、删除清单项的工具。
 - **SDK**：`@anycon/sdk` 的节点对象上有 `todo.*` 的薄封装和 `todo.changed` 事件，类型来自生成的协议类型；不替调用方做离线缓存和重放。Python SDK 不动。
 
@@ -1355,7 +1356,7 @@ Todo {
 
 `todo.dispatch` 的参数：
 
-- `id`：这一项。不是小写 UUID → `invalid`（`data.field = "id"`）；不存在 → `not_found`；已关闭（`done` / `dropped`）→ `invalid`（`data.field = "id"`，`data.reason = "closed"`）。`unreviewed` 的项由人派发，算一次人为修改，清掉 `unreviewed`（§ 21.2）。**谁拦、拦什么**：daemon 只拦自报了 `mcp` 的本机连接（`forbidden`，和 agent 不能修改清单项是同一条界线，§ 21.8）。`todo.dispatch` 没有「自报是 agent」的参数（`agent` 是 agent 的 id），daemon 看不到调用方的环境变量；anycon 拉起的 agent 里运行的 `anycon todo run` 是**CLI 自己**拒绝的（读 `ANYCON_AGENT`，§ 22.6）。两处都是护栏，不是边界：有 shell 的 agent 可以清掉环境变量再跑 CLI、自报成 `cli`，或者直接发 RPC，照样能派发；真正的限制是第一条消息由 daemon 生成、会话仍受审批和 `sessions.max_concurrent` 约束、派发缺省带「不 push、不开 PR」（§ 22.5，同样不是边界）。
+- `id`：这一项。不是小写 UUID → `invalid`（`data.field = "id"`）；不存在 → `not_found`；已关闭（`done` / `dropped`）→ `invalid`（`data.field = "id"`，`data.reason = "closed"`）；周期项（带 `repeat` 的模板，§ 26.9）→ `invalid`（`data.field = "id"`，`data.reason = "repeat_template"`），派发的是它复制出来的每一次。`unreviewed` 的项由人派发，算一次人为修改，清掉 `unreviewed`（§ 21.2）。**谁拦、拦什么**：daemon 只拦自报了 `mcp` 的本机连接（`forbidden`，和 agent 不能修改清单项是同一条界线，§ 21.8）。`todo.dispatch` 没有「自报是 agent」的参数（`agent` 是 agent 的 id），daemon 看不到调用方的环境变量；anycon 拉起的 agent 里运行的 `anycon todo run` 是**CLI 自己**拒绝的（读 `ANYCON_AGENT`，§ 22.6）。两处都是护栏，不是边界：有 shell 的 agent 可以清掉环境变量再跑 CLI、自报成 `cli`，或者直接发 RPC，照样能派发；真正的限制是第一条消息由 daemon 生成、会话仍受审批和 `sessions.max_concurrent` 约束、派发缺省带「不 push、不开 PR」（§ 22.5，同样不是边界）。
 - `project`：缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。空白的 `project` 按没给处理。给了而且和这一项的不同（按项目名比较，大小写 / 规范化的写法和 `session.create` 一致）→ 派发成功时把这一项的 `project` 改成它（同一次修改）。项目不存在 → `not_found`，和 `session.create` 一样。
 - `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`，当场重新判断）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。在项目目录里干没有隔离：agent 的改动直接落在用户的工作目录里，客户端在派发前写明。第 4 步的分身只派到 worktree。明确给了 `workspace` 的，以它为准，校验同 `session.create`（比如不是 git 项目却要 worktree → 同样的错误，什么都不留下）。
 - `agent` / `settings`：同 `session.create`（§ 6），同样的校验，危险模式同样受 `permissions.allow_dangerous_modes` 约束。不认识的 agent → `agent_unavailable`。
@@ -1399,7 +1400,7 @@ Todo {
 TodoEvent {
   seq:   u64          // 这一项内从 1 递增，没有空洞
   ts_ms: timestamp
-  kind:  dispatched | result | state | handed_back | taken_over | twin_decision | twin_question | handler
+  kind:  dispatched | result | state | handed_back | taken_over | twin_decision | twin_question | handler | pr_event
   // dispatched：{ session_id, agent, workspace_mode: local|worktree, no_push, by: { kind, device_id? }, rules?: [规则 id], rules_skipped?: "unsupported" }   rules / rules_skipped 见 § 23.5
   // result：    { session_id, turn, text, truncated }   这一轮结束时 agent 的最后一段话
   // state：     { from, to, by: { kind, device_id? } }   人改了状态（会话引起的变化是 activity，不在这里）
@@ -1408,6 +1409,7 @@ TodoEvent {
   // twin_decision：{ run_id, action, reason }
   // twin_question：{ question_id }
   // handler：{ from: me|twin, to: me|twin, by }
+  // pr_event：{ session_id, event: checks_failed|merged|closed|reviewed, url? }   不含评审和评论的正文，§ 26.9
   // by：{ kind, device_id?, id? }；twin 的 id 是请求方（local 或设备 id）
 }
 ```
@@ -1486,7 +1488,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ## 23. 决策档案
 
-> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）已实现，由 Web 持久化和重放。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）已实现，由 Web 持久化和重放。规则的「过期」和回答时的「以后都这样」（§ 26.10）也已实现：daemon、CLI、TS SDK 和 Web 都有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
 
 ### 23.1 范围
 
@@ -1494,7 +1496,9 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 规则只影响 agent 怎么判断，**不影响任何权限**：不自动批准或拒绝权限请求，不改权限模式，不放宽「不 push、不开 PR」（ADR-54 第 3、5 条）。
 
-不做：「过期」标记（要有分身的运行记录里「按哪条规则」的引用才有依据，第 4 步）；让会话里的 agent 提规则的 MCP 工具。
+「过期」（§ 23.2、§ 26.10）：生效的规则 60 天里没被用到，daemon 标上，不再注入，留在档案里等人恢复。
+
+不做：让会话里的 agent 提规则的 MCP 工具。
 
 ### 23.2 `Rule`
 
@@ -1509,6 +1513,8 @@ Rule {
   created_ms: timestamp
   updated_ms: timestamp   // 每次真正的修改严格递增（同 § 21.3），也是版本号
   last_injected_ms?: timestamp    // 最近一次被注入某个会话；改它不动 updated_ms
+  last_referenced_ms?: timestamp  // 最近一次被分拣的决定引用并且这个决定被执行（§ 26.4）；改它不动 updated_ms
+  stale?: bool            // 过期（缺省 false，线路上 false 省略）：status 仍是 active，但不注入、不计字数预算（§ 26.10）
 }
 ```
 
@@ -1521,7 +1527,9 @@ Rule {
 | `disabled` | 人停用了，留着，可以再打开 | 否 |
 | `rejected` | 人否决了。留着是为了之后提炼时不再提同样的 | 否 |
 
-`source.kind`：`manual` 人手写；`answer` 人在答复权限请求或提问时点「记成规则」（带 `session_id`、`request_id`）；`extracted` 提炼出来的（带 `session_id`、`seq`，§ 23.9）；`agent` 调用方自报是 agent。daemon 填 `device_id`，调用方不能指定。
+**过期**（`stale`）：只对 `active` 的规则有意义。过期的规则还是 `active`，规则页另起一段显示；但它**不注入**（派发的会话、分拣的系统提示、`rule.preview` 和 `todo.dispatch_preview` 的 `rules_text` 都不含它），**不计字数预算**（§ 23.4 的 `budget` 和生效时的检查都把它当成不生效）。daemon 每天看一次（§ 26.10）；人用 `rule.update { stale: false }` 恢复；客户端不能自己标过期（`stale: true` → `invalid`，`data.field = "stale"`）。规则离开 `active`（停用、否决、改回待确认）时 `stale` 清掉，之后再生效就是一条新的生效规则。
+
+`source.kind`：`manual` 人手写；`answer` 人在答复权限请求、agent 的提问或分身的问题时点「记成规则」或勾「以后都这样」（§ 23.6；权限请求和 agent 的提问带 `session_id`、`request_id`；分身的问题没有会话，只带 `request_id`，是 `twin_questions` 里那个问题的 id）；`extracted` 提炼出来的（带 `session_id`、`seq`，§ 23.9）；`agent` 调用方自报是 agent。daemon 填 `device_id`，调用方不能指定。
 
 客户端遇到不认识的 `status` 按「不生效」显示，遇到不认识的 `source.kind` 按「不是人写的」显示，解析不能因此失败（Rust 的协议类型里 `RuleStatus`、`RuleSourceKind`、`RuleSync` 各有一个 `Unknown` 变体接住它，用 `#[serde(other)]`）。daemon 自己从不产生也不接受 `Unknown`：`rule.update` 的 `status` 解析成不认识的值 → `invalid`（`data.field = "status"`）；库里读到不认识的字符串按 `Unknown` 读，不生效，也不会被写回成别的值。
 
@@ -1540,12 +1548,12 @@ Rule {
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。一次给全（不含 `rejected` 的规则总数上限 300，`rejected` 的另有 300，不翻页）。`budget` 见 § 23.4 |
+| `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。`status = active` 时包含过期的（客户端自己按 `stale` 分段）。一次给全（不含 `rejected` 的规则总数上限 300，`rejected` 的另有 300，不翻页）。`budget` 见 § 23.4 |
 | `rule.add` | C→D | `{ id, text, project?, status?: active \| pending \| disabled \| rejected, sync?: node \| group, source?: { kind: manual \| answer, session_id?, request_id? }, agent? }` → `Rule`。`id` 已存在时原样返回已有的那一条。`status` 缺省 `active`，`sync` 缺省 `node`。`agent: true`（或自报了 `mcp` 的连接）时可另带 `origin_session`（§ 23.2）。不含 `rejected` 的规则已满 300 → `invalid`（`data.field = "rules"`，`data.reason = "too_many"`）；这是 agent 写的、而 agent 提的待确认规则（`source.kind` 是 `agent` 或 `extracted`，状态是 `pending`）已满 50 → `invalid`（`data.field = "rules"`，`data.reason = "too_many_pending"`），只拦 agent 的入口，人照常能写；文字里有看不见的字符 → `invalid`（`data.reason = "invisible"`）；会让注入超出上限 → `invalid`（`data.reason = "over_budget"`，§ 23.4） |
-| `rule.update` | C→D | `{ id, text?, project?, clear?, status?, sync?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget` |
+| `rule.update` | C→D | `{ id, text?, project?, clear?, status?, sync?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget`。`stale?: false` 恢复一条过期的规则（和「变成生效」一样过字数检查，超出 → `over_budget`，`data.field = "stale"`；成功后「最近一次变成生效的时间」是现在，60 天从头算，§ 26.10）；规则不是过期的就不算改动；`stale: true` → `invalid`（`data.field = "stale"`）；自报了 `mcp` 的连接照旧 `forbidden` |
 | `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除 |
 | `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话，会注入的那段文字（§ 23.5）。只读 |
-| `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。新建、真正的修改、删除才发；空操作、重复的 `rule.add` 和 `last_injected_ms` 的变化（§ 23.5）不发 |
+| `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。新建、真正的修改、删除、daemon 标过期和人恢复才发；空操作、重复的 `rule.add`、`last_injected_ms` 和 `last_referenced_ms` 的变化（§ 23.5、§ 26.10）不发 |
 | `rule.extract` | C→D | `{ session_id }` → `{ run?: ExtractRun, points }`（§ 23.9）。`points` 是这次会带上的决策点数（水位之后的，最多 40 个）：0 时不调用后端、不留记录，也没有 `run`。否则开始一次提炼，立即返回 `status = running` 的 `run`，结束时发 `rule.extract_done`。正在跑的就是这个会话时返回那一次。会话不存在 → `not_found`；没配提炼用的后端或者它现在不能用 → `invalid`（`data.reason = "not_configured"`）；另一个会话的提炼正在跑 → `invalid`（`data.reason = "busy"`）；今天的调用次数用完 → `invalid`（`data.reason = "budget"`，带 `used`、`limit`）。自报了 `mcp` 的连接 → `forbidden`：提炼花钱，输入是会话内容，只由人发起 |
 | `rule.extract_runs` | C→D | `{ session_id?, limit? }` → `{ runs: [ExtractRun], used_today, daily_calls }`。从新到旧，`limit` 缺省 20，按仓库列表参数惯例钳制到 1–100。`used_today` 是今天所有位置合计已经调用的次数 |
 | `rule.extract_done` | D→C notification | `{ run: ExtractRun }`：一次提炼结束（成功或失败）时发给所有在线客户端 |
@@ -1560,7 +1568,7 @@ Rule {
 
 ### 23.4 上限：在生效的时候把关，注入时不截断
 
-一个会话拿到的规则 = 全节点的 `active` 规则 + 它所在项目的 `active` 规则。这段文字（含 § 23.5 的模板）最多 4 KiB（UTF-8 字节）。
+一个会话拿到的规则 = 全节点的生效规则 + 它所在项目的生效规则（`active` 且没有过期，§ 23.2）。这段文字（含 § 23.5 的模板）最多 4 KiB（UTF-8 字节）。
 
 上限在规则**变成生效的那一刻**检查，不在注入的时候：
 
@@ -1573,7 +1581,7 @@ Rule {
 
 `rule.list` 的 `budget`：`{ cap, node_bytes, projects: { <项目名>: bytes } }`，客户端据此显示「已用 / 上限」。`cap` 是 4096，固定，不可配置。`node_bytes` 是开头加上全节点生效规则的字节数（一条生效的规则都没有时是 0：那时不注入任何东西，也没有开头）；`projects[名字]` 只有这个项目的生效规则，不含 `node_bytes`；同一个项目的不同写法归在第一次出现的那个名字下。一个这个项目的会话拿到的文字是 `node_bytes + projects[名字]`，没有项目规则的会话是 `node_bytes`。
 
-**检查**：一条规则变成生效（新建时就是 `active`，或者 `pending` / `disabled` / `rejected` 改成 `active`），或者生效的规则的文字或项目变了，就用**改动之后**的生效规则算：全节点规则 → `node_bytes` 加上最大的项目；项目规则 → `node_bytes` 加上这个项目。超过 `cap` → `invalid`，`data.reason = "over_budget"`，`data.bytes` 是这个和（这次改动之后一个会话拿到的字节数），`data.cap` 是 4096；刚好 4096 可以。停用、否决、删除、把生效的规则改短、改不生效的规则都不检查，不会因为字数失败。
+**检查**：一条规则变成生效（新建时就是 `active`，或者 `pending` / `disabled` / `rejected` 改成 `active`），或者生效的规则的文字或项目变了，就用**改动之后**的生效规则算：全节点规则 → `node_bytes` 加上最大的项目；项目规则 → `node_bytes` 加上这个项目。超过 `cap` → `invalid`，`data.reason = "over_budget"`，`data.bytes` 是这个和（这次改动之后一个会话拿到的字节数），`data.cap` 是 4096；刚好 4096 可以。停用、否决、删除、把生效的规则改短、改不生效的规则（含过期的规则）都不检查，不会因为字数失败；把过期的规则恢复算「变成生效」，要检查。
 
 ### 23.5 注入
 
@@ -1599,16 +1607,17 @@ Standing rules from the user. The user wrote or confirmed each of them; follow t
 
 - 预填的文字里有 agent 写的东西（提问的原文、命令）。它一旦保存就会进到之后每个会话的系统提示里，所以必须经过编辑框、由用户看过再存，不提供「一键记下」；编辑框里把来自 agent 的部分和用户的选择分开显示。
 - 界面写明：规则不会自动批准任何请求，它只是告诉 agent 你的做法。
+- **「以后都这样」**（回答时的勾选，§ 26.10）是进同一个编辑框的另一个入口，不是另一条路：回答**分身的问题**（`twin.answer`）或 **agent 的提问**（`permission.respond` 带 `answers`）的地方，答复按钮旁多一个勾选；勾上并且答复**成功之后**才打开「记成规则」的编辑框（答复失败、请求已不存在、已被别处答复都不打开），预填同上，由用户改成自己的话再存，预填原样不能保存。勾选本身不进答复的参数，不改答复的内容，也不碰答复按钮的锁和键盘快捷键。出处同「记成规则」：agent 的提问是 `{ kind: answer, session_id, request_id }`；分身的问题没有会话，记 `{ kind: answer, request_id: <问题 id> }`（`request_id` 本来就是「出自哪个权限请求或提问」，不需要新字段，也不记会话）。
 
 ### 23.7 存储、审计、日志
 
-新迁移 `0006_rules.sql`，表 `rules`（列见 § 11；索引 `(created_ms, id)`）。规则的文字是用户内容：不进日志（包括各条错误路径），不进审计。写操作在 daemon 里串行（`Store::rule_lock`，不和别的锁嵌套）。
+新迁移 `0006_rules.sql`，表 `rules`（列见 § 11；索引 `(created_ms, id)`）；`0012_rule_stale.sql` 加 `last_referenced_ms`、`stale` 和 `active_since_ms`（最近一次变成生效的时间：新建时就生效的取 `created_ms`，状态后来改成 `active` 或者从过期恢复的取那次修改的 `updated_ms`；它不在线路上，只用来算过期，已有的规则迁移时记成迁移的那一刻，升级不会让它们立刻过期）。规则的文字是用户内容：不进日志（包括各条错误路径），不进审计。写操作在 daemon 里串行（`Store::rule_lock`，不和别的锁嵌套）。
 
-审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id。`add` 的 `detail` 是 `{ text_len（码点数）, source_kind, status, sync, project? }`；`update` 的 `detail` 是 `{ fields }`（变了的字段名：`text` `project` `status` `sync`），文字变了另带 `text_len`，状态变了另带 `status: { from, to }`；`delete` 为空。不记文字（项目名和清单一样会记）。重复的 `rule.add`、空操作的 `rule.update` 和失败的调用不进审计。每次提炼结束记一条 `rule.extract`：`target` 是会话 id，`detail` 是 `{ trigger, status, points, added（条数）, dropped, backend, error? }`；提炼建出的每条规则另记 `rule.add`（`source_kind = extracted`）。
+审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id。`add` 的 `detail` 是 `{ text_len（码点数）, source_kind, status, sync, project? }`；`update` 的 `detail` 是 `{ fields }`（变了的字段名：`text` `project` `status` `sync` `stale`），文字变了另带 `text_len`，状态变了另带 `status: { from, to }`；daemon 每天标过期时 `detail` 是 `{ auto: "stale" }`（操作者是 daemon，没有 `fields`）；`delete` 为空。不记文字（项目名和清单一样会记）。重复的 `rule.add`、空操作的 `rule.update` 和失败的调用不进审计。每次提炼结束记一条 `rule.extract`：`target` 是会话 id，`detail` 是 `{ trigger, status, points, added（条数）, dropped, backend, error? }`；提炼建出的每条规则另记 `rule.add`（`source_kind = extracted`）。
 
 **名额**：占 300 个名额的是不含 `rejected` 的规则（待确认、生效、停用）；agent 提的待确认规则另有 50 个（`MAX_AGENT_PENDING`：状态 `pending`、来源 `agent` 或 `extracted`），所以 agent 占不满 300 个名额、把人挡在外面（人写的、直接生效的规则不受这 50 个限制）。`rejected` 的规则留着是为了之后提炼时不再提同样的，它们不占那 300 个，但自己也有一个 300 的上限：再否决一条而 `rejected` 的超过 300 时，daemon 删掉最早否决的那条（`updated_ms` 最小的；记审计 `rule.delete`，`detail` 是 `{ "auto": "rejected_cap" }`，并发 `rule.changed`）。把 `rejected` 的规则改回别的状态和新建一样占一个名额（满了 → `too_many`）。
 
-daemon 从不自动删除有用的规则（ADR-54 第 3 条）：待确认、生效、停用的规则一直留着，不受 `history_retention` 影响；上面 `rejected` 满额时删最早的那条，是唯一的自动删除。`anycon export` / `import` 不含规则。
+daemon 从不自动删除有用的规则（ADR-54 第 3 条；过期只是不再注入，不删除）：待确认、生效、停用的规则一直留着，不受 `history_retention` 影响；上面 `rejected` 满额时删最早的那条，是唯一的自动删除。`anycon export` / `import` 不含规则。
 
 ### 23.8 同组节点之间的同步
 
@@ -1931,16 +1940,17 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 ## 26. 分身
 
-> **4a 已实现：daemon 和 CLI（§ 26.1–§ 26.8）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
+> **已实现：4a（§ 26.1–§ 26.8）、4b（§ 26.9，周期项和 PR 事件）和 4c（§ 26.10，规则的「过期」和「以后都这样」），daemon、CLI、TS SDK 和 Web 都有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
 
 分身是 daemon 里的一个调度者：被事件唤醒，看清单里交给它的项，决定每一项怎么办，再用第 2 步的派发（§ 22）开会话去做。它自己不干活，也不批准权限。
 
 ### 26.1 范围：它碰哪些项
 
 - **处理人**：`Todo` 多一个字段 `handler: me | twin`，缺省 `me`。客户端里的「交给分身」和「我自己做」改的就是它（`todo.update { handler }`）。另外两种变化由 daemon 写：「你接手了」（§ 26.6）和「交回给你」（§ 26.4）。和 `state` 不同，`handler` 不是只由人写。客户端遇到不认识的值按 `me` 显示，Rust 协议类型里用 `Unknown` 变体接住。
-- 一项要**同时满足**下面四条，分身才会看它：
+- 一项要**同时满足**下面五条，分身才会看它：
   - `handler = twin`；
   - 没关闭（`state` 不是 `done` / `dropped`）；
+  - 不是周期项的模板（没有 `repeat`，§ 26.9；模板自己不分拣，它的 `handler = twin` 表示「每一次复制出来的都交给分身」）；
   - 不是 `unreviewed`，也就是 agent 记的项要人先收下（ADR-54 第 6 条）；
   - 在范围内：项有 `project`，就必须在允许的项目里。没有 `project` 的项，分身只能从允许的项目里选一个，或者问你。
 - **派发的权限**：自报了 `mcp` 的连接或带 `agent: true` 的写入不能把 `handler` 设成 `twin`，回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；人可以在同一请求带 `reviewed: true` 收下并交给分身。
@@ -1977,6 +1987,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 | `answer` | 你回答了它的问题（§ 26.5） |
 | `tick` | 兜底的定时：有它在处理的项时每 30 分钟一次，没有就不定时 |
 | `manual` | 客户端点了「现在看一遍」（`twin.wake`） |
+| `pr` | 分身派出的会话的 PR 有了变化（§ 26.9） |
 
 - **合并**：触发后等 60 秒，期间新来的触发合并进同一次；从第一个触发算起最多等 5 分钟。
 - **串行**：同一时间只跑一次唤醒。正在跑时来的触发，记下来留给下一次。
@@ -1995,7 +2006,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
   - 不确定能不能做好的不要派。
 
   后面接着节点生效的全节点规则（§ 23.5 同一段文字）。
-- **项**：每一项一段，标出 `id`、标题、正文、`project`、派发次数、最近几次的结果（同 § 22.4 交接用的那几条）、现在的 `activity`、它问过的问题和你的回答。
+- **项**：每一项一段，标出 `id`、标题、正文、`project`、派发次数、最近几次的结果（同 § 22.4 交接用的那几条）、现在的 `activity`、它关联会话的 PR 状态（`pr:` 行，§ 26.9：只有结构化的状态，没有评审和评论的正文）、它问过的问题和你的回答。
   - 每项最多 6 KiB，合计最多 32 KiB；放不下的项这次不看，下次再看，按 `updated_ms` 从早到晚。上次因总量放不下的项在下一次优先，组内仍按 `updated_ms` 从早到晚；这个待看队列只在内存里保存，重启后从最早修改的项开始。
   - 内容区用 § 23.9 那样的随机边界包起来。
 - **可用的东西**：允许的项目，各自的项目规则；还能派几次、还能同时开几个会话；顾问能不能用。
@@ -2012,7 +2023,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 | `done` | — | 它认为做完了：`handler` 改回 `me`，「经过」里记一条「分身认为做完了」和理由。**不写 `state`**（§ 21.2：`state` 只由人设置）；这一项照常靠 `activity = review` 出现在「待验收」里，验收由人做 |
 
 - **`reason`** 必填，≤ 500 个字符，写进运行记录和这一项的「经过」。
-- **`rules?`**：可以带它所依据的规则 id 列表，只记录，4c 用来判断规则是否过期。
+- **`rules?`**：可以带它所依据的规则 id 列表。它进运行记录，决定被执行时（试跑不算）还会更新这些规则的 `last_referenced_ms`（§ 26.10）。模型靠系统提示里规则文字后面的一行「规则 id，按上面的顺序」和每个项目的 `project_rule_ids` 知道每条规则的 id（过期的规则不在其中）。
 - **逐条校验**：这一项还符合 § 26.1、动作合法、附带的字段合法、名额和次数都还有。不合格的这一条不执行，在运行记录里写明原因（`invalid` / `out_of_scope` / `no_capacity` / `budget`）。
 - **整份输出解析不了**：这次唤醒算失败（`bad_output`），什么都不执行。
 
@@ -2046,7 +2057,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
   - 不存提示和模型的原始回答，存的是解析后的决定；`reason` 是模型写的，按 agent 写的内容显示。
   - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`，会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
 - **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。沿用审计的设备字段，`device_id` 填请求方、`device_name = "twin"`；新增的操作者放在 `detail.actor`，不写清单正文、问题、回答和理由。
-- **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
+- **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。PR 事件（§ 26.9）不发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
 
 ### 26.8 RPC
 
@@ -2068,22 +2079,43 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget`、`session_id?`、`question_id?`、`project?`、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
 
-`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9、§ 26.10 尚未实现。
+`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 和 § 26.10 也已实现。
 
 除了读的方法（`twin.get`、`twin.runs`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
 
 ### 26.9 周期项和 PR 事件（4b）
 
-- **周期项**：`Todo.repeat?: { kind: daily | weekdays | weekly, at: "HH:MM", weekday? }`，按机器的时区算。
-  - 到点时 daemon 复制出一项新的（标题、正文、项目、`handler` 都照抄，`source` 记成 `{ kind: repeat, todo_id }`），这一次要处理的就是它；模板本身不进分拣。
-  - 上一次复制出来的还没关闭时不再复制，「经过」里记一条「跳过了一次」。
+- **周期项（已实现）**：`Todo.repeat?: { kind: daily | weekdays | weekly, at: "HH:MM", weekday?, next_ms? }`，按**机器的时区**算（`localtime_r` 读当地时间，不改进程的 `TZ`）。带 `repeat` 的项是**模板**：它记下「每次要做的那件事」，自己不被分身分拣、不能派发。
+  - **规则**：`daily` 每天 `at`；`weekdays` 周一到周五的 `at`；`weekly` 每周 `weekday`（1–7，周一 = 1，ISO）的 `at`，`weekly` 必须带 `weekday`，另外两种不能带。`at` 是 `00:00`–`23:59` 的两位数字 `HH:MM`。校验和错误见 § 21.3。**只由人设置**：自报 `mcp` 的连接或 `agent: true` 的写入设置、替换、清除 `repeat` 都回 `forbidden`（清除用 `todo.update` 的 `clear: ["repeat"]`）。`next_ms` 是节点此刻算出来的下一次时间，不存，请求里带了也忽略；已关闭的模板没有。算在 daemon 上，因为规则按节点的时区，浏览器和节点可能不在同一个时区。
+  - **模板的限制**：分身的分拣不看它（§ 26.1 的条件）；`todo.dispatch` 拒绝它（`invalid`，`data.reason = "repeat_template"`，§ 22.2）；模板可以 `handler = twin`，意思是**每一次复制出来的都交给分身**：复制照抄 `handler`，所以复制出来的项由分身处理、并触发 `todo` 唤醒；模板自己仍不进分拣。处理人的其余规则不变（agent 和自报 `mcp` 的连接不能设成 `twin`，未收下的项不能交给分身）。模板可以关闭（`done` / `dropped`），关闭的模板不再复制，重新打开后从之后的时间点继续。
+  - **复制**：daemon 启动时看一遍、之后每分钟看一次（时钟用判断后端那只可替换的时钟，测试里不真的等）。一个没关闭的模板到了它的下一次时间，就复制出一项：新的 id，`title` / `body` / `project` / `handler` 照抄（`due_ms` 和 `repeat` 不带），`source = { kind: repeat, todo_id: <模板 id> }`，`state = open`，`unreviewed = false`；这一项照常 `todo.changed`、记审计 `todo.repeat`，`handler = twin` 时照常触发分身的唤醒（`todo` 触发，§ 26.3）。模板自己还是 `unreviewed`（agent 记的、没人收下，只可能是旧数据，规则只由人设置）时不复制。
+  - **夏令时**：夏令时切换日照当地时钟算。被跳过的时刻（如 02:30 跳到 03:00）算在跳过之后的第一分钟；回拨时重复出现的时刻（如 01:30 出现两次）只算第一次出现的那个。
+  - **同一次只复制一次，重启也一样**：模板记着「最近处理过的规则时间」（`repeat_last_ms`，存的是规则上的那个时刻，不是处理它的时刻）。设置或改动规则、关闭的模板重新打开时，它设成现在，所以那之前已经过了的时间点不补。
+  - **上一次还没关闭**：这个模板最近复制出来的那一项（`source.todo_id` 是它、最新的一项）还没关闭时，这一次不复制，模板的「经过」里记一条 `repeat_skipped { at_ms }`，这个时间点算处理过了，之后不补。清单已满（1 000 个没关闭的项）时同样当作跳过。
+  - **复制成功**：模板的「经过」里记一条 `repeat_created { todo_id, at_ms }`（`at_ms` 是规则上的时间）。
+  - **停机不补积压**：daemon 停着错过的次数不一次补。起来之后只看最近一个该到的时间：它在停机期间、并且离现在不到 24 小时，就补这一次；更早的不补，只把 `repeat_last_ms` 推到那个时间，什么都不记。
+  - **协议**：`TodoRepeat`、`TodoRepeatKind`（带 `Unknown`）、`TodoSourceKind::Repeat`、`TodoSource.todo_id`、`ClearableTodoField::Repeat`、「经过」的两种新事件（`repeat_created`、`repeat_skipped`），`node.info` 的 `capabilities.todo_repeat`（旧 daemon 没有，读作 `false`；客户端据此决定要不要显示「重复」）。不认识的 `kind`、事件种类、来源种类都落到 `Unknown`，旧客户端不因此解析失败。
+  - **入口**：CLI `anycon todo add --repeat <spec>`、`anycon todo edit <id> --repeat <spec> | --no-repeat`、`anycon todo ls` 的 REPEAT 列（[cli.md § 3.8](cli.md#38-anycon-todo)）；SDK 的 `node.todos.add` / `update` 直接带 `repeat`；Web 见 [web.md § 14.6](web.md#146-清单和单项)。
 - **PR 事件**：分身派出的会话，它的分支对应的 PR 检查失败、被合并或关闭、有了新的评审意见时，触发一次唤醒（`trigger = pr`）。
-  - 在已有的 `gh pr view` 轮询（§ 10.1）上扩展：分身派出的会话也轮询，不论有没有开 PR 自动归档；取回评审意见的条数和最新时间。
+  - **轮询谁**：在已有的 `gh pr view` 轮询（§ 10.1「PR 自动归档」）上扩展，不另起一套。除了开了 `worktree.auto_archive_on_pr_close` 时的会话，**分身派出的、所属的项还交给分身（`handler = twin`）且没关闭的会话**也轮询，不论那个开关；项关闭、或 `handler` 改回 `me` 之后不再轮询。频率、每轮上限、筛选（没归档、没有 turn 在跑、有上游）和 20 秒超时都沿用。分身没开、没配置或暂停时不轮询，恢复后的第一次轮询去和库里的基线比。`gh` 没装、没登录、出错或超时时这些会话什么都不发生：不记事件、不改基线、不报错，下一轮再试，不重试。
+  - **取什么**：`gh pr view --json` 在原有字段之外多取 `reviews` 和 `comments`，daemon **只数条数、取最新一条的时间**（`submittedAt` / `createdAt`），不读也不存任何正文。
+  - **基线**：每个会话上一次轮询的 PR 状态（号码、状态、检查汇总、评审条数、最新时间）存在表 `twin_pr`，重启后接着比。第一次看到某个 PR（或 PR 号变了）只记基线，不算事件，否则每次重启都会把已有的评审当成新的。
+  - **什么算事件**，和基线比：检查从非失败变成失败（`checks_failed`）；PR 变成已合并（`merged`）；变成已关闭、没合并（`closed`）；评审意见和评论的总条数增加，或最新一条的时间变新（`reviewed`）。一次轮询可以有几个事件。
+  - **事件之后**：这一项的「经过」记一条 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`（字段叫 `event` 而不是 `kind`，因为 `kind` 是「经过」的标签），触发一次分身唤醒（`TwinTrigger::Pr`，照常合并和串行）。**不发推送**：分身分拣之后需要你的话会建问题（§ 26.5）；PR 合并本身由 `auto_archive_on_pr_close` 处理。项已经交回给你或关闭时不记事件，基线照常更新。
+  - **分拣的输入**（§ 26.4）里每一项多一行它关联会话的 PR 状态，最多 3 个会话、新的在前：`pr: <number> <state> checks=<passing|failing|pending|none> reviews=<条数> last_review=<时间|none>`。**只放这些结构化的状态，不放评审和评论的正文，也不放 PR 标题和作者**：公开仓库里任何人都能发评论，正文进了分拣的输入就等于让陌生人能向分身的判断里注入指令。分身要处理评审意见时，派发一个会话去做，那个会话里的 agent 自己用 `gh` 去读，受 agent 自己的权限约束。时间串只保留 ISO 8601 UTC 的字符，不合格的当没有。
   - `gh` 没装或没登录时没有这类触发。
 
 ### 26.10 规则的「过期」和「以后都这样」（4c）
 
-- **过期**：规则多一个 `last_referenced_ms`，在分拣输出的 `rules` 引用了它时更新。生效的规则 60 天里既没被引用、也没被注入（`last_injected_ms`），就标成过期（`stale = true`）。
-  - 过期的规则不再注入，但留在档案里，一键恢复。
-  - daemon 从不因为过期删除规则。
-- **「以后都这样」**：回答分身或 agent 的问题时的勾选。勾上之后打开「记成规则」的同一个编辑框，由人改成自己的话再存（§ 23.6），不提供一键生成。
+**已实现**（daemon、CLI、TS SDK、Web）。
+
+- **`last_referenced_ms`**：分拣的决定里的 `rules` 引用了这条规则、并且这个决定被**执行**时更新（`outcome = executed`；试跑、被跳过的决定不算）。只更新存在的、生效的规则（`active` 且没有过期）：不存在的 id、停用 / 待确认 / 否决的、过期的都不报错，也不更新。和 `last_injected_ms` 一样不动 `updated_ms`、不发 `rule.changed`。
+- **标过期**：daemon 启动一分钟后看一次，之后每天一次（时钟取判断后端那只可替换的时钟，测试直接调用）。`status = active`、`stale = false`，并且下面三个时间里**最晚的一个早于 60 天前**（严格早于，刚好 60 天不算）的规则标成 `stale = true`：
+  - `last_injected_ms`（被注入某个会话）；
+  - `last_referenced_ms`（被分拣的决定引用）；
+  - 最近一次变成生效的时间（`active_since_ms`，§ 23.7）：新建时就生效的取 `created_ms`；`pending` / `disabled` / `rejected` 后来改成 `active` 的取那次修改的时间；从过期恢复的取恢复的时间。这个时间不在线路上，所以多存一列：从 `updated_ms` 推不出来（之后改文字也会动它）。
+
+  待确认、停用、否决的规则不标。每条标记是一次真正的修改：`updated_ms` 递增（带着旧版本 `if_updated_ms` 的写会被拒），发 `rule.changed`，记审计 `rule.update`（`detail = { auto: "stale" }`，操作者是 daemon）。**daemon 从不因为过期删除规则。**
+- **过期的效果**：不注入（派发的会话、分拣系统提示里的规则、`rule.preview`、`todo.dispatch_preview` 的 `rules_text`）；不计字数预算（`rule.list` 的 `budget`、生效时的检查）。它仍是 `active`：`rule.list { status: active }` 包含它，客户端按 `stale` 自己分段（规则页另起一段「过期」，[web.md § 4.14](web.md#414-规则-rules)）。
+- **恢复**：`rule.update { stale: false }`，只由人做（自报了 `mcp` 的连接 → `forbidden`，CLI 在 agent 环境里拒绝 `anycon rule restore`）。恢复和「变成生效」一样过字数检查（§ 23.4，超出 → `over_budget`，`data.field = "stale"`），成功后「最近一次变成生效的时间」是现在，60 天从头算。`stale: true` 不能由客户端设（`invalid`，`data.field = "stale"`）。规则停用、否决、改回待确认时 `stale` 清掉；之后再启用就是一条新的生效规则，从启用那刻算起。
+- **「以后都这样」**：回答**分身的问题**（清单项「经过」里就地回答、「待处理」里的分身提问）和 **agent 的提问**（会话权限卡片里 `kind = question` 的回答）时，答复按钮旁边的勾选。勾上并且答复**成功之后**，打开「记成规则」的同一个编辑框，由人改成自己的话再存（§ 23.6），不提供一键生成：预填原样不能保存，答复失败不打开，不勾和以前一样。勾选不改答复的内容，也不碰答复按钮的锁（600 ms）和 `⌘⇧A` / `⌘⇧D`。节点不支持规则时不出现。出处记法见 § 23.6：agent 的提问 `{ kind: answer, session_id, request_id }`，分身的问题 `{ kind: answer, request_id: <问题 id> }`（没有会话）。

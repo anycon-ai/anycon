@@ -7,6 +7,8 @@ import type { NodeInfo } from '@/protocol'
 import { ARM_DELAY_MS } from '@/features/inbox/arming'
 import { useInflight } from '@/features/session/inflight'
 import { cancelRuleRefreshes, resetRulesMemory } from '@/features/rules/service'
+import { useFollowUp } from '@/features/rules/followUp'
+import { FollowUpRuleHost } from '@/features/rules/ui/AlwaysDoThis'
 import { nodeEntry, summary } from '@/test/factories'
 import { FakeRpc } from '@/test/fakeRpc'
 import { FakeRulesDaemon } from '@/test/fakeRulesDaemon'
@@ -98,5 +100,60 @@ describe('Record as a rule in the Inbox', () => {
     expect(h.respond).not.toHaveBeenCalled()
     expect(useSessions.getState().pending.r1).toBeDefined()
     expect(screen.getByTestId('permission-card')).toHaveAttribute('data-state', 'pending')
+  })
+})
+
+describe('Always do this in the Inbox', () => {
+  const askQuestion = (): void => {
+    const q = {
+      ...req('r1'),
+      kind: 'question',
+      title: 'Which package manager?',
+      detail: { questions: [{ id: 'pm', text: 'Which package manager should I use?', choices: [{ id: 'pnpm', label: 'pnpm' }, { id: 'npm', label: 'npm' }] }] },
+      options: [{ id: 'submit', label: 'Submit answers', kind: 'allow_once' }],
+    } as unknown as PendingPermission
+    useSessions.setState({ pending: { r1: q } })
+    useFollowUp.getState().close()
+  }
+
+  it('ticking it while the answer buttons are locked does not unlock them, and ⌘⇧A / ⌘⇧D still answer nothing for a question', async () => {
+    askQuestion()
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ top: 10, bottom: 60, left: 0, right: 10, width: 10, height: 50, x: 0, y: 10, toJSON: () => ({}) })
+    render(<InboxPage />)
+    await user.click(screen.getByLabelText('pnpm'))
+    await user.click(screen.getByTestId('always-do-this-box'))
+    expect(screen.getByTestId('permission-option-submit')).toBeDisabled()
+    await user.click(screen.getByTestId('permission-option-submit'))
+    for (const key of ['A', 'D']) act(() => void document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, metaKey: true, shiftKey: true, key })))
+    expect(h.respond).not.toHaveBeenCalled()
+    arm()
+    expect(screen.getByTestId('permission-option-submit')).toBeEnabled()
+    for (const key of ['A', 'D']) act(() => void document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, metaKey: true, shiftKey: true, key })))
+    expect(h.respond).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('rule-editor')).toBeNull()
+  })
+
+  it('after the unlock, a ticked answer sends the same request and then opens the editor, even though the request leaves the list', async () => {
+    askQuestion()
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    render(
+      <>
+        <InboxPage />
+        <FollowUpRuleHost />
+      </>,
+    )
+    arm()
+    await user.click(screen.getByLabelText('pnpm'))
+    await user.click(screen.getByTestId('always-do-this-box'))
+    await user.click(screen.getByTestId('permission-option-submit'))
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20))
+    })
+    expect(h.respond).toHaveBeenCalledTimes(1)
+    expect(h.respond.mock.calls[0]![1]).toEqual({ request_id: 'r1', answers: { pm: 'pnpm' }, option_id: 'submit' })
+    expect(screen.getByTestId('rule-editor')).toBeInTheDocument()
+    expect(screen.getByTestId('rule-editor-text')).toHaveValue('When asked “Which package manager should I use?”, my answer is: pnpm.')
+    expect(screen.getByTestId('rule-editor-save')).toBeDisabled()
   })
 })

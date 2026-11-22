@@ -135,12 +135,13 @@ if (acceptsAttachment(agent, doc.mime)) {                    // agent：node.age
 ```ts
 const todo = await node.todos.add({ title: '看发布说明', project: 'app' }) // id（小写带连字符的 UUID）缺省由 SDK 生成，自己传的 id 也必须是这个写法
 const { todos, has_more } = await node.todos.list() // 没关闭的项，最近修改的在前；{ include_closed?, project?, limit?, before? }
-await node.todos.update({ id: todo.id, state: 'done' }) // 只改传了的字段；`clear: ['project', 'due_ms']` 清空可选字段
+await node.todos.update({ id: todo.id, state: 'done' }) // 只改传了的字段；`clear: ['project', 'due_ms', 'repeat']` 清空可选字段
 await node.todos.delete(todo.id)
 node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)) // 所有客户端都会收到，包括发起的这一个
 ```
 
 - `add` 按 `id` 幂等：超时后用同一个 `id` 重试，节点返回已有的那一项，不会出现第二项。`source` 和 `unreviewed` 由节点填；替 agent 调用时传 `agent: true`（这一项会标成 agent 加的、在有人收下之前是「未收下」，节点上这类项最多 100 个）。
+- `repeat: { kind: 'daily' | 'weekdays' | 'weekly', at: 'HH:MM', weekday?: 1-7 }`（周一 = 1，按节点的本地时间）让一项成为周期模板，节点到点复制一项新的（docs/spec/daemon.md § 26.9；先看 `capabilities.todo_repeat`）。只由人设置：自报 `mcp` 的连接或带 `agent: true` 的写入得到 `forbidden`。返回里的 `repeat.next_ms` 由节点算出。
 - `list` 按 `(updated_ms, id)` 翻页：`has_more` 为 true 时，把最后一项的 `{ updated_ms, id }` 作为 `before` 取下一页。一页可能少于 `limit`（每页 1 MiB 的字节预算）。翻页期间被改过的项可能出现两次（按 `id` 去重）或被跳过（`todo_changed` 会补上）。
 - 错误：`invalid`（`field` 是出问题的参数；清单满了时 `reason` 是 `too_many` / `too_many_unreviewed`）和 `not_found`，都是 `RpcError`。
 
@@ -165,6 +166,8 @@ await node.todos.update({ id: todo.id, handler: 'me' })
 
 `set` 合并字段；`clear` 清空 agent / model / mode，恢复节点缺省。`dryRun()` 默认等待最多 16 分钟，覆盖最长 15 分钟的判断后端调用；可以传标准 `RequestOptions`（`timeoutMs` / `signal`）覆盖。试跑会消耗一次判断调用并留记录，不执行计划；`run.decisions` 原样保留可选的 `note` / `question` / `options`（给 agent 的补充说明、问题和选项），这些模型文字只按纯文字展示；`wake()` 返回 `void`，实际唤醒仍受合并、暂停和预算约束。`runs` / `questions` 保留协议形状，缺省参数 `{}`，`before_ms` 翻运行记录页。`twin_changed` 收到 `{ state, run? }`，`twin_question` 收到 `{ question }`，包含回答和作废；先订阅再发起操作。`todos.add` / `update` 接受 `handler: me | twin`；界面应先让人读过并收下 agent 项（`update({ id, reviewed: true })`），再提供移交操作（`update({ id, handler: 'twin' })`）。daemon 也接受明确请求的原子收下并移交，SDK 不自动收下。
 
+分身的运行可以由 `pr` 触发（分身派出的会话的 PR 有了变化），清单项的「经过」里会出现 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`；类型跟着协议走，客户端要容忍不认识的值。`pr_event` 不含评审正文。
+
 ## 规则（ADR-54）
 
 每个节点有一份你的规则，一两句话的做法，比如「先写失败的测试再改实现」。生效的规则会写进清单派发出去的会话的系统提示（见 [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)）。规则不改任何权限。`node.rules` 是 `rule.*` 的薄封装；节点是否支持看 `(await node.info()).capabilities.rules`，旧节点回 `RpcError('unsupported')`。SDK 不做离线缓存，也不重放。
@@ -177,6 +180,8 @@ const { text, rule_ids, bytes } = await node.rules.preview({ project: 'app' }) /
 await node.rules.delete(rule.id, { ifUpdatedMs: rule.updated_ms })
 node.on('rule_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.rule)) // 所有客户端都会收到，包括发起的这一个
 ```
+
+生效的规则 60 天没被注入也没被引用，daemon 会标成 `stale: true`：过期的不注入、不占 4096 字节的字数预算，状态仍是 `active`。只有人能恢复：`update({ id, stale: false })`（和变成生效一样检查字数，放不下是 `over_budget`）；`stale: true` 会被拒（`invalid`，`field` 为 `stale`）。
 
 提炼要求 `capabilities.rule_extract`，并配置 `node.info.judge.extract`。`node.rules.extract(sessionId)` 返回 `{ run?, points }`：0 个决策点时不调用后端、没有 run；否则按返回的 `run.id` 匹配 `rule_extract_done` 的 `{ run }`（先订阅再调用，快的后端可能在响应之前结束）。事件发给所有在线客户端，提炼出的规则都待确认。`node.rules.extractRuns({ sessionId?, limit? })` 返回 `{ runs, usedToday, dailyCalls }`，最新的在前，默认 20 次、最多 100 次；每条 run 的字段保持协议命名。请求被拒是 `RpcError`，code 为 `invalid`，reason 为 `budget`、`busy` 或 `not_configured`。断线不取消节点上的提炼，重连后可以读记录。
 

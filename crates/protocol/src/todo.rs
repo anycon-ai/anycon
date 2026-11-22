@@ -1,6 +1,7 @@
 //! 清单（`todo.*`，docs/spec/daemon.md § 21）：节点上的个人待办。
 //!
 //! `Todo` 的 `source` 和 `unreviewed` 由 daemon 填，调用方不能指定；`todo.add` 的 `agent` 只是调用方自报「这是 agent 加的」。
+//! 周期项（`Todo.repeat`）的规则见 docs/spec/daemon.md § 26.9。
 
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +76,8 @@ pub enum TodoSourceKind {
     Agent,
     /// 分身做的动作。
     Twin,
+    /// 周期项（`Todo.repeat`）到点复制出来的一项；`TodoSource.todo_id` 是模板的 id。
+    Repeat,
     /// 这个版本不认识的来源（更新的 daemon 加了新的种类）。**daemon 自己从不产生它**，只是让旧客户端解析更新的 daemon 发来的数据时
     /// 不报错：客户端把它当作「不是某个人记的」（docs/spec/daemon.md § 21.2）。daemon 内部对已知来源逐个处理。
     #[serde(other)]
@@ -90,6 +93,49 @@ pub struct TodoSource {
     /// 这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
+    /// `kind = repeat` 时是复制出这一项的周期项（模板）的 id；模板被删后原样留着。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_id: Option<String>,
+}
+
+/// 周期项的重复方式（`TodoRepeat.kind`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoRepeatKind {
+    /// 每天。
+    Daily,
+    /// 周一到周五。
+    Weekdays,
+    /// 每周的 `weekday`。
+    Weekly,
+    /// 这个版本不认识的重复方式；daemon 自己不产生它，客户端按「重复规则看不懂」显示，不能因此解析失败。
+    #[serde(other)]
+    Unknown,
+}
+
+impl TodoRepeatKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekdays => "weekdays",
+            Self::Weekly => "weekly",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// 周期项的规则：按节点的本地时区，每次到点复制出一项新的（docs/spec/daemon.md § 26.9）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoRepeat {
+    pub kind: TodoRepeatKind,
+    /// `HH:MM`，`00:00`–`23:59`，本地时间。
+    pub at: String,
+    /// 1–7，周一 = 1（ISO）；`kind = weekly` 时必填，别的种类不能带。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekday: Option<u8>,
+    /// 下一次复制的时间（节点此刻算出来的，不存；请求里带了也忽略）。模板已关闭时没有。算在 daemon 上，是因为规则按节点的时区。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_ms: Option<TimestampMs>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -124,6 +170,9 @@ pub struct Todo {
     /// `updated_ms`、不进审计。已关闭（`done` / `dropped`）或者没有派发过的项没有这个字段。`state` 只由人设置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<TodoActivity>,
+    /// 周期规则。带它的项是模板：不进分拣、不能派发，到点由 daemon 复制出新的一项（`source.kind = repeat`）；只由人设置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<TodoRepeat>,
 }
 
 /// 清单项派出的会话现在的情况（算出来的，不存；`Todo.activity`）。
@@ -189,6 +238,9 @@ pub struct TodoAddParams {
     /// 这一项从哪个会话里来；daemon 只在这一项记成 `kind = agent`、且这个会话存在时才记。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_session: Option<SessionId>,
+    /// 周期规则（只由人设置：自报 `mcp` 的连接或 `agent: true` → `forbidden`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<TodoRepeat>,
 }
 
 /// `todo.update` 的 `clear` 可以清空的可选字段。
@@ -197,6 +249,7 @@ pub struct TodoAddParams {
 pub enum ClearableTodoField {
     Project,
     DueMs,
+    Repeat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -220,6 +273,9 @@ pub struct TodoUpdateParams {
     /// 调用方自报是 agent；不能把处理人设成分身，也不算人收下了这一项。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
+    /// 设置或替换周期规则（规则变了就从现在起重新算下一次）；清掉用 `clear: ["repeat"]`。同 `todo.add`，只由人设置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<TodoRepeat>,
     /// 要清空的可选字段，在合并之后生效。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clear: Vec<ClearableTodoField>,
@@ -398,6 +454,39 @@ pub enum TodoEventData {
         to: TodoHandler,
         by: TodoActor,
     },
+    /// 周期项（模板）到点复制出了一项；`at_ms` 是这一次规则上的时间。
+    RepeatCreated {
+        todo_id: String,
+        at_ms: TimestampMs,
+    },
+    /// 周期项到点了，但上一次复制出来的还没关闭（或清单已满），这一次没复制。
+    RepeatSkipped {
+        at_ms: TimestampMs,
+    },
+    /// 分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。
+    /// 不含评审或评论的正文，只有变化的种类和 PR 地址。
+    PrEvent {
+        session_id: SessionId,
+        event: PrEventKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+/// [`TodoEventData::PrEvent`] 的种类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PrEventKind {
+    /// 检查从非失败变成失败。
+    ChecksFailed,
+    Merged,
+    /// 关闭但没有合并。
+    Closed,
+    /// 评审意见的条数增加，或最新一条的时间变新。
+    Reviewed,
+    /// 这个版本不认识的种类；daemon 自己不产生它。
     #[serde(other)]
     Unknown,
 }
@@ -433,13 +522,19 @@ mod tests {
             state: TodoState::Waiting,
             handler: Default::default(),
             due_ms: None,
-            source: TodoSource { kind: TodoSourceKind::Agent, device_id: None, session_id: Some("sess_1".into()) },
+            source: TodoSource {
+                kind: TodoSourceKind::Agent,
+                device_id: None,
+                session_id: Some("sess_1".into()),
+                todo_id: None,
+            },
             unreviewed: true,
             created_ms: 1,
             updated_ms: 2,
             closed_ms: None,
             sessions: vec![],
             activity: None,
+            repeat: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["state"], "waiting");
@@ -586,10 +681,21 @@ mod twin_tests {
             json!({"kind":"twin_decision", "run_id":"r", "action":"wait", "reason":"Running"}),
             json!({"kind":"twin_question", "question_id":"q"}),
             json!({"kind":"handler", "from":"me", "to":"twin", "by":{"kind":"twin", "id":"local"}}),
+            json!({"kind":"pr_event", "session_id":"s", "event":"checks_failed"}),
+            json!({"kind":"pr_event", "session_id":"s", "event":"reviewed", "url":"https://github.com/o/r/pull/1"}),
         ] {
             let event: TodoEventData = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(event).unwrap(), value);
         }
+    }
+
+    #[test]
+    fn unknown_pr_event_kinds_and_triggers_do_not_fail_parsing() {
+        let e: TodoEventData =
+            serde_json::from_value(json!({"kind":"pr_event", "session_id":"s", "event":"future"})).unwrap();
+        assert_eq!(e, TodoEventData::PrEvent { session_id: "s".into(), event: PrEventKind::Unknown, url: None });
+        assert_eq!(serde_json::from_value::<crate::TwinTrigger>(json!("pr")).unwrap(), crate::TwinTrigger::Pr);
+        assert_eq!(serde_json::from_value::<crate::TwinTrigger>(json!("future")).unwrap(), crate::TwinTrigger::Unknown);
     }
 
     #[test]
@@ -598,5 +704,42 @@ mod twin_tests {
         assert!(!m.unattended);
         let j: crate::JudgeInfo = serde_json::from_value(json!({"backends":[],"daily_calls":20})).unwrap();
         assert!(j.advisor.is_none());
+    }
+}
+
+#[cfg(test)]
+mod repeat_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn repeat_roundtrips_and_future_kinds_and_events_are_safe() {
+        let r = TodoRepeat { kind: TodoRepeatKind::Weekly, at: "09:30".into(), weekday: Some(1), next_ms: None };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v, json!({"kind":"weekly","at":"09:30","weekday":1}));
+        assert_eq!(serde_json::from_value::<TodoRepeat>(v).unwrap(), r);
+        let daily = serde_json::to_value(TodoRepeat {
+            kind: TodoRepeatKind::Daily,
+            at: "00:00".into(),
+            weekday: None,
+            next_ms: None,
+        });
+        assert!(daily.unwrap().get("weekday").is_none());
+        let future: TodoRepeat = serde_json::from_value(json!({"kind":"monthly","at":"09:00"})).unwrap();
+        assert_eq!(future.kind, TodoRepeatKind::Unknown);
+    }
+
+    #[test]
+    fn repeat_source_and_events_keep_their_wire_shape() {
+        let src: TodoSource = serde_json::from_value(json!({"kind":"repeat","todo_id":"t"})).unwrap();
+        assert_eq!((src.kind, src.todo_id.as_deref()), (TodoSourceKind::Repeat, Some("t")));
+        for value in
+            [json!({"kind":"repeat_created","todo_id":"n","at_ms":5}), json!({"kind":"repeat_skipped","at_ms":5})]
+        {
+            let event: TodoEventData = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(event).unwrap(), value);
+        }
+        let p: TodoUpdateParams = serde_json::from_value(json!({"id":"x","clear":["repeat"]})).unwrap();
+        assert_eq!(p.clear, vec![ClearableTodoField::Repeat]);
     }
 }

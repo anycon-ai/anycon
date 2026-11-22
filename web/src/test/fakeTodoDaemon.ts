@@ -69,7 +69,7 @@ export class FakeTodoDaemon {
     const have = this.todos.get(p.id)
     if (have) return have
     if ([...this.todos.values()].filter((t) => t.state !== 'done' && t.state !== 'dropped').length >= this.openLimit) throw rpcError('invalid', 'todos', 'too_many')
-    const t: Todo = { ...(p.handler ? { handler: p.handler } : {}), id: p.id, title: p.title, body: p.body ?? '', ...(p.project ? { project: p.project } : {}), ...(p.due_ms != null ? { due_ms: p.due_ms } : {}), state: 'open', source: { kind: p.agent ? 'agent' : 'device', device_id: 'dev' }, unreviewed: !!p.agent, created_ms: ++this.now, updated_ms: this.now }
+    const t: Todo = { ...(p.handler ? { handler: p.handler } : {}), id: p.id, title: p.title, body: p.body ?? '', ...(p.project ? { project: p.project } : {}), ...(p.due_ms != null ? { due_ms: p.due_ms } : {}), ...(p.repeat ? { repeat: p.repeat } : {}), state: 'open', source: { kind: p.agent ? 'agent' : 'device', device_id: 'dev' }, unreviewed: !!p.agent, created_ms: ++this.now, updated_ms: this.now }
     this.todos.set(t.id, t)
     this.onChange?.(t.id, t)
     return t
@@ -87,6 +87,10 @@ export class FakeTodoDaemon {
     if (p.body != null) next.body = p.body
     if (p.project != null) next.project = p.project
     if (p.due_ms != null) next.due_ms = p.due_ms
+    if (p.repeat) {
+      if (next.handler === 'twin') throw rpcError('invalid', 'handler', 'repeat_template')
+      next.repeat = p.repeat
+    }
     for (const k of p.clear ?? []) delete next[k]
     if (p.state) {
       next.state = p.state

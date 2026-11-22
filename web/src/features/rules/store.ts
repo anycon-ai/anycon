@@ -121,7 +121,10 @@ export function useRuleView(nodeIds: readonly string[]): ViewRule[] {
 /** 一条规则的状态：不认识的值（更新的 daemon）按「不生效」处理，单独成一类，不当成任何已知状态。 */
 export type KnownStatus = Exclude<RuleStatus, 'unknown'> | 'unknown'
 export const statusOf = (r: Pick<Rule, 'status'>): KnownStatus => (r.status === 'pending' || r.status === 'active' || r.status === 'disabled' || r.status === 'rejected' ? r.status : 'unknown')
-export const isActiveRule = (r: Pick<Rule, 'status'>): boolean => r.status === 'active'
+/** 生效的规则：`active` 且没过期（过期的不交给 agent、不占字数预算）。 */
+export const isActiveRule = (r: Pick<Rule, 'status' | 'stale'>): boolean => r.status === 'active' && r.stale !== true
+/** 过期的规则：状态还是 `active`，但 60 天没被用到，daemon 不再注入它（docs/spec/daemon.md § 26.10）。 */
+export const isStaleRule = (r: Pick<Rule, 'status' | 'stale'>): boolean => r.status === 'active' && r.stale === true
 export const isPendingRule = (r: Pick<Rule, 'status'>): boolean => r.status === 'pending'
 
 /** 来源：不认识的种类按「不是人写的」处理。 */

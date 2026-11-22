@@ -523,6 +523,16 @@ impl Sessions {
     /// `gh pr view … -- <branch>`：`Ok(PR)` 或 `pr_error` 的取值。分支名以 `-` 开头直接 `error`（不让它变成 `gh` 的选项），
     /// 参数里 `--` 之后才是分支名。
     async fn pr_lookup(&self, cwd: &Path, branch: &str) -> Result<PullRequestInfo, &'static str> {
+        self.pr_fetch(cwd, branch, false).await.map(|(pr, _)| pr)
+    }
+
+    /// 同 [`Self::pr_lookup`]；`with_reviews` 时多取评审意见的条数和最新时间（只取计数和时间，不要正文字段）。
+    async fn pr_fetch(
+        &self,
+        cwd: &Path,
+        branch: &str,
+        with_reviews: bool,
+    ) -> Result<(PullRequestInfo, gitops::PrReviews), &'static str> {
         if branch.is_empty() || branch.starts_with('-') {
             return Err("error");
         }
@@ -532,15 +542,24 @@ impl Sessions {
             Ok(_) => {}
             Err(_) => return Err("error"),
         }
-        let args =
-            ["pr", "view", "--json", "number,url,title,state,isDraft,baseRefName,statusCheckRollup", "--", branch];
+        let fields = if with_reviews {
+            "number,url,title,state,isDraft,baseRefName,statusCheckRollup,reviews,comments"
+        } else {
+            "number,url,title,state,isDraft,baseRefName,statusCheckRollup"
+        };
+        let args = ["pr", "view", "--json", fields, "--", branch];
         match git.gh(cwd, &args, std::time::Duration::from_secs(20)).await {
             Err(e) if e.is_not_found() => Err("gh_not_installed"),
             Err(_) => Err("error"),
-            Ok(o) if o.success() => gitops::parse_pr_json(&String::from_utf8_lossy(&o.stdout)).map_err(|e| {
-                tracing::debug!(error = %e, "cannot parse the gh output");
-                "error"
-            }),
+            Ok(o) if o.success() => {
+                let raw = String::from_utf8_lossy(&o.stdout);
+                let pr = gitops::parse_pr_json(&raw).map_err(|e| {
+                    tracing::debug!(error = %e, "cannot parse the gh output");
+                    "error"
+                })?;
+                let reviews = if with_reviews { gitops::parse_pr_reviews(&raw) } else { Default::default() };
+                Ok((pr, reviews))
+            }
             Ok(o) => Err(gitops::classify_gh_failure(&String::from_utf8_lossy(&o.stderr))),
         }
     }
@@ -1470,9 +1489,18 @@ impl Sessions {
 
     /// `worktree.auto_archive_on_pr_close`：挑没归档、没有 turn 在跑、有上游的 worktree 会话（每轮最多 20 个，最久没查的先查），
     /// `gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档。`gh` 不可用（没装 / 没登录）整轮跳过。返回归档了几个会话。
+    ///
+    /// 同一轮也轮询分身派出的、所属的项还交给分身处理的会话，不论开关（docs/spec/daemon.md § 26.9）：结果交给
+    /// [`crate::twin::pr_observed`] 去比较和记事件；开关没开时它们不会被归档。
     pub async fn auto_archive_round(self: &std::sync::Arc<Self>) -> usize {
         let cfg = self.d.config.get();
-        if !cfg.worktree.auto_archive_on_pr_close || !self.d.worktrees.available() {
+        let archive_on = cfg.worktree.auto_archive_on_pr_close;
+        let twin_ctx = self.twin_ctx.read().unwrap().upgrade();
+        let twin_targets = match &twin_ctx {
+            Some(c) => crate::twin::pr_targets(c).await,
+            None => Default::default(),
+        };
+        if (!archive_on && twin_targets.is_empty()) || !self.d.worktrees.available() {
             return 0;
         }
         let mut cands: Vec<(Option<Instant>, String, PathBuf, String)> = Vec::new();
@@ -1486,6 +1514,9 @@ impl Sessions {
                     | SessionStatus::WaitingPermission
             );
             if st.deleted || st.row.archived || st.turn.is_some() || busy || st.wt_busy.is_some() {
+                continue;
+            }
+            if !archive_on && !twin_targets.contains_key(&st.row.id) {
                 continue;
             }
             let (Some(wt), Some(project)) =
@@ -1508,8 +1539,14 @@ impl Sessions {
             if !self.d.worktrees.has_upstream(&cwd, &branch).await {
                 continue;
             }
-            match self.pr_lookup(&cwd, &branch).await {
-                Ok(pr) if matches!(pr.state, PullRequestState::Merged | PullRequestState::Closed) => {
+            let twin_todo = twin_targets.get(&sid);
+            let looked = self.pr_fetch(&cwd, &branch, twin_todo.is_some()).await;
+            if let (Some(todo_id), Some(c), Ok((pr, reviews))) = (twin_todo, &twin_ctx, &looked) {
+                let snapshot = gitops::PrSnapshot::new(pr, reviews.clone());
+                crate::twin::pr_observed(c, &sid, todo_id, snapshot, &pr.url).await;
+            }
+            match looked.map(|(pr, _)| pr) {
+                Ok(pr) if archive_on && matches!(pr.state, PullRequestState::Merged | PullRequestState::Closed) => {
                     let p = SessionArchiveParams { session_id: sid.clone(), worktree: WorktreeDisposal::Auto };
                     match self.archive_by_daemon(p).await {
                         Ok(()) => archived += 1,

@@ -269,6 +269,12 @@ fn main() {
             })),
         ),
         rpc(
+            "rule_update_restore",
+            RpcMessage::request(903u64, methods::RULE_UPDATE, json!({
+                "id": "11111111-2222-4333-8444-555555555555", "stale": false, "if_updated_ms": 1700000000000u64
+            })),
+        ),
+        rpc(
             "rule_extract",
             RpcMessage::request(
                 20u64,
@@ -350,7 +356,7 @@ fn main() {
         requester: "local".into(),
         started_ms: 1,
         finished_ms: Some(2),
-        triggers: vec![TwinTrigger::Todo, TwinTrigger::Manual],
+        triggers: vec![TwinTrigger::Todo, TwinTrigger::Manual, TwinTrigger::Pr],
         dry_run: true,
         result: TwinRunResult::Done,
         items: vec!["t".into()],
@@ -440,6 +446,41 @@ fn main() {
                         from: TodoHandler::Me,
                         to: TodoHandler::Twin,
                         by: TodoActor { kind: TodoSourceKind::Twin, id: Some("local".into()), device_id: None },
+                    },
+                },
+            })
+            .unwrap(),
+        ),
+    ));
+    for (name, data) in [
+        ("todo_repeat_created", TodoEventData::RepeatCreated { todo_id: "n".into(), at_ms: 3 }),
+        ("todo_repeat_skipped", TodoEventData::RepeatSkipped { at_ms: 3 }),
+    ] {
+        v.push(rpc(
+            name,
+            RpcMessage::notification(
+                methods::TODO_EVENT,
+                serde_json::to_value(TodoEventNotice {
+                    todo_id: "t".into(),
+                    event: TodoEvent { seq: 2, ts_ms: 4, data },
+                })
+                .unwrap(),
+            ),
+        ));
+    }
+    v.push(rpc(
+        "todo_pr_event",
+        RpcMessage::notification(
+            methods::TODO_EVENT,
+            serde_json::to_value(TodoEventNotice {
+                todo_id: "t".into(),
+                event: TodoEvent {
+                    seq: 2,
+                    ts_ms: 3,
+                    data: TodoEventData::PrEvent {
+                        session_id: "s".into(),
+                        event: PrEventKind::Reviewed,
+                        url: Some("https://github.com/o/r/pull/1".into()),
                     },
                 },
             })

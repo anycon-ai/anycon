@@ -11,16 +11,24 @@ import { useSessions } from '@/stores/sessions'
 import { Chip, type Tone } from '@/ui/Misc'
 import { useMinute } from '@/features/inbox/ui/info'
 import { groupPeers, openRuleAlignment, useRuleSync } from '../groupSync'
-import { sourceOf, statusOf, type ViewRule } from '../store'
+import { isStaleRule, sourceOf, statusOf, type ViewRule } from '../store'
 
 export { RuleText } from './RuleText'
 
 const STATUS_TONE: Record<ReturnType<typeof statusOf>, Tone> = { pending: 'warning', active: 'success', disabled: 'neutral', rejected: 'neutral', unknown: 'neutral' }
 
 /** 状态：每种都带文字。不认识的状态（更新的 daemon）按「不生效」显示。 */
-export function RuleStatusChip({ rule }: { rule: Pick<ViewRule, 'status'> }) {
+export function RuleStatusChip({ rule }: { rule: Pick<ViewRule, 'status' | 'stale'> }) {
   const { t } = useTranslation()
   const s = statusOf(rule)
+  // 过期的规则还是 `active`，但不再交给 agent：标签写「过期」，不写「生效」
+  if (isStaleRule(rule)) {
+    return (
+      <Chip tone="warning" testId="rule-status" dataState="stale">
+        {t('rules.status.stale')}
+      </Chip>
+    )
+  }
   return (
     <Chip tone={STATUS_TONE[s]} testId="rule-status" dataState={s}>
       {t(`rules.status.${s}`)}

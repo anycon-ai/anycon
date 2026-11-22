@@ -17,6 +17,7 @@ import { useRunningMoveGuard } from '@/features/todos/move'
 import { CaptureHost } from './CaptureHost'
 import { ManageSpacesDialog } from './ManageSpacesDialog'
 import { HomeNotice } from './HomeNotice'
+import { FollowUpRuleHost } from '@/features/rules/ui/AlwaysDoThis'
 import { InboxAnnouncer } from './InboxAnnouncer'
 import { CommandPalette } from './CommandPalette'
 import { NewProjectHost } from './NewProjectHost'
@@ -141,6 +142,7 @@ export function AppShell() {
       <InboxAnnouncer />
       <HomeNotice deferred={deepLink} />
       <NewProjectHost />
+      <FollowUpRuleHost />
       <ManageSpacesDialog />
       {/* 别的设备请求接入时的批准对话框、应用内扫码（ADR-36）：任何页面都能打开 */}
       <EnrollApprovalDialog />

@@ -162,6 +162,8 @@ export interface RuleEdit {
   project?: string | null
   status?: 'pending' | 'active' | 'disabled' | 'rejected'
   sync?: 'node' | 'group'
+  /** 只能给 `false`：恢复过期的规则（和变成生效一样过字数检查）。 */
+  stale?: false
 }
 
 /** 修改。`ifUpdatedMs` 是用户看到这条规则时的版本：别的设备改过它就不动，返回 `changed` 和现在的样子。 */
@@ -173,6 +175,7 @@ export async function updateRule(nodeId: string, id: string, edit: RuleEdit, ifU
     ...(edit.project === null ? { clear: ['project'] } : {}),
     ...(edit.status ? { status: edit.status } : {}),
     ...(edit.sync ? { sync: edit.sync } : {}),
+    ...(edit.stale === false ? { stale: false } : {}),
     if_updated_ms: ifUpdatedMs,
   }
   const res = await send(nodeId, id, () => rpc().request<Rule>(nodeId, 'rule.update', params))

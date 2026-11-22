@@ -17,6 +17,7 @@ const NEW_TODO = (nodeId: string, id: string, p: AddParams, at: number): ViewTod
   ...(p.project ? { project: p.project } : {}),
   ...(p.due_ms != null ? { due_ms: p.due_ms } : {}),
   ...(p.handler ? { handler: p.handler } : {}),
+  ...(p.repeat ? { repeat: p.repeat } : {}),
   state: 'open',
   source: { kind: 'device' },
   unreviewed: false,
@@ -32,6 +33,7 @@ function applyUpdate(t: ViewTodo, f: UpdateFields, at: number): ViewTodo {
   if (f.body !== undefined) out.body = f.body
   if (f.project !== undefined && f.project !== null) out.project = f.project
   if (f.due_ms !== undefined && f.due_ms !== null) out.due_ms = f.due_ms
+  if (f.repeat !== undefined) out.repeat = f.repeat
   for (const k of f.clear ?? []) delete out[k]
   if (f.state !== undefined) {
     out.state = f.state
@@ -42,7 +44,7 @@ function applyUpdate(t: ViewTodo, f: UpdateFields, at: number): ViewTodo {
     } else delete out.closed_ms
   }
   // 人改了它（任何字段）就不再是「待收下」（和 daemon 的规则一样）
-  if (f.reviewed || f.title !== undefined || f.body !== undefined || f.project !== undefined || f.due_ms !== undefined || f.state !== undefined || (f.clear?.length ?? 0) > 0) out.unreviewed = false
+  if (f.reviewed || f.title !== undefined || f.body !== undefined || f.project !== undefined || f.due_ms !== undefined || f.repeat !== undefined || f.state !== undefined || (f.clear?.length ?? 0) > 0) out.unreviewed = false
   out.updated_ms = Math.max(t.updated_ms, at)
   return out
 }

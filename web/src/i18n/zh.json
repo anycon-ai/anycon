@@ -362,7 +362,10 @@
       "earlier": "更早的",
       "failed": "没能读到经过。",
       "sessions": "这一项的会话",
-      "sessionN": "会话 {{n}}"
+      "sessionN": "会话 {{n}}",
+      "repeatCreated": "周期：为 {{time}} 复制了一项",
+      "openCopy": "打开这一项",
+      "repeatSkipped": "周期：{{time}} 没有复制，上一次的还没关闭"
     },
     "reviewPage": {
       "page": "验收",
@@ -479,7 +482,8 @@
       "review": "待验收",
       "working": "处理中",
       "open": "还没开始",
-      "closed": "已关闭"
+      "closed": "已关闭",
+      "repeat": "周期项"
     },
     "states": {
       "open": "还没开始",
@@ -552,6 +556,39 @@
       "full": "清单已满，没能重新打开这一项，它仍是关闭的。",
       "fullKept": "清单已满，没能重新打开这一项，它仍是关闭的；对它的其他改动已保留。"
     },
+    "repeat": {
+      "label": "重复",
+      "weekday": "星期几",
+      "at": "时间",
+      "choice": {
+        "none": "不重复",
+        "daily": "每天",
+        "weekdays": "工作日",
+        "weekly": "每周"
+      },
+      "day": {
+        "1": "周一",
+        "2": "周二",
+        "3": "周三",
+        "4": "周四",
+        "5": "周五",
+        "6": "周六",
+        "7": "周日"
+      },
+      "rule": {
+        "daily": "每天 {{at}}",
+        "weekdays": "工作日 {{at}}",
+        "weekly": "每{{day}} {{at}}",
+        "unknown": "这个版本看不懂的重复规则"
+      },
+      "next": "下一次 {{time}}",
+      "template": "周期项",
+      "from": "来自周期项",
+      "fromTitle": "来自周期项：{{title}}",
+      "templateGone": "这个周期项已经删除了。",
+      "note": "这一项是模板：节点到点会把它复制成一项新的待办，关闭它就不再复制。时间按节点的时钟算。",
+      "noteClosed": "这一项已经关闭，不再复制。重新打开才会继续。"
+    },
     "errors": {
       "title": {
         "empty": "标题不能为空。",
@@ -574,6 +611,11 @@
       "due_ms": {
         "invalid": "期望时间不合法。",
         "rejected": "节点没有接受这个期望时间。"
+      },
+      "repeat": {
+        "invalid": "重复的时间不合法（写成 时:分）。",
+        "rejected": "节点没有接受这个重复规则。",
+        "template": "周期项不能派发，派发它复制出来的那一项。"
       },
       "full": "清单已满（1000 项没关闭的）。先关闭或删除一些。",
       "fullUnreviewed": "agent 记的、等着收下的项太多了。",
@@ -1333,6 +1375,15 @@
     "pendingEmpty": "没有等你确认的规则。",
     "activeEmpty": "还没有生效的规则。新建一条，或者确认一条等着的规则。",
     "inactive": "已停用和已否决（{{count}}）",
+    "stale": {
+      "title": "已过期（{{count}}）",
+      "note": "60 天里没有被用到，不再交给 agent，也不占字数上限。恢复或删除之前它们一直留在这里。"
+    },
+    "always": {
+      "label": "以后都这样",
+      "hint": "答复之后，把这次的做法写成一条规则。你改完并保存之前不会存下任何东西。",
+      "title": "以后都这样"
+    },
     "offline": "连不上 {{nodes}}。显示的是它上次报告的规则；要改动规则，节点得在线。",
     "unsupported": {
       "title": "这里没有节点支持规则",
@@ -1343,6 +1394,7 @@
       "active": "已生效",
       "disabled": "已停用",
       "rejected": "已否决",
+      "stale": "已过期",
       "unknown": "未生效"
     },
     "scope": {
@@ -1368,6 +1420,7 @@
       "disable": "停用",
       "enable": "启用",
       "restore": "启用",
+      "restoreStale": "恢复",
       "delete": "删除"
     },
     "bulk": {
@@ -2732,10 +2785,20 @@
     "questionLoading": "正在加载分身的问题…",
     "give": "交给分身",
     "me": "我自己做",
+    "giveEach": "每次交给分身",
+    "meEach": "每次我自己做",
     "openRun": "查看这次运行",
     "decision": "分身的决定：{{action}}",
     "handedBack": "分身交回给你",
     "takenOver": "你接手了",
+    "prEvent": {
+      "checks_failed": "PR 的检查失败了",
+      "merged": "PR 已合并",
+      "closed": "PR 被关闭了（没有合并）",
+      "reviewed": "PR 有了新的评审意见",
+      "unknown": "PR 有变化",
+      "open": "打开 PR"
+    },
     "handlerChanged": "处理人变化：{{from}} → {{to}}",
     "reviewReason": "分身的决定和理由",
     "state": {
@@ -2769,6 +2832,7 @@
       "answer": "你的回答",
       "tick": "定时查看",
       "manual": "手动唤醒",
+      "pr": "PR",
       "unknown": "未知原因"
     },
     "result": {

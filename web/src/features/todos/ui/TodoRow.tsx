@@ -7,6 +7,7 @@ import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/ui/Me
 import { cn } from '@/ui/cn'
 import { LONG_PRESS_MS, LONG_PRESS_SLOP, swipeOffset, swipeVerdict } from '../swipe'
 import { HandlerChip, LinkedStatus } from './ActivityBits'
+import { RepeatFromBadge, repeatSummary } from './RepeatBits'
 import { isAgentSource, isOtherSource } from '../source'
 import { isClosed, type ViewTodo } from '../types'
 import { cleanOneLine } from '../validate'
@@ -83,7 +84,9 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
     setDx(0)
   }
 
-  const meta = [item.project, nodeName, item.due_ms ? t('todos.dueAt', { time: formatDateTime(item.due_ms, i18n.language) }) : undefined].filter(Boolean).join(' · ')
+  // 周期项（模板）这一行写规则和下一次的时间；已关闭的模板只写规则
+  const repeatLine = item.repeat ? (closed ? repeatSummary(t, i18n.language, { ...item.repeat, next_ms: null }) : repeatSummary(t, i18n.language, item.repeat)) : undefined
+  const meta = [item.project, nodeName, repeatLine, item.due_ms ? t('todos.dueAt', { time: formatDateTime(item.due_ms, i18n.language) }) : undefined].filter(Boolean).join(' · ')
   return (
     <li className="relative select-none overflow-hidden rounded-lg border border-border bg-surface" data-testid="todo-row" data-id={item.id} data-state={item.state} data-selected={selected ? 'true' : undefined}>
       <div className="flex items-stretch" style={{ transform: dx ? `translateX(${dx}px)` : undefined, touchAction: 'pan-y' }} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={cancel} onContextMenu={(e) => { if ((e.nativeEvent as unknown as { pointerType?: string }).pointerType === 'touch') e.preventDefault() }}>
@@ -115,6 +118,7 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
           </span>
           <LinkedStatus item={item} />
           <HandlerChip item={item} />
+          <RepeatFromBadge item={item} />
           {agent ? (
             <Chip tone="info" icon={<Bot className="size-3" aria-hidden />} testId="todo-agent">
               {t('todos.byAgent')}

@@ -16,7 +16,7 @@ export type ClearableRuleField = "project";
 /**
  * `todo.update` 的 `clear` 可以清空的可选字段。
  */
-export type ClearableTodoField = "project" | "due_ms";
+export type ClearableTodoField = "project" | "due_ms" | "repeat";
 export type DeviceKind = "daemon" | "web" | "cli" | "sdk";
 /**
  * 一项配置能不能被远程客户端改（ADR-43）。
@@ -704,9 +704,13 @@ export type TodoActivity = "working" | "waiting" | "review" | "unknown";
  */
 export type TodoHandler = "me" | "twin" | "unknown";
 /**
+ * 周期项的重复方式（`TodoRepeat.kind`）。
+ */
+export type TodoRepeatKind = "daily" | "weekdays" | "weekly" | "unknown";
+/**
  * 一项是谁记的。
  */
-export type TodoSourceKind = "device" | "local" | "agent" | "twin" | "unknown";
+export type TodoSourceKind = "device" | "local" | "agent" | "twin" | "repeat" | "unknown";
 /**
  * 清单项的状态。这一步 daemon 不限制状态之间怎么转。
  */
@@ -777,9 +781,28 @@ export type TodoEvent1 =
       to: TodoHandler;
     }
   | {
+      at_ms: number;
+      kind: "repeat_created";
+      todo_id: string;
+    }
+  | {
+      at_ms: number;
+      kind: "repeat_skipped";
+    }
+  | {
+      event: PrEventKind;
+      kind: "pr_event";
+      session_id: string;
+      url?: string | null;
+    }
+  | {
       kind: "unknown";
     };
 export type TwinAction = "dispatch" | "ask_user" | "ask_advisor" | "wait" | "hand_back" | "done" | "unknown";
+/**
+ * [`TodoEventData::PrEvent`] 的种类。
+ */
+export type PrEventKind = "merged" | "checks_failed" | "closed" | "reviewed" | "unknown";
 /**
  * 「经过」里的一条的内容；`kind` 是线路上的标签。
  */
@@ -839,12 +862,27 @@ export type TodoEventData =
       to: TodoHandler;
     }
   | {
+      at_ms: number;
+      kind: "repeat_created";
+      todo_id: string;
+    }
+  | {
+      at_ms: number;
+      kind: "repeat_skipped";
+    }
+  | {
+      event: PrEventKind;
+      kind: "pr_event";
+      session_id: string;
+      url?: string | null;
+    }
+  | {
       kind: "unknown";
     };
 export type TwinDecisionOutcome = "executed" | "skipped" | "unknown";
 export type TwinSkipReason = "invalid" | "out_of_scope" | "no_capacity" | "budget" | "unknown";
 export type TwinRunResult = "done" | "idle" | "budget" | "failed" | "cancelled" | "unknown";
-export type TwinTrigger = "todo" | "session" | "answer" | "tick" | "manual" | "unknown";
+export type TwinTrigger = ("todo" | "session" | "answer" | "tick" | "manual" | "unknown") | "pr";
 export type TwinState = "running" | "idle" | "paused" | "disabled" | "not_configured" | "budget" | "unknown";
 export type TwinQuestionStatus = "open" | "answered" | "void" | "unknown";
 export type ClearableTwinField = "agent" | "model" | "mode" | "unknown";
@@ -1996,6 +2034,10 @@ export interface NodeCapabilities {
    */
   todo?: boolean;
   /**
+   * 支持周期项（`Todo.repeat`，docs/spec/daemon.md § 26.9）。旧 daemon 没有这个字段，读作 false。
+   */
+  todo_repeat?: boolean;
+  /**
    * 支持分身的调度和 RPC。
    */
   twin?: boolean;
@@ -2565,10 +2607,19 @@ export interface Rule {
    */
   last_injected_ms?: number | null;
   /**
+   * 最近一次被分拣的决定引用、并且这个决定被执行；改它不动 `updated_ms`，也不发 `rule.changed`（§ 26.10）。
+   */
+  last_referenced_ms?: number | null;
+  /**
    * 只进这个项目的会话；缺省 = 这个节点上所有项目的会话。
    */
   project?: string | null;
   source: RuleSource;
+  /**
+   * 过期：生效的规则 60 天里没被注入也没被引用，daemon 标上它。过期的规则仍是 `active`，但不注入、不计字数预算；
+   * 只有人能用 `rule.update { stale: false }` 恢复（docs/spec/daemon.md § 23.2、§ 26.10）。缺省 `false`。
+   */
+  stale?: boolean;
   status: RuleStatus;
   sync: RuleSync;
   /**
@@ -2771,6 +2822,10 @@ export interface RuleUpdateParams {
    */
   if_updated_ms?: number | null;
   project?: string | null;
+  /**
+   * 只能给 `false`：恢复一条过期的规则（和「变成生效」一样过字数检查）。给 `true` → `invalid`（`data.field = "stale"`）。
+   */
+  stale?: boolean | null;
   status?: RuleStatus | null;
   /**
    * 同组范围仅接受全节点、非待确认的规则。
@@ -3221,6 +3276,10 @@ export interface Todo {
    */
   project?: string | null;
   /**
+   * 周期规则。带它的项是模板：不进分拣、不能派发，到点由 daemon 复制出新的一项（`source.kind = repeat`）；只由人设置。
+   */
+  repeat?: TodoRepeat | null;
+  /**
    * 这一项派出的会话（`todo.dispatch`，docs/spec/daemon.md § 22.3），按派发的先后，最多 20 个。会话被删除后关联留着。
    */
   sessions?: string[];
@@ -3236,6 +3295,24 @@ export interface Todo {
   unreviewed: boolean;
   updated_ms: number;
 }
+/**
+ * 周期项的规则：按节点的本地时区，每次到点复制出一项新的（docs/spec/daemon.md § 26.9）。
+ */
+export interface TodoRepeat {
+  /**
+   * `HH:MM`，`00:00`–`23:59`，本地时间。
+   */
+  at: string;
+  kind: TodoRepeatKind;
+  /**
+   * 下一次复制的时间（节点此刻算出来的，不存；请求里带了也忽略）。模板已关闭时没有。算在 daemon 上，是因为规则按节点的时区。
+   */
+  next_ms?: number | null;
+  /**
+   * 1–7，周一 = 1（ISO）；`kind = weekly` 时必填，别的种类不能带。
+   */
+  weekday?: number | null;
+}
 export interface TodoSource {
   /**
    * 经 hub 来的调用带上发起设备的 id。
@@ -3246,6 +3323,10 @@ export interface TodoSource {
    * 这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。
    */
   session_id?: string | null;
+  /**
+   * `kind = repeat` 时是复制出这一项的周期项（模板）的 id；模板被删后原样留着。
+   */
+  todo_id?: string | null;
 }
 /**
  * 谁做了这件事（审计里的「发起者」，不含会话内容）。
@@ -3275,6 +3356,10 @@ export interface TodoAddParams {
    */
   origin_session?: string | null;
   project?: string | null;
+  /**
+   * 周期规则（只由人设置：自报 `mcp` 的连接或 `agent: true` → `forbidden`）。
+   */
+  repeat?: TodoRepeat | null;
   title: string;
 }
 /**
@@ -3430,6 +3515,10 @@ export interface TodoUpdateParams {
   handler?: TodoHandler | null;
   id: string;
   project?: string | null;
+  /**
+   * 设置或替换周期规则（规则变了就从现在起重新算下一次）；清掉用 `clear: ["repeat"]`。同 `todo.add`，只由人设置。
+   */
+  repeat?: TodoRepeat | null;
   /**
    * `true`：把 `unreviewed` 清掉（`false` 或对已经收下的项会被忽略）。
    */

@@ -15,6 +15,8 @@ import { RuleText } from './RuleText'
 export interface RuleOps {
   /** `status` 之间的转换：确认（`pending` → `active`）、否决、停用、启用。成功返回 true。 */
   setStatus: (rule: ViewRule, status: 'active' | 'rejected' | 'disabled') => Promise<boolean>
+  /** 恢复一条过期的规则（`rule.update { stale: false }`，带着看到它时的版本）；`over_budget` 等原因 toast 说明。成功返回 true。 */
+  restore: (rule: ViewRule) => Promise<boolean>
   /** 打开编辑器；`confirm`：存的时候同时确认。 */
   edit: (rule: ViewRule, confirm: boolean) => void
   /** 打开新建（`nodeIds` 里选节点）。 */
@@ -58,6 +60,17 @@ export function useRuleOps({ onSaved, onRemoved, hold, release }: { onSaved?: (r
         mark(k, false)
         if (!res.ok) {
           release?.(rule)
+          toast.error(failText(t, res.fail))
+          return false
+        }
+        return true
+      },
+      restore: async (rule) => {
+        const k = ruleKey(rule)
+        mark(k, true)
+        const res = await updateRule(rule.node_id, rule.id, { stale: false }, rule.updated_ms)
+        mark(k, false)
+        if (!res.ok) {
           toast.error(failText(t, res.fail))
           return false
         }

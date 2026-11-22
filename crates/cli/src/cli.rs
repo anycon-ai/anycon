@@ -140,6 +140,8 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum TodoCmd {
+    /// Change an item's repeat rule (not available inside an anycon agent session)
+    Edit(TodoEditArgs),
     /// Choose who handles an item (not available inside an anycon agent session)
     Assign {
         /// To-do id (a prefix is enough)
@@ -230,6 +232,12 @@ pub enum RuleCmd {
         /// Rule id (a prefix is enough)
         id: String,
     },
+    /// Give a stale rule back to agents (a rule goes stale after 60 days without being used); prints its full text (not
+    /// available inside an anycon agent session)
+    Restore {
+        /// Rule id (a prefix is enough)
+        id: String,
+    },
     /// Remove a rule for good (not available inside an anycon agent session)
     Rm {
         /// Rule id (a prefix is enough)
@@ -307,6 +315,22 @@ pub struct TodoAddArgs {
     /// 2026-12-01T17:00+08:00
     #[arg(long, value_name = "TIME")]
     pub due: Option<String>,
+    /// Make this a repeating item: `daily@09:00`, `weekdays@09:00` or `weekly:mon@09:00` (node-local time). The item is
+    /// a template; at each time the node copies it into a new open item. Not available inside an anycon agent session
+    #[arg(long, value_name = "SPEC")]
+    pub repeat: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct TodoEditArgs {
+    /// To-do id (a prefix is enough)
+    pub id: String,
+    /// Set or replace the repeat rule: `daily@09:00`, `weekdays@09:00` or `weekly:mon@09:00` (node-local time)
+    #[arg(long, value_name = "SPEC", conflicts_with = "no_repeat", required_unless_present = "no_repeat")]
+    pub repeat: Option<String>,
+    /// Stop repeating: the item becomes an ordinary item
+    #[arg(long)]
+    pub no_repeat: bool,
 }
 
 #[derive(Args, Debug)]

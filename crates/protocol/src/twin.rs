@@ -25,6 +25,8 @@ pub enum TwinTrigger {
     Answer,
     Tick,
     Manual,
+    /// 分身派出的会话的 PR 有了变化（检查失败、合并、关闭、新的评审意见；daemon spec § 26.9）。
+    Pr,
     #[serde(other)]
     Unknown,
 }

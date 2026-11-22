@@ -10,7 +10,7 @@ import { Collapsible } from 'radix-ui'
 import { useTranslation } from 'react-i18next'
 import { PageHeader } from '@/components/PageHeader'
 import { setStatusMany } from '@/features/rules/service'
-import { statusOf, useRuleView, useRules, useRulesNodes, type ViewRule } from '@/features/rules/store'
+import { isStaleRule, statusOf, useRuleView, useRules, useRulesNodes, type ViewRule } from '@/features/rules/store'
 import { BudgetSummary } from '@/features/rules/ui/BudgetSummary'
 import { failText } from '@/features/rules/ui/errors'
 import { RuleCard } from '@/features/rules/ui/RuleCard'
@@ -63,7 +63,9 @@ export function RulesPage({ initialTab, focus }: { initialTab?: Tab; focus?: { n
   const { ops, dialogs } = useRuleOps()
 
   const pending = useMemo(() => all.filter((r) => statusOf(r) === 'pending'), [all])
-  const active = useMemo(() => all.filter((r) => statusOf(r) === 'active'), [all])
+  // 过期的规则状态还是 `active`，但不再交给 agent、不占字数预算：另起一段
+  const active = useMemo(() => all.filter((r) => statusOf(r) === 'active' && !isStaleRule(r)), [all])
+  const staleRules = useMemo(() => all.filter(isStaleRule), [all])
   const other = useMemo(() => all.filter((r) => !['pending', 'active'].includes(statusOf(r))), [all])
   const [tab, setTab] = useState<Tab>(() => initialTab ?? (pending.length > 0 ? 'pending' : 'active'))
   // 勾选时记下那一刻看到的版本（`updated_ms`）：批量确认 / 否决发的就是它；规则在这之后变了，勾选作废（卡片上标出来，要重新勾）
@@ -211,13 +213,27 @@ export function RulesPage({ initialTab, focus }: { initialTab?: Tab; focus?: { n
                 </div>
               ) : (
                 <div className="space-y-4" data-testid="rules-active">
-                  {active.length === 0 ? (
+                  {active.length === 0 && staleRules.length === 0 ? (
                     <p className="py-6 text-center text-sm text-fg-subtle" data-testid="rules-active-empty">
                       {t('rules.activeEmpty')}
                     </p>
                   ) : (
                     group(active, false)
                   )}
+                  {staleRules.length > 0 ? (
+                    <Collapsible.Root className="space-y-2" data-testid="rules-stale">
+                      <Collapsible.Trigger className="group flex min-h-9 items-center gap-1.5 text-sm font-medium text-fg-muted hover:text-fg" data-testid="rules-stale-toggle">
+                        <ChevronRight className="size-4 transition-transform group-data-[state=open]:rotate-90" aria-hidden />
+                        {t('rules.stale.title', { count: staleRules.length })}
+                      </Collapsible.Trigger>
+                      <Collapsible.Content className="space-y-3">
+                        <p className="text-xs text-fg-subtle" data-testid="rules-stale-note">
+                          {t('rules.stale.note')}
+                        </p>
+                        {group(staleRules, false)}
+                      </Collapsible.Content>
+                    </Collapsible.Root>
+                  ) : null}
                   {other.length > 0 ? (
                     <Collapsible.Root className="space-y-2" data-testid="rules-inactive">
                       <Collapsible.Trigger className="group flex min-h-9 items-center gap-1.5 text-sm font-medium text-fg-muted hover:text-fg" data-testid="rules-inactive-toggle">

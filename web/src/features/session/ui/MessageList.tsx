@@ -34,7 +34,7 @@ export interface MessageListProps {
   respondingIds: ReadonlySet<string>
   /** 答复时 daemon 回了 `not_found` 的请求（id → 原因）：卡片显示说明、不再给按钮。 */
   settledIds?: ReadonlyMap<string, SettledReason>
-  onRespond: (params: PermissionRespondParams) => void
+  onRespond: (params: PermissionRespondParams, onAnswered?: () => void) => void
   onRetryPending: (messageId: string) => void
   onEditPending: (messageId: string) => void
   onDeletePending: (messageId: string) => void

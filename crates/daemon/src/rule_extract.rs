@@ -379,6 +379,8 @@ async fn add_rules(
             created_ms: now,
             updated_ms: now,
             last_injected_ms: None,
+            last_referenced_ms: None,
+            stale: false,
         };
         crate::rules::insert(c, caller, &rule).await?;
         run.added.push(rule.id);

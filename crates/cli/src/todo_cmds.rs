@@ -15,7 +15,7 @@ use anycon_daemon::util::{fmt_utc, parse_utc};
 use anycon_protocol::*;
 use serde_json::{json, Value};
 
-use crate::cli::{TodoAddArgs, TodoCmd, TodoHistoryArgs, TodoLsArgs, TodoRunArgs};
+use crate::cli::{TodoAddArgs, TodoCmd, TodoEditArgs, TodoHistoryArgs, TodoLsArgs, TodoRunArgs};
 use crate::commands::App;
 use crate::conn::Conn;
 use crate::error::{CliError, Result, EXIT_ERROR};
@@ -72,6 +72,40 @@ pub fn parse_due(s: &str) -> Result<u64> {
     }
     let base = parse_utc(&format!("{date}T{clock}Z")).ok_or_else(bad)? as i64;
     u64::try_from(base - sign * (oh * 60 + om) * 60_000).map_err(|_| bad())
+}
+
+const WEEKDAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+/// `--repeat`：`daily@09:00`、`weekdays@09:00`、`weekly:mon@09:00`（节点的本地时间；星期写 `mon`…`sun`，周一 = 1）。
+pub fn parse_repeat(s: &str) -> Result<TodoRepeat> {
+    let bad = || {
+        CliError::usage(format!(
+            "--repeat: cannot read {s:?}; use daily@09:00, weekdays@09:00 or weekly:mon@09:00 \
+             (the time is HH:MM on the node's clock; days are mon, tue, wed, thu, fri, sat, sun)"
+        ))
+    };
+    let (rule, at) = s.trim().split_once('@').ok_or_else(bad)?;
+    anycon_daemon::todo_repeat::parse_at(at).ok_or_else(bad)?;
+    let (kind, weekday) = match rule.split_once(':') {
+        None if rule == "daily" => (TodoRepeatKind::Daily, None),
+        None if rule == "weekdays" => (TodoRepeatKind::Weekdays, None),
+        Some(("weekly", day)) => {
+            let n = WEEKDAYS.iter().position(|d| d.eq_ignore_ascii_case(day)).ok_or_else(bad)?;
+            (TodoRepeatKind::Weekly, Some(n as u8 + 1))
+        }
+        _ => return Err(bad()),
+    };
+    Ok(TodoRepeat { kind, at: at.to_string(), weekday, next_ms: None })
+}
+
+/// 规则写回 `--repeat` 的写法。
+fn repeat_str(r: &TodoRepeat) -> String {
+    match (r.kind, r.weekday) {
+        (TodoRepeatKind::Daily, _) => format!("daily@{}", r.at),
+        (TodoRepeatKind::Weekdays, _) => format!("weekdays@{}", r.at),
+        (TodoRepeatKind::Weekly, Some(w @ 1..=7)) => format!("weekly:{}@{}", WEEKDAYS[w as usize - 1], r.at),
+        _ => "unknown".to_string(),
+    }
 }
 
 /// 一页页翻到 `has_more = false`，按 `id` 去重。
@@ -159,6 +193,11 @@ fn friendly(e: CliError) -> CliError {
         Some("too_many") => {
             CliError::new(e.exit, e.code, "the to-do list is full (1000 open items); close or remove some first")
         }
+        Some("repeat_template") => CliError::new(
+            e.exit,
+            e.code,
+            "a repeating to-do is a template and cannot be dispatched; dispatch one of the copies it creates",
+        ),
         Some("too_many_unreviewed") => CliError::new(
             e.exit,
             e.code,
@@ -170,6 +209,7 @@ fn friendly(e: CliError) -> CliError {
 
 pub async fn todo(app: &App, cmd: TodoCmd) -> Result<u8> {
     match cmd {
+        TodoCmd::Edit(a) => edit(app, a).await,
         TodoCmd::Assign { id, handler } => assign(app, &id, &handler).await,
         TodoCmd::Add(a) => add(app, a).await,
         TodoCmd::Ls(a) => ls(app, a).await,
@@ -186,6 +226,10 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
     if a.twin {
         refuse_inside_agent("add --twin")?;
     }
+    if a.repeat.is_some() {
+        refuse_inside_agent("add --repeat")?;
+    }
+    let repeat = a.repeat.as_deref().map(parse_repeat).transpose()?;
     let due_ms = a.due.as_deref().map(parse_due).transpose()?;
     let nested = inside_agent();
     let params = TodoAddParams {
@@ -196,6 +240,7 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
         body: a.body,
         project: a.project,
         due_ms,
+        repeat,
         agent: nested.then_some(true),
         origin_session: nested.then(|| std::env::var(SESSION_ID_ENV).ok().filter(|s| !s.is_empty())).flatten(),
     };
@@ -219,6 +264,14 @@ fn activity_str(a: TodoActivity) -> &'static str {
     }
 }
 
+/// `daily@09:00 next 2026-12-01 01:00Z`：规则按节点的时钟，下一次的时间换成 UTC 显示（和 DUE 一样）。
+fn repeat_cell(r: &TodoRepeat) -> String {
+    match r.next_ms {
+        Some(next) => format!("{} next {}Z", repeat_str(r), &fmt_utc(next)[..16]),
+        None => repeat_str(r),
+    }
+}
+
 fn state_str(s: TodoState) -> &'static str {
     s.as_str()
 }
@@ -234,7 +287,7 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
         println!("no to-dos");
         return Ok(0);
     }
-    let mut rows = vec![["ID", "STATE", "ACTIVITY", "DUE", "PROJECT", "BY", "TITLE"]
+    let mut rows = vec![["ID", "STATE", "ACTIVITY", "DUE", "REPEAT", "PROJECT", "BY", "TITLE"]
         .iter()
         .map(|h| h.to_string())
         .collect::<Vec<_>>()];
@@ -242,6 +295,7 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
         let by = match (t.source.kind, t.unreviewed) {
             (TodoSourceKind::Agent, true) => app.out.yellow("agent (unreviewed)"),
             (TodoSourceKind::Agent, false) => "agent".to_string(),
+            (TodoSourceKind::Repeat, _) => "repeat".to_string(),
             (TodoSourceKind::Twin | TodoSourceKind::Unknown, true) => app.out.yellow("other (unreviewed)"),
             (TodoSourceKind::Twin | TodoSourceKind::Unknown, false) => "other".to_string(),
             _ => String::new(),
@@ -251,6 +305,7 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
             state_str(t.state).to_string(),
             t.activity.map(activity_str).unwrap_or_default().to_string(),
             t.due_ms.map(|d| fmt_utc(d)[..16].to_string()).unwrap_or_default(),
+            t.repeat.as_ref().map(repeat_cell).unwrap_or_default(),
             t.project.clone().unwrap_or_default(),
             by,
             sanitize_label(&t.title, 80, ""),
@@ -304,8 +359,32 @@ fn empty_update() -> TodoUpdateParams {
         due_ms: None,
         state: None,
         reviewed: None,
+        repeat: None,
         clear: Vec::new(),
     }
+}
+
+async fn edit(app: &App, a: TodoEditArgs) -> Result<u8> {
+    refuse_inside_agent("edit")?;
+    let repeat = a.repeat.as_deref().map(parse_repeat).transpose()?;
+    let conn = app.conn().await?;
+    let id = match resolve_todo(&conn, &a.id, false).await? {
+        Ok(t) => t.id,
+        Err(id) => id,
+    };
+    let clear = if repeat.is_none() { vec![ClearableTodoField::Repeat] } else { Vec::new() };
+    let t: Todo = conn
+        .call(methods::TODO_UPDATE, TodoUpdateParams { id, repeat, clear, ..empty_update() })
+        .await
+        .map_err(friendly)?;
+    if app.json() {
+        app.out.json_line(&t);
+    } else if let Some(r) = &t.repeat {
+        println!("{} repeats {}", short(&t.id), repeat_cell(r));
+    } else {
+        println!("{} no longer repeats", short(&t.id));
+    }
+    Ok(0)
 }
 
 async fn rm(app: &App, key: &str) -> Result<u8> {
@@ -338,6 +417,11 @@ fn friendly_dispatch(e: CliError, agent: &str) -> CliError {
                 "agent {agent} has no way to block pushes and pull requests; add --allow-push to dispatch anyway (the \
                  agent may then push and open pull requests)"
             ),
+        ),
+        ("invalid", Some("repeat_template")) => CliError::new(
+            e.exit,
+            e.code,
+            "this to-do repeats, so it is a template; dispatch one of the copies it creates instead",
         ),
         ("invalid", Some("closed")) => CliError::new(
             e.exit,
@@ -442,6 +526,7 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         (TodoSourceKind::Local, _) => "this machine".to_string(),
         (TodoSourceKind::Agent, _) => "an agent".to_string(),
         (TodoSourceKind::Twin, _) => "the twin".to_string(),
+        (TodoSourceKind::Repeat, _) => "a repeating item".to_string(),
         (TodoSourceKind::Device, None) => "a device".to_string(),
         (TodoSourceKind::Unknown, _) => "someone".to_string(),
     };
@@ -490,6 +575,24 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         }
         TodoEventData::TwinQuestion { question_id } => {
             (format!("twin question {}", sanitize_label(question_id, 80, "?")), vec![])
+        }
+        TodoEventData::RepeatCreated { todo_id, at_ms } => {
+            (format!("repeated: created {} for {}Z", short(todo_id), &fmt_utc(*at_ms)[..16]), vec![])
+        }
+        TodoEventData::RepeatSkipped { at_ms } => {
+            (format!("repeated: skipped {}Z, the previous copy is still open", &fmt_utc(*at_ms)[..16]), vec![])
+        }
+        TodoEventData::PrEvent { session_id, event, url } => {
+            let what = match event {
+                PrEventKind::ChecksFailed => "checks failed",
+                PrEventKind::Merged => "merged",
+                PrEventKind::Closed => "closed without merging",
+                PrEventKind::Reviewed => "new review activity",
+                PrEventKind::Unknown => "changed",
+            };
+            let link =
+                url.as_deref().filter(|u| u.starts_with("https://github.com/")).map(|u| sanitize_label(u, 200, ""));
+            (format!("pull request {what} (session {session_id})"), link.into_iter().collect())
         }
         TodoEventData::Unknown => ("unrecognized event".into(), vec![]),
     }
@@ -550,7 +653,8 @@ async fn assign(app: &App, key: &str, handler: &str) -> Result<u8> {
                 ..empty_update()
             },
         )
-        .await?;
+        .await
+        .map_err(friendly)?;
     if app.json() {
         app.out.json_line(&t);
     } else {
@@ -603,5 +707,39 @@ mod tests {
         let mut e = CliError::usage("title: x");
         e.reason = None;
         assert_eq!(friendly(e).message, "title: x");
+    }
+
+    #[test]
+    fn repeat_specs_parse_and_print_back() {
+        let r = parse_repeat("daily@09:00").unwrap();
+        assert_eq!((r.kind, r.at.as_str(), r.weekday), (TodoRepeatKind::Daily, "09:00", None));
+        assert_eq!(parse_repeat("weekdays@23:59").unwrap().kind, TodoRepeatKind::Weekdays);
+        let r = parse_repeat(" weekly:Sun@00:00 ").unwrap();
+        assert_eq!((r.kind, r.weekday), (TodoRepeatKind::Weekly, Some(7)));
+        assert_eq!(repeat_str(&r), "weekly:sun@00:00");
+        assert_eq!(parse_repeat("weekly:mon@09:00").unwrap().weekday, Some(1));
+        for spec in [
+            "daily",
+            "daily@9:00",
+            "daily@24:00",
+            "daily@09:60",
+            "daily:mon@09:00",
+            "weekly@09:00",
+            "weekly:xyz@09:00",
+            "weekdays:mon@09:00",
+            "monthly@09:00",
+            "@09:00",
+            "",
+        ] {
+            assert!(parse_repeat(spec).is_err(), "{spec:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn the_repeat_cell_shows_the_rule_and_the_next_time_in_utc() {
+        let mut r = parse_repeat("weekly:fri@18:30").unwrap();
+        assert_eq!(repeat_cell(&r), "weekly:fri@18:30");
+        r.next_ms = parse_utc("2026-12-04T10:30Z");
+        assert_eq!(repeat_cell(&r), "weekly:fri@18:30 next 2026-12-04 10:30Z");
     }
 }

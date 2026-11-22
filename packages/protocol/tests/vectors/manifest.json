@@ -699,6 +699,20 @@
     }
   },
   {
+    "name": "rpc_rule_update_restore",
+    "type": "rpc",
+    "value": {
+      "id": 903,
+      "jsonrpc": "2.0",
+      "method": "rule.update",
+      "params": {
+        "id": "11111111-2222-4333-8444-555555555555",
+        "if_updated_ms": 1700000000000,
+        "stale": false
+      }
+    }
+  },
+  {
     "name": "rpc_todo_handler",
     "type": "rpc",
     "value": {
@@ -715,6 +729,60 @@
           "seq": 1,
           "to": "twin",
           "ts_ms": 2
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
+    "name": "rpc_todo_pr_event",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "event": "reviewed",
+          "kind": "pr_event",
+          "seq": 2,
+          "session_id": "s",
+          "ts_ms": 3,
+          "url": "https://github.com/o/r/pull/1"
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
+    "name": "rpc_todo_repeat_created",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "at_ms": 3,
+          "kind": "repeat_created",
+          "seq": 2,
+          "todo_id": "n",
+          "ts_ms": 4
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
+    "name": "rpc_todo_repeat_skipped",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "at_ms": 3,
+          "kind": "repeat_skipped",
+          "seq": 2,
+          "ts_ms": 4
         },
         "todo_id": "t"
       }
@@ -793,7 +861,8 @@
           "started_ms": 1,
           "triggers": [
             "todo",
-            "manual"
+            "manual",
+            "pr"
           ]
         },
         "state": "idle"
@@ -846,7 +915,8 @@
           "started_ms": 1,
           "triggers": [
             "todo",
-            "manual"
+            "manual",
+            "pr"
           ]
         }
       }
@@ -1008,7 +1078,8 @@
             "started_ms": 1,
             "triggers": [
               "todo",
-              "manual"
+              "manual",
+              "pr"
             ]
           }
         ]

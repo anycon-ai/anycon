@@ -205,9 +205,10 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 | 命令 | 说明 |
 |---|---|
-| `anycon todo add <title> [--body <text>] [--project <name>] [--due <time>] [--twin]` | `todo.add`，id 由 CLI 生成（UUID）。打印 `added <id 前 8 位>  <title>`；`--json` 打印这一项。`--body` 是 Markdown（≤ 16 KiB），`--project` 不校验项目是否存在。**`--due`**：`YYYY-MM-DD`（当天 00:00 UTC），或 RFC 3339 时刻（`2026-12-01T09:00:00Z`、`2026-12-01T17:00+08:00`；秒可省，不收小数秒）；别的写法 → 退出码 2。标题为空 / 超过 200 字符 / 含换行、清单已满（1 000 个没关闭的项）也是错误（退出码 2，说明原因） |
+| `anycon todo add <title> [--body <text>] [--project <name>] [--due <time>] [--repeat <spec>] [--twin]` | `todo.add`，id 由 CLI 生成（UUID）。打印 `added <id 前 8 位>  <title>`；`--json` 打印这一项。`--body` 是 Markdown（≤ 16 KiB），`--project` 不校验项目是否存在。**`--due`**：`YYYY-MM-DD`（当天 00:00 UTC），或 RFC 3339 时刻（`2026-12-01T09:00:00Z`、`2026-12-01T17:00+08:00`；秒可省，不收小数秒）；别的写法 → 退出码 2。标题为空 / 超过 200 字符 / 含换行、清单已满（1 000 个没关闭的项）也是错误（退出码 2，说明原因）。**`--repeat <spec>`**：让这一项成为周期项（模板，[daemon.md § 26.9](daemon.md#269-周期项和-pr-事件4b)），`<spec>` 写成 `daily@09:00`、`weekdays@09:00`、`weekly:mon@09:00`（时间是节点本地时钟的 `HH:MM`；星期写 `mon` `tue` `wed` `thu` `fri` `sat` `sun`，不分大小写）；写错 → 退出码 2，提示三种写法。agent 环境里拒绝执行（退出码 5） |
+| `anycon todo edit <id> --repeat <spec>` · `--no-repeat` | `todo.update { repeat }` 设置或替换周期规则，`--no-repeat` 用 `clear: ["repeat"]` 清掉它（这一项变回普通的项）；两个选项必须给一个、不能同时给（退出码 2）。打印 `<id 前 8 位> repeats <规则> next <UTC 时间>` 或 `<id 前 8 位> no longer repeats`；`--json` 打印这一项。规则和 `add --repeat` 一样；模板可以 `assign … twin` / `add --twin`（每一次复制出来的都交给分身），但不能派发（`run`），收到 `invalid` / `repeat_template` 时 CLI 说明「周期项是模板，派发它复制出来的那一项」。agent 环境里拒绝执行（退出码 5） |
 | `anycon todo assign <id> me\|twin` | `todo.update { handler }`，改变处理人，不改 `state`。agent 环境里拒绝执行（退出码 5） |
-| `anycon todo ls [--all] [--project <name>] [--json]` | `todo.list`，**一页页翻到 `has_more = false`**，按 `id` 去重。缺省只列没关闭的，`--all` 加上 `done` / `dropped`；按最近修改从新到旧。列：ID（前 8 位）、STATE、ACTIVITY（派发过的项，会话现在的情况：`working` / `waiting` / `review`，算出来的，§ 22.3）、DUE（UTC）、PROJECT、BY（agent 加的项写 `agent`，没被收下的写 `agent (unreviewed)`；这个版本不认识的来源写 `other`，没被收下的写 `other (unreviewed)`）、TITLE；没有项时打印 `no to-dos`。`--json` 是 `{ "todos": [Todo] }`（CLI 解析之后再输出，不是 daemon 的原始 JSON：这个版本不认识的 `source.kind` 输出成 `"unknown"`） |
+| `anycon todo ls [--all] [--project <name>] [--json]` | `todo.list`，**一页页翻到 `has_more = false`**，按 `id` 去重。缺省只列没关闭的，`--all` 加上 `done` / `dropped`；按最近修改从新到旧。列：ID（前 8 位）、STATE、ACTIVITY（派发过的项，会话现在的情况：`working` / `waiting` / `review`，算出来的，§ 22.3）、DUE（UTC）、REPEAT（周期项的规则和节点算出的下一次时间，写成 `weekly:fri@18:30 next 2026-12-04 10:30Z`，下一次换成 UTC 显示、规则的时间是节点的本地时钟；不是周期项的为空）、PROJECT、BY（agent 加的项写 `agent`，没被收下的写 `agent (unreviewed)`；这个版本不认识的来源写 `other`，没被收下的写 `other (unreviewed)`；周期项复制出来的写 `repeat`）、TITLE；没有项时打印 `no to-dos`。`--json` 是 `{ "todos": [Todo] }`（CLI 解析之后再输出，不是 daemon 的原始 JSON：这个版本不认识的 `source.kind` 输出成 `"unknown"`） |
 | `anycon todo done <id>` · `drop <id>` · `reopen <id>` | `todo.update { state }`：`done`、`dropped`、`open`。打印新状态和标题；`--json` 打印这一项 |
 | `anycon todo rm <id>` | `todo.delete`（物理删除） |
 | `anycon todo run <id> [--agent <id>] [--model <id>] [--mode <id>] [--project <name>] [--local] [--allow-push] [--dry-run]` | `todo.dispatch`（[daemon.md § 22](daemon.md#22-派发)）：把这一项交给 agent。`--dry-run` 用 `todo.dispatch_preview` 打印此刻会发出的第一条消息（含带过去的之前的结果）、什么都不发（不选 agent，不开会话；终端转义和控制字符显示成转义形式，`--json` 是 `{ "first_message" }` 原文）。`--agent` 缺省是唯一 ready 的 agent（和 `anycon new` 一样）；`--project` 缺省用这一项的，不同时这一项被改成它；缺省在新的 worktree 里（项目能开的话，不看 `worktree.default`），`--local` 明确在项目目录里（没有隔离，输出里写明）；缺省带「不 push、不开 PR」，所选 agent 没有这个选项时被拒绝（`unsupported`，退出码 1，提示加 `--allow-push`），`--allow-push` 放弃它。第一条消息由 daemon 生成，没有 `--prompt`；每次运行带一个新的 `message_id`（重发时 daemon 返回第一次的结果，不开第二个会话）。打印 `dispatched <id 前 8 位>  <title>`、会话 id 和工作位置（worktree 的分支，或「项目目录」）、有没有「不 push」，以及怎么接着看；`--json` 打印 `{ todo, session }`。已关闭 → 退出码 2（提示先 `reopen`），已派发 20 次、没有项目 → 退出码 2，项目不存在 → 1 |
@@ -219,7 +220,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 - `add` 带 `agent: true`，并把环境里的 `ANYCON_SESSION_ID` 作为 `origin_session`（会话存在才会被记下，[daemon.md § 21.2](daemon.md#212-todo)）。会话里的 agent 不需要配置 MCP 就能跑 `anycon` 命令，这是它记「之后要处理」最顺手的写法
 - `ls`、`history` 照常
-- `done` / `drop` / `reopen` / `rm` / `run` / `assign` / `add --twin` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做（`run` 的说明是「把清单项交给 agent 由你来做」，别的是「关闭、重新打开、删除由你来做」）。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）。和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线
+- `done` / `drop` / `reopen` / `rm` / `run` / `assign` / `edit` / `add --twin` / `add --repeat` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做（`run` 的说明是「把清单项交给 agent 由你来做」，别的是「关闭、重新打开、删除由你来做」）。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）。和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线
 
 这是**护栏，不是安全边界**：`ANYCON_AGENT` 是 agent 能改的环境变量，能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单，对存心隐藏来源的本机进程没有约束力；daemon 把「带了 `agent: true`」的项、以及来自自报了 `local.set_client { client: "mcp" }` 的本机连接的项标成 agent 加的（后者同样是连接自报的）。
 
@@ -230,16 +231,17 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | 命令 | 说明 |
 |---|---|
 | `anycon rule add <text> [--project <name>] [--group]` | `rule.add`，id 由 CLI 生成（UUID）。`<text>` 一两句话，最多 600 个字符，可以含换行；`--project` 只让规则进这个项目的会话（不校验项目是否存在），缺省是节点上所有项目。人敲的命令直接生效：打印 `added <id 前 8 位>  <规则>`；`--json` 打印这条规则。超出注入的字数上限（一个会话最多 4096 字节的规则）→ 退出码 2，提示先合并或停用几条；不含 `rejected` 的总数已满 300 → 退出码 2；agent 提的待确认规则已满 50（在 agent 里运行时）→ 退出码 2；文字里有双向控制符或零宽字符 → 退出码 2 |
-| `anycon rule ls [--all] [--json]` | `rule.list`。缺省列 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；按创建时间从早到晚。列：ID（前 8 位）、STATUS、SYNC（node / group）、PROJECT、BY（agent 提的写 `agent`，待确认的写 `agent (needs review)`）、RULE（多行的用 ` / ` 连成一行，最多 100 个字符，控制字符去掉）；最后一行写一个会话最多拿到多少字节的规则（全节点的加上最大的项目的）。`--json` 是 `{ "rules": [Rule], "budget": RuleBudget }` |
+| `anycon rule ls [--all] [--json]` | `rule.list`。缺省列 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；按创建时间从早到晚。列：ID（前 8 位）、STATUS（过期的规则写 `STALE`：状态仍是 active，但不再交给 agent）、SYNC（node / group）、PROJECT、BY（agent 提的写 `agent`，待确认的写 `agent (needs review)`）、RULE（多行的用 ` / ` 连成一行，最多 100 个字符，控制字符去掉）；最后一行写一个会话最多拿到多少字节的规则（全节点的加上最大的项目的）。`--json` 是 `{ "rules": [Rule], "budget": RuleBudget }` |
 | `anycon rule show <id>` | 一条规则的全部内容：文字（`visible()`，控制字符显示成转义，换行保留）、状态、同步范围、项目、来源（人写的 / 回答里记的 / 提炼的 / agent 提的，agent 提的带来源会话）。`ls` 把规则截成一行，确认之前用它看全文；只读，在 anycon 拉起的 agent 里也能用。`--json` 是这条规则 |
 | `anycon rule confirm <id>` · `enable <id>` | `rule.update { status: active }`。`confirm` 用在待确认的规则上，`enable` 用在停用的上，效果一样。打印 `confirmed …` / `enabled …`，**后面是被激活的这条规则的全文、项目和来源**（生效的规则原样进每个会话的系统提示）；`--json` 打印这条规则 |
 | `anycon rule reject <id>` | `rule.update { status: rejected }`：留着，之后提炼时不再提同样的，但永远不生效 |
 | `anycon rule disable <id>` | `rule.update { status: disabled }`：停用，留着，可以再 `enable` |
+| `anycon rule restore <id>` | `rule.update { stale: false }`（[daemon.md § 26.10](daemon.md#2610-规则的过期和以后都这样4c)）：恢复一条**过期**的规则（生效的规则 60 天没被注入也没被引用，daemon 标上，不再交给 agent、不占字数预算）。和 `enable` 一样过字数检查（放不下 → 退出码 2，提示先合并或停用几条）。打印 `restored …`，后面是这条规则的全文、项目和来源；不是过期的规则打印 `nothing changed: … is not stale`。`--json` 打印这条规则 |
 | `anycon rule rm <id>` | `rule.delete`（物理删除） |
 | `anycon rule extract <session> [--no-wait] [--json]` | `rule.extract`（[daemon.md § 23.9](daemon.md#239-提炼)，已实现）：把这个会话的决策点交给判断后端，提炼出待确认的规则。`<session>` 接受唯一前缀，同 `anycon session`。缺省等 `rule.extract_done`（本机配置可读时最多等后端的 `timeout` 再加 30 秒；远程不公开 timeout，按后端种类的最大允许值再加 30 秒：API 630 秒、agent 或未知种类 930 秒），然后打印新建的每条规则（全文用 `visible()`，带 id 和 `anycon rule confirm <id>` 的提示）和丢掉的条数；`--no-wait` 打印开始了就退出。`--json` 等待时输出最终 `ExtractRun`，不等待时输出 `{ run, points }`，没有决策点时输出 `{ points: 0 }`。没有新的决策点时打印 `no new decision points`，退出码 0。失败时退出码 1，stderr 是错误码的说明（`budget` 带 `used / limit`）|
 | `anycon rule runs [--session <session>] [--json]` | `rule.extract_runs`：最近 20 次提炼，列：时间、会话（前 8 位）、TRIGGER、STATUS、ADDED、DROPPED、错误码；第一行是今天用了几次、上限几次 |
 
-`<id>` 接受唯一前缀（UUID 的前几位，不区分大小写），和 `anycon todo` 一样：完整的 UUID 直接用，不列表；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2。经前缀找到的规则，`confirm` / `reject` / `disable` / `enable` / `rm` 都带它列出时的 `if_updated_ms`：这期间别处改过这条规则（比如改了文字）就不动它，提示重新 `anycon rule ls`。已经是目标状态时打印 `nothing changed: … is already …`。
+`<id>` 接受唯一前缀（UUID 的前几位，不区分大小写），和 `anycon todo` 一样：完整的 UUID 直接用，不列表；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2。经前缀找到的规则，`confirm` / `reject` / `disable` / `enable` / `restore` / `rm` 都带它列出时的 `if_updated_ms`：这期间别处改过这条规则（比如改了文字）就不动它，提示重新 `anycon rule ls`。已经是目标状态时打印 `nothing changed: … is already …`。
 
 `ls` / `show` 显示 `sync`（node / group）。`add --group` 发 `sync: group`，只在当前连接的一个节点上建立全节点规则；打印英文说明，其他节点由后续 Web 写入触发的同步或「对齐」补齐（只重连、读列表不会自动扩散），CLI 不执行跨节点写入。有项目且 --group 由 daemon 拒绝（not_syncable）；agent 新建始终 pending / node。
 
@@ -247,7 +249,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 - `add` 带 `agent: true`，并把环境里的 `ANYCON_SESSION_ID` 作为 `origin_session`（会话存在才记）：规则记成待确认、来源是 agent，打印 `proposed …` 并提示 `anycon rule confirm <id>`；它在你确认之前不生效
 - `ls`、`show`、`runs` 照常
-- `confirm` / `reject` / `disable` / `enable` / `rm` / `extract` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）
+- `confirm` / `reject` / `disable` / `enable` / `restore` / `rm` / `extract` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）
 
 这是**护栏，不是安全边界**（理由同 § 3.8）：真正的闸是「待确认的规则要人确认才生效」。`anycon mcp` 没有规则的工具。
 

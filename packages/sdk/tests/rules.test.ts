@@ -86,6 +86,23 @@ for (const impl of cryptoImpls) {
       })
     })
 
+    it('stale: false 原样发出（恢复过期的规则），返回的规则带 stale 和 last_referenced_ms 字段', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const rule = await node.rules.add({ text: 'old habit' })
+        const back = await node.rules.update({
+          id: rule.id,
+          stale: false,
+          if_updated_ms: rule.updated_ms,
+        })
+        assert.deepEqual(paramsOf(env, 'rule.update'), [
+          { id: rule.id, stale: false, if_updated_ms: rule.updated_ms },
+        ])
+        assert.equal(back.stale, false)
+        const typed: { stale?: boolean; last_referenced_ms?: number | null } = back
+        assert.equal(typed.last_referenced_ms ?? null, null)
+      })
+    })
+
     it('node.info 带 capabilities.rules', async () => {
       await withNode(await impl.load(), async (node) => {
         assert.equal((await node.info()).capabilities.rules, true)

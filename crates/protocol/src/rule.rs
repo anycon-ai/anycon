@@ -116,6 +116,17 @@ pub struct Rule {
     /// 最近一次被注入某个会话；改它不动 `updated_ms`，也不发 `rule.changed`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_injected_ms: Option<TimestampMs>,
+    /// 最近一次被分拣的决定引用、并且这个决定被执行；改它不动 `updated_ms`，也不发 `rule.changed`（§ 26.10）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_referenced_ms: Option<TimestampMs>,
+    /// 过期：生效的规则 60 天里没被注入也没被引用，daemon 标上它。过期的规则仍是 `active`，但不注入、不计字数预算；
+    /// 只有人能用 `rule.update { stale: false }` 恢复（docs/spec/daemon.md § 23.2、§ 26.10）。缺省 `false`。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stale: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -220,6 +231,9 @@ pub struct RuleUpdateParams {
     /// 同组范围仅接受全节点、非待确认的规则。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<RuleSync>,
+    /// 只能给 `false`：恢复一条过期的规则（和「变成生效」一样过字数检查）。给 `true` → `invalid`（`data.field = "stale"`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
     /// 给了而和这条规则现在的 `updated_ms` 不同：什么都不改，`invalid`（`data.reason = "changed"`，`data.updated_ms` 是现在的值）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_updated_ms: Option<TimestampMs>,
@@ -284,6 +298,8 @@ mod tests {
             created_ms: 1,
             updated_ms: 2,
             last_injected_ms: None,
+            last_referenced_ms: None,
+            stale: false,
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(
@@ -291,7 +307,11 @@ mod tests {
             (Some("pending"), Some("node"), Some("agent"))
         );
         assert!(
-            v.get("project").is_none() && v.get("last_injected_ms").is_none() && v["source"].get("device_id").is_none()
+            v.get("project").is_none()
+                && v.get("last_injected_ms").is_none()
+                && v.get("last_referenced_ms").is_none()
+                && v.get("stale").is_none()
+                && v["source"].get("device_id").is_none()
         );
         assert_eq!(serde_json::from_value::<Rule>(v).unwrap(), r);
     }

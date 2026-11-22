@@ -8,5 +8,8 @@ export const isHumanSource = (source: Pick<TodoSource, 'kind'>): boolean => sour
 /** agent 记的。 */
 export const isAgentSource = (source: Pick<TodoSource, 'kind'>): boolean => source.kind === 'agent'
 
-/** 不认识的来源（既不是人，也不是 agent）：显示成「自动记的」。 */
-export const isOtherSource = (source: Pick<TodoSource, 'kind'>): boolean => !isHumanSource(source) && !isAgentSource(source)
+/** 周期项到点复制出来的（规则是人设的，复制是节点按规则做的）：有自己的「来自周期项」标记，不算「自动记的」。 */
+export const isRepeatSource = (source: Pick<TodoSource, 'kind'>): boolean => source.kind === 'repeat'
+
+/** 不认识的来源（既不是人，也不是 agent，也不是周期项）：显示成「自动记的」。 */
+export const isOtherSource = (source: Pick<TodoSource, 'kind'>): boolean => !isHumanSource(source) && !isAgentSource(source) && !isRepeatSource(source)

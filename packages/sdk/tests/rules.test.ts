@@ -89,7 +89,11 @@ for (const impl of cryptoImpls) {
     it('stale: false 原样发出（恢复过期的规则），返回的规则带 stale 和 last_referenced_ms 字段', async () => {
       await withNode(await impl.load(), async (node, env) => {
         const rule = await node.rules.add({ text: 'old habit' })
-        const back = await node.rules.update({ id: rule.id, stale: false, if_updated_ms: rule.updated_ms })
+        const back = await node.rules.update({
+          id: rule.id,
+          stale: false,
+          if_updated_ms: rule.updated_ms,
+        })
         assert.deepEqual(paramsOf(env, 'rule.update'), [
           { id: rule.id, stale: false, if_updated_ms: rule.updated_ms },
         ])

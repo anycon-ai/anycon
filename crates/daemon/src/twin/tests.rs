@@ -844,6 +844,7 @@ fn pr_events_compare_against_the_previous_poll() {
     assert!(pr_events(&base, &other).is_empty(), "a different PR starts a new baseline");
 }
 
+#[cfg(unix)]
 trait SetGhOk {
     fn set_gh_ok(&self, stdout: &str);
 }
@@ -854,6 +855,7 @@ impl SetGhOk for TestDaemon {
     }
 }
 
+#[cfg(unix)]
 fn gh_json(state: &str, conclusion: &str, reviews: &[(&str, &str)]) -> String {
     let reviews: Vec<Value> = reviews.iter().map(|(at, body)| json!({"submittedAt":at,"body":body})).collect();
     json!({"number":9,"url":"https://github.com/o/r/pull/9","title":"t","state":state,"isDraft":false,
@@ -888,6 +890,7 @@ async fn pr_fixture() -> (TestDaemon, Arc<FakeJudgeBackend>, Todo, String) {
     (td, fake, t, sid)
 }
 
+#[cfg(unix)]
 async fn pr_history(td: &TestDaemon, todo_id: &str) -> Vec<PrEventKind> {
     let mut out: Vec<PrEventKind> = td
         .ctx

@@ -357,6 +357,43 @@ export async function clearEvents(sessionId: string): Promise<void> {
   await (await getDb()).delete('events', IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]))
 }
 
+export async function countEvents(): Promise<number> {
+  return (await getDb()).count('events')
+}
+
+// ---- 清空缓存（/settings/data） ----
+
+/** 草稿（输入区里的附件和未发送消息的附件）引用的 blob。 */
+export function draftBlobIds(d: DraftRecord): string[] {
+  return [...(d.attachments ?? []), ...d.unsent.flatMap((m) => m.attachments ?? [])].map((a) => a.blob_id)
+}
+
+/**
+ * 在**一个**事务里清掉会话历史缓存（`events`，并把 `sessions.low_seq` 归零）和附件缓存（`blobs`）。
+ * 附件缓存里留下 `keep` 和已存草稿引用的那些：未发送消息和草稿在节点回收了 blob 之后要从这里重传（spec/web.md § 4.6「附件」）。
+ * 会话摘要、清单缓存、待发队列、身份和节点都不动。返回删掉的事件条数和附件个数。
+ */
+export async function clearCaches(keep: ReadonlySet<string>): Promise<{ events: number; blobs: number }> {
+  const tx = (await getDb()).transaction(['events', 'sessions', 'blobs', 'drafts'], 'readwrite')
+  const keepAll = new Set(keep)
+  for (const d of await tx.objectStore('drafts').getAll()) for (const id of draftBlobIds(d)) keepAll.add(id)
+  const events = await tx.objectStore('events').count()
+  await tx.objectStore('events').clear()
+  let cursor = await tx.objectStore('sessions').openCursor()
+  while (cursor) {
+    if (cursor.value.low_seq !== 0) await cursor.update({ ...cursor.value, low_seq: 0 })
+    cursor = await cursor.continue()
+  }
+  let blobs = 0
+  for (const key of await tx.objectStore('blobs').getAllKeys()) {
+    if (keepAll.has(key)) continue
+    await tx.objectStore('blobs').delete(key)
+    blobs++
+  }
+  await tx.done
+  return { events, blobs }
+}
+
 // ---- drafts ----
 
 export async function getDraft(sessionId: string): Promise<DraftRecord | undefined> {

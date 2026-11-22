@@ -16,6 +16,7 @@ export function SettingsLayout() {
     ...(multi ? [{ to: '/settings/quota', label: t('settings.quota'), id: 'quota' } as const] : []),
     { to: '/settings/notifications', label: t('settings.notifications'), id: 'notifications' },
     { to: '/settings/appearance', label: t('settings.appearance'), id: 'appearance' },
+    { to: '/settings/data', label: t('settings.data'), id: 'data' },
   ] as const
   return (
     <>

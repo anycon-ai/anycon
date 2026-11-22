@@ -27,13 +27,13 @@ describe('SettingsLayout', () => {
   it('single: lists Notifications between Devices and Appearance, linking to /settings/notifications, and has no Quota tab', async () => {
     mount('single')
     expect(await screen.findByTestId('settings-nav-notifications')).toHaveAttribute('href', '/settings/notifications')
-    expect(ids()).toEqual(['profile', 'login', 'sessions', 'devices', 'notifications', 'appearance'].map((id) => `settings-nav-${id}`))
+    expect(ids()).toEqual(['profile', 'login', 'sessions', 'devices', 'notifications', 'appearance', 'data'].map((id) => `settings-nav-${id}`))
     expect(screen.queryByTestId('settings-nav-quota')).toBeNull()
   })
 
   it('multi: adds a Quota tab right after Devices', async () => {
     mount('multi')
     expect(await screen.findByTestId('settings-nav-quota')).toHaveAttribute('href', '/settings/quota')
-    expect(ids()).toEqual(['profile', 'login', 'sessions', 'devices', 'quota', 'notifications', 'appearance'].map((id) => `settings-nav-${id}`))
+    expect(ids()).toEqual(['profile', 'login', 'sessions', 'devices', 'quota', 'notifications', 'appearance', 'data'].map((id) => `settings-nav-${id}`))
   })
 })

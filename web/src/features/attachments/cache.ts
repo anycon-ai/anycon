@@ -59,6 +59,14 @@ async function loadIndex(): Promise<Map<string, IndexEntry>> {
   return indexLoading
 }
 
+/** 附件缓存现在的个数和总字节数（第一次调用要扫一遍缓存，和第一次写缓存时一样）。 */
+export async function attachmentCacheStats(): Promise<{ count: number; bytes: number }> {
+  const idx = await loadIndex()
+  let bytes = 0
+  for (const e of idx.values()) bytes += e.size
+  return { count: idx.size, bytes }
+}
+
 /** 查缓存。没有、读不出、或是旧形状的记录都返回 null（缓存未命中）。 */
 export async function readCached(blobId: string, now: number = Date.now()): Promise<CacheEntry | null> {
   let rec: db.BlobRecord | undefined

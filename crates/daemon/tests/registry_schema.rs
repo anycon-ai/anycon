@@ -8,11 +8,13 @@
 //! 也不能漏掉没调用又没列出的方法）。
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 
-use anycon_daemon::testutil::{FakeHubLink, TestClient, TestDaemon};
+use anycon_daemon::judge::{JudgeReply, Usage};
+use anycon_daemon::testutil::{FakeHubLink, FakeJudgeBackend, TestClient, TestDaemon};
 use anycon_protocol::methods::{self, Direction, REGISTRY};
-use anycon_protocol::{DeviceKind, EnrollFrame, EnrollHint, EnrollMethod};
+use anycon_protocol::{DeviceKind, EnrollFrame, EnrollHint, EnrollMethod, Event, SessionEvent};
 use jsonschema::Validator;
 use serde_json::{json, Value};
 
@@ -391,6 +393,61 @@ async fn walk_rule(w: &mut Walk<'_>) {
     w.call(methods::RULE_DELETE, json!({ "id": id })).await;
 }
 
+/// 提炼的无决策点返回、运行中返回和有记录的列表都走真实 RPC；后端用离线替身。
+async fn walk_rule_extract(w: &mut Walk<'_>) {
+    let session = w.call(methods::SESSION_CREATE, json!({ "agent": "fake" })).await;
+    let sid = session["id"].as_str().unwrap();
+    let empty = w.call(methods::RULE_EXTRACT, json!({ "session_id": sid })).await;
+    assert_eq!(empty["points"], 0);
+    assert!(empty["run"].is_null());
+
+    let seq = w.td.ctx.store.max_seq(sid).await.unwrap() + 1;
+    w.td.ctx
+        .store
+        .append_event(&SessionEvent {
+            session_id: sid.into(),
+            seq,
+            ts_ms: w.td.ctx.judge.clock().now(),
+            turn_id: None,
+            event: Event::PermissionResolved {
+                request_id: "schema-extract".into(),
+                option_id: Some("deny".into()),
+                by_device: "schema".into(),
+                answers: None,
+                message: Some("Always write tests first".into()),
+            },
+        })
+        .await
+        .unwrap();
+    let fake = FakeJudgeBackend::new([Ok(JudgeReply {
+        text: json!({ "rules": [{ "text": "Write tests first", "seq": seq, "scope": "node" }] }).to_string(),
+        usage: Usage { input_tokens: Some(12), output_tokens: Some(4), cost_usd: Some(0.01) },
+    })]);
+    w.td.ctx.judge.set_backend_factory(Arc::new(move |_| fake.clone()));
+    for (key, value) in [
+        (
+            "judge.backends.local",
+            "{kind='api',format='openai',model='fake',base_url='http://localhost:1',timeout='10s'}",
+        ),
+        ("judge.extract", "local"),
+    ] {
+        anycon_daemon::config::set_value(&w.td.paths, key, value).unwrap();
+    }
+    w.td.ctx.config.reload().unwrap();
+    let started = w.call(methods::RULE_EXTRACT, json!({ "session_id": sid })).await;
+    assert_eq!(started["points"], 1);
+    assert_eq!(started["run"]["status"], "running");
+    tokio::time::timeout(T, w.td.ctx.extractor.wait_idle()).await.unwrap();
+    let listed = w.call(methods::RULE_EXTRACT_RUNS, json!({ "session_id": sid, "limit": 20 })).await;
+    let runs = listed["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["id"], started["run"]["id"]);
+    assert_eq!(runs[0]["status"], "done");
+    assert_eq!(runs[0]["added"].as_array().unwrap().len(), 1);
+    assert_eq!(runs[0]["usage"]["input_tokens"], 12);
+    assert_eq!(listed["used_today"], 1);
+}
+
 async fn walk_preview(w: &mut Walk<'_>, td: &TestDaemon, psid: &str) {
     // ---- 预览（ADR-39）：端口写进 allow_ports（热加载），签发、列出、列端口、作废
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -436,6 +493,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     Box::pin(walk_session(&mut w)).await;
     Box::pin(walk_todo(&mut w)).await;
     Box::pin(walk_rule(&mut w)).await;
+    Box::pin(walk_rule_extract(&mut w)).await;
     Box::pin(walk_worktree(&mut w, &td)).await;
     let psid = Box::pin(walk_permission(&mut w)).await;
     Box::pin(walk_preview(&mut w, &td, &psid)).await;
@@ -467,6 +525,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         methods::TODO_CHANGED,
         methods::TODO_EVENT,
         methods::RULE_CHANGED,
+        methods::RULE_EXTRACT_DONE,
     ] {
         assert!(seen.contains(want), "the walk should have produced {want}: {seen:?}");
     }

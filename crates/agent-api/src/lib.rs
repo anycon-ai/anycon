@@ -87,6 +87,56 @@ pub struct SpawnRequest {
     pub agent_info: Arc<AgentInfo>,
 }
 
+/// 一次性调用：调用方提供空临时目录，调用结束后负责删除。
+#[derive(Clone)]
+pub struct OneshotRequest {
+    pub system: String,
+    pub prompt: String,
+    pub model: Option<String>,
+    pub timeout: Duration,
+    pub cwd: PathBuf,
+    pub env: Arc<HashMap<String, String>>,
+    pub config: AdapterConfig,
+    pub agent_info: Arc<AgentInfo>,
+}
+
+impl std::fmt::Debug for OneshotRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OneshotRequest")
+            .field("system_bytes", &self.system.len())
+            .field("prompt_bytes", &self.prompt.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// 一次性调用的文字与用量；缺失的用量不推算。
+#[derive(Clone, Default, PartialEq)]
+pub struct OneshotReply {
+    pub text: String,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_usd: Option<f64>,
+}
+
+impl std::fmt::Debug for OneshotReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OneshotReply").field("text_bytes", &self.text.len()).finish_non_exhaustive()
+    }
+}
+
+/// 固定错误分类，不携带提示、输出、命令或环境（其中可能有密钥）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum OneshotError {
+    #[error("oneshot is unsupported")]
+    Unsupported,
+    #[error("oneshot timed out")]
+    Timeout,
+    #[error("oneshot failed")]
+    Failed,
+    #[error("oneshot could not start")]
+    Spawn,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserInput {
     pub message_id: String,
@@ -218,6 +268,11 @@ pub trait Adapter: Send + Sync + 'static {
     /// 默认实现按 `agent_info` 的 models / modes / options 检查；adapter 可覆盖加自己的规则。
     fn validate_settings(&self, info: &AgentInfo, settings: &SessionSettings) -> Result<()> {
         default_validate(info, settings)
+    }
+
+    /// 不开会话的一次性调用；实现负责总超时与进程树清理，包括调用 future 被丢弃的情况。
+    async fn oneshot(&self, _req: OneshotRequest) -> std::result::Result<OneshotReply, OneshotError> {
+        Err(OneshotError::Unsupported)
     }
 
     /// 拉起或续接一个 agent 会话。

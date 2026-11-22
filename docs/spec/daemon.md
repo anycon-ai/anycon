@@ -218,7 +218,7 @@ AgentInfo {
     structured_output: bool
     env:               bool            // 支持每会话 env
     system_prompt:     bool            // `system_prompt_append` 真的会交给 agent（§ 6.3）；Claude Code、Codex、mock 为 true，ACP 为 false，旧 daemon 没有这个字段（按 false）。决策档案的规则靠它注入（§ 23.5）
-    oneshot:           bool            // 能做一次性调用（不开会话、没有工具，§ 25.1 的 agent 判断后端）；Claude Code、Codex（装的版本支持那些参数时）、mock 为 true，ACP 为 false，旧 daemon 没有这个字段（按 false）
+    oneshot:           bool            // 能做一次性调用（不开会话；Claude Code 无工具，Codex 仍有只读工具，§ 25.1 的 agent 判断后端）；Claude Code、Codex（装的版本支持那些参数时）、mock 为 true，ACP 为 false，旧 daemon 没有这个字段（按 false）
   }
   probed_at: timestamp
 }
@@ -1833,18 +1833,18 @@ timeout = "5m"
 - **`timeout`**：10s–15m，缺省 5m。
 - **怎么调**：每次在一个新建的空临时目录里拉起 agent 的非交互模式，提示从 stdin 给，结束后删掉这个目录。
   - 不写会话，不出现在会话列表里；agent 自己的会话记录能关的都关掉。
-  - 子进程环境同 § 5.5（`agents.<id>.env` 照用）。
-  - 超时就杀掉进程树，算 `timeout`。
+  - 子进程环境复用 § 5.5 的会话环境构造（`agents.<id>.env` 照用，带 `ANYCON_AGENT=1`；没有会话级 env 和 `ANYCON_SESSION_ID`）。
+  - 超时就杀掉进程树，算 `timeout`；调用被取消、输出超限、leader 退出时也清理进程树。stdout / stderr 各最多读取 1 MiB，超过算 `agent_failed`，不把 stderr 或任何内容带进错误信息。
 - **各 agent 的调法**：
   - **Claude Code**：`claude -p --output-format json --tools "" --no-session-persistence --strict-mcp-config --system-prompt <系统提示> [--model <m>]`。没有任何工具，不加载 MCP server。
     - 取 JSON 里的 `result`；`is_error = true` 算 `agent_failed`。
-    - usage 取 `usage.input_tokens` / `output_tokens` 和 `total_cost_usd`。
-  - **Codex**：`codex exec --skip-git-repo-check --ephemeral --sandbox read-only --color never -o <临时文件> [-m <m>] -`。
-    - Codex 没有单独的系统提示参数，系统提示拼在提示的开头。
+    - 输入用量 = `usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens`：Anthropic 的 `input_tokens` 不含缓存读写。缺失的缓存字段按 0；嵌套 `cache_creation` 是创建用量的明细，不重复加。输出取 `usage.output_tokens`，费用取 `total_cost_usd`；缺失的用量留空。
+  - **Codex**：`codex exec --skip-git-repo-check --ephemeral --sandbox read-only --color never --json -o <临时文件> [-m <m>] -`。
+    - Codex 没有单独的系统提示参数，系统提示拼在提示的开头；用 `=== SYSTEM INSTRUCTIONS ===` / `=== END SYSTEM INSTRUCTIONS ===` 和 `=== USER PROMPT ===` / `=== END USER PROMPT ===` 分隔。这只是文本分隔，不构成指令隔离边界。
     - Codex 关不掉全部工具：它在只读沙箱里还能跑只读的命令（§ 25.4）。
-    - 取 `-o` 写下的最后一条消息。
+    - 取 `-o` 写下的最后一条消息（普通文件，最多读取 1 MiB）。`--json` 的 `turn.completed.usage` 提供 `input_tokens` / `output_tokens`，缺失留空；`cached_input_tokens` 已包含在输入总数中，不重复加。`error` / `turn.failed` 事件算 `agent_failed`，JSON 解析失败同样拒绝。
   - 两种都是：退出码非 0 算 `agent_failed`。
-- **核实**：这些参数要在真实的 CLI 上核实（测试放在 `ANYCON_REAL_AGENT_TESTS=1` 后面）。装的版本不支持时，adapter 不声明 `oneshot`。
+- **版本界线**：`oneshot` 保守下界为 Claude Code **2.1.325**、Codex **0.169.0**，版本无法解析或低于下界时为 false；这是本机 CLI `--help` 核对过完整参数集的下界，不声称是参数首次引入的版本。mock 为 true，ACP 保持 false。真实模型调用（文字、用量、Claude Code 无法读外部秘密文件、Codex 只断言成功）由 `real_oneshot` 测试覆盖，需要 `ANYCON_REAL_AGENT_TESTS=1` 和 `--ignored`；离线 CI 只编译它，不据此声称已完成模型实测。
 
 ### 25.2 次数和记录
 

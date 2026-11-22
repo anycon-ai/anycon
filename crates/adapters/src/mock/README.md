@@ -204,3 +204,7 @@ kind=`other` 的权限请求，`request_id = "<session_id>-perm-<n>"`（和其�
 | `write` | 第 2 个 turn | …回显…, tool_call(Write), tool_result(`Modified anycon-mock.txt`, diff), file_changed(modified), turn_done；文件内容 `mock write turn 1\nmock write turn 2\n` |
 | `write permission` | 默认 | …回显…, permission(tool), → allow → tool_call(Bash), tool_output_delta, tool_result, tool_call(Write), tool_result, file_changed, turn_done |
 | `write`（`anycon-mock.txt` 是符号链接） | 默认 | …回显…, tool_call(Write), tool_result(`is_error: true`, `refusing to write anycon-mock.txt: it is a symbolic link`), turn_done(completed)；链接和目标都不变 |
+
+## 一次性调用
+
+`capabilities.oneshot = true`。`prompt` 中第一个 `MOCK_ONESHOT:` 后的第一个空白分隔词按标准 base64 解码，再按 UTF-8 作为回答；没有标记返回 `{"rules":[]}`，非法编码返回 `OneshotError::Failed`。例如 `MOCK_ONESHOT:aGVsbG8=` 返回 `hello`。用量和费用固定为 0，不执行命令、不访问网络。

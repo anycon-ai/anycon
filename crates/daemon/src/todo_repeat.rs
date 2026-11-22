@@ -367,3 +367,26 @@ pub fn spawn(c: &Arc<Ctx>) -> tokio::task::JoinHandle<()> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 不设时区，在机器自己的时区里算：每个平台（包括 Windows 上用 CRT 算当地时间的那条路径）都跑。
+    #[test]
+    fn the_next_time_is_ahead_within_a_week_and_the_last_one_is_behind_in_any_zone() {
+        let now = 1_732_000_000_000; // 2024-11-19，不在任何夏令时切换日附近
+        let day = 24 * 3600 * 1000;
+        for (kind, weekday) in
+            [(TodoRepeatKind::Daily, None), (TodoRepeatKind::Weekdays, None), (TodoRepeatKind::Weekly, Some(3))]
+        {
+            let r = TodoRepeat { kind, at: "09:30".into(), weekday, next_ms: None };
+            let next = slot_after(&r, now).expect("next slot");
+            assert!(next > now && next <= now + 7 * day, "{kind:?}: {next}");
+            let last = slot_at_or_before(&r, now).expect("last slot");
+            assert!(last <= now && last > now - 8 * day, "{kind:?}: {last}");
+            // 两次之间至少隔一天（同一个时刻不会算两次）
+            assert!(next - last >= day - 3600 * 1000, "{kind:?}: {last} .. {next}");
+        }
+    }
+}

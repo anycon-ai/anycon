@@ -2,6 +2,10 @@
 //!
 //! 整个测试进程用 `America/New_York`（有夏令时）：时区在第一次调用时间 API 之前由 [`tz`] 设置。时间点写成 UTC，
 //! 注释里标出当地时间。
+//!
+//! 只在 unix 上跑：Windows 的 C 运行库不认 IANA 时区名，而且读的是它启动时复制下来的环境，`std::env::set_var` 改不到它，
+//! 测试没法把时区固定下来。Windows 上算当地时间的那条路径由 `todo_repeat` 模块自己的单元测试覆盖（不依赖时区）。
+#![cfg(unix)]
 
 use std::sync::Once;
 

@@ -1807,18 +1807,18 @@ timeout = "5m"
   - `api_key = "…"`：直接写在文件里。
 
   两个都没给，或者环境变量是空的，这个后端就不能用（`problem = no_key`）。回环地址上的 `http://` 后端可以不要密钥。
-- **`max_output_tokens`**：1–16 384，缺省 2 048。
+- **`max_output_tokens`**：1–16 384，缺省 2 048。Messages API 用 `max_tokens`；Chat Completions 在主机是 `api.openai.com` 时用 `max_completion_tokens`（官方新模型不接受 `max_tokens`），别的主机（兼容网关、本地服务）用 `max_tokens`。
 - **`timeout`**：整次请求的时限，10s–10m，缺省 2m。
-- **请求**：不用流式，不带工具，不设 temperature。系统提示和用户消息各一段（Messages API 的 `system` 字段；Chat Completions 是一条 `system` 消息）。
-- **回应**：回应体最多 1 MiB。取第一段文字：Messages API 是 `content[]` 里第一个 `type = text` 的；Chat Completions 是 `choices[0].message.content`。
-  - usage：Messages API 取 `usage.input_tokens` / `output_tokens`，Chat Completions 取 `usage.prompt_tokens` / `completion_tokens`。
+- **请求**：不用流式，不带工具，不设 temperature。系统提示和用户消息各一段（Messages API 的 `system` 字段；Chat Completions 是一条 `system` 消息）。`Content-Type: application/json`；`User-Agent: anycon/<版本>`，不带平台或别的标识；没有密钥时不带认证头。调用时再次拒绝非回环的明文 HTTP（`internal`）和缺少密钥的非回环地址（`auth`），均不连接。
+- **回应**：回应体最多 1 MiB。取第一段文字：Messages API 是 `content[]` 里第一个 `type = text` 的；Chat Completions 是 `choices[0].message.content`，字符串直接取，一组 part 则按顺序拼接其中 `type = text` 的文字。
+  - usage：Messages API 取 `usage.input_tokens` / `output_tokens`，Chat Completions 取 `usage.prompt_tokens` / `completion_tokens`；缺少的留空，不填 `cost_usd`。
 - **错误**：
-  - 连不上、TLS 失败 → `network`
+  - 连不上、DNS / TLS 失败、连接中途断开 → `network`
   - 401 / 403 → `auth`
   - 429 → `rate_limited`
   - 别的非 2xx → `http`（带状态码）
   - 超时 → `timeout`
-  - 回应解析不了 → `bad_output`
+  - 回应体超过 1 MiB、JSON 解析不了或没有文字 → `bad_output`
 
   错误里只有这个码和状态码，不带回应的内容。
 

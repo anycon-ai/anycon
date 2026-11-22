@@ -21,16 +21,13 @@ use std::time::Duration;
 
 use anycon_protocol::{DoctorCheck, NodeUpdateAvailable};
 use bytes::Bytes;
-use http_body_util::{BodyExt, Empty, Limited};
-use hyper::client::conn::http1;
-use hyper_util::rt::TokioIo;
+use http_body_util::Full;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
 use tokio::sync::watch;
 
 use crate::config::{Config, ConfigStore, Paths};
+use crate::https::{self, parse_target};
 use crate::util::now_ms;
 
 /// 生产环境的检查地址。
@@ -290,58 +287,6 @@ pub enum CheckError {
     BadVersion,
 }
 
-/// 解析好的检查地址。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Target {
-    tls: bool,
-    host: String,
-    port: u16,
-    /// `Host` 头。
-    authority: String,
-    path: String,
-}
-
-/// `https://host[:port]/path`；`http://` 只接受本机回环地址（测试用）。不接受查询串、片段和用户信息。
-fn parse_target(url: &str) -> Result<Target, CheckError> {
-    let (scheme, rest) = url.split_once("://").ok_or(CheckError::BadUrl)?;
-    let tls = match scheme {
-        "https" => true,
-        "http" => false,
-        _ => return Err(CheckError::BadUrl),
-    };
-    if rest.contains(['?', '#', '@']) || rest.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(CheckError::BadUrl);
-    }
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    let default_port = if tls { 443 } else { 80 };
-    let (host, port) = if let Some(stripped) = authority.strip_prefix('[') {
-        let (h, p) = stripped.split_once(']').ok_or(CheckError::BadUrl)?;
-        let port = match p {
-            "" => default_port,
-            p => p.strip_prefix(':').and_then(|p| p.parse().ok()).ok_or(CheckError::BadUrl)?,
-        };
-        (h.to_string(), port)
-    } else {
-        match authority.rsplit_once(':') {
-            Some((h, p)) => (h.to_string(), p.parse().map_err(|_| CheckError::BadUrl)?),
-            None => (authority.to_string(), default_port),
-        }
-    };
-    if host.is_empty() {
-        return Err(CheckError::BadUrl);
-    }
-    if !tls {
-        let loopback = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
-        if !loopback {
-            return Err(CheckError::BadUrl);
-        }
-    }
-    Ok(Target { tls, host, port, authority: authority.to_string(), path: path.to_string() })
-}
-
 /// `releases.json` 的回应。只取 `latest`；`url`、`published_at` 和别的字段都不用（链接由版本号拼出来）。
 #[derive(Deserialize)]
 struct ReleasesJson {
@@ -354,56 +299,31 @@ pub fn parse_response(body: &[u8]) -> Result<Version, CheckError> {
     Version::parse_strict(&r.latest).ok_or(CheckError::BadVersion)
 }
 
-/// 被丢弃时结束连接任务（超时取消外层 future 时不留下后台任务）。
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
+impl From<https::Error> for CheckError {
+    fn from(error: https::Error) -> Self {
+        match error {
+            https::Error::BadUrl => Self::BadUrl,
+            https::Error::Timeout => Self::Timeout,
+            https::Error::Connect(kind) => Self::Connect(kind),
+            https::Error::Tls => Self::Tls,
+            https::Error::Http => Self::Http,
+            https::Error::Status(status) => Self::Status(status),
+            https::Error::TooLarge | https::Error::Body => Self::Body,
+        }
     }
-}
-
-async fn exchange<S>(io: S, t: &Target) -> Result<Bytes, CheckError>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let (mut sender, conn) =
-        http1::handshake::<_, Empty<Bytes>>(TokioIo::new(io)).await.map_err(|_| CheckError::Http)?;
-    let _conn = AbortOnDrop(tokio::spawn(async move {
-        let _ = conn.await;
-    }));
-    // 只有这两个头：没有 cookie、Accept-Language 之类会区分用户的东西
-    let req = http::Request::get(t.path.as_str())
-        .header(http::header::HOST, t.authority.as_str())
-        .header(http::header::USER_AGENT, user_agent())
-        .body(Empty::<Bytes>::new())
-        .map_err(|_| CheckError::Http)?;
-    let resp = sender.send_request(req).await.map_err(|_| CheckError::Http)?;
-    // 不跟随重定向：3xx 和别的非 200 一样算失败
-    if resp.status() != http::StatusCode::OK {
-        return Err(CheckError::Status(resp.status().as_u16()));
-    }
-    let body = Limited::new(resp.into_body(), MAX_BODY_BYTES).collect().await.map_err(|_| CheckError::Body)?;
-    Ok(body.to_bytes())
 }
 
 /// 请求一次，返回校验过的最新版本。
 pub async fn fetch_latest(url: &str, timeout: Duration) -> Result<Version, CheckError> {
     let t = parse_target(url)?;
-    let work = async {
-        let tcp = TcpStream::connect((t.host.as_str(), t.port)).await.map_err(|e| CheckError::Connect(e.kind()))?;
-        let body = if t.tls {
-            let name = rustls::pki_types::ServerName::try_from(t.host.clone()).map_err(|_| CheckError::BadUrl)?;
-            let tls = tokio_rustls::TlsConnector::from(crate::hub::tls_config())
-                .connect(name, tcp)
-                .await
-                .map_err(|_| CheckError::Tls)?;
-            exchange(tls, &t).await?
-        } else {
-            exchange(tcp, &t).await?
-        };
-        parse_response(&body)
-    };
-    tokio::time::timeout(timeout, work).await.map_err(|_| CheckError::Timeout)?
+    // 只有这两个头：没有 cookie、Accept-Language 之类会区分用户的东西。
+    let req = http::Request::get(t.path.as_str())
+        .header(http::header::HOST, t.authority.as_str())
+        .header(http::header::USER_AGENT, user_agent())
+        .body(Full::new(Bytes::new()))
+        .map_err(|_| CheckError::Http)?;
+    let body = https::request(&t, req, timeout, MAX_BODY_BYTES, |status| status == http::StatusCode::OK).await?;
+    parse_response(&body)
 }
 
 // ---------------------------------------------------------------- 检查器
@@ -607,6 +527,8 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    use crate::https::Target;
 
     fn v(s: &str) -> Version {
         Version::parse_strict(s).unwrap()

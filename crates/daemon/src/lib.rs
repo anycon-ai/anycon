@@ -26,6 +26,7 @@ pub mod env;
 pub mod flow;
 pub mod fsopen;
 pub mod gitops;
+mod https;
 pub mod hub;
 pub mod identity;
 pub mod judge;

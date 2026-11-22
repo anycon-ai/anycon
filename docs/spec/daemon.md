@@ -1981,7 +1981,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 | `ask_advisor` | `question`（≤ 2 KiB） | 调用顾问后端（§ 25 的 `advisor` 位置），把回答附上，**同一次唤醒里**只为这一项再分拣一次。每项每次唤醒最多问一次 |
 | `wait` | — | 什么都不做（会话还在跑、在等你的回答） |
 | `hand_back` | — | `handler` 改回 `me`，「经过」里记一条「分身交回给你」和理由 |
-| `done` | — | 把项标成 `review`，「经过」里记理由。分身不会把项标成 `done`，验收由人做 |
+| `done` | — | 它认为做完了：`handler` 改回 `me`，「经过」里记一条「分身认为做完了」和理由。**不写 `state`**（§ 21.2：`state` 只由人设置）；这一项照常靠 `activity = review` 出现在「待验收」里，验收由人做 |
 
 - **`reason`** 必填，≤ 500 个字符，写进运行记录和这一项的「经过」。
 - **`rules?`**：可以带它所依据的规则 id 列表，只记录，4c 用来判断规则是否过期。
@@ -2017,7 +2017,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 - **表 `twin_runs`**：`id`、请求方、`started_ms`、`finished_ms`、触发（合并进来的几种）、`dry_run`、`result`（`done` / `idle` / `budget` / `failed` / `cancelled`）、看了哪些项、判断调用的 id、每项的决定（`action`、`reason`、`rules`、执行结果和不执行的原因）、错误码。
   - 不存提示和模型的原始回答，存的是解析后的决定；`reason` 是模型写的，按 agent 写的内容显示。
   - 保留 90 天。
-- **审计**：分身做的每件事（派发、建问题、交回、标 `review`、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。
+- **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。
 - **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
 
 ### 26.8 RPC

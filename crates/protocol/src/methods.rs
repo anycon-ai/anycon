@@ -149,6 +149,17 @@ pub const RULE_PREVIEW: &str = "rule.preview";
 /// D→C notification，params = RuleChanged
 pub const RULE_CHANGED: &str = "rule.changed";
 
+// 分身（docs/spec/daemon.md § 26）
+pub const TWIN_GET: &str = "twin.get";
+pub const TWIN_SET: &str = "twin.set";
+pub const TWIN_WAKE: &str = "twin.wake";
+pub const TWIN_DRY_RUN: &str = "twin.dry_run";
+pub const TWIN_RUNS: &str = "twin.runs";
+pub const TWIN_QUESTIONS: &str = "twin.questions";
+pub const TWIN_ANSWER: &str = "twin.answer";
+pub const TWIN_CHANGED: &str = "twin.changed";
+pub const TWIN_QUESTION: &str = "twin.question";
+
 // blob（附件，ADR-35）
 /// 开始上传一个附件。
 pub const BLOB_PUT_BEGIN: &str = "blob.put_begin";
@@ -293,6 +304,15 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(RULE_EXTRACT, Some("RuleExtractParams"), Some("RuleExtractResult")),
     req(RULE_EXTRACT_RUNS, Some("RuleExtractRunsParams"), Some("RuleExtractRunsResult")),
     notif(RULE_EXTRACT_DONE, "RuleExtractDone"),
+    req(TWIN_GET, None, Some("TwinGetResult")),
+    req(TWIN_SET, Some("TwinSetParams"), Some("TwinGetResult")),
+    req(TWIN_WAKE, None, None),
+    req(TWIN_DRY_RUN, None, Some("TwinDryRunResult")),
+    req(TWIN_RUNS, Some("TwinRunsParams"), Some("TwinRunsResult")),
+    req(TWIN_QUESTIONS, Some("TwinQuestionsParams"), Some("TwinQuestionsResult")),
+    req(TWIN_ANSWER, Some("TwinAnswerParams"), Some("TwinQuestion")),
+    notif(TWIN_CHANGED, "TwinChanged"),
+    notif(TWIN_QUESTION, "TwinQuestionNotice"),
     req(BLOB_PUT_BEGIN, Some("BlobPutBeginParams"), Some("BlobPutBeginResult")),
     req(BLOB_PUT_CHUNK, Some("BlobPutChunkParams"), None),
     req(BLOB_PUT_END, Some("BlobIdParams"), Some("AttachmentRef")),

@@ -323,6 +323,7 @@ impl FakeAdapter {
                         description: None,
                         default: true,
                         risk: ModeRisk::Normal,
+                        unattended: true,
                     },
                     ModeInfo {
                         id: "plan".into(),
@@ -330,6 +331,7 @@ impl FakeAdapter {
                         description: None,
                         default: false,
                         risk: ModeRisk::Safe,
+                        unattended: false,
                     },
                     ModeInfo {
                         id: "yolo".into(),
@@ -337,6 +339,7 @@ impl FakeAdapter {
                         description: None,
                         default: false,
                         risk: ModeRisk::Dangerous,
+                        unattended: false,
                     },
                 ];
                 info.options = vec![ConfigOption {

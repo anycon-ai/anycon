@@ -32,6 +32,9 @@ pub struct NodeCapabilities {
     /// 支持规则提炼 RPC；没有该字段时按不支持处理。
     #[serde(default)]
     pub rule_extract: bool,
+    /// 支持分身的调度和 RPC。
+    #[serde(default)]
+    pub twin: bool,
 }
 
 /// 节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。

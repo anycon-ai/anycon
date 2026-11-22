@@ -13,13 +13,20 @@ use crate::util::parse_duration;
 pub struct JudgeConfig {
     pub extract: String,
     pub triage: String,
+    pub advisor: String,
     pub daily_calls: u32,
     pub backends: BTreeMap<String, JudgeBackendConfig>,
 }
 
 impl Default for JudgeConfig {
     fn default() -> Self {
-        Self { extract: String::new(), triage: String::new(), daily_calls: 20, backends: BTreeMap::new() }
+        Self {
+            extract: String::new(),
+            triage: String::new(),
+            advisor: String::new(),
+            daily_calls: 20,
+            backends: BTreeMap::new(),
+        }
     }
 }
 
@@ -373,5 +380,25 @@ mod tests {
         {
             assert!(crate::config::is_hot_key(key));
         }
+    }
+}
+
+#[cfg(test)]
+mod twin_config_tests {
+    use crate::config::{is_hot_key, ConfigStore, Paths};
+
+    #[test]
+    fn twin_and_advisor_defaults_and_hot_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::write(paths.config_toml(), "").unwrap();
+        let store = ConfigStore::load(&paths).unwrap();
+        assert!(store.get().twin.enabled);
+        assert!(store.get().judge.advisor.is_empty());
+        assert!(is_hot_key("twin.enabled") && is_hot_key("judge.advisor"));
+        std::fs::write(paths.config_toml(), "[twin]\nenabled=false\n[judge]\nadvisor='expert'\n").unwrap();
+        store.reload().unwrap();
+        assert!(!store.get().twin.enabled);
+        assert_eq!(store.get().judge.advisor, "expert");
     }
 }

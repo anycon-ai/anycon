@@ -106,6 +106,7 @@ pub fn modes() -> Vec<ModeInfo> {
         description: Some(description.to_string()),
         default,
         risk,
+        unattended: id == "auto",
     };
     vec![
         m("default", "Always Ask", "Ask before every file edit and command", true, ModeRisk::Normal),

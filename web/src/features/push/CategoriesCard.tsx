@@ -11,8 +11,8 @@ import { forgetSystemNotifyPrefs } from './prefsCache'
 import type { NotifyCategory } from '@/protocol'
 
 /** 界面上的顺序：要人马上处理的在前。 */
-export const CATEGORY_ORDER: readonly NotifyCategory[] = ['permission_requested', 'error', 'enroll_requested', 'security', 'follow_up', 'turn_finished', 'session_idle']
-/** 能发邮件的四个类别（ADR-37）；另外三个只有推送。 */
+export const CATEGORY_ORDER: readonly NotifyCategory[] = ['permission_requested', 'error', 'enroll_requested', 'security', 'follow_up', 'twin_question', 'turn_finished', 'session_idle']
+/** 能发邮件的四个类别（ADR-37）；其余类别只有推送。 */
 export const EMAIL_CATEGORIES: ReadonlySet<NotifyCategory> = new Set<NotifyCategory>(['permission_requested', 'error', 'enroll_requested', 'security'])
 
 /** hub 没回的类别按「全关」补上，界面每个类别一行。 */

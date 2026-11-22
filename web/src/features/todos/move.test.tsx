@@ -335,6 +335,14 @@ describe('retrying the same move', () => {
   })
 })
 
+it('resets the handler at the target because twin scopes belong to each node', async () => {
+  const item = { ...itemOnSrc(), handler: 'twin' as const }
+  const r = await moveTodo(item, SAME)
+  expect(r.ok).toBe(true)
+  const call = rpc.calls.find((c) => c.nodeId === SAME && c.method === 'todo.add')
+  expect(call?.params).toMatchObject({ handler: 'me' })
+})
+
 describe('deleting the copy and leaving both', () => {
   /** 一次删原节点被拒的移动：两份都在，复制的 updated_ms 已知。 */
   async function stuck(): Promise<string> {

@@ -473,18 +473,18 @@ async fn flush_results_locked(sessions: &Arc<Sessions>, todo_id: &str) {
     }
 }
 
-fn broadcast_event(clients: &Clients, todo_id: &str, event: TodoEvent) {
+pub(crate) fn broadcast_event(clients: &Clients, todo_id: &str, event: TodoEvent) {
     clients.broadcast(methods::TODO_EVENT, TodoEventNotice { todo_id: todo_id.to_string(), event });
 }
 
 /// 调用方在「经过」里的身份。
 pub fn actor_of(caller: &Caller) -> TodoActor {
     if caller.is_mcp() {
-        TodoActor { kind: TodoSourceKind::Agent, device_id: None }
+        TodoActor { id: None, kind: TodoSourceKind::Agent, device_id: None }
     } else if caller.local {
-        TodoActor { kind: TodoSourceKind::Local, device_id: None }
+        TodoActor { id: None, kind: TodoSourceKind::Local, device_id: None }
     } else {
-        TodoActor { kind: TodoSourceKind::Device, device_id: Some(caller.device_id.clone()) }
+        TodoActor { id: None, kind: TodoSourceKind::Device, device_id: Some(caller.device_id.clone()) }
     }
 }
 
@@ -514,7 +514,7 @@ fn event_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<TodoEvent, StoreError> 
 fn data_session_id(d: &TodoEventData) -> Option<&str> {
     match d {
         TodoEventData::Dispatched { session_id, .. } | TodoEventData::Result { session_id, .. } => Some(session_id),
-        TodoEventData::State { .. } => None,
+        _ => None,
     }
 }
 
@@ -523,11 +523,17 @@ fn data_kind(d: &TodoEventData) -> &'static str {
         TodoEventData::Dispatched { .. } => "dispatched",
         TodoEventData::Result { .. } => "result",
         TodoEventData::State { .. } => "state",
+        TodoEventData::HandedBack { .. } => "handed_back",
+        TodoEventData::TakenOver { .. } => "taken_over",
+        TodoEventData::TwinDecision { .. } => "twin_decision",
+        TodoEventData::TwinQuestion { .. } => "twin_question",
+        TodoEventData::Handler { .. } => "handler",
+        TodoEventData::Unknown => "unknown",
     }
 }
 
 /// 追加一条「经过」（`seq` 在这一项内从 1 递增；调用方持清单锁，所以没有并发的追加）。
-async fn event_append_on(
+pub(crate) async fn event_append_on(
     conn: &mut SqliteConnection,
     todo_id: &str,
     ts_ms: u64,
@@ -713,7 +719,7 @@ impl Store {
         .fetch_all(self.pool())
         .await?;
         let has_more = rows.len() > limit;
-        // 读不懂的行（更早的版本留下的、或者更新的版本写的）跳过，不让整页失败
+        // 结构损坏的行跳过，不让整页失败；不认识的 kind 由 Unknown 接住并照常返回。
         let events = rows
             .iter()
             .take(limit)

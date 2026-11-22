@@ -22,6 +22,10 @@ export type PushCategory = NotifyCategory | 'test'
 export const SESSION_CATEGORIES = ['permission_requested', 'turn_finished', 'error', 'session_idle', 'follow_up'] as const
 export type SessionCategory = (typeof SESSION_CATEGORIES)[number]
 
+function isSessionCategory(category: PushCategory): category is SessionCategory {
+  return SESSION_CATEGORIES.some((known) => known === category)
+}
+
 const SESSION_TITLE_KEY: Record<SessionCategory, string> = {
   permission_requested: 'push.permissionRequested',
   turn_finished: 'push.turnFinished',
@@ -76,6 +80,8 @@ export function pushText(t: TFunction, input: PushTextInput): PushText {
   if (category === 'test') return { title: t('push.test'), body: t('push.testBody'), tag: 'test', url: '/settings/notifications' }
   if (!node) return { title: t('push.generic'), tag: category, url: '/' }
   if (category === 'enroll_requested' || category === 'security') return enrollPushText(t, category, node)
+  // 还没有专用文案的新类别照常显示通用通知，避免按会话类别索引失败。
+  if (!isSessionCategory(category)) return genericPushText(t)
   const param = node.param ?? node.id.slice(0, 8)
   const nodeName = cleanHintText(node.name)
   // 空间名是任何已配对设备都能写到节点上的文字：和节点名一样清理，缺了就不带

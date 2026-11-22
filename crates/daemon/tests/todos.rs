@@ -64,6 +64,7 @@ fn row(id: &str, updated_ms: u64, state: TodoState) -> Todo {
         body: String::new(),
         project: None,
         state,
+        handler: Default::default(),
         due_ms: None,
         source: TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None },
         unreviewed: false,
@@ -840,12 +841,12 @@ async fn audit_records_lengths_and_field_names_never_content() {
     let first = entries.iter().find(|e| e.target.as_deref() == Some(t.id.as_str()) && e.action == "todo.add").unwrap();
     assert_eq!(
         first.detail,
-        json!({ "title_len": secret_title.chars().count(), "body_len": secret_body.len(), "project": "web", "source_kind": "local" })
+        json!({ "title_len": secret_title.chars().count(), "body_len": secret_body.len(), "project": "web", "source_kind": "local", "handler": "me" })
     );
     assert_eq!(first.device_name, "local-cli");
     let agent_add =
         entries.iter().find(|e| e.target.as_deref() == Some(agent_item.id.as_str()) && e.action == "todo.add").unwrap();
-    assert_eq!(agent_add.detail, json!({ "title_len": 3, "body_len": 0, "source_kind": "agent" }));
+    assert_eq!(agent_add.detail, json!({ "title_len": 3, "body_len": 0, "source_kind": "agent", "handler": "me" }));
     assert_eq!(agent_add.device_name, "local-mcp");
 
     let updates: Vec<&AuditEntry> = entries.iter().filter(|e| e.action == "todo.update").collect();
@@ -1125,4 +1126,112 @@ async fn an_unknown_source_kind_is_never_written_to_the_store() {
     assert!(td.ctx.store.todo_insert(&t).await.is_err());
     assert!(td.ctx.store.todo_get(&t.id).await.unwrap().is_none(), "nothing was stored");
     td.shutdown().await;
+}
+
+#[tokio::test]
+async fn handler_changes_persist_broadcast_history_and_audit() {
+    let td = TestDaemon::start().await;
+    let mut c = td.client_as(anycon_daemon::clients::Caller {
+        device_id: "dev-human".into(),
+        device_name: "human".into(),
+        kind: DeviceKind::Web,
+        local: false,
+    });
+    let mut observer = td.client("observer");
+    let todo = add_ok(&td, &mut c, "Handle this").await;
+    assert_eq!(todo.handler, TodoHandler::Me);
+    observer.drain_now();
+    let changed = update(&td, &mut c, json!({"id":todo.id, "handler":"twin"})).await.unwrap();
+    assert_eq!(changed.handler, TodoHandler::Twin);
+    assert!(changed.updated_ms > todo.updated_ms);
+    let notice = changes(&mut observer);
+    assert_eq!(notice.len(), 1);
+    assert_eq!(notice[0].todo.as_ref().unwrap().handler, TodoHandler::Twin);
+    let got: Todo = c.call(&td, methods::TODO_GET, json!({"id":todo.id})).await.unwrap();
+    assert_eq!(got.handler, TodoHandler::Twin);
+    assert_eq!(list(&td, &mut c, json!({})).await.todos[0].handler, TodoHandler::Twin);
+    let history: TodoHistoryResult = c.call(&td, methods::TODO_HISTORY, json!({"id":todo.id})).await.unwrap();
+    assert_eq!(history.events.len(), 1);
+    assert_eq!(
+        history.events[0].data,
+        TodoEventData::Handler {
+            from: TodoHandler::Me,
+            to: TodoHandler::Twin,
+            by: TodoActor { kind: TodoSourceKind::Device, id: None, device_id: Some("dev-human".into()) },
+        }
+    );
+    let entries = audit(&td, "todo.update").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].detail["fields"], json!(["handler"]));
+    assert_eq!(entries[0].detail["handler"], json!({"from":"me", "to":"twin"}));
+    let noop = update(&td, &mut c, json!({"id":todo.id, "handler":"twin"})).await.unwrap();
+    assert_eq!(noop.updated_ms, changed.updated_ms);
+    assert_eq!(audit(&td, "todo.update").await.len(), 1);
+    update(&td, &mut c, json!({"id":todo.id, "handler":"me"})).await.unwrap();
+    let assigned = add(&td, &mut c, json!({"id":id(), "title":"Assigned", "handler":"twin"})).await.unwrap();
+    assert_eq!(assigned.handler, TodoHandler::Twin);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn handler_requires_human_and_explicit_review_and_rejects_unknown() {
+    let td = TestDaemon::start().await;
+    let mut human = td.local_cli_client();
+    let mut mcp = td.local_mcp_client();
+    for agent in [false, true] {
+        let caller = if agent { &mut human } else { &mut mcp };
+        let e =
+            add(&td, caller, json!({"id":id(), "title":"Agent", "handler":"twin", "agent":agent})).await.unwrap_err();
+        assert_eq!(e.data.unwrap().code, ErrorCode::Forbidden);
+    }
+    let todo = add(&td, &mut human, json!({"id":id(), "title":"Unreviewed", "agent":true})).await.unwrap();
+    for params in [
+        json!({"id":todo.id, "handler":"twin"}),
+        json!({"id":todo.id, "handler":"twin", "reviewed":false}),
+        json!({"id":todo.id, "handler":"twin", "title":"Changed"}),
+    ] {
+        let e = update(&td, &mut human, params).await.unwrap_err();
+        assert_eq!(code(&e), (ErrorCode::Invalid, Some("handler".into()), Some("unreviewed".into())));
+    }
+    for (caller, agent) in [(&mut mcp, false), (&mut human, true)] {
+        let e = update(&td, caller, json!({"id":todo.id, "handler":"twin", "reviewed":true, "agent":agent}))
+            .await
+            .unwrap_err();
+        assert_eq!(e.data.unwrap().code, ErrorCode::Forbidden);
+    }
+    assert!(td.ctx.store.todo_get(&todo.id).await.unwrap().unwrap().unreviewed);
+    assert!(audit(&td, "todo.update").await.is_empty());
+    let reviewed = update(&td, &mut human, json!({"id":todo.id, "handler":"twin", "reviewed":true})).await.unwrap();
+    assert!(!reviewed.unreviewed && reviewed.handler == TodoHandler::Twin);
+    let e = update(&td, &mut mcp, json!({"id":todo.id, "handler":"twin"})).await.unwrap_err();
+    assert_eq!(e.data.unwrap().code, ErrorCode::Forbidden);
+    // agent 仍可把项交回人；不能借别的字段或 reviewed 自己收下项。
+    update(&td, &mut mcp, json!({"id":todo.id, "handler":"me"})).await.unwrap();
+    let t = add(&td, &mut human, json!({"id":id(), "title":"Agent", "agent":true})).await.unwrap();
+    assert!(
+        update(&td, &mut human, json!({"id":t.id, "agent":true,"reviewed":true,"title":"Edited"}))
+            .await
+            .unwrap()
+            .unreviewed
+    );
+    for value in ["unknown", "future"] {
+        let e = update(&td, &mut human, json!({"id":todo.id, "handler":value})).await.unwrap_err();
+        assert_eq!(invalid_field(&e), "handler");
+        let e = add(&td, &mut human, json!({"id":id(), "title":"Invalid", "handler":value})).await.unwrap_err();
+        assert_eq!(invalid_field(&e), "handler");
+    }
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn handler_migration_preserves_existing_todos() {
+    use sqlx::Row;
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0004_todos.sql")).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO todos (id,title,body,state,source_kind,unreviewed,created_ms,updated_ms) VALUES ('t','title','','open','local',0,1,1)")
+        .execute(&pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0008_todo_handler.sql")).execute(&pool).await.unwrap();
+    let row = sqlx::query("SELECT handler,title FROM todos WHERE id='t'").fetch_one(&pool).await.unwrap();
+    assert_eq!(row.get::<String, _>("handler"), "me");
+    assert_eq!(row.get::<String, _>("title"), "title");
 }

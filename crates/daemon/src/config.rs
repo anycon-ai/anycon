@@ -469,6 +469,19 @@ impl<'de> Deserialize<'de> for AgentsConfig {
     }
 }
 
+/// 分身的机器级硬开关；热加载，远程只能关闭。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TwinConfig {
+    pub enabled: bool,
+}
+
+impl Default for TwinConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -482,6 +495,7 @@ pub struct Config {
     pub preview: PreviewConfig,
     pub rules: RulesConfig,
     pub judge: JudgeConfig,
+    pub twin: TwinConfig,
     pub notify: NotifyConfig,
     pub update: UpdateConfig,
     pub log: LogConfig,
@@ -1063,6 +1077,7 @@ pub fn is_hot_key(key: &str) -> bool {
         || key.starts_with("preview.")
         || key.starts_with("rules.")
         || key.starts_with("judge.")
+        || key == "twin.enabled"
         || key == "update.check"
         || key == "log.level"
     {

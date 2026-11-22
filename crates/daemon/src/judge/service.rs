@@ -20,6 +20,7 @@ use crate::store::{JudgeCallFinish, JudgeCallStart, Store, StoreError};
 pub enum Position {
     Extract,
     Triage,
+    Advisor,
 }
 
 impl Position {
@@ -27,6 +28,7 @@ impl Position {
         match self {
             Self::Extract => "extract",
             Self::Triage => "triage",
+            Self::Advisor => "advisor",
         }
     }
 }
@@ -137,6 +139,7 @@ pub fn local_day_start(now_ms: u64) -> Option<u64> {
 fn selected(cfg: &JudgeConfig, position: Position) -> Option<&str> {
     let name = match position {
         Position::Extract if !cfg.extract.is_empty() => &cfg.extract,
+        Position::Advisor if !cfg.advisor.is_empty() => &cfg.advisor,
         _ => &cfg.triage,
     };
     cfg.backends.contains_key(name).then_some(name.as_str())
@@ -188,6 +191,7 @@ pub fn describe(cfg: &Config, env: &HashMap<String, String>, agents: &[AgentInfo
         backends,
         extract: selected(&cfg.judge, Position::Extract).map(str::to_string),
         triage: selected(&cfg.judge, Position::Triage).map(str::to_string),
+        advisor: selected(&cfg.judge, Position::Advisor).map(str::to_string),
         daily_calls: cfg.judge.daily_calls,
     }
 }
@@ -862,6 +866,14 @@ mod tests {
         let info = describe(&cfg, &HashMap::new(), &[]);
         assert_eq!(info.extract.as_deref(), Some("a"));
         assert_eq!(info.triage, info.extract);
+        assert_eq!(info.advisor, info.triage);
+        cfg.judge.advisor = "b".into();
+        assert_eq!(selected(&cfg.judge, Position::Advisor), Some("b"));
+        cfg.judge.advisor = "missing".into();
+        assert_eq!(selected(&cfg.judge, Position::Advisor), None);
+        cfg.judge.advisor.clear();
+        assert_eq!(selected(&cfg.judge, Position::Advisor), Some("a"));
+        assert_eq!(Position::Advisor.as_str(), "advisor");
         assert_eq!(info.backends[0].problem, Some(JudgeProblem::NoKey));
         assert_eq!(info.backends[1].problem, None);
         assert_eq!(info.backends[2].problem, Some(JudgeProblem::AgentMissing));

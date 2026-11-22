@@ -14,7 +14,7 @@ use std::time::Duration;
 use anycon_daemon::judge::{JudgeReply, Usage};
 use anycon_daemon::testutil::{FakeHubLink, FakeJudgeBackend, TestClient, TestDaemon};
 use anycon_protocol::methods::{self, Direction, REGISTRY};
-use anycon_protocol::{DeviceKind, EnrollFrame, EnrollHint, EnrollMethod, Event, SessionEvent};
+use anycon_protocol::{DeviceKind, EnrollFrame, EnrollHint, EnrollMethod, ErrorCode, Event, NodeInfo, SessionEvent};
 use jsonschema::Validator;
 use serde_json::{json, Value};
 
@@ -37,7 +37,27 @@ const NOT_CALLED: &[(&str, &str)] = &[
         methods::JOB_CANCEL,
         "needs a clone job that is still running; an offline test cannot keep one running (tests/socket.rs covers the NotFound path); its `Empty` result is validated through the other `result: None` methods",
     ),
+    (methods::TWIN_GET, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
+    (methods::TWIN_SET, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
+    (methods::TWIN_WAKE, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
+    (methods::TWIN_DRY_RUN, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
+    (methods::TWIN_RUNS, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
+    (methods::TWIN_QUESTIONS, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
+    (methods::TWIN_ANSWER, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
 ];
+
+#[tokio::test]
+async fn twin_methods_are_registered_but_unavailable() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
+    assert!(!info.capabilities.twin);
+    for (method, _) in NOT_CALLED.iter().filter(|(method, _)| method.starts_with("twin.")) {
+        let err = c.call::<Value>(&td, method, json!({})).await.unwrap_err();
+        assert_eq!(err.data.unwrap().code, ErrorCode::Unsupported, "{method}");
+    }
+    td.shutdown().await;
+}
 
 struct Walk<'a> {
     td: &'a TestDaemon,

@@ -185,6 +185,7 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
     let due_ms = a.due.as_deref().map(parse_due).transpose()?;
     let nested = inside_agent();
     let params = TodoAddParams {
+        handler: None,
         // 客户端生成 id：`todo.add` 按它幂等
         id: uuid::Uuid::new_v4().to_string(),
         title: a.title,
@@ -237,8 +238,8 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
         let by = match (t.source.kind, t.unreviewed) {
             (TodoSourceKind::Agent, true) => app.out.yellow("agent (unreviewed)"),
             (TodoSourceKind::Agent, false) => "agent".to_string(),
-            (TodoSourceKind::Unknown, true) => app.out.yellow("other (unreviewed)"),
-            (TodoSourceKind::Unknown, false) => "other".to_string(),
+            (TodoSourceKind::Twin | TodoSourceKind::Unknown, true) => app.out.yellow("other (unreviewed)"),
+            (TodoSourceKind::Twin | TodoSourceKind::Unknown, false) => "other".to_string(),
             _ => String::new(),
         };
         rows.push(vec![
@@ -290,6 +291,8 @@ async fn set_state(app: &App, what: &str, key: &str, state: TodoState, done: &st
 
 fn empty_update() -> TodoUpdateParams {
     TodoUpdateParams {
+        handler: None,
+        agent: None,
         id: String::new(),
         title: None,
         body: None,
@@ -434,6 +437,7 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         (TodoSourceKind::Device, Some(d)) => format!("device {}", sanitize_label(d, 40, "?")),
         (TodoSourceKind::Local, _) => "this machine".to_string(),
         (TodoSourceKind::Agent, _) => "an agent".to_string(),
+        (TodoSourceKind::Twin, _) => "the twin".to_string(),
         (TodoSourceKind::Device, None) => "a device".to_string(),
         (TodoSourceKind::Unknown, _) => "someone".to_string(),
     };
@@ -470,6 +474,20 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         TodoEventData::State { from, to, by: who } => {
             (format!("{} -> {} by {}", from.as_str(), to.as_str(), by(who)), vec![])
         }
+        TodoEventData::Handler { from, to, by: who } => {
+            (format!("handler: {} -> {} by {}", from.as_str(), to.as_str(), by(who)), vec![])
+        }
+        TodoEventData::HandedBack { reason, .. } => {
+            ("handed back to you".into(), visible(reason).lines().map(str::to_string).collect())
+        }
+        TodoEventData::TakenOver { by: who } => (format!("taken over by {}", by(who)), vec![]),
+        TodoEventData::TwinDecision { reason, .. } => {
+            ("twin decision".into(), visible(reason).lines().map(str::to_string).collect())
+        }
+        TodoEventData::TwinQuestion { question_id } => {
+            (format!("twin question {}", sanitize_label(question_id, 80, "?")), vec![])
+        }
+        TodoEventData::Unknown => ("unrecognized event".into(), vec![]),
     }
 }
 

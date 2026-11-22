@@ -180,6 +180,17 @@ export const METHODS = {
   /** D→C notification，params = RuleExtractDone */
   RULE_EXTRACT_DONE: 'rule.extract_done',
 
+  // 分身
+  TWIN_GET: 'twin.get',
+  TWIN_SET: 'twin.set',
+  TWIN_WAKE: 'twin.wake',
+  TWIN_DRY_RUN: 'twin.dry_run',
+  TWIN_RUNS: 'twin.runs',
+  TWIN_QUESTIONS: 'twin.questions',
+  TWIN_ANSWER: 'twin.answer',
+  TWIN_CHANGED: 'twin.changed',
+  TWIN_QUESTION: 'twin.question',
+
   // blob（附件，ADR-35）
   /** params = BlobPutBeginParams → BlobPutBeginResult */
   BLOB_PUT_BEGIN: 'blob.put_begin',

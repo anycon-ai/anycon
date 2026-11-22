@@ -90,6 +90,7 @@ fn builtin_modes() -> Vec<ModeInfo> {
             description: Some("Ask before running commands".into()),
             default: true,
             risk: ModeRisk::Normal,
+            unattended: true,
         },
         ModeInfo {
             id: MODE_PLAN.into(),
@@ -97,6 +98,7 @@ fn builtin_modes() -> Vec<ModeInfo> {
             description: Some("Plan only, never run anything".into()),
             default: false,
             risk: ModeRisk::Safe,
+            unattended: false,
         },
         ModeInfo {
             id: MODE_YOLO.into(),
@@ -104,6 +106,7 @@ fn builtin_modes() -> Vec<ModeInfo> {
             description: Some("Run everything without asking".into()),
             default: false,
             risk: ModeRisk::Dangerous,
+            unattended: false,
         },
     ]
 }
@@ -239,6 +242,11 @@ mod tests {
             previous: None,
             scratch_dir: std::env::temp_dir(),
         }
+    }
+
+    #[test]
+    fn only_ask_is_unattended() {
+        assert!(builtin_modes().iter().all(|m| m.unattended == (m.id == MODE_ASK)));
     }
 
     #[tokio::test]

@@ -309,6 +309,7 @@ pub fn modes(state: &ConfigState) -> Vec<ModeInfo> {
             label: m.name,
             description: m.description,
             risk: ModeRisk::Normal,
+            unattended: false,
         })
         .collect()
 }

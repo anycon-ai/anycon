@@ -1593,6 +1593,7 @@
         "rules": "Rules",
         "notify": "Notifications",
         "log": "Logging",
+        "twin": "Twin",
         "judge": "Judgment backends"
       },
       "keys": {
@@ -1671,6 +1672,12 @@
             "hint": "How much the node writes to its log. You can read the log under About, View logs."
           }
         },
+        "twin": {
+          "enabled": {
+            "label": "Enable twin",
+            "hint": "Turn off all twin scheduling on this node. Turning it back on requires changing the setting on the machine."
+          }
+        },
         "judge": {
           "extract": {
             "label": "Extraction backend",
@@ -1678,7 +1685,11 @@
           },
           "triage": {
             "label": "Triage backend",
-            "hint": "Choose the backend for triage and for extraction when no separate backend is selected."
+            "hint": "Choose the backend for triage, and for extraction or advice when no separate backend is selected."
+          },
+          "advisor": {
+            "label": "Advisor backend",
+            "hint": "Choose the advisor backend; an empty choice follows the triage backend."
           },
           "daily_calls": {
             "label": "Daily judgment calls",
@@ -2434,7 +2445,8 @@
         "security": "Security alerts for a node",
         "turn_finished": "A turn finished",
         "session_idle": "A session went idle",
-        "follow_up": "A session marked Follow up is ready"
+        "follow_up": "A session marked Follow up is ready",
+        "twin_question": "Your twin has a question"
       },
       "emailNoSmtp": "This hub is not set up to send email.",
       "emailNoAddress": "Link an email address in Account settings to get alerts by email.",

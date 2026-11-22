@@ -850,16 +850,18 @@ pub(crate) async fn notification_prefs_are_stored_per_account_and_category(db: &
     let b = s.create_account("b", false, now).await.unwrap();
     assert!(s.get_notification_prefs(&a.id).await.unwrap().is_empty(), "no rows = defaults, filled in by the caller");
     let p = |category, push, email| NotificationPref { category, push, email };
-    s.set_notification_prefs(&a.id, &[p(Error, false, true), p(Security, true, false)]).await.unwrap();
+    s.set_notification_prefs(&a.id, &[p(Error, false, true), p(Security, true, false), p(TwinQuestion, true, false)])
+        .await
+        .unwrap();
     s.set_notification_prefs(&a.id, &[p(Error, true, true)]).await.unwrap();
     s.set_notification_prefs(&b.id, &[p(Error, false, false)]).await.unwrap();
     let mut got = s.get_notification_prefs(&a.id).await.unwrap();
     got.sort_by_key(|x| category_to_str(x.category));
-    assert_eq!(got, vec![p(Error, true, true), p(Security, true, false)]);
+    assert_eq!(got, vec![p(Error, true, true), p(Security, true, false), p(TwinQuestion, true, false)]);
     assert_eq!(s.get_notification_prefs(&b.id).await.unwrap(), vec![p(Error, false, false)]);
     // 一个陌生的类别（以后版本写进来的）被跳过，不影响其它
     db.insert_unknown_notification_category(&a.id).await;
-    assert_eq!(s.get_notification_prefs(&a.id).await.unwrap().len(), 2);
+    assert_eq!(s.get_notification_prefs(&a.id).await.unwrap().len(), 3);
 }
 
 pub(crate) async fn the_notification_tables_cascade_with_their_owners(db: &TestDb) {

@@ -746,6 +746,7 @@ impl Rpc {
                 todo: true,
                 rules: true,
                 rule_extract: true,
+                twin: false,
             },
             started_at_ms: c.started_at_ms,
             attachment_limits: Some(NodeAttachmentLimits {

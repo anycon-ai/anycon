@@ -9,8 +9,9 @@
 use std::sync::Arc;
 
 use anycon_protocol::{
-    methods, ClearableTodoField, ErrorCode, RpcError, Todo, TodoAddParams, TodoChanged, TodoDeleteParams, TodoIdParams,
-    TodoListParams, TodoListResult, TodoSource, TodoSourceKind, TodoState, TodoUpdateParams,
+    methods, ClearableTodoField, ErrorCode, RpcError, Todo, TodoAddParams, TodoChanged, TodoDeleteParams,
+    TodoEventData, TodoHandler, TodoIdParams, TodoListParams, TodoListResult, TodoSource, TodoSourceKind, TodoState,
+    TodoUpdateParams,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -106,6 +107,20 @@ pub(crate) fn check_project(project: &str) -> RpcResult<String> {
     Ok(p.to_string())
 }
 
+/// 交给分身必须是人的明确决定，未收下的项不能借处理人变更自动收下。
+fn check_handler(caller: &Caller, agent: bool, handler: Option<TodoHandler>, unreviewed: bool) -> RpcResult<()> {
+    match handler {
+        Some(TodoHandler::Unknown) => Err(invalid("handler", None, "unknown handler".into())),
+        Some(TodoHandler::Twin) if caller.is_mcp() || agent => {
+            Err(RpcError::new(ErrorCode::Forbidden, "agents cannot assign todos to the twin"))
+        }
+        Some(TodoHandler::Twin) if unreviewed => {
+            Err(invalid("handler", Some("unreviewed"), "review the todo before assigning it to the twin".into()))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn check_due(due_ms: u64) -> RpcResult<u64> {
     if due_ms > i64::MAX as u64 {
         return Err(invalid("due_ms", None, "due_ms is out of range".into()));
@@ -121,6 +136,7 @@ fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
     let kind = match r.get::<String, _>("source_kind").as_str() {
         "device" => TodoSourceKind::Device,
         "agent" => TodoSourceKind::Agent,
+        "twin" => TodoSourceKind::Twin,
         _ => TodoSourceKind::Local,
     };
     let state = match r.get::<String, _>("state").as_str() {
@@ -137,6 +153,11 @@ fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
         body: r.get("body"),
         project: r.get("project"),
         state,
+        handler: match r.get::<String, _>("handler").as_str() {
+            "twin" => TodoHandler::Twin,
+            "me" => TodoHandler::Me,
+            _ => TodoHandler::Unknown,
+        },
         due_ms: r.get::<Option<i64>, _>("due_ms").map(|v| v as u64),
         source: TodoSource { kind, device_id: r.get("source_device"), session_id: r.get("source_session") },
         unreviewed: r.get::<i64, _>("unreviewed") != 0,
@@ -154,6 +175,7 @@ fn source_kind_str(k: TodoSourceKind) -> &'static str {
         TodoSourceKind::Device => "device",
         TodoSourceKind::Local => "local",
         TodoSourceKind::Agent => "agent",
+        TodoSourceKind::Twin => "twin",
         // daemon 自己不产生 `Unknown`（它只在客户端解析更新版本的数据时出现），`todo_insert` 也拒绝写它；
         // 这里只是让匹配保持完整，并且绝不能落到人的来源上
         TodoSourceKind::Unknown => "unknown",
@@ -167,7 +189,7 @@ where
 {
     sqlx::query(
         "UPDATE todos SET title = ?, body = ?, project = ?, state = ?, due_ms = ?, unreviewed = ?, \
-         updated_ms = ?, closed_ms = ? WHERE id = ?",
+         updated_ms = ?, closed_ms = ?, handler = ? WHERE id = ?",
     )
     .bind(&t.title)
     .bind(&t.body)
@@ -177,7 +199,43 @@ where
     .bind(t.unreviewed as i64)
     .bind(t.updated_ms as i64)
     .bind(t.closed_ms.map(|v| v as i64))
+    .bind(t.handler.as_str())
     .bind(&t.id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// 新建清单项，可与处理人「经过」放在同一个事务里。
+async fn insert_todo_on<'e, E>(db: E, t: &Todo) -> Result<(), StoreError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    // `Unknown` 只存在于客户端的解析里：daemon 不能把它写进库（读回去会变成别的种类）
+    if t.source.kind == TodoSourceKind::Unknown {
+        return Err(StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a todo cannot have an unknown source kind",
+        )));
+    }
+    sqlx::query(
+        "INSERT INTO todos (id, title, body, project, state, due_ms, source_kind, source_device, source_session, \
+         unreviewed, created_ms, updated_ms, closed_ms, handler) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )
+    .bind(&t.id)
+    .bind(&t.title)
+    .bind(&t.body)
+    .bind(&t.project)
+    .bind(t.state.as_str())
+    .bind(t.due_ms.map(|v| v as i64))
+    .bind(source_kind_str(t.source.kind))
+    .bind(&t.source.device_id)
+    .bind(&t.source.session_id)
+    .bind(t.unreviewed as i64)
+    .bind(t.created_ms as i64)
+    .bind(t.updated_ms as i64)
+    .bind(t.closed_ms.map(|v| v as i64))
+    .bind(t.handler.as_str())
     .execute(db)
     .await?;
     Ok(())
@@ -211,33 +269,7 @@ impl Store {
     }
 
     pub async fn todo_insert(&self, t: &Todo) -> Result<(), StoreError> {
-        // `Unknown` 只存在于客户端的解析里：daemon 不能把它写进库（读回去会变成别的种类）
-        if t.source.kind == TodoSourceKind::Unknown {
-            return Err(StoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "a todo cannot have an unknown source kind",
-            )));
-        }
-        sqlx::query(
-            "INSERT INTO todos (id, title, body, project, state, due_ms, source_kind, source_device, source_session, \
-             unreviewed, created_ms, updated_ms, closed_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        )
-        .bind(&t.id)
-        .bind(&t.title)
-        .bind(&t.body)
-        .bind(&t.project)
-        .bind(t.state.as_str())
-        .bind(t.due_ms.map(|v| v as i64))
-        .bind(source_kind_str(t.source.kind))
-        .bind(&t.source.device_id)
-        .bind(&t.source.session_id)
-        .bind(t.unreviewed as i64)
-        .bind(t.created_ms as i64)
-        .bind(t.updated_ms as i64)
-        .bind(t.closed_ms.map(|v| v as i64))
-        .execute(self.pool())
-        .await?;
-        Ok(())
+        insert_todo_on(self.pool(), t).await
     }
 
     /// 写回可以变的字段（来源和创建时间不变）。
@@ -385,6 +417,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
     let due_ms = p.due_ms.map(check_due).transpose()?;
     let source = source_of(c, caller, p.agent.unwrap_or(false), p.origin_session.as_deref()).await?;
     let unreviewed = source.kind == TodoSourceKind::Agent;
+    check_handler(caller, p.agent.unwrap_or(false), p.handler, unreviewed)?;
 
     if c.store.todo_count_open().await.map_err(internal)? >= MAX_OPEN {
         return Err(invalid("todos", Some("too_many"), format!("at most {MAX_OPEN} open todos")));
@@ -404,6 +437,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         body,
         project,
         state: TodoState::Open,
+        handler: p.handler.unwrap_or_default(),
         due_ms,
         source,
         unreviewed,
@@ -413,12 +447,36 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         sessions: Vec::new(),
         activity: None,
     };
-    c.store.todo_insert(&todo).await.map_err(internal)?;
+    let mut tx = c.store.pool().begin().await.map_err(StoreError::from).map_err(internal)?;
+    insert_todo_on(&mut *tx, &todo).await.map_err(internal)?;
+    let handler_event = if todo.handler != TodoHandler::Me {
+        Some(
+            crate::todo_dispatch::event_append_on(
+                &mut tx,
+                &todo.id,
+                now,
+                TodoEventData::Handler {
+                    from: TodoHandler::Me,
+                    to: todo.handler,
+                    by: crate::todo_dispatch::actor_of(caller),
+                },
+            )
+            .await
+            .map_err(internal)?,
+        )
+    } else {
+        None
+    };
+    tx.commit().await.map_err(StoreError::from).map_err(internal)?;
+    if let Some(ev) = handler_event {
+        crate::todo_dispatch::broadcast_event(&c.clients, &todo.id, ev);
+    }
     // 只记长度（标题按字符、正文按字节）和项目名，不记内容
     let mut detail = json!({
         "title_len": todo.title.chars().count(),
         "body_len": todo.body.len(),
         "source_kind": source_kind_str(todo.source.kind),
+        "handler": todo.handler,
     });
     if let Some(project) = &todo.project {
         detail["project"] = json!(project);
@@ -434,7 +492,11 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     check_id(&p.id)?;
     let _w = c.store.todo_lock().lock().await;
     let old = c.store.todo_get(&p.id).await.map_err(internal)?.ok_or_else(|| not_found(&p.id))?;
+    check_handler(caller, p.agent.unwrap_or(false), p.handler, old.unreviewed && p.reviewed != Some(true))?;
     let mut new = old.clone();
+    if let Some(handler) = p.handler {
+        new.handler = handler;
+    }
     if let Some(t) = &p.title {
         new.title = check_title(t)?;
     }
@@ -474,9 +536,12 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     if new.state != old.state {
         fields.push("state");
     }
+    if new.handler != old.handler {
+        fields.push("handler");
+    }
     // `unreviewed` 从 true 变 false：人收下它（`reviewed: true`），或者对它做了任何别的修改。
     // 自报了 `mcp` 的本机连接两条都不算：`reviewed` 被忽略，它做的修改也不算「人改过」。
-    if old.unreviewed && !caller.is_mcp() && (p.reviewed == Some(true) || !fields.is_empty()) {
+    if old.unreviewed && !caller.is_mcp() && p.agent != Some(true) && (p.reviewed == Some(true) || !fields.is_empty()) {
         new.unreviewed = false;
         fields.push("unreviewed");
     }
@@ -498,10 +563,36 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
         _ => {}
     }
     new.updated_ms = next_updated_ms(now, old.updated_ms);
-    c.store.todo_save(&new).await.map_err(internal)?;
+    let mut tx = c.store.pool().begin().await.map_err(StoreError::from).map_err(internal)?;
+    save_todo_on(&mut *tx, &new).await.map_err(internal)?;
+    let handler_event = if new.handler != old.handler {
+        Some(
+            crate::todo_dispatch::event_append_on(
+                &mut tx,
+                &new.id,
+                now,
+                TodoEventData::Handler {
+                    from: old.handler,
+                    to: new.handler,
+                    by: crate::todo_dispatch::actor_of(caller),
+                },
+            )
+            .await
+            .map_err(internal)?,
+        )
+    } else {
+        None
+    };
+    tx.commit().await.map_err(StoreError::from).map_err(internal)?;
+    if let Some(ev) = handler_event {
+        crate::todo_dispatch::broadcast_event(&c.clients, &new.id, ev);
+    }
     let mut detail = json!({ "fields": fields });
     if new.state != old.state {
         detail["state"] = json!({ "from": old.state, "to": new.state });
+    }
+    if new.handler != old.handler {
+        detail["handler"] = json!({ "from": old.handler, "to": new.handler });
     }
     c.audit.record(caller, "todo.update", Some(&new.id), detail).await;
     // 派发过的项：状态是人改的，「经过」里记一条（§ 22.4）
@@ -586,6 +677,7 @@ mod tests {
             body: String::new(),
             project: None,
             state: TodoState::Open,
+            handler: Default::default(),
             due_ms: None,
             source: TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None },
             unreviewed: false,

@@ -315,6 +315,138 @@ fn main() {
             ),
         ),
     ]);
+    // 分身协议的请求、响应和通知由 Rust 类型序列化，供 TS 编解码逐字节核对。
+    let scope = TwinScope {
+        paused: false,
+        projects: vec!["app".into()],
+        agent: Some("mock".into()),
+        model: None,
+        mode: None,
+        max_sessions: 2,
+        daily_dispatches: 10,
+    };
+    let twin = TwinGetResult {
+        scope,
+        state: TwinState::Idle,
+        enabled: true,
+        configured: true,
+        today: TwinToday { dispatches: 1, judge_calls: 2 },
+        working: vec!["t".into()],
+        waiting: vec![],
+    };
+    let question = TwinQuestion {
+        id: "q".into(),
+        todo_id: "t".into(),
+        question: "Which project?".into(),
+        options: vec!["app".into()],
+        created_ms: 1,
+        answered_ms: Some(2),
+        answer: Some("app".into()),
+        answered_by: Some(TodoActor { kind: TodoSourceKind::Device, id: None, device_id: Some(DEVICE_A.into()) }),
+        status: TwinQuestionStatus::Answered,
+    };
+    let run = TwinRun {
+        id: "r".into(),
+        requester: "local".into(),
+        started_ms: 1,
+        finished_ms: Some(2),
+        triggers: vec![TwinTrigger::Todo, TwinTrigger::Manual],
+        dry_run: true,
+        result: TwinRunResult::Done,
+        items: vec!["t".into()],
+        judge_calls: vec!["j".into()],
+        decisions: vec![TwinDecision {
+            todo_id: "t".into(),
+            action: TwinAction::Dispatch,
+            reason: "Ready".into(),
+            rules: vec!["rule".into()],
+            outcome: TwinDecisionOutcome::Skipped,
+            skip_reason: Some(TwinSkipReason::NoCapacity),
+            session_id: None,
+            question_id: None,
+            project: Some("app".into()),
+        }],
+        error: None,
+    };
+    for (name, method, params, result) in [
+        ("get", methods::TWIN_GET, json!({}), serde_json::to_value(&twin).unwrap()),
+        (
+            "set",
+            methods::TWIN_SET,
+            serde_json::to_value(TwinSetParams {
+                paused: Some(true),
+                clear: vec![ClearableTwinField::Agent, ClearableTwinField::Model, ClearableTwinField::Mode],
+                ..Default::default()
+            })
+            .unwrap(),
+            serde_json::to_value(&twin).unwrap(),
+        ),
+        ("wake", methods::TWIN_WAKE, json!({}), json!({})),
+        (
+            "dry_run",
+            methods::TWIN_DRY_RUN,
+            json!({}),
+            serde_json::to_value(TwinDryRunResult { run: run.clone() }).unwrap(),
+        ),
+        (
+            "runs",
+            methods::TWIN_RUNS,
+            serde_json::to_value(TwinRunsParams { limit: Some(10), before_ms: Some(9) }).unwrap(),
+            serde_json::to_value(TwinRunsResult { runs: vec![run.clone()] }).unwrap(),
+        ),
+        (
+            "questions",
+            methods::TWIN_QUESTIONS,
+            serde_json::to_value(TwinQuestionsParams { open_only: Some(true) }).unwrap(),
+            serde_json::to_value(TwinQuestionsResult { questions: vec![question.clone()] }).unwrap(),
+        ),
+        (
+            "answer",
+            methods::TWIN_ANSWER,
+            serde_json::to_value(TwinAnswerParams { id: "q".into(), answer: "app".into() }).unwrap(),
+            serde_json::to_value(&question).unwrap(),
+        ),
+    ] {
+        v.push(rpc(&format!("twin_{name}"), RpcMessage::request(30u64, method, params)));
+        v.push(rpc(&format!("twin_{name}_result"), RpcMessage::result(RpcId::Num(30), result)));
+    }
+    v.push(rpc(
+        "twin_changed",
+        RpcMessage::notification(
+            methods::TWIN_CHANGED,
+            serde_json::to_value(TwinChanged { state: TwinState::Idle, run: Some(run) }).unwrap(),
+        ),
+    ));
+    v.push(rpc(
+        "twin_question",
+        RpcMessage::notification(
+            methods::TWIN_QUESTION,
+            serde_json::to_value(TwinQuestionNotice { question }).unwrap(),
+        ),
+    ));
+    v.push(rpc(
+        "todo_handler",
+        RpcMessage::notification(
+            methods::TODO_EVENT,
+            serde_json::to_value(TodoEventNotice {
+                todo_id: "t".into(),
+                event: TodoEvent {
+                    seq: 1,
+                    ts_ms: 2,
+                    data: TodoEventData::Handler {
+                        from: TodoHandler::Me,
+                        to: TodoHandler::Twin,
+                        by: TodoActor { kind: TodoSourceKind::Twin, id: Some("local".into()), device_id: None },
+                    },
+                },
+            })
+            .unwrap(),
+        ),
+    ));
+    let body =
+        rmp_serde::to_vec_named(&NotifyBody { category: NotifyCategory::TwinQuestion, session_id: None, detail: None })
+            .unwrap();
+    v.push(envelope("notify_twin_question", DEVICE_A, DEVICE_B, Kind::Notify, 1, body));
     v.sort_by(|a, b| a.name.cmp(&b.name));
 
     // 清掉旧的 .hex，避免 Control 变体改名后留下过期文件（只动 .hex 和 manifest / frames）。

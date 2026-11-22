@@ -146,6 +146,7 @@ async fn ready_when_installed_and_logged_in() {
     assert!(info.models.iter().any(|m| m.id == "sonnet" || m.id == "opus"));
 
     // 权限模式
+    assert!(info.modes.iter().all(|m| m.unattended == (m.id == "auto")));
     let modes: Vec<(&str, ModeRisk, bool)> = info.modes.iter().map(|m| (m.id.as_str(), m.risk, m.default)).collect();
     assert_eq!(
         modes,

@@ -4882,6 +4882,37 @@
       ],
       "type": "string"
     },
+    "PrEventKind": {
+      "description": "[`TodoEventData::PrEvent`] 的种类。",
+      "oneOf": [
+        {
+          "enum": [
+            "merged"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "checks_failed",
+          "description": "检查从非失败变成失败。",
+          "type": "string"
+        },
+        {
+          "const": "closed",
+          "description": "关闭但没有合并。",
+          "type": "string"
+        },
+        {
+          "const": "reviewed",
+          "description": "评审意见的条数增加，或最新一条的时间变新。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的种类；daemon 自己不产生它。",
+          "type": "string"
+        }
+      ]
+    },
     "PreviewBodyEncoding": {
       "description": "隧道里响应体的编码。`gzip`：`DATA` 帧拼起来是 gzip 流，预览页要先解压；`headers` 里已经去掉\n`content-encoding` / `content-length`。",
       "enum": [
@@ -8582,6 +8613,33 @@
           "type": "object"
         },
         {
+          "description": "分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。\n不含评审或评论的正文，只有变化的种类和 PR 地址。",
+          "properties": {
+            "event": {
+              "$ref": "#/definitions/PrEventKind"
+            },
+            "kind": {
+              "const": "pr_event",
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "event"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "kind": {
               "const": "unknown",
@@ -8864,6 +8922,33 @@
           "required": [
             "kind",
             "at_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。\n不含评审或评论的正文，只有变化的种类和 PR 地址。",
+          "properties": {
+            "event": {
+              "$ref": "#/definitions/PrEventKind"
+            },
+            "kind": {
+              "const": "pr_event",
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "event"
           ],
           "type": "object"
         },
@@ -10054,15 +10139,24 @@
       "type": "object"
     },
     "TwinTrigger": {
-      "enum": [
-        "todo",
-        "session",
-        "answer",
-        "tick",
-        "manual",
-        "unknown"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "todo",
+            "session",
+            "answer",
+            "tick",
+            "manual",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "pr",
+          "description": "分身派出的会话的 PR 有了变化（检查失败、合并、关闭、新的评审意见；daemon spec § 26.9）。",
+          "type": "string"
+        }
+      ]
     },
     "Usage": {
       "properties": {

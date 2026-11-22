@@ -833,7 +833,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
 - `workspace.branches`：`git for-each-ref --sort=-committerdate --format=%(refname:short) refs/heads refs/remotes`，去掉 `*/HEAD` 和 `<branch_prefix>/` 开头的本地分支，各取前 200 个
 - 关联项目（ADR-33 补充）：上面所有写操作只发生在 `.anycon/worktrees/` 里 anycon 自己建的目录、`info/exclude` 的那一行，以及 git 的 worktree / 分支元数据；另外会话的附件落在 `<工作目录>/.anycon/attachments/<session_id>/`（§ 7.10，ADR-44；worktree 会话落在它自己的 worktree 里，不是项目目录），这个目录同样是 anycon 自己建、自己删的，`info/exclude` 里的 `/.anycon/` 一并覆盖它
 
-**PR 自动归档**（`worktree.auto_archive_on_pr_close = true`）：周期任务每 10 分钟一次，**不在 sweeper 的同步路径上跑**（单独 `tokio::spawn`，原子标记保证同一时刻只有一轮；每小时的 `cleanup` 同样移出），挑没归档、没有 turn 在跑、有上游的 worktree 会话（每次最多 20 个），`gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档；归档前在会话锁里重新检查，这时有 turn、在等审批或有排队消息就跳过、留到下一轮。`gh` 不可用就整轮跳过。
+**PR 自动归档**（`worktree.auto_archive_on_pr_close = true`）：周期任务每 10 分钟一次，**不在 sweeper 的同步路径上跑**（单独 `tokio::spawn`，原子标记保证同一时刻只有一轮；每小时的 `cleanup` 同样移出），挑没归档、没有 turn 在跑、有上游的 worktree 会话（每次最多 20 个），`gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档；归档前在会话锁里重新检查，这时有 turn、在等审批或有排队消息就跳过、留到下一轮。`gh` 不可用就整轮跳过。**同一轮也轮询分身派出的会话**（§ 26.9）：所属的项交给分身处理且没关闭的会话，不论这个开关开没开，筛选条件和频率相同；开关没开时只记 PR 状态和事件，不归档。没有第二套轮询。
 
 **错误原因**（`data.reason`，客户端据此显示说明；未知的按错误码显示通用说明）：
 
@@ -1400,7 +1400,7 @@ Todo {
 TodoEvent {
   seq:   u64          // 这一项内从 1 递增，没有空洞
   ts_ms: timestamp
-  kind:  dispatched | result | state | handed_back | taken_over | twin_decision | twin_question | handler
+  kind:  dispatched | result | state | handed_back | taken_over | twin_decision | twin_question | handler | pr_event
   // dispatched：{ session_id, agent, workspace_mode: local|worktree, no_push, by: { kind, device_id? }, rules?: [规则 id], rules_skipped?: "unsupported" }   rules / rules_skipped 见 § 23.5
   // result：    { session_id, turn, text, truncated }   这一轮结束时 agent 的最后一段话
   // state：     { from, to, by: { kind, device_id? } }   人改了状态（会话引起的变化是 activity，不在这里）
@@ -1409,6 +1409,7 @@ TodoEvent {
   // twin_decision：{ run_id, action, reason }
   // twin_question：{ question_id }
   // handler：{ from: me|twin, to: me|twin, by }
+  // pr_event：{ session_id, event: checks_failed|merged|closed|reviewed, url? }   不含评审和评论的正文，§ 26.9
   // by：{ kind, device_id?, id? }；twin 的 id 是请求方（local 或设备 id）
 }
 ```
@@ -1932,7 +1933,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 ## 26. 分身
 
-> **4a 已实现：daemon 和 CLI（§ 26.1–§ 26.8）；4b 的周期项已实现（§ 26.9 前一半：daemon、CLI、SDK、Web），PR 事件还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
+> **4a 已实现（§ 26.1–§ 26.8：daemon、CLI、TS SDK 和 Web）；4b 已实现（§ 26.9：周期项和 PR 事件）；4c 还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
 
 分身是 daemon 里的一个调度者：被事件唤醒，看清单里交给它的项，决定每一项怎么办，再用第 2 步的派发（§ 22）开会话去做。它自己不干活，也不批准权限。
 
@@ -1979,6 +1980,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 | `answer` | 你回答了它的问题（§ 26.5） |
 | `tick` | 兜底的定时：有它在处理的项时每 30 分钟一次，没有就不定时 |
 | `manual` | 客户端点了「现在看一遍」（`twin.wake`） |
+| `pr` | 分身派出的会话的 PR 有了变化（§ 26.9） |
 
 - **合并**：触发后等 60 秒，期间新来的触发合并进同一次；从第一个触发算起最多等 5 分钟。
 - **串行**：同一时间只跑一次唤醒。正在跑时来的触发，记下来留给下一次。
@@ -1997,7 +1999,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
   - 不确定能不能做好的不要派。
 
   后面接着节点生效的全节点规则（§ 23.5 同一段文字）。
-- **项**：每一项一段，标出 `id`、标题、正文、`project`、派发次数、最近几次的结果（同 § 22.4 交接用的那几条）、现在的 `activity`、它问过的问题和你的回答。
+- **项**：每一项一段，标出 `id`、标题、正文、`project`、派发次数、最近几次的结果（同 § 22.4 交接用的那几条）、现在的 `activity`、它关联会话的 PR 状态（`pr:` 行，§ 26.9：只有结构化的状态，没有评审和评论的正文）、它问过的问题和你的回答。
   - 每项最多 6 KiB，合计最多 32 KiB；放不下的项这次不看，下次再看，按 `updated_ms` 从早到晚。上次因总量放不下的项在下一次优先，组内仍按 `updated_ms` 从早到晚；这个待看队列只在内存里保存，重启后从最早修改的项开始。
   - 内容区用 § 23.9 那样的随机边界包起来。
 - **可用的东西**：允许的项目，各自的项目规则；还能派几次、还能同时开几个会话；顾问能不能用。
@@ -2048,7 +2050,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
   - 不存提示和模型的原始回答，存的是解析后的决定；`reason` 是模型写的，按 agent 写的内容显示。
   - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`，会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
 - **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。沿用审计的设备字段，`device_id` 填请求方、`device_name = "twin"`；新增的操作者放在 `detail.actor`，不写清单正文、问题、回答和理由。
-- **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
+- **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。PR 事件（§ 26.9）不发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
 
 ### 26.8 RPC
 
@@ -2070,7 +2072,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget`、`session_id?`、`question_id?`、`project?`、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
 
-`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 的周期项已实现，PR 事件和 § 26.10 尚未实现。
+`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 已实现，§ 26.10 尚未实现。
 
 除了读的方法（`twin.get`、`twin.runs`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
 
@@ -2088,7 +2090,12 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
   - **协议**：`TodoRepeat`、`TodoRepeatKind`（带 `Unknown`）、`TodoSourceKind::Repeat`、`TodoSource.todo_id`、`ClearableTodoField::Repeat`、「经过」的两种新事件（`repeat_created`、`repeat_skipped`），`node.info` 的 `capabilities.todo_repeat`（旧 daemon 没有，读作 `false`；客户端据此决定要不要显示「重复」）。不认识的 `kind`、事件种类、来源种类都落到 `Unknown`，旧客户端不因此解析失败。
   - **入口**：CLI `anycon todo add --repeat <spec>`、`anycon todo edit <id> --repeat <spec> | --no-repeat`、`anycon todo ls` 的 REPEAT 列（[cli.md § 3.8](cli.md#38-anycon-todo)）；SDK 的 `node.todos.add` / `update` 直接带 `repeat`；Web 见 [web.md § 14.6](web.md#146-清单和单项)。
 - **PR 事件**：分身派出的会话，它的分支对应的 PR 检查失败、被合并或关闭、有了新的评审意见时，触发一次唤醒（`trigger = pr`）。
-  - 在已有的 `gh pr view` 轮询（§ 10.1）上扩展：分身派出的会话也轮询，不论有没有开 PR 自动归档；取回评审意见的条数和最新时间。
+  - **轮询谁**：在已有的 `gh pr view` 轮询（§ 10.1「PR 自动归档」）上扩展，不另起一套。除了开了 `worktree.auto_archive_on_pr_close` 时的会话，**分身派出的、所属的项还交给分身（`handler = twin`）且没关闭的会话**也轮询，不论那个开关；项关闭、或 `handler` 改回 `me` 之后不再轮询。频率、每轮上限、筛选（没归档、没有 turn 在跑、有上游）和 20 秒超时都沿用。分身没开、没配置或暂停时不轮询，恢复后的第一次轮询去和库里的基线比。`gh` 没装、没登录、出错或超时时这些会话什么都不发生：不记事件、不改基线、不报错，下一轮再试，不重试。
+  - **取什么**：`gh pr view --json` 在原有字段之外多取 `reviews` 和 `comments`，daemon **只数条数、取最新一条的时间**（`submittedAt` / `createdAt`），不读也不存任何正文。
+  - **基线**：每个会话上一次轮询的 PR 状态（号码、状态、检查汇总、评审条数、最新时间）存在表 `twin_pr`，重启后接着比。第一次看到某个 PR（或 PR 号变了）只记基线，不算事件，否则每次重启都会把已有的评审当成新的。
+  - **什么算事件**，和基线比：检查从非失败变成失败（`checks_failed`）；PR 变成已合并（`merged`）；变成已关闭、没合并（`closed`）；评审意见和评论的总条数增加，或最新一条的时间变新（`reviewed`）。一次轮询可以有几个事件。
+  - **事件之后**：这一项的「经过」记一条 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`（字段叫 `event` 而不是 `kind`，因为 `kind` 是「经过」的标签），触发一次分身唤醒（`TwinTrigger::Pr`，照常合并和串行）。**不发推送**：分身分拣之后需要你的话会建问题（§ 26.5）；PR 合并本身由 `auto_archive_on_pr_close` 处理。项已经交回给你或关闭时不记事件，基线照常更新。
+  - **分拣的输入**（§ 26.4）里每一项多一行它关联会话的 PR 状态，最多 3 个会话、新的在前：`pr: <number> <state> checks=<passing|failing|pending|none> reviews=<条数> last_review=<时间|none>`。**只放这些结构化的状态，不放评审和评论的正文，也不放 PR 标题和作者**：公开仓库里任何人都能发评论，正文进了分拣的输入就等于让陌生人能向分身的判断里注入指令。分身要处理评审意见时，派发一个会话去做，那个会话里的 agent 自己用 `gh` 去读，受 agent 自己的权限约束。时间串只保留 ISO 8601 UTC 的字符，不合格的当没有。
   - `gh` 没装或没登录时没有这类触发。
 
 ### 26.10 规则的「过期」和「以后都这样」（4c）

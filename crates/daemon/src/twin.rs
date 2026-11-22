@@ -12,6 +12,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::clients::Caller;
 use crate::daemon::Ctx;
+use crate::gitops::{PrChecks, PrSnapshot};
 use crate::judge::service::{local_day_start, protocol_error, Position, ServiceError};
 use crate::judge::{CallError, JudgeRequest};
 use crate::todo_dispatch::{actor_of, broadcast_event, truncate_utf8};
@@ -335,6 +336,88 @@ pub fn spawn(c: &Arc<Ctx>) -> tokio::task::JoinHandle<()> {
     })
 }
 
+/// 要轮询 PR 的会话（`session_id -> todo_id`）：分身派出的、所属的项交给分身处理且没关闭。
+/// 分身没开 / 没配置 / 暂停时为空：这时的变化留到恢复后的第一次轮询去比。
+pub async fn pr_targets(c: &Ctx) -> std::collections::HashMap<String, String> {
+    let Ok(scope) = c.store.twin_scope(LOCAL).await else { return Default::default() };
+    if !enabled(c, &scope) {
+        return Default::default();
+    }
+    c.store.twin_pr_targets().await.unwrap_or_default().into_iter().collect()
+}
+
+/// 两次轮询之间发生了什么。不同的 PR（号码变了）从头记基线；`Reviewed` 看条数增加或最新时间变新。
+fn pr_events(prev: &PrSnapshot, now: &PrSnapshot) -> Vec<PrEventKind> {
+    let mut out = vec![];
+    if prev.number != now.number {
+        return out;
+    }
+    if prev.checks != PrChecks::Failing && now.checks == PrChecks::Failing {
+        out.push(PrEventKind::ChecksFailed);
+    }
+    if prev.state != PullRequestState::Merged && now.state == PullRequestState::Merged {
+        out.push(PrEventKind::Merged);
+    }
+    if prev.state != PullRequestState::Closed && now.state == PullRequestState::Closed {
+        out.push(PrEventKind::Closed);
+    }
+    if now.reviews > prev.reviews || now.last_review > prev.last_review {
+        out.push(PrEventKind::Reviewed);
+    }
+    out
+}
+
+/// 一次 PR 轮询的结果。和库里的上一次比：第一次看到只记基线；有变化就往这一项的「经过」记 `pr_event`，
+/// 触发一次唤醒（不发推送）。`gh` 取不到的轮次不会走到这里，基线保持不变。
+pub async fn pr_observed(c: &Ctx, session_id: &str, todo_id: &str, now: PrSnapshot, url: &str) {
+    let prev = match c.store.twin_pr_get(session_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "twin PR baseline unreadable");
+            return;
+        }
+    };
+    let events = prev.as_ref().map(|p| pr_events(p, &now)).unwrap_or_default();
+    let mut recorded = false;
+    if !events.is_empty() {
+        let _guard = c.store.todo_lock().lock().await;
+        let open = matches!(c.store.todo_get(todo_id).await, Ok(Some(t)) if t.handler == TodoHandler::Twin
+            && !t.state.is_closed());
+        if open {
+            let url = (url.len() <= 500).then(|| url.to_string());
+            for event in events {
+                let data = TodoEventData::PrEvent { session_id: session_id.into(), event, url: url.clone() };
+                match c.store.todo_event_append(todo_id, c.judge.clock().now(), data).await {
+                    Ok(ev) => {
+                        broadcast_event(&c.clients, todo_id, ev);
+                        recorded = true;
+                    }
+                    Err(e) => tracing::warn!(error = %e, "twin PR event not recorded"),
+                }
+            }
+        }
+    }
+    if let Err(e) = c.store.twin_pr_save(session_id, &now).await {
+        tracing::warn!(error = %e, "twin PR baseline not saved");
+    }
+    if recorded {
+        let _ = c.twin.trigger(c, TwinTrigger::Pr).await;
+    }
+}
+
+/// 分拣输入里的 PR 状态行。只有结构化的状态：评审和评论的正文任何人都能在公开仓库里写，
+/// 进了分拣输入就能向分身的判断注入指令（docs/spec/daemon.md § 26.9）。
+fn pr_line(s: &PrSnapshot) -> String {
+    format!(
+        "pr: {} {} checks={} reviews={} last_review={}\n",
+        s.number,
+        crate::gitops::pr_state_str(s.state),
+        s.checks.as_str(),
+        s.reviews,
+        s.last_review.as_deref().unwrap_or("none")
+    )
+}
+
 pub async fn wake(c: &Ctx, caller: &Caller) -> Result<Empty> {
     human(caller)?;
     c.twin.trigger(c, TwinTrigger::Manual).await?;
@@ -408,12 +491,14 @@ async fn request(c: &Ctx, s: &TwinScope, todos: &[Todo], advisor: Option<&str>) 
     let mut bytes = 0;
     for t in todos {
         let earlier = c.store.todo_earlier_results(&t.id).await.map_err(internal)?;
+        let prs: String = c.store.twin_pr_of_todo(&t.id).await.map_err(internal)?.iter().map(pr_line).collect();
         let mut text = format!(
-            "id: {}\nproject: {}\ndispatches: {}\nactivity: {:?}\ntitle: {}\nbody:\n{}\n",
+            "id: {}\nproject: {}\ndispatches: {}\nactivity: {:?}\n{}title: {}\nbody:\n{}\n",
             t.id,
             t.project.as_deref().unwrap_or("(choose an allowed project)"),
             t.sessions.len(),
             t.activity,
+            prs,
             truncate_utf8(&t.title, 600).0,
             truncate_utf8(&t.body, 1800).0
         );

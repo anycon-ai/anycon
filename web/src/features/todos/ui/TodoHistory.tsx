@@ -109,6 +109,7 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
       case 'taken_over':
       case 'handler':
       case 'twin_question':
+      case 'pr_event':
         return <li key={e.seq} data-testid="history-row" data-kind={e.kind}><span className="text-fg-subtle">{when(e.ts_ms)}</span><TwinHistoryEvent nodeId={item.node_id} event={e} /></li>
       case 'repeat_created':
         return (

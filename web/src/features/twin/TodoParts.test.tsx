@@ -127,6 +127,24 @@ describe('Twin in to-dos', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Web' }))
     await waitFor(() => expect(rpc.calls.find((c) => c.method === 'twin.answer')?.params).toEqual({ id: 'q1', answer: 'Web' }))
   })
+  it('shows the four PR events and only links GitHub addresses', async () => {
+    const events: TodoEvent[] = [
+      { seq: 4, ts_ms: 4, kind: 'pr_event', session_id: 's', event: 'closed', url: 'javascript:alert(1)' },
+      { seq: 3, ts_ms: 3, kind: 'pr_event', session_id: 's', event: 'merged', url: 'https://github.com/o/r/pull/1' },
+      { seq: 2, ts_ms: 2, kind: 'pr_event', session_id: 's', event: 'reviewed', url: 'https://evil.example/https://github.com/' },
+      { seq: 1, ts_ms: 1, kind: 'pr_event', session_id: 's', event: 'checks_failed' },
+    ]
+    rpc.handlers['todo.history'] = () => ({ events, has_more: false })
+    const item = { ...todoItem({ id: 't1', handler: 'twin' }), node_id: A, unsynced: false }
+    render(<TodoHistory item={item} />)
+    expect(await screen.findByText('The checks on the pull request failed')).toBeInTheDocument()
+    expect(screen.getByText('The pull request has new review activity')).toBeInTheDocument()
+    expect(screen.getByText('The pull request was merged')).toBeInTheDocument()
+    expect(screen.getByText('The pull request was closed without merging')).toBeInTheDocument()
+    const links = screen.getAllByRole('link', { name: 'Open the pull request' })
+    expect(links).toHaveLength(1)
+    expect(links[0]).toHaveAttribute('href', 'https://github.com/o/r/pull/1')
+  })
   it('shows the Twin reason in acceptance, and emits no handler entry without capability', () => {
     const item = { ...todoItem({ id: 't1' }), node_id: A, unsynced: false }
     act(() =>

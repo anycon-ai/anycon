@@ -166,6 +166,8 @@ await node.todos.update({ id: todo.id, handler: 'me' })
 
 `set` 合并字段；`clear` 清空 agent / model / mode，恢复节点缺省。`dryRun()` 默认等待最多 16 分钟，覆盖最长 15 分钟的判断后端调用；可以传标准 `RequestOptions`（`timeoutMs` / `signal`）覆盖。试跑会消耗一次判断调用并留记录，不执行计划；`run.decisions` 原样保留可选的 `note` / `question` / `options`（给 agent 的补充说明、问题和选项），这些模型文字只按纯文字展示；`wake()` 返回 `void`，实际唤醒仍受合并、暂停和预算约束。`runs` / `questions` 保留协议形状，缺省参数 `{}`，`before_ms` 翻运行记录页。`twin_changed` 收到 `{ state, run? }`，`twin_question` 收到 `{ question }`，包含回答和作废；先订阅再发起操作。`todos.add` / `update` 接受 `handler: me | twin`；界面应先让人读过并收下 agent 项（`update({ id, reviewed: true })`），再提供移交操作（`update({ id, handler: 'twin' })`）。daemon 也接受明确请求的原子收下并移交，SDK 不自动收下。
 
+分身的运行可以由 `pr` 触发（分身派出的会话的 PR 有了变化），清单项的「经过」里会出现 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`；类型跟着协议走，客户端要容忍不认识的值。`pr_event` 不含评审正文。
+
 ## 规则（ADR-54）
 
 每个节点有一份你的规则，一两句话的做法，比如「先写失败的测试再改实现」。生效的规则会写进清单派发出去的会话的系统提示（见 [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)）。规则不改任何权限。`node.rules` 是 `rule.*` 的薄封装；节点是否支持看 `(await node.info()).capabilities.rules`，旧节点回 `RpcError('unsupported')`。SDK 不做离线缓存，也不重放。

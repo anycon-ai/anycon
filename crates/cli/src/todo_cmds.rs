@@ -582,6 +582,18 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         TodoEventData::RepeatSkipped { at_ms } => {
             (format!("repeated: skipped {}Z, the previous copy is still open", &fmt_utc(*at_ms)[..16]), vec![])
         }
+        TodoEventData::PrEvent { session_id, event, url } => {
+            let what = match event {
+                PrEventKind::ChecksFailed => "checks failed",
+                PrEventKind::Merged => "merged",
+                PrEventKind::Closed => "closed without merging",
+                PrEventKind::Reviewed => "new review activity",
+                PrEventKind::Unknown => "changed",
+            };
+            let link =
+                url.as_deref().filter(|u| u.starts_with("https://github.com/")).map(|u| sanitize_label(u, 200, ""));
+            (format!("pull request {what} (session {session_id})"), link.into_iter().collect())
+        }
         TodoEventData::Unknown => ("unrecognized event".into(), vec![]),
     }
 }

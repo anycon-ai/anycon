@@ -166,6 +166,7 @@ fn kind_of(e: &TodoEvent) -> &'static str {
         TodoEventData::Handler { .. } => "handler",
         TodoEventData::RepeatCreated { .. } => "repeat_created",
         TodoEventData::RepeatSkipped { .. } => "repeat_skipped",
+        TodoEventData::PrEvent { .. } => "pr_event",
         TodoEventData::Unknown => "unknown",
     }
 }

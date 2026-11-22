@@ -721,6 +721,25 @@
     }
   },
   {
+    "name": "rpc_todo_pr_event",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "event": "reviewed",
+          "kind": "pr_event",
+          "seq": 2,
+          "session_id": "s",
+          "ts_ms": 3,
+          "url": "https://github.com/o/r/pull/1"
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
     "name": "rpc_todo_repeat_created",
     "type": "rpc",
     "value": {
@@ -828,7 +847,8 @@
           "started_ms": 1,
           "triggers": [
             "todo",
-            "manual"
+            "manual",
+            "pr"
           ]
         },
         "state": "idle"
@@ -881,7 +901,8 @@
           "started_ms": 1,
           "triggers": [
             "todo",
-            "manual"
+            "manual",
+            "pr"
           ]
         }
       }
@@ -1043,7 +1064,8 @@
             "started_ms": 1,
             "triggers": [
               "todo",
-              "manual"
+              "manual",
+              "pr"
             ]
           }
         ]

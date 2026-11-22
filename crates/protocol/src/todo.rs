@@ -463,6 +463,30 @@ pub enum TodoEventData {
     RepeatSkipped {
         at_ms: TimestampMs,
     },
+    /// 分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。
+    /// 不含评审或评论的正文，只有变化的种类和 PR 地址。
+    PrEvent {
+        session_id: SessionId,
+        event: PrEventKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+/// [`TodoEventData::PrEvent`] 的种类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PrEventKind {
+    /// 检查从非失败变成失败。
+    ChecksFailed,
+    Merged,
+    /// 关闭但没有合并。
+    Closed,
+    /// 评审意见的条数增加，或最新一条的时间变新。
+    Reviewed,
+    /// 这个版本不认识的种类；daemon 自己不产生它。
     #[serde(other)]
     Unknown,
 }
@@ -657,10 +681,21 @@ mod twin_tests {
             json!({"kind":"twin_decision", "run_id":"r", "action":"wait", "reason":"Running"}),
             json!({"kind":"twin_question", "question_id":"q"}),
             json!({"kind":"handler", "from":"me", "to":"twin", "by":{"kind":"twin", "id":"local"}}),
+            json!({"kind":"pr_event", "session_id":"s", "event":"checks_failed"}),
+            json!({"kind":"pr_event", "session_id":"s", "event":"reviewed", "url":"https://github.com/o/r/pull/1"}),
         ] {
             let event: TodoEventData = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(event).unwrap(), value);
         }
+    }
+
+    #[test]
+    fn unknown_pr_event_kinds_and_triggers_do_not_fail_parsing() {
+        let e: TodoEventData =
+            serde_json::from_value(json!({"kind":"pr_event", "session_id":"s", "event":"future"})).unwrap();
+        assert_eq!(e, TodoEventData::PrEvent { session_id: "s".into(), event: PrEventKind::Unknown, url: None });
+        assert_eq!(serde_json::from_value::<crate::TwinTrigger>(json!("pr")).unwrap(), crate::TwinTrigger::Pr);
+        assert_eq!(serde_json::from_value::<crate::TwinTrigger>(json!("future")).unwrap(), crate::TwinTrigger::Unknown);
     }
 
     #[test]

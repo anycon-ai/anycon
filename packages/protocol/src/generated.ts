@@ -790,9 +790,19 @@ export type TodoEvent1 =
       kind: "repeat_skipped";
     }
   | {
+      event: PrEventKind;
+      kind: "pr_event";
+      session_id: string;
+      url?: string | null;
+    }
+  | {
       kind: "unknown";
     };
 export type TwinAction = "dispatch" | "ask_user" | "ask_advisor" | "wait" | "hand_back" | "done" | "unknown";
+/**
+ * [`TodoEventData::PrEvent`] 的种类。
+ */
+export type PrEventKind = "merged" | "checks_failed" | "closed" | "reviewed" | "unknown";
 /**
  * 「经过」里的一条的内容；`kind` 是线路上的标签。
  */
@@ -861,12 +871,18 @@ export type TodoEventData =
       kind: "repeat_skipped";
     }
   | {
+      event: PrEventKind;
+      kind: "pr_event";
+      session_id: string;
+      url?: string | null;
+    }
+  | {
       kind: "unknown";
     };
 export type TwinDecisionOutcome = "executed" | "skipped" | "unknown";
 export type TwinSkipReason = "invalid" | "out_of_scope" | "no_capacity" | "budget" | "unknown";
 export type TwinRunResult = "done" | "idle" | "budget" | "failed" | "cancelled" | "unknown";
-export type TwinTrigger = "todo" | "session" | "answer" | "tick" | "manual" | "unknown";
+export type TwinTrigger = ("todo" | "session" | "answer" | "tick" | "manual" | "unknown") | "pr";
 export type TwinState = "running" | "idle" | "paused" | "disabled" | "not_configured" | "budget" | "unknown";
 export type TwinQuestionStatus = "open" | "answered" | "void" | "unknown";
 export type ClearableTwinField = "agent" | "model" | "mode" | "unknown";

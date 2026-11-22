@@ -2780,6 +2780,14 @@
     "decision": "分身的决定：{{action}}",
     "handedBack": "分身交回给你",
     "takenOver": "你接手了",
+    "prEvent": {
+      "checks_failed": "PR 的检查失败了",
+      "merged": "PR 已合并",
+      "closed": "PR 被关闭了（没有合并）",
+      "reviewed": "PR 有了新的评审意见",
+      "unknown": "PR 有变化",
+      "open": "打开 PR"
+    },
     "handlerChanged": "处理人变化：{{from}} → {{to}}",
     "reviewReason": "分身的决定和理由",
     "state": {
@@ -2813,6 +2821,7 @@
       "answer": "你的回答",
       "tick": "定时查看",
       "manual": "手动唤醒",
+      "pr": "PR",
       "unknown": "未知原因"
     },
     "result": {

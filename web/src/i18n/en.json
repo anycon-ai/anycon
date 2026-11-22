@@ -2817,6 +2817,14 @@
     "decision": "Twin decided: {{action}}",
     "handedBack": "Twin handed this back to you",
     "takenOver": "You took over",
+    "prEvent": {
+      "checks_failed": "The checks on the pull request failed",
+      "merged": "The pull request was merged",
+      "closed": "The pull request was closed without merging",
+      "reviewed": "The pull request has new review activity",
+      "unknown": "The pull request changed",
+      "open": "Open the pull request"
+    },
     "handlerChanged": "Handler changed: {{from}} → {{to}}",
     "reviewReason": "Twin’s decision and reason",
     "state": {
@@ -2850,6 +2858,7 @@
       "answer": "Your answer",
       "tick": "Scheduled check",
       "manual": "Manual wake",
+      "pr": "PR",
       "unknown": "Unknown trigger"
     },
     "result": {

@@ -564,6 +564,7 @@ fn data_kind(d: &TodoEventData) -> &'static str {
         TodoEventData::Handler { .. } => "handler",
         TodoEventData::RepeatCreated { .. } => "repeat_created",
         TodoEventData::RepeatSkipped { .. } => "repeat_skipped",
+        TodoEventData::PrEvent { .. } => "pr_event",
         TodoEventData::Unknown => "unknown",
     }
 }

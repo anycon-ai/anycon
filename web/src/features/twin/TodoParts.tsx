@@ -17,7 +17,7 @@ export function TwinHandlerButton({ item }: { item: ViewTodo }) {
   const supported = useNodes((s) => s.byId[item.node_id]?.info?.capabilities.twin === true)
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
-  if (!supported || isClosed(item.state) || (item.handler !== 'twin' && item.state !== 'open')) return null
+  if (!supported || item.unreviewed || isClosed(item.state) || (item.handler !== 'twin' && item.state !== 'open')) return null
   return (
     <div className="space-y-2">
       <Button
@@ -26,7 +26,7 @@ export function TwinHandlerButton({ item }: { item: ViewTodo }) {
         onClick={() => {
           setBusy(true)
           setFailed(false)
-          void updateTodo(item.node_id, item.id, { handler: item.handler === 'twin' ? 'me' : 'twin', ...(item.unreviewed && item.handler !== 'twin' ? { reviewed: true } : {}) })
+          void updateTodo(item.node_id, item.id, { handler: item.handler === 'twin' ? 'me' : 'twin' })
             .then((r) => setFailed(!r.ok))
             .finally(() => setBusy(false))
         }}

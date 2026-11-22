@@ -29,6 +29,18 @@ export function Decisions({ nodeId, run }: { nodeId: string; run: TwinRun }) {
             </Link>
             <p>{t(`twin.action.${d.action}`)}</p>
             <p className="whitespace-pre-wrap break-words">{d.reason}</p>
+            {d.action === 'dispatch' && d.note ? (
+              <div>
+                <p className="text-xs text-fg-subtle">{t('twin.dispatchNote')}</p>
+                <p className="whitespace-pre-wrap break-words">{d.note}</p>
+              </div>
+            ) : null}
+            {(d.action === 'ask_user' || d.action === 'ask_advisor') && d.question ? <p className="whitespace-pre-wrap break-words">{d.question}</p> : null}
+            {d.action === 'ask_user' && d.options?.length ? (
+              <ul className="list-inside list-disc">
+                {d.options.map((option, index) => <li key={index} className="whitespace-pre-wrap break-words">{option}</li>)}
+              </ul>
+            ) : null}
             {d.outcome === 'skipped' ? <p>{t('twin.skipped', { reason: t(`twin.skip.${d.skip_reason ?? 'unknown'}`) })}</p> : null}
             {d.rules.map((id) => (
               <Link key={id} to="/rules" search={{ node: shortNodeId(nodeId, order), rule: id }} className="mr-2 text-accent-text">

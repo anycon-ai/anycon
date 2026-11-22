@@ -96,6 +96,30 @@ describe('Twin page', () => {
     await waitFor(() => expect(calls('twin.wake')).toHaveLength(1))
     expect(calls('twin.set')[0]?.params).toEqual({ paused: false })
   })
+  it('shows the complete dry-run plan as agent-written plain text', async () => {
+    daemon.dry = twinRun({
+      dry_run: true,
+      decisions: [
+        { todo_id: 't1', action: 'dispatch', reason: 'Ready', rules: [], outcome: 'executed', note: '<script>send()</script>\nKeep the API stable.' },
+        { todo_id: 't2', action: 'ask_user', reason: 'Need a preference', rules: [], outcome: 'executed', question: '<b>Which platform?</b>', options: ['<img src=x onerror=send()>', '**Web**'] },
+        { todo_id: 't3', action: 'ask_advisor', reason: 'Need technical advice', rules: [], outcome: 'executed', question: '[Which index?](https://example.com)' },
+      ],
+    })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
+    expect(await screen.findByText('Twin’s supplementary instructions to the agent')).toBeInTheDocument()
+    expect(screen.getByText('<script>send()</script> Keep the API stable.')).toBeInTheDocument()
+    expect(screen.getByText('<b>Which platform?</b>')).toBeInTheDocument()
+    expect(screen.getByText('<img src=x onerror=send()>')).toBeInTheDocument()
+    expect(screen.getByText('**Web**')).toBeInTheDocument()
+    expect(screen.getByText('[Which index?](https://example.com)')).toBeInTheDocument()
+    for (const row of screen.getAllByTestId('twin-decision')) {
+      expect(row.querySelector('script, img, b, strong')).toBeNull()
+      expect(row.querySelectorAll('a')).toHaveLength(1)
+    }
+    expect(screen.getAllByText('Written by an agent')).toHaveLength(1)
+    expect(calls('twin.answer')).toHaveLength(0)
+  })
   it('first setup saves paused and requires a dry run before enabling', async () => {
     daemon.values.set(A, twinValue({ configured: false, state: 'not_configured', scope: { paused: false, projects: [], max_sessions: 2, daily_dispatches: 10 } }))
     await load()

@@ -14,7 +14,7 @@ import { useTodos } from '@/features/todos/store'
 import { isClosed } from '@/features/todos/types'
 import { useSessions } from '@/stores/sessions'
 import i18n from '@/i18n'
-import { pushText, type PushText } from './pushText'
+import { notifyTodoId, pushText, type PushText } from './pushText'
 
 const ICON = '/icon-192.png'
 
@@ -80,10 +80,11 @@ async function hasSubscription(reg: NotificationTarget): Promise<boolean> {
 /** `notify` 信封 → 通知文案（纯函数，和 service worker 里用的是同一个 `pushText`）。 */
 export function textForNotify(env: Pick<SystemNotifyEnv, 't' | 'nodeName' | 'sessionTitle' | 'nodeIds'> & Partial<Pick<SystemNotifyEnv, 'nodeGroup' | 'sessionTodo' | 'todoTitle'>>, nodeId: string, body: NotifyBody): PushText {
   const sessionId = body.session_id ?? null
+  const todoId = notifyTodoId(sessionId)
   return pushText(env.t, {
     category: body.category,
     node: { id: nodeId, name: env.nodeName(nodeId), group: env.nodeGroup?.(nodeId) ?? null, param: shortNodeId(nodeId, env.nodeIds()) },
-    session: sessionId ? { id: sessionId, title: body.category === 'twin_question' ? env.todoTitle?.(nodeId, sessionId) : env.sessionTitle(nodeId, sessionId), todo: body.category === 'twin_question' ? null : env.sessionTodo?.(nodeId, sessionId) ?? null } : null,
+    session: sessionId ? { id: sessionId, title: todoId ? env.todoTitle?.(nodeId, todoId) : env.sessionTitle(nodeId, sessionId), todo: todoId ? null : env.sessionTodo?.(nodeId, sessionId) ?? null } : null,
   })
 }
 

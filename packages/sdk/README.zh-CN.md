@@ -163,7 +163,7 @@ const todo = await node.todos.add({ title: 'Fix login', project: 'app', handler:
 await node.todos.update({ id: todo.id, handler: 'me' })
 ```
 
-`set` 合并字段；`clear` 清空 agent / model / mode，恢复节点缺省。`dryRun()` 默认等待最多 16 分钟，覆盖最长 15 分钟的判断后端调用；可以传标准 `RequestOptions`（`timeoutMs` / `signal`）覆盖。试跑会消耗一次判断调用并留记录，不执行计划；`wake()` 返回 `void`，实际唤醒仍受合并、暂停和预算约束。`runs` / `questions` 保留协议形状，缺省参数 `{}`，`before_ms` 翻运行记录页。`twin_changed` 收到 `{ state, run? }`，`twin_question` 收到 `{ question }`，包含回答和作废；先订阅再发起操作。`todos.add` / `update` 接受 `handler: me | twin`；未收下的 agent 项可用一次 `update({ id, reviewed: true, handler: 'twin' })` 收下并移交。
+`set` 合并字段；`clear` 清空 agent / model / mode，恢复节点缺省。`dryRun()` 默认等待最多 16 分钟，覆盖最长 15 分钟的判断后端调用；可以传标准 `RequestOptions`（`timeoutMs` / `signal`）覆盖。试跑会消耗一次判断调用并留记录，不执行计划；`run.decisions` 原样保留可选的 `note` / `question` / `options`（给 agent 的补充说明、问题和选项），这些模型文字只按纯文字展示；`wake()` 返回 `void`，实际唤醒仍受合并、暂停和预算约束。`runs` / `questions` 保留协议形状，缺省参数 `{}`，`before_ms` 翻运行记录页。`twin_changed` 收到 `{ state, run? }`，`twin_question` 收到 `{ question }`，包含回答和作废；先订阅再发起操作。`todos.add` / `update` 接受 `handler: me | twin`；界面应先让人读过并收下 agent 项（`update({ id, reviewed: true })`），再提供移交操作（`update({ id, handler: 'twin' })`）。daemon 也接受明确请求的原子收下并移交，SDK 不自动收下。
 
 ## 规则（ADR-54）
 

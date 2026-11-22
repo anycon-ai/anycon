@@ -11,7 +11,7 @@ import type { ShowNotificationOptions } from './types'
 export const NOTIFICATION_ICON = '/icon-192.png'
 
 export interface PushDeps {
-  directory(nodeId: string | null, sessionId: string | null, twin?: boolean): Promise<PushDirectory>
+  directory(nodeId: string | null, sessionId: string | null): Promise<PushDirectory>
   /** 页面记下的界面语言；没有就是 undefined。 */
   language(): Promise<string | undefined>
   navigatorLanguage(): string | undefined
@@ -44,9 +44,7 @@ export async function handlePush(data: { json(): unknown } | null, deps: PushDep
   const payload = readPushPayload(data)
   let dir: PushDirectory = { nodeIds: [] }
   try {
-    dir = payload?.category === 'twin_question'
-      ? await deps.directory(payload.node, payload.session, true)
-      : await deps.directory(payload?.node ?? null, payload?.session ?? null)
+    dir = await deps.directory(payload?.node ?? null, payload?.session ?? null)
   } catch {
     /* 没有缓存就用兜底文案 */
   }

@@ -39,7 +39,6 @@ export function dueToInput(ms: number | null | undefined): string {
 /**
  * 单项详情（桌面在右半边，手机是二级页，spec/web.md § 4.12）：标题和正文可编辑（不编辑时正文按 Markdown 渲染，和助手消息同一条
  * 消毒管线，从不当 HTML）、项目、期望时间、状态（打开 / 处理中 / 完成 / 不做了）、删除（二次确认）；agent 记的项有回到来源会话的链接。
- * 这一步没有「让 agent 处理」「交给分身」。
  */
 /** 草稿里的字段值（和 `datetime-local` 的格式）：从一项现在的样子读出来。 */
 export function valuesOf(item: Pick<ViewTodo, 'title' | 'body' | 'project' | 'due_ms'>): EditValues {
@@ -246,7 +245,6 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           <Button disabled={!online} onClick={() => void updateTodo(item.node_id, item.id, { state: 'dropped' })} data-testid="todo-dismiss">
             {t('inbox.dismiss')}
           </Button>
-          <TwinHandlerButton item={item} />
           <Button disabled={!online} onClick={() => setDispatching(true)} data-testid="todo-dispatch">
             {t('dispatch.action')}
           </Button>

@@ -766,7 +766,7 @@ export class FakeDaemon {
         dry_run: true,
         result: 'done',
         triggers: ['manual'],
-        items: ['t1'],
+        items: ['t1', 't2', 't3'],
         judge_calls: ['j1'],
         decisions: [
           {
@@ -775,6 +775,24 @@ export class FakeDaemon {
             reason: 'Need a project',
             rules: [],
             outcome: 'executed',
+            question: 'Which project?',
+            options: ['web', 'api'],
+          },
+          {
+            todo_id: 't2',
+            action: 'dispatch',
+            reason: 'Ready to build',
+            rules: [],
+            outcome: 'executed',
+            note: 'Keep the API stable.',
+          },
+          {
+            todo_id: 't3',
+            action: 'ask_advisor',
+            reason: 'Need technical advice',
+            rules: [],
+            outcome: 'executed',
+            question: 'Which index?',
           },
         ],
       }

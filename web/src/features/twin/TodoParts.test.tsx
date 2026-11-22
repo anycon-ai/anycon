@@ -21,6 +21,7 @@ import { useCapture } from '@/features/todos/capture'
 import { HandlerChip } from '@/features/todos/ui/ActivityBits'
 import { historyKey, useTodoHistory } from '@/features/todos/history'
 import { TodoHistory } from '@/features/todos/ui/TodoHistory'
+import { TodoDetail } from '@/features/todos/ui/TodoDetail'
 import { TwinHandlerButton, TwinReviewReason } from './TodoParts'
 import { useTwin } from './store'
 import { syncTwin } from './service'
@@ -46,22 +47,40 @@ beforeEach(async () => {
   useNodes.setState({ byId: { [A]: nodeEntry({ id: A, info }) }, order: [A], loaded: true })
 })
 const ids = [A]
-function LiveHandler() {
+function LiveHandler({ detail = false }: { detail?: boolean }) {
   const item = useTodoView(ids)[0]
-  return item ? <TwinHandlerButton item={item} /> : null
+  return item ? detail ? <TodoDetail item={item} online /> : <TwinHandlerButton item={item} /> : null
 }
 describe('Twin in to-dos', () => {
-  it.each([false, true])('gives to Twin (unreviewed %s), accepts in the same request, and takes back', async (unreviewed) => {
+  it('gives a reviewed item to Twin and takes it back', async () => {
     const id = '11111111-2222-4333-8444-555555555555'
-    daemon.seed(todoItem({ id, unreviewed, source: { kind: unreviewed ? 'agent' : 'device' } }))
+    daemon.seed(todoItem({ id }))
     await syncTodos(A)
     render(<LiveHandler />)
     await userEvent.click(screen.getByRole('button', { name: 'Give to Twin' }))
     await waitFor(() => expect(daemon.todos.get(id)?.handler).toBe('twin'))
     const params = rpc.calls.find((c) => c.method === 'todo.update')?.params
-    expect(params).toEqual({ id, handler: 'twin', ...(unreviewed ? { reviewed: true } : {}) })
+    expect(params).toEqual({ id, handler: 'twin' })
     await userEvent.click(await screen.findByRole('button', { name: 'I’ll do it' }))
     await waitFor(() => expect(daemon.todos.get(id)?.handler).toBe('me'))
+  })
+  it('requires accepting an agent item before offering handover, as two separate actions', async () => {
+    const id = '11111111-2222-4333-8444-555555555555'
+    daemon.seed(todoItem({ id, handler: 'me', unreviewed: true, source: { kind: 'agent' }, body: 'Read these requirements before accepting.' }))
+    rpc.handlers['todo.history'] = () => ({ events: [], has_more: false })
+    await syncTodos(A)
+    render(<LiveHandler detail />)
+    expect(screen.getByText('Read these requirements before accepting.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Give to Twin' })).not.toBeInTheDocument()
+    expect(rpc.calls.filter((c) => c.method === 'todo.update')).toHaveLength(0)
+    await userEvent.click(screen.getByTestId('todo-accept'))
+    const handover = await screen.findByRole('button', { name: 'Give to Twin' })
+    await waitFor(() => expect(daemon.todos.get(id)?.unreviewed).toBe(false))
+    expect(rpc.calls.filter((c) => c.method === 'todo.update').map((c) => c.params)).toEqual([{ id, reviewed: true }])
+    expect(daemon.todos.get(id)?.handler).toBe('me')
+    await userEvent.click(handover)
+    await waitFor(() => expect(daemon.todos.get(id)?.handler).toBe('twin'))
+    expect(rpc.calls.filter((c) => c.method === 'todo.update').map((c) => c.params)).toEqual([{ id, reviewed: true }, { id, handler: 'twin' }])
   })
   it('shows Twin even before dispatch, and handler filters select its items', () => {
     const todo = { ...todoItem({ id: 't1', handler: 'twin' }), node_id: A, unsynced: false }

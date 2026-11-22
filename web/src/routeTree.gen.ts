@@ -28,6 +28,7 @@ import { Route as AppUnlockNodeRouteImport } from './routes/_app/unlock.$node'
 import { Route as AppShellNNodeRouteImport } from './routes/_app/_shell/n.$node'
 import { Route as AppShellSettingsIndexRouteImport } from './routes/_app/_shell/settings.index'
 import { Route as AppShellSettingsAppearanceRouteImport } from './routes/_app/_shell/settings.appearance'
+import { Route as AppShellSettingsDataRouteImport } from './routes/_app/_shell/settings.data'
 import { Route as AppShellSettingsDevicesRouteImport } from './routes/_app/_shell/settings.devices'
 import { Route as AppShellSettingsLoginRouteImport } from './routes/_app/_shell/settings.login'
 import { Route as AppShellSettingsNotificationsRouteImport } from './routes/_app/_shell/settings.notifications'
@@ -139,6 +140,11 @@ const AppShellSettingsAppearanceRoute =
     path: '/appearance',
     getParentRoute: () => AppShellSettingsRoute,
   } as any)
+const AppShellSettingsDataRoute = AppShellSettingsDataRouteImport.update({
+  id: '/data',
+  path: '/data',
+  getParentRoute: () => AppShellSettingsRoute,
+} as any)
 const AppShellSettingsDevicesRoute = AppShellSettingsDevicesRouteImport.update({
   id: '/devices',
   path: '/devices',
@@ -240,6 +246,7 @@ export interface FileRoutesByFullPath {
   '/unlock/': typeof AppUnlockIndexRoute
   '/n/$node': typeof AppShellNNodeRouteWithChildren
   '/settings/appearance': typeof AppShellSettingsAppearanceRoute
+  '/settings/data': typeof AppShellSettingsDataRoute
   '/settings/devices': typeof AppShellSettingsDevicesRoute
   '/settings/login': typeof AppShellSettingsLoginRoute
   '/settings/notifications': typeof AppShellSettingsNotificationsRoute
@@ -273,6 +280,7 @@ export interface FileRoutesByTo {
   '/unlock/$node': typeof AppUnlockNodeRoute
   '/unlock': typeof AppUnlockIndexRoute
   '/settings/appearance': typeof AppShellSettingsAppearanceRoute
+  '/settings/data': typeof AppShellSettingsDataRoute
   '/settings/devices': typeof AppShellSettingsDevicesRoute
   '/settings/login': typeof AppShellSettingsLoginRoute
   '/settings/notifications': typeof AppShellSettingsNotificationsRoute
@@ -311,6 +319,7 @@ export interface FileRoutesById {
   '/_app/unlock/': typeof AppUnlockIndexRoute
   '/_app/_shell/n/$node': typeof AppShellNNodeRouteWithChildren
   '/_app/_shell/settings/appearance': typeof AppShellSettingsAppearanceRoute
+  '/_app/_shell/settings/data': typeof AppShellSettingsDataRoute
   '/_app/_shell/settings/devices': typeof AppShellSettingsDevicesRoute
   '/_app/_shell/settings/login': typeof AppShellSettingsLoginRoute
   '/_app/_shell/settings/notifications': typeof AppShellSettingsNotificationsRoute
@@ -348,6 +357,7 @@ export interface FileRouteTypes {
     | '/unlock/'
     | '/n/$node'
     | '/settings/appearance'
+    | '/settings/data'
     | '/settings/devices'
     | '/settings/login'
     | '/settings/notifications'
@@ -381,6 +391,7 @@ export interface FileRouteTypes {
     | '/unlock/$node'
     | '/unlock'
     | '/settings/appearance'
+    | '/settings/data'
     | '/settings/devices'
     | '/settings/login'
     | '/settings/notifications'
@@ -418,6 +429,7 @@ export interface FileRouteTypes {
     | '/_app/unlock/'
     | '/_app/_shell/n/$node'
     | '/_app/_shell/settings/appearance'
+    | '/_app/_shell/settings/data'
     | '/_app/_shell/settings/devices'
     | '/_app/_shell/settings/login'
     | '/_app/_shell/settings/notifications'
@@ -578,6 +590,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppShellSettingsAppearanceRouteImport
       parentRoute: typeof AppShellSettingsRoute
     }
+    '/_app/_shell/settings/data': {
+      id: '/_app/_shell/settings/data'
+      path: '/data'
+      fullPath: '/settings/data'
+      preLoaderRoute: typeof AppShellSettingsDataRouteImport
+      parentRoute: typeof AppShellSettingsRoute
+    }
     '/_app/_shell/settings/devices': {
       id: '/_app/_shell/settings/devices'
       path: '/devices'
@@ -695,6 +714,7 @@ declare module '@tanstack/react-router' {
 
 interface AppShellSettingsRouteChildren {
   AppShellSettingsAppearanceRoute: typeof AppShellSettingsAppearanceRoute
+  AppShellSettingsDataRoute: typeof AppShellSettingsDataRoute
   AppShellSettingsDevicesRoute: typeof AppShellSettingsDevicesRoute
   AppShellSettingsLoginRoute: typeof AppShellSettingsLoginRoute
   AppShellSettingsNotificationsRoute: typeof AppShellSettingsNotificationsRoute
@@ -705,6 +725,7 @@ interface AppShellSettingsRouteChildren {
 
 const AppShellSettingsRouteChildren: AppShellSettingsRouteChildren = {
   AppShellSettingsAppearanceRoute: AppShellSettingsAppearanceRoute,
+  AppShellSettingsDataRoute: AppShellSettingsDataRoute,
   AppShellSettingsDevicesRoute: AppShellSettingsDevicesRoute,
   AppShellSettingsLoginRoute: AppShellSettingsLoginRoute,
   AppShellSettingsNotificationsRoute: AppShellSettingsNotificationsRoute,

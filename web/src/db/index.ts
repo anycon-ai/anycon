@@ -109,7 +109,14 @@ export interface TodoMetaRecord {
   synced_at: number
 }
 
+/** 这个浏览器最近一次打开某个会话的时间：会话历史缓存按它淘汰（`pruneEventCache`）。 */
+export interface EventMetaRecord {
+  session_id: string
+  opened_at_ms: number
+}
+
 interface AnyconDB extends DBSchema {
+  event_meta: { key: string; value: EventMetaRecord }
   rule_outbox: { key: number; value: RuleSyncRecord; indexes: { by_node: string; by_rule: [string, string] } }
   keys: { key: string; value: IdentityRecord }
   nodes: { key: string; value: NodeRecord }
@@ -123,8 +130,8 @@ interface AnyconDB extends DBSchema {
 }
 
 export const DB_NAME = 'anycon'
-/** 3：同组规则期望状态（`rule_outbox`）。升级只新增仓，不动已有的。 */
-export const DB_VERSION = 3
+/** 3：同组规则期望状态（`rule_outbox`）；4：会话历史缓存的打开时间（`event_meta`）。升级只新增仓，不动已有的。 */
+export const DB_VERSION = 4
 
 let dbPromise: Promise<IDBPDatabase<AnyconDB>> | null = null
 
@@ -180,6 +187,7 @@ export function getDb(): Promise<IDBPDatabase<AnyconDB>> {
         const outbox = db.createObjectStore('todo_outbox', { keyPath: 'seq', autoIncrement: true })
         outbox.createIndex('by_node', 'node_id')
       }
+      if (oldVersion < 4) db.createObjectStore('event_meta', { keyPath: 'session_id' })
     },
     terminated() {
       dbPromise = null
@@ -214,8 +222,9 @@ export async function resetDb(): Promise<void> {
 /** 清空全部本地数据（换账号登录时）。 */
 export async function wipeAll(): Promise<void> {
   const db = await getDb()
-  const tx = db.transaction(['keys', 'nodes', 'sessions', 'events', 'drafts', 'blobs', 'todos', 'todo_meta', 'todo_outbox', 'rule_outbox'], 'readwrite')
+  const tx = db.transaction(['keys', 'nodes', 'sessions', 'events', 'event_meta', 'drafts', 'blobs', 'todos', 'todo_meta', 'todo_outbox', 'rule_outbox'], 'readwrite')
   await Promise.all([
+    tx.objectStore('event_meta').clear(),
     tx.objectStore('todos').clear(),
     tx.objectStore('todo_meta').clear(),
     tx.objectStore('todo_outbox').clear(),
@@ -301,7 +310,7 @@ export async function putNode(rec: NodeRecord): Promise<void> {
 export async function deleteNode(nodeId: string): Promise<void> {
   const db = await getDb()
   const sessions = await db.getAllFromIndex('sessions', 'by_node', nodeId)
-  const tx = db.transaction(['nodes', 'sessions', 'events', 'drafts', 'todos', 'todo_meta', 'todo_outbox', 'rule_outbox'], 'readwrite')
+  const tx = db.transaction(['nodes', 'sessions', 'events', 'event_meta', 'drafts', 'todos', 'todo_meta', 'todo_outbox', 'rule_outbox'], 'readwrite')
   await tx.objectStore('nodes').delete(nodeId)
   for (const k of await tx.objectStore('rule_outbox').index('by_node').getAllKeys(nodeId)) await tx.objectStore('rule_outbox').delete(k)
   // 这台节点的清单缓存和还没同步的改动一起删（节点被忘记 / 取消配对之后它们没有地方可发了）
@@ -311,6 +320,7 @@ export async function deleteNode(nodeId: string): Promise<void> {
   for (const s of sessions) {
     await tx.objectStore('sessions').delete(s.session_id)
     await tx.objectStore('events').delete(IDBKeyRange.bound([s.session_id, 0], [s.session_id, Number.MAX_SAFE_INTEGER]))
+    await tx.objectStore('event_meta').delete(s.session_id)
     await tx.objectStore('drafts').delete(s.session_id)
   }
   await tx.done
@@ -330,10 +340,11 @@ export async function putSessions(recs: SessionRecord[]): Promise<void> {
 
 export async function deleteSession(sessionId: string): Promise<void> {
   const db = await getDb()
-  const tx = db.transaction(['sessions', 'events', 'drafts'], 'readwrite')
+  const tx = db.transaction(['sessions', 'events', 'event_meta', 'drafts'], 'readwrite')
   await Promise.all([
     tx.objectStore('sessions').delete(sessionId),
     tx.objectStore('events').delete(IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER])),
+    tx.objectStore('event_meta').delete(sessionId),
     tx.objectStore('drafts').delete(sessionId),
     tx.done,
   ])
@@ -355,6 +366,110 @@ export async function putEvents(sessionId: string, events: SessionEvent[]): Prom
 
 export async function clearEvents(sessionId: string): Promise<void> {
   await (await getDb()).delete('events', IDBKeyRange.bound([sessionId, 0], [sessionId, Number.MAX_SAFE_INTEGER]))
+}
+
+export async function countEvents(): Promise<number> {
+  return (await getDb()).count('events')
+}
+
+// ---- 会话历史缓存的淘汰 ----
+
+/** 记下这个浏览器刚打开了这个会话（淘汰时最近打开的留下）。 */
+export async function touchEventMeta(sessionId: string, now: number): Promise<void> {
+  await (await getDb()).put('event_meta', { session_id: sessionId, opened_at_ms: now })
+}
+
+export interface EventPruneOptions {
+  /** 除 `protect` 之外，留下最近打开的这么多个会话的缓存。 */
+  keepSessions: number
+  /** 每个留下的会话最多缓存这么多条事件，多出来的从最旧的删。 */
+  maxPerSession: number
+  /** 不碰、也不占 `keepSessions` 名额的会话（这个标签页里正打开着的）。 */
+  protect: ReadonlySet<string>
+}
+
+export interface EventPruneResult {
+  /** 整个缓存被删掉的会话。 */
+  dropped: string[]
+  /** 删掉了较旧一段事件的会话（最新的 `maxPerSession` 条还在）。 */
+  trimmed: string[]
+}
+
+/**
+ * 在一个事务里淘汰会话历史缓存：`protect` 以外的按 `event_meta.opened_at_ms` 从新到旧排（没有记录的——升级前缓存的——算最旧），
+ * 排在 `keepSessions` 之后的整个删掉（连同 `event_meta`，`sessions.low_seq` 归零），
+ * 留下的每个超过 `maxPerSession` 条就删掉较旧的那段，缓存仍是连续的 [low, last] 一段（向上翻页时再从节点拉）。
+ * `sessions` 摘要本身不删。
+ */
+export async function pruneEventCache(opts: EventPruneOptions): Promise<EventPruneResult> {
+  const tx = (await getDb()).transaction(['events', 'event_meta', 'sessions'], 'readwrite')
+  const events = tx.objectStore('events')
+  // 有缓存的会话：按主键跳着走，每个会话只停一次
+  const cached: string[] = []
+  let kc = await events.openKeyCursor()
+  while (kc) {
+    const sid = kc.key[0]
+    cached.push(sid)
+    kc = await kc.continue([sid, Number.MAX_SAFE_INTEGER])
+  }
+  const opened = new Map((await tx.objectStore('event_meta').getAll()).map((m) => [m.session_id, m.opened_at_ms]))
+  const at = (sid: string): number => opened.get(sid) ?? 0
+  const ordered = cached.filter((sid) => !opts.protect.has(sid)).sort((a, b) => at(b) - at(a) || a.localeCompare(b))
+  const out: EventPruneResult = { dropped: [], trimmed: [] }
+  for (const [i, sid] of ordered.entries()) {
+    const all = IDBKeyRange.bound([sid, 0], [sid, Number.MAX_SAFE_INTEGER])
+    if (i >= opts.keepSessions) {
+      await events.delete(all)
+      await tx.objectStore('event_meta').delete(sid)
+      const rec = await tx.objectStore('sessions').get(sid)
+      if (rec && rec.low_seq !== 0) await tx.objectStore('sessions').put({ ...rec, low_seq: 0 })
+      out.dropped.push(sid)
+      continue
+    }
+    if ((await events.count(all)) <= opts.maxPerSession) continue
+    // 从最新往回数 maxPerSession 条，停在第一条要删的上
+    const c = await events.openKeyCursor(all, 'prev')
+    const oldest = await c?.advance(opts.maxPerSession)
+    if (!oldest) continue
+    await events.delete(IDBKeyRange.bound([sid, 0], oldest.key))
+    out.trimmed.push(sid)
+  }
+  await tx.done
+  return out
+}
+
+// ---- 清空缓存（/settings/data） ----
+
+/** 草稿（输入区里的附件和未发送消息的附件）引用的 blob。 */
+export function draftBlobIds(d: DraftRecord): string[] {
+  return [...(d.attachments ?? []), ...d.unsent.flatMap((m) => m.attachments ?? [])].map((a) => a.blob_id)
+}
+
+/**
+ * 在**一个**事务里清掉会话历史缓存（`events` 和 `event_meta`，并把 `sessions.low_seq` 归零）和附件缓存（`blobs`）。
+ * 附件缓存里留下 `keep` 和已存草稿引用的那些：未发送消息和草稿在节点回收了 blob 之后要从这里重传（spec/web.md § 4.6「附件」）。
+ * 会话摘要、清单缓存、待发队列、身份和节点都不动。返回删掉的事件条数和附件个数。
+ */
+export async function clearCaches(keep: ReadonlySet<string>): Promise<{ events: number; blobs: number }> {
+  const tx = (await getDb()).transaction(['events', 'event_meta', 'sessions', 'blobs', 'drafts'], 'readwrite')
+  const keepAll = new Set(keep)
+  for (const d of await tx.objectStore('drafts').getAll()) for (const id of draftBlobIds(d)) keepAll.add(id)
+  const events = await tx.objectStore('events').count()
+  await tx.objectStore('events').clear()
+  await tx.objectStore('event_meta').clear()
+  let cursor = await tx.objectStore('sessions').openCursor()
+  while (cursor) {
+    if (cursor.value.low_seq !== 0) await cursor.update({ ...cursor.value, low_seq: 0 })
+    cursor = await cursor.continue()
+  }
+  let blobs = 0
+  for (const key of await tx.objectStore('blobs').getAllKeys()) {
+    if (keepAll.has(key)) continue
+    await tx.objectStore('blobs').delete(key)
+    blobs++
+  }
+  await tx.done
+  return { events, blobs }
 }
 
 // ---- drafts ----

@@ -109,9 +109,10 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 1. 和 hub 断开，正在重连（红）。hub 终止这条连接、不再自动重连时换成对应的横幅：被另一个实例顶掉、设备被吊销、协议版本不兼容，以及（`multi`）账号的在线连接数到上限（`auth_fail { quota }`，红，带「查看用量」→ `/settings/quota`）
 2. 节点离线，消息会留在本地（黄）
 3. 有设备请求接入某台节点（蓝，带「查看」，打开批准对话框，§ 4.3.2；请求结束就消失）
-4. 有 N 条未发送消息（黄，带「现在重发」）
-5. 该浏览器尚未启用通知（蓝，带「去开启」→ `/settings/notifications`，可关闭，只提示一次）。同时满足才显示：浏览器能收推送（§ 4.9 的能力检测）、hub 配了推送（`/api/config.push_available`）、这个浏览器配对过节点、本浏览器没有推送订阅、浏览器没有拒绝过通知、`/settings/notifications` 以外的页面（在那一页上不催）、用户没关过。点「去开启」也算提示过了；关闭（或点了「去开启」）记在 localStorage 的偏好 `notifyBannerDismissed` 里，之后不再显示。没有注册 service worker（开发服务器）时也不显示
-6. 新版本 Web UI 已就绪，刷新生效（蓝）
+4. 这个浏览器没能在本地保存数据（黄）：任何一次 IndexedDB 写入失败（空间满、被禁用）都会亮，带「管理存储」→ `/settings/data` 和「关闭」。关闭只收起横幅，之后再有写入失败会再出来；在 `/settings/data` 清空缓存后也收起
+5. 有 N 条未发送消息（黄，带「现在重发」）
+6. 该浏览器尚未启用通知（蓝，带「去开启」→ `/settings/notifications`，可关闭，只提示一次）。同时满足才显示：浏览器能收推送（§ 4.9 的能力检测）、hub 配了推送（`/api/config.push_available`）、这个浏览器配对过节点、本浏览器没有推送订阅、浏览器没有拒绝过通知、`/settings/notifications` 以外的页面（在那一页上不催）、用户没关过。点「去开启」也算提示过了；关闭（或点了「去开启」）记在 localStorage 的偏好 `notifyBannerDismissed` 里，之后不再显示。没有注册 service worker（开发服务器）时也不显示
+7. 新版本 Web UI 已就绪，刷新生效（蓝）
 
 ## 4. 页面
 
@@ -412,7 +413,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `/settings/devices` | 本账号全部设备（含当前浏览器，标「这台」），按节点分组显示配对关系，吊销。吊销节点（daemon）和节点设置里的「移除这台节点」一样：只有 hub 那一步，成功后这个浏览器也忘记它，确认框用同样的说明 |
 | `/settings/notifications` | **本浏览器的推送**：状态（未开启 / 已开启 / 被浏览器拒绝 / 不支持——不是安全上下文、没有 `PushManager`、iOS 没加到主屏）；「开启推送」→ `Notification.requestPermission()` → `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })` → `POST /api/push/subscriptions`（带本浏览器的 web 设备 id；还没配对过任何节点的浏览器没有设备 id，提示先配对或解锁一台节点）；「关闭」退订并 `DELETE`；「发送测试推送」→ `POST /api/push/test`。订阅过期 / 被换掉（`pushsubscriptionchange`）时 service worker 重新订阅并上报。**每个类别**一行 push / email 两个开关（顺序：`permission_requested`、`error`、`enroll_requested`、`security`、`follow_up`、`turn_finished`、`session_idle`；`follow_up` 是标了「待处理」的会话完成了，默认只开 push；只有前四类有邮件开关，其余的邮件开关禁用；`GET` / `PUT /api/me/notifications`；`email_available = false` 时邮件那一列禁用并说明原因：hub 没配 SMTP，或账号没绑定邮箱）。**本账号的其他推送订阅**列表（hub 给的 `device_name`、推送服务主机名），可删除。测试推送的结果按 `{ result, status? }` 显示（`error` 时带上推送服务回的状态码） |
 | `/settings/appearance` | 主题（跟随系统 / 浅 / 深）、语言、字号、紧凑模式、侧栏显示运行中的会话（Recent 组的开关，默认开）、禁止页面缩放（只在 iOS / Android 上显示）、思考过程显示（折叠 / 展开 / 隐藏）、Enter 行为 |
-| `/settings/data` | 本地缓存大小、清空缓存、导出本浏览器的设备密钥（否——不提供，见 ADR-23）|
+| `/settings/data` | 本机存储（导航里叫「本机存储」，两种模式都有）。**用量**：`navigator.storage.estimate()` 的已用 / 配额，文字加进度条，80% 以上变黄；浏览器不报告时说明不知道；下面一句说上限由浏览器按设备剩余空间定、清出空间会变大、无痕标签页少得多。**缓存**：缓存的会话事件条数（`events` 的条数，下面一句说明只留最近打开的 20 个会话、每个最多 2000 条，§ 6.2）和附件缓存的个数与大小；「清空缓存」先确认，确认框写明删掉什么（会话历史和附件的缓存，打开会话时从节点重新加载，节点离线时看不到）、留下什么（设备密钥、节点、草稿、未发送消息和它们的附件、会话列表、清单）。清空在一个事务里删掉全部 `events` 和 `event_meta`、把 `sessions.low_seq` 归零、删掉 `blobs` 里没被草稿 / 未发送消息 / 输入区 / 发送中的消息引用的记录（§ 6.2）；之后没打开的会话 `cached_seq` 归零，附件缓存的内存索引重建，存储横幅（§ 3.4）收起。**空间不足时保留数据**：`navigator.storage.persisted()` 的状态（已开启 / 未开启 / 不支持）；未开启时说明设备空间不足时浏览器可能删掉这个网站的数据（包括设备密钥，之后要重新配对），给「请求浏览器保留」（`navigator.storage.persist()`）；浏览器拒绝时说明它按使用情况决定，加到主屏幕或允许通知后可能不同。不提供导出本浏览器的设备密钥（ADR-23）|
 | `/settings/quota` | 仅 `multi`（导航里也只在 `multi` 出现）：`GET /api/quota` 的四项——设备、节点（daemon）、同时在线的连接、滚动 24 小时内的配对与接入次数。每行「已用 / 上限」和进度条，上限为 `null` 显示「不限」；用到 80% 标「快满了」，满了标「已满」。hub 通过 `quota_update` 推来的用量（存在 `hub` store 的 `quota`）一变，页面就重新拉一次 `/api/quota`（推送里没有每日配对次数）。页面上有去「设备」页的链接，移除不用的设备释放名额。配额类失败都指到这里：全局横幅（`auth_fail { quota }`，§ 3.4）、配对 / 接入 / 解锁出错时（`pair_failed` / `enroll_failed` 的 `quota`）错误文字后面的「查看用量」链接 |
 | `/settings/security` | 安全活动（hub 审计里本账号的部分） |
 
@@ -690,6 +691,7 @@ nodes       { node_id, name, info, agents, last_seen }
 sessions    { session_id, node_id, project, agent, title, status, options, last_seq, updated_at, summary }   `summary` 是整份 `SessionSummary`，含 `follow_up` 和 `read_seq`（§ 4.6.1）
 events      { [session_id, seq], event }                 主键是复合键，范围查询拉增量
 drafts      { session_id, text, attachments?: [AttachmentRef], unsent: [{ …, attachments? }] }
+event_meta  { session_id, opened_at_ms }                这个浏览器最近一次打开这个会话的时间，会话历史缓存按它淘汰
 blobs       { blob_id, bytes, mime, last_used_ms }       附件缓存（ADR-35、ADR-44：图片和下载过 / 上传过的文件），LRU 上限 200 MiB
 todos       { key: "<node>:<id>", node_id, todo }        节点清单的缓存（§ 4.12）；索引 by_node
 todo_meta   { node_id, synced_at }                       上次同步成功的时间
@@ -697,7 +699,9 @@ todo_outbox { seq（自增）, node_id, id, op, state, error?, created_at, claim
 rule_outbox { seq（自增）, node, rule_id, desired, state, error?, claimed_at?, claimed_by? }   同组最后期望；唯一索引 (node, rule_id)，节点索引 by_node
 ```
 
-数据库版本 2 新增清单的三个 store，版本 3 新增 `rule_outbox`；升级只创建新仓，不动已有数据；迁移只前进。分享暂存（§ 8）另放在自己的小库 `anycon-share` 里：service worker 从不创建也不写主库，只读（`openExisting`）。
+数据库版本 2 新增清单的三个 store，版本 3 新增 `rule_outbox`，版本 4 新增 `event_meta`；升级只创建新仓，不动已有数据；迁移只前进。分享暂存（§ 8）另放在自己的小库 `anycon-share` 里：service worker 从不创建也不写主库，只读（`openExisting`）。
+
+会话历史（`events`）和附件（`blobs`）是缓存：`/settings/data` 的「清空缓存」（§ 4.9）只删它们（和 `event_meta`），附件里留下草稿和未发送消息还要用的；其余的仓不动。会话历史缓存有上限：打开会话时记下 `event_meta.opened_at_ms`，最多每 5 分钟淘汰一次——这个标签页里打开着的会话不动、不占名额，其余的按打开时间只留最近的 20 个（没有记录的，即升级前缓存的，算最旧），被挤出去的整个删掉（摘要留着，`low_seq` 归零，内存里 `cached_seq` 归零），留下的每个只留最新的 2000 条（和打开时「落后太多就整个丢掉」的门槛一样），缓存仍是连续的一段，更早的向上翻页时从节点拉。按条数不按字节，因为 IndexedDB 读不出记录大小。附件缓存另有 200 MiB 的 LRU 上限。
 
 按 origin 隔离，这是 [ADR-23](../decisions.md#adr-23-token-登录与局域网双-origin) 接受的代价。
 

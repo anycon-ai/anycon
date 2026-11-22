@@ -117,9 +117,14 @@ export function StatusBanner({ nodeId, nodeConn }: { nodeId: string | null; node
     case 'storage':
       text = t('banner.storage')
       action = (
-        <Button size="sm" variant="outline" onClick={() => useUi.getState().setStorageError(false)} data-testid="banner-storage-dismiss">
-          {t('common.dismiss')}
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => void navigate({ to: '/settings/data' })} data-testid="banner-storage-manage">
+            {t('banner.storageManage')}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => useUi.getState().setStorageError(false)} data-testid="banner-storage-dismiss">
+            {t('common.dismiss')}
+          </Button>
+        </div>
       )
       break
     case 'unsent':

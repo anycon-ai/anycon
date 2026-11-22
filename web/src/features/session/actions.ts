@@ -21,6 +21,7 @@ import type {
 } from '@/protocol'
 import * as db from '@/db'
 import type { SettingsUpdate } from '@/features/settings/resolve'
+import { noteSessionOpened } from '@/features/storage/eventCache'
 import { isRecord } from '@/lib/guards'
 import { uuid } from '@/lib/ids'
 import { mark, shortId, timed } from '@/lib/timing'
@@ -49,6 +50,8 @@ export async function openSession(nodeId: string, sessionId: string): Promise<vo
   const item = useSessions.getState().list[sessionId]
   const baseline = cached.length === 0 && item && item.last_seq <= 3 ? item.settings : null
   useSessions.getState().openStart(nodeId, sessionId, cached, baseline)
+  // 打开之后才记：淘汰时这个会话已经算「打开着」，不会被删
+  void noteSessionOpened(sessionId)
   if (rpc().isReady(nodeId)) await syncOpenSession(nodeId, sessionId)
 }
 

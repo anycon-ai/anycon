@@ -10,6 +10,7 @@ import { useNodes } from '@/stores/nodes'
 import { useSessions } from '@/stores/sessions'
 import { Chip, type Tone } from '@/ui/Misc'
 import { useMinute } from '@/features/inbox/ui/info'
+import { groupPeers, openRuleAlignment, useRuleSync } from '../groupSync'
 import { sourceOf, statusOf, type ViewRule } from '../store'
 
 export { RuleText } from './RuleText'
@@ -63,11 +64,17 @@ export function RuleSourceLine({ rule }: { rule: ViewRule }) {
 export function RuleMeta({ rule, showNode }: { rule: ViewRule; showNode?: boolean }) {
   const { t, i18n } = useTranslation()
   useMinute()
+  const records = useRuleSync((s) => s.records)
+  const peers = groupPeers(rule.node_id)
+  const pending = records.filter((r) => r.rule_id === rule.id && (r.node === rule.node_id || peers.includes(r.node)))
+  const failed = pending.some((r) => r.state === 'failed')
   const nodeName = useNodes((s) => s.byId[rule.node_id]?.name)
   return (
     <div className="space-y-1" data-testid="rule-meta">
       <div className="flex flex-wrap items-center gap-1.5">
         <RuleStatusChip rule={rule} />
+        {rule.sync === 'group' ? <Chip tone="info" testId="rule-group">{t('rules.group.badge')}</Chip> : null}
+        {pending.length > 0 ? <button type="button" onClick={() => openRuleAlignment(rule.node_id)} className={failed ? 'text-danger' : 'text-fg-muted'} data-testid="rule-sync-status">{failed ? t('rules.group.failed') : t('rules.group.syncing', { count: pending.length })}</button> : null}
         <Chip tone="info" testId="rule-scope">
           {ruleScope(t, rule)}
         </Chip>

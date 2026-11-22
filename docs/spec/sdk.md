@@ -211,3 +211,7 @@ anycon.serve(hub="https://hub.example.com", name="bot-host", workspace="~/bots")
 - Python：`anycon` 纯 Python 包依赖 `anycon-crypto`（maturin abi3 wheel），`requires-python >= 3.12`。**v0.1 没有 Python 代码**：`sdk/python/` 里只有一个 `README.md` 和一个 `pyproject.toml` 占位（声明包名、版本和「推迟」状态），实现和类型生成在 v0.1.x，见 [roadmap](../roadmap.md)。本文的 Python 代码块是 API 设计，不是现有功能
 - TS：`@anycon/protocol`、`@anycon/sdk`，Node ≥ 20，bun 和 Node 两个运行时都跑测试。**v0.1 只发 ESM**，CJS 后补
 - 版本号跟随协议 minor；兼容矩阵见 [protocol.md § 9](../protocol.md#9-版本与兼容)
+
+## 规则同步范围
+
+TS SDK 的 `node.rules.add({ text, sync?: "node" | "group" })` 和 `node.rules.update({ id, sync?: "node" | "group" })` 透传范围，只写当前连接的节点；SDK 不跨节点同步，也没有同组 outbox。缺省新建 node，项目规则和 pending 不能 group；agent 新建强制 pending / node。add 也接受 disabled / rejected，供调用方恢复期望状态。跨节点同步由 Web 完成，见 [daemon.md § 23.8](daemon.md#238-同组节点之间的同步)。

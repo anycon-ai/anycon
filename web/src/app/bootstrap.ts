@@ -2,6 +2,7 @@
 import { useDrafts as useTodoDrafts } from '@/features/todos/drafts'
 import * as db from '@/db'
 import { inboxNowCountFromStores, subscribeInbox } from '@/features/inbox/model'
+import { reloadRuleSync } from '@/features/rules/groupSync'
 import { hydrateTodos } from '@/features/todos/service'
 import { handleNotification } from '@/features/sync/notifications'
 import { hydrateNodeSessions, syncNode } from '@/features/sync/syncNode'
@@ -69,6 +70,7 @@ export function startTransport(accountId: string): Promise<void> {
     nodesLoaded: (nodes) => {
       useNodes.getState().hydrate(nodes)
       for (const n of nodes) void hydrateNodeSessions(n.node_id)
+      void reloadRuleSync().catch((e: unknown) => console.warn('anycon: could not load rule sync queue', e))
       void hydrateTodos(nodes.map((n) => n.node_id))
     },
     nodeAdded: (rec) => useNodes.getState().add(rec),

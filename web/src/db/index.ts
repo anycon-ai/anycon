@@ -3,6 +3,7 @@ import { deleteShareDb } from '@/sw/shareStore'
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { AgentInfo, AttachmentRef, NodeInfo, Project, SessionEvent, SessionSummary, Todo } from '@/protocol'
 import { isClosed, type OutboxRecord } from '@/features/todos/types'
+import type { RuleSyncRecord } from '@/features/rules/syncTypes'
 import { bytesEqual } from '@/lib/bytes'
 
 export interface IdentityRecord {
@@ -109,6 +110,7 @@ export interface TodoMetaRecord {
 }
 
 interface AnyconDB extends DBSchema {
+  rule_outbox: { key: number; value: RuleSyncRecord; indexes: { by_node: string; by_rule: [string, string] } }
   keys: { key: string; value: IdentityRecord }
   nodes: { key: string; value: NodeRecord }
   sessions: { key: string; value: SessionRecord; indexes: { by_node: string } }
@@ -121,8 +123,8 @@ interface AnyconDB extends DBSchema {
 }
 
 export const DB_NAME = 'anycon'
-/** 2：清单（`todos` / `todo_meta` / `todo_outbox`）。升级只新增仓，不动已有的。 */
-export const DB_VERSION = 2
+/** 3：同组规则期望状态（`rule_outbox`）。升级只新增仓，不动已有的。 */
+export const DB_VERSION = 3
 
 let dbPromise: Promise<IDBPDatabase<AnyconDB>> | null = null
 
@@ -166,6 +168,11 @@ export function getDb(): Promise<IDBPDatabase<AnyconDB>> {
         db.createObjectStore('drafts', { keyPath: 'session_id' })
         db.createObjectStore('blobs', { keyPath: 'blob_id' })
       }
+      if (oldVersion < 3) {
+        const rules = db.createObjectStore('rule_outbox', { keyPath: 'seq', autoIncrement: true })
+        rules.createIndex('by_node', 'node')
+        rules.createIndex('by_rule', ['node', 'rule_id'], { unique: true })
+      }
       if (oldVersion < 2) {
         const todos = db.createObjectStore('todos', { keyPath: 'key' })
         todos.createIndex('by_node', 'node_id')
@@ -207,11 +214,12 @@ export async function resetDb(): Promise<void> {
 /** 清空全部本地数据（换账号登录时）。 */
 export async function wipeAll(): Promise<void> {
   const db = await getDb()
-  const tx = db.transaction(['keys', 'nodes', 'sessions', 'events', 'drafts', 'blobs', 'todos', 'todo_meta', 'todo_outbox'], 'readwrite')
+  const tx = db.transaction(['keys', 'nodes', 'sessions', 'events', 'drafts', 'blobs', 'todos', 'todo_meta', 'todo_outbox', 'rule_outbox'], 'readwrite')
   await Promise.all([
     tx.objectStore('todos').clear(),
     tx.objectStore('todo_meta').clear(),
     tx.objectStore('todo_outbox').clear(),
+    tx.objectStore('rule_outbox').clear(),
     tx.objectStore('keys').clear(),
     tx.objectStore('nodes').clear(),
     tx.objectStore('sessions').clear(),
@@ -293,8 +301,9 @@ export async function putNode(rec: NodeRecord): Promise<void> {
 export async function deleteNode(nodeId: string): Promise<void> {
   const db = await getDb()
   const sessions = await db.getAllFromIndex('sessions', 'by_node', nodeId)
-  const tx = db.transaction(['nodes', 'sessions', 'events', 'drafts', 'todos', 'todo_meta', 'todo_outbox'], 'readwrite')
+  const tx = db.transaction(['nodes', 'sessions', 'events', 'drafts', 'todos', 'todo_meta', 'todo_outbox', 'rule_outbox'], 'readwrite')
   await tx.objectStore('nodes').delete(nodeId)
+  for (const k of await tx.objectStore('rule_outbox').index('by_node').getAllKeys(nodeId)) await tx.objectStore('rule_outbox').delete(k)
   // 这台节点的清单缓存和还没同步的改动一起删（节点被忘记 / 取消配对之后它们没有地方可发了）
   await tx.objectStore('todo_meta').delete(nodeId)
   for (const k of await tx.objectStore('todos').index('by_node').getAllKeys(nodeId)) await tx.objectStore('todos').delete(k)
@@ -581,4 +590,71 @@ export async function dropNodeTodos(nodeId: string): Promise<number> {
   await tx.objectStore('todo_meta').delete(nodeId)
   await tx.done
   return pending.length
+}
+
+// ---- 同组规则期望状态 ----
+
+/** 同一个目标节点和规则只保留最后写下的状态；多个目标在一个事务里持久化。 */
+export async function putRuleSync(records: readonly RuleSyncRecord[]): Promise<void> {
+  if (records.length === 0) return
+  const tx = (await getDb()).transaction('rule_outbox', 'readwrite')
+  for (const rec of records) {
+    const key = await tx.store.index('by_rule').getKey([rec.node, rec.rule_id])
+    const old = key === undefined ? undefined : await tx.store.get(key)
+    if (key !== undefined) await tx.store.delete(key)
+    await tx.store.add({ ...rec, ...(old?.claimed_at !== undefined ? { claimed_at: old.claimed_at, claimed_by: old.claimed_by } : {}) })
+  }
+  await tx.done
+}
+
+export async function listRuleSync(): Promise<RuleSyncRecord[]> {
+  return (await getDb()).getAll('rule_outbox')
+}
+
+/** 按顺序认领；无 Web Locks 时，事务里的租约避免多个标签页同时发送。 */
+export async function claimRuleSync(node: string, leaseMs: number, owner: string): Promise<RuleSyncRecord | null> {
+  const tx = (await getDb()).transaction('rule_outbox', 'readwrite')
+  const all = await tx.store.index('by_node').getAll(node)
+  const held = all.some((r) => r.claimed_by !== owner && r.claimed_at !== undefined && r.claimed_at + leaseMs > Date.now())
+  const rec = all.find((r) => r.state === 'pending')
+  if (!rec || held) {
+    await tx.done
+    return null
+  }
+  rec.claimed_at = Date.now()
+  rec.claimed_by = owner
+  await tx.store.put(rec)
+  await tx.done
+  return rec
+}
+
+/** 回执只处理被发送的那个序号，不会删掉它在途时写下的新期望。 */
+export async function finishRuleSync(seq: number, error?: RuleSyncRecord['error'], retain = false, owner?: string, counts: Pick<RuleSyncRecord, 'attempts' | 'drops'> = {}): Promise<void> {
+  const tx = (await getDb()).transaction('rule_outbox', 'readwrite')
+  const rec = await tx.store.get(seq)
+  if (rec && (owner === undefined || rec.claimed_by === undefined || rec.claimed_by === owner)) {
+    if (error || retain) {
+      Object.assign(rec, counts)
+      delete rec.claimed_at
+      delete rec.claimed_by
+      if (error) { rec.state = 'failed'; rec.error = error }
+      await tx.store.put(rec)
+    } else await tx.store.delete(seq)
+  }
+  await tx.done
+}
+
+export async function retryRuleSync(seq: number): Promise<void> {
+  const tx = (await getDb()).transaction('rule_outbox', 'readwrite')
+  const rec = await tx.store.get(seq)
+  if (rec) {
+    delete rec.attempts
+    delete rec.drops
+    delete rec.error
+    delete rec.claimed_at
+    delete rec.claimed_by
+    rec.state = 'pending'
+    await tx.store.put(rec)
+  }
+  await tx.done
 }

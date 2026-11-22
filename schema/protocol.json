@@ -5963,6 +5963,17 @@
           ],
           "description": "缺省 `active`。"
         },
+        "sync": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuleSync"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "缺省 `node`；agent 写入强制为 `node`。"
+        },
         "text": {
           "type": "string"
         }
@@ -6008,7 +6019,9 @@
       "description": "`rule.add` 可以直接给的状态。",
       "enum": [
         "active",
-        "pending"
+        "pending",
+        "disabled",
+        "rejected"
       ],
       "type": "string"
     },
@@ -6365,7 +6378,7 @@
       ]
     },
     "RuleSync": {
-      "description": "规则在节点之间的同步范围。这一半恒为 `node`（docs/spec/daemon.md § 23.8）。",
+      "description": "规则在节点之间的同步范围，由客户端同步（docs/spec/daemon.md § 23.8）。",
       "oneOf": [
         {
           "const": "node",
@@ -6374,7 +6387,7 @@
         },
         {
           "const": "group",
-          "description": "同组节点（由客户端同步，还没有实现）。",
+          "description": "同组节点（由客户端同步）。",
           "type": "string"
         },
         {
@@ -6420,6 +6433,17 @@
               "type": "null"
             }
           ]
+        },
+        "sync": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RuleSync"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "同组范围仅接受全节点、非待确认的规则。"
         },
         "text": {
           "type": [

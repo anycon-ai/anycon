@@ -625,7 +625,7 @@ export type RuleSourceKind = "manual" | "answer" | "extracted" | "agent" | "unkn
  */
 export type RuleStatus = "pending" | "active" | "disabled" | "rejected" | "unknown";
 /**
- * 规则在节点之间的同步范围。这一半恒为 `node`（docs/spec/daemon.md § 23.8）。
+ * 规则在节点之间的同步范围，由客户端同步（docs/spec/daemon.md § 23.8）。
  */
 export type RuleSync = "node" | "group" | "unknown";
 /**
@@ -635,7 +635,7 @@ export type RuleAddSourceKind = "manual" | "answer";
 /**
  * `rule.add` 可以直接给的状态。
  */
-export type RuleAddStatus = "active" | "pending";
+export type RuleAddStatus = "active" | "pending" | "disabled" | "rejected";
 export type JudgeErrorCode =
   | "timeout"
   | "network"
@@ -2524,6 +2524,10 @@ export interface RuleAddParams {
    * 缺省 `active`。
    */
   status?: RuleAddStatus | null;
+  /**
+   * 缺省 `node`；agent 写入强制为 `node`。
+   */
+  sync?: RuleSync | null;
   text: string;
 }
 export interface RuleAddSource {
@@ -2671,6 +2675,10 @@ export interface RuleUpdateParams {
   if_updated_ms?: number | null;
   project?: string | null;
   status?: RuleStatus | null;
+  /**
+   * 同组范围仅接受全节点、非待确认的规则。
+   */
+  sync?: RuleSync | null;
   text?: string | null;
 }
 /**

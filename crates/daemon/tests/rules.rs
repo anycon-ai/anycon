@@ -156,8 +156,6 @@ async fn add_validates_the_id_the_text_the_project_and_the_enums() {
 
     // status / source 只接受调用方可以给的值
     for bad in [
-        json!({ "status": "disabled" }),
-        json!({ "status": "rejected" }),
         json!({ "status": "unknown" }),
         json!({ "status": "bogus" }),
         json!({ "source": { "kind": "extracted" } }),
@@ -903,7 +901,7 @@ async fn the_audit_log_records_what_changed_without_the_text() {
     // 中文按字符数算：「AUDITSECRET 中文」= 14
     assert_eq!(
         entries[0].detail,
-        json!({ "text_len": 14, "source_kind": "manual", "status": "active", "project": "web" })
+        json!({ "text_len": 14, "source_kind": "manual", "status": "active", "sync": "node", "project": "web" })
     );
     assert_eq!(entries[0].device_id, "dev-pixel");
     assert_eq!(
@@ -1500,5 +1498,131 @@ async fn the_mock_agent_echoes_the_injected_rules() {
         .collect();
     // mock 回显 `system_prompt_append` 的前 32 个字符
     assert!(text.contains("prompt_append=Standing rules from the user. Th You said: hello"), "{text}");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn group_sync_validates_final_scope_and_order_and_preserves_agent_guard() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let mut mcp = td.local_mcp_client();
+    for status in ["active", "disabled", "rejected"] {
+        let r = add(&td, &mut c, json!({"id": id(), "text": "sync", "status": status, "sync": "group"})).await.unwrap();
+        assert_eq!(r.sync, RuleSync::Group);
+        assert_eq!(rule_of(&td, &mut c, &r.id).await.sync, RuleSync::Group);
+    }
+    for extra in [json!({"project": "web"}), json!({"status": "pending"})] {
+        let mut p = json!({"id": id(), "text": "t", "sync": "group"});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert_eq!(code(&add(&td, &mut c, p).await.unwrap_err()), invalid("sync", Some("not_syncable")));
+    }
+    for (extra, field, reason) in [
+        (json!({"text": ""}), "text", None),
+        (json!({"project": "a\nb"}), "project", None),
+        (json!({"source": {"kind": "answer", "session_id": ""}}), "source.session_id", None),
+        (json!({"sync": "future"}), "sync", None),
+    ] {
+        let mut p = json!({"id": id(), "text": "t", "sync": "group", "status": "pending"});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert_eq!(code(&add(&td, &mut c, p).await.unwrap_err()), invalid(field, reason));
+    }
+    let pending =
+        add(&td, &mut c, json!({"id": id(), "text": "pending", "agent": true, "sync": "group"})).await.unwrap();
+    assert_eq!((pending.status, pending.sync), (RuleStatus::Pending, RuleSync::Node));
+    let agent =
+        add(&td, &mut mcp, json!({"id": id(), "text": "mcp", "sync": "future", "status": "rejected"})).await.unwrap();
+    assert_eq!((agent.status, agent.sync), (RuleStatus::Pending, RuleSync::Node));
+    assert_eq!(
+        code(&update(&td, &mut c, json!({"id": pending.id, "sync": "group"})).await.unwrap_err()),
+        invalid("sync", Some("not_syncable"))
+    );
+    let confirmed = update(&td, &mut c, json!({"id": pending.id, "status": "active", "sync": "group"})).await.unwrap();
+    for (extra, field, reason) in [
+        (json!({"text": ""}), "text", None),
+        (json!({"project": "a\nb"}), "project", None),
+        (json!({"status": "future"}), "status", None),
+        (json!({"project": "web"}), "sync", Some("not_syncable")),
+        (json!({"status": "pending"}), "sync", Some("not_syncable")),
+        (json!({"sync": "future"}), "sync", None),
+    ] {
+        let mut p = json!({"id": confirmed.id});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert_eq!(code(&update(&td, &mut c, p).await.unwrap_err()), invalid(field, reason));
+    }
+    let e = update(&td, &mut c, json!({"id": confirmed.id, "sync": "future", "if_updated_ms": 0})).await.unwrap_err();
+    assert_eq!(code(&e), invalid("if_updated_ms", Some("changed")));
+    let local = update(&td, &mut c, json!({"id": confirmed.id, "sync": "node", "project": "web"})).await.unwrap();
+    assert_eq!(local.sync, RuleSync::Node);
+    let e = update(&td, &mut c, json!({"id": local.id, "sync": "group"})).await.unwrap_err();
+    assert_eq!(code(&e), invalid("sync", Some("not_syncable")));
+    let e = update(&td, &mut c, json!({"id": local.id, "project": "web", "sync": "group"})).await.unwrap_err();
+    assert_eq!(code(&e), invalid("sync", Some("not_syncable")));
+    let shared = update(&td, &mut c, json!({"id": local.id, "sync": "group", "clear": ["project"]})).await.unwrap();
+    assert_eq!(shared.sync, RuleSync::Group);
+    assert_eq!(shared.project, None);
+    let existing = add(&td, &mut mcp, json!({"id": confirmed.id, "text": "", "sync": "future"})).await.unwrap();
+    assert_eq!(existing, shared);
+    let e = update(&td, &mut mcp, json!({"id": id(), "sync": "future"})).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::Forbidden));
+    let e = update(&td, &mut c, json!({"id": id(), "sync": "future"})).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::NotFound));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn group_sync_is_persisted_notified_and_audited_even_when_only_scope_changes() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    let r = add(&td, &mut c, json!({"id": id(), "text": "t", "sync": "group"})).await.unwrap();
+    assert_eq!(changes(&mut c).last().unwrap().rule.as_ref().unwrap().sync, RuleSync::Group);
+    let local = update(&td, &mut c, json!({"id": r.id, "sync": "node"})).await.unwrap();
+    assert!(local.updated_ms > r.updated_ms);
+    assert_eq!(rule_of(&td, &mut c, &r.id).await.sync, RuleSync::Node);
+    assert_eq!(changes(&mut c).last().unwrap().rule.as_ref().unwrap().sync, RuleSync::Node);
+    let before = audit(&td, "rule.").await;
+    assert_eq!(before.iter().find(|a| a.action == "rule.add").unwrap().detail["sync"], "group");
+    assert_eq!(before.iter().find(|a| a.action == "rule.update").unwrap().detail, json!({"fields": ["sync"]}));
+    assert_eq!(update(&td, &mut c, json!({"id": r.id, "sync": "node"})).await.unwrap(), local);
+    assert!(changes(&mut c).is_empty());
+    assert_eq!(audit(&td, "rule.").await.len(), before.len());
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn group_scope_validation_precedes_capacity_and_budget() {
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    for i in 0..300 {
+        let rule = row(&id(), "full", None, RuleStatus::Disabled, i);
+        td.ctx.store.rule_insert(&rule).await.unwrap();
+    }
+    let bad = add(&td, &mut c, json!({"id": id(), "text": "t", "project": "app", "sync": "group"})).await.unwrap_err();
+    assert_eq!(code(&bad), invalid("sync", Some("not_syncable")));
+    let full = add(&td, &mut c, json!({"id": id(), "text": "t", "sync": "group"})).await.unwrap_err();
+    assert_eq!(code(&full), invalid("rules", Some("too_many")));
+    // 否决副本可以在非否决名额用完时恢复，仍受自己的上限约束。
+    let rejected =
+        add(&td, &mut c, json!({"id": id(), "text": "t", "status": "rejected", "sync": "group"})).await.unwrap();
+    assert_eq!(rejected.status, RuleStatus::Rejected);
+    td.shutdown().await;
+
+    let td = TestDaemon::start().await;
+    let mut c = td.local_cli_client();
+    for _ in 0..6 {
+        add_ok(&td, &mut c, &"x".repeat(600)).await;
+    }
+    let r = add(&td, &mut c, json!({"id": id(), "text": "y", "status": "pending"})).await.unwrap();
+    let bad = update(
+        &td,
+        &mut c,
+        json!({"id": r.id, "text": "x".repeat(600), "status": "active", "project": "app", "sync": "group"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&bad), invalid("sync", Some("not_syncable")));
+    let budget = update(&td, &mut c, json!({"id": r.id, "text": "x".repeat(600), "status": "active", "sync": "group"}))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&budget), invalid("status", Some("over_budget")));
     td.shutdown().await;
 }

@@ -228,9 +228,9 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 | 命令 | 说明 |
 |---|---|
-| `anycon rule add <text> [--project <name>]` | `rule.add`，id 由 CLI 生成（UUID）。`<text>` 一两句话，最多 600 个字符，可以含换行；`--project` 只让规则进这个项目的会话（不校验项目是否存在），缺省是节点上所有项目。人敲的命令直接生效：打印 `added <id 前 8 位>  <规则>`；`--json` 打印这条规则。超出注入的字数上限（一个会话最多 4096 字节的规则）→ 退出码 2，提示先合并或停用几条；不含 `rejected` 的总数已满 300 → 退出码 2；agent 提的待确认规则已满 50（在 agent 里运行时）→ 退出码 2；文字里有双向控制符或零宽字符 → 退出码 2 |
-| `anycon rule ls [--all] [--json]` | `rule.list`。缺省列 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；按创建时间从早到晚。列：ID（前 8 位）、STATUS、PROJECT、BY（agent 提的写 `agent`，待确认的写 `agent (needs review)`）、RULE（多行的用 ` / ` 连成一行，最多 100 个字符，控制字符去掉）；最后一行写一个会话最多拿到多少字节的规则（全节点的加上最大的项目的）。`--json` 是 `{ "rules": [Rule], "budget": RuleBudget }` |
-| `anycon rule show <id>` | 一条规则的全部内容：文字（`visible()`，控制字符显示成转义，换行保留）、状态、项目、来源（人写的 / 回答里记的 / 提炼的 / agent 提的，agent 提的带来源会话）。`ls` 把规则截成一行，确认之前用它看全文；只读，在 anycon 拉起的 agent 里也能用。`--json` 是这条规则 |
+| `anycon rule add <text> [--project <name>] [--group]` | `rule.add`，id 由 CLI 生成（UUID）。`<text>` 一两句话，最多 600 个字符，可以含换行；`--project` 只让规则进这个项目的会话（不校验项目是否存在），缺省是节点上所有项目。人敲的命令直接生效：打印 `added <id 前 8 位>  <规则>`；`--json` 打印这条规则。超出注入的字数上限（一个会话最多 4096 字节的规则）→ 退出码 2，提示先合并或停用几条；不含 `rejected` 的总数已满 300 → 退出码 2；agent 提的待确认规则已满 50（在 agent 里运行时）→ 退出码 2；文字里有双向控制符或零宽字符 → 退出码 2 |
+| `anycon rule ls [--all] [--json]` | `rule.list`。缺省列 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；按创建时间从早到晚。列：ID（前 8 位）、STATUS、SYNC（node / group）、PROJECT、BY（agent 提的写 `agent`，待确认的写 `agent (needs review)`）、RULE（多行的用 ` / ` 连成一行，最多 100 个字符，控制字符去掉）；最后一行写一个会话最多拿到多少字节的规则（全节点的加上最大的项目的）。`--json` 是 `{ "rules": [Rule], "budget": RuleBudget }` |
+| `anycon rule show <id>` | 一条规则的全部内容：文字（`visible()`，控制字符显示成转义，换行保留）、状态、同步范围、项目、来源（人写的 / 回答里记的 / 提炼的 / agent 提的，agent 提的带来源会话）。`ls` 把规则截成一行，确认之前用它看全文；只读，在 anycon 拉起的 agent 里也能用。`--json` 是这条规则 |
 | `anycon rule confirm <id>` · `enable <id>` | `rule.update { status: active }`。`confirm` 用在待确认的规则上，`enable` 用在停用的上，效果一样。打印 `confirmed …` / `enabled …`，**后面是被激活的这条规则的全文、项目和来源**（生效的规则原样进每个会话的系统提示）；`--json` 打印这条规则 |
 | `anycon rule reject <id>` | `rule.update { status: rejected }`：留着，之后提炼时不再提同样的，但永远不生效 |
 | `anycon rule disable <id>` | `rule.update { status: disabled }`：停用，留着，可以再 `enable` |
@@ -239,6 +239,8 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `anycon rule runs [--session <session>] [--json]` | `rule.extract_runs`：最近 20 次提炼，列：时间、会话（前 8 位）、TRIGGER、STATUS、ADDED、DROPPED、错误码；第一行是今天用了几次、上限几次 |
 
 `<id>` 接受唯一前缀（UUID 的前几位，不区分大小写），和 `anycon todo` 一样：完整的 UUID 直接用，不列表；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2。经前缀找到的规则，`confirm` / `reject` / `disable` / `enable` / `rm` 都带它列出时的 `if_updated_ms`：这期间别处改过这条规则（比如改了文字）就不动它，提示重新 `anycon rule ls`。已经是目标状态时打印 `nothing changed: … is already …`。
+
+`ls` / `show` 显示 `sync`（node / group）。`add --group` 发 `sync: group`，只在当前连接的一个节点上建立全节点规则；打印英文说明，其他节点由后续 Web 写入触发的同步或「对齐」补齐（只重连、读列表不会自动扩散），CLI 不执行跨节点写入。有项目且 --group 由 daemon 拒绝（not_syncable）；agent 新建始终 pending / node。
 
 **在 anycon 拉起的 agent 里**（环境里有 `ANYCON_AGENT` 且不是空串或 `0`，和 `anycon mcp`、`anycon todo` 是同一个判断）：
 

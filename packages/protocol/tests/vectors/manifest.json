@@ -503,6 +503,21 @@
     }
   },
   {
+    "name": "rpc_rule_add_group",
+    "type": "rpc",
+    "value": {
+      "id": 901,
+      "jsonrpc": "2.0",
+      "method": "rule.add",
+      "params": {
+        "id": "11111111-2222-4333-8444-555555555555",
+        "status": "disabled",
+        "sync": "group",
+        "text": "Ask before adding a dependency."
+      }
+    }
+  },
+  {
     "name": "rpc_rule_extract",
     "type": "rpc",
     "value": {
@@ -654,6 +669,20 @@
           }
         ],
         "used_today": 1
+      }
+    }
+  },
+  {
+    "name": "rpc_rule_update_group",
+    "type": "rpc",
+    "value": {
+      "id": 902,
+      "jsonrpc": "2.0",
+      "method": "rule.update",
+      "params": {
+        "id": "11111111-2222-4333-8444-555555555555",
+        "status": "active",
+        "sync": "group"
       }
     }
   }

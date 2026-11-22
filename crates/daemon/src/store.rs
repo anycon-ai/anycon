@@ -439,6 +439,15 @@ impl Store {
         rows.iter().map(Self::row_to_session).collect()
     }
 
+    /// 自动提炼先按会话更新时间缩小范围，再检查最后事件时间。
+    pub(crate) async fn sessions_updated_since(&self, since_ms: u64) -> Result<Vec<SessionRow>> {
+        let rows = sqlx::query("SELECT * FROM sessions WHERE updated_ms >= ?")
+            .bind(since_ms as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(Self::row_to_session).collect()
+    }
+
     pub async fn get_session(&self, id: &str) -> Result<Option<SessionRow>> {
         let row = sqlx::query("SELECT * FROM sessions WHERE id = ?").bind(id).fetch_optional(&self.pool).await?;
         row.as_ref().map(Self::row_to_session).transpose()

@@ -86,6 +86,11 @@ impl From<RpcError> for CliError {
                 msg = format!("{msg} ({r})");
             }
         }
+        if let Some(d) = &e.data {
+            if let (Some(used), Some(limit)) = (d.used, d.limit) {
+                msg.push_str(&format!(" ({used} / {limit} calls used today)"));
+            }
+        }
         // spec/cli.md § 4：参数不对（含不合法的设置）= 2，被拒绝 = 5，其余 = 1
         let exit = match code {
             Some(ErrorCode::Forbidden) => EXIT_DENIED,

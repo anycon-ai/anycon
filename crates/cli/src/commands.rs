@@ -1853,6 +1853,8 @@ mod tests {
                 updated_ms: None,
                 bytes: None,
                 cap: None,
+                used: None,
+                limit: None,
             }));
             CliError::from(e)
         };

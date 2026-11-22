@@ -5715,6 +5715,14 @@
             "null"
           ]
         },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "reason": {
           "type": [
             "string",
@@ -5732,6 +5740,15 @@
         "updated_ms": {
           "description": "带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = \"changed\"`）时，那一项现在的 `updated_ms`。",
           "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "used": {
+          "description": "判断后端当天已经使用的次数与每日上限（reason = budget）。",
+          "format": "uint32",
           "minimum": 0,
           "type": [
             "integer",

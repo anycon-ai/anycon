@@ -106,6 +106,8 @@ async fn resolve_rule(conn: &Conn, key: &str) -> Result<std::result::Result<Rule
 
 pub async fn rule(app: &App, cmd: RuleCmd) -> Result<u8> {
     match cmd {
+        RuleCmd::Extract { session, no_wait } => extract(app, &session, no_wait).await,
+        RuleCmd::Runs { session } => runs(app, session.as_deref()).await,
         RuleCmd::Add(a) => add(app, a).await,
         RuleCmd::Ls(a) => ls(app, a).await,
         RuleCmd::Show { id } => show(app, &id).await,
@@ -299,6 +301,157 @@ async fn rm(app: &App, key: &str) -> Result<u8> {
             Err(_) => println!("removed {}", short(&id)),
         }
     }
+    Ok(0)
+}
+
+/// 本机配置可读时使用实际超时；远程只公开种类，所以用该种类允许的最大超时。
+async fn extract_timeout(app: &App, conn: &Conn, backend: &str) -> Result<std::time::Duration> {
+    use anycon_daemon::config::JudgeBackendConfig;
+    use std::time::Duration;
+    if conn.local {
+        if let Ok(config) = anycon_daemon::config::Config::load(&app.paths) {
+            if let Some(backend) = config.judge.backends.get(backend) {
+                let timeout = match backend {
+                    JudgeBackendConfig::Api(c) => c.timeout,
+                    JudgeBackendConfig::Agent(c) => c.timeout,
+                };
+                return Ok(timeout + Duration::from_secs(30));
+            }
+        }
+    }
+    let info: anycon_protocol::NodeInfo = conn.call(methods::NODE_INFO, json!({})).await?;
+    let api = info
+        .judge
+        .and_then(|j| j.backends.into_iter().find(|b| b.name == backend))
+        .is_some_and(|b| b.kind == anycon_protocol::JudgeBackendKind::Api);
+    Ok(Duration::from_secs(if api { 630 } else { 930 }))
+}
+
+async fn extract(app: &App, key: &str, no_wait: bool) -> Result<u8> {
+    use anycon_protocol::{ExtractRunStatus, RuleExtractDone, RuleExtractResult};
+    refuse_inside_agent("extract")?;
+    let mut conn = app.conn().await?;
+    let session_id = crate::commands::resolve_session(&conn, key).await?;
+    // 请求之前取走接收端：极快的后端可能先通知、后收到 RPC 回应。
+    let mut notes = conn.notifications();
+    let result: RuleExtractResult =
+        conn.call(methods::RULE_EXTRACT, json!({"session_id": session_id})).await.map_err(|mut e| {
+            if matches!(e.reason.as_deref(), Some("budget" | "busy" | "not_configured")) {
+                e.exit = EXIT_ERROR;
+            }
+            e
+        })?;
+    let Some(mut run) = result.run.clone() else {
+        if app.json() {
+            app.out.json_line(&result);
+        } else {
+            println!("no new decision points");
+        }
+        return Ok(0);
+    };
+    if no_wait {
+        if app.json() {
+            app.out.json_line(&result);
+        } else {
+            println!("extraction started: {} ({} decision points)", run.id, run.points);
+        }
+        return Ok(0);
+    }
+    let waiting_since = tokio::time::Instant::now();
+    let timeout = extract_timeout(app, &conn, &run.backend).await?;
+    let deadline = waiting_since + timeout;
+    while run.status == ExtractRunStatus::Running {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return Err(CliError::new(EXIT_ERROR, "timeout", "timed out waiting for extraction; check `anycon rule runs`")),
+            _ = tokio::signal::ctrl_c() => return Err(CliError::interrupted()),
+            note = notes.recv() => {
+                let note = note.ok_or_else(|| CliError::offline("connection lost while waiting for extraction"))?;
+                if note.method == methods::RULE_EXTRACT_DONE {
+                    let done: RuleExtractDone = serde_json::from_value(note.params)?;
+                    if done.run.id == run.id { run = done.run; }
+                }
+            }
+        }
+    }
+    if app.json() {
+        app.out.json_line(&run);
+    }
+    if run.status != ExtractRunStatus::Done {
+        let error = run
+            .error
+            .unwrap_or(anycon_protocol::JudgeError { code: anycon_protocol::JudgeErrorCode::Internal, status: None });
+        let code = if error.code == anycon_protocol::JudgeErrorCode::Unknown {
+            "internal".to_owned()
+        } else {
+            serde_json::to_value(error.code)?.as_str().unwrap_or("internal").to_owned()
+        };
+        let explanation = match error.code {
+            anycon_protocol::JudgeErrorCode::Auth => "backend authentication failed",
+            anycon_protocol::JudgeErrorCode::RateLimited => "backend rate limit reached",
+            anycon_protocol::JudgeErrorCode::Timeout => "backend timed out",
+            anycon_protocol::JudgeErrorCode::Network => "could not reach the backend",
+            anycon_protocol::JudgeErrorCode::BadOutput => "backend did not return usable rules",
+            anycon_protocol::JudgeErrorCode::AgentFailed => "the judge agent failed",
+            anycon_protocol::JudgeErrorCode::Cancelled => "extraction was cancelled",
+            anycon_protocol::JudgeErrorCode::Http => "backend HTTP request failed",
+            _ => "extraction failed internally",
+        };
+        return Err(CliError::new(
+            EXIT_ERROR,
+            code,
+            format!("{explanation}{}", error.status.map(|s| format!(" (HTTP {s})")).unwrap_or_default()),
+        ));
+    }
+    if !app.json() {
+        let all = list_all(&conn).await?;
+        for id in &run.added {
+            if let Some(rule) = all.rules.iter().find(|r| r.id == *id) {
+                println!("{}\n{}\nConfirm with `anycon rule confirm {}`", rule.id, visible(&rule.text), rule.id);
+            } else {
+                println!("{} (rule is no longer available)", id);
+            }
+        }
+        println!(
+            "added {}; dropped {} invalid, {} duplicate, {} full",
+            run.added.len(),
+            run.dropped.invalid,
+            run.dropped.duplicate,
+            run.dropped.full
+        );
+    }
+    Ok(0)
+}
+
+async fn runs(app: &App, session: Option<&str>) -> Result<u8> {
+    let conn = app.conn().await?;
+    let session_id = match session {
+        Some(s) => Some(crate::commands::resolve_session(&conn, s).await?),
+        None => None,
+    };
+    let result: anycon_protocol::RuleExtractRunsResult =
+        conn.call(methods::RULE_EXTRACT_RUNS, json!({"session_id":session_id})).await?;
+    if app.json() {
+        app.out.json_line(&result);
+        return Ok(0);
+    }
+    println!("today: {} / {} calls", result.used_today, result.daily_calls);
+    let mut rows = vec![vec!["TIME", "SESSION", "TRIGGER", "STATUS", "ADDED", "DROPPED", "ERROR"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()];
+    for run in result.runs {
+        let string = |v: Value| v.as_str().unwrap_or("unknown").to_owned();
+        rows.push(vec![
+            crate::output::ago(run.started_ms),
+            short(&run.session_id),
+            string(json!(run.trigger)),
+            string(json!(run.status)),
+            run.added.len().to_string(),
+            (run.dropped.invalid + run.dropped.duplicate + run.dropped.full).to_string(),
+            run.error.map(|e| string(json!(e.code))).unwrap_or_default(),
+        ]);
+    }
+    print!("{}", table(&rows));
     Ok(0)
 }
 

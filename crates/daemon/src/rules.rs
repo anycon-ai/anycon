@@ -84,7 +84,7 @@ fn over_budget(field: &str, bytes: usize) -> RpcError {
 // ====================================================================== 校验
 
 /// 规则文字：去掉首尾空白之后 1–600 个 Unicode 码点；可以多行，但除换行外不含控制字符，也不含 U+2028 / U+2029。返回去掉空白后的文字。
-fn check_text(text: &str) -> RpcResult<String> {
+pub(crate) fn check_text(text: &str) -> RpcResult<String> {
     let t = text.trim();
     if t.is_empty() {
         return Err(invalid("text", None, "text must not be empty".into()));
@@ -512,18 +512,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
         (status, RuleSource { kind, session_id, seq: None, request_id, device_id })
     };
 
-    if c.store.rule_count().await.map_err(internal)? >= MAX_RULES {
-        return Err(invalid("rules", Some("too_many"), format!("at most {MAX_RULES} rules")));
-    }
-    if by_agent && c.store.rule_count_agent_pending().await.map_err(internal)? >= MAX_AGENT_PENDING {
-        return Err(invalid(
-            "rules",
-            Some("too_many_pending"),
-            format!(
-                "at most {MAX_AGENT_PENDING} agent-proposed rules can wait for review; confirm or reject some first"
-            ),
-        ));
-    }
+    check_capacity(&c.store, by_agent).await?;
     let now = now_ms();
     let rule = Rule {
         id: p.id,
@@ -540,7 +529,30 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
         let all = c.store.rules_all().await.map_err(internal)?;
         check_after(c, &all, &rule, "text")?;
     }
-    c.store.rule_insert(&rule).await.map_err(internal)?;
+    insert(c, caller, &rule).await?;
+    Ok(rule)
+}
+
+/// 调用者持有 rule_lock；新建规则与提炼共用名额检查。
+pub(crate) async fn check_capacity(store: &Store, by_agent: bool) -> RpcResult<()> {
+    if store.rule_count().await.map_err(internal)? >= MAX_RULES {
+        return Err(invalid("rules", Some("too_many"), format!("at most {MAX_RULES} rules")));
+    }
+    if by_agent && store.rule_count_agent_pending().await.map_err(internal)? >= MAX_AGENT_PENDING {
+        return Err(invalid(
+            "rules",
+            Some("too_many_pending"),
+            format!(
+                "at most {MAX_AGENT_PENDING} agent-proposed rules can wait for review; confirm or reject some first"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// 调用者持有 rule_lock；所有新规则共用存储、审计和通知路径。
+pub(crate) async fn insert(c: &Ctx, caller: &Caller, rule: &Rule) -> RpcResult<()> {
+    c.store.rule_insert(rule).await.map_err(internal)?;
     // 只记长度（按字符）、项目名、状态和来源种类，不记文字
     let mut detail = json!({
         "text_len": rule.text.chars().count(),
@@ -552,7 +564,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
     }
     c.audit.record(caller, "rule.add", Some(&rule.id), detail).await;
     notify_changed(c, RuleChanged { id: rule.id.clone(), rule: Some(rule.clone()), deleted: false });
-    Ok(rule)
+    Ok(())
 }
 
 /// `if_updated_ms` 给了而和现在的不同 → `invalid`（`reason = "changed"`，`data.updated_ms` 是现在的值）。

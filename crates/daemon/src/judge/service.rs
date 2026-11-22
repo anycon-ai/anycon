@@ -360,9 +360,21 @@ pub struct Permit {
 }
 
 impl Permit {
+    /// 预留时的后端名，不受之后的热加载影响。
+    pub fn backend_name(&self) -> &str {
+        &self.backend_info.name
+    }
+
     /// 记账和调用在独立任务中完成，调用方丢弃 future 也不会中断收尾。
     pub async fn call(self, req: JudgeRequest) -> Result<CallOutcome, ServiceError> {
-        tokio::spawn(async move {
+        self.call_recorded(req).await.1
+    }
+
+    /// 失败时也返回已创建的调用记录 id；提炼据此关联用量与失败记录。
+    pub async fn call_recorded(self, req: JudgeRequest) -> (Option<String>, Result<CallOutcome, ServiceError>) {
+        let recorded = Arc::new(RwLock::new(None));
+        let record = recorded.clone();
+        let result = tokio::spawn(async move {
             let Self { guard, position, backend, backend_info, store, clock, mut shutdown } = self;
             let _guard = guard;
             if *shutdown.borrow() {
@@ -385,6 +397,7 @@ impl Permit {
                 })
                 .await
                 .map_err(|_| CallError::Internal)?;
+            *record.write().unwrap() = Some(call_id.clone());
             let timer = Instant::now();
             let result = tokio::select! {
                 biased;
@@ -421,7 +434,10 @@ impl Permit {
             Ok(CallOutcome { reply: result?, call_id, backend: name })
         })
         .await
-        .map_err(|_| ServiceError::Call(CallError::Internal))?
+        .map_err(|_| ServiceError::Call(CallError::Internal))
+        .and_then(|r| r);
+        let call_id = recorded.read().unwrap().clone();
+        (call_id, result)
     }
 }
 

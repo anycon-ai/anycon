@@ -48,6 +48,11 @@ pub struct RpcErrorData {
     pub bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<u64>,
+    /// 判断后端当天已经使用的次数与每日上限（reason = budget）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -72,6 +77,8 @@ impl RpcError {
                 updated_ms: None,
                 bytes: None,
                 cap: None,
+                used: None,
+                limit: None,
             })),
         }
     }

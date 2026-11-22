@@ -40,6 +40,7 @@ pub mod peers;
 pub mod preview;
 pub mod remote_config;
 pub mod rpc;
+pub mod rule_extract;
 pub mod rules;
 pub mod sessions;
 pub mod setup;

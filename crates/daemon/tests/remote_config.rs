@@ -567,7 +567,7 @@ async fn judge_config_rpc_is_hot_and_keeps_backend_secrets_local() {
         .await
         .unwrap();
     let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
-    assert!(!info.capabilities.rule_extract);
+    assert!(info.capabilities.rule_extract);
     let judge = info.judge.unwrap();
     assert_eq!(judge.extract.as_deref(), Some("a"));
     assert_eq!(judge.triage.as_deref(), Some("a"));

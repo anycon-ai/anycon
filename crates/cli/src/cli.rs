@@ -172,6 +172,20 @@ pub enum TodoCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum RuleCmd {
+    /// Extract proposed rules from a session (not available inside an anycon agent session)
+    Extract {
+        /// Session id (a unique prefix is enough)
+        session: String,
+        /// Start extraction and return immediately
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Show the latest 20 extraction runs and today's call budget
+    Runs {
+        /// Only show runs for this session (a unique prefix is enough)
+        #[arg(long)]
+        session: Option<String>,
+    },
     /// Add a rule: a sentence or two about how you want agents to work. It takes effect at once. Inside an agent
     /// session that anycon started, the rule is marked as proposed by an agent and does nothing until you confirm it
     Add(RuleAddArgs),

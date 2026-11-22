@@ -2428,12 +2428,17 @@ export interface RpcErrorData {
    * `invalid_settings` 时的字段名等补充信息。
    */
   field?: string | null;
+  limit?: number | null;
   reason?: string | null;
   retry_after_ms?: number | null;
   /**
    * 带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = "changed"`）时，那一项现在的 `updated_ms`。
    */
   updated_ms?: number | null;
+  /**
+   * 判断后端当天已经使用的次数与每日上限（reason = budget）。
+   */
+  used?: number | null;
 }
 export interface RpcRequest {
   id: RpcId;

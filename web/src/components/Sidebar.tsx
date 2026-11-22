@@ -1,3 +1,4 @@
+import { Bot } from 'lucide-react'
 import { useMemo, useState, type HTMLAttributes } from 'react'
 import { Link, useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
@@ -10,6 +11,8 @@ import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
 import { useInboxNowCount } from '@/features/inbox/useInbox'
 import { useCapture } from '@/features/todos/capture'
+import { TwinStatusBar } from '@/features/twin/Parts'
+import { useTwinAvailable } from '@/features/twin/store'
 import { useRulesAvailable } from '@/features/rules/store'
 import { useTodoAvailable } from '@/features/todos/store'
 import { useOpenTodoCount } from '@/features/todos/useOpenTodoCount'
@@ -101,6 +104,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
       </div>
       <SidebarNav onNavigate={onNavigate} />
       <SessionsPanel nodeId={nodeId} onNavigate={onNavigate} onSearch={onSearch} />
+      <TwinStatusBar sidebar />
       <AccountFooter onNavigate={onNavigate} />
     </div>
   )
@@ -113,6 +117,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const todoCount = useOpenTodoCount()
   const todoAvailable = useTodoAvailable()
   const rulesAvailable = useRulesAvailable()
+  const twinAvailable = useTwinAvailable()
   const openCapture = useCapture((s) => s.openCapture)
   const here = useRouterState({ select: (s) => s.location.pathname })
   const current = here === '/inbox'
@@ -160,6 +165,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         </button>
       </div>
       ) : null}
+      {twinAvailable ? <Link to="/twin" onClick={onNavigate} aria-current={here === '/twin' ? 'page' : undefined} data-testid="sidebar-twin" className={cn(row, here === '/twin' && 'bg-accent-subtle')}><Bot className="size-4 shrink-0 text-fg-muted" aria-hidden /><span>{t('twin.title')}</span></Link> : null}
       {rulesAvailable ? (
         <Link to="/rules" onClick={onNavigate} aria-current={rulesHere ? 'page' : undefined} data-testid="sidebar-rules" className={cn(row, rulesHere && 'bg-accent-subtle')}>
           <ScrollText className="size-4 shrink-0 text-fg-muted" aria-hidden />

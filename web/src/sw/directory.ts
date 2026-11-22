@@ -53,7 +53,7 @@ function str(v: unknown, key: string): string | undefined {
 }
 
 /** 读节点名 / 会话标题 / 已配对节点 id。任何一步出错都返回已读到的部分（兜底文案由调用方负责）。 */
-export async function readPushDirectory(nodeId: string | null, sessionId: string | null): Promise<PushDirectory> {
+export async function readPushDirectory(nodeId: string | null, sessionId: string | null, twin = false): Promise<PushDirectory> {
   const db = await openMain()
   if (!db) return EMPTY
   try {
@@ -69,6 +69,18 @@ export async function readPushDirectory(nodeId: string | null, sessionId: string
       }
       // 会话必须属于载荷里的这个节点：hub 说什么都不能让别的节点的会话标题出现在这条通知里（页面一侧的 `sessionTitle(nodeId, sessionId)` 同样核对）
       if (sessionId && nodeId) {
+        // 分身通知暂用 session 字段带 todo id；先尝试清单缓存，始终按节点取复合键。
+        if (twin) {
+          try {
+            const todoRec = await db.get('todos', `${nodeId}:${sessionId}`)
+            const todo = typeof todoRec === 'object' && todoRec !== null ? (todoRec as Record<string, unknown>).todo : undefined
+            const title = str(todo, 'title')
+            if (title) out.sessionTitle = title
+          } catch {
+            // 旧库没有清单仓。
+          }
+          return out
+        }
         const rec = await db.get('sessions', sessionId)
         if (str(rec, 'node_id') === nodeId) {
           const title = str(rec, 'title')

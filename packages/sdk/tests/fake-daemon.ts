@@ -40,6 +40,10 @@ import {
   makeEnvelope,
   makeNotification,
   resetBody,
+  type TwinGetResult,
+  type TwinSetParams,
+  type TwinQuestion,
+  type TwinRun,
   type AgentInfo,
   type AttachmentRef,
   type BlobGetParams,
@@ -610,6 +614,7 @@ export class FakeDaemon {
         todo: true,
         rules: true,
         rule_extract: true,
+        twin: true,
       },
       attachment_limits: {
         max_bytes: this.maxAttachmentBytes,
@@ -706,6 +711,98 @@ export class FakeDaemon {
       return { job_id: jobId }
     })
 
+    // 分身：脚本化快照、试跑、通知和回答；只验证 SDK 线路，不模拟模型判断。
+    let twin: TwinGetResult = {
+      enabled: true,
+      configured: false,
+      state: 'not_configured',
+      scope: { paused: false, projects: [], max_sessions: 2, daily_dispatches: 10 },
+      today: { dispatches: 0, judge_calls: 0 },
+      working: [],
+      waiting: [],
+    }
+    const twinRuns: TwinRun[] = []
+    let question: TwinQuestion = {
+      id: 'q1',
+      todo_id: 't1',
+      question: 'Which project?',
+      options: ['web', 'api'],
+      created_ms: 1,
+      status: 'open',
+    }
+    on('twin.get', () => twin)
+    on<TwinSetParams, TwinGetResult>('twin.set', (p) => {
+      if (p.max_sessions === 99)
+        throw AnyconRpcError.of('invalid', 'too many sessions', { field: 'max_sessions' })
+      const { clear, ...patch } = p
+      twin = {
+        ...twin,
+        scope: {
+          ...twin.scope,
+          ...patch,
+          projects: p.projects ?? twin.scope.projects,
+          paused: p.paused ?? twin.scope.paused,
+          max_sessions: p.max_sessions ?? twin.scope.max_sessions,
+          daily_dispatches: p.daily_dispatches ?? twin.scope.daily_dispatches,
+        },
+      }
+      for (const key of clear ?? [])
+        if (key === 'agent' || key === 'model' || key === 'mode') delete twin.scope[key]
+      twin.configured = twin.scope.projects.length > 0
+      twin.state = twin.scope.paused ? 'paused' : twin.configured ? 'idle' : 'not_configured'
+      this.#notifyAll('twin.changed', { state: twin.state })
+      return twin
+    })
+    on('twin.wake', () => {
+      this.#notifyAll('twin.changed', { state: twin.state })
+      return {}
+    })
+    on('twin.dry_run', () => {
+      const run: TwinRun = {
+        id: `run-${twinRuns.length}`,
+        requester: 'local',
+        started_ms: 2,
+        finished_ms: 3,
+        dry_run: true,
+        result: 'done',
+        triggers: ['manual'],
+        items: ['t1'],
+        judge_calls: ['j1'],
+        decisions: [
+          {
+            todo_id: 't1',
+            action: 'ask_user',
+            reason: 'Need a project',
+            rules: [],
+            outcome: 'executed',
+          },
+        ],
+      }
+      twinRuns.unshift(run)
+      this.#notifyAll('twin.changed', { state: twin.state, run })
+      return { run }
+    })
+    on<{ before_ms?: number; limit?: number }, unknown>('twin.runs', (p) => ({
+      runs: twinRuns
+        .filter((r) => p.before_ms === undefined || r.started_ms < p.before_ms)
+        .slice(0, p.limit ?? 20),
+    }))
+    on<{ open_only?: boolean }, unknown>('twin.questions', (p) => ({
+      questions: p.open_only && question.status !== 'open' ? [] : [question],
+    }))
+    on<{ id: string; answer: string }, TwinQuestion>('twin.answer', (p) => {
+      if (p.id !== question.id) throw AnyconRpcError.of('not_found', 'no such question')
+      question = {
+        ...question,
+        status: 'answered',
+        answer: p.answer,
+        answered_ms: 4,
+        answered_by: { kind: 'device', device_id: peerId },
+      }
+      this.#notifyAll('twin.question', { question })
+      return question
+    })
+
     // 清单：内存里的最小实现（按 id 幂等的 add、(updated_ms, id) 倒序的 list、update / delete 的 not_found、todo.changed 广播）。
     const todos = new Map<string, Record<string, unknown>>()
     let todoClock = 1000
@@ -718,6 +815,7 @@ export class FakeDaemon {
         id: p.id,
         title: p.title,
         body: (p.body as string | undefined) ?? '',
+        handler: p.handler ?? 'me',
         ...(p.project !== undefined ? { project: p.project } : {}),
         state: 'open',
         source: p.agent ? { kind: 'agent' } : { kind: 'device', device_id: peerId },

@@ -15,7 +15,12 @@ import { handleTodoEvent } from '@/features/todos/history'
 import { handleExtractDone } from '@/features/rules/extract'
 import { handleRuleChanged } from '@/features/rules/service'
 import { handleTodoChanged } from '@/features/todos/service'
-import { inboxUrl } from './pushText'
+import type { TwinChanged, TwinQuestionNotice } from '@/protocol'
+import { syncTwin, handleTwinQuestion } from '@/features/twin/service'
+import { supportsTwin, useTwin } from '@/features/twin/store'
+import { useTodos } from '@/features/todos/store'
+import { cleanHintText } from '@/lib/hint'
+import { inboxUrl, twinInboxUrl } from './pushText'
 import { handleSecurityEvent } from './securityEvent'
 
 export function handleNotification(nodeId: string, method: string, params: unknown): void {
@@ -73,6 +78,28 @@ export function handleNotification(nodeId: string, method: string, params: unkno
       if (by && by !== 'daemon' && by !== useHub.getState().snapshot.deviceId && !known.some((d) => d.device_id === by)) {
         void refreshDevices(nodeId)
       }
+      return
+    }
+    case 'twin.changed': {
+      if (!supportsTwin(nodeId)) return
+      const change = params as TwinChanged
+      const value = useTwin.getState().nodes[nodeId]?.value
+      if (value && typeof change?.state === 'string') useTwin.getState().patch(nodeId, { value: { ...value, state: change.state } })
+      void syncTwin(nodeId)
+      return
+    }
+    case 'twin.question': {
+      if (!supportsTwin(nodeId)) return
+      const notice = params as TwinQuestionNotice
+      const q = notice?.question
+      if (!q?.id) return
+      const old = useTwin.getState().nodes[nodeId]?.questions.find((x) => x.id === q.id)
+      handleTwinQuestion(nodeId, notice)
+      if (q.status === 'open' && !old && document.visibilityState === 'visible') {
+        const title = cleanHintText(useTodos.getState().nodes[nodeId]?.items[q.todo_id]?.title, 80) || i18n.t('push.aTodo')
+        toast.info(i18n.t('push.twinQuestion', { title }), { label: i18n.t('toast.view'), run: () => navigateTo(twinInboxUrl(shortNodeId(nodeId, useNodes.getState().order), q.todo_id)) })
+      }
+      void syncTwin(nodeId)
       return
     }
     case 'todo.changed':

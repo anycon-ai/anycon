@@ -144,6 +144,27 @@ node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)
 - `list` 按 `(updated_ms, id)` 翻页：`has_more` 为 true 时，把最后一项的 `{ updated_ms, id }` 作为 `before` 取下一页。一页可能少于 `limit`（每页 1 MiB 的字节预算）。翻页期间被改过的项可能出现两次（按 `id` 去重）或被跳过（`todo_changed` 会补上）。
 - 错误：`invalid`（`field` 是出问题的参数；清单满了时 `reason` 是 `too_many` / `too_many_unreviewed`）和 `not_found`，都是 `RpcError`。
 
+## 分身（ADR-54）
+
+`node.twin` 是 `twin.*` 的在线薄封装，需要 `(await node.info()).capabilities.twin === true`。不缓存、不重放；未知节点能力或旧 daemon 由调用方隐藏入口，直接调用旧节点会得到 `RpcError`（`unsupported`）。分身不批准权限。问题和理由由模型写成，只作为不可信的纯文字显示。
+
+```ts
+node.on('twin_changed', (change) => console.log(change.state, change.run))
+node.on('twin_question', (notice) => console.log(notice.question))
+const status = await node.twin.get()
+await node.twin.set({ projects: ['app'], paused: true, max_sessions: 1, daily_dispatches: 5 })
+const { run } = await node.twin.dryRun()
+const { runs } = await node.twin.runs({ limit: 20 })
+const { questions } = await node.twin.questions({ open_only: true })
+if (questions[0]) await node.twin.answer({ id: questions[0].id, answer: 'app' })
+await node.twin.set({ paused: false })
+await node.twin.wake()
+const todo = await node.todos.add({ title: 'Fix login', project: 'app', handler: 'twin' })
+await node.todos.update({ id: todo.id, handler: 'me' })
+```
+
+`set` 合并字段；`clear` 清空 agent / model / mode，恢复节点缺省。`dryRun()` 默认等待最多 16 分钟，覆盖最长 15 分钟的判断后端调用；可以传标准 `RequestOptions`（`timeoutMs` / `signal`）覆盖。试跑会消耗一次判断调用并留记录，不执行计划；`wake()` 返回 `void`，实际唤醒仍受合并、暂停和预算约束。`runs` / `questions` 保留协议形状，缺省参数 `{}`，`before_ms` 翻运行记录页。`twin_changed` 收到 `{ state, run? }`，`twin_question` 收到 `{ question }`，包含回答和作废；先订阅再发起操作。`todos.add` / `update` 接受 `handler: me | twin`；未收下的 agent 项可用一次 `update({ id, reviewed: true, handler: 'twin' })` 收下并移交。
+
 ## 规则（ADR-54）
 
 每个节点有一份你的规则，一两句话的做法，比如「先写失败的测试再改实现」。生效的规则会写进清单派发出去的会话的系统提示（见 [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)）。规则不改任何权限。`node.rules` 是 `rule.*` 的薄封装；节点是否支持看 `(await node.info()).capabilities.rules`，旧节点回 `RpcError('unsupported')`。SDK 不做离线缓存，也不重放。

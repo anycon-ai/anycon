@@ -172,6 +172,27 @@ node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)
 - `list` pages by `(updated_ms, id)`: while `has_more` is true, pass the last item's `{ updated_ms, id }` as `before`. A page can be shorter than `limit` (1 MiB budget per page). Items changed while you page can show up twice (de-duplicate by `id`) or be skipped (`todo_changed` tells you).
 - Errors: `invalid` (`field`: the parameter; `reason` `too_many` / `too_many_unreviewed` when the list is full) and `not_found`, as `RpcError`.
 
+## Twin (ADR-54)
+
+`node.twin` is an online wrapper over `twin.*`, available when `(await node.info()).capabilities.twin === true`. It keeps no cache and replays nothing. Hide entry points on older nodes; direct calls receive `RpcError` (`unsupported`). Twin cannot approve permissions. Questions and reasons are model output: display them as untrusted plain text.
+
+```ts
+node.on('twin_changed', (change) => console.log(change.state, change.run))
+node.on('twin_question', (notice) => console.log(notice.question))
+const status = await node.twin.get()
+await node.twin.set({ projects: ['app'], paused: true, max_sessions: 1, daily_dispatches: 5 })
+const { run } = await node.twin.dryRun()
+const { runs } = await node.twin.runs({ limit: 20 })
+const { questions } = await node.twin.questions({ open_only: true })
+if (questions[0]) await node.twin.answer({ id: questions[0].id, answer: 'app' })
+await node.twin.set({ paused: false })
+await node.twin.wake()
+const todo = await node.todos.add({ title: 'Fix login', project: 'app', handler: 'twin' })
+await node.todos.update({ id: todo.id, handler: 'me' })
+```
+
+`set` merges fields; `clear` resets agent / model / mode to node defaults. `dryRun()` waits up to 16 minutes by default, covering the maximum 15-minute judgment backend timeout; standard `RequestOptions` (`timeoutMs` / `signal`) can override it. A dry run consumes a judgment call and leaves a run record, executing no plan. `wake()` returns `void`; execution still follows daemon coalescing, pause and budget limits. `runs` / `questions` preserve protocol result shapes and default to `{}`; paginate runs with `before_ms`. `twin_changed` delivers `{ state, run? }` and `twin_question` delivers `{ question }`, including answers and voided questions; subscribe before initiating operations. `todos.add` / `update` accept `handler: me | twin`. Accept an unreviewed agent item and hand it over atomically with `update({ id, reviewed: true, handler: 'twin' })`.
+
 ## Rules (ADR-54)
 
 Each node keeps a list of your rules, short instructions such as "write the failing test first". The active ones are written into the system prompt of the sessions a to-do is dispatched to (see [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)). Rules never change permissions. `node.rules` is a thin wrapper over `rule.*`; a node reports support in `(await node.info()).capabilities.rules`, and an older node answers with `RpcError('unsupported')`. The SDK does no offline caching or replay.

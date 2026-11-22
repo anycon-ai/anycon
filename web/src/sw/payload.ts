@@ -2,7 +2,7 @@
 // 类别必须是已知的，id 只认各自的字符集（不会拼出别的路径、query 或别的 origin）。
 import type { PushCategory } from '@/features/sync/pushText'
 
-const CATEGORIES: ReadonlySet<string> = new Set<PushCategory>(['permission_requested', 'turn_finished', 'error', 'session_idle', 'follow_up', 'enroll_requested', 'security', 'test'])
+const CATEGORIES: ReadonlySet<string> = new Set<PushCategory>(['permission_requested', 'turn_finished', 'error', 'session_idle', 'follow_up', 'twin_question', 'enroll_requested', 'security', 'test'])
 
 export interface PushPayload {
   category: PushCategory

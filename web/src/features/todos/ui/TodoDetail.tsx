@@ -24,6 +24,7 @@ import { activityOf, isReview } from '../activity'
 import { DispatchDialog } from './DispatchDialog'
 import { HandlerChip, LinkedStatus } from './ActivityBits'
 import { MoveTodoDialog } from './MoveTodoDialog'
+import { TwinHandlerButton } from '@/features/twin/TodoParts'
 import { TodoHistory } from './TodoHistory'
 import { fieldErrorText, outboxErrorText } from './errors'
 
@@ -245,6 +246,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           <Button disabled={!online} onClick={() => void updateTodo(item.node_id, item.id, { state: 'dropped' })} data-testid="todo-dismiss">
             {t('inbox.dismiss')}
           </Button>
+          <TwinHandlerButton item={item} />
           <Button disabled={!online} onClick={() => setDispatching(true)} data-testid="todo-dispatch">
             {t('dispatch.action')}
           </Button>
@@ -271,9 +273,12 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           </Button>
         )}
         {!isClosed(item.state) ? (
-          <Button variant={isReview(item) ? 'outline' : 'primary'} disabled={!online} onClick={() => setDispatching(true)} title={online ? undefined : t('dispatch.blocked.offline')} data-testid="todo-dispatch">
-            {t('dispatch.action')}
-          </Button>
+          <>
+            <TwinHandlerButton item={item} />
+            <Button variant={isReview(item) ? 'outline' : 'primary'} disabled={!online} onClick={() => setDispatching(true)} title={online ? undefined : t('dispatch.blocked.offline')} data-testid="todo-dispatch">
+              {t('dispatch.action')}
+            </Button>
+          </>
         ) : null}
         {isReview(item) ? (
           <Link to="/todos/$node/$todo/review" params={{ node: shortNodeId(item.node_id, order), todo: item.id }} className="inline-flex min-h-9 items-center rounded-md border border-border-strong px-3 text-sm font-medium hover:bg-bg-hover max-md:min-h-11" data-testid="todo-review-link">

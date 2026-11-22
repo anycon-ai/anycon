@@ -18,6 +18,7 @@ import { timed } from '@/lib/timing'
 import i18n from '@/i18n'
 import { flushUnsent, syncOpenSession } from '@/features/session/actions'
 import { resumeRuleSync } from '@/features/rules/groupSync'
+import { syncTwin } from '@/features/twin/service'
 import { syncRules } from '@/features/rules/service'
 import { syncTodos } from '@/features/todos/service'
 import { planSessionSync } from './plan'
@@ -87,6 +88,7 @@ export async function syncNode(nodeId: string): Promise<void> {
       // 清单（只有支持的节点）：先重放离线期间的改动，再翻页（spec/web.md § 4.12）
       info.capabilities.todo ? step('todo.sync', () => syncTodos(nodeId)) : undefined,
       // 规则（只有支持的节点，docs/spec/daemon.md § 23）：整表读一份，之后靠 rule.changed
+      info.capabilities.twin ? step('twin.sync', () => syncTwin(nodeId)) : undefined,
       step('rule.sync', async () => {
         await resumeRuleSync(nodeId).catch((e: unknown) => console.warn('anycon: could not resume rule sync', e))
         if (info.capabilities.rules) await syncRules(nodeId)

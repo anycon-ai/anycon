@@ -1,6 +1,7 @@
 // 一个条目在行里和详情里要显示的文字：标题、所属会话 / 项目 / 节点、等了多久、节点是不是在线。
 import { useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useTodos } from '@/features/todos/store'
 import { cleanHintText } from '@/lib/hint'
 import { cleanOneLine } from '@/features/todos/validate'
 import { formatRelative } from '@/lib/format'
@@ -53,6 +54,7 @@ export interface ItemInfo {
 export function useItemInfo(item: InboxItem): ItemInfo {
   const { t, i18n } = useTranslation()
   useMinute()
+  const todo = useTodos((s) => item.kind === 'twin_question' ? s.nodes[item.nodeId]?.items[item.question.todo_id] : undefined)
   const node = useNodes((s) => s.byId[item.nodeId])
   const order = useNodes((s) => s.order)
   const listed = useSessions((s) => ('sessionId' in item ? s.list[item.sessionId] : undefined))
@@ -60,6 +62,7 @@ export function useItemInfo(item: InboxItem): ItemInfo {
   const time = formatRelative(item.sinceMs, i18n.language)
   const base = { nodeName, nodeParam: shortNodeId(item.nodeId, order), online: node?.conn === 'ready' }
   switch (item.kind) {
+    case 'twin_question': return { ...base, title: cleanOneLine(todo?.title) || t('twin.questionTitle'), project: todo?.project ?? undefined, since: t('inbox.waitingSince', { time }) }
     case 'permission':
     case 'plan':
     case 'question':

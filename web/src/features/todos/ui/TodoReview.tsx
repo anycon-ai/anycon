@@ -1,3 +1,4 @@
+import { TwinReviewReason } from '@/features/twin/TodoParts'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
@@ -221,6 +222,7 @@ export function TodoReview({ item, online }: { item: ViewTodo; online: boolean }
             ) : (
               <p className="text-sm text-fg-muted" data-testid="review-no-result">{t('todos.reviewPage.noResult')}</p>
             )}
+            <TwinReviewReason item={item} />
             {session ? (
               <div className="flex flex-wrap items-center gap-3 text-sm" data-testid="review-summary">
                 {changes.phase === 'ready' && changes.summary ? (

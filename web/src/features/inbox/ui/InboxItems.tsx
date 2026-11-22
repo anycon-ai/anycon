@@ -1,5 +1,6 @@
 // 「待处理」页里一个条目的两种样子：列表里的一行（`InboxRow`）和展开后的详情（`InboxDetail`）。
 // 权限请求、计划、提问在详情里用的是会话页同一个 `PermissionCard`，按钮只在详情里：行上没有任何不看内容就能答复的入口。
+import { TwinQuestionForm } from '@/features/twin/Question'
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, ChevronRight, ClipboardCheck, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ScrollText, ShieldQuestion, Smartphone } from 'lucide-react'
@@ -41,6 +42,7 @@ export interface InboxActions {
 }
 
 const KIND_ICON: Record<InboxItemKind, typeof Flag> = {
+  twin_question: HelpCircle,
   permission: ShieldQuestion,
   plan: ClipboardList,
   question: HelpCircle,
@@ -55,6 +57,7 @@ const KIND_ICON: Record<InboxItemKind, typeof Flag> = {
 
 /** 不靠颜色分辨：每种都有文字标签。 */
 const KIND_TONE: Record<InboxItemKind, 'warning' | 'info' | 'danger' | 'success'> = {
+  twin_question: 'warning',
   permission: 'warning',
   plan: 'warning',
   question: 'warning',
@@ -122,7 +125,7 @@ export function InboxRow({
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="min-w-0 flex-1 truncate font-medium [overflow-wrap:anywhere]">{info.title}</span>
-            <Chip tone={KIND_TONE[item.kind]}>{t(item.kind === 'later' && !isAgentSource(item.todo.source) ? 'inbox.kind.laterOther' : `inbox.kind.${item.kind}`)}</Chip>
+            <Chip tone={KIND_TONE[item.kind]}>{t(item.kind === 'twin_question' ? 'inbox.kind.question' : item.kind === 'later' && !isAgentSource(item.todo.source) ? 'inbox.kind.laterOther' : `inbox.kind.${item.kind}`)}</Chip>
             {info.online && item.kind !== 'waiting' ? null : <CachedChip nodeName={info.nodeName} />}
           </span>
           {meta ? <span className="mt-0.5 block truncate text-xs text-fg-subtle">{meta}</span> : null}
@@ -145,6 +148,7 @@ function RowActions({ item, actions, online, sessionId, nodeParam, selected, onS
     case 'plan':
     case 'question':
     case 'rule':
+    case 'twin_question':
       // 请求、计划、提问和待确认的规则：行上没有任何动作，答复 / 确认只在显示着全文的详情里
       return null
     case 'enroll':
@@ -199,6 +203,7 @@ export function InboxDetail({ item, armed, outside }: { item: InboxItem; /** 答
     case 'plan':
     case 'question':
       return <RequestDetail item={item} armed={armed} outside={outside} />
+    case 'twin_question': return <div data-inbox-detail data-testid="inbox-detail" data-kind="twin_question" className="space-y-3"><OutsideNote outside={outside} item={item} /><DetailHeader item={item} /><TwinQuestionForm key={item.key} nodeId={item.nodeId} question={item.question} armed={armed} /><Link to="/todos/$node/$todo" params={{ node: item.nodeId, todo: item.question.todo_id }} className="text-accent-text">{item.question.todo_id}</Link></div>
     case 'rule':
       return <RuleDetail key={item.key} item={item} armed={armed} outside={outside} />
     default:

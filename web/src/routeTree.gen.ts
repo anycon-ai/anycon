@@ -34,6 +34,8 @@ import { Route as AppShellSettingsNotificationsRouteImport } from './routes/_app
 import { Route as AppShellSettingsQuotaRouteImport } from './routes/_app/_shell/settings.quota'
 import { Route as AppShellSettingsSessionsRouteImport } from './routes/_app/_shell/settings.sessions'
 import { Route as AppShellTodosIndexRouteImport } from './routes/_app/_shell/todos.index'
+import { Route as AppShellTwinIndexRouteImport } from './routes/_app/_shell/twin.index'
+import { Route as AppShellTwinNodeRouteImport } from './routes/_app/_shell/twin.$node'
 import { Route as AppShellNNodeIndexRouteImport } from './routes/_app/_shell/n.$node.index'
 import { Route as AppShellNNodeNewRouteImport } from './routes/_app/_shell/n.$node.new'
 import { Route as AppShellNNodeSettingsRouteImport } from './routes/_app/_shell/n.$node.settings'
@@ -169,6 +171,16 @@ const AppShellTodosIndexRoute = AppShellTodosIndexRouteImport.update({
   path: '/todos/',
   getParentRoute: () => AppShellRoute,
 } as any)
+const AppShellTwinIndexRoute = AppShellTwinIndexRouteImport.update({
+  id: '/twin/',
+  path: '/twin/',
+  getParentRoute: () => AppShellRoute,
+} as any)
+const AppShellTwinNodeRoute = AppShellTwinNodeRouteImport.update({
+  id: '/twin/$node',
+  path: '/twin/$node',
+  getParentRoute: () => AppShellRoute,
+} as any)
 const AppShellNNodeIndexRoute = AppShellNNodeIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -233,8 +245,10 @@ export interface FileRoutesByFullPath {
   '/settings/notifications': typeof AppShellSettingsNotificationsRoute
   '/settings/quota': typeof AppShellSettingsQuotaRoute
   '/settings/sessions': typeof AppShellSettingsSessionsRoute
+  '/twin/$node': typeof AppShellTwinNodeRoute
   '/settings/': typeof AppShellSettingsIndexRoute
   '/todos/': typeof AppShellTodosIndexRoute
+  '/twin/': typeof AppShellTwinIndexRoute
   '/n/$node/new': typeof AppShellNNodeNewRoute
   '/n/$node/settings': typeof AppShellNNodeSettingsRoute
   '/todos/$node/$todo': typeof AppShellTodosNodeTodoRoute
@@ -264,8 +278,10 @@ export interface FileRoutesByTo {
   '/settings/notifications': typeof AppShellSettingsNotificationsRoute
   '/settings/quota': typeof AppShellSettingsQuotaRoute
   '/settings/sessions': typeof AppShellSettingsSessionsRoute
+  '/twin/$node': typeof AppShellTwinNodeRoute
   '/settings': typeof AppShellSettingsIndexRoute
   '/todos': typeof AppShellTodosIndexRoute
+  '/twin': typeof AppShellTwinIndexRoute
   '/n/$node/new': typeof AppShellNNodeNewRoute
   '/n/$node/settings': typeof AppShellNNodeSettingsRoute
   '/todos/$node/$todo': typeof AppShellTodosNodeTodoRoute
@@ -300,8 +316,10 @@ export interface FileRoutesById {
   '/_app/_shell/settings/notifications': typeof AppShellSettingsNotificationsRoute
   '/_app/_shell/settings/quota': typeof AppShellSettingsQuotaRoute
   '/_app/_shell/settings/sessions': typeof AppShellSettingsSessionsRoute
+  '/_app/_shell/twin/$node': typeof AppShellTwinNodeRoute
   '/_app/_shell/settings/': typeof AppShellSettingsIndexRoute
   '/_app/_shell/todos/': typeof AppShellTodosIndexRoute
+  '/_app/_shell/twin/': typeof AppShellTwinIndexRoute
   '/_app/_shell/n/$node/new': typeof AppShellNNodeNewRoute
   '/_app/_shell/n/$node/settings': typeof AppShellNNodeSettingsRoute
   '/_app/_shell/todos/$node/$todo': typeof AppShellTodosNodeTodoRoute
@@ -335,8 +353,10 @@ export interface FileRouteTypes {
     | '/settings/notifications'
     | '/settings/quota'
     | '/settings/sessions'
+    | '/twin/$node'
     | '/settings/'
     | '/todos/'
+    | '/twin/'
     | '/n/$node/new'
     | '/n/$node/settings'
     | '/todos/$node/$todo'
@@ -366,8 +386,10 @@ export interface FileRouteTypes {
     | '/settings/notifications'
     | '/settings/quota'
     | '/settings/sessions'
+    | '/twin/$node'
     | '/settings'
     | '/todos'
+    | '/twin'
     | '/n/$node/new'
     | '/n/$node/settings'
     | '/todos/$node/$todo'
@@ -401,8 +423,10 @@ export interface FileRouteTypes {
     | '/_app/_shell/settings/notifications'
     | '/_app/_shell/settings/quota'
     | '/_app/_shell/settings/sessions'
+    | '/_app/_shell/twin/$node'
     | '/_app/_shell/settings/'
     | '/_app/_shell/todos/'
+    | '/_app/_shell/twin/'
     | '/_app/_shell/n/$node/new'
     | '/_app/_shell/n/$node/settings'
     | '/_app/_shell/todos/$node/$todo'
@@ -596,6 +620,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppShellTodosIndexRouteImport
       parentRoute: typeof AppShellRoute
     }
+    '/_app/_shell/twin/': {
+      id: '/_app/_shell/twin/'
+      path: '/twin'
+      fullPath: '/twin/'
+      preLoaderRoute: typeof AppShellTwinIndexRouteImport
+      parentRoute: typeof AppShellRoute
+    }
+    '/_app/_shell/twin/$node': {
+      id: '/_app/_shell/twin/$node'
+      path: '/twin/$node'
+      fullPath: '/twin/$node'
+      preLoaderRoute: typeof AppShellTwinNodeRouteImport
+      parentRoute: typeof AppShellRoute
+    }
     '/_app/_shell/n/$node/': {
       id: '/_app/_shell/n/$node/'
       path: '/'
@@ -709,7 +747,9 @@ interface AppShellRouteChildren {
   AppShellSessionsRoute: typeof AppShellSessionsRoute
   AppShellSettingsRoute: typeof AppShellSettingsRouteWithChildren
   AppShellNNodeRoute: typeof AppShellNNodeRouteWithChildren
+  AppShellTwinNodeRoute: typeof AppShellTwinNodeRoute
   AppShellTodosIndexRoute: typeof AppShellTodosIndexRoute
+  AppShellTwinIndexRoute: typeof AppShellTwinIndexRoute
   AppShellTodosNodeTodoRoute: typeof AppShellTodosNodeTodoRoute
   AppShellTodosNodeTodoReviewRoute: typeof AppShellTodosNodeTodoReviewRoute
 }
@@ -723,7 +763,9 @@ const AppShellRouteChildren: AppShellRouteChildren = {
   AppShellSessionsRoute: AppShellSessionsRoute,
   AppShellSettingsRoute: AppShellSettingsRouteWithChildren,
   AppShellNNodeRoute: AppShellNNodeRouteWithChildren,
+  AppShellTwinNodeRoute: AppShellTwinNodeRoute,
   AppShellTodosIndexRoute: AppShellTodosIndexRoute,
+  AppShellTwinIndexRoute: AppShellTwinIndexRoute,
   AppShellTodosNodeTodoRoute: AppShellTodosNodeTodoRoute,
   AppShellTodosNodeTodoReviewRoute: AppShellTodosNodeTodoReviewRoute,
 }

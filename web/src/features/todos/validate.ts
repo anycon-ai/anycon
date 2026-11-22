@@ -80,6 +80,7 @@ export function parseCapture(text: string): { title: string; body: string } {
 }
 
 export interface DraftTodo {
+  handler?: 'me' | 'twin'
   title: string
   body: string
   project?: string | null

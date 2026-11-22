@@ -3,6 +3,7 @@
 //
 // 加新的段（待验收、稍后）或新的条目类型时：在 `InboxSectionId` / `InboxItem` 里加一项，在 `deriveInbox` 里往对应的段里放，
 // 页面按 `SECTIONS` 的顺序逐段渲染，不需要改页面的骨架。
+import type { TwinQuestion } from '@/protocol'
 import type { PermissionKind } from '@/protocol'
 import { isActiveStatus } from '@/features/session/group'
 import { isFollowUp, isFollowUpReady } from '@/features/session/marks'
@@ -19,7 +20,7 @@ export const ERROR_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 export const SECTIONS = ['now', 'review', 'later'] as const
 export type InboxSectionId = (typeof SECTIONS)[number]
 
-export type InboxItemKind = 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error' | 'waiting' | 'review' | 'later' | 'rule'
+export type InboxItemKind = 'twin_question' | 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error' | 'waiting' | 'review' | 'later' | 'rule'
 
 interface ItemBase {
   /** 稳定的 key：列表、选中、焦点都靠它。 */
@@ -74,9 +75,12 @@ export interface RuleInboxItem extends ItemBase {
   rule: ViewRule
 }
 
-export type InboxItem = RequestItem | EnrollInboxItem | SessionInboxItem | ReviewInboxItem | LaterInboxItem | RuleInboxItem
+export interface TwinInboxItem extends ItemBase { kind: 'twin_question'; question: TwinQuestion }
+
+export type InboxItem = TwinInboxItem | RequestItem | EnrollInboxItem | SessionInboxItem | ReviewInboxItem | LaterInboxItem | RuleInboxItem
 
 export interface InboxInputs {
+  twinQuestions?: readonly (TwinQuestion & { node_id: string })[]
   sessions: Readonly<Record<string, SessionItem>>
   pending: Readonly<Record<string, PendingPermission>>
   enroll: { items: Readonly<Record<string, EnrollItem>>; resolved: Readonly<Record<string, EnrollResolution>> }
@@ -176,6 +180,9 @@ export function deriveInbox(i: InboxInputs): InboxModel {
     }
   }
 
+  for (const q of i.twinQuestions ?? []) {
+    if (picked.has(q.node_id) && q.status === 'open') now.push({ key: `twin:${q.node_id}:${q.id}`, section: 'now', kind: 'twin_question', nodeId: q.node_id, question: q, sinceMs: q.created_ms, expiresAtMs: null })
+  }
   now.sort(compareNow)
   inProgress.sort((a, b) => b.updated_at_ms - a.updated_at_ms)
   // 待验收：派发过的项 `activity = review`，等得最久的在前（没有「开始等」的时刻，用最近一次修改的时间）。验收（通过 / 不要了）之后状态变成关闭，自然不在这里

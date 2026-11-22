@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { ChevronRight, ListChecks, Plus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { TwinStatusBar } from '@/features/twin/Parts'
+import { useTwinAvailable } from '@/features/twin/store'
 import { PageHeader } from '@/components/PageHeader'
 import { setTodoState } from '@/features/todos/actions'
 import { useCapture } from '@/features/todos/capture'
@@ -37,6 +39,7 @@ const key = (t: Pick<ViewTodo, 'node_id' | 'id'>): string => `${t.node_id}:${t.i
  * `selected`：地址里的那一项。`active`：页面此刻在眼前（手机上标签页常驻、藏起来时不处理键）。
  */
 export function TodosPage({ selected, active = true }: { selected?: { node: string; todo: string }; active?: boolean }) {
+  const twinAvailable = useTwinAvailable()
   const { t } = useTranslation()
   const navigate = useNavigate()
   const wide = useIsWide()
@@ -235,6 +238,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
         <Select aria-label={t('todos.filterHandler')} value={filters.handler ?? 'all'} onChange={(e) => setFilters((f) => ({ ...f, handler: e.target.value as HandlerFilter }))} className="w-auto" data-testid="todos-filter-handler">
           <option value="all">{t('todos.handlerAll')}</option>
           <option value="me">{t('todos.handler.me')}</option>
+          {twinAvailable ? <option value="twin">{t('todos.handler.twin')}</option> : null}
           <option value="agent">{t('todos.handler.agent')}</option>
         </Select>
         <Button size="sm" variant={multi ? 'primary' : 'outline'} aria-pressed={multi} onClick={() => { setMulti((m) => !m); setChecked(new Set()) }} data-testid="todos-multi">
@@ -318,6 +322,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="todos-page" data-mode={wide ? 'split' : 'single'}>
       {header}
+      <TwinStatusBar />
       <div className="flex min-h-0 flex-1">
         <div className={cn('scroll-thin min-h-0 min-w-0 flex-1 overflow-y-auto', wide && 'max-w-[26rem] shrink-0 border-r border-border xl:w-[380px] xl:flex-none')} data-testid="todos-list">
           {list}

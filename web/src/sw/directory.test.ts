@@ -166,3 +166,13 @@ describe('readPushDirectory: the to-do a session came from', () => {
     expect((await readPushDirectory('a'.repeat(32), 'sess_1')).todo).toEqual({ id: 'td-9' })
   })
 })
+
+it('Twin pushes use only the todo in the named node, without changing session pushes', async () => {
+  const id = 'a'.repeat(32)
+  await putNode(node(id, 'mac-mini'))
+  const db = await getDb()
+  await db.put('todos', { key: `${id}:td-1`, node_id: id, todo: { id: 'td-1', title: 'Fix login' } } as never)
+  expect(await readPushDirectory(id, 'td-1', true)).toMatchObject({ sessionTitle: 'Fix login' })
+  expect((await readPushDirectory('b'.repeat(32), 'td-1', true)).sessionTitle).toBeUndefined()
+  expect((await readPushDirectory(id, 'td-1')).sessionTitle).toBeUndefined()
+})

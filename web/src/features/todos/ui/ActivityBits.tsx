@@ -10,13 +10,13 @@ import type { ViewTodo } from '../types'
  * 谁在处理（我 / agent）：只在有东西在动的行上显示（等你决定、待验收、处理中）；还没开始和已关闭的行不显示。
  * `activity` 是 daemon 算的，这里只读它。
  */
-export function HandlerChip({ item }: { item: Pick<ViewTodo, 'activity' | 'state'> }) {
+export function HandlerChip({ item }: { item: Pick<ViewTodo, 'activity' | 'state' | 'handler'> }) {
   const { t } = useTranslation()
   const group = listGroupOf(item)
-  if (group === 'open' || group === 'closed') return null
+  if ((group === 'open' && item.handler !== 'twin') || group === 'closed') return null
   const who = handlerOf(item)
   return (
-    <Chip tone={who === 'agent' ? 'info' : 'neutral'} icon={who === 'agent' ? <Bot className="size-3" aria-hidden /> : <User className="size-3" aria-hidden />} testId="todo-handler" dataState={who}>
+    <Chip tone={who !== 'me' ? 'info' : 'neutral'} icon={who !== 'me' ? <Bot className="size-3" aria-hidden /> : <User className="size-3" aria-hidden />} testId="todo-handler" dataState={who}>
       {t(`todos.handler.${who}`)}
     </Chip>
   )
@@ -46,7 +46,7 @@ export function LinkedStatus({ item }: { item: Pick<ViewTodo, 'sessions' | 'stat
 }
 
 /** 这一项现在的 `activity`（已知的三种之一）的文字，给详情和验收页的标签用。 */
-export function activityLabelKey(item: Pick<ViewTodo, 'activity' | 'state'>): string | null {
+export function activityLabelKey(item: Pick<ViewTodo, 'activity' | 'state' | 'handler'>): string | null {
   const a = activityOf(item)
   return a ? `todos.activity.${a}` : null
 }

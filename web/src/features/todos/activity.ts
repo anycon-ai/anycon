@@ -32,8 +32,10 @@ export function listGroupOf(t: Pick<Todo, 'activity' | 'state'>): ListGroup {
 }
 
 /** 谁在处理：agent 正在跑的是 agent，其余（等你决定、待验收、你自己设的「处理中」、还没开始）都在你手上。 */
-export type Handler = 'me' | 'agent'
-export function handlerOf(t: Pick<Todo, 'activity' | 'state'>): Handler {
+export type Handler = 'me' | 'agent' | 'twin'
+export function handlerOf(t: Pick<Todo, 'activity' | 'state' | 'handler'>): Handler {
+  if (!isClosed(t.state) && t.handler === 'twin') return 'twin'
+  if (t.handler !== undefined && t.handler !== 'me' && t.handler !== 'twin') return 'me'
   return activityOf(t) === 'working' ? 'agent' : 'me'
 }
 

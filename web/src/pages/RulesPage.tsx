@@ -15,6 +15,7 @@ import { BudgetSummary } from '@/features/rules/ui/BudgetSummary'
 import { failText } from '@/features/rules/ui/errors'
 import { RuleCard } from '@/features/rules/ui/RuleCard'
 import { ruleKey, useRuleOps } from '@/features/rules/ui/useRuleOps'
+import { resolveNodeParam } from '@/lib/ids'
 import { cleanHintText } from '@/lib/hint'
 import { useNodeFilter } from '@/lib/nodeFilter'
 import { useNodes } from '@/stores/nodes'
@@ -30,7 +31,7 @@ type Tab = 'pending' | 'active'
  * 停用和否决的（还有这个版本不认识状态的）收在「已生效」下面的折叠里。每条规则的全文（纯文字）都在卡片上；待确认的可以多选一起确认 / 否决。
  * 来源节点不在线时禁用写入；成功后，同组目标的期望状态由持久化队列转发。
  */
-export function RulesPage({ initialTab }: { initialTab?: Tab } = {}) {
+export function RulesPage({ initialTab, focus }: { initialTab?: Tab; focus?: { node: string; rule: string } } = {}) {
   const { t } = useTranslation()
   const { selected } = useNodeFilter()
   const [alignmentTarget, setAlignmentTarget] = useState<string | null>(null)
@@ -40,6 +41,11 @@ export function RulesPage({ initialTab }: { initialTab?: Tab } = {}) {
   const supporting = useRulesNodes(selected)
   const all = useRuleView(supporting)
   const nodes = useNodes((s) => s.byId)
+  const order = useNodes((s) => s.order)
+  const focusNode = focus ? resolveNodeParam(focus.node, order) : undefined
+  const focusNodes = useRulesNodes(focusNode ? [focusNode] : [])
+  const focusRules = useRuleView(focusNodes)
+  const focused = focusRules.find((r) => r.id === focus?.rule)
   const state = useRules((s) => s.nodes)
   const alignmentGroups = useMemo(() => {
     const groups = new Map<string, string>()
@@ -131,6 +137,10 @@ export function RulesPage({ initialTab }: { initialTab?: Tab } = {}) {
           <p className="text-sm text-fg-muted" data-testid="rules-intro">
             {t('rules.intro')}
           </p>
+          {focus ? <section className="space-y-2 rounded border border-border p-3" data-testid="rules-focused">
+            <h2 className="font-semibold">{t('twin.referencedRule')}</h2>
+            {focused ? <ul><RuleCard rule={focused} showNode online={nodes[focused.node_id]?.conn === 'ready'} ops={ops} /></ul> : <p>{focusNode && nodes[focusNode]?.conn !== 'ready' ? t('twin.offline') : focusNode && state[focusNode]?.failed ? t('twin.loadFailed') : focusNodes.length && !state[focusNode!]?.loaded ? t('twin.loading') : t('twin.ruleGone')}</p>}
+          </section> : null}
           {supporting.length === 0 ? (
             <EmptyState icon={<ScrollText className="size-6" />} title={t('rules.unsupported.title')}>
               {t('rules.unsupported.body')}

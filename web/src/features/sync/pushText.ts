@@ -42,6 +42,11 @@ export function inboxUrl(nodeParamValue: string, sessionId: string): string {
   return `/inbox?node=${encodeURIComponent(nodeParamValue)}&session=${encodeURIComponent(sessionId)}`
 }
 
+// 暂以 notify.session_id / 推送 session 承载 todo id；与 daemon 对齐时只需改这里和目录解析。
+export function twinInboxUrl(node: string, todoId?: string | null): string {
+  return `/inbox?node=${encodeURIComponent(node)}${todoId ? `&todo=${encodeURIComponent(todoId)}` : ''}`
+}
+
 /** 接入相关的两个类别：`enroll_requested` 和 `security`。 */
 export function enrollPushText(t: TFunction, category: Extract<NotifyCategory, 'enroll_requested' | 'security'>, node: { id: string; name?: string | null; param?: string }): PushText {
   const name = cleanHintText(node.name) || t('push.aNode')
@@ -80,12 +85,17 @@ export function pushText(t: TFunction, input: PushTextInput): PushText {
   if (category === 'test') return { title: t('push.test'), body: t('push.testBody'), tag: 'test', url: '/settings/notifications' }
   if (!node) return { title: t('push.generic'), tag: category, url: '/' }
   if (category === 'enroll_requested' || category === 'security') return enrollPushText(t, category, node)
+  const nodeName = cleanHintText(node.name)
+  const space = cleanHintText(typeof node.group === 'string' ? node.group.trim() : '', 40)
+  if (category === 'twin_question') return {
+    title: t('push.twinQuestion', { title: cleanHintText(session?.todo?.title ?? session?.title, 80) || t('push.aTodo') }),
+    tag: `twin:${node.id}:${session?.id ?? ''}`,
+    url: twinInboxUrl(node.param ?? node.id.slice(0, 8), session?.todo?.id ?? session?.id),
+    body: space ? t('push.onNodeSpace', { node: nodeName || t('push.aNode'), space }) : t('push.onNode', { node: nodeName || t('push.aNode') }),
+  }
   // 还没有专用文案的新类别照常显示通用通知，避免按会话类别索引失败。
   if (!isSessionCategory(category)) return genericPushText(t)
   const param = node.param ?? node.id.slice(0, 8)
-  const nodeName = cleanHintText(node.name)
-  // 空间名是任何已配对设备都能写到节点上的文字：和节点名一样清理，缺了就不带
-  const space = cleanHintText(typeof node.group === 'string' ? node.group.trim() : '', 40)
   const sessionTitle = cleanHintText(session?.title, 80)
   // 清单项派出的会话做完了一轮：「<项的标题> 做完了，等你验收」，点开落在那一项的验收页（spec/web.md § 4.12、§ 7）。
   // 项的标题是用户 / agent 写的文字，和别的名字一样清理；缓存里没有标题就不猜，走下面原来的文案

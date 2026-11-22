@@ -411,7 +411,7 @@ export async function addTodo(nodeId: string, draft: DraftTodo): Promise<ActionR
   if (error) return { ok: false, error }
   const id = newTodoId()
   const project = draft.project?.trim()
-  const params = { title: draft.title.trim(), body: draft.body, ...(project ? { project } : {}), ...(draft.due_ms != null ? { due_ms: draft.due_ms } : {}) }
+  const params = { ...(draft.handler ? { handler: draft.handler } : {}), title: draft.title.trim(), body: draft.body, ...(project ? { project } : {}), ...(draft.due_ms != null ? { due_ms: draft.due_ms } : {}) }
   const failed = await enqueue(nodeId, id, { kind: 'add', params })
   return failed ? { ok: false, error: failed } : { ok: true, id }
 }
@@ -550,7 +550,7 @@ function scheduleRetry(nodeId: string, seq: number): void {
 
 async function sendOp(nodeId: string, rec: OutboxRecord): Promise<Todo | null> {
   const op = rec.op
-  if (op.kind === 'add') return rpc().request<Todo>(nodeId, 'todo.add', { id: rec.id, title: op.params.title, body: op.params.body, ...(op.params.project ? { project: op.params.project } : {}), ...(op.params.due_ms != null ? { due_ms: op.params.due_ms } : {}) })
+  if (op.kind === 'add') return rpc().request<Todo>(nodeId, 'todo.add', { ...(op.params.handler ? { handler: op.params.handler } : {}), id: rec.id, title: op.params.title, body: op.params.body, ...(op.params.project ? { project: op.params.project } : {}), ...(op.params.due_ms != null ? { due_ms: op.params.due_ms } : {}) })
   if (op.kind === 'update') return rpc().request<Todo>(nodeId, 'todo.update', { id: rec.id, ...op.fields })
   await rpc().request(nodeId, 'todo.delete', { id: rec.id })
   return null

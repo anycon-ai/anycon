@@ -1,3 +1,6 @@
+import { syncTwin } from '@/features/twin/service'
+import { Button } from '@/ui/Button'
+import { supportsTwin, twinQuestions, useTwin } from '@/features/twin/store'
 import { useEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, ChevronRight, ListChecks, X } from 'lucide-react'
@@ -33,7 +36,8 @@ const SECTION_TITLE: Record<InboxSectionId, string> = { now: 'inbox.sections.now
 /** 从通知点进来：定位这个会话最早的一条待答复请求（推送只带类别、节点和会话，不带请求 id）。 */
 export interface InboxLocate {
   node: string
-  session: string
+  session?: string
+  todo?: string
 }
 
 /** ≥ 1200px 左右分栏；平板详情从右边滑出；手机单栏、行内展开。 */
@@ -75,7 +79,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
       seen.current = null
       return
     }
-    const id = `${locate.node}:${locate.session}`
+    const id = `${locate.node}:${locate.session ?? locate.todo}`
     if (!active || seen.current === id) return
     seen.current = id
     resolvedKey.current = null
@@ -90,11 +94,13 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   const targetNode = useNodes((s) => (nodeId ? s.byId[nodeId] : undefined))
   const sessions = useSessions((s) => s.list)
   const pending = useSessions((s) => s.pending)
-  const located = useMemo<RequestItem | null>(() => {
+  const twinNodes = useTwin((s) => s.nodes)
+  const located = useMemo<InboxItem | null>(() => {
     if (!target || !nodeId) return null
-    const m = deriveInbox({ sessions, pending, enroll: { items: {}, resolved: {} }, selected: [nodeId], now: Date.now() })
+    const m = deriveInbox({ twinQuestions: supportsTwin(nodeId) ? twinQuestions(twinNodes, [nodeId]) : [], sessions, pending, enroll: { items: {}, resolved: {} }, selected: [nodeId], now: Date.now() })
+    if (target.todo) return nowItems(m).find((i) => i.kind === 'twin_question' && i.question.todo_id === target.todo) ?? null
     return nowItems(m).filter(isRequest).filter((i) => i.sessionId === target.session).sort((a, b) => a.sinceMs - b.sinceMs)[0] ?? null
-  }, [target, nodeId, sessions, pending])
+  }, [target, nodeId, sessions, pending, twinNodes])
   // 过滤器之外的节点上的那条：放在列表最前面，带说明
   const outside = located && !mainItems.some((i) => i.key === located.key) ? located : null
   const items = useMemo(() => (outside ? [outside, ...mainItems] : mainItems), [outside, mainItems])
@@ -125,12 +131,12 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
       }
       choose(located.key)
       requestAnimationFrame(() => document.querySelector(`[data-inbox-row="${CSS.escape(located.key)}"]`)?.scrollIntoView?.({ block: 'nearest' }))
-    } else if (targetNode?.synced) {
+    } else if (targetNode?.synced && (!target.todo || targetNode.info?.capabilities.twin !== true || !!twinNodes[nodeId]?.value && !twinNodes[nodeId]?.failed)) {
       resolvedKey.current = 'gone'
       setGone(target)
       setTarget(null)
     }
-  }, [target, nodeId, located, targetNode?.synced, choose])
+  }, [target, nodeId, located, targetNode?.synced, choose, twinNodes, targetNode?.info?.capabilities.twin])
   // 用户离开了那条请求（选了别的、它没了）：目标放掉。要先看到它被选中过（`choose` 到选中之间隔着一次渲染）
   const reached = useRef(false)
   useEffect(() => {
@@ -272,7 +278,7 @@ function GoneNotice({ locate, onDismiss }: { locate: InboxLocate; onDismiss: () 
       <div className="min-w-0 flex-1">
         <p className="font-medium">{t('inbox.requestGone')}</p>
         <p className="text-fg-muted">{t('inbox.requestGoneBody')}</p>
-        {nodeId ? (
+        {nodeId && locate.session ? (
           <Link to="/n/$node/s/$session" params={{ node: shortNodeId(nodeId, order), session: locate.session }} className="mt-1 inline-block font-medium text-accent-text hover:underline">
             {t('inbox.openSession')}
           </Link>
@@ -291,13 +297,14 @@ function PendingTarget({ target, nodeId, onDismiss }: { target: InboxLocate; nod
   const { t } = useTranslation()
   const name = useNodes((s) => (nodeId ? s.byId[nodeId]?.name : undefined))
   const conn = useNodes((s) => (nodeId ? s.byId[nodeId]?.conn : undefined))
+  const failed = useTwin((s) => !!nodeId && !!target.todo && s.nodes[nodeId]?.failed === true)
   const mismatch = useNodes((s) => (nodeId ? s.byId[nodeId]?.versionMismatch : false))
   return (
     <div className="flex items-start gap-2 rounded-lg border border-border bg-bg-subtle px-3 py-2.5 text-sm" role="status" data-testid={nodeId ? 'inbox-connecting' : 'inbox-unknown-node'}>
       <div className="min-w-0 flex-1">
         {nodeId ? (
           <>
-            <p>{mismatch ? t('errors.rpc.protocol_mismatch') : conn === 'peer_offline' ? t('inbox.nodeOffline', { node: name ?? target.node }) : conn === 'noise_failed' ? t('inbox.nodeNeedsPairing', { node: name ?? target.node }) : t('inbox.connecting', { node: name ?? target.node })}</p>
+            {failed && conn === 'ready' ? <p role="alert">{t('twin.loadFailed')} <Button onClick={() => nodeId && void syncTwin(nodeId)}>{t('todos.retry')}</Button></p> : <p>{mismatch ? t('errors.rpc.protocol_mismatch') : conn === 'peer_offline' ? t('inbox.nodeOffline', { node: name ?? target.node }) : conn === 'noise_failed' ? t('inbox.nodeNeedsPairing', { node: name ?? target.node }) : t('inbox.connecting', { node: name ?? target.node })}</p>}
             {conn === 'noise_failed' ? (
               <Link to="/unlock/$node" params={{ node: target.node }} className="inline-flex min-h-8 items-center font-medium text-accent-text hover:underline max-md:min-h-11">
                 {t('inbox.unlockNode')}

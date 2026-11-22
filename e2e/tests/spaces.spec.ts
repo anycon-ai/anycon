@@ -14,7 +14,13 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { runCli } from '../helpers/cli.js'
 import { readState } from '../helpers/state.js'
-import { CONNECT_TIMEOUT, nodeBase, pairNewBrowser, type PairedBrowser } from '../helpers/ui.js'
+import {
+  CONNECT_TIMEOUT,
+  expectNodeOnline,
+  nodeBase,
+  pairNewBrowser,
+  type PairedBrowser,
+} from '../helpers/ui.js'
 
 const SPACE = 'e2e-space'
 const RENAMED = 'e2e-renamed'
@@ -69,6 +75,9 @@ test.describe.serial('空间', () => {
   })
 
   test('c. 管理空间：给空间改名（节点在线）', async () => {
+    // 空间名可以来自缓存；节点设置页的在线 chip 表示 Noise 连接已经就绪。
+    await page.goto(`${base}/settings?tab=limits`)
+    await expectNodeOnline(page)
     await openSwitcher()
     await page.getByTestId('space-manage').click()
     const dialog = page.getByTestId('manage-spaces')

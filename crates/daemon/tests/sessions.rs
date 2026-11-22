@@ -551,7 +551,14 @@ async fn a_permission_the_agent_withdraws_is_resolved_and_late_answers_are_refus
     let resolved = a.wait_notification(T, |n| n.method == methods::PERMISSION_RESOLVED).await.unwrap().params;
     assert_eq!(resolved["request_id"], json!(req.request_id));
     assert_eq!(resolved["by_device"], "daemon");
-    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    // 自动拒绝会让假 agent 马上结束回合；Running 是中间状态，应检查持久化事件而不是轮询快照。
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    let events = history(&td, &mut a, &s.id).await;
+    let withdrawn = events
+        .iter()
+        .position(|e| matches!(&e.event, Event::PermissionResolved { request_id, .. } if request_id == &req.request_id))
+        .unwrap();
+    assert!(matches!(events[withdrawn + 1].event, Event::Status { state: SessionStatus::Running, .. }));
     assert_eq!(get(&td, &mut a, &s.id).await.pending_permissions, 0);
     let e = a
         .call::<Empty>(&td, methods::PERMISSION_RESPOND, json!({ "request_id": req.request_id, "option_id": "allow" }))

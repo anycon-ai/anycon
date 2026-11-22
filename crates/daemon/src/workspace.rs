@@ -387,13 +387,6 @@ impl Workspace {
         self.git.cold_budget_ms.store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 测试用：算完的项目合并成一条 `workspace.changed { updated }` 的防抖时长（缺省 200 毫秒）。机器忙时几个项目算完的时刻
-    /// 会拉开，测试把它加长，才不会因为调度抖动把一批拆成两条。
-    #[cfg(any(test, feature = "testing"))]
-    pub fn set_git_updated_debounce_for_test(&self, d: Duration) {
-        self.git.updated_debounce_ms.store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
-    }
-
     /// 测试用：忘掉所有项目的 git 元数据缓存（再次 `workspace.list` 就是冷缓存）。
     #[cfg(any(test, feature = "testing"))]
     pub fn clear_git_cache_for_test(&self) {
@@ -2152,8 +2145,6 @@ struct GitMetaSvc {
     inflight: Mutex<HashMap<PathBuf, Arc<Inflight>>>,
     /// 冷缓存时前台最多等多久（毫秒）；测试里可以缩短。
     cold_budget_ms: std::sync::atomic::AtomicU64,
-    /// `workspace.changed { updated }` 的防抖时长（毫秒）；测试里可以加长。
-    updated_debounce_ms: std::sync::atomic::AtomicU64,
     /// 算完了、等着合并成一条 `workspace.changed { updated }` 发出去的项目名（200 ms 防抖）。
     notify_queue: Mutex<BTreeSet<String>>,
 }
@@ -2166,7 +2157,6 @@ impl GitMetaSvc {
             clients,
             inflight: Mutex::new(HashMap::new()),
             cold_budget_ms: std::sync::atomic::AtomicU64::new(GIT_COLD_BUDGET.as_millis() as u64),
-            updated_debounce_ms: std::sync::atomic::AtomicU64::new(GIT_UPDATED_DEBOUNCE.as_millis() as u64),
             notify_queue: Mutex::new(BTreeSet::new()),
         }
     }
@@ -2185,10 +2175,7 @@ impl GitMetaSvc {
         }
         let this = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(
-                this.updated_debounce_ms.load(std::sync::atomic::Ordering::Relaxed),
-            ))
-            .await;
+            tokio::time::sleep(GIT_UPDATED_DEBOUNCE).await;
             let updated: Vec<String> = std::mem::take(&mut *this.notify_queue.lock().unwrap()).into_iter().collect();
             if !updated.is_empty() {
                 this.clients.broadcast(methods::WORKSPACE_CHANGED, &WorkspaceChanged { updated, ..Default::default() });
@@ -2403,6 +2390,33 @@ mod tests {
                 _ => return None,
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_updated_notifications_of_projects_that_finish_together_are_merged_into_one() {
+        let clients = Clients::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        clients.register(crate::clients::Caller::local_cli(), Box::new(crate::clients::testing::ChanSink(tx)));
+        let git = Arc::new(GitMetaSvc::new(Arc::new(HashMap::new()), clients));
+        // 计算完成后的入队和合并窗口都由测试驱动，不依赖 git 进程结束的先后或机器速度。
+        for name in ["mergec", "mergea", "mergeb", "mergea"] {
+            git.queue_updated(BTreeSet::from([name.to_string()]));
+        }
+        tokio::task::yield_now().await;
+        tokio::time::advance(GIT_UPDATED_DEBOUNCE - Duration::from_millis(1)).await;
+        assert!(rx.try_recv().is_err(), "nothing is sent before the merge window ends");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let note = rx.recv().await.unwrap();
+        assert_eq!(note.method, methods::WORKSPACE_CHANGED);
+        let change: WorkspaceChanged = serde_json::from_value(note.params).unwrap();
+        assert_eq!(change.updated, ["mergea", "mergeb", "mergec"]);
+        assert!(rx.try_recv().is_err(), "one notification for the whole batch");
+        // 发完后下一批仍会启动自己的窗口。
+        git.queue_updated(BTreeSet::from(["next".to_string()]));
+        let note = rx.recv().await.unwrap();
+        let change: WorkspaceChanged = serde_json::from_value(note.params).unwrap();
+        assert_eq!(change.updated, ["next"]);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

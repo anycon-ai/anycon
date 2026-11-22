@@ -333,6 +333,10 @@ impl Agents {
 
     /// 探测一个 agent。`cheap = true` 只跑便宜的步骤（除非需要升级为完整探测）。
     pub async fn probe(self: &Arc<Self>, id: &str, cheap: bool) -> Option<Arc<AgentInfo>> {
+        self.probe_inner(id, cheap, false).await
+    }
+
+    async fn probe_inner(self: &Arc<Self>, id: &str, cheap: bool, changed_only: bool) -> Option<Arc<AgentInfo>> {
         let adapter = self.adapter(id)?;
         let lock = self.locks.lock().unwrap().entry(id.to_string()).or_default().clone();
         // 周期性 cheap 探测碰到正在跑的探测就跳过；强制探测排队等
@@ -344,12 +348,21 @@ impl Agents {
         } else {
             lock.lock().await
         };
+        // 取得该 agent 的探测锁后再读配置、比较并登记指纹；多个热加载可能为同一个变更排队。
         let cfg = self.config.get();
+        let fp = probe_fingerprint(&cfg, id);
+        {
+            let mut known = self.fingerprints.lock().unwrap();
+            if changed_only && known.get(id) == Some(&fp) {
+                drop(known);
+                return self.info(id);
+            }
+            known.insert(id.to_string(), fp);
+        }
         let Some(ac) = cfg.adapter_config(id).cloned() else {
             self.remove(id);
             return None;
         };
-        self.fingerprints.lock().unwrap().insert(id.to_string(), probe_fingerprint(&cfg, id));
         if !ac.enabled {
             let info = self.disabled_info(adapter.as_ref());
             self.commit(info, None).await;
@@ -494,8 +507,9 @@ impl Agents {
     pub fn spawn_scheduler(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
         tokio::spawn(async move {
-            this.refresh_all().await;
+            // 首次探测期间也可能热加载，先订阅才能在探测完成后补上这些变更。
             let mut cfg_rx = this.config.subscribe();
+            this.refresh_all().await;
             loop {
                 let interval = this.config.get().probe_interval();
                 tokio::select! {
@@ -550,7 +564,7 @@ impl Agents {
         }
     }
 
-    async fn on_config_changed(self: &Arc<Self>) {
+    async fn on_config_changed(self: &Arc<Self>) -> Vec<tokio::task::JoinHandle<()>> {
         self.sync_acp_adapters(&self.config.get());
         self.announce_if_view_changed();
         let cfg = self.config.get();
@@ -561,21 +575,18 @@ impl Agents {
             let fp = probe_fingerprint(&cfg, id);
             let changed = self.fingerprints.lock().unwrap().get(id).is_none_or(|old| old != &fp);
             if changed {
-                if cfg.adapter_config(id).is_none() {
-                    self.remove(id);
-                    self.fingerprints.lock().unwrap().insert(id.to_string(), fp);
-                } else {
-                    to_probe.push(id.to_string());
-                }
+                to_probe.push(id.to_string());
             }
         }
-        for id in to_probe {
-            let this = self.clone();
-            tokio::spawn(async move {
-                this.probe(&id, false).await;
-            });
-        }
-        // 仅 default_* 变化：不重探，但列表里的 `default` 标记不依赖它们，所以无事可做
+        to_probe
+            .into_iter()
+            .map(|id| {
+                let this = self.clone();
+                tokio::spawn(async move {
+                    this.probe_inner(&id, false, true).await;
+                })
+            })
+            .collect()
     }
 
     // ---------------- 会话设置：默认值与校验 ----------------
@@ -1100,6 +1111,70 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(5), "{:?} {:?}", by("claude-code"), by("codex"));
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_config_change_during_the_initial_probe_is_not_lost() {
+        let f = fx("[agents.fake]\nenabled = true\n").await;
+        tokio::time::pause();
+        f.fake.set_probe_delay(Duration::from_secs(1));
+        let scheduler = f.agents.spawn_scheduler();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while f.fake.probe_calls.load(Ordering::SeqCst) == 0 {
+            assert!(std::time::Instant::now() < deadline, "initial probe started");
+            tokio::task::yield_now().await;
+        }
+        // 初次探测已经取了旧配置但尚未完成；热加载发生在配置监视循环开始之前。
+        crate::config::set_value(f.config.paths(), "agents.fake.enabled", "false").unwrap();
+        f.config.reload().unwrap();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while f.agents.info("fake").unwrap().status != AgentStatus::Disabled {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the config change during startup was lost: {:?}, probes: {}, completed: {}",
+                f.agents.info("fake"),
+                f.fake.probe_calls.load(Ordering::SeqCst),
+                f.fake.full_probes.load(Ordering::SeqCst)
+            );
+            tokio::task::yield_now().await;
+        }
+        scheduler.abort();
+        assert_eq!(f.fake.probe_calls.load(Ordering::SeqCst), 1, "disabling does not run the adapter again");
+    }
+
+    #[tokio::test]
+    async fn defaults_changed_while_a_config_probe_is_queued_do_not_probe_twice() {
+        let mut f = fx("[agents.fake]\nenabled = true\n").await;
+        f.agents.probe("fake", false).await;
+        while f.rx.try_recv().is_ok() {}
+        let lock = f.agents.locks.lock().unwrap().get("fake").unwrap().clone();
+        let guard = lock.lock().await;
+        crate::config::set_value(f.config.paths(), "agents.fake.command", "\"/opt/fake\"").unwrap();
+        f.config.reload().unwrap();
+        let mut jobs = f.agents.on_config_changed().await;
+        // 命令变更的探测还没取得锁；默认值的热加载不能为同一个命令再排一次探测。
+        f.agents
+            .set_defaults(&anycon_protocol::NodeSetAgentDefaultsParams {
+                agent: "fake".into(),
+                model: Some("fake-small".into()),
+                thinking: None,
+                mode: None,
+                options: None,
+            })
+            .await
+            .unwrap();
+        jobs.extend(f.agents.on_config_changed().await);
+        drop(guard);
+        for job in jobs {
+            job.await.unwrap();
+        }
+        assert_eq!(f.fake.probe_calls.load(Ordering::SeqCst), 2, "one initial probe and one changed command");
+        let notes: Vec<_> = std::iter::from_fn(|| f.rx.try_recv().ok()).collect();
+        assert_eq!(notes.len(), 1, "only the defaults changed the client view: {notes:?}");
+        assert_eq!(notes[0].method, methods::AGENT_CHANGED);
+        let pushed: AgentListResult = serde_json::from_value(notes[0].params.clone()).unwrap();
+        assert!(pushed.agents[0].models.iter().any(|m| m.id == "fake-small" && m.default));
     }
 
     #[tokio::test]

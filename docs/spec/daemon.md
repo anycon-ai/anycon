@@ -1464,7 +1464,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ## 23. 决策档案
 
-> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半的 daemon 和 CLI（手动／自动提炼、记录、通知，§ 23.9；判断后端，§ 25）已实现，提炼的 SDK 和 Web 入口另行接入；同组节点之间的同步（§ 23.8）单独实现，也还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）单独实现，还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
 
 ### 23.1 范围
 
@@ -1765,7 +1765,7 @@ ExtractRun {
 
 ## 25. 判断后端
 
-> **判断后端（协议、配置、存储、调度、诊断、API 与 agent 调用）和 daemon／CLI 规则提炼已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。现在用到它的只有提炼规则（§ 23.9）；分拣和顾问在第 4 步。
+> **已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。现在用到它的只有提炼规则（§ 23.9）；分拣和顾问在第 4 步。
 
 ### 25.1 配置
 
@@ -1842,9 +1842,9 @@ timeout = "5m"
   - **Codex**：`codex exec --skip-git-repo-check --ephemeral --sandbox read-only --color never --json -o <临时文件> [-m <m>] -`。
     - Codex 没有单独的系统提示参数，系统提示拼在提示的开头；用 `=== SYSTEM INSTRUCTIONS ===` / `=== END SYSTEM INSTRUCTIONS ===` 和 `=== USER PROMPT ===` / `=== END USER PROMPT ===` 分隔。这只是文本分隔，不构成指令隔离边界。
     - Codex 关不掉全部工具：它在只读沙箱里还能跑只读的命令（§ 25.4）。
-    - 取 `-o` 写下的最后一条消息（普通文件，最多读取 1 MiB）。`--json` 的 `turn.completed.usage` 提供 `input_tokens` / `output_tokens`，缺失留空；`cached_input_tokens` 已包含在输入总数中，不重复加。`error` / `turn.failed` 事件算 `agent_failed`，JSON 解析失败同样拒绝。
+    - 取 `-o` 写下的最后一条消息（普通文件，最多读取 1 MiB）。`--json` 的 `turn.completed.usage` 提供 `input_tokens` / `output_tokens`，缺失留空；`cached_input_tokens` 已包含在输入总数中，不重复加。成功要求退出码为 0 并且出现过 `turn.completed`；`turn.failed` 算 `agent_failed`；`error` 事件只在之后没有 `turn.completed` 时才算失败（Codex 在可以重试的情况下也发 `error`）。事件流里有解析不了的行同样算失败。
   - 两种都是：退出码非 0 算 `agent_failed`。
-- **版本界线**：`oneshot` 保守下界为 Claude Code **2.1.325**、Codex **0.169.0**，版本无法解析或低于下界时为 false；这是本机 CLI `--help` 核对过完整参数集的下界，不声称是参数首次引入的版本。mock 为 true，ACP 保持 false。真实模型调用（文字、用量、Claude Code 无法读外部秘密文件、Codex 只断言成功）由 `real_oneshot` 测试覆盖，需要 `ANYCON_REAL_AGENT_TESTS=1` 和 `--ignored`；离线 CI 只编译它，不据此声称已完成模型实测。
+- **版本界线**：Claude Code 从 **2.1.325**、Codex 从 **0.169.0** 起声明 `oneshot`；版本解析不了或更低时不声明。这两个版本上核实过上面全部参数，更早的版本没有核实，不代表它们不支持。mock 声明，ACP 不声明。真实 CLI 的测试（`real_oneshot`：回答和用量；Claude Code 读不到临时目录外的文件；Codex 调用成功）要 `ANYCON_REAL_AGENT_TESTS=1` 和 `--ignored`。
 
 ### 25.2 次数和记录
 
@@ -1873,7 +1873,7 @@ judge?: {                     // 旧 daemon 没有这个字段
 }
 ```
 
-daemon 始终给出 `judge`（全未配置时 `backends = []`、省略两个位置，仍给出 `daily_calls`）；旧 daemon 可以省略。提炼 RPC 已接入，`capabilities.rule_extract = true`。
+daemon 总是给出 `judge`：什么都没配时 `backends = []`，没有两个位置的字段，`daily_calls` 照给。旧 daemon 没有这个字段。
 
 不含 `base_url`、密钥和环境变量名。客户端靠它决定「提炼规则」能不能点，以及没配时怎么说明。`node.info.capabilities.rule_extract = true` 表示 daemon 支持 `rule.extract`。
 
@@ -1885,7 +1885,7 @@ daemon 始终给出 `judge`（全未配置时 `backends = []`、省略两个位�
 ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc (agent=claude-code model=sonnet: ready); extract: haiku (ready); triage: not configured; today: 3 / 20 calls
 ```
 
-列出每个后端的名字、种类、模型 / agent 及 `no_key` / `agent_missing` / `agent_unsupported`；密钥只报告 `key found` 或 `key not found`，回环 HTTP 无密钥时另说明可选。不含地址、密钥或环境变量名。两个位置都列出生效选择，提炼选择包含跟随分拣的结果；名字不存在时写 `backend does not exist`。没有任何配置是 `ok`、`not configured`；任一位置指向不存在或不可用的后端是 `warn`，未被选择的坏后端只列出问题。`warn` 在现有诊断协议中仍是 `ok = false`，沿用 CLI 的非零退出码约定。显示今天的调用次数和上限；daemon 未运行时以只读方式查询数据库，读不了时显示 `unavailable`，不修复或迁移数据库。
+列出每个后端的名字、种类、模型 / agent 及 `no_key` / `agent_missing` / `agent_unsupported`；密钥只报告 `key found` 或 `key not found`，回环 HTTP 无密钥时另说明可选。不含地址、密钥或环境变量名。两个位置都列出生效选择，提炼选择包含跟随分拣的结果；名字不存在时写 `backend does not exist`。没有任何配置是 `ok`、`not configured`；任一位置指向不存在或不可用的后端是 `warn`，未被选择的坏后端只列出问题。`warn` 在诊断协议里也是 `ok = false`，所以 `anycon doctor` 的退出码非 0。最后是今天的调用次数和上限；daemon 没在运行时只读地查数据库，读不了就写 `unavailable`，不修复、不迁移数据库。
 
 ### 25.4 威胁模型
 

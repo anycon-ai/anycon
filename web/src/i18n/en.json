@@ -1887,6 +1887,7 @@
     "usageHint": "The browser sets the limit, often from the free space on the device, so on a phone that is nearly full it can be small: freeing up space on the phone raises it. Private and incognito tabs may get much less.",
     "cacheTitle": "Cache",
     "history": "Session history",
+    "historyHint": "Keeps the {{sessions}} sessions you opened most recently in this browser, up to {{events}} events each. Anything older is loaded from the node when you open it.",
     "events_one": "{{count}} event",
     "events_other": "{{count}} events",
     "attachments": "Attachments",

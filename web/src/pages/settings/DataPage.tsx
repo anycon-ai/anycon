@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Progress } from 'radix-ui'
 import { useTranslation } from 'react-i18next'
+import { KEEP_SESSIONS, MAX_EVENTS_PER_SESSION } from '@/features/storage/eventCache'
 import { clearLocalCaches, readCacheStats, readPersist, readUsage, requestPersist, type CacheStats, type PersistState, type StorageUsage } from '@/features/storage/localData'
 import { describeError } from '@/lib/errors'
 import { formatBytes } from '@/lib/format'
@@ -93,10 +94,15 @@ export function DataPage() {
           <section className="space-y-2">
             <SectionTitle>{t('localData.cacheTitle')}</SectionTitle>
             <Card className="divide-y divide-border" testId="data-cache">
-              <div className="flex items-baseline justify-between gap-3 px-4 py-3">
-                <p className="text-sm font-medium">{t('localData.history')}</p>
-                <p className="shrink-0 font-mono text-sm" data-testid="data-cache-events">
-                  {snap.cache ? t('localData.events', { count: snap.cache.events }) : '—'}
+              <div className="space-y-1 px-4 py-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="text-sm font-medium">{t('localData.history')}</p>
+                  <p className="shrink-0 font-mono text-sm" data-testid="data-cache-events">
+                    {snap.cache ? t('localData.events', { count: snap.cache.events }) : '—'}
+                  </p>
+                </div>
+                <p className="text-xs text-fg-subtle" data-testid="data-cache-history-hint">
+                  {t('localData.historyHint', { sessions: KEEP_SESSIONS, events: MAX_EVENTS_PER_SESSION })}
                 </p>
               </div>
               <div className="flex items-baseline justify-between gap-3 px-4 py-3">

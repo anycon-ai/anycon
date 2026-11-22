@@ -1865,6 +1865,7 @@
     "usageHint": "上限由浏览器决定，常常按设备的剩余空间算：手机快满时上限会很小，清出手机空间就会变大。无痕 / 隐私标签页能用的可能少得多。",
     "cacheTitle": "缓存",
     "history": "会话历史",
+    "historyHint": "只留这个浏览器最近打开的 {{sessions}} 个会话，每个最多 {{events}} 条事件；更早的在打开时从节点加载。",
     "events_other": "{{count}} 条事件",
     "attachments": "附件",
     "files_other": "{{count}} 个文件 · {{size}}",

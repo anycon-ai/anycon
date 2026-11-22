@@ -2,6 +2,7 @@
 //!
 //! 主要模块：
 //! - `daemon` / `local` / `rpc`：装配与生命周期、本机通道（Unix socket / Windows 命名管道）、RPC 调度
+//! - `client`：作为设备经 hub 连别的节点的传输（设备身份、短码配对的加入方、Noise 发起方、RPC 客户端；CLI 和分身共用）
 //! - `hub` / `peers` / `flow`：到 hub 的连接、已配对客户端的 Noise 会话、发送方流控
 //! - `sessions` / `agents` / `workspace` / `wsroots` / `worktree`：会话、agent 注册与探测、项目目录（多个 workspace 根）、每会话 worktree
 //! - `store` / `config` / `audit` / `blobs`：SQLite 存储、配置、审计、附件通道
@@ -18,6 +19,7 @@
 pub mod agents;
 pub mod audit;
 pub mod blobs;
+pub mod client;
 pub mod clients;
 pub mod config;
 pub mod daemon;

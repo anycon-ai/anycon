@@ -197,42 +197,8 @@ pub fn short_id(id: &str) -> String {
     id.chars().take(12).collect()
 }
 
-/// 不可见的字符：Unicode `Cf`（格式字符）类的全部——零宽字符、双向文字控制符、软连字符、BOM、阿拉伯字母标记、
-/// U+206A–206F、U+FFF9–FFFB、tag 字符 U+E0000–E007F……——再加上不属于 `Cf` 却同样看不见、能用来伪装或悄悄断行的：
-/// 行 / 段分隔符 U+2028/2029、组合用字素连接符 U+034F、盲文空白 U+2800、Hangul 填充符（U+115F/1160/3164/FFA0）、
-/// 蒙古文自由变体选择符 U+180B–180F、变体选择符（U+FE00–FE0F、U+E0100–E01EF）。
-/// 它们不会被 `char::is_control` 抓到，却能让终端上显示的和实际的内容不一样（视觉欺骗）。
-fn is_invisible_format(c: char) -> bool {
-    use unicode_general_category::{get_general_category, GeneralCategory};
-    get_general_category(c) == GeneralCategory::Format
-        || matches!(
-            c,
-            '\u{2028}'
-                | '\u{2029}'
-                | '\u{034F}'
-                | '\u{2800}'
-                | '\u{115F}'
-                | '\u{1160}'
-                | '\u{3164}'
-                | '\u{FFA0}'
-                | '\u{180B}'..='\u{180F}'
-                | '\u{FE00}'..='\u{FE0F}'
-                | '\u{E0000}'..='\u{E007F}'
-                | '\u{E0100}'..='\u{E01EF}'
-        )
-}
-
-/// 来自对端的、要显示或存起来的名字：去掉控制字符和不可见的格式字符（双向文字控制符、零宽字符、U+2028/2029、BOM、
-/// U+061C…，防终端转义序列 / 视觉欺骗），修剪空白，按**字符**截断到 `max` 个字符；清理后为空就用 `fallback`。
-pub fn sanitize_label(s: &str, max: usize, fallback: &str) -> String {
-    let cleaned: String = s.chars().filter(|c| !c.is_control() && !is_invisible_format(*c)).collect();
-    let t: String = cleaned.trim().chars().take(max).collect();
-    if t.is_empty() {
-        fallback.to_string()
-    } else {
-        t
-    }
-}
+use anycon_daemon::client::is_invisible_format;
+pub use anycon_daemon::client::sanitize_label;
 
 /// 把来自 agent 的文本变成可以安全打印的样子（审批提示里的命令、路径、URL、标题、计划、问题、选项标签都经过它）：
 /// 控制字符和 ANSI 转义不再被终端解释，而是显示成转义形式——`\x1b`、`\r`、`\t`、`\0`、其它显示成 `\x07` /

@@ -272,6 +272,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "unicode-general-category",
  "unicode-normalization",
  "uuid",
  "webpki-roots 0.26.11",

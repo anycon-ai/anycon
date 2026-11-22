@@ -327,6 +327,9 @@ daemon                      hub                        新客户端
 | `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`，物理删除；`if_updated_ms` 的语义同 `rule.update`。`id` 不存在 → `not_found`；自报了 `mcp` 的本机连接 → `forbidden` |
 | `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话（缺省：不属于任何项目的会话）会注入的那段文字、写进去的规则 id（按在文字里的顺序）和 `text` 的 UTF-8 字节数；没有生效的规则时 `text` 为空串。只读：不改 `last_injected_ms` |
 | `rule.changed` | D→C notification | `{ id, rule?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。空操作、重复的 `rule.add` 和 `last_injected_ms` 的变化不发 |
+| `rule.extract` | C→D | `{ session_id }` → `{ run?: ExtractRun, points }`：把会话的决策点交给判断后端提炼成待确认的规则（[spec/daemon.md § 23.9](spec/daemon.md#239-提炼)）。`points = 0` 时什么都不做、没有 `run`；否则立即返回 `status = running` 的 `run`，结束时发 `rule.extract_done`。`invalid` 的 `data.reason`：`not_configured`、`budget`、`busy`；自报了 `mcp` 的连接 → `forbidden`。`capabilities.rule_extract` 为 true 时才有 |
+| `rule.extract_runs` | C→D | `{ session_id?, limit? }` → `{ runs: [ExtractRun], used_today, daily_calls }` |
+| `rule.extract_done` | D→C notification | `{ run: ExtractRun }`：一次提炼结束时发给所有在线客户端 |
 
 `Rule { id, text, project?, status: pending \| active \| disabled \| rejected, sync: node \| group, source { kind: manual \| answer \| extracted \| agent, session_id?, seq?, request_id?, device_id? }, created_ms, updated_ms, last_injected_ms? }`。`status`、`source.kind`、`sync` 遇到不认识的值（更新的 daemon）解析成 `unknown`：客户端按「不生效」「不是人写的」显示，不报错；daemon 自己不产生也不接受 `unknown`。`sync` 这一半恒为 `node`。`text` 按 Unicode 码点算（≤ 600），注入的上限（4096）按 UTF-8 字节算。
 

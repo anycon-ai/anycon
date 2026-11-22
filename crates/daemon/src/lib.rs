@@ -28,6 +28,7 @@ pub mod fsopen;
 pub mod gitops;
 pub mod hub;
 pub mod identity;
+pub mod judge;
 pub mod limits;
 pub mod linkrules;
 pub mod local;

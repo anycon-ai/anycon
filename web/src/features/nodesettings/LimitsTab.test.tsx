@@ -372,3 +372,28 @@ describe('node settings: the Limits tab and an offline node', () => {
     await waitFor(() => expect(ctl('rules.inject_manual_sessions')).toHaveAttribute('aria-checked', 'true'))
   })
 })
+
+
+it('labels all extraction settings, names empty backend choices and refreshes node.info after selecting a backend', async () => {
+  items = [
+    { key: 'rules.extract_auto', value: false, kind: 'bool', editable: 'any' },
+    { key: 'judge.extract', value: '', kind: 'enum', editable: 'any', options: ['', 'mock'] },
+    { key: 'judge.triage', value: '', kind: 'enum', editable: 'any', options: [''] },
+    { key: 'judge.daily_calls', value: 20, kind: 'int', editable: 'any', min: 0, max: 1000 },
+  ]
+  rpc.handlers['node.info'] = () => ({ capabilities: { rule_extract: true }, judge: { extract: 'mock' } })
+  const user = userEvent.setup()
+  render(<LimitsTab nodeId={NODE} />)
+  await screen.findByLabelText('Extract rules automatically')
+  expect(screen.getByLabelText('Extraction backend')).toBe(ctl('judge.extract'))
+  expect(screen.getByLabelText('Triage backend')).toBe(ctl('judge.triage'))
+  expect(screen.getByLabelText('Daily judgment calls')).toHaveValue(20)
+  expect(within(ctl('judge.extract')).getAllByRole('option').map((o) => o.textContent)).toEqual(['Do not use', 'mock'])
+  expect(screen.getByText('Configure backends in config.toml on this machine.')).toBeInTheDocument()
+  for (const row of screen.getAllByTestId('limit-row')) expect(row.querySelector('p')).not.toBeNull()
+  await user.selectOptions(ctl('judge.extract'), 'mock')
+  await user.click(ctl('rules.extract_auto'))
+  await user.click(screen.getByTestId('limits-save'))
+  await waitFor(() => expect(useNodes.getState().byId[NODE]?.info?.judge?.extract).toBe('mock'))
+  expect(setCalls()).toEqual([{ changes: [{ key: 'rules.extract_auto', value: true }, { key: 'judge.extract', value: 'mock' }] }])
+})

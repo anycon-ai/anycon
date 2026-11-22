@@ -12,6 +12,7 @@ import { useSessions, type SessionItem } from '@/stores/sessions'
 import { toast } from '@/stores/ui'
 import i18n from '@/i18n'
 import { handleTodoEvent } from '@/features/todos/history'
+import { handleExtractDone } from '@/features/rules/extract'
 import { handleRuleChanged } from '@/features/rules/service'
 import { handleTodoChanged } from '@/features/todos/service'
 import { inboxUrl } from './pushText'
@@ -76,6 +77,9 @@ export function handleNotification(nodeId: string, method: string, params: unkno
     }
     case 'todo.changed':
       handleTodoChanged(nodeId, params)
+      return
+    case 'rule.extract_done':
+      handleExtractDone(nodeId, params)
       return
     case 'rule.changed':
       handleRuleChanged(nodeId, params)

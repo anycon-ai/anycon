@@ -89,8 +89,8 @@ export function LimitsTab({ nodeId }: { nodeId: string }) {
       setLoad({ status: 'ready', items: res.items })
       setDrafts(initialDrafts(res.items))
       toast.success(t('nodeSettings.limits.saved'))
-      // 分组、名字变了没有通知：刷新 node.info，空间切换才会跟着变
-      if (changes.some((c) => c.key === 'hub.group' || c.key === 'hub.name')) refreshNodeInfo(nodeId).catch(warnOnError('refresh node.info after changing the group or name'))
+      // 分组、名字和判断后端变了没有通知：刷新 node.info，让空间切换和提炼入口跟着变
+      if (changes.some((c) => c.key === 'hub.group' || c.key === 'hub.name' || c.key.startsWith('judge.'))) refreshNodeInfo(nodeId).catch(warnOnError('refresh node.info after changing node settings'))
     } catch (e) {
       const rpcError = e instanceof RpcCallError && e.kind === 'rpc' && (e.code === 'invalid' || e.code === 'forbidden') ? e : null
       const bad = rpcError ? items.find((i) => i.key === rpcError.field) : undefined
@@ -200,7 +200,7 @@ function LimitRow({ item, draft, disabled, problem, serverError, onChange }: { i
         <Select id={id} data-testid={id} aria-label={label} className="w-44" value={String(draft)} disabled={off} onChange={(e) => onChange(e.target.value)}>
           {all.map((o) => (
             <option key={o} value={o}>
-              {t(`nodeSettings.limits.options.${item.key}.${o}`, { defaultValue: o })}
+              {item.key.startsWith('judge.') && o === '' ? t('nodeSettings.limits.judgeNone') : t(`nodeSettings.limits.options.${item.key}.${o}`, { defaultValue: o })}
             </option>
           ))}
         </Select>
@@ -223,6 +223,7 @@ function LimitRow({ item, draft, disabled, problem, serverError, onChange }: { i
         <div className="shrink-0">{control}</div>
       </div>
       {hint ? <p className="text-xs text-fg-subtle">{hint}</p> : null}
+      {item.key.startsWith('judge.') && item.options?.length === 1 && item.options[0] === '' ? <p className="text-xs text-fg-subtle">{t('nodeSettings.limits.judgeLocal')}</p> : null}
       {range ? <p className="text-xs text-fg-subtle">{range}</p> : null}
       {item.env_override ? (
         <p className="text-xs text-warning" data-testid={`limit-env-${item.key}`}>

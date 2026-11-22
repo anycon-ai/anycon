@@ -26,6 +26,9 @@ import {
   type Rule,
   type RuleAddParams,
   type RuleChanged,
+  type RuleExtractDone,
+  type RuleExtractResult,
+  type ExtractRun,
   type RuleListParams,
   type RuleListResult,
   type RulePreviewParams,
@@ -107,6 +110,8 @@ export interface NodeEvents {
   todo_event: [TodoEventNotice]
   /** 规则有一条被新建、修改或删除（`rule.changed`，docs/spec/daemon.md § 23；发给所有在线客户端，包括发起的那一个）。`last_injected_ms` 的变化不通知。 */
   rule_changed: [RuleChanged]
+  /** 一次提炼结束，按 run.id 对应发起的调用；所有在线客户端都会收到。 */
+  rule_extract_done: [RuleExtractDone]
 }
 
 export interface NodeOptions {
@@ -227,6 +232,9 @@ export class Node extends Emitter<NodeEvents> {
     })
     rpc.onNotification<RuleChanged>(METHODS.RULE_CHANGED, (c) => {
       this.emit('rule_changed', c)
+    })
+    rpc.onNotification<RuleExtractDone>(METHODS.RULE_EXTRACT_DONE, (done) => {
+      this.emit('rule_extract_done', done)
     })
     rpc.onNotification<JobProgress>(METHODS.JOB_PROGRESS, (p) => {
       const rec = this.#job(p.job_id)
@@ -597,6 +605,19 @@ export class Node extends Emitter<NodeEvents> {
    * 规则的文字是用户内容，经过 `rule.add` 进来的、agent 写的文字会进之后每个会话的系统提示：生效之前要人确认。
    */
   readonly rules = {
+    /** 提炼会话里新的决策点；points 为 0 时没有 run，否则按 run.id 等 rule_extract_done。 */
+    extract: (sessionId: string): Promise<RuleExtractResult> =>
+      this.call('rule.extract', { session_id: sessionId }),
+    /** 最近的提炼记录与今天所有判断位置合计的调用次数；省略 limit 时为 20。 */
+    extractRuns: async (
+      options: { sessionId?: string; limit?: number } = {},
+    ): Promise<{ runs: ExtractRun[]; usedToday: number; dailyCalls: number }> => {
+      const result = await this.call('rule.extract_runs', {
+        ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
+        ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      })
+      return { runs: result.runs, usedToday: result.used_today, dailyCalls: result.daily_calls }
+    },
     /**
      * `rule.list`：全部规则（总数上限 300，不翻页），按创建时间从早到晚；`status` / `project` 过滤（`project` 不含全节点规则）。
      * `budget` 是注入的字数预算（只算生效的规则，不随过滤条件变）：一个这个项目的会话拿到的规则文字是 `node_bytes + projects[项目]`，上限 `cap`。

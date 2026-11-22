@@ -434,3 +434,11 @@ describe('several nodes', () => {
     expect(within(cards()[0]!).getByTestId('rule-node')).toHaveTextContent('alpha')
   })
 })
+
+
+it('opens the pending tab explicitly after extraction, even before rule.changed arrives', async () => {
+  await syncRules(A)
+  render(<RulesPage initialTab="pending" />)
+  expect(screen.getByTestId('rules-pending-empty')).toBeInTheDocument()
+  expect(screen.queryByTestId('rules-active')).toBeNull()
+})

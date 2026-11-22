@@ -53,6 +53,9 @@ import {
   type Crypto,
   type DiffFile,
   type Envelope,
+  type ExtractRun,
+  type RuleExtractResult,
+  type RuleExtractRunsResult,
   type Event,
   type Handshake,
   type Keypair,
@@ -606,6 +609,7 @@ export class FakeDaemon {
         audit: false,
         todo: true,
         rules: true,
+        rule_extract: true,
       },
       attachment_limits: {
         max_bytes: this.maxAttachmentBytes,
@@ -868,6 +872,45 @@ export class FakeDaemon {
       [...rules.values()].filter(
         (r) => r.status === 'active' && (r.project === undefined || r.project === project),
       )
+    // 提炼只模拟线路结果，不调用判断后端。
+    const extractRuns: ExtractRun[] = []
+    on<{ session_id: string }, RuleExtractResult>('rule.extract', (p) => {
+      if (p.session_id === 'empty') return { points: 0 }
+      if (['budget', 'busy', 'not_configured'].includes(p.session_id)) {
+        const data = { reason: p.session_id, used: 20, limit: 20 }
+        throw AnyconRpcError.of('invalid', 'extraction rejected', data)
+      }
+      const run: ExtractRun = {
+        id: `extract-${extractRuns.length}`,
+        session_id: p.session_id,
+        status: 'running',
+        trigger: 'manual',
+        started_ms: 1,
+        points: 2,
+        from_seq: 1,
+        to_seq: 2,
+        added: [],
+        dropped: { duplicate: 0, invalid: 0, full: 0 },
+        backend: 'mock',
+      }
+      extractRuns.unshift(run)
+      setTimeout(() => {
+        const done = { ...run, status: 'done' as const, finished_ms: 2 }
+        extractRuns[extractRuns.indexOf(run)] = done
+        this.#notifyAll('rule.extract_done', { run: done })
+      }, 10)
+      return { run, points: run.points }
+    })
+    on<{ session_id?: string; limit?: number }, RuleExtractRunsResult>(
+      'rule.extract_runs',
+      (p) => ({
+        runs: extractRuns
+          .filter((r) => !p.session_id || r.session_id === p.session_id)
+          .slice(0, p.limit ?? 20),
+        used_today: extractRuns.length,
+        daily_calls: 20,
+      }),
+    )
     on<{ project?: string }, unknown>('rule.preview', (p) => {
       const chosen = chosenFor(p.project)
       const text = rulesTextOf(chosen)

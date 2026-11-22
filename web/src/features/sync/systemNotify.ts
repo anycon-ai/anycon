@@ -14,7 +14,7 @@ import { useTodos } from '@/features/todos/store'
 import { isClosed } from '@/features/todos/types'
 import { useSessions } from '@/stores/sessions'
 import i18n from '@/i18n'
-import { pushText, type PushText } from './pushText'
+import { notifyTodoId, pushText, type PushText } from './pushText'
 
 const ICON = '/icon-192.png'
 
@@ -37,6 +37,7 @@ export interface SystemNotifyEnv {
   sessionTitle(nodeId: string, sessionId: string): string | undefined
   /** 这个会话是从哪一项清单派出的和那一项的标题（本地缓存）；不是清单派出的就是 undefined。 */
   sessionTodo?(nodeId: string, sessionId: string): { id: string; title?: string } | undefined
+  todoTitle?(nodeId: string, todoId: string): string | undefined
   nodeIds(): readonly string[]
 }
 
@@ -61,6 +62,7 @@ export function defaultEnv(): SystemNotifyEnv {
       if (todo && isClosed(todo.state)) return undefined
       return { id: s.todo_id, ...(todo?.title ? { title: todo.title } : {}) }
     },
+    todoTitle: (nodeId, todoId) => useTodos.getState().nodes[nodeId]?.items[todoId]?.title,
     nodeIds: () => useNodes.getState().order,
   }
 }
@@ -76,12 +78,13 @@ async function hasSubscription(reg: NotificationTarget): Promise<boolean> {
 }
 
 /** `notify` 信封 → 通知文案（纯函数，和 service worker 里用的是同一个 `pushText`）。 */
-export function textForNotify(env: Pick<SystemNotifyEnv, 't' | 'nodeName' | 'sessionTitle' | 'nodeIds'> & Partial<Pick<SystemNotifyEnv, 'nodeGroup' | 'sessionTodo'>>, nodeId: string, body: NotifyBody): PushText {
+export function textForNotify(env: Pick<SystemNotifyEnv, 't' | 'nodeName' | 'sessionTitle' | 'nodeIds'> & Partial<Pick<SystemNotifyEnv, 'nodeGroup' | 'sessionTodo' | 'todoTitle'>>, nodeId: string, body: NotifyBody): PushText {
   const sessionId = body.session_id ?? null
+  const todoId = notifyTodoId(sessionId)
   return pushText(env.t, {
     category: body.category,
     node: { id: nodeId, name: env.nodeName(nodeId), group: env.nodeGroup?.(nodeId) ?? null, param: shortNodeId(nodeId, env.nodeIds()) },
-    session: sessionId ? { id: sessionId, title: env.sessionTitle(nodeId, sessionId), todo: env.sessionTodo?.(nodeId, sessionId) ?? null } : null,
+    session: sessionId ? { id: sessionId, title: todoId ? env.todoTitle?.(nodeId, todoId) : env.sessionTitle(nodeId, sessionId), todo: todoId ? null : env.sessionTodo?.(nodeId, sessionId) ?? null } : null,
   })
 }
 

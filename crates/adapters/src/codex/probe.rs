@@ -76,6 +76,7 @@ pub fn modes() -> Vec<ModeInfo> {
         description: Some(description.to_string()),
         default,
         risk,
+        unattended: id == "auto_review",
     };
     vec![
         m(

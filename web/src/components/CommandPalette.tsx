@@ -6,6 +6,7 @@ import { useDevices } from '@/api/queries'
 import { setFollowUp } from '@/features/session/actions'
 import { isFollowUp } from '@/features/session/marks'
 import { useContentSearch, type ContentHit } from '@/features/search/contentSearch'
+import { useTwinAvailable } from '@/features/twin/store'
 import { useRulesAvailable } from '@/features/rules/store'
 import { useTodoAvailable } from '@/features/todos/store'
 import { quickAdd } from '@/features/todos/quickAdd'
@@ -73,6 +74,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const sessions = useSessions((s) => s.list)
   const { selected } = useNodeFilter()
   const rulesAvailable = useRulesAvailable()
+  const twinAvailable = useTwinAvailable()
   const devices = useDevices()
   const [q, setQ] = useState('')
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -116,6 +118,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       for (const p of nodes[nodeId]?.projects ?? [])
         out.push({ id: `p-${p.name}`, icon: <FolderGit2 className="size-4" />, label: p.name, hint: t('palette.project'), run: go(() => void navigate({ to: '/n/$node/p/$project', params: { node: param, project: p.name } })) })
     }
+    if (twinAvailable) out.push({ id: 'twin', icon: <Server className="size-4" />, label: t('twin.title'), hint: 'G A', run: go(() => void navigate({ to: '/twin' })) })
     if (rulesAvailable) out.push({ id: 'rules', icon: <ScrollText className="size-4" />, label: t('palette.rules'), run: go(() => void navigate({ to: '/rules' })) })
     for (const id of order) {
       const n = nodes[id]
@@ -131,7 +134,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       })
     }
     return out
-  }, [nodeId, currentSession, nodes, order, sessions, navigate, onOpenChange, t, rulesAvailable])
+  }, [nodeId, currentSession, nodes, order, sessions, navigate, onOpenChange, t, rulesAvailable, twinAvailable])
 
   // 第一行始终是「记到清单：<输入的文字>」（spec/web.md § 4.12.1）：不管输入什么都在，不参与过滤；输入为空时打开记一项的输入条
   const addTodoItem = useMemo<Item>(() => {

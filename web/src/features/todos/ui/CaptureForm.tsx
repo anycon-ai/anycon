@@ -43,6 +43,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   const nodeLabel = (id: string): string => cleanHintText(nodes[id]?.name) || id.slice(0, 8)
   const area = useRef<HTMLTextAreaElement>(null)
   const [pickedNode, setPickedNode] = useState<string | null>(null)
+  const [handler, setHandler] = useState<'me' | 'twin'>(() => { try { return localStorage.getItem('anycon.todoHandler') === 'twin' ? 'twin' : 'me' } catch { return 'me' } })
   const [project, setProject] = useState('')
   const [due, setDue] = useState('')
   const [error, setError] = useState<FieldError | null>(null)
@@ -71,7 +72,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
     setDue('')
     let r: Awaited<ReturnType<typeof addTodo>>
     try {
-      r = await addTodo(nodeId, { title, body, project: draft.project.trim() || null, due_ms: dueFromInput(draft.due) ?? null })
+      r = await addTodo(nodeId, { title, body, ...(nodes[nodeId]?.info?.capabilities.twin ? { handler } : {}), project: draft.project.trim() || null, due_ms: dueFromInput(draft.due) ?? null })
     } catch (e) {
       console.warn('anycon: adding a to-do failed unexpectedly', e)
       r = { ok: false, error: { field: 'storage', reason: 'failed' } }
@@ -169,6 +170,21 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
                       {nodeLabel(id)}
                     </option>
                   ))}
+            </Select>
+          </label>
+        ) : null}
+        {nodeId && nodes[nodeId]?.info?.capabilities.twin ? (
+          <label className="flex items-center gap-1.5">
+            <span>{t('todos.filterHandler')}</span>
+            <Select value={handler} data-testid="capture-handler" onChange={(e) => {
+              const next = e.target.value === 'twin' ? 'twin' : 'me'
+              setHandler(next)
+              try { localStorage.setItem('anycon.todoHandler', next) } catch {
+                // 设备偏好不可写不影响记一项。
+              }
+            }}>
+              <option value="me">{t('twin.me')}</option>
+              <option value="twin">{t('twin.give')}</option>
             </Select>
           </label>
         ) : null}

@@ -158,6 +158,14 @@ await node.discardAttachment(ref)                                         // 传
 
 **清除设置**：`session.setSettings(settings, { clear? })`。`settings` 是增量（缺省的字段保持），要把某个值清掉（恢复为未设置 / agent 默认）在 `clear` 里点名：`['model', 'thinking', 'mode', 'env', 'system_prompt_append', 'max_turns', 'max_budget_usd']`，见 [daemon.md § 6](daemon.md#6-会话选项)。
 
+### 3.3 TS 分身客户端
+
+**已实现。** `Node.twin` 封装 daemon § 26.1–§ 26.8：`get()` → `TwinGetResult`，`set(TwinSetParams)` → 同一形状，`wake()` → `void`，`dryRun(RequestOptions?)` → `{ run }`，`runs(TwinRunsParams = {})` → `{ runs }`，`questions(TwinQuestionsParams = {})` → `{ questions }`，`answer({ id, answer })` → `TwinQuestion`。SDK 事件 `twin_changed` / `twin_question` 分别透传 `twin.changed` / `twin.question` 的通知体（含回答和作废）。不缓存、不重放；节点离线时失败，旧节点回 `unsupported`，调用方据 `capabilities.twin` 决定是否提供入口。类型直接引用协议，并从 SDK 入口重导出 `Twin*` 和 `TodoHandler`，不另建平行模型。
+
+`dryRun` 同步等分拣完成，缺省 RPC 时限 16 分钟，覆盖判断后端最长 15 分钟的时限；可用 `RequestOptions.timeoutMs` / `signal` 覆盖 / 取消等待。试跑计一次判断调用、留运行记录但不执行；`wake` 的应答不代表已经完成唤醒。运行记录按 `before_ms` 翻页，问题用 `open_only` 过滤，字段和返回值保留协议命名。`TwinDecision` 的 `note?` / `question?` / `options?` 原样透传，分别用于派发的补充说明、问你或问顾问的问题及问你的选项；它们和理由都是模型输出，只作为不可信纯文字展示。
+
+`todos.add` / `update` 的 `handler` 使用协议的 `me | twin`；界面应先让人看过并收下 agent 项（`todo.update { id, reviewed: true }`），收下后再提供 `handler: twin` 的操作。daemon 也接受明确请求的原子收下并移交，但 SDK 不替调用方自动收下。所有分身写权限和范围校验由 daemon 负责，SDK 不提供任何代答权限请求的分身路径。
+
 ## 4. 节点方向（自定义 agent）
 
 SDK 进程本身就是一个 daemon 节点：对 hub 来说是一台 `kind = sdk` 的设备，对客户端来说实现了内层协议的 daemon 侧子集。

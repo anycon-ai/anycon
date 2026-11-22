@@ -208,3 +208,5 @@ kind=`other` 的权限请求，`request_id = "<session_id>-perm-<n>"`（和其�
 ## 一次性调用
 
 `capabilities.oneshot = true`。`prompt` 中第一个 `MOCK_ONESHOT:` 后的第一个空白分隔词按标准 base64 解码，再按 UTF-8 作为回答；没有标记返回 `{"rules":[]}`，非法编码返回 `OneshotError::Failed`。例如 `MOCK_ONESHOT:aGVsbG8=` 返回 `hello`。用量和费用固定为 0，不执行命令、不访问网络。
+
+`ask` 模式声明 `unattended = true`，供分身模式选择测试使用；`plan` / `yolo` 为 `false`。这个标记不改变 mock 的权限请求行为。

@@ -34,6 +34,7 @@ const DEFAULT_PREFS: PrefRow[] = [
   { category: 'enroll_requested', push: true, email: true },
   { category: 'security', push: true, email: true },
   { category: 'follow_up', push: true, email: false },
+  { category: 'twin_question', push: true, email: false },
   { category: 'turn_finished', push: true, email: false },
   { category: 'session_idle', push: false, email: false },
 ]
@@ -290,7 +291,7 @@ describe('what to notify — categories', () => {
   it('lists every category in order with their current push / email switches', async () => {
     mount()
     const rows = await screen.findAllByTestId(/^notify-row-/)
-    expect(rows.map((r) => r.getAttribute('data-testid'))).toEqual(['permission_requested', 'error', 'enroll_requested', 'security', 'follow_up', 'turn_finished', 'session_idle'].map((c) => `notify-row-${c}`))
+    expect(rows.map((r) => r.getAttribute('data-testid'))).toEqual(['permission_requested', 'error', 'enroll_requested', 'security', 'follow_up', 'twin_question', 'turn_finished', 'session_idle'].map((c) => `notify-row-${c}`))
     expect(screen.getByTestId('notify-push-permission_requested')).toBeChecked()
     expect(screen.getByTestId('notify-push-session_idle')).not.toBeChecked()
     expect(screen.getByTestId('notify-email-error')).toBeChecked()
@@ -303,7 +304,7 @@ describe('what to notify — categories', () => {
     await user.click(await screen.findByTestId('notify-push-session_idle'))
     await waitFor(() => expect(api.callsTo('PUT /api/me/notifications')).toHaveLength(1))
     const sent = (api.callsTo('PUT /api/me/notifications')[0]!.body as { categories: PrefRow[] }).categories
-    expect(sent).toHaveLength(7)
+    expect(sent).toHaveLength(8)
     expect(sent.find((c) => c.category === 'session_idle')).toEqual({ category: 'session_idle', push: true, email: false })
     expect(sent.filter((c) => c.category !== 'session_idle')).toEqual(DEFAULT_PREFS.filter((c) => c.category !== 'session_idle'))
     await waitFor(() => expect(screen.getByTestId('notify-push-session_idle')).toBeChecked())

@@ -8,6 +8,23 @@ use crate::*;
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProtocolSchema {
+    // 分身
+    pub twin_scope: TwinScope,
+    pub twin_state: TwinState,
+    pub twin_today: TwinToday,
+    pub twin_get_result: TwinGetResult,
+    pub twin_set_params: TwinSetParams,
+    pub twin_run: TwinRun,
+    pub twin_decision: TwinDecision,
+    pub twin_question: TwinQuestion,
+    pub twin_dry_run_result: TwinDryRunResult,
+    pub twin_runs_params: TwinRunsParams,
+    pub twin_runs_result: TwinRunsResult,
+    pub twin_questions_params: TwinQuestionsParams,
+    pub twin_questions_result: TwinQuestionsResult,
+    pub twin_answer_params: TwinAnswerParams,
+    pub twin_changed: TwinChanged,
+    pub twin_question_notice: TwinQuestionNotice,
     // 外层
     pub kind: Kind,
     pub notify_body: NotifyBody,

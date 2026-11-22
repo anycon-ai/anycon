@@ -5,6 +5,7 @@
 // - 连接用完就关（页面要删库 / 升级时不会被这里挡住），别的标签页要删库时（`blocking`）也立刻让出；
 // - 读到的东西按不可信数据对待（页面写的，但格式可能是旧版本的）：逐个字段收窄，缺了就当没有。
 import { deleteDB, openDB, type IDBPDatabase } from 'idb'
+import { notifyTodoId } from '@/features/sync/pushText'
 
 const MAIN_DB = 'anycon'
 const SW_DB = 'anycon-sw'
@@ -69,6 +70,19 @@ export async function readPushDirectory(nodeId: string | null, sessionId: string
       }
       // 会话必须属于载荷里的这个节点：hub 说什么都不能让别的节点的会话标题出现在这条通知里（页面一侧的 `sessionTitle(nodeId, sessionId)` 同样核对）
       if (sessionId && nodeId) {
+        // 带前缀的是清单落点；始终按节点取复合键，不借用其他节点的标题。
+        const targetTodoId = notifyTodoId(sessionId)
+        if (targetTodoId) {
+          try {
+            const todoRec = await db.get('todos', `${nodeId}:${targetTodoId}`)
+            const todo = typeof todoRec === 'object' && todoRec !== null ? (todoRec as Record<string, unknown>).todo : undefined
+            const title = str(todo, 'title')
+            if (title) out.sessionTitle = title
+          } catch {
+            // 旧库没有清单仓。
+          }
+          return out
+        }
         const rec = await db.get('sessions', sessionId)
         if (str(rec, 'node_id') === nodeId) {
           const title = str(rec, 'title')

@@ -494,6 +494,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     Box::pin(walk_todo(&mut w)).await;
     Box::pin(walk_rule(&mut w)).await;
     Box::pin(walk_rule_extract(&mut w)).await;
+    Box::pin(walk_twin(&mut w)).await;
     Box::pin(walk_worktree(&mut w, &td)).await;
     let psid = Box::pin(walk_permission(&mut w)).await;
     Box::pin(walk_preview(&mut w, &td, &psid)).await;
@@ -526,6 +527,8 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         methods::TODO_EVENT,
         methods::RULE_CHANGED,
         methods::RULE_EXTRACT_DONE,
+        methods::TWIN_CHANGED,
+        methods::TWIN_QUESTION,
     ] {
         assert!(seen.contains(want), "the walk should have produced {want}: {seen:?}");
     }
@@ -552,4 +555,39 @@ async fn the_validator_rejects_a_response_that_drifted_from_its_type() {
     assert!(!w.validator("NodeInfo", "x").is_valid(&nested), "a nested type through $ref");
     assert!(!w.validator("Empty", "x").is_valid(&Value::Null), "null is not an Empty result");
     td.shutdown().await;
+}
+
+/// 分身的七个请求和两种通知都使用实际结果进行 schema 校验。
+async fn walk_twin(w: &mut Walk<'_>) {
+    w.td.fake.declare_no_push.store(true, std::sync::atomic::Ordering::SeqCst);
+    w.call(methods::AGENT_LIST, json!({"refresh":true})).await;
+    anycon_daemon::config::set_value(&w.td.paths, "judge.triage", "local").unwrap();
+    w.td.ctx.config.reload().unwrap();
+    w.call(methods::TWIN_GET, json!({})).await;
+    w.call(methods::TWIN_SET, json!({"projects":["todoproj"],"agent":"fake","mode":"ask"})).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    w.call(methods::TODO_ADD, json!({"id":id,"title":"a preference","project":"todoproj","handler":"twin"})).await;
+    let question = json!({
+        "id": id,
+        "action": "ask_user",
+        "reason": "Need your preference",
+        "question": "Which approach?",
+        "options": ["A", "B"],
+    });
+    let backend = FakeJudgeBackend::new([
+        Ok(JudgeReply { text: json!({"items": [question]}).to_string(), ..Default::default() }),
+        Ok(JudgeReply { text: "{\"items\":[]}".into(), ..Default::default() }),
+    ]);
+    w.td.ctx.judge.set_backend_factory(Arc::new(move |_| backend.clone()));
+    w.call(methods::TWIN_WAKE, json!({})).await;
+    w.td.ctx.judge.clock().set(anycon_daemon::util::now_ms() + 61_000);
+    w.td.ctx.twin.poll(&w.td.ctx).await.unwrap();
+    w.td.ctx.twin.wait_idle().await;
+    let questions = w.call(methods::TWIN_QUESTIONS, json!({"open_only":true})).await;
+    let qid = questions["questions"][0]["id"].clone();
+    assert!(qid.is_string());
+    w.call(methods::TWIN_ANSWER, json!({"id":qid,"answer":"A"})).await;
+    w.call(methods::TWIN_DRY_RUN, json!({})).await;
+    w.call(methods::TWIN_RUNS, json!({"limit":20})).await;
+    w.call(methods::TWIN_SET, json!({"paused":true})).await;
 }

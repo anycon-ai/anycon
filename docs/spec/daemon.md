@@ -114,6 +114,7 @@ extract_auto = false                  # true = 会话空闲之后自动提炼规
 [judge]                               # 判断后端（ADR-54 第 4 条，§ 25）。整段热加载；后端本身不能远程设置
 extract = ""                          # 提炼规则用哪个后端；空 = 跟随 triage；都空 = 不提炼
 triage = ""                           # 分拣（第 4 步）
+advisor = ""                          # 顾问；空 = 跟随 triage
 daily_calls = 20                      # 每个本地日所有位置合计最多调用后端几次；0 = 不调用
 
 [judge.backends.haiku]                # 一个后端；名字自己起。字段见 § 25.1
@@ -121,6 +122,9 @@ kind = "api"                          # api | agent
 format = "anthropic"                  # anthropic | openai
 model = "claude-haiku-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
+
+[twin]                                # 分身的机器级硬开关（§ 26.2）。热加载
+enabled = true                        # 远程只能关闭；恢复开启要在本机改
 
 [notify]
 turn_finished = "when_unwatched"      # always | when_unwatched | never
@@ -134,7 +138,7 @@ level = "info"
 retention_days = 7                     # 只在 daemon 启动时清理一次，长期不重启会累积
 ```
 
-`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`rules.*`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
+`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`rules.*`、`judge.*`、`twin.enabled`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
 **远程修改**（`node.get_config` / `node.set_config`，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）：客户端（Web 的节点设置「限制」标签、SDK）可以读写下面这张白名单里的键，其余一律不行。只收热加载的键，改完不用重启。
 
@@ -160,7 +164,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 | `preview.enabled` | 布尔 | **只能收紧**：`true` → `false` |
 
 - **名单之外**的键既不出现在 `node.get_config` 里，也不接受（`forbidden`，`data.reason = not_editable`）：尤其是 `agents.*`（`command` / `env` 等于远程执行任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*`（有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`、`update.check`（要不要联系 anycon.ai 是机器主人的决定，ADR-57）、`judge.backends.*`（地址、密钥、要跑的 agent，§ 25.1）。想放宽权限，或改这些键，只能在机器上 `anycon config set`
-- **只能收紧**的开关远程想从 `false` 改成 `true`，回 `forbidden`（`data.reason = tighten_only`，同一请求里别的改动也不写）。Web 上这两个开关在关着时禁用，并提示在机器上运行 `anycon config set <键> true`
+- **只能收紧**的开关远程想从 `false` 改成 `true`，回 `forbidden`（`data.reason = tighten_only`，同一请求里别的改动也不写）。Web 上这些开关在关着时禁用，并提示在机器上运行 `anycon config set <键> true`
 - **环境变量覆盖的键只读**：`node.get_config` 里 `env_override = true`、`editable = no`（`log.level` 还包括被 `ANYCON_LOG` / `RUST_LOG` 接管），`node.set_config` 回 `forbidden`（`data.reason = env_override`）。判断和加载配置时用同一个环境变量层，不会各说各话
 - **`node.get_config`** → `{ items: [{ key, value, kind, editable, env_override, options?, min?, max? }] }`：`value` 是当前生效值（默认值 → 文件 → 环境变量合并后）；`kind` 是 `bool` \| `int` \| `duration` \| `enum` \| `text`；`editable` 是 `any` \| `tighten_only` \| `no`；`options`（`enum`）、`min` / `max`（`int` 是数值，`duration` 是毫秒，`text` 的 `max` 是字符数）给客户端渲染控件和做本地校验用。顺序固定，按配置段分组
 - **`node.set_config { changes: [{ key, value }] }`**：先校验**全部**改动，任何一项不合法就一项都不写——键重复、`changes` 为空、值的 JSON 类型和 `kind` 不符、超出范围、不在枚举里、时长写不出来都回 `invalid`（`data.field` 是键，`data.reason` 是 `duplicate` / `type` / `range` / `format`）；多个问题时报请求里的第一个。通过之后用 `anycon config set` 同一套逻辑写 `config.toml`（保留注释和格式、整份配置校验通过才原子替换，值按类型写——`branch_prefix = "123"` 写成字符串），再走同一条热加载路径，审计 `config.changed`（§ 13），返回新的 `node.get_config` 结果。和当前值相同的改动是空操作（不写、不审计）；全是空操作时直接返回当前结果。daemon 里同一时刻只处理一个 `node.set_config`（先重读一次文件，再算旧值、判断「只能收紧」），并发的两次不会互相覆盖成不一致的文件
@@ -204,7 +208,8 @@ AgentInfo {
 
   modes: [ {                           // 权限模式，agent 自己的集合
     id: "acceptEdits", label: "Accept File Edits", description, default: bool,   // id 是 agent 自己的，不翻译
-    risk: "safe" | "normal" | "dangerous"
+    risk: "safe" | "normal" | "dangerous",
+    unattended: bool                  // 缺省 false；无人值守时可用，由 agent 自己处理自动审批
   } ]
 
   options: [ ConfigOption ]            // 其他 agent 特定选项，见 § 6.2
@@ -359,6 +364,8 @@ ConfigOption {
 `text` 选项可以带 `choices`：客户端渲染成候选列表，但值不限于列表（daemon 只检查它是字符串，最长 4096 字节）。客户端用通用控件渲染，放在「更多选项」里。Codex 的 fast mode、ACP agent 的自定义 configOptions 都走这里。
 
 ### 6.3 各 agent 的映射
+
+`ModeInfo.unattended`：Claude Code 的 `auto`、Codex 的 `auto_review` 为 `true`，其余模式和所有 ACP 模式为 `false`。mock 的 `ask` 为 `true`，供测试选择无人值守模式；标记不改变权限请求行为。旧 adapter 没给这个字段时按 `false` 读。
 
 | 设置 | Claude Code（`claude -p`） | Codex（app-server） | ACP |
 |---|---|---|---|
@@ -873,7 +880,7 @@ SQLite（WAL）。全部表：
 | `agent_cache` | agent id、AgentInfo(JSON)、diagnose 文本、probed_at |
 | `preview_labels` | 预览 label（§ 19.2）：port（主键）、label（唯一）、created_at_ms |
 | `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
-| `todos` | 清单（§ 21.4）：id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
+| `todos` | 清单（§ 21.4）：id（主键）、title、body、project、state、handler（缺省 me）、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 | `todo_sessions` / `todo_events` | 清单项派出的会话和「经过」（§ 22.8）；`sessions.todo_id` 是会话的来源项 |
 | `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms。不受 `history_retention` 影响 |
 | `judge_calls` | 判断后端的每次调用（§ 25.2，迁移 `0007_judge.sql`）：id、position、backend、kind、model、started_ms、finished_ms、status（`ok` 或错误码）、input_bytes、output_bytes、input_tokens、output_tokens、cost_usd。不存提示和回应，保留 90 天 |
@@ -986,7 +993,7 @@ SQLite（WAL）。全部表：
 - `anycon mcp`（ADR-49）是本机 socket 上的又一个客户端：只暴露十一个映射到已有 RPC 的工具，没有批准 / 拒绝权限请求的工具（等待审批时调用立即返回 `waiting_permission`），`create_session` 拒绝选 `risk = dangerous` 的模式、`send_message` 拒绝向已处在这类模式的会话发消息（除非 `--allow-dangerous-modes`，`permissions.allow_dangerous_modes` 仍是上限）、没有会话 `env`，在 anycon 拉起的 agent 里（环境有 `ANYCON_AGENT`）默认拒绝会改状态的工具。其中 `add_todo` 例外：它能往节点的清单里加项（不开会话、不触发 turn，不需要 `--allow-nested`），加的项标着 agent 加的、没被收下，数量有上限（§ 21.2、§ 21.3）；没有任何修改、关闭、删除清单项的工具。这些约束在 MCP 这个接口上，daemon 对它没有额外的业务接口，也不能区分它和别的本机客户端，除了自报的审计身份 `local-mcp`（清单据此把它加的项记成 agent 加的、并且不让它清掉「未收下」，同样是自报的标注）；它不是对 agent 的隔离（有 shell 能力的 agent 本来就能直接用 CLI），上限是 `sessions.max_concurrent`、审批和 `config.toml`
 - 本机 socket 0600；CLI 不需要再认证。Windows 上是命名管道：属主和 DACL 都是当前用户、拒绝远程客户端、第一个实例独占名字；管道名字是全局的，客户端连上之后核对管道属主是当前用户，防别的本机用户抢先建同名管道冒充 daemon（ADR-42）
 - dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
-- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes` 和 `preview.enabled` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*` 不在名单里（`hub.group` 在，它只是客户端显示用的标签）；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
+- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes`、`preview.enabled` 和 `twin.enabled` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*` 不在名单里（`hub.group` 在，它只是客户端显示用的标签）；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
 - `--add-dir` 之类扩大 agent 文件范围的参数不暴露给客户端
 - worktree（§ 10.1）：目录在项目里面，复核规则同关联项目；不把主仓库 `.git` 加进 agent 的可写目录；`.worktreeinclude` 只复制、不执行，不跟随符号链接；daemon 的 git 关掉 fsmonitor / hooks / 外部 diff / textconv / 合并签名，仓库配置里的 filter / merge driver / sshCommand / askPass / credential helper / uploadpack 仍会被执行（已知限制，§ 10.1「限制」）
 
@@ -1195,7 +1202,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 ## 21. 清单
 
-> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间与移到另一个节点)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发（§ 22）已经实现；决策档案和分身自动唤醒各自实现时再补规格。
+> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间与移到另一个节点)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单。手动派发（§ 22）、决策档案（§ 23）和分身自动唤醒（§ 26 的 4a）也已实现。
 
 ### 21.1 范围
 
@@ -1212,8 +1219,9 @@ Todo {
   body:       string      // Markdown，≤ 16 KiB，可以是空串
   project?:   string      // 项目名（§ 10），1–200 个 Unicode 码点、不含控制字符和 U+2028 / U+2029（去掉首尾空白后存）；不校验项目存在，项目改名 / 删除后原样保留
   state:      open | working | waiting | review | done | dropped
+  handler:    me | twin   // 缺省 me；旧 daemon 没给时按 me 读，未知值也按 me 显示
   due_ms?:    timestamp   // 想在什么时候之前处理；这一步只用于显示和排序
-  source:     { kind: device | local | agent, device_id?, session_id? }   // daemon 填，调用方不能指定
+  source:     { kind: device | local | agent | twin, device_id?, session_id? }   // daemon 填，调用方不能指定
   unreviewed: bool        // agent 记的、还没有人收下的项；见下
   created_ms: timestamp
   updated_ms: timestamp
@@ -1243,9 +1251,11 @@ Todo {
 - `anycon mcp` 的 `add_todo`，不管连的是本机 socket 还是经 hub（`--hub` / `--node`）。经 hub 时连接的身份是这台机器上已配对的 CLI 设备，daemon 分不出它是不是 MCP，只能靠这个参数。
 - `anycon todo add` 在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`，§ 5.5）。会话里的 agent 不需要配置 MCP 就能跑 `anycon` 命令，这是它最顺手的写法。
 
-`agent` 这个标记的用处是之后让分身不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。`kind` 之后会多出新的值（[ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的「某个节点的分身」）：客户端遇到不认识的值按「不是人加的」显示，解析时不能因此失败（Rust 的协议类型里有一个 `Unknown` 变体接住它，用 `#[serde(other)]`；daemon 自己从不产生它，对真正的三种来源仍逐个处理）。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
+`agent` 这个标记的用处是之后让分身不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。`kind` 之后会多出新的值（[ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的「某个节点的分身」）：客户端遇到不认识的值按「不是人加的」显示，解析时不能因此失败（Rust 的协议类型里有一个 `Unknown` 变体接住它，用 `#[serde(other)]`；daemon 自己从不产生它，对已知来源仍逐个处理）。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
 
-`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。当前自报着 `mcp` 的本机连接发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。这只是接口上的护栏，不是边界：自报是这条连接自己的声明，同一条连接再发 `local.set_client { client: "cli" }` 就和人敲的命令一样了（有 shell 的 agent 本来也能直接这样做，和 `--allow-nested` 一样）。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 4.11](web.md#411-待处理-inbox)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
+`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。当前自报着 `mcp` 的本机连接或带 `agent: true` 的写入发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。这只是接口上的护栏，不是边界：自报是这条连接自己的声明，同一条连接再发 `local.set_client { client: "cli" }` 就和人敲的命令一样了（有 shell 的 agent 本来也能直接这样做，和 `--allow-nested` 一样）。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 4.11](web.md#411-待处理-inbox)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
+
+`handler`：`todo.add` / `todo.update` 接受 `me` 或 `twin`，未知值回 `invalid`（`data.field = "handler"`）。自报 `mcp` 的连接或带 `agent: true` 的写入设成 `twin` 回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；同一请求明确带 `reviewed: true` 的人可以收下并交给分身。单独修改别的字段不能替代这次明确确认。每次处理人变化都记 `handler { from, to, by }`「经过」，包括从未派发过的项；新建时直接交给分身记 `me → twin`。审计只记字段名和前后值。`TodoSourceKind.twin` 表示分身的动作操作者；未知来源仍按「不是人」显示。
 
 `session_id` 是这一项从哪个会话里来的。daemon 拉起 agent 时在环境里注入 `ANYCON_SESSION_ID`（和 `ANYCON_AGENT` 一起，§ 5.5，同样不能被会话 `env` 覆盖；ACP agent 除外，见 § 5.5），`anycon mcp` 和 `anycon todo add` 读到就在 `todo.add` 里带上 `origin_session`；daemon 只在这一项记成 `kind: agent` 时才看它，并且核对这个会话存在才记，否则丢掉这个字段、照常建项。会话之后被删，`session_id` 原样留着，客户端按「会话已不存在」显示。
 
@@ -1257,8 +1267,8 @@ Todo {
 |---|---|---|
 | `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；`include_closed` 时也给已关闭的。`project` 去掉首尾空白后按名字精确比较（和存的名字同样处理）。按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 填上一页最后一项的这两个值，返回排在它后面的。`limit` 缺省 200、上限 1000。一页另有字节预算：各项序列化后的字节累计超过 1 MiB 就停（至少给一项），所以一页可能少于 `limit`；后面还有没给出的项时 `has_more = true` |
 | `todo.get` | C→D | `{ id }` → `Todo`。读一项；只读，不审计、不通知。`id` 不存在 → `not_found`，不是小写带连字符的 UUID → `invalid`（`data.field = "id"`，同 `todo.add`）。客户端用它在做破坏性的动作之前向节点确认「这一项现在是什么样」，而不是信缓存 |
-| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
-| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, reviewed?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白；`id` 不是小写 UUID 同样 `invalid`，`todo.delete` 也是）；**把 `done` / `dropped` 的项改回没关闭的状态时，和新建一样占一个名额：已有 1000 个没关闭的项 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）**；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
+| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, handler?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
+| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, handler?, reviewed?, agent?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白；`id` 不是小写 UUID 同样 `invalid`，`todo.delete` 也是）；**把 `done` / `dropped` 的项改回没关闭的状态时，和新建一样占一个名额：已有 1000 个没关闭的项 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）**；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
 | `todo.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除。`id` 不存在 → `not_found`（重放时客户端把它当作已完成）。给了 `if_updated_ms`、而这一项现在的 `updated_ms` 不是它：什么都不删，`invalid`（`data.field = "if_updated_ms"`，`data.reason = "changed"`，`data.updated_ms` 是现在的值），不审计、不通知；检查和删除在同一把锁里，中间没有别的写入。没给就无条件删 |
 | `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
 
@@ -1278,6 +1288,8 @@ Todo {
 |---|---|
 | `todos` | id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 
+迁移 `0008_todo_handler.sql` 为 `todos` 增加 `handler TEXT NOT NULL DEFAULT 'me'`，已有项保持由人处理。
+
 已关闭的项按 `history_retention`（§ 3）清理，从 `closed_ms` 起算；没关闭的不清理。`title` / `body` 是用户内容：不进日志（§ 17），不进审计。
 
 派发另有 `todo_sessions` 和 `todo_events` 两张表、`sessions.todo_id` 一列（迁移 `0005_todo_dispatch.sql`，§ 22.8）。
@@ -1286,7 +1298,7 @@ Todo {
 
 ### 21.5 审计
 
-`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state`，`unreviewed` 被清掉时也列上），`state` 变了另记 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
+`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind, handler }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state` `handler`，`unreviewed` 被清掉时也列上），`state` 或 `handler` 变了另记相应的 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
 
 ### 21.6 节点离线
 
@@ -1310,6 +1322,8 @@ Todo {
 
 - 合并：对所选的、此刻在线的节点各发 `todo.list`，并成一个列表，每项标着节点；离线的节点用本地缓存，并标明是缓存。
 - 移动：在目标节点 `todo.add`（新的 `id`，内容照搬，`project` 清空——项目名在另一个节点上不一定是同一个项目），成功后在原节点 `todo.delete`。两步之间失败时宁可留下两份，不丢。有来源会话（`source.session_id`）的项移过去之后不带这个字段。目标节点和原节点不同组时，客户端先让用户确认。「原节点那一项没变」「目标上的那一份还在」不能靠客户端的缓存判断（已关闭的项重连后不会重新列、别的标签页可能有没发出去的改动、目标上那一份可能被改过），所以要在节点上检查：动手前 `todo.get` 原节点那一项、核对它和用户确认时一样；删原节点之前 `todo.get` 目标上的那一份，再用 `todo.delete` 带 `if_updated_ms`（用户确认时那一项的 `updated_ms`）删原节点；之后想删掉目标上的那一份，同样先 `todo.get` 原节点，再用 `if_updated_ms`（目标那份最后一次确认的 `updated_ms`）删它。步骤和界面见 [web.md § 4.13](web.md#413-空间与移到另一个节点)。
+
+跨节点移动由客户端在目标节点新建再删除原项；目标项的 `handler` 重置为 `me`，因为目标节点的分身项目范围独立，需要人在目标节点重新决定是否交给分身。
 
 ### 21.8 客户端入口
 
@@ -1385,16 +1399,23 @@ Todo {
 TodoEvent {
   seq:   u64          // 这一项内从 1 递增，没有空洞
   ts_ms: timestamp
-  kind:  dispatched | result | state
+  kind:  dispatched | result | state | handed_back | taken_over | twin_decision | twin_question | handler
   // dispatched：{ session_id, agent, workspace_mode: local|worktree, no_push, by: { kind, device_id? }, rules?: [规则 id], rules_skipped?: "unsupported" }   rules / rules_skipped 见 § 23.5
   // result：    { session_id, turn, text, truncated }   这一轮结束时 agent 的最后一段话
   // state：     { from, to, by: { kind, device_id? } }   人改了状态（会话引起的变化是 activity，不在这里）
+  // handed_back：{ reason, run_id? }
+  // taken_over：{ by }
+  // twin_decision：{ run_id, action, reason }
+  // twin_question：{ question_id }
+  // handler：{ from: me|twin, to: me|twin, by }
+  // by：{ kind, device_id?, id? }；twin 的 id 是请求方（local 或设备 id）
 }
 ```
 
 - **dispatched**：每次成功的派发一条（`by` 是发起的调用方：`local` / `device`）。
 - **result**：关联会话每一轮结束（`turn_done`）时，daemon 取这一轮 agent 的最后一段文字——最后一个文字块（最后一段 `text_delta`，到 `text_done` 为止；中间的块和思考不算）——最多 4 KiB（按 UTF-8 字节，在码点边界截断，保留开头，`truncated = true`）。这一轮没有文字（只有工具调用）时记一条 `text` 为空的 result。`turn` 是会话里的 turn 号。时机和 § 14 的 `turn_finished` 一致：正常结束的一轮（`completed` / `max_turns` / `budget`）在结束时后台任务还在跑，就推迟到推迟的通知发出（agent 自己跑的那一轮结束，或任务都结束 15 秒后的兜底）的那一刻，一起记（用户又发了消息、进程被摘掉时，推迟的结果也在那一刻记，不丢）；agent 自己开的 turn 也各记一条；取消、出错的一轮没有「推迟」，结束时立即记，文字是到那时为止收到的。daemon 在两次记录之间重启会丢掉还没记的 `result`（它只在内存里）。
 - **state**：这一项派发过（`sessions` 非空）之后，人每改一次 `state`（`todo.update`）记一条，`by` 是发起这次 `todo.update` 的调用方（`{ kind, device_id? }`）。会话引起的变化是算出来的 `activity`，不进「经过」；派发本身不改 `state`。
+- 未知 `kind` 用 `Unknown` 接住，客户端忽略显示，不能因此解析失败。
 - 「经过」只追加：没有修改、删除一条的方法；删除这一项时一起删。已关闭的项按 `history_retention` 清理时一起清。
 - 「经过」的 `text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。
 - **第一条消息**，daemon 按下面的格式生成（给 agent 看，用英文）：
@@ -1772,7 +1793,7 @@ ExtractRun {
 
 ## 25. 判断后端
 
-> **已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。现在用到它的只有提炼规则（§ 23.9）；分拣和顾问在第 4 步。
+> **已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。提炼规则（§ 23.9）、分拣和顾问（§ 26）都使用它。
 
 ### 25.1 配置
 
@@ -1861,7 +1882,7 @@ timeout = "5m"
   - 到了上限，手动的请求回 `invalid`（`data.reason = "budget"`，带 `used` 和 `limit`）；自动的等到第二天。
 - **同时只有一次**：一个节点同时只有一次调用在进行。`Judge::begin` 依次检查没配或后端不能用（`not_configured`）→ 拿不到节点调用锁（`busy`）→ 今天次数用完（`budget`）。预算在拿到锁之后查询，避免并发请求同时通过。
   - 检查通过返回 `Permit`，持有锁和按当时配置构造的后端；提炼先预留再插入 `running` 记录，失败的调用同样关联 `call_id`；检查及预留不写记录。直接丢弃只释放锁；调用 `Permit::call` 才开始记账和后台调用，之后的配置热加载不改变这次调用。
-- **`judge_calls` 表**：每次调用留一行，记时间、位置（`extract`，之后还有 `triage`、`advisor`）、后端名、种类、模型、结果（`ok` 或错误码）、输入和输出的字节数、usage。
+- **`judge_calls` 表**：每次调用留一行，记时间、位置（`extract`、`triage`、`advisor`）、后端名、种类、模型、结果（`ok` 或错误码）、输入和输出的字节数、usage。
   - **不存提示和回应的内容**，日志里也没有：日志只记位置、后端名、结果、耗时和字节数。
   - 记录保留 90 天。`rule_extract_runs` 同样清理 90 天前的已结束记录，但保留每个会话最新的 `done`（按 `started_ms`、同毫秒的插入顺序确定，不论多旧），避免水位丢失后重复提炼。
 - **daemon 停下时**：正在进行的调用被取消，记成 `cancelled`。下次启动时，未结束的调用也补记 `cancelled`，仍为 `running` 的提炼改为 `failed` / `cancelled`。已开始的调用独立于 RPC 调用方的连接存活，断线不丢掉记账收尾；关库前等待收尾完成。
@@ -1882,7 +1903,7 @@ judge?: {                     // 旧 daemon 没有这个字段
 }
 ```
 
-daemon 总是给出 `judge`：什么都没配时 `backends = []`，没有两个位置的字段，`daily_calls` 照给。旧 daemon 没有这个字段。
+daemon 总是给出 `judge`：什么都没配时 `backends = []`，没有三个位置的字段，`daily_calls` 照给。旧 daemon 没有这个字段。
 
 不含 `base_url`、密钥和环境变量名。客户端靠它决定「提炼规则」能不能点，以及没配时怎么说明。`node.info.capabilities.rule_extract = true` 表示 daemon 支持 `rule.extract`。
 
@@ -1891,10 +1912,10 @@ daemon 总是给出 `judge`：什么都没配时 `backends = []`，没有两个�
 `anycon doctor` / `node.doctor` 增加 `judge` 项。例如：
 
 ```text
-ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc (agent=claude-code model=sonnet: ready); extract: haiku (ready); triage: not configured; today: 3 / 20 calls
+ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc (agent=claude-code model=sonnet: ready); extract: haiku (ready); triage: not configured; advisor: not configured; today: 3 / 20 calls
 ```
 
-列出每个后端的名字、种类、模型 / agent 及 `no_key` / `agent_missing` / `agent_unsupported`；密钥只报告 `key found` 或 `key not found`，回环 HTTP 无密钥时另说明可选。不含地址、密钥或环境变量名。两个位置都列出生效选择，提炼选择包含跟随分拣的结果；名字不存在时写 `backend does not exist`。没有任何配置是 `ok`、`not configured`；任一位置指向不存在或不可用的后端是 `warn`，未被选择的坏后端只列出问题。`warn` 在诊断协议里也是 `ok = false`，所以 `anycon doctor` 的退出码非 0。最后是今天的调用次数和上限；daemon 没在运行时只读地查数据库，读不了就写 `unavailable`，不修复、不迁移数据库。
+列出每个后端的名字、种类、模型 / agent 及 `no_key` / `agent_missing` / `agent_unsupported`；密钥只报告 `key found` 或 `key not found`，回环 HTTP 无密钥时另说明可选。不含地址、密钥或环境变量名。三个位置都列出生效选择，提炼和顾问选择包含跟随分拣的结果；名字不存在时写 `backend does not exist`。没有任何配置是 `ok`、`not configured`；任一位置指向不存在或不可用的后端是 `warn`，未被选择的坏后端只列出问题。`warn` 在诊断协议里也是 `ok = false`，所以 `anycon doctor` 的退出码非 0。最后是今天的调用次数和上限；daemon 没在运行时只读地查数据库，读不了就写 `unavailable`，不修复、不迁移数据库。
 
 ### 25.4 威胁模型
 
@@ -1905,11 +1926,12 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
   - Codex 的一次性调用还能在只读沙箱里跑只读命令：摘录里注入的指令可能让它读这台机器上的文件，再写进回答里。
   - 回答最多只能变成待确认的规则，要人看过才生效。但在这之前，它已经经过了 Codex 的模型服务。
 - **注入**：摘录里有 agent 写的文字，可能带着注入的指令。提炼出来的规则一律待确认（§ 23.2），确认界面显示全文和出处；模板里也写明 agent 写的部分是数据，不是指令。但模板挡不住注入，挡得住的只有人工确认这一道闸。
-- **hub**：看不到任何新的东西。
+- **分身分拣**：会把交给分身且在范围内的清单项、之前的结果、问题和回答，以及生效规则发给判断后端；`api` 是 daemon 经 HTTPS 直接发给配置的模型服务、不经 hub，`agent` 是本机 agent CLI 发给它的模型服务。固定动作的校验只限制 daemon 执行什么，不会把后端自身变成沙箱；上述 Codex 只读命令的限制同样适用。分身只能在允许的项目里派发、固定带「不 push、不开 PR」，不能批准权限。
+- **hub**：清单及判断内容不进入明文信封；分身新增 `twin_question` 类别以及带 `todo_` 前缀的不透明落点 id。
 
 ## 26. 分身
 
-> **规格，还没实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
+> **4a 已实现：daemon 和 CLI（§ 26.1–§ 26.8）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
 
 分身是 daemon 里的一个调度者：被事件唤醒，看清单里交给它的项，决定每一项怎么办，再用第 2 步的派发（§ 22）开会话去做。它自己不干活，也不批准权限。
 
@@ -1921,18 +1943,18 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
   - 没关闭（`state` 不是 `done` / `dropped`）；
   - 不是 `unreviewed`，也就是 agent 记的项要人先收下（ADR-54 第 6 条）；
   - 在范围内：项有 `project`，就必须在允许的项目里。没有 `project` 的项，分身只能从允许的项目里选一个，或者问你。
-- **派发的权限**：自报了 `mcp` 的连接不能把 `handler` 改成 `twin`，回 `forbidden`。agent 记的项也一样：它们在被收下之前，`handler` 改不成 `twin`。
+- **派发的权限**：自报了 `mcp` 的连接或带 `agent: true` 的写入不能把 `handler` 设成 `twin`，回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；人可以在同一请求带 `reviewed: true` 收下并交给分身。
 
 ### 26.2 配置
 
-- **机器级硬开关** `[twin] enabled = true`：缺省开，热加载，**只能在本机改**。远程修改白名单里它是「只能收紧」，同 `preview.enabled`。关掉之后分身什么都不做：不唤醒、不调用模型、不派发，已经派出的会话照常跑完。
+- **机器级硬开关** `[twin] enabled = true`：缺省开，热加载，**只能在本机放宽**。远程修改白名单里它是「只能收紧」，同 `preview.enabled`。关掉之后分身什么都不做：不唤醒、不调用模型、不派发，已经派出的会话照常跑完。
 - **范围、上限和暂停**存在库里，按**请求方**分开存（表 `twin_scopes`，主键是请求方）。本机分身的请求方是 `local`；ADR-56 的分身连接之后会以设备 id 作请求方。读写用 `twin.get` / `twin.set`（§ 26.8），只由人改，自报 `mcp` 的连接回 `forbidden`。字段：
 
 | 字段 | 缺省 | 说明 |
 |---|---|---|
 | `paused` | `false` | 一键暂停：不唤醒、不派发；已经派出的会话照常跑完 |
 | `projects` | `[]` | 能进哪些项目。**空 = 未配置**，分身什么都不做 |
-| `agent` | 节点的缺省 agent | 派出的会话用哪个 agent |
+| `agent` | 节点 ready 的 agent 按 id 排序的第一个 | 派出的会话用哪个 agent；节点当前没有单独的全局缺省 agent 字段，明确设置可固定选择 |
 | `model` | agent 的缺省 | 可选 |
 | `mode` | 见下 | 派出的会话用哪个权限模式 |
 | `max_sessions` | 2 | 它派出的会话同时最多几个；不能超过 `sessions.max_concurrent − 1`，至少给人留一个名额 |
@@ -1974,7 +1996,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
   后面接着节点生效的全节点规则（§ 23.5 同一段文字）。
 - **项**：每一项一段，标出 `id`、标题、正文、`project`、派发次数、最近几次的结果（同 § 22.4 交接用的那几条）、现在的 `activity`、它问过的问题和你的回答。
-  - 每项最多 6 KiB，合计最多 32 KiB；放不下的项这次不看，下次再看，按 `updated_ms` 从早到晚。
+  - 每项最多 6 KiB，合计最多 32 KiB；放不下的项这次不看，下次再看，按 `updated_ms` 从早到晚。上次因总量放不下的项在下一次优先，组内仍按 `updated_ms` 从早到晚；这个待看队列只在内存里保存，重启后从最早修改的项开始。
   - 内容区用 § 23.9 那样的随机边界包起来。
 - **可用的东西**：允许的项目，各自的项目规则；还能派几次、还能同时开几个会话；顾问能不能用。
 
@@ -1996,7 +2018,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 **运行约束**：
 
-- 同一项连续 3 次派发失败（派发本身出错，或者会话以出错结束），就交回给你，写明原因。
+- 同一项连续 3 次派发失败（派发本身出错，或者会话以出错结束），就交回给你，写明原因。人再次把处理人改成 `twin` 时重置连续失败计数，保留已经统计过的会话结局水位，允许在修复问题后重新交给分身。
 - 它派出的会话在运行中 2 小时没有任何事件，算卡住：交回给你。会话不取消，交给你决定。
 - 正在处理的项（派出的会话还没结束一轮的）最多 `max_sessions` 个；每天派发最多 `daily_dispatches` 次。
 
@@ -2006,7 +2028,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 - **表 `twin_questions`**：`id`、`todo_id`、`question`、`options`、`created_ms`、`answered_ms`、`answer`、`answered_by`。问题是**模型写的**，客户端按「agent 写的」显示，纯文字。
 - **回答**：`twin.answer { id, answer }`，`answer` ≤ 2 KiB，只由人发；回答之后触发一次唤醒。一项同时只有一个没回答的问题，再问会替换它（旧的标成「已作废」）。
-- **通知**：新类别 `twin_question`，这是 v0.4 里 hub 唯一的改动，它只多认一个类别词。缺省推送开、邮件关；文案和落点见 web.md § 14.10。
+- **通知**：新类别 `twin_question`，这是 v0.4 里 hub 唯一的改动，它只多认一个类别词。缺省推送开、邮件关。沿用现有 `NotifyBody`：`session_id = "todo_<todo_id>"` 表示清单项落点（`follow_up` 的交回通知也用这个表示法），不是一个会话；客户端识别前缀后打开该节点的清单项。和现有推送相同，`detail = None`，不尝试使用带计数器的 Noise 通道加密带外详情，所以不构造 `NotifyDetail`，标题、问题及回答都不进入明文信封。在线详情通过 E2E 的 `twin.question` 和 `todo.get` 取得；文案见 web.md § 14.10。
 - **没回答的问题**：一直留着，不超时；项被关闭、`handler` 改回 `me` 时作废。
 
 ### 26.6 你接手了
@@ -2022,8 +2044,8 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 - **表 `twin_runs`**：`id`、请求方、`started_ms`、`finished_ms`、触发（合并进来的几种）、`dry_run`、`result`（`done` / `idle` / `budget` / `failed` / `cancelled`）、看了哪些项、判断调用的 id、每项的决定（`action`、`reason`、`rules`、执行结果和不执行的原因）、错误码。
   - 不存提示和模型的原始回答，存的是解析后的决定；`reason` 是模型写的，按 agent 写的内容显示。
-  - 保留 90 天。
-- **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。
+  - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`，会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
+- **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。沿用审计的设备字段，`device_id` 填请求方、`device_name = "twin"`；新增的操作者放在 `detail.actor`，不写清单正文、问题、回答和理由。
 - **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
 
 ### 26.8 RPC
@@ -2033,7 +2055,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `twin.get` | C→D | `{}` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working: [todo_id], waiting: [todo_id] }`。`state` 是 `running` / `idle` / `paused` / `disabled` / `not_configured` / `budget` |
-| `twin.set` | C→D | `{ paused?, projects?, agent?, model?, mode?, max_sessions?, daily_dispatches? }` → `twin.get` 的结果。校验见 § 26.2 |
+| `twin.set` | C→D | `{ paused?, projects?, agent?, model?, mode?, max_sessions?, daily_dispatches?, clear? }` → `twin.get` 的结果。校验见 § 26.2 |
 | `twin.wake` | C→D | `{}` → `{}`：现在唤醒一次（照样受合并和串行约束） |
 | `twin.dry_run` | C→D | `{}` → `{ run }`：同步等到分拣结束（受判断后端的 `timeout` 约束） |
 | `twin.runs` | C→D | `{ limit?, before_ms? }` → `{ runs: [TwinRun] }` |
@@ -2041,6 +2063,12 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 | `twin.answer` | C→D | `{ id, answer }` → `TwinQuestion` |
 | `twin.changed` | D→C notification | `{ state, run? }`：状态变了、一次唤醒结束时发 |
 | `twin.question` | D→C notification | `{ question }`：建了、回答了、作废了一个问题 |
+
+`twin.set.clear` 同 `todo.update`：合并后清空 `agent` / `model` / `mode`，恢复缺省选择；字段缺省表示保持不变。
+
+线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget`、`session_id?`、`question_id?`、`project?`、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
+
+`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9、§ 26.10 尚未实现。
 
 除了读的方法（`twin.get`、`twin.runs`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
 

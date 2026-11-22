@@ -49,6 +49,7 @@ async fn a_ready_agent_declares_models_modes_options_and_capabilities() {
         info.modes.iter().map(|m| (m.id.as_str(), m.default, m.risk)).collect::<Vec<_>>(),
         vec![("ask", true, ModeRisk::Normal), ("code", false, ModeRisk::Normal), ("plan", false, ModeRisk::Normal)]
     );
+    assert!(info.modes.iter().all(|m| !m.unattended));
     assert_eq!(info.modes[0].description.as_deref(), Some("Ask before changes"));
 
     assert_eq!(info.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), vec!["brave", "ctx"]);

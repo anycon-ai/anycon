@@ -3,7 +3,7 @@
 import { decode } from '@msgpack/msgpack'
 import type { NotifyBody, NotifyCategory } from '@/protocol'
 
-const CATEGORIES: ReadonlySet<string> = new Set<NotifyCategory>(['permission_requested', 'turn_finished', 'error', 'session_idle', 'follow_up', 'enroll_requested', 'security'])
+const CATEGORIES: ReadonlySet<string> = new Set<NotifyCategory>(['permission_requested', 'turn_finished', 'error', 'session_idle', 'follow_up', 'twin_question', 'enroll_requested', 'security'])
 
 /** 读不懂（不是 msgpack、不是 map、类别未知）返回 null——来自网络的数据，逐字段收窄。 */
 export function decodeNotifyBody(bytes: Uint8Array): NotifyBody | null {

@@ -42,6 +42,27 @@ impl TodoState {
     }
 }
 
+/// 清单项的处理人；旧节点没有这个字段时由人处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoHandler {
+    #[default]
+    Me,
+    Twin,
+    #[serde(other)]
+    Unknown,
+}
+
+impl TodoHandler {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Me => "me",
+            Self::Twin => "twin",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// 一项是谁记的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -52,8 +73,10 @@ pub enum TodoSourceKind {
     Local,
     /// agent 加的（`todo.add` 带了 `agent: true`，或来自自报了 `mcp` 的本机连接）。
     Agent,
+    /// 分身做的动作。
+    Twin,
     /// 这个版本不认识的来源（更新的 daemon 加了新的种类）。**daemon 自己从不产生它**，只是让旧客户端解析更新的 daemon 发来的数据时
-    /// 不报错：客户端把它当作「不是某个人记的」（docs/spec/daemon.md § 21.2）。daemon 内部对真正的三种来源逐个处理。
+    /// 不报错：客户端把它当作「不是某个人记的」（docs/spec/daemon.md § 21.2）。daemon 内部对已知来源逐个处理。
     #[serde(other)]
     Unknown,
 }
@@ -81,6 +104,8 @@ pub struct Todo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     pub state: TodoState,
+    #[serde(default)]
+    pub handler: TodoHandler,
     /// 想在什么时候之前处理；只用于显示和排序。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_ms: Option<TimestampMs>,
@@ -149,6 +174,8 @@ pub struct TodoListResult {
 pub struct TodoAddParams {
     /// UUID。已经存在时原样返回已有的那一项（幂等）。
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<TodoHandler>,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
@@ -176,6 +203,8 @@ pub enum ClearableTodoField {
 pub struct TodoUpdateParams {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<TodoHandler>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
@@ -188,6 +217,9 @@ pub struct TodoUpdateParams {
     /// `true`：把 `unreviewed` 清掉（`false` 或对已经收下的项会被忽略）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed: Option<bool>,
+    /// 调用方自报是 agent；不能把处理人设成分身，也不算人收下了这一项。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
     /// 要清空的可选字段，在合并之后生效。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clear: Vec<ClearableTodoField>,
@@ -306,6 +338,9 @@ pub struct TodoHistoryResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoActor {
     pub kind: TodoSourceKind,
+    /// 分身动作的请求方（local 或设备 id）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<DeviceId>,
 }
@@ -330,9 +365,41 @@ pub enum TodoEventData {
     },
     /// 关联会话的一轮结束了：agent 这一轮的最后一段话（≤ 4 KiB，在码点边界截断）。这一轮没有文字时 `text` 为空。
     /// `text` 是 agent 写的，按会话内容对待：不进日志、不进审计；客户端按不可信内容渲染。
-    Result { session_id: SessionId, turn: u64, text: String, truncated: bool },
+    Result {
+        session_id: SessionId,
+        turn: u64,
+        text: String,
+        truncated: bool,
+    },
     /// 人改了状态（这一项有过派发之后才记）。会话引起的变化不在这里：它是算出来的 `activity`，不存、不进「经过」。
-    State { from: TodoState, to: TodoState, by: TodoActor },
+    State {
+        from: TodoState,
+        to: TodoState,
+        by: TodoActor,
+    },
+    HandedBack {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+    },
+    TakenOver {
+        by: TodoActor,
+    },
+    TwinDecision {
+        run_id: String,
+        action: crate::TwinAction,
+        reason: String,
+    },
+    TwinQuestion {
+        question_id: String,
+    },
+    Handler {
+        from: TodoHandler,
+        to: TodoHandler,
+        by: TodoActor,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 /// 「经过」里的一条：只追加，没有修改、删除一条的方法；删除这一项时一起删。
@@ -364,6 +431,7 @@ mod tests {
             body: String::new(),
             project: None,
             state: TodoState::Waiting,
+            handler: Default::default(),
             due_ms: None,
             source: TodoSource { kind: TodoSourceKind::Agent, device_id: None, session_id: Some("sess_1".into()) },
             unreviewed: true,
@@ -390,10 +458,10 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_source_kind_still_parses_and_is_not_one_of_the_known_three() {
+    fn an_unknown_source_kind_still_parses_and_is_not_human() {
         let v = serde_json::json!({
             "id": "a", "title": "t", "body": "", "state": "open", "unreviewed": false, "created_ms": 1, "updated_ms": 2,
-            "source": { "kind": "twin", "device_id": "d" }
+            "source": { "kind": "future", "device_id": "d" }
         });
         let t: Todo = serde_json::from_value(v).unwrap();
         assert_eq!(t.source.kind, TodoSourceKind::Unknown);
@@ -436,7 +504,7 @@ mod tests {
             data: TodoEventData::State {
                 from: TodoState::Open,
                 to: TodoState::Waiting,
-                by: TodoActor { kind: TodoSourceKind::Device, device_id: Some("d1".into()) },
+                by: TodoActor { id: None, kind: TodoSourceKind::Device, device_id: Some("d1".into()) },
             },
         };
         let v = serde_json::to_value(&ev).unwrap();
@@ -485,5 +553,50 @@ mod tests {
             "unreviewed": false, "created_ms": 1, "updated_ms": 1
         });
         assert!(serde_json::from_value::<Todo>(v).unwrap().sessions.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod twin_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_todos_default_to_me_and_future_handlers_are_safe() {
+        let value = json!({"id":"t", "title":"t", "body":"", "state":"open", "source":{"kind":"local"},
+            "unreviewed":false, "created_ms":1, "updated_ms":1});
+        let todo: Todo = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(todo.handler, TodoHandler::Me);
+        let mut future = value;
+        future["handler"] = json!("future");
+        let todo: Todo = serde_json::from_value(future).unwrap();
+        assert_eq!(todo.handler, TodoHandler::Unknown);
+        assert_eq!(serde_json::from_value::<TodoSourceKind>(json!("twin")).unwrap(), TodoSourceKind::Twin);
+    }
+
+    #[test]
+    fn history_accepts_future_kinds_and_roundtrips_twin_events() {
+        let unknown: TodoEvent =
+            serde_json::from_value(json!({"seq":1,"ts_ms":2,"kind":"future","extra":{"a":3}})).unwrap();
+        assert_eq!(unknown.data, TodoEventData::Unknown);
+        for value in [
+            json!({"kind":"handed_back", "reason":"Review needed"}),
+            json!({"kind":"handed_back", "reason":"Review needed", "run_id":"r"}),
+            json!({"kind":"taken_over", "by":{"kind":"device", "device_id":"d"}}),
+            json!({"kind":"twin_decision", "run_id":"r", "action":"wait", "reason":"Running"}),
+            json!({"kind":"twin_question", "question_id":"q"}),
+            json!({"kind":"handler", "from":"me", "to":"twin", "by":{"kind":"twin", "id":"local"}}),
+        ] {
+            let event: TodoEventData = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(event).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn old_mode_and_judge_info_default_new_fields() {
+        let m: crate::ModeInfo = serde_json::from_value(json!({"id":"ask", "label":"Ask", "risk":"normal"})).unwrap();
+        assert!(!m.unattended);
+        let j: crate::JudgeInfo = serde_json::from_value(json!({"backends":[],"daily_calls":20})).unwrap();
+        assert!(j.advisor.is_none());
     }
 }

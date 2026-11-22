@@ -168,3 +168,19 @@ describe('to-dos: G T and C', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 })
+
+
+it('G A opens Twin only with capability and ignores typing', () => {
+  useNodes.getState().patch(A, { info: { capabilities: { twin: true } } as unknown as NodeInfo })
+  const first = render(<Harness />)
+  press('g'); press('a')
+  expect(navigate).toHaveBeenCalledWith({ to: '/twin' })
+  navigate.mockReset()
+  press('g', {}, first.getByLabelText('box')); press('a', {}, first.getByLabelText('box'))
+  expect(navigate).not.toHaveBeenCalled()
+  first.unmount()
+  useNodes.getState().patch(A, { info: { capabilities: { twin: false } } as unknown as NodeInfo })
+  render(<Harness />)
+  press('g'); press('a')
+  expect(navigate).not.toHaveBeenCalled()
+})

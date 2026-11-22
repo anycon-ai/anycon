@@ -2,6 +2,7 @@
 // 只在它的输入真的变了才重算：会话摘要里和待处理有关的字段、待答复的请求、接入请求、节点过滤器的勾选。打开的会话每来一条流式事件，
 // `list` 里那一项的 `cached_seq` 都会变，但那和待处理无关，不触发重算。
 // 定时器：有还没过期的接入请求（按秒倒计时）时每秒一次，否则每分钟一次（出错会话的 7 天期限）；没人订阅时不起定时器。
+import { supportsTwin, twinQuestions, useTwin } from '@/features/twin/store'
 import { cleanHintText } from '@/lib/hint'
 import { deriveSpaces, groupOf, resolveSelection } from '@/lib/spaces'
 import { useEnroll, type EnrollItem } from '@/stores/enroll'
@@ -25,6 +26,7 @@ export interface InboxSnapshot {
 }
 
 interface Inputs {
+  twinNodes: ReturnType<typeof useTwin.getState>['nodes']
   list: Record<string, SessionItem>
   pending: ReturnType<typeof useSessions.getState>['pending']
   enrollItems: Record<string, EnrollItem>
@@ -41,13 +43,13 @@ interface Inputs {
 }
 
 function groupsSig(s: ReturnType<typeof useNodes.getState>): string {
-  return s.order.map((id) => `${id}=${groupOf(s.byId[id]?.info)}`).join('\u0000')
+  return s.order.map((id) => `${id}=${groupOf(s.byId[id]?.info)}:twin=${s.byId[id]?.info?.capabilities.twin === true}`).join('\u0000')
 }
 
 function readInputs(): Inputs {
   const s = useSessions.getState()
   const e = useEnroll.getState()
-  return { list: s.list, pending: s.pending, enrollItems: e.items, enrollResolved: e.resolved, order: useNodes.getState().order, saved: usePrefs.getState().sidebarNodes, space: usePrefs.getState().sidebarSpace, byId: useNodes.getState().byId, groups: groupsSig(useNodes.getState()), todoNodes: useTodos.getState().nodes, todoOutbox: useTodos.getState().outbox, ruleNodes: useRules.getState().nodes }
+  return { twinNodes: useTwin.getState().nodes, list: s.list, pending: s.pending, enrollItems: e.items, enrollResolved: e.resolved, order: useNodes.getState().order, saved: usePrefs.getState().sidebarNodes, space: usePrefs.getState().sidebarSpace, byId: useNodes.getState().byId, groups: groupsSig(useNodes.getState()), todoNodes: useTodos.getState().nodes, todoOutbox: useTodos.getState().outbox, ruleNodes: useRules.getState().nodes }
 }
 
 /** 一个会话摘要里和待处理有关的字段是否变了（`cached_seq`、`last_seq`、设置等不算）。 */
@@ -79,14 +81,14 @@ function listRelevantChanged(a: Record<string, SessionItem>, b: Record<string, S
 }
 
 function inputsChanged(a: Inputs, b: Inputs): boolean {
-  return listRelevantChanged(a.list, b.list) || a.pending !== b.pending || a.enrollItems !== b.enrollItems || a.enrollResolved !== b.enrollResolved || a.order !== b.order || a.saved !== b.saved || a.space !== b.space || a.groups !== b.groups || a.todoNodes !== b.todoNodes || a.todoOutbox !== b.todoOutbox || a.ruleNodes !== b.ruleNodes
+  return a.twinNodes !== b.twinNodes || listRelevantChanged(a.list, b.list) || a.pending !== b.pending || a.enrollItems !== b.enrollItems || a.enrollResolved !== b.enrollResolved || a.order !== b.order || a.saved !== b.saved || a.space !== b.space || a.groups !== b.groups || a.todoNodes !== b.todoNodes || a.todoOutbox !== b.todoOutbox || a.ruleNodes !== b.ruleNodes
 }
 
 function compute(i: Inputs, now: number): InboxSnapshot {
   const selected = resolveSelection(i.order, i.byId, i.saved, i.space)
   const todos = viewOf({ nodes: i.todoNodes, outbox: i.todoOutbox }, selected.filter(nodeSupportsTodo))
   const rules = rulesOf(i.ruleNodes, selected.filter(nodeSupportsRules))
-  const base = { sessions: i.list, pending: i.pending, enroll: { items: i.enrollItems, resolved: i.enrollResolved }, now, todos, rules }
+  const base = { twinQuestions: twinQuestions(i.twinNodes, i.order.filter(supportsTwin)), sessions: i.list, pending: i.pending, enroll: { items: i.enrollItems, resolved: i.enrollResolved }, now, todos, rules }
   const outsideNodes = i.order.filter((id) => !selected.includes(id))
   const spaces = deriveSpaces(i.order, i.byId)
   const outsideWhere: InboxSnapshot['outsideWhere'] = []
@@ -160,7 +162,7 @@ function onStoreChange(): void {
 
 export function subscribeInbox(listener: () => void): () => void {
   if (listeners.size === 0) {
-    unsubs = [useTodos.subscribe(onStoreChange), useRules.subscribe(onStoreChange), useSessions.subscribe(onStoreChange), useEnroll.subscribe(onStoreChange), useNodes.subscribe((s, prev) => (s.order !== prev.order || groupsSig(s) !== groupsSig(prev)) && onStoreChange()), usePrefs.subscribe((s, prev) => (s.sidebarNodes !== prev.sidebarNodes || s.sidebarSpace !== prev.sidebarSpace) && onStoreChange())]
+    unsubs = [useTwin.subscribe(onStoreChange), useTodos.subscribe(onStoreChange), useRules.subscribe(onStoreChange), useSessions.subscribe(onStoreChange), useEnroll.subscribe(onStoreChange), useNodes.subscribe((s, prev) => (s.order !== prev.order || groupsSig(s) !== groupsSig(prev)) && onStoreChange()), usePrefs.subscribe((s, prev) => (s.sidebarNodes !== prev.sidebarNodes || s.sidebarSpace !== prev.sidebarSpace) && onStoreChange())]
     schedule()
   }
   listeners.add(listener)

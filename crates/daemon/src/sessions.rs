@@ -442,6 +442,7 @@ pub struct Sessions {
     workfiles: WorkFiles,
     /// 从清单派出的会话的状态变化和每轮结果，交给清单的后台任务（`todo_dispatch.rs`）：会话锁里只入队，不碰清单的锁。
     todo_signal: Arc<crate::todo_dispatch::TodoSignal>,
+    twin_ctx: std::sync::RwLock<std::sync::Weak<crate::daemon::Ctx>>,
 }
 
 /// 「同一时刻只有一个」的标记：拿到它的人跑，drop 时放回去（任务 panic 也会放）。
@@ -499,6 +500,7 @@ impl Sessions {
             pr_round_every: std::sync::atomic::AtomicU32::new(PR_ROUND_EVERY),
             agent_pids: Mutex::new(HashMap::new()),
             workfiles: WorkFiles::new(),
+            twin_ctx: Default::default(),
             todo_signal: Default::default(),
         });
         this.load().await;
@@ -616,6 +618,11 @@ impl Sessions {
         let sess = self.get(id).ok()?;
         let st = sess.st.lock().await;
         (!st.deleted).then_some((st.row.status, st.background_tasks))
+    }
+
+    pub(crate) fn bind_twin(&self, c: &Arc<crate::daemon::Ctx>) {
+        *self.twin_ctx.write().unwrap() = Arc::downgrade(c);
+        self.todo_signal.bind_twin(c);
     }
 
     pub(crate) fn todo_signal(&self) -> &Arc<crate::todo_dispatch::TodoSignal> {
@@ -1097,7 +1104,16 @@ impl Sessions {
         if st.deleted {
             return Err(err(ErrorCode::NotFound, "session was deleted"));
         }
-        self.send_locked(&sess, &mut st, caller, p.message_id, p.content, p.attachments).await
+        let sid = p.session_id.clone();
+        let result = self.send_locked(&sess, &mut st, caller, p.message_id, p.content, p.attachments).await;
+        drop(st);
+        if result.as_ref().is_ok_and(|r| !r.duplicate) {
+            let c = self.twin_ctx.read().unwrap().upgrade();
+            if let Some(c) = c {
+                crate::twin::taken_over(&c, caller, &sid).await?;
+            }
+        }
+        result
     }
 
     async fn send_locked(

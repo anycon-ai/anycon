@@ -53,6 +53,8 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
             "rules.extract_auto",
             "judge.extract",
             "judge.triage",
+            "judge.advisor",
+            "twin.enabled",
             "judge.daily_calls",
             "notify.turn_finished",
             "notify.session_idle_after",
@@ -539,7 +541,7 @@ async fn judge_config_rpc_is_hot_and_keeps_backend_secrets_local() {
     .await;
     let mut c = td.client("web");
     let r: NodeConfigResult = c.call(&td, methods::NODE_GET_CONFIG, json!({})).await.unwrap();
-    for key in ["judge.extract", "judge.triage"] {
+    for key in ["judge.extract", "judge.triage", "judge.advisor"] {
         assert_eq!(item(&r, key).options, vec!["", "a", "z"]);
     }
     let text = serde_json::to_string(&r).unwrap();
@@ -578,5 +580,55 @@ async fn judge_config_rpc_is_hot_and_keeps_backend_secrets_local() {
     let judge = doctor.checks.iter().find(|i| i.id == "judge").unwrap();
     assert!(judge.ok && judge.detail.contains("today: 0 / 7 calls"));
     assert!(!judge.detail.contains("PRIVATE-KEY"));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn twin_switch_only_tightens_and_advisor_selects_configured_backends() {
+    let td = TestDaemon::start_with(
+        &[("judge.backends", "{ local = { kind = 'agent', agent = 'fake' } }"), ("judge.triage", "\"local\"")],
+        false,
+    )
+    .await;
+    let mut c = td.local_cli_client();
+    let r: NodeConfigResult = c.call(&td, methods::NODE_GET_CONFIG, json!({})).await.unwrap();
+    assert_eq!(item(&r, "twin.enabled").value, json!(true));
+    assert_eq!(item(&r, "twin.enabled").editable, ConfigEditable::TightenOnly);
+    let advisor = item(&r, "judge.advisor");
+    assert_eq!(
+        (advisor.kind, advisor.options.clone()),
+        (ConfigValueKind::Enum, vec!["".to_string(), "local".to_string()])
+    );
+    let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
+    assert_eq!(info.judge.unwrap().advisor.as_deref(), Some("local"));
+    assert!(info.capabilities.twin);
+    let _: NodeConfigResult = c
+        .call(
+            &td,
+            methods::NODE_SET_CONFIG,
+            changes(&[("twin.enabled", json!(false)), ("judge.advisor", json!("local"))]),
+        )
+        .await
+        .unwrap();
+    assert!(!td.ctx.config.get().twin.enabled);
+    assert_eq!(td.ctx.config.get().judge.advisor, "local");
+    let e = c
+        .call::<Value>(
+            &td,
+            methods::NODE_SET_CONFIG,
+            changes(&[("twin.enabled", json!(true)), ("judge.advisor", json!(""))]),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), (ErrorCode::Forbidden, Some("twin.enabled".into()), Some("tighten_only".into())));
+    assert_eq!(td.ctx.config.get().judge.advisor, "local");
+    let e = c
+        .call::<Value>(&td, methods::NODE_SET_CONFIG, changes(&[("judge.advisor", json!("missing"))]))
+        .await
+        .unwrap_err();
+    assert_eq!(e.data.unwrap().code, ErrorCode::Invalid);
+    let _: NodeConfigResult =
+        c.call(&td, methods::NODE_SET_CONFIG, changes(&[("judge.advisor", json!(""))])).await.unwrap();
+    assert!(td.ctx.config.get().judge.advisor.is_empty());
     td.shutdown().await;
 }

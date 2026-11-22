@@ -122,6 +122,17 @@ import type {
   TodoListResult,
   TodoUpdateParams,
   TrashEntry,
+  TwinAnswerParams,
+  TwinChanged,
+  TwinDryRunResult,
+  TwinGetResult,
+  TwinQuestion,
+  TwinQuestionNotice,
+  TwinQuestionsParams,
+  TwinQuestionsResult,
+  TwinRunsParams,
+  TwinRunsResult,
+  TwinSetParams,
   WorkspaceBranchesParams,
   WorkspaceBranchesResult,
   WorkspaceBrowseParams,
@@ -215,6 +226,13 @@ export interface RequestMethods {
   'rule.preview': { params: RulePreviewParams; result: RulePreviewResult }
   'rule.extract': { params: RuleExtractParams; result: RuleExtractResult }
   'rule.extract_runs': { params: RuleExtractRunsParams; result: RuleExtractRunsResult }
+  'twin.get': { params: Empty; result: TwinGetResult }
+  'twin.set': { params: TwinSetParams; result: TwinGetResult }
+  'twin.wake': { params: Empty; result: Empty }
+  'twin.dry_run': { params: Empty; result: TwinDryRunResult }
+  'twin.runs': { params: TwinRunsParams; result: TwinRunsResult }
+  'twin.questions': { params: TwinQuestionsParams; result: TwinQuestionsResult }
+  'twin.answer': { params: TwinAnswerParams; result: TwinQuestion }
   'blob.put_begin': { params: BlobPutBeginParams; result: BlobPutBeginResult }
   'blob.put_chunk': { params: BlobPutChunkParams; result: Empty }
   'blob.put_end': { params: BlobIdParams; result: AttachmentRef }
@@ -244,6 +262,8 @@ export interface NotificationMethods {
   'todo.event': { params: TodoEventNotice }
   'rule.changed': { params: RuleChanged }
   'rule.extract_done': { params: RuleExtractDone }
+  'twin.changed': { params: TwinChanged }
+  'twin.question': { params: TwinQuestionNotice }
   'permission.request': { params: PermissionRequest }
   'permission.resolved': { params: PermissionResolved }
 }

@@ -20,6 +20,8 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
     std::env::set_var("ANYCON_PREVIEW__ENABLED", "true");
     std::env::set_var("ANYCON_JUDGE__EXTRACT", "absent");
     std::env::set_var("ANYCON_JUDGE__TRIAGE", "absent");
+    std::env::set_var("ANYCON_JUDGE__ADVISOR", "absent");
+    std::env::set_var("ANYCON_TWIN__ENABLED", "false");
     std::env::set_var("ANYCON_JUDGE__DAILY_CALLS", "7");
     std::env::set_var("ANYCON_RULES__EXTRACT_AUTO", "true");
     // `ANYCON_LOG` 接管日志过滤：`log.level` 改了也不生效
@@ -34,6 +36,8 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
         "log.level",
         "judge.extract",
         "judge.triage",
+        "judge.advisor",
+        "twin.enabled",
         "judge.daily_calls",
         "rules.extract_auto",
     ] {
@@ -59,6 +63,8 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
         ("log.level", json!("warn")),
         ("judge.extract", json!("")),
         ("judge.triage", json!("")),
+        ("judge.advisor", json!("")),
+        ("twin.enabled", json!(false)),
         ("judge.daily_calls", json!(2)),
         ("rules.extract_auto", json!(false)),
     ] {
@@ -90,9 +96,14 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
     std::env::remove_var("ANYCON_SESSIONS__MAX_CONCURRENT");
     std::env::remove_var("ANYCON_PREVIEW__ENABLED");
     std::env::remove_var("ANYCON_LOG");
-    for key in
-        ["ANYCON_JUDGE__EXTRACT", "ANYCON_JUDGE__TRIAGE", "ANYCON_JUDGE__DAILY_CALLS", "ANYCON_RULES__EXTRACT_AUTO"]
-    {
+    for key in [
+        "ANYCON_TWIN__ENABLED",
+        "ANYCON_JUDGE__ADVISOR",
+        "ANYCON_JUDGE__EXTRACT",
+        "ANYCON_JUDGE__TRIAGE",
+        "ANYCON_JUDGE__DAILY_CALLS",
+        "ANYCON_RULES__EXTRACT_AUTO",
+    ] {
         std::env::remove_var(key);
     }
     let r: NodeConfigResult = c

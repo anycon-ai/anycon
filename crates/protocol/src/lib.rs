@@ -26,6 +26,7 @@ pub mod rule;
 pub mod schema;
 pub mod session;
 pub mod todo;
+pub mod twin;
 pub mod workspace;
 
 pub use agent::*;
@@ -42,6 +43,7 @@ pub use rpc::*;
 pub use rule::*;
 pub use session::*;
 pub use todo::*;
+pub use twin::*;
 pub use workspace::*;
 
 /// 内层 JSON-RPC 协议版本。相邻 minor 兼容，0.x 阶段可 break。

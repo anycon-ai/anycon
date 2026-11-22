@@ -46,7 +46,10 @@ impl Audit {
         self.record(caller, "fs.read", Some(path), serde_json::json!({ "bytes": bytes })).await;
     }
 
-    pub async fn record(&self, caller: &Caller, action: &str, target: Option<&str>, detail: Value) {
+    pub async fn record(&self, caller: &Caller, action: &str, target: Option<&str>, mut detail: Value) {
+        if caller.is_twin() {
+            detail["actor"] = serde_json::json!({"kind":"twin", "id":caller.device_id});
+        }
         let entry = AuditEntry {
             ts_ms: now_ms(),
             device_id: caller.device_id.clone(),

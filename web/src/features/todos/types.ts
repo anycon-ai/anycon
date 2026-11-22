@@ -11,13 +11,14 @@ export interface UpdateFields {
   project?: string | null
   due_ms?: number | null
   state?: TodoState
+  handler?: 'me' | 'twin'
   reviewed?: boolean
   clear?: Array<'project' | 'due_ms'>
 }
 
 /** 离线期间留在本地的一条改动（spec/web.md § 4.12、daemon.md § 21.6）。 */
 export type OutboxOp =
-  | { kind: 'add'; params: { title: string; body: string; project?: string | null; due_ms?: number | null } }
+  | { kind: 'add'; params: { title: string; body: string; handler?: 'me' | 'twin'; project?: string | null; due_ms?: number | null } }
   | { kind: 'update'; fields: UpdateFields }
   | { kind: 'delete' }
 

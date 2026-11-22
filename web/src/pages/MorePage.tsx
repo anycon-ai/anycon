@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { AccountFooter } from '@/components/Sidebar'
 import { PageHeader } from '@/components/PageHeader'
 import { connectionLabel, connectionTone } from '@/components/useConnectionLabel'
+import { useTwinAvailable } from '@/features/twin/store'
 import { useRulesAvailable } from '@/features/rules/store'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes } from '@/stores/nodes'
@@ -20,6 +21,7 @@ export function MorePage() {
   const order = useNodes((s) => s.order)
   const byId = useNodes((s) => s.byId)
   const rulesAvailable = useRulesAvailable()
+  const twinAvailable = useTwinAvailable()
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="more-page">
       <PageHeader root crumbs={[{ label: t('more.title') }]} showNodeStatus={false} />
@@ -61,6 +63,7 @@ export function MorePage() {
             {t('more.pair')}
           </Link>
         </section>
+        {twinAvailable ? <Link to="/twin" className={`${ROW} border border-border bg-surface`} data-testid="more-twin"><Server className="size-4" aria-hidden />{t('twin.title')}</Link> : null}
         {rulesAvailable ? (
           <section aria-labelledby="more-rules">
             <h2 id="more-rules" className="mb-1 px-3 text-xs font-semibold tracking-wide text-fg-muted uppercase">

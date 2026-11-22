@@ -151,6 +151,8 @@ pub struct FakeAdapter {
     pub driver: Mutex<&'static str>,
     /// 声明 `no_push` 选项（「不 push、不开 PR」，docs/spec/daemon.md § 22.5）；默认不声明（改了要 `agent.list { refresh: true }` 重新探测）。
     pub declare_no_push: AtomicBool,
+    /// 是否声明无人值守模式；改变后重新探测。
+    pub unattended: AtomicBool,
 }
 
 /// 假 adapter 对**插话**（`UserInput.interject = true`）的失败方式。
@@ -216,6 +218,7 @@ impl FakeAdapter {
             pid: Mutex::new(None),
             driver: Mutex::new("mock"),
             declare_no_push: AtomicBool::new(false),
+            unattended: AtomicBool::new(true),
         })
     }
 
@@ -323,6 +326,7 @@ impl FakeAdapter {
                         description: None,
                         default: true,
                         risk: ModeRisk::Normal,
+                        unattended: self.unattended.load(Ordering::SeqCst),
                     },
                     ModeInfo {
                         id: "plan".into(),
@@ -330,6 +334,7 @@ impl FakeAdapter {
                         description: None,
                         default: false,
                         risk: ModeRisk::Safe,
+                        unattended: false,
                     },
                     ModeInfo {
                         id: "yolo".into(),
@@ -337,6 +342,7 @@ impl FakeAdapter {
                         description: None,
                         default: false,
                         risk: ModeRisk::Dangerous,
+                        unattended: false,
                     },
                 ];
                 info.options = vec![ConfigOption {

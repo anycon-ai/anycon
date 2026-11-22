@@ -523,6 +523,60 @@
   },
   {
     "direction": "request",
+    "name": "twin.get",
+    "params": null,
+    "result": "TwinGetResult"
+  },
+  {
+    "direction": "request",
+    "name": "twin.set",
+    "params": "TwinSetParams",
+    "result": "TwinGetResult"
+  },
+  {
+    "direction": "request",
+    "name": "twin.wake",
+    "params": null,
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "twin.dry_run",
+    "params": null,
+    "result": "TwinDryRunResult"
+  },
+  {
+    "direction": "request",
+    "name": "twin.runs",
+    "params": "TwinRunsParams",
+    "result": "TwinRunsResult"
+  },
+  {
+    "direction": "request",
+    "name": "twin.questions",
+    "params": "TwinQuestionsParams",
+    "result": "TwinQuestionsResult"
+  },
+  {
+    "direction": "request",
+    "name": "twin.answer",
+    "params": "TwinAnswerParams",
+    "result": "TwinQuestion"
+  },
+  {
+    "direction": "notification",
+    "name": "twin.changed",
+    "params": "TwinChanged",
+    "result": null
+  },
+  {
+    "direction": "notification",
+    "name": "twin.question",
+    "params": "TwinQuestionNotice",
+    "result": null
+  },
+  {
+    "direction": "request",
     "name": "blob.put_begin",
     "params": "BlobPutBeginParams",
     "result": "BlobPutBeginResult"

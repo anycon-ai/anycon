@@ -83,3 +83,28 @@ describe('the command palette', () => {
     expect(screen.queryByText('Rules')).toBeNull()
   })
 })
+
+
+describe('Twin navigation', () => {
+  const setTwin = (twin: boolean): void => useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'alpha', info: { capabilities: { twin } } as unknown as NodeInfo }) }, order: [NODE], loaded: true })
+  it('appears in sidebar, status bar, More, and palette only with capability', async () => {
+    setTwin(true)
+    const first = wrap(<Sidebar nodeId={NODE} />)
+    expect(screen.getByTestId('sidebar-twin')).toHaveAttribute('href', '/twin')
+    expect(screen.getByTestId('twin-status-bar')).toBeInTheDocument()
+    first.unmount()
+    const more = wrap(<MorePage />)
+    expect(screen.getByTestId('more-twin')).toHaveAttribute('href', '/twin')
+    more.unmount()
+    const palette = wrap(<CommandPalette open onOpenChange={() => {}} />)
+    await userEvent.click(screen.getByText('Twin'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/twin' })
+    palette.unmount()
+    setTwin(false)
+    wrap(<><Sidebar nodeId={NODE} /><MorePage /><CommandPalette open onOpenChange={() => {}} /></>)
+    expect(screen.queryByTestId('sidebar-twin')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('more-twin')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('twin-status-bar')).not.toBeInTheDocument()
+    expect(screen.queryByText('Twin')).not.toBeInTheDocument()
+  })
+})

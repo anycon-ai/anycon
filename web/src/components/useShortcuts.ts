@@ -8,6 +8,7 @@ import { shortNodeId } from '@/lib/ids'
 import { useCurrentNode } from '@/lib/nav'
 import { navigateTo } from '@/lib/navigate'
 import { useCapture } from '@/features/todos/capture'
+import { useTwinAvailable } from '@/features/twin/store'
 import { useTodoAvailable } from '@/features/todos/store'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
@@ -33,6 +34,8 @@ export function useShortcuts(): void {
   // 按过 `G` 的时刻（毫秒）；0 = 没有在等第二个键
   const goAt = useRef(0)
   // `C`、`G` `T` 只在有节点支持清单时生效（没有入口就没有快捷键）
+  const twinAvailable = useRef(false)
+  twinAvailable.current = useTwinAvailable()
   const todoAvailable = useRef(false)
   todoAvailable.current = useTodoAvailable()
 
@@ -60,6 +63,7 @@ export function useShortcuts(): void {
           void navigate({ to: '/todos' })
           return
         }
+        if (waiting && key === 'a' && twinAvailable.current) { e.preventDefault(); void navigate({ to: '/twin' }); return }
         if (waiting && key === 'i') {
           e.preventDefault()
           void navigate({ to: '/inbox' })

@@ -59,6 +59,7 @@ pub struct Agents {
     busy_agents: OnceLock<BusyAgents>,
     /// 上一次向客户端广播（或确认）的 etag。配置变化导致 etag 变了才再推 `agent.changed`。
     announced_etag: Mutex<String>,
+    changed: tokio::sync::watch::Sender<()>,
 }
 
 fn strip_probed(i: &AgentInfo) -> AgentInfo {
@@ -198,6 +199,7 @@ impl Agents {
             wake: tokio::sync::Notify::new(),
             busy_agents: OnceLock::new(),
             announced_etag: Mutex::new(String::new()),
+            changed: tokio::sync::watch::channel(()).0,
         });
         // 配置里的 ACP agent（注册表里的加用户自己加的）：工厂给的话在这里补上 adapter
         this.sync_acp_adapters(&this.config.get());
@@ -460,6 +462,12 @@ impl Agents {
         let list = self.list();
         *self.announced_etag.lock().unwrap() = list.etag.clone();
         self.clients.broadcast(methods::AGENT_CHANGED, list);
+        self.changed.send_replace(());
+    }
+
+    /// 后台调度者据此重新计算依赖 agent 可用性的状态，不增加轮询定时器。
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changed.subscribe()
     }
 
     /// 配置变化（`default_*`、`allow_dangerous_modes`、`dangerous_modes`）改变了客户端看到的列表时补推一次。

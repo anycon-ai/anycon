@@ -16,6 +16,7 @@ const NEW_TODO = (nodeId: string, id: string, p: AddParams, at: number): ViewTod
   body: p.body,
   ...(p.project ? { project: p.project } : {}),
   ...(p.due_ms != null ? { due_ms: p.due_ms } : {}),
+  ...(p.handler ? { handler: p.handler } : {}),
   state: 'open',
   source: { kind: 'device' },
   unreviewed: false,
@@ -26,6 +27,7 @@ const NEW_TODO = (nodeId: string, id: string, p: AddParams, at: number): ViewTod
 
 function applyUpdate(t: ViewTodo, f: UpdateFields, at: number): ViewTodo {
   const out: ViewTodo = { ...t }
+  if (f.handler !== undefined) out.handler = f.handler
   if (f.title !== undefined) out.title = f.title
   if (f.body !== undefined) out.body = f.body
   if (f.project !== undefined && f.project !== null) out.project = f.project

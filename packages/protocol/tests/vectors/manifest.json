@@ -424,6 +424,18 @@
     }
   },
   {
+    "name": "envelope_notify_twin_question",
+    "type": "envelope",
+    "value": {
+      "body_hex": "83a863617465676f7279ad7477696e5f7175657374696f6eaa73657373696f6e5f6964c0a664657461696cc0",
+      "from": "0123456789abcdef0123456789abcdef",
+      "kind": "notify",
+      "seq": 1,
+      "to": "fedcba9876543210fedcba9876543210",
+      "v": 1
+    }
+  },
+  {
     "name": "rpc_notification",
     "type": "rpc",
     "value": {
@@ -684,6 +696,389 @@
         "status": "active",
         "sync": "group"
       }
+    }
+  },
+  {
+    "name": "rpc_todo_handler",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "by": {
+            "id": "local",
+            "kind": "twin"
+          },
+          "from": "me",
+          "kind": "handler",
+          "seq": 1,
+          "to": "twin",
+          "ts_ms": 2
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_answer",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.answer",
+      "params": {
+        "answer": "app",
+        "id": "q"
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_answer_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "answer": "app",
+        "answered_by": {
+          "device_id": "0123456789abcdef0123456789abcdef",
+          "kind": "device"
+        },
+        "answered_ms": 2,
+        "created_ms": 1,
+        "id": "q",
+        "options": [
+          "app"
+        ],
+        "question": "Which project?",
+        "status": "answered",
+        "todo_id": "t"
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_changed",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "twin.changed",
+      "params": {
+        "run": {
+          "decisions": [
+            {
+              "action": "dispatch",
+              "note": "Keep changes small",
+              "outcome": "skipped",
+              "project": "app",
+              "reason": "Ready",
+              "rules": [
+                "rule"
+              ],
+              "skip_reason": "no_capacity",
+              "todo_id": "t"
+            }
+          ],
+          "dry_run": true,
+          "finished_ms": 2,
+          "id": "r",
+          "items": [
+            "t"
+          ],
+          "judge_calls": [
+            "j"
+          ],
+          "requester": "local",
+          "result": "done",
+          "started_ms": 1,
+          "triggers": [
+            "todo",
+            "manual"
+          ]
+        },
+        "state": "idle"
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_dry_run",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.dry_run",
+      "params": {}
+    }
+  },
+  {
+    "name": "rpc_twin_dry_run_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "run": {
+          "decisions": [
+            {
+              "action": "dispatch",
+              "note": "Keep changes small",
+              "outcome": "skipped",
+              "project": "app",
+              "reason": "Ready",
+              "rules": [
+                "rule"
+              ],
+              "skip_reason": "no_capacity",
+              "todo_id": "t"
+            }
+          ],
+          "dry_run": true,
+          "finished_ms": 2,
+          "id": "r",
+          "items": [
+            "t"
+          ],
+          "judge_calls": [
+            "j"
+          ],
+          "requester": "local",
+          "result": "done",
+          "started_ms": 1,
+          "triggers": [
+            "todo",
+            "manual"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_get",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.get",
+      "params": {}
+    }
+  },
+  {
+    "name": "rpc_twin_get_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "configured": true,
+        "enabled": true,
+        "scope": {
+          "agent": "mock",
+          "daily_dispatches": 10,
+          "max_sessions": 2,
+          "paused": false,
+          "projects": [
+            "app"
+          ]
+        },
+        "state": "idle",
+        "today": {
+          "dispatches": 1,
+          "judge_calls": 2
+        },
+        "waiting": [],
+        "working": [
+          "t"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_question",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "twin.question",
+      "params": {
+        "question": {
+          "answer": "app",
+          "answered_by": {
+            "device_id": "0123456789abcdef0123456789abcdef",
+            "kind": "device"
+          },
+          "answered_ms": 2,
+          "created_ms": 1,
+          "id": "q",
+          "options": [
+            "app"
+          ],
+          "question": "Which project?",
+          "status": "answered",
+          "todo_id": "t"
+        }
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_questions",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.questions",
+      "params": {
+        "open_only": true
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_questions_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "questions": [
+          {
+            "answer": "app",
+            "answered_by": {
+              "device_id": "0123456789abcdef0123456789abcdef",
+              "kind": "device"
+            },
+            "answered_ms": 2,
+            "created_ms": 1,
+            "id": "q",
+            "options": [
+              "app"
+            ],
+            "question": "Which project?",
+            "status": "answered",
+            "todo_id": "t"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_runs",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.runs",
+      "params": {
+        "before_ms": 9,
+        "limit": 10
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_runs_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "runs": [
+          {
+            "decisions": [
+              {
+                "action": "dispatch",
+                "note": "Keep changes small",
+                "outcome": "skipped",
+                "project": "app",
+                "reason": "Ready",
+                "rules": [
+                  "rule"
+                ],
+                "skip_reason": "no_capacity",
+                "todo_id": "t"
+              }
+            ],
+            "dry_run": true,
+            "finished_ms": 2,
+            "id": "r",
+            "items": [
+              "t"
+            ],
+            "judge_calls": [
+              "j"
+            ],
+            "requester": "local",
+            "result": "done",
+            "started_ms": 1,
+            "triggers": [
+              "todo",
+              "manual"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_set",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.set",
+      "params": {
+        "clear": [
+          "agent",
+          "model",
+          "mode"
+        ],
+        "paused": true
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_set_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "configured": true,
+        "enabled": true,
+        "scope": {
+          "agent": "mock",
+          "daily_dispatches": 10,
+          "max_sessions": 2,
+          "paused": false,
+          "projects": [
+            "app"
+          ]
+        },
+        "state": "idle",
+        "today": {
+          "dispatches": 1,
+          "judge_calls": 2
+        },
+        "waiting": [],
+        "working": [
+          "t"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_wake",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.wake",
+      "params": {}
+    }
+  },
+  {
+    "name": "rpc_twin_wake_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {}
     }
   }
 ]

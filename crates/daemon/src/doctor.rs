@@ -693,7 +693,11 @@ fn judge_check(
     use crate::config::JudgeBackendConfig;
     use anycon_protocol::JudgeProblem;
     let mut lines = Vec::new();
-    if cfg.judge.backends.is_empty() && cfg.judge.extract.is_empty() && cfg.judge.triage.is_empty() {
+    if cfg.judge.backends.is_empty()
+        && cfg.judge.extract.is_empty()
+        && cfg.judge.triage.is_empty()
+        && cfg.judge.advisor.is_empty()
+    {
         lines.push("not configured".into());
     }
     for backend in &info.backends {
@@ -724,7 +728,8 @@ fn judge_check(
     }
     let mut ok = true;
     let extract = if cfg.judge.extract.is_empty() { &cfg.judge.triage } else { &cfg.judge.extract };
-    for (position, name) in [("extract", extract), ("triage", &cfg.judge.triage)] {
+    let advisor = if cfg.judge.advisor.is_empty() { &cfg.judge.triage } else { &cfg.judge.advisor };
+    for (position, name) in [("extract", extract), ("triage", &cfg.judge.triage), ("advisor", advisor)] {
         let state = if name.is_empty() {
             "not configured"
         } else if let Some(b) = info.backends.iter().find(|b| &b.name == name) {
@@ -790,6 +795,11 @@ mod judge_tests {
         assert!(!absent.ok && absent.detail.contains("triage: absent (backend does not exist)"));
         cfg.judge.triage = "local".into();
         assert!(make(&cfg).ok);
+        assert!(make(&cfg).detail.contains("advisor: local (ready)"));
+        cfg.judge.advisor = "absent".into();
+        assert!(!make(&cfg).ok && make(&cfg).detail.contains("advisor: absent (backend does not exist)"));
+        cfg.judge.advisor = "cloud".into();
+        assert!(!make(&cfg).ok && make(&cfg).detail.contains("advisor: cloud (unavailable)"));
     }
 
     #[tokio::test]

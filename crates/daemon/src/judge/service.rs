@@ -20,6 +20,7 @@ use crate::store::{JudgeCallFinish, JudgeCallStart, Store, StoreError};
 pub enum Position {
     Extract,
     Triage,
+    Advisor,
 }
 
 impl Position {
@@ -27,6 +28,7 @@ impl Position {
         match self {
             Self::Extract => "extract",
             Self::Triage => "triage",
+            Self::Advisor => "advisor",
         }
     }
 }
@@ -137,6 +139,7 @@ pub fn local_day_start(now_ms: u64) -> Option<u64> {
 fn selected(cfg: &JudgeConfig, position: Position) -> Option<&str> {
     let name = match position {
         Position::Extract if !cfg.extract.is_empty() => &cfg.extract,
+        Position::Advisor if !cfg.advisor.is_empty() => &cfg.advisor,
         _ => &cfg.triage,
     };
     cfg.backends.contains_key(name).then_some(name.as_str())
@@ -188,6 +191,7 @@ pub fn describe(cfg: &Config, env: &HashMap<String, String>, agents: &[AgentInfo
         backends,
         extract: selected(&cfg.judge, Position::Extract).map(str::to_string),
         triage: selected(&cfg.judge, Position::Triage).map(str::to_string),
+        advisor: selected(&cfg.judge, Position::Advisor).map(str::to_string),
         daily_calls: cfg.judge.daily_calls,
     }
 }
@@ -230,6 +234,7 @@ pub struct Judge {
     gate: Arc<Mutex<()>>,
     shutdown: watch::Receiver<bool>,
     clock: Arc<Clock>,
+    calls_changed: watch::Sender<()>,
 }
 
 impl Judge {
@@ -249,6 +254,7 @@ impl Judge {
         let clock = Arc::new(Clock::default());
         store.cancel_unfinished_judge_calls(clock.now()).await?;
         store.cancel_running_extract_runs(clock.now()).await?;
+        store.cancel_twin_runs(clock.now()).await?;
         Ok(Arc::new(Self {
             config,
             store,
@@ -258,6 +264,7 @@ impl Judge {
             gate: Arc::new(Mutex::new(())),
             shutdown,
             clock,
+            calls_changed: watch::channel(()).0,
         }))
     }
 
@@ -269,6 +276,11 @@ impl Judge {
     }
     pub fn clock(&self) -> &Clock {
         &self.clock
+    }
+
+    /// 所有位置共享判断预算；记录开始后让分身重新计算状态。
+    pub(crate) fn subscribe_calls(&self) -> watch::Receiver<()> {
+        self.calls_changed.subscribe()
     }
 
     /// 替换工厂只影响之后的调用，不改变已经进行中的后端。
@@ -307,6 +319,7 @@ impl Judge {
             store: self.store.clone(),
             clock: self.clock.clone(),
             shutdown: self.shutdown.clone(),
+            calls_changed: self.calls_changed.clone(),
         })
     }
 
@@ -323,6 +336,7 @@ impl Judge {
         let before = self.clock.now().saturating_sub(90 * 24 * 3600 * 1000);
         self.store.prune_extract_runs(before).await?;
         self.store.prune_judge_calls(before).await?;
+        self.store.prune_twin(before).await?;
         Ok(())
     }
 
@@ -357,6 +371,7 @@ pub struct Permit {
     store: Store,
     clock: Arc<Clock>,
     shutdown: watch::Receiver<bool>,
+    calls_changed: watch::Sender<()>,
 }
 
 impl Permit {
@@ -375,7 +390,7 @@ impl Permit {
         let recorded = Arc::new(RwLock::new(None));
         let record = recorded.clone();
         let result = tokio::spawn(async move {
-            let Self { guard, position, backend, backend_info, store, clock, mut shutdown } = self;
+            let Self { guard, position, backend, backend_info, store, clock, mut shutdown, calls_changed } = self;
             let _guard = guard;
             if *shutdown.borrow() {
                 return Err(ServiceError::Call(CallError::Cancelled));
@@ -398,6 +413,7 @@ impl Permit {
                 .await
                 .map_err(|_| CallError::Internal)?;
             *record.write().unwrap() = Some(call_id.clone());
+            calls_changed.send_replace(());
             let timer = Instant::now();
             let result = tokio::select! {
                 biased;
@@ -862,6 +878,14 @@ mod tests {
         let info = describe(&cfg, &HashMap::new(), &[]);
         assert_eq!(info.extract.as_deref(), Some("a"));
         assert_eq!(info.triage, info.extract);
+        assert_eq!(info.advisor, info.triage);
+        cfg.judge.advisor = "b".into();
+        assert_eq!(selected(&cfg.judge, Position::Advisor), Some("b"));
+        cfg.judge.advisor = "missing".into();
+        assert_eq!(selected(&cfg.judge, Position::Advisor), None);
+        cfg.judge.advisor.clear();
+        assert_eq!(selected(&cfg.judge, Position::Advisor), Some("a"));
+        assert_eq!(Position::Advisor.as_str(), "advisor");
         assert_eq!(info.backends[0].problem, Some(JudgeProblem::NoKey));
         assert_eq!(info.backends[1].problem, None);
         assert_eq!(info.backends[2].problem, Some(JudgeProblem::AgentMissing));

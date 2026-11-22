@@ -69,7 +69,7 @@ export class FakeTodoDaemon {
     const have = this.todos.get(p.id)
     if (have) return have
     if ([...this.todos.values()].filter((t) => t.state !== 'done' && t.state !== 'dropped').length >= this.openLimit) throw rpcError('invalid', 'todos', 'too_many')
-    const t: Todo = { id: p.id, title: p.title, body: p.body ?? '', ...(p.project ? { project: p.project } : {}), ...(p.due_ms != null ? { due_ms: p.due_ms } : {}), state: 'open', source: { kind: p.agent ? 'agent' : 'device', device_id: 'dev' }, unreviewed: !!p.agent, created_ms: ++this.now, updated_ms: this.now }
+    const t: Todo = { ...(p.handler ? { handler: p.handler } : {}), id: p.id, title: p.title, body: p.body ?? '', ...(p.project ? { project: p.project } : {}), ...(p.due_ms != null ? { due_ms: p.due_ms } : {}), state: 'open', source: { kind: p.agent ? 'agent' : 'device', device_id: 'dev' }, unreviewed: !!p.agent, created_ms: ++this.now, updated_ms: this.now }
     this.todos.set(t.id, t)
     this.onChange?.(t.id, t)
     return t
@@ -81,6 +81,8 @@ export class FakeTodoDaemon {
     const next: Todo = { ...cur }
     const reopening = (cur.state === 'done' || cur.state === 'dropped') && p.state && p.state !== 'done' && p.state !== 'dropped'
     if (reopening && [...this.todos.values()].filter((t) => t.state !== 'done' && t.state !== 'dropped').length >= this.openLimit) throw rpcError('invalid', 'todos', 'too_many')
+    if (p.handler === 'twin' && cur.unreviewed && !p.reviewed) throw rpcError('invalid', 'handler', 'unreviewed')
+    if (p.handler) next.handler = p.handler
     if (p.title != null) next.title = p.title
     if (p.body != null) next.body = p.body
     if (p.project != null) next.project = p.project

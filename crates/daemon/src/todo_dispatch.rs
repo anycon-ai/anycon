@@ -287,12 +287,14 @@ pub async fn fill_activity(sessions: &Arc<Sessions>, todos: &mut [Todo]) {
 pub struct TodoSignal {
     inner: Mutex<SignalInner>,
     notify: Notify,
+    twin: std::sync::RwLock<Weak<Ctx>>,
 }
 
 #[derive(Default)]
 struct SignalInner {
     /// 要重新算 `activity` 的清单项。
     dirty: HashSet<String>,
+    changed_sessions: HashSet<String>,
     /// `(todo_id, session_id, 结果)`，按产生的先后。
     results: VecDeque<QueuedResult>,
     /// 会话 → 已经产生、还没记进「经过」的结果数（被推迟的和在队列里的）。
@@ -305,9 +307,17 @@ struct SignalInner {
 type QueuedResult = (String, String, PendingResult);
 
 impl TodoSignal {
+    pub(crate) fn bind_twin(&self, c: &Arc<Ctx>) {
+        *self.twin.write().unwrap() = Arc::downgrade(c);
+    }
+
     /// 这一项的会话有变化（状态、后台任务数在 0 和非 0 之间、结果的扣留、被删除）。
-    pub fn status_changed(&self, todo_id: &str, _session_id: &str) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).dirty.insert(todo_id.to_string());
+    pub fn status_changed(&self, todo_id: &str, session_id: &str) {
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.dirty.insert(todo_id.to_string());
+            inner.changed_sessions.insert(session_id.to_string());
+        }
         self.notify.notify_one();
     }
 
@@ -399,8 +409,30 @@ pub async fn run_worker(sessions: Weak<Sessions>, signal: Arc<TodoSignal>) {
             flush_results_locked(&sessions, &todo_id).await;
             dirty.insert(todo_id);
         }
+        let changed_sessions =
+            std::mem::take(&mut signal.inner.lock().unwrap_or_else(|e| e.into_inner()).changed_sessions);
         for todo_id in dirty {
             notify_activity(&sessions, &todo_id).await;
+        }
+        let c = signal.twin.read().unwrap().upgrade();
+        if let Some(c) = c {
+            for sid in changed_sessions {
+                if c.store.twin_session_owner(&sid).await.ok().flatten().is_some()
+                    && sessions.status_of(&sid).await.is_some_and(|(s, _)| {
+                        matches!(
+                            s,
+                            SessionStatus::Idle
+                                | SessionStatus::Ended
+                                | SessionStatus::WaitingPermission
+                                | SessionStatus::Error
+                                | SessionStatus::Interrupted
+                        )
+                    })
+                {
+                    let _ = c.twin.trigger(&c, anycon_protocol::TwinTrigger::Session).await;
+                    break;
+                }
+            }
         }
     }
 }
@@ -473,18 +505,20 @@ async fn flush_results_locked(sessions: &Arc<Sessions>, todo_id: &str) {
     }
 }
 
-fn broadcast_event(clients: &Clients, todo_id: &str, event: TodoEvent) {
+pub(crate) fn broadcast_event(clients: &Clients, todo_id: &str, event: TodoEvent) {
     clients.broadcast(methods::TODO_EVENT, TodoEventNotice { todo_id: todo_id.to_string(), event });
 }
 
 /// 调用方在「经过」里的身份。
 pub fn actor_of(caller: &Caller) -> TodoActor {
-    if caller.is_mcp() {
-        TodoActor { kind: TodoSourceKind::Agent, device_id: None }
+    if caller.is_twin() {
+        TodoActor { id: Some(caller.device_id.clone()), kind: TodoSourceKind::Twin, device_id: None }
+    } else if caller.is_mcp() {
+        TodoActor { id: None, kind: TodoSourceKind::Agent, device_id: None }
     } else if caller.local {
-        TodoActor { kind: TodoSourceKind::Local, device_id: None }
+        TodoActor { id: None, kind: TodoSourceKind::Local, device_id: None }
     } else {
-        TodoActor { kind: TodoSourceKind::Device, device_id: Some(caller.device_id.clone()) }
+        TodoActor { id: None, kind: TodoSourceKind::Device, device_id: Some(caller.device_id.clone()) }
     }
 }
 
@@ -514,7 +548,7 @@ fn event_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<TodoEvent, StoreError> 
 fn data_session_id(d: &TodoEventData) -> Option<&str> {
     match d {
         TodoEventData::Dispatched { session_id, .. } | TodoEventData::Result { session_id, .. } => Some(session_id),
-        TodoEventData::State { .. } => None,
+        _ => None,
     }
 }
 
@@ -523,11 +557,17 @@ fn data_kind(d: &TodoEventData) -> &'static str {
         TodoEventData::Dispatched { .. } => "dispatched",
         TodoEventData::Result { .. } => "result",
         TodoEventData::State { .. } => "state",
+        TodoEventData::HandedBack { .. } => "handed_back",
+        TodoEventData::TakenOver { .. } => "taken_over",
+        TodoEventData::TwinDecision { .. } => "twin_decision",
+        TodoEventData::TwinQuestion { .. } => "twin_question",
+        TodoEventData::Handler { .. } => "handler",
+        TodoEventData::Unknown => "unknown",
     }
 }
 
 /// 追加一条「经过」（`seq` 在这一项内从 1 递增；调用方持清单锁，所以没有并发的追加）。
-async fn event_append_on(
+pub(crate) async fn event_append_on(
     conn: &mut SqliteConnection,
     todo_id: &str,
     ts_ms: u64,
@@ -713,7 +753,7 @@ impl Store {
         .fetch_all(self.pool())
         .await?;
         let has_more = rows.len() > limit;
-        // 读不懂的行（更早的版本留下的、或者更新的版本写的）跳过，不让整页失败
+        // 结构损坏的行跳过，不让整页失败；不认识的 kind 由 Unknown 接住并照常返回。
         let events = rows
             .iter()
             .take(limit)
@@ -798,6 +838,16 @@ async fn default_workspace(c: &Ctx, project: &str) -> Option<SessionWorkspace> {
 
 /// `todo.dispatch`（§ 22.2）。全部或全无：会话开不起来，这一项和「经过」都不变。
 pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcResult<TodoDispatchResult> {
+    dispatch_inner(c, caller, p, None).await
+}
+
+/// 共用派发事务；分身说明只进入第一条消息，不改清单正文。
+pub(crate) async fn dispatch_inner(
+    c: &Ctx,
+    caller: &Caller,
+    mut p: TodoDispatchParams,
+    note: Option<&str>,
+) -> RpcResult<TodoDispatchResult> {
     crate::todos::check_id(&p.id)?;
     // 自报了 `mcp` 的本机连接不能派发：和 agent 不能修改清单项是同一条界线（§ 21.8），护栏
     if caller.is_mcp() {
@@ -810,6 +860,13 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
         .await
         .map_err(internal)?
         .ok_or_else(|| RpcError::new(ErrorCode::NotFound, format!("todo {} not found", p.id)))?;
+    if caller.is_twin() {
+        let (agent, settings) = crate::twin::dispatch_settings_locked(c, &old, &p).await?;
+        p.agent = agent;
+        p.settings = settings;
+        p.no_push = Some(true);
+        p.workspace = Some(SessionWorkspace::Worktree { base: None, branch: None });
+    }
     // 刚结束的一轮的结果还在队列里的话先记下来：这次派发的第一条消息要带它
     flush_results_locked(&c.sessions, &p.id).await;
     // 幂等：同一个 `message_id` 的重试（回执丢了）返回第一次的结果，不再开第二个会话、不多记关联和「经过」
@@ -918,7 +975,11 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
     };
 
     let earlier = c.store.todo_earlier_results(&old.id).await.map_err(internal)?;
-    let prompt = compose_first_message(&old.title, &old.body, &earlier, no_push);
+    let mut prompt = compose_first_message(&old.title, &old.body, &earlier, no_push);
+    if let Some(note) = note {
+        prompt.push_str("\n\nTwin note (written by the twin):\n");
+        prompt.push_str(note);
+    }
     // 生效的规则（§ 23.5）：派发的会话总是注入；agent 收不到 `system_prompt_append` 时不注入、不让派发失败，只在「经过」里记原因
     let (rules, rules_skipped) =
         match crate::rules::injection_for(&c.store, &c.workspace, Some(&project)).await.map_err(internal)? {
@@ -974,6 +1035,15 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
             .bind(new.sessions.len() as i64)
             .execute(&mut *tx)
             .await?;
+        if caller.is_twin() {
+            sqlx::query("INSERT INTO twin_sessions VALUES (?, ?, ?, ?)")
+                .bind(&session.id)
+                .bind(&new.id)
+                .bind(&caller.device_id)
+                .bind(c.judge.clock().now() as i64)
+                .execute(&mut *tx)
+                .await?;
+        }
         crate::todos::save_todo_on(&mut *tx, &new).await?;
         let ev = event_append_on(&mut tx, &new.id, now, data).await?;
         tx.commit().await?;
@@ -1031,6 +1101,7 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcRes
     c.clients
         .broadcast(methods::TODO_CHANGED, TodoChanged { id: new.id.clone(), todo: Some(announced), deleted: false });
     broadcast_event(&c.clients, &new.id, ev);
+    c.sessions.todo_signal().status_changed(&new.id, &session.id);
     let mut todo = new;
     todo.activity = compute_activity(&c.sessions, &todo).await;
     Ok(TodoDispatchResult { todo, session })

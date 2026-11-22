@@ -34,6 +34,17 @@ import {
   type RulePreviewParams,
   type RulePreviewResult,
   type RuleUpdateParams,
+  type TwinAnswerParams,
+  type TwinChanged,
+  type TwinDryRunResult,
+  type TwinGetResult,
+  type TwinQuestion,
+  type TwinQuestionNotice,
+  type TwinQuestionsParams,
+  type TwinQuestionsResult,
+  type TwinRunsParams,
+  type TwinRunsResult,
+  type TwinSetParams,
   type Todo,
   type TodoAddParams,
   type TodoChanged,
@@ -112,6 +123,9 @@ export interface NodeEvents {
   rule_changed: [RuleChanged]
   /** 一次提炼结束，按 run.id 对应发起的调用；所有在线客户端都会收到。 */
   rule_extract_done: [RuleExtractDone]
+  // 分身状态和问题变化，包含别的设备的回答和作废。
+  twin_changed: [TwinChanged]
+  twin_question: [TwinQuestionNotice]
 }
 
 export interface NodeOptions {
@@ -236,6 +250,12 @@ export class Node extends Emitter<NodeEvents> {
     rpc.onNotification<RuleExtractDone>(METHODS.RULE_EXTRACT_DONE, (done) => {
       this.emit('rule_extract_done', done)
     })
+    rpc.onNotification<TwinChanged>(METHODS.TWIN_CHANGED, (change) =>
+      this.emit('twin_changed', change),
+    )
+    rpc.onNotification<TwinQuestionNotice>(METHODS.TWIN_QUESTION, (notice) =>
+      this.emit('twin_question', notice),
+    )
     rpc.onNotification<JobProgress>(METHODS.JOB_PROGRESS, (p) => {
       const rec = this.#job(p.job_id)
       rec.progress.push(p)
@@ -649,6 +669,22 @@ export class Node extends Emitter<NodeEvents> {
     /** `rule.preview`：现在开一个这个项目的会话（缺省：不属于任何项目的会话）会注入的那段文字、用到的规则和它的字节数。只读。 */
     preview: (params: RulePreviewParams = {}): Promise<RulePreviewResult> =>
       this.call('rule.preview', params),
+  }
+
+  // 分身的薄封装：需要 capabilities.twin，不缓存、不重放；问题和理由是模型写的纯文字。
+  readonly twin = {
+    get: (): Promise<TwinGetResult> => this.call('twin.get', {}),
+    set: (params: TwinSetParams): Promise<TwinGetResult> => this.call('twin.set', params),
+    wake: async (): Promise<void> => {
+      await this.call('twin.wake', {})
+    },
+    // 判断后端最长可跑十五分钟；调用方仍可通过标准 RPC 选项收紧时限或取消。
+    dryRun: (options: RequestOptions = {}): Promise<TwinDryRunResult> =>
+      this.call('twin.dry_run', {}, { timeoutMs: 16 * 60_000, ...options }),
+    runs: (params: TwinRunsParams = {}): Promise<TwinRunsResult> => this.call('twin.runs', params),
+    questions: (params: TwinQuestionsParams = {}): Promise<TwinQuestionsResult> =>
+      this.call('twin.questions', params),
+    answer: (params: TwinAnswerParams): Promise<TwinQuestion> => this.call('twin.answer', params),
   }
 
   readonly permissions = {

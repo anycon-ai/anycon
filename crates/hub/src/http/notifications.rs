@@ -247,7 +247,7 @@ pub struct PutPrefs {
 
 /// `PUT /api/me/notifications { categories: [{ category, push, email }] }`：只认已知类别（未知类别 `400`），
 /// 数组里没出现的类别保持原样。邮件只对 `permission_requested` / `error` / `enroll_requested` / `security` 有意义，
-/// 其余三个类别的 `email` 一律存成 `false`。返回完整的结果（和 `GET` 一样）。
+/// 其余类别的 `email` 一律存成 `false`。返回完整的结果（和 `GET` 一样）。
 pub async fn put_prefs(
     State(state): State<Arc<AppState>>,
     auth: Authed,

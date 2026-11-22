@@ -149,3 +149,19 @@ describe('handlePush for a session that came from a to-do', () => {
     expect(shown[0]!.options.data).toEqual({ url: '/n/nnnnnnnn/s/sess_abc' })
   })
 })
+
+describe('Twin notification targets', () => {
+  it.each(['twin_question', 'follow_up'])('resolves a prefixed todo for %s', async (category) => {
+    const directory = vi.fn(async () => ({ nodeName: 'mac-mini', sessionTitle: 'Fix login', nodeIds: [NODE] }))
+    const { deps, shown } = setup({ directory })
+    await handlePush(data({ category, node: NODE, session: 'todo_td-1' }), deps)
+    expect(directory).toHaveBeenCalledWith(NODE, 'todo_td-1')
+    expect(shown[0]!.title).toContain('Fix login')
+    expect(shown[0]!.options.data).toEqual({ url: category === 'twin_question' ? '/inbox?node=nnnnnnnn&todo=td-1' : '/todos/nnnnnnnn/td-1' })
+  })
+  it('keeps a non-prefixed Twin question on its ordinary session', async () => {
+    const { deps, shown } = setup({ dir: { sessionTitle: 'Old session', nodeIds: [NODE] } })
+    await handlePush(data({ category: 'twin_question', node: NODE, session: 'sess_abc' }), deps)
+    expect(shown[0]!.options).toMatchObject({ tag: 'session:sess_abc', data: { url: '/n/nnnnnnnn/s/sess_abc' } })
+  })
+})

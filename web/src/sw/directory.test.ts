@@ -166,3 +166,24 @@ describe('readPushDirectory: the to-do a session came from', () => {
     expect((await readPushDirectory('a'.repeat(32), 'sess_1')).todo).toEqual({ id: 'td-9' })
   })
 })
+
+it('Twin pushes use only the todo in the named node, without changing session pushes', async () => {
+  const id = 'a'.repeat(32)
+  await putNode(node(id, 'mac-mini'))
+  const db = await getDb()
+  await db.put('todos', { key: `${id}:td-1`, node_id: id, todo: { id: 'td-1', title: 'Fix login' } } as never)
+  expect(await readPushDirectory(id, 'todo_td-1')).toMatchObject({ sessionTitle: 'Fix login' })
+  expect((await readPushDirectory('b'.repeat(32), 'todo_td-1')).sessionTitle).toBeUndefined()
+  expect((await readPushDirectory(id, 'td-1')).sessionTitle).toBeUndefined()
+})
+
+it('ordinary sessions still read their own title, including with an empty todo prefix', async () => {
+  const id = 'a'.repeat(32)
+  await putNode(node(id, 'mac-mini'))
+  await putSessions([session('td-1', id, 'A real session'), session('todo_', id, 'Empty suffix')])
+  const db = await getDb()
+  await db.put('todos', { key: `${id}:td-1`, node_id: id, todo: { id: 'td-1', title: 'Wrong item' } } as never)
+  expect((await readPushDirectory(id, 'td-1')).sessionTitle).toBe('A real session')
+  expect((await readPushDirectory(id, 'todo_')).sessionTitle).toBe('Empty suffix')
+  expect((await readPushDirectory(id, 'todo_missing')).sessionTitle).toBeUndefined()
+})

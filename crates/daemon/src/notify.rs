@@ -112,6 +112,11 @@ impl Notifier {
         }
     }
 
+    /// 清单通知用带前缀的不透明 id 作落点；详情仍不进入明文信封。
+    pub fn todo(&self, category: NotifyCategory, todo_id: &str) {
+        self.fire(category, &format!("todo_{todo_id}"));
+    }
+
     pub fn forget(&self, session_id: &str) {
         self.last.lock().unwrap().retain(|(sid, _), _| sid != session_id);
     }

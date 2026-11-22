@@ -662,6 +662,15 @@
       ],
       "type": "string"
     },
+    "ClearableTwinField": {
+      "enum": [
+        "agent",
+        "model",
+        "mode",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "ClientInfo": {
       "description": "设备自报信息。配对和每次 `auth` 都带。",
       "properties": {
@@ -3420,6 +3429,12 @@
     },
     "JudgeInfo": {
       "properties": {
+        "advisor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "backends": {
           "items": {
             "$ref": "#/definitions/JudgeBackendInfo"
@@ -3588,6 +3603,11 @@
         },
         "risk": {
           "$ref": "#/definitions/ModeRisk"
+        },
+        "unattended": {
+          "default": false,
+          "description": "无人值守时可以使用；由 agent 自己处理自动审批。",
+          "type": "boolean"
         }
       },
       "required": [
@@ -3767,6 +3787,11 @@
         "todo": {
           "default": false,
           "description": "支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。",
+          "type": "boolean"
+        },
+        "twin": {
+          "default": false,
+          "description": "支持分身的调度和 RPC。",
           "type": "boolean"
         },
         "workspace": {
@@ -4451,6 +4476,11 @@
         {
           "const": "follow_up",
           "description": "用户标了「待处理」的会话这一轮结束了。比 `turn_finished` 优先：标了的会话只发这一类，不再发 `turn_finished`，\n也不受 `notify.turn_finished` 的 `when_unwatched` / `never` 限制（标记本身就是用户的明确要求）。",
+          "type": "string"
+        },
+        {
+          "const": "twin_question",
+          "description": "分身提出了需要人回答的问题。",
           "type": "string"
         },
         {
@@ -7919,6 +7949,14 @@
             "null"
           ]
         },
+        "handler": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TodoHandler"
+            }
+          ],
+          "default": "me"
+        },
         "id": {
           "description": "客户端生成的 UUID；`todo.add` 按它幂等。",
           "type": "string"
@@ -8004,6 +8042,13 @@
             "null"
           ]
         },
+        "id": {
+          "description": "分身动作的请求方（local 或设备 id）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "kind": {
           "$ref": "#/definitions/TodoSourceKind"
         }
@@ -8034,6 +8079,16 @@
           "type": [
             "integer",
             "null"
+          ]
+        },
+        "handler": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoHandler"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "id": {
@@ -8353,6 +8408,120 @@
             "by"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "handed_back",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "by": {
+              "$ref": "#/definitions/TodoActor"
+            },
+            "kind": {
+              "const": "taken_over",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "action": {
+              "$ref": "#/definitions/TwinAction"
+            },
+            "kind": {
+              "const": "twin_decision",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "run_id",
+            "action",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "twin_question",
+              "type": "string"
+            },
+            "question_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "question_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "by": {
+              "$ref": "#/definitions/TodoActor"
+            },
+            "from": {
+              "$ref": "#/definitions/TodoHandler"
+            },
+            "kind": {
+              "const": "handler",
+              "type": "string"
+            },
+            "to": {
+              "$ref": "#/definitions/TodoHandler"
+            }
+          },
+          "required": [
+            "kind",
+            "from",
+            "to",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -8483,6 +8652,120 @@
             "by"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "handed_back",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "by": {
+              "$ref": "#/definitions/TodoActor"
+            },
+            "kind": {
+              "const": "taken_over",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "action": {
+              "$ref": "#/definitions/TwinAction"
+            },
+            "kind": {
+              "const": "twin_decision",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "run_id",
+            "action",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "twin_question",
+              "type": "string"
+            },
+            "question_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "question_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "by": {
+              "$ref": "#/definitions/TodoActor"
+            },
+            "from": {
+              "$ref": "#/definitions/TodoHandler"
+            },
+            "kind": {
+              "const": "handler",
+              "type": "string"
+            },
+            "to": {
+              "$ref": "#/definitions/TodoHandler"
+            }
+          },
+          "required": [
+            "kind",
+            "from",
+            "to",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -8501,6 +8784,15 @@
         "event"
       ],
       "type": "object"
+    },
+    "TodoHandler": {
+      "description": "清单项的处理人；旧节点没有这个字段时由人处理。",
+      "enum": [
+        "me",
+        "twin",
+        "unknown"
+      ],
+      "type": "string"
     },
     "TodoHistoryParams": {
       "description": "`todo.history` 的参数。",
@@ -8663,8 +8955,13 @@
           "type": "string"
         },
         {
+          "const": "twin",
+          "description": "分身做的动作。",
+          "type": "string"
+        },
+        {
           "const": "unknown",
-          "description": "这个版本不认识的来源（更新的 daemon 加了新的种类）。**daemon 自己从不产生它**，只是让旧客户端解析更新的 daemon 发来的数据时\n不报错：客户端把它当作「不是某个人记的」（docs/spec/daemon.md § 21.2）。daemon 内部对真正的三种来源逐个处理。",
+          "description": "这个版本不认识的来源（更新的 daemon 加了新的种类）。**daemon 自己从不产生它**，只是让旧客户端解析更新的 daemon 发来的数据时\n不报错：客户端把它当作「不是某个人记的」（docs/spec/daemon.md § 21.2）。daemon 内部对已知来源逐个处理。",
           "type": "string"
         }
       ]
@@ -8706,6 +9003,13 @@
     },
     "TodoUpdateParams": {
       "properties": {
+        "agent": {
+          "description": "调用方自报是 agent；不能把处理人设成分身，也不算人收下了这一项。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "body": {
           "type": [
             "string",
@@ -8725,6 +9029,16 @@
           "type": [
             "integer",
             "null"
+          ]
+        },
+        "handler": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoHandler"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "id": {
@@ -8978,6 +9292,579 @@
         "error",
         "max_turns",
         "budget"
+      ],
+      "type": "string"
+    },
+    "TwinAction": {
+      "enum": [
+        "dispatch",
+        "ask_user",
+        "ask_advisor",
+        "wait",
+        "hand_back",
+        "done",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "TwinAnswerParams": {
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "answer"
+      ],
+      "type": "object"
+    },
+    "TwinChanged": {
+      "properties": {
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TwinRun"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/TwinState"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "TwinDecision": {
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/TwinAction"
+        },
+        "note": {
+          "description": "解析后的动作参数；试跑据此展示计划，不保存原始模型输出。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outcome": {
+          "$ref": "#/definitions/TwinDecisionOutcome"
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "question": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "question_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "rules": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skip_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TwinSkipReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "todo_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "todo_id",
+        "action",
+        "reason",
+        "rules",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "TwinDecisionOutcome": {
+      "enum": [
+        "executed",
+        "skipped",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "TwinDryRunResult": {
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/TwinRun"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "type": "object"
+    },
+    "TwinGetResult": {
+      "properties": {
+        "configured": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "scope": {
+          "$ref": "#/definitions/TwinScope"
+        },
+        "state": {
+          "$ref": "#/definitions/TwinState"
+        },
+        "today": {
+          "$ref": "#/definitions/TwinToday"
+        },
+        "waiting": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "working": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "scope",
+        "state",
+        "enabled",
+        "configured",
+        "today",
+        "working",
+        "waiting"
+      ],
+      "type": "object"
+    },
+    "TwinQuestion": {
+      "properties": {
+        "answer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "answered_by": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoActor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "answered_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "created_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "options": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "question": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/TwinQuestionStatus"
+        },
+        "todo_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "todo_id",
+        "question",
+        "created_ms",
+        "status"
+      ],
+      "type": "object"
+    },
+    "TwinQuestionNotice": {
+      "properties": {
+        "question": {
+          "$ref": "#/definitions/TwinQuestion"
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "type": "object"
+    },
+    "TwinQuestionStatus": {
+      "enum": [
+        "open",
+        "answered",
+        "void",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "TwinQuestionsParams": {
+      "properties": {
+        "open_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TwinQuestionsResult": {
+      "properties": {
+        "questions": {
+          "items": {
+            "$ref": "#/definitions/TwinQuestion"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "type": "object"
+    },
+    "TwinRun": {
+      "properties": {
+        "decisions": {
+          "items": {
+            "$ref": "#/definitions/TwinDecision"
+          },
+          "type": "array"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finished_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "judge_calls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requester": {
+          "description": "本机为 local；分身连接以设备 id 作请求方。",
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/TwinRunResult"
+        },
+        "started_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "triggers": {
+          "items": {
+            "$ref": "#/definitions/TwinTrigger"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "requester",
+        "started_ms",
+        "triggers",
+        "dry_run",
+        "result",
+        "items",
+        "judge_calls",
+        "decisions"
+      ],
+      "type": "object"
+    },
+    "TwinRunResult": {
+      "enum": [
+        "done",
+        "idle",
+        "budget",
+        "failed",
+        "cancelled",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "TwinRunsParams": {
+      "properties": {
+        "before_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TwinRunsResult": {
+      "properties": {
+        "runs": {
+          "items": {
+            "$ref": "#/definitions/TwinRun"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "runs"
+      ],
+      "type": "object"
+    },
+    "TwinScope": {
+      "properties": {
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "daily_dispatches": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_sessions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "projects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "paused",
+        "projects",
+        "max_sessions",
+        "daily_dispatches"
+      ],
+      "type": "object"
+    },
+    "TwinSetParams": {
+      "properties": {
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clear": {
+          "description": "合并字段之后清空；恢复 agent / model / mode 的缺省选择。",
+          "items": {
+            "$ref": "#/definitions/ClearableTwinField"
+          },
+          "type": "array"
+        },
+        "daily_dispatches": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_sessions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paused": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "projects": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TwinSkipReason": {
+      "enum": [
+        "invalid",
+        "out_of_scope",
+        "no_capacity",
+        "budget",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "TwinState": {
+      "enum": [
+        "running",
+        "idle",
+        "paused",
+        "disabled",
+        "not_configured",
+        "budget",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "TwinToday": {
+      "properties": {
+        "dispatches": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "judge_calls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dispatches",
+        "judge_calls"
+      ],
+      "type": "object"
+    },
+    "TwinTrigger": {
+      "enum": [
+        "todo",
+        "session",
+        "answer",
+        "tick",
+        "manual",
+        "unknown"
       ],
       "type": "string"
     },
@@ -10230,6 +11117,54 @@
     "trash_entry": {
       "$ref": "#/definitions/TrashEntry"
     },
+    "twin_answer_params": {
+      "$ref": "#/definitions/TwinAnswerParams"
+    },
+    "twin_changed": {
+      "$ref": "#/definitions/TwinChanged"
+    },
+    "twin_decision": {
+      "$ref": "#/definitions/TwinDecision"
+    },
+    "twin_dry_run_result": {
+      "$ref": "#/definitions/TwinDryRunResult"
+    },
+    "twin_get_result": {
+      "$ref": "#/definitions/TwinGetResult"
+    },
+    "twin_question": {
+      "$ref": "#/definitions/TwinQuestion"
+    },
+    "twin_question_notice": {
+      "$ref": "#/definitions/TwinQuestionNotice"
+    },
+    "twin_questions_params": {
+      "$ref": "#/definitions/TwinQuestionsParams"
+    },
+    "twin_questions_result": {
+      "$ref": "#/definitions/TwinQuestionsResult"
+    },
+    "twin_run": {
+      "$ref": "#/definitions/TwinRun"
+    },
+    "twin_runs_params": {
+      "$ref": "#/definitions/TwinRunsParams"
+    },
+    "twin_runs_result": {
+      "$ref": "#/definitions/TwinRunsResult"
+    },
+    "twin_scope": {
+      "$ref": "#/definitions/TwinScope"
+    },
+    "twin_set_params": {
+      "$ref": "#/definitions/TwinSetParams"
+    },
+    "twin_state": {
+      "$ref": "#/definitions/TwinState"
+    },
+    "twin_today": {
+      "$ref": "#/definitions/TwinToday"
+    },
     "workspace_branches_params": {
       "$ref": "#/definitions/WorkspaceBranchesParams"
     },
@@ -10292,6 +11227,22 @@
     }
   },
   "required": [
+    "twin_scope",
+    "twin_state",
+    "twin_today",
+    "twin_get_result",
+    "twin_set_params",
+    "twin_run",
+    "twin_decision",
+    "twin_question",
+    "twin_dry_run_result",
+    "twin_runs_params",
+    "twin_runs_result",
+    "twin_questions_params",
+    "twin_questions_result",
+    "twin_answer_params",
+    "twin_changed",
+    "twin_question_notice",
     "kind",
     "notify_body",
     "notify_detail",
@@ -11027,6 +11978,60 @@
       "direction": "notification",
       "name": "rule.extract_done",
       "params": "RuleExtractDone",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "twin.get",
+      "params": null,
+      "result": "TwinGetResult"
+    },
+    {
+      "direction": "request",
+      "name": "twin.set",
+      "params": "TwinSetParams",
+      "result": "TwinGetResult"
+    },
+    {
+      "direction": "request",
+      "name": "twin.wake",
+      "params": null,
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "twin.dry_run",
+      "params": null,
+      "result": "TwinDryRunResult"
+    },
+    {
+      "direction": "request",
+      "name": "twin.runs",
+      "params": "TwinRunsParams",
+      "result": "TwinRunsResult"
+    },
+    {
+      "direction": "request",
+      "name": "twin.questions",
+      "params": "TwinQuestionsParams",
+      "result": "TwinQuestionsResult"
+    },
+    {
+      "direction": "request",
+      "name": "twin.answer",
+      "params": "TwinAnswerParams",
+      "result": "TwinQuestion"
+    },
+    {
+      "direction": "notification",
+      "name": "twin.changed",
+      "params": "TwinChanged",
+      "result": null
+    },
+    {
+      "direction": "notification",
+      "name": "twin.question",
+      "params": "TwinQuestionNotice",
       "result": null
     },
     {

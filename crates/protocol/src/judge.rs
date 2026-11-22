@@ -53,6 +53,8 @@ pub struct JudgeInfo {
     pub extract: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisor: Option<String>,
     pub daily_calls: u32,
 }
 

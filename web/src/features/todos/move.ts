@@ -1,5 +1,5 @@
 // 把一项移到另一个节点（docs/spec/daemon.md § 21.7，spec/web.md § 4.13）。每个节点各有一份清单，daemon 之间不通信，所以移动是客户端的事：
-// 先在目标节点 `todo.add`（**新的 id**，标题 / 正文 / 期望时间照搬，**项目清掉**——项目名在另一个节点上不一定是同一个项目，不带来源会话；
+// 先在目标节点 `todo.add`（**新的 id**，标题 / 正文 / 期望时间照搬，**处理人重置为 me**（目标节点的分身范围独立）、**项目清掉**——项目名在另一个节点上不一定是同一个项目，不带来源会话；
 // 不是 agent 加的：移过去的这一份是用户自己的），已关闭的项再在目标上改回关闭；目标**确认了**之后才在原节点 `todo.delete`。
 // 中间任何一步失败，这一项都留在原节点：宁可两个节点上各有一份，不丢。这里直接发请求，**不经离线待发队列**——队列的重放顺序没法保证
 // 「目标确认了才删原节点」，所以两个节点都要在线、这一项也不能有没发出去的改动。
@@ -330,7 +330,7 @@ async function step(key: string): Promise<MoveResult> {
     if (g2) return fail(key, g2)
     patch(key, { stage: 'adding' })
     try {
-      const added = await rpc().request<Todo>(targetNode, 'todo.add', { id: targetId, title: base.title, body: base.body, ...(base.due_ms != null ? { due_ms: base.due_ms } : {}) })
+      const added = await rpc().request<Todo>(targetNode, 'todo.add', { id: targetId, handler: 'me', title: base.title, body: base.body, ...(base.due_ms != null ? { due_ms: base.due_ms } : {}) })
       patch(key, { copy: base.state === 'open' ? 'full' : 'open', copyUpdatedMs: added.updated_ms })
       await applyConfirmedTodo(targetNode, added)
     } catch (err) {

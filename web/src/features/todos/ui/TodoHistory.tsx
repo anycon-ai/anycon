@@ -1,3 +1,4 @@
+import { TwinHistoryEvent } from '@/features/twin/TodoParts'
 import { useEffect, useMemo } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
@@ -46,10 +47,11 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
   const ready = useNodes((s) => s.byId[item.node_id]?.conn === 'ready')
   const synced = useNodes((s) => s.byId[item.node_id]?.synced === true)
   const dispatched = wasDispatched(item)
+  const twinSupported = useNodes((s) => s.byId[item.node_id]?.info?.capabilities.twin === true)
   // 打开时读第一页；节点重连并同步完之后再读一次（断线期间的事件没有通知）
   useEffect(() => {
-    if (dispatched && ready && synced) void loadHistory(item.node_id, item.id)
-  }, [dispatched, ready, synced, item.node_id, item.id])
+    if ((dispatched || twinSupported) && ready && synced) void loadHistory(item.node_id, item.id)
+  }, [dispatched, twinSupported, ready, synced, item.node_id, item.id])
   const chronological = useMemo(() => [...entry.events].reverse(), [entry.events])
   // 每个会话是派给哪个 agent 的（`result` 行用）
   const agentOf = useMemo(() => {
@@ -57,7 +59,7 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
     for (const e of entry.events) if (e.kind === 'dispatched') m.set(e.session_id, e.agent)
     return m
   }, [entry.events])
-  if (!dispatched && entry.events.length === 0) return null
+  if (!dispatched && entry.events.length === 0 && !entry.loading && !entry.failed) return null
 
   const when = (ms: number): string => formatDateTime(ms, i18n.language)
   const stateText = (s: string): string => t(`todos.states.${s}`, { defaultValue: cleanHintText(s) })
@@ -99,6 +101,12 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
             <span className="text-fg-subtle">{when(e.ts_ms)}</span> {t('todos.history.state', { from: stateText(e.from), to: stateText(e.to) })}
           </li>
         )
+      case 'twin_decision':
+      case 'handed_back':
+      case 'taken_over':
+      case 'handler':
+      case 'twin_question':
+        return <li key={e.seq} data-testid="history-row" data-kind={e.kind}><span className="text-fg-subtle">{when(e.ts_ms)}</span><TwinHistoryEvent nodeId={item.node_id} event={e} /></li>
       default:
         // 更新的 daemon 加的种类：这个版本不认识，不画
         return null

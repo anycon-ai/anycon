@@ -205,7 +205,8 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 | 命令 | 说明 |
 |---|---|
-| `anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]` | `todo.add`，id 由 CLI 生成（UUID）。打印 `added <id 前 8 位>  <title>`；`--json` 打印这一项。`--body` 是 Markdown（≤ 16 KiB），`--project` 不校验项目是否存在。**`--due`**：`YYYY-MM-DD`（当天 00:00 UTC），或 RFC 3339 时刻（`2026-12-01T09:00:00Z`、`2026-12-01T17:00+08:00`；秒可省，不收小数秒）；别的写法 → 退出码 2。标题为空 / 超过 200 字符 / 含换行、清单已满（1 000 个没关闭的项）也是错误（退出码 2，说明原因） |
+| `anycon todo add <title> [--body <text>] [--project <name>] [--due <time>] [--twin]` | `todo.add`，id 由 CLI 生成（UUID）。打印 `added <id 前 8 位>  <title>`；`--json` 打印这一项。`--body` 是 Markdown（≤ 16 KiB），`--project` 不校验项目是否存在。**`--due`**：`YYYY-MM-DD`（当天 00:00 UTC），或 RFC 3339 时刻（`2026-12-01T09:00:00Z`、`2026-12-01T17:00+08:00`；秒可省，不收小数秒）；别的写法 → 退出码 2。标题为空 / 超过 200 字符 / 含换行、清单已满（1 000 个没关闭的项）也是错误（退出码 2，说明原因） |
+| `anycon todo assign <id> me\|twin` | `todo.update { handler }`，改变处理人，不改 `state`。agent 环境里拒绝执行（退出码 5） |
 | `anycon todo ls [--all] [--project <name>] [--json]` | `todo.list`，**一页页翻到 `has_more = false`**，按 `id` 去重。缺省只列没关闭的，`--all` 加上 `done` / `dropped`；按最近修改从新到旧。列：ID（前 8 位）、STATE、ACTIVITY（派发过的项，会话现在的情况：`working` / `waiting` / `review`，算出来的，§ 22.3）、DUE（UTC）、PROJECT、BY（agent 加的项写 `agent`，没被收下的写 `agent (unreviewed)`；这个版本不认识的来源写 `other`，没被收下的写 `other (unreviewed)`）、TITLE；没有项时打印 `no to-dos`。`--json` 是 `{ "todos": [Todo] }`（CLI 解析之后再输出，不是 daemon 的原始 JSON：这个版本不认识的 `source.kind` 输出成 `"unknown"`） |
 | `anycon todo done <id>` · `drop <id>` · `reopen <id>` | `todo.update { state }`：`done`、`dropped`、`open`。打印新状态和标题；`--json` 打印这一项 |
 | `anycon todo rm <id>` | `todo.delete`（物理删除） |
@@ -218,7 +219,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 - `add` 带 `agent: true`，并把环境里的 `ANYCON_SESSION_ID` 作为 `origin_session`（会话存在才会被记下，[daemon.md § 21.2](daemon.md#212-todo)）。会话里的 agent 不需要配置 MCP 就能跑 `anycon` 命令，这是它记「之后要处理」最顺手的写法
 - `ls`、`history` 照常
-- `done` / `drop` / `reopen` / `rm` / `run` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做（`run` 的说明是「把清单项交给 agent 由你来做」，别的是「关闭、重新打开、删除由你来做」）。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）。和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线
+- `done` / `drop` / `reopen` / `rm` / `run` / `assign` / `add --twin` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做（`run` 的说明是「把清单项交给 agent 由你来做」，别的是「关闭、重新打开、删除由你来做」）。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）。和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线
 
 这是**护栏，不是安全边界**：`ANYCON_AGENT` 是 agent 能改的环境变量，能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单，对存心隐藏来源的本机进程没有约束力；daemon 把「带了 `agent: true`」的项、以及来自自报了 `local.set_client { client: "mcp" }` 的本机连接的项标成 agent 加的（后者同样是连接自报的）。
 
@@ -251,6 +252,25 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 这是**护栏，不是安全边界**（理由同 § 3.8）：真正的闸是「待确认的规则要人确认才生效」。`anycon mcp` 没有规则的工具。
 
 `anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（规则在会话的系统提示里，不在消息里；`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则，或者所选 agent 收不到规则。
+
+### 3.10 `anycon twin`
+
+分身的范围、运行记录和问题（[daemon.md § 26](daemon.md#26-分身)）。所有命令走通用的 `--local` / `--hub` / `--node` 连接，支持全局 `--json`。
+
+| 命令 | 说明 |
+|---|---|
+| `anycon twin status` | `twin.get`：打印状态、项目、agent / 模型 / 模式、运行名额及当天用量 |
+| `anycon twin pause` / `resume` | `twin.set { paused }`；已派出的会话继续 |
+| `anycon twin wake` | `twin.wake`；仍受 60 秒合并和最多 5 分钟的约束 |
+| `anycon twin dry-run` | `twin.dry_run`：打印每一项的动作、理由、执行或跳过及原因；不执行动作，计一次判断调用 |
+| `anycon twin runs [--json]` | `twin.runs`：最近的运行和每项决定；JSON 返回 `{ runs }` |
+| `anycon twin questions` | `twin.questions { open_only: true }`：打印未回答的问题 id、清单项 id、问题和选项 |
+| `anycon twin answer <id> <text>` | `twin.answer`，问题完整 id、回答 ≤ 2 KiB |
+| `anycon twin set [--projects a,b] [--agent <id>] [--model <id>] [--mode <id>] [--max-sessions <n>] [--daily-dispatches <n>] [--clear-agent] [--clear-model] [--clear-mode]` | `twin.set`：未给的字段保持不变；`--projects ''` 清空允许项目。`--clear-*` 在合并之后清空相应选择，恢复缺省 |
+
+`anycon todo add --twin` 建立 `handler = twin` 的项；`anycon todo assign <id> me\|twin` 使用清单的唯一前缀解析。未收下的 agent 项不能交给分身，要先由人收下。
+
+在 anycon 拉起的 agent 环境中，`status`、`runs`、`questions` 可读，其余子命令，以及 `todo add --twin`、`todo assign`，在连接之前拒绝执行，退出码 5。输出给终端的模型文字会显示控制字符，不执行终端转义；JSON 保留原始文字。
 
 ## 4. 输出约定
 

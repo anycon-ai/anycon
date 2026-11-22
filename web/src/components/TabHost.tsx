@@ -20,12 +20,13 @@ export function usePathname(): string {
 /** `/inbox`：地址里带 `?node=&session=` 是从通知点进来的，页面定位那一条后把它们去掉（replace，不多一条历史记录）。 */
 export function InboxHost() {
   const pathname = usePathname()
-  const search = useSearch({ strict: false }) as { node?: unknown; session?: unknown }
+  const search = useSearch({ strict: false }) as { node?: unknown; session?: unknown; todo?: unknown }
   const navigate = useNavigate()
   const active = pathname === '/inbox'
   const node = typeof search.node === 'string' ? search.node : undefined
   const session = typeof search.session === 'string' ? search.session : undefined
-  const locate = active && node && session ? { node, session } : undefined
+  const todo = typeof search.todo === 'string' ? search.todo : undefined
+  const locate = active && node && (session || todo) ? { node, session, ...(todo ? { todo } : {}) } : undefined
   const done = useCallback(() => void navigate({ to: '/inbox', search: {}, replace: true }), [navigate])
   return <InboxPage active={active} locate={locate} onLocateDone={done} />
 }

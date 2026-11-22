@@ -442,3 +442,13 @@ it('opens the pending tab explicitly after extraction, even before rule.changed 
   expect(screen.getByTestId('rules-pending-empty')).toBeInTheDocument()
   expect(screen.queryByTestId('rules-active')).toBeNull()
 })
+
+it('opens a referenced rule outside the current selection and explains a deleted reference', async () => {
+  daemon.seed(ruleItem({ id: 'r1', text: 'Only change the selected project', status: 'disabled' }))
+  await syncRules(A)
+  usePrefs.setState({ sidebarNodes: [B] })
+  const view = render(<RulesPage focus={{ node: A, rule: 'r1' }} />)
+  expect(within(screen.getByTestId('rules-focused')).getByText('Only change the selected project')).toBeInTheDocument()
+  view.rerender(<RulesPage focus={{ node: A, rule: 'gone' }} />)
+  expect(screen.getByText('This rule is no longer available.')).toBeInTheDocument()
+})

@@ -105,7 +105,32 @@ impl Rpc {
         let c = &self.ctx;
         let caller_owned = client.caller();
         let caller = &caller_owned;
+        if matches!(method, methods::TWIN_SET | methods::TWIN_WAKE | methods::TWIN_DRY_RUN | methods::TWIN_ANSWER) {
+            crate::twin::human(caller)?;
+        }
         match method {
+            methods::TWIN_GET => ok(Box::pin(crate::twin::get(c)).await?),
+            methods::TWIN_SET => ok(Box::pin(crate::twin::set(c, caller, params(p)?)).await?),
+            methods::TWIN_WAKE => ok(crate::twin::wake(c, caller).await?),
+            methods::TWIN_DRY_RUN => ok(Box::pin(crate::twin::dry_run(c, caller)).await?),
+            methods::TWIN_RUNS => ok(anycon_protocol::TwinRunsResult {
+                runs: c
+                    .store
+                    .twin_runs("local", params(p)?)
+                    .await
+                    .map_err(|_| err(ErrorCode::Internal, "twin storage error"))?,
+            }),
+            methods::TWIN_QUESTIONS => {
+                let p: anycon_protocol::TwinQuestionsParams = params(p)?;
+                ok(anycon_protocol::TwinQuestionsResult {
+                    questions: c
+                        .store
+                        .twin_questions("local", p.open_only.unwrap_or(true))
+                        .await
+                        .map_err(|_| err(ErrorCode::Internal, "twin storage error"))?,
+                })
+            }
+            methods::TWIN_ANSWER => ok(Box::pin(crate::twin::answer(c, caller, params(p)?)).await?),
             // ---------------- node ----------------
             methods::NODE_INFO => ok(self.node_info()),
             methods::NODE_DEVICES => ok(NodeDevicesResult { devices: c.peers.list() }),
@@ -746,6 +771,7 @@ impl Rpc {
                 todo: true,
                 rules: true,
                 rule_extract: true,
+                twin: true,
             },
             started_at_ms: c.started_at_ms,
             attachment_limits: Some(NodeAttachmentLimits {

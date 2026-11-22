@@ -584,7 +584,11 @@ export type NodeLogLevel = "trace" | "debug" | "info" | "warn" | "error";
 export type SecurityEventKind =
   "device_enrolled" | "password_failures" | "password_locked" | "password_changed" | "settings_changed";
 export type NotifyCategory =
-  ("permission_requested" | "turn_finished" | "error" | "session_idle") | "follow_up" | "enroll_requested" | "security";
+  | ("permission_requested" | "turn_finished" | "error" | "session_idle")
+  | "follow_up"
+  | "twin_question"
+  | "enroll_requested"
+  | "security";
 /**
  * 隧道里响应体的编码。`gzip`：`DATA` 帧拼起来是 gzip 流，预览页要先解压；`headers` 里已经去掉
  * `content-encoding` / `content-length`。
@@ -696,9 +700,13 @@ export type SyncOutcome = "up_to_date" | "merged" | "conflicts" | "aborted";
  */
 export type TodoActivity = "working" | "waiting" | "review" | "unknown";
 /**
+ * 清单项的处理人；旧节点没有这个字段时由人处理。
+ */
+export type TodoHandler = "me" | "twin" | "unknown";
+/**
  * 一项是谁记的。
  */
-export type TodoSourceKind = "device" | "local" | "agent" | "unknown";
+export type TodoSourceKind = "device" | "local" | "agent" | "twin" | "unknown";
 /**
  * 清单项的状态。这一步 daemon 不限制状态之间怎么转。
  */
@@ -742,7 +750,36 @@ export type TodoEvent1 =
       from: TodoState;
       kind: "state";
       to: TodoState;
+    }
+  | {
+      kind: "handed_back";
+      reason: string;
+      run_id?: string | null;
+    }
+  | {
+      by: TodoActor;
+      kind: "taken_over";
+    }
+  | {
+      action: TwinAction;
+      kind: "twin_decision";
+      reason: string;
+      run_id: string;
+    }
+  | {
+      kind: "twin_question";
+      question_id: string;
+    }
+  | {
+      by: TodoActor;
+      from: TodoHandler;
+      kind: "handler";
+      to: TodoHandler;
+    }
+  | {
+      kind: "unknown";
     };
+export type TwinAction = "dispatch" | "ask_user" | "ask_advisor" | "wait" | "hand_back" | "done" | "unknown";
 /**
  * 「经过」里的一条的内容；`kind` 是线路上的标签。
  */
@@ -775,7 +812,42 @@ export type TodoEventData =
       from: TodoState;
       kind: "state";
       to: TodoState;
+    }
+  | {
+      kind: "handed_back";
+      reason: string;
+      run_id?: string | null;
+    }
+  | {
+      by: TodoActor;
+      kind: "taken_over";
+    }
+  | {
+      action: TwinAction;
+      kind: "twin_decision";
+      reason: string;
+      run_id: string;
+    }
+  | {
+      kind: "twin_question";
+      question_id: string;
+    }
+  | {
+      by: TodoActor;
+      from: TodoHandler;
+      kind: "handler";
+      to: TodoHandler;
+    }
+  | {
+      kind: "unknown";
     };
+export type TwinDecisionOutcome = "executed" | "skipped" | "unknown";
+export type TwinSkipReason = "invalid" | "out_of_scope" | "no_capacity" | "budget" | "unknown";
+export type TwinRunResult = "done" | "idle" | "budget" | "failed" | "cancelled" | "unknown";
+export type TwinTrigger = "todo" | "session" | "answer" | "tick" | "manual" | "unknown";
+export type TwinState = "running" | "idle" | "paused" | "disabled" | "not_configured" | "budget" | "unknown";
+export type TwinQuestionStatus = "open" | "answered" | "void" | "unknown";
+export type ClearableTwinField = "agent" | "model" | "mode" | "unknown";
 
 /**
  * 仅用于导出 schema，不在线上传输。字段名即 TS / Python 的类型名。
@@ -972,6 +1044,22 @@ export interface ProtocolSchema {
   todo_state: TodoState;
   todo_update_params: TodoUpdateParams;
   trash_entry: TrashEntry;
+  twin_answer_params: TwinAnswerParams;
+  twin_changed: TwinChanged;
+  twin_decision: TwinDecision;
+  twin_dry_run_result: TwinDryRunResult;
+  twin_get_result: TwinGetResult;
+  twin_question: TwinQuestion;
+  twin_question_notice: TwinQuestionNotice;
+  twin_questions_params: TwinQuestionsParams;
+  twin_questions_result: TwinQuestionsResult;
+  twin_run: TwinRun;
+  twin_runs_params: TwinRunsParams;
+  twin_runs_result: TwinRunsResult;
+  twin_scope: TwinScope;
+  twin_set_params: TwinSetParams;
+  twin_state: TwinState;
+  twin_today: TwinToday;
   workspace_branches_params: WorkspaceBranchesParams;
   workspace_branches_result: WorkspaceBranchesResult;
   workspace_browse_params: WorkspaceBrowseParams;
@@ -1119,6 +1207,10 @@ export interface ModeInfo {
   id: string;
   label: string;
   risk: ModeRisk;
+  /**
+   * 无人值守时可以使用；由 agent 自己处理自动审批。
+   */
+  unattended?: boolean;
 }
 /**
  * agent 特定的其他选项（Codex fast mode、ACP 自定义 configOptions…）。客户端用通用控件渲染。
@@ -1904,6 +1996,10 @@ export interface NodeCapabilities {
    */
   todo?: boolean;
   /**
+   * 支持分身的调度和 RPC。
+   */
+  twin?: boolean;
+  /**
    * 有 workspace（文件夹即项目）。SDK 节点可能没有。
    */
   workspace: boolean;
@@ -1913,6 +2009,7 @@ export interface NodeCapabilities {
   worktree?: boolean;
 }
 export interface JudgeInfo {
+  advisor?: string | null;
   backends: JudgeBackendInfo[];
   daily_calls: number;
   extract?: string | null;
@@ -3114,6 +3211,7 @@ export interface Todo {
    * 想在什么时候之前处理；只用于显示和排序。
    */
   due_ms?: number | null;
+  handler?: TodoHandler & string;
   /**
    * 客户端生成的 UUID；`todo.add` 按它幂等。
    */
@@ -3154,6 +3252,10 @@ export interface TodoSource {
  */
 export interface TodoActor {
   device_id?: string | null;
+  /**
+   * 分身动作的请求方（local 或设备 id）。
+   */
+  id?: string | null;
   kind: TodoSourceKind;
 }
 export interface TodoAddParams {
@@ -3163,6 +3265,7 @@ export interface TodoAddParams {
   agent?: boolean | null;
   body?: string | null;
   due_ms?: number | null;
+  handler?: TodoHandler | null;
   /**
    * UUID。已经存在时原样返回已有的那一项（幂等）。
    */
@@ -3314,12 +3417,17 @@ export interface TodoListResult {
   todos: Todo[];
 }
 export interface TodoUpdateParams {
+  /**
+   * 调用方自报是 agent；不能把处理人设成分身，也不算人收下了这一项。
+   */
+  agent?: boolean | null;
   body?: string | null;
   /**
    * 要清空的可选字段，在合并之后生效。
    */
   clear?: ClearableTodoField[];
   due_ms?: number | null;
+  handler?: TodoHandler | null;
   id: string;
   project?: string | null;
   /**
@@ -3341,6 +3449,112 @@ export interface TrashEntry {
    */
   root?: string | null;
   trashed_at_ms: number;
+}
+export interface TwinAnswerParams {
+  answer: string;
+  id: string;
+}
+export interface TwinChanged {
+  run?: TwinRun | null;
+  state: TwinState;
+}
+export interface TwinRun {
+  decisions: TwinDecision[];
+  dry_run: boolean;
+  error?: JudgeError | null;
+  finished_ms?: number | null;
+  id: string;
+  items: string[];
+  judge_calls: string[];
+  /**
+   * 本机为 local；分身连接以设备 id 作请求方。
+   */
+  requester: string;
+  result: TwinRunResult;
+  started_ms: number;
+  triggers: TwinTrigger[];
+}
+export interface TwinDecision {
+  action: TwinAction;
+  /**
+   * 解析后的动作参数；试跑据此展示计划，不保存原始模型输出。
+   */
+  note?: string | null;
+  options?: string[];
+  outcome: TwinDecisionOutcome;
+  project?: string | null;
+  question?: string | null;
+  question_id?: string | null;
+  reason: string;
+  rules: string[];
+  session_id?: string | null;
+  skip_reason?: TwinSkipReason | null;
+  todo_id: string;
+}
+export interface TwinDryRunResult {
+  run: TwinRun;
+}
+export interface TwinGetResult {
+  configured: boolean;
+  enabled: boolean;
+  scope: TwinScope;
+  state: TwinState;
+  today: TwinToday;
+  waiting: string[];
+  working: string[];
+}
+export interface TwinScope {
+  agent?: string | null;
+  daily_dispatches: number;
+  max_sessions: number;
+  mode?: string | null;
+  model?: string | null;
+  paused: boolean;
+  projects: string[];
+}
+export interface TwinToday {
+  dispatches: number;
+  judge_calls: number;
+}
+export interface TwinQuestion {
+  answer?: string | null;
+  answered_by?: TodoActor | null;
+  answered_ms?: number | null;
+  created_ms: number;
+  id: string;
+  options?: string[];
+  question: string;
+  status: TwinQuestionStatus;
+  todo_id: string;
+}
+export interface TwinQuestionNotice {
+  question: TwinQuestion;
+}
+export interface TwinQuestionsParams {
+  open_only?: boolean | null;
+}
+export interface TwinQuestionsResult {
+  questions: TwinQuestion[];
+}
+export interface TwinRunsParams {
+  before_ms?: number | null;
+  limit?: number | null;
+}
+export interface TwinRunsResult {
+  runs: TwinRun[];
+}
+export interface TwinSetParams {
+  agent?: string | null;
+  /**
+   * 合并字段之后清空；恢复 agent / model / mode 的缺省选择。
+   */
+  clear?: ClearableTwinField[];
+  daily_dispatches?: number | null;
+  max_sessions?: number | null;
+  mode?: string | null;
+  model?: string | null;
+  paused?: boolean | null;
+  projects?: string[] | null;
 }
 /**
  * `workspace.branches`：给新建会话的「基于哪个分支」下拉框列分支。

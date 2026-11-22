@@ -100,6 +100,7 @@ pub struct Ctx {
     pub agents: Arc<Agents>,
     pub judge: Arc<crate::judge::service::Judge>,
     pub extractor: crate::rule_extract::Extractor,
+    pub twin: crate::twin::Twin,
     pub sessions: Arc<Sessions>,
     pub blobs: Arc<Blobs>,
     pub workspace: Arc<Workspace>,
@@ -286,6 +287,7 @@ impl Daemon {
             agents: agents.clone(),
             judge: judge.clone(),
             extractor: Default::default(),
+            twin: Default::default(),
             sessions: sessions.clone(),
             blobs,
             workspace: workspace.clone(),
@@ -304,6 +306,7 @@ impl Daemon {
             started: Instant::now(),
             shutdown_tx,
         });
+        sessions.bind_twin(&ctx);
         let rpc = Rpc::new(ctx.clone());
 
         // 周期探测跳过有进行中会话的 agent；Weak 避免 Agents ↔ Sessions 互相持有
@@ -330,6 +333,7 @@ impl Daemon {
         tasks.extend(preview.spawn_background());
         tasks.push(judge.spawn_cleanup());
         tasks.push(crate::rule_extract::spawn(&ctx));
+        tasks.push(crate::twin::spawn(&ctx));
         // 更新检查：第一次在几分钟之后，之后大约每天一次；关着时不发请求（ADR-57）
         if let Some(off) = updates.off_reason() {
             tracing::debug!(reason = off.describe(), "update check is off");
@@ -404,6 +408,7 @@ impl Daemon {
     pub async fn shutdown(mut self) {
         tracing::info!("daemon shutting down");
         let _ = self.ctx.shutdown_tx.send(true);
+        self.ctx.twin.wait_idle().await;
         self.ctx.judge.wait_idle().await;
         self.ctx.extractor.wait_idle().await;
         self.ctx.preview.shutdown().await;

@@ -159,6 +159,12 @@ fn kind_of(e: &TodoEvent) -> &'static str {
         TodoEventData::Dispatched { .. } => "dispatched",
         TodoEventData::Result { .. } => "result",
         TodoEventData::State { .. } => "state",
+        TodoEventData::HandedBack { .. } => "handed_back",
+        TodoEventData::TakenOver { .. } => "taken_over",
+        TodoEventData::TwinDecision { .. } => "twin_decision",
+        TodoEventData::TwinQuestion { .. } => "twin_question",
+        TodoEventData::Handler { .. } => "handler",
+        TodoEventData::Unknown => "unknown",
     }
 }
 
@@ -246,7 +252,7 @@ async fn dispatch_opens_a_worktree_session_and_links_it() {
             assert_eq!((session_id.as_str(), agent.as_str()), (r.session.id.as_str(), "fake"));
             assert_eq!(*workspace_mode, SessionWorkspaceMode::Worktree);
             assert!(!no_push);
-            assert_eq!(*by, TodoActor { kind: TodoSourceKind::Local, device_id: None });
+            assert_eq!(*by, TodoActor { id: None, kind: TodoSourceKind::Local, device_id: None });
         }
         other => panic!("{other:?}"),
     }
@@ -437,7 +443,7 @@ async fn an_mcp_connection_cannot_dispatch_but_a_paired_device_can() {
     let h = wait_history(&td, &mut cli, &t.id, 1).await;
     match &h.last().unwrap().data {
         TodoEventData::Dispatched { by, .. } => {
-            assert_eq!(*by, TodoActor { kind: TodoSourceKind::Device, device_id: Some("dev-phone".into()) })
+            assert_eq!(*by, TodoActor { id: None, kind: TodoSourceKind::Device, device_id: Some("dev-phone".into()) })
         }
         other => panic!("{other:?}"),
     }
@@ -719,7 +725,11 @@ async fn a_persons_state_is_never_changed_by_session_activity() {
     let h = wait_results(&td, &mut c, &t.id, 2).await;
     assert_eq!(
         states(&h),
-        vec![(TodoState::Open, TodoState::Waiting, TodoActor { kind: TodoSourceKind::Local, device_id: None })]
+        vec![(
+            TodoState::Open,
+            TodoState::Waiting,
+            TodoActor { id: None, kind: TodoSourceKind::Local, device_id: None }
+        )]
     );
     td.shutdown().await;
 }
@@ -1666,14 +1676,14 @@ async fn no_stale_activity_notification_follows_a_delete() {
 }
 
 #[tokio::test]
-async fn history_skips_rows_it_cannot_read_instead_of_failing_the_page() {
+async fn history_keeps_unknown_kinds_and_skips_malformed_rows() {
     let td = TestDaemon::start_git(&[]).await;
     project_dir(&td, "proj");
     let mut c = td.local_cli_client();
     let t = new_todo(&td, &mut c, "Old rows", "", Some("proj")).await;
     dispatch(&td, &mut c, &t.id, json!({})).await;
     wait_results(&td, &mut c, &t.id, 1).await;
-    // 这个分支更早的版本留下的 `by: "dispatch"`，和不认识的 kind
+    // 旧数据的 by 结构损坏时跳过；更新版本的 kind 保留为 Unknown。
     for (seq, data) in [
         (100, r#"{"kind":"state","from":"working","to":"review","by":"dispatch"}"#),
         (101, r#"{"kind":"something_new","x":1}"#),
@@ -1689,8 +1699,10 @@ async fn history_skips_rows_it_cannot_read_instead_of_failing_the_page() {
         .unwrap();
     }
     let h = history(&td, &mut c, &t.id).await;
-    assert_eq!(h.len(), 2, "the readable rows are still there: {h:?}");
-    assert!(h.iter().all(|e| e.seq < 100));
+    assert_eq!(h.len(), 3, "the readable rows and future kinds are still there: {h:?}");
+    assert_eq!(h[0].seq, 101);
+    assert_eq!(h[0].data, TodoEventData::Unknown);
+    assert!(h.iter().all(|e| e.seq != 100));
     // 带着这样的行再派发也不会失败
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     dispatch(&td, &mut c, &t.id, json!({})).await;

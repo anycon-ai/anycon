@@ -18,6 +18,7 @@ mod rule_cmds;
 mod service;
 mod todo_cmds;
 mod transfer_cmds;
+mod twin_cmds;
 mod worktree_cmds;
 
 use std::process::ExitCode;
@@ -70,6 +71,7 @@ async fn run(cli: Cli) -> Result<u8> {
         Command::Export(a) => transfer_cmds::export(&app, a).await,
         Command::Import(a) => transfer_cmds::import(&app, a).await,
         Command::Todo(c) => todo_cmds::todo(&app, c).await,
+        Command::Twin(c) => twin_cmds::twin(&app, c).await,
         Command::Rule(c) => rule_cmds::rule(&app, c).await,
         Command::Mcp(a) => mcp::run(&app, a).await,
         Command::Audit(a) => commands::audit(&app, a).await,

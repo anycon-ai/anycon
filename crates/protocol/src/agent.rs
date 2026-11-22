@@ -80,6 +80,9 @@ pub struct ModeInfo {
     #[serde(default)]
     pub default: bool,
     pub risk: ModeRisk,
+    /// 无人值守时可以使用；由 agent 自己处理自动审批。
+    #[serde(default)]
+    pub unattended: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]

@@ -24,6 +24,7 @@ import { activityOf, isReview } from '../activity'
 import { DispatchDialog } from './DispatchDialog'
 import { HandlerChip, LinkedStatus } from './ActivityBits'
 import { MoveTodoDialog } from './MoveTodoDialog'
+import { TwinHandlerButton } from '@/features/twin/TodoParts'
 import { TodoHistory } from './TodoHistory'
 import { fieldErrorText, outboxErrorText } from './errors'
 
@@ -38,7 +39,6 @@ export function dueToInput(ms: number | null | undefined): string {
 /**
  * 单项详情（桌面在右半边，手机是二级页，spec/web.md § 4.12）：标题和正文可编辑（不编辑时正文按 Markdown 渲染，和助手消息同一条
  * 消毒管线，从不当 HTML）、项目、期望时间、状态（打开 / 处理中 / 完成 / 不做了）、删除（二次确认）；agent 记的项有回到来源会话的链接。
- * 这一步没有「让 agent 处理」「交给分身」。
  */
 /** 草稿里的字段值（和 `datetime-local` 的格式）：从一项现在的样子读出来。 */
 export function valuesOf(item: Pick<ViewTodo, 'title' | 'body' | 'project' | 'due_ms'>): EditValues {
@@ -271,9 +271,12 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           </Button>
         )}
         {!isClosed(item.state) ? (
-          <Button variant={isReview(item) ? 'outline' : 'primary'} disabled={!online} onClick={() => setDispatching(true)} title={online ? undefined : t('dispatch.blocked.offline')} data-testid="todo-dispatch">
-            {t('dispatch.action')}
-          </Button>
+          <>
+            <TwinHandlerButton item={item} />
+            <Button variant={isReview(item) ? 'outline' : 'primary'} disabled={!online} onClick={() => setDispatching(true)} title={online ? undefined : t('dispatch.blocked.offline')} data-testid="todo-dispatch">
+              {t('dispatch.action')}
+            </Button>
+          </>
         ) : null}
         {isReview(item) ? (
           <Link to="/todos/$node/$todo/review" params={{ node: shortNodeId(item.node_id, order), todo: item.id }} className="inline-flex min-h-9 items-center rounded-md border border-border-strong px-3 text-sm font-medium hover:bg-bg-hover max-md:min-h-11" data-testid="todo-review-link">

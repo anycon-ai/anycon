@@ -235,6 +235,8 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `anycon rule reject <id>` | `rule.update { status: rejected }`：留着，之后提炼时不再提同样的，但永远不生效 |
 | `anycon rule disable <id>` | `rule.update { status: disabled }`：停用，留着，可以再 `enable` |
 | `anycon rule rm <id>` | `rule.delete`（物理删除） |
+| `anycon rule extract <session> [--no-wait] [--json]` | `rule.extract`（[daemon.md § 23.9](daemon.md#239-提炼)，规格，还没实现）：把这个会话的决策点交给判断后端，提炼出待确认的规则。`<session>` 接受唯一前缀，同 `anycon session`。缺省等 `rule.extract_done`（最多等后端的 `timeout` 再加 30 秒），然后打印新建的每条规则（全文用 `visible()`，带 id 和 `anycon rule confirm <id>` 的提示）和丢掉的条数；`--no-wait` 打印开始了就退出。没有新的决策点时打印 `no new decision points`，退出码 0。失败时退出码 1，stderr 是错误码的说明（`budget` 带 `used / limit`）|
+| `anycon rule runs [--session <session>] [--json]` | `rule.extract_runs`：最近 20 次提炼，列：时间、会话（前 8 位）、TRIGGER、STATUS、ADDED、DROPPED、错误码；第一行是今天用了几次、上限几次 |
 
 `<id>` 接受唯一前缀（UUID 的前几位，不区分大小写），和 `anycon todo` 一样：完整的 UUID 直接用，不列表；没有匹配 → 退出码 1（`not_found`），匹配到多个 → 2。经前缀找到的规则，`confirm` / `reject` / `disable` / `enable` / `rm` 都带它列出时的 `if_updated_ms`：这期间别处改过这条规则（比如改了文字）就不动它，提示重新 `anycon rule ls`。已经是目标状态时打印 `nothing changed: … is already …`。
 
@@ -242,7 +244,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 - `add` 带 `agent: true`，并把环境里的 `ANYCON_SESSION_ID` 作为 `origin_session`（会话存在才记）：规则记成待确认、来源是 agent，打印 `proposed …` 并提示 `anycon rule confirm <id>`；它在你确认之前不生效
 - `ls`、`show` 照常
-- `confirm` / `reject` / `disable` / `enable` / `rm` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）
+- `confirm` / `reject` / `disable` / `enable` / `rm` / `extract` 拒绝执行：退出码 5，stderr 说明这些在 anycon 拉起的 agent 里不可用、由人来做。这是 **CLI 自己**做的拒绝（daemon 看不到环境变量，只拦自报了 `mcp` 的连接）
 
 这是**护栏，不是安全边界**（理由同 § 3.8）：真正的闸是「待确认的规则要人确认才生效」。`anycon mcp` 没有规则的工具。
 

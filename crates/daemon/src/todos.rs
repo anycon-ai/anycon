@@ -484,6 +484,9 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
     c.audit.record(caller, "todo.add", Some(&todo.id), detail).await;
     c.sessions.todo_signal().note_sent(&todo.id, todo.activity);
     notify_changed(&c.clients, TodoChanged { id: todo.id.clone(), todo: Some(todo.clone()), deleted: false });
+    if todo.handler == TodoHandler::Twin {
+        c.twin.trigger(c, anycon_protocol::TwinTrigger::Todo).await?;
+    }
     Ok(todo)
 }
 
@@ -565,6 +568,15 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     new.updated_ms = next_updated_ms(now, old.updated_ms);
     let mut tx = c.store.pool().begin().await.map_err(StoreError::from).map_err(internal)?;
     save_todo_on(&mut *tx, &new).await.map_err(internal)?;
+    if new.handler == TodoHandler::Twin && old.handler != TodoHandler::Twin {
+        // 人重新交给分身时允许重试；保留会话结局水位，避免把旧的失败再计一次。
+        sqlx::query("UPDATE twin_items SET failures=0 WHERE todo_id=?")
+            .bind(&new.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::from)
+            .map_err(internal)?;
+    }
     let handler_event = if new.handler != old.handler {
         Some(
             crate::todo_dispatch::event_append_on(
@@ -600,6 +612,12 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     new.activity = crate::todo_dispatch::compute_activity(&c.sessions, &new).await;
     c.sessions.todo_signal().note_sent(&new.id, new.activity);
     notify_changed(&c.clients, TodoChanged { id: new.id.clone(), todo: Some(new.clone()), deleted: false });
+    if new.handler != TodoHandler::Twin || new.state.is_closed() {
+        crate::twin::void_questions(c, &new.id).await?;
+    }
+    if new.handler == TodoHandler::Twin {
+        c.twin.trigger(c, anycon_protocol::TwinTrigger::Todo).await?;
+    }
     Ok(new)
 }
 
@@ -630,6 +648,7 @@ pub async fn delete(c: &Ctx, caller: &Caller, p: TodoDeleteParams) -> RpcResult<
     if !c.store.todo_delete(id).await.map_err(internal)? {
         return Err(not_found(id));
     }
+    crate::twin::void_questions(c, id).await?;
     c.audit.record(caller, "todo.delete", Some(id), json!({})).await;
     c.sessions.todo_signal().forget(id);
     notify_changed(&c.clients, TodoChanged { id: id.to_string(), todo: None, deleted: true });

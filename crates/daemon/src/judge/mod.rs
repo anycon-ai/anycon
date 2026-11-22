@@ -1,5 +1,5 @@
 //! 判断后端（docs/spec/daemon.md § 25，ADR-54 第 4 条）：分身要做的「判断」交给一个由用户在 `config.toml` 里配置的后端，
-//! 现在用到它的只有提炼规则（§ 23.9）。`kind = "api"` 是 daemon 直接调用模型 API（[`api`]），`kind = "agent"` 是一次性
+//! 提炼规则（§ 23.9）、分拣和顾问（§ 26）共用它。`kind = "api"` 是 daemon 直接调用模型 API（[`api`]），`kind = "agent"` 是一次性
 //! 调用本机的 agent CLI（[`agent`]）。
 //!
 //! 这里只放各后端共用的类型和 [`Backend`] 接口。提示和回应都是用户内容：不进日志、不存库，错误里也不带。

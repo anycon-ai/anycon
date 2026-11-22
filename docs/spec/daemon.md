@@ -1202,7 +1202,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 ## 21. 清单
 
-> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间与移到另一个节点)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单，没有分身，没有任何模型调用。手动派发（§ 22）已经实现；决策档案和分身自动唤醒各自实现时再补规格。
+> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间与移到另一个节点)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单。手动派发（§ 22）、决策档案（§ 23）和分身自动唤醒（§ 26 的 4a）也已实现。
 
 ### 21.1 范围
 
@@ -1793,7 +1793,7 @@ ExtractRun {
 
 ## 25. 判断后端
 
-> **已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。现在用到它的只有提炼规则（§ 23.9）；分拣和顾问在第 4 步。
+> **已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。提炼规则（§ 23.9）、分拣和顾问（§ 26）都使用它。
 
 ### 25.1 配置
 
@@ -1882,7 +1882,7 @@ timeout = "5m"
   - 到了上限，手动的请求回 `invalid`（`data.reason = "budget"`，带 `used` 和 `limit`）；自动的等到第二天。
 - **同时只有一次**：一个节点同时只有一次调用在进行。`Judge::begin` 依次检查没配或后端不能用（`not_configured`）→ 拿不到节点调用锁（`busy`）→ 今天次数用完（`budget`）。预算在拿到锁之后查询，避免并发请求同时通过。
   - 检查通过返回 `Permit`，持有锁和按当时配置构造的后端；提炼先预留再插入 `running` 记录，失败的调用同样关联 `call_id`；检查及预留不写记录。直接丢弃只释放锁；调用 `Permit::call` 才开始记账和后台调用，之后的配置热加载不改变这次调用。
-- **`judge_calls` 表**：每次调用留一行，记时间、位置（`extract`，之后还有 `triage`、`advisor`）、后端名、种类、模型、结果（`ok` 或错误码）、输入和输出的字节数、usage。
+- **`judge_calls` 表**：每次调用留一行，记时间、位置（`extract`、`triage`、`advisor`）、后端名、种类、模型、结果（`ok` 或错误码）、输入和输出的字节数、usage。
   - **不存提示和回应的内容**，日志里也没有：日志只记位置、后端名、结果、耗时和字节数。
   - 记录保留 90 天。`rule_extract_runs` 同样清理 90 天前的已结束记录，但保留每个会话最新的 `done`（按 `started_ms`、同毫秒的插入顺序确定，不论多旧），避免水位丢失后重复提炼。
 - **daemon 停下时**：正在进行的调用被取消，记成 `cancelled`。下次启动时，未结束的调用也补记 `cancelled`，仍为 `running` 的提炼改为 `failed` / `cancelled`。已开始的调用独立于 RPC 调用方的连接存活，断线不丢掉记账收尾；关库前等待收尾完成。
@@ -1926,11 +1926,12 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
   - Codex 的一次性调用还能在只读沙箱里跑只读命令：摘录里注入的指令可能让它读这台机器上的文件，再写进回答里。
   - 回答最多只能变成待确认的规则，要人看过才生效。但在这之前，它已经经过了 Codex 的模型服务。
 - **注入**：摘录里有 agent 写的文字，可能带着注入的指令。提炼出来的规则一律待确认（§ 23.2），确认界面显示全文和出处；模板里也写明 agent 写的部分是数据，不是指令。但模板挡不住注入，挡得住的只有人工确认这一道闸。
-- **hub**：看不到任何新的东西。
+- **分身分拣**：会把交给分身且在范围内的清单项、之前的结果、问题和回答，以及生效规则发给判断后端；`api` 是 daemon 经 HTTPS 直接发给配置的模型服务、不经 hub，`agent` 是本机 agent CLI 发给它的模型服务。固定动作的校验只限制 daemon 执行什么，不会把后端自身变成沙箱；上述 Codex 只读命令的限制同样适用。分身只能在允许的项目里派发、固定带「不 push、不开 PR」，不能批准权限。
+- **hub**：清单及判断内容不进入明文信封；分身新增 `twin_question` 类别以及带 `todo_` 前缀的不透明落点 id。
 
 ## 26. 分身
 
-> **规格，还没实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
+> **4a 已实现：daemon 和 CLI（§ 26.1–§ 26.8）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
 
 分身是 daemon 里的一个调度者：被事件唤醒，看清单里交给它的项，决定每一项怎么办，再用第 2 步的派发（§ 22）开会话去做。它自己不干活，也不批准权限。
 
@@ -1953,7 +1954,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 |---|---|---|
 | `paused` | `false` | 一键暂停：不唤醒、不派发；已经派出的会话照常跑完 |
 | `projects` | `[]` | 能进哪些项目。**空 = 未配置**，分身什么都不做 |
-| `agent` | 节点的缺省 agent | 派出的会话用哪个 agent |
+| `agent` | 节点 ready 的 agent 按 id 排序的第一个 | 派出的会话用哪个 agent；节点当前没有单独的全局缺省 agent 字段，明确设置可固定选择 |
 | `model` | agent 的缺省 | 可选 |
 | `mode` | 见下 | 派出的会话用哪个权限模式 |
 | `max_sessions` | 2 | 它派出的会话同时最多几个；不能超过 `sessions.max_concurrent − 1`，至少给人留一个名额 |
@@ -1995,7 +1996,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
   后面接着节点生效的全节点规则（§ 23.5 同一段文字）。
 - **项**：每一项一段，标出 `id`、标题、正文、`project`、派发次数、最近几次的结果（同 § 22.4 交接用的那几条）、现在的 `activity`、它问过的问题和你的回答。
-  - 每项最多 6 KiB，合计最多 32 KiB；放不下的项这次不看，下次再看，按 `updated_ms` 从早到晚。
+  - 每项最多 6 KiB，合计最多 32 KiB；放不下的项这次不看，下次再看，按 `updated_ms` 从早到晚。上次因总量放不下的项在下一次优先，组内仍按 `updated_ms` 从早到晚；这个待看队列只在内存里保存，重启后从最早修改的项开始。
   - 内容区用 § 23.9 那样的随机边界包起来。
 - **可用的东西**：允许的项目，各自的项目规则；还能派几次、还能同时开几个会话；顾问能不能用。
 
@@ -2017,7 +2018,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 **运行约束**：
 
-- 同一项连续 3 次派发失败（派发本身出错，或者会话以出错结束），就交回给你，写明原因。
+- 同一项连续 3 次派发失败（派发本身出错，或者会话以出错结束），就交回给你，写明原因。人再次把处理人改成 `twin` 时重置连续失败计数，保留已经统计过的会话结局水位，允许在修复问题后重新交给分身。
 - 它派出的会话在运行中 2 小时没有任何事件，算卡住：交回给你。会话不取消，交给你决定。
 - 正在处理的项（派出的会话还没结束一轮的）最多 `max_sessions` 个；每天派发最多 `daily_dispatches` 次。
 
@@ -2027,7 +2028,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 - **表 `twin_questions`**：`id`、`todo_id`、`question`、`options`、`created_ms`、`answered_ms`、`answer`、`answered_by`。问题是**模型写的**，客户端按「agent 写的」显示，纯文字。
 - **回答**：`twin.answer { id, answer }`，`answer` ≤ 2 KiB，只由人发；回答之后触发一次唤醒。一项同时只有一个没回答的问题，再问会替换它（旧的标成「已作废」）。
-- **通知**：新类别 `twin_question`，这是 v0.4 里 hub 唯一的改动，它只多认一个类别词。缺省推送开、邮件关；文案和落点见 web.md § 14.10。
+- **通知**：新类别 `twin_question`，这是 v0.4 里 hub 唯一的改动，它只多认一个类别词。缺省推送开、邮件关。沿用现有 `NotifyBody`：`session_id = "todo_<todo_id>"` 表示清单项落点（`follow_up` 的交回通知也用这个表示法），不是一个会话；客户端识别前缀后打开该节点的清单项。和现有推送相同，`detail = None`，不尝试使用带计数器的 Noise 通道加密带外详情，所以不构造 `NotifyDetail`，标题、问题及回答都不进入明文信封。在线详情通过 E2E 的 `twin.question` 和 `todo.get` 取得；文案见 web.md § 14.10。
 - **没回答的问题**：一直留着，不超时；项被关闭、`handler` 改回 `me` 时作废。
 
 ### 26.6 你接手了
@@ -2043,8 +2044,8 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 - **表 `twin_runs`**：`id`、请求方、`started_ms`、`finished_ms`、触发（合并进来的几种）、`dry_run`、`result`（`done` / `idle` / `budget` / `failed` / `cancelled`）、看了哪些项、判断调用的 id、每项的决定（`action`、`reason`、`rules`、执行结果和不执行的原因）、错误码。
   - 不存提示和模型的原始回答，存的是解析后的决定；`reason` 是模型写的，按 agent 写的内容显示。
-  - 保留 90 天。
-- **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。
+  - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`，会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
+- **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。沿用审计的设备字段，`device_id` 填请求方、`device_name = "twin"`；新增的操作者放在 `detail.actor`，不写清单正文、问题、回答和理由。
 - **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
 
 ### 26.8 RPC
@@ -2065,9 +2066,9 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 `twin.set.clear` 同 `todo.update`：合并后清空 `agent` / `model` / `mode`，恢复缺省选择；字段缺省表示保持不变。
 
-线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget`、`session_id?`、`question_id?`、`project?`。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
+线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget`、`session_id?`、`question_id?`、`project?`、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
 
-协议、配置和 Todo 处理人已经具备；调度和 `twin.*` 处理尚未启用，当前 `capabilities.twin = false`，调用这些方法仍回 `unsupported`。
+`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9、§ 26.10 尚未实现。
 
 除了读的方法（`twin.get`、`twin.runs`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
 

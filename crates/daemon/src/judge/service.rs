@@ -234,6 +234,7 @@ pub struct Judge {
     gate: Arc<Mutex<()>>,
     shutdown: watch::Receiver<bool>,
     clock: Arc<Clock>,
+    calls_changed: watch::Sender<()>,
 }
 
 impl Judge {
@@ -253,6 +254,7 @@ impl Judge {
         let clock = Arc::new(Clock::default());
         store.cancel_unfinished_judge_calls(clock.now()).await?;
         store.cancel_running_extract_runs(clock.now()).await?;
+        store.cancel_twin_runs(clock.now()).await?;
         Ok(Arc::new(Self {
             config,
             store,
@@ -262,6 +264,7 @@ impl Judge {
             gate: Arc::new(Mutex::new(())),
             shutdown,
             clock,
+            calls_changed: watch::channel(()).0,
         }))
     }
 
@@ -273,6 +276,11 @@ impl Judge {
     }
     pub fn clock(&self) -> &Clock {
         &self.clock
+    }
+
+    /// 所有位置共享判断预算；记录开始后让分身重新计算状态。
+    pub(crate) fn subscribe_calls(&self) -> watch::Receiver<()> {
+        self.calls_changed.subscribe()
     }
 
     /// 替换工厂只影响之后的调用，不改变已经进行中的后端。
@@ -311,6 +319,7 @@ impl Judge {
             store: self.store.clone(),
             clock: self.clock.clone(),
             shutdown: self.shutdown.clone(),
+            calls_changed: self.calls_changed.clone(),
         })
     }
 
@@ -327,6 +336,7 @@ impl Judge {
         let before = self.clock.now().saturating_sub(90 * 24 * 3600 * 1000);
         self.store.prune_extract_runs(before).await?;
         self.store.prune_judge_calls(before).await?;
+        self.store.prune_twin(before).await?;
         Ok(())
     }
 
@@ -361,6 +371,7 @@ pub struct Permit {
     store: Store,
     clock: Arc<Clock>,
     shutdown: watch::Receiver<bool>,
+    calls_changed: watch::Sender<()>,
 }
 
 impl Permit {
@@ -379,7 +390,7 @@ impl Permit {
         let recorded = Arc::new(RwLock::new(None));
         let record = recorded.clone();
         let result = tokio::spawn(async move {
-            let Self { guard, position, backend, backend_info, store, clock, mut shutdown } = self;
+            let Self { guard, position, backend, backend_info, store, clock, mut shutdown, calls_changed } = self;
             let _guard = guard;
             if *shutdown.borrow() {
                 return Err(ServiceError::Call(CallError::Cancelled));
@@ -402,6 +413,7 @@ impl Permit {
                 .await
                 .map_err(|_| CallError::Internal)?;
             *record.write().unwrap() = Some(call_id.clone());
+            calls_changed.send_replace(());
             let timer = Instant::now();
             let result = tokio::select! {
                 biased;

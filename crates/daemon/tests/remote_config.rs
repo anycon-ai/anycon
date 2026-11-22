@@ -601,7 +601,7 @@ async fn twin_switch_only_tightens_and_advisor_selects_configured_backends() {
     );
     let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
     assert_eq!(info.judge.unwrap().advisor.as_deref(), Some("local"));
-    assert!(!info.capabilities.twin);
+    assert!(info.capabilities.twin);
     let _: NodeConfigResult = c
         .call(
             &td,

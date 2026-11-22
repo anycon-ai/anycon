@@ -14,7 +14,7 @@ use std::time::Duration;
 use anycon_daemon::judge::{JudgeReply, Usage};
 use anycon_daemon::testutil::{FakeHubLink, FakeJudgeBackend, TestClient, TestDaemon};
 use anycon_protocol::methods::{self, Direction, REGISTRY};
-use anycon_protocol::{DeviceKind, EnrollFrame, EnrollHint, EnrollMethod, ErrorCode, Event, NodeInfo, SessionEvent};
+use anycon_protocol::{DeviceKind, EnrollFrame, EnrollHint, EnrollMethod, Event, SessionEvent};
 use jsonschema::Validator;
 use serde_json::{json, Value};
 
@@ -37,27 +37,7 @@ const NOT_CALLED: &[(&str, &str)] = &[
         methods::JOB_CANCEL,
         "needs a clone job that is still running; an offline test cannot keep one running (tests/socket.rs covers the NotFound path); its `Empty` result is validated through the other `result: None` methods",
     ),
-    (methods::TWIN_GET, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
-    (methods::TWIN_SET, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
-    (methods::TWIN_WAKE, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
-    (methods::TWIN_DRY_RUN, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
-    (methods::TWIN_RUNS, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
-    (methods::TWIN_QUESTIONS, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
-    (methods::TWIN_ANSWER, "分身 RPC 尚未启用；twin_methods_are_registered_but_unavailable 覆盖 unsupported"),
 ];
-
-#[tokio::test]
-async fn twin_methods_are_registered_but_unavailable() {
-    let td = TestDaemon::start().await;
-    let mut c = td.local_cli_client();
-    let info: NodeInfo = c.call(&td, methods::NODE_INFO, json!({})).await.unwrap();
-    assert!(!info.capabilities.twin);
-    for (method, _) in NOT_CALLED.iter().filter(|(method, _)| method.starts_with("twin.")) {
-        let err = c.call::<Value>(&td, method, json!({})).await.unwrap_err();
-        assert_eq!(err.data.unwrap().code, ErrorCode::Unsupported, "{method}");
-    }
-    td.shutdown().await;
-}
 
 struct Walk<'a> {
     td: &'a TestDaemon,
@@ -514,6 +494,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
     Box::pin(walk_todo(&mut w)).await;
     Box::pin(walk_rule(&mut w)).await;
     Box::pin(walk_rule_extract(&mut w)).await;
+    Box::pin(walk_twin(&mut w)).await;
     Box::pin(walk_worktree(&mut w, &td)).await;
     let psid = Box::pin(walk_permission(&mut w)).await;
     Box::pin(walk_preview(&mut w, &td, &psid)).await;
@@ -546,6 +527,8 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         methods::TODO_EVENT,
         methods::RULE_CHANGED,
         methods::RULE_EXTRACT_DONE,
+        methods::TWIN_CHANGED,
+        methods::TWIN_QUESTION,
     ] {
         assert!(seen.contains(want), "the walk should have produced {want}: {seen:?}");
     }
@@ -572,4 +555,29 @@ async fn the_validator_rejects_a_response_that_drifted_from_its_type() {
     assert!(!w.validator("NodeInfo", "x").is_valid(&nested), "a nested type through $ref");
     assert!(!w.validator("Empty", "x").is_valid(&Value::Null), "null is not an Empty result");
     td.shutdown().await;
+}
+
+/// 分身的七个请求和两种通知都使用实际结果进行 schema 校验。
+async fn walk_twin(w: &mut Walk<'_>) {
+    w.td.fake.declare_no_push.store(true, std::sync::atomic::Ordering::SeqCst);
+    w.call(methods::AGENT_LIST, json!({"refresh":true})).await;
+    anycon_daemon::config::set_value(&w.td.paths, "judge.triage", "local").unwrap();
+    w.td.ctx.config.reload().unwrap();
+    w.call(methods::TWIN_GET, json!({})).await;
+    w.call(methods::TWIN_SET, json!({"projects":["todoproj"],"agent":"fake","mode":"ask"})).await;
+    let id = uuid::Uuid::new_v4().to_string();
+    w.call(methods::TODO_ADD, json!({"id":id,"title":"a preference","project":"todoproj","handler":"twin"})).await;
+    let backend=FakeJudgeBackend::new([Ok(JudgeReply {text:json!({"items":[{"id":id,"action":"ask_user","reason":"Need your preference","question":"Which approach?","options":["A","B"]}]}).to_string(),..Default::default()}),Ok(JudgeReply {text:"{\"items\":[]}".into(),..Default::default()})]);
+    w.td.ctx.judge.set_backend_factory(Arc::new(move |_| backend.clone()));
+    w.call(methods::TWIN_WAKE, json!({})).await;
+    w.td.ctx.judge.clock().set(anycon_daemon::util::now_ms() + 61_000);
+    w.td.ctx.twin.poll(&w.td.ctx).await.unwrap();
+    w.td.ctx.twin.wait_idle().await;
+    let questions = w.call(methods::TWIN_QUESTIONS, json!({"open_only":true})).await;
+    let qid = questions["questions"][0]["id"].clone();
+    assert!(qid.is_string());
+    w.call(methods::TWIN_ANSWER, json!({"id":qid,"answer":"A"})).await;
+    w.call(methods::TWIN_DRY_RUN, json!({})).await;
+    w.call(methods::TWIN_RUNS, json!({"limit":20})).await;
+    w.call(methods::TWIN_SET, json!({"paused":true})).await;
 }

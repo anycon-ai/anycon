@@ -111,6 +111,9 @@ pub enum Command {
     /// the sessions that to-dos are handed to (and of other sessions when the node is set to do so)
     #[command(subcommand)]
     Rule(RuleCmd),
+    /// Configure the twin, inspect its decisions and answer its questions
+    #[command(subcommand)]
+    Twin(TwinCmd),
     /// Run an MCP server on stdio so other agents can look at and drive this node's sessions through MCP tools
     /// (use `anycon mcp` as the server command in an MCP client's config)
     Mcp(McpArgs),
@@ -137,6 +140,14 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum TodoCmd {
+    /// Choose who handles an item (not available inside an anycon agent session)
+    Assign {
+        /// To-do id (a prefix is enough)
+        id: String,
+        /// Handler: me or twin
+        #[arg(value_parser=["me", "twin"])]
+        handler: String,
+    },
     /// Add an item to the node's to-do list. Inside an agent session that anycon started, the item is marked as added by
     /// an agent and waits for you to review it
     Add(TodoAddArgs),
@@ -281,6 +292,9 @@ pub struct TodoHistoryArgs {
 
 #[derive(Args, Debug)]
 pub struct TodoAddArgs {
+    /// Let the twin handle this item (not available inside an anycon agent session)
+    #[arg(long)]
+    pub twin: bool,
     /// One line, at most 200 characters
     pub title: String,
     /// Longer notes in Markdown (at most 16 KiB)
@@ -1001,4 +1015,57 @@ mod tests {
         assert!(parse(&["projects", "trash", "app", "--root", "/x"]).is_err());
         assert!(parse(&["projects", "rename", "a", "b", "--root", "/x"]).is_err());
     }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TwinCmd {
+    /// Show the twin's scope, state and today's usage
+    Status,
+    /// Pause automatic work
+    Pause,
+    /// Resume automatic work
+    Resume,
+    /// Request a wake, subject to the merge window
+    Wake,
+    /// Inspect a plan without executing it (uses one judgement call)
+    DryRun,
+    /// List recent runs
+    Runs,
+    /// List questions waiting for an answer
+    Questions,
+    /// Answer an open question
+    Answer { id: String, text: String },
+    /// Update scope and limits; omitted fields stay unchanged
+    Set(TwinSetArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TwinSetArgs {
+    /// Allowed projects, separated by commas; an empty string clears them
+    #[arg(long)]
+    pub projects: Option<String>,
+    /// Agent to dispatch to
+    #[arg(long)]
+    pub agent: Option<String>,
+    /// Model for dispatched sessions
+    #[arg(long)]
+    pub model: Option<String>,
+    /// Permission mode for dispatched sessions
+    #[arg(long)]
+    pub mode: Option<String>,
+    /// Maximum simultaneous items
+    #[arg(long)]
+    pub max_sessions: Option<u32>,
+    /// Maximum dispatches per local day
+    #[arg(long)]
+    pub daily_dispatches: Option<u32>,
+    /// Restore the default agent
+    #[arg(long)]
+    pub clear_agent: bool,
+    /// Restore the agent's default model
+    #[arg(long)]
+    pub clear_model: bool,
+    /// Restore automatic mode selection
+    #[arg(long)]
+    pub clear_mode: bool,
 }

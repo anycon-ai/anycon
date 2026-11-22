@@ -3476,8 +3476,14 @@ export interface TwinRun {
 }
 export interface TwinDecision {
   action: TwinAction;
+  /**
+   * 解析后的动作参数；试跑据此展示计划，不保存原始模型输出。
+   */
+  note?: string | null;
+  options?: string[];
   outcome: TwinDecisionOutcome;
   project?: string | null;
+  question?: string | null;
   question_id?: string | null;
   reason: string;
   rules: string[];

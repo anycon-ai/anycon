@@ -7,6 +7,7 @@
 //! - `store` / `config` / `audit` / `blobs`：SQLite 存储、配置、审计、附件通道
 //! - `remote_config` / `logtail`：远程查看 / 修改节点配置（白名单，ADR-43）、远程读日志尾部（`node.logs`）
 //! - `todos` / `todo_dispatch`：清单（`todo.*`，每个节点一份个人待办，§ 21）和派发（`todo.dispatch`，从一项开会话、关联、`activity`、「经过」，§ 22）
+//! - `twin`：分身的事件唤醒、分拣、范围与预算、确定性动作和问题（§ 26）
 //! - `rules`：决策档案的规则（`rule.*`，每个节点一份，生效的规则注入派发出去的会话的系统提示，§ 23）
 //! - `transfer`：`anycon export` / `import`（会话历史和附件的 zip 导出 / 导入，只走本机通道）
 //! - `preview`：dev server 预览（票据、端口探测、Noise 隧道里的 HTTP / WebSocket 转发）
@@ -49,6 +50,7 @@ pub mod sys;
 pub mod todo_dispatch;
 pub mod todos;
 pub mod transfer;
+pub mod twin;
 pub mod update;
 pub mod util;
 pub mod workfiles;

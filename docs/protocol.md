@@ -330,10 +330,10 @@ daemon                      hub                        新客户端
 | `rule.extract` | C→D | `{ session_id }` → `{ run?: ExtractRun, points }`：把会话的决策点交给判断后端提炼成待确认的规则（[spec/daemon.md § 23.9](spec/daemon.md#239-提炼)）。`points = 0` 时什么都不做、没有 `run`；否则立即返回 `status = running` 的 `run`，结束时发 `rule.extract_done`。`invalid` 的 `data.reason`：`not_configured`、`budget`、`busy`；自报了 `mcp` 的连接 → `forbidden`。`capabilities.rule_extract` 为 true 时才有 |
 | `rule.extract_runs` | C→D | `{ session_id?, limit? }` → `{ runs: [ExtractRun], used_today, daily_calls }` |
 | `rule.extract_done` | D→C notification | `{ run: ExtractRun }`：一次提炼结束时发给所有在线客户端 |
-| `twin.get` | C→D | `{}` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working, waiting }`（[spec/daemon.md § 26.8](spec/daemon.md#268-rpc)） |
+| `twin.get` | C→D | `capabilities.twin = true` 时可用；`{}` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working, waiting }`（[spec/daemon.md § 26.8](spec/daemon.md#268-rpc)） |
 | `twin.set` | C→D | `{ paused?, projects?, agent?, model?, mode?, max_sessions?, daily_dispatches?, clear? }` → `TwinGetResult`；`clear` 在合并后清空 `agent` / `model` / `mode` |
 | `twin.wake` | C→D | `{}` → `{}` |
-| `twin.dry_run` | C→D | `{}` → `{ run: TwinRun }` |
+| `twin.dry_run` | C→D | `{}` → `{ run: TwinRun }`；决定含动作参数 `note?` / `question?` / `options?`，只校验不执行，计一次判断调用 |
 | `twin.runs` | C→D | `{ limit?, before_ms? }` → `{ runs: [TwinRun] }` |
 | `twin.questions` | C→D | `{ open_only? }` → `{ questions: [TwinQuestion] }` |
 | `twin.answer` | C→D | `{ id, answer }` → `TwinQuestion` |

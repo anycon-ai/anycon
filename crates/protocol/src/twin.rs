@@ -177,6 +177,13 @@ pub struct TwinDecision {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_id: Option<String>,
+    /// 解析后的动作参数；试跑据此展示计划，不保存原始模型输出。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
 }

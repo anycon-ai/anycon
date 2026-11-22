@@ -170,6 +170,7 @@ fn friendly(e: CliError) -> CliError {
 
 pub async fn todo(app: &App, cmd: TodoCmd) -> Result<u8> {
     match cmd {
+        TodoCmd::Assign { id, handler } => assign(app, &id, &handler).await,
         TodoCmd::Add(a) => add(app, a).await,
         TodoCmd::Ls(a) => ls(app, a).await,
         TodoCmd::Done { id } => set_state(app, "done", &id, TodoState::Done, "done").await,
@@ -182,10 +183,13 @@ pub async fn todo(app: &App, cmd: TodoCmd) -> Result<u8> {
 }
 
 async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
+    if a.twin {
+        refuse_inside_agent("add --twin")?;
+    }
     let due_ms = a.due.as_deref().map(parse_due).transpose()?;
     let nested = inside_agent();
     let params = TodoAddParams {
-        handler: None,
+        handler: a.twin.then_some(TodoHandler::Twin),
         // 客户端生成 id：`todo.add` 按它幂等
         id: uuid::Uuid::new_v4().to_string(),
         title: a.title,
@@ -526,6 +530,31 @@ async fn history(app: &App, a: TodoHistoryArgs) -> Result<u8> {
         for line in body {
             println!("    {line}");
         }
+    }
+    Ok(0)
+}
+
+async fn assign(app: &App, key: &str, handler: &str) -> Result<u8> {
+    refuse_inside_agent("assign")?;
+    let conn = app.conn().await?;
+    let id = match resolve_todo(&conn, key, false).await? {
+        Ok(t) => t.id,
+        Err(id) => id,
+    };
+    let t: Todo = conn
+        .call(
+            methods::TODO_UPDATE,
+            TodoUpdateParams {
+                id,
+                handler: Some(if handler == "twin" { TodoHandler::Twin } else { TodoHandler::Me }),
+                ..empty_update()
+            },
+        )
+        .await?;
+    if app.json() {
+        app.out.json_line(&t);
+    } else {
+        println!("{} is handled by {}", short(&t.id), handler);
     }
     Ok(0)
 }

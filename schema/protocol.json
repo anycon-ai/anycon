@@ -9348,10 +9348,29 @@
         "action": {
           "$ref": "#/definitions/TwinAction"
         },
+        "note": {
+          "description": "解析后的动作参数；试跑据此展示计划，不保存原始模型输出。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "outcome": {
           "$ref": "#/definitions/TwinDecisionOutcome"
         },
         "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "question": {
           "type": [
             "string",
             "null"

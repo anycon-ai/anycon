@@ -768,6 +768,7 @@
           "decisions": [
             {
               "action": "dispatch",
+              "note": "Keep changes small",
               "outcome": "skipped",
               "project": "app",
               "reason": "Ready",
@@ -820,6 +821,7 @@
           "decisions": [
             {
               "action": "dispatch",
+              "note": "Keep changes small",
               "outcome": "skipped",
               "project": "app",
               "reason": "Ready",
@@ -981,6 +983,7 @@
             "decisions": [
               {
                 "action": "dispatch",
+                "note": "Keep changes small",
                 "outcome": "skipped",
                 "project": "app",
                 "reason": "Ready",

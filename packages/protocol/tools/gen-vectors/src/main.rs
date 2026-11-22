@@ -356,6 +356,9 @@ fn main() {
         items: vec!["t".into()],
         judge_calls: vec!["j".into()],
         decisions: vec![TwinDecision {
+            note: Some("Keep changes small".into()),
+            question: None,
+            options: vec![],
             todo_id: "t".into(),
             action: TwinAction::Dispatch,
             reason: "Ready".into(),

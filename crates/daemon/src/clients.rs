@@ -26,6 +26,15 @@ impl Caller {
         Caller { device_id: "daemon".into(), device_name: "daemon".into(), kind: DeviceKind::Daemon, local: true }
     }
 
+    /// 分身内部操作的请求方身份；不用于客户端自报。
+    pub fn twin(requester: &str) -> Self {
+        Self { device_id: requester.into(), device_name: "twin".into(), kind: DeviceKind::Daemon, local: true }
+    }
+
+    pub fn is_twin(&self) -> bool {
+        self.local && self.kind == DeviceKind::Daemon && self.device_name == "twin"
+    }
+
     pub fn local_cli() -> Self {
         Self::local(LocalClientKind::Cli)
     }

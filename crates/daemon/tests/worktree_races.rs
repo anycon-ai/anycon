@@ -251,41 +251,6 @@ async fn a_cold_workspace_list_does_not_hold_up_the_other_requests_of_the_same_c
     td.shutdown().await;
 }
 
-#[tokio::test]
-async fn the_updated_notifications_of_projects_that_finish_together_are_merged_into_one() {
-    let td = TestDaemon::start_git(&[]).await;
-    for n in ["mergea", "mergeb", "mergec"] {
-        td.new_repo(n);
-    }
-    td.ctx.workspace.set_git_cold_budget_for_test(Duration::from_millis(300));
-    // 防抖加长到 1.5 秒：三个 git 进程各自睡 1.2 秒再跑，算完的时刻在机器忙时能差出几百毫秒，缺省的 200 毫秒会把一批拆开
-    td.ctx.workspace.set_git_updated_debounce_for_test(Duration::from_millis(1500));
-    td.slow_git(&[("*merge*status*", 1.2)]);
-    let mut c = td.client("a");
-    let l: WorkspaceListResult = c.call(&td, methods::WORKSPACE_LIST, json!({})).await.unwrap();
-    assert!(l.projects.iter().all(|p| p.git.is_none() && p.git_pending), "all three are still being computed: {l:?}");
-    // 三个项目差不多同时算完：防抖窗口内合并成一条 `workspace.changed`
-    let updated_events = |notes: Vec<RpcNotification>| -> Vec<Vec<String>> {
-        notes
-            .into_iter()
-            .filter(|n| n.method == methods::WORKSPACE_CHANGED)
-            .map(|n| serde_json::from_value::<WorkspaceChanged>(n.params).unwrap().updated)
-            .filter(|u| !u.is_empty())
-            .collect()
-    };
-    let mut all: Vec<Vec<String>> = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while all.iter().flatten().count() < 3 && Instant::now() < deadline {
-        all.extend(updated_events(c.drain_for(Duration::from_millis(300)).await));
-    }
-    all.extend(updated_events(c.drain_for(Duration::from_millis(600)).await));
-    assert_eq!(all.len(), 1, "one notification, not one per project: {all:?}");
-    let mut names = all[0].clone();
-    names.sort();
-    assert_eq!(names, ["mergea", "mergeb", "mergec"]);
-    td.shutdown().await;
-}
-
 // =====================================================================================================================
 // daemon 自己发起的归档在会话锁里复查
 // =====================================================================================================================

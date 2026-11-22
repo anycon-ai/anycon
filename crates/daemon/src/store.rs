@@ -13,6 +13,7 @@ use anycon_protocol::{
     AgentInfo, AuditEntry, DeviceKind, Event, SearchHit, SessionEvent, SessionSettings, SessionStatus, UsageTotals,
     WorktreeState,
 };
+use futures::TryStreamExt;
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
@@ -546,6 +547,48 @@ impl Store {
         let mut evs = rows.iter().map(Self::row_to_event).collect::<Result<Vec<_>>>()?;
         evs.reverse();
         Ok(evs)
+    }
+
+    /// 历史的一页：只解码直到字节边界的候选，不为之后的每一页重复读取整段大事件；最近一页按升序返回。
+    pub async fn history_page(
+        &self,
+        session_id: &str,
+        after_seq: u64,
+        before_seq: Option<u64>,
+        limit: u32,
+    ) -> Result<(Vec<SessionEvent>, bool)> {
+        let sql = if before_seq.is_some() {
+            "SELECT * FROM events WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?"
+        } else {
+            "SELECT * FROM events WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?"
+        };
+        let mut rows = sqlx::query(sql)
+            .bind(session_id)
+            .bind(before_seq.unwrap_or(after_seq) as i64)
+            .bind(i64::from(limit) + 1)
+            .fetch(&self.pool);
+        let mut events = Vec::new();
+        let mut bytes = 0;
+        let mut has_more = false;
+        while let Some(row) = rows.try_next().await? {
+            if events.len() == limit as usize {
+                has_more = true;
+                break;
+            }
+            let mut event = Self::row_to_event(&row)?;
+            crate::limits::limit_event(&mut event.event);
+            bytes += crate::limits::event_bytes(&event);
+            events.push(event);
+            if events.len() > 1 && bytes > crate::limits::HISTORY_PAGE_MAX {
+                has_more = true;
+                break;
+            }
+        }
+        if before_seq.is_some() {
+            events.reverse();
+        }
+        let (events, cut) = crate::limits::cap_page(events, crate::limits::HISTORY_PAGE_MAX, before_seq.is_some());
+        Ok((events, has_more || cut))
     }
 
     pub async fn max_seq(&self, session_id: &str) -> Result<u64> {
@@ -1870,6 +1913,25 @@ mod tests {
         s.close().await;
         let s2 = Store::open(&_d.path().join("daemon.db")).await.unwrap();
         assert_eq!(s2.load_sessions().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn history_does_not_decode_events_beyond_the_byte_budget() {
+        let (_d, s) = temp_store().await;
+        s.upsert_session(&row("s1", None)).await.unwrap();
+        for seq in 1..=5 {
+            s.append_event(&ev("s1", seq, Event::TextDelta { text: "x".repeat(150_000) })).await.unwrap();
+        }
+        // 第三个事件是解码哨兵：无论翻页方向，前两个候选已经确定了字节边界，不应解码它。
+        sqlx::query("UPDATE events SET event = 'invalid json' WHERE seq = 3").execute(&s.pool).await.unwrap();
+        for before in [None, Some(6)] {
+            let (page, more) = s.history_page("s1", 0, before, 500).await.unwrap();
+            assert!(more);
+            assert_eq!(page.len(), 1);
+            assert_eq!(page[0].seq, if before.is_some() { 5 } else { 1 });
+        }
+        // 真正翻到坏事件时才报告解码错误。
+        assert!(s.history_page("s1", 2, None, 500).await.is_err());
     }
 
     #[tokio::test]

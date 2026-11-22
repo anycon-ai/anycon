@@ -2982,27 +2982,12 @@ impl Sessions {
     pub async fn history(&self, p: SessionHistoryParams) -> RpcResult<SessionHistoryResult> {
         self.get(&p.session_id)?;
         let limit = p.limit.unwrap_or(200).clamp(1, 1000);
-        let store = &self.d.store;
-        let fetch = limit + 1;
-        let io = |e: crate::store::StoreError| err(ErrorCode::Internal, e.to_string());
-        let (mut evs, mut has_more, keep_newest) = if let Some(before) = p.before_seq {
-            let mut evs = store.events_before(&p.session_id, before, fetch).await.map_err(io)?;
-            let has_more = evs.len() as u32 > limit;
-            if has_more {
-                evs.remove(0);
-            }
-            (evs, has_more, true)
-        } else {
-            let mut evs = store.events_after(&p.session_id, p.after_seq, fetch).await.map_err(io)?;
-            let has_more = evs.len() as u32 > limit;
-            evs.truncate(limit as usize);
-            (evs, has_more, false)
-        };
-        for e in &mut evs {
-            limits::limit_event(&mut e.event);
-        }
-        let (events, cut) = limits::cap_page(std::mem::take(&mut evs), limits::HISTORY_PAGE_MAX, keep_newest);
-        has_more |= cut;
+        let (events, has_more) = self
+            .d
+            .store
+            .history_page(&p.session_id, p.after_seq, p.before_seq, limit)
+            .await
+            .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
         Ok(SessionHistoryResult { events, has_more })
     }
 

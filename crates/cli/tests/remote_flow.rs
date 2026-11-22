@@ -395,10 +395,13 @@ async fn the_cli_reads_a_multi_mib_history_through_the_hub() {
             .await
         );
     }
+    let started = std::time::Instant::now();
     let r = anycon(&chome, &["history", &s.id, "--json"], None, &[]).await;
+    eprintln!("6 MB history through the hub: {:?}", started.elapsed());
     assert_eq!(r.code, 0, "{}", r.stderr);
-    let big = r
-        .json_lines()
+    let events = r.json_lines();
+    assert!(events.windows(2).all(|w| w[0]["seq"].as_u64().unwrap() < w[1]["seq"].as_u64().unwrap()));
+    let big = events
         .iter()
         .filter(|e| {
             e["event"]["type"] == "text_delta" && e["event"]["text"].as_str().is_some_and(|t| t.len() == 150_000)

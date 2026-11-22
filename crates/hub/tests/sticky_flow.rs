@@ -16,6 +16,7 @@ use anycon_hub::config::MIN_ENVELOPE_BYTES;
 use anycon_protocol::envelope::frame::{self, DataFrame, Reassembler};
 use anycon_protocol::{Control, DeviceKind, DropReason, Envelope, Kind};
 use common::*;
+use futures::FutureExt;
 use tokio::task::JoinHandle;
 
 const MIB: usize = 1024 * 1024;
@@ -199,7 +200,9 @@ fn spawn_receiver(
     tokio::spawn(async move {
         let mut got = Received::default();
         let mut reasm = Reassembler::new();
-        tokio::time::sleep(first_delay).await;
+        if !first_delay.is_zero() {
+            tokio::time::sleep(first_delay).await;
+        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         loop {
             // 收齐之后再多等一会儿，看有没有重复的片
@@ -244,7 +247,9 @@ fn spawn_receiver(
                         }
                         Err(err) => got.frame_errors.push(format!("seq {}: {err}", e.seq)),
                     }
-                    tokio::time::sleep(per_frame).await;
+                    if !per_frame.is_zero() {
+                        tokio::time::sleep(per_frame).await;
+                    }
                 }
                 Some(Recv::Env(_)) => {} // peer_online 等
             }
@@ -302,13 +307,9 @@ impl Flow {
         );
     }
 
-    /// `rate_limited` 每秒至多一条（接收时刻有一点抖动，留 10% 余量），提示至少 100 ms。
-    fn assert_rate_limited_notices_are_spaced(&self) {
+    /// 提示至少 100 ms。通知限频由 `ReceiptGate` 的确定性时间测试覆盖，接收时刻会受网络和任务调度影响。
+    fn assert_retry_after_is_bounded(&self) {
         let n = &self.sender.stats.rate_limited;
-        for w in n.windows(2) {
-            let gap = w[1].0.duration_since(w[0].0);
-            assert!(gap >= Duration::from_millis(900), "two rate_limited notices {gap:?} apart: {n:?}");
-        }
         assert!(
             n.iter().all(|(_, ms)| (100..=30_000).contains(ms)),
             "retry_after_ms is between 100 ms and 30 s (the client caps it at 30 s): {n:?}"
@@ -325,6 +326,31 @@ struct FlowSpec {
 }
 
 async fn run_flow(hub: TestHub, spec: FlowSpec) -> Flow {
+    run_flow_with_frozen_burst(hub, spec, false).await
+}
+
+/// 冻结初始突发期间的时钟；保持任务可运行，阻止 Tokio 在等待 socket 时自动推进到下一个定时器。
+struct FrozenClock(JoinHandle<()>);
+
+impl FrozenClock {
+    fn new() -> Self {
+        tokio::time::pause();
+        Self(tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        }))
+    }
+}
+
+impl Drop for FrozenClock {
+    fn drop(&mut self) {
+        self.0.abort();
+        tokio::time::resume();
+    }
+}
+
+async fn run_flow_with_frozen_burst(hub: TestHub, spec: FlowSpec, freeze_burst: bool) -> Flow {
     let a = hub.seed_device(spec.sender_kind, "sender").await;
     let b = hub.seed_device(spec.receiver_kind, "receiver").await;
     hub.seed_paired(&a, &b).await;
@@ -339,9 +365,23 @@ async fn run_flow(hub: TestHub, spec: FlowSpec) -> Flow {
     let ciphertexts: Vec<Vec<u8>> = messages.iter().map(|m| tx.encrypt(m).expect("encrypt")).collect();
     let mut sender = Sender::new(da, &b.id);
     let started = Instant::now();
+    let frozen = freeze_burst.then(FrozenClock::new);
     let mut frames = 0;
     for (i, ct) in ciphertexts.iter().enumerate() {
         frames += sender.send_message(ct, i as u32 + 1).await;
+    }
+    if freeze_burst {
+        // 所有分片经过同一个不回填的桶。收到限流回执后才恢复时间，之后按真实 retry_after_ms 重发。
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while sender.stats.rate_limited.is_empty() && Instant::now() < deadline {
+            match sender.dev.recv_within(Duration::ZERO).now_or_never().flatten() {
+                Some(Recv::Env(e)) => sender.absorb(e),
+                Some(other) => panic!("sender disconnected during the frozen burst: {other:?}"),
+                None => tokio::task::yield_now().await,
+            }
+        }
+        drop(frozen);
+        assert!(!sender.stats.rate_limited.is_empty(), "the frozen burst must exceed the byte budget");
     }
     if let Err(code) = sender.settle().await {
         panic!("the sender's connection was closed ({code:?}) before everything was delivered");
@@ -434,19 +474,25 @@ async fn thirty_mib_from_a_daemon_to_a_slow_reader_loses_nothing_and_stays_conne
 )]
 #[tokio::test]
 async fn thirty_mib_over_a_lower_daemon_budget_is_throttled_not_dropped() {
-    // 把 daemon 预算降到 20 MiB / 分钟（桶容量 20 MiB，回填约 0.33 MiB / 秒）：灌 30 MiB 会撞上它，多出来的要等额度慢慢回来（约 30 秒）。
-    // 传输耗时 T 秒时桶里最多能过 20 + 0.33·T MiB，要小于 30 MiB，即 T < 30 s：共享的 CI 机器上实测 T 约 10 s，
-    // 预算取 27 MiB 时上限只有约 7 s，补充量就把余下的数据全放过去了，预算根本没被打到。
-    let hub = TestHub::start_with(|c| c.limits.daemon_bytes_per_min = 20 * MIB as u64).await;
-    let flow = run_flow(
+    // 初始 30 MiB 突发期间冻结桶的时钟：20 MiB 用完后必然限流，不会因机器慢而回填出剩余的额度。
+    let hub = TestHub::start_with(|c| {
+        c.limits.daemon_bytes_per_min = 20 * MIB as u64;
+        // 缓冲能容纳整个突发，不让缓冲背压挡在字节预算之前；慢读和小缓冲由其他流量测试覆盖。
+        c.outbound_buffer_bytes = 32 * MIB;
+        // 时钟冻结时信封窗口也不前进；这里只验证字节预算。
+        c.limits.conn_envelopes_per_sec = u32::MAX;
+    })
+    .await;
+    let flow = run_flow_with_frozen_burst(
         hub,
         FlowSpec {
             sender_kind: DeviceKind::Daemon,
             receiver_kind: DeviceKind::Web,
             sizes: vec![10 * MIB, 10 * MIB, 10 * MIB],
-            first_delay: Duration::from_millis(100),
+            first_delay: Duration::ZERO,
             per_frame: Duration::ZERO,
         },
+        true,
     )
     .await;
     flow.report("flow");
@@ -454,8 +500,7 @@ async fn thirty_mib_over_a_lower_daemon_budget_is_throttled_not_dropped() {
     let s = &flow.sender.stats;
     assert!(!s.rate_limited.is_empty(), "the budget must actually have been hit");
     assert!(s.backpressure > 0 && s.resent > 0);
-    flow.assert_rate_limited_notices_are_spaced();
-    assert!(flow.elapsed >= Duration::from_secs(2), "the last few MiB had to wait for the budget: {:?}", flow.elapsed);
+    flow.assert_retry_after_is_bounded();
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +529,7 @@ async fn a_client_over_its_10_mib_per_minute_budget_is_throttled_not_dropped_whi
     let s = &flow.sender.stats;
     assert!(!s.rate_limited.is_empty(), "11 MiB is over the client budget");
     assert!(s.backpressure > 0 && s.resent > 0);
-    flow.assert_rate_limited_notices_are_spaced();
+    flow.assert_retry_after_is_bounded();
     assert!(flow.elapsed >= Duration::from_secs(3), "{:?}", flow.elapsed);
 
     // 同一个 hub 上，daemon 种类发同样多的数据：不会碰到速率限制

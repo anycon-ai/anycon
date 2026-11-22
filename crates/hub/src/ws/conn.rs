@@ -608,7 +608,7 @@ async fn on_binary(state: &Arc<AppState>, conn: &Arc<Conn>, cs: &mut ConnState, 
     if cs.hub_closed {
         return;
     }
-    let now = Instant::now();
+    let now = tokio::time::Instant::now().into_std();
     let limits = &state.config.limits;
     // 先只解信封头（解不出来的帧照样计入信封速率）。
     let hdr = rmp_serde::from_slice::<Header>(&frame).ok();

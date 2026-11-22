@@ -1208,7 +1208,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 清单记的是「现在或之后要处理的事」，一项一条。它属于这台节点：存在 daemon 的 SQLite 里，所有已配对设备看到同一份，hub 不存也不转存（节点离线时的行为见 § 21.6）。
 
-不做：标签、里程碑、看板视图、子项、排序拖拽、和外部 issue 系统同步、到期提醒的推送（新的通知类别要改外层信封和 hub，这一步不加）。周期性的项在分身那一步才有（ADR-54 第 10 条），到时 `Todo` 多一个可选字段，这一步的客户端不用为它做准备。
+不做：标签、里程碑、看板视图、子项、排序拖拽、和外部 issue 系统同步、到期提醒的推送（新的通知类别要改外层信封和 hub，这一步不加）。周期性的项（ADR-54 第 10 条）是 `Todo` 的一个可选字段 `repeat`，见 [§ 26.9](#269-周期项和-pr-事件4b)；不带它的项和没有这个字段的旧客户端都不受影响。
 
 ### 21.2 `Todo`
 
@@ -1221,12 +1221,13 @@ Todo {
   state:      open | working | waiting | review | done | dropped
   handler:    me | twin   // 缺省 me；旧 daemon 没给时按 me 读，未知值也按 me 显示
   due_ms?:    timestamp   // 想在什么时候之前处理；这一步只用于显示和排序
-  source:     { kind: device | local | agent | twin, device_id?, session_id? }   // daemon 填，调用方不能指定
+  source:     { kind: device | local | agent | twin | repeat, device_id?, session_id?, todo_id? }   // daemon 填，调用方不能指定；`todo_id` 只有 `kind = repeat` 才有（§ 26.9）
   unreviewed: bool        // agent 记的、还没有人收下的项；见下
   created_ms: timestamp
   updated_ms: timestamp
   closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉；在 done 和 dropped 之间换时保持原来的
   sessions: [session_id]  // 这一项派出的会话（§ 22.3）；旧 daemon 没有，按空读
+  repeat?:    { kind: daily | weekdays | weekly, at: "HH:MM", weekday?: 1..7, next_ms? }   // 周期规则：带它的项是模板（§ 26.9）；只由人设置
   activity?: working | waiting | review   // 派出的会话现在的情况，每次返回这一项时算出来，不存（§ 22.3）；已关闭或没派发过的项没有。之后可能多出新的值：解析时落到 `unknown`（Rust 的 `TodoActivity::Unknown`），客户端按「不显示 activity」处理，不能因此失败；daemon 自己不产生它
 }
 ```
@@ -1267,8 +1268,8 @@ Todo {
 |---|---|---|
 | `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；`include_closed` 时也给已关闭的。`project` 去掉首尾空白后按名字精确比较（和存的名字同样处理）。按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 填上一页最后一项的这两个值，返回排在它后面的。`limit` 缺省 200、上限 1000。一页另有字节预算：各项序列化后的字节累计超过 1 MiB 就停（至少给一项），所以一页可能少于 `limit`；后面还有没给出的项时 `has_more = true` |
 | `todo.get` | C→D | `{ id }` → `Todo`。读一项；只读，不审计、不通知。`id` 不存在 → `not_found`，不是小写带连字符的 UUID → `invalid`（`data.field = "id"`，同 `todo.add`）。客户端用它在做破坏性的动作之前向节点确认「这一项现在是什么样」，而不是信缓存 |
-| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, handler?, agent?, origin_session? }` → `Todo`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
-| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, handler?, reviewed?, agent?, clear? }` → `Todo`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白；`id` 不是小写 UUID 同样 `invalid`，`todo.delete` 也是）；**把 `done` / `dropped` 的项改回没关闭的状态时，和新建一样占一个名额：已有 1000 个没关闭的项 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）**；`clear` 列出要清空的可选字段（`project` `due_ms`），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
+| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, handler?, agent?, origin_session?, repeat? }` → `Todo`。`repeat` 见 § 26.9：`kind` 不认识、`at` 不是 `00:00`–`23:59` 的 `HH:MM`、`weekly` 没有 1–7 的 `weekday` 或别的种类带了 `weekday` → `invalid`（`data.field = "repeat"`，`data.reason` 是 `kind` / `at` / `weekday`）；自报 `mcp` 的连接或 `agent: true` 的写入带 `repeat` → `forbidden`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
+| `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, handler?, reviewed?, agent?, repeat?, clear? }` → `Todo`。`repeat` 设置或替换周期规则（规则变了，下一次从现在起算，不补设置之前的时间点），校验和错误同 `todo.add`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白；`id` 不是小写 UUID 同样 `invalid`，`todo.delete` 也是）；**把 `done` / `dropped` 的项改回没关闭的状态时，和新建一样占一个名额：已有 1000 个没关闭的项 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）**；`clear` 列出要清空的可选字段（`project` `due_ms` `repeat`；清掉 `repeat` 的限制同设置它：agent 不能清），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
 | `todo.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除。`id` 不存在 → `not_found`（重放时客户端把它当作已完成）。给了 `if_updated_ms`、而这一项现在的 `updated_ms` 不是它：什么都不删，`invalid`（`data.field = "if_updated_ms"`，`data.reason = "changed"`，`data.updated_ms` 是现在的值），不审计、不通知；检查和删除在同一把锁里，中间没有别的写入。没给就无条件删 |
 | `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
 
@@ -1288,7 +1289,7 @@ Todo {
 |---|---|
 | `todos` | id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 
-迁移 `0008_todo_handler.sql` 为 `todos` 增加 `handler TEXT NOT NULL DEFAULT 'me'`，已有项保持由人处理。
+迁移 `0008_todo_handler.sql` 为 `todos` 增加 `handler TEXT NOT NULL DEFAULT 'me'`，已有项保持由人处理。迁移 `0010_todo_repeat.sql` 为 `todos` 增加 `repeat_kind`、`repeat_at`、`repeat_weekday`（周期规则）、`repeat_last_ms`（这个模板最近处理过的规则时间，§ 26.9）和 `source_todo`（复制出来的项记着模板的 id），都可以为空。
 
 已关闭的项按 `history_retention`（§ 3）清理，从 `closed_ms` 起算；没关闭的不清理。`title` / `body` 是用户内容：不进日志（§ 17），不进审计。
 
@@ -1298,7 +1299,7 @@ Todo {
 
 ### 21.5 审计
 
-`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind, handler }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state` `handler`，`unreviewed` 被清掉时也列上），`state` 或 `handler` 变了另记相应的 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
+`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind, handler }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state` `handler` `repeat`，`unreviewed` 被清掉时也列上）；`add` 带周期规则时另记 `repeat: true`。周期项到点复制出一项记 `todo.repeat`（发起者是 `daemon`），`target` 是新项的 id，`detail` 是 `{ template, at_ms }`，不记标题和正文，`state` 或 `handler` 变了另记相应的 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
 
 ### 21.6 节点离线
 
@@ -1328,7 +1329,7 @@ Todo {
 ### 21.8 客户端入口
 
 - **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；派发之后的界面用 `activity` 显示会话的情况；显示哪些节点的清单跟随空间切换（[web.md § 4.13](web.md#413-空间与移到另一个节点)）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
-- **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>]`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
+- **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>] [--repeat <spec>]`、`anycon todo edit <id> --repeat <spec> | --no-repeat`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
 - **`anycon mcp`**：两个新工具。`list_todos`（`todo.list`，只读）；`add_todo`（`todo.add`：`title`、`body`、`project`；总是带 `agent: true`，连的是本机还是经 hub 都一样）。**`add_todo` 在 anycon 拉起的 agent 里也能用**，不需要 `--allow-nested`：会话里的 agent 记下「之后要处理」正是它的用途，它不开会话、不触发任何 turn，写进去的项标着 `source.kind = agent`。agent 没有修改、关闭、删除清单项的工具。
 - **SDK**：`@anycon/sdk` 的节点对象上有 `todo.*` 的薄封装和 `todo.changed` 事件，类型来自生成的协议类型；不替调用方做离线缓存和重放。Python SDK 不动。
 
@@ -1355,7 +1356,7 @@ Todo {
 
 `todo.dispatch` 的参数：
 
-- `id`：这一项。不是小写 UUID → `invalid`（`data.field = "id"`）；不存在 → `not_found`；已关闭（`done` / `dropped`）→ `invalid`（`data.field = "id"`，`data.reason = "closed"`）。`unreviewed` 的项由人派发，算一次人为修改，清掉 `unreviewed`（§ 21.2）。**谁拦、拦什么**：daemon 只拦自报了 `mcp` 的本机连接（`forbidden`，和 agent 不能修改清单项是同一条界线，§ 21.8）。`todo.dispatch` 没有「自报是 agent」的参数（`agent` 是 agent 的 id），daemon 看不到调用方的环境变量；anycon 拉起的 agent 里运行的 `anycon todo run` 是**CLI 自己**拒绝的（读 `ANYCON_AGENT`，§ 22.6）。两处都是护栏，不是边界：有 shell 的 agent 可以清掉环境变量再跑 CLI、自报成 `cli`，或者直接发 RPC，照样能派发；真正的限制是第一条消息由 daemon 生成、会话仍受审批和 `sessions.max_concurrent` 约束、派发缺省带「不 push、不开 PR」（§ 22.5，同样不是边界）。
+- `id`：这一项。不是小写 UUID → `invalid`（`data.field = "id"`）；不存在 → `not_found`；已关闭（`done` / `dropped`）→ `invalid`（`data.field = "id"`，`data.reason = "closed"`）；周期项（带 `repeat` 的模板，§ 26.9）→ `invalid`（`data.field = "id"`，`data.reason = "repeat_template"`），派发的是它复制出来的每一次。`unreviewed` 的项由人派发，算一次人为修改，清掉 `unreviewed`（§ 21.2）。**谁拦、拦什么**：daemon 只拦自报了 `mcp` 的本机连接（`forbidden`，和 agent 不能修改清单项是同一条界线，§ 21.8）。`todo.dispatch` 没有「自报是 agent」的参数（`agent` 是 agent 的 id），daemon 看不到调用方的环境变量；anycon 拉起的 agent 里运行的 `anycon todo run` 是**CLI 自己**拒绝的（读 `ANYCON_AGENT`，§ 22.6）。两处都是护栏，不是边界：有 shell 的 agent 可以清掉环境变量再跑 CLI、自报成 `cli`，或者直接发 RPC，照样能派发；真正的限制是第一条消息由 daemon 生成、会话仍受审批和 `sessions.max_concurrent` 约束、派发缺省带「不 push、不开 PR」（§ 22.5，同样不是边界）。
 - `project`：缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。空白的 `project` 按没给处理。给了而且和这一项的不同（按项目名比较，大小写 / 规范化的写法和 `session.create` 一致）→ 派发成功时把这一项的 `project` 改成它（同一次修改）。项目不存在 → `not_found`，和 `session.create` 一样。
 - `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`，当场重新判断）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。在项目目录里干没有隔离：agent 的改动直接落在用户的工作目录里，客户端在派发前写明。第 4 步的分身只派到 worktree。明确给了 `workspace` 的，以它为准，校验同 `session.create`（比如不是 git 项目却要 worktree → 同样的错误，什么都不留下）。
 - `agent` / `settings`：同 `session.create`（§ 6），同样的校验，危险模式同样受 `permissions.allow_dangerous_modes` 约束。不认识的 agent → `agent_unavailable`。
@@ -1931,16 +1932,17 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 ## 26. 分身
 
-> **4a 已实现：daemon 和 CLI（§ 26.1–§ 26.8）。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
+> **4a 已实现：daemon 和 CLI（§ 26.1–§ 26.8）；4b 的周期项已实现（§ 26.9 前一半：daemon、CLI、SDK、Web），PR 事件还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
 
 分身是 daemon 里的一个调度者：被事件唤醒，看清单里交给它的项，决定每一项怎么办，再用第 2 步的派发（§ 22）开会话去做。它自己不干活，也不批准权限。
 
 ### 26.1 范围：它碰哪些项
 
 - **处理人**：`Todo` 多一个字段 `handler: me | twin`，缺省 `me`。客户端里的「交给分身」和「我自己做」改的就是它（`todo.update { handler }`）。另外两种变化由 daemon 写：「你接手了」（§ 26.6）和「交回给你」（§ 26.4）。和 `state` 不同，`handler` 不是只由人写。客户端遇到不认识的值按 `me` 显示，Rust 协议类型里用 `Unknown` 变体接住。
-- 一项要**同时满足**下面四条，分身才会看它：
+- 一项要**同时满足**下面五条，分身才会看它：
   - `handler = twin`；
   - 没关闭（`state` 不是 `done` / `dropped`）；
+  - 不是周期项的模板（没有 `repeat`，§ 26.9；模板自己不分拣，它的 `handler = twin` 表示「每一次复制出来的都交给分身」）；
   - 不是 `unreviewed`，也就是 agent 记的项要人先收下（ADR-54 第 6 条）；
   - 在范围内：项有 `project`，就必须在允许的项目里。没有 `project` 的项，分身只能从允许的项目里选一个，或者问你。
 - **派发的权限**：自报了 `mcp` 的连接或带 `agent: true` 的写入不能把 `handler` 设成 `twin`，回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；人可以在同一请求带 `reviewed: true` 收下并交给分身。
@@ -2068,15 +2070,23 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget`、`session_id?`、`question_id?`、`project?`、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
 
-`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9、§ 26.10 尚未实现。
+`capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 的周期项已实现，PR 事件和 § 26.10 尚未实现。
 
 除了读的方法（`twin.get`、`twin.runs`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
 
 ### 26.9 周期项和 PR 事件（4b）
 
-- **周期项**：`Todo.repeat?: { kind: daily | weekdays | weekly, at: "HH:MM", weekday? }`，按机器的时区算。
-  - 到点时 daemon 复制出一项新的（标题、正文、项目、`handler` 都照抄，`source` 记成 `{ kind: repeat, todo_id }`），这一次要处理的就是它；模板本身不进分拣。
-  - 上一次复制出来的还没关闭时不再复制，「经过」里记一条「跳过了一次」。
+- **周期项（已实现）**：`Todo.repeat?: { kind: daily | weekdays | weekly, at: "HH:MM", weekday?, next_ms? }`，按**机器的时区**算（`localtime_r` 读当地时间，不改进程的 `TZ`）。带 `repeat` 的项是**模板**：它记下「每次要做的那件事」，自己不被分身分拣、不能派发。
+  - **规则**：`daily` 每天 `at`；`weekdays` 周一到周五的 `at`；`weekly` 每周 `weekday`（1–7，周一 = 1，ISO）的 `at`，`weekly` 必须带 `weekday`，另外两种不能带。`at` 是 `00:00`–`23:59` 的两位数字 `HH:MM`。校验和错误见 § 21.3。**只由人设置**：自报 `mcp` 的连接或 `agent: true` 的写入设置、替换、清除 `repeat` 都回 `forbidden`（清除用 `todo.update` 的 `clear: ["repeat"]`）。`next_ms` 是节点此刻算出来的下一次时间，不存，请求里带了也忽略；已关闭的模板没有。算在 daemon 上，因为规则按节点的时区，浏览器和节点可能不在同一个时区。
+  - **模板的限制**：分身的分拣不看它（§ 26.1 的条件）；`todo.dispatch` 拒绝它（`invalid`，`data.reason = "repeat_template"`，§ 22.2）；模板可以 `handler = twin`，意思是**每一次复制出来的都交给分身**：复制照抄 `handler`，所以复制出来的项由分身处理、并触发 `todo` 唤醒；模板自己仍不进分拣。处理人的其余规则不变（agent 和自报 `mcp` 的连接不能设成 `twin`，未收下的项不能交给分身）。模板可以关闭（`done` / `dropped`），关闭的模板不再复制，重新打开后从之后的时间点继续。
+  - **复制**：daemon 启动时看一遍、之后每分钟看一次（时钟用判断后端那只可替换的时钟，测试里不真的等）。一个没关闭的模板到了它的下一次时间，就复制出一项：新的 id，`title` / `body` / `project` / `handler` 照抄（`due_ms` 和 `repeat` 不带），`source = { kind: repeat, todo_id: <模板 id> }`，`state = open`，`unreviewed = false`；这一项照常 `todo.changed`、记审计 `todo.repeat`，`handler = twin` 时照常触发分身的唤醒（`todo` 触发，§ 26.3）。模板自己还是 `unreviewed`（agent 记的、没人收下，只可能是旧数据，规则只由人设置）时不复制。
+  - **夏令时**：夏令时切换日照当地时钟算。被跳过的时刻（如 02:30 跳到 03:00）算在跳过之后的第一分钟；回拨时重复出现的时刻（如 01:30 出现两次）只算第一次出现的那个。
+  - **同一次只复制一次，重启也一样**：模板记着「最近处理过的规则时间」（`repeat_last_ms`，存的是规则上的那个时刻，不是处理它的时刻）。设置或改动规则、关闭的模板重新打开时，它设成现在，所以那之前已经过了的时间点不补。
+  - **上一次还没关闭**：这个模板最近复制出来的那一项（`source.todo_id` 是它、最新的一项）还没关闭时，这一次不复制，模板的「经过」里记一条 `repeat_skipped { at_ms }`，这个时间点算处理过了，之后不补。清单已满（1 000 个没关闭的项）时同样当作跳过。
+  - **复制成功**：模板的「经过」里记一条 `repeat_created { todo_id, at_ms }`（`at_ms` 是规则上的时间）。
+  - **停机不补积压**：daemon 停着错过的次数不一次补。起来之后只看最近一个该到的时间：它在停机期间、并且离现在不到 24 小时，就补这一次；更早的不补，只把 `repeat_last_ms` 推到那个时间，什么都不记。
+  - **协议**：`TodoRepeat`、`TodoRepeatKind`（带 `Unknown`）、`TodoSourceKind::Repeat`、`TodoSource.todo_id`、`ClearableTodoField::Repeat`、「经过」的两种新事件（`repeat_created`、`repeat_skipped`），`node.info` 的 `capabilities.todo_repeat`（旧 daemon 没有，读作 `false`；客户端据此决定要不要显示「重复」）。不认识的 `kind`、事件种类、来源种类都落到 `Unknown`，旧客户端不因此解析失败。
+  - **入口**：CLI `anycon todo add --repeat <spec>`、`anycon todo edit <id> --repeat <spec> | --no-repeat`、`anycon todo ls` 的 REPEAT 列（[cli.md § 3.8](cli.md#38-anycon-todo)）；SDK 的 `node.todos.add` / `update` 直接带 `repeat`；Web 见 [web.md § 14.6](web.md#146-清单和单项)。
 - **PR 事件**：分身派出的会话，它的分支对应的 PR 检查失败、被合并或关闭、有了新的评审意见时，触发一次唤醒（`trigger = pr`）。
   - 在已有的 `gh pr view` 轮询（§ 10.1）上扩展：分身派出的会话也轮询，不论有没有开 PR 自动归档；取回评审意见的条数和最新时间。
   - `gh` 没装或没登录时没有这类触发。

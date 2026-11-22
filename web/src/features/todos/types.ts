@@ -1,4 +1,4 @@
-import type { Todo, TodoState } from '@/protocol'
+import type { Todo, TodoRepeat, TodoState } from '@/protocol'
 
 /** 这一步界面上有的四个状态（`waiting` / `review` 由别的客户端写，归在「处理中」里显示，spec/web.md § 4.12）。 */
 export const UI_STATES = ['open', 'working', 'done', 'dropped'] as const satisfies readonly TodoState[]
@@ -13,12 +13,14 @@ export interface UpdateFields {
   state?: TodoState
   handler?: 'me' | 'twin'
   reviewed?: boolean
-  clear?: Array<'project' | 'due_ms'>
+  /** 周期规则（只由人设置）；清掉用 `clear: ['repeat']`。 */
+  repeat?: TodoRepeat
+  clear?: Array<'project' | 'due_ms' | 'repeat'>
 }
 
 /** 离线期间留在本地的一条改动（spec/web.md § 4.12、daemon.md § 21.6）。 */
 export type OutboxOp =
-  | { kind: 'add'; params: { title: string; body: string; handler?: 'me' | 'twin'; project?: string | null; due_ms?: number | null } }
+  | { kind: 'add'; params: { title: string; body: string; handler?: 'me' | 'twin'; project?: string | null; due_ms?: number | null; repeat?: TodoRepeat | null } }
   | { kind: 'update'; fields: UpdateFields }
   | { kind: 'delete' }
 

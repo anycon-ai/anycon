@@ -31,7 +31,7 @@ export function TwinHandlerButton({ item }: { item: ViewTodo }) {
             .finally(() => setBusy(false))
         }}
       >
-        {t(item.handler === 'twin' ? 'twin.me' : 'twin.give')}
+        {t(item.repeat ? (item.handler === 'twin' ? 'twin.meEach' : 'twin.giveEach') : item.handler === 'twin' ? 'twin.me' : 'twin.give')}
       </Button>
       {failed ? <p role="alert">{t('twin.saveFailed')}</p> : null}
     </div>

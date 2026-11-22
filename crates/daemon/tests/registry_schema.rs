@@ -342,6 +342,19 @@ async fn walk_todo(w: &mut Walk<'_>) {
         )
         .await;
     assert_eq!(t["id"], id);
+    // 周期项（§ 26.9）：模板带 `repeat` 和算出来的 `next_ms`，清掉之后是普通项
+    let rid = "5e1c1e5a-3b9f-4c2e-8a64-0f2b5d9e1a79";
+    let r = w
+        .call(
+            methods::TODO_ADD,
+            json!({ "id": rid, "title": "weekly", "repeat": { "kind": "weekly", "at": "09:00", "weekday": 1 } }),
+        )
+        .await;
+    assert!(r["repeat"]["next_ms"].is_u64(), "{r}");
+    w.call(methods::TODO_UPDATE, json!({ "id": rid, "repeat": { "kind": "weekdays", "at": "08:30" } })).await;
+    w.call(methods::TODO_HISTORY, json!({ "id": rid })).await;
+    w.call(methods::TODO_UPDATE, json!({ "id": rid, "clear": ["repeat"] })).await;
+    w.call(methods::TODO_DELETE, json!({ "id": rid })).await;
     w.call(methods::TODO_LIST, json!({})).await;
     w.call(methods::TODO_LIST, json!({ "include_closed": true, "limit": 1 })).await;
     w.call(methods::TODO_GET, json!({ "id": id })).await;

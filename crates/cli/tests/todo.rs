@@ -512,3 +512,55 @@ async fn run_dry_run_prints_the_first_message_and_sends_nothing() {
     assert_ne!(r.code, 0);
     n.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_is_set_shown_cleared_and_refused_inside_an_agent_session() {
+    let n = node().await;
+    // 规则写错：退出码 2，什么都不建
+    let r = n.cli(&["todo", "add", "Bad", "--repeat", "hourly@09:00"]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(r.stderr.contains("--repeat") && r.stderr.contains("weekly:mon@09:00"), "{}", r.stderr);
+    assert!(n.todos(true).await.is_empty());
+
+    let r = n.cli(&["todo", "add", "Weekly review", "--repeat", "weekly:fri@18:30", "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let t = r.json();
+    assert_eq!(t["repeat"]["kind"], "weekly");
+    assert_eq!((t["repeat"]["at"].as_str(), t["repeat"]["weekday"].as_u64()), (Some("18:30"), Some(5)));
+    assert!(t["repeat"]["next_ms"].as_u64().unwrap() > anycon_daemon::util::now_ms());
+    let id = t["id"].as_str().unwrap().to_string();
+
+    // ls 标出规则和下一次时间
+    let r = n.cli(&["todo", "ls"]).await;
+    assert!(r.stdout.contains("REPEAT") && r.stdout.contains("weekly:fri@18:30 next "), "{}", r.stdout);
+
+    // edit 改规则、再关掉
+    let r = n.cli(&["todo", "edit", &id[..8], "--repeat", "daily@07:15"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains("daily@07:15"), "{}", r.stdout);
+    assert_eq!(n.cli(&["todo", "edit", &id[..8]]).await.code, 2, "one of --repeat / --no-repeat is required");
+
+    // 模板可以交给分身（每一次复制出来的都交给它），但不能派发
+    let r = n.cli(&["todo", "assign", &id[..8], "twin"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let r = n.cli(&["todo", "run", &id[..8], "--agent", "mock", "--project", "p", "--allow-push"]).await;
+    assert!(r.code != 0 && r.stderr.contains("template"), "{}", r.stderr);
+
+    // agent 环境里不能设置或修改规则
+    let agent_env = [("ANYCON_AGENT", "1")];
+    for args in [
+        vec!["todo", "add", "Sneaky", "--repeat", "daily@09:00"],
+        vec!["todo", "edit", &id[..8], "--repeat", "daily@09:00"],
+        vec!["todo", "edit", &id[..8], "--no-repeat"],
+    ] {
+        let r = n.cli_env(&args, &agent_env).await;
+        assert_eq!(r.code, 5, "{args:?}: {}", r.stderr);
+        assert!(r.stderr.contains("not available inside an anycon agent session"), "{}", r.stderr);
+    }
+    assert_eq!(n.todos(true).await.len(), 1);
+
+    let r = n.cli(&["todo", "edit", &id[..8], "--no-repeat", "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.json().get("repeat").is_none());
+    n.stop().await;
+}

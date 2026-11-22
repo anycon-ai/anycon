@@ -53,6 +53,8 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
   const [multi, setMulti] = useState(false)
   const [checked, setChecked] = useState<ReadonlySet<string>>(new Set())
   const [cursor, setCursor] = useState<string | null>(null)
+  // 「周期项」一组可以折叠
+  const [repeatOpen, setRepeatOpen] = useState(true)
   const [deleting, setDeleting] = useState<ViewTodo | null>(null)
   const [moving, setMoving] = useState<ViewTodo | null>(null)
   // 有别的支持清单的节点（不论选没选中）：才有「移到另一个节点…」
@@ -60,7 +62,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
 
   const groups = useMemo(() => groupTodos(view, filters), [view, filters])
   const closedExpanded = supporting.some((id) => nodeState[id]?.closed.expanded)
-  const flat = useMemo(() => flatOrder(groups, closedExpanded), [groups, closedExpanded])
+  const flat = useMemo(() => flatOrder(groups, closedExpanded, repeatOpen), [groups, closedExpanded, repeatOpen])
   const projects = useMemo(() => projectsOf(view), [view])
   const showNode = supporting.length > 1
   const hydrated = supporting.every((id) => nodeState[id]?.hydrated)
@@ -196,7 +198,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
       onReopen={() => void setTodoState(item, 'open')}
       onDrop={() => void setTodoState(item, 'dropped', { undo: true })}
       onDelete={() => setDeleting(item)}
-      {...(canMove(item) && !(item.unreviewed && !isHumanSource(item.source)) ? { onMove: () => setMoving(item) } : {})}
+      {...(canMove(item) && !item.repeat && !(item.unreviewed && !isHumanSource(item.source)) ? { onMove: () => setMoving(item) } : {})}
     />
   )
 
@@ -213,7 +215,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
 
   const closedMore = supporting.some((id) => nodeState[id]?.closed.hasMore)
   const closedLoading = supporting.some((id) => nodeState[id]?.closed.loading)
-  const empty = flat.length === 0 && groups.closed.length === 0
+  const empty = flat.length === 0 && groups.closed.length === 0 && groups.repeat.length === 0
   const list = (
     <div className="mx-auto max-w-3xl space-y-4 p-3 sm:p-4">
       {cachedNodes.length > 0 ? (
@@ -290,6 +292,18 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
       {section('review', t('todos.groups.review'))}
       {section('working', t('todos.groups.working'))}
       {section('open', t('todos.groups.open'))}
+      {groups.repeat.length > 0 ? (
+        <section data-testid="todos-group-repeat">
+          <h2 className="text-sm">
+            <button type="button" aria-expanded={repeatOpen} onClick={() => setRepeatOpen((o) => !o)} className="flex min-h-11 w-full items-center gap-2 rounded-lg px-1 text-left text-xs font-semibold tracking-wide text-fg-muted uppercase hover:bg-bg-hover" data-testid="todos-repeat-toggle">
+              <ChevronRight className={cn('size-4 transition-transform', repeatOpen && 'rotate-90')} aria-hidden />
+              {t('todos.groups.repeat')}
+              <span className="rounded-full bg-bg-muted px-1.5 py-0.5 text-[0.6875rem] font-medium normal-case">{groups.repeat.length}</span>
+            </button>
+          </h2>
+          {repeatOpen ? <ul className="mt-1 space-y-2">{groups.repeat.map(row)}</ul> : null}
+        </section>
+      ) : null}
       <section data-testid="todos-group-closed">
         <h2 className="text-sm">
           <button

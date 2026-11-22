@@ -170,7 +170,7 @@ impl Store {
 
     pub async fn twin_todos(&self) -> Result<Vec<Todo>> {
         let ids = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 \
+            "SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 AND repeat_kind IS NULL \
              AND state NOT IN ('done','dropped') ORDER BY updated_ms, id",
         )
         .fetch_all(self.pool())

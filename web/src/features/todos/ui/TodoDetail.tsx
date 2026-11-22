@@ -24,6 +24,8 @@ import { activityOf, isReview } from '../activity'
 import { DispatchDialog } from './DispatchDialog'
 import { HandlerChip, LinkedStatus } from './ActivityBits'
 import { MoveTodoDialog } from './MoveTodoDialog'
+import { RepeatField, RepeatFromChip, RepeatTemplateChip, repeatInputText, repeatSummary, useNodeSupportsRepeat } from './RepeatBits'
+import { repeatFromInput, repeatInputError, repeatToInput } from '../repeat'
 import { TwinHandlerButton } from '@/features/twin/TodoParts'
 import { TodoHistory } from './TodoHistory'
 import { fieldErrorText, outboxErrorText } from './errors'
@@ -41,8 +43,8 @@ export function dueToInput(ms: number | null | undefined): string {
  * 消毒管线，从不当 HTML）、项目、期望时间、状态（打开 / 处理中 / 完成 / 不做了）、删除（二次确认）；agent 记的项有回到来源会话的链接。
  */
 /** 草稿里的字段值（和 `datetime-local` 的格式）：从一项现在的样子读出来。 */
-export function valuesOf(item: Pick<ViewTodo, 'title' | 'body' | 'project' | 'due_ms'>): EditValues {
-  return { title: item.title, body: item.body, project: item.project ?? '', due: dueToInput(item.due_ms) }
+export function valuesOf(item: Pick<ViewTodo, 'title' | 'body' | 'project' | 'due_ms' | 'repeat'>): EditValues {
+  return { title: item.title, body: item.body, project: item.project ?? '', due: dueToInput(item.due_ms), repeat: repeatToInput(item.repeat) }
 }
 
 export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online: boolean; onDeleted?: () => void }) {
@@ -63,16 +65,20 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const [dispatching, setDispatching] = useState(false)
   const activity = activityOf(item)
   // 有别的支持清单的节点才有「移到另一个节点…」
-  const canMove = useNodes((s) => s.order.some((id) => id !== item.node_id && s.byId[id]?.info?.capabilities.todo === true))
-  const { title, body, project, due_ms } = item
-  const current = useMemo(() => valuesOf({ title, body, project, due_ms }), [title, body, project, due_ms])
+  // 周期项（模板）不能移：移过去的只是一份普通的项，规则会丢
+  const otherNodeSupportsTodo = useNodes((s) => s.order.some((id) => id !== item.node_id && s.byId[id]?.info?.capabilities.todo === true))
+  const canMove = !item.repeat && otherNodeSupportsTodo
+  const { title, body, project, due_ms, repeat } = item
+  const repeatInput = repeatToInput(repeat)
+  const current = useMemo(() => valuesOf({ title, body, project, due_ms, repeat }), [title, body, project, due_ms, repeat])
+  const repeatSupported = useNodeSupportsRepeat(item.node_id)
 
   const dirty = draft ? dirtyFields(draft) : []
   // 编辑期间别处改了的字段：没改过的字段不会被发出去（保存只发用户改过的），在这里告诉用户；两边都改了的字段让用户选
   const elsewhere = draft ? changedElsewhere(draft, current) : []
   const conflicts = elsewhere.filter((f) => dirty.includes(f))
   const quiet = elsewhere.filter((f) => !dirty.includes(f))
-  const fieldName = (f: EditField): string => t(f === 'title' ? 'todos.fieldTitle' : f === 'body' ? 'todos.fieldBody' : f === 'project' ? 'todos.project' : 'todos.due')
+  const fieldName = (f: EditField): string => t(f === 'title' ? 'todos.fieldTitle' : f === 'body' ? 'todos.fieldBody' : f === 'project' ? 'todos.project' : f === 'repeat' ? 'todos.repeat.label' : 'todos.due')
 
   const setField = (f: EditField, v: string): void => useDrafts.getState().set(key, f, v)
 
@@ -91,6 +97,11 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
       const d = dueFromInput(draft.values.due)
       if (d != null) fields.due_ms = d
       else fields.clear = [...(fields.clear ?? []), 'due_ms']
+    }
+    if (dirty.includes('repeat')) {
+      const r = repeatFromInput(draft.values.repeat ?? '')
+      if (r) fields.repeat = r
+      else fields.clear = [...(fields.clear ?? []), 'repeat']
     }
     if (Object.keys(fields).length > 0) {
       setSaving(true)
@@ -134,6 +145,8 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         ) : null}
         <LinkedStatus item={item} />
         <HandlerChip item={item} />
+        <RepeatTemplateChip item={item} />
+        <RepeatFromChip item={item} />
         {item.failed ? <Chip tone="danger">{t('todos.notSaved')}</Chip> : item.unsynced ? <Chip tone="warning">{t('todos.notSynced')}</Chip> : null}
         <span className="text-xs text-fg-subtle">{nodeName}</span>
       </div>
@@ -164,6 +177,13 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
               <Input type="datetime-local" value={draft?.values.due ?? ''} onChange={(e) => setField('due', e.target.value)} className="w-auto" data-testid="todo-edit-due" />
             </label>
           </div>
+          {repeatSupported || repeatInput ? (
+            <div className="space-y-1 text-sm font-medium">
+              <span>{t('todos.repeat.label')}</span>
+              <RepeatField value={draft?.values.repeat ?? ''} onChange={(v) => setField('repeat', v)} testId="todo-edit-repeat" />
+              {repeatInputError(draft?.values.repeat ?? '') ? <p className="text-xs font-normal text-danger">{t('todos.errors.repeat.invalid')}</p> : null}
+            </div>
+          ) : null}
           {quiet.length > 0 ? (
             <div className="space-y-1 rounded-md border border-warning/40 bg-warning-subtle p-3 text-sm" role="status" data-testid="todo-changed-elsewhere">
               <p>{t('todos.editedElsewhere', { fields: quiet.map(fieldName).join(', ') })}</p>
@@ -176,7 +196,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             <div key={f} className="space-y-2 rounded-md border border-danger/40 bg-danger-subtle p-3 text-sm" role="alert" data-testid="todo-conflict" data-field={f}>
               <p className="font-medium">{t('todos.conflict', { field: fieldName(f) })}</p>
               <p className="text-fg-muted">
-                {t('todos.theirs')}: <span className="whitespace-pre-wrap [overflow-wrap:anywhere]" data-testid="todo-conflict-theirs">{current[f] || t('todos.none')}</span>
+                {t('todos.theirs')}: <span className="whitespace-pre-wrap [overflow-wrap:anywhere]" data-testid="todo-conflict-theirs">{f === 'repeat' ? repeatInputText(t, current.repeat ?? '') : current[f] || t('todos.none')}</span>
               </p>
               <div className="flex gap-2">
                 <Button size="sm" onClick={() => useDrafts.getState().rebase(key, [f], current, false)} data-testid="todo-keep-mine">
@@ -232,7 +252,18 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
             <dd>{item.project ? cleanOneLine(item.project) : t('todos.none')}</dd>
             <dt className="text-fg-subtle">{t('todos.due')}</dt>
             <dd>{item.due_ms ? formatDateTime(item.due_ms, i18n.language) : t('todos.none')}</dd>
+            {item.repeat ? (
+              <>
+                <dt className="text-fg-subtle">{t('todos.repeat.label')}</dt>
+                <dd data-testid="todo-repeat-rule">{isClosed(item.state) ? repeatSummary(t, i18n.language, { ...item.repeat, next_ms: null }) : repeatSummary(t, i18n.language, item.repeat)}</dd>
+              </>
+            ) : null}
           </dl>
+          {item.repeat ? (
+            <p className="text-sm text-fg-muted" data-testid="todo-repeat-note">
+              {t(isClosed(item.state) ? 'todos.repeat.noteClosed' : 'todos.repeat.note')}
+            </p>
+          ) : null}
         </>
       )}
 
@@ -273,9 +304,11 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         {!isClosed(item.state) ? (
           <>
             <TwinHandlerButton item={item} />
-            <Button variant={isReview(item) ? 'outline' : 'primary'} disabled={!online} onClick={() => setDispatching(true)} title={online ? undefined : t('dispatch.blocked.offline')} data-testid="todo-dispatch">
-              {t('dispatch.action')}
-            </Button>
+            {item.repeat ? null : (
+              <Button variant={isReview(item) ? 'outline' : 'primary'} disabled={!online} onClick={() => setDispatching(true)} title={online ? undefined : t('dispatch.blocked.offline')} data-testid="todo-dispatch">
+                {t('dispatch.action')}
+              </Button>
+            )}
           </>
         ) : null}
         {isReview(item) ? (

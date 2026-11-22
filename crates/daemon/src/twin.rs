@@ -85,6 +85,7 @@ fn in_scope(c: &Ctx, s: &TwinScope, t: &Todo) -> bool {
     t.handler == TodoHandler::Twin
         && !t.state.is_closed()
         && !t.unreviewed
+        && t.repeat.is_none()
         && t.project.as_ref().is_none_or(|p| s.projects.iter().any(|a| c.workspace.same_project_name(a, p)))
 }
 async fn items(c: &Ctx, s: &TwinScope) -> Result<Vec<Todo>> {

@@ -135,12 +135,13 @@ if (acceptsAttachment(agent, doc.mime)) {                    // agent：node.age
 ```ts
 const todo = await node.todos.add({ title: '看发布说明', project: 'app' }) // id（小写带连字符的 UUID）缺省由 SDK 生成，自己传的 id 也必须是这个写法
 const { todos, has_more } = await node.todos.list() // 没关闭的项，最近修改的在前；{ include_closed?, project?, limit?, before? }
-await node.todos.update({ id: todo.id, state: 'done' }) // 只改传了的字段；`clear: ['project', 'due_ms']` 清空可选字段
+await node.todos.update({ id: todo.id, state: 'done' }) // 只改传了的字段；`clear: ['project', 'due_ms', 'repeat']` 清空可选字段
 await node.todos.delete(todo.id)
 node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)) // 所有客户端都会收到，包括发起的这一个
 ```
 
 - `add` 按 `id` 幂等：超时后用同一个 `id` 重试，节点返回已有的那一项，不会出现第二项。`source` 和 `unreviewed` 由节点填；替 agent 调用时传 `agent: true`（这一项会标成 agent 加的、在有人收下之前是「未收下」，节点上这类项最多 100 个）。
+- `repeat: { kind: 'daily' | 'weekdays' | 'weekly', at: 'HH:MM', weekday?: 1-7 }`（周一 = 1，按节点的本地时间）让一项成为周期模板，节点到点复制一项新的（docs/spec/daemon.md § 26.9；先看 `capabilities.todo_repeat`）。只由人设置：自报 `mcp` 的连接或带 `agent: true` 的写入得到 `forbidden`。返回里的 `repeat.next_ms` 由节点算出。
 - `list` 按 `(updated_ms, id)` 翻页：`has_more` 为 true 时，把最后一项的 `{ updated_ms, id }` 作为 `before` 取下一页。一页可能少于 `limit`（每页 1 MiB 的字节预算）。翻页期间被改过的项可能出现两次（按 `id` 去重）或被跳过（`todo_changed` 会补上）。
 - 错误：`invalid`（`field` 是出问题的参数；清单满了时 `reason` 是 `too_many` / `too_many_unreviewed`）和 `not_found`，都是 `RpcError`。
 

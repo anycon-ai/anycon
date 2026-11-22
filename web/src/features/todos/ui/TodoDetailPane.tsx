@@ -12,6 +12,7 @@ import { draftKey, dirtyFields, useDrafts } from '../drafts'
 import { addTodo, completeClosedWalk } from '../service'
 import { fieldErrorText } from './errors'
 import { dueFromInput } from './CaptureForm'
+import { repeatFromInput } from '../repeat'
 import type { FieldError } from '../validate'
 import { nodeSupportsTodo, useTodoView, useTodos } from '../store'
 import { TodoDetail } from './TodoDetail'
@@ -126,7 +127,7 @@ function Gone({ nodeId, todo }: { nodeId: string; todo: string }) {
           size="sm"
           variant="primary"
           onClick={() => {
-            void addTodo(nodeId, { title: v.title, body: v.body, project: v.project.trim() || null, due_ms: dueFromInput(v.due) ?? null }).then((r) => {
+            void addTodo(nodeId, { title: v.title, body: v.body, project: v.project.trim() || null, due_ms: dueFromInput(v.due) ?? null, repeat: repeatFromInput(v.repeat ?? '') }).then((r) => {
               if (r.ok) useDrafts.getState().clear(key)
               else setError(r.error)
             })

@@ -66,13 +66,14 @@ fn row(id: &str, updated_ms: u64, state: TodoState) -> Todo {
         state,
         handler: Default::default(),
         due_ms: None,
-        source: TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None },
+        source: TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None, todo_id: None },
         unreviewed: false,
         created_ms: updated_ms,
         updated_ms,
         closed_ms: state.is_closed().then_some(updated_ms),
         sessions: vec![],
         activity: None,
+        repeat: None,
     }
 }
 
@@ -93,7 +94,7 @@ async fn add_creates_an_open_item_and_trims_the_title() {
     .unwrap();
     assert_eq!((t.id.as_str(), t.title.as_str(), t.body.as_str()), (new_id.as_str(), "Write the report", "# notes"));
     assert_eq!((t.project.as_deref(), t.state, t.due_ms), (Some("web"), TodoState::Open, Some(123)));
-    assert_eq!(t.source, TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None });
+    assert_eq!(t.source, TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None, todo_id: None });
     assert!(!t.unreviewed && t.closed_ms.is_none());
     assert!(t.created_ms >= before && t.created_ms == t.updated_ms);
     // body 缺省是空串，项目缺省没有

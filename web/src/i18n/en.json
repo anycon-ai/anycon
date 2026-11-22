@@ -363,7 +363,10 @@
       "earlier": "Earlier",
       "failed": "Could not load the history.",
       "sessions": "Sessions of this item",
-      "sessionN": "Session {{n}}"
+      "sessionN": "Session {{n}}",
+      "repeatCreated": "Repeat: made a copy for {{time}}",
+      "openCopy": "Open the copy",
+      "repeatSkipped": "Repeat: skipped {{time}}, the previous copy is still open"
     },
     "reviewPage": {
       "page": "Review",
@@ -480,7 +483,8 @@
       "review": "To review",
       "working": "In progress",
       "open": "Not started",
-      "closed": "Closed"
+      "closed": "Closed",
+      "repeat": "Repeating"
     },
     "states": {
       "open": "Not started",
@@ -557,6 +561,39 @@
     },
     "discardedMore_one": "{{count}} later change to the same to-do was discarded with it.",
     "discardedMore_other": "{{count}} later changes to the same to-do were discarded with it.",
+    "repeat": {
+      "label": "Repeat",
+      "weekday": "Day of the week",
+      "at": "Time",
+      "choice": {
+        "none": "Does not repeat",
+        "daily": "Every day",
+        "weekdays": "Weekdays",
+        "weekly": "Every week"
+      },
+      "day": {
+        "1": "Monday",
+        "2": "Tuesday",
+        "3": "Wednesday",
+        "4": "Thursday",
+        "5": "Friday",
+        "6": "Saturday",
+        "7": "Sunday"
+      },
+      "rule": {
+        "daily": "Every day at {{at}}",
+        "weekdays": "Weekdays at {{at}}",
+        "weekly": "Every {{day}} at {{at}}",
+        "unknown": "A repeat rule this app cannot read"
+      },
+      "next": "next {{time}}",
+      "template": "Repeating",
+      "from": "From a repeating item",
+      "fromTitle": "From the repeating item: {{title}}",
+      "templateGone": "The repeating item was deleted.",
+      "note": "This item is a template. The node copies it into a new open item at each time; close it to stop. Times follow the node's clock.",
+      "noteClosed": "This item is closed, so it makes no more copies. Reopen it to start again."
+    },
     "errors": {
       "title": {
         "empty": "The title cannot be empty.",
@@ -579,6 +616,11 @@
       "due_ms": {
         "invalid": "The due time is not valid.",
         "rejected": "The node did not accept this due time."
+      },
+      "repeat": {
+        "invalid": "The repeat time is not valid (use HH:MM).",
+        "rejected": "The node did not accept this repeat rule.",
+        "template": "A repeating item cannot be dispatched; dispatch one of its copies instead."
       },
       "full": "The to-do list is full (1000 open to-dos). Close or delete some first.",
       "fullUnreviewed": "Too many to-dos added by agents are waiting to be accepted.",
@@ -2769,6 +2811,8 @@
     "questionLoading": "Loading the Twin question…",
     "give": "Give to Twin",
     "me": "I’ll do it",
+    "giveEach": "Each copy goes to the twin",
+    "meEach": "I’ll handle each copy",
     "openRun": "Open this run",
     "decision": "Twin decided: {{action}}",
     "handedBack": "Twin handed this back to you",

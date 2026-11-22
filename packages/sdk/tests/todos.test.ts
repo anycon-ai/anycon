@@ -78,6 +78,22 @@ for (const impl of cryptoImpls) {
       })
     })
 
+    it('repeat：add / update 原样发出周期规则，clear 能清掉它', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const repeat = { kind: 'weekly', at: '09:00', weekday: 1 } as const
+        const t = await node.todos.add({ title: 'weekly review', repeat })
+        assert.deepEqual(paramsOf(env, 'todo.add'), [{ id: t.id, title: 'weekly review', repeat }])
+        assert.deepEqual(t.repeat, repeat)
+        const daily = { kind: 'daily', at: '07:30' } as const
+        assert.deepEqual((await node.todos.update({ id: t.id, repeat: daily })).repeat, daily)
+        assert.equal((await node.todos.update({ id: t.id, clear: ['repeat'] })).repeat, undefined)
+        assert.deepEqual(paramsOf(env, 'todo.update'), [
+          { id: t.id, repeat: daily },
+          { id: t.id, clear: ['repeat'] },
+        ])
+      })
+    })
+
     it('list / update / delete：参数原样发出，返回值带类型；不存在的项是 RpcError not_found', async () => {
       await withNode(await impl.load(), async (node, env) => {
         const a = await node.todos.add({ title: 'a' })

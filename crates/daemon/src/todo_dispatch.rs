@@ -562,6 +562,8 @@ fn data_kind(d: &TodoEventData) -> &'static str {
         TodoEventData::TwinDecision { .. } => "twin_decision",
         TodoEventData::TwinQuestion { .. } => "twin_question",
         TodoEventData::Handler { .. } => "handler",
+        TodoEventData::RepeatCreated { .. } => "repeat_created",
+        TodoEventData::RepeatSkipped { .. } => "repeat_skipped",
         TodoEventData::Unknown => "unknown",
     }
 }
@@ -860,6 +862,13 @@ pub(crate) async fn dispatch_inner(
         .await
         .map_err(internal)?
         .ok_or_else(|| RpcError::new(ErrorCode::NotFound, format!("todo {} not found", p.id)))?;
+    if old.repeat.is_some() {
+        return Err(invalid(
+            "id",
+            Some("repeat_template"),
+            "a repeating todo is a template and cannot be dispatched; dispatch the copy it creates".into(),
+        ));
+    }
     if caller.is_twin() {
         let (agent, settings) = crate::twin::dispatch_settings_locked(c, &old, &p).await?;
         p.agent = agent;

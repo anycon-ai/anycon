@@ -582,7 +582,7 @@ export class Node extends Emitter<NodeEvents> {
      */
     add: (params: Omit<TodoAddParams, 'id'> & { id?: string }): Promise<Todo> =>
       this.call('todo.add', { ...params, id: params.id ?? randomId() }),
-    /** `todo.update`：只带要改的字段；`clear` 列出要清空的可选字段（`project` / `due_ms`）。项不存在 → `RpcError`（`not_found`）。 */
+    /** `todo.update`：只带要改的字段；`clear` 列出要清空的可选字段（`project` / `due_ms` / `repeat`）。`repeat` 是周期规则（docs/spec/daemon.md § 26.9，节点 `capabilities.todo_repeat` 为 true 才有；只由人设置，自报 `mcp` 或 `agent: true` → `forbidden`）。项不存在 → `RpcError`（`not_found`）。 */
     update: (params: TodoUpdateParams): Promise<Todo> => this.call('todo.update', params),
     /**
      * `todo.delete`：物理删除。项不存在 → `RpcError`（`not_found`）。给了 `ifUpdatedMs`，而这一项现在的 `updated_ms` 不是它：

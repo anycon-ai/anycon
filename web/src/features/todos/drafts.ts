@@ -5,12 +5,15 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
 
-export const EDIT_FIELDS = ['title', 'body', 'project', 'due'] as const
+export const EDIT_FIELDS = ['title', 'body', 'project', 'due', 'repeat'] as const
 export type EditField = (typeof EDIT_FIELDS)[number]
-export type EditValues = Record<EditField, string>
+/** `repeat` 可以没有（没有周期规则的草稿、不带这个字段的调用方），读的时候按空串。 */
+export type EditValues = Record<Exclude<EditField, 'repeat'>, string> & { repeat?: string }
+
+const valueOf = (v: EditValues, f: EditField): string => v[f] ?? ''
 
 export interface EditDraft {
-  /** 开始编辑时那一项各字段的值（`due` 是 `datetime-local` 的字符串）。 */
+  /** 开始编辑时那一项各字段的值（`due` 是 `datetime-local` 的字符串，`repeat` 是 `repeatToInput` 的写法）。 */
   base: EditValues
   /** 用户现在填的。 */
   values: EditValues
@@ -42,8 +45,8 @@ export const useDrafts = create<DraftsState>()((set) => ({
       const base = { ...d.base }
       const values = { ...d.values }
       for (const f of fields) {
-        base[f] = current[f]
-        if (take) values[f] = current[f]
+        base[f] = valueOf(current, f)
+        if (take) values[f] = valueOf(current, f)
       }
       return { drafts: { ...s.drafts, [key]: { base, values } } }
     }),
@@ -57,12 +60,12 @@ export const useDrafts = create<DraftsState>()((set) => ({
 
 /** 草稿里用户改过的字段（值和 base 不一样的）。 */
 export function dirtyFields(d: EditDraft): EditField[] {
-  return EDIT_FIELDS.filter((f) => d.values[f] !== d.base[f])
+  return EDIT_FIELDS.filter((f) => valueOf(d.values, f) !== valueOf(d.base, f))
 }
 
 /** 编辑期间别处改了的字段（现在的值和 base 不一样的）。 */
 export function changedElsewhere(d: EditDraft, current: EditValues): EditField[] {
-  return EDIT_FIELDS.filter((f) => current[f] !== d.base[f])
+  return EDIT_FIELDS.filter((f) => valueOf(current, f) !== valueOf(d.base, f))
 }
 
 export const draftKey = (nodeId: string, id: string): string => `${nodeId}:${id}`

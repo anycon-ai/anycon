@@ -1,3 +1,6 @@
+import type { TodoRepeat } from '@/protocol'
+import { repeatError } from './repeat'
+
 // 清单项的本地校验（docs/spec/daemon.md § 21.2）：和 daemon 同一套规则，在发出去之前先挡掉，daemon 仍然拒绝时再显示它的 `invalid`。
 // 长度按 Unicode 码点算（`[...s].length`，不是 UTF-16 的 `.length`：一个 emoji 在 `.length` 里是 2），正文按 UTF-8 字节。
 
@@ -16,7 +19,7 @@ export function utf8Bytes(s: string): number {
   return new TextEncoder().encode(s).length
 }
 
-export type TodoField = 'title' | 'body' | 'project' | 'due_ms'
+export type TodoField = 'title' | 'body' | 'project' | 'due_ms' | 'repeat'
 export interface FieldError {
   /** `storage`：本地库写不进去（配额、库被别的标签页关掉），改动没有入队。 */
   field: TodoField | 'storage'
@@ -85,11 +88,17 @@ export interface DraftTodo {
   body: string
   project?: string | null
   due_ms?: number | null
+  repeat?: TodoRepeat | null
 }
 
 /** 新建前的整体校验：返回第一个错误，或 null。 */
 export function draftError(d: DraftTodo): FieldError | null {
-  return titleError(d.title) ?? bodyError(d.body) ?? projectError(d.project) ?? dueError(d.due_ms)
+  return titleError(d.title) ?? bodyError(d.body) ?? projectError(d.project) ?? dueError(d.due_ms) ?? repeatFieldError(d.repeat)
+}
+
+/** 周期规则不合格（时间不是 `HH:MM`、星期不对）。 */
+export function repeatFieldError(r: TodoRepeat | null | undefined): FieldError | null {
+  return repeatError(r) ? { field: 'repeat', reason: 'invalid' } : null
 }
 
 /** 显示用：去掉控制字符和双向控制符，折成一行（agent 给的标题等不可信文字，和会话标题同一个处理）。 */

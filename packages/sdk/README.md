@@ -163,12 +163,13 @@ Each node keeps a personal to-do list (see [docs/spec/daemon.md § 21](../../doc
 ```ts
 const todo = await node.todos.add({ title: 'Review the release notes', project: 'app' }) // an id (a lowercase hyphenated UUID) is generated for you; an id you pass yourself must have that form too
 const { todos, has_more } = await node.todos.list() // open items, newest change first; { include_closed?, project?, limit?, before? }
-await node.todos.update({ id: todo.id, state: 'done' }) // only the fields you pass change; `clear: ['project', 'due_ms']` empties optional fields
+await node.todos.update({ id: todo.id, state: 'done' }) // only the fields you pass change; `clear: ['project', 'due_ms', 'repeat']` empties optional fields
 await node.todos.delete(todo.id)
 node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)) // every client gets these, the caller too
 ```
 
 - `add` is idempotent on `id`: after a timeout, retry with the same `id` and the node returns the existing item instead of creating a second one. The node fills in `source` and `unreviewed`; pass `agent: true` if the call is made on behalf of an agent (the item is then marked as added by an agent and unreviewed until a person reviews it, and the node keeps at most 100 such items).
+- `repeat: { kind: 'daily' | 'weekdays' | 'weekly', at: 'HH:MM', weekday?: 1-7 }` (Monday = 1, node-local time) makes an item a repeating template that the node copies at each time (docs/spec/daemon.md § 26.9; check `capabilities.todo_repeat`). Only a person sets it: a connection that reports as `mcp`, or a write with `agent: true`, gets `forbidden`. The returned `repeat.next_ms` is computed by the node.
 - `list` pages by `(updated_ms, id)`: while `has_more` is true, pass the last item's `{ updated_ms, id }` as `before`. A page can be shorter than `limit` (1 MiB budget per page). Items changed while you page can show up twice (de-duplicate by `id`) or be skipped (`todo_changed` tells you).
 - Errors: `invalid` (`field`: the parameter; `reason` `too_many` / `too_many_unreviewed` when the list is full) and `not_found`, as `RpcError`.
 

@@ -760,3 +760,46 @@ async fn old_success_does_not_repeatedly_reset_later_dispatch_failures() {
     assert_eq!(td.ctx.store.todo_get(&t.id).await.unwrap().unwrap().handler, TodoHandler::Me);
     td.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_repeating_template_is_never_triaged_but_its_twin_copies_wake_the_twin() {
+    let (td, _fake) = fixture(false).await;
+    // 模板可以交给分身（每一份复制出来的都交给它），但分身自己从不看模板
+    let mut c = td.local_cli_client();
+    let template: Todo = c
+        .call(
+            &td,
+            methods::TODO_ADD,
+            json!({"id":uuid::Uuid::new_v4().to_string(),"title":"weekly report","project":"p","handler":"twin",
+                   "repeat":{"kind":"daily","at":"09:00"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(template.handler, TodoHandler::Twin);
+    let scope = td.ctx.store.twin_scope(LOCAL).await.unwrap();
+    assert!(items(&td.ctx, &scope).await.unwrap().iter().all(|t| t.id != template.id));
+    let plain = todo(&td, "plain").await;
+    assert_eq!(items(&td.ctx, &scope).await.unwrap().iter().map(|t| t.id.clone()).collect::<Vec<_>>(), vec![plain.id]);
+
+    // 到点复制出来的项照抄 handler：交给分身时照常触发唤醒（`todo`）
+    {
+        let mut p = td.ctx.twin.pending.lock().unwrap();
+        p.first = None;
+        p.triggers.clear();
+    }
+    td.ctx.judge.clock().set(td.ctx.judge.clock().now() + 24 * 60 * MINUTE);
+    assert_eq!(crate::todo_repeat::tick(&td.ctx).await.unwrap(), 1);
+    let copies: Vec<_> = td
+        .ctx
+        .store
+        .twin_todos()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.source.todo_id.as_deref() == Some(template.id.as_str()))
+        .collect();
+    assert_eq!(copies.len(), 1);
+    assert_eq!((copies[0].handler, copies[0].source.kind), (TodoHandler::Twin, TodoSourceKind::Repeat));
+    assert!(td.ctx.twin.pending.lock().unwrap().triggers.contains(&TwinTrigger::Todo));
+    td.shutdown().await;
+}

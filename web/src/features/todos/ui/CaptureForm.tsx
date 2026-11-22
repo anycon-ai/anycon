@@ -16,6 +16,8 @@ import { addTodo, deleteTodo } from '../service'
 import { useSupportingNodes } from '../store'
 import { parseCapture, type FieldError } from '../validate'
 import { fieldErrorText } from './errors'
+import { RepeatField, useNodeSupportsRepeat } from './RepeatBits'
+import { repeatFromInput } from '../repeat'
 
 /** 本地时间的 `datetime-local` 值 → 毫秒；空 / 不合法 → undefined。 */
 export function dueFromInput(v: string): number | undefined {
@@ -46,6 +48,8 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   const [handler, setHandler] = useState<'me' | 'twin'>(() => { try { return localStorage.getItem('anycon.todoHandler') === 'twin' ? 'twin' : 'me' } catch { return 'me' } })
   const [project, setProject] = useState('')
   const [due, setDue] = useState('')
+  // 周期规则（`repeatToInput` 的写法，空串 = 不重复）
+  const [repeat, setRepeat] = useState('')
   const [error, setError] = useState<FieldError | null>(null)
   // 发送进行中：期间不能再发（连按两次回车不会记两项）、输入框只读（等待期间敲的字不会被清掉）
   const [busy, setBusy] = useState(false)
@@ -54,6 +58,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
 
   // 缺省节点：选中的、支持清单的节点里上次用过的，没有就第一个
   const nodeId = (pickedNode && supporting.includes(pickedNode) ? pickedNode : null) ?? pickDefaultNode(supporting, space, lastNode, lastBySpace)
+  const repeatSupported = useNodeSupportsRepeat(nodeId)
   const projects = useMemo(() => (nodeId ? (nodes[nodeId]?.projects ?? []).map((p) => p.name) : []), [nodes, nodeId])
 
   useEffect(() => {
@@ -64,15 +69,16 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
     if (!nodeId || sending.current || text.trim() === '') return
     sending.current = true
     setBusy(true)
-    const draft = { text, project, due }
+    const draft = { text, project, due, repeat }
     const { title, body } = parseCapture(text)
     // 先清空再等：写进队列之后用户立刻可以接着记下一项；没写成功就把原样放回去（连同错误提示），什么都不丢
     setText('')
     setProject('')
     setDue('')
+    setRepeat('')
     let r: Awaited<ReturnType<typeof addTodo>>
     try {
-      r = await addTodo(nodeId, { title, body, ...(nodes[nodeId]?.info?.capabilities.twin ? { handler } : {}), project: draft.project.trim() || null, due_ms: dueFromInput(draft.due) ?? null })
+      r = await addTodo(nodeId, { title, body, ...(nodes[nodeId]?.info?.capabilities.twin ? { handler } : {}), project: draft.project.trim() || null, due_ms: dueFromInput(draft.due) ?? null, ...(repeatSupported ? { repeat: repeatFromInput(draft.repeat) } : {}) })
     } catch (e) {
       console.warn('anycon: adding a to-do failed unexpectedly', e)
       r = { ok: false, error: { field: 'storage', reason: 'failed' } }
@@ -84,6 +90,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
       setText(draft.text)
       setProject(draft.project)
       setDue(draft.due)
+      setRepeat(draft.repeat)
       setError(r.error)
       return
     }
@@ -201,6 +208,12 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
           <span>{t('todos.due')}</span>
           <Input type="datetime-local" value={due} onChange={(e) => setDue(e.target.value)} className="!h-9 w-auto" data-testid="capture-due" />
         </label>
+        {repeatSupported ? (
+          <div className="flex items-center gap-1.5">
+            <span>{t('todos.repeat.label')}</span>
+            <RepeatField value={repeat} onChange={(v) => { setRepeat(v); setError(null) }} testId="capture-repeat" />
+          </div>
+        ) : null}
       </div>
       {supporting.length > 1 && nodeId ? (
         <p className="text-xs text-fg-subtle" data-testid="capture-target">

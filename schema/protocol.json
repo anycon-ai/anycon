@@ -658,7 +658,8 @@
       "description": "`todo.update` 的 `clear` 可以清空的可选字段。",
       "enum": [
         "project",
-        "due_ms"
+        "due_ms",
+        "repeat"
       ],
       "type": "string"
     },
@@ -3787,6 +3788,11 @@
         "todo": {
           "default": false,
           "description": "支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。",
+          "type": "boolean"
+        },
+        "todo_repeat": {
+          "default": false,
+          "description": "支持周期项（`Todo.repeat`，docs/spec/daemon.md § 26.9）。旧 daemon 没有这个字段，读作 false。",
           "type": "boolean"
         },
         "twin": {
@@ -7968,6 +7974,17 @@
             "null"
           ]
         },
+        "repeat": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoRepeat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "周期规则。带它的项是模板：不进分拣、不能派发，到点由 daemon 复制出新的一项（`source.kind = repeat`）；只由人设置。"
+        },
         "sessions": {
           "default": [],
           "description": "这一项派出的会话（`todo.dispatch`，docs/spec/daemon.md § 22.3），按派发的先后，最多 20 个。会话被删除后关联留着。",
@@ -8107,6 +8124,17 @@
             "string",
             "null"
           ]
+        },
+        "repeat": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoRepeat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "周期规则（只由人设置：自报 `mcp` 的连接或 `agent: true` → `forbidden`）。"
         },
         "title": {
           "type": "string"
@@ -8512,6 +8540,48 @@
           "type": "object"
         },
         {
+          "description": "周期项（模板）到点复制出了一项；`at_ms` 是这一次规则上的时间。",
+          "properties": {
+            "at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "repeat_created",
+              "type": "string"
+            },
+            "todo_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "todo_id",
+            "at_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "周期项到点了，但上一次复制出来的还没关闭（或清单已满），这一次没复制。",
+          "properties": {
+            "at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "repeat_skipped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at_ms"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "kind": {
               "const": "unknown",
@@ -8756,6 +8826,48 @@
           "type": "object"
         },
         {
+          "description": "周期项（模板）到点复制出了一项；`at_ms` 是这一次规则上的时间。",
+          "properties": {
+            "at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "repeat_created",
+              "type": "string"
+            },
+            "todo_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "todo_id",
+            "at_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "周期项到点了，但上一次复制出来的还没关闭（或清单已满），这一次没复制。",
+          "properties": {
+            "at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "repeat_skipped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "at_ms"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "kind": {
               "const": "unknown",
@@ -8911,6 +9023,67 @@
       ],
       "type": "object"
     },
+    "TodoRepeat": {
+      "description": "周期项的规则：按节点的本地时区，每次到点复制出一项新的（docs/spec/daemon.md § 26.9）。",
+      "properties": {
+        "at": {
+          "description": "`HH:MM`，`00:00`–`23:59`，本地时间。",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/TodoRepeatKind"
+        },
+        "next_ms": {
+          "description": "下一次复制的时间（节点此刻算出来的，不存；请求里带了也忽略）。模板已关闭时没有。算在 daemon 上，是因为规则按节点的时区。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "weekday": {
+          "description": "1–7，周一 = 1（ISO）；`kind = weekly` 时必填，别的种类不能带。",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "at"
+      ],
+      "type": "object"
+    },
+    "TodoRepeatKind": {
+      "description": "周期项的重复方式（`TodoRepeat.kind`）。",
+      "oneOf": [
+        {
+          "const": "daily",
+          "description": "每天。",
+          "type": "string"
+        },
+        {
+          "const": "weekdays",
+          "description": "周一到周五。",
+          "type": "string"
+        },
+        {
+          "const": "weekly",
+          "description": "每周的 `weekday`。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的重复方式；daemon 自己不产生它，客户端按「重复规则看不懂」显示，不能因此解析失败。",
+          "type": "string"
+        }
+      ]
+    },
     "TodoSource": {
       "properties": {
         "device_id": {
@@ -8925,6 +9098,13 @@
         },
         "session_id": {
           "description": "这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "todo_id": {
+          "description": "`kind = repeat` 时是复制出这一项的周期项（模板）的 id；模板被删后原样留着。",
           "type": [
             "string",
             "null"
@@ -8957,6 +9137,11 @@
         {
           "const": "twin",
           "description": "分身做的动作。",
+          "type": "string"
+        },
+        {
+          "const": "repeat",
+          "description": "周期项（`Todo.repeat`）到点复制出来的一项；`TodoSource.todo_id` 是模板的 id。",
           "type": "string"
         },
         {
@@ -9049,6 +9234,17 @@
             "string",
             "null"
           ]
+        },
+        "repeat": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoRepeat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "设置或替换周期规则（规则变了就从现在起重新算下一次）；清掉用 `clear: [\"repeat\"]`。同 `todo.add`，只由人设置。"
         },
         "reviewed": {
           "description": "`true`：把 `unreviewed` 清掉（`false` 或对已经收下的项会被忽略）。",

@@ -98,6 +98,25 @@ describe('groups', () => {
     expect(within(row('o')).queryByTestId('todo-handler')).toBeNull()
   })
 
+  it('repeating items (templates) sit in a group of their own after "not started", collapsible, each with its rule and next time', async () => {
+    const next = Date.UTC(2030, 0, 7, 9, 0)
+    await load(
+      { id: 'o', title: 'later' },
+      { id: 'tpl', title: 'Weekly review', repeat: { kind: 'weekly', at: '09:00', weekday: 1, next_ms: next } as never },
+      { id: 'copy', title: 'Weekly review', source: { kind: 'repeat', todo_id: 'tpl' } as never },
+    )
+    const order = [...document.querySelectorAll('[data-testid^="todos-group-"]')].map((g) => g.getAttribute('data-testid')).filter((id) => id !== 'todos-group-closed')
+    expect(order).toEqual(['todos-group-open', 'todos-group-repeat'])
+    expect(within(screen.getByTestId('todos-group-repeat')).getAllByTestId('todo-row').map((r) => r.getAttribute('data-id'))).toEqual(['tpl'])
+    // 复制出来的项是一项普通的待办，在「还没开始」里，带「来自周期项」
+    expect(within(screen.getByTestId('todos-group-open')).getAllByTestId('todo-row').map((r) => r.getAttribute('data-id')).sort()).toEqual(['copy', 'o'])
+    expect(within(row('copy')).getByTestId('todo-repeat-from-badge')).toBeInTheDocument()
+    expect(row('tpl')).toHaveTextContent(/Every Monday at 09:00 · next/)
+    await userEvent.click(screen.getByTestId('todos-repeat-toggle'))
+    expect(screen.getByTestId('todos-repeat-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(rows().map((r) => r.getAttribute('data-id')).sort()).toEqual(['copy', 'o'])
+  })
+
   it('the “who is handling it” filter narrows the list', async () => {
     await load({ id: 'w', title: 'agent busy', activity: 'working' as never }, { id: 'r', title: 'review me', activity: 'review' as never }, { id: 'o', title: 'later' })
     await userEvent.selectOptions(screen.getByTestId('todos-filter-handler'), 'agent')
@@ -416,6 +435,21 @@ describe('unsaved edits', () => {
     await userEvent.click(screen.getByTestId('todo-orphan-save'))
     await waitFor(() => expect([...daemon.todos.values()].some((t) => t.title === 'first' && t.body === 'my long note plus more')).toBe(true))
     await waitFor(() => expect(useDrafts.getState().drafts).toEqual({}))
+  })
+
+  it('saving an orphaned edit as a new to-do keeps the repeat rule that was being edited', async () => {
+    useNodes.getState().patch(A, { info: { capabilities: { todo: true, todo_repeat: true } } as unknown as NodeInfo })
+    daemon.seed(todoItem({ id: 'a', title: 'weekly', repeat: { kind: 'weekdays', at: '08:00' } }))
+    await syncTodos(A)
+    render(<TodosPage selected={{ node: A, todo: 'a' }} />)
+    await userEvent.click(await screen.findByTestId('todo-edit'))
+    await userEvent.type(screen.getByTestId('todo-edit-title'), ' plus')
+    await act(async () => {
+      daemon.todos.delete('a')
+      handleTodoChanged(A, { id: 'a', deleted: true })
+    })
+    await userEvent.click(await screen.findByTestId('todo-orphan-save'))
+    await waitFor(() => expect([...daemon.todos.values()].find((t) => t.title === 'weekly plus')?.repeat).toEqual({ kind: 'weekdays', at: '08:00' }))
   })
 
   it('discarding the orphaned text clears the draft, so nothing keeps asking before the tab closes', async () => {

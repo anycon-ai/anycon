@@ -35,6 +35,9 @@ pub struct NodeCapabilities {
     /// 支持分身的调度和 RPC。
     #[serde(default)]
     pub twin: bool,
+    /// 支持周期项（`Todo.repeat`，docs/spec/daemon.md § 26.9）。旧 daemon 没有这个字段，读作 false。
+    #[serde(default)]
+    pub todo_repeat: bool,
 }
 
 /// 节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。

@@ -721,6 +721,41 @@
     }
   },
   {
+    "name": "rpc_todo_repeat_created",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "at_ms": 3,
+          "kind": "repeat_created",
+          "seq": 2,
+          "todo_id": "n",
+          "ts_ms": 4
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
+    "name": "rpc_todo_repeat_skipped",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "at_ms": 3,
+          "kind": "repeat_skipped",
+          "seq": 2,
+          "ts_ms": 4
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
     "name": "rpc_twin_answer",
     "type": "rpc",
     "value": {

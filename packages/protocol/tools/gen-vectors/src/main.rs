@@ -446,6 +446,22 @@ fn main() {
             .unwrap(),
         ),
     ));
+    for (name, data) in [
+        ("todo_repeat_created", TodoEventData::RepeatCreated { todo_id: "n".into(), at_ms: 3 }),
+        ("todo_repeat_skipped", TodoEventData::RepeatSkipped { at_ms: 3 }),
+    ] {
+        v.push(rpc(
+            name,
+            RpcMessage::notification(
+                methods::TODO_EVENT,
+                serde_json::to_value(TodoEventNotice {
+                    todo_id: "t".into(),
+                    event: TodoEvent { seq: 2, ts_ms: 4, data },
+                })
+                .unwrap(),
+            ),
+        ));
+    }
     let body =
         rmp_serde::to_vec_named(&NotifyBody { category: NotifyCategory::TwinQuestion, session_id: None, detail: None })
             .unwrap();

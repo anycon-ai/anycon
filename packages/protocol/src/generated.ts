@@ -16,7 +16,7 @@ export type ClearableRuleField = "project";
 /**
  * `todo.update` 的 `clear` 可以清空的可选字段。
  */
-export type ClearableTodoField = "project" | "due_ms";
+export type ClearableTodoField = "project" | "due_ms" | "repeat";
 export type DeviceKind = "daemon" | "web" | "cli" | "sdk";
 /**
  * 一项配置能不能被远程客户端改（ADR-43）。
@@ -704,9 +704,13 @@ export type TodoActivity = "working" | "waiting" | "review" | "unknown";
  */
 export type TodoHandler = "me" | "twin" | "unknown";
 /**
+ * 周期项的重复方式（`TodoRepeat.kind`）。
+ */
+export type TodoRepeatKind = "daily" | "weekdays" | "weekly" | "unknown";
+/**
  * 一项是谁记的。
  */
-export type TodoSourceKind = "device" | "local" | "agent" | "twin" | "unknown";
+export type TodoSourceKind = "device" | "local" | "agent" | "twin" | "repeat" | "unknown";
 /**
  * 清单项的状态。这一步 daemon 不限制状态之间怎么转。
  */
@@ -777,6 +781,15 @@ export type TodoEvent1 =
       to: TodoHandler;
     }
   | {
+      at_ms: number;
+      kind: "repeat_created";
+      todo_id: string;
+    }
+  | {
+      at_ms: number;
+      kind: "repeat_skipped";
+    }
+  | {
       kind: "unknown";
     };
 export type TwinAction = "dispatch" | "ask_user" | "ask_advisor" | "wait" | "hand_back" | "done" | "unknown";
@@ -837,6 +850,15 @@ export type TodoEventData =
       from: TodoHandler;
       kind: "handler";
       to: TodoHandler;
+    }
+  | {
+      at_ms: number;
+      kind: "repeat_created";
+      todo_id: string;
+    }
+  | {
+      at_ms: number;
+      kind: "repeat_skipped";
     }
   | {
       kind: "unknown";
@@ -1995,6 +2017,10 @@ export interface NodeCapabilities {
    * 支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。
    */
   todo?: boolean;
+  /**
+   * 支持周期项（`Todo.repeat`，docs/spec/daemon.md § 26.9）。旧 daemon 没有这个字段，读作 false。
+   */
+  todo_repeat?: boolean;
   /**
    * 支持分身的调度和 RPC。
    */
@@ -3221,6 +3247,10 @@ export interface Todo {
    */
   project?: string | null;
   /**
+   * 周期规则。带它的项是模板：不进分拣、不能派发，到点由 daemon 复制出新的一项（`source.kind = repeat`）；只由人设置。
+   */
+  repeat?: TodoRepeat | null;
+  /**
    * 这一项派出的会话（`todo.dispatch`，docs/spec/daemon.md § 22.3），按派发的先后，最多 20 个。会话被删除后关联留着。
    */
   sessions?: string[];
@@ -3236,6 +3266,24 @@ export interface Todo {
   unreviewed: boolean;
   updated_ms: number;
 }
+/**
+ * 周期项的规则：按节点的本地时区，每次到点复制出一项新的（docs/spec/daemon.md § 26.9）。
+ */
+export interface TodoRepeat {
+  /**
+   * `HH:MM`，`00:00`–`23:59`，本地时间。
+   */
+  at: string;
+  kind: TodoRepeatKind;
+  /**
+   * 下一次复制的时间（节点此刻算出来的，不存；请求里带了也忽略）。模板已关闭时没有。算在 daemon 上，是因为规则按节点的时区。
+   */
+  next_ms?: number | null;
+  /**
+   * 1–7，周一 = 1（ISO）；`kind = weekly` 时必填，别的种类不能带。
+   */
+  weekday?: number | null;
+}
 export interface TodoSource {
   /**
    * 经 hub 来的调用带上发起设备的 id。
@@ -3246,6 +3294,10 @@ export interface TodoSource {
    * 这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。
    */
   session_id?: string | null;
+  /**
+   * `kind = repeat` 时是复制出这一项的周期项（模板）的 id；模板被删后原样留着。
+   */
+  todo_id?: string | null;
 }
 /**
  * 谁做了这件事（审计里的「发起者」，不含会话内容）。
@@ -3275,6 +3327,10 @@ export interface TodoAddParams {
    */
   origin_session?: string | null;
   project?: string | null;
+  /**
+   * 周期规则（只由人设置：自报 `mcp` 的连接或 `agent: true` → `forbidden`）。
+   */
+  repeat?: TodoRepeat | null;
   title: string;
 }
 /**
@@ -3430,6 +3486,10 @@ export interface TodoUpdateParams {
   handler?: TodoHandler | null;
   id: string;
   project?: string | null;
+  /**
+   * 设置或替换周期规则（规则变了就从现在起重新算下一次）；清掉用 `clear: ["repeat"]`。同 `todo.add`，只由人设置。
+   */
+  repeat?: TodoRepeat | null;
   /**
    * `true`：把 `unreviewed` 清掉（`false` 或对已经收下的项会被忽略）。
    */

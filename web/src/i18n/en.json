@@ -1509,6 +1509,32 @@
         "internal": "The extraction failed. Try again later."
       },
       "retry": "Retry"
+    },
+    "group": {
+      "align": "Align group nodes",
+      "alignNote": "Compare all group rules. Offline nodes are unknown. Choose a version or delete all copies.",
+      "scope": "Sync scope",
+      "node": "Only this node",
+      "group": "Group nodes",
+      "badge": "Group",
+      "notSyncable": "Only confirmed rules without a project can sync to the group.",
+      "projectDisabled": "Project rules cannot sync to the group.",
+      "localNote": "Switching back to this node leaves other nodes’ copies unchanged; review them in group alignment.",
+      "syncing_one": "Syncing to {{count}} node",
+      "syncing_other": "Syncing to {{count}} nodes",
+      "syncing": "Syncing to {{count}} nodes",
+      "failed": "Sync failed · Open alignment",
+      "unknown": "Offline or unreadable · Unknown",
+      "missing": "Missing",
+      "consistent": "All known group rules match.",
+      "useVersion": "Use this version",
+      "deleteAll": "Delete all copies",
+      "retry": "Retry",
+      "discard": "Discard",
+      "refresh": "Refresh comparison",
+      "failure": "Rejected: {{reason}} {{field}}",
+      "operationFailed": "Could not update the local sync queue. Try again.",
+      "storageFailed": "The rule was saved, but group sync could not be stored. Use group alignment to copy it."
     }
   },
   "nodeSettings": {

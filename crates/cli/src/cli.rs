@@ -228,6 +228,9 @@ pub enum RuleCmd {
 
 #[derive(Args, Debug)]
 pub struct RuleAddArgs {
+    /// Mark this rule for group sync; Web copies it to other nodes during sync or alignment
+    #[arg(long)]
+    pub group: bool,
     /// One or two sentences, at most 600 characters; line breaks are allowed
     pub text: String,
     /// Only apply the rule to sessions of this project (default: every project on this node)

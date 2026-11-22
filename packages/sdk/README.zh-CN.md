@@ -244,6 +244,10 @@ hub 对单个信封有大小上限（默认 256 KiB），而一页 `session.hist
 - hub 的 `dropped { seq, reason }` 每连接每秒至多一条，是「发错东西」的信号而不是逐条回执，**不据此重发**：`node.on('error', …)` 收到 `AnyconError`（`envelope_too_large` = 分片之后仍超限，说明 hub 的 `ANYCON_MAX_ENVELOPE_BYTES` 比一片还小；`not_paired` 则是 `NodeRejected`），进行中的请求失败，通道重新握手；
 - hub 的 `rate_limited { retry_after_ms }` 是**整条 hub 连接**（所有节点、含重发）的「暂停多久」提示（伴随 `backpressure` 出现，封顶 30 s，重连后清零），**不再意味着有信封被丢**：到点之前所有节点新的信封排队，被退回的 seq 也等到那之后才重发；不失败请求、不重新握手、不发 `error` 事件，也不会因为 1 秒内刚发过数据就把传输当作失步。
 
+## 规则同步范围
+
+`node.rules.add({ text, sync: 'group' })` 和 `node.rules.update({ id, sync: 'group' })` 只写当前连接的节点。新建缺省 `node`；项目规则和待确认规则不能是 `group`。SDK 不跨节点同步，也没有同组 outbox；Web 在用户写入成功后向已配对、同一非空分组的节点复制最后期望，重连后重放，并提供「对齐」处理差异和拒绝。改回 `node` 时其他节点上的副本保留。
+
 ## 开发
 
 ```bash

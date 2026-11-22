@@ -6,6 +6,7 @@ import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Overlay'
 import { deleteRule, updateRule, type RuleFail } from '../service'
+import { groupPeers } from '../groupSync'
 import type { ViewRule } from '../store'
 import { failText } from './errors'
 import { RuleEditor, type EditorMode } from './RuleEditor'
@@ -46,6 +47,10 @@ export function useRuleOps({ onSaved, onRemoved, hold, release }: { onSaved?: (r
     () => ({
       busy,
       setStatus: async (rule, status) => {
+        if (rule.status === 'pending' && status === 'active' && groupPeers(rule.node_id).length > 0) {
+          setEditor({ mode: { kind: 'edit', rule, confirm: true } })
+          return false
+        }
         const k = ruleKey(rule)
         mark(k, true)
         hold?.(rule)

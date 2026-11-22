@@ -68,13 +68,13 @@ impl RuleSourceKind {
     }
 }
 
-/// 规则在节点之间的同步范围。这一半恒为 `node`（docs/spec/daemon.md § 23.8）。
+/// 规则在节点之间的同步范围，由客户端同步（docs/spec/daemon.md § 23.8）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleSync {
     /// 只在这个节点。
     Node,
-    /// 同组节点（由客户端同步，还没有实现）。
+    /// 同组节点（由客户端同步）。
     Group,
     /// 这个版本不认识的范围；daemon 自己不产生它。
     #[serde(other)]
@@ -153,6 +153,8 @@ pub struct RuleListResult {
 pub enum RuleAddStatus {
     Active,
     Pending,
+    Disabled,
+    Rejected,
 }
 
 /// `rule.add` 的调用方可以声明的来源种类（`extracted` 只有 daemon 自己提炼时才有，`agent` 由 `agent: true` 决定）。
@@ -182,6 +184,9 @@ pub struct RuleAddParams {
     /// 缺省 `active`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<RuleAddStatus>,
+    /// 缺省 `node`；agent 写入强制为 `node`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<RuleSync>,
     /// 缺省 `{ kind: manual }`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<RuleAddSource>,
@@ -212,6 +217,9 @@ pub struct RuleUpdateParams {
     pub clear: Vec<ClearableRuleField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<RuleStatus>,
+    /// 同组范围仅接受全节点、非待确认的规则。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<RuleSync>,
     /// 给了而和这条规则现在的 `updated_ms` 不同：什么都不改，`invalid`（`data.reason = "changed"`，`data.updated_ms` 是现在的值）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_updated_ms: Option<TimestampMs>,
@@ -307,7 +315,7 @@ mod tests {
         let p: RuleAddParams = serde_json::from_value(serde_json::json!({ "id": "x", "text": "t" })).unwrap();
         assert!(p.status.is_none() && p.source.is_none() && p.agent.is_none());
         for bad in [
-            serde_json::json!({ "id": "x", "text": "t", "status": "disabled" }),
+            serde_json::json!({ "id": "x", "text": "t", "status": "future" }),
             serde_json::json!({ "id": "x", "text": "t", "source": { "kind": "extracted" } }),
             serde_json::json!({ "id": "x", "text": "t", "source": { "kind": "agent" } }),
         ] {

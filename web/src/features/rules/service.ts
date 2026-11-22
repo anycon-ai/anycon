@@ -1,11 +1,14 @@
 // 规则的网络（docs/spec/daemon.md § 23，spec/web.md § 4.14）：连上节点时读一份（`rule.list`，带字数预算），之后靠 `rule.changed`；
-// 写操作直接发给节点（没有离线队列：规则要人看过再确认，不在没连上的时候悄悄排队）。节点不在线时按钮禁用，这里也不发。
+// 用户写操作先发给来源节点，成功后把同组目标的期望状态持久化并重放。来源节点离线时禁用写入。
 // `rule.changed` 不带字数预算和 `last_injected_ms` 的变化，所以每次变化之后隔一会儿重读一份（合并连续的变化）。
 import type { Rule, RuleAddParams, RuleChanged, RuleListResult, RuleUpdateParams } from '@/protocol'
 import { rpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
 import { useNodes } from '@/stores/nodes'
 import { nodeSupportsRules, useRules } from './store'
+import { enqueueRuleSync, groupPeers, forgetRuleSyncNode, propagateRule, resetRuleSync } from './groupSync'
+import { toast } from '@/stores/ui'
+import i18n from '@/i18n'
 import { newRuleId } from './validate'
 
 /** `rule.changed` 之后隔多久重读一份（预算和 `last_injected_ms`）。 */
@@ -58,11 +61,13 @@ export function forgetNodeRules(nodeId: string): void {
   const t = refreshTimers.get(nodeId)
   if (t) clearTimeout(t)
   refreshTimers.delete(nodeId)
+  forgetRuleSyncNode(nodeId)
   useRules.getState().removeNode(nodeId)
 }
 
 export function resetRulesMemory(): void {
   cancelRuleRefreshes()
+  resetRuleSync()
   useRules.getState().reset()
 }
 
@@ -77,6 +82,7 @@ export type RuleFail =
   | { kind: 'too_many' }
   | { kind: 'too_many_pending' }
   | { kind: 'invisible' }
+  | { kind: 'not_syncable' }
   | { kind: 'invalid'; field?: string }
   | { kind: 'not_found' }
   | { kind: 'forbidden' }
@@ -100,6 +106,7 @@ async function classify(nodeId: string, id: string | null, e: unknown): Promise<
       if (reason === 'over_budget') return { kind: 'over_budget', bytes: e.bytes, cap: e.cap }
       if (reason === 'too_many') return { kind: 'too_many' }
       if (reason === 'too_many_pending') return { kind: 'too_many_pending' }
+      if (reason === 'not_syncable') return { kind: 'not_syncable' }
       if (reason === 'invisible') return { kind: 'invisible' }
       return { kind: 'invalid', field: e.field }
     case 'not_found':
@@ -127,6 +134,7 @@ export interface NewRule {
   id?: string
   text: string
   project?: string | null
+  sync?: 'node' | 'group'
   status?: 'active' | 'pending'
   source?: RuleAddParams['source']
 }
@@ -137,12 +145,14 @@ export async function addRule(nodeId: string, r: NewRule): Promise<RuleResult> {
     text: r.text,
     ...(r.project && r.project.trim() ? { project: r.project } : {}),
     ...(r.status ? { status: r.status } : {}),
+    ...(r.sync ? { sync: r.sync } : {}),
     ...(r.source ? { source: r.source } : {}),
   }
   const res = await send(nodeId, null, () => rpc().request<Rule>(nodeId, 'rule.add', params))
   if (!res.ok) return res
   useRules.getState().applyChanged(nodeId, { id: res.value.id, rule: res.value, deleted: false })
   scheduleRefresh(nodeId)
+  await propagateRule(nodeId, res.value).catch(syncStorageError)
   return { ok: true, rule: res.value }
 }
 
@@ -151,6 +161,7 @@ export interface RuleEdit {
   text?: string
   project?: string | null
   status?: 'pending' | 'active' | 'disabled' | 'rejected'
+  sync?: 'node' | 'group'
 }
 
 /** 修改。`ifUpdatedMs` 是用户看到这条规则时的版本：别的设备改过它就不动，返回 `changed` 和现在的样子。 */
@@ -161,31 +172,40 @@ export async function updateRule(nodeId: string, id: string, edit: RuleEdit, ifU
     ...(typeof edit.project === 'string' ? { project: edit.project } : {}),
     ...(edit.project === null ? { clear: ['project'] } : {}),
     ...(edit.status ? { status: edit.status } : {}),
+    ...(edit.sync ? { sync: edit.sync } : {}),
     if_updated_ms: ifUpdatedMs,
   }
   const res = await send(nodeId, id, () => rpc().request<Rule>(nodeId, 'rule.update', params))
   if (!res.ok) return res
   useRules.getState().applyChanged(nodeId, { id, rule: res.value, deleted: false })
   scheduleRefresh(nodeId)
+  await propagateRule(nodeId, res.value).catch(syncStorageError)
   return { ok: true, rule: res.value }
 }
 
 export async function deleteRule(nodeId: string, id: string, ifUpdatedMs: number): Promise<{ ok: true } | { ok: false; fail: RuleFail }> {
+  const previous = useRules.getState().nodes[nodeId]?.items[id]
   const res = await send(nodeId, id, () => rpc().request<Record<string, never>>(nodeId, 'rule.delete', { id, if_updated_ms: ifUpdatedMs }))
   if (!res.ok) return res
   useRules.getState().applyChanged(nodeId, { id, deleted: true })
   scheduleRefresh(nodeId)
+  if (previous?.sync === 'group') await enqueueRuleSync(groupPeers(nodeId), id, 'deleted').catch(syncStorageError)
   return { ok: true }
 }
 
 /** 一批规则改成同一个状态（多选确认 / 否决）：一条一条发，各带它自己的版本；返回成功的条数和失败的（原因各不同）。 */
-export async function setStatusMany(rules: readonly { node_id: string; id: string; updated_ms: number }[], status: 'active' | 'rejected'): Promise<{ done: number; failed: Array<{ id: string; fail: RuleFail }> }> {
+export async function setStatusMany(rules: readonly { node_id: string; id: string; updated_ms: number }[], status: 'active' | 'rejected', sync?: 'node' | 'group'): Promise<{ done: number; failed: Array<{ id: string; fail: RuleFail }> }> {
   let done = 0
   const failed: Array<{ id: string; fail: RuleFail }> = []
   for (const r of rules) {
-    const res = await updateRule(r.node_id, r.id, { status }, r.updated_ms)
+    const res = await updateRule(r.node_id, r.id, { status, ...(sync ? { sync } : {}) }, r.updated_ms)
     if (res.ok) done++
     else failed.push({ id: r.id, fail: res.fail })
   }
   return { done, failed }
+}
+
+function syncStorageError(e: unknown): void {
+  console.warn('anycon: could not save group rule synchronization', e)
+  toast.error(i18n.t('rules.group.storageFailed'))
 }

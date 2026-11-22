@@ -1,3 +1,8 @@
+// 规则页：按空间显示规则，提供确认、编辑和同组版本对齐。
+import { GroupAlignment } from '@/features/rules/ui/GroupAlignment'
+import { groupPeers, useRuleSync } from '@/features/rules/groupSync'
+import { groupOf, displayName } from '@/lib/spaces'
+import { Select } from '@/ui/Field'
 import { ExtractHistory } from '@/features/rules/ui/ExtractHistory'
 import { useMemo, useState } from 'react'
 import { ChevronRight, Plus, ScrollText } from 'lucide-react'
@@ -23,15 +28,31 @@ type Tab = 'pending' | 'active'
 /**
  * 规则页（`/rules`，spec/web.md § 4.14，docs/spec/daemon.md § 23）：勾选的、支持规则的节点上的规则。两个标签：待确认、已生效；
  * 停用和否决的（还有这个版本不认识状态的）收在「已生效」下面的折叠里。每条规则的全文（纯文字）都在卡片上；待确认的可以多选一起确认 / 否决。
- * 写操作直接发给节点（没有离线队列）：节点不在线时按钮禁用并说明。
+ * 来源节点不在线时禁用写入；成功后，同组目标的期望状态由持久化队列转发。
  */
 export function RulesPage({ initialTab }: { initialTab?: Tab } = {}) {
   const { t } = useTranslation()
   const { selected } = useNodeFilter()
+  const [alignmentTarget, setAlignmentTarget] = useState<string | null>(null)
+  const [bulkSync, setBulkSync] = useState<'node' | 'group'>('node')
+  const review = useRuleSync((s) => s.review)
+  const records = useRuleSync((s) => s.records)
   const supporting = useRulesNodes(selected)
   const all = useRuleView(supporting)
   const nodes = useNodes((s) => s.byId)
   const state = useRules((s) => s.nodes)
+  const alignmentGroups = useMemo(() => {
+    const groups = new Map<string, string>()
+    for (const id of selected) {
+      const key = groupOf(nodes[id]?.info)
+      const members = [id, ...groupPeers(id)]
+      if ((key && members.filter((n) => nodes[n]?.info?.capabilities.rules).length > 1) || records.some((r) => members.includes(r.node) && r.state === 'failed')) groups.set(key || id, id)
+    }
+    return [...groups.values()]
+  }, [selected, nodes, records])
+  const alignmentNode = review ?? alignmentTarget
+  const alignmentMembers = alignmentNode ? [alignmentNode, ...groupPeers(alignmentNode)].filter((id) => !!nodes[id]).join(':') : ''
+  const alignmentNodes = useMemo(() => alignmentMembers ? alignmentMembers.split(':') : [], [alignmentMembers])
   const showNode = supporting.length > 1
   const { ops, dialogs } = useRuleOps()
 
@@ -56,13 +77,17 @@ export function RulesPage({ initialTab }: { initialTab?: Tab } = {}) {
       return n
     })
 
+  const bulkHasPeers = checkedRules.some((r) => groupPeers(r.node_id).length > 0)
+  const bulkProject = checkedRules.some((r) => !!r.project)
+
   const bulk = async (status: 'active' | 'rejected'): Promise<void> => {
     const targets = checkedRules.filter((r) => nodes[r.node_id]?.conn === 'ready')
     if (targets.length === 0) return
     setBulkBusy(true)
-    const res = await setStatusMany(targets, status)
+    const res = await setStatusMany(targets, status, status === 'active' && bulkHasPeers ? (bulkProject ? 'node' : bulkSync) : undefined)
     setBulkBusy(false)
     setChecked(new Map())
+    setBulkSync('node')
     if (res.failed.length === 0) toast.success(t(status === 'active' ? 'rules.bulk.confirmed' : 'rules.bulk.rejected', { count: res.done }))
     else toast.error(t('rules.bulk.partial', { done: res.done, failed: res.failed.length, reason: failText(t, res.failed[0]!.fail) }))
   }
@@ -91,12 +116,16 @@ export function RulesPage({ initialTab }: { initialTab?: Tab } = {}) {
         crumbs={[{ label: t('rules.title') }]}
         showNodeStatus={false}
         actions={
+          <>
+          {alignmentGroups.map((id) => <Button key={id} size="sm" onClick={() => setAlignmentTarget(id)} data-testid="rules-align">{t('rules.group.align')}{alignmentGroups.length > 1 ? ` · ${displayName(groupOf(nodes[id]?.info)) || cleanHintText(nodes[id]?.name) || id.slice(0, 8)}` : ''}</Button>)}
           <Button size="sm" variant="primary" disabled={addNodes.length === 0} onClick={() => ops.add(addNodes)} data-testid="rules-add" className="max-md:min-h-11">
             <Plus className="size-4" aria-hidden />
             {t('rules.add')}
           </Button>
+          </>
         }
       />
+      <GroupAlignment nodes={alignmentNodes} open={alignmentNode !== null} onOpenChange={(open) => { if (!open) { setAlignmentTarget(null); useRuleSync.setState({ review: null }) } }} />
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl space-y-4 p-3 md:p-4">
           <p className="text-sm text-fg-muted" data-testid="rules-intro">
@@ -158,6 +187,7 @@ export function RulesPage({ initialTab }: { initialTab?: Tab } = {}) {
                         <span className="min-w-0 flex-1 text-xs text-fg-subtle" aria-live="polite">
                           {t('rules.selected', { count: checkedRules.length })}
                         </span>
+                        {bulkHasPeers ? <label>{t('rules.group.scope')}<Select aria-label={t('rules.group.scope')} value={bulkProject ? 'node' : bulkSync} onChange={(e) => setBulkSync(e.target.value === 'group' ? 'group' : 'node')} data-testid="rules-bulk-sync"><option value="node">{t('rules.group.node')}</option><option value="group" disabled={bulkProject}>{t('rules.group.group')}</option></Select>{bulkProject ? <span>{t('rules.group.projectDisabled')}</span> : null}</label> : null}
                         <Button size="sm" variant="primary" className="max-md:min-h-11" disabled={checkedRules.length === 0 || bulkBusy || !onlineAll} onClick={() => void bulk('active')} data-testid="rules-bulk-confirm">
                           {t('rules.bulk.confirmSelected')}
                         </Button>

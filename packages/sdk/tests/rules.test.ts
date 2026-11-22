@@ -76,6 +76,16 @@ for (const impl of cryptoImpls) {
       })
     })
 
+    it('sync 参数透传给一个节点，SDK 不发跨节点请求', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const rule = await node.rules.add({ text: 'shared', sync: 'group' })
+        assert.equal(paramsOf(env, 'rule.add')[0]?.sync, 'group')
+        await node.rules.update({ id: rule.id, sync: 'node' })
+        assert.deepEqual(paramsOf(env, 'rule.update'), [{ id: rule.id, sync: 'node' }])
+        assert.equal(paramsOf(env, 'rule.add').length, 1)
+      })
+    })
+
     it('node.info 带 capabilities.rules', async () => {
       await withNode(await impl.load(), async (node) => {
         assert.equal((await node.info()).capabilities.rules, true)

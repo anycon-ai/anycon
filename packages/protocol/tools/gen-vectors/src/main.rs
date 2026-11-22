@@ -257,6 +257,18 @@ fn main() {
     };
     v.extend([
         rpc(
+            "rule_add_group",
+            RpcMessage::request(901u64, methods::RULE_ADD, json!({
+                "id": "11111111-2222-4333-8444-555555555555", "text": "Ask before adding a dependency.", "status": "disabled", "sync": "group"
+            })),
+        ),
+        rpc(
+            "rule_update_group",
+            RpcMessage::request(902u64, methods::RULE_UPDATE, json!({
+                "id": "11111111-2222-4333-8444-555555555555", "status": "active", "sync": "group"
+            })),
+        ),
+        rpc(
             "rule_extract",
             RpcMessage::request(
                 20u64,

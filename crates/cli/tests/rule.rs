@@ -343,3 +343,23 @@ async fn an_agent_rule_records_the_session_it_was_proposed_in() {
     assert!(r.json()["source"]["session_id"].is_null());
     n.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_flag_marks_one_node_and_scope_is_visible() {
+    let n = node().await;
+    let r = n.cli(&["rule", "add", "shared rule", "--group", "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.json()["sync"], "group");
+    assert!(r.stderr.contains("Web") && r.stderr.contains("one node only"), "{}", r.stderr);
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    let shown = n.cli(&["rule", "show", &id]).await;
+    assert!(shown.stdout.contains("sync:    group"), "{}", shown.stdout);
+    let ls = n.cli(&["rule", "ls"]).await;
+    assert!(ls.stdout.contains("SYNC") && ls.stdout.contains("group"), "{}", ls.stdout);
+    let bad = n.cli(&["rule", "add", "project", "--group", "--project", "web"]).await;
+    assert_ne!(bad.code, 0);
+    let agent = n.cli_env(&["rule", "add", "agent", "--group", "--json"], &[("ANYCON_AGENT", "1")]).await;
+    assert_eq!(agent.json()["sync"], "node");
+    assert_eq!(agent.json()["status"], "pending");
+    n.stop().await;
+}

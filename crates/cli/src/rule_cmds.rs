@@ -127,6 +127,7 @@ async fn add(app: &App, a: RuleAddArgs) -> Result<u8> {
         text: a.text,
         project: a.project,
         status: None,
+        sync: a.group.then_some(RuleSync::Group),
         source: None,
         agent: nested.then_some(true),
         origin_session: nested.then(|| std::env::var(SESSION_ID_ENV).ok().filter(|s| !s.is_empty())).flatten(),
@@ -145,12 +146,18 @@ async fn add(app: &App, a: RuleAddArgs) -> Result<u8> {
     } else {
         println!("added {}  {}", short(&r.id), one_line(&r.text));
     }
+    if r.sync == RuleSync::Group {
+        eprintln!(
+            "Other nodes are updated by Web on the next Web edit or group alignment; CLI writes to one node only."
+        );
+    }
     Ok(0)
 }
 
 /// 一条规则的全部内容：文字经 [`visible`]（控制字符显示成转义，换行保留），缩进列在下面。
 fn print_full(r: &Rule) {
     println!("    status:  {}", status_str(r.status));
+    println!("    sync:    {}", sync_str(r.sync));
     println!("    project: {}", sanitize_label(r.project.as_deref().unwrap_or("(all projects)"), 200, "?"));
     let by = match r.source.kind {
         RuleSourceKind::Manual => "typed by a person".to_string(),
@@ -207,7 +214,8 @@ async fn ls(app: &App, a: RuleLsArgs) -> Result<u8> {
         println!("no rules");
         return Ok(0);
     }
-    let mut rows = vec![["ID", "STATUS", "PROJECT", "BY", "RULE"].iter().map(|h| h.to_string()).collect::<Vec<_>>()];
+    let mut rows =
+        vec![["ID", "STATUS", "SYNC", "PROJECT", "BY", "RULE"].iter().map(|h| h.to_string()).collect::<Vec<_>>()];
     for r in &shown {
         let by = match (r.source.kind, r.status) {
             (RuleSourceKind::Agent, RuleStatus::Pending) => app.out.yellow("agent (needs review)"),
@@ -223,6 +231,7 @@ async fn ls(app: &App, a: RuleLsArgs) -> Result<u8> {
         rows.push(vec![
             short(&r.id),
             status,
+            sync_str(r.sync).to_string(),
             sanitize_label(r.project.as_deref().unwrap_or(""), 40, ""),
             by,
             one_line(&r.text),
@@ -256,6 +265,7 @@ async fn set_status(app: &App, what: &str, key: &str, status: RuleStatus, done: 
         return Ok(0);
     }
     let params = RuleUpdateParams {
+        sync: None,
         id,
         text: None,
         project: None,
@@ -453,6 +463,14 @@ async fn runs(app: &App, session: Option<&str>) -> Result<u8> {
     }
     print!("{}", table(&rows));
     Ok(0)
+}
+
+fn sync_str(sync: RuleSync) -> &'static str {
+    match sync {
+        RuleSync::Node => "node",
+        RuleSync::Group => "group",
+        RuleSync::Unknown => "unknown",
+    }
 }
 
 #[cfg(test)]

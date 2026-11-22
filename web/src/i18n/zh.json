@@ -1487,6 +1487,32 @@
         "internal": "提炼失败，请稍后重试。"
       },
       "retry": "重试"
+    },
+    "group": {
+      "align": "对齐同组节点",
+      "alignNote": "比较同组规则。离线节点显示未知。选一个版本推给其他节点，或都删掉。",
+      "scope": "同步范围",
+      "node": "只在这个节点",
+      "group": "同组节点",
+      "badge": "同组",
+      "notSyncable": "只有不属于项目、且已确认过的规则才能同步到同组节点。",
+      "projectDisabled": "有项目的规则不能同步到同组节点。",
+      "localNote": "改回只在这个节点时，其他节点的副本保留不动，可在「对齐」里处理。",
+      "syncing_one": "正在同步到 {{count}} 个节点",
+      "syncing_other": "正在同步到 {{count}} 个节点",
+      "syncing": "正在同步到 {{count}} 个节点",
+      "failed": "同步失败 · 前往对齐",
+      "unknown": "离线或读取失败 · 未知",
+      "missing": "没有",
+      "consistent": "已知的同组规则均一致。",
+      "useVersion": "用这个版本",
+      "deleteAll": "都删掉",
+      "retry": "重试",
+      "discard": "放弃",
+      "refresh": "刷新比较",
+      "failure": "节点拒绝：{{reason}} {{field}}",
+      "operationFailed": "未能更新本地同步队列，请重试。",
+      "storageFailed": "规则已保存，但同组同步未能写入本地存储。请在「对齐」里补齐。"
     }
   },
   "nodeSettings": {

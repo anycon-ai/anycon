@@ -1,5 +1,5 @@
 // 规则的内存状态（每个节点一份，docs/spec/daemon.md § 23）。规则的文字是用户内容，也可能是 agent 写的待确认的话：
-// 只放在内存里，不落盘（没有离线缓存、没有待发队列）；写操作直接发给节点，节点连不上时界面禁用并说明原因。
+// 整表只放在内存里；同组目标的最后期望由 groupSync 单独落盘和重放。来源节点连不上时写操作禁用。
 import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { Rule, RuleBudget, RuleChanged, RuleSourceKind, RuleStatus } from '@/protocol'

@@ -1465,7 +1465,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ## 23. 决策档案
 
-> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）单独实现，还没有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）已实现，由 Web 持久化和重放。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
 
 ### 23.1 范围
 
@@ -1473,7 +1473,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 规则只影响 agent 怎么判断，**不影响任何权限**：不自动批准或拒绝权限请求，不改权限模式，不放宽「不 push、不开 PR」（ADR-54 第 3、5 条）。
 
-不做：同组节点之间的同步（单独实现，§ 23.8）；「过期」标记（要有分身的运行记录里「按哪条规则」的引用才有依据，第 4 步）；让会话里的 agent 提规则的 MCP 工具。
+不做：「过期」标记（要有分身的运行记录里「按哪条规则」的引用才有依据，第 4 步）；让会话里的 agent 提规则的 MCP 工具。
 
 ### 23.2 `Rule`
 
@@ -1483,7 +1483,7 @@ Rule {
   text:       string      // 1–600 个 Unicode 码点，可以多行；除换行外不含控制字符，不含 U+2028 / U+2029，不含双向控制符和零宽字符（§ 23.2）
   project?:   string      // 只进这个项目的会话；缺省 = 这个节点上所有项目的会话
   status:     pending | active | disabled | rejected
-  sync:       node | group        // 这一半恒为 node；group 见 § 23.8
+  sync:       node | group        // 缺省 node；group 由 Web 同步，见 § 23.8
   source:     { kind: manual | answer | extracted | agent, session_id?, seq?, request_id?, device_id? }
   created_ms: timestamp
   updated_ms: timestamp   // 每次真正的修改严格递增（同 § 21.3），也是版本号
@@ -1509,7 +1509,7 @@ Rule {
 **谁能写**（和清单同一条界线，§ 21.2）：
 
 - 人（已配对设备、本机 CLI）：新建时可以直接是 `active`；可以改文字、改状态、删除。
-- `rule.add` 带了 `agent: true`，或者来自自报了 `mcp` 的本机连接：只能新建，状态强制为 `pending`，`source.kind` 强制为 `agent`；`rule.update` / `rule.delete` → `forbidden`。这是自报的护栏，不是边界；真正的闸是「`pending` 要人确认才生效」。
+- `rule.add` 带了 `agent: true`，或者来自自报了 `mcp` 的本机连接：只能新建，状态强制为 `pending`、`sync` 强制为 `node`，`source.kind` 强制为 `agent`；`rule.update` / `rule.delete` → `forbidden`。这是自报的护栏，不是边界；真正的闸是「`pending` 要人确认才生效」。
 - `twin` 设备（ADR-56）：规则的读写都不在它的白名单里。
 - 细节：`rule.add` 的 `id` 已存在时先于一切别的校验原样返回（来自 agent 的调用也一样）；`rule.update` / `rule.delete` 的 `forbidden` 先于 `not_found`，自报了 `mcp` 的连接探测不出哪些 id 存在；`rule.list` 和 `rule.preview` 对它照常开放（读）。人确认一条 agent 提的规则（`pending` → `active`）不改它的 `source`，所以它仍然标着是 agent 提的。
 
@@ -1520,8 +1520,8 @@ Rule {
 | 方法 | 方向 | 说明 |
 |---|---|---|
 | `rule.list` | C→D | `{ status?, project? }` → `{ rules: [Rule], budget }`。一次给全（不含 `rejected` 的规则总数上限 300，`rejected` 的另有 300，不翻页）。`budget` 见 § 23.4 |
-| `rule.add` | C→D | `{ id, text, project?, status?: active \| pending, source?: { kind: manual \| answer, session_id?, request_id? }, agent? }` → `Rule`。`id` 已存在时原样返回已有的那一条。`status` 缺省 `active`。`agent: true`（或自报了 `mcp` 的连接）时可另带 `origin_session`（§ 23.2）。不含 `rejected` 的规则已满 300 → `invalid`（`data.field = "rules"`，`data.reason = "too_many"`）；这是 agent 写的、而 agent 提的待确认规则（`source.kind` 是 `agent` 或 `extracted`，状态是 `pending`）已满 50 → `invalid`（`data.field = "rules"`，`data.reason = "too_many_pending"`），只拦 agent 的入口，人照常能写；文字里有看不见的字符 → `invalid`（`data.reason = "invisible"`）；会让注入超出上限 → `invalid`（`data.reason = "over_budget"`，§ 23.4） |
-| `rule.update` | C→D | `{ id, text?, project?, clear?, status?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget` |
+| `rule.add` | C→D | `{ id, text, project?, status?: active \| pending \| disabled \| rejected, sync?: node \| group, source?: { kind: manual \| answer, session_id?, request_id? }, agent? }` → `Rule`。`id` 已存在时原样返回已有的那一条。`status` 缺省 `active`，`sync` 缺省 `node`。`agent: true`（或自报了 `mcp` 的连接）时可另带 `origin_session`（§ 23.2）。不含 `rejected` 的规则已满 300 → `invalid`（`data.field = "rules"`，`data.reason = "too_many"`）；这是 agent 写的、而 agent 提的待确认规则（`source.kind` 是 `agent` 或 `extracted`，状态是 `pending`）已满 50 → `invalid`（`data.field = "rules"`，`data.reason = "too_many_pending"`），只拦 agent 的入口，人照常能写；文字里有看不见的字符 → `invalid`（`data.reason = "invisible"`）；会让注入超出上限 → `invalid`（`data.reason = "over_budget"`，§ 23.4） |
+| `rule.update` | C→D | `{ id, text?, project?, clear?, status?, sync?, if_updated_ms? }` → `Rule`。没有任何字段真的变了就是空操作。`if_updated_ms` 给了而和当前的不同 → `invalid`（`data.reason = "changed"`，带当前的 `updated_ms`）。改成 `active`、或者改一条 `active` 规则的文字 / 项目而超出上限 → `over_budget` |
 | `rule.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除 |
 | `rule.preview` | C→D | `{ project? }` → `{ text, rule_ids, bytes }`：现在开一个这个项目的会话，会注入的那段文字（§ 23.5）。只读 |
 | `rule.changed` | D→C notification | `{ id, rule?, deleted }`，发给所有在线客户端，包括发起的那一台；`deleted = true` 时没有 `rule`。新建、真正的修改、删除才发；空操作、重复的 `rule.add` 和 `last_injected_ms` 的变化（§ 23.5）不发 |
@@ -1532,8 +1532,9 @@ Rule {
 细节：
 
 - **`rule.list`**：`status` 和 `project` 同时给是交集。`project` 去掉首尾空白后按项目名的等价规则比较，只给 `project` 等于它的规则，**不含全节点规则**（要看一个项目的会话会拿到什么，用 `rule.preview`）；空白按没给。`budget` 总是按全部生效的规则算，不随过滤条件变。规则按 `created_ms` 从早到晚（同一毫秒的按写入先后）。
-- **校验的顺序**（`rule.update` / `rule.delete`）：`id` 的写法（小写带连字符的 UUID，同 `todo.add`，`invalid`，`data.field = "id"`）、`forbidden`、规则存在（`not_found`）、`if_updated_ms`、各字段的校验、空操作、字数上限。检查和写入在同一把锁里，中间没有别的规则写入。`rule.add`：`id` 的写法、已存在则原样返回、各字段、总数、字数上限。
-- **`data.field`**：文字 `text`、项目 `project`、状态 `status`、来源里的 id `source.session_id` / `source.request_id`、总数 `rules`（`reason = "too_many"`）、条件 `if_updated_ms`（`reason = "changed"`）。`over_budget` 的 `field` 是引起它的字段：新建时是 `text`；修改时状态变了就是 `status`，否则是第一个变了的字段（`text`、`project`）。
+- **校验的顺序**（`rule.update` / `rule.delete`）：`id` 的写法（小写带连字符的 UUID，同 `todo.add`，`invalid`，`data.field = "id"`）、`forbidden`、规则存在（`not_found`）、`if_updated_ms`、各字段的校验、空操作、总数、字数上限。检查和写入在同一把锁里，中间没有别的规则写入。`rule.add`：`id` 的写法、已存在则原样返回、各字段、总数、字数上限。
+- **字段校验顺序**：新建按 `text`、`project`、`source.session_id`、`source.request_id`、`sync`；修改按 `text`、`project`、`status`、应用 `clear`、`sync`。`sync` 未知值 → `invalid`（`data.field = "sync"`）；最终范围是 `group`，而改后有项目或状态为 `pending` → `invalid`（`data.field = "sync"`，`data.reason = "not_syncable"`），先于空操作、总数和字数上限。同一修改里 `clear: ["project"]` 加 `sync: "group"` 按清除项目后的最终状态校验。agent 新建在与强制 `pending` 相同的路径强制 `node`，忽略传入的 `sync`。`id` 已存在的返回仍先于这些校验。新建 `rejected` 不占非否决规则名额，超出否决上限时沿用 § 23.7 的淘汰。
+- **`data.field`**：文字 `text`、项目 `project`、状态 `status`、同步范围 `sync`、来源里的 id `source.session_id` / `source.request_id`、总数 `rules`（`reason = "too_many"`）、条件 `if_updated_ms`（`reason = "changed"`）。`over_budget` 的 `field` 是引起它的字段：新建时是 `text`；修改时状态变了就是 `status`，否则是第一个变了的字段（`text`、`project`）。
 - **`rule.preview`** 的 `project` 校验同 `rule.add`（不合法 → `invalid`），不校验项目存在，空白按没给。只读：不改 `last_injected_ms`。
 
 ### 23.4 上限：在生效的时候把关，注入时不截断
@@ -1582,20 +1583,25 @@ Standing rules from the user. The user wrote or confirmed each of them; follow t
 
 新迁移 `0006_rules.sql`，表 `rules`（列见 § 11；索引 `(created_ms, id)`）。规则的文字是用户内容：不进日志（包括各条错误路径），不进审计。写操作在 daemon 里串行（`Store::rule_lock`，不和别的锁嵌套）。
 
-审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id。`add` 的 `detail` 是 `{ text_len（码点数）, source_kind, status, project? }`；`update` 的 `detail` 是 `{ fields }`（变了的字段名：`text` `project` `status`），文字变了另带 `text_len`，状态变了另带 `status: { from, to }`；`delete` 为空。不记文字（项目名和清单一样会记）。重复的 `rule.add`、空操作的 `rule.update` 和失败的调用不进审计。每次提炼结束记一条 `rule.extract`：`target` 是会话 id，`detail` 是 `{ trigger, status, points, added（条数）, dropped, backend, error? }`；提炼建出的每条规则另记 `rule.add`（`source_kind = extracted`）。
+审计 `rule.add` / `rule.update` / `rule.delete`：`target` 是规则 id。`add` 的 `detail` 是 `{ text_len（码点数）, source_kind, status, sync, project? }`；`update` 的 `detail` 是 `{ fields }`（变了的字段名：`text` `project` `status` `sync`），文字变了另带 `text_len`，状态变了另带 `status: { from, to }`；`delete` 为空。不记文字（项目名和清单一样会记）。重复的 `rule.add`、空操作的 `rule.update` 和失败的调用不进审计。每次提炼结束记一条 `rule.extract`：`target` 是会话 id，`detail` 是 `{ trigger, status, points, added（条数）, dropped, backend, error? }`；提炼建出的每条规则另记 `rule.add`（`source_kind = extracted`）。
 
 **名额**：占 300 个名额的是不含 `rejected` 的规则（待确认、生效、停用）；agent 提的待确认规则另有 50 个（`MAX_AGENT_PENDING`：状态 `pending`、来源 `agent` 或 `extracted`），所以 agent 占不满 300 个名额、把人挡在外面（人写的、直接生效的规则不受这 50 个限制）。`rejected` 的规则留着是为了之后提炼时不再提同样的，它们不占那 300 个，但自己也有一个 300 的上限：再否决一条而 `rejected` 的超过 300 时，daemon 删掉最早否决的那条（`updated_ms` 最小的；记审计 `rule.delete`，`detail` 是 `{ "auto": "rejected_cap" }`，并发 `rule.changed`）。把 `rejected` 的规则改回别的状态和新建一样占一个名额（满了 → `too_many`）。
 
 daemon 从不自动删除有用的规则（ADR-54 第 3 条）：待确认、生效、停用的规则一直留着，不受 `history_retention` 影响；上面 `rejected` 满额时删最早的那条，是唯一的自动删除。`anycon export` / `import` 不含规则。
 
-### 23.8 同组节点之间的同步（单独实现）
+### 23.8 同组节点之间的同步
 
-决定见 ADR-54 第 12 条。实现时的形状：
+**已实现**（ADR-54 第 12 条）。daemon 只保存本节点的规则，不与其他 daemon 通信；hub 不参与规则同步。
 
-- `sync = group` 的规则由**客户端**同步：用户在一台设备上确认、修改、停用、删除它时，这台设备把同一个操作发给同一个空间（[web.md § 4.13](web.md#413-空间与移到另一个节点)）里的每个节点；规则 id 在各节点上相同。离线的节点等它回来后重放。
-- 只有全节点规则能设成 `group`：项目名在另一个节点上不一定是同一个项目。
-- 各节点的 `updated_ms` 是各自的时钟，不能跨节点比较。「对齐」按内容比：同一个 id 在各节点上的文字和状态不一致、或者有的节点没有，就列出来由用户选一份发给其余节点。
-- `pending` 的规则不同步：它的出处指向提炼它的那个节点上的会话。
+- **范围**：`rule.add` / `rule.update` 接受 `sync?: node | group`，新建缺省 `node`。只有全节点、非 `pending` 的规则能是 `group`（校验及顺序见 § 23.3）。`rule.list` / `rule.changed` 原样带 `sync`。`rule.add` 接受 `disabled` / `rejected`，使离线目标能直接恢复期望状态。
+- **同组**：这台 Web 设备配对过、`hub.group`（`node.info.group`）去首尾空白后相同且不为空的节点，即 [web.md § 4.13](web.md#413-空间与移到另一个节点) 的空间。空分组自成一组，没有同步目标；不替用户配对其他节点。
+- **写入**：用户在 Web 对 `sync = group` 的规则做每一个写操作（新建、改文字、确认、否决、停用、启用、删除、改成 `group`），先照常写来源节点，成功后给每个别的同组节点记期望状态到 IndexedDB `rule_outbox`：`{ node, rule_id, desired: { text, status, sync: "group" } }` 或 `desired: "deleted"`。同一 `(node, rule_id)` 只留最新的一条，替换后按最后写下的顺序排。只同步文字、状态、范围与 id，不转发指向来源节点会话的 `source`。
+- **重放**：每个节点连着时按记录顺序，期望规则 → `rule.add { id, text, status, sync: "group" }`；返回的已有规则与期望不一样 → `rule.update { id, text, status, sync: "group" }`。不带 `if_updated_ms`：节点各自的 `updated_ms` 不可比较，跨节点按最后写下的期望为准。期望删除 → `rule.delete { id }`，`not_found` 算成功。重放不会再触发转发。请求在途写入了新期望时，旧回执只处理自己的记录，不删新记录。多标签页通过 Web Locks、无锁时通过事务内认领租约串行发送。
+- **错误**：离线、断线、无法投递和节点已离线时的超时保留为待发，不计失败次数。节点仍在线时的超时累计 `attempts`，达到 3 次标失败；只有 `closed` 且原因为 `peer_reconnected` / `noise_reset` 时累计 `drops`，达到 5 次标失败（`link`）。计数随队列持久化；整条期望写入成功、手动重试或新的期望会清零。重连或延迟后只重试未失败的条目，详见 [web.md § 4.14](web.md#414-规则-rules)。节点拒绝（`over_budget`、`too_many`、`not_syncable`、其他 `invalid`、`forbidden` 等）标成失败，保留错误码、字段和原因；停止自动重试，用户在对齐里重试或放弃。旧节点忽略 `sync`、写入回执仍不符合期望时也保留为失败（`unsupported`），不误报成功。忘记节点和清空本地身份时清除对应队列。来源写入成功而 IndexedDB 失败时明确提示已保存但未排入同步，由对齐补齐。
+- **改回 `node`**：只改当前节点，其他副本不动。编辑框明确说明；之后对齐会列出范围不一致，由用户决定。
+- **对齐**：当前空间有两个以上支持规则的节点时，规则页提供「对齐同组节点」。向每个在线节点读 `rule.list`，取所有 `sync = group` 的 id，比较每个节点同 id 的文字、状态及范围：都有且相同才一致，否则逐行显示每个节点的文字 / 状态 / 没有 / 离线未知；读取失败也为未知，不把离线当作缺失。用户选一个可同步的节点版本推给其余节点（该版本是 `node` 时也把来源改为 `group`），或「都删掉」，均走同一队列。失败记录也列在这里，支持重试 / 放弃。
+- **确认时选范围**：新建、编辑和确认待确认规则（包括提炼规则）的编辑框，在本节点所在空间还有别的节点时有「只在这个节点 / 同组节点」选择；新建和确认缺省本节点，编辑已有规则保留原范围。有项目的禁用同组并说明。确认同组用一次 `rule.update { status: active, sync: group }`，成功才转发。卡片标出「同组」、正在同步的节点数，失败时指向对齐。
+- **SDK / CLI**：TS SDK 的 `node.rules.add` / `update` 接受 `sync`，SDK 不跨节点同步。CLI `ls` / `show` 显示范围，`add --group` 只在连接的节点建同组规则，并说明其他节点由 Web 在后续 Web 写入触发的同步或对齐时补齐；普通列表读取不自动把既有规则扩散给其他节点。
 
 ### 23.9 提炼
 
@@ -1701,11 +1707,11 @@ ExtractRun {
 
 ### 23.10 客户端入口
 
-- **Web**（已实现，[web.md § 4.14](web.md#414-规则-rules)）：规则页 `/rules`（待确认 / 已生效，显示已用字数和上限，新建、编辑、确认、否决、停用、启用、删除，多选）；「待处理」稍后段里的待确认规则（一条一行，确认只在显示着全文的详情里）；审批卡片和提问卡片的答复按钮旁的「记成规则」（不答复请求）；派发对话框里显示将注入的规则（`todo.dispatch_preview` 的 `rules_text`，换项目重新取）和「这个 agent 收不到规则」；会话信息面板里的「交给 agent 的规则」；「更多」、左栏和命令面板里出现「规则」。回答框的「以后都这样」勾选没有做（只有「记成规则」按钮）。
-- **CLI**：`anycon rule add <text> [--project <name>]`、`anycon rule ls [--all] [--json]`、`anycon rule show <id>`、`anycon rule confirm | reject | disable | enable <id>`、`anycon rule rm <id>`；`<id>` 接受前缀。在 anycon 拉起的 agent 里（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true`（记成待确认），`ls` 和 `show`（只读）照常，其余拒绝执行（同 § 21.8，护栏，不是边界）；`add` 带 `ANYCON_SESSION_ID` 作为 `origin_session`。`show` 用 `visible()` 打印一条规则的全文、状态、项目和来源（`ls` 把规则截成一行，不够审阅）；`confirm` / `enable` 打印被激活的那条规则的全文。`ls` 缺省给 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；`--json` 给 `{ rules, budget }`。`confirm` / `enable` 把状态改成 `active`，`reject` 改成 `rejected`，`disable` 改成 `disabled`（都是 `rule.update`；经前缀列过表的带 `if_updated_ms`，所以列出之后别处改过这条规则就不确认；已经是这个状态就如实说没变）。`anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则。子命令规格见 [cli.md § 3.9](cli.md#39-anycon-rule)。
+- **Web**（已实现，[web.md § 4.14](web.md#414-规则-rules)）：规则页 `/rules`（待确认 / 已生效，显示已用字数和上限，新建、编辑、确认、否决、停用、启用、删除，多选）；「待处理」稍后段里的待确认规则（一条一行，确认只在显示着全文的详情里）；审批卡片和提问卡片的答复按钮旁的「记成规则」（不答复请求）；派发对话框里显示将注入的规则（`todo.dispatch_preview` 的 `rules_text`，换项目重新取）和「这个 agent 收不到规则」；会话信息面板里的「交给 agent 的规则」；「更多」、左栏和命令面板里出现「规则」。同组同步（§ 23.8）：范围选择、卡片上的同组 / 待发数 / 失败标记、「对齐同组节点」比较与选择版本、失败记录的重试 / 放弃。回答框的「以后都这样」勾选没有做（只有「记成规则」按钮）。
+- **CLI**：`anycon rule add <text> [--project <name>] [--group]`、`anycon rule ls [--all] [--json]`、`anycon rule show <id>`、`anycon rule confirm | reject | disable | enable <id>`、`anycon rule rm <id>`；`<id>` 接受前缀。在 anycon 拉起的 agent 里（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true`（记成待确认），`ls` 和 `show`（只读）照常，其余拒绝执行（同 § 21.8，护栏，不是边界）；`add` 带 `ANYCON_SESSION_ID` 作为 `origin_session`。`show` 用 `visible()` 打印一条规则的全文、状态、项目和来源（`ls` 把规则截成一行，不够审阅）；`confirm` / `enable` 打印被激活的那条规则的全文。`ls` / `show` 显示 `sync`；`add --group` 只写当前节点并打印 Web 同步说明。`ls` 缺省给 `active` 和 `pending`，`--all` 加上 `disabled` 和 `rejected`；`--json` 给 `{ rules, budget }`。`confirm` / `enable` 把状态改成 `active`，`reject` 改成 `rejected`，`disable` 改成 `disabled`（都是 `rule.update`；经前缀列过表的带 `if_updated_ms`，所以列出之后别处改过这条规则就不确认；已经是这个状态就如实说没变）。`anycon todo run --dry-run` 有生效的规则时，在第一条消息后面另外列出 `rules_text`（`--json` 里是 `rules_text` 字段）；`anycon todo history` 显示每次派发给了几条规则。子命令规格见 [cli.md § 3.9](cli.md#39-anycon-rule)。
 - **`anycon mcp`**：不加工具。MCP 的工具都是固定映射到具体 RPC 的，没有通用的转发，所以经它够不着 `rule.*`；自报了 `mcp` 的连接直接发 `rule.add` 只能记待确认的，发 `rule.update` / `rule.delete` 得到 `forbidden`。
 - **提炼**（§ 23.9）：Web 会话页「更多」里的「提炼规则」、规则页里提炼出的规则的出处和「提炼记录」、节点设置里的 `rules.extract_auto` 和 `judge.*`（[web.md § 4.14](web.md#414-规则-rules)）；CLI 的 `anycon rule extract <session>` 和 `anycon rule runs`（[cli.md § 3.9](cli.md#39-anycon-rule)），其中 `extract` 在 anycon 拉起的 agent 里拒绝执行，`runs` 只读、照常可用；`anycon doctor` 的「判断后端」一项（§ 25）。
-- **SDK**：`node.rules.*`（含 `extract`、`extractRuns`）、`rule_changed` 和 `rule_extract_done` 事件。
+- **SDK**：`node.rules.*`（含 `extract`、`extractRuns`）、`rule_changed` 和 `rule_extract_done` 事件。`add` / `update` 接受 `sync`，SDK 不负责跨节点同步。
 
 ### 23.11 代价 / 限制
 

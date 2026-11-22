@@ -12,6 +12,7 @@ import { addRule, updateRule, type NewRule, type RuleFail } from '../service'
 import { useRules, type ViewRule } from '../store'
 import { codePoints, newRuleId, normalizeRuleText, ruleTextError, TEXT_MAX } from '../validate'
 import { failText, textErrorText } from './errors'
+import { groupPeers } from '../groupSync'
 import { RuleText } from './RuleText'
 
 export type EditorMode =
@@ -41,6 +42,7 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
   const initial = mode.kind === 'edit' ? mode.rule : null
   const [nodeId, setNodeId] = useState(mode.kind === 'edit' ? mode.rule.node_id : (mode.nodeIds[0] ?? ''))
   const [text, setText] = useState(mode.kind === 'edit' ? mode.rule.text : (mode.text ?? ''))
+  const [sync, setSync] = useState<'node' | 'group'>(mode.kind === 'edit' && !mode.confirm && mode.rule.sync === 'group' ? 'group' : 'node')
   const [project, setProject] = useState(mode.kind === 'edit' ? (mode.rule.project ?? ALL) : (mode.project ?? ALL))
   // 看到这条规则时的版本：别处改了它之后，用户看过现在的样子再存，就以现在的版本为准
   const [base, setBase] = useState<ViewRule | null>(initial)
@@ -49,6 +51,9 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
   const idRef = useRef(newRuleId())
   const entry = useNodes((s) => s.byId[nodeId])
   const nodes = useNodes((s) => s.byId)
+  const hasPeers = groupPeers(nodeId).length > 0
+  const projectLocked = project !== ALL || !!initial?.project
+  const effectiveSync = projectLocked ? 'node' : sync
   const online = entry?.conn === 'ready'
   const budget = useRules((s) => s.nodes[nodeId]?.budget)
 
@@ -58,6 +63,7 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
     setText(mode.kind === 'edit' ? mode.rule.text : (mode.text ?? ''))
     setProject(mode.kind === 'edit' ? (mode.rule.project ?? ALL) : (mode.project ?? ALL))
     setBase(mode.kind === 'edit' ? mode.rule : null)
+    setSync(mode.kind === 'edit' && !mode.confirm && mode.rule.sync === 'group' ? 'group' : 'node')
     setFail(null)
     idRef.current = newRuleId()
     // 只在打开的那一刻重置
@@ -75,7 +81,7 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
   const count = codePoints(trimmed)
   const editing = mode.kind === 'edit'
   const gone = fail?.kind === 'changed' && fail.current === null
-  const changed = base ? trimmed !== base.text || (project === ALL ? null : project) !== (base.project ?? null) : true
+  const changed = base ? effectiveSync !== base.sync || trimmed !== base.text || (project === ALL ? null : project) !== (base.project ?? null) : true
   const confirming = mode.kind === 'edit' && mode.confirm
   const untouched = mode.kind === 'add' && !!mode.unchangedFrom && trimmed !== '' && trimmed === normalizeRuleText(mode.unchangedFrom())
   const canSave = online && !busy && !gone && localError === null && !untouched && (changed || confirming)
@@ -87,7 +93,7 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
     onSaving?.()
     const res =
       mode.kind === 'add'
-        ? await addRule(nodeId, { id: idRef.current, text: trimmed, project: project === ALL ? null : project, status: 'active', ...(mode.source ? { source: mode.source } : {}) })
+        ? await addRule(nodeId, { id: idRef.current, text: trimmed, project: project === ALL ? null : project, sync: effectiveSync, status: 'active', ...(mode.source ? { source: mode.source } : {}) })
         : await updateRule(
             nodeId,
             mode.rule.id,
@@ -95,6 +101,7 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
               ...(trimmed !== base!.text ? { text: trimmed } : {}),
               ...((project === ALL ? null : project) !== (base!.project ?? null) ? { project: project === ALL ? null : project } : {}),
               ...(mode.confirm ? { status: 'active' as const } : {}),
+              ...(effectiveSync !== base!.sync ? { sync: effectiveSync } : {}),
             },
             base!.updated_ms,
           )
@@ -151,6 +158,14 @@ export function RuleEditor({ open, onOpenChange, mode, onSaved, onSaving, onSave
             ))}
           </Select>
         </Field>
+        {hasPeers || initial?.sync === 'group' ? (
+          <Field label={t('rules.group.scope')} htmlFor="rule-sync" hint={projectLocked ? t('rules.group.projectDisabled') : t('rules.group.localNote')}>
+            <Select id="rule-sync" value={effectiveSync} onChange={(e) => setSync(e.target.value === 'group' ? 'group' : 'node')} data-testid="rule-editor-sync">
+              <option value="node">{t('rules.group.node')}</option>
+              <option value="group" disabled={projectLocked}>{t('rules.group.group')}</option>
+            </Select>
+          </Field>
+        ) : null}
         {budget ? <p className="text-xs text-fg-subtle">{t('rules.editor.budget', { cap: budget.cap })}</p> : null}
         {untouched ? (
           <p className="text-xs text-fg-muted" role="status" data-testid="rule-editor-edit-first">

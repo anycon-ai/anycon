@@ -286,6 +286,10 @@ The hub limits the size of a single envelope (256 KiB by default), and a page of
 - The hub's `dropped { seq, reason }` arrives at most once per connection per second. It signals that something wrong was sent and is not a per-envelope receipt, so the SDK **doesn't resend on it**: `node.on('error', …)` receives an `AnyconError` (`envelope_too_large` means still over the limit after fragmenting, i.e. the hub's `ANYCON_MAX_ENVELOPE_BYTES` is smaller than one fragment; `not_paired` becomes `NodeRejected`), in-flight requests fail, and the channel handshakes again.
 - The hub's `rate_limited { retry_after_ms }` is a "how long to pause" hint for the **whole hub connection** (all nodes, resends included). It comes with `backpressure`, is capped at 30 s, resets on reconnect, and **doesn't mean an envelope was dropped**. Until it expires, new envelopes for every node are queued, and bounced seqs also wait until then to be resent. It doesn't fail requests, start a new handshake, or emit an `error` event, and the SDK doesn't treat the transport as desynchronized just because data was sent within the last second.
 
+## Rule sync scope
+
+`node.rules.add({ text, sync: 'group' })` and `node.rules.update({ id, sync: 'group' })` write only to that node. New rules default to `node`; project rules and pending rules cannot use `group`. The SDK does not synchronize across nodes or keep a group outbox. Web copies confirmed group rules to paired nodes in the same nonempty group, retries offline targets, and offers group alignment for differences and refusals. Switching a rule back to `node` leaves other nodes’ copies unchanged.
+
 ## Development
 
 ```bash

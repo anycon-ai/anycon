@@ -625,6 +625,7 @@ export class Node extends Emitter<NodeEvents> {
     list: (params: RuleListParams = {}): Promise<RuleListResult> => this.call('rule.list', params),
     /**
      * `rule.add`。`id` 缺省时 SDK 生成一个 UUID（小写带连字符）；超时后要重试就传同一个：`id` 已经存在时 daemon 原样返回已有的那一条。
+     * `sync` 缺省 `node`；`group` 仅允许非待确认的全节点规则。SDK 只写当前节点，不负责跨节点同步。
      * `status` 缺省 `active`；`agent: true`（调用方自报是 agent）或来自自报了 `mcp` 的本机连接时，状态强制为 `pending`、来源强制为 `agent`。
      * 文字为空 / 超过 600 个码点 / 含换行以外的控制字符、总数已满 300（`reason = 'too_many'`）、
      * 生效后会超出注入的字数上限（`reason = 'over_budget'`，`bytes` 和 `cap` 是这次改动之后的字节数和上限）→ `RpcError`（`invalid`）。

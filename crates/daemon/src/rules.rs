@@ -133,6 +133,25 @@ fn check_source_id(field: &str, v: &str) -> RpcResult<String> {
     Ok(v.to_string())
 }
 
+/// 同步范围只接受已确认过的全节点规则；未知范围不能写回存储。
+fn check_sync(sync: RuleSync, project: Option<&str>, status: RuleStatus) -> RpcResult<()> {
+    if sync == RuleSync::Unknown {
+        return Err(invalid("sync", None, "sync must be node or group".into()));
+    }
+    if sync == RuleSync::Group && (project.is_some() || status == RuleStatus::Pending) {
+        return Err(invalid("sync", Some("not_syncable"), "only non-pending node-wide rules can sync".into()));
+    }
+    Ok(())
+}
+
+fn sync_str(sync: RuleSync) -> &'static str {
+    match sync {
+        RuleSync::Node => "node",
+        RuleSync::Group => "group",
+        RuleSync::Unknown => "unknown",
+    }
+}
+
 // ====================================================================== 模板和字数（纯函数）
 
 /// 一条规则在注入文字里的样子：`- ` 开头，多行的后续行缩进两格（含空行）。
@@ -370,10 +389,11 @@ impl Store {
     /// 写回可以变的字段（来源和创建时间不变；`last_injected_ms` 只由 [`Store::rules_mark_injected`] 写）。
     pub async fn rule_save(&self, r: &Rule) -> Result<(), StoreError> {
         check_writable(r)?;
-        sqlx::query("UPDATE rules SET text = ?, project = ?, status = ?, updated_ms = ? WHERE id = ?")
+        sqlx::query("UPDATE rules SET text = ?, project = ?, status = ?, sync = ?, updated_ms = ? WHERE id = ?")
             .bind(&r.text)
             .bind(&r.project)
             .bind(r.status.as_str())
+            .bind(sync_str(r.sync))
             .bind(r.updated_ms as i64)
             .bind(&r.id)
             .execute(self.pool())
@@ -495,6 +515,8 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
         let status = match p.status.unwrap_or(RuleAddStatus::Active) {
             RuleAddStatus::Active => RuleStatus::Active,
             RuleAddStatus::Pending => RuleStatus::Pending,
+            RuleAddStatus::Disabled => RuleStatus::Disabled,
+            RuleAddStatus::Rejected => RuleStatus::Rejected,
         };
         let src = p.source.as_ref();
         let kind = match src.map(|s| s.kind).unwrap_or(RuleAddSourceKind::Manual) {
@@ -512,14 +534,18 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
         (status, RuleSource { kind, session_id, seq: None, request_id, device_id })
     };
 
-    check_capacity(&c.store, by_agent).await?;
+    let sync = if by_agent { RuleSync::Node } else { p.sync.unwrap_or(RuleSync::Node) };
+    check_sync(sync, project.as_deref(), status)?;
+    if status != RuleStatus::Rejected {
+        check_capacity(&c.store, by_agent).await?;
+    }
     let now = now_ms();
     let rule = Rule {
         id: p.id,
         text,
         project,
         status,
-        sync: RuleSync::Node,
+        sync,
         source,
         created_ms: now,
         updated_ms: now,
@@ -530,6 +556,9 @@ pub async fn add(c: &Ctx, caller: &Caller, p: RuleAddParams) -> RpcResult<Rule> 
         check_after(c, &all, &rule, "text")?;
     }
     insert(c, caller, &rule).await?;
+    if rule.status == RuleStatus::Rejected {
+        evict_oldest_rejected(c, caller, &rule.id).await;
+    }
     Ok(rule)
 }
 
@@ -558,6 +587,7 @@ pub(crate) async fn insert(c: &Ctx, caller: &Caller, rule: &Rule) -> RpcResult<(
         "text_len": rule.text.chars().count(),
         "source_kind": rule.source.kind.as_str(),
         "status": rule.status.as_str(),
+        "sync": sync_str(rule.sync),
     });
     if let Some(project) = &rule.project {
         detail["project"] = json!(project);
@@ -610,6 +640,11 @@ pub async fn update(c: &Ctx, caller: &Caller, p: RuleUpdateParams) -> RpcResult<
         }
     }
 
+    if let Some(sync) = p.sync {
+        new.sync = sync;
+    }
+    check_sync(new.sync, new.project.as_deref(), new.status)?;
+
     let mut fields: Vec<&str> = Vec::new();
     if new.text != old.text {
         fields.push("text");
@@ -619,6 +654,9 @@ pub async fn update(c: &Ctx, caller: &Caller, p: RuleUpdateParams) -> RpcResult<
     }
     if new.status != old.status {
         fields.push("status");
+    }
+    if new.sync != old.sync {
+        fields.push("sync");
     }
     if fields.is_empty() {
         return Ok(old);

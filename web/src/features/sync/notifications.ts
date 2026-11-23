@@ -17,7 +17,7 @@ import { handleRuleChanged } from '@/features/rules/service'
 import { handleTodoChanged } from '@/features/todos/service'
 import type { TwinChanged, TwinQuestionNotice } from '@/protocol'
 import { syncTwin, handleTwinQuestion } from '@/features/twin/service'
-import { supportsTwin, useTwin } from '@/features/twin/store'
+import { bumpTwinLinks, supportsTwin, useTwin } from '@/features/twin/store'
 import { useTodos } from '@/features/todos/store'
 import { cleanHintText } from '@/lib/hint'
 import { inboxUrl, twinInboxUrl } from './pushText'
@@ -86,6 +86,8 @@ export function handleNotification(nodeId: string, method: string, params: unkno
       const value = useTwin.getState().nodes[nodeId]?.value
       if (value && typeof change?.state === 'string') useTwin.getState().patch(nodeId, { value: { ...value, state: change.state } })
       void syncTwin(nodeId)
+      // 连接建立、断开、上线、下线、状态更新时 daemon 发这条通知：「使用别的节点」的列表据此重读 `twin.links`
+      bumpTwinLinks(nodeId)
       return
     }
     case 'twin.question': {

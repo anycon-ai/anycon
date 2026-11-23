@@ -172,7 +172,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 - **`node.set_config { changes: [{ key, value }] }`**：先校验**全部**改动，任何一项不合法就一项都不写——键重复、`changes` 为空、值的 JSON 类型和 `kind` 不符、超出范围、不在枚举里、时长写不出来都回 `invalid`（`data.field` 是键，`data.reason` 是 `duplicate` / `type` / `range` / `format`）；多个问题时报请求里的第一个。通过之后用 `anycon config set` 同一套逻辑写 `config.toml`（保留注释和格式、整份配置校验通过才原子替换，值按类型写——`branch_prefix = "123"` 写成字符串），再走同一条热加载路径，审计 `config.changed`（§ 13），返回新的 `node.get_config` 结果。和当前值相同的改动是空操作（不写、不审计）；全是空操作时直接返回当前结果。daemon 里同一时刻只处理一个 `node.set_config`（先重读一次文件，再算旧值、判断「只能收紧」），并发的两次不会互相覆盖成不一致的文件
 - 范围（并发 1–32、时长上限 7d 等）只约束远程写入；`config.toml` 里手写的越界值照常加载，`node.get_config` 照实显示
 
-环境变量覆盖文件里的值，写法是 `ANYCON_<段>__<键>`（双下划线表示层级），比如 `ANYCON_SESSIONS__MAX_CONCURRENT=2`；数组按 TOML 写：`ANYCON_WORKSPACE__LINK_ROOTS='["/abs/path"]'`、`ANYCON_WORKSPACE__EXTRA_ROOTS='["/mnt/ext/projects"]'`。键名里带连字符的（`agents.claude-code.*`）没法用环境变量设，用 `anycon config set`。`ANYCON_HOME`、`ANYCON_LOG`、`ANYCON_MOCK_AGENT`、`ANYCON_UPDATE_CHECK` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`；`ANYCON_UPDATE_CHECK` 见 § 23）。
+环境变量覆盖文件里的值，写法是 `ANYCON_<段>__<键>`（双下划线表示层级），比如 `ANYCON_SESSIONS__MAX_CONCURRENT=2`；数组按 TOML 写：`ANYCON_WORKSPACE__LINK_ROOTS='["/abs/path"]'`、`ANYCON_WORKSPACE__EXTRA_ROOTS='["/mnt/ext/projects"]'`。键名里带连字符的（`agents.claude-code.*`）没法用环境变量设，用 `anycon config set`。`ANYCON_HOME`、`ANYCON_LOG`、`ANYCON_MOCK_AGENT`、`ANYCON_UPDATE_CHECK`、`ANYCON_TWIN_COALESCE_MS` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`；`ANYCON_UPDATE_CHECK` 见 § 23；`ANYCON_TWIN_COALESCE_MS` **只用于测试**，缩短分身唤醒的合并窗口，见 § 26.3，不能远程设置，也没有对应的配置键）。
 
 ## 4. 数据目录
 
@@ -1996,7 +1996,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 | `manual` | 客户端点了「现在看一遍」（`twin.wake`） |
 | `pr` | 分身派出的会话的 PR 有了变化（§ 26.9） |
 
-- **合并**：触发后等 60 秒，期间新来的触发合并进同一次；从第一个触发算起最多等 5 分钟。
+- **合并**：触发后等 60 秒，期间新来的触发合并进同一次；从第一个触发算起最多等 5 分钟。测试可以用环境变量 `ANYCON_TWIN_COALESCE_MS`（不是配置键）缩短这个窗口：daemon 启动时读一次，取值 1000–60000 毫秒，最长等待是窗口的 5 倍；不合法的值忽略并记一条 warn。别的计时（30 分钟的 `tick`、2 小时的卡住、每日的计数）不受影响。
 - **串行**：同一时间只跑一次唤醒。正在跑时来的触发，记下来留给下一次。
 - **不调用模型的情况**：没有符合 § 26.1 的项，或者今天的判断次数（`judge.daily_calls`）用完了。这时也留一条运行记录（`result = idle` / `budget`），但不发通知。
 
@@ -2041,7 +2041,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 - 它派出的会话在运行中 2 小时没有任何事件，算卡住：交回给你。会话不取消，交给你决定。派到别的节点的会话同样算，方法见 § 27.4（看的是那个会话的 `last_seq` 有没有变，时间用本节点自己的时钟），理由里写明是哪个节点上的会话。
 - 正在处理的项（派出的会话还没结束一轮的）最多 `max_sessions` 个；每天派发最多 `daily_dispatches` 次。
 
-**试跑**：`twin.dry_run` 走同样的输入和分拣，但只返回计划和校验结果，不执行、不建问题、不问顾问（`ask_advisor` 只列出来）。它计一次判断调用，同样留运行记录（`dry_run = true`）。
+**试跑**：`twin.dry_run` 走同样的输入和分拣，但只返回计划和校验结果，不执行、不建问题、不问顾问（`ask_advisor` 只列出来）。**暂停时也能试跑**：它只要求分身已配置、`[twin] enabled` 开着、daemon 没在关停（不满足时 `invalid`，`data.reason = "not_configured"`）；试跑本来就是给暂停着的分身用的：第一次配置先保存成暂停再试跑，恢复之前也先试跑（web.md § 14.8）。它计一次判断调用，同样留运行记录（`dry_run = true`）。
 
 ### 26.5 分身的问题
 

@@ -691,6 +691,21 @@ async fn assign(app: &App, key: &str, handler: &str) -> Result<u8> {
 mod tests {
     use super::*;
 
+    /// daemon 因为 agent 没有「不 push」的选项拒绝派发时，CLI 说清楚是哪个 agent、加 `--allow-push` 才能派。
+    /// 集成测试只有 mock agent，它声明了 `no_push`，所以这条拒绝在这里直接测。
+    #[test]
+    fn a_dispatch_refused_for_no_push_tells_how_to_go_ahead() {
+        let mut e = CliError::new(1, "unsupported", "the agent cannot block pushes");
+        e.reason = Some("no_push".into());
+        let out = friendly_dispatch(e, "acme");
+        assert_eq!((out.exit, out.code.as_str()), (1, "unsupported"));
+        assert!(out.message.contains("agent acme") && out.message.contains("--allow-push"), "{}", out.message);
+        // 别的原因不改写
+        let mut other = CliError::new(1, "unsupported", "something else");
+        other.reason = Some("other".into());
+        assert_eq!(friendly_dispatch(other, "acme").message, "something else");
+    }
+
     #[test]
     fn due_accepts_dates_and_rfc3339_times() {
         let day = parse_utc("2026-12-01").unwrap();

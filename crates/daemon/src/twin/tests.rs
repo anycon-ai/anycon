@@ -366,6 +366,49 @@ async fn dry_run_has_plan_parameters_and_no_action_side_effects() {
     td.shutdown().await;
 }
 
+#[test]
+fn coalesce_window_comes_from_the_test_variable_within_bounds() {
+    assert_eq!(parse_coalesce(None), (60_000, None));
+    assert_eq!(parse_coalesce(Some("2000")), (2_000, None));
+    assert_eq!(parse_coalesce(Some("1000")).0, 1_000);
+    assert_eq!(parse_coalesce(Some("60000")).0, 60_000);
+    for bad in ["999", "60001", "abc", "", "-5"] {
+        assert_eq!(parse_coalesce(Some(bad)), (60_000, Some(bad.to_string())));
+    }
+    let mut p = Pending::default();
+    p.add(TwinTrigger::Manual, 10_000);
+    p.add(TwinTrigger::Todo, 11_000);
+    assert_eq!(p.deadline_with(2_000), Some(13_000));
+    assert_eq!(p.deadline_with(60_000), Some(71_000));
+    // 一直有新触发时，最多从第一个算起等 5 个窗口
+    p.add(TwinTrigger::Tick, 19_000);
+    assert_eq!(p.deadline_with(2_000), Some(20_000));
+}
+
+#[tokio::test]
+async fn dry_run_works_while_paused_and_changes_nothing() {
+    let (td, fake) = fixture(false).await;
+    let t = todo(&td, "work").await;
+    set(&td.ctx, &Caller::local_cli(), TwinSetParams { paused: Some(true), ..Default::default() }).await.unwrap();
+    reply(&fake, json!([{"id":t.id,"action":"dispatch","reason":"r"},{"id":"ignored","action":"wait","reason":"r"}]));
+    let result = dry_run(&td.ctx, &Caller::local_cli()).await.unwrap().run;
+    assert!(result.dry_run);
+    assert_eq!(result.result, TwinRunResult::Done);
+    assert_eq!(result.decisions[0].action, TwinAction::Dispatch);
+    // 计划完整地给出来：校验按「没暂停」算，不会因为暂停把这一条记成范围外
+    assert_eq!(result.decisions[0].outcome, TwinDecisionOutcome::Executed);
+    assert!(result.decisions[0].skip_reason.is_none());
+    assert!(result.decisions[0].session_id.is_none());
+    assert!(td.ctx.store.twin_questions(LOCAL, false).await.unwrap().is_empty());
+    assert!(td.ctx.sessions.list(Default::default()).await.sessions.is_empty());
+    assert!(get(&td.ctx).await.unwrap().scope.paused);
+    // 机器级开关关着时仍然不能试跑
+    crate::config::set_value(&td.paths, "twin.enabled", "false").unwrap();
+    td.ctx.config.reload().unwrap();
+    assert!(dry_run(&td.ctx, &Caller::local_cli()).await.is_err());
+    td.shutdown().await;
+}
+
 #[tokio::test]
 async fn advisor_retriages_only_that_item_and_only_once() {
     let (td, fake) = fixture(false).await;

@@ -61,6 +61,8 @@ struct Effective {
     thinking: Option<String>,
     mode: String,
     verbose: bool,
+    /// 「不 push、不开 PR」：mock 不会 push，只记下来并在回显里写出来，让测试断言它真的带上了。
+    no_push: bool,
     system_prompt_append: Option<String>,
     max_turns: Option<u32>,
     max_budget_usd: Option<f64>,
@@ -105,7 +107,7 @@ fn resolve(settings: &SessionSettings, models: &[ModelInfo]) -> Result<Effective
         return Err(invalid("mode", format!("unknown mode {mode}")));
     }
     for k in settings.options.keys() {
-        if k != "verbose" {
+        if k != "verbose" && k != "no_push" {
             return Err(invalid(&format!("options.{k}"), "unknown option"));
         }
     }
@@ -114,11 +116,17 @@ fn resolve(settings: &SessionSettings, models: &[ModelInfo]) -> Result<Effective
         Some(_) => return Err(invalid("options.verbose", "expected a boolean")),
         None => false,
     };
+    let no_push = match settings.options.get("no_push") {
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(invalid("options.no_push", "expected a boolean")),
+        None => false,
+    };
     Ok(Effective {
         model: model_id,
         thinking,
         mode,
         verbose,
+        no_push,
         system_prompt_append: settings.system_prompt_append.clone(),
         max_turns: settings.max_turns,
         max_budget_usd: settings.max_budget_usd,
@@ -133,6 +141,7 @@ impl Effective {
             "thinking": self.thinking,
             "mode": self.mode,
             "verbose": self.verbose,
+            "no_push": self.no_push,
             "system_prompt_append": self.system_prompt_append,
             "max_turns": self.max_turns,
             "max_budget_usd": self.max_budget_usd,
@@ -452,6 +461,9 @@ async fn script(
     ];
     if eff.verbose {
         chunks.push(" verbose=on".to_string());
+    }
+    if eff.no_push {
+        chunks.push(" no_push=on".to_string());
     }
     if let Some(extras) = eff.echo_extras() {
         chunks.push(extras);

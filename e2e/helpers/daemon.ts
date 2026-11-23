@@ -5,11 +5,23 @@
  */
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { cliBin, hubUrl, type E2EState } from './env.js'
 import { readLog, spawnLogged, tailLog, waitFor, type Spawned } from './process.js'
+
+/** `startExtraDaemon` 的选项；都可选，缺省的行为和只传 `hubUrl` 时一样。 */
+export interface ExtraDaemonOptions {
+  /** 连哪个 hub，缺省是共享的 hub；`multi` 用例指向自己起的 hub（`helpers/multi-hub.ts`）。 */
+  hubUrl?: string
+  /** 额外的环境变量，只给这个 daemon 进程（比如判断后端的 `api_key_env` 指向的变量）。 */
+  env?: Record<string, string>
+  /** 启动之前用 `anycon config set <键> <值>` 写的键（在默认的「关掉真 agent」之后，所以可以把它们再打开）。 */
+  config?: Record<string, string>
+  /** 启动之前追加到 `config.toml` 末尾的 TOML：`config set` 写不了的整段（比如 `[judge.backends.<名字>]`）。 */
+  toml?: string
+}
 
 export interface ExtraDaemon {
   /** 它的 `ANYCON_HOME`：传给 `anycon …` 命令（`startPairing` 等）用。 */
@@ -35,7 +47,7 @@ function count(file: string, text: string): number {
 export async function startExtraDaemon(
   state: Pick<E2EState, 'tmpDir' | 'gitConfig'>,
   name: string,
-  options: { hubUrl?: string } = {},
+  options: ExtraDaemonOptions = {},
 ): Promise<ExtraDaemon> {
   // 目录名要短：本机 socket 在 `<home>/daemon.sock`，unix socket 路径有长度上限（macOS 104 字节，临时目录本身已经很长）。
   // 4 位 hex 够用（一次运行只起几个额外节点）；multi 用例的节点在 `<tmpDir>/m1/` 下，多一层目录
@@ -55,6 +67,7 @@ export async function startExtraDaemon(
     NO_COLOR: '1',
     GIT_CONFIG_GLOBAL: state.gitConfig,
     GIT_CONFIG_NOSYSTEM: '1',
+    ...options.env,
   }
   execFileSync(
     cliBin,
@@ -77,6 +90,19 @@ export async function startExtraDaemon(
       stdio: 'pipe',
       timeout: 30_000,
     })
+  }
+
+  for (const [key, value] of Object.entries(options.config ?? {})) {
+    execFileSync(cliBin, ['config', 'set', key, value], { env, stdio: 'pipe', timeout: 30_000 })
+  }
+  if (options.toml) {
+    const path = execFileSync(cliBin, ['config', 'path'], {
+      env,
+      encoding: 'utf8',
+      timeout: 30_000,
+    }).trim()
+    const current = readFileSync(path, 'utf8')
+    appendFileSync(path, `${current.endsWith('\n') ? '' : '\n'}${options.toml}\n`)
   }
 
   let proc: Spawned | undefined

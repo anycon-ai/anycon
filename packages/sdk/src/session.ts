@@ -31,7 +31,7 @@ import type {
 } from '@anycon/protocol'
 
 import { AsyncQueue } from './async-queue.js'
-import { AnyconError, NodeOffline } from './errors.js'
+import { AnyconError, ConnectionError, NodeOffline } from './errors.js'
 import type { Node } from './node.js'
 import type { PermissionPolicy } from './permissions.js'
 
@@ -139,6 +139,46 @@ export interface ArchiveOptions {
   worktree?: WorktreeDisposal
 }
 
+/**
+ * 补历史期间扣住实时事件的闸门（`events({ fromSeq })` 和重连后的 `Session.resync()` 共用）。
+ * 补历史时，实时事件到达的时机不受控：它们可能比还没补完的历史更新。如果直接放行，消费者先看到较新的 seq，
+ * 随后补来的较旧事件会被「seq 不大于已见过的最大值」的去重丢掉。所以补历史期间 `live()` 只扣住，
+ * 补完（`release()`）之后按 seq 接在历史后面；`emit` 负责去重和保序。
+ */
+class ReplayGate {
+  readonly #emit: (se: SessionEvent) => void
+  readonly #held: SessionEvent[] = []
+  #replaying: boolean
+
+  constructor(emit: (se: SessionEvent) => void, replaying: boolean) {
+    this.#emit = emit
+    this.#replaying = replaying
+  }
+
+  get replaying(): boolean {
+    return this.#replaying
+  }
+
+  /** 实时事件：补历史期间扣住，之后直接放行。 */
+  live(se: SessionEvent): void {
+    if (this.#replaying) this.#held.push(se)
+    else this.#emit(se)
+  }
+
+  /** 补历史没有补完而放弃：扣住的实时事件丢掉（不放出），之后的实时事件直接放行。 */
+  discard(): void {
+    this.#replaying = false
+    this.#held.length = 0
+  }
+
+  /** 补历史结束：按 seq 放出扣住的实时事件，之后的实时事件直接放行。 */
+  release(): void {
+    this.#replaying = false
+    for (const se of this.#held.toSorted((a, b) => a.seq - b.seq)) this.#emit(se)
+    this.#held.length = 0
+  }
+}
+
 /** `session.delete` 的选项。 */
 export interface DeleteOptions extends ArchiveOptions {
   /** 同时删掉 worktree 的分支（`git branch -D`），分支上没合并的提交会丢。只有 worktree 也被删掉时才生效。 */
@@ -176,6 +216,9 @@ export class Session {
   readonly #subs = new Set<Subscriber>()
   #watched = false
   #watchChain: Promise<unknown> = Promise.resolve()
+  #resyncChain: Promise<unknown> = Promise.resolve()
+  /** `resync()` 补历史期间的闸门；有它时 `dispatch` 的实时事件先扣住。 */
+  #resyncGate: ReplayGate | undefined
 
   /** @internal 由 `Node` 创建。 */
   constructor(node: Node, summary: SessionSummary) {
@@ -329,17 +372,13 @@ export class Session {
     const onAbort = () => queue.fail(options.signal?.reason ?? new Error('aborted'))
     // 已经推给消费者的最大 seq；补历史和实时事件会重叠，按它去重、保序。
     let high = options.fromSeq ?? 0
-    let replaying = options.fromSeq !== undefined
-    const held: SessionEvent[] = []
     const emit = (se: SessionEvent) => {
       if (se.seq <= high) return
       high = se.seq
       queue.push(this.#toStream(se))
     }
-    const live = (se: SessionEvent) => {
-      if (replaying) held.push(se)
-      else emit(se)
-    }
+    const gate = new ReplayGate(emit, options.fromSeq !== undefined)
+    const live = (se: SessionEvent) => gate.live(se)
     release = this.#subscribe(live)
     options.signal?.addEventListener('abort', onAbort, { once: true })
     queue.onDispose(this.#guardQueue(queue, 0))
@@ -347,9 +386,7 @@ export class Session {
       await this.#ensureWatching()
       if (options.fromSeq !== undefined) {
         await this.#replay(emit, options.fromSeq)
-        replaying = false
-        for (const se of held.toSorted((a, b) => a.seq - b.seq)) emit(se)
-        held.length = 0
+        gate.release()
       }
     })().catch((err: unknown) => queue.fail(err))
     return queue
@@ -483,8 +520,13 @@ export class Session {
 
   // ---------- 内部：事件分发 ----------
 
-  /** @internal Node 收到 `session.event` 时调用。按 seq 去重。 */
+  /** @internal Node 收到 `session.event` 时调用。按 seq 去重；`resync()` 补历史期间先扣住。 */
   dispatch(se: SessionEvent): void {
+    if (this.#resyncGate) this.#resyncGate.live(se)
+    else this.#deliver(se)
+  }
+
+  #deliver(se: SessionEvent): void {
     if (se.seq <= this.#lastSeq) return
     this.#lastSeq = se.seq
     for (const sub of Array.from(this.#subs)) {
@@ -502,20 +544,46 @@ export class Session {
     }
   }
 
-  /** @internal 重新握手后：重新 watch 并补齐错过的事件。 */
-  async resync(): Promise<void> {
+  /**
+   * @internal 重新握手 / 重连之后：重新 watch 并补齐错过的事件。
+   *
+   * 补历史（`session.history`，分页）期间到达的实时事件先扣住（和 `events({ fromSeq })` 同一个闸门），补完之后
+   * 按 seq 接在历史后面，所以订阅者看到的 seq 严格递增、每个只有一次，不会因为较新的实时事件先到而丢掉较旧的历史事件。
+   * `since` 在重新 watch 之前取，补的是「断线前最后一次看到的 seq」之后的全部。
+   * 补历史没补完（`watch` 或 `history` 抛错）时，看通道还在不在：
+   * - 通道没了（节点不在线，或错误是 `ConnectionError` / `NodeOffline`；最常见的原因是补历史期间又断了一次）：
+   *   扣住的实时事件**丢掉**，`lastSeq` 停在已经交付的地方。daemon 持久化事件，下一次 `ready` 的 `resync()`
+   *   从这里补，补回的历史把丢掉的实时事件也带上，仍然按序、每个一次。如果放出它们，`lastSeq` 会越过还没补到的历史，
+   *   那段历史永远补不回来；
+   * - 通道还在、是别的原因失败（比如 `history` 答 `internal`）：扣住的实时事件照样按序放出（不丢、不乱序、不重复），
+   *   没补上的历史留下一个空档，调用方之后用 `history({ afterSeq })` 取回。
+   * 错误向上抛（`Node` 吞掉它）。丢掉的 `permission` 事件会随下一次补历史重新交付并交给权限策略（`permission.request`
+   * 通知不经过会话的事件分发，`Node` 直接处理，不受影响）。同一个会话的多次 `resync()` 排队执行。
+   */
+  resync(): Promise<void> {
+    const run = this.#resyncChain.then(() => this.#resyncOnce())
+    this.#resyncChain = run.catch(() => undefined)
+    return run
+  }
+
+  async #resyncOnce(): Promise<void> {
     if (this.#subs.size === 0) return
-    this.#watched = false
-    await this.#ensureWatching()
     const since = this.#lastSeq
-    let after = since
-    for (let guard = 0; guard < 50; guard++) {
-      const page = await this.history({ afterSeq: after, limit: 1000 })
-      for (const se of page.events) this.dispatch(se)
-      const last = page.events.at(-1)
-      if (!page.has_more || !last || last.seq <= after) break
-      after = last.seq
+    const gate = new ReplayGate((se) => this.#deliver(se), true)
+    this.#resyncGate = gate
+    try {
+      this.#watched = false
+      await this.#ensureWatching()
+      await this.#replay((se) => this.#deliver(se), since)
+    } catch (err) {
+      this.#resyncGate = undefined
+      if (!this.node.online || err instanceof ConnectionError || err instanceof NodeOffline) {
+        gate.discard()
+      } else gate.release()
+      throw err
     }
+    this.#resyncGate = undefined
+    gate.release()
   }
 
   #subscribe(sub: Subscriber): () => void {

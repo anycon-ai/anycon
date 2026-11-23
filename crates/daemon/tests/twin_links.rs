@@ -262,6 +262,11 @@ impl Rig {
     }
 }
 
+/// 这次运行的第一条决定；没有决定时把整次运行（结果、错误、触发、看了哪些项）放进失败信息，偶发失败时才看得出是哪种情况。
+fn first_decision(run: &TwinRun) -> &TwinDecision {
+    run.decisions.first().unwrap_or_else(|| panic!("the run made no decision: {run:?}"))
+}
+
 fn reason(e: &RpcError) -> Option<String> {
     e.data.as_ref().and_then(|d| d.reason.clone())
 }
@@ -483,7 +488,7 @@ async fn a_restart_fetches_the_results_that_were_missed_and_never_records_one_tw
     let todo = r.a_todo("hold until A is back").await;
     r.plan_remote(&todo.id, "p", "");
     let run = r.wake().await;
-    assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed, "{run:?}");
+    assert_eq!(first_decision(&run).outcome, TwinDecisionOutcome::Executed, "{run:?}");
     assert!(eventually(T, || async { r.b.fake.handle_count() == 1 }).await);
 
     // A 停了；B 上这一轮在 A 不在的时候结束
@@ -527,7 +532,7 @@ async fn an_unavailable_or_refusing_node_skips_the_decision_and_three_failures_h
     // 项目不在 B 开放的范围里：B 拒绝（`remote_refused`，带 B 的原因），B 上没有留下项
     r.plan_remote(&todo.id, "q", "");
     let run = r.wake().await;
-    let d = &run.decisions[0];
+    let d = first_decision(&run);
     assert_eq!(
         (d.outcome, d.skip_reason),
         (TwinDecisionOutcome::Skipped, Some(TwinSkipReason::RemoteRefused)),
@@ -547,7 +552,7 @@ async fn an_unavailable_or_refusing_node_skips_the_decision_and_three_failures_h
     let mut gone = r;
     gone.plan_remote(&todo.id, "p", "");
     let run = gone.wake().await;
-    let d = &run.decisions[0];
+    let d = first_decision(&run);
     assert_eq!(
         (d.outcome, d.skip_reason),
         (TwinDecisionOutcome::Skipped, Some(TwinSkipReason::RemoteUnavailable)),
@@ -585,7 +590,7 @@ impl Rig {
         self.plan_remote(&todo.id, "p", "");
         let spawned = self.b.fake.handle_count();
         let run = self.wake().await;
-        assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed, "{run:?}");
+        assert_eq!(first_decision(&run).outcome, TwinDecisionOutcome::Executed, "{run:?}");
         wait_until!("the item to be working on A", self.a_get(&todo.id).await.activity == Some(TodoActivity::Working));
         // `todo.dispatch` 一返回，B 上的会话已经关联到这一项，但假 agent 不一定已经拉起来：用例接着要用它的 handle
         wait_until!("the session and its agent on B", {
@@ -933,7 +938,7 @@ async fn unlinking_forgets_the_link_on_this_node_only_and_a_later_link_reuses_th
     let todo = r.a_todo("hold after unlink").await;
     r.plan_remote(&todo.id, "p", "");
     let run = r.wake().await;
-    assert_eq!(run.decisions[0].skip_reason, Some(TwinSkipReason::Invalid), "{run:?}");
+    assert_eq!(first_decision(&run).skip_reason, Some(TwinSkipReason::Invalid), "{run:?}");
     let req = r.judge.requests.lock().unwrap().last().cloned().unwrap();
     assert!(!req.prompt.contains("Linked nodes"), "no link, no node table");
 

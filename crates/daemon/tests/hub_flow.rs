@@ -115,7 +115,7 @@ async fn first_pairing_issues_a_device_token_and_then_ik_rpc_works() {
         eventually(T, || async { td.ctx.peers.record(&web.device_id).is_some() }).await,
         "peer is re-keyed to the permanent id"
     );
-    let peers_json: Value = serde_json::from_str(&std::fs::read_to_string(td.paths.peers_json()).unwrap()).unwrap();
+    let peers_json = peers_json_when(&td, |j| j["peers"][0]["device_id"] == json!(web.device_id)).await;
     assert_eq!(peers_json["peers"][0]["device_id"], json!(web.device_id));
     assert_eq!(peers_json["peers"][0]["name"], json!("Test Browser"));
     assert_eq!(peers_json["peers"][0]["pubkey"], json!(hex::encode(web.kp.public)));
@@ -841,7 +841,7 @@ async fn a_pairing_that_stalls_in_confirmation_is_not_listed_and_is_removed_when
         "the tentative peer row is deleted when the hub goes away"
     );
     assert!(td.ctx.peers.record(&temp_id).is_none());
-    let peers_json: Value = serde_json::from_str(&std::fs::read_to_string(td.paths.peers_json()).unwrap()).unwrap();
+    let peers_json = peers_json_when(&td, |j| j["peers"].as_array().is_some_and(|a| a.is_empty())).await;
     assert!(peers_json["peers"].as_array().unwrap().is_empty(), "{peers_json}");
     let devices: NodeDevicesResult = local.call(&td, methods::NODE_DEVICES, json!({})).await.unwrap();
     assert!(devices.devices.is_empty(), "no temporary id in node.devices: {devices:?}");
@@ -860,7 +860,7 @@ async fn the_pairing_watchdog_removes_a_tentative_peer_that_never_gets_confirmed
         "the watchdog deletes the tentative row"
     );
     assert!(td.ctx.peers.record(&temp_id).is_none());
-    let peers_json: Value = serde_json::from_str(&std::fs::read_to_string(td.paths.peers_json()).unwrap()).unwrap();
+    let peers_json = peers_json_when(&td, |j| j["peers"].as_array().is_some_and(|a| a.is_empty())).await;
     assert!(peers_json["peers"].as_array().unwrap().is_empty());
     // daemon 仍然可以重新配对（状态机没卡住）
     td.ctx.peers.set_pair_step_timeout(Duration::from_secs(70));
@@ -875,6 +875,20 @@ async fn the_pairing_watchdog_removes_a_tentative_peer_that_never_gets_confirmed
 // ---------------------------------------------------------------------------
 // 暂存配对记录的其余作废路径
 
+/// 等 `peers.json` 满足 `ok`，返回最后读到的内容。daemon 先改库和内存、再写这个文件（`Peers::save_record`、
+/// `Peers::discard_staged`），所以看到库或内存变了之后立刻读文件，可能读到上一版。
+async fn peers_json_when(td: &TestDaemon, ok: impl Fn(&Value) -> bool) -> Value {
+    let read = || -> Value { serde_json::from_str(&std::fs::read_to_string(td.paths.peers_json()).unwrap()).unwrap() };
+    let deadline = std::time::Instant::now() + T;
+    loop {
+        let j = read();
+        if ok(&j) || std::time::Instant::now() >= deadline {
+            return j;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 async fn no_trace_of(td: &TestDaemon, temp_id: &str) {
     assert!(
         eventually(T, || async { td.ctx.store.list_peers().await.unwrap().is_empty() }).await,
@@ -882,7 +896,7 @@ async fn no_trace_of(td: &TestDaemon, temp_id: &str) {
     );
     assert!(td.ctx.peers.record(temp_id).is_none());
     assert!(td.ctx.peers.list().is_empty() && !td.ctx.peers.paired_ids().contains(&temp_id.to_string()));
-    let peers_json: Value = serde_json::from_str(&std::fs::read_to_string(td.paths.peers_json()).unwrap()).unwrap();
+    let peers_json = peers_json_when(td, |j| j["peers"].as_array().is_some_and(|a| a.is_empty())).await;
     assert!(peers_json["peers"].as_array().unwrap().is_empty(), "{peers_json}");
 }
 
@@ -1098,7 +1112,7 @@ async fn a_pairing_cancelled_while_the_tentative_peer_is_being_saved_leaves_no_g
     assert!(td.ctx.store.list_peers().await.unwrap().is_empty(), "no ghost row in the database");
     assert!(td.ctx.peers.list().is_empty(), "nor in node.devices");
     assert!(td.ctx.peers.paired_ids().is_empty());
-    let peers_json: Value = serde_json::from_str(&std::fs::read_to_string(td.paths.peers_json()).unwrap()).unwrap();
+    let peers_json = peers_json_when(&td, |j| j["peers"].as_array().is_some_and(|a| a.is_empty())).await;
     assert!(peers_json["peers"].as_array().unwrap().is_empty(), "{peers_json}");
     // 没有对被作废的这次配对发 PairConfirm：新设备等不到 PairDone
     assert!(

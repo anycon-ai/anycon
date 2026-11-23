@@ -119,7 +119,10 @@ function hubChannel(
 }
 
 /** 起一套 hub + 假 daemon，配对一台设备，用给定的重连间隔连上，把 hub 通道交给 `run`。 */
-async function withHub(reconnectMs: number, run: (channel: Channel) => Promise<void>): Promise<void> {
+async function withHub(
+  reconnectMs: number,
+  run: (channel: Channel) => Promise<void>,
+): Promise<void> {
   const env = await startEnv(mockCrypto)
   try {
     const paired = await env.pair()

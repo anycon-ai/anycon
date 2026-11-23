@@ -101,8 +101,9 @@ just e2e                                     # = bun install + playwright instal
   - a. A 的分身页「使用别的节点」：列表空；B 设了 `[twin] accept_links = false`（`anycon config set`，热加载）时 B 上 `anycon twin link-code` 被拒，「添加」里 A 自己不在候选里、B 灰掉（`data-blocked=acceptOff`）并写明怎么办；改回来（页面重连后重读 `node.info`）可选；分组不同时点「继续」多一步确认（写明两边的分组，确认之前 A 没有连接、B 上没有分身设备），可以退回；确认后连上，列表里有 B（分组名、在线、还没有开放项目，不刷新页面，靠 `twin.changed` 重读 `twin.links`）；页面的 HTML 和 hub / 两个 daemon 的日志里没有短码（`CODE_RE`：四组四位的配对字母表）
   - b. B 的节点设置「设备」里有「<A>'s twin」，标成分身，「范围」缺省什么都不开放：A 的假后端回 `dispatch { node: B, project }` → 运行记录里是 `remote_refused`，理由后面接着 B 的 `out_of_scope`，B 上没有来源是分身的项、没有会话；请求里的节点表（在随机边界里）写着 B 在线、`projects: []`；分身页的决定行有「派到节点：B」和「另一个节点拒绝了」
   - c. 在 B 的「范围」里开放一个项目再派（手动唤醒）：请求里的节点表有 B 的名字和开放的项目，在随机边界里、边界外和系统提示里没有；B 上有一项来源是分身（设备 id 对得上）、有 worktree 会话，今天的派发次数 1；A 这一项记下远程项，「经过」里有 `remote_dispatched`、`remote_result`（B 的 agent 回答），页面上有「派到了 B」、去 B 上那一项和会话的链接、B 的结果；结果取回触发 A 的下一次唤醒，请求里带着 `earlier result (node …)`
-  - d. 停掉 B：A 的连接离线；A 派发 → 请求里节点表标着 `available: false`，决定是 `remote_unavailable`；B 停掉后页面不刷新就变成离线；B 重启后 A 的连接恢复在线
-  - e. 「断开」：确认框写明要在 B 上吊销、有去 B 设备列表的链接；断开后 A 的列表空了，B 上那台分身设备和它的范围还在；照提醒里的链接去 B 的设备列表吊销它
+  - d. 在 B 上接手：同一个浏览器在 B 上那个会话里发一条消息 → B 在这一项的「经过」里记一条 `taken_over`（没有 `node_id`），同一个会话里再发一条不多记；A 这一项变成「我」处理（`handler = me`），「经过」里一条带 B 的 id 的 `taken_over`，页面写「你在 <B> 上接手了」（`twin.takenOverOn`）；B 上那几轮的结果照样回到 A 的 `remote_result`，但假后端之后（等过 6 个合并窗口）没有收到任何新的请求，A 这一项也没有新的派发
+  - e. 停掉 B：A 的连接离线；A 派发 → 请求里节点表标着 `available: false`，决定是 `remote_unavailable`；B 停掉后页面不刷新就变成离线；B 重启后 A 的连接恢复在线
+  - f. 「断开」：确认框写明要在 B 上吊销、有去 B 设备列表的链接；断开后 A 的列表空了，B 上那台分身设备和它的范围还在；照提醒里的链接去 B 的设备列表吊销它
 - `tests/worktree.spec.ts` — 每会话 worktree（ADR-34），真实 git；每个用例自己配对浏览器、在 workspace 根下自己建一个仓库项目（`.gitignore` + `.worktreeinclude` + 被忽略的 `.env`，带一次提交）：
   - a. 主流程：新建会话选「新 worktree」→ 发 `write` → 分支 chip 变成 `active`、`.env` 被复制进 `<项目>/.anycon/worktrees/<名字>/`、主目录里没有 `anycon-mock.txt` →「改动」标签里有它（`added` + `untracked`）和展开的 diff → 在 worktree 里提交、在主目录的 `main` 上再提交一次 →「同步 base」`sync-result[data-outcome="merged"]` + 消息流里的 `git-event`，磁盘上是合并提交（提交人来自临时 gitconfig）→ 再 `write`（已跟踪文件的修改，「未提交」视图里是 `modified`）→ 概览里归档（自动）→ 因为有未提交改动 worktree 被保留 → 节点设置 → Workspace → Worktree 里是「已保留」→ 勾「丢弃未提交的改动」删除 → 目录不在了、分支还在
   - b. 「当前目录」模式：没有 worktree，「改动」标签只有「未提交」视图（没有「相对 base」分段、没有「同步 base」），`anycon-mock.txt` 是未跟踪文件；归档不弹 worktree 的确认框

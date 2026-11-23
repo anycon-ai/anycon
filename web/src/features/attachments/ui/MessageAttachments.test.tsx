@@ -248,12 +248,13 @@ describe('files (anything that is not a png / jpeg / gif / webp image)', () => {
     render(<MessageAttachments nodeId={NODE} attachments={[file(1, { name: 'report.final.pdf' })]} />)
     await userEvent.click(screen.getByRole('button', { name: 'Download report.final.pdf' }))
     await waitFor(() => expect(clicks).toHaveLength(1))
+    // 存盘的点击是同步发生的，条回到 idle 要等 saveAttachment 结束之后的那次渲染：等它，而不是在点击之后立刻读
+    await waitFor(() => expect(screen.getByTestId('message-attachment')).toHaveAttribute('data-state', 'idle'))
     expect(stats.calls).toEqual(['1@0', '1@250', '1@500'])
     expect(clicks[0]!.name).toBe('report.final.pdf')
     expect(clicks[0]!.blob!.type).toBe('application/octet-stream')
     expect(new Uint8Array(await clicks[0]!.blob!.arrayBuffer())).toEqual(content(1))
     expect(await readCached(file(1).blob_id)).not.toBeNull()
-    expect(screen.getByTestId('message-attachment')).toHaveAttribute('data-state', 'idle')
   })
 
   it('never shows HTML or SVG inline, and never hands them to the browser with their own type', async () => {

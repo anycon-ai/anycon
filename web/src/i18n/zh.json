@@ -2895,6 +2895,7 @@
     "decision": "分身的决定：{{action}}",
     "handedBack": "分身交回给你",
     "takenOver": "你接手了",
+    "takenOverOn": "你在 {{node}} 上接手了",
     "remote": {
       "target": "派到节点：{{node}}",
       "unknownNode": "另一个节点（{{id}}）",

@@ -772,6 +772,7 @@ export type TodoEvent1 =
   | {
       by: TodoActor;
       kind: "taken_over";
+      node_id?: string | null;
     }
   | {
       action: TwinAction;
@@ -865,6 +866,7 @@ export type TodoEventData =
   | {
       by: TodoActor;
       kind: "taken_over";
+      node_id?: string | null;
     }
   | {
       action: TwinAction;

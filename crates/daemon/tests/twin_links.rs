@@ -244,7 +244,7 @@ impl Rig {
             }
             if started.elapsed() >= T {
                 let state: TwinGetResult = self.a_cli.call(&self.a, methods::TWIN_GET, json!({})).await.unwrap();
-                panic!("no new twin run finished; state {:?}", state);
+                panic!("no new twin run finished; state {:?} runs {:?}", state, self.runs().await);
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -571,6 +571,339 @@ async fn an_unavailable_or_refusing_node_skips_the_decision_and_three_failures_h
     let status: TwinGetResult = gone.a_cli.call(&gone.a, methods::TWIN_GET, json!({})).await.unwrap();
     assert_eq!(status.today.dispatches, 0);
     gone.shutdown().await;
+}
+
+// ====================================================================== 在 B 上接手、远程会话卡住
+
+impl Rig {
+    /// 把一项派到 B 的项目 `p`，返回 A 上的项、B 上的项和会话 id。标题里有 `hold`，B 上的会话一直跑到放行。
+    async fn remote_item(&mut self, title: &str) -> (Todo, Todo, String) {
+        self.link().await;
+        self.wait_online().await;
+        self.open_p().await;
+        let todo = self.a_todo(title).await;
+        self.plan_remote(&todo.id, "p", "");
+        let run = self.wake().await;
+        assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed, "{run:?}");
+        wait_until!("the item to be working on A", self.a_get(&todo.id).await.activity == Some(TodoActivity::Working));
+        let remote = self.b_todos().await.remove(0);
+        let sid = remote.sessions[0].clone();
+        (todo, remote, sid)
+    }
+
+    /// B 的人在这个会话里发一条消息。
+    async fn b_says(&mut self, sid: &str, message_id: &str) {
+        let _: Value = self
+            .b_cli
+            .call(
+                &self.b,
+                methods::SESSION_SEND,
+                json!({ "session_id": sid, "message_id": message_id, "content": "I will take it from here" }),
+            )
+            .await
+            .unwrap();
+    }
+
+    /// 把分身时钟一次拨过一段长时间，让兜底的定时（`tick`）先在这个时间点上加进待办，之后 [`Rig::wake`] 的合并窗口才不会被它推后。
+    async fn jump(&mut self, ms: u64) {
+        self.clock += ms;
+        self.a.ctx.judge.clock().set(self.clock);
+        let _: TwinGetResult = self.a_cli.call(&self.a, methods::TWIN_SET, json!({ "paused": false })).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+
+    async fn b_last_seq(&mut self, sid: &str) -> u64 {
+        let s: SessionSummary =
+            self.b_cli.call(&self.b, methods::SESSION_GET, json!({ "session_id": sid })).await.unwrap();
+        s.last_seq
+    }
+
+    async fn b_history(&mut self, id: &str) -> Vec<TodoEvent> {
+        let r: TodoHistoryResult = self.b_cli.call(&self.b, methods::TODO_HISTORY, json!({ "id": id })).await.unwrap();
+        r.events
+    }
+
+    async fn open_questions(&mut self) -> Vec<TwinQuestion> {
+        let r: TwinQuestionsResult =
+            self.a_cli.call(&self.a, methods::TWIN_QUESTIONS, json!({ "open_only": true })).await.unwrap();
+        r.questions
+    }
+}
+
+/// 一项的「经过」里 `taken_over` 的数量，和它们的 `node_id`。
+fn taken_over_of(history: &[TodoEvent]) -> Vec<Option<String>> {
+    history
+        .iter()
+        .filter_map(|e| match &e.data {
+            TodoEventData::TakenOver { node_id, .. } => Some(node_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn results_of(history: &[TodoEvent]) -> usize {
+    history.iter().filter(|e| matches!(e.data, TodoEventData::RemoteResult { .. })).count()
+}
+
+#[tokio::test]
+async fn taking_over_on_b_tells_a_which_stops_its_twin_and_the_result_of_that_turn_does_not_wake_it() {
+    let mut r = rig().await;
+    let (todo, remote, sid) = r.remote_item("hold the line").await;
+    // A 的分身问了一个问题，还没人回答
+    r.judge.push(Ok(JudgeReply {
+        text: json!({ "items": [{
+            "id": todo.id, "action": "ask_user", "reason": "Unsure", "question": "Which way?"
+        }] })
+        .to_string(),
+        ..Default::default()
+    }));
+    r.wake().await;
+    assert_eq!(r.open_questions().await.len(), 1);
+    let (runs_before, asked_before) = (r.runs().await.len(), r.judge.requests.lock().unwrap().len());
+
+    // B 的人在分身派来的会话里发消息：B 那一项的「经过」记一条（没有 `node_id`），再发不再记；B 这一项的 `handler` 不动
+    r.b_says(&sid, "m1").await;
+    r.b_says(&sid, "m2").await;
+    let on_b = r.b_history(&remote.id).await;
+    assert_eq!(taken_over_of(&on_b), vec![None], "{on_b:?}");
+    let remote_now: Todo = r.b_cli.call(&r.b, methods::TODO_GET, json!({ "id": remote.id })).await.unwrap();
+    assert_eq!(remote_now.handler, TodoHandler::Me);
+
+    // A 取回：`handler` 改成 `me`，「经过」里有带 B 的 `node_id` 的 `taken_over` 和 `handler`，问题作废，B 那条的 `by` 照抄
+    wait_until!("A to learn about the takeover", r.a_get(&todo.id).await.handler == TodoHandler::Me);
+    let history = r.a_history(&todo.id).await;
+    assert_eq!(taken_over_of(&history), vec![Some(r.b_id.clone())], "{history:?}");
+    let by_on_b = on_b.iter().find_map(|e| match &e.data {
+        TodoEventData::TakenOver { by, .. } => Some(by.clone()),
+        _ => None,
+    });
+    let by_on_a = history.iter().find_map(|e| match &e.data {
+        TodoEventData::TakenOver { by, .. } => Some(by.clone()),
+        _ => None,
+    });
+    assert_eq!(by_on_a, by_on_b);
+    assert!(history
+        .iter()
+        .any(|e| matches!(&e.data, TodoEventData::Handler { from: TodoHandler::Twin, to: TodoHandler::Me, .. })));
+    assert!(r.open_questions().await.is_empty(), "the open question was voided");
+    let audit: NodeAuditResult = r.a_cli.call(&r.a, methods::NODE_AUDIT, json!({ "limit": 100 })).await.unwrap();
+    assert!(audit.entries.iter().any(|e| e.action == "twin.taken_over" && e.target.as_deref() == Some(&todo.id)));
+
+    // 放行：B 上这一轮的结果记进 A 的「经过」，但 A 的分身不被它唤醒（这一项已经不归它）
+    r.b.fake.last_handle().release();
+    wait_until!("the result of that turn", results_of(&r.a_history(&todo.id).await) >= 1);
+    r.clock += 5 * 60_000;
+    r.a.ctx.judge.clock().set(r.clock);
+    let _: TwinGetResult = r.a_cli.call(&r.a, methods::TWIN_SET, json!({ "paused": false })).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(r.runs().await.len(), runs_before, "no new run");
+    assert_eq!(r.judge.requests.lock().unwrap().len(), asked_before, "the judge was not asked again");
+    assert_eq!(taken_over_of(&r.a_history(&todo.id).await).len(), 1, "recorded once");
+    assert_eq!(r.a_get(&todo.id).await.remote.len(), 1, "nothing was dispatched again");
+    r.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_takeover_on_b_while_a_was_away_is_caught_up_once_and_never_repeated() {
+    let mut r = rig().await;
+    let (todo, remote, sid) = r.remote_item("hold until A is back").await;
+    r.a.stop().await;
+    r.b_says(&sid, "m1").await;
+    r.b.fake.last_handle().release();
+    wait_until!("B to record the takeover and the result", {
+        let h = r.b_history(&remote.id).await;
+        taken_over_of(&h).len() == 1 && h.iter().any(|e| matches!(e.data, TodoEventData::Result { .. }))
+    });
+
+    r.a.start_again().await;
+    r.a_cli = r.a.client("a-cli");
+    wait_until!("A to catch up", r.a_get(&todo.id).await.handler == TodoHandler::Me);
+    wait_until!("the result", results_of(&r.a_history(&todo.id).await) >= 1);
+    let (taken, results) = {
+        let h = r.a_history(&todo.id).await;
+        (taken_over_of(&h), results_of(&h))
+    };
+    assert_eq!(taken, vec![Some(r.b_id.clone())]);
+    // 再重启：同一条路径，不重复
+    r.a.restart().await;
+    r.a_cli = r.a.client("a-cli");
+    r.wait_online().await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let h = r.a_history(&todo.id).await;
+    assert_eq!((taken_over_of(&h).len(), results_of(&h)), (1, results));
+    assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Me);
+    r.shutdown().await;
+}
+
+#[tokio::test]
+async fn results_after_a_takeover_in_the_same_sync_are_recorded_but_do_not_wake_the_twin() {
+    let mut r = rig().await;
+    let (todo, remote, sid) = r.remote_item("hold for the sync").await;
+    let runs_before = r.runs().await.len();
+    // A 不在：B 上先有一次结果（这一轮结束）、然后接手、然后又一次结果，A 一次同步全部取回，按 `seq` 的顺序
+    r.a.stop().await;
+    r.b.fake.last_handle().release();
+    wait_until!("the first result on B", {
+        r.b_history(&remote.id).await.iter().any(|e| matches!(e.data, TodoEventData::Result { .. }))
+    });
+    r.b_says(&sid, "m1").await;
+    wait_until!("B to record the takeover and a second result", {
+        let h = r.b_history(&remote.id).await;
+        taken_over_of(&h).len() == 1 && h.iter().filter(|e| matches!(e.data, TodoEventData::Result { .. })).count() == 2
+    });
+    let b_seqs: Vec<u64> = r.b_history(&remote.id).await.iter().map(|e| e.seq).collect();
+    assert!(b_seqs.windows(2).all(|w| w[0] > w[1]), "B's history is newest first: {b_seqs:?}");
+
+    r.a.start_again().await;
+    r.a_cli = r.a.client("a-cli");
+    r.a.ctx.judge.clock().set(r.clock);
+    let backend = r.judge.clone();
+    r.a.ctx.judge.set_backend_factory(Arc::new(move |_| backend.clone()));
+    wait_until!("A to take both results and the takeover", {
+        let h = r.a_history(&todo.id).await;
+        results_of(&h) == 2 && taken_over_of(&h).len() == 1
+    });
+    // 记进「经过」的顺序和 B 上一样：结果、接手、结果
+    let order: Vec<&str> = r
+        .a_history(&todo.id)
+        .await
+        .iter()
+        .filter_map(|e| match &e.data {
+            TodoEventData::RemoteResult { .. } => Some("result"),
+            TodoEventData::TakenOver { .. } => Some("taken_over"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, vec!["result", "taken_over", "result"]);
+    assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Me);
+    // 第二次结果没有唤醒分身
+    r.clock += 5 * 60_000;
+    r.a.ctx.judge.clock().set(r.clock);
+    let _: TwinGetResult = r.a_cli.call(&r.a, methods::TWIN_SET, json!({ "paused": false })).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(r.runs().await.len(), runs_before, "no wake after the takeover");
+    r.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_takeover_on_b_is_only_noted_when_the_item_is_no_longer_the_twins() {
+    let mut r = rig().await;
+    let (todo, remote, sid) = r.remote_item("hold while the person has it").await;
+    // 人在 A 上已经把它收回来了
+    let _: Todo = r.a_cli.call(&r.a, methods::TODO_UPDATE, json!({ "id": todo.id, "handler": "me" })).await.unwrap();
+    let before = r.a_history(&todo.id).await.len();
+    r.b_says(&sid, "m1").await;
+    wait_until!("B to record the takeover", taken_over_of(&r.b_history(&remote.id).await).len() == 1);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let history = r.a_history(&todo.id).await;
+    assert!(taken_over_of(&history).is_empty(), "the item was already the person's: nothing to record");
+    assert_eq!(history.len(), before);
+    r.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_remote_session_without_events_for_two_hours_is_handed_back_and_progress_starts_the_count_over() {
+    let mut r = rig().await;
+    let (todo, remote, sid) = r.remote_item("hold for a long time").await;
+    let hours = |h: u64| h * 60 * 60_000;
+    let wait_plan = |r: &Rig| {
+        r.judge.push(Ok(JudgeReply {
+            text: json!({ "items": [{ "id": todo.id, "action": "wait", "reason": "Still running" }] }).to_string(),
+            ..Default::default()
+        }))
+    };
+    // 一小时五十分钟：还没到
+    wait_plan(&r);
+    r.jump(hours(1) + 50 * 60_000).await;
+    let run = r.wake().await;
+    assert!(!run.decisions.iter().any(|d| d.action == TwinAction::HandBack), "{run:?}");
+    // B 上的会话有了新事件：从这一刻重新起算（再过一个多小时，离派发已经超过 3 小时，仍然没到）
+    let before = r.b_last_seq(&sid).await;
+    r.b.fake
+        .last_handle()
+        .inject(anycon_agent_api::AgentEvent::Event(anycon_protocol::Event::TextDelta { text: " more".into() }))
+        .await;
+    wait_until!("B to record the event", r.b_last_seq(&sid).await > before);
+    wait_plan(&r);
+    r.clock += 5 * 60_000;
+    let run = r.wake().await;
+    assert!(!run.decisions.iter().any(|d| d.action == TwinAction::HandBack), "{run:?}");
+    wait_plan(&r);
+    r.jump(hours(1) + 50 * 60_000).await;
+    let run = r.wake().await;
+    assert!(!run.decisions.iter().any(|d| d.action == TwinAction::HandBack), "{run:?}");
+    assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Twin);
+
+    // 满 2 小时没有新事件：交回，理由里有节点
+    r.jump(30 * 60_000).await;
+    let run = r.wake().await;
+    let back = run.decisions.iter().find(|d| d.action == TwinAction::HandBack).unwrap_or_else(|| panic!("{run:?}"));
+    assert_eq!(back.outcome, TwinDecisionOutcome::Executed);
+    assert!(back.reason.contains("on node") && back.reason.contains("two hours"), "{}", back.reason);
+    assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Me);
+    assert!(r
+        .a_history(&todo.id)
+        .await
+        .iter()
+        .any(|e| matches!(&e.data, TodoEventData::HandedBack { reason, .. } if reason.contains("on node"))));
+    // 会话不取消
+    let s: SessionSummary = r.b_cli.call(&r.b, methods::SESSION_GET, json!({ "session_id": sid })).await.unwrap();
+    assert_eq!(s.status, SessionStatus::Running);
+    let _ = remote;
+    r.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_stuck_count_does_not_include_time_while_b_was_offline() {
+    let mut r = rig().await;
+    let (todo, _remote, _sid) = r.remote_item("hold across an outage").await;
+    let hours = |h: u64| h * 60 * 60_000;
+    // B 离线三小时：这段时间不判断，不算失败，也不交回
+    r.b.stop().await;
+    let b_id = r.b_id.clone();
+    wait_until!("A to see B go offline", {
+        let l: TwinLinksResult = r.a_cli.call(&r.a, methods::TWIN_LINKS, json!({})).await.unwrap();
+        l.links.iter().any(|l| l.node_id == b_id && !l.online)
+    });
+    r.jump(hours(3)).await;
+    let run = r.wake().await;
+    assert!(!run.decisions.iter().any(|d| d.action == TwinAction::HandBack), "{run:?}");
+    assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Twin);
+    // B 回来之后立刻看一遍：不会因为离线的三小时交回
+    r.b.start_again().await;
+    r.wait_online().await;
+    let run = r.wake().await;
+    assert!(!run.decisions.iter().any(|d| d.action == TwinAction::HandBack), "{run:?}");
+    assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Twin);
+    r.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_stuck_count_starts_over_when_a_restarts() {
+    let mut r = rig().await;
+    let (todo, _remote, _sid) = r.remote_item("hold across a restart").await;
+    let hours = |h: u64| h * 60 * 60_000;
+    // A 停机期间过去了三个小时（B 上的会话一直在跑，没有新事件）
+    r.a.restart().await;
+    r.a_cli = r.a.client("a-cli");
+    r.jump(hours(3)).await;
+    r.a.ctx.judge.clock().set(r.clock);
+    let backend = r.judge.clone();
+    r.a.ctx.judge.set_backend_factory(Arc::new(move |_| backend.clone()));
+    r.wait_online().await;
+    r.judge.push(Ok(JudgeReply {
+        text: json!({ "items": [{ "id": todo.id, "action": "wait", "reason": "Still running" }] }).to_string(),
+        ..Default::default()
+    }));
+    let run = r.wake().await;
+    assert!(!run.decisions.iter().any(|d| d.action == TwinAction::HandBack), "{run:?}");
+    assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Twin);
+    // 从重启之后第一次看到算起，满 2 小时才交回
+    r.jump(hours(2)).await;
+    let run = r.wake().await;
+    assert!(run.decisions.iter().any(|d| d.action == TwinAction::HandBack), "{run:?}");
+    assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Me);
+    r.shutdown().await;
 }
 
 // ====================================================================== 断开

@@ -1409,7 +1409,7 @@ TodoEvent {
   // result：    { session_id, turn, text, truncated }   这一轮结束时 agent 的最后一段话
   // state：     { from, to, by: { kind, device_id? } }   人改了状态（会话引起的变化是 activity，不在这里）
   // handed_back：{ reason, run_id? }
-  // taken_over：{ by }
+  // taken_over：{ by, node_id? }   `node_id` 有值表示接手发生在那个节点上（§ 27.4）
   // twin_decision：{ run_id, action, reason }
   // twin_question：{ question_id }
   // handler：{ from: me|twin, to: me|twin, by }
@@ -2036,7 +2036,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 **运行约束**：
 
 - 同一项连续 3 次派发失败（派发本身出错，包括派到别的节点失败，§ 27.4；或者会话以出错结束），就交回给你，写明原因。人再次把处理人改成 `twin` 时重置连续失败计数，保留已经统计过的会话结局水位，允许在修复问题后重新交给分身。
-- 它派出的会话在运行中 2 小时没有任何事件，算卡住：交回给你。会话不取消，交给你决定。
+- 它派出的会话在运行中 2 小时没有任何事件，算卡住：交回给你。会话不取消，交给你决定。派到别的节点的会话同样算，方法见 § 27.4（看的是那个会话的 `last_seq` 有没有变，时间用本节点自己的时钟），理由里写明是哪个节点上的会话。
 - 正在处理的项（派出的会话还没结束一轮的）最多 `max_sessions` 个；每天派发最多 `daily_dispatches` 次。
 
 **试跑**：`twin.dry_run` 走同样的输入和分拣，但只返回计划和校验结果，不执行、不建问题、不问顾问（`ask_advisor` 只列出来）。它计一次判断调用，同样留运行记录（`dry_run = true`）。
@@ -2057,11 +2057,13 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 daemon 认的是「这个会话由分身派出、发消息的不是分身自己」。
 
+分身派到别的节点 B 的会话（§ 27.4）里你发了消息，也算接手：B 在那一项的「经过」里记一条 `taken_over`，分身所在的节点 A 取回它之后照上面的做（`handler` 改成 `me`、记一条带 `node_id` 的 `taken_over`、作废挂着的问题），和本机的接手共用同一个实现。
+
 ### 26.7 运行记录、审计和通知
 
 - **表 `twin_runs`**：`id`、请求方、`started_ms`、`finished_ms`、触发（合并进来的几种）、`dry_run`、`result`（`done` / `idle` / `budget` / `failed` / `cancelled`）、看了哪些项、判断调用的 id、每项的决定（`action`、`reason`、`rules`、执行结果和不执行的原因）、错误码。
   - 不存提示和模型的原始回答，存的是解析后的决定；`reason` 是模型写的，按 agent 写的内容显示。
-  - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`，会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
+  - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`（分身设备派来的会话还有一列 `taken_ms`：这个会话里的接手已经记过一次，§ 27.3），会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
 - **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。沿用审计的设备字段，`device_id` 填请求方、`device_name = "twin"`；新增的操作者放在 `detail.actor`，不写清单正文、问题、回答和理由。
 - **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。PR 事件（§ 26.9）不发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
 
@@ -2128,7 +2130,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 ## 27. 分身连接
 
-> **已实现：协议（本节的全部方法、类型和枚举值）、hub 接受 `twin` 种类（§ 27.5）、B 这一侧（`node.twin_link_code`、短码的种类、`[twin] accept_links`、安全事件和审计、§ 27.3 的白名单、推送过滤、按请求方存的范围、记一项和派发的约束、`twin.peer_status`）、A 这一侧（§ 27.1 的分身设备身份和连接、`twin.link` / `twin.links` / `twin.unlink`、§ 27.4 的节点表、远程派发和取回结果），CLI（`anycon twin link-code` / `link` / `links` / `unlink` / `set --requester` / `status --requester`），以及 TS SDK 和 Web 的界面（§ 27.6，web.md § 14.8）。** [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的第 5 步。下面用 A 指跑分身的节点，B 指被使用的节点。
+> **已实现：协议（本节的全部方法、类型和枚举值）、hub 接受 `twin` 种类（§ 27.5）、B 这一侧（`node.twin_link_code`、短码的种类、`[twin] accept_links`、安全事件和审计、§ 27.3 的白名单、推送过滤、按请求方存的范围、记一项和派发的约束、`twin.peer_status`）、A 这一侧（§ 27.1 的分身设备身份和连接、`twin.link` / `twin.links` / `twin.unlink`、§ 27.4 的节点表、远程派发和取回结果、在 B 上接手的同步、远程会话 2 小时没有进展算卡住），CLI（`anycon twin link-code` / `link` / `links` / `unlink` / `set --requester` / `status --requester`），以及 TS SDK 和 Web 的界面（§ 27.6，web.md § 14.8）。** [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的第 5 步。下面用 A 指跑分身的节点，B 指被使用的节点。
 
 A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在 B 自己的 worktree 里干活。A 的 daemon 为此持有一个**分身设备**身份，作为 B 的一台已配对设备，经 hub、经 E2E 通道连接 B。没有节点对节点的新通道，也没有给判断后端或本机别的进程用的代理。
 
@@ -2187,6 +2189,7 @@ A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在
 - **派发**（`todo.dispatch` 来自分身设备）：只派它自己建的项。B 用这条连接的范围定 agent / 模型 / 模式（模式缺省同 § 26.2 的 `unattended` 规则，不接受 `dangerous`），`no_push` 恒为 true，`workspace` 恒为 worktree；请求里带的这些字段只能落在范围允许的值里，否则 `invalid`（`data.field` 是 `agent` / `settings` / `no_push` / `workspace`，`data.reason = "not_allowed"`）：`agent` 缺省（空串）用范围定的；`settings` 里的模型和模式缺省或和范围定的一样，不能带 `thinking`、环境变量和别的选项；`no_push` 缺省或为 true；`workspace` 缺省或是不带 `base` / `branch` 的 worktree。`note`（≤ 2 KiB，`TodoDispatchParams.note`）只有分身设备能带，作为「分身的说明」接在第一条消息后面，不改这一项的正文（别的调用方带了 → `invalid`，`data.field = "note"`，`data.reason = "not_allowed"`；超长 → `data.reason = "length"`）。项目取请求里的、缺省用项自己的，必须还在范围里（`forbidden`，`out_of_scope`）。名额：这条连接派出的、还在处理中的会话 ≤ `max_sessions`，并且总给人留 `sessions.max_concurrent` 里的一个；每个本地日最多 `daily_dispatches` 次；`paused` 时拒绝。超出时 `invalid`（`data.field = "dispatch"`，`data.reason` 是 `no_capacity` / `budget` / `paused`）。名额和每日次数用 § 26.2 的同一个实现，按请求方各算各的：会话记在 `twin_sessions`，请求方是设备 id。
 - **`twin.peer_status {}`** → `{ name, group, projects, agents: [{ id, label, ready }], remaining_sessions, remaining_dispatches, paused, accept_links }`：只给这条连接自己的。`remaining_sessions` 是它的 `max_sessions` 和给人留名额之后的上限里更紧的那个，减去它在处理中的会话数，再受全节点还剩的名额限制；`remaining_dispatches` 是 `daily_dispatches` 减去今天已派发的次数。不是分身设备调用 → `forbidden`（`data.reason = "not_twin_device"`）。
 - **不转派**：来源是分身（`source.kind = twin`）的项，B 自己的分身不碰；分身设备也只能操作它自己建的项。
+- **B 上的人接手**：有人（不是 B 本机的分身、不是分身设备）在分身设备派来的会话里发了消息，B 在这个会话所属那一项的「经过」里记一条 `taken_over { by }`（没有 `node_id`），照现有的推送过滤推给那台分身设备（`todo.event`）。B 这一项的 `handler` 不动：它说的是 B 自己的分身，B 的分身本来就不碰来源是分身的项。**每个会话只记一次**：表 `twin_sessions` 的 `taken_ms` 和这条事件在同一个事务里写（迁移 `0014_twin_session_taken.sql`，空表示还没记），所以同一个会话里再发消息、重发同一条都不会再记，不用去翻这一项的历史；分身后来又派了新的会话、你又在新会话里接手，是新的一次。B 自己的分身派出的会话（请求方是本机）按 § 26.6 处理，不受影响。
 
 ### 27.4 A 上：分身怎么用 B
 
@@ -2203,7 +2206,13 @@ A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在
 - **取回结果**：A 订阅 `Client` 的通知，**通知只当作「去同步」的信号，不当作数据**——B 上远程项的 `todo.event`（`result`）和 `todo.changed`（`activity`）只对 `todo_remotes` 里对得上 `(node_id, remote_todo_id)` 的项起作用。同步一个远程项（`sync_remote`，同一时间只做一个）：先 `todo.get` 取 B 上现在的 `activity` 存起来，再 `todo.history` 从新往旧翻（每页 200 条，最多 10 页）到 `fetched_seq` 为止，把更新的 `result` 按 `seq` 从小到大逐条记进 A 这一项的「经过」（`remote_result { node_id, session_id, text }`，`text` 同 § 22.4 的 4 KiB 截断），**同一个事务里**把 `fetched_seq` 推进到这一条的 `seq`（只增不减）。所以重连（每次 `NodeReady`）、A 重启、通知丢了之后都用同一条路径补上，没有重复；刚派发完的项也补取一次（B 的事件可能比 A 记下这一行早到）。有新的结果就触发一次 A 的分身唤醒（触发 `session`，§ 26.3；只在这一项还交给分身、没关闭时），分拣的输入里带最近几条远程结果（`earlier result (node …, session …)`，和本机的一起占 § 26.4 的那 1 200 字节）。
   - **`text` 是 B 上 agent 写的**：按会话内容对待，不进日志、不进审计；客户端按不可信内容渲染。
 - **A 这一项的 `activity`**：`todo_dispatch::compute_activity` 把本机会话的结果（§ 22.3）和每个远程项最近一次知道的 `activity`（B 的 `todo.changed` 或同步时的 `todo.get`，存在 `todo_remotes.activity`，B 不在线时就是最后一次的）合起来：任何一边是 `working` 就是 `working`；否则任何一边是 `waiting` 就是 `waiting`；否则 `review`。派出之后还没收到过 B 的 `activity` 按 `working`（结果还没回来）；B 说没有（已关闭）或给了不认识的值的远程项不参与。只有远程项没有本机会话时就是远程项的。远程项的 `activity` 变了，A 重新算这一项的 `activity` 并发 `todo.changed`（和本机会话变化同一条路径）。
-- **你接手了**（§ 26.6）只看 A 本机的会话；在 B 上的会话里发消息不改 A 这一项的 `handler`（限制，写进 § 27.7）。A 的「2 小时没有事件算卡住」（§ 26.4）也只看本机会话。
+- **你接手了**（§ 26.6）：本机的会话看 A 自己；在 B 上的会话里发消息时，B 记一条 `taken_over`（§ 27.3），A 取回结果的同一条路径（`sync_remote`）从 B 的 `todo.history` 里认出它（`seq` 大于 `fetched_seq` 的），A 这一项还交给分身（`handler = twin`）时照本机的「你接手了」处理：`handler` 改成 `me`，「经过」里记 `taken_over { by, node_id }`（`node_id` 是 B，`by` 照抄 B 那一条的，它是 B 上的设备 id，这台浏览器也和 B 配过对时能认出名字）和 `handler`，作废这一项挂着的分身问题，发 `todo.changed`，记审计 `twin.taken_over`；和推进 `fetched_seq` 在同一个事务里，所以重启、断线、通知丢了之后靠同一条路径补上，不重复。通知仍然只是「去同步」的信号：同步远程项时 `todo.event` 的 `result` 和 `taken_over` 都会触发它。
+  - 同一次同步里按 `seq` 从小到大处理，接手之后的 `result` 照常记进「经过」，但这一项的 `handler` 已经是 `me`，不触发分身唤醒（唤醒只在这一项还交给分身、没关闭时）。
+  - A 上这一项已经不是 `handler = twin`（你在 A 上已经接手、收回或关闭了）：只推进 `fetched_seq`，不再记一条 `taken_over`——你已经在 A 上拿走了它，再记只是噪音。这一项后来又派了新的远程项时，旧远程项上迟到的接手同样只推进进度：它说的不是现在这一次。
+- **远程会话卡住**（§ 26.4）：A 收不到 B 上远程会话的逐条事件（`session.event` 只推给 watch 着的设备，A 不 watch），但分身设备可以对它派出的会话调 `session.get`（§ 27.3），`SessionSummary.last_seq` 是最后一个事件的 `seq`。分身唤醒做运行约束时（不是试跑；`tick` 在有交给分身的项时每 30 分钟一次，只有远程项在处理中也算），对交给分身、最近知道的 `activity` 是 `working`、B 在线的远程项：从 `remote_dispatched` 取会话 id，调 B 的 `session.get`，记下 `(last_seq, 从什么时候起没变)`；会话在运行中（运行、启动中或排队）而 `last_seq` 变了就重新起算，满 2 小时没变就像本机的卡住一样交回给你，理由是「The dispatched session on node <名称> has had no events for two hours」。
+  - **时间只用 A 自己的时钟**（和分身的别的计时用同一个，测试里可换），不比较两台机器的时间。
+  - **基线放在内存里**：派发成功的那一刻起算；A 启动、B 重新连上（`NodeReady`）时清掉这个节点的全部计时，之后第一次看到才重新起算，所以 A 停机、B 离线的时间不会算进去，回来之后不会立刻误判。基线本来就会重置，所以不落库；代价是 A 每隔不到 2 小时就重启一次的话永远数不满；这时那一项在 Web 上一直是 `working`，人看得到。
+  - B 不在线、`session.get` 调不通或回了错：这次不判断，不算失败，这个会话的计时也重新起算（断断续续连不上的时间同样不算「没有进展」）。会话已经不在运行中（这一轮结束、出错、被取消）不算卡住，由结果、`activity` 和 § 26.4 的别的约束处理。
 - **分身连接的管理**：`twin.links {}` → `{ links: [TwinLink] }`（每条：B 的 id、名称、分组、指纹、配对时间、在不在线、上一次的 `twin.peer_status`；在线状态是传输握手好了，状态在 B 上线时、每次唤醒取节点表时刷新）；`twin.link`、`twin.unlink` 见 § 27.2。都只由人调用。连接建立、断开、上线、下线时 A 发一条 `twin.changed`，客户端据此重新读 `twin.links`（它还带本机分身的状态，和 § 26.8 的是同一条通知）。
 - **不转派**：A 上来源是分身（`source.kind = twin`）的项，A 的分身同样不碰（§ 26.1 的第五条条件：本节点不分是 A 还是 B，同一个判断）。
 - **没有代理**：判断后端、`anycon mcp` 和 A 上别的本机进程都拿不到分身设备的身份，也没有「经 A 调 B」的方法：`twin.link` / `twin.links` / `twin.unlink` 只管连接本身，B 上的动作只由分拣的计划（经 daemon 的确定性执行）和后台的只读同步发出，参数不由调用方给。分身设备的密钥不出 daemon 进程。
@@ -2233,7 +2242,7 @@ A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在
 - **内容跨机器**：A 上这一项的标题、正文和分身的说明会写进 B 的数据库；B 上会话的结果会取回 A。经 hub 的仍是密文。
 - **都经 hub**：hub 不可达时，同一个局域网里的两个节点也连不上。
 - **A 离线时**，A 派到 B 的项不再有人推进。B 上的会话照常跑完，结果等 A 回来再取。
-- **你在 B 上的会话里接手**，A 的分身不知道，它下一次唤醒仍会看这一项。会话本身已经在你手里，它的派发名额照算。
+- **你在 B 上的会话里接手**，A 在下一次同步时知道（§ 27.4）：A 离线时 B 照常记，A 回来再取。在 A 取到之前这段时间里（A 离线、B 的通知丢了，或者连接断着），A 的分身仍会以为这一项归它，所以这一段内它仍可能看这一项。会话本身已经在你手里，它的派发名额照算。
 - **一个分身设备只属于一个账号**：它能连接的 B 都要在这个账号里（hub 的已有设备规则）。
 - **新的权限面**：每个方法都要有「`twin` 设备调用被拒绝」的测试（白名单里的除外），每个通知都要有「不推给 `twin` 设备」的测试；新增方法或通知时要决定它进不进名单。
 - **旧版本**：旧 daemon 不认识 `twin` 种类，不能被使用；客户端按 `capabilities.twin` 和 `twin_accept_links` 判断（旧 daemon 的 `node.info` 没有 `twin_accept_links`，读作 `false`）。B 降级到不认识 `twin` 的旧版本不会让分身设备变成普通设备：数据库里有旧版本不认识的迁移，旧 daemon 的 `sqlx::migrate!().run()` 没有 `ignore_missing`，遇到已应用而自己没有的迁移就报 `VersionMissing` 并拒绝启动，所以连接不会在降级时「失效开放」。恢复一份旧的备份只会带回当时的设备记录。

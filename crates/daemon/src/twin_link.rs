@@ -13,13 +13,15 @@
 //!
 //! B 上项的内容（标题、会话的结果）是外来的文字：不进日志、不进审计；日志和审计只带 id、数字和枚举。
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anycon_protocol::{
-    methods, DeviceKind, Empty, ErrorCode, RpcError, Todo, TodoActivity, TodoChanged, TodoDispatchParams,
-    TodoDispatchResult, TodoEvent, TodoEventData, TodoEventNotice, TodoHandler, TodoHistoryParams, TodoHistoryResult,
-    TodoIdParams, TwinLink, TwinLinkParams, TwinLinksResult, TwinPeerStatus, TwinTrigger, TwinUnlinkParams,
+    methods, DeviceKind, Empty, ErrorCode, RpcError, SessionIdParams, SessionStatus, SessionSummary, Todo,
+    TodoActivity, TodoActor, TodoChanged, TodoDispatchParams, TodoDispatchResult, TodoEvent, TodoEventData,
+    TodoEventNotice, TodoHandler, TodoHistoryParams, TodoHistoryResult, TodoIdParams, TwinLink, TwinLinkParams,
+    TwinLinksResult, TwinPeerStatus, TwinTrigger, TwinUnlinkParams,
 };
 use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
@@ -183,6 +185,31 @@ pub struct TwinLinks {
     closed: std::sync::atomic::AtomicBool,
     /// 同步远程项的「经过」一次只做一个（事件任务和刚派发完的补取都走它）。
     sync_gate: Arc<tokio::sync::Mutex<()>>,
+    /// 远程会话「没有进展」的计时（§ 26.4）：只在内存里，A 重启、B 重新连上、刚派发完都重新起算。
+    stalls: Mutex<HashMap<(String, String), Stall>>,
+}
+
+/// 2 小时没有事件算卡住（§ 26.4），和本机会话同一个数。
+const STALL_MS: u64 = 120 * 60_000;
+
+/// 一个远程会话最近看到的 `last_seq`，和从什么时候起它没变过。时间是 A 自己的时钟，不比较两台机器的时间。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stall {
+    last_seq: Option<u64>,
+    since_ms: u64,
+}
+
+impl Stall {
+    /// 又看到一次 `last_seq`：变了（或第一次看到）就重新起算；返回是否已经满 2 小时没变。
+    fn observe(&mut self, last_seq: u64, now_ms: u64) -> bool {
+        match self.last_seq {
+            // 派发时留的基线：第一次读到 seq 只补上数字，起算点还是派发的时候
+            None => self.last_seq = Some(last_seq),
+            Some(prev) if prev != last_seq => *self = Stall { last_seq: Some(last_seq), since_ms: now_ms },
+            Some(_) => {}
+        }
+        now_ms.saturating_sub(self.since_ms) >= STALL_MS
+    }
 }
 
 impl TwinLinks {
@@ -376,6 +403,60 @@ impl TwinLinks {
 
     // ------------------------------------------------------------ 分拣用
 
+    fn stalls(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), Stall>> {
+        self.stalls.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// B 重新连上：这个节点上所有远程会话的计时重新起算，B 离线的时间不算进「没有进展」。
+    fn stall_reset_node(&self, node: &str) {
+        self.stalls().retain(|(n, _), _| n != node);
+    }
+
+    /// 这一项交给分身的远程会话里，有没有在运行中满 2 小时 `last_seq` 没变的（§ 26.4）。返回「在哪个节点上」的说明，没有就 `None`。
+    ///
+    /// 只看 B 最近知道的 `activity` 是 `working`、B 在线的远程项；`session.get` 调不通这次不判断（不算失败），计时也重新起算，
+    /// 所以断断续续连不上的时间不会被当成「没有进展」。
+    pub(crate) async fn stalled(&self, c: &Ctx, todo_id: &str) -> Option<String> {
+        let client = self.client()?;
+        let rows = c.store.todo_remote_rows(todo_id).await.ok()?;
+        for row in rows {
+            if row.activity != Some(Some(TodoActivity::Working))
+                || client.node_status(&row.node_id) != NodeStatus::Ready
+            {
+                continue;
+            }
+            let Ok(Some(sid)) = c.store.todo_remote_session(todo_id, &row.node_id, &row.remote_todo_id).await else {
+                continue;
+            };
+            let key = (row.node_id.clone(), sid.clone());
+            let summary = client
+                .request(&row.node_id, methods::SESSION_GET, SessionIdParams { session_id: sid }, SYNC_TIMEOUT)
+                .await
+                .ok()
+                .and_then(|v| serde_json::from_value::<SessionSummary>(v).ok());
+            let now = c.judge.clock().now();
+            let stalled = match summary {
+                Some(s)
+                    if matches!(s.status, SessionStatus::Running | SessionStatus::Starting | SessionStatus::Queued) =>
+                {
+                    self.stalls().entry(key).or_insert(Stall { last_seq: None, since_ms: now }).observe(s.last_seq, now)
+                }
+                _ => {
+                    self.stalls().remove(&key);
+                    false
+                }
+            };
+            if stalled {
+                let name = c.store.twin_links().await.ok()?.into_iter().find(|l| l.node_id == row.node_id)?.name;
+                return Some(format!(
+                    "The dispatched session on node {} has had no events for two hours",
+                    label(&name)
+                ));
+            }
+        }
+        None
+    }
+
     /// 这个 id 是不是一条分身连接（分拣的 `dispatch.node` 要在这里面）。
     pub(crate) fn knows(&self, node_id: &str) -> bool {
         self.client().is_some_and(|c| c.nodes().iter().any(|n| n.id == node_id))
@@ -443,6 +524,9 @@ impl TwinLinks {
         record_dispatch(c, run_id, &t.id, node, &rid, &session_id)
             .await
             .map_err(|_| Failure::Unavailable("storage".into()))?;
+        // 刚派发完：从现在起算「没有进展」
+        self.stalls()
+            .insert((node.to_string(), session_id.clone()), Stall { last_seq: None, since_ms: c.judge.clock().now() });
         // 刚派出的项可能很快就有结果：B 的 `todo.event` 比 A 记下这一行早到的话，事件任务会找不到它，所以现在补取一次
         let c2 = self.ctx.lock().unwrap_or_else(|e| e.into_inner()).upgrade();
         let (client2, gate) = (client.clone(), self.sync_gate.clone());
@@ -562,6 +646,7 @@ async fn events(
 }
 
 async fn on_ready(c: &Arc<Ctx>, client: &Client, node: &str, gate: &tokio::sync::Mutex<()>) {
+    c.twin_links.stall_reset_node(node);
     refresh_status(c, client, node).await;
     let rows = c.store.todo_remotes_on(node).await.unwrap_or_default();
     for row in rows {
@@ -580,10 +665,10 @@ async fn on_notification(
     gate: &tokio::sync::Mutex<()>,
 ) {
     match method {
-        // 这一项的「经过」多了一条：是结果就去同步（同步读 B 的 `todo.history`，通知本身不当作数据）
+        // 这一项的「经过」多了一条：是结果或者有人接手了就去同步（同步读 B 的 `todo.history`，通知本身不当作数据）
         methods::TODO_EVENT => {
             let Ok(n) = serde_json::from_value::<TodoEventNotice>(params) else { return };
-            if !matches!(n.event.data, TodoEventData::Result { .. }) {
+            if !matches!(n.event.data, TodoEventData::Result { .. } | TodoEventData::TakenOver { .. }) {
                 return;
             }
             for row in c.store.todo_remote_by_remote(node, &n.todo_id).await.unwrap_or_default() {
@@ -653,10 +738,15 @@ async fn sync_remote(c: &Arc<Ctx>, client: &Client, row: &RemoteRow) {
     newer.sort_by_key(|e| e.seq);
     let mut wake = false;
     for ev in &newer {
-        match record_result(c, row, ev).await {
+        let recorded = match &ev.data {
+            TodoEventData::Result { .. } => record_result(c, row, ev).await,
+            TodoEventData::TakenOver { by, .. } => record_taken_over(c, row, ev, by).await.map(|_| false),
+            _ => continue,
+        };
+        match recorded {
             Ok(recorded) => wake |= recorded,
             Err(e) => {
-                tracing::warn!(error = %e.message, "cannot record a remote result");
+                tracing::warn!(error = %e.message, "cannot record a remote event");
                 return;
             }
         }
@@ -710,6 +800,28 @@ async fn record_result(c: &Ctx, row: &RemoteRow, ev: &TodoEvent) -> Result<bool>
     tx.commit().await.map_err(internal)?;
     crate::todo_dispatch::broadcast_event(&c.clients, &row.todo_id, event);
     Ok(true)
+}
+
+/// B 上有人在这个远程项的会话里接手了：A 这一项还交给分身，就照本机的「你接手了」处理（`twin::take_over_on`，和本机共用），
+/// 同一个事务里推进 `fetched_seq`。`handler` 已经不是 `twin` 的（人在 A 上已经接手或收回了）只推进进度、不记；这一项后来又派了
+/// 新的远程项时，旧远程项上迟到的接手同样不记：它说的不是现在这一次。
+async fn record_taken_over(c: &Ctx, row: &RemoteRow, ev: &TodoEvent, by: &TodoActor) -> Result<()> {
+    let _guard = c.store.todo_lock().lock().await;
+    let Some(t) = c.store.todo_get(&row.todo_id).await.map_err(internal)? else { return Ok(()) };
+    let latest = c.store.todo_remotes(&row.todo_id).await.map_err(internal)?.pop();
+    let current = latest.is_some_and(|r| r.node_id == row.node_id && r.todo_id == row.remote_todo_id);
+    if t.handler != TodoHandler::Twin || !current {
+        return Ok(());
+    }
+    let mut tx = c.store.pool().begin().await.map_err(internal)?;
+    let (t, events) =
+        crate::twin::take_over_on(&mut tx, t, by.clone(), Some(row.node_id.clone()), c.judge.clock().now()).await?;
+    crate::store::twin_link::set_fetched_seq(&mut tx, &row.todo_id, &row.node_id, &row.remote_todo_id, ev.seq)
+        .await
+        .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    let detail = json!({ "node_id": row.node_id, "remote_todo_id": row.remote_todo_id, "by": by });
+    crate::twin::take_over_done(c, t, events, &Caller::twin("local"), detail).await
 }
 
 /// 远程派发成功之后在 A 上记下来：`Todo.remote`（只追加）、`remote_dispatched`、这一项的 `updated_ms`。同一个事务。

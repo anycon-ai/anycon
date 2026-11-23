@@ -199,6 +199,31 @@ impl Store {
             .collect())
     }
 
+    /// B 上这个远程项最近一次派发出的会话（`remote_dispatched` 里的 `session_id`，B 上的会话 id）。
+    pub async fn todo_remote_session(
+        &self,
+        todo_id: &str,
+        node_id: &str,
+        remote_todo_id: &str,
+    ) -> Result<Option<String>> {
+        let rows = sqlx::query(
+            "SELECT data FROM todo_events WHERE todo_id = ? AND kind = 'remote_dispatched' ORDER BY seq DESC",
+        )
+        .bind(todo_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().find_map(|r| {
+            match serde_json::from_str::<anycon_protocol::TodoEventData>(&r.get::<String, _>(0)) {
+                Ok(anycon_protocol::TodoEventData::RemoteDispatched { node_id: n, todo_id: t, session_id })
+                    if n == node_id && t == remote_todo_id =>
+                {
+                    Some(session_id)
+                }
+                _ => None,
+            }
+        }))
+    }
+
     /// 本地日从 `since_ms` 起派到别的节点的次数（和本机会话一起算进分身每日派发的次数）。
     pub async fn todo_remotes_since(&self, since_ms: u64) -> Result<u32> {
         Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM todo_remotes WHERE created_ms>=?")

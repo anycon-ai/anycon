@@ -2934,6 +2934,7 @@
     "decision": "Twin decided: {{action}}",
     "handedBack": "Twin handed this back to you",
     "takenOver": "You took over",
+    "takenOverOn": "You took over on {{node}}",
     "remote": {
       "target": "Sent to node: {{node}}",
       "unknownNode": "another node ({{id}})",

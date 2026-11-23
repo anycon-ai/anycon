@@ -149,10 +149,12 @@ turn_index = 0
 
 
 def emit(line):
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    # log the result before printing it: once it is on stdout the adapter can end the turn and the test can read the
+    # log, so logging afterwards would race with that read
     if '"type":"result"' in line or '"type": "result"' in line:
         log({"kind": "result"})
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
     state["emitted"] += 1
     if crash_after and state["emitted"] >= crash_after:
         sys.stderr.write("fatal: simulated crash\n")

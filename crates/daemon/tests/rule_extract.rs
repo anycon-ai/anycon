@@ -41,25 +41,40 @@ async fn session(td: &TestDaemon, project: Option<&str>) -> String {
     s.id
 }
 
+/// 直接在库里给会话记一个决策点。会话可能还活着（daemon 用内存里的计数给自己的事件分 seq）：刚好撞上它同时写的那一条时
+/// 换下一个 seq 再写，不然偶尔会 `UNIQUE constraint failed: events.session_id, events.seq`。
 async fn point(td: &TestDaemon, sid: &str, ts: u64) -> u64 {
-    let seq = td.ctx.store.max_seq(sid).await.unwrap() + 1;
-    td.ctx
-        .store
-        .append_event(&SessionEvent {
-            session_id: sid.into(),
-            seq,
-            ts_ms: ts,
-            turn_id: None,
-            event: Event::PermissionResolved {
-                request_id: uuid::Uuid::new_v4().to_string(),
-                option_id: Some("deny".into()),
-                by_device: "d".into(),
-                answers: None,
-                message: Some("Always write tests first".into()),
-            },
-        })
-        .await
-        .unwrap();
+    let mut attempts = 0;
+    let seq = loop {
+        let seq = td.ctx.store.max_seq(sid).await.unwrap() + 1;
+        let written = td
+            .ctx
+            .store
+            .append_event(&SessionEvent {
+                session_id: sid.into(),
+                seq,
+                ts_ms: ts,
+                turn_id: None,
+                event: Event::PermissionResolved {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    option_id: Some("deny".into()),
+                    by_device: "d".into(),
+                    answers: None,
+                    message: Some("Always write tests first".into()),
+                },
+            })
+            .await;
+        match written {
+            Ok(()) => break seq,
+            Err(anycon_daemon::store::StoreError::Db(e))
+                if attempts < 50 && e.as_database_error().is_some_and(|d| d.is_unique_violation()) =>
+            {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("cannot record a decision point: {e}"),
+        }
+    };
     sqlx::query("UPDATE sessions SET last_seq=?, updated_ms=? WHERE id=?")
         .bind(seq as i64)
         .bind(ts as i64)

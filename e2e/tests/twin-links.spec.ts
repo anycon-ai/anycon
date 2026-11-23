@@ -39,6 +39,7 @@ import {
 import { readLog, waitFor } from '../helpers/process.js'
 import { readState } from '../helpers/state.js'
 import {
+  COALESCE_MS,
   cliJson,
   judgeToml,
   removeNodesFromAccount,
@@ -517,7 +518,104 @@ test.describe.serial('分身连接', () => {
     expect(itemsOf(later).find((i) => i.id === item.id)!.dispatches).toBe(1)
   })
 
-  test('d. B 不在线：A 的连接显示离线，派发 → remote_unavailable；B 回来之后恢复在线', async () => {
+  test('d. 在 B 上接手：B 记一条 taken_over（每个会话一次）；A 这一项变成「我」处理；之后的结果照样回到 A，A 的分身不再唤醒', async () => {
+    test.setTimeout(120_000)
+    const item = (await todoByTitle(homeA(), TITLE_REMOTE))!
+    expect(item.handler).toBe('twin')
+    const remote = (await todos(homeB())).find((t) => t.source.kind === 'twin')!
+    const sessionId = remote.sessions![0]!
+    const results = async (): Promise<string[]> =>
+      (await todoHistory(homeA(), item.id))
+        .filter((e) => e.kind === 'remote_result')
+        .map((e) => e.text ?? '')
+    const resultsBefore = (await results()).length
+    // 前面几步的唤醒收尾之后再记下请求数：之后假后端不该再收到任何分拣请求
+    await waitFor(
+      'the earlier wakes have settled',
+      () => {
+        const last = judge.requests.at(-1)
+        return last === undefined || Date.now() - last.receivedAt > 4 * COALESCE_MS
+      },
+      { timeoutMs: 60_000, intervalMs: 500 },
+    )
+    const mark = judge.requests.length
+
+    // 同时和两个节点配过对的浏览器，在 B 上的这个会话里发一条消息：这就是「在 B 上接手」
+    await page.goto(`${baseB}/s/${sessionId}`)
+    await expect(page.getByTestId('composer-input')).toBeVisible({ timeout: CONNECT_TIMEOUT })
+    const first = `e2e-${RUN} I take over on the other node`
+    const takenAt = Date.now()
+    await page.getByTestId('composer-input').fill(first)
+    await page.getByTestId('composer-send').click()
+
+    // B：这一项的「经过」里记了一条接手（没有 node_id），A 的分身设备的项
+    await expect
+      .poll(
+        async () =>
+          (await todoHistory(homeB(), remote.id)).filter((e) => e.kind === 'taken_over').length,
+        {
+          timeout: 30_000,
+        },
+      )
+      .toBe(1)
+    expect(
+      (await todoHistory(homeB(), remote.id)).find((e) => e.kind === 'taken_over')?.node_id,
+    ).toBeUndefined()
+
+    // A：这一项变成「我」处理，「经过」里记一条带着 B 的 id 的接手
+    await expect
+      .poll(async () => (await todoByTitle(homeA(), TITLE_REMOTE))?.handler, {
+        timeout: 30_000,
+      })
+      .toBe('me')
+    const taken = (await todoHistory(homeA(), item.id)).filter((e) => e.kind === 'taken_over')
+    expect(taken).toHaveLength(1)
+    expect(taken[0]!.node_id).toBe(bId)
+
+    // 同一个会话里再发一条：B 不再多记一条，A 也没有第二条
+    await expect
+      .poll(async () => (await results()).some((t) => t.includes(first)), { timeout: 30_000 })
+      .toBe(true)
+    const second = `e2e-${RUN} and one more message`
+    await page.getByTestId('composer-input').fill(second)
+    await page.getByTestId('composer-send').click()
+    await expect
+      .poll(async () => (await results()).some((t) => t.includes(second)), { timeout: 30_000 })
+      .toBe(true)
+    expect((await results()).length).toBeGreaterThanOrEqual(resultsBefore + 2)
+    expect(
+      (await todoHistory(homeB(), remote.id)).filter((e) => e.kind === 'taken_over'),
+    ).toHaveLength(1)
+    expect(
+      (await todoHistory(homeA(), item.id)).filter((e) => e.kind === 'taken_over'),
+    ).toHaveLength(1)
+
+    // 页面：A 的这一项「经过」里写着「你在 <B> 上接手了」
+    await page.goto(`/todos/${shortA}/${item.id}`)
+    await expect(page.locator('[data-testid="history-row"][data-kind="taken_over"]')).toContainText(
+      containsText('twin.takenOverOn', { node: NODE_B }),
+      {
+        timeout: CONNECT_TIMEOUT,
+      },
+    )
+
+    // 接手之后分身不再唤醒、不再派：等过最长的合并等待，假后端仍然没有收到新的请求，A 的这一项也没有新的派发
+    await waitFor(
+      'the longest merge wait has passed',
+      () => Date.now() - takenAt > 6 * COALESCE_MS,
+      {
+        timeoutMs: 30_000,
+        intervalMs: 500,
+      },
+    )
+    expect(judge.requests.slice(mark)).toEqual([])
+    expect((await todoByTitle(homeA(), TITLE_REMOTE))?.remote).toHaveLength(1)
+    expect(
+      (await todoHistory(homeA(), item.id)).filter((e) => e.kind === 'remote_dispatched'),
+    ).toHaveLength(1)
+  })
+
+  test('e. B 不在线：A 的连接显示离线，派发 → remote_unavailable；B 回来之后恢复在线', async () => {
     test.setTimeout(300_000)
     await page.goto(`/twin/${shortA}`)
     await expect(page.getByTestId('twin-link-online')).toHaveText(exactText('twinLinks.online'), {
@@ -595,7 +693,7 @@ test.describe.serial('分身连接', () => {
     })
   })
 
-  test('e. 「断开」：写明要在 B 上吊销；断开后 A 的列表空了、B 上那台分身设备还在；再在 B 上吊销', async () => {
+  test('f. 「断开」：写明要在 B 上吊销；断开后 A 的列表空了、B 上那台分身设备还在；再在 B 上吊销', async () => {
     test.setTimeout(120_000)
     await page.goto(`/twin/${shortA}`)
     const row = page.getByTestId('twin-link')

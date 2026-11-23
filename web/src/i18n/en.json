@@ -2794,6 +2794,67 @@
       "unknown": "The node rejected the request."
     }
   },
+  "twinLinks": {
+    "title": "Use other nodes",
+    "hint": "This node’s Twin can add to-dos on other nodes and have agents work on them, inside the projects each of those nodes opens to it.",
+    "add": "Add",
+    "none": "Twin is not using any other node.",
+    "loadFailed": "Could not load the connections.",
+    "online": "online",
+    "offline": "offline",
+    "projects": "Open projects: {{projects}}",
+    "noProjects": "Nothing is open to this node there yet.",
+    "remaining": "Left now: {{sessions}} sessions, {{dispatches}} dispatches today",
+    "paused": "That node has paused this connection.",
+    "acceptOff": "That node does not accept twin connections right now.",
+    "noStatus": "Status not fetched yet.",
+    "disconnect": "Disconnect",
+    "disconnectTitle": "Disconnect {{name}}?",
+    "disconnectBody": "This node forgets the connection and Twin stops using {{name}}.",
+    "revokeHint": "To disconnect completely, also revoke this node’s twin device in the device list of {{name}}. Until then it stays paired there and keeps what was opened to it.",
+    "disconnected": "Disconnected from {{name}}. To disconnect completely, revoke this node’s twin device on {{name}}.",
+    "openDevices": "Open the device list of {{name}}",
+    "revokeThere": "This device is not paired with {{name}}; revoke the twin device on that node.",
+    "addTitle": "Let Twin use another node",
+    "addBody": "Choose a node you have paired with. {{name}}’s Twin will be able to add to-dos there and run agents on that node, inside the projects it opens to this connection (none until you open some).",
+    "pick": "Node to use",
+    "noCandidates": "You have not paired this device with any other node.",
+    "blocked": {
+      "linked": "Already connected.",
+      "unsupported": "This node’s version does not support being used by a Twin. Update it first.",
+      "acceptOff": "This node does not accept twin connections. Set [twin] accept_links = true on that machine.",
+      "offline": "Offline. Try again when it is online."
+    },
+    "noGroup": "no group",
+    "groupDiffers": "{{a}} is in the group “{{groupA}}” and {{b}} is in “{{groupB}}”.",
+    "groupWhy": "Groups exist to keep, for example, home and work nodes apart. Connecting them lets {{a}}’s Twin send work and copied to-do text across that line. Continue only if that is what you want.",
+    "next": "Continue",
+    "connect": "Connect",
+    "connectAnyway": "Connect anyway",
+    "connecting": "Connecting…",
+    "errors": {
+      "acceptLinksOff": "That node does not accept twin connections. Set [twin] accept_links = true on that machine.",
+      "differentHub": "The two nodes are not on the same hub, so they cannot be connected.",
+      "codeExpired": "The pairing code expired before it was used. Try again.",
+      "nodeMismatch": "The node that answered is not the one you chose, so nothing was connected.",
+      "pairBusy": "The hub is not opening another pairing right now (daily limit or rate limit). Try again later.",
+      "codeStep": "The node to use could not open a pairing.",
+      "linkStep": "Twin could not pair with that node."
+    }
+  },
+  "twinScope": {
+    "kind": "twin",
+    "button": "Scope",
+    "title": "Scope of {{name}}",
+    "hint": "What this node’s twin connection may do here.",
+    "formHint": "Projects opened here are the only ones that node’s Twin can add to-dos in and have agents work on.",
+    "nothingOpen": "Nothing is open: that Twin cannot add to-dos or start work here.",
+    "acceptOff": "This node does not accept twin connections now; the scope is kept for when it does.",
+    "usage": "Today: {{dispatches}} / {{budget}} dispatches",
+    "working": "Working on ({{count}})",
+    "pause": "Pause this connection",
+    "resume": "Resume this connection"
+  },
   "twin": {
     "errors": {
       "auth": "The backend rejected its API key.",
@@ -2871,6 +2932,15 @@
     "decision": "Twin decided: {{action}}",
     "handedBack": "Twin handed this back to you",
     "takenOver": "You took over",
+    "remote": {
+      "target": "Sent to node: {{node}}",
+      "unknownNode": "another node ({{id}})",
+      "dispatched": "Sent to {{node}}",
+      "openItem": "Open the item on {{node}}",
+      "openSession": "Open the session on {{node}}",
+      "notPaired": "This device is not paired with that node.",
+      "result": "Result from {{node}}"
+    },
     "prEvent": {
       "checks_failed": "The checks on the pull request failed",
       "merged": "The pull request was merged",
@@ -2903,6 +2973,8 @@
       "invalid": "Invalid decision",
       "out_of_scope": "Outside allowed projects",
       "no_capacity": "No available session slots",
+      "remote_unavailable": "The other node was unreachable",
+      "remote_refused": "The other node refused it",
       "budget": "Budget used up",
       "unknown": "Unknown reason"
     },

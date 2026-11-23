@@ -11,6 +11,8 @@ import { isClosed, type ViewTodo } from '@/features/todos/types'
 import { Button } from '@/ui/Button'
 import { useTwin } from './store'
 import { TwinQuestionForm } from './Question'
+import { usePeerName } from './peer'
+import { Markdown } from '@/components/Markdown'
 
 export function TwinHandlerButton({ item }: { item: ViewTodo }) {
   const { t } = useTranslation()
@@ -94,6 +96,10 @@ export function TwinHistoryEvent({ nodeId, event }: { nodeId: string; event: Tod
         </p>
       )
     }
+    case 'remote_dispatched':
+      return <RemoteDispatched event={event} />
+    case 'remote_result':
+      return <RemoteResult event={event} />
     case 'twin_question': {
       const q = questions?.find((x) => x.id === event.question_id)
       return q && supported ? <TwinQuestionForm key={q.id} nodeId={nodeId} question={q} /> : <p>{t('twin.questionLoading')}</p>
@@ -101,6 +107,58 @@ export function TwinHistoryEvent({ nodeId, event }: { nodeId: string; event: Tod
     default:
       return null
   }
+}
+type RemoteDispatchedEvent = Extract<TodoEvent, { kind: 'remote_dispatched' }>
+type RemoteResultEvent = Extract<TodoEvent, { kind: 'remote_result' }>
+/** 这台设备也和那个节点配过对时，才有它的节点页；否则只写名字。 */
+function useRemoteRoute(nodeId: string): string | null {
+  const order = useNodes((s) => s.order)
+  const paired = useNodes((s) => !!s.byId[nodeId])
+  return paired ? shortNodeId(nodeId, order) : null
+}
+function RemoteDispatched({ event }: { event: RemoteDispatchedEvent }) {
+  const { t } = useTranslation()
+  const name = usePeerName(event.node_id)
+  const route = useRemoteRoute(event.node_id)
+  return (
+    <div className="space-y-1" data-testid="remote-dispatched">
+      <p>{t('twin.remote.dispatched', { node: name })}</p>
+      {route ? (
+        <p className="space-x-3">
+          <Link to="/todos/$node/$todo" params={{ node: route, todo: event.todo_id }} className="text-accent-text">
+            {t('twin.remote.openItem', { node: name })}
+          </Link>
+          <Link to="/n/$node/s/$session" params={{ node: route, session: event.session_id }} className="text-accent-text">
+            {t('twin.remote.openSession', { node: name })}
+          </Link>
+        </p>
+      ) : (
+        <p className="text-xs text-fg-subtle">{t('twin.remote.notPaired')}</p>
+      )}
+    </div>
+  )
+}
+function RemoteResult({ event }: { event: RemoteResultEvent }) {
+  const { t } = useTranslation()
+  const name = usePeerName(event.node_id)
+  const route = useRemoteRoute(event.node_id)
+  return (
+    <div className="space-y-1" data-testid="remote-result">
+      <p>{t('twin.remote.result', { node: name })}</p>
+      {event.text ? (
+        <div className="scroll-thin max-h-48 overflow-auto rounded-md border border-border p-2" data-testid="remote-result-text">
+          <Markdown text={event.text} />
+        </div>
+      ) : (
+        <p className="text-xs text-fg-subtle">{t('todos.history.noText')}</p>
+      )}
+      {route ? (
+        <Link to="/n/$node/s/$session" params={{ node: route, session: event.session_id }} className="text-accent-text">
+          {t('twin.remote.openSession', { node: name })}
+        </Link>
+      ) : null}
+    </div>
+  )
 }
 export function TwinReviewReason({ item }: { item: ViewTodo }) {
   const { t } = useTranslation()

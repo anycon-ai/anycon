@@ -94,3 +94,64 @@ for (const impl of cryptoImpls)
       }
     })
   })
+
+for (const impl of cryptoImpls)
+  describe(`分身连接（${impl.label}）`, () => {
+    it('短码只经内存交给 twin.link，links / unlink / peerStatus 透传，twin.get 带 requester', async () => {
+      const env = await startEnv(await impl.load())
+      try {
+        await env.pair()
+        const node = await connect(env.url, {
+          storage: env.storage,
+          crypto: await impl.load(),
+          ...FAST,
+        })
+        try {
+          const { code } = await node.twinLinkCode()
+          const peer = 'b'.repeat(32)
+          const link = await node.twin.link({ code, node_id: peer })
+          assert.equal(link.node_id, peer)
+          assert.equal(link.status?.remaining_dispatches, 4)
+          assert.deepEqual(
+            (await node.twin.links()).links.map((l) => l.name),
+            ['office'],
+          )
+          assert.equal((await node.twin.peerStatus()).accept_links, true)
+          await node.twin.get({ requester: 'dev1' })
+          await node.twin.set({ requester: 'dev1', paused: true })
+          assert.equal(await node.twin.unlink({ node_id: peer }), undefined)
+          assert.deepEqual(await node.twin.links(), { links: [] })
+          await assert.rejects(
+            node.twin.link({ code: 'nope', node_id: peer }),
+            (e: unknown) => e instanceof RpcError && e.field === 'code',
+          )
+          await assert.rejects(
+            node.twin.unlink({ node_id: peer }),
+            (e: unknown) => e instanceof RpcError && e.code === 'not_found',
+          )
+          const calls = env.daemon.requests.filter(
+            (r) => r.method.startsWith('twin.') || r.method === 'node.twin_link_code',
+          )
+          assert.deepEqual(
+            calls.map((r) => [r.method, r.params]),
+            [
+              ['node.twin_link_code', {}],
+              ['twin.link', { code, node_id: peer }],
+              ['twin.links', {}],
+              ['twin.peer_status', {}],
+              ['twin.get', { requester: 'dev1' }],
+              ['twin.set', { requester: 'dev1', paused: true }],
+              ['twin.unlink', { node_id: peer }],
+              ['twin.links', {}],
+              ['twin.link', { code: 'nope', node_id: peer }],
+              ['twin.unlink', { node_id: peer }],
+            ],
+          )
+        } finally {
+          await node.close()
+        }
+      } finally {
+        await env.stop()
+      }
+    })
+  })

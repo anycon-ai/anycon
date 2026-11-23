@@ -11,6 +11,7 @@ import {
   type JobDone,
   type JobProgress,
   type NodeInfo,
+  type NodeTwinLinkCodeResult,
   type PermissionRequest,
   type PermissionResolved,
   type Project,
@@ -37,7 +38,12 @@ import {
   type TwinAnswerParams,
   type TwinChanged,
   type TwinDryRunResult,
+  type TwinGetParams,
   type TwinGetResult,
+  type TwinLink,
+  type TwinLinkParams,
+  type TwinLinksResult,
+  type TwinPeerStatus,
   type TwinQuestion,
   type TwinQuestionNotice,
   type TwinQuestionsParams,
@@ -45,6 +51,7 @@ import {
   type TwinRunsParams,
   type TwinRunsResult,
   type TwinSetParams,
+  type TwinUnlinkParams,
   type Todo,
   type TodoAddParams,
   type TodoChanged,
@@ -675,7 +682,8 @@ export class Node extends Emitter<NodeEvents> {
 
   // 分身的薄封装：需要 capabilities.twin，不缓存、不重放；问题和理由是模型写的纯文字。
   readonly twin = {
-    get: (): Promise<TwinGetResult> => this.call('twin.get', {}),
+    // `requester` 缺省是本机分身；给一台分身设备的 id，读被使用的节点给这条连接的范围。
+    get: (params: TwinGetParams = {}): Promise<TwinGetResult> => this.call('twin.get', params),
     set: (params: TwinSetParams): Promise<TwinGetResult> => this.call('twin.set', params),
     wake: async (): Promise<void> => {
       await this.call('twin.wake', {})
@@ -687,6 +695,19 @@ export class Node extends Emitter<NodeEvents> {
     questions: (params: TwinQuestionsParams = {}): Promise<TwinQuestionsResult> =>
       this.call('twin.questions', params),
     answer: (params: TwinAnswerParams): Promise<TwinQuestion> => this.call('twin.answer', params),
+    // 分身连接（ADR-56）。`link` 的 `code` 是被使用的节点发的短码：只经内存从 `twinLinkCode()` 的结果交给这里，
+    // SDK 不缓存、不写日志。`link` / `unlink` 在使用别的节点的那一端调用；`peerStatus` 在被使用的节点上由分身设备调用。
+    link: (params: TwinLinkParams): Promise<TwinLink> => this.call('twin.link', params),
+    links: (): Promise<TwinLinksResult> => this.call('twin.links', {}),
+    unlink: async (params: TwinUnlinkParams): Promise<void> => {
+      await this.call('twin.unlink', params)
+    },
+    peerStatus: (): Promise<TwinPeerStatus> => this.call('twin.peer_status', {}),
+  }
+
+  /** `node.twin_link_code`：在被使用的节点上开一次只接受分身设备的短码配对（10 分钟）；短码是秘密，只交给 `twin.link`。 */
+  twinLinkCode(): Promise<NodeTwinLinkCodeResult> {
+    return this.call('node.twin_link_code', {})
   }
 
   readonly permissions = {

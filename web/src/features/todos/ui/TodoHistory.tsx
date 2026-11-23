@@ -110,6 +110,8 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
       case 'handler':
       case 'twin_question':
       case 'pr_event':
+      case 'remote_dispatched':
+      case 'remote_result':
         return <li key={e.seq} data-testid="history-row" data-kind={e.kind}><span className="text-fg-subtle">{when(e.ts_ms)}</span><TwinHistoryEvent nodeId={item.node_id} event={e} /></li>
       case 'repeat_created':
         return (

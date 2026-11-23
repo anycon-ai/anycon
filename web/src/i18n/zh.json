@@ -2755,6 +2755,67 @@
       "unknown": "节点拒绝了这个请求。"
     }
   },
+  "twinLinks": {
+    "title": "使用别的节点",
+    "hint": "这台节点的分身可以在别的节点上记项并让那里的 agent 干活，范围是每个节点对它开放的项目。",
+    "add": "添加",
+    "none": "分身没有在使用别的节点。",
+    "loadFailed": "没能读到连接。",
+    "online": "在线",
+    "offline": "离线",
+    "projects": "开放的项目：{{projects}}",
+    "noProjects": "那边还没有对这台节点开放任何项目。",
+    "remaining": "现在还剩：{{sessions}} 个会话，今天还能派发 {{dispatches}} 次",
+    "paused": "那个节点暂停了这条连接。",
+    "acceptOff": "那个节点现在不接受分身连接。",
+    "noStatus": "还没有取到状态。",
+    "disconnect": "断开",
+    "disconnectTitle": "断开 {{name}}？",
+    "disconnectBody": "这台节点忘掉这条连接，分身不再使用 {{name}}。",
+    "revokeHint": "要完全断开，还要在 {{name}} 的设备列表里吊销这台节点的分身设备。在那之前它仍在那边保持配对，已开放的范围也还在。",
+    "disconnected": "已和 {{name}} 断开。要完全断开，请在 {{name}} 上吊销这台节点的分身设备。",
+    "openDevices": "打开 {{name}} 的设备列表",
+    "revokeThere": "这台设备没有和 {{name}} 配过对，请到那个节点上吊销分身设备。",
+    "addTitle": "让分身使用另一个节点",
+    "addBody": "选一个你配过对的节点。{{name}} 的分身可以在那里记项、让那里的 agent 干活，范围是那个节点对这条连接开放的项目（你开放之前什么都没有）。",
+    "pick": "要使用的节点",
+    "noCandidates": "这台设备没有和别的节点配过对。",
+    "blocked": {
+      "linked": "已经连接。",
+      "unsupported": "这个节点的版本还不支持被分身使用，请先更新。",
+      "acceptOff": "这个节点不接受分身连接。请在那台机器上设置 [twin] accept_links = true。",
+      "offline": "离线。等它在线再试。"
+    },
+    "noGroup": "无分组",
+    "groupDiffers": "{{a}} 的分组是“{{groupA}}”，{{b}} 的分组是“{{groupB}}”。",
+    "groupWhy": "分组本来是用来把家里和公司这类节点隔开的。连起来之后，{{a}} 的分身会把任务和复制的清单文字送过这条界线。确定要这样再继续。",
+    "next": "继续",
+    "connect": "连接",
+    "connectAnyway": "仍然连接",
+    "connecting": "正在连接…",
+    "errors": {
+      "acceptLinksOff": "那个节点不接受分身连接。请在那台机器上设置 [twin] accept_links = true。",
+      "differentHub": "这两个节点不在同一个 hub 上，连不了。",
+      "codeExpired": "配对短码在用上之前就过期了，请再试一次。",
+      "nodeMismatch": "应答的节点不是你选的那个，所以什么都没有连接。",
+      "pairBusy": "hub 现在不再开新的配对（今天的次数用完了或被限速），请稍后再试。",
+      "codeStep": "要使用的节点没能开出配对。",
+      "linkStep": "分身没能和那个节点配对。"
+    }
+  },
+  "twinScope": {
+    "kind": "分身",
+    "button": "范围",
+    "title": "{{name}} 的范围",
+    "hint": "这条分身连接在这里能做什么。",
+    "formHint": "这里开放的项目，那个节点的分身可以在里面记项并让 agent 干活，别的项目碰不到。",
+    "nothingOpen": "什么都没有开放：那个分身在这里不能记项，也不能让 agent 干活。",
+    "acceptOff": "这个节点现在不接受分身连接；范围保留，重新接受后照常可用。",
+    "usage": "今天：派发 {{dispatches}} / {{budget}} 次",
+    "working": "处理中（{{count}}）",
+    "pause": "暂停这条连接",
+    "resume": "恢复这条连接"
+  },
   "twin": {
     "errors": {
       "auth": "判断后端的密钥不对。",
@@ -2832,6 +2893,15 @@
     "decision": "分身的决定：{{action}}",
     "handedBack": "分身交回给你",
     "takenOver": "你接手了",
+    "remote": {
+      "target": "派到节点：{{node}}",
+      "unknownNode": "另一个节点（{{id}}）",
+      "dispatched": "派到了 {{node}}",
+      "openItem": "在 {{node}} 上打开这一项",
+      "openSession": "在 {{node}} 上打开会话",
+      "notPaired": "这台设备没有和那个节点配过对。",
+      "result": "来自 {{node}} 的结果"
+    },
     "prEvent": {
       "checks_failed": "PR 的检查失败了",
       "merged": "PR 已合并",
@@ -2864,6 +2934,8 @@
       "invalid": "决定不合法",
       "out_of_scope": "不在项目范围内",
       "no_capacity": "没有空闲会话名额",
+      "remote_unavailable": "另一个节点连不上",
+      "remote_refused": "另一个节点拒绝了",
       "budget": "预算用完",
       "unknown": "原因未知"
     },

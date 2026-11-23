@@ -181,6 +181,34 @@ describe('Twin in to-dos', () => {
     expect(screen.getByTestId('record-agent')).toHaveTextContent('Which project?')
     expect(screen.getByTestId('rule-editor-save')).toBeDisabled()
   })
+  it('shows remote dispatch and remote result with the node name, linking to the other node only when this device is paired with it', async () => {
+    const B = 'b'.repeat(32)
+    const F = 'f'.repeat(32)
+    useNodes.setState((st) => ({ byId: { ...st.byId, [B]: nodeEntry({ id: B, name: 'beta' }) }, order: [A, B] }))
+    const events: TodoEvent[] = [
+      { seq: 4, ts_ms: 4, kind: 'remote_result', node_id: B, session_id: 'sb', text: 'Fixed <script>alert(1)</script> **done**' },
+      { seq: 3, ts_ms: 3, kind: 'remote_result', node_id: F, session_id: 'sf', text: 'From afar' },
+      { seq: 2, ts_ms: 2, kind: 'remote_dispatched', node_id: F, todo_id: 'rf', session_id: 'sf' },
+      { seq: 1, ts_ms: 1, kind: 'remote_dispatched', node_id: B, todo_id: 'rb', session_id: 'sb' },
+    ]
+    rpc.handlers['todo.history'] = () => ({ events, has_more: false })
+    const item = { ...todoItem({ id: 't1', handler: 'twin' }), node_id: A, unsynced: false }
+    render(<TodoHistory item={item} />)
+    const sent = await screen.findAllByTestId('remote-dispatched')
+    expect(sent[0]).toHaveTextContent('Sent to beta')
+    expect(screen.getByRole('link', { name: 'Open the item on beta' })).toHaveAttribute('href', '/todos/bbbbbbbb/rb')
+    expect(screen.getAllByRole('link', { name: 'Open the session on beta' })).toHaveLength(2)
+    // 没配过对的节点：只有名字（id 前 8 位），没有链接
+    expect(sent[1]).toHaveTextContent('Sent to another node (ffffffff)')
+    expect(sent[1]).toHaveTextContent('This device is not paired with that node.')
+    expect(sent[1]!.querySelector('a')).toBeNull()
+    const results = screen.getAllByTestId('remote-result')
+    expect(results[1]).toHaveTextContent('Result from beta')
+    expect(results[1]).toHaveTextContent('Fixed')
+    expect(results[1]!.querySelector('script')).toBeNull()
+    expect(results[0]).toHaveTextContent('Result from another node (ffffffff)')
+    expect(results[0]!.querySelector('a')).toBeNull()
+  })
   it('shows the Twin reason in acceptance, and emits no handler entry without capability', () => {
     const item = { ...todoItem({ id: 't1' }), node_id: A, unsynced: false }
     act(() =>

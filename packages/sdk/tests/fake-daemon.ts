@@ -41,6 +41,10 @@ import {
   makeNotification,
   resetBody,
   type TwinGetResult,
+  type TwinLink,
+  type TwinLinkParams,
+  type TwinPeerStatus,
+  type TwinUnlinkParams,
   type TwinSetParams,
   type TwinQuestion,
   type TwinRun,
@@ -753,6 +757,41 @@ export class FakeDaemon {
       this.#notifyAll('twin.changed', { state: twin.state })
       return twin
     })
+    const twinLinks: TwinLink[] = []
+    const peerStatus: TwinPeerStatus = {
+      name: 'office',
+      group: 'work',
+      projects: ['web'],
+      agents: [{ id: 'mock', label: 'Mock', ready: true }],
+      remaining_sessions: 1,
+      remaining_dispatches: 4,
+      paused: false,
+      accept_links: true,
+    }
+    on('node.twin_link_code', () => ({ code: 'ABCD-2345-WXYZ-6789', expires_ms: 600_000 }))
+    on<TwinLinkParams, TwinLink>('twin.link', (p) => {
+      if (p.code !== 'ABCD-2345-WXYZ-6789')
+        throw AnyconRpcError.of('invalid', 'bad code', { field: 'code', reason: 'code_expired' })
+      const link: TwinLink = {
+        node_id: p.node_id,
+        name: 'office',
+        group: 'work',
+        fingerprint: 'abcd1234',
+        paired_ms: 1,
+        online: true,
+        status: peerStatus,
+      }
+      twinLinks.push(link)
+      return link
+    })
+    on('twin.links', () => ({ links: twinLinks }))
+    on<TwinUnlinkParams, unknown>('twin.unlink', (p) => {
+      const i = twinLinks.findIndex((l) => l.node_id === p.node_id)
+      if (i < 0) throw AnyconRpcError.of('not_found', 'no such link')
+      twinLinks.splice(i, 1)
+      return {}
+    })
+    on('twin.peer_status', () => peerStatus)
     on('twin.wake', () => {
       this.#notifyAll('twin.changed', { state: twin.state })
       return {}

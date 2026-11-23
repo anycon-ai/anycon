@@ -1,5 +1,5 @@
 // 分身界面的假节点：可控制状态、运行和问题，记录协议参数及拒绝。
-import type { TwinAnswerParams, TwinGetResult, TwinQuestion, TwinRun, TwinSetParams } from '@/protocol'
+import type { TwinAnswerParams, TwinGetParams, TwinGetResult, TwinLink, TwinLinkParams, TwinPeerStatus, TwinQuestion, TwinRun, TwinSetParams, TwinUnlinkParams } from '@/protocol'
 import { type FakeRpc, rpcError } from './fakeRpc'
 export const twinValue = (over: Partial<TwinGetResult> = {}): TwinGetResult => ({
   enabled: true,
@@ -33,19 +33,70 @@ export const twinQuestion = (over: Partial<TwinQuestion> = {}): TwinQuestion => 
   status: 'open',
   ...over,
 })
+export const peerStatus = (over: Partial<TwinPeerStatus> = {}): TwinPeerStatus => ({
+  name: 'beta',
+  projects: ['api'],
+  agents: [{ id: 'mock', label: 'Mock', ready: true }],
+  remaining_sessions: 2,
+  remaining_dispatches: 7,
+  paused: false,
+  accept_links: true,
+  ...over,
+})
+export const twinLink = (over: Partial<TwinLink> = {}): TwinLink => ({
+  node_id: 'b'.repeat(32),
+  name: 'beta',
+  fingerprint: 'abcd1234',
+  paired_ms: 1000,
+  online: true,
+  status: peerStatus(),
+  ...over,
+})
+/** 一次短码，测试里断言它从没出现在界面、日志和存储里。 */
+export const LINK_CODE = 'QZXW-7391-MNBV-4826'
 export class FakeTwinDaemon {
   values = new Map<string, TwinGetResult>()
   runs: TwinRun[] = []
   questions: TwinQuestion[] = []
   dry = twinRun({ id: 'dry-1', dry_run: true })
   failSet = false
+  /** 分身设备（`requester`）的范围，键是 `<节点 id>:<设备 id>`。 */
+  scopes = new Map<string, TwinGetResult>()
+  /** 使用方节点上的分身连接。 */
+  links: TwinLink[] = []
+  /** 下一次 `node.twin_link_code` / `twin.link` 抛的错误。 */
+  failCode: Error | null = null
+  failLink: Error | null = null
   constructor(readonly rpc: FakeRpc) {
-    rpc.handlers['twin.get'] = (_p, id) => this.values.get(id) ?? twinValue()
+    const slot = (id: string, requester?: string | null): string => (requester && requester !== 'local' ? `${id}:${requester}` : id)
+    const book = (requester?: string | null) => (requester && requester !== 'local' ? this.scopes : this.values)
+    rpc.handlers['twin.get'] = (raw, id) => {
+      const { requester } = (raw ?? {}) as TwinGetParams
+      const fallback = requester && requester !== 'local' ? twinValue({ configured: false, state: 'not_configured', scope: { paused: false, projects: [], max_sessions: 1, daily_dispatches: 0 }, today: { dispatches: 0, judge_calls: 0 } }) : twinValue()
+      return book(requester).get(slot(id, requester)) ?? fallback
+    }
+    rpc.handlers['node.twin_link_code'] = () => {
+      if (this.failCode) throw this.failCode
+      return { code: LINK_CODE, expires_ms: Date.now() + 600_000 }
+    }
+    rpc.handlers['twin.links'] = () => ({ links: this.links })
+    rpc.handlers['twin.link'] = (raw) => {
+      if (this.failLink) throw this.failLink
+      const p = raw as TwinLinkParams
+      const link = twinLink({ node_id: p.node_id })
+      this.links = [...this.links.filter((l) => l.node_id !== p.node_id), link]
+      return link
+    }
+    rpc.handlers['twin.unlink'] = (raw) => {
+      const p = raw as TwinUnlinkParams
+      this.links = this.links.filter((l) => l.node_id !== p.node_id)
+      return {}
+    }
     rpc.handlers['twin.set'] = (raw, id) => {
       if (this.failSet) throw rpcError('invalid', 'max_sessions', 'range')
       const p = raw as TwinSetParams
-      const { clear, ...patch } = p
-      const cur = this.values.get(id) ?? twinValue()
+      const { clear, requester, ...patch } = p
+      const cur = book(requester).get(slot(id, requester)) ?? (requester && requester !== 'local' ? twinValue({ configured: false, state: 'not_configured', scope: { paused: false, projects: [], max_sessions: 1, daily_dispatches: 0 }, today: { dispatches: 0, judge_calls: 0 } }) : twinValue())
       const scope = {
         ...cur.scope,
         ...patch,
@@ -56,7 +107,7 @@ export class FakeTwinDaemon {
       }
       for (const key of clear ?? []) if (key === 'agent' || key === 'model' || key === 'mode') delete scope[key]
       const value: TwinGetResult = { ...cur, scope, configured: !!scope.projects.length, state: scope.paused ? 'paused' : scope.projects.length ? 'idle' : 'not_configured' }
-      this.values.set(id, value)
+      book(requester).set(slot(id, requester), value)
       return value
     }
     rpc.handlers['twin.runs'] = (raw) => {

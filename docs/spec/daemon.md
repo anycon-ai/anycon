@@ -2216,7 +2216,7 @@ A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在
 
 ### 27.6 客户端
 
-- **Web**：
+- **Web**（**已实现**，细节见 [web.md § 14.8](web.md#148-分身和规则) 和 [§ 4.8](web.md#48-节点设置-nnodesettings)；A 侧 daemon 的方法没有实现的节点上，「使用别的节点」不显示）：
   - **A 的分身页**多一块「使用别的节点」：列出分身连接（名称、在不在线、开放的项目、剩余名额）；「添加」列出这台设备配过对、支持分身（`capabilities.twin`）、`twin_accept_links` 开着的别的节点，选一个，分组不同时多确认一次，然后依次调 B 的 `node.twin_link_code` 和 A 的 `twin.link`。「断开」调 A 的 `twin.unlink`，并说明要在 B 上吊销设备。
   - **B 的节点设置**「设备」里，分身设备显示成「<A> 的分身」，旁边有「范围」：这条连接的 `twin.get` / `twin.set`（`requester` = 设备 id），表单同分身页的范围，缺省什么都不开放。
   - **「经过」**显示 `remote_dispatched` 和 `remote_result`：这台设备也和 B 配过对时，能点到 B 上的那一项。

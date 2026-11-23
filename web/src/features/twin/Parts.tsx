@@ -12,6 +12,7 @@ import { useTodos } from '@/features/todos/store'
 import { Button } from '@/ui/Button'
 import { setTwin } from './service'
 import { groupRuns, useTwin, useTwinNodeIds } from './store'
+import { usePeerName } from './peer'
 
 export function Decisions({ nodeId, run }: { nodeId: string; run: TwinRun }) {
   const { t } = useTranslation()
@@ -28,6 +29,7 @@ export function Decisions({ nodeId, run }: { nodeId: string; run: TwinRun }) {
               {todos?.[d.todo_id]?.title ?? d.todo_id}
             </Link>
             <p>{t(`twin.action.${d.action}`)}</p>
+            {d.node ? <DecisionNode id={d.node} /> : null}
             <p className="whitespace-pre-wrap break-words">{d.reason}</p>
             {d.action === 'dispatch' && d.note ? (
               <div>
@@ -53,6 +55,12 @@ export function Decisions({ nodeId, run }: { nodeId: string; run: TwinRun }) {
       {run.decisions.length === 0 ? <p>{t('twin.nothing')}</p> : null}
     </div>
   )
+}
+/** 这条决定派到了哪个节点（`node` 缺省是本机，不显示）。 */
+function DecisionNode({ id }: { id: string }) {
+  const { t } = useTranslation()
+  const name = usePeerName(id)
+  return <p data-testid="twin-decision-node">{t('twin.remote.target', { node: name })}</p>
 }
 export function RunHistory({ nodeId, runs, runId }: { nodeId: string; runs: TwinRun[]; runId?: string }) {
   const { t, i18n } = useTranslation()

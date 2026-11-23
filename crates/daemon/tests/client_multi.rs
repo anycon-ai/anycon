@@ -125,6 +125,10 @@ impl Rig {
 
 /// 两个节点，一个设备身份，先后和两个节点配对（第一次用临时连接，第二次在已经开着的长连接上）。
 async fn rig(tweak: impl FnOnce(&mut HubConfig)) -> Rig {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let hub = TestHub::start_with(tweak).await;
     let a = node(&hub).await;
     let b = node(&hub).await;
@@ -286,4 +290,105 @@ async fn pairing_with_the_wrong_expected_node_discards_the_pairing_locally() {
     assert_eq!(e.code, "node_mismatch");
     assert!(client.nodes().is_empty());
     client.shutdown().await;
+}
+
+/// 假 hub + 假节点：认证时说节点在线；节点对前几条握手的处理由 `script` 决定（`Garbage` = 回一条对不上的回复，
+/// 就像同一设备身份上一条旧连接的握手回复被 hub 转到了现在这条；`Ignore` = 不理），之后正常应答。
+#[derive(Clone, Copy)]
+enum Fate {
+    Garbage,
+    Ignore,
+}
+
+async fn flaky_node_hub(
+    node_kp: Keypair,
+    client_pub: [u8; 32],
+    script: Vec<Fate>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    use anycon_crypto::{Handshake, Role};
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    let node_id = "fake-node".to_string();
+    let h = tokio::spawn(async move {
+        let (tcp, _) = l.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let (mut seq, mut seen) = (0u64, 0usize);
+        while let Some(Ok(Message::Binary(b))) = ws.next().await {
+            let env = Envelope::decode(&b).unwrap();
+            let reply = match env.kind {
+                Kind::Control => match env.control_body().unwrap() {
+                    Control::Auth { .. } => Some(
+                        Envelope::control(
+                            "",
+                            1,
+                            &Control::AuthOk {
+                                device_id: "dev-1".into(),
+                                server_time_ms: 0,
+                                peers_online: vec![node_id.clone()],
+                                quota: None,
+                            },
+                        )
+                        .unwrap(),
+                    ),
+                    _ => None,
+                },
+                Kind::Handshake => {
+                    seen += 1;
+                    seq += 1;
+                    match script.get(seen - 1) {
+                        Some(Fate::Ignore) => None,
+                        Some(Fate::Garbage) => {
+                            Some(Envelope::new(node_id.clone(), "dev-1", Kind::Handshake, seq, vec![7u8; 96]))
+                        }
+                        None => {
+                            let mut hs = Handshake::reconnect(Role::Responder, &node_kp, Some(&client_pub)).unwrap();
+                            hs.read(&env.body).unwrap();
+                            let m2 = hs.write(&[]).unwrap();
+                            Some(Envelope::new(node_id.clone(), "dev-1", Kind::Handshake, seq, m2))
+                        }
+                    }
+                }
+                _ => None,
+            };
+            if let Some(e) = reply {
+                ws.send(Message::Binary(e.encode().unwrap().into())).await.unwrap();
+            }
+        }
+    });
+    (url, h)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_that_ignores_or_garbles_the_first_handshakes_is_retried_until_it_answers() {
+    let node_kp = Keypair::generate();
+    let client_kp = Keypair::generate();
+    // 一条对不上的回复，再三次没有回复（超过原来的 3 次上限），最后才正常应答
+    let script = vec![Fate::Garbage, Fate::Ignore, Fate::Ignore, Fate::Ignore, Fate::Ignore];
+    let (url, hub) = flaky_node_hub(node_kp.clone(), client_kp.public, script).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut st = HubState::load(dir.path(), &url);
+    st.secret = Some(client_kp.secret);
+    st.token = Some("tok".into());
+    st.token_issued_at_ms = Some(anycon_daemon::util::now_ms());
+    st.device_id = Some("dev-1".into());
+    st.nodes.push(anycon_daemon::client::NodeEntry {
+        id: "fake-node".into(),
+        name: "fake".into(),
+        pubkey: hex::encode(node_kp.public),
+        paired_at_ms: 1,
+    });
+    st.save().unwrap();
+    let mut o = options();
+    o.handshake_timeout = Duration::from_millis(200);
+    let client = Client::start(st, o).unwrap();
+    assert!(
+        eventually(Duration::from_secs(30), || async { client.node_status("fake-node") == NodeStatus::Ready }).await,
+        "the node was given up on: {:?} / {:?}",
+        client.node_status("fake-node"),
+        client.last_error()
+    );
+    client.shutdown().await;
+    hub.abort();
 }

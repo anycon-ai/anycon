@@ -233,7 +233,8 @@ struct Queued {
 }
 
 struct Handshaking {
-    hs: Handshake,
+    /// 握手进行中；`None` = 在等下一次重试（`deadline` 是重试的时刻）。
+    hs: Option<Handshake>,
     deadline: Instant,
     attempts: u32,
     waiting: Vec<Queued>,
@@ -649,18 +650,12 @@ impl Actor {
         for id in expired {
             let Some(Session::Handshaking(h)) = live.sessions.remove(&id) else { continue };
             let Some(node) = self.state.nodes.iter().find(|n| n.id == id).cloned() else { continue };
-            if h.attempts < HANDSHAKE_ATTEMPTS {
-                self.begin_handshake(live, &node, h.attempts + 1, h.waiting).await?;
+            if h.hs.is_none() {
+                // 退避结束：重试
+                self.begin_handshake(live, &node, h.attempts, h.waiting).await?;
             } else {
-                let e = ClientError::not_paired(
-                    "the node is online but did not accept this device; it may have been revoked or may not be \
-                     paired with it any more",
-                );
-                for q in h.waiting {
-                    let _ = q.reply.send(Err(e.clone()));
-                }
-                self.set_status(&id, NodeStatus::Offline);
-                self.emit(ClientEvent::NodeOffline { node_id: id });
+                tracing::debug!(node = %id, attempts = h.attempts, "client: handshake timed out");
+                self.handshake_failed(live, &node, h).await?;
             }
         }
         // 被退回的信封到点重发
@@ -733,6 +728,12 @@ impl Actor {
                 match live.sessions.get_mut(&node_id) {
                     None => {
                         let _ = reply.send(Err(ClientError::offline("the node is offline")));
+                    }
+                    // 已经放弃过前几次、在退避重试：不让请求干等
+                    Some(Session::Handshaking(h)) if h.attempts > HANDSHAKE_ATTEMPTS => {
+                        let _ = reply.send(Err(ClientError::offline(
+                            "the node is online but is not answering the handshake; still retrying",
+                        )));
                     }
                     Some(Session::Handshaking(h)) => h.waiting.push(Queued { method, params, reply }),
                     Some(Session::Ready(_)) => {
@@ -818,6 +819,7 @@ impl Actor {
     async fn on_control(&mut self, live: &mut Live, c: Control) -> std::result::Result<(), String> {
         match c {
             Control::PeerOnline { device } => {
+                tracing::debug!(node = %device, "client: peer_online");
                 let Some(node) = self.state.nodes.iter().find(|n| n.id == device).cloned() else { return Ok(()) };
                 match live.sessions.get(&device) {
                     // 已经在握手：不重复
@@ -831,6 +833,7 @@ impl Actor {
                 }
             }
             Control::PeerOffline { device } => {
+                tracing::debug!(node = %device, "client: peer_offline");
                 self.drop_session(live, &device, "the node went offline");
             }
             Control::Undeliverable { to, .. } => {
@@ -876,20 +879,23 @@ impl Actor {
 
     async fn on_handshake(&mut self, live: &mut Live, env: Envelope) -> std::result::Result<(), String> {
         let id = env.from.clone();
-        let Some(Session::Handshaking(mut h)) = live.sessions.remove(&id) else { return Ok(()) };
-        if let Err(e) = h.hs.read(&env.body) {
-            let err = ClientError::not_paired(format!(
-                "the node did not accept this device ({e}); it may have been revoked or may not be paired with it \
-                 any more"
-            ));
-            for q in h.waiting {
-                let _ = q.reply.send(Err(err.clone()));
-            }
-            self.set_status(&id, NodeStatus::Offline);
-            self.emit(ClientEvent::NodeOffline { node_id: id });
+        // 只有真在握手的会话才收这条回复。迟到的、对不上的回复（同一设备身份上一条连接的握手，hub 按设备 id
+        // 转给了现在这条）不能把已经建好的通道拆掉。
+        if !matches!(live.sessions.get(&id), Some(Session::Handshaking(h)) if h.hs.is_some()) {
             return Ok(());
         }
-        let transport = match h.hs.into_transport() {
+        let Some(Session::Handshaking(mut h)) = live.sessions.remove(&id) else { return Ok(()) };
+        tracing::debug!(node = %id, "client: handshake reply");
+        let mut hs = h.hs.take().expect("checked above");
+        if let Err(e) = hs.read(&env.body) {
+            // 对不上的回复多半是上面说的迟到回复，不是节点拒绝：重新握手（真被拒绝的节点根本不回，走超时）
+            tracing::debug!(node = %id, error = %e, "client: a handshake reply did not match; retrying");
+            if let Some(node) = self.state.nodes.iter().find(|n| n.id == id).cloned() {
+                self.handshake_failed(live, &node, h).await?;
+            }
+            return Ok(());
+        }
+        let transport = match hs.into_transport() {
             Ok(t) => t,
             Err(e) => {
                 let err = ClientError::general(e.to_string());
@@ -973,17 +979,57 @@ impl Actor {
                 return Ok(());
             }
         };
+        tracing::debug!(node = %node.id, attempts, "client: sending the IK handshake");
         live.h.send_env(&node.id, Kind::Handshake, m1).await.map_err(|e| e.message)?;
         live.sessions.insert(
             node.id.clone(),
             Session::Handshaking(Box::new(Handshaking {
-                hs,
+                hs: Some(hs),
                 deadline: Instant::now() + self.opts.handshake_timeout,
                 attempts,
                 waiting,
             })),
         );
         self.set_status(&node.id, NodeStatus::Connecting);
+        Ok(())
+    }
+
+    /// 一次握手没成（超时，或回复对不上）。前 [`HANDSHAKE_ATTEMPTS`] 次立刻重来；用完之后排着的请求以错误收场，
+    /// 但只要节点还在线就一直重试（间隔 1 秒起翻倍、上限 30 秒），不等下一次 `peer_online`——节点可能只是
+    /// 暂时没处理握手（忙、还在清理上一条连接的会话），而它不会再发 `peer_online`。
+    async fn handshake_failed(
+        &mut self,
+        live: &mut Live,
+        node: &NodeEntry,
+        h: Box<Handshaking>,
+    ) -> std::result::Result<(), String> {
+        let done = h.attempts;
+        let waiting = if done >= HANDSHAKE_ATTEMPTS {
+            let e = ClientError::not_paired(
+                "the node is online but did not accept this device; it may have been revoked or may not be \
+                 paired with it any more",
+            );
+            for q in h.waiting {
+                let _ = q.reply.send(Err(e.clone()));
+            }
+            Vec::new()
+        } else {
+            h.waiting
+        };
+        if done < HANDSHAKE_ATTEMPTS {
+            return self.begin_handshake(live, node, done + 1, waiting).await;
+        }
+        let delay = Duration::from_secs(1 << (done - HANDSHAKE_ATTEMPTS).min(5)).min(Duration::from_secs(30));
+        tracing::debug!(node = %node.id, attempts = done, ?delay, "client: the node did not answer; retrying later");
+        live.sessions.insert(
+            node.id.clone(),
+            Session::Handshaking(Box::new(Handshaking {
+                hs: None,
+                deadline: Instant::now() + delay,
+                attempts: done + 1,
+                waiting,
+            })),
+        );
         Ok(())
     }
 

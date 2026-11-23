@@ -773,18 +773,27 @@ async fn results_after_a_takeover_in_the_same_sync_are_recorded_but_do_not_wake_
         let h = r.a_history(&todo.id).await;
         results_of(&h) == 2 && taken_over_of(&h).len() == 1
     });
-    // 记进「经过」的顺序和 B 上一样：结果、接手、结果
-    let order: Vec<&str> = r
-        .a_history(&todo.id)
-        .await
-        .iter()
-        .filter_map(|e| match &e.data {
-            TodoEventData::RemoteResult { .. } => Some("result"),
-            TodoEventData::TakenOver { .. } => Some("taken_over"),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(order, vec!["result", "taken_over", "result"]);
+    // 记进 A 的「经过」的顺序和 B 上的 `seq` 顺序一样。B 上接手和那一轮结果的先后不固定：消息先交给 agent，接手之后才记，
+    // 很快结束的一轮可能先记下结果，所以只要求 A 照抄 B 的顺序，不写死成「结果、接手、结果」
+    let kinds = |h: &[TodoEvent], result: fn(&TodoEventData) -> bool| -> Vec<&'static str> {
+        h.iter()
+            .filter_map(|e| {
+                if result(&e.data) {
+                    Some("result")
+                } else if matches!(e.data, TodoEventData::TakenOver { .. }) {
+                    Some("taken_over")
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    let on_a = kinds(&r.a_history(&todo.id).await, |d| matches!(d, TodoEventData::RemoteResult { .. }));
+    let on_b = kinds(&r.b_history(&remote.id).await, |d| matches!(d, TodoEventData::Result { .. }));
+    assert_eq!(on_a, on_b, "A records B's events in B's order");
+    // 「经过」是从新到旧：最旧的一条是第一轮的结果，它在接手之前
+    assert_eq!(on_a.last(), Some(&"result"), "the first turn's result came before the takeover: {on_a:?}");
+    assert_eq!(on_a.iter().filter(|k| **k == "taken_over").count(), 1, "{on_a:?}");
     assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Me);
     // 第二次结果没有唤醒分身
     r.clock += 5 * 60_000;

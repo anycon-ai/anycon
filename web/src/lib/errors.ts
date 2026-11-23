@@ -51,3 +51,16 @@ export function describeErrorIn(e: unknown, t: TFunction, prefix: string): strin
   }
   return describeError(e, t)
 }
+
+/**
+ * 这个请求是不是被一个太旧的 daemon 拒绝：旧 daemon 不认识的方法回 JSON-RPC 的 -32601（稳定错误码 `unsupported`）。
+ * 只给「新 daemon 绝不会回 `unsupported`」的请求用（比如 `session.set_marks`）：别的请求里 `unsupported` 是「agent 不支持」。
+ */
+export function isMethodNotFound(e: unknown): boolean {
+  return e instanceof RpcCallError && e.kind === 'rpc' && (e.rpc?.code === -32601 || e.code === 'unsupported')
+}
+
+/** 标 / 取消「待处理」失败的说法：旧 daemon 不认识 `session.set_marks`，要它更新才能用；别的错误照常。 */
+export function describeMarkError(e: unknown, t: TFunction): string {
+  return isMethodNotFound(e) ? t('errors.daemonTooOld') : describeError(e, t)
+}

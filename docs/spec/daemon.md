@@ -892,6 +892,8 @@ SQLite（WAL）。全部表：
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
 
+迁移只前进。库里记着本版本不认识的迁移（数据是更新版本的 anycon 写的）时，daemon 拒绝启动，说明数据是更新版本写的、该用更新的版本或恢复升级之前的备份，并带上数据库的路径。启动时应用了新的迁移，daemon 记一条 info 日志（`from`、`to` 是迁移前后的最新迁移编号，新库的 `from` 为 0）；没有新迁移不记。
+
 事件表按会话删除；`history_retention` 到期的会话整条删。`VACUUM` 不自动跑，`anycon stats` 显示可回收空间并给命令。
 
 **备份**（见 [§ 4](#4-数据目录)）：`sessions` / `events` / `turns` / `messages_fts` / `blobs` / `worktrees` 里属于某个会话的行，加上 `blobs/` 下的附件文件，就是这个会话的全部历史；`anycon export` 把它们按 [§ 20](#20-导出文件格式anycon-export--import) 的格式打成 zip，`anycon import` 在一个事务里还原一个会话（事件、附件记录、worktree 记录、全文索引、turn 汇总）。`peers`、`enroll_password`、`agent_cache`、`preview_*`、`audit`、`jobs`、`kv`、`linked_projects`、`todos`、`todo_sessions`、`todo_events` 不进导出：它们是这台节点自己的状态，不是会话历史。
@@ -2154,7 +2156,7 @@ A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在
    - 短码不写进日志和审计（审计只记 `node.twin_link_code` 这个动作）。
 2. 那台设备把短码经 E2E 交给 A：`twin.link { code, node_id }`（`node_id` 是 B 的 id，A 配对完成后核对它，对不上就失败并丢掉这次配对）。
 3. A 的 daemon 作为加入方走短码配对（ADR-29，和 `anycon pair` 同一套），`ClientInfo.kind = twin`，设备名是「<A 的节点名>'s twin」。完成后记下这条连接（`twin/nodes.json` 和表 `twin_links`：B 的 id、公钥、名称、配对时间），向 B 取一次 `twin.peer_status`（取不到不影响建立），发一条 `twin.changed` 让客户端重新读 `twin.links`，记审计 `twin.link`，返回 `TwinLink`。
-   - 失败都带可读的说明和 `data.reason`：`node_mismatch`（配对到的不是 `node_id`：这次配对在 A 上丢掉，B 上的设备记录要在 B 上吊销，`invalid`）、`not_found`（短码不存在、过期或已用掉；B 不在 A 的 hub 上时同样是它，说明里提示两个节点必须在同一个 hub 上，`not_found`）、`timeout`（B 没有完成配对：`accept_links` 关着、或者短码种类不对时 B 不回握手，A 要等到 hub 的撮合超时，`unsupported`）、`forbidden`（两台设备不属于同一个账号）、`rate_limited`、`quota`、`no_hub`（这个节点没有配置 hub）、`offline`（A 没连上 hub）、`hub_changed`（见 § 27.1）。短码格式不对是 `invalid`。
+   - 失败都带可读的说明和 `data.reason`：`node_mismatch`（配对到的不是 `node_id`：这次配对在 A 上丢掉，B 上的设备记录要在 B 上吊销，`invalid`）、`not_found`（短码不存在、过期或已用掉；B 不在 A 的 hub 上时同样是它，说明里提示两个节点必须在同一个 hub 上，`not_found`）、`timeout`（B 没有完成配对：`accept_links` 关着、或者短码种类不对时 B 不回握手，A 要等到 hub 的撮合超时，`unsupported`）、`forbidden`（两台设备不属于同一个账号）、`rate_limited`、`quota`、`no_hub`（这个节点没有配置 hub）、`offline`（A 没连上 hub）、`hub_changed`（见 § 27.1）、`hub_unsupported`（`unsupported`：hub 以 `protocol` 拒绝了这条连接的认证，即 hub 不认识 `twin` 设备种类，比 0.4 旧；说明里提示先升级 hub。只有建立分身连接这一步这样解释：这条连接只为分身设备而开，别处的 `protocol` 拒绝不一定是这个原因。失败之后 A 上没有连接记录、没有存下的节点，也没有留着的长连接）。短码格式不对是 `invalid`。
 
 - **短码的种类**：`node.twin_link_code` 发出的短码只接受 `kind = twin` 的设备；普通短码（`anycon pair`）、接入码和节点口令一律不接受 `kind = twin`（配对失败，`reason = twin_not_allowed`）。
   - 配对：设备种类在第三条握手消息的 `ClientInfo` 里（受 PSK 保护）。B 读到它之后核对：普通短码遇到 `twin`、分身短码遇到别的种类，或者 `accept_links` 关着，都作废这次配对、不发 `pair_confirm`、不登记设备；失败结果记在 `local.pair_outcome`（`reason = twin_not_allowed`，普通短码的那次配对取得到）并写一条审计 `pair.refused`。B 不给加入方发别的消息，hub 的撮合随后超时。

@@ -58,6 +58,9 @@ impl ConnectFail {
     }
 }
 
+/// hub 以 `protocol` 拒绝认证时 [`ClientError::reason`] 的值。
+pub const HUB_PROTOCOL_REASON: &str = "hub_protocol";
+
 pub(crate) fn auth_fail_error(reason: AuthFailReason) -> ClientError {
     match reason {
         AuthFailReason::Invalid | AuthFailReason::Revoked => ClientError::not_paired(format!(
@@ -68,7 +71,11 @@ pub(crate) fn auth_fail_error(reason: AuthFailReason) -> ClientError {
             "the hub speaks an incompatible protocol version; update anycon (or the hub) so the versions are adjacent",
         ),
         AuthFailReason::Quota => ClientError::new(ErrorClass::General, "quota", "the hub's device quota for this account is used up"),
-        AuthFailReason::Protocol => ClientError::general("the hub rejected the connection (protocol error)"),
+        // `reason = "hub_protocol"`：hub 不认这次认证（比如旧 hub 不认识设备种类）。哪种情况由调用方按上下文解释，
+        // 比如建立分身连接时（`twin_link::link_error`）说成「hub 太旧」。
+        AuthFailReason::Protocol => {
+            ClientError::general("the hub rejected the connection (protocol error)").with_reason(HUB_PROTOCOL_REASON)
+        }
     }
 }
 

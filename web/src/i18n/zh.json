@@ -2070,6 +2070,7 @@
     "nodeOffline": "节点离线，没有发出去。",
     "timeout": "节点没有及时响应。",
     "connectionLost": "连接断开了。",
+    "daemonTooOld": "这个节点的 daemon 太旧，更新之后才能用。",
     "rpc": {
       "invalid": "请求不合法。",
       "invalid_settings": "agent 不接受这些选项。",
@@ -2800,6 +2801,7 @@
       "hubChanged": "这个节点已有的分身连接是在另一个 hub 上建的，先断开它们，再在这个 hub 上连接。",
       "noHub": "这个节点没有配置 hub，分身连接要经过 hub。",
       "nodeMismatch": "应答的节点不是你选的那个，所以什么都没有连接。",
+      "hubUnsupported": "hub 还不支持分身连接，请先把 hub 升级到 0.4 或更新的版本。",
       "pairBusy": "hub 现在不再开新的配对（今天的次数用完了或被限速），请稍后再试。",
       "codeStep": "要使用的节点没能开出配对。",
       "linkStep": "分身没能和那个节点配对。"
@@ -2837,6 +2839,7 @@
     "chooseAgent": "缺省使用按 id 排序的第一个就绪 agent。先选择 agent，再指定它的模型或模式。",
     "title": "分身",
     "noSupport": "所选节点都不支持分身。",
+    "nodeUnsupported": "{{node}} 还不支持分身。更新这个节点的 daemon 之后才有分身。",
     "on": "开着",
     "off": "关着",
     "offline": "节点离线",

@@ -39,7 +39,7 @@ import { resolveConflictsMessage } from '@/features/worktree/messages'
 import { sendQuickMessage } from '@/features/worktree/quick'
 import { useGitRefresh } from '@/features/worktree/useGitRefresh'
 import { MessageList } from '@/features/session/ui/MessageList'
-import { describeError } from '@/lib/errors'
+import { describeError, describeMarkError } from '@/lib/errors'
 import { useCurrentNode, useNodeParam } from '@/lib/nav'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { pendingMessages, useDrafts } from '@/stores/drafts'
@@ -169,7 +169,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
     if (!nodeId) return
     setFollowUpBusy(true)
     setFollowUp(nodeId, sessionId, on)
-      .catch((e: unknown) => toast.error(describeError(e, t)))
+      .catch((e: unknown) => toast.error(describeMarkError(e, t)))
       .finally(() => setFollowUpBusy(false))
   }
 

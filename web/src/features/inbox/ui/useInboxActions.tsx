@@ -4,7 +4,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { archiveSession, setFollowUp } from '@/features/session/actions'
 import { holdHandled, unmarkHandled } from '@/features/session/inflight'
-import { describeError } from '@/lib/errors'
+import { describeMarkError } from '@/lib/errors'
 import { ArchiveWorktreeDialog, effectiveChoice, type DisposeInfo } from '@/features/worktree/DisposeDialog'
 import { describeArchiveError } from '@/features/worktree/errors'
 import { updateTodo } from '@/features/todos/service'
@@ -34,7 +34,7 @@ export function useInboxActions(): { actions: InboxActions; dialogs: ReactNode }
         holdHandled(`session:${s.id}`)
         setFollowUp(s.node_id, s.id, false).catch((e: unknown) => {
           unmarkHandled(`session:${s.id}`)
-          toast.error(t('inbox.markDoneFailed', { error: describeError(e, t) }))
+          toast.error(t('inbox.markDoneFailed', { error: describeMarkError(e, t) }))
         })
       },
       archive: (s) => {

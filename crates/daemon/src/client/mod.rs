@@ -21,7 +21,7 @@ mod pairing;
 mod state;
 
 pub use error::{ClientError, ErrorClass, Result};
-pub use hubws::{ConnectFail, HubWs, STEP};
+pub use hubws::{ConnectFail, HubWs, HUB_PROTOCOL_REASON, STEP};
 pub use link::{check_protocol, online_nodes, open, ClosedReason, NodeLink, Req};
 pub use multi::{Client, ClientEvent, ClientOptions, NodeStatus};
 pub use pairing::{

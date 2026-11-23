@@ -307,6 +307,8 @@ docker exec anycon-hub anycon-hub backup /data/backup.db   # 在线一致性备�
 
 v0.1：直接停容器复制 `/data` 目录（或在宿主机上对 `hub.db` 跑 `sqlite3 hub.db ".backup backup.db"`）。
 
+**升级之前先备份**（§ 6）：hub 的数据（SQLite 的 `hub.db` 或 `backup` 出来的文件，Postgres 的库）和每个节点的 daemon 数据目录都要有一份升级之前的。数据库迁移只前进，降级靠的就是这份备份。
+
 **提醒**：hub 里没有会话历史。历史在每台 daemon 的数据目录（默认 `~/.anycon/`），那边要单独备份：停掉 daemon 复制整个目录，或者在线 `sqlite3 ~/.anycon/daemon.db ".backup backup.db"`（附件在 `~/.anycon/blobs/`，一并复制）；只想带走会话历史（含附件，已归档的会话也在）用 `anycon export`，换机器后 `anycon import` 导入（zip 里是明文内容，不含密钥和配对设备，按数据目录同等保管；格式见 [spec/daemon.md § 20](spec/daemon.md#20-导出文件格式anycon-export--import)）。
 
 ## 6. 升级
@@ -321,6 +323,13 @@ docker run -d --name anycon-hub …                 # 和 § 2 同样的参数�
 
 - hub 和 daemon 兼容相邻一个 minor 版本，daemon 比 hub 新或旧一个 minor 都能工作
 - 0.x 阶段不保证，升级前看 [CHANGELOG](../CHANGELOG.md)；拿不准时 hub、daemon、CLI、SDK 一起升
+
+**升级之前先备份**（§ 5）：hub 的数据（SQLite 的文件，或者 Postgres 的库）和每个节点的 daemon 数据目录。数据库迁移只前进：新版本启动时把库迁到新结构，旧版本在迁移过的数据上**拒绝启动**，不会悄悄跑坏。所以降级只能把升级之前的备份恢复回去，升级之后新加的内容（会话、设备、配置的改动）会丢。旧版本看到新数据时的报错是这样的，搜得到：
+
+- hub（0.4 之前的版本）：`anycon-hub: failed to start: migration error: migration <n> was previously applied but is missing in the resolved migrations`
+- daemon（0.4 之前的版本）：`error: error: store: migration: migration <n> was previously applied but is missing in the resolved migrations`
+
+0.4 起的版本遇到同样的情况会直接说「数据是更新版本的 anycon 写的（数据库迁移 n 这个版本不认识）；用更新的版本，或者恢复升级之前的备份」（hub 说的是 SQLite 文件或 Postgres 库，daemon 说的是数据目录的路径）。hub 和节点一起升级时先升级 hub：0.4 的分身连接和分身提问的推送要求 hub 也是 0.4，0.3.x 的 hub 拒绝分身设备、也不推送分身提问；其余功能在相邻 minor 之间照常（见下面的兼容策略）。
 
 **重启前看一眼有多少人在用。** 管理员在 `/admin` 的「hub 状态」（`GET /api/admin/status`，[spec/hub.md § 2.4](spec/hub.md#24-管理-apiadmin)）里能看到此刻的数字：在线设备、在线账号、开着客户端的账号（有浏览器、CLI 或 SDK 设备在线）、在线节点和客户端、最近一分钟有流量的连接、进行中的配对和接入、预览连接。只有数量，不含账号、设备和 IP；数字来自 hub 内存，重启后从零开始。重启会打断的东西（[spec/hub.md § 3.1](spec/hub.md#31-连接生命周期)）：
 
@@ -412,7 +421,7 @@ anycon pair
 anycon doctor                            # 检查网络、agent CLI 是否安装、权限
 ```
 
-升级（`brew upgrade anycon` 或重跑安装脚本）后 `anycon service restart` 换上新版本。服务文件记的路径升级后不变：Homebrew 装的记 formula 的固定入口 `<prefix>/opt/anycon/bin/anycon`，不记带版本号的 Cellar 路径。
+升级（`brew upgrade anycon` 或重跑安装脚本）前先备份数据目录（§ 5）：daemon 数据库的迁移同样只前进，旧版本在新数据上拒绝启动，降级要恢复升级之前的备份（报错文字见 § 6）；hub 和节点一起升级时先升 hub。升级后 `anycon service restart` 换上新版本。服务文件记的路径升级后不变：Homebrew 装的记 formula 的固定入口 `<prefix>/opt/anycon/bin/anycon`，不记带版本号的 Cellar 路径。
 
 Windows 上的服务是当前用户的计划任务 `anycon`：登录时启动、失败后每分钟重试、不限运行时长、用电池时照常运行，不需要管理员权限。任务运行同目录的 `anyconw.exe`，它不带控制台窗口地拉起 `anycon.exe daemon`；没有 `anyconw.exe` 时直接运行 `anycon.exe`，会有一个控制台窗口（关掉它 daemon 就停了）。daemon 在跑的时候 `anycon.exe` 被占用、不能覆盖，安装脚本先把旧文件改名再放新的，之后照样 `anycon service restart`（[ADR-42](decisions.md#adr-42-windows命名管道job-object计划任务)）。
 

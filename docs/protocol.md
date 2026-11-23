@@ -340,7 +340,7 @@ daemon                      hub                        新客户端
 | `twin.answer` | C→D | `{ id, answer }` → `TwinQuestion` |
 | `twin.changed` | D→C notification | `{ state, run? }`。本机分身的状态或运行变了；分身连接建立、断开、上线、下线时也发（客户端据此重读 `twin.links`） |
 | `twin.question` | D→C notification | `{ question: TwinQuestion }` |
-| `twin.link` | C→D | A 上：`{ code, node_id }` → `TwinLink { node_id, name, group?, fingerprint, paired_ms, online, status? }`，用 B 的 `node.twin_link_code` 的短码建立分身连接（[spec/daemon.md § 27.2](spec/daemon.md#272-建立和断开)）。只由人调用（`twin` 设备和自报 `mcp` 的连接 → `forbidden`）；节点 id 对不上、短码不对等失败带 `data.reason`（`node_mismatch`、`not_found`、`timeout`、`forbidden`、`no_hub`、`offline`、`hub_changed`…）。成功后发 `twin.changed` |
+| `twin.link` | C→D | A 上：`{ code, node_id }` → `TwinLink { node_id, name, group?, fingerprint, paired_ms, online, status? }`，用 B 的 `node.twin_link_code` 的短码建立分身连接（[spec/daemon.md § 27.2](spec/daemon.md#272-建立和断开)）。只由人调用（`twin` 设备和自报 `mcp` 的连接 → `forbidden`）；节点 id 对不上、短码不对等失败带 `data.reason`（`node_mismatch`、`not_found`、`timeout`、`forbidden`、`no_hub`、`offline`、`hub_changed`、`hub_unsupported`…）。成功后发 `twin.changed` |
 | `twin.links` | C→D | A 上：`{}` → `{ links: [TwinLink] }`，每条带在不在线和上一次的 `twin.peer_status`。只由人调用 |
 | `twin.unlink` | C→D | A 上：`{ node_id }`：忘掉这一条分身连接（关传输、删记录；没有这条 → `not_found`），B 上的设备记录要在 B 上吊销。只由人调用，发 `twin.changed` |
 | `twin.peer_status` | C→D | B 上：`{}` → `{ name, group?, projects, agents: [{ id, label, ready }], remaining_sessions, remaining_dispatches, paused, accept_links }`：B 对这条分身连接开放了什么、还剩多少，只给调用的这条连接自己的；只有 `twin` 种类的设备能调，别的调用方 `forbidden`（`data.reason = "not_twin_device"`）。`twin` 设备能调的方法只有一张白名单，通知也只收自己的项和会话的四种（[spec/daemon.md § 27.3](spec/daemon.md#273-b-上分身设备能做什么)）：名单之外 `forbidden`，`data.reason = "twin_device"` |

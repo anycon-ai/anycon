@@ -85,8 +85,18 @@ fn failure_of(e: ClientError) -> Failure {
 }
 
 /// `twin.link` 的错误：说得出原因的都带 `data.reason`。
+///
+/// 这里的连接只为分身设备而开，所以 hub 以 `protocol` 拒绝认证就是它不认识 `twin` 设备种类（0.4 之前的 hub）；
+/// 别处的 `protocol` 拒绝不一定是这个原因，不在这里解释。
 fn link_error(e: ClientError) -> RpcError {
     let reason = e.reason.clone().unwrap_or_else(|| e.code.clone());
+    if reason == crate::client::HUB_PROTOCOL_REASON {
+        return err_reason(
+            ErrorCode::Unsupported,
+            "the hub does not accept twin devices; it may be older than anycon 0.4, so update the hub first",
+            "hub_unsupported",
+        );
+    }
     let (code, hint) = match (e.class, e.code.as_str()) {
         (ErrorClass::Usage, _) => (ErrorCode::Invalid, ""),
         (ErrorClass::Offline, _) => (ErrorCode::Unsupported, ""),

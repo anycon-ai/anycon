@@ -30,6 +30,15 @@ use super::{Identity, IdentityAccountOutcome, LinkIdentityOutcome, NewIdentityAc
 const TOUCH_DEVICE_SQL: &str =
     "UPDATE devices SET last_seen_ms = ?, last_ip_prefix = ? WHERE id = ? AND revoked_at_ms IS NULL";
 
+/// 库里已应用的最新迁移版本；还没有迁移记录（新库）时为 `None`。
+async fn applied_version(pool: &SqlitePool) -> Option<i64> {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
 fn be(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
 }
@@ -175,8 +184,11 @@ impl SqliteStore {
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(5))
             .foreign_keys(true);
+        let what = format!("the SQLite database {}", options.get_filename().display());
         let pool = SqlitePoolOptions::new().max_connections(8).connect_with(options).await.map_err(be)?;
-        sqlx::migrate!("./migrations/sqlite").run(&pool).await.map_err(|e| StoreError::Migrate(e.to_string()))?;
+        let before = applied_version(&pool).await;
+        sqlx::migrate!("./migrations/sqlite").run(&pool).await.map_err(|e| super::migrate_error(e, &what))?;
+        super::log_migrated(before, applied_version(&pool).await);
         Ok(Self { pool })
     }
 }
@@ -1444,5 +1456,30 @@ mod tests {
         store.kv_set("k", "v").await.unwrap();
         assert!(file.exists());
         assert!(!dir.path().join("hub.db").exists());
+    }
+
+    /// 库里有本版本不认识的迁移记录（更新版本写的数据）：打开失败，文字说明该怎么办。
+    #[tokio::test]
+    async fn data_from_a_newer_version_is_rejected_with_the_way_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(None, dir.path()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+             VALUES (9999, 'future', 1, x'00', 0)",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        store.pool.close().await;
+        let err = SqliteStore::open(None, dir.path()).await.err().expect("a newer database must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("written by a newer version of anycon"), "{msg}");
+        assert!(msg.contains("migration 9999"), "{msg}");
+        assert!(msg.contains("hub.db"), "{msg}");
+        assert!(msg.contains("restore the backup"), "{msg}");
+        // 别的迁移错误照旧
+        let other = super::super::migrate_error(sqlx::migrate::MigrateError::Dirty(3), "the SQLite database x");
+        assert!(other.to_string().contains("migration 3"), "{other}");
+        assert!(!other.to_string().contains("newer version"), "{other}");
     }
 }

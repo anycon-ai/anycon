@@ -390,7 +390,7 @@ hub 对 `twin_question` 只识别类别词，不解析分身的问题或回答�
 
 `ANYCON_DATABASE_URL` 不设（或 `sqlite:…`）用 SQLite，`postgres://…` / `postgresql://…` 用 Postgres（[ADR-12](../decisions.md#adr-12-sqlx-双后端trait-抽象)）。hub 的其余代码只依赖 `Store` trait，两个实现的行为一致，由同一套测试（`crates/hub/src/store/conformance.rs`）验证。
 
-- **迁移**：两套，`crates/hub/migrations/sqlite/` 和 `crates/hub/migrations/postgres/`，编号和名字一一对应（`0001_init`、`0002_preview`、`0003_identities`、`0004_token_rotation`、`0005_device_ip_prefix`……），启动时跑当前后端那一套，只前进。以后加迁移两边按同一个编号各加一份（有测试检查两个目录的文件名一致）
+- **迁移**：两套，`crates/hub/migrations/sqlite/` 和 `crates/hub/migrations/postgres/`，编号和名字一一对应（`0001_init`、`0002_preview`、`0003_identities`、`0004_token_rotation`、`0005_device_ip_prefix`……），启动时跑当前后端那一套，只前进。以后加迁移两边按同一个编号各加一份（有测试检查两个目录的文件名一致）。库里记着本版本不认识的迁移（数据是更新版本的 hub 写的）时，hub 拒绝启动，说明这个 SQLite 文件或 Postgres 库是更新版本写的、该用更新的版本或恢复升级之前的备份；启动时应用了新的迁移，记一条 info 日志（`from`、`to` 是迁移前后的最新迁移编号，新库的 `from` 为 0），没有新迁移不记
 - **类型**：毫秒时间戳是 SQLite `INTEGER` / Postgres `BIGINT`（Rust 侧 `u64`，字段名以 `_ms` 结尾；`devices` 的 `prev_token_expires_at_ms`、`token_rotated_at_ms` 也是，`prev_token_hash` 是 `TEXT`）；布尔（`is_admin`、`push`、`email`）是 `INTEGER` 0/1 / `BOOLEAN`；自增 id（`email_codes.id`、`hub_audit.id`）是 `AUTOINCREMENT` / `GENERATED ALWAYS AS IDENTITY`；`hub_audit.detail` 是 JSON 文本，两边都是 `TEXT`（Postgres 不用 JSONB：hub 不解析它）。`preview_labels`、`preview_tokens` 在 Postgres 里多一个 `seq` 自增列：SQLite 靠隐含的 rowid 给同一毫秒写入的行排先后，Postgres 没有 rowid
 - **排序规则**：SQLite 的文本按字节比较，Postgres 的默认排序规则随数据库的 locale。需要和代码里一致的地方（`pairings` 的 `device_a < device_b`、`ORDER BY id`、keyset 分页的游标）在 Postgres 里显式用 `COLLATE "C"`，所以两边的排序和翻页结果相同
 

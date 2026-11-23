@@ -13,7 +13,7 @@ import { quickAdd } from '@/features/todos/quickAdd'
 import { useCapture } from '@/features/todos/capture'
 import { lockedNodes } from '@/features/unlock/nodes'
 import { formatDateTime, formatRelative } from '@/lib/format'
-import { describeError } from '@/lib/errors'
+import { describeMarkError } from '@/lib/errors'
 import { cleanHintText } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
 import { useCurrentNode } from '@/lib/nav'
@@ -105,7 +105,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
         icon: <Flag className="size-4" />,
         label: marked ? t('followUp.unmark') : t('followUp.mark'),
         hint: cur.title || undefined,
-        run: go(() => void setFollowUp(cur.node_id, cur.id, !marked).catch((e: unknown) => toast.error(describeError(e, t)))),
+        run: go(() => void setFollowUp(cur.node_id, cur.id, !marked).catch((e: unknown) => toast.error(describeMarkError(e, t)))),
       })
     }
     if (nodeId) {

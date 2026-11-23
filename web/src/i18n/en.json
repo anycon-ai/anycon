@@ -2094,6 +2094,7 @@
     "nodeOffline": "The node is offline. Nothing was sent.",
     "timeout": "The node did not answer in time.",
     "connectionLost": "The connection was lost.",
+    "daemonTooOld": "This node's daemon is too old. Update it to use this.",
     "rpc": {
       "invalid": "The request was not valid.",
       "invalid_settings": "The agent does not accept those options.",
@@ -2839,6 +2840,7 @@
       "hubChanged": "This node's twin connections were made on another hub. Disconnect them before connecting on this hub.",
       "noHub": "This node has no hub configured, and twin connections go through the hub.",
       "nodeMismatch": "The node that answered is not the one you chose, so nothing was connected.",
+      "hubUnsupported": "The hub does not support twin connections yet. Update the hub to 0.4 or newer first.",
       "pairBusy": "The hub is not opening another pairing right now (daily limit or rate limit). Try again later.",
       "codeStep": "The node to use could not open a pairing.",
       "linkStep": "Twin could not pair with that node."
@@ -2876,6 +2878,7 @@
     "chooseAgent": "Defaults to the first ready agent by ID. Choose an agent to customize its model or mode.",
     "title": "Twin",
     "noSupport": "No nodes in this selection support Twin.",
+    "nodeUnsupported": "{{node}} does not support Twin yet. Update its daemon to use Twin there.",
     "on": "On",
     "off": "Off",
     "offline": "Node offline",

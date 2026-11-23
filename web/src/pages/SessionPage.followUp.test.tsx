@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Event, SessionSummary } from '@/protocol'
 import i18n from '@/i18n'
 import { ev, mockAgent, nodeEntry, resetSeq, summary } from '@/test/factories'
-import { FakeRpc } from '@/test/fakeRpc'
+import { FakeRpc, rpcError } from '@/test/fakeRpc'
+import { RpcCallError } from '@/transport/rpcClient'
 import { mockRouter } from '@/test/routerMock'
 import { setRpc } from '@/transport/instance'
 import { resetDrafts } from '@/stores/drafts'
@@ -107,6 +108,36 @@ describe('SessionPage: follow-up', () => {
     await waitFor(() => expect(calls('session.set_marks')).toEqual([{ session_id: SID, follow_up: true }]))
     await waitFor(() => expect(screen.queryByTestId('follow-up-chip')).toBeNull())
     expect(screen.getByTestId('follow-up-bar')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['an old daemon that does not know the method (JSON-RPC -32601)', () => new RpcCallError('rpc', 'method not found', { code: -32601, message: 'method not found: session.set_marks', data: { code: 'unsupported' } })],
+    ['a daemon that answers unsupported', () => rpcError('unsupported')],
+  ])('says the daemon is too old (not that the agent cannot) when %s rejects the mark, from the flag and from the chip', async (_name, make) => {
+    const user = userEvent.setup()
+    rpc.handlers['session.set_marks'] = () => {
+      throw make()
+    }
+    seed()
+    render(<SessionPage sessionId={SID} />)
+    await user.click(await screen.findByTestId('follow-up-toggle'))
+    await waitFor(() => expect(useUi.getState().toasts.map((x) => x.text)).toEqual(["This node's daemon is too old. Update it to use this."]))
+    useUi.setState({ toasts: [] })
+    await user.click(await screen.findByTestId('follow-up-chip'))
+    await waitFor(() => expect(useUi.getState().toasts.map((x) => x.text)).toEqual(["This node's daemon is too old. Update it to use this."]))
+    // 本地标记已改回去
+    expect(useSessions.getState().list[SID]!.follow_up).toBeFalsy()
+  })
+
+  it('other mark failures keep their ordinary wording', async () => {
+    const user = userEvent.setup()
+    rpc.handlers['session.set_marks'] = () => {
+      throw rpcError('not_found')
+    }
+    seed()
+    render(<SessionPage sessionId={SID} />)
+    await user.click(await screen.findByTestId('follow-up-toggle'))
+    await waitFor(() => expect(useUi.getState().toasts.map((x) => x.text)).toEqual(['Not found.']))
   })
 
   it('on a narrow screen there is no chip beside the input; the header flag is still there', async () => {

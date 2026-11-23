@@ -52,6 +52,7 @@ const REASONS: Record<string, string> = {
   hub_changed: 'hubChanged',
   no_hub: 'noHub',
   node_mismatch: 'nodeMismatch',
+  hub_unsupported: 'hubUnsupported',
 }
 
 /** 把添加失败按 `data.reason` 翻成人话；不认识的原因落到按错误码的通用说明。 */

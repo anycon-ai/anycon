@@ -71,6 +71,15 @@ const TX_ATTEMPTS: u32 = 5;
 const TOUCH_DEVICE_SQL: &str =
     "UPDATE devices SET last_seen_ms = $1, last_ip_prefix = $2 WHERE id = $3 AND revoked_at_ms IS NULL";
 
+/// 库里已应用的最新迁移版本；还没有迁移记录（新库）时为 `None`。
+async fn applied_version(pool: &PgPool) -> Option<i64> {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
 fn be(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
 }
@@ -274,7 +283,12 @@ impl PostgresStore {
             .connect_with(options)
             .await
             .map_err(|e| StoreError::Backend(format!("cannot connect to Postgres at {target}: {e}")))?;
-        sqlx::migrate!("./migrations/postgres").run(&pool).await.map_err(|e| StoreError::Migrate(e.to_string()))?;
+        let before = applied_version(&pool).await;
+        sqlx::migrate!("./migrations/postgres")
+            .run(&pool)
+            .await
+            .map_err(|e| super::migrate_error(e, "the Postgres database"))?;
+        super::log_migrated(before, applied_version(&pool).await);
         tracing::info!(target = %target, "connected to Postgres, migrations are up to date");
         Ok(Self { pool })
     }

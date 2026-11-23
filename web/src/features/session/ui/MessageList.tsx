@@ -311,7 +311,7 @@ function MessageListView(props: MessageListProps) {
         <div className="chat-column py-4" style={virtual ? { height: virtualizer.getTotalSize(), position: 'relative' } : undefined}>
           {props.hasMoreOlder ? (
             <div className="flex justify-center pb-3">
-              <Button variant="ghost" size="sm" onClick={props.onLoadOlder} disabled={props.loadingOlder} data-testid="load-older">
+              <Button variant="outline" size="sm" className="rounded-full bg-surface" onClick={props.onLoadOlder} disabled={props.loadingOlder} data-testid="load-older">
                 {props.loadingOlder ? <Loader2 className="size-3.5 animate-spin" /> : null}
                 {t('session.loadOlder')}
               </Button>

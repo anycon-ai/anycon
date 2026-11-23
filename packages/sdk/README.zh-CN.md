@@ -168,6 +168,22 @@ await node.todos.update({ id: todo.id, handler: 'me' })
 
 分身的运行可以由 `pr` 触发（分身派出的会话的 PR 有了变化），清单项的「经过」里会出现 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`；类型跟着协议走，客户端要容忍不认识的值。`pr_event` 不含评审正文。
 
+### 分身连接（ADR-56）
+
+一个节点的分身可以作为受限的 `twin` 设备和另一个节点配对，在那里记项并让 agent 在那个节点对这条连接开放的项目里干活。由人在同时和两个节点配过对的客户端上建立：先向要使用的节点要一个一次性短码，再交给使用它的节点。短码是秘密：把 `twinLinkCode()` 的结果直接交给 `twin.link`，SDK 不缓存、不写日志，你的代码也不要显示或存下它。
+
+```ts
+const { code } = await used.twinLinkCode() // 在被使用的节点（B）上：`node.twin_link_code`
+const link = await using.twin.link({ code, node_id: (await used.info()).node_id }) // 在使用它的节点（A）上
+const { links } = await using.twin.links() // 名称、分组、在不在线、上一次的 `peer_status`
+await using.twin.unlink({ node_id: link.node_id }) // A 忘掉这一条；要在 B 上吊销那台分身设备才算断开
+// 在 B 上：一条连接能做什么（requester = 分身设备的 id），缺省什么都不开放
+await used.twin.set({ requester: deviceId, projects: ['app'], max_sessions: 1, daily_dispatches: 5 })
+const status = await used.twin.get({ requester: deviceId })
+```
+
+`twin.peerStatus()` 由分身设备自己在 B 上调用（名称、开放的项目、剩余名额），别的调用方得到 `forbidden`。建立失败时 `data.reason` 是 `accept_links_off`、`different_hub`、`code_expired` 或 `node_mismatch`。节点用 `node.info.twin_accept_links` 报告是否接受；客户端只在节点有 `capabilities.twin` 并且它为 `true` 时把它列为可用的目标。清单的「经过」里可能出现 `remote_dispatched` 和 `remote_result`，分拣的决定带 `node` 和新的跳过原因 `remote_unavailable` / `remote_refused`；不认识的值按未知处理。
+
 ## 规则（ADR-54）
 
 每个节点有一份你的规则，一两句话的做法，比如「先写失败的测试再改实现」。生效的规则会写进清单派发出去的会话的系统提示（见 [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)）。规则不改任何权限。`node.rules` 是 `rule.*` 的薄封装；节点是否支持看 `(await node.info()).capabilities.rules`，旧节点回 `RpcError('unsupported')`。SDK 不做离线缓存，也不重放。

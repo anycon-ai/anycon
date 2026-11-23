@@ -167,6 +167,8 @@ fn kind_of(e: &TodoEvent) -> &'static str {
         TodoEventData::RepeatCreated { .. } => "repeat_created",
         TodoEventData::RepeatSkipped { .. } => "repeat_skipped",
         TodoEventData::PrEvent { .. } => "pr_event",
+        TodoEventData::RemoteDispatched { .. } => "remote_dispatched",
+        TodoEventData::RemoteResult { .. } => "remote_result",
         TodoEventData::Unknown => "unknown",
     }
 }
@@ -217,6 +219,21 @@ async fn declare_no_push(td: &TestDaemon, c: &mut TestClient) {
 }
 
 // ---------------------------------------------------------------- 开会话
+
+/// 分身的说明（`note`）只有分身设备（另一个节点的分身，§ 27.4）能带：别的调用方带了 → `invalid`，什么也没开。
+#[tokio::test]
+async fn a_dispatch_note_is_only_for_a_twin_device() {
+    let td = TestDaemon::start_git(&[]).await;
+    td.new_repo("proj");
+    let mut c = td.local_cli_client();
+    let t = new_todo(&td, &mut c, "Write docs", "", Some("proj")).await;
+    let e = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false, "note": "hello" }))
+        .await
+        .unwrap_err();
+    assert_eq!((code(&e), field_reason(&e)), (ErrorCode::Invalid, (Some("note".into()), Some("not_allowed".into()))));
+    assert_eq!(session_count(&td, &mut c).await, 0);
+    assert!(get_todo(&td, &mut c, &t.id).await.sessions.is_empty());
+}
 
 #[tokio::test]
 async fn dispatch_opens_a_worktree_session_and_links_it() {

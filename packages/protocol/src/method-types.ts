@@ -51,6 +51,7 @@ import type {
   NodeSetEnrollEnabledParams,
   NodeSetEnrollPasswordParams,
   NodeStats,
+  NodeTwinLinkCodeResult,
   PairAck,
   PermissionListParams,
   PermissionListResult,
@@ -125,7 +126,12 @@ import type {
   TwinAnswerParams,
   TwinChanged,
   TwinDryRunResult,
+  TwinGetParams,
   TwinGetResult,
+  TwinLink,
+  TwinLinkParams,
+  TwinLinksResult,
+  TwinPeerStatus,
   TwinQuestion,
   TwinQuestionNotice,
   TwinQuestionsParams,
@@ -133,6 +139,7 @@ import type {
   TwinRunsParams,
   TwinRunsResult,
   TwinSetParams,
+  TwinUnlinkParams,
   WorkspaceBranchesParams,
   WorkspaceBranchesResult,
   WorkspaceBrowseParams,
@@ -161,6 +168,7 @@ export interface RequestMethods {
   'node.doctor': { params: Empty; result: NodeDoctorResult }
   'node.audit': { params: NodeAuditParams; result: NodeAuditResult }
   'node.set_agent_defaults': { params: NodeSetAgentDefaultsParams; result: Empty }
+  'node.twin_link_code': { params: Empty; result: NodeTwinLinkCodeResult }
   'node.get_config': { params: Empty; result: NodeConfigResult }
   'node.set_config': { params: NodeSetConfigParams; result: NodeConfigResult }
   'node.logs': { params: NodeLogsParams; result: NodeLogsResult }
@@ -226,13 +234,17 @@ export interface RequestMethods {
   'rule.preview': { params: RulePreviewParams; result: RulePreviewResult }
   'rule.extract': { params: RuleExtractParams; result: RuleExtractResult }
   'rule.extract_runs': { params: RuleExtractRunsParams; result: RuleExtractRunsResult }
-  'twin.get': { params: Empty; result: TwinGetResult }
+  'twin.get': { params: TwinGetParams; result: TwinGetResult }
   'twin.set': { params: TwinSetParams; result: TwinGetResult }
   'twin.wake': { params: Empty; result: Empty }
   'twin.dry_run': { params: Empty; result: TwinDryRunResult }
   'twin.runs': { params: TwinRunsParams; result: TwinRunsResult }
   'twin.questions': { params: TwinQuestionsParams; result: TwinQuestionsResult }
   'twin.answer': { params: TwinAnswerParams; result: TwinQuestion }
+  'twin.link': { params: TwinLinkParams; result: TwinLink }
+  'twin.links': { params: Empty; result: TwinLinksResult }
+  'twin.unlink': { params: TwinUnlinkParams; result: Empty }
+  'twin.peer_status': { params: Empty; result: TwinPeerStatus }
   'blob.put_begin': { params: BlobPutBeginParams; result: BlobPutBeginResult }
   'blob.put_chunk': { params: BlobPutChunkParams; result: Empty }
   'blob.put_end': { params: BlobIdParams; result: AttachmentRef }

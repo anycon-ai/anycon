@@ -21,6 +21,7 @@ import { cn } from '@/ui/cn'
 import { Card, Chip, CopyButton, Dot, Segmented, Skeleton, Spinner, Switch } from '@/ui/Misc'
 import { Dialog } from '@/ui/Overlay'
 import { QrCode } from '@/ui/QrCode'
+import { TwinLinkScope } from './TwinLinkScope'
 
 type PairBeginRefusal = 'quota' | 'rate_limited' | 'forbidden'
 
@@ -43,6 +44,8 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
   const self = useHub((s) => s.snapshot.deviceId)
   const [loading, setLoading] = useState(false)
   const [revoke, setRevoke] = useState<PeerDevice | null>(null)
+  // 分身设备的「范围」对话框
+  const [scope, setScope] = useState<PeerDevice | null>(null)
   const [pairing, setPairing] = useState<NodePairBeginResult | null>(null)
   // hub 拒绝了这次登记（见 `pairBeginRefusal`）：对话框留着，里面写原因
   const [refusal, setRefusal] = useState<PairBeginRefusal | null>(null)
@@ -144,7 +147,7 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
                 <p className="flex flex-wrap items-center gap-2 font-medium">
                   <span className="truncate">{d.name}</span>
                   {d.device_id === self ? <Chip tone="accent">{t('devices.thisBrowser')}</Chip> : null}
-                  <Chip>{d.kind}</Chip>
+                  <Chip>{d.kind === 'twin' ? t('twinScope.kind') : d.kind}</Chip>
                 </p>
                 <p className="flex flex-wrap items-center gap-x-3 text-xs text-fg-subtle">
                   <span className="inline-flex items-center gap-1">
@@ -154,6 +157,11 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
                   <span className="font-mono">{d.fingerprint}</span>
                 </p>
               </div>
+              {d.kind === 'twin' ? (
+                <Button variant="outline" size="sm" disabled={offline} onClick={() => setScope(d)} data-testid="device-twin-scope">
+                  {t('twinScope.button')}
+                </Button>
+              ) : null}
               <Button variant="outline-danger" size="sm" icon={<Trash2 className="size-4" />} disabled={offline} onClick={() => setRevoke(d)} aria-label={t('devices.revoke')}>
                 <span className="hidden sm:inline">{t('devices.revoke')}</span>
               </Button>
@@ -220,6 +228,8 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
           ) : null}
         </div>
       </Dialog>
+
+      <TwinLinkScope nodeId={nodeId} device={scope} onClose={() => setScope(null)} />
 
       <Dialog open={!!revoke} onOpenChange={(o) => !o && setRevoke(null)} title={t('devices.revokeTitle', { name: revoke?.name ?? '' })} description={t('devices.revokeBody')} closeLabel={t('common.close')}>
         <div className="flex justify-end gap-2">

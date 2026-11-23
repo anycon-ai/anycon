@@ -106,7 +106,7 @@ describe('i18n', () => {
     const sessionPushKeys = ['permissionRequested', 'turnFinished', 'error', 'sessionIdle', 'followUp']
     // 账号内接入（ADR-36）：失败原因、安全事件、审计动作、状态，全是拼 key 用的枚举
     const enrollMethod: Record<EnrollMethod, true> = { scan: true, code: true, password: true }
-    const securityKind: Record<SecurityEventKind, true> = { device_enrolled: true, password_failures: true, password_locked: true, password_changed: true, settings_changed: true }
+    const securityKind: Record<SecurityEventKind, true> = { device_enrolled: true, password_failures: true, password_locked: true, password_changed: true, settings_changed: true, twin_linked: true, twin_unlinked: true, unknown: true }
     const enrollResult: Record<EnrollResult, true> = { approved: true, denied: true, completed: true, failed: true, expired: true }
     const passwordState: Record<'unset' | 'enabled' | 'disabled' | 'locked', true> = { unset: true, enabled: true, disabled: true, locked: true }
     const unlockEntries = ['scan', 'approve', 'code', 'password']
@@ -133,7 +133,7 @@ describe('i18n', () => {
       ...unlockEntries.flatMap((k) => [`unlock.entries.${k}.title`, `unlock.entries.${k}.hint`]),
       ...unlockSteps.map((k) => `unlock.steps.${k}`),
       ...Object.keys(enrollMethod).map((k) => `security.method.${k}`),
-      ...Object.keys(securityKind).map((k) => `security.${{ device_enrolled: 'deviceEnrolled', password_failures: 'passwordFailures', password_locked: 'passwordLocked', password_changed: 'passwordChanged', settings_changed: 'settingsChanged' }[k as SecurityEventKind]}`),
+      ...Object.keys(securityKind).map((k) => `security.${{ device_enrolled: 'deviceEnrolled', password_failures: 'passwordFailures', password_locked: 'passwordLocked', password_changed: 'passwordChanged', settings_changed: 'settingsChanged', twin_linked: 'twinLinked', twin_unlinked: 'twinUnlinked', unknown: 'unknownEvent' }[k as SecurityEventKind]}`),
       'security.passwordCleared',
       ...Object.keys(enrollResult).map((k) => `approve.${{ approved: 'approvedBy', denied: 'deniedBy', completed: 'completed', failed: 'failed', expired: 'expired' }[k as EnrollResult]}`),
       ...Object.keys(passwordState).map((k) => `enrollTab.state.${k}`),

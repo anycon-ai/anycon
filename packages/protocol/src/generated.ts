@@ -17,7 +17,7 @@ export type ClearableRuleField = "project";
  * `todo.update` 的 `clear` 可以清空的可选字段。
  */
 export type ClearableTodoField = "project" | "due_ms" | "repeat";
-export type DeviceKind = "daemon" | "web" | "cli" | "sdk";
+export type DeviceKind = ("daemon" | "web" | "cli" | "sdk") | "twin" | "unknown";
 /**
  * 一项配置能不能被远程客户端改（ADR-43）。
  */
@@ -244,7 +244,9 @@ export type EnrollRejectReason =
   | "denied"
   | "wrong_secret"
   | "expired"
-  | "invalid";
+  | "invalid"
+  | "twin_not_allowed"
+  | "unknown";
 /**
  * `EnrollReply.status`。
  */
@@ -582,7 +584,14 @@ export type NodeLogLevel = "trace" | "debug" | "info" | "warn" | "error";
  * `node.security_event.kind`。
  */
 export type SecurityEventKind =
-  "device_enrolled" | "password_failures" | "password_locked" | "password_changed" | "settings_changed";
+  | "device_enrolled"
+  | "password_failures"
+  | "password_locked"
+  | "password_changed"
+  | "settings_changed"
+  | "twin_linked"
+  | "twin_unlinked"
+  | "unknown";
 export type NotifyCategory =
   | ("permission_requested" | "turn_finished" | "error" | "session_idle")
   | "follow_up"
@@ -790,6 +799,18 @@ export type TodoEvent1 =
       kind: "repeat_skipped";
     }
   | {
+      kind: "remote_dispatched";
+      node_id: string;
+      session_id: string;
+      todo_id: string;
+    }
+  | {
+      kind: "remote_result";
+      node_id: string;
+      session_id: string;
+      text: string;
+    }
+  | {
       event: PrEventKind;
       kind: "pr_event";
       session_id: string;
@@ -871,6 +892,18 @@ export type TodoEventData =
       kind: "repeat_skipped";
     }
   | {
+      kind: "remote_dispatched";
+      node_id: string;
+      session_id: string;
+      todo_id: string;
+    }
+  | {
+      kind: "remote_result";
+      node_id: string;
+      session_id: string;
+      text: string;
+    }
+  | {
       event: PrEventKind;
       kind: "pr_event";
       session_id: string;
@@ -880,7 +913,8 @@ export type TodoEventData =
       kind: "unknown";
     };
 export type TwinDecisionOutcome = "executed" | "skipped" | "unknown";
-export type TwinSkipReason = "invalid" | "out_of_scope" | "no_capacity" | "budget" | "unknown";
+export type TwinSkipReason =
+  ("invalid" | "out_of_scope" | "no_capacity" | "budget" | "unknown") | "remote_unavailable" | "remote_refused";
 export type TwinRunResult = "done" | "idle" | "budget" | "failed" | "cancelled" | "unknown";
 export type TwinTrigger = ("todo" | "session" | "answer" | "tick" | "manual" | "unknown") | "pr";
 export type TwinState = "running" | "idle" | "paused" | "disabled" | "not_configured" | "budget" | "unknown";
@@ -966,6 +1000,7 @@ export interface ProtocolSchema {
   node_set_enroll_enabled_params: NodeSetEnrollEnabledParams;
   node_set_enroll_password_params: NodeSetEnrollPasswordParams;
   node_stats: NodeStats;
+  node_twin_link_code_result: NodeTwinLinkCodeResult;
   node_worktree_settings: NodeWorktreeSettings;
   notify_body: NotifyBody;
   notify_detail: NotifyDetail;
@@ -1077,6 +1112,7 @@ export interface ProtocolSchema {
   todo_id_params: TodoIdParams;
   todo_list_params: TodoListParams;
   todo_list_result: TodoListResult;
+  todo_remote: TodoRemote;
   todo_source: TodoSource;
   todo_source_kind: TodoSourceKind;
   todo_state: TodoState;
@@ -1086,7 +1122,13 @@ export interface ProtocolSchema {
   twin_changed: TwinChanged;
   twin_decision: TwinDecision;
   twin_dry_run_result: TwinDryRunResult;
+  twin_get_params: TwinGetParams;
   twin_get_result: TwinGetResult;
+  twin_link: TwinLink;
+  twin_link_params: TwinLinkParams;
+  twin_links_result: TwinLinksResult;
+  twin_peer_agent: TwinPeerAgent;
+  twin_peer_status: TwinPeerStatus;
   twin_question: TwinQuestion;
   twin_question_notice: TwinQuestionNotice;
   twin_questions_params: TwinQuestionsParams;
@@ -1098,6 +1140,7 @@ export interface ProtocolSchema {
   twin_set_params: TwinSetParams;
   twin_state: TwinState;
   twin_today: TwinToday;
+  twin_unlink_params: TwinUnlinkParams;
   workspace_branches_params: WorkspaceBranchesParams;
   workspace_branches_result: WorkspaceBranchesResult;
   workspace_browse_params: WorkspaceBrowseParams;
@@ -1972,6 +2015,10 @@ export interface NodeInfo {
   protocol_version: number;
   started_at_ms: number;
   /**
+   * `[twin] accept_links`：这个节点现在接受别的节点的分身连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。
+   */
+  twin_accept_links?: boolean;
+  /**
    * 更新检查（ADR-57）知道有比这个 daemon 更新的正式版本时给出；没有更新的版本、检查关着、还没检查成功过，
    * 以及旧 daemon，都不给。
    */
@@ -2239,6 +2286,19 @@ export interface SessionCounts {
   queued: number;
   running: number;
   waiting_permission: number;
+}
+/**
+ * `node.twin_link_code` 的结果：B 开了一次只接受分身设备的短码配对。
+ */
+export interface NodeTwinLinkCodeResult {
+  /**
+   * 16 位短码（`XXXX-XXXX-XXXX-XXXX`）。
+   */
+  code: string;
+  /**
+   * 过期时间（10 分钟后）。
+   */
+  expires_ms: number;
 }
 /**
  * `kind = notify` 的 body（msgpack）。`category` 是外层唯一有语义的明文字段。
@@ -3276,6 +3336,10 @@ export interface Todo {
    */
   project?: string | null;
   /**
+   * 这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由分身连接的 A 侧写。
+   */
+  remote?: TodoRemote[];
+  /**
    * 周期规则。带它的项是模板：不进分拣、不能派发，到点由 daemon 复制出新的一项（`source.kind = repeat`）；只由人设置。
    */
   repeat?: TodoRepeat | null;
@@ -3294,6 +3358,19 @@ export interface Todo {
    */
   unreviewed: boolean;
   updated_ms: number;
+}
+/**
+ * 这一项在另一个节点上对应的项（`Todo.remote`）。
+ */
+export interface TodoRemote {
+  /**
+   * 那个节点的 id。
+   */
+  node_id: string;
+  /**
+   * 那个节点上的项 id。
+   */
+  todo_id: string;
 }
 /**
  * 周期项的规则：按节点的本地时区，每次到点复制出一项新的（docs/spec/daemon.md § 26.9）。
@@ -3315,7 +3392,7 @@ export interface TodoRepeat {
 }
 export interface TodoSource {
   /**
-   * 经 hub 来的调用带上发起设备的 id。
+   * 经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台分身设备（另一个节点的分身，docs/spec/daemon.md § 27.3）的设备 id。
    */
   device_id?: string | null;
   kind: TodoSourceKind;
@@ -3406,6 +3483,11 @@ export interface TodoDispatchParams {
    * 「不 push、不开 PR」（agent 的 `no_push` 选项）。缺省 `true`；所选 agent 没有声明这个选项而它为 `true` → `unsupported`。
    */
   no_push?: boolean | null;
+  /**
+   * 分身的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。
+   * 只有分身设备（另一个节点的分身）能带；别的调用方带了 → `invalid`（`data.field = "note"`，`data.reason = "not_allowed"`）。
+   */
+  note?: string | null;
   /**
    * 缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。给了而且和这一项的不同，派发成功时写回这一项。
    */
@@ -3566,6 +3648,10 @@ export interface TwinRun {
 export interface TwinDecision {
   action: TwinAction;
   /**
+   * 派发到哪个节点（节点表里的 id）；缺省 = 本机。只用于显示。
+   */
+  node?: string | null;
+  /**
    * 解析后的动作参数；试跑据此展示计划，不保存原始模型输出。
    */
   note?: string | null;
@@ -3582,6 +3668,16 @@ export interface TwinDecision {
 }
 export interface TwinDryRunResult {
   run: TwinRun;
+}
+/**
+ * `twin.get` 的参数。
+ */
+export interface TwinGetParams {
+  /**
+   * 读谁的范围：缺省 `local`（本机分身）；也可以是一个已配对的分身设备（`DeviceKind::Twin`）的设备 id，读 B 给这条分身连接
+   * 的设置（docs/spec/daemon.md § 27.3）。不是已存在的分身设备 → `not_found`。
+   */
+  requester?: string | null;
 }
 export interface TwinGetResult {
   configured: boolean;
@@ -3604,6 +3700,88 @@ export interface TwinScope {
 export interface TwinToday {
   dispatches: number;
   judge_calls: number;
+}
+/**
+ * 一条分身连接（A 记下的，表 `twin_links`）。
+ */
+export interface TwinLink {
+  /**
+   * B 的静态公钥指纹。
+   */
+  fingerprint: string;
+  group?: string | null;
+  name: string;
+  /**
+   * B 的节点 id。
+   */
+  node_id: string;
+  /**
+   * 这条连接现在在线。
+   */
+  online?: boolean;
+  paired_ms: number;
+  /**
+   * 上一次的 `twin.peer_status`；还没取到过为空。
+   */
+  status?: TwinPeerStatus | null;
+}
+/**
+ * B 对这条分身连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。
+ */
+export interface TwinPeerStatus {
+  /**
+   * B 现在接受分身连接（`[twin] accept_links`）。
+   */
+  accept_links: boolean;
+  agents: TwinPeerAgent[];
+  /**
+   * B 的分组名。
+   */
+  group?: string | null;
+  /**
+   * B 的节点名。
+   */
+  name: string;
+  /**
+   * 这条连接被 B 暂停了。
+   */
+  paused: boolean;
+  /**
+   * 对这条连接开放的项目；空 = 什么都没开放。
+   */
+  projects: string[];
+  /**
+   * 这个本地日还能派发几次。
+   */
+  remaining_dispatches: number;
+  /**
+   * 这条连接还能同时派出几个会话：它的上限和给人留的名额里更紧的那个，减去已在处理中的。
+   */
+  remaining_sessions: number;
+}
+export interface TwinPeerAgent {
+  id: string;
+  label: string;
+  /**
+   * agent 现在可用（已安装、已登录）。
+   */
+  ready: boolean;
+}
+/**
+ * `twin.link` 的参数：A 的 daemon 用 B 发的短码以分身设备的身份和 B 配对。
+ */
+export interface TwinLinkParams {
+  /**
+   * B 的 `node.twin_link_code` 发出的短码。
+   */
+  code: string;
+  /**
+   * B 的节点 id：配对完成后核对，对不上就失败并丢掉这次配对。
+   */
+  node_id: string;
+}
+export interface TwinLinksResult {
+  links: TwinLink[];
 }
 export interface TwinQuestion {
   answer?: string | null;
@@ -3644,6 +3822,16 @@ export interface TwinSetParams {
   model?: string | null;
   paused?: boolean | null;
   projects?: string[] | null;
+  /**
+   * 改谁的范围，同 [`TwinGetParams::requester`]。
+   */
+  requester?: string | null;
+}
+/**
+ * `twin.unlink` 的参数：A 忘掉这一条连接（关掉传输、删记录）。B 上的设备记录要在 B 上吊销。
+ */
+export interface TwinUnlinkParams {
+  node_id: string;
 }
 /**
  * `workspace.branches`：给新建会话的「基于哪个分支」下拉框列分支。

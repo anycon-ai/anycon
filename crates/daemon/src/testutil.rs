@@ -984,6 +984,20 @@ impl TestDaemon {
             .await
     }
 
+    /// [`TestDaemon::start_git`]，同时开本机 socket、连 `hub_url`（分身连接的两端都要真 hub：被使用的节点要能开 worktree）。
+    pub async fn start_git_hub(overrides: &[(&str, &str)], hub_url: &str) -> TestDaemon {
+        Self::start_inner(
+            overrides,
+            true,
+            Some(hub_url),
+            Kit::Fake,
+            true,
+            vec![],
+            crate::update::UpdateCheckOptions::off(),
+        )
+        .await
+    }
+
     /// daemon 的 `PATH` 里没有 `git`（`NodeCapabilities.worktree` 为 false）。
     pub async fn start_without_git() -> TestDaemon {
         Self::start_inner(
@@ -1156,9 +1170,19 @@ impl TestDaemon {
 
     /// 停掉再用同一个 home 重新启动（测试重启恢复）。
     pub async fn restart(&mut self) {
+        self.stop().await;
+        self.start_again().await;
+    }
+
+    /// 只停（`ctx` 还指着停掉的那个）；之后 [`TestDaemon::start_again`] 用同一个 home 再起。
+    pub async fn stop(&mut self) {
         if let Some(d) = self.daemon.take() {
             d.shutdown().await;
         }
+    }
+
+    /// [`TestDaemon::stop`] 之后用同一个 home 再起。
+    pub async fn start_again(&mut self) {
         let (daemon, ctx) =
             Self::boot(&self.paths, &self.fake, self.socket, self.hub, self.kit, &self.env_extra, &self.update_check)
                 .await;
@@ -1207,6 +1231,28 @@ impl TestDaemon {
             device_id: device_id.into(),
             device_name: name.into(),
             kind: anycon_protocol::DeviceKind::Web,
+            local: false,
+        })
+    }
+
+    /// 一台已配对的分身设备（另一个节点的分身，种类 `twin`）和它经 hub 的连接：先登记成已配对设备（`twin.get` / `twin.set`
+    /// 的 `requester` 只认已存在的分身设备），再以它的身份注册一个客户端。公钥是假的，不能握手。
+    pub async fn twin_device_client(&self, device_id: &str, name: &str) -> TestClient {
+        self.ctx
+            .peers
+            .add_test_peer(crate::store::PeerRow {
+                device_id: device_id.into(),
+                pubkey: [7; 32],
+                name: name.into(),
+                kind: anycon_protocol::DeviceKind::Twin,
+                paired_at_ms: crate::util::now_ms(),
+                last_seen_ms: None,
+            })
+            .await;
+        self.client_as(Caller {
+            device_id: device_id.into(),
+            device_name: name.into(),
+            kind: anycon_protocol::DeviceKind::Twin,
             local: false,
         })
     }
@@ -1698,6 +1744,8 @@ pub struct FakeWeb {
     pub token: Option<String>,
     pub kp: Keypair,
     pub name: String,
+    /// 自报的设备种类（认证和配对第三条消息里的 `ClientInfo.kind`），缺省 `web`。
+    pub kind: DeviceKind,
     pub node_id: Option<String>,
     pub node_pub: Option<[u8; 32]>,
     pub transport: Option<Transport>,
@@ -1738,6 +1786,19 @@ impl FakeWeb {
         kp: Keypair,
         recv_buffer: Option<u32>,
     ) -> FakeWeb {
+        Self::connect_kind(hub_url, token, cookie, name, kp, recv_buffer, DeviceKind::Web).await
+    }
+
+    /// 同 [`FakeWeb::connect_with`]，自报的设备种类可选（分身设备测试用 `DeviceKind::Twin`）。
+    pub async fn connect_kind(
+        hub_url: &str,
+        token: Option<String>,
+        cookie: Option<&str>,
+        name: &str,
+        kp: Keypair,
+        recv_buffer: Option<u32>,
+        kind: DeviceKind,
+    ) -> FakeWeb {
         let url = format!("{}/v1/ws", hub_url.replacen("http://", "ws://", 1));
         let mut req = url.into_client_request().unwrap();
         req.headers_mut().insert("Origin", hub_url.parse().unwrap());
@@ -1763,6 +1824,7 @@ impl FakeWeb {
             token: token.clone(),
             kp,
             name: name.to_string(),
+            kind,
             node_id: None,
             node_pub: None,
             transport: None,
@@ -1780,7 +1842,7 @@ impl FakeWeb {
             protocol_version: PROTOCOL_VERSION,
             client: ClientInfo {
                 name: name.into(),
-                kind: DeviceKind::Web,
+                kind,
                 platform: "browser".into(),
                 version: "test".into(),
                 origin: None,
@@ -1888,7 +1950,7 @@ impl FakeWeb {
         // 第三条的 payload 带上本设备信息（daemon 据此记名字和类型）
         let info = ClientInfo {
             name: self.name.clone(),
-            kind: DeviceKind::Web,
+            kind: self.kind,
             platform: "browser".into(),
             version: "test".into(),
             origin: None,

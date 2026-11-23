@@ -38,9 +38,6 @@ impl CliError {
     pub fn not_paired(message: impl Into<String>) -> Self {
         Self::new(EXIT_NOT_PAIRED, "not_paired", message)
     }
-    pub fn protocol_mismatch(message: impl Into<String>) -> Self {
-        Self::new(EXIT_ERROR, "protocol_mismatch", message)
-    }
     /// 被拒绝（退出码 5）：账号内接入的码 / 口令不对、请求被拒绝、方式没开启、退避中、已锁定。
     pub fn denied(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(EXIT_DENIED, code, message)
@@ -99,6 +96,19 @@ impl From<RpcError> for CliError {
         };
         let reason = e.data.as_ref().and_then(|d| d.reason.clone());
         CliError { exit, code: code.map(code_str).unwrap_or("error").to_string(), message: msg, reason }
+    }
+}
+
+impl From<anycon_daemon::client::ClientError> for CliError {
+    fn from(e: anycon_daemon::client::ClientError) -> Self {
+        use anycon_daemon::client::ErrorClass;
+        let exit = match e.class {
+            ErrorClass::General => EXIT_ERROR,
+            ErrorClass::Usage => EXIT_USAGE,
+            ErrorClass::Offline => EXIT_OFFLINE,
+            ErrorClass::NotPaired => EXIT_NOT_PAIRED,
+        };
+        CliError::new(exit, e.code, e.message)
     }
 }
 

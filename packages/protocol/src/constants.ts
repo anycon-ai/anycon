@@ -66,6 +66,8 @@ export const METHODS = {
   NODE_ENROLL_REQUESTED: 'node.enroll_requested',
   /** D→C notification，params = NodeEnrollResolved */
   NODE_ENROLL_RESOLVED: 'node.enroll_resolved',
+  /** 开一次只接受分身设备的短码配对（docs/spec/daemon.md § 27.2）。 */
+  NODE_TWIN_LINK_CODE: 'node.twin_link_code',
   /** D→C notification，params = NodeSecurityEvent */
   NODE_SECURITY_EVENT: 'node.security_event',
 
@@ -190,6 +192,12 @@ export const METHODS = {
   TWIN_ANSWER: 'twin.answer',
   TWIN_CHANGED: 'twin.changed',
   TWIN_QUESTION: 'twin.question',
+  // 分身连接（docs/spec/daemon.md § 27）
+  TWIN_LINK: 'twin.link',
+  TWIN_LINKS: 'twin.links',
+  TWIN_UNLINK: 'twin.unlink',
+  /** B 上：对这条分身连接开放了什么、还剩多少（只给调用的这条连接自己的）。 */
+  TWIN_PEER_STATUS: 'twin.peer_status',
 
   // blob（附件，ADR-35）
   /** params = BlobPutBeginParams → BlobPutBeginResult */

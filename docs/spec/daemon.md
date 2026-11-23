@@ -125,6 +125,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 [twin]                                # 分身的机器级硬开关（§ 26.2）。热加载
 enabled = true                        # 远程只能关闭；恢复开启要在本机改
+accept_links = true                   # 接受别的节点的分身连接（§ 27.2）；远程只能关闭
 
 [notify]
 turn_finished = "when_unwatched"      # always | when_unwatched | never
@@ -138,7 +139,7 @@ level = "info"
 retention_days = 7                     # 只在 daemon 启动时清理一次，长期不重启会累积
 ```
 
-`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`rules.*`、`judge.*`、`twin.enabled`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
+`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`rules.*`、`judge.*`、`twin.enabled`、`twin.accept_links`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
 **远程修改**（`node.get_config` / `node.set_config`，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）：客户端（Web 的节点设置「限制」标签、SDK）可以读写下面这张白名单里的键，其余一律不行。只收热加载的键，改完不用重启。
 
@@ -156,6 +157,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 | `rules.extract_auto` | 布尔（缺省 `false`）：会话空闲之后自动提炼规则（§ 23.9） | 任意改 |
 | `judge.extract` / `judge.triage` / `judge.advisor` | 枚举：空，或者 `judge.backends` 里已有的一个名字（`options` 里列出这些名字） | 任意改 |
 | `twin.enabled` | 布尔（缺省 `true`）：分身的机器级硬开关（§ 26.2） | **只能收紧**：`true` → `false` |
+| `twin.accept_links` | 布尔（缺省 `true`）：接受别的节点的分身连接（§ 27.2） | **只能收紧**：`true` → `false` |
 | `judge.daily_calls` | 整数 0–1000 | 任意改 |
 | `notify.turn_finished` | `always` \| `when_unwatched` \| `never` | 任意改 |
 | `notify.session_idle_after` | 时长 0–7d | 任意改 |
@@ -885,6 +887,7 @@ SQLite（WAL）。全部表：
 | `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms、last_referenced_ms、stale、active_since_ms（`0012_rule_stale.sql`）。不受 `history_retention` 影响 |
 | `judge_calls` | 判断后端的每次调用（§ 25.2，迁移 `0007_judge.sql`）：id、position、backend、kind、model、started_ms、finished_ms、status（`ok` 或错误码）、input_bytes、output_bytes、input_tokens、output_tokens、cost_usd。不存提示和回应，保留 90 天 |
 | `rule_extract_runs` | 每次提炼（§ 23.9，同一个迁移）：id、session_id、trigger、device_id、status、started_ms、finished_ms、points、from_seq、to_seq、added(JSON)、dropped(JSON)、backend、error_code、error_status、call_id。保留 90 天，但每个会话最新的 `done` 始终保留以维持水位 |
+| `twin_links` / `todo_remotes` | 分身连接的 A 这一侧（§ 27.1、§ 27.4，迁移 `0013_twin_links.sql`）：`twin_links` 是每条连接的元数据（节点 id、名称、分组、公钥、配对时间、上一次的 `twin.peer_status`），`todo_remotes` 是清单项派到别的节点的远程项和取回结果的进度。已配对的节点本身在 `twin/nodes.json`（§ 4） |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
@@ -911,7 +914,7 @@ SQLite（WAL）。全部表：
 
 本机 socket 上的调用方 `device_id` 是 `local`，`device_name` 默认 `local-cli`。连接可以用 `local.set_client { client: "cli" | "mcp" }` 自报客户端种类（固定枚举，别的值 `invalid`；只在本机通道有，经 hub 调用 `forbidden`，经 hub 的连接身份由配对的设备决定），自报 `mcp` 之后这条连接的审计设备名是 `local-mcp`（`anycon mcp` 连上就声明，[ADR-49](../decisions.md#adr-49-anycon-mcpstdio-mcp-server-是又一个客户端入口不暴露审批不做编排)）。它只用来在审计里分清「人敲的命令」和「agent 经 MCP 发的」：自报的，不改变任何权限，对故意不声明的本机进程没有约束力。
 
-记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2；派发开的会话另记一条 `session.create`）`rule.add` `rule.update` `rule.delete`（只记长度、字段名和状态，不记规则的文字，§ 23.7）`rule.extract`（只记触发方式、结果、数量和后端，不记摘录或回应，§ 23.7）。会话引起的 `activity` 变化不进审计（它不是修改，§ 22.3）。
+记录的 action：`session.create` `session.send`（只记长度不记内容）`session.cancel` `session.delete` `session.set_settings` `permission.respond`（含 option 和 message）`workspace.create` `workspace.clone` `workspace.rename` `workspace.trash` `workspace.restore` `workspace.link`（记 canonical 路径）`workspace.unlink` `export` `import` `worktree.create` `worktree.remove` `session.sync_base` `fs.read`（分块读同一个文件只记一次，见下）`node.revoke_device` `node.pair_begin` `pair.completed` `enroll.requested` `enroll.approved` `enroll.denied` `enroll.code` `enroll.completed` `enroll.failed` `enroll.password_set` `enroll.password_cleared` `enroll.password_locked` `enroll.settings` `node.set_agent_defaults` `config.changed` `preview.open` `preview.close` `todo.add` `todo.update` `todo.delete`（只记长度和字段名，不记标题和正文，§ 21.5）`todo.dispatch`（只记会话 id、agent、工作位置和 `no_push`，§ 22.2；派发开的会话另记一条 `session.create`）`rule.add` `rule.update` `rule.delete`（只记长度、字段名和状态，不记规则的文字，§ 23.7）`rule.extract`（只记触发方式、结果、数量和后端，不记摘录或回应，§ 23.7）`twin.link`（`target` 是 B 的节点 id，`detail` 只有它的名称；不记短码）`twin.unlink` `twin.remote_dispatch`（派到别的节点，`detail` 是 `{ run_id, node_id, remote_todo_id }`，不记标题和正文，§ 27.4）。会话引起的 `activity` 变化不进审计（它不是修改，§ 22.3）。
 
 `fs.read` 的 target 是请求里的 `path`，detail 是 `bytes`（文件总长）。一个大文件要分很多块读（`encoding = "base64"`，每块 512 KiB），逐块记会把审计表灌满、盖掉有意义的行，所以**同一台设备对同一路径的读，5 分钟内只记第一次**。窗口按（设备，路径）算而不是按「第 0 块」算：只读后面的块也会留下一条，不能靠跳过第 0 块绕开审计。窗口只在真正写了一行时刷新，持续读一个文件，每 5 分钟至少有一行；去重表只在内存里，daemon 重启就清空。
 
@@ -993,7 +996,7 @@ SQLite（WAL）。全部表：
 - `anycon mcp`（ADR-49）是本机 socket 上的又一个客户端：只暴露十一个映射到已有 RPC 的工具，没有批准 / 拒绝权限请求的工具（等待审批时调用立即返回 `waiting_permission`），`create_session` 拒绝选 `risk = dangerous` 的模式、`send_message` 拒绝向已处在这类模式的会话发消息（除非 `--allow-dangerous-modes`，`permissions.allow_dangerous_modes` 仍是上限）、没有会话 `env`，在 anycon 拉起的 agent 里（环境有 `ANYCON_AGENT`）默认拒绝会改状态的工具。其中 `add_todo` 例外：它能往节点的清单里加项（不开会话、不触发 turn，不需要 `--allow-nested`），加的项标着 agent 加的、没被收下，数量有上限（§ 21.2、§ 21.3）；没有任何修改、关闭、删除清单项的工具。这些约束在 MCP 这个接口上，daemon 对它没有额外的业务接口，也不能区分它和别的本机客户端，除了自报的审计身份 `local-mcp`（清单据此把它加的项记成 agent 加的、并且不让它清掉「未收下」，同样是自报的标注）；它不是对 agent 的隔离（有 shell 能力的 agent 本来就能直接用 CLI），上限是 `sessions.max_concurrent`、审批和 `config.toml`
 - 本机 socket 0600；CLI 不需要再认证。Windows 上是命名管道：属主和 DACL 都是当前用户、拒绝远程客户端、第一个实例独占名字；管道名字是全局的，客户端连上之后核对管道属主是当前用户，防别的本机用户抢先建同名管道冒充 daemon（ADR-42）
 - dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
-- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes`、`preview.enabled` 和 `twin.enabled` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*` 不在名单里（`hub.group` 在，它只是客户端显示用的标签）；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
+- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes`、`preview.enabled`、`twin.enabled` 和 `twin.accept_links` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*` 不在名单里（`hub.group` 在，它只是客户端显示用的标签）；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
 - `--add-dir` 之类扩大 agent 文件范围的参数不暴露给客户端
 - worktree（§ 10.1）：目录在项目里面，复核规则同关联项目；不把主仓库 `.git` 加进 agent 的可写目录；`.worktreeinclude` 只复制、不执行，不跟随符号链接；daemon 的 git 关掉 fsmonitor / hooks / 外部 diff / textconv / 合并签名，仓库配置里的 filter / merge driver / sshCommand / askPass / credential helper / uploadpack 仍会被执行（已知限制，§ 10.1「限制」）
 
@@ -1389,6 +1392,7 @@ Todo {
 - **`review` 看记录**：最近一轮正常结束还不够，这一轮的 `result` 必须已经在「经过」里（按会话和 turn 号查 `todo_events`）；不在（崩溃时来不及记）→ `waiting`，由人看一眼，不会补一条编的 `result`。
 - **`result` 先于 `review`**：一轮结束时它的 `result` 先「扣留」（计数），记进「经过」之后才放掉；扣留期间算 `working`。所以 `activity = review` 意味着这一轮的 `result` 已经在「经过」里，在 `review` 上立刻再派发也带得上它。记 `result` 是按项、持清单锁做的（先取走这一项排着的结果，逐条记下，再清扣留，再重新算）。
 - **通知是尽力而为，对错不靠它**：关联会话的状态真的变了（排队位置变了不算）、后台任务数在 0 和非 0 之间变化（1 → 2 这样的不算）、`result` 的扣留清掉、会话被删除、进程被摘掉（任务数被清零）时，daemon 重新算这一项的 `activity`，和上一次发出去的不同就发 `todo.changed`（带 `activity`）。漏发或多发一条都不影响对错，因为每次读都是现算的；daemon 启动时不用写什么（客户端连上会重新列清单），只用当前值把「上一次发出去的」填上，避免启动后重复通知。
+- **派到别的节点的项**（§ 27.4）：`activity` 还要把远程项最近一次知道的 `activity` 算进去（任何一边 `working` → `working`，否则任何一边 `waiting` → `waiting`，否则 `review`）；只有远程项、没有本机会话的项也有 `activity`。
 - **会话的情况不是修改**：它不写进 `state`、不动 `updated_ms`、不进审计，「经过」里也没有对应的条目。人在派发过的项上改 `state` 是一次普通的修改（`updated_ms` 照常变，审计记 `todo.update`），「经过」里记一条 `state`（§ 22.4）。
 - 通知（`turn_finished`）：关联会话的 `turn_finished` 通知照常发（§ 14），客户端把文案换成「<这一项的标题> 做完了，等你验收」并落在验收页（[web.md § 7](web.md#7-通知)）；不新增通知类别。
 
@@ -1947,18 +1951,19 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 ### 26.1 范围：它碰哪些项
 
 - **处理人**：`Todo` 多一个字段 `handler: me | twin`，缺省 `me`。客户端里的「交给分身」和「我自己做」改的就是它（`todo.update { handler }`）。另外两种变化由 daemon 写：「你接手了」（§ 26.6）和「交回给你」（§ 26.4）。和 `state` 不同，`handler` 不是只由人写。客户端遇到不认识的值按 `me` 显示，Rust 协议类型里用 `Unknown` 变体接住。
-- 一项要**同时满足**下面五条，分身才会看它：
+- 一项要**同时满足**下面六条，分身才会看它：
   - `handler = twin`；
   - 没关闭（`state` 不是 `done` / `dropped`）；
   - 不是周期项的模板（没有 `repeat`，§ 26.9；模板自己不分拣，它的 `handler = twin` 表示「每一次复制出来的都交给分身」）；
   - 不是 `unreviewed`，也就是 agent 记的项要人先收下（ADR-54 第 6 条）；
+  - 不是分身设备记的项（`source.kind = twin`，§ 27.3：别的节点的分身经分身连接记在这里的项，这个节点自己的分身不碰；人也不能把它们交给分身，`todo.update { handler: twin }` → `invalid`，`data.reason = "twin_source"`）；
   - 在范围内：项有 `project`，就必须在允许的项目里。没有 `project` 的项，分身只能从允许的项目里选一个，或者问你。
 - **派发的权限**：自报了 `mcp` 的连接或带 `agent: true` 的写入不能把 `handler` 设成 `twin`，回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；人可以在同一请求带 `reviewed: true` 收下并交给分身。
 
 ### 26.2 配置
 
-- **机器级硬开关** `[twin] enabled = true`：缺省开，热加载，**只能在本机放宽**。远程修改白名单里它是「只能收紧」，同 `preview.enabled`。关掉之后分身什么都不做：不唤醒、不调用模型、不派发，已经派出的会话照常跑完。
-- **范围、上限和暂停**存在库里，按**请求方**分开存（表 `twin_scopes`，主键是请求方）。本机分身的请求方是 `local`；ADR-56 的分身连接之后会以设备 id 作请求方。读写用 `twin.get` / `twin.set`（§ 26.8），只由人改，自报 `mcp` 的连接回 `forbidden`。字段：
+- **机器级硬开关** `[twin] enabled = true`：缺省开，热加载，**只能在本机放宽**。远程修改白名单里它是「只能收紧」，同 `preview.enabled`。关掉之后分身什么都不做：不唤醒、不调用模型、不派发，已经派出的会话照常跑完。它只管这台机器自己的分身；这台机器接不接受别的节点的分身是另一个键 `[twin] accept_links`（§ 27.2），互不影响。
+- **范围、上限和暂停**存在库里，按**请求方**分开存（表 `twin_scopes`，主键是请求方）。本机分身的请求方是 `local`，每条分身连接（§ 27）的请求方是那台分身设备的设备 id。读写用 `twin.get` / `twin.set`（§ 26.8，`requester` 缺省 `local`），只由人改，自报 `mcp` 的连接和分身设备回 `forbidden`。字段：
 
 | 字段 | 缺省 | 说明 |
 |---|---|---|
@@ -1983,7 +1988,7 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 | 触发 | 说明 |
 |---|---|
 | `todo` | 一项交给了分身、交给分身的项被修改，或者刚被收下 |
-| `session` | 它派出的会话一轮结束、开始等审批、出错 |
+| `session` | 它派出的会话一轮结束、开始等审批、出错；它派到别的节点的项取回了新的结果（§ 27.4） |
 | `answer` | 你回答了它的问题（§ 26.5） |
 | `tick` | 兜底的定时：有它在处理的项时每 30 分钟一次，没有就不定时 |
 | `manual` | 客户端点了「现在看一遍」（`twin.wake`） |
@@ -2010,12 +2015,13 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
   - 每项最多 6 KiB，合计最多 32 KiB；放不下的项这次不看，下次再看，按 `updated_ms` 从早到晚。上次因总量放不下的项在下一次优先，组内仍按 `updated_ms` 从早到晚；这个待看队列只在内存里保存，重启后从最早修改的项开始。
   - 内容区用 § 23.9 那样的随机边界包起来。
 - **可用的东西**：允许的项目，各自的项目规则；还能派几次、还能同时开几个会话；顾问能不能用。
+- **节点表**：有分身连接时多一块（§ 27.4），放在同一个随机边界里。
 
 **输出**：一个 JSON 对象，`{"items":[{ "id", "action", "reason", ... }]}`。每项一条，`action` 只能是下面几种：
 
 | `action` | 附带 | daemon 怎么执行 |
 |---|---|---|
-| `dispatch` | `project?`（项没有项目时必填，必须在允许的项目里）、`note?`（≤ 2 KiB，给 agent 的补充说明） | 走 `todo.dispatch`（§ 22），用 § 26.2 的 agent / 模型 / 模式，`no_push` 恒为 true；`note` 作为「分身的说明」接在第一条消息后面，标明它来自分身 |
+| `dispatch` | `project?`（项没有项目时必填，必须在允许的项目里）、`note?`（≤ 2 KiB，给 agent 的补充说明）、`node?`（派到一条分身连接的节点，`project` 必填，§ 27.4） | 走 `todo.dispatch`（§ 22），用 § 26.2 的 agent / 模型 / 模式，`no_push` 恒为 true；`note` 作为「分身的说明」接在第一条消息后面，标明它来自分身 |
 | `ask_user` | `question`（≤ 1 KiB）、`options?`（≤ 5 个，各 ≤ 100 个字符） | 建一个问题（§ 26.5），通知你 |
 | `ask_advisor` | `question`（≤ 2 KiB） | 调用顾问后端（§ 25 的 `advisor` 位置），把回答附上，**同一次唤醒里**只为这一项再分拣一次。每项每次唤醒最多问一次 |
 | `wait` | — | 什么都不做（会话还在跑、在等你的回答） |
@@ -2024,12 +2030,12 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 - **`reason`** 必填，≤ 500 个字符，写进运行记录和这一项的「经过」。
 - **`rules?`**：可以带它所依据的规则 id 列表。它进运行记录，决定被执行时（试跑不算）还会更新这些规则的 `last_referenced_ms`（§ 26.10）。模型靠系统提示里规则文字后面的一行「规则 id，按上面的顺序」和每个项目的 `project_rule_ids` 知道每条规则的 id（过期的规则不在其中）。
-- **逐条校验**：这一项还符合 § 26.1、动作合法、附带的字段合法、名额和次数都还有。不合格的这一条不执行，在运行记录里写明原因（`invalid` / `out_of_scope` / `no_capacity` / `budget`）。
+- **逐条校验**：这一项还符合 § 26.1、动作合法、附带的字段合法、名额和次数都还有。不合格的这一条不执行，在运行记录里写明原因（`invalid` / `out_of_scope` / `no_capacity` / `budget`；派到别的节点还有 `remote_unavailable` / `remote_refused`，§ 27.4）。
 - **整份输出解析不了**：这次唤醒算失败（`bad_output`），什么都不执行。
 
 **运行约束**：
 
-- 同一项连续 3 次派发失败（派发本身出错，或者会话以出错结束），就交回给你，写明原因。人再次把处理人改成 `twin` 时重置连续失败计数，保留已经统计过的会话结局水位，允许在修复问题后重新交给分身。
+- 同一项连续 3 次派发失败（派发本身出错，包括派到别的节点失败，§ 27.4；或者会话以出错结束），就交回给你，写明原因。人再次把处理人改成 `twin` 时重置连续失败计数，保留已经统计过的会话结局水位，允许在修复问题后重新交给分身。
 - 它派出的会话在运行中 2 小时没有任何事件，算卡住：交回给你。会话不取消，交给你决定。
 - 正在处理的项（派出的会话还没结束一轮的）最多 `max_sessions` 个；每天派发最多 `daily_dispatches` 次。
 
@@ -2065,8 +2071,8 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `twin.get` | C→D | `{}` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working: [todo_id], waiting: [todo_id] }`。`state` 是 `running` / `idle` / `paused` / `disabled` / `not_configured` / `budget` |
-| `twin.set` | C→D | `{ paused?, projects?, agent?, model?, mode?, max_sessions?, daily_dispatches?, clear? }` → `twin.get` 的结果。校验见 § 26.2 |
+| `twin.get` | C→D | `{ requester? }` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working: [todo_id], waiting: [todo_id] }`。`state` 是 `running` / `idle` / `paused` / `disabled` / `not_configured` / `budget`。`requester` 缺省或 `local` 是本机分身；也可以是一台分身设备的设备 id（§ 27.3），读 B 给这条连接的范围，不是已配对的、种类是 `twin` 的设备 id → `not_found`（不接受名称或前缀）。对一台分身设备：`enabled` 是 `[twin] accept_links`，`configured` 是范围里有没有项目，`state` 是 `disabled`（`accept_links` 关着）/ `paused` / `not_configured` / `budget`（今天的次数用完）/ `running`（它派出的会话在处理中）/ `idle`，`today.judge_calls` 恒为 0，`working` 是它在处理中的项，`waiting` 恒为空 |
+| `twin.set` | C→D | `{ requester?, paused?, projects?, agent?, model?, mode?, max_sessions?, daily_dispatches?, clear? }` → `twin.get` 的结果。校验见 § 26.2；`requester` 同 `twin.get`，改一台分身设备的范围不动本机分身的调度和状态；审计的 `target` 是被改的请求方 |
 | `twin.wake` | C→D | `{}` → `{}`：现在唤醒一次（照样受合并和串行约束） |
 | `twin.dry_run` | C→D | `{}` → `{ run }`：同步等到分拣结束（受判断后端的 `timeout` 约束） |
 | `twin.runs` | C→D | `{ limit?, before_ms? }` → `{ runs: [TwinRun] }` |
@@ -2077,7 +2083,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 `twin.set.clear` 同 `todo.update`：合并后清空 `agent` / `model` / `mode`，恢复缺省选择；字段缺省表示保持不变。
 
-线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget`、`session_id?`、`question_id?`、`project?`、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
+线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget | remote_unavailable | remote_refused`（后两个是派发到别的节点时用的，§ 27.4）、`session_id?`、`question_id?`、`project?`、`node?`（派发到哪个节点，只用于显示）、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
 
 `capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 和 § 26.10 也已实现。
 
@@ -2119,3 +2125,116 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 - **过期的效果**：不注入（派发的会话、分拣系统提示里的规则、`rule.preview`、`todo.dispatch_preview` 的 `rules_text`）；不计字数预算（`rule.list` 的 `budget`、生效时的检查）。它仍是 `active`：`rule.list { status: active }` 包含它，客户端按 `stale` 自己分段（规则页另起一段「过期」，[web.md § 4.14](web.md#414-规则-rules)）。
 - **恢复**：`rule.update { stale: false }`，只由人做（自报了 `mcp` 的连接 → `forbidden`，CLI 在 agent 环境里拒绝 `anycon rule restore`）。恢复和「变成生效」一样过字数检查（§ 23.4，超出 → `over_budget`，`data.field = "stale"`），成功后「最近一次变成生效的时间」是现在，60 天从头算。`stale: true` 不能由客户端设（`invalid`，`data.field = "stale"`）。规则停用、否决、改回待确认时 `stale` 清掉；之后再启用就是一条新的生效规则，从启用那刻算起。
 - **「以后都这样」**：回答**分身的问题**（清单项「经过」里就地回答、「待处理」里的分身提问）和 **agent 的提问**（会话权限卡片里 `kind = question` 的回答）时，答复按钮旁边的勾选。勾上并且答复**成功之后**，打开「记成规则」的同一个编辑框，由人改成自己的话再存（§ 23.6），不提供一键生成：预填原样不能保存，答复失败不打开，不勾和以前一样。勾选不改答复的内容，也不碰答复按钮的锁（600 ms）和 `⌘⇧A` / `⌘⇧D`。节点不支持规则时不出现。出处记法见 § 23.6：agent 的提问 `{ kind: answer, session_id, request_id }`，分身的问题 `{ kind: answer, request_id: <问题 id> }`（没有会话）。
+
+## 27. 分身连接
+
+> **已实现：协议（本节的全部方法、类型和枚举值）、hub 接受 `twin` 种类（§ 27.5）、B 这一侧（`node.twin_link_code`、短码的种类、`[twin] accept_links`、安全事件和审计、§ 27.3 的白名单、推送过滤、按请求方存的范围、记一项和派发的约束、`twin.peer_status`）、A 这一侧（§ 27.1 的分身设备身份和连接、`twin.link` / `twin.links` / `twin.unlink`、§ 27.4 的节点表、远程派发和取回结果），CLI（`anycon twin link-code` / `link` / `links` / `unlink` / `set --requester` / `status --requester`），以及 TS SDK 和 Web 的界面（§ 27.6，web.md § 14.8）。** [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的第 5 步。下面用 A 指跑分身的节点，B 指被使用的节点。
+
+A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在 B 自己的 worktree 里干活。A 的 daemon 为此持有一个**分身设备**身份，作为 B 的一台已配对设备，经 hub、经 E2E 通道连接 B。没有节点对节点的新通道，也没有给判断后端或本机别的进程用的代理。
+
+### 27.1 分身设备
+
+- **一个节点一个分身设备**，和浏览器一样：同一个身份分别和每个 B 配对。它在 hub 上是一台设备（`DeviceKind::Twin`）、一条连接，不论连接了几个 B。
+- **独立的密钥**：存在 A 的数据目录的 `twin/` 下，文件和 CLI 的设备身份同一种格式（密钥、设备 id、device token 和它的签发时间、已配对的节点），只有 daemon 进程读；不复用 A 的节点密钥，也不复用 A 上 CLI 的客户端身份。device token 照 CLI 的规则轮换（hub.md § 5）；连接一直开着时每 10 分钟查一次要不要轮换，不等重连。
+- **只在 A 自己的 hub 上**：分身设备连的是 A 的 `hub.url`；B 必须在同一个 hub 上（不同 hub 的节点之间建不了连接，建立时报错说明）。
+- **连接**：至少有一条分身连接时，A 的 daemon 除了节点自己的那条 hub 连接，再开一条分身设备的 hub 连接；对每个 B 是 Noise 的发起方，各自握手、各自重连（和 CLI 连节点同一套：分片、背压、`peer_online` / `peer_offline`）。没有分身连接时不开这条连接。
+  - 实现是 `client::Client`（CLI 用的设备客户端，一条 hub 连接对多个节点），`ClientInfo.kind = twin`，设备名「<A 的节点名>'s twin」（B 的设备列表照这个显示，客户端按设备种类本地化）。第一次 `twin.link` 时生成身份并开连接；daemon 启动时 `twin/nodes.json` 里有节点就自动开，关停时断开。最后一条分身连接被 `twin.unlink` 之后连接关掉，身份文件保留，下次建立时沿用同一个设备身份。
+  - **已配对的节点以 `twin/nodes.json` 为准**；库里的表 `twin_links`（迁移 `0013_twin_links.sql`）只存它的元数据：节点名、分组、公钥、配对时间和上一次的 `twin.peer_status`（B 不在线时 `twin.links` 用它）。启动时两边对账：文件里有而库里没有的补一行，库里有而文件里没有的删掉。
+  - 身份属于建立它时的 hub：`hub.url` 改了、而 `twin/nodes.json` 里还有旧 hub 上的连接时，不开连接，`twin.link` 回 `unsupported`（`data.reason = "hub_changed"`），先 `twin.unlink` 掉旧的（没有连接在跑时直接改文件）。
+- `[twin] enabled = false` 不断开分身连接（只是没有判断在用它们）。
+- **没有代理**：`Client` 只在 `twin_link` 模块里，不存进别处、不经任何 RPC 方法递出去。B 上的动作只有两处：分拣的计划被 daemon 执行（`todo.add`、`todo.dispatch`，§ 27.4），和后台任务对远程项做的只读同步（`twin.peer_status`、`todo.get`、`todo.history`）。
+
+### 27.2 建立和断开
+
+建立只能由人在一台**同时和 A、B 配过对的设备**上做（或者在两台机器的本机 CLI 上各敲一条命令）：
+
+1. 那台设备对 B 发 `node.twin_link_code {}` → `{ code, expires_ms }`：B 开一次只接受分身设备的短码配对，16 位短码，10 分钟有效，同一时间只有一个（再要一个会作废旧的）。
+   - hub 上的登记只有 5 分钟（hub 的 `pair_ttl`）：B 在登记到期之前、还没有加入方的时候用同一个 `match_id` 再登记一次（每次再登记同样占 hub 的每日配对次数），所以这个短码实际有 10 分钟。
+   - 和 `node.pair_begin` 共用「一个 daemon 同时只有一个配对」：这个短码用掉之前，再要一个分身短码、或者开一次普通配对，都会作废它，反过来也一样。
+   - 短码不写进日志和审计（审计只记 `node.twin_link_code` 这个动作）。
+2. 那台设备把短码经 E2E 交给 A：`twin.link { code, node_id }`（`node_id` 是 B 的 id，A 配对完成后核对它，对不上就失败并丢掉这次配对）。
+3. A 的 daemon 作为加入方走短码配对（ADR-29，和 `anycon pair` 同一套），`ClientInfo.kind = twin`，设备名是「<A 的节点名>'s twin」。完成后记下这条连接（`twin/nodes.json` 和表 `twin_links`：B 的 id、公钥、名称、配对时间），向 B 取一次 `twin.peer_status`（取不到不影响建立），发一条 `twin.changed` 让客户端重新读 `twin.links`，记审计 `twin.link`，返回 `TwinLink`。
+   - 失败都带可读的说明和 `data.reason`：`node_mismatch`（配对到的不是 `node_id`：这次配对在 A 上丢掉，B 上的设备记录要在 B 上吊销，`invalid`）、`not_found`（短码不存在、过期或已用掉；B 不在 A 的 hub 上时同样是它，说明里提示两个节点必须在同一个 hub 上，`not_found`）、`timeout`（B 没有完成配对：`accept_links` 关着、或者短码种类不对时 B 不回握手，A 要等到 hub 的撮合超时，`unsupported`）、`forbidden`（两台设备不属于同一个账号）、`rate_limited`、`quota`、`no_hub`（这个节点没有配置 hub）、`offline`（A 没连上 hub）、`hub_changed`（见 § 27.1）。短码格式不对是 `invalid`。
+
+- **短码的种类**：`node.twin_link_code` 发出的短码只接受 `kind = twin` 的设备；普通短码（`anycon pair`）、接入码和节点口令一律不接受 `kind = twin`（配对失败，`reason = twin_not_allowed`）。
+  - 配对：设备种类在第三条握手消息的 `ClientInfo` 里（受 PSK 保护）。B 读到它之后核对：普通短码遇到 `twin`、分身短码遇到别的种类，或者 `accept_links` 关着，都作废这次配对、不发 `pair_confirm`、不登记设备；失败结果记在 `local.pair_outcome`（`reason = twin_not_allowed`，普通短码的那次配对取得到）并写一条审计 `pair.refused`。B 不给加入方发别的消息，hub 的撮合随后超时。
+  - 接入（`anycon connect` 的接入码、节点口令、扫码批准）：接入握手的 `hello` 里自报 `kind = twin` → `rejected`，`reason = twin_not_allowed`（`EnrollRejectReason`），会话结束，口令的失败计数不变。
+- **谁能做**：两边的方法都只由人调用：已配对设备或本机 CLI；`twin` 设备和自报 `mcp` 的连接 → `forbidden`（A 上的 `twin.link` / `twin.links` / `twin.unlink` 同样）。
+- **B 的开关** `[twin] accept_links`（缺省 `true`，热加载，远程只能收紧）：`false` 时 `node.twin_link_code` 回 `forbidden`（`data.reason = "accept_links_off"`），已有的分身设备的传输被断开、握手被拒，设备记录和它的范围保留，重新打开后照常可用。`node.info` 带上 `twin_accept_links`。
+  - 关掉的那一刻：已有分身设备的传输作废（它之后的 IK 握手被忽略）；还没用掉的分身短码作废（B 不再回握手）；`twin_scopes` 里它们的范围原样保留。
+  - 和 `[twin] enabled` 互不影响：只关 `enabled` 的机器自己不跑分身、但仍给别的节点干活。
+- **建立和吊销时**：B 给它所有已配对的设备发 `node.security_event`（新种类 `twin_linked` / `twin_unlinked`）和 `notify { security }`，并记审计。
+  - 事件带 `device_id` / `device_name`（那台分身设备）和 `by_device`（要短码、或吊销它的那台设备，本机 CLI 为 `local`）；`notify` 发给除分身设备以外的已配对设备，60 秒内的多条合并成一次，同 `security` 类别的别的事件。
+  - 审计：`twin.linked`（配对完成时，`target` 是设备 id）、`twin.unlinked`（吊销时）、`node.twin_link_code`、`pair.refused`。不写短码。
+- **断开**：B 吊销这台设备（设备列表里照常吊销），这一条连接就没了。A 上 `twin.unlink { node_id }` 只是 A 忘掉这一条（关掉传输、从 `twin/nodes.json` 和 `twin_links` 里删掉，记审计 `twin.unlink`，发 `twin.changed`）；B 上的设备记录要在 B 上吊销，界面上写明。没有这个节点 → `not_found`。A 上已经记下的远程项（`Todo.remote`）和已经取回的「经过」不动，只是不再同步。
+- 分组名不同的两个节点之间建立时，客户端多确认一次；daemon 不检查分组。
+
+### 27.3 B 上：分身设备能做什么
+
+**由 B 的 daemon 强制**，按连接的设备种类判断（设备种类在配对时经握手认证并落盘，之后不变）。强制在两个集中的地方：RPC 分发处（进入任何处理之前检查一次）和每条通知送到一个客户端的出口；单个方法里没有各写一份。
+
+- **方法白名单**：`twin` 设备只能调：
+  - `node.info`、`agent.list`：`node.info` 不含这台机器上的目录路径（`workspace_root` / `workspace_roots`）、判断后端和更新状态；`agent.list` 不含 agent 命令行工具的路径，`refresh` 不起作用（分身设备不能触发重新探测）
+  - `twin.peer_status`（新：B 对这条连接开放了什么、还剩多少，见下）
+  - `todo.add`、`todo.get`、`todo.list`、`todo.history`、`todo.dispatch`——只针对**它自己建的项**
+  - `session.get`、`session.history`、`session.watch`、`session.unwatch`、`session.cancel`、`session.diff`——只针对**它自己派出的会话**（`session.diff` 是看改动的方法；`session.git_status` 会调用 `gh`，不开放）
+
+  名单之外一律 `forbidden`（`data.reason = "twin_device"`），包括不存在的方法名和只给本机用的 `local.*`；**新增的方法缺省不在名单里**。`forbidden` 先于 `not_found`：名单里的方法碰别人的项和会话、或者碰不存在的 id，答复一字不差（同一个 `forbidden`），分身设备探测不出别人的项和会话存不存在。`todo.add` 按 `id` 幂等，已存在而不是它自己建的 id 同样 `forbidden`，不会把别人的项原样返回；`todo.list` 只返回它自己建的项。
+- **推送过滤**：对 `twin` 设备只推它自己建的项的 `todo.changed` / `todo.event`、它派出的会话的 `session.changed`、它 watch 的会话的 `session.event`。别的一律不推（会话列表、权限请求、清单、接入、安全事件、项目和 agent 的变化），也不给它发 `notify`。**新增的通知缺省不推**。
+  - 会话刚派出时，它的第一条 `session.changed` 可能比归属登记早、不推；之后的都推，结果也可以从 `todo.event` 和 `session.get` 取。
+- **范围**：B 上每条分身连接一份设置，存在 `twin_scopes`，请求方是这台分身设备的设备 id（本机分身是 `local`）。字段和 § 26.2 一样（`paused`、`projects`、`agent`、`model`、`mode`、`max_sessions`、`daily_dispatches`），缺省 `projects = []`，也就是什么都不开放。由 B 的人改：`twin.get` / `twin.set` 多一个可选的 `requester`（缺省 `local`），只接受已存在的分身设备 id（§ 26.8）。
+- **记一项**（`todo.add` 来自分身设备）：`project` 必须在这条连接开放的项目里，否则 `forbidden`（`data.reason = "out_of_scope"`）；不带 `project` → `invalid`；`source = { kind: twin, device_id }`（不看自报的 `agent: true`，也不记 `origin_session`）；`handler = me`、不是 `unreviewed`（开放给它的范围就是 B 的主人的决定）；不能带 `repeat`、不能带 `handler: twin`（`forbidden`，`data.reason = "twin_device"`）。这台设备建的、没关闭的项最多 100 个，满了 `invalid`（`data.field = "todos"`，`data.reason = "too_many_twin"`，同 agent 记的未收下项的上限 `too_many_unreviewed`）。B 自己的分身不处理这些项（§ 26.1 的第六条条件；`todo.update` 把这样的项交给分身 → `invalid`，`data.reason = "twin_source"`）。
+- **派发**（`todo.dispatch` 来自分身设备）：只派它自己建的项。B 用这条连接的范围定 agent / 模型 / 模式（模式缺省同 § 26.2 的 `unattended` 规则，不接受 `dangerous`），`no_push` 恒为 true，`workspace` 恒为 worktree；请求里带的这些字段只能落在范围允许的值里，否则 `invalid`（`data.field` 是 `agent` / `settings` / `no_push` / `workspace`，`data.reason = "not_allowed"`）：`agent` 缺省（空串）用范围定的；`settings` 里的模型和模式缺省或和范围定的一样，不能带 `thinking`、环境变量和别的选项；`no_push` 缺省或为 true；`workspace` 缺省或是不带 `base` / `branch` 的 worktree。`note`（≤ 2 KiB，`TodoDispatchParams.note`）只有分身设备能带，作为「分身的说明」接在第一条消息后面，不改这一项的正文（别的调用方带了 → `invalid`，`data.field = "note"`，`data.reason = "not_allowed"`；超长 → `data.reason = "length"`）。项目取请求里的、缺省用项自己的，必须还在范围里（`forbidden`，`out_of_scope`）。名额：这条连接派出的、还在处理中的会话 ≤ `max_sessions`，并且总给人留 `sessions.max_concurrent` 里的一个；每个本地日最多 `daily_dispatches` 次；`paused` 时拒绝。超出时 `invalid`（`data.field = "dispatch"`，`data.reason` 是 `no_capacity` / `budget` / `paused`）。名额和每日次数用 § 26.2 的同一个实现，按请求方各算各的：会话记在 `twin_sessions`，请求方是设备 id。
+- **`twin.peer_status {}`** → `{ name, group, projects, agents: [{ id, label, ready }], remaining_sessions, remaining_dispatches, paused, accept_links }`：只给这条连接自己的。`remaining_sessions` 是它的 `max_sessions` 和给人留名额之后的上限里更紧的那个，减去它在处理中的会话数，再受全节点还剩的名额限制；`remaining_dispatches` 是 `daily_dispatches` 减去今天已派发的次数。不是分身设备调用 → `forbidden`（`data.reason = "not_twin_device"`）。
+- **不转派**：来源是分身（`source.kind = twin`）的项，B 自己的分身不碰；分身设备也只能操作它自己建的项。
+
+### 27.4 A 上：分身怎么用 B
+
+实现在 `twin_link` 模块（连接、节点表、远程派发、取回结果）和 `twin`（分拣和执行）。
+
+- **节点表**（§ 26.4 的输入多一块）：每次唤醒（试跑也算），A 对每条在线的连接并发调 `twin.peer_status`（每个 5 秒超时），把「节点 id、名称、分组、在不在线、开放的项目、可用的 agent、剩余会话和派发次数、B 是否暂停了这条连接」放进分拣的输入，一个节点一行 JSON，合计最多 4 KiB（超了按节点名排序，后面的节点丢掉）。不在线或调不通的节点标成 `available: false`，只有 id 和名称。没有分身连接时输入里没有这一块，系统提示也不提 `node`。
+  - **节点名、项目名、agent 名都来自 B，是外来的文字**：先去掉控制字符和不可见的格式字符、按字符截断（名字 64、每个节点最多 20 个项目、10 个 agent），再放进和各项同一个随机边界里（§ 26.4、§ 23.9），系统提示说明它们是数据。
+- **派发到别的节点**：分拣的 `dispatch` 多一个可选的 `node`（节点表里的 id，必须是 A 现有的一条分身连接；缺省本机；别的动作带 `node` 不合法）。`node` 给了，`project` 必填（B 上的项目名，不看 A 这一项的 `project`：范围由 B 把关，A 不预判），A 自己的 agent 设置不管（B 用它给这条连接定的）。daemon 执行时：
+  1. 在 B 上 `todo.add`：标题、正文照抄 A 的这一项，`project` 取 `dispatch.project`。新 id 由 A 这一项的 id 和已经派出的次数定出来（SHA-256 取前 16 字节写成 UUID）：`todo.add` 按 id 幂等，所以「B 上记好了、`todo.dispatch` 没成功」之后的重试用的是同一个项，B 上不会留下多余的项；派发成功、A 记下之后次数加一，下一次是新的项。
+  2. 在 B 上 `todo.dispatch` 这一项（`agent` 为空、其余缺省：B 按范围定），`note` 经 `TodoDispatchParams.note` 接在第一条消息后面（§ 26.4、§ 27.3），`message_id` 由远程项 id 定出来，所以回执丢了的重试拿回第一次的结果、不再开第二个会话。
+  3. 成功之后在 A 的同一个事务里：这一项记下这次远程派发（表 `todo_remotes`：`todo_id`、`node_id`、`remote_todo_id`、`created_ms`、取回的进度 `fetched_seq`、B 上最近知道的 `activity`；`Todo.remote: [{ node_id, todo_id }]` 从它读出来，只追加），「经过」里记 `remote_dispatched { node_id, todo_id, session_id }`（`session_id` 是 B 上的会话 id），这一项的 `updated_ms` 前进，审计记 `twin.remote_dispatch`（只有 id）；连续失败的计数清零。A 上这一项的 `sessions` 不变，没有开本机会话。
+
+  失败：这一条决定 `skipped`，`skip_reason` 是 `remote_unavailable`（B 不在线、握手没成功、超时、传输出错）或 `remote_refused`（B 回了错误：范围、名额、预算、暂停、项目不在开放的范围里……；B 的 `data.reason` 清理成 `[a-z0-9_]` 之后接在这条决定的 `reason` 后面，「（the node refused: out_of_scope）」），都计入 § 26.4 的「连续 3 次派发失败」（本机派发里属于范围、名额、预算的拒绝不算失败，B 的拒绝都算：A 不知道 B 的范围变了没有）。**A 自己的 `daily_dispatches` 也算这次派发**（成功的远程派发和本机的会话一起算今天的次数，`twin.get` 的 `today.dispatches` 是两者之和），A 的 `max_sessions` 把「B 上最近知道的 `activity` 是 `working` 的远程项」和本机在处理中的项一起算；这一项自己的远程项还在 `working` 时不再派（同本机）。
+- **取回结果**：A 订阅 `Client` 的通知，**通知只当作「去同步」的信号，不当作数据**——B 上远程项的 `todo.event`（`result`）和 `todo.changed`（`activity`）只对 `todo_remotes` 里对得上 `(node_id, remote_todo_id)` 的项起作用。同步一个远程项（`sync_remote`，同一时间只做一个）：先 `todo.get` 取 B 上现在的 `activity` 存起来，再 `todo.history` 从新往旧翻（每页 200 条，最多 10 页）到 `fetched_seq` 为止，把更新的 `result` 按 `seq` 从小到大逐条记进 A 这一项的「经过」（`remote_result { node_id, session_id, text }`，`text` 同 § 22.4 的 4 KiB 截断），**同一个事务里**把 `fetched_seq` 推进到这一条的 `seq`（只增不减）。所以重连（每次 `NodeReady`）、A 重启、通知丢了之后都用同一条路径补上，没有重复；刚派发完的项也补取一次（B 的事件可能比 A 记下这一行早到）。有新的结果就触发一次 A 的分身唤醒（触发 `session`，§ 26.3；只在这一项还交给分身、没关闭时），分拣的输入里带最近几条远程结果（`earlier result (node …, session …)`，和本机的一起占 § 26.4 的那 1 200 字节）。
+  - **`text` 是 B 上 agent 写的**：按会话内容对待，不进日志、不进审计；客户端按不可信内容渲染。
+- **A 这一项的 `activity`**：`todo_dispatch::compute_activity` 把本机会话的结果（§ 22.3）和每个远程项最近一次知道的 `activity`（B 的 `todo.changed` 或同步时的 `todo.get`，存在 `todo_remotes.activity`，B 不在线时就是最后一次的）合起来：任何一边是 `working` 就是 `working`；否则任何一边是 `waiting` 就是 `waiting`；否则 `review`。派出之后还没收到过 B 的 `activity` 按 `working`（结果还没回来）；B 说没有（已关闭）或给了不认识的值的远程项不参与。只有远程项没有本机会话时就是远程项的。远程项的 `activity` 变了，A 重新算这一项的 `activity` 并发 `todo.changed`（和本机会话变化同一条路径）。
+- **你接手了**（§ 26.6）只看 A 本机的会话；在 B 上的会话里发消息不改 A 这一项的 `handler`（限制，写进 § 27.7）。A 的「2 小时没有事件算卡住」（§ 26.4）也只看本机会话。
+- **分身连接的管理**：`twin.links {}` → `{ links: [TwinLink] }`（每条：B 的 id、名称、分组、指纹、配对时间、在不在线、上一次的 `twin.peer_status`；在线状态是传输握手好了，状态在 B 上线时、每次唤醒取节点表时刷新）；`twin.link`、`twin.unlink` 见 § 27.2。都只由人调用。连接建立、断开、上线、下线时 A 发一条 `twin.changed`，客户端据此重新读 `twin.links`（它还带本机分身的状态，和 § 26.8 的是同一条通知）。
+- **不转派**：A 上来源是分身（`source.kind = twin`）的项，A 的分身同样不碰（§ 26.1 的第五条条件：本节点不分是 A 还是 B，同一个判断）。
+- **没有代理**：判断后端、`anycon mcp` 和 A 上别的本机进程都拿不到分身设备的身份，也没有「经 A 调 B」的方法：`twin.link` / `twin.links` / `twin.unlink` 只管连接本身，B 上的动作只由分拣的计划（经 daemon 的确定性执行）和后台的只读同步发出，参数不由调用方给。分身设备的密钥不出 daemon 进程。
+
+### 27.5 hub
+
+接受 `DeviceKind::Twin` 的设备：配对、认证、路由、吊销都和别的设备一样。设备列表里显示种类。`multi` 模式下它占账号的设备和连接配额。hub 多看到的元数据是「A 的分身这台设备和 B 配了对」，以及两者之间流量的大小和时间。
+
+实现：设备表的 `kind` 是不带约束的文本列，`twin` 不需要新的迁移；hub 在认证时拒绝它不认识的设备种类（`auth_fail { protocol }`），所以库里不会出现 `unknown`（hub.md § 5）。分身设备不占 daemon 配额。
+
+### 27.6 客户端
+
+- **Web**（**已实现**，细节见 [web.md § 14.8](web.md#148-分身和规则) 和 [§ 4.8](web.md#48-节点设置-nnodesettings)；A 侧 daemon 的方法没有实现的节点上，「使用别的节点」不显示）：
+  - **A 的分身页**多一块「使用别的节点」：列出分身连接（名称、在不在线、开放的项目、剩余名额）；「添加」列出这台设备配过对、支持分身（`capabilities.twin`）、`twin_accept_links` 开着的别的节点，选一个，分组不同时多确认一次，然后依次调 B 的 `node.twin_link_code` 和 A 的 `twin.link`。「断开」调 A 的 `twin.unlink`，并说明要在 B 上吊销设备。
+  - **B 的节点设置**「设备」里，分身设备显示成「<A> 的分身」，旁边有「范围」：这条连接的 `twin.get` / `twin.set`（`requester` = 设备 id），表单同分身页的范围，缺省什么都不开放。
+  - **「经过」**显示 `remote_dispatched` 和 `remote_result`：这台设备也和 B 配过对时，能点到 B 上的那一项。
+  - 所有文案 en / zh。
+- **CLI**：
+  - 在 B 上：`anycon twin link-code`，打印短码和过期时间（已实现）。
+  - 在 A 上：`anycon twin link <code> --peer <B 的 id>`、`anycon twin links`、`anycon twin unlink <node>`（`<node>` 是 B 的 id、唯一的 id 前缀或名称；选项叫 `--peer`，因为 `--node` 是全局选项、选的是命令在哪个节点上跑）。`link` 和 `unlink` 在 anycon 拉起的 agent 里拒绝执行，`links` 可读。
+  - 在 B 上看和改一条连接的范围：`anycon twin status --requester <device>`、`anycon twin set --requester <device> …`（同 § 26.8 的 `status` / `set`；`<device>` 是分身设备的 id、唯一的 id 前缀或名称，已实现）。
+  - 在 anycon 拉起的 agent 里，这些写操作拒绝执行（`link-code`、`link`、`unlink`、`set`）。
+
+### 27.7 代价 / 限制和威胁模型
+
+- **A 能让 B 干活**：A 被入侵、A 的判断被注入，都能在 B 对这条连接开放的项目里让 B 的 agent 干活。上限是 B 的范围设置、B 上 agent 的审查器和「不 push、不开 PR」。A 上别的本机进程没有直接用 B 的入口：没有代理，它们只能像用户一样往 A 的清单里记项、交给分身（agent 记的项要人先收下，§ 26.1）。
+- **内容跨机器**：A 上这一项的标题、正文和分身的说明会写进 B 的数据库；B 上会话的结果会取回 A。经 hub 的仍是密文。
+- **都经 hub**：hub 不可达时，同一个局域网里的两个节点也连不上。
+- **A 离线时**，A 派到 B 的项不再有人推进。B 上的会话照常跑完，结果等 A 回来再取。
+- **你在 B 上的会话里接手**，A 的分身不知道，它下一次唤醒仍会看这一项。会话本身已经在你手里，它的派发名额照算。
+- **一个分身设备只属于一个账号**：它能连接的 B 都要在这个账号里（hub 的已有设备规则）。
+- **新的权限面**：每个方法都要有「`twin` 设备调用被拒绝」的测试（白名单里的除外），每个通知都要有「不推给 `twin` 设备」的测试；新增方法或通知时要决定它进不进名单。
+- **旧版本**：旧 daemon 不认识 `twin` 种类，不能被使用；客户端按 `capabilities.twin` 和 `twin_accept_links` 判断（旧 daemon 的 `node.info` 没有 `twin_accept_links`，读作 `false`）。B 降级到不认识 `twin` 的旧版本不会让分身设备变成普通设备：数据库里有旧版本不认识的迁移，旧 daemon 的 `sqlx::migrate!().run()` 没有 `ignore_missing`，遇到已应用而自己没有的迁移就报 `VersionMissing` 并拒绝启动，所以连接不会在降级时「失效开放」。恢复一份旧的备份只会带回当时的设备记录。
+- **分身设备占不满清单**：一台分身设备建的、没关闭的项最多 100 个（同 agent 记的未收下项的上限），满了 `todo.add` 回 `invalid`（`data.field = "todos"`，`data.reason = "too_many_twin"`）；不然被入侵的 A 能把 B 的清单填到 1 000 个的总上限、挤掉人的项。人自己记的项不受影响。B 的人看得到每一项的来源（`source.kind = twin`），可以随时删除、暂停这条连接或吊销这台设备。

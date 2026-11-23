@@ -265,6 +265,7 @@ macro_rules! suite {
                 invites_are_single_use
                 invites_and_accounts_paginate_by_keyset_even_with_identical_timestamps
                 devices_pairings_revoke
+                every_device_kind_round_trips_through_the_store
                 seeing_a_device_records_the_time_and_ip_prefix_and_leaves_revoked_devices_alone
                 a_batch_of_seen_devices_is_written_in_chunks_and_the_last_entry_for_a_device_wins
                 rotating_a_device_token_keeps_only_the_previous_one_for_the_grace_period
@@ -468,6 +469,22 @@ pub(crate) async fn devices_pairings_revoke(db: &TestDb) {
     assert!(s.get_device("aaaa").await.unwrap().unwrap().revoked_at_ms.is_some());
     assert_eq!(s.list_devices(&acc.id).await.unwrap().len(), 2);
     assert!(s.revoke_device("aaaa", now + 2).await.unwrap().is_empty());
+}
+
+pub(crate) async fn every_device_kind_round_trips_through_the_store(db: &TestDb) {
+    let s = &db.store;
+    let now = now_ms();
+    let acc = s.create_account("admin", true, now).await.unwrap();
+    for (i, kind) in [DeviceKind::Daemon, DeviceKind::Web, DeviceKind::Cli, DeviceKind::Sdk, DeviceKind::Twin]
+        .into_iter()
+        .enumerate()
+    {
+        let mut d = new_device(&acc.id, &format!("kind-{i}"), &format!("tok-{i}"));
+        d.kind = kind;
+        s.create_device(d, now).await.unwrap();
+        assert_eq!(s.get_device(&format!("kind-{i}")).await.unwrap().unwrap().kind, kind);
+    }
+    assert_eq!(s.list_devices(&acc.id).await.unwrap().iter().filter(|d| d.kind == DeviceKind::Twin).count(), 1);
 }
 
 pub(crate) async fn seeing_a_device_records_the_time_and_ip_prefix_and_leaves_revoked_devices_alone(db: &TestDb) {

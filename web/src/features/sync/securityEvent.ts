@@ -13,7 +13,7 @@ import { toast } from '@/stores/ui'
 import { rpc } from '@/transport/instance'
 import i18n from '@/i18n'
 
-const KINDS: ReadonlySet<string> = new Set<SecurityEventKind>(['device_enrolled', 'password_failures', 'password_locked', 'password_changed', 'settings_changed'])
+const KINDS: ReadonlySet<string> = new Set<SecurityEventKind>(['device_enrolled', 'password_failures', 'password_locked', 'password_changed', 'settings_changed', 'twin_linked', 'twin_unlinked'])
 
 export function parseSecurityEvent(v: unknown): NodeSecurityEvent | null {
   if (typeof v !== 'object' || v === null) return null
@@ -56,6 +56,13 @@ export function securityText(t: TFunction, ev: NodeSecurityEvent, ctx: SecurityT
       return ev.password_set === false ? t('security.passwordCleared', { node, who: who(t, ev.by_device, ctx) }) : t('security.passwordChanged', { node, who: who(t, ev.by_device, ctx) })
     case 'settings_changed':
       return t('security.settingsChanged', { node, who: who(t, ev.by_device, ctx) })
+    case 'twin_linked':
+      return t('security.twinLinked', { node, device: cleanHintText(ev.device_name) || t('security.unknownDevice'), who: who(t, ev.by_device, ctx) })
+    case 'twin_unlinked':
+      return t('security.twinUnlinked', { node, device: cleanHintText(ev.device_name) || t('security.unknownDevice'), who: who(t, ev.by_device, ctx) })
+    // 更新的 daemon 的事件种类：`parseSecurityEvent` 已经丢掉了它，这里只让匹配完整
+    case 'unknown':
+      return t('security.unknownEvent', { node })
   }
 }
 
@@ -70,13 +77,13 @@ export function handleSecurityEvent(nodeId: string, params: unknown): void {
   const entry = nodes.byId[nodeId]
   const self = useHub.getState().snapshot.deviceId
   // 新设备加入后，设备列表要补一次
-  if (ev.kind === 'device_enrolled')
+  if (ev.kind === 'device_enrolled' || ev.kind === 'twin_linked' || ev.kind === 'twin_unlinked')
     rpc()
       .request<NodeDevicesResult>(nodeId, 'node.devices', {})
       .then((r) => useNodes.getState().setDevices(nodeId, r.devices))
       .catch((e: unknown) => console.warn('anycon: could not refresh the device list after a new device enrolled', e))
   // 自己改的不用再提醒自己
-  if ((ev.kind === 'password_changed' || ev.kind === 'settings_changed') && ev.by_device && ev.by_device === self) return
+  if ((ev.kind === 'password_changed' || ev.kind === 'settings_changed' || ev.kind === 'twin_linked' || ev.kind === 'twin_unlinked') && ev.by_device && ev.by_device === self) return
   const text = securityText(i18n.t.bind(i18n), ev, {
     node: entry?.name ?? '',
     deviceName: (id) => entry?.devices.find((d) => d.device_id === id)?.name,

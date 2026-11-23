@@ -155,12 +155,47 @@ impl Store {
         Ok(())
     }
 
+    /// 这个请求方从 `since` 起派发的次数。本机分身（`local`）派到别的节点的也算（§ 27.4）。
     pub async fn twin_dispatches_since(&self, requester: &str, since: u64) -> Result<u32> {
-        Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM twin_sessions WHERE requester=? AND created_ms>=?")
+        let local =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM twin_sessions WHERE requester=? AND created_ms>=?")
+                .bind(requester)
+                .bind(since as i64)
+                .fetch_one(self.pool())
+                .await? as u32;
+        Ok(if requester == "local" { local.saturating_add(self.todo_remotes_since(since).await?) } else { local })
+    }
+
+    /// 这个请求方派出的会话：`(会话 id, 项 id)`。
+    pub async fn twin_sessions_of(&self, requester: &str) -> Result<Vec<(String, String)>> {
+        Ok(sqlx::query_as("SELECT session_id, todo_id FROM twin_sessions WHERE requester=? ORDER BY created_ms")
             .bind(requester)
-            .bind(since as i64)
-            .fetch_one(self.pool())
-            .await? as u32)
+            .fetch_all(self.pool())
+            .await?)
+    }
+
+    /// 分身设备派出的会话：`(设备 id, 会话 id)`。启动时读进推送过滤的归属索引。
+    pub async fn twin_device_sessions(&self) -> Result<Vec<(String, String)>> {
+        Ok(sqlx::query_as("SELECT requester, session_id FROM twin_sessions WHERE requester != 'local'")
+            .fetch_all(self.pool())
+            .await?)
+    }
+
+    /// 分身设备建的项：`(设备 id, 项 id)`。
+    pub async fn twin_device_todos(&self) -> Result<Vec<(String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT source_device, id FROM todos WHERE source_kind = 'twin' AND source_device IS NOT NULL",
+        )
+        .fetch_all(self.pool())
+        .await?)
+    }
+
+    /// 一项的来源：`(source_kind, source_device)`；没有这一项为 `None`。
+    pub async fn todo_source(&self, id: &str) -> Result<Option<(String, Option<String>)>> {
+        Ok(sqlx::query_as("SELECT source_kind, source_device FROM todos WHERE id = ?")
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?)
     }
 
     pub async fn twin_session_owner(&self, sid: &str) -> Result<Option<String>> {
@@ -170,10 +205,11 @@ impl Store {
             .await?)
     }
 
+    /// 来自分身设备的项不进本机分身的范围：来源是分身的项，B 自己的分身不碰（docs/spec/daemon.md § 27.3）。
     pub async fn twin_todos(&self) -> Result<Vec<Todo>> {
         let ids = sqlx::query_scalar::<_, String>(
             "SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 AND repeat_kind IS NULL \
-             AND state NOT IN ('done','dropped') ORDER BY updated_ms, id",
+             AND source_kind != 'twin' AND state NOT IN ('done','dropped') ORDER BY updated_ms, id",
         )
         .fetch_all(self.pool())
         .await?;
@@ -190,7 +226,8 @@ impl Store {
     pub async fn twin_pr_targets(&self) -> Result<Vec<(String, String)>> {
         Ok(sqlx::query_as(
             "SELECT ts.session_id, ts.todo_id FROM twin_sessions ts JOIN todos t ON t.id = ts.todo_id \
-             WHERE t.handler = 'twin' AND t.unreviewed = 0 AND t.state NOT IN ('done','dropped') \
+             WHERE t.handler = 'twin' AND t.unreviewed = 0 AND t.source_kind != 'twin' \
+             AND t.state NOT IN ('done','dropped') \
              ORDER BY ts.created_ms, ts.session_id",
         )
         .fetch_all(self.pool())

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeRpc, rpcError } from '@/test/fakeRpc'
@@ -208,5 +208,69 @@ describe('DevicesTab — access code page (ADR-36)', () => {
     } finally {
       delete (navigator as { mediaDevices?: unknown }).mediaDevices
     }
+  })
+})
+
+describe('DevicesTab — twin devices', () => {
+  const TWIN = 'w'.repeat(32)
+  const dev = (over: Record<string, unknown>) => ({ device_id: 'd1', name: 'x', kind: 'web', fingerprint: 'ff', online: true, paired_at_ms: 1, ...over })
+  let sets: Array<Record<string, unknown>>
+  beforeEach(() => {
+    sets = []
+    rpc.handlers['node.devices'] = () => ({ devices: [dev({ device_id: 'b1', name: 'my browser' }), dev({ device_id: TWIN, name: 'alpha’s twin', kind: 'twin' })] })
+    rpc.handlers['twin.get'] = (p) => {
+      expect((p as { requester?: string }).requester).toBe(TWIN)
+      return { enabled: true, configured: false, state: 'not_configured', scope: { paused: false, projects: [], max_sessions: 1, daily_dispatches: 0 }, today: { dispatches: 1, judge_calls: 0 }, working: [], waiting: [] }
+    }
+    rpc.handlers['twin.set'] = (p) => {
+      sets.push(p as Record<string, unknown>)
+      const q = p as { projects?: string[]; paused?: boolean; max_sessions?: number; daily_dispatches?: number }
+      return { enabled: true, configured: !!q.projects?.length, state: 'idle', scope: { paused: q.paused ?? false, projects: q.projects ?? [], max_sessions: q.max_sessions ?? 1, daily_dispatches: q.daily_dispatches ?? 0 }, today: { dispatches: 1, judge_calls: 0 }, working: [], waiting: [] }
+    }
+    rpc.handlers['node.get_config'] = () => ({ items: [{ key: 'sessions.max_concurrent', value: 4 }] })
+    useNodes.getState().setProjects(NODE, '/w', [
+      { name: 'web', path: '/w/web', modified_at_ms: 1, active_sessions: 0 },
+      { name: 'api', path: '/w/api', modified_at_ms: 1, active_sessions: 0 },
+    ])
+  })
+  it('shows a Scope button only on twin devices, labelled as a twin', async () => {
+    render(<DevicesTab nodeId={NODE} />)
+    await screen.findByText('alpha’s twin')
+    expect(screen.getAllByTestId('device-twin-scope')).toHaveLength(1)
+    expect(screen.getByText('twin')).toBeInTheDocument()
+  })
+  it('opens the scope of that connection with nothing opened by default, and saves it with the device id as requester', async () => {
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(await screen.findByTestId('device-twin-scope'))
+    const dialog = await screen.findByTestId('twin-scope-dialog')
+    expect(await within(dialog).findByText(/Nothing is open: that Twin cannot add to-dos/)).toBeInTheDocument()
+    expect(dialog).toHaveTextContent('Projects opened here are the only ones that node’s Twin can add to-dos in and have agents work on.')
+    expect(within(dialog).getByRole('checkbox', { name: 'web' })).not.toBeChecked()
+    expect(within(dialog).getByRole('checkbox', { name: 'api' })).not.toBeChecked()
+    await user.click(within(dialog).getByRole('checkbox', { name: 'api' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save scope' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Save scope' }))
+    await waitFor(() => expect(sets).toHaveLength(1))
+    expect(sets[0]).toMatchObject({ requester: TWIN, projects: ['api'] })
+    // 本机分身的 requester 缺省，这里一定带着设备 id
+    await waitFor(() => expect(within(dialog).getByRole('checkbox', { name: 'api' })).toBeChecked())
+  })
+  it('pauses and resumes the connection through the same requester', async () => {
+    const user = userEvent.setup()
+    render(<DevicesTab nodeId={NODE} />)
+    await user.click(await screen.findByTestId('device-twin-scope'))
+    await user.click(await screen.findByTestId('twin-scope-pause'))
+    await waitFor(() => expect(sets).toEqual([{ paused: true, requester: TWIN }]))
+    expect(await screen.findByTestId('twin-scope-pause')).toHaveTextContent('Resume this connection')
+  })
+  it('revoking a twin device works like any other device', async () => {
+    const user = userEvent.setup()
+    rpc.handlers['node.revoke_device'] = () => ({})
+    render(<DevicesTab nodeId={NODE} />)
+    await screen.findByText('alpha’s twin')
+    const row = screen.getByText('alpha’s twin').closest('li')!
+    await user.click(within(row).getByRole('button', { name: 'Revoke' }))
+    expect(await screen.findByTestId('device-revoke-confirm')).toBeInTheDocument()
   })
 })

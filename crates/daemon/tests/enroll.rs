@@ -32,6 +32,8 @@ struct Bench {
     /// 收到过的全部通知（只增不减，查泄漏用）。
     all_seen: Vec<RpcNotification>,
     counter: u32,
+    /// 下一个 `newcomer` 自报的设备种类（缺省 `cli`）。
+    hint_kind: DeviceKind,
 }
 
 /// 新设备一侧：临时 id（hub 给的）、接入会话 id、initiator。
@@ -84,7 +86,16 @@ impl Bench {
         let client = td.client("phone");
         let recorder = Arc::new(Recorder::default());
         td.ctx.notifier.set_out(recorder.clone());
-        Bench { td, link, client, recorder, seen: Vec::new(), all_seen: Vec::new(), counter: 0 }
+        Bench {
+            td,
+            link,
+            client,
+            recorder,
+            seen: Vec::new(),
+            all_seen: Vec::new(),
+            counter: 0,
+            hint_kind: DeviceKind::Cli,
+        }
     }
 
     async fn restart(self) -> Bench {
@@ -159,10 +170,10 @@ impl Bench {
             node_id: self.link.node_id.clone(),
             method,
             approval,
-            hint: hint(name),
+            hint: EnrollHint { kind: self.hint_kind, ..hint(name) },
             client_info: ClientInfo {
                 name: name.into(),
-                kind: DeviceKind::Cli,
+                kind: self.hint_kind,
                 platform: "test".into(),
                 version: "0".into(),
                 origin: None,
@@ -271,6 +282,38 @@ fn rejected(o: Out) -> (EnrollRejectReason, Option<u64>, Option<u32>) {
 
 fn caller(id: &str) -> Caller {
     Caller { device_id: id.into(), device_name: format!("device {id}"), kind: DeviceKind::Web, local: false }
+}
+
+// ====================================================================== 分身设备不能用接入码和节点口令加入
+
+#[tokio::test]
+async fn an_enrollment_that_claims_to_be_a_twin_device_is_rejected_for_every_method() {
+    let mut b = Bench::new().await;
+    b.set_password(PW).await;
+    // 一个有效的主动接入码也在：这些都不该让自报 `twin` 的发起方进来
+    b.call::<NodeEnrollCodeResult>(methods::NODE_ENROLL_CODE, json!({})).await.unwrap();
+    b.hint_kind = DeviceKind::Twin;
+    for (method, approval) in [
+        (EnrollMethod::Password, false),
+        (EnrollMethod::Scan, false),
+        (EnrollMethod::Code, true),
+        (EnrollMethod::Code, false),
+    ] {
+        let mut n = b.newcomer(method, approval).await;
+        n.init.set_password(PW);
+        let (reason, retry, attempts) = rejected(b.start(&mut n).await);
+        assert_eq!((reason, retry, attempts), (EnrollRejectReason::TwinNotAllowed, None, None), "{method:?}");
+        assert!(b.link.take_controls().iter().all(|c| !matches!(c, Control::PairConfirm { .. })));
+        assert_eq!(b.td.ctx.enroll.live_count(), 0, "{method:?}: the session ended");
+    }
+    assert!(b.td.ctx.peers.list().is_empty() && b.td.ctx.store.list_peers().await.unwrap().is_empty());
+    // 口令的失败计数不受影响（没走到比对口令那一步）
+    assert_eq!(b.status().await.password.failures, 0);
+    // 同一台机器上不是 `twin` 的设备照常用口令加入
+    b.hint_kind = DeviceKind::Cli;
+    let (formal, _) = pw_joins(&mut b, PW).await;
+    assert_eq!(b.td.ctx.peers.record(&formal).unwrap().kind, DeviceKind::Cli);
+    b.td.shutdown().await;
 }
 
 // ====================================================================== 成功路径

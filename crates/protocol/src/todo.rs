@@ -87,7 +87,7 @@ pub enum TodoSourceKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoSource {
     pub kind: TodoSourceKind,
-    /// 经 hub 来的调用带上发起设备的 id。
+    /// 经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台分身设备（另一个节点的分身，docs/spec/daemon.md § 27.3）的设备 id。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<DeviceId>,
     /// 这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。
@@ -173,6 +173,18 @@ pub struct Todo {
     /// 周期规则。带它的项是模板：不进分拣、不能派发，到点由 daemon 复制出新的一项（`source.kind = repeat`）；只由人设置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat: Option<TodoRepeat>,
+    /// 这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由分身连接的 A 侧写。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote: Vec<TodoRemote>,
+}
+
+/// 这一项在另一个节点上对应的项（`Todo.remote`）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoRemote {
+    /// 那个节点的 id。
+    pub node_id: DeviceId,
+    /// 那个节点上的项 id。
+    pub todo_id: String,
 }
 
 /// 清单项派出的会话现在的情况（算出来的，不存；`Todo.activity`）。
@@ -330,6 +342,10 @@ pub struct TodoDispatchParams {
     /// 不多记关联和「经过」；它同时是会话第一条消息的 id。缺省由 daemon 生成（那样就没有幂等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// 分身的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。
+    /// 只有分身设备（另一个节点的分身）能带；别的调用方带了 → `invalid`（`data.field = "note"`，`data.reason = "not_allowed"`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -463,6 +479,19 @@ pub enum TodoEventData {
     RepeatSkipped {
         at_ms: TimestampMs,
     },
+    /// 分身把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话
+    /// （那个节点上的 id，不是这个节点的会话）。
+    RemoteDispatched {
+        node_id: DeviceId,
+        todo_id: String,
+        session_id: SessionId,
+    },
+    /// 取回了另一个节点上一次派发的结果：`text` 同 `result`（≤ 4 KiB，在码点边界截断），是会话内容，按不可信内容渲染。
+    RemoteResult {
+        node_id: DeviceId,
+        session_id: SessionId,
+        text: String,
+    },
     /// 分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。
     /// 不含评审或评论的正文，只有变化的种类和 PR 地址。
     PrEvent {
@@ -535,6 +564,7 @@ mod tests {
             sessions: vec![],
             activity: None,
             repeat: None,
+            remote: vec![],
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["state"], "waiting");
@@ -639,6 +669,35 @@ mod tests {
         assert!(t.activity.is_none() && serde_json::to_value(&t).unwrap().get("activity").is_none());
         t.activity = Some(TodoActivity::Review);
         assert_eq!(serde_json::to_value(&t).unwrap()["activity"], "review");
+    }
+
+    #[test]
+    fn remote_items_are_left_out_when_empty_and_remote_events_roundtrip() {
+        let mut t: Todo = serde_json::from_value(serde_json::json!({
+            "id": "a", "title": "t", "body": "", "state": "open", "source": { "kind": "twin", "device_id": "d" },
+            "unreviewed": false, "created_ms": 1, "updated_ms": 1
+        }))
+        .unwrap();
+        assert!(t.remote.is_empty() && serde_json::to_value(&t).unwrap().get("remote").is_none());
+        t.remote.push(TodoRemote { node_id: "n".into(), todo_id: "r".into() });
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["remote"], serde_json::json!([{ "node_id": "n", "todo_id": "r" }]));
+        assert_eq!(serde_json::from_value::<Todo>(v).unwrap(), t);
+        for (data, kind) in [
+            (
+                TodoEventData::RemoteDispatched { node_id: "n".into(), todo_id: "r".into(), session_id: "s".into() },
+                "remote_dispatched",
+            ),
+            (
+                TodoEventData::RemoteResult { node_id: "n".into(), session_id: "s".into(), text: "done".into() },
+                "remote_result",
+            ),
+        ] {
+            let ev = TodoEvent { seq: 1, ts_ms: 2, data };
+            let v = serde_json::to_value(&ev).unwrap();
+            assert_eq!(v["kind"], kind);
+            assert_eq!(serde_json::from_value::<TodoEvent>(v).unwrap(), ev);
+        }
     }
 
     #[test]

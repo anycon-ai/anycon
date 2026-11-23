@@ -75,6 +75,14 @@ fn main() {
         version: "0.1.0".into(),
         origin: Some("https://hub.example.com".into()),
     };
+    // 分身设备（另一个节点的分身，docs/spec/daemon.md § 27）：种类 `twin`
+    let twin_client = ClientInfo {
+        name: "mac-mini 的分身".into(),
+        kind: DeviceKind::Twin,
+        platform: "macos-aarch64".into(),
+        version: "0.1.0".into(),
+        origin: None,
+    };
     let quota = Quota {
         devices: 2,
         devices_max: Some(10),
@@ -107,6 +115,15 @@ fn main() {
                 device_token: None,
                 protocol_version: PROTOCOL_VERSION,
                 client: sdk_client,
+                preview_token: None,
+            },
+        ),
+        control(
+            "auth_with_token_twin",
+            Control::Auth {
+                device_token: Some("tok_5c2e8b1a7d9f4e30".into()),
+                protocol_version: PROTOCOL_VERSION,
+                client: twin_client,
                 preview_token: None,
             },
         ),
@@ -374,15 +391,42 @@ fn main() {
             session_id: None,
             question_id: None,
             project: Some("app".into()),
+            node: None,
         }],
         error: None,
+    };
+    let peer_status = TwinPeerStatus {
+        name: "mac-mini".into(),
+        group: Some("home".into()),
+        projects: vec!["app".into()],
+        agents: vec![TwinPeerAgent { id: "mock".into(), label: "Mock".into(), ready: true }],
+        remaining_sessions: 1,
+        remaining_dispatches: 9,
+        paused: false,
+        accept_links: true,
+    };
+    let link = TwinLink {
+        node_id: DEVICE_B.into(),
+        name: "mac-mini".into(),
+        group: Some("home".into()),
+        fingerprint: "ab:cd:ef".into(),
+        paired_ms: 1,
+        online: true,
+        status: Some(peer_status.clone()),
     };
     for (name, method, params, result) in [
         ("get", methods::TWIN_GET, json!({}), serde_json::to_value(&twin).unwrap()),
         (
+            "get_requester",
+            methods::TWIN_GET,
+            serde_json::to_value(TwinGetParams { requester: Some(DEVICE_A.into()) }).unwrap(),
+            serde_json::to_value(&twin).unwrap(),
+        ),
+        (
             "set",
             methods::TWIN_SET,
             serde_json::to_value(TwinSetParams {
+                requester: Some(DEVICE_A.into()),
                 paused: Some(true),
                 clear: vec![ClearableTwinField::Agent, ClearableTwinField::Model, ClearableTwinField::Mode],
                 ..Default::default()
@@ -415,6 +459,33 @@ fn main() {
             serde_json::to_value(TwinAnswerParams { id: "q".into(), answer: "app".into() }).unwrap(),
             serde_json::to_value(&question).unwrap(),
         ),
+        ("peer_status", methods::TWIN_PEER_STATUS, json!({}), serde_json::to_value(&peer_status).unwrap()),
+        (
+            "link",
+            methods::TWIN_LINK,
+            serde_json::to_value(TwinLinkParams { code: "ABCD-2345-EFGH-6789".into(), node_id: DEVICE_B.into() })
+                .unwrap(),
+            serde_json::to_value(&link).unwrap(),
+        ),
+        (
+            "links",
+            methods::TWIN_LINKS,
+            json!({}),
+            serde_json::to_value(TwinLinksResult { links: vec![link.clone()] }).unwrap(),
+        ),
+        (
+            "unlink",
+            methods::TWIN_UNLINK,
+            serde_json::to_value(TwinUnlinkParams { node_id: DEVICE_B.into() }).unwrap(),
+            json!({}),
+        ),
+        (
+            "link_code",
+            methods::NODE_TWIN_LINK_CODE,
+            json!({}),
+            serde_json::to_value(NodeTwinLinkCodeResult { code: "ABCD-2345-EFGH-6789".into(), expires_ms: 600_000 })
+                .unwrap(),
+        ),
     ] {
         v.push(rpc(&format!("twin_{name}"), RpcMessage::request(30u64, method, params)));
         v.push(rpc(&format!("twin_{name}_result"), RpcMessage::result(RpcId::Num(30), result)));
@@ -431,6 +502,23 @@ fn main() {
         RpcMessage::notification(
             methods::TWIN_QUESTION,
             serde_json::to_value(TwinQuestionNotice { question }).unwrap(),
+        ),
+    ));
+    v.push(rpc(
+        "node_security_event_twin_linked",
+        RpcMessage::notification(
+            methods::NODE_SECURITY_EVENT,
+            serde_json::to_value(NodeSecurityEvent {
+                kind: SecurityEventKind::TwinLinked,
+                ts_ms: 5,
+                by_device: Some("local".into()),
+                device_id: Some(DEVICE_A.into()),
+                device_name: Some("mac-mini 的分身".into()),
+                method: None,
+                failures: None,
+                password_set: None,
+            })
+            .unwrap(),
         ),
     ));
     v.push(rpc(
@@ -455,6 +543,14 @@ fn main() {
     for (name, data) in [
         ("todo_repeat_created", TodoEventData::RepeatCreated { todo_id: "n".into(), at_ms: 3 }),
         ("todo_repeat_skipped", TodoEventData::RepeatSkipped { at_ms: 3 }),
+        (
+            "todo_remote_dispatched",
+            TodoEventData::RemoteDispatched { node_id: DEVICE_B.into(), todo_id: "r".into(), session_id: "s".into() },
+        ),
+        (
+            "todo_remote_result",
+            TodoEventData::RemoteResult { node_id: DEVICE_B.into(), session_id: "s".into(), text: "done".into() },
+        ),
     ] {
         v.push(rpc(
             name,

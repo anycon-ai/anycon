@@ -296,6 +296,8 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
             (TodoSourceKind::Agent, true) => app.out.yellow("agent (unreviewed)"),
             (TodoSourceKind::Agent, false) => "agent".to_string(),
             (TodoSourceKind::Repeat, _) => "repeat".to_string(),
+            // 另一个节点的分身经分身连接记的项
+            (TodoSourceKind::Twin, _) if t.source.device_id.is_some() => "twin device".to_string(),
             (TodoSourceKind::Twin | TodoSourceKind::Unknown, true) => app.out.yellow("other (unreviewed)"),
             (TodoSourceKind::Twin | TodoSourceKind::Unknown, false) => "other".to_string(),
             _ => String::new(),
@@ -485,6 +487,7 @@ async fn run(app: &App, a: TodoRunArgs) -> Result<u8> {
         no_push: a.allow_push.then_some(false),
         // 一次命令一个：回执丢了、重发时 daemon 返回第一次的结果，不开第二个会话
         message_id: Some(uuid::Uuid::new_v4().to_string()),
+        note: None,
     };
     let r: TodoDispatchResult =
         conn.call(methods::TODO_DISPATCH, params).await.map_err(|e| friendly_dispatch(e, &agent))?;
@@ -594,6 +597,27 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
                 url.as_deref().filter(|u| u.starts_with("https://github.com/")).map(|u| sanitize_label(u, 200, ""));
             (format!("pull request {what} (session {session_id})"), link.into_iter().collect())
         }
+        TodoEventData::RemoteDispatched { node_id, todo_id, session_id } => (
+            format!(
+                "dispatched on node {} (to-do {}, session {})",
+                sanitize_label(node_id, 40, "?"),
+                short(todo_id),
+                sanitize_label(session_id, 40, "?")
+            ),
+            vec![],
+        ),
+        TodoEventData::RemoteResult { node_id, session_id, text } => (
+            format!(
+                "report from node {}, session {}",
+                sanitize_label(node_id, 40, "?"),
+                sanitize_label(session_id, 40, "?")
+            ),
+            if text.is_empty() {
+                vec!["(no text)".to_string()]
+            } else {
+                visible(text).lines().map(str::to_string).collect()
+            },
+        ),
         TodoEventData::Unknown => ("unrecognized event".into(), vec![]),
     }
 }

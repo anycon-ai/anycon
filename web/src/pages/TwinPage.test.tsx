@@ -207,3 +207,33 @@ it('each referenced rule links to its own node and rule', async () => {
   expect(await screen.findByRole('link', { name: 'Rules: rule1' })).toHaveAttribute('href', '/rules?node=aaaaaaaa&rule=rule1')
   expect(screen.getByRole('link', { name: 'Rules: rule2' })).toHaveAttribute('href', '/rules?node=aaaaaaaa&rule=rule2')
 })
+
+describe('Twin decisions that use another node', () => {
+  it('shows the node a dispatch went to (by name when paired, by short id otherwise) and the two new skip reasons', async () => {
+    useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true) }) }, order: [A, B] }))
+    daemon.dry = twinRun({
+      dry_run: true,
+      decisions: [
+        { todo_id: 't1', action: 'dispatch', reason: 'Build it there', rules: [], outcome: 'executed', node: B, project: 'api' },
+        { todo_id: 't2', action: 'dispatch', reason: 'No route', rules: [], outcome: 'skipped', node: 'f'.repeat(32), skip_reason: 'remote_unavailable' },
+        { todo_id: 't3', action: 'dispatch', reason: 'Not allowed', rules: [], outcome: 'skipped', node: B, skip_reason: 'remote_refused' },
+        { todo_id: 't4', action: 'dispatch', reason: 'Here', rules: [], outcome: 'executed' },
+      ],
+    })
+    await load()
+    await userEvent.click(screen.getAllByRole('button', { name: 'Try a dry run' })[0]!)
+    await screen.findByText('Build it there')
+    const rows = screen.getAllByTestId('twin-decision')
+    expect(rows[0]).toHaveTextContent('Sent to node: beta')
+    expect(rows[1]).toHaveTextContent('Sent to node: another node (ffffffff)')
+    expect(rows[1]).toHaveTextContent('Skipped: The other node was unreachable')
+    expect(rows[2]).toHaveTextContent('Skipped: The other node refused it')
+    // 缺省是本机：不写节点
+    expect(within(rows[3]!).queryByTestId('twin-decision-node')).not.toBeInTheDocument()
+  })
+  it('adds the connection section to the page of a twin-capable node', async () => {
+    await load()
+    expect(await screen.findByTestId('twin-links')).toBeInTheDocument()
+    expect(calls('twin.links').some((c) => c.nodeId === A)).toBe(true)
+  })
+})

@@ -95,7 +95,7 @@ worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self';
 | `GET /api/me/tokens` · `POST` · `DELETE /:id` | 登录 token。`POST` 返回明文一次，库里存 blake2 哈希。删的是账号最后一个登录 token、而账号没有别的登录方式（绑定了邮箱且配了 SMTP、hub 配了的提供方的 OAuth 身份）→ `409 last_login_method`；`single` 的 bootstrap 管理员始终有 bootstrap token（它不是库里的行），所以删得掉自己名下的 token；`id` 不属于本账号 → `404 not_found`。和解绑邮箱、解除身份一起按账号串行（见下）。仅 `single`（`multi` 里 `404 not_found`） |
 | `GET /api/me/passkeys` · `PATCH /:id`（改名）· `DELETE /:id` | |
 | `GET /api/me/identities` · `DELETE /:provider` | OAuth 身份，两种模式都有。`GET` → `[{ provider: "github" \| "google", created_at_ms }]`；库里只存 `(provider, subject, account_id, created_at_ms)`，不存也不返回用户名、邮箱、头像和 access token。`DELETE` → `204`（没绑过也是 `204`）；`:provider` 不是 `github` / `google` → `404 not_found`；这是账号唯一的登录方式 → `409 last_login_method`（只有 hub 现在配了的提供方才算登录方式）；和解绑邮箱、删登录 token 一起按账号串行（见下）。审计 `identity_unlinked`。一个账号在一个提供方最多一个身份 |
-| `GET /api/devices` | 本账号全部设备：id、名称、kind（`daemon` / `web` / `cli` / `sdk`）、平台、origin（web 设备）、创建时间、最近在线、当前是否在线、与哪些设备配对。**也接受设备 token**（`Authorization: Bearer <device token>`，当前 token 或轮换后 60 秒宽限内的上一个 token 都认，§ 5；只读，返回内容和 cookie 登录时一样）：CLI 已经是这个 hub 上的设备时用它列节点，不必再登录一次（[spec/cli.md § 3.3](cli.md)）。带了 `Authorization` 头就只看它（不回退到 cookie）；token 不存在、已吊销、不是 `Bearer` 都是 `401 unauthorized`。设备 token 只开放这个接口和 `POST /api/preview/tokens`（§ 13.3，只认设备 token），`PATCH` / `DELETE` 和其余 `/api/*` 仍然只认登录 cookie |
+| `GET /api/devices` | 本账号全部设备：id、名称、kind（`daemon` / `web` / `cli` / `sdk` / `twin`）、平台、origin（web 设备）、创建时间、最近在线、当前是否在线、与哪些设备配对。**也接受设备 token**（`Authorization: Bearer <device token>`，当前 token 或轮换后 60 秒宽限内的上一个 token 都认，§ 5；只读，返回内容和 cookie 登录时一样）：CLI 已经是这个 hub 上的设备时用它列节点，不必再登录一次（[spec/cli.md § 3.3](cli.md)）。带了 `Authorization` 头就只看它（不回退到 cookie）；token 不存在、已吊销、不是 `Bearer` 都是 `401 unauthorized`。设备 token 只开放这个接口和 `POST /api/preview/tokens`（§ 13.3，只认设备 token），`PATCH` / `DELETE` 和其余 `/api/*` 仍然只认登录 cookie |
 | `PATCH /api/devices/:id` | 改名 |
 | `DELETE /api/devices/:id` | 吊销：断连接、删配对、删 push 订阅。**只是 hub 侧的一半**，daemon 侧的公钥删除由客户端通过 `node.revoke_device` 完成；UI 两步一起做 |
 | `GET /api/invites` · `POST` · `DELETE /:id` | 邀请链接。仅 `single`，管理员专用（`multi` 里 `404 not_found`，开放注册没有邀请）。单次使用、默认 7 天过期、可附备注。受邀者用链接兑换（`/auth/invite`），或者带着邀请码走 OAuth 登录（§ 2.2.1） |
@@ -243,7 +243,7 @@ close code 全表（`auth_fail` 总是先于 close 发出）：
 device
   id            随机 128 bit，对外的 DeviceId
   account_id
-  kind          daemon | web | cli | sdk
+  kind          daemon | web | cli | sdk | twin
   name          客户端提供，可改。Web 默认 "Chrome · macOS · hub.example.com"
   platform      客户端自报：os、arch、客户端版本
   origin        仅 web：该浏览器访问 hub 的 origin（区分局域网/公网两份）
@@ -255,6 +255,7 @@ device
                   和 web_sessions、hub_audit 的 ip_prefix 同一格式，不存完整 IP；每次覆盖，只有最近一次，不是历史
 ```
 
+- **`twin` 种类**（[daemon.md § 27](daemon.md#27-分身连接)，ADR-56）：另一个节点的分身，一个节点一台、一条 hub 连接，不论它连了几个节点。hub 对它没有任何特别的规则：短码配对（作为 joiner，新设备归入 host 所在的账号）、认证、路由、吊销、设备列表（`kind = twin`）都和别的设备一样；`multi` 模式下它占账号的设备数和连接数（不占 daemon 数）。设备表的 `kind` 是不带约束的文本列，不需要新的迁移。hub 在认证时拒绝它不认识的 `kind`（更新的客户端自报的新种类）：`auth_fail { protocol }`，所以库里不会有不认识的种类。**限制设备能做什么的是被使用的 daemon，不是 hub**：hub 不解析内层方法，不知道哪些方法在白名单里。hub 多看到的元数据是「这台分身设备和这个节点配了对」，以及两者之间流量的大小和时间
 - device token 是 32 字节随机数（64 位小写 hex），配对确认时签发，只传一次；客户端存在自己的配置目录 / IndexedDB。hub 只存哈希
 - **轮换**：`control.rotate_token`（设备→hub，没有字段）→ hub 回 `token_rotated { device_token }`，旧 token 再保留 60 秒宽限。目的是缩短**泄露了的 token** 的有效期；客户端默认在 token 满 30 天后的下一次连接上发起（各客户端的策略和落盘方式见 [daemon.md § 15](daemon.md#15-连接与可靠性)、[cli.md § 2](cli.md#2-目录与配置)、[web.md § 6.4](web.md#64-连接状态机每个节点)、[sdk.md § 2](sdk.md#2-身份与配对)）。规则：
   - **谁能轮换**：带设备 token 认证的永久连接（daemon / web / cli / sdk 一视同仁），含配对 / 接入完成后原地升级成正式设备的连接。**而且这条连接认证用的必须是当前 token**（见下面「旧 token 不能用来接管设备」）。没有身份的临时连接和预览连接发的 `rotate_token` 一律忽略（不回复、不影响连接）

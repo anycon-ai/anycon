@@ -4,7 +4,9 @@
 
 mod judge;
 mod twin;
+pub(crate) mod twin_link;
 pub use judge::{ExtractAttempts, ExtractRunFinish, JudgeCallFinish, JudgeCallStart};
+pub use twin_link::{LinkRow, RemoteRow};
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -270,12 +272,15 @@ pub fn parse_status(s: &str) -> SessionStatus {
     }
 }
 
-fn kind_str(k: DeviceKind) -> &'static str {
+pub fn kind_name(k: DeviceKind) -> &'static str {
     match k {
         DeviceKind::Daemon => "daemon",
         DeviceKind::Web => "web",
         DeviceKind::Cli => "cli",
         DeviceKind::Sdk => "sdk",
+        DeviceKind::Twin => "twin",
+        // 配对时 `Unknown` 已经按 `web` 存（`parse_client_info`），不会走到这里；只让匹配完整
+        DeviceKind::Unknown => "web",
     }
 }
 
@@ -284,6 +289,7 @@ pub fn parse_kind(s: &str) -> DeviceKind {
         "daemon" => DeviceKind::Daemon,
         "web" => DeviceKind::Web,
         "sdk" => DeviceKind::Sdk,
+        "twin" => DeviceKind::Twin,
         _ => DeviceKind::Cli,
     }
 }
@@ -859,7 +865,7 @@ impl Store {
         .bind(&p.device_id)
         .bind(hex::encode(p.pubkey))
         .bind(&p.name)
-        .bind(kind_str(p.kind))
+        .bind(kind_name(p.kind))
         .bind(p.paired_at_ms as i64)
         .bind(p.last_seen_ms.map(|v| v as i64))
         .execute(&self.pool)

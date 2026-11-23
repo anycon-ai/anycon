@@ -565,25 +565,29 @@ async fn enroll_inner(
     }
     // 3. 连 hub：已有设备身份就带着 token（账号取自设备）；没有就开临时连接，升级请求里带登录 cookie
     let mut h = match state.token.clone() {
-        Some(token) => match HubWs::connect_raw(&env.hub_url, Some(token), &name, account.cookie.as_deref()).await {
-            Ok(h) => h,
-            Err(ConnectFail::Auth(
-                anycon_protocol::AuthFailReason::Invalid | anycon_protocol::AuthFailReason::Revoked,
-            )) => {
-                ui.say("note: the hub no longer accepts this device's saved credentials; joining as a new device");
-                state.forget_credentials()?;
-                account.ensure(ui, sigint).await?;
-                HubWs::connect_raw(&env.hub_url, None, &name, account.cookie.as_deref())
-                    .await
-                    .map_err(ConnectFail::into_cli)?
+        Some(token) => {
+            match HubWs::connect_raw(&env.hub_url, Some(token), remote::client_info(&name), account.cookie.as_deref())
+                .await
+            {
+                Ok(h) => h,
+                Err(ConnectFail::Auth(
+                    anycon_protocol::AuthFailReason::Invalid | anycon_protocol::AuthFailReason::Revoked,
+                )) => {
+                    ui.say("note: the hub no longer accepts this device's saved credentials; joining as a new device");
+                    state.forget_credentials()?;
+                    account.ensure(ui, sigint).await?;
+                    HubWs::connect_raw(&env.hub_url, None, remote::client_info(&name), account.cookie.as_deref())
+                        .await
+                        .map_err(|f| CliError::from(f.into_error()))?
+                }
+                Err(f) => return Err(f.into_error().into()),
             }
-            Err(f) => return Err(f.into_cli()),
-        },
+        }
         None => {
             account.ensure(ui, sigint).await?;
-            HubWs::connect_raw(&env.hub_url, None, &name, account.cookie.as_deref())
+            HubWs::connect_raw(&env.hub_url, None, remote::client_info(&name), account.cookie.as_deref())
                 .await
-                .map_err(ConnectFail::into_cli)?
+                .map_err(|f| CliError::from(f.into_error()))?
         }
     };
     // hub 只在升级那一刻读一次 cookie（账号已经记在这条连接上）：连上了就马上登出，会话 cookie 不多留一秒
@@ -684,6 +688,12 @@ pub(crate) fn rejected_error(reason: EnrollRejectReason, retry_after_ms: Option<
         EnrollRejectReason::Busy => CliError::new(EXIT_ERROR, "busy", "the node is busy with other join requests; try again in a moment"),
         EnrollRejectReason::Expired => CliError::new(EXIT_ERROR, "expired", "the request or the join code expired; start again"),
         EnrollRejectReason::Invalid => CliError::new(EXIT_ERROR, "protocol_error", "the node rejected the request as malformed"),
+        EnrollRejectReason::TwinNotAllowed => CliError::denied(
+            "twin_not_allowed",
+            "a twin device cannot join with a join code or a password; \
+             run `anycon twin link-code` on the node it should use",
+        ),
+        EnrollRejectReason::Unknown => CliError::new(EXIT_ERROR, "rejected", "the node rejected the request"),
     }
 }
 

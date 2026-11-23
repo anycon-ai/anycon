@@ -196,6 +196,22 @@ await node.todos.update({ id: todo.id, handler: 'me' })
 
 Twin runs can be triggered by `pr` (a pull request of a session the twin dispatched changed), and a to-do's history can contain `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }` entries; the types follow the protocol, and clients must tolerate unknown values. `pr_event` carries no review text.
 
+### Twin connections (ADR-56)
+
+A node's twin can be paired with another node as a restricted `twin` device, so it can add to-dos there and have agents work on them inside the projects that node opens to the connection. A person sets this up from a client that is paired with both nodes: ask the node to use for a one-time code, then hand it to the node that will use it. The code is a secret: pass the result of `twinLinkCode()` straight to `twin.link`; the SDK does not cache or log it, and your code should not display or store it.
+
+```ts
+const { code } = await used.twinLinkCode() // on the node to be used (B): `node.twin_link_code`
+const link = await using.twin.link({ code, node_id: (await used.info()).node_id }) // on the node that uses it (A)
+const { links } = await using.twin.links() // name, group, online, last `peer_status`
+await using.twin.unlink({ node_id: link.node_id }) // A forgets it; revoke the twin device on B to finish
+// on B: what a connection may do (requester = the twin device's id), nothing is open by default
+await used.twin.set({ requester: deviceId, projects: ['app'], max_sessions: 1, daily_dispatches: 5 })
+const status = await used.twin.get({ requester: deviceId })
+```
+
+`twin.peerStatus()` is what a twin device itself calls on B (name, open projects, what is left); other callers get `forbidden`. A refused link carries `data.reason`: `accept_links_off`, `different_hub`, `code_expired` or `node_mismatch`. A node reports `node.info.twin_accept_links`; clients should only offer a node as a target when it has `capabilities.twin` and that is `true`. To-do history may contain `remote_dispatched` and `remote_result`, and decisions `node` and the skip reasons `remote_unavailable` / `remote_refused`; treat unknown values as unknown.
+
 ## Rules (ADR-54)
 
 Each node keeps a list of your rules, short instructions such as "write the failing test first". The active ones are written into the system prompt of the sessions a to-do is dispatched to (see [docs/spec/daemon.md § 23](../../docs/spec/daemon.md#23-决策档案)). Rules never change permissions. `node.rules` is a thin wrapper over `rule.*`; a node reports support in `(await node.info()).capabilities.rules`, and an older node answers with `RpcError('unsupported')`. The SDK does no offline caching or replay.

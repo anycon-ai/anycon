@@ -32,6 +32,8 @@ pub const MAX_PROJECT_CHARS: usize = 200;
 pub const MAX_OPEN: i64 = 1000;
 /// 没被收下（`unreviewed`）的项最多这么多：agent 占不满清单。
 pub const MAX_UNREVIEWED: i64 = 100;
+/// 一台分身设备（另一个节点的分身）最多有这么多没关闭的项：它占不满清单（docs/spec/daemon.md § 27.3）。
+pub const MAX_TWIN_DEVICE_OPEN: i64 = 100;
 /// `todo.list` 的 `limit` 缺省值和上限。
 pub const DEFAULT_LIMIT: u32 = 200;
 pub const MAX_LIMIT: u32 = 1000;
@@ -199,6 +201,7 @@ pub(crate) fn row_to_todo(r: &sqlx::sqlite::SqliteRow) -> Todo {
         sessions: Vec::new(),
         activity: None,
         repeat: repeat_of_row(r),
+        remote: Vec::new(),
     }
 }
 
@@ -218,7 +221,7 @@ fn repeat_of_row(r: &sqlx::sqlite::SqliteRow) -> Option<TodoRepeat> {
     })
 }
 
-fn source_kind_str(k: TodoSourceKind) -> &'static str {
+pub(crate) fn source_kind_str(k: TodoSourceKind) -> &'static str {
     match k {
         TodoSourceKind::Device => "device",
         TodoSourceKind::Local => "local",
@@ -309,6 +312,7 @@ impl Store {
         let r = sqlx::query("SELECT * FROM todos WHERE id = ?").bind(id).fetch_optional(self.pool()).await?;
         let Some(mut t) = r.as_ref().map(row_to_todo) else { return Ok(None) };
         t.sessions = self.todo_links(id).await?;
+        t.remote = Box::pin(self.todo_remotes(id)).await?;
         Ok(Some(t))
     }
 
@@ -323,6 +327,18 @@ impl Store {
     /// 没被收下的项数。
     pub async fn todo_count_unreviewed(&self) -> Result<i64, StoreError> {
         Ok(sqlx::query("SELECT COUNT(*) FROM todos WHERE unreviewed = 1").fetch_one(self.pool()).await?.get(0))
+    }
+
+    /// 一台分身设备建的、没关闭的项数。
+    pub async fn todo_count_open_of_twin_device(&self, device: &str) -> Result<i64, StoreError> {
+        Ok(sqlx::query(
+            "SELECT COUNT(*) FROM todos WHERE source_kind = 'twin' AND source_device = ? \
+             AND state NOT IN ('done','dropped')",
+        )
+        .bind(device)
+        .fetch_one(self.pool())
+        .await?
+        .get(0))
     }
 
     pub async fn todo_insert(&self, t: &Todo) -> Result<(), StoreError> {
@@ -342,6 +358,7 @@ impl Store {
             sqlx::query("DELETE FROM todos WHERE id = ?").bind(id).execute(&mut *tx).await?.rows_affected() > 0;
         if deleted {
             sqlx::query("DELETE FROM todo_sessions WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
+            sqlx::query("DELETE FROM todo_remotes WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
             sqlx::query("DELETE FROM todo_events WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
@@ -360,7 +377,13 @@ impl Store {
     }
 
     /// 一页：`(updated_ms, id)` 从新到旧。按字节预算和条数截断，`has_more` 表示后面还有没给出的项。
-    pub async fn todo_page(&self, p: &TodoListParams, limit: usize) -> Result<TodoListResult, StoreError> {
+    /// `owner` 给了就只列这台分身设备建的项（`source` 是它）。
+    pub async fn todo_page(
+        &self,
+        p: &TodoListParams,
+        limit: usize,
+        owner: Option<&str>,
+    ) -> Result<TodoListResult, StoreError> {
         // 固定的 SQL，可选的过滤条件用 `? IS NULL OR …` 表达（不拼接字符串）
         let (before_ms, before_id) = match &p.before {
             Some(b) => (Some(b.updated_ms.min(i64::MAX as u64) as i64), Some(b.id.clone())),
@@ -370,12 +393,15 @@ impl Store {
             "SELECT * FROM todos \
              WHERE (? = 1 OR state NOT IN ('done','dropped')) \
                AND (? IS NULL OR project = ?) \
+               AND (? IS NULL OR (source_kind = 'twin' AND source_device = ?)) \
                AND (? IS NULL OR updated_ms < ? OR (updated_ms = ? AND id < ?)) \
              ORDER BY updated_ms DESC, id DESC",
         )
         .bind(p.include_closed.unwrap_or(false) as i64)
         .bind(&p.project)
         .bind(&p.project)
+        .bind(owner)
+        .bind(owner)
         .bind(before_ms)
         .bind(before_ms)
         .bind(before_ms)
@@ -395,8 +421,11 @@ impl Store {
         }
         drop(rows);
         let links = self.todo_links_of(&todos.iter().map(|t| t.id.clone()).collect::<Vec<_>>()).await?;
+        let ids: Vec<String> = todos.iter().map(|t| t.id.clone()).collect();
+        let mut remotes = Box::pin(self.todo_remotes_of(&ids)).await?;
         for t in &mut todos {
             t.sessions = links.get(&t.id).cloned().unwrap_or_default();
+            t.remote = remotes.remove(&t.id).unwrap_or_default();
         }
         Ok(TodoListResult { todos, has_more })
     }
@@ -426,11 +455,13 @@ fn trim_to_budget(page: &mut TodoListResult, budget: usize) {
 }
 
 /// `todo.list`。
-pub async fn list(c: &Ctx, mut p: TodoListParams) -> RpcResult<TodoListResult> {
+pub async fn list(c: &Ctx, caller: &Caller, mut p: TodoListParams) -> RpcResult<TodoListResult> {
     // 项目名存的是去掉首尾空白之后的，过滤条件同样处理
     p.project = p.project.map(|s| s.trim().to_string());
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
-    let mut page = c.store.todo_page(&p, limit).await.map_err(internal)?;
+    // 分身设备只看得到它自己建的项（docs/spec/daemon.md § 27.3）
+    let owner = crate::twin_device::is_twin_device(caller).then_some(caller.device_id.as_str());
+    let mut page = c.store.todo_page(&p, limit, owner).await.map_err(internal)?;
     crate::todo_dispatch::fill_activity(&c.sessions, &mut page.todos).await;
     page.todos.iter_mut().for_each(|t| crate::todo_repeat::fill_next(c, t));
     // 字节预算按实际发出去的样子量（带着 `sessions` 和 `activity`）
@@ -440,6 +471,15 @@ pub async fn list(c: &Ctx, mut p: TodoListParams) -> RpcResult<TodoListResult> {
 
 /// 这一项是谁记的（§ 21.2）。`agent` 是调用方自报的；自报了 `mcp` 的本机连接总是算 agent。
 async fn source_of(c: &Ctx, caller: &Caller, agent: bool, origin_session: Option<&str>) -> RpcResult<TodoSource> {
+    // 分身设备（另一个节点的分身）建的：不看自报的 `agent`，来源就是那台设备（docs/spec/daemon.md § 27.3）
+    if crate::twin_device::is_twin_device(caller) {
+        return Ok(TodoSource {
+            kind: TodoSourceKind::Twin,
+            device_id: Some(caller.device_id.clone()),
+            session_id: None,
+            todo_id: None,
+        });
+    }
     if agent || caller.is_mcp() {
         // `origin_session` 只在这一项记成 agent 加的、并且这个会话存在时才记，否则丢掉这个字段
         let session_id = match origin_session {
@@ -465,16 +505,31 @@ async fn source_of(c: &Ctx, caller: &Caller, agent: bool, origin_session: Option
 pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> {
     check_id(&p.id)?;
     let _w = c.store.todo_lock().lock().await;
+    let from_twin_device = crate::twin_device::is_twin_device(caller);
     if let Some(mut existing) = c.store.todo_get(&p.id).await.map_err(internal)? {
+        // 按 `id` 幂等不能让分身设备读到别人的项
+        if from_twin_device && !crate::twin_device::owns(&existing, &caller.device_id) {
+            return Err(crate::twin_device::twin_device_forbidden());
+        }
         existing.activity = crate::todo_dispatch::compute_activity(&c.sessions, &existing).await;
         crate::todo_repeat::fill_next(c, &mut existing);
         return Ok(existing);
     }
+    // 分身设备记的项：不能带周期规则、不能交给本机分身；项目必须在这条连接开放的范围里
+    if from_twin_device && (p.repeat.is_some() || p.handler == Some(TodoHandler::Twin)) {
+        return Err(crate::twin_device::twin_device_forbidden());
+    }
+    let device_project = if from_twin_device {
+        Some(crate::twin_device::check_project_in_scope(c, &caller.device_id, p.project.as_deref()).await?)
+    } else {
+        None
+    };
     let title = check_title(&p.title)?;
     let body = p.body.unwrap_or_default();
     check_body(&body)?;
     // 空白的项目名按没给处理（`--project ""`）
     let project = match p.project.as_deref() {
+        _ if device_project.is_some() => device_project,
         Some(s) if !s.trim().is_empty() => Some(check_project(s)?),
         _ => None,
     };
@@ -498,6 +553,16 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         ));
     }
 
+    if from_twin_device
+        && c.store.todo_count_open_of_twin_device(&caller.device_id).await.map_err(internal)? >= MAX_TWIN_DEVICE_OPEN
+    {
+        return Err(invalid(
+            "todos",
+            Some("too_many_twin"),
+            format!("a twin device can have at most {MAX_TWIN_DEVICE_OPEN} open todos; close or delete some first"),
+        ));
+    }
+
     let now = now_ms();
     let mut todo = Todo {
         id: p.id,
@@ -515,6 +580,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         sessions: Vec::new(),
         activity: None,
         repeat: p.repeat.as_ref().map(crate::todo_repeat::normalized),
+        remote: Vec::new(),
     };
     let mut tx = c.store.pool().begin().await.map_err(StoreError::from).map_err(internal)?;
     insert_todo_on(&mut *tx, &todo).await.map_err(internal)?;
@@ -540,6 +606,10 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         None
     };
     tx.commit().await.map_err(StoreError::from).map_err(internal)?;
+    // 推送过滤要在第一条 `todo.changed` 发出之前就认得这一项是谁的
+    if from_twin_device {
+        c.clients.owners().add_todo(&caller.device_id, &todo.id);
+    }
     if let Some(ev) = handler_event {
         crate::todo_dispatch::broadcast_event(&c.clients, &todo.id, ev);
     }
@@ -572,6 +642,14 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     let _w = c.store.todo_lock().lock().await;
     let old = c.store.todo_get(&p.id).await.map_err(internal)?.ok_or_else(|| not_found(&p.id))?;
     check_handler(caller, p.agent.unwrap_or(false), p.handler, old.unreviewed && p.reviewed != Some(true))?;
+    // 来源是分身设备的项，B 自己的分身不碰（§ 27.3）：交给它只会得到一项没人处理的「处理人 = 分身」
+    if p.handler == Some(TodoHandler::Twin) && old.source.kind == TodoSourceKind::Twin {
+        return Err(invalid(
+            "handler",
+            Some("twin_source"),
+            "a todo added by another node's twin cannot be handed to this node's twin".into(),
+        ));
+    }
     let wants_repeat = p.repeat.is_some() || p.clear.contains(&ClearableTodoField::Repeat);
     if wants_repeat {
         check_repeat_actor(caller, p.agent.unwrap_or(false))?;
@@ -750,6 +828,7 @@ pub async fn delete(c: &Ctx, caller: &Caller, p: TodoDeleteParams) -> RpcResult<
     c.audit.record(caller, "todo.delete", Some(id), json!({})).await;
     c.sessions.todo_signal().forget(id);
     notify_changed(&c.clients, TodoChanged { id: id.to_string(), todo: None, deleted: true });
+    c.clients.owners().forget_todo(id);
     Ok(())
 }
 
@@ -772,7 +851,8 @@ pub async fn purge_closed(
         match store.todo_delete(&id).await {
             Ok(true) => {
                 signal.forget(&id);
-                notify_changed(clients, TodoChanged { id, todo: None, deleted: true })
+                notify_changed(clients, TodoChanged { id: id.clone(), todo: None, deleted: true });
+                clients.owners().forget_todo(&id);
             }
             Ok(false) => {}
             Err(e) => tracing::warn!(error = %e, "cannot delete an expired todo"),
@@ -804,6 +884,7 @@ mod tests {
             sessions: (0..20).map(|i| format!("sess_{n}_{i:020}")).collect(),
             activity: Some(TodoActivity::Working),
             repeat: None,
+            remote: vec![],
         };
         let one = serde_json::to_vec(&item(0)).unwrap().len();
         let mut page = TodoListResult { todos: (0..10).map(item).collect(), has_more: false };

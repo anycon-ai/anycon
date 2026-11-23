@@ -55,6 +55,7 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
             "judge.triage",
             "judge.advisor",
             "twin.enabled",
+            "twin.accept_links",
             "judge.daily_calls",
             "notify.turn_finished",
             "notify.session_idle_after",

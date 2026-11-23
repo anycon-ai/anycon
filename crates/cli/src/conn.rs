@@ -27,14 +27,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// 本机 socket 一行的上限。
 const MAX_LINE: usize = 32 * 1024 * 1024;
 
-pub(crate) struct Req {
-    pub method: String,
-    pub params: Value,
-    pub reply: oneshot::Sender<std::result::Result<Value, RpcError>>,
-}
-
-/// 连接结束的原因（驱动循环退出时写入）。
-pub(crate) type ClosedReason = Arc<Mutex<Option<String>>>;
+pub(crate) use anycon_daemon::client::{ClosedReason, Req};
 
 pub struct Conn {
     tx: mpsc::UnboundedSender<Req>,

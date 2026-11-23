@@ -310,6 +310,7 @@ async fn fire(c: &Ctx, template: &Todo, slot: u64, now: u64) -> Result<bool, Rpc
         sessions: Vec::new(),
         activity: None,
         repeat: None,
+        remote: vec![],
     };
     crate::todos::insert_todo_on(&mut *tx, &copy).await.map_err(internal)?;
     let created = crate::todo_dispatch::event_append_on(

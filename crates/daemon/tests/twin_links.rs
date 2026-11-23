@@ -583,9 +583,14 @@ impl Rig {
         self.open_p().await;
         let todo = self.a_todo(title).await;
         self.plan_remote(&todo.id, "p", "");
+        let spawned = self.b.fake.handle_count();
         let run = self.wake().await;
         assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed, "{run:?}");
         wait_until!("the item to be working on A", self.a_get(&todo.id).await.activity == Some(TodoActivity::Working));
+        // `todo.dispatch` 一返回，B 上的会话已经关联到这一项，但假 agent 不一定已经拉起来：用例接着要用它的 handle
+        wait_until!("the session and its agent on B", {
+            self.b_todos().await.first().is_some_and(|t| !t.sessions.is_empty()) && self.b.fake.handle_count() > spawned
+        });
         let remote = self.b_todos().await.remove(0);
         let sid = remote.sessions[0].clone();
         (todo, remote, sid)

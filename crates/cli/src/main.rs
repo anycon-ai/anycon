@@ -97,7 +97,12 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(CliError { exit, code, message, .. }) => {
             if exit != error::EXIT_INTERRUPTED {
-                eprintln!("error: {code}: {message}");
+                // 通用错误的 code 就是 "error"，不再重复一遍
+                if code == "error" {
+                    eprintln!("error: {message}");
+                } else {
+                    eprintln!("error: {code}: {message}");
+                }
             }
             ExitCode::from(exit)
         }

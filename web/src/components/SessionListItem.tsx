@@ -3,7 +3,7 @@ import { Flag, GitBranch } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { setFollowUp } from '@/features/session/actions'
 import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
-import { describeError } from '@/lib/errors'
+import { describeMarkError } from '@/lib/errors'
 import { formatRelative } from '@/lib/format'
 import { useNodeParam } from '@/lib/nav'
 import { useNodes } from '@/stores/nodes'
@@ -78,7 +78,7 @@ export function SessionListItem({ session, showProject }: { session: SessionItem
         title={toggleLabel}
         aria-pressed={marked}
         disabled={offline}
-        onClick={() => void setFollowUp(session.node_id, session.id, !marked).catch((e: unknown) => toast.error(describeError(e, t)))}
+        onClick={() => void setFollowUp(session.node_id, session.id, !marked).catch((e: unknown) => toast.error(describeMarkError(e, t)))}
         className={cn('shrink-0 self-start rounded-md p-2 pr-3 hover:text-fg disabled:opacity-40', marked ? 'text-info' : 'text-fg-subtle/60')}
         data-testid="session-follow-up-toggle"
       >

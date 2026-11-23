@@ -33,8 +33,8 @@ export function TwinPage({ node, run }: { node?: string; run?: string }) {
       <PageHeader root crumbs={[{ label: t('twin.title') }]} showNodeStatus={false} />
       <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-auto p-4">
         {ids.length > 1 ? <TwinStatusBar /> : null}
-        {!ids.length ? <p>{t('twin.noSupport')}</p> : null}
-        {target && !selectedIds.includes(target) ? <p>{t('inbox.outsideFilter', { node: byId[target]?.name ?? target })}</p> : null}
+        {!ids.length ? <p>{target && byId[target] ? t('twin.nodeUnsupported', { node: byId[target].name }) : t('twin.noSupport')}</p> : null}
+        {ids.length && target && !selectedIds.includes(target) ? <p>{t('todos.outsideFilter', { node: byId[target]?.name ?? target })}</p> : null}
         {ids.map((id) => (
           <TwinCard key={id} node={byId[id]!} runId={run} />
         ))}

@@ -27,6 +27,12 @@ pub enum StoreError {
     Db(#[from] sqlx::Error),
     #[error("migration: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
+    /// 库里记着本版本不认识的迁移：数据是更新版本的 anycon 写的（降级）。
+    #[error(
+        "the data in {path} was written by a newer version of anycon (database migration {version} is unknown to \
+         this version); use the newer version, or restore the backup taken before the upgrade"
+    )]
+    NewerData { path: String, version: i64 },
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("io: {0}")]
@@ -308,6 +314,15 @@ pub fn event_index(ev: &Event) -> (String, Option<String>) {
     (kind, ref_id)
 }
 
+/// 库里已应用的最新迁移版本；还没有迁移记录（新库）时为 `None`。
+async fn applied_version(pool: &SqlitePool) -> Option<i64> {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
 impl Store {
     /// 打开（必要时创建）数据库并跑迁移。
     pub async fn open(path: &Path) -> Result<Store> {
@@ -322,7 +337,19 @@ impl Store {
             .foreign_keys(false)
             .busy_timeout(Duration::from_secs(10));
         let pool = SqlitePoolOptions::new().max_connections(8).connect_with(opts).await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        let migrator = sqlx::migrate!("./migrations");
+        let before = applied_version(&pool).await;
+        match migrator.run(&pool).await {
+            Ok(()) => {}
+            Err(sqlx::migrate::MigrateError::VersionMissing(version)) => {
+                return Err(StoreError::NewerData { path: path.display().to_string(), version });
+            }
+            Err(e) => return Err(e.into()),
+        }
+        let after = applied_version(&pool).await;
+        if after != before {
+            tracing::info!(from = before.unwrap_or(0), to = after.unwrap_or(0), "database migrated");
+        }
         Ok(Store { pool, path: path.to_path_buf(), todo_lock: Default::default(), rule_lock: Default::default() })
     }
 
@@ -1769,6 +1796,29 @@ fn like_snippet(text: &str, needle_lower: &str) -> String {
 mod tests {
     use super::*;
     use anycon_protocol::{PermissionDetail, PermissionKind, PermissionOption, PermissionOptionKind};
+
+    /// 库里有本版本不认识的迁移记录（更新版本写的数据）：打开失败，文字说明该怎么办。
+    #[tokio::test]
+    async fn open_rejects_data_from_a_newer_version() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("daemon.db");
+        let s = Store::open(&path).await.unwrap();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+             VALUES (9999, 'future', 1, x'00', 0)",
+        )
+        .execute(s.pool())
+        .await
+        .unwrap();
+        s.close().await;
+        let err = Store::open(&path).await.err().expect("a newer database must be rejected");
+        assert!(matches!(err, StoreError::NewerData { version: 9999, .. }), "{err}");
+        let text = err.to_string();
+        assert!(text.contains("written by a newer version of anycon"), "{text}");
+        assert!(text.contains("migration 9999"), "{text}");
+        assert!(text.contains(&path.display().to_string()), "{text}");
+        assert!(text.contains("restore the backup"), "{text}");
+    }
 
     async fn temp_store() -> (tempfile::TempDir, Store) {
         let d = tempfile::tempdir().unwrap();

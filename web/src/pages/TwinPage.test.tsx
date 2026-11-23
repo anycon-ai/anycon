@@ -72,6 +72,14 @@ describe('Twin page', () => {
     expect(screen.queryByTestId('twin-card')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
   })
+  it('a node whose daemon is too old for Twin says so, without the Inbox filter note that belongs to other pages', async () => {
+    useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'old-node', info: info(false) }) }, order: [A, B] }))
+    render(<TwinPage node={B} />)
+    expect(screen.getByText('old-node does not support Twin yet. Update its daemon to use Twin there.')).toBeInTheDocument()
+    expect(screen.queryByText(/node filter/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Inbox/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('twin-card')).not.toBeInTheDocument()
+  })
   it('pauses one node, or all nodes in the selected space', async () => {
     useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true) }) }, order: [A, B] }))
     await load()

@@ -35,6 +35,25 @@ pub enum StoreError {
     Corrupt(String),
 }
 
+/// 把迁移错误转成给用户看的文字：库里有本版本不认识的迁移记录时（降级）说明原因和办法，
+/// `what` 是「the SQLite database」或「the Postgres database」。
+fn migrate_error(e: sqlx::migrate::MigrateError, what: &str) -> StoreError {
+    match e {
+        sqlx::migrate::MigrateError::VersionMissing(version) => StoreError::Migrate(format!(
+            "{what} was written by a newer version of anycon (database migration {version} is unknown to this \
+             version); use the newer version, or restore the backup taken before the upgrade"
+        )),
+        e => StoreError::Migrate(e.to_string()),
+    }
+}
+
+/// 记一条迁移前后的版本（没有新迁移就不记）。`None` 是还没有迁移记录（新库）。
+fn log_migrated(before: Option<i64>, after: Option<i64>) {
+    if before != after {
+        tracing::info!(from = before.unwrap_or(0), to = after.unwrap_or(0), "database migrated");
+    }
+}
+
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// `ANYCON_DATABASE_URL` 指向 Postgres（`postgres://…` 或 `postgresql://…`，不区分大小写）。

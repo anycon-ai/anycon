@@ -1006,7 +1006,9 @@ async fn the_oldest_ticket_of_a_device_is_dropped_past_64_and_its_tunnel_closed(
             .preview_ticket_insert(&PreviewTicketRow {
                 ticket_id: format!("{i:032x}"),
                 label: if i == 0 { label.clone() } else { anycon_protocol::tunnel::label_from_bytes(&[i as u8; 16]) },
-                port: if i == 0 { r.up.port } else { 40_000 + i as u16 },
+                // 其余 63 张用 1–63 号端口：系统不会把 1024 以下的端口分给 `TestUpstream`，所以第 65 张（`second.port`）
+                // 一定是新端口；用 40_000 段的话，Linux 的临时端口（32768–60999）可能撞上，`preview.open` 就会复用那张票据
+                port: if i == 0 { r.up.port } else { i as u16 },
                 psk: format!("{:064x}", i + 1),
                 device_id: "dev-a".into(),
                 session_id: None,

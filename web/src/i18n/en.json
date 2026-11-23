@@ -2834,8 +2834,10 @@
     "connecting": "Connecting…",
     "errors": {
       "acceptLinksOff": "That node does not accept twin connections. Set [twin] accept_links = true on that machine.",
-      "differentHub": "The two nodes are not on the same hub, so they cannot be connected.",
-      "codeExpired": "The pairing code expired before it was used. Try again.",
+      "notFound": "The other node could not be reached for pairing: it must be on the same hub as this node, and the code must be fresh. Try again.",
+      "notAccepted": "The other node did not accept the connection. It may have turned off accepting twin connections ([twin] accept_links).",
+      "hubChanged": "This node's twin connections were made on another hub. Disconnect them before connecting on this hub.",
+      "noHub": "This node has no hub configured, and twin connections go through the hub.",
       "nodeMismatch": "The node that answered is not the one you chose, so nothing was connected.",
       "pairBusy": "The hub is not opening another pairing right now (daily limit or rate limit). Try again later.",
       "codeStep": "The node to use could not open a pairing.",

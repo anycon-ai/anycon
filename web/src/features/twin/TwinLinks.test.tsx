@@ -165,8 +165,9 @@ describe('Adding a link', () => {
   })
   it.each([
     ['code', 'accept_links_off', 'forbidden', 'That node does not accept twin connections. Set [twin] accept_links = true on that machine.'],
-    ['link', 'different_hub', 'invalid', 'The two nodes are not on the same hub, so they cannot be connected.'],
-    ['link', 'code_expired', 'invalid', 'The pairing code expired before it was used. Try again.'],
+    ['link', 'not_found', 'not_found', 'The other node could not be reached for pairing: it must be on the same hub as this node, and the code must be fresh. Try again.'],
+    ['link', 'timeout', 'unsupported', 'The other node did not accept the connection. It may have turned off accepting twin connections ([twin] accept_links).'],
+    ['link', 'hub_changed', 'unsupported', "This node's twin connections were made on another hub. Disconnect them before connecting on this hub."],
     ['link', 'node_mismatch', 'invalid', 'The node that answered is not the one you chose, so nothing was connected.'],
     ['code', 'quota', 'busy', 'The hub is not opening another pairing right now (daily limit or rate limit). Try again later.'],
   ] as const)('explains a %s step failure with reason %s in plain words and keeps the dialog open', async (step, reason, code, text) => {

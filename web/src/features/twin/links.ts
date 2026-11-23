@@ -47,8 +47,10 @@ export const isUnsupported = (e: unknown): boolean => e instanceof RpcCallError 
 
 const REASONS: Record<string, string> = {
   accept_links_off: 'acceptLinksOff',
-  different_hub: 'differentHub',
-  code_expired: 'codeExpired',
+  not_found: 'notFound',
+  timeout: 'notAccepted',
+  hub_changed: 'hubChanged',
+  no_hub: 'noHub',
   node_mismatch: 'nodeMismatch',
 }
 

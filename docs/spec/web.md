@@ -1080,7 +1080,7 @@ v0.1 另含 [ADR-36](../decisions.md#adr-36-账号内接入账号负责路由dae
 - 「添加」：列出这台设备配过对的、别的节点。可选的条件是 `capabilities.twin`、`node.info.twin_accept_links` 为 true 和在线；不满足的灰掉并写原因（已经连接 / 版本不支持被使用 / 不接受分身连接，并说要在那台机器上设 `[twin] accept_links = true` / 离线）。选一个之后：
   - **两个节点的分组名不同（一边没有分组也算不同）时多确认一次**：写明两边的分组，说明分组本来是用来隔开家里和公司这类节点的，连起来之后任务和复制的清单文字会越过这条界线；确认之前不调任何方法，可以回到列表。
   - 确认之后**依次**调 B 的 `node.twin_link_code {}` 和 A 的 `twin.link { code, node_id }`。**短码是秘密**：它只作为一个局部变量经内存从第一个调用的结果传到第二个调用的请求，不进组件状态、不显示（没有「复制短码」）、不写日志、不存本地，也不进错误说明；失败后不自动重试（再要一个短码会作废上一个，由人再点一次）。
-  - 失败按 `data.reason` 用人话说：`accept_links_off`（B 关了接受分身连接）、`different_hub`（不在同一个 hub）、`code_expired`（短码在用上之前过期）、`node_mismatch`（应答的节点不是选的那个）；`node.twin_link_code` 被 hub 拒绝（`busy`，`quota` / `rate_limited`）说今天的配对次数用完或被限速；别的原因按失败的那一步（向 B 要短码 / A 和 B 配对）加通用的错误说明。对话框留着，可以重试。
+  - 失败按 `data.reason` 用人话说：取短码那一步的 `accept_links_off`（B 关了接受分身连接）；连接那一步的 `not_found`（配对时找不到对方：不在同一个 hub，或者短码不是刚生成的）、`timeout`（对方没有接受，可能关了 `accept_links`）、`node_mismatch`（应答的节点不是选的那个，什么都没连）、`hub_changed`（已有的分身连接是在别的 hub 上建的）、`no_hub`（这个节点没配 hub）；hub 的配额或限流（`busy` 加 `quota` / `rate_limited`）。别的原因按失败的那一步加通用的错误说明。
 - 「断开」调 A 的 `twin.unlink { node_id }`，确认框和之后的提示都写明：**A 只是忘掉这一条，要在 B 的设备列表里吊销这台节点的分身设备才算完全断开**，在那之前它仍在 B 上配对、范围还在。这台设备也和 B 配过对时给一个去 B 的设备列表（`/n/<B>/settings?tab=devices`）的链接，没配过对时只写说明。
 
 **B 上给一条分身连接的范围**在节点设置的「设备」标签里（[§ 4.8](#48-节点设置-nnodesettings)）。

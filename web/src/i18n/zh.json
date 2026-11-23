@@ -2795,8 +2795,10 @@
     "connecting": "正在连接…",
     "errors": {
       "acceptLinksOff": "那个节点不接受分身连接。请在那台机器上设置 [twin] accept_links = true。",
-      "differentHub": "这两个节点不在同一个 hub 上，连不了。",
-      "codeExpired": "配对短码在用上之前就过期了，请再试一次。",
+      "notFound": "配对时找不到对方节点：两个节点要在同一个 hub 上，短码也要是刚生成的。请再试一次。",
+      "notAccepted": "对方节点没有接受这次连接，可能关掉了「接受别的节点的分身」（[twin] accept_links）。",
+      "hubChanged": "这个节点已有的分身连接是在另一个 hub 上建的，先断开它们，再在这个 hub 上连接。",
+      "noHub": "这个节点没有配置 hub，分身连接要经过 hub。",
       "nodeMismatch": "应答的节点不是你选的那个，所以什么都没有连接。",
       "pairBusy": "hub 现在不再开新的配对（今天的次数用完了或被限速），请稍后再试。",
       "codeStep": "要使用的节点没能开出配对。",

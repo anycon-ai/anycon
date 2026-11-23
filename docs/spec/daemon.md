@@ -2128,7 +2128,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 ## 27. 分身连接
 
-> **已实现：协议（本节的全部方法、类型和枚举值）、hub 接受 `twin` 种类（§ 27.5）、B 这一侧（`node.twin_link_code`、短码的种类、`[twin] accept_links`、安全事件和审计、§ 27.3 的白名单、推送过滤、按请求方存的范围、记一项和派发的约束、`twin.peer_status`）、A 这一侧（§ 27.1 的分身设备身份和连接、`twin.link` / `twin.links` / `twin.unlink`、§ 27.4 的节点表、远程派发和取回结果），以及 CLI（`anycon twin link-code` / `link` / `links` / `unlink` / `set --requester` / `status --requester`）。Web 的界面（§ 27.6）见 web.md。** [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的第 5 步。下面用 A 指跑分身的节点，B 指被使用的节点。
+> **已实现：协议（本节的全部方法、类型和枚举值）、hub 接受 `twin` 种类（§ 27.5）、B 这一侧（`node.twin_link_code`、短码的种类、`[twin] accept_links`、安全事件和审计、§ 27.3 的白名单、推送过滤、按请求方存的范围、记一项和派发的约束、`twin.peer_status`）、A 这一侧（§ 27.1 的分身设备身份和连接、`twin.link` / `twin.links` / `twin.unlink`、§ 27.4 的节点表、远程派发和取回结果），CLI（`anycon twin link-code` / `link` / `links` / `unlink` / `set --requester` / `status --requester`），以及 TS SDK 和 Web 的界面（§ 27.6，web.md § 14.8）。** [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的第 5 步。下面用 A 指跑分身的节点，B 指被使用的节点。
 
 A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在 B 自己的 worktree 里干活。A 的 daemon 为此持有一个**分身设备**身份，作为 B 的一台已配对设备，经 hub、经 E2E 通道连接 B。没有节点对节点的新通道，也没有给判断后端或本机别的进程用的代理。
 

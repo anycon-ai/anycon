@@ -413,7 +413,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
             ) : null}
             {summary?.todo_id ? <TodoOriginLink nodeId={nodeId} todoId={summary.todo_id} className="inline-flex min-w-0 max-w-40 shrink items-center gap-1 rounded-full bg-bg-muted px-2 py-0.5 text-xs font-medium text-fg-muted hover:text-fg max-sm:hidden" /> : null}
             {dangerousMode ? (
-              <Chip tone="danger" testId="mode-chip-dangerous" icon={<ShieldAlert className="size-3" aria-hidden />} className="shrink-0">
+              <Chip tone="danger" testId="mode-chip-dangerous" icon={<ShieldAlert className="size-3" aria-hidden />} className="shrink-0 max-sm:hidden">
                 {dangerousMode.label}
               </Chip>
             ) : null}

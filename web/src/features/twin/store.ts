@@ -19,6 +19,10 @@ export const useTwin = create<{ nodes: Record<string, NodeTwin>; patch: (id: str
     reset: () => set({ nodes: {} }),
   }),
 )
+/** 分身连接列表要重读的信号：每收到一条 `twin.changed` 加一，`TwinLinks` 据此（合并之后）重新读 `twin.links`。 */
+export const useTwinLinksTick = create<{ tick: Record<string, number> }>()(() => ({ tick: {} }))
+export const bumpTwinLinks = (id: string): void =>
+  useTwinLinksTick.setState((s) => ({ tick: { ...s.tick, [id]: (s.tick[id] ?? 0) + 1 } }))
 export const supportsTwin = (id: string): boolean => useNodes.getState().byId[id]?.info?.capabilities.twin === true
 export function useTwinAvailable(): boolean {
   return useNodes((s) => s.order.some((id) => s.byId[id]?.info?.capabilities.twin === true))

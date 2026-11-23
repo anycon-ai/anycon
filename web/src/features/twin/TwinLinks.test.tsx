@@ -10,6 +10,7 @@ import { mockRouter } from '@/test/routerMock'
 import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { TwinLinks } from './TwinLinks'
+import { handleNotification } from '@/features/sync/notifications'
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), vi.fn()))
 const A = 'a'.repeat(32)
 const B = 'b'.repeat(32)
@@ -76,6 +77,17 @@ describe('Twin links list', () => {
     expect(await screen.findByTestId('twin-link-projects')).toHaveTextContent('Nothing is open to this node there yet.')
     expect(screen.getByText('That node has paused this connection.')).toBeInTheDocument()
     expect(screen.getByText('That node does not accept twin connections right now.')).toBeInTheDocument()
+  })
+  it('reads the links again when the node says twin.changed, once for a burst', async () => {
+    daemon.links = [twinLink({ online: false, status: null })]
+    await renderLinks()
+    expect(await screen.findByTestId('twin-link-online')).toHaveTextContent('offline')
+    expect(screen.getByText('Status not fetched yet.')).toBeInTheDocument()
+    daemon.links = [twinLink({ online: true, status: peerStatus({ projects: ['api'] }) })]
+    for (let i = 0; i < 4; i++) handleNotification(A, 'twin.changed', { state: 'idle' })
+    await waitFor(() => expect(screen.getByTestId('twin-link-online')).toHaveTextContent('online'))
+    expect(screen.getByTestId('twin-link-projects')).toHaveTextContent('Open projects: api')
+    expect(calls('twin.links')).toHaveLength(2)
   })
   it('is hidden on a daemon that does not know twin links yet', async () => {
     delete rpc.handlers['twin.links']

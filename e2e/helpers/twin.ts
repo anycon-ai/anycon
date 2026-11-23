@@ -14,6 +14,15 @@ import { loginViaApi } from './ui.js'
 export const JUDGE_KEY_ENV = 'E2E_JUDGE_KEY'
 export const JUDGE_KEY = 'e2e-judge-key'
 
+/** 分身唤醒的合并窗口（毫秒）：`ANYCON_TWIN_COALESCE_MS` 只用于测试（daemon.md § 3、§ 26.3），缺省是 60 秒。 */
+export const COALESCE_MS = 2_000
+
+/** 额外节点的环境变量：判断后端的密钥和缩短后的合并窗口。 */
+export const twinEnv = (): Record<string, string> => ({
+  [JUDGE_KEY_ENV]: JUDGE_KEY,
+  ANYCON_TWIN_COALESCE_MS: String(COALESCE_MS),
+})
+
 type Home = { daemonHome: string }
 
 /** 追加到节点 `config.toml` 的判断后端段：分拣用假后端，调用次数放宽（整个文件会有几十次）。 */
@@ -144,8 +153,8 @@ export function triageRequests(judge: FakeJudge): JudgeRequest[] {
 }
 
 /**
- * 等假后端收到第 `after` 个之后的一个满足条件的分拣请求，返回它。上限是调用方给的：分拣的合并窗口是 60 秒（daemon.md § 26.3），
- * 每次唤醒至少要等这么久，所以这是对一个具体事件的有界等待，不是固定睡眠。
+ * 等假后端收到第 `after` 个之后的一个满足条件的分拣请求，返回它。分拣的合并窗口在测试里缩短到 `COALESCE_MS`（daemon.md § 26.3），
+ * 所以这是对一个具体事件的有界等待，不是固定睡眠。
  */
 export async function waitForTriage(
   judge: FakeJudge,
@@ -162,7 +171,7 @@ export async function waitForTriage(
       },
       {
         message: `the fake judge receives ${what}`,
-        timeout: options.timeoutMs ?? 150_000,
+        timeout: options.timeoutMs ?? 60_000,
         intervals: [500],
       },
     )

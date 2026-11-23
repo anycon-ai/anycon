@@ -47,6 +47,30 @@ pub fn human(caller: &Caller) -> Result<()> {
     Ok(())
 }
 
+/// 环境变量 `ANYCON_TWIN_COALESCE_MS`（只用于测试，不是配置键）：唤醒的合并窗口，毫秒，1000–60000；缺省 60 秒。
+const COALESCE_ENV: &str = "ANYCON_TWIN_COALESCE_MS";
+
+/// 解析合并窗口：没设、不是数字或超出范围都用缺省的 60 秒；设了但不合法时第二个返回值带上原文，调用方记一条 warn。
+fn parse_coalesce(value: Option<&str>) -> (u64, Option<String>) {
+    let Some(raw) = value else { return (MINUTE, None) };
+    match raw.trim().parse::<u64>() {
+        Ok(ms) if (1_000..=MINUTE).contains(&ms) => (ms, None),
+        _ => (MINUTE, Some(raw.to_string())),
+    }
+}
+
+/// 合并窗口，进程里第一次用到时读一次环境变量。
+fn coalesce_ms() -> u64 {
+    static WINDOW: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *WINDOW.get_or_init(|| {
+        let (ms, bad) = parse_coalesce(std::env::var(COALESCE_ENV).ok().as_deref());
+        if let Some(raw) = bad {
+            tracing::warn!(value=%raw, "ignoring an invalid {COALESCE_ENV}; using the default 60 s window");
+        }
+        ms
+    })
+}
+
 #[derive(Default)]
 struct Pending {
     first: Option<u64>,
@@ -66,7 +90,11 @@ impl Pending {
         }
     }
     fn deadline(&self) -> Option<u64> {
-        self.first.map(|first| (self.last + MINUTE).min(first + 5 * MINUTE))
+        self.deadline_with(coalesce_ms())
+    }
+    /// 合并窗口 `window`：最后一个触发之后等一个窗口，从第一个触发算起最多等 5 个窗口。
+    fn deadline_with(&self, window: u64) -> Option<u64> {
+        self.first.map(|first| (self.last + window).min(first + 5 * window))
     }
 }
 
@@ -84,7 +112,11 @@ fn ready(c: &Ctx, s: &TwinScope) -> bool {
         && info.triage.as_ref().is_some_and(|name| info.backends.iter().any(|b| &b.name == name && b.problem.is_none()))
 }
 fn enabled(c: &Ctx, s: &TwinScope) -> bool {
-    c.config.get().twin.enabled && !s.paused && ready(c, s) && !*c.shutdown_tx.borrow()
+    plannable(c, s) && !s.paused
+}
+/// 能出计划：机器级开关开着、已配置、没在关停。不看 `paused`：试跑就是给暂停着的分身用的（先试跑，再决定要不要继续）。
+fn plannable(c: &Ctx, s: &TwinScope) -> bool {
+    c.config.get().twin.enabled && ready(c, s) && !*c.shutdown_tx.borrow()
 }
 fn in_scope(c: &Ctx, s: &TwinScope, t: &Todo) -> bool {
     t.handler == TodoHandler::Twin
@@ -497,7 +529,7 @@ pub async fn wake(c: &Ctx, caller: &Caller) -> Result<Empty> {
 pub async fn dry_run(c: &Arc<Ctx>, caller: &Caller) -> Result<TwinDryRunResult> {
     human(caller)?;
     let s = c.store.twin_scope(LOCAL).await.map_err(internal)?;
-    if !enabled(c, &s) {
+    if !plannable(c, &s) {
         return Err(invalid("state", "not_configured"));
     }
     let rx = start(c, true, vec![TwinTrigger::Manual]).await?;
@@ -767,7 +799,7 @@ async fn run(c: &Ctx, dry_run: bool, triggers: Vec<TwinTrigger>) -> Result<TwinR
 
 async fn run_inner(c: &Ctx, run: &mut TwinRun) -> std::result::Result<(), CallError> {
     let s = c.store.twin_scope(LOCAL).await.map_err(|_| CallError::Internal)?;
-    if !enabled(c, &s) {
+    if !(if run.dry_run { plannable(c, &s) } else { enabled(c, &s) }) {
         run.result = TwinRunResult::Idle;
         return Ok(());
     }
@@ -841,7 +873,10 @@ async fn run_inner(c: &Ctx, run: &mut TwinRun) -> std::result::Result<(), CallEr
             let scope = c.store.twin_scope(LOCAL).await.map_err(|_| CallError::Internal)?;
             let skip = if !candidate.as_ref().is_ok_and(legal) {
                 Some(TwinSkipReason::Invalid)
-            } else if !valid || !fresh.as_ref().is_some_and(|t| in_scope(c, &scope, t)) || !enabled(c, &scope) {
+            } else if !valid
+                || !fresh.as_ref().is_some_and(|t| in_scope(c, &scope, t))
+                || !(if run.dry_run { plannable(c, &scope) } else { enabled(c, &scope) })
+            {
                 Some(TwinSkipReason::OutOfScope)
             } else {
                 None

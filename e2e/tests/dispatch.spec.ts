@@ -1,8 +1,8 @@
 /**
  * 让 agent 处理一项清单（docs/spec/web.md § 4.12、§ 4.11）：真实 hub + daemon（mock agent）+ web + 真实 git。
  *
- *   a. 详情里「让 agent 处理」：mock agent 没有声明 `no_push`，所以「不 push、不开 PR」勾着时有说明、发送禁用；取消勾选之后
- *      才能发。展开第一条消息的预览，和 `anycon todo run <id> --allow-push --dry-run` 打印的逐字相同。发送之后这一项出现在「待验收」组
+ *   a. 详情里「让 agent 处理」：mock agent 声明了 `no_push`，「不 push、不开 PR」缺省勾着、没有说明；取消勾选之后
+ *      写明 agent 能 push。展开第一条消息的预览，和 `anycon todo run <id> --allow-push --dry-run` 打印的逐字相同。发送之后这一项出现在「待验收」组
  *   b. 「待处理」里有「待验收」段（个数只在段标题上，不进导航数字）；验收页先给结论（mock agent 的回复）、改了 1 个文件（worktree 里的
  *      anycon-mock.txt），点开能看到它的 diff
  *   c. 「再改改…」发一条消息给那个会话：这一项的结果多一条（`activity` 由 daemon 随会话改回处理中、再变成待验收；mock 的一轮只有
@@ -112,10 +112,9 @@ test.describe.serial('让 agent 处理', () => {
     // 有别的 agent（比如本机装了 Claude Code）时选 mock
     if ((await page.getByTestId('dispatch-agent').count()) > 0)
       await page.getByTestId('dispatch-agent').selectOption('mock')
-    // mock agent 不能挡住 push：勾着时说明并禁用发送
+    // mock agent 声明了 `no_push`：缺省勾着，没有「这个 agent 挡不住 push」的说明；取消勾选之后写明会让 agent 能 push
     await expect(page.getByTestId('dispatch-no-push')).toBeChecked()
-    await expect(page.getByTestId('dispatch-no-push-warning')).toBeVisible()
-    await expect(page.getByTestId('dispatch-send')).toBeDisabled()
+    await expect(page.getByTestId('dispatch-no-push-warning')).toHaveCount(0)
     await page.getByTestId('dispatch-no-push').uncheck()
     await expect(page.getByTestId('dispatch-push-allowed')).toBeVisible()
     // 项目的 git 信息读完之前不能发（不猜工作位置）
@@ -205,7 +204,7 @@ test.describe.serial('让 agent 处理', () => {
     await expect.poll(async () => (await daemonTodo())?.state).toBe('done')
     await expect(page.getByTestId('review-closed')).toHaveAttribute('data-state', 'done')
     await expect(page.getByTestId('review-push')).toBeVisible()
-    // 点它之前先要确认：mock agent 的会话没有 no_push 选项，所以直接发消息、不弹确认，这里只检查入口在
+    // 点它之前先要确认：这里只检查入口在
     await expect(page.getByTestId('review-approve')).toBeDisabled()
   })
 })

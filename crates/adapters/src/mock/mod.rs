@@ -112,14 +112,25 @@ fn builtin_modes() -> Vec<ModeInfo> {
 }
 
 fn builtin_options() -> Vec<ConfigOption> {
-    vec![ConfigOption {
-        id: "verbose".into(),
-        label: "Verbose".into(),
-        description: Some("Add an extra line to every reply".into()),
-        kind: ConfigOptionKind::Bool,
-        choices: vec![],
-        default: serde_json::Value::Bool(false),
-    }]
+    vec![
+        ConfigOption {
+            id: "verbose".into(),
+            label: "Verbose".into(),
+            description: Some("Add an extra line to every reply".into()),
+            kind: ConfigOptionKind::Bool,
+            choices: vec![],
+            default: serde_json::Value::Bool(false),
+        },
+        // 分身派出的会话固定带它（daemon.md § 26.2）：mock 不会 push，只在回显里写出来
+        ConfigOption {
+            id: "no_push".into(),
+            label: "No push".into(),
+            description: Some("Never push or open a pull request (echoed as no_push=on)".into()),
+            kind: ConfigOptionKind::Bool,
+            choices: vec![],
+            default: serde_json::Value::Bool(false),
+        },
+    ]
 }
 
 #[async_trait::async_trait]
@@ -274,7 +285,7 @@ mod tests {
         assert!(info.modes[0].default);
         assert_eq!(info.modes[1].risk, ModeRisk::Safe);
         assert_eq!(info.modes[2].risk, ModeRisk::Dangerous);
-        assert_eq!(info.options[0].id, "verbose");
+        assert_eq!(info.options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), vec!["verbose", "no_push"]);
         assert_eq!(info.options[0].kind, ConfigOptionKind::Bool);
         let c = &info.capabilities;
         assert!(c.resume && c.interrupt && c.thinking_stream && c.usage);

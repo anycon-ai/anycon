@@ -374,11 +374,7 @@ async fn run_hands_an_item_to_an_agent_and_history_shows_what_happened() {
     let r = n.cli(&["todo", "run", &id[..8], "--agent", "mock", "--project", "nope", "--allow-push"]).await;
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(r.stderr.contains("not_found"), "{}", r.stderr);
-    // 缺省要「不 push、不开 PR」：mock agent 没有这个选项 → 拒绝，并告诉怎么办；这一项没动
-    let r = n.cli(&["todo", "run", &id[..8], "--agent", "mock", "--project", "proj"]).await;
-    assert_eq!(r.code, 1, "{}", r.stderr);
-    assert!(r.stderr.contains("--allow-push") && r.stderr.contains("mock"), "{}", r.stderr);
-    assert_eq!(n.todos(false).await[0]["state"], "open");
+    // 「不 push、不开 PR」的拒绝（agent 没声明 `no_push`）在 daemon 的测试里用没有这个选项的假 agent 覆盖；mock 声明了它
 
     // --allow-push --local：派发成功，项目写回这一项
     let r = n

@@ -3,14 +3,14 @@
  * （`helpers/judge.ts`）。agent 用 `helpers/fake-claude.ts` 的假 `claude`（原因见那个文件）。
  *
  * 串行；两个额外节点 A（跑分身、有判断后端）和 B（被使用），一个同时和两者配对的浏览器。A、B 的 `[hub] group` 不同，用来走「分组不同
- * 多确认一次」。分拣的合并窗口是 60 秒（§ 26.3），每次唤醒至少等这么久，所以等唤醒的步骤都是对「假后端收到某个请求」的有界等待。
+ * 多确认一次」。节点的环境变量 `ANYCON_TWIN_COALESCE_MS`（只用于测试）把分拣的合并窗口缩短到 2 秒（§ 26.3），等唤醒的步骤都是对「假后端收到某个请求」的有界等待。
  *
  *   a. A 的分身页「使用别的节点」：列表空；「添加」里 A 自己不在候选里，B 设了 `[twin] accept_links = false` 时灰掉并说明原因（B 上
  *      `anycon twin link-code` 同样被拒），改回来之后（热加载）可选；分组不同时多确认一次，确认之前什么都没连；确认后连上，列表里有 B、在线；
  *      页面和 hub / 两个 daemon 的日志里都没有配对短码
  *   b. B 的节点设置「设备」里有 A 的分身设备（标成分身），范围缺省什么都不开放：A 的假后端回 `dispatch { node: B, project }` →
  *      A 的运行记录里这条决定是 `remote_refused`，B 上什么都没有
- *   c. 在 B 的「范围」里开放一个项目，再派：B 上有一项来源是分身、有会话（假 `claude` 跑完）；A 这一项的「经过」里有「派到了 B」和 B 的结果
+ *   c. 在 B 的「范围」里开放一个项目，再派：B 上有一项来源是分身、有会话（mock agent 跑完）；A 这一项的「经过」里有「派到了 B」和 B 的结果
  *      （`remote_result`）；A 的假后端收到的请求里有节点表（在随机边界里，有 B 的名字和开放的项目），之后的请求里带着 B 的结果
  *   d. 停掉 B：A 的连接显示离线，A 派发 → `remote_unavailable`（请求里节点表标着 `available: false`）；B 回来之后连接恢复在线
  *   e. A 上「断开」：说明「要在 B 上吊销才算完全断开」，有去 B 的设备列表的入口；断开后 A 的列表空了、B 上那台分身设备还在；然后在 B 上吊销它
@@ -23,7 +23,6 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { daemonDevices, runCli, runCliResult, startPairing } from '../helpers/cli.js'
 import { startExtraDaemon, type ExtraDaemon } from '../helpers/daemon.js'
-import { fakeClaude } from '../helpers/fake-claude.js'
 import { git, makeRepoProject } from '../helpers/git.js'
 import { containsText, exactText } from '../helpers/i18n.js'
 import {
@@ -40,8 +39,6 @@ import {
 import { readLog, waitFor } from '../helpers/process.js'
 import { readState } from '../helpers/state.js'
 import {
-  JUDGE_KEY,
-  JUDGE_KEY_ENV,
   cliJson,
   judgeToml,
   removeNodesFromAccount,
@@ -50,6 +47,7 @@ import {
   todoHistory,
   todos,
   twinRuns,
+  twinEnv,
   twinStatus,
   waitForTriage,
 } from '../helpers/twin.js'
@@ -72,7 +70,8 @@ const PROJECT_OPEN = `e2e-tl-open-${RUN}`
 const PROJECT_CLOSED = `e2e-tl-closed-${RUN}`
 const TITLE_REMOTE = `e2e-${RUN} send this to the other node`
 const TITLE_OFFLINE = `e2e-${RUN} send this while it is down`
-const REPLY = `e2e-${RUN} the agent is done`
+/** B 上 mock agent 的回答（带着它收到的「不 push」选项）。 */
+const REPLY = 'mode=ask] no_push=on'
 const REASON = {
   refused: `e2e-${RUN} try the other node (not opened yet)`,
   sent: `e2e-${RUN} the other node has it now`,
@@ -119,21 +118,6 @@ const respond = (request: JudgeRequest): { items: TwinPlanItem[] } => ({
   items: isTriage(request) ? itemsOf(request).map((i) => decide(i, request)) : [],
 })
 
-/**
- * 已知的产品缺口：这一步照正确的行为断言，失败时记下来、用变通办法让后面的步骤接着验证，最后由「已知问题」那个用例统一报出。
- * 缺口修好之后这个函数和那个用例一起删掉。返回这一步是否通过。
- */
-const knownGaps: string[] = []
-async function knownGap(what: string, step: () => Promise<void>): Promise<boolean> {
-  try {
-    await step()
-    return true
-  } catch (error) {
-    knownGaps.push(`${what}\n${String(error).split('\n').slice(0, 6).join('\n')}`)
-    return false
-  }
-}
-
 const inBlocks = (request: JudgeRequest, needle: string): boolean =>
   dataBlocks(request).some((b) => b.text.includes(needle))
 
@@ -172,15 +156,14 @@ test.describe.serial('分身连接', () => {
     const state = readState()
     test.skip(!state.daemonStarted, 'needs the e2e daemon (E2E_SKIP_DAEMON=1 was set)')
     judge = await startJudge(respond)
-    const fake = fakeClaude(state, REPLY)
     a = await startExtraDaemon(state, NODE_A, {
-      env: { ...fake.env, [JUDGE_KEY_ENV]: JUDGE_KEY },
-      config: { ...fake.config, 'hub.group': GROUP_A },
+      env: twinEnv(),
+      config: { 'hub.group': GROUP_A },
       toml: judgeToml(judge),
     })
     b = await startExtraDaemon(state, NODE_B, {
-      env: fake.env,
-      config: { ...fake.config, 'hub.group': GROUP_B },
+      env: twinEnv(),
+      config: { 'hub.group': GROUP_B },
     })
     const gs = { ...gitState(), workspaceDir: a.workspaceDir }
     makeRepoProject(gs, PROJECT_A)
@@ -289,25 +272,7 @@ test.describe.serial('分身连接', () => {
         { timeout: 90_000 },
       )
       .toBe(true)
-    // A 在 B 上线、取到 `twin.peer_status` 时发 `twin.changed`，客户端据此重新读 `twin.links`（daemon.md § 27.4、§ 27.6）：不刷新页面，
-    // 列表里 B 就该是在线、带分组名、写着开放了什么。现在网页只在 `twin.changed` 时重读 `twin.get`，不重读 `twin.links`，所以停在
-    // 添加完成那一刻读到的样子（B 的状态晚几秒才取到，页面上一直写「还没取到状态」；握手更慢时还是离线）
-    const live = await knownGap(
-      'the connection list should update on twin.changed without a reload (daemon.md § 27.6)',
-      async () => {
-        await expect(row.getByTestId('twin-link-online')).toHaveText(
-          exactText('twinLinks.online'),
-          {
-            timeout: 20_000,
-          },
-        )
-        await expect(row.getByTestId('twin-link-projects')).toBeVisible({ timeout: 20_000 })
-      },
-    )
-    if (!live) {
-      await page.reload()
-      await expect(row).toHaveCount(1, { timeout: CONNECT_TIMEOUT })
-    }
+    // A 在 B 上线、取到 `twin.peer_status` 时发 `twin.changed`，页面据此重读 `twin.links`（daemon.md § 27.6）：不刷新，列表就跟着变
     // 在线、有分组名；B 还没有开放任何项目
     await expect(row.getByTestId('twin-link-online')).toHaveText(exactText('twinLinks.online'), {
       timeout: 60_000,
@@ -430,7 +395,7 @@ test.describe.serial('分身连接', () => {
     expect(await twinStatus(homeB(), twinDeviceId)).toMatchObject({ configured: true })
     await page.keyboard.press('Escape')
 
-    // 再派（手动唤醒；合并窗口 60 秒）：这次派到开放的项目
+    // 再派（手动唤醒）：这次派到开放的项目
     target = PROJECT_OPEN
     const item = (await todoByTitle(homeA(), TITLE_REMOTE))!
     const before = judge.requests.length
@@ -554,34 +519,20 @@ test.describe.serial('分身连接', () => {
 
   test('d. B 不在线：A 的连接显示离线，派发 → remote_unavailable；B 回来之后恢复在线', async () => {
     test.setTimeout(300_000)
-    // 页面开着没刷新：A 在连接下线时发 `twin.changed`，列表应当跟着变成离线（同 a：网页现在不重读 `twin.links`）
     await page.goto(`/twin/${shortA}`)
     await expect(page.getByTestId('twin-link-online')).toHaveText(exactText('twinLinks.online'), {
       timeout: CONNECT_TIMEOUT,
     })
     await b.stop()
-    const sawOffline = await knownGap(
-      'the connection list should show the node offline on twin.changed without a reload (daemon.md § 27.6)',
-      async () => {
-        await expect(page.getByTestId('twin-link-online')).toHaveText(
-          exactText('twinLinks.offline'),
-          {
-            timeout: 20_000,
-          },
-        )
-      },
-    )
     await expect
       .poll(
         async () =>
           (await cliJson<{ links: { online: boolean }[] }>(homeA(), ['twin', 'links'])).links[0]
             ?.online,
-        {
-          timeout: 60_000,
-        },
+        { timeout: 60_000 },
       )
       .toBe(false)
-    if (!sawOffline) await page.reload()
+    // 页面开着没刷新：A 在连接下线时发 `twin.changed`，列表跟着变成离线
     await expect(page.getByTestId('twin-link-online')).toHaveText(exactText('twinLinks.offline'), {
       timeout: CONNECT_TIMEOUT,
     })
@@ -691,9 +642,5 @@ test.describe.serial('分身连接', () => {
     // A 自己的分身不受影响
     expect(await twinStatus(homeA())).toMatchObject({ scope: { projects: [PROJECT_A] } })
     await expectNoCodes()
-  })
-
-  test('f. 已知问题：上面记下来的、网页还没做到的行为', () => {
-    expect(knownGaps).toEqual([])
   })
 })

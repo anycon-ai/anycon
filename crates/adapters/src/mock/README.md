@@ -16,8 +16,8 @@
 |---|---|
 | id / label / driver | `mock` / `Mock Agent` / `mock` |
 | 模型 | `mock-large`（默认；thinking `low` / `high`，默认 `high`）、`mock-small`（无 thinking）；`config.additional_models` 追加在后面（按 id 去重），**探测得到的，`spawn` / `set_settings` 也能真的选用**（用它自己的 `thinking` 选项和默认值） |
-| 权限模式 | `ask`（normal，默认）、`plan`（safe）、`yolo`（dangerous） |
-| 选项 | `verbose`（bool，默认 false） |
+| 权限模式 | `ask`（normal，默认，`unattended`：分身派出的会话缺省取它）、`plan`（safe）、`yolo`（dangerous） |
+| 选项 | `verbose`（bool，默认 false）、`no_push`（bool，默认 false：「不 push、不开 PR」，分身派出的会话固定带它，`twin.set` 要求所选 agent 声明了它；mock 不会 push，所以只记下来、在回显里写出来，让测试断言它真的带上了） |
 | capabilities | `resume`、`interrupt`、`thinking_stream`、`usage` 为 true；`interject`、`env` 等为 false；`attachments` = `["image/png", "image/jpeg", "image/gif", "image/webp"]`（ADR-35） |
 | `allow_custom_model` | false |
 
@@ -28,7 +28,7 @@
 | 步骤 | 条件 | 事件 |
 |---|---|---|
 | 1 思考 | 当前模型有 thinking（`mock-large`） | `thinking_delta "Considering the request. "`、`thinking_delta "Planning the answer. "`、`thinking_done { duration_ms: 20 }` |
-| 2 回显 | 总是 | `text_delta "Mock reply: "`、`text_delta "[model=<m> thinking=<t> mode=<mode>]"`、（`verbose` 为 true 时 `text_delta " verbose=on"`）、（设了 `system_prompt_append` / `max_turns` / `max_budget_usd` 中任何一个时 `text_delta " prompt_append=<前 32 字符> max_turns=<n> budget=<x>"`，没设的项整项不显示，见下）、`text_delta " You said: <prompt，最多 200 字符>"`、（**消息带附件时**多一个 `text_delta " Attachments: <name> (<mime>, <bytes> bytes, sha256 <前 12 位>)[; …]"`，见下面「附件」）、`text_done`。`<t>` 在没有 thinking 的模型上是 `none` |
+| 2 回显 | 总是 | `text_delta "Mock reply: "`、`text_delta "[model=<m> thinking=<t> mode=<mode>]"`、（`verbose` 为 true 时 `text_delta " verbose=on"`）、（`no_push` 为 true 时 `text_delta " no_push=on"`，在 verbose 之后）、（设了 `system_prompt_append` / `max_turns` / `max_budget_usd` 中任何一个时 `text_delta " prompt_append=<前 32 字符> max_turns=<n> budget=<x>"`，没设的项整项不显示，见下）、`text_delta " You said: <prompt，最多 200 字符>"`、（**消息带附件时**多一个 `text_delta " Attachments: <name> (<mime>, <bytes> bytes, sha256 <前 12 位>)[; …]"`，见下面「附件」）、`text_done`。`<t>` 在没有 thinking 的模型上是 `none` |
 | 3 计划 | prompt 含 `plan` | `plan`（3 项：`Inspect the project` completed、`Implement the change` in_progress、`Run the tests` pending）→ 权限请求 `kind=plan`（见下）→ 允许：`text_delta "Plan approved."`；否则 `"Plan rejected: <message>"`（无 message 时 `"Plan rejected."`）；然后 `text_done` |
 | 4 提问 | prompt 含 `question` | 权限请求 `kind=question`（见下）→ 有 `answers`：`text_delta "You answered: q1=b"`（多个 key 按字典序用 `; ` 连接，数组值（多选）用 `", "` 连接，和 claude-code adapter 一致）；否则 `"Question skipped."`；然后 `text_done` |
 | 4' 链接 | prompt 含 `link` | 权限请求 `kind=other`、带 `detail.url`（见下面「`link`」）→ 选 `accept`：`text_delta "Link confirmed."`；否则 `"Link declined."`；然后 `text_done` |
@@ -43,7 +43,7 @@
 ### 回显串（`step 2`）的格式
 
 ```
-Mock reply: [model=<m> thinking=<t> mode=<mode>][ verbose=on][ prompt_append=<p>][ max_turns=<n>][ budget=<x>] You said: <prompt>
+Mock reply: [model=<m> thinking=<t> mode=<mode>][ verbose=on][ no_push=on][ prompt_append=<p>][ max_turns=<n>][ budget=<x>] You said: <prompt>
 ```
 
 - **前缀 `Mock reply: [model=… thinking=… mode=…]` 不变**；新增的三项和 ` verbose=on` 一样都在 `]` 之后、` You said:` 之前，各自只在设置了时才出现，顺序固定：`prompt_append`、`max_turns`、`budget`。三项合在同一个 `text_delta` 里（一项都没设时不多这一个 delta，事件序列和以前完全一样）。
@@ -173,9 +173,9 @@ kind=`other` 的权限请求，`request_id = "<session_id>-perm-<n>"`（和其�
 
 - **turn_id**：本进程内从 1 递增。daemon 自己生成 `turn_start`，应当用自己的 turn id 覆盖 `turn_done.turn_id`（所有 adapter 都是这样）。
 - **取消**：`cancel()` 立刻让进行中的 turn 结束，发 `turn_done { reason: cancelled, usage }`（含「等权限答复」的状态；未决请求作废，之后对它的 `respond_permission` 是 no-op）。空闲时是 no-op，可重复调用。
-- **续接**：`Started.resume.agent_session_id` = `"mock-<session_id>"`；用 `req.resume` 再 `spawn` 时沿用同一个 id。设置只看新请求的 `settings`（完整目标设置），**不读** `resume.launch_args`——它里面记的是这次有效的设置（`model` / `thinking` / `mode` / `verbose` / `system_prompt_append` / `max_turns` / `max_budget_usd`），仅供参考，`resume_handle()` 会随 `set_settings` 更新（不额外补发 `Started`）。
+- **续接**：`Started.resume.agent_session_id` = `"mock-<session_id>"`；用 `req.resume` 再 `spawn` 时沿用同一个 id。设置只看新请求的 `settings`（完整目标设置），**不读** `resume.launch_args`——它里面记的是这次有效的设置（`model` / `thinking` / `mode` / `verbose` / `no_push` / `system_prompt_append` / `max_turns` / `max_budget_usd`），仅供参考，`resume_handle()` 会随 `set_settings` 更新（不额外补发 `Started`）。
 - **改设置**（「完整目标设置」语义，和 claude-code 一致）：`set_settings(settings)` 里的 `settings` 就是**整份目标设置**（daemon 传的是合并 / 清除 / 回填默认之后的整份），**缺省字段 = 清除**，不会从当前值补：
-  `model: None` → `mock-large`；`thinking: None` → 该模型的默认（`mock-large` 是 `high`，`mock-small` 是 `none`）；`mode: None` → `ask`；`options.verbose` 缺省 → 关；
+  `model: None` → `mock-large`；`thinking: None` → 该模型的默认（`mock-large` 是 `high`，`mock-small` 是 `none`）；`mode: None` → `ask`；`options.verbose` / `options.no_push` 缺省 → 关；
   `system_prompt_append` / `max_turns` / `max_budget_usd` 为 `None` → 回显里不再出现。立刻生效（`applied_now = true`、`restart_required = false`），从下一个 turn 起回显新值；
   非法值（未知模型 / 模式 / 选项、模型不支持的 thinking）返回 `InvalidSettings` 且不改变现有设置。`spawn` 用同一套解析（所以 `SpawnRequest.settings` 里缺省的字段同样回到默认）。
 - **并发**：turn 进行中再 `send` 返回 `Unsupported`（mock 不支持插话，daemon 自己排队）。

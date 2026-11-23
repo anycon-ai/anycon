@@ -1,6 +1,6 @@
 // 分身页的「使用别的节点」：列出这个节点的分身用着的节点，添加（两步 RPC）和断开。
 // 短码只在 `addTwinLink` 里经内存传递；这里的状态和渲染里都没有它。
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import type { TwinLink } from '@/protocol'
@@ -10,7 +10,11 @@ import { useNodes, type NodeEntry } from '@/stores/nodes'
 import { Button } from '@/ui/Button'
 import { Chip, Dot } from '@/ui/Misc'
 import { Dialog } from '@/ui/Overlay'
+import { useTwinLinksTick } from './store'
 import { addTwinLink, candidateBlock, describeLinkError, groupsDiffer, isUnsupported, listTwinLinks, removeTwinLink } from './links'
+
+/** 连着来的 `twin.changed` 合并成一次读的等待。 */
+const LINKS_COALESCE_MS = 250
 
 export function TwinLinks({ node }: { node: NodeEntry }) {
   const { t } = useTranslation()
@@ -30,9 +34,19 @@ export function TwinLinks({ node }: { node: NodeEntry }) {
       else setFailed(true)
     }
   }, [node.id])
+  // 收到 `twin.changed` 时重读（daemon.md § 27.6）；连着来的几条合并成一次读，第一次挂载立即读
+  const tick = useTwinLinksTick((s) => s.tick[node.id] ?? 0)
+  const loaded = useRef(false)
   useEffect(() => {
-    if (online) void load()
-  }, [online, load])
+    if (!online) return
+    if (!loaded.current) {
+      loaded.current = true
+      void load()
+      return
+    }
+    const timer = setTimeout(() => void load(), LINKS_COALESCE_MS)
+    return () => clearTimeout(timer)
+  }, [online, load, tick])
   // 这个节点的 daemon 还不认识分身连接：不显示这一块
   if (unsupported) return null
   return (

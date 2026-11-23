@@ -410,6 +410,20 @@ async fn explicit_settings_are_echoed() {
 }
 
 #[tokio::test]
+async fn no_push_option_is_declared_and_echoed() {
+    let info = MockAdapter::new().probe(&probe_ctx(true)).await;
+    assert!(info.options.iter().any(|o| o.id == "no_push" && o.kind == anycon_protocol::ConfigOptionKind::Bool));
+    // 不带时回显里没有；带 true 时回显 ` no_push=on`；不是布尔值被拒绝
+    let mut h = spawn_with(SessionSettings::default()).await;
+    assert!(!text_of(&run_turn(&mut h, "x", no_permission).await).contains("no_push"));
+    let mut options = serde_json::Map::new();
+    options.insert("no_push".into(), json!(true));
+    let mut h = spawn_with(SessionSettings { options, ..Default::default() }).await;
+    let evs = run_turn(&mut h, "x", no_permission).await;
+    assert!(text_of(&evs).contains("mode=ask] no_push=on You said: x"), "{}", text_of(&evs));
+}
+
+#[tokio::test]
 async fn verbose_option_adds_marker() {
     let mut options = serde_json::Map::new();
     options.insert("verbose".into(), json!(true));

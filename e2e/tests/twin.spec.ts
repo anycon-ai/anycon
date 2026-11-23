@@ -3,10 +3,10 @@
  *
  * 用到判断后端的节点由这个文件自己起（`startExtraDaemon`，不动共享的 daemon），配置在启动前写进它的 `config.toml`：
  * `[judge.backends.e2efake]`（`kind = "api"`、`format = "anthropic"`、`base_url` 指向用例里起的假服务，密钥来自只在这个 daemon
- * 环境里的变量）。agent 用 `helpers/fake-claude.ts` 的假 `claude`：mock agent 没声明 `no_push`，配置不了分身（那个文件顶部写了原因）。
+ * 环境里的变量）。agent 是 mock（它声明了 `no_push` 和 `unattended` 的 `ask` 模式，派出的会话回显里能看到 `no_push=on`）。
  *
- * 串行，一个额外节点 + 一个配对的浏览器；节点和浏览器的设备在结束时去掉。分拣的合并窗口是 60 秒（§ 26.3），每次唤醒至少等这么久，
- * 所以每个等唤醒的步骤都是对「假后端收到某个请求」的有界等待。
+ * 串行，一个额外节点 + 一个配对的浏览器；节点和浏览器的设备在结束时去掉。节点的环境变量 `ANYCON_TWIN_COALESCE_MS`（只用于测试）
+ * 把分拣的合并窗口从 60 秒缩短到 2 秒（§ 26.3），每个等唤醒的步骤都是对「假后端收到某个请求」的有界等待。
  *
  *   a. 分身页：没配置时的状态；打开一个项目、设预算（第一次保存先暂停并自动试跑）；试跑显示假后端的计划，节点上什么都没派、没问
  *   b. 「记一项」里交给分身 →「就这么办」唤醒 → 假后端回 `dispatch` → 开了 worktree 会话；清单里这一项显示分身在处理；分身页的运行记录
@@ -23,7 +23,6 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { runCli } from '../helpers/cli.js'
 import { startExtraDaemon, type ExtraDaemon } from '../helpers/daemon.js'
-import { fakeClaude } from '../helpers/fake-claude.js'
 import { git, makeRepoProject } from '../helpers/git.js'
 import { containsText, exactText } from '../helpers/i18n.js'
 import {
@@ -39,8 +38,8 @@ import {
 import { waitFor } from '../helpers/process.js'
 import { readState } from '../helpers/state.js'
 import {
+  COALESCE_MS,
   JUDGE_KEY,
-  JUDGE_KEY_ENV,
   cliJson,
   judgeToml,
   removeNodesFromAccount,
@@ -49,6 +48,7 @@ import {
   todoHistory,
   todos,
   triageRequests,
+  twinEnv,
   twinRuns,
   twinStatus,
   waitForTriage,
@@ -136,21 +136,6 @@ function outsideBlocks(request: JudgeRequest): string {
 const inBlocks = (request: JudgeRequest, needle: string): boolean =>
   dataBlocks(request).some((b) => b.text.includes(needle))
 
-/**
- * 已知的产品缺口：这一步照正确的行为断言，失败时记下来、用变通办法让后面的步骤接着验证，最后由「已知问题」那个用例统一报出。
- * 缺口修好之后这个函数和那个用例一起删掉。返回这一步是否通过。
- */
-const knownGaps: string[] = []
-async function knownGap(what: string, step: () => Promise<void>): Promise<boolean> {
-  try {
-    await step()
-    return true
-  } catch (error) {
-    knownGaps.push(`${what}\n${String(error).split('\n').slice(0, 6).join('\n')}`)
-    return false
-  }
-}
-
 /** `HH:MM`（节点和测试在同一台机器上，周期项按机器的本地时间算）。 */
 function clock(d: Date): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
@@ -174,10 +159,8 @@ test.describe.serial('分身', () => {
     const state = readState()
     test.skip(!state.daemonStarted, 'needs the e2e daemon (E2E_SKIP_DAEMON=1 was set)')
     judge = await startJudge(respond)
-    const fake = fakeClaude(state, `e2e-${RUN} the agent is done`)
     node = await startExtraDaemon(state, NODE_NAME, {
-      env: { ...fake.env, [JUDGE_KEY_ENV]: JUDGE_KEY },
-      config: fake.config,
+      env: twinEnv(),
       toml: judgeToml(judge),
     })
     // 先建项目和「试跑项」，再配对浏览器：浏览器连上时拉的第一次清单和项目列表就已经有它们
@@ -235,21 +218,8 @@ test.describe.serial('分身', () => {
         projects: [PROJECT],
         daily_dispatches: 5,
       })
-    // 试跑的结果：假后端的计划，每项一行（动作、理由、给 agent 的说明）。第一次保存之后网页在暂停着时自动试跑（web.md § 14.8），
-    // 而 daemon 现在对暂停着的分身拒绝 `twin.dry_run`（`invalid`，`data.reason = "not_configured"`，页面上是「The request was not valid. (state)」）
+    // 试跑的结果：假后端的计划，每项一行（动作、理由、给 agent 的说明）。第一次保存之后网页在暂停着时自动试跑（web.md § 14.8）
     const decision = card.getByTestId('twin-decision')
-    const worked = await knownGap(
-      'the first save should dry-run while the twin is paused (web.md § 14.8), the daemon refuses twin.dry_run when paused',
-      async () => {
-        await expect(decision).toHaveCount(1, { timeout: 15_000 })
-      },
-    )
-    if (!worked) {
-      // 变通：取消暂停之后手动试跑，后面的步骤照常验证
-      await runCli(home(), ['twin', 'resume'])
-      await page.reload()
-      await card.getByRole('button', { name: exactText('twin.dryRun') }).click()
-    }
     await expect(decision).toHaveCount(1, { timeout: 30_000 })
     await expect(decision).toContainText(TITLE_DRY)
     await expect(decision).toContainText(containsText('twin.action.dispatch'))
@@ -258,8 +228,8 @@ test.describe.serial('分身', () => {
 
     // 节点一侧：范围和预算存下来了、暂停着；试跑只记了运行记录，什么都没派、没问
     expect(await twinStatus(home())).toMatchObject({
-      state: worked ? 'paused' : 'idle',
-      scope: { paused: worked, projects: [PROJECT], daily_dispatches: 5 },
+      state: 'paused',
+      scope: { paused: true, projects: [PROJECT], daily_dispatches: 5 },
       today: { dispatches: 0 },
     })
     const dry = await todoByTitle(home(), TITLE_DRY)
@@ -296,7 +266,7 @@ test.describe.serial('分身', () => {
 
   test('b. 「记一项」里交给分身 → 唤醒 → dispatch → worktree 会话；清单和分身页都看得到', async () => {
     test.setTimeout(240_000)
-    // 「就这么办」：取消暂停并唤醒（合并窗口 60 秒）；窗口里再记一项，两件事合进同一次唤醒
+    // 「就这么办」：取消暂停并唤醒（合并窗口缩短到 2 秒）；窗口里再记一项，两件事合进同一次唤醒
     phase = 'live'
     await page.goto(`/twin/${short}`)
     await page.getByRole('button', { name: exactText('twin.dryRun') }).click()
@@ -339,7 +309,7 @@ test.describe.serial('分身', () => {
     expect(request.system).not.toContain(TITLE_DISPATCH)
     await expect
       .poll(async () => (await todoByTitle(home(), TITLE_DISPATCH))?.sessions?.length ?? 0, {
-        timeout: 60_000,
+        timeout: 30_000,
       })
       .toBe(1)
     const sessionId = (await todoByTitle(home(), TITLE_DISPATCH))!.sessions![0]!
@@ -352,6 +322,14 @@ test.describe.serial('分身', () => {
       })
       .toMatch(/\.anycon\/worktrees\//)
     // 分身派发固定「不 push」：「经过」里的 dispatched 记着，说明接在第一条消息后面
+    await expect
+      .poll(
+        async () => (await todoHistory(home(), item.id)).find((e) => e.kind === 'result')?.text,
+        {
+          timeout: 30_000,
+        },
+      )
+      .toContain('mode=ask] no_push=on')
     const events = await todoHistory(home(), item.id)
     expect(events.find((e) => e.kind === 'dispatched')).toMatchObject({ session_id: sessionId })
     expect(events.find((e) => e.kind === 'twin_decision')).toMatchObject({
@@ -367,8 +345,11 @@ test.describe.serial('分身', () => {
     })
     await row.getByTestId('todo-main').click()
     await expect(page.getByTestId('todo-detail')).toBeVisible()
-    const decisionRow = page.locator('[data-testid="history-row"][data-kind="twin_decision"]')
-    await expect(decisionRow).toContainText(REASON.dispatch)
+    // 会话结束也会唤醒分身（之后的决定是「等」）：按理由找派发的那一条
+    const decisionRow = page
+      .locator('[data-testid="history-row"][data-kind="twin_decision"]')
+      .filter({ hasText: REASON.dispatch })
+    await expect(decisionRow).toHaveCount(1)
     // 「经过」里的「打开这次运行」直达分身页里的这次运行：展开着，有这条决定
     await decisionRow.getByRole('link', { name: exactText('twin.openRun') }).click()
     await expect(page).toHaveURL(/\/twin\?.*run=/)
@@ -449,18 +430,23 @@ test.describe.serial('分身', () => {
     expect(rule.source).toMatchObject({ kind: 'answer', request_id: questionId })
     expect(rule.source.session_id).toBeUndefined()
 
-    // 回答触发一次唤醒：请求里带着这项的问答和新规则；假后端回 dispatch，节点上派出会话
-    const wake = await waitForTriage(
-      judge,
-      'the wake after the answer',
-      (r) => itemsOf(r).some((i) => i.id === item.id && i.text.includes(`answer: ${OPTION_A}`)),
-      { after: answerRequestsBefore },
-    )
+    // 回答触发一次唤醒：请求里带着这项的问答；假后端回 dispatch，节点上派出会话。合并窗口很短，这次唤醒可能早于规则保存，
+    // 所以规则要到之后（保存之后手动唤醒的）请求里找
+    const answered = (r: JudgeRequest): boolean =>
+      itemsOf(r).some((i) => i.id === item.id && i.text.includes(`answer: ${OPTION_A}`))
+    const wake = await waitForTriage(judge, 'the wake after the answer', answered, {
+      after: answerRequestsBefore,
+    })
     expect(itemsOf(wake).find((i) => i.id === item.id)!.text).toContain(QUESTION)
-    expect(wake.system + wake.prompt).toContain(RULE_TEXT)
+    const afterRule = judge.requests.length
+    await runCli(home(), ['twin', 'wake'])
+    const withRule = await waitForTriage(judge, 'a wake after the rule was saved', answered, {
+      after: afterRule,
+    })
+    expect(withRule.system + withRule.prompt).toContain(RULE_TEXT)
     await expect
       .poll(async () => (await todoByTitle(home(), TITLE_ASK))?.sessions?.length ?? 0, {
-        timeout: 60_000,
+        timeout: 30_000,
       })
       .toBe(1)
     const run = (await twinRuns(home())).find((r) =>
@@ -539,17 +525,21 @@ test.describe.serial('分身', () => {
         )
         return copy !== undefined
       },
-      { timeoutMs: 150_000, intervalMs: 2_000 },
+      { timeoutMs: 130_000, intervalMs: 2_000 },
     )
     expect(copy).toMatchObject({ title: TITLE_PERIODIC, handler: 'twin', project: PROJECT })
     expect((await todoHistory(home(), periodic.id)).some((e) => e.kind === 'repeat_created')).toBe(
       true,
     )
-    // 窗口（60 秒）从第一个触发算起：过了它，假后端仍然什么都没收到
-    await waitFor('the 60 s merge window has passed', () => Date.now() - addedAt > 65_000, {
-      timeoutMs: 80_000,
-      intervalMs: 1_000,
-    })
+    // 合并窗口从第一个触发算起，最长等 5 个窗口：过了它，假后端仍然什么都没收到
+    await waitFor(
+      'the longest merge wait has passed',
+      () => Date.now() - addedAt > 6 * COALESCE_MS,
+      {
+        timeoutMs: 30_000,
+        intervalMs: 1_000,
+      },
+    )
     expect(judge.requests.slice(mark)).toEqual([])
     expect((await twinStatus(home())).state).toBe('paused')
   })
@@ -563,25 +553,9 @@ test.describe.serial('分身', () => {
     )!
     const mark = judge.requests.length
     await page.goto(`/twin/${short}`)
-    // 暂停着：恢复先试跑（web.md § 14.8）；daemon 对暂停着的分身拒绝 `twin.dry_run`（同 a），所以先用 CLI 取消暂停再试跑
+    // 暂停着：恢复先试跑（web.md § 14.8），暂停时也能试跑
     expect((await twinStatus(home())).scope.paused).toBe(true)
-    const dryButton = page.getByRole('button', { name: exactText('twin.dryRun') })
-    const worked = await knownGap(
-      'resuming should start with a dry run while the twin is paused (web.md § 14.8), the daemon refuses twin.dry_run when paused',
-      async () => {
-        await dryButton.click()
-        await expect(
-          page.getByTestId('twin-decision').filter({ hasText: TITLE_PAUSED }),
-        ).toBeVisible({
-          timeout: 15_000,
-        })
-      },
-    )
-    if (!worked) {
-      await runCli(home(), ['twin', 'resume'])
-      await page.reload()
-      await dryButton.click()
-    }
+    await page.getByRole('button', { name: exactText('twin.dryRun') }).click()
     await expect(page.getByTestId('twin-decision').filter({ hasText: TITLE_PAUSED })).toBeVisible({
       timeout: 30_000,
     })
@@ -606,13 +580,9 @@ test.describe.serial('分身', () => {
     expect(itemsOf(live).map((i) => i.id)).not.toContain(taken.id)
     await expect
       .poll(async () => (await todoByTitle(home(), TITLE_PAUSED))?.sessions?.length ?? 0, {
-        timeout: 60_000,
+        timeout: 30_000,
       })
       .toBe(1)
     expect((await twinStatus(home())).today.dispatches).toBeGreaterThanOrEqual(3)
-  })
-
-  test('g. 已知问题：上面记下来的、daemon 还没做到的行为', () => {
-    expect(knownGaps).toEqual([])
   })
 })

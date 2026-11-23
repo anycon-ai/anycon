@@ -19,6 +19,23 @@ use crate::config::Paths;
 /// `PairDone` 之后等对端的 `pair.ack` 最多多久；超时 = 配对失败、什么都不落盘。
 pub const ACK_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// hub 限速（429）时，一次性的配对最多一共等多久。再长就是 hub 在持续限这个地址，让用户自己决定。
+pub(crate) const RATE_LIMIT_PATIENCE: Duration = Duration::from_secs(30);
+
+/// hub 限速时，下一次重试前等多久；`None` = 不是限速，或者再等就超过 [`RATE_LIMIT_PATIENCE`] 了，该放弃。
+/// 按 hub 给的 `Retry-After` 等（至少 1 秒）；没给就从 2 秒起每次翻倍（上限 16 秒）。`waited` 是已经等掉的时间，
+/// `attempt` 是已经等过几次。
+pub(crate) fn rate_limit_wait(e: &ClientError, waited: Duration, attempt: u32) -> Option<Duration> {
+    if e.code != super::error::RATE_LIMITED_CODE {
+        return None;
+    }
+    let d = e
+        .retry_after()
+        .unwrap_or_else(|| Duration::from_secs(2u64.saturating_mul(1 << attempt.min(3)).min(16)))
+        .max(Duration::from_secs(1));
+    (waited + d <= RATE_LIMIT_PATIENCE).then_some(d)
+}
+
 /// 加入方的撮合和握手：发 `pair_join`，等 `pair_matched`，和节点（临时 id）走完 XXpsk3 握手，再发 `pair_confirm`。
 /// 返回配对传输和握手得到的节点公钥；之后由 [`finish_pairing`] 等 `pair_done` 和 `pair.ack`。
 pub async fn join_handshake(
@@ -122,7 +139,22 @@ pub(crate) async fn pair_with(
     let mut state = HubState::load(&dir, &hub_url);
     state.check()?;
     state.hub_url = hub_url;
-    pair_state(&mut state, client, code_arg, ack_timeout).await
+    // 一次性、由人触发：hub 限速这个地址时按它给的 `Retry-After` 等一等再试
+    let (mut waited, mut attempt) = (Duration::ZERO, 0u32);
+    loop {
+        match pair_state(&mut state, client.clone(), code_arg, ack_timeout).await {
+            Err(e) => match rate_limit_wait(&e, waited, attempt) {
+                Some(d) => {
+                    super::notice(&format!("note: the hub is limiting new connections; retrying in {} s", d.as_secs()));
+                    tokio::time::sleep(d).await;
+                    waited += d;
+                    attempt += 1;
+                }
+                None => return Err(e),
+            },
+            ok => return ok,
+        }
+    }
 }
 
 /// 用一条新的 hub 连接、以 `state` 里的设备身份（没有就生成新密钥）配对；成功后 `state` 已更新并落盘。
@@ -265,5 +297,45 @@ pub fn parse_code_arg(arg: &str) -> Result<String> {
         Err(ClientError::usage(
             "invalid pairing code (expected 8 or 16 characters like 7K3P-Q2MX, or the link printed by `anycon pair`)",
         ))
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::*;
+
+    fn limited(after: Option<u64>) -> ClientError {
+        ClientError::rate_limited("http://hub", after.map(Duration::from_secs))
+    }
+
+    #[test]
+    fn waits_for_the_hubs_retry_after_and_gives_up_past_the_patience() {
+        let z = Duration::ZERO;
+        assert_eq!(rate_limit_wait(&limited(Some(5)), z, 0), Some(Duration::from_secs(5)));
+        // 至少 1 秒
+        assert_eq!(rate_limit_wait(&limited(Some(0)), z, 0), Some(Duration::from_secs(1)));
+        // 单次就超过耐心：不等
+        assert_eq!(rate_limit_wait(&limited(Some(31)), z, 0), None);
+        // 累计超过：不再等
+        assert_eq!(rate_limit_wait(&limited(Some(10)), Duration::from_secs(25), 2), None);
+        assert_eq!(rate_limit_wait(&limited(Some(10)), Duration::from_secs(20), 2), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn without_retry_after_it_backs_off_from_two_seconds() {
+        let mut waited = Duration::ZERO;
+        let mut seen = vec![];
+        for attempt in 0.. {
+            let Some(d) = rate_limit_wait(&limited(None), waited, attempt) else { break };
+            seen.push(d.as_secs());
+            waited += d;
+        }
+        assert_eq!(seen, vec![2, 4, 8, 16]);
+    }
+
+    #[test]
+    fn other_errors_are_not_waited_for() {
+        assert_eq!(rate_limit_wait(&ClientError::offline("x"), Duration::ZERO, 0), None);
+        assert_eq!(rate_limit_wait(&ClientError::general("x"), Duration::ZERO, 0), None);
     }
 }

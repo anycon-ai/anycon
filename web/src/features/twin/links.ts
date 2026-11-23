@@ -23,6 +23,12 @@ export async function listTwinLinks(nodeId: string): Promise<TwinLink[]> {
   return (await rpc().request<TwinLinksResult>(nodeId, 'twin.links', {})).links
 }
 
+/**
+ * `twin.link` 的超时：daemon 要等 B 确认配对（最多 30 秒），hub 限速时还会按 `Retry-After` 等（最多 30 秒，daemon.md § 27.2），
+ * 缺省的 30 秒会在 daemon 还在等的时候就报超时。
+ */
+const TWIN_LINK_TIMEOUT_MS = 75_000
+
 /** 依次调 B 的 `node.twin_link_code` 和 A 的 `twin.link`；任何一步失败都抛 `TwinLinkError`，不重试（再要短码会作废旧的）。 */
 export async function addTwinLink(usingNode: string, usedNode: string): Promise<TwinLink> {
   let code: string
@@ -32,7 +38,7 @@ export async function addTwinLink(usingNode: string, usedNode: string): Promise<
     throw new TwinLinkError('code', e)
   }
   try {
-    return await rpc().request<TwinLink>(usingNode, 'twin.link', { code, node_id: usedNode })
+    return await rpc().request<TwinLink>(usingNode, 'twin.link', { code, node_id: usedNode }, TWIN_LINK_TIMEOUT_MS)
   } catch (e) {
     throw new TwinLinkError('link', e)
   }
@@ -53,6 +59,7 @@ const REASONS: Record<string, string> = {
   no_hub: 'noHub',
   node_mismatch: 'nodeMismatch',
   hub_unsupported: 'hubUnsupported',
+  hub_rate_limited: 'hubRateLimited',
 }
 
 /** 把添加失败按 `data.reason` 翻成人话；不认识的原因落到按错误码的通用说明。 */

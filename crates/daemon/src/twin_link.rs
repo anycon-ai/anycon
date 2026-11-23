@@ -99,6 +99,11 @@ fn link_error(e: ClientError) -> RpcError {
             "hub_unsupported",
         );
     }
+    // hub 限速了这个地址上的新连接（等过几次仍然不行）。协议没有专门的限速码：`busy`（暂时做不了、稍后再试）
+    // 最接近，和 `node.pair_begin` 对 hub 限速的约定一致；文字里已经带着建议等多久。
+    if e.code == crate::client::RATE_LIMITED_CODE {
+        return err_reason(ErrorCode::Busy, e.message, crate::client::HUB_RATE_LIMITED_REASON);
+    }
     let (code, hint) = match (e.class, e.code.as_str()) {
         (ErrorClass::Usage, _) => (ErrorCode::Invalid, ""),
         (ErrorClass::Offline, _) => (ErrorCode::Unsupported, ""),

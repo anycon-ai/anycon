@@ -2841,6 +2841,7 @@
       "noHub": "This node has no hub configured, and twin connections go through the hub.",
       "nodeMismatch": "The node that answered is not the one you chose, so nothing was connected.",
       "hubUnsupported": "The hub does not support twin connections yet. Update the hub to 0.4 or newer first.",
+      "hubRateLimited": "The hub is temporarily limiting new connections from this address. Wait a moment and try again.",
       "pairBusy": "The hub is not opening another pairing right now (daily limit or rate limit). Try again later.",
       "codeStep": "The node to use could not open a pairing.",
       "linkStep": "Twin could not pair with that node."

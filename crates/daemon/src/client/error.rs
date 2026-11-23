@@ -24,11 +24,24 @@ pub struct ClientError {
     pub rpc: Option<RpcError>,
     /// 比 `code` 更细的机器可读原因（配对被 hub 拒绝时是 hub 给的原因：`not_found`、`timeout`、`forbidden`……）。
     pub reason: Option<String>,
+    /// hub 限速时它建议等多久（`Retry-After`）；只有 [`ClientError::rate_limited`] 会带，hub 没给就是 `None`。
+    /// 取整到秒，0 = 没有。不用 `Option`，为的是不让 `ClientError`（到处在 `Result` 里）变大。
+    retry_after_secs: u32,
 }
 
+/// hub 限速时 [`ClientError::code`] 的值。
+pub const RATE_LIMITED_CODE: &str = "rate_limited";
+
+/// hub 限速时 [`ClientError::reason`] 的值（也是 `twin.link` 的 `data.reason`）。
+pub const HUB_RATE_LIMITED_REASON: &str = "hub_rate_limited";
+
 impl ClientError {
+    /// hub 限速时它建议等多久（`Retry-After`）。
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        (self.retry_after_secs > 0).then(|| std::time::Duration::from_secs(u64::from(self.retry_after_secs)))
+    }
     pub fn new(class: ErrorClass, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { class, code: code.into(), message: message.into(), rpc: None, reason: None }
+        Self { class, code: code.into(), message: message.into(), rpc: None, reason: None, retry_after_secs: 0 }
     }
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = Some(reason.into());
@@ -43,6 +56,21 @@ impl ClientError {
     pub fn offline(message: impl Into<String>) -> Self {
         Self::new(ErrorClass::Offline, "offline", message)
     }
+    /// hub 对 WebSocket 升级限速了（HTTP 429）。归在「离线」类（hub 暂时去不了，稍后可以再试）。
+    pub fn rate_limited(hub_url: &str, retry_after: Option<std::time::Duration>) -> Self {
+        let wait = match retry_after {
+            Some(d) => format!("about {} s", d.as_secs().max(1)),
+            None => "a little while".to_string(),
+        };
+        let mut e = Self::new(
+            ErrorClass::Offline,
+            RATE_LIMITED_CODE,
+            format!("the hub at {hub_url} is limiting new connections from this address; try again in {wait}"),
+        )
+        .with_reason(HUB_RATE_LIMITED_REASON);
+        e.retry_after_secs = retry_after.map_or(0, |d| d.as_secs().clamp(1, u64::from(u32::MAX)) as u32);
+        e
+    }
     pub fn not_paired(message: impl Into<String>) -> Self {
         Self::new(ErrorClass::NotPaired, "not_paired", message)
     }
@@ -56,7 +84,14 @@ impl ClientError {
             .and_then(|c| serde_json::to_value(c).ok())
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| "error".into());
-        Self { class: ErrorClass::General, code, message: e.message.clone(), rpc: Some(e), reason: None }
+        Self {
+            class: ErrorClass::General,
+            code,
+            message: e.message.clone(),
+            rpc: Some(e),
+            reason: None,
+            retry_after_secs: 0,
+        }
     }
 }
 

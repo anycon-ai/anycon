@@ -101,9 +101,13 @@ impl HubWs {
         client: ClientInfo,
         cookie: Option<&str>,
     ) -> std::result::Result<HubWs, ConnectFail> {
-        let ws = connect_ws_with_cookie(hub_url, cookie)
-            .await
-            .map_err(|e| ConnectFail::Other(ClientError::offline(format!("cannot reach the hub at {hub_url}: {e}"))))?;
+        let ws = connect_ws_with_cookie(hub_url, cookie).await.map_err(|e| {
+            ConnectFail::Other(if e.is_rate_limited() {
+                ClientError::rate_limited(hub_url, e.retry_after())
+            } else {
+                ClientError::offline(format!("cannot reach the hub at {hub_url}: {e}"))
+            })
+        })?;
         let mut h = HubWs {
             ws,
             seq: 0,

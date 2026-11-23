@@ -125,6 +125,11 @@ async fn authenticate(state: &Arc<AppState>, socket: &mut WebSocket, preview_lab
         reject(socket, AuthFailReason::Version).await;
         return None;
     }
+    // 这个版本不认识的设备种类：hub 不知道它该有什么规则，也存不下它
+    if client.kind == DeviceKind::Unknown {
+        reject(socket, AuthFailReason::Protocol).await;
+        return None;
+    }
 
     // 预览连接只在预览域名上，预览域名上也只有预览连接：不带 device_token、client.kind = web，否则 `protocol`。
     match (preview_label, preview_token) {

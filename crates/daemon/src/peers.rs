@@ -21,8 +21,9 @@ use std::time::{Duration, Instant};
 use anycon_crypto::{Handshake, Role, Transport};
 use anycon_protocol::envelope::frame;
 use anycon_protocol::{
-    methods, ClientInfo, Control, DeviceKind, DropReason, ErrorCode, Kind, NodePairBeginResult, NotifyBody, PairAck,
-    PairFailReason, PairRole, PeerDevice, RpcError, RpcMessage, RpcNotification, RpcRequest,
+    methods, ClientInfo, Control, DeviceKind, DropReason, ErrorCode, Kind, NodePairBeginResult, NodeSecurityEvent,
+    NodeTwinLinkCodeResult, NotifyBody, PairAck, PairFailReason, PairRole, PeerDevice, RpcError, RpcMessage,
+    RpcNotification, RpcRequest, SecurityEventKind,
 };
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -48,6 +49,10 @@ const PAIR_CODE_TIMEOUT: Duration = Duration::from_secs(10);
 const TEMP_CONN_MAX_BEGINS: u32 = 3;
 const TEMP_CONN_MAX_AGE: Duration = Duration::from_secs(9 * 60);
 const FRESH_CONN_TIMEOUT: Duration = Duration::from_secs(15);
+/// `node.twin_link_code` 的短码有效多久（docs/spec/daemon.md § 27.2）。
+const TWIN_CODE_TTL: Duration = Duration::from_secs(10 * 60);
+/// hub 上的登记在到期前这么久就续一次。
+const TWIN_CODE_REFRESH_MARGIN: Duration = Duration::from_secs(20);
 const PAIR_STEP_TIMEOUT: Duration = Duration::from_secs(70);
 const STALL_LIMIT: Duration = Duration::from_secs(60);
 /// 写任务每发出这么多字节就让出一小会儿（让 hub 的退回回执先到，大消息不会整条灌出去才发现被退回）。
@@ -371,7 +376,17 @@ enum Phase {
     },
 }
 
+/// 这次配对的短码接受什么样的加入方。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairMode {
+    /// `node.pair_begin` 的短码：任何设备种类，**除了** `twin`。
+    Normal,
+    /// `node.twin_link_code` 的短码：只接受 `kind = twin`（§ 27.2）。
+    TwinLink,
+}
+
 struct PairState {
+    mode: PairMode,
     phase: Phase,
     caller: Caller,
     updated: Instant,
@@ -414,6 +429,9 @@ pub enum PairFailureReason {
     Hub(PairFailReason),
     /// 同一个 daemon 上又开始了一次新的 `pair_begin`（比如网页的「添加设备」）：这次的短码已经失效，等着它的客户端不必再等。
     Replaced,
+    /// 加入方的设备种类和这个短码不符：普通短码不接受 `kind = twin`，`node.twin_link_code` 的短码只接受 `kind = twin`
+    /// （docs/spec/daemon.md § 27.2）。
+    TwinNotAllowed,
 }
 
 impl PairFailureReason {
@@ -427,6 +445,7 @@ impl PairFailureReason {
             PairFailureReason::Hub(PairFailReason::Quota) => "quota",
             PairFailureReason::Hub(PairFailReason::Forbidden) => "forbidden",
             PairFailureReason::Replaced => "replaced",
+            PairFailureReason::TwinNotAllowed => "twin_not_allowed",
         }
     }
 }
@@ -486,6 +505,8 @@ pub struct Peers {
     me: std::sync::OnceLock<std::sync::Weak<Peers>>,
     /// 预览模块（ADR-39）：吊销设备时作废它签发的票据、断开用这些票据的隧道。
     preview: std::sync::OnceLock<std::sync::Weak<Preview>>,
+    /// 通知器（分身连接建立和吊销时发 `notify { security }`）。通知器的出口就是 `Peers`，所以这里只持弱引用。
+    notifier: std::sync::OnceLock<std::sync::Weak<crate::notify::Notifier>>,
     /// 配对拿到新 token 后通知 hub 连接重连。
     pub reconnect: Arc<Notify>,
     /// 传输被我们重置过多少次（`reset_peer`；测试 / 诊断用）。
@@ -507,6 +528,15 @@ fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// 不认识的设备种类（更新的客户端）按 `web` 记：和以前自报的种类解析不了时的做法一样。
+fn known_kind(kind: DeviceKind) -> DeviceKind {
+    if kind == DeviceKind::Unknown {
+        DeviceKind::Web
+    } else {
+        kind
+    }
+}
+
 pub(crate) fn parse_client_info(payload: &[u8], device_id: &str) -> (String, DeviceKind) {
     let fallback = || (format!("device-{}", short_id(device_id)), DeviceKind::Web);
     if payload.is_empty() {
@@ -514,7 +544,7 @@ pub(crate) fn parse_client_info(payload: &[u8], device_id: &str) -> (String, Dev
     }
     if let Ok(info) = serde_json::from_slice::<ClientInfo>(payload) {
         let name: String = info.name.chars().take(100).collect();
-        return (if name.trim().is_empty() { fallback().0 } else { name }, info.kind);
+        return (if name.trim().is_empty() { fallback().0 } else { name }, known_kind(info.kind));
     }
     if let Ok(v) = serde_json::from_slice::<Value>(payload) {
         let name = v
@@ -522,8 +552,10 @@ pub(crate) fn parse_client_info(payload: &[u8], device_id: &str) -> (String, Dev
             .and_then(Value::as_str)
             .map(|n| n.chars().take(100).collect::<String>())
             .filter(|n| !n.trim().is_empty());
-        let kind =
-            v.get("kind").and_then(|k| serde_json::from_value::<DeviceKind>(k.clone()).ok()).unwrap_or(DeviceKind::Web);
+        let kind = v
+            .get("kind")
+            .and_then(|k| serde_json::from_value::<DeviceKind>(k.clone()).ok())
+            .map_or(DeviceKind::Web, known_kind);
         return (name.unwrap_or_else(|| fallback().0), kind);
     }
     fallback()
@@ -579,6 +611,7 @@ impl Peers {
             begins_on_conn: Mutex::new((0, 0)),
             me: std::sync::OnceLock::new(),
             preview: std::sync::OnceLock::new(),
+            notifier: std::sync::OnceLock::new(),
             reconnect: Arc::new(Notify::new()),
             resets: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
@@ -644,6 +677,18 @@ impl Peers {
             .collect();
         v.sort_by_key(|p| p.paired_at_ms);
         v
+    }
+
+    /// 收 `notify` 的设备：已配对的、不是分身设备的。
+    pub fn notify_ids(&self) -> Vec<String> {
+        let staged = self.staged.lock().unwrap().clone();
+        self.records
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|p| p.kind != DeviceKind::Twin && !staged.contains(&p.device_id))
+            .map(|p| p.device_id.clone())
+            .collect()
     }
 
     pub fn paired_ids(&self) -> Vec<String> {
@@ -803,6 +848,64 @@ impl Peers {
         self.write_json();
     }
 
+    /// 接上通知器（装配时调用一次）。
+    pub fn bind_notifier(&self, notifier: &Arc<crate::notify::Notifier>) {
+        let _ = self.notifier.set(Arc::downgrade(notifier));
+    }
+
+    /// 分身连接建立 / 吊销（docs/spec/daemon.md § 27.2）：给所有在线的已配对设备发 `node.security_event`（分身设备自己收不到，
+    /// 推送过滤会拦下），并发一次 `notify { security }`（60 秒内的多条合并）。审计由调用方记。
+    pub async fn twin_event(&self, kind: SecurityEventKind, device_id: &str, device_name: &str, by: Option<&str>) {
+        let ev = NodeSecurityEvent {
+            kind,
+            ts_ms: now_ms(),
+            by_device: by.map(str::to_string),
+            device_id: Some(device_id.to_string()),
+            device_name: Some(device_name.to_string()),
+            method: None,
+            failures: None,
+            password_set: None,
+        };
+        tracing::info!(?kind, device = %device_id, "security event");
+        self.clients.broadcast(methods::NODE_SECURITY_EVENT, &ev);
+        if let Some(n) = self.notifier.get().and_then(std::sync::Weak::upgrade) {
+            n.security();
+        }
+    }
+
+    /// `[twin] accept_links` 热加载：关掉时断开已有的分身设备的传输（记录和范围保留），并作废还没用掉的分身短码。
+    pub fn spawn_config_watcher(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let this = Arc::downgrade(self);
+        let mut rx = self.config.subscribe();
+        tokio::spawn(async move {
+            while rx.changed().await.is_ok() {
+                let Some(this) = this.upgrade() else { return };
+                if !this.config.get().twin.accept_links {
+                    this.disconnect_twin_devices().await;
+                }
+            }
+        })
+    }
+
+    /// 断开所有分身设备的传输（`accept_links` 关了）。
+    pub async fn disconnect_twin_devices(&self) {
+        let twins: Vec<String> = self
+            .records
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|p| p.kind == DeviceKind::Twin)
+            .map(|p| p.device_id.clone())
+            .collect();
+        for id in twins {
+            self.drop_session(&id);
+        }
+        let twin_code_open = self.pairing.lock().unwrap().as_ref().is_some_and(|s| s.mode == PairMode::TwinLink);
+        if twin_code_open {
+            self.abort_pairing_as(Some(PairFailureReason::TwinNotAllowed)).await;
+        }
+    }
+
     /// 接上预览模块（装配时调用一次）。
     pub fn bind_preview(&self, preview: &Arc<Preview>) {
         let _ = self.preview.set(Arc::downgrade(preview));
@@ -959,6 +1062,11 @@ impl Peers {
             tracing::debug!(peer = %from, "handshake from an unpaired device; ignored");
             return;
         };
+        // `accept_links` 关着：分身设备的握手被拒（记录和范围保留，重新打开后照常可用）
+        if rec.kind == DeviceKind::Twin && !self.config.get().twin.accept_links {
+            tracing::debug!(peer = %from, "handshake from a twin device refused: [twin] accept_links is off");
+            return;
+        }
         let kp = self.identity.keypair();
         let mut hs = match Handshake::reconnect(Role::Responder, &kp, Some(&rec.pubkey)) {
             Ok(h) => h,
@@ -1084,6 +1192,54 @@ impl Peers {
     /// 还没有 device token 的 daemon（首次配对）用的是临时 hub 连接：hub 限制一条临时连接一生最多 3 次 `PairBegin`、
     /// 最长 10 分钟。所以连接用完 / 快到期了就先换一条新连接再发；被回 `rate_limited` 也换一次连接重试。
     pub async fn pair_begin(self: &Arc<Self>, caller: &Caller, long: bool) -> Result<NodePairBeginResult, RpcError> {
+        self.begin_pairing(caller, long, PairMode::Normal).await.map(|(r, _)| r)
+    }
+
+    /// `node.twin_link_code`（§ 27.2）：开一次只接受分身设备的短码配对，16 位，10 分钟有效，同一时间只有一个
+    /// （和 `node.pair_begin` 共用「一个 daemon 同时一个配对」：再要一个、或者开一次普通配对，都会作废旧的）。
+    /// `[twin] accept_links = false` 时 `forbidden`（`data.reason = "accept_links_off"`）。
+    pub async fn twin_link_code(self: &Arc<Self>, caller: &Caller) -> Result<NodeTwinLinkCodeResult, RpcError> {
+        if !self.config.get().twin.accept_links {
+            return Err(crate::worktree::err_reason(
+                ErrorCode::Forbidden,
+                "this node does not accept twin links ([twin] accept_links is off)",
+                "accept_links_off",
+            ));
+        }
+        let (r, _) = self.begin_pairing(caller, true, PairMode::TwinLink).await?;
+        Ok(NodeTwinLinkCodeResult { code: r.code, expires_ms: now_ms() + TWIN_CODE_TTL.as_millis() as u64 })
+    }
+
+    /// hub 的登记只有 5 分钟（hub 的 `pair_ttl`）：分身连接的短码要 10 分钟，所以在登记快到期、还没有加入方的时候用同一个
+    /// `match_id` 再登记一次（hub 的新登记顶掉旧的、重新计时）。配对被顶掉、已经有加入方、或到了 10 分钟就停。
+    fn spawn_twin_code_refresh(&self, gen: u64, match_id: String, registered_ttl: Duration, deadline: Instant) {
+        let Some(me) = self.self_ref() else { return };
+        tokio::spawn(async move {
+            // 至少隔一秒：hub 的登记时间比续期的提前量还短时，不要连着发
+            let delay = registered_ttl.saturating_sub(TWIN_CODE_REFRESH_MARGIN).max(Duration::from_secs(1));
+            loop {
+                let wake = (Instant::now() + delay).min(deadline);
+                tokio::time::sleep_until(wake.into()).await;
+                if Instant::now() >= deadline {
+                    return;
+                }
+                let waiting = {
+                    let p = me.pairing.lock().unwrap();
+                    p.as_ref().is_some_and(|ps| ps.generation == gen && matches!(ps.phase, Phase::AwaitMatch { .. }))
+                };
+                if !waiting || !me.outbox.send_control(&Control::PairBegin { match_id: match_id.clone() }) {
+                    return;
+                }
+            }
+        });
+    }
+
+    async fn begin_pairing(
+        self: &Arc<Self>,
+        caller: &Caller,
+        long: bool,
+        mode: PairMode,
+    ) -> Result<(NodePairBeginResult, u64), RpcError> {
         if !self.outbox.connected() {
             return Err(RpcError::new(ErrorCode::Unsupported, "not connected to the hub; check `anycon doctor`"));
         }
@@ -1108,7 +1264,7 @@ impl Peers {
         // PSK 的副本放进 `Zeroizing`（`Phase` 里的也是），用完 / 配对作废时清零；`secrets` 自己 Drop 时清零
         let (psk, match_id) = (Zeroizing::new(secrets.psk), secrets.match_id.clone());
         let mut retried = false;
-        let expires_at_ms = loop {
+        let (expires_at_ms, gen) = loop {
             let temp = self.identity.device_token().is_none();
             if temp && self.temp_connection_used_up() {
                 self.fresh_connection().await?;
@@ -1119,6 +1275,7 @@ impl Peers {
             // 它还停在确认阶段的话，暂存的 peer 记录不能留着
             self.abort_pairing_as(Some(PairFailureReason::Replaced)).await;
             *self.pairing.lock().unwrap() = Some(PairState {
+                mode,
                 phase: Phase::AwaitRegistered { psk: psk.clone(), tx },
                 caller: caller.clone(),
                 updated: Instant::now(),
@@ -1132,7 +1289,7 @@ impl Peers {
             }
             self.note_pair_begin(epoch);
             match tokio::time::timeout(PAIR_CODE_TIMEOUT, rx).await {
-                Ok(Ok(Ok(at))) => break at,
+                Ok(Ok(Ok(at))) => break (at, gen),
                 Ok(Ok(Err(PairFailReason::RateLimited))) if temp && !retried => {
                     retried = true;
                     self.clear_pairing(gen);
@@ -1151,9 +1308,18 @@ impl Peers {
                 }
             }
         };
-        self.audit.record(caller, "node.pair_begin", None, serde_json::json!({ "long": long })).await;
+        match mode {
+            PairMode::Normal => {
+                self.audit.record(caller, "node.pair_begin", None, serde_json::json!({ "long": long })).await
+            }
+            PairMode::TwinLink => {
+                let ttl = Duration::from_millis(expires_at_ms.saturating_sub(now_ms()));
+                self.spawn_twin_code_refresh(gen, match_id, ttl, Instant::now() + TWIN_CODE_TTL);
+                self.audit.record(caller, "node.twin_link_code", None, serde_json::json!({})).await;
+            }
+        }
         let link = format!("{hub_url}/pair#code={code}");
-        Ok(NodePairBeginResult { code, expires_at_ms, link })
+        Ok((NodePairBeginResult { code, expires_at_ms, link }, gen))
     }
 
     /// 记一次 `PairBegin`（按 hub 连接计数）。
@@ -1352,9 +1518,14 @@ impl Peers {
         } else {
             tracing::error!("pairing completed without a transport; the joiner will not receive pair.ack");
         }
-        let name = self.record(&peer).map(|r| r.name).unwrap_or_default();
+        let record = self.record(&peer);
+        let name = record.as_ref().map(|r| r.name.clone()).unwrap_or_default();
         self.audit.record(&caller, "pair.completed", Some(&peer), serde_json::json!({ "name": name })).await;
         tracing::info!(peer = %peer, name = %name, "pairing completed");
+        if record.is_some_and(|r| r.kind == DeviceKind::Twin) {
+            self.audit.record(&caller, "twin.linked", Some(&peer), serde_json::json!({ "name": name })).await;
+            self.twin_event(SecurityEventKind::TwinLinked, &peer, &name, Some(&caller.device_id)).await;
+        }
     }
 
     /// 把 `pair.ack` 作为第一条 `data` 消息发给新设备（配对用的 XXpsk3 传输，只用这一次）。
@@ -1380,7 +1551,7 @@ impl Peers {
         enum Outcome {
             NotMine,
             Reply(Vec<Vec<u8>>),
-            Done { replies: Vec<Vec<u8>>, remote: [u8; 32], payload: Vec<u8>, generation: u64 },
+            Done { replies: Vec<Vec<u8>>, remote: [u8; 32], payload: Vec<u8>, generation: u64, mode: PairMode },
             Failed,
         }
         let outcome = {
@@ -1433,7 +1604,7 @@ impl Peers {
                         (Some(remote), Ok(t)) => {
                             ps.phase = Phase::Confirming { peer: from.to_string(), transport: Some(t) };
                             ps.updated = Instant::now();
-                            Outcome::Done { replies, remote, payload, generation: ps.generation }
+                            Outcome::Done { replies, remote, payload, generation: ps.generation, mode: ps.mode }
                         }
                         (_, r) => {
                             if let Err(e) = r {
@@ -1457,11 +1628,44 @@ impl Peers {
                 *self.pairing.lock().unwrap() = None;
                 true
             }
-            Outcome::Done { replies, remote, payload, generation } => {
+            Outcome::Done { replies, remote, payload, generation, mode } => {
                 for r in replies {
                     self.outbox.send_envelope(from, Kind::Handshake, r);
                 }
                 let (name, kind) = parse_client_info(&payload, from);
+                // 设备种类要和这个短码对得上（`kind` 在第三条握手消息里，受 PSK 保护）：普通短码不接受 `twin`，
+                // `node.twin_link_code` 的短码只接受 `twin`，并且 `[twin] accept_links` 还开着（§ 27.2）。
+                // 不对就作废这次配对、不发 `pair_confirm`：加入方什么都没得到（hub 的撮合随后超时）。
+                let kind_ok = match mode {
+                    PairMode::Normal => kind != DeviceKind::Twin,
+                    PairMode::TwinLink => kind == DeviceKind::Twin && self.config.get().twin.accept_links,
+                };
+                if !kind_ok {
+                    tracing::warn!(
+                        peer = %from, ?kind, ?mode,
+                        "pairing refused: the device kind does not fit this code"
+                    );
+                    let state = {
+                        let mut p = self.pairing.lock().unwrap();
+                        if p.as_ref().is_some_and(|s| s.generation == generation) {
+                            p.take()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(state) = state {
+                        self.note_pair_failure(&state, PairFailureReason::TwinNotAllowed);
+                        self.audit
+                            .record(
+                                &state.caller,
+                                "pair.refused",
+                                None,
+                                serde_json::json!({ "reason": "twin_not_allowed", "kind": kind }),
+                            )
+                            .await;
+                    }
+                    return true;
+                }
                 // 先登记再确认：对端收到 PairDone 后立刻发起 IK，不能因为我们这边还没处理 PairDone 而被拒。
                 // 登记在临时 id 下，标成暂存：`node.devices` 看不到它，直到 `PairDone` 把它改键成正式 id
                 self.staged.lock().unwrap().insert(from.to_string());
@@ -1618,7 +1822,10 @@ fn read_peers_json(paths: &Paths) -> Vec<PeerRow> {
             device_id: id.to_string(),
             pubkey,
             name: p.get("name").and_then(Value::as_str).unwrap_or("device").to_string(),
-            kind: p.get("kind").and_then(|k| serde_json::from_value(k.clone()).ok()).unwrap_or(DeviceKind::Web),
+            kind: p
+                .get("kind")
+                .and_then(|k| serde_json::from_value(k.clone()).ok())
+                .map_or(DeviceKind::Web, known_kind),
             paired_at_ms: p.get("paired_at_ms").and_then(Value::as_u64).unwrap_or(0),
             last_seen_ms: None,
         });
@@ -1630,7 +1837,8 @@ fn read_peers_json(paths: &Paths) -> Vec<PeerRow> {
 impl NotifyOut for Peers {
     fn send(&self, body: NotifyBody) {
         let Ok(bytes) = rmp_serde::to_vec_named(&body) else { return };
-        for id in self.paired_ids() {
+        // 分身设备（另一个节点的分身）不收 `notify`（docs/spec/daemon.md § 27.3）
+        for id in self.notify_ids() {
             self.outbox.send_envelope(&id, Kind::Notify, bytes.clone());
         }
     }
@@ -2108,6 +2316,26 @@ mod tests {
             sess.stopped.load(std::sync::atomic::Ordering::SeqCst),
             "a session whose encrypted message was lost must be dropped (peer re-handshakes)"
         );
+    }
+
+    #[test]
+    fn a_twin_kind_is_kept_and_a_kind_this_version_does_not_know_reads_as_web() {
+        let id = "abcdef0123456789";
+        assert_eq!(
+            parse_client_info(r#"{"name":"mac 的分身","kind":"twin","platform":"p","version":"1"}"#.as_bytes(), id),
+            ("mac 的分身".to_string(), DeviceKind::Twin)
+        );
+        // 不认识的种类（更新的客户端）：和以前自报的种类解析不了时一样，按 `web` 记
+        assert_eq!(
+            parse_client_info(br#"{"name":"x","kind":"future","platform":"p","version":"1"}"#, id),
+            ("x".to_string(), DeviceKind::Web)
+        );
+        assert_eq!(parse_client_info(br#"{"name":"x","kind":"future"}"#, id), ("x".to_string(), DeviceKind::Web));
+        assert_eq!(parse_client_info(br#"{"name":"x","kind":"twin"}"#, id), ("x".to_string(), DeviceKind::Twin));
+        // 存储里的写法来回一致
+        for kind in [DeviceKind::Daemon, DeviceKind::Web, DeviceKind::Cli, DeviceKind::Sdk, DeviceKind::Twin] {
+            assert_eq!(crate::store::parse_kind(crate::store::kind_name(kind)), kind);
+        }
     }
 
     #[test]

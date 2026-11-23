@@ -469,16 +469,20 @@ impl<'de> Deserialize<'de> for AgentsConfig {
     }
 }
 
-/// 分身的机器级硬开关；热加载，远程只能关闭。
+/// 分身的机器级硬开关；热加载，远程只能关闭。两个键互不影响（docs/spec/daemon.md § 26.2、§ 27.2）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TwinConfig {
+    /// 这台机器自己跑分身的判断（唤醒、调用模型、派发）。
     pub enabled: bool,
+    /// 这台机器接受别的节点的分身连接：关了就断开已有的分身设备、拒绝它们的握手和新的 `twin` 种类配对
+    /// （设备记录和范围保留，重新打开后照常可用）。
+    pub accept_links: bool,
 }
 
 impl Default for TwinConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self { enabled: true, accept_links: true }
     }
 }
 
@@ -1078,6 +1082,7 @@ pub fn is_hot_key(key: &str) -> bool {
         || key.starts_with("rules.")
         || key.starts_with("judge.")
         || key == "twin.enabled"
+        || key == "twin.accept_links"
         || key == "update.check"
         || key == "log.level"
     {

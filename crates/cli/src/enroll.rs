@@ -688,6 +688,12 @@ pub(crate) fn rejected_error(reason: EnrollRejectReason, retry_after_ms: Option<
         EnrollRejectReason::Busy => CliError::new(EXIT_ERROR, "busy", "the node is busy with other join requests; try again in a moment"),
         EnrollRejectReason::Expired => CliError::new(EXIT_ERROR, "expired", "the request or the join code expired; start again"),
         EnrollRejectReason::Invalid => CliError::new(EXIT_ERROR, "protocol_error", "the node rejected the request as malformed"),
+        EnrollRejectReason::TwinNotAllowed => CliError::denied(
+            "twin_not_allowed",
+            "a twin device cannot join with a join code or a password; \
+             run `anycon twin link-code` on the node it should use",
+        ),
+        EnrollRejectReason::Unknown => CliError::new(EXIT_ERROR, "rejected", "the node rejected the request"),
     }
 }
 

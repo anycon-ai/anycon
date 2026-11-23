@@ -30,6 +30,8 @@ export const UNLOCK_ERROR_CODES: Record<EnrollErrorCode, true> = {
   wrong_secret: true,
   expired: true,
   invalid: true,
+  twin_not_allowed: true,
+  unknown: true,
 }
 
 /** 这些原因意味着「这一次接入没有了，重新开始就行」。 */

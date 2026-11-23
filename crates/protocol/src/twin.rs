@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{JudgeError, TimestampMs, TodoActor};
+use crate::{DeviceId, JudgeError, TimestampMs, TodoActor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +72,10 @@ pub enum TwinSkipReason {
     OutOfScope,
     NoCapacity,
     Budget,
+    /// 派发到别的节点：那个节点不在线、调不通或超时（docs/spec/daemon.md § 27.4）。
+    RemoteUnavailable,
+    /// 派发到别的节点：那个节点拒绝了（范围、名额、预算、暂停）。
+    RemoteRefused,
     #[serde(other)]
     Unknown,
 }
@@ -127,8 +131,20 @@ pub struct TwinGetResult {
     pub waiting: Vec<String>,
 }
 
+/// `twin.get` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TwinGetParams {
+    /// 读谁的范围：缺省 `local`（本机分身）；也可以是一个已配对的分身设备（`DeviceKind::Twin`）的设备 id，读 B 给这条分身连接
+    /// 的设置（docs/spec/daemon.md § 27.3）。不是已存在的分身设备 → `not_found`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TwinSetParams {
+    /// 改谁的范围，同 [`TwinGetParams::requester`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,6 +204,9 @@ pub struct TwinDecision {
     pub options: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// 派发到哪个节点（节点表里的 id）；缺省 = 本机。只用于显示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -254,6 +273,85 @@ pub struct TwinQuestionNotice {
     pub question: TwinQuestion,
 }
 
+// ---------------- 分身连接（docs/spec/daemon.md § 27） ----------------
+
+/// `node.twin_link_code` 的结果：B 开了一次只接受分身设备的短码配对。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NodeTwinLinkCodeResult {
+    /// 16 位短码（`XXXX-XXXX-XXXX-XXXX`）。
+    pub code: String,
+    /// 过期时间（10 分钟后）。
+    pub expires_ms: TimestampMs,
+}
+
+/// `twin.link` 的参数：A 的 daemon 用 B 发的短码以分身设备的身份和 B 配对。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TwinLinkParams {
+    /// B 的 `node.twin_link_code` 发出的短码。
+    pub code: String,
+    /// B 的节点 id：配对完成后核对，对不上就失败并丢掉这次配对。
+    pub node_id: DeviceId,
+}
+
+/// B 对这条分身连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TwinPeerStatus {
+    /// B 的节点名。
+    pub name: String,
+    /// B 的分组名。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// 对这条连接开放的项目；空 = 什么都没开放。
+    pub projects: Vec<String>,
+    pub agents: Vec<TwinPeerAgent>,
+    /// 这条连接还能同时派出几个会话：它的上限和给人留的名额里更紧的那个，减去已在处理中的。
+    pub remaining_sessions: u32,
+    /// 这个本地日还能派发几次。
+    pub remaining_dispatches: u32,
+    /// 这条连接被 B 暂停了。
+    pub paused: bool,
+    /// B 现在接受分身连接（`[twin] accept_links`）。
+    pub accept_links: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TwinPeerAgent {
+    pub id: String,
+    pub label: String,
+    /// agent 现在可用（已安装、已登录）。
+    pub ready: bool,
+}
+
+/// 一条分身连接（A 记下的，表 `twin_links`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TwinLink {
+    /// B 的节点 id。
+    pub node_id: DeviceId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// B 的静态公钥指纹。
+    pub fingerprint: String,
+    pub paired_ms: TimestampMs,
+    /// 这条连接现在在线。
+    #[serde(default)]
+    pub online: bool,
+    /// 上一次的 `twin.peer_status`；还没取到过为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<TwinPeerStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TwinLinksResult {
+    pub links: Vec<TwinLink>,
+}
+
+/// `twin.unlink` 的参数：A 忘掉这一条连接（关掉传输、删记录）。B 上的设备记录要在 B 上吊销。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TwinUnlinkParams {
+    pub node_id: DeviceId,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +374,42 @@ mod tests {
             TwinQuestionStatus,
             ClearableTwinField
         );
+        assert_eq!(
+            serde_json::from_value::<TwinSkipReason>(json!("remote_unavailable")).unwrap(),
+            TwinSkipReason::RemoteUnavailable
+        );
+        assert_eq!(
+            serde_json::from_value::<TwinSkipReason>(json!("remote_refused")).unwrap(),
+            TwinSkipReason::RemoteRefused
+        );
+    }
+
+    #[test]
+    fn requester_is_optional_and_left_out_when_absent() {
+        let p: TwinGetParams = serde_json::from_value(json!({})).unwrap();
+        assert!(p.requester.is_none() && serde_json::to_value(p).unwrap() == json!({}));
+        let p: TwinSetParams = serde_json::from_value(json!({"requester":"dev1","paused":true})).unwrap();
+        assert_eq!(p.requester.as_deref(), Some("dev1"));
+    }
+
+    #[test]
+    fn peer_status_and_link_roundtrip() {
+        let status = TwinPeerStatus {
+            name: "b".into(),
+            group: None,
+            projects: vec!["p".into()],
+            agents: vec![TwinPeerAgent { id: "claude-code".into(), label: "Claude Code".into(), ready: true }],
+            remaining_sessions: 2,
+            remaining_dispatches: 10,
+            paused: false,
+            accept_links: true,
+        };
+        let v = serde_json::to_value(&status).unwrap();
+        assert!(v.get("group").is_none());
+        assert_eq!(serde_json::from_value::<TwinPeerStatus>(v).unwrap(), status);
+        let link: TwinLink =
+            serde_json::from_value(json!({"node_id":"n","name":"b","fingerprint":"ab:cd","paired_ms":1})).unwrap();
+        assert!(!link.online && link.status.is_none());
     }
 
     #[test]

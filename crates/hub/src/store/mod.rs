@@ -443,6 +443,9 @@ pub fn kind_to_str(kind: DeviceKind) -> &'static str {
         DeviceKind::Web => "web",
         DeviceKind::Cli => "cli",
         DeviceKind::Sdk => "sdk",
+        DeviceKind::Twin => "twin",
+        // 认证时就拒绝了不认识的种类，不会走到存储；这里只让匹配完整
+        DeviceKind::Unknown => "unknown",
     }
 }
 
@@ -452,6 +455,7 @@ pub fn kind_from_str(s: &str) -> StoreResult<DeviceKind> {
         "web" => DeviceKind::Web,
         "cli" => DeviceKind::Cli,
         "sdk" => DeviceKind::Sdk,
+        "twin" => DeviceKind::Twin,
         other => return Err(StoreError::Corrupt(format!("unknown device kind {other:?}"))),
     })
 }

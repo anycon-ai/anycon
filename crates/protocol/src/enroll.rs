@@ -70,6 +70,12 @@ pub enum EnrollRejectReason {
     Expired,
     /// 帧格式或顺序不对。
     Invalid,
+    /// 发起方自报 `kind = twin`：分身设备只能经 `node.twin_link_code` 发出的短码配对，接入码和节点口令不接受
+    /// （docs/spec/daemon.md § 27.2）。
+    TwinNotAllowed,
+    /// 这个版本不认识的原因（更新的 daemon）。
+    #[serde(other)]
+    Unknown,
 }
 
 /// 接入期间 `handshake` 信封的 body。N = 新设备（initiator），D = daemon（responder）。
@@ -267,6 +273,13 @@ pub enum SecurityEventKind {
     PasswordChanged,
     /// `[enroll]` 被修改（含重新启用）。
     SettingsChanged,
+    /// 一个分身设备（另一个节点的分身）和这个节点建立了分身连接（`device_id` / `device_name`，docs/spec/daemon.md § 27.2）。
+    TwinLinked,
+    /// 一个分身设备被吊销：分身连接没了。
+    TwinUnlinked,
+    /// 这个版本不认识的种类（更新的 daemon）。
+    #[serde(other)]
+    Unknown,
 }
 
 /// D→C notification `node.security_event`（同时发 `notify { category: security }`）。

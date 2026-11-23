@@ -55,6 +55,12 @@
   },
   {
     "direction": "request",
+    "name": "node.twin_link_code",
+    "params": null,
+    "result": "NodeTwinLinkCodeResult"
+  },
+  {
+    "direction": "request",
     "name": "node.get_config",
     "params": null,
     "result": "NodeConfigResult"
@@ -524,7 +530,7 @@
   {
     "direction": "request",
     "name": "twin.get",
-    "params": null,
+    "params": "TwinGetParams",
     "result": "TwinGetResult"
   },
   {
@@ -574,6 +580,30 @@
     "name": "twin.question",
     "params": "TwinQuestionNotice",
     "result": null
+  },
+  {
+    "direction": "request",
+    "name": "twin.link",
+    "params": "TwinLinkParams",
+    "result": "TwinLink"
+  },
+  {
+    "direction": "request",
+    "name": "twin.links",
+    "params": null,
+    "result": "TwinLinksResult"
+  },
+  {
+    "direction": "request",
+    "name": "twin.unlink",
+    "params": "TwinUnlinkParams",
+    "result": null
+  },
+  {
+    "direction": "request",
+    "name": "twin.peer_status",
+    "params": null,
+    "result": "TwinPeerStatus"
   },
   {
     "direction": "request",

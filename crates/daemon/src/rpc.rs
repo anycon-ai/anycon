@@ -105,11 +105,29 @@ impl Rpc {
         let c = &self.ctx;
         let caller_owned = client.caller();
         let caller = &caller_owned;
+        // 分身设备（另一个节点的分身）只能调白名单里的方法、只碰它自己的项和会话：在进入任何处理之前集中检查一次，
+        // 名单之外和别人的项 / 会话一律 `forbidden`（先于 `not_found`，docs/spec/daemon.md § 27.3）
+        if caller.is_twin_device() {
+            crate::twin_device::authorize(c, caller, method, &p).await?;
+        }
         if matches!(method, methods::TWIN_SET | methods::TWIN_WAKE | methods::TWIN_DRY_RUN | methods::TWIN_ANSWER) {
             crate::twin::human(caller)?;
         }
         match method {
-            methods::TWIN_GET => ok(Box::pin(crate::twin::get(c)).await?),
+            methods::TWIN_GET => {
+                let p: anycon_protocol::TwinGetParams = params(p)?;
+                ok(Box::pin(crate::twin::get_for(c, p.requester.as_deref())).await?)
+            }
+            methods::TWIN_PEER_STATUS => ok(crate::twin_device::peer_status(c, caller).await?),
+            // 分身连接的 A 侧（docs/spec/daemon.md § 27.4）：协议已定义，这个版本的 daemon 还没有处理
+            methods::TWIN_LINK | methods::TWIN_LINKS | methods::TWIN_UNLINK => {
+                crate::twin::human(caller)?;
+                Err(err(ErrorCode::Unsupported, "using other nodes as a twin is not available in this version"))
+            }
+            methods::NODE_TWIN_LINK_CODE => {
+                crate::twin::human(caller)?;
+                ok(c.peers.twin_link_code(caller).await?)
+            }
             methods::TWIN_SET => ok(Box::pin(crate::twin::set(c, caller, params(p)?)).await?),
             methods::TWIN_WAKE => ok(crate::twin::wake(c, caller).await?),
             methods::TWIN_DRY_RUN => ok(Box::pin(crate::twin::dry_run(c, caller)).await?),
@@ -132,7 +150,17 @@ impl Rpc {
             }
             methods::TWIN_ANSWER => ok(Box::pin(crate::twin::answer(c, caller, params(p)?)).await?),
             // ---------------- node ----------------
-            methods::NODE_INFO => ok(self.node_info()),
+            methods::NODE_INFO => {
+                let mut info = self.node_info();
+                if caller.is_twin_device() {
+                    // 分身设备只需要节点是谁、能做什么：不给这台机器上的目录路径、判断后端和更新状态
+                    info.workspace_root = None;
+                    info.workspace_roots.clear();
+                    info.judge = None;
+                    info.update_available = None;
+                }
+                ok(info)
+            }
             methods::NODE_DEVICES => ok(NodeDevicesResult { devices: c.peers.list() }),
             methods::NODE_REVOKE_DEVICE => {
                 let p: NodeRevokeDeviceParams = params(p)?;
@@ -140,8 +168,21 @@ impl Rpc {
                     .peers
                     .resolve(&p.device_id)
                     .ok_or_else(|| err(ErrorCode::NotFound, format!("device {} is not paired", p.device_id)))?;
+                let record = c.peers.record(&id);
                 let hub_notified = c.peers.revoke(&id, Some(caller.device_id.as_str())).await?;
                 c.audit.record(caller, "node.revoke_device", Some(&id), json!({ "hub_notified": hub_notified })).await;
+                // 吊销一台分身设备 = 这一条分身连接没了：同样告诉所有已配对设备、记审计（§ 27.2）
+                if let Some(row) = record.filter(|r| r.kind == anycon_protocol::DeviceKind::Twin) {
+                    c.audit.record(caller, "twin.unlinked", Some(&id), json!({ "name": row.name })).await;
+                    c.peers
+                        .twin_event(
+                            anycon_protocol::SecurityEventKind::TwinUnlinked,
+                            &id,
+                            &row.name,
+                            Some(caller.device_id.as_str()),
+                        )
+                        .await;
+                }
                 ok(Empty {})
             }
             methods::NODE_PAIR_BEGIN => {
@@ -218,8 +259,17 @@ impl Rpc {
 
             // ---------------- agent ----------------
             methods::AGENT_LIST => {
-                let p: AgentListParams = params(p)?;
-                ok(c.agents.handle_list(p).await)
+                let mut p: AgentListParams = params(p)?;
+                if caller.is_twin_device() {
+                    // 重新探测会起 agent 的命令行工具：分身设备只读现有的结果
+                    p.refresh = false;
+                }
+                let mut list = c.agents.handle_list(p).await;
+                if caller.is_twin_device() {
+                    // 分身设备不需要 agent 命令行工具在这台机器上的路径
+                    list.agents.iter_mut().for_each(|a| a.path = None);
+                }
+                ok(list)
             }
             methods::AGENT_DIAGNOSE => {
                 let p: AgentDiagnoseParams = params(p)?;
@@ -511,7 +561,7 @@ impl Rpc {
             // ---------------- 清单（daemon.md § 21）：title / body 是用户内容，不进日志和审计 ----------------
             methods::TODO_LIST => {
                 let p: TodoListParams = params(p)?;
-                ok(crate::todos::list(c, p).await?)
+                ok(crate::todos::list(c, caller, p).await?)
             }
             methods::TODO_GET => {
                 let p: TodoIdParams = params(p)?;
@@ -794,6 +844,7 @@ impl Rpc {
             }),
             update_available: c.updates.available(),
             judge: Some(c.judge.info()),
+            twin_accept_links: c.config.get().twin.accept_links,
         }
     }
 

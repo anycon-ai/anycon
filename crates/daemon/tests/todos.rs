@@ -74,6 +74,7 @@ fn row(id: &str, updated_ms: u64, state: TodoState) -> Todo {
         sessions: vec![],
         activity: None,
         repeat: None,
+        remote: vec![],
     }
 }
 

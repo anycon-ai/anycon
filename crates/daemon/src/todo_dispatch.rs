@@ -417,7 +417,8 @@ pub async fn run_worker(sessions: Weak<Sessions>, signal: Arc<TodoSignal>) {
         let c = signal.twin.read().unwrap().upgrade();
         if let Some(c) = c {
             for sid in changed_sessions {
-                if c.store.twin_session_owner(&sid).await.ok().flatten().is_some()
+                // 只有本机分身派出的会话的变化会唤醒它（分身设备派出的项由那个节点的分身推进）
+                if c.store.twin_session_owner(&sid).await.ok().flatten().as_deref() == Some("local")
                     && sessions.status_of(&sid).await.is_some_and(|(s, _)| {
                         matches!(
                             s,
@@ -513,6 +514,8 @@ pub(crate) fn broadcast_event(clients: &Clients, todo_id: &str, event: TodoEvent
 pub fn actor_of(caller: &Caller) -> TodoActor {
     if caller.is_twin() {
         TodoActor { id: Some(caller.device_id.clone()), kind: TodoSourceKind::Twin, device_id: None }
+    } else if caller.is_twin_device() {
+        TodoActor { id: None, kind: TodoSourceKind::Twin, device_id: Some(caller.device_id.clone()) }
     } else if caller.is_mcp() {
         TodoActor { id: None, kind: TodoSourceKind::Agent, device_id: None }
     } else if caller.local {
@@ -565,6 +568,8 @@ fn data_kind(d: &TodoEventData) -> &'static str {
         TodoEventData::RepeatCreated { .. } => "repeat_created",
         TodoEventData::RepeatSkipped { .. } => "repeat_skipped",
         TodoEventData::PrEvent { .. } => "pr_event",
+        TodoEventData::RemoteDispatched { .. } => "remote_dispatched",
+        TodoEventData::RemoteResult { .. } => "remote_result",
         TodoEventData::Unknown => "unknown",
     }
 }
@@ -876,6 +881,13 @@ pub(crate) async fn dispatch_inner(
         p.settings = settings;
         p.no_push = Some(true);
         p.workspace = Some(SessionWorkspace::Worktree { base: None, branch: None });
+    } else if caller.is_twin_device() {
+        // 另一个节点的分身：范围、名额和每日次数是这条连接自己的一份（§ 27.3）
+        let (agent, settings) = crate::twin_device::dispatch_settings_locked(c, caller, &old, &p).await?;
+        p.agent = agent;
+        p.settings = settings;
+        p.no_push = Some(true);
+        p.workspace = Some(SessionWorkspace::Worktree { base: None, branch: None });
     }
     // 刚结束的一轮的结果还在队列里的话先记下来：这次派发的第一条消息要带它
     flush_results_locked(&c.sessions, &p.id).await;
@@ -1045,7 +1057,7 @@ pub(crate) async fn dispatch_inner(
             .bind(new.sessions.len() as i64)
             .execute(&mut *tx)
             .await?;
-        if caller.is_twin() {
+        if caller.is_twin() || caller.is_twin_device() {
             sqlx::query("INSERT INTO twin_sessions VALUES (?, ?, ?, ?)")
                 .bind(&session.id)
                 .bind(&new.id)
@@ -1069,6 +1081,10 @@ pub(crate) async fn dispatch_inner(
             return Err(internal(e));
         }
     };
+    // 推送过滤要在这个会话的第一条 `session.changed` 之前就认得它是谁派的
+    if caller.is_twin_device() {
+        c.clients.owners().add_session(&caller.device_id, &session.id);
+    }
     // 会话本身的审计和 `session.create` 一样（模式、是否危险、环境变量键名），派发是另一条
     let dangerous = match (&session.settings.mode, c.agents.info(&session.agent)) {
         (Some(m), Some(info)) => c.agents.is_dangerous_mode(&session.agent, &info, m),

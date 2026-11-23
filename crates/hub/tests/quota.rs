@@ -311,6 +311,32 @@ async fn the_daemon_limit_applies_to_a_new_daemon_and_not_to_other_kinds() {
     assert_eq!(store.count_devices(&acc).await.unwrap(), (4, 1));
 }
 
+/// 分身设备占账号的设备配额（不占 daemon 配额），满了和别的设备一样配不进来。
+#[tokio::test]
+async fn a_twin_device_takes_a_device_slot_and_not_a_daemon_slot() {
+    let q = limits(3, 1, 10, 50);
+    let hub = multi_hub(q).await;
+    let (acc, cookie) = account(&hub, "alice", None).await;
+    let node = hub.seed_device_in(&acc, DeviceKind::Daemon, "node").await;
+    let web = hub.seed_device_in(&acc, DeviceKind::Web, "web").await;
+    let (mut n, _) = connect_with_quota(&hub, Some(&node.token), DeviceKind::Daemon, "node").await;
+    let (_w, _) = connect_with_quota(&hub, Some(&web.token), DeviceKind::Web, "web").await;
+    n.drain_controls(SHORT).await;
+    let store = hub.handle.store();
+
+    let mut twin = temp_with_cookie(&hub, &cookie, DeviceKind::Twin, "a-twin").await;
+    pair_and_confirm(&mut n, &mut twin).await;
+    assert!(matches!(twin.recv_control().await, Control::PairDone { device_id: Some(_), .. }));
+    assert_eq!(store.count_devices(&acc).await.unwrap(), (3, 1), "one more device, still one daemon");
+
+    // 设备数到了上限：再来一台分身设备配不进来，什么都不建
+    n.drain_controls(SHORT).await;
+    let mut second = temp_with_cookie(&hub, &cookie, DeviceKind::Twin, "b-twin").await;
+    pair_and_confirm(&mut n, &mut second).await;
+    assert_eq!(second.recv_control().await, Control::PairFailed { reason: PairFailReason::Quota });
+    assert_eq!(store.count_devices(&acc).await.unwrap(), (3, 1));
+}
+
 #[tokio::test]
 async fn a_pairing_that_creates_two_devices_is_all_or_nothing() {
     let q = limits(3, 3, 10, 50);

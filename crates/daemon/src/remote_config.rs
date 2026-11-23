@@ -1,8 +1,8 @@
 //! 远程查看 / 修改节点配置：`node.get_config` / `node.set_config`（[ADR-43](../../../docs/decisions.md)，docs/spec/daemon.md § 3）。
 //!
 //! `config.toml` 是机器主人的最后一道边界，而配对过的客户端可能被盗用，所以远程能碰的只有一张白名单（[`SPECS`]）：
-//! 只收热加载、不扩大攻击面的键；安全相关的开关（`permissions.allow_dangerous_modes`、`preview.enabled`、`twin.enabled`）只能从 `true`
-//! 改成 `false`，要放宽得在机器上 `anycon config set`。白名单之外的键（`agents.*`、`workspace.*`、`hub.url` / `hub.name`、`enroll.*`……）
+//! 只收热加载、不扩大攻击面的键；安全相关的开关（`permissions.allow_dangerous_modes`、`preview.enabled`、`twin.enabled`、
+//! `twin.accept_links`）只能从 `true` 改成 `false`，要放宽得在机器上 `anycon config set`。白名单之外的键（`agents.*`、`workspace.*`、`hub.url` / `hub.name`、`enroll.*`……）
 //! 既不会返回，也不接受。
 //!
 //! 写入、热加载、审计复用本机 CLI 的同一套逻辑：[`crate::config::set_toml_values`]（保留注释和格式、整份配置校验通过才原子替换）
@@ -99,6 +99,7 @@ const SPECS: &[Spec] = &[
     Spec { key: "judge.triage", rule: Rule::JudgeBackend, editable: ConfigEditable::Any },
     Spec { key: "judge.advisor", rule: Rule::JudgeBackend, editable: ConfigEditable::Any },
     Spec { key: "twin.enabled", rule: Rule::Bool, editable: ConfigEditable::TightenOnly },
+    Spec { key: "twin.accept_links", rule: Rule::Bool, editable: ConfigEditable::TightenOnly },
     Spec { key: "judge.daily_calls", rule: Rule::Int { min: 0, max: 1000 }, editable: ConfigEditable::Any },
     Spec {
         key: "notify.turn_finished",

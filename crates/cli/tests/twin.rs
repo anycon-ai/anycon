@@ -122,6 +122,8 @@ async fn all_writes_refuse_agent_environment_before_connecting() {
         vec!["twin", "dry-run"],
         vec!["twin", "answer", "q", "a"],
         vec!["twin", "set", "--projects", "p"],
+        vec!["twin", "set", "--requester", "dev", "--projects", "p"],
+        vec!["twin", "link-code"],
         vec!["todo", "add", "work", "--twin"],
         vec!["todo", "assign", "t", "twin"],
     ] {
@@ -129,4 +131,41 @@ async fn all_writes_refuse_agent_environment_before_connecting() {
         assert_eq!(r.code, 5, "{args:?}: {}", r.stderr);
         assert!(r.stderr.contains("not available inside an anycon agent session"));
     }
+}
+
+/// `--requester` 用设备 id、唯一的 id 前缀或名称选一台分身设备；`link-code` 要节点连着 hub。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn requester_picks_a_twin_device_and_link_code_needs_a_hub() {
+    let td = TestDaemon::start_with(&[], true).await;
+    td.fake.declare_no_push.store(true, Ordering::SeqCst);
+    td.ctx.agents.handle_list(AgentListParams { refresh: true, ..Default::default() }).await;
+    std::fs::create_dir_all(td.workspace.join("p")).unwrap();
+    let _twin = td.twin_device_client("twin-dev-1234", "A's twin").await;
+    // 唯一的 id 前缀
+    let set = anycon(
+        &td.paths.home,
+        &["twin", "set", "--requester", "twin-dev", "--projects", "p", "--agent", "fake", "--json"],
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(set.code, 0, "{}", set.stderr);
+    assert_eq!(set.json()["scope"]["projects"], json!(["p"]));
+    // 完整的 id 和名称
+    for key in ["twin-dev-1234", "A's twin"] {
+        let r = anycon(&td.paths.home, &["twin", "status", "--requester", key, "--json"], None, &[]).await;
+        assert_eq!(r.code, 0, "{key}: {}", r.stderr);
+        assert_eq!(r.json()["scope"]["projects"], json!(["p"]), "{key}");
+    }
+    // 本机分身的范围没动
+    let own = anycon(&td.paths.home, &["twin", "status", "--json"], None, &[]).await;
+    assert_eq!(own.json()["scope"]["projects"], json!([]));
+    // 对不上任何分身设备：用法错误，不发请求
+    let none = anycon(&td.paths.home, &["twin", "status", "--requester", "nobody"], None, &[]).await;
+    assert_eq!(none.code, 2, "{}", none.stderr);
+    assert!(none.stderr.contains("no twin device matches"), "{}", none.stderr);
+    // 节点没连上 hub：短码没处登记
+    let code = anycon(&td.paths.home, &["twin", "link-code"], None, &[]).await;
+    assert_eq!(code.code, 3, "{}", code.stderr);
+    td.shutdown().await;
 }

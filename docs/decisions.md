@@ -945,7 +945,7 @@ ADR-1 拆成两层来看：
 
 **已被 [ADR-54](#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 部分修订**：`hub.group`（节点的分组名，只是给客户端看的标签）进白名单，可以任意改，并且热加载；`hub.url` 和 `hub.name` 仍然不在名单里。
 
-**将被 [ADR-56](#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 部分修订**（还没实现）：`twin.enabled` 和 `twin.accept_links` 进白名单，和 `preview.enabled` 一样只能收紧。
+**已被 [ADR-56](#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 部分修订**：`twin.enabled` 和 `twin.accept_links` 进白名单，和 `preview.enabled` 一样只能收紧。
 
 **背景**：节点设置的「限制」标签原来只读，要改并发数、超时、日志级别得登录到那台机器。但 `config.toml` 同时是机器主人的最后一道边界：`agents.<id>.command` / `env` 等于远程执行任意命令，`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports` 决定 agent 和预览能碰到机器上的什么，`permissions.allow_dangerous_modes` 决定 agent 能不能不经审批行动，`hub.*` 决定 daemon 连到哪。已配对的客户端可能被盗用（丢手机、公用电脑，浏览器里的设备私钥是明文放在 IndexedDB 的，[architecture.md § 5.6](architecture.md#56-威胁模型)）；如果它能改这些键，「放宽权限必须在机器上做」这道边界就没了。
 

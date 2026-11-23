@@ -1708,6 +1708,10 @@
           "enabled": {
             "label": "启用分身",
             "hint": "关闭这台节点的分身调度；重新打开须在节点机器上修改。"
+          },
+          "accept_links": {
+            "label": "接受别的节点的分身",
+            "hint": "关闭后断开所有别的节点的分身连接，并拒绝新的连接；它们的记录和范围保留。重新打开须在节点机器上修改。"
           }
         },
         "judge": {
@@ -2528,7 +2532,10 @@
     "passwordLocked": "{{node}} 的口令解锁已被锁定。",
     "passwordChanged": "{{node}} 的节点口令已被{{who}}修改。",
     "passwordCleared": "{{node}} 的节点口令已被{{who}}清除。",
-    "settingsChanged": "{{node}} 的接入设置已被{{who}}修改。"
+    "settingsChanged": "{{node}} 的接入设置已被{{who}}修改。",
+    "twinLinked": "另一个节点的分身“{{device}}”已被{{who}}连到 {{node}}。",
+    "twinUnlinked": "{{node}} 的分身连接“{{device}}”已被{{who}}吊销。",
+    "unknownEvent": "{{node}} 报告了一个这个版本不认识的安全事件。"
   },
   "scan": {
     "title": "扫码批准新设备",
@@ -2743,7 +2750,9 @@
       "ack_invalid": "节点无法证明自己的身份，所以什么都没有保存。请确认你用的是正确的 hub。",
       "key_changed": "这台节点的密钥变了。先在这里忘记它，再重新解锁。",
       "invalid_code": "接入码是 6 位数字。",
-      "invalid": "节点没有接受这个请求。"
+      "invalid": "节点没有接受这个请求。",
+      "twin_not_allowed": "分身设备不能用接入码或口令接入。",
+      "unknown": "节点拒绝了这个请求。"
     }
   },
   "twin": {

@@ -1478,13 +1478,27 @@
       ]
     },
     "DeviceKind": {
-      "enum": [
-        "daemon",
-        "web",
-        "cli",
-        "sdk"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "daemon",
+            "web",
+            "cli",
+            "sdk"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "twin",
+          "description": "另一个节点的分身（docs/spec/daemon.md § 27.1）：一个节点一个身份，只能经 `node.twin_link_code` 发出的短码配对，\n被使用的节点按设备种类限制它能调的方法和收到的通知（§ 27.3）。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的种类（更新的客户端）。hub 在认证时拒绝它（`protocol`），daemon 配对时把它当作 `web` 存（同以前解析失败时的做法）。",
+          "type": "string"
+        }
+      ]
     },
     "DiagnosticField": {
       "properties": {
@@ -2041,6 +2055,16 @@
         {
           "const": "invalid",
           "description": "帧格式或顺序不对。",
+          "type": "string"
+        },
+        {
+          "const": "twin_not_allowed",
+          "description": "发起方自报 `kind = twin`：分身设备只能经 `node.twin_link_code` 发出的短码配对，接入码和节点口令不接受\n（docs/spec/daemon.md § 27.2）。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的原因（更新的 daemon）。",
           "type": "string"
         }
       ]
@@ -4040,6 +4064,11 @@
           "minimum": 0,
           "type": "integer"
         },
+        "twin_accept_links": {
+          "default": false,
+          "description": "`[twin] accept_links`：这个节点现在接受别的节点的分身连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。",
+          "type": "boolean"
+        },
         "update_available": {
           "anyOf": [
             {
@@ -4384,6 +4413,26 @@
         "agent_processes",
         "db_bytes",
         "disk_free_bytes"
+      ],
+      "type": "object"
+    },
+    "NodeTwinLinkCodeResult": {
+      "description": "`node.twin_link_code` 的结果：B 开了一次只接受分身设备的短码配对。",
+      "properties": {
+        "code": {
+          "description": "16 位短码（`XXXX-XXXX-XXXX-XXXX`）。",
+          "type": "string"
+        },
+        "expires_ms": {
+          "description": "过期时间（10 分钟后）。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "code",
+        "expires_ms"
       ],
       "type": "object"
     },
@@ -6620,6 +6669,21 @@
           "const": "settings_changed",
           "description": "`[enroll]` 被修改（含重新启用）。",
           "type": "string"
+        },
+        {
+          "const": "twin_linked",
+          "description": "一个分身设备（另一个节点的分身）和这个节点建立了分身连接（`device_id` / `device_name`，docs/spec/daemon.md § 27.2）。",
+          "type": "string"
+        },
+        {
+          "const": "twin_unlinked",
+          "description": "一个分身设备被吊销：分身连接没了。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的种类（更新的 daemon）。",
+          "type": "string"
         }
       ]
     },
@@ -8025,6 +8089,13 @@
             "null"
           ]
         },
+        "remote": {
+          "description": "这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由分身连接的 A 侧写。",
+          "items": {
+            "$ref": "#/definitions/TodoRemote"
+          },
+          "type": "array"
+        },
         "repeat": {
           "anyOf": [
             {
@@ -8633,6 +8704,56 @@
           "type": "object"
         },
         {
+          "description": "分身把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话\n（那个节点上的 id，不是这个节点的会话）。",
+          "properties": {
+            "kind": {
+              "const": "remote_dispatched",
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "todo_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "node_id",
+            "todo_id",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "取回了另一个节点上一次派发的结果：`text` 同 `result`（≤ 4 KiB，在码点边界截断），是会话内容，按不可信内容渲染。",
+          "properties": {
+            "kind": {
+              "const": "remote_result",
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "node_id",
+            "session_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
           "description": "分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。\n不含评审或评论的正文，只有变化的种类和 PR 地址。",
           "properties": {
             "event": {
@@ -8946,6 +9067,56 @@
           "type": "object"
         },
         {
+          "description": "分身把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话\n（那个节点上的 id，不是这个节点的会话）。",
+          "properties": {
+            "kind": {
+              "const": "remote_dispatched",
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "todo_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "node_id",
+            "todo_id",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "取回了另一个节点上一次派发的结果：`text` 同 `result`（≤ 4 KiB，在码点边界截断），是会话内容，按不可信内容渲染。",
+          "properties": {
+            "kind": {
+              "const": "remote_result",
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "node_id",
+            "session_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
           "description": "分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。\n不含评审或评论的正文，只有变化的种类和 PR 地址。",
           "properties": {
             "event": {
@@ -9128,6 +9299,24 @@
       ],
       "type": "object"
     },
+    "TodoRemote": {
+      "description": "这一项在另一个节点上对应的项（`Todo.remote`）。",
+      "properties": {
+        "node_id": {
+          "description": "那个节点的 id。",
+          "type": "string"
+        },
+        "todo_id": {
+          "description": "那个节点上的项 id。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "todo_id"
+      ],
+      "type": "object"
+    },
     "TodoRepeat": {
       "description": "周期项的规则：按节点的本地时区，每次到点复制出一项新的（docs/spec/daemon.md § 26.9）。",
       "properties": {
@@ -9192,7 +9381,7 @@
     "TodoSource": {
       "properties": {
         "device_id": {
-          "description": "经 hub 来的调用带上发起设备的 id。",
+          "description": "经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台分身设备（另一个节点的分身，docs/spec/daemon.md § 27.3）的设备 id。",
           "type": [
             "string",
             "null"
@@ -9649,6 +9838,13 @@
         "action": {
           "$ref": "#/definitions/TwinAction"
         },
+        "node": {
+          "description": "派发到哪个节点（节点表里的 id）；缺省 = 本机。只用于显示。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "note": {
           "description": "解析后的动作参数；试跑据此展示计划，不保存原始模型输出。",
           "type": [
@@ -9740,6 +9936,19 @@
       ],
       "type": "object"
     },
+    "TwinGetParams": {
+      "description": "`twin.get` 的参数。",
+      "properties": {
+        "requester": {
+          "description": "读谁的范围：缺省 `local`（本机分身）；也可以是一个已配对的分身设备（`DeviceKind::Twin`）的设备 id，读 B 给这条分身连接\n的设置（docs/spec/daemon.md § 27.3）。不是已存在的分身设备 → `not_found`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "TwinGetResult": {
       "properties": {
         "configured": {
@@ -9778,6 +9987,167 @@
         "today",
         "working",
         "waiting"
+      ],
+      "type": "object"
+    },
+    "TwinLink": {
+      "description": "一条分身连接（A 记下的，表 `twin_links`）。",
+      "properties": {
+        "fingerprint": {
+          "description": "B 的静态公钥指纹。",
+          "type": "string"
+        },
+        "group": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "node_id": {
+          "description": "B 的节点 id。",
+          "type": "string"
+        },
+        "online": {
+          "default": false,
+          "description": "这条连接现在在线。",
+          "type": "boolean"
+        },
+        "paired_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TwinPeerStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "上一次的 `twin.peer_status`；还没取到过为空。"
+        }
+      },
+      "required": [
+        "node_id",
+        "name",
+        "fingerprint",
+        "paired_ms"
+      ],
+      "type": "object"
+    },
+    "TwinLinkParams": {
+      "description": "`twin.link` 的参数：A 的 daemon 用 B 发的短码以分身设备的身份和 B 配对。",
+      "properties": {
+        "code": {
+          "description": "B 的 `node.twin_link_code` 发出的短码。",
+          "type": "string"
+        },
+        "node_id": {
+          "description": "B 的节点 id：配对完成后核对，对不上就失败并丢掉这次配对。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "node_id"
+      ],
+      "type": "object"
+    },
+    "TwinLinksResult": {
+      "properties": {
+        "links": {
+          "items": {
+            "$ref": "#/definitions/TwinLink"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "links"
+      ],
+      "type": "object"
+    },
+    "TwinPeerAgent": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "ready": {
+          "description": "agent 现在可用（已安装、已登录）。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "ready"
+      ],
+      "type": "object"
+    },
+    "TwinPeerStatus": {
+      "description": "B 对这条分身连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。",
+      "properties": {
+        "accept_links": {
+          "description": "B 现在接受分身连接（`[twin] accept_links`）。",
+          "type": "boolean"
+        },
+        "agents": {
+          "items": {
+            "$ref": "#/definitions/TwinPeerAgent"
+          },
+          "type": "array"
+        },
+        "group": {
+          "description": "B 的分组名。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "B 的节点名。",
+          "type": "string"
+        },
+        "paused": {
+          "description": "这条连接被 B 暂停了。",
+          "type": "boolean"
+        },
+        "projects": {
+          "description": "对这条连接开放的项目；空 = 什么都没开放。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "remaining_dispatches": {
+          "description": "这个本地日还能派发几次。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "remaining_sessions": {
+          "description": "这条连接还能同时派出几个会话：它的上限和给人留的名额里更紧的那个，减去已在处理中的。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "projects",
+        "agents",
+        "remaining_sessions",
+        "remaining_dispatches",
+        "paused",
+        "accept_links"
       ],
       "type": "object"
     },
@@ -10113,19 +10483,40 @@
             "array",
             "null"
           ]
+        },
+        "requester": {
+          "description": "改谁的范围，同 [`TwinGetParams::requester`]。",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "TwinSkipReason": {
-      "enum": [
-        "invalid",
-        "out_of_scope",
-        "no_capacity",
-        "budget",
-        "unknown"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "invalid",
+            "out_of_scope",
+            "no_capacity",
+            "budget",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "remote_unavailable",
+          "description": "派发到别的节点：那个节点不在线、调不通或超时（docs/spec/daemon.md § 27.4）。",
+          "type": "string"
+        },
+        {
+          "const": "remote_refused",
+          "description": "派发到别的节点：那个节点拒绝了（范围、名额、预算、暂停）。",
+          "type": "string"
+        }
+      ]
     },
     "TwinState": {
       "enum": [
@@ -10177,6 +10568,18 @@
           "type": "string"
         }
       ]
+    },
+    "TwinUnlinkParams": {
+      "description": "`twin.unlink` 的参数：A 忘掉这一条连接（关掉传输、删记录）。B 上的设备记录要在 B 上吊销。",
+      "properties": {
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id"
+      ],
+      "type": "object"
     },
     "Usage": {
       "properties": {
@@ -11079,6 +11482,9 @@
     "node_stats": {
       "$ref": "#/definitions/NodeStats"
     },
+    "node_twin_link_code_result": {
+      "$ref": "#/definitions/NodeTwinLinkCodeResult"
+    },
     "node_worktree_settings": {
       "$ref": "#/definitions/NodeWorktreeSettings"
     },
@@ -11412,6 +11818,9 @@
     "todo_list_result": {
       "$ref": "#/definitions/TodoListResult"
     },
+    "todo_remote": {
+      "$ref": "#/definitions/TodoRemote"
+    },
     "todo_source": {
       "$ref": "#/definitions/TodoSource"
     },
@@ -11439,8 +11848,26 @@
     "twin_dry_run_result": {
       "$ref": "#/definitions/TwinDryRunResult"
     },
+    "twin_get_params": {
+      "$ref": "#/definitions/TwinGetParams"
+    },
     "twin_get_result": {
       "$ref": "#/definitions/TwinGetResult"
+    },
+    "twin_link": {
+      "$ref": "#/definitions/TwinLink"
+    },
+    "twin_link_params": {
+      "$ref": "#/definitions/TwinLinkParams"
+    },
+    "twin_links_result": {
+      "$ref": "#/definitions/TwinLinksResult"
+    },
+    "twin_peer_agent": {
+      "$ref": "#/definitions/TwinPeerAgent"
+    },
+    "twin_peer_status": {
+      "$ref": "#/definitions/TwinPeerStatus"
     },
     "twin_question": {
       "$ref": "#/definitions/TwinQuestion"
@@ -11474,6 +11901,9 @@
     },
     "twin_today": {
       "$ref": "#/definitions/TwinToday"
+    },
+    "twin_unlink_params": {
+      "$ref": "#/definitions/TwinUnlinkParams"
     },
     "workspace_branches_params": {
       "$ref": "#/definitions/WorkspaceBranchesParams"
@@ -11540,6 +11970,7 @@
     "twin_scope",
     "twin_state",
     "twin_today",
+    "twin_get_params",
     "twin_get_result",
     "twin_set_params",
     "twin_run",
@@ -11553,6 +11984,14 @@
     "twin_answer_params",
     "twin_changed",
     "twin_question_notice",
+    "node_twin_link_code_result",
+    "twin_link_params",
+    "twin_link",
+    "twin_links_result",
+    "twin_unlink_params",
+    "twin_peer_status",
+    "twin_peer_agent",
+    "todo_remote",
     "kind",
     "notify_body",
     "notify_detail",
@@ -11821,6 +12260,12 @@
       "name": "node.set_agent_defaults",
       "params": "NodeSetAgentDefaultsParams",
       "result": null
+    },
+    {
+      "direction": "request",
+      "name": "node.twin_link_code",
+      "params": null,
+      "result": "NodeTwinLinkCodeResult"
     },
     {
       "direction": "request",
@@ -12293,7 +12738,7 @@
     {
       "direction": "request",
       "name": "twin.get",
-      "params": null,
+      "params": "TwinGetParams",
       "result": "TwinGetResult"
     },
     {
@@ -12343,6 +12788,30 @@
       "name": "twin.question",
       "params": "TwinQuestionNotice",
       "result": null
+    },
+    {
+      "direction": "request",
+      "name": "twin.link",
+      "params": "TwinLinkParams",
+      "result": "TwinLink"
+    },
+    {
+      "direction": "request",
+      "name": "twin.links",
+      "params": null,
+      "result": "TwinLinksResult"
+    },
+    {
+      "direction": "request",
+      "name": "twin.unlink",
+      "params": "TwinUnlinkParams",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "twin.peer_status",
+      "params": null,
+      "result": "TwinPeerStatus"
     },
     {
       "direction": "request",

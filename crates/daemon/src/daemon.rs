@@ -184,6 +184,8 @@ impl Daemon {
         tracing::info!(source = env.source.as_str(), "daemon environment resolved");
 
         let clients = Clients::new();
+        // 分身设备建的项和派出的会话（推送过滤要同步判断，所以内存里留一份索引）
+        clients.owners().load(&store).await;
         let audit = Audit::new(store.clone());
         let notifier = Notifier::new(config.clone(), clients.clone());
         let workspace =
@@ -257,6 +259,7 @@ impl Daemon {
         )
         .await;
         notifier.set_out(peers.clone());
+        peers.bind_notifier(&notifier);
         let preview = Preview::new(PreviewDeps {
             store: store.clone(),
             config: config.clone(),
@@ -329,6 +332,7 @@ impl Daemon {
             sessions.spawn_todo_worker(),
             enroll.spawn_sweeper(),
             enroll.spawn_config_watcher(),
+            peers.spawn_config_watcher(),
         ];
         tasks.extend(preview.spawn_background());
         tasks.push(judge.spawn_cleanup());

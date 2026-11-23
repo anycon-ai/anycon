@@ -1730,6 +1730,10 @@
           "enabled": {
             "label": "Enable twin",
             "hint": "Turn off all twin scheduling on this node. Turning it back on requires changing the setting on the machine."
+          },
+          "accept_links": {
+            "label": "Accept other nodes’ twins",
+            "hint": "Turn off to disconnect every twin connection from other nodes and refuse new ones. Their records and scopes are kept. Turning it back on requires changing the setting on the machine."
           }
         },
         "judge": {
@@ -2567,7 +2571,10 @@
     "passwordLocked": "Password unlock of {{node}} is now locked.",
     "passwordChanged": "The node password of {{node}} was changed by {{who}}.",
     "passwordCleared": "The node password of {{node}} was removed by {{who}}.",
-    "settingsChanged": "The access settings of {{node}} were changed by {{who}}."
+    "settingsChanged": "The access settings of {{node}} were changed by {{who}}.",
+    "twinLinked": "Another node’s twin, “{{device}}”, was connected to {{node}} by {{who}}.",
+    "twinUnlinked": "The twin connection “{{device}}” of {{node}} was revoked by {{who}}.",
+    "unknownEvent": "{{node}} reported a security event that this version does not know."
   },
   "scan": {
     "title": "Scan to approve a new device",
@@ -2782,7 +2789,9 @@
       "ack_invalid": "The node could not prove its identity, so nothing was saved. Make sure you are using the right hub.",
       "key_changed": "This node’s key has changed. Forget it here first, then unlock again.",
       "invalid_code": "An access code has 6 digits.",
-      "invalid": "The node did not accept that request."
+      "invalid": "The node did not accept that request.",
+      "twin_not_allowed": "A twin device cannot join with an access code or a password.",
+      "unknown": "The node rejected the request."
     }
   },
   "twin": {

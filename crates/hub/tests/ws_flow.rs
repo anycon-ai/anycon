@@ -1275,6 +1275,67 @@ async fn permanent_host_with_tokenless_joiner_and_no_cookie_still_joins_the_host
 }
 
 // ---------------------------------------------------------------------------
+// 分身设备（docs/spec/hub.md § 5.4）：种类 `twin` 的设备和别的设备走同一套配对、认证、路由、吊销
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_twin_device_pairs_authenticates_routes_and_is_revoked_like_any_other_device() {
+    let hub = TestHub::start().await;
+    let cookie = hub.login_admin().await;
+    let b = hub.seed_device(DeviceKind::Daemon, "b").await;
+    let mut node = FakeDevice::connect(&hub, Some(&b.token), DeviceKind::Daemon, "b").await;
+
+    // 没有身份的临时连接以 `twin` 种类走短码配对，归入 host 的账号
+    let (_, match_id) = new_code();
+    node.pair_begin(&match_id).await;
+    let mut twin = FakeDevice::connect(&hub, None, DeviceKind::Twin, "a-twin").await;
+    twin.send_control(&Control::PairJoin { match_id }).await;
+    expect_matched(&mut node, &mut twin).await;
+    let temp = twin.id.clone();
+    twin.send_control(&Control::PairConfirm { peer: b.id.clone() }).await;
+    node.send_control(&Control::PairConfirm { peer: temp }).await;
+    let (twin_id, token) = match twin.recv_control().await {
+        Control::PairDone { device_id: Some(id), device_token: Some(t), .. } => (id, t),
+        other => panic!("{other:?}"),
+    };
+    let device = hub.handle.store().get_device(&twin_id).await.unwrap().unwrap();
+    assert_eq!((device.kind, device.account_id.as_str()), (DeviceKind::Twin, hub.admin_account_id().as_str()));
+    assert!(hub.handle.store().is_paired(&b.id, &twin_id).await.unwrap());
+
+    // 设备列表里显示种类
+    let listed: Value = hub.get("/api/devices", &cookie).await.json().await.unwrap();
+    let entry = listed.as_array().unwrap().iter().find(|d| d["id"] == twin_id).unwrap();
+    assert_eq!(entry["kind"], "twin");
+    assert_eq!(entry["paired_with"], json!([b.id]));
+    drop(twin);
+
+    // 用 device token 重新认证，和节点互相路由
+    let mut again = FakeDevice::connect(&hub, Some(&token), DeviceKind::Twin, "a-twin").await;
+    assert_eq!((again.id.as_str(), again.peers_online.as_slice()), (twin_id.as_str(), [b.id.clone()].as_slice()));
+    node.drain_controls(SHORT).await;
+    again.send_env(&b.id, Kind::Data, vec![1, 2]).await;
+    let got = node.recv_env().await;
+    assert_eq!((got.from, got.body), (twin_id.clone(), vec![1, 2]));
+
+    // 吊销：和别的设备一样断开、删配对、置 revoked
+    node.send_control(&Control::Revoke { device: twin_id.clone() }).await;
+    assert_eq!(again.expect_close().await, Some(4004));
+    assert!(hub.handle.store().get_device(&twin_id).await.unwrap().unwrap().revoked_at_ms.is_some());
+    assert!(!hub.handle.store().is_paired(&b.id, &twin_id).await.unwrap());
+    let mut late = FakeDevice::open_with(&hub.ws_url(), &[]).await.unwrap();
+    late.send_auth(Some(&token), DeviceKind::Twin, "a-twin").await;
+    assert!(matches!(late.recv_control().await, Control::AuthFail { reason: AuthFailReason::Revoked }));
+}
+
+#[tokio::test]
+async fn a_device_kind_this_hub_does_not_know_is_refused_at_auth() {
+    let hub = TestHub::start().await;
+    let mut raw = FakeDevice::open_with(&hub.ws_url(), &[]).await.unwrap();
+    raw.send_auth(None, DeviceKind::Unknown, "future").await;
+    assert!(matches!(raw.recv_control().await, Control::AuthFail { reason: AuthFailReason::Protocol }));
+}
+
+// ---------------------------------------------------------------------------
 // last_seen 的定期刷新、管理页的在线计数
 // ---------------------------------------------------------------------------
 

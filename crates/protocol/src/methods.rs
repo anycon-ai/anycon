@@ -35,6 +35,8 @@ pub const NODE_SET_ENROLL_ENABLED: &str = "node.set_enroll_enabled";
 pub const NODE_ENROLL_REQUESTED: &str = "node.enroll_requested";
 /// D→C notification，params = NodeEnrollResolved
 pub const NODE_ENROLL_RESOLVED: &str = "node.enroll_resolved";
+/// 开一次只接受分身设备的短码配对（docs/spec/daemon.md § 27.2）：`{}` → `{ code, expires_ms }`。只由人调用。
+pub const NODE_TWIN_LINK_CODE: &str = "node.twin_link_code";
 /// D→C notification，params = NodeSecurityEvent
 pub const NODE_SECURITY_EVENT: &str = "node.security_event";
 
@@ -159,6 +161,15 @@ pub const TWIN_QUESTIONS: &str = "twin.questions";
 pub const TWIN_ANSWER: &str = "twin.answer";
 pub const TWIN_CHANGED: &str = "twin.changed";
 pub const TWIN_QUESTION: &str = "twin.question";
+// 分身连接（docs/spec/daemon.md § 27）
+/// A 上：用 B 的短码建立一条分身连接（`{ code, node_id }` → `TwinLink`）。只由人调用。
+pub const TWIN_LINK: &str = "twin.link";
+/// A 上：列出分身连接（`{}` → `{ links }`）。
+pub const TWIN_LINKS: &str = "twin.links";
+/// A 上：忘掉一条分身连接（`{ node_id }`）。B 上的设备记录要在 B 上吊销。
+pub const TWIN_UNLINK: &str = "twin.unlink";
+/// B 上：对这条分身连接开放了什么、还剩多少（`{}` → `TwinPeerStatus`，只给调用的这条连接自己的）。
+pub const TWIN_PEER_STATUS: &str = "twin.peer_status";
 
 // blob（附件，ADR-35）
 /// 开始上传一个附件。
@@ -226,6 +237,7 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(NODE_DOCTOR, None, Some("NodeDoctorResult")),
     req(NODE_AUDIT, Some("NodeAuditParams"), Some("NodeAuditResult")),
     req(NODE_SET_AGENT_DEFAULTS, Some("NodeSetAgentDefaultsParams"), None),
+    req(NODE_TWIN_LINK_CODE, None, Some("NodeTwinLinkCodeResult")),
     req(NODE_GET_CONFIG, None, Some("NodeConfigResult")),
     req(NODE_SET_CONFIG, Some("NodeSetConfigParams"), Some("NodeConfigResult")),
     req(NODE_LOGS, Some("NodeLogsParams"), Some("NodeLogsResult")),
@@ -304,7 +316,7 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(RULE_EXTRACT, Some("RuleExtractParams"), Some("RuleExtractResult")),
     req(RULE_EXTRACT_RUNS, Some("RuleExtractRunsParams"), Some("RuleExtractRunsResult")),
     notif(RULE_EXTRACT_DONE, "RuleExtractDone"),
-    req(TWIN_GET, None, Some("TwinGetResult")),
+    req(TWIN_GET, Some("TwinGetParams"), Some("TwinGetResult")),
     req(TWIN_SET, Some("TwinSetParams"), Some("TwinGetResult")),
     req(TWIN_WAKE, None, None),
     req(TWIN_DRY_RUN, None, Some("TwinDryRunResult")),
@@ -313,6 +325,10 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(TWIN_ANSWER, Some("TwinAnswerParams"), Some("TwinQuestion")),
     notif(TWIN_CHANGED, "TwinChanged"),
     notif(TWIN_QUESTION, "TwinQuestionNotice"),
+    req(TWIN_LINK, Some("TwinLinkParams"), Some("TwinLink")),
+    req(TWIN_LINKS, None, Some("TwinLinksResult")),
+    req(TWIN_UNLINK, Some("TwinUnlinkParams"), None),
+    req(TWIN_PEER_STATUS, None, Some("TwinPeerStatus")),
     req(BLOB_PUT_BEGIN, Some("BlobPutBeginParams"), Some("BlobPutBeginResult")),
     req(BLOB_PUT_CHUNK, Some("BlobPutChunkParams"), None),
     req(BLOB_PUT_END, Some("BlobIdParams"), Some("AttachmentRef")),

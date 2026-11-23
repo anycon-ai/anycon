@@ -69,6 +69,21 @@
     }
   },
   {
+    "name": "control_auth_with_token_twin",
+    "type": "control",
+    "value": {
+      "client": {
+        "kind": "twin",
+        "name": "mac-mini 的分身",
+        "platform": "macos-aarch64",
+        "version": "0.1.0"
+      },
+      "device_token": "tok_5c2e8b1a7d9f4e30",
+      "protocol_version": 1,
+      "type": "auth"
+    }
+  },
+  {
     "name": "control_auth_with_token_web",
     "type": "control",
     "value": {
@@ -436,6 +451,21 @@
     }
   },
   {
+    "name": "rpc_node_security_event_twin_linked",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "node.security_event",
+      "params": {
+        "by_device": "local",
+        "device_id": "0123456789abcdef0123456789abcdef",
+        "device_name": "mac-mini 的分身",
+        "kind": "twin_linked",
+        "ts_ms": 5
+      }
+    }
+  },
+  {
     "name": "rpc_notification",
     "type": "rpc",
     "value": {
@@ -754,6 +784,44 @@
     }
   },
   {
+    "name": "rpc_todo_remote_dispatched",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "kind": "remote_dispatched",
+          "node_id": "fedcba9876543210fedcba9876543210",
+          "seq": 2,
+          "session_id": "s",
+          "todo_id": "r",
+          "ts_ms": 4
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
+    "name": "rpc_todo_remote_result",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "kind": "remote_result",
+          "node_id": "fedcba9876543210fedcba9876543210",
+          "seq": 2,
+          "session_id": "s",
+          "text": "done",
+          "ts_ms": 4
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
     "name": "rpc_todo_repeat_created",
     "type": "rpc",
     "value": {
@@ -933,6 +1001,48 @@
     }
   },
   {
+    "name": "rpc_twin_get_requester",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.get",
+      "params": {
+        "requester": "0123456789abcdef0123456789abcdef"
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_get_requester_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "configured": true,
+        "enabled": true,
+        "scope": {
+          "agent": "mock",
+          "daily_dispatches": 10,
+          "max_sessions": 2,
+          "paused": false,
+          "projects": [
+            "app"
+          ]
+        },
+        "state": "idle",
+        "today": {
+          "dispatches": 1,
+          "judge_calls": 2
+        },
+        "waiting": [],
+        "working": [
+          "t"
+        ]
+      }
+    }
+  },
+  {
     "name": "rpc_twin_get_result",
     "type": "rpc",
     "value": {
@@ -959,6 +1069,159 @@
         "working": [
           "t"
         ]
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_link",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.link",
+      "params": {
+        "code": "ABCD-2345-EFGH-6789",
+        "node_id": "fedcba9876543210fedcba9876543210"
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_link_code",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "node.twin_link_code",
+      "params": {}
+    }
+  },
+  {
+    "name": "rpc_twin_link_code_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "code": "ABCD-2345-EFGH-6789",
+        "expires_ms": 600000
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_link_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "fingerprint": "ab:cd:ef",
+        "group": "home",
+        "name": "mac-mini",
+        "node_id": "fedcba9876543210fedcba9876543210",
+        "online": true,
+        "paired_ms": 1,
+        "status": {
+          "accept_links": true,
+          "agents": [
+            {
+              "id": "mock",
+              "label": "Mock",
+              "ready": true
+            }
+          ],
+          "group": "home",
+          "name": "mac-mini",
+          "paused": false,
+          "projects": [
+            "app"
+          ],
+          "remaining_dispatches": 9,
+          "remaining_sessions": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_links",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.links",
+      "params": {}
+    }
+  },
+  {
+    "name": "rpc_twin_links_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "links": [
+          {
+            "fingerprint": "ab:cd:ef",
+            "group": "home",
+            "name": "mac-mini",
+            "node_id": "fedcba9876543210fedcba9876543210",
+            "online": true,
+            "paired_ms": 1,
+            "status": {
+              "accept_links": true,
+              "agents": [
+                {
+                  "id": "mock",
+                  "label": "Mock",
+                  "ready": true
+                }
+              ],
+              "group": "home",
+              "name": "mac-mini",
+              "paused": false,
+              "projects": [
+                "app"
+              ],
+              "remaining_dispatches": 9,
+              "remaining_sessions": 1
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_peer_status",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.peer_status",
+      "params": {}
+    }
+  },
+  {
+    "name": "rpc_twin_peer_status_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "accept_links": true,
+        "agents": [
+          {
+            "id": "mock",
+            "label": "Mock",
+            "ready": true
+          }
+        ],
+        "group": "home",
+        "name": "mac-mini",
+        "paused": false,
+        "projects": [
+          "app"
+        ],
+        "remaining_dispatches": 9,
+        "remaining_sessions": 1
       }
     }
   },
@@ -1099,7 +1362,8 @@
           "model",
           "mode"
         ],
-        "paused": true
+        "paused": true,
+        "requester": "0123456789abcdef0123456789abcdef"
       }
     }
   },
@@ -1131,6 +1395,27 @@
           "t"
         ]
       }
+    }
+  },
+  {
+    "name": "rpc_twin_unlink",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.unlink",
+      "params": {
+        "node_id": "fedcba9876543210fedcba9876543210"
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_unlink_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {}
     }
   },
   {

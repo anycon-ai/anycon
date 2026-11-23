@@ -104,6 +104,9 @@ pub struct NodeInfo {
     /// 判断后端的脱敏状态。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<crate::JudgeInfo>,
+    /// `[twin] accept_links`：这个节点现在接受别的节点的分身连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。
+    #[serde(default)]
+    pub twin_accept_links: bool,
 }
 
 /// 有更新的版本（`node.info.update_available`）。daemon 只在 `latest` 是严格的 `X.Y.Z` 且比自己的版本新时给出；

@@ -5,6 +5,7 @@ use serde_json::json;
 
 use crate::cli::{TwinCmd, TwinSetArgs};
 use crate::commands::App;
+use crate::conn::Conn;
 use crate::error::{CliError, Result};
 use crate::output::{sanitize_label, visible};
 
@@ -19,7 +20,26 @@ fn write_allowed() -> Result<()> {
     Ok(())
 }
 
-fn set_params(a: TwinSetArgs) -> TwinSetParams {
+/// `--requester`：一台分身设备的设备 id、唯一的 id 前缀或名称 → 完整的设备 id。只在种类是 `twin` 的设备里找。
+async fn requester_id(conn: &Conn, key: &str) -> Result<String> {
+    let devices: NodeDevicesResult = conn.call(methods::NODE_DEVICES, json!({})).await?;
+    let twins: Vec<&PeerDevice> = devices.devices.iter().filter(|d| d.kind == DeviceKind::Twin).collect();
+    let pick = |matches: Vec<&&PeerDevice>| (matches.len() == 1).then(|| matches[0].device_id.clone());
+    twins
+        .iter()
+        .find(|d| d.device_id == key)
+        .map(|d| d.device_id.clone())
+        .or_else(|| pick(twins.iter().filter(|d| !key.is_empty() && d.device_id.starts_with(key)).collect()))
+        .or_else(|| pick(twins.iter().filter(|d| d.name == key).collect()))
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "no twin device matches {}; `anycon devices` lists this node's paired devices",
+                sanitize_label(key, 100, "")
+            ))
+        })
+}
+
+fn set_params(a: TwinSetArgs, requester: Option<String>) -> TwinSetParams {
     let mut clear = vec![];
     if a.clear_agent {
         clear.push(ClearableTwinField::Agent);
@@ -31,6 +51,7 @@ fn set_params(a: TwinSetArgs) -> TwinSetParams {
         clear.push(ClearableTwinField::Mode);
     }
     TwinSetParams {
+        requester,
         paused: None,
         projects: a.projects.map(|s| s.split(',').filter(|p| !p.trim().is_empty()).map(str::to_string).collect()),
         agent: a.agent,
@@ -43,14 +64,36 @@ fn set_params(a: TwinSetArgs) -> TwinSetParams {
 }
 
 pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
-    if !matches!(cmd, TwinCmd::Status | TwinCmd::Runs | TwinCmd::Questions) {
+    if !matches!(cmd, TwinCmd::Status(_) | TwinCmd::Runs | TwinCmd::Questions) {
         write_allowed()?;
     }
     let conn = app.conn().await?;
     match cmd {
-        TwinCmd::Status => {
-            let r: TwinGetResult = conn.call(methods::TWIN_GET, json!({})).await?;
+        TwinCmd::Status(a) => {
+            let requester = match &a.requester {
+                Some(key) => Some(requester_id(&conn, key).await?),
+                None => None,
+            };
+            let r: TwinGetResult = conn.call(methods::TWIN_GET, TwinGetParams { requester }).await?;
             print_status(app, &r);
+        }
+        TwinCmd::LinkCode => {
+            let r: NodeTwinLinkCodeResult = match conn.call(methods::NODE_TWIN_LINK_CODE, json!({})).await {
+                Ok(r) => r,
+                // `unsupported`：节点没连上 hub，短码没处登记
+                Err(e) if e.code == "unsupported" => return Err(CliError::offline(e.message)),
+                Err(e) => return Err(e),
+            };
+            if app.json() {
+                app.out.json_line(&r);
+            } else {
+                println!("Twin link code: {}", app.out.bold(&r.code));
+                println!(
+                    "Valid until {} UTC (10 minutes). Only another node's twin can use it; pairing with it adds a twin \
+                     device here, which you can scope with `anycon twin set --requester <device>`.",
+                    anycon_daemon::util::fmt_utc(r.expires_ms)
+                );
+            }
         }
         TwinCmd::Pause | TwinCmd::Resume => {
             let r: TwinGetResult = conn
@@ -62,7 +105,11 @@ pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
             print_status(app, &r);
         }
         TwinCmd::Set(a) => {
-            let r: TwinGetResult = conn.call(methods::TWIN_SET, set_params(a)).await?;
+            let requester = match &a.requester {
+                Some(key) => Some(requester_id(&conn, key).await?),
+                None => None,
+            };
+            let r: TwinGetResult = conn.call(methods::TWIN_SET, set_params(a, requester)).await?;
             print_status(app, &r);
         }
         TwinCmd::Wake => {
@@ -171,6 +218,8 @@ mod tests {
     fn all_commands_parse_and_set_clears_defaults() {
         for args in [
             vec!["status"],
+            vec!["status", "--requester", "dev1"],
+            vec!["link-code"],
             vec!["pause"],
             vec!["resume"],
             vec!["wake"],
@@ -208,7 +257,7 @@ mod tests {
         let Command::Twin(TwinCmd::Set(a)) = cli.command else {
             panic!("set");
         };
-        let p = set_params(a);
+        let p = set_params(a, None);
         assert_eq!(p.projects, Some(vec!["a".into(), "b".into()]));
         assert_eq!(p.clear.len(), 3);
         assert_eq!(p.max_sessions, Some(1));

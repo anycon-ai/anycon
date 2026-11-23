@@ -1044,7 +1044,7 @@ mod tests {
 #[derive(Subcommand, Debug)]
 pub enum TwinCmd {
     /// Show the twin's scope, state and today's usage
-    Status,
+    Status(TwinStatusArgs),
     /// Pause automatic work
     Pause,
     /// Resume automatic work
@@ -1061,10 +1061,25 @@ pub enum TwinCmd {
     Answer { id: String, text: String },
     /// Update scope and limits; omitted fields stay unchanged
     Set(TwinSetArgs),
+    /// Print a one-time code that lets another node's twin use this node (valid for 10 minutes; not available inside
+    /// an anycon agent session)
+    LinkCode,
+}
+
+#[derive(Args, Debug)]
+pub struct TwinStatusArgs {
+    /// Show what this node lets one twin device (another node's twin) do, instead of this node's own twin. Takes the
+    /// device's id, a unique id prefix or its name (see `anycon devices`)
+    #[arg(long)]
+    pub requester: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct TwinSetArgs {
+    /// Change the scope of one twin device (another node's twin) instead of this node's own twin. Takes the device's
+    /// id, a unique id prefix or its name (see `anycon devices`)
+    #[arg(long)]
+    pub requester: Option<String>,
     /// Allowed projects, separated by commas; an empty string clears them
     #[arg(long)]
     pub projects: Option<String>,

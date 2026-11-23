@@ -392,6 +392,12 @@ pub(crate) fn pair_failure_error(reason: &str) -> CliError {
             EXIT_ERROR,
             format!("the hub no longer knows this pairing code (it expired or was already used); {retry}"),
         ),
+        "twin_not_allowed" => (
+            EXIT_DENIED,
+            "this device's kind does not fit the code: ordinary pairing codes do not accept a twin device (use \
+             `anycon twin link-code` on the node a twin should use), and a twin link code only accepts a twin device"
+                .to_string(),
+        ),
         "replaced" => (
             EXIT_ERROR,
             format!("another pairing was started on this node (from another client); this code is no longer valid — {retry}"),

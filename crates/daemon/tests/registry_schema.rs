@@ -34,6 +34,25 @@ const NOT_CALLED: &[(&str, &str)] = &[
         "needs a paired device; its result is `Empty` like every other `result: None` method, and tests/hub_flow.rs covers the call",
     ),
     (
+        methods::NODE_TWIN_LINK_CODE,
+        "needs a hub connection (the code is registered with the hub); tests/twin_link.rs validates its result \
+         against NodeTwinLinkCodeResult (the test whose name starts with `a_twin_link_code_pairs_a_twin_device`)",
+    ),
+    (
+        methods::TWIN_LINK,
+        "the twin device side of a twin link (docs/spec/daemon.md § 27.4) is not implemented yet: the protocol is \
+         defined, the daemon answers `unsupported` (tests/twin_link.rs \
+         `twin_link_codes_and_pairing_are_for_people_only`); there is no result to validate",
+    ),
+    (
+        methods::TWIN_LINKS,
+        "same as twin.link: defined in the protocol, answered with `unsupported` until the twin device side exists",
+    ),
+    (
+        methods::TWIN_UNLINK,
+        "same as twin.link: defined in the protocol, answered with `unsupported` until the twin device side exists",
+    ),
+    (
         methods::JOB_CANCEL,
         "needs a clone job that is still running; an offline test cannot keep one running (tests/socket.rs covers the NotFound path); its `Empty` result is validated through the other `result: None` methods",
     ),
@@ -603,4 +622,13 @@ async fn walk_twin(w: &mut Walk<'_>) {
     w.call(methods::TWIN_DRY_RUN, json!({})).await;
     w.call(methods::TWIN_RUNS, json!({"limit":20})).await;
     w.call(methods::TWIN_SET, json!({"paused":true})).await;
+    // 分身连接（§ 27.3）：一台分身设备的范围用 `requester` 读写；`twin.peer_status` 只给分身设备自己的连接，用它的身份调
+    let device = w.td.twin_device_client("twin-walk", "A's twin").await;
+    w.call(methods::TWIN_SET, json!({"requester":"twin-walk","projects":["todoproj"],"agent":"fake"})).await;
+    let scope = w.call(methods::TWIN_GET, json!({"requester":"twin-walk"})).await;
+    assert_eq!(scope["scope"]["projects"], json!(["todoproj"]));
+    let human = std::mem::replace(&mut w.c, device);
+    let status = w.call(methods::TWIN_PEER_STATUS, json!({})).await;
+    assert_eq!(status["projects"], json!(["todoproj"]));
+    w.c = human;
 }

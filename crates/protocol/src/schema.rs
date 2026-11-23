@@ -12,6 +12,7 @@ pub struct ProtocolSchema {
     pub twin_scope: TwinScope,
     pub twin_state: TwinState,
     pub twin_today: TwinToday,
+    pub twin_get_params: TwinGetParams,
     pub twin_get_result: TwinGetResult,
     pub twin_set_params: TwinSetParams,
     pub twin_run: TwinRun,
@@ -25,6 +26,15 @@ pub struct ProtocolSchema {
     pub twin_answer_params: TwinAnswerParams,
     pub twin_changed: TwinChanged,
     pub twin_question_notice: TwinQuestionNotice,
+    // 分身连接
+    pub node_twin_link_code_result: NodeTwinLinkCodeResult,
+    pub twin_link_params: TwinLinkParams,
+    pub twin_link: TwinLink,
+    pub twin_links_result: TwinLinksResult,
+    pub twin_unlink_params: TwinUnlinkParams,
+    pub twin_peer_status: TwinPeerStatus,
+    pub twin_peer_agent: TwinPeerAgent,
+    pub todo_remote: TodoRemote,
     // 外层
     pub kind: Kind,
     pub notify_body: NotifyBody,

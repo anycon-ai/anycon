@@ -11,6 +11,12 @@ pub enum DeviceKind {
     Web,
     Cli,
     Sdk,
+    /// 另一个节点的分身（docs/spec/daemon.md § 27.1）：一个节点一个身份，只能经 `node.twin_link_code` 发出的短码配对，
+    /// 被使用的节点按设备种类限制它能调的方法和收到的通知（§ 27.3）。
+    Twin,
+    /// 这个版本不认识的种类（更新的客户端）。hub 在认证时拒绝它（`protocol`），daemon 配对时把它当作 `web` 存（同以前解析失败时的做法）。
+    #[serde(other)]
+    Unknown,
 }
 
 /// 设备自报信息。配对和每次 `auth` 都带。
@@ -238,6 +244,24 @@ pub mod close_code {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn twin_is_a_device_kind_and_a_newer_kind_reads_as_unknown() {
+        let v = serde_json::to_value(DeviceKind::Twin).unwrap();
+        assert_eq!(v, serde_json::json!("twin"));
+        assert_eq!(serde_json::from_value::<DeviceKind>(v).unwrap(), DeviceKind::Twin);
+        assert_eq!(serde_json::from_value::<DeviceKind>(serde_json::json!("future")).unwrap(), DeviceKind::Unknown);
+        // 内层 JSON 和 msgpack 两条线路上都一样
+        let info = ClientInfo {
+            name: "a 的分身".into(),
+            kind: DeviceKind::Twin,
+            platform: "linux-x86_64".into(),
+            version: "0".into(),
+            origin: None,
+        };
+        let back: ClientInfo = rmp_serde::from_slice(&rmp_serde::to_vec_named(&info).unwrap()).unwrap();
+        assert_eq!(back, info);
+    }
 
     #[test]
     fn control_msgpack_roundtrip() {

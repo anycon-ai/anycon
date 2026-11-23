@@ -163,6 +163,38 @@ impl Store {
             .await? as u32)
     }
 
+    /// 这个请求方派出的会话：`(会话 id, 项 id)`。
+    pub async fn twin_sessions_of(&self, requester: &str) -> Result<Vec<(String, String)>> {
+        Ok(sqlx::query_as("SELECT session_id, todo_id FROM twin_sessions WHERE requester=? ORDER BY created_ms")
+            .bind(requester)
+            .fetch_all(self.pool())
+            .await?)
+    }
+
+    /// 分身设备派出的会话：`(设备 id, 会话 id)`。启动时读进推送过滤的归属索引。
+    pub async fn twin_device_sessions(&self) -> Result<Vec<(String, String)>> {
+        Ok(sqlx::query_as("SELECT requester, session_id FROM twin_sessions WHERE requester != 'local'")
+            .fetch_all(self.pool())
+            .await?)
+    }
+
+    /// 分身设备建的项：`(设备 id, 项 id)`。
+    pub async fn twin_device_todos(&self) -> Result<Vec<(String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT source_device, id FROM todos WHERE source_kind = 'twin' AND source_device IS NOT NULL",
+        )
+        .fetch_all(self.pool())
+        .await?)
+    }
+
+    /// 一项的来源：`(source_kind, source_device)`；没有这一项为 `None`。
+    pub async fn todo_source(&self, id: &str) -> Result<Option<(String, Option<String>)>> {
+        Ok(sqlx::query_as("SELECT source_kind, source_device FROM todos WHERE id = ?")
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?)
+    }
+
     pub async fn twin_session_owner(&self, sid: &str) -> Result<Option<String>> {
         Ok(sqlx::query_scalar("SELECT requester FROM twin_sessions WHERE session_id=?")
             .bind(sid)
@@ -170,10 +202,11 @@ impl Store {
             .await?)
     }
 
+    /// 来自分身设备的项不进本机分身的范围：来源是分身的项，B 自己的分身不碰（docs/spec/daemon.md § 27.3）。
     pub async fn twin_todos(&self) -> Result<Vec<Todo>> {
         let ids = sqlx::query_scalar::<_, String>(
             "SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 AND repeat_kind IS NULL \
-             AND state NOT IN ('done','dropped') ORDER BY updated_ms, id",
+             AND source_kind != 'twin' AND state NOT IN ('done','dropped') ORDER BY updated_ms, id",
         )
         .fetch_all(self.pool())
         .await?;
@@ -190,7 +223,8 @@ impl Store {
     pub async fn twin_pr_targets(&self) -> Result<Vec<(String, String)>> {
         Ok(sqlx::query_as(
             "SELECT ts.session_id, ts.todo_id FROM twin_sessions ts JOIN todos t ON t.id = ts.todo_id \
-             WHERE t.handler = 'twin' AND t.unreviewed = 0 AND t.state NOT IN ('done','dropped') \
+             WHERE t.handler = 'twin' AND t.unreviewed = 0 AND t.source_kind != 'twin' \
+             AND t.state NOT IN ('done','dropped') \
              ORDER BY ts.created_ms, ts.session_id",
         )
         .fetch_all(self.pool())

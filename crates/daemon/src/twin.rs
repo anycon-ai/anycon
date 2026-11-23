@@ -40,6 +40,10 @@ pub fn human(caller: &Caller) -> Result<()> {
     if caller.is_mcp() {
         return Err(RpcError::new(ErrorCode::Forbidden, "twin writes must be requested by a person"));
     }
+    // 分身设备（另一个节点的分身）更不是人；分发处的白名单已经拦下，这里是第二道
+    if caller.is_twin_device() {
+        return Err(crate::twin_device::twin_device_forbidden());
+    }
     Ok(())
 }
 
@@ -84,6 +88,8 @@ fn enabled(c: &Ctx, s: &TwinScope) -> bool {
 }
 fn in_scope(c: &Ctx, s: &TwinScope, t: &Todo) -> bool {
     t.handler == TodoHandler::Twin
+        // 来源是分身设备的项，这个节点自己的分身不碰（docs/spec/daemon.md § 27.3）
+        && t.source.kind != TodoSourceKind::Twin
         && !t.state.is_closed()
         && !t.unreviewed
         && t.repeat.is_none()
@@ -94,6 +100,56 @@ async fn items(c: &Ctx, s: &TwinScope) -> Result<Vec<Todo>> {
     todos.retain(|t| in_scope(c, s, t));
     crate::todo_dispatch::fill_activity(&c.sessions, &mut todos).await;
     Ok(todos)
+}
+
+/// `twin.get`：`requester` 缺省是本机分身；也可以是一台分身设备的设备 id（B 给这条连接的设置，§ 27.3）。
+pub async fn get_for(c: &Ctx, requester: Option<&str>) -> Result<TwinGetResult> {
+    match requester_device(c, requester)? {
+        Some(device) => get_device(c, &device).await,
+        None => get(c).await,
+    }
+}
+
+/// `requester` 对应的分身设备 id；缺省或 `local` 是本机分身（`None`）。别的值必须是已配对的、种类是 `twin` 的设备 id，
+/// 否则 `not_found`（不接受名称或前缀，也不让它指到一台别种类的设备）。
+fn requester_device(c: &Ctx, requester: Option<&str>) -> Result<Option<String>> {
+    match requester {
+        None | Some(LOCAL) => Ok(None),
+        Some(id) => match c.peers.record(id) {
+            Some(row) if row.kind == DeviceKind::Twin => Ok(Some(row.device_id)),
+            _ => Err(RpcError::new(ErrorCode::NotFound, "no such twin device")),
+        },
+    }
+}
+
+/// 一台分身设备的范围和今天的用量。没有判断和问题：它的状态只看 B 的开关、暂停、范围和预算。
+async fn get_device(c: &Ctx, device: &str) -> Result<TwinGetResult> {
+    let scope = c.store.twin_scope(device).await.map_err(internal)?;
+    let accept = c.config.get().twin.accept_links;
+    let configured = !scope.projects.is_empty();
+    let mut working: Vec<String> = vec![];
+    for (sid, todo) in c.store.twin_sessions_of(device).await.map_err(internal)? {
+        let busy =
+            c.sessions.status_of(&sid).await.is_some_and(|(st, tasks)| crate::twin_device::processing(st, tasks));
+        if busy && !working.contains(&todo) {
+            working.push(todo);
+        }
+    }
+    let today = TwinToday { dispatches: crate::twin_device::dispatches_today(c, device).await?, judge_calls: 0 };
+    let state = if !accept {
+        TwinState::Disabled
+    } else if scope.paused {
+        TwinState::Paused
+    } else if !configured {
+        TwinState::NotConfigured
+    } else if today.dispatches >= scope.daily_dispatches {
+        TwinState::Budget
+    } else if !working.is_empty() {
+        TwinState::Running
+    } else {
+        TwinState::Idle
+    };
+    Ok(TwinGetResult { scope, state, enabled: accept, configured, today, working, waiting: vec![] })
 }
 
 pub async fn get(c: &Ctx) -> Result<TwinGetResult> {
@@ -131,7 +187,7 @@ pub async fn get(c: &Ctx) -> Result<TwinGetResult> {
 }
 
 /// 采用 agent 声明的 unattended 标记；危险模式无论是否缺省都不能由分身使用。
-fn settings(c: &Ctx, s: &TwinScope) -> Result<(String, SessionSettings)> {
+pub(crate) fn settings(c: &Ctx, s: &TwinScope) -> Result<(String, SessionSettings)> {
     let agent = s
         .agent
         .clone()
@@ -162,9 +218,12 @@ fn settings(c: &Ctx, s: &TwinScope) -> Result<(String, SessionSettings)> {
 pub async fn set(c: &Ctx, caller: &Caller, p: TwinSetParams) -> Result<TwinGetResult> {
     human(caller)?;
     let _guard = c.twin.scope_lock.lock().await;
+    // 改谁的范围：本机分身，或一台分身设备（B 给这条连接的设置）
+    let device = requester_device(c, p.requester.as_deref())?;
+    let key = device.as_deref().unwrap_or(LOCAL);
     let dispatch_changed =
         p.projects.is_some() || p.agent.is_some() || p.model.is_some() || p.mode.is_some() || !p.clear.is_empty();
-    let mut s = c.store.twin_scope(LOCAL).await.map_err(internal)?;
+    let mut s = c.store.twin_scope(key).await.map_err(internal)?;
     if let Some(v) = p.paused {
         s.paused = v;
     }
@@ -208,14 +267,18 @@ pub async fn set(c: &Ctx, caller: &Caller, p: TwinSetParams) -> Result<TwinGetRe
     if dispatch_changed && (!s.projects.is_empty() || s.agent.is_some() || s.mode.is_some() || s.model.is_some()) {
         settings(c, &s)?;
     }
-    c.store.save_twin_scope(LOCAL, &s).await.map_err(internal)?;
+    c.store.save_twin_scope(key, &s).await.map_err(internal)?;
     let detail = json!({
         "paused": s.paused,
         "projects": s.projects,
         "max_sessions": s.max_sessions,
         "daily_dispatches": s.daily_dispatches,
     });
-    c.audit.record(caller, "twin.set", Some(LOCAL), detail).await;
+    c.audit.record(caller, "twin.set", Some(key), detail).await;
+    if device.is_some() {
+        // 分身设备的范围不影响本机分身的调度和状态
+        return get_device(c, key).await;
+    }
     c.twin.notify.notify_one();
     changed(c, None).await?;
     get(c).await
@@ -723,6 +786,7 @@ async fn run_inner(c: &Ctx, run: &mut TwinRun) -> std::result::Result<(), CallEr
                 question: None,
                 options: vec![],
                 project: None,
+                node: None,
             };
             let valid = run.items.contains(&id) && (!seen.contains(&id) || advised);
             let fresh = c.store.todo_get(&id).await.map_err(|_| CallError::Internal)?;
@@ -870,19 +934,37 @@ async fn validate_action(c: &Ctx, s: &TwinScope, t: &Todo, p: &Candidate) -> Res
         return Ok(Some(TwinSkipReason::Invalid));
     }
     let status = get(c).await?;
-    if status.today.dispatches >= s.daily_dispatches {
-        return Ok(Some(TwinSkipReason::Budget));
+    Ok(capacity_skip(c, s, status.today.dispatches, status.working.len(), working_item(c, t).await?).await)
+}
+
+/// 每日次数和名额（§ 26.2）：本机分身和分身设备（§ 27.3）共用。`dispatches` 是这个请求方这个本地日已经派发的次数，
+/// `working` 是它现在处理中的会话（项）数，`item_working` 是这一项自己已经有会话在处理中。
+/// 名额：不超过它自己的 `max_sessions`，并且总给人留 `sessions.max_concurrent` 里的一个。
+pub(crate) async fn capacity_skip(
+    c: &Ctx,
+    s: &TwinScope,
+    dispatches: u32,
+    working: usize,
+    item_working: bool,
+) -> Option<TwinSkipReason> {
+    if dispatches >= s.daily_dispatches {
+        return Some(TwinSkipReason::Budget);
     }
-    let max = (s.max_sessions as usize).min(c.config.get().sessions.max_concurrent.saturating_sub(1));
+    let for_humans = c.config.get().sessions.max_concurrent.saturating_sub(1);
+    let max = (s.max_sessions as usize).min(for_humans);
     let (counts, _) = c.sessions.counts().await;
     let active = (counts.running + counts.queued + counts.waiting_permission) as usize;
-    if status.working.len() >= max
-        || active >= c.config.get().sessions.max_concurrent.saturating_sub(1)
-        || working_item(c, t).await?
-    {
-        return Ok(Some(TwinSkipReason::NoCapacity));
+    (working >= max || active >= for_humans || item_working).then_some(TwinSkipReason::NoCapacity)
+}
+
+/// `TwinSkipReason` 对外的名字（`invalid` 错误的 `data.reason`）。
+pub(crate) fn skip_reason_str(r: TwinSkipReason) -> &'static str {
+    match r {
+        TwinSkipReason::OutOfScope => "out_of_scope",
+        TwinSkipReason::NoCapacity => "no_capacity",
+        TwinSkipReason::Budget => "budget",
+        _ => "invalid",
     }
-    Ok(None)
 }
 
 /// 调用方已持清单锁，在派发事务内再次检查归属、范围和最新名额。
@@ -917,15 +999,7 @@ pub(crate) async fn dispatch_settings_locked(
         options: vec![],
     };
     if let Some(skip) = validate_action(c, &scope, t, &candidate).await? {
-        return Err(invalid(
-            "dispatch",
-            match skip {
-                TwinSkipReason::OutOfScope => "out_of_scope",
-                TwinSkipReason::NoCapacity => "no_capacity",
-                TwinSkipReason::Budget => "budget",
-                _ => "invalid",
-            },
-        ));
+        return Err(invalid("dispatch", skip_reason_str(skip)));
     }
     settings(c, &scope)
 }
@@ -1043,6 +1117,7 @@ async fn execute(
                                 question: None,
                                 options: vec![],
                                 project: None,
+                                node: None,
                             },
                         )
                         .await?;
@@ -1325,6 +1400,7 @@ async fn constraints(c: &Ctx, run: &mut TwinRun) -> Result<()> {
                     question: None,
                     options: vec![],
                     project: None,
+                    node: None,
                 },
             )
             .await?;

@@ -1119,7 +1119,7 @@ pub(crate) async fn dispatch_inner(
             .execute(&mut *tx)
             .await?;
         if caller.is_twin() || caller.is_twin_device() {
-            sqlx::query("INSERT INTO twin_sessions VALUES (?, ?, ?, ?)")
+            sqlx::query("INSERT INTO twin_sessions (session_id, todo_id, requester, created_ms) VALUES (?, ?, ?, ?)")
                 .bind(&session.id)
                 .bind(&new.id)
                 .bind(&caller.device_id)

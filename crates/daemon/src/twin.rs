@@ -1369,8 +1369,10 @@ pub(crate) async fn announce_todo(c: &Ctx, mut t: Todo) {
     c.clients.broadcast(methods::TODO_CHANGED, TodoChanged { id: t.id.clone(), todo: Some(t), deleted: false });
 }
 
+/// 有人在会话 `sid` 里发了消息（§ 26.6）。会话由本机分身派出时，这一项就是人接手了；会话由分身设备（别的节点的分身）派来时，
+/// 在这一项的「经过」里记一条 `taken_over`，那个节点取回之后自己改它的 `handler`（§ 27.4）。
 pub async fn taken_over(c: &Ctx, caller: &Caller, sid: &str) -> Result<()> {
-    if caller.is_twin() {
+    if caller.is_twin() || caller.is_twin_device() {
         return Ok(());
     }
     let Some(requester) = c.store.twin_session_owner(sid).await.map_err(internal)? else {
@@ -1383,37 +1385,104 @@ pub async fn taken_over(c: &Ctx, caller: &Caller, sid: &str) -> Result<()> {
     let Some(id) = row.todo_id else {
         return Ok(());
     };
-    let Some(mut t) = c.store.todo_get(&id).await.map_err(internal)? else {
+    if requester != LOCAL {
+        return device_session_taken_over(c, caller, sid, &requester, &id).await;
+    }
+    let Some(t) = c.store.todo_get(&id).await.map_err(internal)? else {
         return Ok(());
     };
     if t.handler != TodoHandler::Twin {
         return Ok(());
     }
     let now = c.judge.clock().now();
+    let mut tx = c.store.pool().begin().await.map_err(internal)?;
+    let (t, events) = take_over_on(&mut tx, t, actor_of(caller), None, now).await?;
+    tx.commit().await.map_err(internal)?;
+    take_over_done(c, t, events, &Caller::twin(&requester), json!({"session_id":sid,"by":actor_of(caller)})).await
+}
+
+/// 这一项交给分身时被人接手：`handler` 改成 `me`，「经过」记 `taken_over`（`node_id` 有值表示接手发生在那个节点上）和 `handler`。
+/// 本机的会话和 A 取回 B 上的接手共用它。调用方持 `todo_lock`、在 `tx` 里调用并在之后提交，再调 [`take_over_done`]。
+pub(crate) async fn take_over_on(
+    tx: &mut sqlx::SqliteConnection,
+    mut t: Todo,
+    by: TodoActor,
+    node_id: Option<DeviceId>,
+    now: u64,
+) -> Result<(Todo, Vec<TodoEvent>)> {
     t.handler = TodoHandler::Me;
     t.updated_ms = crate::todos::next_updated_ms(now, t.updated_ms);
-    let mut tx = c.store.pool().begin().await.map_err(internal)?;
     crate::todos::save_todo_on(&mut *tx, &t).await.map_err(internal)?;
-    let ev =
-        crate::todo_dispatch::event_append_on(&mut tx, &id, now, TodoEventData::TakenOver { by: actor_of(caller) })
-            .await
-            .map_err(internal)?;
-    let handler = crate::todo_dispatch::event_append_on(
-        &mut tx,
-        &id,
+    let taken = crate::todo_dispatch::event_append_on(
+        &mut *tx,
+        &t.id,
         now,
-        TodoEventData::Handler { from: TodoHandler::Twin, to: TodoHandler::Me, by: actor_of(caller) },
+        TodoEventData::TakenOver { by: by.clone(), node_id },
+    )
+    .await
+    .map_err(internal)?;
+    let handler = crate::todo_dispatch::event_append_on(
+        &mut *tx,
+        &t.id,
+        now,
+        TodoEventData::Handler { from: TodoHandler::Twin, to: TodoHandler::Me, by },
+    )
+    .await
+    .map_err(internal)?;
+    Ok((t, vec![taken, handler]))
+}
+
+/// [`take_over_on`] 提交之后：推「经过」、作废挂着的问题、通知客户端、记审计（`audit` 是分身这一侧的操作者）。
+pub(crate) async fn take_over_done(
+    c: &Ctx,
+    t: Todo,
+    events: Vec<TodoEvent>,
+    audit: &Caller,
+    detail: Value,
+) -> Result<()> {
+    let id = t.id.clone();
+    for ev in events {
+        broadcast_event(&c.clients, &id, ev);
+    }
+    void_questions(c, &id).await?;
+    announce_todo(c, t).await;
+    c.audit.record(audit, "todo.handler", Some(&id), json!({"handler":"me"})).await;
+    c.audit.record(audit, "twin.taken_over", Some(&id), detail).await;
+    Ok(())
+}
+
+/// 分身设备派来的会话里有人发了消息：在这一项的「经过」里记一条 `taken_over`，每个会话只记一次（表 `twin_sessions` 的
+/// `taken_ms`，和事件在同一个事务里）。这一项的 `handler` 不动：它说的是本机的分身，本机的分身本来就不碰来源是分身的项。
+/// 分身又派了新的会话、人又在新会话里接手，是新的一次。调用方持 `todo_lock`。
+async fn device_session_taken_over(c: &Ctx, caller: &Caller, sid: &str, requester: &str, id: &str) -> Result<()> {
+    if c.store.todo_get(id).await.map_err(internal)?.is_none() {
+        return Ok(());
+    }
+    let now = c.judge.clock().now();
+    let mut tx = c.store.pool().begin().await.map_err(internal)?;
+    let claimed = sqlx::query("UPDATE twin_sessions SET taken_ms=? WHERE session_id=? AND taken_ms IS NULL")
+        .bind(now as i64)
+        .bind(sid)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?
+        .rows_affected();
+    if claimed == 0 {
+        return Ok(());
+    }
+    let ev = crate::todo_dispatch::event_append_on(
+        &mut tx,
+        id,
+        now,
+        TodoEventData::TakenOver { by: actor_of(caller), node_id: None },
     )
     .await
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
-    broadcast_event(&c.clients, &id, ev);
-    broadcast_event(&c.clients, &id, handler);
-    void_questions(c, &id).await?;
-    announce_todo(c, t).await;
-    let twin = Caller::twin(&requester);
-    c.audit.record(&twin, "todo.handler", Some(&id), json!({"handler":"me"})).await;
-    c.audit.record(&twin, "twin.taken_over", Some(&id), json!({"session_id":sid,"by":actor_of(caller)})).await;
+    broadcast_event(&c.clients, id, ev);
+    c.audit
+        .record(&Caller::twin(requester), "twin.taken_over", Some(id), json!({"session_id":sid,"by":actor_of(caller)}))
+        .await;
     Ok(())
 }
 
@@ -1438,7 +1507,7 @@ async fn failure(c: &Ctx, id: &str, sid: Option<&str>) -> Result<u32> {
 async fn constraints(c: &Ctx, run: &mut TwinRun) -> Result<()> {
     let s = c.store.twin_scope(LOCAL).await.map_err(internal)?;
     for t in items(c, &s).await? {
-        let mut reason = None;
+        let mut reason: Option<String> = None;
         for sid in &t.sessions {
             if c.store.twin_session_owner(sid).await.map_err(internal)?.is_none() {
                 continue;
@@ -1453,8 +1522,11 @@ async fn constraints(c: &Ctx, run: &mut TwinRun) -> Result<()> {
                     .map_err(internal)?
                     .is_some_and(|at| c.judge.clock().now().saturating_sub(at) >= 120 * MINUTE)
             {
-                reason = Some("The dispatched session has had no events for two hours");
+                reason = Some("The dispatched session has had no events for two hours".into());
             }
+        }
+        if reason.is_none() {
+            reason = c.twin_links.stalled(c, &t.id).await;
         }
         if let Some(sid) = t.sessions.last() {
             if c.store.twin_session_owner(sid).await.map_err(internal)?.is_some() {
@@ -1465,7 +1537,7 @@ async fn constraints(c: &Ctx, run: &mut TwinRun) -> Result<()> {
                 {
                     let key = format!("{sid}:error:{}", ended.as_ref().map(|(turn, _, _)| *turn).unwrap_or(0));
                     if failure(c, &t.id, Some(&key)).await? >= 3 {
-                        reason = Some("Three consecutive dispatch failures");
+                        reason = Some("Three consecutive dispatch failures".into());
                     }
                 } else if let Some((turn, _, end_reason)) = ended {
                     if matches!(end_reason.as_str(), "completed" | "max_turns" | "budget") {
@@ -1488,14 +1560,14 @@ async fn constraints(c: &Ctx, run: &mut TwinRun) -> Result<()> {
             if !run.items.contains(&t.id) {
                 run.items.push(t.id.clone());
             }
-            release(c, &Caller::twin(&run.requester), &t.id, &run.id, reason, false).await?;
+            release(c, &Caller::twin(&run.requester), &t.id, &run.id, &reason, false).await?;
             record_decision(
                 c,
                 run,
                 TwinDecision {
                     todo_id: t.id,
                     action: TwinAction::HandBack,
-                    reason: reason.into(),
+                    reason,
                     rules: vec![],
                     outcome: TwinDecisionOutcome::Executed,
                     skip_reason: None,

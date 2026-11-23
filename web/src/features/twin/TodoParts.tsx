@@ -69,7 +69,7 @@ export function TwinHistoryEvent({ nodeId, event }: { nodeId: string; event: Tod
         </div>
       )
     case 'taken_over':
-      return <p>{t('twin.takenOver')}</p>
+      return event.node_id ? <TakenOverOn nodeId={event.node_id} /> : <p>{t('twin.takenOver')}</p>
     case 'handler':
       return (
         <p>
@@ -107,6 +107,12 @@ export function TwinHistoryEvent({ nodeId, event }: { nodeId: string; event: Tod
     default:
       return null
   }
+}
+/** 接手发生在分身用的另一个节点上：写节点名（这台设备没和它配过对时用 id 的前 8 位）。 */
+function TakenOverOn({ nodeId }: { nodeId: string }) {
+  const { t } = useTranslation()
+  const name = usePeerName(nodeId)
+  return <p data-testid="taken-over-on">{t('twin.takenOverOn', { node: name })}</p>
 }
 type RemoteDispatchedEvent = Extract<TodoEvent, { kind: 'remote_dispatched' }>
 type RemoteResultEvent = Extract<TodoEvent, { kind: 'remote_result' }>

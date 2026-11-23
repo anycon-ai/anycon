@@ -8589,6 +8589,7 @@
           "type": "object"
         },
         {
+          "description": "一个人在分身派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个\n节点上（分身用的别的节点）：那个节点记的这一条没有它，分身所在节点取回之后记的有。",
           "properties": {
             "by": {
               "$ref": "#/definitions/TodoActor"
@@ -8596,6 +8597,12 @@
             "kind": {
               "const": "taken_over",
               "type": "string"
+            },
+            "node_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -8952,6 +8959,7 @@
           "type": "object"
         },
         {
+          "description": "一个人在分身派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个\n节点上（分身用的别的节点）：那个节点记的这一条没有它，分身所在节点取回之后记的有。",
           "properties": {
             "by": {
               "$ref": "#/definitions/TodoActor"
@@ -8959,6 +8967,12 @@
             "kind": {
               "const": "taken_over",
               "type": "string"
+            },
+            "node_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [

@@ -548,6 +548,13 @@ fn main() {
             TodoEventData::RemoteDispatched { node_id: DEVICE_B.into(), todo_id: "r".into(), session_id: "s".into() },
         ),
         (
+            "todo_taken_over_on_node",
+            TodoEventData::TakenOver {
+                by: TodoActor { kind: TodoSourceKind::Device, id: None, device_id: Some(DEVICE_B.into()) },
+                node_id: Some(DEVICE_B.into()),
+            },
+        ),
+        (
             "todo_remote_result",
             TodoEventData::RemoteResult { node_id: DEVICE_B.into(), session_id: "s".into(), text: "done".into() },
         ),

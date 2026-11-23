@@ -865,3 +865,48 @@ async fn a_twin_device_can_have_at_most_100_open_items_and_people_are_not_affect
     add(&f.td, &mut f.a, "fits again", "p").await.unwrap();
     f.td.shutdown().await;
 }
+
+async fn taken_over_events(td: &TestDaemon, human: &mut TestClient, todo: &str) -> Vec<TodoEventData> {
+    let h: TodoHistoryResult = human.call(td, methods::TODO_HISTORY, json!({ "id": todo })).await.unwrap();
+    h.events.into_iter().map(|e| e.data).filter(|d| matches!(d, TodoEventData::TakenOver { .. })).collect()
+}
+
+#[tokio::test]
+async fn a_person_speaking_in_a_session_a_twin_device_dispatched_is_recorded_once_per_session() {
+    let mut f = fixture().await;
+    let t = add(&f.td, &mut f.a, "hold the line", "p").await.unwrap();
+    let first = dispatch(&f.td, &mut f.a, &t.id).await.unwrap().session.id;
+    wait_handles(&f.td, 1).await;
+    let say = |sid: &str, id: &str| json!({ "session_id": sid, "message_id": id, "content": "let me take a look" });
+
+    // 第一条消息：「经过」里记一条 `taken_over`（没有 `node_id`，来源是这台设备的人），推给分身设备；`handler` 不动
+    f.human.call::<Value>(&f.td, methods::SESSION_SEND, say(&first, "m1")).await.unwrap();
+    let pushed =
+        f.a.wait_notification(T, |n| n.method == methods::TODO_EVENT && n.params["event"]["kind"] == "taken_over")
+            .await
+            .expect("the twin device is told about the takeover");
+    assert_eq!(pushed.params["todo_id"], json!(t.id));
+    assert!(pushed.params["event"].get("node_id").is_none(), "the node that recorded it does not name itself");
+    let events = taken_over_events(&f.td, &mut f.human, &t.id).await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(matches!(&events[0], TodoEventData::TakenOver { by, node_id: None } if by.kind == TodoSourceKind::Local));
+    let todo: Todo = f.human.call(&f.td, methods::TODO_GET, json!({ "id": t.id })).await.unwrap();
+    assert_eq!(todo.handler, TodoHandler::Me, "the handler says what this node's own twin does, and it is untouched");
+
+    // 同一个会话里再说一条：不再记
+    f.human.call::<Value>(&f.td, methods::SESSION_SEND, say(&first, "m2")).await.unwrap();
+    assert_eq!(taken_over_events(&f.td, &mut f.human, &t.id).await.len(), 1);
+    // 重发同一条（幂等）也不记
+    f.human.call::<Value>(&f.td, methods::SESSION_SEND, say(&first, "m2")).await.unwrap();
+    assert_eq!(taken_over_events(&f.td, &mut f.human, &t.id).await.len(), 1);
+
+    // 分身设备又派了一个新的会话，人又在新会话里接手：新的一次
+    f.td.fake.last_handle().release();
+    f.a.call::<Empty>(&f.td, methods::SESSION_CANCEL, json!({ "session_id": first })).await.unwrap();
+    wait_not_working(&f.td, &mut f.a, &first).await;
+    let second = dispatch(&f.td, &mut f.a, &t.id).await.unwrap().session.id;
+    assert_ne!(first, second);
+    f.human.call::<Value>(&f.td, methods::SESSION_SEND, say(&second, "m3")).await.unwrap();
+    assert_eq!(taken_over_events(&f.td, &mut f.human, &t.id).await.len(), 2);
+    f.td.shutdown().await;
+}

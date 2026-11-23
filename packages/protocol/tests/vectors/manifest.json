@@ -857,6 +857,27 @@
     }
   },
   {
+    "name": "rpc_todo_taken_over_on_node",
+    "type": "rpc",
+    "value": {
+      "jsonrpc": "2.0",
+      "method": "todo.event",
+      "params": {
+        "event": {
+          "by": {
+            "device_id": "fedcba9876543210fedcba9876543210",
+            "kind": "device"
+          },
+          "kind": "taken_over",
+          "node_id": "fedcba9876543210fedcba9876543210",
+          "seq": 2,
+          "ts_ms": 4
+        },
+        "todo_id": "t"
+      }
+    }
+  },
+  {
     "name": "rpc_twin_answer",
     "type": "rpc",
     "value": {

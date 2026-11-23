@@ -572,7 +572,7 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         TodoEventData::HandedBack { reason, .. } => {
             ("handed back to you".into(), visible(reason).lines().map(str::to_string).collect())
         }
-        TodoEventData::TakenOver { by: who } => (format!("taken over by {}", by(who)), vec![]),
+        TodoEventData::TakenOver { by: who, .. } => (format!("taken over by {}", by(who)), vec![]),
         TodoEventData::TwinDecision { reason, .. } => {
             ("twin decision".into(), visible(reason).lines().map(str::to_string).collect())
         }

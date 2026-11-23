@@ -454,8 +454,12 @@ pub enum TodoEventData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_id: Option<String>,
     },
+    /// 一个人在分身派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个
+    /// 节点上（分身用的别的节点）：那个节点记的这一条没有它，分身所在节点取回之后记的有。
     TakenOver {
         by: TodoActor,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<DeviceId>,
     },
     TwinDecision {
         run_id: String,
@@ -737,6 +741,7 @@ mod twin_tests {
             json!({"kind":"handed_back", "reason":"Review needed"}),
             json!({"kind":"handed_back", "reason":"Review needed", "run_id":"r"}),
             json!({"kind":"taken_over", "by":{"kind":"device", "device_id":"d"}}),
+            json!({"kind":"taken_over", "by":{"kind":"device", "device_id":"d"}, "node_id":"n"}),
             json!({"kind":"twin_decision", "run_id":"r", "action":"wait", "reason":"Running"}),
             json!({"kind":"twin_question", "question_id":"q"}),
             json!({"kind":"handler", "from":"me", "to":"twin", "by":{"kind":"twin", "id":"local"}}),

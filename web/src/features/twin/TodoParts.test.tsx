@@ -129,6 +129,22 @@ describe('Twin in to-dos', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Web' }))
     await waitFor(() => expect(rpc.calls.find((c) => c.method === 'twin.answer')?.params).toEqual({ id: 'q1', answer: 'Web' }))
   })
+  it('says on which node you took over, by name when paired and by short id when not', async () => {
+    const B = 'b'.repeat(32)
+    const F = 'f'.repeat(32)
+    useNodes.setState((st) => ({ byId: { ...st.byId, [B]: nodeEntry({ id: B, name: 'beta' }) }, order: [A, B] }))
+    const events: TodoEvent[] = [
+      { seq: 3, ts_ms: 3, kind: 'taken_over', by: { kind: 'device' }, node_id: F },
+      { seq: 2, ts_ms: 2, kind: 'taken_over', by: { kind: 'device' }, node_id: B },
+      { seq: 1, ts_ms: 1, kind: 'taken_over', by: { kind: 'device' } },
+    ]
+    rpc.handlers['todo.history'] = () => ({ events, has_more: false })
+    const item = { ...todoItem({ id: 't1', handler: 'me' }), node_id: A, unsynced: false }
+    render(<TodoHistory item={item} />)
+    expect(await screen.findByText('You took over')).toBeInTheDocument()
+    const onNode = screen.getAllByTestId('taken-over-on').map((e) => e.textContent)
+    expect(onNode).toEqual(['You took over on beta', 'You took over on another node (ffffffff)'])
+  })
   it('shows the four PR events and only links GitHub addresses', async () => {
     const events: TodoEvent[] = [
       { seq: 4, ts_ms: 4, kind: 'pr_event', session_id: 's', event: 'closed', url: 'javascript:alert(1)' },

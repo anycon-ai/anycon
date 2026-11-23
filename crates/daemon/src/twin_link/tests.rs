@@ -81,3 +81,33 @@ fn a_node_error_is_a_refusal_with_a_cleaned_reason_and_anything_else_is_unavaila
     let timeout = ClientError::new(ErrorClass::Offline, "timeout", "slow");
     assert_eq!(failure_of(timeout), Failure::Unavailable("timeout".into()));
 }
+
+#[test]
+fn a_remote_session_is_stuck_after_two_hours_with_the_same_last_seq_and_progress_starts_the_count_over() {
+    let minute = 60_000;
+    let mut s = Stall { last_seq: None, since_ms: 1_000 };
+    // 派发时留的基线：第一次读到 seq 只补上数字，起算点还是派发的时候
+    assert!(!s.observe(7, 1_000 + 30 * minute));
+    assert_eq!(s, Stall { last_seq: Some(7), since_ms: 1_000 });
+    assert!(!s.observe(7, 1_000 + 119 * minute));
+    assert!(s.observe(7, 1_000 + 120 * minute));
+    // 有了新事件：重新起算
+    assert!(!s.observe(8, 1_000 + 150 * minute));
+    assert_eq!(s.since_ms, 1_000 + 150 * minute);
+    assert!(!s.observe(8, 1_000 + 269 * minute));
+    assert!(s.observe(8, 1_000 + 270 * minute));
+}
+
+#[test]
+fn a_node_coming_back_resets_the_stuck_count_of_its_sessions_only() {
+    let links = TwinLinks::default();
+    {
+        let mut stalls = links.stalls();
+        stalls.insert(("b".into(), "s1".into()), Stall { last_seq: Some(1), since_ms: 5 });
+        stalls.insert(("b".into(), "s2".into()), Stall { last_seq: None, since_ms: 5 });
+        stalls.insert(("c".into(), "s3".into()), Stall { last_seq: Some(1), since_ms: 5 });
+    }
+    links.stall_reset_node("b");
+    let left: Vec<_> = links.stalls().keys().cloned().collect();
+    assert_eq!(left, vec![("c".to_string(), "s3".to_string())]);
+}

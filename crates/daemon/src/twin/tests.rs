@@ -690,7 +690,7 @@ async fn dry_run_reserves_planned_slots_and_local_day_resets_dispatch_budget() {
     assert_eq!(r.decisions[0].outcome, TwinDecisionOutcome::Executed);
     assert_eq!(r.decisions[1].skip_reason, Some(TwinSkipReason::NoCapacity));
     let now = td.ctx.judge.clock().now();
-    sqlx::query("INSERT INTO twin_sessions VALUES ('old', ?, 'local', ?)")
+    sqlx::query("INSERT INTO twin_sessions (session_id, todo_id, requester, created_ms) VALUES ('old', ?, 'local', ?)")
         .bind(&a.id)
         .bind(now as i64)
         .execute(td.ctx.store.pool())

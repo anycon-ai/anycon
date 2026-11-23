@@ -40,17 +40,13 @@ const NOT_CALLED: &[(&str, &str)] = &[
     ),
     (
         methods::TWIN_LINK,
-        "the twin device side of a twin link (docs/spec/daemon.md § 27.4) is not implemented yet: the protocol is \
-         defined, the daemon answers `unsupported` (tests/twin_link.rs \
-         `twin_link_codes_and_pairing_are_for_people_only`); there is no result to validate",
-    ),
-    (
-        methods::TWIN_LINKS,
-        "same as twin.link: defined in the protocol, answered with `unsupported` until the twin device side exists",
+        "needs a hub connection and another node's twin link code; tests/twin_links.rs validates its result \
+         against TwinLink (the test whose name starts with `linking_needs_the_right_node`)",
     ),
     (
         methods::TWIN_UNLINK,
-        "same as twin.link: defined in the protocol, answered with `unsupported` until the twin device side exists",
+        "needs an existing twin link, which needs a second node; its `Empty` result is validated through the other \
+         `result: None` methods, and tests/twin_links.rs covers the call",
     ),
     (
         methods::JOB_CANCEL,
@@ -622,6 +618,9 @@ async fn walk_twin(w: &mut Walk<'_>) {
     w.call(methods::TWIN_DRY_RUN, json!({})).await;
     w.call(methods::TWIN_RUNS, json!({"limit":20})).await;
     w.call(methods::TWIN_SET, json!({"paused":true})).await;
+    // 没有分身连接时 `twin.links` 是空列表（有连接的在 tests/twin_links.rs）
+    let links = w.call(methods::TWIN_LINKS, json!({})).await;
+    assert_eq!(links["links"], json!([]));
     // 分身连接（§ 27.3）：一台分身设备的范围用 `requester` 读写；`twin.peer_status` 只给分身设备自己的连接，用它的身份调
     let device = w.td.twin_device_client("twin-walk", "A's twin").await;
     w.call(methods::TWIN_SET, json!({"requester":"twin-walk","projects":["todoproj"],"agent":"fake"})).await;

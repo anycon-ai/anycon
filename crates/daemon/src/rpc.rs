@@ -87,7 +87,8 @@ impl Rpc {
     pub async fn handle_request(&self, client: &Arc<ClientHandle>, req: RpcRequest) -> RpcMessage {
         let id: RpcId = req.id.clone();
         let started = std::time::Instant::now();
-        let res = self.dispatch(client, &req.method, req.params).await;
+        // 分发的 future 很大（每个方法的处理都在里面），放在堆上：调用方（连接任务、测试）的栈不随方法数增长
+        let res = Box::pin(self.dispatch(client, &req.method, req.params)).await;
         let elapsed_ms = started.elapsed().as_millis() as u64;
         tracing::debug!(method = %req.method, elapsed_ms, ok = res.is_ok(), "rpc handled");
         match res {
@@ -119,11 +120,13 @@ impl Rpc {
                 ok(Box::pin(crate::twin::get_for(c, p.requester.as_deref())).await?)
             }
             methods::TWIN_PEER_STATUS => ok(crate::twin_device::peer_status(c, caller).await?),
-            // 分身连接的 A 侧（docs/spec/daemon.md § 27.4）：协议已定义，这个版本的 daemon 还没有处理
-            methods::TWIN_LINK | methods::TWIN_LINKS | methods::TWIN_UNLINK => {
+            // 分身连接的 A 侧（docs/spec/daemon.md § 27.2、§ 27.4）：只由人调用；没有任何方法能经 A 调 B
+            methods::TWIN_LINK => ok(Box::pin(c.twin_links.link(c, caller, params(p)?)).await?),
+            methods::TWIN_LINKS => {
                 crate::twin::human(caller)?;
-                Err(err(ErrorCode::Unsupported, "using other nodes as a twin is not available in this version"))
+                ok(Box::pin(c.twin_links.links(c)).await?)
             }
+            methods::TWIN_UNLINK => ok(Box::pin(c.twin_links.unlink(c, caller, params(p)?)).await?),
             methods::NODE_TWIN_LINK_CODE => {
                 crate::twin::human(caller)?;
                 ok(c.peers.twin_link_code(caller).await?)

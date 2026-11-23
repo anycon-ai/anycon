@@ -30,7 +30,8 @@ CLI 作为客户端设备的密钥和 device token 存在 `~/.anycon/client/<hub
 ├── logs/daemon.log             滚动，默认保留 7 天
 ├── blobs/                      附件
 ├── update-check.json           更新检查上次的时间和结果（daemon.md § 24），0600
-└── client/<hub-host>/          CLI 作为客户端设备时的密钥和 token
+├── client/<hub-host>/          CLI 作为客户端设备时的密钥和 token
+└── twin/                       分身设备（这个节点的分身去使用别的节点时的身份，daemon.md § 27.1）：密钥、device token、已配对的节点，格式同 client/<hub-host>/，只有 daemon 进程读写
 ```
 
 Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon 启动时给数据目录设一份只有当前用户、SYSTEM 和 Administrators 能访问的受保护 DACL，里面的文件继承它；上面写着 0600 的文件靠的就是它。
@@ -269,11 +270,14 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 | `anycon twin questions` | `twin.questions { open_only: true }`：打印未回答的问题 id、清单项 id、问题和选项 |
 | `anycon twin answer <id> <text>` | `twin.answer`，问题完整 id、回答 ≤ 2 KiB |
 | `anycon twin set [--requester <device>] [--projects a,b] [--agent <id>] [--model <id>] [--mode <id>] [--max-sessions <n>] [--daily-dispatches <n>] [--clear-agent] [--clear-model] [--clear-mode]` | `twin.set`：未给的字段保持不变；`--projects ''` 清空允许项目。`--clear-*` 在合并之后清空相应选择，恢复缺省。`--requester <device>` 改的是这个节点给一台分身设备的范围（同 `status --requester`；缺省什么都不开放），不动本机分身 |
-| `anycon twin link-code` | `node.twin_link_code`：打印一次性的分身短码和过期时间（16 位，10 分钟，只接受分身设备，再要一个会作废旧的）。`--json` 打印 `{ code, expires_ms }`。节点没连上 hub → 退出码 3；`[twin] accept_links = false` → 退出码 5（`accept_links_off`）。这个短码用来让另一个节点的分身使用这个节点，A 侧的 `anycon twin link` / `links` / `unlink`（[daemon.md § 27.6](daemon.md#276-客户端)）还没有实现 |
+| `anycon twin link-code` | `node.twin_link_code`：打印一次性的分身短码和过期时间（16 位，10 分钟，只接受分身设备，再要一个会作废旧的）。`--json` 打印 `{ code, expires_ms }`。节点没连上 hub → 退出码 3；`[twin] accept_links = false` → 退出码 5（`accept_links_off`）。这个短码用来让另一个节点的分身使用这个节点，在那个节点上用 `anycon twin link` 接上（下面三行） |
+| `anycon twin link <code> --peer <node-id>` | `twin.link`：这个节点的分身用 `<node-id>` 那个节点的 `link-code` 短码去使用它（两个节点要在同一个 hub 上）。选项叫 `--peer`，因为全局的 `--node` 选的是命令在哪个节点上跑。配对完成后核对节点 id，对不上就丢掉这次配对（B 上的设备记录要在 B 上吊销）。打印 `Linked <名称> (<id 前 8 位>)` 并提示在那个节点上用 `anycon twin set --requester <device> --projects …` 开放项目（缺省什么都不开放）；`--json` 打印 `TwinLink`。失败的原因在 stderr（`node_mismatch`、`not_found`、`timeout`、`forbidden`、`hub_changed`……）；这个节点没配置 hub 或连不上 hub → 退出码 3。要等对端完成配对，最长约一分钟（`--timeout` 不管它，用 `call_slow` 的 150 秒）。agent 环境里拒绝执行（退出码 5） |
+| `anycon twin links [--json]` | `twin.links`：每条分身连接一段：id 前 8 位、名称、`online` / `offline`、那个节点开放的项目（没有就写 `none opened`）、还剩的会话和每日派发次数、那个节点是否暂停了这条连接。没有就打印 `no linked nodes`；`--json` 打印 `{ links }`。agent 环境里可读 |
+| `anycon twin unlink <node>` | `twin.unlink`：只在这个节点上忘掉这条连接。`<node>` 是连接的节点 id、唯一的 id 前缀或名称（对不上 → 退出码 2）。提示那个节点上的设备记录要在那边吊销（`anycon revoke`）；`--json` 打印 `{ "unlinked": <id> }`。agent 环境里拒绝执行（退出码 5） |
 
 `anycon todo add --twin` 建立 `handler = twin` 的项；`anycon todo assign <id> me\|twin` 使用清单的唯一前缀解析。未收下的 agent 项不能交给分身，要先由人收下。
 
-在 anycon 拉起的 agent 环境中，`status`、`runs`、`questions` 可读，其余子命令（含 `link-code`），以及 `todo add --twin`、`todo assign`，在连接之前拒绝执行，退出码 5。输出给终端的模型文字会显示控制字符，不执行终端转义；JSON 保留原始文字。
+在 anycon 拉起的 agent 环境中，`status`、`runs`、`questions`、`links` 可读，其余子命令（含 `link-code`、`link`、`unlink`），以及 `todo add --twin`、`todo assign`，在连接之前拒绝执行，退出码 5。输出给终端的模型文字会显示控制字符，不执行终端转义；JSON 保留原始文字。
 
 ## 4. 输出约定
 

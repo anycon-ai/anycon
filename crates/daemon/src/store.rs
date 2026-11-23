@@ -4,7 +4,9 @@
 
 mod judge;
 mod twin;
+pub(crate) mod twin_link;
 pub use judge::{ExtractAttempts, ExtractRunFinish, JudgeCallFinish, JudgeCallStart};
+pub use twin_link::{LinkRow, RemoteRow};
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

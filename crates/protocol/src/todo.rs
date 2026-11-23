@@ -342,6 +342,10 @@ pub struct TodoDispatchParams {
     /// 不多记关联和「经过」；它同时是会话第一条消息的 id。缺省由 daemon 生成（那样就没有幂等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// 分身的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。
+    /// 只有分身设备（另一个节点的分身）能带；别的调用方带了 → `invalid`（`data.field = "note"`，`data.reason = "not_allowed"`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

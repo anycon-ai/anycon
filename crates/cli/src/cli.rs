@@ -1064,6 +1064,25 @@ pub enum TwinCmd {
     /// Print a one-time code that lets another node's twin use this node (valid for 10 minutes; not available inside
     /// an anycon agent session)
     LinkCode,
+    /// Let this node's twin use another node: pair with the code `anycon twin link-code` printed on that node (not
+    /// available inside an anycon agent session)
+    Link {
+        /// The one-time code printed by `anycon twin link-code` on the other node
+        code: String,
+        /// The other node's id (not `--node`, which picks the node this command runs on); the pairing is dropped if the
+        /// code belongs to a different node
+        #[arg(long)]
+        peer: String,
+    },
+    /// List the nodes this node's twin can use, whether they are online, and what they open to it
+    Links,
+    /// Forget a node this node's twin uses (its id, a unique id prefix or its name); the twin device stays paired on
+    /// that node until you revoke it there (not available inside an anycon agent session)
+    Unlink {
+        /// The linked node: its id, a unique id prefix or its name
+        #[arg(value_name = "NODE")]
+        target: String,
+    },
 }
 
 #[derive(Args, Debug)]

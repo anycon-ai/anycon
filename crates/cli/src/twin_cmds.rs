@@ -64,7 +64,7 @@ fn set_params(a: TwinSetArgs, requester: Option<String>) -> TwinSetParams {
 }
 
 pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
-    if !matches!(cmd, TwinCmd::Status(_) | TwinCmd::Runs | TwinCmd::Questions) {
+    if !matches!(cmd, TwinCmd::Status(_) | TwinCmd::Runs | TwinCmd::Questions | TwinCmd::Links) {
         write_allowed()?;
     }
     let conn = app.conn().await?;
@@ -92,6 +92,53 @@ pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
                     "Valid until {} UTC (10 minutes). Only another node's twin can use it; pairing with it adds a twin \
                      device here, which you can scope with `anycon twin set --requester <device>`.",
                     anycon_daemon::util::fmt_utc(r.expires_ms)
+                );
+            }
+        }
+        TwinCmd::Link { code, peer } => {
+            let r: TwinLink = match conn.call_slow(methods::TWIN_LINK, TwinLinkParams { code, node_id: peer }).await {
+                Ok(r) => r,
+                // 这个节点没有配置 hub、或者连不上 hub：短码没处用
+                Err(e) if matches!(e.reason.as_deref(), Some("no_hub" | "offline")) => {
+                    return Err(CliError::offline(e.message))
+                }
+                Err(e) => return Err(e),
+            };
+            if app.json() {
+                app.out.json_line(&r);
+            } else {
+                println!(
+                    "Linked {} ({}). It has not opened anything to this twin yet: on that node, run `anycon twin set \
+                     --requester <device> --projects <names>` (`anycon devices` lists the twin device).",
+                    sanitize_label(&r.name, 64, "node"),
+                    short_id(&r.node_id)
+                );
+            }
+        }
+        TwinCmd::Links => {
+            let r: TwinLinksResult = conn.call(methods::TWIN_LINKS, json!({})).await?;
+            if app.json() {
+                app.out.json_line(&r);
+            } else if r.links.is_empty() {
+                println!("no linked nodes");
+            } else {
+                for l in &r.links {
+                    print_link(l);
+                }
+            }
+        }
+        TwinCmd::Unlink { target } => {
+            let links: TwinLinksResult = conn.call(methods::TWIN_LINKS, json!({})).await?;
+            let l = pick_link(&links.links, &target)?;
+            let _: Empty = conn.call(methods::TWIN_UNLINK, TwinUnlinkParams { node_id: l.node_id.clone() }).await?;
+            if app.json() {
+                app.out.json_line(&json!({ "unlinked": l.node_id }));
+            } else {
+                println!(
+                    "Unlinked {} ({}). The twin device stays paired on that node until you revoke it there \
+                     (`anycon revoke` on that node, or its device list).",
+                    sanitize_label(&l.name, 64, "node"),
+                    short_id(&l.node_id)
                 );
             }
         }
@@ -167,6 +214,47 @@ pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
     }
     Ok(0)
 }
+fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
+/// `<node>`：连接的节点 id、唯一的 id 前缀或名称（名称不唯一就报错，让用户改用 id）。
+fn pick_link<'a>(links: &'a [TwinLink], key: &str) -> Result<&'a TwinLink> {
+    let by = |f: &dyn Fn(&TwinLink) -> bool| -> Vec<&'a TwinLink> { links.iter().filter(|l| f(l)).collect() };
+    let exact = by(&|l| l.node_id == key);
+    let prefix = by(&|l| !key.is_empty() && l.node_id.starts_with(key));
+    let name = by(&|l| l.name == key);
+    [exact, prefix, name].into_iter().find(|m| m.len() == 1).map(|m| m[0]).ok_or_else(|| {
+        CliError::usage(format!(
+            "no linked node matches {}; `anycon twin links` lists the nodes this twin uses",
+            sanitize_label(key, 100, "")
+        ))
+    })
+}
+
+fn print_link(l: &TwinLink) {
+    let mut line = format!(
+        "{}  {}  {}",
+        short_id(&l.node_id),
+        sanitize_label(&l.name, 64, "?"),
+        if l.online { "online" } else { "offline" }
+    );
+    if let Some(s) = &l.status {
+        line.push_str(&format!(
+            "\n    projects: {}\n    free sessions: {}  free dispatches today: {}{}",
+            if s.projects.is_empty() {
+                "none opened".to_string()
+            } else {
+                sanitize_label(&s.projects.join(", "), 1000, "")
+            },
+            s.remaining_sessions,
+            s.remaining_dispatches,
+            if s.paused { "  (paused by that node)" } else { "" }
+        ));
+    }
+    println!("{line}");
+}
+
 fn label<T: serde::Serialize>(v: T) -> String {
     serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
 }
@@ -220,6 +308,10 @@ mod tests {
             vec!["status"],
             vec!["status", "--requester", "dev1"],
             vec!["link-code"],
+            vec!["link", "ABCD-ABCD-ABCD-ABCD", "--peer", "n1"],
+            vec!["links"],
+            vec!["links", "--json"],
+            vec!["unlink", "laptop"],
             vec!["pause"],
             vec!["resume"],
             vec!["wake"],

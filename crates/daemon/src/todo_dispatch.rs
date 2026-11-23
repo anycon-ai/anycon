@@ -39,6 +39,8 @@ pub const EARLIER_MAX_BYTES: usize = 8 * 1024;
 /// `todo.history` 的 `limit` 缺省值和上限。
 pub const HISTORY_DEFAULT_LIMIT: u32 = 50;
 pub const HISTORY_MAX_LIMIT: u32 = 200;
+/// 分身的说明（`note`）的字节上限，和分拣的 `dispatch` 里的一样。
+pub const MAX_NOTE_BYTES: usize = 2048;
 /// `no_push` 选项在 `AgentInfo.options` 里的 id（§ 22.5）。
 pub const OPTION_NO_PUSH: &str = "no_push";
 
@@ -239,9 +241,52 @@ pub fn turn_outcome(reason: &str) -> TurnOutcome {
 
 /// 现在这一项的 `activity`：读各关联会话此刻的状态算出来，不存（已关闭或没有派发过的项没有）。
 pub async fn compute_activity(sessions: &Arc<Sessions>, todo: &Todo) -> Option<TodoActivity> {
-    if todo.state.is_closed() || todo.sessions.is_empty() {
+    if todo.state.is_closed() || (todo.sessions.is_empty() && todo.remote.is_empty()) {
         return None;
     }
+    let local = if todo.sessions.is_empty() { None } else { Some(Box::pin(local_activity(sessions, todo)).await) };
+    let remote = Box::pin(remote_activity(sessions, todo)).await;
+    Some(match (local, remote) {
+        (Some(l), Some(r)) => merge_activity(l, r),
+        (Some(l), None) => l,
+        (None, Some(r)) => r,
+        (None, None) => TodoActivity::Waiting,
+    })
+}
+
+/// 本机会话和远程项合起来的 `activity`（docs/spec/daemon.md § 27.4）：任何一边在 `working` 就是 `working`；否则任何一边在
+/// `waiting` 就是 `waiting`；否则 `review`。
+fn merge_activity(a: TodoActivity, b: TodoActivity) -> TodoActivity {
+    match (a, b) {
+        (TodoActivity::Working, _) | (_, TodoActivity::Working) => TodoActivity::Working,
+        (TodoActivity::Waiting, _) | (_, TodoActivity::Waiting) => TodoActivity::Waiting,
+        _ => TodoActivity::Review,
+    }
+}
+
+/// 远程项最近知道的 `activity`（来自 B 的 `todo.changed`，A 存一份，B 不在线时用最后一次的）：多个远程项各自按 [`merge_activity`] 合并。
+/// 派出之后还没收到过 B 的 `activity` 按 `working`（结果还没回来）；B 说没有（`none`）或给了这里不认识的值的不算。没有远程项返回 `None`。
+async fn remote_activity(sessions: &Arc<Sessions>, todo: &Todo) -> Option<TodoActivity> {
+    if todo.remote.is_empty() {
+        return None;
+    }
+    let rows = match sessions.store().todo_remote_rows(&todo.id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot read the remote activity of a todo");
+            return None;
+        }
+    };
+    rows.into_iter()
+        .filter_map(|r| match r.activity {
+            None => Some(TodoActivity::Working),
+            Some(Some(TodoActivity::Unknown)) | Some(None) => None,
+            Some(Some(a)) => Some(a),
+        })
+        .reduce(merge_activity)
+}
+
+async fn local_activity(sessions: &Arc<Sessions>, todo: &Todo) -> TodoActivity {
     let signal = sessions.todo_signal();
     let mut linked: Vec<(String, LinkedSession)> = Vec::with_capacity(todo.sessions.len());
     for sid in &todo.sessions {
@@ -269,7 +314,7 @@ pub async fn compute_activity(sessions: &Arc<Sessions>, todo: &Todo) -> Option<T
         }
     }
     let list: Vec<LinkedSession> = linked.into_iter().map(|(_, l)| l).collect();
-    Some(activity_of(&list))
+    activity_of(&list)
 }
 
 /// 给要返回的每一项补上 `activity`。
@@ -309,6 +354,12 @@ type QueuedResult = (String, String, PendingResult);
 impl TodoSignal {
     pub(crate) fn bind_twin(&self, c: &Arc<Ctx>) {
         *self.twin.write().unwrap() = Arc::downgrade(c);
+    }
+
+    /// 这一项的 `activity` 要重新算（远程项的 `activity` 变了）：不涉及本机会话，也不唤醒分身。
+    pub fn mark_dirty(&self, todo_id: &str) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).dirty.insert(todo_id.to_string());
+        self.notify.notify_one();
     }
 
     /// 这一项的会话有变化（状态、后台任务数在 0 和非 0 之间、结果的扣留、被删除）。
@@ -845,8 +896,18 @@ async fn default_workspace(c: &Ctx, project: &str) -> Option<SessionWorkspace> {
 }
 
 /// `todo.dispatch`（§ 22.2）。全部或全无：会话开不起来，这一项和「经过」都不变。
-pub async fn dispatch(c: &Ctx, caller: &Caller, p: TodoDispatchParams) -> RpcResult<TodoDispatchResult> {
-    dispatch_inner(c, caller, p, None).await
+pub async fn dispatch(c: &Ctx, caller: &Caller, mut p: TodoDispatchParams) -> RpcResult<TodoDispatchResult> {
+    // 分身的说明只有分身设备（另一个节点的分身，§ 27.4）能带；别的调用方没有这个入口，本机分身直接走 `dispatch_inner`
+    let note = p.note.take();
+    if let Some(note) = &note {
+        if !caller.is_twin_device() {
+            return Err(invalid("note", Some("not_allowed"), "only a twin device can send a dispatch note".into()));
+        }
+        if note.len() > MAX_NOTE_BYTES {
+            return Err(invalid("note", Some("length"), format!("the note is at most {MAX_NOTE_BYTES} bytes")));
+        }
+    }
+    dispatch_inner(c, caller, p, note.as_deref()).await
 }
 
 /// 共用派发事务；分身说明只进入第一条消息，不改清单正文。

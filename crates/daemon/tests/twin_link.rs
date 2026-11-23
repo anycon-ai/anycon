@@ -361,12 +361,14 @@ async fn twin_link_codes_and_pairing_are_for_people_only() {
         let e = mcp.call::<Value>(&w.td, method, json!({ "code": "x", "node_id": "y" })).await.unwrap_err();
         assert_eq!(e.stable_code(), Some(ErrorCode::Forbidden), "{method}");
     }
-    // A 侧还没有实现：人调用得到 `unsupported`
+    // 人调用：A 侧的处理在 tests/twin_links.rs 里；这里只看这个节点自己没有分身连接时的回答
     let mut human = w.td.local_cli_client();
-    for method in [methods::TWIN_LINK, methods::TWIN_LINKS, methods::TWIN_UNLINK] {
-        let e = human.call::<Value>(&w.td, method, json!({ "code": "x", "node_id": "y" })).await.unwrap_err();
-        assert_eq!(e.stable_code(), Some(ErrorCode::Unsupported), "{method}");
-    }
+    let e = human.call::<Value>(&w.td, methods::TWIN_LINK, json!({ "code": "x", "node_id": "y" })).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::Invalid), "a malformed code is a parameter error");
+    let links: TwinLinksResult = human.call(&w.td, methods::TWIN_LINKS, json!({})).await.unwrap();
+    assert!(links.links.is_empty());
+    let e = human.call::<Value>(&w.td, methods::TWIN_UNLINK, json!({ "node_id": "y" })).await.unwrap_err();
+    assert_eq!(e.stable_code(), Some(ErrorCode::NotFound));
     w.td.shutdown().await;
 }
 

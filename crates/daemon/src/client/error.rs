@@ -22,11 +22,17 @@ pub struct ClientError {
     pub code: String,
     pub message: String,
     pub rpc: Option<RpcError>,
+    /// 比 `code` 更细的机器可读原因（配对被 hub 拒绝时是 hub 给的原因：`not_found`、`timeout`、`forbidden`……）。
+    pub reason: Option<String>,
 }
 
 impl ClientError {
     pub fn new(class: ErrorClass, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { class, code: code.into(), message: message.into(), rpc: None }
+        Self { class, code: code.into(), message: message.into(), rpc: None, reason: None }
+    }
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
     }
     pub fn general(message: impl Into<String>) -> Self {
         Self::new(ErrorClass::General, "error", message)
@@ -50,7 +56,7 @@ impl ClientError {
             .and_then(|c| serde_json::to_value(c).ok())
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_else(|| "error".into());
-        Self { class: ErrorClass::General, code, message: e.message.clone(), rpc: Some(e) }
+        Self { class: ErrorClass::General, code, message: e.message.clone(), rpc: Some(e), reason: None }
     }
 }
 

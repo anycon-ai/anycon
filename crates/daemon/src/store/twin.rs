@@ -155,12 +155,15 @@ impl Store {
         Ok(())
     }
 
+    /// 这个请求方从 `since` 起派发的次数。本机分身（`local`）派到别的节点的也算（§ 27.4）。
     pub async fn twin_dispatches_since(&self, requester: &str, since: u64) -> Result<u32> {
-        Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM twin_sessions WHERE requester=? AND created_ms>=?")
-            .bind(requester)
-            .bind(since as i64)
-            .fetch_one(self.pool())
-            .await? as u32)
+        let local =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM twin_sessions WHERE requester=? AND created_ms>=?")
+                .bind(requester)
+                .bind(since as i64)
+                .fetch_one(self.pool())
+                .await? as u32;
+        Ok(if requester == "local" { local.saturating_add(self.todo_remotes_since(since).await?) } else { local })
     }
 
     /// 这个请求方派出的会话：`(会话 id, 项 id)`。

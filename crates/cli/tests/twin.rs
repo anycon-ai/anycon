@@ -124,6 +124,8 @@ async fn all_writes_refuse_agent_environment_before_connecting() {
         vec!["twin", "set", "--projects", "p"],
         vec!["twin", "set", "--requester", "dev", "--projects", "p"],
         vec!["twin", "link-code"],
+        vec!["twin", "link", "AAAA-BBBB-CCCC-DDDD", "--peer", "n"],
+        vec!["twin", "unlink", "n"],
         vec!["todo", "add", "work", "--twin"],
         vec!["todo", "assign", "t", "twin"],
     ] {

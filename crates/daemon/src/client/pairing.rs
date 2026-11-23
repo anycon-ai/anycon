@@ -232,6 +232,7 @@ pub async fn complete_pairing(
 }
 
 pub fn pair_failed(reason: PairFailReason) -> ClientError {
+    let tag = serde_json::to_value(reason).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
     let msg = match reason {
         PairFailReason::NotFound => "the pairing code was not found, has expired, or was already used",
         PairFailReason::Timeout => "pairing timed out",
@@ -242,7 +243,7 @@ pub fn pair_failed(reason: PairFailReason) -> ClientError {
             "the hub refused this pairing (the devices belong to different accounts, or neither has one)"
         }
     };
-    ClientError::new(ErrorClass::NotPaired, "pair_failed", msg)
+    ClientError::new(ErrorClass::NotPaired, "pair_failed", msg).with_reason(tag)
 }
 
 /// 从 `--code` 的值里取出短码：可以直接是短码（`7K3P-Q2MX`，大小写 / 连字符随意），也可以是 `anycon pair` 打印的链接

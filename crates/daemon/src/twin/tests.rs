@@ -236,8 +236,8 @@ async fn input_is_bounded_ordered_random_and_injects_rules() {
     .unwrap();
     let scope = get(&td.ctx).await.unwrap().scope;
     let sorted = items(&td.ctx, &scope).await.unwrap();
-    let (a, ids) = request(&td.ctx, &scope, &sorted, Some("ADVICE")).await.unwrap();
-    let (b, _) = request(&td.ctx, &scope, &sorted, None).await.unwrap();
+    let (a, ids) = request(&td.ctx, &scope, &sorted, Some("ADVICE"), None).await.unwrap();
+    let (b, _) = request(&td.ctx, &scope, &sorted, None, None).await.unwrap();
     assert!(a.system.contains("Always explain the tradeoff"));
     assert!(a.prompt.contains("Use the project's formatter"));
     assert!(a.prompt.contains("ADVICE"));
@@ -317,7 +317,8 @@ async fn questions_replace_void_answer_notify_and_push() {
     assert_eq!(pushes[0].category, NotifyCategory::TwinQuestion);
     assert_eq!(pushes[0].session_id.as_deref(), Some(format!("todo_{}", t.id).as_str()));
     assert!(pushes[0].detail.is_none());
-    let (req, _) = request(&td.ctx, &get(&td.ctx).await.unwrap().scope, std::slice::from_ref(&t), None).await.unwrap();
+    let (req, _) =
+        request(&td.ctx, &get(&td.ctx).await.unwrap().scope, std::slice::from_ref(&t), None, None).await.unwrap();
     assert!(req.prompt.contains("answer: a"));
     td.shutdown().await;
 }
@@ -1108,7 +1109,7 @@ async fn the_triage_input_names_the_rule_ids_and_leaves_stale_rules_out() {
     sqlx::query("UPDATE rules SET stale = 1 WHERE id = ?").bind(&old.id).execute(td.ctx.store.pool()).await.unwrap();
     let t = todo(&td, "work").await;
     let scope = get(&td.ctx).await.unwrap().scope;
-    let (req, _) = request(&td.ctx, &scope, std::slice::from_ref(&t), None).await.unwrap();
+    let (req, _) = request(&td.ctx, &scope, std::slice::from_ref(&t), None, None).await.unwrap();
     assert!(req.system.contains("Always explain the tradeoff") && req.system.contains(&node.id));
     assert!(req.prompt.contains("Use the project's formatter") && req.prompt.contains(&project.id));
     assert!(!req.system.contains("A forgotten habit") && !req.prompt.contains("A forgotten habit"));

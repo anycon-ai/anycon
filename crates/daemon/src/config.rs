@@ -97,6 +97,11 @@ impl Paths {
     pub fn probe_scratch(&self) -> PathBuf {
         self.home.join("tmp").join("probe")
     }
+    /// 分身设备（这个节点的分身去使用别的节点时的身份，docs/spec/daemon.md § 27.1）的目录：和 CLI 的客户端设备同一种文件格式，
+    /// 只有 daemon 进程读写。
+    pub fn twin_dir(&self) -> PathBuf {
+        self.home.join("twin")
+    }
     /// CLI 作为客户端设备时的目录：`client/<hub-host>/`。
     pub fn client_dir(&self, hub_host: &str) -> PathBuf {
         let safe: String =

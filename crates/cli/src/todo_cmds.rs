@@ -487,6 +487,7 @@ async fn run(app: &App, a: TodoRunArgs) -> Result<u8> {
         no_push: a.allow_push.then_some(false),
         // 一次命令一个：回执丢了、重发时 daemon 返回第一次的结果，不开第二个会话
         message_id: Some(uuid::Uuid::new_v4().to_string()),
+        note: None,
     };
     let r: TodoDispatchResult =
         conn.call(methods::TODO_DISPATCH, params).await.map_err(|e| friendly_dispatch(e, &agent))?;

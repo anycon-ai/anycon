@@ -101,6 +101,8 @@ pub struct Ctx {
     pub judge: Arc<crate::judge::service::Judge>,
     pub extractor: crate::rule_extract::Extractor,
     pub twin: crate::twin::Twin,
+    /// 分身连接的 A 这一侧：分身设备的身份和长连接（§ 27）。
+    pub twin_links: crate::twin_link::TwinLinks,
     pub sessions: Arc<Sessions>,
     pub blobs: Arc<Blobs>,
     pub workspace: Arc<Workspace>,
@@ -291,6 +293,7 @@ impl Daemon {
             judge: judge.clone(),
             extractor: Default::default(),
             twin: Default::default(),
+            twin_links: Default::default(),
             sessions: sessions.clone(),
             blobs,
             workspace: workspace.clone(),
@@ -310,6 +313,7 @@ impl Daemon {
             shutdown_tx,
         });
         sessions.bind_twin(&ctx);
+        ctx.twin_links.start(&ctx).await;
         let rpc = Rpc::new(ctx.clone());
 
         // 周期探测跳过有进行中会话的 agent；Weak 避免 Agents ↔ Sessions 互相持有
@@ -415,6 +419,7 @@ impl Daemon {
         tracing::info!("daemon shutting down");
         let _ = self.ctx.shutdown_tx.send(true);
         self.ctx.twin.wait_idle().await;
+        self.ctx.twin_links.shutdown().await;
         self.ctx.judge.wait_idle().await;
         self.ctx.extractor.wait_idle().await;
         self.ctx.preview.shutdown().await;

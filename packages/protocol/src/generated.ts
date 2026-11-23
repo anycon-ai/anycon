@@ -3484,6 +3484,11 @@ export interface TodoDispatchParams {
    */
   no_push?: boolean | null;
   /**
+   * 分身的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。
+   * 只有分身设备（另一个节点的分身）能带；别的调用方带了 → `invalid`（`data.field = "note"`，`data.reason = "not_allowed"`）。
+   */
+  note?: string | null;
+  /**
    * 缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。给了而且和这一项的不同，派发成功时写回这一项。
    */
   project?: string | null;

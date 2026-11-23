@@ -312,6 +312,7 @@ impl Store {
         let r = sqlx::query("SELECT * FROM todos WHERE id = ?").bind(id).fetch_optional(self.pool()).await?;
         let Some(mut t) = r.as_ref().map(row_to_todo) else { return Ok(None) };
         t.sessions = self.todo_links(id).await?;
+        t.remote = Box::pin(self.todo_remotes(id)).await?;
         Ok(Some(t))
     }
 
@@ -357,6 +358,7 @@ impl Store {
             sqlx::query("DELETE FROM todos WHERE id = ?").bind(id).execute(&mut *tx).await?.rows_affected() > 0;
         if deleted {
             sqlx::query("DELETE FROM todo_sessions WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
+            sqlx::query("DELETE FROM todo_remotes WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
             sqlx::query("DELETE FROM todo_events WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
@@ -419,8 +421,11 @@ impl Store {
         }
         drop(rows);
         let links = self.todo_links_of(&todos.iter().map(|t| t.id.clone()).collect::<Vec<_>>()).await?;
+        let ids: Vec<String> = todos.iter().map(|t| t.id.clone()).collect();
+        let mut remotes = Box::pin(self.todo_remotes_of(&ids)).await?;
         for t in &mut todos {
             t.sessions = links.get(&t.id).cloned().unwrap_or_default();
+            t.remote = remotes.remove(&t.id).unwrap_or_default();
         }
         Ok(TodoListResult { todos, has_more })
     }

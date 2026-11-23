@@ -984,6 +984,20 @@ impl TestDaemon {
             .await
     }
 
+    /// [`TestDaemon::start_git`]，同时开本机 socket、连 `hub_url`（分身连接的两端都要真 hub：被使用的节点要能开 worktree）。
+    pub async fn start_git_hub(overrides: &[(&str, &str)], hub_url: &str) -> TestDaemon {
+        Self::start_inner(
+            overrides,
+            true,
+            Some(hub_url),
+            Kit::Fake,
+            true,
+            vec![],
+            crate::update::UpdateCheckOptions::off(),
+        )
+        .await
+    }
+
     /// daemon 的 `PATH` 里没有 `git`（`NodeCapabilities.worktree` 为 false）。
     pub async fn start_without_git() -> TestDaemon {
         Self::start_inner(
@@ -1156,9 +1170,19 @@ impl TestDaemon {
 
     /// 停掉再用同一个 home 重新启动（测试重启恢复）。
     pub async fn restart(&mut self) {
+        self.stop().await;
+        self.start_again().await;
+    }
+
+    /// 只停（`ctx` 还指着停掉的那个）；之后 [`TestDaemon::start_again`] 用同一个 home 再起。
+    pub async fn stop(&mut self) {
         if let Some(d) = self.daemon.take() {
             d.shutdown().await;
         }
+    }
+
+    /// [`TestDaemon::stop`] 之后用同一个 home 再起。
+    pub async fn start_again(&mut self) {
         let (daemon, ctx) =
             Self::boot(&self.paths, &self.fake, self.socket, self.hub, self.kit, &self.env_extra, &self.update_check)
                 .await;

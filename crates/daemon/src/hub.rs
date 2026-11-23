@@ -73,27 +73,77 @@ pub(crate) fn tls_config() -> Arc<rustls::ClientConfig> {
     .clone()
 }
 
+/// 连接 hub 的 WebSocket 失败。`Display` 和以前的字符串一样（`tungstenite` 的错误文字）。
+#[derive(Debug, thiserror::Error)]
+pub enum WsConnectError {
+    /// hub 对升级请求回了 HTTP 状态（限速是 429；`retry_after` 来自 `Retry-After`，只认秒数）。
+    #[error("HTTP error: {}", status_text(*status))]
+    Http { status: u16, retry_after: Option<Duration> },
+    /// 其他失败：连不上、TLS、超时、请求本身不合法。
+    #[error("{0}")]
+    Other(String),
+}
+
+/// `429 Too Many Requests` 这样的状态文字（和 `tungstenite` 自己的错误文字一致）。
+fn status_text(status: u16) -> String {
+    match tokio_tungstenite::tungstenite::http::StatusCode::from_u16(status) {
+        Ok(s) => s.to_string(),
+        Err(_) => status.to_string(),
+    }
+}
+
+impl WsConnectError {
+    /// hub 限速了这次升级（429）。
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, WsConnectError::Http { status: 429, .. })
+    }
+
+    /// 限速时建议等多久（hub 没给 `Retry-After` 就是 `None`）。
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            WsConnectError::Http { retry_after, .. } => *retry_after,
+            WsConnectError::Other(_) => None,
+        }
+    }
+
+    fn from_tungstenite(e: tokio_tungstenite::tungstenite::Error) -> Self {
+        use tokio_tungstenite::tungstenite::Error;
+        match e {
+            Error::Http(resp) => {
+                let retry_after = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .map(Duration::from_secs);
+                WsConnectError::Http { status: resp.status().as_u16(), retry_after }
+            }
+            other => WsConnectError::Other(other.to_string()),
+        }
+    }
+}
+
 /// 连接 hub 的 WebSocket（15 秒超时）。带上 hub 自己的 origin，通过 hub 的 Origin 校验。
 pub async fn connect_ws(hub_url: &str) -> Result<WsStream, String> {
-    connect_ws_with_cookie(hub_url, None).await
+    connect_ws_with_cookie(hub_url, None).await.map_err(|e| e.to_string())
 }
 
 /// [`connect_ws`]，升级请求里再带一个 `Cookie` 头（`name=value`）。账号内接入（ADR-36）：CLI 临时登录拿到的会话 cookie 放在这里，
 /// hub 据此知道这条临时连接属于哪个账号。cookie 只在内存里，不写日志。
-pub async fn connect_ws_with_cookie(hub_url: &str, cookie: Option<&str>) -> Result<WsStream, String> {
+pub async fn connect_ws_with_cookie(hub_url: &str, cookie: Option<&str>) -> Result<WsStream, WsConnectError> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    let (url, origin) = ws_url(hub_url)?;
-    let mut req = url.as_str().into_client_request().map_err(|e| e.to_string())?;
+    let (url, origin) = ws_url(hub_url).map_err(WsConnectError::Other)?;
+    let mut req = url.as_str().into_client_request().map_err(|e| WsConnectError::Other(e.to_string()))?;
     if let Ok(v) = origin.parse() {
         req.headers_mut().insert("Origin", v);
     }
     if let Some(c) = cookie {
-        req.headers_mut().insert("Cookie", c.parse().map_err(|_| "invalid cookie".to_string())?);
+        req.headers_mut().insert("Cookie", c.parse().map_err(|_| WsConnectError::Other("invalid cookie".into()))?);
     }
     let fut = tokio_tungstenite::connect_async_tls_with_config(req, None, true, Some(Connector::Rustls(tls_config())));
     match tokio::time::timeout(Duration::from_secs(15), fut).await {
-        Err(_) => Err("connection timed out".into()),
-        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(WsConnectError::Other("connection timed out".into())),
+        Ok(Err(e)) => Err(WsConnectError::from_tungstenite(e)),
         Ok(Ok((ws, _))) => Ok(ws),
     }
 }
@@ -756,6 +806,11 @@ enum Outcome {
         msg: String,
         authed: bool,
     },
+    /// hub 限速了升级请求（429）：按 `Retry-After` 再连，不走指数退避。
+    RateLimited {
+        msg: String,
+        retry_after: Option<Duration>,
+    },
     AuthFail(AuthFailReason),
     /// 睡眠唤醒或拿到新 token：立即重连
     Reconnect,
@@ -921,6 +976,22 @@ impl HubLink {
                         d
                     }
                 }
+                Outcome::RateLimited { msg, retry_after } => {
+                    tracing::warn!(error = %msg, ?retry_after, "the hub rate-limited the connection");
+                    self.state.update(|s| s.last_error = Some(msg));
+                    // 没有 `Retry-After` 就当一般失败退避；有就按它等（只往后加一点抖动，别和同 IP 的其他设备同时回来）
+                    match retry_after {
+                        Some(d) => {
+                            d.clamp(Duration::from_secs(1), Duration::from_secs(120))
+                                + Duration::from_millis(rand::thread_rng().gen_range(100..1500))
+                        }
+                        None => {
+                            let d = jitter(backoff);
+                            backoff = (backoff * 2).min(Duration::from_secs(60));
+                            d
+                        }
+                    }
+                }
                 Outcome::Error { msg, authed } => {
                     tracing::warn!(error = %msg, "hub connection failed");
                     self.state.update(|s| s.last_error = Some(msg));
@@ -945,9 +1016,12 @@ impl HubLink {
     }
 
     async fn session(&self, url: &str, rpc: &Arc<Rpc>, shutdown: &mut watch::Receiver<bool>) -> Outcome {
-        let mut ws = match connect_ws(url).await {
+        let mut ws = match connect_ws_with_cookie(url, None).await {
             Ok(w) => w,
-            Err(e) => return Outcome::Error { msg: e, authed: false },
+            Err(e) if e.is_rate_limited() => {
+                return Outcome::RateLimited { msg: e.to_string(), retry_after: e.retry_after() }
+            }
+            Err(e) => return Outcome::Error { msg: e.to_string(), authed: false },
         };
         let token = self.identity.device_token();
         let cfg = self.config.get();
@@ -1144,6 +1218,58 @@ impl HubLink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 对每个连接回同一段原始 HTTP 响应的假服务端。
+    async fn canned_http(response: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = s.read(&mut buf).await;
+                    let _ = s.write_all(response.as_bytes()).await;
+                    let _ = s.shutdown().await;
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[tokio::test]
+    async fn a_429_on_the_upgrade_is_told_apart_and_keeps_retry_after() {
+        let url = canned_http("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Length: 0\r\n\r\n").await;
+        let e = connect_ws_with_cookie(&url, None).await.err().unwrap();
+        assert!(e.is_rate_limited(), "{e:?}");
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(7)));
+        // 文字和以前（tungstenite 的错误文字）一样
+        assert_eq!(e.to_string(), "HTTP error: 429 Too Many Requests");
+        assert_eq!(connect_ws(&url).await.err().as_deref(), Some("HTTP error: 429 Too Many Requests"));
+    }
+
+    #[tokio::test]
+    async fn a_429_without_a_usable_retry_after_has_none() {
+        let url = canned_http("HTTP/1.1 429 Too Many Requests\r\nRetry-After: soon\r\nContent-Length: 0\r\n\r\n").await;
+        let e = connect_ws_with_cookie(&url, None).await.err().unwrap();
+        assert!(e.is_rate_limited());
+        assert_eq!(e.retry_after(), None);
+    }
+
+    #[tokio::test]
+    async fn other_http_statuses_and_unreachable_hubs_are_not_rate_limits() {
+        let url = canned_http("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n").await;
+        let e = connect_ws_with_cookie(&url, None).await.err().unwrap();
+        assert!(!e.is_rate_limited(), "{e:?}");
+        assert!(matches!(e, WsConnectError::Http { status: 403, .. }));
+        // 端口上没有人听
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead = format!("http://{}", l.local_addr().unwrap());
+        drop(l);
+        let e = connect_ws_with_cookie(&dead, None).await.err().unwrap();
+        assert!(matches!(e, WsConnectError::Other(_)), "{e:?}");
+        assert!(!e.is_rate_limited());
+    }
 
     #[test]
     fn url_conversion() {

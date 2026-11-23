@@ -182,6 +182,7 @@ describe('Adding a link', () => {
     ['link', 'hub_changed', 'unsupported', "This node's twin connections were made on another hub. Disconnect them before connecting on this hub."],
     ['link', 'node_mismatch', 'invalid', 'The node that answered is not the one you chose, so nothing was connected.'],
     ['link', 'hub_unsupported', 'unsupported', 'The hub does not support twin connections yet. Update the hub to 0.4 or newer first.'],
+    ['link', 'hub_rate_limited', 'busy', 'The hub is temporarily limiting new connections from this address. Wait a moment and try again.'],
     ['code', 'quota', 'busy', 'The hub is not opening another pairing right now (daily limit or rate limit). Try again later.'],
   ] as const)('explains a %s step failure with reason %s in plain words and keeps the dialog open', async (step, reason, code, text) => {
     const err = rpcError(code, undefined, reason)

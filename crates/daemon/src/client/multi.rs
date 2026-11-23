@@ -31,7 +31,9 @@ use tokio_tungstenite::tungstenite::Message;
 use super::channel::NodeChannel;
 use super::error::{ClientError, ErrorClass, Result};
 use super::hubws::{close_reason, ConnectFail, HubWs};
-use super::pairing::{derive_secrets, finish_pairing, join_handshake, pair_state, parse_code_arg, ACK_TIMEOUT};
+use super::pairing::{
+    derive_secrets, finish_pairing, join_handshake, pair_state, parse_code_arg, rate_limit_wait, ACK_TIMEOUT,
+};
 use super::state::{write_token_files, HubState, NodeEntry};
 use crate::flow::{RatePause, RETAIN_MAX_AGE};
 
@@ -416,6 +418,10 @@ impl Actor {
             Cmd::Pair { code, expect_node, reply } => {
                 let r = self.pair_standalone(&code, expect_node.as_deref()).await;
                 let _ = reply.send(r);
+                // 等限速的时候收到了关停
+                if !self.shutdown_done.is_empty() {
+                    return true;
+                }
             }
             Cmd::RemoveNode { node_id, reply } => {
                 let _ = reply.send(self.remove_node(&node_id));
@@ -440,9 +446,51 @@ impl Actor {
     }
 
     /// 没有长连接：用一条临时连接配对（带着已有的 token，所以只在没连着 hub 的时候用）。
+    /// hub 限速（429）时按 `Retry-After` 等一等再试，总共最多 [`super::pairing::RATE_LIMIT_PATIENCE`]；
+    /// 等待期间照常处理别的命令，收到关停就放弃。
     async fn pair_standalone(&mut self, code: &str, expect: Option<&str>) -> Result<NodeEntry> {
-        let entry = pair_state(&mut self.state, self.opts.client.clone(), code, self.opts.ack_timeout).await?;
-        self.after_pair(entry, expect)
+        let (mut waited, mut attempt) = (Duration::ZERO, 0u32);
+        loop {
+            match pair_state(&mut self.state, self.opts.client.clone(), code, self.opts.ack_timeout).await {
+                Ok(entry) => return self.after_pair(entry, expect),
+                Err(e) => {
+                    let Some(d) = rate_limit_wait(&e, waited, attempt) else { return Err(e) };
+                    tracing::info!(wait_ms = d.as_millis() as u64, "the hub limits new connections; pairing waits");
+                    if self.pause(d).await {
+                        return Err(stopped());
+                    }
+                    waited += d;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
+    /// 没有长连接时睡 `d`，期间回应别的命令（和 [`Self::wait`] 一样，但配对不能嵌套进来）。返回 `true` = 收到了关停。
+    async fn pause(&mut self, d: Duration) -> bool {
+        let sleep = tokio::time::sleep(d);
+        tokio::pin!(sleep);
+        loop {
+            tokio::select! {
+                _ = &mut sleep => return false,
+                cmd = self.rx.recv() => match cmd {
+                    None => return true,
+                    Some(Cmd::Shutdown { done }) => {
+                        self.shutdown_done.push(done);
+                        return true;
+                    }
+                    Some(Cmd::Pair { reply, .. }) => {
+                        let _ = reply.send(Err(ClientError::general("another pairing is already in progress")));
+                    }
+                    Some(Cmd::Request { reply, .. }) => {
+                        let _ = reply.send(Err(offline_hub()));
+                    }
+                    Some(Cmd::RemoveNode { node_id, reply }) => {
+                        let _ = reply.send(self.remove_node(&node_id));
+                    }
+                },
+            }
+        }
     }
 
     /// 配对完成后的核对和登记。
@@ -513,6 +561,10 @@ impl Actor {
                     ConnectFail::Auth(AuthFailReason::Quota) => Some(Duration::from_secs(60)),
                     ConnectFail::Auth(AuthFailReason::Revoked) => Some(Duration::from_secs(3600)),
                     ConnectFail::Auth(_) => Some(Duration::from_secs(600)),
+                    // hub 限速：按它给的 `Retry-After` 再连，不走指数退避（没给就退避）
+                    ConnectFail::Other(e) if e.code == super::error::RATE_LIMITED_CODE => {
+                        e.retry_after().map(|d| d.clamp(Duration::from_secs(1), Duration::from_secs(120)))
+                    }
                     ConnectFail::Other(_) => None,
                 };
                 let e = fail.into_error();

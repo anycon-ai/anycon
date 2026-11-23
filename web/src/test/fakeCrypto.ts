@@ -13,51 +13,58 @@ function eq(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i])
 }
 
-function tagOf(psk: Uint8Array): number {
-  return psk.reduce((acc, x) => (acc * 31 + x) & 0xff, 7)
+/**
+ * 4 字节的校验值（FNV-1a 32 位，经 `expand`）：PSK 校验、IK 第一条「加密给谁」、传输密钥和传输 MAC 都用它。
+ * 一个字节的校验值在「一定解不开 / 一定握手失败」的用例里有 1/256 的假通过（两把随机钥匙的标记撞上），用例就偶发失败。
+ */
+function tag32(...parts: Uint8Array[]): Uint8Array {
+  return expand(4, ...parts)
 }
 
-/** XXpsk3 第 3 条里带的 PSK 校验值：FNV-1a 32 位。一个字节的 `tagOf` 在「错口令一定握手失败」的用例里会有 1/256 的假通过。 */
-function pskTag(psk: Uint8Array): Uint8Array {
-  let h = 0x811c9dc5
-  for (const b of psk) h = Math.imul(h ^ b, 0x01000193) >>> 0
-  return Uint8Array.of(h >>> 24, (h >>> 16) & 0xff, (h >>> 8) & 0xff, h & 0xff)
+function cmp(a: Uint8Array, b: Uint8Array): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i]! - b[i]!
+  return a.length - b.length
 }
 
-/** 假传输：XOR + 一个字节的校验和（模拟 AEAD：改一个字节就解不开）+ 顺序 nonce。 */
+const u32 = (n: number): Uint8Array => Uint8Array.of(n >>> 24, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff)
+
+/** 传输层的头：`0xe0`、4 字节 nonce、4 字节 MAC。 */
+const TRANSPORT_HEADER = 9
+
+/** 假传输：XOR + 4 字节的校验值（模拟 AEAD：改一个字节、换一把钥匙都解不开）+ 顺序 nonce。 */
 class FakeTransport implements Transport {
   private sendN = 0
   private recvN = 0
-  private readonly key: number
+  private readonly key: Uint8Array
   constructor(
     local: Uint8Array,
     private readonly remote: Uint8Array,
-    salt = 0,
+    salt: Uint8Array = new Uint8Array(0),
   ) {
-    this.key = (local[0]! ^ remote[0]! ^ salt) & 0xff
+    // 两边各自用（自己, 对方）建传输，按字节序排好再混，两边得到同一把钥匙
+    const [a, b] = cmp(local, remote) <= 0 ? [local, remote] : [remote, local]
+    this.key = tag32(a, b, salt)
   }
-  private mac(body: Uint8Array, n: number): number {
-    let sum = this.key * 7 + n
-    for (const b of body) sum = (sum * 31 + b) & 0xffff
-    return sum & 0xff
+  private mac(body: Uint8Array, n: number): Uint8Array {
+    return tag32(this.key, u32(n), body)
   }
   encrypt(pt: Uint8Array): Uint8Array {
-    const out = new Uint8Array(6 + pt.length)
+    const out = new Uint8Array(TRANSPORT_HEADER + pt.length)
     out[0] = 0xe0
     new DataView(out.buffer).setUint32(1, this.sendN)
-    for (let i = 0; i < pt.length; i++) out[6 + i] = pt[i]! ^ this.key
-    out[5] = this.mac(out.subarray(6), this.sendN)
+    for (let i = 0; i < pt.length; i++) out[TRANSPORT_HEADER + i] = pt[i]! ^ this.key[i % 4]!
+    out.set(this.mac(out.subarray(TRANSPORT_HEADER), this.sendN), 5)
     this.sendN++
     return out
   }
   decrypt(ct: Uint8Array): Uint8Array {
-    if (ct.length < 6 || ct[0] !== 0xe0) throw new Error('decrypt failed: malformed')
+    if (ct.length < TRANSPORT_HEADER || ct[0] !== 0xe0) throw new Error('decrypt failed: malformed')
     const n = new DataView(ct.buffer, ct.byteOffset, ct.byteLength).getUint32(1)
     if (n !== this.recvN) throw new Error('decrypt failed: nonce')
-    if (ct[5] !== this.mac(ct.subarray(6), n)) throw new Error('decrypt failed: bad mac')
+    if (!eq(ct.subarray(5, TRANSPORT_HEADER), this.mac(ct.subarray(TRANSPORT_HEADER), n))) throw new Error('decrypt failed: bad mac')
     this.recvN++
-    const out = new Uint8Array(ct.length - 6)
-    for (let i = 0; i < out.length; i++) out[i] = ct[6 + i]! ^ this.key
+    const out = new Uint8Array(ct.length - TRANSPORT_HEADER)
+    for (let i = 0; i < out.length; i++) out[i] = ct[TRANSPORT_HEADER + i]! ^ this.key[i % 4]!
     return out
   }
   get remotePublic(): Uint8Array {
@@ -102,10 +109,10 @@ class FakeHandshake implements Handshake {
     if (this.kind === 'xx') {
       if (i === 0) return cat([0x01], (this.nonce = rnd(4)), payload)
       if (i === 1) return cat([0x02], this.local.public, this.nonce!, payload)
-      return cat([0x03], pskTag(this.psk!), this.local.public, payload)
+      return cat([0x03], tag32(this.psk!), this.local.public, payload)
     }
     // IK 的第一条是加密给 responder 静态公钥的：tag 模拟「只有持有对应私钥的一方读得出来」
-    if (i === 0) return cat([0x11], this.local.public, (this.nonce = rnd(4)), [tagOf(this.remote!)], payload)
+    if (i === 0) return cat([0x11], this.local.public, (this.nonce = rnd(4)), tag32(this.remote!), payload)
     return cat([0x12], this.local.public, this.nonce!, payload)
   }
   read(msg: Uint8Array): Uint8Array {
@@ -118,7 +125,7 @@ class FakeHandshake implements Handshake {
         this.remote = msg.slice(1, 33)
         payload = msg.slice(37)
       } else if (i === 2 && msg[0] === 0x03) {
-        if (!eq(msg.slice(1, 5), pskTag(this.psk!))) throw new Error('handshake failed: bad psk')
+        if (!eq(msg.slice(1, 5), tag32(this.psk!))) throw new Error('handshake failed: bad psk')
         this.remote = msg.slice(5, 37)
         payload = msg.slice(37)
       } else if (i !== 0 || msg[0] !== 0x01) throw new Error('handshake failed: unexpected message')
@@ -130,10 +137,10 @@ class FakeHandshake implements Handshake {
       if (msg[0] !== 0x11) throw new Error('handshake failed: unexpected message')
       const remote = msg.slice(1, 33)
       if (this.expectedRemote && !eq(remote, this.expectedRemote)) throw new Error('handshake failed: unknown static key')
-      if (msg[37] !== tagOf(this.local.public)) throw new Error('handshake failed: not encrypted to my static key')
+      if (!eq(msg.slice(37, 41), tag32(this.local.public))) throw new Error('handshake failed: not encrypted to my static key')
       this.remote = remote
       this.nonce = msg.slice(33, 37)
-      payload = msg.slice(38)
+      payload = msg.slice(41)
     } else {
       if (msg[0] !== 0x12 || !eq(msg.slice(1, 33), this.expectedRemote!)) throw new Error('handshake failed: bad responder key')
       if (!eq(msg.slice(33, 37), this.nonce!)) throw new Error('handshake failed: reply does not belong to this handshake')
@@ -151,7 +158,7 @@ class FakeHandshake implements Handshake {
     if (!this.isFinished() || !this.remote) throw new Error('handshake not finished')
     // XXpsk3 的传输密钥里混着 PSK：PSK 不同则互相解不开（IK 没有 PSK）
     // 传输密钥也绑定这次握手的临时密钥：用别的握手的回复建出来的传输解不开对端的数据
-    const salt = ((this.psk ? tagOf(this.psk) : 0) ^ Array.from(this.nonce ?? []).reduce((a, b) => (a * 31 + b) & 0xff, 0)) & 0xff
+    const salt = tag32(this.psk ?? new Uint8Array(0), this.nonce ?? new Uint8Array(0))
     return new FakeTransport(this.local.public, this.remote, salt)
   }
   free(): void {}

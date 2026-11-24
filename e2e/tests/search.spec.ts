@@ -152,7 +152,10 @@ test.describe.serial('会话内容搜索', () => {
     await page.goto('/inbox')
     await page.getByTestId('menu-button').click()
     await expect(page.getByTestId('sidebar')).toBeVisible({ timeout: CONNECT_TIMEOUT })
-    await page.getByTestId('sidebar').getByRole('button', { name: /Search|搜索/ }).click()
+    await page
+      .getByTestId('sidebar')
+      .getByRole('button', { name: /Search|搜索/ })
+      .click()
     const input = page.getByRole('textbox', { name: /Search|搜索/ })
     await expect(input).toBeFocused()
     await input.fill('zanzibarpot')

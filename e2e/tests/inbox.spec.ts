@@ -149,7 +149,9 @@ test.describe.serial('待处理', () => {
     const drawer = page.getByTestId('sidebar')
     await expect(drawer).toBeVisible()
     await expect(drawer.getByTestId('sidebar-inbox')).toHaveAttribute('aria-current', 'page')
-    await expect(drawer.getByTestId('sidebar-inbox-count')).toHaveText('1', { timeout: CONNECT_TIMEOUT })
+    await expect(drawer.getByTestId('sidebar-inbox-count')).toHaveText('1', {
+      timeout: CONNECT_TIMEOUT,
+    })
     await expect(drawer.getByTestId('node-switcher')).toBeVisible()
     await drawer
       .getByRole('link', { name: /run permission/i })

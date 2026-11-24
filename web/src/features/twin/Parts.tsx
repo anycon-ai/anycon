@@ -13,6 +13,7 @@ import { Button } from '@/ui/Button'
 import { setTwin } from './service'
 import { groupRuns, useTwin, useTwinNodeIds } from './store'
 import { usePeerName } from './peer'
+import { usageText } from './usage'
 
 export function Decisions({ nodeId, run }: { nodeId: string; run: TwinRun }) {
   const { t } = useTranslation()
@@ -63,8 +64,7 @@ function DecisionNode({ id }: { id: string }) {
   return <p data-testid="twin-decision-node">{t('twin.remote.target', { node: name })}</p>
 }
 export function RunHistory({ nodeId, runs, runId }: { nodeId: string; runs: TwinRun[]; runId?: string }) {
-  const { t, i18n } = useTranslation()
-  const lastWake = [...runs].filter((r) => !r.dry_run).sort((a, b) => b.started_ms - a.started_ms)[0]
+  const { t } = useTranslation()
   return (
     <section className="space-y-2">
       <h3 className="font-semibold">{t('twin.runs')}</h3>
@@ -85,21 +85,18 @@ export function RunHistory({ nodeId, runs, runId }: { nodeId: string; runs: Twin
         ),
       )}
       {!runs.length ? <p className="text-sm text-fg-subtle">{t('twin.noRuns')}</p> : null}
-      {lastWake ? (
-        <p className="text-xs text-fg-subtle">
-          {t('twin.lastWake', { time: formatDateTime(lastWake.started_ms, i18n.language), reason: lastWake.triggers.map((x) => t(`twin.trigger.${x}`)).join(', ') })}
-        </p>
-      ) : null}
     </section>
   )
 }
 function RunLine({ nodeId, run, open }: { nodeId: string; run: TwinRun; open: boolean }) {
   const { t, i18n } = useTranslation()
+  const usage = usageText(t, run.usage)
   return (
     <Collapsible.Root defaultOpen={open} id={`run-${run.id}`} className="rounded border border-border p-2" data-testid="twin-run">
       <Collapsible.Trigger className="min-h-11 w-full text-left text-sm">
         {formatDateTime(run.started_ms, i18n.language)} · {run.triggers.map((x) => t(`twin.trigger.${x}`)).join(', ')} · {t('twin.processed', { count: run.items.length })} ·{' '}
         {t(`twin.result.${run.result}`)} · {t('twin.runJudges', { count: run.judge_calls.length })}
+        {usage ? ` · ${usage}` : ''}
         {run.dry_run ? ` · ${t('twin.dryRun')}` : ''}
       </Collapsible.Trigger>
       <Collapsible.Content>

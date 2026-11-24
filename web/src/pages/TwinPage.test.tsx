@@ -1,195 +1,111 @@
-// 分身状态、暂停、首次试跑、运行折叠和范围表单，全部通过假节点。
+// 分身页（运行状态页）：状态优先级、暂停 / 恢复 / 现在看一眼 / 试跑、没配置的卡片、今天的数字、健康提醒、现在、趋势、运行记录，
+// 以及没有 `twin_stats` 时的降级。配置（范围、预算、判断后端、分身连接）的测试在 TwinTab.test.tsx。
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { NodeInfo } from '@/protocol'
+import type { NodeInfo, TwinGetResult } from '@/protocol'
 import { nodeEntry, mockAgent, project } from '@/test/factories'
-import { FakeRpc } from '@/test/fakeRpc'
-import { FakeTwinDaemon, twinRun, twinValue } from '@/test/fakeTwinDaemon'
+import { FakeRpc, rpcError } from '@/test/fakeRpc'
+import { FakeTwinDaemon, twinDay, twinQuestion, twinRun, twinValue } from '@/test/fakeTwinDaemon'
 import { mockRouter } from '@/test/routerMock'
 import { setRpc } from '@/transport/instance'
 import { useNodes } from '@/stores/nodes'
 import { usePrefs } from '@/stores/prefs'
 import { useTwin } from '@/features/twin/store'
 import { syncTwin } from '@/features/twin/service'
+import { handleNotification } from '@/features/sync/notifications'
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), vi.fn(), {}, { pathname: '/twin' }))
 import { TwinPage } from './TwinPage'
 const A = 'a'.repeat(32)
 const B = 'b'.repeat(32)
 let rpc: FakeRpc
 let daemon: FakeTwinDaemon
-const info = (twin: boolean): NodeInfo => ({ capabilities: { twin, todo: true }, judge: { triage: 'triage', backends: [], daily_calls: 20 } }) as unknown as NodeInfo
+const info = (twin: boolean, stats = false): NodeInfo =>
+  ({ capabilities: { twin, todo: true, ...(stats ? { twin_stats: true } : {}) }, judge: { triage: 'triage', backends: [{ name: 'triage' }], daily_calls: 20 } }) as unknown as NodeInfo
+const midnight = new Date().setHours(0, 0, 0, 0)
+function setNode(stats: boolean): void {
+  useNodes.setState({
+    byId: {
+      [A]: nodeEntry({
+        id: A,
+        name: 'alpha',
+        info: info(true, stats),
+        projects: [project({ name: 'web' }), project({ name: 'api' })],
+        agents: [mockAgent({ modes: [{ id: 'ask', label: 'Ask', risk: 'normal' }, { id: 'auto', label: 'Auto', risk: 'normal', unattended: true }] })],
+      }),
+    },
+    order: [A],
+    loaded: true,
+  })
+}
 beforeEach(() => {
   rpc = new FakeRpc()
   daemon = new FakeTwinDaemon(rpc)
   setRpc(rpc)
   useTwin.getState().reset()
   usePrefs.setState({ sidebarNodes: null, sidebarSpace: null })
-  useNodes.setState({
-    byId: {
-      [A]: nodeEntry({
-        id: A,
-        name: 'alpha',
-        info: info(true),
-        projects: [project({ name: 'web' }), project({ name: 'api' })],
-        agents: [
-          mockAgent({
-            modes: [
-              { id: 'ask', label: 'Ask', risk: 'normal' },
-              { id: 'auto', label: 'Auto', risk: 'normal', unattended: true },
-              { id: 'danger', label: 'Dangerous', risk: 'dangerous' },
-            ],
-          }),
-        ],
-      }),
-    },
-    order: [A],
-    loaded: true,
-  })
+  setNode(false)
 })
-async function load() {
-  render(<TwinPage />)
-  await screen.findAllByText('Scope and budget')
-  await waitFor(() => expect(screen.getAllByRole('button', { name: 'Save scope' })[0]).toBeEnabled())
+async function load(props: { node?: string; run?: string } = {}) {
+  render(<TwinPage {...props} />)
+  await waitFor(() => expect(screen.getByTestId('twin-state')).not.toHaveTextContent('Loading…'))
 }
 const calls = (method: string) => rpc.calls.filter((c) => c.method === method)
-describe('Twin page', () => {
+const set = (over: Partial<TwinGetResult>) => daemon.values.set(A, twinValue(over))
+const paused = (over: Partial<TwinGetResult> = {}) => set({ state: 'paused', scope: { paused: true, projects: ['web'], max_sessions: 2, daily_dispatches: 10 }, ...over })
+
+describe('Twin page status head', () => {
   it.each(['idle', 'running', 'paused', 'budget', 'not_configured', 'disabled'] as const)('renders daemon state %s', async (state) => {
-    daemon.values.set(A, twinValue({ state, enabled: state !== 'disabled', configured: state !== 'not_configured' }))
+    set({ state, enabled: state !== 'disabled', configured: state !== 'not_configured' })
     await load()
     expect(screen.getByTestId('twin-state')).toHaveTextContent(
-      { idle: 'On', running: 'On · judging', paused: 'Paused', budget: 'Budget used up', not_configured: 'Not configured', disabled: 'Off' }[state],
+      { idle: 'On', running: 'On · judging', paused: 'Paused', budget: 'Budget used up', not_configured: 'Not configured', disabled: 'Twin is switched off on this machine' }[state],
     )
-    if (state === 'disabled') expect(screen.getByText(/Set \[twin\] enabled/)).toBeInTheDocument()
   })
-  it('shows offline and hides unsupported nodes and actions', async () => {
+  it('says not configured even when the twin is also paused', async () => {
+    set({ state: 'paused', configured: false, scope: { paused: true, projects: [], max_sessions: 2, daily_dispatches: 10 } })
+    await load()
+    expect(screen.getByTestId('twin-state')).toHaveTextContent('Not configured')
+  })
+  it('says the machine switch wins over everything else', async () => {
+    set({ enabled: false, configured: false, state: 'disabled' })
+    await load()
+    expect(screen.getByTestId('twin-state')).toHaveTextContent('switched off on this machine')
+    expect(screen.queryByTestId('twin-setup')).not.toBeInTheDocument()
+  })
+  it('offers retry when loading failed', async () => {
+    rpc.handlers['twin.get'] = () => {
+      throw new Error('boom')
+    }
+    render(<TwinPage />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load Twin.')
+    expect(screen.getByTestId('twin-state')).toHaveTextContent('Could not load Twin.')
+    rpc.handlers['twin.get'] = () => twinValue()
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.getByTestId('twin-state')).toHaveTextContent('On'))
+  })
+  it('shows offline and hides actions; unsupported nodes disappear', async () => {
     useNodes.getState().patch(A, { conn: 'peer_offline' })
     render(<TwinPage />)
     expect(screen.getByText('Node offline')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
     expect(calls('twin.get')).toHaveLength(0)
     act(() => useNodes.getState().patch(A, { info: info(false) }))
     expect(screen.queryByTestId('twin-card')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
   })
   it('a node whose daemon is too old for Twin says so, without the Inbox filter note that belongs to other pages', async () => {
     useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'old-node', info: info(false) }) }, order: [A, B] }))
     render(<TwinPage node={B} />)
     expect(screen.getByText('old-node does not support Twin yet. Update its daemon to use Twin there.')).toBeInTheDocument()
     expect(screen.queryByText(/node filter/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/Inbox/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('twin-card')).not.toBeInTheDocument()
   })
-  it('pauses one node, or all nodes in the selected space', async () => {
-    useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true) }) }, order: [A, B] }))
+  it('no longer carries the scope form or the connection section', async () => {
     await load()
-    const alpha = screen.getAllByTestId('twin-card')[0]!
-    await userEvent.click(within(alpha).getByRole('button', { name: 'Pause' }))
-    await waitFor(() => expect(daemon.values.get(A)?.scope.paused).toBe(true))
-    await userEvent.click(screen.getByRole('button', { name: 'Pause all' }))
-    await waitFor(() => expect(daemon.values.get(B)?.scope.paused).toBe(true))
-    expect(calls('twin.set').every((c) => (c.params as { paused: boolean }).paused)).toBe(true)
-  })
-  it('dry runs list actions and skipped reasons, then explicitly wake', async () => {
-    daemon.dry = twinRun({
-      dry_run: true,
-      decisions: [{ todo_id: 't1', action: 'dispatch', reason: 'Need more slots', rules: [], outcome: 'skipped', skip_reason: 'no_capacity' }],
-    })
-    await load()
-    await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
-    expect(await screen.findByText('Need more slots')).toBeInTheDocument()
-    expect(screen.getByText('Skipped: No available session slots')).toBeInTheDocument()
-    expect(calls('twin.wake')).toHaveLength(0)
-    await userEvent.click(screen.getByRole('button', { name: 'Do it this way' }))
-    await waitFor(() => expect(calls('twin.wake')).toHaveLength(1))
-    expect(calls('twin.set')[0]?.params).toEqual({ paused: false })
-  })
-  it('shows the complete dry-run plan as agent-written plain text', async () => {
-    daemon.dry = twinRun({
-      dry_run: true,
-      decisions: [
-        { todo_id: 't1', action: 'dispatch', reason: 'Ready', rules: [], outcome: 'executed', note: '<script>send()</script>\nKeep the API stable.' },
-        { todo_id: 't2', action: 'ask_user', reason: 'Need a preference', rules: [], outcome: 'executed', question: '<b>Which platform?</b>', options: ['<img src=x onerror=send()>', '**Web**'] },
-        { todo_id: 't3', action: 'ask_advisor', reason: 'Need technical advice', rules: [], outcome: 'executed', question: '[Which index?](https://example.com)' },
-      ],
-    })
-    await load()
-    await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
-    expect(await screen.findByText('Twin’s supplementary instructions to the agent')).toBeInTheDocument()
-    expect(screen.getByText('<script>send()</script> Keep the API stable.')).toBeInTheDocument()
-    expect(screen.getByText('<b>Which platform?</b>')).toBeInTheDocument()
-    expect(screen.getByText('<img src=x onerror=send()>')).toBeInTheDocument()
-    expect(screen.getByText('**Web**')).toBeInTheDocument()
-    expect(screen.getByText('[Which index?](https://example.com)')).toBeInTheDocument()
-    for (const row of screen.getAllByTestId('twin-decision')) {
-      expect(row.querySelector('script, img, b, strong')).toBeNull()
-      expect(row.querySelectorAll('a')).toHaveLength(1)
-    }
-    expect(screen.getAllByText('Written by an agent')).toHaveLength(1)
-    expect(calls('twin.answer')).toHaveLength(0)
-  })
-  it('first setup saves paused and requires a dry run before enabling', async () => {
-    daemon.values.set(A, twinValue({ configured: false, state: 'not_configured', scope: { paused: false, projects: [], max_sessions: 2, daily_dispatches: 10 } }))
-    await load()
-    expect(screen.getByText(/No projects selected/)).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('checkbox', { name: 'web' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Save scope' }))
-    await screen.findByRole('button', { name: 'Do it this way' })
-    expect(calls('twin.set')[0]?.params).toMatchObject({ projects: ['web'], paused: true })
-    expect(calls('twin.dry_run')).toHaveLength(1)
-    expect(calls('twin.wake')).toHaveLength(0)
-  })
-  it('groups consecutive idle runs and expands individual decisions', async () => {
-    daemon.runs = [
-      twinRun({ id: 'r3', started_ms: 3000, result: 'idle', decisions: [], items: [] }),
-      twinRun({ id: 'r2', started_ms: 2000, result: 'idle', decisions: [], items: [] }),
-      twinRun({ id: 'r1', started_ms: 1000 }),
-    ]
-    await load()
-    expect(screen.getByRole('button', { name: '2 idle runs' })).toBeInTheDocument()
-    expect(screen.getAllByTestId('twin-run')).toHaveLength(1)
-    await userEvent.click(screen.getByRole('button', { name: '2 idle runs' }))
-    expect(screen.getAllByTestId('twin-run')).toHaveLength(3)
-    await userEvent.click(within(screen.getAllByTestId('twin-run')[2]!).getByRole('button'))
-    expect(screen.getByText('Ready to build')).toBeInTheDocument()
-  })
-  it('filters dangerous modes, marks unattended default, validates max sessions, saves and reports errors', async () => {
-    await load()
-    expect(screen.getByRole('combobox', { name: 'Mode' })).toBeDisabled()
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Agent' }), 'mock')
-    expect(screen.queryByRole('option', { name: 'Dangerous' })).not.toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Auto · Unattended · default' })).toBeInTheDocument()
-    expect(screen.getByText(/Choose 1–3 sessions/)).toBeInTheDocument()
-    const max = screen.getByRole('spinbutton', { name: 'Concurrent sessions' })
-    await userEvent.clear(max)
-    await userEvent.type(max, '4')
-    expect(screen.getByRole('button', { name: 'Save scope' })).toBeDisabled()
-    await userEvent.clear(max)
-    await userEvent.type(max, '1')
-    await userEvent.click(screen.getByRole('checkbox', { name: 'api' }))
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Mode' }), 'auto')
-    await userEvent.click(screen.getByRole('button', { name: 'Save scope' }))
-    await waitFor(() => expect(calls('twin.set')[0]?.params).toMatchObject({ projects: ['web', 'api'], mode: 'auto', max_sessions: 1 }))
-    daemon.failSet = true
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save scope' })).toBeEnabled())
-    await userEvent.click(screen.getByRole('button', { name: 'Save scope' }))
-    expect(await screen.findByRole('alert')).toBeInTheDocument()
-  })
-  it('explains a missing triage backend', async () => {
-    daemon.values.set(A, twinValue({ configured: false }))
-    await load()
-    expect(screen.getByText('No available triage backend. Configure one in node settings.')).toBeInTheDocument()
-  })
-  it('opens a run on an older page outside the selected nodes', async () => {
-    daemon.runs = Array.from({ length: 51 }, (_, i) => twinRun({ id: `r${i}`, started_ms: 10000 - i }))
-    usePrefs.setState({ sidebarNodes: [] })
-    render(<TwinPage node={A} run="r50" />)
-    expect(await screen.findByText('Ready to build')).toBeInTheDocument()
-    expect(calls('twin.runs').some((c) => (c.params as { before_ms?: number }).before_ms === 9951)).toBe(true)
-  })
-  it('reports a cleaned up run', async () => {
-    render(<TwinPage node={A} run="gone" />)
-    expect(await screen.findByText('This run is no longer available (records are kept for 90 days).')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save scope' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('twin-links')).not.toBeInTheDocument()
+    expect(calls('twin.links')).toHaveLength(0)
+    expect(screen.queryByText(/node settings → Limits/)).not.toBeInTheDocument()
   })
   it('only includes selected nodes', async () => {
     useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true) }) }, order: [A, B] }))
@@ -201,47 +117,542 @@ describe('Twin page', () => {
   })
 })
 
-it('cannot enable Twin from a failed dry run', async () => {
-  daemon.dry = twinRun({ result: 'failed', error: { code: 'internal' } })
-  await load()
-  await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
-  expect(await screen.findByRole('button', { name: 'Do it this way' })).toBeDisabled()
-  expect(calls('twin.wake')).toHaveLength(0)
-})
-it('each referenced rule links to its own node and rule', async () => {
-  daemon.dry = twinRun({ decisions: [{ todo_id: 't1', action: 'dispatch', reason: 'Ready', rules: ['rule1', 'rule2'], outcome: 'executed' }] })
-  await load()
-  await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
-  expect(await screen.findByRole('link', { name: 'Rules: rule1' })).toHaveAttribute('href', '/rules?node=aaaaaaaa&rule=rule1')
-  expect(screen.getByRole('link', { name: 'Rules: rule2' })).toHaveAttribute('href', '/rules?node=aaaaaaaa&rule=rule2')
-})
-
-describe('Twin decisions that use another node', () => {
-  it('shows the node a dispatch went to (by name when paired, by short id otherwise) and the two new skip reasons', async () => {
+describe('Twin page actions', () => {
+  it('pauses one node, or all nodes in the selected space', async () => {
+    useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true) }) }, order: [A, B] }))
+    render(<TwinPage />)
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Pause' })).toHaveLength(2))
+    const alpha = screen.getAllByTestId('twin-card')[0]!
+    await userEvent.click(within(alpha).getByRole('button', { name: 'Pause' }))
+    await waitFor(() => expect(daemon.values.get(A)?.scope.paused).toBe(true))
+    await userEvent.click(screen.getByRole('button', { name: 'Pause all' }))
+    await waitFor(() => expect(daemon.values.get(B)?.scope.paused).toBe(true))
+    expect(calls('twin.set').every((c) => (c.params as { paused: boolean }).paused)).toBe(true)
+  })
+  it('shows Resume instead of Pause and Look now when paused', async () => {
+    paused()
+    await load()
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Look now' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try a dry run' })).toBeEnabled()
+  })
+  it('resume runs a dry run first, shows the plan, and only "Do it" unpauses and wakes', async () => {
+    paused()
+    daemon.dry = twinRun({ dry_run: true, decisions: [{ todo_id: 't1', action: 'dispatch', reason: 'Need more slots', rules: [], outcome: 'skipped', skip_reason: 'no_capacity' }] })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    expect(await within(dialog).findByText('Need more slots')).toBeInTheDocument()
+    expect(within(dialog).getByText('Skipped: No available session slots')).toBeInTheDocument()
+    expect(calls('twin.set')).toHaveLength(0)
+    expect(calls('twin.wake')).toHaveLength(0)
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Do it this way' }))
+    await waitFor(() => expect(calls('twin.wake')).toHaveLength(1))
+    expect(calls('twin.set')[0]?.params).toEqual({ paused: false })
+    await waitFor(() => expect(screen.queryByTestId('twin-plan-dialog')).not.toBeInTheDocument())
+  })
+  it('cancel leaves the twin paused', async () => {
+    paused()
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    await within(dialog).findByTestId('twin-decision')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(calls('twin.set')).toHaveLength(0)
+    expect(calls('twin.wake')).toHaveLength(0)
+  })
+  it.each(['failed', 'budget', 'cancelled'] as const)('cannot resume from a dry run that ended as %s', async (result) => {
+    paused()
+    daemon.dry = twinRun({ dry_run: true, result, ...(result === 'failed' ? { error: { code: 'internal' } } : {}) })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    expect(await within(dialog).findByText(/Twin cannot resume yet/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Do it this way' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Resume without a dry run' })).toBeEnabled()
+    expect(calls('twin.wake')).toHaveLength(0)
+  })
+  it('explains a budget-exhausted dry run and resumes without a dry run', async () => {
+    paused()
+    daemon.dry = twinRun({ dry_run: true, result: 'budget' })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    expect(await within(dialog).findByText(/judgment-call budget is used up/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Do it this way' })).toBeDisabled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Resume without a dry run' }))
+    await waitFor(() => expect(calls('twin.wake')).toHaveLength(1))
+    expect(calls('twin.set')[0]?.params).toEqual({ paused: false })
+    await waitFor(() => expect(screen.queryByTestId('twin-plan-dialog')).not.toBeInTheDocument())
+  })
+  it('offers resuming without a dry run when the dry-run request itself fails', async () => {
+    paused()
+    rpc.handlers['twin.dry_run'] = () => {
+      throw rpcError('internal')
+    }
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    expect(await within(dialog).findByRole('button', { name: 'Resume without a dry run' })).toBeEnabled()
+  })
+  it('does not offer resuming without a dry run when the plan is usable', async () => {
+    paused()
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Do it this way' })).toBeEnabled())
+    expect(within(dialog).queryByRole('button', { name: 'Resume without a dry run' })).not.toBeInTheDocument()
+  })
+  it('shows a failed set inside the dialog, keeps it open and usable (Do it and resume without a dry run)', async () => {
+    paused()
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    const doIt = await within(dialog).findByRole('button', { name: 'Do it this way' })
+    await waitFor(() => expect(doIt).toBeEnabled())
+    daemon.failSet = true
+    await userEvent.click(doIt)
+    expect(await within(dialog).findByRole('alert', { name: '' })).toBeInTheDocument()
+    expect(within(dialog).getByText(/max_sessions|invalid/i)).toBeInTheDocument()
+    expect(screen.getByTestId('twin-plan-dialog')).toBeInTheDocument()
+    await waitFor(() => expect(doIt).toBeEnabled())
+    expect(calls('twin.wake')).toHaveLength(0)
+  })
+  it('a failed set through resume without a dry run shows the error inside the dialog', async () => {
+    paused()
+    daemon.dry = twinRun({ dry_run: true, result: 'budget' })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    daemon.failSet = true
+    await userEvent.click(await within(dialog).findByRole('button', { name: 'Resume without a dry run' }))
+    await waitFor(() => expect(within(dialog).getAllByRole('alert').length).toBeGreaterThan(1))
+    expect(within(dialog).getByRole('button', { name: 'Resume without a dry run' })).toBeEnabled()
+  })
+  it('closes the dialog once the set succeeds and reports a failed wake on the card', async () => {
+    paused()
+    rpc.handlers['twin.wake'] = () => {
+      throw rpcError('internal')
+    }
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    const doIt = await within(dialog).findByRole('button', { name: 'Do it this way' })
+    await waitFor(() => expect(doIt).toBeEnabled())
+    await userEvent.click(doIt)
+    await waitFor(() => expect(screen.queryByTestId('twin-plan-dialog')).not.toBeInTheDocument())
+    expect(await screen.findByText(/Twin is resumed, but waking it failed/)).toBeInTheDocument()
+    expect(daemon.values.get(A)?.scope.paused).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+  })
+  it('an idle dry run can be resumed', async () => {
+    paused()
+    daemon.dry = twinRun({ dry_run: true, result: 'idle', decisions: [], items: [] })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Do it this way' })).toBeEnabled())
+  })
+  it('Look now wakes once and says the wake is coalesced', async () => {
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Look now' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('within about a minute')
+    expect(calls('twin.wake')).toHaveLength(1)
+  })
+  it('clears the "within a minute" note when a new run arrives or the twin is paused', async () => {
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Look now' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('within about a minute')
+    daemon.runs = [twinRun({ id: 'run-new', started_ms: 9000 })]
+    await act(async () => {
+      await syncTwin(A)
+    })
+    await waitFor(() => expect(screen.queryByText(/within about a minute/)).not.toBeInTheDocument())
+    await userEvent.click(screen.getByRole('button', { name: 'Look now' }))
+    expect(await screen.findByText(/within about a minute/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Pause' }))
+    await waitFor(() => expect(screen.queryByText(/within about a minute/)).not.toBeInTheDocument())
+  })
+  it('hides Look now and Dry run when the machine switch is off', async () => {
+    set({ enabled: false, state: 'disabled' })
+    await load()
+    expect(screen.queryByRole('button', { name: 'Look now' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try a dry run' })).not.toBeInTheDocument()
+  })
+  it('a plain dry run lists the plan but has no "Do it" and executes nothing', async () => {
+    daemon.dry = twinRun({ dry_run: true })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
+    const dialog = await screen.findByTestId('twin-plan-dialog')
+    expect(await within(dialog).findByText('Ready to build')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Do it this way' })).not.toBeInTheDocument()
+    expect(calls('twin.set')).toHaveLength(0)
+    expect(calls('twin.wake')).toHaveLength(0)
+  })
+  it('shows the complete dry-run plan as agent-written plain text', async () => {
+    daemon.dry = twinRun({
+      dry_run: true,
+      decisions: [
+        { todo_id: 't1', action: 'dispatch', reason: 'Ready', rules: [], outcome: 'executed', note: '<script>send()</script>\nKeep the API stable.' },
+        { todo_id: 't2', action: 'ask_user', reason: 'Need a preference', rules: [], outcome: 'executed', question: '<b>Which platform?</b>', options: ['<img src=x onerror=send()>', '**Web**'] },
+      ],
+    })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
+    expect(await screen.findByText('Twin’s supplementary instructions to the agent')).toBeInTheDocument()
+    expect(screen.getByText('<script>send()</script> Keep the API stable.')).toBeInTheDocument()
+    expect(screen.getByText('<b>Which platform?</b>')).toBeInTheDocument()
+    expect(screen.getByText('<img src=x onerror=send()>')).toBeInTheDocument()
+    for (const row of screen.getAllByTestId('twin-decision')) expect(row.querySelector('script, img, b, strong')).toBeNull()
+    expect(screen.getAllByText('Written by an agent')).toHaveLength(1)
+  })
+  it('each referenced rule links to its own node and rule', async () => {
+    daemon.dry = twinRun({ dry_run: true, decisions: [{ todo_id: 't1', action: 'dispatch', reason: 'Ready', rules: ['rule1', 'rule2'], outcome: 'executed' }] })
+    await load()
+    await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
+    expect(await screen.findByRole('link', { name: 'Rules: rule1' })).toHaveAttribute('href', '/rules?node=aaaaaaaa&rule=rule1')
+    expect(screen.getByRole('link', { name: 'Rules: rule2' })).toHaveAttribute('href', '/rules?node=aaaaaaaa&rule=rule2')
+  })
+  it('shows which node a dispatch went to', async () => {
     useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true) }) }, order: [A, B] }))
     daemon.dry = twinRun({
       dry_run: true,
       decisions: [
         { todo_id: 't1', action: 'dispatch', reason: 'Build it there', rules: [], outcome: 'executed', node: B, project: 'api' },
-        { todo_id: 't2', action: 'dispatch', reason: 'No route', rules: [], outcome: 'skipped', node: 'f'.repeat(32), skip_reason: 'remote_unavailable' },
-        { todo_id: 't3', action: 'dispatch', reason: 'Not allowed', rules: [], outcome: 'skipped', node: B, skip_reason: 'remote_refused' },
         { todo_id: 't4', action: 'dispatch', reason: 'Here', rules: [], outcome: 'executed' },
       ],
     })
-    await load()
-    await userEvent.click(screen.getAllByRole('button', { name: 'Try a dry run' })[0]!)
+    render(<TwinPage node={A} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Try a dry run' }))
     await screen.findByText('Build it there')
     const rows = screen.getAllByTestId('twin-decision')
     expect(rows[0]).toHaveTextContent('Sent to node: beta')
-    expect(rows[1]).toHaveTextContent('Sent to node: another node (ffffffff)')
-    expect(rows[1]).toHaveTextContent('Skipped: The other node was unreachable')
-    expect(rows[2]).toHaveTextContent('Skipped: The other node refused it')
-    // 缺省是本机：不写节点
-    expect(within(rows[3]!).queryByTestId('twin-decision-node')).not.toBeInTheDocument()
+    expect(within(rows[1]!).queryByTestId('twin-decision-node')).not.toBeInTheDocument()
   })
-  it('adds the connection section to the page of a twin-capable node', async () => {
+})
+
+describe('Twin page when not configured', () => {
+  it('shows the head, what is missing and one set-up link, and nothing else', async () => {
+    set({ configured: false, state: 'not_configured', scope: { paused: false, projects: [], max_sessions: 2, daily_dispatches: 10 } })
+    setNode(true)
+    // 没有可用的分拣后端
+    useNodes.getState().patch(A, { info: { capabilities: { twin: true, twin_stats: true }, judge: { triage: 'triage', backends: [] } } as unknown as NodeInfo })
     await load()
-    expect(await screen.findByTestId('twin-links')).toBeInTheDocument()
-    expect(calls('twin.links').some((c) => c.nodeId === A)).toBe(true)
+    expect(screen.getByText('No projects selected yet.')).toBeInTheDocument()
+    expect(screen.queryByText(/below/)).not.toBeInTheDocument()
+    expect(screen.getByText(/No usable triage backend/)).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: 'Set up' })
+    expect(link).toHaveAttribute('href', '/n/aaaaaaaa/settings?tab=twin')
+    expect(screen.getAllByRole('link')).toHaveLength(1)
+    expect(screen.queryByTestId('twin-today')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('twin-now')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('twin-trend')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('twin-config-summary')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try a dry run' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Run history')).not.toBeInTheDocument()
+  })
+  it('still lists earlier runs when there are some', async () => {
+    set({ configured: false, state: 'not_configured' })
+    daemon.runs = [twinRun()]
+    await load()
+    expect(await screen.findByText('Run history')).toBeInTheDocument()
+    expect(screen.getAllByTestId('twin-run')).toHaveLength(1)
+  })
+})
+
+describe('Twin page overview', () => {
+  it('summarises the configuration on one line with a settings link', async () => {
+    set({ scope: { paused: false, projects: ['web', 'api'], agent: 'mock', mode: 'auto', max_sessions: 3, daily_dispatches: 12 } })
+    await load()
+    const line = await screen.findByTestId('twin-config-summary')
+    expect(line).toHaveTextContent('2 projects · Mock · Auto · does not push · up to 3 sessions · 12 dispatches a day · Settings')
+    expect(within(line).getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/n/aaaaaaaa/settings?tab=twin')
+  })
+  it('falls back to the node default for agent and mode', async () => {
+    await load()
+    expect(await screen.findByTestId('twin-config-summary')).toHaveTextContent('1 project · Node default · Node default')
+  })
+  it('shows the raw id for an agent or mode the node does not list', async () => {
+    set({ scope: { paused: false, projects: ['web'], agent: 'gone', mode: 'odd', max_sessions: 2, daily_dispatches: 10 } })
+    await load()
+    expect(await screen.findByTestId('twin-config-summary')).toHaveTextContent('1 project · gone · odd')
+  })
+
+  describe('with twin_stats', () => {
+    beforeEach(() => {
+      setNode(true)
+      set({
+        today: { dispatches: 4, judge_calls: 7 },
+        last_run: { id: 'r9', started_ms: Date.now() - 60_000, finished_ms: Date.now() - 50_000, result: 'done', triggers: ['todo'] },
+        next_wake_ms: Date.now() + 30_000,
+        queued: ['q1'],
+        deferred: ['d1', 'd2'],
+        working: ['w1'],
+      })
+      daemon.statsDays = [
+        twinDay({
+          date: '2026-01-02',
+          runs: { done: 3, idle: 5, failed: 1, cancelled: 1, budget: 1 },
+          usage: { cost_usd: 0.42 },
+        }),
+      ]
+    })
+    it('takes wakes and cost from twin.stats, and last / next wake from twin.get', async () => {
+      await load()
+      const wakes = await screen.findByTestId('twin-tile-wakes')
+      expect(wakes).toHaveTextContent('11')
+      expect(wakes).toHaveTextContent('acted 3 · idle 5 · failed 1')
+      // 取消和预算用完不算失败，单独写
+      expect(wakes).toHaveTextContent('2 stopped early (budget or cancelled)')
+      expect(screen.getByTestId('twin-tile-dispatches')).toHaveTextContent('4 / 10')
+      expect(screen.getByTestId('twin-tile-judges')).toHaveTextContent('7 / 20')
+      expect(screen.getByTestId('twin-tile-cost')).toHaveTextContent('$0.42')
+      expect(screen.getByTestId('twin-tile-last')).toHaveTextContent('To-do changed · Completed')
+      expect(screen.getByTestId('twin-tile-next')).not.toHaveTextContent('When something changes')
+      expect(calls('twin.stats')[0]?.params).toEqual({ days: 7 })
+    })
+    it('shows tokens when there is no cost, and hides the cost tile without usage', async () => {
+      daemon.statsDays = [twinDay({ usage: { input_tokens: 12000, output_tokens: 300 } })]
+      await load()
+      expect(await screen.findByTestId('twin-tile-cost')).toHaveTextContent('12k in · 300 out')
+    })
+    it('hides the cost tile when there is no usage', async () => {
+      daemon.statsDays = [twinDay()]
+      await load()
+      await screen.findByTestId('twin-tile-wakes')
+      expect(screen.queryByTestId('twin-tile-cost')).not.toBeInTheDocument()
+    })
+    it('says "never" without a last wake, and when the next wake depends on changes', async () => {
+      set({ last_run: null, next_wake_ms: null })
+      await load()
+      expect(await screen.findByTestId('twin-tile-last')).toHaveTextContent('Never')
+      expect(screen.getByTestId('twin-tile-next')).toHaveTextContent('When something changes')
+    })
+    it('does not promise a next wake while paused', async () => {
+      paused({ next_wake_ms: null })
+      await load()
+      expect(await screen.findByTestId('twin-tile-next')).not.toHaveTextContent('When something changes')
+    })
+    it('lists Working, Queued and Not looked at last time, and collapses the empty ones', async () => {
+      daemon.questions = []
+      await load()
+      expect(await screen.findByRole('heading', { name: 'Working on (1)' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'Queued (1)' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'Not looked at last time (2)' })).toBeInTheDocument()
+      expect(screen.getByText(/ran out of input space/)).toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: /Waiting for you/ })).not.toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'd1' })).toHaveAttribute('href', '/todos/aaaaaaaa/d1')
+    })
+    it('says so in one line when nothing is going on', async () => {
+      set({ working: [], queued: [], deferred: [] })
+      await load()
+      expect(await screen.findByText('Nothing in progress, waiting for you or queued.')).toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: /Queued/ })).not.toBeInTheDocument()
+    })
+
+    describe('trend', () => {
+      beforeEach(() => {
+        daemon.statsDays = [
+          twinDay({
+            date: '2026-01-01',
+            runs: { done: 1 },
+            decisions: { dispatch: 2, ask_user: 1 },
+            handed_back: 1,
+            taken_over: 1,
+            accepted: 1,
+            turnaround_ms: 120_000,
+            usage: { cost_usd: 0.1 },
+          }),
+          twinDay({ date: '2026-01-02', runs: { done: 2, idle: 3, failed: 1 }, decisions: { dispatch: 2 }, accepted: 1, turnaround_ms: 240_000, dropped: 2, usage: { cost_usd: 0.2 } }),
+        ]
+      })
+      it('shows the range summary with plain counts and a day table, newest first', async () => {
+        await load()
+        const summary = await screen.findByTestId('twin-trend-summary')
+        expect(within(summary).getByTestId('twin-trend-wakes')).toHaveTextContent('7')
+        expect(within(summary).getByTestId('twin-trend-dispatches')).toHaveTextContent('4')
+        expect(within(summary).getByTestId('twin-trend-questions')).toHaveTextContent('1')
+        expect(within(summary).getByTestId('twin-trend-handed-back')).toHaveTextContent(/^Handed back to you1$/)
+        expect(within(summary).getByTestId('twin-trend-taken-over')).toHaveTextContent(/^You took over1$/)
+        expect(within(summary).getByTestId('twin-trend-accepted')).toHaveTextContent('2')
+        expect(within(summary).getByTestId('twin-trend-dropped')).toHaveTextContent('2')
+        expect(within(summary).getByTestId('twin-trend-turnaround')).toHaveTextContent('3m 0s')
+        expect(within(summary).getByTestId('twin-trend-cost')).toHaveTextContent('$0.30')
+        const table = screen.getByRole('table', { name: 'Twin activity per day, newest first' })
+        expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toContain('Date')
+        const rows = within(table).getAllByTestId('twin-trend-row')
+        expect(rows).toHaveLength(7)
+        expect(rows[0]).toHaveTextContent('2026-01-02')
+        expect(rows[0]).toHaveTextContent('6 (2 acted / 3 idle / 1 failed)')
+        expect(rows[1]).toHaveTextContent('2026-01-01')
+      })
+      it('shows a dash for turnaround when nothing was dispatched or accepted', async () => {
+        daemon.statsDays = [twinDay({ runs: { idle: 2 } })]
+        await load()
+        const summary = await screen.findByTestId('twin-trend-summary')
+        expect(within(summary).getByTestId('twin-trend-taken-over')).toHaveTextContent(/^You took over0$/)
+        expect(within(summary).getByTestId('twin-trend-turnaround')).toHaveTextContent('—')
+      })
+      it('switches to 30 days on demand and refreshes when twin.changed arrives', async () => {
+        await load()
+        await screen.findByTestId('twin-trend-summary')
+        await userEvent.click(screen.getByRole('radio', { name: '30 days' }))
+        await waitFor(() => expect(calls('twin.stats').some((c) => (c.params as { days: number }).days === 30)).toBe(true))
+        await waitFor(() => expect(screen.getAllByTestId('twin-trend-row')).toHaveLength(30))
+        const before = calls('twin.stats').length
+        act(() => handleNotification(A, 'twin.changed', { state: 'idle' }))
+        await waitFor(() => expect(calls('twin.stats').length).toBe(before + 1))
+        expect((calls('twin.stats').at(-1)?.params as { days: number }).days).toBe(30)
+      })
+      it('shows an error with Retry when statistics fail, keeps the page working, and recovers', async () => {
+        daemon.failStats = true
+        await load()
+        const trend = await screen.findByTestId('twin-trend')
+        await within(trend).findByText('Could not load statistics.')
+        expect(trend).not.toHaveTextContent('Loading statistics…')
+        expect(screen.getByTestId('twin-tile-dispatches')).toBeInTheDocument()
+        expect(screen.getByTestId('twin-state')).not.toHaveTextContent('Could not load')
+        daemon.failStats = false
+        await userEvent.click(within(trend).getByRole('button', { name: 'Retry' }))
+        await screen.findByTestId('twin-trend-summary')
+        expect(within(trend).queryByText('Could not load statistics.')).not.toBeInTheDocument()
+      })
+      it('ends in the error state when a range switch fails', async () => {
+        await load()
+        await screen.findByTestId('twin-trend-summary')
+        daemon.failStats = true
+        await userEvent.click(screen.getByRole('radio', { name: '30 days' }))
+        await screen.findByText('Could not load statistics.')
+        expect(screen.queryByText('Loading statistics…')).not.toBeInTheDocument()
+      })
+      it('does not fetch statistics from a sync nobody shows, and the page does', async () => {
+        useNodes.getState().patch(A, { conn: 'ready' })
+        await act(async () => {
+          await syncTwin(A)
+        })
+        expect(calls('twin.get').length).toBeGreaterThan(0)
+        expect(calls('twin.stats')).toHaveLength(0)
+        await load()
+        await waitFor(() => expect(calls('twin.stats').length).toBeGreaterThan(0))
+      })
+    })
+  })
+
+  describe('without twin_stats', () => {
+    it('derives today from the loaded runs and hides cost, next wake, queued, deferred and the trend', async () => {
+      set({ queued: ['q1'], deferred: ['d1'], next_wake_ms: Date.now() + 1000 })
+      daemon.runs = [
+        twinRun({ id: 'r4', started_ms: midnight + 4000, result: 'done', triggers: ['manual'], usage: { cost_usd: 1 } }),
+        twinRun({ id: 'r3', started_ms: midnight + 3000, result: 'idle', decisions: [], items: [] }),
+        twinRun({ id: 'r2', started_ms: midnight + 2000, result: 'failed', error: { code: 'timeout' } }),
+        twinRun({ id: 'r1', started_ms: midnight - 5000, result: 'done' }),
+        twinRun({ id: 'dry', started_ms: midnight + 5000, dry_run: true }),
+      ]
+      await load()
+      const wakes = await screen.findByTestId('twin-tile-wakes')
+      expect(wakes).toHaveTextContent('3')
+      expect(wakes).toHaveTextContent('acted 1 · idle 1 · failed 1')
+      expect(screen.getByTestId('twin-tile-last')).toHaveTextContent('Manual wake · Completed')
+      expect(screen.queryByTestId('twin-tile-cost')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('twin-tile-next')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('twin-trend')).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: /Queued/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: /Not looked at/ })).not.toBeInTheDocument()
+      expect(calls('twin.stats')).toHaveLength(0)
+    })
+    it('says never when there are no runs', async () => {
+      await load()
+      expect(await screen.findByTestId('twin-tile-last')).toHaveTextContent('Never')
+    })
+    it('shows just the number of judgment calls when the daily limit is unknown', async () => {
+      useNodes.getState().patch(A, { info: { capabilities: { twin: true, todo: true } } as unknown as NodeInfo })
+      await load()
+      expect((await screen.findByTestId('twin-tile-judges')).textContent).toContain('3')
+      expect(screen.getByTestId('twin-tile-judges')).not.toHaveTextContent('/')
+    })
+  })
+
+  it('lists who is waiting for you with how long, linking to the inbox entry', async () => {
+    set({ waiting: ['t1', 't2'] })
+    daemon.questions = [twinQuestion({ created_ms: Date.now() - 125_000 })]
+    await load()
+    const link = await screen.findByRole('link', { name: 't1' })
+    expect(link).toHaveAttribute('href', '/inbox?node=aaaaaaaa&todo=t1')
+    expect(link.parentElement).toHaveTextContent(/waiting 2m/)
+    expect(screen.getByRole('link', { name: 't2' })).toHaveAttribute('href', '/todos/aaaaaaaa/t2')
+  })
+})
+
+describe('Twin page health alert', () => {
+  it('names the error when the last two real runs failed', async () => {
+    daemon.runs = [
+      twinRun({ id: 'r3', started_ms: 3000, result: 'failed', error: { code: 'auth' } }),
+      twinRun({ id: 'r2', started_ms: 2000, result: 'failed', error: { code: 'auth' } }),
+      twinRun({ id: 'r1', started_ms: 1000 }),
+    ]
+    await load()
+    const alert = await screen.findByTestId('twin-health')
+    expect(alert).toHaveTextContent('last 2 wakes all failed. The backend rejected its API key.')
+    expect(within(alert).getByRole('link', { name: 'Open Twin settings' })).toHaveAttribute('href', '/n/aaaaaaaa/settings?tab=twin')
+  })
+  it.each([
+    ['a single failure', [twinRun({ id: 'r2', started_ms: 2000, result: 'failed' }), twinRun({ id: 'r1', started_ms: 1000 })]],
+    ['failures interrupted by a success', [twinRun({ id: 'r3', started_ms: 3000, result: 'failed' }), twinRun({ id: 'r2', started_ms: 2000 }), twinRun({ id: 'r1', started_ms: 1000, result: 'failed' })]],
+    ['failed dry runs', [twinRun({ id: 'r2', started_ms: 2000, result: 'failed', dry_run: true }), twinRun({ id: 'r1', started_ms: 1000, result: 'failed', dry_run: true })]],
+  ])('stays quiet for %s', async (_name, runs) => {
+    daemon.runs = runs
+    await load()
+    await screen.findByTestId('twin-today')
+    expect(screen.queryByTestId('twin-health')).not.toBeInTheDocument()
+  })
+})
+
+describe('Twin page run history', () => {
+  it('groups consecutive idle runs and expands individual decisions', async () => {
+    daemon.runs = [
+      twinRun({ id: 'r3', started_ms: 3000, result: 'idle', decisions: [], items: [] }),
+      twinRun({ id: 'r2', started_ms: 2000, result: 'idle', decisions: [], items: [] }),
+      twinRun({ id: 'r1', started_ms: 1000 }),
+    ]
+    await load()
+    expect(await screen.findByRole('button', { name: '2 idle runs' })).toBeInTheDocument()
+    expect(screen.getAllByTestId('twin-run')).toHaveLength(1)
+    await userEvent.click(screen.getByRole('button', { name: '2 idle runs' }))
+    expect(screen.getAllByTestId('twin-run')).toHaveLength(3)
+    await userEvent.click(within(screen.getAllByTestId('twin-run')[2]!).getByRole('button'))
+    expect(screen.getByText('Ready to build')).toBeInTheDocument()
+  })
+  it('shows usage on a run line when the run has it, and nothing otherwise', async () => {
+    daemon.runs = [
+      twinRun({ id: 'r3', started_ms: 3000, usage: { cost_usd: 0.05 } }),
+      twinRun({ id: 'r2', started_ms: 2000, usage: { input_tokens: 2500, output_tokens: 40 } }),
+      twinRun({ id: 'r1', started_ms: 1000 }),
+    ]
+    await load()
+    await screen.findAllByTestId('twin-run')
+    const lines = screen.getAllByTestId('twin-run')
+    expect(lines[0]).toHaveTextContent('$0.05')
+    expect(lines[1]).toHaveTextContent('2.5k in · 40 out')
+    expect(lines[2]).not.toHaveTextContent('$')
+    expect(lines[2]).not.toHaveTextContent(' in ·')
+  })
+  it('no longer has a last-wake line under the history', async () => {
+    daemon.runs = [twinRun()]
+    await load()
+    await screen.findAllByTestId('twin-run')
+    expect(screen.queryByText(/^Last wake:/)).not.toBeInTheDocument()
+  })
+  it('opens a run on an older page outside the selected nodes', async () => {
+    daemon.runs = Array.from({ length: 51 }, (_, i) => twinRun({ id: `r${i}`, started_ms: 10000 - i }))
+    usePrefs.setState({ sidebarNodes: [] })
+    render(<TwinPage node={A} run="r50" />)
+    expect(await screen.findByText('Ready to build')).toBeInTheDocument()
+    expect(calls('twin.runs').some((c) => (c.params as { before_ms?: number }).before_ms === 9951)).toBe(true)
+  })
+  it('reports a cleaned up run', async () => {
+    render(<TwinPage node={A} run="gone" />)
+    expect(await screen.findByText('This run is no longer available (records are kept for 90 days).')).toBeInTheDocument()
   })
 })

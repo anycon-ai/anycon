@@ -209,7 +209,7 @@ test.describe.serial('分身连接', () => {
     expect(refused.code).not.toBe(0)
     expect(refused.stderr).toMatch(/forbidden|accept_links/i)
 
-    await page.goto(`/twin/${shortA}`)
+    await page.goto(`/n/${shortA}/settings?tab=twin`)
     const links = page.getByTestId('twin-links')
     await expect(links).toBeVisible({ timeout: CONNECT_TIMEOUT })
     await expect(links).toContainText(containsText('twinLinks.none'))
@@ -617,7 +617,7 @@ test.describe.serial('分身连接', () => {
 
   test('e. B 不在线：A 的连接显示离线，派发 → remote_unavailable；B 回来之后恢复在线', async () => {
     test.setTimeout(300_000)
-    await page.goto(`/twin/${shortA}`)
+    await page.goto(`/n/${shortA}/settings?tab=twin`)
     await expect(page.getByTestId('twin-link-online')).toHaveText(exactText('twinLinks.online'), {
       timeout: CONNECT_TIMEOUT,
     })
@@ -687,7 +687,7 @@ test.describe.serial('分身连接', () => {
         },
       )
       .toBe(true)
-    await page.goto(`/twin/${shortA}`)
+    await page.goto(`/n/${shortA}/settings?tab=twin`)
     await expect(page.getByTestId('twin-link-online')).toHaveText(exactText('twinLinks.online'), {
       timeout: CONNECT_TIMEOUT,
     })
@@ -695,7 +695,7 @@ test.describe.serial('分身连接', () => {
 
   test('f. 「断开」：写明要在 B 上吊销；断开后 A 的列表空了、B 上那台分身设备还在；再在 B 上吊销', async () => {
     test.setTimeout(120_000)
-    await page.goto(`/twin/${shortA}`)
+    await page.goto(`/n/${shortA}/settings?tab=twin`)
     const row = page.getByTestId('twin-link')
     await expect(row).toHaveCount(1, { timeout: CONNECT_TIMEOUT })
     await row.getByTestId('twin-link-remove').click()

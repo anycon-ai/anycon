@@ -183,32 +183,43 @@ test.describe.serial('分身', () => {
     await removeNodesFromAccount(request, readState(), [NODE_NAME])
   })
 
-  test('a. 分身页：没配置时的状态；打开项目、设预算；试跑显示计划，什么都没派没问', async () => {
+  test('a. 没配置时的状态；在节点设置 → 分身里打开项目、设预算；试跑显示计划，什么都没派没问', async () => {
     test.setTimeout(120_000)
     await page.goto(`/twin/${short}`)
     const card = page.getByTestId('twin-card')
     await expect(card).toBeVisible({ timeout: CONNECT_TIMEOUT })
-    // 没配置：节点上和页面上都是「未配置」，没有项目；判断后端是配好的，所以不说缺后端
+    // 没配置：节点上和页面上都是「未配置」，没有项目；判断后端是配好的，所以不说缺后端。页面上只有一个「去设置」，没有操作按钮
     await expect(page.getByTestId('twin-state')).toHaveText(exactText('twin.state.not_configured'))
-    await expect(card).toContainText(containsText('twin.notConfigured'))
-    await expect(card).toContainText(containsText('twin.noProjects'))
+    await expect(card).toContainText(containsText('twin.noProjectsYet'))
     await expect(card).not.toContainText(containsText('twin.noTriage'))
+    await expect(card.getByRole('button', { name: exactText('twin.dryRun') })).toHaveCount(0)
+    await expect(card.getByRole('checkbox')).toHaveCount(0)
     expect(await twinStatus(home())).toMatchObject({
       state: 'not_configured',
       configured: false,
       enabled: true,
       scope: { paused: false, projects: [] },
     })
-    // 没配置时不能试跑
-    await expect(card.getByRole('button', { name: exactText('twin.dryRun') })).toBeDisabled()
 
-    // 打开项目、设每天派发的预算；第一次配置先以暂停保存，再自动试跑（web.md § 14.8）
-    await card.getByRole('checkbox', { name: PROJECT }).check()
-    await card.getByLabel(exactText('twin.dailyDispatches')).fill('5')
-    await expect(card.getByRole('button', { name: exactText('twin.save') })).toBeEnabled({
+    // 范围和预算在节点设置 → 分身里：从「去设置」进去
+    await card.getByRole('link', { name: exactText('twin.setUp') }).click()
+    await expect(page).toHaveURL(/\/settings\?(.*&)?tab=twin/)
+    const tab = page.getByTestId('twin-tab')
+    await expect(tab).toBeVisible({ timeout: CONNECT_TIMEOUT })
+    await expect(page.getByTestId('twin-tab-state')).toHaveText(
+      exactText('twin.state.not_configured'),
+    )
+    // 没配置时不能试跑
+    await expect(tab.getByTestId('twin-tab-dry-run')).toBeDisabled()
+
+    // 打开项目、设每天派发的预算；第一次配置先以暂停保存，再自动试跑（web.md § 4.8）
+    const scope = page.getByTestId('twin-tab-scope')
+    await scope.getByRole('checkbox', { name: PROJECT }).check()
+    await scope.getByLabel(exactText('twin.dailyDispatches')).fill('5')
+    await expect(scope.getByRole('button', { name: exactText('twin.save') })).toBeEnabled({
       timeout: 15_000,
     })
-    await card.getByRole('button', { name: exactText('twin.save') }).click()
+    await scope.getByRole('button', { name: exactText('twin.save') }).click()
 
     // 范围和预算存下来了，第一次保存是暂停着的
     await expect
@@ -218,8 +229,8 @@ test.describe.serial('分身', () => {
         projects: [PROJECT],
         daily_dispatches: 5,
       })
-    // 试跑的结果：假后端的计划，每项一行（动作、理由、给 agent 的说明）。第一次保存之后网页在暂停着时自动试跑（web.md § 14.8）
-    const decision = card.getByTestId('twin-decision')
+    // 试跑的结果：假后端的计划，每项一行（动作、理由、给 agent 的说明）。第一次保存之后网页在暂停着时自动试跑
+    const decision = tab.getByTestId('twin-decision')
     await expect(decision).toHaveCount(1, { timeout: 30_000 })
     await expect(decision).toContainText(TITLE_DRY)
     await expect(decision).toContainText(containsText('twin.action.dispatch'))
@@ -269,12 +280,14 @@ test.describe.serial('分身', () => {
     // 「就这么办」：取消暂停并唤醒（合并窗口缩短到 2 秒）；窗口里再记一项，两件事合进同一次唤醒
     phase = 'live'
     await page.goto(`/twin/${short}`)
-    await page.getByRole('button', { name: exactText('twin.dryRun') }).click()
-    await expect(page.getByTestId('twin-decision')).toHaveCount(1, { timeout: 30_000 })
+    // 暂停着：「恢复」先试跑并在对话框里给出计划，「就这么办」才取消暂停
+    await page.getByRole('button', { name: exactText('twin.resume') }).click()
+    const plan = page.getByTestId('twin-plan-dialog')
+    await expect(plan.getByTestId('twin-decision')).toHaveCount(1, { timeout: 30_000 })
     const dryRequest = triageRequests(judge).at(-1)!
     // 试跑的请求和之前一样：「试跑项」这时让它等着
     expect(itemsOf(dryRequest)).toHaveLength(1)
-    await page.getByRole('button', { name: exactText('twin.doIt') }).click()
+    await plan.getByRole('button', { name: exactText('twin.doIt') }).click()
     await expect(page.getByTestId('twin-state')).toHaveText(exactText('twin.state.idle'), {
       timeout: 15_000,
     })
@@ -553,10 +566,11 @@ test.describe.serial('分身', () => {
     )!
     const mark = judge.requests.length
     await page.goto(`/twin/${short}`)
-    // 暂停着：恢复先试跑（web.md § 14.8），暂停时也能试跑
+    // 暂停着：恢复先试跑并在对话框里给出计划（web.md § 14.8）
     expect((await twinStatus(home())).scope.paused).toBe(true)
-    await page.getByRole('button', { name: exactText('twin.dryRun') }).click()
-    await expect(page.getByTestId('twin-decision').filter({ hasText: TITLE_PAUSED })).toBeVisible({
+    await page.getByRole('button', { name: exactText('twin.resume') }).click()
+    const plan = page.getByTestId('twin-plan-dialog')
+    await expect(plan.getByTestId('twin-decision').filter({ hasText: TITLE_PAUSED })).toBeVisible({
       timeout: 30_000,
     })
     const dryRun = triageRequests(judge).at(-1)!
@@ -565,7 +579,7 @@ test.describe.serial('分身', () => {
     expect(ids).toContain(copy.id)
     expect(ids).not.toContain(taken.id)
 
-    await page.getByRole('button', { name: exactText('twin.doIt') }).click()
+    await plan.getByRole('button', { name: exactText('twin.doIt') }).click()
     await expect(page.getByTestId('twin-state')).toHaveText(exactText('twin.state.idle'), {
       timeout: 15_000,
     })

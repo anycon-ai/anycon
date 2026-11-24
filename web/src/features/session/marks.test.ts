@@ -1,24 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionStatus } from '@/protocol'
-import { isFollowUp, isFollowUpArmed, isFollowUpReady, isUnread } from './marks'
+import { isFollowUp, isUnread } from './marks'
 
 const s = (over: Partial<{ status: SessionStatus; archived: boolean; follow_up: boolean; read_seq: number; last_seq: number }> = {}) => ({ status: 'idle' as SessionStatus, archived: false, follow_up: false, last_seq: 10, read_seq: 10, ...over })
 
 describe('follow-up', () => {
-  it('is armed while the session runs and ready once it stops', () => {
-    for (const status of ['running', 'starting', 'queued', 'waiting_permission'] as const) {
-      expect(isFollowUpArmed(s({ follow_up: true, status }))).toBe(true)
-      expect(isFollowUpReady(s({ follow_up: true, status }))).toBe(false)
-    }
-    for (const status of ['idle', 'error', 'ended', 'interrupted'] as const) {
-      expect(isFollowUpReady(s({ follow_up: true, status }))).toBe(true)
-      expect(isFollowUpArmed(s({ follow_up: true, status }))).toBe(false)
+  it('is marked in any status: there is no armed / ready split', () => {
+    for (const status of ['running', 'starting', 'queued', 'waiting_permission', 'idle', 'error', 'ended', 'interrupted'] as const) {
+      expect(isFollowUp(s({ follow_up: true, status }))).toBe(true)
     }
   })
 
   it('ignores archived sessions and unmarked ones', () => {
     expect(isFollowUp(s({ follow_up: true, archived: true }))).toBe(false)
-    expect(isFollowUpReady(s({ follow_up: true, archived: true }))).toBe(false)
     expect(isFollowUp(s())).toBe(false)
     expect(isFollowUp({ archived: false })).toBe(false)
   })

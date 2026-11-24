@@ -51,7 +51,7 @@ describe('push texts for the session categories and the test push', () => {
 
   it('the other four session categories have their own sentence but share the session tag, and still open the session', () => {
     const titles = (['turn_finished', 'error', 'session_idle', 'follow_up'] as const).map((category) => pushText(en, { category, node, session }))
-    expect(titles.map((p) => p.title)).toEqual(['“Fix login” finished', '“Fix login” ran into an error', '“Fix login” is idle', '“Fix login” is ready for follow-up'])
+    expect(titles.map((p) => p.title)).toEqual(['“Fix login” finished', '“Fix login” ran into an error', '“Fix login” is idle', '“Fix login” finished'])
     expect(new Set(titles.map((p) => p.tag))).toEqual(new Set(['session:sess_abc123']))
     // follow_up 照旧去会话页，不进待处理
     expect(new Set(titles.map((p) => p.url))).toEqual(new Set(['/n/nnnnnnnn/s/sess_abc123']))

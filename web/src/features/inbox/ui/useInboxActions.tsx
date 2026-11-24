@@ -1,10 +1,9 @@
-// 行上的「已处理」「归档」「查看」：复用会话页的动作（`setFollowUp`、`archiveSession`），不另写一套。
+// 行上的「归档」「查看」：复用会话页的动作（`archiveSession`），不另写一套。
 // 有 worktree 的会话归档前要先问 worktree 怎么处理（和会话页的确认框同一个）。
 import { useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { archiveSession, setFollowUp } from '@/features/session/actions'
+import { archiveSession } from '@/features/session/actions'
 import { holdHandled, unmarkHandled } from '@/features/session/inflight'
-import { describeMarkError } from '@/lib/errors'
 import { ArchiveWorktreeDialog, effectiveChoice, type DisposeInfo } from '@/features/worktree/DisposeDialog'
 import { describeArchiveError } from '@/features/worktree/errors'
 import { updateTodo } from '@/features/todos/service'
@@ -29,14 +28,6 @@ export function useInboxActions(): { actions: InboxActions; dialogs: ReactNode }
 
   const actions = useMemo<InboxActions>(
     () => ({
-      markDone: (s) => {
-        // 先改本地（条目马上消失、焦点落到下一条），请求失败 `setFollowUp` 会改回去，这里只提示
-        holdHandled(`session:${s.id}`)
-        setFollowUp(s.node_id, s.id, false).catch((e: unknown) => {
-          unmarkHandled(`session:${s.id}`)
-          toast.error(t('inbox.markDoneFailed', { error: describeMarkError(e, t) }))
-        })
-      },
       archive: (s) => {
         const info = disposeInfo(s)
         if (info) {

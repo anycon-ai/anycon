@@ -71,8 +71,9 @@ impl Notifier {
         self.fire(NotifyCategory::PermissionRequested, session_id);
     }
 
-    /// `turn_done`，按 `notify.turn_finished`。标了「待处理」的会话只发 `follow_up`：标记是用户的明确要求，
-    /// 不受 `notify.turn_finished` 和有没有人在看的限制，也不再另发 `turn_finished`。
+    /// 会话完成：`turn_done`，按 `notify.turn_finished`。标了「完成后提醒」（`follow_up`）的会话只发 `follow_up`：
+    /// 标记是用户的明确要求，不受 `notify.turn_finished` 和有没有人在看的限制，也不再另发 `turn_finished`。
+    /// 标记只提醒一次，由调用方在这之后清掉；通知被 60 秒去重挡掉时标记也照样清。
     pub fn turn_finished(&self, session_id: &str, follow_up: bool) {
         if follow_up {
             self.fire(NotifyCategory::FollowUp, session_id);

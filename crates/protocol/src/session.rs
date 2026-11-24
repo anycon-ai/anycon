@@ -557,6 +557,11 @@ pub struct SessionChanged {
     /// 同 [`SessionSummary::follow_up`]。
     #[serde(default)]
     pub follow_up: bool,
+    /// 这条 `session.changed` 是 daemon 因为发了 `follow_up` 通知、消费了 `follow_up` 标记而发的：
+    /// 会话刚完成，标记已清成 false。只有这一种情况为 true（出错清标记、`session.set_marks` 都不带）；
+    /// 它是一次性的事件信号，客户端不存进会话摘要。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub follow_up_fired: bool,
     /// 同 [`SessionSummary::read_seq`]。
     #[serde(default)]
     pub read_seq: u64,
@@ -1102,9 +1107,26 @@ pub struct SessionEvent {
     pub event: Event,
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follow_up_fired_is_omitted_when_false_and_defaults_to_false() {
+        let base = serde_json::json!({
+            "session_id": "s", "title": "t", "status": "idle", "pending_permissions": 0,
+            "updated_at_ms": 1, "last_seq": 2
+        });
+        let c: SessionChanged = serde_json::from_value(base).unwrap();
+        assert!(!c.follow_up_fired);
+        assert!(serde_json::to_value(&c).unwrap().get("follow_up_fired").is_none());
+        let fired = SessionChanged { follow_up_fired: true, ..c };
+        assert_eq!(serde_json::to_value(&fired).unwrap()["follow_up_fired"], serde_json::json!(true));
+    }
 
     #[test]
     fn event_tagging() {

@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { Flag, GitBranch } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { setFollowUp } from '@/features/session/actions'
-import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
+import { isFollowUp, isUnread } from '@/features/session/marks'
 import { describeMarkError } from '@/lib/errors'
 import { formatRelative } from '@/lib/format'
 import { useNodeParam } from '@/lib/nav'
@@ -23,18 +23,17 @@ export function SessionStatusChip({ status, testId, dotOnMobile }: { status: Ses
 }
 
 /**
- * 会话列表的一行：标题、agent / 模型、最后一条消息摘要、时间、状态；标了「待处理」的带一个 chip，
- * 停下来之后还没看的带未读小红点。最右边是「待处理」开关（不放进链接里：按钮不能嵌在 `<a>` 里）。
+ * 会话列表的一行：标题、agent / 模型、最后一条消息摘要、时间、状态；标了「完成后提醒」的带一个 chip，
+ * 停下来之后还没看的带未读小红点。最右边是「完成后提醒」开关（不放进链接里：按钮不能嵌在 `<a>` 里）。
  */
 export function SessionListItem({ session, showProject }: { session: SessionItem; showProject?: boolean }) {
   const { t, i18n } = useTranslation()
   const nodeParam = useNodeParam(session.node_id)
   const offline = useNodes((n) => n.byId[session.node_id]?.conn !== 'ready')
   const marked = isFollowUp(session)
-  const ready = isFollowUpReady(session)
   const toggleLabel = marked ? t('followUp.unmark') : t('followUp.mark')
   return (
-    <div className={cn('flex items-stretch rounded-lg border border-border bg-surface hover:bg-bg-hover', ready && 'border-l-2 border-l-info')} data-follow-up={marked ? (ready ? 'ready' : 'armed') : undefined}>
+    <div className="flex items-stretch rounded-lg border border-border bg-surface hover:bg-bg-hover" data-follow-up={marked ? 'true' : undefined}>
       <Link
         to="/n/$node/s/$session"
         params={{ node: nodeParam, session: session.id }}
@@ -50,7 +49,7 @@ export function SessionListItem({ session, showProject }: { session: SessionItem
             {isUnread(session) ? <UnreadDot /> : null}
             {marked ? (
               <Chip tone="info" icon={<Flag className="size-3" aria-hidden />} testId="follow-up-chip-row">
-                {ready ? t('followUp.chipReady') : t('followUp.chipArmed')}
+                {t('followUp.chip')}
               </Chip>
             ) : null}
             {session.pending_permissions > 0 ? <Chip tone="warning">{t('session.pendingCount', { count: session.pending_permissions })}</Chip> : null}

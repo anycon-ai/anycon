@@ -493,7 +493,7 @@ function patchFollowUp(nodeId: string, sessionId: string, followUp: boolean): vo
   })
 }
 /**
- * 标 / 取消「待处理」（docs/spec/web.md § 4.6.1）。先改本地让按钮立刻有反应；请求失败就改回去并把错误抛给调用方。
+ * 标 / 取消「完成后提醒」（docs/spec/web.md § 4.6.1）。先改本地让按钮立刻有反应；请求失败就改回去并把错误抛给调用方。
  * 标记不影响会话的行为，也不改 `updated_at_ms`。
  */
 export async function setFollowUp(nodeId: string, sessionId: string, followUp: boolean): Promise<void> {

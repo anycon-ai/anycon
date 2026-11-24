@@ -66,21 +66,22 @@ describe('inbox items', () => {
     expect(keys(m)).toEqual([`enroll:${A}:ok`])
   })
 
-  it('lists sessions marked for follow-up that have stopped, not running, archived or unmarked ones', () => {
+  it('does not list sessions marked “notify when done” in any status: the mark is a one-shot reminder, not something that needs a decision', () => {
     const m = derive({
       sessions: [
         session({ id: 'idle', follow_up: true, status: 'idle' }),
         session({ id: 'ended', follow_up: true, status: 'ended' }),
+        session({ id: 'interrupted', follow_up: true, status: 'interrupted' }),
         session({ id: 'run', follow_up: true, status: 'running' }),
         session({ id: 'arch', follow_up: true, archived: true }),
         session({ id: 'plain' }),
       ],
     })
-    expect(keys(m).sort()).toEqual(['session:ended', 'session:idle'])
-    expect(nowItems(m).every((i) => i.kind === 'follow_up')).toBe(true)
+    expect(keys(m)).toEqual([])
+    expect(inboxNowCount(m)).toBe(0)
   })
 
-  it('a follow-up session that is waiting for approval is not listed as follow-up: with its request it is the request, without one it is the cached “waiting” item', () => {
+  it('a marked session that is waiting for approval is not listed as marked: with its request it is the request, without one it is the cached “waiting” item', () => {
     const m = derive({
       sessions: [
         session({ id: 'w', follow_up: true, status: 'idle', pending_permissions: 1 }),
@@ -143,10 +144,9 @@ describe('errored sessions', () => {
     expect(isRecentError({ status: 'interrupted', archived: false, updated_at_ms: NOW }, NOW)).toBe(false)
   })
 
-  it('a session that is both marked and errored is one item, a follow-up one', () => {
+  it('a session that is both marked and errored is listed once, as an error', () => {
     const m = derive({ sessions: [session({ id: 'both', status: 'error', follow_up: true, updated_at_ms: NOW - DAY })] })
-    expect(nowItems(m).map((i) => i.kind)).toEqual(['follow_up'])
-    // 清掉标记之后，它还在 7 天内，就以出错的身份留在这里
+    expect(nowItems(m).map((i) => i.kind)).toEqual(['error'])
     expect(nowItems(derive({ sessions: [session({ id: 'both', status: 'error', follow_up: false, updated_at_ms: NOW - DAY })] })).map((i) => i.kind)).toEqual(['error'])
   })
 })
@@ -190,13 +190,13 @@ describe('order of the Now section', () => {
         request('older-no-expiry', { created_at_ms: NOW - 90_000 }),
       ],
       enroll: [enrollItem('e', { expiresAt: NOW + 20_000 })],
-      sessions: [session({ id: 'f', follow_up: true, status: 'idle', updated_at_ms: NOW - 500_000 }), session({ id: 'e', status: 'error', updated_at_ms: NOW - 100_000 })],
+      sessions: [session({ id: 'f', status: 'error', updated_at_ms: NOW - 500_000 }), session({ id: 'e', status: 'error', updated_at_ms: NOW - 100_000 })],
     })
     expect(keys(m)).toEqual(['request:soon', `enroll:${A}:e`, 'request:late', 'session:f', 'session:e', 'request:older-no-expiry'])
   })
 
-  it('follow-up sessions: the one that has waited longest comes first', () => {
-    const m = derive({ sessions: [session({ id: 'new', follow_up: true, updated_at_ms: 2_000 }), session({ id: 'old', follow_up: true, updated_at_ms: 1_000 })] })
+  it('errored sessions: the one that has waited longest comes first', () => {
+    const m = derive({ sessions: [session({ id: 'new', status: 'error', updated_at_ms: NOW - 1_000 }), session({ id: 'old', status: 'error', updated_at_ms: NOW - 2_000 })] })
     expect(keys(m)).toEqual(['session:old', 'session:new'])
   })
 
@@ -207,14 +207,14 @@ describe('order of the Now section', () => {
 })
 
 describe('what the badge counts', () => {
-  it('is the number of items in Now: approvals, enroll requests, follow-up sessions that stopped and errored sessions', () => {
+  it('is the number of items in Now: approvals, enroll requests and errored sessions', () => {
     const m = derive({
       pending: [request('1'), request('2', { session_id: 's-1' })],
       enroll: [enrollItem('e')],
       sessions: [session({ id: 'f', follow_up: true }), session({ id: 'run', follow_up: true, status: 'running' }), session({ id: 'x', status: 'error', updated_at_ms: NOW }), session({ id: 'u', last_seq: 5, read_seq: 0 })],
     })
-    // 两条请求（同一个会话也各算一条）+ 一条接入请求 + 一个待处理会话 + 一个出错会话；运行中的和未读的不算
-    expect(inboxNowCount(m)).toBe(5)
+    // 两条请求（同一个会话也各算一条）+ 一条接入请求 + 一个出错会话；标了完成后提醒的、运行中的和未读的不算
+    expect(inboxNowCount(m)).toBe(4)
   })
 
   it('is zero for an empty inbox', () => {

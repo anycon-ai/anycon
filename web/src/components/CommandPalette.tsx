@@ -96,7 +96,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       setQ('')
       fn()
     }
-    // 在会话页里：标 / 取消「待处理」（spec/web.md § 4.6.1）
+    // 在会话页里：标 / 取消「完成后提醒」（spec/web.md § 4.6.1）
     const cur = currentSession ? sessions[currentSession] : undefined
     if (cur && !cur.archived && nodes[cur.node_id]?.conn === 'ready') {
       const marked = isFollowUp(cur)

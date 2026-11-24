@@ -18,14 +18,12 @@ import { useSessions, type PendingPermission, type SessionItem } from '@/stores/
 const h = vi.hoisted(() => ({
   navigate: vi.fn(),
   respond: vi.fn(),
-  setFollowUp: vi.fn(),
   archive: vi.fn(),
 }))
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), h.navigate, {}, { pathname: '/inbox' }))
 vi.mock('@/features/session/actions', async (orig) => ({
   ...(await orig<object>()),
   respondPermission: h.respond,
-  setFollowUp: h.setFollowUp,
   archiveSession: h.archive,
 }))
 
@@ -71,10 +69,6 @@ beforeEach(() => {
     useSessions.getState().resolvePending(nodeId, p.request_id)
     return 'answered'
   })
-  h.setFollowUp.mockReset().mockImplementation(async (_n: string, id: string, v: boolean) => {
-    const it = useSessions.getState().list[id]
-    if (it) useSessions.setState((s) => ({ list: { ...s.list, [id]: { ...it, follow_up: v } } }))
-  })
   h.archive.mockReset().mockImplementation(async (_n: string, id: string) => {
     const it = useSessions.getState().list[id]
     if (it) useSessions.setState((s) => ({ list: { ...s.list, [id]: { ...it, archived: true } } }))
@@ -118,13 +112,13 @@ describe('list', () => {
   it('labels each row with its kind in words, not only by colour', () => {
     seed({
       pending: [req('p'), req('q', { kind: 'question' }), req('pl', { kind: 'plan' })],
-      sessions: [sess({ id: 'f', follow_up: true, status: 'idle' }), sess({ id: 'e', status: 'error' })],
+      sessions: [sess({ id: 'e', status: 'error' })],
     })
     useEnroll.setState({ items: { [`${A}:x`]: { nodeId: A, info: { enroll_id: 'x', expires_at_ms: Date.now() + 60_000, created_at_ms: Date.now(), status: 'wait_approval', method: 'code', approval: true }, expiresAt: Date.now() + 60_000, receivedAt: Date.now(), createdAt: Date.now() } } })
     render(<InboxPage />)
     const kinds = rows().map((r) => r.getAttribute('data-kind'))
-    expect(kinds.sort()).toEqual(['enroll', 'error', 'follow_up', 'permission', 'plan', 'question'])
-    for (const label of ['Approval', 'Plan', 'Question', 'Device request', 'Follow up', 'Error']) expect(screen.getAllByText(label).length).toBeGreaterThan(0)
+    expect(kinds.sort()).toEqual(['enroll', 'error', 'permission', 'plan', 'question'])
+    for (const label of ['Approval', 'Plan', 'Question', 'Device request', 'Error']) expect(screen.getAllByText(label).length).toBeGreaterThan(0)
   })
 
   it('shows the empty state when nothing waits, and “In progress” as a collapsed row that expands', async () => {
@@ -141,7 +135,7 @@ describe('list', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     const armed = screen.getAllByTestId('inbox-in-progress-row').find((r) => r.getAttribute('data-armed') === 'true')!
     expect(within(armed).getByText('Flagged job')).toBeInTheDocument()
-    expect(within(armed).getByText('Will remind')).toBeInTheDocument()
+    expect(within(armed).getByText('Notify when done')).toBeInTheDocument()
   })
 
   it('a running session with a follow-up mark is in progress, not in Now', () => {
@@ -233,12 +227,12 @@ describe('permission requests', () => {
 
   it('a node that is offline: the row and the details say the data is cached, and the buttons are disabled', () => {
     useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha', conn: 'peer_offline' }), [B]: nodeEntry({ id: B, name: 'beta' }) } })
-    seed({ pending: [req('one')], sessions: [sess({ id: 'f', follow_up: true, status: 'idle' })] })
+    seed({ pending: [req('one')], sessions: [sess({ id: 'f', status: 'error' })] })
     render(<InboxPage />)
     expect(screen.getAllByTestId('inbox-cached')).toHaveLength(2)
     expect(screen.getByTestId('inbox-cached-note')).toHaveTextContent(/alpha is offline/)
     expect(screen.getByTestId('permission-option-allow')).toBeDisabled()
-    expect(screen.getByTestId('inbox-done')).toBeDisabled()
+    expect(screen.getByTestId('inbox-archive')).toBeDisabled()
     // 在线的节点没有这个标注
     useNodes.setState({ byId: { [A]: nodeEntry({ id: A, name: 'alpha' }), [B]: nodeEntry({ id: B, name: 'beta' }) } })
   })
@@ -253,22 +247,20 @@ describe('permission requests', () => {
 })
 
 describe('sessions and device requests', () => {
-  it('“Done” on a follow-up row clears the mark, and focus goes to the next item', async () => {
-    const user = setup()
-    seed({ sessions: [sess({ id: 'f1', title: 'First', follow_up: true, status: 'idle', updated_at_ms: 1_000 }), sess({ id: 'f2', title: 'Second', follow_up: true, status: 'idle', updated_at_ms: 2_000 })] })
+  it('sessions marked “notify when done” are not listed, in any status, and have no “Mark done” button', () => {
+    seed({ sessions: [sess({ id: 'f1', follow_up: true, status: 'idle' }), sess({ id: 'f2', follow_up: true, status: 'ended' }), sess({ id: 'f3', follow_up: true, status: 'interrupted' })] })
     render(<InboxPage />)
-    expect(rowTitles()[0]).toContain('First')
-    await user.click(within(rows()[0]!).getByTestId('inbox-done'))
-    expect(h.setFollowUp).toHaveBeenCalledWith(A, 'f1', false)
-    await waitFor(() => expect(rows()).toHaveLength(1))
-    expect(document.activeElement).toBe(within(rows()[0]!).getByTestId('inbox-row-main'))
-    expect(rowTitles()[0]).toContain('Second')
+    expect(rows()).toHaveLength(0)
+    expect(screen.getByTestId('inbox-empty')).toBeInTheDocument()
+    expect(screen.queryByTestId('inbox-done')).toBeNull()
   })
 
-  it('a follow-up row can be opened', () => {
-    seed({ sessions: [sess({ id: 'f1', follow_up: true, status: 'idle' })] })
+  it('a marked session that also errored is listed as an error, with open and archive but no “Mark done”', () => {
+    seed({ sessions: [sess({ id: 'f1', follow_up: true, status: 'error' })] })
     render(<InboxPage />)
+    expect(rows().map((r) => r.getAttribute('data-kind'))).toEqual(['error'])
     expect(within(rows()[0]!).getByTestId('inbox-open')).toHaveAttribute('href', '/n/aaaaaaaa/s/f1')
+    expect(within(rows()[0]!).queryByTestId('inbox-done')).toBeNull()
   })
 
   it('an errored session offers open and archive; archive calls the session action', async () => {

@@ -68,14 +68,13 @@ export function useItemInfo(item: InboxItem): ItemInfo {
     case 'question':
       return { ...base, title: item.request.title, sessionTitle: listed?.title || item.sessionId, sessionId: item.sessionId, project: listed?.project ?? undefined, since: t('inbox.waitingSince', { time }) }
     case 'waiting':
-    case 'follow_up':
     case 'error':
       return {
         ...base,
         title: item.session.title || item.session.id,
         sessionId: item.session.id,
         project: item.session.project ?? undefined,
-        since: t(item.kind === 'waiting' ? 'inbox.waitingSince' : item.kind === 'error' || item.session.status === 'error' ? 'inbox.erroredSince' : 'inbox.stoppedSince', { time }),
+        since: t(item.kind === 'waiting' ? 'inbox.waitingSince' : 'inbox.erroredSince', { time }),
       }
     case 'review':
       return { ...base, title: cleanOneLine(item.todo.title), project: item.todo.project ? cleanOneLine(item.todo.project) : undefined, since: t('inbox.reviewSince', { time }) }

@@ -589,7 +589,8 @@ fn apply(
         title_locked: file.title_locked,
         status: final_status,
         archived: file.archived,
-        follow_up: file.follow_up,
+        // 导入的会话都没在跑：「完成后提醒」没有意义，导出文件里的标记（旧版导出可能是「待处理」）一律不要
+        follow_up: false,
         read_seq: 0, // 事件写完后 `finish_session` 把它推到 last_seq
         settings: file.settings.clone(),
         agent_session_id: None,

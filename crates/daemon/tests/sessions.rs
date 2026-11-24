@@ -35,6 +35,19 @@ async fn get(td: &TestDaemon, c: &mut TestClient, sid: &str) -> SessionSummary {
     c.call(td, methods::SESSION_GET, json!({ "session_id": sid })).await.unwrap()
 }
 
+async fn wait_summary(td: &TestDaemon, c: &mut TestClient, sid: &str, f: impl Fn(&SessionSummary) -> bool) -> bool {
+    let t = std::time::Instant::now();
+    loop {
+        if f(&get(td, c, sid).await) {
+            return true;
+        }
+        if t.elapsed() > T {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 async fn wait_status(td: &TestDaemon, c: &mut TestClient, sid: &str, want: SessionStatus) -> bool {
     let t = std::time::Instant::now();
     loop {
@@ -2348,6 +2361,7 @@ async fn set_marks_flips_follow_up_without_touching_updated_at_and_tells_every_c
         .expect("session.changed carries the new mark");
     let ch: SessionChanged = serde_json::from_value(ch.params).unwrap();
     assert_eq!((ch.session_id.as_str(), ch.follow_up), (s.id.as_str(), true));
+    assert!(!ch.follow_up_fired, "set_marks never fires");
     let after = get(&td, &mut a, &s.id).await;
     assert!(after.follow_up);
     assert_eq!(after.updated_at_ms, before.updated_at_ms, "a mark is not session activity");
@@ -2415,19 +2429,33 @@ async fn mark_read_only_moves_forward_never_past_last_seq_and_survives_a_restart
     td.shutdown().await;
 }
 
+/// `session.changed` 里这个会话带 `follow_up_fired = true` 的有几条。
+fn fired_changes(notes: &[RpcNotification], sid: &str) -> usize {
+    notes
+        .iter()
+        .filter(|n| {
+            n.method == methods::SESSION_CHANGED
+                && n.params["session_id"] == json!(sid)
+                && n.params["follow_up_fired"] == json!(true)
+        })
+        .count()
+}
+
 #[tokio::test]
-async fn a_follow_up_session_sends_follow_up_instead_of_turn_finished_even_when_watched_and_turned_off() {
+async fn a_follow_up_session_notifies_follow_up_once_and_the_mark_is_consumed() {
     use anycon_daemon::notify::testing::Recorder;
     let td = TestDaemon::start_with(&[("notify.turn_finished", "\"never\"")], false).await;
     let rec = std::sync::Arc::new(Recorder::default());
     td.ctx.notifier.set_out(rec.clone());
     let mut a = td.client("a");
+    let mut b = td.client("b");
     let count = |cat: NotifyCategory, sid: &str| {
         rec.0.lock().unwrap().iter().filter(|b| b.category == cat && b.session_id.as_deref() == Some(sid)).count()
     };
 
     let marked = create(&td, &mut a, None).await;
     let plain = create(&td, &mut a, None).await;
+    // 会话停着时先标：意思是「下一轮结束后提醒我」；标记本身不带 fired
     let _: Empty =
         a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": marked.id, "follow_up": true })).await.unwrap();
     // 标了的会话有人 watch 着，也照发
@@ -2438,9 +2466,125 @@ async fn a_follow_up_session_sends_follow_up_instead_of_turn_finished_even_when_
     assert!(wait_status(&td, &mut a, &plain.id, SessionStatus::Idle).await);
     assert!(eventually(T, || async { count(NotifyCategory::FollowUp, &marked.id) == 1 }).await);
     assert_eq!(count(NotifyCategory::TurnFinished, &marked.id), 0, "follow_up replaces turn_finished");
+    // 标记被消费：落库、广播，且只有消费的那一条 session.changed 带 fired
+    assert!(wait_summary(&td, &mut a, &marked.id, |s| !s.follow_up).await);
+    let notes = b.drain_for(Duration::from_millis(1300)).await;
+    assert_eq!(fired_changes(&notes, &marked.id), 1, "{notes:?}");
+    let fired = notes.iter().find(|n| n.params["follow_up_fired"] == json!(true)).unwrap();
+    assert_eq!(fired.params["follow_up"], json!(false), "the mark is already cleared when it fires");
+    assert_eq!(fired.params["status"], json!("idle"));
+    assert!(
+        notes
+            .iter()
+            .filter(|n| n.method == methods::SESSION_CHANGED)
+            .all(|n| n.params["session_id"] != json!(plain.id) || n.params.get("follow_up_fired").is_none()),
+        "an unmarked session never fires"
+    );
     // 没标的：notify.turn_finished = never 照旧什么都不发
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(count(NotifyCategory::FollowUp, &plain.id) + count(NotifyCategory::TurnFinished, &plain.id), 0);
+
+    // 之后就是普通会话：下一轮完成不再提醒
+    send(&td, &mut a, &marked.id, "again").await;
+    assert!(wait_summary(&td, &mut a, &marked.id, |s| s.usage.turns == 2).await);
+    assert!(wait_status(&td, &mut a, &marked.id, SessionStatus::Idle).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(count(NotifyCategory::FollowUp, &marked.id), 1);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_mark_is_cleared_even_when_the_notification_is_deduplicated() {
+    use anycon_daemon::notify::testing::Recorder;
+    let td = TestDaemon::start().await;
+    let rec = std::sync::Arc::new(Recorder::default());
+    td.ctx.notifier.set_out(rec.clone());
+    let mut a = td.client("a");
+    let mut b = td.client("b");
+    let s = create(&td, &mut a, None).await;
+    let mark = |on: bool| json!({ "session_id": s.id, "follow_up": on });
+    let _: Empty = a.call(&td, methods::SESSION_SET_MARKS, mark(true)).await.unwrap();
+    send(&td, &mut a, &s.id, "one").await;
+    assert!(wait_summary(&td, &mut a, &s.id, |s| !s.follow_up).await);
+    // 60 秒内再标一次、再完成一轮：同类别通知被去重挡掉，标记照样清，fired 照样带
+    let _ = b.drain_for(Duration::from_millis(1300)).await;
+    let _: Empty = a.call(&td, methods::SESSION_SET_MARKS, mark(true)).await.unwrap();
+    send(&td, &mut a, &s.id, "two").await;
+    assert!(wait_summary(&td, &mut a, &s.id, |s| s.usage.turns == 2).await);
+    assert!(wait_summary(&td, &mut a, &s.id, |s| !s.follow_up).await);
+    let notes = b.drain_for(Duration::from_millis(1300)).await;
+    assert_eq!(fired_changes(&notes, &s.id), 1, "{notes:?}");
+    let n = rec
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|x| x.category == NotifyCategory::FollowUp && x.session_id.as_deref() == Some(&s.id))
+        .count();
+    assert_eq!(n, 1, "the second notification was deduplicated");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_follow_up_waits_for_the_queued_messages_to_run() {
+    use anycon_daemon::notify::testing::Recorder;
+    let td = TestDaemon::start().await;
+    let rec = std::sync::Arc::new(Recorder::default());
+    td.ctx.notifier.set_out(rec.clone());
+    let mut a = td.client("a");
+    let follow_ups = || rec.0.lock().unwrap().iter().filter(|x| x.category == NotifyCategory::FollowUp).count();
+    let s = create(&td, &mut a, Some("hold on")).await;
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id, "follow_up": true })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    // fake 不支持插话：这条进积压，当前 turn 结束后接着跑（内容带 hold，第二轮也停住）
+    assert!(send(&td, &mut a, &s.id, "hold again").await.queued);
+    td.fake.last_handle().release();
+    // 第一轮结束、积压的那一轮在跑：会话没完成，不提醒，标记还在
+    assert!(wait_summary(&td, &mut a, &s.id, |s| s.usage.turns == 1 && s.status == SessionStatus::Running).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(follow_ups(), 0, "the queued message has not run yet");
+    assert!(get(&td, &mut a, &s.id).await.follow_up);
+    td.fake.last_handle().release();
+    assert!(wait_summary(&td, &mut a, &s.id, |s| s.usage.turns == 2 && !s.follow_up).await);
+    assert!(eventually(T, || async { follow_ups() == 1 }).await);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_keeps_the_follow_up_mark_and_an_error_clears_it_without_firing() {
+    use anycon_daemon::notify::testing::Recorder;
+    let td = TestDaemon::start().await;
+    let rec = std::sync::Arc::new(Recorder::default());
+    td.ctx.notifier.set_out(rec.clone());
+    let mut a = td.client("a");
+    let mut b = td.client("b");
+    let s = create(&td, &mut a, None).await;
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id, "follow_up": true })).await.unwrap();
+
+    // 用户取消：标记留着，没有提醒
+    send(&td, &mut a, &s.id, "go slow").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Running).await);
+    let _: Empty = a.call(&td, methods::SESSION_CANCEL, json!({ "session_id": s.id })).await.unwrap();
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Idle).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(get(&td, &mut a, &s.id).await.follow_up, "a cancelled turn does not consume the reminder");
+    assert!(rec.0.lock().unwrap().iter().all(|x| x.category != NotifyCategory::FollowUp));
+
+    // 出错：这一轮结束了，出错有自己的通知，标记清掉；不带 fired，也不发 follow_up
+    let _ = b.drain_for(Duration::from_millis(1300)).await;
+    send(&td, &mut a, &s.id, "please crash").await;
+    assert!(wait_status(&td, &mut a, &s.id, SessionStatus::Error).await);
+    assert!(wait_summary(&td, &mut a, &s.id, |s| !s.follow_up).await);
+    let notes = b.drain_for(Duration::from_millis(1300)).await;
+    assert_eq!(fired_changes(&notes, &s.id), 0, "{notes:?}");
+    assert!(notes.iter().any(|n| n.method == methods::SESSION_CHANGED
+        && n.params["session_id"] == json!(s.id)
+        && n.params["status"] == json!("error")
+        && n.params["follow_up"] == json!(false)));
+    let cats: Vec<_> = rec.0.lock().unwrap().iter().map(|x| x.category).collect();
+    assert!(cats.contains(&NotifyCategory::Error), "{cats:?}");
+    assert!(!cats.contains(&NotifyCategory::FollowUp), "{cats:?}");
     td.shutdown().await;
 }
 

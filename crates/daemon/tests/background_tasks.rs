@@ -294,6 +294,7 @@ async fn follow_up_waits_for_background_tasks_like_turn_finished_does() {
     let rec = Arc::new(Recorder::default());
     td.ctx.notifier.set_out(rec.clone());
     let mut a = td.client("a");
+    let mut b = td.client("b");
     let follow_ups = |sid: &str| {
         rec.0
             .lock()
@@ -312,8 +313,67 @@ async fn follow_up_waits_for_background_tasks_like_turn_finished_does() {
     assert!(wait_for(&td, &mut a, &s.id, |s| s.status == SessionStatus::Idle).await);
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(follow_ups(&s.id), 0, "background work is still going on");
+    assert!(get(&td, &mut a, &s.id).await.follow_up, "the reminder is still armed while background tasks run");
     h0.inject(AgentEvent::Background { tasks: 0 }).await;
     agent_turn(&td, 0, "all done").await;
     assert!(eventually(T, || async { follow_ups(&s.id) == 1 }).await);
+    // 通知发出之后标记才清，并且这一次 session.changed 带 fired
+    assert!(wait_for(&td, &mut a, &s.id, |s| !s.follow_up).await);
+    let notes = b.drain_for(Duration::from_millis(500)).await;
+    let fired: Vec<_> = notes
+        .iter()
+        .filter(|n| n.method == methods::SESSION_CHANGED && n.params["follow_up_fired"] == json!(true))
+        .collect();
+    assert_eq!(fired.len(), 1, "{notes:?}");
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agent_started_turn_notifies_follow_up_when_the_session_is_marked() {
+    let td = TestDaemon::start_with(&[("notify.turn_finished", "\"never\"")], false).await;
+    let rec = Arc::new(Recorder::default());
+    td.ctx.notifier.set_out(rec.clone());
+    let mut a = td.client("a");
+    let follow_ups = |sid: &str| {
+        rec.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| b.category == NotifyCategory::FollowUp && b.session_id.as_deref() == Some(sid))
+            .count()
+    };
+    let s = create(&td, &mut a, "plain").await;
+    assert!(wait_for(&td, &mut a, &s.id, |s| s.status == SessionStatus::Idle).await);
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id, "follow_up": true })).await.unwrap();
+    // 没有推迟的通知，agent 自己开的一轮平时不提醒；标了 follow_up 就提醒，并消费标记
+    agent_turn(&td, 0, "on its own").await;
+    assert!(eventually(T, || async { follow_ups(&s.id) == 1 }).await);
+    assert!(wait_for(&td, &mut a, &s.id, |s| !s.follow_up).await);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_deferred_follow_up_is_sent_and_consumed_when_no_agent_turn_follows() {
+    let td = TestDaemon::start_with(&[("notify.turn_finished", "\"never\"")], false).await;
+    td.ctx.sessions.set_finish_notify_grace(Duration::from_millis(300));
+    let rec = Arc::new(Recorder::default());
+    td.ctx.notifier.set_out(rec.clone());
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, "hold while launching").await;
+    let _: Empty =
+        a.call(&td, methods::SESSION_SET_MARKS, json!({ "session_id": s.id, "follow_up": true })).await.unwrap();
+    assert!(wait_for(&td, &mut a, &s.id, |s| s.status == SessionStatus::Running).await);
+    let h0 = td.fake.handle(0);
+    h0.inject(AgentEvent::Background { tasks: 1 }).await;
+    h0.release();
+    assert!(wait_for(&td, &mut a, &s.id, |s| s.status == SessionStatus::Idle).await);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(get(&td, &mut a, &s.id).await.follow_up);
+    // 任务结束了，CLI 却没有接着自己跑一轮：兜底补发，同样消费标记
+    h0.inject(AgentEvent::Background { tasks: 0 }).await;
+    assert!(wait_for(&td, &mut a, &s.id, |s| !s.follow_up).await);
+    let n = rec.0.lock().unwrap().iter().filter(|b| b.category == NotifyCategory::FollowUp).count();
+    assert_eq!(n, 1);
     td.shutdown().await;
 }

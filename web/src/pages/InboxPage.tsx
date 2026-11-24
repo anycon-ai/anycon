@@ -290,7 +290,7 @@ function GoneNotice({ locate, onDismiss }: { locate: InboxLocate; onDismiss: () 
 }
 
 /**
- * 通知的目标还没找到：节点这个浏览器不认识 / 还没解锁（给解锁和配对的入口，不是「已处理」）；认识但还没连上、没同步完（等它，
+ * 通知的目标还没找到：节点这个浏览器不认识 / 还没解锁（给解锁和配对的入口）；认识但还没连上、没同步完（等它，
  * 同步完之后要么找到、要么说已经处理了）。
  */
 function PendingTarget({ target, nodeId, onDismiss }: { target: InboxLocate; nodeId: string | undefined; onDismiss: () => void }) {

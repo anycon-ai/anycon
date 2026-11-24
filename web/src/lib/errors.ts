@@ -60,7 +60,7 @@ export function isMethodNotFound(e: unknown): boolean {
   return e instanceof RpcCallError && e.kind === 'rpc' && (e.rpc?.code === -32601 || e.code === 'unsupported')
 }
 
-/** 标 / 取消「待处理」失败的说法：旧 daemon 不认识 `session.set_marks`，要它更新才能用；别的错误照常。 */
+/** 标 / 取消「完成后提醒」失败的说法：旧 daemon 不认识 `session.set_marks`，要它更新才能用；别的错误照常。 */
 export function describeMarkError(e: unknown, t: TFunction): string {
   return isMethodNotFound(e) ? t('errors.daemonTooOld') : describeError(e, t)
 }

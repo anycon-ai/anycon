@@ -6,7 +6,7 @@
 import type { TwinQuestion } from '@/protocol'
 import type { PermissionKind } from '@/protocol'
 import { isActiveStatus } from '@/features/session/group'
-import { isFollowUp, isFollowUpReady } from '@/features/session/marks'
+import { isFollowUp } from '@/features/session/marks'
 import { pendingApprovals, type EnrollItem, type EnrollResolution } from '@/stores/enroll'
 import type { PendingPermission, SessionItem } from '@/stores/sessions'
 import { activityOf, isReview } from '@/features/todos/activity'
@@ -20,7 +20,7 @@ export const ERROR_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 export const SECTIONS = ['now', 'review', 'later'] as const
 export type InboxSectionId = (typeof SECTIONS)[number]
 
-export type InboxItemKind = 'twin_question' | 'permission' | 'plan' | 'question' | 'enroll' | 'follow_up' | 'error' | 'waiting' | 'review' | 'later' | 'rule'
+export type InboxItemKind = 'twin_question' | 'permission' | 'plan' | 'question' | 'enroll' | 'error' | 'waiting' | 'review' | 'later' | 'rule'
 
 interface ItemBase {
   /** 稳定的 key：列表、选中、焦点都靠它。 */
@@ -49,7 +49,7 @@ export interface SessionInboxItem extends ItemBase {
    * `waiting`：会话摘要说它在等审批，但这个页面还没有那条请求（刷新后还没同步完、节点离线）：来自缓存的摘要，
    * 没有请求详情、没有答复按钮，只能打开会话；请求到了之后由真正的请求条目取代。
    */
-  kind: 'follow_up' | 'error' | 'waiting'
+  kind: 'error' | 'waiting'
   sessionId: string
   session: SessionItem
 }
@@ -136,7 +136,7 @@ export function isRecentError(s: Pick<SessionItem, 'status' | 'archived' | 'upda
 export function deriveInbox(i: InboxInputs): InboxModel {
   const picked = new Set(i.selected)
   const now: InboxItem[] = []
-  // 已经以权限请求的身份列在「现在」里的会话：不再作为「待处理」会话重复列，也不算「进行中」
+  // 已经以权限请求的身份列在「现在」里的会话：不再重复列，也不算「进行中」
   const requested = new Set<string>()
 
   for (const p of Object.values(i.pending)) {
@@ -162,7 +162,7 @@ export function deriveInbox(i: InboxInputs): InboxModel {
   const inProgress: SessionItem[] = []
   for (const s of Object.values(i.sessions)) {
     if (!picked.has(s.node_id) || s.archived) continue
-    // 已经以权限请求列在「现在」里了：不重复列，也不算「进行中」或「待处理」
+    // 已经以权限请求列在「现在」里了：不重复列，也不算「进行中」
     if (requested.has(s.id)) continue
     if (isWaiting(s)) {
       now.push({ key: `waiting:${s.id}`, section: 'now', kind: 'waiting', nodeId: s.node_id, sessionId: s.id, session: s, sinceMs: s.updated_at_ms, expiresAtMs: null })
@@ -172,10 +172,8 @@ export function deriveInbox(i: InboxInputs): InboxModel {
       inProgress.push(s)
       continue
     }
-    // 标了「待处理」又出错的会话只列一次，按「待处理」算：用户明确标过它；清掉标记后它仍在 7 天内就以出错的身份回来
-    if (isFollowUpReady(s)) {
-      now.push({ key: `session:${s.id}`, section: 'now', kind: 'follow_up', nodeId: s.node_id, sessionId: s.id, session: s, sinceMs: s.updated_at_ms, expiresAtMs: null })
-    } else if (isRecentError(s, i.now)) {
+    // 「完成后提醒」（`follow_up`）不进这一页：它只管提醒一次，结果靠未读红点；这里只放需要决策的事
+    if (isRecentError(s, i.now)) {
       now.push({ key: `session:${s.id}`, section: 'now', kind: 'error', nodeId: s.node_id, sessionId: s.id, session: s, sinceMs: s.updated_at_ms, expiresAtMs: null })
     }
   }
@@ -219,7 +217,7 @@ export function inboxNowCount(model: InboxModel): number {
   return nowItems(model).length
 }
 
-/** 「进行中」里标了「完成后提醒」的会话。 */
+/** 「进行中」里标了「完成后提醒」的会话（`inProgress` 里的会话都在跑，所以只看有没有标）。 */
 export function isArmed(s: SessionItem): boolean {
   return isFollowUp(s) && isActiveStatus(s.status)
 }

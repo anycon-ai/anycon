@@ -47,6 +47,15 @@ for (const impl of cryptoImpls)
           assert.equal(dry.run.decisions[2]?.question, 'Which index?')
           assert.equal((await node.twin.runs()).runs[0]?.id, dry.run.id)
           assert.deepEqual(await node.twin.runs({ limit: 3, before_ms: 1 }), { runs: [] })
+          assert.equal((await node.twin.stats()).days.length, 7)
+          const stats = await node.twin.stats({ days: 2 })
+          assert.equal(stats.days.length, 2)
+          assert.equal(stats.days[1]?.judge_calls, 2)
+          assert.equal(stats.days[1]?.usage, undefined)
+          await assert.rejects(
+            node.twin.stats({ days: 0 }),
+            (e: unknown) => e instanceof RpcError && e.code === 'invalid' && e.field === 'days',
+          )
           assert.equal(
             (await node.twin.questions({ open_only: true })).questions[0]?.status,
             'open',
@@ -73,6 +82,9 @@ for (const impl of cryptoImpls)
               ['twin.dry_run', {}],
               ['twin.runs', {}],
               ['twin.runs', { limit: 3, before_ms: 1 }],
+              ['twin.stats', {}],
+              ['twin.stats', { days: 2 }],
+              ['twin.stats', { days: 0 }],
               ['twin.questions', { open_only: true }],
               ['twin.answer', { id: 'q1', answer: 'web' }],
               ['twin.questions', {}],

@@ -1,5 +1,5 @@
 // 分身界面的假节点：可控制状态、运行和问题，记录协议参数及拒绝。
-import type { TwinAnswerParams, TwinGetParams, TwinGetResult, TwinLink, TwinLinkParams, TwinPeerStatus, TwinQuestion, TwinRun, TwinSetParams, TwinUnlinkParams } from '@/protocol'
+import type { TwinAnswerParams, TwinGetParams, TwinGetResult, TwinLink, TwinLinkParams, TwinPeerStatus, TwinQuestion, TwinRun, TwinSetParams, TwinStatsParams, TwinDayStats, TwinUnlinkParams } from '@/protocol'
 import { type FakeRpc, rpcError } from './fakeRpc'
 export const twinValue = (over: Partial<TwinGetResult> = {}): TwinGetResult => ({
   enabled: true,
@@ -11,6 +11,8 @@ export const twinValue = (over: Partial<TwinGetResult> = {}): TwinGetResult => (
   waiting: [],
   ...over,
 })
+/** 一天的统计；`date` 缺省是 2026-01-01，计数缺省为 0（与守护进程的「缺省 = 0」一致）。 */
+export const twinDay = (over: Partial<TwinDayStats> = {}): TwinDayStats => ({ date: '2026-01-01', start_ms: 0, ...over })
 export const twinRun = (over: Partial<TwinRun> = {}): TwinRun => ({
   id: 'run-1',
   requester: 'local',
@@ -60,6 +62,9 @@ export class FakeTwinDaemon {
   questions: TwinQuestion[] = []
   dry = twinRun({ id: 'dry-1', dry_run: true })
   failSet = false
+  /** `twin.stats` 的结果：按日期升序，最后一项是今天。缺省按请求的天数补零。 */
+  statsDays: TwinDayStats[] | null = null
+  failStats = false
   /** 分身设备（`requester`）的范围，键是 `<节点 id>:<设备 id>`。 */
   scopes = new Map<string, TwinGetResult>()
   /** 使用方节点上的分身连接。 */
@@ -113,6 +118,19 @@ export class FakeTwinDaemon {
     rpc.handlers['twin.runs'] = (raw) => {
       const p = raw as { before_ms?: number; limit?: number }
       return { runs: this.runs.filter((r) => p.before_ms === undefined || r.started_ms < p.before_ms).slice(0, p.limit ?? 50) }
+    }
+    rpc.handlers['twin.stats'] = (raw) => {
+      if (this.failStats) throw rpcError('internal')
+      const days = (raw as TwinStatsParams).days ?? 7
+      const all = this.statsDays ?? [twinDay({ date: '2026-01-01' })]
+      // 不够的往前补零日，多的取最近的
+      const first = new Date(`${all[0]!.date}T00:00:00Z`)
+      const pad = Array.from({ length: Math.max(0, days - all.length) }, (_, i) => {
+        const d = new Date(first)
+        d.setUTCDate(d.getUTCDate() - (days - all.length - i))
+        return twinDay({ date: d.toISOString().slice(0, 10) })
+      })
+      return { days: [...pad, ...all].slice(-days) }
     }
     rpc.handlers['twin.questions'] = () => ({ questions: this.questions })
     rpc.handlers['twin.dry_run'] = () => ({ run: this.dry })

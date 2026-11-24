@@ -356,6 +356,17 @@ fn main() {
         today: TwinToday { dispatches: 1, judge_calls: 2 },
         working: vec!["t".into()],
         waiting: vec![],
+        last_run: Some(TwinRunBrief {
+            id: "r".into(),
+            started_ms: 1,
+            finished_ms: Some(2),
+            triggers: vec![TwinTrigger::Tick],
+            result: TwinRunResult::Done,
+            error: None,
+        }),
+        next_wake_ms: Some(60_000),
+        queued: vec!["u".into()],
+        deferred: vec!["v".into()],
     };
     let question = TwinQuestion {
         id: "q".into(),
@@ -394,6 +405,24 @@ fn main() {
             node: None,
         }],
         error: None,
+        usage: Some(JudgeUsage { input_tokens: Some(10), output_tokens: Some(3), cost_usd: Some(0.001) }),
+    };
+    let stats = TwinStatsResult {
+        days: vec![TwinDayStats {
+            date: "2026-01-02".into(),
+            start_ms: 1_767_283_200_000,
+            runs: TwinRunCounts { done: 2, idle: 1, budget: 0, failed: 1, cancelled: 0 },
+            dry_runs: 1,
+            judge_calls: 5,
+            usage: Some(JudgeUsage { input_tokens: Some(100), output_tokens: Some(30), cost_usd: Some(0.01) }),
+            decisions: TwinDecisionCounts { dispatch: 2, ask_user: 1, ask_advisor: 0, wait: 1, hand_back: 0, done: 1 },
+            skipped: 1,
+            handed_back: 1,
+            taken_over: 0,
+            accepted: 1,
+            dropped: 0,
+            turnaround_ms: 3_600_000,
+        }],
     };
     let peer_status = TwinPeerStatus {
         name: "mac-mini".into(),
@@ -446,6 +475,12 @@ fn main() {
             methods::TWIN_RUNS,
             serde_json::to_value(TwinRunsParams { limit: Some(10), before_ms: Some(9) }).unwrap(),
             serde_json::to_value(TwinRunsResult { runs: vec![run.clone()] }).unwrap(),
+        ),
+        (
+            "stats",
+            methods::TWIN_STATS,
+            serde_json::to_value(TwinStatsParams { days: Some(7) }).unwrap(),
+            serde_json::to_value(&stats).unwrap(),
         ),
         (
             "questions",

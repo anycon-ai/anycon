@@ -129,7 +129,7 @@ export interface SegmentedOption<T extends string> {
 }
 
 /** 分段控件（思考等级、主题等）。再次点击当前项不会取消选择。 */
-export function Segmented<T extends string>({ value, onChange, options, ariaLabel, size = 'md', disabled, testId, fill }: { value: T | null; onChange: (v: T) => void; options: SegmentedOption<T>[]; ariaLabel: string; size?: 'sm' | 'md'; disabled?: boolean; testId?: string; fill?: boolean }) {
+export function Segmented<T extends string>({ value, onChange, options, ariaLabel, size = 'md', disabled, testId, fill }: { value: T | null; onChange: (v: T) => void; options: SegmentedOption<T>[]; ariaLabel: string; size?: 'sm' | 'md' | 'lg'; disabled?: boolean; testId?: string; fill?: boolean }) {
   return (
     <ToggleGroup.Root
       type="single"
@@ -153,7 +153,7 @@ export function Segmented<T extends string>({ value, onChange, options, ariaLabe
             'rounded-[0.3rem] font-medium text-fg-muted transition-colors hover:text-fg disabled:opacity-40 data-[state=on]:bg-surface data-[state=on]:text-fg data-[state=on]:shadow-sm',
             // fill：撑满一行、各项等宽，窄屏上文字换行而不是横向滚动
             fill ? 'min-w-0 flex-1 px-2 text-center leading-tight' : 'whitespace-nowrap',
-            size === 'sm' ? 'px-2 py-1 text-xs' : fill ? 'py-1.5 text-[0.8125rem]' : 'px-3 py-1.5 text-[0.8125rem]',
+            size === 'sm' ? 'px-2 py-1 text-xs' : size === 'lg' ? 'min-h-11 px-4 text-sm' : fill ? 'py-1.5 text-[0.8125rem]' : 'px-3 py-1.5 text-[0.8125rem]',
           )}
         >
           {o.label}

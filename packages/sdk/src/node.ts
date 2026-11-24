@@ -50,6 +50,8 @@ import {
   type TwinQuestionsResult,
   type TwinRunsParams,
   type TwinRunsResult,
+  type TwinStatsParams,
+  type TwinStatsResult,
   type TwinSetParams,
   type TwinUnlinkParams,
   type Todo,
@@ -692,6 +694,9 @@ export class Node extends Emitter<NodeEvents> {
     dryRun: (options: RequestOptions = {}): Promise<TwinDryRunResult> =>
       this.call('twin.dry_run', {}, { timeoutMs: 16 * 60_000, ...options }),
     runs: (params: TwinRunsParams = {}): Promise<TwinRunsResult> => this.call('twin.runs', params),
+    // 最近几个本地日的统计（只读、只统计本机分身）；`days` 1..=90，缺省 7。节点 `capabilities.twin_stats` 为 true 才有，旧节点回 `unsupported`。
+    stats: (params: TwinStatsParams = {}): Promise<TwinStatsResult> =>
+      this.call('twin.stats', params),
     questions: (params: TwinQuestionsParams = {}): Promise<TwinQuestionsResult> =>
       this.call('twin.questions', params),
     answer: (params: TwinAnswerParams): Promise<TwinQuestion> => this.call('twin.answer', params),

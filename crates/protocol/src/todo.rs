@@ -449,10 +449,14 @@ pub enum TodoEventData {
         to: TodoState,
         by: TodoActor,
     },
+    /// 分身把这一项交回给人。`done = true`：不是没做完，而是分身判断已经做完了、请人确认（`reason` 以固定前缀开头）。
+    /// 旧版本写的这类事件没有这个字段，按 `reason` 的前缀识别。
     HandedBack {
         reason: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_id: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        done: bool,
     },
     /// 一个人在分身派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个
     /// 节点上（分身用的别的节点）：那个节点记的这一条没有它，分身所在节点取回之后记的有。

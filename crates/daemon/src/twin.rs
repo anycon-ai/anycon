@@ -13,8 +13,9 @@ use tokio::sync::{Mutex, Notify};
 use crate::clients::Caller;
 use crate::daemon::Ctx;
 use crate::gitops::{PrChecks, PrSnapshot};
-use crate::judge::service::{local_day_start, protocol_error, Position, ServiceError};
+use crate::judge::service::{local_date, local_day_start, protocol_error, Position, ServiceError};
 use crate::judge::{CallError, JudgeRequest};
+use crate::store::sum_usage;
 use crate::todo_dispatch::{actor_of, broadcast_event, truncate_utf8};
 
 const LOCAL: &str = "local";
@@ -181,21 +182,32 @@ async fn get_device(c: &Ctx, device: &str) -> Result<TwinGetResult> {
     } else {
         TwinState::Idle
     };
-    Ok(TwinGetResult { scope, state, enabled: accept, configured, today, working, waiting: vec![] })
+    // 分身设备没有运行记录、唤醒时间、排队和被推迟的项：last_run / next_wake_ms / queued / deferred 恒为缺省 / 空。
+    Ok(TwinGetResult {
+        scope,
+        state,
+        enabled: accept,
+        configured,
+        today,
+        working,
+        waiting: vec![],
+        last_run: None,
+        next_wake_ms: None,
+        queued: vec![],
+        deferred: vec![],
+    })
 }
 
-pub async fn get(c: &Ctx) -> Result<TwinGetResult> {
-    let scope = c.store.twin_scope(LOCAL).await.map_err(internal)?;
-    let configured = ready(c, &scope);
-    let todos = items(c, &scope).await?;
-    let mut working = vec![];
-    for t in &todos {
-        if working_item(c, t).await? {
-            working.push(t.id.clone());
-        }
-    }
-    let questions = c.store.twin_questions(LOCAL, true).await.map_err(internal)?;
-    let waiting = questions.into_iter().map(|q| q.todo_id).collect();
+/// 本机分身的状态和算状态用到的几个量。`get` 和 `changed` 共用，状态逻辑只有这一份。
+struct LocalStatus {
+    state: TwinState,
+    enabled: bool,
+    configured: bool,
+    today: TwinToday,
+}
+
+async fn local_status(c: &Ctx, scope: &TwinScope) -> Result<LocalStatus> {
+    let configured = ready(c, scope);
     let start = local_day_start(c.judge.clock().now()).ok_or_else(|| internal("local day"))?;
     let today = TwinToday {
         dispatches: c.store.twin_dispatches_since(LOCAL, start).await.map_err(internal)?,
@@ -215,7 +227,125 @@ pub async fn get(c: &Ctx) -> Result<TwinGetResult> {
     } else {
         TwinState::Idle
     };
-    Ok(TwinGetResult { scope, state, enabled, configured, today, working, waiting })
+    Ok(LocalStatus { state, enabled, configured, today })
+}
+
+pub async fn get(c: &Ctx) -> Result<TwinGetResult> {
+    let scope = c.store.twin_scope(LOCAL).await.map_err(internal)?;
+    let LocalStatus { state, enabled, configured, today } = local_status(c, &scope).await?;
+    let todos = items(c, &scope).await?;
+    let mut working = vec![];
+    for t in &todos {
+        if working_item(c, t).await? {
+            working.push(t.id.clone());
+        }
+    }
+    let questions = c.store.twin_questions(LOCAL, true).await.map_err(internal)?;
+    let waiting: Vec<String> = questions.into_iter().map(|q| q.todo_id).collect();
+    let queued =
+        todos.iter().filter(|t| !working.contains(&t.id) && !waiting.contains(&t.id)).map(|t| t.id.clone()).collect();
+    let wakes = self::enabled(c, &scope);
+    let last_run = c.store.twin_last_run(LOCAL).await.map_err(internal)?;
+    let (next_wake_ms, deferred) = {
+        let p = c.twin.pending.lock().unwrap();
+        // 和 `spawn` 算睡眠时长的口径一致，但不含「预算用完后到下一个本地午夜」那个只重算状态的定时器
+        let next_wake = wakes
+            .then(|| {
+                let coalesced = if p.running { None } else { p.deadline() };
+                coalesced.into_iter().chain(p.next_tick).min()
+            })
+            .flatten();
+        let deferred: Vec<String> =
+            p.deferred.iter().filter(|id| todos.iter().any(|t| &t.id == *id)).cloned().collect();
+        (next_wake, deferred)
+    };
+    Ok(TwinGetResult {
+        scope,
+        state,
+        enabled,
+        configured,
+        today,
+        working,
+        waiting,
+        last_run,
+        next_wake_ms,
+        queued,
+        deferred,
+    })
+}
+
+/// `twin.stats`：最近 `days` 个本地日（含今天，升序，没有活动的日子补零）。只统计本机分身。
+/// 日界线都用 `local_day_start` 重新解析：往前走一天从午夜减 12 小时再取日界线，不假定一天是 24 小时（夏令时）。
+pub async fn stats(c: &Ctx, p: TwinStatsParams) -> Result<TwinStatsResult> {
+    let n = p.days.unwrap_or(7);
+    if !(1..=90).contains(&n) {
+        return Err(invalid("days", "out_of_range"));
+    }
+    let mut starts = vec![local_day_start(c.judge.clock().now()).ok_or_else(|| internal("local day"))?];
+    while starts.len() < n as usize {
+        let first = starts[starts.len() - 1];
+        starts
+            .push(first.checked_sub(12 * 60 * MINUTE).and_then(local_day_start).ok_or_else(|| internal("local day"))?);
+    }
+    starts.reverse();
+    let since = starts[0];
+    let mut days = Vec::with_capacity(starts.len());
+    for &start in &starts {
+        let date = local_date(start).ok_or_else(|| internal("local date"))?;
+        days.push(TwinDayStats { date, start_ms: start, ..Default::default() });
+    }
+    // 事件时间落在哪一天：最后一个不晚于它的日界线
+    let bucket = |at: u64| starts.partition_point(|s| *s <= at).checked_sub(1);
+    for run in c.store.twin_runs_since(LOCAL, since).await.map_err(internal)? {
+        let Some(d) = bucket(run.started_ms).map(|i| &mut days[i]) else { continue };
+        d.judge_calls += run.judge_calls.len() as u32;
+        d.usage = sum_usage(d.usage.iter().chain(run.usage.iter()));
+        if run.dry_run {
+            d.dry_runs += 1;
+            continue;
+        }
+        match run.result {
+            TwinRunResult::Done => d.runs.done += 1,
+            TwinRunResult::Idle => d.runs.idle += 1,
+            TwinRunResult::Budget => d.runs.budget += 1,
+            TwinRunResult::Failed => d.runs.failed += 1,
+            TwinRunResult::Cancelled => d.runs.cancelled += 1,
+            TwinRunResult::Unknown => {}
+        }
+        for dec in &run.decisions {
+            match dec.outcome {
+                TwinDecisionOutcome::Skipped => d.skipped += 1,
+                TwinDecisionOutcome::Executed => match dec.action {
+                    TwinAction::Dispatch => d.decisions.dispatch += 1,
+                    TwinAction::AskUser => d.decisions.ask_user += 1,
+                    TwinAction::AskAdvisor => d.decisions.ask_advisor += 1,
+                    TwinAction::Wait => d.decisions.wait += 1,
+                    TwinAction::HandBack => d.decisions.hand_back += 1,
+                    TwinAction::Done => d.decisions.done += 1,
+                    TwinAction::Unknown => {}
+                },
+                TwinDecisionOutcome::Unknown => {}
+            }
+        }
+    }
+    for (at, kind) in c.store.todo_event_times_since(since).await.map_err(internal)? {
+        let Some(d) = bucket(at).map(|i| &mut days[i]) else { continue };
+        match kind.as_str() {
+            "handed_back" => d.handed_back += 1,
+            "taken_over" => d.taken_over += 1,
+            _ => {}
+        }
+    }
+    for (at, done, first_dispatch) in c.store.twin_closed_since(since).await.map_err(internal)? {
+        let Some(d) = bucket(at).map(|i| &mut days[i]) else { continue };
+        if done {
+            d.accepted += 1;
+            d.turnaround_ms += at.saturating_sub(first_dispatch);
+        } else {
+            d.dropped += 1;
+        }
+    }
+    Ok(TwinStatsResult { days })
 }
 
 /// 采用 agent 声明的 unattended 标记；危险模式无论是否缺省都不能由分身使用。
@@ -319,13 +449,16 @@ pub async fn set(c: &Ctx, caller: &Caller, p: TwinSetParams) -> Result<TwinGetRe
 /// 分身连接变了（建立、断开、在线状态、上一次的 `twin.peer_status`）：发一条 `twin.changed` 让客户端重新读 `twin.links`。
 /// 和状态变化无关，所以不看「状态变没变」。
 pub(crate) async fn announce_links(c: &Ctx) {
-    if let Ok(g) = get(c).await {
-        c.clients.broadcast(methods::TWIN_CHANGED, TwinChanged { state: g.state, run: None });
+    if let Ok(scope) = c.store.twin_scope(LOCAL).await {
+        if let Ok(st) = local_status(c, &scope).await {
+            c.clients.broadcast(methods::TWIN_CHANGED, TwinChanged { state: st.state, run: None });
+        }
     }
 }
 
 async fn changed(c: &Ctx, run: Option<TwinRun>) -> Result<TwinState> {
-    let state = get(c).await?.state;
+    let scope = c.store.twin_scope(LOCAL).await.map_err(internal)?;
+    let state = local_status(c, &scope).await?.state;
     let send = {
         let mut p = c.twin.pending.lock().unwrap();
         let send = p.state != Some(state) || run.is_some();
@@ -783,6 +916,7 @@ async fn run(c: &Ctx, dry_run: bool, triggers: Vec<TwinTrigger>) -> Result<TwinR
         judge_calls: vec![],
         decisions: vec![],
         error: None,
+        usage: None,
     };
     c.store.save_twin_run(&run).await.map_err(internal)?;
     let result = Box::pin(run_inner(c, &mut run)).await;
@@ -793,6 +927,8 @@ async fn run(c: &Ctx, dry_run: bool, triggers: Vec<TwinTrigger>) -> Result<TwinR
     }
     run.finished_ms = Some(c.judge.clock().now());
     c.store.save_twin_run(&run).await.map_err(internal)?;
+    // 用量不存在运行记录里：从这次运行的判断调用现算，和 `twin.runs` 读到的一致
+    run.usage = c.store.judge_usage(&run.judge_calls).await.map_err(internal)?;
     tracing::info!(run_id=%run.id,result=?run.result,dry_run,items=run.items.len(),"twin wake finished");
     Ok(run)
 }
@@ -1380,8 +1516,9 @@ async fn release(c: &Ctx, caller: &Caller, id: &str, run: &str, reason: &str, do
         id,
         now,
         TodoEventData::HandedBack {
-            reason: if done { format!("The twin believes this is done: {reason}") } else { reason.into() },
+            reason: if done { format!("{}{reason}", crate::store::DONE_HAND_BACK_PREFIX) } else { reason.into() },
             run_id: Some(run.into()),
+            done,
         },
     )
     .await

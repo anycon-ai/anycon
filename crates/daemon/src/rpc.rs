@@ -141,6 +141,7 @@ impl Rpc {
                     .await
                     .map_err(|_| err(ErrorCode::Internal, "twin storage error"))?,
             }),
+            methods::TWIN_STATS => ok(crate::twin::stats(c, params(p)?).await?),
             methods::TWIN_QUESTIONS => {
                 let p: anycon_protocol::TwinQuestionsParams = params(p)?;
                 ok(anycon_protocol::TwinQuestionsResult {
@@ -826,6 +827,7 @@ impl Rpc {
                 rule_extract: true,
                 twin: true,
                 todo_repeat: true,
+                twin_stats: true,
             },
             started_at_ms: c.started_at_ms,
             attachment_limits: Some(NodeAttachmentLimits {

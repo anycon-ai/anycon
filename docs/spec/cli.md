@@ -262,7 +262,7 @@ Windows 上 `~` 是 `%USERPROFILE%`。没有权限位：`anycon init` 和 daemon
 
 | 命令 | 说明 |
 |---|---|
-| `anycon twin status [--requester <device>]` | `twin.get`：打印状态、项目、agent / 模型 / 模式、运行名额及当天用量。`--requester` 看这个节点对一台分身设备（另一个节点的分身，[daemon.md § 27](daemon.md#27-分身连接)）开放了什么：`<device>` 是那台设备的 id、唯一的 id 前缀或名称（只在种类是 `twin` 的设备里找，对不上 → 退出码 2）；不给就是这个节点自己的分身 |
+| `anycon twin status [--requester <device>]` | `twin.get`：打印状态、项目、agent / 模型 / 模式、运行名额及当天用量；本机分身还有 `last wake`（上一次真实唤醒距今多久和结果）、`next wake`（UTC 时间，没有则 `-`）和 `queued`（排队等分拣的项数）三行，节点没有 `capabilities.twin_stats`（旧 daemon 不填这几项）时这三行打印 `-`，不当成「从未唤醒、没有排队」；`--json` 带 `twin.get` 的全部字段（含 `last_run`、`next_wake_ms`、`queued`、`deferred`）。`--requester` 看这个节点对一台分身设备（另一个节点的分身，[daemon.md § 27](daemon.md#27-分身连接)）开放了什么：`<device>` 是那台设备的 id、唯一的 id 前缀或名称（只在种类是 `twin` 的设备里找，对不上 → 退出码 2）；不给就是这个节点自己的分身 |
 | `anycon twin pause` / `resume` | `twin.set { paused }`；已派出的会话继续 |
 | `anycon twin wake` | `twin.wake`；仍受 60 秒合并和最多 5 分钟的约束 |
 | `anycon twin dry-run` | `twin.dry_run`：打印每一项的动作、理由、执行或跳过及原因；不执行动作，计一次判断调用 |

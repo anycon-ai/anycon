@@ -188,6 +188,7 @@ export const METHODS = {
   TWIN_WAKE: 'twin.wake',
   TWIN_DRY_RUN: 'twin.dry_run',
   TWIN_RUNS: 'twin.runs',
+  TWIN_STATS: 'twin.stats',
   TWIN_QUESTIONS: 'twin.questions',
   TWIN_ANSWER: 'twin.answer',
   TWIN_CHANGED: 'twin.changed',

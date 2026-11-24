@@ -74,8 +74,9 @@ pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
                 Some(key) => Some(requester_id(&conn, key).await?),
                 None => None,
             };
+            let local = requester.is_none();
             let r: TwinGetResult = conn.call(methods::TWIN_GET, TwinGetParams { requester }).await?;
-            print_status(app, &r);
+            print_status(app, &r, view(app, &conn, local).await);
         }
         TwinCmd::LinkCode => {
             let r: NodeTwinLinkCodeResult = match conn.call(methods::NODE_TWIN_LINK_CODE, json!({})).await {
@@ -149,15 +150,16 @@ pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
                     TwinSetParams { paused: Some(matches!(cmd, TwinCmd::Pause)), ..Default::default() },
                 )
                 .await?;
-            print_status(app, &r);
+            print_status(app, &r, view(app, &conn, true).await);
         }
         TwinCmd::Set(a) => {
             let requester = match &a.requester {
                 Some(key) => Some(requester_id(&conn, key).await?),
                 None => None,
             };
+            let local = requester.is_none();
             let r: TwinGetResult = conn.call(methods::TWIN_SET, set_params(a, requester)).await?;
-            print_status(app, &r);
+            print_status(app, &r, view(app, &conn, local).await);
         }
         TwinCmd::Wake => {
             let r: Empty = conn.call(methods::TWIN_WAKE, json!({})).await?;
@@ -258,7 +260,34 @@ fn print_link(l: &TwinLink) {
 fn label<T: serde::Serialize>(v: T) -> String {
     serde_json::to_value(v).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
 }
-fn print_status(app: &App, r: &TwinGetResult) {
+/// 状态输出里运行状态那几行（唤醒、排队）怎么打印。
+#[derive(Clone, Copy, PartialEq)]
+enum View {
+    /// 分身设备的范围没有运行记录和排队，不打印。
+    Scope,
+    /// 本机分身，节点报告了 `capabilities.twin_stats`，数字可信。
+    Full,
+    /// 本机分身，但旧 daemon 不填这些字段：打印 `-`，不把「没有数据」当成「从没唤醒、没有排队」。
+    Unknown,
+}
+
+async fn view(app: &App, conn: &Conn, local: bool) -> View {
+    if !local {
+        return View::Scope;
+    }
+    if app.json() {
+        return View::Full;
+    }
+    // 节点信息拿不到（老 daemon）就当没有这个能力
+    let info: Option<NodeInfo> = conn.call(methods::NODE_INFO, json!({})).await.ok();
+    if info.is_some_and(|i| i.capabilities.twin_stats) {
+        View::Full
+    } else {
+        View::Unknown
+    }
+}
+
+fn print_status(app: &App, r: &TwinGetResult, view: View) {
     if app.json() {
         app.out.json_line(r);
         return;
@@ -278,6 +307,25 @@ fn print_status(app: &App, r: &TwinGetResult) {
         r.today.judge_calls,
         r.waiting.len(),
     );
+    if view == View::Unknown {
+        println!("last wake: -\nnext wake: -\nqueued: -");
+    }
+    if view == View::Full {
+        match &r.last_run {
+            Some(run) => println!(
+                "last wake: {} ({}{})",
+                crate::output::ago(run.started_ms),
+                label(run.result),
+                if run.finished_ms.is_none() { ", still running" } else { "" }
+            ),
+            None => println!("last wake: never"),
+        }
+        match r.next_wake_ms {
+            Some(at) => println!("next wake: {} UTC", anycon_daemon::util::fmt_utc(at)),
+            None => println!("next wake: -"),
+        }
+        println!("queued: {}", r.queued.len());
+    }
 }
 fn print_run(r: &TwinRun) {
     println!("{}  {}{}", r.id, label(r.result), if r.dry_run { " (dry run)" } else { "" });

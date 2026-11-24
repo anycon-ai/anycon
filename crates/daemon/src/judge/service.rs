@@ -136,6 +136,48 @@ pub fn local_day_start(now_ms: u64) -> Option<u64> {
     }
 }
 
+/// 毫秒时间戳在本机时区的日期 `YYYY-MM-DD`。
+#[cfg(unix)]
+pub fn local_date(ms: u64) -> Option<String> {
+    let seconds: libc::time_t = (ms / 1000).try_into().ok()?;
+    // 指针指向有效的栈内存；localtime_r 不共享可变的 tm 缓冲区。
+    unsafe {
+        let mut local: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&seconds, &mut local).is_null() {
+            return None;
+        }
+        Some(format!("{:04}-{:02}-{:02}", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday))
+    }
+}
+
+#[cfg(windows)]
+pub fn local_date(ms: u64) -> Option<String> {
+    #[repr(C)]
+    struct Tm {
+        sec: i32,
+        min: i32,
+        hour: i32,
+        mday: i32,
+        mon: i32,
+        year: i32,
+        wday: i32,
+        yday: i32,
+        isdst: i32,
+    }
+    unsafe extern "C" {
+        fn _localtime64_s(result: *mut Tm, time: *const i64) -> i32;
+    }
+    let seconds = i64::try_from(ms / 1000).ok()?;
+    // CRT 写入已分配的结构。
+    unsafe {
+        let mut local: Tm = std::mem::zeroed();
+        if _localtime64_s(&mut local, &seconds) != 0 {
+            return None;
+        }
+        Some(format!("{:04}-{:02}-{:02}", local.year + 1900, local.mon + 1, local.mday))
+    }
+}
+
 fn selected(cfg: &JudgeConfig, position: Position) -> Option<&str> {
     let name = match position {
         Position::Extract if !cfg.extract.is_empty() => &cfg.extract,

@@ -3824,6 +3824,11 @@
           "description": "支持分身的调度和 RPC。",
           "type": "boolean"
         },
+        "twin_stats": {
+          "default": false,
+          "description": "daemon 提供 `twin.stats`，`twin.get` 带 `last_run` / `next_wake_ms` / `queued` / `deferred`，`TwinRun` 带 `usage`\n（docs/spec/daemon.md § 26.8）。旧 daemon 没有这个字段，读作 false。",
+          "type": "boolean"
+        },
         "workspace": {
           "description": "有 workspace（文件夹即项目）。SDK 节点可能没有。",
           "type": "boolean"
@@ -8571,7 +8576,11 @@
           "type": "object"
         },
         {
+          "description": "分身把这一项交回给人。`done = true`：不是没做完，而是分身判断已经做完了、请人确认（`reason` 以固定前缀开头）。\n旧版本写的这类事件没有这个字段，按 `reason` 的前缀识别。",
           "properties": {
+            "done": {
+              "type": "boolean"
+            },
             "kind": {
               "const": "handed_back",
               "type": "string"
@@ -8941,7 +8950,11 @@
           "type": "object"
         },
         {
+          "description": "分身把这一项交回给人。`done = true`：不是没做完，而是分身判断已经做完了、请人确认（`reason` 以固定前缀开头）。\n旧版本写的这类事件没有这个字段，按 `reason` 的前缀识别。",
           "properties": {
+            "done": {
+              "type": "boolean"
+            },
             "kind": {
               "const": "handed_back",
               "type": "string"
@@ -9858,6 +9871,122 @@
       ],
       "type": "object"
     },
+    "TwinDayStats": {
+      "description": "一个本地日的分身统计。数据来自节点保留的运行记录（90 天）和待办的经过（已删除待办的经过没了），所以旧日子的数字可能变小。",
+      "properties": {
+        "accepted": {
+          "default": 0,
+          "description": "这天由未关闭（非 `done` / `dropped`）变为 `done` 的 `state` 事件数，且本机分身在事件时间或之前派发过这一项。\n已关闭项在 `done` 和 `dropped` 之间改来改去不算；重新打开后再关闭算新的一次。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "date": {
+          "description": "节点本地时间的 `YYYY-MM-DD`。",
+          "type": "string"
+        },
+        "decisions": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TwinDecisionCounts"
+            }
+          ],
+          "default": {
+            "ask_advisor": 0,
+            "ask_user": 0,
+            "dispatch": 0,
+            "done": 0,
+            "hand_back": 0,
+            "wait": 0
+          }
+        },
+        "dropped": {
+          "default": 0,
+          "description": "同 `accepted`，但是变为 `dropped`。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dry_runs": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "handed_back": {
+          "default": 0,
+          "description": "这天待办经过里的 `handed_back` 事件数：分身没做完就交回给人的次数（`hand_back` 判断、连续 3 次失败、2 小时卡住）。\n不含 `done` 判断（分身认为做完了，请人确认）写的那一条。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "judge_calls": {
+          "default": 0,
+          "description": "这天开始的所有运行（含试跑，它们也占预算）发起的判断调用次数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runs": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TwinRunCounts"
+            }
+          ],
+          "default": {
+            "budget": 0,
+            "cancelled": 0,
+            "done": 0,
+            "failed": 0,
+            "idle": 0
+          },
+          "description": "这天开始的非试跑运行，按 `result`。"
+        },
+        "skipped": {
+          "default": 0,
+          "description": "非试跑运行里 `outcome = skipped` 的决定数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_ms": {
+          "description": "这一天开始的本地零点。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taken_over": {
+          "default": 0,
+          "description": "这天的 `taken_over` 事件数，只算本机分身派发过（不晚于事件）的项；分身设备派来的会话里的接手不算。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turnaround_ms": {
+          "default": 0,
+          "description": "这天每个 `accepted` 事件的（事件时间 - 该项在事件时间或之前最近一次被本机分身派发的时间）之和；平均 = `turnaround_ms / accepted`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "这些调用的用量之和。"
+        }
+      },
+      "required": [
+        "date",
+        "start_ms"
+      ],
+      "type": "object"
+    },
     "TwinDecision": {
       "properties": {
         "action": {
@@ -9942,6 +10071,48 @@
       ],
       "type": "object"
     },
+    "TwinDecisionCounts": {
+      "description": "非试跑运行里 `outcome = executed` 的决定按动作的计数。",
+      "properties": {
+        "ask_advisor": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ask_user": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dispatch": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "done": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hand_back": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wait": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "TwinDecisionOutcome": {
       "enum": [
         "executed",
@@ -9979,8 +10150,42 @@
         "configured": {
           "type": "boolean"
         },
+        "deferred": {
+          "description": "仍在范围内、但上一次判断放不进输入（§ 26.4 的大小上限）的待办 id。只在内存里，重启后为空。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "enabled": {
           "type": "boolean"
+        },
+        "last_run": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TwinRunBrief"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "最近一次真实唤醒（不含试跑），按 `started_ms`；可能还在运行（没有 `finished_ms`）。"
+        },
+        "next_wake_ms": {
+          "description": "已配置、本机启用且未暂停时：待处理触发的合并截止时间（运行中没有）和下一次兜底 tick 里较早的那个；都没有则缺省。\n读取时的快照，变化时不发通知。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "queued": {
+          "description": "在分身范围内（§ 26.1），但既不在 `working` 里也没有未回答的问题的待办 id。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "scope": {
           "$ref": "#/definitions/TwinScope"
@@ -10342,6 +10547,17 @@
             "$ref": "#/definitions/TwinTrigger"
           },
           "type": "array"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "这次运行所有判断调用的用量之和；调用都没报告的成员缺省。"
         }
       },
       "required": [
@@ -10355,6 +10571,90 @@
         "judge_calls",
         "decisions"
       ],
+      "type": "object"
+    },
+    "TwinRunBrief": {
+      "description": "一次运行的摘要（`TwinGetResult.last_run`）：不含每项的决定，要看细节用 `twin.runs`。",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JudgeError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finished_ms": {
+          "description": "缺省 = 还在运行。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/TwinRunResult"
+        },
+        "started_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "triggers": {
+          "items": {
+            "$ref": "#/definitions/TwinTrigger"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "started_ms",
+        "triggers",
+        "result"
+      ],
+      "type": "object"
+    },
+    "TwinRunCounts": {
+      "description": "非试跑运行按 `result` 的计数。",
+      "properties": {
+        "budget": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cancelled": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "done": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idle": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
       "type": "object"
     },
     "TwinRunResult": {
@@ -10554,6 +10854,37 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "TwinStatsParams": {
+      "description": "`twin.stats` 的参数。只统计本机分身。",
+      "properties": {
+        "days": {
+          "description": "统计最近几个本地日（含今天），1..=90，缺省 7；越界 → `invalid`，`data.field = \"days\"`。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TwinStatsResult": {
+      "description": "`twin.stats` 的结果。",
+      "properties": {
+        "days": {
+          "description": "节点本地时区的每一天，按日期升序，最后一项是今天；没有活动的日子也在，数字为 0。",
+          "items": {
+            "$ref": "#/definitions/TwinDayStats"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "days"
+      ],
+      "type": "object"
     },
     "TwinToday": {
       "properties": {
@@ -11867,6 +12198,9 @@
     "twin_changed": {
       "$ref": "#/definitions/TwinChanged"
     },
+    "twin_day_stats": {
+      "$ref": "#/definitions/TwinDayStats"
+    },
     "twin_decision": {
       "$ref": "#/definitions/TwinDecision"
     },
@@ -11909,6 +12243,9 @@
     "twin_run": {
       "$ref": "#/definitions/TwinRun"
     },
+    "twin_run_brief": {
+      "$ref": "#/definitions/TwinRunBrief"
+    },
     "twin_runs_params": {
       "$ref": "#/definitions/TwinRunsParams"
     },
@@ -11923,6 +12260,12 @@
     },
     "twin_state": {
       "$ref": "#/definitions/TwinState"
+    },
+    "twin_stats_params": {
+      "$ref": "#/definitions/TwinStatsParams"
+    },
+    "twin_stats_result": {
+      "$ref": "#/definitions/TwinStatsResult"
     },
     "twin_today": {
       "$ref": "#/definitions/TwinToday"
@@ -12004,6 +12347,10 @@
     "twin_dry_run_result",
     "twin_runs_params",
     "twin_runs_result",
+    "twin_stats_params",
+    "twin_stats_result",
+    "twin_run_brief",
+    "twin_day_stats",
     "twin_questions_params",
     "twin_questions_result",
     "twin_answer_params",
@@ -12789,6 +13136,12 @@
       "name": "twin.runs",
       "params": "TwinRunsParams",
       "result": "TwinRunsResult"
+    },
+    {
+      "direction": "request",
+      "name": "twin.stats",
+      "params": "TwinStatsParams",
+      "result": "TwinStatsResult"
     },
     {
       "direction": "request",

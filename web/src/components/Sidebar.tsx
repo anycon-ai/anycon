@@ -16,7 +16,7 @@ import { useTwinAvailable } from '@/features/twin/store'
 import { useRulesAvailable } from '@/features/rules/store'
 import { useTodoAvailable } from '@/features/todos/store'
 import { useOpenTodoCount } from '@/features/todos/useOpenTodoCount'
-import { isFollowUp, isFollowUpReady, isUnread } from '@/features/session/marks'
+import { isFollowUp, isUnread } from '@/features/session/marks'
 import { useEnroll } from '@/stores/enroll'
 import { shortNodeId } from '@/lib/ids'
 import { useNodeFilter } from '@/lib/nodeFilter'
@@ -55,9 +55,9 @@ function isWaiting(s: SessionItem): boolean {
   return s.pending_permissions > 0 || s.status === 'waiting_permission'
 }
 
-/** 一行上和标注有关的两个字段：未读小红点、「待处理」状态（还在跑 = armed，停下来 = ready）。 */
-function marksOf(s: SessionItem): { unread: boolean; followUp?: 'armed' | 'ready' } {
-  return { unread: isUnread(s), ...(isFollowUp(s) ? { followUp: isFollowUpReady(s) ? ('ready' as const) : ('armed' as const) } : {}) }
+/** 一行上和标注有关的两个字段：未读小红点、是否标了「完成后提醒」。 */
+function marksOf(s: SessionItem): { unread: boolean; followUp?: true } {
+  return { unread: isUnread(s), ...(isFollowUp(s) ? { followUp: true as const } : {}) }
 }
 
 /**
@@ -178,7 +178,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
 /**
  * 会话树和它上面的一排（节点过滤、新建项目、搜索）：左栏的中间部分。
- * Recent、项目树（带「待处理」小旗和未读小红点）、临时会话照旧。
+ * Recent、项目树（带「完成后提醒」小旗和未读小红点）、临时会话照旧。
  */
 export function SessionsPanel({ nodeId, onNavigate, onSearch }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void }) {
   const { t } = useTranslation()
@@ -412,9 +412,9 @@ function ProjectBranch({ nodeParam, nodeName, group, activeNode, activeSession, 
 
 /**
  * `project`：不在项目树里的行（Recent）带上所属项目，不然看不出这个会话是哪个项目的。
- * `unread`：未读小红点。`followUp`：标了「待处理」（空心 = 还在跑，实心 = 在等你）。
+ * `unread`：未读小红点。`followUp`：标了「完成后提醒」。
  */
-function SessionRow({ nodeParam, nodeName, project, id, title, status, pending, branch, active, unread, followUp, onNavigate }: { nodeParam: string; nodeName?: string; project?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; unread?: boolean; followUp?: 'armed' | 'ready'; onNavigate?: () => void }) {
+function SessionRow({ nodeParam, nodeName, project, id, title, status, pending, branch, active, unread, followUp, onNavigate }: { nodeParam: string; nodeName?: string; project?: string; id: string; title: string; status: Parameters<typeof SessionDot>[0]['status']; pending: number; branch?: string; active: boolean; unread?: boolean; followUp?: boolean; onNavigate?: () => void }) {
   const { t } = useTranslation()
   const meta = [project, nodeName].filter(Boolean).join(' · ')
   return (
@@ -431,7 +431,7 @@ function SessionRow({ nodeParam, nodeName, project, id, title, status, pending, 
       <SessionDot status={status} />
       <span className={cn('min-w-0 flex-1 truncate', unread && !active && 'font-semibold')}>{title || id}</span>
       {meta ? <span className="max-w-[40%] shrink-0 truncate text-xs text-fg-subtle">{meta}</span> : null}
-      {followUp ? <Flag className={cn('size-3 shrink-0 text-info', followUp === 'ready' && 'fill-current')} aria-label={followUp === 'ready' ? t('followUp.chipReady') : t('followUp.chipArmed')} data-testid="sidebar-follow-up-flag" /> : null}
+      {followUp ? <Flag className="size-3 shrink-0 text-info" aria-label={t('followUp.chip')} data-testid="sidebar-follow-up-flag" /> : null}
       {unread && !active ? <UnreadDot /> : null}
       {pending > 0 ? <Chip tone="warning">{pending}</Chip> : null}
     </Link>

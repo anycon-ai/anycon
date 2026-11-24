@@ -32,7 +32,7 @@ describe('ProjectPage: follow-up filter', () => {
   it('counts the marked sessions (not the archived ones) and lists only those', () => {
     render(<ProjectPage project="app" />)
     const tab = screen.getByTestId('project-filter-follow-up')
-    expect(tab).toHaveTextContent('Follow up (2)')
+    expect(tab).toHaveTextContent('Notify when done (2)')
     fireEvent.click(tab)
     const rows = screen.getAllByTestId('session-list-item').map((r) => r.textContent)
     expect(rows).toHaveLength(2)
@@ -44,7 +44,7 @@ describe('ProjectPage: follow-up filter', () => {
   it('shows the plain label when nothing is marked', () => {
     useSessions.setState({ list: { c: item({ id: 'c', title: 'Plain' }) } })
     render(<ProjectPage project="app" />)
-    expect(within(screen.getByTestId('project-filter-follow-up')).getByText('Follow up')).toBeInTheDocument()
+    expect(within(screen.getByTestId('project-filter-follow-up')).getByText('Notify when done')).toBeInTheDocument()
     expect(screen.getByTestId('project-filter-follow-up')).not.toHaveTextContent('(')
   })
 })

@@ -3,7 +3,7 @@
 import { TwinQuestionForm } from '@/features/twin/Question'
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, ChevronRight, ClipboardCheck, ClipboardList, ExternalLink, Flag, HelpCircle, Hourglass, ListPlus, ScrollText, ShieldQuestion, Smartphone } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ClipboardCheck, ClipboardList, ExternalLink, HelpCircle, Hourglass, ListPlus, ScrollText, ShieldQuestion, Smartphone } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cleanHintText, displayHint } from '@/lib/hint'
 import { shortNodeId } from '@/lib/ids'
@@ -31,8 +31,6 @@ import { ReviewBriefLine, ReviewDetail, ReviewRowActions } from './ReviewParts'
 
 /** 行和详情里的操作（处理后的焦点转移由页面负责）。 */
 export interface InboxActions {
-  /** 清掉会话上的「待处理」标记。 */
-  markDone: (s: SessionItem) => void
   archive: (s: SessionItem) => void
   /** 打开接入请求的批准对话框（spec/web.md § 4.3.2）。 */
   reviewEnroll: (e: EnrollItem) => void
@@ -41,13 +39,12 @@ export interface InboxActions {
   dismissLater: (t: ViewTodo) => void
 }
 
-const KIND_ICON: Record<InboxItemKind, typeof Flag> = {
+const KIND_ICON: Record<InboxItemKind, typeof AlertTriangle> = {
   twin_question: HelpCircle,
   permission: ShieldQuestion,
   plan: ClipboardList,
   question: HelpCircle,
   enroll: Smartphone,
-  follow_up: Flag,
   error: AlertTriangle,
   waiting: Hourglass,
   review: ClipboardCheck,
@@ -62,7 +59,6 @@ const KIND_TONE: Record<InboxItemKind, 'warning' | 'info' | 'danger' | 'success'
   plan: 'warning',
   question: 'warning',
   enroll: 'info',
-  follow_up: 'info',
   error: 'danger',
   waiting: 'warning',
   review: 'success',
@@ -79,7 +75,7 @@ export function CachedChip({ nodeName }: { nodeName: string }) {
   )
 }
 
-/** 行：主按钮（选中 / 展开）+ 不需要看详情的操作（已处理、归档、查看接入请求）。`children` 是手机上展开后的详情。 */
+/** 行：主按钮（选中 / 展开）+ 不需要看详情的操作（归档、查看接入请求）。`children` 是手机上展开后的详情。 */
 export function InboxRow({
   item,
   mode,
@@ -173,7 +169,6 @@ function RowActions({ item, actions, online, sessionId, nodeParam, selected, onS
         </div>
       )
     case 'waiting':
-    case 'follow_up':
     case 'error':
       return (
         <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-10">
@@ -182,11 +177,7 @@ function RowActions({ item, actions, online, sessionId, nodeParam, selected, onS
               {t('inbox.open')}
             </Link>
           ) : null}
-          {item.kind === 'waiting' ? null : item.kind === 'follow_up' ? (
-            <Button size="sm" variant="primary" className={small} disabled={!online} onClick={() => actions.markDone(item.session)} data-testid="inbox-done">
-              {t('inbox.markDone')}
-            </Button>
-          ) : (
+          {item.kind === 'waiting' ? null : (
             <Button size="sm" variant="secondary" className={small} disabled={!online} onClick={() => actions.archive(item.session)} data-testid="inbox-archive">
               {t('inbox.archive')}
             </Button>
@@ -283,12 +274,6 @@ function PlainDetail({ item, outside }: { item: Exclude<InboxItem, RequestItem |
       <OutsideNote outside={outside} item={item} />
       <h3 className="text-base font-semibold [overflow-wrap:anywhere]">{info.title}</h3>
       <DetailHeader item={item} />
-      {item.kind === 'follow_up' ? (
-        <p className="text-sm text-fg-muted">
-          {t('followUp.barReady')}
-          {item.session.status === 'error' ? ` ${t('inbox.alsoError')}` : ''}
-        </p>
-      ) : null}
       {item.kind === 'error' ? <p className="text-sm text-fg-muted">{t('inbox.errorBody')}</p> : null}
       {item.kind === 'waiting' ? <p className="text-sm text-fg-muted">{t('inbox.waitingBody')}</p> : null}
       {item.kind === 'enroll' ? <EnrollSummary item={item.enroll} nodeName={info.nodeName} /> : null}

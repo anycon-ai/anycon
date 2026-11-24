@@ -2919,6 +2919,12 @@ export interface SessionChanged {
    * 同 [`SessionSummary::follow_up`]。
    */
   follow_up?: boolean;
+  /**
+   * 这条 `session.changed` 是 daemon 因为发了 `follow_up` 通知、消费了 `follow_up` 标记而发的：
+   * 会话刚完成，标记已清成 false。只有这一种情况为 true（出错清标记、`session.set_marks` 都不带）；
+   * 它是一次性的事件信号，客户端不存进会话摘要。
+   */
+  follow_up_fired?: boolean;
   last_seq: number;
   pending_permissions: number;
   /**

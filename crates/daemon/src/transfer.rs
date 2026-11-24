@@ -157,7 +157,8 @@ pub struct SessionFile {
     pub status: SessionStatus,
     #[serde(default)]
     pub archived: bool,
-    /// 「待处理」标记。旧的导出包没有这一项，按没标处理。已读水位不导出：导入的会话一律当作已读。
+    /// 「完成后提醒」标记（`follow_up`）。导出，但导入时不收：导入的会话都没在跑，一律按没标处理；格式保持兼容。
+    /// 旧的导出包没有这一项。已读水位不导出：导入的会话一律当作已读。
     #[serde(default)]
     pub follow_up: bool,
     #[serde(default)]

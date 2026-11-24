@@ -45,12 +45,14 @@ describe('SessionListItem: follow-up and unread', () => {
     expect(screen.getByTestId('session-follow-up-toggle')).toHaveAttribute('aria-pressed', 'false')
   })
 
-  it('a marked session that stopped reads “Follow up”; one that still runs reads “Will remind”', () => {
+  it('a marked session reads “Notify when done” whatever its status, with the same look', () => {
     const { rerender } = render(<SessionListItem session={seed({ follow_up: true, status: 'idle' })} />)
-    expect(screen.getByTestId('follow-up-chip-row')).toHaveTextContent('Follow up')
+    expect(screen.getByTestId('follow-up-chip-row')).toHaveTextContent('Notify when done')
     expect(screen.getByTestId('session-follow-up-toggle')).toHaveAttribute('aria-pressed', 'true')
+    const idleClass = screen.getByTestId('follow-up-chip-row').className
     rerender(<SessionListItem session={item({ follow_up: true, status: 'running' })} />)
-    expect(screen.getByTestId('follow-up-chip-row')).toHaveTextContent('Will remind')
+    expect(screen.getByTestId('follow-up-chip-row')).toHaveTextContent('Notify when done')
+    expect(screen.getByTestId('follow-up-chip-row').className).toBe(idleClass)
   })
 
   it('shows the unread dot only once the session stopped with output past the read watermark', () => {

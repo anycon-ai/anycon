@@ -47,13 +47,13 @@ describe('sidebar navigation', () => {
     expect(nav.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('shows the “Now” count: approvals, stopped follow-ups, errors and device requests', () => {
+  it('shows the “Now” count: approvals, errors and device requests, but not a stopped session marked “notify when done”', () => {
     useSessions.setState({ list: { f: row({ id: 'f', follow_up: true, status: 'idle' }), e: row({ id: 'e', status: 'error', updated_at_ms: Date.now() }) } })
     useSessions.getState().addPending(NODE, { request_id: 'r', session_id: 'x', kind: 'tool', title: 't', detail: {}, options: [], created_at_ms: 1 })
     useEnroll.getState().upsert(NODE, { enroll_id: 'en', expires_at_ms: Date.now() + 60_000, created_at_ms: Date.now(), status: 'wait_approval', method: 'code', approval: true })
     wrap(<Sidebar nodeId={NODE} />)
-    expect(screen.getByTestId('sidebar-inbox-count')).toHaveTextContent('4')
-    expect(screen.getByTestId('sidebar-inbox')).toHaveAccessibleName('Inbox, 4 waiting')
+    expect(screen.getByTestId('sidebar-inbox-count')).toHaveTextContent('3')
+    expect(screen.getByTestId('sidebar-inbox')).toHaveAccessibleName('Inbox, 3 waiting')
   })
 
   it('does not count unread sessions or sessions that are still running', () => {

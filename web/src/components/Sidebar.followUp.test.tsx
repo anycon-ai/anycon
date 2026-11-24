@@ -1,5 +1,5 @@
-// 左栏里的「待处理」标注（web.md § 4.6.1）：停下来的待处理会话在「待处理」页里（排序、不重复、计数见 features/inbox/derive.test.ts），
-// 左栏不再有置顶组；还在跑的留在 Recent 里带一个空心旗，未读的亮小红点；窄条上只有「待处理」的一个「现在」个数。
+// 左栏里的「完成后提醒」标注（web.md § 4.6.1）：左栏没有置顶组；标了的会话（任何状态）带同一种旗，未读的亮小红点；
+// 窄条上只有「待处理」的一个「现在」个数（标记不计入）。
 import type { ReactNode } from 'react'
 import { render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -28,7 +28,7 @@ beforeEach(() => {
 })
 
 describe('sidebar: follow-up marks', () => {
-  it('has no pinned groups any more: the stopped follow-up sessions are in the inbox, the approvals too', () => {
+  it('has no pinned groups: marked sessions and approvals are not pulled out of the project tree', () => {
     seed(
       row({ id: 'new', title: 'Finished recently', follow_up: true, status: 'idle', updated_at_ms: 2_000 }),
       row({ id: 'ask', title: 'Approve me', follow_up: true, status: 'waiting_permission', pending_permissions: 1 }),
@@ -41,18 +41,14 @@ describe('sidebar: follow-up marks', () => {
     expect(screen.getByText('Approve me')).toBeInTheDocument()
   })
 
-  it('a stopped follow-up session shows a solid flag in the project tree', () => {
-    seed(row({ id: 'new', title: 'Finished recently', follow_up: true, status: 'idle' }))
+  it('a marked session shows the same flag whether it stopped or still runs', () => {
+    seed(row({ id: 'new', title: 'Finished recently', follow_up: true, status: 'idle' }), row({ id: 'run', title: 'Still running', follow_up: true, status: 'running' }))
     wrap(<Sidebar nodeId={NODE} />)
-    const flag = within(screen.getByText('Finished recently').closest('a')!).getByTestId('sidebar-follow-up-flag')
-    expect(flag.getAttribute('class')).toMatch(/fill-current/)
-  })
-
-  it('a running follow-up session keeps its place in Recent, with a hollow flag', () => {
-    seed(row({ id: 'run', title: 'Still running', follow_up: true, status: 'running' }))
-    wrap(<Sidebar nodeId={NODE} />)
-    const flag = within(screen.getByTestId('sidebar-recent')).getByTestId('sidebar-follow-up-flag')
-    expect(flag.getAttribute('class')).not.toMatch(/fill-current/)
+    const idle = within(screen.getByText('Finished recently').closest('a')!).getByTestId('sidebar-follow-up-flag')
+    const running = within(screen.getByTestId('sidebar-recent')).getByTestId('sidebar-follow-up-flag')
+    expect(idle).toHaveAccessibleName('Notify when done')
+    expect(idle.getAttribute('class')).not.toMatch(/fill-current/)
+    expect(running.getAttribute('class')).toBe(idle.getAttribute('class'))
   })
 
   it('shows the unread dot on a stopped session with unseen output, but not on the open one', () => {
@@ -63,17 +59,17 @@ describe('sidebar: follow-up marks', () => {
     expect(within(screen.getAllByText('Seen')[0]!.closest('a')!).queryByTestId('unread-dot')).toBeNull()
   })
 
-  it('the narrow rail shows one count, the inbox “Now” count: approvals, follow-ups and errors together, and not two chips', () => {
+  it('the narrow rail shows one count, the inbox “Now” count: approvals and errors together (a follow-up mark is not counted), and not two chips', () => {
     seed(row({ id: 'a', follow_up: true, status: 'idle' }), row({ id: 'b', status: 'error', updated_at_ms: Date.now() }), row({ id: 'c', pending_permissions: 1, status: 'waiting_permission' }))
     useSessions.getState().addPending(NODE, { request_id: 'r1', session_id: 'c', kind: 'tool', title: 't', detail: {}, options: [], created_at_ms: 1 })
     wrap(<SidebarRail nodeId={NODE} onSearch={() => {}} onPin={() => {}} />)
     const link = screen.getByTestId('sidebar-rail-inbox')
     expect(link).toHaveAttribute('href', '/inbox')
-    expect(link).toHaveAccessibleName('Inbox, 3 waiting')
-    expect(screen.getByTestId('sidebar-rail-inbox-count')).toHaveTextContent('3')
+    expect(link).toHaveAccessibleName('Inbox, 2 waiting')
+    expect(screen.getByTestId('sidebar-rail-inbox-count')).toHaveTextContent('2')
     expect(screen.queryByTestId('sidebar-rail-waiting')).toBeNull()
     expect(screen.queryByTestId('sidebar-rail-follow-up')).toBeNull()
-    expect(screen.getAllByText('3')).toHaveLength(1)
+    expect(screen.getAllByText('2')).toHaveLength(1)
   })
 
   it('the rail has the inbox link without a number when nothing waits', () => {

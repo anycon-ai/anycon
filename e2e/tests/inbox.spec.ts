@@ -145,7 +145,7 @@ test.describe.serial('待处理', () => {
     await expect(rows().first().getByTestId('permission-command')).toBeVisible()
 
     // 抽屉：导航带个数、会话树；点进会话页，抽屉收起
-    await page.getByTestId('menu-button').click()
+    await page.getByTestId('menu-button').filter({ visible: true }).click()
     const drawer = page.getByTestId('sidebar')
     await expect(drawer).toBeVisible()
     await expect(drawer.getByTestId('sidebar-inbox')).toHaveAttribute('aria-current', 'page')
@@ -161,18 +161,18 @@ test.describe.serial('待处理', () => {
     await expect(page.getByTestId('sidebar')).toBeHidden()
 
     // 节点首页在抽屉里空间切换器的菜单里
-    await page.getByTestId('menu-button').click()
+    await page.getByTestId('menu-button').filter({ visible: true }).click()
     await page.getByTestId('sidebar').getByTestId('node-switcher').click()
     await page.getByTestId('node-home').click()
     await expect(page).toHaveURL(/\/n\/[0-9a-f]+$/)
 
     // 回「待处理」，在行内答复：条目消失，焦点落到「没有等你的事」
-    await page.getByTestId('menu-button').click()
+    await page.getByTestId('menu-button').filter({ visible: true }).click()
     await page.getByTestId('sidebar').getByTestId('sidebar-inbox').click()
     await expect(page).toHaveURL(/\/inbox$/)
     await rows().first().getByTestId('permission-option-allow').click()
     await expect(page.getByTestId('inbox-empty')).toBeVisible({ timeout: 15_000 })
-    await page.getByTestId('menu-button').click()
+    await page.getByTestId('menu-button').filter({ visible: true }).click()
     await expect(page.getByTestId('sidebar-inbox-count')).toHaveCount(0)
     await page.keyboard.press('Escape')
     await page.setViewportSize({ width: 1280, height: 720 })

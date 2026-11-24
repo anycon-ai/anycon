@@ -88,7 +88,7 @@ test.describe.serial('清单', () => {
   test('b. 手机宽度：抽屉里的「＋」打开底部弹层', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/todos')
-    await page.getByTestId('menu-button').click()
+    await page.getByTestId('menu-button').filter({ visible: true }).click()
     const capture = page.getByTestId('sidebar').getByTestId('sidebar-capture')
     await expect(capture).toBeVisible({ timeout: CONNECT_TIMEOUT })
     await capture.click()

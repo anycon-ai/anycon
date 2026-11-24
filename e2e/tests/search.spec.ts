@@ -150,7 +150,7 @@ test.describe.serial('会话内容搜索', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     // 手机上左栏在抽屉里，搜索按钮在它上面
     await page.goto('/inbox')
-    await page.getByTestId('menu-button').click()
+    await page.getByTestId('menu-button').filter({ visible: true }).click()
     await expect(page.getByTestId('sidebar')).toBeVisible({ timeout: CONNECT_TIMEOUT })
     await page
       .getByTestId('sidebar')

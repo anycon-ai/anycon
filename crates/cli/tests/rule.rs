@@ -252,7 +252,10 @@ async fn a_dispatch_preview_lists_the_rules_and_the_history_says_how_many_were_g
     );
     let r = n.cli(&["todo", "run", &todo[..8], "--dry-run", "--allow-push", "--json"]).await;
     let j = r.json();
-    assert_eq!(j["first_message"], "Tidy the changelog");
+    assert_eq!(
+        j["first_message"],
+        "Tidy the changelog\n\nWhen you are done, end your final message with a short report: what you changed, how you verified it (commands you ran and their results), and anything left undone or uncertain."
+    );
     assert!(j["rules_text"].as_str().unwrap().ends_with("- Write the failing test first."), "{j}");
 
     // 派发：「经过」里写着给了几条规则

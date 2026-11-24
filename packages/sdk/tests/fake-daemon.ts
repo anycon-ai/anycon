@@ -863,6 +863,27 @@ export class FakeDaemon {
         .filter((r) => p.before_ms === undefined || r.started_ms < p.before_ms)
         .slice(0, p.limit ?? 20),
     }))
+    on<{ days?: number }, unknown>('twin.stats', (p) => {
+      const days = p.days ?? 7
+      if (!Number.isInteger(days) || days < 1 || days > 90)
+        throw AnyconRpcError.of('invalid', 'days out of range', { field: 'days' })
+      return {
+        days: Array.from({ length: days }, (_, i) => ({
+          date: `2026-01-${String(i + 1).padStart(2, '0')}`,
+          start_ms: 1_767_225_600_000 + i * 86_400_000,
+          runs: { done: i === days - 1 ? 1 : 0, idle: 0, budget: 0, failed: 0, cancelled: 0 },
+          dry_runs: 0,
+          judge_calls: i === days - 1 ? 2 : 0,
+          decisions: { dispatch: 0, ask_user: 0, ask_advisor: 0, wait: 0, hand_back: 0, done: 0 },
+          skipped: 0,
+          handed_back: 0,
+          taken_over: 0,
+          accepted: 0,
+          dropped: 0,
+          turnaround_ms: 0,
+        })),
+      }
+    })
     on<{ open_only?: boolean }, unknown>('twin.questions', (p) => ({
       questions: p.open_only && question.status !== 'open' ? [] : [question],
     }))

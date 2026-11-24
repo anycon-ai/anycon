@@ -559,6 +559,12 @@
   },
   {
     "direction": "request",
+    "name": "twin.stats",
+    "params": "TwinStatsParams",
+    "result": "TwinStatsResult"
+  },
+  {
+    "direction": "request",
     "name": "twin.questions",
     "params": "TwinQuestionsParams",
     "result": "TwinQuestionsResult"

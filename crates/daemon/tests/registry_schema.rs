@@ -617,6 +617,7 @@ async fn walk_twin(w: &mut Walk<'_>) {
     w.call(methods::TWIN_ANSWER, json!({"id":qid,"answer":"A"})).await;
     w.call(methods::TWIN_DRY_RUN, json!({})).await;
     w.call(methods::TWIN_RUNS, json!({"limit":20})).await;
+    w.call(methods::TWIN_STATS, json!({"days":3})).await;
     w.call(methods::TWIN_SET, json!({"paused":true})).await;
     // 没有分身连接时 `twin.links` 是空列表（有连接的在 tests/twin_links.rs）
     let links = w.call(methods::TWIN_LINKS, json!({})).await;

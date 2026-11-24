@@ -38,6 +38,10 @@ pub struct NodeCapabilities {
     /// 支持周期项（`Todo.repeat`，docs/spec/daemon.md § 26.9）。旧 daemon 没有这个字段，读作 false。
     #[serde(default)]
     pub todo_repeat: bool,
+    /// daemon 提供 `twin.stats`，`twin.get` 带 `last_run` / `next_wake_ms` / `queued` / `deferred`，`TwinRun` 带 `usage`
+    /// （docs/spec/daemon.md § 26.8）。旧 daemon 没有这个字段，读作 false。
+    #[serde(default)]
+    pub twin_stats: bool,
 }
 
 /// 节点的 worktree 配置（`config.toml` 的 `[worktree]`），客户端据此决定新建会话的初始选择和分支名预览。

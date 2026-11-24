@@ -952,7 +952,12 @@
             "todo",
             "manual",
             "pr"
-          ]
+          ],
+          "usage": {
+            "cost_usd": 0.001,
+            "input_tokens": 10,
+            "output_tokens": 3
+          }
         },
         "state": "idle"
       }
@@ -1006,7 +1011,12 @@
             "todo",
             "manual",
             "pr"
-          ]
+          ],
+          "usage": {
+            "cost_usd": 0.001,
+            "input_tokens": 10,
+            "output_tokens": 3
+          }
         }
       }
     }
@@ -1041,7 +1051,23 @@
       "jsonrpc": "2.0",
       "result": {
         "configured": true,
+        "deferred": [
+          "v"
+        ],
         "enabled": true,
+        "last_run": {
+          "finished_ms": 2,
+          "id": "r",
+          "result": "done",
+          "started_ms": 1,
+          "triggers": [
+            "tick"
+          ]
+        },
+        "next_wake_ms": 60000,
+        "queued": [
+          "u"
+        ],
         "scope": {
           "agent": "mock",
           "daily_dispatches": 10,
@@ -1071,7 +1097,23 @@
       "jsonrpc": "2.0",
       "result": {
         "configured": true,
+        "deferred": [
+          "v"
+        ],
         "enabled": true,
+        "last_run": {
+          "finished_ms": 2,
+          "id": "r",
+          "result": "done",
+          "started_ms": 1,
+          "triggers": [
+            "tick"
+          ]
+        },
+        "next_wake_ms": 60000,
+        "queued": [
+          "u"
+        ],
         "scope": {
           "agent": "mock",
           "daily_dispatches": 10,
@@ -1364,7 +1406,12 @@
               "todo",
               "manual",
               "pr"
-            ]
+            ],
+            "usage": {
+              "cost_usd": 0.001,
+              "input_tokens": 10,
+              "output_tokens": 3
+            }
           }
         ]
       }
@@ -1396,7 +1443,23 @@
       "jsonrpc": "2.0",
       "result": {
         "configured": true,
+        "deferred": [
+          "v"
+        ],
         "enabled": true,
+        "last_run": {
+          "finished_ms": 2,
+          "id": "r",
+          "result": "done",
+          "started_ms": 1,
+          "triggers": [
+            "tick"
+          ]
+        },
+        "next_wake_ms": 60000,
+        "queued": [
+          "u"
+        ],
         "scope": {
           "agent": "mock",
           "daily_dispatches": 10,
@@ -1414,6 +1477,62 @@
         "waiting": [],
         "working": [
           "t"
+        ]
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_stats",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "method": "twin.stats",
+      "params": {
+        "days": 7
+      }
+    }
+  },
+  {
+    "name": "rpc_twin_stats_result",
+    "type": "rpc",
+    "value": {
+      "id": 30,
+      "jsonrpc": "2.0",
+      "result": {
+        "days": [
+          {
+            "accepted": 1,
+            "date": "2026-01-02",
+            "decisions": {
+              "ask_advisor": 0,
+              "ask_user": 1,
+              "dispatch": 2,
+              "done": 1,
+              "hand_back": 0,
+              "wait": 1
+            },
+            "dropped": 0,
+            "dry_runs": 1,
+            "handed_back": 1,
+            "judge_calls": 5,
+            "runs": {
+              "budget": 0,
+              "cancelled": 0,
+              "done": 2,
+              "failed": 1,
+              "idle": 1
+            },
+            "skipped": 1,
+            "start_ms": 1767283200000,
+            "taken_over": 0,
+            "turnaround_ms": 3600000,
+            "usage": {
+              "cost_usd": 0.01,
+              "input_tokens": 100,
+              "output_tokens": 30
+            }
+          }
         ]
       }
     }

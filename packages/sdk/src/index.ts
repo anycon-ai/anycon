@@ -172,6 +172,8 @@ export type {
   TwinRunResult,
   TwinRunsParams,
   TwinRunsResult,
+  TwinStatsParams,
+  TwinStatsResult,
   TwinScope,
   TwinSetParams,
   TwinSkipReason,

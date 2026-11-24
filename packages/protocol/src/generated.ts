@@ -765,6 +765,7 @@ export type TodoEvent1 =
       to: TodoState;
     }
   | {
+      done?: boolean;
       kind: "handed_back";
       reason: string;
       run_id?: string | null;
@@ -859,6 +860,7 @@ export type TodoEventData =
       to: TodoState;
     }
   | {
+      done?: boolean;
       kind: "handed_back";
       reason: string;
       run_id?: string | null;
@@ -1122,6 +1124,7 @@ export interface ProtocolSchema {
   trash_entry: TrashEntry;
   twin_answer_params: TwinAnswerParams;
   twin_changed: TwinChanged;
+  twin_day_stats: TwinDayStats;
   twin_decision: TwinDecision;
   twin_dry_run_result: TwinDryRunResult;
   twin_get_params: TwinGetParams;
@@ -1136,11 +1139,14 @@ export interface ProtocolSchema {
   twin_questions_params: TwinQuestionsParams;
   twin_questions_result: TwinQuestionsResult;
   twin_run: TwinRun;
+  twin_run_brief: TwinRunBrief;
   twin_runs_params: TwinRunsParams;
   twin_runs_result: TwinRunsResult;
   twin_scope: TwinScope;
   twin_set_params: TwinSetParams;
   twin_state: TwinState;
+  twin_stats_params: TwinStatsParams;
+  twin_stats_result: TwinStatsResult;
   twin_today: TwinToday;
   twin_unlink_params: TwinUnlinkParams;
   workspace_branches_params: WorkspaceBranchesParams;
@@ -2090,6 +2096,11 @@ export interface NodeCapabilities {
    * 支持分身的调度和 RPC。
    */
   twin?: boolean;
+  /**
+   * daemon 提供 `twin.stats`，`twin.get` 带 `last_run` / `next_wake_ms` / `queued` / `deferred`，`TwinRun` 带 `usage`
+   * （docs/spec/daemon.md § 26.8）。旧 daemon 没有这个字段，读作 false。
+   */
+  twin_stats?: boolean;
   /**
    * 有 workspace（文件夹即项目）。SDK 节点可能没有。
    */
@@ -3646,6 +3657,10 @@ export interface TwinRun {
   result: TwinRunResult;
   started_ms: number;
   triggers: TwinTrigger[];
+  /**
+   * 这次运行所有判断调用的用量之和；调用都没报告的成员缺省。
+   */
+  usage?: JudgeUsage | null;
 }
 export interface TwinDecision {
   action: TwinAction;
@@ -3668,6 +3683,80 @@ export interface TwinDecision {
   skip_reason?: TwinSkipReason | null;
   todo_id: string;
 }
+/**
+ * 一个本地日的分身统计。数据来自节点保留的运行记录（90 天）和待办的经过（已删除待办的经过没了），所以旧日子的数字可能变小。
+ */
+export interface TwinDayStats {
+  /**
+   * 这天由未关闭（非 `done` / `dropped`）变为 `done` 的 `state` 事件数，且本机分身在事件时间或之前派发过这一项。
+   * 已关闭项在 `done` 和 `dropped` 之间改来改去不算；重新打开后再关闭算新的一次。
+   */
+  accepted?: number;
+  /**
+   * 节点本地时间的 `YYYY-MM-DD`。
+   */
+  date: string;
+  decisions?: TwinDecisionCounts;
+  /**
+   * 同 `accepted`，但是变为 `dropped`。
+   */
+  dropped?: number;
+  dry_runs?: number;
+  /**
+   * 这天待办经过里的 `handed_back` 事件数：分身没做完就交回给人的次数（`hand_back` 判断、连续 3 次失败、2 小时卡住）。
+   * 不含 `done` 判断（分身认为做完了，请人确认）写的那一条。
+   */
+  handed_back?: number;
+  /**
+   * 这天开始的所有运行（含试跑，它们也占预算）发起的判断调用次数。
+   */
+  judge_calls?: number;
+  /**
+   * 这天开始的非试跑运行，按 `result`。
+   */
+  runs?: TwinRunCounts;
+  /**
+   * 非试跑运行里 `outcome = skipped` 的决定数。
+   */
+  skipped?: number;
+  /**
+   * 这一天开始的本地零点。
+   */
+  start_ms: number;
+  /**
+   * 这天的 `taken_over` 事件数，只算本机分身派发过（不晚于事件）的项；分身设备派来的会话里的接手不算。
+   */
+  taken_over?: number;
+  /**
+   * 这天每个 `accepted` 事件的（事件时间 - 该项在事件时间或之前最近一次被本机分身派发的时间）之和；平均 = `turnaround_ms / accepted`。
+   */
+  turnaround_ms?: number;
+  /**
+   * 这些调用的用量之和。
+   */
+  usage?: JudgeUsage | null;
+}
+/**
+ * 非试跑运行里 `outcome = executed` 的决定按动作的计数。
+ */
+export interface TwinDecisionCounts {
+  ask_advisor?: number;
+  ask_user?: number;
+  dispatch?: number;
+  done?: number;
+  hand_back?: number;
+  wait?: number;
+}
+/**
+ * 非试跑运行按 `result` 的计数。
+ */
+export interface TwinRunCounts {
+  budget?: number;
+  cancelled?: number;
+  done?: number;
+  failed?: number;
+  idle?: number;
+}
 export interface TwinDryRunResult {
   run: TwinRun;
 }
@@ -3683,12 +3772,43 @@ export interface TwinGetParams {
 }
 export interface TwinGetResult {
   configured: boolean;
+  /**
+   * 仍在范围内、但上一次判断放不进输入（§ 26.4 的大小上限）的待办 id。只在内存里，重启后为空。
+   */
+  deferred?: string[];
   enabled: boolean;
+  /**
+   * 最近一次真实唤醒（不含试跑），按 `started_ms`；可能还在运行（没有 `finished_ms`）。
+   */
+  last_run?: TwinRunBrief | null;
+  /**
+   * 已配置、本机启用且未暂停时：待处理触发的合并截止时间（运行中没有）和下一次兜底 tick 里较早的那个；都没有则缺省。
+   * 读取时的快照，变化时不发通知。
+   */
+  next_wake_ms?: number | null;
+  /**
+   * 在分身范围内（§ 26.1），但既不在 `working` 里也没有未回答的问题的待办 id。
+   */
+  queued?: string[];
   scope: TwinScope;
   state: TwinState;
   today: TwinToday;
   waiting: string[];
   working: string[];
+}
+/**
+ * 一次运行的摘要（`TwinGetResult.last_run`）：不含每项的决定，要看细节用 `twin.runs`。
+ */
+export interface TwinRunBrief {
+  error?: JudgeError | null;
+  /**
+   * 缺省 = 还在运行。
+   */
+  finished_ms?: number | null;
+  id: string;
+  result: TwinRunResult;
+  started_ms: number;
+  triggers: TwinTrigger[];
 }
 export interface TwinScope {
   agent?: string | null;
@@ -3828,6 +3948,24 @@ export interface TwinSetParams {
    * 改谁的范围，同 [`TwinGetParams::requester`]。
    */
   requester?: string | null;
+}
+/**
+ * `twin.stats` 的参数。只统计本机分身。
+ */
+export interface TwinStatsParams {
+  /**
+   * 统计最近几个本地日（含今天），1..=90，缺省 7；越界 → `invalid`，`data.field = "days"`。
+   */
+  days?: number | null;
+}
+/**
+ * `twin.stats` 的结果。
+ */
+export interface TwinStatsResult {
+  /**
+   * 节点本地时区的每一天，按日期升序，最后一项是今天；没有活动的日子也在，数字为 0。
+   */
+  days: TwinDayStats[];
 }
 /**
  * `twin.unlink` 的参数：A 忘掉这一条连接（关掉传输、删记录）。B 上的设备记录要在 B 上吊销。

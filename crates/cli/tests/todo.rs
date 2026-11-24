@@ -492,11 +492,14 @@ async fn run_dry_run_prints_the_first_message_and_sends_nothing() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(
         r.stdout,
-        "Tidy the changelog\n\nKeep a Changelog format\n\nLeave your changes on the branch: do not push and do not open a pull request.\n"
+        "Tidy the changelog\n\nKeep a Changelog format\n\nWhen you are done, end your final message with a short report: what you changed, how you verified it (commands you ran and their results), and anything left undone or uncertain.\n\nLeave your changes on the branch: do not push and do not open a pull request.\n"
     );
     let r = n.cli(&["todo", "run", &id[..8], "--dry-run", "--allow-push", "--json"]).await;
     assert_eq!(r.code, 0, "{}", r.stderr);
-    assert_eq!(r.json()["first_message"], "Tidy the changelog\n\nKeep a Changelog format");
+    assert_eq!(
+        r.json()["first_message"],
+        "Tidy the changelog\n\nKeep a Changelog format\n\nWhen you are done, end your final message with a short report: what you changed, how you verified it (commands you ran and their results), and anything left undone or uncertain."
+    );
     // 什么都没发生：没有会话、「经过」是空的、这一项没有关联
     let t = &n.todos(false).await[0];
     assert!(t["sessions"].as_array().is_none_or(|s| s.is_empty()), "{t}");

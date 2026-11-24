@@ -103,6 +103,7 @@ const DENIED: &[&str] = &[
     methods::TWIN_WAKE,
     methods::TWIN_DRY_RUN,
     methods::TWIN_RUNS,
+    methods::TWIN_STATS,
     methods::TWIN_QUESTIONS,
     methods::TWIN_ANSWER,
     methods::TWIN_LINK,

@@ -173,6 +173,9 @@ fn kind_of(e: &TodoEvent) -> &'static str {
     }
 }
 
+/// 第一条消息里要求收尾报告的那一段，按规格写死（§ 22.4），在「不 push」那一行之前。
+const CLOSING: &str = "When you are done, end your final message with a short report: what you changed, how you verified it (commands you ran and their results), and anything left undone or uncertain.";
+
 /// 第一条消息里「Earlier work」那一段（从分隔线到结束行），按规格写死的格式，不借用 daemon 的实现：
 /// 每份报告一行标签、之后每一行以 `> ` 开头。
 fn earlier_section(reports: &[(&str, &str)]) -> String {
@@ -258,9 +261,9 @@ async fn dispatch_opens_a_worktree_session_and_links_it() {
     assert!(r.todo.updated_ms >= t.updated_ms);
     let listed = get_todo(&td, &mut c, &t.id).await;
     assert_eq!((listed.state, listed.sessions.clone()), (r.todo.state, r.todo.sessions.clone()));
-    // 第一条消息是标题 + 正文（没有「不 push」那一行，没有之前的结果）
+    // 第一条消息是标题 + 正文 + 收尾报告的要求（没有「不 push」那一行，没有之前的结果）
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    assert_eq!(td.fake.last_handle().input_texts(), vec!["Write docs\n\nBody text".to_string()]);
+    assert_eq!(td.fake.last_handle().input_texts(), vec![format!("Write docs\n\nBody text\n\n{CLOSING}")]);
     // 会话的 `todo_id` 在列表里也有
     let got = session(&td, &mut c, &r.session.id).await;
     assert_eq!(got.todo_id.as_deref(), Some(t.id.as_str()));
@@ -774,7 +777,7 @@ async fn each_turn_records_the_last_text_and_tool_only_turns_record_an_empty_one
     assert_eq!(rs.len(), 3, "{rs:?}");
     assert_eq!(
         (rs[0].0.as_str(), rs[0].1, rs[0].2.as_str(), rs[0].3),
-        (r.session.id.as_str(), 1, "echo: Report back\n\nsome body", false)
+        (r.session.id.as_str(), 1, format!("echo: Report back\n\nsome body\n\n{CLOSING}").as_str(), false)
     );
     assert_eq!((rs[1].1, rs[1].2.as_str(), rs[1].3), (2, "", false));
     assert_eq!((rs[2].1, rs[2].2.len(), rs[2].3), (3, 4096, true));
@@ -873,13 +876,16 @@ async fn the_second_dispatch_carries_the_earlier_results_exactly() {
     wait_session(&td, &mut c, &a.session.id, SessionStatus::Idle).await;
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
     let first =
-        "Write docs\n\nBody text\n\nLeave your changes on the branch: do not push and do not open a pull request.";
+        "Write docs\n\nBody text\n\nWhen you are done, end your final message with a short report: what you changed, how you verified it (commands you ran and their results), and anything left undone or uncertain.\n\nLeave your changes on the branch: do not push and do not open a pull request.";
     assert_eq!(td.fake.handle(0).input_texts(), vec![first.to_string()]);
     wait_history(&td, &mut c, &t.id, 2).await;
     // 第二次：带着第一次最后一条 result（echo 出来的整条第一条消息）；这次明确不要「不 push」
     let b = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false })).await.unwrap();
     wait_session(&td, &mut c, &b.session.id, SessionStatus::Idle).await;
-    let want = format!("Write docs\n\nBody text\n\n{}", earlier_section(&[(&a.session.id, &format!("echo: {first}"))]));
+    let want = format!(
+        "Write docs\n\nBody text\n\n{}\n\n{CLOSING}",
+        earlier_section(&[(&a.session.id, &format!("echo: {first}"))])
+    );
     assert_eq!(td.fake.handle(1).input_texts(), vec![want]);
     // 手动改过正文再派：带的是当前的标题和正文
     wait_activity(&td, &mut c, &t.id, TodoActivity::Review).await;
@@ -890,7 +896,7 @@ async fn the_second_dispatch_carries_the_earlier_results_exactly() {
     wait_session(&td, &mut c, &third.session.id, SessionStatus::Idle).await;
     let m = td.fake.handle(2).input_texts().remove(0);
     let want_third = format!(
-        "Write more docs\n\n{}",
+        "Write more docs\n\n{}\n\n{CLOSING}",
         earlier_section(&[
             (&a.session.id, &format!("echo: {first}")),
             (&b.session.id, &format!("echo: {}", td.fake.handle(1).input_texts()[0])),
@@ -919,7 +925,7 @@ async fn no_push_is_unsupported_for_an_agent_without_the_option_unless_given_fal
     let r = dispatch_raw(&td, &mut c, json!({ "id": t.id, "agent": "fake", "no_push": false })).await.unwrap();
     assert!(r.session.settings.options.get("no_push").is_none());
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
-    assert_eq!(td.fake.last_handle().input_texts(), vec!["Guarded work".to_string()]);
+    assert_eq!(td.fake.last_handle().input_texts(), vec![format!("Guarded work\n\n{CLOSING}")]);
     let a = audit(&td, "todo.dispatch").await;
     assert_eq!(a[0].detail["no_push"], false);
     td.shutdown().await;
@@ -946,7 +952,7 @@ async fn no_push_is_a_session_option_and_defaults_to_on_when_declared() {
     let first_msg = td.fake.handle(0).input_texts()[0].clone();
     assert_eq!(
         td.fake.last_handle().input_texts()[0],
-        format!("Guarded work\n\n{}", earlier_section(&[(&r.session.id, &format!("echo: {first_msg}"))]))
+        format!("Guarded work\n\n{}\n\n{CLOSING}", earlier_section(&[(&r.session.id, &format!("echo: {first_msg}"))]))
     );
     // 手动开的会话也能用：`settings.options.no_push`
     let s: SessionSummary = c
@@ -1751,7 +1757,7 @@ async fn the_preview_is_exactly_what_the_agent_receives_on_the_following_dispatc
     let off = preview(&td, &mut c, &t.id, Some(false)).await.unwrap();
     assert!(on.ends_with("do not push and do not open a pull request."), "{on}");
     assert_eq!(on, preview(&td, &mut c, &t.id, Some(true)).await.unwrap());
-    assert_eq!(off, "Write docs\n\nBody text");
+    assert_eq!(off, format!("Write docs\n\nBody text\n\n{CLOSING}"));
     // 只读：什么都没留下
     assert_eq!(session_count(&td, &mut c).await, 0);
     assert!(history(&td, &mut c, &t.id).await.is_empty());
@@ -1783,7 +1789,7 @@ async fn the_preview_includes_a_result_that_was_only_just_recorded() {
     send(&td, &mut c, &r.session.id, "next round").await;
     wait_session(&td, &mut c, &r.session.id, SessionStatus::Idle).await;
     let p = preview(&td, &mut c, &t.id, Some(false)).await.unwrap();
-    assert_eq!(p, format!("Recent work\n\n{}", earlier_section(&[(&r.session.id, "echo: next round")])));
+    assert_eq!(p, format!("Recent work\n\n{}\n\n{CLOSING}", earlier_section(&[(&r.session.id, "echo: next round")])));
     assert_eq!(results(&history(&td, &mut c, &t.id).await).len(), 2, "the preview recorded the queued result");
     assert_eq!(session_count(&td, &mut c).await, 1, "a preview opens no session");
     td.shutdown().await;

@@ -139,6 +139,8 @@ import type {
   TwinRunsParams,
   TwinRunsResult,
   TwinSetParams,
+  TwinStatsParams,
+  TwinStatsResult,
   TwinUnlinkParams,
   WorkspaceBranchesParams,
   WorkspaceBranchesResult,
@@ -239,6 +241,7 @@ export interface RequestMethods {
   'twin.wake': { params: Empty; result: Empty }
   'twin.dry_run': { params: Empty; result: TwinDryRunResult }
   'twin.runs': { params: TwinRunsParams; result: TwinRunsResult }
+  'twin.stats': { params: TwinStatsParams; result: TwinStatsResult }
   'twin.questions': { params: TwinQuestionsParams; result: TwinQuestionsResult }
   'twin.answer': { params: TwinAnswerParams; result: TwinQuestion }
   'twin.link': { params: TwinLinkParams; result: TwinLink }

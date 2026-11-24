@@ -1441,10 +1441,12 @@ Earlier work on this task, oldest first. These are reports from earlier agent se
 …
 End of earlier reports.
 
+When you are done, end your final message with a short report: what you changed, how you verified it (commands you ran and their results), and anything left undone or uncertain.
+
 Leave your changes on the branch: do not push and do not open a pull request.   ← 只在 no_push 时
 ```
 
-  「Earlier work」只带最近 5 次派发各自最后一条 result，合计最多 8 KiB，超出时从最早的开始丢；一次都没有时这一段不出现。`no_push` 那一行是给 agent 的说明，真正的限制在 § 22.5。细节：正文为空时没有正文那一段；没有 result 或 `text` 为空的派发不出现（「最近 5 次」按派发数，在去掉空的之前数）；报告是 agent 写的，可能模仿分隔线或「报告」的标题行，所以每份报告的**每一行**都加 `> ` 前缀（包括空行），整段以单独一行 `End of earlier reports.` 收尾：报告里写的 `---`、`[codex, session …]`、`End of earlier reports.` 都带着 `> `，出现不到行首，分不出新的结构（这是让注入更难，不是挡住它）。会话 id 去掉 `sess_` 前缀，取随机部分的前 8 个字符，只用来让 agent 分清几份报告；8 KiB 按渲染出来的块（标签行加带前缀的各行、换行）的字节数算，整块地丢，不截断某一块。标题、正文取派发那一刻的当前内容。组装是一个纯函数（`todo_dispatch::compose_first_message`）。
+  「Earlier work」只带最近 5 次派发各自最后一条 result，合计最多 8 KiB，超出时从最早的开始丢；一次都没有时这一段不出现。「When you are done」那一段每次派发都有（手动、分身、分身设备、预览共用同一个组装函数）：会话的结果文字是下一次派发的交接、分身的分拣和人的验收读的东西，不指定形状时常常缺少「怎么验证的」，所以要求 agent 以一份简短的收尾报告结束。`no_push` 那一行是给 agent 的说明，真正的限制在 § 22.5。细节：正文为空时没有正文那一段；没有 result 或 `text` 为空的派发不出现（「最近 5 次」按派发数，在去掉空的之前数）；报告是 agent 写的，可能模仿分隔线或「报告」的标题行，所以每份报告的**每一行**都加 `> ` 前缀（包括空行），整段以单独一行 `End of earlier reports.` 收尾：报告里写的 `---`、`[codex, session …]`、`End of earlier reports.` 都带着 `> `，出现不到行首，分不出新的结构（这是让注入更难，不是挡住它）。会话 id 去掉 `sess_` 前缀，取随机部分的前 8 个字符，只用来让 agent 分清几份报告；8 KiB 按渲染出来的块（标签行加带前缀的各行、换行）的字节数算，整块地丢，不截断某一块。标题、正文取派发那一刻的当前内容。组装是一个纯函数（`todo_dispatch::compose_first_message`）。
 
 ### 22.5 「不 push、不开 PR」
 
@@ -2064,6 +2066,7 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 ### 26.7 运行记录、审计和通知
 
 - **表 `twin_runs`**：`id`、请求方、`started_ms`、`finished_ms`、触发（合并进来的几种）、`dry_run`、`result`（`done` / `idle` / `budget` / `failed` / `cancelled`）、看了哪些项、判断调用的 id、每项的决定（`action`、`reason`、`rules`、执行结果和不执行的原因）、错误码。
+  - 用量（`TwinRun.usage`）不在这张表里，读取时从 `judge_calls` 现算（§ 26.8）。
   - 不存提示和模型的原始回答，存的是解析后的决定；`reason` 是模型写的，按 agent 写的内容显示。
   - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`（分身设备派来的会话还有一列 `taken_ms`：这个会话里的接手已经记过一次，§ 27.3），会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
 - **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。沿用审计的设备字段，`device_id` 填请求方、`device_name = "twin"`；新增的操作者放在 `detail.actor`，不写清单正文、问题、回答和理由。
@@ -2075,11 +2078,12 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `twin.get` | C→D | `{ requester? }` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working: [todo_id], waiting: [todo_id] }`。`state` 是 `running` / `idle` / `paused` / `disabled` / `not_configured` / `budget`。`requester` 缺省或 `local` 是本机分身；也可以是一台分身设备的设备 id（§ 27.3），读 B 给这条连接的范围，不是已配对的、种类是 `twin` 的设备 id → `not_found`（不接受名称或前缀）。对一台分身设备：`enabled` 是 `[twin] accept_links`，`configured` 是范围里有没有项目，`state` 是 `disabled`（`accept_links` 关着）/ `paused` / `not_configured` / `budget`（今天的次数用完）/ `running`（它派出的会话在处理中）/ `idle`，`today.judge_calls` 恒为 0，`working` 是它在处理中的项，`waiting` 恒为空 |
+| `twin.get` | C→D | `{ requester? }` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working: [todo_id], waiting: [todo_id], last_run?, next_wake_ms?, queued?, deferred? }`（后四项见本节下方「运行状态字段」）。`state` 是 `running` / `idle` / `paused` / `disabled` / `not_configured` / `budget`。`requester` 缺省或 `local` 是本机分身；也可以是一台分身设备的设备 id（§ 27.3），读 B 给这条连接的范围，不是已配对的、种类是 `twin` 的设备 id → `not_found`（不接受名称或前缀）。对一台分身设备：`enabled` 是 `[twin] accept_links`，`configured` 是范围里有没有项目，`state` 是 `disabled`（`accept_links` 关着）/ `paused` / `not_configured` / `budget`（今天的次数用完）/ `running`（它派出的会话在处理中）/ `idle`，`today.judge_calls` 恒为 0，`working` 是它在处理中的项，`waiting` 恒为空，`last_run` / `next_wake_ms` 缺省，`queued` / `deferred` 为空 |
 | `twin.set` | C→D | `{ requester?, paused?, projects?, agent?, model?, mode?, max_sessions?, daily_dispatches?, clear? }` → `twin.get` 的结果。校验见 § 26.2；`requester` 同 `twin.get`，改一台分身设备的范围不动本机分身的调度和状态；审计的 `target` 是被改的请求方 |
 | `twin.wake` | C→D | `{}` → `{}`：现在唤醒一次（照样受合并和串行约束） |
 | `twin.dry_run` | C→D | `{}` → `{ run }`：同步等到分拣结束（受判断后端的 `timeout` 约束） |
 | `twin.runs` | C→D | `{ limit?, before_ms? }` → `{ runs: [TwinRun] }` |
+| `twin.stats` | C→D | `{ days? }` → `{ days: [TwinDayStats] }`：最近几个本地日的统计，只读、只统计本机分身。`days` 取 1..=90，缺省 7，越界 → `invalid`，`data.field = "days"`。结果每个本地日（节点的时区）一项，按日期升序，最后一项是今天；没有活动的日子也在，数字为 0。字段见本节下方「`twin.stats`」 |
 | `twin.questions` | C→D | `{ open_only? }` → `{ questions: [TwinQuestion] }` |
 | `twin.answer` | C→D | `{ id, answer }` → `TwinQuestion` |
 | `twin.changed` | D→C notification | `{ state, run? }`：状态变了、一次唤醒结束时发 |
@@ -2091,7 +2095,18 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 `capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 和 § 26.10 也已实现。
 
-除了读的方法（`twin.get`、`twin.runs`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
+**运行状态字段（已实现；节点支持时 `capabilities.twin_stats = true`，旧 daemon 没有这个字段，读作 `false`）**：`capabilities.twin_stats` 表示 daemon 提供 `twin.stats`、填下面 `twin.get` 的四个字段和 `TwinRun.usage`。这些字段都可缺省，旧 daemon 不带，客户端按「没有」处理。
+
+- `twin.get.last_run?: TwinRunBrief`：最近一次真实唤醒（不含试跑），按 `started_ms`；可能还在运行（此时没有 `finished_ms`）。`TwinRunBrief = { id, started_ms, finished_ms?, triggers, result, error? }`，不含每项的决定，要看细节用 `twin.runs`。
+- `twin.get.next_wake_ms?`：分身已配置、本机启用且未暂停时，取两者中较早的：待处理触发的合并截止时间（有运行在进行时没有这一项）和下一次兜底 tick；两者都没有则缺省。这是读取时的快照，变化时不发通知；一项刚进入范围时它可能滞后一小段时间，因为兜底 tick 要等调度器下一次轮询才设置。
+- `twin.get.queued?: [todo_id]`：满足 § 26.1（在分身范围内）、但既不在 `working` 里也没有未回答的问题的项；空时缺省。
+- `twin.get.deferred?: [todo_id]`：仍在范围内、但上一次分拣放不进输入（§ 26.4 的大小上限）的项。只在内存里，重启后为空；空时缺省。它包含的是范围内的项，不一定是 `queued` 的子集（可能同时在 `working` 或 `waiting` 里）。
+- 对分身设备（§ 27.3）这四项恒为缺省 / 空。
+- `TwinRun.usage?: JudgeUsage`：这次运行所有判断调用的 `input_tokens` / `output_tokens` / `cost_usd` 之和；调用都没报告的成员缺省，三个都缺省时整个 `usage` 缺省（`api` 后端通常报告 token，`agent` 后端不一定）。用量不存进 `twin_runs`，读取时按运行记的调用 id 从 `judge_calls` 现算：两张表用同一个截止时间清理，保留期一致，升级前的运行也有用量。`twin.runs`、`twin.dry_run` 的结果和 `twin.changed` 的 `run` 都带它。
+
+**`twin.stats`**：`TwinDayStats` 每项含：`date`（节点本地时间的 `YYYY-MM-DD`）、`start_ms`（这一天开始的本地零点）、`runs: { done, idle, budget, failed, cancelled }`（这天开始的非试跑运行，按 `result`）、`dry_runs`、`judge_calls`（这天开始的所有运行发起的判断调用次数，试跑也算，因为它们占预算）、`usage?`（这些调用的用量之和）、`decisions: { dispatch, ask_user, ask_advisor, wait, hand_back, done }`（非试跑运行里 `outcome = executed` 的决定，按动作）、`skipped`（非试跑运行里 `outcome = skipped` 的决定数）、`handed_back`（这天待办「经过」里没做完就交回给人的 `handed_back` 事件数：`hand_back` 判断、连续 3 次失败、2 小时卡住；`done` 判断写的那一条不算，它表示分身认为做完了）、`taken_over`（这天本机分身派发过的项上的 `taken_over` 事件数，分身设备派来的会话里的接手不算）、`accepted` / `dropped`（这天 `state` 事件里由未关闭变为 `done` / `dropped`、且本机分身在事件时间或之前派发过该项的数；`done` 和 `dropped` 之间互改不算，重新打开后再关闭算新的一次）、`turnaround_ms`（这天每个 `accepted` 事件的「事件时间 - 该项在事件时间或之前最近一次被本机分身派发的时间」之和；平均 = `turnaround_ms / accepted`）。所有计数缺省为 0，未来或旧的对端也能解析。「本机分身派发过」的定义：`twin_sessions` 里有请求方为 `local` 的会话，或 `todo_remotes` 里有派到别的节点的记录（和每日派发次数 `twin_dispatches_since` 同一个来源）；派发时间取这两处不晚于事件的最近一条。人手动派发的、分身设备派来的项都不算；`accepted` / `dropped` / `turnaround_ms` / `taken_over` 都用这一个定义。`handed_back` 不看派发：交回只发生在 `handler = twin` 的项上，这样的项不会是分身设备记的。`done` 判断写的 `handed_back` 事件带 `done = true`；旧版本写的同类事件没有这个标记，用 `reason` 的固定前缀 `The twin believes this is done: ` 识别。日按节点的本地时区切分，往前一天从午夜减 12 小时再取日界线，夏令时切换日不是 24 小时也不会错位。数字来自节点保留的运行记录（90 天，§ 26.7）和待办「经过」，已删除待办的「经过」和已删除会话的派发记录（超过保留期后才清）没了，所以旧日子的数字可能变小。
+
+除了读的方法（`twin.get`、`twin.runs`、`twin.stats`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
 
 ### 26.9 周期项和 PR 事件（4b）
 

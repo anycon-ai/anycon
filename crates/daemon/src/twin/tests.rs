@@ -139,7 +139,7 @@ async fn scope_validation_defaults_and_states() {
 async fn mcp_writes_are_forbidden_and_reads_work() {
     let (td, _) = fixture(false).await;
     let mut c = td.local_mcp_client();
-    for method in [methods::TWIN_GET, methods::TWIN_RUNS, methods::TWIN_QUESTIONS] {
+    for method in [methods::TWIN_GET, methods::TWIN_RUNS, methods::TWIN_STATS, methods::TWIN_QUESTIONS] {
         c.call::<Value>(&td, method, json!({})).await.unwrap();
     }
     for method in [methods::TWIN_SET, methods::TWIN_WAKE, methods::TWIN_DRY_RUN, methods::TWIN_ANSWER] {
@@ -1157,5 +1157,523 @@ async fn the_triage_input_names_the_rule_ids_and_leaves_stale_rules_out() {
     assert!(req.prompt.contains("Use the project's formatter") && req.prompt.contains(&project.id));
     assert!(!req.system.contains("A forgotten habit") && !req.prompt.contains("A forgotten habit"));
     assert!(!req.system.contains(&old.id) && !req.prompt.contains(&old.id));
+    td.shutdown().await;
+}
+
+// ---------------------------------------------------------------- twin.get 的运行状态字段、用量和统计
+
+fn usage_reply(fake: &FakeJudgeBackend, plans: Value, usage: crate::judge::Usage) {
+    fake.push(Ok(JudgeReply { text: json!({"items":plans}).to_string(), usage }));
+}
+
+#[tokio::test]
+async fn get_reports_last_run_queue_and_deferred() {
+    let (td, fake) = fixture(false).await;
+    let g = get(&td.ctx).await.unwrap();
+    assert!(g.last_run.is_none() && g.queued.is_empty() && g.deferred.is_empty());
+    let a = todo(&td, "a").await;
+    let b = todo(&td, "b").await;
+    let g = get(&td.ctx).await.unwrap();
+    assert_eq!(g.queued.len(), 2);
+    assert!(g.queued.contains(&a.id) && g.queued.contains(&b.id));
+    // 有未回答的问题的项不在排队里
+    reply(&fake, json!([{"id":a.id,"action":"ask_user","reason":"r","question":"Which?"}]));
+    let run = run_now(&td, false).await;
+    let g = get(&td.ctx).await.unwrap();
+    assert_eq!(g.waiting, vec![a.id.clone()]);
+    assert_eq!(g.queued, vec![b.id.clone()]);
+    let last = g.last_run.unwrap();
+    assert_eq!(
+        (last.id.as_str(), last.started_ms, last.finished_ms),
+        (run.id.as_str(), run.started_ms, run.finished_ms)
+    );
+    assert_eq!((last.result, last.triggers), (TwinRunResult::Done, vec![TwinTrigger::Manual]));
+    // 试跑不算上一次唤醒，即使更晚
+    td.ctx.judge.clock().set(run.started_ms + 1000);
+    reply(&fake, json!([]));
+    let dry = run_now(&td, true).await;
+    assert!(dry.dry_run && dry.started_ms > run.started_ms);
+    assert_eq!(get(&td.ctx).await.unwrap().last_run.unwrap().id, run.id);
+    // 还在运行的：没有 finished_ms
+    let mut running = run.clone();
+    running.id = "running".into();
+    running.started_ms += 5000;
+    running.finished_ms = None;
+    td.ctx.store.save_twin_run(&running).await.unwrap();
+    let last = get(&td.ctx).await.unwrap().last_run.unwrap();
+    assert_eq!((last.id.as_str(), last.finished_ms), ("running", None));
+    // 被推迟的：只留还在范围内的
+    td.ctx.twin.pending.lock().unwrap().deferred = vec![b.id.clone(), "gone".into()];
+    assert_eq!(get(&td.ctx).await.unwrap().deferred, vec![b.id.clone()]);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_dispatched_item_is_working_not_queued() {
+    let (td, fake) = fixture(true).await;
+    td.new_repo("p");
+    let a = todo(&td, "a").await;
+    let b = todo(&td, "b").await;
+    plan(&td, &fake, &a, "dispatch").await;
+    let g = get(&td.ctx).await.unwrap();
+    assert_eq!((g.working, g.queued), (vec![a.id.clone()], vec![b.id.clone()]));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn next_wake_is_the_earlier_of_the_coalescing_deadline_and_the_tick() {
+    let (td, _) = fixture(false).await;
+    let _ = todo(&td, "a").await;
+    let now = td.ctx.judge.clock().now();
+    let tick = now + 30 * MINUTE;
+    // 后台调度循环也会读写这两个字段（固定时钟下写的值相同）：每步都先把状态设成确定的值再读
+    let set_pending = |first: Option<u64>, running: bool| {
+        let mut p = td.ctx.twin.pending.lock().unwrap();
+        p.first = first;
+        p.last = first.unwrap_or(0);
+        p.next_tick = Some(tick);
+        p.running = running;
+    };
+    // 只有 tick
+    set_pending(None, false);
+    assert_eq!(get(&td.ctx).await.unwrap().next_wake_ms, Some(tick));
+    // 有待处理的触发：合并截止时间比 tick 早
+    set_pending(Some(now), false);
+    let deadline = td.ctx.twin.pending.lock().unwrap().deadline().unwrap();
+    assert_eq!(deadline, now + coalesce_ms());
+    assert_eq!(get(&td.ctx).await.unwrap().next_wake_ms, Some(deadline.min(tick)));
+    // 运行中没有合并截止时间，只剩 tick
+    set_pending(Some(now), true);
+    assert_eq!(get(&td.ctx).await.unwrap().next_wake_ms, Some(tick));
+    set_pending(None, false);
+    // 暂停：缺省
+    set(&td.ctx, &Caller::local_cli(), TwinSetParams { paused: Some(true), ..Default::default() }).await.unwrap();
+    set_pending(Some(now), false);
+    assert_eq!(get(&td.ctx).await.unwrap().next_wake_ms, None);
+    // 恢复之后又有了
+    set(&td.ctx, &Caller::local_cli(), TwinSetParams { paused: Some(false), ..Default::default() }).await.unwrap();
+    set_pending(Some(now), false);
+    assert!(get(&td.ctx).await.unwrap().next_wake_ms.is_some());
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn run_usage_sums_the_calls_and_leaves_missing_members_out() {
+    let (td, fake) = fixture(false).await;
+    let a = todo(&td, "a").await;
+    let plans = json!([{"id":a.id,"action":"wait","reason":"r"}]);
+    // 没有任何调用报告用量：缺省
+    reply(&fake, plans.clone());
+    let none = run_now(&td, false).await;
+    assert_eq!(none.judge_calls.len(), 1);
+    assert!(none.usage.is_none());
+    // 只报告了 token 的一次：cost 缺省
+    usage_reply(
+        &fake,
+        plans.clone(),
+        crate::judge::Usage { input_tokens: Some(100), output_tokens: Some(20), cost_usd: None },
+    );
+    let tokens = run_now(&td, false).await;
+    assert_eq!(tokens.usage, Some(JudgeUsage { input_tokens: Some(100), output_tokens: Some(20), cost_usd: None }));
+    // 试跑的结果也带用量
+    usage_reply(
+        &fake,
+        plans.clone(),
+        crate::judge::Usage { input_tokens: None, output_tokens: None, cost_usd: Some(0.25) },
+    );
+    let dry = run_now(&td, true).await;
+    assert_eq!(dry.usage, Some(JudgeUsage { input_tokens: None, output_tokens: None, cost_usd: Some(0.25) }));
+    // twin.runs 读到的和运行结束时给出的一致
+    let runs = td.ctx.store.twin_runs(LOCAL, TwinRunsParams::default()).await.unwrap();
+    for r in [&none, &tokens, &dry] {
+        assert_eq!(runs.iter().find(|x| x.id == r.id).unwrap().usage, r.usage);
+    }
+    // 多次调用求和（顾问重新分拣是第二次调用）
+    let calls = runs.iter().find(|x| x.id == tokens.id).unwrap().judge_calls.clone();
+    sqlx::query("UPDATE judge_calls SET input_tokens = NULL, cost_usd = 1.5 WHERE id = ?")
+        .bind(&dry.judge_calls[0])
+        .execute(td.ctx.store.pool())
+        .await
+        .unwrap();
+    let both: Vec<String> = calls.into_iter().chain(dry.judge_calls.clone()).collect();
+    assert_eq!(
+        td.ctx.store.judge_usage(&both).await.unwrap(),
+        Some(JudgeUsage { input_tokens: Some(100), output_tokens: Some(20), cost_usd: Some(1.5) })
+    );
+    assert_eq!(td.ctx.store.judge_usage(&[]).await.unwrap(), None);
+    td.shutdown().await;
+}
+
+/// 一个运行记录，字段只给统计用到的。
+fn stat_run(
+    id: &str,
+    started: u64,
+    dry: bool,
+    result: TwinRunResult,
+    decisions: Vec<TwinDecision>,
+    calls: &[&str],
+) -> TwinRun {
+    TwinRun {
+        id: id.into(),
+        requester: LOCAL.into(),
+        started_ms: started,
+        finished_ms: Some(started + 10),
+        triggers: vec![TwinTrigger::Tick],
+        dry_run: dry,
+        result,
+        items: vec![],
+        judge_calls: calls.iter().map(|s| s.to_string()).collect(),
+        decisions,
+        error: None,
+        usage: None,
+    }
+}
+fn decision(action: TwinAction, outcome: TwinDecisionOutcome) -> TwinDecision {
+    TwinDecision {
+        todo_id: "t".into(),
+        action,
+        reason: "r".into(),
+        rules: vec![],
+        outcome,
+        skip_reason: None,
+        session_id: None,
+        question_id: None,
+        note: None,
+        question: None,
+        options: vec![],
+        project: None,
+        node: None,
+    }
+}
+async fn judge_call(td: &TestDaemon, started: u64, usage: JudgeUsage) -> String {
+    let store = &td.ctx.store;
+    let id = store
+        .start_judge_call(&crate::store::JudgeCallStart {
+            position: "triage",
+            backend: "local",
+            kind: "api",
+            model: None,
+            started_ms: started,
+            input_bytes: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .finish_judge_call(
+            &id,
+            &crate::store::JudgeCallFinish { finished_ms: started + 1, status: "ok", output_bytes: 1, usage },
+        )
+        .await
+        .unwrap();
+    id
+}
+async fn event(td: &TestDaemon, todo: &str, at: u64, data: TodoEventData) {
+    td.ctx.store.todo_event_append(todo, at, data).await.unwrap();
+}
+fn by_human() -> TodoActor {
+    TodoActor { kind: TodoSourceKind::Local, id: None, device_id: None }
+}
+fn state_event(to: TodoState) -> TodoEventData {
+    TodoEventData::State { from: TodoState::Open, to, by: by_human() }
+}
+fn state_from(from: TodoState, to: TodoState) -> TodoEventData {
+    TodoEventData::State { from, to, by: by_human() }
+}
+async fn twin_session(td: &TestDaemon, sid: &str, todo: &str, requester: &str, at: u64) {
+    sqlx::query("INSERT INTO twin_sessions (session_id, todo_id, requester, created_ms) VALUES (?, ?, ?, ?)")
+        .bind(sid)
+        .bind(todo)
+        .bind(requester)
+        .bind(at as i64)
+        .execute(td.ctx.store.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn stats_validates_days_and_zero_fills_ascending_local_days() {
+    let (td, _) = fixture(false).await;
+    for days in [0u32, 91] {
+        let e = stats(&td.ctx, TwinStatsParams { days: Some(days) }).await.unwrap_err();
+        assert_eq!(e.stable_code(), Some(ErrorCode::Invalid));
+        assert_eq!(e.data.unwrap().field.as_deref(), Some("days"));
+    }
+    assert_eq!(stats(&td.ctx, TwinStatsParams::default()).await.unwrap().days.len(), 7);
+    let noon = local_day_start(1_800_000_000_000).unwrap() + 12 * 60 * MINUTE;
+    td.ctx.judge.clock().set(noon);
+    let r = stats(&td.ctx, TwinStatsParams { days: Some(90) }).await.unwrap();
+    assert_eq!(r.days.len(), 90);
+    let last = r.days.last().unwrap();
+    assert_eq!((last.start_ms, last.date.clone()), (local_day_start(noon).unwrap(), local_date(noon).unwrap()));
+    for w in r.days.windows(2) {
+        assert!(w[0].start_ms < w[1].start_ms && w[0].date < w[1].date);
+        // 相邻两天的日界线都是各自的本地午夜
+        assert_eq!(local_day_start(w[1].start_ms), Some(w[1].start_ms));
+        assert_eq!(local_day_start(w[0].start_ms + 36 * 60 * MINUTE), Some(w[1].start_ms));
+    }
+    let one = stats(&td.ctx, TwinStatsParams { days: Some(1) }).await.unwrap();
+    assert_eq!(one.days.len(), 1);
+    assert_eq!(one.days[0], TwinDayStats { date: last.date.clone(), start_ms: last.start_ms, ..Default::default() });
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn stats_buckets_runs_calls_and_decisions_by_local_start_day() {
+    use TwinAction as A;
+    use TwinDecisionOutcome as O;
+    let (td, _) = fixture(false).await;
+    let today = local_day_start(1_800_000_000_000).unwrap();
+    let yesterday = local_day_start(today - 12 * 60 * MINUTE).unwrap();
+    td.ctx.judge.clock().set(today + 20 * 60 * MINUTE);
+    let u1 = JudgeUsage { input_tokens: Some(10), output_tokens: Some(2), cost_usd: None };
+    let u2 = JudgeUsage { input_tokens: Some(5), output_tokens: None, cost_usd: Some(0.5) };
+    let c1 = judge_call(&td, today + 1, u1).await;
+    let c2 = judge_call(&td, today + 2, u2).await;
+    // 昨天 23:59 开始、跨过午夜才结束的一次运行，算昨天；它的调用在午夜之后开始，也算昨天
+    let c3 =
+        judge_call(&td, today + 5, JudgeUsage { input_tokens: Some(1), output_tokens: None, cost_usd: None }).await;
+    let c_dry = judge_call(&td, today + 3, JudgeUsage::default()).await;
+    let store = &td.ctx.store;
+    let ds = |a, o| decision(a, o);
+    store
+        .save_twin_run(&stat_run(
+            "r1",
+            today + 1,
+            false,
+            TwinRunResult::Done,
+            vec![
+                ds(A::Dispatch, O::Executed),
+                ds(A::Dispatch, O::Executed),
+                ds(A::AskUser, O::Executed),
+                ds(A::AskAdvisor, O::Executed),
+                ds(A::Wait, O::Executed),
+                ds(A::HandBack, O::Executed),
+                ds(A::Done, O::Executed),
+                ds(A::Dispatch, O::Skipped),
+            ],
+            &[&c1, &c2],
+        ))
+        .await
+        .unwrap();
+    store.save_twin_run(&stat_run("r2", today + 10, false, TwinRunResult::Failed, vec![], &[])).await.unwrap();
+    store.save_twin_run(&stat_run("r3", today + 11, false, TwinRunResult::Idle, vec![], &[])).await.unwrap();
+    store.save_twin_run(&stat_run("r4", today + 12, false, TwinRunResult::Budget, vec![], &[])).await.unwrap();
+    store.save_twin_run(&stat_run("r5", today + 13, false, TwinRunResult::Cancelled, vec![], &[])).await.unwrap();
+    // 试跑：只计 dry_runs、调用和用量，它的决定不计
+    store
+        .save_twin_run(&stat_run(
+            "d1",
+            today + 3,
+            true,
+            TwinRunResult::Done,
+            vec![ds(A::Dispatch, O::Executed)],
+            &[&c_dry],
+        ))
+        .await
+        .unwrap();
+    store
+        .save_twin_run(&stat_run(
+            "y1",
+            yesterday + 23 * 60 * MINUTE + 59 * 60_000,
+            false,
+            TwinRunResult::Done,
+            vec![ds(A::Wait, O::Executed)],
+            &[&c3],
+        ))
+        .await
+        .unwrap();
+    // 范围之外（三天前）和别的请求方不计
+    store
+        .save_twin_run(&stat_run("old", today - 3 * 24 * 60 * MINUTE, false, TwinRunResult::Done, vec![], &[]))
+        .await
+        .unwrap();
+    let mut other = stat_run("dev", today + 5, false, TwinRunResult::Done, vec![], &[]);
+    other.requester = "some-device".into();
+    store.save_twin_run(&other).await.unwrap();
+    let r = stats(&td.ctx, TwinStatsParams { days: Some(2) }).await.unwrap();
+    let (y, t) = (&r.days[0], &r.days[1]);
+    assert_eq!(t.runs, TwinRunCounts { done: 1, idle: 1, budget: 1, failed: 1, cancelled: 1 });
+    assert_eq!(t.dry_runs, 1);
+    assert_eq!(t.judge_calls, 3);
+    assert_eq!(t.usage, Some(JudgeUsage { input_tokens: Some(15), output_tokens: Some(2), cost_usd: Some(0.5) }));
+    assert_eq!(
+        t.decisions,
+        TwinDecisionCounts { dispatch: 2, ask_user: 1, ask_advisor: 1, wait: 1, hand_back: 1, done: 1 }
+    );
+    assert_eq!(t.skipped, 1);
+    assert_eq!(y.runs, TwinRunCounts { done: 1, ..Default::default() });
+    assert_eq!((y.dry_runs, y.judge_calls, y.decisions.wait), (0, 1, 1));
+    assert_eq!(y.usage, Some(JudgeUsage { input_tokens: Some(1), output_tokens: None, cost_usd: None }));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn stats_counts_closures_only_for_items_the_local_twin_dispatched() {
+    let (td, _) = fixture(false).await;
+    let today = local_day_start(1_800_000_000_000).unwrap();
+    let yesterday = local_day_start(today - 12 * 60 * MINUTE).unwrap();
+    td.ctx.judge.clock().set(today + 20 * 60 * MINUTE);
+    let h = 60 * MINUTE;
+    // 本机分身派过：done，最近一次派发在昨天 12:00，今天 02:00 关闭 -> 14 小时
+    twin_session(&td, "s1", "viaTwin", LOCAL, yesterday + 10 * h).await;
+    twin_session(&td, "s1b", "viaTwin", LOCAL, yesterday + 12 * h).await;
+    event(&td, "viaTwin", today + 2 * h, state_event(TodoState::Done)).await;
+    // 派到别的节点的也算
+    sqlx::query(
+        "INSERT INTO todo_remotes (todo_id, node_id, remote_todo_id, created_ms) VALUES ('viaRemote','n','r',?)",
+    )
+    .bind((today + h) as i64)
+    .execute(td.ctx.store.pool())
+    .await
+    .unwrap();
+    event(&td, "viaRemote", today + 3 * h, state_event(TodoState::Done)).await;
+    event(&td, "viaRemote2", today + 3 * h, state_event(TodoState::Dropped)).await;
+    // 分身设备派来的会话和人手动派发的不算
+    twin_session(&td, "s2", "device", "some-device", yesterday + h).await;
+    event(&td, "device", today + h, state_event(TodoState::Done)).await;
+    event(&td, "manual", today + h, state_event(TodoState::Done)).await;
+    event(&td, "manual", today + h, state_event(TodoState::Dropped)).await;
+    // 没有关闭的状态变化不算
+    event(&td, "viaTwin", today + 4 * h, state_event(TodoState::Working)).await;
+    // 放弃：昨天，分身派过
+    twin_session(&td, "s3", "dropMe", LOCAL, yesterday + h).await;
+    event(&td, "dropMe", yesterday + 5 * h, state_event(TodoState::Dropped)).await;
+    let r = stats(&td.ctx, TwinStatsParams { days: Some(2) }).await.unwrap();
+    let (y, t) = (&r.days[0], &r.days[1]);
+    assert_eq!((t.accepted, t.dropped, t.turnaround_ms), (2, 0, 14 * h + 2 * h));
+    assert_eq!((y.accepted, y.dropped, y.turnaround_ms), (0, 1, 0));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn stats_counts_hand_backs_and_takeovers_by_event_time() {
+    let (td, _) = fixture(false).await;
+    let today = local_day_start(1_800_000_000_000).unwrap();
+    let yesterday = local_day_start(today - 12 * 60 * MINUTE).unwrap();
+    td.ctx.judge.clock().set(today + 20 * 60 * MINUTE);
+    let back = || TodoEventData::HandedBack { reason: "r".into(), run_id: None, done: false };
+    let taken = || TodoEventData::TakenOver { by: by_human(), node_id: None };
+    twin_session(&td, "sa", "a", LOCAL, today).await;
+    twin_session(&td, "sc", "c", LOCAL, yesterday - 10).await;
+    event(&td, "a", today + 1, back()).await;
+    event(&td, "b", today + 2, back()).await;
+    event(&td, "a", today + 3, taken()).await;
+    event(&td, "c", yesterday + 5, taken()).await;
+    event(&td, "c", yesterday + 6, taken()).await;
+    event(&td, "c", yesterday - 1, taken()).await;
+    let r = stats(&td.ctx, TwinStatsParams { days: Some(2) }).await.unwrap();
+    assert_eq!((r.days[1].handed_back, r.days[1].taken_over), (2, 1));
+    assert_eq!((r.days[0].handed_back, r.days[0].taken_over), (0, 2));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn stats_closures_count_only_transitions_into_closed_after_a_twin_dispatch() {
+    let (td, _) = fixture(false).await;
+    let today = local_day_start(1_800_000_000_000).unwrap();
+    td.ctx.judge.clock().set(today + 20 * 60 * MINUTE);
+    let h = 60 * MINUTE;
+    // done -> dropped 不是第二次关闭
+    twin_session(&td, "s1", "flip", LOCAL, today).await;
+    event(&td, "flip", today + h, state_event(TodoState::Done)).await;
+    event(&td, "flip", today + 2 * h, state_from(TodoState::Done, TodoState::Dropped)).await;
+    event(&td, "flip", today + 3 * h, state_from(TodoState::Dropped, TodoState::Done)).await;
+    // 分身派发之前的关闭不算
+    event(&td, "early", today + h, state_event(TodoState::Done)).await;
+    twin_session(&td, "s2", "early", LOCAL, today + 2 * h).await;
+    // 关闭 -> 重新打开 -> 再派发 -> 再关闭：从最近一次派发算起
+    twin_session(&td, "s3", "again", LOCAL, today).await;
+    event(&td, "again", today + h, state_event(TodoState::Done)).await;
+    event(&td, "again", today + 2 * h, state_from(TodoState::Done, TodoState::Open)).await;
+    twin_session(&td, "s4", "again", LOCAL, today + 5 * h).await;
+    event(&td, "again", today + 6 * h, state_event(TodoState::Done)).await;
+    let r = stats(&td.ctx, TwinStatsParams { days: Some(1) }).await.unwrap();
+    let t = &r.days[0];
+    // flip 1 次（首个 done）、again 2 次；early 0 次
+    assert_eq!((t.accepted, t.dropped), (3, 0));
+    assert_eq!(t.turnaround_ms, h + h + h);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn stats_takeovers_ignore_twin_device_items_and_hand_backs_ignore_done_decisions() {
+    let (td, fake) = fixture(false).await;
+    let today = local_day_start(1_800_000_000_000).unwrap();
+    td.ctx.judge.clock().set(today + 20 * 60 * MINUTE);
+    let taken = || TodoEventData::TakenOver { by: by_human(), node_id: None };
+    // 本机分身派的算；分身设备派来的、派发之前的不算
+    twin_session(&td, "s1", "mine", LOCAL, today).await;
+    event(&td, "mine", today + 5, taken()).await;
+    twin_session(&td, "s2", "device", "some-device", today).await;
+    event(&td, "device", today + 5, taken()).await;
+    event(&td, "mine", today - 5, taken()).await;
+    // 真实路径：hand_back 判断算一次，done 判断不算，自动交回（release，done = false）算一次
+    for action in ["hand_back", "done"] {
+        let t = todo(&td, action).await;
+        plan(&td, &fake, &t, action).await;
+    }
+    let t = todo(&td, "stuck").await;
+    release(&td.ctx, &Caller::local_cli(), &t.id, "run", "stuck for 2 hours", false).await.unwrap();
+    // 旧版本写的 done 交回：没有标记，只有前缀
+    event(
+        &td,
+        "legacy",
+        today + 6,
+        TodoEventData::HandedBack {
+            reason: format!("{}looks fine", crate::store::DONE_HAND_BACK_PREFIX),
+            run_id: None,
+            done: false,
+        },
+    )
+    .await;
+    let r = stats(&td.ctx, TwinStatsParams { days: Some(1) }).await.unwrap();
+    assert_eq!((r.days[0].taken_over, r.days[0].handed_back), (1, 2));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn twin_runs_usage_is_batched_per_run_and_matches_judge_usage() {
+    let (td, _) = fixture(false).await;
+    let u = |i, c| JudgeUsage { input_tokens: Some(i), output_tokens: None, cost_usd: c };
+    let a = judge_call(&td, 1000, u(10, Some(0.5))).await;
+    let b = judge_call(&td, 1001, u(5, None)).await;
+    let c = judge_call(&td, 1002, u(7, None)).await;
+    let mut r1 = stat_run("r1", 1000, false, TwinRunResult::Done, vec![], &[]);
+    r1.judge_calls = vec![a.clone(), b.clone(), a.clone()];
+    let r2 = stat_run("r2", 2000, false, TwinRunResult::Idle, vec![], &[]);
+    let mut r3 = stat_run("r3", 3000, false, TwinRunResult::Done, vec![], &[]);
+    r3.judge_calls = vec![c.clone(), "gone".into()];
+    for r in [&r1, &r2, &r3] {
+        td.ctx.store.save_twin_run(r).await.unwrap();
+    }
+    let runs = td.ctx.store.twin_runs(LOCAL, TwinRunsParams::default()).await.unwrap();
+    let by = |id: &str| runs.iter().find(|r| r.id == id).unwrap().usage.clone();
+    // 重复的调用 id 只算一次
+    assert_eq!(by("r1"), Some(JudgeUsage { input_tokens: Some(15), output_tokens: None, cost_usd: Some(0.5) }));
+    assert_eq!(by("r2"), None);
+    assert_eq!(by("r3"), Some(u(7, None)));
+    assert_eq!(by("r1"), td.ctx.store.judge_usage(&r1.judge_calls).await.unwrap());
+    let since = td.ctx.store.twin_runs_since(LOCAL, 0).await.unwrap();
+    for run in &runs {
+        assert_eq!(since.iter().find(|r| r.id == run.id).unwrap().usage, run.usage);
+    }
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn changed_path_state_equals_get_state() {
+    let (td, _) = fixture(false).await;
+    for paused in [false, true] {
+        let mut scope = td.ctx.store.twin_scope(LOCAL).await.unwrap();
+        scope.paused = paused;
+        td.ctx.store.save_twin_scope(LOCAL, &scope).await.unwrap();
+        assert_eq!(changed(&td.ctx, None).await.unwrap(), get(&td.ctx).await.unwrap().state);
+    }
+    td.ctx.twin.pending.lock().unwrap().running = true;
+    let mut scope = td.ctx.store.twin_scope(LOCAL).await.unwrap();
+    scope.paused = false;
+    td.ctx.store.save_twin_scope(LOCAL, &scope).await.unwrap();
+    assert_eq!(changed(&td.ctx, None).await.unwrap(), TwinState::Running);
+    assert_eq!(get(&td.ctx).await.unwrap().state, TwinState::Running);
     td.shutdown().await;
 }

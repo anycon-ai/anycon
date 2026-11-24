@@ -4,6 +4,8 @@
 
 mod judge;
 mod twin;
+pub(crate) use twin::sum_usage;
+pub(crate) use twin::DONE_HAND_BACK_PREFIX;
 pub(crate) mod twin_link;
 pub use judge::{ExtractAttempts, ExtractRunFinish, JudgeCallFinish, JudgeCallStart};
 pub use twin_link::{LinkRow, RemoteRow};

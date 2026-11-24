@@ -157,6 +157,8 @@ pub const TWIN_SET: &str = "twin.set";
 pub const TWIN_WAKE: &str = "twin.wake";
 pub const TWIN_DRY_RUN: &str = "twin.dry_run";
 pub const TWIN_RUNS: &str = "twin.runs";
+/// C→D：最近几个本地日的分身统计（`TwinStatsParams` → `TwinStatsResult`），只读。
+pub const TWIN_STATS: &str = "twin.stats";
 pub const TWIN_QUESTIONS: &str = "twin.questions";
 pub const TWIN_ANSWER: &str = "twin.answer";
 pub const TWIN_CHANGED: &str = "twin.changed";
@@ -321,6 +323,7 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(TWIN_WAKE, None, None),
     req(TWIN_DRY_RUN, None, Some("TwinDryRunResult")),
     req(TWIN_RUNS, Some("TwinRunsParams"), Some("TwinRunsResult")),
+    req(TWIN_STATS, Some("TwinStatsParams"), Some("TwinStatsResult")),
     req(TWIN_QUESTIONS, Some("TwinQuestionsParams"), Some("TwinQuestionsResult")),
     req(TWIN_ANSWER, Some("TwinAnswerParams"), Some("TwinQuestion")),
     notif(TWIN_CHANGED, "TwinChanged"),

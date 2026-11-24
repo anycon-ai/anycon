@@ -172,6 +172,8 @@ pub struct LaunchOptions {
     pub block_outside_writes: bool,
     /// 「不 push、不开 PR」（docs/spec/daemon.md § 22.5）：`permissions.deny` 里拒绝 [`NO_PUSH_DENY_RULES`]。
     pub no_push: bool,
+    /// `--chrome`：接上 Claude in Chrome 扩展（无头模式下不带就没有 `claude-in-chrome` 这个 MCP server）。
+    pub chrome: bool,
     /// `--advisor` 的值；`None` = 不开。
     pub advisor_model: Option<String>,
     /// 会话设置里的 `env` 覆盖（进程环境本身由 daemon 合并好放在 `SpawnRequest.env`）。
@@ -195,7 +197,7 @@ impl LaunchOptions {
     /// `AgentInfo` 的默认值（或「没有」），和 [`Self::resolve_desired`] 同一套语义。
     ///
     /// **不把 `resume.launch_args` 当设置读**：它只是上次进程启动时有效设置的快照，每一项（模型 / 思考 / 模式 /
-    /// `system_prompt_append` / `max_*` / `fast_mode` / `block_outside_writes` / `advisor_model`）在 `SessionSettings` 里都有对应字段，没有哪一项是只有进程才知道的。
+    /// `system_prompt_append` / `max_*` / `fast_mode` / `block_outside_writes` / `no_push` / `chrome` / `advisor_model`）在 `SessionSettings` 里都有对应字段，没有哪一项是只有进程才知道的。
     /// daemon 在没有存活进程时（idle 关闭、daemon 重启、ended）改设置只会改库里的 `settings`，`launch_args` 可能已经过期；
     /// 要是在这里回落到它，用户清掉的系统提示追加 / 预算 / 轮数上限会在 resume 时悄悄复活。
     /// 所以设置一律不取自它；从 `resume` 里取 `agent_session_id`（拼 `--resume=<id>`），没有 `resume` 就生成新的 `--session-id`。
@@ -296,6 +298,7 @@ impl LaunchOptions {
         let fast_mode = bool_option("fast_mode")?;
         let block_outside_writes = bool_option(probe::OPTION_BLOCK_OUTSIDE_WRITES)?;
         let no_push = bool_option(probe::OPTION_NO_PUSH)?;
+        let chrome = bool_option(probe::OPTION_CHROME)?;
 
         let advisor_model = match settings.options.get(probe::OPTION_ADVISOR_MODEL) {
             None => None,
@@ -314,6 +317,7 @@ impl LaunchOptions {
             fast_mode,
             block_outside_writes,
             no_push,
+            chrome,
             advisor_model,
             env: settings.env.clone(),
             resume_id,
@@ -371,6 +375,10 @@ impl LaunchOptions {
         if let Some(m) = &self.advisor_model {
             kv(&mut a, "--advisor", m);
         }
+        // 关 = 不传（不用 `--no-chrome`：没有这个参数的老 CLI 会因为不认识的选项直接退出）
+        if self.chrome {
+            a.push("--chrome".to_string());
+        }
         kv(&mut a, "--permission-mode", &self.mode);
         if self.dangerous() {
             a.push("--dangerously-skip-permissions".to_string());
@@ -424,6 +432,7 @@ impl LaunchOptions {
             "fast_mode": self.fast_mode,
             "block_outside_writes": self.block_outside_writes,
             "no_push": self.no_push,
+            "chrome": self.chrome,
             "advisor_model": self.advisor_model,
             MARKER_CONVERSATION_STARTED: self.conversation_started,
         })
@@ -622,6 +631,33 @@ mod tests {
             matches!(err, AdapterError::InvalidSettings { ref field, .. } if field == "options.block_outside_writes"),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn chrome_adds_the_flag_only_when_on() {
+        let with = |v: Value| SessionSettings {
+            options: [("chrome".to_string(), v)].into_iter().collect(),
+            ..Default::default()
+        };
+        let o = resolve(with(json!(true)), None).unwrap();
+        assert!(o.chrome && o.to_args().contains(&"--chrome".to_string()));
+        assert_eq!(o.to_json()["chrome"], true);
+        // 关（显式 false / 没给）：不传，也不传 `--no-chrome`
+        for s in [with(json!(false)), SessionSettings::default()] {
+            let o = resolve(s, None).unwrap();
+            assert!(!o.chrome && !o.to_args().iter().any(|a| a.contains("chrome")));
+            assert_eq!(o.to_json()["chrome"], false);
+        }
+        // 续接（resume）时同样带上
+        let o = resolve(
+            with(json!(true)),
+            Some(ResumeHandle { agent_session_id: "abc-123".into(), launch_args: Value::Null }),
+        )
+        .unwrap();
+        assert!(o.to_args().contains(&"--chrome".to_string()));
+        // 不是布尔
+        let err = resolve(with(json!("yes")), None).unwrap_err();
+        assert!(matches!(err, AdapterError::InvalidSettings { ref field, .. } if field == "options.chrome"), "{err:?}");
     }
 
     #[test]

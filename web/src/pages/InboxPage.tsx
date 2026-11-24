@@ -51,7 +51,7 @@ const isRequest = (i: InboxItem): i is RequestItem => i.kind === 'permission' ||
 
 /**
  * 「待处理」（`/inbox`，应用的首页，spec/web.md § 4.11）：所有等用户的事，跨左栏节点过滤器勾选的节点。
- * `active`：页面此刻是否在眼前。手机上三个标签页常驻、只是藏起来（保留各自的滚动位置和没发出去的输入），藏着时不处理快捷键和焦点。
+ * `active`：页面此刻是否在眼前。手机上这一页常驻、去别的页面时只是藏起来（保留滚动位置和没发出去的输入），藏着时不处理快捷键和焦点。
  * `locate`：从通知点进来的目标；页面读到它就调 `onLocateDone`（把地址里的参数去掉），之后靠自己的状态跟着走。
  */
 export function InboxPage({ active = true, locate, onLocateDone }: { active?: boolean; locate?: InboxLocate; onLocateDone?: () => void }) {
@@ -114,7 +114,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   // 平板上详情只在用户操作（点一行、深链接）之后才滑出；窗口缩放带来的自动选中不弹
   const overlayOpen = mode === 'overlay' && sel.explicit && sel.selected !== null
   const detailShown = mode === 'overlay' ? overlayOpen : mode === 'split' ? !!shown : !!shown
-  // 页面藏在后面（手机上切到别的标签页）时不计时：回到眼前也算「显示的请求换了」，重新锁一小会儿
+  // 页面藏在后面（手机上去了别的页面）时不计时：回到眼前也算「显示的请求换了」，重新锁一小会儿
   // 规则换了版本（`updated_ms`，别处改了文字）也要重新锁：用户确认的是他读过的那一版
   const armed = useArmed(active && detailShown && shown ? (shown.kind === 'rule' ? `${shown.key}@${shown.rule.updated_ms}` : shown.key) : null)
 
@@ -183,7 +183,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   return (
     <InboxActiveContext.Provider value={active}>
     <div ref={root} className="flex min-h-0 flex-1 flex-col" data-testid="inbox-page" data-mode={mode}>
-      <PageHeader root crumbs={[{ label: t('inbox.title') }]} showNodeStatus={false} />
+      <PageHeader root spaceSwitcher crumbs={[{ label: t('inbox.title') }]} showNodeStatus={false} />
       <div className="flex min-h-0 flex-1">
         <div className={cn('scroll-thin min-h-0 min-w-0 flex-1 overflow-y-auto', mode === 'split' && 'max-w-[26rem] shrink-0 border-r border-border xl:w-[360px] xl:flex-none')} data-testid="inbox-list">
           <div className="mx-auto max-w-3xl space-y-4 p-3 sm:p-4">
@@ -290,7 +290,7 @@ function GoneNotice({ locate, onDismiss }: { locate: InboxLocate; onDismiss: () 
 }
 
 /**
- * 通知的目标还没找到：节点这个浏览器不认识 / 还没解锁（给解锁和配对的入口，不是「已处理」）；认识但还没连上、没同步完（等它，
+ * 通知的目标还没找到：节点这个浏览器不认识 / 还没解锁（给解锁和配对的入口）；认识但还没连上、没同步完（等它，
  * 同步完之后要么找到、要么说已经处理了）。
  */
 function PendingTarget({ target, nodeId, onDismiss }: { target: InboxLocate; nodeId: string | undefined; onDismiss: () => void }) {

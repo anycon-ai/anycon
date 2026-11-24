@@ -486,7 +486,7 @@ ACP：resume 时 adapter 先看进程里还有没有这个会话（之前脱离�
 | 方法 | 行为 |
 |---|---|
 | `session.archive` / `unarchive` | flag，列表默认不显示 archived。**已归档的会话不能 `send`**（`invalid`，`data.reason = "archived"`，先 `unarchive`；ADR-34 修订）。有 worktree 的会话：`archive { worktree: auto \| keep \| remove }` 先收掉 agent 进程再按 § 10.1「归档、删除、取消归档」处理 worktree；`unarchive` 按分支重建被删掉的 worktree，重建失败则保持归档并返回错误 |
-| `session.set_marks { session_id, follow_up? }` | 局部更新用户标注，只改传了的字段（现在只有 `follow_up`，「待处理」）。纯标注，不影响会话的行为：不改 `updated_ms`（标注不是会话活动，不能让「最近活跃」的排序跳动）、没有状态限制（归档的、在跑的都能标）；值真的变了才落库并发 `session.changed`。会话不存在 → `not_found`。归档不在这里，它有自己的行为约束 |
+| `session.set_marks { session_id, follow_up? }` | 局部更新用户标注，只改传了的字段（现在只有 `follow_up`，「完成后提醒」）。纯标注，不影响会话的行为：不改 `updated_ms`（标注不是会话活动，不能让「最近活跃」的排序跳动）、没有状态限制（归档的、在跑的、停下来的都能标；给停下来的会话标，意思是「下一轮结束后提醒我」）；值真的变了才落库并发 `session.changed`（不带 `follow_up_fired`）。`follow_up` 是只提醒一次的标记：会话完成、`follow_up` 通知发出时由 daemon 清成 false（§ 14）。会话不存在 → `not_found`。归档不在这里，它有自己的行为约束 |
 | `session.mark_read { session_id, seq }` | 已读水位推到 `seq`：`read_seq = max(read_seq, min(seq, last_seq))`，只增不减，所以重复、乱序的调用无害。变了才落库并发 `session.changed`（别的设备据此清掉未读点）；不改 `updated_ms`。水位在节点上，所有已配对设备共用一个。客户端的判断：会话不在运行（`status` 不是 `queued` / `starting` / `running` / `waiting_permission`）且 `last_seq > read_seq` 就是未读。通过 RPC 新建的会话 `read_seq = 0`，导入和升级前就存在的会话 `read_seq = last_seq`（视为已读） |
 | `session.delete` | 删 SQLite 里的事件和附件、scratch 目录、落到工作目录的附件（`<工作目录>/.anycon/attachments/<session_id>/`，只删这一个目录，§ 7.10）；agent 自己的会话文件（如 `~/.claude/projects/…`）**不动**，那是用户的。有 worktree 的会话：`delete { worktree, delete_branch }` 同上处理，被保留下来的 worktree 变成「没有会话的 worktree」 |
 | `session.restart` | 杀进程、resume。用于 agent 卡死或改了 `thinking` 后想立即生效 |
@@ -870,7 +870,7 @@ SQLite（WAL）。全部表：
 
 | 表 | 内容 |
 |---|---|
-| `sessions` | id、project、agent、title、status、archived、follow_up、read_seq（已读水位，§ 7.8）、settings(JSON)、agent_session_id、launch_args(JSON)、created、updated、last_seq、usage 累计 |
+| `sessions` | id、project、agent、title、status、archived、follow_up（完成后提醒，会话完成时由 daemon 清掉，§ 14；迁移 `0015_follow_up_once.sql` 把升级时不在进行中的会话的标记清掉）、read_seq（已读水位，§ 7.8）、settings(JSON)、agent_session_id、launch_args(JSON)、created、updated、last_seq、usage 累计 |
 | `linked_projects` | name（主键）、path（canonical，唯一）、created（ADR-33） |
 | `worktrees` | id（主键）、project_loc（同会话的位置记录）、project（名字，展示用）、rel_path、branch、base（规范化的引用名或完整 SHA）、base_display（展示名）、base_sha、session_id（可空）、state、dev、ino、git_pointer（`.git` 指针文件内容，项目路径换成 `{project}`；早期版本建的记录为空）、created（ADR-34）。`sessions.worktree_id` 指向它 |
 | `events` | `(session_id, seq)` 主键、ts、turn_id、event(JSON) |
@@ -932,7 +932,7 @@ SQLite（WAL）。全部表：
 |---|---|
 | `permission_requested` | 每次 `permission` 事件，立即 |
 | `turn_finished` | `turn_done` 且按 `notify.turn_finished`：`when_unwatched` 时只在该会话没有 watcher 时发。turn 结束时后台任务还在跑（§ 7.3）的，推迟到它们都结束之后、agent 自己跑的那一轮结束时再发；那一轮没来（任务都结束 15 秒后还没有 turn；`idle_timeout` 更短时按它，赶在回收之前）就兜底补发。agent 自己开的 turn 只在有推迟的通知时才发，不然它是已经通知过的 turn 的后续。用户又发了消息的，推迟的通知作废 |
-| `follow_up` | 标了「待处理」（`session.set_marks`，§ 7.8）的会话这一轮结束，时机和 `turn_finished` 完全一样（包括推迟到后台任务结束之后、兜底补发）。**标了的会话只发这一类，不再发 `turn_finished`**；标记是用户的明确要求，所以不受 `notify.turn_finished`（`never` / `when_unwatched`）限制，有 watcher 也发。推迟期间取消了标记，补发时按当时的标记判断 |
+| `follow_up` | 标了「完成后提醒」（`session.set_marks`，§ 7.8）的会话完成了，时机和 `turn_finished` 完全一样（包括推迟到后台任务结束之后、兜底补发）。**标了的会话只发这一类，不再发 `turn_finished`**；标记是用户的明确要求，所以不受 `notify.turn_finished`（`never` / `when_unwatched`）限制，有 watcher 也发。agent 自己开的 turn 平时只在有推迟的通知时才发，标着 `follow_up` 时也算（用户明确要了提醒，标记发完就清，不会重复）。还有积压的消息要接着跑时（turn 进行中发来、进了积压队列的消息）会话没完成，不发也不清，留给跑完积压的那一轮（兜底补发同理）。**标记只提醒一次，由 daemon 消费**：发通知的同时把 `follow_up` 清成 false 并落库，再发一条带 `follow_up_fired = true` 的 `session.changed`（客户端据此弹前台 toast）；通知被 60 秒去重挡掉时标记也照样清，`follow_up_fired` 照样带。推迟期间取消了标记，补发时按当时的标记判断。用户取消（中断）的一轮不算完成，标记留着；会话出错（会调用 `error` 通知的那几处）时，标记清掉（这一轮已经结束，出错有自己的通知），这一条 `session.changed` 不带 `follow_up_fired` |
 | `error` | `error` 事件且 `recoverable = false`，或会话进入 `error` |
 | `enroll_requested` | 一个请求批准的接入（§ 15.1，`code` 且 `approval = true`）到达，立即；每个请求一次。`scan` 不发（用户就在扫码）；批准之后同一会话里的重试也不再发 |
 | `security` | 新设备经接入加入；节点口令连续失败满 3 次；口令接入被锁定；口令被设置 / 修改 / 清除；`[enroll]` 被修改 |
@@ -1136,7 +1136,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 | `title`、`title_locked` | string、bool | 标题，以及用户是否手动改过（改过就不再自动取） |
 | `status` | string | 导出时的状态（`SessionStatus`） |
 | `archived` | bool | |
-| `follow_up` | bool | 「待处理」标记；可选，旧的压缩包没有，按 `false` |
+| `follow_up` | bool | 「完成后提醒」标记；可选，旧的压缩包没有，按 `false`。导出带它，导入时不收（§ 20.5） |
 | `settings` | object | `SessionSettings`，含会话 `env` 的值 |
 | `agent_session_id` | string \| null | agent 自己的会话 id。**导出，导入时不收**（§ 20.5） |
 | `created_ms`、`updated_ms` | number | `updated_ms` 是最后活动时间：会话行的 `updated_ms` 和最后一个事件的时间中较大的 |
@@ -1185,7 +1185,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 每个会话一个数据库事务（会话行、worktree 行、附件记录、事件、全文索引、turn 汇总）：附件先写到 `blobs/tmp/import-<随机>/`（0600，边写边核对 SHA-256），数据库都写成功之后 rename 到 `blobs/`，最后提交；任何一步失败都回滚并删掉已经放好的文件，不会留下半个会话。提交之后会话装进内存、向在线客户端发 `session.changed`，马上能列出、读历史、搜索。
 
-- **id、时间、标题、设置、用量、归档状态、「待处理」标记**原样保留；`read_seq` 设成 `last_seq`（导入不会点亮一片未读）；项目名按本机盘上的写法规范（`canonical_project_name`）。项目在本机不存在时照样导入：会话仍能从节点首页和搜索打开，要继续对话就建（或关联）一个同名项目；导入报告会列出这样的项目。
+- **id、时间、标题、设置、用量、归档状态**原样保留；`follow_up` 一律设成 `false`（导入的会话都没在跑，「完成后提醒」没有意义；导出格式不变，旧版导出里的「待处理」标记也不会变成「下一轮提醒」）；`read_seq` 设成 `last_seq`（导入不会点亮一片未读）；项目名按本机盘上的写法规范（`canonical_project_name`）。项目在本机不存在时照样导入：会话仍能从节点首页和搜索打开，要继续对话就建（或关联）一个同名项目；导入报告会列出这样的项目。
 - **没有 agent 进程**。`status`：导出时是 `queued` / `starting` / `running` / `waiting_permission` 的变成 `interrupted`（和 daemon 崩溃重启后的孤儿会话一样，§ 2），其余（`idle` `ended` `error` `interrupted`）不变。没有答复的 `permission` 事件在历史里收尾（追加 `permission_resolved { by_device: "daemon" }`），导出时在跑的会话再追加一条 `status { interrupted }`；这些追加的事件接在原有最后一个 seq 之后，时间是导入时间，这是导入会改动事件流的唯一地方。事件流里有 `turn_start` 没有 `turn_done` 的 turn 在 `turns` 表里标 `error`。
 - **`agent_session_id` 清空，`launch_args` 不收**。理由：agent 的会话文件（Claude Code 的 `~/.claude/projects/<cwd>/<id>.jsonl`、Codex 的 rollout）在别的机器上不存在，带着 id 的话下一次 `send` 走 resume 必然失败，而且会一直失败（id 一直在）。清掉之后下一次 `send` 开一个新的 agent 会话：历史仍在、仍可搜索，但 agent 不记得之前的对话。代价：在**同一台机器**上从导出恢复（agent 的会话文件还在）时 resume 也不再接上原来的 agent 对话。`launch_args` 本来就不被 resume 读（adapter 只取 `agent_session_id`，其余按当前设置），而且来自不可信的文件，所以不收。
 - **`project_loc` 为空**：和迁移之前创建的旧会话一样，第一次拉起 agent 时按本机同名项目补记（§ 10 里「记下位置」的规则），所以同名项目换了目录、设备号和 inode 不同都不会让导入的会话被拒。

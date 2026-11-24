@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 
-/** 会话页顶栏的「待处理」开关：空心 = 没标，实心 = 已标。 */
+/** 会话页顶栏的「完成后提醒」开关：空心 = 没标，实心 = 已标。 */
 export function FollowUpToggle({ on, onToggle, disabled }: { on: boolean; onToggle: () => void; disabled?: boolean }) {
   const { t } = useTranslation()
   const label = on ? t('followUp.unmark') : t('followUp.mark')
@@ -33,17 +33,17 @@ export function FollowUpChip({ onMark, disabled }: { onMark: () => void; disable
 }
 
 /**
- * 标了「待处理」的会话，输入区上方的一条：还在跑时说明「完成后会提醒你」，已经停下来时说明「在等你处理」，
- * 后者的按钮是「已处理」（清掉标记）。打开会话不会清掉标记，只有这里（或顶栏的开关）会。
+ * 标了「完成后提醒」的会话，输入区上方的一条：会话在跑（或还有后台任务）时说明「结束后会通知你」，停着时说明
+ * 「下一轮结束后会通知你」。按钮都是「取消提醒」。没有「就绪」态：完成之后 daemon 提醒一次并清掉标记，这一条随之消失。
  */
-export function FollowUpBar({ ready, onClear, busy, disabled }: { ready: boolean; onClear: () => void; busy?: boolean; disabled?: boolean }) {
+export function FollowUpBar({ running, onClear, busy, disabled }: { running: boolean; onClear: () => void; busy?: boolean; disabled?: boolean }) {
   const { t } = useTranslation()
   return (
-    <div role="status" className="flex shrink-0 items-center gap-2 border-t border-info/30 bg-info-subtle px-3 py-2 text-sm text-info md:px-4" data-testid="follow-up-bar" data-ready={ready}>
-      <Flag className="size-4 shrink-0 fill-current" aria-hidden />
-      <span className="min-w-0 flex-1 truncate">{ready ? t('followUp.barReady') : t('followUp.barArmed')}</span>
+    <div role="status" className="flex shrink-0 items-center gap-2 border-t border-info/30 bg-info-subtle px-3 py-2 text-sm text-info md:px-4" data-testid="follow-up-bar" data-running={running}>
+      <Flag className="size-4 shrink-0" aria-hidden />
+      <span className="min-w-0 flex-1 truncate">{running ? t('followUp.barRunning') : t('followUp.barIdle')}</span>
       <Button size="sm" variant="outline" loading={busy} disabled={disabled} onClick={onClear} data-testid="follow-up-clear">
-        {ready ? t('followUp.done') : t('followUp.cancel')}
+        {t('followUp.cancel')}
       </Button>
     </div>
   )

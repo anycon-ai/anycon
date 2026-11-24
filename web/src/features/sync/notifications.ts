@@ -2,7 +2,6 @@
 import type { AgentListResult, JobDone, JobProgress, NodeDevicesResult, NodeEnrollResolved, PermissionRequest, PermissionResolved, SessionChanged, SessionEvent, SessionSummary, WorkspaceChanged, WorkspaceListResult } from '@/protocol'
 import { rpc } from '@/transport/instance'
 import { enqueueLive } from '@/features/session/actions'
-import { isActiveStatus } from '@/features/session/group'
 import { shortNodeId } from '@/lib/ids'
 import { navigateTo } from '@/lib/navigate'
 import { parseEnrollInfo, useEnroll } from '@/stores/enroll'
@@ -44,7 +43,7 @@ export function handleNotification(nodeId: string, method: string, params: unkno
         return
       }
       useSessions.getState().applyChanged(nodeId, ch)
-      if (known && !ch.deleted) toastIfFollowUpReady(nodeId, known, ch)
+      if (known && !ch.deleted) toastIfFollowUpFired(nodeId, known, ch)
       if (!known && !ch.deleted) {
         // 别的设备新建的会话：补一次元数据
         void rpc()
@@ -163,13 +162,12 @@ export function handleNotification(nodeId: string, method: string, params: unkno
 }
 
 /**
- * 标了「待处理」的会话从运行变成停下来：页面在前台时弹一条 toast（点「查看」去那个会话）。页面在后台时由 daemon 的
- * `follow_up` 通知变成系统通知；正在看着这个会话时不打扰。
+ * daemon 因为发了 `follow_up` 通知而消费标记的那条 `session.changed`（`follow_up_fired = true`）：页面在前台时弹一条 toast
+ * （点「查看」去那个会话）。只认这个明确的信号，不从 `follow_up` 从 true 变 false 推断「完成」：别的设备取消提醒也会这样变。
+ * 页面在后台时由 daemon 的 `follow_up` 通知变成系统通知；正在看着这个会话时不打扰。
  */
-function toastIfFollowUpReady(nodeId: string, before: SessionItem, ch: SessionChanged): void {
-  const marked = ch.follow_up ?? before.follow_up
-  if (!marked || before.archived || (ch.archived ?? before.archived)) return
-  if (!isActiveStatus(before.status) || isActiveStatus(ch.status)) return
+function toastIfFollowUpFired(nodeId: string, before: SessionItem, ch: SessionChanged): void {
+  if (!ch.follow_up_fired) return
   const st = useSessions.getState()
   if (st.open[ch.session_id] && document.visibilityState === 'visible') return
   const order = useNodes.getState().order

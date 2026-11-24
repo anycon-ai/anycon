@@ -99,6 +99,7 @@ export function ProjectPage({ project }: { project: string }) {
   return (
     <>
       <PageHeader
+        root
         crumbs={[{ label: entry.name, to: { to: '/n/$node', params: { node: nodeParam } } }, { label: project }]}
         actions={
           <>

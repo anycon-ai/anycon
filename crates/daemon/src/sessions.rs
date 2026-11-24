@@ -682,6 +682,7 @@ impl Sessions {
             status: st.row.status,
             archived: st.row.archived,
             follow_up: st.row.follow_up,
+            follow_up_fired: false,
             read_seq: st.row.read_seq,
             pending_permissions: st.perms.len() as u32,
             background_tasks: st.background_tasks,
@@ -1912,6 +1913,30 @@ impl Sessions {
         self.fail_turn_with(st, code, e.to_string(), true).await;
     }
 
+    /// 会话真正完成了：发通知。标着 `follow_up`（完成后提醒）的会话发 `follow_up` 并消费标记——清成 false、落库，
+    /// 再发一条带 `follow_up_fired` 的 `session.changed`（客户端据此弹前台 toast）。通知被去重挡掉时标记照样清。
+    async fn notify_turn_finished(self: &Arc<Self>, st: &mut St) {
+        let follow_up = st.row.follow_up;
+        self.d.notifier.turn_finished(&st.row.id, follow_up);
+        if follow_up {
+            st.row.follow_up = false;
+            self.persist(st).await;
+            let mut c = self.changed_payload(st);
+            c.follow_up_fired = true;
+            self.push_changed(c, true);
+        }
+    }
+
+    /// 会话出错：发 `error` 通知。这一轮已经结束，出错有自己的通知，所以顺带清掉 `follow_up`（不带 `follow_up_fired`）。
+    async fn notify_error(self: &Arc<Self>, st: &mut St) {
+        self.d.notifier.error(&st.row.id);
+        if st.row.follow_up {
+            st.row.follow_up = false;
+            self.persist(st).await;
+            self.push_changed(self.changed_payload(st), true);
+        }
+    }
+
     /// 以一个 `error` 事件收尾当前 turn（会话进入 error 状态，可以修好设置后再 send）。
     async fn fail_turn_with(self: &Arc<Self>, st: &mut St, code: &str, message: String, recoverable: bool) {
         self.emit(st, Event::Error { code: code.into(), message, recoverable, resets_at_ms: None, limit_scope: None })
@@ -1920,7 +1945,7 @@ impl Sessions {
             self.retire(st, d);
         }
         self.end_turn(st, TurnDoneReason::Error, None, Some(SessionStatus::Error)).await;
-        self.d.notifier.error(&st.row.id);
+        self.notify_error(st).await;
     }
 
     /// 收尾当前 turn：发 `TurnDone`、记 turn 表和用量、释放名额，然后进入 idle / 下一个 turn / 指定状态。
@@ -2001,12 +2026,15 @@ impl Sessions {
         if reason == TurnDoneReason::Completed || reason == TurnDoneReason::MaxTurns || reason == TurnDoneReason::Budget
         {
             // 后台任务还在跑：活还没干完，「完成」推迟到它们都结束之后的那个 turn（daemon.md § 14）。agent 自己开的 turn
-            // 只在有推迟的通知时才发——没有的话这个 turn 是已经通知过的 turn 的后续，不再打扰一次
+            // 只在有推迟的通知时才发——没有的话这个 turn 是已经通知过的 turn 的后续，不再打扰一次；
+            // 例外是标着 `follow_up` 的会话：用户明确要了提醒，而标记发完就清，不会重复
             if st.background_tasks > 0 {
                 st.finish_notify_pending = true;
-            } else if !by_agent || st.finish_notify_pending {
+            } else if st.row.follow_up && !st.backlog.is_empty() {
+                // 标着 `follow_up`、还有积压的消息要接着跑：会话没完成。提醒只有一次，留给跑完积压的那一轮
+            } else if !by_agent || st.finish_notify_pending || st.row.follow_up {
                 st.finish_notify_pending = false;
-                self.d.notifier.turn_finished(&st.row.id, st.row.follow_up);
+                self.notify_turn_finished(st).await;
             }
         }
         self.persist(st).await;
@@ -2293,7 +2321,7 @@ impl Sessions {
                 // 限额类的恢复时间和范围照原样透传；daemon 不因为限额自动重试或排队
                 self.emit(st, Event::Error { code, message, recoverable, resets_at_ms, limit_scope }).await;
                 if !recoverable {
-                    self.d.notifier.error(&st.row.id);
+                    self.notify_error(st).await;
                 }
             }
             other => {
@@ -2481,7 +2509,7 @@ impl Sessions {
                     .await;
                 }
                 self.end_turn(st, TurnDoneReason::Error, None, Some(SessionStatus::Error)).await;
-                self.d.notifier.error(&st.row.id);
+                self.notify_error(st).await;
             } else {
                 self.end_turn(st, TurnDoneReason::Completed, None, Some(SessionStatus::Ended)).await;
             }
@@ -2501,7 +2529,7 @@ impl Sessions {
                 )
                 .await;
                 self.set_status(st, SessionStatus::Error, None).await;
-                self.d.notifier.error(&st.row.id);
+                self.notify_error(st).await;
             } else {
                 self.set_status(st, SessionStatus::Ended, None).await;
             }
@@ -3186,6 +3214,7 @@ impl Sessions {
                 status: SessionStatus::Ended,
                 archived: false,
                 follow_up: false,
+                follow_up_fired: false,
                 read_seq: 0,
                 pending_permissions: 0,
                 background_tasks: 0,
@@ -3706,7 +3735,7 @@ impl Sessions {
                         self.retire(&mut st, d);
                     }
                     self.end_turn(&mut st, TurnDoneReason::Error, None, Some(SessionStatus::Error)).await;
-                    self.d.notifier.error(&st.row.id);
+                    self.notify_error(&mut st).await;
                     continue;
                 }
             }
@@ -3721,15 +3750,17 @@ impl Sessions {
                     continue;
                 }
             }
-            // 推迟的「turn 完成」：后台任务都结束了，CLI 却没有接着自己跑一轮（那一轮结束时会发）——过一会儿兜底补发
+            // 推迟的「turn 完成」：后台任务都结束了，CLI 却没有接着自己跑一轮（那一轮结束时会发）——过一会儿兜底补发。
+            // 标着 `follow_up` 又有积压的消息在排队时不补发：会话还没完成，跑完积压的那一轮会发
             if st.finish_notify_pending
                 && st.turn.is_none()
                 && st.background_tasks == 0
                 && st.background_drained_at.is_some_and(|t| t.elapsed() >= finish_grace)
+                && (st.backlog.is_empty() || !st.row.follow_up)
             {
                 st.finish_notify_pending = false;
                 self.release_pending_results(&mut st);
-                self.d.notifier.turn_finished(&st.row.id, st.row.follow_up);
+                self.notify_turn_finished(&mut st).await;
             }
             // ended（回合数 / 预算用完）但进程还活着：和 idle 一样按 `idle_timeout` 回收，别让它一直占着进程
             if st.row.status == SessionStatus::Ended

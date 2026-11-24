@@ -1944,6 +1944,36 @@ mod tests {
         let (follow_up, read_seq): (i64, i64) =
             sqlx::query_as("SELECT follow_up, read_seq FROM sessions WHERE id = 'old'").fetch_one(&pool).await.unwrap();
         assert_eq!((follow_up, read_seq), (0, 42));
+
+        // 迁移 0015：不在进行中的会话的 follow_up 清掉，进行中的保留
+        for (id, status) in [
+            ("a", "idle"),
+            ("b", "ended"),
+            ("c", "error"),
+            ("d", "interrupted"),
+            ("e", "running"),
+            ("f", "starting"),
+            ("g", "queued"),
+            ("h", "waiting_permission"),
+        ] {
+            sqlx::query(
+                "INSERT INTO sessions (id, agent, status, created_ms, updated_ms, last_seq, follow_up) VALUES (?, 'fake', ?, 1, 2, 0, 1)",
+            )
+            .bind(id)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::raw_sql(include_str!("../migrations/0015_follow_up_once.sql")).execute(&pool).await.unwrap();
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT id, follow_up FROM sessions WHERE id != 'old' ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let want: Vec<(String, i64)> =
+            "abcdefgh".chars().map(|c| (c.to_string(), i64::from("efgh".contains(c)))).collect();
+        assert_eq!(rows, want);
     }
 
     #[tokio::test]

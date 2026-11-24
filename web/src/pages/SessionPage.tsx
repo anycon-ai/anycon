@@ -14,6 +14,7 @@ import { describeAttachmentFailure, describeAttachNotice } from '@/features/atta
 import { archiveSession, cancelTurn, closeSession, deleteSession, loadHistoryTo, loadOlder, needsReupload, openSession, renameSession, restartSession, resendUnsent, sendMessage, setFollowUp, unarchiveSession, type SendOutcome } from '@/features/session/actions'
 import { downloadText, exportMarkdown } from '@/features/session/export'
 import { isRunning, useDeviceLabel, useRespondPermission, useSessionData, useSessionSettings } from '@/features/session/hooks'
+import { isActiveStatus } from '@/features/session/group'
 import { isFollowUp } from '@/features/session/marks'
 import { useMarkRead } from '@/features/session/useMarkRead'
 import { activeOptions } from '@/features/settings/resolve'
@@ -161,8 +162,9 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
   // 已归档的会话不能 `send`（daemon 回 `invalid` / `archived`）：输入框换成「已归档 · 取消归档」，也不再给「重试这一轮」
   const archived = !!summary?.archived
   const agent = entry?.agents.find((a) => a.id === summary?.agent)
-  // 「待处理」标记（spec/web.md § 4.6.1）：开着会话页、会话停下来之后，把看到的位置报给 daemon（未读小红点据此消失）
+  // 标了「完成后提醒」（spec/web.md § 4.6.1）
   const followUp = !!summary && isFollowUp(summary)
+  // 未读水位：开着会话页、会话停下来之后，把看到的位置报给 daemon（未读小红点据此消失）
   useMarkRead({ nodeId, sessionId, lastSeq: view?.lastSeq, settled: !running, ready: open?.phase === 'ready' && !offline })
   const [followUpBusy, setFollowUpBusy] = useState(false)
   const changeFollowUp = (on: boolean): void => {
@@ -401,6 +403,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
     <>
       <SelectionCapture />
       <PageHeader
+        root
         crumbs={[
           { label: entry.name, to: { to: '/n/$node', params: { node: nodeParam } } },
           ...(project ? [{ label: project, to: { to: '/n/$node/p/$project', params: { node: nodeParam, project } } }] : []),
@@ -547,7 +550,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
             {announce}
           </div>
 
-          {followUp && !showChanges && !showPreview && !archived ? <FollowUpBar ready={!running} busy={followUpBusy} disabled={offline} onClear={() => changeFollowUp(false)} /> : null}
+          {followUp && !showChanges && !showPreview && !archived ? <FollowUpBar running={isActiveStatus(status) || backgroundTasks > 0} busy={followUpBusy} disabled={offline} onClear={() => changeFollowUp(false)} /> : null}
 
           {showChanges ? (
             // 「改动」视图没有输入框：分支 chip 照样留在底部

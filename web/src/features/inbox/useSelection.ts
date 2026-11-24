@@ -4,7 +4,7 @@
 //   inline（手机）      选中 = 展开，页面打开时默认展开第一条，再点一下收起。
 // 选中跟着条目的 key，不跟位置：前面插进来一条新的，用户正在看的不变。
 // 选中的条目从列表里消失时分两种：
-//   在这个页面上处理的（答复、已处理、归档）→ 选中和焦点落到下一条；
+//   在这个页面上处理的（答复、归档）→ 选中和焦点落到下一条；
 //   别的方式离开的（别的设备答复了、在会话页答复了、过期了、标记清掉了）→ 不替用户挑下一条（它的按钮会立刻变成可点的，用户没看过内容），
 //   留一个「这一条已经不在等你了」的占位（`ghost`），带「下一条」按钮；用户自己改了节点过滤器（切换器、「显示这个节点」「切换到这个空间」）导致它离开的，直接清掉选中，不留占位；
 // 别的原因让它的节点离开当前选择（别的设备改了分组、改名）的，留占位，写明它去了哪里（请求可能还在那个节点上等着）。
@@ -70,7 +70,7 @@ export interface InboxSelection {
 }
 
 /**
- * `items`：列表里的条目，按显示顺序。`active`：页面此刻是否在眼前（手机上标签页常驻、只是藏起来，藏着的时候不抢焦点）。
+ * `items`：列表里的条目，按显示顺序。`active`：页面此刻是否在眼前（手机上这一页常驻、只是藏起来，藏着的时候不抢焦点）。
  * `empty`：一条都没有时，焦点落到的元素（「没有等你的事」那个标题）。
  */
 export function useInboxSelection({ items, picked, filterMark, mode, active, ready, root, empty }: { items: readonly InboxItem[]; /** 左栏当前选中的节点（空间 / 勾选的节点）。 */ picked: readonly string[]; /** 用户在这个标签页里改节点过滤器的次数（`useFilterMarks`）：变了才算「用户改了过滤器」；别处改了分组、改名、节点被忘记让节点离开选中的集合不算。 */ filterMark: number; mode: InboxMode; active: boolean; /** 勾选的节点这一轮同步都定下来了：刚打开页面时条目还在路上，要等它。 */ ready: boolean; root: RefObject<HTMLElement | null>; empty: RefObject<HTMLElement | null> }): InboxSelection {

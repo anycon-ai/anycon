@@ -1,4 +1,4 @@
-// 会话页上的「待处理」（web.md § 4.6.1）：顶栏开关、输入区上方的条、输入框旁的小开关，以及已读上报。
+// 会话页上的「完成后提醒」（web.md § 4.6.1）：顶栏开关、输入区上方的条、输入框旁的小开关，以及已读上报。
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -55,7 +55,7 @@ beforeEach(async () => {
 afterEach(() => setRpc(null))
 
 describe('SessionPage: follow-up', () => {
-  it('the header flag marks the session, and the bar above the input says it is waiting for you', async () => {
+  it('the header flag marks the session, and the bar above the input says the next turn will notify', async () => {
     const user = userEvent.setup()
     seed()
     render(<SessionPage sessionId={SID} />)
@@ -65,29 +65,43 @@ describe('SessionPage: follow-up', () => {
     await user.click(toggle)
     await waitFor(() => expect(calls('session.set_marks')).toEqual([{ session_id: SID, follow_up: true }]))
     const bar = await screen.findByTestId('follow-up-bar')
-    expect(bar).toHaveAttribute('data-ready', 'true')
-    expect(bar).toHaveTextContent('waiting for you')
+    expect(bar).toHaveAttribute('data-running', 'false')
+    expect(bar).toHaveTextContent('You will be notified when the next turn finishes.')
     expect(screen.getByTestId('follow-up-toggle')).toHaveAttribute('aria-pressed', 'true')
   })
 
-  it('“Mark done” clears the mark', async () => {
+  it('“Cancel reminder” clears the mark', async () => {
     const user = userEvent.setup()
     seed({ summary: { follow_up: true } })
     render(<SessionPage sessionId={SID} />)
-    await user.click(await screen.findByTestId('follow-up-clear'))
+    const clear = await screen.findByTestId('follow-up-clear')
+    expect(clear).toHaveTextContent('Cancel reminder')
+    await user.click(clear)
     await waitFor(() => expect(calls('session.set_marks')).toEqual([{ session_id: SID, follow_up: false }]))
     await waitFor(() => expect(screen.queryByTestId('follow-up-bar')).toBeNull())
   })
 
-  it('while the session runs the bar promises a notification instead, and the mark stays when the session stops', async () => {
+  it('while the session runs the bar says it will notify when it finishes; there is no “ready” state and no “Mark done”', async () => {
     seed({ summary: { follow_up: true, status: 'running' } })
     render(<SessionPage sessionId={SID} />)
     const bar = await screen.findByTestId('follow-up-bar')
-    expect(bar).toHaveAttribute('data-ready', 'false')
-    expect(bar).toHaveTextContent('notified')
+    expect(bar).toHaveAttribute('data-running', 'true')
+    expect(bar).toHaveTextContent('when this session finishes')
     act(() => useSessions.setState((s) => ({ list: { ...s.list, [SID]: { ...s.list[SID]!, status: 'idle' } } })))
-    await waitFor(() => expect(screen.getByTestId('follow-up-bar')).toHaveAttribute('data-ready', 'true'))
+    await waitFor(() => expect(screen.getByTestId('follow-up-bar')).toHaveAttribute('data-running', 'false'))
+    expect(screen.queryByText('Mark done')).toBeNull()
     expect(calls('session.set_marks')).toEqual([])
+  })
+
+  it('an idle session with background tasks still running says it will notify when it finishes, not that it is waiting for you', async () => {
+    seed({ summary: { follow_up: true, status: 'idle', background_tasks: 2 } })
+    render(<SessionPage sessionId={SID} />)
+    const bar = await screen.findByTestId('follow-up-bar')
+    expect(bar).toHaveAttribute('data-running', 'true')
+    expect(bar).toHaveTextContent('You will be notified when this session finishes.')
+    expect(bar).not.toHaveTextContent('waiting for you')
+    expect(screen.queryByText('Mark done')).toBeNull()
+    expect(screen.getByTestId('follow-up-clear')).toHaveTextContent('Cancel reminder')
   })
 
   it('opening a marked session does not clear the mark', async () => {
@@ -98,7 +112,7 @@ describe('SessionPage: follow-up', () => {
     expect(useSessions.getState().list[SID]!.follow_up).toBe(true)
   })
 
-  it('an unmarked session offers “Remind me when done” beside the input (wide screens), which marks it and then gives way to the bar', async () => {
+  it('an unmarked session offers “Notify when done” beside the input (wide screens), which marks it and then gives way to the bar', async () => {
     const user = userEvent.setup()
     seed()
     render(<SessionPage sessionId={SID} />)

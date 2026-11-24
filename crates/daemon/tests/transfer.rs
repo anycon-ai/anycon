@@ -423,7 +423,7 @@ async fn export_then_import_round_trips_events_attachments_search_and_archive_st
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn follow_up_travels_with_an_export_and_imported_sessions_count_as_read() {
+async fn follow_up_is_exported_but_not_imported_and_imported_sessions_count_as_read() {
     let a = TestDaemon::start().await;
     let mut ca = a.client("a");
     let marked = make_session(&a, &mut ca, None, "tell me about the zebra", &[]).await;
@@ -446,13 +446,13 @@ async fn follow_up_travels_with_an_export_and_imported_sessions_count_as_read() 
     let got = list(&b, &mut cb).await;
     let m = got.iter().find(|s| s.id == marked).unwrap();
     let p = got.iter().find(|s| s.id == plain).unwrap();
-    assert!(m.follow_up && !p.follow_up);
+    assert!(!m.follow_up && !p.follow_up, "imported sessions are not running, so no reminder is armed");
     for s in [m, p] {
         assert!(s.last_seq > 0);
         assert_eq!(s.read_seq, s.last_seq, "an import must not light up unread dots");
     }
 
-    // 旧的导出包没有 follow_up：按没标处理
+    // 旧的导出包没有 follow_up：同样按没标处理
     let old = out.join("old.zip");
     let mut e = entries.clone();
     edit_json(&mut e, &format!("sessions/{marked}/session.json"), |v| {

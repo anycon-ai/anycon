@@ -1,4 +1,5 @@
-// 标了「待处理」的会话停下来时，页面在前台弹一条 toast（web.md § 4.6.1）；正在看着它、没标、还在跑时不弹。
+// daemon 消费 `follow_up` 标记（`follow_up_fired`）时，页面在前台弹一条 toast（web.md § 4.6.1）；
+// 只认这个信号，正在看着那个会话时不弹。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '@/i18n'
 import { setNavigator } from '@/lib/navigate'
@@ -28,45 +29,41 @@ function seed(over: Parameters<typeof summary>[0]): void {
 }
 
 describe('follow-up toast', () => {
-  it('tells you when a marked session stops, with a “View” action that opens it', () => {
+  it('tells you when the daemon consumed the mark (follow_up_fired), with a “View” action that opens it', () => {
     const go = vi.fn()
     setNavigator(go)
     seed({ status: 'running', follow_up: true })
-    handleNotification(NODE, 'session.changed', changed({ follow_up: true }))
+    handleNotification(NODE, 'session.changed', changed({ follow_up: false, follow_up_fired: true }))
     expect(toasts()).toHaveLength(1)
-    expect(toasts()[0]!.text).toBe('“Analyse jira” finished and is waiting for you.')
+    expect(toasts()[0]!.text).toBe('“Analyse jira” finished.')
     toasts()[0]!.action!.run()
     expect(go).toHaveBeenCalledWith(`/n/${NODE.slice(0, 8)}/s/${SID}`)
   })
 
-  it('also fires when the mark arrives together with the stop', () => {
-    seed({ status: 'running', follow_up: true })
-    handleNotification(NODE, 'session.changed', changed({ status: 'error' }))
-    expect(toasts()).toHaveLength(1)
+  it('stays quiet when the mark went from true to false without the fired signal (cancelled on another device)', () => {
+    seed({ status: 'idle', follow_up: true })
+    handleNotification(NODE, 'session.changed', changed({ follow_up: false }))
+    expect(toasts()).toEqual([])
   })
 
-  it('stays quiet for an unmarked session, a session that is still running, and one that was already stopped', () => {
-    seed({ status: 'running' })
-    handleNotification(NODE, 'session.changed', changed())
+  it('does not infer a finish from the status: a marked session that stops without the signal stays quiet', () => {
     seed({ status: 'running', follow_up: true })
-    handleNotification(NODE, 'session.changed', changed({ status: 'running', follow_up: true }))
-    seed({ status: 'idle', follow_up: true })
     handleNotification(NODE, 'session.changed', changed({ follow_up: true }))
+    handleNotification(NODE, 'session.changed', changed({ follow_up: false, status: 'error' }))
     expect(toasts()).toEqual([])
   })
 
   it('does not interrupt someone who is looking at that session', () => {
     seed({ status: 'running', follow_up: true })
     useSessions.getState().openStart(NODE, SID, [])
-    handleNotification(NODE, 'session.changed', changed({ follow_up: true }))
+    handleNotification(NODE, 'session.changed', changed({ follow_up: false, follow_up_fired: true }))
     expect(toasts()).toEqual([])
   })
 
-  it('stays quiet when the mark was removed or the session archived at the same moment', () => {
+  it('never stores the fired signal on the session summary', () => {
     seed({ status: 'running', follow_up: true })
-    handleNotification(NODE, 'session.changed', changed({ follow_up: false }))
-    seed({ status: 'running', follow_up: true })
-    handleNotification(NODE, 'session.changed', changed({ follow_up: true, archived: true }))
-    expect(toasts()).toEqual([])
+    handleNotification(NODE, 'session.changed', changed({ follow_up: false, follow_up_fired: true }))
+    expect(useSessions.getState().list[SID]).not.toHaveProperty('follow_up_fired')
+    expect(useSessions.getState().list[SID]!.follow_up).toBe(false)
   })
 })

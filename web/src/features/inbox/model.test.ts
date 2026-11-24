@@ -38,6 +38,8 @@ describe('inbox model', () => {
     const idle = getInboxSnapshot()
     expect(inboxNowCount(idle.model)).toBe(0)
     useSessions.setState((s) => ({ list: { x: { ...s.list.x!, follow_up: true } } }))
+    expect(inboxNowCount(getInboxSnapshot().model)).toBe(0)
+    useSessions.setState((s) => ({ list: { x: { ...s.list.x!, status: 'error', updated_at_ms: Date.now() } } }))
     expect(inboxNowCount(getInboxSnapshot().model)).toBe(1)
     useSessions.setState((s) => ({ list: { x: { ...s.list.x!, status: 'running' } } }))
     expect(inboxNowCount(getInboxSnapshot().model)).toBe(0)
@@ -66,7 +68,7 @@ describe('inbox model', () => {
     expect(inboxNowCountFromStores()).toBe(1)
   })
 
-  it('what the number counts: approvals (also plans and questions), device requests, stopped follow-ups, errors in the last 7 days, cached waiting sessions; not running sessions, unread or other nodes', () => {
+  it('what the number counts: approvals (also plans and questions), device requests, errors in the last 7 days, cached waiting sessions; not marked or running sessions, unread or other nodes', () => {
     const now = Date.now()
     useSessions.setState({
       list: {
@@ -82,7 +84,7 @@ describe('inbox model', () => {
     useSessions.getState().addPending(A, { ...req('q'), kind: 'question' })
     useEnroll.getState().upsert(A, { enroll_id: 'en', expires_at_ms: now + 60_000, created_at_ms: now, status: 'wait_approval', method: 'code', approval: true })
     usePrefs.setState({ sidebarNodes: [A] })
-    expect(inboxNowCountFromStores()).toBe(5)
+    expect(inboxNowCountFromStores()).toBe(4)
   })
 })
 

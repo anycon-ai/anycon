@@ -167,11 +167,11 @@ describe('when an item leaves', () => {
     expect(rows()).toHaveLength(1)
   })
 
-  it('a follow-up mark cleared elsewhere leaves the neutral placeholder, with Open session', () => {
-    seed({ sessions: [sess({ id: 'f', title: 'Flagged', follow_up: true, status: 'idle' })] })
+  it('an error that stopped being one elsewhere leaves the neutral placeholder, with Open session', () => {
+    seed({ sessions: [sess({ id: 'f', title: 'Flagged', status: 'error', updated_at_ms: Date.now() })] })
     render(<InboxPage />)
     expect(rows()[0]).toHaveAttribute('data-selected', 'true')
-    act(() => seed({ sessions: [sess({ id: 'f', title: 'Flagged', follow_up: false, status: 'idle' })] }))
+    act(() => seed({ sessions: [sess({ id: 'f', title: 'Flagged', status: 'idle', updated_at_ms: Date.now() })] }))
     const ghost = screen.getByTestId('inbox-ghost')
     expect(ghost).toHaveTextContent('No longer waiting for you')
     expect(ghost).not.toHaveTextContent('request was answered')

@@ -1,4 +1,4 @@
-// 规则页的入口（spec/web.md § 3.1、§ 3.3、§ 9.1）：左栏、手机「更多」、命令面板，都只在有节点支持规则（`capabilities.rules`）时出现。
+// 规则页的入口（spec/web.md § 3.1、§ 3.3、§ 9.1）：左栏（手机上是抽屉）、命令面板，都只在有节点支持规则（`capabilities.rules`）时出现。
 import type { ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -22,7 +22,6 @@ vi.mock('@/api/queries', () => ({ useMe: () => ({ data: undefined }), useDevices
 
 import { CommandPalette } from './CommandPalette'
 import { Sidebar } from './Sidebar'
-import { MorePage } from '@/pages/MorePage'
 
 const NODE = 'n'.repeat(32)
 const info = (rules: boolean): NodeInfo => ({ capabilities: { rules } }) as unknown as NodeInfo
@@ -58,18 +57,6 @@ describe('the sidebar', () => {
   })
 })
 
-describe('More on a phone', () => {
-  it('lists Rules when a node supports them, and not otherwise', () => {
-    setRules(true)
-    const { unmount } = wrap(<MorePage />)
-    expect(screen.getByTestId('more-rules')).toHaveAttribute('href', '/rules')
-    unmount()
-    setRules(false)
-    wrap(<MorePage />)
-    expect(screen.queryByTestId('more-rules')).toBeNull()
-  })
-})
-
 describe('the command palette', () => {
   it('has a Rules item that opens the page, only when a node supports rules', async () => {
     const user = userEvent.setup()
@@ -87,23 +74,19 @@ describe('the command palette', () => {
 
 describe('Twin navigation', () => {
   const setTwin = (twin: boolean): void => useNodes.setState({ byId: { [NODE]: nodeEntry({ id: NODE, name: 'alpha', info: { capabilities: { twin } } as unknown as NodeInfo }) }, order: [NODE], loaded: true })
-  it('appears in sidebar, status bar, More, and palette only with capability', async () => {
+  it('appears in sidebar, status bar and palette only with capability', async () => {
     setTwin(true)
     const first = wrap(<Sidebar nodeId={NODE} />)
     expect(screen.getByTestId('sidebar-twin')).toHaveAttribute('href', '/twin')
     expect(screen.getByTestId('twin-status-bar')).toBeInTheDocument()
     first.unmount()
-    const more = wrap(<MorePage />)
-    expect(screen.getByTestId('more-twin')).toHaveAttribute('href', '/twin')
-    more.unmount()
     const palette = wrap(<CommandPalette open onOpenChange={() => {}} />)
     await userEvent.click(screen.getByText('Twin'))
     expect(navigate).toHaveBeenCalledWith({ to: '/twin' })
     palette.unmount()
     setTwin(false)
-    wrap(<><Sidebar nodeId={NODE} /><MorePage /><CommandPalette open onOpenChange={() => {}} /></>)
+    wrap(<><Sidebar nodeId={NODE} /><CommandPalette open onOpenChange={() => {}} /></>)
     expect(screen.queryByTestId('sidebar-twin')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('more-twin')).not.toBeInTheDocument()
     expect(screen.queryByTestId('twin-status-bar')).not.toBeInTheDocument()
     expect(screen.queryByText('Twin')).not.toBeInTheDocument()
   })

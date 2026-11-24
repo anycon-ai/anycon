@@ -37,14 +37,14 @@ export function AdminPage() {
   if (me.data && !isAdmin)
     return (
       <>
-        <PageHeader crumbs={[{ label: t('admin.title') }]} showNodeStatus={false} />
+        <PageHeader root crumbs={[{ label: t('admin.title') }]} showNodeStatus={false} />
         <EmptyState title={t('admin.forbiddenTitle')}>{t('admin.forbiddenBody')}</EmptyState>
       </>
     )
 
   return (
     <>
-      <PageHeader crumbs={[{ label: t('admin.title') }]} showNodeStatus={false} />
+      <PageHeader root crumbs={[{ label: t('admin.title') }]} showNodeStatus={false} />
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl space-y-8 p-4 md:p-6">
           <h1 className="text-xl font-semibold">{t('admin.title')}</h1>

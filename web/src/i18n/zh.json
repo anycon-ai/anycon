@@ -145,6 +145,7 @@
     "quotaView": "查看用量"
   },
   "sidebar": {
+    "menu": "菜单",
     "nav": "导航",
     "resize": "调整侧栏宽度",
     "resizeHint": "拖动调整宽度，双击恢复默认。",
@@ -270,28 +271,11 @@
     "announce_other": "{{count}} 件事在等你",
     "announceNone": "现在没有等你的事了"
   },
-  "tabs": {
-    "label": "主导航",
-    "inbox": "待处理",
-    "todos": "清单",
-    "sessions": "会话",
-    "more": "更多"
-  },
-  "more": {
-    "title": "更多",
-    "nodes": "节点",
-    "nodeHome": "首页",
-    "nodeSettings": "设置",
-    "noNodes": "还没有配对节点。",
-    "pair": "配对节点",
-    "settings": "设置",
-    "account": "账号"
-  },
   "homeNotice": {
     "title": "首页换成了「待处理」",
     "body": "现在打开 Anycon 先看到「待处理」：需要审批的请求、计划、提问、接入请求、你标了待处理的会话和出错的会话，跨所有节点合在一个列表里。",
     "whereDesktop": "原来的节点首页（项目、临时会话、最近会话）在左栏顶部节点菜单的「节点首页」里。",
-    "wherePhone": "原来的节点首页在「更多 > 节点」里。左侧的菜单换成了底部的标签栏：待处理、会话、更多。",
+    "wherePhone": "原来的节点首页在菜单（左上角的按钮）顶部节点菜单的「节点首页」里。",
     "ok": "知道了"
   },
   "dispatch": {
@@ -447,6 +431,7 @@
     },
     "handler": { "me": "我", "agent": "agent", "twin": "分身" },
     "handlerAll": "不限",
+    "handlerLabel": "谁来做",
     "filterHandler": "按谁在处理过滤",
     "activity": { "working": "agent 在处理", "waiting": "等你决定", "review": "待验收" },
     "title": "清单",

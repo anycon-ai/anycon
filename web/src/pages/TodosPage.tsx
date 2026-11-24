@@ -35,8 +35,8 @@ const key = (t: Pick<ViewTodo, 'node_id' | 'id'>): string => `${t.node_id}:${t.i
 
 /**
  * 清单页（`/todos`、`/todos/:node/:todo`，spec/web.md § 4.12）：勾选的、支持清单的节点合在一个列表里，分五组——等你决定、待验收、处理中、还没开始、
- * 已关闭（折叠，展开才向节点要，一页页往下翻）。桌面左边列表右边详情；手机上是列表，点一行进二级页。
- * `selected`：地址里的那一项。`active`：页面此刻在眼前（手机上标签页常驻、藏起来时不处理键）。
+ * 已关闭（折叠，展开才向节点要，一页页往下翻）。桌面左边列表右边详情；手机上是列表，点一行进下一级页。
+ * `selected`：地址里的那一项。`active`：页面此刻在眼前（手机上这一页常驻、藏起来时不处理键）。
  */
 export function TodosPage({ selected, active = true }: { selected?: { node: string; todo: string }; active?: boolean }) {
   const twinAvailable = useTwinAvailable()
@@ -152,6 +152,7 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
   const header = (
     <PageHeader
       root
+      spaceSwitcher
       crumbs={[{ label: t('todos.title') }]}
       showNodeStatus={false}
       actions={

@@ -17,7 +17,7 @@ export function isTypingTarget(target: EventTarget | null): boolean {
 
 /**
  * 权限请求卡片的 DOM 节点（会话页和「待处理」页的卡片是同一个组件，都带 `data-request`）。
- * 手机上藏起来的标签页（`inert` / 不可见）里可能还留着同一个请求的卡片，坐标照样在屏幕上：这里只认真正看得见、能点的那一份。
+ * 手机上藏起来的「待处理」（`inert` / 不可见）里可能还留着同一个请求的卡片，坐标照样在屏幕上：这里只认真正看得见、能点的那一份。
  */
 export function requestCardElement(requestId: string): Element | null {
   const all = document.querySelectorAll(`[data-request="${CSS.escape(requestId)}"]`)

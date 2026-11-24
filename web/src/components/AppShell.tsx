@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Outlet, useNavigate, useParams, useRouterState } from '@tanstack/react-router'
+import { useTranslation } from 'react-i18next'
 import { shortNodeId } from '@/lib/ids'
-import { useInboxNowCount } from '@/features/inbox/useInbox'
 import { useCurrentNode } from '@/lib/nav'
 import { useIsWide } from '@/lib/useMediaQuery'
-import { useOpenTodoCount } from '@/features/todos/useOpenTodoCount'
 import { useSessions } from '@/stores/sessions'
 import { useNodes } from '@/stores/nodes'
 import { clampSidebarWidth, usePrefs } from '@/stores/prefs'
 import { useUi } from '@/stores/ui'
+import { Drawer } from '@/ui/Overlay'
 import { EnrollApprovalDialog } from '@/features/approve/EnrollApprovalDialog'
 import { ScanApproveDialog } from '@/features/approve/ScanApproveDialog'
 import { ApprovalBanner } from './ApprovalBanner'
@@ -21,11 +21,10 @@ import { FollowUpRuleHost } from '@/features/rules/ui/AlwaysDoThis'
 import { InboxAnnouncer } from './InboxAnnouncer'
 import { CommandPalette } from './CommandPalette'
 import { NewProjectHost } from './NewProjectHost'
+import { keptPageOf, PhonePages } from './PageHosts'
 import { Sidebar, SidebarRail } from './Sidebar'
 import { SidebarResizeHandle } from './SidebarResizeHandle'
 import { StatusBanner } from './StatusBanner'
-import { PhoneTabs } from './TabHost'
-import { TabBar, tabOfPath } from './TabBar'
 import { useShortcuts } from './useShortcuts'
 import { useSidebarPeek } from './useSidebarPeek'
 import { cn } from '@/ui/cn'
@@ -33,9 +32,10 @@ import { cn } from '@/ui/cn'
 /**
  * 已登录页面的外壳：左栏 + 状态横幅 + 页面。
  * 左栏 ≥768px 时钉住就常驻占位、可拖动调宽；没钉住时只留一条窄条，悬停浮出、盖在页面上，移开收回。
- * 手机（< 768px）没有左栏：底部标签栏（待处理 / 会话 / 更多）是主导航，只在标签页的根页面显示，进二级页时收起。
+ * 手机（< 768px）上左栏是抽屉：顶栏左边的菜单按钮打开，里面是和桌面同一个左栏，点了去处就收起（spec/web.md § 3.3）。
  */
 export function AppShell() {
+  const { t } = useTranslation()
   const { nodeId } = useCurrentNode()
   const order = useNodes((s) => s.order)
   const byId = useNodes((s) => s.byId)
@@ -50,11 +50,11 @@ export function AppShell() {
   const setPalette = useUi((s) => s.setPalette)
   const wide = useIsWide()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-  const tab = tabOfPath(pathname)
+  const kept = keptPageOf(pathname)
   // 地址带着 `?node=&session=` 的 `/inbox`：从通知点进来的，升级说明先不弹
   const deepLink = useRouterState({ select: (s) => s.location.pathname === '/inbox' && !!(s.location.search as { node?: string; session?: string } | undefined)?.node })
-  const inboxCount = useInboxNowCount()
-  const todoCount = useOpenTodoCount()
+  const drawerOpen = useUi((s) => s.leftDrawerOpen)
+  const setDrawer = useUi((s) => s.setLeftDrawer)
   useUnsavedDraftsGuard()
   useRunningMoveGuard()
   const setLastSessionsPath = useUi((s) => s.setLastSessionsPath)
@@ -68,6 +68,11 @@ export function AppShell() {
   useShortcuts()
 
   const activeNode = nodeId ?? (lastNode && byId[lastNode] ? lastNode : order[0])
+
+  // 换到宽屏时抽屉没有意义了，关掉它（不然窄回来时它还开着）
+  useEffect(() => {
+    if (wide) setDrawer(false)
+  }, [wide, setDrawer])
 
   useEffect(() => {
     if (nodeId && nodeId !== lastNode) setPrefs({ lastNode: nodeId })
@@ -93,7 +98,6 @@ export function AppShell() {
   return (
     <div className="flex h-screen-dvh overflow-hidden bg-bg">
       {/* z-30：浮出的左栏盖住页面，但在菜单 / 对话框（z-40 起）下面 */}
-      {/* 手机上根本不挂载左栏：它的节点下拉、搜索等会和「会话」标签页里的重复 */}
       {wide ? (
         <div className="relative z-30 flex shrink-0" data-testid="sidebar-dock">
           {sidebarOpen ? null : <SidebarRail nodeId={activeNode} onSearch={search} onPin={togglePin} {...railProps} />}
@@ -125,17 +129,27 @@ export function AppShell() {
             />
           </aside>
         </div>
-      ) : null}
+      ) : (
+        <Drawer side="left" open={drawerOpen} onOpenChange={setDrawer} title={t('sidebar.menu')} closeLabel={t('common.close')}>
+          <Sidebar
+            nodeId={activeNode}
+            onNavigate={() => setDrawer(false)}
+            onSearch={() => {
+              setDrawer(false)
+              setPalette(true)
+            }}
+          />
+        </Drawer>
+      )}
       <div className="relative flex min-w-0 flex-1 flex-col">
         {wide ? <CaptureHost /> : null}
         <StatusBannerForNode nodeId={nodeId} />
-        {/* 手机上标签页常驻在这里（绝对定位叠在页面区上，切走时只是藏起来）；二级页照常走 Outlet */}
+        {/* 手机上「待处理」「清单」常驻在这里（绝对定位叠在页面区上，去别的页面时只是藏起来）；其余页面照常走 Outlet */}
         <div className="relative flex min-h-0 flex-1 flex-col">
-          {wide ? null : <PhoneTabs />}
-          {wide || !tab ? <Outlet /> : null}
+          {wide ? null : <PhonePages />}
+          {wide || !kept ? <Outlet /> : null}
         </div>
         <PendingApprovalBanner nodeId={nodeId} />
-        {wide || !tab ? null : <TabBar current={tab} inboxCount={inboxCount} todoCount={todoCount} />}
       </div>
       <CommandPalette open={palette} onOpenChange={setPalette} />
       {wide ? null : <CaptureHost />}

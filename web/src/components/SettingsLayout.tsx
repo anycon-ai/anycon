@@ -20,7 +20,7 @@ export function SettingsLayout() {
   ] as const
   return (
     <>
-      <PageHeader crumbs={[{ label: t('settings.title') }]} showNodeStatus={false} />
+      <PageHeader root crumbs={[{ label: t('settings.title') }]} showNodeStatus={false} />
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-4 md:flex-row md:p-6">
           <nav aria-label={t('settings.title')} className="flex shrink-0 gap-1 overflow-x-auto md:w-48 md:flex-col">

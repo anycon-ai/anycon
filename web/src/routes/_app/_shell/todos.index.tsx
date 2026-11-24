@@ -1,4 +1,4 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { TabRoute } from '@/components/TabHost'
+import { KeptRoute } from '@/components/PageHosts'
 
-export const Route = createFileRoute('/_app/_shell/todos/')({ component: () => <TabRoute tab="todos" /> })
+export const Route = createFileRoute('/_app/_shell/todos/')({ component: () => <KeptRoute page="todos" /> })

@@ -181,25 +181,22 @@ describe('everything the node filter applies to follows the space', () => {
 })
 
 describe('phone top bar', () => {
-  it('shows the current space name and opens the same switcher on a tab root, when there are groups', async () => {
+  it('shows the current space name and opens the same switcher on pages that ask for it, when there are groups', async () => {
     const user = userEvent.setup()
     usePrefs.setState({ sidebarSpace: 'Work' })
-    wrap(<PageHeader root crumbs={[{ label: 'Inbox' }]} showNodeStatus={false} />)
+    wrap(<PageHeader root spaceSwitcher crumbs={[{ label: 'Inbox' }]} showNodeStatus={false} />)
     expect(screen.getByTestId('space-topbar-label')).toHaveTextContent('Work')
     await user.click(screen.getByTestId('space-topbar'))
     expect(await screen.findByTestId('space-all')).toBeInTheDocument()
   })
 
-  it('is absent without groups, on secondary pages, and where the page has its own switcher', () => {
+  it('is absent without groups and on pages that do not ask for it', () => {
     setup({})
-    const none = wrap(<PageHeader root crumbs={[{ label: 'Inbox' }]} showNodeStatus={false} />)
+    const none = wrap(<PageHeader root spaceSwitcher crumbs={[{ label: 'Inbox' }]} showNodeStatus={false} />)
     expect(screen.queryByTestId('space-topbar')).toBeNull()
     none.unmount()
     setup({ h: 'Home', w: 'Work', x: 'Work' })
-    const second = wrap(<PageHeader crumbs={[{ label: 'Session' }]} showNodeStatus={false} />)
-    expect(screen.queryByTestId('space-topbar')).toBeNull()
-    second.unmount()
-    wrap(<PageHeader root spaceSwitcher={false} crumbs={[{ label: 'Sessions' }]} showNodeStatus={false} />)
+    wrap(<PageHeader root crumbs={[{ label: 'Session' }]} showNodeStatus={false} />)
     expect(screen.queryByTestId('space-topbar')).toBeNull()
   })
 })

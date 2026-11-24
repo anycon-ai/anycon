@@ -49,6 +49,7 @@ export function NodeHomePage() {
   return (
     <>
       <PageHeader
+        root
         crumbs={[{ label: entry.name }]}
         actions={
           <Link to="/n/$node/settings" params={{ node: nodeParam }} aria-label={t('node.settings')}>

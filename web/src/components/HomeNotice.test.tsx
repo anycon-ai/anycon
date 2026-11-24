@@ -23,10 +23,10 @@ describe('home notice', () => {
     expect(dialog).toHaveTextContent('Node home')
   })
 
-  it('on a phone it points at More > Nodes and the bottom bar instead', () => {
+  it('on a phone it points at the menu button instead of the sidebar', () => {
     setViewport('phone')
     render(<HomeNotice />)
-    expect(screen.getByRole('dialog')).toHaveTextContent('More > Nodes')
+    expect(screen.getByRole('dialog')).toHaveTextContent('the button at the top left')
   })
 
   it('“Got it” closes it and remembers, so it does not come back', async () => {

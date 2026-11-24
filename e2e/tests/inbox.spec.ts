@@ -127,21 +127,16 @@ test.describe.serial('待处理', () => {
     ).toHaveAttribute('href', new RegExp(`${second}$`))
   })
 
-  test('d. 手机宽度：底栏取代抽屉；第一条默认展开，在行内答复；会话页收起底栏、返回后恢复', async () => {
+  test('d. 手机宽度：左侧抽屉是主导航；第一条默认展开，在行内答复；从抽屉进会话页和节点首页', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/inbox')
     await expect(page.getByTestId('inbox-page')).toHaveAttribute('data-mode', 'inline', {
       timeout: CONNECT_TIMEOUT,
     })
-    // 底部标签栏：待处理 / 清单 / ＋ / 会话 / 更多（＋是按钮不是链接），没有左栏、没有抽屉的菜单按钮
-    const bar = page.getByTestId('tab-bar')
-    await expect(bar).toBeVisible()
-    await expect(bar.getByRole('link')).toHaveCount(4)
-    await expect(bar.getByTestId('tab-capture')).toBeVisible()
-    await expect(page.getByTestId('tab-inbox')).toHaveAttribute('aria-current', 'page')
-    await expect(page.getByTestId('tab-inbox-count')).toHaveText('1', { timeout: CONNECT_TIMEOUT })
+    // 没有底栏、左栏收在抽屉里；顶栏只有菜单按钮（「待处理」是左栏里的去处，没有返回）
+    await expect(page.getByTestId('tab-bar')).toHaveCount(0)
     await expect(page.getByTestId('sidebar')).toBeHidden()
-    await expect(page.getByTestId('menu-button')).toHaveCount(0)
+    await expect(page.getByTestId('header-back')).toHaveCount(0)
 
     // 第一条默认展开，里面是完整的卡片
     await expect(rows()).toHaveCount(1)
@@ -149,39 +144,35 @@ test.describe.serial('待处理', () => {
     await expect(main).toHaveAttribute('aria-expanded', 'true')
     await expect(rows().first().getByTestId('permission-command')).toBeVisible()
 
-    // 「会话」标签：原来抽屉里的东西；点进会话页，底栏收起；返回走浏览器历史，底栏回来
-    await page.getByTestId('tab-sessions').click()
-    await expect(page).toHaveURL(/\/sessions$/)
-    await expect(page.getByTestId('tab-sessions')).toHaveAttribute('aria-current', 'page')
-    await expect(page.getByTestId('node-switcher')).toBeVisible()
-    await page
+    // 抽屉：导航带个数、会话树；点进会话页，抽屉收起
+    await page.getByTestId('menu-button').click()
+    const drawer = page.getByTestId('sidebar')
+    await expect(drawer).toBeVisible()
+    await expect(drawer.getByTestId('sidebar-inbox')).toHaveAttribute('aria-current', 'page')
+    await expect(drawer.getByTestId('sidebar-inbox-count')).toHaveText('1', { timeout: CONNECT_TIMEOUT })
+    await expect(drawer.getByTestId('node-switcher')).toBeVisible()
+    await drawer
       .getByRole('link', { name: /run permission/i })
       .first()
       .click()
     await expect(page).toHaveURL(/\/s\/sess_[0-9A-Za-z]+$/)
-    await expect(page.getByTestId('tab-bar')).toBeHidden()
-    await page.getByTestId('header-back').click()
-    await expect(page).toHaveURL(/\/sessions$/)
-    await expect(page.getByTestId('tab-bar')).toBeVisible()
+    await expect(page.getByTestId('sidebar')).toBeHidden()
 
-    // 「更多」：节点的首页和设置、设置
-    await page.getByTestId('tab-more').click()
-    await expect(page).toHaveURL(/\/more$/)
-    await expect(page.getByTestId('more-node')).toHaveCount(1)
-    await expect(page.getByTestId('more-node-home')).toBeVisible()
-    await expect(page.getByTestId('more-node-settings')).toBeVisible()
-    await expect(page.getByTestId('more-settings')).toBeVisible()
-    await page.getByTestId('more-node-home').click()
+    // 节点首页在抽屉里空间切换器的菜单里
+    await page.getByTestId('menu-button').click()
+    await page.getByTestId('sidebar').getByTestId('node-switcher').click()
+    await page.getByTestId('node-home').click()
     await expect(page).toHaveURL(/\/n\/[0-9a-f]+$/)
-    await expect(page.getByTestId('tab-bar')).toBeHidden()
-    await page.getByTestId('header-back').click()
 
     // 回「待处理」，在行内答复：条目消失，焦点落到「没有等你的事」
-    await page.getByTestId('tab-inbox').click()
+    await page.getByTestId('menu-button').click()
+    await page.getByTestId('sidebar').getByTestId('sidebar-inbox').click()
     await expect(page).toHaveURL(/\/inbox$/)
     await rows().first().getByTestId('permission-option-allow').click()
     await expect(page.getByTestId('inbox-empty')).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByTestId('tab-inbox-count')).toHaveCount(0)
+    await page.getByTestId('menu-button').click()
+    await expect(page.getByTestId('sidebar-inbox-count')).toHaveCount(0)
+    await page.keyboard.press('Escape')
     await page.setViewportSize({ width: 1280, height: 720 })
   })
 
@@ -198,9 +189,7 @@ test.describe.serial('待处理', () => {
     await expect(open).toHaveAttribute('href', new RegExp(`${first}$`))
     await open.click()
     await expect(page).toHaveURL(new RegExp(`/s/${first}$`))
-    await expect(page.getByTestId('tab-bar')).toBeHidden()
     // 在会话页答复它（会话页的卡片没有锁）
-    // 藏在后面的「待处理」标签页里还有同一张卡片（不可见、不可点）：只认看得见的那张
     await pendingCard(page).filter({ visible: true }).getByTestId('permission-option-allow').click()
     await expect(resolvedCards(page)).toHaveCount(1, { timeout: 15_000 })
     await page.goBack()

@@ -121,6 +121,7 @@ export function RulesPage({ initialTab, focus }: { initialTab?: Tab; focus?: { n
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="rules-page">
       <PageHeader
+        root
         crumbs={[{ label: t('rules.title') }]}
         showNodeStatus={false}
         actions={

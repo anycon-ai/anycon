@@ -2,7 +2,7 @@
  * 清单 `/todos`（docs/spec/web.md § 4.12、§ 4.12.1）：真实 hub + daemon + web。
  *
  *   a. 桌面输入条（侧栏「＋」）记一项，出现在清单页；第二个浏览器上下文经 `todo.changed` 看到
- *   b. 手机宽度：底栏中间的「＋」打开底部弹层，记一项
+ *   b. 手机宽度：抽屉里「清单」旁边的「＋」打开底部弹层，记一项
  *   c. 编辑标题、完成、重新打开、删除（二次确认），每一步用 `anycon todo ls --json` 对照 daemon
  *   d. agent 用 `ANYCON_AGENT=1 anycon todo add` 记的项出现在待处理的「稍后」段，不进清单页和导航数字；收下之后进清单
  *   e. 离线：掐掉页面到 hub 的连接（节点对页面不可达），记一项、改一项，恢复后重放，daemon 里的结果和界面一致
@@ -85,11 +85,15 @@ test.describe.serial('清单', () => {
     await expect(page.getByTestId('capture-bar')).toHaveCount(0)
   })
 
-  test('b. 手机宽度：底栏「＋」打开底部弹层', async () => {
+  test('b. 手机宽度：抽屉里的「＋」打开底部弹层', async () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/todos')
-    await expect(page.getByTestId('tab-capture')).toBeVisible({ timeout: CONNECT_TIMEOUT })
-    await page.getByTestId('tab-capture').click()
+    await page.getByTestId('menu-button').click()
+    const capture = page.getByTestId('sidebar').getByTestId('sidebar-capture')
+    await expect(capture).toBeVisible({ timeout: CONNECT_TIMEOUT })
+    await capture.click()
+    // 抽屉收起，弹层打开
+    await expect(page.getByTestId('sidebar')).toBeHidden()
     await expect(page.getByTestId('capture-sheet')).toBeVisible()
     await page.getByTestId('capture-input').fill(`${t('sheet')}\nsecond line is the body`)
     await page.getByTestId('capture-send').click()

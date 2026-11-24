@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
 import { Link, useCanGoBack, useNavigate, useRouter } from '@tanstack/react-router'
-import { ArrowLeft, ChevronRight, Pencil } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Menu, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCurrentNode } from '@/lib/nav'
 import { useNodeFilter } from '@/lib/nodeFilter'
+import { useUi } from '@/stores/ui'
 import { SpaceSwitcher } from './SpaceSwitcher'
 import { Chip } from '@/ui/Misc'
 import { connectionLabel, connectionTone } from './useConnectionLabel'
@@ -19,18 +20,23 @@ export interface Crumb {
 }
 
 /**
- * 页面顶栏：手机上的返回按钮、面包屑、页面的状态（`meta`，比如会话页的「聊天 / 改动」和状态 chip）、
+ * 页面顶栏：手机上的菜单按钮（打开左侧抽屉）和返回按钮、面包屑、页面的状态（`meta`，比如会话页的「聊天 / 改动」和状态 chip）、
  * 节点状态 chip、页面自己的操作按钮。
+ * `root`：左栏里直接能到的页面（待处理、清单、会话……），手机上只有菜单按钮；其余是从别的页面点进来的下一级页，菜单旁边多一个返回。
+ * 页面传了 `onBack` 时（文件预览回到树）不管 `root` 都显示返回。
  */
-export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBack, root, spaceSwitcher = true }: { crumbs: Crumb[]; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void; root?: boolean; /** 手机上标签页根页面的顶栏带当前空间的切换按钮（只在有分组时；「会话」页自己页面里就有切换器，不重复）。 */ spaceSwitcher?: boolean }) {
+export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBack, root, spaceSwitcher = false }: { crumbs: Crumb[]; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void; root?: boolean; /** 手机上顶栏带当前空间的切换按钮（只在有分组时）：跨节点汇总的页面（待处理、清单、分身）用，免得为了换空间去开抽屉。 */ spaceSwitcher?: boolean }) {
   const { t } = useTranslation()
   const { entry, nodeId } = useCurrentNode()
   const hasGroups = useNodeFilter().spaces.hasGroups
+  const setDrawer = useUi((s) => s.setLeftDrawer)
   return (
     <header className="pt-safe flex min-h-12 shrink-0 items-center gap-2 border-b border-border bg-bg px-3">
-      {/* 手机没有左侧抽屉：底部标签栏页（root）没有返回，其余页面都是二级页，带返回（默认走浏览器历史） */}
-      {root ? null : <BackButton onBack={onBack} />}
-      {root && spaceSwitcher && hasGroups ? <SpaceSwitcher nodeId={nodeId} variant="topbar" /> : null}
+      <button type="button" aria-label={t('sidebar.menu')} className="-ml-2 grid size-11 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-bg-hover md:hidden" onClick={() => setDrawer(true)} data-testid="menu-button">
+        <Menu className="size-5" aria-hidden />
+      </button>
+      {root && !onBack ? null : <BackButton onBack={onBack} />}
+      {spaceSwitcher && hasGroups ? <SpaceSwitcher nodeId={nodeId} variant="topbar" /> : null}
       <nav aria-label={t('common.breadcrumb')} className="flex min-w-0 flex-1 items-center gap-1 text-sm">
         {crumbs.map((c, i) => (
           <span key={`${i}-${c.label}`} className={i === crumbs.length - 1 ? 'flex min-w-0 items-center gap-1' : 'hidden min-w-0 items-center gap-1 sm:flex'}>

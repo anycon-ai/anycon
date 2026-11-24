@@ -145,9 +145,9 @@ node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)
 - `list` 按 `(updated_ms, id)` 翻页：`has_more` 为 true 时，把最后一项的 `{ updated_ms, id }` 作为 `before` 取下一页。一页可能少于 `limit`（每页 1 MiB 的字节预算）。翻页期间被改过的项可能出现两次（按 `id` 去重）或被跳过（`todo_changed` 会补上）。
 - 错误：`invalid`（`field` 是出问题的参数；清单满了时 `reason` 是 `too_many` / `too_many_unreviewed`）和 `not_found`，都是 `RpcError`。
 
-## 分身（ADR-54）
+## Bot（ADR-54）
 
-`node.twin` 是 `twin.*` 的在线薄封装，需要 `(await node.info()).capabilities.twin === true`。不缓存、不重放；未知节点能力或旧 daemon 由调用方隐藏入口，直接调用旧节点会得到 `RpcError`（`unsupported`）。分身不批准权限。问题和理由由模型写成，只作为不可信的纯文字显示。
+`node.twin` 是 `twin.*` 的在线薄封装，需要 `(await node.info()).capabilities.twin === true`。不缓存、不重放；未知节点能力或旧 daemon 由调用方隐藏入口，直接调用旧节点会得到 `RpcError`（`unsupported`）。Bot 不批准权限。问题和理由由模型写成，只作为不可信的纯文字显示。
 
 ```ts
 node.on('twin_changed', (change) => console.log(change.state, change.run))
@@ -166,23 +166,23 @@ await node.todos.update({ id: todo.id, handler: 'me' })
 
 `set` 合并字段；`clear` 清空 agent / model / mode，恢复节点缺省。`dryRun()` 默认等待最多 16 分钟，覆盖最长 15 分钟的判断后端调用；可以传标准 `RequestOptions`（`timeoutMs` / `signal`）覆盖。试跑会消耗一次判断调用并留记录，不执行计划；`run.decisions` 原样保留可选的 `note` / `question` / `options`（给 agent 的补充说明、问题和选项），这些模型文字只按纯文字展示；`wake()` 返回 `void`，实际唤醒仍受合并、暂停和预算约束。`runs` / `questions` 保留协议形状，缺省参数 `{}`，`before_ms` 翻运行记录页。`twin_changed` 收到 `{ state, run? }`，`twin_question` 收到 `{ question }`，包含回答和作废；先订阅再发起操作。`todos.add` / `update` 接受 `handler: me | twin`；界面应先让人读过并收下 agent 项（`update({ id, reviewed: true })`），再提供移交操作（`update({ id, handler: 'twin' })`）。daemon 也接受明确请求的原子收下并移交，SDK 不自动收下。
 
-分身的运行可以由 `pr` 触发（分身派出的会话的 PR 有了变化），清单项的「经过」里会出现 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`；类型跟着协议走，客户端要容忍不认识的值。`pr_event` 不含评审正文。
+Bot 的运行可以由 `pr` 触发（Bot 派出的会话的 PR 有了变化），清单项的「经过」里会出现 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`；类型跟着协议走，客户端要容忍不认识的值。`pr_event` 不含评审正文。
 
-### 分身连接（ADR-56）
+### Bot 连接（ADR-56）
 
-一个节点的分身可以作为受限的 `twin` 设备和另一个节点配对，在那里记项并让 agent 在那个节点对这条连接开放的项目里干活。由人在同时和两个节点配过对的客户端上建立：先向要使用的节点要一个一次性短码，再交给使用它的节点。短码是秘密：把 `twinLinkCode()` 的结果直接交给 `twin.link`，SDK 不缓存、不写日志，你的代码也不要显示或存下它。
+一个节点的 Bot 可以作为受限的 `twin` 设备和另一个节点配对，在那里记项并让 agent 在那个节点对这条连接开放的项目里干活。由人在同时和两个节点配过对的客户端上建立：先向要使用的节点要一个一次性短码，再交给使用它的节点。短码是秘密：把 `twinLinkCode()` 的结果直接交给 `twin.link`，SDK 不缓存、不写日志，你的代码也不要显示或存下它。
 
 ```ts
 const { code } = await used.twinLinkCode() // 在被使用的节点（B）上：`node.twin_link_code`
 const link = await using.twin.link({ code, node_id: (await used.info()).node_id }) // 在使用它的节点（A）上
 const { links } = await using.twin.links() // 名称、分组、在不在线、上一次的 `peer_status`
-await using.twin.unlink({ node_id: link.node_id }) // A 忘掉这一条；要在 B 上吊销那台分身设备才算断开
-// 在 B 上：一条连接能做什么（requester = 分身设备的 id），缺省什么都不开放
+await using.twin.unlink({ node_id: link.node_id }) // A 忘掉这一条；要在 B 上吊销那台 Bot 设备才算断开
+// 在 B 上：一条连接能做什么（requester = Bot 设备的 id），缺省什么都不开放
 await used.twin.set({ requester: deviceId, projects: ['app'], max_sessions: 1, daily_dispatches: 5 })
 const status = await used.twin.get({ requester: deviceId })
 ```
 
-`twin.peerStatus()` 由分身设备自己在 B 上调用（名称、开放的项目、剩余名额），别的调用方得到 `forbidden`。建立失败时 `data.reason` 是 `accept_links_off`、`different_hub`、`code_expired` 或 `node_mismatch`。节点用 `node.info.twin_accept_links` 报告是否接受；客户端只在节点有 `capabilities.twin` 并且它为 `true` 时把它列为可用的目标。清单的「经过」里可能出现 `remote_dispatched` 和 `remote_result`，分拣的决定带 `node` 和新的跳过原因 `remote_unavailable` / `remote_refused`；不认识的值按未知处理。
+`twin.peerStatus()` 由 Bot 设备自己在 B 上调用（名称、开放的项目、剩余名额），别的调用方得到 `forbidden`。建立失败时 `data.reason` 是 `accept_links_off`、`different_hub`、`code_expired` 或 `node_mismatch`。节点用 `node.info.twin_accept_links` 报告是否接受；客户端只在节点有 `capabilities.twin` 并且它为 `true` 时把它列为可用的目标。清单的「经过」里可能出现 `remote_dispatched` 和 `remote_result`，分拣的决定带 `node` 和新的跳过原因 `remote_unavailable` / `remote_refused`；不认识的值按未知处理。
 
 ## 规则（ADR-54）
 

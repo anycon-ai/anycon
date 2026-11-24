@@ -16,7 +16,7 @@ export interface RepeatForm {
   at: string
 }
 
-/** 带周期规则的项是模板：不分拣、不派发、不交给分身。 */
+/** 带周期规则的项是模板：不分拣、不派发、不交给 Bot。 */
 export const isTemplate = (t: Pick<Todo, 'repeat'>): boolean => !!t.repeat
 
 /** 这一项是周期项复制出来的：模板的 id。 */

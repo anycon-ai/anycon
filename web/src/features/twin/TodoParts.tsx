@@ -1,4 +1,4 @@
-// 清单中的分身入口和经过；处理人变化继续走原有待发队列。
+// 清单中的 Bot 入口和经过；处理人变化继续走原有待发队列。
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
@@ -108,7 +108,7 @@ export function TwinHistoryEvent({ nodeId, event }: { nodeId: string; event: Tod
       return null
   }
 }
-/** 接手发生在分身用的另一个节点上：写节点名（这台设备没和它配过对时用 id 的前 8 位）。 */
+/** 接手发生在 Bot 用的另一个节点上：写节点名（这台设备没和它配过对时用 id 的前 8 位）。 */
 function TakenOverOn({ nodeId }: { nodeId: string }) {
   const { t } = useTranslation()
   const name = usePeerName(nodeId)

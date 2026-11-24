@@ -538,7 +538,7 @@ pub fn pr_state_parse(s: &str) -> PullRequestState {
     }
 }
 
-/// 一次轮询得到的 PR 结构化状态（分身的 PR 事件和分拣输入只用它，docs/spec/daemon.md § 26.9）。
+/// 一次轮询得到的 PR 结构化状态（Bot 的 PR 事件和分拣输入只用它，docs/spec/daemon.md § 26.9）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrSnapshot {
     pub number: u64,
@@ -561,7 +561,7 @@ impl PrSnapshot {
 }
 
 /// 评审意见的摘要：只有条数和最新一条的时间，**没有正文**（正文是任何人在公开仓库里都能写的文字，
-/// 不能进分身的分拣输入，docs/spec/daemon.md § 26.9）。
+/// 不能进 Bot 的分拣输入，docs/spec/daemon.md § 26.9）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PrReviews {
     /// `reviews` 与 `comments` 的总条数。

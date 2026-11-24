@@ -32,7 +32,7 @@ pub const MAX_PROJECT_CHARS: usize = 200;
 pub const MAX_OPEN: i64 = 1000;
 /// 没被收下（`unreviewed`）的项最多这么多：agent 占不满清单。
 pub const MAX_UNREVIEWED: i64 = 100;
-/// 一台分身设备（另一个节点的分身）最多有这么多没关闭的项：它占不满清单（docs/spec/daemon.md § 27.3）。
+/// 一台 Bot 设备（另一个节点的 Bot）最多有这么多没关闭的项：它占不满清单（docs/spec/daemon.md § 27.3）。
 pub const MAX_TWIN_DEVICE_OPEN: i64 = 100;
 /// `todo.list` 的 `limit` 缺省值和上限。
 pub const DEFAULT_LIMIT: u32 = 200;
@@ -109,7 +109,7 @@ pub(crate) fn check_project(project: &str) -> RpcResult<String> {
     Ok(p.to_string())
 }
 
-/// 交给分身必须是人的明确决定，未收下的项不能借处理人变更自动收下。
+/// 交给 Bot 必须是人的明确决定，未收下的项不能借处理人变更自动收下。
 fn check_handler(caller: &Caller, agent: bool, handler: Option<TodoHandler>, unreviewed: bool) -> RpcResult<()> {
     match handler {
         Some(TodoHandler::Unknown) => Err(invalid("handler", None, "unknown handler".into())),
@@ -329,7 +329,7 @@ impl Store {
         Ok(sqlx::query("SELECT COUNT(*) FROM todos WHERE unreviewed = 1").fetch_one(self.pool()).await?.get(0))
     }
 
-    /// 一台分身设备建的、没关闭的项数。
+    /// 一台 Bot 设备建的、没关闭的项数。
     pub async fn todo_count_open_of_twin_device(&self, device: &str) -> Result<i64, StoreError> {
         Ok(sqlx::query(
             "SELECT COUNT(*) FROM todos WHERE source_kind = 'twin' AND source_device = ? \
@@ -377,7 +377,7 @@ impl Store {
     }
 
     /// 一页：`(updated_ms, id)` 从新到旧。按字节预算和条数截断，`has_more` 表示后面还有没给出的项。
-    /// `owner` 给了就只列这台分身设备建的项（`source` 是它）。
+    /// `owner` 给了就只列这台 Bot 设备建的项（`source` 是它）。
     pub async fn todo_page(
         &self,
         p: &TodoListParams,
@@ -459,7 +459,7 @@ pub async fn list(c: &Ctx, caller: &Caller, mut p: TodoListParams) -> RpcResult<
     // 项目名存的是去掉首尾空白之后的，过滤条件同样处理
     p.project = p.project.map(|s| s.trim().to_string());
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
-    // 分身设备只看得到它自己建的项（docs/spec/daemon.md § 27.3）
+    // Bot 设备只看得到它自己建的项（docs/spec/daemon.md § 27.3）
     let owner = crate::twin_device::is_twin_device(caller).then_some(caller.device_id.as_str());
     let mut page = c.store.todo_page(&p, limit, owner).await.map_err(internal)?;
     crate::todo_dispatch::fill_activity(&c.sessions, &mut page.todos).await;
@@ -471,7 +471,7 @@ pub async fn list(c: &Ctx, caller: &Caller, mut p: TodoListParams) -> RpcResult<
 
 /// 这一项是谁记的（§ 21.2）。`agent` 是调用方自报的；自报了 `mcp` 的本机连接总是算 agent。
 async fn source_of(c: &Ctx, caller: &Caller, agent: bool, origin_session: Option<&str>) -> RpcResult<TodoSource> {
-    // 分身设备（另一个节点的分身）建的：不看自报的 `agent`，来源就是那台设备（docs/spec/daemon.md § 27.3）
+    // Bot 设备（另一个节点的 Bot）建的：不看自报的 `agent`，来源就是那台设备（docs/spec/daemon.md § 27.3）
     if crate::twin_device::is_twin_device(caller) {
         return Ok(TodoSource {
             kind: TodoSourceKind::Twin,
@@ -507,7 +507,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
     let _w = c.store.todo_lock().lock().await;
     let from_twin_device = crate::twin_device::is_twin_device(caller);
     if let Some(mut existing) = c.store.todo_get(&p.id).await.map_err(internal)? {
-        // 按 `id` 幂等不能让分身设备读到别人的项
+        // 按 `id` 幂等不能让 Bot 设备读到别人的项
         if from_twin_device && !crate::twin_device::owns(&existing, &caller.device_id) {
             return Err(crate::twin_device::twin_device_forbidden());
         }
@@ -515,7 +515,7 @@ pub async fn add(c: &Ctx, caller: &Caller, p: TodoAddParams) -> RpcResult<Todo> 
         crate::todo_repeat::fill_next(c, &mut existing);
         return Ok(existing);
     }
-    // 分身设备记的项：不能带周期规则、不能交给本机分身；项目必须在这条连接开放的范围里
+    // Bot 设备记的项：不能带周期规则、不能交给本机 Bot；项目必须在这条连接开放的范围里
     if from_twin_device && (p.repeat.is_some() || p.handler == Some(TodoHandler::Twin)) {
         return Err(crate::twin_device::twin_device_forbidden());
     }
@@ -642,7 +642,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     let _w = c.store.todo_lock().lock().await;
     let old = c.store.todo_get(&p.id).await.map_err(internal)?.ok_or_else(|| not_found(&p.id))?;
     check_handler(caller, p.agent.unwrap_or(false), p.handler, old.unreviewed && p.reviewed != Some(true))?;
-    // 来源是分身设备的项，B 自己的分身不碰（§ 27.3）：交给它只会得到一项没人处理的「处理人 = 分身」
+    // 来源是 Bot 设备的项，B 自己的 Bot 不碰（§ 27.3）：交给它只会得到一项没人处理的「处理人 = Bot」
     if p.handler == Some(TodoHandler::Twin) && old.source.kind == TodoSourceKind::Twin {
         return Err(invalid(
             "handler",
@@ -743,7 +743,7 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
         crate::todo_repeat::set_last_on(&mut tx, &new.id, last).await.map_err(internal)?;
     }
     if new.handler == TodoHandler::Twin && old.handler != TodoHandler::Twin {
-        // 人重新交给分身时允许重试；保留会话结局水位，避免把旧的失败再计一次。
+        // 人重新交给 Bot 时允许重试；保留会话结局水位，避免把旧的失败再计一次。
         sqlx::query("UPDATE twin_items SET failures=0 WHERE todo_id=?")
             .bind(&new.id)
             .execute(&mut *tx)

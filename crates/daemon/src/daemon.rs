@@ -101,7 +101,7 @@ pub struct Ctx {
     pub judge: Arc<crate::judge::service::Judge>,
     pub extractor: crate::rule_extract::Extractor,
     pub twin: crate::twin::Twin,
-    /// 分身连接的 A 这一侧：分身设备的身份和长连接（§ 27）。
+    /// Bot 连接的 A 这一侧：Bot 设备的身份和长连接（§ 27）。
     pub twin_links: crate::twin_link::TwinLinks,
     pub sessions: Arc<Sessions>,
     pub blobs: Arc<Blobs>,
@@ -186,7 +186,7 @@ impl Daemon {
         tracing::info!(source = env.source.as_str(), "daemon environment resolved");
 
         let clients = Clients::new();
-        // 分身设备建的项和派出的会话（推送过滤要同步判断，所以内存里留一份索引）
+        // Bot 设备建的项和派出的会话（推送过滤要同步判断，所以内存里留一份索引）
         clients.owners().load(&store).await;
         let audit = Audit::new(store.clone());
         let notifier = Notifier::new(config.clone(), clients.clone());

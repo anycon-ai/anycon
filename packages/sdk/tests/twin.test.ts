@@ -1,11 +1,11 @@
-// 分身 SDK 通过真实 RPC 和假节点验证参数、通知、错误映射和处理人。
+// Bot SDK 通过真实 RPC 和假节点验证参数、通知、错误映射和处理人。
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { connect, RpcError, type TwinGetResult } from '../src/index.js'
 import { FAST, cryptoImpls, startEnv, until } from './harness.js'
 
 for (const impl of cryptoImpls)
-  describe(`分身（${impl.label}）`, () => {
+  describe(`Bot（${impl.label}）`, () => {
     it('全部方法透传协议字段，事件保留模型理由，清单透传 handler', async () => {
       const env = await startEnv(await impl.load())
       try {
@@ -108,7 +108,7 @@ for (const impl of cryptoImpls)
   })
 
 for (const impl of cryptoImpls)
-  describe(`分身连接（${impl.label}）`, () => {
+  describe(`Bot 连接（${impl.label}）`, () => {
     it('短码只经内存交给 twin.link，links / unlink / peerStatus 透传，twin.get 带 requester', async () => {
       const env = await startEnv(await impl.load())
       try {

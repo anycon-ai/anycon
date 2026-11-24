@@ -8,6 +8,7 @@ import { useMemo, useState } from 'react'
 import { ChevronRight, Plus, ScrollText } from 'lucide-react'
 import { Collapsible } from 'radix-ui'
 import { useTranslation } from 'react-i18next'
+import { BotTabs } from '@/components/BotTabs'
 import { PageHeader } from '@/components/PageHeader'
 import { setStatusMany } from '@/features/rules/service'
 import { isStaleRule, statusOf, useRuleView, useRules, useRulesNodes, type ViewRule } from '@/features/rules/store'
@@ -30,6 +31,7 @@ type Tab = 'pending' | 'active'
  * 规则页（`/rules`，spec/web.md § 4.14，docs/spec/daemon.md § 23）：勾选的、支持规则的节点上的规则。两个标签：待确认、已生效；
  * 停用和否决的（还有这个版本不认识状态的）收在「已生效」下面的折叠里。每条规则的全文（纯文字）都在卡片上；待确认的可以多选一起确认 / 否决。
  * 来源节点不在线时禁用写入；成功后，同组目标的期望状态由持久化队列转发。
+ * 顶栏里是 Bot 区的两个标签（`BotTabs`）：它和 Bot 页并列，入口是左栏底部的 Bot 状态。
  */
 export function RulesPage({ initialTab, focus }: { initialTab?: Tab; focus?: { node: string; rule: string } } = {}) {
   const { t } = useTranslation()
@@ -122,7 +124,7 @@ export function RulesPage({ initialTab, focus }: { initialTab?: Tab; focus?: { n
     <div className="flex min-h-0 flex-1 flex-col" data-testid="rules-page">
       <PageHeader
         root
-        crumbs={[{ label: t('rules.title') }]}
+        tabs={<BotTabs current="rules" />}
         showNodeStatus={false}
         actions={
           <>

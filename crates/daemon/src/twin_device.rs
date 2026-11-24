@@ -1,14 +1,14 @@
-//! 被使用的节点（B）这一侧：分身设备（`DeviceKind::Twin`，另一个节点的分身）能做什么（docs/spec/daemon.md § 27.3）。
+//! 被使用的节点（B）这一侧：Bot 设备（`DeviceKind::Twin`，另一个节点的 Bot）能做什么（docs/spec/daemon.md § 27.3）。
 //!
 //! 一条边界，三个集中的地方：
 //!
 //! - **方法白名单**（[`ALLOWED`] + [`authorize`]）：RPC 分发处在进入任何处理之前，按调用方的设备种类集中检查一次。名单之外一律
 //!   `forbidden`（`data.reason = "twin_device"`），新增的方法缺省不在名单里；名单里「只针对它自己的项 / 会话」的方法，
-//!   归属不对同样 `forbidden`——`forbidden` 先于 `not_found`，所以分身设备探测不出别人的项和会话存不存在。
+//!   归属不对同样 `forbidden`——`forbidden` 先于 `not_found`，所以 Bot 设备探测不出别人的项和会话存不存在。
 //! - **推送过滤**（[`pushable`]）：每条通知最终都经 [`ClientHandle::notify`](crate::clients::ClientHandle::notify) 送到一个客户端，
-//!   过滤就在那里做；对分身设备只放行 [`PUSHED`] 里的四种、并且只限它自己的项和会话，新增的通知缺省不推。
-//! - **范围、名额和每日次数**：按请求方（这台分身设备的设备 id）存在 `twin_scopes`，实现和本机分身（§ 26）共用
-//!   [`crate::twin`] 里的函数；这里只放分身设备特有的部分（归属、`twin.peer_status`、记一项和派发的强制）。
+//!   过滤就在那里做；对 Bot 设备只放行 [`PUSHED`] 里的四种、并且只限它自己的项和会话，新增的通知缺省不推。
+//! - **范围、名额和每日次数**：按请求方（这台 Bot 设备的设备 id）存在 `twin_scopes`，实现和本机 Bot（§ 26）共用
+//!   [`crate::twin`] 里的函数；这里只放 Bot 设备特有的部分（归属、`twin.peer_status`、记一项和派发的强制）。
 //!
 //! 项和会话的归属存在库里（项的 `source`、表 `twin_sessions`）；推送要同步判断，所以另有一份内存里的 [`TwinOwners`]，
 //! 启动时从库里读、写库成功之后更新，只用于推送，方法的检查读库。
@@ -31,7 +31,7 @@ use crate::store::Store;
 
 type Result<T> = std::result::Result<T, RpcError>;
 
-/// 一个方法对分身设备开放到什么程度。
+/// 一个方法对 Bot 设备开放到什么程度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// 不看参数（节点和 agent 的信息、它自己的 `twin.peer_status`）。
@@ -46,7 +46,7 @@ pub enum Scope {
     OwnSession,
 }
 
-/// 方法白名单：分身设备只能调这些。**新增的方法缺省不在名单里**；加进来之前要想清楚它能碰什么。
+/// 方法白名单：Bot 设备只能调这些。**新增的方法缺省不在名单里**；加进来之前要想清楚它能碰什么。
 /// 守护测试（`tests/twin_device.rs`）遍历方法注册表，要求每个请求方法恰好出现在这里或者测试里的「被拒绝」表里。
 pub const ALLOWED: &[(&str, Scope)] = &[
     (methods::NODE_INFO, Scope::Open),
@@ -66,7 +66,7 @@ pub const ALLOWED: &[(&str, Scope)] = &[
     (methods::SESSION_DIFF, Scope::OwnSession),
 ];
 
-/// 推给分身设备的通知：只有这四种，并且只限它自己的项和会话。别的一律不推（会话列表、权限请求、清单、接入、安全事件、
+/// 推给 Bot 设备的通知：只有这四种，并且只限它自己的项和会话。别的一律不推（会话列表、权限请求、清单、接入、安全事件、
 /// 项目和 agent 的变化…），也不给它发 `notify`。**新增的通知缺省不推。**
 pub const PUSHED: &[&str] =
     &[methods::TODO_CHANGED, methods::TODO_EVENT, methods::SESSION_CHANGED, methods::SESSION_EVENT];
@@ -94,7 +94,7 @@ struct Owned {
     sessions: HashSet<String>,
 }
 
-/// 每台分身设备建的项和派出的会话（推送过滤用）。库是真源：启动时 [`TwinOwners::load`]，之后每次写库成功才更新。
+/// 每台 Bot 设备建的项和派出的会话（推送过滤用）。库是真源：启动时 [`TwinOwners::load`]，之后每次写库成功才更新。
 #[derive(Default)]
 pub struct TwinOwners {
     inner: Mutex<HashMap<String, Owned>>,
@@ -143,14 +143,14 @@ impl TwinOwners {
     }
 }
 
-/// 这个调用方是不是经 hub 来的分身设备。
+/// 这个调用方是不是经 hub 来的 Bot 设备。
 pub fn is_twin_device(caller: &Caller) -> bool {
     !caller.local && caller.kind == DeviceKind::Twin
 }
 
 // ====================================================================== 推送过滤
 
-/// 这条通知能不能推给分身设备 `device`。`watching`：这个设备现在是不是 watch 着通知里的会话。
+/// 这条通知能不能推给 Bot 设备 `device`。`watching`：这个设备现在是不是 watch 着通知里的会话。
 /// 不在 [`PUSHED`] 里的方法一律 `false`；在里面的要通知里的 id 属于这台设备（`session.event` 还要它 watch 着）。
 pub fn pushable(owners: &TwinOwners, device: &str, watching: impl Fn(&str) -> bool, n: &RpcNotification) -> bool {
     let id_of = |field: &str| n.params.get(field).and_then(Value::as_str);
@@ -165,7 +165,7 @@ pub fn pushable(owners: &TwinOwners, device: &str, watching: impl Fn(&str) -> bo
 
 // ====================================================================== 方法白名单
 
-/// 在 RPC 分发处调用（调用方是分身设备时）：方法在不在名单里，名单里的归属对不对。通过了才会进处理函数。
+/// 在 RPC 分发处调用（调用方是 Bot 设备时）：方法在不在名单里，名单里的归属对不对。通过了才会进处理函数。
 pub async fn authorize(c: &Ctx, caller: &Caller, method: &str, params: &Value) -> Result<()> {
     let Some(scope) = scope_of(method) else { return Err(twin_device_forbidden()) };
     let text = |field: &str| params.get(field).and_then(Value::as_str);
@@ -198,7 +198,7 @@ pub async fn authorize(c: &Ctx, caller: &Caller, method: &str, params: &Value) -
 
 // ====================================================================== 范围
 
-/// 这台分身设备的范围（`twin_scopes`，请求方 = 设备 id）。缺省 `projects = []`：什么都不开放。
+/// 这台 Bot 设备的范围（`twin_scopes`，请求方 = 设备 id）。缺省 `projects = []`：什么都不开放。
 pub async fn scope_of_device(c: &Ctx, device: &str) -> Result<TwinScope> {
     c.store.twin_scope(device).await.map_err(internal)
 }
@@ -209,7 +209,7 @@ pub async fn dispatches_today(c: &Ctx, device: &str) -> Result<u32> {
     c.store.twin_dispatches_since(device, start).await.map_err(internal)
 }
 
-/// 这台设备派出的、还在处理中的会话数（同本机分身的「处理中」：在跑、排队、等审批、还有后台任务）。
+/// 这台设备派出的、还在处理中的会话数（同本机 Bot 的「处理中」：在跑、排队、等审批、还有后台任务）。
 pub async fn working_sessions(c: &Ctx, device: &str) -> Result<usize> {
     let mut n = 0;
     for (sid, _) in c.store.twin_sessions_of(device).await.map_err(internal)? {
@@ -220,7 +220,7 @@ pub async fn working_sessions(c: &Ctx, device: &str) -> Result<usize> {
     Ok(n)
 }
 
-/// 「处理中」：和本机分身判断一项有没有在干活是同一个条件。
+/// 「处理中」：和本机 Bot 判断一项有没有在干活是同一个条件。
 pub(crate) fn processing(status: SessionStatus, background_tasks: u32) -> bool {
     background_tasks > 0
         || matches!(
@@ -273,7 +273,7 @@ pub fn owns(todo: &Todo, device: &str) -> bool {
     todo.source.kind == TodoSourceKind::Twin && todo.source.device_id.as_deref() == Some(device)
 }
 
-/// `todo.add` 来自分身设备：`project` 必须在这条连接开放的项目里（`forbidden`，`data.reason = "out_of_scope"`）。
+/// `todo.add` 来自 Bot 设备：`project` 必须在这条连接开放的项目里（`forbidden`，`data.reason = "out_of_scope"`）。
 /// 返回规范化的项目名。
 pub async fn check_project_in_scope(c: &Ctx, device: &str, project: Option<&str>) -> Result<String> {
     let Some(project) = project.map(str::trim).filter(|p| !p.is_empty()) else {
@@ -300,12 +300,12 @@ fn invalid_field(field: &str, reason: &str) -> RpcError {
     e
 }
 
-/// `todo.dispatch` 来自分身设备：调用方已持清单锁，`t` 是读到的最新的项。
+/// `todo.dispatch` 来自 Bot 设备：调用方已持清单锁，`t` 是读到的最新的项。
 ///
 /// - 只派它自己建的项（再确认一次：分发处的检查在锁外）；
 /// - 项目（请求里的，缺省项自己的）必须还在范围里；
 /// - agent / 模型 / 模式由范围定，`no_push` 恒为 true，`workspace` 恒为 worktree：请求里带的这些字段只能落在这些值里，否则 `invalid`；
-/// - `paused`、名额、每日次数用和本机分身同一个实现（[`crate::twin::capacity_skip`]），超出时 `invalid`
+/// - `paused`、名额、每日次数用和本机 Bot 同一个实现（[`crate::twin::capacity_skip`]），超出时 `invalid`
 ///   （`data.reason` 是 `paused` / `no_capacity` / `budget`）；同一个 `message_id` 的重试不再占名额和次数。
 pub async fn dispatch_settings_locked(
     c: &Ctx,

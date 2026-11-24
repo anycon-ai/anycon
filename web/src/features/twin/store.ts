@@ -1,4 +1,4 @@
-// 分身的内存快照：重连补读，登出和忘记节点时清掉，不落盘。
+// Bot 的内存快照：重连补读，登出和忘记节点时清掉，不落盘。
 import { create } from 'zustand'
 import type { TwinDayStats, TwinGetResult, TwinQuestion, TwinRun } from '@/protocol'
 import { useNodes } from '@/stores/nodes'
@@ -13,7 +13,7 @@ export interface NodeTwin {
   statsDays: number
   /** 最近一次 `twin.stats` 的结果：升序，最后一项是今天。节点不支持或还没读到时缺省。 */
   stats?: TwinDayStats[]
-  /** 最近一次 `twin.stats` 读取失败；下一次成功时清掉。只影响趋势区，不算整个分身读取失败。 */
+  /** 最近一次 `twin.stats` 读取失败；下一次成功时清掉。只影响趋势区，不算整个 Bot 读取失败。 */
   statsFailed: boolean
 }
 export const emptyTwin = (): NodeTwin => ({ runs: [], questions: [], failed: false, statsDays: 7, statsFailed: false })
@@ -25,7 +25,7 @@ export const useTwin = create<{ nodes: Record<string, NodeTwin>; patch: (id: str
     reset: () => set({ nodes: {} }),
   }),
 )
-/** 分身连接列表要重读的信号：每收到一条 `twin.changed` 加一，`TwinLinks` 据此（合并之后）重新读 `twin.links`。 */
+/** Bot 连接列表要重读的信号：每收到一条 `twin.changed` 加一，`TwinLinks` 据此（合并之后）重新读 `twin.links`。 */
 export const useTwinLinksTick = create<{ tick: Record<string, number> }>()(() => ({ tick: {} }))
 export const bumpTwinLinks = (id: string): void =>
   useTwinLinksTick.setState((s) => ({ tick: { ...s.tick, [id]: (s.tick[id] ?? 0) + 1 } }))

@@ -284,7 +284,7 @@ fn caller(id: &str) -> Caller {
     Caller { device_id: id.into(), device_name: format!("device {id}"), kind: DeviceKind::Web, local: false }
 }
 
-// ====================================================================== 分身设备不能用接入码和节点口令加入
+// ====================================================================== Bot 设备不能用接入码和节点口令加入
 
 #[tokio::test]
 async fn an_enrollment_that_claims_to_be_a_twin_device_is_rejected_for_every_method() {

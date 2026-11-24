@@ -1,4 +1,4 @@
-// 节点设置 →「分身」：标签出现的条件、状态行、判断后端（和「限制」分工）、范围与首次流程、被别的节点使用、离线。
+// 节点设置 →「Bot」：标签出现的条件、状态行、判断后端（和「限制」分工）、范围与首次流程、被别的节点使用、离线。
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
@@ -25,7 +25,7 @@ let daemon: FakeTwinDaemon
 let items: ConfigItem[]
 const info = (over: Partial<NodeInfo> = {}, twin = true): NodeInfo =>
   ({ capabilities: { twin, todo: true }, twin_accept_links: true, judge: { triage: 'mock', backends: [{ name: 'mock' }], daily_calls: 20 }, ...over }) as unknown as NodeInfo
-const device = (over: Partial<PeerDevice> = {}): PeerDevice => ({ device_id: 'dev-twin', fingerprint: 'abcd', kind: 'twin', name: 'beta twin', online: true, paired_at_ms: 1, ...over })
+const device = (over: Partial<PeerDevice> = {}): PeerDevice => ({ device_id: 'dev-twin', fingerprint: 'abcd', kind: 'twin', name: 'beta bot', online: true, paired_at_ms: 1, ...over })
 
 function setNode(over: Partial<Parameters<typeof nodeEntry>[0]> = {}): void {
   useNodes.setState({
@@ -70,15 +70,15 @@ beforeEach(() => {
 })
 afterEach(() => setRpc(null))
 
-describe('Settings page: the Twin tab', () => {
-  it('exists only on nodes that support Twin, between Limits and the rest', async () => {
+describe('Settings page: the Bot tab', () => {
+  it('exists only on nodes that support Bot, between Limits and the rest', async () => {
     render(<NodeSettingsPage tab="twin" />)
     expect(await screen.findByTestId('twin-tab')).toBeInTheDocument()
     const order = screen.getAllByRole('tab').map((t) => t.textContent)
-    expect(order.indexOf('Twin')).toBe(order.indexOf('Limits') + 1)
+    expect(order.indexOf('Bot')).toBe(order.indexOf('Limits') + 1)
   })
 
-  it('falls back to the first tab for ?tab=twin on a node without Twin', async () => {
+  it('falls back to the first tab for ?tab=twin on a node without Bot', async () => {
     setNode({ info: info({}, false) })
     render(<NodeSettingsPage tab="twin" />)
     expect(screen.queryByTestId('tab-twin')).toBeNull()
@@ -87,7 +87,7 @@ describe('Settings page: the Twin tab', () => {
   })
 })
 
-describe('Twin tab: status line', () => {
+describe('Bot tab: status line', () => {
   const state = () => screen.getByTestId('twin-tab-state')
   it('shows the daemon state and links to the run status page', async () => {
     daemon.values.set(NODE, twinValue({ state: 'paused' }))
@@ -107,7 +107,7 @@ describe('Twin tab: status line', () => {
     expect(within(missing).getByText(/No usable triage backend/)).toBeInTheDocument()
   })
 
-  it('explains a machine-disabled twin and an offline node', async () => {
+  it('explains a machine-disabled bot and an offline node', async () => {
     daemon.values.set(NODE, twinValue({ enabled: false, state: 'disabled' }))
     const { unmount } = render(<TwinTab nodeId={NODE} />)
     await waitFor(() => expect(state()).toHaveTextContent('switched off on this machine'))
@@ -118,7 +118,7 @@ describe('Twin tab: status line', () => {
   })
 })
 
-describe('Twin tab: judge backends', () => {
+describe('Bot tab: judge backends', () => {
   it('shows judge.* and twin.* items, saves only the changed ones and refreshes node.info', async () => {
     const user = userEvent.setup()
     render(<TwinTab nodeId={NODE} />)
@@ -158,7 +158,7 @@ describe('Twin tab: judge backends', () => {
     expect(screen.getByTestId('limit-tighten-twin.accept_links')).toBeInTheDocument()
   })
 
-  it('moves out of Limits when the node supports Twin, and stays in Limits when it does not', async () => {
+  it('moves out of Limits when the node supports Bot, and stays in Limits when it does not', async () => {
     const { unmount } = render(<LimitsTab nodeId={NODE} />)
     await screen.findByTestId('limit-sessions.max_concurrent')
     expect(screen.queryByTestId('limit-judge.triage')).toBeNull()
@@ -171,14 +171,14 @@ describe('Twin tab: judge backends', () => {
   })
 })
 
-describe('Twin tab: scope and first-time flow', () => {
+describe('Bot tab: scope and first-time flow', () => {
   const saveScope = async (user: ReturnType<typeof userEvent.setup>) => {
     const save = await screen.findByRole('button', { name: 'Save scope' })
     await waitFor(() => expect(save).toBeEnabled())
     await user.click(save)
   }
 
-  it('loads the twin itself, then saves a first configuration paused, shows the plan and "Do it" unpauses and wakes', async () => {
+  it('loads the bot itself, then saves a first configuration paused, shows the plan and "Do it" unpauses and wakes', async () => {
     daemon.values.set(NODE, twinValue({ configured: false, state: 'not_configured', scope: { paused: false, projects: [], max_sessions: 2, daily_dispatches: 10 } }))
     daemon.dry = twinRun({ id: 'dry-1', dry_run: true, result: 'done' })
     const user = userEvent.setup()
@@ -204,7 +204,7 @@ describe('Twin tab: scope and first-time flow', () => {
     expect(screen.getByTestId('twin-tab-do-it')).toBeDisabled()
   })
 
-  it('just saves when the twin is already configured', async () => {
+  it('just saves when the bot is already configured', async () => {
     daemon.values.set(NODE, twinValue())
     const user = userEvent.setup()
     render(<TwinTab nodeId={NODE} />)
@@ -218,13 +218,13 @@ describe('Twin tab: scope and first-time flow', () => {
   })
 })
 
-describe('Twin tab: used by other nodes', () => {
-  it('lists only twin devices and opens the scope dialog', async () => {
+describe('Bot tab: used by other nodes', () => {
+  it('lists only bot devices and opens the scope dialog', async () => {
     daemon.values.set(NODE, twinValue())
     const user = userEvent.setup()
     render(<TwinTab nodeId={NODE} />)
     const list = await screen.findByTestId('twin-tab-devices')
-    await waitFor(() => expect(within(list).getByText('beta twin')).toBeInTheDocument())
+    await waitFor(() => expect(within(list).getByText('beta bot')).toBeInTheDocument())
     expect(within(list).queryByText('my laptop')).toBeNull()
     expect(screen.getByTestId('twin-tab-devices-link')).toHaveAttribute('href', '/n/nnnnnnnn/settings?tab=devices')
     await user.click(screen.getByTestId('twin-tab-device-scope'))
@@ -232,17 +232,17 @@ describe('Twin tab: used by other nodes', () => {
     expect(calls('twin.get').some((c) => (c.params as { requester?: string }).requester === 'dev-twin')).toBe(true)
   })
 
-  it('shows an empty state, and a note when this machine does not accept twin links', async () => {
+  it('shows an empty state, and a note when this machine does not accept bot links', async () => {
     rpc.handlers['node.devices'] = () => ({ devices: [] })
     setNode({ info: info({ twin_accept_links: false }) })
     render(<TwinTab nodeId={NODE} />)
-    expect(await screen.findByText('No other node’s Twin is paired with this node.')).toBeInTheDocument()
+    expect(await screen.findByText('No other node’s Bot is paired with this node.')).toBeInTheDocument()
     expect(screen.getByTestId('twin-tab-accept-off')).toHaveTextContent('anycon config set twin.accept_links true')
     expect(screen.getByTestId('twin-tab-accept-off')).not.toHaveTextContent('above')
   })
 })
 
-describe('Twin tab: offline', () => {
+describe('Bot tab: offline', () => {
   it('reads and writes nothing, and disables the controls', async () => {
     setNode({ conn: 'peer_offline', devices: [device()] })
     useTwin.getState().patch(NODE, { value: twinValue() })

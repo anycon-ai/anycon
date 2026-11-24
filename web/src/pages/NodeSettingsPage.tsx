@@ -24,7 +24,7 @@ export function NodeSettingsPage({ tab, review }: { tab?: SettingsTab; review?: 
   if (!nodeId || !entry) return null
   // 「预览」标签只在 hub 配了预览、节点也支持时才有（web.md § 13.1）；?tab=preview 落在没有这个标签的节点上就回到第一个标签
   const hasPreview = previewAvailable(template, entry.info)
-  // 「分身」标签只在节点支持分身时才有；?tab=twin 落在不支持的节点上同样回到第一个标签
+  // 「Bot」标签只在节点支持 Bot 时才有；?tab=twin 落在不支持的节点上同样回到第一个标签
   const hasTwin = entry.info?.capabilities.twin === true
   const shown = (tab === 'preview' && !hasPreview) || (tab === 'twin' && !hasTwin) ? 'agent' : (tab ?? 'agent')
   return (

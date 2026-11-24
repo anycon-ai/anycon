@@ -1,4 +1,4 @@
-// 分身问题复用「提问」队列：可点选、自由输入、按通知跨筛选定位。
+// Bot 问题复用「提问」队列：可点选、自由输入、按通知跨筛选定位。
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'

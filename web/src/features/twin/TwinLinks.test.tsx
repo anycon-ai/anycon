@@ -58,7 +58,7 @@ async function openAdd() {
   return screen.findByTestId('twin-link-add-dialog')
 }
 
-describe('Twin links list', () => {
+describe('Bot links list', () => {
   it('lists the node, online state, open projects and what is left from the last peer status', async () => {
     daemon.links = [twinLink({ status: peerStatus({ projects: ['api', 'docs'], remaining_sessions: 1, remaining_dispatches: 5 }) }), twinLink({ node_id: C, name: 'cold', online: false, status: null, group: 'work' })]
     await renderLinks()
@@ -76,7 +76,7 @@ describe('Twin links list', () => {
     await renderLinks()
     expect(await screen.findByTestId('twin-link-projects')).toHaveTextContent('Nothing is open to this node there yet.')
     expect(screen.getByText('That node has paused this connection.')).toBeInTheDocument()
-    expect(screen.getByText('That node does not accept twin connections right now.')).toBeInTheDocument()
+    expect(screen.getByText('That node does not accept bot connections right now.')).toBeInTheDocument()
   })
   it('reads the links again when the node says twin.changed, once for a burst', async () => {
     daemon.links = [twinLink({ online: false, status: null })]
@@ -89,7 +89,7 @@ describe('Twin links list', () => {
     expect(screen.getByTestId('twin-link-projects')).toHaveTextContent('Open projects: api')
     expect(calls('twin.links')).toHaveLength(2)
   })
-  it('is hidden on a daemon that does not know twin links yet', async () => {
+  it('is hidden on a daemon that does not know bot links yet', async () => {
     delete rpc.handlers['twin.links']
     render(<TwinLinks node={useNodes.getState().byId[A]!} />)
     await waitFor(() => expect(calls('twin.links')).toHaveLength(1))
@@ -108,7 +108,7 @@ describe('Adding a link', () => {
     expect(by('beta').dataset.blocked).toBe('')
     expect(within(by('beta')).getByRole('radio')).toBeEnabled()
     expect(within(by('old')).getByRole('radio')).toBeDisabled()
-    expect(by('old')).toHaveTextContent('does not support being used by a Twin')
+    expect(by('old')).toHaveTextContent('does not support being used by a Bot')
     expect(within(by('closed')).getByRole('radio')).toBeDisabled()
     expect(by('closed')).toHaveTextContent('[twin] accept_links = true')
     expect(within(by('sleepy')).getByRole('radio')).toBeDisabled()
@@ -176,12 +176,12 @@ describe('Adding a link', () => {
     expect(await screen.findByTestId('twin-link-group-confirm')).toHaveTextContent('no group')
   })
   it.each([
-    ['code', 'accept_links_off', 'forbidden', 'That node does not accept twin connections. Set [twin] accept_links = true on that machine.'],
+    ['code', 'accept_links_off', 'forbidden', 'That node does not accept bot connections. Set [twin] accept_links = true on that machine.'],
     ['link', 'not_found', 'not_found', 'The other node could not be reached for pairing: it must be on the same hub as this node, and the code must be fresh. Try again.'],
-    ['link', 'timeout', 'unsupported', 'The other node did not accept the connection. It may have turned off accepting twin connections ([twin] accept_links).'],
-    ['link', 'hub_changed', 'unsupported', "This node's twin connections were made on another hub. Disconnect them before connecting on this hub."],
+    ['link', 'timeout', 'unsupported', 'The other node did not accept the connection. It may have turned off accepting bot connections ([twin] accept_links).'],
+    ['link', 'hub_changed', 'unsupported', "This node's bot connections were made on another hub. Disconnect them before connecting on this hub."],
     ['link', 'node_mismatch', 'invalid', 'The node that answered is not the one you chose, so nothing was connected.'],
-    ['link', 'hub_unsupported', 'unsupported', 'The hub does not support twin connections yet. Update the hub to 0.4 or newer first.'],
+    ['link', 'hub_unsupported', 'unsupported', 'The hub does not support bot connections yet. Update the hub to 0.4 or newer first.'],
     ['link', 'hub_rate_limited', 'busy', 'The hub is temporarily limiting new connections from this address. Wait a moment and try again.'],
     ['code', 'quota', 'busy', 'The hub is not opening another pairing right now (daily limit or rate limit). Try again later.'],
   ] as const)('explains a %s step failure with reason %s in plain words and keeps the dialog open', async (step, reason, code, text) => {
@@ -205,7 +205,7 @@ describe('Adding a link', () => {
     await openAdd()
     await userEvent.click(screen.getByRole('radio', { name: /beta/ }))
     await userEvent.click(screen.getByTestId('twin-link-connect'))
-    expect(await screen.findByTestId('twin-link-error')).toHaveTextContent('Twin could not pair with that node.')
+    expect(await screen.findByTestId('twin-link-error')).toHaveTextContent('Bot could not pair with that node.')
     expectNoCode()
   })
   it('the code only passes through memory: not in the DOM, console or storage while the pairing is in flight either', async () => {
@@ -235,7 +235,7 @@ describe('Disconnecting', () => {
     await renderLinks()
     await userEvent.click(await screen.findByTestId('twin-link-remove'))
     const dialog = await screen.findByTestId('twin-link-remove-dialog')
-    expect(within(dialog).getByTestId('twin-link-revoke-hint')).toHaveTextContent('revoke this node’s twin device in the device list of beta')
+    expect(within(dialog).getByTestId('twin-link-revoke-hint')).toHaveTextContent('revoke this node’s bot device in the device list of beta')
     // 这台设备也和 B 配过对：给一个去 B 的设备列表的入口
     const link = within(dialog).getByRole('link', { name: 'Open the device list of beta' })
     expect(link.getAttribute('href')).toMatch(/^\/n\/.+\/settings\?tab=devices$/)
@@ -243,7 +243,7 @@ describe('Disconnecting', () => {
     await userEvent.click(within(dialog).getByTestId('twin-link-remove-confirm'))
     await waitFor(() => expect(calls('twin.unlink')).toHaveLength(1))
     expect(calls('twin.unlink')[0]).toMatchObject({ nodeId: A, params: { node_id: B } })
-    expect(await screen.findByTestId('twin-link-revoke')).toHaveTextContent('revoke this node’s twin device on beta')
+    expect(await screen.findByTestId('twin-link-revoke')).toHaveTextContent('revoke this node’s bot device on beta')
     await waitFor(() => expect(screen.queryByTestId('twin-link')).not.toBeInTheDocument())
   })
   it('without a pairing with the other node there is no link, only the instruction', async () => {

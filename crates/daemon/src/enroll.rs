@@ -795,7 +795,7 @@ impl Enroll {
             Pre::Resend(peer) => return self.send_frame(&peer, &wait_approval_frame()),
             Pre::Go => {}
         }
-        // 分身设备只能经 `node.twin_link_code` 的短码配对（docs/spec/daemon.md § 27.2）：接入码和节点口令一律不接受
+        // Bot 设备只能经 `node.twin_link_code` 的短码配对（docs/spec/daemon.md § 27.2）：接入码和节点口令一律不接受
         if hint.kind == anycon_protocol::DeviceKind::Twin {
             return self.reject(id, EnrollRejectReason::TwinNotAllowed, None, None, true).await;
         }

@@ -1,6 +1,7 @@
 import { MoreHorizontal, ListPlus } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { resolveNodeParam } from '@/lib/ids'
+import { useIsWide } from '@/lib/useMediaQuery'
 import { useNodes } from '@/stores/nodes'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/ui/Menu'
 import { cn } from '@/ui/cn'
@@ -25,13 +26,18 @@ export function openCaptureFromMessage(text: string, node: string | undefined, s
   useCapture.getState().openCapture({ text: captureFromQuote(text, link) })
 }
 
-/** 消息的「⋯」菜单里的「记到清单」。节点不支持清单时不显示。 */
+/**
+ * 消息的「⋯」菜单里的「记到清单」。节点不支持清单时不显示。
+ * 手机（< 768px）上也不显示：没法悬停，按钮只能一直露着，在 assistant 消息上盖住正文、在用户消息旁边被挤到屏幕外；
+ * 手机上从消息记一项用选中文字（`SelectionCapture`）。
+ */
 export function MessageTodoMenu({ text, seq, className }: { text: string; seq: number; className?: string }) {
   const { t } = useTranslation()
   const order = useNodes((s) => s.order)
+  const wide = useIsWide()
   const route = sessionRoute()
   const nodeId = route ? resolveNodeParam(route.node, order) : undefined
-  if (!route || !nodeId || !nodeSupportsTodo(nodeId) || text.trim() === '') return null
+  if (!wide || !route || !nodeId || !nodeSupportsTodo(nodeId) || text.trim() === '') return null
   return (
     <Menu>
       <MenuTrigger asChild>

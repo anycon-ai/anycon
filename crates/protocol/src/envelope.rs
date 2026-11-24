@@ -80,7 +80,7 @@ pub enum NotifyCategory {
     /// 用户标了「待处理」的会话这一轮结束了。比 `turn_finished` 优先：标了的会话只发这一类，不再发 `turn_finished`，
     /// 也不受 `notify.turn_finished` 的 `when_unwatched` / `never` 限制（标记本身就是用户的明确要求）。
     FollowUp,
-    /// 分身提出了需要人回答的问题。
+    /// Bot 提出了需要人回答的问题。
     TwinQuestion,
     /// 有设备请求批准接入（ADR-36）。没有 `session_id`。
     EnrollRequested,

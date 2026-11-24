@@ -35,7 +35,7 @@ pub const NODE_SET_ENROLL_ENABLED: &str = "node.set_enroll_enabled";
 pub const NODE_ENROLL_REQUESTED: &str = "node.enroll_requested";
 /// D→C notification，params = NodeEnrollResolved
 pub const NODE_ENROLL_RESOLVED: &str = "node.enroll_resolved";
-/// 开一次只接受分身设备的短码配对（docs/spec/daemon.md § 27.2）：`{}` → `{ code, expires_ms }`。只由人调用。
+/// 开一次只接受 Bot 设备的短码配对（docs/spec/daemon.md § 27.2）：`{}` → `{ code, expires_ms }`。只由人调用。
 pub const NODE_TWIN_LINK_CODE: &str = "node.twin_link_code";
 /// D→C notification，params = NodeSecurityEvent
 pub const NODE_SECURITY_EVENT: &str = "node.security_event";
@@ -151,26 +151,26 @@ pub const RULE_PREVIEW: &str = "rule.preview";
 /// D→C notification，params = RuleChanged
 pub const RULE_CHANGED: &str = "rule.changed";
 
-// 分身（docs/spec/daemon.md § 26）
+// Bot（docs/spec/daemon.md § 26）
 pub const TWIN_GET: &str = "twin.get";
 pub const TWIN_SET: &str = "twin.set";
 pub const TWIN_WAKE: &str = "twin.wake";
 pub const TWIN_DRY_RUN: &str = "twin.dry_run";
 pub const TWIN_RUNS: &str = "twin.runs";
-/// C→D：最近几个本地日的分身统计（`TwinStatsParams` → `TwinStatsResult`），只读。
+/// C→D：最近几个本地日的 Bot 统计（`TwinStatsParams` → `TwinStatsResult`），只读。
 pub const TWIN_STATS: &str = "twin.stats";
 pub const TWIN_QUESTIONS: &str = "twin.questions";
 pub const TWIN_ANSWER: &str = "twin.answer";
 pub const TWIN_CHANGED: &str = "twin.changed";
 pub const TWIN_QUESTION: &str = "twin.question";
-// 分身连接（docs/spec/daemon.md § 27）
-/// A 上：用 B 的短码建立一条分身连接（`{ code, node_id }` → `TwinLink`）。只由人调用。
+// Bot 连接（docs/spec/daemon.md § 27）
+/// A 上：用 B 的短码建立一条 Bot 连接（`{ code, node_id }` → `TwinLink`）。只由人调用。
 pub const TWIN_LINK: &str = "twin.link";
-/// A 上：列出分身连接（`{}` → `{ links }`）。
+/// A 上：列出 Bot 连接（`{}` → `{ links }`）。
 pub const TWIN_LINKS: &str = "twin.links";
-/// A 上：忘掉一条分身连接（`{ node_id }`）。B 上的设备记录要在 B 上吊销。
+/// A 上：忘掉一条 Bot 连接（`{ node_id }`）。B 上的设备记录要在 B 上吊销。
 pub const TWIN_UNLINK: &str = "twin.unlink";
-/// B 上：对这条分身连接开放了什么、还剩多少（`{}` → `TwinPeerStatus`，只给调用的这条连接自己的）。
+/// B 上：对这条 Bot 连接开放了什么、还剩多少（`{}` → `TwinPeerStatus`，只给调用的这条连接自己的）。
 pub const TWIN_PEER_STATUS: &str = "twin.peer_status";
 
 // blob（附件，ADR-35）

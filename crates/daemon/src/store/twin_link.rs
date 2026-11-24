@@ -1,4 +1,4 @@
-//! 分身连接的 A 这一侧的存储（docs/spec/daemon.md § 27.4）：分身连接的元数据（表 `twin_links`）和远程项（表 `todo_remotes`）。
+//! Bot 连接的 A 这一侧的存储（docs/spec/daemon.md § 27.4）：Bot 连接的元数据（表 `twin_links`）和远程项（表 `todo_remotes`）。
 //! 只存 id、数字和枚举，以及 B 的节点名和分组名；B 上项的内容只经「经过」的事件进库，不在这里。
 
 use anycon_protocol::{TodoActivity, TodoRemote, TwinPeerStatus};
@@ -6,7 +6,7 @@ use sqlx::Row;
 
 use super::{Result, Store};
 
-/// 一条分身连接的元数据（`twin_links` 的一行）。
+/// 一条 Bot 连接的元数据（`twin_links` 的一行）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkRow {
     pub node_id: String,
@@ -224,7 +224,7 @@ impl Store {
         }))
     }
 
-    /// 本地日从 `since_ms` 起派到别的节点的次数（和本机会话一起算进分身每日派发的次数）。
+    /// 本地日从 `since_ms` 起派到别的节点的次数（和本机会话一起算进 Bot 每日派发的次数）。
     pub async fn todo_remotes_since(&self, since_ms: u64) -> Result<u32> {
         Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM todo_remotes WHERE created_ms>=?")
             .bind(since_ms as i64)

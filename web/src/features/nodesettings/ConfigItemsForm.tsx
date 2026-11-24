@@ -14,7 +14,7 @@ import { Input, Select } from '@/ui/Field'
 import { Card, SectionTitle, Skeleton, Switch } from '@/ui/Misc'
 import { envNames, formatLimitDuration, initialDrafts, isChanged, localProblem, sectionOf, toWire, type Draft, type LimitProblem } from './limits'
 
-/** 分身标签管的键：判断后端（`judge.*`）和分身开关（`twin.*`）。 */
+/** Bot 标签管的键：判断后端（`judge.*`）和 Bot 开关（`twin.*`）。 */
 export const isTwinKey = (key: string): boolean => key.startsWith('judge.') || key.startsWith('twin.')
 export const isNotTwinKey = (key: string): boolean => !isTwinKey(key)
 
@@ -24,7 +24,7 @@ type Load = { status: 'loading' } | { status: 'ready'; items: ConfigItem[] } | {
 const STALE_REASONS = new Set(['env_override', 'tighten_only', 'not_editable'])
 
 /**
- * 「限制」和「分身」两个标签共用的配置表单（docs/spec/web.md § 4.8，ADR-43）：`node.get_config` 列出能远程看的配置项，
+ * 「限制」和「Bot」两个标签共用的配置表单（docs/spec/web.md § 4.8，ADR-43）：`node.get_config` 列出能远程看的配置项，
  * `include` 选出这个标签管的键，按类型和约束渲染；保存时只把改过的项放进一次 `node.set_config`，节点整体校验、整体写入，
  * 所以出错时一项都没改，错误按项显示在对应的输入框下面。安全相关的开关（`tighten_only`）关着时禁用，只能在机器上用
  * `anycon config set` 打开；被环境变量覆盖的项只读并说明原因。
@@ -96,7 +96,7 @@ export function ConfigItemsForm({ nodeId, include, prefix }: { nodeId: string; i
       setLoad({ status: 'ready', items: res.items })
       setDrafts(initialDrafts(res.items))
       toast.success(t('nodeSettings.limits.saved'))
-      // 分组、名字、判断后端和分身开关变了没有通知：刷新 node.info，让空间切换、提炼入口和「不接受分身连接」的提示跟着变
+      // 分组、名字、判断后端和 Bot 开关变了没有通知：刷新 node.info，让空间切换、提炼入口和「不接受 Bot 连接」的提示跟着变
       if (changes.some((c) => c.key === 'hub.group' || c.key === 'hub.name' || c.key.startsWith('judge.') || c.key.startsWith('twin.'))) refreshNodeInfo(nodeId).catch(warnOnError('refresh node.info after changing node settings'))
     } catch (e) {
       const rpcError = e instanceof RpcCallError && e.kind === 'rpc' && (e.code === 'invalid' || e.code === 'forbidden') ? e : null

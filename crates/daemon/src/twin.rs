@@ -1,5 +1,5 @@
-//! 分身的范围、事件合并、分拣和确定性执行（docs/spec/daemon.md § 26）。
-//! 判断只能选择给定清单项的动作；派发共用清单的事务，分身没有权限审批入口。
+//! Bot 的范围、事件合并、分拣和确定性执行（docs/spec/daemon.md § 26）。
+//! 判断只能选择给定清单项的动作；派发共用清单的事务，Bot 没有权限审批入口。
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex as SyncMutex};
@@ -41,7 +41,7 @@ pub fn human(caller: &Caller) -> Result<()> {
     if caller.is_mcp() {
         return Err(RpcError::new(ErrorCode::Forbidden, "twin writes must be requested by a person"));
     }
-    // 分身设备（另一个节点的分身）更不是人；分发处的白名单已经拦下，这里是第二道
+    // Bot 设备（另一个节点的 Bot）更不是人；分发处的白名单已经拦下，这里是第二道
     if caller.is_twin_device() {
         return Err(crate::twin_device::twin_device_forbidden());
     }
@@ -115,13 +115,13 @@ fn ready(c: &Ctx, s: &TwinScope) -> bool {
 fn enabled(c: &Ctx, s: &TwinScope) -> bool {
     plannable(c, s) && !s.paused
 }
-/// 能出计划：机器级开关开着、已配置、没在关停。不看 `paused`：试跑就是给暂停着的分身用的（先试跑，再决定要不要继续）。
+/// 能出计划：机器级开关开着、已配置、没在关停。不看 `paused`：试跑就是给暂停着的 Bot 用的（先试跑，再决定要不要继续）。
 fn plannable(c: &Ctx, s: &TwinScope) -> bool {
     c.config.get().twin.enabled && ready(c, s) && !*c.shutdown_tx.borrow()
 }
 fn in_scope(c: &Ctx, s: &TwinScope, t: &Todo) -> bool {
     t.handler == TodoHandler::Twin
-        // 来源是分身设备的项，这个节点自己的分身不碰（docs/spec/daemon.md § 27.3）
+        // 来源是 Bot 设备的项，这个节点自己的 Bot 不碰（docs/spec/daemon.md § 27.3）
         && t.source.kind != TodoSourceKind::Twin
         && !t.state.is_closed()
         && !t.unreviewed
@@ -135,7 +135,7 @@ async fn items(c: &Ctx, s: &TwinScope) -> Result<Vec<Todo>> {
     Ok(todos)
 }
 
-/// `twin.get`：`requester` 缺省是本机分身；也可以是一台分身设备的设备 id（B 给这条连接的设置，§ 27.3）。
+/// `twin.get`：`requester` 缺省是本机 Bot；也可以是一台 Bot 设备的设备 id（B 给这条连接的设置，§ 27.3）。
 pub async fn get_for(c: &Ctx, requester: Option<&str>) -> Result<TwinGetResult> {
     match requester_device(c, requester)? {
         Some(device) => get_device(c, &device).await,
@@ -143,7 +143,7 @@ pub async fn get_for(c: &Ctx, requester: Option<&str>) -> Result<TwinGetResult> 
     }
 }
 
-/// `requester` 对应的分身设备 id；缺省或 `local` 是本机分身（`None`）。别的值必须是已配对的、种类是 `twin` 的设备 id，
+/// `requester` 对应的 Bot 设备 id；缺省或 `local` 是本机 Bot（`None`）。别的值必须是已配对的、种类是 `twin` 的设备 id，
 /// 否则 `not_found`（不接受名称或前缀，也不让它指到一台别种类的设备）。
 fn requester_device(c: &Ctx, requester: Option<&str>) -> Result<Option<String>> {
     match requester {
@@ -155,7 +155,7 @@ fn requester_device(c: &Ctx, requester: Option<&str>) -> Result<Option<String>> 
     }
 }
 
-/// 一台分身设备的范围和今天的用量。没有判断和问题：它的状态只看 B 的开关、暂停、范围和预算。
+/// 一台 Bot 设备的范围和今天的用量。没有判断和问题：它的状态只看 B 的开关、暂停、范围和预算。
 async fn get_device(c: &Ctx, device: &str) -> Result<TwinGetResult> {
     let scope = c.store.twin_scope(device).await.map_err(internal)?;
     let accept = c.config.get().twin.accept_links;
@@ -182,7 +182,7 @@ async fn get_device(c: &Ctx, device: &str) -> Result<TwinGetResult> {
     } else {
         TwinState::Idle
     };
-    // 分身设备没有运行记录、唤醒时间、排队和被推迟的项：last_run / next_wake_ms / queued / deferred 恒为缺省 / 空。
+    // Bot 设备没有运行记录、唤醒时间、排队和被推迟的项：last_run / next_wake_ms / queued / deferred 恒为缺省 / 空。
     Ok(TwinGetResult {
         scope,
         state,
@@ -198,7 +198,7 @@ async fn get_device(c: &Ctx, device: &str) -> Result<TwinGetResult> {
     })
 }
 
-/// 本机分身的状态和算状态用到的几个量。`get` 和 `changed` 共用，状态逻辑只有这一份。
+/// 本机 Bot 的状态和算状态用到的几个量。`get` 和 `changed` 共用，状态逻辑只有这一份。
 struct LocalStatus {
     state: TwinState,
     enabled: bool,
@@ -274,7 +274,7 @@ pub async fn get(c: &Ctx) -> Result<TwinGetResult> {
     })
 }
 
-/// `twin.stats`：最近 `days` 个本地日（含今天，升序，没有活动的日子补零）。只统计本机分身。
+/// `twin.stats`：最近 `days` 个本地日（含今天，升序，没有活动的日子补零）。只统计本机 Bot。
 /// 日界线都用 `local_day_start` 重新解析：往前走一天从午夜减 12 小时再取日界线，不假定一天是 24 小时（夏令时）。
 pub async fn stats(c: &Ctx, p: TwinStatsParams) -> Result<TwinStatsResult> {
     let n = p.days.unwrap_or(7);
@@ -348,7 +348,7 @@ pub async fn stats(c: &Ctx, p: TwinStatsParams) -> Result<TwinStatsResult> {
     Ok(TwinStatsResult { days })
 }
 
-/// 采用 agent 声明的 unattended 标记；危险模式无论是否缺省都不能由分身使用。
+/// 采用 agent 声明的 unattended 标记；危险模式无论是否缺省都不能由 Bot 使用。
 pub(crate) fn settings(c: &Ctx, s: &TwinScope) -> Result<(String, SessionSettings)> {
     let agent = s
         .agent
@@ -380,7 +380,7 @@ pub(crate) fn settings(c: &Ctx, s: &TwinScope) -> Result<(String, SessionSetting
 pub async fn set(c: &Ctx, caller: &Caller, p: TwinSetParams) -> Result<TwinGetResult> {
     human(caller)?;
     let _guard = c.twin.scope_lock.lock().await;
-    // 改谁的范围：本机分身，或一台分身设备（B 给这条连接的设置）
+    // 改谁的范围：本机 Bot，或一台 Bot 设备（B 给这条连接的设置）
     let device = requester_device(c, p.requester.as_deref())?;
     let key = device.as_deref().unwrap_or(LOCAL);
     let dispatch_changed =
@@ -438,7 +438,7 @@ pub async fn set(c: &Ctx, caller: &Caller, p: TwinSetParams) -> Result<TwinGetRe
     });
     c.audit.record(caller, "twin.set", Some(key), detail).await;
     if device.is_some() {
-        // 分身设备的范围不影响本机分身的调度和状态
+        // Bot 设备的范围不影响本机 Bot 的调度和状态
         return get_device(c, key).await;
     }
     c.twin.notify.notify_one();
@@ -446,7 +446,7 @@ pub async fn set(c: &Ctx, caller: &Caller, p: TwinSetParams) -> Result<TwinGetRe
     get(c).await
 }
 
-/// 分身连接变了（建立、断开、在线状态、上一次的 `twin.peer_status`）：发一条 `twin.changed` 让客户端重新读 `twin.links`。
+/// Bot 连接变了（建立、断开、在线状态、上一次的 `twin.peer_status`）：发一条 `twin.changed` 让客户端重新读 `twin.links`。
 /// 和状态变化无关，所以不看「状态变没变」。
 pub(crate) async fn announce_links(c: &Ctx) {
     if let Ok(scope) = c.store.twin_scope(LOCAL).await {
@@ -572,8 +572,8 @@ pub fn spawn(c: &Arc<Ctx>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// 要轮询 PR 的会话（`session_id -> todo_id`）：分身派出的、所属的项交给分身处理且没关闭。
-/// 分身没开 / 没配置 / 暂停时为空：这时的变化留到恢复后的第一次轮询去比。
+/// 要轮询 PR 的会话（`session_id -> todo_id`）：Bot 派出的、所属的项交给 Bot 处理且没关闭。
+/// Bot 没开 / 没配置 / 暂停时为空：这时的变化留到恢复后的第一次轮询去比。
 pub async fn pr_targets(c: &Ctx) -> std::collections::HashMap<String, String> {
     let Ok(scope) = c.store.twin_scope(LOCAL).await else { return Default::default() };
     if !enabled(c, &scope) {
@@ -642,7 +642,7 @@ pub async fn pr_observed(c: &Ctx, session_id: &str, todo_id: &str, now: PrSnapsh
 }
 
 /// 分拣输入里的 PR 状态行。只有结构化的状态：评审和评论的正文任何人都能在公开仓库里写，
-/// 进了分拣输入就能向分身的判断注入指令（docs/spec/daemon.md § 26.9）。
+/// 进了分拣输入就能向 Bot 的判断注入指令（docs/spec/daemon.md § 26.9）。
 fn pr_line(s: &PrSnapshot) -> String {
     format!(
         "pr: {} {} checks={} reviews={} last_review={}\n",
@@ -707,7 +707,7 @@ const SYSTEM: &str = "You are the node's twin. Choose one action per supplied it
     ask_user requires question (at most 1024 bytes) and optional options (at most 5, each at most 100 characters); \
     ask_advisor requires question (at most 2048 bytes). Other actions have no additional fields.";
 
-/// 有分身连接时接在 `SYSTEM` 后面。
+/// 有 Bot 连接时接在 `SYSTEM` 后面。
 const NODES_SYSTEM: &str =
     " Linked nodes are other machines you may use: to dispatch there, add \"node\" (a linked node id \
     whose available is true) and \"project\" (required, one of that node's projects) to the dispatch decision; \
@@ -856,7 +856,7 @@ struct Candidate {
     question: Option<String>,
     #[serde(default)]
     options: Vec<String>,
-    /// 派发到哪个分身连接的节点（节点表里的 id）；缺省 = 本机。
+    /// 派发到哪个 Bot 连接的节点（节点表里的 id）；缺省 = 本机。
     node: Option<String>,
 }
 fn legal(p: &Candidate) -> bool {
@@ -953,7 +953,7 @@ async fn run_inner(c: &Ctx, run: &mut TwinRun) -> std::result::Result<(), CallEr
         run.result = TwinRunResult::Budget;
         return Ok(());
     }
-    // 节点表（§ 27.4）：每次唤醒问一遍每条在线的分身连接（`twin.peer_status`）
+    // 节点表（§ 27.4）：每次唤醒问一遍每条在线的 Bot 连接（`twin.peer_status`）
     let nodes = c.twin_links.table(c).await;
     let (req, ids) = request(c, &s, &todos, None, nodes.as_ref()).await.map_err(|_| CallError::Internal)?;
     let mut considered = ids;
@@ -1163,7 +1163,7 @@ async fn validate_action(c: &Ctx, s: &TwinScope, t: &Todo, p: &Candidate) -> Res
     Ok(capacity_skip(c, s, status.today.dispatches, status.working.len(), working_item(c, t).await?).await)
 }
 
-/// 派发到别的节点（§ 27.4）：节点要是一条分身连接，`project` 必填（B 上的项目名，不看 A 这一项的项目，范围由 B 把关）。
+/// 派发到别的节点（§ 27.4）：节点要是一条 Bot 连接，`project` 必填（B 上的项目名，不看 A 这一项的项目，范围由 B 把关）。
 /// A 自己的每日次数和名额照算；A 的 agent 设置不管，B 用它给这条连接定的。
 async fn validate_remote(
     c: &Ctx,
@@ -1180,7 +1180,7 @@ async fn validate_remote(
     Ok(capacity_skip(c, s, status.today.dispatches, status.working.len(), working_item(c, t).await?).await)
 }
 
-/// 每日次数和名额（§ 26.2）：本机分身和分身设备（§ 27.3）共用。`dispatches` 是这个请求方这个本地日已经派发的次数，
+/// 每日次数和名额（§ 26.2）：本机 Bot 和 Bot 设备（§ 27.3）共用。`dispatches` 是这个请求方这个本地日已经派发的次数，
 /// `working` 是它现在处理中的会话（项）数，`item_working` 是这一项自己已经有会话在处理中。
 /// 名额：不超过它自己的 `max_sessions`，并且总给人留 `sessions.max_concurrent` 里的一个。
 pub(crate) async fn capacity_skip(
@@ -1541,7 +1541,7 @@ pub(crate) async fn announce_todo(c: &Ctx, mut t: Todo) {
     c.clients.broadcast(methods::TODO_CHANGED, TodoChanged { id: t.id.clone(), todo: Some(t), deleted: false });
 }
 
-/// 有人在会话 `sid` 里发了消息（§ 26.6）。会话由本机分身派出时，这一项就是人接手了；会话由分身设备（别的节点的分身）派来时，
+/// 有人在会话 `sid` 里发了消息（§ 26.6）。会话由本机 Bot 派出时，这一项就是人接手了；会话由 Bot 设备（别的节点的 Bot）派来时，
 /// 在这一项的「经过」里记一条 `taken_over`，那个节点取回之后自己改它的 `handler`（§ 27.4）。
 pub async fn taken_over(c: &Ctx, caller: &Caller, sid: &str) -> Result<()> {
     if caller.is_twin() || caller.is_twin_device() {
@@ -1573,7 +1573,7 @@ pub async fn taken_over(c: &Ctx, caller: &Caller, sid: &str) -> Result<()> {
     take_over_done(c, t, events, &Caller::twin(&requester), json!({"session_id":sid,"by":actor_of(caller)})).await
 }
 
-/// 这一项交给分身时被人接手：`handler` 改成 `me`，「经过」记 `taken_over`（`node_id` 有值表示接手发生在那个节点上）和 `handler`。
+/// 这一项交给 Bot 时被人接手：`handler` 改成 `me`，「经过」记 `taken_over`（`node_id` 有值表示接手发生在那个节点上）和 `handler`。
 /// 本机的会话和 A 取回 B 上的接手共用它。调用方持 `todo_lock`、在 `tx` 里调用并在之后提交，再调 [`take_over_done`]。
 pub(crate) async fn take_over_on(
     tx: &mut sqlx::SqliteConnection,
@@ -1604,7 +1604,7 @@ pub(crate) async fn take_over_on(
     Ok((t, vec![taken, handler]))
 }
 
-/// [`take_over_on`] 提交之后：推「经过」、作废挂着的问题、通知客户端、记审计（`audit` 是分身这一侧的操作者）。
+/// [`take_over_on`] 提交之后：推「经过」、作废挂着的问题、通知客户端、记审计（`audit` 是 Bot 这一侧的操作者）。
 pub(crate) async fn take_over_done(
     c: &Ctx,
     t: Todo,
@@ -1623,9 +1623,9 @@ pub(crate) async fn take_over_done(
     Ok(())
 }
 
-/// 分身设备派来的会话里有人发了消息：在这一项的「经过」里记一条 `taken_over`，每个会话只记一次（表 `twin_sessions` 的
-/// `taken_ms`，和事件在同一个事务里）。这一项的 `handler` 不动：它说的是本机的分身，本机的分身本来就不碰来源是分身的项。
-/// 分身又派了新的会话、人又在新会话里接手，是新的一次。调用方持 `todo_lock`。
+/// Bot 设备派来的会话里有人发了消息：在这一项的「经过」里记一条 `taken_over`，每个会话只记一次（表 `twin_sessions` 的
+/// `taken_ms`，和事件在同一个事务里）。这一项的 `handler` 不动：它说的是本机的 Bot，本机的 Bot 本来就不碰来源是 Bot 的项。
+/// Bot 又派了新的会话、人又在新会话里接手，是新的一次。调用方持 `todo_lock`。
 async fn device_session_taken_over(c: &Ctx, caller: &Caller, sid: &str, requester: &str, id: &str) -> Result<()> {
     if c.store.todo_get(id).await.map_err(internal)?.is_none() {
         return Ok(());

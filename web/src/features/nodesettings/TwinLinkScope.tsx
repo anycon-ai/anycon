@@ -1,5 +1,5 @@
-// 设备列表里一台分身设备（别的节点的分身）的「范围」：这条连接的 `twin.get` / `twin.set`（`requester` = 设备 id）。
-// 表单和分身页的一样；缺省什么都不开放。
+// 设备列表里一台 Bot 设备（别的节点的 Bot）的「范围」：这条连接的 `twin.get` / `twin.set`（`requester` = 设备 id）。
+// 表单和 Bot 页的一样；缺省什么都不开放。
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'

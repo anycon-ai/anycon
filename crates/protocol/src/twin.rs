@@ -1,4 +1,4 @@
-//! 分身的范围、状态、运行记录和问题协议（docs/spec/daemon.md § 26）；判断与执行由 daemon 负责。
+//! Bot 的范围、状态、运行记录和问题协议（docs/spec/daemon.md § 26）；判断与执行由 daemon 负责。
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +25,7 @@ pub enum TwinTrigger {
     Answer,
     Tick,
     Manual,
-    /// 分身派出的会话的 PR 有了变化（检查失败、合并、关闭、新的评审意见；daemon spec § 26.9）。
+    /// Bot 派出的会话的 PR 有了变化（检查失败、合并、关闭、新的评审意见；daemon spec § 26.9）。
     Pr,
     #[serde(other)]
     Unknown,
@@ -150,7 +150,7 @@ pub struct TwinGetResult {
     /// 读取时的快照，变化时不发通知。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_wake_ms: Option<TimestampMs>,
-    /// 在分身范围内（§ 26.1），但既不在 `working` 里也没有未回答的问题的待办 id。
+    /// 在 Bot 范围内（§ 26.1），但既不在 `working` 里也没有未回答的问题的待办 id。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued: Vec<String>,
     /// 仍在范围内、但上一次判断放不进输入（§ 26.4 的大小上限）的待办 id。只在内存里，重启后为空。
@@ -161,8 +161,8 @@ pub struct TwinGetResult {
 /// `twin.get` 的参数。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TwinGetParams {
-    /// 读谁的范围：缺省 `local`（本机分身）；也可以是一个已配对的分身设备（`DeviceKind::Twin`）的设备 id，读 B 给这条分身连接
-    /// 的设置（docs/spec/daemon.md § 27.3）。不是已存在的分身设备 → `not_found`。
+    /// 读谁的范围：缺省 `local`（本机 Bot）；也可以是一个已配对的 Bot 设备（`DeviceKind::Twin`）的设备 id，读 B 给这条 Bot 连接
+    /// 的设置（docs/spec/daemon.md § 27.3）。不是已存在的 Bot 设备 → `not_found`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<String>,
 }
@@ -194,7 +194,7 @@ pub struct TwinSetParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TwinRun {
     pub id: String,
-    /// 本机为 local；分身连接以设备 id 作请求方。
+    /// 本机为 local；Bot 连接以设备 id 作请求方。
     pub requester: String,
     pub started_ms: TimestampMs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -274,7 +274,7 @@ pub struct TwinRunsResult {
     pub runs: Vec<TwinRun>,
 }
 
-/// `twin.stats` 的参数。只统计本机分身。
+/// `twin.stats` 的参数。只统计本机 Bot。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TwinStatsParams {
     /// 统计最近几个本地日（含今天），1..=90，缺省 7；越界 → `invalid`，`data.field = "days"`。
@@ -321,7 +321,7 @@ pub struct TwinDecisionCounts {
     pub done: u32,
 }
 
-/// 一个本地日的分身统计。数据来自节点保留的运行记录（90 天）和待办的经过（已删除待办的经过没了），所以旧日子的数字可能变小。
+/// 一个本地日的 Bot 统计。数据来自节点保留的运行记录（90 天）和待办的经过（已删除待办的经过没了），所以旧日子的数字可能变小。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TwinDayStats {
     /// 节点本地时间的 `YYYY-MM-DD`。
@@ -344,21 +344,21 @@ pub struct TwinDayStats {
     /// 非试跑运行里 `outcome = skipped` 的决定数。
     #[serde(default)]
     pub skipped: u32,
-    /// 这天待办经过里的 `handed_back` 事件数：分身没做完就交回给人的次数（`hand_back` 判断、连续 3 次失败、2 小时卡住）。
-    /// 不含 `done` 判断（分身认为做完了，请人确认）写的那一条。
+    /// 这天待办经过里的 `handed_back` 事件数：Bot 没做完就交回给人的次数（`hand_back` 判断、连续 3 次失败、2 小时卡住）。
+    /// 不含 `done` 判断（Bot 认为做完了，请人确认）写的那一条。
     #[serde(default)]
     pub handed_back: u32,
-    /// 这天的 `taken_over` 事件数，只算本机分身派发过（不晚于事件）的项；分身设备派来的会话里的接手不算。
+    /// 这天的 `taken_over` 事件数，只算本机 Bot 派发过（不晚于事件）的项；Bot 设备派来的会话里的接手不算。
     #[serde(default)]
     pub taken_over: u32,
-    /// 这天由未关闭（非 `done` / `dropped`）变为 `done` 的 `state` 事件数，且本机分身在事件时间或之前派发过这一项。
+    /// 这天由未关闭（非 `done` / `dropped`）变为 `done` 的 `state` 事件数，且本机 Bot 在事件时间或之前派发过这一项。
     /// 已关闭项在 `done` 和 `dropped` 之间改来改去不算；重新打开后再关闭算新的一次。
     #[serde(default)]
     pub accepted: u32,
     /// 同 `accepted`，但是变为 `dropped`。
     #[serde(default)]
     pub dropped: u32,
-    /// 这天每个 `accepted` 事件的（事件时间 - 该项在事件时间或之前最近一次被本机分身派发的时间）之和；平均 = `turnaround_ms / accepted`。
+    /// 这天每个 `accepted` 事件的（事件时间 - 该项在事件时间或之前最近一次被本机 Bot 派发的时间）之和；平均 = `turnaround_ms / accepted`。
     #[serde(default)]
     pub turnaround_ms: u64,
 }
@@ -392,9 +392,9 @@ pub struct TwinQuestionNotice {
     pub question: TwinQuestion,
 }
 
-// ---------------- 分身连接（docs/spec/daemon.md § 27） ----------------
+// ---------------- Bot 连接（docs/spec/daemon.md § 27） ----------------
 
-/// `node.twin_link_code` 的结果：B 开了一次只接受分身设备的短码配对。
+/// `node.twin_link_code` 的结果：B 开了一次只接受 Bot 设备的短码配对。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NodeTwinLinkCodeResult {
     /// 16 位短码（`XXXX-XXXX-XXXX-XXXX`）。
@@ -403,7 +403,7 @@ pub struct NodeTwinLinkCodeResult {
     pub expires_ms: TimestampMs,
 }
 
-/// `twin.link` 的参数：A 的 daemon 用 B 发的短码以分身设备的身份和 B 配对。
+/// `twin.link` 的参数：A 的 daemon 用 B 发的短码以 Bot 设备的身份和 B 配对。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TwinLinkParams {
     /// B 的 `node.twin_link_code` 发出的短码。
@@ -412,7 +412,7 @@ pub struct TwinLinkParams {
     pub node_id: DeviceId,
 }
 
-/// B 对这条分身连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。
+/// B 对这条 Bot 连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TwinPeerStatus {
     /// B 的节点名。
@@ -429,7 +429,7 @@ pub struct TwinPeerStatus {
     pub remaining_dispatches: u32,
     /// 这条连接被 B 暂停了。
     pub paused: bool,
-    /// B 现在接受分身连接（`[twin] accept_links`）。
+    /// B 现在接受 Bot 连接（`[twin] accept_links`）。
     pub accept_links: bool,
 }
 
@@ -441,7 +441,7 @@ pub struct TwinPeerAgent {
     pub ready: bool,
 }
 
-/// 一条分身连接（A 记下的，表 `twin_links`）。
+/// 一条 Bot 连接（A 记下的，表 `twin_links`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TwinLink {
     /// B 的节点 id。

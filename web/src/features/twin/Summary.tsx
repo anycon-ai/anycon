@@ -1,4 +1,4 @@
-// 分身页的只读概览：配置摘要、今天的数字、连续失败的提醒。
+// Bot 页的只读概览：配置摘要、今天的数字、连续失败的提醒。
 // 没有 `capabilities.twin_stats` 时，今天的唤醒次数和最近一次唤醒由已读到的运行记录推算（浏览器本地日），不显示花费和下一次唤醒。
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'

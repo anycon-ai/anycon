@@ -984,7 +984,7 @@ impl TestDaemon {
             .await
     }
 
-    /// [`TestDaemon::start_git`]，同时开本机 socket、连 `hub_url`（分身连接的两端都要真 hub：被使用的节点要能开 worktree）。
+    /// [`TestDaemon::start_git`]，同时开本机 socket、连 `hub_url`（Bot 连接的两端都要真 hub：被使用的节点要能开 worktree）。
     pub async fn start_git_hub(overrides: &[(&str, &str)], hub_url: &str) -> TestDaemon {
         Self::start_inner(
             overrides,
@@ -1235,8 +1235,8 @@ impl TestDaemon {
         })
     }
 
-    /// 一台已配对的分身设备（另一个节点的分身，种类 `twin`）和它经 hub 的连接：先登记成已配对设备（`twin.get` / `twin.set`
-    /// 的 `requester` 只认已存在的分身设备），再以它的身份注册一个客户端。公钥是假的，不能握手。
+    /// 一台已配对的 Bot 设备（另一个节点的 Bot，种类 `twin`）和它经 hub 的连接：先登记成已配对设备（`twin.get` / `twin.set`
+    /// 的 `requester` 只认已存在的 Bot 设备），再以它的身份注册一个客户端。公钥是假的，不能握手。
     pub async fn twin_device_client(&self, device_id: &str, name: &str) -> TestClient {
         self.ctx
             .peers
@@ -1789,7 +1789,7 @@ impl FakeWeb {
         Self::connect_kind(hub_url, token, cookie, name, kp, recv_buffer, DeviceKind::Web).await
     }
 
-    /// 同 [`FakeWeb::connect_with`]，自报的设备种类可选（分身设备测试用 `DeviceKind::Twin`）。
+    /// 同 [`FakeWeb::connect_with`]，自报的设备种类可选（Bot 设备测试用 `DeviceKind::Twin`）。
     pub async fn connect_kind(
         hub_url: &str,
         token: Option<String>,

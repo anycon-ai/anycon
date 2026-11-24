@@ -74,7 +74,7 @@ pub enum TodoSourceKind {
     Local,
     /// agent 加的（`todo.add` 带了 `agent: true`，或来自自报了 `mcp` 的本机连接）。
     Agent,
-    /// 分身做的动作。
+    /// Bot 做的动作。
     Twin,
     /// 周期项（`Todo.repeat`）到点复制出来的一项；`TodoSource.todo_id` 是模板的 id。
     Repeat,
@@ -87,7 +87,7 @@ pub enum TodoSourceKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoSource {
     pub kind: TodoSourceKind,
-    /// 经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台分身设备（另一个节点的分身，docs/spec/daemon.md § 27.3）的设备 id。
+    /// 经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台 Bot 设备（另一个节点的 Bot，docs/spec/daemon.md § 27.3）的设备 id。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<DeviceId>,
     /// 这一项是从哪个会话里来的（只有 `kind = agent` 才可能有；会话之后被删，这个字段原样留着）。
@@ -173,7 +173,7 @@ pub struct Todo {
     /// 周期规则。带它的项是模板：不进分拣、不能派发，到点由 daemon 复制出新的一项（`source.kind = repeat`）；只由人设置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat: Option<TodoRepeat>,
-    /// 这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由分身连接的 A 侧写。
+    /// 这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由 Bot 连接的 A 侧写。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote: Vec<TodoRemote>,
 }
@@ -282,7 +282,7 @@ pub struct TodoUpdateParams {
     /// `true`：把 `unreviewed` 清掉（`false` 或对已经收下的项会被忽略）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed: Option<bool>,
-    /// 调用方自报是 agent；不能把处理人设成分身，也不算人收下了这一项。
+    /// 调用方自报是 agent；不能把处理人设成 Bot，也不算人收下了这一项。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
     /// 设置或替换周期规则（规则变了就从现在起重新算下一次）；清掉用 `clear: ["repeat"]`。同 `todo.add`，只由人设置。
@@ -342,8 +342,8 @@ pub struct TodoDispatchParams {
     /// 不多记关联和「经过」；它同时是会话第一条消息的 id。缺省由 daemon 生成（那样就没有幂等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
-    /// 分身的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。
-    /// 只有分身设备（另一个节点的分身）能带；别的调用方带了 → `invalid`（`data.field = "note"`，`data.reason = "not_allowed"`）。
+    /// Bot 的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。
+    /// 只有 Bot 设备（另一个节点的 Bot）能带；别的调用方带了 → `invalid`（`data.field = "note"`，`data.reason = "not_allowed"`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -410,7 +410,7 @@ pub struct TodoHistoryResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoActor {
     pub kind: TodoSourceKind,
-    /// 分身动作的请求方（local 或设备 id）。
+    /// Bot 动作的请求方（local 或设备 id）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -449,7 +449,7 @@ pub enum TodoEventData {
         to: TodoState,
         by: TodoActor,
     },
-    /// 分身把这一项交回给人。`done = true`：不是没做完，而是分身判断已经做完了、请人确认（`reason` 以固定前缀开头）。
+    /// Bot 把这一项交回给人。`done = true`：不是没做完，而是 Bot 判断已经做完了、请人确认（`reason` 以固定前缀开头）。
     /// 旧版本写的这类事件没有这个字段，按 `reason` 的前缀识别。
     HandedBack {
         reason: String,
@@ -458,8 +458,8 @@ pub enum TodoEventData {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         done: bool,
     },
-    /// 一个人在分身派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个
-    /// 节点上（分身用的别的节点）：那个节点记的这一条没有它，分身所在节点取回之后记的有。
+    /// 一个人在 Bot 派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个
+    /// 节点上（Bot 用的别的节点）：那个节点记的这一条没有它，Bot 所在节点取回之后记的有。
     TakenOver {
         by: TodoActor,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -487,7 +487,7 @@ pub enum TodoEventData {
     RepeatSkipped {
         at_ms: TimestampMs,
     },
-    /// 分身把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话
+    /// Bot 把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话
     /// （那个节点上的 id，不是这个节点的会话）。
     RemoteDispatched {
         node_id: DeviceId,
@@ -500,7 +500,7 @@ pub enum TodoEventData {
         session_id: SessionId,
         text: String,
     },
-    /// 分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。
+    /// Bot 派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。
     /// 不含评审或评论的正文，只有变化的种类和 PR 地址。
     PrEvent {
         session_id: SessionId,

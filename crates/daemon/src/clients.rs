@@ -26,13 +26,13 @@ impl Caller {
         Caller { device_id: "daemon".into(), device_name: "daemon".into(), kind: DeviceKind::Daemon, local: true }
     }
 
-    /// 分身内部操作的请求方身份；不用于客户端自报。
+    /// Bot 内部操作的请求方身份；不用于客户端自报。
     pub fn twin(requester: &str) -> Self {
         Self { device_id: requester.into(), device_name: "twin".into(), kind: DeviceKind::Daemon, local: true }
     }
 
-    /// 经 hub 来的分身设备（另一个节点的分身，`DeviceKind::Twin`）：只能调白名单里的方法、只收到过滤后的通知
-    /// （[`crate::twin_device`]）。和 [`Caller::is_twin`]（本机分身自己的内部操作）不是一回事。
+    /// 经 hub 来的 Bot 设备（另一个节点的 Bot，`DeviceKind::Twin`）：只能调白名单里的方法、只收到过滤后的通知
+    /// （[`crate::twin_device`]）。和 [`Caller::is_twin`]（本机 Bot 自己的内部操作）不是一回事。
     pub fn is_twin_device(&self) -> bool {
         crate::twin_device::is_twin_device(self)
     }
@@ -95,7 +95,7 @@ pub const MAX_WATCHES: usize = 5;
 
 pub struct ClientHandle {
     pub conn_id: u64,
-    /// 分身设备的项和会话的归属，推送过滤用（[`crate::twin_device::pushable`]）。
+    /// Bot 设备的项和会话的归属，推送过滤用（[`crate::twin_device::pushable`]）。
     owners: Arc<crate::twin_device::TwinOwners>,
     /// 本机连接可以用 `local.set_client` 改自己的审计身份，所以放在锁里；读用 [`ClientHandle::caller`]。
     caller: RwLock<Caller>,
@@ -126,7 +126,7 @@ impl ClientHandle {
         true
     }
 
-    /// 送一条通知给这个客户端。**所有通知都经这里**（`broadcast`、`to_watchers`、导出的进度），所以对分身设备的推送过滤
+    /// 送一条通知给这个客户端。**所有通知都经这里**（`broadcast`、`to_watchers`、导出的进度），所以对 Bot 设备的推送过滤
     /// 在这里做一次：不在 [`crate::twin_device::PUSHED`] 里的、或不是它自己的项和会话的，不送。
     pub fn notify(&self, n: &RpcNotification) {
         let twin_device = {
@@ -194,7 +194,7 @@ impl Clients {
         h
     }
 
-    /// 分身设备的项和会话的归属（推送过滤用）。
+    /// Bot 设备的项和会话的归属（推送过滤用）。
     pub fn owners(&self) -> &Arc<crate::twin_device::TwinOwners> {
         &self.owners
     }

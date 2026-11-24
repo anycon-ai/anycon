@@ -1,4 +1,4 @@
-//! 判断后端（docs/spec/daemon.md § 25，ADR-54 第 4 条）：分身要做的「判断」交给一个由用户在 `config.toml` 里配置的后端，
+//! 判断后端（docs/spec/daemon.md § 25，ADR-54 第 4 条）：Bot 要做的「判断」交给一个由用户在 `config.toml` 里配置的后端，
 //! 提炼规则（§ 23.9）、分拣和顾问（§ 26）共用它。`kind = "api"` 是 daemon 直接调用模型 API（[`api`]），`kind = "agent"` 是一次性
 //! 调用本机的 agent CLI（[`agent`]）。
 //!

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Send } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cleanHintText } from '@/lib/hint'
@@ -55,6 +55,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   const [busy, setBusy] = useState(false)
   const sending = useRef(false)
   const errorId = useId()
+  const ids = useId()
 
   // 缺省节点：选中的、支持清单的节点里上次用过的，没有就第一个
   const nodeId = (pickedNode && supporting.includes(pickedNode) ? pickedNode : null) ?? pickDefaultNode(supporting, space, lastNode, lastBySpace)
@@ -146,7 +147,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
           className="min-h-11 flex-1 resize-none py-2.5"
           data-testid="capture-input"
         />
-        <Button type="submit" variant="primary" disabled={!canSend || busy} aria-label={t('todos.send')} className="size-11 shrink-0 !p-0" data-testid="capture-send">
+        <Button type="submit" variant="primary" disabled={!canSend || busy} aria-label={t('todos.send')} className="!size-11 shrink-0 justify-center !p-0" data-testid="capture-send">
           <Send className="size-4" aria-hidden />
         </Button>
       </div>
@@ -155,11 +156,11 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
           {fieldErrorText(t, error)}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2 text-xs text-fg-subtle" data-testid="capture-options">
+      {/* 手机 / 「记一项」页：标签一列、控件一列，左边缘对齐、控件同宽；桌面的输入条（compact）里排成一行 */}
+      <div className={compact ? 'flex flex-wrap items-center gap-2 text-xs text-fg-subtle' : 'grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-3 gap-y-2 text-sm text-fg-muted'} data-testid="capture-options">
         {supporting.length > 1 ? (
-          <label className="flex items-center gap-1.5">
-            <span>{t('todos.toNode')}</span>
-            <Select value={nodeId ?? ''} onChange={(e) => setPickedNode(e.target.value)} className="!h-9 w-auto max-w-40" data-testid="capture-node">
+          <Opt label={t('todos.toNode')} htmlFor={`${ids}-node`} compact={compact}>
+            <Select id={`${ids}-node`} value={nodeId ?? ''} onChange={(e) => setPickedNode(e.target.value)} className={compact ? '!h-9 w-auto max-w-40' : undefined} data-testid="capture-node">
               {spaces.hasGroups
                 ? [...spaces.spaces.map((sp) => ({ label: sp.label, ids: sp.nodeIds.filter((id) => supporting.includes(id)) })), { label: '', ids: spaces.ungrouped.filter((id) => supporting.includes(id)) }]
                     .filter((g) => g.ids.length > 0)
@@ -178,12 +179,11 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
                     </option>
                   ))}
             </Select>
-          </label>
+          </Opt>
         ) : null}
         {nodeId && nodes[nodeId]?.info?.capabilities.twin ? (
-          <label className="flex items-center gap-1.5">
-            <span>{t('todos.filterHandler')}</span>
-            <Select value={handler} data-testid="capture-handler" onChange={(e) => {
+          <Opt label={t('todos.handlerLabel')} htmlFor={`${ids}-handler`} compact={compact}>
+            <Select id={`${ids}-handler`} value={handler} className={compact ? 'w-auto' : undefined} data-testid="capture-handler" onChange={(e) => {
               const next = e.target.value === 'twin' ? 'twin' : 'me'
               setHandler(next)
               try { localStorage.setItem('anycon.todoHandler', next) } catch {
@@ -193,26 +193,24 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
               <option value="me">{t('twin.me')}</option>
               <option value="twin">{t('twin.give')}</option>
             </Select>
-          </label>
+          </Opt>
         ) : null}
-        <label className="flex items-center gap-1.5">
-          <span>{t('todos.project')}</span>
-          <Input value={project} onChange={(e) => setProject(e.target.value)} list="capture-projects" className="!h-9 w-32" placeholder={t('todos.none')} data-testid="capture-project" />
-          <datalist id="capture-projects">
+        <Opt label={t('todos.project')} htmlFor={`${ids}-project`} compact={compact}>
+          <Input id={`${ids}-project`} value={project} onChange={(e) => setProject(e.target.value)} list={`${ids}-projects`} className={compact ? '!h-9 w-32' : undefined} placeholder={t('todos.none')} data-testid="capture-project" />
+          <datalist id={`${ids}-projects`}>
             {projects.map((p) => (
               <option key={p} value={p} />
             ))}
           </datalist>
-        </label>
-        <label className="flex items-center gap-1.5">
-          <span>{t('todos.due')}</span>
-          <Input type="datetime-local" value={due} onChange={(e) => setDue(e.target.value)} className="!h-9 w-auto" data-testid="capture-due" />
-        </label>
+        </Opt>
+        <Opt label={t('todos.due')} htmlFor={`${ids}-due`} compact={compact}>
+          <Input id={`${ids}-due`} type="datetime-local" value={due} onChange={(e) => setDue(e.target.value)} className={compact ? '!h-9 w-auto' : 'min-w-0'} data-testid="capture-due" />
+        </Opt>
         {repeatSupported ? (
-          <div className="flex items-center gap-1.5">
-            <span>{t('todos.repeat.label')}</span>
-            <RepeatField value={repeat} onChange={(v) => { setRepeat(v); setError(null) }} testId="capture-repeat" />
-          </div>
+          <Opt label={t('todos.repeat.label')} compact={compact}>
+            {/* 网格里每个下拉等分这一格，和上面的控件一样宽 */}
+            <RepeatField value={repeat} onChange={(v) => { setRepeat(v); setError(null) }} testId="capture-repeat" className={compact ? undefined : 'grid auto-cols-fr grid-flow-col gap-1.5'} />
+          </Opt>
         ) : null}
       </div>
       {supporting.length > 1 && nodeId ? (
@@ -221,5 +219,27 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
         </p>
       ) : null}
     </form>
+  )
+}
+
+/**
+ * 一个可选项：`compact`（桌面输入条）时标签和控件挤在一行；否则是网格里的两格（标签一格、控件一格），标签不换行。
+ * 没有 `htmlFor` 的（重复规则是几个控件，各自有 `aria-label`）标签只是文字。
+ */
+function Opt({ label, htmlFor, compact, children }: { label: string; htmlFor?: string; compact?: boolean; children: ReactNode }) {
+  const text = htmlFor ? <label htmlFor={htmlFor} className="whitespace-nowrap">{label}</label> : <span className="whitespace-nowrap">{label}</span>
+  if (compact) {
+    return (
+      <div className="flex items-center gap-1.5">
+        {text}
+        {children}
+      </div>
+    )
+  }
+  return (
+    <>
+      {text}
+      <div className="min-w-0">{children}</div>
+    </>
   )
 }

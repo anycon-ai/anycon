@@ -19,7 +19,10 @@ interface UiState {
   updateReady: boolean
   applyUpdate: (() => void) | null
   rightDrawerOpen: boolean
-  /** 命令面板（⌘K）：左栏的搜索按钮、手机「会话」页的搜索按钮和快捷键共用一个。 */
+  /** 手机（< 768px）上的左侧抽屉：顶栏的菜单按钮打开，里面是和桌面一样的左栏。 */
+  leftDrawerOpen: boolean
+  setLeftDrawer: (v: boolean) => void
+  /** 命令面板（⌘K）：左栏（手机上是抽屉）的搜索按钮和快捷键共用一个。 */
   paletteOpen: boolean
   setPalette: (v: boolean) => void
   /** 「待处理」页正显示着从通知点进来的那条请求：升级说明先不弹，免得盖住它。 */
@@ -44,6 +47,8 @@ export const useUi = create<UiState>()((set, get) => ({
   updateReady: false,
   applyUpdate: null,
   rightDrawerOpen: false,
+  leftDrawerOpen: false,
+  setLeftDrawer: (leftDrawerOpen) => set({ leftDrawerOpen }),
   paletteOpen: false,
   setPalette: (paletteOpen) => set({ paletteOpen }),
   deferHomeNotice: false,

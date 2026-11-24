@@ -1,7 +1,7 @@
-// 外壳在三种宽度下的导航（spec/web.md § 3）：手机没有左栏、底部标签栏只在标签页的根页面出现（进二级页收起、返回恢复）；
-// 宽屏有左栏、没有标签栏。
+// 外壳在三种宽度下的导航（spec/web.md § 3）：手机上左栏是抽屉，顶栏的菜单按钮打开、点了去处就收起；宽屏左栏常驻。
 import type { ReactNode } from 'react'
-import { render as rtlRender, screen } from '@testing-library/react'
+import { act, render as rtlRender, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nodeEntry } from '@/test/factories'
@@ -28,9 +28,10 @@ vi.mock('./NewProjectHost', () => ({ NewProjectHost: () => null }))
 vi.mock('./StatusBanner', () => ({ StatusBanner: () => null }))
 vi.mock('@/features/approve/EnrollApprovalDialog', () => ({ EnrollApprovalDialog: () => null }))
 vi.mock('@/features/approve/ScanApproveDialog', () => ({ ScanApproveDialog: () => null }))
-vi.mock('./TabHost', () => ({ PhoneTabs: () => <div data-testid="phone-tabs" /> }))
+vi.mock('./PageHosts', () => ({ PhonePages: () => <div data-testid="phone-pages" />, keptPageOf: (p: string) => (p === '/inbox' ? 'inbox' : p === '/todos' ? 'todos' : null) }))
 
 import { AppShell } from './AppShell'
+import { PageHeader } from './PageHeader'
 
 const A = 'a'.repeat(32)
 const client = new QueryClient()
@@ -40,7 +41,7 @@ beforeEach(() => {
   resetViewport()
   route.pathname = '/inbox'
   usePrefs.setState({ sidebarOpen: true, sidebarNodes: null, homeNoticeSeen: true })
-  useUi.setState({ lastSessionsPath: null })
+  useUi.setState({ lastSessionsPath: null, leftDrawerOpen: false })
   useNodes.setState({ byId: { [A]: nodeEntry({ id: A }) }, order: [A], loaded: true })
   useSessions.setState({ list: {}, pending: {}, open: {} })
 })
@@ -48,56 +49,69 @@ beforeEach(() => {
 describe('phone', () => {
   beforeEach(() => setViewport('phone'))
 
-  it('has no sidebar (and no drawer), and shows the tab bar on a tab root page', () => {
-    render(<AppShell />)
-    expect(screen.queryByTestId('sidebar-dock')).toBeNull()
-    expect(screen.queryByTestId('sidebar')).toBeNull()
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument()
-    expect(screen.getByTestId('phone-tabs')).toBeInTheDocument()
-    // 标签页由常驻的 PhoneTabs 承载，不走 Outlet
-    expect(screen.queryByTestId('outlet')).toBeNull()
-  })
-
-  it('shows it on every tab root and nowhere else: the session page, node home, settings hide it', () => {
-    for (const path of ['/inbox', '/sessions', '/more']) {
+  it('has no docked sidebar and no tab bar; the inbox and the to-do list are kept by the shell, the rest go through the Outlet', () => {
+    for (const path of ['/inbox', '/todos', '/n/aaaaaaaa/s/sess_1', '/n/aaaaaaaa', '/settings']) {
       route.pathname = path
       const { unmount } = render(<AppShell />)
-      expect(screen.queryByTestId('tab-bar'), path).toBeInTheDocument()
-      unmount()
-    }
-    for (const path of ['/n/aaaaaaaa/s/sess_1', '/n/aaaaaaaa', '/n/aaaaaaaa/p/app', '/n/aaaaaaaa/settings', '/settings', '/n/aaaaaaaa/new']) {
-      route.pathname = path
-      const { unmount } = render(<AppShell />)
+      expect(screen.queryByTestId('sidebar-dock'), path).toBeNull()
+      expect(screen.queryByTestId('sidebar'), path).toBeNull()
       expect(screen.queryByTestId('tab-bar'), path).toBeNull()
-      expect(screen.getByTestId('outlet')).toBeInTheDocument()
+      expect(screen.getByTestId('phone-pages'), path).toBeInTheDocument()
+      if (path === '/inbox' || path === '/todos') expect(screen.queryByTestId('outlet'), path).toBeNull()
+      else expect(screen.getByTestId('outlet'), path).toBeInTheDocument()
       unmount()
     }
   })
 
-  it('restores the bar when the user comes back to a tab root', () => {
-    route.pathname = '/n/aaaaaaaa/s/sess_1'
-    const { rerender: rr } = render(<AppShell />)
-    const rerender = (ui: ReactNode): void => rr(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
-    expect(screen.queryByTestId('tab-bar')).toBeNull()
-    route.pathname = '/inbox'
-    rerender(<AppShell />)
-    expect(screen.getByTestId('tab-bar')).toBeInTheDocument()
+  it('the menu button in the top bar opens the sidebar in a drawer, and picking a place closes it', async () => {
+    const user = userEvent.setup()
+    render(
+      <>
+        <PageHeader root crumbs={[{ label: 'Inbox' }]} showNodeStatus={false} />
+        <AppShell />
+      </>,
+    )
+    expect(screen.queryByTestId('sidebar')).toBeNull()
+    await user.click(screen.getByTestId('menu-button'))
+    expect(await screen.findByTestId('sidebar')).toBeInTheDocument()
+    await user.click(screen.getByTestId('sidebar-inbox'))
+    expect(useUi.getState().leftDrawerOpen).toBe(false)
   })
 
-  it('shows the inbox count on the tab', () => {
+  it('shows the inbox count in the drawer', async () => {
     useSessions.getState().addPending(A, { request_id: 'r', session_id: 's', kind: 'tool', title: 't', detail: {}, options: [], created_at_ms: 1 })
     render(<AppShell />)
-    expect(screen.getByTestId('tab-inbox-count')).toHaveTextContent('1')
+    act(() => useUi.getState().setLeftDrawer(true))
+    expect(await screen.findByTestId('sidebar-inbox-count')).toHaveTextContent('1')
+  })
+
+  it('top bars: places in the sidebar get only the menu button, pages reached from them also get back', () => {
+    const root = render(<PageHeader root crumbs={[{ label: 'Inbox' }]} />)
+    expect(screen.getByTestId('menu-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('header-back')).toBeNull()
+    root.unmount()
+    const sub = render(<PageHeader crumbs={[{ label: 'Item' }]} />)
+    expect(screen.getByTestId('menu-button')).toBeInTheDocument()
+    expect(screen.getByTestId('header-back')).toBeInTheDocument()
+    sub.unmount()
+    // 页面自己要返回（文件预览回到树）时，`root` 也带返回
+    render(<PageHeader root crumbs={[{ label: 'Files' }]} onBack={() => {}} />)
+    expect(screen.getByTestId('header-back')).toBeInTheDocument()
   })
 })
 
 describe('tablet and desktop', () => {
-  it('has the sidebar and the page, and no tab bar', () => {
+  it('has the sidebar and the page, which always goes through the Outlet', () => {
     render(<AppShell />)
     expect(screen.getByTestId('sidebar')).toBeInTheDocument()
     expect(screen.getByTestId('outlet')).toBeInTheDocument()
-    expect(screen.queryByTestId('tab-bar')).toBeNull()
-    expect(screen.queryByTestId('phone-tabs')).toBeNull()
+    expect(screen.queryByTestId('phone-pages')).toBeNull()
+  })
+
+  it('closes a drawer left open from a narrow window', () => {
+    useUi.setState({ leftDrawerOpen: true })
+    render(<AppShell />)
+    expect(useUi.getState().leftDrawerOpen).toBe(false)
   })
 
   it('records the last place in Sessions for “G S”, but not node settings or the inbox', () => {

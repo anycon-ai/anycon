@@ -146,6 +146,7 @@
     "quotaView": "View limits"
   },
   "sidebar": {
+    "menu": "Menu",
     "nav": "Main navigation",
     "resize": "Resize sidebar",
     "resizeHint": "Drag to resize. Double-click to reset.",
@@ -271,28 +272,11 @@
     "announce_other": "{{count}} things are waiting for you",
     "announceNone": "Nothing is waiting for you now"
   },
-  "tabs": {
-    "label": "Main navigation",
-    "inbox": "Inbox",
-    "todos": "To-dos",
-    "sessions": "Sessions",
-    "more": "More"
-  },
-  "more": {
-    "title": "More",
-    "nodes": "Nodes",
-    "nodeHome": "Home",
-    "nodeSettings": "Settings",
-    "noNodes": "No node paired yet.",
-    "pair": "Pair a node",
-    "settings": "Settings",
-    "account": "Account"
-  },
   "homeNotice": {
     "title": "Your home page is now Inbox",
     "body": "Anycon now opens on Inbox: approvals, plans, questions, device requests, sessions you flagged for follow-up and sessions that failed, all in one list across your nodes.",
     "whereDesktop": "The node home page (projects, temporary sessions, recent sessions) is under Node home in the node menu at the top of the sidebar.",
-    "wherePhone": "The node home page is under More > Nodes. The menu on the left is replaced by the bar at the bottom: Inbox, Sessions and More.",
+    "wherePhone": "The node home page is under Node home in the node menu at the top of the side menu (the button at the top left).",
     "ok": "Got it"
   },
   "dispatch": {
@@ -448,6 +432,7 @@
     },
     "handler": { "me": "Me", "agent": "Agent", "twin": "Twin" },
     "handlerAll": "Everyone",
+    "handlerLabel": "Who does it",
     "filterHandler": "Filter by who is handling it",
     "activity": { "working": "Agent is working", "waiting": "Waiting for your decision", "review": "Ready to review" },
     "title": "To-dos",

@@ -401,6 +401,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
     <>
       <SelectionCapture />
       <PageHeader
+        root
         crumbs={[
           { label: entry.name, to: { to: '/n/$node', params: { node: nodeParam } } },
           ...(project ? [{ label: project, to: { to: '/n/$node/p/$project', params: { node: nodeParam, project } } }] : []),

@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next'
 import { PageHeader } from '@/components/PageHeader'
 import { TodoDetailPane } from '@/features/todos/ui/TodoDetailPane'
 
-/** 手机上的单项详情：全屏的二级页（标签栏收起，返回走浏览器历史，spec/web.md § 4.12）。宽屏上由 `TodosPage` 在右半边显示同一个 `TodoDetailPane`。 */
+/** 手机上的单项详情：下一级页（顶栏有返回，走浏览器历史，spec/web.md § 4.12）。宽屏上由 `TodosPage` 在右半边显示同一个 `TodoDetailPane`。 */
 export function TodoDetailPage({ node, todo }: { node: string; todo: string }) {
   const { t } = useTranslation()
   return (

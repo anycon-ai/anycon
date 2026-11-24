@@ -91,7 +91,7 @@ function PinButton({ pinned, onToggle, className }: { pinned: boolean; onToggle:
 /**
  * `nodeId`：页面当前所在的节点，只用于下拉里的「节点设置」；左栏显示哪些节点由下拉里的勾选决定。
  * `pin`：宽屏左栏才传，Logo 旁边多一个钉住 / 取消钉住按钮。
- * 自上而下：Logo、导航（「待处理」带「现在」的个数）、节点过滤和搜索、会话树、账号菜单。手机没有左栏，用底部标签栏（`TabBar`）。
+ * 自上而下：Logo、导航（「待处理」带「现在」的个数）、节点过滤和搜索、会话树、账号菜单。手机上同一个左栏放在抽屉里（`onNavigate` 关抽屉）。
  */
 export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void; pin?: { pinned: boolean; onToggle: () => void } }) {
   return (
@@ -110,7 +110,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
   )
 }
 
-/** 顶层导航。目前只有「待处理」；之后的去处（清单…）加在这里。 */
+/** 顶层导航：待处理、清单（旁边是「记一项」）、分身、规则。触屏上每行至少 44px 高。 */
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { t } = useTranslation()
   const count = useInboxNowCount()
@@ -123,7 +123,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const current = here === '/inbox'
   const todosHere = here === '/todos' || here.startsWith('/todos/')
   const rulesHere = here === '/rules'
-  const row = 'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-bg-hover'
+  const row = 'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-bg-hover [@media(pointer:coarse)]:min-h-11'
   return (
     <nav className="space-y-0.5 px-2 pb-2" aria-label={t('sidebar.nav')} data-testid="sidebar-nav">
       <Link
@@ -160,7 +160,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             </span>
           ) : null}
         </Link>
-        <button type="button" onClick={() => openCapture()} aria-label={t('todos.addTitle')} title={`${t('todos.addTitle')} (C)`} className="grid place-items-center rounded-md p-1.5 text-fg-subtle hover:bg-bg-hover hover:text-fg [@media(pointer:coarse)]:size-11" data-testid="sidebar-capture">
+        <button type="button" onClick={() => { onNavigate?.(); openCapture() }} aria-label={t('todos.addTitle')} title={`${t('todos.addTitle')} (C)`} className="grid place-items-center rounded-md p-1.5 text-fg-subtle hover:bg-bg-hover hover:text-fg [@media(pointer:coarse)]:size-11" data-testid="sidebar-capture">
           <Plus className="size-4" aria-hidden />
         </button>
       </div>
@@ -177,7 +177,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 /**
- * 会话树和它上面的一排（节点过滤、新建项目、搜索）：桌面左栏的中间部分，也是手机「会话」标签页的内容。
+ * 会话树和它上面的一排（节点过滤、新建项目、搜索）：左栏的中间部分。
  * Recent、项目树（带「待处理」小旗和未读小红点）、临时会话照旧。
  */
 export function SessionsPanel({ nodeId, onNavigate, onSearch }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void }) {

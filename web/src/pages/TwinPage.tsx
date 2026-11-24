@@ -30,7 +30,7 @@ export function TwinPage({ node, run }: { node?: string; run?: string }) {
   }, [ready])
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="twin-page">
-      <PageHeader root crumbs={[{ label: t('twin.title') }]} showNodeStatus={false} />
+      <PageHeader root spaceSwitcher crumbs={[{ label: t('twin.title') }]} showNodeStatus={false} />
       <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-auto p-4">
         {ids.length > 1 ? <TwinStatusBar /> : null}
         {!ids.length ? <p>{target && byId[target] ? t('twin.nodeUnsupported', { node: byId[target].name }) : t('twin.noSupport')}</p> : null}

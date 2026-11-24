@@ -81,7 +81,7 @@ export function nodeSupportsRules(nodeId: string): boolean {
   return useNodes.getState().byId[nodeId]?.info?.capabilities.rules === true
 }
 
-/** 有没有任何已配对的节点支持规则：没有就不提供规则的入口（侧栏、「更多」、命令面板）。 */
+/** 有没有任何已配对的节点支持规则：没有就不提供规则的入口（左栏、命令面板）。 */
 export function useRulesAvailable(): boolean {
   return useNodes((s) => s.order.some((id) => s.byId[id]?.info?.capabilities.rules === true))
 }

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::judge::{AgentBackendConfig, ApiBackendConfig, ApiFormat, ApiKeySource};
+use crate::judge::{AgentBackendConfig, ApiBackendConfig, ApiFormat, ApiKeySource, Effort};
 use crate::util::parse_duration;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,6 +54,8 @@ struct RawBackend {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<Effort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     timeout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
@@ -72,6 +74,9 @@ impl<'de> Deserialize<'de> for JudgeBackendConfig {
 fn required(value: Option<String>, field: &str) -> Result<String, String> {
     value.filter(|s| !s.trim().is_empty()).ok_or_else(|| format!("{field} is required"))
 }
+
+/// 两种后端的 `timeout` 上限都是 60 分钟。一个节点同时只有一次判断调用（§ 25.2），调用越长，别的位置等得越久。
+pub const MAX_TIMEOUT_SECS: u64 = 60 * 60;
 
 fn timeout(value: Option<String>, default: u64, max: u64) -> Result<Duration, String> {
     let d = match value {
@@ -122,6 +127,9 @@ impl RawBackend {
         match self.kind.as_str() {
             "api" => {
                 let format = self.format.ok_or("format is required (anthropic or openai)")?;
+                if self.effort.is_some() && format != ApiFormat::Anthropic {
+                    return Err("effort only applies to format = anthropic".into());
+                }
                 let model = required(self.model, "model")?;
                 let max_output_tokens = self.max_output_tokens.unwrap_or(2048);
                 if !(1..=16384).contains(&max_output_tokens) {
@@ -138,14 +146,20 @@ impl RawBackend {
                     base_url: base_url(self.base_url, format)?,
                     api_key,
                     max_output_tokens,
-                    timeout: timeout(self.timeout, 120, 600)?,
+                    effort: self.effort,
+                    timeout: timeout(self.timeout, 120, MAX_TIMEOUT_SECS)?,
                 }))
             }
-            "agent" => Ok(JudgeBackendConfig::Agent(AgentBackendConfig {
-                agent: required(self.agent, "agent")?,
-                model: self.model,
-                timeout: timeout(self.timeout, 300, 900)?,
-            })),
+            "agent" => {
+                if self.effort.is_some() {
+                    return Err("effort only applies to kind = api with format = anthropic".into());
+                }
+                Ok(JudgeBackendConfig::Agent(AgentBackendConfig {
+                    agent: required(self.agent, "agent")?,
+                    model: self.model,
+                    timeout: timeout(self.timeout, 300, MAX_TIMEOUT_SECS)?,
+                }))
+            }
             _ => Err("kind must be api or agent".into()),
         }
     }
@@ -161,6 +175,7 @@ impl From<JudgeBackendConfig> for RawBackend {
             api_key_env: None,
             api_key: None,
             max_output_tokens: None,
+            effort: None,
             timeout: None,
             agent: None,
         };
@@ -171,6 +186,7 @@ impl From<JudgeBackendConfig> for RawBackend {
                 raw.base_url = Some(c.base_url);
                 raw.model = Some(c.model);
                 raw.max_output_tokens = Some(c.max_output_tokens);
+                raw.effort = c.effort;
                 raw.timeout = Some(format!("{}ms", c.timeout.as_millis()));
                 match c.api_key {
                     ApiKeySource::Env(name) => raw.api_key_env = Some(name),
@@ -242,6 +258,7 @@ mod tests {
             let JudgeBackendConfig::Api(c) = &cfg.judge.backends[name] else { panic!() };
             assert_eq!(c.base_url, url);
             assert_eq!(c.max_output_tokens, 2048);
+            assert_eq!(c.effort, None);
             assert_eq!(c.timeout, Duration::from_secs(120));
             assert_eq!(c.api_key, ApiKeySource::None);
         }
@@ -270,7 +287,8 @@ mod tests {
             "kind='agent'\nagent=''",
             "kind='agent'\nagent=5",
             "kind='agent'\nagent='a'\ntimeout='9s'",
-            "kind='agent'\nagent='a'\ntimeout='901s'",
+            "kind='agent'\nagent='a'\ntimeout='3601s'",
+            "kind='agent'\nagent='a'\neffort='high'",
             "kind='agent'\nagent='a'\ntimeout='invalid'",
         ] {
             assert!(load(&format!("[judge.backends.a]\n{body}\napi_key='PRIVATE-KEY'")).is_err(), "{body}");
@@ -282,7 +300,8 @@ mod tests {
             "max_output_tokens=-1",
             "max_output_tokens='x'",
             "timeout='9s'",
-            "timeout='601s'",
+            "timeout='3601s'",
+            "effort='high'",
             "timeout='broken'",
             "timeout=120",
             "api_key_env='K'",
@@ -291,11 +310,27 @@ mod tests {
             let error = load(&format!("{api}{extra}")).unwrap_err();
             assert!(!format!("{error:?} {error}").contains("PRIVATE-KEY"));
         }
-        for extra in ["max_output_tokens=1\ntimeout='10s'", "max_output_tokens=16384\ntimeout='10m'"] {
+        for extra in ["max_output_tokens=1\ntimeout='10s'", "max_output_tokens=16384\ntimeout='60m'"] {
             let cfg = load(&format!("{api}{extra}")).unwrap();
             assert!(!format!("{cfg:?}").contains("PRIVATE-KEY"));
         }
-        for timeout in ["10s", "15m"] {
+        let anthropic = "[judge.backends.a]\nkind='api'\nformat='anthropic'\nmodel='m'\n";
+        for (value, expected) in [
+            ("low", Effort::Low),
+            ("medium", Effort::Medium),
+            ("high", Effort::High),
+            ("xhigh", Effort::Xhigh),
+            ("max", Effort::Max),
+        ] {
+            let cfg = load(&format!("{anthropic}effort='{value}'")).unwrap();
+            let JudgeBackendConfig::Api(c) = &cfg.judge.backends["a"] else { panic!() };
+            assert_eq!(c.effort, Some(expected));
+            assert_eq!(serde_json::from_value::<Config>(serde_json::to_value(&cfg).unwrap()).unwrap(), cfg);
+        }
+        for value in ["'High'", "'none'", "''", "3"] {
+            assert!(load(&format!("{anthropic}effort={value}")).is_err(), "{value}");
+        }
+        for timeout in ["10s", "60m"] {
             assert!(load(&format!("[judge.backends.a]\nkind='agent'\nagent='a'\ntimeout='{timeout}'")).is_ok());
         }
         for n in ["-1", "4294967296", "1.5", "'20'"] {

@@ -55,7 +55,7 @@ export function LogsDialog({ nodeId, open, onOpenChange }: { nodeId: string; ope
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 text-sm text-fg-muted">
             {t('nodeSettings.logs.level')}
-            <Select className="w-32" value={level} onChange={(e) => setLevel(e.target.value as NodeLogLevel)} data-testid="logs-level">
+            <Select className="w-auto" value={level} onChange={(e) => setLevel(e.target.value as NodeLogLevel)} data-testid="logs-level">
               {LEVELS.map((l) => (
                 <option key={l} value={l}>
                   {t(`nodeSettings.logs.levels.${l}`)}

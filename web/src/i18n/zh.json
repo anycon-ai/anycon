@@ -487,6 +487,7 @@
     "fieldTitle": "标题",
     "fieldBody": "备注",
     "noBody": "没有备注。",
+    "bodyHint": "让 agent 处理或交给 Bot 时，标题和备注就是给它的任务说明：标题在前，备注接在后面。",
     "deleteTitle": "删除这一项？",
     "deleteBody": "「{{title}}」会从节点上删除，不能恢复。",
     "markedDone": "「{{title}}」已完成",

@@ -104,6 +104,16 @@ describe('editing', () => {
     expect(daemon.todos.get('t')).toMatchObject({ title: 'new title', body: 'old body', project: 'api' })
   })
 
+  it('the notes field says that the title and notes are what an agent or the Bot gets', async () => {
+    const user = userEvent.setup()
+    await show({ id: 't', title: 'x', body: 'y' })
+    expect(screen.queryByTestId('todo-edit-body-hint')).toBeNull()
+    await user.click(screen.getByTestId('todo-edit'))
+    const hint = screen.getByTestId('todo-edit-body-hint')
+    expect(hint).toHaveTextContent(/agent/)
+    expect(screen.getByTestId('todo-edit-body')).toHaveAttribute('aria-describedby', hint.id)
+  })
+
   it('clearing the project sends a clear, not an empty string', async () => {
     const user = userEvent.setup()
     await show({ id: 't', title: 'x', project: 'api' })

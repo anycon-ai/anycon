@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Bot, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -63,6 +63,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const [saving, setSaving] = useState(false)
   const [moving, setMoving] = useState(false)
   const [dispatching, setDispatching] = useState(false)
+  const bodyHintId = useId()
   const activity = activityOf(item)
   // 有别的支持清单的节点才有「移到另一个节点…」
   // 周期项（模板）不能移：移过去的只是一份普通的项，规则会丢
@@ -165,14 +166,18 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           </label>
           <label className="block space-y-1 text-sm font-medium">
             {t('todos.fieldBody')}
-            <Textarea rows={8} value={draft?.values.body ?? ''} onChange={(e) => setField('body', e.target.value)} data-testid="todo-edit-body" />
+            <Textarea rows={8} value={draft?.values.body ?? ''} onChange={(e) => setField('body', e.target.value)} aria-describedby={bodyHintId} data-testid="todo-edit-body" />
+            {/* 派发时标题和备注就是给 agent 的第一条消息（daemon 的 `compose_first_message`），Bot 判断时也读这两项 */}
+            <span id={bodyHintId} className="block text-xs font-normal text-fg-subtle" data-testid="todo-edit-body-hint">
+              {t('todos.bodyHint')}
+            </span>
           </label>
           <div className="flex flex-wrap gap-3">
-            <label className="space-y-1 text-sm font-medium">
+            <label className="flex flex-col gap-1 text-sm font-medium">
               {t('todos.project')}
               <Input value={draft?.values.project ?? ''} onChange={(e) => setField('project', e.target.value)} className="w-44" data-testid="todo-edit-project" />
             </label>
-            <label className="space-y-1 text-sm font-medium">
+            <label className="flex flex-col gap-1 text-sm font-medium">
               {t('todos.due')}
               <Input type="datetime-local" value={draft?.values.due ?? ''} onChange={(e) => setField('due', e.target.value)} className="w-auto" data-testid="todo-edit-due" />
             </label>
@@ -267,8 +272,9 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </>
       )}
 
+      {/* 动作这一行和上面的内容（编辑时是「保存 / 取消」）之间画一条线，免得看成同一组按钮 */}
       {pendingReview ? (
-        <div className="flex flex-wrap items-center gap-2" data-testid="todo-review">
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4" data-testid="todo-review">
           <p className="w-full text-sm text-fg-muted">{t(isAgentSource(item.source) ? 'inbox.laterBody' : 'inbox.laterBodyOther')}</p>
           <Button variant="primary" disabled={!online} onClick={() => void updateTodo(item.node_id, item.id, { reviewed: true })} data-testid="todo-accept">
             {t('inbox.accept')}
@@ -281,8 +287,8 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           </Button>
         </div>
       ) : (
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 text-sm font-medium">
+      <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4" data-testid="todo-actions">
+        <label className="flex items-center gap-2 text-sm font-medium whitespace-nowrap">
           {t('todos.state')}
           <Select value={item.state} onChange={(e) => void setTodoState(item, e.target.value as ViewTodo['state'], { undo: false })} className="w-auto" data-testid="todo-state">
             {states.map((s) => (

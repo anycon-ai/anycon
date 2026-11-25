@@ -488,6 +488,7 @@
     "fieldTitle": "Title",
     "fieldBody": "Notes",
     "noBody": "No notes.",
+    "bodyHint": "When an agent or the Bot handles this item, the title and notes are its instructions: the title first, then the notes.",
     "deleteTitle": "Delete this to-do?",
     "deleteBody": "“{{title}}” will be deleted from the node. This cannot be undone.",
     "markedDone": "“{{title}}” marked done",

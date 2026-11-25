@@ -777,6 +777,10 @@ async fn set_settings_uses_control_requests() {
     let r = h.set_settings(&d).await.unwrap();
     assert!(r.restart_required);
     assert_eq!(h.resume_handle().unwrap().launch_args["block_outside_writes"], true);
+    d.options.insert("chrome".into(), json!(true));
+    let r = h.set_settings(&d).await.unwrap();
+    assert!(r.restart_required);
+    assert_eq!(h.resume_handle().unwrap().launch_args["chrome"], true);
     d.options.insert("advisor_model".into(), json!("opus"));
     let r = h.set_settings(&d).await.unwrap();
     assert!(r.restart_required);

@@ -1830,6 +1830,7 @@ base_url = "https://api.anthropic.com"
 model = "claude-haiku-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
 max_output_tokens = 2048
+effort = "medium"             # 可选，只有 format = "anthropic" 能设
 timeout = "2m"
 
 [judge.backends.cc]
@@ -1838,6 +1839,8 @@ agent = "claude-code"
 model = "sonnet"              # 可选
 timeout = "5m"
 ```
+
+**`timeout` 设多长**：两种后端的上限都是 60 分钟，但一个节点同时只有一次判断调用（§ 25.2）。一次调用跑多久，这段时间里别的位置就等多久：手动「提炼规则」回 `busy`，Bot 的那次唤醒也停在这次调用上。思考常开的模型碰到难的分拣或顾问问题，一次可能要好几分钟，一般设 20–30 分钟就够了；只有确实需要时才设到 60 分钟。先调低 `effort` 往往比加长 `timeout` 更管用。
 
 一个位置配的名字在 `backends` 里不存在时，加载照常成功：这个位置当作没配，`anycon doctor` 里会提示。远程写入只接受已有的名字（§ 3）。各个字段写得不合法（`kind` 不认识、缺了必填的字段、超出范围）时，配置加载失败，规则和别的配置键一样。
 
@@ -1854,17 +1857,22 @@ timeout = "5m"
 
   两个都没给，或者环境变量是空的，这个后端就不能用（`problem = no_key`）。回环地址上的 `http://` 后端可以不要密钥。
 - **`max_output_tokens`**：1–16 384，缺省 2 048。Messages API 用 `max_tokens`；Chat Completions 在主机是 `api.openai.com` 时用 `max_completion_tokens`（官方新模型不接受 `max_tokens`），别的主机（兼容网关、本地服务）用 `max_tokens`。
-- **`timeout`**：整次请求的时限，10s–10m，缺省 2m。
-- **请求**：不用流式，不带工具，不设 temperature。系统提示和用户消息各一段（Messages API 的 `system` 字段；Chat Completions 是一条 `system` 消息）。`Content-Type: application/json`；`User-Agent: anycon/<版本>`，不带平台或别的标识；没有密钥时不带认证头。调用时再次拒绝非回环的明文 HTTP（`internal`）和缺少密钥的非回环地址（`auth`），均不连接。
-- **回应**：回应体最多 1 MiB。取第一段文字：Messages API 是 `content[]` 里第一个 `type = text` 的；Chat Completions 是 `choices[0].message.content`，字符串直接取，一组 part 则按顺序拼接其中 `type = text` 的文字。
-  - usage：Messages API 取 `usage.input_tokens` / `output_tokens`，Chat Completions 取 `usage.prompt_tokens` / `completion_tokens`；缺少的留空，不填 `cost_usd`。
+- **`effort`**：可选，`low` | `medium` | `high` | `xhigh` | `max`，只有 `format = "anthropic"` 能设（`openai` 或 `kind = "agent"` 写了就加载失败）。原样放进请求的 `output_config.effort`，控制模型思考的深度：越低越快、越省 token。不设就不发，用模型自己的缺省。模型不支持这个参数时服务回 400（`http`）。
+- **`timeout`**：整次请求（从连接到读完整个流）的时限，10s–60m，缺省 2m。设多长见上面。
+- **请求**：用流式（Messages API 和 Chat Completions 都带 `"stream": true`，Chat Completions 另带 `"stream_options": {"include_usage": true}` 让最后一块带上用量；头里带 `Accept: text/event-stream`）。长的调用在生成期间连接上一直有数据，不会因为长时间空闲被路由器、NAT 或代理断开。不带工具，不设 temperature。系统提示和用户消息各一段（Messages API 的 `system` 字段；Chat Completions 是一条 `system` 消息）。`Content-Type: application/json`；`User-Agent: anycon/<版本>`，不带平台或别的标识；没有密钥时不带认证头。调用时再次拒绝非回环的明文 HTTP（`internal`）和缺少密钥的非回环地址（`auth`），均不连接。
+- **回应**：SSE 流，边收边解析，只留下文字和用量。只看 `data:` 行（多行按 `\n` 连接），`event:`、`id:`、`retry:` 和注释行忽略；换行可以是 `\n` 或 `\r\n`，最后一个事件可以不以空行收尾。取第一段文字：
+  - Messages API：第一个 `type = text` 的内容块，即它的 `content_block_start` 里的 `text` 加上同一 `index` 的所有 `text_delta`；思考块和别的块忽略。读到 `message_stop` 才算完整。
+  - Chat Completions：`index = 0`（缺省算 0）的 choice 的各块 `delta.content` 按顺序拼接，字符串直接取，一组 part 取其中 `type = text` 的文字。读到 `data: [DONE]`，或者那个 choice 给出了 `finish_reason` 之后流正常结束，才算完整。
+  - 完整之后的事件忽略。取出的文字最多 1 MiB，单个事件最多 1 MiB，整个流最多 32 MiB。
+  - usage：Messages API 取 `message_start` 的 `message.usage.input_tokens` / `output_tokens`，再用 `message_delta` 的 `usage`（累计值）覆盖；Chat Completions 取带 `usage` 的那一块的 `prompt_tokens` / `completion_tokens`。缺少的留空，不填 `cost_usd`。
 - **错误**：
-  - 连不上、DNS / TLS 失败、连接中途断开 → `network`
+  - 连不上、DNS / TLS 失败、连接中途断开、流在结束标记之前就结束了 → `network`
   - 401 / 403 → `auth`
   - 429 → `rate_limited`
   - 别的非 2xx → `http`（带状态码）
+  - 已经回了 2xx 之后流里出现错误：Messages API 的 `error` 事件按它的 `error.type` 映射（`rate_limit_error` → `rate_limited`，`authentication_error` / `permission_error` → `auth`，`overloaded_error` → `http` 529，别的 → `http` 500）；Chat Completions 的块里有 `error` → `http` 500
   - 超时 → `timeout`
-  - 回应体超过 1 MiB、JSON 解析不了或没有文字 → `bad_output`
+  - 超出上面的大小限制、事件的 JSON 解析不了、没有文字 → `bad_output`
 
   错误里只有这个码和状态码，不带回应的内容。
 
@@ -1876,7 +1884,7 @@ timeout = "5m"
   - 现在支持的是 Claude Code 和 Codex；ACP agent 不支持，mock 支持（测试用）。
   - 没装、被禁用的 → `problem = agent_missing`；不支持的 → `agent_unsupported`。
 - **`model`**：可选，缺省用 agent 的 `default_model`。
-- **`timeout`**：10s–15m，缺省 5m。
+- **`timeout`**：10s–60m，缺省 5m。设多长见上面。
 - **怎么调**：每次在一个新建的空临时目录里拉起 agent 的非交互模式，提示从 stdin 给，结束后删掉这个目录。
   - 不写会话，不出现在会话列表里；agent 自己的会话记录能关的都关掉。
   - 子进程环境复用 § 5.5 的会话环境构造（`agents.<id>.env` 照用，带 `ANYCON_AGENT=1`；没有会话级 env 和 `ANYCON_SESSION_ID`）。

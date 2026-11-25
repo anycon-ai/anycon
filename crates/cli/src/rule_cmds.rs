@@ -360,7 +360,7 @@ async fn rm(app: &App, key: &str) -> Result<u8> {
     Ok(0)
 }
 
-/// 本机配置可读时使用实际超时；远程只公开种类，所以用该种类允许的最大超时。
+/// 本机配置可读时使用实际超时；远程不公开超时，所以用允许的最大超时（两种后端相同）。
 async fn extract_timeout(app: &App, conn: &Conn, backend: &str) -> Result<std::time::Duration> {
     use anycon_daemon::config::JudgeBackendConfig;
     use std::time::Duration;
@@ -375,12 +375,7 @@ async fn extract_timeout(app: &App, conn: &Conn, backend: &str) -> Result<std::t
             }
         }
     }
-    let info: anycon_protocol::NodeInfo = conn.call(methods::NODE_INFO, json!({})).await?;
-    let api = info
-        .judge
-        .and_then(|j| j.backends.into_iter().find(|b| b.name == backend))
-        .is_some_and(|b| b.kind == anycon_protocol::JudgeBackendKind::Api);
-    Ok(Duration::from_secs(if api { 630 } else { 930 }))
+    Ok(Duration::from_secs(anycon_daemon::config::JUDGE_MAX_TIMEOUT_SECS + 30))
 }
 
 async fn extract(app: &App, key: &str, no_wait: bool) -> Result<u8> {

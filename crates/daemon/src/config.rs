@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 pub mod judge;
-pub use judge::{JudgeBackendConfig, JudgeConfig};
+pub use judge::{JudgeBackendConfig, JudgeConfig, MAX_TIMEOUT_SECS as JUDGE_MAX_TIMEOUT_SECS};
 
 use crate::util::{expand_tilde, home_dir, parse_duration, parse_size};
 

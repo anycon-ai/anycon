@@ -1,5 +1,6 @@
 //! 一次性 HTTP/1.1 客户端：HTTPS 使用 webpki 根证书，明文只允许回环地址。
-//! 不跟随重定向、不添加身份标识；调用方提供请求头、可接受的状态码、回应体上限和整体超时。
+//! 不跟随重定向、不添加身份标识；调用方提供请求头、可接受的状态码和整体超时，回应体要么一次读完（有上限），
+//! 要么按到达的顺序一块一块交给调用方（流式回应，调用方自己限制和解析）。
 //! 错误只包含固定分类、状态码或 I/O 错误种类，不携带 URL、请求头或请求与回应的内容。
 //! 超时或取消会终止连接任务，避免请求在后台继续运行。
 
@@ -97,10 +98,16 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// 回应体怎么读：一次读完（有上限），或者每到一块就交给回调。
+enum Sink<'a> {
+    Collect(usize),
+    Stream(&'a mut (dyn FnMut(&[u8]) -> Result<(), Error> + Send)),
+}
+
 async fn exchange<S>(
     io: S,
     req: http::Request<Full<Bytes>>,
-    max_body_bytes: usize,
+    sink: Sink<'_>,
     accept_status: fn(http::StatusCode) -> bool,
 ) -> Result<Bytes, Error>
 where
@@ -115,22 +122,34 @@ where
     if !accept_status(resp.status()) {
         return Err(Error::Status(resp.status().as_u16()));
     }
-    let body = Limited::new(resp.into_body(), max_body_bytes).collect().await.map_err(|e| {
-        if e.is::<LengthLimitError>() {
-            Error::TooLarge
-        } else {
-            Error::Body
+    match sink {
+        Sink::Collect(max_body_bytes) => {
+            let body = Limited::new(resp.into_body(), max_body_bytes).collect().await.map_err(|e| {
+                if e.is::<LengthLimitError>() {
+                    Error::TooLarge
+                } else {
+                    Error::Body
+                }
+            })?;
+            Ok(body.to_bytes())
         }
-    })?;
-    Ok(body.to_bytes())
+        Sink::Stream(on_chunk) => {
+            let mut body = resp.into_body();
+            while let Some(frame) = body.frame().await {
+                if let Ok(data) = frame.map_err(|_| Error::Body)?.into_data() {
+                    on_chunk(&data)?;
+                }
+            }
+            Ok(Bytes::new())
+        }
+    }
 }
 
-/// 时限覆盖 DNS、TCP、TLS、发送请求和读完有上限的回应体。
-pub(crate) async fn request(
+async fn send(
     target: &Target,
     req: http::Request<Full<Bytes>>,
     timeout: Duration,
-    max_body_bytes: usize,
+    sink: Sink<'_>,
     accept_status: fn(http::StatusCode) -> bool,
 ) -> Result<Bytes, Error> {
     let work = async {
@@ -142,10 +161,33 @@ pub(crate) async fn request(
                 .connect(name, tcp)
                 .await
                 .map_err(|_| Error::Tls)?;
-            exchange(tls, req, max_body_bytes, accept_status).await
+            exchange(tls, req, sink, accept_status).await
         } else {
-            exchange(tcp, req, max_body_bytes, accept_status).await
+            exchange(tcp, req, sink, accept_status).await
         }
     };
     tokio::time::timeout(timeout, work).await.map_err(|_| Error::Timeout)?
+}
+
+/// 时限覆盖 DNS、TCP、TLS、发送请求和读完有上限的回应体。
+pub(crate) async fn request(
+    target: &Target,
+    req: http::Request<Full<Bytes>>,
+    timeout: Duration,
+    max_body_bytes: usize,
+    accept_status: fn(http::StatusCode) -> bool,
+) -> Result<Bytes, Error> {
+    send(target, req, timeout, Sink::Collect(max_body_bytes), accept_status).await
+}
+
+/// 流式回应：状态码可接受时，回应体按到达的顺序交给 `on_chunk`，读到结束为止；`on_chunk` 返回错误就断开连接。
+/// 时限覆盖从连接到读完整个回应体。回应体的大小由 `on_chunk` 自己限制。
+pub(crate) async fn request_streaming(
+    target: &Target,
+    req: http::Request<Full<Bytes>>,
+    timeout: Duration,
+    accept_status: fn(http::StatusCode) -> bool,
+    on_chunk: &mut (dyn FnMut(&[u8]) -> Result<(), Error> + Send),
+) -> Result<(), Error> {
+    send(target, req, timeout, Sink::Stream(on_chunk), accept_status).await.map(|_| ())
 }

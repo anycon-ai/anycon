@@ -107,6 +107,29 @@ impl ApiFormat {
     }
 }
 
+/// `format = "anthropic"` 的思考深度，原样放进请求的 `output_config.effort`（§ 25.1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+}
+
 /// 密钥从哪里来（§ 25.1）。
 #[derive(Clone, PartialEq, Eq)]
 pub enum ApiKeySource {
@@ -148,7 +171,9 @@ pub struct ApiBackendConfig {
     pub api_key: ApiKeySource,
     /// 1–16 384，缺省 2 048。
     pub max_output_tokens: u32,
-    /// 整次请求的时限，10s–10m，缺省 2m。
+    /// 只有 `format = "anthropic"` 能设；不设就不发，用模型自己的缺省。
+    pub effort: Option<Effort>,
+    /// 整次请求的时限，10s–60m，缺省 2m。
     pub timeout: Duration,
 }
 
@@ -159,7 +184,7 @@ pub struct AgentBackendConfig {
     pub agent: String,
     /// 缺省用 agent 的 `default_model`。
     pub model: Option<String>,
-    /// 10s–15m，缺省 5m。
+    /// 10s–60m，缺省 5m。
     pub timeout: Duration,
 }
 

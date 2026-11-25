@@ -99,9 +99,10 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
           </li>
         )
       case 'state':
+        // 周期项开着「Bot 做完自动关闭」时，关闭是 daemon 按设置做的，不是人改的
         return (
-          <li key={e.seq} data-testid="history-row" data-kind="state">
-            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {t('todos.history.state', { from: stateText(e.from), to: stateText(e.to) })}
+          <li key={e.seq} data-testid="history-row" data-kind="state" data-by={e.by.kind}>
+            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {e.by.kind === 'repeat' ? t('todos.history.closedByRepeat') : t('todos.history.state', { from: stateText(e.from), to: stateText(e.to) })}
           </li>
         )
       case 'twin_decision':
@@ -116,7 +117,7 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
       case 'repeat_created':
         return (
           <li key={e.seq} data-testid="history-row" data-kind="repeat_created">
-            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {t('todos.history.repeatCreated', { time: when(e.at_ms) })}{' '}
+            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {e.manual ? t('todos.history.repeatCreatedManual') : t('todos.history.repeatCreated', { time: when(e.at_ms) })}{' '}
             <Link to="/todos/$node/$todo" params={{ node: shortNodeId(item.node_id, order), todo: e.todo_id }} className="font-medium text-accent-text hover:underline" data-testid="history-repeat-copy">
               {t('todos.history.openCopy')}
             </Link>

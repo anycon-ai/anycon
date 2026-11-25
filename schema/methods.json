@@ -463,6 +463,12 @@
   },
   {
     "direction": "request",
+    "name": "todo.repeat_now",
+    "params": "TodoIdParams",
+    "result": "Todo"
+  },
+  {
+    "direction": "request",
     "name": "todo.history",
     "params": "TodoHistoryParams",
     "result": "TodoHistoryResult"

@@ -29,6 +29,7 @@ export class FakeTodoDaemon {
     rpc.handlers['todo.get'] = (p) => this.handle('todo.get', p, () => this.get((p as { id: string }).id))
     rpc.handlers['todo.add'] = (p) => this.handle('todo.add', p, () => this.add(p as TodoAddParams))
     rpc.handlers['todo.update'] = (p) => this.handle('todo.update', p, () => this.update(p as TodoUpdateParams))
+    rpc.handlers['todo.repeat_now'] = (p) => this.handle('todo.repeat_now', p, () => this.repeatNow((p as { id: string }).id))
     rpc.handlers['todo.delete'] = (p) => this.handle('todo.delete', p, () => this.delete(p as { id: string; if_updated_ms?: number }))
   }
 
@@ -103,6 +104,26 @@ export class FakeTodoDaemon {
     this.todos.set(next.id, next)
     this.onChange?.(next.id, next)
     return next
+  }
+
+  /** `todo.repeat_now`（docs/spec/daemon.md § 26.9）：复制一份，错误的原因和 daemon 一样。 */
+  private repeatNow(id: string): Todo {
+    const tpl = this.todos.get(id)
+    if (!tpl) throw rpcError('not_found')
+    if (!tpl.repeat) throw rpcError('invalid', 'id', 'not_template')
+    if (tpl.state === 'done' || tpl.state === 'dropped') throw rpcError('invalid', 'id', 'closed')
+    if (tpl.unreviewed) throw rpcError('invalid', 'id', 'unreviewed')
+    const latest = [...this.todos.values()].filter((t) => t.source.kind === 'repeat' && t.source.todo_id === id).sort((a, b) => b.created_ms - a.created_ms)[0]
+    if (latest && latest.state !== 'done' && latest.state !== 'dropped') {
+      const e = rpcError('invalid', 'id', 'previous_open')
+      e.rpc!.data!.todo_id = latest.id
+      throw e
+    }
+    if ([...this.todos.values()].filter((t) => t.state !== 'done' && t.state !== 'dropped').length >= this.openLimit) throw rpcError('invalid', 'todos', 'too_many')
+    const copy: Todo = { id: crypto.randomUUID(), title: tpl.title, body: tpl.body, ...(tpl.project ? { project: tpl.project } : {}), handler: tpl.handler ?? 'me', state: 'open', source: { kind: 'repeat', todo_id: id }, unreviewed: false, created_ms: ++this.now, updated_ms: this.now, sessions: [] }
+    this.todos.set(copy.id, copy)
+    this.onChange?.(copy.id, copy)
+    return copy
   }
 
   private get(id: string): Todo {

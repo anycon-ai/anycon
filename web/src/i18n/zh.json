@@ -345,6 +345,8 @@
       "sessionN": "会话 {{n}}",
       "repeatCreated": "周期：为 {{time}} 复制了一项",
       "openCopy": "打开这一项",
+      "repeatCreatedManual": "手动执行了一次",
+      "closedByRepeat": "按周期项的设置，Bot 做完后自动关闭",
       "repeatSkipped": "周期：{{time}} 没有复制，上一次的还没关闭"
     },
     "reviewPage": {
@@ -487,6 +489,7 @@
     "fieldTitle": "标题",
     "fieldBody": "备注",
     "noBody": "没有备注。",
+    "bodyHint": "让 agent 处理或交给 Bot 时，标题和备注就是给它的任务说明：标题在前，备注接在后面。",
     "deleteTitle": "删除这一项？",
     "deleteBody": "「{{title}}」会从节点上删除，不能恢复。",
     "markedDone": "「{{title}}」已完成",
@@ -560,7 +563,49 @@
         "daily": "每天 {{at}}",
         "weekdays": "工作日 {{at}}",
         "weekly": "每{{day}} {{at}}",
+        "interval": "{{days}} {{at}}–{{until}} {{every}}",
+        "dailyDays": "每天",
+        "weekdaysDays": "工作日",
+        "weeklyDays": "每{{day}}",
+        "everyMinutes": "每 {{n}} 分钟",
+        "everyOneHour": "每 1 小时",
+        "everyHours": "每 {{n}} 小时",
         "unknown": "这个版本看不懂的重复规则"
+      },
+      "every": {
+        "label": "间隔",
+        "once": "只一次",
+        "minutes": "每 {{n}} 分钟",
+        "oneHour": "每 1 小时",
+        "hours": "每 {{n}} 小时"
+      },
+      "start": "开始时间",
+      "untilWord": "到",
+      "until": "结束时间",
+      "autoClose": {
+        "label": "Bot 认为做完时自动关闭",
+        "hint": "复制出来的项交给 Bot 处理时，Bot 判断做完就直接关闭，不进待验收；结果仍记在经过里。",
+        "short": "自动关闭",
+        "on": "Bot 认为做完时自动关闭"
+      },
+      "runNow": {
+        "action": "现在执行一次",
+        "offline": "节点不在线。现在执行要节点在线，不会排队等它。",
+        "blocked": "上一份还没关闭，不能再复制：",
+        "openPrevious": "打开上一份",
+        "done": "已复制出一项。",
+        "open": "打开",
+        "errors": {
+          "notTemplate": "这一项不是周期项。",
+          "closed": "这个周期项已经关闭了，先重新打开。",
+          "unreviewed": "这个周期项还没有收下，先收下。",
+          "previousOpen": "上一份还没关闭，不能再复制：",
+          "forbidden": "这个连接不允许执行周期项。",
+          "notFound": "找不到：这一项已经不存在了。",
+          "unsupported": "这个节点不支持现在执行一次。把它上面的 anycon 更新一下。",
+          "link": "连接断了，不知道有没有复制出来。先看一眼清单，再决定要不要重试。",
+          "failed": "没能执行。"
+        }
       },
       "next": "下一次 {{time}}",
       "template": "周期项",
@@ -595,6 +640,8 @@
       },
       "repeat": {
         "invalid": "重复的时间不合法（写成 时:分）。",
+        "until": "结束时间要晚于开始时间（同一天内，写成 时:分）。",
+        "every": "间隔要在 15 分钟到 12 小时之间。",
         "rejected": "节点没有接受这个重复规则。",
         "template": "周期项不能派发，派发它复制出来的那一项。"
       },

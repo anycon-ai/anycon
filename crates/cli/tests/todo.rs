@@ -563,3 +563,73 @@ async fn repeat_is_set_shown_cleared_and_refused_inside_an_agent_session() {
     assert!(r.json().get("repeat").is_none());
     n.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interval_rule_auto_close_and_repeat_now_work_end_to_end() {
+    let n = node().await;
+    // 写错的间隔规则：退出码 2，说明全部写法，什么都不建
+    for spec in ["weekdays@09:00-18:00/10m", "weekdays@18:00-09:00/2h", "daily@09:00-18:00"] {
+        let r = n.cli(&["todo", "add", "Bad", "--repeat", spec]).await;
+        assert_eq!(r.code, 2, "{spec}: {}", r.stderr);
+        assert!(
+            r.stderr.contains("weekdays@09:00-18:00/2h")
+                || r.stderr.contains("between 15m and 12h")
+                || r.stderr.contains("later than"),
+            "{}",
+            r.stderr
+        );
+    }
+    // --auto-close 必须和 --repeat 一起
+    assert_eq!(n.cli(&["todo", "add", "Bad", "--auto-close"]).await.code, 2);
+    assert!(n.todos(true).await.is_empty());
+
+    let r = n.cli(&["todo", "add", "Patrol", "--repeat", "weekdays@09:00-18:00/2h", "--auto-close", "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let t = r.json();
+    assert_eq!(t["repeat"]["kind"], "interval");
+    assert_eq!(
+        (t["repeat"]["days"].as_str(), t["repeat"]["every_min"].as_u64(), t["repeat"]["until"].as_str()),
+        (Some("weekdays"), Some(120), Some("18:00"))
+    );
+    assert_eq!(t["repeat"]["auto_close"], true);
+    let id = t["id"].as_str().unwrap().to_string();
+    let r = n.cli(&["todo", "ls"]).await;
+    assert!(r.stdout.contains("weekdays@09:00-18:00/2h auto-close next "), "{}", r.stdout);
+
+    // edit 单独改 auto-close：规则原样保留；只换规则时沿用 auto-close
+    let r = n.cli(&["todo", "edit", &id[..8], "--no-auto-close", "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.json()["repeat"].get("auto_close").is_none());
+    assert_eq!(r.json()["repeat"]["every_min"], 120);
+    let r = n.cli(&["todo", "edit", &id[..8], "--auto-close"]).await;
+    assert!(r.stdout.contains("auto-close"), "{}", r.stdout);
+    let r = n.cli(&["todo", "edit", &id[..8], "--repeat", "weekly:mon@09:00-12:00/30m", "--json"]).await;
+    assert_eq!(r.json()["repeat"]["auto_close"], true);
+    assert_eq!(r.json()["repeat"]["weekday"], 1);
+    assert_eq!(n.cli(&["todo", "edit", &id[..8], "--no-repeat", "--auto-close"]).await.code, 2);
+    // 不是周期项的项上单独给 --auto-close
+    let plain = n.cli(&["todo", "add", "Plain", "--json"]).await.json();
+    let r = n.cli(&["todo", "edit", &plain["id"].as_str().unwrap()[..8], "--auto-close"]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(r.stderr.contains("does not repeat"), "{}", r.stderr);
+
+    // repeat-now：复制出一项，再点一次说明上一份还开着；不是周期项也说明
+    let r = n.cli(&["todo", "repeat-now", &id[..8]]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.starts_with("added ") && r.stdout.contains("Patrol"), "{}", r.stdout);
+    let copy = n.todos(false).await.into_iter().find(|t| t["source"]["kind"] == "repeat").expect("a copy");
+    let r = n.cli(&["todo", "repeat-now", &id[..8]]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(r.stderr.contains("still open") && r.stderr.contains(&copy["id"].as_str().unwrap()[..8]), "{}", r.stderr);
+    let r = n.cli(&["todo", "repeat-now", &plain["id"].as_str().unwrap()[..8]]).await;
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.contains("does not repeat"), "{}", r.stderr);
+    let r = n.cli(&["todo", "repeat-now", &id[..8], "--json"]).await;
+    assert_eq!(r.code, 2, "still refused while the copy is open");
+
+    // agent 环境里拒绝
+    let r = n.cli_env(&["todo", "repeat-now", &id[..8]], &[("ANYCON_AGENT", "1")]).await;
+    assert_eq!(r.code, 5, "{}", r.stderr);
+    assert!(r.stderr.contains("not available inside an anycon agent session"), "{}", r.stderr);
+    n.stop().await;
+}

@@ -179,6 +179,12 @@ pub enum TodoCmd {
     /// session to the item and keeps the item's state in step with the session. Not available inside an anycon agent
     /// session
     Run(TodoRunArgs),
+    /// Create one copy of a repeating item right now, as if its time had come. The schedule is not changed. Not
+    /// available inside an anycon agent session
+    RepeatNow {
+        /// Id of the repeating item (a prefix is enough)
+        id: String,
+    },
     /// Show what happened on an item: each dispatch, the report each turn ended with, and state changes (newest first)
     History(TodoHistoryArgs),
 }
@@ -315,22 +321,45 @@ pub struct TodoAddArgs {
     /// 2026-12-01T17:00+08:00
     #[arg(long, value_name = "TIME")]
     pub due: Option<String>,
-    /// Make this a repeating item: `daily@09:00`, `weekdays@09:00` or `weekly:mon@09:00` (node-local time). The item is
-    /// a template; at each time the node copies it into a new open item. Not available inside an anycon agent session
+    /// Make this a repeating item (node-local time): `daily@09:00`, `weekdays@09:00`, `weekly:mon@09:00`, or several
+    /// times a day `<days>@<from>-<until>/<every>` where <days> is daily, weekdays or weekly:<mon..sun> and <every> is
+    /// `<n>m` or `<n>h` (15m to 12h), for example `weekdays@09:00-18:00/2h`. The item is a template; at each time the
+    /// node copies it into a new open item. Not available inside an anycon agent session
     #[arg(long, value_name = "SPEC")]
     pub repeat: Option<String>,
+    /// With --repeat: when the bot decides a copy is done, close it instead of moving it to review
+    #[arg(long, requires = "repeat", conflicts_with = "no_auto_close")]
+    pub auto_close: bool,
+    /// With --repeat: leave the copies for you to accept (the default)
+    #[arg(long, requires = "repeat")]
+    pub no_auto_close: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct TodoEditArgs {
     /// To-do id (a prefix is enough)
     pub id: String,
-    /// Set or replace the repeat rule: `daily@09:00`, `weekdays@09:00` or `weekly:mon@09:00` (node-local time)
-    #[arg(long, value_name = "SPEC", conflicts_with = "no_repeat", required_unless_present = "no_repeat")]
+    /// Set or replace the repeat rule (node-local time): `daily@09:00`, `weekdays@09:00`, `weekly:mon@09:00`, or several
+    /// times a day `<days>@<from>-<until>/<every>` where <days> is daily, weekdays or weekly:<mon..sun> and <every> is
+    /// `<n>m` or `<n>h` (15m to 12h), for example `weekdays@09:00-18:00/2h`. Without --auto-close / --no-auto-close the
+    /// item keeps its current auto-close setting
+    #[arg(
+        long,
+        value_name = "SPEC",
+        conflicts_with = "no_repeat",
+        required_unless_present_any = ["no_repeat", "auto_close", "no_auto_close"]
+    )]
     pub repeat: Option<String>,
     /// Stop repeating: the item becomes an ordinary item
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["auto_close", "no_auto_close"])]
     pub no_repeat: bool,
+    /// When the bot decides a copy is done, close it instead of moving it to review (the item must already repeat, or
+    /// be given --repeat)
+    #[arg(long, conflicts_with = "no_auto_close")]
+    pub auto_close: bool,
+    /// Leave the copies for you to accept
+    #[arg(long)]
+    pub no_auto_close: bool,
 }
 
 #[derive(Args, Debug)]

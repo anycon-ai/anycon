@@ -953,6 +953,29 @@ export class FakeDaemon {
       if (!todo) throw AnyconRpcError.of('not_found', 'no such todo')
       return todo
     })
+    on<{ id: string }, unknown>('todo.repeat_now', (p) => {
+      const tpl = todos.get(p.id)
+      if (!tpl) throw AnyconRpcError.of('not_found', 'no such todo')
+      if (!tpl.repeat)
+        throw AnyconRpcError.of('invalid', 'not a repeating todo', {
+          field: 'id',
+          reason: 'not_template',
+        })
+      const copy = {
+        id: `copy-${todoClock + 1}`,
+        title: tpl.title,
+        body: tpl.body,
+        handler: tpl.handler,
+        state: 'open',
+        source: { kind: 'repeat', todo_id: p.id },
+        unreviewed: false,
+        created_ms: ++todoClock,
+        updated_ms: todoClock,
+      }
+      todos.set(copy.id, copy)
+      this.#notifyAll('todo.changed', { id: copy.id, todo: copy, deleted: false })
+      return copy
+    })
     on<{ id: string; if_updated_ms?: number }, unknown>('todo.delete', (p) => {
       const cur = todos.get(p.id)
       if (cur && p.if_updated_ms !== undefined && cur.updated_ms !== p.if_updated_ms) {

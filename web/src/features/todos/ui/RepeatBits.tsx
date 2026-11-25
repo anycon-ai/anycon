@@ -1,4 +1,5 @@
 // 周期项（docs/spec/daemon.md § 26.9，spec/web.md § 14.6）的界面零件：「重复」的选择控件、规则的文字、复制出来的项上的「来自周期项」。
+import { useId } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Repeat } from 'lucide-react'
 import type { TFunction } from 'i18next'
@@ -7,20 +8,37 @@ import type { TodoRepeat } from '@/protocol'
 import { formatDateTime } from '@/lib/format'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes } from '@/stores/nodes'
+import { CheckboxField } from '@/ui/Choice'
 import { Input, Select } from '@/ui/Field'
 import { cleanOneLine } from '../validate'
-import { formOf, inputOf, repeatTemplateOf, REPEAT_CHOICES, type RepeatChoice } from '../repeat'
+import { formOf, inputOf, repeatTemplateOf, REPEAT_CHOICES, REPEAT_EVERY_CHOICES, type RepeatChoice } from '../repeat'
 import type { ViewTodo } from '../types'
 import { useOriginTodo } from './TodoOrigin'
 
 /** 这个节点支持周期项（`capabilities.todo_repeat`）。 */
 export const useNodeSupportsRepeat = (nodeId: string | null | undefined): boolean => useNodes((s) => (nodeId ? s.byId[nodeId]?.info?.capabilities.todo_repeat === true : false))
 
-/** 规则的一句话：「每天 09:00」「工作日 09:00」「每周一 09:00」。不认识的种类（更新的节点给的）只说看不懂。 */
-export function repeatRuleText(t: TFunction, r: Pick<TodoRepeat, 'kind' | 'at' | 'weekday'>): string {
+/** 这个节点支持一天里重复多次、自动关闭和「现在执行一次」（`capabilities.todo_repeat_interval`）。 */
+export const useNodeSupportsInterval = (nodeId: string | null | undefined): boolean => useNodes((s) => (nodeId ? s.byId[nodeId]?.info?.capabilities.todo_repeat_interval === true : false))
+
+type RuleLike = Pick<TodoRepeat, 'kind' | 'at' | 'weekday'> & Partial<Pick<TodoRepeat, 'days' | 'every_min' | 'until'>>
+
+/** 间隔的一句话：「每 30 分钟」「每 2 小时」。整小时按小时说。 */
+export function everyText(t: TFunction, minutes: number): string {
+  if (minutes === 60) return t('todos.repeat.rule.everyOneHour')
+  return minutes % 60 === 0 ? t('todos.repeat.rule.everyHours', { n: minutes / 60 }) : t('todos.repeat.rule.everyMinutes', { n: minutes })
+}
+
+/** 规则的一句话：「每天 09:00」「工作日 09:00」「每周一 09:00」「工作日 09:00–18:00 每 2 小时」。不认识的种类（更新的节点给的）只说看不懂。 */
+export function repeatRuleText(t: TFunction, r: RuleLike): string {
+  const day = t(`todos.repeat.day.${r.weekday ?? 1}`)
   if (r.kind === 'daily') return t('todos.repeat.rule.daily', { at: r.at })
   if (r.kind === 'weekdays') return t('todos.repeat.rule.weekdays', { at: r.at })
-  if (r.kind === 'weekly') return t('todos.repeat.rule.weekly', { day: t(`todos.repeat.day.${r.weekday ?? 1}`), at: r.at })
+  if (r.kind === 'weekly') return t('todos.repeat.rule.weekly', { day, at: r.at })
+  if (r.kind === 'interval' && (r.days === 'daily' || r.days === 'weekdays' || r.days === 'weekly') && r.every_min && r.until) {
+    const days = r.days === 'weekly' ? t('todos.repeat.rule.weeklyDays', { day }) : t(`todos.repeat.rule.${r.days}Days`)
+    return t('todos.repeat.rule.interval', { days, at: r.at, until: r.until, every: everyText(t, r.every_min) })
+  }
   return t('todos.repeat.rule.unknown')
 }
 
@@ -28,7 +46,8 @@ export function repeatRuleText(t: TFunction, r: Pick<TodoRepeat, 'kind' | 'at' |
 export function repeatInputText(t: TFunction, input: string): string {
   const f = formOf(input)
   if (f.choice === 'none') return t('todos.repeat.choice.none')
-  return repeatRuleText(t, { kind: f.choice, at: f.at, weekday: f.weekday })
+  const rule = f.every > 0 ? repeatRuleText(t, { kind: 'interval', days: f.choice, at: f.at, weekday: f.weekday, every_min: f.every, until: f.until }) : repeatRuleText(t, { kind: f.choice, at: f.at, weekday: f.weekday })
+  return f.autoClose ? `${rule} · ${t('todos.repeat.autoClose.on')}` : rule
 }
 
 /** 规则和下一次的时间（节点按它自己的时区算好的）：一行字，列表行和详情共用。 */
@@ -38,14 +57,17 @@ export function repeatSummary(t: TFunction, language: string, r: TodoRepeat): st
 }
 
 /**
- * 「重复」：不重复 / 每天 / 工作日 / 每周（再选星期几）+ 时间。值是 `repeatToInput` 的字符串，由调用方存。
+ * 「重复」：不重复 / 每天 / 工作日 / 每周（再选星期几）+ 时间；节点支持时（`intervalSupported`）还能选「每隔 N 分钟 / 小时」，
+ * 这时时间是开始，多一个「到」。值是 `repeatToInput` 的字符串，由调用方存。
  * `disabledReason` 给了就整个禁用并写明原因。
  */
-export function RepeatField({ value, onChange, disabledReason, testId = 'repeat', className }: { value: string; onChange: (v: string) => void; disabledReason?: string; testId?: string; className?: string }) {
+export function RepeatField({ value, onChange, disabledReason, intervalSupported = false, testId = 'repeat', className }: { value: string; onChange: (v: string) => void; disabledReason?: string; intervalSupported?: boolean; testId?: string; className?: string }) {
   const { t } = useTranslation()
   const f = formOf(value)
   const set = (patch: Partial<typeof f>): void => onChange(inputOf({ ...f, ...patch }))
   const disabled = disabledReason !== undefined
+  // 节点上已有的间隔不在常用选项里（比如命令行设的 90 分钟）：把它也列出来，不然下拉框会显示成别的值
+  const everyChoices = REPEAT_EVERY_CHOICES.includes(f.every) ? REPEAT_EVERY_CHOICES : [...REPEAT_EVERY_CHOICES, f.every]
   return (
     <div className={className ?? 'flex flex-wrap items-center gap-1.5'} data-testid={testId}>
       <Select value={f.choice} disabled={disabled} title={disabledReason} aria-label={t('todos.repeat.label')} onChange={(e) => set({ choice: e.target.value as RepeatChoice })} className="!h-9 w-auto" data-testid={`${testId}-kind`}>
@@ -64,10 +86,34 @@ export function RepeatField({ value, onChange, disabledReason, testId = 'repeat'
           ))}
         </Select>
       ) : null}
-      {f.choice !== 'none' ? <Input type="time" value={f.at} disabled={disabled} aria-label={t('todos.repeat.at')} onChange={(e) => set({ at: e.target.value })} className="!h-9 w-auto" data-testid={`${testId}-at`} /> : null}
+      {f.choice !== 'none' && intervalSupported ? (
+        <Select value={String(f.every)} disabled={disabled} aria-label={t('todos.repeat.every.label')} onChange={(e) => set({ every: Number(e.target.value) })} className="!h-9 w-auto" data-testid={`${testId}-every`}>
+          {everyChoices.map((m) => (
+            <option key={m} value={m}>
+              {m === 0 ? t('todos.repeat.every.once') : m === 60 ? t('todos.repeat.every.oneHour') : m % 60 === 0 ? t('todos.repeat.every.hours', { n: m / 60 }) : t('todos.repeat.every.minutes', { n: m })}
+            </option>
+          ))}
+        </Select>
+      ) : null}
+      {f.choice !== 'none' ? <Input type="time" value={f.at} disabled={disabled} aria-label={t(f.every > 0 ? 'todos.repeat.start' : 'todos.repeat.at')} onChange={(e) => set({ at: e.target.value })} className="!h-9 w-auto" data-testid={`${testId}-at`} /> : null}
+      {f.choice !== 'none' && f.every > 0 ? (
+        <>
+          <span className="text-sm font-normal text-fg-muted">{t('todos.repeat.untilWord')}</span>
+          <Input type="time" value={f.until} disabled={disabled} aria-label={t('todos.repeat.until')} onChange={(e) => set({ until: e.target.value })} className="!h-9 w-auto" data-testid={`${testId}-until`} />
+        </>
+      ) : null}
       {disabledReason ? <span className="text-xs text-fg-subtle">{disabledReason}</span> : null}
     </div>
   )
+}
+
+/** 「Bot 认为做完时自动关闭」：改的是同一个规则字符串（`repeatToInput` 的写法）；没有规则时不显示。 */
+export function AutoCloseField({ value, onChange, testId = 'repeat' }: { value: string; onChange: (v: string) => void; testId?: string }) {
+  const { t } = useTranslation()
+  const id = useId()
+  const f = formOf(value)
+  if (f.choice === 'none') return null
+  return <CheckboxField id={id} checked={f.autoClose} onCheckedChange={(v) => onChange(inputOf({ ...f, autoClose: v }))} label={t('todos.repeat.autoClose.label')} hint={t('todos.repeat.autoClose.hint')} testId={`${testId}-auto-close`} />
 }
 
 const chipClass = 'inline-flex max-w-full items-center gap-1 rounded-full bg-info-subtle px-2 py-0.5 text-xs font-medium whitespace-nowrap text-info'

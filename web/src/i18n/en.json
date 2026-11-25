@@ -346,6 +346,8 @@
       "sessionN": "Session {{n}}",
       "repeatCreated": "Repeat: made a copy for {{time}}",
       "openCopy": "Open the copy",
+      "repeatCreatedManual": "Run by hand once",
+      "closedByRepeat": "Closed automatically after the bot finished, as the repeating item is set to",
       "repeatSkipped": "Repeat: skipped {{time}}, the previous copy is still open"
     },
     "reviewPage": {
@@ -488,6 +490,7 @@
     "fieldTitle": "Title",
     "fieldBody": "Notes",
     "noBody": "No notes.",
+    "bodyHint": "When an agent or the Bot handles this item, the title and notes are its instructions: the title first, then the notes.",
     "deleteTitle": "Delete this to-do?",
     "deleteBody": "“{{title}}” will be deleted from the node. This cannot be undone.",
     "markedDone": "“{{title}}” marked done",
@@ -565,7 +568,49 @@
         "daily": "Every day at {{at}}",
         "weekdays": "Weekdays at {{at}}",
         "weekly": "Every {{day}} at {{at}}",
+        "interval": "{{days}} {{at}}–{{until}} {{every}}",
+        "dailyDays": "Every day",
+        "weekdaysDays": "Weekdays",
+        "weeklyDays": "Every {{day}}",
+        "everyMinutes": "every {{n}} minutes",
+        "everyOneHour": "every hour",
+        "everyHours": "every {{n}} hours",
         "unknown": "A repeat rule this app cannot read"
+      },
+      "every": {
+        "label": "Interval",
+        "once": "Once",
+        "minutes": "Every {{n}} minutes",
+        "oneHour": "Every hour",
+        "hours": "Every {{n}} hours"
+      },
+      "start": "Start time",
+      "untilWord": "until",
+      "until": "End time",
+      "autoClose": {
+        "label": "Close automatically when the bot thinks it is done",
+        "hint": "When a copy is handled by the bot and the bot decides it is done, it is closed instead of waiting for your review. The result is still recorded in the history.",
+        "short": "Auto-close",
+        "on": "Closes when the bot thinks it is done"
+      },
+      "runNow": {
+        "action": "Run once now",
+        "offline": "The node is offline. Running needs the node online; it is not queued.",
+        "blocked": "The previous copy is still open, so no new copy can be made:",
+        "openPrevious": "Open the previous copy",
+        "done": "Made a copy.",
+        "open": "Open",
+        "errors": {
+          "notTemplate": "This item is not a repeating item.",
+          "closed": "This repeating item is closed. Reopen it first.",
+          "unreviewed": "This repeating item has not been accepted yet. Accept it first.",
+          "previousOpen": "The previous copy is still open, so no new copy can be made:",
+          "forbidden": "This connection is not allowed to run repeating items.",
+          "notFound": "Not found: the item no longer exists.",
+          "unsupported": "This node does not support running once now. Update anycon on it.",
+          "link": "The connection failed, so a copy may or may not have been made. Check the list before trying again.",
+          "failed": "Could not run it."
+        }
       },
       "next": "next {{time}}",
       "template": "Repeating",
@@ -600,6 +645,8 @@
       },
       "repeat": {
         "invalid": "The repeat time is not valid (use HH:MM).",
+        "until": "The end time must be later than the start time on the same day (use HH:MM).",
+        "every": "The interval must be between 15 minutes and 12 hours.",
         "rejected": "The node did not accept this repeat rule.",
         "template": "A repeating item cannot be dispatched; dispatch one of its copies instead."
       },

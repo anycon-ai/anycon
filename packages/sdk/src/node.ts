@@ -623,6 +623,12 @@ export class Node extends Emitter<NodeEvents> {
      */
     dispatchPreview: (params: TodoDispatchPreviewParams): Promise<TodoDispatchPreviewResult> =>
       this.call('todo.dispatch_preview', params),
+    /**
+     * `todo.repeat_now`（docs/spec/daemon.md § 26.9）：现在执行一次周期项，得到新复制出的一项；不动周期项的下一次时间。节点 `capabilities.todo_repeat_interval` 为 true 才有。
+     * 项不存在 → `not_found`；不是周期项 / 已关闭 / 未收下 / 上一份还没关闭 → `invalid`（`data.reason` = `not_template` / `closed` / `unreviewed` / `previous_open`，最后一种带 `data.todo_id`）；
+     * 清单满了 → `invalid`（`data.reason = 'too_many'`）；自报了 `mcp` 的本机连接 → `forbidden`。
+     */
+    repeatNow: (id: string): Promise<Todo> => this.call('todo.repeat_now', { id }),
     /** `todo.history`：这一项的「经过」，按 `seq` 从新到旧；`has_more` 时用最后一条的 `seq` 作为 `before_seq` 取下一页（`limit` 缺省 50、上限 200）。 */
     history: (params: TodoHistoryParams): Promise<TodoHistoryResult> =>
       this.call('todo.history', params),

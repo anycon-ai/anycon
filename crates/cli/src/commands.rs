@@ -335,7 +335,7 @@ pub async fn pair(app: &App, a: PairArgs) -> Result<u8> {
 }
 
 /// daemon 说它没有这个方法（比这个 CLI 老的 daemon）。
-fn is_method_not_found(e: &CliError) -> bool {
+pub(crate) fn is_method_not_found(e: &CliError) -> bool {
     e.code == "unsupported" && e.message.starts_with("method not found")
 }
 
@@ -1861,6 +1861,7 @@ mod tests {
                 cap: None,
                 used: None,
                 limit: None,
+                todo_id: None,
             }));
             CliError::from(e)
         };

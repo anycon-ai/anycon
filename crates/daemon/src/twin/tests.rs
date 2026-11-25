@@ -848,6 +848,128 @@ async fn a_repeating_template_is_never_triaged_but_its_twin_copies_wake_the_twin
     td.shutdown().await;
 }
 
+/// 建一个模板，和一份交给 Bot 的、从它复制出来的项，返回（模板，复制出来的项）。复制直接写库而不走 `tick`：
+/// `tick` 会触发 Bot 自己的调度，和测试里手动开的那一轮抢同一把门。
+async fn template_with_copy(td: &TestDaemon, auto_close: bool) -> (Todo, Todo) {
+    let mut c = td.local_cli_client();
+    let template: Todo = c
+        .call(
+            td,
+            methods::TODO_ADD,
+            json!({"id":uuid::Uuid::new_v4().to_string(),"title":"patrol","project":"p",
+                   "repeat":{"kind":"daily","at":"09:00","auto_close":auto_close}}),
+        )
+        .await
+        .unwrap();
+    let now = td.ctx.judge.clock().now();
+    let copy = Todo {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: "patrol".into(),
+        body: String::new(),
+        project: Some("p".into()),
+        state: TodoState::Open,
+        handler: TodoHandler::Twin,
+        due_ms: None,
+        source: TodoSource {
+            kind: TodoSourceKind::Repeat,
+            device_id: None,
+            session_id: None,
+            todo_id: Some(template.id.clone()),
+        },
+        unreviewed: false,
+        created_ms: now,
+        updated_ms: now,
+        closed_ms: None,
+        sessions: vec![],
+        activity: None,
+        repeat: None,
+        remote: vec![],
+    };
+    td.ctx.store.todo_insert(&copy).await.unwrap();
+    (template, copy)
+}
+
+async fn history_of(td: &TestDaemon, id: &str) -> Vec<TodoEventData> {
+    td.ctx.store.todo_history_page(id, None, 50).await.unwrap().events.into_iter().map(|e| e.data).collect()
+}
+
+#[tokio::test]
+async fn done_closes_a_copy_of_an_auto_close_template_and_records_why() {
+    let (td, fake) = fixture(false).await;
+    let (template, copy) = template_with_copy(&td, true).await;
+    let mut watcher = td.local_cli_client();
+    let run = plan(&td, &fake, &copy, "done").await;
+    assert_eq!(run.decisions[0].outcome, TwinDecisionOutcome::Executed);
+    let now = td.ctx.store.todo_get(&copy.id).await.unwrap().unwrap();
+    assert_eq!((now.state, now.handler), (TodoState::Done, TodoHandler::Me));
+    assert!(now.closed_ms.is_some());
+    let events = history_of(&td, &copy.id).await;
+    let by = TodoActor { kind: TodoSourceKind::Repeat, id: Some(template.id.clone()), device_id: None };
+    assert!(events.contains(&TodoEventData::State { from: TodoState::Open, to: TodoState::Done, by }), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, TodoEventData::HandedBack { done: true, .. })));
+    assert!(events.iter().any(|e| matches!(e, TodoEventData::TwinDecision { action: TwinAction::Done, .. })));
+    // 通知了客户端，审计不含标题和正文
+    let seen: Vec<TodoChanged> = watcher
+        .drain_now()
+        .into_iter()
+        .filter(|n| n.method == methods::TODO_CHANGED)
+        .map(|n| serde_json::from_value(n.params).unwrap())
+        .collect();
+    assert!(seen.iter().any(|ch| ch.id == copy.id && ch.todo.as_ref().is_some_and(|t| t.state == TodoState::Done)));
+    let audit = td.ctx.audit.query(None, None, 100).await;
+    let entry = audit.iter().find(|e| e.action == "todo.update" && e.target.as_deref() == Some(copy.id.as_str()));
+    assert!(entry.is_some_and(|e| !e.detail.to_string().contains("patrol")));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn done_only_closes_when_the_template_exists_and_still_has_auto_close() {
+    let (td, fake) = fixture(false).await;
+    // 模板没开 auto_close：照旧，只是交回给人
+    let (_, copy) = template_with_copy(&td, false).await;
+    plan(&td, &fake, &copy, "done").await;
+    let now = td.ctx.store.todo_get(&copy.id).await.unwrap().unwrap();
+    assert_eq!((now.state, now.handler, now.closed_ms), (TodoState::Open, TodoHandler::Me, None));
+    assert!(!history_of(&td, &copy.id).await.iter().any(|e| matches!(e, TodoEventData::State { .. })));
+
+    // 复制出来之后模板才关掉 auto_close：看模板「现在」的设置
+    let (template, copy) = template_with_copy(&td, true).await;
+    sqlx::query("UPDATE todos SET repeat_auto_close = 0 WHERE id = ?")
+        .bind(&template.id)
+        .execute(td.ctx.store.pool())
+        .await
+        .unwrap();
+    plan(&td, &fake, &copy, "done").await;
+    assert_eq!(td.ctx.store.todo_get(&copy.id).await.unwrap().unwrap().state, TodoState::Open);
+
+    // 模板被删：不关
+    let (template, copy) = template_with_copy(&td, true).await;
+    assert!(td.ctx.store.todo_delete(&template.id).await.unwrap());
+    plan(&td, &fake, &copy, "done").await;
+    assert_eq!(td.ctx.store.todo_get(&copy.id).await.unwrap().unwrap().state, TodoState::Open);
+
+    // 普通的项：不关
+    let plain = todo(&td, "plain").await;
+    plan(&td, &fake, &plain, "done").await;
+    let now = td.ctx.store.todo_get(&plain.id).await.unwrap().unwrap();
+    assert_eq!((now.state, now.handler), (TodoState::Open, TodoHandler::Me));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn only_done_closes_a_copy_never_hand_back_or_wait() {
+    let (td, fake) = fixture(false).await;
+    let (_, copy) = template_with_copy(&td, true).await;
+    plan(&td, &fake, &copy, "wait").await;
+    let now = td.ctx.store.todo_get(&copy.id).await.unwrap().unwrap();
+    assert_eq!((now.state, now.handler), (TodoState::Open, TodoHandler::Twin));
+    plan(&td, &fake, &copy, "hand_back").await;
+    let now = td.ctx.store.todo_get(&copy.id).await.unwrap().unwrap();
+    assert_eq!((now.state, now.handler), (TodoState::Open, TodoHandler::Me));
+    assert!(!history_of(&td, &copy.id).await.iter().any(|e| matches!(e, TodoEventData::State { .. })));
+    td.shutdown().await;
+}
+
 // ---------------------------------------------------------------- PR 事件（spec § 26.9）
 
 fn snap(state: PullRequestState, checks: PrChecks, reviews: u32, last: Option<&str>) -> PrSnapshot {

@@ -228,6 +228,7 @@ export interface RequestMethods {
   'todo.delete': { params: TodoDeleteParams; result: Empty }
   'todo.dispatch_preview': { params: TodoDispatchPreviewParams; result: TodoDispatchPreviewResult }
   'todo.dispatch': { params: TodoDispatchParams; result: TodoDispatchResult }
+  'todo.repeat_now': { params: TodoIdParams; result: Todo }
   'todo.history': { params: TodoHistoryParams; result: TodoHistoryResult }
   'rule.list': { params: RuleListParams; result: RuleListResult }
   'rule.add': { params: RuleAddParams; result: Rule }

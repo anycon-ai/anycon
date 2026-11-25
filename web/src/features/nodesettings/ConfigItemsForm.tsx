@@ -203,7 +203,7 @@ function LimitRow({ item, draft, disabled, problem, serverError, onChange }: { i
       // 节点上的值不在选项里（比如手写的 `INFO`）：照样显示，免得下拉框悄悄显示成别的值
       const all = options.includes(String(draft)) ? options : [String(draft), ...options]
       control = (
-        <Select id={id} data-testid={id} aria-label={label} className="w-44" value={String(draft)} disabled={off} onChange={(e) => onChange(e.target.value)}>
+        <Select id={id} data-testid={id} aria-label={label} className="w-auto" value={String(draft)} disabled={off} onChange={(e) => onChange(e.target.value)}>
           {all.map((o) => (
             <option key={o} value={o}>
               {item.key.startsWith('judge.') && o === '' ? t('nodeSettings.limits.judgeNone') : t(`nodeSettings.limits.options.${item.key}.${o}`, { defaultValue: o })}

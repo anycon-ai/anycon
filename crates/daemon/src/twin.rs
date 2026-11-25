@@ -1501,6 +1501,13 @@ async fn release(c: &Ctx, caller: &Caller, id: &str, run: &str, reason: &str, do
     let now = c.judge.clock().now();
     t.handler = TodoHandler::Me;
     t.updated_ms = crate::todos::next_updated_ms(now, t.updated_ms);
+    // Bot 判断做完（`done`）、而这一项是还开着 `auto_close` 的周期项复制出来的：直接关闭，不进待验收（§ 26.9）
+    let old_state = t.state;
+    let auto_closed_by = if done { auto_close_template(c, &t).await? } else { None };
+    if auto_closed_by.is_some() {
+        t.state = TodoState::Done;
+        t.closed_ms = Some(now);
+    }
     let mut tx = c.store.pool().begin().await.map_err(internal)?;
     crate::todos::save_todo_on(&mut *tx, &t).await.map_err(internal)?;
     let ev = crate::todo_dispatch::event_append_on(
@@ -1511,6 +1518,14 @@ async fn release(c: &Ctx, caller: &Caller, id: &str, run: &str, reason: &str, do
     )
     .await
     .map_err(internal)?;
+    let closed = match &auto_closed_by {
+        Some(template) => {
+            let by = TodoActor { kind: TodoSourceKind::Repeat, id: Some(template.clone()), device_id: None };
+            let data = TodoEventData::State { from: old_state, to: TodoState::Done, by };
+            Some(crate::todo_dispatch::event_append_on(&mut tx, id, now, data).await.map_err(internal)?)
+        }
+        None => None,
+    };
     let back = crate::todo_dispatch::event_append_on(
         &mut tx,
         id,
@@ -1525,16 +1540,35 @@ async fn release(c: &Ctx, caller: &Caller, id: &str, run: &str, reason: &str, do
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
     broadcast_event(&c.clients, id, ev);
+    if let Some(closed) = closed {
+        broadcast_event(&c.clients, id, closed);
+    }
     broadcast_event(&c.clients, id, back);
     void_questions(c, id).await?;
     announce_todo(c, t).await;
     c.audit.record(caller, "todo.handler", Some(id), json!({"handler":"me","run_id":run})).await;
+    if let Some(template) = &auto_closed_by {
+        // 审计和 `todo.update` 改状态的那条同形，另外记是哪个周期项的设置关的；不含标题和正文
+        let detail = json!({"fields":["state"],"state":{"from":old_state,"to":TodoState::Done},"auto_close":template});
+        c.audit.record(caller, "todo.update", Some(id), detail).await;
+    }
     c.audit.record(caller, "twin.hand_back", Some(id), json!({"run_id":run,"done":done})).await;
     if !done {
         c.notifier.todo(NotifyCategory::FollowUp, id);
     }
     Ok(())
 }
+/// 这一项是周期项复制出来的、模板还在、并且模板现在开着 `auto_close`：返回模板的 id（Bot 的 `done` 要把这一项直接关闭）。
+/// 已经关闭的项不再关一次。调用方持清单写锁。
+async fn auto_close_template(c: &Ctx, t: &Todo) -> Result<Option<String>> {
+    if t.source.kind != TodoSourceKind::Repeat || t.state.is_closed() {
+        return Ok(None);
+    }
+    let Some(template_id) = t.source.todo_id.as_deref() else { return Ok(None) };
+    let template = c.store.todo_get(template_id).await.map_err(internal)?;
+    Ok(template.filter(|m| m.repeat.as_ref().is_some_and(|r| r.auto_close)).map(|m| m.id))
+}
+
 pub(crate) async fn announce_todo(c: &Ctx, mut t: Todo) {
     t.activity = crate::todo_dispatch::compute_activity(&c.sessions, &t).await;
     c.sessions.todo_signal().note_sent(&t.id, t.activity);

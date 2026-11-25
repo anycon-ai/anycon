@@ -25,7 +25,25 @@ fn utc(s: &str) -> u64 {
 }
 
 fn rule(kind: TodoRepeatKind, at: &str, weekday: Option<u8>) -> TodoRepeat {
-    TodoRepeat { kind, at: at.into(), weekday, next_ms: None }
+    TodoRepeat {
+        kind,
+        at: at.into(),
+        weekday,
+        days: None,
+        every_min: None,
+        until: None,
+        auto_close: false,
+        next_ms: None,
+    }
+}
+
+fn interval(days: TodoRepeatDays, weekday: Option<u8>, at: &str, every_min: u32, until: &str) -> TodoRepeat {
+    TodoRepeat {
+        days: Some(days),
+        every_min: Some(every_min),
+        until: Some(until.into()),
+        ..rule(TodoRepeatKind::Interval, at, weekday)
+    }
 }
 
 fn id() -> String {
@@ -164,6 +182,27 @@ async fn the_rule_is_validated_and_only_a_person_sets_it() {
         (json!({ "kind": "daily", "at": "09:00", "weekday": 1 }), "weekday"),
         (json!({ "kind": "weekdays", "at": "09:00", "weekday": 1 }), "weekday"),
         (json!({ "kind": "monthly", "at": "09:00" }), "kind"),
+        // 间隔规则：days / every_min / until 必填且在范围内，别的种类不能带
+        (json!({ "kind": "interval", "at": "09:00", "every_min": 60, "until": "18:00" }), "days"),
+        (json!({ "kind": "interval", "at": "09:00", "days": "monthly", "every_min": 60, "until": "18:00" }), "kind"),
+        (json!({ "kind": "interval", "at": "09:00", "days": "daily", "until": "18:00" }), "every_min"),
+        (json!({ "kind": "interval", "at": "09:00", "days": "daily", "every_min": 14, "until": "18:00" }), "every_min"),
+        (
+            json!({ "kind": "interval", "at": "09:00", "days": "daily", "every_min": 721, "until": "18:00" }),
+            "every_min",
+        ),
+        (json!({ "kind": "interval", "at": "09:00", "days": "daily", "every_min": 60 }), "until"),
+        (json!({ "kind": "interval", "at": "09:00", "days": "daily", "every_min": 60, "until": "9:00" }), "until"),
+        (json!({ "kind": "interval", "at": "09:00", "days": "daily", "every_min": 60, "until": "09:00" }), "until"),
+        (json!({ "kind": "interval", "at": "18:00", "days": "daily", "every_min": 60, "until": "09:00" }), "until"),
+        (json!({ "kind": "interval", "at": "09:00", "days": "weekly", "every_min": 60, "until": "18:00" }), "weekday"),
+        (
+            json!({ "kind": "interval", "at": "09:00", "days": "daily", "every_min": 60, "until": "18:00", "weekday": 1 }),
+            "weekday",
+        ),
+        (json!({ "kind": "daily", "at": "09:00", "days": "daily" }), "days"),
+        (json!({ "kind": "daily", "at": "09:00", "every_min": 60 }), "every_min"),
+        (json!({ "kind": "weekdays", "at": "09:00", "until": "18:00" }), "until"),
     ] {
         let e = add(&td, &mut c, json!({ "id": id(), "title": "t", "repeat": repeat })).await.unwrap_err();
         assert_eq!(reason(&e), (ErrorCode::Invalid, Some("repeat".into()), Some(field_reason.into())), "{repeat}");
@@ -215,6 +254,249 @@ async fn the_rule_is_validated_and_only_a_person_sets_it() {
     let t = update(&td, &mut c, json!({ "id": t.id, "clear": ["repeat"] })).await.unwrap();
     assert!(t.repeat.is_none());
     assert!(get(&td, &mut c, &t.id).await.repeat.is_none());
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn interval_rules_and_auto_close_are_stored_and_changing_only_auto_close_keeps_the_schedule() {
+    let (td, mut c) = start().await;
+    td.ctx.judge.clock().set(utc("2024-01-10T13:00Z")); // 08:00 EST，周三
+    let rule = json!({ "kind": "interval", "at": "09:00", "days": "weekdays", "every_min": 120, "until": "18:00" });
+    let t = add(&td, &mut c, json!({ "id": id(), "title": "Patrol", "repeat": rule })).await.unwrap();
+    let r = t.repeat.clone().unwrap();
+    assert_eq!(
+        (r.kind, r.days, r.every_min, r.until.as_deref(), r.auto_close),
+        (TodoRepeatKind::Interval, Some(TodoRepeatDays::Weekdays), Some(120), Some("18:00"), false)
+    );
+    assert_eq!(r.next_ms, Some(utc("2024-01-10T14:00Z")));
+    assert_eq!(get(&td, &mut c, &t.id).await.repeat.unwrap().days, Some(TodoRepeatDays::Weekdays));
+    // 只改 auto_close 不重新算「已处理的时间」：10:00 EST 改完之后，09:00 那次（没来得及复制）还能补上
+    td.ctx.judge.clock().set(utc("2024-01-10T15:00Z")); // 10:00 EST
+    let mut with_close = rule.clone();
+    with_close["auto_close"] = json!(true);
+    let t = update(&td, &mut c, json!({ "id": t.id, "repeat": with_close })).await.unwrap();
+    assert!(t.repeat.unwrap().auto_close);
+    assert!(get(&td, &mut c, &t.id).await.repeat.unwrap().auto_close);
+    assert_eq!(tick(&td.ctx).await.unwrap(), 1);
+    // 改了时间安排（间隔）就从现在起重算：补不上之前的
+    let mut moved = rule.clone();
+    moved["every_min"] = json!(60);
+    update(&td, &mut c, json!({ "id": t.id, "repeat": moved })).await.unwrap();
+    td.ctx.judge.clock().set(utc("2024-01-10T15:30Z"));
+    assert_eq!(tick(&td.ctx).await.unwrap(), 0);
+    let daily = add(
+        &td,
+        &mut c,
+        json!({ "id": id(), "title": "Daily", "repeat": { "kind": "daily", "at": "09:00", "auto_close": true } }),
+    )
+    .await
+    .unwrap();
+    assert!(daily.repeat.unwrap().auto_close);
+    td.shutdown().await;
+}
+
+#[test]
+fn interval_slots_run_from_the_start_while_not_after_the_end() {
+    tz();
+    let weekdays = interval(TodoRepeatDays::Weekdays, None, "09:00", 120, "18:00");
+    // 2024-01-10（周三）：09:00 11:00 13:00 15:00 17:00 EST；18:00 不是时间点（09:00 + 4×2h = 17:00，下一个 19:00 过了 until）
+    assert_eq!(slot_at_or_before(&weekdays, utc("2024-01-10T15:00Z")), Some(utc("2024-01-10T14:00Z"))); // 10:00
+    assert_eq!(slot_after(&weekdays, utc("2024-01-10T15:00Z")), Some(utc("2024-01-10T16:00Z"))); // 11:00
+    assert_eq!(slot_at_or_before(&weekdays, utc("2024-01-10T16:00Z")), Some(utc("2024-01-10T16:00Z")));
+    assert_eq!(slot_after(&weekdays, utc("2024-01-10T16:00Z")), Some(utc("2024-01-10T18:00Z")));
+    assert_eq!(slot_at_or_before(&weekdays, utc("2024-01-10T23:30Z")), Some(utc("2024-01-10T22:00Z"))); // 17:00
+                                                                                                        // 当天最后一个之后：下一个工作日 09:00；周五之后跳过周末
+    assert_eq!(slot_after(&weekdays, utc("2024-01-10T22:00Z")), Some(utc("2024-01-11T14:00Z")));
+    assert_eq!(slot_after(&weekdays, utc("2024-01-12T22:00Z")), Some(utc("2024-01-15T14:00Z")));
+    // 周末之后的最近一次是周五的最后一个
+    assert_eq!(slot_at_or_before(&weekdays, utc("2024-01-14T20:00Z")), Some(utc("2024-01-12T22:00Z")));
+    // 当天第一个之前：前一个工作日的最后一个
+    assert_eq!(slot_at_or_before(&weekdays, utc("2024-01-11T13:00Z")), Some(utc("2024-01-10T22:00Z")));
+
+    // until 含端点：09:00–17:00 每 2 小时，17:00 是时间点
+    let inclusive = interval(TodoRepeatDays::Daily, None, "09:00", 120, "17:00");
+    assert_eq!(slot_at_or_before(&inclusive, utc("2024-01-10T23:00Z")), Some(utc("2024-01-10T22:00Z")));
+    // 15 分钟一个、weekly：只在那个星期几（2024-01-15 是周一）
+    let monday = interval(TodoRepeatDays::Weekly, Some(1), "09:00", 15, "09:45");
+    assert_eq!(slot_after(&monday, utc("2024-01-10T15:00Z")), Some(utc("2024-01-15T14:00Z")));
+    assert_eq!(slot_after(&monday, utc("2024-01-15T14:00Z")), Some(utc("2024-01-15T14:15Z")));
+    assert_eq!(slot_after(&monday, utc("2024-01-15T14:45Z")), Some(utc("2024-01-22T14:00Z")));
+    // 时间点永远晚于 after_ms（相等的不算）
+    for t in [utc("2024-01-10T16:00Z"), utc("2024-01-10T14:00Z"), utc("2024-01-12T22:00Z")] {
+        assert!(slot_after(&weekdays, t).unwrap() > t);
+    }
+    // 不完整的规则没有时间点
+    assert_eq!(slot_after(&rule(TodoRepeatKind::Interval, "09:00", None), utc("2024-01-10T15:00Z")), None);
+}
+
+#[test]
+fn interval_slots_follow_the_local_clock_across_daylight_saving() {
+    tz();
+    // 2024-03-10 02:00 EST 跳到 03:00 EDT；每小时一个、00:30–04:30：02:30 不存在，落在 03:00 EDT（07:00Z），
+    // 和 03:30 EDT（07:30Z）是不同的时刻；其余按当地时钟
+    let r = interval(TodoRepeatDays::Daily, None, "00:30", 60, "04:30");
+    assert_eq!(slot_after(&r, utc("2024-03-10T05:30Z")), Some(utc("2024-03-10T06:30Z"))); // 01:30 EST
+    assert_eq!(slot_after(&r, utc("2024-03-10T06:30Z")), Some(utc("2024-03-10T07:00Z"))); // 02:30 → 03:00 EDT
+    assert_eq!(slot_after(&r, utc("2024-03-10T07:00Z")), Some(utc("2024-03-10T07:30Z"))); // 03:30 EDT
+    assert_eq!(slot_after(&r, utc("2024-03-10T08:30Z")), Some(utc("2024-03-11T04:30Z"))); // 04:30 EDT 之后是第二天 00:30 EDT
+                                                                                          // 回拨日 2024-11-03：01:30 出现两次，只算第一次（EDT，05:30Z）；02:30 EST 在 07:30Z
+    assert_eq!(slot_after(&r, utc("2024-11-03T04:30Z")), Some(utc("2024-11-03T05:30Z")));
+    assert_eq!(slot_after(&r, utc("2024-11-03T05:30Z")), Some(utc("2024-11-03T07:30Z")));
+}
+
+#[tokio::test]
+async fn an_interval_template_copies_at_each_slot_and_skips_while_a_copy_is_open() {
+    let (td, mut c) = start().await;
+    td.ctx.judge.clock().set(utc("2024-01-10T13:00Z")); // 08:00 EST
+    let rule = json!({ "kind": "interval", "at": "09:00", "days": "daily", "every_min": 120, "until": "18:00" });
+    let t = add(&td, &mut c, json!({ "id": id(), "title": "Patrol", "repeat": rule })).await.unwrap();
+    td.ctx.judge.clock().set(utc("2024-01-10T14:00Z"));
+    assert_eq!(tick(&td.ctx).await.unwrap(), 1);
+    // 11:00 的时间点：上一份还开着，跳过
+    td.ctx.judge.clock().set(utc("2024-01-10T16:00Z"));
+    assert_eq!(tick(&td.ctx).await.unwrap(), 0);
+    let first = copies(&list_all(&td, &mut c).await, &t.id).remove(0);
+    update(&td, &mut c, json!({ "id": first.id, "state": "done" })).await.unwrap();
+    // 13:00 的时间点：关了，照常复制
+    td.ctx.judge.clock().set(utc("2024-01-10T18:00Z"));
+    assert_eq!(tick(&td.ctx).await.unwrap(), 1);
+    assert_eq!(copies(&list_all(&td, &mut c).await, &t.id).len(), 2);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn repeat_now_copies_once_without_touching_the_schedule() {
+    let (td, mut c) = start().await;
+    td.ctx.judge.clock().set(utc("2024-01-10T13:00Z")); // 08:00 EST
+    let t = add(
+        &td,
+        &mut c,
+        json!({ "id": id(), "title": "Secret title", "body": "Secret body", "project": "home",
+                "repeat": { "kind": "daily", "at": "09:00" } }),
+    )
+    .await
+    .unwrap();
+    let before = get(&td, &mut c, &t.id).await;
+    let last_before: Option<i64> = sqlx::query_scalar("SELECT repeat_last_ms FROM todos WHERE id = ?")
+        .bind(&t.id)
+        .fetch_one(td.ctx.store.pool())
+        .await
+        .unwrap();
+    let mut watcher = td.local_cli_client();
+    td.ctx.judge.clock().set(utc("2024-01-10T13:30Z"));
+    let copy: Todo = c.call(&td, methods::TODO_REPEAT_NOW, json!({ "id": t.id })).await.unwrap();
+    assert_eq!(
+        (copy.title.as_str(), copy.body.as_str(), copy.project.as_deref(), copy.state, copy.handler),
+        ("Secret title", "Secret body", Some("home"), TodoState::Open, TodoHandler::Me)
+    );
+    assert_eq!(copy.source.kind, TodoSourceKind::Repeat);
+    assert_eq!(copy.source.todo_id.as_deref(), Some(t.id.as_str()));
+    assert!(copy.repeat.is_none() && copy.due_ms.is_none() && !copy.unreviewed);
+    assert_eq!(get(&td, &mut c, &copy.id).await.id, copy.id);
+    // 模板的「经过」：手动的一条；下一次时间和记录都没动
+    let events = history(&td, &mut c, &t.id).await;
+    assert_eq!(
+        events.iter().map(|e| e.data.clone()).collect::<Vec<_>>(),
+        vec![TodoEventData::RepeatCreated { todo_id: copy.id.clone(), at_ms: utc("2024-01-10T13:30Z"), manual: true }]
+    );
+    let after = get(&td, &mut c, &t.id).await;
+    assert_eq!(after.repeat.as_ref().and_then(|r| r.next_ms), before.repeat.as_ref().and_then(|r| r.next_ms));
+    assert_eq!(after.updated_ms, before.updated_ms);
+    let last_after: Option<i64> = sqlx::query_scalar("SELECT repeat_last_ms FROM todos WHERE id = ?")
+        .bind(&t.id)
+        .fetch_one(td.ctx.store.pool())
+        .await
+        .unwrap();
+    assert_eq!(last_before, last_after);
+    // todo.changed 和审计（不含标题、正文）
+    let seen: Vec<TodoChanged> = watcher
+        .drain_now()
+        .into_iter()
+        .filter(|n| n.method == methods::TODO_CHANGED)
+        .map(|n| serde_json::from_value(n.params).unwrap())
+        .collect();
+    assert!(seen.iter().any(|ch| ch.id == copy.id && ch.todo.is_some()), "{seen:?}");
+    let audit = td.ctx.audit.query(None, None, 100).await;
+    let entry = audit.iter().find(|e| e.action == "todo.repeat").expect("audit entry");
+    assert_eq!(entry.target.as_deref(), Some(copy.id.as_str()));
+    assert_eq!(entry.detail["manual"], json!(true));
+    assert_eq!(entry.detail["template"], json!(t.id));
+    assert!(!entry.detail.to_string().contains("Secret"));
+    // 手动那份还开着：再点一次被拒，到点的那次也跳过
+    let e = c.call::<Todo>(&td, methods::TODO_REPEAT_NOW, json!({ "id": t.id })).await.unwrap_err();
+    assert_eq!(reason(&e), (ErrorCode::Invalid, Some("id".into()), Some("previous_open".into())));
+    assert_eq!(e.data.unwrap().todo_id.as_deref(), Some(copy.id.as_str()));
+    td.ctx.judge.clock().set(utc("2024-01-10T14:00Z"));
+    assert_eq!(tick(&td.ctx).await.unwrap(), 0);
+    assert!(history(&td, &mut c, &t.id).await.iter().any(|e| matches!(e.data, TodoEventData::RepeatSkipped { .. })));
+    // 关了之后又能点
+    update(&td, &mut c, json!({ "id": copy.id, "state": "dropped" })).await.unwrap();
+    let again: Todo = c.call(&td, methods::TODO_REPEAT_NOW, json!({ "id": t.id })).await.unwrap();
+    assert_ne!(again.id, copy.id);
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn repeat_now_refusals() {
+    let (td, mut c) = start().await;
+    td.ctx.judge.clock().set(utc("2024-01-10T13:00Z"));
+    let call = |id: String| json!({ "id": id });
+    // 不存在 / id 不规范
+    let e = c.call::<Todo>(&td, methods::TODO_REPEAT_NOW, call(id())).await.unwrap_err();
+    assert_eq!(reason(&e).0, ErrorCode::NotFound);
+    let e = c.call::<Todo>(&td, methods::TODO_REPEAT_NOW, call("nope".into())).await.unwrap_err();
+    assert_eq!(reason(&e), (ErrorCode::Invalid, Some("id".into()), None));
+    // 不是周期项
+    let plain = add(&td, &mut c, json!({ "id": id(), "title": "plain" })).await.unwrap();
+    let e = c.call::<Todo>(&td, methods::TODO_REPEAT_NOW, call(plain.id.clone())).await.unwrap_err();
+    assert_eq!(reason(&e), (ErrorCode::Invalid, Some("id".into()), Some("not_template".into())));
+    // 已关闭
+    let t = add(&td, &mut c, json!({ "id": id(), "title": "t", "repeat": { "kind": "daily", "at": "09:00" } }))
+        .await
+        .unwrap();
+    update(&td, &mut c, json!({ "id": t.id, "state": "done" })).await.unwrap();
+    let e = c.call::<Todo>(&td, methods::TODO_REPEAT_NOW, call(t.id.clone())).await.unwrap_err();
+    assert_eq!(reason(&e), (ErrorCode::Invalid, Some("id".into()), Some("closed".into())));
+    update(&td, &mut c, json!({ "id": t.id, "state": "open" })).await.unwrap();
+    // 未收下（只有直接写库才有）
+    sqlx::query("UPDATE todos SET unreviewed = 1 WHERE id = ?").bind(&t.id).execute(td.ctx.store.pool()).await.unwrap();
+    let e = c.call::<Todo>(&td, methods::TODO_REPEAT_NOW, call(t.id.clone())).await.unwrap_err();
+    assert_eq!(reason(&e), (ErrorCode::Invalid, Some("id".into()), Some("unreviewed".into())));
+    sqlx::query("UPDATE todos SET unreviewed = 0 WHERE id = ?").bind(&t.id).execute(td.ctx.store.pool()).await.unwrap();
+    // 只由人：自报 mcp 的连接 → forbidden，什么都不建
+    let mut mcp = td.local_mcp_client();
+    let e = mcp.call::<Todo>(&td, methods::TODO_REPEAT_NOW, call(t.id.clone())).await.unwrap_err();
+    assert_eq!(reason(&e).0, ErrorCode::Forbidden);
+    assert!(copies(&list_all(&td, &mut c).await, &t.id).is_empty());
+    // 清单满了：和 todo.add 一样的 too_many
+    sqlx::query("UPDATE todos SET state = 'done', closed_ms = 1 WHERE id <> ?")
+        .bind(&t.id)
+        .execute(td.ctx.store.pool())
+        .await
+        .unwrap();
+    for i in 0..anycon_daemon::todos::MAX_OPEN - 1 {
+        let todo = Todo {
+            id: id(),
+            title: format!("x{i}"),
+            body: String::new(),
+            project: None,
+            state: TodoState::Open,
+            handler: TodoHandler::Me,
+            due_ms: None,
+            source: TodoSource { kind: TodoSourceKind::Local, device_id: None, session_id: None, todo_id: None },
+            unreviewed: false,
+            created_ms: 1,
+            updated_ms: 1,
+            closed_ms: None,
+            sessions: vec![],
+            activity: None,
+            repeat: None,
+            remote: vec![],
+        };
+        td.ctx.store.todo_insert(&todo).await.unwrap();
+    }
+    let e = c.call::<Todo>(&td, methods::TODO_REPEAT_NOW, call(t.id.clone())).await.unwrap_err();
+    assert_eq!(reason(&e), (ErrorCode::Invalid, Some("todos".into()), Some("too_many".into())));
     td.shutdown().await;
 }
 
@@ -298,7 +580,7 @@ async fn a_due_template_is_copied_once_even_across_a_restart() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(
         events[0].data,
-        TodoEventData::RepeatCreated { todo_id: copy.id.clone(), at_ms: utc("2024-01-10T14:00Z") }
+        TodoEventData::RepeatCreated { todo_id: copy.id.clone(), at_ms: utc("2024-01-10T14:00Z"), manual: false }
     );
     // 复制出来的项照常发 todo.changed
     let seen: Vec<TodoChanged> = watcher
@@ -343,7 +625,8 @@ async fn an_open_copy_skips_the_next_time_and_a_closed_one_does_not() {
         vec![
             TodoEventData::RepeatCreated {
                 todo_id: copies(&list_all(&td, &mut c).await, &template.id)[0].id.clone(),
-                at_ms: utc("2024-01-10T14:00Z")
+                at_ms: utc("2024-01-10T14:00Z"),
+                manual: false
             },
             TodoEventData::RepeatSkipped { at_ms: utc("2024-01-11T14:00Z") },
         ]

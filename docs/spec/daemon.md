@@ -1232,7 +1232,7 @@ Todo {
   updated_ms: timestamp
   closed_ms?: timestamp   // 进入 done / dropped 的时间；重新打开时清掉；在 done 和 dropped 之间换时保持原来的
   sessions: [session_id]  // 这一项派出的会话（§ 22.3）；旧 daemon 没有，按空读
-  repeat?:    { kind: daily | weekdays | weekly, at: "HH:MM", weekday?: 1..7, next_ms? }   // 周期规则：带它的项是模板（§ 26.9）；只由人设置
+  repeat?:    { kind: daily | weekdays | weekly | interval, at: "HH:MM", weekday?: 1..7, days?: daily | weekdays | weekly, every_min?: 15..720, until?: "HH:MM", auto_close?: bool, next_ms? }   // 周期规则：带它的项是模板（§ 26.9）；只由人设置；`days` / `every_min` / `until` 只有 `kind = interval` 才有；`auto_close` 缺省 false、false 时不出现
   activity?: working | waiting | review   // 派出的会话现在的情况，每次返回这一项时算出来，不存（§ 22.3）；已关闭或没派发过的项没有。之后可能多出新的值：解析时落到 `unknown`（Rust 的 `TodoActivity::Unknown`），客户端按「不显示 activity」处理，不能因此失败；daemon 自己不产生它
 }
 ```
@@ -1248,7 +1248,7 @@ Todo {
 | `done` | 完成 | 人手动 |
 | `dropped` | 不做了 | 人手动 |
 
-**`state` 只由人设置**（和 `todo.add` 的初值 `open`），daemon 不限制状态之间怎么转，会话的运行不会写它：派发（§ 22）之后会话的情况是单独的、算出来的 `activity`（§ 22.3）。`waiting` / `review` 仍是合法的值（人和旧客户端可以写），daemon 自己从不写。
+**`state` 只由人设置**（和 `todo.add` 的初值 `open`），daemon 不限制状态之间怎么转，会话的运行不会写它：派发（§ 22）之后会话的情况是单独的、算出来的 `activity`（§ 22.3）。`waiting` / `review` 仍是合法的值（人和旧客户端可以写），daemon 自己从不写。**唯一的例外**：周期项的模板开着 `repeat.auto_close`、Bot 对它复制出来的某一项执行 `done` 时，daemon 把那一项的 `state` 设成 `done`（[§ 26.9](#269-周期项和-pr-事件4b)，[ADR-54](../decisions.md#adr-54-清单决策档案和-bot都在-daemon-上bot-不能批准权限) 的修订）；这一条只在人明确打开了那个选项的模板的复制上生效，「经过」里记着是谁关的。
 
 `source`：一项是 agent 加的（`kind: agent`），当 `todo.add` 带了 `agent: true`，或者它来自本机 socket 上自报了 `local.set_client { client: "mcp" }` 的连接（§ 13）；这时经 hub 来的调用另带 `device_id`。其余的，经 hub 来的调用是 `{ kind: device, device_id }`，本机 socket 是 `{ kind: local }`。
 
@@ -1273,8 +1273,9 @@ Todo {
 |---|---|---|
 | `todo.list` | C→D | `{ include_closed?, project?, limit?, before? }` → `{ todos: [Todo], has_more }`。缺省只给没关闭的（`done` / `dropped` 之外）；`include_closed` 时也给已关闭的。`project` 去掉首尾空白后按名字精确比较（和存的名字同样处理）。按 `(updated_ms, id)` 从新到旧；`before: { updated_ms, id }` 填上一页最后一项的这两个值，返回排在它后面的。`limit` 缺省 200、上限 1000。一页另有字节预算：各项序列化后的字节累计超过 1 MiB 就停（至少给一项），所以一页可能少于 `limit`；后面还有没给出的项时 `has_more = true` |
 | `todo.get` | C→D | `{ id }` → `Todo`。读一项；只读，不审计、不通知。`id` 不存在 → `not_found`，不是小写带连字符的 UUID → `invalid`（`data.field = "id"`，同 `todo.add`）。客户端用它在做破坏性的动作之前向节点确认「这一项现在是什么样」，而不是信缓存 |
-| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, handler?, agent?, origin_session?, repeat? }` → `Todo`。`repeat` 见 § 26.9：`kind` 不认识、`at` 不是 `00:00`–`23:59` 的 `HH:MM`、`weekly` 没有 1–7 的 `weekday` 或别的种类带了 `weekday` → `invalid`（`data.field = "repeat"`，`data.reason` 是 `kind` / `at` / `weekday`）；自报 `mcp` 的连接或 `agent: true` 的写入带 `repeat` → `forbidden`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
+| `todo.add` | C→D | `{ id, title, body?, project?, due_ms?, handler?, agent?, origin_session?, repeat? }` → `Todo`。`repeat` 见 § 26.9：`kind`（或 `interval` 的 `days`）不认识、`at` 不是 `00:00`–`23:59` 的 `HH:MM`、`weekly`（或 `interval` 且 `days = weekly`）没有 1–7 的 `weekday` 或别的情况带了 `weekday`、`interval` 缺 `days` / `every_min` / `until` 或 `every_min` 不在 15–720、`until` 不是 `HH:MM` 或不晚于 `at`、别的种类带了 `days` / `every_min` / `until` → `invalid`（`data.field = "repeat"`，`data.reason` 是 `kind` / `at` / `weekday` / `days` / `every_min` / `until`）；自报 `mcp` 的连接或 `agent: true` 的写入带 `repeat`（包括 `auto_close`）→ `forbidden`。**`id` 已经存在时原样返回已有的那一项，不改它、不报错**（先于对别的参数的校验）：离线重放和回执丢失后的重发都靠这一条（§ 21.6）。`id` 不是小写带连字符的 UUID（大写、花括号、没有连字符、urn 形式都不行；daemon 不做规范化，客户端自己留着一份 id，改写了会对不上）、`title` 为空或超过 200 个 Unicode 码点、含控制字符或 U+2028 / U+2029、`body` 超过 16 KiB（按 UTF-8 字节）、`project` / `due_ms` 不合法 → `invalid`（`data.field` 是出问题的参数名）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）；这一项会是 `unreviewed` 的、而未收下的项已满 100 → `invalid`（`data.field = "todos"`，`data.reason = "too_many_unreviewed"`）。空白的 `project` 按没给处理。`agent` 和 `origin_session` 见 § 21.2 |
 | `todo.update` | C→D | `{ id, title?, body?, project?, due_ms?, state?, handler?, reviewed?, agent?, repeat?, clear? }` → `Todo`。`repeat` 设置或替换周期规则（规则变了，下一次从现在起算，不补设置之前的时间点），校验和错误同 `todo.add`。`reviewed: true` 把 `unreviewed` 清掉（见 § 21.2；`false` 或对已经收下的项 → 忽略这个字段）。缺省的字段保持不变；字段的校验同 `todo.add`（`project` 给了就不能是空白；`id` 不是小写 UUID 同样 `invalid`，`todo.delete` 也是）；**把 `done` / `dropped` 的项改回没关闭的状态时，和新建一样占一个名额：已有 1000 个没关闭的项 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`）**；`clear` 列出要清空的可选字段（`project` `due_ms` `repeat`；清掉 `repeat` 的限制同设置它：agent 不能清），在合并之后生效（和 `session.set_settings` 的 `clear` 同一个约定）。没有任何字段真的变了就是空操作：不改 `updated_ms`、不发通知、不进审计（被忽略的 `reviewed`、清空本来就没有的字段、同值的修改都算没变）。`id` 不存在 → `not_found` |
+| `todo.repeat_now` | C→D | `{ id }` → `Todo`（新复制出的一项）。现在执行一次周期项，见 § 26.9；`capabilities.todo_repeat_interval = true` 才有。`id` 不是小写 UUID → `invalid`（`data.field = "id"`）；不存在 → `not_found`；不是周期项 → `invalid`（`data.field = "id"`，`data.reason = "not_template"`）；模板已关闭 → `invalid`（`"closed"`）；模板还是 `unreviewed` → `invalid`（`"unreviewed"`）；模板最近复制出来的一项还没关闭 → `invalid`（`"previous_open"`，`data.todo_id` 是那一项的 id）；未关闭的项已满 1000 → `invalid`（`data.field = "todos"`，`data.reason = "too_many"`，同 `todo.add`）；自报 `mcp` 的连接、Bot 连接 → `forbidden`（它会产生工作、可能花 Bot 或 agent 的预算，只由人调用）。持清单的锁，检查和写入之间没有别的写入 |
 | `todo.delete` | C→D | `{ id, if_updated_ms? }` → `{}`。物理删除。`id` 不存在 → `not_found`（重放时客户端把它当作已完成）。给了 `if_updated_ms`、而这一项现在的 `updated_ms` 不是它：什么都不删，`invalid`（`data.field = "if_updated_ms"`，`data.reason = "changed"`，`data.updated_ms` 是现在的值），不审计、不通知；检查和删除在同一把锁里，中间没有别的写入。没给就无条件删 |
 | `todo.changed` | D→C notification | `{ id, todo?, deleted }`：新建、修改、删除后发给**所有**在线客户端，包括发起的那一台；`deleted = true` 时没有 `todo` |
 
@@ -1294,7 +1295,7 @@ Todo {
 |---|---|
 | `todos` | id（主键）、title、body、project、state、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 
-迁移 `0008_todo_handler.sql` 为 `todos` 增加 `handler TEXT NOT NULL DEFAULT 'me'`，已有项保持由人处理。迁移 `0010_todo_repeat.sql` 为 `todos` 增加 `repeat_kind`、`repeat_at`、`repeat_weekday`（周期规则）、`repeat_last_ms`（这个模板最近处理过的规则时间，§ 26.9）和 `source_todo`（复制出来的项记着模板的 id），都可以为空。
+迁移 `0008_todo_handler.sql` 为 `todos` 增加 `handler TEXT NOT NULL DEFAULT 'me'`，已有项保持由人处理。迁移 `0010_todo_repeat.sql` 为 `todos` 增加 `repeat_kind`、`repeat_at`、`repeat_weekday`（周期规则）、`repeat_last_ms`（这个模板最近处理过的规则时间，§ 26.9）和 `source_todo`（复制出来的项记着模板的 id），都可以为空。迁移 `0017_todo_repeat_interval.sql` 再增加 `repeat_days`、`repeat_every_min`、`repeat_until`（间隔规则）和 `repeat_auto_close`（`NOT NULL DEFAULT 0`）。
 
 已关闭的项按 `history_retention`（§ 3）清理，从 `closed_ms` 起算；没关闭的不清理。`title` / `body` 是用户内容：不进日志（§ 17），不进审计。
 
@@ -1304,7 +1305,7 @@ Todo {
 
 ### 21.5 审计
 
-`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind, handler }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state` `handler` `repeat`，`unreviewed` 被清掉时也列上）；`add` 带周期规则时另记 `repeat: true`。周期项到点复制出一项记 `todo.repeat`（发起者是 `daemon`），`target` 是新项的 id，`detail` 是 `{ template, at_ms }`，不记标题和正文，`state` 或 `handler` 变了另记相应的 `{ from, to }`；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
+`todo.add`、`todo.update`、`todo.delete`，`target` 是项的 id。`detail`：`add` 记 `{ title_len（字符数）, body_len（字节数）, project?, source_kind, handler }`；`update` 记变了的字段名 `{ fields }`（`title` `body` `project` `due_ms` `state` `handler` `repeat`，`unreviewed` 被清掉时也列上）；`add` 带周期规则时另记 `repeat: true`。周期项到点复制出一项记 `todo.repeat`（发起者是 `daemon`），`target` 是新项的 id，`detail` 是 `{ template, at_ms }`，不记标题和正文，`state` 或 `handler` 变了另记相应的 `{ from, to }`；`todo.repeat_now` 手动复制的一项同样记 `todo.repeat`，发起者是请求的客户端，`detail` 是 `{ template, at_ms（执行的时刻）, manual: true }`；Bot 的 `done` 因 `auto_close` 关闭一项时另记一条 `todo.update`（发起者是 Bot，`detail` 是 `{ fields: ["state"], state: { from, to }, auto_close: <模板 id> }`，不含标题和正文）；`delete` 为空。只记长度和字段名，不记 `title` / `body` 的内容（和 `session.send` 只记长度同一条规则）。重复的 `todo.add`（`id` 已存在）和空操作的 `todo.update` 不进审计。
 
 ### 21.6 节点离线
 
@@ -2040,7 +2041,7 @@ Bot 是 daemon 里的一个调度者：被事件唤醒，看清单里交给它�
 | `ask_advisor` | `question`（≤ 2 KiB） | 调用顾问后端（§ 25 的 `advisor` 位置），把回答附上，**同一次唤醒里**只为这一项再分拣一次。每项每次唤醒最多问一次 |
 | `wait` | — | 什么都不做（会话还在跑、在等你的回答） |
 | `hand_back` | — | `handler` 改回 `me`，「经过」里记一条「Bot 交回给你」和理由 |
-| `done` | — | 它认为做完了：`handler` 改回 `me`，「经过」里记一条「Bot 认为做完了」和理由。**不写 `state`**（§ 21.2：`state` 只由人设置）；这一项照常靠 `activity = review` 出现在「待验收」里，验收由人做 |
+| `done` | — | 它认为做完了：`handler` 改回 `me`，「经过」里记一条「Bot 认为做完了」和理由。**不写 `state`**（§ 21.2：`state` 只由人设置）；这一项照常靠 `activity = review` 出现在「待验收」里，验收由人做。**唯一的例外**：这一项是周期项（§ 26.9）复制出来的、模板还在、并且模板现在开着 `repeat.auto_close`，daemon 同时把它的 `state` 设成 `done`（记 `closed_ms`），不进待验收，见 § 26.9「自动关闭」。`hand_back`、`wait`、提问从不关闭任何项 |
 
 - **`reason`** 必填，≤ 500 个字符，写进运行记录和这一项的「经过」。
 - **`rules?`**：可以带它所依据的规则 id 列表。它进运行记录，决定被执行时（试跑不算）还会更新这些规则的 `last_referenced_ms`（§ 26.10）。模型靠系统提示里规则文字后面的一行「规则 id，按上面的顺序」和每个项目的 `project_rule_ids` 知道每条规则的 id（过期的规则不在其中）。
@@ -2120,17 +2121,20 @@ Bot 派到别的节点 B 的会话（§ 27.4）里你发了消息，也算接手
 
 ### 26.9 周期项和 PR 事件（4b）
 
-- **周期项（已实现）**：`Todo.repeat?: { kind: daily | weekdays | weekly, at: "HH:MM", weekday?, next_ms? }`，按**机器的时区**算（`localtime_r` 读当地时间，不改进程的 `TZ`）。带 `repeat` 的项是**模板**：它记下「每次要做的那件事」，自己不被 Bot 分拣、不能派发。
-  - **规则**：`daily` 每天 `at`；`weekdays` 周一到周五的 `at`；`weekly` 每周 `weekday`（1–7，周一 = 1，ISO）的 `at`，`weekly` 必须带 `weekday`，另外两种不能带。`at` 是 `00:00`–`23:59` 的两位数字 `HH:MM`。校验和错误见 § 21.3。**只由人设置**：自报 `mcp` 的连接或 `agent: true` 的写入设置、替换、清除 `repeat` 都回 `forbidden`（清除用 `todo.update` 的 `clear: ["repeat"]`）。`next_ms` 是节点此刻算出来的下一次时间，不存，请求里带了也忽略；已关闭的模板没有。算在 daemon 上，因为规则按节点的时区，浏览器和节点可能不在同一个时区。
+- **周期项（已实现）**：`Todo.repeat?: { kind: daily | weekdays | weekly | interval, at: "HH:MM", weekday?, days?, every_min?, until?, auto_close?, next_ms? }`，按**机器的时区**算（`localtime_r` 读当地时间，不改进程的 `TZ`）。带 `repeat` 的项是**模板**：它记下「每次要做的那件事」，自己不被 Bot 分拣、不能派发。
+  - **规则**：`daily` 每天 `at`；`weekdays` 周一到周五的 `at`；`weekly` 每周 `weekday`（1–7，周一 = 1，ISO）的 `at`，`weekly` 必须带 `weekday`，另外两种不能带。`at` 是 `00:00`–`23:59` 的两位数字 `HH:MM`。校验和错误见 § 21.3。`interval`（一天里重复多次）见下面「间隔规则」。**只由人设置**：自报 `mcp` 的连接或 `agent: true` 的写入设置、替换、清除 `repeat` 都回 `forbidden`（清除用 `todo.update` 的 `clear: ["repeat"]`）。`next_ms` 是节点此刻算出来的下一次时间，不存，请求里带了也忽略；已关闭的模板没有。算在 daemon 上，因为规则按节点的时区，浏览器和节点可能不在同一个时区。
   - **模板的限制**：Bot 的分拣不看它（§ 26.1 的条件）；`todo.dispatch` 拒绝它（`invalid`，`data.reason = "repeat_template"`，§ 22.2）；模板可以 `handler = twin`，意思是**每一次复制出来的都交给 Bot**：复制照抄 `handler`，所以复制出来的项由 Bot 处理、并触发 `todo` 唤醒；模板自己仍不进分拣。处理人的其余规则不变（agent 和自报 `mcp` 的连接不能设成 `twin`，未收下的项不能交给 Bot）。模板可以关闭（`done` / `dropped`），关闭的模板不再复制，重新打开后从之后的时间点继续。
   - **复制**：daemon 启动时看一遍、之后每分钟看一次（时钟用判断后端那只可替换的时钟，测试里不真的等）。一个没关闭的模板到了它的下一次时间，就复制出一项：新的 id，`title` / `body` / `project` / `handler` 照抄（`due_ms` 和 `repeat` 不带），`source = { kind: repeat, todo_id: <模板 id> }`，`state = open`，`unreviewed = false`；这一项照常 `todo.changed`、记审计 `todo.repeat`，`handler = twin` 时照常触发 Bot 的唤醒（`todo` 触发，§ 26.3）。模板自己还是 `unreviewed`（agent 记的、没人收下，只可能是旧数据，规则只由人设置）时不复制。
   - **夏令时**：夏令时切换日照当地时钟算。被跳过的时刻（如 02:30 跳到 03:00）算在跳过之后的第一分钟；回拨时重复出现的时刻（如 01:30 出现两次）只算第一次出现的那个。
   - **同一次只复制一次，重启也一样**：模板记着「最近处理过的规则时间」（`repeat_last_ms`，存的是规则上的那个时刻，不是处理它的时刻）。设置或改动规则、关闭的模板重新打开时，它设成现在，所以那之前已经过了的时间点不补。
   - **上一次还没关闭**：这个模板最近复制出来的那一项（`source.todo_id` 是它、最新的一项）还没关闭时，这一次不复制，模板的「经过」里记一条 `repeat_skipped { at_ms }`，这个时间点算处理过了，之后不补。清单已满（1 000 个没关闭的项）时同样当作跳过。
-  - **复制成功**：模板的「经过」里记一条 `repeat_created { todo_id, at_ms }`（`at_ms` 是规则上的时间）。
+  - **复制成功**：模板的「经过」里记一条 `repeat_created { todo_id, at_ms }`（`at_ms` 是规则上的时间；手动执行的一次多 `manual: true`，`at_ms` 是执行的时刻，线路上 `manual` 为 false 时省略）。
+  - **间隔规则（`kind = interval`）**：在 `days`（`daily` / `weekdays` / `weekly`，`weekly` 要带 `weekday`）指定的日子里，当天的时间点是 `at`、`at + every_min`、`at + 2·every_min`……直到不晚于 `until`（含）。`every_min` 是 15–720 的整数，`until` 是同一天内严格晚于 `at` 的 `HH:MM`（不跨午夜）。例：工作日、`at = 09:00`、`every_min = 120`、`until = 18:00` → 09:00 11:00 13:00 15:00 17:00。每个时间点都按当地时钟换成时刻，夏令时的规则同上（被跳过的时刻落在跳过之后的第一分钟，重复的时刻取第一次出现的）；两个时间点落在同一时刻时只算一次。`next_ms`、`repeat_last_ms`、停机补一次（只补最近一个该到的时间，且不到 24 小时）、上一次没关闭就跳过、清单已满就跳过，都和别的种类一样，对每个时间点各自生效；只改 `auto_close` 不重置 `repeat_last_ms`，改了别的字段才重置。**为什么是新的 `kind`**：旧客户端读到不认识的 `kind` 显示「重复规则看不懂」，而不是把它当成一天一次的规则、报错成一个错误的时间。
+  - **自动关闭（`auto_close`）**：任何一种规则都能带，缺省 false，只由人设置（和 `repeat` 其余部分一样，`mcp` / `agent: true` → `forbidden`）。Bot 对一项执行 `done`（§ 26.4）时，如果这一项的 `source.kind = repeat`、`source.todo_id` 指的模板还在、并且模板**此刻**的 `repeat.auto_close` 为 true，daemon 在 `done` 原有的效果（`handler` 改回 `me`、「经过」里记 Bot 的决定和理由）之外，同一个事务里把这一项的 `state` 设成 `done`、写 `closed_ms`，并在这一项的「经过」里记一条 `state { from, to: done, by: { kind: repeat, id: <模板 id> } }`；同样的善后：广播 `todo.changed`、作废这一项上还开着的 Bot 提问、记审计（见 § 21.5）。模板已删除、或选项已关掉时，行为和以前完全一样（只交回给人、进待验收）。只有 `done` 触发；`hand_back`、`wait`、提问从不关闭任何项；不是周期项复制出来的项不受影响。**为什么**：每隔几小时巡查一次的模板，如果每一份都要人验收才算关闭，下一个时间点就会因为「上一份没关闭」一直被跳过。这是对「`state` 只由人设置」的明确例外，边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和-bot都在-daemon-上bot-不能批准权限) 的修订。`done` 只有这一条执行路径（本机 Bot 的执行，§ 26.4）：别的节点的 Bot 经 Bot 连接（§ 27）记在这个节点上的项是 `source.kind = twin`，不是周期项复制出来的，所以不受它影响。
+  - **现在执行一次（`todo.repeat_now { id }` → 新的一项）**：立刻复制出一项，和到点复制出来的完全一样（照抄的字段、`source`、`todo.changed`、`handler = twin` 时触发 Bot、`note_sent`），但**不动 `repeat_last_ms` 和下一次的时间**。模板的「经过」里记 `repeat_created { todo_id, at_ms: <现在>, manual: true }`，审计 `todo.repeat`（`detail` 含 `manual: true`，不含标题和正文）。拒绝的情形见 § 21.3 的 `todo.repeat_now`；因为检查「上一份没关闭」，手动复制出来的一份还开着时，下一个到点的时间点会被跳过（有意的，和到点复制一致）。只由人调用。
   - **停机不补积压**：daemon 停着错过的次数不一次补。起来之后只看最近一个该到的时间：它在停机期间、并且离现在不到 24 小时，就补这一次；更早的不补，只把 `repeat_last_ms` 推到那个时间，什么都不记。
-  - **协议**：`TodoRepeat`、`TodoRepeatKind`（带 `Unknown`）、`TodoSourceKind::Repeat`、`TodoSource.todo_id`、`ClearableTodoField::Repeat`、「经过」的两种新事件（`repeat_created`、`repeat_skipped`），`node.info` 的 `capabilities.todo_repeat`（旧 daemon 没有，读作 `false`；客户端据此决定要不要显示「重复」）。不认识的 `kind`、事件种类、来源种类都落到 `Unknown`，旧客户端不因此解析失败。
-  - **入口**：CLI `anycon todo add --repeat <spec>`、`anycon todo edit <id> --repeat <spec> | --no-repeat`、`anycon todo ls` 的 REPEAT 列（[cli.md § 3.8](cli.md#38-anycon-todo)）；SDK 的 `node.todos.add` / `update` 直接带 `repeat`；Web 见 [web.md § 14.6](web.md#146-清单和单项)。
+  - **协议**：`TodoRepeat`、`TodoRepeatKind`（带 `Unknown`）、`TodoSourceKind::Repeat`、`TodoSource.todo_id`、`ClearableTodoField::Repeat`、「经过」的两种新事件（`repeat_created`、`repeat_skipped`），`node.info` 的 `capabilities.todo_repeat`（旧 daemon 没有，读作 `false`；客户端据此决定要不要显示「重复」）。间隔规则另有 `TodoRepeatDays`（带 `Unknown`）、`TodoRepeat` 的 `days` / `every_min` / `until` / `auto_close`、方法 `todo.repeat_now`、`repeat_created.manual`、`RpcErrorData.todo_id`，由 `capabilities.todo_repeat_interval` 一并表示（旧 daemon 没有，读作 `false`；客户端据此决定要不要显示「每隔」、自动关闭和「现在执行一次」）。不认识的 `kind`、事件种类、来源种类都落到 `Unknown`，旧客户端不因此解析失败。
+  - **入口**：CLI `anycon todo add --repeat <spec> [--auto-close]`、`anycon todo edit <id> --repeat <spec> | --no-repeat | --auto-close | --no-auto-close`、`anycon todo repeat-now <id>`、`anycon todo ls` 的 REPEAT 列（[cli.md § 3.8](cli.md#38-anycon-todo)）；SDK 的 `node.todos.add` / `update` 直接带 `repeat`；Web 见 [web.md § 14.6](web.md#146-清单和单项)。
 - **PR 事件**：Bot 派出的会话，它的分支对应的 PR 检查失败、被合并或关闭、有了新的评审意见时，触发一次唤醒（`trigger = pr`）。
   - **轮询谁**：在已有的 `gh pr view` 轮询（§ 10.1「PR 自动归档」）上扩展，不另起一套。除了开了 `worktree.auto_archive_on_pr_close` 时的会话，**Bot 派出的、所属的项还交给 Bot（`handler = twin`）且没关闭的会话**也轮询，不论那个开关；项关闭、或 `handler` 改回 `me` 之后不再轮询。频率、每轮上限、筛选（没归档、没有 turn 在跑、有上游）和 20 秒超时都沿用。Bot 没开、没配置或暂停时不轮询，恢复后的第一次轮询去和库里的基线比。`gh` 没装、没登录、出错或超时时这些会话什么都不发生：不记事件、不改基线、不报错，下一轮再试，不重试。
   - **取什么**：`gh pr view --json` 在原有字段之外多取 `reviews` 和 `comments`，daemon **只数条数、取最新一条的时间**（`submittedAt` / `createdAt`），不读也不存任何正文。

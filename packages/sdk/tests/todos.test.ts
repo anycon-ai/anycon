@@ -98,7 +98,13 @@ for (const impl of cryptoImpls) {
       await withNode(await impl.load(), async (node, env) => {
         const tpl = await node.todos.add({
           title: 'patrol',
-          repeat: { kind: 'interval', days: 'weekdays', at: '09:00', every_min: 120, until: '18:00' },
+          repeat: {
+            kind: 'interval',
+            days: 'weekdays',
+            at: '09:00',
+            every_min: 120,
+            until: '18:00',
+          },
         })
         const copy = await node.todos.repeatNow(tpl.id)
         assert.deepEqual(paramsOf(env, 'todo.repeat_now'), [{ id: tpl.id }])

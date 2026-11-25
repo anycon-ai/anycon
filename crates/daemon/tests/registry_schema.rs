@@ -367,7 +367,14 @@ async fn walk_todo(w: &mut Walk<'_>) {
         .await;
     assert!(r["repeat"]["next_ms"].is_u64(), "{r}");
     w.call(methods::TODO_UPDATE, json!({ "id": rid, "repeat": { "kind": "weekdays", "at": "08:30" } })).await;
+    // 间隔规则和自动关闭，以及现在执行一次：结果是新复制出的项，模板的「经过」里多一条 `manual` 的 `repeat_created`
+    let interval = json!({ "kind": "interval", "days": "weekdays", "at": "09:00", "every_min": 120, "until": "18:00", "auto_close": true });
+    let r = w.call(methods::TODO_UPDATE, json!({ "id": rid, "repeat": interval })).await;
+    assert_eq!(r["repeat"]["every_min"], 120, "{r}");
+    let copy = w.call(methods::TODO_REPEAT_NOW, json!({ "id": rid })).await;
+    assert_eq!(copy["source"]["todo_id"], rid, "{copy}");
     w.call(methods::TODO_HISTORY, json!({ "id": rid })).await;
+    w.call(methods::TODO_DELETE, json!({ "id": copy["id"] })).await;
     w.call(methods::TODO_UPDATE, json!({ "id": rid, "clear": ["repeat"] })).await;
     w.call(methods::TODO_DELETE, json!({ "id": rid })).await;
     w.call(methods::TODO_LIST, json!({})).await;

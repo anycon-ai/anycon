@@ -957,7 +957,10 @@ export class FakeDaemon {
       const tpl = todos.get(p.id)
       if (!tpl) throw AnyconRpcError.of('not_found', 'no such todo')
       if (!tpl.repeat)
-        throw AnyconRpcError.of('invalid', 'not a repeating todo', { field: 'id', reason: 'not_template' })
+        throw AnyconRpcError.of('invalid', 'not a repeating todo', {
+          field: 'id',
+          reason: 'not_template',
+        })
       const copy = {
         id: `copy-${todoClock + 1}`,
         title: tpl.title,

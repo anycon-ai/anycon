@@ -91,6 +91,8 @@ const DENIED: &[&str] = &[
     methods::TODO_UPDATE,
     methods::TODO_DELETE,
     methods::TODO_DISPATCH_PREVIEW,
+    // 现在执行周期项只由人做：会产生工作、花 Bot 或 agent 的预算
+    methods::TODO_REPEAT_NOW,
     methods::RULE_LIST,
     methods::RULE_ADD,
     methods::RULE_UPDATE,

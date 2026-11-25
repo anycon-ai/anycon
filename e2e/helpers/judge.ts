@@ -1,7 +1,8 @@
 /**
  * Bot 的判断后端替身：一个最小的 Anthropic Messages API 服务（docs/spec/daemon.md § 25.1：`POST /v1/messages`，
- * `x-api-key`、`anthropic-version`，请求体 `{ model, max_tokens, system, messages: [{ role: 'user', content }] }`，
- * 回应取 `content[]` 里第一个 `type = text` 的文字）。Node `http`，没有额外依赖，在用例自己的进程里起、监听 127.0.0.1 的随机端口。
+ * `x-api-key`、`anthropic-version`，请求体 `{ model, max_tokens, system, messages: [{ role: 'user', content }], stream: true }`）。
+ * daemon 只收流式回应，所以回答写成 SSE：`message_start`、一个文字块（回答切成几段 `text_delta`，覆盖跨事件拼接）、
+ * `message_delta`（用量）、`message_stop`。Node `http`，没有额外依赖，在用例自己的进程里起、监听 127.0.0.1 的随机端口。
  *
  * 每个请求都按 daemon 实际发的格式解析并记下来（`requests`），回答由用例给：`respond` 是一个按请求内容决定回答的函数，返回
  * 分拣计划（`{ items: [...] }`，§ 26.4）。项 id 要从请求里找：每一项包在随机边界 `<DATA_ANYCON_TWIN_<32 位 hex>> … </DATA_…>`
@@ -23,6 +24,8 @@ export interface JudgeRequest {
   prompt: string
   apiKey: string | undefined
   anthropicVersion: string | undefined
+  /** 请求体里的 `stream`；daemon 总是要流式回应。 */
+  stream: boolean
 }
 
 /** 分拣输入里的一项（§ 26.4：`id` / `project` / `dispatches` / `activity` / `title` / `body` 加上它的结果和问答）。 */
@@ -126,6 +129,36 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
+/** 一个 SSE 事件。 */
+function event(type: string, data: Record<string, unknown>): string {
+  return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`
+}
+
+/** 回答写成 Messages API 的流：一个文字块，切成三段 delta。 */
+function sseReply(index: number, model: string, text: string): string {
+  const third = Math.ceil(text.length / 3)
+  const parts = [text.slice(0, third), text.slice(third, 2 * third), text.slice(2 * third)]
+  return [
+    event('message_start', {
+      message: {
+        id: `msg_e2e_${index}`,
+        type: 'message',
+        role: 'assistant',
+        model,
+        content: [],
+        usage: { input_tokens: 100, output_tokens: 1 },
+      },
+    }),
+    event('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    ...parts.map((part) =>
+      event('content_block_delta', { index: 0, delta: { type: 'text_delta', text: part } }),
+    ),
+    event('content_block_stop', { index: 0 }),
+    event('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 20 } }),
+    event('message_stop', {}),
+  ].join('')
+}
+
 /** 起一个假的判断后端。 */
 export async function startJudge(respond: JudgeResponder = waitForAll): Promise<FakeJudge> {
   const requests: JudgeRequest[] = []
@@ -142,6 +175,7 @@ export async function startJudge(respond: JudgeResponder = waitForAll): Promise<
         max_tokens: number
         system: string
         messages: { role: string; content: string }[]
+        stream?: boolean
       }
       const header = (name: string): string | undefined => {
         const v = req.headers[name]
@@ -157,22 +191,13 @@ export async function startJudge(respond: JudgeResponder = waitForAll): Promise<
         prompt: body.messages[0]?.content ?? '',
         apiKey: header('x-api-key'),
         anthropicVersion: header('anthropic-version'),
+        stream: body.stream === true,
       }
       requests.push(request)
       const answer = await judge.respond(request)
       const text = typeof answer === 'string' ? answer : JSON.stringify(answer)
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(
-        JSON.stringify({
-          id: `msg_e2e_${request.index}`,
-          type: 'message',
-          role: 'assistant',
-          model: body.model,
-          content: [{ type: 'text', text }],
-          stop_reason: 'end_turn',
-          usage: { input_tokens: 100, output_tokens: 20 },
-        }),
-      )
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+      res.end(sseReply(request.index, body.model, text))
     })().catch(() => {
       if (!res.headersSent) res.writeHead(500)
       res.end()

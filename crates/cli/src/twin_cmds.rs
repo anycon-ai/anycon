@@ -1,4 +1,4 @@
-//! `anycon twin`：读取和设置分身范围、查看决定、回答问题；写操作在 anycon agent 环境中拒绝执行。
+//! `anycon twin`：读取和设置 Bot 范围、查看决定、回答问题；写操作在 anycon agent 环境中拒绝执行。
 
 use anycon_protocol::*;
 use serde_json::json;
@@ -13,14 +13,14 @@ fn write_allowed() -> Result<()> {
     if crate::mcp::started_inside_a_session() {
         return Err(CliError::denied(
             "forbidden",
-            "twin write commands are not available inside an anycon agent session (ANYCON_AGENT is set); \
+            "bot write commands (`anycon twin ...`) are not available inside an anycon agent session (ANYCON_AGENT is set); \
              run them from your own terminal",
         ));
     }
     Ok(())
 }
 
-/// `--requester`：一台分身设备的设备 id、唯一的 id 前缀或名称 → 完整的设备 id。只在种类是 `twin` 的设备里找。
+/// `--requester`：一台 Bot 设备的设备 id、唯一的 id 前缀或名称 → 完整的设备 id。只在种类是 `twin` 的设备里找。
 async fn requester_id(conn: &Conn, key: &str) -> Result<String> {
     let devices: NodeDevicesResult = conn.call(methods::NODE_DEVICES, json!({})).await?;
     let twins: Vec<&PeerDevice> = devices.devices.iter().filter(|d| d.kind == DeviceKind::Twin).collect();
@@ -33,7 +33,7 @@ async fn requester_id(conn: &Conn, key: &str) -> Result<String> {
         .or_else(|| pick(twins.iter().filter(|d| d.name == key).collect()))
         .ok_or_else(|| {
             CliError::usage(format!(
-                "no twin device matches {}; `anycon devices` lists this node's paired devices",
+                "no bot device matches {}; `anycon devices` lists this node's paired devices",
                 sanitize_label(key, 100, "")
             ))
         })
@@ -88,9 +88,9 @@ pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
             if app.json() {
                 app.out.json_line(&r);
             } else {
-                println!("Twin link code: {}", app.out.bold(&r.code));
+                println!("Bot link code: {}", app.out.bold(&r.code));
                 println!(
-                    "Valid until {} UTC (10 minutes). Only another node's twin can use it; pairing with it adds a twin \
+                    "Valid until {} UTC (10 minutes). Only another node's bot can use it; pairing with it adds a bot \
                      device here, which you can scope with `anycon twin set --requester <device>`.",
                     anycon_daemon::util::fmt_utc(r.expires_ms)
                 );
@@ -109,8 +109,8 @@ pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
                 app.out.json_line(&r);
             } else {
                 println!(
-                    "Linked {} ({}). It has not opened anything to this twin yet: on that node, run `anycon twin set \
-                     --requester <device> --projects <names>` (`anycon devices` lists the twin device).",
+                    "Linked {} ({}). It has not opened anything to this bot yet: on that node, run `anycon twin set \
+                     --requester <device> --projects <names>` (`anycon devices` lists the bot device).",
                     sanitize_label(&r.name, 64, "node"),
                     short_id(&r.node_id)
                 );
@@ -136,7 +136,7 @@ pub async fn twin(app: &App, cmd: TwinCmd) -> Result<u8> {
                 app.out.json_line(&json!({ "unlinked": l.node_id }));
             } else {
                 println!(
-                    "Unlinked {} ({}). The twin device stays paired on that node until you revoke it there \
+                    "Unlinked {} ({}). The bot device stays paired on that node until you revoke it there \
                      (`anycon revoke` on that node, or its device list).",
                     sanitize_label(&l.name, 64, "node"),
                     short_id(&l.node_id)
@@ -228,7 +228,7 @@ fn pick_link<'a>(links: &'a [TwinLink], key: &str) -> Result<&'a TwinLink> {
     let name = by(&|l| l.name == key);
     [exact, prefix, name].into_iter().find(|m| m.len() == 1).map(|m| m[0]).ok_or_else(|| {
         CliError::usage(format!(
-            "no linked node matches {}; `anycon twin links` lists the nodes this twin uses",
+            "no linked node matches {}; `anycon twin links` lists the nodes this bot uses",
             sanitize_label(key, 100, "")
         ))
     })
@@ -263,11 +263,11 @@ fn label<T: serde::Serialize>(v: T) -> String {
 /// 状态输出里运行状态那几行（唤醒、排队）怎么打印。
 #[derive(Clone, Copy, PartialEq)]
 enum View {
-    /// 分身设备的范围没有运行记录和排队，不打印。
+    /// Bot 设备的范围没有运行记录和排队，不打印。
     Scope,
-    /// 本机分身，节点报告了 `capabilities.twin_stats`，数字可信。
+    /// 本机 Bot，节点报告了 `capabilities.twin_stats`，数字可信。
     Full,
-    /// 本机分身，但旧 daemon 不填这些字段：打印 `-`，不把「没有数据」当成「从没唤醒、没有排队」。
+    /// 本机 Bot，但旧 daemon 不填这些字段：打印 `-`，不把「没有数据」当成「从没唤醒、没有排队」。
     Unknown,
 }
 

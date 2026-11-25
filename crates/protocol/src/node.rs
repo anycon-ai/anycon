@@ -32,7 +32,7 @@ pub struct NodeCapabilities {
     /// 支持规则提炼 RPC；没有该字段时按不支持处理。
     #[serde(default)]
     pub rule_extract: bool,
-    /// 支持分身的调度和 RPC。
+    /// 支持 Bot 的调度和 RPC。
     #[serde(default)]
     pub twin: bool,
     /// 支持周期项（`Todo.repeat`，docs/spec/daemon.md § 26.9）。旧 daemon 没有这个字段，读作 false。
@@ -108,7 +108,7 @@ pub struct NodeInfo {
     /// 判断后端的脱敏状态。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<crate::JudgeInfo>,
-    /// `[twin] accept_links`：这个节点现在接受别的节点的分身连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。
+    /// `[twin] accept_links`：这个节点现在接受别的节点的 Bot 连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。
     #[serde(default)]
     pub twin_accept_links: bool,
 }

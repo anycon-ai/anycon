@@ -1,6 +1,6 @@
-// 分身页的状态头和节点设置「分身」标签共用同一套状态优先级：
+// Bot 页的状态头和节点设置「Bot」标签共用同一套状态优先级：
 // 离线 → 读取中 / 读取失败 → 本机关闭 → 没配置（压过已暂停）→ 守护进程报告的状态。
-// 没配好的分身暂停与否没有意义，用户要先补上缺的部分，所以「没配置」排在「已暂停」前面。
+// 没配好的 Bot 暂停与否没有意义，用户要先补上缺的部分，所以「没配置」排在「已暂停」前面。
 import type { TFunction } from 'i18next'
 import type { NodeEntry } from '@/stores/nodes'
 import type { NodeTwin } from './store'
@@ -33,7 +33,7 @@ export function twinHeadLabel(t: TFunction, head: TwinHead): string {
   }
 }
 
-/** 没有可用的分流后端：没选、选的不存在，或选的有问题。状态头和节点设置「分身」标签用同一个判断。 */
+/** 没有可用的分流后端：没选、选的不存在，或选的有问题。状态头和节点设置「Bot」标签用同一个判断。 */
 export function missingTriage(node: Pick<NodeEntry, 'info'>): boolean {
   const judge = node.info?.judge
   const triage = judge?.backends.find((b) => b.name === judge.triage)

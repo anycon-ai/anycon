@@ -1,4 +1,4 @@
-// 桌面左栏顶部的导航（spec/web.md § 3.1）：「待处理」带「现在」的个数，在会话树上面；节点菜单里有「节点首页」。
+// 桌面左栏的导航（spec/web.md § 3.1）：「待处理」带「现在」的个数，在节点过滤器下面、会话树上面；节点菜单里有「节点首页」。
 import type { ReactNode } from 'react'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -45,6 +45,12 @@ describe('sidebar navigation', () => {
     expect(screen.queryByTestId('sidebar-inbox-count')).toBeNull()
     const tree = screen.getByRole('navigation', { name: 'Sessions' })
     expect(nav.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('puts Inbox and To-dos below the node switcher: they count only the ticked nodes', () => {
+    wrap(<Sidebar nodeId={NODE} />)
+    const nav = screen.getByTestId('sidebar-nav')
+    expect(screen.getByTestId('node-switcher').compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('shows the “Now” count: approvals, errors and device requests, but not a stopped session marked “notify when done”', () => {

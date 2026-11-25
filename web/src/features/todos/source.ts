@@ -1,4 +1,4 @@
-// 一项是谁记的（docs/spec/daemon.md § 21.2）。`kind` 之后会多出新的值（更新的 daemon、分身）：不认识的值一律按「不是人加的」处理，
+// 一项是谁记的（docs/spec/daemon.md § 21.2）。`kind` 之后会多出新的值（更新的 daemon、Bot）：不认识的值一律按「不是人加的」处理，
 // 解析时不能失败，也不能被当成「我记的」，更不能走 agent 专属的「收下 / 丢掉」那一套（除非它自己带了 `unreviewed`）。
 import type { TodoSource } from '@/protocol'
 

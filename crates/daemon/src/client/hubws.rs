@@ -72,7 +72,7 @@ pub(crate) fn auth_fail_error(reason: AuthFailReason) -> ClientError {
         ),
         AuthFailReason::Quota => ClientError::new(ErrorClass::General, "quota", "the hub's device quota for this account is used up"),
         // `reason = "hub_protocol"`：hub 不认这次认证（比如旧 hub 不认识设备种类）。哪种情况由调用方按上下文解释，
-        // 比如建立分身连接时（`twin_link::link_error`）说成「hub 太旧」。
+        // 比如建立 Bot 连接时（`twin_link::link_error`）说成「hub 太旧」。
         AuthFailReason::Protocol => {
             ClientError::general("the hub rejected the connection (protocol error)").with_reason(HUB_PROTOCOL_REASON)
         }

@@ -505,7 +505,7 @@ pub struct Peers {
     me: std::sync::OnceLock<std::sync::Weak<Peers>>,
     /// 预览模块（ADR-39）：吊销设备时作废它签发的票据、断开用这些票据的隧道。
     preview: std::sync::OnceLock<std::sync::Weak<Preview>>,
-    /// 通知器（分身连接建立和吊销时发 `notify { security }`）。通知器的出口就是 `Peers`，所以这里只持弱引用。
+    /// 通知器（Bot 连接建立和吊销时发 `notify { security }`）。通知器的出口就是 `Peers`，所以这里只持弱引用。
     notifier: std::sync::OnceLock<std::sync::Weak<crate::notify::Notifier>>,
     /// 配对拿到新 token 后通知 hub 连接重连。
     pub reconnect: Arc<Notify>,
@@ -679,7 +679,7 @@ impl Peers {
         v
     }
 
-    /// 收 `notify` 的设备：已配对的、不是分身设备的。
+    /// 收 `notify` 的设备：已配对的、不是 Bot 设备的。
     pub fn notify_ids(&self) -> Vec<String> {
         let staged = self.staged.lock().unwrap().clone();
         self.records
@@ -853,7 +853,7 @@ impl Peers {
         let _ = self.notifier.set(Arc::downgrade(notifier));
     }
 
-    /// 分身连接建立 / 吊销（docs/spec/daemon.md § 27.2）：给所有在线的已配对设备发 `node.security_event`（分身设备自己收不到，
+    /// Bot 连接建立 / 吊销（docs/spec/daemon.md § 27.2）：给所有在线的已配对设备发 `node.security_event`（Bot 设备自己收不到，
     /// 推送过滤会拦下），并发一次 `notify { security }`（60 秒内的多条合并）。审计由调用方记。
     pub async fn twin_event(&self, kind: SecurityEventKind, device_id: &str, device_name: &str, by: Option<&str>) {
         let ev = NodeSecurityEvent {
@@ -873,7 +873,7 @@ impl Peers {
         }
     }
 
-    /// `[twin] accept_links` 热加载：关掉时断开已有的分身设备的传输（记录和范围保留），并作废还没用掉的分身短码。
+    /// `[twin] accept_links` 热加载：关掉时断开已有的 Bot 设备的传输（记录和范围保留），并作废还没用掉的 Bot 短码。
     pub fn spawn_config_watcher(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let this = Arc::downgrade(self);
         let mut rx = self.config.subscribe();
@@ -887,7 +887,7 @@ impl Peers {
         })
     }
 
-    /// 断开所有分身设备的传输（`accept_links` 关了）。
+    /// 断开所有 Bot 设备的传输（`accept_links` 关了）。
     pub async fn disconnect_twin_devices(&self) {
         let twins: Vec<String> = self
             .records
@@ -1062,7 +1062,7 @@ impl Peers {
             tracing::debug!(peer = %from, "handshake from an unpaired device; ignored");
             return;
         };
-        // `accept_links` 关着：分身设备的握手被拒（记录和范围保留，重新打开后照常可用）
+        // `accept_links` 关着：Bot 设备的握手被拒（记录和范围保留，重新打开后照常可用）
         if rec.kind == DeviceKind::Twin && !self.config.get().twin.accept_links {
             tracing::debug!(peer = %from, "handshake from a twin device refused: [twin] accept_links is off");
             return;
@@ -1195,7 +1195,7 @@ impl Peers {
         self.begin_pairing(caller, long, PairMode::Normal).await.map(|(r, _)| r)
     }
 
-    /// `node.twin_link_code`（§ 27.2）：开一次只接受分身设备的短码配对，16 位，10 分钟有效，同一时间只有一个
+    /// `node.twin_link_code`（§ 27.2）：开一次只接受 Bot 设备的短码配对，16 位，10 分钟有效，同一时间只有一个
     /// （和 `node.pair_begin` 共用「一个 daemon 同时一个配对」：再要一个、或者开一次普通配对，都会作废旧的）。
     /// `[twin] accept_links = false` 时 `forbidden`（`data.reason = "accept_links_off"`）。
     pub async fn twin_link_code(self: &Arc<Self>, caller: &Caller) -> Result<NodeTwinLinkCodeResult, RpcError> {
@@ -1210,7 +1210,7 @@ impl Peers {
         Ok(NodeTwinLinkCodeResult { code: r.code, expires_ms: now_ms() + TWIN_CODE_TTL.as_millis() as u64 })
     }
 
-    /// hub 的登记只有 5 分钟（hub 的 `pair_ttl`）：分身连接的短码要 10 分钟，所以在登记快到期、还没有加入方的时候用同一个
+    /// hub 的登记只有 5 分钟（hub 的 `pair_ttl`）：Bot 连接的短码要 10 分钟，所以在登记快到期、还没有加入方的时候用同一个
     /// `match_id` 再登记一次（hub 的新登记顶掉旧的、重新计时）。配对被顶掉、已经有加入方、或到了 10 分钟就停。
     fn spawn_twin_code_refresh(&self, gen: u64, match_id: String, registered_ttl: Duration, deadline: Instant) {
         let Some(me) = self.self_ref() else { return };
@@ -1837,7 +1837,7 @@ fn read_peers_json(paths: &Paths) -> Vec<PeerRow> {
 impl NotifyOut for Peers {
     fn send(&self, body: NotifyBody) {
         let Ok(bytes) = rmp_serde::to_vec_named(&body) else { return };
-        // 分身设备（另一个节点的分身）不收 `notify`（docs/spec/daemon.md § 27.3）
+        // Bot 设备（另一个节点的 Bot）不收 `notify`（docs/spec/daemon.md § 27.3）
         for id in self.notify_ids() {
             self.outbox.send_envelope(&id, Kind::Notify, bytes.clone());
         }
@@ -2322,8 +2322,8 @@ mod tests {
     fn a_twin_kind_is_kept_and_a_kind_this_version_does_not_know_reads_as_web() {
         let id = "abcdef0123456789";
         assert_eq!(
-            parse_client_info(r#"{"name":"mac 的分身","kind":"twin","platform":"p","version":"1"}"#.as_bytes(), id),
-            ("mac 的分身".to_string(), DeviceKind::Twin)
+            parse_client_info(r#"{"name":"mac 的 Bot","kind":"twin","platform":"p","version":"1"}"#.as_bytes(), id),
+            ("mac 的 Bot".to_string(), DeviceKind::Twin)
         );
         // 不认识的种类（更新的客户端）：和以前自报的种类解析不了时一样，按 `web` 记
         assert_eq!(

@@ -1490,7 +1490,7 @@
         },
         {
           "const": "twin",
-          "description": "另一个节点的分身（docs/spec/daemon.md § 27.1）：一个节点一个身份，只能经 `node.twin_link_code` 发出的短码配对，\n被使用的节点按设备种类限制它能调的方法和收到的通知（§ 27.3）。",
+          "description": "另一个节点的 Bot（docs/spec/daemon.md § 27.1）：一个节点一个身份，只能经 `node.twin_link_code` 发出的短码配对，\n被使用的节点按设备种类限制它能调的方法和收到的通知（§ 27.3）。",
           "type": "string"
         },
         {
@@ -2059,7 +2059,7 @@
         },
         {
           "const": "twin_not_allowed",
-          "description": "发起方自报 `kind = twin`：分身设备只能经 `node.twin_link_code` 发出的短码配对，接入码和节点口令不接受\n（docs/spec/daemon.md § 27.2）。",
+          "description": "发起方自报 `kind = twin`：Bot 设备只能经 `node.twin_link_code` 发出的短码配对，接入码和节点口令不接受\n（docs/spec/daemon.md § 27.2）。",
           "type": "string"
         },
         {
@@ -3821,7 +3821,7 @@
         },
         "twin": {
           "default": false,
-          "description": "支持分身的调度和 RPC。",
+          "description": "支持 Bot 的调度和 RPC。",
           "type": "boolean"
         },
         "twin_stats": {
@@ -4071,7 +4071,7 @@
         },
         "twin_accept_links": {
           "default": false,
-          "description": "`[twin] accept_links`：这个节点现在接受别的节点的分身连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。",
+          "description": "`[twin] accept_links`：这个节点现在接受别的节点的 Bot 连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。",
           "type": "boolean"
         },
         "update_available": {
@@ -4422,7 +4422,7 @@
       "type": "object"
     },
     "NodeTwinLinkCodeResult": {
-      "description": "`node.twin_link_code` 的结果：B 开了一次只接受分身设备的短码配对。",
+      "description": "`node.twin_link_code` 的结果：B 开了一次只接受 Bot 设备的短码配对。",
       "properties": {
         "code": {
           "description": "16 位短码（`XXXX-XXXX-XXXX-XXXX`）。",
@@ -4540,7 +4540,7 @@
         },
         {
           "const": "twin_question",
-          "description": "分身提出了需要人回答的问题。",
+          "description": "Bot 提出了需要人回答的问题。",
           "type": "string"
         },
         {
@@ -6677,12 +6677,12 @@
         },
         {
           "const": "twin_linked",
-          "description": "一个分身设备（另一个节点的分身）和这个节点建立了分身连接（`device_id` / `device_name`，docs/spec/daemon.md § 27.2）。",
+          "description": "一个 Bot 设备（另一个节点的 Bot）和这个节点建立了 Bot 连接（`device_id` / `device_name`，docs/spec/daemon.md § 27.2）。",
           "type": "string"
         },
         {
           "const": "twin_unlinked",
-          "description": "一个分身设备被吊销：分身连接没了。",
+          "description": "一个 Bot 设备被吊销：Bot 连接没了。",
           "type": "string"
         },
         {
@@ -8099,7 +8099,7 @@
           ]
         },
         "remote": {
-          "description": "这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由分身连接的 A 侧写。",
+          "description": "这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由 Bot 连接的 A 侧写。",
           "items": {
             "$ref": "#/definitions/TodoRemote"
           },
@@ -8191,7 +8191,7 @@
           ]
         },
         "id": {
-          "description": "分身动作的请求方（local 或设备 id）。",
+          "description": "Bot 动作的请求方（local 或设备 id）。",
           "type": [
             "string",
             "null"
@@ -8367,7 +8367,7 @@
           ]
         },
         "note": {
-          "description": "分身的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。\n只有分身设备（另一个节点的分身）能带；别的调用方带了 → `invalid`（`data.field = \"note\"`，`data.reason = \"not_allowed\"`）。",
+          "description": "Bot 的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。\n只有 Bot 设备（另一个节点的 Bot）能带；别的调用方带了 → `invalid`（`data.field = \"note\"`，`data.reason = \"not_allowed\"`）。",
           "type": [
             "string",
             "null"
@@ -8576,7 +8576,7 @@
           "type": "object"
         },
         {
-          "description": "分身把这一项交回给人。`done = true`：不是没做完，而是分身判断已经做完了、请人确认（`reason` 以固定前缀开头）。\n旧版本写的这类事件没有这个字段，按 `reason` 的前缀识别。",
+          "description": "Bot 把这一项交回给人。`done = true`：不是没做完，而是 Bot 判断已经做完了、请人确认（`reason` 以固定前缀开头）。\n旧版本写的这类事件没有这个字段，按 `reason` 的前缀识别。",
           "properties": {
             "done": {
               "type": "boolean"
@@ -8602,7 +8602,7 @@
           "type": "object"
         },
         {
-          "description": "一个人在分身派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个\n节点上（分身用的别的节点）：那个节点记的这一条没有它，分身所在节点取回之后记的有。",
+          "description": "一个人在 Bot 派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个\n节点上（Bot 用的别的节点）：那个节点记的这一条没有它，Bot 所在节点取回之后记的有。",
           "properties": {
             "by": {
               "$ref": "#/definitions/TodoActor"
@@ -8731,7 +8731,7 @@
           "type": "object"
         },
         {
-          "description": "分身把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话\n（那个节点上的 id，不是这个节点的会话）。",
+          "description": "Bot 把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话\n（那个节点上的 id，不是这个节点的会话）。",
           "properties": {
             "kind": {
               "const": "remote_dispatched",
@@ -8781,7 +8781,7 @@
           "type": "object"
         },
         {
-          "description": "分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。\n不含评审或评论的正文，只有变化的种类和 PR 地址。",
+          "description": "Bot 派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。\n不含评审或评论的正文，只有变化的种类和 PR 地址。",
           "properties": {
             "event": {
               "$ref": "#/definitions/PrEventKind"
@@ -8950,7 +8950,7 @@
           "type": "object"
         },
         {
-          "description": "分身把这一项交回给人。`done = true`：不是没做完，而是分身判断已经做完了、请人确认（`reason` 以固定前缀开头）。\n旧版本写的这类事件没有这个字段，按 `reason` 的前缀识别。",
+          "description": "Bot 把这一项交回给人。`done = true`：不是没做完，而是 Bot 判断已经做完了、请人确认（`reason` 以固定前缀开头）。\n旧版本写的这类事件没有这个字段，按 `reason` 的前缀识别。",
           "properties": {
             "done": {
               "type": "boolean"
@@ -8976,7 +8976,7 @@
           "type": "object"
         },
         {
-          "description": "一个人在分身派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个\n节点上（分身用的别的节点）：那个节点记的这一条没有它，分身所在节点取回之后记的有。",
+          "description": "一个人在 Bot 派出的会话里发了消息，接手了这一项（docs/spec/daemon.md § 26.6、§ 27.4）。`node_id` 有值表示接手发生在那个\n节点上（Bot 用的别的节点）：那个节点记的这一条没有它，Bot 所在节点取回之后记的有。",
           "properties": {
             "by": {
               "$ref": "#/definitions/TodoActor"
@@ -9105,7 +9105,7 @@
           "type": "object"
         },
         {
-          "description": "分身把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话\n（那个节点上的 id，不是这个节点的会话）。",
+          "description": "Bot 把这一项派到了另一个节点（docs/spec/daemon.md § 27.4）：`todo_id` 是那个节点上的项，`session_id` 是它在那里开的会话\n（那个节点上的 id，不是这个节点的会话）。",
           "properties": {
             "kind": {
               "const": "remote_dispatched",
@@ -9155,7 +9155,7 @@
           "type": "object"
         },
         {
-          "description": "分身派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。\n不含评审或评论的正文，只有变化的种类和 PR 地址。",
+          "description": "Bot 派出的会话的 PR 有了变化（docs/spec/daemon.md § 26.9）。字段不叫 `kind`：它是整个枚举的标签。\n不含评审或评论的正文，只有变化的种类和 PR 地址。",
           "properties": {
             "event": {
               "$ref": "#/definitions/PrEventKind"
@@ -9419,7 +9419,7 @@
     "TodoSource": {
       "properties": {
         "device_id": {
-          "description": "经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台分身设备（另一个节点的分身，docs/spec/daemon.md § 27.3）的设备 id。",
+          "description": "经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台 Bot 设备（另一个节点的 Bot，docs/spec/daemon.md § 27.3）的设备 id。",
           "type": [
             "string",
             "null"
@@ -9468,7 +9468,7 @@
         },
         {
           "const": "twin",
-          "description": "分身做的动作。",
+          "description": "Bot 做的动作。",
           "type": "string"
         },
         {
@@ -9521,7 +9521,7 @@
     "TodoUpdateParams": {
       "properties": {
         "agent": {
-          "description": "调用方自报是 agent；不能把处理人设成分身，也不算人收下了这一项。",
+          "description": "调用方自报是 agent；不能把处理人设成 Bot，也不算人收下了这一项。",
           "type": [
             "boolean",
             "null"
@@ -9872,11 +9872,11 @@
       "type": "object"
     },
     "TwinDayStats": {
-      "description": "一个本地日的分身统计。数据来自节点保留的运行记录（90 天）和待办的经过（已删除待办的经过没了），所以旧日子的数字可能变小。",
+      "description": "一个本地日的 Bot 统计。数据来自节点保留的运行记录（90 天）和待办的经过（已删除待办的经过没了），所以旧日子的数字可能变小。",
       "properties": {
         "accepted": {
           "default": 0,
-          "description": "这天由未关闭（非 `done` / `dropped`）变为 `done` 的 `state` 事件数，且本机分身在事件时间或之前派发过这一项。\n已关闭项在 `done` 和 `dropped` 之间改来改去不算；重新打开后再关闭算新的一次。",
+          "description": "这天由未关闭（非 `done` / `dropped`）变为 `done` 的 `state` 事件数，且本机 Bot 在事件时间或之前派发过这一项。\n已关闭项在 `done` 和 `dropped` 之间改来改去不算；重新打开后再关闭算新的一次。",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -9915,7 +9915,7 @@
         },
         "handed_back": {
           "default": 0,
-          "description": "这天待办经过里的 `handed_back` 事件数：分身没做完就交回给人的次数（`hand_back` 判断、连续 3 次失败、2 小时卡住）。\n不含 `done` 判断（分身认为做完了，请人确认）写的那一条。",
+          "description": "这天待办经过里的 `handed_back` 事件数：Bot 没做完就交回给人的次数（`hand_back` 判断、连续 3 次失败、2 小时卡住）。\n不含 `done` 判断（Bot 认为做完了，请人确认）写的那一条。",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -9957,14 +9957,14 @@
         },
         "taken_over": {
           "default": 0,
-          "description": "这天的 `taken_over` 事件数，只算本机分身派发过（不晚于事件）的项；分身设备派来的会话里的接手不算。",
+          "description": "这天的 `taken_over` 事件数，只算本机 Bot 派发过（不晚于事件）的项；Bot 设备派来的会话里的接手不算。",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
         "turnaround_ms": {
           "default": 0,
-          "description": "这天每个 `accepted` 事件的（事件时间 - 该项在事件时间或之前最近一次被本机分身派发的时间）之和；平均 = `turnaround_ms / accepted`。",
+          "description": "这天每个 `accepted` 事件的（事件时间 - 该项在事件时间或之前最近一次被本机 Bot 派发的时间）之和；平均 = `turnaround_ms / accepted`。",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -10136,7 +10136,7 @@
       "description": "`twin.get` 的参数。",
       "properties": {
         "requester": {
-          "description": "读谁的范围：缺省 `local`（本机分身）；也可以是一个已配对的分身设备（`DeviceKind::Twin`）的设备 id，读 B 给这条分身连接\n的设置（docs/spec/daemon.md § 27.3）。不是已存在的分身设备 → `not_found`。",
+          "description": "读谁的范围：缺省 `local`（本机 Bot）；也可以是一个已配对的 Bot 设备（`DeviceKind::Twin`）的设备 id，读 B 给这条 Bot 连接\n的设置（docs/spec/daemon.md § 27.3）。不是已存在的 Bot 设备 → `not_found`。",
           "type": [
             "string",
             "null"
@@ -10181,7 +10181,7 @@
           ]
         },
         "queued": {
-          "description": "在分身范围内（§ 26.1），但既不在 `working` 里也没有未回答的问题的待办 id。",
+          "description": "在 Bot 范围内（§ 26.1），但既不在 `working` 里也没有未回答的问题的待办 id。",
           "items": {
             "type": "string"
           },
@@ -10221,7 +10221,7 @@
       "type": "object"
     },
     "TwinLink": {
-      "description": "一条分身连接（A 记下的，表 `twin_links`）。",
+      "description": "一条 Bot 连接（A 记下的，表 `twin_links`）。",
       "properties": {
         "fingerprint": {
           "description": "B 的静态公钥指纹。",
@@ -10271,7 +10271,7 @@
       "type": "object"
     },
     "TwinLinkParams": {
-      "description": "`twin.link` 的参数：A 的 daemon 用 B 发的短码以分身设备的身份和 B 配对。",
+      "description": "`twin.link` 的参数：A 的 daemon 用 B 发的短码以 Bot 设备的身份和 B 配对。",
       "properties": {
         "code": {
           "description": "B 的 `node.twin_link_code` 发出的短码。",
@@ -10323,10 +10323,10 @@
       "type": "object"
     },
     "TwinPeerStatus": {
-      "description": "B 对这条分身连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。",
+      "description": "B 对这条 Bot 连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。",
       "properties": {
         "accept_links": {
-          "description": "B 现在接受分身连接（`[twin] accept_links`）。",
+          "description": "B 现在接受 Bot 连接（`[twin] accept_links`）。",
           "type": "boolean"
         },
         "agents": {
@@ -10531,7 +10531,7 @@
           "type": "array"
         },
         "requester": {
-          "description": "本机为 local；分身连接以设备 id 作请求方。",
+          "description": "本机为 local；Bot 连接以设备 id 作请求方。",
           "type": "string"
         },
         "result": {
@@ -10856,7 +10856,7 @@
       "type": "string"
     },
     "TwinStatsParams": {
-      "description": "`twin.stats` 的参数。只统计本机分身。",
+      "description": "`twin.stats` 的参数。只统计本机 Bot。",
       "properties": {
         "days": {
           "description": "统计最近几个本地日（含今天），1..=90，缺省 7；越界 → `invalid`，`data.field = \"days\"`。",
@@ -10920,7 +10920,7 @@
         },
         {
           "const": "pr",
-          "description": "分身派出的会话的 PR 有了变化（检查失败、合并、关闭、新的评审意见；daemon spec § 26.9）。",
+          "description": "Bot 派出的会话的 PR 有了变化（检查失败、合并、关闭、新的评审意见；daemon spec § 26.9）。",
           "type": "string"
         }
       ]

@@ -585,7 +585,7 @@ async fn the_validator_rejects_a_response_that_drifted_from_its_type() {
     td.shutdown().await;
 }
 
-/// 分身的七个请求和两种通知都使用实际结果进行 schema 校验。
+/// Bot 的七个请求和两种通知都使用实际结果进行 schema 校验。
 async fn walk_twin(w: &mut Walk<'_>) {
     w.td.fake.declare_no_push.store(true, std::sync::atomic::Ordering::SeqCst);
     w.call(methods::AGENT_LIST, json!({"refresh":true})).await;
@@ -619,10 +619,10 @@ async fn walk_twin(w: &mut Walk<'_>) {
     w.call(methods::TWIN_RUNS, json!({"limit":20})).await;
     w.call(methods::TWIN_STATS, json!({"days":3})).await;
     w.call(methods::TWIN_SET, json!({"paused":true})).await;
-    // 没有分身连接时 `twin.links` 是空列表（有连接的在 tests/twin_links.rs）
+    // 没有 Bot 连接时 `twin.links` 是空列表（有连接的在 tests/twin_links.rs）
     let links = w.call(methods::TWIN_LINKS, json!({})).await;
     assert_eq!(links["links"], json!([]));
-    // 分身连接（§ 27.3）：一台分身设备的范围用 `requester` 读写；`twin.peer_status` 只给分身设备自己的连接，用它的身份调
+    // Bot 连接（§ 27.3）：一台 Bot 设备的范围用 `requester` 读写；`twin.peer_status` 只给 Bot 设备自己的连接，用它的身份调
     let device = w.td.twin_device_client("twin-walk", "A's twin").await;
     w.call(methods::TWIN_SET, json!({"requester":"twin-walk","projects":["todoproj"],"agent":"fake"})).await;
     let scope = w.call(methods::TWIN_GET, json!({"requester":"twin-walk"})).await;

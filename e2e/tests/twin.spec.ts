@@ -1,5 +1,5 @@
 /**
- * 分身（docs/spec/daemon.md § 26，web.md § 14.8）：真实 hub + 真实 daemon + 真实 web + 假的判断后端（`helpers/judge.ts`）。
+ * Bot（docs/spec/daemon.md § 26，web.md § 14.8）：真实 hub + 真实 daemon + 真实 web + 假的判断后端（`helpers/judge.ts`）。
  *
  * 用到判断后端的节点由这个文件自己起（`startExtraDaemon`，不动共享的 daemon），配置在启动前写进它的 `config.toml`：
  * `[judge.backends.e2efake]`（`kind = "api"`、`format = "anthropic"`、`base_url` 指向用例里起的假服务，密钥来自只在这个 daemon
@@ -8,12 +8,12 @@
  * 串行，一个额外节点 + 一个配对的浏览器；节点和浏览器的设备在结束时去掉。节点的环境变量 `ANYCON_TWIN_COALESCE_MS`（只用于测试）
  * 把分拣的合并窗口从 60 秒缩短到 2 秒（§ 26.3），每个等唤醒的步骤都是对「假后端收到某个请求」的有界等待。
  *
- *   a. 分身页：没配置时的状态；打开一个项目、设预算（第一次保存先暂停并自动试跑）；试跑显示假后端的计划，节点上什么都没派、没问
- *   b. 「记一项」里交给分身 →「就这么办」唤醒 → 假后端回 `dispatch` → 开了 worktree 会话；清单里这一项显示分身在处理；分身页的运行记录
+ *   a. Bot 页：没配置时的状态；打开一个项目、设预算（第一次保存先暂停并自动试跑）；试跑显示假后端的计划，节点上什么都没派、没问
+ *   b. 「记一项」里交给 Bot →「就这么办」唤醒 → 假后端回 `dispatch` → 开了 worktree 会话；清单里这一项显示 Bot 在处理；Bot 页的运行记录
  *      里有这次唤醒、决定和理由；请求里这一项在随机边界里、系统提示里没有项的内容
- *   c. 假后端回 `ask_user` → 「待处理」里是分身的问题 → 回答时勾「以后都这样」→ 规则编辑框带着内容打开 → 保存后节点上有这条规则；
+ *   c. 假后端回 `ask_user` → 「待处理」里是 Bot 的问题 → 回答时勾「以后都这样」→ 规则编辑框带着内容打开 → 保存后节点上有这条规则；
  *      下一次唤醒的请求里带着你的回答和这条规则
- *   d. 接手：在分身派出的会话里发一条消息 → 这一项变成「我」处理，「经过」里有「你接手了」
+ *   d. 接手：在 Bot 派出的会话里发一条消息 → 这一项变成「我」处理，「经过」里有「你接手了」
  *   e. 暂停：新的触发不唤醒（假后端没收到请求）；同时等周期项（§ 26.9）按规则在下一分钟复制出一项（复制不唤醒）
  *   f. 继续：试跑的请求里没有接手的那一项；「就这么办」之后唤醒恢复，新的项被派出
  */
@@ -143,7 +143,7 @@ function clock(d: Date): string {
 
 const gitState = () => ({ gitConfig: readState().gitConfig })
 
-test.describe.serial('分身', () => {
+test.describe.serial('Bot', () => {
   let judge: FakeJudge
   let node: ExtraDaemon
   let device: PairedBrowser
@@ -183,7 +183,7 @@ test.describe.serial('分身', () => {
     await removeNodesFromAccount(request, readState(), [NODE_NAME])
   })
 
-  test('a. 没配置时的状态；在节点设置 → 分身里打开项目、设预算；试跑显示计划，什么都没派没问', async () => {
+  test('a. 没配置时的状态；在节点设置 → Bot 里打开项目、设预算；试跑显示计划，什么都没派没问', async () => {
     test.setTimeout(120_000)
     await page.goto(`/twin/${short}`)
     const card = page.getByTestId('twin-card')
@@ -201,7 +201,7 @@ test.describe.serial('分身', () => {
       scope: { paused: false, projects: [] },
     })
 
-    // 范围和预算在节点设置 → 分身里：从「去设置」进去
+    // 范围和预算在节点设置 → Bot 里：从「去设置」进去
     await card.getByRole('link', { name: exactText('twin.setUp') }).click()
     await expect(page).toHaveURL(/\/settings\?(.*&)?tab=twin/)
     const tab = page.getByTestId('twin-tab')
@@ -271,11 +271,11 @@ test.describe.serial('分身', () => {
     expect(dataBlocks(request!)[0]!.marker).toMatch(/^ANYCON_TWIN_[0-9a-f]{32}$/)
     expect(outsideBlocks(request!)).not.toContain(TITLE_DRY)
     expect(request!.system).not.toContain(TITLE_DRY)
-    // 没有分身连接：系统提示不提节点表
+    // 没有 Bot 连接：系统提示不提节点表
     expect(request!.system).not.toContain('Linked nodes')
   })
 
-  test('b. 「记一项」里交给分身 → 唤醒 → dispatch → worktree 会话；清单和分身页都看得到', async () => {
+  test('b. 「记一项」里交给 Bot → 唤醒 → dispatch → worktree 会话；清单和 Bot 页都看得到', async () => {
     test.setTimeout(240_000)
     // 「就这么办」：取消暂停并唤醒（合并窗口缩短到 2 秒）；窗口里再记一项，两件事合进同一次唤醒
     phase = 'live'
@@ -334,7 +334,7 @@ test.describe.serial('分身', () => {
         timeout: 30_000,
       })
       .toMatch(/\.anycon\/worktrees\//)
-    // 分身派发固定「不 push」：「经过」里的 dispatched 记着，说明接在第一条消息后面
+    // Bot 派发固定「不 push」：「经过」里的 dispatched 记着，说明接在第一条消息后面
     await expect
       .poll(
         async () => (await todoHistory(home(), item.id)).find((e) => e.kind === 'result')?.text,
@@ -350,7 +350,7 @@ test.describe.serial('分身', () => {
       reason: REASON.dispatch,
     })
 
-    // 清单页：这一项显示分身在处理
+    // 清单页：这一项显示 Bot 在处理
     await page.goto('/todos')
     const row = page.locator('[data-testid="todo-row"]').filter({ hasText: TITLE_DISPATCH })
     await expect(row.getByTestId('todo-handler')).toHaveAttribute('data-state', 'twin', {
@@ -358,19 +358,19 @@ test.describe.serial('分身', () => {
     })
     await row.getByTestId('todo-main').click()
     await expect(page.getByTestId('todo-detail')).toBeVisible()
-    // 会话结束也会唤醒分身（之后的决定是「等」）：按理由找派发的那一条
+    // 会话结束也会唤醒 Bot（之后的决定是「等」）：按理由找派发的那一条
     const decisionRow = page
       .locator('[data-testid="history-row"][data-kind="twin_decision"]')
       .filter({ hasText: REASON.dispatch })
     await expect(decisionRow).toHaveCount(1)
-    // 「经过」里的「打开这次运行」直达分身页里的这次运行：展开着，有这条决定
+    // 「经过」里的「打开这次运行」直达 Bot 页里的这次运行：展开着，有这条决定
     await decisionRow.getByRole('link', { name: exactText('twin.openRun') }).click()
     await expect(page).toHaveURL(/\/twin\?.*run=/)
     await expect(page.getByTestId('twin-run').first()).toBeVisible({ timeout: 15_000 })
     const decision = page.getByTestId('twin-decision').filter({ hasText: TITLE_DISPATCH })
     await expect(decision).toContainText(REASON.dispatch)
     await expect(decision).toContainText(NOTE)
-    // 分身页的运行记录里有这次唤醒（不是试跑）
+    // Bot 页的运行记录里有这次唤醒（不是试跑）
     const runs = await twinRuns(home())
     const wake = runs.find((r) => r.decisions.some((d) => d.todo_id === item.id))!
     expect(wake).toMatchObject({ dry_run: false, result: 'done' })
@@ -382,7 +382,7 @@ test.describe.serial('分身', () => {
     expect(wake.triggers).toContain('todo')
   })
 
-  test('c. ask_user → 待处理里的分身问题 → 回答并勾「以后都这样」→ 规则编辑框 → 保存后节点上有规则；下一次唤醒带着回答', async () => {
+  test('c. ask_user → 待处理里的 Bot 问题 → 回答并勾「以后都这样」→ 规则编辑框 → 保存后节点上有规则；下一次唤醒带着回答', async () => {
     test.setTimeout(300_000)
     const before = judge.requests.length
     await runCli(home(), ['todo', 'add', TITLE_ASK, '--project', PROJECT, '--twin'])
@@ -391,7 +391,7 @@ test.describe.serial('分身', () => {
       after: before,
     })
 
-    // 待处理里是分身的问题（模型写的，按「agent 写的」纯文字显示）
+    // 待处理里是 Bot 的问题（模型写的，按「agent 写的」纯文字显示）
     await page.goto('/inbox')
     const row = page.locator('[data-testid="inbox-row"][data-kind="twin_question"]')
     await expect(row).toBeVisible({ timeout: 60_000 })
@@ -471,7 +471,7 @@ test.describe.serial('分身', () => {
     })
   })
 
-  test('d. 接手：在分身派出的会话里发一条消息，这一项变成「我」处理，「经过」里有「你接手了」', async () => {
+  test('d. 接手：在 Bot 派出的会话里发一条消息，这一项变成「我」处理，「经过」里有「你接手了」', async () => {
     test.setTimeout(120_000)
     const item = (await todoByTitle(home(), TITLE_DISPATCH))!
     expect(item.handler).toBe('twin')
@@ -491,7 +491,7 @@ test.describe.serial('分身', () => {
     await page.goto(`/todos/${short}/${item.id}`)
     const taken = page.locator('[data-testid="history-row"][data-kind="taken_over"]')
     await expect(taken).toContainText(containsText('twin.takenOver'), { timeout: CONNECT_TIMEOUT })
-    // 分身不再碰它：它不在「处理中」「等你」里
+    // Bot 不再碰它：它不在「处理中」「等你」里
     const status = await twinStatus(home())
     expect(status.working).not.toContain(item.id)
     expect(status.waiting).not.toContain(item.id)
@@ -511,7 +511,7 @@ test.describe.serial('分身', () => {
       .toBe(true)
     const mark = judge.requests.length
 
-    // 新的触发：一项交给分身；一个周期项（模板的复制交给分身），到点的时间设成下一分钟
+    // 新的触发：一项交给 Bot；一个周期项（模板的复制交给 Bot），到点的时间设成下一分钟
     const addedAt = Date.now()
     await runCli(home(), ['todo', 'add', TITLE_PAUSED, '--project', PROJECT, '--twin'])
     const template = new Date(addedAt + 60_000)

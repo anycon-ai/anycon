@@ -24,8 +24,9 @@ export interface Crumb {
  * 节点状态 chip、页面自己的操作按钮。
  * `root`：左栏里直接能到的页面（待处理、清单、会话……），手机上只有菜单按钮；其余是从别的页面点进来的下一级页，菜单旁边多一个返回。
  * 页面传了 `onBack` 时（文件预览回到树）不管 `root` 都显示返回。
+ * `tabs`：同一区域里并列的几页（Bot 和规则）放一排标签，代替面包屑。
  */
-export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBack, root, spaceSwitcher = false }: { crumbs: Crumb[]; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void; root?: boolean; /** 手机上顶栏带当前空间的切换按钮（只在有分组时）：跨节点汇总的页面（待处理、清单、分身）用，免得为了换空间去开抽屉。 */ spaceSwitcher?: boolean }) {
+export function PageHeader({ crumbs = [], tabs, meta, actions, showNodeStatus = true, onBack, root, spaceSwitcher = false }: { crumbs?: Crumb[]; tabs?: ReactNode; meta?: ReactNode; actions?: ReactNode; showNodeStatus?: boolean; onBack?: () => void; root?: boolean; /** 手机上顶栏带当前空间的切换按钮（只在有分组时）：跨节点汇总的页面（待处理、清单、Bot）用，免得为了换空间去开抽屉。 */ spaceSwitcher?: boolean }) {
   const { t } = useTranslation()
   const { entry, nodeId } = useCurrentNode()
   const hasGroups = useNodeFilter().spaces.hasGroups
@@ -37,6 +38,7 @@ export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBac
       </button>
       {root && !onBack ? null : <BackButton onBack={onBack} />}
       {spaceSwitcher && hasGroups ? <SpaceSwitcher nodeId={nodeId} variant="topbar" /> : null}
+      {tabs ?? (
       <nav aria-label={t('common.breadcrumb')} className="flex min-w-0 flex-1 items-center gap-1 text-sm">
         {crumbs.map((c, i) => (
           <span key={`${i}-${c.label}`} className={i === crumbs.length - 1 ? 'flex min-w-0 items-center gap-1' : 'hidden min-w-0 items-center gap-1 sm:flex'}>
@@ -56,6 +58,7 @@ export function PageHeader({ crumbs, meta, actions, showNodeStatus = true, onBac
           </span>
         ))}
       </nav>
+      )}
       {meta}
       {showNodeStatus && entry ? (
         <Chip tone={connectionTone(entry.conn)} testId="node-status" dataState={entry.conn} title={connectionLabel(entry.conn, t)} dotOnMobile className="shrink-0">

@@ -1,9 +1,9 @@
-//! 使用别的节点这一侧（A）：分身设备身份和长连接、`twin.link` / `twin.links` / `twin.unlink`、分拣的节点表、派发到别的节点、
+//! 使用别的节点这一侧（A）：Bot 设备身份和长连接、`twin.link` / `twin.links` / `twin.unlink`、分拣的节点表、派发到别的节点、
 //! 取回结果（docs/spec/daemon.md § 27.1、§ 27.2、§ 27.4）。
 //!
 //! - **身份**：存在数据目录的 `twin/` 下，和 CLI 的设备身份同一种文件（[`HubState`]），第一次 `twin.link` 时生成；已配对的节点以
 //!   `twin/nodes.json` 为准，库里的表 `twin_links` 只存它的元数据（名称、分组、上一次的 `twin.peer_status`），启动时对账。
-//! - **连接**：至少有一条分身连接时 daemon 起一个 [`Client`]（一条 hub 连接对多个节点，设备种类 `twin`），没有就不起，关停时
+//! - **连接**：至少有一条 Bot 连接时 daemon 起一个 [`Client`]（一条 hub 连接对多个节点，设备种类 `twin`），没有就不起，关停时
 //!   [`TwinLinks::shutdown`]。`[twin] enabled = false` 不影响它。
 //! - **没有代理**：[`Client`] 只在这个模块里，不存进别处、不经任何 RPC 方法递出去。A 上的任何调用方都没有「经 A 调 B」的办法：
 //!   B 上的动作只有两处——分拣的计划被 [`TwinLinks::dispatch`] 执行（`todo.add`、`todo.dispatch`），和后台任务对远程项做的只读同步
@@ -60,9 +60,9 @@ fn internal(e: impl std::fmt::Display) -> RpcError {
     RpcError::new(ErrorCode::Internal, "twin link storage error")
 }
 
-/// 分身设备在 hub 上的名字：「<节点名>'s twin」（B 的设备列表里照这个显示，客户端按设备种类本地化）。
+/// Bot 设备在 hub 上的名字：「<节点名>'s bot」（B 的设备列表里照这个显示，客户端按设备种类本地化）。
 fn device_name(node_name: &str) -> String {
-    format!("{}'s twin", sanitize_label(node_name, 48, "node"))
+    format!("{}'s bot", sanitize_label(node_name, 48, "node"))
 }
 
 /// 派发到别的节点失败的两种：B 不在线 / 调不通 / 超时，和 B 明确拒绝了。
@@ -88,7 +88,7 @@ fn failure_of(e: ClientError) -> Failure {
 
 /// `twin.link` 的错误：说得出原因的都带 `data.reason`。
 ///
-/// 这里的连接只为分身设备而开，所以 hub 以 `protocol` 拒绝认证就是它不认识 `twin` 设备种类（0.4 之前的 hub）；
+/// 这里的连接只为 Bot 设备而开，所以 hub 以 `protocol` 拒绝认证就是它不认识 `twin` 设备种类（0.4 之前的 hub）；
 /// 别处的 `protocol` 拒绝不一定是这个原因，不在这里解释。
 fn link_error(e: ClientError) -> RpcError {
     let reason = e.reason.clone().unwrap_or_else(|| e.code.clone());
@@ -188,7 +188,7 @@ fn remote_id(todo_id: &str, n: usize) -> String {
     uuid::Builder::from_random_bytes(bytes).into_uuid().hyphenated().to_string()
 }
 
-/// A 上所有分身连接的状态：一个 [`Client`] 和它的事件任务。
+/// A 上所有 Bot 连接的状态：一个 [`Client`] 和它的事件任务。
 #[derive(Default)]
 pub struct TwinLinks {
     /// `twin.link` / `twin.unlink` / 启动 / 关停互相串行。
@@ -232,7 +232,7 @@ impl TwinLinks {
         self.running.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(c, _)| c.clone())
     }
 
-    /// daemon 启动时：库里和 `twin/nodes.json` 对账；有分身连接就起长连接。
+    /// daemon 启动时：库里和 `twin/nodes.json` 对账；有 Bot 连接就起长连接。
     pub async fn start(&self, c: &Arc<Ctx>) {
         *self.ctx.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(c);
         let _op = self.ops.lock().await;
@@ -313,7 +313,7 @@ impl TwinLinks {
         let mut state = HubState::load(&c.paths.twin_dir(), &url);
         state.check().map_err(link_error)?;
         if state.nodes.is_empty() {
-            // 还没有分身连接：身份属于现在的 hub
+            // 还没有 Bot 连接：身份属于现在的 hub
             state.hub_url = url.clone();
         } else if host_of(&state.hub_url).ok() != host_of(&url).ok() {
             return Err(err_reason(
@@ -333,7 +333,7 @@ impl TwinLinks {
 
     // ------------------------------------------------------------ RPC
 
-    /// `twin.link`：用 B 的短码以分身设备的身份和 B 配对。
+    /// `twin.link`：用 B 的短码以 Bot 设备的身份和 B 配对。
     pub async fn link(&self, c: &Ctx, caller: &Caller, p: TwinLinkParams) -> Result<TwinLink> {
         crate::twin::human(caller)?;
         if p.node_id.trim().is_empty() {
@@ -427,7 +427,7 @@ impl TwinLinks {
         self.stalls().retain(|(n, _), _| n != node);
     }
 
-    /// 这一项交给分身的远程会话里，有没有在运行中满 2 小时 `last_seq` 没变的（§ 26.4）。返回「在哪个节点上」的说明，没有就 `None`。
+    /// 这一项交给 Bot 的远程会话里，有没有在运行中满 2 小时 `last_seq` 没变的（§ 26.4）。返回「在哪个节点上」的说明，没有就 `None`。
     ///
     /// 只看 B 最近知道的 `activity` 是 `working`、B 在线的远程项；`session.get` 调不通这次不判断（不算失败），计时也重新起算，
     /// 所以断断续续连不上的时间不会被当成「没有进展」。
@@ -472,7 +472,7 @@ impl TwinLinks {
         None
     }
 
-    /// 这个 id 是不是一条分身连接（分拣的 `dispatch.node` 要在这里面）。
+    /// 这个 id 是不是一条 Bot 连接（分拣的 `dispatch.node` 要在这里面）。
     pub(crate) fn knows(&self, node_id: &str) -> bool {
         self.client().is_some_and(|c| c.nodes().iter().any(|n| n.id == node_id))
     }
@@ -779,7 +779,7 @@ async fn sync_remote(c: &Arc<Ctx>, client: &Client, row: &RemoteRow) {
         }
     }
     if wake {
-        // 像本机会话的结果一样：A 的分身再看一眼这一项（只在它还交给分身、没关闭时）
+        // 像本机会话的结果一样：A 的 Bot 再看一眼这一项（只在它还交给 Bot、没关闭时）
         let twin_item = matches!(
             c.store.todo_get(&row.todo_id).await,
             Ok(Some(t)) if t.handler == TodoHandler::Twin && !t.state.is_closed()
@@ -817,7 +817,7 @@ async fn record_result(c: &Ctx, row: &RemoteRow, ev: &TodoEvent) -> Result<bool>
     Ok(true)
 }
 
-/// B 上有人在这个远程项的会话里接手了：A 这一项还交给分身，就照本机的「你接手了」处理（`twin::take_over_on`，和本机共用），
+/// B 上有人在这个远程项的会话里接手了：A 这一项还交给 Bot，就照本机的「你接手了」处理（`twin::take_over_on`，和本机共用），
 /// 同一个事务里推进 `fetched_seq`。`handler` 已经不是 `twin` 的（人在 A 上已经接手或收回了）只推进进度、不记；这一项后来又派了
 /// 新的远程项时，旧远程项上迟到的接手同样不记：它说的不是现在这一次。
 async fn record_taken_over(c: &Ctx, row: &RemoteRow, ev: &TodoEvent, by: &TodoActor) -> Result<()> {

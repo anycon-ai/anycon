@@ -329,7 +329,7 @@ docker run -d --name anycon-hub …                 # 和 § 2 同样的参数�
 - hub（0.4 之前的版本）：`anycon-hub: failed to start: migration error: migration <n> was previously applied but is missing in the resolved migrations`
 - daemon（0.4 之前的版本）：`error: error: store: migration: migration <n> was previously applied but is missing in the resolved migrations`
 
-0.4 起的版本遇到同样的情况会直接说「数据是更新版本的 anycon 写的（数据库迁移 n 这个版本不认识）；用更新的版本，或者恢复升级之前的备份」（hub 说的是 SQLite 文件或 Postgres 库，daemon 说的是数据目录的路径）。hub 和节点一起升级时先升级 hub：0.4 的分身连接和分身提问的推送要求 hub 也是 0.4，0.3.x 的 hub 拒绝分身设备、也不推送分身提问；其余功能在相邻 minor 之间照常（见下面的兼容策略）。
+0.4 起的版本遇到同样的情况会直接说「数据是更新版本的 anycon 写的（数据库迁移 n 这个版本不认识）；用更新的版本，或者恢复升级之前的备份」（hub 说的是 SQLite 文件或 Postgres 库，daemon 说的是数据目录的路径）。hub 和节点一起升级时先升级 hub：0.4 的 Bot 连接和 Bot 提问的推送要求 hub 也是 0.4，0.3.x 的 hub 拒绝 Bot 设备、也不推送 Bot 提问；其余功能在相邻 minor 之间照常（见下面的兼容策略）。
 
 **重启前看一眼有多少人在用。** 管理员在 `/admin` 的「hub 状态」（`GET /api/admin/status`，[spec/hub.md § 2.4](spec/hub.md#24-管理-apiadmin)）里能看到此刻的数字：在线设备、在线账号、开着客户端的账号（有浏览器、CLI 或 SDK 设备在线）、在线节点和客户端、最近一分钟有流量的连接、进行中的配对和接入、预览连接。只有数量，不含账号、设备和 IP；数字来自 hub 内存，重启后从零开始。重启会打断的东西（[spec/hub.md § 3.1](spec/hub.md#31-连接生命周期)）：
 

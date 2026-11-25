@@ -123,9 +123,9 @@ format = "anthropic"                  # anthropic | openai
 model = "claude-haiku-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
 
-[twin]                                # 分身的机器级硬开关（§ 26.2）。热加载
+[twin]                                # Bot 的机器级硬开关（§ 26.2）。热加载
 enabled = true                        # 远程只能关闭；恢复开启要在本机改
-accept_links = true                   # 接受别的节点的分身连接（§ 27.2）；远程只能关闭
+accept_links = true                   # 接受别的节点的 Bot 连接（§ 27.2）；远程只能关闭
 
 [notify]
 turn_finished = "when_unwatched"      # always | when_unwatched | never
@@ -156,8 +156,8 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 | `rules.inject_manual_sessions` | 布尔（缺省 `false`）：手动开的会话是否也注入生效的规则（§ 23.5） | 任意改 |
 | `rules.extract_auto` | 布尔（缺省 `false`）：会话空闲之后自动提炼规则（§ 23.9） | 任意改 |
 | `judge.extract` / `judge.triage` / `judge.advisor` | 枚举：空，或者 `judge.backends` 里已有的一个名字（`options` 里列出这些名字） | 任意改 |
-| `twin.enabled` | 布尔（缺省 `true`）：分身的机器级硬开关（§ 26.2） | **只能收紧**：`true` → `false` |
-| `twin.accept_links` | 布尔（缺省 `true`）：接受别的节点的分身连接（§ 27.2） | **只能收紧**：`true` → `false` |
+| `twin.enabled` | 布尔（缺省 `true`）：Bot 的机器级硬开关（§ 26.2） | **只能收紧**：`true` → `false` |
+| `twin.accept_links` | 布尔（缺省 `true`）：接受别的节点的 Bot 连接（§ 27.2） | **只能收紧**：`true` → `false` |
 | `judge.daily_calls` | 整数 0–1000 | 任意改 |
 | `notify.turn_finished` | `always` \| `when_unwatched` \| `never` | 任意改 |
 | `notify.session_idle_after` | 时长 0–7d | 任意改 |
@@ -172,7 +172,7 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 - **`node.set_config { changes: [{ key, value }] }`**：先校验**全部**改动，任何一项不合法就一项都不写——键重复、`changes` 为空、值的 JSON 类型和 `kind` 不符、超出范围、不在枚举里、时长写不出来都回 `invalid`（`data.field` 是键，`data.reason` 是 `duplicate` / `type` / `range` / `format`）；多个问题时报请求里的第一个。通过之后用 `anycon config set` 同一套逻辑写 `config.toml`（保留注释和格式、整份配置校验通过才原子替换，值按类型写——`branch_prefix = "123"` 写成字符串），再走同一条热加载路径，审计 `config.changed`（§ 13），返回新的 `node.get_config` 结果。和当前值相同的改动是空操作（不写、不审计）；全是空操作时直接返回当前结果。daemon 里同一时刻只处理一个 `node.set_config`（先重读一次文件，再算旧值、判断「只能收紧」），并发的两次不会互相覆盖成不一致的文件
 - 范围（并发 1–32、时长上限 7d 等）只约束远程写入；`config.toml` 里手写的越界值照常加载，`node.get_config` 照实显示
 
-环境变量覆盖文件里的值，写法是 `ANYCON_<段>__<键>`（双下划线表示层级），比如 `ANYCON_SESSIONS__MAX_CONCURRENT=2`；数组按 TOML 写：`ANYCON_WORKSPACE__LINK_ROOTS='["/abs/path"]'`、`ANYCON_WORKSPACE__EXTRA_ROOTS='["/mnt/ext/projects"]'`。键名里带连字符的（`agents.claude-code.*`）没法用环境变量设，用 `anycon config set`。`ANYCON_HOME`、`ANYCON_LOG`、`ANYCON_MOCK_AGENT`、`ANYCON_UPDATE_CHECK`、`ANYCON_TWIN_COALESCE_MS` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`；`ANYCON_UPDATE_CHECK` 见 § 23；`ANYCON_TWIN_COALESCE_MS` **只用于测试**，缩短分身唤醒的合并窗口，见 § 26.3，不能远程设置，也没有对应的配置键）。
+环境变量覆盖文件里的值，写法是 `ANYCON_<段>__<键>`（双下划线表示层级），比如 `ANYCON_SESSIONS__MAX_CONCURRENT=2`；数组按 TOML 写：`ANYCON_WORKSPACE__LINK_ROOTS='["/abs/path"]'`、`ANYCON_WORKSPACE__EXTRA_ROOTS='["/mnt/ext/projects"]'`。键名里带连字符的（`agents.claude-code.*`）没法用环境变量设，用 `anycon config set`。`ANYCON_HOME`、`ANYCON_LOG`、`ANYCON_MOCK_AGENT`、`ANYCON_UPDATE_CHECK`、`ANYCON_TWIN_COALESCE_MS` 不是配置键（`ANYCON_MOCK_AGENT=1` 等价于 `agents.mock.enabled = true`；`ANYCON_UPDATE_CHECK` 见 § 23；`ANYCON_TWIN_COALESCE_MS` **只用于测试**，缩短 Bot 唤醒的合并窗口，见 § 26.3，不能远程设置，也没有对应的配置键）。
 
 ## 4. 数据目录
 
@@ -835,7 +835,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
 - `workspace.branches`：`git for-each-ref --sort=-committerdate --format=%(refname:short) refs/heads refs/remotes`，去掉 `*/HEAD` 和 `<branch_prefix>/` 开头的本地分支，各取前 200 个
 - 关联项目（ADR-33 补充）：上面所有写操作只发生在 `.anycon/worktrees/` 里 anycon 自己建的目录、`info/exclude` 的那一行，以及 git 的 worktree / 分支元数据；另外会话的附件落在 `<工作目录>/.anycon/attachments/<session_id>/`（§ 7.10，ADR-44；worktree 会话落在它自己的 worktree 里，不是项目目录），这个目录同样是 anycon 自己建、自己删的，`info/exclude` 里的 `/.anycon/` 一并覆盖它
 
-**PR 自动归档**（`worktree.auto_archive_on_pr_close = true`）：周期任务每 10 分钟一次，**不在 sweeper 的同步路径上跑**（单独 `tokio::spawn`，原子标记保证同一时刻只有一轮；每小时的 `cleanup` 同样移出），挑没归档、没有 turn 在跑、有上游的 worktree 会话（每次最多 20 个），`gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档；归档前在会话锁里重新检查，这时有 turn、在等审批或有排队消息就跳过、留到下一轮。`gh` 不可用就整轮跳过。**同一轮也轮询分身派出的会话**（§ 26.9）：所属的项交给分身处理且没关闭的会话，不论这个开关开没开，筛选条件和频率相同；开关没开时只记 PR 状态和事件，不归档。没有第二套轮询。
+**PR 自动归档**（`worktree.auto_archive_on_pr_close = true`）：周期任务每 10 分钟一次，**不在 sweeper 的同步路径上跑**（单独 `tokio::spawn`，原子标记保证同一时刻只有一轮；每小时的 `cleanup` 同样移出），挑没归档、没有 turn 在跑、有上游的 worktree 会话（每次最多 20 个），`gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档；归档前在会话锁里重新检查，这时有 turn、在等审批或有排队消息就跳过、留到下一轮。`gh` 不可用就整轮跳过。**同一轮也轮询 Bot 派出的会话**（§ 26.9）：所属的项交给 Bot 处理且没关闭的会话，不论这个开关开没开，筛选条件和频率相同；开关没开时只记 PR 状态和事件，不归档。没有第二套轮询。
 
 **错误原因**（`data.reason`，客户端据此显示说明；未知的按错误码显示通用说明）：
 
@@ -887,7 +887,7 @@ SQLite（WAL）。全部表：
 | `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms、last_referenced_ms、stale、active_since_ms（`0012_rule_stale.sql`）。不受 `history_retention` 影响 |
 | `judge_calls` | 判断后端的每次调用（§ 25.2，迁移 `0007_judge.sql`）：id、position、backend、kind、model、started_ms、finished_ms、status（`ok` 或错误码）、input_bytes、output_bytes、input_tokens、output_tokens、cost_usd。不存提示和回应，保留 90 天 |
 | `rule_extract_runs` | 每次提炼（§ 23.9，同一个迁移）：id、session_id、trigger、device_id、status、started_ms、finished_ms、points、from_seq、to_seq、added(JSON)、dropped(JSON)、backend、error_code、error_status、call_id。保留 90 天，但每个会话最新的 `done` 始终保留以维持水位 |
-| `twin_links` / `todo_remotes` | 分身连接的 A 这一侧（§ 27.1、§ 27.4，迁移 `0013_twin_links.sql`）：`twin_links` 是每条连接的元数据（节点 id、名称、分组、公钥、配对时间、上一次的 `twin.peer_status`），`todo_remotes` 是清单项派到别的节点的远程项和取回结果的进度。已配对的节点本身在 `twin/nodes.json`（§ 4） |
+| `twin_links` / `todo_remotes` | Bot 连接的 A 这一侧（§ 27.1、§ 27.4，迁移 `0013_twin_links.sql`）：`twin_links` 是每条连接的元数据（节点 id、名称、分组、公钥、配对时间、上一次的 `twin.peer_status`），`todo_remotes` 是清单项派到别的节点的远程项和取回结果的进度。已配对的节点本身在 `twin/nodes.json`（§ 4） |
 | `audit` | § 13 |
 | `jobs` | clone 等长任务的状态，重启后标 failed |
 | `kv` | schema 版本等 |
@@ -1207,7 +1207,7 @@ sessions/<会话 id>/blobs/<blob_id>.<扩展名>
 
 ## 21. 清单
 
-> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间与移到另一个节点)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限)。本节是它的第一步：一份按节点存的个人清单。手动派发（§ 22）、决策档案（§ 23）和分身自动唤醒（§ 26 的 4a）也已实现。
+> **已实现：daemon（协议、存储、RPC、审计、保留期清理、`[hub] group`）、CLI（`anycon todo`）、`anycon mcp`（`list_todos` / `add_todo`）和 TS SDK（`node.todos`）。Web 客户端（§ 21.8 的 Web 一条，[web.md § 4.12](web.md#412-清单-todos)、[§ 4.13](web.md#413-空间与移到另一个节点)）也已实现。** 决定和边界见 [ADR-54](../decisions.md#adr-54-清单决策档案和-bot都在-daemon-上bot-不能批准权限)。本节是它的第一步：一份按节点存的个人清单。手动派发（§ 22）、决策档案（§ 23）和 Bot 自动唤醒（§ 26 的 4a）也已实现。
 
 ### 21.1 范围
 
@@ -1257,11 +1257,11 @@ Todo {
 - `anycon mcp` 的 `add_todo`，不管连的是本机 socket 还是经 hub（`--hub` / `--node`）。经 hub 时连接的身份是这台机器上已配对的 CLI 设备，daemon 分不出它是不是 MCP，只能靠这个参数。
 - `anycon todo add` 在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`，§ 5.5）。会话里的 agent 不需要配置 MCP 就能跑 `anycon` 命令，这是它最顺手的写法。
 
-`agent` 这个标记的用处是之后让分身不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。`kind` 之后会多出新的值（[ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的「某个节点的分身」）：客户端遇到不认识的值按「不是人加的」显示，解析时不能因此失败（Rust 的协议类型里有一个 `Unknown` 变体接住它，用 `#[serde(other)]`；daemon 自己从不产生它，对已知来源仍逐个处理）。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
+`agent` 这个标记的用处是之后让 Bot 不自动处理 agent 加的项（ADR-54 第 6 条），客户端把这类项和人加的分开显示。`kind` 之后会多出新的值（[ADR-56](../decisions.md#adr-56-bot-可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的「某个节点的 Bot」）：客户端遇到不认识的值按「不是人加的」显示，解析时不能因此失败（Rust 的协议类型里有一个 `Unknown` 变体接住它，用 `#[serde(other)]`；daemon 自己从不产生它，对已知来源仍逐个处理）。它区分的是「agent 照常干活时加的」和「人加的」，对付不了存心绕开的本机进程（比如先清掉 `ANYCON_AGENT` 再跑 `anycon todo add`）：和 `--allow-nested` 一样是护栏，不是安全边界。
 
-`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。当前自报着 `mcp` 的本机连接或带 `agent: true` 的写入发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。这只是接口上的护栏，不是边界：自报是这条连接自己的声明，同一条连接再发 `local.set_client { client: "cli" }` 就和人敲的命令一样了（有 shell 的 agent 本来也能直接这样做，和 `--allow-nested` 一样）。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 4.11](web.md#411-待处理-inbox)）；之后分身只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
+`unreviewed`：`source.kind = agent` 的项建出来时是 `true`，别的来源恒为 `false`。人在客户端「收下」它（`todo.update { reviewed: true }`），或者对它做了任何别的修改，就变成 `false`，不会再变回去。当前自报着 `mcp` 的本机连接或带 `agent: true` 的写入发来的 `todo.update` 清不掉它：`reviewed` 被忽略，它做的别的修改也不算「人改过」。这只是接口上的护栏，不是边界：自报是这条连接自己的声明，同一条连接再发 `local.set_client { client: "cli" }` 就和人敲的命令一样了（有 shell 的 agent 本来也能直接这样做，和 `--allow-nested` 一样）。客户端把 `unreviewed` 的项放在「待处理」的稍后段（[web.md § 4.11](web.md#411-待处理-inbox)）；之后 Bot 只处理 `unreviewed = false` 的项（ADR-54 第 6 条）。
 
-`handler`：`todo.add` / `todo.update` 接受 `me` 或 `twin`，未知值回 `invalid`（`data.field = "handler"`）。自报 `mcp` 的连接或带 `agent: true` 的写入设成 `twin` 回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；同一请求明确带 `reviewed: true` 的人可以收下并交给分身。单独修改别的字段不能替代这次明确确认。每次处理人变化都记 `handler { from, to, by }`「经过」，包括从未派发过的项；新建时直接交给分身记 `me → twin`。审计只记字段名和前后值。`TodoSourceKind.twin` 表示分身的动作操作者；未知来源仍按「不是人」显示。
+`handler`：`todo.add` / `todo.update` 接受 `me` 或 `twin`，未知值回 `invalid`（`data.field = "handler"`）。自报 `mcp` 的连接或带 `agent: true` 的写入设成 `twin` 回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；同一请求明确带 `reviewed: true` 的人可以收下并交给 Bot。单独修改别的字段不能替代这次明确确认。每次处理人变化都记 `handler { from, to, by }`「经过」，包括从未派发过的项；新建时直接交给 Bot 记 `me → twin`。审计只记字段名和前后值。`TodoSourceKind.twin` 表示 Bot 的动作操作者；未知来源仍按「不是人」显示。
 
 `session_id` 是这一项从哪个会话里来的。daemon 拉起 agent 时在环境里注入 `ANYCON_SESSION_ID`（和 `ANYCON_AGENT` 一起，§ 5.5，同样不能被会话 `env` 覆盖；ACP agent 除外，见 § 5.5），`anycon mcp` 和 `anycon todo add` 读到就在 `todo.add` 里带上 `origin_session`；daemon 只在这一项记成 `kind: agent` 时才看它，并且核对这个会话存在才记，否则丢掉这个字段、照常建项。会话之后被删，`session_id` 原样留着，客户端按「会话已不存在」显示。
 
@@ -1319,7 +1319,7 @@ Todo {
 
 ### 21.7 多个节点
 
-每个节点各有一份清单，daemon 之间不通信（ADR-54 第 12 条）。分身连接（[ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定)，[§ 27](#27-分身连接)）让一个节点的 daemon 作为另一个节点的受限设备，在它的清单里记项并派发；清单仍然按节点各有一份。daemon 这边只多一样东西：**分组名**。
+每个节点各有一份清单，daemon 之间不通信（ADR-54 第 12 条）。Bot 连接（[ADR-56](../decisions.md#adr-56-bot-可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定)，[§ 27](#27-bot-连接)）让一个节点的 daemon 作为另一个节点的受限设备，在它的清单里记项并派发；清单仍然按节点各有一份。daemon 这边只多一样东西：**分组名**。
 
 - `[hub] group`：文本，≤ 40 个 Unicode 码点，单行（不含控制字符和 U+2028 / U+2029），缺省为空；这条规则对 `config set` 和手写的 `config.toml` 同样成立（加载时校验），和节点显示名（`[hub] name`）放在一起。热加载，加进远程修改的白名单（§ 3，`hub.group`，任意改），所以已配对设备能改，改动照常进审计 `config.changed`；`node.info` 里给出 `group`（旧 daemon 没有这个字段，客户端按空处理）。配置改变没有通知，别的设备在下一次刷新 `node.info` 之前仍显示旧的分组。
 - 分组名相同（去掉首尾空白、区分大小写）的节点是一组；为空的节点自成一组。它是给客户端看的标签，daemon 不拿它做任何判断，不是访问控制。
@@ -1329,24 +1329,24 @@ Todo {
 - 合并：对所选的、此刻在线的节点各发 `todo.list`，并成一个列表，每项标着节点；离线的节点用本地缓存，并标明是缓存。
 - 移动：在目标节点 `todo.add`（新的 `id`，内容照搬，`project` 清空——项目名在另一个节点上不一定是同一个项目），成功后在原节点 `todo.delete`。两步之间失败时宁可留下两份，不丢。有来源会话（`source.session_id`）的项移过去之后不带这个字段。目标节点和原节点不同组时，客户端先让用户确认。「原节点那一项没变」「目标上的那一份还在」不能靠客户端的缓存判断（已关闭的项重连后不会重新列、别的标签页可能有没发出去的改动、目标上那一份可能被改过），所以要在节点上检查：动手前 `todo.get` 原节点那一项、核对它和用户确认时一样；删原节点之前 `todo.get` 目标上的那一份，再用 `todo.delete` 带 `if_updated_ms`（用户确认时那一项的 `updated_ms`）删原节点；之后想删掉目标上的那一份，同样先 `todo.get` 原节点，再用 `if_updated_ms`（目标那份最后一次确认的 `updated_ms`）删它。步骤和界面见 [web.md § 4.13](web.md#413-空间与移到另一个节点)。
 
-跨节点移动由客户端在目标节点新建再删除原项；目标项的 `handler` 重置为 `me`，因为目标节点的分身项目范围独立，需要人在目标节点重新决定是否交给分身。
+跨节点移动由客户端在目标节点新建再删除原项；目标项的 `handler` 重置为 `me`，因为目标节点的 Bot 项目范围独立，需要人在目标节点重新决定是否交给 Bot。
 
 ### 21.8 客户端入口
 
-- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；派发之后的界面用 `activity` 显示会话的情况；显示哪些节点的清单跟随空间切换（[web.md § 4.13](web.md#413-空间与移到另一个节点)）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和分身之后的界面)。
+- **Web**：清单页和单项详情（新建、编辑、改状态、删除），导航项上带未关闭的数量；这一步界面只用 `open` / `working` / `done` / `dropped` 四个状态，`waiting` / `review` 到手动派发那一步才出现在界面上（别的客户端写了这两个值的项，归在「处理中」里显示）；派发之后的界面用 `activity` 显示会话的情况；显示哪些节点的清单跟随空间切换（[web.md § 4.13](web.md#413-空间与移到另一个节点)）；`unreviewed` 的项出现在「待处理」里等人收下；`source.kind = agent` 的项有来源标记和回到来源会话的链接。界面设计见 [web.md § 14](web.md#14-加入清单和-bot-之后的界面)。
 - **CLI**：`anycon todo add <title> [--body <text>] [--project <name>] [--due <time>] [--repeat <spec>]`、`anycon todo edit <id> --repeat <spec> | --no-repeat`、`anycon todo ls [--all] [--project <name>] [--json]`、`anycon todo done | drop | reopen <id>`、`anycon todo rm <id>`；`<id>` 接受前缀，和会话 id 一样。在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`）：`add` 带 `agent: true` 和 `origin_session`（§ 21.2），`ls` 照常，`done` / `drop` / `reopen` / `rm` 拒绝执行并说明原因——和 `anycon mcp` 不给 agent 修改清单的工具是同一条界线，同样只是护栏。子命令规格见 [cli.md § 3.8](cli.md#38-anycon-todo)。
 - **`anycon mcp`**：两个新工具。`list_todos`（`todo.list`，只读）；`add_todo`（`todo.add`：`title`、`body`、`project`；总是带 `agent: true`，连的是本机还是经 hub 都一样）。**`add_todo` 在 anycon 拉起的 agent 里也能用**，不需要 `--allow-nested`：会话里的 agent 记下「之后要处理」正是它的用途，它不开会话、不触发任何 turn，写进去的项标着 `source.kind = agent`。agent 没有修改、关闭、删除清单项的工具。
 - **SDK**：`@anycon/sdk` 的节点对象上有 `todo.*` 的薄封装和 `todo.changed` 事件，类型来自生成的协议类型；不替调用方做离线缓存和重放。Python SDK 不动。
 
 ## 22. 派发
 
-> **已实现：daemon（`todo.dispatch` / `todo.history` / `todo.event`、关联、算出来的 `activity`、「经过」、`no_push` 选项）、CLI（`anycon todo run` / `history`）和 TS SDK（`node.todos.dispatch` / `dispatchPreview` / `history`、`todo_event`）。Web 客户端的界面（派发对话框、「经过」、验收页、「待验收」段、会话页的来源 chip、左栏的折叠、通知，[web.md § 4.12](web.md#412-清单-todos)）也已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 8 条的第 2 步：在清单的一项上让 agent 处理。决定见 ADR-54 第 4、5 条和 [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条；界面见 [web.md § 4.12](web.md#412-清单-todos)、§ 4.11、§ 4.6、§ 7。没有单独的 capability：`node.info.capabilities.todo` 为 true 而 daemon 没有这一节的方法时，`todo.dispatch` / `todo.history` 得到 `unsupported`（`method not found`），客户端据此不显示入口。
+> **已实现：daemon（`todo.dispatch` / `todo.history` / `todo.event`、关联、算出来的 `activity`、「经过」、`no_push` 选项）、CLI（`anycon todo run` / `history`）和 TS SDK（`node.todos.dispatch` / `dispatchPreview` / `history`、`todo_event`）。Web 客户端的界面（派发对话框、「经过」、验收页、「待验收」段、会话页的来源 chip、左栏的折叠、通知，[web.md § 4.12](web.md#412-清单-todos)）也已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和-bot都在-daemon-上bot-不能批准权限) 第 8 条的第 2 步：在清单的一项上让 agent 处理。决定见 ADR-54 第 4、5 条和 [ADR-56](../decisions.md#adr-56-bot-可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 第 8 条；界面见 [web.md § 4.12](web.md#412-清单-todos)、§ 4.11、§ 4.6、§ 7。没有单独的 capability：`node.info.capabilities.todo` 为 true 而 daemon 没有这一节的方法时，`todo.dispatch` / `todo.history` 得到 `unsupported`（`method not found`），客户端据此不显示入口。
 
 ### 22.1 范围
 
 派发 = 从一项开一个会话，把会话和这一项关联，每一轮的结果记进这一项的「经过」，会话现在的情况作为 `activity` 在每次返回这一项时算出来（不改 `state`）。一项可以先后派发多次，每次一个新会话；之前各次的结果随下一次的第一条消息带过去（ADR-54 第 4 条的交接：会话用完即弃，清单项是一直在的那份文档）。
 
-这一步没有判断、没有模型调用：派给哪个 agent、用什么设置、在哪里工作，都由调用方决定。第 4 步的分身和第 5 步别的节点的分身调用的是同一个方法，所以派发的全部逻辑（开会话、关联、`activity`、「不 push、不开 PR」）都在 daemon 里，客户端不拼 `session.create` 再回写。发起者和审计身份都取自调用方（`Caller`），没有写死成「本机」：别的节点的分身以受限设备的身份调用时，「经过」和审计里记的就是那台设备。
+这一步没有判断、没有模型调用：派给哪个 agent、用什么设置、在哪里工作，都由调用方决定。第 4 步的 Bot 和第 5 步别的节点的 Bot 调用的是同一个方法，所以派发的全部逻辑（开会话、关联、`activity`、「不 push、不开 PR」）都在 daemon 里，客户端不拼 `session.create` 再回写。发起者和审计身份都取自调用方（`Caller`），没有写死成「本机」：别的节点的 Bot 以受限设备的身份调用时，「经过」和审计里记的就是那台设备。
 
 不做：把已有的会话关联到一项（会话从一项派出，才属于这一项）；一个会话属于多项；失败后自动重派（第 4 步的事）。
 
@@ -1363,7 +1363,7 @@ Todo {
 
 - `id`：这一项。不是小写 UUID → `invalid`（`data.field = "id"`）；不存在 → `not_found`；已关闭（`done` / `dropped`）→ `invalid`（`data.field = "id"`，`data.reason = "closed"`）；周期项（带 `repeat` 的模板，§ 26.9）→ `invalid`（`data.field = "id"`，`data.reason = "repeat_template"`），派发的是它复制出来的每一次。`unreviewed` 的项由人派发，算一次人为修改，清掉 `unreviewed`（§ 21.2）。**谁拦、拦什么**：daemon 只拦自报了 `mcp` 的本机连接（`forbidden`，和 agent 不能修改清单项是同一条界线，§ 21.8）。`todo.dispatch` 没有「自报是 agent」的参数（`agent` 是 agent 的 id），daemon 看不到调用方的环境变量；anycon 拉起的 agent 里运行的 `anycon todo run` 是**CLI 自己**拒绝的（读 `ANYCON_AGENT`，§ 22.6）。两处都是护栏，不是边界：有 shell 的 agent 可以清掉环境变量再跑 CLI、自报成 `cli`，或者直接发 RPC，照样能派发；真正的限制是第一条消息由 daemon 生成、会话仍受审批和 `sessions.max_concurrent` 约束、派发缺省带「不 push、不开 PR」（§ 22.5，同样不是边界）。
 - `project`：缺省用这一项的 `project`；两者都没有 → `invalid`（`data.field = "project"`）。空白的 `project` 按没给处理。给了而且和这一项的不同（按项目名比较，大小写 / 规范化的写法和 `session.create` 一致）→ 派发成功时把这一项的 `project` 改成它（同一次修改）。项目不存在 → `not_found`，和 `session.create` 一样。
-- `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`，当场重新判断）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。在项目目录里干没有隔离：agent 的改动直接落在用户的工作目录里，客户端在派发前写明。第 4 步的分身只派到 worktree。明确给了 `workspace` 的，以它为准，校验同 `session.create`（比如不是 git 项目却要 worktree → 同样的错误，什么都不留下）。
+- `workspace`：同 `session.create`（§ 10.1）。缺省时可以开 worktree 的项目（`worktree_ready`，当场重新判断）用新的 worktree，否则在项目目录里；不看 `worktree.default`——派出去的活缺省不改在用户正在用的工作目录里（ADR-54 第 4 条）。在项目目录里干没有隔离：agent 的改动直接落在用户的工作目录里，客户端在派发前写明。第 4 步的 Bot 只派到 worktree。明确给了 `workspace` 的，以它为准，校验同 `session.create`（比如不是 git 项目却要 worktree → 同样的错误，什么都不留下）。
 - `agent` / `settings`：同 `session.create`（§ 6），同样的校验，危险模式同样受 `permissions.allow_dangerous_modes` 约束。不认识的 agent → `agent_unavailable`。
 - `no_push`：「不 push、不开 PR」（§ 22.5）。缺省 `true`。所选 agent 没有声明这个选项（`AgentInfo.options` 里没有 id 为 `no_push` 的布尔选项）而 `no_push = true` → `unsupported`（`data.field = "no_push"`，`data.reason = "no_push"`）：要派给这样的 agent，调用方得明确传 `false`。声明了的 agent，daemon 把 `settings.options.no_push` 设成 `no_push` 的值（`true` 或 `false`，覆盖调用方在 `settings.options` 里给的同名值）；没声明的 agent 带 `false` 时不写这个选项。
 - `message_id`：可选（≤ 128 字节，不含控制字符，否则 `invalid`），幂等，语义同 `session.create` 的 `message_id`：同一个值的重试（比如回执丢了）返回第一次的结果（同一个会话，不多一条关联、不多一条 `dispatched`、不多一条审计）。重试要求：找到的会话还在这一项的 `sessions` 里，并且 `agent`、`project`（有效的项目）、`no_push` 和第一次一样；不一样 → `invalid`（`data.field = "message_id"`）；已经用在别的项或别的用途上也是 `invalid`。会话属于这一项以前的派发（项被删了、又用同一个 id 建了回来）而不在现在的 `sessions` 里：当作新的派发，第一条消息用新的 id。它同时是会话第一条消息的 id。缺省由 daemon 生成（没有幂等）；CLI 和 SDK 每次调用生成一个。第一次派发出的会话之后被删除的话，重试查不到它，会当成新的派发。
@@ -1446,7 +1446,7 @@ When you are done, end your final message with a short report: what you changed,
 Leave your changes on the branch: do not push and do not open a pull request.   ← 只在 no_push 时
 ```
 
-  「Earlier work」只带最近 5 次派发各自最后一条 result，合计最多 8 KiB，超出时从最早的开始丢；一次都没有时这一段不出现。「When you are done」那一段每次派发都有（手动、分身、分身设备、预览共用同一个组装函数）：会话的结果文字是下一次派发的交接、分身的分拣和人的验收读的东西，不指定形状时常常缺少「怎么验证的」，所以要求 agent 以一份简短的收尾报告结束。`no_push` 那一行是给 agent 的说明，真正的限制在 § 22.5。细节：正文为空时没有正文那一段；没有 result 或 `text` 为空的派发不出现（「最近 5 次」按派发数，在去掉空的之前数）；报告是 agent 写的，可能模仿分隔线或「报告」的标题行，所以每份报告的**每一行**都加 `> ` 前缀（包括空行），整段以单独一行 `End of earlier reports.` 收尾：报告里写的 `---`、`[codex, session …]`、`End of earlier reports.` 都带着 `> `，出现不到行首，分不出新的结构（这是让注入更难，不是挡住它）。会话 id 去掉 `sess_` 前缀，取随机部分的前 8 个字符，只用来让 agent 分清几份报告；8 KiB 按渲染出来的块（标签行加带前缀的各行、换行）的字节数算，整块地丢，不截断某一块。标题、正文取派发那一刻的当前内容。组装是一个纯函数（`todo_dispatch::compose_first_message`）。
+  「Earlier work」只带最近 5 次派发各自最后一条 result，合计最多 8 KiB，超出时从最早的开始丢；一次都没有时这一段不出现。「When you are done」那一段每次派发都有（手动、Bot、Bot 设备、预览共用同一个组装函数）：会话的结果文字是下一次派发的交接、Bot 的分拣和人的验收读的东西，不指定形状时常常缺少「怎么验证的」，所以要求 agent 以一份简短的收尾报告结束。`no_push` 那一行是给 agent 的说明，真正的限制在 § 22.5。细节：正文为空时没有正文那一段；没有 result 或 `text` 为空的派发不出现（「最近 5 次」按派发数，在去掉空的之前数）；报告是 agent 写的，可能模仿分隔线或「报告」的标题行，所以每份报告的**每一行**都加 `> ` 前缀（包括空行），整段以单独一行 `End of earlier reports.` 收尾：报告里写的 `---`、`[codex, session …]`、`End of earlier reports.` 都带着 `> `，出现不到行首，分不出新的结构（这是让注入更难，不是挡住它）。会话 id 去掉 `sess_` 前缀，取随机部分的前 8 个字符，只用来让 agent 分清几份报告；8 KiB 按渲染出来的块（标签行加带前缀的各行、换行）的字节数算，整块地丢，不截断某一块。标题、正文取派发那一刻的当前内容。组装是一个纯函数（`todo_dispatch::compose_first_message`）。
 
 ### 22.5 「不 push、不开 PR」
 
@@ -1496,7 +1496,7 @@ Leave your changes on the branch: do not push and do not open a pull request.   
 
 ## 23. 决策档案
 
-> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）已实现，由 Web 持久化和重放。规则的「过期」和回答时的「以后都这样」（§ 26.10）也已实现：daemon、CLI、TS SDK 和 Web 都有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
+> **前一半已实现：daemon（协议、存储、RPC、审计、字数上限、注入、`rules.inject_manual_sessions`）、CLI（`anycon rule`）、TS SDK（`node.rules`、`rule_changed`）和 Web 界面（§ 23.10 的 Web 一条，[web.md § 4.14](web.md#414-规则-rules)）。后一半也已实现：从会话里提炼规则（手动和自动、记录、通知，§ 23.9）和判断后端（§ 25），daemon、CLI、TS SDK 和 Web 都有。同组节点之间的同步（§ 23.8）已实现，由 Web 持久化和重放。规则的「过期」和回答时的「以后都这样」（§ 26.10）也已实现：daemon、CLI、TS SDK 和 Web 都有。** [ADR-54](../decisions.md#adr-54-清单决策档案和-bot都在-daemon-上bot-不能批准权限) 第 3 条、第 8 条的第 3 步。本节的前一半是规则本身——存在哪、谁能写、怎么确认、怎么注入派发出去的会话，没有任何模型调用；后一半是 § 23.9 的提炼。
 
 ### 23.1 范围
 
@@ -1537,7 +1537,7 @@ Rule {
 
 **过期**（`stale`）：只对 `active` 的规则有意义。过期的规则还是 `active`，规则页另起一段显示；但它**不注入**（派发的会话、分拣的系统提示、`rule.preview` 和 `todo.dispatch_preview` 的 `rules_text` 都不含它），**不计字数预算**（§ 23.4 的 `budget` 和生效时的检查都把它当成不生效）。daemon 每天看一次（§ 26.10）；人用 `rule.update { stale: false }` 恢复；客户端不能自己标过期（`stale: true` → `invalid`，`data.field = "stale"`）。规则离开 `active`（停用、否决、改回待确认）时 `stale` 清掉，之后再生效就是一条新的生效规则。
 
-`source.kind`：`manual` 人手写；`answer` 人在答复权限请求、agent 的提问或分身的问题时点「记成规则」或勾「以后都这样」（§ 23.6；权限请求和 agent 的提问带 `session_id`、`request_id`；分身的问题没有会话，只带 `request_id`，是 `twin_questions` 里那个问题的 id）；`extracted` 提炼出来的（带 `session_id`、`seq`，§ 23.9）；`agent` 调用方自报是 agent。daemon 填 `device_id`，调用方不能指定。
+`source.kind`：`manual` 人手写；`answer` 人在答复权限请求、agent 的提问或 Bot 的问题时点「记成规则」或勾「以后都这样」（§ 23.6；权限请求和 agent 的提问带 `session_id`、`request_id`；Bot 的问题没有会话，只带 `request_id`，是 `twin_questions` 里那个问题的 id）；`extracted` 提炼出来的（带 `session_id`、`seq`，§ 23.9）；`agent` 调用方自报是 agent。daemon 填 `device_id`，调用方不能指定。
 
 客户端遇到不认识的 `status` 按「不生效」显示，遇到不认识的 `source.kind` 按「不是人写的」显示，解析不能因此失败（Rust 的协议类型里 `RuleStatus`、`RuleSourceKind`、`RuleSync` 各有一个 `Unknown` 变体接住它，用 `#[serde(other)]`）。daemon 自己从不产生也不接受 `Unknown`：`rule.update` 的 `status` 解析成不认识的值 → `invalid`（`data.field = "status"`）；库里读到不认识的字符串按 `Unknown` 读，不生效，也不会被写回成别的值。
 
@@ -1615,7 +1615,7 @@ Standing rules from the user. The user wrote or confirmed each of them; follow t
 
 - 预填的文字里有 agent 写的东西（提问的原文、命令）。它一旦保存就会进到之后每个会话的系统提示里，所以必须经过编辑框、由用户看过再存，不提供「一键记下」；编辑框里把来自 agent 的部分和用户的选择分开显示。
 - 界面写明：规则不会自动批准任何请求，它只是告诉 agent 你的做法。
-- **「以后都这样」**（回答时的勾选，§ 26.10）是进同一个编辑框的另一个入口，不是另一条路：回答**分身的问题**（`twin.answer`）或 **agent 的提问**（`permission.respond` 带 `answers`）的地方，答复按钮旁多一个勾选；勾上并且答复**成功之后**才打开「记成规则」的编辑框（答复失败、请求已不存在、已被别处答复都不打开），预填同上，由用户改成自己的话再存，预填原样不能保存。勾选本身不进答复的参数，不改答复的内容，也不碰答复按钮的锁和键盘快捷键。出处同「记成规则」：agent 的提问是 `{ kind: answer, session_id, request_id }`；分身的问题没有会话，记 `{ kind: answer, request_id: <问题 id> }`（`request_id` 本来就是「出自哪个权限请求或提问」，不需要新字段，也不记会话）。
+- **「以后都这样」**（回答时的勾选，§ 26.10）是进同一个编辑框的另一个入口，不是另一条路：回答**Bot 的问题**（`twin.answer`）或 **agent 的提问**（`permission.respond` 带 `answers`）的地方，答复按钮旁多一个勾选；勾上并且答复**成功之后**才打开「记成规则」的编辑框（答复失败、请求已不存在、已被别处答复都不打开），预填同上，由用户改成自己的话再存，预填原样不能保存。勾选本身不进答复的参数，不改答复的内容，也不碰答复按钮的锁和键盘快捷键。出处同「记成规则」：agent 的提问是 `{ kind: answer, session_id, request_id }`；Bot 的问题没有会话，记 `{ kind: answer, request_id: <问题 id> }`（`request_id` 本来就是「出自哪个权限请求或提问」，不需要新字段，也不记会话）。
 
 ### 23.7 存储、审计、日志
 
@@ -1643,7 +1643,7 @@ daemon 从不自动删除有用的规则（ADR-54 第 3 条；过期只是不再
 
 ### 23.9 提炼
 
-已实现的提炼（[ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 3 条）：从会话里挑出用户做过的决定，交给判断后端（§ 25）归纳成**待确认**的规则。没有配提炼用的后端时，后台检查任务不发起调用；`rule.extract` 有新的决策点时回 `not_configured`，没有新的决策点仍回 `{ points: 0 }`。后台检查任务可以常驻，以便热加载配置之后自动生效。
+已实现的提炼（[ADR-54](../decisions.md#adr-54-清单决策档案和-bot都在-daemon-上bot-不能批准权限) 第 3 条）：从会话里挑出用户做过的决定，交给判断后端（§ 25）归纳成**待确认**的规则。没有配提炼用的后端时，后台检查任务不发起调用；`rule.extract` 有新的决策点时回 `not_configured`，没有新的决策点仍回 `{ points: 0 }`。后台检查任务可以常驻，以便热加载配置之后自动生效。
 
 #### 决策点
 
@@ -1810,7 +1810,7 @@ ExtractRun {
 
 ## 25. 判断后端
 
-> **已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 第 4 条：分身要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。提炼规则（§ 23.9）、分拣和顾问（§ 26）都使用它。
+> **已实现。** [ADR-54](../decisions.md#adr-54-清单决策档案和-bot都在-daemon-上bot-不能批准权限) 第 4 条：Bot 要做的「判断」（分拣、提炼规则、顾问）交给一个由用户配置的后端，干活仍然是普通会话。本节写后端本身。提炼规则（§ 23.9）、分拣和顾问（§ 26）都使用它。
 
 ### 25.1 配置
 
@@ -1943,36 +1943,38 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
   - Codex 的一次性调用还能在只读沙箱里跑只读命令：摘录里注入的指令可能让它读这台机器上的文件，再写进回答里。
   - 回答最多只能变成待确认的规则，要人看过才生效。但在这之前，它已经经过了 Codex 的模型服务。
 - **注入**：摘录里有 agent 写的文字，可能带着注入的指令。提炼出来的规则一律待确认（§ 23.2），确认界面显示全文和出处；模板里也写明 agent 写的部分是数据，不是指令。但模板挡不住注入，挡得住的只有人工确认这一道闸。
-- **分身分拣**：会把交给分身且在范围内的清单项、之前的结果、问题和回答，以及生效规则发给判断后端；`api` 是 daemon 经 HTTPS 直接发给配置的模型服务、不经 hub，`agent` 是本机 agent CLI 发给它的模型服务。固定动作的校验只限制 daemon 执行什么，不会把后端自身变成沙箱；上述 Codex 只读命令的限制同样适用。分身只能在允许的项目里派发、固定带「不 push、不开 PR」，不能批准权限。
-- **hub**：清单及判断内容不进入明文信封；分身新增 `twin_question` 类别以及带 `todo_` 前缀的不透明落点 id。
+- **Bot 分拣**：会把交给 Bot 且在范围内的清单项、之前的结果、问题和回答，以及生效规则发给判断后端；`api` 是 daemon 经 HTTPS 直接发给配置的模型服务、不经 hub，`agent` 是本机 agent CLI 发给它的模型服务。固定动作的校验只限制 daemon 执行什么，不会把后端自身变成沙箱；上述 Codex 只读命令的限制同样适用。Bot 只能在允许的项目里派发、固定带「不 push、不开 PR」，不能批准权限。
+- **hub**：清单及判断内容不进入明文信封；Bot 新增 `twin_question` 类别以及带 `todo_` 前缀的不透明落点 id。
 
-## 26. 分身
+## 26. Bot
 
-> **已实现：4a（§ 26.1–§ 26.8）、4b（§ 26.9，周期项和 PR 事件）和 4c（§ 26.10，规则的「过期」和「以后都这样」），daemon、CLI、TS SDK 和 Web 都有。** [ADR-54](../decisions.md#adr-54-清单决策档案和分身都在-daemon-上分身不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
+> **已实现：4a（§ 26.1–§ 26.8）、4b（§ 26.9，周期项和 PR 事件）和 4c（§ 26.10，规则的「过期」和「以后都这样」），daemon、CLI、TS SDK 和 Web 都有。** [ADR-54](../decisions.md#adr-54-清单决策档案和-bot都在-daemon-上bot-不能批准权限) 的第 4 步。分三批落地：**4a**，本节除 § 26.9、§ 26.10 以外的全部；**4b**，周期项和 PR 事件（§ 26.9）；**4c**，规则的「过期」和回答时的「以后都这样」（§ 26.10）。
 
-分身是 daemon 里的一个调度者：被事件唤醒，看清单里交给它的项，决定每一项怎么办，再用第 2 步的派发（§ 22）开会话去做。它自己不干活，也不批准权限。
+Bot 是 daemon 里的一个调度者：被事件唤醒，看清单里交给它的项，决定每一项怎么办，再用第 2 步的派发（§ 22）开会话去做。它自己不干活，也不批准权限。
+
+界面、文档和 CLI 的说明文字里叫 Bot；协议、配置、CLI 命令、路由和数据库里的名字仍是 `twin`（`twin.*` 方法、`capabilities.twin`、`[twin]`、`anycon twin`、设备种类 `twin`），两者是同一个东西（[ADR-60](../decisions.md#adr-60-界面和文档里分身改叫-bot标识符仍是-twin)）。
 
 ### 26.1 范围：它碰哪些项
 
-- **处理人**：`Todo` 多一个字段 `handler: me | twin`，缺省 `me`。客户端里的「交给分身」和「我自己做」改的就是它（`todo.update { handler }`）。另外两种变化由 daemon 写：「你接手了」（§ 26.6）和「交回给你」（§ 26.4）。和 `state` 不同，`handler` 不是只由人写。客户端遇到不认识的值按 `me` 显示，Rust 协议类型里用 `Unknown` 变体接住。
-- 一项要**同时满足**下面六条，分身才会看它：
+- **处理人**：`Todo` 多一个字段 `handler: me | twin`，缺省 `me`。客户端里的「交给 Bot」和「我自己做」改的就是它（`todo.update { handler }`）。另外两种变化由 daemon 写：「你接手了」（§ 26.6）和「交回给你」（§ 26.4）。和 `state` 不同，`handler` 不是只由人写。客户端遇到不认识的值按 `me` 显示，Rust 协议类型里用 `Unknown` 变体接住。
+- 一项要**同时满足**下面六条，Bot 才会看它：
   - `handler = twin`；
   - 没关闭（`state` 不是 `done` / `dropped`）；
-  - 不是周期项的模板（没有 `repeat`，§ 26.9；模板自己不分拣，它的 `handler = twin` 表示「每一次复制出来的都交给分身」）；
+  - 不是周期项的模板（没有 `repeat`，§ 26.9；模板自己不分拣，它的 `handler = twin` 表示「每一次复制出来的都交给 Bot」）；
   - 不是 `unreviewed`，也就是 agent 记的项要人先收下（ADR-54 第 6 条）；
-  - 不是分身设备记的项（`source.kind = twin`，§ 27.3：别的节点的分身经分身连接记在这里的项，这个节点自己的分身不碰；人也不能把它们交给分身，`todo.update { handler: twin }` → `invalid`，`data.reason = "twin_source"`）；
-  - 在范围内：项有 `project`，就必须在允许的项目里。没有 `project` 的项，分身只能从允许的项目里选一个，或者问你。
-- **派发的权限**：自报了 `mcp` 的连接或带 `agent: true` 的写入不能把 `handler` 设成 `twin`，回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；人可以在同一请求带 `reviewed: true` 收下并交给分身。
+  - 不是 Bot 设备记的项（`source.kind = twin`，§ 27.3：别的节点的 Bot 经 Bot 连接记在这里的项，这个节点自己的 Bot 不碰；人也不能把它们交给 Bot，`todo.update { handler: twin }` → `invalid`，`data.reason = "twin_source"`）；
+  - 在范围内：项有 `project`，就必须在允许的项目里。没有 `project` 的项，Bot 只能从允许的项目里选一个，或者问你。
+- **派发的权限**：自报了 `mcp` 的连接或带 `agent: true` 的写入不能把 `handler` 设成 `twin`，回 `forbidden`。未收下的项设成 `twin` 回 `invalid`（`data.reason = "unreviewed"`）；人可以在同一请求带 `reviewed: true` 收下并交给 Bot。
 
 ### 26.2 配置
 
-- **机器级硬开关** `[twin] enabled = true`：缺省开，热加载，**只能在本机放宽**。远程修改白名单里它是「只能收紧」，同 `preview.enabled`。关掉之后分身什么都不做：不唤醒、不调用模型、不派发，已经派出的会话照常跑完。它只管这台机器自己的分身；这台机器接不接受别的节点的分身是另一个键 `[twin] accept_links`（§ 27.2），互不影响。
-- **范围、上限和暂停**存在库里，按**请求方**分开存（表 `twin_scopes`，主键是请求方）。本机分身的请求方是 `local`，每条分身连接（§ 27）的请求方是那台分身设备的设备 id。读写用 `twin.get` / `twin.set`（§ 26.8，`requester` 缺省 `local`），只由人改，自报 `mcp` 的连接和分身设备回 `forbidden`。字段：
+- **机器级硬开关** `[twin] enabled = true`：缺省开，热加载，**只能在本机放宽**。远程修改白名单里它是「只能收紧」，同 `preview.enabled`。关掉之后 Bot 什么都不做：不唤醒、不调用模型、不派发，已经派出的会话照常跑完。它只管这台机器自己的 Bot；这台机器接不接受别的节点的 Bot 是另一个键 `[twin] accept_links`（§ 27.2），互不影响。
+- **范围、上限和暂停**存在库里，按**请求方**分开存（表 `twin_scopes`，主键是请求方）。本机 Bot 的请求方是 `local`，每条 Bot 连接（§ 27）的请求方是那台 Bot 设备的设备 id。读写用 `twin.get` / `twin.set`（§ 26.8，`requester` 缺省 `local`），只由人改，自报 `mcp` 的连接和 Bot 设备回 `forbidden`。字段：
 
 | 字段 | 缺省 | 说明 |
 |---|---|---|
 | `paused` | `false` | 一键暂停：不唤醒、不派发；已经派出的会话照常跑完 |
-| `projects` | `[]` | 能进哪些项目。**空 = 未配置**，分身什么都不做 |
+| `projects` | `[]` | 能进哪些项目。**空 = 未配置**，Bot 什么都不做 |
 | `agent` | 节点 ready 的 agent 按 id 排序的第一个 | 派出的会话用哪个 agent；节点当前没有单独的全局缺省 agent 字段，明确设置可固定选择 |
 | `model` | agent 的缺省 | 可选 |
 | `mode` | 见下 | 派出的会话用哪个权限模式 |
@@ -1982,21 +1984,21 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 - **权限模式**：adapter 在 `ModeInfo` 上声明 `unattended: bool`，表示「无人值守时可以用」（ADR-54 第 5 条，daemon 和客户端不内置「哪个模式叫 auto」）。现在 Claude Code 的 `auto` 和 Codex 的 `auto_review` 标了它。
   - `mode` 缺省取这个 agent 第一个带 `unattended`、并且风险不是 `dangerous` 的模式；agent 没有这样的模式，就用它的缺省模式（那样每个请求都等人）。
   - `twin.set` 只接受风险不是 `dangerous` 的模式。
-- **「不 push、不开 PR」**：分身派出的会话总是带。adapter 不支持这个选项的 agent，`twin.set` 不接受，回 `invalid`（`data.reason = "no_push_unsupported"`）。
+- **「不 push、不开 PR」**：Bot 派出的会话总是带。adapter 不支持这个选项的 agent，`twin.set` 不接受，回 `invalid`（`data.reason = "no_push_unsupported"`）。
 - **未配置**：没有可用的分拣后端（§ 25 的 `triage` 位置），或者 `projects` 为空，就是未配置。未配置时不起定时器，也不调用模型。
 
 ### 26.3 唤醒
 
-触发器，每一种都只在分身已配置、没暂停、`enabled` 开着时才算：
+触发器，每一种都只在 Bot 已配置、没暂停、`enabled` 开着时才算：
 
 | 触发 | 说明 |
 |---|---|
-| `todo` | 一项交给了分身、交给分身的项被修改，或者刚被收下 |
+| `todo` | 一项交给了 Bot、交给 Bot 的项被修改，或者刚被收下 |
 | `session` | 它派出的会话一轮结束、开始等审批、出错；它派到别的节点的项取回了新的结果（§ 27.4） |
 | `answer` | 你回答了它的问题（§ 26.5） |
 | `tick` | 兜底的定时：有它在处理的项时每 30 分钟一次，没有就不定时 |
 | `manual` | 客户端点了「现在看一遍」（`twin.wake`） |
-| `pr` | 分身派出的会话的 PR 有了变化（§ 26.9） |
+| `pr` | Bot 派出的会话的 PR 有了变化（§ 26.9） |
 
 - **合并**：触发后等 60 秒，期间新来的触发合并进同一次；从第一个触发算起最多等 5 分钟。测试可以用环境变量 `ANYCON_TWIN_COALESCE_MS`（不是配置键）缩短这个窗口：daemon 启动时读一次，取值 1000–60000 毫秒，最长等待是窗口的 5 倍；不合法的值忽略并记一条 warn。别的计时（30 分钟的 `tick`、2 小时的卡住、每日的计数）不受影响。
 - **串行**：同一时间只跑一次唤醒。正在跑时来的触发，记下来留给下一次。
@@ -2019,18 +2021,18 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
   - 每项最多 6 KiB，合计最多 32 KiB；放不下的项这次不看，下次再看，按 `updated_ms` 从早到晚。上次因总量放不下的项在下一次优先，组内仍按 `updated_ms` 从早到晚；这个待看队列只在内存里保存，重启后从最早修改的项开始。
   - 内容区用 § 23.9 那样的随机边界包起来。
 - **可用的东西**：允许的项目，各自的项目规则；还能派几次、还能同时开几个会话；顾问能不能用。
-- **节点表**：有分身连接时多一块（§ 27.4），放在同一个随机边界里。
+- **节点表**：有 Bot 连接时多一块（§ 27.4），放在同一个随机边界里。
 
 **输出**：一个 JSON 对象，`{"items":[{ "id", "action", "reason", ... }]}`。每项一条，`action` 只能是下面几种：
 
 | `action` | 附带 | daemon 怎么执行 |
 |---|---|---|
-| `dispatch` | `project?`（项没有项目时必填，必须在允许的项目里）、`note?`（≤ 2 KiB，给 agent 的补充说明）、`node?`（派到一条分身连接的节点，`project` 必填，§ 27.4） | 走 `todo.dispatch`（§ 22），用 § 26.2 的 agent / 模型 / 模式，`no_push` 恒为 true；`note` 作为「分身的说明」接在第一条消息后面，标明它来自分身 |
+| `dispatch` | `project?`（项没有项目时必填，必须在允许的项目里）、`note?`（≤ 2 KiB，给 agent 的补充说明）、`node?`（派到一条 Bot 连接的节点，`project` 必填，§ 27.4） | 走 `todo.dispatch`（§ 22），用 § 26.2 的 agent / 模型 / 模式，`no_push` 恒为 true；`note` 作为「Bot 的说明」接在第一条消息后面，标明它来自 Bot |
 | `ask_user` | `question`（≤ 1 KiB）、`options?`（≤ 5 个，各 ≤ 100 个字符） | 建一个问题（§ 26.5），通知你 |
 | `ask_advisor` | `question`（≤ 2 KiB） | 调用顾问后端（§ 25 的 `advisor` 位置），把回答附上，**同一次唤醒里**只为这一项再分拣一次。每项每次唤醒最多问一次 |
 | `wait` | — | 什么都不做（会话还在跑、在等你的回答） |
-| `hand_back` | — | `handler` 改回 `me`，「经过」里记一条「分身交回给你」和理由 |
-| `done` | — | 它认为做完了：`handler` 改回 `me`，「经过」里记一条「分身认为做完了」和理由。**不写 `state`**（§ 21.2：`state` 只由人设置）；这一项照常靠 `activity = review` 出现在「待验收」里，验收由人做 |
+| `hand_back` | — | `handler` 改回 `me`，「经过」里记一条「Bot 交回给你」和理由 |
+| `done` | — | 它认为做完了：`handler` 改回 `me`，「经过」里记一条「Bot 认为做完了」和理由。**不写 `state`**（§ 21.2：`state` 只由人设置）；这一项照常靠 `activity = review` 出现在「待验收」里，验收由人做 |
 
 - **`reason`** 必填，≤ 500 个字符，写进运行记录和这一项的「经过」。
 - **`rules?`**：可以带它所依据的规则 id 列表。它进运行记录，决定被执行时（试跑不算）还会更新这些规则的 `last_referenced_ms`（§ 26.10）。模型靠系统提示里规则文字后面的一行「规则 id，按上面的顺序」和每个项目的 `project_rule_ids` 知道每条规则的 id（过期的规则不在其中）。
@@ -2039,13 +2041,13 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 **运行约束**：
 
-- 同一项连续 3 次派发失败（派发本身出错，包括派到别的节点失败，§ 27.4；或者会话以出错结束），就交回给你，写明原因。人再次把处理人改成 `twin` 时重置连续失败计数，保留已经统计过的会话结局水位，允许在修复问题后重新交给分身。
+- 同一项连续 3 次派发失败（派发本身出错，包括派到别的节点失败，§ 27.4；或者会话以出错结束），就交回给你，写明原因。人再次把处理人改成 `twin` 时重置连续失败计数，保留已经统计过的会话结局水位，允许在修复问题后重新交给 Bot。
 - 它派出的会话在运行中 2 小时没有任何事件，算卡住：交回给你。会话不取消，交给你决定。派到别的节点的会话同样算，方法见 § 27.4（看的是那个会话的 `last_seq` 有没有变，时间用本节点自己的时钟），理由里写明是哪个节点上的会话。
 - 正在处理的项（派出的会话还没结束一轮的）最多 `max_sessions` 个；每天派发最多 `daily_dispatches` 次。
 
-**试跑**：`twin.dry_run` 走同样的输入和分拣，但只返回计划和校验结果，不执行、不建问题、不问顾问（`ask_advisor` 只列出来）。**暂停时也能试跑**：它只要求分身已配置、`[twin] enabled` 开着、daemon 没在关停（不满足时 `invalid`，`data.reason = "not_configured"`）；试跑本来就是给暂停着的分身用的：第一次配置先保存成暂停再试跑，恢复之前也先试跑（web.md § 14.8）。它计一次判断调用，同样留运行记录（`dry_run = true`）。
+**试跑**：`twin.dry_run` 走同样的输入和分拣，但只返回计划和校验结果，不执行、不建问题、不问顾问（`ask_advisor` 只列出来）。**暂停时也能试跑**：它只要求 Bot 已配置、`[twin] enabled` 开着、daemon 没在关停（不满足时 `invalid`，`data.reason = "not_configured"`）；试跑本来就是给暂停着的 Bot 用的：第一次配置先保存成暂停再试跑，恢复之前也先试跑（web.md § 14.8）。它计一次判断调用，同样留运行记录（`dry_run = true`）。
 
-### 26.5 分身的问题
+### 26.5 Bot 的问题
 
 - **表 `twin_questions`**：`id`、`todo_id`、`question`、`options`、`created_ms`、`answered_ms`、`answer`、`answered_by`。问题是**模型写的**，客户端按「agent 写的」显示，纯文字。
 - **回答**：`twin.answer { id, answer }`，`answer` ≤ 2 KiB，只由人发；回答之后触发一次唤醒。一项同时只有一个没回答的问题，再问会替换它（旧的标成「已作废」）。
@@ -2054,22 +2056,22 @@ ok   judge              haiku (api model=claude-haiku-5-5: ready; key found); cc
 
 ### 26.6 你接手了
 
-在分身派出的会话里，你（或者任何已配对设备）发了一条消息，这一项就是你接手了：
+在 Bot 派出的会话里，你（或者任何已配对设备）发了一条消息，这一项就是你接手了：
 
 - `handler` 改成 `me`，「经过」里记一条「你接手了」；
-- 分身之后不再碰它，直到你再交给它。
+- Bot 之后不再碰它，直到你再交给它。
 
-daemon 认的是「这个会话由分身派出、发消息的不是分身自己」。
+daemon 认的是「这个会话由 Bot 派出、发消息的不是 Bot 自己」。
 
-分身派到别的节点 B 的会话（§ 27.4）里你发了消息，也算接手：B 在那一项的「经过」里记一条 `taken_over`，分身所在的节点 A 取回它之后照上面的做（`handler` 改成 `me`、记一条带 `node_id` 的 `taken_over`、作废挂着的问题），和本机的接手共用同一个实现。
+Bot 派到别的节点 B 的会话（§ 27.4）里你发了消息，也算接手：B 在那一项的「经过」里记一条 `taken_over`，Bot 所在的节点 A 取回它之后照上面的做（`handler` 改成 `me`、记一条带 `node_id` 的 `taken_over`、作废挂着的问题），和本机的接手共用同一个实现。
 
 ### 26.7 运行记录、审计和通知
 
 - **表 `twin_runs`**：`id`、请求方、`started_ms`、`finished_ms`、触发（合并进来的几种）、`dry_run`、`result`（`done` / `idle` / `budget` / `failed` / `cancelled`）、看了哪些项、判断调用的 id、每项的决定（`action`、`reason`、`rules`、执行结果和不执行的原因）、错误码。
   - 用量（`TwinRun.usage`）不在这张表里，读取时从 `judge_calls` 现算（§ 26.8）。
   - 不存提示和模型的原始回答，存的是解析后的决定；`reason` 是模型写的，按 agent 写的内容显示。
-  - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`（分身设备派来的会话还有一列 `taken_ms`：这个会话里的接手已经记过一次，§ 27.3），会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
-- **审计**：分身做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。沿用审计的设备字段，`device_id` 填请求方、`device_name = "twin"`；新增的操作者放在 `detail.actor`，不写清单正文、问题、回答和理由。
+  - 保留 90 天。已回答或作废的问题同样清理，未回答的问题一直保留。派发来源单独存在 `twin_sessions`（Bot 设备派来的会话还有一列 `taken_ms`：这个会话里的接手已经记过一次，§ 27.3），会话还存在时不随运行记录清理，确保旧会话里的新消息仍能触发「你接手了」；连续失败计数存在 `twin_items`。
+- **审计**：Bot 做的每件事（派发、建问题、交回、改 `handler`）记审计，操作者是 `{ kind: twin, id: <请求方> }`，不写死成本机的一个名字。沿用审计的设备字段，`device_id` 填请求方、`device_name = "twin"`；新增的操作者放在 `detail.actor`，不写清单正文、问题、回答和理由。
 - **通知**：只有建了问题（`twin_question`）和交回给你（复用 `follow_up` 类别）才发。PR 事件（§ 26.9）不发。没事可做的唤醒不通知，派发也不单独通知：会话做完时照常有 `turn_finished`。
 
 ### 26.8 RPC
@@ -2078,12 +2080,12 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `twin.get` | C→D | `{ requester? }` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working: [todo_id], waiting: [todo_id], last_run?, next_wake_ms?, queued?, deferred? }`（后四项见本节下方「运行状态字段」）。`state` 是 `running` / `idle` / `paused` / `disabled` / `not_configured` / `budget`。`requester` 缺省或 `local` 是本机分身；也可以是一台分身设备的设备 id（§ 27.3），读 B 给这条连接的范围，不是已配对的、种类是 `twin` 的设备 id → `not_found`（不接受名称或前缀）。对一台分身设备：`enabled` 是 `[twin] accept_links`，`configured` 是范围里有没有项目，`state` 是 `disabled`（`accept_links` 关着）/ `paused` / `not_configured` / `budget`（今天的次数用完）/ `running`（它派出的会话在处理中）/ `idle`，`today.judge_calls` 恒为 0，`working` 是它在处理中的项，`waiting` 恒为空，`last_run` / `next_wake_ms` 缺省，`queued` / `deferred` 为空 |
-| `twin.set` | C→D | `{ requester?, paused?, projects?, agent?, model?, mode?, max_sessions?, daily_dispatches?, clear? }` → `twin.get` 的结果。校验见 § 26.2；`requester` 同 `twin.get`，改一台分身设备的范围不动本机分身的调度和状态；审计的 `target` 是被改的请求方 |
+| `twin.get` | C→D | `{ requester? }` → `{ scope, state, enabled, configured, today: { dispatches, judge_calls }, working: [todo_id], waiting: [todo_id], last_run?, next_wake_ms?, queued?, deferred? }`（后四项见本节下方「运行状态字段」）。`state` 是 `running` / `idle` / `paused` / `disabled` / `not_configured` / `budget`。`requester` 缺省或 `local` 是本机 Bot；也可以是一台 Bot 设备的设备 id（§ 27.3），读 B 给这条连接的范围，不是已配对的、种类是 `twin` 的设备 id → `not_found`（不接受名称或前缀）。对一台 Bot 设备：`enabled` 是 `[twin] accept_links`，`configured` 是范围里有没有项目，`state` 是 `disabled`（`accept_links` 关着）/ `paused` / `not_configured` / `budget`（今天的次数用完）/ `running`（它派出的会话在处理中）/ `idle`，`today.judge_calls` 恒为 0，`working` 是它在处理中的项，`waiting` 恒为空，`last_run` / `next_wake_ms` 缺省，`queued` / `deferred` 为空 |
+| `twin.set` | C→D | `{ requester?, paused?, projects?, agent?, model?, mode?, max_sessions?, daily_dispatches?, clear? }` → `twin.get` 的结果。校验见 § 26.2；`requester` 同 `twin.get`，改一台 Bot 设备的范围不动本机 Bot 的调度和状态；审计的 `target` 是被改的请求方 |
 | `twin.wake` | C→D | `{}` → `{}`：现在唤醒一次（照样受合并和串行约束） |
 | `twin.dry_run` | C→D | `{}` → `{ run }`：同步等到分拣结束（受判断后端的 `timeout` 约束） |
 | `twin.runs` | C→D | `{ limit?, before_ms? }` → `{ runs: [TwinRun] }` |
-| `twin.stats` | C→D | `{ days? }` → `{ days: [TwinDayStats] }`：最近几个本地日的统计，只读、只统计本机分身。`days` 取 1..=90，缺省 7，越界 → `invalid`，`data.field = "days"`。结果每个本地日（节点的时区）一项，按日期升序，最后一项是今天；没有活动的日子也在，数字为 0。字段见本节下方「`twin.stats`」 |
+| `twin.stats` | C→D | `{ days? }` → `{ days: [TwinDayStats] }`：最近几个本地日的统计，只读、只统计本机 Bot。`days` 取 1..=90，缺省 7，越界 → `invalid`，`data.field = "days"`。结果每个本地日（节点的时区）一项，按日期升序，最后一项是今天；没有活动的日子也在，数字为 0。字段见本节下方「`twin.stats`」 |
 | `twin.questions` | C→D | `{ open_only? }` → `{ questions: [TwinQuestion] }` |
 | `twin.answer` | C→D | `{ id, answer }` → `TwinQuestion` |
 | `twin.changed` | D→C notification | `{ state, run? }`：状态变了、一次唤醒结束时发 |
@@ -2091,29 +2093,29 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
 
 `twin.set.clear` 同 `todo.update`：合并后清空 `agent` / `model` / `mode`，恢复缺省选择；字段缺省表示保持不变。
 
-线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget | remote_unavailable | remote_refused`（后两个是派发到别的节点时用的，§ 27.4）、`session_id?`、`question_id?`、`project?`、`node?`（派发到哪个节点，只用于显示）、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有分身枚举的未知值解析成 `Unknown`。
+线路上的 `TwinScope` 是 § 26.2 的字段；`agent` / `model` / `mode` 可选。`TwinRun` 用 `requester` 表示请求方，`items` 是这次看的 todo id 列表，`judge_calls` 是判断调用 id 列表；`finished_ms` 在结束前缺省，`error?: JudgeError` 复用判断后端错误码。`TwinDecision` 含 `todo_id`、`action`、`reason`、`rules`、`outcome: executed | skipped`、`skip_reason?: invalid | out_of_scope | no_capacity | budget | remote_unavailable | remote_refused`（后两个是派发到别的节点时用的，§ 27.4）、`session_id?`、`question_id?`、`project?`、`node?`（派发到哪个节点，只用于显示）、`note?`、`question?`、`options?`；后三者保存校验后的动作参数，让试跑也能展示完整计划。`TwinQuestion.status` 是 `open | answered | void`，`options` 缺省空数组，`answered_by?` 是同「经过」的操作者。所有 Bot 枚举的未知值解析成 `Unknown`。
 
 `capabilities.twin = true`；daemon 实现本节全部 RPC 和通知。§ 26.9 和 § 26.10 也已实现。
 
 **运行状态字段（已实现；节点支持时 `capabilities.twin_stats = true`，旧 daemon 没有这个字段，读作 `false`）**：`capabilities.twin_stats` 表示 daemon 提供 `twin.stats`、填下面 `twin.get` 的四个字段和 `TwinRun.usage`。这些字段都可缺省，旧 daemon 不带，客户端按「没有」处理。
 
 - `twin.get.last_run?: TwinRunBrief`：最近一次真实唤醒（不含试跑），按 `started_ms`；可能还在运行（此时没有 `finished_ms`）。`TwinRunBrief = { id, started_ms, finished_ms?, triggers, result, error? }`，不含每项的决定，要看细节用 `twin.runs`。
-- `twin.get.next_wake_ms?`：分身已配置、本机启用且未暂停时，取两者中较早的：待处理触发的合并截止时间（有运行在进行时没有这一项）和下一次兜底 tick；两者都没有则缺省。这是读取时的快照，变化时不发通知；一项刚进入范围时它可能滞后一小段时间，因为兜底 tick 要等调度器下一次轮询才设置。
-- `twin.get.queued?: [todo_id]`：满足 § 26.1（在分身范围内）、但既不在 `working` 里也没有未回答的问题的项；空时缺省。
+- `twin.get.next_wake_ms?`：Bot 已配置、本机启用且未暂停时，取两者中较早的：待处理触发的合并截止时间（有运行在进行时没有这一项）和下一次兜底 tick；两者都没有则缺省。这是读取时的快照，变化时不发通知；一项刚进入范围时它可能滞后一小段时间，因为兜底 tick 要等调度器下一次轮询才设置。
+- `twin.get.queued?: [todo_id]`：满足 § 26.1（在 Bot 范围内）、但既不在 `working` 里也没有未回答的问题的项；空时缺省。
 - `twin.get.deferred?: [todo_id]`：仍在范围内、但上一次分拣放不进输入（§ 26.4 的大小上限）的项。只在内存里，重启后为空；空时缺省。它包含的是范围内的项，不一定是 `queued` 的子集（可能同时在 `working` 或 `waiting` 里）。
-- 对分身设备（§ 27.3）这四项恒为缺省 / 空。
+- 对 Bot 设备（§ 27.3）这四项恒为缺省 / 空。
 - `TwinRun.usage?: JudgeUsage`：这次运行所有判断调用的 `input_tokens` / `output_tokens` / `cost_usd` 之和；调用都没报告的成员缺省，三个都缺省时整个 `usage` 缺省（`api` 后端通常报告 token，`agent` 后端不一定）。用量不存进 `twin_runs`，读取时按运行记的调用 id 从 `judge_calls` 现算：两张表用同一个截止时间清理，保留期一致，升级前的运行也有用量。`twin.runs`、`twin.dry_run` 的结果和 `twin.changed` 的 `run` 都带它。
 
-**`twin.stats`**：`TwinDayStats` 每项含：`date`（节点本地时间的 `YYYY-MM-DD`）、`start_ms`（这一天开始的本地零点）、`runs: { done, idle, budget, failed, cancelled }`（这天开始的非试跑运行，按 `result`）、`dry_runs`、`judge_calls`（这天开始的所有运行发起的判断调用次数，试跑也算，因为它们占预算）、`usage?`（这些调用的用量之和）、`decisions: { dispatch, ask_user, ask_advisor, wait, hand_back, done }`（非试跑运行里 `outcome = executed` 的决定，按动作）、`skipped`（非试跑运行里 `outcome = skipped` 的决定数）、`handed_back`（这天待办「经过」里没做完就交回给人的 `handed_back` 事件数：`hand_back` 判断、连续 3 次失败、2 小时卡住；`done` 判断写的那一条不算，它表示分身认为做完了）、`taken_over`（这天本机分身派发过的项上的 `taken_over` 事件数，分身设备派来的会话里的接手不算）、`accepted` / `dropped`（这天 `state` 事件里由未关闭变为 `done` / `dropped`、且本机分身在事件时间或之前派发过该项的数；`done` 和 `dropped` 之间互改不算，重新打开后再关闭算新的一次）、`turnaround_ms`（这天每个 `accepted` 事件的「事件时间 - 该项在事件时间或之前最近一次被本机分身派发的时间」之和；平均 = `turnaround_ms / accepted`）。所有计数缺省为 0，未来或旧的对端也能解析。「本机分身派发过」的定义：`twin_sessions` 里有请求方为 `local` 的会话，或 `todo_remotes` 里有派到别的节点的记录（和每日派发次数 `twin_dispatches_since` 同一个来源）；派发时间取这两处不晚于事件的最近一条。人手动派发的、分身设备派来的项都不算；`accepted` / `dropped` / `turnaround_ms` / `taken_over` 都用这一个定义。`handed_back` 不看派发：交回只发生在 `handler = twin` 的项上，这样的项不会是分身设备记的。`done` 判断写的 `handed_back` 事件带 `done = true`；旧版本写的同类事件没有这个标记，用 `reason` 的固定前缀 `The twin believes this is done: ` 识别。日按节点的本地时区切分，往前一天从午夜减 12 小时再取日界线，夏令时切换日不是 24 小时也不会错位。数字来自节点保留的运行记录（90 天，§ 26.7）和待办「经过」，已删除待办的「经过」和已删除会话的派发记录（超过保留期后才清）没了，所以旧日子的数字可能变小。
+**`twin.stats`**：`TwinDayStats` 每项含：`date`（节点本地时间的 `YYYY-MM-DD`）、`start_ms`（这一天开始的本地零点）、`runs: { done, idle, budget, failed, cancelled }`（这天开始的非试跑运行，按 `result`）、`dry_runs`、`judge_calls`（这天开始的所有运行发起的判断调用次数，试跑也算，因为它们占预算）、`usage?`（这些调用的用量之和）、`decisions: { dispatch, ask_user, ask_advisor, wait, hand_back, done }`（非试跑运行里 `outcome = executed` 的决定，按动作）、`skipped`（非试跑运行里 `outcome = skipped` 的决定数）、`handed_back`（这天待办「经过」里没做完就交回给人的 `handed_back` 事件数：`hand_back` 判断、连续 3 次失败、2 小时卡住；`done` 判断写的那一条不算，它表示 Bot 认为做完了）、`taken_over`（这天本机 Bot 派发过的项上的 `taken_over` 事件数，Bot 设备派来的会话里的接手不算）、`accepted` / `dropped`（这天 `state` 事件里由未关闭变为 `done` / `dropped`、且本机 Bot 在事件时间或之前派发过该项的数；`done` 和 `dropped` 之间互改不算，重新打开后再关闭算新的一次）、`turnaround_ms`（这天每个 `accepted` 事件的「事件时间 - 该项在事件时间或之前最近一次被本机 Bot 派发的时间」之和；平均 = `turnaround_ms / accepted`）。所有计数缺省为 0，未来或旧的对端也能解析。「本机 Bot 派发过」的定义：`twin_sessions` 里有请求方为 `local` 的会话，或 `todo_remotes` 里有派到别的节点的记录（和每日派发次数 `twin_dispatches_since` 同一个来源）；派发时间取这两处不晚于事件的最近一条。人手动派发的、Bot 设备派来的项都不算；`accepted` / `dropped` / `turnaround_ms` / `taken_over` 都用这一个定义。`handed_back` 不看派发：交回只发生在 `handler = twin` 的项上，这样的项不会是 Bot 设备记的。`done` 判断写的 `handed_back` 事件带 `done = true`；旧版本写的同类事件没有这个标记，用 `reason` 的固定前缀 `The twin believes this is done: ` 识别。日按节点的本地时区切分，往前一天从午夜减 12 小时再取日界线，夏令时切换日不是 24 小时也不会错位。数字来自节点保留的运行记录（90 天，§ 26.7）和待办「经过」，已删除待办的「经过」和已删除会话的派发记录（超过保留期后才清）没了，所以旧日子的数字可能变小。
 
 除了读的方法（`twin.get`、`twin.runs`、`twin.stats`、`twin.questions`），自报 `mcp` 的连接一律回 `forbidden`。CLI 在 anycon 拉起的 agent 里也拒绝执行这些写操作。
 
 ### 26.9 周期项和 PR 事件（4b）
 
-- **周期项（已实现）**：`Todo.repeat?: { kind: daily | weekdays | weekly, at: "HH:MM", weekday?, next_ms? }`，按**机器的时区**算（`localtime_r` 读当地时间，不改进程的 `TZ`）。带 `repeat` 的项是**模板**：它记下「每次要做的那件事」，自己不被分身分拣、不能派发。
+- **周期项（已实现）**：`Todo.repeat?: { kind: daily | weekdays | weekly, at: "HH:MM", weekday?, next_ms? }`，按**机器的时区**算（`localtime_r` 读当地时间，不改进程的 `TZ`）。带 `repeat` 的项是**模板**：它记下「每次要做的那件事」，自己不被 Bot 分拣、不能派发。
   - **规则**：`daily` 每天 `at`；`weekdays` 周一到周五的 `at`；`weekly` 每周 `weekday`（1–7，周一 = 1，ISO）的 `at`，`weekly` 必须带 `weekday`，另外两种不能带。`at` 是 `00:00`–`23:59` 的两位数字 `HH:MM`。校验和错误见 § 21.3。**只由人设置**：自报 `mcp` 的连接或 `agent: true` 的写入设置、替换、清除 `repeat` 都回 `forbidden`（清除用 `todo.update` 的 `clear: ["repeat"]`）。`next_ms` 是节点此刻算出来的下一次时间，不存，请求里带了也忽略；已关闭的模板没有。算在 daemon 上，因为规则按节点的时区，浏览器和节点可能不在同一个时区。
-  - **模板的限制**：分身的分拣不看它（§ 26.1 的条件）；`todo.dispatch` 拒绝它（`invalid`，`data.reason = "repeat_template"`，§ 22.2）；模板可以 `handler = twin`，意思是**每一次复制出来的都交给分身**：复制照抄 `handler`，所以复制出来的项由分身处理、并触发 `todo` 唤醒；模板自己仍不进分拣。处理人的其余规则不变（agent 和自报 `mcp` 的连接不能设成 `twin`，未收下的项不能交给分身）。模板可以关闭（`done` / `dropped`），关闭的模板不再复制，重新打开后从之后的时间点继续。
-  - **复制**：daemon 启动时看一遍、之后每分钟看一次（时钟用判断后端那只可替换的时钟，测试里不真的等）。一个没关闭的模板到了它的下一次时间，就复制出一项：新的 id，`title` / `body` / `project` / `handler` 照抄（`due_ms` 和 `repeat` 不带），`source = { kind: repeat, todo_id: <模板 id> }`，`state = open`，`unreviewed = false`；这一项照常 `todo.changed`、记审计 `todo.repeat`，`handler = twin` 时照常触发分身的唤醒（`todo` 触发，§ 26.3）。模板自己还是 `unreviewed`（agent 记的、没人收下，只可能是旧数据，规则只由人设置）时不复制。
+  - **模板的限制**：Bot 的分拣不看它（§ 26.1 的条件）；`todo.dispatch` 拒绝它（`invalid`，`data.reason = "repeat_template"`，§ 22.2）；模板可以 `handler = twin`，意思是**每一次复制出来的都交给 Bot**：复制照抄 `handler`，所以复制出来的项由 Bot 处理、并触发 `todo` 唤醒；模板自己仍不进分拣。处理人的其余规则不变（agent 和自报 `mcp` 的连接不能设成 `twin`，未收下的项不能交给 Bot）。模板可以关闭（`done` / `dropped`），关闭的模板不再复制，重新打开后从之后的时间点继续。
+  - **复制**：daemon 启动时看一遍、之后每分钟看一次（时钟用判断后端那只可替换的时钟，测试里不真的等）。一个没关闭的模板到了它的下一次时间，就复制出一项：新的 id，`title` / `body` / `project` / `handler` 照抄（`due_ms` 和 `repeat` 不带），`source = { kind: repeat, todo_id: <模板 id> }`，`state = open`，`unreviewed = false`；这一项照常 `todo.changed`、记审计 `todo.repeat`，`handler = twin` 时照常触发 Bot 的唤醒（`todo` 触发，§ 26.3）。模板自己还是 `unreviewed`（agent 记的、没人收下，只可能是旧数据，规则只由人设置）时不复制。
   - **夏令时**：夏令时切换日照当地时钟算。被跳过的时刻（如 02:30 跳到 03:00）算在跳过之后的第一分钟；回拨时重复出现的时刻（如 01:30 出现两次）只算第一次出现的那个。
   - **同一次只复制一次，重启也一样**：模板记着「最近处理过的规则时间」（`repeat_last_ms`，存的是规则上的那个时刻，不是处理它的时刻）。设置或改动规则、关闭的模板重新打开时，它设成现在，所以那之前已经过了的时间点不补。
   - **上一次还没关闭**：这个模板最近复制出来的那一项（`source.todo_id` 是它、最新的一项）还没关闭时，这一次不复制，模板的「经过」里记一条 `repeat_skipped { at_ms }`，这个时间点算处理过了，之后不补。清单已满（1 000 个没关闭的项）时同样当作跳过。
@@ -2121,13 +2123,13 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
   - **停机不补积压**：daemon 停着错过的次数不一次补。起来之后只看最近一个该到的时间：它在停机期间、并且离现在不到 24 小时，就补这一次；更早的不补，只把 `repeat_last_ms` 推到那个时间，什么都不记。
   - **协议**：`TodoRepeat`、`TodoRepeatKind`（带 `Unknown`）、`TodoSourceKind::Repeat`、`TodoSource.todo_id`、`ClearableTodoField::Repeat`、「经过」的两种新事件（`repeat_created`、`repeat_skipped`），`node.info` 的 `capabilities.todo_repeat`（旧 daemon 没有，读作 `false`；客户端据此决定要不要显示「重复」）。不认识的 `kind`、事件种类、来源种类都落到 `Unknown`，旧客户端不因此解析失败。
   - **入口**：CLI `anycon todo add --repeat <spec>`、`anycon todo edit <id> --repeat <spec> | --no-repeat`、`anycon todo ls` 的 REPEAT 列（[cli.md § 3.8](cli.md#38-anycon-todo)）；SDK 的 `node.todos.add` / `update` 直接带 `repeat`；Web 见 [web.md § 14.6](web.md#146-清单和单项)。
-- **PR 事件**：分身派出的会话，它的分支对应的 PR 检查失败、被合并或关闭、有了新的评审意见时，触发一次唤醒（`trigger = pr`）。
-  - **轮询谁**：在已有的 `gh pr view` 轮询（§ 10.1「PR 自动归档」）上扩展，不另起一套。除了开了 `worktree.auto_archive_on_pr_close` 时的会话，**分身派出的、所属的项还交给分身（`handler = twin`）且没关闭的会话**也轮询，不论那个开关；项关闭、或 `handler` 改回 `me` 之后不再轮询。频率、每轮上限、筛选（没归档、没有 turn 在跑、有上游）和 20 秒超时都沿用。分身没开、没配置或暂停时不轮询，恢复后的第一次轮询去和库里的基线比。`gh` 没装、没登录、出错或超时时这些会话什么都不发生：不记事件、不改基线、不报错，下一轮再试，不重试。
+- **PR 事件**：Bot 派出的会话，它的分支对应的 PR 检查失败、被合并或关闭、有了新的评审意见时，触发一次唤醒（`trigger = pr`）。
+  - **轮询谁**：在已有的 `gh pr view` 轮询（§ 10.1「PR 自动归档」）上扩展，不另起一套。除了开了 `worktree.auto_archive_on_pr_close` 时的会话，**Bot 派出的、所属的项还交给 Bot（`handler = twin`）且没关闭的会话**也轮询，不论那个开关；项关闭、或 `handler` 改回 `me` 之后不再轮询。频率、每轮上限、筛选（没归档、没有 turn 在跑、有上游）和 20 秒超时都沿用。Bot 没开、没配置或暂停时不轮询，恢复后的第一次轮询去和库里的基线比。`gh` 没装、没登录、出错或超时时这些会话什么都不发生：不记事件、不改基线、不报错，下一轮再试，不重试。
   - **取什么**：`gh pr view --json` 在原有字段之外多取 `reviews` 和 `comments`，daemon **只数条数、取最新一条的时间**（`submittedAt` / `createdAt`），不读也不存任何正文。
   - **基线**：每个会话上一次轮询的 PR 状态（号码、状态、检查汇总、评审条数、最新时间）存在表 `twin_pr`，重启后接着比。第一次看到某个 PR（或 PR 号变了）只记基线，不算事件，否则每次重启都会把已有的评审当成新的。
   - **什么算事件**，和基线比：检查从非失败变成失败（`checks_failed`）；PR 变成已合并（`merged`）；变成已关闭、没合并（`closed`）；评审意见和评论的总条数增加，或最新一条的时间变新（`reviewed`）。一次轮询可以有几个事件。
-  - **事件之后**：这一项的「经过」记一条 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`（字段叫 `event` 而不是 `kind`，因为 `kind` 是「经过」的标签），触发一次分身唤醒（`TwinTrigger::Pr`，照常合并和串行）。**不发推送**：分身分拣之后需要你的话会建问题（§ 26.5）；PR 合并本身由 `auto_archive_on_pr_close` 处理。项已经交回给你或关闭时不记事件，基线照常更新。
-  - **分拣的输入**（§ 26.4）里每一项多一行它关联会话的 PR 状态，最多 3 个会话、新的在前：`pr: <number> <state> checks=<passing|failing|pending|none> reviews=<条数> last_review=<时间|none>`。**只放这些结构化的状态，不放评审和评论的正文，也不放 PR 标题和作者**：公开仓库里任何人都能发评论，正文进了分拣的输入就等于让陌生人能向分身的判断里注入指令。分身要处理评审意见时，派发一个会话去做，那个会话里的 agent 自己用 `gh` 去读，受 agent 自己的权限约束。时间串只保留 ISO 8601 UTC 的字符，不合格的当没有。
+  - **事件之后**：这一项的「经过」记一条 `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }`（字段叫 `event` 而不是 `kind`，因为 `kind` 是「经过」的标签），触发一次 Bot 唤醒（`TwinTrigger::Pr`，照常合并和串行）。**不发推送**：Bot 分拣之后需要你的话会建问题（§ 26.5）；PR 合并本身由 `auto_archive_on_pr_close` 处理。项已经交回给你或关闭时不记事件，基线照常更新。
+  - **分拣的输入**（§ 26.4）里每一项多一行它关联会话的 PR 状态，最多 3 个会话、新的在前：`pr: <number> <state> checks=<passing|failing|pending|none> reviews=<条数> last_review=<时间|none>`。**只放这些结构化的状态，不放评审和评论的正文，也不放 PR 标题和作者**：公开仓库里任何人都能发评论，正文进了分拣的输入就等于让陌生人能向 Bot 的判断里注入指令。Bot 要处理评审意见时，派发一个会话去做，那个会话里的 agent 自己用 `gh` 去读，受 agent 自己的权限约束。时间串只保留 ISO 8601 UTC 的字符，不合格的当没有。
   - `gh` 没装或没登录时没有这类触发。
 
 ### 26.10 规则的「过期」和「以后都这样」（4c）
@@ -2143,124 +2145,124 @@ daemon 认的是「这个会话由分身派出、发消息的不是分身自己�
   待确认、停用、否决的规则不标。每条标记是一次真正的修改：`updated_ms` 递增（带着旧版本 `if_updated_ms` 的写会被拒），发 `rule.changed`，记审计 `rule.update`（`detail = { auto: "stale" }`，操作者是 daemon）。**daemon 从不因为过期删除规则。**
 - **过期的效果**：不注入（派发的会话、分拣系统提示里的规则、`rule.preview`、`todo.dispatch_preview` 的 `rules_text`）；不计字数预算（`rule.list` 的 `budget`、生效时的检查）。它仍是 `active`：`rule.list { status: active }` 包含它，客户端按 `stale` 自己分段（规则页另起一段「过期」，[web.md § 4.14](web.md#414-规则-rules)）。
 - **恢复**：`rule.update { stale: false }`，只由人做（自报了 `mcp` 的连接 → `forbidden`，CLI 在 agent 环境里拒绝 `anycon rule restore`）。恢复和「变成生效」一样过字数检查（§ 23.4，超出 → `over_budget`，`data.field = "stale"`），成功后「最近一次变成生效的时间」是现在，60 天从头算。`stale: true` 不能由客户端设（`invalid`，`data.field = "stale"`）。规则停用、否决、改回待确认时 `stale` 清掉；之后再启用就是一条新的生效规则，从启用那刻算起。
-- **「以后都这样」**：回答**分身的问题**（清单项「经过」里就地回答、「待处理」里的分身提问）和 **agent 的提问**（会话权限卡片里 `kind = question` 的回答）时，答复按钮旁边的勾选。勾上并且答复**成功之后**，打开「记成规则」的同一个编辑框，由人改成自己的话再存（§ 23.6），不提供一键生成：预填原样不能保存，答复失败不打开，不勾和以前一样。勾选不改答复的内容，也不碰答复按钮的锁（600 ms）和 `⌘⇧A` / `⌘⇧D`。节点不支持规则时不出现。出处记法见 § 23.6：agent 的提问 `{ kind: answer, session_id, request_id }`，分身的问题 `{ kind: answer, request_id: <问题 id> }`（没有会话）。
+- **「以后都这样」**：回答**Bot 的问题**（清单项「经过」里就地回答、「待处理」里的 Bot 提问）和 **agent 的提问**（会话权限卡片里 `kind = question` 的回答）时，答复按钮旁边的勾选。勾上并且答复**成功之后**，打开「记成规则」的同一个编辑框，由人改成自己的话再存（§ 23.6），不提供一键生成：预填原样不能保存，答复失败不打开，不勾和以前一样。勾选不改答复的内容，也不碰答复按钮的锁（600 ms）和 `⌘⇧A` / `⌘⇧D`。节点不支持规则时不出现。出处记法见 § 23.6：agent 的提问 `{ kind: answer, session_id, request_id }`，Bot 的问题 `{ kind: answer, request_id: <问题 id> }`（没有会话）。
 
-## 27. 分身连接
+## 27. Bot 连接
 
-> **已实现：协议（本节的全部方法、类型和枚举值）、hub 接受 `twin` 种类（§ 27.5）、B 这一侧（`node.twin_link_code`、短码的种类、`[twin] accept_links`、安全事件和审计、§ 27.3 的白名单、推送过滤、按请求方存的范围、记一项和派发的约束、`twin.peer_status`）、A 这一侧（§ 27.1 的分身设备身份和连接、`twin.link` / `twin.links` / `twin.unlink`、§ 27.4 的节点表、远程派发和取回结果、在 B 上接手的同步、远程会话 2 小时没有进展算卡住），CLI（`anycon twin link-code` / `link` / `links` / `unlink` / `set --requester` / `status --requester`），以及 TS SDK 和 Web 的界面（§ 27.6，web.md § 14.8）。** [ADR-56](../decisions.md#adr-56-分身可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的第 5 步。下面用 A 指跑分身的节点，B 指被使用的节点。
+> **已实现：协议（本节的全部方法、类型和枚举值）、hub 接受 `twin` 种类（§ 27.5）、B 这一侧（`node.twin_link_code`、短码的种类、`[twin] accept_links`、安全事件和审计、§ 27.3 的白名单、推送过滤、按请求方存的范围、记一项和派发的约束、`twin.peer_status`）、A 这一侧（§ 27.1 的 Bot 设备身份和连接、`twin.link` / `twin.links` / `twin.unlink`、§ 27.4 的节点表、远程派发和取回结果、在 B 上接手的同步、远程会话 2 小时没有进展算卡住），CLI（`anycon twin link-code` / `link` / `links` / `unlink` / `set --requester` / `status --requester`），以及 TS SDK 和 Web 的界面（§ 27.6，web.md § 14.8）。** [ADR-56](../decisions.md#adr-56-bot-可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 的第 5 步。下面用 A 指跑 Bot 的节点，B 指被使用的节点。
 
-A 的分身能在 B 的清单里记一项并派发它，B 上的 agent 照常在 B 自己的 worktree 里干活。A 的 daemon 为此持有一个**分身设备**身份，作为 B 的一台已配对设备，经 hub、经 E2E 通道连接 B。没有节点对节点的新通道，也没有给判断后端或本机别的进程用的代理。
+A 的 Bot 能在 B 的清单里记一项并派发它，B 上的 agent 照常在 B 自己的 worktree 里干活。A 的 daemon 为此持有一个**Bot 设备**身份，作为 B 的一台已配对设备，经 hub、经 E2E 通道连接 B。没有节点对节点的新通道，也没有给判断后端或本机别的进程用的代理。
 
-### 27.1 分身设备
+### 27.1 Bot 设备
 
-- **一个节点一个分身设备**，和浏览器一样：同一个身份分别和每个 B 配对。它在 hub 上是一台设备（`DeviceKind::Twin`）、一条连接，不论连接了几个 B。
+- **一个节点一个 Bot 设备**，和浏览器一样：同一个身份分别和每个 B 配对。它在 hub 上是一台设备（`DeviceKind::Twin`）、一条连接，不论连接了几个 B。
 - **独立的密钥**：存在 A 的数据目录的 `twin/` 下，文件和 CLI 的设备身份同一种格式（密钥、设备 id、device token 和它的签发时间、已配对的节点），只有 daemon 进程读；不复用 A 的节点密钥，也不复用 A 上 CLI 的客户端身份。device token 照 CLI 的规则轮换（hub.md § 5）；连接一直开着时每 10 分钟查一次要不要轮换，不等重连。
-- **只在 A 自己的 hub 上**：分身设备连的是 A 的 `hub.url`；B 必须在同一个 hub 上（不同 hub 的节点之间建不了连接，建立时报错说明）。
-- **连接**：至少有一条分身连接时，A 的 daemon 除了节点自己的那条 hub 连接，再开一条分身设备的 hub 连接；对每个 B 是 Noise 的发起方，各自握手、各自重连（和 CLI 连节点同一套：分片、背压、`peer_online` / `peer_offline`）。没有分身连接时不开这条连接。
-  - 实现是 `client::Client`（CLI 用的设备客户端，一条 hub 连接对多个节点），`ClientInfo.kind = twin`，设备名「<A 的节点名>'s twin」（B 的设备列表照这个显示，客户端按设备种类本地化）。第一次 `twin.link` 时生成身份并开连接；daemon 启动时 `twin/nodes.json` 里有节点就自动开，关停时断开。最后一条分身连接被 `twin.unlink` 之后连接关掉，身份文件保留，下次建立时沿用同一个设备身份。
+- **只在 A 自己的 hub 上**：Bot 设备连的是 A 的 `hub.url`；B 必须在同一个 hub 上（不同 hub 的节点之间建不了连接，建立时报错说明）。
+- **连接**：至少有一条 Bot 连接时，A 的 daemon 除了节点自己的那条 hub 连接，再开一条 Bot 设备的 hub 连接；对每个 B 是 Noise 的发起方，各自握手、各自重连（和 CLI 连节点同一套：分片、背压、`peer_online` / `peer_offline`）。没有 Bot 连接时不开这条连接。
+  - 实现是 `client::Client`（CLI 用的设备客户端，一条 hub 连接对多个节点），`ClientInfo.kind = twin`，设备名「<A 的节点名>'s bot」（B 的设备列表照这个显示，客户端按设备种类本地化）。第一次 `twin.link` 时生成身份并开连接；daemon 启动时 `twin/nodes.json` 里有节点就自动开，关停时断开。最后一条 Bot 连接被 `twin.unlink` 之后连接关掉，身份文件保留，下次建立时沿用同一个设备身份。
   - **已配对的节点以 `twin/nodes.json` 为准**；库里的表 `twin_links`（迁移 `0013_twin_links.sql`）只存它的元数据：节点名、分组、公钥、配对时间和上一次的 `twin.peer_status`（B 不在线时 `twin.links` 用它）。启动时两边对账：文件里有而库里没有的补一行，库里有而文件里没有的删掉。
   - 身份属于建立它时的 hub：`hub.url` 改了、而 `twin/nodes.json` 里还有旧 hub 上的连接时，不开连接，`twin.link` 回 `unsupported`（`data.reason = "hub_changed"`），先 `twin.unlink` 掉旧的（没有连接在跑时直接改文件）。
-- `[twin] enabled = false` 不断开分身连接（只是没有判断在用它们）。
+- `[twin] enabled = false` 不断开 Bot 连接（只是没有判断在用它们）。
 - **没有代理**：`Client` 只在 `twin_link` 模块里，不存进别处、不经任何 RPC 方法递出去。B 上的动作只有两处：分拣的计划被 daemon 执行（`todo.add`、`todo.dispatch`，§ 27.4），和后台任务对远程项做的只读同步（`twin.peer_status`、`todo.get`、`todo.history`）。
 
 ### 27.2 建立和断开
 
 建立只能由人在一台**同时和 A、B 配过对的设备**上做（或者在两台机器的本机 CLI 上各敲一条命令）：
 
-1. 那台设备对 B 发 `node.twin_link_code {}` → `{ code, expires_ms }`：B 开一次只接受分身设备的短码配对，16 位短码，10 分钟有效，同一时间只有一个（再要一个会作废旧的）。
+1. 那台设备对 B 发 `node.twin_link_code {}` → `{ code, expires_ms }`：B 开一次只接受 Bot 设备的短码配对，16 位短码，10 分钟有效，同一时间只有一个（再要一个会作废旧的）。
    - hub 上的登记只有 5 分钟（hub 的 `pair_ttl`）：B 在登记到期之前、还没有加入方的时候用同一个 `match_id` 再登记一次（每次再登记同样占 hub 的每日配对次数），所以这个短码实际有 10 分钟。
-   - 和 `node.pair_begin` 共用「一个 daemon 同时只有一个配对」：这个短码用掉之前，再要一个分身短码、或者开一次普通配对，都会作废它，反过来也一样。
+   - 和 `node.pair_begin` 共用「一个 daemon 同时只有一个配对」：这个短码用掉之前，再要一个 Bot 短码、或者开一次普通配对，都会作废它，反过来也一样。
    - 短码不写进日志和审计（审计只记 `node.twin_link_code` 这个动作）。
 2. 那台设备把短码经 E2E 交给 A：`twin.link { code, node_id }`（`node_id` 是 B 的 id，A 配对完成后核对它，对不上就失败并丢掉这次配对）。
-3. A 的 daemon 作为加入方走短码配对（ADR-29，和 `anycon pair` 同一套），`ClientInfo.kind = twin`，设备名是「<A 的节点名>'s twin」。完成后记下这条连接（`twin/nodes.json` 和表 `twin_links`：B 的 id、公钥、名称、配对时间），向 B 取一次 `twin.peer_status`（取不到不影响建立），发一条 `twin.changed` 让客户端重新读 `twin.links`，记审计 `twin.link`，返回 `TwinLink`。
-   - 失败都带可读的说明和 `data.reason`：`node_mismatch`（配对到的不是 `node_id`：这次配对在 A 上丢掉，B 上的设备记录要在 B 上吊销，`invalid`）、`not_found`（短码不存在、过期或已用掉；B 不在 A 的 hub 上时同样是它，说明里提示两个节点必须在同一个 hub 上，`not_found`）、`timeout`（B 没有完成配对：`accept_links` 关着、或者短码种类不对时 B 不回握手，A 要等到 hub 的撮合超时，`unsupported`）、`forbidden`（两台设备不属于同一个账号）、`rate_limited`、`quota`、`hub_rate_limited`（`busy`：hub 对这个地址的 WebSocket 升级限速了，回 `429`。协议没有专门的限速码，`busy`（暂时做不了、稍后再试）最接近，和 `node.pair_begin` 对 hub 限速的约定一致。A 先按 `Retry-After` 等一等再试：没有 `Retry-After` 就从 2 秒起每次翻倍，每次至少等 1 秒，总共最多等 30 秒；单次要等的就超过这个总数时不等，直接失败。等待期间 A 照常回应别的命令，关停能打断它。还不行才失败，说明里写着建议等多久。同一个出口 IP 后面设备多、页面反复刷新时会碰上。长连接的重连本来就退避，遇到 `429` 时改按 `Retry-After` 等；CLI 的 `anycon connect` 同样是一次性、由人触发，也按同样的规则等（在 stderr 提示），别的 CLI 命令不等）、`no_hub`（这个节点没有配置 hub）、`offline`（A 没连上 hub）、`hub_changed`（见 § 27.1）、`hub_unsupported`（`unsupported`：hub 以 `protocol` 拒绝了这条连接的认证，即 hub 不认识 `twin` 设备种类，比 0.4 旧；说明里提示先升级 hub。只有建立分身连接这一步这样解释：这条连接只为分身设备而开，别处的 `protocol` 拒绝不一定是这个原因。失败之后 A 上没有连接记录、没有存下的节点，也没有留着的长连接）。短码格式不对是 `invalid`。
+3. A 的 daemon 作为加入方走短码配对（ADR-29，和 `anycon pair` 同一套），`ClientInfo.kind = twin`，设备名是「<A 的节点名>'s bot」。完成后记下这条连接（`twin/nodes.json` 和表 `twin_links`：B 的 id、公钥、名称、配对时间），向 B 取一次 `twin.peer_status`（取不到不影响建立），发一条 `twin.changed` 让客户端重新读 `twin.links`，记审计 `twin.link`，返回 `TwinLink`。
+   - 失败都带可读的说明和 `data.reason`：`node_mismatch`（配对到的不是 `node_id`：这次配对在 A 上丢掉，B 上的设备记录要在 B 上吊销，`invalid`）、`not_found`（短码不存在、过期或已用掉；B 不在 A 的 hub 上时同样是它，说明里提示两个节点必须在同一个 hub 上，`not_found`）、`timeout`（B 没有完成配对：`accept_links` 关着、或者短码种类不对时 B 不回握手，A 要等到 hub 的撮合超时，`unsupported`）、`forbidden`（两台设备不属于同一个账号）、`rate_limited`、`quota`、`hub_rate_limited`（`busy`：hub 对这个地址的 WebSocket 升级限速了，回 `429`。协议没有专门的限速码，`busy`（暂时做不了、稍后再试）最接近，和 `node.pair_begin` 对 hub 限速的约定一致。A 先按 `Retry-After` 等一等再试：没有 `Retry-After` 就从 2 秒起每次翻倍，每次至少等 1 秒，总共最多等 30 秒；单次要等的就超过这个总数时不等，直接失败。等待期间 A 照常回应别的命令，关停能打断它。还不行才失败，说明里写着建议等多久。同一个出口 IP 后面设备多、页面反复刷新时会碰上。长连接的重连本来就退避，遇到 `429` 时改按 `Retry-After` 等；CLI 的 `anycon connect` 同样是一次性、由人触发，也按同样的规则等（在 stderr 提示），别的 CLI 命令不等）、`no_hub`（这个节点没有配置 hub）、`offline`（A 没连上 hub）、`hub_changed`（见 § 27.1）、`hub_unsupported`（`unsupported`：hub 以 `protocol` 拒绝了这条连接的认证，即 hub 不认识 `twin` 设备种类，比 0.4 旧；说明里提示先升级 hub。只有建立 Bot 连接这一步这样解释：这条连接只为 Bot 设备而开，别处的 `protocol` 拒绝不一定是这个原因。失败之后 A 上没有连接记录、没有存下的节点，也没有留着的长连接）。短码格式不对是 `invalid`。
 
 - **短码的种类**：`node.twin_link_code` 发出的短码只接受 `kind = twin` 的设备；普通短码（`anycon pair`）、接入码和节点口令一律不接受 `kind = twin`（配对失败，`reason = twin_not_allowed`）。
-  - 配对：设备种类在第三条握手消息的 `ClientInfo` 里（受 PSK 保护）。B 读到它之后核对：普通短码遇到 `twin`、分身短码遇到别的种类，或者 `accept_links` 关着，都作废这次配对、不发 `pair_confirm`、不登记设备；失败结果记在 `local.pair_outcome`（`reason = twin_not_allowed`，普通短码的那次配对取得到）并写一条审计 `pair.refused`。B 不给加入方发别的消息，hub 的撮合随后超时。
+  - 配对：设备种类在第三条握手消息的 `ClientInfo` 里（受 PSK 保护）。B 读到它之后核对：普通短码遇到 `twin`、Bot 短码遇到别的种类，或者 `accept_links` 关着，都作废这次配对、不发 `pair_confirm`、不登记设备；失败结果记在 `local.pair_outcome`（`reason = twin_not_allowed`，普通短码的那次配对取得到）并写一条审计 `pair.refused`。B 不给加入方发别的消息，hub 的撮合随后超时。
   - 接入（`anycon connect` 的接入码、节点口令、扫码批准）：接入握手的 `hello` 里自报 `kind = twin` → `rejected`，`reason = twin_not_allowed`（`EnrollRejectReason`），会话结束，口令的失败计数不变。
 - **谁能做**：两边的方法都只由人调用：已配对设备或本机 CLI；`twin` 设备和自报 `mcp` 的连接 → `forbidden`（A 上的 `twin.link` / `twin.links` / `twin.unlink` 同样）。
-- **B 的开关** `[twin] accept_links`（缺省 `true`，热加载，远程只能收紧）：`false` 时 `node.twin_link_code` 回 `forbidden`（`data.reason = "accept_links_off"`），已有的分身设备的传输被断开、握手被拒，设备记录和它的范围保留，重新打开后照常可用。`node.info` 带上 `twin_accept_links`。
-  - 关掉的那一刻：已有分身设备的传输作废（它之后的 IK 握手被忽略）；还没用掉的分身短码作废（B 不再回握手）；`twin_scopes` 里它们的范围原样保留。
-  - 和 `[twin] enabled` 互不影响：只关 `enabled` 的机器自己不跑分身、但仍给别的节点干活。
+- **B 的开关** `[twin] accept_links`（缺省 `true`，热加载，远程只能收紧）：`false` 时 `node.twin_link_code` 回 `forbidden`（`data.reason = "accept_links_off"`），已有的 Bot 设备的传输被断开、握手被拒，设备记录和它的范围保留，重新打开后照常可用。`node.info` 带上 `twin_accept_links`。
+  - 关掉的那一刻：已有 Bot 设备的传输作废（它之后的 IK 握手被忽略）；还没用掉的 Bot 短码作废（B 不再回握手）；`twin_scopes` 里它们的范围原样保留。
+  - 和 `[twin] enabled` 互不影响：只关 `enabled` 的机器自己不跑 Bot、但仍给别的节点干活。
 - **建立和吊销时**：B 给它所有已配对的设备发 `node.security_event`（新种类 `twin_linked` / `twin_unlinked`）和 `notify { security }`，并记审计。
-  - 事件带 `device_id` / `device_name`（那台分身设备）和 `by_device`（要短码、或吊销它的那台设备，本机 CLI 为 `local`）；`notify` 发给除分身设备以外的已配对设备，60 秒内的多条合并成一次，同 `security` 类别的别的事件。
+  - 事件带 `device_id` / `device_name`（那台 Bot 设备）和 `by_device`（要短码、或吊销它的那台设备，本机 CLI 为 `local`）；`notify` 发给除 Bot 设备以外的已配对设备，60 秒内的多条合并成一次，同 `security` 类别的别的事件。
   - 审计：`twin.linked`（配对完成时，`target` 是设备 id）、`twin.unlinked`（吊销时）、`node.twin_link_code`、`pair.refused`。不写短码。
 - **断开**：B 吊销这台设备（设备列表里照常吊销），这一条连接就没了。A 上 `twin.unlink { node_id }` 只是 A 忘掉这一条（关掉传输、从 `twin/nodes.json` 和 `twin_links` 里删掉，记审计 `twin.unlink`，发 `twin.changed`）；B 上的设备记录要在 B 上吊销，界面上写明。没有这个节点 → `not_found`。A 上已经记下的远程项（`Todo.remote`）和已经取回的「经过」不动，只是不再同步。
 - 分组名不同的两个节点之间建立时，客户端多确认一次；daemon 不检查分组。
 
-### 27.3 B 上：分身设备能做什么
+### 27.3 B 上：Bot 设备能做什么
 
 **由 B 的 daemon 强制**，按连接的设备种类判断（设备种类在配对时经握手认证并落盘，之后不变）。强制在两个集中的地方：RPC 分发处（进入任何处理之前检查一次）和每条通知送到一个客户端的出口；单个方法里没有各写一份。
 
 - **方法白名单**：`twin` 设备只能调：
-  - `node.info`、`agent.list`：`node.info` 不含这台机器上的目录路径（`workspace_root` / `workspace_roots`）、判断后端和更新状态；`agent.list` 不含 agent 命令行工具的路径，`refresh` 不起作用（分身设备不能触发重新探测）
+  - `node.info`、`agent.list`：`node.info` 不含这台机器上的目录路径（`workspace_root` / `workspace_roots`）、判断后端和更新状态；`agent.list` 不含 agent 命令行工具的路径，`refresh` 不起作用（Bot 设备不能触发重新探测）
   - `twin.peer_status`（新：B 对这条连接开放了什么、还剩多少，见下）
   - `todo.add`、`todo.get`、`todo.list`、`todo.history`、`todo.dispatch`——只针对**它自己建的项**
   - `session.get`、`session.history`、`session.watch`、`session.unwatch`、`session.cancel`、`session.diff`——只针对**它自己派出的会话**（`session.diff` 是看改动的方法；`session.git_status` 会调用 `gh`，不开放）
 
-  名单之外一律 `forbidden`（`data.reason = "twin_device"`），包括不存在的方法名和只给本机用的 `local.*`；**新增的方法缺省不在名单里**。`forbidden` 先于 `not_found`：名单里的方法碰别人的项和会话、或者碰不存在的 id，答复一字不差（同一个 `forbidden`），分身设备探测不出别人的项和会话存不存在。`todo.add` 按 `id` 幂等，已存在而不是它自己建的 id 同样 `forbidden`，不会把别人的项原样返回；`todo.list` 只返回它自己建的项。
+  名单之外一律 `forbidden`（`data.reason = "twin_device"`），包括不存在的方法名和只给本机用的 `local.*`；**新增的方法缺省不在名单里**。`forbidden` 先于 `not_found`：名单里的方法碰别人的项和会话、或者碰不存在的 id，答复一字不差（同一个 `forbidden`），Bot 设备探测不出别人的项和会话存不存在。`todo.add` 按 `id` 幂等，已存在而不是它自己建的 id 同样 `forbidden`，不会把别人的项原样返回；`todo.list` 只返回它自己建的项。
 - **推送过滤**：对 `twin` 设备只推它自己建的项的 `todo.changed` / `todo.event`、它派出的会话的 `session.changed`、它 watch 的会话的 `session.event`。别的一律不推（会话列表、权限请求、清单、接入、安全事件、项目和 agent 的变化），也不给它发 `notify`。**新增的通知缺省不推**。
   - 会话刚派出时，它的第一条 `session.changed` 可能比归属登记早、不推；之后的都推，结果也可以从 `todo.event` 和 `session.get` 取。
-- **范围**：B 上每条分身连接一份设置，存在 `twin_scopes`，请求方是这台分身设备的设备 id（本机分身是 `local`）。字段和 § 26.2 一样（`paused`、`projects`、`agent`、`model`、`mode`、`max_sessions`、`daily_dispatches`），缺省 `projects = []`，也就是什么都不开放。由 B 的人改：`twin.get` / `twin.set` 多一个可选的 `requester`（缺省 `local`），只接受已存在的分身设备 id（§ 26.8）。
-- **记一项**（`todo.add` 来自分身设备）：`project` 必须在这条连接开放的项目里，否则 `forbidden`（`data.reason = "out_of_scope"`）；不带 `project` → `invalid`；`source = { kind: twin, device_id }`（不看自报的 `agent: true`，也不记 `origin_session`）；`handler = me`、不是 `unreviewed`（开放给它的范围就是 B 的主人的决定）；不能带 `repeat`、不能带 `handler: twin`（`forbidden`，`data.reason = "twin_device"`）。这台设备建的、没关闭的项最多 100 个，满了 `invalid`（`data.field = "todos"`，`data.reason = "too_many_twin"`，同 agent 记的未收下项的上限 `too_many_unreviewed`）。B 自己的分身不处理这些项（§ 26.1 的第六条条件；`todo.update` 把这样的项交给分身 → `invalid`，`data.reason = "twin_source"`）。
-- **派发**（`todo.dispatch` 来自分身设备）：只派它自己建的项。B 用这条连接的范围定 agent / 模型 / 模式（模式缺省同 § 26.2 的 `unattended` 规则，不接受 `dangerous`），`no_push` 恒为 true，`workspace` 恒为 worktree；请求里带的这些字段只能落在范围允许的值里，否则 `invalid`（`data.field` 是 `agent` / `settings` / `no_push` / `workspace`，`data.reason = "not_allowed"`）：`agent` 缺省（空串）用范围定的；`settings` 里的模型和模式缺省或和范围定的一样，不能带 `thinking`、环境变量和别的选项；`no_push` 缺省或为 true；`workspace` 缺省或是不带 `base` / `branch` 的 worktree。`note`（≤ 2 KiB，`TodoDispatchParams.note`）只有分身设备能带，作为「分身的说明」接在第一条消息后面，不改这一项的正文（别的调用方带了 → `invalid`，`data.field = "note"`，`data.reason = "not_allowed"`；超长 → `data.reason = "length"`）。项目取请求里的、缺省用项自己的，必须还在范围里（`forbidden`，`out_of_scope`）。名额：这条连接派出的、还在处理中的会话 ≤ `max_sessions`，并且总给人留 `sessions.max_concurrent` 里的一个；每个本地日最多 `daily_dispatches` 次；`paused` 时拒绝。超出时 `invalid`（`data.field = "dispatch"`，`data.reason` 是 `no_capacity` / `budget` / `paused`）。名额和每日次数用 § 26.2 的同一个实现，按请求方各算各的：会话记在 `twin_sessions`，请求方是设备 id。
-- **`twin.peer_status {}`** → `{ name, group, projects, agents: [{ id, label, ready }], remaining_sessions, remaining_dispatches, paused, accept_links }`：只给这条连接自己的。`remaining_sessions` 是它的 `max_sessions` 和给人留名额之后的上限里更紧的那个，减去它在处理中的会话数，再受全节点还剩的名额限制；`remaining_dispatches` 是 `daily_dispatches` 减去今天已派发的次数。不是分身设备调用 → `forbidden`（`data.reason = "not_twin_device"`）。
-- **不转派**：来源是分身（`source.kind = twin`）的项，B 自己的分身不碰；分身设备也只能操作它自己建的项。
-- **B 上的人接手**：有人（不是 B 本机的分身、不是分身设备）在分身设备派来的会话里发了消息，B 在这个会话所属那一项的「经过」里记一条 `taken_over { by }`（没有 `node_id`），照现有的推送过滤推给那台分身设备（`todo.event`）。B 这一项的 `handler` 不动：它说的是 B 自己的分身，B 的分身本来就不碰来源是分身的项。**每个会话只记一次**：表 `twin_sessions` 的 `taken_ms` 和这条事件在同一个事务里写（迁移 `0014_twin_session_taken.sql`，空表示还没记），所以同一个会话里再发消息、重发同一条都不会再记，不用去翻这一项的历史；分身后来又派了新的会话、你又在新会话里接手，是新的一次。B 自己的分身派出的会话（请求方是本机）按 § 26.6 处理，不受影响。
+- **范围**：B 上每条 Bot 连接一份设置，存在 `twin_scopes`，请求方是这台 Bot 设备的设备 id（本机 Bot 是 `local`）。字段和 § 26.2 一样（`paused`、`projects`、`agent`、`model`、`mode`、`max_sessions`、`daily_dispatches`），缺省 `projects = []`，也就是什么都不开放。由 B 的人改：`twin.get` / `twin.set` 多一个可选的 `requester`（缺省 `local`），只接受已存在的 Bot 设备 id（§ 26.8）。
+- **记一项**（`todo.add` 来自 Bot 设备）：`project` 必须在这条连接开放的项目里，否则 `forbidden`（`data.reason = "out_of_scope"`）；不带 `project` → `invalid`；`source = { kind: twin, device_id }`（不看自报的 `agent: true`，也不记 `origin_session`）；`handler = me`、不是 `unreviewed`（开放给它的范围就是 B 的主人的决定）；不能带 `repeat`、不能带 `handler: twin`（`forbidden`，`data.reason = "twin_device"`）。这台设备建的、没关闭的项最多 100 个，满了 `invalid`（`data.field = "todos"`，`data.reason = "too_many_twin"`，同 agent 记的未收下项的上限 `too_many_unreviewed`）。B 自己的 Bot 不处理这些项（§ 26.1 的第六条条件；`todo.update` 把这样的项交给 Bot → `invalid`，`data.reason = "twin_source"`）。
+- **派发**（`todo.dispatch` 来自 Bot 设备）：只派它自己建的项。B 用这条连接的范围定 agent / 模型 / 模式（模式缺省同 § 26.2 的 `unattended` 规则，不接受 `dangerous`），`no_push` 恒为 true，`workspace` 恒为 worktree；请求里带的这些字段只能落在范围允许的值里，否则 `invalid`（`data.field` 是 `agent` / `settings` / `no_push` / `workspace`，`data.reason = "not_allowed"`）：`agent` 缺省（空串）用范围定的；`settings` 里的模型和模式缺省或和范围定的一样，不能带 `thinking`、环境变量和别的选项；`no_push` 缺省或为 true；`workspace` 缺省或是不带 `base` / `branch` 的 worktree。`note`（≤ 2 KiB，`TodoDispatchParams.note`）只有 Bot 设备能带，作为「Bot 的说明」接在第一条消息后面，不改这一项的正文（别的调用方带了 → `invalid`，`data.field = "note"`，`data.reason = "not_allowed"`；超长 → `data.reason = "length"`）。项目取请求里的、缺省用项自己的，必须还在范围里（`forbidden`，`out_of_scope`）。名额：这条连接派出的、还在处理中的会话 ≤ `max_sessions`，并且总给人留 `sessions.max_concurrent` 里的一个；每个本地日最多 `daily_dispatches` 次；`paused` 时拒绝。超出时 `invalid`（`data.field = "dispatch"`，`data.reason` 是 `no_capacity` / `budget` / `paused`）。名额和每日次数用 § 26.2 的同一个实现，按请求方各算各的：会话记在 `twin_sessions`，请求方是设备 id。
+- **`twin.peer_status {}`** → `{ name, group, projects, agents: [{ id, label, ready }], remaining_sessions, remaining_dispatches, paused, accept_links }`：只给这条连接自己的。`remaining_sessions` 是它的 `max_sessions` 和给人留名额之后的上限里更紧的那个，减去它在处理中的会话数，再受全节点还剩的名额限制；`remaining_dispatches` 是 `daily_dispatches` 减去今天已派发的次数。不是 Bot 设备调用 → `forbidden`（`data.reason = "not_twin_device"`）。
+- **不转派**：来源是 Bot（`source.kind = twin`）的项，B 自己的 Bot 不碰；Bot 设备也只能操作它自己建的项。
+- **B 上的人接手**：有人（不是 B 本机的 Bot、不是 Bot 设备）在 Bot 设备派来的会话里发了消息，B 在这个会话所属那一项的「经过」里记一条 `taken_over { by }`（没有 `node_id`），照现有的推送过滤推给那台 Bot 设备（`todo.event`）。B 这一项的 `handler` 不动：它说的是 B 自己的 Bot，B 的 Bot 本来就不碰来源是 Bot 的项。**每个会话只记一次**：表 `twin_sessions` 的 `taken_ms` 和这条事件在同一个事务里写（迁移 `0014_twin_session_taken.sql`，空表示还没记），所以同一个会话里再发消息、重发同一条都不会再记，不用去翻这一项的历史；Bot 后来又派了新的会话、你又在新会话里接手，是新的一次。B 自己的 Bot 派出的会话（请求方是本机）按 § 26.6 处理，不受影响。
 
-### 27.4 A 上：分身怎么用 B
+### 27.4 A 上：Bot 怎么用 B
 
 实现在 `twin_link` 模块（连接、节点表、远程派发、取回结果）和 `twin`（分拣和执行）。
 
-- **节点表**（§ 26.4 的输入多一块）：每次唤醒（试跑也算），A 对每条在线的连接并发调 `twin.peer_status`（每个 5 秒超时），把「节点 id、名称、分组、在不在线、开放的项目、可用的 agent、剩余会话和派发次数、B 是否暂停了这条连接」放进分拣的输入，一个节点一行 JSON，合计最多 4 KiB（超了按节点名排序，后面的节点丢掉）。不在线或调不通的节点标成 `available: false`，只有 id 和名称。没有分身连接时输入里没有这一块，系统提示也不提 `node`。
+- **节点表**（§ 26.4 的输入多一块）：每次唤醒（试跑也算），A 对每条在线的连接并发调 `twin.peer_status`（每个 5 秒超时），把「节点 id、名称、分组、在不在线、开放的项目、可用的 agent、剩余会话和派发次数、B 是否暂停了这条连接」放进分拣的输入，一个节点一行 JSON，合计最多 4 KiB（超了按节点名排序，后面的节点丢掉）。不在线或调不通的节点标成 `available: false`，只有 id 和名称。没有 Bot 连接时输入里没有这一块，系统提示也不提 `node`。
   - **节点名、项目名、agent 名都来自 B，是外来的文字**：先去掉控制字符和不可见的格式字符、按字符截断（名字 64、每个节点最多 20 个项目、10 个 agent），再放进和各项同一个随机边界里（§ 26.4、§ 23.9），系统提示说明它们是数据。
-- **派发到别的节点**：分拣的 `dispatch` 多一个可选的 `node`（节点表里的 id，必须是 A 现有的一条分身连接；缺省本机；别的动作带 `node` 不合法）。`node` 给了，`project` 必填（B 上的项目名，不看 A 这一项的 `project`：范围由 B 把关，A 不预判），A 自己的 agent 设置不管（B 用它给这条连接定的）。daemon 执行时：
+- **派发到别的节点**：分拣的 `dispatch` 多一个可选的 `node`（节点表里的 id，必须是 A 现有的一条 Bot 连接；缺省本机；别的动作带 `node` 不合法）。`node` 给了，`project` 必填（B 上的项目名，不看 A 这一项的 `project`：范围由 B 把关，A 不预判），A 自己的 agent 设置不管（B 用它给这条连接定的）。daemon 执行时：
   1. 在 B 上 `todo.add`：标题、正文照抄 A 的这一项，`project` 取 `dispatch.project`。新 id 由 A 这一项的 id 和已经派出的次数定出来（SHA-256 取前 16 字节写成 UUID）：`todo.add` 按 id 幂等，所以「B 上记好了、`todo.dispatch` 没成功」之后的重试用的是同一个项，B 上不会留下多余的项；派发成功、A 记下之后次数加一，下一次是新的项。
   2. 在 B 上 `todo.dispatch` 这一项（`agent` 为空、其余缺省：B 按范围定），`note` 经 `TodoDispatchParams.note` 接在第一条消息后面（§ 26.4、§ 27.3），`message_id` 由远程项 id 定出来，所以回执丢了的重试拿回第一次的结果、不再开第二个会话。
   3. 成功之后在 A 的同一个事务里：这一项记下这次远程派发（表 `todo_remotes`：`todo_id`、`node_id`、`remote_todo_id`、`created_ms`、取回的进度 `fetched_seq`、B 上最近知道的 `activity`；`Todo.remote: [{ node_id, todo_id }]` 从它读出来，只追加），「经过」里记 `remote_dispatched { node_id, todo_id, session_id }`（`session_id` 是 B 上的会话 id），这一项的 `updated_ms` 前进，审计记 `twin.remote_dispatch`（只有 id）；连续失败的计数清零。A 上这一项的 `sessions` 不变，没有开本机会话。
 
   失败：这一条决定 `skipped`，`skip_reason` 是 `remote_unavailable`（B 不在线、握手没成功、超时、传输出错）或 `remote_refused`（B 回了错误：范围、名额、预算、暂停、项目不在开放的范围里……；B 的 `data.reason` 清理成 `[a-z0-9_]` 之后接在这条决定的 `reason` 后面，「（the node refused: out_of_scope）」），都计入 § 26.4 的「连续 3 次派发失败」（本机派发里属于范围、名额、预算的拒绝不算失败，B 的拒绝都算：A 不知道 B 的范围变了没有）。**A 自己的 `daily_dispatches` 也算这次派发**（成功的远程派发和本机的会话一起算今天的次数，`twin.get` 的 `today.dispatches` 是两者之和），A 的 `max_sessions` 把「B 上最近知道的 `activity` 是 `working` 的远程项」和本机在处理中的项一起算；这一项自己的远程项还在 `working` 时不再派（同本机）。
-- **取回结果**：A 订阅 `Client` 的通知，**通知只当作「去同步」的信号，不当作数据**——B 上远程项的 `todo.event`（`result`）和 `todo.changed`（`activity`）只对 `todo_remotes` 里对得上 `(node_id, remote_todo_id)` 的项起作用。同步一个远程项（`sync_remote`，同一时间只做一个）：先 `todo.get` 取 B 上现在的 `activity` 存起来，再 `todo.history` 从新往旧翻（每页 200 条，最多 10 页）到 `fetched_seq` 为止，把更新的 `result` 按 `seq` 从小到大逐条记进 A 这一项的「经过」（`remote_result { node_id, session_id, text }`，`text` 同 § 22.4 的 4 KiB 截断），**同一个事务里**把 `fetched_seq` 推进到这一条的 `seq`（只增不减）。所以重连（每次 `NodeReady`）、A 重启、通知丢了之后都用同一条路径补上，没有重复；刚派发完的项也补取一次（B 的事件可能比 A 记下这一行早到）。有新的结果就触发一次 A 的分身唤醒（触发 `session`，§ 26.3；只在这一项还交给分身、没关闭时），分拣的输入里带最近几条远程结果（`earlier result (node …, session …)`，和本机的一起占 § 26.4 的那 1 200 字节）。
+- **取回结果**：A 订阅 `Client` 的通知，**通知只当作「去同步」的信号，不当作数据**——B 上远程项的 `todo.event`（`result`）和 `todo.changed`（`activity`）只对 `todo_remotes` 里对得上 `(node_id, remote_todo_id)` 的项起作用。同步一个远程项（`sync_remote`，同一时间只做一个）：先 `todo.get` 取 B 上现在的 `activity` 存起来，再 `todo.history` 从新往旧翻（每页 200 条，最多 10 页）到 `fetched_seq` 为止，把更新的 `result` 按 `seq` 从小到大逐条记进 A 这一项的「经过」（`remote_result { node_id, session_id, text }`，`text` 同 § 22.4 的 4 KiB 截断），**同一个事务里**把 `fetched_seq` 推进到这一条的 `seq`（只增不减）。所以重连（每次 `NodeReady`）、A 重启、通知丢了之后都用同一条路径补上，没有重复；刚派发完的项也补取一次（B 的事件可能比 A 记下这一行早到）。有新的结果就触发一次 A 的 Bot 唤醒（触发 `session`，§ 26.3；只在这一项还交给 Bot、没关闭时），分拣的输入里带最近几条远程结果（`earlier result (node …, session …)`，和本机的一起占 § 26.4 的那 1 200 字节）。
   - **`text` 是 B 上 agent 写的**：按会话内容对待，不进日志、不进审计；客户端按不可信内容渲染。
 - **A 这一项的 `activity`**：`todo_dispatch::compute_activity` 把本机会话的结果（§ 22.3）和每个远程项最近一次知道的 `activity`（B 的 `todo.changed` 或同步时的 `todo.get`，存在 `todo_remotes.activity`，B 不在线时就是最后一次的）合起来：任何一边是 `working` 就是 `working`；否则任何一边是 `waiting` 就是 `waiting`；否则 `review`。派出之后还没收到过 B 的 `activity` 按 `working`（结果还没回来）；B 说没有（已关闭）或给了不认识的值的远程项不参与。只有远程项没有本机会话时就是远程项的。远程项的 `activity` 变了，A 重新算这一项的 `activity` 并发 `todo.changed`（和本机会话变化同一条路径）。
-- **你接手了**（§ 26.6）：本机的会话看 A 自己；在 B 上的会话里发消息时，B 记一条 `taken_over`（§ 27.3），A 取回结果的同一条路径（`sync_remote`）从 B 的 `todo.history` 里认出它（`seq` 大于 `fetched_seq` 的），A 这一项还交给分身（`handler = twin`）时照本机的「你接手了」处理：`handler` 改成 `me`，「经过」里记 `taken_over { by, node_id }`（`node_id` 是 B，`by` 照抄 B 那一条的，它是 B 上的设备 id，这台浏览器也和 B 配过对时能认出名字）和 `handler`，作废这一项挂着的分身问题，发 `todo.changed`，记审计 `twin.taken_over`；和推进 `fetched_seq` 在同一个事务里，所以重启、断线、通知丢了之后靠同一条路径补上，不重复。通知仍然只是「去同步」的信号：同步远程项时 `todo.event` 的 `result` 和 `taken_over` 都会触发它。
-  - 同一次同步里按 `seq` 从小到大处理，接手之后的 `result` 照常记进「经过」，但这一项的 `handler` 已经是 `me`，不触发分身唤醒（唤醒只在这一项还交给分身、没关闭时）。B 上接手和这条消息开始的那一轮的结果谁先记不固定：消息先交给 agent，B 才记接手，很快结束的一轮可能先记下结果。A 照抄 B 的顺序；结果先同步过来时它会触发一次唤醒，但唤醒要等合并窗口（§ 26.3），接手的 `todo.event` 在那之前就到了，唤醒时这一项已经不交给分身，分身不会对它做决定。
+- **你接手了**（§ 26.6）：本机的会话看 A 自己；在 B 上的会话里发消息时，B 记一条 `taken_over`（§ 27.3），A 取回结果的同一条路径（`sync_remote`）从 B 的 `todo.history` 里认出它（`seq` 大于 `fetched_seq` 的），A 这一项还交给 Bot（`handler = twin`）时照本机的「你接手了」处理：`handler` 改成 `me`，「经过」里记 `taken_over { by, node_id }`（`node_id` 是 B，`by` 照抄 B 那一条的，它是 B 上的设备 id，这台浏览器也和 B 配过对时能认出名字）和 `handler`，作废这一项挂着的 Bot 问题，发 `todo.changed`，记审计 `twin.taken_over`；和推进 `fetched_seq` 在同一个事务里，所以重启、断线、通知丢了之后靠同一条路径补上，不重复。通知仍然只是「去同步」的信号：同步远程项时 `todo.event` 的 `result` 和 `taken_over` 都会触发它。
+  - 同一次同步里按 `seq` 从小到大处理，接手之后的 `result` 照常记进「经过」，但这一项的 `handler` 已经是 `me`，不触发 Bot 唤醒（唤醒只在这一项还交给 Bot、没关闭时）。B 上接手和这条消息开始的那一轮的结果谁先记不固定：消息先交给 agent，B 才记接手，很快结束的一轮可能先记下结果。A 照抄 B 的顺序；结果先同步过来时它会触发一次唤醒，但唤醒要等合并窗口（§ 26.3），接手的 `todo.event` 在那之前就到了，唤醒时这一项已经不交给 Bot，Bot 不会对它做决定。
   - A 上这一项已经不是 `handler = twin`（你在 A 上已经接手、收回或关闭了）：只推进 `fetched_seq`，不再记一条 `taken_over`——你已经在 A 上拿走了它，再记只是噪音。这一项后来又派了新的远程项时，旧远程项上迟到的接手同样只推进进度：它说的不是现在这一次。
-- **远程会话卡住**（§ 26.4）：A 收不到 B 上远程会话的逐条事件（`session.event` 只推给 watch 着的设备，A 不 watch），但分身设备可以对它派出的会话调 `session.get`（§ 27.3），`SessionSummary.last_seq` 是最后一个事件的 `seq`。分身唤醒做运行约束时（不是试跑；`tick` 在有交给分身的项时每 30 分钟一次，只有远程项在处理中也算），对交给分身、最近知道的 `activity` 是 `working`、B 在线的远程项：从 `remote_dispatched` 取会话 id，调 B 的 `session.get`，记下 `(last_seq, 从什么时候起没变)`；会话在运行中（运行、启动中或排队）而 `last_seq` 变了就重新起算，满 2 小时没变就像本机的卡住一样交回给你，理由是「The dispatched session on node <名称> has had no events for two hours」。
-  - **时间只用 A 自己的时钟**（和分身的别的计时用同一个，测试里可换），不比较两台机器的时间。
+- **远程会话卡住**（§ 26.4）：A 收不到 B 上远程会话的逐条事件（`session.event` 只推给 watch 着的设备，A 不 watch），但 Bot 设备可以对它派出的会话调 `session.get`（§ 27.3），`SessionSummary.last_seq` 是最后一个事件的 `seq`。Bot 唤醒做运行约束时（不是试跑；`tick` 在有交给 Bot 的项时每 30 分钟一次，只有远程项在处理中也算），对交给 Bot、最近知道的 `activity` 是 `working`、B 在线的远程项：从 `remote_dispatched` 取会话 id，调 B 的 `session.get`，记下 `(last_seq, 从什么时候起没变)`；会话在运行中（运行、启动中或排队）而 `last_seq` 变了就重新起算，满 2 小时没变就像本机的卡住一样交回给你，理由是「The dispatched session on node <名称> has had no events for two hours」。
+  - **时间只用 A 自己的时钟**（和 Bot 的别的计时用同一个，测试里可换），不比较两台机器的时间。
   - **基线放在内存里**：派发成功的那一刻起算；A 启动、B 重新连上（`NodeReady`）时清掉这个节点的全部计时，之后第一次看到才重新起算，所以 A 停机、B 离线的时间不会算进去，回来之后不会立刻误判。基线本来就会重置，所以不落库；代价是 A 每隔不到 2 小时就重启一次的话永远数不满；这时那一项在 Web 上一直是 `working`，人看得到。
   - B 不在线、`session.get` 调不通或回了错：这次不判断，不算失败，这个会话的计时也重新起算（断断续续连不上的时间同样不算「没有进展」）。会话已经不在运行中（这一轮结束、出错、被取消）不算卡住，由结果、`activity` 和 § 26.4 的别的约束处理。
-- **分身连接的管理**：`twin.links {}` → `{ links: [TwinLink] }`（每条：B 的 id、名称、分组、指纹、配对时间、在不在线、上一次的 `twin.peer_status`；在线状态是传输握手好了，状态在 B 上线时、每次唤醒取节点表时刷新）；`twin.link`、`twin.unlink` 见 § 27.2。都只由人调用。连接建立、断开、上线、下线时 A 发一条 `twin.changed`，客户端据此重新读 `twin.links`（它还带本机分身的状态，和 § 26.8 的是同一条通知）。
-- **不转派**：A 上来源是分身（`source.kind = twin`）的项，A 的分身同样不碰（§ 26.1 的第五条条件：本节点不分是 A 还是 B，同一个判断）。
-- **没有代理**：判断后端、`anycon mcp` 和 A 上别的本机进程都拿不到分身设备的身份，也没有「经 A 调 B」的方法：`twin.link` / `twin.links` / `twin.unlink` 只管连接本身，B 上的动作只由分拣的计划（经 daemon 的确定性执行）和后台的只读同步发出，参数不由调用方给。分身设备的密钥不出 daemon 进程。
+- **Bot 连接的管理**：`twin.links {}` → `{ links: [TwinLink] }`（每条：B 的 id、名称、分组、指纹、配对时间、在不在线、上一次的 `twin.peer_status`；在线状态是传输握手好了，状态在 B 上线时、每次唤醒取节点表时刷新）；`twin.link`、`twin.unlink` 见 § 27.2。都只由人调用。连接建立、断开、上线、下线时 A 发一条 `twin.changed`，客户端据此重新读 `twin.links`（它还带本机 Bot 的状态，和 § 26.8 的是同一条通知）。
+- **不转派**：A 上来源是 Bot（`source.kind = twin`）的项，A 的 Bot 同样不碰（§ 26.1 的第五条条件：本节点不分是 A 还是 B，同一个判断）。
+- **没有代理**：判断后端、`anycon mcp` 和 A 上别的本机进程都拿不到 Bot 设备的身份，也没有「经 A 调 B」的方法：`twin.link` / `twin.links` / `twin.unlink` 只管连接本身，B 上的动作只由分拣的计划（经 daemon 的确定性执行）和后台的只读同步发出，参数不由调用方给。Bot 设备的密钥不出 daemon 进程。
 
 ### 27.5 hub
 
-接受 `DeviceKind::Twin` 的设备：配对、认证、路由、吊销都和别的设备一样。设备列表里显示种类。`multi` 模式下它占账号的设备和连接配额。hub 多看到的元数据是「A 的分身这台设备和 B 配了对」，以及两者之间流量的大小和时间。
+接受 `DeviceKind::Twin` 的设备：配对、认证、路由、吊销都和别的设备一样。设备列表里显示种类。`multi` 模式下它占账号的设备和连接配额。hub 多看到的元数据是「A 的 Bot 这台设备和 B 配了对」，以及两者之间流量的大小和时间。
 
-实现：设备表的 `kind` 是不带约束的文本列，`twin` 不需要新的迁移；hub 在认证时拒绝它不认识的设备种类（`auth_fail { protocol }`），所以库里不会出现 `unknown`（hub.md § 5）。分身设备不占 daemon 配额。
+实现：设备表的 `kind` 是不带约束的文本列，`twin` 不需要新的迁移；hub 在认证时拒绝它不认识的设备种类（`auth_fail { protocol }`），所以库里不会出现 `unknown`（hub.md § 5）。Bot 设备不占 daemon 配额。
 
 ### 27.6 客户端
 
-- **Web**（**已实现**，细节见 [web.md § 14.8](web.md#148-分身和规则) 和 [§ 4.8](web.md#48-节点设置-nnodesettings)；A 侧 daemon 的方法没有实现的节点上，「使用别的节点」不显示）：
-  - **A 的分身页**多一块「使用别的节点」：列出分身连接（名称、在不在线、开放的项目、剩余名额）；「添加」列出这台设备配过对、支持分身（`capabilities.twin`）、`twin_accept_links` 开着的别的节点，选一个，分组不同时多确认一次，然后依次调 B 的 `node.twin_link_code` 和 A 的 `twin.link`。「断开」调 A 的 `twin.unlink`，并说明要在 B 上吊销设备。
-  - **B 的节点设置**「设备」里，分身设备显示成「<A> 的分身」，旁边有「范围」：这条连接的 `twin.get` / `twin.set`（`requester` = 设备 id），表单同分身页的范围，缺省什么都不开放。
+- **Web**（**已实现**，细节见 [web.md § 14.8](web.md#148-bot-和规则) 和 [§ 4.8](web.md#48-节点设置-nnodesettings)；A 侧 daemon 的方法没有实现的节点上，「使用别的节点」不显示）：
+  - **A 的 Bot 页**多一块「使用别的节点」：列出 Bot 连接（名称、在不在线、开放的项目、剩余名额）；「添加」列出这台设备配过对、支持 Bot（`capabilities.twin`）、`twin_accept_links` 开着的别的节点，选一个，分组不同时多确认一次，然后依次调 B 的 `node.twin_link_code` 和 A 的 `twin.link`。「断开」调 A 的 `twin.unlink`，并说明要在 B 上吊销设备。
+  - **B 的节点设置**「设备」里，Bot 设备显示成「<A> 的 Bot」，旁边有「范围」：这条连接的 `twin.get` / `twin.set`（`requester` = 设备 id），表单同 Bot 页的范围，缺省什么都不开放。
   - **「经过」**显示 `remote_dispatched` 和 `remote_result`：这台设备也和 B 配过对时，能点到 B 上的那一项。
   - 所有文案 en / zh。
 - **CLI**：
   - 在 B 上：`anycon twin link-code`，打印短码和过期时间（已实现）。
   - 在 A 上：`anycon twin link <code> --peer <B 的 id>`、`anycon twin links`、`anycon twin unlink <node>`（`<node>` 是 B 的 id、唯一的 id 前缀或名称；选项叫 `--peer`，因为 `--node` 是全局选项、选的是命令在哪个节点上跑）。`link` 和 `unlink` 在 anycon 拉起的 agent 里拒绝执行，`links` 可读。
-  - 在 B 上看和改一条连接的范围：`anycon twin status --requester <device>`、`anycon twin set --requester <device> …`（同 § 26.8 的 `status` / `set`；`<device>` 是分身设备的 id、唯一的 id 前缀或名称，已实现）。
+  - 在 B 上看和改一条连接的范围：`anycon twin status --requester <device>`、`anycon twin set --requester <device> …`（同 § 26.8 的 `status` / `set`；`<device>` 是 Bot 设备的 id、唯一的 id 前缀或名称，已实现）。
   - 在 anycon 拉起的 agent 里，这些写操作拒绝执行（`link-code`、`link`、`unlink`、`set`）。
 
 ### 27.7 代价 / 限制和威胁模型
 
-- **A 能让 B 干活**：A 被入侵、A 的判断被注入，都能在 B 对这条连接开放的项目里让 B 的 agent 干活。上限是 B 的范围设置、B 上 agent 的审查器和「不 push、不开 PR」。A 上别的本机进程没有直接用 B 的入口：没有代理，它们只能像用户一样往 A 的清单里记项、交给分身（agent 记的项要人先收下，§ 26.1）。
-- **内容跨机器**：A 上这一项的标题、正文和分身的说明会写进 B 的数据库；B 上会话的结果会取回 A。经 hub 的仍是密文。
+- **A 能让 B 干活**：A 被入侵、A 的判断被注入，都能在 B 对这条连接开放的项目里让 B 的 agent 干活。上限是 B 的范围设置、B 上 agent 的审查器和「不 push、不开 PR」。A 上别的本机进程没有直接用 B 的入口：没有代理，它们只能像用户一样往 A 的清单里记项、交给 Bot（agent 记的项要人先收下，§ 26.1）。
+- **内容跨机器**：A 上这一项的标题、正文和 Bot 的说明会写进 B 的数据库；B 上会话的结果会取回 A。经 hub 的仍是密文。
 - **都经 hub**：hub 不可达时，同一个局域网里的两个节点也连不上。
 - **A 离线时**，A 派到 B 的项不再有人推进。B 上的会话照常跑完，结果等 A 回来再取。
-- **你在 B 上的会话里接手**，A 在下一次同步时知道（§ 27.4）：A 离线时 B 照常记，A 回来再取。在 A 取到之前这段时间里（A 离线、B 的通知丢了，或者连接断着），A 的分身仍会以为这一项归它，所以这一段内它仍可能看这一项。会话本身已经在你手里，它的派发名额照算。
-- **一个分身设备只属于一个账号**：它能连接的 B 都要在这个账号里（hub 的已有设备规则）。
+- **你在 B 上的会话里接手**，A 在下一次同步时知道（§ 27.4）：A 离线时 B 照常记，A 回来再取。在 A 取到之前这段时间里（A 离线、B 的通知丢了，或者连接断着），A 的 Bot 仍会以为这一项归它，所以这一段内它仍可能看这一项。会话本身已经在你手里，它的派发名额照算。
+- **一个 Bot 设备只属于一个账号**：它能连接的 B 都要在这个账号里（hub 的已有设备规则）。
 - **新的权限面**：每个方法都要有「`twin` 设备调用被拒绝」的测试（白名单里的除外），每个通知都要有「不推给 `twin` 设备」的测试；新增方法或通知时要决定它进不进名单。
-- **旧版本**：旧 daemon 不认识 `twin` 种类，不能被使用；客户端按 `capabilities.twin` 和 `twin_accept_links` 判断（旧 daemon 的 `node.info` 没有 `twin_accept_links`，读作 `false`）。B 降级到不认识 `twin` 的旧版本不会让分身设备变成普通设备：数据库里有旧版本不认识的迁移，旧 daemon 的 `sqlx::migrate!().run()` 没有 `ignore_missing`，遇到已应用而自己没有的迁移就报 `VersionMissing` 并拒绝启动，所以连接不会在降级时「失效开放」。恢复一份旧的备份只会带回当时的设备记录。
-- **分身设备占不满清单**：一台分身设备建的、没关闭的项最多 100 个（同 agent 记的未收下项的上限），满了 `todo.add` 回 `invalid`（`data.field = "todos"`，`data.reason = "too_many_twin"`）；不然被入侵的 A 能把 B 的清单填到 1 000 个的总上限、挤掉人的项。人自己记的项不受影响。B 的人看得到每一项的来源（`source.kind = twin`），可以随时删除、暂停这条连接或吊销这台设备。
+- **旧版本**：旧 daemon 不认识 `twin` 种类，不能被使用；客户端按 `capabilities.twin` 和 `twin_accept_links` 判断（旧 daemon 的 `node.info` 没有 `twin_accept_links`，读作 `false`）。B 降级到不认识 `twin` 的旧版本不会让 Bot 设备变成普通设备：数据库里有旧版本不认识的迁移，旧 daemon 的 `sqlx::migrate!().run()` 没有 `ignore_missing`，遇到已应用而自己没有的迁移就报 `VersionMissing` 并拒绝启动，所以连接不会在降级时「失效开放」。恢复一份旧的备份只会带回当时的设备记录。
+- **Bot 设备占不满清单**：一台 Bot 设备建的、没关闭的项最多 100 个（同 agent 记的未收下项的上限），满了 `todo.add` 回 `invalid`（`data.field = "todos"`，`data.reason = "too_many_twin"`）；不然被入侵的 A 能把 B 的清单填到 1 000 个的总上限、挤掉人的项。人自己记的项不受影响。B 的人看得到每一项的来源（`source.kind = twin`），可以随时删除、暂停这条连接或吊销这台设备。

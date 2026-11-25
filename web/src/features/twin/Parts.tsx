@@ -1,4 +1,4 @@
-// 分身页、清单页和侧栏共用的状态与决定。模型给的理由按纯文字展示。
+// Bot 页、清单页和侧栏共用的状态与决定。模型给的理由按纯文字展示。
 import { useState } from 'react'
 import { Collapsible } from 'radix-ui'
 import { Link } from '@tanstack/react-router'
@@ -105,14 +105,39 @@ function RunLine({ nodeId, run, open }: { nodeId: string; run: TwinRun; open: bo
     </Collapsible.Root>
   )
 }
-export function TwinStatusBar({ sidebar = false }: { sidebar?: boolean }) {
+/**
+ * 勾选的、支持 Bot 的节点合起来的一句状态：处理中几项、等你几项、开着 / 关着 / 暂停；`offline` 是有这样的节点不在线。
+ * 没有这样的节点时是 null。左栏底部的 Bot 入口和清单页、Bot 页顶上的状态条共用。
+ */
+export function useTwinSummary(): { text: string; offline: boolean } | null {
   const { t } = useTranslation()
   const ids = useTwinNodeIds()
   const twins = useTwin((s) => s.nodes)
   const nodes = useNodes((s) => s.byId)
+  if (!ids.length) return null
+  const values = ids.flatMap((id) => (twins[id]?.value ? [twins[id]!.value!] : []))
+  const state = !values.length
+    ? t('twin.loading')
+    : values.every((v) => v.scope.paused)
+      ? t('twin.state.paused')
+      : values.some((v) => v.scope.paused)
+        ? t('twin.partlyPaused')
+        : values.every((v) => !v.enabled)
+          ? t('twin.off')
+          : t('twin.on')
+  const counts = t('twin.summary', { working: values.reduce((n, v) => n + v.working.length, 0), waiting: values.reduce((n, v) => n + v.waiting.length, 0) })
+  return { text: `${counts} · ${state}`, offline: ids.some((id) => nodes[id]?.conn !== 'ready') }
+}
+/** 清单页和（多个节点时）Bot 页顶上的状态条：状态、今天的用量和「全部暂停」。 */
+export function TwinStatusBar() {
+  const { t } = useTranslation()
+  const ids = useTwinNodeIds()
+  const twins = useTwin((s) => s.nodes)
+  const nodes = useNodes((s) => s.byId)
+  const summary = useTwinSummary()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  if (!ids.length) return null
+  if (!summary) return null
   const values = ids.flatMap((id) => (twins[id]?.value ? [twins[id]!.value!] : []))
   const pause = async (): Promise<void> => {
     setBusy(true)
@@ -125,32 +150,19 @@ export function TwinStatusBar({ sidebar = false }: { sidebar?: boolean }) {
   return (
     <div className="space-y-1 border-t border-border p-3 text-xs" data-testid="twin-status-bar">
       <Link to="/twin" className="block text-accent-text">
-        {t('twin.title')} · {t('twin.summary', { working: values.reduce((n, v) => n + v.working.length, 0), waiting: values.reduce((n, v) => n + v.waiting.length, 0) })} ·{' '}
-        {!values.length
-          ? t('twin.loading')
-          : values.every((v) => v.scope.paused)
-            ? t('twin.state.paused')
-            : values.some((v) => v.scope.paused)
-              ? t('twin.partlyPaused')
-              : values.every((v) => !v.enabled)
-                ? t('twin.off')
-                : t('twin.on')}
+        {t('twin.title')} · {summary.text}
       </Link>
-      {ids.some((id) => nodes[id]?.conn !== 'ready') ? <p>{t('twin.offline')}</p> : null}
-      {!sidebar ? (
-        <>
-          <p>
-            {t('twin.usage', {
-              dispatches: values.reduce((n, v) => n + v.today.dispatches, 0),
-              budget: values.reduce((n, v) => n + v.scope.daily_dispatches, 0),
-              judges: values.reduce((n, v) => n + v.today.judge_calls, 0),
-            })}
-          </p>
-          <Button size="sm" variant="primary" disabled={busy || !ids.some((id) => nodes[id]?.conn === 'ready')} onClick={() => void pause()}>
-            {t('twin.pauseAll')}
-          </Button>
-        </>
-      ) : null}
+      {summary.offline ? <p>{t('twin.offline')}</p> : null}
+      <p>
+        {t('twin.usage', {
+          dispatches: values.reduce((n, v) => n + v.today.dispatches, 0),
+          budget: values.reduce((n, v) => n + v.scope.daily_dispatches, 0),
+          judges: values.reduce((n, v) => n + v.today.judge_calls, 0),
+        })}
+      </p>
+      <Button size="sm" variant="primary" disabled={busy || !ids.some((id) => nodes[id]?.conn === 'ready')} onClick={() => void pause()}>
+        {t('twin.pauseAll')}
+      </Button>
       {error ? <p role="alert">{error}</p> : null}
     </div>
   )

@@ -1,8 +1,10 @@
-// 分身页只看运行状态：状态头和操作、今天的数字、连续失败提醒、现在在做什么、趋势、运行记录。
-// 范围、预算、判断后端和分身连接在节点设置 →「分身」；记录想做的事仍然通过清单。
+// Bot 页只看运行状态：状态头和操作、今天的数字、连续失败提醒、现在在做什么、趋势、运行记录。
+// 范围、预算、判断后端和 Bot 连接在节点设置 →「Bot」；记录想做的事仍然通过清单。
+// 它和规则页是顶栏里并列的两个标签（`BotTabs`），入口是左栏底部的 Bot 状态（spec/web.md § 14.8）。
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TwinRun } from '@/protocol'
+import { BotTabs } from '@/components/BotTabs'
 import { PageHeader } from '@/components/PageHeader'
 import { useNodes, type NodeEntry } from '@/stores/nodes'
 import { resolveNodeParam } from '@/lib/ids'
@@ -31,7 +33,7 @@ export function TwinPage({ node, run }: { node?: string; run?: string }) {
   }, [ready])
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="twin-page">
-      <PageHeader root spaceSwitcher crumbs={[{ label: t('twin.title') }]} showNodeStatus={false} />
+      <PageHeader root spaceSwitcher tabs={<BotTabs current="twin" />} showNodeStatus={false} />
       <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-auto p-4">
         {ids.length > 1 ? <TwinStatusBar /> : null}
         {!ids.length ? <p>{target && byId[target] ? t('twin.nodeUnsupported', { node: byId[target].name }) : t('twin.noSupport')}</p> : null}

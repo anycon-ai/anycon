@@ -1,4 +1,4 @@
-//! 分身的范围、运行和问题存储；只保存解析后的决定，不保存判断提示或原始回应。
+//! Bot 的范围、运行和问题存储；只保存解析后的决定，不保存判断提示或原始回应。
 
 use anycon_protocol::*;
 use sqlx::Row;
@@ -11,8 +11,8 @@ use super::{Result, Store};
 /// 所以写入方和统计查询共用这一个常量。
 pub(crate) const DONE_HAND_BACK_PREFIX: &str = "The twin believes this is done: ";
 
-/// 本机分身的派发记录 `(todo_id, created_ms)`：`twin_sessions` 里请求方为本机的会话，加上 `todo_remotes` 里派到别的节点的
-/// 记录（和每日派发次数 `twin_dispatches_since` 同一个来源）。人手动派发的、分身设备派来的都不在内。
+/// 本机 Bot 的派发记录 `(todo_id, created_ms)`：`twin_sessions` 里请求方为本机的会话，加上 `todo_remotes` 里派到别的节点的
+/// 记录（和每日派发次数 `twin_dispatches_since` 同一个来源）。人手动派发的、Bot 设备派来的都不在内。
 const LOCAL_DISPATCHES_CTE: &str = "WITH local_dispatches(todo_id, created_ms) AS ( \
      SELECT todo_id, created_ms FROM twin_sessions WHERE requester='local' \
      UNION ALL SELECT todo_id, created_ms FROM todo_remotes)";
@@ -179,8 +179,8 @@ impl Store {
 
     /// `since` 起「经过」里的 `handed_back` / `taken_over` 事件：`(时间, kind)`。
     /// - `handed_back` 只算没做完就交回的：`done` 判断写的那一条不算（`done` 标记，或旧版本写的、没有标记但 `reason` 带
-    ///   [`DONE_HAND_BACK_PREFIX`] 的）。交回只发生在 `handler = twin` 的项上，那些项不会是分身设备记的，所以不另查派发。
-    /// - `taken_over` 只算本机分身在事件时间或之前派发过的项（分身设备派来的会话里的接手也写这个事件，不是本机分身的）。
+    ///   [`DONE_HAND_BACK_PREFIX`] 的）。交回只发生在 `handler = twin` 的项上，那些项不会是 Bot 设备记的，所以不另查派发。
+    /// - `taken_over` 只算本机 Bot 在事件时间或之前派发过的项（Bot 设备派来的会话里的接手也写这个事件，不是本机 Bot 的）。
     pub async fn todo_event_times_since(&self, since: u64) -> Result<Vec<(u64, String)>> {
         let rows: Vec<(i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{LOCAL_DISPATCHES_CTE} SELECT e.ts_ms, e.kind FROM todo_events e WHERE e.ts_ms>=? AND ( \
@@ -197,10 +197,10 @@ impl Store {
         Ok(rows.into_iter().map(|(t, k)| (t as u64, k)).collect())
     }
 
-    /// `since` 起把本机分身派发过的项关闭的 `state` 事件：`(事件时间, 是否完成, 最近一次派发时间)`。
-    /// 只算从未关闭变为 `done` / `dropped` 的事件（`from` 已经关闭的不算），且本机分身在事件时间或之前派发过；
+    /// `since` 起把本机 Bot 派发过的项关闭的 `state` 事件：`(事件时间, 是否完成, 最近一次派发时间)`。
+    /// 只算从未关闭变为 `done` / `dropped` 的事件（`from` 已经关闭的不算），且本机 Bot 在事件时间或之前派发过；
     /// 派发时间取不晚于事件的最近一次，重新打开再关闭时从最近那次派发算起。
-    /// 「本机分身派发过」= `twin_sessions` 里有本机请求方的会话，或 `todo_remotes` 里有派到别的节点的记录。
+    /// 「本机 Bot 派发过」= `twin_sessions` 里有本机请求方的会话，或 `todo_remotes` 里有派到别的节点的记录。
     pub async fn twin_closed_since(&self, since: u64) -> Result<Vec<(u64, bool, u64)>> {
         let rows: Vec<(i64, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{LOCAL_DISPATCHES_CTE} SELECT ts_ms, to_state, last_ms FROM ( \
@@ -265,7 +265,7 @@ impl Store {
         Ok(())
     }
 
-    /// 这个请求方从 `since` 起派发的次数。本机分身（`local`）派到别的节点的也算（§ 27.4）。
+    /// 这个请求方从 `since` 起派发的次数。本机 Bot（`local`）派到别的节点的也算（§ 27.4）。
     pub async fn twin_dispatches_since(&self, requester: &str, since: u64) -> Result<u32> {
         let local =
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM twin_sessions WHERE requester=? AND created_ms>=?")
@@ -284,14 +284,14 @@ impl Store {
             .await?)
     }
 
-    /// 分身设备派出的会话：`(设备 id, 会话 id)`。启动时读进推送过滤的归属索引。
+    /// Bot 设备派出的会话：`(设备 id, 会话 id)`。启动时读进推送过滤的归属索引。
     pub async fn twin_device_sessions(&self) -> Result<Vec<(String, String)>> {
         Ok(sqlx::query_as("SELECT requester, session_id FROM twin_sessions WHERE requester != 'local'")
             .fetch_all(self.pool())
             .await?)
     }
 
-    /// 分身设备建的项：`(设备 id, 项 id)`。
+    /// Bot 设备建的项：`(设备 id, 项 id)`。
     pub async fn twin_device_todos(&self) -> Result<Vec<(String, String)>> {
         Ok(sqlx::query_as(
             "SELECT source_device, id FROM todos WHERE source_kind = 'twin' AND source_device IS NOT NULL",
@@ -315,7 +315,7 @@ impl Store {
             .await?)
     }
 
-    /// 来自分身设备的项不进本机分身的范围：来源是分身的项，B 自己的分身不碰（docs/spec/daemon.md § 27.3）。
+    /// 来自 Bot 设备的项不进本机 Bot 的范围：来源是 Bot 的项，B 自己的 Bot 不碰（docs/spec/daemon.md § 27.3）。
     pub async fn twin_todos(&self) -> Result<Vec<Todo>> {
         let ids = sqlx::query_scalar::<_, String>(
             "SELECT id FROM todos WHERE handler='twin' AND unreviewed=0 AND repeat_kind IS NULL \
@@ -332,7 +332,7 @@ impl Store {
         Ok(out)
     }
 
-    /// 要轮询 PR 的会话：分身派出的、所属的项还交给分身处理且没关闭。返回 `(session_id, todo_id)`。
+    /// 要轮询 PR 的会话：Bot 派出的、所属的项还交给 Bot 处理且没关闭。返回 `(session_id, todo_id)`。
     pub async fn twin_pr_targets(&self) -> Result<Vec<(String, String)>> {
         Ok(sqlx::query_as(
             "SELECT ts.session_id, ts.todo_id FROM twin_sessions ts JOIN todos t ON t.id = ts.todo_id \

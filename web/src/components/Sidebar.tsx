@@ -11,7 +11,7 @@ import { useCameraAvailable } from '@/features/approve/useCameraAvailable'
 import { groupNodeSessions, isActiveStatus, type NodeProjectGroup } from '@/features/session/group'
 import { useInboxNowCount } from '@/features/inbox/useInbox'
 import { useCapture } from '@/features/todos/capture'
-import { TwinStatusBar } from '@/features/twin/Parts'
+import { useTwinSummary } from '@/features/twin/Parts'
 import { useTwinAvailable } from '@/features/twin/store'
 import { useRulesAvailable } from '@/features/rules/store'
 import { useTodoAvailable } from '@/features/todos/store'
@@ -91,7 +91,8 @@ function PinButton({ pinned, onToggle, className }: { pinned: boolean; onToggle:
 /**
  * `nodeId`：页面当前所在的节点，只用于下拉里的「节点设置」；左栏显示哪些节点由下拉里的勾选决定。
  * `pin`：宽屏左栏才传，Logo 旁边多一个钉住 / 取消钉住按钮。
- * 自上而下：Logo、导航（「待处理」带「现在」的个数）、节点过滤和搜索、会话树、账号菜单。手机上同一个左栏放在抽屉里（`onNavigate` 关抽屉）。
+ * 自上而下：Logo、节点过滤（空间切换）和搜索、导航（「待处理」「清单」，它们只算勾选的节点，所以放在过滤器下面）、会话树、
+ * Bot 入口（Bot 和规则两页的入口，带 Bot 的状态）、账号菜单。手机上同一个左栏放在抽屉里（`onNavigate` 关抽屉）。
  */
 export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void; pin?: { pinned: boolean; onToggle: () => void } }) {
   return (
@@ -102,28 +103,28 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
         </Link>
         {pin ? <PinButton pinned={pin.pinned} onToggle={pin.onToggle} /> : null}
       </div>
+      <SpaceRow nodeId={nodeId} onNavigate={onNavigate} onSearch={onSearch} />
       <SidebarNav onNavigate={onNavigate} />
-      <SessionsPanel nodeId={nodeId} onNavigate={onNavigate} onSearch={onSearch} />
-      <TwinStatusBar sidebar />
+      <SessionTree nodeId={nodeId} onNavigate={onNavigate} />
+      <BotEntry onNavigate={onNavigate} />
       <AccountFooter onNavigate={onNavigate} />
     </div>
   )
 }
 
-/** 顶层导航：待处理、清单（旁边是「记一项」）、分身、规则。触屏上每行至少 44px 高。 */
+/** 左栏导航行的样式：触屏上至少 44px 高。 */
+const row = 'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-bg-hover [@media(pointer:coarse)]:min-h-11'
+
+/** 顶层导航：待处理、清单（旁边是「记一项」）。触屏上每行至少 44px 高。 */
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { t } = useTranslation()
   const count = useInboxNowCount()
   const todoCount = useOpenTodoCount()
   const todoAvailable = useTodoAvailable()
-  const rulesAvailable = useRulesAvailable()
-  const twinAvailable = useTwinAvailable()
   const openCapture = useCapture((s) => s.openCapture)
   const here = useRouterState({ select: (s) => s.location.pathname })
   const current = here === '/inbox'
   const todosHere = here === '/todos' || here.startsWith('/todos/')
-  const rulesHere = here === '/rules'
-  const row = 'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-bg-hover [@media(pointer:coarse)]:min-h-11'
   return (
     <nav className="space-y-0.5 px-2 pb-2" aria-label={t('sidebar.nav')} data-testid="sidebar-nav">
       <Link
@@ -165,22 +166,72 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         </button>
       </div>
       ) : null}
-      {twinAvailable ? <Link to="/twin" onClick={onNavigate} aria-current={here === '/twin' ? 'page' : undefined} data-testid="sidebar-twin" className={cn(row, here === '/twin' && 'bg-accent-subtle')}><Bot className="size-4 shrink-0 text-fg-muted" aria-hidden /><span>{t('twin.title')}</span></Link> : null}
-      {rulesAvailable ? (
-        <Link to="/rules" onClick={onNavigate} aria-current={rulesHere ? 'page' : undefined} data-testid="sidebar-rules" className={cn(row, rulesHere && 'bg-accent-subtle')}>
-          <ScrollText className="size-4 shrink-0 text-fg-muted" aria-hidden />
-          <span className="min-w-0 flex-1 truncate">{t('rules.title')}</span>
-        </Link>
-      ) : null}
     </nav>
   )
 }
 
 /**
- * 会话树和它上面的一排（节点过滤、新建项目、搜索）：左栏的中间部分。
+ * 左栏底部的 Bot 入口：Bot 和规则是同一页上的两个标签（`BotTabs`），不各占一行导航。
+ * 有节点支持 Bot 时点了去 Bot 页，第二行是勾选节点合起来的状态（处理中、等你、是否暂停）；只支持规则时这一行就是「规则」。
+ * 两样都没有节点支持时不显示。在 Bot 页或规则页上时标 `aria-current`。
+ */
+function BotEntry({ onNavigate }: { onNavigate?: () => void }) {
+  const { t } = useTranslation()
+  const twin = useTwinAvailable()
+  const rules = useRulesAvailable()
+  const summary = useTwinSummary()
+  const here = useRouterState({ select: (s) => s.location.pathname })
+  if (!twin && !rules) return null
+  const current = here === '/rules' || here === '/twin' || here.startsWith('/twin/')
+  const Icon = twin ? Bot : ScrollText
+  return (
+    <div className="border-t border-border px-2 py-2" data-testid="sidebar-bot-bar">
+      <Link to={twin ? '/twin' : '/rules'} onClick={onNavigate} aria-current={current ? 'page' : undefined} data-testid="sidebar-bot" className={cn(row, current && 'bg-accent-subtle')}>
+        <Icon className="size-4 shrink-0 text-fg-muted" aria-hidden />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{twin ? t('twin.title') : t('rules.title')}</span>
+          {twin && summary ? (
+            <span className="block truncate text-xs font-normal text-fg-subtle" data-testid="sidebar-bot-summary">
+              {summary.text}
+              {summary.offline ? ` · ${t('twin.offline')}` : ''}
+            </span>
+          ) : null}
+        </span>
+      </Link>
+    </div>
+  )
+}
+
+/** Logo 下面的一排：节点过滤（空间切换）、新建项目、搜索。 */
+function SpaceRow({ nodeId, onNavigate, onSearch }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void }) {
+  const { t } = useTranslation()
+  const order = useNodes((s) => s.order)
+  const { selected } = useNodeFilter()
+  const newProject = useNewProjectAction(nodeId, selected, onNavigate)
+  return (
+    <div className="flex items-stretch gap-2 px-3 pb-2">
+      <div className="min-w-0 flex-1">
+        <SpaceSwitcher nodeId={nodeId} onNavigate={onNavigate} />
+      </div>
+      {newProject ? (
+        <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('project.new')} title={t('project.new')} onClick={newProject} data-testid="sidebar-new-project-button">
+          <FolderPlus className="size-4" />
+        </Button>
+      ) : null}
+      {onSearch && order.length > 0 ? (
+        <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('sidebar.search')} onClick={onSearch}>
+          <Search className="size-4" />
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * 会话树：左栏的中间部分，占满剩下的高度、自己滚动。
  * Recent、项目树（带「完成后提醒」小旗和未读小红点）、临时会话照旧。
  */
-export function SessionsPanel({ nodeId, onNavigate, onSearch }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void }) {
+function SessionTree({ nodeId, onNavigate }: { nodeId: string | undefined; onNavigate?: () => void }) {
   const { t } = useTranslation()
   const nodes = useNodes((s) => s.byId)
   const order = useNodes((s) => s.order)
@@ -205,76 +256,58 @@ export function SessionsPanel({ nodeId, onNavigate, onSearch }: { nodeId: string
   const recent = useRecentSessions(selected, showRecent)
 
   return (
-    <>
-      <div className="flex items-stretch gap-2 px-3 pb-2">
-        <div className="min-w-0 flex-1">
-          <SpaceSwitcher nodeId={nodeId} onNavigate={onNavigate} />
-        </div>
-        {newProject ? (
-          <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('project.new')} title={t('project.new')} onClick={newProject} data-testid="sidebar-new-project-button">
-            <FolderPlus className="size-4" />
-          </Button>
-        ) : null}
-        {onSearch && order.length > 0 ? (
-          <Button variant="outline" size="icon" className="!h-auto !w-10" aria-label={t('sidebar.search')} onClick={onSearch}>
-            <Search className="size-4" />
-          </Button>
-        ) : null}
-      </div>
-
-      <nav className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label={t('sidebar.sessions')}>
-        {selected.length > 0 ? (
-          <>
-            {recent.length > 0 ? (
-              <div className="mb-2" data-testid="sidebar-recent">
-                <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.recent')}</p>
-                {recent.map((s) => (
-                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} project={s.project ?? undefined} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
-                ))}
-              </div>
-            ) : null}
-            {grouped.projects.length > 0 ? (
-              <div className="flex flex-col gap-2">
-                {grouped.projects.map((g) => (
-                  <ProjectBranch
-                    key={`${g.nodeId}:${g.name}`}
-                    nodeParam={paramOf(g.nodeId)}
-                    nodeName={nodeLabel(g.nodeId)}
-                    group={g}
-                    activeNode={params.node}
-                    activeSession={params.session}
-                    activeProject={params.project}
-                    onNavigate={onNavigate}
-                  />
-                ))}
-              </div>
-            ) : null}
-            {grouped.scratch.length > 0 ? (
-              <div className="mt-2">
-                <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.scratch')}</p>
-                {grouped.scratch.map((s) => (
-                  <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
-                ))}
-              </div>
-            ) : null}
-            {grouped.projects.length === 0 && grouped.scratch.length === 0 ? (
-              <div className="px-2 py-6 text-center text-sm text-fg-subtle" data-testid="sidebar-empty">
-                <p>{t('sidebar.empty')}</p>
-                {/* 左栏没有单独的「新会话」按钮，没有项目就没有「＋」可点：直接在这里打开新建项目对话框 */}
-                {newProject ? (
-                  <button type="button" onClick={newProject} className="mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium text-accent-text hover:bg-bg-hover" data-testid="sidebar-new-project">
-                    <FolderPlus className="size-4" />
-                    {t('project.new')}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <p className="px-2 py-6 text-center text-sm text-fg-subtle">{t('sidebar.noNode')}</p>
-        )}
-      </nav>
-    </>
+    <nav className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label={t('sidebar.sessions')}>
+      {selected.length > 0 ? (
+        <>
+          {recent.length > 0 ? (
+            <div className="mb-2" data-testid="sidebar-recent">
+              <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.recent')}</p>
+              {recent.map((s) => (
+                <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} project={s.project ?? undefined} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
+              ))}
+            </div>
+          ) : null}
+          {grouped.projects.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              {grouped.projects.map((g) => (
+                <ProjectBranch
+                  key={`${g.nodeId}:${g.name}`}
+                  nodeParam={paramOf(g.nodeId)}
+                  nodeName={nodeLabel(g.nodeId)}
+                  group={g}
+                  activeNode={params.node}
+                  activeSession={params.session}
+                  activeProject={params.project}
+                  onNavigate={onNavigate}
+                />
+              ))}
+            </div>
+          ) : null}
+          {grouped.scratch.length > 0 ? (
+            <div className="mt-2">
+              <p className="px-2 py-1 text-xs font-semibold tracking-wide text-fg-subtle uppercase">{t('sidebar.scratch')}</p>
+              {grouped.scratch.map((s) => (
+                <SessionRow key={s.id} nodeParam={paramOf(s.node_id)} nodeName={nodeLabel(s.node_id)} id={s.id} title={s.title} status={s.status} pending={s.pending_permissions} branch={s.worktree?.branch} active={params.session === s.id} onNavigate={onNavigate} {...marksOf(s)} />
+              ))}
+            </div>
+          ) : null}
+          {grouped.projects.length === 0 && grouped.scratch.length === 0 ? (
+            <div className="px-2 py-6 text-center text-sm text-fg-subtle" data-testid="sidebar-empty">
+              <p>{t('sidebar.empty')}</p>
+              {/* 左栏没有单独的「新会话」按钮，没有项目就没有「＋」可点：直接在这里打开新建项目对话框 */}
+              {newProject ? (
+                <button type="button" onClick={newProject} className="mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium text-accent-text hover:bg-bg-hover" data-testid="sidebar-new-project">
+                  <FolderPlus className="size-4" />
+                  {t('project.new')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <p className="px-2 py-6 text-center text-sm text-fg-subtle">{t('sidebar.noNode')}</p>
+      )}
+    </nav>
   )
 }
 

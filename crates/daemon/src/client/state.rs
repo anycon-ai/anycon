@@ -1,4 +1,4 @@
-//! 客户端设备在本机上的状态：每个 hub 一套，存在 `<home>/client/<hub-host>/`（CLI 和分身设备共用同一套格式）：
+//! 客户端设备在本机上的状态：每个 hub 一套，存在 `<home>/client/<hub-host>/`（CLI 和 Bot 设备共用同一套格式）：
 //! `client.key`（Noise 私钥 hex，0600）、`device-token`（0600）、`device-token-issued-at`（token 的签发时间，Unix 毫秒）、
 //! `device-id`、`nodes.json`（已配对节点：id、名称、公钥）。
 //!
@@ -265,7 +265,7 @@ pub fn sanitize_label(s: &str, max: usize, fallback: &str) -> String {
     }
 }
 
-/// 本设备在 hub 上自报的信息；`kind` 由调用方给（CLI 是 `cli`，分身设备是 `twin`）。
+/// 本设备在 hub 上自报的信息；`kind` 由调用方给（CLI 是 `cli`，Bot 设备是 `twin`）。
 pub fn client_info(name: &str, kind: DeviceKind) -> ClientInfo {
     ClientInfo {
         name: name.to_string(),

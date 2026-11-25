@@ -1,4 +1,4 @@
-// 分身页「趋势」：最近 7 / 30 天的汇总和逐日表，只有数字，不画图。只有 `capabilities.twin_stats` 的节点才有。
+// Bot 页「趋势」：最近 7 / 30 天的汇总和逐日表，只有数字，不画图。只有 `capabilities.twin_stats` 的节点才有。
 // 数字来自节点保留的运行记录和待办经过，是事实计数，不做判断。
 import { useTranslation } from 'react-i18next'
 import type { TwinDayStats } from '@/protocol'

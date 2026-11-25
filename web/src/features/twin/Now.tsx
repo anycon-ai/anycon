@@ -1,4 +1,4 @@
-// 分身页「现在」：正在处理、在等你、排队中、上次没看的项。空的段不占标题，全空时只留一行说明。
+// Bot 页「现在」：正在处理、在等你、排队中、上次没看的项。空的段不占标题，全空时只留一行说明。
 // 排队中和上次没看的项只有 `capabilities.twin_stats` 的节点才给；旧节点不显示这两段。
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'

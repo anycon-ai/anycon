@@ -320,7 +320,7 @@ impl Judge {
         &self.clock
     }
 
-    /// 所有位置共享判断预算；记录开始后让分身重新计算状态。
+    /// 所有位置共享判断预算；记录开始后让 Bot 重新计算状态。
     pub(crate) fn subscribe_calls(&self) -> watch::Receiver<()> {
         self.calls_changed.subscribe()
     }

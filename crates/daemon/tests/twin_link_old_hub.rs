@@ -1,4 +1,4 @@
-//! 在不认识 `twin` 设备种类的旧 hub 上建立分身连接（docs/spec/daemon.md § 27.2）：假 hub 对每次认证都回 `protocol` 拒绝，
+//! 在不认识 `twin` 设备种类的旧 hub 上建立 Bot 连接（docs/spec/daemon.md § 27.2）：假 hub 对每次认证都回 `protocol` 拒绝，
 //! `twin.link` 要回 `unsupported`、`data.reason = "hub_unsupported"`，A 上不留半截的状态。
 
 use anycon_daemon::client::HubState;

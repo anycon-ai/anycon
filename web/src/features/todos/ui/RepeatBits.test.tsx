@@ -1,4 +1,4 @@
-// 周期项的界面（spec/web.md § 14.6）：详情里的规则和「重复」控件（只在节点支持时出现）、模板没有「让 agent 处理」和「交给分身」、
+// 周期项的界面（spec/web.md § 14.6）：详情里的规则和「重复」控件（只在节点支持时出现）、模板没有「让 agent 处理」和「交给 Bot」、
 // 复制出来的项的「来自周期项」、「经过」里的两种新事件、记一项里的「重复」。
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -70,14 +70,14 @@ afterEach(() => {
 const weekly = { kind: 'weekly', at: '09:00', weekday: 1, next_ms: Date.UTC(2030, 0, 7, 9, 0) } as const
 
 describe('a template in the detail', () => {
-  it('shows the rule and the next time, and offers no "let an agent do it"; the twin toggle is about each copy', async () => {
+  it('shows the rule and the next time, and offers no "let an agent do it"; the bot toggle is about each copy', async () => {
     setNode(true, true)
     await show({ id: 't', title: 'Weekly review', repeat: weekly })
     expect(screen.getByTestId('todo-repeat-chip')).toBeInTheDocument()
     expect(screen.getByTestId('todo-repeat-rule')).toHaveTextContent(/Every Monday at 09:00/)
     expect(screen.getByTestId('todo-repeat-rule')).toHaveTextContent(/next/)
     expect(screen.queryByTestId('todo-dispatch')).toBeNull()
-    expect(screen.getByTestId('todo-twin-handler')).toHaveTextContent('Each copy goes to the twin')
+    expect(screen.getByTestId('todo-twin-handler')).toHaveTextContent('Each copy goes to the bot')
     expect(screen.queryByTestId('todo-move')).toBeNull()
     expect(screen.getByTestId('todo-repeat-note')).toBeInTheDocument()
   })
@@ -134,7 +134,7 @@ describe('editing the rule', () => {
     expect(daemon.todos.get('t')?.repeat).toBeUndefined()
   })
 
-  it('a template hands each copy to the twin and back, with template wording; no toggle without twin support or for an unreviewed item', async () => {
+  it('a template hands each copy to the bot and back, with template wording; no toggle without bot support or for an unreviewed item', async () => {
     setNode(true, true)
     const user = userEvent.setup()
     await show({ id: 't', title: 'Weekly', repeat: weekly })
@@ -147,7 +147,7 @@ describe('editing the rule', () => {
     expect(daemon.todos.get('t')?.handler).toBe('me')
   })
 
-  it('no hand-over toggle on a template when the node has no twin', async () => {
+  it('no hand-over toggle on a template when the node has no bot', async () => {
     setNode(true, false)
     await show({ id: 't', title: 'Weekly', repeat: weekly })
     expect(screen.queryByTestId('todo-twin-handler')).toBeNull()
@@ -256,7 +256,7 @@ describe('the capture form', () => {
     expect(screen.getByTestId('capture-repeat-kind')).toHaveValue('none')
   })
 
-  it('an item without a rule sends no repeat, and with a rule it can still go to the twin (each copy does)', async () => {
+  it('an item without a rule sends no repeat, and with a rule it can still go to the bot (each copy does)', async () => {
     setNode(true, true)
     const user = userEvent.setup()
     render(<CaptureForm />)
@@ -264,7 +264,7 @@ describe('the capture form', () => {
     await user.click(screen.getByTestId('capture-send'))
     await waitFor(() => expect([...daemon.todos.values()]).toHaveLength(1))
     expect('repeat' in ((rpc.calls.find((c) => c.method === 'todo.add')?.params as object) ?? {}) ? (rpc.calls.find((c) => c.method === 'todo.add')?.params as { repeat?: unknown }).repeat : null).toBeNull()
-    await type('Twin rule')
+    await type('Bot rule')
     await user.selectOptions(screen.getByTestId('capture-handler'), 'twin')
     await user.selectOptions(screen.getByTestId('capture-repeat-kind'), 'daily')
     expect(screen.getByTestId('capture-handler')).not.toBeDisabled()

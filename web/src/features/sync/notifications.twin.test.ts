@@ -1,4 +1,4 @@
-// 分身新问题的前台提示与推送落点：session 的 todo_ 前缀表示清单项。
+// Bot 新问题的前台提示与推送落点：session 的 todo_ 前缀表示清单项。
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { NodeInfo } from '@/protocol'
 import i18n from '@/i18n'
@@ -34,7 +34,7 @@ it('foreground toast names the item and locates it; duplicates and answered noti
   const q = twinQuestion()
   handleNotification(A, 'twin.question', { question: q })
   const toast = useUi.getState().toasts[0]!
-  expect(toast.text).toBe('Twin has a question: Fix login')
+  expect(toast.text).toBe('Bot has a question: Fix login')
   toast.action!.run()
   expect(go).toHaveBeenCalledWith('/inbox?node=aaaaaaaa&todo=t1')
   handleNotification(A, 'twin.question', { question: q })
@@ -44,7 +44,7 @@ it('foreground toast names the item and locates it; duplicates and answered noti
 it('push and page system notifications share en/zh text, escaping and a todo landing', () => {
   const node = { id: A, param: 'aaaaaaaa', name: 'alpha' }
   const input = { category: 'twin_question' as const, node, session: { id: 'todo_t1', title: 'Fix login' } }
-  expect(pushText(i18n.getFixedT('zh'), input).title).toBe('分身有个问题：Fix login')
+  expect(pushText(i18n.getFixedT('zh'), input).title).toBe('Bot 有个问题：Fix login')
   const expected = pushText(i18n.getFixedT('en'), input)
   expect(expected.url).toBe('/inbox?node=aaaaaaaa&todo=t1')
   expect(pushText(i18n.getFixedT('en'), { ...input, node: { ...node, group: 'Work' } }).body).toContain('Work')
@@ -63,7 +63,7 @@ it('push and page system notifications share en/zh text, escaping and a todo lan
   expect(sessionTitle).not.toHaveBeenCalled()
   expect(twinInboxUrl('a&b', 'x/y?z')).toBe('/inbox?node=a%26b&todo=x%2Fy%3Fz')
 })
-it('unsupported nodes have no toast or live Twin entry', () => {
+it('unsupported nodes have no toast or live Bot entry', () => {
   useNodes.getState().patch(A, { info: { capabilities: { twin: false } } as unknown as NodeInfo })
   handleNotification(A, 'twin.question', { question: twinQuestion() })
   expect(useUi.getState().toasts).toHaveLength(0)
@@ -87,7 +87,7 @@ it('decodes exactly one prefix and keeps the todo destination without a cached t
   expect(notifyTodoId(null)).toBeNull()
   const env = { t: i18n.getFixedT('en'), nodeName: () => 'alpha', nodeIds: () => [A], sessionTitle: () => undefined }
   const result = textForNotify(env, A, { category: 'twin_question', session_id: 'todo_t1', detail: null })
-  expect(result.title).toBe('Twin has a question: a to-do')
+  expect(result.title).toBe('Bot has a question: a to-do')
   expect(result.url).toBe('/inbox?node=aaaaaaaa&todo=t1')
   expect(textForNotify(env, A, { category: 'follow_up', session_id: 'todo_t1', detail: null }).url).toBe('/todos/aaaaaaaa/t1')
 })

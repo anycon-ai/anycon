@@ -1,4 +1,4 @@
-// 分身连接（使用别的节点）的 RPC：添加是两步，先问被使用的节点 B 要短码，再把短码交给使用方 A。
+// Bot 连接（使用别的节点）的 RPC：添加是两步，先问被使用的节点 B 要短码，再把短码交给使用方 A。
 // 短码是秘密：只作为局部变量经内存从第一步的结果传到第二步的请求，不进状态、不进日志、不进错误信息。
 import type { TFunction } from 'i18next'
 import type { NodeInfo, NodeTwinLinkCodeResult, TwinLink, TwinLinksResult } from '@/protocol'

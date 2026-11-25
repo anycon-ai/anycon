@@ -1,5 +1,5 @@
-// 分身页（运行状态页）：状态优先级、暂停 / 恢复 / 现在看一眼 / 试跑、没配置的卡片、今天的数字、健康提醒、现在、趋势、运行记录，
-// 以及没有 `twin_stats` 时的降级。配置（范围、预算、判断后端、分身连接）的测试在 TwinTab.test.tsx。
+// Bot 页（运行状态页）：状态优先级、暂停 / 恢复 / 现在看一眼 / 试跑、没配置的卡片、今天的数字、健康提醒、现在、趋势、运行记录，
+// 以及没有 `twin_stats` 时的降级。配置（范围、预算、判断后端、Bot 连接）的测试在 TwinTab.test.tsx。
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -54,15 +54,15 @@ const calls = (method: string) => rpc.calls.filter((c) => c.method === method)
 const set = (over: Partial<TwinGetResult>) => daemon.values.set(A, twinValue(over))
 const paused = (over: Partial<TwinGetResult> = {}) => set({ state: 'paused', scope: { paused: true, projects: ['web'], max_sessions: 2, daily_dispatches: 10 }, ...over })
 
-describe('Twin page status head', () => {
+describe('Bot page status head', () => {
   it.each(['idle', 'running', 'paused', 'budget', 'not_configured', 'disabled'] as const)('renders daemon state %s', async (state) => {
     set({ state, enabled: state !== 'disabled', configured: state !== 'not_configured' })
     await load()
     expect(screen.getByTestId('twin-state')).toHaveTextContent(
-      { idle: 'On', running: 'On · judging', paused: 'Paused', budget: 'Budget used up', not_configured: 'Not configured', disabled: 'Twin is switched off on this machine' }[state],
+      { idle: 'On', running: 'On · judging', paused: 'Paused', budget: 'Budget used up', not_configured: 'Not configured', disabled: 'Bot is switched off on this machine' }[state],
     )
   })
-  it('says not configured even when the twin is also paused', async () => {
+  it('says not configured even when the bot is also paused', async () => {
     set({ state: 'paused', configured: false, scope: { paused: true, projects: [], max_sessions: 2, daily_dispatches: 10 } })
     await load()
     expect(screen.getByTestId('twin-state')).toHaveTextContent('Not configured')
@@ -78,8 +78,8 @@ describe('Twin page status head', () => {
       throw new Error('boom')
     }
     render(<TwinPage />)
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load Twin.')
-    expect(screen.getByTestId('twin-state')).toHaveTextContent('Could not load Twin.')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load Bot.')
+    expect(screen.getByTestId('twin-state')).toHaveTextContent('Could not load Bot.')
     rpc.handlers['twin.get'] = () => twinValue()
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(screen.getByTestId('twin-state')).toHaveTextContent('On'))
@@ -93,10 +93,10 @@ describe('Twin page status head', () => {
     act(() => useNodes.getState().patch(A, { info: info(false) }))
     expect(screen.queryByTestId('twin-card')).not.toBeInTheDocument()
   })
-  it('a node whose daemon is too old for Twin says so, without the Inbox filter note that belongs to other pages', async () => {
+  it('a node whose daemon is too old for Bot says so, without the Inbox filter note that belongs to other pages', async () => {
     useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'old-node', info: info(false) }) }, order: [A, B] }))
     render(<TwinPage node={B} />)
-    expect(screen.getByText('old-node does not support Twin yet. Update its daemon to use Twin there.')).toBeInTheDocument()
+    expect(screen.getByText('old-node does not support Bot yet. Update its daemon to use Bot there.')).toBeInTheDocument()
     expect(screen.queryByText(/node filter/)).not.toBeInTheDocument()
     expect(screen.queryByTestId('twin-card')).not.toBeInTheDocument()
   })
@@ -117,7 +117,7 @@ describe('Twin page status head', () => {
   })
 })
 
-describe('Twin page actions', () => {
+describe('Bot page actions', () => {
   it('pauses one node, or all nodes in the selected space', async () => {
     useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true) }) }, order: [A, B] }))
     render(<TwinPage />)
@@ -152,7 +152,7 @@ describe('Twin page actions', () => {
     expect(calls('twin.set')[0]?.params).toEqual({ paused: false })
     await waitFor(() => expect(screen.queryByTestId('twin-plan-dialog')).not.toBeInTheDocument())
   })
-  it('cancel leaves the twin paused', async () => {
+  it('cancel leaves the bot paused', async () => {
     paused()
     await load()
     await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
@@ -168,7 +168,7 @@ describe('Twin page actions', () => {
     await load()
     await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
     const dialog = await screen.findByTestId('twin-plan-dialog')
-    expect(await within(dialog).findByText(/Twin cannot resume yet/)).toBeInTheDocument()
+    expect(await within(dialog).findByText(/Bot cannot resume yet/)).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Do it this way' })).toBeDisabled()
     expect(within(dialog).getByRole('button', { name: 'Resume without a dry run' })).toBeEnabled()
     expect(calls('twin.wake')).toHaveLength(0)
@@ -242,7 +242,7 @@ describe('Twin page actions', () => {
     await waitFor(() => expect(doIt).toBeEnabled())
     await userEvent.click(doIt)
     await waitFor(() => expect(screen.queryByTestId('twin-plan-dialog')).not.toBeInTheDocument())
-    expect(await screen.findByText(/Twin is resumed, but waking it failed/)).toBeInTheDocument()
+    expect(await screen.findByText(/Bot is resumed, but waking it failed/)).toBeInTheDocument()
     expect(daemon.values.get(A)?.scope.paused).toBe(false)
     expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
   })
@@ -260,7 +260,7 @@ describe('Twin page actions', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('within about a minute')
     expect(calls('twin.wake')).toHaveLength(1)
   })
-  it('clears the "within a minute" note when a new run arrives or the twin is paused', async () => {
+  it('clears the "within a minute" note when a new run arrives or the bot is paused', async () => {
     await load()
     await userEvent.click(screen.getByRole('button', { name: 'Look now' }))
     expect(await screen.findByRole('status')).toHaveTextContent('within about a minute')
@@ -300,7 +300,7 @@ describe('Twin page actions', () => {
     })
     await load()
     await userEvent.click(screen.getByRole('button', { name: 'Try a dry run' }))
-    expect(await screen.findByText('Twin’s supplementary instructions to the agent')).toBeInTheDocument()
+    expect(await screen.findByText('Bot’s supplementary instructions to the agent')).toBeInTheDocument()
     expect(screen.getByText('<script>send()</script> Keep the API stable.')).toBeInTheDocument()
     expect(screen.getByText('<b>Which platform?</b>')).toBeInTheDocument()
     expect(screen.getByText('<img src=x onerror=send()>')).toBeInTheDocument()
@@ -332,7 +332,7 @@ describe('Twin page actions', () => {
   })
 })
 
-describe('Twin page when not configured', () => {
+describe('Bot page when not configured', () => {
   it('shows the head, what is missing and one set-up link, and nothing else', async () => {
     set({ configured: false, state: 'not_configured', scope: { paused: false, projects: [], max_sessions: 2, daily_dispatches: 10 } })
     setNode(true)
@@ -344,7 +344,8 @@ describe('Twin page when not configured', () => {
     expect(screen.getByText(/No usable triage backend/)).toBeInTheDocument()
     const link = screen.getByRole('link', { name: 'Set up' })
     expect(link).toHaveAttribute('href', '/n/aaaaaaaa/settings?tab=twin')
-    expect(screen.getAllByRole('link')).toHaveLength(1)
+    // 卡片里只有这一个链接（顶栏里的 Bot / 规则标签不算）
+    expect(within(screen.getByTestId('twin-card')).getAllByRole('link')).toHaveLength(1)
     expect(screen.queryByTestId('twin-today')).not.toBeInTheDocument()
     expect(screen.queryByTestId('twin-now')).not.toBeInTheDocument()
     expect(screen.queryByTestId('twin-trend')).not.toBeInTheDocument()
@@ -362,7 +363,7 @@ describe('Twin page when not configured', () => {
   })
 })
 
-describe('Twin page overview', () => {
+describe('Bot page overview', () => {
   it('summarises the configuration on one line with a settings link', async () => {
     set({ scope: { paused: false, projects: ['web', 'api'], agent: 'mock', mode: 'auto', max_sessions: 3, daily_dispatches: 12 } })
     await load()
@@ -480,7 +481,7 @@ describe('Twin page overview', () => {
         expect(within(summary).getByTestId('twin-trend-dropped')).toHaveTextContent('2')
         expect(within(summary).getByTestId('twin-trend-turnaround')).toHaveTextContent('3m 0s')
         expect(within(summary).getByTestId('twin-trend-cost')).toHaveTextContent('$0.30')
-        const table = screen.getByRole('table', { name: 'Twin activity per day, newest first' })
+        const table = screen.getByRole('table', { name: 'Bot activity per day, newest first' })
         expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toContain('Date')
         const rows = within(table).getAllByTestId('twin-trend-row')
         expect(rows).toHaveLength(7)
@@ -585,7 +586,7 @@ describe('Twin page overview', () => {
   })
 })
 
-describe('Twin page health alert', () => {
+describe('Bot page health alert', () => {
   it('names the error when the last two real runs failed', async () => {
     daemon.runs = [
       twinRun({ id: 'r3', started_ms: 3000, result: 'failed', error: { code: 'auth' } }),
@@ -595,7 +596,7 @@ describe('Twin page health alert', () => {
     await load()
     const alert = await screen.findByTestId('twin-health')
     expect(alert).toHaveTextContent('last 2 wakes all failed. The backend rejected its API key.')
-    expect(within(alert).getByRole('link', { name: 'Open Twin settings' })).toHaveAttribute('href', '/n/aaaaaaaa/settings?tab=twin')
+    expect(within(alert).getByRole('link', { name: 'Open Bot settings' })).toHaveAttribute('href', '/n/aaaaaaaa/settings?tab=twin')
   })
   it.each([
     ['a single failure', [twinRun({ id: 'r2', started_ms: 2000, result: 'failed' }), twinRun({ id: 'r1', started_ms: 1000 })]],
@@ -609,7 +610,7 @@ describe('Twin page health alert', () => {
   })
 })
 
-describe('Twin page run history', () => {
+describe('Bot page run history', () => {
   it('groups consecutive idle runs and expands individual decisions', async () => {
     daemon.runs = [
       twinRun({ id: 'r3', started_ms: 3000, result: 'idle', decisions: [], items: [] }),

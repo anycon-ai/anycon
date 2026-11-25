@@ -1,6 +1,6 @@
-//! 分身连接在被使用的节点（B）上的建立和断开（docs/spec/daemon.md § 27.2）：daemon ↔ 真实 hub（进程内）↔ 假的分身设备。
+//! Bot 连接在被使用的节点（B）上的建立和断开（docs/spec/daemon.md § 27.2）：daemon ↔ 真实 hub（进程内）↔ 假的 Bot 设备。
 //!
-//! `node.twin_link_code` 开一次只接受分身设备的短码配对；普通短码不接受 `twin` 种类；`[twin] accept_links` 关掉时断开已有的分身设备、
+//! `node.twin_link_code` 开一次只接受 Bot 设备的短码配对；普通短码不接受 `twin` 种类；`[twin] accept_links` 关掉时断开已有的 Bot 设备、
 //! 拒绝新的；建立和吊销时发安全事件和 `notify { security }`、记审计；配对完成之后设备种类落盘，白名单和推送过滤在真实的加密通道上生效。
 
 use std::sync::Arc;
@@ -93,7 +93,7 @@ impl World {
         serde_json::from_value(raw).unwrap()
     }
 
-    /// 以分身设备的身份和这个节点配对（用 `node.twin_link_code` 的短码），再做 IK 握手。
+    /// 以 Bot 设备的身份和这个节点配对（用 `node.twin_link_code` 的短码），再做 IK 握手。
     async fn pair_twin(&self, code: &str, name: &str) -> FakeWeb {
         let mut twin = FakeWeb::connect_kind(
             &self.hub.url(),
@@ -134,7 +134,7 @@ async fn a_twin_link_code_pairs_a_twin_device_whose_kind_is_stored_and_who_is_an
         "{code:?}"
     );
 
-    // 分身设备以 `kind = twin` 配对：种类和公钥一起落盘（库、peers.json、设备列表）
+    // Bot 设备以 `kind = twin` 配对：种类和公钥一起落盘（库、peers.json、设备列表）
     let mut twin = w.pair_twin(&code.code, "A's twin").await;
     let id = twin.device_id.clone();
     assert_eq!(w.td.ctx.peers.record(&id).unwrap().kind, DeviceKind::Twin);
@@ -174,7 +174,7 @@ async fn a_twin_link_code_pairs_a_twin_device_whose_kind_is_stored_and_who_is_an
         assert_eq!(e.data.as_ref().and_then(|d| d.reason.as_deref()), Some("twin_device"), "{method}");
     }
     assert_eq!(w.td.ctx.peers.record(&id).unwrap().kind, DeviceKind::Twin, "nothing it tried changed anything");
-    // 节点上有别的事发生（人开了会话，其他设备收得到 session.changed）：分身设备什么都收不到
+    // 节点上有别的事发生（人开了会话，其他设备收得到 session.changed）：Bot 设备什么都收不到
     let s: SessionSummary = web
         .call(methods::SESSION_CREATE, json!({ "agent": "fake", "prompt": "hello", "message_id": "w1" }))
         .await
@@ -361,7 +361,7 @@ async fn twin_link_codes_and_pairing_are_for_people_only() {
         let e = mcp.call::<Value>(&w.td, method, json!({ "code": "x", "node_id": "y" })).await.unwrap_err();
         assert_eq!(e.stable_code(), Some(ErrorCode::Forbidden), "{method}");
     }
-    // 人调用：A 侧的处理在 tests/twin_links.rs 里；这里只看这个节点自己没有分身连接时的回答
+    // 人调用：A 侧的处理在 tests/twin_links.rs 里；这里只看这个节点自己没有 Bot 连接时的回答
     let mut human = w.td.local_cli_client();
     let e = human.call::<Value>(&w.td, methods::TWIN_LINK, json!({ "code": "x", "node_id": "y" })).await.unwrap_err();
     assert_eq!(e.stable_code(), Some(ErrorCode::Invalid), "a malformed code is a parameter error");

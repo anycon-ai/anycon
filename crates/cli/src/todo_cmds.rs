@@ -296,8 +296,8 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
             (TodoSourceKind::Agent, true) => app.out.yellow("agent (unreviewed)"),
             (TodoSourceKind::Agent, false) => "agent".to_string(),
             (TodoSourceKind::Repeat, _) => "repeat".to_string(),
-            // 另一个节点的分身经分身连接记的项
-            (TodoSourceKind::Twin, _) if t.source.device_id.is_some() => "twin device".to_string(),
+            // 另一个节点的 Bot 经 Bot 连接记的项
+            (TodoSourceKind::Twin, _) if t.source.device_id.is_some() => "bot device".to_string(),
             (TodoSourceKind::Twin | TodoSourceKind::Unknown, true) => app.out.yellow("other (unreviewed)"),
             (TodoSourceKind::Twin | TodoSourceKind::Unknown, false) => "other".to_string(),
             _ => String::new(),
@@ -528,7 +528,7 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         (TodoSourceKind::Device, Some(d)) => format!("device {}", sanitize_label(d, 40, "?")),
         (TodoSourceKind::Local, _) => "this machine".to_string(),
         (TodoSourceKind::Agent, _) => "an agent".to_string(),
-        (TodoSourceKind::Twin, _) => "the twin".to_string(),
+        (TodoSourceKind::Twin, _) => "the bot".to_string(),
         (TodoSourceKind::Repeat, _) => "a repeating item".to_string(),
         (TodoSourceKind::Device, None) => "a device".to_string(),
         (TodoSourceKind::Unknown, _) => "someone".to_string(),
@@ -574,10 +574,10 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         }
         TodoEventData::TakenOver { by: who, .. } => (format!("taken over by {}", by(who)), vec![]),
         TodoEventData::TwinDecision { reason, .. } => {
-            ("twin decision".into(), visible(reason).lines().map(str::to_string).collect())
+            ("bot decision".into(), visible(reason).lines().map(str::to_string).collect())
         }
         TodoEventData::TwinQuestion { question_id } => {
-            (format!("twin question {}", sanitize_label(question_id, 80, "?")), vec![])
+            (format!("bot question {}", sanitize_label(question_id, 80, "?")), vec![])
         }
         TodoEventData::RepeatCreated { todo_id, at_ms } => {
             (format!("repeated: created {} for {}Z", short(todo_id), &fmt_utc(*at_ms)[..16]), vec![])

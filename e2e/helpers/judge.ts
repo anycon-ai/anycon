@@ -1,5 +1,5 @@
 /**
- * 分身的判断后端替身：一个最小的 Anthropic Messages API 服务（docs/spec/daemon.md § 25.1：`POST /v1/messages`，
+ * Bot 的判断后端替身：一个最小的 Anthropic Messages API 服务（docs/spec/daemon.md § 25.1：`POST /v1/messages`，
  * `x-api-key`、`anthropic-version`，请求体 `{ model, max_tokens, system, messages: [{ role: 'user', content }] }`，
  * 回应取 `content[]` 里第一个 `type = text` 的文字）。Node `http`，没有额外依赖，在用例自己的进程里起、监听 127.0.0.1 的随机端口。
  *
@@ -64,7 +64,7 @@ export interface FakeJudge {
   stop: () => Promise<void>
 }
 
-/** 请求里是不是分身的分拣（系统提示的开头，`crates/daemon/src/twin.rs` 的 `SYSTEM`）。 */
+/** 请求里是不是 Bot 的分拣（系统提示的开头，`crates/daemon/src/twin.rs` 的 `SYSTEM`）。 */
 export function isTriage(request: JudgeRequest): boolean {
   return request.system.startsWith("You are the node's twin.")
 }
@@ -97,7 +97,7 @@ export function itemsOf(request: JudgeRequest): TwinItem[] {
   return items
 }
 
-/** 节点表（§ 27.4：每个节点一行 JSON，在同一个随机边界里）；没有分身连接时是 `undefined`。 */
+/** 节点表（§ 27.4：每个节点一行 JSON，在同一个随机边界里）；没有 Bot 连接时是 `undefined`。 */
 export function nodeRowsOf(request: JudgeRequest): Record<string, unknown>[] | undefined {
   const block = dataBlocks(request).find(
     (b) => b.text.startsWith('{') && !b.text.startsWith('id: '),

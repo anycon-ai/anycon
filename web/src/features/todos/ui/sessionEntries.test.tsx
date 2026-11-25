@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeInfo } from '@/protocol'
 import { nodeEntry } from '@/test/factories'
 import { useNodes } from '@/stores/nodes'
+import { resetViewport, setViewport } from '@/test/viewport'
 import { useCapture } from '../capture'
 import { MessageTodoMenu } from './MessageTodoMenu'
 import { SelectionCapture } from './SelectionCapture'
@@ -20,6 +21,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   go('/')
+  resetViewport()
   vi.restoreAllMocks()
 })
 
@@ -120,7 +122,14 @@ describe('selection button placement (nits)', () => {
 
 describe('message menu on touch devices (nits)', () => {
   it('is not hidden behind a hover: it is shown whenever the device cannot hover', () => {
+    setViewport('tablet')
     render(<MessageTodoMenu text="x" seq={1} />)
     expect(screen.getByTestId('message-menu').className).toMatch(/\[@media\(hover:none\)\]:opacity-100/)
+  })
+
+  it('is not on phones, where it would sit on top of the message; selecting text still offers the entry', () => {
+    setViewport('phone')
+    render(<MessageTodoMenu text="x" seq={1} />)
+    expect(screen.queryByTestId('message-menu')).toBeNull()
   })
 })

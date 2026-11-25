@@ -1,4 +1,4 @@
-// 分身页的状态头：节点名、状态行和操作。配置（范围、预算、判断后端、分身连接）在节点设置 →「分身」。
+// Bot 页的状态头：节点名、状态行和操作。配置（范围、预算、判断后端、Bot 连接）在节点设置 →「Bot」。
 // 恢复要先试跑再确认：只有试跑结果是 `done` 或 `idle` 才允许「就这么办」。
 import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'

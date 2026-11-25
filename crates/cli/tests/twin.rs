@@ -1,4 +1,4 @@
-//! CLI 分身命令和 agent 环境护栏；socket、判断后端和 adapter 都来自临时测试台。
+//! CLI Bot 命令和 agent 环境护栏；socket、判断后端和 adapter 都来自临时测试台。
 mod common;
 
 use anycon_daemon::judge::JudgeReply;
@@ -135,7 +135,7 @@ async fn all_writes_refuse_agent_environment_before_connecting() {
     }
 }
 
-/// `--requester` 用设备 id、唯一的 id 前缀或名称选一台分身设备；`link-code` 要节点连着 hub。
+/// `--requester` 用设备 id、唯一的 id 前缀或名称选一台 Bot 设备；`link-code` 要节点连着 hub。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn requester_picks_a_twin_device_and_link_code_needs_a_hub() {
     let td = TestDaemon::start_with(&[], true).await;
@@ -159,13 +159,13 @@ async fn requester_picks_a_twin_device_and_link_code_needs_a_hub() {
         assert_eq!(r.code, 0, "{key}: {}", r.stderr);
         assert_eq!(r.json()["scope"]["projects"], json!(["p"]), "{key}");
     }
-    // 本机分身的范围没动
+    // 本机 Bot 的范围没动
     let own = anycon(&td.paths.home, &["twin", "status", "--json"], None, &[]).await;
     assert_eq!(own.json()["scope"]["projects"], json!([]));
-    // 对不上任何分身设备：用法错误，不发请求
+    // 对不上任何 Bot 设备：用法错误，不发请求
     let none = anycon(&td.paths.home, &["twin", "status", "--requester", "nobody"], None, &[]).await;
     assert_eq!(none.code, 2, "{}", none.stderr);
-    assert!(none.stderr.contains("no twin device matches"), "{}", none.stderr);
+    assert!(none.stderr.contains("no bot device matches"), "{}", none.stderr);
     // 节点没连上 hub：短码没处登记
     let code = anycon(&td.paths.home, &["twin", "link-code"], None, &[]).await;
     assert_eq!(code.code, 3, "{}", code.stderr);

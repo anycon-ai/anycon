@@ -426,7 +426,7 @@
       "cleanupForce": "Discard the changes in {{count}} uncommitted file(s)"
     },
     "handler": { "me": "Me", "agent": "Agent", "twin": "Bot" },
-    "handlerAll": "Everyone",
+    "handlerAll": "All handlers",
     "handlerLabel": "Who does it",
     "filterHandler": "Filter by who is handling it",
     "activity": { "working": "Agent is working", "waiting": "Waiting for your decision", "review": "Ready to review" },
@@ -501,7 +501,7 @@
     "filterProject": "Filter by project",
     "filterSource": "Filter by source",
     "allProjects": "All projects",
-    "sourceAll": "All",
+    "sourceAll": "All sources",
     "sourceMine": "Added by me",
     "sourceAgent": "Added by agents",
     "messageActions": "Message actions",

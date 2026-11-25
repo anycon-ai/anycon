@@ -35,7 +35,7 @@ export function TwinPage({ node, run }: { node?: string; run?: string }) {
     <div className="flex min-h-0 flex-1 flex-col" data-testid="twin-page">
       <PageHeader root spaceSwitcher tabs={<BotTabs current="twin" />} showNodeStatus={false} />
       <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-auto p-4">
-        {ids.length > 1 ? <TwinStatusBar /> : null}
+        {ids.length > 1 ? <TwinStatusBar className="rounded-lg border border-border bg-surface px-3 py-2" /> : null}
         {!ids.length ? <p>{target && byId[target] ? t('twin.nodeUnsupported', { node: byId[target].name }) : t('twin.noSupport')}</p> : null}
         {ids.length && target && !selectedIds.includes(target) ? <p>{t('todos.outsideFilter', { node: byId[target]?.name ?? target })}</p> : null}
         {ids.map((id) => (

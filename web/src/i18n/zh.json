@@ -425,7 +425,7 @@
       "cleanupForce": "丢弃 {{count}} 个未提交文件里的改动"
     },
     "handler": { "me": "我", "agent": "agent", "twin": "Bot" },
-    "handlerAll": "不限",
+    "handlerAll": "全部处理人",
     "handlerLabel": "谁来做",
     "filterHandler": "按谁在处理过滤",
     "activity": { "working": "agent 在处理", "waiting": "等你决定", "review": "待验收" },
@@ -500,7 +500,7 @@
     "filterProject": "按项目过滤",
     "filterSource": "按来源过滤",
     "allProjects": "全部项目",
-    "sourceAll": "全部",
+    "sourceAll": "全部来源",
     "sourceMine": "我记的",
     "sourceAgent": "agent 记的",
     "messageActions": "消息操作",

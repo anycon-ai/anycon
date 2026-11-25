@@ -266,6 +266,7 @@ test.describe.serial('Bot', () => {
       model: 'e2e-judge',
       apiKey: JUDGE_KEY,
       anthropicVersion: '2023-06-01',
+      stream: true,
     })
     expect(itemsOf(request!).map((i) => i.id)).toEqual([dry!.id])
     expect(dataBlocks(request!)[0]!.marker).toMatch(/^ANYCON_TWIN_[0-9a-f]{32}$/)

@@ -10,6 +10,7 @@ import { describeError } from '@/lib/errors'
 import { useNodes } from '@/stores/nodes'
 import { useTodos } from '@/features/todos/store'
 import { Button } from '@/ui/Button'
+import { cn } from '@/ui/cn'
 import { setTwin } from './service'
 import { groupRuns, useTwin, useTwinNodeIds } from './store'
 import { usePeerName } from './peer'
@@ -128,8 +129,11 @@ export function useTwinSummary(): { text: string; offline: boolean } | null {
   const counts = t('twin.summary', { working: values.reduce((n, v) => n + v.working.length, 0), waiting: values.reduce((n, v) => n + v.waiting.length, 0) })
   return { text: `${counts} · ${state}`, offline: ids.some((id) => nodes[id]?.conn !== 'ready') }
 }
-/** 清单页和（多个节点时）Bot 页顶上的状态条：状态、今天的用量和「全部暂停」。 */
-export function TwinStatusBar() {
+/**
+ * 清单页和（多个节点时）Bot 页顶上的状态条：一行写状态、今天的用量和「一起暂停」，窄了才折行。
+ * 都已经暂停时没有「一起暂停」（按了什么也不变）；恢复要先试跑，在 Bot 页的卡片上做。外框由调用方给。
+ */
+export function TwinStatusBar({ className }: { className?: string }) {
   const { t } = useTranslation()
   const ids = useTwinNodeIds()
   const twins = useTwin((s) => s.nodes)
@@ -139,6 +143,7 @@ export function TwinStatusBar() {
   const [error, setError] = useState('')
   if (!summary) return null
   const values = ids.flatMap((id) => (twins[id]?.value ? [twins[id]!.value!] : []))
+  const allPaused = values.length > 0 && values.every((v) => v.scope.paused)
   const pause = async (): Promise<void> => {
     setBusy(true)
     setError('')
@@ -148,22 +153,28 @@ export function TwinStatusBar() {
     setBusy(false)
   }
   return (
-    <div className="space-y-1 border-t border-border p-3 text-xs" data-testid="twin-status-bar">
-      <Link to="/twin" className="block text-accent-text">
+    <div className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-muted', className)} data-testid="twin-status-bar">
+      <Link to="/twin" className="font-medium text-accent-text hover:underline">
         {t('twin.title')} · {summary.text}
       </Link>
-      {summary.offline ? <p>{t('twin.offline')}</p> : null}
-      <p>
+      <span>
         {t('twin.usage', {
           dispatches: values.reduce((n, v) => n + v.today.dispatches, 0),
           budget: values.reduce((n, v) => n + v.scope.daily_dispatches, 0),
           judges: values.reduce((n, v) => n + v.today.judge_calls, 0),
         })}
-      </p>
-      <Button size="sm" variant="primary" disabled={busy || !ids.some((id) => nodes[id]?.conn === 'ready')} onClick={() => void pause()}>
-        {t('twin.pauseAll')}
-      </Button>
-      {error ? <p role="alert">{error}</p> : null}
+      </span>
+      {summary.offline ? <span>{t('twin.offline')}</span> : null}
+      {allPaused ? null : (
+        <Button size="sm" variant="outline" className="ml-auto" disabled={busy || !ids.some((id) => nodes[id]?.conn === 'ready')} onClick={() => void pause()}>
+          {t('twin.pauseAll')}
+        </Button>
+      )}
+      {error ? (
+        <p role="alert" className="basis-full text-danger">
+          {error}
+        </p>
+      ) : null}
     </div>
   )
 }

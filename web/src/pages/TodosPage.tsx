@@ -156,9 +156,16 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
       crumbs={[{ label: t('todos.title') }]}
       showNodeStatus={false}
       actions={
-        <Button size="sm" onClick={() => useCapture.getState().openCapture()} icon={<Plus className="size-4" aria-hidden />} data-testid="todos-add">
-          {t('todos.addTitle')}
-        </Button>
+        <div className="flex items-center gap-1">
+          {supporting.length > 0 ? (
+            <Button size="sm" variant={multi ? 'primary' : 'ghost'} aria-pressed={multi} onClick={() => { setMulti((m) => !m); setChecked(new Set()) }} data-testid="todos-multi">
+              {t('todos.select_')}
+            </Button>
+          ) : null}
+          <Button size="sm" onClick={() => useCapture.getState().openCapture()} icon={<Plus className="size-4" aria-hidden />} data-testid="todos-add">
+            {t('todos.addTitle')}
+          </Button>
+        </div>
       }
     />
   )
@@ -224,8 +231,9 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
           {t('todos.cached', { nodes: cachedNodes.join(', ') })}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2" data-testid="todos-filters">
-        <Select aria-label={t('todos.filterProject')} value={filters.project ?? ''} onChange={(e) => setFilters((f) => ({ ...f, project: e.target.value || null }))} className="w-auto max-w-44" data-testid="todos-filter-project">
+      {/* 三个筛选一行平分。`Select` 自带 `w-full`（`cn` 不合并类，写 `w-auto` 盖不住），宽度交给 `flex-1 basis-0` */}
+      <div className="flex items-center gap-2" data-testid="todos-filters">
+        <Select aria-label={t('todos.filterProject')} value={filters.project ?? ''} onChange={(e) => setFilters((f) => ({ ...f, project: e.target.value || null }))} className="min-w-0 flex-1 basis-0" data-testid="todos-filter-project">
           <option value="">{t('todos.allProjects')}</option>
           {projects.map((p) => (
             <option key={p} value={p}>
@@ -233,20 +241,17 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
             </option>
           ))}
         </Select>
-        <Select aria-label={t('todos.filterSource')} value={filters.source} onChange={(e) => setFilters((f) => ({ ...f, source: e.target.value as SourceFilter }))} className="w-auto" data-testid="todos-filter-source">
+        <Select aria-label={t('todos.filterSource')} value={filters.source} onChange={(e) => setFilters((f) => ({ ...f, source: e.target.value as SourceFilter }))} className="min-w-0 flex-1 basis-0" data-testid="todos-filter-source">
           <option value="all">{t('todos.sourceAll')}</option>
           <option value="mine">{t('todos.sourceMine')}</option>
           <option value="agent">{t('todos.sourceAgent')}</option>
         </Select>
-        <Select aria-label={t('todos.filterHandler')} value={filters.handler ?? 'all'} onChange={(e) => setFilters((f) => ({ ...f, handler: e.target.value as HandlerFilter }))} className="w-auto" data-testid="todos-filter-handler">
+        <Select aria-label={t('todos.filterHandler')} value={filters.handler ?? 'all'} onChange={(e) => setFilters((f) => ({ ...f, handler: e.target.value as HandlerFilter }))} className="min-w-0 flex-1 basis-0" data-testid="todos-filter-handler">
           <option value="all">{t('todos.handlerAll')}</option>
           <option value="me">{t('todos.handler.me')}</option>
           {twinAvailable ? <option value="twin">{t('todos.handler.twin')}</option> : null}
           <option value="agent">{t('todos.handler.agent')}</option>
         </Select>
-        <Button size="sm" variant={multi ? 'primary' : 'outline'} aria-pressed={multi} onClick={() => { setMulti((m) => !m); setChecked(new Set()) }} data-testid="todos-multi">
-          {t('todos.select_')}
-        </Button>
       </div>
       {multi ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-subtle px-3 py-2 text-sm" role="toolbar" aria-label={t('todos.bulk')} data-testid="todos-bulk">
@@ -337,9 +342,9 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="todos-page" data-mode={wide ? 'split' : 'single'}>
       {header}
-      <TwinStatusBar />
+      <TwinStatusBar className="border-b border-border px-4 py-2" />
       <div className="flex min-h-0 flex-1">
-        <div className={cn('scroll-thin min-h-0 min-w-0 flex-1 overflow-y-auto', wide && 'max-w-[26rem] shrink-0 border-r border-border xl:w-[380px] xl:flex-none')} data-testid="todos-list">
+        <div className={cn('scroll-thin min-h-0 min-w-0 flex-1 overflow-y-auto', wide && 'max-w-[26rem] shrink-0 border-r border-border xl:w-[26rem] xl:flex-none')} data-testid="todos-list">
           {list}
         </div>
         {wide ? (

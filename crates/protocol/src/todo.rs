@@ -108,12 +108,42 @@ pub enum TodoRepeatKind {
     Weekdays,
     /// 每周的 `weekday`。
     Weekly,
+    /// 在 `days` 指定的日子里，从 `at` 起每隔 `every_min` 分钟一次、直到 `until`（含）。单独成一种而不是给其它三种加字段：
+    /// 旧客户端读到它显示「重复规则看不懂」，而不是把它当成一天一次的规则、显示一个错误的时间。
+    Interval,
     /// 这个版本不认识的重复方式；daemon 自己不产生它，客户端按「重复规则看不懂」显示，不能因此解析失败。
     #[serde(other)]
     Unknown,
 }
 
 impl TodoRepeatKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekdays => "weekdays",
+            Self::Weekly => "weekly",
+            Self::Interval => "interval",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// `kind = interval` 的规则在哪些日子里生效（`TodoRepeat.days`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoRepeatDays {
+    /// 每天。
+    Daily,
+    /// 周一到周五。
+    Weekdays,
+    /// 每周的 `weekday`。
+    Weekly,
+    /// 这个版本不认识的日子；daemon 自己不产生它，请求里带了会被拒绝。
+    #[serde(other)]
+    Unknown,
+}
+
+impl TodoRepeatDays {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Daily => "daily",
@@ -130,9 +160,22 @@ pub struct TodoRepeat {
     pub kind: TodoRepeatKind,
     /// `HH:MM`，`00:00`–`23:59`，本地时间。
     pub at: String,
-    /// 1–7，周一 = 1（ISO）；`kind = weekly` 时必填，别的种类不能带。
+    /// 1–7，周一 = 1（ISO）；`kind = weekly`、或 `kind = interval` 且 `days = weekly` 时必填，别的情况不能带。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weekday: Option<u8>,
+    /// `kind = interval` 时必填（别的种类不能带）：在哪些日子里生效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<TodoRepeatDays>,
+    /// `kind = interval` 时必填（别的种类不能带）：两次之间隔多少分钟，15–720。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_min: Option<u32>,
+    /// `kind = interval` 时必填（别的种类不能带）：当天最后一个时间点不晚于它，`HH:MM`，同一天内严格晚于 `at`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Bot 对这个模板复制出来的项执行 `done` 时，daemon 直接把那一项关闭（docs/spec/daemon.md § 26.9）；缺省 false，false 时不出现。
+    /// 任何一种规则都能带。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_close: bool,
     /// 下一次复制的时间（节点此刻算出来的，不存；请求里带了也忽略）。模板已关闭时没有。算在 daemon 上，是因为规则按节点的时区。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_ms: Option<TimestampMs>,
@@ -479,9 +522,12 @@ pub enum TodoEventData {
         by: TodoActor,
     },
     /// 周期项（模板）到点复制出了一项；`at_ms` 是这一次规则上的时间。
+    /// `manual = true`：人用 `todo.repeat_now` 手动执行的一次，`at_ms` 是执行的时刻。
     RepeatCreated {
         todo_id: String,
         at_ms: TimestampMs,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        manual: bool,
     },
     /// 周期项到点了，但上一次复制出来的还没关闭（或清单已满），这一次没复制。
     RepeatSkipped {
@@ -782,7 +828,16 @@ mod repeat_tests {
 
     #[test]
     fn repeat_roundtrips_and_future_kinds_and_events_are_safe() {
-        let r = TodoRepeat { kind: TodoRepeatKind::Weekly, at: "09:30".into(), weekday: Some(1), next_ms: None };
+        let r = TodoRepeat {
+            kind: TodoRepeatKind::Weekly,
+            at: "09:30".into(),
+            weekday: Some(1),
+            days: None,
+            every_min: None,
+            until: None,
+            auto_close: false,
+            next_ms: None,
+        };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v, json!({"kind":"weekly","at":"09:30","weekday":1}));
         assert_eq!(serde_json::from_value::<TodoRepeat>(v).unwrap(), r);
@@ -790,11 +845,33 @@ mod repeat_tests {
             kind: TodoRepeatKind::Daily,
             at: "00:00".into(),
             weekday: None,
+            days: None,
+            every_min: None,
+            until: None,
+            auto_close: false,
             next_ms: None,
         });
         assert!(daily.unwrap().get("weekday").is_none());
         let future: TodoRepeat = serde_json::from_value(json!({"kind":"monthly","at":"09:00"})).unwrap();
         assert_eq!(future.kind, TodoRepeatKind::Unknown);
+    }
+
+    #[test]
+    fn interval_rule_and_manual_event_keep_their_wire_shape() {
+        let v =
+            json!({"kind":"interval","at":"09:00","days":"weekdays","every_min":120,"until":"18:00","auto_close":true});
+        let r: TodoRepeat = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(
+            (r.kind, r.days, r.every_min, r.until.as_deref(), r.auto_close),
+            (TodoRepeatKind::Interval, Some(TodoRepeatDays::Weekdays), Some(120), Some("18:00"), true)
+        );
+        assert_eq!(serde_json::to_value(&r).unwrap(), v);
+        let future: TodoRepeat =
+            serde_json::from_value(json!({"kind":"interval","at":"09:00","days":"monthly"})).unwrap();
+        assert_eq!(future.days, Some(TodoRepeatDays::Unknown));
+        let created = json!({"kind":"repeat_created","todo_id":"n","at_ms":5,"manual":true});
+        let ev: TodoEventData = serde_json::from_value(created.clone()).unwrap();
+        assert_eq!(serde_json::to_value(ev).unwrap(), created);
     }
 
     #[test]

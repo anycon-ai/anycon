@@ -576,7 +576,8 @@ fn main() {
         ),
     ));
     for (name, data) in [
-        ("todo_repeat_created", TodoEventData::RepeatCreated { todo_id: "n".into(), at_ms: 3 }),
+        ("todo_repeat_created", TodoEventData::RepeatCreated { todo_id: "n".into(), at_ms: 3, manual: false }),
+        ("todo_repeat_created_manual", TodoEventData::RepeatCreated { todo_id: "n".into(), at_ms: 3, manual: true }),
         ("todo_repeat_skipped", TodoEventData::RepeatSkipped { at_ms: 3 }),
         (
             "todo_remote_dispatched",

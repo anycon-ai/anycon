@@ -53,6 +53,9 @@ pub struct RpcErrorData {
     pub used: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// 指向另一项清单项：`todo.repeat_now` 被拒（`reason = "previous_open"`）时，还没关闭的那一份复制出来的项的 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -79,6 +82,7 @@ impl RpcError {
                 cap: None,
                 used: None,
                 limit: None,
+                todo_id: None,
             })),
         }
     }

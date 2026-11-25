@@ -579,6 +579,10 @@ impl Rpc {
                 let p: TodoUpdateParams = params(p)?;
                 ok(crate::todos::update(c, caller, p).await?)
             }
+            methods::TODO_REPEAT_NOW => {
+                let p: TodoIdParams = params(p)?;
+                ok(crate::todo_repeat::repeat_now(c, caller, p).await?)
+            }
             methods::TODO_DELETE => {
                 let p: TodoDeleteParams = params(p)?;
                 crate::todos::delete(c, caller, p).await?;
@@ -827,6 +831,7 @@ impl Rpc {
                 rule_extract: true,
                 twin: true,
                 todo_repeat: true,
+                todo_repeat_interval: true,
                 twin_stats: true,
             },
             started_at_ms: c.started_at_ms,

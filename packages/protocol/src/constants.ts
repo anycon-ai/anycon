@@ -157,6 +157,8 @@ export const METHODS = {
   TODO_DISPATCH_PREVIEW: 'todo.dispatch_preview',
   /** params = TodoDispatchParams → TodoDispatchResult */
   TODO_DISPATCH: 'todo.dispatch',
+  /** params = TodoIdParams → Todo（新复制出的一项）；现在执行一次周期项，不动它的下一次时间；只由人调用 */
+  TODO_REPEAT_NOW: 'todo.repeat_now',
   /** params = TodoHistoryParams → TodoHistoryResult */
   TODO_HISTORY: 'todo.history',
   /** D→C notification，params = TodoEventNotice */

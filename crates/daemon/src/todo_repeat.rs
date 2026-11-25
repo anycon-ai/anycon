@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anycon_protocol::{
-    RpcError, Todo, TodoActor, TodoEventData, TodoHandler, TodoRepeat, TodoRepeatKind, TodoSource, TodoSourceKind,
-    TodoState, TwinTrigger,
+    RpcError, Todo, TodoActor, TodoEventData, TodoHandler, TodoRepeat, TodoRepeatDays, TodoRepeatKind, TodoSource,
+    TodoSourceKind, TodoState, TwinTrigger,
 };
 use serde_json::json;
 use sqlx::{Row, SqliteConnection};
@@ -151,12 +151,36 @@ pub fn parse_at(at: &str) -> Option<(i64, i64)> {
 
 fn on_day(r: &TodoRepeat, days: i64) -> bool {
     let iso = iso_weekday(days);
+    let weekday = r.weekday.is_some_and(|w| i64::from(w) == iso);
     match r.kind {
         TodoRepeatKind::Daily => true,
         TodoRepeatKind::Weekdays => iso <= 5,
-        TodoRepeatKind::Weekly => r.weekday.is_some_and(|w| i64::from(w) == iso),
+        TodoRepeatKind::Weekly => weekday,
+        TodoRepeatKind::Interval => match r.days {
+            Some(TodoRepeatDays::Daily) => true,
+            Some(TodoRepeatDays::Weekdays) => iso <= 5,
+            Some(TodoRepeatDays::Weekly) => weekday,
+            Some(TodoRepeatDays::Unknown) | None => false,
+        },
         TodoRepeatKind::Unknown => false,
     }
+}
+
+/// 规则在生效的那一天里的各个时间点（当地的时和分），按先后。`interval` 从 `at` 起每隔 `every_min` 分钟一个、直到 `until`（含）；
+/// 别的种类只有 `at` 一个。规则不完整（不该出现：入口已校验）时没有时间点。
+fn day_slots(r: &TodoRepeat) -> Vec<(i64, i64)> {
+    let Some((h, m)) = parse_at(&r.at) else { return Vec::new() };
+    if r.kind != TodoRepeatKind::Interval {
+        return vec![(h, m)];
+    }
+    let (Some(every), Some((uh, um))) = (r.every_min, r.until.as_deref().and_then(parse_at)) else {
+        return Vec::new();
+    };
+    if every == 0 {
+        return Vec::new();
+    }
+    let (start, end) = (h * 60 + m, uh * 60 + um);
+    (0..).map(|i| start + i * i64::from(every)).take_while(|&t| t <= end).map(|t| (t / 60, t % 60)).collect()
 }
 
 fn local_day(ms: u64) -> Option<i64> {
@@ -166,16 +190,22 @@ fn local_day(ms: u64) -> Option<i64> {
 
 /// 规则上不晚于 `now_ms` 的最近一个时间（毫秒）。
 pub fn slot_at_or_before(r: &TodoRepeat, now_ms: u64) -> Option<u64> {
-    let (h, m) = parse_at(&r.at)?;
+    let slots = day_slots(r);
     let today = local_day(now_ms)?;
-    (0..=8).map(|k| today - k).filter(|&d| on_day(r, d)).find_map(|d| instant_of(d, h, m).filter(|&t| t <= now_ms))
+    (0..=8)
+        .map(|k| today - k)
+        .filter(|&d| on_day(r, d))
+        .find_map(|d| slots.iter().filter_map(|&(h, m)| instant_of(d, h, m)).filter(|&t| t <= now_ms).max())
 }
 
 /// 规则上晚于 `after_ms` 的第一个时间（毫秒）。
 pub fn slot_after(r: &TodoRepeat, after_ms: u64) -> Option<u64> {
-    let (h, m) = parse_at(&r.at)?;
+    let slots = day_slots(r);
     let today = local_day(after_ms)?;
-    (0..=8).map(|k| today + k).filter(|&d| on_day(r, d)).find_map(|d| instant_of(d, h, m).filter(|&t| t > after_ms))
+    (0..=8)
+        .map(|k| today + k)
+        .filter(|&d| on_day(r, d))
+        .find_map(|d| slots.iter().filter_map(|&(h, m)| instant_of(d, h, m)).filter(|&t| t > after_ms).min())
 }
 
 /// 给要发出去的项填上模板的下一次时间；已关闭的模板没有。
@@ -218,16 +248,16 @@ impl Store {
             .collect())
     }
 
-    /// 这个模板最近复制出来的一项有没有关闭；还没复制过时为 `None`。
-    async fn repeat_latest_closed(&self, template: &str) -> Result<Option<bool>, StoreError> {
-        let state: Option<String> = sqlx::query_scalar(
-            "SELECT state FROM todos WHERE source_kind = 'repeat' AND source_todo = ? \
+    /// 这个模板最近复制出来的一项（id 和有没有关闭）；还没复制过时为 `None`。
+    async fn repeat_latest(&self, template: &str) -> Result<Option<(String, bool)>, StoreError> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT id, state FROM todos WHERE source_kind = 'repeat' AND source_todo = ? \
              ORDER BY created_ms DESC, id DESC LIMIT 1",
         )
         .bind(template)
         .fetch_optional(self.pool())
         .await?;
-        Ok(state.map(|s| matches!(s.as_str(), "done" | "dropped")))
+        Ok(row.map(|(id, s)| (id, matches!(s.as_str(), "done" | "dropped"))))
     }
 }
 
@@ -273,9 +303,9 @@ async fn fire(c: &Ctx, template: &Todo, slot: u64, now: u64) -> Result<bool, Rpc
         tx.commit().await.map_err(sql)?;
         return Ok(false);
     }
-    let latest_closed = c.store.repeat_latest_closed(&template.id).await.map_err(internal)?;
+    let latest_open = c.store.repeat_latest(&template.id).await.map_err(internal)?.is_some_and(|(_, closed)| !closed);
     let full = c.store.todo_count_open().await.map_err(internal)? >= crate::todos::MAX_OPEN;
-    if latest_closed == Some(false) || full {
+    if latest_open || full {
         // 上一次的还没关闭（或清单已满）：这一次不复制，在模板的「经过」里记一条
         let ev = crate::todo_dispatch::event_append_on(
             &mut tx,
@@ -289,6 +319,27 @@ async fn fire(c: &Ctx, template: &Todo, slot: u64, now: u64) -> Result<bool, Rpc
         crate::todo_dispatch::broadcast_event(&c.clients, &template.id, ev);
         return Ok(false);
     }
+    let made = insert_copy(&mut tx, template, now, slot, false).await?;
+    tx.commit().await.map_err(sql)?;
+    publish_copy(c, &Caller::daemon(), template, made, slot, false).await?;
+    Ok(true)
+}
+
+/// 刚写进事务的一份复制：新的一项和要广播的「经过」。
+struct MadeCopy {
+    copy: Todo,
+    created: anycon_protocol::TodoEvent,
+    handler_event: Option<anycon_protocol::TodoEvent>,
+}
+
+/// 在事务里复制出新的一项并记模板的 `repeat_created`（`manual` 为 true 时是人手动执行的一次）；到点复制和 `todo.repeat_now` 共用。
+async fn insert_copy(
+    tx: &mut SqliteConnection,
+    template: &Todo,
+    now: u64,
+    at_ms: u64,
+    manual: bool,
+) -> Result<MadeCopy, RpcError> {
     let copy = Todo {
         id: uuid::Uuid::new_v4().to_string(),
         title: template.title.clone(),
@@ -314,29 +365,43 @@ async fn fire(c: &Ctx, template: &Todo, slot: u64, now: u64) -> Result<bool, Rpc
     };
     crate::todos::insert_todo_on(&mut *tx, &copy).await.map_err(internal)?;
     let created = crate::todo_dispatch::event_append_on(
-        &mut tx,
+        tx,
         &template.id,
         now,
-        TodoEventData::RepeatCreated { todo_id: copy.id.clone(), at_ms: slot },
+        TodoEventData::RepeatCreated { todo_id: copy.id.clone(), at_ms, manual },
     )
     .await
     .map_err(internal)?;
     let handler_event = if copy.handler != TodoHandler::Me {
         let by = TodoActor { kind: TodoSourceKind::Repeat, id: Some(template.id.clone()), device_id: None };
         let data = TodoEventData::Handler { from: TodoHandler::Me, to: copy.handler, by };
-        Some(crate::todo_dispatch::event_append_on(&mut tx, &copy.id, now, data).await.map_err(internal)?)
+        Some(crate::todo_dispatch::event_append_on(tx, &copy.id, now, data).await.map_err(internal)?)
     } else {
         None
     };
-    tx.commit().await.map_err(sql)?;
+    Ok(MadeCopy { copy, created, handler_event })
+}
+
+/// 复制提交之后的广播、审计和 Bot 触发。
+async fn publish_copy(
+    c: &Ctx,
+    caller: &Caller,
+    template: &Todo,
+    made: MadeCopy,
+    at_ms: u64,
+    manual: bool,
+) -> Result<(), RpcError> {
+    let MadeCopy { copy, created, handler_event } = made;
     crate::todo_dispatch::broadcast_event(&c.clients, &template.id, created);
     if let Some(ev) = handler_event {
         crate::todo_dispatch::broadcast_event(&c.clients, &copy.id, ev);
     }
     // 审计只记模板 id 和规则时间，不记标题、正文
-    c.audit
-        .record(&Caller::daemon(), "todo.repeat", Some(&copy.id), json!({ "template": template.id, "at_ms": slot }))
-        .await;
+    let mut detail = json!({ "template": template.id, "at_ms": at_ms });
+    if manual {
+        detail["manual"] = json!(true);
+    }
+    c.audit.record(caller, "todo.repeat", Some(&copy.id), detail).await;
     c.sessions.todo_signal().note_sent(&copy.id, None);
     crate::todos::notify_changed(
         &c.clients,
@@ -345,7 +410,66 @@ async fn fire(c: &Ctx, template: &Todo, slot: u64, now: u64) -> Result<bool, Rpc
     if copy.handler == TodoHandler::Twin {
         c.twin.trigger(c, TwinTrigger::Todo).await?;
     }
-    Ok(true)
+    Ok(())
+}
+
+fn repeat_now_invalid(reason: &str, message: &str) -> RpcError {
+    let mut e = RpcError::new(anycon_protocol::ErrorCode::Invalid, message);
+    if let Some(d) = e.data.as_mut() {
+        d.field = Some("id".into());
+        d.reason = Some(reason.into());
+    }
+    e
+}
+
+/// `todo.repeat_now`：现在复制一份，和到点复制一样，但不动模板的 `repeat_last_ms`（下一次照旧）。只由人调用：
+/// 它会产生工作、可能花 Bot 或 agent 的预算。持清单锁，检查和写入之间没有别的写入。
+pub async fn repeat_now(c: &Ctx, caller: &Caller, p: anycon_protocol::TodoIdParams) -> Result<Todo, RpcError> {
+    crate::todos::check_id(&p.id)?;
+    if caller.is_mcp() || caller.is_twin() || caller.is_twin_device() {
+        return Err(RpcError::new(anycon_protocol::ErrorCode::Forbidden, "agents cannot run a repeating todo"));
+    }
+    let _w = c.store.todo_lock().lock().await;
+    let template = c
+        .store
+        .todo_get(&p.id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| RpcError::new(anycon_protocol::ErrorCode::NotFound, format!("todo {} not found", p.id)))?;
+    if template.repeat.is_none() {
+        return Err(repeat_now_invalid("not_template", "the todo has no repeat rule"));
+    }
+    if template.state.is_closed() {
+        return Err(repeat_now_invalid("closed", "the repeating todo is closed"));
+    }
+    if template.unreviewed {
+        return Err(repeat_now_invalid("unreviewed", "review the repeating todo before running it"));
+    }
+    if let Some((open_id, false)) = c.store.repeat_latest(&template.id).await.map_err(internal)? {
+        let mut e = repeat_now_invalid("previous_open", "the previous copy is still open");
+        if let Some(d) = e.data.as_mut() {
+            d.todo_id = Some(open_id);
+        }
+        return Err(e);
+    }
+    if c.store.todo_count_open().await.map_err(internal)? >= crate::todos::MAX_OPEN {
+        let mut e = RpcError::new(
+            anycon_protocol::ErrorCode::Invalid,
+            format!("at most {} open todos", crate::todos::MAX_OPEN),
+        );
+        if let Some(d) = e.data.as_mut() {
+            d.field = Some("todos".into());
+            d.reason = Some("too_many".into());
+        }
+        return Err(e);
+    }
+    let now = c.judge.clock().now();
+    let mut tx = c.store.pool().begin().await.map_err(StoreError::from).map_err(internal)?;
+    let made = insert_copy(&mut tx, &template, now, now, true).await?;
+    tx.commit().await.map_err(StoreError::from).map_err(internal)?;
+    let copy = made.copy.clone();
+    publish_copy(c, caller, &template, made, now, true).await?;
+    Ok(copy)
 }
 
 /// 后台任务：启动时先看一遍（补停机期间错过的最近一次），之后每分钟的开头看一次。
@@ -381,7 +505,16 @@ mod tests {
         for (kind, weekday) in
             [(TodoRepeatKind::Daily, None), (TodoRepeatKind::Weekdays, None), (TodoRepeatKind::Weekly, Some(3))]
         {
-            let r = TodoRepeat { kind, at: "09:30".into(), weekday, next_ms: None };
+            let r = TodoRepeat {
+                kind,
+                at: "09:30".into(),
+                weekday,
+                days: None,
+                every_min: None,
+                until: None,
+                auto_close: false,
+                next_ms: None,
+            };
             let next = slot_after(&r, now).expect("next slot");
             assert!(next > now && next <= now + 7 * day, "{kind:?}: {next}");
             let last = slot_at_or_before(&r, now).expect("last slot");
@@ -389,5 +522,32 @@ mod tests {
             // 两次之间至少隔一天（同一个时刻不会算两次）
             assert!(next - last >= day - 3600 * 1000, "{kind:?}: {last} .. {next}");
         }
+    }
+
+    /// 间隔规则：一天里的时间点个数和端点，以及不完整的规则没有时间点（不依赖时区）。
+    #[test]
+    fn interval_day_slots_include_both_ends_and_incomplete_rules_have_none() {
+        let mut r = TodoRepeat {
+            kind: TodoRepeatKind::Interval,
+            at: "09:00".into(),
+            weekday: None,
+            days: Some(TodoRepeatDays::Daily),
+            every_min: Some(120),
+            until: Some("17:00".into()),
+            auto_close: false,
+            next_ms: None,
+        };
+        assert_eq!(day_slots(&r), vec![(9, 0), (11, 0), (13, 0), (15, 0), (17, 0)]);
+        r.until = Some("16:59".into());
+        assert_eq!(day_slots(&r).len(), 4);
+        r.every_min = None;
+        assert!(day_slots(&r).is_empty());
+        r.every_min = Some(0);
+        assert!(day_slots(&r).is_empty());
+        r.every_min = Some(15);
+        r.until = Some("09:30".into());
+        assert_eq!(day_slots(&r), vec![(9, 0), (9, 15), (9, 30)]);
+        r.until = None;
+        assert!(day_slots(&r).is_empty());
     }
 }

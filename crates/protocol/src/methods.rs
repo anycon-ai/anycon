@@ -126,6 +126,9 @@ pub const TODO_CHANGED: &str = "todo.changed";
 pub const TODO_DISPATCH_PREVIEW: &str = "todo.dispatch_preview";
 /// 从一项开一个会话并关联（docs/spec/daemon.md § 22）。
 pub const TODO_DISPATCH: &str = "todo.dispatch";
+/// 现在执行一次周期项（`{ id }` → 新复制出的 `Todo`，docs/spec/daemon.md § 26.9）：和到点复制一样，但不动周期项的下一次时间。
+/// 只由人调用；不是周期项 / 已关闭 / 未收下 / 上一份还没关闭 → `invalid`（`data.reason`）。
+pub const TODO_REPEAT_NOW: &str = "todo.repeat_now";
 /// 一项的「经过」，按 `seq` 从新到旧翻页。
 pub const TODO_HISTORY: &str = "todo.history";
 /// D→C notification，params = TodoEventNotice：「经过」多了一条。
@@ -307,6 +310,7 @@ pub const REGISTRY: &[MethodSpec] = &[
     notif(TODO_CHANGED, "TodoChanged"),
     req(TODO_DISPATCH_PREVIEW, Some("TodoDispatchPreviewParams"), Some("TodoDispatchPreviewResult")),
     req(TODO_DISPATCH, Some("TodoDispatchParams"), Some("TodoDispatchResult")),
+    req(TODO_REPEAT_NOW, Some("TodoIdParams"), Some("Todo")),
     req(TODO_HISTORY, Some("TodoHistoryParams"), Some("TodoHistoryResult")),
     notif(TODO_EVENT, "TodoEventNotice"),
     req(RULE_LIST, Some("RuleListParams"), Some("RuleListResult")),

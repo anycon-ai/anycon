@@ -38,6 +38,10 @@ pub struct NodeCapabilities {
     /// 支持周期项（`Todo.repeat`，docs/spec/daemon.md § 26.9）。旧 daemon 没有这个字段，读作 false。
     #[serde(default)]
     pub todo_repeat: bool,
+    /// 周期项支持 `kind = interval`、`auto_close`、`todo.repeat_now` 和 `repeat_created.manual`（docs/spec/daemon.md § 26.9）。
+    /// 旧 daemon 没有这个字段，读作 false。
+    #[serde(default)]
+    pub todo_repeat_interval: bool,
     /// daemon 提供 `twin.stats`，`twin.get` 带 `last_run` / `next_wake_ms` / `queued` / `deferred`，`TwinRun` 带 `usage`
     /// （docs/spec/daemon.md § 26.8）。旧 daemon 没有这个字段，读作 false。
     #[serde(default)]

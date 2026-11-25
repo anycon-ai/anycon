@@ -713,9 +713,13 @@ export type TodoActivity = "working" | "waiting" | "review" | "unknown";
  */
 export type TodoHandler = "me" | "twin" | "unknown";
 /**
+ * `kind = interval` 的规则在哪些日子里生效（`TodoRepeat.days`）。
+ */
+export type TodoRepeatDays = "daily" | "weekdays" | "weekly" | "unknown";
+/**
  * 周期项的重复方式（`TodoRepeat.kind`）。
  */
-export type TodoRepeatKind = "daily" | "weekdays" | "weekly" | "unknown";
+export type TodoRepeatKind = "daily" | "weekdays" | "weekly" | "interval" | "unknown";
 /**
  * 一项是谁记的。
  */
@@ -794,6 +798,7 @@ export type TodoEvent1 =
   | {
       at_ms: number;
       kind: "repeat_created";
+      manual?: boolean;
       todo_id: string;
     }
   | {
@@ -889,6 +894,7 @@ export type TodoEventData =
   | {
       at_ms: number;
       kind: "repeat_created";
+      manual?: boolean;
       todo_id: string;
     }
   | {
@@ -2093,6 +2099,11 @@ export interface NodeCapabilities {
    */
   todo_repeat?: boolean;
   /**
+   * 周期项支持 `kind = interval`、`auto_close`、`todo.repeat_now` 和 `repeat_created.manual`（docs/spec/daemon.md § 26.9）。
+   * 旧 daemon 没有这个字段，读作 false。
+   */
+  todo_repeat_interval?: boolean;
+  /**
    * 支持 Bot 的调度和 RPC。
    */
   twin?: boolean;
@@ -2643,6 +2654,10 @@ export interface RpcErrorData {
   limit?: number | null;
   reason?: string | null;
   retry_after_ms?: number | null;
+  /**
+   * 指向另一项清单项：`todo.repeat_now` 被拒（`reason = "previous_open"`）时，还没关闭的那一份复制出来的项的 id。
+   */
+  todo_id?: string | null;
   /**
    * 带条件的写被拒（`todo.delete` 的 `if_updated_ms` 对不上，`reason = "changed"`）时，那一项现在的 `updated_ms`。
    */
@@ -3399,13 +3414,30 @@ export interface TodoRepeat {
    * `HH:MM`，`00:00`–`23:59`，本地时间。
    */
   at: string;
+  /**
+   * Bot 对这个模板复制出来的项执行 `done` 时，daemon 直接把那一项关闭（docs/spec/daemon.md § 26.9）；缺省 false，false 时不出现。
+   * 任何一种规则都能带。
+   */
+  auto_close?: boolean;
+  /**
+   * `kind = interval` 时必填（别的种类不能带）：在哪些日子里生效。
+   */
+  days?: TodoRepeatDays | null;
+  /**
+   * `kind = interval` 时必填（别的种类不能带）：两次之间隔多少分钟，15–720。
+   */
+  every_min?: number | null;
   kind: TodoRepeatKind;
   /**
    * 下一次复制的时间（节点此刻算出来的，不存；请求里带了也忽略）。模板已关闭时没有。算在 daemon 上，是因为规则按节点的时区。
    */
   next_ms?: number | null;
   /**
-   * 1–7，周一 = 1（ISO）；`kind = weekly` 时必填，别的种类不能带。
+   * `kind = interval` 时必填（别的种类不能带）：当天最后一个时间点不晚于它，`HH:MM`，同一天内严格晚于 `at`。
+   */
+  until?: string | null;
+  /**
+   * 1–7，周一 = 1（ISO）；`kind = weekly`、或 `kind = interval` 且 `days = weekly` 时必填，别的情况不能带。
    */
   weekday?: number | null;
 }

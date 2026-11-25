@@ -6,14 +6,18 @@ import { Markdown } from '@/components/Markdown'
 import { formatDateTime } from '@/lib/format'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes } from '@/stores/nodes'
+import { toast } from '@/stores/ui'
+import { navigateTo } from '@/lib/navigate'
 import { useSessions } from '@/stores/sessions'
 import { Button } from '@/ui/Button'
 import { Input, Select, Textarea } from '@/ui/Field'
+import { RpcCallError } from '@/transport/rpcClient'
 import { Dialog } from '@/ui/Overlay'
 import { Chip } from '@/ui/Misc'
 import { setTodoState } from '../actions'
 import { changedElsewhere, dirtyFields, draftKey, useDrafts, type EditField, type EditValues } from '../drafts'
 import { deleteTodo, discardOp, retryOp, updateTodo } from '../service'
+import { describeRepeatNowError, runRepeatNow, useOpenCopy } from '../repeatNow'
 import { useTodos } from '../store'
 import { isAgentSource, isHumanSource, isOtherSource } from '../source'
 import { isClosed, UI_STATES, type UpdateFields, type ViewTodo } from '../types'
@@ -24,8 +28,8 @@ import { activityOf, isReview } from '../activity'
 import { DispatchDialog } from './DispatchDialog'
 import { HandlerChip, LinkedStatus } from './ActivityBits'
 import { MoveTodoDialog } from './MoveTodoDialog'
-import { RepeatField, RepeatFromChip, RepeatTemplateChip, repeatInputText, repeatSummary, useNodeSupportsRepeat } from './RepeatBits'
-import { repeatFromInput, repeatInputError, repeatToInput } from '../repeat'
+import { AutoCloseField, RepeatField, RepeatFromChip, RepeatTemplateChip, repeatInputText, repeatSummary, useNodeSupportsInterval, useNodeSupportsRepeat } from './RepeatBits'
+import { repeatFromInput, repeatInputProblem, repeatToInput } from '../repeat'
 import { TwinHandlerButton } from '@/features/twin/TodoParts'
 import { TodoHistory } from './TodoHistory'
 import { fieldErrorText, outboxErrorText } from './errors'
@@ -64,6 +68,8 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const [moving, setMoving] = useState(false)
   const [dispatching, setDispatching] = useState(false)
   const bodyHintId = useId()
+  const [runningNow, setRunningNow] = useState(false)
+  const [runNowError, setRunNowError] = useState<{ message: string; copyId?: string } | null>(null)
   const activity = activityOf(item)
   // 有别的支持清单的节点才有「移到另一个节点…」
   // 周期项（模板）不能移：移过去的只是一份普通的项，规则会丢
@@ -73,8 +79,11 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const repeatInput = repeatToInput(repeat)
   const current = useMemo(() => valuesOf({ title, body, project, due_ms, repeat }), [title, body, project, due_ms, repeat])
   const repeatSupported = useNodeSupportsRepeat(item.node_id)
+  const intervalSupported = useNodeSupportsInterval(item.node_id)
+  const openCopy = useOpenCopy(item.node_id, item.id)
 
   const dirty = draft ? dirtyFields(draft) : []
+  const repeatProblem = repeatInputProblem(draft?.values.repeat ?? '')
   // 编辑期间别处改了的字段：没改过的字段不会被发出去（保存只发用户改过的），在这里告诉用户；两边都改了的字段让用户选
   const elsewhere = draft ? changedElsewhere(draft, current) : []
   const conflicts = elsewhere.filter((f) => dirty.includes(f))
@@ -115,6 +124,21 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
     }
     setError(null)
     useDrafts.getState().clear(key)
+  }
+
+  const runNow = async (): Promise<void> => {
+    if (runningNow) return
+    setRunningNow(true)
+    setRunNowError(null)
+    try {
+      const copy = await runRepeatNow(item.node_id, item.id)
+      const node = shortNodeId(item.node_id, useNodes.getState().order)
+      toast.info(t('todos.repeat.runNow.done'), { label: t('todos.repeat.runNow.open'), run: () => navigateTo(`/todos/${node}/${copy.id}`) }, 10_000)
+    } catch (e) {
+      setRunNowError({ message: describeRepeatNowError(e, t), ...(e instanceof RpcCallError && e.todoId ? { copyId: e.todoId } : {}) })
+    } finally {
+      setRunningNow(false)
+    }
   }
 
   const cancel = (): void => {
@@ -185,8 +209,9 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           {repeatSupported || repeatInput ? (
             <div className="space-y-1 text-sm font-medium">
               <span>{t('todos.repeat.label')}</span>
-              <RepeatField value={draft?.values.repeat ?? ''} onChange={(v) => setField('repeat', v)} testId="todo-edit-repeat" />
-              {repeatInputError(draft?.values.repeat ?? '') ? <p className="text-xs font-normal text-danger">{t('todos.errors.repeat.invalid')}</p> : null}
+              <RepeatField value={draft?.values.repeat ?? ''} onChange={(v) => setField('repeat', v)} intervalSupported={intervalSupported} testId="todo-edit-repeat" />
+              {intervalSupported ? <AutoCloseField value={draft?.values.repeat ?? ''} onChange={(v) => setField('repeat', v)} testId="todo-edit-repeat" /> : null}
+              {repeatProblem ? <p className="text-xs font-normal text-danger" data-testid="todo-edit-repeat-error">{t(repeatProblem === 'at' ? 'todos.errors.repeat.invalid' : repeatProblem === 'until' ? 'todos.errors.repeat.until' : 'todos.errors.repeat.every')}</p> : null}
             </div>
           ) : null}
           {quiet.length > 0 ? (
@@ -261,6 +286,12 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
               <>
                 <dt className="text-fg-subtle">{t('todos.repeat.label')}</dt>
                 <dd data-testid="todo-repeat-rule">{isClosed(item.state) ? repeatSummary(t, i18n.language, { ...item.repeat, next_ms: null }) : repeatSummary(t, i18n.language, item.repeat)}</dd>
+                {item.repeat.auto_close ? (
+                  <>
+                    <dt className="text-fg-subtle">{t('todos.repeat.autoClose.short')}</dt>
+                    <dd data-testid="todo-repeat-auto-close">{t('todos.repeat.autoClose.on')}</dd>
+                  </>
+                ) : null}
               </>
             ) : null}
           </dl>
@@ -310,6 +341,11 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         {!isClosed(item.state) ? (
           <>
             <TwinHandlerButton item={item} />
+            {item.repeat && intervalSupported ? (
+              <Button disabled={!online || runningNow || !!openCopy} onClick={() => void runNow()} title={online ? undefined : t('todos.repeat.runNow.offline')} data-testid="todo-run-now">
+                {t('todos.repeat.runNow.action')}
+              </Button>
+            ) : null}
             {item.repeat ? null : (
               <Button variant={isReview(item) ? 'outline' : 'primary'} disabled={!online} onClick={() => setDispatching(true)} title={online ? undefined : t('dispatch.blocked.offline')} data-testid="todo-dispatch">
                 {t('dispatch.action')}
@@ -332,6 +368,26 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
         </Button>
       </div>
       )}
+
+      {item.repeat && intervalSupported && !isClosed(item.state) && !pendingReview ? (
+        openCopy ? (
+          <p className="text-sm text-fg-muted" data-testid="todo-run-now-blocked">
+            {t('todos.repeat.runNow.blocked')}{' '}
+            <Link to="/todos/$node/$todo" params={{ node: shortNodeId(item.node_id, order), todo: openCopy.id }} className="font-medium text-accent-text hover:underline" data-testid="todo-run-now-open-copy">
+              {t('todos.repeat.runNow.openPrevious')}
+            </Link>
+          </p>
+        ) : runNowError ? (
+          <p className="text-sm text-danger" role="alert" data-testid="todo-run-now-error">
+            {runNowError.message}{' '}
+            {runNowError.copyId ? (
+              <Link to="/todos/$node/$todo" params={{ node: shortNodeId(item.node_id, order), todo: runNowError.copyId }} className="font-medium text-accent-text hover:underline">
+                {t('todos.repeat.runNow.openPrevious')}
+              </Link>
+            ) : null}
+          </p>
+        ) : null
+      ) : null}
 
       {isAgentSource(item.source) ? (
         <p className="text-sm text-fg-muted" data-testid="todo-source">

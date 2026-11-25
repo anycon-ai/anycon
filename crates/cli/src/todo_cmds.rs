@@ -3,7 +3,7 @@
 //! 和别的客户端命令一样走 [`App::conn`]（本机 socket，或 `--hub` / `--node` 经 hub）。`<id>` 接受唯一前缀。
 //!
 //! 在 anycon 拉起的 agent 里运行时（环境里有 `ANYCON_AGENT`，和 `anycon mcp` 是同一个判断）：`add` 带 `agent: true` 和
-//! `origin_session`（读 `ANYCON_SESSION_ID`），`ls` / `history` 照常，`done` / `drop` / `reopen` / `rm` / `run` 拒绝执行。
+//! `origin_session`（读 `ANYCON_SESSION_ID`），`ls` / `history` 照常，`done` / `drop` / `reopen` / `rm` / `run` / `repeat-now` 拒绝执行。
 //! 这是和 `anycon mcp` 不给 agent 修改清单的工具同一条界线的**护栏，不是安全边界**：agent 能改自己的环境
 //! （比如先清掉 `ANYCON_AGENT` 再运行），能执行 shell 的 agent 本来也能直接发 RPC。它防的是 agent 照常干活时顺手改掉人的清单。
 //!
@@ -16,7 +16,7 @@ use anycon_protocol::*;
 use serde_json::{json, Value};
 
 use crate::cli::{TodoAddArgs, TodoCmd, TodoEditArgs, TodoHistoryArgs, TodoLsArgs, TodoRunArgs};
-use crate::commands::App;
+use crate::commands::{is_method_not_found, App};
 use crate::conn::Conn;
 use crate::error::{CliError, Result, EXIT_ERROR};
 use crate::output::{sanitize_label, table, visible};
@@ -29,7 +29,12 @@ fn inside_agent() -> bool {
 /// 在 agent 里拒绝会改动清单的子命令。
 fn refuse_inside_agent(what: &str) -> Result<()> {
     if inside_agent() {
-        let message = if what == "run" {
+        let message = if what == "repeat-now" {
+            format!(
+                "`anycon todo repeat-now` is not available inside an anycon agent session ({AGENT_MARKER_ENV} is set): \
+                 running a repeating to-do creates work for you and the bot. Run it from your own terminal."
+            )
+        } else if what == "run" {
             format!(
                 "`anycon todo run` is not available inside an anycon agent session ({AGENT_MARKER_ENV} is set): handing \
                  a to-do to an agent is left to you. Run it from your own terminal."
@@ -76,36 +81,102 @@ pub fn parse_due(s: &str) -> Result<u64> {
 
 const WEEKDAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
-/// `--repeat`：`daily@09:00`、`weekdays@09:00`、`weekly:mon@09:00`（节点的本地时间；星期写 `mon`…`sun`，周一 = 1）。
-pub fn parse_repeat(s: &str) -> Result<TodoRepeat> {
-    let bad = || {
-        CliError::usage(format!(
-            "--repeat: cannot read {s:?}; use daily@09:00, weekdays@09:00 or weekly:mon@09:00 \
-             (the time is HH:MM on the node's clock; days are mon, tue, wed, thu, fri, sat, sun)"
-        ))
-    };
-    let (rule, at) = s.trim().split_once('@').ok_or_else(bad)?;
-    anycon_daemon::todo_repeat::parse_at(at).ok_or_else(bad)?;
-    let (kind, weekday) = match rule.split_once(':') {
-        None if rule == "daily" => (TodoRepeatKind::Daily, None),
-        None if rule == "weekdays" => (TodoRepeatKind::Weekdays, None),
+const REPEAT_FORMS: &str = "use daily@09:00, weekdays@09:00 or weekly:mon@09:00, or several times a day as \
+    <days>@<from>-<until>/<every> such as weekdays@09:00-18:00/2h or weekly:mon@09:00-12:00/30m \
+    (<days> is daily, weekdays or weekly:<mon..sun>; <every> is <n>m or <n>h from 15m to 12h; \
+    times are HH:MM on the node's clock)";
+
+/// `<days>` 的写法：`daily`、`weekdays`、`weekly:mon`…`weekly:sun`（周一 = 1）。
+fn parse_days(rule: &str) -> Option<(TodoRepeatDays, Option<u8>)> {
+    match rule.split_once(':') {
+        None if rule == "daily" => Some((TodoRepeatDays::Daily, None)),
+        None if rule == "weekdays" => Some((TodoRepeatDays::Weekdays, None)),
         Some(("weekly", day)) => {
-            let n = WEEKDAYS.iter().position(|d| d.eq_ignore_ascii_case(day)).ok_or_else(bad)?;
-            (TodoRepeatKind::Weekly, Some(n as u8 + 1))
+            let n = WEEKDAYS.iter().position(|d| d.eq_ignore_ascii_case(day))?;
+            Some((TodoRepeatDays::Weekly, Some(n as u8 + 1)))
         }
-        _ => return Err(bad()),
+        _ => None,
+    }
+}
+
+/// `<n>m` 或 `<n>h` → 分钟数（范围由调用方检查）。
+fn parse_every(s: &str) -> Option<u32> {
+    // 按后缀拆，不按字节位置：用户写的单位可能是多字节字符，按字节切会落在字符中间
+    let (n, scale) = if let Some(n) = s.strip_suffix('m') { (n, 1) } else { (s.strip_suffix('h')?, 60) };
+    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    n.parse::<u32>().ok()?.checked_mul(scale)
+}
+
+/// `--repeat`：`daily@09:00`、`weekdays@09:00`、`weekly:mon@09:00`，或一天里重复多次的 `<days>@<from>-<until>/<every>`
+/// （如 `weekdays@09:00-18:00/2h`）。节点的本地时间；星期写 `mon`…`sun`，周一 = 1。
+pub fn parse_repeat(s: &str) -> Result<TodoRepeat> {
+    let bad = || CliError::usage(format!("--repeat: cannot read {s:?}; {REPEAT_FORMS}"));
+    let (rule, time) = s.trim().split_once('@').ok_or_else(bad)?;
+    let plain = |kind, weekday, at: &str| TodoRepeat {
+        kind,
+        at: at.to_string(),
+        weekday,
+        days: None,
+        every_min: None,
+        until: None,
+        auto_close: false,
+        next_ms: None,
     };
-    Ok(TodoRepeat { kind, at: at.to_string(), weekday, next_ms: None })
+    if let Some((range, every)) = time.split_once('/') {
+        let (from, until) = range.split_once('-').ok_or_else(bad)?;
+        let (days, weekday) = parse_days(rule).ok_or_else(bad)?;
+        let start = anycon_daemon::todo_repeat::parse_at(from).ok_or_else(bad)?;
+        let end = anycon_daemon::todo_repeat::parse_at(until).ok_or_else(bad)?;
+        let every_min = parse_every(every).ok_or_else(bad)?;
+        if end.0 * 60 + end.1 <= start.0 * 60 + start.1 {
+            return Err(CliError::usage(format!(
+                "--repeat: {s:?}: the end time must be later than the start time on the same day"
+            )));
+        }
+        if !(anycon_daemon::todos::MIN_EVERY_MIN..=anycon_daemon::todos::MAX_EVERY_MIN).contains(&every_min) {
+            return Err(CliError::usage(format!("--repeat: {s:?}: the interval must be between 15m and 12h")));
+        }
+        return Ok(TodoRepeat {
+            days: Some(days),
+            every_min: Some(every_min),
+            until: Some(until.to_string()),
+            ..plain(TodoRepeatKind::Interval, weekday, from)
+        });
+    }
+    anycon_daemon::todo_repeat::parse_at(time).ok_or_else(bad)?;
+    let (days, weekday) = parse_days(rule).ok_or_else(bad)?;
+    let kind = match days {
+        TodoRepeatDays::Daily => TodoRepeatKind::Daily,
+        TodoRepeatDays::Weekdays => TodoRepeatKind::Weekdays,
+        _ => TodoRepeatKind::Weekly,
+    };
+    Ok(plain(kind, weekday, time))
 }
 
 /// 规则写回 `--repeat` 的写法。
 fn repeat_str(r: &TodoRepeat) -> String {
-    match (r.kind, r.weekday) {
-        (TodoRepeatKind::Daily, _) => format!("daily@{}", r.at),
-        (TodoRepeatKind::Weekdays, _) => format!("weekdays@{}", r.at),
-        (TodoRepeatKind::Weekly, Some(w @ 1..=7)) => format!("weekly:{}@{}", WEEKDAYS[w as usize - 1], r.at),
-        _ => "unknown".to_string(),
-    }
+    let days = |d: TodoRepeatDays| match (d, r.weekday) {
+        (TodoRepeatDays::Daily, _) => Some("daily".to_string()),
+        (TodoRepeatDays::Weekdays, _) => Some("weekdays".to_string()),
+        (TodoRepeatDays::Weekly, Some(w @ 1..=7)) => Some(format!("weekly:{}", WEEKDAYS[w as usize - 1])),
+        _ => None,
+    };
+    let text = match r.kind {
+        TodoRepeatKind::Daily => days(TodoRepeatDays::Daily).map(|d| format!("{d}@{}", r.at)),
+        TodoRepeatKind::Weekdays => days(TodoRepeatDays::Weekdays).map(|d| format!("{d}@{}", r.at)),
+        TodoRepeatKind::Weekly => days(TodoRepeatDays::Weekly).map(|d| format!("{d}@{}", r.at)),
+        TodoRepeatKind::Interval => match (r.days.and_then(days), r.until.as_deref(), r.every_min) {
+            (Some(d), Some(until), Some(m)) => {
+                let every = if m % 60 == 0 { format!("{}h", m / 60) } else { format!("{m}m") };
+                Some(format!("{d}@{}-{until}/{every}", r.at))
+            }
+            _ => None,
+        },
+        TodoRepeatKind::Unknown => None,
+    };
+    text.unwrap_or_else(|| "unknown".to_string())
 }
 
 /// 一页页翻到 `has_more = false`，按 `id` 去重。
@@ -219,6 +290,7 @@ pub async fn todo(app: &App, cmd: TodoCmd) -> Result<u8> {
         TodoCmd::Rm { id } => rm(app, &id).await,
         TodoCmd::Run(a) => run(app, a).await,
         TodoCmd::History(a) => history(app, a).await,
+        TodoCmd::RepeatNow { id } => repeat_now(app, &id).await,
     }
 }
 
@@ -229,7 +301,10 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
     if a.repeat.is_some() {
         refuse_inside_agent("add --repeat")?;
     }
-    let repeat = a.repeat.as_deref().map(parse_repeat).transpose()?;
+    let mut repeat = a.repeat.as_deref().map(parse_repeat).transpose()?;
+    if let Some(r) = repeat.as_mut() {
+        r.auto_close = a.auto_close;
+    }
     let due_ms = a.due.as_deref().map(parse_due).transpose()?;
     let nested = inside_agent();
     let params = TodoAddParams {
@@ -245,6 +320,9 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
         origin_session: nested.then(|| std::env::var(SESSION_ID_ENV).ok().filter(|s| !s.is_empty())).flatten(),
     };
     let conn = app.conn().await?;
+    if params.repeat.as_ref().is_some_and(needs_interval_support) {
+        require_interval_support(&conn).await?;
+    }
     let t: Todo = conn.call(methods::TODO_ADD, params).await.map_err(friendly)?;
     if app.json() {
         app.out.json_line(&t);
@@ -266,9 +344,13 @@ fn activity_str(a: TodoActivity) -> &'static str {
 
 /// `daily@09:00 next 2026-12-01 01:00Z`：规则按节点的时钟，下一次的时间换成 UTC 显示（和 DUE 一样）。
 fn repeat_cell(r: &TodoRepeat) -> String {
+    let mut text = repeat_str(r);
+    if r.auto_close {
+        text.push_str(" auto-close");
+    }
     match r.next_ms {
-        Some(next) => format!("{} next {}Z", repeat_str(r), &fmt_utc(next)[..16]),
-        None => repeat_str(r),
+        Some(next) => format!("{text} next {}Z", &fmt_utc(next)[..16]),
+        None => text,
     }
 }
 
@@ -366,15 +448,57 @@ fn empty_update() -> TodoUpdateParams {
     }
 }
 
+/// 这条规则用到了只有较新的 daemon 才认识的东西（间隔规则、`auto_close`）。
+fn needs_interval_support(r: &TodoRepeat) -> bool {
+    r.kind == TodoRepeatKind::Interval || r.auto_close
+}
+
+/// 节点的 daemon 不认识间隔规则 / `auto_close` / `repeat-now` 时说清楚，而不是让它回一个看不懂的 `invalid`。
+async fn require_interval_support(conn: &Conn) -> Result<()> {
+    let info: NodeInfo = conn.call(methods::NODE_INFO, json!({})).await?;
+    if info.capabilities.todo_repeat_interval {
+        Ok(())
+    } else {
+        Err(CliError::general(
+            "this node's daemon is too old for that: it does not support several-times-a-day repeats, --auto-close or \
+             repeat-now; update anycon on that node",
+        ))
+    }
+}
+
 async fn edit(app: &App, a: TodoEditArgs) -> Result<u8> {
     refuse_inside_agent("edit")?;
-    let repeat = a.repeat.as_deref().map(parse_repeat).transpose()?;
+    let mut repeat = a.repeat.as_deref().map(parse_repeat).transpose()?;
+    let wants_auto = a.auto_close || a.no_auto_close;
     let conn = app.conn().await?;
-    let id = match resolve_todo(&conn, &a.id, false).await? {
-        Ok(t) => t.id,
-        Err(id) => id,
+    let resolved = resolve_todo(&conn, &a.id, false).await?;
+    let id = match &resolved {
+        Ok(t) => t.id.clone(),
+        Err(id) => id.clone(),
     };
-    let clear = if repeat.is_none() { vec![ClearableTodoField::Repeat] } else { Vec::new() };
+    let mut clear = Vec::new();
+    if let Some(r) = repeat.as_mut() {
+        if wants_auto {
+            r.auto_close = a.auto_close;
+        } else if let Some(old) = fetch_rule(&conn, &id).await? {
+            // 只换规则、没提 auto-close：沿用原来的设置，不悄悄关掉
+            r.auto_close = old.auto_close;
+        }
+    } else if wants_auto {
+        // 单独改 auto-close：读出原来的规则，原样发回去，只换这一项
+        let Some(mut old) = fetch_rule(&conn, &id).await? else {
+            return Err(CliError::usage(
+                "--auto-close and --no-auto-close only apply to a repeating item; this one does not repeat (give --repeat to make it one)",
+            ));
+        };
+        old.auto_close = a.auto_close;
+        repeat = Some(old);
+    } else {
+        clear.push(ClearableTodoField::Repeat);
+    }
+    if repeat.as_ref().is_some_and(needs_interval_support) {
+        require_interval_support(&conn).await?;
+    }
     let t: Todo = conn
         .call(methods::TODO_UPDATE, TodoUpdateParams { id, repeat, clear, ..empty_update() })
         .await
@@ -385,6 +509,51 @@ async fn edit(app: &App, a: TodoEditArgs) -> Result<u8> {
         println!("{} repeats {}", short(&t.id), repeat_cell(r));
     } else {
         println!("{} no longer repeats", short(&t.id));
+    }
+    Ok(0)
+}
+
+/// 读出这一项现在的周期规则；不是周期项时为 `None`。
+async fn fetch_rule(conn: &Conn, id: &str) -> Result<Option<TodoRepeat>> {
+    let t: Todo = conn.call(methods::TODO_GET, TodoIdParams { id: id.to_string() }).await?;
+    Ok(t.repeat)
+}
+
+/// `todo.repeat_now` 的 `invalid` 原因换成人话。
+fn friendly_repeat_now(e: CliError) -> CliError {
+    let message = match e.reason.as_deref() {
+        Some("not_template") => "this to-do does not repeat, so there is nothing to run; see `anycon todo edit --repeat`".to_string(),
+        Some("closed") => "this repeating to-do is closed (done or dropped); reopen it with `anycon todo reopen` first".to_string(),
+        Some("unreviewed") => "this repeating to-do was added by an agent and is still waiting for your review; accept it first".to_string(),
+        Some("previous_open") => format!(
+            "the previous copy {} is still open; finish or drop it first (a new copy is only made once the last one is closed)",
+            e.todo_id.as_deref().map(short).unwrap_or_else(|| "of this to-do".to_string())
+        ),
+        Some("too_many") => "the to-do list is full (1000 open items); close or remove some first".to_string(),
+        _ if is_method_not_found(&e) => {
+            "this node's daemon is too old for repeat-now; update anycon on that node".to_string()
+        }
+        _ => return e,
+    };
+    CliError::new(e.exit, e.code, message)
+}
+
+async fn repeat_now(app: &App, key: &str) -> Result<u8> {
+    refuse_inside_agent("repeat-now")?;
+    let conn = app.conn().await?;
+    let id = match resolve_todo(&conn, key, false).await? {
+        Ok(t) => t.id,
+        Err(id) => id,
+    };
+    let info: NodeInfo = conn.call(methods::NODE_INFO, json!({})).await?;
+    if !info.capabilities.todo_repeat_interval {
+        return Err(CliError::general("this node's daemon is too old for repeat-now; update anycon on that node"));
+    }
+    let t: Todo = conn.call(methods::TODO_REPEAT_NOW, TodoIdParams { id }).await.map_err(friendly_repeat_now)?;
+    if app.json() {
+        app.out.json_line(&t);
+    } else {
+        println!("added {}  {}", short(&t.id), sanitize_label(&t.title, 80, ""));
     }
     Ok(0)
 }
@@ -563,6 +732,14 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
                 visible(text).lines().map(str::to_string).collect()
             },
         ),
+        TodoEventData::State { from, to, by: TodoActor { kind: TodoSourceKind::Repeat, .. } } => (
+            format!(
+                "{} -> {}: closed by the repeating item's auto-close setting after the bot decided it was done",
+                from.as_str(),
+                to.as_str()
+            ),
+            vec![],
+        ),
         TodoEventData::State { from, to, by: who } => {
             (format!("{} -> {} by {}", from.as_str(), to.as_str(), by(who)), vec![])
         }
@@ -579,7 +756,10 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         TodoEventData::TwinQuestion { question_id } => {
             (format!("bot question {}", sanitize_label(question_id, 80, "?")), vec![])
         }
-        TodoEventData::RepeatCreated { todo_id, at_ms } => {
+        TodoEventData::RepeatCreated { todo_id, at_ms, manual: true } => {
+            (format!("repeated by hand: created {} at {}Z", short(todo_id), &fmt_utc(*at_ms)[..16]), vec![])
+        }
+        TodoEventData::RepeatCreated { todo_id, at_ms, manual: false } => {
             (format!("repeated: created {} for {}Z", short(todo_id), &fmt_utc(*at_ms)[..16]), vec![])
         }
         TodoEventData::RepeatSkipped { at_ms } => {
@@ -771,6 +951,69 @@ mod tests {
             "",
         ] {
             assert!(parse_repeat(spec).is_err(), "{spec:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn interval_specs_parse_and_print_back() {
+        let r = parse_repeat("weekdays@09:00-18:00/2h").unwrap();
+        assert_eq!(
+            (r.kind, r.at.as_str(), r.days, r.every_min, r.until.as_deref(), r.weekday),
+            (TodoRepeatKind::Interval, "09:00", Some(TodoRepeatDays::Weekdays), Some(120), Some("18:00"), None)
+        );
+        assert_eq!(repeat_str(&r), "weekdays@09:00-18:00/2h");
+        let r = parse_repeat("weekly:Mon@09:00-12:00/30m").unwrap();
+        assert_eq!((r.days, r.weekday, r.every_min), (Some(TodoRepeatDays::Weekly), Some(1), Some(30)));
+        assert_eq!(repeat_str(&r), "weekly:mon@09:00-12:00/30m");
+        assert_eq!(repeat_str(&parse_repeat("daily@00:00-23:59/90m").unwrap()), "daily@00:00-23:59/90m");
+        assert_eq!(parse_repeat("daily@09:00-18:00/15m").unwrap().every_min, Some(15));
+        assert_eq!(parse_repeat("daily@09:00-23:00/12h").unwrap().every_min, Some(720));
+        for spec in [
+            "daily@09:00-18:00",
+            "daily@09:00/2h",
+            "daily@09:00-18:00/2",
+            "daily@09:00-18:00/2d",
+            "daily@09:00-18:00/h",
+            "daily@09:00-18:00/14m",
+            "daily@09:00-18:00/13h",
+            "daily@09:00-18:00/0m",
+            "daily@18:00-09:00/2h",
+            "daily@09:00-09:00/15m",
+            "weekly@09:00-18:00/2h",
+            "weekly:xyz@09:00-18:00/2h",
+            "monthly@09:00-18:00/2h",
+            "daily@9:00-18:00/2h",
+            // 多字节的单位：要报写法不对，不能 panic
+            "daily@09:00-18:00/2时",
+            "daily@09:00-18:00/时",
+            "daily@09:00-18:00/+2h",
+        ] {
+            let e = parse_repeat(spec).expect_err(spec);
+            assert_eq!(e.exit, crate::error::EXIT_USAGE, "{spec}");
+        }
+        // 错误信息列出所有写法
+        let msg = parse_repeat("nope").unwrap_err().message;
+        assert!(msg.contains("weekly:mon@09:00") && msg.contains("weekdays@09:00-18:00/2h"), "{msg}");
+    }
+
+    #[test]
+    fn the_repeat_cell_shows_auto_close() {
+        let mut r = parse_repeat("weekdays@09:00-18:00/2h").unwrap();
+        r.auto_close = true;
+        r.next_ms = parse_utc("2026-12-04T10:30Z");
+        assert_eq!(repeat_cell(&r), "weekdays@09:00-18:00/2h auto-close next 2026-12-04 10:30Z");
+    }
+
+    #[test]
+    fn repeat_now_refusals_are_explained_with_the_open_copy() {
+        let mut e = CliError::usage("id: previous_open");
+        e.reason = Some("previous_open".into());
+        e.todo_id = Some("12345678-aaaa-bbbb-cccc-1234567890ab".into());
+        assert!(friendly_repeat_now(e).message.contains("12345678"));
+        for reason in ["not_template", "closed", "unreviewed", "too_many"] {
+            let mut e = CliError::usage(format!("id: {reason}"));
+            e.reason = Some(reason.into());
+            assert!(!friendly_repeat_now(e).message.starts_with("id:"), "{reason}");
         }
     }
 

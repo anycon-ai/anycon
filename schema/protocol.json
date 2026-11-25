@@ -3819,6 +3819,11 @@
           "description": "支持周期项（`Todo.repeat`，docs/spec/daemon.md § 26.9）。旧 daemon 没有这个字段，读作 false。",
           "type": "boolean"
         },
+        "todo_repeat_interval": {
+          "default": false,
+          "description": "周期项支持 `kind = interval`、`auto_close`、`todo.repeat_now` 和 `repeat_created.manual`（docs/spec/daemon.md § 26.9）。\n旧 daemon 没有这个字段，读作 false。",
+          "type": "boolean"
+        },
         "twin": {
           "default": false,
           "description": "支持 Bot 的调度和 RPC。",
@@ -5855,6 +5860,13 @@
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "todo_id": {
+          "description": "指向另一项清单项：`todo.repeat_now` 被拒（`reason = \"previous_open\"`）时，还没关闭的那一份复制出来的项的 id。",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -8689,7 +8701,7 @@
           "type": "object"
         },
         {
-          "description": "周期项（模板）到点复制出了一项；`at_ms` 是这一次规则上的时间。",
+          "description": "周期项（模板）到点复制出了一项；`at_ms` 是这一次规则上的时间。\n`manual = true`：人用 `todo.repeat_now` 手动执行的一次，`at_ms` 是执行的时刻。",
           "properties": {
             "at_ms": {
               "format": "uint64",
@@ -8699,6 +8711,9 @@
             "kind": {
               "const": "repeat_created",
               "type": "string"
+            },
+            "manual": {
+              "type": "boolean"
             },
             "todo_id": {
               "type": "string"
@@ -9063,7 +9078,7 @@
           "type": "object"
         },
         {
-          "description": "周期项（模板）到点复制出了一项；`at_ms` 是这一次规则上的时间。",
+          "description": "周期项（模板）到点复制出了一项；`at_ms` 是这一次规则上的时间。\n`manual = true`：人用 `todo.repeat_now` 手动执行的一次，`at_ms` 是执行的时刻。",
           "properties": {
             "at_ms": {
               "format": "uint64",
@@ -9073,6 +9088,9 @@
             "kind": {
               "const": "repeat_created",
               "type": "string"
+            },
+            "manual": {
+              "type": "boolean"
             },
             "todo_id": {
               "type": "string"
@@ -9362,6 +9380,30 @@
           "description": "`HH:MM`，`00:00`–`23:59`，本地时间。",
           "type": "string"
         },
+        "auto_close": {
+          "description": "Bot 对这个模板复制出来的项执行 `done` 时，daemon 直接把那一项关闭（docs/spec/daemon.md § 26.9）；缺省 false，false 时不出现。\n任何一种规则都能带。",
+          "type": "boolean"
+        },
+        "days": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TodoRepeatDays"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`kind = interval` 时必填（别的种类不能带）：在哪些日子里生效。"
+        },
+        "every_min": {
+          "description": "`kind = interval` 时必填（别的种类不能带）：两次之间隔多少分钟，15–720。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "kind": {
           "$ref": "#/definitions/TodoRepeatKind"
         },
@@ -9374,8 +9416,15 @@
             "null"
           ]
         },
+        "until": {
+          "description": "`kind = interval` 时必填（别的种类不能带）：当天最后一个时间点不晚于它，`HH:MM`，同一天内严格晚于 `at`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "weekday": {
-          "description": "1–7，周一 = 1（ISO）；`kind = weekly` 时必填，别的种类不能带。",
+          "description": "1–7，周一 = 1（ISO）；`kind = weekly`、或 `kind = interval` 且 `days = weekly` 时必填，别的情况不能带。",
           "format": "uint8",
           "maximum": 255,
           "minimum": 0,
@@ -9390,6 +9439,31 @@
         "at"
       ],
       "type": "object"
+    },
+    "TodoRepeatDays": {
+      "description": "`kind = interval` 的规则在哪些日子里生效（`TodoRepeat.days`）。",
+      "oneOf": [
+        {
+          "const": "daily",
+          "description": "每天。",
+          "type": "string"
+        },
+        {
+          "const": "weekdays",
+          "description": "周一到周五。",
+          "type": "string"
+        },
+        {
+          "const": "weekly",
+          "description": "每周的 `weekday`。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的日子；daemon 自己不产生它，请求里带了会被拒绝。",
+          "type": "string"
+        }
+      ]
     },
     "TodoRepeatKind": {
       "description": "周期项的重复方式（`TodoRepeat.kind`）。",
@@ -9407,6 +9481,11 @@
         {
           "const": "weekly",
           "description": "每周的 `weekday`。",
+          "type": "string"
+        },
+        {
+          "const": "interval",
+          "description": "在 `days` 指定的日子里，从 `at` 起每隔 `every_min` 分钟一次、直到 `until`（含）。单独成一种而不是给其它三种加字段：\n旧客户端读到它显示「重复规则看不懂」，而不是把它当成一天一次的规则、显示一个错误的时间。",
           "type": "string"
         },
         {
@@ -13040,6 +13119,12 @@
       "name": "todo.dispatch",
       "params": "TodoDispatchParams",
       "result": "TodoDispatchResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.repeat_now",
+      "params": "TodoIdParams",
+      "result": "Todo"
     },
     {
       "direction": "request",

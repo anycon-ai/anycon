@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { todoItem } from '@/test/factories'
 import { flatOrder, groupTodos, openCount } from './list'
 import { overlayItem } from './outbox'
-import { formOf, inputOf, repeatError, repeatFromInput, repeatInputError, repeatTemplateOf, repeatToInput } from './repeat'
+import { formOf, inputOf, repeatError, repeatFromInput, repeatInputError, repeatInputProblem, repeatTemplateOf, repeatToInput } from './repeat'
 import { isOtherSource, isRepeatSource } from './source'
 import type { OutboxRecord, ViewTodo } from './types'
 import { draftError } from './validate'
@@ -21,9 +21,43 @@ describe('the rule as a draft string', () => {
     }
     expect(repeatFromInput('')).toBeNull()
     expect(formOf('')).toMatchObject({ choice: 'none' })
-    expect(formOf('weekly:3@10:15')).toEqual({ choice: 'weekly', weekday: 3, at: '10:15' })
-    expect(inputOf({ choice: 'weekly', weekday: 2, at: '08:00' })).toBe('weekly:2@08:00')
-    expect(inputOf({ choice: 'none', weekday: 2, at: '08:00' })).toBe('')
+    const single = { every: 0, until: '18:00', autoClose: false }
+    expect(formOf('weekly:3@10:15')).toEqual({ choice: 'weekly', weekday: 3, at: '10:15', ...single })
+    expect(inputOf({ choice: 'weekly', weekday: 2, at: '08:00', ...single })).toBe('weekly:2@08:00')
+    expect(inputOf({ choice: 'none', weekday: 2, at: '08:00', ...single })).toBe('')
+  })
+
+  it('round-trips an interval rule and auto-close, and sends only the fields that apply', () => {
+    const interval = { kind: 'interval', days: 'weekdays', at: '09:00', every_min: 120, until: '18:00' } as const
+    expect(repeatToInput(interval)).toBe('weekdays@09:00-18:00/120')
+    expect(repeatToInput({ ...interval, days: 'weekly', weekday: 2, auto_close: true })).toBe('weekly:2@09:00-18:00/120#close')
+    expect(repeatToInput({ kind: 'daily', at: '09:00', auto_close: true })).toBe('daily@09:00#close')
+    for (const r of [interval, { ...interval, days: 'weekly', weekday: 6, auto_close: true }, { kind: 'weekly', at: '18:00', weekday: 5, auto_close: true }, { kind: 'daily', at: '09:00' }] as const) {
+      expect(repeatFromInput(repeatToInput(r))).toEqual(r)
+    }
+    expect(formOf('weekdays@09:00-17:30/90#close')).toEqual({ choice: 'weekdays', weekday: 1, at: '09:00', every: 90, until: '17:30', autoClose: true })
+    // 只选「每隔」、没动「到」：缺省 18:00
+    expect(inputOf({ ...formOf('daily@09:00'), every: 60 })).toBe('daily@09:00-18:00/60')
+    // 间隔改回「只一次」：不再带「到」和间隔
+    expect(inputOf({ ...formOf('daily@09:00-18:00/60#close'), every: 0 })).toBe('daily@09:00#close')
+    // 不认识的天（更新的节点给的）读成没有规则
+    expect(repeatToInput({ kind: 'interval', days: 'unknown', at: '09:00', every_min: 60, until: '18:00' })).toBe('')
+  })
+
+  it('checks an interval like the node does: the end is later than the start, the interval is 15 to 720 minutes', () => {
+    expect(repeatInputError('daily@09:00-18:00/120')).toBe(false)
+    expect(repeatInputProblem('daily@09:00-09:00/120')).toBe('until')
+    expect(repeatInputProblem('daily@18:00-09:00/120')).toBe('until')
+    expect(repeatInputProblem('daily@09:00-/120')).toBe('until')
+    expect(repeatInputProblem('daily@09:00-18:00/14')).toBe('every')
+    expect(repeatInputProblem('daily@09:00-18:00/721')).toBe('every')
+    expect(repeatInputProblem('daily@9:00-18:00/60')).toBe('at')
+    expect(repeatError({ kind: 'interval', days: 'daily', at: '09:00', every_min: 60, until: '18:00' })).toBe(false)
+    expect(repeatError({ kind: 'interval', at: '09:00', every_min: 60, until: '18:00' })).toBe(true)
+    expect(repeatError({ kind: 'interval', days: 'weekly', at: '09:00', every_min: 60, until: '18:00' })).toBe(true)
+    expect(repeatError({ kind: 'interval', days: 'daily', at: '09:00', every_min: 60, until: '08:00' })).toBe(true)
+    expect(repeatError({ kind: 'daily', at: '09:00', every_min: 60 })).toBe(true)
+    expect(draftError({ title: 't', body: '', repeat: { kind: 'interval', days: 'daily', at: '09:00', every_min: 5, until: '18:00' } })).toEqual({ field: 'repeat', reason: 'invalid' })
   })
 
   it('a kind this version does not know is left alone: it reads as no rule, so saving sends nothing for it', () => {

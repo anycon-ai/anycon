@@ -16,7 +16,7 @@ import { addTodo, deleteTodo } from '../service'
 import { useSupportingNodes } from '../store'
 import { parseCapture, type FieldError } from '../validate'
 import { fieldErrorText } from './errors'
-import { RepeatField, useNodeSupportsRepeat } from './RepeatBits'
+import { AutoCloseField, RepeatField, useNodeSupportsInterval, useNodeSupportsRepeat } from './RepeatBits'
 import { repeatFromInput } from '../repeat'
 
 /** 本地时间的 `datetime-local` 值 → 毫秒；空 / 不合法 → undefined。 */
@@ -60,6 +60,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   // 缺省节点：选中的、支持清单的节点里上次用过的，没有就第一个
   const nodeId = (pickedNode && supporting.includes(pickedNode) ? pickedNode : null) ?? pickDefaultNode(supporting, space, lastNode, lastBySpace)
   const repeatSupported = useNodeSupportsRepeat(nodeId)
+  const intervalSupported = useNodeSupportsInterval(nodeId)
   const projects = useMemo(() => (nodeId ? (nodes[nodeId]?.projects ?? []).map((p) => p.name) : []), [nodes, nodeId])
 
   useEffect(() => {
@@ -209,8 +210,15 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
         {repeatSupported ? (
           <Opt label={t('todos.repeat.label')} compact={compact}>
             {/* 网格里每个下拉等分这一格，和上面的控件一样宽 */}
-            <RepeatField value={repeat} onChange={(v) => { setRepeat(v); setError(null) }} testId="capture-repeat" className={compact ? undefined : 'grid auto-cols-fr grid-flow-col gap-1.5'} />
+            <RepeatField value={repeat} onChange={(v) => { setRepeat(v); setError(null) }} intervalSupported={intervalSupported} testId="capture-repeat" className={compact || intervalSupported ? undefined : 'grid auto-cols-fr grid-flow-col gap-1.5'} />
           </Opt>
+        ) : null}
+        {/* 桌面输入条（compact）里放不下，只在完整的表单里有 */}
+        {!compact && intervalSupported && repeat !== '' ? (
+          <>
+            <span aria-hidden />
+            <AutoCloseField value={repeat} onChange={(v) => { setRepeat(v); setError(null) }} testId="capture-repeat" />
+          </>
         ) : null}
       </div>
       {supporting.length > 1 && nodeId ? (

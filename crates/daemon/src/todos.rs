@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use anycon_protocol::{
     methods, ClearableTodoField, ErrorCode, RpcError, Todo, TodoAddParams, TodoChanged, TodoDeleteParams,
-    TodoEventData, TodoHandler, TodoIdParams, TodoListParams, TodoListResult, TodoRepeat, TodoRepeatKind, TodoSource,
-    TodoSourceKind, TodoState, TodoUpdateParams,
+    TodoEventData, TodoHandler, TodoIdParams, TodoListParams, TodoListResult, TodoRepeat, TodoRepeatDays,
+    TodoRepeatKind, TodoSource, TodoSourceKind, TodoState, TodoUpdateParams,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -28,6 +28,9 @@ pub const MAX_TITLE_CHARS: usize = 200;
 pub const MAX_BODY_BYTES: usize = 16 * 1024;
 /// 项目名的字符数上限（不校验项目存在，只防止塞进超长的东西）。
 pub const MAX_PROJECT_CHARS: usize = 200;
+/// 间隔规则两次之间的分钟数范围。
+pub const MIN_EVERY_MIN: u32 = 15;
+pub const MAX_EVERY_MIN: u32 = 720;
 /// 没关闭的项最多这么多。
 pub const MAX_OPEN: i64 = 1000;
 /// 没被收下（`unreviewed`）的项最多这么多：agent 占不满清单。
@@ -123,20 +126,74 @@ fn check_handler(caller: &Caller, agent: bool, handler: Option<TodoHandler>, unr
     }
 }
 
-/// 周期规则：`at` 是 `HH:MM`（00:00–23:59），`weekly` 必须带 1–7 的 `weekday`，另外两种不能带。
+/// 周期规则的字段（`data.reason` 是出问题的字段名）：
+/// - `at` 是 `HH:MM`（00:00–23:59）；
+/// - `weekday`：`weekly`、或 `interval` 且 `days = weekly` 时必须是 1–7，别的情况不能带；
+/// - `interval` 必须带 `days`（不认识的值 → `kind`）、`every_min`（15–720）、`until`（`HH:MM`，同一天内严格晚于 `at`），别的种类不能带这三项。
 fn check_repeat(r: &TodoRepeat) -> RpcResult<()> {
     if r.kind == TodoRepeatKind::Unknown {
         return Err(invalid("repeat", Some("kind"), "unknown repeat kind".into()));
     }
-    if crate::todo_repeat::parse_at(&r.at).is_none() {
+    let Some(at) = crate::todo_repeat::parse_at(&r.at) else {
         return Err(invalid("repeat", Some("at"), "repeat.at must be HH:MM between 00:00 and 23:59".into()));
+    };
+    let weekday_needed = match r.kind {
+        TodoRepeatKind::Weekly => true,
+        TodoRepeatKind::Interval => {
+            let Some(days) = r.days else {
+                return Err(invalid("repeat", Some("days"), "an interval repeat needs days".into()));
+            };
+            if days == TodoRepeatDays::Unknown {
+                return Err(invalid("repeat", Some("kind"), "unknown repeat days".into()));
+            }
+            let every = r.every_min.filter(|e| (MIN_EVERY_MIN..=MAX_EVERY_MIN).contains(e));
+            if every.is_none() {
+                return Err(invalid(
+                    "repeat",
+                    Some("every_min"),
+                    format!("repeat.every_min must be between {MIN_EVERY_MIN} and {MAX_EVERY_MIN} minutes"),
+                ));
+            }
+            let until = r.until.as_deref().and_then(crate::todo_repeat::parse_at);
+            if until.is_none_or(|u| u.0 * 60 + u.1 <= at.0 * 60 + at.1) {
+                return Err(invalid(
+                    "repeat",
+                    Some("until"),
+                    "repeat.until must be HH:MM later than repeat.at on the same day".into(),
+                ));
+            }
+            days == TodoRepeatDays::Weekly
+        }
+        _ => false,
+    };
+    if r.kind != TodoRepeatKind::Interval {
+        if r.days.is_some() {
+            return Err(invalid("repeat", Some("days"), "only an interval repeat takes days".into()));
+        }
+        if r.every_min.is_some() {
+            return Err(invalid("repeat", Some("every_min"), "only an interval repeat takes every_min".into()));
+        }
+        if r.until.is_some() {
+            return Err(invalid("repeat", Some("until"), "only an interval repeat takes until".into()));
+        }
     }
-    match (r.kind, r.weekday) {
-        (TodoRepeatKind::Weekly, Some(1..=7)) | (TodoRepeatKind::Daily | TodoRepeatKind::Weekdays, None) => Ok(()),
-        (TodoRepeatKind::Weekly, _) => {
+    match (weekday_needed, r.weekday) {
+        (true, Some(1..=7)) | (false, None) => Ok(()),
+        (true, _) => {
             Err(invalid("repeat", Some("weekday"), "a weekly repeat needs weekday 1 (Monday) to 7 (Sunday)".into()))
         }
-        _ => Err(invalid("repeat", Some("weekday"), "only a weekly repeat takes a weekday".into())),
+        (false, Some(_)) => Err(invalid("repeat", Some("weekday"), "only a weekly repeat takes a weekday".into())),
+    }
+}
+
+/// 两条规则的时间安排是否相同（`auto_close` 不算：改它不改变下一次什么时候复制）。
+fn same_schedule(a: &Option<TodoRepeat>, b: &Option<TodoRepeat>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            TodoRepeat { auto_close: false, ..a.clone() } == TodoRepeat { auto_close: false, ..b.clone() }
+        }
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -213,10 +270,20 @@ fn repeat_of_row(r: &sqlx::sqlite::SqliteRow) -> Option<TodoRepeat> {
             "daily" => TodoRepeatKind::Daily,
             "weekdays" => TodoRepeatKind::Weekdays,
             "weekly" => TodoRepeatKind::Weekly,
+            "interval" => TodoRepeatKind::Interval,
             _ => TodoRepeatKind::Unknown,
         },
         at: r.get::<Option<String>, _>("repeat_at").unwrap_or_default(),
         weekday: r.get::<Option<i64>, _>("repeat_weekday").map(|v| v as u8),
+        days: r.get::<Option<String>, _>("repeat_days").map(|d| match d.as_str() {
+            "daily" => TodoRepeatDays::Daily,
+            "weekdays" => TodoRepeatDays::Weekdays,
+            "weekly" => TodoRepeatDays::Weekly,
+            _ => TodoRepeatDays::Unknown,
+        }),
+        every_min: r.get::<Option<i64>, _>("repeat_every_min").map(|v| v as u32),
+        until: r.get("repeat_until"),
+        auto_close: r.get::<i64, _>("repeat_auto_close") != 0,
         next_ms: None,
     })
 }
@@ -241,7 +308,8 @@ where
 {
     sqlx::query(
         "UPDATE todos SET title = ?, body = ?, project = ?, state = ?, due_ms = ?, unreviewed = ?, \
-         updated_ms = ?, closed_ms = ?, handler = ?, repeat_kind = ?, repeat_at = ?, repeat_weekday = ? WHERE id = ?",
+         updated_ms = ?, closed_ms = ?, handler = ?, repeat_kind = ?, repeat_at = ?, repeat_weekday = ?, \
+         repeat_days = ?, repeat_every_min = ?, repeat_until = ?, repeat_auto_close = ? WHERE id = ?",
     )
     .bind(&t.title)
     .bind(&t.body)
@@ -255,6 +323,10 @@ where
     .bind(t.repeat.as_ref().map(|r| r.kind.as_str()))
     .bind(t.repeat.as_ref().map(|r| r.at.clone()))
     .bind(t.repeat.as_ref().and_then(|r| r.weekday).map(i64::from))
+    .bind(t.repeat.as_ref().and_then(|r| r.days).map(|d| d.as_str()))
+    .bind(t.repeat.as_ref().and_then(|r| r.every_min).map(i64::from))
+    .bind(t.repeat.as_ref().and_then(|r| r.until.clone()))
+    .bind(t.repeat.as_ref().is_some_and(|r| r.auto_close) as i64)
     .bind(&t.id)
     .execute(db)
     .await?;
@@ -275,8 +347,9 @@ where
     }
     sqlx::query(
         "INSERT INTO todos (id, title, body, project, state, due_ms, source_kind, source_device, source_session, \
-         unreviewed, created_ms, updated_ms, closed_ms, handler, repeat_kind, repeat_at, repeat_weekday, source_todo) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+         unreviewed, created_ms, updated_ms, closed_ms, handler, repeat_kind, repeat_at, repeat_weekday, source_todo, \
+         repeat_days, repeat_every_min, repeat_until, repeat_auto_close) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&t.id)
     .bind(&t.title)
@@ -296,6 +369,10 @@ where
     .bind(t.repeat.as_ref().map(|r| r.at.clone()))
     .bind(t.repeat.as_ref().and_then(|r| r.weekday).map(i64::from))
     .bind(&t.source.todo_id)
+    .bind(t.repeat.as_ref().and_then(|r| r.days).map(|d| d.as_str()))
+    .bind(t.repeat.as_ref().and_then(|r| r.every_min).map(i64::from))
+    .bind(t.repeat.as_ref().and_then(|r| r.until.clone()))
+    .bind(t.repeat.as_ref().is_some_and(|r| r.auto_close) as i64)
     .execute(db)
     .await?;
     Ok(())
@@ -737,7 +814,9 @@ pub async fn update(c: &Ctx, caller: &Caller, p: TodoUpdateParams) -> RpcResult<
     new.updated_ms = next_updated_ms(now, old.updated_ms);
     let mut tx = c.store.pool().begin().await.map_err(StoreError::from).map_err(internal)?;
     save_todo_on(&mut *tx, &new).await.map_err(internal)?;
-    if new.repeat != old.repeat || (new.repeat.is_some() && old.state.is_closed() && !new.state.is_closed()) {
+    if !same_schedule(&new.repeat, &old.repeat)
+        || (new.repeat.is_some() && old.state.is_closed() && !new.state.is_closed())
+    {
         // 规则变了、或关闭的模板重新打开：从现在起重新算下一次，不补设置（重开）之前的时间点
         let last = new.repeat.is_some().then(|| c.judge.clock().now());
         crate::todo_repeat::set_last_on(&mut tx, &new.id, last).await.map_err(internal)?;

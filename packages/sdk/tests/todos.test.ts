@@ -94,6 +94,25 @@ for (const impl of cryptoImpls) {
       })
     })
 
+    it('repeatNow：发 todo.repeat_now，得到复制出的一项；不是周期项 → invalid（reason = not_template）', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const tpl = await node.todos.add({
+          title: 'patrol',
+          repeat: { kind: 'interval', days: 'weekdays', at: '09:00', every_min: 120, until: '18:00' },
+        })
+        const copy = await node.todos.repeatNow(tpl.id)
+        assert.deepEqual(paramsOf(env, 'todo.repeat_now'), [{ id: tpl.id }])
+        assert.equal(copy.source.kind, 'repeat')
+        assert.equal(copy.source.todo_id, tpl.id)
+        const plain = await node.todos.add({ title: 'plain' })
+        await assert.rejects(node.todos.repeatNow(plain.id), (e: unknown) => {
+          assert.ok(e instanceof RpcError)
+          assert.equal(e.reason, 'not_template')
+          return true
+        })
+      })
+    })
+
     it('list / update / delete：参数原样发出，返回值带类型；不存在的项是 RpcError not_found', async () => {
       await withNode(await impl.load(), async (node, env) => {
         const a = await node.todos.add({ title: 'a' })

@@ -46,6 +46,10 @@ export class RpcCallError extends Error {
   get cap(): number | undefined {
     return this.rpc?.data?.cap ?? undefined
   }
+  /** 指向另一项清单项：`todo.repeat_now` 被拒（`reason = previous_open`）时，还没关闭的那一份复制出来的项。 */
+  get todoId(): string | undefined {
+    return this.rpc?.data?.todo_id ?? undefined
+  }
 }
 
 /**

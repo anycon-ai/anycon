@@ -17,11 +17,13 @@ pub struct CliError {
     pub message: String,
     /// daemon 错误的 `data.reason`（`busy` + `quota` 之类）：同一个错误码下的细分原因。不是 RPC 错误时为 `None`。
     pub reason: Option<String>,
+    /// daemon 错误的 `data.todo_id`（`todo.repeat_now` 的 `previous_open` 指向还没关闭的那份）。
+    pub todo_id: Option<String>,
 }
 
 impl CliError {
     pub fn new(exit: u8, code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { exit, code: code.into(), message: message.into(), reason: None }
+        Self { exit, code: code.into(), message: message.into(), reason: None, todo_id: None }
     }
     pub fn general(message: impl Into<String>) -> Self {
         Self::new(EXIT_ERROR, "error", message)
@@ -95,7 +97,8 @@ impl From<RpcError> for CliError {
             _ => EXIT_ERROR,
         };
         let reason = e.data.as_ref().and_then(|d| d.reason.clone());
-        CliError { exit, code: code.map(code_str).unwrap_or("error").to_string(), message: msg, reason }
+        let todo_id = e.data.as_ref().and_then(|d| d.todo_id.clone());
+        CliError { exit, code: code.map(code_str).unwrap_or("error").to_string(), message: msg, reason, todo_id }
     }
 }
 

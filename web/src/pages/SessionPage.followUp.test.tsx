@@ -1,5 +1,5 @@
 // 会话页上的「完成后提醒」（web.md § 4.6.1）：顶栏开关、输入区上方的条、输入框旁的小开关，以及已读上报。
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Event, SessionSummary } from '@/protocol'
@@ -75,8 +75,19 @@ describe('SessionPage: follow-up', () => {
     seed({ summary: { follow_up: true } })
     render(<SessionPage sessionId={SID} />)
     const clear = await screen.findByTestId('follow-up-clear')
-    expect(clear).toHaveTextContent('Cancel reminder')
+    expect(clear).toHaveAccessibleName('Cancel reminder')
     await user.click(clear)
+    await waitFor(() => expect(calls('session.set_marks')).toEqual([{ session_id: SID, follow_up: false }]))
+    await waitFor(() => expect(screen.queryByTestId('follow-up-bar')).toBeNull())
+  })
+
+  it('clicking the flag in the bar also clears the mark', async () => {
+    const user = userEvent.setup()
+    seed({ summary: { follow_up: true } })
+    render(<SessionPage sessionId={SID} />)
+    const bar = await screen.findByTestId('follow-up-bar')
+    const flag = within(bar).getAllByRole('button', { name: 'Cancel reminder' }).find((b) => b.dataset.testid !== 'follow-up-clear')!
+    await user.click(flag)
     await waitFor(() => expect(calls('session.set_marks')).toEqual([{ session_id: SID, follow_up: false }]))
     await waitFor(() => expect(screen.queryByTestId('follow-up-bar')).toBeNull())
   })
@@ -101,7 +112,7 @@ describe('SessionPage: follow-up', () => {
     expect(bar).toHaveTextContent('You will be notified when this session finishes.')
     expect(bar).not.toHaveTextContent('waiting for you')
     expect(screen.queryByText('Mark done')).toBeNull()
-    expect(screen.getByTestId('follow-up-clear')).toHaveTextContent('Cancel reminder')
+    expect(screen.getByTestId('follow-up-clear')).toHaveAccessibleName('Cancel reminder')
   })
 
   it('opening a marked session does not clear the mark', async () => {

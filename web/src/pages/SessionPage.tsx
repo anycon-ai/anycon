@@ -266,6 +266,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
   const mainView: MainView = (choice === 'changes' && gitAvailable) || (choice === 'preview' && previewTemplateOk !== null) ? choice : 'chat'
   const showChanges = mainView === 'changes'
   const showPreview = mainView === 'preview' && previewTemplateOk !== null
+  const showFollowUp = followUp && !showChanges && !showPreview && !archived
   const openChanges = (): void => setMainChoice({ sessionId, view: 'changes' })
   const syncBlock = view ? latestSyncBlock(view.blocks) : null
   const eventConflictFiles = syncBlock?.action === 'sync_conflicts' ? syncBlock.files : undefined
@@ -539,18 +540,21 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
             />
           ) : null}
 
-          {backgroundCount > 0 ? (
-            // 低调的一个 chip：有后台任务（workflow、后台子 agent / 命令）在干活，点开列出。会话已经 idle 时，结束后 agent 会自己再跑一轮
-            <div className="chat-column flex shrink-0 items-center pt-2" data-testid="background-tasks" data-count={backgroundCount}>
-              <BackgroundTasksChip tasks={liveTasks} count={backgroundCount} idle={!running} />
+          {backgroundCount > 0 || showFollowUp ? (
+            <div className="chat-column flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 pt-2">
+              {backgroundCount > 0 ? (
+                // 低调的一个 chip：有后台任务（workflow、后台子 agent / 命令）在干活，点开列出。会话已经 idle 时，结束后 agent 会自己再跑一轮
+                <div className="flex min-w-0 items-center" data-testid="background-tasks" data-count={backgroundCount}>
+                  <BackgroundTasksChip tasks={liveTasks} count={backgroundCount} idle={!running} />
+                </div>
+              ) : null}
+              {showFollowUp ? <FollowUpBar running={isActiveStatus(status) || backgroundTasks > 0} busy={followUpBusy} disabled={offline} onClear={() => changeFollowUp(false)} /> : null}
             </div>
           ) : null}
 
           <div className="sr-only" aria-live="polite" role="status">
             {announce}
           </div>
-
-          {followUp && !showChanges && !showPreview && !archived ? <FollowUpBar running={isActiveStatus(status) || backgroundTasks > 0} busy={followUpBusy} disabled={offline} onClear={() => changeFollowUp(false)} /> : null}
 
           {showChanges ? (
             // 「改动」视图没有输入框：分支 chip 照样留在底部

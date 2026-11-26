@@ -881,7 +881,8 @@ SQLite（WAL）。全部表：
 | `enroll_password` | 节点口令（§ 15.1）：salt（16 字节）、Argon2id 输出（32 字节）、set_at、set_by；连续失败次数、下次允许尝试的时间、是否锁定。最多一行。接入会话和接入码只在内存 |
 | `agent_cache` | agent id、AgentInfo(JSON)、diagnose 文本、probed_at |
 | `preview_labels` | 预览 label（§ 19.2）：port（主键）、label（唯一）、created_at_ms |
-| `preview_tickets` | 预览票据：ticket_id（主键）、label、port、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
+| `preview_dir_labels` | 目录预览的 label（§ 19.2、§ 19.6）：dir（主键）、label（唯一）、created_at_ms |
+| `preview_tickets` | 预览票据：ticket_id（主键）、label、port、dir（目录票据才有，这时 port 记 0）、psk、device_id（签发它的设备）、session_id（可空）、created_at_ms、expires_at_ms |
 | `todos` | 清单（§ 21.4）：id（主键）、title、body、project、state、handler（缺省 me）、due_ms、source_kind、source_device、source_session、unreviewed、created_ms、updated_ms、closed_ms |
 | `todo_sessions` / `todo_events` | 清单项派出的会话和「经过」（§ 22.8）；`sessions.todo_id` 是会话的来源项 |
 | `rules` | 决策档案的规则（§ 23.7，迁移 `0006_rules.sql`）：id（主键）、text、project、status、sync、source_kind、source_session、source_seq、source_request、source_device、created_ms、updated_ms、last_injected_ms、last_referenced_ms、stale、active_since_ms（`0012_rule_stale.sql`）。不受 `history_retention` 影响 |
@@ -1030,21 +1031,23 @@ v0.1 另含：图片附件（§ 7.10，ADR-35）；账号内接入（§ 15.1，[
 
 ## 19. 预览
 
-[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。daemon 给已配对设备签发预览票据，接受预览页（浏览器里的 service worker）的隧道，把隧道里的 HTTP 请求和 WebSocket 转给本机端口。方法见 [protocol.md § 5.7](../protocol.md#57-预览adr-39)，隧道格式见 [protocol.md § 11](../protocol.md#11-预览隧道)。
+[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。daemon 给已配对设备签发预览票据，接受预览页（浏览器里的 service worker）的隧道，把隧道里的 HTTP 请求和 WebSocket 转给本机端口；目录预览的票据（[ADR-62](../decisions.md#adr-62-消息里的本地文件链接在应用内打开html-报告经预览隧道按项目目录提供)）由 daemon 自己用项目目录里的文件回答（§ 19.6）。方法见 [protocol.md § 5.7](../protocol.md#57-预览adr-39)，隧道格式见 [protocol.md § 11](../protocol.md#11-预览隧道)。
 
 ### 19.1 配置与能力
 
-`[preview]`（§ 3），整段热加载。`node.info.capabilities.preview = preview.enabled`。改成 `enabled = false` 时：已有的票据保留（重新打开后还能用），对全部隧道发 `GOAWAY { disabled }` 并断开，`preview.open` 回 `forbidden`（`data.reason = "disabled"`），新握手回 `disabled`。`allow_ports` 里的端口必须是 1–65535。
+`[preview]`（§ 3），整段热加载。`node.info.capabilities.preview = preview.enabled`，`capabilities.preview_dir` 也等于它（目录预览跟着同一个开关，没有单独的配置）。改成 `enabled = false` 时：已有的票据保留（重新打开后还能用），对全部隧道发 `GOAWAY { disabled }` 并断开，`preview.open` 回 `forbidden`（`data.reason = "disabled"`），新握手回 `disabled`。`allow_ports` 里的端口必须是 1–65535。
 
 ### 19.2 label 与票据
 
-- **label**：每个端口一个，第一次 `preview.open` 这个端口时生成（16 字节随机数 → 26 位小写 base32，`tunnel::label_from_bytes`），存库，之后固定不变。这样同一个端口的预览 origin 不变，dev app 存在浏览器里的状态（localStorage 等）下次还在，行为和 `localhost:<端口>` 一样
+- **label**：每个端口一个，第一次 `preview.open` 这个端口时生成（16 字节随机数 → 26 位小写 base32，`tunnel::label_from_bytes`），存库，之后固定不变。这样同一个端口的预览 origin 不变，dev app 存在浏览器里的状态（localStorage 等）下次还在，行为和 `localhost:<端口>` 一样。目录预览每个 `dir`（项目名或 `.scratch`）也一个，规则相同，按 `dir` 的字面值记：项目改名之后是新的 label。hub 给每个节点至多绑 256 个 label、删节点才释放，所以 label 只按端口和项目分，不按子目录或 worktree 分（ADR-62）
 - **票据**：`preview.open` 签发。`ticket_id` 16 字节、`psk` 32 字节，都来自系统随机数；有效期 `preview.ticket_ttl`。存库（daemon 重启后预览页能直接重连），密钥和其他密钥一样只在 daemon 的数据目录里
-- **复用**：同一设备对同一端口已有一张剩余有效期超过一半的票据时直接返回它（`reused`），避免每次点「预览」都签一张新的
+- **复用**：同一设备对同一端口（目录）已有一张剩余有效期超过一半的票据时直接返回它（`reused`），避免每次点「预览」都签一张新的
 - **上限**：每个设备至多 64 张未过期的票据，超了删最旧的（并断开用它的隧道）；daemon 同时至多 64 条隧道，超了握手回 `busy`
 - **作废**：过期（每分钟清一次，用它的隧道收到 `GOAWAY { expired }`）；`preview.close { label }`（`GOAWAY { closed }`）；吊销签发它的设备（`node.revoke_device`，`GOAWAY { revoked }`，在吊销流程里和删公钥一起做）。吊销时先等这个设备的隧道把 `GOAWAY { revoked }` 交给出站队列（最多 0.5 秒），再把 `revoke` 发给 hub：hub 收到后会以 `4004` 关掉预览连接，顺序反过来预览页就看不到原因
 
 ### 19.3 端口策略
+
+这一节只管端口票据；目录票据只看 `preview.enabled`，其余规则在 § 19.6。
 
 一个端口允许预览，当且仅当 `preview.enabled`，且满足下面任一条：
 
@@ -1073,9 +1076,9 @@ v0.1 另含：图片附件（§ 7.10，ADR-35）；账号内接入（§ 15.1，[
 
 ### 19.5 隧道和转发
 
-- **握手**：只接受已经收到 `control.preview_peer` 的对端；按 [protocol.md § 11.2](../protocol.md#112-握手) 查票据、核对 label、过期时间和端口策略，失败按原因回拒绝。一个对端同时只有一条传输，新的第一条握手消息顶掉旧的
+- **握手**：只接受已经收到 `control.preview_peer` 的对端；按 [protocol.md § 11.2](../protocol.md#112-握手) 查票据、核对 label、过期时间和端口策略（目录票据只看 `preview.enabled`；目录这时不在也放行，请求会得到 404），失败按原因回拒绝。`PreviewHello` 里端口票据给 `port`、目录票据给 `dir`。一个对端同时只有一条传输，新的第一条握手消息顶掉旧的
 - **发送**：隧道消息走 hub 出站队列，和会话传输一样保留原文、按 `seq` 重发；区别是按端到端回执释放（[protocol.md § 11.5](../protocol.md#115-流控与回执)），在途上限 8 MiB。`rate_limited { to }` 只暂停这一个对端
-- **连上游**：每个 HTTP stream 一条新的 TCP 连接，先 `127.0.0.1:<端口>` 再 `[::1]:<端口>`（Vite 在 macOS 上常常只监听 `::1`），连接超时 5 秒，连不上 `RESET { refused }`。用 HTTP/1.1；等响应头最多 120 秒（首次编译慢的框架），超时 `RESET { timeout }`
+- **连上游**（端口票据；目录票据见 § 19.6）：每个 HTTP stream 一条新的 TCP 连接，先 `127.0.0.1:<端口>` 再 `[::1]:<端口>`（Vite 在 macOS 上常常只监听 `::1`），连接超时 5 秒，连不上 `RESET { refused }`。用 HTTP/1.1；等响应头最多 120 秒（首次编译慢的框架），超时 `RESET { timeout }`
 - **改写请求头**：`host` 改成 `localhost:<端口>`；`origin` 和 `referer` 里的预览 origin 换成 `http://localhost:<端口>`；去掉逐跳头（`connection`、`keep-alive`、`proxy-*`、`te`、`trailer`、`transfer-encoding`、`upgrade`）和 `forwarded`、`x-forwarded-*`；HTTP 请求一律带 `accept-encoding: gzip`（浏览器不让 service worker 看到这个头，预览页发来的请求里通常没有它），WebSocket 握手不带
 - **改写响应头**：去掉逐跳头；`location` 是指向 `localhost` / 回环地址同一端口的绝对 URL 时改成只有路径的形式；`set-cookie` 原样交给预览页（由 service worker 的 cookie jar 处理）。上游已经是 gzip 的原样转发并标 `encoding = gzip`；没压缩、`content-type` 是文本类（`text/*`、JavaScript、JSON、XML、SVG、wasm；`text/event-stream` 除外）、没有 `content-range` 且大于 1 KiB 的，daemon 边读边 gzip（快速档，每段 sync flush，流式响应不会被攒住）。这两种情况都去掉 `content-encoding` / `content-length`。上游拒绝 WebSocket 升级时的响应原样（identity）转发
 - **WebSocket**：用上游自己的握手（daemon 生成 `sec-websocket-key`），带上改写后的头和子协议；ping / pong 两边各自应答，不进隧道；关闭码和原因原样转发
@@ -1083,6 +1086,21 @@ v0.1 另含：图片附件（§ 7.10，ADR-35）；账号内接入（§ 15.1，[
 - **卡死检测**：带帧的消息 120 秒没有被回执，就丢掉传输、发 `RESET` 帧体，让预览页重新握手（纯回执消息不算：对端空闲时本来就不回执它）
 - **握手失败**：Noise 读不了第一条（PSK 不对、钉的不是这台 daemon、消息坏了）回 `malformed`
 - **日志**：隧道建立 / 断开在 debug 级记 label 和对端 id；不记路径、头、正文、票据 id 和密钥
+
+### 19.6 目录预览
+
+[ADR-62](../decisions.md#adr-62-消息里的本地文件链接在应用内打开html-报告经预览隧道按项目目录提供)。`preview.open { dir }` 签发的票据，隧道里的每个 HTTP stream 由 daemon 自己用这个目录里的文件回答，不连任何端口。Web UI 用它打开 agent 生成的 HTML 报告（[web.md § 4.6、§ 4.7](web.md#47-文件浏览-nnodefiles)）。
+
+- **`dir`**：只有一段：项目名（关联项目也是它的名字），或 `.scratch`（主根下全部 scratch 会话的目录）。空、`.`、`..`、以 `.` 开头（`.scratch` 除外）、带 `/` `\` NUL → `invalid`（和项目名的规则一致）；不是项目 → `not_found`；按 `fs.*` 的规则解析（§ 10、§ 16），解析出来必须是目录，否则 `not_found`（还没有 scratch 会话时的 `.scratch`）。审计 `preview.open` 的 target 是 `dir`，detail 带 `kind = "dir"`（端口票据是 `"port"`）
+- **URL 路径 → 文件**：去掉 `?` 和 `#` 之后的部分，按 UTF-8 做百分号解码（解不出 → `400`）；带 NUL 或 `\` → `400`（编码过的 `%00`、`%5C` 一样）；解码之后按 `/` 分段（`%2F` 也是分隔符），空段和 `.` 跳过，有 `..` → `400`（浏览器自己会消掉 `..`，带着它来的请求不是浏览器发的）。scratch 会话的文件是 `/<会话 id>/…`，worktree 会话的文件是 `/.anycon/worktrees/<名字>/…`
+- **隐藏文件**：有任何一段以 `.` 开头 → `404`，只有开头的 `.anycon/worktrees/<名字>`（前两段）不算；`<名字>` 和之后的段照样检查。解析之后（canonicalize）相对目录的路径再按同一条规则查一遍：指向 `.git` 之类的符号链接同样 `404`。这一条比 `fs.read` 严：报告里的脚本能经隧道读文件，项目里的密钥最常放在这些地方
+- **边界**：每个请求都重新解析 `dir`（项目被改名、移走之后就是 `404`）；目标路径 canonicalize 之后必须在 `dir` 里（指向外面的符号链接 `404`，哪怕还在 workspace 根里），然后从 `dir` 开始逐段 `O_NOFOLLOW` 打开（`fsopen::open_file_in`，和 `fs.read` 同一套）。不是普通文件、打不开也是 `404`；只有没有读权限是 `403`。越界和不存在回同样的 `404`，不区分
+- **目录**：路径不以 `/` 结尾 → `301`，`location` 是加上 `/` 的路径（保留查询串），这样页面里的相对地址按目录解析。`location` 用解码后的各段重新编码拼成，`//evil.example` 这类写法不会变成协议相对的地址；以 `/` 结尾 → 给这个目录里的 `index.html`（同样的检查），没有就 `404`。**不列目录内容**
+- **方法**：只有 `GET` 和 `HEAD`（`HEAD` 只回头部），别的 → `405`，带 `allow: GET, HEAD`；请求体不读（窗口照样归还）。WebSocket 请求 → 普通的 `404` 响应（不是 `101`）。`Range` 头忽略，总是 `200` 整个文件
+- **响应头**：`content-type` 按扩展名（`html` / `htm` 是 `text/html; charset=utf-8`，CSS、JavaScript、JSON、XML、`txt` / `md` / `csv` / `tsv` / `log` 这些文本类都带 `charset=utf-8`；图片、字体、音视频、`pdf`、`wasm`、`zip` 用标准类型；不认识的 `application/octet-stream`）；`x-content-type-options: nosniff`；`cache-control: no-cache`；`last-modified`；按大小和修改时间算的弱 `etag`。`if-none-match` 对上（弱比较，`*` 也算）→ `304`；没有 `if-none-match` 时 `if-modified-since` 不早于修改时间（按秒）→ `304`。文本类、大于 1 KiB 的边读边 gzip（`encoding = gzip`，不带 `content-length`，同 § 19.5），其余原样带 `content-length`
+- **错误**：`400` / `403` / `404` / `405` / `500` 的正文是一行纯文本（`text/plain; charset=utf-8`），不带路径
+- **发送**：按 stream 窗口一段一段读文件发出去，读文件不占 async 线程；文件不设大小上限（和 dev server 的响应一样按窗口流式发），最多发打开时看到的那么多字节（读的过程中文件变长，多出来的不发）
+- **不审计每个请求**：`preview.open` 记审计，隧道里的文件请求不记（dev server 的请求也不记）；日志同样不记路径、头和正文
 
 ## 20. 导出文件格式（`anycon export` / `import`）
 

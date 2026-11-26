@@ -286,11 +286,13 @@ daemon                      hub                        新客户端
 
 `node.info.capabilities.preview = true` 表示 daemon 支持这一组方法且节点开着预览（`preview.enabled`）。隧道本身不走 JSON-RPC，见 § 11；端口策略见 [spec/daemon.md § 19](spec/daemon.md#19-预览)。
 
+预览的目标是**本机端口**（dev server）或**项目目录**（目录预览，[ADR-62](decisions.md#adr-62-消息里的本地文件链接在应用内打开html-报告经预览隧道按项目目录提供)：daemon 自己把目录里的文件按静态网站提供，规则见 [spec/daemon.md § 19.6](spec/daemon.md#196-目录预览)）。每张票据正好是其中一种：下面的 `port` / `dir` 正好有一个。`capabilities.preview_dir = true` 表示支持目录预览（旧 daemon 没有这个字段，按 false）。
+
 | 方法 | 方向 | 说明 |
 |---|---|---|
-| `preview.open` | C→D | `{ port, session_id? }` → `{ label, port, ticket_id, psk, expires_at_ms, session_id? }`。为本机端口签发一张票据：`label` 是这个端口固定的预览 label（26 位小写 base32），`ticket_id` 32 位 hex，`psk` 64 位 hex（票据密钥，只交给预览页）。同一设备对同一端口已有一张剩余有效期超过一半的票据时返回它。端口不允许 → `forbidden`（`data.reason = "port_not_allowed"`）；预览关着 → `forbidden`（`disabled`）；`port` 为 0 → `invalid`；`session_id` 不存在 → `not_found` |
+| `preview.open` | C→D | `{ port?, dir?, session_id? }` → `{ label, port?, dir?, ticket_id, psk, expires_at_ms, session_id? }`。为本机端口或项目目录签发一张票据：`label` 是这个端口 / 目录固定的预览 label（26 位小写 base32），`ticket_id` 32 位 hex，`psk` 64 位 hex（票据密钥，只交给预览页）；结果里的 `port` / `dir` 和参数里给的那个对应（`dir` 是 daemon 规整过的写法）。`dir` 是项目名（关联项目也用它的名字）或 `.scratch`（全部 scratch 会话的目录），只有一段。同一设备对同一端口 / 目录已有一张剩余有效期超过一半的票据时返回它。`port` 和 `dir` 不是正好给了一个、`port` 为 0、`dir` 为空 / 是 `.` 或 `..` / 以 `.` 开头（`.scratch` 除外）/ 带 `/` `\` NUL → `invalid`；端口不允许 → `forbidden`（`data.reason = "port_not_allowed"`）；预览关着 → `forbidden`（`disabled`）；`dir` 不是项目、或者目录不在（还没有 scratch 会话时的 `.scratch`）→ `not_found`；`session_id` 不存在 → `not_found`。旧 daemon 不认 `dir`，没有 `port` 时回 `invalid` |
 | `preview.close` | C→D | `{ label }` → `{}`。作废这个 label 的全部票据，对用它们的隧道发 `GOAWAY { closed }`。不存在也返回成功 |
-| `preview.list` | C→D | → `{ previews: [{ label, port, ticket_id, session_id?, created_by, created_by_name, created_at_ms, expires_at_ms, tunnels }] }`：全部未过期的票据 |
+| `preview.list` | C→D | → `{ previews: [{ label, port?, dir?, ticket_id, session_id?, created_by, created_by_name, created_at_ms, expires_at_ms, tunnels }] }`：全部未过期的票据，`port` / `dir` 正好有一个 |
 | `preview.ports` | C→D | `{ session_id? }` → `{ ports: [{ port, source, session_id?, pid?, process? }], detection }`。`source`：`session`（监听进程在会话的 agent 进程树 / 进程组里）、`workspace`（监听进程的工作目录在会话的工作目录里）、`config`（`preview.allow_ports`）。带 `session_id` 只列这个会话的（外加 `config` 的）。`detection = unavailable`：这台机器上没有可用的探测手段，只列 `config` 的 |
 
 票据密钥、令牌和预览 URL 都不写日志；`preview.open` / `preview.close` 记本地审计（不含密钥）。
@@ -536,7 +538,7 @@ crates/protocol (Rust, schemars)
 
 ## 11. 预览隧道
 
-[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。浏览器预览 origin（`<label>.<预览域名>`）里的 service worker（下称 P）和 daemon（D）之间的一条独立 Noise 传输，把 P 拦下的 HTTP 请求和 WebSocket 转给 D 本机的 `127.0.0.1:<端口>`。格式的真源是 `anycon_protocol::preview::tunnel`（TS：`packages/protocol/src/preview.ts`，字节级一致由 `tests/vectors/preview.json` 保证）。
+[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。浏览器预览 origin（`<label>.<预览域名>`）里的 service worker（下称 P）和 daemon（D）之间的一条独立 Noise 传输，把 P 拦下的 HTTP 请求和 WebSocket 转给 D 本机的 `127.0.0.1:<端口>`；目录预览（[ADR-62](decisions.md#adr-62-消息里的本地文件链接在应用内打开html-报告经预览隧道按项目目录提供)）的票据则由 D 自己用目录里的文件回答（[spec/daemon.md § 19.6](spec/daemon.md#196-目录预览)），隧道格式完全一样。格式的真源是 `anycon_protocol::preview::tunnel`（TS：`packages/protocol/src/preview.ts`，字节级一致由 `tests/vectors/preview.json` 保证）。
 
 ```
 预览页 P（service worker）          hub                              daemon D
@@ -544,9 +546,9 @@ crates/protocol (Rust, schemars)
   │─ control.auth { preview_token } ─►│ 令牌 → (账号, 节点 D, label)       │
   │◄─ control.auth_ok { device_id: P, peers_online: [D] }               │
   │                                  │── control.preview_peer { P, label } ─►│
-  │══ handshake: 01 ‖ ticket_id ‖ NKpsk0 第一条 ═══════════════════════════►│ 查票据、核对 label 和端口
+  │══ handshake: 01 ‖ ticket_id ‖ NKpsk0 第一条 ═══════════════════════════►│ 查票据、核对 label 和端口 / 目录
   │◄═ handshake: 00 ‖ NKpsk0 第二条（payload = PreviewHello）══════════════│
-  │══ data: 隧道消息（ack ‖ 帧 …）══════════════════════════════════════►│ → 127.0.0.1:<端口>
+  │══ data: 隧道消息（ack ‖ 帧 …）══════════════════════════════════════►│ → 127.0.0.1:<端口> / 目录里的文件
   │◄═ data: 隧道消息 ══════════════════════════════════════════════════│
 ```
 
@@ -561,7 +563,7 @@ crates/protocol (Rust, schemars)
 
 - 模式 `Noise_NKpsk0_25519_ChaChaPoly_BLAKE2s`。P 是 initiator：没有静态密钥，钉住 D 的静态公钥（`PreviewLaunch.node_public`）。D 是 responder。PSK = 票据密钥（32 字节），在第一条消息就混入。prologue = `"anycon-preview-v1"` ‖ `0x00` ‖ label ‖ `0x00` ‖ ticket_id（16 字节）：P 的 label 取自己的主机名，D 的取 `preview_peer.label`，hub 说谎只会让握手失败
 - P → D 的 `handshake` 信封 body：`0x01`（版本）‖ ticket_id（16 字节）‖ Noise 第一条（payload 为空）
-- D → P 的回复 body：`0x00` ‖ Noise 第二条，payload 是 JSON `PreviewHello { port, expires_at_ms, session_id? }`；或者 `0x01` ‖ 原因（UTF-8）：`unknown_ticket` `expired` `label_mismatch` `port_not_allowed` `disabled` `busy` `malformed`。拒绝回复不受 Noise 保护，只当提示用
+- D → P 的回复 body：`0x00` ‖ Noise 第二条，payload 是 JSON `PreviewHello { port?, dir?, expires_at_ms, session_id? }`（端口票据给 `port`，目录票据给 `dir`；P 核对它和 `PreviewLaunch` 里的目标一致）；或者 `0x01` ‖ 原因（UTF-8）：`unknown_ticket` `expired` `label_mismatch` `port_not_allowed` `disabled` `busy` `malformed`。拒绝回复不受 Noise 保护，只当提示用
 - D 只处理已经收到 `preview_peer` 的 P 发来的握手；没收到就忽略（不回复）
 - P 任何时候都可以重新发第一条消息。D 收到后丢掉 P 的旧传输和上面的全部 stream，重新开始
 - 传输失步（解密失败、收到 `FRAGMENT` 帧体）：收方丢掉传输，发 `RESET` 帧体（`0x02`，§ 3）；P 收到或自己发现失步就重新握手
@@ -602,4 +604,4 @@ crates/protocol (Rust, schemars)
 
 ### 11.6 hub 看到什么
 
-预览连接什么时候建立、断开，属于哪个账号、哪个节点、哪个 label，信封的大小和时间。看不到端口、路径、请求和响应的任何内容；令牌只存哈希。
+预览连接什么时候建立、断开，属于哪个账号、哪个节点、哪个 label，信封的大小和时间。看不到端口、目录、路径、请求和响应的任何内容；令牌只存哈希。

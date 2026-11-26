@@ -29,7 +29,7 @@
 - 判断后端和提炼规则（ADR-54 第 3、4 条）：没配后端、或者 `judge.daily_calls = 0` 时 daemon 能否发出任何模型请求；`api` 后端的请求能否带出决策点摘录和已有规则之外的会话内容；密钥、提示或回应能否进到日志、审计、`node.get_config`、`node.info` 或 hub 看得到的地方；已配对设备能否远程设置后端（地址、密钥、要跑的 agent）；提炼出的规则能否不经人确认就生效；Claude Code 的一次性调用能否用上任何工具
 - 被提示注入的 agent 能否借 Web UI 把数据发往第三方
 - 更新检查（ADR-57）：请求里能否带出账号、设备、节点、安装的标识或会话内容；`[update] check = false` / `ANYCON_UPDATE_CHECK=0` 之后 daemon 是否仍联系 anycon.ai；已配对设备能否远程打开它；CLI 的其他命令、`anycon mcp`、SDK 是否发这个请求；伪造的回应能否让终端、日志或 Web UI 显示校验过的版本号以外的文字，或让提示里的链接指向 `https://github.com/anycon-ai/anycon/releases/` 以外的地方
-- dev server 预览（ADR-39）：预览页里的代码能否读到 Web UI 的密钥或登录态；hub 能否在不持有票据的情况下打开隧道或看到隧道内容；能否经预览访问 daemon 机器上不该放行的端口（会话之外、`preview.allow_ports` 之外、本机 hub）；吊销设备或关闭预览后隧道是否仍能使用
+- dev server 预览（ADR-39）：预览页里的代码能否读到 Web UI 的密钥或登录态；hub 能否在不持有票据的情况下打开隧道或看到隧道内容；能否经预览访问 daemon 机器上不该放行的端口（会话之外、`preview.allow_ports` 之外、本机 hub）；吊销设备或关闭预览后隧道是否仍能使用；目录预览（ADR-62）能否读到所在项目目录之外的文件、以 `.` 开头的文件和目录（`.anycon/worktrees/<名字>/` 前缀之外），或者列出目录内容
 
 ## 自建用户如何获知安全更新
 
@@ -65,6 +65,8 @@
 **不是沙箱。** agent 以 daemon 用户的身份运行，anycon 提供审批和 workspace 路径边界，不提供 OS 级隔离。已配对设备等于能在那台机器上让 agent 干活。**关联的本机目录**（`workspace.link`，ADR-33）同样交给了已配对设备：里面的文件可以不经审批读取（`fs.read`，进审计），agent 在里面按所选权限模式改文件（normal 风险的模式不逐个审批）。daemon 拒绝关联隐藏目录、常见的系统 / 凭证 / 自启动目录和 anycon 数据目录，但这张拒绝表是启发式的，挡不住所有「写进去就会被执行」的位置；显式放行一个拒绝项会放开它下面的一切。**建议把 `workspace.link_roots` 收窄到代码目录**（比如 `["~/work"]`），设成 `[]` 就关闭关联。 已知窗口：turn 进行中关联目录被换掉（比如换成指向别处的符号链接），daemon 每约 2 秒复核一次、发现后收掉 agent 进程，在这之前 agent 不经审批执行的动作仍可能落到新目标上；报告时请说明是否超出了这个窗口。
 
 **dev server 预览。** 预览运行时（引导页、service worker、shim）同样由 hub 下发，和 Web UI 同一个信任前提。预览 origin 的 IndexedDB 里存着这个预览的 hub 令牌和票据密钥，预览页里的 dev app（agent 写的代码和它的依赖）读得到它们：拿到的人在过期前（默认 24 小时）能访问这一个端口，关闭预览（`preview.close`）或吊销签发它的设备立即失效。dev app 里写死的 `localhost` 地址、自己的 service worker 在预览里不工作。见 [ADR-39](docs/decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。
+
+**目录预览。** 消息里指向项目中 HTML 文件的链接经同一条隧道打开：daemon 只读地提供那个项目目录（不给以 `.` 开头的文件和目录，不列目录）。报告是 agent 写的代码，在预览 origin 里运行时能读到同一个项目里的其他文件，并发到第三方，和 dev app 一样；它只在你点开时运行。项目外的文件打不开。见 [ADR-62](docs/decisions.md#adr-62-消息里的本地文件链接在应用内打开html-报告经预览隧道按项目目录提供)。
 
 **清单项派发的交接是提示，不是防注入的手段。** `todo.dispatch`（`anycon todo run`、SDK）开一个会话，每一轮结束时 daemon 把 agent 的最后一段话（≤ 4 KiB）记进这一项的「经过」；同一项再派发时，最近 5 次派发各自的报告（合计 ≤ 8 KiB）写进新会话的第一条消息，标明是之前 agent 会话的报告、不是指令。被提示注入的会话写下的话因此会进到下一个 agent 的输入里，标注（含每份报告每行的 `> ` 前缀）挡不住注入。第一条消息由 daemon 生成，调用方不能另给；daemon 拒绝自报了 `mcp` 的连接发 `todo.dispatch`，`anycon todo run`（CLI 自己做）在 anycon 拉起的 agent 里拒绝执行，都是护栏，不是边界：有 shell 的 agent 清掉环境变量、自报成 `cli` 或直接发 RPC 仍然能派发。「经过」里的文字是会话内容：不进日志和审计，只在端到端通道里传输，hub 只看到元数据。**「不 push、不开 PR」是按命令模式匹配的护栏，不是边界，也只在声明了它的 agent 上有效**：现在只有 Claude Code（启动时 `--settings` 的 `permissions.deny` 拒绝 `git push`、`gh pr create`、`gh pr merge` 这几条命令的写法）；写个脚本再 push、`git -c k=v push`、`gh api` 都挡不住；规则在 Claude Code 2.1.325 的 `default`、`bypassPermissions`、`auto` 三种权限模式下实测都生效（`bypassPermissions` 只测了带规则的一次，没有不带规则的对照；只有这一个 CLI 版本，别的版本没验证）；Codex 和 ACP agent 没有声明它，派发给它们必须明确放弃。
 

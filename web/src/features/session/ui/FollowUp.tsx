@@ -1,4 +1,4 @@
-import { Flag } from 'lucide-react'
+import { Flag, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
@@ -33,18 +33,33 @@ export function FollowUpChip({ onMark, disabled }: { onMark: () => void; disable
 }
 
 /**
- * 标了「完成后提醒」的会话，输入区上方的一条：会话在跑（或还有后台任务）时说明「结束后会通知你」，停着时说明
- * 「下一轮结束后会通知你」。按钮都是「取消提醒」。没有「就绪」态：完成之后 daemon 提醒一次并清掉标记，这一条随之消失。
+ * 标了「完成后提醒」的会话，输入区上方的轻量提示（和后台任务 chip 同一行）：实心旗帜 + 一句说明 + 叉号。会话在跑（或还有后台任务）时说
+ * 「结束后会通知你」，停着时说「下一轮结束后会通知你」。点旗帜或叉号都是取消提醒。没有「就绪」态：完成之后 daemon
+ * 提醒一次并清掉标记，这一行随之消失。
  */
 export function FollowUpBar({ running, onClear, busy, disabled }: { running: boolean; onClear: () => void; busy?: boolean; disabled?: boolean }) {
   const { t } = useTranslation()
+  const cancel = t('followUp.cancel')
+  const off = disabled || busy
   return (
-    <div role="status" className="flex shrink-0 items-center gap-2 border-t border-info/30 bg-info-subtle px-3 py-2 text-sm text-info md:px-4" data-testid="follow-up-bar" data-running={running}>
-      <Flag className="size-4 shrink-0" aria-hidden />
-      <span className="min-w-0 flex-1 truncate">{running ? t('followUp.barRunning') : t('followUp.barIdle')}</span>
-      <Button size="sm" variant="outline" loading={busy} disabled={disabled} onClick={onClear} data-testid="follow-up-clear">
-        {t('followUp.cancel')}
-      </Button>
+    <div className="inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-info" data-testid="follow-up-bar" data-running={running}>
+        <button type="button" onClick={onClear} disabled={off} title={cancel} aria-label={cancel} className="shrink-0 rounded p-0.5 hover:bg-info-subtle disabled:opacity-50">
+          <Flag className="size-3.5 fill-current" aria-hidden />
+        </button>
+        <span role="status" className="min-w-0 truncate">
+          {running ? t('followUp.barRunning') : t('followUp.barIdle')}
+        </span>
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={off}
+          title={cancel}
+          aria-label={cancel}
+          className="shrink-0 rounded p-0.5 text-fg-subtle hover:bg-bg-hover hover:text-fg disabled:opacity-50"
+          data-testid="follow-up-clear"
+        >
+          <X className="size-3.5" aria-hidden />
+        </button>
     </div>
   )
 }

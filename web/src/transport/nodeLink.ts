@@ -216,6 +216,8 @@ export class NodeLink {
       if (!hs.isFinished()) return
       const remote = hs.remotePublic()
       const transport = hs.intoTransport()
+      // 握手对象已经被 intoTransport 消耗：之后的 teardownNoise 不能再 free 它（wasm 会抛错，链路就卡在半拆的状态）
+      this.hs = null
       if (remote && !bytesEqual(remote, this.publicKey)) {
         transport.free()
         throw new Error('remote static key mismatch')
@@ -227,7 +229,6 @@ export class NodeLink {
       }
       if (this.hsTimer) clearTimeout(this.hsTimer)
       this.hsTimer = null
-      this.hs = null
       this.transport = transport
     } catch (e) {
       if (this.restartAfterHandshake) return this.restartHandshake() // 本来就要按新的 peer_online 重来

@@ -21,6 +21,7 @@ import {
 } from './connection'
 import type { FullCrypto, Handshake, Keypair, Transport } from './crypto'
 import { EnrollError, EnrollRun, runInitiator, type EnrollHooks, type EnrollParams } from './enroll'
+import { inlineKdf, type Kdf } from './kdf'
 import type { PairDoneEvent, PairEvent } from './events'
 import { Mailbox, MailboxClosed, MailboxTimeout } from './mailbox'
 import { NodeLink } from './nodeLink'
@@ -196,8 +197,13 @@ export interface ClientDeps {
   storage: ClientStorage
   rng?: () => number
   origin?: () => string
-  /** 派生配对密钥（同步的 Argon2id，会卡主线程约 0.1–1 s）之前调用，让 UI 先画出「正在派生密钥…」。默认等下一帧。 */
+  /** 派生配对密钥（Argon2id，约 0.1–1 s）之前调用，让 UI 先画出「正在派生密钥…」。默认等下一帧。 */
   yieldToPaint?: () => Promise<void>
+  /**
+   * 两处 Argon2id（配对短码、节点口令）用什么算。默认在页面的 crypto 上同步算；浏览器里换成一次性 Worker（`./kdf.ts`），
+   * 页面自己的 wasm 实例就不会被撑大 64 MiB。
+   */
+  kdf?: (crypto: FullCrypto) => Kdf
 }
 
 const WS_OPEN = 1
@@ -980,13 +986,13 @@ export class AnyconClient {
       }
       await this.waitAuthed(15_000)
 
-      // 一次 Argon2id 同时得到 match_id 和 PSK。它是同步计算、会卡主线程，所以先让 UI 画出这一步
+      // 一次 Argon2id 同时得到 match_id 和 PSK。退回主线程算的时候会卡住页面，所以先让 UI 画出这一步
       report('deriving')
       await (this.deps.yieldToPaint ?? nextPaint)()
       let matchId: string
       let pskBytes: Uint8Array
       try {
-        const secrets = crypto.derivePairSecrets(normalized)
+        const secrets = await this.kdf(crypto).derivePairSecrets(normalized)
         matchId = secrets.matchId
         pskBytes = psk = secrets.psk
       } catch (e) {
@@ -1155,6 +1161,10 @@ export class AnyconClient {
     }
   }
 
+  private kdf(crypto: FullCrypto): Kdf {
+    return (this.deps.kdf ?? inlineKdf)(crypto)
+  }
+
   cancelPairing(): void {
     this.pairMailbox?.close()
   }
@@ -1205,6 +1215,7 @@ export class AnyconClient {
       const outcome = await runInitiator(
         {
           crypto,
+          kdf: this.kdf(crypto),
           keypair,
           mailbox: mb,
           clientInfo: () => this.clientInfo(),

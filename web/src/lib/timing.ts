@@ -1,7 +1,7 @@
 // 连接耗时埋点：页面加载 → 连上 hub → 与节点握手 → 首次同步 → 打开的会话拿到历史，每一步记一个时间点。
 //
 // - 总是记：用 `performance.mark` / `performance.measure`（名字带 `anycon:` 前缀），DevTools 的 Performance 面板里能看到；
-//   另外在内存里留最近 `MAX_ENTRIES` 条。只记阶段名、方法名和节点 id 前缀，不记任何内容。
+//   时间线里攒满 `MAX_ENTRIES` 条就清掉重来；另外在内存里留最近 `MAX_ENTRIES` 条。只记阶段名、方法名和节点 id 前缀，不记任何内容。
 // - `localStorage['anycon.debug.timing'] = '1'` 时，一串时间点停下来 `REPORT_AFTER_MS` 后在控制台打一张表
 //   （从最近一次「开始连 hub」算起）。随时可以在控制台调 `anyconTiming()` 打出全部记录。
 
@@ -34,6 +34,24 @@ function enabled(): boolean {
   }
 }
 
+/** 上次清理之后又往浏览器的性能时间线里记了多少条。 */
+let timelineCount = 0
+
+/**
+ * 浏览器的性能时间线不会自己丢掉 mark / measure：每次重连、每次同步都记，长时间开着的页面会一直攒。
+ * 攒满 `MAX_ENTRIES` 条就把我们记的（带前缀的）全部清掉，DevTools 里看到的是最近这一批。
+ */
+function trimTimeline(): void {
+  if (++timelineCount <= MAX_ENTRIES) return
+  timelineCount = 0
+  try {
+    for (const e of performance.getEntriesByType('mark')) if (e.name.startsWith(PREFIX)) performance.clearMarks(e.name)
+    for (const e of performance.getEntriesByType('measure')) if (e.name.startsWith(PREFIX)) performance.clearMeasures(e.name)
+  } catch {
+    // 没有 User Timing API：什么也没记
+  }
+}
+
 function push(e: TimingEntry): void {
   entries.push(e)
   if (entries.length > MAX_ENTRIES) entries.splice(0, entries.length - MAX_ENTRIES)
@@ -48,6 +66,7 @@ function push(e: TimingEntry): void {
 /** 记一个时间点。 */
 export function mark(name: string): void {
   const at = now()
+  trimTimeline()
   try {
     performance.mark(PREFIX + name)
   } catch {
@@ -63,6 +82,7 @@ export async function timed<T>(name: string, f: () => Promise<T>): Promise<T> {
     return await f()
   } finally {
     const end = now()
+    trimTimeline()
     try {
       performance.measure(PREFIX + name, { start, end })
     } catch {
@@ -105,6 +125,7 @@ function printTiming(list: TimingEntry[]): void {
 /** 测试用：清空记录。 */
 export function resetTiming(): void {
   entries.length = 0
+  timelineCount = 0
   if (reportTimer) clearTimeout(reportTimer)
   reportTimer = null
 }

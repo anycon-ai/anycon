@@ -61,6 +61,8 @@ export function encodeEnvelope(env: Envelope): Uint8Array {
     throw new ProtocolError('envelope body must be a Uint8Array')
   }
   // 键序固定，和 Rust 结构体声明顺序一致。
+  // `encode` 返回的是编码器内部缓冲区的视图：缓冲区至少 2 KiB、扩容时按所需的 2 倍分配。发送方要把信封原文留在重发窗口里，
+  // 视图会把整块缓冲区一起留住（几百字节的小信封占 2 KiB 以上），所以拷成恰好大小的一份再返回。
   return encode({
     v: env.v,
     from: env.from,
@@ -68,7 +70,7 @@ export function encodeEnvelope(env: Envelope): Uint8Array {
     kind: env.kind,
     seq: env.seq,
     body: env.body,
-  })
+  }).slice()
 }
 
 export function decodeEnvelope(bytes: Uint8Array): Envelope {

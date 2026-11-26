@@ -82,6 +82,8 @@ class FakeHandshake implements Handshake {
   private nonce: Uint8Array | undefined
   /** 和真实实现一样把 PSK 拷走：调用方拿到握手对象后会把自己那份清零。 */
   private readonly psk: Uint8Array | undefined
+  /** `intoTransport()` 或 `free()` 之后为 true：和 wasm-bindgen 的对象一样，之后再 `free()` 会抛错。 */
+  private gone = false
   constructor(
     private readonly kind: Kind,
     private readonly role: Role,
@@ -156,12 +158,17 @@ class FakeHandshake implements Handshake {
   }
   intoTransport(): Transport {
     if (!this.isFinished() || !this.remote) throw new Error('handshake not finished')
+    this.gone = true
     // XXpsk3 的传输密钥里混着 PSK：PSK 不同则互相解不开（IK 没有 PSK）
     // 传输密钥也绑定这次握手的临时密钥：用别的握手的回复建出来的传输解不开对端的数据
     const salt = tag32(this.psk ?? new Uint8Array(0), this.nonce ?? new Uint8Array(0))
     return new FakeTransport(this.local.public, this.remote, salt)
   }
-  free(): void {}
+  free(): void {
+    // wasm-bindgen：被 `intoTransport()` 消耗过或已经释放的对象指针是 0，再释放会抛这个错
+    if (this.gone) throw new Error('null pointer passed to rust')
+    this.gone = true
+  }
 }
 
 function kp(secret: Uint8Array): Keypair {

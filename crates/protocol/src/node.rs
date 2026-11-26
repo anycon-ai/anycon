@@ -23,6 +23,9 @@ pub struct NodeCapabilities {
     /// 支持 dev server 预览（`preview.*`，ADR-39），且节点配置 `preview.enabled = true`。
     #[serde(default)]
     pub preview: bool,
+    /// 支持目录预览（`preview.open { dir }`，ADR-62），且节点开着预览。旧 daemon 没有这个字段，读作 false。
+    #[serde(default)]
+    pub preview_dir: bool,
     /// 支持清单（`todo.*`，docs/spec/daemon.md § 21）。旧 daemon 没有这个字段，读作 false。
     #[serde(default)]
     pub todo: bool,

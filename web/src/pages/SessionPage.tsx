@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { FileDiff, Globe, MessageSquare, PanelRight, PanelRightClose, ShieldAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
+import type { Project } from '@/protocol'
 import { SettingsControls } from '@/components/SettingsControls'
 import { Composer } from '@/components/Composer'
 import { PageHeader } from '@/components/PageHeader'
@@ -21,7 +22,7 @@ import { activeOptions } from '@/features/settings/resolve'
 import { latestSyncBlock, pendingPermissions, type UserBlock } from '@/features/session/reducer'
 import { backgroundCommands, isTurnActive, subagentRows } from '@/features/session/subagents'
 import { backgroundTaskCount, runningTasks, tasksLive } from '@/features/session/tasks'
-import { previewAvailable, usePreviewTemplate } from '@/features/preview/availability'
+import { previewAvailable, previewDirAvailable, usePreviewTemplate } from '@/features/preview/availability'
 import { PreviewView } from '@/features/preview/PreviewView'
 import { ApprovalBanner } from '@/components/ApprovalBanner'
 import { SelectionCapture } from '@/features/todos/ui/SelectionCapture'
@@ -40,6 +41,7 @@ import { resolveConflictsMessage } from '@/features/worktree/messages'
 import { sendQuickMessage } from '@/features/worktree/quick'
 import { useGitRefresh } from '@/features/worktree/useGitRefresh'
 import { MessageList } from '@/features/session/ui/MessageList'
+import { SessionFilesProvider, useSessionFiles } from '@/features/session/ui/LocalFiles'
 import { describeError, describeMarkError } from '@/lib/errors'
 import { useCurrentNode, useNodeParam } from '@/lib/nav'
 import { useMediaQuery } from '@/lib/useMediaQuery'
@@ -60,6 +62,9 @@ function failedText(reason: SendOutcome['reason'], t: TFunction): string {
   if (reason === 'archived') return t('session.archivedHint')
   return describeAttachmentFailure(reason, t) ?? t('message.failed')
 }
+
+/** 还没有项目列表时用的空列表（引用稳定：消息的 Markdown 是 memo 的）。 */
+const NO_PROJECTS: Project[] = []
 
 /**
  * `focusSeq`：URL 的 `?seq=`，搜索命中带来的事件 seq（spec/web.md § 9）。会话第一次同步完之后，把历史往前加载到那个 seq、
@@ -233,6 +238,17 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
 
   const { respond: onRespond, responding, settled } = useRespondPermission(nodeId)
 
+  // 消息里的本地文件链接（web.md § 4.6「本地文件链接」，ADR-62）：按节点上的项目目录解析；HTML 在节点支持目录预览时经预览打开
+  const localFiles = useSessionFiles({
+    nodeId: nodeId ?? '',
+    nodeParam,
+    sessionId,
+    dirTemplate: previewDirAvailable(previewTemplate, entry?.info) ? previewTemplate : null,
+    workDir: summary ? sessionWorkDir(summary, projectMeta) : null,
+    projects: entry?.projects ?? NO_PROJECTS,
+    primaryRoot: entry?.info?.workspace_roots?.find((r) => r.primary)?.path ?? entry?.workspaceRoot ?? entry?.info?.workspace_root ?? undefined,
+  })
+
   if (!nodeId || !entry) return null
 
   // 会话不存在（被别的设备删了 / 链接错）
@@ -401,7 +417,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
   ]
 
   return (
-    <>
+    <SessionFilesProvider value={localFiles}>
       <SelectionCapture />
       <PageHeader
         root
@@ -625,7 +641,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
           await renameSession(nodeId, sessionId, name)
         }}
       />
-    </>
+    </SessionFilesProvider>
   )
 }
 

@@ -19,6 +19,7 @@ import { MessageAttachments } from '@/features/attachments/ui/MessageAttachments
 import type { AssistantBlock, ErrorBlock, GitSystemBlock, PlanBlock, SystemBlock, ThinkingBlock, ToolBlock, TurnDoneBlock, UserBlock } from '../reducer'
 import { countCalls, subagentState, type ToolTree } from '../subagents'
 import { diffStats, splitLines, syntheticDiff, toolCommand, toolDescription, toolFileChanges, toolLabel, toolOutputText, toolPath, toolQuery, toolUrl } from '../text'
+import { useSessionLocalFiles } from './localFilesContext'
 import { TaskList, TaskLiveContext } from './Tasks'
 
 const DiffView = lazy(() => import('./DiffView').then((m) => ({ default: m.DiffView })))
@@ -118,9 +119,11 @@ export function PendingBubble({ msg, nodeId, onRetry, onEdit, onDelete }: { msg:
 export function AssistantMessage({ block }: { block: AssistantBlock }) {
   const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
+  // agent 写的本地文件路径指节点上的文件（web.md § 4.6「本地文件链接」）
+  const local = useSessionLocalFiles()
   return (
     <div className="group relative" data-seq={block.seq} data-testid="message-assistant" data-done={block.done}>
-      <Markdown text={block.text} streaming={!block.done} />
+      <Markdown text={block.text} streaming={!block.done} local={local} />
       <MessageTodoMenu text={block.text} seq={block.seq} className="absolute -top-1 right-9" />
       <button
         type="button"
@@ -146,6 +149,7 @@ export function AssistantMessage({ block }: { block: AssistantBlock }) {
 
 export function ThinkingView({ block }: { block: ThinkingBlock }) {
   const { t } = useTranslation()
+  const local = useSessionLocalFiles()
   const mode = usePrefs((s) => s.thinkingDisplay)
   const [open, setOpen] = useState(mode === 'expanded')
   const [now, setNow] = useState(() => Date.now())
@@ -165,7 +169,7 @@ export function ThinkingView({ block }: { block: ThinkingBlock }) {
         <span className={cn('truncate', !block.done && 'animate-pulse-soft')}>{block.done ? t('thinking.done', { seconds: secs }) : t('thinking.running')}</span>
         {hasText ? <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')} aria-hidden /> : null}
       </button>
-      {open && hasText ? <div className="ml-1.5 mt-1 border-l-2 border-border pl-3 text-fg-muted"><Markdown text={block.text} streaming={!block.done} /></div> : null}
+      {open && hasText ? <div className="ml-1.5 mt-1 border-l-2 border-border pl-3 text-fg-muted"><Markdown text={block.text} streaming={!block.done} local={local} /></div> : null}
       {!open && !block.done && lastLines ? <p className="ml-1.5 line-clamp-2 whitespace-pre-wrap border-l-2 border-border pl-3 text-xs text-fg-subtle">{lastLines}</p> : null}
     </div>
   )
@@ -374,6 +378,7 @@ export function SubagentView({ block, tree }: { block: ToolBlock; tree: ToolTree
   // 后台子 agent 的第一条结果只是「已在后台启动」，结束时补的那条（或任务的终态）才是它的总结
   const output = state === 'done' || state === 'error' ? toolOutputText(block) : ''
   const last = kids.at(-1)
+  const local = useSessionLocalFiles()
   return (
     <div className="text-sm" data-testid="tool-block" data-category="subagent" data-state={state}>
       <button type="button" className={cn('flex max-w-full items-center gap-1.5 py-0.5 text-left', state === 'error' ? 'text-danger' : 'text-fg-subtle hover:text-fg-muted')} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
@@ -398,7 +403,7 @@ export function SubagentView({ block, tree }: { block: ToolBlock; tree: ToolTree
           ))}
           {output ? (
             <div className={cn('scroll-thin max-h-96 overflow-auto rounded-lg border px-3 py-2 text-fg-muted', state === 'error' ? 'border-danger/60' : 'border-border')} data-testid="subagent-result">
-              <Markdown text={output} />
+              <Markdown text={output} local={local} />
             </div>
           ) : null}
         </div>

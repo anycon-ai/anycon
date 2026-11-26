@@ -1,7 +1,8 @@
-//! dev server 预览（ADR-39，docs/spec/daemon.md § 19，docs/protocol.md § 11）。
+//! 预览（ADR-39、ADR-62，docs/spec/daemon.md § 19，docs/protocol.md § 11）。
 //!
 //! daemon 给已配对设备签发预览票据（`preview.*` 方法，[`api`]），接受预览页（浏览器预览 origin 里的 service worker）经 hub
-//! 建立的 Noise 隧道（[`tunnel`]），把隧道里的 HTTP 请求和 WebSocket 转给本机端口（[`upstream`]）。hub 只转发密文。
+//! 建立的 Noise 隧道（[`tunnel`]）。票据的目标（[`Target`]）是本机端口时，隧道里的 HTTP 请求和 WebSocket 转给这个端口
+//! （[`upstream`]）；是一个项目目录时，daemon 自己把目录里的文件按静态网站提供（[`dirserve`]）。hub 只转发密文。
 //!
 //! 模块分工（带「纯」的只有数据变换，各有单元测试）：
 //!
@@ -10,6 +11,7 @@
 //! - `stream`（纯）：stream 表（id 递增、窗口、`RESET`、WebSocket 消息拼装、结束条件）；
 //! - `ledger`（纯）：端到端回执账本和出站帧队列；
 //! - `upstream`：每个 stream 的上游任务（连本机端口、HTTP / WebSocket）和发送窗口；
+//! - `dirserve`（纯的路径 / 头部规则 + 读文件）：目录预览的 stream，一个请求回一个文件；
 //! - `tunnel`：每个预览对端一个任务，握手、收发、定时器；
 //! - 本文件：[`Preview`]——登记预览对端、隧道登记表（至多 64 条）、hub 事件的入口、票据作废、后台任务。
 //!
@@ -17,6 +19,7 @@
 //! 交给这里；`peers.rs` 在吊销设备时调 [`Preview::on_device_revoked`]。
 
 pub mod api;
+pub mod dirserve;
 pub mod ledger;
 pub mod ports;
 pub mod rewrite;
@@ -41,6 +44,7 @@ use crate::peers::Peers;
 use crate::sessions::Sessions;
 use crate::store::Store;
 use crate::util::now_ms;
+use crate::workspace::Workspace;
 use ports::{Policy, PortDetector, Verdict};
 use tunnel::{Msg, PeerTask};
 use upstream::Timeouts;
@@ -56,6 +60,39 @@ const STALE_DENIAL: Duration = Duration::from_millis(500);
 /// 过期票据多久清一次。
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
 
+/// 一张票据的目标。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// 本机端口（dev server）。
+    Port(u16),
+    /// 目录预览（ADR-62）：项目名或 `.scratch`。
+    Dir(String),
+}
+
+impl Target {
+    /// 库里的一行票据的目标：`dir` 不为空就是目录票据。
+    pub fn of(row: &crate::store::PreviewTicketRow) -> Target {
+        match &row.dir {
+            Some(d) => Target::Dir(d.clone()),
+            None => Target::Port(row.port),
+        }
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        match self {
+            Target::Port(p) => Some(*p),
+            Target::Dir(_) => None,
+        }
+    }
+
+    pub fn dir(&self) -> Option<&str> {
+        match self {
+            Target::Port(_) => None,
+            Target::Dir(d) => Some(d),
+        }
+    }
+}
+
 /// `preview.list` / 断开隧道 / 作废票据要看的、一条隧道的信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TunnelInfo {
@@ -63,7 +100,7 @@ pub struct TunnelInfo {
     pub ticket_id: String,
     /// 签发这张票据的设备。
     pub device_id: String,
-    pub port: u16,
+    pub target: Target,
     pub expires_at_ms: u64,
 }
 
@@ -75,6 +112,8 @@ pub struct PreviewDeps {
     pub outbox: Arc<HubOutbox>,
     pub audit: Audit,
     pub sessions: Arc<Sessions>,
+    /// 目录预览解析目录、读文件用（和 `fs.*` 同一套路径规则）。
+    pub workspace: Arc<Workspace>,
     pub peers: Arc<Peers>,
     /// daemon 的环境（跑 `lsof` / `ps` 用）。
     pub env: Arc<HashMap<String, String>>,
@@ -166,6 +205,16 @@ impl Preview {
             return ports::check_port(port, &policy, &snap, &sessions, lenient);
         }
         verdict
+    }
+
+    /// 票据的目标现在能不能预览：端口按端口策略（[`Self::check_port`]）；目录只看预览开没开（目录在不在、能不能读，
+    /// 每个请求自己判断，docs/spec/daemon.md § 19.6）。
+    pub async fn check_target(&self, target: &Target, lenient: bool) -> Verdict {
+        match target {
+            Target::Port(p) => self.check_port(*p, lenient).await,
+            Target::Dir(_) if self.d.config.get().preview.enabled => Verdict::Allowed,
+            Target::Dir(_) => Verdict::Disabled,
+        }
     }
 
     // ------------------------------------------------------------ 隧道登记

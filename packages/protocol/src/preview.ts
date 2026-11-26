@@ -76,9 +76,23 @@ function hasForbiddenPathChar(path: string): boolean {
 const HEX32 = /^[0-9a-f]{32}$/
 const HEX64 = /^[0-9a-f]{64}$/
 
+/** 目录预览的目录名最多这么多个 UTF-8 字节（一个项目名，或 `.scratch`）。 */
+export const PREVIEW_DIR_MAX_BYTES = 255
+
+/**
+ * 目录预览的目录（`PreviewLaunch.dir`）是否合法：非空、不超过 `PREVIEW_DIR_MAX_BYTES` 个 UTF-8 字节，
+ * 只有一段（不含 `/` 和 `\`，也不是 `.` / `..`），不含控制字符。是不是真有这个项目由 daemon 判断。
+ */
+export function isValidPreviewDir(dir: string): boolean {
+  if (dir.length === 0 || new TextEncoder().encode(dir).length > PREVIEW_DIR_MAX_BYTES) return false
+  if (dir === '.' || dir === '..') return false
+  return !dir.includes('/') && !hasForbiddenPathChar(dir)
+}
+
 /**
  * URL fragment（可以带或不带开头的 `#`）→ `PreviewLaunch`。格式不对一律抛 `ProtocolError`：
- * 版本、label、id 和密钥的格式、端口范围、`path` 以 `/` 开头且不是 `//`（协议相对 URL）、不含 `\` 和控制字符。
+ * 版本、label、id 和密钥的格式、目标（`port` 在 1–65535，或者 `dir` 是合法的目录名，两者正好一个）、
+ * `path` 以 `/` 开头且不是 `//`（协议相对 URL）、不含 `\` 和控制字符。
  */
 export function decodePreviewLaunch(fragment: string): PreviewLaunch {
   const text = fragment.startsWith('#') ? fragment.slice(1) : fragment
@@ -105,12 +119,23 @@ export function decodePreviewLaunch(fragment: string): PreviewLaunch {
     }
     return x
   }
+  // 目标：端口或目录，正好一个（`null` 和缺省一样算没给）
+  const hasPort = v.port !== undefined && v.port !== null
+  const hasDir = v.dir !== undefined && v.dir !== null
+  if (hasPort === hasDir) throw new ProtocolError('preview launch: needs exactly one of port and dir')
+  let target: { port: number } | { dir: string }
+  if (hasPort) target = { port: int('port', 1, 65535) }
+  else {
+    const dir = str('dir')
+    if (!isValidPreviewDir(dir)) throw new ProtocolError('preview launch: invalid dir')
+    target = { dir }
+  }
   const launch: PreviewLaunch = {
     v: int('v', 0, Number.MAX_SAFE_INTEGER),
     node: str('node'),
     node_public: str('node_public'),
     label: str('label'),
-    port: int('port', 1, 65535),
+    ...target,
     ticket_id: str('ticket_id'),
     psk: str('psk'),
     token: str('token'),

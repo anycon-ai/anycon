@@ -26,11 +26,12 @@ use anycon_protocol::{
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use super::dirserve::{self, DirCtx};
 use super::ledger::{AckDue, Ledger, OutQueue, STALL_LIMIT};
 use super::ports::Verdict;
 use super::stream::{Action, StreamTable, UpKind, UpOut};
 use super::upstream::{self, Credit, Emit, StreamCtx, ToUp, UpEvent};
-use super::{Preview, TunnelInfo};
+use super::{Preview, Target, TunnelInfo};
 use crate::util::now_ms;
 
 /// 一次 `flush` 最多发多少条消息，然后回到事件循环（别让一个大下载饿死入站处理）。
@@ -206,9 +207,9 @@ impl PeerTask {
             t.recheck_inflight = true;
             t.next_recheck = now + self.pv.recheck_every();
             t.activity = false;
-            let (pv, tx, epoch, port) = (self.pv.clone(), self.tx.clone(), t.epoch, t.info.port);
+            let (pv, tx, epoch, target) = (self.pv.clone(), self.tx.clone(), t.epoch, t.info.target.clone());
             tokio::spawn(async move {
-                let verdict = pv.check_port(port, true).await;
+                let verdict = pv.check_target(&target, true).await;
                 let _ = tx.send(Msg::Policy { epoch, verdict });
             });
         }
@@ -298,7 +299,8 @@ impl PeerTask {
         if !self.pv.d.config.get().preview.enabled {
             return Err(R::Disabled);
         }
-        match self.pv.check_port(ticket.port, true).await {
+        let target = Target::of(&ticket);
+        match self.pv.check_target(&target, true).await {
             Verdict::Allowed => {}
             Verdict::Disabled => return Err(R::Disabled),
             Verdict::NotAllowed => return Err(R::PortNotAllowed),
@@ -310,7 +312,8 @@ impl PeerTask {
         // 密钥不对 / prologue 不对 / 报文损坏：读第一条就失败
         hs.read(noise).map_err(|_| R::Malformed)?;
         let hello = PreviewHello {
-            port: ticket.port,
+            port: target.port(),
+            dir: target.dir().map(str::to_string),
             expires_at_ms: ticket.expires_at_ms,
             session_id: ticket.session_id.clone(),
         };
@@ -322,7 +325,7 @@ impl PeerTask {
             label: self.label.clone(),
             ticket_id: ticket_hex.clone(),
             device_id: ticket.device_id.clone(),
-            port: ticket.port,
+            target,
             expires_at_ms: ticket.expires_at_ms,
         };
         if !self.pv.register_tunnel(&self.peer, info.clone()) {
@@ -520,16 +523,25 @@ impl PeerTask {
         let (to_up, rx) = mpsc::unbounded_channel();
         let (tx, epoch) = (self.tx.clone(), t.epoch);
         let emit: Emit = Arc::new(move |ev| tx.send(Msg::Up { epoch, id, ev }).is_ok());
-        let ctx = StreamCtx {
-            port: t.info.port,
-            label: self.label.clone(),
-            head,
-            rx,
-            credit: credit.clone(),
-            emit,
-            timeouts,
+        let task = match &t.info.target {
+            Target::Port(port) => tokio::spawn(upstream::run(StreamCtx {
+                port: *port,
+                label: self.label.clone(),
+                head,
+                rx,
+                credit: credit.clone(),
+                emit,
+                timeouts,
+            })),
+            // 目录预览不读请求体：`rx` 在这里就放掉，发不进去的数据隧道照样归还窗口
+            Target::Dir(dir) => tokio::spawn(dirserve::run(DirCtx {
+                workspace: self.pv.d.workspace.clone(),
+                dir: dir.clone(),
+                head,
+                credit: credit.clone(),
+                emit,
+            })),
         };
-        let task = tokio::spawn(upstream::run(ctx));
         t.handles.insert(id, StreamHandle { to_up, credit, task });
     }
 

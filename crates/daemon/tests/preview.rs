@@ -1,5 +1,5 @@
-//! dev server 预览（ADR-39，docs/spec/daemon.md § 19）：票据、端口策略、隧道握手、HTTP / WebSocket 转发、
-//! 流控与端到端回执、hub 的退回和限速、GOAWAY。
+//! 预览（ADR-39，docs/spec/daemon.md § 19）：票据、端口策略、隧道握手、HTTP / WebSocket 转发、
+//! 流控与端到端回执、hub 的退回和限速、GOAWAY；目录预览（ADR-62，§ 19.6）。
 //!
 //! 用 `TestDaemon` + 进程内的假 hub（`LocalPreviewHub`，信封走 daemon 自己的 `HubLink::on_frame` / `on_control`）+ Rust 写的预览页
 //! （`FakePreview`）+ 本机 HTTP / WebSocket 测试服务器（`TestUpstream`）。不依赖网络；端口探测相关的用例没有 `lsof` 时跳过。
@@ -45,6 +45,10 @@ impl Rig {
 
     async fn open(&mut self, port: u16) -> PreviewOpenResult {
         self.c.call(&self.td, methods::PREVIEW_OPEN, json!({ "port": port })).await.unwrap()
+    }
+
+    async fn open_dir(&mut self, dir: &str) -> PreviewOpenResult {
+        self.c.call(&self.td, methods::PREVIEW_OPEN, json!({ "dir": dir })).await.unwrap()
     }
 
     async fn open_err(&mut self, params: Value) -> RpcError {
@@ -114,7 +118,7 @@ async fn open_issues_a_ticket_and_the_tunnel_handshake_returns_the_hello() {
     let before = anycon_daemon::util::now_ms();
     let t = r.open(r.up.port).await;
     assert!(anycon_protocol::tunnel::is_valid_label(&t.label), "{}", t.label);
-    assert_eq!((t.ticket_id.len(), t.psk.len(), t.port), (32, 64, r.up.port));
+    assert_eq!((t.ticket_id.len(), t.psk.len(), t.port, t.dir.as_deref()), (32, 64, Some(r.up.port), None));
     assert!(t.ticket_id.bytes().chain(t.psk.bytes()).all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
     // 默认有效期 24 小时
     let ttl = t.expires_at_ms - before;
@@ -188,6 +192,7 @@ async fn labels_are_fixed_per_port_tickets_are_reused_and_survive_a_restart() {
             ticket_id: "ab".repeat(16),
             label: c2.label.clone(),
             port: second.port,
+            dir: None,
             psk: "cd".repeat(32),
             device_id: "dev-old".into(),
             session_id: None,
@@ -335,7 +340,8 @@ async fn handshakes_with_a_wrong_secret_label_or_ticket_are_rejected() {
         .preview_ticket_insert(&PreviewTicketRow {
             ticket_id: "aa".repeat(16),
             label: t.label.clone(),
-            port: t.port,
+            port: t.port.unwrap(),
+            dir: None,
             psk: "bb".repeat(32),
             device_id: "dev-a".into(),
             session_id: None,
@@ -968,7 +974,8 @@ async fn expired_tickets_are_swept_and_their_tunnels_get_goaway_expired() {
         .preview_ticket_insert(&PreviewTicketRow {
             ticket_id: "5a".repeat(16),
             label: t.label.clone(),
-            port: t.port,
+            port: t.port.unwrap(),
+            dir: None,
             psk: "6b".repeat(32),
             device_id: "dev-a".into(),
             session_id: None,
@@ -1009,6 +1016,7 @@ async fn the_oldest_ticket_of_a_device_is_dropped_past_64_and_its_tunnel_closed(
                 // 其余 63 张用 1–63 号端口：系统不会把 1024 以下的端口分给 `TestUpstream`，所以第 65 张（`second.port`）
                 // 一定是新端口；用 40_000 段的话，Linux 的临时端口（32768–60999）可能撞上，`preview.open` 就会复用那张票据
                 port: if i == 0 { r.up.port } else { i as u16 },
+                dir: None,
                 psk: format!("{:064x}", i + 1),
                 device_id: "dev-a".into(),
                 session_id: None,
@@ -1020,7 +1028,8 @@ async fn the_oldest_ticket_of_a_device_is_dropped_past_64_and_its_tunnel_closed(
     }
     let oldest = PreviewOpenResult {
         label: label.clone(),
-        port: r.up.port,
+        port: Some(r.up.port),
+        dir: None,
         ticket_id: format!("{:032x}", 0),
         psk: format!("{:064x}", 1),
         expires_at_ms: now + 3_600_000,
@@ -1086,7 +1095,7 @@ async fn without_a_working_lsof_only_the_configured_ports_are_available() {
     assert_eq!(ports.ports[0].source, PreviewPortSource::Config);
     // 配置里的端口照常能开；别的不行
     let t: PreviewOpenResult = c.call(&td, methods::PREVIEW_OPEN, json!({ "port": up.port })).await.unwrap();
-    assert_eq!(t.port, up.port);
+    assert_eq!(t.port, Some(up.port));
     let other = TestUpstream::start().await;
     let e = c.call::<PreviewOpenResult>(&td, methods::PREVIEW_OPEN, json!({ "port": other.port })).await.unwrap_err();
     assert_eq!((code(&e), reason(&e).as_deref()), (ErrorCode::Forbidden, Some("port_not_allowed")));
@@ -1232,7 +1241,7 @@ async fn a_server_running_in_the_sessions_directory_is_attributed_by_working_dir
     let p = ports.ports.iter().find(|p| p.port == listener.port).unwrap_or_else(|| panic!("{ports:?}"));
     assert_eq!((p.source, p.session_id.as_deref()), (PreviewPortSource::Workspace, Some(s.id.as_str())));
     let t: PreviewOpenResult = c.call(&td, methods::PREVIEW_OPEN, json!({ "port": listener.port })).await.unwrap();
-    assert_eq!(t.port, listener.port);
+    assert_eq!(t.port, Some(listener.port));
     // 没有这个目录里的会话（scratch 会话）看不到它
     let scratch: SessionSummary = c.call(&td, methods::SESSION_CREATE, json!({ "agent": "fake" })).await.unwrap();
     let scoped: PreviewPortsResult =
@@ -1315,7 +1324,7 @@ async fn a_port_shared_with_a_process_that_is_not_the_sessions_is_neither_allowe
     // 只有会话的服务（127.0.0.1）在监听：允许、列出
     runner.listening.store(true, SeqCst);
     let t: PreviewOpenResult = c.call(&td, methods::PREVIEW_OPEN, json!({ "port": port })).await.unwrap();
-    assert_eq!(t.port, port);
+    assert_eq!(t.port, Some(port));
     td.ctx.preview.detector().invalidate().await;
     let listed = c.call::<PreviewPortsResult>(&td, methods::PREVIEW_PORTS, json!({})).await.unwrap();
     let p = listed.ports.iter().find(|p| p.port == port).expect("listed");
@@ -1338,7 +1347,7 @@ async fn a_port_shared_with_a_process_that_is_not_the_sessions_is_neither_allowe
     anycon_daemon::config::set_value(&td.paths, "preview.allow_ports", &format!("[{port}]")).unwrap();
     td.ctx.config.reload().unwrap();
     let again: PreviewOpenResult = c.call(&td, methods::PREVIEW_OPEN, json!({ "port": port })).await.unwrap();
-    assert_eq!(again.port, port);
+    assert_eq!(again.port, Some(port));
     let listed = c.call::<PreviewPortsResult>(&td, methods::PREVIEW_PORTS, json!({})).await.unwrap();
     let p = listed.ports.iter().find(|p| p.port == port).unwrap();
     assert_eq!(p.source, PreviewPortSource::Config);
@@ -1368,6 +1377,275 @@ async fn a_denial_based_on_a_stale_snapshot_is_checked_again_once() {
     // 缓存有一会儿了（但还没过 2 秒的 TTL）：拒绝之前重新探测，这回认出来了
     tokio::time::sleep(Duration::from_millis(700)).await;
     let t: PreviewOpenResult = c.call(&td, methods::PREVIEW_OPEN, json!({ "port": port })).await.unwrap();
-    assert_eq!(t.port, port);
+    assert_eq!(t.port, Some(port));
     assert_eq!(runner.runs.load(SeqCst), runs_before + 1);
+}
+
+// ===================================================================== 目录预览（ADR-62，spec/daemon.md § 19.6）
+
+/// 比 1 KiB 大的 HTML（会被压缩）。
+fn big_html() -> String {
+    format!("<!doctype html><meta charset=utf-8><title>测试报告</title><p>{}</p>", "通过 ".repeat(800))
+}
+
+/// 在 workspace 根下建项目 `site`：报告、截图、子目录、隐藏文件、worktree，以及（unix 上）两个不该被提供的符号链接。
+fn make_site(td: &TestDaemon) -> std::path::PathBuf {
+    let site = td.workspace.join("site");
+    let w = |rel: &str, body: &[u8]| {
+        let p = site.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    w("index.html", b"<h1>home</h1>");
+    w("report.html", big_html().as_bytes());
+    w("测试报告.html", "<p>中文文件名</p>".as_bytes());
+    w("shots/a.png", &[0x89, b'P', b'N', b'G', 0, 1, 2, 3]);
+    w("sub/index.html", b"<h1>sub</h1>");
+    w("noindex/x.txt", b"x");
+    w(".env", b"SECRET=1");
+    w(".git/config", b"[remote]");
+    w(".anycon/attachments/a.txt", b"attached");
+    w(".anycon/worktrees/wt/report.html", b"<h1>worktree</h1>");
+    w(".anycon/worktrees/wt/.env", b"SECRET=2");
+    std::fs::write(td.dir.path().join("outside.txt"), b"outside").unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(td.dir.path().join("outside.txt"), site.join("link-out")).unwrap();
+        std::os::unix::fs::symlink(site.join(".git/config"), site.join("link-git")).unwrap();
+        std::os::unix::fs::symlink(site.join("shots"), site.join("pics")).unwrap();
+    }
+    site
+}
+
+async fn dir_tunnel(r: &mut Rig, dir: &str) -> (PreviewOpenResult, FakePreview) {
+    let t = r.open_dir(dir).await;
+    let p = r.connect(&t).await;
+    (t, p)
+}
+
+#[tokio::test]
+async fn a_directory_preview_serves_the_projects_files() {
+    let mut r = Rig::new().await;
+    make_site(&r.td);
+    let info: NodeInfo = r.call(methods::NODE_INFO, json!({})).await.unwrap();
+    assert!(info.capabilities.preview_dir);
+
+    let (t, mut pv) = dir_tunnel(&mut r, "site").await;
+    assert_eq!((t.port, t.dir.as_deref()), (None, Some("site")));
+    assert!(anycon_protocol::tunnel::is_valid_label(&t.label));
+    let hello = pv.hello.clone().unwrap();
+    assert_eq!((hello.port, hello.dir.as_deref(), hello.expires_at_ms), (None, Some("site"), t.expires_at_ms));
+
+    // 小文件：identity，带 content-length 和缓存相关的头
+    let f = pv.get("/index.html").await;
+    assert_eq!((f.status, f.text().as_str()), (200, "<h1>home</h1>"));
+    assert_eq!(f.encoding, Some(PreviewBodyEncoding::Identity));
+    assert_eq!(f.header("content-type"), Some("text/html; charset=utf-8"));
+    assert_eq!(f.header("content-length"), Some("13"));
+    assert_eq!(f.header("cache-control"), Some("no-cache"));
+    assert_eq!(f.header("x-content-type-options"), Some("nosniff"));
+    assert!(f.header("etag").is_some_and(|e| e.starts_with("W/\"")), "{:?}", f.headers);
+    assert!(f.header("last-modified").is_some());
+    // 大的文本：边读边 gzip，不带 content-length
+    let f = pv.get("/report.html").await;
+    assert_eq!((f.status, f.encoding), (200, Some(PreviewBodyEncoding::Gzip)));
+    assert_eq!(f.text(), big_html());
+    assert_eq!(f.header("content-length"), None);
+    // 图片原样
+    let f = pv.get("/shots/a.png").await;
+    assert_eq!((f.status, f.header("content-type")), (200, Some("image/png")));
+    assert_eq!(f.body, [0x89, b'P', b'N', b'G', 0, 1, 2, 3]);
+    // 百分号编码的中文文件名
+    let f = pv.get("/%E6%B5%8B%E8%AF%95%E6%8A%A5%E5%91%8A.html?v=1#x").await;
+    assert_eq!((f.status, f.text().as_str()), (200, "<p>中文文件名</p>"));
+    // 目录：`/` 给 index.html；不带斜杠的 301（带上查询串）；带斜杠的给它的 index.html；没有 index.html 的 404，不列目录
+    assert_eq!(pv.get("/").await.text(), "<h1>home</h1>");
+    let f = pv.get("/sub").await;
+    assert_eq!((f.status, f.header("location")), (301, Some("/sub/")));
+    assert_eq!(pv.get("/sub?tab=2").await.header("location"), Some("/sub/?tab=2"));
+    assert_eq!(pv.get("/sub/").await.text(), "<h1>sub</h1>");
+    assert_eq!(pv.get("/noindex/").await.status, 404);
+    let f = pv.get("/missing.html").await;
+    assert_eq!((f.status, f.header("content-type")), (404, Some("text/plain; charset=utf-8")));
+    // 目录里的符号链接（指向目录里的东西）照常
+    #[cfg(unix)]
+    assert_eq!(pv.get("/pics/a.png").await.status, 200);
+
+    // 列表里是目录票据；同一设备再开一次复用；别的目录是别的 label
+    let listed: PreviewListResult = r.call(methods::PREVIEW_LIST, json!({})).await.unwrap();
+    assert_eq!(listed.previews.len(), 1);
+    let p = &listed.previews[0];
+    assert_eq!((p.port, p.dir.as_deref(), p.label.as_str(), p.tunnels), (None, Some("site"), t.label.as_str(), 1));
+    assert_eq!(r.open_dir("site").await.ticket_id, t.ticket_id);
+    std::fs::create_dir_all(r.td.workspace.join("other")).unwrap();
+    let other = r.open_dir("other").await;
+    assert_ne!(other.label, t.label);
+    // 和端口的 label 互不相干
+    assert_ne!(r.open(r.up.port).await.label, t.label);
+
+    // 审计：target 是目录，detail 带 kind
+    let audit: NodeAuditResult = r.call(methods::NODE_AUDIT, json!({ "limit": 50 })).await.unwrap();
+    let open = audit
+        .entries
+        .iter()
+        .rev()
+        .find(|e| e.action == "preview.open" && e.target.as_deref() == Some("site"))
+        .expect("audited");
+    assert_eq!((open.detail["kind"].clone(), open.detail["reused"].clone()), (json!("dir"), json!(false)));
+    let port_open = audit.entries.iter().find(|e| e.action == "preview.open" && e.detail["kind"] == json!("port"));
+    assert!(port_open.is_some());
+    assert!(!serde_json::to_string(&audit).unwrap().contains(&t.psk));
+}
+
+#[tokio::test]
+async fn hidden_files_and_links_out_of_the_directory_are_not_served() {
+    let mut r = Rig::new().await;
+    make_site(&r.td);
+    let (_t, mut pv) = dir_tunnel(&mut r, "site").await;
+    for hidden in [
+        "/.env",
+        "/%2Eenv",
+        "/.git/config",
+        "/.git/",
+        "/.anycon/attachments/a.txt",
+        "/.anycon/worktrees/wt/.env",
+        "/.anycon/worktrees",
+    ] {
+        let f = pv.get(hidden).await;
+        assert_eq!(f.status, 404, "{hidden}");
+        assert!(!f.text().contains("SECRET"), "{hidden}");
+    }
+    // worktree 会话的工作目录可以
+    let f = pv.get("/.anycon/worktrees/wt/report.html").await;
+    assert_eq!((f.status, f.text().as_str()), (200, "<h1>worktree</h1>"));
+    // 符号链接：指出目录、指向隐藏文件都是 404
+    #[cfg(unix)]
+    for link in ["/link-out", "/link-git"] {
+        let f = pv.get(link).await;
+        assert_eq!(f.status, 404, "{link}");
+        assert!(!f.text().contains("outside") && !f.text().contains("remote"), "{link}");
+    }
+    // 不合法的路径：400
+    for bad in ["/sub/../.env", "/%2e%2e/outside.txt", "/a%00b", "/a%5Cb", "/%ff"] {
+        assert_eq!(pv.get(bad).await.status, 400, "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn conditional_requests_head_and_other_methods() {
+    let mut r = Rig::new().await;
+    make_site(&r.td);
+    let (_t, mut pv) = dir_tunnel(&mut r, "site").await;
+    let first = pv.get("/report.html").await;
+    let tag = first.header("etag").unwrap().to_string();
+    let modified = first.header("last-modified").unwrap().to_string();
+    // etag 命中：304，没有正文
+    let f = pv.fetch("GET", "/report.html", &[("if-none-match", &tag)], None).await;
+    assert_eq!((f.status, f.body.len()), (304, 0));
+    assert_eq!(f.header("etag"), Some(tag.as_str()));
+    let f = pv.fetch("GET", "/report.html", &[("if-modified-since", &modified)], None).await;
+    assert_eq!(f.status, 304);
+    let f = pv.fetch("GET", "/report.html", &[("if-none-match", "W/\"stale\"")], None).await;
+    assert_eq!(f.status, 200);
+    // 文件变了，etag 跟着变
+    std::fs::write(r.td.workspace.join("site/report.html"), "<p>changed</p>").unwrap();
+    let f = pv.fetch("GET", "/report.html", &[("if-none-match", &tag)], None).await;
+    assert_eq!((f.status, f.text().as_str()), (200, "<p>changed</p>"));
+    // HEAD：头，不带正文，不压缩
+    std::fs::write(r.td.workspace.join("site/report.html"), big_html()).unwrap();
+    let f = pv.fetch("HEAD", "/report.html", &[], None).await;
+    assert_eq!((f.status, f.body.len(), f.encoding), (200, 0, Some(PreviewBodyEncoding::Identity)));
+    assert_eq!(f.header("content-length"), Some(big_html().len().to_string().as_str()));
+    // 别的方法：405（带请求体也不卡住）
+    let f = pv.fetch("POST", "/report.html", &[], Some(&vec![7u8; 300 * 1024])).await;
+    assert_eq!((f.status, f.header("allow")), (405, Some("GET, HEAD")));
+    // WebSocket：普通的 404
+    let rejected = pv.ws_open("/ws", &[]).await.expect_err("no WebSocket in a directory preview");
+    assert_eq!(rejected.status, 404);
+    // 隧道还能用
+    assert_eq!(pv.get("/index.html").await.status, 200);
+}
+
+#[tokio::test]
+async fn open_dir_validates_its_parameters() {
+    let mut r = Rig::new().await;
+    make_site(&r.td);
+    std::fs::write(r.td.workspace.join("plain.txt"), b"x").unwrap();
+    let up = r.up.port;
+    for params in [json!({ "port": up, "dir": "site" }), json!({}), json!({ "session_id": "sess_x" })] {
+        let e = r.open_err(params.clone()).await;
+        assert_eq!(code(&e), ErrorCode::Invalid, "{params}");
+    }
+    for bad in ["", ".", "..", "a/b", "a\\b", ".git", ".trash", "a\0b"] {
+        let e = r.open_err(json!({ "dir": bad })).await;
+        assert_eq!(code(&e), ErrorCode::Invalid, "{bad:?}");
+    }
+    for missing in ["nope", "plain.txt"] {
+        let e = r.open_err(json!({ "dir": missing })).await;
+        assert_eq!(code(&e), ErrorCode::NotFound, "{missing}");
+    }
+    let e = r.open_err(json!({ "dir": "site", "session_id": "sess_nope" })).await;
+    assert_eq!(code(&e), ErrorCode::NotFound);
+
+    // `.scratch`：全部 scratch 会话的工作目录，地址是 `/<会话 id>/…`
+    let scratch = r.td.workspace.join(".scratch/sess_1");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::write(scratch.join("out.html"), "<p>scratch</p>").unwrap();
+    let (t, mut pv) = dir_tunnel(&mut r, ".scratch").await;
+    assert_eq!(t.dir.as_deref(), Some(".scratch"));
+    assert_eq!(pv.get("/sess_1/out.html").await.text(), "<p>scratch</p>");
+
+    // 预览关着：forbidden / disabled
+    r.set("preview.enabled", "false");
+    let info: NodeInfo = r.call(methods::NODE_INFO, json!({})).await.unwrap();
+    assert!(!info.capabilities.preview_dir);
+    let e = r.open_err(json!({ "dir": "site" })).await;
+    assert_eq!((code(&e), reason(&e).as_deref()), (ErrorCode::Forbidden, Some("disabled")));
+}
+
+#[tokio::test]
+async fn a_directory_preview_follows_the_directory_and_the_enabled_switch() {
+    let mut r = Rig::new().await;
+    make_site(&r.td);
+    let (t, mut pv) = dir_tunnel(&mut r, "site").await;
+    assert_eq!(pv.get("/index.html").await.status, 200);
+    // 每个请求重新解析目录：项目改名之后旧名字下什么都没有
+    std::fs::rename(r.td.workspace.join("site"), r.td.workspace.join("site2")).unwrap();
+    assert_eq!(pv.get("/index.html").await.status, 404);
+    std::fs::rename(r.td.workspace.join("site2"), r.td.workspace.join("site")).unwrap();
+    assert_eq!(pv.get("/index.html").await.status, 200);
+
+    // 关掉预览：GOAWAY { disabled }，握手被拒；重新打开后票据照旧能用
+    r.set("preview.enabled", "false");
+    assert!(pv.wait_until(T, |p| p.goaway.is_some()).await, "no GOAWAY");
+    assert_eq!(pv.goaway.as_ref().unwrap().code, PreviewGoawayCode::Disabled);
+    assert_eq!(pv.handshake().await, Err(HandshakeError::Rejected("disabled".into())));
+    r.set("preview.enabled", "true");
+    assert!(pv.handshake().await.is_ok());
+    assert_eq!(pv.get("/index.html").await.status, 200);
+
+    // preview.close 对目录票据一样
+    let _: Empty = r.call(methods::PREVIEW_CLOSE, json!({ "label": t.label })).await.unwrap();
+    assert!(pv.wait_until(T, |p| p.goaway.is_some()).await, "no GOAWAY");
+    assert_eq!(pv.goaway.as_ref().unwrap().code, PreviewGoawayCode::Closed);
+    assert_eq!(pv.handshake().await, Err(HandshakeError::Rejected("unknown_ticket".into())));
+}
+
+#[tokio::test]
+async fn a_linked_project_can_be_previewed_by_its_name() {
+    let mut r = Rig::new().await;
+    let machine = r.td.dir.path().join("machine");
+    std::fs::create_dir_all(machine.join("reports")).unwrap();
+    std::fs::write(machine.join("reports/index.html"), "<p>linked</p>").unwrap();
+    std::fs::write(machine.join("reports/.env"), "SECRET=3").unwrap();
+    let machine = anycon_daemon::sys::canonicalize(machine).unwrap();
+    r.set("workspace.link_roots", &serde_json::to_string(&[machine.to_string_lossy()]).unwrap());
+    let _: Project = r
+        .call(methods::WORKSPACE_LINK, json!({ "path": machine.join("reports"), "name": "qa-reports" }))
+        .await
+        .unwrap();
+    let (t, mut pv) = dir_tunnel(&mut r, "qa-reports").await;
+    assert_eq!(t.dir.as_deref(), Some("qa-reports"));
+    assert_eq!(pv.get("/").await.text(), "<p>linked</p>");
+    assert_eq!(pv.get("/.env").await.status, 404);
 }

@@ -12,7 +12,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NODE_ID, Rig, SELF_ID, makeLaunch, settle } from '../../test/rig'
 import { dataFrame, endFrame, frame, responseFrame } from '../../test/peer'
-import { TunnelUnavailable, type TunnelState } from './link'
+import { TunnelUnavailable, helloMatchesLaunch, parseHello, type TunnelState } from './link'
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -117,11 +117,31 @@ describe('handshake', () => {
 
   it('treats a hello for another port as a failure', async () => {
     const rig = new Rig()
-    rig.hello = (l) => ({ port: l.port + 1, expires_at_ms: l.expires_at_ms })
+    rig.hello = (l) => ({ port: (l.port ?? 0) + 1, expires_at_ms: l.expires_at_ms })
     rig.tunnel.start()
     await rig.connect()
     await rig.answerHandshake()
     expect(rig.tunnel.state).toMatchObject({ phase: 'terminal', kind: 'handshake_failed' })
+  })
+
+  it('a folder preview connects when the hello names the same folder', async () => {
+    const { port: _port, ...rest } = makeLaunch()
+    const rig = new Rig({ launch: { ...rest, dir: 'web' } })
+    await rig.ready()
+    expect(rig.tunnel.state.phase).toBe('ready')
+  })
+
+  it('treats a hello for another folder, or for a port, as a failure', async () => {
+    const { port: _port, ...rest } = makeLaunch()
+    for (const hello of [{ dir: 'other' }, { port: 5173 }, { port: 5173, dir: 'web' }]) {
+      const rig = new Rig({ launch: { ...rest, dir: 'web' } })
+      rig.hello = (l) => ({ ...hello, expires_at_ms: l.expires_at_ms })
+      rig.tunnel.start()
+      await rig.connect()
+      // 目标对不上：立即失败；hello 本身不合法（两个都给了）：和读不出来的回复一样，重试三次后失败
+      for (let i = 0; i < 3 && rig.tunnel.state.phase === 'handshaking'; i++) await rig.answerHandshake()
+      expect(rig.tunnel.state).toMatchObject({ phase: 'terminal', kind: 'handshake_failed' })
+    }
   })
 
   it('retries when the machine does not answer, and reconnects after three attempts', async () => {
@@ -507,3 +527,25 @@ function encodeEnvelopeFrom(from: string, body: Uint8Array): Uint8Array {
   frames.set(body, 1)
   return encodeEnvelope(makeEnvelope(from, SELF_ID, 'data', 1, frames))
 }
+
+describe('hello', () => {
+  const bytes = (v: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(v))
+
+  it('parses a port or a folder target, exactly one', () => {
+    expect(parseHello(bytes({ port: 3000, expires_at_ms: 5 }))).toEqual({ port: 3000, expires_at_ms: 5 })
+    expect(parseHello(bytes({ dir: 'web', expires_at_ms: 5, port: null }))).toEqual({ dir: 'web', expires_at_ms: 5 })
+    for (const bad of [{ expires_at_ms: 5 }, { port: 1, dir: 'a', expires_at_ms: 5 }, { port: '1', expires_at_ms: 5 }, { dir: 1, expires_at_ms: 5 }, { port: 1 }]) {
+      expect(() => parseHello(bytes(bad))).toThrow()
+    }
+  })
+
+  it('matches the target of the launch', () => {
+    expect(helloMatchesLaunch({ port: 1, expires_at_ms: 0 }, { port: 1 })).toBe(true)
+    expect(helloMatchesLaunch({ port: 2, expires_at_ms: 0 }, { port: 1 })).toBe(false)
+    expect(helloMatchesLaunch({ dir: 'web', expires_at_ms: 0 }, { port: 1 })).toBe(false)
+    expect(helloMatchesLaunch({ dir: 'web', expires_at_ms: 0 }, { dir: 'web' })).toBe(true)
+    expect(helloMatchesLaunch({ dir: 'Web', expires_at_ms: 0 }, { dir: 'web' })).toBe(false)
+    expect(helloMatchesLaunch({ port: 1, expires_at_ms: 0 }, { dir: 'web' })).toBe(false)
+    expect(helloMatchesLaunch({ port: 1, expires_at_ms: 0 }, {})).toBe(false)
+  })
+})

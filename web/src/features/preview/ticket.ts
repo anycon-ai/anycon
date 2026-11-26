@@ -1,5 +1,5 @@
 // 预览票据（ADR-39，docs/spec/web.md § 13.1）：向 daemon 要票据（`preview.open`）、向 hub 要令牌（`POST /api/preview/tokens`），
-// 拼成预览页的启动参数（`PreviewLaunch`）和 URL。
+// 拼成预览页的启动参数（`PreviewLaunch`）和 URL。票据的目标是本机端口（dev server），或一个项目目录（目录预览，ADR-62）。
 //
 // 票据密钥和令牌都在 URL 的 fragment 里（浏览器不把 fragment 发给 hub）：这个模块不写日志，拿到的东西只放在内存里
 // （不进 IndexedDB、不进路由状态、不复制到剪贴板）。
@@ -32,10 +32,13 @@ export class PreviewLocalError extends Error {
   }
 }
 
-/** 一个（节点, 端口）的预览票据：除了 `path` 之外的启动参数，加上它的 origin。含密钥，别写日志。 */
+/** 预览的目标：本机端口，或目录预览的目录（项目名，或 `.scratch`）。 */
+export type PreviewTarget = { port: number } | { dir: string }
+
+/** 一个（节点, 目标）的预览票据：除了 `path` 之外的启动参数，加上它的 origin。含密钥，别写日志。 */
 export interface PreviewTicket {
   nodeId: string
-  port: number
+  target: PreviewTarget
   label: string
   /** `https://<label>.<预览域名>`，没有结尾的斜杠。 */
   origin: string
@@ -48,16 +51,17 @@ export interface PreviewTicket {
 
 const tickets = new Map<string, PreviewTicket>()
 const inflight = new Map<string, Promise<PreviewTicket>>()
-const keyOf = (nodeId: string, port: number): string => `${nodeId}:${port}`
+const keyOf = (nodeId: string, target: PreviewTarget): string =>
+  'port' in target ? `${nodeId}:port:${target.port}` : `${nodeId}:dir:${target.dir}`
 
-/** 缓存里这个端口的票据，不管还剩多久。停止预览要用它的 label。 */
-export function knownTicket(nodeId: string, port: number): PreviewTicket | undefined {
-  return tickets.get(keyOf(nodeId, port))
+/** 缓存里这个目标的票据，不管还剩多久。停止预览要用它的 label。 */
+export function knownTicket(nodeId: string, target: PreviewTarget): PreviewTicket | undefined {
+  return tickets.get(keyOf(nodeId, target))
 }
 
-/** 缓存里这个端口的票据，剩余有效期够长才返回（够长的才值得同步地直接用，比如点「在新标签页打开」时）。 */
-export function usableTicket(nodeId: string, port: number, now = Date.now()): PreviewTicket | undefined {
-  const cached = tickets.get(keyOf(nodeId, port))
+/** 缓存里这个目标的票据，剩余有效期够长才返回（够长的才值得同步地直接用，比如点「在新标签页打开」时）。 */
+export function usableTicket(nodeId: string, target: PreviewTarget, now = Date.now()): PreviewTicket | undefined {
+  const cached = tickets.get(keyOf(nodeId, target))
   return cached && cached.expiresAtMs - now >= REFRESH_MARGIN_MS ? cached : undefined
 }
 
@@ -74,20 +78,21 @@ export function clearTickets(): void {
 
 export interface EnsureTicketArgs {
   nodeId: string
-  port: number
-  sessionId: string
+  target: PreviewTarget
+  /** 从哪个会话发起（daemon 只用于展示和审计）；文件浏览里打开的没有。 */
+  sessionId?: string
   /** `/api/config.preview_origin_template`。 */
   template: string
 }
 
 /**
- * 取这个（节点, 端口）的票据：缓存里有且剩余有效期够长就用它，否则 `preview.open` → 令牌请求。
- * 同一个（节点, 端口）同时发起的请求合并成一次（StrictMode 下 effect 会跑两遍，也不该签两张票）。
+ * 取这个（节点, 目标）的票据：缓存里有且剩余有效期够长就用它，否则 `preview.open` → 令牌请求。
+ * 同一个（节点, 目标）同时发起的请求合并成一次（StrictMode 下 effect 会跑两遍，也不该签两张票）。
  */
 export function ensureTicket(args: EnsureTicketArgs): Promise<PreviewTicket> {
-  const usable = usableTicket(args.nodeId, args.port)
+  const usable = usableTicket(args.nodeId, args.target)
   if (usable) return Promise.resolve(usable)
-  const key = keyOf(args.nodeId, args.port)
+  const key = keyOf(args.nodeId, args.target)
   let pending = inflight.get(key)
   if (!pending) {
     pending = requestTicket(args).finally(() => inflight.delete(key))
@@ -101,7 +106,7 @@ export function ensureTicket(args: EnsureTicketArgs): Promise<PreviewTicket> {
  * hub 令牌还剩 10 分钟以上就沿用——每次刷新都换令牌会占满每设备 64 个的上限，挤掉这台设备上别的预览。
  */
 export function refreshTicket(args: EnsureTicketArgs): Promise<PreviewTicket> {
-  const key = keyOf(args.nodeId, args.port)
+  const key = keyOf(args.nodeId, args.target)
   const pending = requestTicket(args, tickets.get(key)).finally(() => {
     if (inflight.get(key) === pending) inflight.delete(key)
   })
@@ -110,7 +115,7 @@ export function refreshTicket(args: EnsureTicketArgs): Promise<PreviewTicket> {
 }
 
 async function requestTicket(
-  { nodeId, port, sessionId, template }: EnsureTicketArgs,
+  { nodeId, target, sessionId, template }: EnsureTicketArgs,
   previous?: PreviewTicket,
 ): Promise<PreviewTicket> {
   // 先查本地条件：缺了就别去 daemon 签一张用不上的票据
@@ -120,8 +125,11 @@ async function requestTicket(
   const deviceToken = (await getIdentity())?.device_token
   if (!deviceToken) throw new PreviewLocalError('no_device_token')
 
-  const params: PreviewOpenParams = { port, session_id: sessionId }
+  const params: PreviewOpenParams = { ...target, ...(sessionId === undefined ? {} : { session_id: sessionId }) }
   const opened = await rpc().request<PreviewOpenResult>(nodeId, 'preview.open', params)
+  // 启动参数里的目标用 daemon 回的写法（目录是它规整过的）；回应里缺了就沿用请求的
+  const launchTarget: PreviewTarget =
+    'port' in target ? { port: opened.port ?? target.port } : { dir: opened.dir ?? target.dir }
   let origin: string
   try {
     origin = previewOrigin(template, opened.label)
@@ -136,7 +144,7 @@ async function requestTicket(
   const expiresAtMs = Math.min(opened.expires_at_ms, token.expires_at_ms)
   const ticket: PreviewTicket = {
     nodeId,
-    port: opened.port,
+    target: launchTarget,
     label: opened.label,
     origin,
     expiresAtMs,
@@ -146,14 +154,14 @@ async function requestTicket(
       node: nodeId,
       node_public: toHex(nodePublic),
       label: opened.label,
-      port: opened.port,
+      ...launchTarget,
       ticket_id: opened.ticket_id,
       psk: opened.psk,
       token: token.token,
       expires_at_ms: expiresAtMs,
     },
   }
-  tickets.set(keyOf(nodeId, port), ticket)
+  tickets.set(keyOf(nodeId, target), ticket)
   return ticket
 }
 

@@ -175,7 +175,7 @@ impl Fx {
 async fn http_and_websocket_cross_a_real_hub() {
     let mut fx = Fx::new().await;
     let (t, mut pv) = fx.preview().await;
-    assert_eq!(pv.hello.as_ref().unwrap().port, fx.up.port);
+    assert_eq!(pv.hello.as_ref().unwrap().port, Some(fx.up.port));
     assert_eq!(fx.td.ctx.preview.tunnel_count(), 1);
 
     // GET：头部改写、响应原样

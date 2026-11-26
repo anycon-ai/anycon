@@ -101,7 +101,7 @@ export function PreviewView({ nodeId, sessionId, template, offline }: PreviewVie
       setPhase('opening')
       setError(null)
       try {
-        const args = { nodeId, port, sessionId, template }
+        const args = { nodeId, target: { port }, sessionId, template }
         const ticket = await (fresh ? refreshTicket(args) : ensureTicket(args))
         if (mine !== attempt.current) return
         frameSeq.current += 1
@@ -145,7 +145,7 @@ export function PreviewView({ nodeId, sessionId, template, offline }: PreviewVie
     return [...all].sort((a, b) => a - b).map((port) => ({ port, label: portLabel(port, listed.get(port), t) }))
   }, [ports.ports, extra, selected, t])
 
-  const known = selected === null ? undefined : knownTicket(nodeId, selected)
+  const known = selected === null ? undefined : knownTicket(nodeId, { port: selected })
   const opening = phase === 'opening'
 
   const submitPath = (e: FormEvent): void => {
@@ -178,7 +178,7 @@ export function PreviewView({ nodeId, sessionId, template, offline }: PreviewVie
   /** 缓存里的票据够新就同步地 `window.open`（保住点击带来的用户激活，弹窗不被拦）；否则先取票据。 */
   const openTab = async (): Promise<void> => {
     if (selected === null) return
-    const cached = usableTicket(nodeId, selected)
+    const cached = usableTicket(nodeId, { port: selected })
     if (cached) {
       window.open(launchUrl(cached, path), '_blank', 'noopener,noreferrer')
       return
@@ -186,7 +186,7 @@ export function PreviewView({ nodeId, sessionId, template, offline }: PreviewVie
     setTabBusy(true)
     setError(null)
     try {
-      const ticket = await ensureTicket({ nodeId, port: selected, sessionId, template })
+      const ticket = await ensureTicket({ nodeId, target: { port: selected }, sessionId, template })
       window.open(launchUrl(ticket, path), '_blank', 'noopener,noreferrer')
     } catch (e) {
       console.warn('anycon: could not open the preview in a new tab', e)

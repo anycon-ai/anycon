@@ -582,9 +582,9 @@ export class PreviewTunnel {
       void this.beginHandshake()
       return
     }
-    if (hello.port !== this.deps.launch.port) {
+    if (!helloMatchesLaunch(hello, this.deps.launch)) {
       transport.free()
-      return this.terminal('handshake_failed', 'the machine answered for a different port')
+      return this.terminal('handshake_failed', 'the machine answered for a different port or folder')
     }
     this.expiresAt = Math.min(this.expiresAt, hello.expires_at_ms)
     this.armExpiry()
@@ -670,12 +670,26 @@ export class PreviewTunnel {
   }
 }
 
-function parseHello(payload: Uint8Array): PreviewHello {
+/** 握手回复的 payload。目标是端口（`port`）或目录（`dir`），正好一个；`null` 和缺省一样算没给。 */
+export function parseHello(payload: Uint8Array): PreviewHello {
   const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload))
   if (typeof value !== 'object' || value === null) throw new Error('bad hello')
   const v = value as Record<string, unknown>
-  if (typeof v.port !== 'number' || typeof v.expires_at_ms !== 'number') throw new Error('bad hello')
-  return { port: v.port, expires_at_ms: v.expires_at_ms }
+  if (typeof v.expires_at_ms !== 'number') throw new Error('bad hello')
+  const port = v.port ?? undefined
+  const dir = v.dir ?? undefined
+  if (port !== undefined && dir === undefined && typeof port === 'number') return { port, expires_at_ms: v.expires_at_ms }
+  if (dir !== undefined && port === undefined && typeof dir === 'string') return { dir, expires_at_ms: v.expires_at_ms }
+  throw new Error('bad hello')
+}
+
+/**
+ * daemon 回答的目标和启动参数的一致：端口票据比端口，目录票据比目录。不一致说明连到的票据不是这一份启动参数要的
+ * （不该发生；发生了就别把请求送过去）。
+ */
+export function helloMatchesLaunch(hello: PreviewHello, launch: Pick<PreviewLaunch, 'port' | 'dir'>): boolean {
+  if (launch.dir !== undefined && launch.dir !== null) return hello.dir === launch.dir && (hello.port ?? undefined) === undefined
+  return launch.port !== undefined && launch.port !== null && hello.port === launch.port && (hello.dir ?? undefined) === undefined
 }
 
 function rejectKind(reason: PreviewRejectReason | string): UnavailableKind {

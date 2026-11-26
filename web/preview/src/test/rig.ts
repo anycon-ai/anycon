@@ -100,7 +100,8 @@ export class Rig {
   peer: TestPeer | null = null
   private responder: Handshake | null = null
   /** daemon 回给 P 的 hello。 */
-  hello: (launch: PreviewLaunch) => PreviewHello = (l) => ({ port: l.port, expires_at_ms: l.expires_at_ms })
+  hello: (launch: PreviewLaunch) => PreviewHello = (l) =>
+    typeof l.dir === 'string' ? { dir: l.dir, expires_at_ms: l.expires_at_ms } : { port: l.port, expires_at_ms: l.expires_at_ms }
   /** daemon 的握手回复：`accept`（默认）、`reject:<原因>`、`garbage`（接受但 Noise 部分是乱码）或 `silent`（不回）。 */
   handshakeMode: 'accept' | 'silent' | 'garbage' | `reject:${string}` = 'accept'
   daemonPublic = DAEMON_PUBLIC

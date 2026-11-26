@@ -31,6 +31,8 @@ import {
   decodeGoaway,
   decodeMessage,
   decodePreviewLaunch,
+  isValidPreviewDir,
+  PREVIEW_DIR_MAX_BYTES,
   decodeRequestHead,
   decodeReset,
   decodeResponseHead,
@@ -112,6 +114,45 @@ describe('preview launch', () => {
     ]) {
       assert.throws(() => decodePreviewLaunch(frag), ProtocolError)
     }
+  })
+})
+
+describe('preview launch target', () => {
+  it('accepts a directory instead of a port', () => {
+    const { port: _port, ...rest } = launch
+    for (const dir of ['web', '.scratch', '测试 项目', 'a'.repeat(PREVIEW_DIR_MAX_BYTES)]) {
+      const dirLaunch: PreviewLaunch = { ...rest, dir }
+      const back = decodePreviewLaunch(encodePreviewLaunch(dirLaunch))
+      assert.deepEqual(back, dirLaunch)
+      assert.equal('port' in back, false)
+      assert.equal(isValidPreviewDir(dir), true)
+    }
+  })
+
+  it('needs exactly one of port and dir, and a single-segment dir', () => {
+    const { port: _port, ...rest } = launch
+    const raw = (patch: Record<string, unknown>): string =>
+      encodePreviewLaunch({ ...rest, ...patch } as PreviewLaunch)
+    for (const frag of [
+      raw({}),
+      raw({ port: null, dir: null }),
+      raw({ port: 5173, dir: 'web' }),
+      raw({ dir: '' }),
+      raw({ dir: 'a/b' }),
+      raw({ dir: 'a\\b' }),
+      raw({ dir: '.' }),
+      raw({ dir: '..' }),
+      raw({ dir: 'a\tb' }),
+      raw({ dir: 'a'.repeat(PREVIEW_DIR_MAX_BYTES + 1) }),
+      // 255 个字节按 UTF-8 算：85 个汉字是 255 字节，86 个超了
+      raw({ dir: '测'.repeat(86) }),
+      raw({ dir: 5 }),
+    ]) {
+      assert.throws(() => decodePreviewLaunch(frag), ProtocolError)
+    }
+    assert.equal(decodePreviewLaunch(raw({ dir: '测'.repeat(85) })).dir, '测'.repeat(85))
+    // 给了 dir、port 是 null：按目录票据
+    assert.equal(decodePreviewLaunch(raw({ port: null, dir: 'web' })).dir, 'web')
   })
 })
 

@@ -1,19 +1,36 @@
 // Bot 页的状态头：节点名、状态行和操作。配置（范围、预算、判断后端、Bot 连接）在节点设置 →「Bot」。
+// 状态头是卡片的卡头：带底色和状态点，节点名是收起 / 展开的开关（外层是 `TwinPage` 里的 `Collapsible.Root`），操作按钮在收起时也在。
 // 恢复要先试跑再确认：只有试跑结果是 `done` 或 `idle` 才允许「就这么办」。
 import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
+import { Collapsible } from 'radix-ui'
+import { ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { describeError } from '@/lib/errors'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes, type NodeEntry } from '@/stores/nodes'
 import { Button } from '@/ui/Button'
 import { Dialog } from '@/ui/Overlay'
-import { Spinner } from '@/ui/Misc'
+import { Dot, Spinner, type Tone } from '@/ui/Misc'
 import { Decisions } from './Parts'
 import { setTwin, syncTwin, wakeTwin } from './service'
-import { missingTriage, twinHead, twinHeadLabel } from './state'
+import { missingTriage, twinHead, twinHeadLabel, type TwinHead } from './state'
 import { useTwin } from './store'
 import { usePlan } from './usePlan'
+
+/** 卡头状态点的语气：状态不只靠颜色，旁边总有状态文字。 */
+const headTone: Record<TwinHead, Tone> = {
+  offline: 'neutral',
+  loading: 'neutral',
+  failed: 'danger',
+  disabled: 'neutral',
+  not_configured: 'warning',
+  paused: 'warning',
+  budget: 'warning',
+  running: 'accent',
+  idle: 'success',
+  unknown: 'neutral',
+}
 
 /** `resume` 是暂停后的恢复路径（带「就这么办」）；`dry` 只看计划。 */
 type DialogMode = 'resume' | 'dry'
@@ -83,22 +100,29 @@ export function StatusHead({ node, onError }: { node: NodeEntry; onError: (messa
     }
   }
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="font-semibold">{node.name}</h2>
-          <p data-testid="twin-state">{twinHeadLabel(t, head)}</p>
+    <div className="space-y-2 bg-bg-subtle px-4 py-3" data-testid="twin-head">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <h2 className="min-w-0 font-semibold">
+            <Collapsible.Trigger className="group flex min-h-9 min-w-0 items-center gap-1.5 rounded-md text-left" data-testid="twin-toggle">
+              <ChevronRight className="size-4 shrink-0 text-fg-muted transition-transform group-data-[state=open]:rotate-90" aria-hidden />
+              <span className="truncate">{node.name}</span>
+            </Collapsible.Trigger>
+          </h2>
+          <span className="flex shrink-0 items-center gap-1.5 text-sm text-fg-muted">
+            <Dot tone={headTone[head]} pulse={head === 'running'} />
+            <span data-testid="twin-state">{twinHeadLabel(t, head)}</span>
+          </span>
         </div>
         {value && configured ? (
           <div className="flex flex-wrap gap-2">
             {paused ? (
-              <Button variant="primary" size="lg" disabled={!online || busy || !enabled} onClick={() => openPlan('resume')}>
+              <Button variant="primary" disabled={!online || busy || !enabled} onClick={() => openPlan('resume')}>
                 {t('twin.resume')}
               </Button>
             ) : (
               <Button
                 variant="primary"
-                size="lg"
                 disabled={!online || busy}
                 onClick={() => {
                   setLooked(null)
@@ -110,7 +134,8 @@ export function StatusHead({ node, onError }: { node: NodeEntry; onError: (messa
             )}
             {!paused && enabled ? (
               <Button
-                size="lg"
+                variant="outline"
+                className="bg-surface"
                 disabled={!online || busy}
                 onClick={() =>
                   void act(async () => {
@@ -124,7 +149,7 @@ export function StatusHead({ node, onError }: { node: NodeEntry; onError: (messa
               </Button>
             ) : null}
             {enabled ? (
-              <Button size="lg" disabled={!online || busy} onClick={() => openPlan('dry')}>
+              <Button variant="outline" className="bg-surface" disabled={!online || busy} onClick={() => openPlan('dry')}>
                 {t('twin.dryRun')}
               </Button>
             ) : null}
@@ -148,7 +173,7 @@ export function StatusHead({ node, onError }: { node: NodeEntry; onError: (messa
         <div className="space-y-2">
           {!value.scope.projects.length ? <p>{t('twin.noProjectsYet')}</p> : null}
           <MissingTriage node={node} />
-          <Link to="/n/$node/settings" params={{ node: shortNodeId(node.id, order) }} search={{ tab: 'twin' }} className="inline-flex h-11 items-center rounded-md bg-accent px-5 font-medium text-accent-fg hover:bg-accent-hover" data-testid="twin-setup">
+          <Link to="/n/$node/settings" params={{ node: shortNodeId(node.id, order) }} search={{ tab: 'twin' }} className="inline-flex h-9 items-center rounded-md bg-accent px-4 text-sm font-medium text-accent-fg hover:bg-accent-hover" data-testid="twin-setup">
             {t('twin.setUp')}
           </Link>
         </div>
@@ -182,7 +207,7 @@ export function StatusHead({ node, onError }: { node: NodeEntry; onError: (messa
           {dialog === 'resume' && plan && plan.kind !== 'running' && !canProceed ? (
             <div className="space-y-1">
               <p className="text-sm text-fg-muted">{t('twin.resumeAnywayHint')}</p>
-              <Button size="lg" disabled={!online || busy || !enabled} onClick={() => void doIt()} data-testid="twin-resume-anyway">
+              <Button disabled={!online || busy || !enabled} onClick={() => void doIt()} data-testid="twin-resume-anyway">
                 {t('twin.resumeAnyway')}
               </Button>
             </div>

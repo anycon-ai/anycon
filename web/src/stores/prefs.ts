@@ -38,6 +38,8 @@ export interface PrefsState {
   infoPanelOpen: boolean
   /** 信息面板里收起的卡片（卡片的 key，如 `session`、`agents`），所有会话共用。 */
   infoCollapsed: string[]
+  /** Bot 页上收起的节点卡片（节点 id）；默认都展开。 */
+  twinCollapsed: string[]
   /** 宽屏左栏是否展开（手机上左栏是抽屉，不受影响）。 */
   sidebarOpen: boolean
   /** 宽屏左栏宽度（px），拖动左栏右缘调整。 */
@@ -69,11 +71,12 @@ export interface PrefsState {
   /** key = `${nodeId}:${project}`：这个浏览器在这个项目上次选的工作位置（ADR-34）。 */
   lastWorkspace: Record<string, SessionWorkspaceMode>
   customModels: Record<string, string[]>
-  set: (patch: Partial<Omit<PrefsState, 'set' | 'setLastUsed' | 'setLastWorkspace' | 'addCustomModel' | 'setInfoCollapsed'>>) => void
+  set: (patch: Partial<Omit<PrefsState, 'set' | 'setLastUsed' | 'setLastWorkspace' | 'addCustomModel' | 'setInfoCollapsed' | 'setTwinCollapsed'>>) => void
   setLastUsed: (key: string, value: Candidate) => void
   setLastWorkspace: (key: string, mode: SessionWorkspaceMode) => void
   addCustomModel: (key: string, model: string) => void
   setInfoCollapsed: (key: string, collapsed: boolean) => void
+  setTwinCollapsed: (nodeId: string, collapsed: boolean) => void
 }
 
 /** 这个浏览器在这次页面加载之前有没有存过偏好（有 = 老用户）。读不了 localStorage 时当作新用户：宁可不打扰。 */
@@ -122,6 +125,7 @@ export const usePrefs = create<PrefsState>()(
       filesShowHidden: false,
       infoPanelOpen: true,
       infoCollapsed: [],
+      twinCollapsed: [],
       sidebarOpen: true,
       sidebarWidth: SIDEBAR_DEFAULT,
       sidebarNodes: null,
@@ -150,6 +154,11 @@ export const usePrefs = create<PrefsState>()(
           if (s.infoCollapsed.includes(key) === collapsed) return s
           return { infoCollapsed: collapsed ? [...s.infoCollapsed, key] : s.infoCollapsed.filter((k) => k !== key) }
         }),
+      setTwinCollapsed: (nodeId, collapsed) =>
+        set((s) => {
+          if (s.twinCollapsed.includes(nodeId) === collapsed) return s
+          return { twinCollapsed: collapsed ? [...s.twinCollapsed, nodeId] : s.twinCollapsed.filter((k) => k !== nodeId) }
+        }),
     }),
     {
       name: 'anycon.prefs',
@@ -167,6 +176,7 @@ export const usePrefs = create<PrefsState>()(
         filesShowHidden: s.filesShowHidden,
         infoPanelOpen: s.infoPanelOpen,
         infoCollapsed: s.infoCollapsed,
+        twinCollapsed: s.twinCollapsed,
         sidebarOpen: s.sidebarOpen,
         sidebarWidth: s.sidebarWidth,
         sidebarNodes: s.sidebarNodes,

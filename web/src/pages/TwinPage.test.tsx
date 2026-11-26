@@ -43,7 +43,7 @@ beforeEach(() => {
   daemon = new FakeTwinDaemon(rpc)
   setRpc(rpc)
   useTwin.getState().reset()
-  usePrefs.setState({ sidebarNodes: null, sidebarSpace: null })
+  usePrefs.setState({ sidebarNodes: null, sidebarSpace: null, twinCollapsed: [] })
   setNode(false)
 })
 async function load(props: { node?: string; run?: string } = {}) {
@@ -114,6 +114,33 @@ describe('Bot page status head', () => {
     render(<TwinPage />)
     expect(screen.queryByText('alpha')).not.toBeInTheDocument()
     expect(screen.getByText('beta')).toBeInTheDocument()
+  })
+})
+
+describe('Bot page card collapse', () => {
+  it('collapses one card to its head, keeps the actions, and remembers it', async () => {
+    useNodes.setState((s) => ({ byId: { ...s.byId, [B]: nodeEntry({ id: B, name: 'beta', info: info(true) }) }, order: [A, B] }))
+    render(<TwinPage />)
+    await waitFor(() => expect(screen.getAllByTestId('twin-config-summary')).toHaveLength(2))
+    const [alpha, beta] = screen.getAllByTestId('twin-card')
+    const toggle = within(alpha!).getByRole('button', { name: 'alpha' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(within(alpha!).queryByTestId('twin-config-summary')).not.toBeInTheDocument()
+    expect(within(alpha!).getByRole('button', { name: 'Pause' })).toBeInTheDocument()
+    expect(within(beta!).getByTestId('twin-config-summary')).toBeInTheDocument()
+    expect(usePrefs.getState().twinCollapsed).toEqual([A])
+    await userEvent.click(toggle)
+    expect(within(alpha!).getByTestId('twin-config-summary')).toBeInTheDocument()
+    expect(usePrefs.getState().twinCollapsed).toEqual([])
+  })
+  it('a run link opens a collapsed card', async () => {
+    daemon.runs = [twinRun({ id: 'r1' })]
+    usePrefs.setState({ twinCollapsed: [A] })
+    render(<TwinPage node={A} run="r1" />)
+    expect(await screen.findByTestId('twin-run')).toBeInTheDocument()
+    expect(usePrefs.getState().twinCollapsed).toEqual([])
   })
 })
 

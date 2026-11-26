@@ -92,6 +92,12 @@ export default defineConfig({
       },
     }),
   ],
+  // 派生 Worker（src/transport/kdf.worker.ts）：动态 import wasm 胶水 js，要 ES module 格式；
+  // 主构建的插件不作用于 Worker 的构建，wasm 没构建时的桩要单独给它
+  worker: {
+    format: 'es',
+    plugins: () => [wasmFallback()],
+  },
   server: {
     port: 5173,
     proxy: {

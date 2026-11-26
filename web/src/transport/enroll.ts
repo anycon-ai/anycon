@@ -13,6 +13,7 @@ import { PAIR_STEP_TIMEOUT_MS } from '@/lib/constants'
 import { buildEnrollQr } from '@/lib/enrollQr'
 import type { PairErrorCode } from './client'
 import type { FullCrypto, Handshake, Keypair, Transport } from './crypto'
+import type { Kdf } from './kdf'
 import type { PairDoneEvent, PairEvent } from './events'
 import { MailboxClosed, MailboxTimeout, type Mailbox } from './mailbox'
 import { bytesOfHex, decodeEnrollFrame, encodeEnrollFrame, hexOf } from './wire'
@@ -119,6 +120,8 @@ export class EnrollRun {
 
 export interface EnrollIo {
   crypto: FullCrypto
+  /** 节点口令的 Argon2id 用它算（主线程的 `crypto` 不碰 Argon2id，见 `./kdf.ts`）。 */
+  kdf: Kdf
   keypair: Keypair
   mailbox: Mailbox<PairEvent>
   clientInfo(): ClientInfo
@@ -211,7 +214,7 @@ class Initiator {
     await this.io.yieldToPaint()
     let prs: Uint8Array
     try {
-      prs = this.io.crypto.deriveEnrollPasswordPrs(password, bytesOfHex(ready.salt))
+      prs = await this.io.kdf.deriveEnrollPasswordPrs(password, bytesOfHex(ready.salt))
     } catch (e) {
       throw protocolError(`could not derive the password key: ${(e as Error).message}`)
     }

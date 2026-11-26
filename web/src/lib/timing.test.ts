@@ -36,4 +36,18 @@ describe('timing', () => {
     const rows = table.mock.calls[0]![0] as Array<{ step: string }>
     expect(rows.map((r) => r.step)).toEqual(['hub.connect', 'hub.auth_ok'])
   })
+
+  it('keeps the browser performance timeline bounded on a long-lived page', async () => {
+    performance.clearMarks()
+    performance.clearMeasures()
+    const ours = (): number =>
+      [...performance.getEntriesByType('mark'), ...performance.getEntriesByType('measure')].filter((e) => e.name.startsWith('anycon:')).length
+    for (let i = 0; i < 2000; i++) {
+      mark('hub.connect')
+      await timed('rpc node.info', async () => 1)
+    }
+    expect(ours()).toBeGreaterThan(0)
+    expect(ours()).toBeLessThanOrEqual(300)
+    expect(timingEntries()).toHaveLength(300)
+  })
 })

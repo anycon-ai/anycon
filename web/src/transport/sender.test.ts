@@ -1,7 +1,7 @@
 // 发送方规则（docs/protocol.md § 3.1）：用一个只实现「转发 / 退回并粘住」的假 hub 驱动 EnvelopeSender，
 // 断言重发顺序、暂停范围、缓冲上限和最终到达顺序。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EnvelopeSender, HANDSHAKE_BACKOFF_CAP_MS, SENT_LOG_MAX_BYTES, SENT_RETAIN_MS, STUCK_RESET_MS } from './sender'
+import { EnvelopeSender, HANDSHAKE_BACKOFF_CAP_MS, SENT_LOG_MAX_BYTES, SENT_RELEASE_MS, SENT_RETAIN_MS, STUCK_RESET_MS } from './sender'
 
 const A = 'a'.repeat(32)
 const B = 'b'.repeat(32)
@@ -341,6 +341,42 @@ describe('EnvelopeSender — backpressure', () => {
     t.sender.onUndeliverable(1)
     await vi.advanceTimersByTimeAsync(0)
     expect(t.writes).toEqual([1, 2, 3])
+  })
+
+  it('releases originals a minute after they were sent even when the window never fills (a tab that stays connected for days)', async () => {
+    const t = setup({ capacity: 1_000_000 })
+    for (let seq = 1; seq <= 100; seq++) t.send(seq)
+    await vi.advanceTimersByTimeAsync(30_000)
+    t.send(101)
+    expect(t.sender.loggedBytes).toBe(101 * 16)
+    await vi.advanceTimersByTimeAsync(SENT_RELEASE_MS - 30_000)
+    // 1–100 满一分钟了，101 还没有
+    expect(t.sender.lookup(100)).toBeUndefined()
+    expect(t.sender.lookup(101)).toBeDefined()
+    expect(t.sender.loggedBytes).toBe(16)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(t.sender.loggedBytes).toBe(0)
+    expect(t.resets).toEqual([])
+  })
+
+  it('keeps an envelope that is waiting to be resent past the release age, and releases it after the resend has aged too', async () => {
+    const t = setup({ capacity: 1000 })
+    t.send(1, A)
+    t.send(2, B)
+    await vi.advanceTimersByTimeAsync(SENT_RELEASE_MS - 10_000)
+    t.failTo.add(A) // A 的重发写不进去：1 一直在「等重发」
+    t.sender.onBackpressure(A, 1) // 很晚才到的退回，原文还在
+    await vi.advanceTimersByTimeAsync(11_000) // 1、2 都发出满一分钟了；离第一次退回还不到一分钟，不算卡死
+    expect(t.sender.lookup(1)).toBeDefined()
+    expect(t.sender.lookup(2)).toBeUndefined()
+    t.failTo.delete(A)
+    await vi.advanceTimersByTimeAsync(1_000) // 1 终于重发出去，重新计时
+    expect(t.writes.at(-1)).toBe(1)
+    expect(t.resets).toEqual([])
+    expect(t.sender.lookup(1)).toBeDefined()
+    await vi.advanceTimersByTimeAsync(SENT_RELEASE_MS)
+    expect(t.sender.loggedBytes).toBe(0)
+    expect(t.resets).toEqual([])
   })
 
   it('resets the peer if the hub keeps bouncing it for a minute', async () => {

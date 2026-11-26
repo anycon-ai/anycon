@@ -36,6 +36,14 @@ describe('envelope', () => {
     assert.equal(e.v, ENVELOPE_VERSION)
   })
 
+  it('编码结果独占一块恰好大小的缓冲区（发送方会把它留在重发窗口里）', () => {
+    for (const size of [0, 100, 3000, 200 * 1024]) {
+      const bytes = encodeEnvelope(env(new Uint8Array(size)))
+      assert.equal(bytes.byteOffset, 0)
+      assert.equal(bytes.buffer.byteLength, bytes.byteLength, `body ${size} B`)
+    }
+  })
+
   it('body 用 bin 而不是 array：bin8 / bin16 / bin32 头字节', () => {
     const header = (len: number) => {
       const bytes = encodeEnvelope(env(new Uint8Array(len)))

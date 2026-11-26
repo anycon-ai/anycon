@@ -7,7 +7,8 @@
 // 1. 留着最近发出的 `data` 信封**原文**（按字节封顶，不是按条数），不能重新加密。
 //    保留缓冲是**在途窗口**，不是 LRU：最近 `SENT_RETAIN_MS`（10 s）内发出的、以及被退回正等着重发的信封**永远不逐出**
 //    （它们可能还在路上、hub 还没处理，被退回时得有原文可重发）；放不下新的就**暂停发送**（新信封留在 outbox 里），
-//    等旧的过了保护期再逐出、腾出位置。传输作废后它名下的信封原文立刻释放，只留一个 10 s 的墓碑（seq → 对端）
+//    等旧的过了保护期再逐出、腾出位置。发出满 `SENT_RELEASE_MS`（60 s）、没在等重发的原文不等窗口满就释放，
+//    连接一直不断的页面不会一直攒到窗口上限。传输作废后它名下的信封原文立刻释放，只留一个 10 s 的墓碑（seq → 对端）
 //    用来认出晚到的退回，不让它们去重置已经重新握手的新传输；
 // 2. 收到 `backpressure` 就**暂停该对端**（新的 `data` 信封先在 outbox 里排队，不写出去），等 `retry_after_ms`
 //    （最近一条 `rate_limited` 给的；没有就 100–300 ms + 抖动），然后把**所有**被退回的 seq **按升序原样重发**，再放行排队的新信封；
@@ -26,6 +27,11 @@ import type { Envelope } from './wire'
 export const SENT_LOG_MAX_BYTES = 16 * 1024 * 1024
 /** 发出后这么久之内的信封永远不逐出（hub 的退回通常在几百毫秒内到，这里留足余量）。 */
 export const SENT_RETAIN_MS = 10_000
+/**
+ * 发出这么久之后，没在等重发的原文主动释放，不等窗口满了才逐出。连接一直不断的页面否则会一直攒到窗口上限，
+ * 而且条数可以很多（几百字节的小信封要好几万条才占满 16 MiB）。取保护期的好几倍：释放不会和晚到的退回抢。
+ */
+export const SENT_RELEASE_MS = 60_000
 /** 没有 `rate_limited` 提示时，重发 data 前等多久：100–300 ms（含抖动）。 */
 const RETRY_MIN_MS = 100
 const RETRY_JITTER_MS = 200
@@ -114,6 +120,8 @@ export class EnvelopeSender {
   private rateUntil = 0
   private drainTimer: ReturnType<typeof setTimeout> | null = null
   private drainAt = 0
+  /** 下一次释放过期原文的定时器；重发缓冲为空时没有。 */
+  private releaseTimer: ReturnType<typeof setTimeout> | null = null
   /** 上一轮 drain 因为在途窗口满了而停下（有 data 信封在 outbox 里等位置）。 */
   private windowHeld = false
   private readonly maxLogBytes: number
@@ -192,6 +200,43 @@ export class EnvelopeSender {
   private record(item: Pending, now: number): void {
     this.sentLog.set(item.seq, { bytes: item.bytes, to: item.to, sentAt: now })
     this.logBytes += item.bytes.length
+    this.armRelease()
+  }
+
+  /** 在最老的一封（不算等重发的）满 `SENT_RELEASE_MS` 时释放一次。已经有定时器或缓冲是空的就不动。 */
+  private armRelease(): void {
+    if (this.releaseTimer || this.sentLog.size === 0) return
+    const pinned = this.returnedSeqs()
+    let oldest: number | undefined
+    for (const [seq, e] of this.sentLog) {
+      if (pinned.has(seq)) continue
+      oldest = e.sentAt
+      break
+    }
+    // 全都在等重发：重发会把它们挪到末尾、重新计时，或者传输作废时一起释放；到时候 record() 会再排
+    if (oldest === undefined) return
+    this.releaseTimer = setTimeout(
+      () => {
+        this.releaseTimer = null
+        this.releaseExpired(Date.now())
+        this.armRelease()
+      },
+      Math.max(oldest + SENT_RELEASE_MS - Date.now(), 1000),
+    )
+  }
+
+  /** 释放发出满 `SENT_RELEASE_MS`、没在等重发的原文。 */
+  private releaseExpired(now: number): void {
+    let pinned: Set<number> | undefined
+    let freed = false
+    for (const [seq, e] of this.sentLog) {
+      if (now - e.sentAt < SENT_RELEASE_MS) break // 按写出先后排列：后面的都更新
+      pinned ??= this.returnedSeqs()
+      if (pinned.has(seq)) continue
+      this.unlog(seq)
+      freed = true
+    }
+    if (freed) this.wake()
   }
 
   /**
@@ -345,6 +390,8 @@ export class EnvelopeSender {
       this.sentLog.delete(seq)
       this.sentLog.set(seq, { ...entry, sentAt: now })
     }
+    // 不再等重发了：缓冲里要是只剩它们，此前没有释放定时器
+    this.armRelease()
     p.blocked = false
     this.drain()
   }
@@ -445,6 +492,8 @@ export class EnvelopeSender {
     this.handshakeSeqs.clear()
     if (this.drainTimer) clearTimeout(this.drainTimer)
     this.drainTimer = null
+    if (this.releaseTimer) clearTimeout(this.releaseTimer)
+    this.releaseTimer = null
     this.windowHeld = false
     this.outbox = []
     this.sentLog.clear()

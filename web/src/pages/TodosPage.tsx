@@ -348,8 +348,9 @@ export function TodosPage({ selected, active = true }: { selected?: { node: stri
           {list}
         </div>
         {wide ? (
-          <div className="scroll-thin min-w-0 flex-1 overflow-y-auto p-6" data-testid="todos-detail-pane">
-            <div className="mx-auto max-w-2xl">{selected ? <TodoDetailPane node={selected.node} todo={selected.todo} /> : <p className="text-sm text-fg-subtle">{t('todos.pickOne')}</p>}</div>
+          // 详情跟着右半边变宽：两侧留 24px，宽屏 40px，很宽时 60px，最宽 72rem，和会话正文同一个上限，再宽行就太长了
+          <div className="scroll-thin min-w-0 flex-1 overflow-y-auto px-6 py-6 lg:px-10 2xl:px-15" data-testid="todos-detail-pane">
+            <div className="mx-auto max-w-6xl">{selected ? <TodoDetailPane node={selected.node} todo={selected.todo} /> : <p className="text-sm text-fg-subtle">{t('todos.pickOne')}</p>}</div>
           </div>
         ) : null}
       </div>

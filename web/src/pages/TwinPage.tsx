@@ -1,12 +1,15 @@
 // Bot 页只看运行状态：状态头和操作、今天的数字、连续失败提醒、现在在做什么、趋势、运行记录。
 // 范围、预算、判断后端和 Bot 连接在节点设置 →「Bot」；记录想做的事仍然通过清单。
+// 每个节点一张卡，卡头带底色，点节点名收起 / 展开；收起的节点记在偏好里（spec/web.md § 14.8）。
 // 它和规则页是顶栏里并列的两个标签（`BotTabs`），入口是左栏底部的 Bot 状态（spec/web.md § 14.8）。
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Collapsible } from 'radix-ui'
 import type { TwinRun } from '@/protocol'
 import { BotTabs } from '@/components/BotTabs'
 import { PageHeader } from '@/components/PageHeader'
 import { useNodes, type NodeEntry } from '@/stores/nodes'
+import { usePrefs } from '@/stores/prefs'
 import { resolveNodeParam } from '@/lib/ids'
 import { describeError } from '@/lib/errors'
 import { rpc } from '@/transport/instance'
@@ -54,6 +57,12 @@ function TwinCard({ node, runId }: { node: NodeEntry; runId?: string }) {
   const [older, setOlder] = useState<TwinRun[]>([])
   const [runMissing, setRunMissing] = useState(false)
   const online = node.conn === 'ready'
+  const collapsed = usePrefs((s) => s.twinCollapsed.includes(node.id))
+  const setCollapsed = usePrefs((s) => s.setTwinCollapsed)
+  // 直达某条运行时这张卡必须展开，否则目标记录看不见
+  useEffect(() => {
+    if (runId) setCollapsed(node.id, false)
+  }, [runId, node.id, setCollapsed])
   // 从「经过」直达较早的运行时，顺着游标补页直到找到；记录被清理时明确说明。
   useEffect(() => {
     if (!runId || !online || !entry?.runs) return
@@ -101,40 +110,45 @@ function TwinCard({ node, runId }: { node: NodeEntry; runId?: string }) {
   // 卡片挂着就说明有人在看统计：今天的数字和趋势都用它
   useEffect(() => wantTwinStats(node.id), [node.id])
   return (
-    <article className="space-y-4 rounded-lg border border-border bg-surface p-4" data-testid="twin-card">
-      <StatusHead node={node} onError={setError} />
-      {/* 没配置好时只留状态头和「去设置」；有运行记录才显示历史 */}
-      {configured ? (
-        <>
-          <ConfigSummary node={node} />
-          <TodayTiles node={node} />
-          <HealthAlert node={node} />
-          <NowSections node={node} />
-          {node.info?.capabilities.twin_stats === true ? <Trend nodeId={node.id} /> : null}
-        </>
-      ) : null}
-      {runMissing ? <p role="status">{t('twin.runGone')}</p> : null}
-      {entry?.runs.length || configured || runId ? <RunHistory key={runId} nodeId={node.id} runs={[...(entry?.runs ?? []), ...older].filter((r, i, all) => all.findIndex((x) => x.id === r.id) === i)} runId={runId} /> : null}
-      {(entry?.runs.length ?? 0) >= 50 && before !== 0 ? (
-        <Button
-          disabled={!online || busy}
-          onClick={() =>
-            void act(async () => {
-              const ms = older.at(-1)?.started_ms ?? entry!.runs.at(-1)!.started_ms
-              const result = await rpc().request<{ runs: TwinRun[] }>(node.id, 'twin.runs', { before_ms: ms, limit: 50 })
-              setOlder((old) => [...old, ...result.runs])
-              setBefore(result.runs.length ? ms : 0)
-            })
-          }
-        >
-          {t('twin.older')}
-        </Button>
-      ) : null}
-      {error ? (
-        <p role="alert" className="text-danger">
-          {error}
-        </p>
-      ) : null}
-    </article>
+    <Collapsible.Root asChild open={!collapsed} onOpenChange={(open) => setCollapsed(node.id, !open)}>
+      <article className="overflow-hidden rounded-lg border border-border bg-surface" data-testid="twin-card">
+        <StatusHead node={node} onError={setError} />
+        {/* 动作的错误在卡头下面，收起时也看得见 */}
+        {error ? (
+          <p role="alert" className="border-t border-border px-4 py-2 text-danger">
+            {error}
+          </p>
+        ) : null}
+        <Collapsible.Content className="space-y-4 border-t border-border p-4 empty:hidden">
+          {/* 没配置好时只留状态头和「去设置」；有运行记录才显示历史 */}
+          {configured ? (
+            <>
+              <ConfigSummary node={node} />
+              <TodayTiles node={node} />
+              <HealthAlert node={node} />
+              <NowSections node={node} />
+              {node.info?.capabilities.twin_stats === true ? <Trend nodeId={node.id} /> : null}
+            </>
+          ) : null}
+          {runMissing ? <p role="status">{t('twin.runGone')}</p> : null}
+          {entry?.runs.length || configured || runId ? <RunHistory key={runId} nodeId={node.id} runs={[...(entry?.runs ?? []), ...older].filter((r, i, all) => all.findIndex((x) => x.id === r.id) === i)} runId={runId} /> : null}
+          {(entry?.runs.length ?? 0) >= 50 && before !== 0 ? (
+            <Button
+              disabled={!online || busy}
+              onClick={() =>
+                void act(async () => {
+                  const ms = older.at(-1)?.started_ms ?? entry!.runs.at(-1)!.started_ms
+                  const result = await rpc().request<{ runs: TwinRun[] }>(node.id, 'twin.runs', { before_ms: ms, limit: 50 })
+                  setOlder((old) => [...old, ...result.runs])
+                  setBefore(result.runs.length ? ms : 0)
+                })
+              }
+            >
+              {t('twin.older')}
+            </Button>
+          ) : null}
+        </Collapsible.Content>
+      </article>
+    </Collapsible.Root>
   )
 }

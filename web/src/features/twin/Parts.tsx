@@ -94,7 +94,7 @@ function RunLine({ nodeId, run, open }: { nodeId: string; run: TwinRun; open: bo
   const usage = usageText(t, run.usage)
   return (
     <Collapsible.Root defaultOpen={open} id={`run-${run.id}`} className="rounded border border-border p-2" data-testid="twin-run">
-      <Collapsible.Trigger className="min-h-11 w-full text-left text-sm">
+      <Collapsible.Trigger className="min-h-9 w-full text-left text-sm">
         {formatDateTime(run.started_ms, i18n.language)} · {run.triggers.map((x) => t(`twin.trigger.${x}`)).join(', ')} · {t('twin.processed', { count: run.items.length })} ·{' '}
         {t(`twin.result.${run.result}`)} · {t('twin.runJudges', { count: run.judge_calls.length })}
         {usage ? ` · ${usage}` : ''}

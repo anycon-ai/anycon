@@ -2,6 +2,7 @@ import { TwinHistoryEvent } from '@/features/twin/TodoParts'
 import { useEffect, useMemo } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
+import { CircleDot, FileText, Repeat, Send, SkipForward } from 'lucide-react'
 import { Markdown } from '@/components/Markdown'
 import { SessionDot } from '@/components/StatusDot'
 import { formatDateTime } from '@/lib/format'
@@ -15,6 +16,7 @@ import type { TodoEvent } from '@/protocol'
 import { useHistoryEntry, loadHistory, loadMoreHistory } from '../history'
 import { wasDispatched } from '../activity'
 import type { ViewTodo } from '../types'
+import { HistoryCard, historyListClass, historyQuoteClass } from './HistoryCard'
 
 /** 到会话页的链接 + 它现在的状态点；会话不在了（被删了）就写明，不留一个点了没用的链接。 */
 export function SessionRef({ nodeId, sessionId, label }: { nodeId: string; sessionId: string; label?: string }) {
@@ -39,6 +41,7 @@ export function SessionRef({ nodeId, sessionId, label }: { nodeId: string; sessi
 
 /**
  * 「经过」（spec/web.md § 4.12）：派发、每一轮的结果、人改的状态，从旧到新；下面是每个关联会话和它现在的状态。
+ * 画成一条时间线：每条事件是一张卡片（`HistoryCard`），标题和时间在卡片顶上，链接在底下。
  * `result` 的文字是 agent 写的，按不可信的内容渲染（同一条消毒的 Markdown 管线，从不当 HTML）。只在派发过的项上出现。
  */
 export function TodoHistory({ item }: { item: ViewTodo }) {
@@ -66,43 +69,41 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
 
   const when = (ms: number): string => formatDateTime(ms, i18n.language)
   const stateText = (s: string): string => t(`todos.states.${s}`, { defaultValue: cleanHintText(s) })
+  const link = 'font-medium text-accent-text hover:underline'
   const row = (e: TodoEvent) => {
     switch (e.kind) {
       case 'dispatched':
         return (
-          <li key={e.seq} className="space-y-1" data-testid="history-row" data-kind="dispatched">
-            <p>
-              <span className="text-fg-subtle">{when(e.ts_ms)}</span> {t('todos.history.dispatched', { agent: cleanHintText(e.agent) || '?' })}
-              {' · '}
-              {e.workspace_mode === 'worktree' ? t('todos.history.worktree') : t('todos.history.localDir')}
-              {' · '}
-              {e.no_push ? t('todos.history.noPush') : t('todos.history.pushAllowed')}
-            </p>
-            <SessionRef nodeId={item.node_id} sessionId={e.session_id} />
+          <li key={e.seq} data-testid="history-row" data-kind="dispatched">
+            <HistoryCard icon={Send} tone="accent" time={when(e.ts_ms)} title={t('todos.history.dispatched', { agent: cleanHintText(e.agent) || '?' })} actions={<SessionRef nodeId={item.node_id} sessionId={e.session_id} />}>
+              <p className="text-fg-muted">
+                {e.workspace_mode === 'worktree' ? t('todos.history.worktree') : t('todos.history.localDir')}
+                {' · '}
+                {e.no_push ? t('todos.history.noPush') : t('todos.history.pushAllowed')}
+              </p>
+            </HistoryCard>
           </li>
         )
       case 'result':
         return (
-          <li key={e.seq} className="space-y-1" data-testid="history-row" data-kind="result">
-            <p>
-              <span className="text-fg-subtle">{when(e.ts_ms)}</span> {t('todos.history.result', { agent: cleanHintText(agentOf.get(e.session_id)) || t('todos.history.agent'), turn: e.turn })}
-            </p>
-            {e.text ? (
-              <div className="scroll-thin max-h-48 overflow-auto rounded-md border border-border p-2" data-testid="history-result-text">
-                <Markdown text={e.text} />
-              </div>
-            ) : (
-              <p className="text-xs text-fg-subtle">{t('todos.history.noText')}</p>
-            )}
-            {e.truncated ? <p className="text-xs text-fg-subtle">{t('todos.history.truncated')}</p> : null}
-            <SessionRef nodeId={item.node_id} sessionId={e.session_id} />
+          <li key={e.seq} data-testid="history-row" data-kind="result">
+            <HistoryCard icon={FileText} tone="success" time={when(e.ts_ms)} title={t('todos.history.result', { agent: cleanHintText(agentOf.get(e.session_id)) || t('todos.history.agent'), turn: e.turn })} actions={<SessionRef nodeId={item.node_id} sessionId={e.session_id} />}>
+              {e.text ? (
+                <div className={historyQuoteClass} data-testid="history-result-text">
+                  <Markdown text={e.text} />
+                </div>
+              ) : (
+                <p className="text-xs text-fg-subtle">{t('todos.history.noText')}</p>
+              )}
+              {e.truncated ? <p className="text-xs text-fg-subtle">{t('todos.history.truncated')}</p> : null}
+            </HistoryCard>
           </li>
         )
       case 'state':
         // 周期项开着「Bot 做完自动关闭」时，关闭是 daemon 按设置做的，不是人改的
         return (
           <li key={e.seq} data-testid="history-row" data-kind="state" data-by={e.by.kind}>
-            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {e.by.kind === 'repeat' ? t('todos.history.closedByRepeat') : t('todos.history.state', { from: stateText(e.from), to: stateText(e.to) })}
+            <HistoryCard icon={CircleDot} time={when(e.ts_ms)} title={e.by.kind === 'repeat' ? t('todos.history.closedByRepeat') : t('todos.history.state', { from: stateText(e.from), to: stateText(e.to) })} />
           </li>
         )
       case 'twin_decision':
@@ -113,20 +114,30 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
       case 'pr_event':
       case 'remote_dispatched':
       case 'remote_result':
-        return <li key={e.seq} data-testid="history-row" data-kind={e.kind}><span className="text-fg-subtle">{when(e.ts_ms)}</span><TwinHistoryEvent nodeId={item.node_id} event={e} /></li>
+        return (
+          <li key={e.seq} data-testid="history-row" data-kind={e.kind}>
+            <TwinHistoryEvent nodeId={item.node_id} event={e} time={when(e.ts_ms)} />
+          </li>
+        )
       case 'repeat_created':
         return (
           <li key={e.seq} data-testid="history-row" data-kind="repeat_created">
-            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {e.manual ? t('todos.history.repeatCreatedManual') : t('todos.history.repeatCreated', { time: when(e.at_ms) })}{' '}
-            <Link to="/todos/$node/$todo" params={{ node: shortNodeId(item.node_id, order), todo: e.todo_id }} className="font-medium text-accent-text hover:underline" data-testid="history-repeat-copy">
-              {t('todos.history.openCopy')}
-            </Link>
+            <HistoryCard
+              icon={Repeat}
+              time={when(e.ts_ms)}
+              title={e.manual ? t('todos.history.repeatCreatedManual') : t('todos.history.repeatCreated', { time: when(e.at_ms) })}
+              actions={
+                <Link to="/todos/$node/$todo" params={{ node: shortNodeId(item.node_id, order), todo: e.todo_id }} className={link} data-testid="history-repeat-copy">
+                  {t('todos.history.openCopy')}
+                </Link>
+              }
+            />
           </li>
         )
       case 'repeat_skipped':
         return (
           <li key={e.seq} data-testid="history-row" data-kind="repeat_skipped">
-            <span className="text-fg-subtle">{when(e.ts_ms)}</span> {t('todos.history.repeatSkipped', { time: when(e.at_ms) })}
+            <HistoryCard icon={SkipForward} tone="warning" time={when(e.ts_ms)} title={t('todos.history.repeatSkipped', { time: when(e.at_ms) })} />
           </li>
         )
       default:
@@ -136,7 +147,7 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
   }
 
   return (
-    <section className="space-y-2" aria-labelledby="todo-history-title" data-testid="todo-history">
+    <section className="space-y-3" aria-labelledby="todo-history-title" data-testid="todo-history">
       <h3 id="todo-history-title" className="text-sm font-semibold">
         {t('todos.history.title')}
       </h3>
@@ -154,10 +165,10 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
           {t('todos.history.earlier')}
         </Button>
       ) : null}
-      <ol className="space-y-3 border-l border-border pl-3 text-sm" aria-label={t('todos.history.title')}>
+      <ol className={historyListClass} aria-label={t('todos.history.title')}>
         {chronological.map(row)}
       </ol>
-      <ul className="space-y-1 text-sm" aria-label={t('todos.history.sessions')} data-testid="history-sessions">
+      <ul className="space-y-1 pt-1 text-sm" aria-label={t('todos.history.sessions')} data-testid="history-sessions">
         {(item.sessions ?? []).map((sid, i) => (
           <li key={sid} className="flex items-center gap-2">
             <span className="text-fg-subtle">{t('todos.history.sessionN', { n: i + 1 })}</span>

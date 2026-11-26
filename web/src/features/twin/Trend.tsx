@@ -60,7 +60,6 @@ export function Trend({ nodeId }: { nodeId: string }) {
           value={String(days) as '7' | '30'}
           onChange={(v) => void setTwinStatsRange(nodeId, Number(v))}
           ariaLabel={t('twin.trend.range')}
-          size="lg"
           options={[
             { value: '7', label: t('twin.trend.days7'), testId: 'twin-range-7' },
             { value: '30', label: t('twin.trend.days30'), testId: 'twin-range-30' },
@@ -70,7 +69,7 @@ export function Trend({ nodeId }: { nodeId: string }) {
       {!loaded && failed ? (
         <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-danger">
           {t('twin.trend.failed')}
-          <Button size="lg" onClick={() => void retryTwinStats(nodeId)}>
+          <Button onClick={() => void retryTwinStats(nodeId)}>
             {t('todos.retry')}
           </Button>
         </div>

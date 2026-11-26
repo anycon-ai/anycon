@@ -122,7 +122,8 @@ export function decodePreviewLaunch(fragment: string): PreviewLaunch {
   // 目标：端口或目录，正好一个（`null` 和缺省一样算没给）
   const hasPort = v.port !== undefined && v.port !== null
   const hasDir = v.dir !== undefined && v.dir !== null
-  if (hasPort === hasDir) throw new ProtocolError('preview launch: needs exactly one of port and dir')
+  if (hasPort === hasDir)
+    throw new ProtocolError('preview launch: needs exactly one of port and dir')
   let target: { port: number } | { dir: string }
   if (hasPort) target = { port: int('port', 1, 65535) }
   else {

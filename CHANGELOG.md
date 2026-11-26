@@ -107,6 +107,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Web UI: a node could stay disconnected until the page was reloaded when it came back online in the middle of a handshake, or when its key did not match. The finished handshake was freed a second time, the crypto module threw `null pointer passed to rust`, and every later attempt to reset the link threw the same error.
 - Web UI: a tab that stays connected for days no longer builds up memory in its resend buffer. Sent messages were kept until the 16 MiB resend window was full, and each one held at least 2 KiB even when it was a few hundred bytes, so the buffer alone could reach over 100 MB. Messages are now stored at their real size and released a minute after they were sent (unless the hub returned them and they wait to be resent). `@anycon/sdk` stores them at their real size too. The connection timing marks in the browser's performance timeline are also cleared from time to time instead of piling up.
 - Hub: keep peer offline and online notifications in order when a device disconnects and immediately reconnects, preventing clients from discarding the new session.
 - Daemon: changing enrollment settings through RPC no longer produces duplicate audit entries and security events when configuration monitoring runs at the same time.

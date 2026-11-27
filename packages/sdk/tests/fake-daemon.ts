@@ -734,7 +734,7 @@ export class FakeDaemon {
       return { job_id: jobId }
     })
 
-    // Bot：脚本化快照、试跑、通知和回答；只验证 SDK 线路，不模拟模型判断。
+    // Twin：脚本化快照、试跑、通知和回答；只验证 SDK 线路，不模拟模型判断。
     let twin: TwinGetResult = {
       enabled: true,
       configured: false,

@@ -1,4 +1,4 @@
-//! hub 限速 WebSocket 升级（HTTP 429 + `Retry-After`）时建立 Bot 连接（docs/spec/daemon.md § 27.2）：
+//! hub 限速 WebSocket 升级（HTTP 429 + `Retry-After`）时建立 Twin 连接（docs/spec/daemon.md § 27.2）：
 //! 按 `Retry-After` 等一等再试；等不到就失败成 `busy`、`data.reason = "hub_rate_limited"`，A 上不留半截的状态。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::Message;
 
 /// 假 hub：前 `limited` 次升级回 429（`Retry-After: retry_after`），之后收下 WebSocket、对认证回 `AuthFail { protocol }`
-/// （让建立 Bot 连接在「过了限速」之后以一个可识别的方式结束）。返回地址和升级请求计数。
+/// （让建立 Twin 连接在「过了限速」之后以一个可识别的方式结束）。返回地址和升级请求计数。
 async fn start_limiting_hub(limited: usize, retry_after: u64) -> (String, Arc<AtomicUsize>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -72,7 +72,7 @@ async fn linking_waits_for_the_hubs_retry_after_and_then_goes_on() {
     let (url, seen) = start_limiting_hub(2, 1).await;
     let td = TestDaemon::start_full(&[], true, Some(&url)).await;
     let (e, took) = link(&td).await;
-    // 过了限速之后碰上的是「hub 不认 Bot 设备」：说明等过之后确实继续了
+    // 过了限速之后碰上的是「hub 不认 Twin 设备」：说明等过之后确实继续了
     assert_eq!(e.data.as_ref().and_then(|d| d.reason.as_deref()), Some("hub_unsupported"), "{e:?}");
     assert!(took >= Duration::from_millis(900), "waited for Retry-After: {took:?}");
     assert!(took < Duration::from_secs(20), "{took:?}");

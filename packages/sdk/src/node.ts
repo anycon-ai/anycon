@@ -132,7 +132,7 @@ export interface NodeEvents {
   rule_changed: [RuleChanged]
   /** 一次提炼结束，按 run.id 对应发起的调用；所有在线客户端都会收到。 */
   rule_extract_done: [RuleExtractDone]
-  // Bot 状态和问题变化，包含别的设备的回答和作废。
+  // Twin 状态和问题变化，包含别的设备的回答和作废。
   twin_changed: [TwinChanged]
   twin_question: [TwinQuestionNotice]
 }
@@ -688,9 +688,9 @@ export class Node extends Emitter<NodeEvents> {
       this.call('rule.preview', params),
   }
 
-  // Bot 的薄封装：需要 capabilities.twin，不缓存、不重放；问题和理由是模型写的纯文字。
+  // Twin 的薄封装：需要 capabilities.twin，不缓存、不重放；问题和理由是模型写的纯文字。
   readonly twin = {
-    // `requester` 缺省是本机 Bot；给一台 Bot 设备的 id，读被使用的节点给这条连接的范围。
+    // `requester` 缺省是本机 Twin；给一台 Twin 设备的 id，读被使用的节点给这条连接的范围。
     get: (params: TwinGetParams = {}): Promise<TwinGetResult> => this.call('twin.get', params),
     set: (params: TwinSetParams): Promise<TwinGetResult> => this.call('twin.set', params),
     wake: async (): Promise<void> => {
@@ -700,14 +700,14 @@ export class Node extends Emitter<NodeEvents> {
     dryRun: (options: RequestOptions = {}): Promise<TwinDryRunResult> =>
       this.call('twin.dry_run', {}, { timeoutMs: 16 * 60_000, ...options }),
     runs: (params: TwinRunsParams = {}): Promise<TwinRunsResult> => this.call('twin.runs', params),
-    // 最近几个本地日的统计（只读、只统计本机 Bot）；`days` 1..=90，缺省 7。节点 `capabilities.twin_stats` 为 true 才有，旧节点回 `unsupported`。
+    // 最近几个本地日的统计（只读、只统计本机 Twin）；`days` 1..=90，缺省 7。节点 `capabilities.twin_stats` 为 true 才有，旧节点回 `unsupported`。
     stats: (params: TwinStatsParams = {}): Promise<TwinStatsResult> =>
       this.call('twin.stats', params),
     questions: (params: TwinQuestionsParams = {}): Promise<TwinQuestionsResult> =>
       this.call('twin.questions', params),
     answer: (params: TwinAnswerParams): Promise<TwinQuestion> => this.call('twin.answer', params),
-    // Bot 连接（ADR-56）。`link` 的 `code` 是被使用的节点发的短码：只经内存从 `twinLinkCode()` 的结果交给这里，
-    // SDK 不缓存、不写日志。`link` / `unlink` 在使用别的节点的那一端调用；`peerStatus` 在被使用的节点上由 Bot 设备调用。
+    // Twin 连接（ADR-56）。`link` 的 `code` 是被使用的节点发的短码：只经内存从 `twinLinkCode()` 的结果交给这里，
+    // SDK 不缓存、不写日志。`link` / `unlink` 在使用别的节点的那一端调用；`peerStatus` 在被使用的节点上由 Twin 设备调用。
     link: (params: TwinLinkParams): Promise<TwinLink> => this.call('twin.link', params),
     links: (): Promise<TwinLinksResult> => this.call('twin.links', {}),
     unlink: async (params: TwinUnlinkParams): Promise<void> => {
@@ -716,7 +716,7 @@ export class Node extends Emitter<NodeEvents> {
     peerStatus: (): Promise<TwinPeerStatus> => this.call('twin.peer_status', {}),
   }
 
-  /** `node.twin_link_code`：在被使用的节点上开一次只接受 Bot 设备的短码配对（10 分钟）；短码是秘密，只交给 `twin.link`。 */
+  /** `node.twin_link_code`：在被使用的节点上开一次只接受 Twin 设备的短码配对（10 分钟）；短码是秘密，只交给 `twin.link`。 */
   twinLinkCode(): Promise<NodeTwinLinkCodeResult> {
     return this.call('node.twin_link_code', {})
   }

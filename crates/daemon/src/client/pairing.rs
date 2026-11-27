@@ -4,7 +4,7 @@
 //! `pair.ack`，校验 `peer_id` 是自己的正式 id、`node_id` 等于 `PairDone.peer`、`fingerprint` 等于握手得到的节点公钥的指纹，
 //! **通过才落盘**；hub 伪造 `PairDone` 骗不到它（docs/protocol.md § 4.1）。
 //!
-//! `ClientInfo` 由调用方给（CLI 是 `cli`，Bot 设备是 `twin`），它随第 3 条握手消息发给对端，对端据此记设备名和种类。
+//! `ClientInfo` 由调用方给（CLI 是 `cli`，Twin 设备是 `twin`），它随第 3 条握手消息发给对端，对端据此记设备名和种类。
 
 use std::time::Duration;
 

@@ -47,7 +47,7 @@ export function notifyTodoId(sessionId?: string | null): string | null {
   return sessionId?.startsWith('todo_') && sessionId.length > 5 ? sessionId.slice(5) : null
 }
 
-// Bot 的问题在待处理里定位清单项。
+// Twin 的问题在待处理里定位清单项。
 export function twinInboxUrl(node: string, todoId?: string | null): string {
   return `/inbox?node=${encodeURIComponent(node)}${todoId ? `&todo=${encodeURIComponent(todoId)}` : ''}`
 }

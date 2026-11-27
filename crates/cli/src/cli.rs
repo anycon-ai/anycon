@@ -111,7 +111,7 @@ pub enum Command {
     /// the sessions that to-dos are handed to (and of other sessions when the node is set to do so)
     #[command(subcommand)]
     Rule(RuleCmd),
-    /// Configure the bot, inspect its decisions and answer its questions
+    /// Configure the twin, inspect its decisions and answer its questions
     #[command(subcommand)]
     Twin(TwinCmd),
     /// Run an MCP server on stdio so other agents can look at and drive this node's sessions through MCP tools
@@ -146,7 +146,7 @@ pub enum TodoCmd {
     Assign {
         /// To-do id (a prefix is enough)
         id: String,
-        /// Handler: me, or twin for the bot
+        /// Handler: me or twin
         #[arg(value_parser=["me", "twin"])]
         handler: String,
     },
@@ -306,7 +306,7 @@ pub struct TodoHistoryArgs {
 
 #[derive(Args, Debug)]
 pub struct TodoAddArgs {
-    /// Let the bot handle this item (not available inside an anycon agent session)
+    /// Let the twin handle this item (not available inside an anycon agent session)
     #[arg(long)]
     pub twin: bool,
     /// One line, at most 200 characters
@@ -327,7 +327,7 @@ pub struct TodoAddArgs {
     /// node copies it into a new open item. Not available inside an anycon agent session
     #[arg(long, value_name = "SPEC")]
     pub repeat: Option<String>,
-    /// With --repeat: when the bot decides a copy is done, close it instead of moving it to review
+    /// With --repeat: when the twin decides a copy is done, close it instead of moving it to review
     #[arg(long, requires = "repeat", conflicts_with = "no_auto_close")]
     pub auto_close: bool,
     /// With --repeat: leave the copies for you to accept (the default)
@@ -353,7 +353,7 @@ pub struct TodoEditArgs {
     /// Stop repeating: the item becomes an ordinary item
     #[arg(long, conflicts_with_all = ["auto_close", "no_auto_close"])]
     pub no_repeat: bool,
-    /// When the bot decides a copy is done, close it instead of moving it to review (the item must already repeat, or
+    /// When the twin decides a copy is done, close it instead of moving it to review (the item must already repeat, or
     /// be given --repeat)
     #[arg(long, conflicts_with = "no_auto_close")]
     pub auto_close: bool,
@@ -1072,7 +1072,7 @@ mod tests {
 
 #[derive(Subcommand, Debug)]
 pub enum TwinCmd {
-    /// Show the bot's scope, state and today's usage
+    /// Show the twin's scope, state and today's usage
     Status(TwinStatusArgs),
     /// Pause automatic work
     Pause,
@@ -1090,10 +1090,10 @@ pub enum TwinCmd {
     Answer { id: String, text: String },
     /// Update scope and limits; omitted fields stay unchanged
     Set(TwinSetArgs),
-    /// Print a one-time code that lets another node's bot use this node (valid for 10 minutes; not available inside
+    /// Print a one-time code that lets another node's twin use this node (valid for 10 minutes; not available inside
     /// an anycon agent session)
     LinkCode,
-    /// Let this node's bot use another node: pair with the code `anycon twin link-code` printed on that node (not
+    /// Let this node's twin use another node: pair with the code `anycon twin link-code` printed on that node (not
     /// available inside an anycon agent session)
     Link {
         /// The one-time code printed by `anycon twin link-code` on the other node
@@ -1103,9 +1103,9 @@ pub enum TwinCmd {
         #[arg(long)]
         peer: String,
     },
-    /// List the nodes this node's bot can use, whether they are online, and what they open to it
+    /// List the nodes this node's twin can use, whether they are online, and what they open to it
     Links,
-    /// Forget a node this node's bot uses (its id, a unique id prefix or its name); the bot device stays paired on
+    /// Forget a node this node's twin uses (its id, a unique id prefix or its name); the twin device stays paired on
     /// that node until you revoke it there (not available inside an anycon agent session)
     Unlink {
         /// The linked node: its id, a unique id prefix or its name
@@ -1116,7 +1116,7 @@ pub enum TwinCmd {
 
 #[derive(Args, Debug)]
 pub struct TwinStatusArgs {
-    /// Show what this node lets one bot device (another node's bot) do, instead of this node's own bot. Takes the
+    /// Show what this node lets one twin device (another node's twin) do, instead of this node's own twin. Takes the
     /// device's id, a unique id prefix or its name (see `anycon devices`)
     #[arg(long)]
     pub requester: Option<String>,
@@ -1124,7 +1124,7 @@ pub struct TwinStatusArgs {
 
 #[derive(Args, Debug)]
 pub struct TwinSetArgs {
-    /// Change the scope of one bot device (another node's bot) instead of this node's own bot. Takes the device's
+    /// Change the scope of one twin device (another node's twin) instead of this node's own twin. Takes the device's
     /// id, a unique id prefix or its name (see `anycon devices`)
     #[arg(long)]
     pub requester: Option<String>,

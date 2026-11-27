@@ -32,7 +32,7 @@ fn refuse_inside_agent(what: &str) -> Result<()> {
         let message = if what == "repeat-now" {
             format!(
                 "`anycon todo repeat-now` is not available inside an anycon agent session ({AGENT_MARKER_ENV} is set): \
-                 running a repeating to-do creates work for you and the bot. Run it from your own terminal."
+                 running a repeating to-do creates work for you and the twin. Run it from your own terminal."
             )
         } else if what == "run" {
             format!(
@@ -378,8 +378,8 @@ async fn ls(app: &App, a: TodoLsArgs) -> Result<u8> {
             (TodoSourceKind::Agent, true) => app.out.yellow("agent (unreviewed)"),
             (TodoSourceKind::Agent, false) => "agent".to_string(),
             (TodoSourceKind::Repeat, _) => "repeat".to_string(),
-            // 另一个节点的 Bot 经 Bot 连接记的项
-            (TodoSourceKind::Twin, _) if t.source.device_id.is_some() => "bot device".to_string(),
+            // 另一个节点的 Twin 经 Twin 连接记的项
+            (TodoSourceKind::Twin, _) if t.source.device_id.is_some() => "twin device".to_string(),
             (TodoSourceKind::Twin | TodoSourceKind::Unknown, true) => app.out.yellow("other (unreviewed)"),
             (TodoSourceKind::Twin | TodoSourceKind::Unknown, false) => "other".to_string(),
             _ => String::new(),
@@ -697,7 +697,7 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         (TodoSourceKind::Device, Some(d)) => format!("device {}", sanitize_label(d, 40, "?")),
         (TodoSourceKind::Local, _) => "this machine".to_string(),
         (TodoSourceKind::Agent, _) => "an agent".to_string(),
-        (TodoSourceKind::Twin, _) => "the bot".to_string(),
+        (TodoSourceKind::Twin, _) => "the twin".to_string(),
         (TodoSourceKind::Repeat, _) => "a repeating item".to_string(),
         (TodoSourceKind::Device, None) => "a device".to_string(),
         (TodoSourceKind::Unknown, _) => "someone".to_string(),
@@ -734,7 +734,7 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         ),
         TodoEventData::State { from, to, by: TodoActor { kind: TodoSourceKind::Repeat, .. } } => (
             format!(
-                "{} -> {}: closed by the repeating item's auto-close setting after the bot decided it was done",
+                "{} -> {}: closed by the repeating item's auto-close setting after the twin decided it was done",
                 from.as_str(),
                 to.as_str()
             ),
@@ -751,10 +751,10 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
         }
         TodoEventData::TakenOver { by: who, .. } => (format!("taken over by {}", by(who)), vec![]),
         TodoEventData::TwinDecision { reason, .. } => {
-            ("bot decision".into(), visible(reason).lines().map(str::to_string).collect())
+            ("twin decision".into(), visible(reason).lines().map(str::to_string).collect())
         }
         TodoEventData::TwinQuestion { question_id } => {
-            (format!("bot question {}", sanitize_label(question_id, 80, "?")), vec![])
+            (format!("twin question {}", sanitize_label(question_id, 80, "?")), vec![])
         }
         TodoEventData::RepeatCreated { todo_id, at_ms, manual: true } => {
             (format!("repeated by hand: created {} at {}Z", short(todo_id), &fmt_utc(*at_ms)[..16]), vec![])

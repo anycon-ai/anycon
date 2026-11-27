@@ -2029,7 +2029,7 @@ export interface NodeInfo {
   protocol_version: number;
   started_at_ms: number;
   /**
-   * `[twin] accept_links`：这个节点现在接受别的节点的 Bot 连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。
+   * `[twin] accept_links`：这个节点现在接受别的节点的 Twin 连接（docs/spec/daemon.md § 27.2）。旧 daemon 没有这个字段，读作 `false`。
    */
   twin_accept_links?: boolean;
   /**
@@ -2108,7 +2108,7 @@ export interface NodeCapabilities {
    */
   todo_repeat_interval?: boolean;
   /**
-   * 支持 Bot 的调度和 RPC。
+   * 支持 Twin 的调度和 RPC。
    */
   twin?: boolean;
   /**
@@ -2316,7 +2316,7 @@ export interface SessionCounts {
   waiting_permission: number;
 }
 /**
- * `node.twin_link_code` 的结果：B 开了一次只接受 Bot 设备的短码配对。
+ * `node.twin_link_code` 的结果：B 开了一次只接受 Twin 设备的短码配对。
  */
 export interface NodeTwinLinkCodeResult {
   /**
@@ -3410,7 +3410,7 @@ export interface Todo {
    */
   project?: string | null;
   /**
-   * 这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由 Bot 连接的 A 侧写。
+   * 这一项派到别的节点的远程项（docs/spec/daemon.md § 27.4），只追加；没有时缺省为空。由 Twin 连接的 A 侧写。
    */
   remote?: TodoRemote[];
   /**
@@ -3455,7 +3455,7 @@ export interface TodoRepeat {
    */
   at: string;
   /**
-   * Bot 对这个模板复制出来的项执行 `done` 时，daemon 直接把那一项关闭（docs/spec/daemon.md § 26.9）；缺省 false，false 时不出现。
+   * Twin 对这个模板复制出来的项执行 `done` 时，daemon 直接把那一项关闭（docs/spec/daemon.md § 26.9）；缺省 false，false 时不出现。
    * 任何一种规则都能带。
    */
   auto_close?: boolean;
@@ -3483,7 +3483,7 @@ export interface TodoRepeat {
 }
 export interface TodoSource {
   /**
-   * 经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台 Bot 设备（另一个节点的 Bot，docs/spec/daemon.md § 27.3）的设备 id。
+   * 经 hub 来的调用带上发起设备的 id；`kind = twin` 时是那台 Twin 设备（另一个节点的 Twin，docs/spec/daemon.md § 27.3）的设备 id。
    */
   device_id?: string | null;
   kind: TodoSourceKind;
@@ -3502,7 +3502,7 @@ export interface TodoSource {
 export interface TodoActor {
   device_id?: string | null;
   /**
-   * Bot 动作的请求方（local 或设备 id）。
+   * Twin 动作的请求方（local 或设备 id）。
    */
   id?: string | null;
   kind: TodoSourceKind;
@@ -3575,8 +3575,8 @@ export interface TodoDispatchParams {
    */
   no_push?: boolean | null;
   /**
-   * Bot 的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。
-   * 只有 Bot 设备（另一个节点的 Bot）能带；别的调用方带了 → `invalid`（`data.field = "note"`，`data.reason = "not_allowed"`）。
+   * Twin 的说明（≤ 2048 字节），接在第一条消息后面，不改这一项的正文（docs/spec/daemon.md § 26.4、§ 27.4）。
+   * 只有 Twin 设备（另一个节点的 Twin）能带；别的调用方带了 → `invalid`（`data.field = "note"`，`data.reason = "not_allowed"`）。
    */
   note?: string | null;
   /**
@@ -3676,7 +3676,7 @@ export interface TodoListResult {
 }
 export interface TodoUpdateParams {
   /**
-   * 调用方自报是 agent；不能把处理人设成 Bot，也不算人收下了这一项。
+   * 调用方自报是 agent；不能把处理人设成 Twin，也不算人收下了这一项。
    */
   agent?: boolean | null;
   body?: string | null;
@@ -3729,7 +3729,7 @@ export interface TwinRun {
   items: string[];
   judge_calls: string[];
   /**
-   * 本机为 local；Bot 连接以设备 id 作请求方。
+   * 本机为 local；Twin 连接以设备 id 作请求方。
    */
   requester: string;
   result: TwinRunResult;
@@ -3762,11 +3762,11 @@ export interface TwinDecision {
   todo_id: string;
 }
 /**
- * 一个本地日的 Bot 统计。数据来自节点保留的运行记录（90 天）和待办的经过（已删除待办的经过没了），所以旧日子的数字可能变小。
+ * 一个本地日的 Twin 统计。数据来自节点保留的运行记录（90 天）和待办的经过（已删除待办的经过没了），所以旧日子的数字可能变小。
  */
 export interface TwinDayStats {
   /**
-   * 这天由未关闭（非 `done` / `dropped`）变为 `done` 的 `state` 事件数，且本机 Bot 在事件时间或之前派发过这一项。
+   * 这天由未关闭（非 `done` / `dropped`）变为 `done` 的 `state` 事件数，且本机 Twin 在事件时间或之前派发过这一项。
    * 已关闭项在 `done` 和 `dropped` 之间改来改去不算；重新打开后再关闭算新的一次。
    */
   accepted?: number;
@@ -3781,8 +3781,8 @@ export interface TwinDayStats {
   dropped?: number;
   dry_runs?: number;
   /**
-   * 这天待办经过里的 `handed_back` 事件数：Bot 没做完就交回给人的次数（`hand_back` 判断、连续 3 次失败、2 小时卡住）。
-   * 不含 `done` 判断（Bot 认为做完了，请人确认）写的那一条。
+   * 这天待办经过里的 `handed_back` 事件数：Twin 没做完就交回给人的次数（`hand_back` 判断、连续 3 次失败、2 小时卡住）。
+   * 不含 `done` 判断（Twin 认为做完了，请人确认）写的那一条。
    */
   handed_back?: number;
   /**
@@ -3802,11 +3802,11 @@ export interface TwinDayStats {
    */
   start_ms: number;
   /**
-   * 这天的 `taken_over` 事件数，只算本机 Bot 派发过（不晚于事件）的项；Bot 设备派来的会话里的接手不算。
+   * 这天的 `taken_over` 事件数，只算本机 Twin 派发过（不晚于事件）的项；Twin 设备派来的会话里的接手不算。
    */
   taken_over?: number;
   /**
-   * 这天每个 `accepted` 事件的（事件时间 - 该项在事件时间或之前最近一次被本机 Bot 派发的时间）之和；平均 = `turnaround_ms / accepted`。
+   * 这天每个 `accepted` 事件的（事件时间 - 该项在事件时间或之前最近一次被本机 Twin 派发的时间）之和；平均 = `turnaround_ms / accepted`。
    */
   turnaround_ms?: number;
   /**
@@ -3843,8 +3843,8 @@ export interface TwinDryRunResult {
  */
 export interface TwinGetParams {
   /**
-   * 读谁的范围：缺省 `local`（本机 Bot）；也可以是一个已配对的 Bot 设备（`DeviceKind::Twin`）的设备 id，读 B 给这条 Bot 连接
-   * 的设置（docs/spec/daemon.md § 27.3）。不是已存在的 Bot 设备 → `not_found`。
+   * 读谁的范围：缺省 `local`（本机 Twin）；也可以是一个已配对的 Twin 设备（`DeviceKind::Twin`）的设备 id，读 B 给这条 Twin 连接
+   * 的设置（docs/spec/daemon.md § 27.3）。不是已存在的 Twin 设备 → `not_found`。
    */
   requester?: string | null;
 }
@@ -3865,7 +3865,7 @@ export interface TwinGetResult {
    */
   next_wake_ms?: number | null;
   /**
-   * 在 Bot 范围内（§ 26.1），但既不在 `working` 里也没有未回答的问题的待办 id。
+   * 在 Twin 范围内（§ 26.1），但既不在 `working` 里也没有未回答的问题的待办 id。
    */
   queued?: string[];
   scope: TwinScope;
@@ -3902,7 +3902,7 @@ export interface TwinToday {
   judge_calls: number;
 }
 /**
- * 一条 Bot 连接（A 记下的，表 `twin_links`）。
+ * 一条 Twin 连接（A 记下的，表 `twin_links`）。
  */
 export interface TwinLink {
   /**
@@ -3926,11 +3926,11 @@ export interface TwinLink {
   status?: TwinPeerStatus | null;
 }
 /**
- * B 对这条 Bot 连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。
+ * B 对这条 Twin 连接开放了什么、还剩多少（`twin.peer_status` 的结果，只给这条连接自己的）。
  */
 export interface TwinPeerStatus {
   /**
-   * B 现在接受 Bot 连接（`[twin] accept_links`）。
+   * B 现在接受 Twin 连接（`[twin] accept_links`）。
    */
   accept_links: boolean;
   agents: TwinPeerAgent[];
@@ -3968,7 +3968,7 @@ export interface TwinPeerAgent {
   ready: boolean;
 }
 /**
- * `twin.link` 的参数：A 的 daemon 用 B 发的短码以 Bot 设备的身份和 B 配对。
+ * `twin.link` 的参数：A 的 daemon 用 B 发的短码以 Twin 设备的身份和 B 配对。
  */
 export interface TwinLinkParams {
   /**
@@ -4028,7 +4028,7 @@ export interface TwinSetParams {
   requester?: string | null;
 }
 /**
- * `twin.stats` 的参数。只统计本机 Bot。
+ * `twin.stats` 的参数。只统计本机 Twin。
  */
 export interface TwinStatsParams {
   /**

@@ -539,7 +539,7 @@ async fn repeat_is_set_shown_cleared_and_refused_inside_an_agent_session() {
     assert!(r.stdout.contains("daily@07:15"), "{}", r.stdout);
     assert_eq!(n.cli(&["todo", "edit", &id[..8]]).await.code, 2, "one of --repeat / --no-repeat is required");
 
-    // 模板可以交给 Bot（每一次复制出来的都交给它），但不能派发
+    // 模板可以交给 Twin（每一次复制出来的都交给它），但不能派发
     let r = n.cli(&["todo", "assign", &id[..8], "twin"]).await;
     assert_eq!(r.code, 0, "{}", r.stderr);
     let r = n.cli(&["todo", "run", &id[..8], "--agent", "mock", "--project", "p", "--allow-push"]).await;

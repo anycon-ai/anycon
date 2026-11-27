@@ -11,7 +11,7 @@ pub enum DeviceKind {
     Web,
     Cli,
     Sdk,
-    /// 另一个节点的 Bot（docs/spec/daemon.md § 27.1）：一个节点一个身份，只能经 `node.twin_link_code` 发出的短码配对，
+    /// 另一个节点的 Twin（docs/spec/daemon.md § 27.1）：一个节点一个身份，只能经 `node.twin_link_code` 发出的短码配对，
     /// 被使用的节点按设备种类限制它能调的方法和收到的通知（§ 27.3）。
     Twin,
     /// 这个版本不认识的种类（更新的客户端）。hub 在认证时拒绝它（`protocol`），daemon 配对时把它当作 `web` 存（同以前解析失败时的做法）。
@@ -253,7 +253,7 @@ mod tests {
         assert_eq!(serde_json::from_value::<DeviceKind>(serde_json::json!("future")).unwrap(), DeviceKind::Unknown);
         // 内层 JSON 和 msgpack 两条线路上都一样
         let info = ClientInfo {
-            name: "a 的 Bot".into(),
+            name: "a 的 Twin".into(),
             kind: DeviceKind::Twin,
             platform: "linux-x86_64".into(),
             version: "0".into(),

@@ -8,7 +8,7 @@ use crate::*;
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProtocolSchema {
-    // Bot
+    // Twin
     pub twin_scope: TwinScope,
     pub twin_state: TwinState,
     pub twin_today: TwinToday,
@@ -30,7 +30,7 @@ pub struct ProtocolSchema {
     pub twin_answer_params: TwinAnswerParams,
     pub twin_changed: TwinChanged,
     pub twin_question_notice: TwinQuestionNotice,
-    // Bot 连接
+    // Twin 连接
     pub node_twin_link_code_result: NodeTwinLinkCodeResult,
     pub twin_link_params: TwinLinkParams,
     pub twin_link: TwinLink,

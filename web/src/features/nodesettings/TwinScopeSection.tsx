@@ -1,4 +1,4 @@
-// 「Bot」标签里的范围与预算：`ScopeForm` 加首次流程——没配置过时保存成暂停，接着试跑并展示计划，确认后才取消暂停并唤醒。
+// 「Twin」标签里的范围与预算：`ScopeForm` 加首次流程——没配置过时保存成暂停，接着试跑并展示计划，确认后才取消暂停并唤醒。
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { describeError } from '@/lib/errors'
@@ -43,7 +43,7 @@ export function TwinScopeSection({ node }: { node: NodeEntry }) {
         onSave={(params) =>
           act(async () => {
             reset()
-            // 首次保存一律暂停：计划没看过之前 Bot 不会自己开始干活
+            // 首次保存一律暂停：计划没看过之前 Twin 不会自己开始干活
             const first = !value.configured
             await setTwin(node.id, { ...params, ...(first ? { paused: true } : {}) })
             if (first && params.projects?.length && value.enabled) await start()

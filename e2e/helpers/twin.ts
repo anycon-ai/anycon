@@ -1,5 +1,5 @@
 /**
- * Bot 用例（`twin.spec.ts`、`twin-links.spec.ts`）共用的帮助函数：节点侧的 CLI 读数、判断后端的配置片段、
+ * Twin 用例（`twin.spec.ts`、`twin-links.spec.ts`）共用的帮助函数：节点侧的 CLI 读数、判断后端的配置片段、
  * 等假后端收到某个请求、把额外节点从账号里去掉。
  */
 import { expect, type APIRequestContext } from '@playwright/test'
@@ -14,7 +14,7 @@ import { loginViaApi } from './ui.js'
 export const JUDGE_KEY_ENV = 'E2E_JUDGE_KEY'
 export const JUDGE_KEY = 'e2e-judge-key'
 
-/** Bot 唤醒的合并窗口（毫秒）：`ANYCON_TWIN_COALESCE_MS` 只用于测试（daemon.md § 3、§ 26.3），缺省是 60 秒。 */
+/** Twin 唤醒的合并窗口（毫秒）：`ANYCON_TWIN_COALESCE_MS` 只用于测试（daemon.md § 3、§ 26.3），缺省是 60 秒。 */
 export const COALESCE_MS = 2_000
 
 /** 额外节点的环境变量：判断后端的密钥和缩短后的合并窗口。 */
@@ -198,7 +198,7 @@ export async function hubDevices(
 
 /**
  * 把测试自己起的节点（按名字）从账号里去掉：之后的用例（happy path 第 8 步）假定账号下只有一台节点。
- * 节点的 Bot 设备（种类 `twin`，名字是「<节点名>'s bot」，docs/spec/daemon.md § 27.1）一并去掉。尽力而为：清不掉不挡住别的清理。
+ * 节点的 Twin 设备（种类 `twin`，名字是「<节点名>'s twin」，docs/spec/daemon.md § 27.1）一并去掉。尽力而为：清不掉不挡住别的清理。
  */
 export async function removeNodesFromAccount(
   request: APIRequestContext,

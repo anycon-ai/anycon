@@ -100,7 +100,7 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
           </li>
         )
       case 'state':
-        // 周期项开着「Bot 做完自动关闭」时，关闭是 daemon 按设置做的，不是人改的
+        // 周期项开着「Twin 做完自动关闭」时，关闭是 daemon 按设置做的，不是人改的
         return (
           <li key={e.seq} data-testid="history-row" data-kind="state" data-by={e.by.kind}>
             <HistoryCard icon={CircleDot} time={when(e.ts_ms)} title={e.by.kind === 'repeat' ? t('todos.history.closedByRepeat') : t('todos.history.state', { from: stateText(e.from), to: stateText(e.to) })} />

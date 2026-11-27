@@ -173,9 +173,9 @@ node.on('todo_changed', (c) => console.log(c.id, c.deleted ? 'deleted' : c.todo)
 - `list` pages by `(updated_ms, id)`: while `has_more` is true, pass the last item's `{ updated_ms, id }` as `before`. A page can be shorter than `limit` (1 MiB budget per page). Items changed while you page can show up twice (de-duplicate by `id`) or be skipped (`todo_changed` tells you).
 - Errors: `invalid` (`field`: the parameter; `reason` `too_many` / `too_many_unreviewed` when the list is full) and `not_found`, as `RpcError`.
 
-## Bot (ADR-54)
+## Twin (ADR-54)
 
-`node.twin` is an online wrapper over `twin.*`, available when `(await node.info()).capabilities.twin === true`. It keeps no cache and replays nothing. Hide entry points on older nodes; direct calls receive `RpcError` (`unsupported`). Bot cannot approve permissions. Questions and reasons are model output: display them as untrusted plain text.
+`node.twin` is an online wrapper over `twin.*`, available when `(await node.info()).capabilities.twin === true`. It keeps no cache and replays nothing. Hide entry points on older nodes; direct calls receive `RpcError` (`unsupported`). Twin cannot approve permissions. Questions and reasons are model output: display them as untrusted plain text.
 
 ```ts
 node.on('twin_changed', (change) => console.log(change.state, change.run))
@@ -194,11 +194,11 @@ await node.todos.update({ id: todo.id, handler: 'me' })
 
 `set` merges fields; `clear` resets agent / model / mode to node defaults. `dryRun()` waits up to 16 minutes by default, covering the maximum 15-minute judgment backend timeout; standard `RequestOptions` (`timeoutMs` / `signal`) can override it. A dry run consumes a judgment call and leaves a run record, executing no plan. Decisions preserve optional `note`, `question`, and `options`: supplementary agent instructions, questions, and answer choices. Render this model output as plain text. `wake()` returns `void`; execution still follows daemon coalescing, pause and budget limits. `runs` / `questions` preserve protocol result shapes and default to `{}`; paginate runs with `before_ms`. `twin_changed` delivers `{ state, run? }` and `twin_question` delivers `{ question }`, including answers and voided questions; subscribe before initiating operations. `todos.add` / `update` accept `handler: me | twin`. In a UI, let the person read and accept an agent item first with `update({ id, reviewed: true })`, then offer `update({ id, handler: 'twin' })`. The daemon also accepts explicitly requested atomic acceptance and handover; the SDK never accepts items automatically.
 
-Bot runs can be triggered by `pr` (a pull request of a session the bot dispatched changed), and a to-do's history can contain `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }` entries; the types follow the protocol, and clients must tolerate unknown values. `pr_event` carries no review text.
+Twin runs can be triggered by `pr` (a pull request of a session the twin dispatched changed), and a to-do's history can contain `pr_event { session_id, event: checks_failed | merged | closed | reviewed, url? }` entries; the types follow the protocol, and clients must tolerate unknown values. `pr_event` carries no review text.
 
-### Bot connections (ADR-56)
+### Twin connections (ADR-56)
 
-A node's bot can be paired with another node as a restricted `twin` device, so it can add to-dos there and have agents work on them inside the projects that node opens to the connection. A person sets this up from a client that is paired with both nodes: ask the node to use for a one-time code, then hand it to the node that will use it. The code is a secret: pass the result of `twinLinkCode()` straight to `twin.link`; the SDK does not cache or log it, and your code should not display or store it.
+A node's twin can be paired with another node as a restricted `twin` device, so it can add to-dos there and have agents work on them inside the projects that node opens to the connection. A person sets this up from a client that is paired with both nodes: ask the node to use for a one-time code, then hand it to the node that will use it. The code is a secret: pass the result of `twinLinkCode()` straight to `twin.link`; the SDK does not cache or log it, and your code should not display or store it.
 
 ```ts
 const { code } = await used.twinLinkCode() // on the node to be used (B): `node.twin_link_code`
@@ -210,7 +210,7 @@ await used.twin.set({ requester: deviceId, projects: ['app'], max_sessions: 1, d
 const status = await used.twin.get({ requester: deviceId })
 ```
 
-`twin.peerStatus()` is what a bot device itself calls on B (name, open projects, what is left); other callers get `forbidden`. A refused link carries `data.reason`: `accept_links_off`, `different_hub`, `code_expired` or `node_mismatch`. A node reports `node.info.twin_accept_links`; clients should only offer a node as a target when it has `capabilities.twin` and that is `true`. To-do history may contain `remote_dispatched` and `remote_result`, and decisions `node` and the skip reasons `remote_unavailable` / `remote_refused`; treat unknown values as unknown.
+`twin.peerStatus()` is what a twin device itself calls on B (name, open projects, what is left); other callers get `forbidden`. A refused link carries `data.reason`: `accept_links_off`, `different_hub`, `code_expired` or `node_mismatch`. A node reports `node.info.twin_accept_links`; clients should only offer a node as a target when it has `capabilities.twin` and that is `true`. To-do history may contain `remote_dispatched` and `remote_result`, and decisions `node` and the skip reasons `remote_unavailable` / `remote_refused`; treat unknown values as unknown.
 
 ## Rules (ADR-54)
 

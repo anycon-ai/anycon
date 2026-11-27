@@ -16,8 +16,8 @@
 |---|---|
 | id / label / driver | `mock` / `Mock Agent` / `mock` |
 | 模型 | `mock-large`（默认；thinking `low` / `high`，默认 `high`）、`mock-small`（无 thinking）；`config.additional_models` 追加在后面（按 id 去重），**探测得到的，`spawn` / `set_settings` 也能真的选用**（用它自己的 `thinking` 选项和默认值） |
-| 权限模式 | `ask`（normal，默认，`unattended`：Bot 派出的会话缺省取它）、`plan`（safe）、`yolo`（dangerous） |
-| 选项 | `verbose`（bool，默认 false）、`no_push`（bool，默认 false：「不 push、不开 PR」，Bot 派出的会话固定带它，`twin.set` 要求所选 agent 声明了它；mock 不会 push，所以只记下来、在回显里写出来，让测试断言它真的带上了） |
+| 权限模式 | `ask`（normal，默认，`unattended`：Twin 派出的会话缺省取它）、`plan`（safe）、`yolo`（dangerous） |
+| 选项 | `verbose`（bool，默认 false）、`no_push`（bool，默认 false：「不 push、不开 PR」，Twin 派出的会话固定带它，`twin.set` 要求所选 agent 声明了它；mock 不会 push，所以只记下来、在回显里写出来，让测试断言它真的带上了） |
 | capabilities | `resume`、`interrupt`、`thinking_stream`、`usage` 为 true；`interject`、`env` 等为 false；`attachments` = `["image/png", "image/jpeg", "image/gif", "image/webp"]`（ADR-35） |
 | `allow_custom_model` | false |
 
@@ -209,4 +209,4 @@ kind=`other` 的权限请求，`request_id = "<session_id>-perm-<n>"`（和其�
 
 `capabilities.oneshot = true`。`prompt` 中第一个 `MOCK_ONESHOT:` 后的第一个空白分隔词按标准 base64 解码，再按 UTF-8 作为回答；没有标记返回 `{"rules":[]}`，非法编码返回 `OneshotError::Failed`。例如 `MOCK_ONESHOT:aGVsbG8=` 返回 `hello`。用量和费用固定为 0，不执行命令、不访问网络。
 
-`ask` 模式声明 `unattended = true`，供 Bot 模式选择测试使用；`plan` / `yolo` 为 `false`。这个标记不改变 mock 的权限请求行为。
+`ask` 模式声明 `unattended = true`，供 Twin 模式选择测试使用；`plan` / `yolo` 为 `false`。这个标记不改变 mock 的权限请求行为。

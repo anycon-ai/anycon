@@ -18,7 +18,7 @@ import { connectionTone } from './useConnectionLabel'
 /**
  * 空间切换（spec/web.md § 4.13）。没有任何节点带分组时就是原来的节点过滤器（一模一样：勾选哪些节点，左栏就显示这些节点上的所有项目；
  * 多选，点一下只切换勾选，菜单不关）。有分组之后菜单最上面多出「全部」和各个空间，选一个空间就选中它的所有节点；下面照旧可以单独勾选节点。
- * `variant`：`sidebar` 是左栏（手机上是抽屉）里的整行按钮；`topbar` 是手机上「待处理」「清单」「Bot」顶栏里的紧凑按钮（只在有分组时出现）。
+ * `variant`：`sidebar` 是左栏（手机上是抽屉）里的整行按钮；`topbar` 是手机上「待处理」「清单」「Twin」顶栏里的紧凑按钮（只在有分组时出现）。
  */
 export function SpaceSwitcher({ nodeId, onNavigate, variant = 'sidebar' }: { nodeId: string | undefined; onNavigate?: () => void; variant?: 'sidebar' | 'topbar' }) {
   const { t } = useTranslation()

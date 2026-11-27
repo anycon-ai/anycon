@@ -42,7 +42,7 @@ export interface PrefsState {
   infoPanelOpen: boolean
   /** 信息面板里收起的卡片（卡片的 key，如 `session`、`agents`），所有会话共用。 */
   infoCollapsed: string[]
-  /** Bot 页上收起的节点卡片（节点 id）；默认都展开。 */
+  /** Twin 页上收起的节点卡片（节点 id）；默认都展开。 */
   twinCollapsed: string[]
   /** 宽屏左栏是否展开（手机上左栏是抽屉，不受影响）。 */
   sidebarOpen: boolean

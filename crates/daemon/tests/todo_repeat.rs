@@ -504,12 +504,12 @@ async fn repeat_now_refusals() {
 async fn a_template_can_go_to_the_twin_for_every_copy_but_cannot_be_dispatched() {
     let (td, mut c) = start().await;
     let r = json!({ "kind": "daily", "at": "09:00" });
-    // 新建时就交给 Bot：每一份复制出来的都交给 Bot
+    // 新建时就交给 Twin：每一份复制出来的都交给 Twin
     let t = add(&td, &mut c, json!({ "id": id(), "title": "t", "project": "p", "handler": "twin", "repeat": r }))
         .await
         .unwrap();
     assert_eq!(t.handler, TodoHandler::Twin);
-    // 模板改成交给 Bot、已经交给 Bot 的项加上规则，都可以
+    // 模板改成交给 Twin、已经交给 Twin 的项加上规则，都可以
     let t2 = add(&td, &mut c, json!({ "id": id(), "title": "t2", "repeat": r })).await.unwrap();
     assert_eq!(
         update(&td, &mut c, json!({ "id": t2.id, "handler": "twin" })).await.unwrap().handler,
@@ -517,7 +517,7 @@ async fn a_template_can_go_to_the_twin_for_every_copy_but_cannot_be_dispatched()
     );
     let plain = add(&td, &mut c, json!({ "id": id(), "title": "p", "handler": "twin" })).await.unwrap();
     assert!(update(&td, &mut c, json!({ "id": plain.id, "repeat": r })).await.unwrap().repeat.is_some());
-    // 其余的处理人规则不变：agent 和自报 mcp 的连接不能设成 twin，未收下的项不能交给 Bot
+    // 其余的处理人规则不变：agent 和自报 mcp 的连接不能设成 twin，未收下的项不能交给 Twin
     let mut mcp = td.local_mcp_client();
     let e = update(&td, &mut mcp, json!({ "id": t2.id, "handler": "twin" })).await.unwrap_err();
     assert_eq!(reason(&e).0, ErrorCode::Forbidden);

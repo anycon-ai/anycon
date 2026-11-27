@@ -394,8 +394,8 @@ pub(crate) fn pair_failure_error(reason: &str) -> CliError {
         ),
         "twin_not_allowed" => (
             EXIT_DENIED,
-            "this device's kind does not fit the code: ordinary pairing codes do not accept a bot device (use \
-             `anycon twin link-code` on the node a bot should use), and a bot link code only accepts a bot device"
+            "this device's kind does not fit the code: ordinary pairing codes do not accept a twin device (use \
+             `anycon twin link-code` on the node a twin should use), and a twin link code only accepts a twin device"
                 .to_string(),
         ),
         "replaced" => (

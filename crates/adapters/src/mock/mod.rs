@@ -121,7 +121,7 @@ fn builtin_options() -> Vec<ConfigOption> {
             choices: vec![],
             default: serde_json::Value::Bool(false),
         },
-        // Bot 派出的会话固定带它（daemon.md § 26.2）：mock 不会 push，只在回显里写出来
+        // Twin 派出的会话固定带它（daemon.md § 26.2）：mock 不会 push，只在回显里写出来
         ConfigOption {
             id: "no_push".into(),
             label: "No push".into(),

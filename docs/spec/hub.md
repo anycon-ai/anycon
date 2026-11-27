@@ -255,7 +255,7 @@ device
                   和 web_sessions、hub_audit 的 ip_prefix 同一格式，不存完整 IP；每次覆盖，只有最近一次，不是历史
 ```
 
-- **`twin` 种类**（[daemon.md § 27](daemon.md#27-bot-连接)，ADR-56）：另一个节点的 Bot，一个节点一台、一条 hub 连接，不论它连了几个节点。hub 对它没有任何特别的规则：短码配对（作为 joiner，新设备归入 host 所在的账号）、认证、路由、吊销、设备列表（`kind = twin`）都和别的设备一样；`multi` 模式下它占账号的设备数和连接数（不占 daemon 数）。设备表的 `kind` 是不带约束的文本列，不需要新的迁移。hub 在认证时拒绝它不认识的 `kind`（更新的客户端自报的新种类）：`auth_fail { protocol }`，所以库里不会有不认识的种类。**限制设备能做什么的是被使用的 daemon，不是 hub**：hub 不解析内层方法，不知道哪些方法在白名单里。hub 多看到的元数据是「这台 Bot 设备和这个节点配了对」，以及两者之间流量的大小和时间
+- **`twin` 种类**（[daemon.md § 27](daemon.md#27-twin-连接)，ADR-56）：另一个节点的 Twin，一个节点一台、一条 hub 连接，不论它连了几个节点。hub 对它没有任何特别的规则：短码配对（作为 joiner，新设备归入 host 所在的账号）、认证、路由、吊销、设备列表（`kind = twin`）都和别的设备一样；`multi` 模式下它占账号的设备数和连接数（不占 daemon 数）。设备表的 `kind` 是不带约束的文本列，不需要新的迁移。hub 在认证时拒绝它不认识的 `kind`（更新的客户端自报的新种类）：`auth_fail { protocol }`，所以库里不会有不认识的种类。**限制设备能做什么的是被使用的 daemon，不是 hub**：hub 不解析内层方法，不知道哪些方法在白名单里。hub 多看到的元数据是「这台 Twin 设备和这个节点配了对」，以及两者之间流量的大小和时间
 - device token 是 32 字节随机数（64 位小写 hex），配对确认时签发，只传一次；客户端存在自己的配置目录 / IndexedDB。hub 只存哈希
 - **轮换**：`control.rotate_token`（设备→hub，没有字段）→ hub 回 `token_rotated { device_token }`，旧 token 再保留 60 秒宽限。目的是缩短**泄露了的 token** 的有效期；客户端默认在 token 满 30 天后的下一次连接上发起（各客户端的策略和落盘方式见 [daemon.md § 15](daemon.md#15-连接与可靠性)、[cli.md § 2](cli.md#2-目录与配置)、[web.md § 6.4](web.md#64-连接状态机每个节点)、[sdk.md § 2](sdk.md#2-身份与配对)）。规则：
   - **谁能轮换**：带设备 token 认证的永久连接（daemon / web / cli / sdk 一视同仁），含配对 / 接入完成后原地升级成正式设备的连接。**而且这条连接认证用的必须是当前 token**（见下面「旧 token 不能用来接管设备」）。没有身份的临时连接和预览连接发的 `rotate_token` 一律忽略（不回复、不影响连接）
@@ -314,7 +314,7 @@ device
 | `enroll_requested` | 开 | 开 |
 | `security` | 开 | 开 |
 
-hub 对 `twin_question` 只识别类别词，不解析 Bot 的问题或回答。
+hub 对 `twin_question` 只识别类别词，不解析 Twin 的问题或回答。
 
 ## 7. 配额与限速
 

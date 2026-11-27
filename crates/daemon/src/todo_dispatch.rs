@@ -39,7 +39,7 @@ pub const EARLIER_MAX_BYTES: usize = 8 * 1024;
 /// `todo.history` 的 `limit` 缺省值和上限。
 pub const HISTORY_DEFAULT_LIMIT: u32 = 50;
 pub const HISTORY_MAX_LIMIT: u32 = 200;
-/// Bot 的说明（`note`）的字节上限，和分拣的 `dispatch` 里的一样。
+/// Twin 的说明（`note`）的字节上限，和分拣的 `dispatch` 里的一样。
 pub const MAX_NOTE_BYTES: usize = 2048;
 /// `no_push` 选项在 `AgentInfo.options` 里的 id（§ 22.5）。
 pub const OPTION_NO_PUSH: &str = "no_push";
@@ -139,8 +139,8 @@ pub const CLOSING_REPORT: &str = "When you are done, end your final message with
 /// 第一条消息（§ 22.4）。`earlier` 按派发的先后（最早的在前）；没有文字的不带；合计超过 [`EARLIER_MAX_BYTES`] 时从最早的开始丢。
 /// 给 agent 看，用英文。之前的报告是 agent 写的，可能模仿分隔线或者「报告」的标题行：每份报告的每一行都以 `> ` 开头，
 /// 整段以单独一行 `End of earlier reports.` 收尾，报告里的内容分不出结构。
-/// 每次派发（手动、Bot、Bot 设备、预览）都在这之后要求 agent 以一段简短的收尾报告结束：会话的结果文字是下一次派发的交接、
-/// Bot 的分拣和人的验收读的东西，不指定形状时常常缺少「怎么验证的」。
+/// 每次派发（手动、Twin、Twin 设备、预览）都在这之后要求 agent 以一段简短的收尾报告结束：会话的结果文字是下一次派发的交接、
+/// Twin 的分拣和人的验收读的东西，不指定形状时常常缺少「怎么验证的」。
 pub fn compose_first_message(title: &str, body: &str, earlier: &[EarlierResult], no_push: bool) -> String {
     let mut out = title.to_string();
     if !body.is_empty() {
@@ -363,7 +363,7 @@ impl TodoSignal {
         *self.twin.write().unwrap() = Arc::downgrade(c);
     }
 
-    /// 这一项的 `activity` 要重新算（远程项的 `activity` 变了）：不涉及本机会话，也不唤醒 Bot。
+    /// 这一项的 `activity` 要重新算（远程项的 `activity` 变了）：不涉及本机会话，也不唤醒 Twin。
     pub fn mark_dirty(&self, todo_id: &str) {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).dirty.insert(todo_id.to_string());
         self.notify.notify_one();
@@ -475,7 +475,7 @@ pub async fn run_worker(sessions: Weak<Sessions>, signal: Arc<TodoSignal>) {
         let c = signal.twin.read().unwrap().upgrade();
         if let Some(c) = c {
             for sid in changed_sessions {
-                // 只有本机 Bot 派出的会话的变化会唤醒它（Bot 设备派出的项由那个节点的 Bot 推进）
+                // 只有本机 Twin 派出的会话的变化会唤醒它（Twin 设备派出的项由那个节点的 Twin 推进）
                 if c.store.twin_session_owner(&sid).await.ok().flatten().as_deref() == Some("local")
                     && sessions.status_of(&sid).await.is_some_and(|(s, _)| {
                         matches!(
@@ -904,7 +904,7 @@ async fn default_workspace(c: &Ctx, project: &str) -> Option<SessionWorkspace> {
 
 /// `todo.dispatch`（§ 22.2）。全部或全无：会话开不起来，这一项和「经过」都不变。
 pub async fn dispatch(c: &Ctx, caller: &Caller, mut p: TodoDispatchParams) -> RpcResult<TodoDispatchResult> {
-    // Bot 的说明只有 Bot 设备（另一个节点的 Bot，§ 27.4）能带；别的调用方没有这个入口，本机 Bot 直接走 `dispatch_inner`
+    // Twin 的说明只有 Twin 设备（另一个节点的 Twin，§ 27.4）能带；别的调用方没有这个入口，本机 Twin 直接走 `dispatch_inner`
     let note = p.note.take();
     if let Some(note) = &note {
         if !caller.is_twin_device() {
@@ -917,7 +917,7 @@ pub async fn dispatch(c: &Ctx, caller: &Caller, mut p: TodoDispatchParams) -> Rp
     dispatch_inner(c, caller, p, note.as_deref()).await
 }
 
-/// 共用派发事务；Bot 说明只进入第一条消息，不改清单正文。
+/// 共用派发事务；Twin 说明只进入第一条消息，不改清单正文。
 pub(crate) async fn dispatch_inner(
     c: &Ctx,
     caller: &Caller,
@@ -950,7 +950,7 @@ pub(crate) async fn dispatch_inner(
         p.no_push = Some(true);
         p.workspace = Some(SessionWorkspace::Worktree { base: None, branch: None });
     } else if caller.is_twin_device() {
-        // 另一个节点的 Bot：范围、名额和每日次数是这条连接自己的一份（§ 27.3）
+        // 另一个节点的 Twin：范围、名额和每日次数是这条连接自己的一份（§ 27.3）
         let (agent, settings) = crate::twin_device::dispatch_settings_locked(c, caller, &old, &p).await?;
         p.agent = agent;
         p.settings = settings;
@@ -1067,7 +1067,7 @@ pub(crate) async fn dispatch_inner(
     let earlier = c.store.todo_earlier_results(&old.id).await.map_err(internal)?;
     let mut prompt = compose_first_message(&old.title, &old.body, &earlier, no_push);
     if let Some(note) = note {
-        prompt.push_str("\n\nBot note (written by the bot):\n");
+        prompt.push_str("\n\nTwin note (written by the twin):\n");
         prompt.push_str(note);
     }
     // 生效的规则（§ 23.5）：派发的会话总是注入；agent 收不到 `system_prompt_append` 时不注入、不让派发失败，只在「经过」里记原因

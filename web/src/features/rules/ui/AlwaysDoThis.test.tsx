@@ -1,4 +1,4 @@
-// 「以后都这样」（docs/spec/daemon.md § 23.6，spec/web.md § 14.6）：回答 agent 的提问和 Bot 的问题时的勾选。勾上并且答复成功之后才打开
+// 「以后都这样」（docs/spec/daemon.md § 23.6，spec/web.md § 14.6）：回答 agent 的提问和 Twin 的问题时的勾选。勾上并且答复成功之后才打开
 // 「记成规则」的同一个编辑框；答复失败、没勾都不打开；预填原样不能保存；勾选不改答复的参数，也不碰按钮的锁。
 import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

@@ -311,7 +311,7 @@ async fn the_daemon_limit_applies_to_a_new_daemon_and_not_to_other_kinds() {
     assert_eq!(store.count_devices(&acc).await.unwrap(), (4, 1));
 }
 
-/// Bot 设备占账号的设备配额（不占 daemon 配额），满了和别的设备一样配不进来。
+/// Twin 设备占账号的设备配额（不占 daemon 配额），满了和别的设备一样配不进来。
 #[tokio::test]
 async fn a_twin_device_takes_a_device_slot_and_not_a_daemon_slot() {
     let q = limits(3, 1, 10, 50);
@@ -329,7 +329,7 @@ async fn a_twin_device_takes_a_device_slot_and_not_a_daemon_slot() {
     assert!(matches!(twin.recv_control().await, Control::PairDone { device_id: Some(_), .. }));
     assert_eq!(store.count_devices(&acc).await.unwrap(), (3, 1), "one more device, still one daemon");
 
-    // 设备数到了上限：再来一台 Bot 设备配不进来，什么都不建
+    // 设备数到了上限：再来一台 Twin 设备配不进来，什么都不建
     n.drain_controls(SHORT).await;
     let mut second = temp_with_cookie(&hub, &cookie, DeviceKind::Twin, "b-twin").await;
     pair_and_confirm(&mut n, &mut second).await;

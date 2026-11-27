@@ -1,4 +1,4 @@
-// 清单中的 Bot 入口和经过（「经过」里每条 Bot 事件是时间线上的一张卡片，见 `HistoryCard`）；处理人变化继续走原有待发队列。
+// 清单中的 Twin 入口和经过（「经过」里每条 Twin 事件是时间线上的一张卡片，见 `HistoryCard`）；处理人变化继续走原有待发队列。
 import { useState, type ReactNode } from 'react'
 import { ArrowLeftRight, Bot, FileText, GitPullRequest, MessageCircleQuestion, Network, Undo2, UserRound, type LucideIcon } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
@@ -43,8 +43,8 @@ export function TwinHandlerButton({ item }: { item: ViewTodo }) {
 }
 type FrameProps = { icon: LucideIcon; tone?: HistoryTone; title: ReactNode; note?: ReactNode; actions?: ReactNode; children?: ReactNode; testId?: string }
 /**
- * 一条 Bot 事件的外框：给了 `time` 就是「经过」时间线里的一张卡片（`HistoryCard`），
- * 没给就是一段不带框的文字（验收页的「Bot 的决定和理由」自己有框）。
+ * 一条 Twin 事件的外框：给了 `time` 就是「经过」时间线里的一张卡片（`HistoryCard`），
+ * 没给就是一段不带框的文字（验收页的「Twin 的决定和理由」自己有框）。
  */
 function Frame({ time, ...p }: FrameProps & { time?: string }) {
   if (time !== undefined) return <HistoryCard time={time} {...p} />
@@ -130,7 +130,7 @@ export function TwinHistoryEvent({ nodeId, event, time }: { nodeId: string; even
       return null
   }
 }
-/** 接手发生在 Bot 用的另一个节点上：写节点名（这台设备没和它配过对时用 id 的前 8 位）。 */
+/** 接手发生在 Twin 用的另一个节点上：写节点名（这台设备没和它配过对时用 id 的前 8 位）。 */
 function TakenOverOn({ nodeId, time }: { nodeId: string; time?: string }) {
   const { t } = useTranslation()
   const name = usePeerName(nodeId)

@@ -1,4 +1,4 @@
-// Bot 界面的假节点：可控制状态、运行和问题，记录协议参数及拒绝。
+// Twin 界面的假节点：可控制状态、运行和问题，记录协议参数及拒绝。
 import type { TwinAnswerParams, TwinGetParams, TwinGetResult, TwinLink, TwinLinkParams, TwinPeerStatus, TwinQuestion, TwinRun, TwinSetParams, TwinStatsParams, TwinDayStats, TwinUnlinkParams } from '@/protocol'
 import { type FakeRpc, rpcError } from './fakeRpc'
 export const twinValue = (over: Partial<TwinGetResult> = {}): TwinGetResult => ({
@@ -65,9 +65,9 @@ export class FakeTwinDaemon {
   /** `twin.stats` 的结果：按日期升序，最后一项是今天。缺省按请求的天数补零。 */
   statsDays: TwinDayStats[] | null = null
   failStats = false
-  /** Bot 设备（`requester`）的范围，键是 `<节点 id>:<设备 id>`。 */
+  /** Twin 设备（`requester`）的范围，键是 `<节点 id>:<设备 id>`。 */
   scopes = new Map<string, TwinGetResult>()
-  /** 使用方节点上的 Bot 连接。 */
+  /** 使用方节点上的 Twin 连接。 */
   links: TwinLink[] = []
   /** 下一次 `node.twin_link_code` / `twin.link` 抛的错误。 */
   failCode: Error | null = null

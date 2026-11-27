@@ -97,7 +97,7 @@
 - **分支 chip** `BranchChip`（会话页底部：输入框上方靠右，ADR-34）：`⑂ 分支 ← base ↑N ↓N · N 个未提交`，胶囊保持 chip 大小、外面的按钮 ≥ 36px；`creating` 转圈 + 文字、`missing` / `failed` 警告图标 + 文字、`kept` / `removed` 中性并带状态词，状态不只靠颜色。手机（< 768px）在「⚙」底部弹层里。
 - **单选 / 复选** `RadioChoices` / `CheckboxField`（`ui/Choice.tsx`，Radix RadioGroup / Checkbox）：每项是一整行可点的标签（≥ 36px），可带一行小字说明；归档 / 删除 worktree 的确认框和节点设置的 worktree 删除框用它。
 - **卡片**：1px `border` + `surface` 底；需要强调时换 `border-warning/50`（待审批）或 `border-danger/50`。
-- **数字和图表**（Bot 页「今天」「趋势」）：数字块是底色比卡片暗一档（`bg-subtle`）、不画边框的小块：带图标的标签、大号数字（比例数字，不用 `tabular-nums`）、一条小图、一行脚注；表格和坐标里的数字才用 `tabular-nums`。对上限的用量画细进度条：轨道是同色的 `-subtle`，80% 起换 warning、用满换 danger，旁边总有「还剩 N 次」这样的文字。图是普通的 div，不引入图表库：柱子最宽 24px、顶端 4px 圆角、底端方角，分段之间留 2px 底色的缝、不画边框；网格线是实线细线（`border`）；颜色只用 token，按作用选（主角 accent-text、失败 danger、其余 `fg-subtle`），图例总在，读数放在图外的一行里（不浮在柱子上），每张图都有一张表可看全部数字。改配色或加颜色前用对比度 / 色觉校验过浅深两套底色。
+- **数字和图表**（Twin 页「今天」「趋势」）：数字块是底色比卡片暗一档（`bg-subtle`）、不画边框的小块：带图标的标签、大号数字（比例数字，不用 `tabular-nums`）、一条小图、一行脚注；表格和坐标里的数字才用 `tabular-nums`。对上限的用量画细进度条：轨道是同色的 `-subtle`，80% 起换 warning、用满换 danger，旁边总有「还剩 N 次」这样的文字。图是普通的 div，不引入图表库：柱子最宽 24px、顶端 4px 圆角、底端方角，分段之间留 2px 底色的缝、不画边框；网格线是实线细线（`border`）；颜色只用 token，按作用选（主角 accent-text、失败 danger、其余 `fg-subtle`），图例总在，读数放在图外的一行里（不浮在柱子上），每张图都有一张表可看全部数字。改配色或加颜色前用对比度 / 色觉校验过浅深两套底色。
 - **覆盖层**：居中对话框（`Dialog`）、侧边抽屉（`Drawer`，手机上的左栏、窄屏的右栏）、底部弹层（`Sheet`，手机上的选项面板）。都基于 Radix Dialog，焦点困住、Esc 关闭。
 - **无障碍**：所有可交互元素有可访问名称；状态不只靠颜色（带文字或图标）；流式输出区域不做 token 级播报，turn 结束时通过一个 `aria-live="polite"` 的隐藏区域播报一句；`prefers-reduced-motion` 下关闭脉冲 / 光标 / 转圈动画，信息面板「Agent」卡片的扫光（`.token-sweep`）不显示，时刻反馈（「待处理」清空时 Logo 的一跳 `.moment-pop`、turn 收尾行对勾的描边 `.moment-check`）不动、直接显示终态，它们旁边的文字照常显示。
 - **动效**：常驻的只有三种——状态点的缓慢脉冲、流式文本末尾的光标、加载转圈。不做页面转场。

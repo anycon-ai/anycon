@@ -80,6 +80,7 @@ env = { }                             # 追加到子进程环境
 additional_models = [                 # 探测列表之外再加的模型（公司代理、Bedrock 名字等）
   { id = "my-proxy-model", label = "Proxy" },
 ]
+start_timeout = "2m"                  # 启动超时（§ 7.1）：turn 开始后这么久没收到 agent 的第一个事件 → agent_start_timeout。10s–1h，缺省 2m，热加载；可以远程改（下面的白名单）
 
 [agents.codex]                        # claude-code 和 codex 不写这一段也参与探测（§ 5.6）；写 enabled = false 关掉
 enabled = true
@@ -89,7 +90,7 @@ default_mode = "workspace"
 [agents.acp.opencode]                 # ACP agent 按名注册；内置一张已知表（§ 5.7），用户可加 / 覆盖；表里的不写这一段也参与探测
 command = "opencode acp"              # 缺省用表里的；自己加的（不在表里）必须写。第一个词在 PATH 里找得到才算安装，不跑 npx / uvx
 dangerous_modes = []                  # ACP 不提供风险等级，由用户标记
-# 其余键和别的 agent 一样：enabled、env、default_model / default_thinking / default_mode / default_options（additional_models 对 ACP 无效：ACP 只接受 agent 列表里的模型）
+# 其余键和别的 agent 一样：enabled、env、default_model / default_thinking / default_mode / default_options、start_timeout（additional_models 对 ACP 无效：ACP 只接受 agent 列表里的模型）
 
 [worktree]                            # 每会话 worktree（ADR-34，§ 10.1）。整段热加载
 default = "worktree"                  # git 项目里新会话的初始选择：worktree | local。只影响客户端的初始选择；线路上不带 workspace 时总是 local
@@ -139,7 +140,7 @@ level = "info"
 retention_days = 7                     # 只在 daemon 启动时清理一次，长期不重启会累积
 ```
 
-`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`rules.*`、`judge.*`、`twin.enabled`、`twin.accept_links`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
+`anycon config set` 可改；标 **热加载** 的键改了立即生效：`workspace.link_roots`、`hub.group`、`sessions.*`、`permissions.*`（含 `allow_dangerous_modes`、`allow_session_env`）、`agents.*.default_*`、`agents.*.enabled`、`agents.*.start_timeout`、整个 `agents.acp.*`（含新增 / 删除一个 ACP agent，不用重启）、`enroll.*`、`notify.*`、`log.level`、`worktree.*`、`preview.*`、`rules.*`、`judge.*`、`twin.enabled`、`twin.accept_links`、`update.check`。其余需重启，包括 `workspace.root` 和 `workspace.extra_roots`（根的集合在启动时定下来；`config set` 改了它们之后马上按启动时的规则判一遍，配置错误和暂时用不了的根在输出里警告，见 § 10「多个 workspace 根」）。`hub.url` 同时决定 `anycon pair` 给出的配对链接的地址（`${hub.url}/pair#code=…`）。
 
 **远程修改**（`node.get_config` / `node.set_config`，[ADR-43](../decisions.md#adr-43-远程修改节点配置白名单安全相关的只能收紧)）：客户端（Web 的节点设置「限制」标签、SDK）可以读写下面这张白名单里的键，其余一律不行。只收热加载的键，改完不用重启。
 
@@ -164,11 +165,12 @@ retention_days = 7                     # 只在 daemon 启动时清理一次，�
 | `log.level` | `error` \| `warn` \| `info` \| `debug` \| `trace` | 任意改 |
 | `permissions.allow_dangerous_modes` | 布尔 | **只能收紧**：`true` → `false` |
 | `preview.enabled` | 布尔 | **只能收紧**：`true` → `false` |
+| `agents.<id>.start_timeout`（ACP agent 是 `agents.acp.<id>.start_timeout`） | 时长 10s–1h（§ 7.1）；**按 agent 展开**：配置里的每个 agent 一项（内置的、`[agents.<id>]` 段里的、ACP 注册表里的和用户加的），`value` 是当前生效值，文件里没写时是缺省的 `2m`（[ADR-64](../decisions.md#adr-64-agent-启动超时按-agent-配置缺省-2-分钟)） | 任意改 |
 
-- **名单之外**的键既不出现在 `node.get_config` 里，也不接受（`forbidden`，`data.reason = not_editable`）：尤其是 `agents.*`（`command` / `env` 等于远程执行任意命令）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*`（有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`、`update.check`（要不要联系 anycon.ai 是机器主人的决定，ADR-57）、`judge.backends.*`（地址、密钥、要跑的 agent，§ 25.1）。想放宽权限，或改这些键，只能在机器上 `anycon config set`
+- **名单之外**的键既不出现在 `node.get_config` 里，也不接受（`forbidden`，`data.reason = not_editable`）：尤其是 `agents.*` 里除了上表按 agent 展开的那几个键之外的一切（`command` / `env` 等于远程执行任意命令；`enabled`、`default_*`（有 `node.set_agent_defaults`，带危险模式门禁）、`dangerous_modes`、`additional_models` 也不在）、`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*`（有专门的 RPC）、`sessions.max_attachment_bytes`、`sessions.history_retention`、`update.check`（要不要联系 anycon.ai 是机器主人的决定，ADR-57）、`judge.backends.*`（地址、密钥、要跑的 agent，§ 25.1）。想放宽权限，或改这些键，只能在机器上 `anycon config set`
 - **只能收紧**的开关远程想从 `false` 改成 `true`，回 `forbidden`（`data.reason = tighten_only`，同一请求里别的改动也不写）。Web 上这些开关在关着时禁用，并提示在机器上运行 `anycon config set <键> true`
 - **环境变量覆盖的键只读**：`node.get_config` 里 `env_override = true`、`editable = no`（`log.level` 还包括被 `ANYCON_LOG` / `RUST_LOG` 接管），`node.set_config` 回 `forbidden`（`data.reason = env_override`）。判断和加载配置时用同一个环境变量层，不会各说各话
-- **`node.get_config`** → `{ items: [{ key, value, kind, editable, env_override, options?, min?, max? }] }`：`value` 是当前生效值（默认值 → 文件 → 环境变量合并后）；`kind` 是 `bool` \| `int` \| `duration` \| `enum` \| `text`；`editable` 是 `any` \| `tighten_only` \| `no`；`options`（`enum`）、`min` / `max`（`int` 是数值，`duration` 是毫秒，`text` 的 `max` 是字符数）给客户端渲染控件和做本地校验用。顺序固定，按配置段分组
+- **`node.get_config`** → `{ items: [{ key, value, kind, editable, env_override, options?, min?, max? }] }`：`value` 是当前生效值（默认值 → 文件 → 环境变量合并后）；`kind` 是 `bool` \| `int` \| `duration` \| `enum` \| `text`；`editable` 是 `any` \| `tighten_only` \| `no`；`options`（`enum`）、`min` / `max`（`int` 是数值，`duration` 是毫秒，`text` 的 `max` 是字符数）给客户端渲染控件和做本地校验用。顺序固定，按配置段分组；按 agent 的键排在最后（先内置和 `[agents.<id>]` 的，再 ACP 的），Web 把它们放在 Agent 标签各自的卡片里，不在「限制」里
 - **`node.set_config { changes: [{ key, value }] }`**：先校验**全部**改动，任何一项不合法就一项都不写——键重复、`changes` 为空、值的 JSON 类型和 `kind` 不符、超出范围、不在枚举里、时长写不出来都回 `invalid`（`data.field` 是键，`data.reason` 是 `duplicate` / `type` / `range` / `format`）；多个问题时报请求里的第一个。通过之后用 `anycon config set` 同一套逻辑写 `config.toml`（保留注释和格式、整份配置校验通过才原子替换，值按类型写——`branch_prefix = "123"` 写成字符串），再走同一条热加载路径，审计 `config.changed`（§ 13），返回新的 `node.get_config` 结果。和当前值相同的改动是空操作（不写、不审计）；全是空操作时直接返回当前结果。daemon 里同一时刻只处理一个 `node.set_config`（先重读一次文件，再算旧值、判断「只能收紧」），并发的两次不会互相覆盖成不一致的文件
 - 范围（并发 1–32、时长上限 7d 等）只约束远程写入；`config.toml` 里手写的越界值照常加载，`node.get_config` 照实显示
 
@@ -413,7 +415,7 @@ create ──► starting ──► running ──► idle ◄──────
 归档：queued / starting / running / **waiting_permission** 时拒绝（`busy`，先停止或答复；归档状态下不跑 turn），其余状态都可 archive；archived 是 flag 不是状态。已归档的会话不开新 turn（排队的消息不会在归档之后作为新 turn 发出）。已知限制：turn 结束后积压消息走的重新排队路径还没有这道检查，插话竞态下仍可能开 turn；归档也不清队列——失败 turn 留下的消息会在取消归档之后随下一条消息一起发出，客户端目前看不到这个队列
 ```
 
-- `starting`：进程已拉起、还没收到 agent 的 init / 第一个事件。超过 60 秒没动静 → `error { code: agent_start_timeout }`
+- `starting`：turn 开始了、还没收到 agent 的第一个事件（输出、思考、工具调用、权限请求、标题、activity……；adapter 报告 agent 会话 id 的 `Started` 不算）。从 turn 开始算，拉起进程卡住也算在内（worktree 会话从 worktree 建好之后算，§ 10.1）。超过这个 agent 的启动超时（`agents.<id>.start_timeout`，缺省 2 分钟，可设 10 秒到 1 小时）没动静 → `error { code: agent_start_timeout, message: "agent did not respond within <时长>" }`，摘掉进程、turn 以 `error` 收尾，会话可以再发。超时在每次扫描时按**当前配置**判断，改了对正在启动的 turn 也立即生效。等的不只是进程起来：Claude Code 这类 agent 要等模型返回第一段输出才有第一个事件，对话越长这段越慢，所以按 agent 可调（[ADR-64](../decisions.md#adr-64-agent-启动超时按-agent-配置缺省-2-分钟)）
 - `idle` 和「进程是否活着」解耦。客户端只看到 idle；进程保活与否是 daemon 的优化
 - `interrupted`：daemon 重启时发现的孤儿会话。下次 `send` 走 resume；adapter 不支持 resume 的转为 `ended` 并提示
 
@@ -775,7 +777,7 @@ v0.1 用 stream-json 的 `control_request { subtype: can_use_tool }` / `control_
    - 目录名 = 分支名最后一段，只保留 `[a-z0-9._-]`（其余换成 `-`），同样去重
    - 会话行和 `worktrees` 行一起写库，`state = creating`，`SessionSummary.worktree` 随结果返回；会话 `starting`。没有 `prompt` 的 `session.create` 要等第一次 `send` 拉起 agent 时才建 worktree，在那之前 `state` 一直是 `creating`，`git_status` / `diff` 返回 `busy`（`worktree_creating`）
    - 之后每次 worktree 状态变化都立即发带完整 `SessionWorktree` 的 `session.changed`
-2. 异步（同一个会话的拉起流程里，在 `spawn_driver` 之前；agent 的 60 秒启动超时从这之后才开始算）：
+2. 异步（同一个会话的拉起流程里，在 `spawn_driver` 之前；agent 的启动超时（§ 7.1）从这之后才开始算）：
    - `<项目>/.anycon` 和 `<项目>/.anycon/worktrees` 不存在就建；存在时逐段 `lstat` 必须是真目录（不是符号链接、不是文件），否则失败
    - `<git common dir>/info/exclude`（`git rev-parse --git-common-dir`）里没有 `/.anycon/` 就追加一行（文件不存在就建）
    - `git worktree add --no-track -b <branch> <path> <base_sha>`，超时 300 秒
@@ -999,7 +1001,7 @@ SQLite（WAL）。全部表：
 - `anycon mcp`（ADR-49）是本机 socket 上的又一个客户端：只暴露十一个映射到已有 RPC 的工具，没有批准 / 拒绝权限请求的工具（等待审批时调用立即返回 `waiting_permission`），`create_session` 拒绝选 `risk = dangerous` 的模式、`send_message` 拒绝向已处在这类模式的会话发消息（除非 `--allow-dangerous-modes`，`permissions.allow_dangerous_modes` 仍是上限）、没有会话 `env`，在 anycon 拉起的 agent 里（环境有 `ANYCON_AGENT`）默认拒绝会改状态的工具。其中 `add_todo` 例外：它能往节点的清单里加项（不开会话、不触发 turn，不需要 `--allow-nested`），加的项标着 agent 加的、没被收下，数量有上限（§ 21.2、§ 21.3）；没有任何修改、关闭、删除清单项的工具。这些约束在 MCP 这个接口上，daemon 对它没有额外的业务接口，也不能区分它和别的本机客户端，除了自报的审计身份 `local-mcp`（清单据此把它加的项记成 agent 加的、并且不让它清掉「未收下」，同样是自报的标注）；它不是对 agent 的隔离（有 shell 能力的 agent 本来就能直接用 CLI），上限是 `sessions.max_concurrent`、审批和 `config.toml`
 - 本机 socket 0600；CLI 不需要再认证。Windows 上是命名管道：属主和 DACL 都是当前用户、拒绝远程客户端、第一个实例独占名字；管道名字是全局的，客户端连上之后核对管道属主是当前用户，防别的本机用户抢先建同名管道冒充 daemon（ADR-42）
 - dev server 预览（§ 19）：只转发到 `127.0.0.1` / `::1`；默认只允许会话自己起的服务监听的端口，其余端口要显式写进 `preview.allow_ports`；本机 hub 的端口永远不允许。票据密钥只交给发起的客户端，不写日志、不进审计；吊销设备时作废它签发的票据
-- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes`、`preview.enabled`、`twin.enabled` 和 `twin.accept_links` 只能收紧、不能远程放宽；`agents.*`、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*` 不在名单里（`hub.group` 在，它只是客户端显示用的标签）；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
+- 远程改配置（§ 3，ADR-43）：只有一张白名单里的热加载键；`permissions.allow_dangerous_modes`、`preview.enabled`、`twin.enabled` 和 `twin.accept_links` 只能收紧、不能远程放宽；`agents.*`（只有按 agent 的 `start_timeout` 例外，它只决定 daemon 等多久，ADR-64）、`workspace.*`、`session_env_*`、`preview.allow_ports`、`hub.url` / `hub.name`、`enroll.*` 不在名单里（`hub.group` 在，它只是客户端显示用的标签）；被环境变量覆盖的键只读；每次改动进审计（键、旧值、新值、设备）。`config.toml` 仍然是机器主人的最后一道边界
 - `--add-dir` 之类扩大 agent 文件范围的参数不暴露给客户端
 - worktree（§ 10.1）：目录在项目里面，复核规则同关联项目；不把主仓库 `.git` 加进 agent 的可写目录；`.worktreeinclude` 只复制、不执行，不跟随符号链接；daemon 的 git 关掉 fsmonitor / hooks / 外部 diff / textconv / 合并签名，仓库配置里的 filter / merge driver / sshCommand / askPass / credential helper / uploadpack 仍会被执行（已知限制，§ 10.1「限制」）
 

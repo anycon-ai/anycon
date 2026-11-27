@@ -947,6 +947,8 @@ ADR-1 拆成两层来看：
 
 **已被 [ADR-56](#adr-56-twin-可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定) 部分修订**：`twin.enabled` 和 `twin.accept_links` 进白名单，和 `preview.enabled` 一样只能收紧。
 
+**已被 [ADR-64](#adr-64-agent-启动超时按-agent-配置缺省-2-分钟) 部分修订**：白名单除了固定的键，还有按 agent 展开的键：配置里的每个 agent 一项 `agents.<id>.start_timeout`（ACP agent 是 `agents.acp.<id>.start_timeout`），可以任意改（带范围），热加载。`agents.*` 里的其余键（`command`、`env`、`enabled`、`default_*` 等）仍然不在名单里。
+
 **背景**：节点设置的「限制」标签原来只读，要改并发数、超时、日志级别得登录到那台机器。但 `config.toml` 同时是机器主人的最后一道边界：`agents.<id>.command` / `env` 等于远程执行任意命令，`workspace.*`、`permissions.allow_session_env` / `session_env_allow`、`preview.allow_ports` 决定 agent 和预览能碰到机器上的什么，`permissions.allow_dangerous_modes` 决定 agent 能不能不经审批行动，`hub.*` 决定 daemon 连到哪。已配对的客户端可能被盗用（丢手机、公用电脑，浏览器里的设备私钥是明文放在 IndexedDB 的，[architecture.md § 5.6](architecture.md#56-威胁模型)）；如果它能改这些键，「放宽权限必须在机器上做」这道边界就没了。
 
 **决定**：
@@ -1822,3 +1824,36 @@ ADR-54 否掉主 Twin 的三条理由里，「daemon 只接受连接」是工程
 **代价 / 限制**：
 
 - ADR-60 生效期间建好的 Twin 连接，在对方的设备列表里叫「<节点名>'s bot」：设备名在配对时定下，重新连接之后才是「<节点名>'s twin」。这段时间只有未发布的版本。
+
+---
+
+## ADR-64 agent 启动超时按 agent 配置，缺省 2 分钟
+
+**背景**：会话的 `starting` 超时原来固定 60 秒，从 turn 开始算，到收到 agent 的第一个事件为止（[spec/daemon.md § 7.1](spec/daemon.md#71-状态)）。对 Claude Code 来说，第一个事件是模型的第一段输出（思考或文本），所以这 60 秒除了拉起进程，还包含 API 处理整段上下文的时间。对话很长（几十万 token、带大量截图）时，这段时间会超过 60 秒。实际遇到的一个会话里，首个输出的延迟从 20 秒左右一路涨到 55 秒，之后每次都超过 60 秒、被判超时；同一个 agent 开新会话，上下文小，几秒就有输出。超时会摘掉进程，重发还是一样，这个会话就用不了了。
+
+**决定**：
+
+1. 启动超时按 agent 配置：`agents.<id>.start_timeout`（ACP agent 是 `agents.acp.<id>.start_timeout`），缺省 2 分钟，可设 10 秒到 1 小时，热加载。daemon 每次扫描都按当前配置判断，改了对正在启动的 turn 也生效。
+2. 按 agent 的设置是远程配置白名单（[ADR-43](#adr-43-远程修改节点配置白名单安全相关的只能收紧)）里的一类键：白名单除了固定的键，还有一张按 agent 的表（键尾、取值规则、当前值），`node.get_config` 按配置里的每个 agent 展开成 `agents.<id>.<键尾>`，`value` 是当前生效值（文件里没写时是缺省值），`node.set_config` 用同一套校验、写入、热加载和审计。协议不变。现在表里只有 `start_timeout`。
+3. Web 的 Agent 卡片里有一块「Agent 设置」，用和「限制」同一个表单，只显示这个 agent 的键，和新会话的默认选项（`node.set_agent_defaults`）分开保存。「限制」不显示 `agents.*` 的键。旧 daemon 不列这些键，卡片里就没有这一块。
+4. 错误消息写出实际的时长（`agent did not respond within 2 minutes`）。
+
+**原因**：
+
+- 不同 agent 出第一个事件的快慢差别很大（Claude Code 要等模型，ACP agent 各有各的启动方式）。一个全局值，对慢的 agent 太短，对快的又太长。
+- 2 分钟给长对话留出余量，真卡住的进程也不会挂太久。
+- 以后还会有别的按 agent 的设置。放进白名单，加一项只要在表里加一行、写好文案：取值校验、范围提示、环境变量覆盖时只读、审计旧值新值、热加载都是现成的，协议和 UI 不用改。
+- 白名单仍然是显式列出的：按 agent 展开的只有表里的键尾，`command` / `env` / `enabled` 这类等于远程执行命令或放宽权限的键不会因此能远程改。启动超时只决定 daemon 等 agent 多久，不扩大远程能改的范围。
+
+**否掉**：
+
+- **`AgentInfo` 上加一个字段、`node.set_agent_defaults` 加一个参数**：每加一个设置都要改协议、改两头的类型和 UI；而且把「新会话的默认选项」和「agent 本身的设置」混在一个 RPC 里，校验、审计各写一套。
+- **把 CLI 确认收到消息（Claude Code 每轮的 `system/init`）当作第一个事件，之后等模型不再计时**：这样超时只能发现进程起不来，模型那边一直不回的情况就没有兜底了，只能靠用户自己取消；而且每个 adapter 都要定义自己的「已收到」信号。以后可以加，和这条不冲突。
+- **只把全局值改成 2 分钟**：个别 agent 需要更长时没法调。
+
+**代价 / 限制**：
+
+- 白名单不再完全是静态的：键的集合随配置里的 agent 变化。评审时要看的是按 agent 的那张表，表里的每个键尾都要满足 ADR-43 的条件（改错了可恢复、热加载、不扩大攻击面）。
+- 按 agent 的设置只能是 `node.get_config` 支持的标量类型（整数、布尔、时长、枚举、文本）；列表、表格这类值放不进来。
+- 上下文极长时仍可能超过设置的值，只能调大或开新会话。
+- 调大以后，真卡住的进程要等更久才判超时（用户随时可以取消）。

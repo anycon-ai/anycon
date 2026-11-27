@@ -92,7 +92,7 @@ function PinButton({ pinned, onToggle, className }: { pinned: boolean; onToggle:
  * `nodeId`：页面当前所在的节点，只用于下拉里的「节点设置」；左栏显示哪些节点由下拉里的勾选决定。
  * `pin`：宽屏左栏才传，Logo 旁边多一个钉住 / 取消钉住按钮。
  * 自上而下：Logo、节点过滤（空间切换）和搜索、导航（「待处理」「清单」，它们只算勾选的节点，所以放在过滤器下面）、会话树、
- * Bot 入口（Bot 和规则两页的入口，带 Bot 的状态）、账号菜单。手机上同一个左栏放在抽屉里（`onNavigate` 关抽屉）。
+ * Twin 入口（Twin 和规则两页的入口，带 Twin 的状态）、账号菜单。手机上同一个左栏放在抽屉里（`onNavigate` 关抽屉）。
  */
 export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string | undefined; onNavigate?: () => void; onSearch?: () => void; pin?: { pinned: boolean; onToggle: () => void } }) {
   return (
@@ -106,7 +106,7 @@ export function Sidebar({ nodeId, onNavigate, onSearch, pin }: { nodeId: string 
       <SpaceRow nodeId={nodeId} onNavigate={onNavigate} onSearch={onSearch} />
       <SidebarNav onNavigate={onNavigate} />
       <SessionTree nodeId={nodeId} onNavigate={onNavigate} />
-      <BotEntry onNavigate={onNavigate} />
+      <TwinEntry onNavigate={onNavigate} />
       <AccountFooter onNavigate={onNavigate} />
     </div>
   )
@@ -171,11 +171,11 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 /**
- * 左栏底部的 Bot 入口：Bot 和规则是同一页上的两个标签（`BotTabs`），不各占一行导航。
- * 有节点支持 Bot 时点了去 Bot 页，第二行是勾选节点合起来的状态（处理中、等你、是否暂停）；只支持规则时这一行就是「规则」。
- * 两样都没有节点支持时不显示。在 Bot 页或规则页上时标 `aria-current`。
+ * 左栏底部的 Twin 入口：Twin 和规则是同一页上的两个标签（`TwinRulesTabs`），不各占一行导航。
+ * 有节点支持 Twin 时点了去 Twin 页，第二行是勾选节点合起来的状态（处理中、等你、是否暂停）；只支持规则时这一行就是「规则」。
+ * 两样都没有节点支持时不显示。在 Twin 页或规则页上时标 `aria-current`。
  */
-function BotEntry({ onNavigate }: { onNavigate?: () => void }) {
+function TwinEntry({ onNavigate }: { onNavigate?: () => void }) {
   const { t } = useTranslation()
   const twin = useTwinAvailable()
   const rules = useRulesAvailable()
@@ -185,13 +185,13 @@ function BotEntry({ onNavigate }: { onNavigate?: () => void }) {
   const current = here === '/rules' || here === '/twin' || here.startsWith('/twin/')
   const Icon = twin ? Bot : ScrollText
   return (
-    <div className="border-t border-border px-2 py-2" data-testid="sidebar-bot-bar">
-      <Link to={twin ? '/twin' : '/rules'} onClick={onNavigate} aria-current={current ? 'page' : undefined} data-testid="sidebar-bot" className={cn(row, current && 'bg-accent-subtle')}>
+    <div className="border-t border-border px-2 py-2" data-testid="sidebar-twin-bar">
+      <Link to={twin ? '/twin' : '/rules'} onClick={onNavigate} aria-current={current ? 'page' : undefined} data-testid="sidebar-twin" className={cn(row, current && 'bg-accent-subtle')}>
         <Icon className="size-4 shrink-0 text-fg-muted" aria-hidden />
         <span className="min-w-0 flex-1">
           <span className="block truncate">{twin ? t('twin.title') : t('rules.title')}</span>
           {twin && summary ? (
-            <span className="block truncate text-xs font-normal text-fg-subtle" data-testid="sidebar-bot-summary">
+            <span className="block truncate text-xs font-normal text-fg-subtle" data-testid="sidebar-twin-summary">
               {summary.text}
               {summary.offline ? ` · ${t('twin.offline')}` : ''}
             </span>

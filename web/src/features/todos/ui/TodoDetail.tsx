@@ -191,7 +191,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
           <label className="block space-y-1 text-sm font-medium">
             {t('todos.fieldBody')}
             <Textarea rows={8} value={draft?.values.body ?? ''} onChange={(e) => setField('body', e.target.value)} aria-describedby={bodyHintId} data-testid="todo-edit-body" />
-            {/* 派发时标题和备注就是给 agent 的第一条消息（daemon 的 `compose_first_message`），Bot 判断时也读这两项 */}
+            {/* 派发时标题和备注就是给 agent 的第一条消息（daemon 的 `compose_first_message`），Twin 判断时也读这两项 */}
             <span id={bodyHintId} className="block text-xs font-normal text-fg-subtle" data-testid="todo-edit-body-hint">
               {t('todos.bodyHint')}
             </span>

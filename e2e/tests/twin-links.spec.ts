@@ -1,21 +1,21 @@
 /**
- * Bot 连接（docs/spec/daemon.md § 27，web.md § 14.8、§ 4.8）：A 的 Bot 使用 B：真实 hub + 两个真实 daemon + 真实 web + A 的假判断后端
+ * Twin 连接（docs/spec/daemon.md § 27，web.md § 14.8、§ 4.8）：A 的 Twin 使用 B：真实 hub + 两个真实 daemon + 真实 web + A 的假判断后端
  * （`helpers/judge.ts`）。agent 用 `helpers/fake-claude.ts` 的假 `claude`（原因见那个文件）。
  *
- * 串行；两个额外节点 A（跑 Bot、有判断后端）和 B（被使用），一个同时和两者配对的浏览器。A、B 的 `[hub] group` 不同，用来走「分组不同
+ * 串行；两个额外节点 A（跑 Twin、有判断后端）和 B（被使用），一个同时和两者配对的浏览器。A、B 的 `[hub] group` 不同，用来走「分组不同
  * 多确认一次」。节点的环境变量 `ANYCON_TWIN_COALESCE_MS`（只用于测试）把分拣的合并窗口缩短到 2 秒（§ 26.3），等唤醒的步骤都是对「假后端收到某个请求」的有界等待。
  *
- *   a. A 的 Bot 页「使用别的节点」：列表空；「添加」里 A 自己不在候选里，B 设了 `[twin] accept_links = false` 时灰掉并说明原因（B 上
+ *   a. A 的 Twin 页「使用别的节点」：列表空；「添加」里 A 自己不在候选里，B 设了 `[twin] accept_links = false` 时灰掉并说明原因（B 上
  *      `anycon twin link-code` 同样被拒），改回来之后（热加载）可选；分组不同时多确认一次，确认之前什么都没连；确认后连上，列表里有 B、在线；
  *      页面和 hub / 两个 daemon 的日志里都没有配对短码
- *   b. B 的节点设置「设备」里有 A 的 Bot 设备（标成 Bot），范围缺省什么都不开放：A 的假后端回 `dispatch { node: B, project }` →
+ *   b. B 的节点设置「设备」里有 A 的 Twin 设备（标成 Twin），范围缺省什么都不开放：A 的假后端回 `dispatch { node: B, project }` →
  *      A 的运行记录里这条决定是 `remote_refused`，B 上什么都没有
- *   c. 在 B 的「范围」里开放一个项目，再派：B 上有一项来源是 Bot、有会话（mock agent 跑完）；A 这一项的「经过」里有「派到了 B」和 B 的结果
+ *   c. 在 B 的「范围」里开放一个项目，再派：B 上有一项来源是 Twin、有会话（mock agent 跑完）；A 这一项的「经过」里有「派到了 B」和 B 的结果
  *      （`remote_result`）；A 的假后端收到的请求里有节点表（在随机边界里，有 B 的名字和开放的项目），之后的请求里带着 B 的结果
  *   d. 停掉 B：A 的连接显示离线，A 派发 → `remote_unavailable`（请求里节点表标着 `available: false`）；B 回来之后连接恢复在线
- *   e. A 上「断开」：说明「要在 B 上吊销才算完全断开」，有去 B 的设备列表的入口；断开后 A 的列表空了、B 上那台 Bot 设备还在；然后在 B 上吊销它
+ *   e. A 上「断开」：说明「要在 B 上吊销才算完全断开」，有去 B 的设备列表的入口；断开后 A 的列表空了、B 上那台 Twin 设备还在；然后在 B 上吊销它
  *
- * 结束时把两个节点（和 A 的 Bot 设备）从账号里去掉。
+ * 结束时把两个节点（和 A 的 Twin 设备）从账号里去掉。
  */
 import { randomBytes } from 'node:crypto'
 
@@ -124,7 +124,7 @@ const inBlocks = (request: JudgeRequest, needle: string): boolean =>
 
 const gitState = () => ({ gitConfig: readState().gitConfig })
 
-test.describe.serial('Bot 连接', () => {
+test.describe.serial('Twin 连接', () => {
   let judge: FakeJudge
   let a: ExtraDaemon
   let b: ExtraDaemon
@@ -171,7 +171,7 @@ test.describe.serial('Bot 连接', () => {
     for (const name of [PROJECT_OPEN, PROJECT_CLOSED]) {
       makeRepoProject({ ...gitState(), workspaceDir: b.workspaceDir }, name)
     }
-    // A 的 Bot 本身配好（范围是 A 上的项目）；连接是被测的内容
+    // A 的 Twin 本身配好（范围是 A 上的项目）；连接是被测的内容
     await runCli(homeA(), ['twin', 'set', '--projects', PROJECT_A])
 
     // 一个同时和 A、B 配过对的浏览器：先用 A 的短码配对，再在同一个浏览器里用 B 的短码配对
@@ -203,7 +203,7 @@ test.describe.serial('Bot 连接', () => {
 
   test('a. 「使用别的节点」：列表空；B 不接受时灰掉；分组不同多确认一次；连上后 B 在线；没有短码', async () => {
     test.setTimeout(180_000)
-    // B 不接受 Bot 连接（热加载）：节点上要不到短码
+    // B 不接受 Twin 连接（热加载）：节点上要不到短码
     await runCli(homeB(), ['config', 'set', 'twin.accept_links', 'false'])
     const refused = await runCliResult(homeB(), ['twin', 'link-code'])
     expect(refused.code).not.toBe(0)
@@ -284,7 +284,7 @@ test.describe.serial('Bot 连接', () => {
     )
     await expect(row).toContainText(GROUP_B)
 
-    // 节点两侧：A 记下了这条连接，B 上多了一台 Bot 设备
+    // 节点两侧：A 记下了这条连接，B 上多了一台 Twin 设备
     const link = (
       await cliJson<{ links: { node_id: string; name: string; online: boolean }[] }>(homeA(), [
         'twin',
@@ -295,18 +295,18 @@ test.describe.serial('Bot 连接', () => {
     expect(link[0]).toMatchObject({ name: NODE_B, online: true })
     bId = link[0]!.node_id
     const twinDevice = (await daemonDevices(homeB())).find((d) => d.kind === 'twin')
-    expect(twinDevice?.name).toBe(`${NODE_A}'s bot`)
+    expect(twinDevice?.name).toBe(`${NODE_A}'s twin`)
     twinDeviceId = twinDevice!.device_id
     // 短码不在页面上，也不在 hub / daemon 的日志里
     await expectNoCodes()
   })
 
-  test('b. B 的「设备」里有 A 的 Bot 设备，范围缺省什么都不开放：派发被拒绝（remote_refused），B 上什么都没有', async () => {
+  test('b. B 的「设备」里有 A 的 Twin 设备，范围缺省什么都不开放：派发被拒绝（remote_refused），B 上什么都没有', async () => {
     test.setTimeout(240_000)
     await page.goto(`${baseB}/settings?tab=devices`)
     const list = page.getByTestId('device-list')
     await expect(list).toBeVisible({ timeout: CONNECT_TIMEOUT })
-    const row = list.locator('li').filter({ hasText: `${NODE_A}'s bot` })
+    const row = list.locator('li').filter({ hasText: `${NODE_A}'s twin` })
     await expect(row).toHaveCount(1)
     await expect(row).toContainText(containsText('twinScope.kind'))
     await row.getByTestId('device-twin-scope').click()
@@ -321,7 +321,7 @@ test.describe.serial('Bot 连接', () => {
     })
     await page.keyboard.press('Escape')
 
-    // A 记一项交给 Bot；它的假后端让这一项派到 B 的一个没开放的项目
+    // A 记一项交给 Twin；它的假后端让这一项派到 B 的一个没开放的项目
     target = PROJECT_CLOSED
     const before = judge.requests.length
     await runCli(homeA(), ['todo', 'add', TITLE_REMOTE, '--project', PROJECT_A, '--twin'])
@@ -359,12 +359,12 @@ test.describe.serial('Bot 连接', () => {
     // B 的拒绝原因（范围）接在理由后面
     expect(decision.reason).toContain(REASON.refused)
     expect(decision.reason).toContain('out_of_scope')
-    // B 上什么都没有：没有来源是 Bot 的项，没有会话
+    // B 上什么都没有：没有来源是 Twin 的项，没有会话
     expect((await todos(homeB())).filter((t) => t.source.kind === 'twin')).toEqual([])
     expect(await sessions(homeB())).toEqual([])
     expect((await todoByTitle(homeA(), TITLE_REMOTE))?.remote ?? []).toEqual([])
 
-    // A 的 Bot 页：运行记录里这条决定写着「派到节点：B」和「另一个节点拒绝了」
+    // A 的 Twin 页：运行记录里这条决定写着「派到节点：B」和「另一个节点拒绝了」
     await page.goto(`/twin?node=${shortA}&run=${run.id}`)
     const shown = page.getByTestId('twin-decision').filter({ hasText: TITLE_REMOTE })
     await expect(shown).toBeVisible({ timeout: CONNECT_TIMEOUT })
@@ -373,14 +373,14 @@ test.describe.serial('Bot 连接', () => {
     await expect(shown).toContainText(REASON.refused)
   })
 
-  test('c. 在 B 上开放一个项目再派：B 上有来源是 Bot 的项和会话；A 的「经过」里有派到了 B 和 B 的结果；请求里有节点表', async () => {
+  test('c. 在 B 上开放一个项目再派：B 上有来源是 Twin 的项和会话；A 的「经过」里有派到了 B 和 B 的结果；请求里有节点表', async () => {
     test.setTimeout(300_000)
     // B 的人在「范围」里给这条连接开放一个项目
     await page.goto(`${baseB}/settings?tab=devices`)
     const row = page
       .getByTestId('device-list')
       .locator('li')
-      .filter({ hasText: `${NODE_A}'s bot` })
+      .filter({ hasText: `${NODE_A}'s twin` })
     await expect(row).toBeVisible({ timeout: CONNECT_TIMEOUT })
     await row.getByTestId('device-twin-scope').click()
     const dialog = page.getByTestId('twin-scope-dialog')
@@ -430,7 +430,7 @@ test.describe.serial('Bot 连接', () => {
     expect(request.system).toContain('Linked nodes')
     expect(request.system).not.toContain(NODE_B)
 
-    // B 一侧：一项来源是 Bot（这台 Bot 设备）的项，有会话；agent 跑完
+    // B 一侧：一项来源是 Twin（这台 Twin 设备）的项，有会话；agent 跑完
     await waitFor(
       'B has the twin item and its session',
       async () =>
@@ -518,7 +518,7 @@ test.describe.serial('Bot 连接', () => {
     expect(itemsOf(later).find((i) => i.id === item.id)!.dispatches).toBe(1)
   })
 
-  test('d. 在 B 上接手：B 记一条 taken_over（每个会话一次）；A 这一项变成「我」处理；之后的结果照样回到 A，A 的 Bot 不再唤醒', async () => {
+  test('d. 在 B 上接手：B 记一条 taken_over（每个会话一次）；A 这一项变成「我」处理；之后的结果照样回到 A，A 的 Twin 不再唤醒', async () => {
     test.setTimeout(120_000)
     const item = (await todoByTitle(homeA(), TITLE_REMOTE))!
     expect(item.handler).toBe('twin')
@@ -548,7 +548,7 @@ test.describe.serial('Bot 连接', () => {
     await page.getByTestId('composer-input').fill(first)
     await page.getByTestId('composer-send').click()
 
-    // B：这一项的「经过」里记了一条接手（没有 node_id），A 的 Bot 设备的项
+    // B：这一项的「经过」里记了一条接手（没有 node_id），A 的 Twin 设备的项
     await expect
       .poll(
         async () =>
@@ -599,7 +599,7 @@ test.describe.serial('Bot 连接', () => {
       },
     )
 
-    // 接手之后 Bot 不再唤醒、不再派：等过最长的合并等待，假后端仍然没有收到新的请求，A 的这一项也没有新的派发
+    // 接手之后 Twin 不再唤醒、不再派：等过最长的合并等待，假后端仍然没有收到新的请求，A 的这一项也没有新的派发
     await waitFor(
       'the longest merge wait has passed',
       () => Date.now() - takenAt > 6 * COALESCE_MS,
@@ -693,7 +693,7 @@ test.describe.serial('Bot 连接', () => {
     })
   })
 
-  test('f. 「断开」：写明要在 B 上吊销；断开后 A 的列表空了、B 上那台 Bot 设备还在；再在 B 上吊销', async () => {
+  test('f. 「断开」：写明要在 B 上吊销；断开后 A 的列表空了、B 上那台 Twin 设备还在；再在 B 上吊销', async () => {
     test.setTimeout(120_000)
     await page.goto(`/n/${shortA}/settings?tab=twin`)
     const row = page.getByTestId('twin-link')
@@ -716,7 +716,7 @@ test.describe.serial('Bot 连接', () => {
     const notice = page.getByTestId('twin-link-revoke')
     await expect(notice).toContainText(NODE_B)
     expect((await cliJson<{ links: unknown[] }>(homeA(), ['twin', 'links'])).links).toEqual([])
-    // A 只是忘掉这一条：B 上那台 Bot 设备和它的范围还在
+    // A 只是忘掉这一条：B 上那台 Twin 设备和它的范围还在
     expect((await daemonDevices(homeB())).filter((d) => d.kind === 'twin')).toHaveLength(1)
     expect((await twinStatus(homeB(), twinDeviceId)).scope.projects).toEqual([PROJECT_OPEN])
 
@@ -727,17 +727,17 @@ test.describe.serial('Bot 连接', () => {
     await expect(page).toHaveURL(/\/settings\?(.*&)?tab=devices/)
     const list = page.getByTestId('device-list')
     await expect(list).toBeVisible({ timeout: CONNECT_TIMEOUT })
-    const twinRow = list.locator('li').filter({ hasText: `${NODE_A}'s bot` })
+    const twinRow = list.locator('li').filter({ hasText: `${NODE_A}'s twin` })
     await expect(twinRow).toHaveCount(1)
     await twinRow.getByRole('button', { name: exactText('devices.revoke') }).click()
     await page.getByTestId('device-revoke-confirm').click()
-    await expect(list.locator('li').filter({ hasText: `${NODE_A}'s bot` })).toHaveCount(0, {
+    await expect(list.locator('li').filter({ hasText: `${NODE_A}'s twin` })).toHaveCount(0, {
       timeout: 15_000,
     })
     await expect
       .poll(async () => (await daemonDevices(homeB())).filter((d) => d.kind === 'twin'))
       .toEqual([])
-    // A 自己的 Bot 不受影响
+    // A 自己的 Twin 不受影响
     expect(await twinStatus(homeA())).toMatchObject({ scope: { projects: [PROJECT_A] } })
     await expectNoCodes()
   })

@@ -1,4 +1,4 @@
-//! 被使用的节点（B）这一侧：Bot 设备（`DeviceKind::Twin`，另一个节点的 Bot）的方法白名单、推送过滤、归属、范围和名额
+//! 被使用的节点（B）这一侧：Twin 设备（`DeviceKind::Twin`，另一个节点的 Twin）的方法白名单、推送过滤、归属、范围和名额
 //! （docs/spec/daemon.md § 27.3）。
 //!
 //! 白名单和推送过滤是安全边界：下面两条遍历测试按方法注册表逐个核对，**新增的请求方法或通知没有在这里分类就会失败**，
@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 const T: Duration = Duration::from_secs(20);
 
-/// Bot 设备能调的方法，和每个方法对归属的要求。要和 `twin_device::ALLOWED` 一模一样。
+/// Twin 设备能调的方法，和每个方法对归属的要求。要和 `twin_device::ALLOWED` 一模一样。
 const ALLOWED: &[(&str, Scope)] = &[
     (methods::NODE_INFO, Scope::Open),
     (methods::AGENT_LIST, Scope::Open),
@@ -34,7 +34,7 @@ const ALLOWED: &[(&str, Scope)] = &[
     (methods::SESSION_DIFF, Scope::OwnSession),
 ];
 
-/// Bot 设备**不能**调的请求方法（每个都要被 `forbidden`，`data.reason = "twin_device"`）。注册表里新增了请求方法而这里没有，
+/// Twin 设备**不能**调的请求方法（每个都要被 `forbidden`，`data.reason = "twin_device"`）。注册表里新增了请求方法而这里没有，
 /// 测试失败：先决定它进不进 `ALLOWED`，进了要写清它只碰什么、加一条归属检查；不进就加到这里。
 const DENIED: &[&str] = &[
     methods::NODE_DEVICES,
@@ -91,7 +91,7 @@ const DENIED: &[&str] = &[
     methods::TODO_UPDATE,
     methods::TODO_DELETE,
     methods::TODO_DISPATCH_PREVIEW,
-    // 现在执行周期项只由人做：会产生工作、花 Bot 或 agent 的预算
+    // 现在执行周期项只由人做：会产生工作、花 Twin 或 agent 的预算
     methods::TODO_REPEAT_NOW,
     methods::RULE_LIST,
     methods::RULE_ADD,
@@ -124,10 +124,10 @@ const DENIED: &[&str] = &[
     methods::PREVIEW_PORTS,
 ];
 
-/// 推给 Bot 设备的通知：只有这四种，并且只限它自己的项和会话。
+/// 推给 Twin 设备的通知：只有这四种，并且只限它自己的项和会话。
 const PUSHED: &[&str] = &[methods::TODO_CHANGED, methods::TODO_EVENT, methods::SESSION_CHANGED, methods::SESSION_EVENT];
 
-/// **不**推给 Bot 设备的通知。注册表里新增了通知而这里没有，测试失败：默认不推，要推得先改 `twin_device::PUSHED` 和归属判断。
+/// **不**推给 Twin 设备的通知。注册表里新增了通知而这里没有，测试失败：默认不推，要推得先改 `twin_device::PUSHED` 和归属判断。
 const NEVER_PUSHED: &[&str] = &[
     methods::PAIR_ACK,
     methods::NODE_ENROLL_REQUESTED,
@@ -161,9 +161,9 @@ struct Fixture {
     td: TestDaemon,
     /// 这个节点的人（本机 CLI）。
     human: TestClient,
-    /// Bot 设备 `twin-a`（范围里开放了项目 `p`）。
+    /// Twin 设备 `twin-a`（范围里开放了项目 `p`）。
     a: TestClient,
-    /// 另一台 Bot 设备 `twin-b`。
+    /// 另一台 Twin 设备 `twin-b`。
     b: TestClient,
 }
 
@@ -257,7 +257,7 @@ async fn whitelisted_methods_work_on_its_own_items_and_sessions_and_are_forbidde
     let mine = add(&f.td, &mut f.a, "mine", "p").await.unwrap();
     let r = dispatch(&f.td, &mut f.a, &mine.id).await.unwrap();
     let sid = r.session.id.clone();
-    // 别人的：人记的项、另一台 Bot 设备记的项、人开的会话
+    // 别人的：人记的项、另一台 Twin 设备记的项、人开的会话
     let humans = add(&f.td, &mut f.human, "the human's", "p").await.unwrap();
     f.human
         .call::<TwinGetResult>(
@@ -374,13 +374,13 @@ async fn an_item_from_a_twin_device_needs_a_project_in_its_scope_and_is_recorded
     // 没有项目：不是「没有范围限制」
     let e = f.a.call::<Todo>(&f.td, methods::TODO_ADD, json!({ "id": uuid(), "title": "x" })).await.unwrap_err();
     assert_eq!(e.stable_code(), Some(ErrorCode::Invalid));
-    // 项目名大小写等写法按项目的同名规则比较，和本机 Bot 一致
+    // 项目名大小写等写法按项目的同名规则比较，和本机 Twin 一致
     let t = add(&f.td, &mut f.a, "do it", "p").await.unwrap();
     assert_eq!(t.source.kind, TodoSourceKind::Twin);
     assert_eq!(t.source.device_id.as_deref(), Some("twin-a"));
     assert_eq!((t.handler, t.unreviewed, t.state, t.repeat.is_none()), (TodoHandler::Me, false, TodoState::Open, true));
     assert!(t.remote.is_empty());
-    // 不能带周期规则、不能交给本机的 Bot
+    // 不能带周期规则、不能交给本机的 Twin
     for extra in [json!({ "handler": "twin" }), json!({ "repeat": { "kind": "daily", "at": "09:00" } })] {
         let mut p = json!({ "id": uuid(), "title": "x", "project": "p" });
         for (k, v) in extra.as_object().unwrap() {
@@ -409,7 +409,7 @@ async fn an_item_from_a_twin_device_needs_a_project_in_its_scope_and_is_recorded
             .await
             .unwrap_err();
     assert!(is_twin_device_forbidden(&e));
-    // 审计：来源是 Bot 设备
+    // 审计：来源是 Twin 设备
     let audit: NodeAuditResult = f.human.call(&f.td, methods::NODE_AUDIT, json!({ "limit": 50 })).await.unwrap();
     let entry = audit.entries.iter().find(|e| e.action == "todo.add" && e.device_id == "twin-a").expect("audited");
     assert_eq!(entry.detail["source_kind"], "twin");
@@ -421,11 +421,11 @@ async fn an_item_from_a_twin_device_needs_a_project_in_its_scope_and_is_recorded
 async fn this_nodes_own_twin_does_not_touch_items_from_a_twin_device() {
     let mut f = fixture().await;
     let t = add(&f.td, &mut f.a, "from the other node", "p").await.unwrap();
-    // 人也不能把它交给本机的 Bot：那只会得到一项没人处理的「处理人 = Bot」
+    // 人也不能把它交给本机的 Twin：那只会得到一项没人处理的「处理人 = Twin」
     let e =
         f.human.call::<Todo>(&f.td, methods::TODO_UPDATE, json!({ "id": t.id, "handler": "twin" })).await.unwrap_err();
     assert_eq!((e.stable_code(), reason(&e).as_deref()), (Some(ErrorCode::Invalid), Some("twin_source")));
-    // 就算库里是这样（比如更早的版本写的），本机 Bot 的范围也不收它
+    // 就算库里是这样（比如更早的版本写的），本机 Twin 的范围也不收它
     sqlx::query("UPDATE todos SET handler = 'twin' WHERE id = ?")
         .bind(&t.id)
         .execute(f.td.ctx.store.pool())
@@ -617,7 +617,7 @@ async fn peer_status_is_the_callers_own_and_only_for_twin_devices() {
     f.td.ctx.config.reload().unwrap();
     let s: TwinPeerStatus = f.a.call(&f.td, methods::TWIN_PEER_STATUS, json!({})).await.unwrap();
     assert!(!s.accept_links);
-    // 别的调用方：不是 Bot 设备，没有「这条连接的范围」
+    // 别的调用方：不是 Twin 设备，没有「这条连接的范围」
     for c in [&mut f.human] {
         let e = c.call::<Value>(&f.td, methods::TWIN_PEER_STATUS, json!({})).await.unwrap_err();
         assert_eq!((e.stable_code(), reason(&e).as_deref()), (Some(ErrorCode::Forbidden), Some("not_twin_device")));
@@ -650,7 +650,7 @@ async fn twin_get_and_set_take_a_requester_that_must_be_an_existing_twin_device(
             assert_eq!(e.stable_code(), Some(ErrorCode::NotFound), "{method} {requester:?}: {e:?}");
         }
     }
-    // 缺省和 `local` 是本机 Bot；改一台设备的范围不动本机 Bot，也不进本机 Bot 的状态
+    // 缺省和 `local` 是本机 Twin；改一台设备的范围不动本机 Twin，也不进本机 Twin 的状态
     let before: TwinGetResult = f.human.call(&f.td, methods::TWIN_GET, json!({})).await.unwrap();
     let r: TwinGetResult = f
         .human
@@ -664,14 +664,14 @@ async fn twin_get_and_set_take_a_requester_that_must_be_an_existing_twin_device(
     assert_eq!((r.scope.paused, r.scope.daily_dispatches, r.state), (true, 7, TwinState::Paused));
     let local: TwinGetResult = f.human.call(&f.td, methods::TWIN_GET, json!({ "requester": "local" })).await.unwrap();
     assert_eq!(local, before);
-    // 设备范围的校验和本机 Bot 一样：不能超过给人留名额之后的上限
+    // 设备范围的校验和本机 Twin 一样：不能超过给人留名额之后的上限
     let e = f
         .human
         .call::<Value>(&f.td, methods::TWIN_SET, json!({ "requester": "twin-b", "max_sessions": 99 }))
         .await
         .unwrap_err();
     assert_eq!(reason(&e).as_deref(), Some("no_capacity"));
-    // 只由人改：自报了 mcp 的连接和 Bot 设备自己都不行
+    // 只由人改：自报了 mcp 的连接和 Twin 设备自己都不行
     let mut mcp = f.td.local_mcp_client();
     let e = mcp
         .call::<Value>(&f.td, methods::TWIN_SET, json!({ "requester": "twin-b", "paused": false }))
@@ -804,7 +804,7 @@ async fn no_notification_but_the_four_owned_kinds_reaches_a_twin_device() {
     other_web.handle.watch(&foreign_session.id).unwrap();
     f.td.ctx.clients.to_watchers(&foreign_session.id, methods::SESSION_EVENT, n(&foreign_session.id));
     assert!(f.a.drain_now().is_empty());
-    // 另一台 Bot 设备看不到 a 的项和会话
+    // 另一台 Twin 设备看不到 a 的项和会话
     let mut b = f.b;
     for (m, p) in [
         (methods::TODO_CHANGED, json!({ "id": mine.id })),
@@ -882,7 +882,7 @@ async fn a_person_speaking_in_a_session_a_twin_device_dispatched_is_recorded_onc
     wait_handles(&f.td, 1).await;
     let say = |sid: &str, id: &str| json!({ "session_id": sid, "message_id": id, "content": "let me take a look" });
 
-    // 第一条消息：「经过」里记一条 `taken_over`（没有 `node_id`，来源是这台设备的人），推给 Bot 设备；`handler` 不动
+    // 第一条消息：「经过」里记一条 `taken_over`（没有 `node_id`，来源是这台设备的人），推给 Twin 设备；`handler` 不动
     f.human.call::<Value>(&f.td, methods::SESSION_SEND, say(&first, "m1")).await.unwrap();
     let pushed =
         f.a.wait_notification(T, |n| n.method == methods::TODO_EVENT && n.params["event"]["kind"] == "taken_over")
@@ -903,7 +903,7 @@ async fn a_person_speaking_in_a_session_a_twin_device_dispatched_is_recorded_onc
     f.human.call::<Value>(&f.td, methods::SESSION_SEND, say(&first, "m2")).await.unwrap();
     assert_eq!(taken_over_events(&f.td, &mut f.human, &t.id).await.len(), 1);
 
-    // Bot 设备又派了一个新的会话，人又在新会话里接手：新的一次
+    // Twin 设备又派了一个新的会话，人又在新会话里接手：新的一次
     f.td.fake.last_handle().release();
     f.a.call::<Empty>(&f.td, methods::SESSION_CANCEL, json!({ "session_id": first })).await.unwrap();
     wait_not_working(&f.td, &mut f.a, &first).await;

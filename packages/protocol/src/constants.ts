@@ -66,7 +66,7 @@ export const METHODS = {
   NODE_ENROLL_REQUESTED: 'node.enroll_requested',
   /** D→C notification，params = NodeEnrollResolved */
   NODE_ENROLL_RESOLVED: 'node.enroll_resolved',
-  /** 开一次只接受 Bot 设备的短码配对（docs/spec/daemon.md § 27.2）。 */
+  /** 开一次只接受 Twin 设备的短码配对（docs/spec/daemon.md § 27.2）。 */
   NODE_TWIN_LINK_CODE: 'node.twin_link_code',
   /** D→C notification，params = NodeSecurityEvent */
   NODE_SECURITY_EVENT: 'node.security_event',
@@ -184,7 +184,7 @@ export const METHODS = {
   /** D→C notification，params = RuleExtractDone */
   RULE_EXTRACT_DONE: 'rule.extract_done',
 
-  // Bot
+  // Twin
   TWIN_GET: 'twin.get',
   TWIN_SET: 'twin.set',
   TWIN_WAKE: 'twin.wake',
@@ -195,11 +195,11 @@ export const METHODS = {
   TWIN_ANSWER: 'twin.answer',
   TWIN_CHANGED: 'twin.changed',
   TWIN_QUESTION: 'twin.question',
-  // Bot 连接（docs/spec/daemon.md § 27）
+  // Twin 连接（docs/spec/daemon.md § 27）
   TWIN_LINK: 'twin.link',
   TWIN_LINKS: 'twin.links',
   TWIN_UNLINK: 'twin.unlink',
-  /** B 上：对这条 Bot 连接开放了什么、还剩多少（只给调用的这条连接自己的）。 */
+  /** B 上：对这条 Twin 连接开放了什么、还剩多少（只给调用的这条连接自己的）。 */
   TWIN_PEER_STATUS: 'twin.peer_status',
 
   // blob（附件，ADR-35）

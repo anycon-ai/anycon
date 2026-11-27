@@ -1,4 +1,4 @@
-//! Bot 行为测试：用可替换时钟、假判断后端和假 adapter 验证判断与执行之间的边界。
+//! Twin 行为测试：用可替换时钟、假判断后端和假 adapter 验证判断与执行之间的边界。
 
 use super::*;
 use crate::judge::JudgeReply;
@@ -500,7 +500,7 @@ async fn dispatch_reuses_worktree_no_push_mode_note_and_takeover() {
     assert_eq!(session.settings.options["no_push"], true);
     assert_eq!(session.settings.mode.as_deref(), Some("ask"));
     let events = td.ctx.store.events_after(sid, 0, 100).await.unwrap();
-    let note = "Bot note (written by the bot):\nKeep the change small";
+    let note = "Twin note (written by the twin):\nKeep the change small";
     assert!(events.iter().any(|e| matches!(&e.event, Event::UserMessage { content, .. } if content.contains(note))));
     assert_eq!(get(&td.ctx).await.unwrap().today.dispatches, 1);
     assert_eq!(get(&td.ctx).await.unwrap().working, vec![t.id.clone()]);
@@ -808,7 +808,7 @@ async fn old_success_does_not_repeatedly_reset_later_dispatch_failures() {
 #[tokio::test]
 async fn a_repeating_template_is_never_triaged_but_its_twin_copies_wake_the_twin() {
     let (td, _fake) = fixture(false).await;
-    // 模板可以交给 Bot（每一份复制出来的都交给它），但 Bot 自己从不看模板
+    // 模板可以交给 Twin（每一份复制出来的都交给它），但 Twin 自己从不看模板
     let mut c = td.local_cli_client();
     let template: Todo = c
         .call(
@@ -825,7 +825,7 @@ async fn a_repeating_template_is_never_triaged_but_its_twin_copies_wake_the_twin
     let plain = todo(&td, "plain").await;
     assert_eq!(items(&td.ctx, &scope).await.unwrap().iter().map(|t| t.id.clone()).collect::<Vec<_>>(), vec![plain.id]);
 
-    // 到点复制出来的项照抄 handler：交给 Bot 时照常触发唤醒（`todo`）
+    // 到点复制出来的项照抄 handler：交给 Twin 时照常触发唤醒（`todo`）
     {
         let mut p = td.ctx.twin.pending.lock().unwrap();
         p.first = None;
@@ -848,8 +848,8 @@ async fn a_repeating_template_is_never_triaged_but_its_twin_copies_wake_the_twin
     td.shutdown().await;
 }
 
-/// 建一个模板，和一份交给 Bot 的、从它复制出来的项，返回（模板，复制出来的项）。复制直接写库而不走 `tick`：
-/// `tick` 会触发 Bot 自己的调度，和测试里手动开的那一轮抢同一把门。
+/// 建一个模板，和一份交给 Twin 的、从它复制出来的项，返回（模板，复制出来的项）。复制直接写库而不走 `tick`：
+/// `tick` 会触发 Twin 自己的调度，和测试里手动开的那一轮抢同一把门。
 async fn template_with_copy(td: &TestDaemon, auto_close: bool) -> (Todo, Todo) {
     let mut c = td.local_cli_client();
     let template: Todo = c
@@ -1030,7 +1030,7 @@ fn gh_json(state: &str, conclusion: &str, reviews: &[(&str, &str)]) -> String {
     .to_string()
 }
 
-/// Bot 派出了一个会话（一轮已经结束，分支已推到上游）。
+/// Twin 派出了一个会话（一轮已经结束，分支已推到上游）。
 #[cfg(unix)]
 async fn pr_fixture() -> (TestDaemon, Arc<FakeJudgeBackend>, Todo, String) {
     let (td, fake) = fixture(true).await;
@@ -1083,7 +1083,7 @@ async fn first_poll_records_a_baseline_and_each_change_becomes_one_event_and_one
     let pending = |td: &TestDaemon| -> Vec<TwinTrigger> {
         td.ctx.twin.pending.lock().unwrap().triggers.iter().copied().filter(|t| *t == TwinTrigger::Pr).collect()
     };
-    // 开关没开（缺省）也轮询 Bot 派出的会话；第一次只记基线
+    // 开关没开（缺省）也轮询 Twin 派出的会话；第一次只记基线
     td.set_gh_ok(&gh_json("OPEN", "SUCCESS", &[("2026-01-01T00:00:00Z", "first")]));
     assert_eq!(td.ctx.sessions.auto_archive_round().await, 0);
     assert!(td.gh_calls() >= 1);
@@ -1136,7 +1136,7 @@ async fn only_sessions_of_open_twin_items_are_polled() {
     c.call::<Value>(&td, methods::TODO_UPDATE, json!({"id":t.id,"handler":"me"})).await.unwrap();
     td.ctx.sessions.auto_archive_round().await;
     assert_eq!(td.gh_calls(), calls);
-    // 再交给 Bot、然后关闭：同样不轮询
+    // 再交给 Twin、然后关闭：同样不轮询
     c.call::<Value>(&td, methods::TODO_UPDATE, json!({"id":t.id,"handler":"twin"})).await.unwrap();
     td.ctx.sessions.auto_archive_round().await;
     assert_eq!(td.gh_calls(), calls + 1);
@@ -1636,7 +1636,7 @@ async fn stats_counts_closures_only_for_items_the_local_twin_dispatched() {
     let yesterday = local_day_start(today - 12 * 60 * MINUTE).unwrap();
     td.ctx.judge.clock().set(today + 20 * 60 * MINUTE);
     let h = 60 * MINUTE;
-    // 本机 Bot 派过：done，最近一次派发在昨天 12:00，今天 02:00 关闭 -> 14 小时
+    // 本机 Twin 派过：done，最近一次派发在昨天 12:00，今天 02:00 关闭 -> 14 小时
     twin_session(&td, "s1", "viaTwin", LOCAL, yesterday + 10 * h).await;
     twin_session(&td, "s1b", "viaTwin", LOCAL, yesterday + 12 * h).await;
     event(&td, "viaTwin", today + 2 * h, state_event(TodoState::Done)).await;
@@ -1650,14 +1650,14 @@ async fn stats_counts_closures_only_for_items_the_local_twin_dispatched() {
     .unwrap();
     event(&td, "viaRemote", today + 3 * h, state_event(TodoState::Done)).await;
     event(&td, "viaRemote2", today + 3 * h, state_event(TodoState::Dropped)).await;
-    // Bot 设备派来的会话和人手动派发的不算
+    // Twin 设备派来的会话和人手动派发的不算
     twin_session(&td, "s2", "device", "some-device", yesterday + h).await;
     event(&td, "device", today + h, state_event(TodoState::Done)).await;
     event(&td, "manual", today + h, state_event(TodoState::Done)).await;
     event(&td, "manual", today + h, state_event(TodoState::Dropped)).await;
     // 没有关闭的状态变化不算
     event(&td, "viaTwin", today + 4 * h, state_event(TodoState::Working)).await;
-    // 放弃：昨天，Bot 派过
+    // 放弃：昨天，Twin 派过
     twin_session(&td, "s3", "dropMe", LOCAL, yesterday + h).await;
     event(&td, "dropMe", yesterday + 5 * h, state_event(TodoState::Dropped)).await;
     let r = stats(&td.ctx, TwinStatsParams { days: Some(2) }).await.unwrap();
@@ -1700,7 +1700,7 @@ async fn stats_closures_count_only_transitions_into_closed_after_a_twin_dispatch
     event(&td, "flip", today + h, state_event(TodoState::Done)).await;
     event(&td, "flip", today + 2 * h, state_from(TodoState::Done, TodoState::Dropped)).await;
     event(&td, "flip", today + 3 * h, state_from(TodoState::Dropped, TodoState::Done)).await;
-    // Bot 派发之前的关闭不算
+    // Twin 派发之前的关闭不算
     event(&td, "early", today + h, state_event(TodoState::Done)).await;
     twin_session(&td, "s2", "early", LOCAL, today + 2 * h).await;
     // 关闭 -> 重新打开 -> 再派发 -> 再关闭：从最近一次派发算起
@@ -1723,7 +1723,7 @@ async fn stats_takeovers_ignore_twin_device_items_and_hand_backs_ignore_done_dec
     let today = local_day_start(1_800_000_000_000).unwrap();
     td.ctx.judge.clock().set(today + 20 * 60 * MINUTE);
     let taken = || TodoEventData::TakenOver { by: by_human(), node_id: None };
-    // 本机 Bot 派的算；Bot 设备派来的、派发之前的不算
+    // 本机 Twin 派的算；Twin 设备派来的、派发之前的不算
     twin_session(&td, "s1", "mine", LOCAL, today).await;
     event(&td, "mine", today + 5, taken()).await;
     twin_session(&td, "s2", "device", "some-device", today).await;

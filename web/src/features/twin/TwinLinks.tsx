@@ -1,4 +1,4 @@
-// Bot 页的「使用别的节点」：列出这个节点的 Bot 用着的节点，添加（两步 RPC）和断开。
+// Twin 页的「使用别的节点」：列出这个节点的 Twin 用着的节点，添加（两步 RPC）和断开。
 // 短码只在 `addTwinLink` 里经内存传递；这里的状态和渲染里都没有它。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
@@ -47,7 +47,7 @@ export function TwinLinks({ node }: { node: NodeEntry }) {
     const timer = setTimeout(() => void load(), LINKS_COALESCE_MS)
     return () => clearTimeout(timer)
   }, [online, load, tick])
-  // 这个节点的 daemon 还不认识 Bot 连接：不显示这一块
+  // 这个节点的 daemon 还不认识 Twin 连接：不显示这一块
   if (unsupported) return null
   return (
     <section className="space-y-3" data-testid="twin-links">

@@ -382,7 +382,7 @@ async fn insert_copy(
     Ok(MadeCopy { copy, created, handler_event })
 }
 
-/// 复制提交之后的广播、审计和 Bot 触发。
+/// 复制提交之后的广播、审计和 Twin 触发。
 async fn publish_copy(
     c: &Ctx,
     caller: &Caller,
@@ -423,7 +423,7 @@ fn repeat_now_invalid(reason: &str, message: &str) -> RpcError {
 }
 
 /// `todo.repeat_now`：现在复制一份，和到点复制一样，但不动模板的 `repeat_last_ms`（下一次照旧）。只由人调用：
-/// 它会产生工作、可能花 Bot 或 agent 的预算。持清单锁，检查和写入之间没有别的写入。
+/// 它会产生工作、可能花 Twin 或 agent 的预算。持清单锁，检查和写入之间没有别的写入。
 pub async fn repeat_now(c: &Ctx, caller: &Caller, p: anycon_protocol::TodoIdParams) -> Result<Todo, RpcError> {
     crate::todos::check_id(&p.id)?;
     if caller.is_mcp() || caller.is_twin() || caller.is_twin_device() {

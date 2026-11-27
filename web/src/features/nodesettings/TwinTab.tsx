@@ -1,5 +1,5 @@
-// 节点设置 →「Bot」（docs/spec/web.md § 4.8）：本节点 Bot 的全部配置集中在这里——判断后端、范围与预算、用别的节点、
-// 被别的节点用；Bot 页只看运行状态。标签只在节点支持 Bot 时才有（`NodeSettingsPage`）。
+// 节点设置 →「Twin」（docs/spec/web.md § 4.8）：本节点 Twin 的全部配置集中在这里——判断后端、范围与预算、用别的节点、
+// 被别的节点用；Twin 页只看运行状态。标签只在节点支持 Twin 时才有（`NodeSettingsPage`）。
 import { useEffect } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
@@ -21,7 +21,7 @@ export function TwinTab({ nodeId }: { nodeId: string }) {
   const order = useNodes((s) => s.order)
   const entry = useTwin((s) => s.nodes[nodeId])
   const online = node?.conn === 'ready'
-  // 直接打开这个标签时 Bot 状态可能还没读过；连接恢复后也补读一次
+  // 直接打开这个标签时 Twin 状态可能还没读过；连接恢复后也补读一次
   useEffect(() => {
     if (online) void syncTwin(nodeId)
   }, [online, nodeId])

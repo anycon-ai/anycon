@@ -1,5 +1,5 @@
-// 「Bot」标签里的「被别的节点使用」：这个节点上配过对的 Bot 设备（别的节点的 Bot），可以逐个设定它能在这里做什么。
-// 撤销 Bot 设备仍在「设备」标签里做，这里不重复。
+// 「Twin」标签里的「被别的节点使用」：这个节点上配过对的 Twin 设备（别的节点的 Twin），可以逐个设定它能在这里做什么。
+// 撤销 Twin 设备仍在「设备」标签里做，这里不重复。
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'

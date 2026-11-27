@@ -1,4 +1,4 @@
-//! CLI 作为客户端设备经 hub 连 daemon：传输、配对、设备身份的存储都在 `anycon_daemon::client`（Bot 设备共用），
+//! CLI 作为客户端设备经 hub 连 daemon：传输、配对、设备身份的存储都在 `anycon_daemon::client`（Twin 设备共用），
 //! 这里只是把它接到 CLI 上：设备种类固定是 `cli`、错误换成带退出码的 [`CliError`]、需要让用户看到的提示打印到 stderr、
 //! 连上的节点交给 [`Conn`]。
 //!

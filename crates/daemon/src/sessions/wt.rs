@@ -1490,7 +1490,7 @@ impl Sessions {
     /// `worktree.auto_archive_on_pr_close`：挑没归档、没有 turn 在跑、有上游的 worktree 会话（每轮最多 20 个，最久没查的先查），
     /// `gh pr view` 拿到 `MERGED` / `CLOSED` 就按 `auto` 归档。`gh` 不可用（没装 / 没登录）整轮跳过。返回归档了几个会话。
     ///
-    /// 同一轮也轮询 Bot 派出的、所属的项还交给 Bot 处理的会话，不论开关（docs/spec/daemon.md § 26.9）：结果交给
+    /// 同一轮也轮询 Twin 派出的、所属的项还交给 Twin 处理的会话，不论开关（docs/spec/daemon.md § 26.9）：结果交给
     /// [`crate::twin::pr_observed`] 去比较和记事件；开关没开时它们不会被归档。
     pub async fn auto_archive_round(self: &std::sync::Arc<Self>) -> usize {
         let cfg = self.d.config.get();

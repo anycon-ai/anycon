@@ -223,7 +223,7 @@ async fn declare_no_push(td: &TestDaemon, c: &mut TestClient) {
 
 // ---------------------------------------------------------------- 开会话
 
-/// Bot 的说明（`note`）只有 Bot 设备（另一个节点的 Bot，§ 27.4）能带：别的调用方带了 → `invalid`，什么也没开。
+/// Twin 的说明（`note`）只有 Twin 设备（另一个节点的 Twin，§ 27.4）能带：别的调用方带了 → `invalid`，什么也没开。
 #[tokio::test]
 async fn a_dispatch_note_is_only_for_a_twin_device() {
     let td = TestDaemon::start_git(&[]).await;

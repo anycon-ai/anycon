@@ -1,5 +1,5 @@
 // 「经过」时间线的一格：左边是轨道上的图标，右边一张卡片——标题和时间一行，下面是内容，最底下是链接。
-// 清单的事件（`TodoHistory`）和 Bot 的事件（`TwinHistoryEvent`）都用它，所以每一条都是分开的一块，不挤成一段。
+// 清单的事件（`TodoHistory`）和 Twin 的事件（`TwinHistoryEvent`）都用它，所以每一条都是分开的一块，不挤成一段。
 import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '@/ui/cn'

@@ -104,7 +104,7 @@ describe('editing', () => {
     expect(daemon.todos.get('t')).toMatchObject({ title: 'new title', body: 'old body', project: 'api' })
   })
 
-  it('the notes field says that the title and notes are what an agent or the Bot gets', async () => {
+  it('the notes field says that the title and notes are what an agent or the Twin gets', async () => {
     const user = userEvent.setup()
     await show({ id: 't', title: 'x', body: 'y' })
     expect(screen.queryByTestId('todo-edit-body-hint')).toBeNull()

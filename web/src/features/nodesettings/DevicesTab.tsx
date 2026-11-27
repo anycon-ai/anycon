@@ -44,7 +44,7 @@ export function DevicesTab({ nodeId }: { nodeId: string }) {
   const self = useHub((s) => s.snapshot.deviceId)
   const [loading, setLoading] = useState(false)
   const [revoke, setRevoke] = useState<PeerDevice | null>(null)
-  // Bot 设备的「范围」对话框
+  // Twin 设备的「范围」对话框
   const [scope, setScope] = useState<PeerDevice | null>(null)
   const [pairing, setPairing] = useState<NodePairBeginResult | null>(null)
   // hub 拒绝了这次登记（见 `pairBeginRefusal`）：对话框留着，里面写原因

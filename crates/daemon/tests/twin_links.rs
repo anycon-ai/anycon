@@ -1,5 +1,5 @@
-//! Bot 连接的 A 这一侧端到端（docs/spec/daemon.md § 27.1、§ 27.2、§ 27.4）：真 hub（进程内）和两个真 daemon。
-//! A 跑 Bot（假判断后端），B 是被使用的节点（假 adapter、git 项目）。覆盖：建立（短码、节点 id 核对、只由人）、节点表、
+//! Twin 连接的 A 这一侧端到端（docs/spec/daemon.md § 27.1、§ 27.2、§ 27.4）：真 hub（进程内）和两个真 daemon。
+//! A 跑 Twin（假判断后端），B 是被使用的节点（假 adapter、git 项目）。覆盖：建立（短码、节点 id 核对、只由人）、节点表、
 //! 派发到 B、结果回到 A 的「经过」并触发唤醒、A 重启之后补取、B 不在线 / 拒绝、连续 3 次失败交回、`twin.unlink`。
 
 use std::sync::atomic::Ordering;
@@ -84,7 +84,7 @@ const JUDGE: [(&str, &str); 2] = [
 
 struct Rig {
     hub: TestHub,
-    /// 跑 Bot 的节点。
+    /// 跑 Twin 的节点。
     a: TestDaemon,
     /// 被使用的节点。
     b: TestDaemon,
@@ -93,7 +93,7 @@ struct Rig {
     judge: Arc<FakeJudgeBackend>,
     a_id: String,
     b_id: String,
-    /// Bot 时钟：每次唤醒把它往后拨。
+    /// Twin 时钟：每次唤醒把它往后拨。
     clock: u64,
 }
 
@@ -123,7 +123,7 @@ async fn rig_with(b_name: Option<&str>, a_extra: &[(&str, &str)]) -> Rig {
     let (a_id, b_id) = (a.ctx.identity.device_id().unwrap(), b.ctx.identity.device_id().unwrap());
     let (a_cli, b_cli) = (a.client("a-cli"), b.client("b-cli"));
     let mut rig = Rig { hub, a, b, a_cli, b_cli, judge, a_id, b_id, clock };
-    // A 的 Bot：范围里至少要有一个项目才算配置好（派到 B 的项目由 B 的范围定，和它无关）
+    // A 的 Twin：范围里至少要有一个项目才算配置好（派到 B 的项目由 B 的范围定，和它无关）
     let _: TwinGetResult = rig
         .a_cli
         .call(&rig.a, methods::TWIN_SET, json!({ "projects": ["x"], "agent": "fake", "daily_dispatches": 5 }))
@@ -152,12 +152,12 @@ impl Rig {
         serde_json::from_value(raw).unwrap()
     }
 
-    /// Bot 设备在 B 上的设备 id（A 的 `twin/` 下的设备文件）。
+    /// Twin 设备在 B 上的设备 id（A 的 `twin/` 下的设备文件）。
     fn twin_device(&self) -> String {
         HubState::load(&self.a.paths.twin_dir(), &self.hub.url()).device_id.expect("the twin device has an id")
     }
 
-    /// B 对这台 Bot 设备开放项目 `p`。
+    /// B 对这台 Twin 设备开放项目 `p`。
     async fn open_p(&mut self) {
         let dev = self.twin_device();
         let r: TwinGetResult = self
@@ -222,7 +222,7 @@ impl Rig {
         }));
     }
 
-    /// 唤醒 A 的 Bot，等这一次运行结束（时钟只由测试拨：先唤醒、再拨过 60 秒的合并窗口、再推一下调度）。每次只拨几分钟：
+    /// 唤醒 A 的 Twin，等这一次运行结束（时钟只由测试拨：先唤醒、再拨过 60 秒的合并窗口、再推一下调度）。每次只拨几分钟：
     /// 一次拨过 30 分钟的兜底定时（`tick`）会让调度自己再加一个触发，把合并窗口又往后推。
     async fn wake(&mut self) -> TwinRun {
         let before: Vec<String> = self.runs().await.into_iter().map(|r| r.id).collect();
@@ -345,11 +345,11 @@ async fn linking_needs_the_right_node_a_fresh_code_and_a_person_and_creates_the_
     assert!(status.projects.is_empty(), "B opened nothing to a new twin device");
     assert!(status.accept_links);
 
-    // B 把它当成一台 Bot 设备，设备名是「<A 的节点名>'s bot」
+    // B 把它当成一台 Twin 设备，设备名是「<A 的节点名>'s twin」
     let devices: NodeDevicesResult = r.b_cli.call(&r.b, methods::NODE_DEVICES, json!({})).await.unwrap();
     let twin = devices.devices.iter().find(|d| d.kind == DeviceKind::Twin).expect("B lists the twin device");
     assert_eq!(twin.device_id, r.twin_device());
-    assert!(twin.name.ends_with("'s bot"), "{}", twin.name);
+    assert!(twin.name.ends_with("'s twin"), "{}", twin.name);
 
     // 审计记了动作，不记短码
     let audit: NodeAuditResult = r.a_cli.call(&r.a, methods::NODE_AUDIT, json!({ "limit": 200 })).await.unwrap();
@@ -388,7 +388,7 @@ async fn a_dispatch_to_the_node_makes_a_remote_item_and_the_result_comes_back_an
     assert!(inner.len() <= 4 * 1024);
     assert!(req.system.contains("Linked nodes"), "the system prompt explains the node field");
 
-    // B 上有了来源是 A 的 Bot 的项，和它派出的会话（note 在第一条消息里）
+    // B 上有了来源是 A 的 Twin 的项，和它派出的会话（note 在第一条消息里）
     let on_b = r.b_todos().await;
     assert_eq!(on_b.len(), 1);
     let remote = &on_b[0];
@@ -453,7 +453,7 @@ async fn a_dispatch_to_the_node_makes_a_remote_item_and_the_result_comes_back_an
         t.activity == Some(TodoActivity::Review)
     });
 
-    // 结果到了之后，A 的 Bot 像本机会话一样被唤醒：时钟拨过合并窗口之后又有一次运行，触发里有 `session`
+    // 结果到了之后，A 的 Twin 像本机会话一样被唤醒：时钟拨过合并窗口之后又有一次运行，触发里有 `session`
     r.judge.push(Ok(JudgeReply {
         text: json!({ "items": [{ "id": todo.id, "action": "wait", "reason": "Look at the result" }] }).to_string(),
         ..Default::default()
@@ -614,7 +614,7 @@ impl Rig {
             .unwrap();
     }
 
-    /// 把 Bot 时钟一次拨过一段长时间，让兜底的定时（`tick`）先在这个时间点上加进待办，之后 [`Rig::wake`] 的合并窗口才不会被它推后。
+    /// 把 Twin 时钟一次拨过一段长时间，让兜底的定时（`tick`）先在这个时间点上加进待办，之后 [`Rig::wake`] 的合并窗口才不会被它推后。
     async fn jump(&mut self, ms: u64) {
         self.clock += ms;
         self.a.ctx.judge.clock().set(self.clock);
@@ -659,7 +659,7 @@ fn results_of(history: &[TodoEvent]) -> usize {
 async fn taking_over_on_b_tells_a_which_stops_its_twin_and_the_result_of_that_turn_does_not_wake_it() {
     let mut r = rig().await;
     let (todo, remote, sid) = r.remote_item("hold the line").await;
-    // A 的 Bot 问了一个问题，还没人回答
+    // A 的 Twin 问了一个问题，还没人回答
     r.judge.push(Ok(JudgeReply {
         text: json!({ "items": [{
             "id": todo.id, "action": "ask_user", "reason": "Unsure", "question": "Which way?"
@@ -671,7 +671,7 @@ async fn taking_over_on_b_tells_a_which_stops_its_twin_and_the_result_of_that_tu
     assert_eq!(r.open_questions().await.len(), 1);
     let (runs_before, asked_before) = (r.runs().await.len(), r.judge.requests.lock().unwrap().len());
 
-    // B 的人在 Bot 派来的会话里发消息：B 那一项的「经过」记一条（没有 `node_id`），再发不再记；B 这一项的 `handler` 不动
+    // B 的人在 Twin 派来的会话里发消息：B 那一项的「经过」记一条（没有 `node_id`），再发不再记；B 这一项的 `handler` 不动
     r.b_says(&sid, "m1").await;
     r.b_says(&sid, "m2").await;
     let on_b = r.b_history(&remote.id).await;
@@ -699,7 +699,7 @@ async fn taking_over_on_b_tells_a_which_stops_its_twin_and_the_result_of_that_tu
     let audit: NodeAuditResult = r.a_cli.call(&r.a, methods::NODE_AUDIT, json!({ "limit": 100 })).await.unwrap();
     assert!(audit.entries.iter().any(|e| e.action == "twin.taken_over" && e.target.as_deref() == Some(&todo.id)));
 
-    // 放行：B 上这一轮的结果记进 A 的「经过」，但 A 的 Bot 不被它唤醒（这一项已经不归它）
+    // 放行：B 上这一轮的结果记进 A 的「经过」，但 A 的 Twin 不被它唤醒（这一项已经不归它）
     r.b.fake.last_handle().release();
     wait_until!("the result of that turn", results_of(&r.a_history(&todo.id).await) >= 1);
     r.clock += 5 * 60_000;
@@ -795,7 +795,7 @@ async fn results_after_a_takeover_in_the_same_sync_are_recorded_but_do_not_wake_
     assert_eq!(on_a.last(), Some(&"result"), "the first turn's result came before the takeover: {on_a:?}");
     assert_eq!(on_a.iter().filter(|k| **k == "taken_over").count(), 1, "{on_a:?}");
     assert_eq!(r.a_get(&todo.id).await.handler, TodoHandler::Me);
-    // 第二次结果没有唤醒 Bot
+    // 第二次结果没有唤醒 Twin
     r.clock += 5 * 60_000;
     r.a.ctx.judge.clock().set(r.clock);
     let _: TwinGetResult = r.a_cli.call(&r.a, methods::TWIN_SET, json!({ "paused": false })).await.unwrap();

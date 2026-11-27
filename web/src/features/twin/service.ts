@@ -16,7 +16,7 @@ const lifetime = (id: string): number => lifetimes.get(id) ?? 0
 function checkLifetime(id: string, started: number): void {
   if (lifetime(id) !== started) throw new RpcCallError('offline', 'Twin node was forgotten')
 }
-/** Bot 页上挂着的卡片数（按节点）。只有有人要看统计时才读 `twin.stats`；侧栏状态条、待办页只要状态。 */
+/** Twin 页上挂着的卡片数（按节点）。只有有人要看统计时才读 `twin.stats`；侧栏状态条、待办页只要状态。 */
 const statsWanted = new Map<string, number>()
 export function wantTwinStats(id: string): () => void {
   statsWanted.set(id, (statsWanted.get(id) ?? 0) + 1)

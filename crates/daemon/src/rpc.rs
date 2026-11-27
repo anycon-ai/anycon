@@ -106,7 +106,7 @@ impl Rpc {
         let c = &self.ctx;
         let caller_owned = client.caller();
         let caller = &caller_owned;
-        // Bot 设备（另一个节点的 Bot）只能调白名单里的方法、只碰它自己的项和会话：在进入任何处理之前集中检查一次，
+        // Twin 设备（另一个节点的 Twin）只能调白名单里的方法、只碰它自己的项和会话：在进入任何处理之前集中检查一次，
         // 名单之外和别人的项 / 会话一律 `forbidden`（先于 `not_found`，docs/spec/daemon.md § 27.3）
         if caller.is_twin_device() {
             crate::twin_device::authorize(c, caller, method, &p).await?;
@@ -120,7 +120,7 @@ impl Rpc {
                 ok(Box::pin(crate::twin::get_for(c, p.requester.as_deref())).await?)
             }
             methods::TWIN_PEER_STATUS => ok(crate::twin_device::peer_status(c, caller).await?),
-            // Bot 连接的 A 侧（docs/spec/daemon.md § 27.2、§ 27.4）：只由人调用；没有任何方法能经 A 调 B
+            // Twin 连接的 A 侧（docs/spec/daemon.md § 27.2、§ 27.4）：只由人调用；没有任何方法能经 A 调 B
             methods::TWIN_LINK => ok(Box::pin(c.twin_links.link(c, caller, params(p)?)).await?),
             methods::TWIN_LINKS => {
                 crate::twin::human(caller)?;
@@ -157,7 +157,7 @@ impl Rpc {
             methods::NODE_INFO => {
                 let mut info = self.node_info();
                 if caller.is_twin_device() {
-                    // Bot 设备只需要节点是谁、能做什么：不给这台机器上的目录路径、判断后端和更新状态
+                    // Twin 设备只需要节点是谁、能做什么：不给这台机器上的目录路径、判断后端和更新状态
                     info.workspace_root = None;
                     info.workspace_roots.clear();
                     info.judge = None;
@@ -175,7 +175,7 @@ impl Rpc {
                 let record = c.peers.record(&id);
                 let hub_notified = c.peers.revoke(&id, Some(caller.device_id.as_str())).await?;
                 c.audit.record(caller, "node.revoke_device", Some(&id), json!({ "hub_notified": hub_notified })).await;
-                // 吊销一台 Bot 设备 = 这一条 Bot 连接没了：同样告诉所有已配对设备、记审计（§ 27.2）
+                // 吊销一台 Twin 设备 = 这一条 Twin 连接没了：同样告诉所有已配对设备、记审计（§ 27.2）
                 if let Some(row) = record.filter(|r| r.kind == anycon_protocol::DeviceKind::Twin) {
                     c.audit.record(caller, "twin.unlinked", Some(&id), json!({ "name": row.name })).await;
                     c.peers
@@ -265,12 +265,12 @@ impl Rpc {
             methods::AGENT_LIST => {
                 let mut p: AgentListParams = params(p)?;
                 if caller.is_twin_device() {
-                    // 重新探测会起 agent 的命令行工具：Bot 设备只读现有的结果
+                    // 重新探测会起 agent 的命令行工具：Twin 设备只读现有的结果
                     p.refresh = false;
                 }
                 let mut list = c.agents.handle_list(p).await;
                 if caller.is_twin_device() {
-                    // Bot 设备不需要 agent 命令行工具在这台机器上的路径
+                    // Twin 设备不需要 agent 命令行工具在这台机器上的路径
                     list.agents.iter_mut().for_each(|a| a.path = None);
                 }
                 ok(list)

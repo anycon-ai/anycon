@@ -53,13 +53,13 @@ function LiveHandler({ detail = false }: { detail?: boolean }) {
   const item = useTodoView(ids)[0]
   return item ? detail ? <TodoDetail item={item} online /> : <TwinHandlerButton item={item} /> : null
 }
-describe('Bot in to-dos', () => {
-  it('gives a reviewed item to Bot and takes it back', async () => {
+describe('Twin in to-dos', () => {
+  it('gives a reviewed item to Twin and takes it back', async () => {
     const id = '11111111-2222-4333-8444-555555555555'
     daemon.seed(todoItem({ id }))
     await syncTodos(A)
     render(<LiveHandler />)
-    await userEvent.click(screen.getByRole('button', { name: 'Give to Bot' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Give to Twin' }))
     await waitFor(() => expect(daemon.todos.get(id)?.handler).toBe('twin'))
     const params = rpc.calls.find((c) => c.method === 'todo.update')?.params
     expect(params).toEqual({ id, handler: 'twin' })
@@ -73,10 +73,10 @@ describe('Bot in to-dos', () => {
     await syncTodos(A)
     render(<LiveHandler detail />)
     expect(screen.getByText('Read these requirements before accepting.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Give to Bot' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Give to Twin' })).not.toBeInTheDocument()
     expect(rpc.calls.filter((c) => c.method === 'todo.update')).toHaveLength(0)
     await userEvent.click(screen.getByTestId('todo-accept'))
-    const handover = await screen.findByRole('button', { name: 'Give to Bot' })
+    const handover = await screen.findByRole('button', { name: 'Give to Twin' })
     await waitFor(() => expect(daemon.todos.get(id)?.unreviewed).toBe(false))
     expect(rpc.calls.filter((c) => c.method === 'todo.update').map((c) => c.params)).toEqual([{ id, reviewed: true }])
     expect(daemon.todos.get(id)?.handler).toBe('me')
@@ -84,10 +84,10 @@ describe('Bot in to-dos', () => {
     await waitFor(() => expect(daemon.todos.get(id)?.handler).toBe('twin'))
     expect(rpc.calls.filter((c) => c.method === 'todo.update').map((c) => c.params)).toEqual([{ id, reviewed: true }, { id, handler: 'twin' }])
   })
-  it('shows Bot even before dispatch, and handler filters select its items', () => {
+  it('shows Twin even before dispatch, and handler filters select its items', () => {
     const todo = { ...todoItem({ id: 't1', handler: 'twin' }), node_id: A, unsynced: false }
     render(<HandlerChip item={todo} />)
-    expect(screen.getByTestId('todo-handler')).toHaveTextContent('Bot')
+    expect(screen.getByTestId('todo-handler')).toHaveTextContent('Twin')
     expect(groupTodos([todo], { source: 'all', project: null, handler: 'twin' }).open).toHaveLength(1)
     expect(groupTodos([todo], { source: 'all', project: null, handler: 'me' }).open).toHaveLength(0)
     expect(handlerOf({ ...todo, handler: 'future' as never })).toBe('me')
@@ -123,7 +123,7 @@ describe('Bot in to-dos', () => {
     render(<TodoHistory item={item} />)
     expect(await screen.findByText('You took over')).toBeInTheDocument()
     expect(screen.getByText('No capacity')).toBeInTheDocument()
-    expect(screen.getByText('Handler changed: Me → Bot')).toBeInTheDocument()
+    expect(screen.getByText('Handler changed: Me → Twin')).toBeInTheDocument()
     expect(screen.getAllByText('Open this run')[0]).toHaveAttribute('href', '/twin?node=aaaaaaaa&run=r1')
     expect(screen.getByTestId('twin-question').querySelector('script')).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Web' }))
@@ -225,7 +225,7 @@ describe('Bot in to-dos', () => {
     expect(results[0]).toHaveTextContent('Result from another node (ffffffff)')
     expect(results[0]!.querySelector('a')).toBeNull()
   })
-  it('shows the Bot reason in acceptance, and emits no handler entry without capability', () => {
+  it('shows the Twin reason in acceptance, and emits no handler entry without capability', () => {
     const item = { ...todoItem({ id: 't1' }), node_id: A, unsynced: false }
     act(() =>
       useTodoHistory
@@ -241,7 +241,7 @@ describe('Bot in to-dos', () => {
   })
 })
 
-it('shows a retry when loading pre-dispatch Bot history fails', async () => {
+it('shows a retry when loading pre-dispatch Twin history fails', async () => {
   rpc.handlers['todo.history'] = () => { throw new Error('offline') }
   const item = { ...todoItem({ id: 't1', handler: 'twin' }), node_id: A, unsynced: false }
   render(<TodoHistory item={item} />)

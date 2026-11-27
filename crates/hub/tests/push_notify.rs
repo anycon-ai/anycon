@@ -1052,9 +1052,9 @@ async fn an_always_on_cli_or_sdk_device_does_not_stop_the_email() {
     for kind in [DeviceKind::Cli, DeviceKind::Sdk] {
         let mut rig = Rig::new().await;
         rig.bind_email("me@example.com").await;
-        let online = rig.hub.seed_device(kind, "bot").await;
+        let online = rig.hub.seed_device(kind, "twin").await;
         rig.hub.pair_live(&rig.daemon, &online).await;
-        let _online_conn = FakeDevice::connect(&rig.hub, Some(&online.token), kind, "bot").await;
+        let _online_conn = FakeDevice::connect(&rig.hub, Some(&online.token), kind, "twin").await;
         let web = rig.web.id.clone();
         rig.notify_offline(&web, NotifyCategory::PermissionRequested, Some("s1")).await;
         assert_eq!(rig.mailer.sent().len(), 1, "{kind:?}: an online {kind:?} device is not a person looking");

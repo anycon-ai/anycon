@@ -107,7 +107,7 @@ export function RepeatField({ value, onChange, disabledReason, intervalSupported
   )
 }
 
-/** 「Bot 认为做完时自动关闭」：改的是同一个规则字符串（`repeatToInput` 的写法）；没有规则时不显示。 */
+/** 「Twin 认为做完时自动关闭」：改的是同一个规则字符串（`repeatToInput` 的写法）；没有规则时不显示。 */
 export function AutoCloseField({ value, onChange, testId = 'repeat' }: { value: string; onChange: (v: string) => void; testId?: string }) {
   const { t } = useTranslation()
   const id = useId()

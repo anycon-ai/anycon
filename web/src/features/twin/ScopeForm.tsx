@@ -1,4 +1,4 @@
-// Bot 范围表单：本机 Bot 和一条 Bot 连接（B 上给那个节点的 Bot 开放的范围）共用，缺省什么都不开放。
+// Twin 范围表单：本机 Twin 和一条 Twin 连接（B 上给那个节点的 Twin 开放的范围）共用，缺省什么都不开放。
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { NodeConfigResult, TwinGetResult, TwinSetParams } from '@/protocol'

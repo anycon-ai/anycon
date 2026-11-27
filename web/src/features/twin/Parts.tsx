@@ -1,4 +1,4 @@
-// Bot 页、清单页和侧栏共用的状态与决定。模型给的理由按纯文字展示。
+// Twin 页、清单页和侧栏共用的状态与决定。模型给的理由按纯文字展示。
 import { useState } from 'react'
 import { Collapsible } from 'radix-ui'
 import { Link } from '@tanstack/react-router'
@@ -125,8 +125,8 @@ function RunLine({ nodeId, run, open }: { nodeId: string; run: TwinRun; open: bo
   )
 }
 /**
- * 勾选的、支持 Bot 的节点合起来的一句状态：处理中几项、等你几项、开着 / 关着 / 暂停；`offline` 是有这样的节点不在线。
- * 没有这样的节点时是 null。左栏底部的 Bot 入口和清单页、Bot 页顶上的状态条共用。
+ * 勾选的、支持 Twin 的节点合起来的一句状态：处理中几项、等你几项、开着 / 关着 / 暂停；`offline` 是有这样的节点不在线。
+ * 没有这样的节点时是 null。左栏底部的 Twin 入口和清单页、Twin 页顶上的状态条共用。
  */
 export function useTwinSummary(): { text: string; offline: boolean } | null {
   const { t } = useTranslation()
@@ -148,8 +148,8 @@ export function useTwinSummary(): { text: string; offline: boolean } | null {
   return { text: `${counts} · ${state}`, offline: ids.some((id) => nodes[id]?.conn !== 'ready') }
 }
 /**
- * 清单页和（多个节点时）Bot 页顶上的状态条：一行写状态、今天的用量和「一起暂停」，窄了才折行。
- * 都已经暂停时没有「一起暂停」（按了什么也不变）；恢复要先试跑，在 Bot 页的卡片上做。外框由调用方给。
+ * 清单页和（多个节点时）Twin 页顶上的状态条：一行写状态、今天的用量和「一起暂停」，窄了才折行。
+ * 都已经暂停时没有「一起暂停」（按了什么也不变）；恢复要先试跑，在 Twin 页的卡片上做。外框由调用方给。
  */
 export function TwinStatusBar({ className }: { className?: string }) {
   const { t } = useTranslation()

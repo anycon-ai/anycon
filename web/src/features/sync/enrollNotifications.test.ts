@@ -138,9 +138,9 @@ describe('securityText', () => {
     expect(securityText(t, ev({ kind: 'settings_changed', by_device: 'abcdef0123456789' }), ctx)).toContain('abcdef01')
   })
 
-  it('bot links: the device that was connected or revoked, and who did it', () => {
-    expect(securityText(t, ev({ kind: 'twin_linked', device_name: 'alpha’s bot', by_device: 'phone' }), ctx)).toBe('Another node’s bot, “alpha’s bot”, was connected to mac-mini by iPhone.')
-    expect(securityText(t, ev({ kind: 'twin_unlinked', device_name: 'alpha’s bot', by_device: 'local' }), ctx)).toBe('The bot connection “alpha’s bot” of mac-mini was revoked by the node’s own machine.')
+  it('twin links: the device that was connected or revoked, and who did it', () => {
+    expect(securityText(t, ev({ kind: 'twin_linked', device_name: 'alpha’s twin', by_device: 'phone' }), ctx)).toBe('Another node’s twin, “alpha’s twin”, was connected to mac-mini by iPhone.')
+    expect(securityText(t, ev({ kind: 'twin_unlinked', device_name: 'alpha’s twin', by_device: 'local' }), ctx)).toBe('The twin connection “alpha’s twin” of mac-mini was revoked by the node’s own machine.')
   })
 
   it('the Chinese texts exist for every kind too', () => {

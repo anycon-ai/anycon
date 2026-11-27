@@ -14,7 +14,7 @@ export const REPEAT_EVERY_CHOICES: readonly number[] = [0, 15, 30, 60, 120, 180,
 export const MIN_EVERY_MIN = 15
 export const MAX_EVERY_MIN = 720
 
-/** 表单里的样子：不重复 / 每天 / 工作日 / 每周的某天，加上时间；可选的「每隔 N 分钟、到 HH:MM」和「Bot 做完自动关闭」。 */
+/** 表单里的样子：不重复 / 每天 / 工作日 / 每周的某天，加上时间；可选的「每隔 N 分钟、到 HH:MM」和「Twin 做完自动关闭」。 */
 export interface RepeatForm {
   choice: RepeatChoice
   /** 1–7，周一 = 1。 */
@@ -26,7 +26,7 @@ export interface RepeatForm {
   autoClose: boolean
 }
 
-/** 带周期规则的项是模板：不分拣、不派发、不交给 Bot。 */
+/** 带周期规则的项是模板：不分拣、不派发、不交给 Twin。 */
 export const isTemplate = (t: Pick<Todo, 'repeat'>): boolean => !!t.repeat
 
 /** 这一项是周期项复制出来的：模板的 id。 */
@@ -38,7 +38,7 @@ type RepeatLike = Pick<TodoRepeat, 'kind' | 'at' | 'weekday'> & Partial<Pick<Tod
 
 /**
  * 草稿和输入里把规则存成一个字符串：空串 = 不重复，`daily@09:00`、`weekdays@09:00`、`weekly:3@09:00`（星期几是 1–7）；
- * 一天里重复多次的是 `<天>@<起>-<止>/<间隔分钟>`，如 `weekdays@09:00-18:00/120`；末尾的 `#close` 是「Bot 做完自动关闭」。
+ * 一天里重复多次的是 `<天>@<起>-<止>/<间隔分钟>`，如 `weekdays@09:00-18:00/120`；末尾的 `#close` 是「Twin 做完自动关闭」。
  * 这一端不认识的种类（更新的节点给的）读成空串：编辑时不动它，保存也就不会发出 `repeat`。
  */
 export function repeatToInput(r: RepeatLike | null | undefined): string {

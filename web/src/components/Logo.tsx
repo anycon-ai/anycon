@@ -13,12 +13,12 @@ export const MARK_D = `${BODY} ${HOLE}`
  * 图形内联自 `public/logo.svg`（设计稿原件，见 DESIGN.md「品牌与图标」），`Logo.test.tsx` 保证外形路径和它一致。
  * 渐变 id 用 `useId` 加前缀，页面上同时有几个 Logo 也不会互相引用错。
  */
-export function Logo({ className, withWord = true }: { className?: string; withWord?: boolean }) {
+export function Logo({ className, markClassName = 'size-7', withWord = true }: { className?: string; /** 图形的尺寸（和需要时的动效 class）。 */ markClassName?: string; withWord?: boolean }) {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, '')
   const ref = (name: string) => `url(#${id}-${name})`
   return (
     <span className={cn('inline-flex items-center gap-2 font-semibold tracking-tight', className)}>
-      <svg viewBox="0 0 256 256" className="size-7 shrink-0" aria-hidden>
+      <svg viewBox="0 0 256 256" className={cn('shrink-0', markClassName)} aria-hidden>
         <defs>
           <linearGradient id={`${id}-base`} x1="35" y1="225" x2="170" y2="53" gradientUnits="userSpaceOnUse">
             <stop stopColor="#294CEB" />

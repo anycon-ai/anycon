@@ -20,6 +20,7 @@ import type {
   WorktreeDisposal,
 } from '@/protocol'
 import * as db from '@/db'
+import { recordAnswered } from '@/features/inbox/today'
 import type { SettingsUpdate } from '@/features/settings/resolve'
 import { noteSessionOpened } from '@/features/storage/eventCache'
 import { isRecord } from '@/lib/guards'
@@ -449,6 +450,8 @@ export async function respondPermission(nodeId: string, params: PermissionRespon
     }
     throw e
   }
+  // 「待处理」清空时的今日小结用：只记个数，存在这个浏览器里。先记再去掉请求，列表清空那一刻的小结里已经算上这一次
+  recordAnswered(nodeId)
   useSessions.getState().resolvePending(nodeId, params.request_id)
   return 'answered'
 }

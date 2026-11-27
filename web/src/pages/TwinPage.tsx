@@ -119,7 +119,7 @@ function TwinCard({ node, runId }: { node: NodeEntry; runId?: string }) {
             {error}
           </p>
         ) : null}
-        <Collapsible.Content className="space-y-4 border-t border-border p-4 empty:hidden">
+        <Collapsible.Content className="space-y-6 border-t border-border p-4 empty:hidden sm:p-5">
           {/* 没配置好时只留状态头和「去设置」；有运行记录才显示历史 */}
           {configured ? (
             <>

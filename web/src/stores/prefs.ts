@@ -31,6 +31,10 @@ export interface PrefsState {
   /** 禁止页面缩放（只在 iOS / Android 上起作用，见 lib/zoom.ts）。默认关，保持系统行为。 */
   blockZoom: boolean
   thinkingDisplay: ThinkingDisplay
+  /** 看着的 turn 正常完成时响一声（WebAudio 合成，见 features/session/feedback.ts）。默认关。 */
+  turnSound: boolean
+  /** 看着的 turn 正常完成时短震一下（只在 Android 上提供）。默认关。 */
+  turnVibrate: boolean
   enterBehavior: EnterBehavior
   projectView: ProjectView
   /** 文件浏览（`/n/:node/files`）是否显示以 `.` 开头的文件和目录。 */
@@ -120,6 +124,8 @@ export const usePrefs = create<PrefsState>()(
       compact: false,
       blockZoom: false,
       thinkingDisplay: 'collapsed',
+      turnSound: false,
+      turnVibrate: false,
       enterBehavior: 'auto',
       projectView: 'cards',
       filesShowHidden: false,
@@ -171,6 +177,8 @@ export const usePrefs = create<PrefsState>()(
         compact: s.compact,
         blockZoom: s.blockZoom,
         thinkingDisplay: s.thinkingDisplay,
+        turnSound: s.turnSound,
+        turnVibrate: s.turnVibrate,
         enterBehavior: s.enterBehavior,
         projectView: s.projectView,
         filesShowHidden: s.filesShowHidden,

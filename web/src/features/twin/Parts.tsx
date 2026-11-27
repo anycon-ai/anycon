@@ -15,6 +15,8 @@ import { setTwin } from './service'
 import { groupRuns, useTwin, useTwinNodeIds } from './store'
 import { usePeerName } from './peer'
 import { usageText } from './usage'
+import { ResultDot, SectionTitle } from './viz'
+import { ChevronRight } from 'lucide-react'
 
 export function Decisions({ nodeId, run }: { nodeId: string; run: TwinRun }) {
   const { t } = useTranslation()
@@ -68,39 +70,55 @@ export function RunHistory({ nodeId, runs, runId }: { nodeId: string; runs: Twin
   const { t } = useTranslation()
   return (
     <section className="space-y-2">
-      <h3 className="font-semibold">{t('twin.runs')}</h3>
-      {groupRuns(runs).map((group) =>
-        group.length > 1 ? (
-          <Collapsible.Root key={group[0]!.id} defaultOpen={group.some((r) => r.id === runId)}>
-            <Collapsible.Trigger asChild>
-              <Button>{t('twin.idleRuns', { count: group.length })}</Button>
-            </Collapsible.Trigger>
-            <Collapsible.Content className="space-y-2 pl-3">
-              {group.map((r) => (
-                <RunLine key={r.id} nodeId={nodeId} run={r} open={r.id === runId} />
-              ))}
-            </Collapsible.Content>
-          </Collapsible.Root>
-        ) : (
-          <RunLine key={group[0]!.id} nodeId={nodeId} run={group[0]!} open={group[0]!.id === runId} />
-        ),
+      <SectionTitle>{t('twin.runs')}</SectionTitle>
+      {runs.length ? (
+        <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+          {groupRuns(runs).map((group) =>
+            group.length > 1 ? (
+              <Collapsible.Root key={group[0]!.id} defaultOpen={group.some((r) => r.id === runId)} className="group/idle">
+                <Collapsible.Trigger className="flex min-h-10 w-full items-center gap-2 px-3 text-left text-sm text-fg-muted hover:bg-bg-hover">
+                  <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/idle:rotate-90" aria-hidden />
+                  {t('twin.idleRuns', { count: group.length })}
+                </Collapsible.Trigger>
+                <Collapsible.Content className="divide-y divide-border border-t border-border bg-bg-subtle/60">
+                  {group.map((r) => (
+                    <RunLine key={r.id} nodeId={nodeId} run={r} open={r.id === runId} />
+                  ))}
+                </Collapsible.Content>
+              </Collapsible.Root>
+            ) : (
+              <RunLine key={group[0]!.id} nodeId={nodeId} run={group[0]!} open={group[0]!.id === runId} />
+            ),
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-fg-subtle">{t('twin.noRuns')}</p>
       )}
-      {!runs.length ? <p className="text-sm text-fg-subtle">{t('twin.noRuns')}</p> : null}
     </section>
   )
 }
 function RunLine({ nodeId, run, open }: { nodeId: string; run: TwinRun; open: boolean }) {
   const { t, i18n } = useTranslation()
   const usage = usageText(t, run.usage)
+  const meta = [t('twin.processed', { count: run.items.length }), t('twin.runJudges', { count: run.judge_calls.length }), ...(usage ? [usage] : [])]
   return (
-    <Collapsible.Root defaultOpen={open} id={`run-${run.id}`} className="rounded border border-border p-2" data-testid="twin-run">
-      <Collapsible.Trigger className="min-h-9 w-full text-left text-sm">
-        {formatDateTime(run.started_ms, i18n.language)} · {run.triggers.map((x) => t(`twin.trigger.${x}`)).join(', ')} · {t('twin.processed', { count: run.items.length })} ·{' '}
-        {t(`twin.result.${run.result}`)} · {t('twin.runJudges', { count: run.judge_calls.length })}
-        {usage ? ` · ${usage}` : ''}
-        {run.dry_run ? ` · ${t('twin.dryRun')}` : ''}
+    <Collapsible.Root defaultOpen={open} id={`run-${run.id}`} className="group/run" data-testid="twin-run">
+      <Collapsible.Trigger className="flex min-h-10 w-full flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2 text-left text-sm hover:bg-bg-hover">
+        {/* 左边是时间、触发和结果，右边是数量和用量；放不下时右边换到下一行，不叠在一起 */}
+        <span className="flex min-w-0 grow items-center gap-2">
+          <ResultDot run={run} />
+          <span className="shrink-0 tabular-nums">{formatDateTime(run.started_ms, i18n.language)}</span>
+          <span className="min-w-0 truncate text-fg-muted">
+            {run.triggers.map((x) => t(`twin.trigger.${x}`)).join(', ')} · {t(`twin.result.${run.result}`)}
+          </span>
+          {run.dry_run ? <span className="shrink-0 rounded-full bg-bg-muted px-2 py-0.5 text-xs text-fg-muted">{t('twin.dryRun')}</span> : null}
+        </span>
+        <span className="ml-auto flex items-center gap-2 text-xs tabular-nums text-fg-subtle">
+          {meta.join(' · ')}
+          <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/run:rotate-90" aria-hidden />
+        </span>
       </Collapsible.Trigger>
-      <Collapsible.Content>
+      <Collapsible.Content className="border-t border-border/60 bg-bg-subtle/60 px-3 py-3">
         <Decisions nodeId={nodeId} run={run} />
       </Collapsible.Content>
     </Collapsible.Root>

@@ -201,6 +201,13 @@
     "willRemind": "完成后提醒",
     "empty": "没有等你的事",
     "emptyBody": "需要审批的请求、计划、提问、接入请求、出错的会话，都会出现在这里。",
+    "today": {
+      "line": "今天：{{facts}}",
+      "sessions_one": "{{count}} 个会话有进展",
+      "sessions_other": "{{count}} 个会话有进展",
+      "answered_one": "在这个浏览器里答复了 {{count}} 个请求",
+      "answered_other": "在这个浏览器里答复了 {{count}} 个请求"
+    },
     "list": "等你处理的事",
     "kind": {
       "permission": "审批",
@@ -1137,6 +1144,14 @@
       "error": "因错误结束",
       "max_turns": "达到轮数上限",
       "budget": "达到预算上限"
+    },
+    "done": {
+      "took": "用时 {{duration}}",
+      "files_one": "改了 {{count}} 个文件",
+      "files_other": "改了 {{count}} 个文件",
+      "sec": "{{s}} 秒",
+      "min": "{{m}} 分 {{s}} 秒",
+      "hour": "{{h}} 小时 {{m}} 分"
     }
   },
   "system": {
@@ -2034,6 +2049,10 @@
     "collapsed": "折叠",
     "expanded": "展开",
     "hidden": "隐藏",
+    "turnSound": "turn 完成时的提示音",
+    "turnSoundHint": "你正看着的 turn 完成时轻响一声。打开时会试听一次。",
+    "turnVibrate": "turn 完成时震动",
+    "turnVibrateHint": "你正看着的 turn 完成时短震一下。",
     "enter": "Enter 键",
     "enterHint": "「自动」在桌面端发送，在触屏设备上换行。",
     "enterSend": "发送",
@@ -3036,8 +3055,6 @@
     "today": {
       "title": "今天",
       "wakes": "唤醒",
-      "wakesDetail": "动手 {{done}} · 无事 {{idle}} · 失败 {{failed}}",
-      "wakesOther": "{{count}} 次中途停下（预算用完或被取消）",
       "dispatches": "派发",
       "judgeCalls": "判断调用",
       "cost": "花费",
@@ -3047,7 +3064,17 @@
       "inProgress": "进行中",
       "nextWake": "下一次唤醒",
       "nextOnChange": "有变化时才会醒：交给它的项、它的会话、你的回答。",
-      "nextNone": "—"
+      "nextNone": "—",
+      "legendDone": "动手 {{count}}",
+      "legendFailed": "失败 {{count}}",
+      "legendIdle": "无事 {{count}}",
+      "legendStopped": "中途停下 {{count}}",
+      "stoppedHint": "预算用完或被取消而停下，不算失败。",
+      "left_one": "今天还剩 {{count}} 次",
+      "left_other": "今天还剩 {{count}} 次",
+      "limitReached": "今天的额度用完了",
+      "tokensIn": "输入 {{n}}",
+      "tokensOut": "输出 {{n}} token"
     },
     "health": {
       "failing_other": "Bot 最近 {{count}} 次唤醒都失败了。{{error}}",
@@ -3077,13 +3104,28 @@
       "takenOver": "你接手了",
       "accepted": "验收通过",
       "dropped": "放弃",
-      "turnaround": "从 Bot 最近一次派发到你验收的平均用时",
+      "turnaround": "平均验收用时",
       "cost": "花费",
       "none": "—",
-      "note": "数字来自节点保留的运行记录和待办经过。已删除的待办不再计入，所以较早的日子可能变小。交回：没做完就还给你的项。你接手了：你进入了 Bot 派发的会话。验收通过和放弃：Bot 派发过、被你关闭为完成或放弃的项。",
+      "note": "数字来自节点保留的运行记录和待办经过。已删除的待办不再计入，所以较早的日子可能变小。交回：没做完就还给你的项。你接手了：你进入了 Bot 派发的会话。验收通过和放弃：Bot 派发过、被你关闭为完成或放弃的项。平均验收用时：从 Bot 最近一次派发那一项到你验收。",
       "caption": "Bot 每天的活动，新的在前",
       "date": "日期",
-      "wakesCell": "动手 {{done}} / 无事 {{idle}} / 失败 {{failed}}"
+      "wakesCell": "动手 {{done}} / 无事 {{idle}} / 失败 {{failed}}",
+      "chartTitle": "每天的唤醒",
+      "chartLabel": "每天的唤醒。用左右方向键逐天查看。",
+      "legendDone": "动手",
+      "legendFailed": "失败",
+      "legendOther": "无事或中途停下",
+      "today": "今天",
+      "noWakes": "这段时间没有唤醒",
+      "tipWakes_one": "唤醒 {{count}} 次",
+      "tipWakes_other": "唤醒 {{count}} 次",
+      "tipDispatches_one": "派发 {{count}}",
+      "tipDispatches_other": "派发 {{count}}",
+      "tipAccepted": "验收通过 {{count}}",
+      "groupActivity": "Bot 做了什么",
+      "groupOutcome": "结果",
+      "showTable": "按天的明细"
     }
   }
 }

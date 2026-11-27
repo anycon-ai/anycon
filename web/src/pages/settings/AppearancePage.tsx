@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { canVibrate, playChime, vibrateOnce } from '@/features/session/feedback'
 import { zoomPlatform } from '@/lib/zoom'
 import { usePrefs, type EnterBehavior, type FontSize, type LanguagePref, type ThemePref, type ThinkingDisplay } from '@/stores/prefs'
 import { Card, Segmented, Switch } from '@/ui/Misc'
@@ -20,6 +21,8 @@ export function AppearancePage() {
   const p = usePrefs()
   // 只有手机系统有「页面缩放」这回事，桌面上不显示
   const zoom = zoomPlatform()
+  // 震动只有 Android 上真的有用（iOS Safari 没有这个 API，桌面没有马达），别的平台不给一个点了没反应的开关
+  const vibrate = canVibrate()
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t('settings.appearance')}</h1>
@@ -86,6 +89,31 @@ export function AppearancePage() {
             ]}
           />
         </Row>
+        <Row label={t('appearance.turnSound')} hint={t('appearance.turnSoundHint')}>
+          <Switch
+            label={t('appearance.turnSound')}
+            checked={p.turnSound}
+            onCheckedChange={(v) => {
+              p.set({ turnSound: v })
+              // 打开时试听一次：也借这次点按把浏览器的音频解锁
+              if (v) playChime()
+            }}
+            testId="turn-sound-switch"
+          />
+        </Row>
+        {vibrate ? (
+          <Row label={t('appearance.turnVibrate')} hint={t('appearance.turnVibrateHint')}>
+            <Switch
+              label={t('appearance.turnVibrate')}
+              checked={p.turnVibrate}
+              onCheckedChange={(v) => {
+                p.set({ turnVibrate: v })
+                if (v) vibrateOnce()
+              }}
+              testId="turn-vibrate-switch"
+            />
+          </Row>
+        ) : null}
         <Row label={t('appearance.enter')} hint={t('appearance.enterHint')}>
           <Segmented<EnterBehavior>
             ariaLabel={t('appearance.enter')}

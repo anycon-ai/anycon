@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next'
 import type { ToolResultDetail } from '@/protocol'
 import { Markdown } from '@/components/Markdown'
 import { copyText } from '@/lib/clipboard'
-import { compactNumber, formatCost, formatDuration } from '@/lib/format'
+import { compactNumber, formatCost } from '@/lib/format'
+import type { TFunction } from 'i18next'
 import type { PendingMessage } from '@/stores/drafts'
 import { usePrefs } from '@/stores/prefs'
 import { toast } from '@/stores/ui'
@@ -456,13 +457,47 @@ export function PlanCard({ block }: { block: PlanBlock }) {
 
 // ---- 用量 ----
 
-/** 每轮结束的一行：「复制这一轮的全部回复」+ 用量灰字。`copyText` 是这一轮 agent 的全部文字（Markdown）。 */
-export function TurnUsage({ block, copyText }: { block: TurnDoneBlock; copyText?: string }) {
+/** 收尾行里的用时：按界面语言写（「3 分 12 秒」/「3m 12s」）。 */
+function turnDuration(ms: number, t: TFunction): string {
+  const s = Math.max(1, Math.round(ms / 1000))
+  if (s < 60) return t('turn.done.sec', { s })
+  const m = Math.floor(s / 60)
+  if (m < 60) return t('turn.done.min', { m, s: s % 60 })
+  return t('turn.done.hour', { h: Math.floor(m / 60), m: m % 60 })
+}
+
+/** 这个 turn 能如实说出来的事实：用时（agent 报的 `usage.duration_ms`）、改了几个文件（`filesChanged`，推不出来就没有）。为 0 的不说。 */
+export function turnFacts(block: TurnDoneBlock, t: TFunction): string[] {
+  const out: string[] = []
+  const ms = block.usage?.duration_ms ?? 0
+  if (ms > 0) out.push(t('turn.done.took', { duration: turnDuration(ms, t) }))
+  if (block.filesChanged !== undefined && block.filesChanged > 0) out.push(t('turn.done.files', { count: block.filesChanged }))
+  return out
+}
+
+/**
+ * 一次描边的对勾（`.moment-check`，index.css）：`animate` 时画一遍，否则直接是画好的样子。
+ * 路径用 `pathLength = 1`，描边动画只动 `stroke-dashoffset`，和图标大小无关。
+ */
+function FinishCheck({ animate }: { animate: boolean }) {
+  return (
+    <svg viewBox="0 0 16 16" className={cn('size-3.5 shrink-0 text-success', animate && 'moment-check')} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden data-testid="turn-check" data-animate={animate ? 'true' : undefined}>
+      <path d="M3.5 8.5 6.5 11.5 12.5 4.5" pathLength={1} />
+    </svg>
+  )
+}
+
+/**
+ * `turn_done` 那一行：「复制」、收尾的事实（用时 · 改了几个文件），再是模型、token、费用。
+ * `finish`：这个 turn 是用户看着结束的（`useLiveTurnEnd`）。只有正常完成（`completed`）的才画对勾，`animate` 时描一遍；
+ * 旧 turn 和没看着结束的不画对勾，事实照常写（它们来自事件本身，打开历史时也一样可靠）。
+ */
+export function TurnUsage({ block, copyText, finish }: { block: TurnDoneBlock; copyText?: string; finish?: 'animate' | 'still' }) {
   const { t } = useTranslation()
   const u = block.usage
+  const facts = turnFacts(block, t)
   const parts: string[] = []
   if (u?.model) parts.push(u.model)
-  if (u && u.duration_ms > 0) parts.push(formatDuration(u.duration_ms))
   if (u && (u.input_tokens != null || u.output_tokens != null)) {
     const tokens: string[] = []
     if (u.input_tokens != null) tokens.push(t('usage.input', { n: compactNumber(u.input_tokens) }))
@@ -470,14 +505,23 @@ export function TurnUsage({ block, copyText }: { block: TurnDoneBlock; copyText?
     parts.push(tokens.join(' / '))
   }
   if (u?.cost_usd != null) parts.push(formatCost(u.cost_usd))
-  const reason = block.reason !== 'completed' ? t(`turn.reason.${block.reason}`) : null
-  if (parts.length === 0 && !reason && !copyText) return null
+  const completed = block.reason === 'completed'
+  const reason = completed ? null : t(`turn.reason.${block.reason}`)
+  const check = completed && finish !== undefined
+  if (parts.length === 0 && facts.length === 0 && !reason && !copyText && !check) return null
   return (
-    <div className="flex min-w-0 items-center gap-2 text-xs text-fg-subtle">
+    <div className="flex min-w-0 items-center gap-2 text-xs text-fg-subtle" data-testid="turn-done">
       {copyText ? <CopyButton text={copyText} label={t('message.copyTurn')} iconOnly className="-ml-1.5 p-1.5" testId="turn-copy" /> : null}
-      {parts.length > 0 || reason ? (
+      {check ? <FinishCheck animate={finish === 'animate'} /> : null}
+      {parts.length > 0 || facts.length > 0 || reason ? (
         <p className="min-w-0 truncate" data-testid="turn-usage">
           {reason ? <span className="mr-2 font-medium text-warning">{reason}</span> : null}
+          {facts.length > 0 ? (
+            <span className="text-fg-muted" data-testid="turn-facts">
+              {facts.join(' · ')}
+            </span>
+          ) : null}
+          {facts.length > 0 && parts.length > 0 ? ' · ' : null}
           {parts.join(' · ')}
         </p>
       ) : null}

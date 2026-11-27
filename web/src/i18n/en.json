@@ -202,6 +202,13 @@
     "willRemind": "Notify when done",
     "empty": "Nothing is waiting for you",
     "emptyBody": "Approvals, plans, questions, device requests, and sessions that failed show up here.",
+    "today": {
+      "line": "Today: {{facts}}",
+      "sessions_one": "{{count}} session moved forward",
+      "sessions_other": "{{count}} sessions moved forward",
+      "answered_one": "{{count}} request answered in this browser",
+      "answered_other": "{{count}} requests answered in this browser"
+    },
     "list": "Things waiting for you",
     "kind": {
       "permission": "Approval",
@@ -1146,6 +1153,14 @@
       "error": "Ended with an error",
       "max_turns": "Turn limit reached",
       "budget": "Budget reached"
+    },
+    "done": {
+      "took": "Took {{duration}}",
+      "files_one": "{{count}} file changed",
+      "files_other": "{{count}} files changed",
+      "sec": "{{s}}s",
+      "min": "{{m}}m {{s}}s",
+      "hour": "{{h}}h {{m}}m"
     }
   },
   "system": {
@@ -2058,6 +2073,10 @@
     "collapsed": "Collapsed",
     "expanded": "Expanded",
     "hidden": "Hidden",
+    "turnSound": "Sound when a turn finishes",
+    "turnSoundHint": "A short chime when a turn you are watching finishes. Turning it on plays it once.",
+    "turnVibrate": "Vibrate when a turn finishes",
+    "turnVibrateHint": "A short vibration when a turn you are watching finishes.",
     "enter": "Enter key",
     "enterHint": "Automatic sends on desktop and inserts a new line on touch devices.",
     "enterSend": "Sends",
@@ -3078,8 +3097,6 @@
     "today": {
       "title": "Today",
       "wakes": "Wakes",
-      "wakesDetail": "acted {{done}} · idle {{idle}} · failed {{failed}}",
-      "wakesOther": "{{count}} stopped early (budget or cancelled)",
       "dispatches": "Dispatches",
       "judgeCalls": "Judgment calls",
       "cost": "Cost",
@@ -3089,7 +3106,17 @@
       "inProgress": "in progress",
       "nextWake": "Next wake",
       "nextOnChange": "When something changes: items handed to it, its sessions, your answers.",
-      "nextNone": "—"
+      "nextNone": "—",
+      "legendDone": "acted {{count}}",
+      "legendFailed": "failed {{count}}",
+      "legendIdle": "idle {{count}}",
+      "legendStopped": "stopped early {{count}}",
+      "stoppedHint": "Stopped because the budget ran out or the run was cancelled. Not counted as failed.",
+      "left_one": "{{count}} left today",
+      "left_other": "{{count}} left today",
+      "limitReached": "Today’s limit is used up",
+      "tokensIn": "{{n}} in",
+      "tokensOut": "{{n}} tokens out"
     },
     "health": {
       "failing_other": "Bot’s last {{count}} wakes all failed. {{error}}",
@@ -3119,13 +3146,28 @@
       "takenOver": "You took over",
       "accepted": "Accepted",
       "dropped": "Dropped",
-      "turnaround": "Average time from Bot’s latest dispatch to your acceptance",
+      "turnaround": "Avg. time to accept",
       "cost": "Cost",
       "none": "—",
-      "note": "Counts come from run records and item history kept on the node. Deleted items drop out, so older days can shrink. Handed back: items returned to you unfinished. You took over: you stepped into a session Bot dispatched. Accepted and dropped: items Bot had dispatched that you closed as done or dropped.",
+      "note": "Counts come from run records and item history kept on the node. Deleted items drop out, so older days can shrink. Handed back: items returned to you unfinished. You took over: you stepped into a session Bot dispatched. Accepted and dropped: items Bot had dispatched that you closed as done or dropped. Avg. time to accept: from Bot’s latest dispatch of an item to your acceptance.",
       "caption": "Bot activity per day, newest first",
       "date": "Date",
-      "wakesCell": "{{done}} acted / {{idle}} idle / {{failed}} failed"
+      "wakesCell": "{{done}} acted / {{idle}} idle / {{failed}} failed",
+      "chartTitle": "Wakes per day",
+      "chartLabel": "Wakes per day. Use the left and right arrow keys to read each day.",
+      "legendDone": "Acted",
+      "legendFailed": "Failed",
+      "legendOther": "Idle or stopped early",
+      "today": "Today",
+      "noWakes": "No wakes in this range",
+      "tipWakes_one": "{{count}} wake",
+      "tipWakes_other": "{{count}} wakes",
+      "tipDispatches_one": "{{count}} dispatch",
+      "tipDispatches_other": "{{count}} dispatches",
+      "tipAccepted": "{{count}} accepted",
+      "groupActivity": "What Bot did",
+      "groupOutcome": "How it ended",
+      "showTable": "Day by day"
     }
   }
 }

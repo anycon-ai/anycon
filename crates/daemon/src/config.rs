@@ -515,16 +515,23 @@ fn env_provider() -> Env {
     Env::prefixed("ANYCON_").ignore(&["HOME", "LOG", "MOCK_AGENT", "UPDATE_CHECK"]).split("__")
 }
 
-/// 当前进程环境里有没有 `ANYCON_<段>__<键>` 覆盖 `key`（点分隔的两段键，如 `sessions.max_concurrent`）。
-/// 覆盖了的键，配置文件里写什么都不生效（环境变量盖过文件），所以远程改它没有意义（`node.set_config` 拒绝，ADR-43）。
+/// 当前进程环境里有没有 `ANYCON_<段>__<键>` 覆盖 `key`（点分隔、至少两段，如 `sessions.max_concurrent`、
+/// `agents.codex.start_timeout`）。覆盖了的键，配置文件里写什么都不生效（环境变量盖过文件），所以远程改它没有意义
+/// （`node.set_config` 拒绝，ADR-43）。
 pub fn env_overrides(key: &str) -> bool {
     use figment::value::Value;
     use figment::Provider;
-    let Some((section, name)) = key.split_once('.') else { return false };
+    let Some((section, rest)) = key.split_once('.') else { return false };
     let Ok(data) = env_provider().data() else { return false };
-    data.values().any(|dict| match dict.get(section) {
-        Some(Value::Dict(_, inner)) => inner.contains_key(name),
-        _ => false,
+    data.values().any(|dict| {
+        let mut cur = dict.get(section);
+        for name in rest.split('.') {
+            cur = match cur {
+                Some(Value::Dict(_, inner)) => inner.get(name),
+                _ => None,
+            };
+        }
+        cur.is_some()
     })
 }
 
@@ -633,6 +640,16 @@ impl Config {
                 ));
             }
         }
+        for (k, c) in &self.agents.agent {
+            if let Some(t) = &c.start_timeout {
+                validate_start_timeout(t).map_err(|e| bad(&format!("agents.{k}.start_timeout"), e))?;
+            }
+        }
+        for (k, c) in &self.agents.acp {
+            if let Some(t) = &c.start_timeout {
+                validate_start_timeout(t).map_err(|e| bad(&format!("agents.acp.{k}.start_timeout"), e))?;
+            }
+        }
         // ACP agent 只在 `[agents.acp.<名字>]` 下配置：写成 `[agents.<名字>]` 不会生效，直接报错比悄悄忽略好
         for k in self.agents.agent.keys() {
             if self.agents.acp.contains_key(k) {
@@ -707,6 +724,15 @@ impl Config {
     /// 取某个 adapter 的配置。没有 `[agents.<id>]` 段 = 未配置（ACP agent 看 `[agents.acp.<id>]`，注册表里的总有一项）。
     pub fn adapter_config(&self, id: &str) -> Option<&AdapterConfig> {
         self.agents.agent.get(id).or_else(|| self.agents.acp.get(id))
+    }
+
+    /// 这个 agent 的启动超时（`agents.<id>.start_timeout`）；没配、没有这个 agent 的段都是缺省值。
+    /// 值在加载时校验过（[`validate_start_timeout`]），这里解析失败也退回缺省值。
+    pub fn agent_start_timeout(&self, id: &str) -> Duration {
+        self.adapter_config(id)
+            .and_then(|c| c.start_timeout.as_deref())
+            .and_then(|s| parse_duration(s).ok())
+            .unwrap_or(START_TIMEOUT_DEFAULT)
     }
 
     /// 全部 ACP agent 的名字：注册表里的加上用户在 `[agents.acp.<name>]` 里加的。
@@ -993,7 +1019,7 @@ pub fn set_toml_values(paths: &Paths, edits: Vec<(String, toml_edit::Value)>) ->
 /// 默认的 `config.toml` 文本（`anycon init` 用）。
 pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, workspace_root: &str) -> String {
     let mut s = String::new();
-    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* rules.* update.check log.level agents.<id>.default_* agents.<id>.enabled\n\n");
+    s.push_str("# anycon daemon 配置。热加载的键：workspace.link_roots hub.group sessions.* permissions.* notify.* worktree.* enroll.* preview.* rules.* update.check log.level agents.<id>.default_* agents.<id>.enabled agents.<id>.start_timeout\n\n");
     s.push_str("[hub]\n");
     match hub_url {
         Some(u) => s.push_str(&format!("url = {}\n", toml_str(u))),
@@ -1024,6 +1050,8 @@ pub fn default_config_toml(hub_url: Option<&str>, node_name: Option<&str>, works
     s.push_str("# session_env_allow = [\"MY_FLAG\", \"FEATURE_*\"]\n");
     s.push_str("\n[agents]\nenv_from_login_shell = true\nprobe_interval = \"30m\"\n");
     s.push_str("\n[agents.claude-code]\nenabled = true\n");
+    s.push_str("# 发出消息后这么久没收到 agent 的任何输出就判启动超时（10s–1h，缺省 2m）。上下文很长时首个输出会变慢，可以调大\n");
+    s.push_str("# start_timeout = \"2m\"\n");
     s.push_str("\n# ACP agent（OpenCode、Gemini CLI、Goose、Kimi Code、Qwen Code、Cursor、GitHub Copilot、Pi）装了就会自动出现；\n");
     s.push_str("# 自己加一个或改命令（热加载；自己加的必须写 command）：\n# [agents.acp.my-agent]\n# command = \"my-agent --acp\"\n");
     s.push_str("\n[worktree]\n");
@@ -1074,6 +1102,25 @@ fn toml_str(s: &str) -> String {
     out
 }
 
+/// agent 的启动超时（`agents.<id>.start_timeout`，docs/spec/daemon.md § 7.1）：turn 开始后这么久没收到 agent 的第一个事件
+/// → `agent_start_timeout`。缺省值和可设范围；远程修改（`node.set_config`）用同一个范围。
+pub const START_TIMEOUT_DEFAULT: Duration = Duration::from_secs(120);
+pub const START_TIMEOUT_MIN: Duration = Duration::from_secs(10);
+pub const START_TIMEOUT_MAX: Duration = Duration::from_secs(3600);
+
+/// `agents.<id>.start_timeout` 的取值：时长，在 [`START_TIMEOUT_MIN`]..=[`START_TIMEOUT_MAX`] 之内。
+pub fn validate_start_timeout(s: &str) -> Result<(), String> {
+    let d = parse_duration(s)?;
+    if !(START_TIMEOUT_MIN..=START_TIMEOUT_MAX).contains(&d) {
+        return Err(format!(
+            "must be between {}s and {}m",
+            START_TIMEOUT_MIN.as_secs(),
+            START_TIMEOUT_MAX.as_secs() / 60
+        ));
+    }
+    Ok(())
+}
+
 /// 某个配置键是否支持热加载（`config set` 提示用）。
 pub fn is_hot_key(key: &str) -> bool {
     if key == "workspace.link_roots"
@@ -1099,7 +1146,7 @@ pub fn is_hot_key(key: &str) -> bool {
     }
     if let Some(rest) = key.strip_prefix("agents.") {
         let tail = rest.rsplit('.').next().unwrap_or("");
-        return tail == "enabled" || tail.starts_with("default_");
+        return tail == "enabled" || tail == "start_timeout" || tail.starts_with("default_");
     }
     false
 }
@@ -1553,6 +1600,39 @@ dangerous_modes = ["yolo"]
         let r = a(&["XDG_*"]);
         assert!(r.len() == 1 && r[0].1.contains("has no effect"), "{r:?}");
         assert!(a(&[]).is_empty() && a(&["*"]).is_empty());
+    }
+
+    #[test]
+    fn the_start_timeout_is_per_agent_defaults_to_two_minutes_and_is_range_checked() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path());
+        // 没配：内置 agent、ACP agent、不认识的 agent 都是缺省的 2 分钟
+        let cfg = Config::load(&paths).unwrap();
+        assert_eq!(cfg.agent_start_timeout("claude-code"), Duration::from_secs(120));
+        assert_eq!(cfg.agent_start_timeout("ghost"), Duration::from_secs(120));
+        // 按 agent 分别设置，ACP agent 在 agents.acp.<名字> 下
+        write(
+            d.path(),
+            "[agents.claude-code]\nstart_timeout = \"5m\"\n\n[agents.acp.my-agent]\ncommand = \"my-agent --acp\"\nstart_timeout = \"45s\"\n",
+        );
+        let cfg = Config::load(&paths).unwrap();
+        assert_eq!(cfg.agent_start_timeout("claude-code"), Duration::from_secs(300));
+        assert_eq!(cfg.agent_start_timeout("codex"), Duration::from_secs(120), "other agents keep the default");
+        assert_eq!(cfg.agent_start_timeout("my-agent"), Duration::from_secs(45));
+        // 范围 10s–1h，写不出来的时长同样拒绝；不合法的值不写盘
+        for bad in ["\"9s\"", "\"61m\"", "\"0\"", "\"soon\""] {
+            assert!(set_value(&paths, "agents.codex.start_timeout", bad).is_err(), "{bad}");
+        }
+        for ok in ["\"10s\"", "\"1h\""] {
+            set_value(&paths, "agents.codex.start_timeout", ok).unwrap();
+        }
+        assert_eq!(Config::load(&paths).unwrap().agent_start_timeout("codex"), Duration::from_secs(3600));
+        write(d.path(), "[agents.acp.my-agent]\ncommand = \"x\"\nstart_timeout = \"2h\"\n");
+        assert!(Config::load(&paths).is_err(), "an out-of-range value in the file is a config error");
+        // 热加载
+        assert!(is_hot_key("agents.claude-code.start_timeout") && is_hot_key("agents.acp.my-agent.start_timeout"));
+        // `anycon init` 写出的配置里有注释掉的示例
+        assert!(default_config_toml(None, None, "/tmp/ws").contains("# start_timeout = \"2m\""));
     }
 
     #[test]

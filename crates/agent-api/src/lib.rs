@@ -40,6 +40,10 @@ pub struct AdapterConfig {
     /// ACP 等不提供风险等级的 agent，由用户标记哪些模式是 dangerous。
     #[serde(default)]
     pub dangerous_modes: Vec<String>,
+    /// 启动超时（时长字符串，如 `2m`）：turn 开始后这么久没收到 agent 的第一个事件就判 `agent_start_timeout`。
+    /// 空 = 缺省值；只有 daemon 用，adapter 不看（docs/spec/daemon.md § 7.1）。
+    #[serde(default)]
+    pub start_timeout: Option<String>,
 }
 
 fn default_true() -> bool {

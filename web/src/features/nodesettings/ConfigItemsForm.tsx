@@ -12,11 +12,18 @@ import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Input, Select } from '@/ui/Field'
 import { Card, SectionTitle, Skeleton, Switch } from '@/ui/Misc'
-import { envNames, formatLimitDuration, initialDrafts, isChanged, localProblem, sectionOf, toWire, type Draft, type LimitProblem } from './limits'
+import { agentKeyOf, envNames, formatLimitDuration, initialDrafts, isChanged, localProblem, sectionOf, toWire, type Draft, type LimitProblem } from './limits'
 
 /** Twin 标签管的键：判断后端（`judge.*`）和 Twin 开关（`twin.*`）。 */
 export const isTwinKey = (key: string): boolean => key.startsWith('judge.') || key.startsWith('twin.')
-export const isNotTwinKey = (key: string): boolean => !isTwinKey(key)
+/** Agent 标签各卡片管的键：按 agent 的设置（`agents.<id>.*`，ADR-64）。 */
+export const isAgentKey = (key: string): boolean => key.startsWith('agents.')
+/** 「限制」标签管的键：agent 的除外；节点支持 Twin 时用后一个，再除去 Twin 标签的。 */
+export const isLimitsKey = (key: string): boolean => !isAgentKey(key)
+export const isLimitsKeyBesideTwin = (key: string): boolean => !isAgentKey(key) && !isTwinKey(key)
+
+/** 嵌在别的卡片里时（Agent 卡片）的标题和说明：只在有项的时候显示。 */
+export type EmbeddedHeading = { title: string; hint: string }
 
 type Load = { status: 'loading' } | { status: 'ready'; items: ConfigItem[] } | { status: 'error'; error: unknown }
 
@@ -29,8 +36,10 @@ const STALE_REASONS = new Set(['env_override', 'tighten_only', 'not_editable'])
  * 所以出错时一项都没改，错误按项显示在对应的输入框下面。安全相关的开关（`tighten_only`）关着时禁用，只能在机器上用
  * `anycon config set` 打开；被环境变量覆盖的项只读并说明原因。
  * `prefix` 是外层容器（`<prefix>-tab`）、保存 / 放弃按钮和离线、出错提示的 testid 前缀；每一行的 testid 不随标签变。`include` 要是稳定引用（模块级函数或 useCallback）。
+ * `embedded`：嵌在别的卡片里（Agent 卡片的按 agent 设置）——不分段、不套卡片，不显示离线和加载占位；节点没列出任何匹配的项
+ * （旧 daemon）就什么都不渲染，标题也不出现。
  */
-export function ConfigItemsForm({ nodeId, include, prefix }: { nodeId: string; include: (key: string) => boolean; prefix: string }) {
+export function ConfigItemsForm({ nodeId, include, prefix, embedded }: { nodeId: string; include: (key: string) => boolean; prefix: string; embedded?: EmbeddedHeading }) {
   const { t } = useTranslation()
   const entry = useNodes((s) => s.byId[nodeId])
   const offline = entry?.conn !== 'ready'
@@ -127,6 +136,41 @@ export function ConfigItemsForm({ nodeId, include, prefix }: { nodeId: string; i
     return order.map((s) => ({ name: s, items: bySection[s]! }))
   }, [items])
 
+  const rows = (list: ConfigItem[], flush: boolean): React.ReactNode =>
+    list.map((item) => <LimitRow key={item.key} item={item} draft={drafts[item.key] ?? ''} disabled={offline || saving} problem={problems[item.key] ?? null} serverError={errors[item.key]} onChange={(v) => edit(item.key, v)} flush={flush} />)
+
+  const actions = (size: 'sm' | undefined): React.ReactNode => (
+    <div className="space-y-2">
+      {Object.keys(errors).length > 0 ? (
+        <p className="text-sm text-danger" role="alert" data-testid={`${prefix}-not-saved`}>
+          {t('nodeSettings.limits.notSaved')}
+        </p>
+      ) : null}
+      <div className="flex gap-2">
+        <Button variant="primary" size={size} onClick={() => void save()} disabled={!canSave} loading={saving} data-testid={`${prefix}-save`}>
+          {t('common.save')}
+        </Button>
+        <Button variant="outline" size={size} onClick={reset} disabled={saving || dirty.length === 0} data-testid={`${prefix}-reset`}>
+          {t('nodeSettings.limits.discard')}
+        </Button>
+      </div>
+    </div>
+  )
+
+  if (embedded) {
+    if (items.length === 0) return null
+    return (
+      <div className="space-y-3" data-testid={`${prefix}-tab`}>
+        <div>
+          <h4 className="text-sm font-medium">{embedded.title}</h4>
+          <p className="text-xs text-fg-subtle">{embedded.hint}</p>
+        </div>
+        <div className="divide-y divide-border">{rows(items, true)}</div>
+        {actions('sm')}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6" data-testid={`${prefix}-tab`}>
       {offline ? (
@@ -144,48 +188,23 @@ export function ConfigItemsForm({ nodeId, include, prefix }: { nodeId: string; i
       {sections.map((sec) => (
         <section key={sec.name} data-testid={`limits-section-${sec.name}`}>
           <SectionTitle>{t(`nodeSettings.limits.sections.${sec.name}`, { defaultValue: sec.name })}</SectionTitle>
-          <Card className="divide-y divide-border">
-            {sec.items.map((item) => (
-              <LimitRow
-                key={item.key}
-                item={item}
-                draft={drafts[item.key] ?? ''}
-                disabled={offline || saving}
-                problem={problems[item.key] ?? null}
-                serverError={errors[item.key]}
-                onChange={(v) => edit(item.key, v)}
-              />
-            ))}
-          </Card>
+          <Card className="divide-y divide-border">{rows(sec.items, false)}</Card>
         </section>
       ))}
 
-      {sections.length > 0 ? (
-        <div className="space-y-2">
-          {Object.keys(errors).length > 0 ? (
-            <p className="text-sm text-danger" role="alert" data-testid={`${prefix}-not-saved`}>
-              {t('nodeSettings.limits.notSaved')}
-            </p>
-          ) : null}
-          <div className="flex gap-2">
-            <Button variant="primary" onClick={() => void save()} disabled={!canSave} loading={saving} data-testid={`${prefix}-save`}>
-              {t('common.save')}
-            </Button>
-            <Button variant="outline" onClick={reset} disabled={saving || dirty.length === 0} data-testid={`${prefix}-reset`}>
-              {t('nodeSettings.limits.discard')}
-            </Button>
-          </div>
-        </div>
-      ) : null}
+      {sections.length > 0 ? actions(undefined) : null}
     </div>
   )
 }
 
-function LimitRow({ item, draft, disabled, problem, serverError, onChange }: { item: ConfigItem; draft: Draft; disabled: boolean; problem: LimitProblem | null; serverError: string | undefined; onChange: (v: Draft) => void }) {
+function LimitRow({ item, draft, disabled, problem, serverError, onChange, flush }: { item: ConfigItem; draft: Draft; disabled: boolean; problem: LimitProblem | null; serverError: string | undefined; onChange: (v: Draft) => void; flush: boolean }) {
   const { t } = useTranslation()
   const id = `limit-${item.key}`
-  const label = t(`nodeSettings.limits.keys.${item.key}.label`, { defaultValue: item.key })
-  const hint = t(`nodeSettings.limits.keys.${item.key}.hint`, { defaultValue: '' })
+  // 按 agent 的键每个 agent 一个，文案按最后一段取（`agentKeys.start_timeout`），不按完整的键
+  const agentKey = agentKeyOf(item.key)
+  const textKey = agentKey ? `nodeSettings.limits.agentKeys.${agentKey.tail}` : `nodeSettings.limits.keys.${item.key}`
+  const label = t(`${textKey}.label`, { defaultValue: agentKey?.tail ?? item.key })
+  const hint = t(`${textKey}.hint`, { defaultValue: '' })
   const readOnly = item.editable === 'no'
   // 只能收紧的开关：节点上已经关着就禁用（想打开要在机器上运行 `anycon config set`）
   const tightenLocked = item.editable === 'tighten_only' && item.value === false
@@ -221,7 +240,7 @@ function LimitRow({ item, draft, disabled, problem, serverError, onChange }: { i
   }
 
   return (
-    <div className="space-y-1.5 px-4 py-3" data-testid="limit-row" data-key={item.key}>
+    <div className={flush ? 'space-y-1.5 py-3 first:pt-0' : 'space-y-1.5 px-4 py-3'} data-testid="limit-row" data-key={item.key}>
       <div className="flex items-center justify-between gap-4">
         <label htmlFor={id} className="min-w-0 text-sm font-medium">
           {label}

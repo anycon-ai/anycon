@@ -1901,6 +1901,37 @@ async fn archive_is_refused_while_a_turn_runs_or_waits_for_an_answer_and_delete_
     td.shutdown().await;
 }
 
+/// 启动超时按 agent 配置（`agents.<id>.start_timeout`），改了对正在启动的 turn 立即生效；错误消息写的是实际的时长。
+/// 范围下限是 10 秒，所以这个测试要等十来秒。
+#[tokio::test]
+async fn the_start_timeout_follows_the_agent_config_even_for_a_turn_already_starting() {
+    let td = TestDaemon::start_with(&[("agents.fake.start_timeout", "\"1h\"")], false).await;
+    *td.fake.spawn_delay.lock().unwrap() = Duration::from_secs(14);
+    let mut a = td.client("a");
+    let s = create(&td, &mut a, Some("hello")).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(get(&td, &mut a, &s.id).await.status, SessionStatus::Starting);
+    anycon_daemon::config::set_value(&td.paths, "agents.fake.start_timeout", "\"10s\"").unwrap();
+    td.ctx.config.reload().unwrap();
+    let started = std::time::Instant::now();
+    let mut errored = false;
+    while started.elapsed() < Duration::from_secs(13) {
+        if get(&td, &mut a, &s.id).await.status == SessionStatus::Error {
+            errored = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(errored, "times out about 10 seconds after the turn started, not after an hour");
+    let evs = history(&td, &mut a, &s.id).await;
+    let msg = evs.iter().find_map(|e| match &e.event {
+        Event::Error { code, message, .. } if code == "agent_start_timeout" => Some(message.clone()),
+        _ => None,
+    });
+    assert_eq!(msg.as_deref(), Some("agent did not respond within 10 seconds"));
+    td.shutdown().await;
+}
+
 #[tokio::test]
 async fn the_start_timeout_also_covers_a_spawn_that_hangs() {
     let td = TestDaemon::start().await;

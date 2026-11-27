@@ -24,6 +24,8 @@ function fresh(): ConfigItem[] {
     { key: 'worktree.auto_archive_on_pr_close', value: false, kind: 'bool', editable: 'any', env_override: false },
     { key: 'preview.enabled', value: false, kind: 'bool', editable: 'tighten_only', env_override: false },
     { key: 'log.level', value: 'info', kind: 'enum', editable: 'any', env_override: false, options: ['error', 'warn', 'info', 'debug', 'trace'] },
+    // 按 agent 的键在 Agent 标签的卡片里，这里不显示（ADR-64）
+    { key: 'agents.claude-code.start_timeout', value: '2m', kind: 'duration', editable: 'any', env_override: false, min: 10_000, max: 3_600_000 },
   ]
 }
 
@@ -76,6 +78,8 @@ describe('node settings: the Limits tab', () => {
     expect(ctl('worktree.branch_prefix')).toHaveValue('anycon')
     expect(ctl('log.level')).toHaveValue('info')
     expect(screen.getByLabelText('Concurrent sessions')).toBe(ctl('sessions.max_concurrent'))
+    expect(screen.queryByTestId('limit-agents.claude-code.start_timeout')).toBeNull()
+    expect(screen.queryByTestId('limits-section-agents')).toBeNull()
   })
 
   it('changing the group (or the name) refreshes node.info afterwards, so the space switcher follows without a reconnect', async () => {

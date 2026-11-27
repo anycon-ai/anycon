@@ -24,6 +24,8 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
     std::env::set_var("ANYCON_TWIN__ENABLED", "false");
     std::env::set_var("ANYCON_JUDGE__DAILY_CALLS", "7");
     std::env::set_var("ANYCON_RULES__EXTRACT_AUTO", "true");
+    // 按 agent 的键是三段：`ANYCON_AGENTS__<id>__<键>`
+    std::env::set_var("ANYCON_AGENTS__FAKE__START_TIMEOUT", "3m");
     // `ANYCON_LOG` 接管日志过滤：`log.level` 改了也不生效
     std::env::set_var("ANYCON_LOG", "debug");
 
@@ -40,6 +42,7 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
         "twin.enabled",
         "judge.daily_calls",
         "rules.extract_auto",
+        "agents.fake.start_timeout",
     ] {
         let i = item(&r, key);
         assert!(i.env_override, "{key}");
@@ -47,6 +50,7 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
     }
     // 环境变量盖过文件：给出的是生效值
     assert_eq!(item(&r, "sessions.max_concurrent").value, json!(2));
+    assert_eq!(item(&r, "agents.fake.start_timeout").value, json!("3m"));
     // 没被覆盖的键照常
     for key in
         ["sessions.idle_timeout", "permissions.allow_dangerous_modes", "notify.turn_finished", "worktree.branch_prefix"]
@@ -67,6 +71,7 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
         ("twin.enabled", json!(false)),
         ("judge.daily_calls", json!(2)),
         ("rules.extract_auto", json!(false)),
+        ("agents.fake.start_timeout", json!("5m")),
     ] {
         let e = c
             .call::<Value>(
@@ -103,6 +108,7 @@ async fn keys_set_by_the_environment_are_read_only_remotely() {
         "ANYCON_JUDGE__TRIAGE",
         "ANYCON_JUDGE__DAILY_CALLS",
         "ANYCON_RULES__EXTRACT_AUTO",
+        "ANYCON_AGENTS__FAKE__START_TIMEOUT",
     ] {
         std::env::remove_var(key);
     }

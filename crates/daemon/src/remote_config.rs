@@ -1,9 +1,9 @@
 //! 远程查看 / 修改节点配置：`node.get_config` / `node.set_config`（[ADR-43](../../../docs/decisions.md)，docs/spec/daemon.md § 3）。
 //!
-//! `config.toml` 是机器主人的最后一道边界，而配对过的客户端可能被盗用，所以远程能碰的只有一张白名单（[`SPECS`]）：
-//! 只收热加载、不扩大攻击面的键；安全相关的开关（`permissions.allow_dangerous_modes`、`preview.enabled`、`twin.enabled`、
-//! `twin.accept_links`）只能从 `true` 改成 `false`，要放宽得在机器上 `anycon config set`。白名单之外的键（`agents.*`、`workspace.*`、`hub.url` / `hub.name`、`enroll.*`……）
-//! 既不会返回，也不接受。
+//! `config.toml` 是机器主人的最后一道边界，而配对过的客户端可能被盗用，所以远程能碰的只有一张白名单（[`SPECS`]，外加按 agent
+//! 展开的 [`AGENT_SPECS`]）：只收热加载、不扩大攻击面的键；安全相关的开关（`permissions.allow_dangerous_modes`、`preview.enabled`、
+//! `twin.enabled`、`twin.accept_links`）只能从 `true` 改成 `false`，要放宽得在机器上 `anycon config set`。白名单之外的键
+//! （`agents.<id>.command` / `env` / `enabled` 等、`workspace.*`、`hub.url` / `hub.name`、`enroll.*`……）既不会返回，也不接受。
 //!
 //! 写入、热加载、审计复用本机 CLI 的同一套逻辑：[`crate::config::set_toml_values`]（保留注释和格式、整份配置校验通过才原子替换）
 //! → [`crate::config::ConfigStore::reload`] → 审计 `config.changed`。所有改动先在 [`plan`] 里整体校验，一项不合法就一项都不写。
@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use crate::clients::Caller;
 use crate::config::{
     validate_branch_prefix, validate_node_group, Config, ConfigError, ConfigStore, NODE_GROUP_MAX_CHARS,
-    PREVIEW_TTL_MAX, PREVIEW_TTL_MIN,
+    PREVIEW_TTL_MAX, PREVIEW_TTL_MIN, START_TIMEOUT_DEFAULT, START_TIMEOUT_MAX, START_TIMEOUT_MIN,
 };
 use crate::daemon::Ctx;
 use crate::util::parse_duration;
@@ -118,9 +118,67 @@ const SPECS: &[Spec] = &[
     },
 ];
 
-/// 白名单里的全部键（测试和文档核对用）。
+/// 按 agent 展开的白名单项：配置里的每个 agent 一个键，`agents.<id>.<tail>`（ACP agent 是 `agents.acp.<id>.<tail>`），
+/// 排在 [`SPECS`] 之后（ADR-64）。只放只有 daemon 自己用、改了不扩大 agent 能做什么的键；`command` / `env` 等于远程执行任意命令，
+/// `enabled`、`default_*`（有 `node.set_agent_defaults`，带危险模式门禁）、`dangerous_modes` 都不在这里。
+struct AgentSpec {
+    tail: &'static str,
+    rule: Rule,
+    /// 当前生效的值：文件里没写时是缺省值，客户端照样看得到。
+    current: fn(&Config, &str) -> Value,
+}
+
+const AGENT_SPECS: &[AgentSpec] = &[AgentSpec {
+    tail: "start_timeout",
+    rule: Rule::Duration { min: START_TIMEOUT_MIN, max: START_TIMEOUT_MAX },
+    current: |cfg, id| match cfg.adapter_config(id).and_then(|c| c.start_timeout.clone()) {
+        Some(s) => json!(s),
+        None => json!(format!("{}m", START_TIMEOUT_DEFAULT.as_secs() / 60)),
+    },
+}];
+
+/// 白名单里的全部固定键（测试和文档核对用）；按 agent 展开的见 [`agent_spec_tails`]。
 pub fn whitelisted_keys() -> impl Iterator<Item = &'static str> {
     SPECS.iter().map(|s| s.key)
+}
+
+/// 按 agent 展开的键的最后一段（`start_timeout`）。
+pub fn agent_spec_tails() -> impl Iterator<Item = &'static str> {
+    AGENT_SPECS.iter().map(|s| s.tail)
+}
+
+/// 一个具体的白名单项：固定键，或某个 agent 的按 agent 键。
+struct Resolved {
+    key: String,
+    rule: Rule,
+    editable: ConfigEditable,
+    current: Value,
+}
+
+/// 当前配置下的全部白名单项，按 `node.get_config` 返回的顺序：固定键，然后每个 agent（先内置 / `[agents.<id>]`，再 ACP）的按 agent 键。
+fn resolved(cfg: &Config) -> Vec<Resolved> {
+    let root = serde_json::to_value(cfg).unwrap_or(Value::Null);
+    let fixed = SPECS.iter().map(|spec| Resolved {
+        key: spec.key.to_string(),
+        rule: spec.rule,
+        editable: spec.editable,
+        current: lookup(&root, spec.key).cloned().unwrap_or(Value::Null),
+    });
+    let agents = cfg
+        .agents
+        .agent
+        .keys()
+        .map(|id| (format!("agents.{id}"), id))
+        .chain(cfg.agents.acp.keys().map(|id| (format!("agents.acp.{id}"), id)));
+    let per_agent = agents.flat_map(|(prefix, id)| {
+        AGENT_SPECS.iter().map(move |spec| Resolved {
+            key: format!("{prefix}.{}", spec.tail),
+            rule: spec.rule,
+            editable: ConfigEditable::Any,
+            current: (spec.current)(cfg, id),
+        })
+    });
+    fixed.chain(per_agent).collect()
 }
 
 /// 这个键是不是被进程环境覆盖：`ANYCON_<段>__<键>`（和加载配置时是同一个判断），`log.level` 还包括接管日志过滤的
@@ -145,11 +203,10 @@ fn kind_of(rule: &Rule) -> ConfigValueKind {
 
 /// `node.get_config`：白名单里的每个键，带当前生效值、能不能改、取值约束。`env_overridden` 判断一个键是不是被环境变量覆盖。
 pub fn items(cfg: &Config, env_overridden: &dyn Fn(&str) -> bool) -> Vec<ConfigItem> {
-    let root = serde_json::to_value(cfg).unwrap_or(Value::Null);
-    SPECS
-        .iter()
+    resolved(cfg)
+        .into_iter()
         .map(|spec| {
-            let env_override = env_overridden(spec.key);
+            let env_override = env_overridden(&spec.key);
             let (mut options, mut min, mut max) = (Vec::new(), None, None);
             match spec.rule {
                 Rule::Bool => {}
@@ -164,8 +221,8 @@ pub fn items(cfg: &Config, env_overridden: &dyn Fn(&str) -> bool) -> Vec<ConfigI
                 Rule::Text { max_chars, .. } => max = Some(max_chars),
             }
             ConfigItem {
-                key: spec.key.to_string(),
-                value: lookup(&root, spec.key).cloned().unwrap_or(Value::Null),
+                key: spec.key,
+                value: spec.current,
                 kind: kind_of(&spec.rule),
                 editable: if env_override { ConfigEditable::No } else { spec.editable },
                 env_override,
@@ -180,7 +237,7 @@ pub fn items(cfg: &Config, env_overridden: &dyn Fn(&str) -> bool) -> Vec<ConfigI
 /// 校验过、待写入的一项改动。
 #[derive(Debug)]
 pub struct Planned {
-    pub key: &'static str,
+    pub key: String,
     pub old: Value,
     pub new: Value,
     toml: toml_edit::Value,
@@ -266,35 +323,37 @@ pub fn plan(
     if changes.is_empty() {
         return Err(RpcError::new(ErrorCode::Invalid, "nothing to change: give at least one change"));
     }
-    let root = serde_json::to_value(cfg).unwrap_or(Value::Null);
+    let specs = resolved(cfg);
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for ch in changes {
         if !seen.insert(ch.key.as_str()) {
             return Err(invalid(&ch.key, "duplicate", "appears more than once".into()));
         }
-        let Some(spec) = SPECS.iter().find(|s| s.key == ch.key) else {
+        let Some(spec) = specs.iter().find(|s| s.key == ch.key) else {
             return Err(forbidden(&ch.key, "not_editable", "this key cannot be changed remotely"));
         };
-        if env_overridden(spec.key) {
+        let key = spec.key.as_str();
+        if env_overridden(key) {
             return Err(forbidden(
-                spec.key,
+                key,
                 "env_override",
                 "is set by an environment variable, which overrides config.toml",
             ));
         }
-        let (new, toml) = check(cfg, &spec.rule, &ch.value).map_err(|(reason, msg)| invalid(spec.key, reason, msg))?;
-        let old = lookup(&root, spec.key).cloned().unwrap_or(Value::Null);
+        let (new, toml) = check(cfg, &spec.rule, &ch.value).map_err(|(reason, msg)| invalid(key, reason, msg))?;
+        // 旧值是当前生效的值（文件里没写的按 agent 键是缺省值）：改成和缺省值一样是空操作
+        let old = spec.current.clone();
         // 只能收紧的开关：新值是 `false`，或者和现在一样（空操作），才放行
         if spec.editable == ConfigEditable::TightenOnly && new != json!(false) && new != old {
             return Err(forbidden(
-                spec.key,
+                key,
                 "tighten_only",
                 "can only be turned off remotely; turn it on with `anycon config set` on the node",
             ));
         }
         if new != old {
-            out.push(Planned { key: spec.key, old, new, toml });
+            out.push(Planned { key: key.to_string(), old, new, toml });
         }
     }
     Ok(out)
@@ -328,7 +387,7 @@ pub async fn set(c: &Ctx, caller: &Caller, p: NodeSetConfigParams) -> Result<Nod
     if planned.is_empty() {
         return Ok(NodeConfigResult { items: items(&cfg, &process_env_overrides) });
     }
-    let edits = planned.iter().map(|x| (x.key.to_string(), x.toml.clone())).collect();
+    let edits = planned.iter().map(|x| (x.key.clone(), x.toml.clone())).collect();
     crate::config::set_toml_values_blocking(&c.paths, edits).await.map_err(|e| match e {
         // 整份配置的校验没过：上面逐项校验的规则比 `Config::validate` 窄，走到这里说明有遗漏，按参数不合法回
         ConfigError::Invalid(m) | ConfigError::Parse(m) => RpcError::new(ErrorCode::Invalid, m),
@@ -337,10 +396,10 @@ pub async fn set(c: &Ctx, caller: &Caller, p: NodeSetConfigParams) -> Result<Nod
     // 和 `anycon config set`、`node.set_enroll_enabled` 同一条热加载路径：重读文件，订阅者（日志级别、预览、agent 列表……）各自生效
     reload(&c.config).await?;
     for x in &planned {
-        c.audit.record(caller, "config.changed", Some(x.key), json!({ "old": x.old, "new": x.new })).await;
+        c.audit.record(caller, "config.changed", Some(&x.key), json!({ "old": x.old, "new": x.new })).await;
     }
     // 只记键名，不记值
-    tracing::info!(keys = ?planned.iter().map(|x| x.key).collect::<Vec<_>>(), device = %caller.device_id, "config changed by a client");
+    tracing::info!(keys = ?planned.iter().map(|x| x.key.as_str()).collect::<Vec<_>>(), device = %caller.device_id, "config changed by a client");
     Ok(NodeConfigResult { items: items(&c.config.get(), &process_env_overrides) })
 }
 
@@ -401,6 +460,11 @@ mod tests {
             );
             assert!(lookup(&root, key).is_some(), "{key} is not a config key");
         }
+        for tail in agent_spec_tails() {
+            for key in [format!("agents.claude-code.{tail}"), format!("agents.acp.opencode.{tail}")] {
+                assert!(crate::config::is_hot_key(&key), "{key} is not hot-reloadable");
+            }
+        }
     }
 
     #[test]
@@ -413,6 +477,14 @@ mod tests {
             }
             // `hub.group` 是显示用的标签，在名单里；`hub.url` / `hub.name` 不在
             assert!(!matches!(*k, "hub.url" | "hub.name"), "{k}");
+        }
+        // 按 agent 的键：命令、环境、开关、默认值（有自己的带门禁的接口）、危险模式标记都不在
+        for tail in agent_spec_tails() {
+            assert!(
+                !matches!(tail, "command" | "env" | "enabled" | "dangerous_modes" | "additional_models")
+                    && !tail.starts_with("default_"),
+                "{tail}"
+            );
         }
         for banned in [
             "permissions.allow_session_env",
@@ -431,7 +503,9 @@ mod tests {
         cfg.sessions.max_concurrent = 5;
         cfg.permissions.allow_dangerous_modes = false;
         let list = items(&cfg, &no_env);
-        assert_eq!(list.len(), SPECS.len());
+        let agents = cfg.agents.agent.len() + cfg.agents.acp.len();
+        assert_eq!(list.len(), SPECS.len() + agents * AGENT_SPECS.len());
+        assert!(list[..SPECS.len()].iter().all(|i| !i.key.starts_with("agents.")), "fixed keys come first");
         let get = |k: &str| list.iter().find(|i| i.key == k).unwrap();
 
         let c = get("sessions.max_concurrent");
@@ -485,6 +559,13 @@ mod tests {
         let cfg = Config::default();
         for key in [
             "agents.claude-code.command",
+            "agents.claude-code.env",
+            "agents.claude-code.enabled",
+            "agents.claude-code.default_mode",
+            // 不认识的 agent、写错了位置的 ACP / 内置 agent
+            "agents.ghost.start_timeout",
+            "agents.acp.claude-code.start_timeout",
+            "agents.opencode.start_timeout",
             "agents.env",
             "judge.backends.local.api_key",
             "judge.backends.local.kind",
@@ -503,6 +584,41 @@ mod tests {
         ] {
             let e = plan(&cfg, &[ch(key, json!(true))], &no_env);
             assert_eq!(err_of(e), (ErrorCode::Forbidden, Some(key.into()), Some("not_editable".into())), "{key}");
+        }
+    }
+
+    #[test]
+    fn every_agent_has_its_own_start_timeout_with_the_default_filled_in() {
+        let mut cfg = Config::default();
+        cfg.agents.agent.get_mut("codex").unwrap().start_timeout = Some("5m".into());
+        let list = items(&cfg, &no_env);
+        let get = |k: &str| list.iter().find(|i| i.key == k).unwrap_or_else(|| panic!("{k} is not listed"));
+        // 没写的是缺省值；内置 agent 在 `agents.<id>`，ACP agent 在 `agents.acp.<id>`
+        for (key, value) in [
+            ("agents.claude-code.start_timeout", "2m"),
+            ("agents.codex.start_timeout", "5m"),
+            ("agents.acp.opencode.start_timeout", "2m"),
+        ] {
+            let i = get(key);
+            assert_eq!(
+                (i.value.clone(), i.kind, i.editable, i.min, i.max),
+                (json!(value), ConfigValueKind::Duration, ConfigEditable::Any, Some(10_000), Some(3_600_000)),
+                "{key}"
+            );
+        }
+        // 改：范围 10s–1h；和当前生效值一样（包括没写时的缺省值）是空操作
+        let p = plan(&cfg, &[ch("agents.claude-code.start_timeout", json!("5m"))], &no_env).unwrap();
+        assert_eq!(
+            (p[0].key.as_str(), p[0].old.clone(), p[0].new.clone()),
+            ("agents.claude-code.start_timeout", json!("2m"), json!("5m"))
+        );
+        assert!(plan(&cfg, &[ch("agents.claude-code.start_timeout", json!("2m"))], &no_env).unwrap().is_empty());
+        assert!(plan(&cfg, &[ch("agents.acp.opencode.start_timeout", json!("10s"))], &no_env).is_ok());
+        for (v, reason) in
+            [(json!("9s"), "range"), (json!("61m"), "range"), (json!("soon"), "format"), (json!(120), "type")]
+        {
+            let e = plan(&cfg, &[ch("agents.codex.start_timeout", v.clone())], &no_env);
+            assert_eq!(err_of(e).2.as_deref(), Some(reason), "{v}");
         }
     }
 
@@ -636,7 +752,7 @@ mod tests {
             &no_env,
         )
         .unwrap();
-        assert_eq!(p.iter().map(|x| x.key).collect::<Vec<_>>(), vec!["log.level"]);
+        assert_eq!(p.iter().map(|x| x.key.as_str()).collect::<Vec<_>>(), vec!["log.level"]);
         assert_eq!((p[0].old.clone(), p[0].new.clone()), (json!("info"), json!("debug")));
     }
 

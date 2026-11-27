@@ -151,12 +151,12 @@ pub fn effective_info(raw: &AgentInfo, cfg: &crate::config::Config) -> AgentInfo
     i
 }
 
-/// 配置里影响探测结果的部分（排除 `default_*`）。键排序后再比较，不受 HashMap 顺序影响。
+/// 配置里影响探测结果的部分（排除 `default_*` 和只有 daemon 用的 `start_timeout`）。键排序后再比较，不受 HashMap 顺序影响。
 fn probe_fingerprint(cfg: &crate::config::Config, id: &str) -> String {
     let Some(ac) = cfg.adapter_config(id) else { return "absent".into() };
     let mut v = serde_json::to_value(ac).unwrap_or_default();
     if let Some(o) = v.as_object_mut() {
-        o.retain(|k, _| !k.starts_with("default_"));
+        o.retain(|k, _| !k.starts_with("default_") && k != "start_timeout");
     }
     let g = serde_json::to_value(&cfg.agents.env).unwrap_or_default();
     format!("{}|{}", crate::util::canonical_json(&v), crate::util::canonical_json(&g))
@@ -1616,6 +1616,16 @@ mod tests {
         f.config.reload().unwrap();
         let l = f.agents.list();
         assert_eq!(l.agents[0].modes.iter().find(|m| m.id == "plan").unwrap().risk, ModeRisk::Dangerous);
+    }
+
+    #[test]
+    fn changing_the_start_timeout_does_not_reprobe_the_agent() {
+        let mut cfg = Config::default();
+        let before = probe_fingerprint(&cfg, "claude-code");
+        cfg.agents.agent.get_mut("claude-code").unwrap().start_timeout = Some("5m".into());
+        assert_eq!(probe_fingerprint(&cfg, "claude-code"), before);
+        cfg.agents.agent.get_mut("claude-code").unwrap().command = Some("/opt/claude".into());
+        assert_ne!(probe_fingerprint(&cfg, "claude-code"), before);
     }
 
     #[tokio::test]

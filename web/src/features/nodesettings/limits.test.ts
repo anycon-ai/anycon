@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ConfigItem } from '@/protocol'
-import { envNames, formatLimitDuration, initialDrafts, isChanged, localProblem, parseDurationMs, sectionOf, toWire } from './limits'
+import { agentKeyOf, envNames, formatLimitDuration, initialDrafts, isChanged, localProblem, parseDurationMs, sectionOf, toWire } from './limits'
 
 const int = (over: Partial<ConfigItem> = {}): ConfigItem => ({ key: 'sessions.max_concurrent', value: 3, kind: 'int', editable: 'any', min: 1, max: 32, ...over })
 const dur = (over: Partial<ConfigItem> = {}): ConfigItem => ({ key: 'preview.ticket_ttl', value: '24h', kind: 'duration', editable: 'any', min: 300_000, max: 604_800_000, ...over })
@@ -11,9 +11,18 @@ describe('node settings limits: helpers', () => {
     expect(sectionOf('log.level')).toBe('log')
   })
 
+  it('tells which agent a per-agent key belongs to', () => {
+    expect(agentKeyOf('agents.claude-code.start_timeout')).toEqual({ agent: 'claude-code', tail: 'start_timeout' })
+    expect(agentKeyOf('agents.acp.opencode.start_timeout')).toEqual({ agent: 'opencode', tail: 'start_timeout' })
+    expect(agentKeyOf('sessions.max_concurrent')).toBeNull()
+    expect(agentKeyOf('agents.codex')).toBeNull()
+  })
+
   it('names the environment variable that would override a key', () => {
     expect(envNames('sessions.max_concurrent')).toBe('ANYCON_SESSIONS__MAX_CONCURRENT')
     expect(envNames('worktree.auto_archive_on_pr_close')).toBe('ANYCON_WORKTREE__AUTO_ARCHIVE_ON_PR_CLOSE')
+    // 按 agent 的键是三段
+    expect(envNames('agents.codex.start_timeout')).toBe('ANYCON_AGENTS__CODEX__START_TIMEOUT')
     // 日志过滤还能被 ANYCON_LOG / RUST_LOG 接管
     expect(envNames('log.level')).toBe('ANYCON_LOG__LEVEL, ANYCON_LOG, RUST_LOG')
   })

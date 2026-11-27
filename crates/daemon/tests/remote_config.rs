@@ -35,7 +35,12 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
     let mut c = td.client("web");
     let r: NodeConfigResult = c.call(&td, methods::NODE_GET_CONFIG, json!({})).await.unwrap();
 
-    let keys: Vec<&str> = r.items.iter().map(|i| i.key.as_str()).collect();
+    // 固定的键在前；之后是每个 agent 的按 agent 键（ADR-64）
+    let keys: Vec<&str> = r.items.iter().map(|i| i.key.as_str()).filter(|k| !k.starts_with("agents.")).collect();
+    let agent_keys: Vec<&str> = r.items.iter().map(|i| i.key.as_str()).filter(|k| k.starts_with("agents.")).collect();
+    assert!(r.items[..keys.len()].iter().all(|i| !i.key.starts_with("agents.")));
+    assert!(agent_keys.contains(&"agents.fake.start_timeout"), "{agent_keys:?}");
+    assert!(agent_keys.iter().all(|k| k.ends_with(".start_timeout")), "{agent_keys:?}");
     assert_eq!(
         keys,
         vec![
@@ -85,7 +90,12 @@ async fn get_config_lists_exactly_the_whitelist_with_the_effective_values() {
     // 不暴露白名单之外的东西（值里也不能有：这些键不在列表里）
     let text = serde_json::to_string(&r).unwrap();
     for hidden in [
-        "agents",
+        // agent 只有按 agent 的那几个键（`start_timeout`），命令、环境、开关、默认值都不在
+        "agents.fake.command",
+        "agents.fake.env",
+        "agents.fake.enabled",
+        "agents.fake.default_",
+        "agents.env",
         "workspace",
         "hub.url",
         "hub.name",
@@ -171,6 +181,42 @@ async fn set_config_writes_the_file_applies_it_at_once_audits_and_returns_the_ne
     assert_eq!(e.detail, json!({ "old": 6, "new": 8 }));
     let e = entries.iter().find(|e| e.target.as_deref() == Some("log.level")).unwrap();
     assert_eq!(e.detail, json!({ "old": "info", "new": "debug" }));
+    td.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_agents_start_timeout_is_set_like_any_other_key() {
+    let td = TestDaemon::start().await;
+    let mut c = td.client("web");
+    let r: NodeConfigResult = c.call(&td, methods::NODE_GET_CONFIG, json!({})).await.unwrap();
+    let t = item(&r, "agents.fake.start_timeout");
+    assert_eq!(
+        (&t.value, t.kind, t.min, t.max),
+        (&json!("2m"), ConfigValueKind::Duration, Some(10_000), Some(3_600_000))
+    );
+
+    let r: NodeConfigResult =
+        c.call(&td, methods::NODE_SET_CONFIG, changes(&[("agents.fake.start_timeout", json!("5m"))])).await.unwrap();
+    assert_eq!(item(&r, "agents.fake.start_timeout").value, json!("5m"));
+    // 写进 `[agents.fake]`，立即生效，审计带旧值（缺省值）和新值
+    assert!(file(&td).contains("start_timeout = \"5m\""), "{}", file(&td));
+    assert_eq!(td.ctx.config.get().agent_start_timeout("fake"), Duration::from_secs(300));
+    let a = audit(&td).await;
+    let e = a.iter().find(|e| e.target.as_deref() == Some("agents.fake.start_timeout")).expect("audited");
+    assert_eq!(e.detail, json!({ "old": "2m", "new": "5m" }));
+
+    // 范围之外、别的 agent 键：拒绝，什么都不写
+    let e = c
+        .call::<NodeConfigResult>(&td, methods::NODE_SET_CONFIG, changes(&[("agents.fake.start_timeout", json!("2h"))]))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), (ErrorCode::Invalid, Some("agents.fake.start_timeout".into()), Some("range".into())));
+    let e = c
+        .call::<NodeConfigResult>(&td, methods::NODE_SET_CONFIG, changes(&[("agents.fake.command", json!("sh"))]))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e).2.as_deref(), Some("not_editable"));
+    assert_eq!(td.ctx.config.get().agent_start_timeout("fake"), Duration::from_secs(300));
     td.shutdown().await;
 }
 

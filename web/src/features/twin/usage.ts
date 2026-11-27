@@ -24,3 +24,13 @@ export function sumUsage(list: ReadonlyArray<JudgeUsage | null | undefined>): Ju
   }
   return Object.keys(sum).length ? sum : null
 }
+
+/** 花费的大字和小字：报了金额就只写金额；只有 token 数时大字写输入，小字写输出（和「今天」的花费块一样）。 */
+export function costParts(t: TFunction, usage: JudgeUsage | null | undefined): { main: string; sub?: string } | null {
+  if (!usage) return null
+  if (typeof usage.cost_usd === 'number') return { main: formatCost(usage.cost_usd) }
+  if (typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number') {
+    return { main: t('twin.today.tokensIn', { n: compactNumber(usage.input_tokens ?? 0) }), sub: t('twin.today.tokensOut', { n: compactNumber(usage.output_tokens ?? 0) }) }
+  }
+  return null
+}

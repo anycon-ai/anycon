@@ -1,15 +1,18 @@
 // Bot 页的只读概览：配置摘要、今天的数字、连续失败的提醒。
 // 没有 `capabilities.twin_stats` 时，今天的唤醒次数和最近一次唤醒由已读到的运行记录推算（浏览器本地日），不显示花费和下一次唤醒。
+import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
+import { AlarmClock, Coins, History, Scale, Send, TriangleAlert, Zap, type LucideIcon } from 'lucide-react'
 import type { TwinRun, TwinRunBrief, TwinRunCounts } from '@/protocol'
 import { formatDateTime } from '@/lib/format'
 import { shortNodeId } from '@/lib/ids'
 import { useNodes, type NodeEntry } from '@/stores/nodes'
 import { twinHead } from './state'
 import { useTwin } from './store'
-import { usageText } from './usage'
+import { costParts } from './usage'
+import { Meter, ResultDot, SectionTitle, SplitBar, Swatch, type WakeKind } from './viz'
 
 const count = (n: number | undefined): number => n ?? 0
 
@@ -48,20 +51,39 @@ export function localToday(runs: readonly TwinRun[], now: number = Date.now()): 
   return { counts, ...(real[0] ? { last: real[0] } : {}) }
 }
 
-function Tile({ label, testId, children, detail }: { label: string; testId: string; children: React.ReactNode; detail?: React.ReactNode }) {
+/** 今天的时间只写几点几分，更早的写日期和时间：不写「3 分钟前」，页面开着不刷新时也不会过时。 */
+export function formatWhen(ts: number, lang: string, now: number = Date.now()): string {
+  const sameDay = new Date(ts).toDateString() === new Date(now).toDateString()
+  return sameDay ? new Date(ts).toLocaleTimeString(lang, { timeStyle: 'short' }) : formatDateTime(ts, lang)
+}
+
+/** 一块数字：标签（带图标）、大号的值（可带「/ 上限」）、一条小图、一行脚注。底色比卡片暗一档，不画边框。 */
+function Kpi({ label, icon: Icon, testId, value, cap, viz, foot }: { label: string; icon: LucideIcon; testId: string; value: ReactNode; cap?: ReactNode; viz?: ReactNode; foot?: ReactNode }) {
   return (
-    <div className="rounded border border-border p-3" data-testid={testId}>
-      <dt className="text-xs text-fg-subtle">{label}</dt>
-      <dd className="mt-1 break-words text-base font-semibold">{children}</dd>
-      {detail ? <dd className="mt-1 break-words text-xs text-fg-muted">{detail}</dd> : null}
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg bg-bg-subtle p-3 sm:p-4" data-testid={testId}>
+      <dt className="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
+        <Icon className="size-3.5 shrink-0" aria-hidden />
+        {label}
+      </dt>
+      <dd className="flex min-w-0 items-baseline gap-1 text-2xl font-semibold tracking-tight">
+        <span className="min-w-0 break-words">{value}</span>
+        {cap !== undefined ? <span className="text-sm font-normal text-fg-subtle"> / {cap}</span> : null}
+      </dd>
+      {viz ? <dd className="pt-0.5">{viz}</dd> : null}
+      {foot ? <dd className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-muted">{foot}</dd> : null}
     </div>
   )
 }
 
+/** 额度块的脚注：还剩几次；用满时写明今天的额度用完了。 */
+function leftText(t: TFunction, used: number, cap: number): string {
+  return used >= cap ? t('twin.today.limitReached') : t('twin.today.left', { count: cap - used })
+}
+
 /** 还没有 `finished_ms` 的运行仍在进行，`result` 还不算数，写「进行中」。 */
-function lastWakeText(t: TFunction, lang: string, run: Pick<TwinRunBrief, 'started_ms' | 'triggers' | 'result' | 'finished_ms'>): string {
+function lastWakeText(t: TFunction, run: Pick<TwinRunBrief, 'triggers' | 'result' | 'finished_ms'>): string {
   const outcome = run.finished_ms == null ? t('twin.today.inProgress') : t(`twin.result.${run.result}`)
-  return [formatDateTime(run.started_ms, lang), run.triggers.map((x) => t(`twin.trigger.${x}`)).join(', '), outcome].join(' · ')
+  return [run.triggers.map((x) => t(`twin.trigger.${x}`)).join(', '), outcome].join(' · ')
 }
 
 export function TodayTiles({ node }: { node: NodeEntry }) {
@@ -81,45 +103,94 @@ export function TodayTiles({ node }: { node: NodeEntry }) {
   const total = done + idle + failed + other
   const last: Pick<TwinRunBrief, 'started_ms' | 'triggers' | 'result' | 'finished_ms'> | undefined = stats ? (value.last_run ?? undefined) : local.last
   const judgeCap = node.info?.judge?.daily_calls
-  const cost = day ? usageText(t, day.usage) : null
+  const cost = costParts(t, day?.usage)
   const active = head === 'idle' || head === 'running'
+  const dispatchCap = value.scope.daily_dispatches
   return (
-    <section aria-label={t('twin.today.title')}>
-      <h3 className="mb-2 text-sm font-semibold">{t('twin.today.title')}</h3>
-      <dl className="grid grid-cols-2 gap-2 lg:grid-cols-3" data-testid="twin-today">
-        <Tile
+    <section aria-labelledby={`twin-today-${node.id}`} className="space-y-2">
+      <SectionTitle id={`twin-today-${node.id}`}>{t('twin.today.title')}</SectionTitle>
+      <dl className="grid grid-cols-2 gap-2 lg:grid-cols-4" data-testid="twin-today">
+        <Kpi
           label={t('twin.today.wakes')}
+          icon={Zap}
           testId="twin-tile-wakes"
-          detail={
+          value={total}
+          viz={
+            <SplitBar
+              parts={[
+                { kind: 'done', value: done },
+                { kind: 'failed', value: failed },
+                { kind: 'other', value: idle + other },
+              ]}
+            />
+          }
+          foot={
             <>
-              {t('twin.today.wakesDetail', { done, idle, failed })}
-              {other ? ` · ${t('twin.today.wakesOther', { count: other })}` : ''}
+              <LegendItem kind="done">{t('twin.today.legendDone', { count: done })}</LegendItem>
+              <LegendItem kind="failed">{t('twin.today.legendFailed', { count: failed })}</LegendItem>
+              <LegendItem kind="other">{t('twin.today.legendIdle', { count: idle })}</LegendItem>
+              {other ? (
+                <LegendItem kind="other" title={t('twin.today.stoppedHint')}>
+                  {t('twin.today.legendStopped', { count: other })}
+                </LegendItem>
+              ) : null}
             </>
           }
-        >
-          {total}
-        </Tile>
-        <Tile label={t('twin.today.dispatches')} testId="twin-tile-dispatches">
-          {value.today.dispatches} / {value.scope.daily_dispatches}
-        </Tile>
-        <Tile label={t('twin.today.judgeCalls')} testId="twin-tile-judges">
-          {typeof judgeCap === 'number' ? `${value.today.judge_calls} / ${judgeCap}` : value.today.judge_calls}
-        </Tile>
-        {cost ? (
-          <Tile label={t('twin.today.cost')} testId="twin-tile-cost">
-            {cost}
-          </Tile>
-        ) : null}
-        <Tile label={t('twin.today.lastWake')} testId="twin-tile-last">
-          {last ? lastWakeText(t, i18n.language, last) : t('twin.today.never')}
-        </Tile>
+        />
+        <Kpi label={t('twin.today.dispatches')} icon={Send} testId="twin-tile-dispatches" value={value.today.dispatches} cap={dispatchCap} viz={<Meter value={value.today.dispatches} max={dispatchCap} />} foot={leftText(t, value.today.dispatches, dispatchCap)} />
+        {typeof judgeCap === 'number' ? (
+          <Kpi label={t('twin.today.judgeCalls')} icon={Scale} testId="twin-tile-judges" value={value.today.judge_calls} cap={judgeCap} viz={<Meter value={value.today.judge_calls} max={judgeCap} />} foot={leftText(t, value.today.judge_calls, judgeCap)} />
+        ) : (
+          <Kpi label={t('twin.today.judgeCalls')} icon={Scale} testId="twin-tile-judges" value={value.today.judge_calls} />
+        )}
+        {cost ? <Kpi label={t('twin.today.cost')} icon={Coins} testId="twin-tile-cost" value={cost.main} foot={cost.sub} /> : null}
+      </dl>
+      <dl className="flex flex-wrap gap-x-6 gap-y-1.5 px-1 pt-1 text-sm">
+        <div className="flex min-w-0 items-center gap-1.5" data-testid="twin-tile-last">
+          <History className="size-3.5 shrink-0 text-fg-subtle" aria-hidden />
+          <dt className="shrink-0 text-fg-subtle">{t('twin.today.lastWake')}</dt>
+          <dd className="flex min-w-0 items-center gap-1.5">
+            {last ? (
+              <>
+                <time dateTime={new Date(last.started_ms).toISOString()} title={formatDateTime(last.started_ms, i18n.language)} className="shrink-0 tabular-nums">
+                  {formatWhen(last.started_ms, i18n.language)}
+                </time>
+                <ResultDot run={last} />
+                <span className="min-w-0 truncate text-fg-muted">{lastWakeText(t, last)}</span>
+              </>
+            ) : (
+              <span className="text-fg-muted">{t('twin.today.never')}</span>
+            )}
+          </dd>
+        </div>
         {stats ? (
-          <Tile label={t('twin.today.nextWake')} testId="twin-tile-next">
-            {value.next_wake_ms != null ? formatDateTime(value.next_wake_ms, i18n.language) : active ? <span className="text-sm font-normal">{t('twin.today.nextOnChange')}</span> : t('twin.today.nextNone')}
-          </Tile>
+          <div className="flex min-w-0 items-center gap-1.5" data-testid="twin-tile-next">
+            <AlarmClock className="size-3.5 shrink-0 text-fg-subtle" aria-hidden />
+            <dt className="shrink-0 text-fg-subtle">{t('twin.today.nextWake')}</dt>
+            <dd className="min-w-0 text-fg-muted">
+              {value.next_wake_ms != null ? (
+                <time dateTime={new Date(value.next_wake_ms).toISOString()} title={formatDateTime(value.next_wake_ms, i18n.language)} className="tabular-nums text-fg">
+                  {formatWhen(value.next_wake_ms, i18n.language)}
+                </time>
+              ) : active ? (
+                t('twin.today.nextOnChange')
+              ) : (
+                t('twin.today.nextNone')
+              )}
+            </dd>
+          </div>
         ) : null}
       </dl>
     </section>
+  )
+}
+
+function LegendItem({ kind, title, children }: { kind: WakeKind; title?: string; children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap" title={title}>
+      <Swatch kind={kind} />
+      {children}
+    </span>
   )
 }
 
@@ -134,11 +205,14 @@ export function HealthAlert({ node }: { node: NodeEntry }) {
   if (streak < 2) return null
   const err = real[0]!.error
   return (
-    <div role="alert" className="rounded border border-danger/50 bg-danger-subtle p-3 text-sm" data-testid="twin-health">
+    <div role="alert" className="flex gap-2.5 rounded-lg border border-danger/40 bg-danger-subtle p-3 text-sm" data-testid="twin-health">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden />
+      <div className="min-w-0 space-y-1">
       <p>{t('twin.health.failing', { count: streak, error: t(`twin.errors.${err?.code ?? 'unknown'}`, { status: err?.status ?? '?' }) })}</p>
       <Link to="/n/$node/settings" params={{ node: shortNodeId(node.id, order) }} search={{ tab: 'twin' }} className="text-accent-text">
         {t('twin.health.settingsLink')}
       </Link>
+      </div>
     </div>
   )
 }

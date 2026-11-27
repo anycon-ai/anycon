@@ -431,11 +431,15 @@ describe('Bot page overview', () => {
       await load()
       const wakes = await screen.findByTestId('twin-tile-wakes')
       expect(wakes).toHaveTextContent('11')
-      expect(wakes).toHaveTextContent('acted 3 · idle 5 · failed 1')
+      expect(wakes).toHaveTextContent('acted 3')
+      expect(wakes).toHaveTextContent('failed 1')
+      expect(wakes).toHaveTextContent('idle 5')
       // 取消和预算用完不算失败，单独写
-      expect(wakes).toHaveTextContent('2 stopped early (budget or cancelled)')
+      expect(wakes).toHaveTextContent('stopped early 2')
       expect(screen.getByTestId('twin-tile-dispatches')).toHaveTextContent('4 / 10')
+      expect(screen.getByTestId('twin-tile-dispatches')).toHaveTextContent('6 left today')
       expect(screen.getByTestId('twin-tile-judges')).toHaveTextContent('7 / 20')
+      expect(screen.getByTestId('twin-tile-judges')).toHaveTextContent('13 left today')
       expect(screen.getByTestId('twin-tile-cost')).toHaveTextContent('$0.42')
       expect(screen.getByTestId('twin-tile-last')).toHaveTextContent('To-do changed · Completed')
       expect(screen.getByTestId('twin-tile-next')).not.toHaveTextContent('When something changes')
@@ -444,13 +448,24 @@ describe('Bot page overview', () => {
     it('shows tokens when there is no cost, and hides the cost tile without usage', async () => {
       daemon.statsDays = [twinDay({ usage: { input_tokens: 12000, output_tokens: 300 } })]
       await load()
-      expect(await screen.findByTestId('twin-tile-cost')).toHaveTextContent('12k in · 300 out')
+      const cost = await screen.findByTestId('twin-tile-cost')
+      expect(cost).toHaveTextContent('12k in')
+      expect(cost).toHaveTextContent('300 tokens out')
     })
     it('hides the cost tile when there is no usage', async () => {
       daemon.statsDays = [twinDay()]
       await load()
       await screen.findByTestId('twin-tile-wakes')
       expect(screen.queryByTestId('twin-tile-cost')).not.toBeInTheDocument()
+    })
+    it('says the daily limit is used up when dispatches reach it', async () => {
+      set({ today: { dispatches: 10, judge_calls: 3 } })
+      await load()
+      const tile = await screen.findByTestId('twin-tile-dispatches')
+      expect(tile).toHaveTextContent('10 / 10')
+      expect(tile).toHaveTextContent('Today’s limit is used up')
+      expect(tile.querySelector('[data-tone]')).toHaveAttribute('data-tone', 'danger')
+      expect(screen.getByTestId('twin-tile-judges').querySelector('[data-tone]')).toHaveAttribute('data-tone', 'accent')
     })
     it('says "never" without a last wake, and when the next wake depends on changes', async () => {
       set({ last_run: null, next_wake_ms: null })
@@ -515,6 +530,40 @@ describe('Bot page overview', () => {
         expect(rows[0]).toHaveTextContent('2026-01-02')
         expect(rows[0]).toHaveTextContent('6 (2 acted / 3 idle / 1 failed)')
         expect(rows[1]).toHaveTextContent('2026-01-01')
+      })
+      it('draws one column per day and reads a day with the arrow keys', async () => {
+        await load()
+        await screen.findByTestId('twin-trend-summary')
+        const chart = screen.getByTestId('twin-trend-chart')
+        expect(within(chart).getAllByTestId('twin-chart-day')).toHaveLength(7)
+        // 每天的唤醒最多 6 次 → 纵轴上限 10（1、2、5 × 10 的幂里不小于一半的那个再乘 2）
+        expect(chart).toHaveTextContent('10')
+        const readout = within(chart).getByTestId('twin-chart-readout')
+        // 没选中哪天时读的是今天（最后一天）
+        expect(readout).toHaveTextContent('Today · 2026-01-02')
+        expect(readout).toHaveTextContent('6 wakes')
+        const plot = within(chart).getByRole('group', { name: /Wakes per day/ })
+        act(() => plot.focus())
+        await userEvent.keyboard('{ArrowLeft}')
+        expect(readout).toHaveTextContent('2026-01-01')
+        expect(readout).not.toHaveTextContent('Today')
+        expect(readout).toHaveTextContent('1 wake')
+        expect(readout).toHaveTextContent('2 dispatches')
+        act(() => plot.blur())
+        expect(readout).toHaveTextContent('Today · 2026-01-02')
+      })
+      it('says so on the chart when there were no wakes in the range', async () => {
+        daemon.statsDays = [twinDay({ runs: {} })]
+        await load()
+        expect(await screen.findByText('No wakes in this range')).toBeInTheDocument()
+      })
+      it('keeps the day table behind a "Day by day" disclosure', async () => {
+        await load()
+        await screen.findByTestId('twin-trend-summary')
+        const details = screen.getByTestId('twin-trend-table').closest('details')!
+        expect(details).not.toHaveAttribute('open')
+        await userEvent.click(within(details).getByText('Day by day'))
+        expect(details).toHaveAttribute('open')
       })
       it('shows a dash for turnaround when nothing was dispatched or accepted', async () => {
         daemon.statsDays = [twinDay({ runs: { idle: 2 } })]
@@ -581,7 +630,10 @@ describe('Bot page overview', () => {
       await load()
       const wakes = await screen.findByTestId('twin-tile-wakes')
       expect(wakes).toHaveTextContent('3')
-      expect(wakes).toHaveTextContent('acted 1 · idle 1 · failed 1')
+      expect(wakes).toHaveTextContent('acted 1')
+      expect(wakes).toHaveTextContent('failed 1')
+      expect(wakes).toHaveTextContent('idle 1')
+      expect(wakes).not.toHaveTextContent('stopped early')
       expect(screen.getByTestId('twin-tile-last')).toHaveTextContent('Manual wake · Completed')
       expect(screen.queryByTestId('twin-tile-cost')).not.toBeInTheDocument()
       expect(screen.queryByTestId('twin-tile-next')).not.toBeInTheDocument()

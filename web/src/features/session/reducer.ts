@@ -153,6 +153,11 @@ export interface TurnDoneBlock extends BlockBase {
   type: 'turn_done'
   reason: TurnDoneReason
   usage?: Usage | null
+  /**
+   * 这个 turn 里 `file_changed` 涉及的不同路径数。只有这个 turn 的 `turn_start` 也在已加载的事件里时才有：
+   * 窗口从 turn 中间开始的话，前面的改动看不到，宁可不给也不给一个偏小的数。
+   */
+  filesChanged?: number
 }
 export interface ErrorBlock extends BlockBase {
   type: 'error'
@@ -254,6 +259,8 @@ export interface SessionView {
   title: string | null
   settings: SessionSettings | null
   changedFiles: Record<string, FileChangeKind>
+  /** 进行中、并且 `turn_start` 在已加载事件里的 turn → 它改过的路径（去重）；`turn_done` 时折成那个块的 `filesChanged`。 */
+  turnFiles: Record<number, string[]>
   usage: UsageSum
   /** 当前的临时状态；收到内容事件 / `turn_done` / `state = none` 时是 null。显示时还要看会话是不是还在跑。 */
   activity: ActivityInfo | null
@@ -280,6 +287,7 @@ export function emptyView(initialSettings: SessionSettings | null = null): Sessi
     title: null,
     settings: initialSettings,
     changedFiles: {},
+    turnFiles: {},
     usage: { turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null },
     activity: null,
     context: null,
@@ -319,6 +327,7 @@ class Work {
   title: string | null
   settings: SessionSettings | null
   changedFiles: Record<string, FileChangeKind>
+  turnFiles: Record<number, string[]>
   usage: UsageSum
   activity: ActivityInfo | null
   context: ContextUsage | null
@@ -341,6 +350,7 @@ class Work {
     this.title = v.title
     this.settings = v.settings
     this.changedFiles = { ...v.changedFiles }
+    this.turnFiles = { ...v.turnFiles }
     this.usage = { ...v.usage }
     this.activity = v.activity
     this.context = v.context
@@ -365,6 +375,7 @@ class Work {
       title: this.title,
       settings: this.settings,
       changedFiles: this.changedFiles,
+      turnFiles: this.turnFiles,
       usage: this.usage,
       activity: this.activity,
       context: this.context,
@@ -412,6 +423,7 @@ function applyOne(w: Work, se: SessionEvent): void {
       w.closeOpen()
       w.activity = null
       w.currentTurn = ev.turn_id
+      w.turnFiles[ev.turn_id] = []
       w.push({ ...base, turnId: ev.turn_id, key: `t-${se.seq}`, type: 'turn_start', agentStarted: ev.message_id === '' })
       return
     }
@@ -534,6 +546,9 @@ function applyOne(w: Work, se: SessionEvent): void {
     }
     case 'file_changed': {
       w.changedFiles[ev.path] = mergeFileKind(w.changedFiles[ev.path], ev.kind)
+      const turn = base.turnId
+      const paths = turn === undefined ? undefined : w.turnFiles[turn]
+      if (turn !== undefined && paths && !paths.includes(ev.path)) w.turnFiles[turn] = [...paths, ev.path]
       return
     }
     case 'plan': {
@@ -588,7 +603,9 @@ function applyOne(w: Work, se: SessionEvent): void {
       w.closeOpen()
       w.activity = null
       w.currentTurn = null
-      w.push({ ...base, turnId: ev.turn_id, key: `td-${se.seq}`, type: 'turn_done', reason: ev.reason, usage: ev.usage })
+      const files = w.turnFiles[ev.turn_id]
+      delete w.turnFiles[ev.turn_id]
+      w.push({ ...base, turnId: ev.turn_id, key: `td-${se.seq}`, type: 'turn_done', reason: ev.reason, usage: ev.usage, ...(files ? { filesChanged: files.length } : {}) })
       w.usage.turns += 1
       if (ev.usage) {
         w.usage.inputTokens += ev.usage.input_tokens ?? 0

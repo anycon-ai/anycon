@@ -201,6 +201,13 @@
     "willRemind": "完成后提醒",
     "empty": "没有等你的事",
     "emptyBody": "需要审批的请求、计划、提问、接入请求、出错的会话，都会出现在这里。",
+    "today": {
+      "line": "今天：{{facts}}",
+      "sessions_one": "{{count}} 个会话有进展",
+      "sessions_other": "{{count}} 个会话有进展",
+      "answered_one": "在这个浏览器里答复了 {{count}} 个请求",
+      "answered_other": "在这个浏览器里答复了 {{count}} 个请求"
+    },
     "list": "等你处理的事",
     "kind": {
       "permission": "审批",
@@ -1137,6 +1144,14 @@
       "error": "因错误结束",
       "max_turns": "达到轮数上限",
       "budget": "达到预算上限"
+    },
+    "done": {
+      "took": "用时 {{duration}}",
+      "files_one": "改了 {{count}} 个文件",
+      "files_other": "改了 {{count}} 个文件",
+      "sec": "{{s}} 秒",
+      "min": "{{m}} 分 {{s}} 秒",
+      "hour": "{{h}} 小时 {{m}} 分"
     }
   },
   "system": {
@@ -2034,6 +2049,10 @@
     "collapsed": "折叠",
     "expanded": "展开",
     "hidden": "隐藏",
+    "turnSound": "turn 完成时的提示音",
+    "turnSoundHint": "你正看着的 turn 完成时轻响一声。打开时会试听一次。",
+    "turnVibrate": "turn 完成时震动",
+    "turnVibrateHint": "你正看着的 turn 完成时短震一下。",
     "enter": "Enter 键",
     "enterHint": "「自动」在桌面端发送，在触屏设备上换行。",
     "enterSend": "发送",

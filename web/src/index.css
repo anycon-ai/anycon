@@ -410,6 +410,43 @@ html[data-font='lg'] {
   -webkit-mask-size: 17.32px 30px;
   mask-size: 17.32px 30px;
 }
+/* 时刻反馈（DESIGN.md「动效」第四类）：一次性、600ms 以内、只由用户动作或任务完成触发、不循环。
+   class 由组件在那一刻挂上，之后留着：动画只在元素出现或 class 第一次挂上时播一遍，重渲染不重播。 */
+
+/* 「待处理」清空时 Logo 轻轻一跳：只动 transform，不动透明度——class 晚一步挂上（等节点同步定下来）时 Logo 不会先消失再出现 */
+@keyframes anycon-moment-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.12) rotate(-4deg);
+  }
+  75% {
+    transform: scale(0.98) rotate(0deg);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.moment-pop {
+  transform-origin: 50% 70%;
+  animation: anycon-moment-pop 520ms cubic-bezier(0.3, 0.7, 0.4, 1) both;
+}
+
+/* turn 收尾行的对勾描一遍：路径 pathLength = 1，只动 stroke-dashoffset。没有这个 class 时是画好的静态对勾 */
+@keyframes anycon-check-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.moment-check path {
+  stroke-dasharray: 1;
+  animation: anycon-check-draw 420ms cubic-bezier(0.65, 0, 0.35, 1) 60ms both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-pulse-soft,
   .stream-caret::after,
@@ -418,6 +455,11 @@ html[data-font='lg'] {
   }
   .token-sweep {
     display: none;
+  }
+  /* 时刻反馈：不动，直接是终态（Logo 原样、对勾画好） */
+  .moment-pop,
+  .moment-check path {
+    animation: none;
   }
   /* 不做淡出：底色一直在，直到组件去掉 class */
   .search-flash {

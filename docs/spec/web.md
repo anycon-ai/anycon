@@ -258,7 +258,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `permission` (`kind = plan`) | 计划卡片：渲染 `detail.text` 的 Markdown，按钮「开始实施」「继续规划」（可附修改意见）；按钮完全由 `options[]` 渲染，v0.1 没有「开始实施，回到之前的模式」 |
 | `permission` (`kind = question`) | 问答卡片：每个问题一组单选 / 多选 / 文本框，一次提交全部 `answers`；每题都答完才能提交，`optional` 的题（MCP elicitation 表单里非必填的属性）标「可选」、可以留空，已选的单选可以清除，留空的不出现在 `answers` 里。答复过的留在对话里：一行灰字「标题 — 已由 iPhone 回答 / 跳过」，下面按题列出问题和回答（`permission_resolved.answers`：选项 id 换成显示名，多选用逗号连接，自由输入原样，没答的写「未回答」）；答复附的话（`permission_resolved.message`，跳过的说明、拒绝的理由，所有 kind 都是）跟在下面。没记回答的旧事件只有那一行 |
 | `permission` (`kind = other`) | 确认卡片：`detail.text` 作说明，按钮按 `options[]` 渲染。带 `detail.url`（MCP server 的 URL 模式授权）时显示**完整的 URL**（不截断、不省略主机名之后的部分）和一个「打开」按钮：只认 `http` / `https`，其它协议不给打开入口（只显示成文字）；链接用 `target="_blank" rel="noopener noreferrer"` 在新标签页打开。打开本身不答复请求：用户在那个页面完成后回来点「我已完成」（`allow_once`）或「拒绝」 |
-| `turn_done` | 一行：「复制」图标（复制这一轮 agent 的全部文字，Markdown，不含工具输出）+ 灰字：模型、用时、token 数、费用（agent 报了才显示） |
+| `turn_done` | 收尾的一行：「复制」图标（复制这一轮 agent 的全部文字，Markdown，不含工具输出），收尾的事实「用时 3 分 12 秒 · 改了 5 个文件」，再是灰字的模型、token 数、费用（agent 报了才显示）。用时是 `usage.duration_ms`（为 0 或没报不写）；改了几个文件是这个 turn 里 `file_changed` 的不同路径数，只在这个 turn 的 `turn_start` 也在已加载的事件里时才写（窗口从 turn 中间开始的话前面的改动看不到，不写一个偏小的数），0 个不写。不是正常完成的（停止、出错、达到上限）前面是黄色的原因，没有对勾。**用户看着时实时结束**的那个 turn（之前已经同步好、没在追赶、watch 着，看着它在跑，`turn_done` 实时到达，页面在前台）正常完成时，行首多一个对勾，描边画一遍（约 420ms，`prefers-reduced-motion` 下直接画好）；打开历史、追赶补拉、向上翻页带来的旧 turn 只有事实、没有对勾——每个 turn 都打勾会让列表变吵，而事实来自事件本身，打开历史时一样可靠。同一时刻按偏好响一声提示音（WebAudio 现场合成，不用音频文件）、短震一下（`navigator.vibrate`），两个都默认关（§ 4.9）。原来的 `aria-live` 播报照旧 |
 | `error` | 红色块，`recoverable` 时带「重试」。块里依次是 `message`（agent 的原文）、认识的 `code` 的本地化说明（`usage_limit` / `rate_limited` / `overloaded` / `budget_exceeded` 各有一句。`rate_limited` 的说明保持中性（频率或用量限制）：旧 daemon 上 Codex 的用量耗尽等也还是这个码；`usage_limit` 有 `resets_at_ms` 时说本地化的恢复时间，没有时说「用量或额度已达上限，查看套餐 / 计费或等窗口恢复」，不承诺会恢复，因为 API key 的计费额度用完不会自己恢复）、`code` 本身。其它带 `resets_at_ms` 的 `code` 多一行本地化的恢复时间（当天只写时间，其它日子带日期，同 `notice` 的 `rate_limit`）；`usage_limit` 且 `limit_scope = model` 时再加一句提示换模型（输入区已有模型选择，不加新控件）；`overloaded` 的说明里也提到可以换模型。不认识的 `code` 只显示 `message` 和 `code`，没有说明。上游没有给恢复时间 / 范围就不显示，不估算 |
 | `status` | 不单独渲染，驱动头部 chip 和 composer 状态 |
 | `file_changed` | 不单独渲染（改了哪些文件看「改动」视图）；git 会话里触发一次 git 状态刷新（见下） |
@@ -413,7 +413,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 | `/settings/sessions` | 浏览器登录会话，可踢出 |
 | `/settings/devices` | 本账号全部设备（含当前浏览器，标「这台」），按节点分组显示配对关系，吊销。吊销节点（daemon）和节点设置里的「移除这台节点」一样：只有 hub 那一步，成功后这个浏览器也忘记它，确认框用同样的说明 |
 | `/settings/notifications` | **本浏览器的推送**：状态（未开启 / 已开启 / 被浏览器拒绝 / 不支持——不是安全上下文、没有 `PushManager`、iOS 没加到主屏）；「开启推送」→ `Notification.requestPermission()` → `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })` → `POST /api/push/subscriptions`（带本浏览器的 web 设备 id；还没配对过任何节点的浏览器没有设备 id，提示先配对或解锁一台节点）；「关闭」退订并 `DELETE`；「发送测试推送」→ `POST /api/push/test`。订阅过期 / 被换掉（`pushsubscriptionchange`）时 service worker 重新订阅并上报。**每个类别**一行 push / email 两个开关（顺序：`permission_requested`、`error`、`enroll_requested`、`security`、`follow_up`、`turn_finished`、`session_idle`；`follow_up` 是标了「待处理」的会话完成了，默认只开 push；只有前四类有邮件开关，其余的邮件开关禁用；`GET` / `PUT /api/me/notifications`；`email_available = false` 时邮件那一列禁用并说明原因：hub 没配 SMTP，或账号没绑定邮箱）。**本账号的其他推送订阅**列表（hub 给的 `device_name`、推送服务主机名），可删除。测试推送的结果按 `{ result, status? }` 显示（`error` 时带上推送服务回的状态码） |
-| `/settings/appearance` | 主题（跟随系统 / 浅 / 深）、语言、字号、紧凑模式、侧栏显示运行中的会话（Recent 组的开关，默认开）、禁止页面缩放（只在 iOS / Android 上显示）、思考过程显示（折叠 / 展开 / 隐藏）、Enter 行为 |
+| `/settings/appearance` | 主题（跟随系统 / 浅 / 深）、语言、字号、紧凑模式、侧栏显示运行中的会话（Recent 组的开关，默认开）、禁止页面缩放（只在 iOS / Android 上显示）、思考过程显示（折叠 / 展开 / 隐藏）、turn 完成时的提示音（`turnSound`，默认关，打开时试听一次）、turn 完成时震动（`turnVibrate`，默认关；只在 Android 上、有 `navigator.vibrate` 时显示——iOS Safari 没有这个 API，桌面浏览器没有马达，不给一个点了没用的开关）、Enter 行为。这两个只对 § 4.6 里「用户看着时实时结束」的 turn 起作用 |
 | `/settings/data` | 本机存储（导航里叫「本机存储」，两种模式都有）。**用量**：`navigator.storage.estimate()` 的已用 / 配额，文字加进度条，80% 以上变黄；浏览器不报告时说明不知道；下面一句说上限由浏览器按设备剩余空间定、清出空间会变大、无痕标签页少得多。**缓存**：缓存的会话事件条数（`events` 的条数，下面一句说明只留最近打开的 20 个会话、每个最多 2000 条，§ 6.2）和附件缓存的个数与大小；「清空缓存」先确认，确认框写明删掉什么（会话历史和附件的缓存，打开会话时从节点重新加载，节点离线时看不到）、留下什么（设备密钥、节点、草稿、未发送消息和它们的附件、会话列表、清单）。清空在一个事务里删掉全部 `events` 和 `event_meta`、把 `sessions.low_seq` 归零、删掉 `blobs` 里没被草稿 / 未发送消息 / 输入区 / 发送中的消息引用的记录（§ 6.2）；之后没打开的会话 `cached_seq` 归零，附件缓存的内存索引重建，存储横幅（§ 3.4）收起。**空间不足时保留数据**：`navigator.storage.persisted()` 的状态（已开启 / 未开启 / 不支持）；未开启时说明设备空间不足时浏览器可能删掉这个网站的数据（包括设备密钥，之后要重新配对），给「请求浏览器保留」（`navigator.storage.persist()`）；浏览器拒绝时说明它按使用情况决定，加到主屏幕或允许通知后可能不同。不提供导出本浏览器的设备密钥（ADR-23）|
 | `/settings/quota` | 仅 `multi`（导航里也只在 `multi` 出现）：`GET /api/quota` 的四项——设备、节点（daemon）、同时在线的连接、滚动 24 小时内的配对与接入次数。每行「已用 / 上限」和进度条，上限为 `null` 显示「不限」；用到 80% 标「快满了」，满了标「已满」。hub 通过 `quota_update` 推来的用量（存在 `hub` store 的 `quota`）一变，页面就重新拉一次 `/api/quota`（推送里没有每日配对次数）。页面上有去「设备」页的链接，移除不用的设备释放名额。配额类失败都指到这里：全局横幅（`auth_fail { quota }`，§ 3.4）、配对 / 接入 / 解锁出错时（`pair_failed` / `enroll_failed` 的 `quota`）错误文字后面的「查看用量」链接 |
 | `/settings/security` | 安全活动（hub 审计里本账号的部分） |
@@ -447,7 +447,7 @@ TanStack Router，文件式路由。`:node` 是 daemon 的 DeviceId，URL 里用
 - 标了「完成后提醒」（`follow_up`）的会话不是条目，不管它在什么状态；既标了又出错的会话按出错列一条。未读（红点）也不是条目：它只管「看过没有」
 - **排序**：有到期时间的（请求的 `expires_at_ms`、接入请求的有效期）在前，先到期的在前；其余按等待时长，等得最久的在前（请求按 `created_at_ms`，会话按 `updated_at_ms`）；时间相同按 key，顺序稳定
 - **数字**（「只算勾选的节点」在有分组时指当前空间，§ 4.13）：「现在」段的条数，在导航项、窄条、应用角标和标签页标题上是同一个数，**只算左栏节点过滤器勾选的节点**（旧版的角标不看过滤器、算所有节点）。包括：待答复的请求（含计划、提问）、接入请求、最近 7 天出错的会话、等待审批（缓存）的会话；不包括还在跑的会话、标了「完成后提醒」的会话、未读。没勾选的节点上「现在」段有条目时，节点过滤器的按钮上有一个小点（有文字说明「过滤器之外的节点上有 N 件在等」，不只靠颜色），数字本身不变。数字只在输入变了时重算（会话摘要里和「待处理」页有关的字段、请求、接入请求、过滤器），不为打开的会话每一条流式事件重算；有接入请求在倒计时时每秒一次，否则每分钟一次（出错会话的 7 天期限）
-- **「进行中」**：页面底部折叠成一行（数量），点开列出还在跑的会话（`running` / `starting` / `queued`；归档的、已经以权限请求列在「现在」里的、在等审批的——那些是「现在」里的「等待审批（缓存）」——除外），标了「完成后提醒」的写明（这个标记在这一页只有这一处出现）；再加上 agent 正在处理的清单项（`activity = working`；人自己把状态设成「处理中」的不在这里），点进去是那一项。清单项在这里有自己的一行，它派出的、还在跑的会话不再重复列。没有等用户的事时，上面是「没有等你的事」（焦点落在这个标题上），「进行中」照常在下面
+- **「进行中」**：页面底部折叠成一行（数量），点开列出还在跑的会话（`running` / `starting` / `queued`；归档的、已经以权限请求列在「现在」里的、在等审批的——那些是「现在」里的「等待审批（缓存）」——除外），标了「完成后提醒」的写明（这个标记在这一页只有这一处出现）；再加上 agent 正在处理的清单项（`activity = working`；人自己把状态设成「处理中」的不在这里），点进去是那一项。清单项在这里有自己的一行，它派出的、还在跑的会话不再重复列。没有等用户的事时，上面是「没有等你的事」（焦点落在这个标题上），「进行中」照常在下面。标题上方是 Logo，在列表从有到空的那一刻、以及进页面时本来就是空的那一次轻轻跳一下（约 520ms，一次性，不循环；要等勾选的节点同步定下来，页面在眼前——手机上藏在后面时不播，回到眼前再播；`prefers-reduced-motion` 下不动）。标题下面是一句今天的小结，只用这个浏览器本地的数据、不发请求：「今天：4 个会话有进展 · 在这个浏览器里答复了 12 个请求」。前一个数是勾选的节点上、没归档、`updated_at_ms` 在本地今天的会话数（`updated_at_ms` 是会话最后一个事件的时间）；后一个数节点不记，由这个浏览器自己数（`permission.respond` 成功一次加一，按节点存在 localStorage 的 `anycon.today`，过了本地零点从零开始，别的设备上的答复不在里面，所以文案写「在这个浏览器里」）。为 0 的那一项不写，两项都没有时换回原来的一句说明
 - 页面的段和条目类型是可扩展的结构（`SECTIONS`、`InboxItem`）：现在从上到下是「现在」「待验收」「稍后」
 
 **「待验收」段**：派发过、`activity = review` 的清单项（`activity` 是 daemon 按会话现在的情况算出来的，浏览器从不自己算，[daemon.md § 22.3](daemon.md#223-关联和-activity)），在「现在」和「稍后」之间，段标题上有个数。只列勾选的节点上的，等得最久的在前（时间用这一项最近一次修改的时间）。**不进导航项、手机标签栏、窄条、应用角标和标签页标题的数字**：它们不卡着正在跑的活，个数只写在段标题上。行上有「待验收」标签、这一项的标题、项目，下面一行是 agent 最后一段话的第一行加「改了 N 个文件 +a −d」（读这一项的「经过」和最近一个关联会话的文件列表，节点不在线就不读；结果文字是 agent 写的，折成一行、去掉控制字符和双向控制符）。行上的动作：**通过**（`state = done`，在这里处理的，选中和焦点落到这一段的下一条）、**再改改…**（选中这一条并打开详情里的输入框；要写点什么才发得出去，发给最近一个还存在的关联会话，这一项的 `activity` 由 daemon 随会话改回处理中，状态不动）、**打开改动**（会话页的「改动」视图）。详情里是结论（agent 最后一段话，同一条消毒的 Markdown 管线，从不当 HTML）、改动统计和同样三个动作，加「去验收页」。这一段的条目**不自动选中、不自动展开**（桌面默认选中第一条、手机默认展开第一条都只看「现在」段），审批的安全规则（选中跟着 key、占位、权限请求的解锁延迟）一条不变；在这一段里处理完一条，选中只落到这一段的下一条，不会落到别的段。
@@ -678,7 +678,7 @@ options: [ { id: "fast_mode", kind: "bool", label: "Fast mode", default: false }
 | `sessions` | 会话列表、每个会话的事件（按 seq） | IndexedDB |
 | `drafts` | 每个会话的未发送消息和草稿 | IndexedDB |
 | `rules` | 每个节点的规则和字数预算（`rule.list` / `rule.changed`，[§ 4.14](#414-规则-rules)）；规则的文字是用户内容，也可能是 agent 写的待确认的话 | **否**（规则整表只在内存里，没有整表离线缓存；同组最后期望另存 rule_outbox，退出并移除本设备、换账号或忘记节点时清掉） |
-| `prefs` | 外观（含左栏是否显示 Recent 组）、Enter 行为、各 `(节点, agent)` 的上次选项、右栏开合、「首页换成待处理」的说明是否看过（`homeNoticeSeen`）、选中的空间（`sidebarSpace`）或手点的节点（`sidebarNodes`）、「记一项」上次记到的节点（`lastTodoNode`）和每个空间各自的（`lastTodoNodeBySpace`） | localStorage |
+| `prefs` | 外观（含左栏是否显示 Recent 组、turn 完成时的提示音 `turnSound` 和震动 `turnVibrate`）、Enter 行为、各 `(节点, agent)` 的上次选项、右栏开合、「首页换成待处理」的说明是否看过（`homeNoticeSeen`）、选中的空间（`sidebarSpace`）或手点的节点（`sidebarNodes`）、「记一项」上次记到的节点（`lastTodoNode`）和每个空间各自的（`lastTodoNodeBySpace`） | localStorage |
 
 hub 的 REST 接口用 TanStack Query，不进 zustand。命令面板的内容搜索结果（§ 9.1）只活在面板自己的组件状态里：不进 store、不写 IndexedDB，关掉面板就丢。
 
@@ -820,7 +820,7 @@ Noise 的 wasm 在主线程跑：单条消息加解密是微秒级，开 Worker 
 | 场景 | 展示 |
 |---|---|
 | 这个浏览器没有节点 | 账号下有节点：`/unlock`；一台都没有：`/setup` 向导 |
-| 「待处理」里没有等你的事 | 「没有等你的事」+ 一句说明，下面是折叠的「进行中」（有还在跑的会话时） |
+| 「待处理」里没有等你的事 | Logo + 「没有等你的事」+ 今天的小结（没有可说的数字时是一句说明，§ 4.11），下面是折叠的「进行中」（有还在跑的会话时） |
 | 节点没有项目 | 插图 + 「新建项目」「克隆仓库」「打开已有目录」三个按钮 + 一句「或者直接发一条消息开始临时会话」 |
 | 项目没有会话 | 直接聚焦 composer |
 | 节点没有可用 agent | 卡片列出检测到的问题和修复命令，composer 禁用 |

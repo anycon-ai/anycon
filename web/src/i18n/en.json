@@ -202,6 +202,13 @@
     "willRemind": "Notify when done",
     "empty": "Nothing is waiting for you",
     "emptyBody": "Approvals, plans, questions, device requests, and sessions that failed show up here.",
+    "today": {
+      "line": "Today: {{facts}}",
+      "sessions_one": "{{count}} session moved forward",
+      "sessions_other": "{{count}} sessions moved forward",
+      "answered_one": "{{count}} request answered in this browser",
+      "answered_other": "{{count}} requests answered in this browser"
+    },
     "list": "Things waiting for you",
     "kind": {
       "permission": "Approval",
@@ -1146,6 +1153,14 @@
       "error": "Ended with an error",
       "max_turns": "Turn limit reached",
       "budget": "Budget reached"
+    },
+    "done": {
+      "took": "Took {{duration}}",
+      "files_one": "{{count}} file changed",
+      "files_other": "{{count}} files changed",
+      "sec": "{{s}}s",
+      "min": "{{m}}m {{s}}s",
+      "hour": "{{h}}h {{m}}m"
     }
   },
   "system": {
@@ -2058,6 +2073,10 @@
     "collapsed": "Collapsed",
     "expanded": "Expanded",
     "hidden": "Hidden",
+    "turnSound": "Sound when a turn finishes",
+    "turnSoundHint": "A short chime when a turn you are watching finishes. Turning it on plays it once.",
+    "turnVibrate": "Vibrate when a turn finishes",
+    "turnVibrateHint": "A short vibration when a turn you are watching finishes.",
     "enter": "Enter key",
     "enterHint": "Automatic sends on desktop and inserts a new line on touch devices.",
     "enterSend": "Sends",

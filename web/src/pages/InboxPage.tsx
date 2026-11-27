@@ -3,8 +3,9 @@ import { Button } from '@/ui/Button'
 import { supportsTwin, twinQuestions, useTwin } from '@/features/twin/store'
 import { useEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, ChevronRight, ListChecks, X } from 'lucide-react'
+import { ChevronRight, ListChecks, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { Logo } from '@/components/Logo'
 import { PageHeader } from '@/components/PageHeader'
 import { SessionDot } from '@/components/StatusDot'
 import { InboxActiveContext } from '@/features/inbox/active'
@@ -17,6 +18,7 @@ import { OVERLAY_CLASS, useInboxSelection, type InboxMode } from '@/features/inb
 import { useInbox } from '@/features/inbox/useInbox'
 import { useNodesSettled } from '@/features/inbox/useSettled'
 import { useInboxKeys } from '@/features/inbox/useInboxKeys'
+import { answeredToday, sessionsActiveToday } from '@/features/inbox/today'
 import type { ViewTodo } from '@/features/todos/types'
 import { cleanOneLine } from '@/features/todos/validate'
 import { formatRelative } from '@/lib/format'
@@ -214,7 +216,7 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
                 </section>
               )
             })}
-            {total === 0 && !outside && !(mode === 'inline' && sel.ghost) ? <EmptyInbox ref={empty} /> : null}
+            {total === 0 && !outside && !(mode === 'inline' && sel.ghost) ? <EmptyInbox ref={empty} nodes={pickedNodes} ready={ready} active={active} /> : null}
             <InProgress sessions={model.inProgress} todos={model.inProgressTodos} showNode={showNode} />
           </div>
         </div>
@@ -247,15 +249,35 @@ export function InboxPage({ active = true, locate, onLocateDone }: { active?: bo
   )
 }
 
-function EmptyInbox({ ref }: { ref: Ref<HTMLHeadingElement> }) {
+/**
+ * 「没有等你的事」。Logo 的一次性动效（`.moment-pop`）在这一块出现时播一次：列表刚被清空，或进页面时本来就是空的。
+ * 要等节点同步定下来（启动时缓存还没对上之前的「空」不算数）、页面在眼前（手机上藏在后面时不播，回到眼前再播）；
+ * 播过之后 class 留着，重渲染不会重播。下面一句是今天的小结（`features/inbox/today.ts`），没有可说的数字时换回原来的说明。
+ */
+function EmptyInbox({ ref, nodes, ready, active }: { ref: Ref<HTMLHeadingElement>; nodes: readonly string[]; ready: boolean; active: boolean }) {
   const { t } = useTranslation()
+  const [play, setPlay] = useState(false)
+  useEffect(() => {
+    if (ready && active) setPlay(true)
+  }, [ready, active])
+  const list = useSessions((s) => s.list)
+  const now = Date.now()
+  const sessions = sessionsActiveToday(list, nodes, now)
+  const answered = answeredToday(nodes, now)
+  const facts = [sessions > 0 ? t('inbox.today.sessions', { count: sessions }) : null, answered > 0 ? t('inbox.today.answered', { count: answered }) : null].filter((x): x is string => x !== null)
   return (
     <div className="flex flex-col items-center gap-2 px-4 py-10 text-center" data-testid="inbox-empty">
-      <CheckCircle2 className="size-8 text-success" aria-hidden />
+      <Logo withWord={false} markClassName={cn('size-9', play && 'moment-pop')} />
       <h2 ref={ref} tabIndex={-1} className="text-base font-semibold focus:outline-none focus-visible:underline">
         {t('inbox.empty')}
       </h2>
-      <p className="max-w-sm text-sm text-fg-subtle">{t('inbox.emptyBody')}</p>
+      {facts.length > 0 ? (
+        <p className="max-w-sm text-sm text-fg-muted" data-testid="inbox-today">
+          {t('inbox.today.line', { facts: facts.join(' · ') })}
+        </p>
+      ) : (
+        <p className="max-w-sm text-sm text-fg-subtle">{t('inbox.emptyBody')}</p>
+      )}
     </div>
   )
 }

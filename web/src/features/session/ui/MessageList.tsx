@@ -8,6 +8,7 @@ import { Button } from '@/ui/Button'
 import { cn } from '@/ui/cn'
 import { errorSeverity } from '../errors'
 import { latestSyncBlock, type ActivityInfo, type Block, type UserBlock } from '../reducer'
+import type { LiveFinish } from '../liveTurn'
 import { toolTree } from '../subagents'
 import { AssistantMessage, ErrorView, PendingBubble, PlanCard, SystemLine, ThinkingView, ToolNode, TurnDivider, TurnUsage, UserBubble, type ConflictActions } from './Messages'
 import { ActivityLine, NoticeLine } from './Notices'
@@ -69,6 +70,8 @@ export interface MessageListProps {
    * 或者还不知道）时才显示。
    */
   git?: { merging?: boolean; busy?: boolean; onResolve: () => void; onAbort: () => void }
+  /** 用户看着时实时结束的那个 turn（`useLiveTurnEnd`）：它的收尾行画对勾，`animate` 时描一遍。 */
+  liveFinish?: LiveFinish | null
 }
 
 /** `line`：一行灰字的块（思考、工具、系统提示、答复过的审批）。连着的几行之间只留很小的间距，像一张列表。`seq`：产生这一行的块的第一个事件的 seq。 */
@@ -172,7 +175,7 @@ function buildRows(p: MessageListProps): Row[] {
         })
         break
       case 'turn_done':
-        rows.push({ key: b.key, node: <TurnUsage block={b} copyText={turnText.length > 0 ? turnText.join('\n\n') : undefined} /> })
+        rows.push({ key: b.key, node: <TurnUsage block={b} copyText={turnText.length > 0 ? turnText.join('\n\n') : undefined} finish={p.liveFinish?.key === b.key ? (p.liveFinish.animate ? 'animate' : 'still') : undefined} /> })
         turnText = []
         break
       case 'error':

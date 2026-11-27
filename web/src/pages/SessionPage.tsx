@@ -18,6 +18,8 @@ import { isRunning, useDeviceLabel, useRespondPermission, useSessionData, useSes
 import { isActiveStatus } from '@/features/session/group'
 import { isFollowUp } from '@/features/session/marks'
 import { useMarkRead } from '@/features/session/useMarkRead'
+import { useLiveTurnEnd } from '@/features/session/liveTurn'
+import { primeChimeOnGesture } from '@/features/session/feedback'
 import { activeOptions } from '@/features/settings/resolve'
 import { latestSyncBlock, pendingPermissions, type UserBlock } from '@/features/session/reducer'
 import { backgroundCommands, isTurnActive, subagentRows } from '@/features/session/subagents'
@@ -187,6 +189,11 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
   // worktree 还没建好 / 已经删了 / 目录不见了的时候 cwd 不可用，不去拉
   const wtUsable = !worktree || worktree.state === 'active' || worktree.state === 'kept'
   useGitRefresh({ nodeId, sessionId, enabled: gitAvailable && wtUsable && !offline })
+
+  // 用户看着时结束的 turn：收尾行的对勾描一遍，按偏好响一声 / 震一下。提示音开着时在第一次点按里解锁音频
+  const liveFinish = useLiveTurnEnd(open)
+  const turnSound = usePrefs((s) => s.turnSound)
+  useEffect(() => (turnSound ? primeChimeOnGesture() : undefined), [turnSound])
 
   // turn 结束时给读屏播一句（token 级增量不播报）
   const [prevRunning, setPrevRunning] = useState(running)
@@ -478,6 +485,7 @@ export function SessionPage({ sessionId, focusSeq: wantedSeq, openView }: { sess
               sessionId={sessionId}
               todoOrigin={summary?.todo_id ? <TodoOriginLink nodeId={nodeId} todoId={summary.todo_id} label={t('permission.fromTodo')} testId="permission-todo" className="inline-flex min-w-0 items-center gap-1 text-accent-text hover:underline" /> : undefined}
               blocks={view?.blocks ?? []}
+              liveFinish={liveFinish}
               pending={pending}
               hasMoreOlder={open?.hasMoreOlder ?? false}
               loadingOlder={loadingOlder}

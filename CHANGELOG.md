@@ -111,6 +111,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Web UI: a long session title no longer squeezes the node and project names in the top bar's breadcrumb down to a letter or two. The title is what gets cut off; each earlier level is shown in full up to 30% of the breadcrumb's width.
 - Web UI: a Markdown link to a local path in a session (such as `[report](/Users/me/report.html)`) no longer opens that path on the hub's address, which never worked and sent the path to the hub.
 - Web UI: pairing with a code and unlocking with a node password no longer leave 64 MiB behind in the tab. The Argon2id key derivation they need ran in the page's own crypto module, whose memory never shrinks, so the tab kept it until it was reloaded. It now runs in a short-lived worker that is closed as soon as the key is ready, and the page no longer freezes while it runs. If the worker cannot start, the key is derived on the page as before.
 - Web UI: a node could stay disconnected until the page was reloaded when it came back online in the middle of a handshake, or when its key did not match. The finished handshake was freed a second time, the crypto module threw `null pointer passed to rust`, and every later attempt to reset the link threw the same error.

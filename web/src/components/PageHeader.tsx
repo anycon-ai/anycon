@@ -41,7 +41,9 @@ export function PageHeader({ crumbs = [], tabs, meta, actions, showNodeStatus = 
       {tabs ?? (
       <nav aria-label={t('common.breadcrumb')} className="flex min-w-0 flex-1 items-center gap-1 text-sm">
         {crumbs.map((c, i) => (
-          <span key={`${i}-${c.label}`} className={i === crumbs.length - 1 ? 'flex min-w-0 items-center gap-1' : 'hidden min-w-0 items-center gap-1 sm:flex'}>
+          // 前面几级不参与收缩，每级最多占面包屑区的 30%；放不下时截断的是最后一级。都按比例收缩的话，
+          // 一个长标题会把很短的节点名、项目名也挤成一两个字
+          <span key={`${i}-${c.label}`} className={i === crumbs.length - 1 ? 'flex min-w-0 items-center gap-1' : 'hidden max-w-[30%] shrink-0 items-center gap-1 sm:flex'}>
             {i > 0 ? <ChevronRight className="size-3.5 shrink-0 text-fg-subtle" aria-hidden /> : null}
             {c.onClick ? (
               <button type="button" onClick={c.onClick} aria-label={c.actionLabel} data-testid={c.testId} className="group flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left hover:bg-bg-hover">

@@ -1,5 +1,5 @@
 import { useRef, useState, type PointerEvent } from 'react'
-import { ArrowRightLeft, Bot, Check, ChevronRight, CircleDashed, MoreHorizontal, RotateCcw, Trash2, X } from 'lucide-react'
+import { ArrowRightLeft, Bot, Check, CircleDashed, MoreHorizontal, RotateCcw, Trash2, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { formatDateTime } from '@/lib/format'
 import { Chip } from '@/ui/Misc'
@@ -88,7 +88,7 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
   const repeatLine = item.repeat ? (closed ? repeatSummary(t, i18n.language, { ...item.repeat, next_ms: null }) : repeatSummary(t, i18n.language, item.repeat)) : undefined
   const meta = [item.project, nodeName, repeatLine, item.due_ms ? t('todos.dueAt', { time: formatDateTime(item.due_ms, i18n.language) }) : undefined].filter(Boolean).join(' · ')
   return (
-    <li className="relative select-none overflow-hidden rounded-lg border border-border bg-surface" data-testid="todo-row" data-id={item.id} data-state={item.state} data-selected={selected ? 'true' : undefined}>
+    <li className={cn('relative select-none overflow-hidden rounded-lg border', selected ? 'border-accent bg-accent-subtle' : 'border-border bg-surface')} data-testid="todo-row" data-id={item.id} data-state={item.state} data-selected={selected ? 'true' : undefined}>
       <div className="flex items-stretch" style={{ transform: dx ? `translateX(${dx}px)` : undefined, touchAction: 'pan-y' }} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={cancel} onContextMenu={(e) => { if ((e.nativeEvent as unknown as { pointerType?: string }).pointerType === 'touch') e.preventDefault() }}>
         {multi ? (
           <label className="grid min-h-11 w-11 shrink-0 cursor-pointer place-items-center">
@@ -107,11 +107,10 @@ export function TodoRow({ item, nodeName, selected, hasDraft, multi, checked, on
             else onOpen()
           }}
           aria-current={selected ? 'true' : undefined}
-          className={cn('flex min-h-11 min-w-0 flex-1 items-start gap-2 rounded-lg px-3 py-2.5 text-left hover:bg-bg-hover', selected && 'bg-accent-subtle')}
+          className={cn('flex min-h-11 min-w-0 flex-1 items-start gap-2 rounded-lg px-3 py-2.5 text-left', !selected && 'hover:bg-bg-hover')}
           data-testid="todo-main"
         >
-          {/* 选中 / 光标所在的行除了背景色，行首还有一个箭头：不只靠颜色 */}
-          {selected ? <ChevronRight className="mt-0.5 size-4 shrink-0" aria-hidden data-testid="todo-cursor" /> : null}
+          {/* 选中 / 光标所在的行整张卡换底色和边框色，不加行首标记：加标记会把标题挤开，选中时行会跳 */}
           <span className={cn('min-w-0 flex-1', closed && 'text-fg-subtle')}>
             <span className={cn('block truncate font-medium [overflow-wrap:anywhere]', closed && 'line-through')}>{cleanOneLine(item.title)}</span>
             {meta ? <span className="mt-0.5 block truncate text-xs text-fg-subtle">{meta}</span> : null}

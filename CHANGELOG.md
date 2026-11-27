@@ -112,6 +112,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Web UI: selecting a to-do (clicking it or moving to it with `J` / `K`) no longer adds an arrow in front of its title, which pushed the text aside and made the row jump. The selected card now has a tinted background and an accent border instead.
 - Web UI: a long session title no longer squeezes the node and project names in the top bar's breadcrumb down to a letter or two. The title is what gets cut off; each earlier level is shown in full up to 30% of the breadcrumb's width.
 - Web UI: a Markdown link to a local path in a session (such as `[report](/Users/me/report.html)`) no longer opens that path on the hub's address, which never worked and sent the path to the hub.
 - Web UI: pairing with a code and unlocking with a node password no longer leave 64 MiB behind in the tab. The Argon2id key derivation they need ran in the page's own crypto module, whose memory never shrinks, so the tab kept it until it was reloaded. It now runs in a short-lived worker that is closed as soon as the key is ready, and the page no longer freezes while it runs. If the worker cannot start, the key is derived on the page as before.

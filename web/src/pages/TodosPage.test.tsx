@@ -357,10 +357,12 @@ describe('keyboard safety', () => {
     expect(h.navigate).not.toHaveBeenCalled()
   })
 
-  it('the row with the cursor has a non-colour marker', async () => {
+  it('the row with the cursor is marked without adding anything that shifts its text', async () => {
     await load({ id: 'a', title: 'first' })
     press('j')
-    expect(within(row('a')).getByTestId('todo-cursor')).toBeInTheDocument()
+    expect(row('a')).toHaveAttribute('data-selected', 'true')
+    expect(within(row('a')).getByTestId('todo-main')).toHaveAttribute('aria-current', 'true')
+    expect(within(row('a')).queryByTestId('todo-cursor')).toBeNull()
   })
 })
 

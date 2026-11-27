@@ -826,6 +826,7 @@ impl Rpc {
                 audit: true,
                 worktree: c.worktrees.available(),
                 preview: c.preview.enabled(),
+                preview_dir: c.preview.enabled(),
                 todo: true,
                 rules: true,
                 rule_extract: true,

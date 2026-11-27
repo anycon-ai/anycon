@@ -4,7 +4,11 @@ import { configure, fireEvent, render, screen, waitFor, within } from '@testing-
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '@/i18n'
-import type { FsEntry, FsReadParams } from '@/protocol'
+import { resetDb } from '@/db'
+import { clearTickets } from '@/features/preview/ticket'
+import type { FsEntry, FsReadParams, PreviewLaunch, PreviewOpenParams } from '@/protocol'
+import { installFakeApi } from '@/test/fakeApi'
+import { LABEL, NODE_KEY, openResult, PREVIEW_TEMPLATE, previewNodeInfo, seedDeviceToken } from '@/test/preview'
 import { nodeEntry, project } from '@/test/factories'
 import { FakeRpc } from '@/test/fakeRpc'
 import { serveFs, type FakeFile } from '@/test/fakeFs'
@@ -22,6 +26,9 @@ vi.setConfig({ testTimeout: 20_000 })
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn' }))
+// hub 的预览 origin 模板（/api/config，react-query）：这个测试没有 QueryClientProvider，直接给值；缺省是 hub 没配预览
+const hubPreview = vi.hoisted(() => ({ template: null as string | null }))
+vi.mock('@/features/preview/availability', async (orig) => ({ ...(await orig<object>()), usePreviewTemplate: () => hubPreview.template }))
 
 import { FilesPage } from './FilesPage'
 
@@ -88,6 +95,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
   setRpc(null)
+  hubPreview.template = null
   io?.restore()
   io = null
   await i18n.changeLanguage('en')
@@ -543,5 +551,85 @@ describe('Markdown preview', () => {
     expect(screen.queryByTestId('files-markdown')).toBeNull()
     go('app/docs/index.md')
     expect(await screen.findByTestId('files-markdown')).toBeInTheDocument()
+  })
+})
+
+describe('web pages (directory preview, ADR-62)', () => {
+  const HTML: Record<string, FakeFile> = { 'app/reports/a b.html': '<!doctype html><title>Report</title><h1>QA</h1>' }
+
+  async function mountWeb(opts: { template: string | null; previewDir: boolean }) {
+    await resetDb()
+    clearTickets()
+    await seedDeviceToken()
+    serveFs(rpc, { ...FILES, ...HTML })
+    hubPreview.template = opts.template
+    const base = previewNodeInfo()
+    useNodes.setState({
+      byId: { [NODE]: nodeEntry({ id: NODE, publicKey: NODE_KEY, projects: [project({ name: 'app' })], info: { ...base, capabilities: { ...base.capabilities, preview_dir: opts.previewDir } } }) },
+      order: [NODE],
+      loaded: true,
+    })
+    render(<Harness initial="app/reports/a b.html" />)
+    await screen.findByTestId('file-code')
+  }
+
+  it('has no "Open as web page" without the hub’s preview domain or a node that supports folder previews', async () => {
+    await mountWeb({ template: null, previewDir: true })
+    expect(screen.queryByTestId('file-open-web')).toBeNull()
+  })
+
+  it('has no button on an older node', async () => {
+    await mountWeb({ template: PREVIEW_TEMPLATE, previewDir: false })
+    expect(screen.queryByTestId('file-open-web')).toBeNull()
+  })
+
+  it('opens the page in a new tab through a preview of the project folder; the source view stays as it is', async () => {
+    rpc.handlers['preview.open'] = () => openResult({ port: undefined, dir: 'app', session_id: undefined })
+    installFakeApi({ 'POST /api/preview/tokens': () => ({ token: 'hub-token', origin: `https://${LABEL}.preview.test`, expires_at_ms: Date.now() + 3_600_000 }) })
+    const tab = { opener: {} as unknown, document: { title: '', body: { textContent: '' } }, location: { replace: vi.fn() }, close: vi.fn() }
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+    try {
+      await mountWeb({ template: PREVIEW_TEMPLATE, previewDir: true })
+      const button = screen.getByTestId('file-open-web')
+      expect(button).toHaveTextContent('Open as web page')
+      await userEvent.click(button)
+      // 同步开出的空白标签页：没有 opener，等票据时显示一句话
+      expect(open).toHaveBeenCalledWith('', '_blank')
+      expect(tab.opener).toBeNull()
+      expect(tab.document.body.textContent).toBe('Opening the preview…')
+      await waitFor(() => expect(tab.location.replace).toHaveBeenCalledTimes(1))
+      expect(rpc.calls.find((c) => c.method === 'preview.open')!.params).toEqual({ dir: 'app' } satisfies PreviewOpenParams)
+      const url = new URL(tab.location.replace.mock.calls[0]![0] as string)
+      expect(url.origin).toBe(`https://${LABEL}.preview.test`)
+      // 这里的节点 id 不是 hex（decodePreviewLaunch 会拒绝），直接解出 JSON 看目标和路径
+      const b64 = url.hash.slice(1).replace(/-/g, '+').replace(/_/g, '/')
+      const launch = JSON.parse(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))) as PreviewLaunch
+      expect(launch.dir).toBe('app')
+      expect('port' in launch).toBe(false)
+      expect(launch.path).toBe('/reports/a%20b.html')
+      expect(tab.close).not.toHaveBeenCalled()
+      // 文件浏览里仍是源码
+      expect(screen.getByTestId('file-code')).toHaveTextContent('<h1>QA</h1>')
+    } finally {
+      open.mockRestore()
+    }
+  })
+
+  it('closes the blank tab and says why when the node refuses', async () => {
+    rpc.handlers['preview.open'] = () => {
+      throw new Error('nope')
+    }
+    const tab = { opener: {} as unknown, document: { title: '', body: { textContent: '' } }, location: { replace: vi.fn() }, close: vi.fn() }
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+    useUi.setState({ toasts: [] })
+    try {
+      await mountWeb({ template: PREVIEW_TEMPLATE, previewDir: true })
+      await userEvent.click(screen.getByTestId('file-open-web'))
+      await waitFor(() => expect(tab.close).toHaveBeenCalledTimes(1))
+      expect(tab.location.replace).not.toHaveBeenCalled()
+      expect(useUi.getState().toasts.some((x) => x.kind === 'error')).toBe(true)
+    } finally {
+      open.mockRestore()
+    }
   })
 })

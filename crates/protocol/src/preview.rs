@@ -1,5 +1,8 @@
-//! dev server 预览（ADR-39，docs/protocol.md § 11）：daemon 的 `preview.*` 方法、预览页的启动参数、
+//! 预览（ADR-39，docs/protocol.md § 11）：daemon 的 `preview.*` 方法、预览页的启动参数、
 //! 隧道握手和隧道消息的编解码。
+//!
+//! 预览的目标有两种，每张票据正好是其中一种：本机端口（dev server），或一个项目目录（目录预览，ADR-62：
+//! daemon 自己把目录里的文件按静态网站提供，agent 生成的 HTML 报告就这样打开）。
 //!
 //! 预览隧道是浏览器预览 origin 里的 service worker 和 daemon 之间的一条**独立 Noise 传输**
 //! （`Noise_NKpsk0`，见 `anycon_crypto::Handshake::preview_initiator` / `preview_responder`），不跑 JSON-RPC：
@@ -10,10 +13,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DeviceId, SessionId, TimestampMs};
 
-/// `preview.open` 参数：为本机 `port` 签发一张预览票据。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+/// `preview.open` 参数：为本机端口 `port` 或目录 `dir` 签发一张预览票据，两者正好给一个。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PreviewOpenParams {
-    pub port: u16,
+    /// 本机端口（dev server）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// 目录预览（ADR-62，spec/daemon.md § 19.6）：项目名（`fs.list` 路径的第一段，关联项目也是它的名字），
+    /// 或 `.scratch`（全部 scratch 会话的工作目录）。要 `capabilities.preview_dir`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     /// 从哪个会话发起（只用于界面展示和审计；端口是否允许不看它，见 spec/daemon.md § 19.3）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
@@ -22,9 +31,14 @@ pub struct PreviewOpenParams {
 /// `preview.open` 结果。`psk` 是票据的密钥，只交给预览页（放进 [`PreviewLaunch`]），不要写日志、不要发给 hub。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PreviewOpenResult {
-    /// 这个端口固定的预览 label（26 位小写 base32），预览 origin 是 `<label>.<预览域名>`。
+    /// 这个端口 / 目录固定的预览 label（26 位小写 base32），预览 origin 是 `<label>.<预览域名>`。
     pub label: String,
-    pub port: u16,
+    /// 端口票据的端口。和 `dir` 正好有一个。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// 目录票据的目录（daemon 规整过的写法，预览页的启动参数用这个值）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     /// 票据 id，32 个小写 hex（16 字节）。
     pub ticket_id: String,
     /// 票据密钥，64 个小写 hex（32 字节），Noise PSK。
@@ -44,7 +58,12 @@ pub struct PreviewCloseParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PreviewInfo {
     pub label: String,
-    pub port: u16,
+    /// 端口票据的端口。和 `dir` 正好有一个。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// 目录票据的目录。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     pub ticket_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
@@ -111,7 +130,12 @@ pub struct PreviewPortsResult {
 /// 隧道握手第二条消息（daemon → 预览页）的 payload，JSON。到这一条预览页才确认对端持有票据、是钉住的 daemon。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PreviewHello {
-    pub port: u16,
+    /// 票据的目标，和 [`PreviewLaunch`] 里的一致才算连对了：端口票据给 `port`，目录票据给 `dir`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// 目录票据的目录。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     pub expires_at_ms: TimestampMs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
@@ -129,7 +153,12 @@ pub struct PreviewLaunch {
     /// daemon 的 Noise 静态公钥，64 个小写 hex。预览页用它做 NK 握手（钉住 daemon）。
     pub node_public: String,
     pub label: String,
-    pub port: u16,
+    /// 票据的目标：端口或目录，正好有一个（取自 `preview.open` 的结果）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// 目录票据的目录。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     pub ticket_id: String,
     pub psk: String,
     /// hub 签发的预览令牌（`POST /api/preview/tokens`），预览连接凭它向 hub 认证。
@@ -694,6 +723,21 @@ mod tests {
         }
         let p = prologue("abc", &id);
         assert!(p.starts_with(PROLOGUE_PREFIX) && p.ends_with(&id));
+    }
+
+    #[test]
+    fn targets_are_a_port_or_a_dir() {
+        // 旧客户端只发 `port`：照样认
+        let old: PreviewOpenParams = serde_json::from_str(r#"{"port":5173,"session_id":"s"}"#).unwrap();
+        assert_eq!(old.port, Some(5173));
+        assert_eq!(old.dir, None);
+        let dir: PreviewOpenParams = serde_json::from_str(r#"{"dir":"web"}"#).unwrap();
+        assert_eq!((dir.port, dir.dir.as_deref()), (None, Some("web")));
+        // 没给的那个不出现在 JSON 里（旧的预览页按 `port` 是数字来认端口票据）
+        let hello = PreviewHello { port: None, dir: Some("web".into()), expires_at_ms: 1, session_id: None };
+        assert_eq!(serde_json::to_value(&hello).unwrap(), serde_json::json!({ "dir": "web", "expires_at_ms": 1 }));
+        let hello = PreviewHello { port: Some(3000), dir: None, expires_at_ms: 1, session_id: None };
+        assert_eq!(serde_json::to_value(&hello).unwrap(), serde_json::json!({ "port": 3000, "expires_at_ms": 1 }));
     }
 
     #[test]

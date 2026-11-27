@@ -993,6 +993,8 @@
     "downloadTooLarge": "This file is too large to download here ({{size}}). The limit is {{limit}}. Copy it from the node instead.",
     "downloadFailed": "Could not download the file.",
     "copyPath": "Copy path",
+    "openWeb": "Open as web page",
+    "openWebHint": "Opens this page in a new tab, through a preview of its project folder. Its scripts run there, not in anycon.",
     "binary": "Binary file, {{bytes}} bytes",
     "truncated": "Showing only the first {{shown}} of {{total}}.",
     "noHighlight": "Syntax highlighting is off for large files.",
@@ -2203,7 +2205,12 @@
   "markdown": {
     "loadImage": "Load image from {{host}}",
     "imageHint": "Remote images can leak information to their host, so they only load when you click - and the hub’s security policy may block them anyway.",
-    "openImage": "This image is from an external site and the hub’s security policy does not load it. Open it from {{host}}"
+    "openImage": "This image is from an external site and the hub’s security policy does not load it. Open it from {{host}}",
+    "localWebPage": "Open as a web page in a new tab",
+    "localFile": "Open in Files",
+    "localOutside": "This file isn’t in a project on this node, so anycon can’t open it. Click to copy the path: {{path}}",
+    "pathCopied": "Path copied",
+    "opening": "Opening the preview…"
   },
   "removeDevice": {
     "title": "Sign out and remove this device",
@@ -2307,7 +2314,9 @@
     "stop": "Stop preview",
     "stopTitle": "Stop the preview of port {{port}}?",
     "stopBody": "This disconnects the preview of this port on all your devices. Pages open elsewhere stop loading. You can start it again at any time.",
+    "stopBodyDir": "This disconnects the preview of this folder on all your devices. Pages open elsewhere stop loading. You can open it again at any time.",
     "stoppedToast": "Stopped the preview of port {{port}}",
+    "stoppedToastDir": "Stopped the preview of folder {{dir}}",
     "stoppedTitle": "Preview stopped",
     "stoppedBody": "The preview of port {{port}} was closed on every device.",
     "restart": "Start again",
@@ -2341,7 +2350,7 @@
     },
     "list": {
       "title": "Open previews",
-      "hint": "Preview tickets issued by this node’s devices and still valid. Closing one revokes every ticket of that port and disconnects it.",
+      "hint": "Preview tickets issued by this node’s devices and still valid. Closing one revokes every ticket of that port or folder and disconnects it.",
       "empty": "No open previews.",
       "offline": "The node is offline.",
       "tunnels_one": "{{count}} tunnel",
@@ -2350,7 +2359,9 @@
       "openedBy": "Opened by {{device}}",
       "expires": "Expires {{time}}",
       "close": "Close",
-      "closeTitle": "Close the preview of port {{port}}?"
+      "closeTitle": "Close the preview of port {{port}}?",
+      "closeTitleDir": "Close the preview of folder {{dir}}?",
+      "folder": "Folder {{dir}}"
     },
     "policy": {
       "title": "Which ports can be previewed",

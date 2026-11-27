@@ -40,9 +40,9 @@ export function ErrorBlock({ error, onRetry, testId = 'files-error' }: { error: 
 }
 
 /** 目录视图和 Markdown 里的链接共用：一个指向节点上某个路径的应用内链接。 */
-export function PathLink({ node, path, children, className, testId }: { node: string; path: string; children: ReactNode; className?: string; testId?: string }) {
+export function PathLink({ node, path, children, className, testId, title }: { node: string; path: string; children: ReactNode; className?: string; testId?: string; title?: string }) {
   return (
-    <Link to="/n/$node/files/$" params={{ node, _splat: path }} className={className} data-testid={testId} data-path={path}>
+    <Link to="/n/$node/files/$" params={{ node, _splat: path }} className={className} title={title} data-testid={testId} data-path={path}>
       {children}
     </Link>
   )

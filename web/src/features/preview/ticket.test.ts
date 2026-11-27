@@ -16,7 +16,7 @@ const NODE = PREVIEW_NODE
 let rpc: FakeRpc
 let api: ReturnType<typeof installFakeApi>
 
-const args = { nodeId: NODE, port: 5173, sessionId: 'sess_a', template: PREVIEW_TEMPLATE }
+const args = { nodeId: NODE, target: { port: 5173 }, sessionId: 'sess_a', template: PREVIEW_TEMPLATE }
 const tokenCalls = (): ApiCall[] => api.callsTo('POST /api/preview/tokens')
 const openCalls = () => rpc.calls.filter((c) => c.method === 'preview.open')
 
@@ -98,17 +98,40 @@ describe('ensureTicket / launchUrl', () => {
     expect(b).toBe(a)
     expect(openCalls()).toHaveLength(1)
     expect(tokenCalls()).toHaveLength(1)
-    expect(usableTicket(NODE, 5173)).toBe(a)
+    expect(usableTicket(NODE, { port: 5173 })).toBe(a)
     // 另一个端口是另一份缓存
-    await ensureTicket({ ...args, port: 3000 })
+    await ensureTicket({ ...args, target: { port: 3000 } })
     expect(openCalls()).toHaveLength(2)
+  })
+
+  it('folder previews: asks for { dir } (session id optional), keeps the dir the node returned, caches per (node, dir)', async () => {
+    rpc.handlers['preview.open'] = (params) => {
+      const p = params as PreviewOpenParams
+      return openResult({ port: undefined, dir: p.dir === 'web/' ? 'web' : (p.dir ?? undefined), session_id: undefined })
+    }
+    api.set('POST /api/preview/tokens', () => ({ token: 'hub-token', origin: `https://${LABEL}.preview.test`, expires_at_ms: Date.now() + 24 * HOUR_MS }))
+    const ticket = await ensureTicket({ nodeId: NODE, target: { dir: 'web' }, template: PREVIEW_TEMPLATE })
+    expect(openCalls()[0]!.params).toEqual({ dir: 'web' } satisfies PreviewOpenParams)
+    expect(ticket.target).toEqual({ dir: 'web' })
+    const launch = decodePreviewLaunch(new URL(launchUrl(ticket, '/reports/a.html')).hash)
+    expect(launch.dir).toBe('web')
+    expect('port' in launch).toBe(false)
+    expect(launch.path).toBe('/reports/a.html')
+    // 目录和端口各是各的缓存
+    expect(usableTicket(NODE, { dir: 'web' })).toBe(ticket)
+    expect(usableTicket(NODE, { port: 5173 })).toBeUndefined()
+    await ensureTicket({ nodeId: NODE, target: { dir: 'web' }, template: PREVIEW_TEMPLATE })
+    expect(openCalls()).toHaveLength(1)
+    await ensureTicket({ nodeId: NODE, target: { dir: 'docs' }, sessionId: 'sess_a', template: PREVIEW_TEMPLATE })
+    expect(openCalls()).toHaveLength(2)
+    expect(openCalls()[1]!.params).toEqual({ dir: 'docs', session_id: 'sess_a' } satisfies PreviewOpenParams)
   })
 
   it('asks again when less than 10 minutes are left', async () => {
     serve({ open: { expires_at_ms: Date.now() + REFRESH_MARGIN_MS - 60_000 } })
     const first = await ensureTicket(args)
-    expect(usableTicket(NODE, 5173)).toBeUndefined()
-    expect(knownTicket(NODE, 5173)).toBe(first)
+    expect(usableTicket(NODE, { port: 5173 })).toBeUndefined()
+    expect(knownTicket(NODE, { port: 5173 })).toBe(first)
     serve()
     const second = await ensureTicket(args)
     expect(second).not.toBe(first)
@@ -155,7 +178,7 @@ describe('ensureTicket / launchUrl', () => {
     const b = await ensureTicket(args).catch((e: unknown) => e)
     expect(b).toBeInstanceOf(ApiError)
     expect(b).toMatchObject({ status: 409, code: 'label_taken' })
-    expect(knownTicket(NODE, 5173)).toBeUndefined()
+    expect(knownTicket(NODE, { port: 5173 })).toBeUndefined()
   })
 
   it('a 401 from the token endpoint does not send the user to the login page (it is about the device, not the cookie)', async () => {
@@ -172,7 +195,7 @@ describe('closePreview', () => {
     await ensureTicket(args)
     await closePreview(NODE, LABEL)
     expect(rpc.calls.find((c) => c.method === 'preview.close')!.params).toEqual({ label: LABEL } satisfies PreviewCloseParams)
-    expect(knownTicket(NODE, 5173)).toBeUndefined()
+    expect(knownTicket(NODE, { port: 5173 })).toBeUndefined()
   })
 
   it('keeps the cache when the node refuses', async () => {
@@ -182,9 +205,9 @@ describe('closePreview', () => {
       throw rpcError('internal')
     }
     await expect(closePreview(NODE, LABEL)).rejects.toBeInstanceOf(RpcCallError)
-    expect(knownTicket(NODE, 5173)).toBeDefined()
+    expect(knownTicket(NODE, { port: 5173 })).toBeDefined()
     forgetLabel(NODE, LABEL)
-    expect(knownTicket(NODE, 5173)).toBeUndefined()
+    expect(knownTicket(NODE, { port: 5173 })).toBeUndefined()
   })
 })
 

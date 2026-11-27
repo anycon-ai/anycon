@@ -1,16 +1,20 @@
 // 文件预览（docs/spec/web.md § 4.7）：文本（shiki 高亮）、Markdown（渲染 / 源码）、图片、二进制。
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { AlertTriangle, FileImage as FileImageIcon, FileText, ImageOff } from 'lucide-react'
+import { AlertTriangle, ExternalLink, FileImage as FileImageIcon, FileText, ImageOff } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useInView } from '@/features/attachments/hooks'
 import { Markdown, type LocalFiles } from '@/components/Markdown'
+import { describePreviewError } from '@/features/preview/errors'
+import { openDirPreview } from '@/features/preview/openDir'
 import { formatBytes } from '@/lib/format'
 import { highlightCode } from '@/lib/highlight'
+import { toast } from '@/stores/ui'
 import { cn } from '@/ui/cn'
 import { CopyButton, Segmented, Skeleton } from '@/ui/Misc'
 import { IMAGE_CHUNK_BYTES, IMAGE_MAX_BYTES, readImage, readText, TEXT_MAX_BYTES } from './api'
 import { DownloadButton } from './DownloadButton'
 import { useAsync, useObjectUrl } from './hooks'
+import { isWebPage } from './localPaths'
 import { ErrorBlock, Loading } from './parts'
 import { baseName, fileKind, parentOf, resolveLocalUrl } from './paths'
 
@@ -31,9 +35,11 @@ export interface FilePreviewProps {
   reloadKey: number
   /** Markdown 里指向节点上文件 / 目录的链接怎么渲染（应用内跳转）；要稳定的引用，Markdown 是 memo 的。 */
   linkTo: (path: string, children: ReactNode) => ReactNode
+  /** 节点支持目录预览时是 hub 的预览 origin 模板（ADR-62）：HTML 文件的头部多一个「以网页打开」。 */
+  dirTemplate?: string | null
 }
 
-export function FilePreview({ nodeId, path, root, size, reloadKey, linkTo }: FilePreviewProps) {
+export function FilePreview({ nodeId, path, root, size, reloadKey, linkTo, dirTemplate }: FilePreviewProps) {
   const kind = useMemo(() => fileKind(baseName(path)), [path])
   // 换文件、刷新都当作新组件：旧文件的状态（视图切换、高亮结果）不带到新文件上
   const key = `${nodeId}\0${path}\0${reloadKey}`
@@ -42,13 +48,45 @@ export function FilePreview({ nodeId, path, root, size, reloadKey, linkTo }: Fil
       {kind.type === 'image' ? (
         <ImagePreview key={key} nodeId={nodeId} path={path} mime={kind.mime} size={size} />
       ) : (
-        <TextPreview key={key} nodeId={nodeId} path={path} root={root} markdown={kind.type === 'markdown'} lang={kind.type === 'text' ? kind.lang : undefined} size={size} linkTo={linkTo} />
+        <TextPreview
+          key={key}
+          nodeId={nodeId}
+          path={path}
+          root={root}
+          markdown={kind.type === 'markdown'}
+          lang={kind.type === 'text' ? kind.lang : undefined}
+          size={size}
+          linkTo={linkTo}
+          extra={dirTemplate && isWebPage(path) ? <OpenWebButton nodeId={nodeId} path={path} template={dirTemplate} /> : undefined}
+        />
       )}
     </div>
   )
 }
 
-/** 预览区的框架：文件名、大小、下载、复制路径，以及页面自己的工具（Markdown 的视图切换）和提示条。 */
+/** 头部按钮的样式（和下载按钮一样）。 */
+const HEADER_BUTTON = 'inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-fg-subtle hover:bg-bg-hover hover:text-fg'
+
+/** HTML 文件头部的「以网页打开」：在新标签页里经目录预览打开（ADR-62）。页面的脚本在预览 origin 里运行，不在 Web UI 里。 */
+function OpenWebButton({ nodeId, path, template }: { nodeId: string; path: string; template: string }) {
+  const { t } = useTranslation()
+  return (
+    <button
+      type="button"
+      className={HEADER_BUTTON}
+      onClick={() => void openDirPreview({ nodeId, fsPath: path, template, waitingText: t('markdown.opening'), onError: (e) => toast.error(describePreviewError(e, t)) })}
+      aria-label={t('files.openWeb')}
+      title={t('files.openWebHint')}
+      data-testid="file-open-web"
+    >
+      <ExternalLink className="size-3.5" aria-hidden />
+      {/* 窄屏上只有图标：头部还要放文件名 */}
+      <span className="hidden sm:inline">{t('files.openWeb')}</span>
+    </button>
+  )
+}
+
+/** 预览区的框架：文件名、大小、下载、复制路径，以及页面自己的工具（Markdown 的视图切换、HTML 的「以网页打开」）和提示条。 */
 function Frame({ nodeId, path, size, icon, toolbar, notices, children }: { nodeId: string; path: string; size?: number; icon: ReactNode; toolbar?: ReactNode; notices?: ReactNode; children: ReactNode }) {
   const { t } = useTranslation()
   return (
@@ -94,7 +132,7 @@ function Centered({ children, testId, tone }: { children: ReactNode; testId: str
   )
 }
 
-function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo }: { nodeId: string; path: string; root: string; markdown: boolean; lang?: string; size?: number; linkTo: (path: string, children: ReactNode) => ReactNode }) {
+function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo, extra }: { nodeId: string; path: string; root: string; markdown: boolean; lang?: string; size?: number; linkTo: (path: string, children: ReactNode) => ReactNode; extra?: ReactNode }) {
   const { t, i18n } = useTranslation()
   const { state, retry } = useAsync(`${nodeId}\0${path}`, () => readText(nodeId, path))
   const text = state.status === 'ready' ? state.data.text : ''
@@ -110,20 +148,20 @@ function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo }: { nod
   const icon = <FileText className="size-4" />
   if (state.status === 'loading')
     return (
-      <Frame nodeId={nodeId} path={path} size={size} icon={icon}>
+      <Frame nodeId={nodeId} path={path} size={size} icon={icon} toolbar={extra}>
         <Loading />
       </Frame>
     )
   if (state.status === 'error')
     return (
-      <Frame nodeId={nodeId} path={path} size={size} icon={icon}>
+      <Frame nodeId={nodeId} path={path} size={size} icon={icon} toolbar={extra}>
         <ErrorBlock error={state.error} onRetry={retry} />
       </Frame>
     )
   const { binary, truncated, bytes } = state.data
   if (binary)
     return (
-      <Frame nodeId={nodeId} path={path} size={bytes} icon={icon}>
+      <Frame nodeId={nodeId} path={path} size={bytes} icon={icon} toolbar={extra}>
         <Centered testId="files-binary">
           <FileImageIcon className="size-8 text-fg-subtle" aria-hidden />
           <p>{t('files.binary', { bytes: bytes.toLocaleString(i18n.language) })}</p>
@@ -138,6 +176,7 @@ function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo }: { nod
       {shown === 'source' && large && (lang || markdown) ? <Notice testId="files-no-highlight">{t('files.noHighlight')}</Notice> : null}
     </>
   )
+  // Markdown 有视图切换；HTML 有「以网页打开」（两者不会同时出现）
   const toolbar = markdown ? (
     <Segmented
       size="sm"
@@ -150,7 +189,9 @@ function TextPreview({ nodeId, path, root, markdown, lang, size, linkTo }: { nod
         { value: 'source', label: t('files.viewSource'), testId: 'files-md-source' },
       ]}
     />
-  ) : undefined
+  ) : (
+    extra
+  )
   return (
     <Frame nodeId={nodeId} path={path} size={bytes} icon={icon} toolbar={toolbar} notices={notices}>
       {text === '' && !truncated ? (

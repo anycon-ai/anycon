@@ -108,7 +108,10 @@ pub struct PreviewTicketRow {
     /// 32 位小写 hex（16 字节）。
     pub ticket_id: String,
     pub label: String,
+    /// 端口票据的端口；目录票据（`dir` 不为空）记 0。
     pub port: u16,
+    /// 目录票据的目录（ADR-62）：项目名或 `.scratch`。端口票据为空。
+    pub dir: Option<String>,
     /// 64 位小写 hex（32 字节）。
     pub psk: String,
     /// 签发它的设备。
@@ -124,6 +127,7 @@ impl std::fmt::Debug for PreviewTicketRow {
         f.debug_struct("PreviewTicketRow")
             .field("label", &self.label)
             .field("port", &self.port)
+            .field("dir", &self.dir)
             .field("device_id", &self.device_id)
             .field("expires_at_ms", &self.expires_at_ms)
             .finish_non_exhaustive()
@@ -1005,14 +1009,37 @@ impl Store {
             .ok_or_else(|| StoreError::Db(sqlx::Error::Protocol("preview label collision".into())))
     }
 
+    /// 这个目录已有的预览 label（目录预览，ADR-62）。
+    pub async fn preview_dir_label_get(&self, dir: &str) -> Result<Option<String>> {
+        let r = sqlx::query("SELECT label FROM preview_dir_labels WHERE dir = ?")
+            .bind(dir)
+            .fetch_optional(&self.pool)
+            .await?;
+        r.map(|r| r.try_get::<String, _>(0)).transpose().map_err(Into::into)
+    }
+
+    /// 给目录登记 label，规则同 [`Self::preview_label_ensure`]。
+    pub async fn preview_dir_label_ensure(&self, dir: &str, label: &str, now_ms: u64) -> Result<String> {
+        sqlx::query("INSERT OR IGNORE INTO preview_dir_labels (dir, label, created_at_ms) VALUES (?,?,?)")
+            .bind(dir)
+            .bind(label)
+            .bind(now_ms as i64)
+            .execute(&self.pool)
+            .await?;
+        self.preview_dir_label_get(dir)
+            .await?
+            .ok_or_else(|| StoreError::Db(sqlx::Error::Protocol("preview label collision".into())))
+    }
+
     pub async fn preview_ticket_insert(&self, t: &PreviewTicketRow) -> Result<()> {
         sqlx::query(
-            "INSERT INTO preview_tickets (ticket_id, label, port, psk, device_id, session_id, created_at_ms, expires_at_ms) \
-             VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO preview_tickets (ticket_id, label, port, dir, psk, device_id, session_id, created_at_ms, expires_at_ms) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
         )
         .bind(&t.ticket_id)
         .bind(&t.label)
         .bind(t.port as i64)
+        .bind(&t.dir)
         .bind(&t.psk)
         .bind(&t.device_id)
         .bind(&t.session_id)
@@ -1028,6 +1055,7 @@ impl Store {
             ticket_id: r.try_get("ticket_id")?,
             label: r.try_get("label")?,
             port: r.try_get::<i64, _>("port")? as u16,
+            dir: r.try_get("dir")?,
             psk: r.try_get("psk")?,
             device_id: r.try_get("device_id")?,
             session_id: r.try_get("session_id")?,
@@ -1074,11 +1102,30 @@ impl Store {
         now_ms: u64,
     ) -> Result<Option<PreviewTicketRow>> {
         let r = sqlx::query(
-            "SELECT * FROM preview_tickets WHERE device_id = ? AND port = ? AND expires_at_ms > ? \
+            "SELECT * FROM preview_tickets WHERE device_id = ? AND port = ? AND dir IS NULL AND expires_at_ms > ? \
              ORDER BY expires_at_ms DESC LIMIT 1",
         )
         .bind(device_id)
         .bind(port as i64)
+        .bind(now_ms as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+        r.as_ref().map(Self::ticket_row).transpose()
+    }
+
+    /// 同一设备对同一目录最近签发的未过期票据。
+    pub async fn preview_ticket_latest_dir(
+        &self,
+        device_id: &str,
+        dir: &str,
+        now_ms: u64,
+    ) -> Result<Option<PreviewTicketRow>> {
+        let r = sqlx::query(
+            "SELECT * FROM preview_tickets WHERE device_id = ? AND dir = ? AND expires_at_ms > ? \
+             ORDER BY expires_at_ms DESC LIMIT 1",
+        )
+        .bind(device_id)
+        .bind(dir)
         .bind(now_ms as i64)
         .fetch_optional(&self.pool)
         .await?;
@@ -2365,6 +2412,7 @@ mod tests {
             ticket_id: id.into(),
             label: label.into(),
             port,
+            dir: None,
             psk: "ab".repeat(32),
             device_id: device.into(),
             session_id: Some("sess_1".into()),
@@ -2412,5 +2460,30 @@ mod tests {
         // Debug 不带票据 id 和密钥
         let dbg = format!("{:?}", ticket("secret-id", "aaaa", 1, "d", 0, 0));
         assert!(!dbg.contains("secret-id") && !dbg.contains(&"ab".repeat(32)));
+    }
+
+    #[tokio::test]
+    async fn preview_dir_labels_and_dir_tickets_are_kept_apart_from_ports() {
+        let (_d, s) = temp_store().await;
+        assert_eq!(s.preview_dir_label_get("web").await.unwrap(), None);
+        assert_eq!(s.preview_dir_label_ensure("web", "dddd", 1).await.unwrap(), "dddd");
+        assert_eq!(s.preview_dir_label_ensure("web", "eeee", 2).await.unwrap(), "dddd");
+        assert!(s.preview_dir_label_ensure(".scratch", "dddd", 3).await.is_err(), "a label belongs to one dir");
+        // 端口和目录各有各的 label 表
+        assert_eq!(s.preview_label_get(0).await.unwrap(), None);
+
+        let mut dir = ticket("t1", "dddd", 0, "d1", 10, 1000);
+        dir.dir = Some("web".into());
+        s.preview_ticket_insert(&dir).await.unwrap();
+        s.preview_ticket_insert(&ticket("t2", "pppp", 3000, "d1", 20, 1000)).await.unwrap();
+        let back = s.preview_ticket_get("t1").await.unwrap().unwrap();
+        assert_eq!((back.port, back.dir.as_deref()), (0, Some("web")));
+        assert_eq!(s.preview_ticket_get("t2").await.unwrap().unwrap().dir, None);
+        assert_eq!(s.preview_ticket_latest_dir("d1", "web", 100).await.unwrap().unwrap().ticket_id, "t1");
+        assert_eq!(s.preview_ticket_latest_dir("d1", "other", 100).await.unwrap(), None);
+        assert_eq!(s.preview_ticket_latest_dir("d2", "web", 100).await.unwrap(), None);
+        // 端口 0 的查询不会拿到目录票据
+        assert_eq!(s.preview_ticket_latest("d1", 0, 100).await.unwrap(), None);
+        assert_eq!(s.preview_ticket_latest_dir("d1", "web", 1000).await.unwrap(), None, "expired");
     }
 }

@@ -14,3 +14,11 @@ export function usePreviewTemplate(): string | null {
 export function previewAvailable(template: string | null, info: NodeInfo | undefined): template is string {
   return template !== null && info?.capabilities.preview === true
 }
+
+/**
+ * 目录预览（ADR-62）能不能用：模板可用，且节点支持目录预览（`capabilities.preview_dir`，节点开着预览时才是 true）。
+ * 不能用时，消息里指向 HTML 文件的链接退回到文件浏览。
+ */
+export function previewDirAvailable(template: string | null, info: NodeInfo | undefined): template is string {
+  return template !== null && info?.capabilities.preview_dir === true
+}

@@ -18,8 +18,17 @@ import { Dialog } from '@/ui/Overlay'
 
 type Load = { status: 'loading' } | { status: 'ready'; previews: PreviewInfo[] } | { status: 'error'; error: unknown }
 
+/** 列表的顺序：端口票据在前（按端口），目录票据在后（按目录名），同一个目标按签发时间。 */
+export function comparePreviews(a: PreviewInfo, b: PreviewInfo): number {
+  const ka = typeof a.dir === 'string' ? 1 : 0
+  const kb = typeof b.dir === 'string' ? 1 : 0
+  if (ka !== kb) return ka - kb
+  if (ka === 1) return (a.dir ?? '') < (b.dir ?? '') ? -1 : (a.dir ?? '') > (b.dir ?? '') ? 1 : a.created_at_ms - b.created_at_ms
+  return (a.port ?? 0) - (b.port ?? 0) || a.created_at_ms - b.created_at_ms
+}
+
 /**
- * 节点设置 →「预览」（docs/spec/web.md § 4.8，ADR-39）：`preview.list` 的全部未过期票据——端口、所属会话、签发设备、过期时间、
+ * 节点设置 →「预览」（docs/spec/web.md § 4.8，ADR-39）：`preview.list` 的全部未过期票据——端口或目录（目录预览，ADR-62）、所属会话、签发设备、过期时间、
  * 此刻的隧道数。每行「关闭」调 `preview.close`：同一个 label 的全部票据一起作废，别的设备上开着的预览会断开。
  * 下面一段只读地说明端口策略；策略在 daemon 的配置里，这里改不了。
  */
@@ -39,7 +48,7 @@ export function PreviewTab({ nodeId }: { nodeId: string }) {
     let alive = true
     rpc()
       .request<PreviewListResult>(nodeId, 'preview.list', {})
-      .then((res) => alive && setLoad({ status: 'ready', previews: [...res.previews].sort((a, b) => a.port - b.port || a.created_at_ms - b.created_at_ms) }))
+      .then((res) => alive && setLoad({ status: 'ready', previews: [...res.previews].sort(comparePreviews) }))
       .catch((error: unknown) => {
         console.warn('anycon: could not list the previews', error)
         if (alive) setLoad({ status: 'error', error })
@@ -54,7 +63,7 @@ export function PreviewTab({ nodeId }: { nodeId: string }) {
     setBusy(true)
     try {
       await closePreview(nodeId, target.label)
-      toast.success(t('preview.stoppedToast', { port: target.port }))
+      toast.success(typeof target.dir === 'string' ? t('preview.stoppedToastDir', { dir: target.dir }) : t('preview.stoppedToast', { port: target.port }))
       setTarget(null)
       setReload((n) => n + 1)
     } catch (e) {
@@ -105,12 +114,18 @@ export function PreviewTab({ nodeId }: { nodeId: string }) {
           {previews.map((p) => {
             const session = p.session_id ? sessions[p.session_id] : undefined
             return (
-              <li key={p.ticket_id} data-testid="preview-row" data-label={p.label} data-port={p.port}>
+              <li key={p.ticket_id} data-testid="preview-row" data-label={p.label} data-port={p.port ?? undefined} data-dir={p.dir ?? undefined}>
                 <Card className="space-y-2 p-3">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className="font-mono font-medium" data-testid="preview-row-port">
-                      {p.port}
-                    </span>
+                    {typeof p.dir === 'string' ? (
+                      <span className="font-medium" data-testid="preview-row-dir">
+                        {t('preview.list.folder', { dir: p.dir })}
+                      </span>
+                    ) : (
+                      <span className="font-mono font-medium" data-testid="preview-row-port">
+                        {p.port}
+                      </span>
+                    )}
                     <Chip tone={p.tunnels > 0 ? 'success' : 'neutral'} testId="preview-row-tunnels">
                       {t('preview.list.tunnels', { count: p.tunnels })}
                     </Chip>
@@ -151,8 +166,8 @@ export function PreviewTab({ nodeId }: { nodeId: string }) {
       <Dialog
         open={target !== null}
         onOpenChange={(open) => !open && !busy && setTarget(null)}
-        title={t('preview.list.closeTitle', { port: target?.port ?? '' })}
-        description={t('preview.stopBody')}
+        title={typeof target?.dir === 'string' ? t('preview.list.closeTitleDir', { dir: target.dir }) : t('preview.list.closeTitle', { port: target?.port ?? '' })}
+        description={typeof target?.dir === 'string' ? t('preview.stopBodyDir') : t('preview.stopBody')}
         closeLabel={t('common.close')}
         testId="preview-close-dialog"
       >

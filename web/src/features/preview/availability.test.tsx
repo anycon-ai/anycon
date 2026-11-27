@@ -7,7 +7,7 @@ import { keys } from '@/api/queries'
 import type { ApiConfig } from '@/api/types'
 import { nodeInfo } from '@/test/factories'
 import { PREVIEW_TEMPLATE, previewNodeInfo } from '@/test/preview'
-import { previewAvailable, usePreviewTemplate } from './availability'
+import { previewAvailable, previewDirAvailable, usePreviewTemplate } from './availability'
 
 function templateFor(config: Partial<ApiConfig>): string | null {
   const client = new QueryClient()
@@ -38,5 +38,15 @@ describe('previewAvailable', () => {
     expect(previewAvailable(PREVIEW_TEMPLATE, nodeInfo())).toBe(false)
     expect(previewAvailable(PREVIEW_TEMPLATE, undefined)).toBe(false)
     expect(previewAvailable(PREVIEW_TEMPLATE, nodeInfo({ capabilities: { ...nodeInfo().capabilities, preview: false } }))).toBe(false)
+  })
+})
+
+describe('previewDirAvailable', () => {
+  it('needs the hub’s template and capabilities.preview_dir (older nodes do not have it)', () => {
+    const caps = previewNodeInfo().capabilities
+    expect(previewDirAvailable(PREVIEW_TEMPLATE, previewNodeInfo({ capabilities: { ...caps, preview_dir: true } }))).toBe(true)
+    expect(previewDirAvailable(null, previewNodeInfo({ capabilities: { ...caps, preview_dir: true } }))).toBe(false)
+    expect(previewDirAvailable(PREVIEW_TEMPLATE, previewNodeInfo())).toBe(false)
+    expect(previewDirAvailable(PREVIEW_TEMPLATE, undefined)).toBe(false)
   })
 })

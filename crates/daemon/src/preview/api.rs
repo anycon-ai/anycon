@@ -1,4 +1,5 @@
-//! `preview.*` RPC（docs/protocol.md § 5.7，docs/spec/daemon.md § 19.2）：签发 / 复用票据、作废、列出、列端口。
+//! `preview.*` RPC（docs/protocol.md § 5.7，docs/spec/daemon.md § 19.2）：签发 / 复用票据（端口或目录，ADR-62）、
+//! 作废、列出、列端口。
 //!
 //! 票据密钥（`psk`）只出现在 `preview.open` 的结果里和库里：不写日志、不进审计。
 
@@ -11,8 +12,9 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use serde_json::json;
 
+use super::dirserve;
 use super::ports::{self, Policy, Verdict};
-use super::{Preview, MAX_TICKETS_PER_DEVICE};
+use super::{Preview, Target, MAX_TICKETS_PER_DEVICE};
 use crate::clients::Caller;
 use crate::store::PreviewTicketRow;
 use crate::util::now_ms;
@@ -46,65 +48,100 @@ pub fn reusable(created_at_ms: u64, expires_at_ms: u64, now_ms: u64) -> bool {
 }
 
 impl Preview {
-    /// `preview.open { port, session_id? }`。
+    /// `preview.open { port | dir, session_id? }`：`port` 和 `dir` 正好给一个。
     pub async fn open(&self, caller: &Caller, p: PreviewOpenParams) -> RpcResult<PreviewOpenResult> {
         let cfg = self.d.config.get();
+        let target = match (p.port, p.dir.as_deref()) {
+            (Some(port), None) => Target::Port(port),
+            (None, Some(dir)) => Target::Dir(dir.to_string()),
+            _ => return Err(RpcError::new(ErrorCode::Invalid, "give exactly one of port and dir")),
+        };
         if !cfg.preview.enabled {
-            return Err(forbidden("disabled", "dev server preview is turned off on this node"));
+            return Err(forbidden("disabled", "preview is turned off on this node"));
         }
-        if p.port == 0 {
-            return Err(RpcError::new(ErrorCode::Invalid, "port must be 1-65535"));
+        match &target {
+            Target::Port(0) => return Err(RpcError::new(ErrorCode::Invalid, "port must be 1-65535")),
+            Target::Port(_) => {}
+            Target::Dir(dir) => {
+                // 名字合法、目录在（`invalid` / `not_found`）；之后每个请求还会再解析一次
+                let ws = self.d.workspace.clone();
+                let dir = dir.clone();
+                tokio::task::spawn_blocking(move || dirserve::resolve_dir(&ws, &dir)).await.map_err(internal)??;
+            }
         }
         if let Some(sid) = &p.session_id {
             self.d.sessions.get_summary(sid).await?;
         }
-        match self.check_port(p.port, false).await {
-            Verdict::Allowed => {}
-            Verdict::Disabled => return Err(forbidden("disabled", "dev server preview is turned off on this node")),
-            Verdict::NotAllowed => {
-                return Err(forbidden(
-                    "port_not_allowed",
-                    "this port is not served by a session; add it to preview.allow_ports to preview it",
-                ))
+        if let Target::Port(port) = target {
+            match self.check_port(port, false).await {
+                Verdict::Allowed => {}
+                Verdict::Disabled => return Err(forbidden("disabled", "preview is turned off on this node")),
+                Verdict::NotAllowed => {
+                    return Err(forbidden(
+                        "port_not_allowed",
+                        "this port is not served by a session; add it to preview.allow_ports to preview it",
+                    ))
+                }
             }
         }
 
         let _guard = self.open_lock.lock().await;
         let now = now_ms();
-        let label = match self.d.store.preview_label_get(p.port).await.map_err(internal)? {
-            Some(l) => l,
-            None => {
-                let fresh = wire::label_from_bytes(&random_array::<16>());
-                self.d.store.preview_label_ensure(p.port, &fresh, now).await.map_err(internal)?
-            }
+        let store = &self.d.store;
+        let label = match &target {
+            Target::Port(port) => match store.preview_label_get(*port).await.map_err(internal)? {
+                Some(l) => l,
+                None => {
+                    let fresh = wire::label_from_bytes(&random_array::<16>());
+                    store.preview_label_ensure(*port, &fresh, now).await.map_err(internal)?
+                }
+            },
+            Target::Dir(dir) => match store.preview_dir_label_get(dir).await.map_err(internal)? {
+                Some(l) => l,
+                None => {
+                    let fresh = wire::label_from_bytes(&random_array::<16>());
+                    store.preview_dir_label_ensure(dir, &fresh, now).await.map_err(internal)?
+                }
+            },
         };
-        let existing = self.d.store.preview_ticket_latest(&caller.device_id, p.port, now).await.map_err(internal)?;
+        let existing = match &target {
+            Target::Port(port) => store.preview_ticket_latest(&caller.device_id, *port, now).await,
+            Target::Dir(dir) => store.preview_ticket_latest_dir(&caller.device_id, dir, now).await,
+        }
+        .map_err(internal)?;
         let (row, reused) = match existing {
             Some(t) if reusable(t.created_at_ms, t.expires_at_ms, now) => (t, true),
             _ => {
                 let t = PreviewTicketRow {
                     ticket_id: hex::encode(random_array::<{ wire::TICKET_ID_LEN }>()),
                     label: label.clone(),
-                    port: p.port,
+                    // 目录票据的 port 记 0（迁移 0018）
+                    port: target.port().unwrap_or(0),
+                    dir: target.dir().map(str::to_string),
                     psk: hex::encode(random_array::<{ wire::PSK_LEN }>()),
                     device_id: caller.device_id.clone(),
                     session_id: p.session_id.clone(),
                     created_at_ms: now,
                     expires_at_ms: now + cfg.preview_ticket_ttl().as_millis() as u64,
                 };
-                self.d.store.preview_ticket_insert(&t).await.map_err(internal)?;
+                store.preview_ticket_insert(&t).await.map_err(internal)?;
                 self.trim_device_tickets(&caller.device_id, now).await;
                 (t, false)
             }
         };
         let session_id = p.session_id.or_else(|| row.session_id.clone());
+        let (audit_target, kind) = match &target {
+            Target::Port(port) => (port.to_string(), "port"),
+            Target::Dir(dir) => (dir.clone(), "dir"),
+        };
         self.d
             .audit
             .record(
                 caller,
                 "preview.open",
-                Some(&p.port.to_string()),
+                Some(&audit_target),
                 json!({
+                    "kind": kind,
                     "label": row.label,
                     "ticket_id": row.ticket_id,
                     "session_id": session_id,
@@ -115,7 +152,8 @@ impl Preview {
             .await;
         Ok(PreviewOpenResult {
             label: row.label,
-            port: row.port,
+            port: target.port(),
+            dir: target.dir().map(str::to_string),
             ticket_id: row.ticket_id,
             psk: row.psk,
             expires_at_ms: row.expires_at_ms,
@@ -160,10 +198,12 @@ impl Preview {
                     None if t.device_id == Caller::local_cli().device_id => Caller::local_cli().device_name,
                     None => t.device_id.chars().take(8).collect(),
                 };
+                let target = Target::of(&t);
                 PreviewInfo {
                     tunnels: in_use.get(&t.ticket_id).copied().unwrap_or(0),
                     label: t.label,
-                    port: t.port,
+                    port: target.port(),
+                    dir: target.dir().map(str::to_string),
                     ticket_id: t.ticket_id,
                     session_id: t.session_id,
                     created_by: t.device_id,

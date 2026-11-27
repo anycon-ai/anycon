@@ -237,21 +237,21 @@ impl Drop for AbortOnDrop {
 // ---------------------------------------------------------------- 响应体编码
 
 /// 边读边 gzip（快速档）。每收到一段就 sync flush：事件流 / 长轮询之类的响应不会被压缩器攒住。
-struct Gzip(GzEncoder<Vec<u8>>);
+pub(super) struct Gzip(GzEncoder<Vec<u8>>);
 
 impl Gzip {
-    fn new() -> Gzip {
+    pub(super) fn new() -> Gzip {
         Gzip(GzEncoder::new(Vec::new(), Compression::fast()))
     }
 
-    fn push(&mut self, data: &[u8]) -> Vec<u8> {
+    pub(super) fn push(&mut self, data: &[u8]) -> Vec<u8> {
         // 写内存 Vec 不会失败
         let _ = self.0.write_all(data);
         let _ = self.0.flush();
         std::mem::take(self.0.get_mut())
     }
 
-    fn finish(self) -> Vec<u8> {
+    pub(super) fn finish(self) -> Vec<u8> {
         self.0.finish().unwrap_or_default()
     }
 }
@@ -331,7 +331,7 @@ fn response_headers(map: &http::HeaderMap) -> Vec<(String, String)> {
 }
 
 /// 把 `data` 按 [`DATA_CHUNK`] 切开，逐段向窗口要额度再发出去。窗口关了（stream 结束）或隧道没了返回 `false`。
-async fn send_data(credit: &Credit, emit: &Emit, data: &[u8]) -> bool {
+pub(super) async fn send_data(credit: &Credit, emit: &Emit, data: &[u8]) -> bool {
     for chunk in data.chunks(DATA_CHUNK) {
         if !credit.acquire(chunk.len()).await {
             return false;

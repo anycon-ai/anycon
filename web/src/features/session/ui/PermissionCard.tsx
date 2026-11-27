@@ -15,6 +15,7 @@ import { AlwaysDoThis } from '@/features/rules/ui/AlwaysDoThis'
 import { openAfterAgentAnswer } from '@/features/rules/followUp'
 import type { PermissionBlock } from '../reducer'
 import { diffStats, syntheticDiff, toolFileChanges } from '../text'
+import { useSessionLocalFiles } from './localFilesContext'
 
 const DiffView = lazy(() => import('./DiffView').then((m) => ({ default: m.DiffView })))
 
@@ -77,6 +78,8 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
   // 「以后都这样」：只是本地的一个勾，不进答复的参数、不碰按钮的锁；答复成功之后才用得上
   const [always, setAlways] = useState(false)
   const needsNote = block.options.some((o) => o.needs_message)
+  // 计划里的本地文件路径指节点上的文件（web.md § 4.6「本地文件链接」）
+  const local = useSessionLocalFiles()
 
   if (block.resolved) {
     const { answers, message } = block.resolved
@@ -186,7 +189,7 @@ export function PermissionCard({ block, deviceLabel, onRespond, busy, targetMode
 
         {block.kind === 'plan' && block.detail.text ? (
           <div className="max-h-96 overflow-y-auto rounded-md border border-border bg-bg p-3" data-testid="permission-plan">
-            <Markdown text={block.detail.text} />
+            <Markdown text={block.detail.text} local={local} />
           </div>
         ) : null}
         {block.kind === 'other' || block.kind === 'mode_change' ? (

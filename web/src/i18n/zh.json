@@ -986,6 +986,8 @@
     "downloadTooLarge": "这个文件太大，无法在这里下载（{{size}}，上限 {{limit}}）。请直接从节点上取。",
     "downloadFailed": "无法下载这个文件。",
     "copyPath": "复制路径",
+    "openWeb": "以网页打开",
+    "openWebHint": "在新标签页里经项目目录的预览打开这个网页。它的脚本在那里运行，不在 anycon 里。",
     "binary": "二进制文件，{{bytes}} 字节",
     "truncated": "只显示了前 {{shown}}（共 {{total}}）。",
     "noHighlight": "文件较大，已关闭语法高亮。",
@@ -2179,7 +2181,12 @@
   "markdown": {
     "loadImage": "加载来自 {{host}} 的图片",
     "imageHint": "远程图片可能把信息泄露给对方主机，所以点击后才加载；hub 的安全策略也可能直接拦掉。",
-    "openImage": "此图片来自外部站点，hub 的安全策略不加载。从 {{host}} 打开"
+    "openImage": "此图片来自外部站点，hub 的安全策略不加载。从 {{host}} 打开",
+    "localWebPage": "在新标签页里以网页打开",
+    "localFile": "在文件浏览中打开",
+    "localOutside": "这个文件不在节点的项目目录里，anycon 打不开。点击复制路径：{{path}}",
+    "pathCopied": "已复制路径",
+    "opening": "正在打开预览…"
   },
   "removeDevice": {
     "title": "退出并移除本设备",
@@ -2278,7 +2285,9 @@
     "stop": "停止预览",
     "stopTitle": "停止端口 {{port}} 的预览？",
     "stopBody": "这会断开你所有设备上这个端口的预览，别处已打开的页面将无法继续加载。之后可以随时重新打开。",
+    "stopBodyDir": "这会断开你所有设备上这个目录的预览，别处已打开的页面将无法继续加载。之后可以随时重新打开。",
     "stoppedToast": "已停止端口 {{port}} 的预览",
+    "stoppedToastDir": "已停止目录 {{dir}} 的预览",
     "stoppedTitle": "预览已停止",
     "stoppedBody": "端口 {{port}} 的预览已在所有设备上关闭。",
     "restart": "重新开始",
@@ -2312,7 +2321,7 @@
     },
     "list": {
       "title": "已打开的预览",
-      "hint": "这个节点上各设备签发、仍然有效的预览票据。关闭一个会作废该端口的全部票据并断开连接。",
+      "hint": "这个节点上各设备签发、仍然有效的预览票据。关闭一个会作废该端口或目录的全部票据并断开连接。",
       "empty": "没有已打开的预览。",
       "offline": "节点不在线。",
       "tunnels_other": "{{count}} 条隧道",
@@ -2320,7 +2329,9 @@
       "openedBy": "由 {{device}} 打开",
       "expires": "{{time}}过期",
       "close": "关闭",
-      "closeTitle": "关闭端口 {{port}} 的预览？"
+      "closeTitle": "关闭端口 {{port}} 的预览？",
+      "closeTitleDir": "关闭目录 {{dir}} 的预览？",
+      "folder": "目录 {{dir}}"
     },
     "policy": {
       "title": "哪些端口可以预览",

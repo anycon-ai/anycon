@@ -2082,6 +2082,10 @@ export interface NodeCapabilities {
    */
   preview?: boolean;
   /**
+   * 支持目录预览（`preview.open { dir }`，ADR-62），且节点开着预览。旧 daemon 没有这个字段，读作 false。
+   */
+  preview_dir?: boolean;
+  /**
    * 支持规则提炼 RPC；没有该字段时按不支持处理。
    */
   rule_extract?: boolean;
@@ -2422,8 +2426,15 @@ export interface PreviewGoaway {
  * 隧道握手第二条消息（daemon → 预览页）的 payload，JSON。到这一条预览页才确认对端持有票据、是钉住的 daemon。
  */
 export interface PreviewHello {
+  /**
+   * 目录票据的目录。
+   */
+  dir?: string | null;
   expires_at_ms: number;
-  port: number;
+  /**
+   * 票据的目标，和 [`PreviewLaunch`] 里的一致才算连对了：端口票据给 `port`，目录票据给 `dir`。
+   */
+  port?: number | null;
   session_id?: string | null;
 }
 /**
@@ -2436,9 +2447,16 @@ export interface PreviewInfo {
    */
   created_by: string;
   created_by_name: string;
+  /**
+   * 目录票据的目录。
+   */
+  dir?: string | null;
   expires_at_ms: number;
   label: string;
-  port: number;
+  /**
+   * 端口票据的端口。和 `dir` 正好有一个。
+   */
+  port?: number | null;
   session_id?: string | null;
   ticket_id: string;
   /**
@@ -2452,6 +2470,10 @@ export interface PreviewInfo {
  * IndexedDB，立即从地址栏抹掉。
  */
 export interface PreviewLaunch {
+  /**
+   * 目录票据的目录。
+   */
+  dir?: string | null;
   /**
    * 票据和令牌里较早的那个过期时间。
    */
@@ -2469,7 +2491,10 @@ export interface PreviewLaunch {
    * 打开后先导航到的路径（以 `/` 开头，可带查询串）。
    */
   path: string;
-  port: number;
+  /**
+   * 票据的目标：端口或目录，正好有一个（取自 `preview.open` 的结果）。
+   */
+  port?: number | null;
   psk: string;
   ticket_id: string;
   /**
@@ -2485,10 +2510,18 @@ export interface PreviewListResult {
   previews: PreviewInfo[];
 }
 /**
- * `preview.open` 参数：为本机 `port` 签发一张预览票据。
+ * `preview.open` 参数：为本机端口 `port` 或目录 `dir` 签发一张预览票据，两者正好给一个。
  */
 export interface PreviewOpenParams {
-  port: number;
+  /**
+   * 目录预览（ADR-62，spec/daemon.md § 19.6）：项目名（`fs.list` 路径的第一段，关联项目也是它的名字），
+   * 或 `.scratch`（全部 scratch 会话的工作目录）。要 `capabilities.preview_dir`。
+   */
+  dir?: string | null;
+  /**
+   * 本机端口（dev server）。
+   */
+  port?: number | null;
   /**
    * 从哪个会话发起（只用于界面展示和审计；端口是否允许不看它，见 spec/daemon.md § 19.3）。
    */
@@ -2498,12 +2531,19 @@ export interface PreviewOpenParams {
  * `preview.open` 结果。`psk` 是票据的密钥，只交给预览页（放进 [`PreviewLaunch`]），不要写日志、不要发给 hub。
  */
 export interface PreviewOpenResult {
+  /**
+   * 目录票据的目录（daemon 规整过的写法，预览页的启动参数用这个值）。
+   */
+  dir?: string | null;
   expires_at_ms: number;
   /**
-   * 这个端口固定的预览 label（26 位小写 base32），预览 origin 是 `<label>.<预览域名>`。
+   * 这个端口 / 目录固定的预览 label（26 位小写 base32），预览 origin 是 `<label>.<预览域名>`。
    */
   label: string;
-  port: number;
+  /**
+   * 端口票据的端口。和 `dir` 正好有一个。
+   */
+  port?: number | null;
   /**
    * 票据密钥，64 个小写 hex（32 字节），Noise PSK。
    */

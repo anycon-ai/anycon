@@ -3,6 +3,7 @@ import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import { ImageOff } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import remarkGfm from 'remark-gfm'
+import { LOCAL_SCHEME } from '@/features/files/localPaths'
 import { CodeBlock } from './CodeBlock'
 
 const remarkPlugins = [remarkGfm]
@@ -15,9 +16,14 @@ function langOf(className: string | undefined): string | undefined {
 /** 浏览器自己就能显示、不会发请求的图片：内嵌的位图 `data:image/…` 和 `blob:`。（SVG 不放行。） */
 const INLINE_IMAGE = /^(?:data:image\/(?:png|jpe?g|gif|webp|avif|bmp)[;,]|blob:)/i
 
-/** react-markdown 默认会把 data: / blob: 的 src 清空；图片的这两种形式放行，其余走默认清洗（拦掉 javascript: 等）。 */
+/**
+ * react-markdown 默认会把 data: / blob: 的 src 清空；图片的这两种形式放行，其余走默认清洗（拦掉 javascript: 等）。
+ * `file:` URL 和 Windows 盘符路径（`C:\…`）也留下：会话消息把它们当节点上的本地路径处理（[`LocalFiles.absolutePaths`]）。
+ * 它们**从不**原样成为 `href` / `src`：没有本地路径处理时，链接显示成文字，图片由 `classifyImage` 拦掉。
+ */
 function urlTransform(url: string, key: string, node: { tagName?: string }): string {
   if (key === 'src' && node.tagName === 'img' && INLINE_IMAGE.test(url)) return url
+  if (LOCAL_SCHEME.test(url)) return url
   return defaultUrlTransform(url)
 }
 
@@ -114,18 +120,29 @@ function MarkdownImage({ src, alt }: { src: string; alt?: string }) {
 /**
  * 渲染的是节点上的某个文件（文件浏览，docs/spec/web.md § 4.7）时，文件里的相对图片和链接指向节点上的文件，不是 hub 上的地址：
  * 交给这里的回调，经 `fs.read` 取、在应用内跳转，浏览器不会拿相对地址去发请求。
+ * 会话消息（§ 4.6「本地文件链接」）也用它：agent 写的路径同样指节点上的文件，那时 `absolutePaths` 为 true。
  */
 export interface LocalFiles {
-  /** 相对地址 → 节点上的路径；解析不了（走出项目目录、`#锚点`）返回 null。 */
+  /** 本地地址 → 节点上的路径；解析不了（走出项目目录、`#锚点`、项目外的绝对路径）返回 null。 */
   resolve: (url: string) => string | null
   /** 渲染一张节点上的图片。 */
   image: (path: string, alt: string | undefined) => ReactNode
   /** 渲染一个指向节点上文件或目录的链接。 */
   link: (path: string, children: ReactNode) => ReactNode
+  /**
+   * 会话消息：`/` 开头的绝对路径、`file:` URL、盘符路径也是本地地址（交给 `resolve`，按节点上的项目目录找），
+   * 而不是 hub 上的地址。文件浏览里不开：那里 `/x` 相对项目目录。
+   */
+  absolutePaths?: boolean
+  /** 本地地址解析不了时链接怎么显示；不给就是普通文字。 */
+  unresolved?: (url: string, children: ReactNode) => ReactNode
 }
 
 /** 有协议（`https:`、`mailto:`、`data:`…）或 `//` 开头：不是相对地址。 */
 const isAbsoluteUrl = (url: string): boolean => url.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(url)
+
+/** 这个地址要不要交给 [`LocalFiles`]：相对地址总是；会话消息里还有绝对路径、`file:` 和盘符路径。 */
+const isLocalUrl = (local: LocalFiles, url: string): boolean => !isAbsoluteUrl(url) || (local.absolutePaths === true && LOCAL_SCHEME.test(url))
 
 /**
  * Markdown 渲染。原始 HTML 不会被解释：没有用 rehype-raw，react-markdown 把 HTML 节点当作文本转义输出
@@ -141,14 +158,17 @@ export const Markdown = memo(function Markdown({ text, streaming, local }: { tex
         urlTransform={urlTransform}
         components={{
           a: ({ node: _n, ...props }: ComponentProps<'a'> & { node?: unknown }) => {
-            if (local && typeof props.href === 'string' && !isAbsoluteUrl(props.href)) {
+            if (local && typeof props.href === 'string' && isLocalUrl(local, props.href)) {
               const path = local.resolve(props.href)
-              return path === null ? <span>{props.children}</span> : local.link(path, props.children)
+              if (path !== null) return local.link(path, props.children)
+              return local.unresolved ? local.unresolved(props.href, props.children) : <span>{props.children}</span>
             }
+            // `file:` / 盘符路径没人处理：不能变成可点的 href
+            if (typeof props.href === 'string' && LOCAL_SCHEME.test(props.href)) return <span>{props.children}</span>
             return <a {...props} target="_blank" rel="noopener noreferrer" />
           },
           img: ({ node: _n, src, alt }: ComponentProps<'img'> & { node?: unknown }) => {
-            if (local && typeof src === 'string' && src !== '' && !isAbsoluteUrl(src)) {
+            if (local && typeof src === 'string' && src !== '' && isLocalUrl(local, src)) {
               const path = local.resolve(src)
               return path === null ? alt ? <span className="text-fg-subtle">{alt}</span> : null : local.image(path, alt)
             }

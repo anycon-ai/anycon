@@ -21,6 +21,8 @@ vi.setConfig({ testTimeout: 20_000 })
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (orig) => mockRouter(await orig<object>(), navigate, { node: 'nnnnnnnn' }))
+// HTML 的「以网页打开」读 hub 的 /api/config（react-query）；这个测试没有 QueryClientProvider，也不涉及预览：当作 hub 没配预览
+vi.mock('@/features/preview/availability', async (orig) => ({ ...(await orig<object>()), usePreviewTemplate: () => null }))
 
 import { FilesPage } from './FilesPage'
 

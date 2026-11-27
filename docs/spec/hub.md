@@ -465,7 +465,7 @@ hub 对 `twin_question` 只识别类别词，不解析 Bot 的问题或回答。
 
 ## 13. 预览
 
-[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。hub 在第二个泛域名上为 dev server 预览提供一个很小的 HTTP 表面和一种新的 WebSocket 连接；隧道里的内容 hub 看不到（[protocol.md § 11](../protocol.md#11-预览隧道)）。
+[ADR-39](../decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)。hub 在第二个泛域名上为 dev server 预览提供一个很小的 HTTP 表面和一种新的 WebSocket 连接；隧道里的内容 hub 看不到（[protocol.md § 11](../protocol.md#11-预览隧道)）。目录预览（[ADR-62](../decisions.md#adr-62-消息里的本地文件链接在应用内打开html-报告经预览隧道按项目目录提供)）走同一套，hub 这边没有区别：label 背后是端口还是项目目录，只有 daemon 知道。
 
 ### 13.1 配置
 
@@ -539,4 +539,4 @@ base-uri 'none'; form-action 'none'
 | `preview_labels` | label（主键）、node_id、account_id、created_at_ms |
 | `preview_tokens` | token_hash（主键）、label、node_id、account_id、device_id（签发它的设备）、created_at_ms、expires_at_ms |
 
-都是元数据：hub 知道哪个账号的哪台节点有哪些 label、谁什么时候申请了令牌；不知道 label 对应哪个端口。新表放在新的 migration（`0002_preview.sql`，SQLite 和 Postgres 各一份）里。
+都是元数据：hub 知道哪个账号的哪台节点有哪些 label、谁什么时候申请了令牌；不知道 label 对应哪个端口或目录。新表放在新的 migration（`0002_preview.sql`，SQLite 和 Postgres 各一份）里。

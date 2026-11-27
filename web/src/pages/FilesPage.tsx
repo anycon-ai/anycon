@@ -12,6 +12,7 @@ import { FileTree, useExpanded } from '@/features/files/FileTree'
 import { useDirCache, type DirCache } from '@/features/files/hooks'
 import { ErrorBlock, Loading, PathLink } from '@/features/files/parts'
 import { baseName, crumbsOf, parentOf, splitPath, treeRoot } from '@/features/files/paths'
+import { previewDirAvailable, usePreviewTemplate } from '@/features/preview/availability'
 import { useCurrentNode, useNodeParam } from '@/lib/nav'
 import { useIsWide } from '@/lib/useMediaQuery'
 import type { NodeEntry } from '@/stores/nodes'
@@ -51,6 +52,9 @@ function FilesBrowser({ nodeId, entry, path }: { nodeId: string; entry: NodeEntr
   const online = entry.conn === 'ready'
   const showHidden = usePrefs((s) => s.filesShowHidden)
   const root = treeRoot(path)
+  // HTML 文件的「以网页打开」（目录预览，ADR-62）：hub 配了预览、节点也支持
+  const previewTemplate = usePreviewTemplate()
+  const dirTemplate = previewDirAvailable(previewTemplate, entry.info) ? previewTemplate : null
   const cache = useDirCache(nodeId, online)
   const { load } = cache
   const [expanded, setExpanded] = useExpanded(root)
@@ -134,7 +138,7 @@ function FilesBrowser({ nodeId, entry, path }: { nodeId: string; entry: NodeEntr
         preview = <ErrorBlock error={sel.error} onRetry={() => load(parent)} />
         break
       case 'file':
-        preview = <FilePreview nodeId={nodeId} path={path} root={root} size={sel.size} reloadKey={reloadKey} linkTo={linkTo} />
+        preview = <FilePreview nodeId={nodeId} path={path} root={root} size={sel.size} reloadKey={reloadKey} linkTo={linkTo} dirTemplate={dirTemplate} />
         break
     }
     const previewPane = (

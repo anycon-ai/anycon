@@ -138,6 +138,26 @@ describe('node settings: closing a preview', () => {
     expect(useUi.getState().toasts.map((x) => x.text)).toContain('Stopped the preview of port 5173')
   })
 
+  it('folder previews (ADR-62) are listed after the ports as "Folder <name>" and close the same way', async () => {
+    serve([
+      previewInfo({ port: undefined, dir: 'web', ticket_id: '1'.repeat(32), label: 'bcdefghijklmnopqrstuvwxyz2' }),
+      previewInfo({ port: 5173, ticket_id: '2'.repeat(32) }),
+    ])
+    const user = userEvent.setup()
+    render(<PreviewTab nodeId={NODE} />)
+    const rows = await screen.findAllByTestId('preview-row')
+    expect(rows.map((r) => r.getAttribute('data-port') ?? r.getAttribute('data-dir'))).toEqual(['5173', 'web'])
+    expect(within(rows[1]!).getByTestId('preview-row-dir')).toHaveTextContent('Folder web')
+    expect(within(rows[1]!).queryByTestId('preview-row-port')).toBeNull()
+    await user.click(within(rows[1]!).getByTestId('preview-row-close'))
+    const dialog = await screen.findByTestId('preview-close-dialog')
+    expect(dialog).toHaveTextContent('Close the preview of folder web?')
+    expect(dialog).toHaveTextContent('this folder')
+    await user.click(screen.getByTestId('preview-close-confirm'))
+    await waitFor(() => expect(closeCalls()).toEqual([{ label: 'bcdefghijklmnopqrstuvwxyz2' }]))
+    await waitFor(() => expect(useUi.getState().toasts.map((x) => x.text)).toContain('Stopped the preview of folder web'))
+  })
+
   it('cancelling sends nothing', async () => {
     serve()
     const user = userEvent.setup()

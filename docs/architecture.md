@@ -66,7 +66,7 @@ hub **不**做：解析消息内容、存会话历史、存附件、搜索、运
 | 会话管理 | 创建、恢复、取消、并发上限 |
 | adapter | 拉起 agent 进程，把 agent 的事件流翻译成协议事件，把用户输入和权限答复送回去 |
 | 审计 | 本地记录谁通过哪个设备做了什么 |
-| 预览 | 给已配对设备签发预览票据；接受预览页的 Noise 隧道，把里面的 HTTP / WebSocket 转给本机允许的端口（[spec/daemon.md § 19](spec/daemon.md#19-预览)） |
+| 预览 | 给已配对设备签发预览票据；接受预览页的 Noise 隧道，把里面的 HTTP / WebSocket 转给本机允许的端口，或者自己用项目目录里的文件回答（目录预览，[ADR-62](decisions.md#adr-62-消息里的本地文件链接在应用内打开html-报告经预览隧道按项目目录提供)）（[spec/daemon.md § 19](spec/daemon.md#19-预览)） |
 | 服务 | `anycon service install` 注册 launchd / systemd / Windows 计划任务（[ADR-42](decisions.md#adr-42-windows命名管道job-object计划任务)） |
 | 更新检查 | 缺省开：大约每天一次 `GET https://anycon.ai/releases.json`，只带 `User-Agent: anycon/<版本> (<os>; <arch>)`，有新版本就提示，不下载不安装；`[update] check = false` / `ANYCON_UPDATE_CHECK=0` 关掉（[spec/daemon.md § 24](spec/daemon.md#24-更新检查)，[ADR-57](decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)，谁看得到什么见 § 5.6） |
 
@@ -183,7 +183,7 @@ hub 这边：
 | 节点口令（只存 Argon2id 派生值）、接入失败计数 | ❌ | ✅ | ❌ 不保存 |
 | 明文内容 | ❌ 不接触（前提见 § 5.6：客户端代码未被 hub 篡改） | ✅ | ✅ |
 | Web 客户端代码（JS / wasm） | ✅ 下发 | — | 浏览器执行；能读到该 origin 下的私钥和明文缓存 |
-| 预览（ADR-39） | label → 节点、令牌哈希 | label → 端口、票据（含密钥） | 预览 origin 的 IndexedDB 里存着令牌和票据；dev server 的内容只在隧道两端 |
+| 预览（ADR-39、ADR-62） | label → 节点、令牌哈希 | label → 端口或项目目录、票据（含密钥） | 预览 origin 的 IndexedDB 里存着令牌和票据；dev server 的内容和目录预览的文件只在隧道两端 |
 
 **推论：**
 
@@ -299,6 +299,7 @@ hub 这边：
 | Bot 连接（[spec/daemon.md § 27](spec/daemon.md#27-bot-连接)） | **Bot 连接让一个节点的 Bot 在另一个节点（B）上记项并派发，B 因此多了一台受限设备（`twin` 种类）。** 只能由人建立：在 B 上用 `node.twin_link_code` 发出一个只接受 Bot 设备的 16 位短码（10 分钟有效、同一时间一个），普通短码、接入码和节点口令一律不接受 `twin` 种类的设备。限制由 B 的 daemon 按设备种类强制，不是靠对方自觉：`twin` 设备只能调一张方法白名单，而且只能碰它自己建的项和它自己派出的会话（名单之外、别人的项和会话一律 `forbidden`，`forbidden` 先于 `not_found`，探测不出别人的东西存不存在）；推给它的通知只有它自己的项和会话的四种，会话列表、权限请求、清单、接入、安全事件、项目和 agent 的变化都不推，也不发 `notify`；`node.info` 不给它目录路径和判断后端。范围（开放哪些项目、同时几个会话、每天几次、用哪个 agent 和模式）存在 B 上、由 B 的人定，缺省什么都不开放，派发的会话固定带「不 push、不开 PR」和 worktree。B 的 `[twin] accept_links = false`（远程只能收紧）随时断开所有 Bot 连接。**A 被入侵、A 的判断被注入，都能在 B 对这条连接开放的项目里让 B 的 agent 干活**；上限是 B 的范围设置、B 上 agent 的审查器和「不 push、不开 PR」（命令模式的护栏，不是沙箱边界）。A 上的标题、正文和 Bot 的说明会写进 B 的数据库，B 上会话的结果会取回 A；经 hub 的仍是端到端密文，hub 多看到的元数据是「A 的 Bot 这台设备和 B 配了对」，以及两者之间流量的大小和时间。Bot 设备的密钥只在 A 的 daemon 进程里，没有给判断后端或 A 上别的本机进程用的代理，也没有「经 A 调 B」的 RPC 方法：B 上的动作只由 A 的 Bot 的计划（A 的 daemon 确定性地执行）和 daemon 后台对远程项做的只读同步发出，A 上别的本机进程没有直接用 B 的入口，只能像用户一样往 A 的清单里记项、交给 Bot（agent 记的项要人先收下）。建立和吊销时，B 给它所有已配对的设备发安全事件和 `security` 推送并记审计。已有 Bot 设备的 B 降级到不认识 `twin` 种类的旧版本之前，先吊销这些设备。 |
 | 提示注入的 agent 借浏览器外泄数据 | Markdown 里的远程图片默认不加载（点击才加载）；hub 给 Web UI 加 CSP（`connect-src 'self'`、`img-src 'self' data: blob:`、`frame-ancestors 'none'`），页面不能向第三方发请求。agent 自己的网络请求走权限审批 |
 | 预览页里的 dev app 攻击 Web UI | dev app 是 agent 写的任意代码。它跑在独立的预览 origin 上（另一个可注册域名，hub 启动时检查），读不到 Web UI 的 IndexedDB 和 cookie；预览运行时和 Web UI 分开构建、分开嵌入，Web UI 的 origin 上注册不了预览的 service worker；内嵌预览的 iframe 不给 `allow-top-navigation`，Web UI 不处理来自它的消息（[ADR-39](decisions.md#adr-39-预览-dev-servernoise-隧道里的端口转发)） |
+| 目录预览里的 HTML 报告读项目文件、外发（[ADR-62](decisions.md#adr-62-消息里的本地文件链接在应用内打开html-报告经预览隧道按项目目录提供)） | 报告是 agent 写的任意代码，和 dev app 一样跑在独立的预览 origin 上，读不到 Web UI 的密钥和登录态。它能经隧道读到同一个项目目录里的文件，再发给第三方（预览 origin 不限制外发请求）。daemon 只读地提供这一个项目目录（scratch 会话合用 `.scratch`），路径检查和 `fs.read` 同一套；不给以 `.` 开头的文件和目录（`.git`、`.env` 等；只放行 worktree 所在的 `.anycon/worktrees/<名字>/` 前缀），不列目录。报告只在用户点开时运行。项目外的文件不提供，`fs` 的边界没有放宽 |
 | 经预览访问 daemon 机器上的其他服务 | daemon 只转发到回环地址，默认只放行会话自己起的服务监听的端口，其余端口要在那台机器上写进 `preview.allow_ports`；本机 hub 的端口永远不行。票据由 daemon 签发、用 Noise PSK 校验，hub 伪造不了；hub 的预览令牌另外保证只有和这台节点配对过的设备能申请。残余：预览 origin 里的令牌和票据对 dev app 的 JS 可见，拿到它们的人在过期前能访问这个端口 |
 | 账号被盗 | 盗号者能看元数据、能发起接入请求，但成为设备需要短码（只能从已配对设备或 daemon 机器获得）、已配对设备的批准，或节点口令，三样都不经 hub（§ 5.2.1）。他能做的坏事：用接入请求反复推送骚扰你、把节点口令接入试到锁死；已配对设备不受影响，每次都有通知 |
 | 邮箱或 GitHub / Google 账号被盗 | 等同账号被盗，权限同样小 |

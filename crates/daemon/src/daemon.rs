@@ -269,6 +269,7 @@ impl Daemon {
             outbox: outbox.clone(),
             audit: audit.clone(),
             sessions: sessions.clone(),
+            workspace: workspace.clone(),
             peers: peers.clone(),
             env: env.base.clone(),
         });

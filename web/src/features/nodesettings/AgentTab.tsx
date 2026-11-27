@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, Save } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { AgentInfo, AgentListResult } from '@/protocol'
@@ -12,6 +12,8 @@ import { useNodes } from '@/stores/nodes'
 import { toast } from '@/stores/ui'
 import { Button } from '@/ui/Button'
 import { Card, Chip, type Tone } from '@/ui/Misc'
+import { ConfigItemsForm } from './ConfigItemsForm'
+import { agentKeyOf } from './limits'
 
 const STATUS_TONE: Record<AgentInfo['status'], Tone> = {
   ready: 'success',
@@ -115,7 +117,24 @@ function AgentCard({ nodeId, agent, offline }: { nodeId: string; agent: AgentInf
             </Button>
           </div>
         ) : null}
+        {agent.status === 'ready' ? <AgentConfig nodeId={nodeId} agentId={agent.id} /> : null}
       </div>
     </Card>
+  )
+}
+
+/**
+ * 这个 agent 在节点上的设置（`agents.<id>.*` 里白名单允许远程改的键，ADR-64）：和「限制」同一个表单，走
+ * `node.get_config` / `node.set_config`。不是新会话的默认值，对它的所有会话立即生效，所以和上面分开保存。
+ * 节点没列出这个 agent 的键（旧 daemon）时整块不显示。
+ */
+function AgentConfig({ nodeId, agentId }: { nodeId: string; agentId: string }) {
+  const { t } = useTranslation()
+  const include = useCallback((key: string) => agentKeyOf(key)?.agent === agentId, [agentId])
+  const heading = useMemo(() => ({ title: t('nodeSettings.agentConfigTitle'), hint: t('nodeSettings.agentConfigHint') }), [t])
+  return (
+    <div className="mt-4 border-t border-border pt-4 empty:hidden">
+      <ConfigItemsForm nodeId={nodeId} include={include} prefix={`agent-config-${agentId}`} embedded={heading} />
+    </div>
   )
 }

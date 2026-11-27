@@ -66,8 +66,6 @@ fn err(code: ErrorCode, msg: impl Into<String>) -> RpcError {
     RpcError::new(code, msg)
 }
 
-/// `starting` 超过这么久没有任何事件 → `agent_start_timeout`（从 turn 开始算，拉起进程卡住也包含在内）。
-const START_TIMEOUT: Duration = Duration::from_secs(60);
 /// `cancel` 之后 adapter 这么久还没结束 turn → 强制收尾并重启进程。
 const CANCEL_GRACE: Duration = Duration::from_secs(10);
 /// `release_project` 最多等被取消的 turn 收尾多久。
@@ -421,8 +419,8 @@ pub struct Sessions {
     throttle: Mutex<HashMap<String, Throttle>>,
     /// 带 prompt 的 `session.create` 串行化，配合 `message_id` 做幂等。
     create_lock: AsyncMutex<()>,
-    /// `starting` 超时（毫秒）；默认 [`START_TIMEOUT`]，测试里可以缩短。
-    start_timeout_ms: std::sync::atomic::AtomicU64,
+    /// 测试里覆盖 `starting` 超时（毫秒）；0 = 不覆盖，按 agent 的配置（`agents.<id>.start_timeout`）。
+    start_timeout_override_ms: std::sync::atomic::AtomicU64,
     /// 推迟的 `turn_finished` 兜底补发前等多久（毫秒）；默认 [`FINISH_NOTIFY_GRACE`]，测试里可以缩短。
     finish_notify_grace_ms: std::sync::atomic::AtomicU64,
     /// 周期复核每隔多少次扫描做一次（默认 [`PROJECT_RECHECK_EVERY`]；测试里可以调大来「关掉」它）。
@@ -491,7 +489,7 @@ impl Sessions {
             resolved: Mutex::new(ResolvedSet::default()),
             throttle: Mutex::new(HashMap::new()),
             create_lock: AsyncMutex::new(()),
-            start_timeout_ms: std::sync::atomic::AtomicU64::new(START_TIMEOUT.as_millis() as u64),
+            start_timeout_override_ms: std::sync::atomic::AtomicU64::new(0),
             finish_notify_grace_ms: std::sync::atomic::AtomicU64::new(FINISH_NOTIFY_GRACE.as_millis() as u64),
             recheck_every: std::sync::atomic::AtomicU32::new(PROJECT_RECHECK_EVERY),
             pr_checked: Mutex::new(HashMap::new()),
@@ -3689,7 +3687,10 @@ impl Sessions {
         let cfg = self.d.config.get();
         let idle_timeout = cfg.idle_timeout();
         let idle_after = cfg.session_idle_after();
-        let start_timeout = Duration::from_millis(self.start_timeout_ms.load(std::sync::atomic::Ordering::Relaxed));
+        let start_timeout_override = match self.start_timeout_override_ms.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            ms => Some(Duration::from_millis(ms)),
+        };
         // 不能晚于 idle 回收：回收会摘掉进程、清掉推迟的通知（同一次扫描里补发在回收之前）
         let mut finish_grace =
             Duration::from_millis(self.finish_notify_grace_ms.load(std::sync::atomic::Ordering::Relaxed));
@@ -3713,8 +3714,9 @@ impl Sessions {
             for rid in expired {
                 self.auto_deny_one(&mut st, &rid, "timeout").await;
             }
-            // starting 超时：从 turn 开始算，拉起进程（spawn）卡住也算在内
+            // starting 超时：从 turn 开始算，拉起进程（spawn）卡住也算在内；时长按 agent 配置，改了立即生效
             if st.row.status == SessionStatus::Starting {
+                let start_timeout = start_timeout_override.unwrap_or_else(|| cfg.agent_start_timeout(&st.row.agent));
                 let timed_out = st
                     .turn
                     .as_ref()
@@ -3724,7 +3726,7 @@ impl Sessions {
                         &mut st,
                         Event::Error {
                             code: "agent_start_timeout".into(),
-                            message: "agent did not respond within 60 seconds".into(),
+                            message: format!("agent did not respond within {}", describe_wait(start_timeout)),
                             recoverable: true,
                             resets_at_ms: None,
                             limit_scope: None,
@@ -3956,10 +3958,10 @@ impl Sessions {
         self.pr_round_every.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 测试用：缩短 `starting` 超时。
+    /// 测试用：缩短 `starting` 超时（盖过 agent 的配置）。
     #[cfg(any(test, feature = "testing"))]
     pub fn set_start_timeout(&self, d: Duration) {
-        self.start_timeout_ms.store(d.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+        self.start_timeout_override_ms.store((d.as_millis() as u64).max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 测试用：缩短推迟的 `turn_finished` 兜底补发前的等待。
@@ -4111,6 +4113,19 @@ async fn driver_loop(
     // 回收残留（幂等；进程组里可能还有它派生的子进程）
     if let Err(e) = tokio::time::timeout(Duration::from_secs(5), handle.shutdown()).await.unwrap_or(Ok(())) {
         tracing::debug!(session = %sid, error = %e, "cleanup after the agent exited failed");
+    }
+}
+
+/// 错误消息里的等待时长：`2 minutes`、`90 seconds`、`1 minute`；不足一秒（只有测试会这样设）写毫秒。
+fn describe_wait(d: Duration) -> String {
+    let plural = |n: u128, unit: &str| if n == 1 { format!("1 {unit}") } else { format!("{n} {unit}s") };
+    let ms = d.as_millis();
+    if ms >= 60_000 && ms.is_multiple_of(60_000) {
+        plural(ms / 60_000, "minute")
+    } else if ms >= 1000 && ms.is_multiple_of(1000) {
+        plural(ms / 1000, "second")
+    } else {
+        format!("{ms} ms")
     }
 }
 
@@ -4437,5 +4452,19 @@ mod archived_backlog_tests {
             assert!(st.turn.is_some(), "once unarchived the queued message starts a turn");
         }
         td.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod start_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn the_start_timeout_message_names_the_wait_in_words() {
+        assert_eq!(describe_wait(Duration::from_secs(120)), "2 minutes");
+        assert_eq!(describe_wait(Duration::from_secs(60)), "1 minute");
+        assert_eq!(describe_wait(Duration::from_secs(90)), "90 seconds");
+        assert_eq!(describe_wait(Duration::from_secs(1)), "1 second");
+        assert_eq!(describe_wait(Duration::from_millis(400)), "400 ms");
     }
 }

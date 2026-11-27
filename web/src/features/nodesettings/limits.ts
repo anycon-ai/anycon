@@ -13,9 +13,18 @@ export function sectionOf(key: string): string {
   return key.split('.')[0] ?? key
 }
 
+/**
+ * 按 agent 的键（`agents.<id>.<tail>`，ACP agent 是 `agents.acp.<id>.<tail>`，ADR-64）→ agent id 和最后一段；别的键返回 null。
+ * 这些键在「Agent」标签各自的卡片里，不在「限制」里。
+ */
+export function agentKeyOf(key: string): { agent: string; tail: string } | null {
+  const m = /^agents\.(?:acp\.)?([^.]+)\.([^.]+)$/.exec(key)
+  return m ? { agent: m[1]!, tail: m[2]! } : null
+}
+
 /** 被环境变量覆盖时，该去哪里改：覆盖这个键的环境变量名。`log.level` 还能被 `ANYCON_LOG` / `RUST_LOG` 接管。 */
 export function envNames(key: string): string {
-  const own = `ANYCON_${key.replace('.', '__').toUpperCase()}`
+  const own = `ANYCON_${key.replaceAll('.', '__').toUpperCase()}`
   return key === 'log.level' ? `${own}, ANYCON_LOG, RUST_LOG` : own
 }
 

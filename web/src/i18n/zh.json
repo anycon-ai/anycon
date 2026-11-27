@@ -1636,6 +1636,8 @@
     "defaultsHint": "存在节点上，你的所有设备共享。",
     "saveDefaults": "保存为节点默认",
     "defaultsSaved": "默认选项已保存",
+    "agentConfigTitle": "Agent 设置",
+    "agentConfigHint": "存在节点上，对这个 agent 的所有会话立即生效。",
     "devicesHint": "和这个节点配对的设备。",
     "addDevice": "添加设备",
     "addDeviceTitle": "添加设备",
@@ -1681,6 +1683,12 @@
         "log": "日志",
         "twin": "Twin",
         "judge": "判断后端"
+      },
+      "agentKeys": {
+        "start_timeout": {
+          "label": "启动超时",
+          "hint": "发出消息后多久没收到 agent 的任何输出就算超时。对话很长时 agent 开始输出得更慢，会话总是超时可以调大。"
+        }
       },
       "keys": {
         "hub": {

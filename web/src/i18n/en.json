@@ -1658,6 +1658,8 @@
     "defaultsHint": "Stored on the node and shared by all your devices.",
     "saveDefaults": "Save as node default",
     "defaultsSaved": "Defaults saved",
+    "agentConfigTitle": "Agent settings",
+    "agentConfigHint": "Stored on the node; apply to all of this agent's sessions right away.",
     "devicesHint": "Devices paired with this node.",
     "addDevice": "Add device",
     "addDeviceTitle": "Add a device",
@@ -1703,6 +1705,12 @@
         "log": "Logging",
         "twin": "Twin",
         "judge": "Judgment backends"
+      },
+      "agentKeys": {
+        "start_timeout": {
+          "label": "Start timeout",
+          "hint": "How long a session waits for the agent's first output after you send a message. Long conversations make the first output slower; raise this if sessions keep timing out."
+        }
       },
       "keys": {
         "hub": {

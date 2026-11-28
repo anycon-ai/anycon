@@ -51,6 +51,8 @@ pub struct Store {
     todo_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// 规则的写入（读-改-写、字数和条数检查）串行化（`rules.rs`）。只有规则的写操作取它，不和别的锁嵌套。
     rule_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// 周期项跨次状态的写入（条数上限和淘汰是读了再写，`todo_state.rs`）串行化。不和清单的锁嵌套。
+    state_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 /// `sessions` 表的一行。
@@ -356,7 +358,13 @@ impl Store {
         if after != before {
             tracing::info!(from = before.unwrap_or(0), to = after.unwrap_or(0), "database migrated");
         }
-        Ok(Store { pool, path: path.to_path_buf(), todo_lock: Default::default(), rule_lock: Default::default() })
+        Ok(Store {
+            pool,
+            path: path.to_path_buf(),
+            todo_lock: Default::default(),
+            rule_lock: Default::default(),
+            state_lock: Default::default(),
+        })
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -366,6 +374,11 @@ impl Store {
     /// 清单写入的锁（见 `todos.rs`）。
     pub fn todo_lock(&self) -> &tokio::sync::Mutex<()> {
         &self.todo_lock
+    }
+
+    /// 周期项跨次状态写入的锁（见 `todo_state.rs`）。
+    pub fn state_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.state_lock
     }
 
     /// 规则写入的锁（见 `rules.rs`）。

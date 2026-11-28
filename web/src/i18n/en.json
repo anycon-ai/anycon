@@ -497,7 +497,98 @@
     "fieldTitle": "Title",
     "fieldBody": "Notes",
     "noBody": "No notes.",
-    "bodyHint": "When an agent or the Twin handles this item, the title and notes are its instructions: the title first, then the notes.",
+    "bodyHint": "When an agent or the twin handles this item, the title and notes are its instructions: the title first, then the notes. anycon also adds a few lines after them, such as asking for a short report at the end. To see the whole message, use the preview in “Let an agent handle it”, or “Preview what the agent receives” on a repeating item.",
+    "runState": {
+      "keep": {
+        "label": "Keep state across runs",
+        "hint": "Agents in the sessions of each copy can read and write this state, to remember what earlier runs already handled.",
+        "short": "Saved state",
+        "on": "Keeps state across runs",
+        "onNoNote": "Keeps state across runs, without the usage notes"
+      },
+      "note": {
+        "label": "Include usage notes",
+        "addedBy": "anycon adds this after the task description:",
+        "loading": "Reading the text from the node…",
+        "off": "No usage notes will be included. You need to describe the commands in the notes yourself.",
+        "copy": "Copy to notes",
+        "offline": "The node is offline, so the text cannot be shown now."
+      },
+      "examples": {
+        "label": "Insert an example",
+        "mergeRequest": {
+          "label": "Merge requests",
+          "text": "Use keys of the form mr:<iid>@<head_sha>. First turn the open merge requests into keys and pass them to unseen; handle only the ones it prints, and stop if it prints nothing. After handling each one, set its key."
+        },
+        "jira": {
+          "label": "Jira",
+          "text": "Use keys of the form jira:<key>@<updated>. First turn the Jira issues you found into keys and pass them to unseen; judge only the ones it prints. After judging each one, set its key with your conclusion as the value."
+        },
+        "cursor": {
+          "label": "Cursor",
+          "text": "Use one key, cursor, to remember the time or id you got to last time. At the start, get it and handle only what is newer; when everything is handled, set it to the newest value."
+        }
+      },
+      "preview": {
+        "show": "Preview what the agent receives",
+        "hide": "Hide the preview",
+        "note": "This is what is sent when a copy is handed to the twin. When the same copy is dispatched again, reports from earlier runs are added too, and the twin may add a note of its own; those two parts are not shown here.",
+        "loading": "Reading the message from the node…",
+        "offline": "The node is offline, so the preview is not available now.",
+        "yours": "You wrote",
+        "added": "Added by anycon",
+        "segment": {
+          "title": "Title",
+          "body": "Notes",
+          "earlier_reports": "Earlier reports",
+          "state_usage": "State usage notes",
+          "closing_report": "Closing report request",
+          "no_push": "No-push line",
+          "twin_note": "Twin's note",
+          "unknown": "Other"
+        }
+      },
+      "panel": {
+        "title": "Saved state",
+        "count": "Entries: {{count}}",
+        "untrusted": "Keys and values are written by agents and shown as plain text.",
+        "show": "Show entries",
+        "hide": "Hide entries",
+        "filter": "Filter by key prefix",
+        "key": "Key",
+        "value": "Value",
+        "written": "Written",
+        "empty": "No entries.",
+        "noMatch": "No entries start with this prefix.",
+        "matched": "{{matched}} of {{total}} match",
+        "more": "Load more",
+        "delete": "Delete",
+        "deleteLabel": "Delete the entry {{key}}",
+        "clear": "Clear all",
+        "clearTitle": "Clear all saved state?",
+        "clearBody": "This deletes all {{count}} entries of this repeating item. Copies that run later start from nothing. This cannot be undone.",
+        "offline": "The node is offline. Saved state is read from the node each time, so it is not available now.",
+        "off": "Keeping state is turned off. The entries are kept; turn it back on to view them, or clear them.",
+        "former": "This item no longer repeats, but it still has saved state from when it did. You can clear it.",
+        "loading": "Reading entries…"
+      },
+      "history": {
+        "usage": "State: {{reads}} reads, {{writes}} writes",
+        "noWrite": "No state was written this turn"
+      },
+      "errors": {
+        "link": "The connection failed. Try again.",
+        "off": "This repeating item does not keep state.",
+        "notRepeating": "This item does not repeat, so it has no state.",
+        "title": "The title is not valid, so the preview cannot be made.",
+        "body": "The notes are too long, so the preview cannot be made.",
+        "project": "The project name is not valid, so the preview cannot be made.",
+        "forbidden": "This connection is not allowed to do that.",
+        "notFound": "Not found: the item no longer exists.",
+        "unsupported": "This node does not support saved state. Update anycon on it.",
+        "failed": "Something went wrong. Try again."
+      }
+    },
     "deleteTitle": "Delete this to-do?",
     "deleteBody": "“{{title}}” will be deleted from the node. This cannot be undone.",
     "markedDone": "“{{title}}” marked done",

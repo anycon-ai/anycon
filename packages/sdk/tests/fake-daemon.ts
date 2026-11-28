@@ -976,6 +976,104 @@ export class FakeDaemon {
       this.#notifyAll('todo.changed', { id: copy.id, todo: copy, deleted: false })
       return copy
     })
+    // 周期项的跨次状态（§ 26.11）：按模板存；复制出来的项经 source.todo_id 找到模板；没开 keep_state → invalid / state_off。
+    const states = new Map<string, Map<string, string>>()
+    const templateOf = (id: string): string => {
+      const t = todos.get(id)
+      if (!t) throw AnyconRpcError.of('not_found', 'no such todo')
+      const source = t.source as { kind?: string; todo_id?: string }
+      const tplId = t.repeat ? id : source.kind === 'repeat' ? source.todo_id : undefined
+      const tpl = tplId === undefined ? undefined : todos.get(tplId)
+      if (!tplId || !tpl)
+        throw AnyconRpcError.of('invalid', 'not a repeating todo', {
+          field: 'id',
+          reason: 'not_repeating',
+        })
+      if (!(tpl.repeat as { keep_state?: boolean } | undefined)?.keep_state)
+        throw AnyconRpcError.of('invalid', 'state is off', { field: 'id', reason: 'state_off' })
+      return tplId
+    }
+    const stateOf = (tplId: string): Map<string, string> => {
+      let m = states.get(tplId)
+      if (!m) states.set(tplId, (m = new Map()))
+      return m
+    }
+    on<{ id: string; key: string }, unknown>('todo.state_get', (p) => {
+      const tplId = templateOf(p.id)
+      const value = stateOf(tplId).get(p.key)
+      return {
+        template_id: tplId,
+        ...(value !== undefined ? { entry: { key: p.key, value, written_ms: 1 } } : {}),
+      }
+    })
+    on<{ id: string; key: string; value?: string }, unknown>('todo.state_set', (p) => {
+      const tplId = templateOf(p.id)
+      const m = stateOf(tplId)
+      m.set(p.key, p.value ?? '')
+      this.#notifyAll('todo.state_changed', { id: tplId, count: m.size })
+      return { template_id: tplId, count: m.size }
+    })
+    on<{ id: string; key: string }, unknown>('todo.state_delete', (p) => {
+      const tplId = templateOf(p.id)
+      const m = stateOf(tplId)
+      const deleted = m.delete(p.key)
+      return { template_id: tplId, deleted, count: m.size }
+    })
+    on<{ id: string; prefix?: string }, unknown>('todo.state_list', (p) => {
+      const tplId = templateOf(p.id)
+      const all = [...stateOf(tplId).entries()].toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      const entries = all
+        .filter(([k]) => p.prefix === undefined || k.startsWith(p.prefix))
+        .map(([key, value]) => ({ key, value, written_ms: 1 }))
+      return {
+        template_id: tplId,
+        entries,
+        total: all.length,
+        matched: entries.length,
+        has_more: false,
+      }
+    })
+    on<{ id: string; keys: string[] }, unknown>('todo.state_unseen', (p) => {
+      const tplId = templateOf(p.id)
+      const m = stateOf(tplId)
+      return { template_id: tplId, unseen: [...new Set(p.keys)].filter((k) => !m.has(k)) }
+    })
+    on<{ id: string }, unknown>('todo.state_clear', (p) => {
+      const t = todos.get(p.id)
+      if (!t) throw AnyconRpcError.of('not_found', 'no such todo')
+      const source = t.source as { todo_id?: string }
+      const tplId = t.repeat ? p.id : (source.todo_id ?? p.id)
+      const removed = stateOf(tplId).size
+      states.delete(tplId)
+      return { template_id: tplId, removed }
+    })
+    on<{ id: string; keep_state?: boolean; state_hint_off?: boolean }, unknown>(
+      'todo.repeat_preview',
+      (p) => {
+        const tpl = todos.get(p.id)
+        if (!tpl) throw AnyconRpcError.of('not_found', 'no such todo')
+        const rule = tpl.repeat as { keep_state?: boolean; state_hint_off?: boolean } | undefined
+        if (!rule)
+          throw AnyconRpcError.of('invalid', 'not a repeating todo', {
+            field: 'id',
+            reason: 'not_template',
+          })
+        const keep = p.keep_state ?? rule.keep_state === true
+        const off = p.state_hint_off ?? rule.state_hint_off === true
+        const segments = [
+          { kind: 'title', text: tpl.title as string },
+          ...(keep && !off ? [{ kind: 'state_usage', text: `state of ${p.id}` }] : []),
+          { kind: 'closing_report', text: 'Report.' },
+        ]
+        return {
+          first_message: segments.map((x) => x.text).join('\n\n'),
+          segments,
+          rules_text: '',
+          state_usage_text: `state of ${p.id}`,
+          state_count: states.get(p.id)?.size ?? 0,
+        }
+      },
+    )
     on<{ id: string; if_updated_ms?: number }, unknown>('todo.delete', (p) => {
       const cur = todos.get(p.id)
       if (cur && p.if_updated_ms !== undefined && cur.updated_ms !== p.if_updated_ms) {

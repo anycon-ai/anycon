@@ -94,6 +94,74 @@ for (const impl of cryptoImpls) {
       })
     })
 
+    it('跨次状态：stateSet / stateGet / stateList / stateUnseen / stateDelete / stateClear 发 todo.state_*，经复制项和经模板是同一份；todo_state_changed 事件', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const tpl = await node.todos.add({
+          title: 'review open merge requests',
+          repeat: { kind: 'daily', at: '09:00', keep_state: true },
+        })
+        const copy = await node.todos.repeatNow(tpl.id)
+        const changes: Array<{ id: string; count: number }> = []
+        node.on('todo_state_changed', (c) => changes.push(c))
+        const set = await node.todos.stateSet(copy.id, 'mr/1', 'seen')
+        assert.deepEqual(paramsOf(env, 'todo.state_set'), [
+          { id: copy.id, key: 'mr/1', value: 'seen' },
+        ])
+        assert.deepEqual(set, { template_id: tpl.id, count: 1 })
+        await node.todos.stateSet(tpl.id, 'mr/2')
+        assert.deepEqual(paramsOf(env, 'todo.state_set')[1], { id: tpl.id, key: 'mr/2', value: '' })
+        assert.equal((await node.todos.stateGet(tpl.id, 'mr/1')).entry?.value, 'seen')
+        assert.equal((await node.todos.stateGet(tpl.id, 'nope')).entry, undefined)
+        const list = await node.todos.stateList({ id: copy.id, prefix: 'mr/' })
+        assert.deepEqual(
+          list.entries.map((e) => e.key),
+          ['mr/1', 'mr/2'],
+        )
+        assert.deepEqual((await node.todos.stateUnseen(tpl.id, ['mr/1', 'mr/3'])).unseen, ['mr/3'])
+        assert.deepEqual(paramsOf(env, 'todo.state_unseen'), [
+          { id: tpl.id, keys: ['mr/1', 'mr/3'] },
+        ])
+        assert.equal((await node.todos.stateDelete(tpl.id, 'mr/2')).deleted, true)
+        assert.equal((await node.todos.stateClear(tpl.id)).removed, 1)
+        assert.deepEqual(paramsOf(env, 'todo.state_clear'), [{ id: tpl.id }])
+        await until(() => changes.length === 2)
+        assert.deepEqual(changes, [
+          { id: tpl.id, count: 1 },
+          { id: tpl.id, count: 2 },
+        ])
+        // 没开 keep_state 的模板：invalid / state_off
+        const off = await node.todos.add({
+          title: 'plain repeat',
+          repeat: { kind: 'daily', at: '09:00' },
+        })
+        await assert.rejects(node.todos.stateSet(off.id, 'k'), (e: unknown) => {
+          assert.ok(e instanceof RpcError)
+          assert.equal(e.code, 'invalid')
+          assert.equal(e.reason, 'state_off')
+          return true
+        })
+      })
+    })
+
+    it('repeatPreview：发 todo.repeat_preview，带上还没保存的开关；segments 标明来源', async () => {
+      await withNode(await impl.load(), async (node, env) => {
+        const tpl = await node.todos.add({ title: 'sweep', repeat: { kind: 'daily', at: '09:00' } })
+        const saved = await node.todos.repeatPreview({ id: tpl.id })
+        assert.deepEqual(
+          saved.segments.map((s) => s.kind),
+          ['title', 'closing_report'],
+        )
+        const unsaved = await node.todos.repeatPreview({ id: tpl.id, keep_state: true })
+        assert.deepEqual(paramsOf(env, 'todo.repeat_preview')[1], { id: tpl.id, keep_state: true })
+        assert.deepEqual(
+          unsaved.segments.map((s) => s.kind),
+          ['title', 'state_usage', 'closing_report'],
+        )
+        assert.equal(unsaved.first_message, unsaved.segments.map((s) => s.text).join('\n\n'))
+        assert.equal(typeof unsaved.state_usage_text, 'string')
+      })
+    })
+
     it('repeatNow：发 todo.repeat_now，得到复制出的一项；不是周期项 → invalid（reason = not_template）', async () => {
       await withNode(await impl.load(), async (node, env) => {
         const tpl = await node.todos.add({

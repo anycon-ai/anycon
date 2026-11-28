@@ -9,6 +9,7 @@
 //! - `remote_config` / `logtail`：远程查看 / 修改节点配置（白名单，ADR-43）、远程读日志尾部（`node.logs`）
 //! - `todos` / `todo_dispatch`：清单（`todo.*`，每个节点一份个人待办，§ 21）和派发（`todo.dispatch`，从一项开会话、关联、`activity`、「经过」，§ 22）
 //! - `todo_repeat`：周期项（带规则的模板每分钟看一次，到点复制出新的一项，§ 26.9）
+//! - `todo_state`：周期项的跨次状态（模板上的「键 → 值」小表，复制出来的各次会话里的 agent 读写，§ 26.11）
 //! - `twin`：Twin 的事件唤醒、分拣、范围与预算、确定性动作和问题（§ 26）
 //! - `twin_link`：使用别的节点这一侧（A），Twin 设备身份和长连接、节点表、远程派发、取回结果（§ 27.1、§ 27.4）
 //! - `twin_device`：被使用的节点这一侧，Twin 设备（另一个节点的 Twin）的方法白名单、推送过滤、归属和范围（§ 27）
@@ -54,6 +55,7 @@ pub mod store;
 pub mod sys;
 pub mod todo_dispatch;
 pub mod todo_repeat;
+pub mod todo_state;
 pub mod todos;
 pub mod transfer;
 pub mod twin;

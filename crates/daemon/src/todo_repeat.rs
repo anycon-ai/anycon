@@ -513,6 +513,8 @@ mod tests {
                 every_min: None,
                 until: None,
                 auto_close: false,
+                keep_state: false,
+                state_hint_off: false,
                 next_ms: None,
             };
             let next = slot_after(&r, now).expect("next slot");
@@ -535,6 +537,8 @@ mod tests {
             every_min: Some(120),
             until: Some("17:00".into()),
             auto_close: false,
+            keep_state: false,
+            state_hint_off: false,
             next_ms: None,
         };
         assert_eq!(day_slots(&r), vec![(9, 0), (11, 0), (13, 0), (15, 0), (17, 0)]);

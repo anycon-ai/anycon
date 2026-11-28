@@ -83,6 +83,8 @@ export function parseCapture(text: string): { title: string; body: string } {
 }
 
 export interface DraftTodo {
+  /** 客户端先定下的 id（小写 UUID）；没给就新生成一个。 */
+  id?: string
   handler?: 'me' | 'twin'
   title: string
   body: string

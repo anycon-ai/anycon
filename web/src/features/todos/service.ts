@@ -25,12 +25,13 @@ import { toast, useUi } from '@/stores/ui'
 import i18n from '@/i18n'
 import { toastIfReady } from './reviewToast'
 import { useTodoHistory } from './history'
+import { useStateCounts } from './state'
 import { useReworkDrafts } from './reworkDraft'
 import { nodeSupportsTodo, useTodos, viewOf } from './store'
 import { outboxErrorText } from './ui/errors'
 import type { OutboxError, OutboxOp, OutboxRecord, UpdateFields } from './types'
 import { isClosed } from './types'
-import { cleanOneLine, draftError, newTodoId, tabsToSpaces, projectError, titleError, bodyError, dueError, repeatFieldError, type DraftTodo, type FieldError } from './validate'
+import { cleanOneLine, draftError, newTodoId, UUID_RE, tabsToSpaces, projectError, titleError, bodyError, dueError, repeatFieldError, type DraftTodo, type FieldError } from './validate'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // 多标签页：库是唯一的真相，别的标签页改了就重读
@@ -133,6 +134,7 @@ export async function forgetNodeTodos(nodeId: string): Promise<number> {
 export function resetTodosMemory(): void {
   dbGone = false
   useTodoHistory.getState().reset()
+  useStateCounts.getState().reset()
   useReworkDrafts.getState().reset()
   closeTodoChannel()
   for (const id of [...retryTimers.keys()]) cancelRetry(id)
@@ -409,7 +411,8 @@ export async function addTodo(nodeId: string, draft: DraftTodo): Promise<ActionR
   draft = { ...draft, title: tabsToSpaces(draft.title), ...(draft.project != null ? { project: tabsToSpaces(draft.project) } : {}) }
   const error = draftError(draft)
   if (error) return { ok: false, error }
-  const id = newTodoId()
+  // 表单可以先定下 id（`todo.repeat_preview` 的用法说明里用的就是它，保存之后还是同一个）
+  const id = draft.id && UUID_RE.test(draft.id) ? draft.id : newTodoId()
   const project = draft.project?.trim()
   const params = { ...(draft.handler ? { handler: draft.handler } : {}), title: draft.title.trim(), body: draft.body, ...(project ? { project } : {}), ...(draft.due_ms != null ? { due_ms: draft.due_ms } : {}), ...(draft.repeat ? { repeat: draft.repeat } : {}) }
   const failed = await enqueue(nodeId, id, { kind: 'add', params })

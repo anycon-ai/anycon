@@ -20,9 +20,10 @@ use crate::commands::{is_method_not_found, App};
 use crate::conn::Conn;
 use crate::error::{CliError, Result, EXIT_ERROR};
 use crate::output::{sanitize_label, table, visible};
+use crate::todo_state_cmds;
 
 /// 这个进程是不是在 anycon 拉起的 agent 里。
-fn inside_agent() -> bool {
+pub(crate) fn inside_agent() -> bool {
     crate::mcp::started_inside_a_session()
 }
 
@@ -122,6 +123,8 @@ pub fn parse_repeat(s: &str) -> Result<TodoRepeat> {
         every_min: None,
         until: None,
         auto_close: false,
+        keep_state: false,
+        state_hint_off: false,
         next_ms: None,
     };
     if let Some((range, every)) = time.split_once('/') {
@@ -224,7 +227,11 @@ fn match_prefix<'a>(all: &'a [Todo], key: &str) -> Result<Option<&'a Todo>> {
 /// `<id>`（唯一前缀，不区分大小写；id 本身是小写 UUID）。完整的 UUID 不用列清单，直接返回 `Err(id)` 让调用方拿它去调用。
 /// 前缀先在没关闭的项里找，找不到再翻已关闭的；`closed_first`（`reopen`）反过来先找已关闭的（一次翻全部），所以一个前缀同时匹配一个没关闭的和一个已关闭的项时不算歧义。
 /// 没有匹配 → 退出码 1（`not_found`），多个 → 2。
-async fn resolve_todo(conn: &Conn, key: &str, closed_first: bool) -> Result<std::result::Result<Todo, String>> {
+pub(crate) async fn resolve_todo(
+    conn: &Conn,
+    key: &str,
+    closed_first: bool,
+) -> Result<std::result::Result<Todo, String>> {
     let key = key.trim().to_lowercase();
     if key.is_empty() {
         return Err(CliError::usage("the to-do id must not be empty"));
@@ -254,7 +261,7 @@ async fn resolve_todo(conn: &Conn, key: &str, closed_first: bool) -> Result<std:
     found.map(Ok).ok_or_else(|| CliError::new(EXIT_ERROR, "not_found", format!("no to-do matches {key:?}")))
 }
 
-fn short(id: &str) -> String {
+pub(crate) fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
@@ -291,6 +298,7 @@ pub async fn todo(app: &App, cmd: TodoCmd) -> Result<u8> {
         TodoCmd::Run(a) => run(app, a).await,
         TodoCmd::History(a) => history(app, a).await,
         TodoCmd::RepeatNow { id } => repeat_now(app, &id).await,
+        TodoCmd::State(cmd) => todo_state_cmds::state(app, cmd).await,
     }
 }
 
@@ -304,6 +312,8 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
     let mut repeat = a.repeat.as_deref().map(parse_repeat).transpose()?;
     if let Some(r) = repeat.as_mut() {
         r.auto_close = a.auto_close;
+        r.keep_state = a.keep_state;
+        r.state_hint_off = a.no_state_hint;
     }
     let due_ms = a.due.as_deref().map(parse_due).transpose()?;
     let nested = inside_agent();
@@ -322,6 +332,9 @@ async fn add(app: &App, a: TodoAddArgs) -> Result<u8> {
     let conn = app.conn().await?;
     if params.repeat.as_ref().is_some_and(needs_interval_support) {
         require_interval_support(&conn).await?;
+    }
+    if params.repeat.as_ref().is_some_and(|r| r.keep_state) {
+        require_state_support(&conn).await?;
     }
     let t: Todo = conn.call(methods::TODO_ADD, params).await.map_err(friendly)?;
     if app.json() {
@@ -347,6 +360,9 @@ fn repeat_cell(r: &TodoRepeat) -> String {
     let mut text = repeat_str(r);
     if r.auto_close {
         text.push_str(" auto-close");
+    }
+    if r.keep_state {
+        text.push_str(if r.state_hint_off { " keeps-state(no-note)" } else { " keeps-state" });
     }
     match r.next_ms {
         Some(next) => format!("{text} next {}Z", &fmt_utc(next)[..16]),
@@ -453,6 +469,18 @@ fn needs_interval_support(r: &TodoRepeat) -> bool {
     r.kind == TodoRepeatKind::Interval || r.auto_close
 }
 
+/// 节点的 daemon 不认识周期项的跨次状态（`keep_state`、`todo.state_*`）时说清楚。
+pub(crate) async fn require_state_support(conn: &Conn) -> Result<()> {
+    let info: NodeInfo = conn.call(methods::NODE_INFO, json!({})).await?;
+    if info.capabilities.todo_repeat_state {
+        Ok(())
+    } else {
+        Err(CliError::general(
+            "this node's daemon is too old for that: it does not keep state for repeating to-dos; update anycon on that node",
+        ))
+    }
+}
+
 /// 节点的 daemon 不认识间隔规则 / `auto_close` / `repeat-now` 时说清楚，而不是让它回一个看不懂的 `invalid`。
 async fn require_interval_support(conn: &Conn) -> Result<()> {
     let info: NodeInfo = conn.call(methods::NODE_INFO, json!({})).await?;
@@ -470,6 +498,8 @@ async fn edit(app: &App, a: TodoEditArgs) -> Result<u8> {
     refuse_inside_agent("edit")?;
     let mut repeat = a.repeat.as_deref().map(parse_repeat).transpose()?;
     let wants_auto = a.auto_close || a.no_auto_close;
+    let wants_keep = a.keep_state || a.no_keep_state;
+    let wants_hint = a.state_hint || a.no_state_hint;
     let conn = app.conn().await?;
     let resolved = resolve_todo(&conn, &a.id, false).await?;
     let id = match &resolved {
@@ -477,27 +507,51 @@ async fn edit(app: &App, a: TodoEditArgs) -> Result<u8> {
         Err(id) => id.clone(),
     };
     let mut clear = Vec::new();
-    if let Some(r) = repeat.as_mut() {
+    if a.no_repeat {
+        clear.push(ClearableTodoField::Repeat);
+    } else {
+        // 读出原来的规则：只换时间时沿用原来的开关（不悄悄关掉），只改开关时原样发回去
+        let old = fetch_rule(&conn, &id).await?;
+        let mut r = match (repeat.take(), &old) {
+            (Some(mut r), Some(old)) => {
+                r.auto_close = old.auto_close;
+                r.keep_state = old.keep_state;
+                r.state_hint_off = old.state_hint_off;
+                r
+            }
+            (Some(r), None) => r,
+            (None, Some(old)) => old.clone(),
+            (None, None) => return Err(CliError::usage(
+                "--auto-close, --keep-state and their --no- forms only apply to a repeating item; this one does not \
+                     repeat (give --repeat to make it one)",
+            )),
+        };
+        r.next_ms = None;
         if wants_auto {
             r.auto_close = a.auto_close;
-        } else if let Some(old) = fetch_rule(&conn, &id).await? {
-            // 只换规则、没提 auto-close：沿用原来的设置，不悄悄关掉
-            r.auto_close = old.auto_close;
         }
-    } else if wants_auto {
-        // 单独改 auto-close：读出原来的规则，原样发回去，只换这一项
-        let Some(mut old) = fetch_rule(&conn, &id).await? else {
-            return Err(CliError::usage(
-                "--auto-close and --no-auto-close only apply to a repeating item; this one does not repeat (give --repeat to make it one)",
-            ));
-        };
-        old.auto_close = a.auto_close;
-        repeat = Some(old);
-    } else {
-        clear.push(ClearableTodoField::Repeat);
+        if wants_keep {
+            r.keep_state = a.keep_state;
+        }
+        if wants_hint {
+            r.state_hint_off = a.no_state_hint;
+        }
+        if r.state_hint_off && !r.keep_state {
+            if a.no_state_hint {
+                return Err(CliError::usage(
+                    "--no-state-hint only applies to an item that keeps state (add --keep-state)",
+                ));
+            }
+            // 关掉状态时「不带说明」没有意义，一起去掉
+            r.state_hint_off = false;
+        }
+        repeat = Some(r);
     }
     if repeat.as_ref().is_some_and(needs_interval_support) {
         require_interval_support(&conn).await?;
+    }
+    if repeat.as_ref().is_some_and(|r| r.keep_state) {
+        require_state_support(&conn).await?;
     }
     let t: Todo = conn
         .call(methods::TODO_UPDATE, TodoUpdateParams { id, repeat, clear, ..empty_update() })
@@ -776,6 +830,9 @@ fn describe_event(e: &TodoEvent) -> (String, Vec<String>) {
             let link =
                 url.as_deref().filter(|u| u.starts_with("https://github.com/")).map(|u| sanitize_label(u, 200, ""));
             (format!("pull request {what} (session {session_id})"), link.into_iter().collect())
+        }
+        TodoEventData::StateUsage { session_id, turn, reads, writes } => {
+            (format!("state used in session {session_id}, turn {turn}: {reads} reads, {writes} writes"), vec![])
         }
         TodoEventData::RemoteDispatched { node_id, todo_id, session_id } => (
             format!(

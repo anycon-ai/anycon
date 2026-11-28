@@ -633,3 +633,72 @@ async fn an_interval_rule_auto_close_and_repeat_now_work_end_to_end() {
     assert!(r.stderr.contains("not available inside an anycon agent session"), "{}", r.stderr);
     n.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn todo_state_reads_and_writes_the_template_table_and_clear_is_for_people() {
+    let n = node().await;
+    let r = n
+        .cli(&["todo", "add", "Review open merge requests", "--repeat", "daily@09:00", "--keep-state", "--json"])
+        .await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let t = r.json();
+    assert_eq!(t["repeat"]["keep_state"], true);
+    assert!(t["repeat"].get("state_hint_off").is_none());
+    let id = t["id"].as_str().unwrap().to_string();
+    let r = n.cli(&["todo", "ls"]).await;
+    assert!(r.stdout.contains("keeps-state"), "{}", r.stdout);
+    let copy = n.cli(&["todo", "repeat-now", &id[..8], "--json"]).await.json();
+    let cid = copy["id"].as_str().unwrap().to_string();
+
+    // 经复制项写、经模板读：是同一份
+    let r = n.cli(&["todo", "state", "set", "--todo", &cid[..8], "mr/12", "reviewed at abc123"]).await;
+    assert_eq!((r.code, r.stdout.trim()), (0, "stored; 1 entries"), "{}", r.stderr);
+    let r = n.cli(&["todo", "state", "get", "--todo", &id[..8], "mr/12"]).await;
+    assert_eq!((r.code, r.stdout.trim()), (0, "reviewed at abc123"), "{}", r.stderr);
+    let r = n.cli(&["todo", "state", "get", "--todo", &id[..8], "mr/99"]).await;
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    // unseen：stdin 一行一个，打印没存着的
+    let r =
+        anycon_stdin_eof(&n.home, &["todo", "state", "unseen", "--todo", &id], "mr/12\r\nmr/13\n\nmr/14\nmr/13\n", &[])
+            .await;
+    assert_eq!((r.code, r.stdout.as_str()), (0, "mr/13\nmr/14\n"), "{}", r.stderr);
+    let r = n.cli(&["todo", "state", "ls", "--todo", &id[..8], "--json"]).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let l = r.json();
+    assert_eq!((l["template_id"].as_str(), l["total"].as_u64()), (Some(id.as_str()), Some(1)));
+    assert_eq!(l["entries"][0]["key"], "mr/12");
+    let r = n.cli(&["todo", "state", "ls", "--todo", &id[..8]]).await;
+    assert!(r.stdout.contains("KEY") && r.stdout.contains("mr/12"), "{}", r.stdout);
+
+    // 在 agent 里：读写都行（带着 agent 标记），清空被拒
+    let agent_env = [("ANYCON_AGENT", "1")];
+    let r = n.cli_env(&["todo", "state", "set", "--todo", &cid[..8], "mr/13"], &agent_env).await;
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let r = anycon_stdin_eof(&n.home, &["todo", "state", "unseen", "--todo", &cid], "mr/13\nmr/14\n", &agent_env).await;
+    assert_eq!((r.code, r.stdout.as_str()), (0, "mr/14\n"), "{}", r.stderr);
+    let r = n.cli_env(&["todo", "state", "rm", "--todo", &id[..8], "mr/13"], &agent_env).await;
+    assert_eq!((r.code, r.stdout.trim()), (0, "removed; 1 entries"), "{}", r.stderr);
+    let r = n.cli_env(&["todo", "state", "clear", "--todo", &id[..8]], &agent_env).await;
+    assert_eq!(r.code, 5, "{}", r.stderr);
+    assert!(r.stderr.contains("not available inside an anycon agent session"), "{}", r.stderr);
+    // 只换时间：开关沿用；关掉「附带说明」；关掉状态（条目留着）
+    let r = n.cli(&["todo", "edit", &id[..8], "--repeat", "weekdays@10:00", "--json"]).await;
+    assert_eq!(r.json()["repeat"]["keep_state"], true, "{}", r.stderr);
+    let r = n.cli(&["todo", "edit", &id[..8], "--no-state-hint", "--json"]).await;
+    assert_eq!(r.json()["repeat"]["state_hint_off"], true, "{}", r.stderr);
+    let r = n.cli(&["todo", "edit", &id[..8], "--no-keep-state", "--json"]).await;
+    let rule = r.json()["repeat"].clone();
+    assert!(rule.get("keep_state").is_none() && rule.get("state_hint_off").is_none(), "{rule}");
+    let r = n.cli(&["todo", "state", "get", "--todo", &id[..8], "mr/12"]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(r.stderr.contains("does not keep state"), "{}", r.stderr);
+    // 人清空：开关关着也能清
+    let r = n.cli(&["todo", "state", "clear", "--todo", &id[..8]]).await;
+    assert_eq!((r.code, r.stdout.trim()), (0, "cleared 1 entries"), "{}", r.stderr);
+    // 普通项没有状态
+    let plain = n.add("Plain").await;
+    let r = n.cli(&["todo", "state", "set", "--todo", plain["id"].as_str().unwrap(), "k"]).await;
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(r.stderr.contains("does not repeat"), "{}", r.stderr);
+    n.stop().await;
+}

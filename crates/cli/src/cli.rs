@@ -187,6 +187,59 @@ pub enum TodoCmd {
     },
     /// Show what happened on an item: each dispatch, the report each turn ended with, and state changes (newest first)
     History(TodoHistoryArgs),
+    /// Read and write the state a repeating item keeps across its runs: a small key-value table that belongs to the
+    /// repeating item (turn it on with `--keep-state`). The agent in each copy's session uses it to remember what
+    /// earlier runs already handled. `--todo` takes the repeating item or any of its copies. Inside an anycon agent
+    /// session every command except `clear` works
+    #[command(subcommand)]
+    State(TodoStateCmd),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TodoStateCmd {
+    /// Read keys from stdin, one per line, and print the ones that are not stored (in the order given, without
+    /// duplicates). Empty lines are skipped
+    Unseen(TodoStateTarget),
+    /// Store a key (replacing its value if it is stored). When the table is full (2000 entries) the entry written
+    /// longest ago is dropped
+    Set {
+        #[command(flatten)]
+        target: TodoStateTarget,
+        /// The key: one line, at most 200 bytes
+        key: String,
+        /// The value, at most 1 KiB (empty when left out)
+        #[arg(default_value = "")]
+        value: String,
+    },
+    /// Print the value stored for a key; exits with status 1 when the key is not stored
+    Get {
+        #[command(flatten)]
+        target: TodoStateTarget,
+        key: String,
+    },
+    /// List the stored entries, ordered by key
+    Ls {
+        #[command(flatten)]
+        target: TodoStateTarget,
+        /// Only keys that start with this
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+    /// Remove a key
+    Rm {
+        #[command(flatten)]
+        target: TodoStateTarget,
+        key: String,
+    },
+    /// Remove every entry (not available inside an anycon agent session)
+    Clear(TodoStateTarget),
+}
+
+#[derive(Args, Debug)]
+pub struct TodoStateTarget {
+    /// The repeating item or one of its copies (a prefix is enough); both reach the same table
+    #[arg(long = "todo", value_name = "ID")]
+    pub todo: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -333,6 +386,15 @@ pub struct TodoAddArgs {
     /// With --repeat: leave the copies for you to accept (the default)
     #[arg(long, requires = "repeat")]
     pub no_auto_close: bool,
+    /// With --repeat: keep a small key-value table across the runs, which the agent in each copy's session reads and
+    /// writes with `anycon todo state` (to remember, say, which merge requests it already reviewed). The first message
+    /// of each copy tells the agent how to use it
+    #[arg(long, requires = "repeat")]
+    pub keep_state: bool,
+    /// With --keep-state: leave the usage note out of the first message; you describe the commands in the notes
+    /// yourself (`anycon todo state` with the repeating item's id works for every copy)
+    #[arg(long, requires = "keep_state")]
+    pub no_state_hint: bool,
 }
 
 #[derive(Args, Debug)]
@@ -347,11 +409,16 @@ pub struct TodoEditArgs {
         long,
         value_name = "SPEC",
         conflicts_with = "no_repeat",
-        required_unless_present_any = ["no_repeat", "auto_close", "no_auto_close"]
+        required_unless_present_any = [
+            "no_repeat", "auto_close", "no_auto_close", "keep_state", "no_keep_state", "state_hint", "no_state_hint"
+        ]
     )]
     pub repeat: Option<String>,
     /// Stop repeating: the item becomes an ordinary item
-    #[arg(long, conflicts_with_all = ["auto_close", "no_auto_close"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["auto_close", "no_auto_close", "keep_state", "no_keep_state", "state_hint", "no_state_hint"]
+    )]
     pub no_repeat: bool,
     /// When the twin decides a copy is done, close it instead of moving it to review (the item must already repeat, or
     /// be given --repeat)
@@ -360,6 +427,19 @@ pub struct TodoEditArgs {
     /// Leave the copies for you to accept
     #[arg(long)]
     pub no_auto_close: bool,
+    /// Keep a small key-value table across the runs for the agents in the copies' sessions (`anycon todo state`)
+    #[arg(long, conflicts_with = "no_keep_state")]
+    pub keep_state: bool,
+    /// Stop offering the table to the copies' agents. The stored entries are kept until you run `anycon todo state
+    /// clear` or remove the item
+    #[arg(long)]
+    pub no_keep_state: bool,
+    /// Put the usage note for the table back into each copy's first message
+    #[arg(long, conflicts_with = "no_state_hint")]
+    pub state_hint: bool,
+    /// Leave the usage note out of each copy's first message (you describe the commands in the notes yourself)
+    #[arg(long)]
+    pub no_state_hint: bool,
 }
 
 #[derive(Args, Debug)]

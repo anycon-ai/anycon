@@ -45,6 +45,10 @@ pub struct NodeCapabilities {
     /// 旧 daemon 没有这个字段，读作 false。
     #[serde(default)]
     pub todo_repeat_interval: bool,
+    /// 周期项支持跨次状态：`repeat.keep_state` / `state_hint_off`、`todo.state_*`、`todo.state_changed`、`todo.repeat_preview`、
+    /// 「经过」的 `state_usage` 和预览的 `segments`（docs/spec/daemon.md § 26.11）。旧 daemon 没有这个字段，读作 false。
+    #[serde(default)]
+    pub todo_repeat_state: bool,
     /// daemon 提供 `twin.stats`，`twin.get` 带 `last_run` / `next_wake_ms` / `queued` / `deferred`，`TwinRun` 带 `usage`
     /// （docs/spec/daemon.md § 26.8）。旧 daemon 没有这个字段，读作 false。
     #[serde(default)]

@@ -22,14 +22,16 @@ import { useTodos } from '../store'
 import { isAgentSource, isHumanSource, isOtherSource } from '../source'
 import { isClosed, UI_STATES, type UpdateFields, type ViewTodo } from '../types'
 import { cleanHintText } from '@/lib/hint'
-import { cleanOneLine, type FieldError } from '../validate'
+import { bodyError, cleanOneLine, type FieldError } from '../validate'
 import { dueFromInput } from './CaptureForm'
 import { activityOf, isReview } from '../activity'
 import { DispatchDialog } from './DispatchDialog'
 import { HandlerChip, LinkedStatus } from './ActivityBits'
 import { MoveTodoDialog } from './MoveTodoDialog'
 import { AutoCloseField, RepeatField, RepeatFromChip, RepeatTemplateChip, repeatInputText, repeatSummary, useNodeSupportsInterval, useNodeSupportsRepeat } from './RepeatBits'
-import { repeatFromInput, repeatInputProblem, repeatToInput } from '../repeat'
+import { formOf, repeatFromInput, repeatInputProblem, repeatToInput } from '../repeat'
+import { appendToNotes, useNodeSupportsState } from '../state'
+import { KeepStateField, RepeatPreview, StateExamples, StatePanel, type PreviewBase } from './StateBits'
 import { TwinHandlerButton } from '@/features/twin/TodoParts'
 import { TodoHistory } from './TodoHistory'
 import { fieldErrorText, outboxErrorText } from './errors'
@@ -81,6 +83,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const repeatSupported = useNodeSupportsRepeat(item.node_id)
   const intervalSupported = useNodeSupportsInterval(item.node_id)
   const openCopy = useOpenCopy(item.node_id, item.id)
+  const stateSupported = useNodeSupportsState(item.node_id)
 
   const dirty = draft ? dirtyFields(draft) : []
   const repeatProblem = repeatInputProblem(draft?.values.repeat ?? '')
@@ -91,6 +94,18 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
   const fieldName = (f: EditField): string => t(f === 'title' ? 'todos.fieldTitle' : f === 'body' ? 'todos.fieldBody' : f === 'project' ? 'todos.project' : f === 'repeat' ? 'todos.repeat.label' : 'todos.due')
 
   const setField = (f: EditField, v: string): void => useDrafts.getState().set(key, f, v)
+  // 「复制到备注」「插入示例」：追加到备注末尾，前面空一行；超过上限就不追加，按备注的校验提示
+  const appendToBody = (text: string): FieldError | null => {
+    const next = appendToNotes(draft?.values.body ?? '', text)
+    const e = bodyError(next)
+    if (e) return e
+    setField('body', next)
+    return null
+  }
+  // 预览用表单里此刻的内容；标题清空了就用存着的（预览要一个合格的标题）
+  const draftTitle = draft?.values.title ?? ''
+  const previewBase: PreviewBase = { id: item.id, ...(draftTitle.trim() ? { title: draftTitle } : {}), body: draft?.values.body ?? item.body, project: draft?.values.project ?? item.project ?? '' }
+  const draftForm = formOf(draft?.values.repeat ?? '')
 
   const save = async (): Promise<void> => {
     if (!draft || saving || conflicts.length > 0) return
@@ -196,6 +211,7 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
               {t('todos.bodyHint')}
             </span>
           </label>
+          {stateSupported && draftForm.choice !== 'none' && draftForm.keepState ? <StateExamples onAppend={appendToBody} testId="todo-edit-state-examples" /> : null}
           <div className="flex flex-wrap gap-3">
             <label className="flex flex-col gap-1 text-sm font-medium">
               {t('todos.project')}
@@ -211,9 +227,11 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
               <span>{t('todos.repeat.label')}</span>
               <RepeatField value={draft?.values.repeat ?? ''} onChange={(v) => setField('repeat', v)} intervalSupported={intervalSupported} testId="todo-edit-repeat" />
               {intervalSupported ? <AutoCloseField value={draft?.values.repeat ?? ''} onChange={(v) => setField('repeat', v)} testId="todo-edit-repeat" /> : null}
+              <KeepStateField nodeId={item.node_id} value={draft?.values.repeat ?? ''} onChange={(v) => setField('repeat', v)} base={previewBase} onAppend={appendToBody} testId="todo-edit-repeat" />
               {repeatProblem ? <p className="text-xs font-normal text-danger" data-testid="todo-edit-repeat-error">{t(repeatProblem === 'at' ? 'todos.errors.repeat.invalid' : repeatProblem === 'until' ? 'todos.errors.repeat.until' : 'todos.errors.repeat.every')}</p> : null}
             </div>
           ) : null}
+          {draftForm.choice !== 'none' ? <RepeatPreview nodeId={item.node_id} base={previewBase} repeat={draft?.values.repeat ?? ''} testId="todo-edit-repeat-preview" /> : null}
           {quiet.length > 0 ? (
             <div className="space-y-1 rounded-md border border-warning/40 bg-warning-subtle p-3 text-sm" role="status" data-testid="todo-changed-elsewhere">
               <p>{t('todos.editedElsewhere', { fields: quiet.map(fieldName).join(', ') })}</p>
@@ -292,6 +310,12 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
                     <dd data-testid="todo-repeat-auto-close">{t('todos.repeat.autoClose.on')}</dd>
                   </>
                 ) : null}
+                {item.repeat.keep_state ? (
+                  <>
+                    <dt className="text-fg-subtle">{t('todos.runState.keep.short')}</dt>
+                    <dd data-testid="todo-repeat-keep-state">{t(item.repeat.state_hint_off ? 'todos.runState.keep.onNoNote' : 'todos.runState.keep.on')}</dd>
+                  </>
+                ) : null}
               </>
             ) : null}
           </dl>
@@ -300,6 +324,8 @@ export function TodoDetail({ item, online, onDeleted }: { item: ViewTodo; online
               {t(isClosed(item.state) ? 'todos.repeat.noteClosed' : 'todos.repeat.note')}
             </p>
           ) : null}
+          {item.repeat ? <RepeatPreview nodeId={item.node_id} base={{ id: item.id }} repeat={repeatInput} /> : null}
+          <StatePanel item={item} />
         </>
       )}
 

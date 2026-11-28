@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle } from 'lucide-react'
-import type { AgentInfo, SessionWorkspace } from '@/protocol'
+import type { AgentInfo, PromptSegment, SessionWorkspace } from '@/protocol'
 import { SettingsControls } from '@/components/SettingsControls'
 import { resolveDefaultsDetailed, selectionKey, toSessionSettings, type DefaultsResolution, type Selection } from '@/features/settings/resolve'
 import { cleanHintText } from '@/lib/hint'
@@ -20,6 +20,7 @@ import { RpcCallError } from '@/transport/rpcClient'
 import { isHumanSource } from '../source'
 import type { ViewTodo } from '../types'
 import { cleanOneLine } from '../validate'
+import { PromptSegments } from './StateBits'
 
 /** 缺了哪个条件就不能派发：给按钮旁边的说明用。 */
 export type DispatchBlock = 'offline' | 'noAgent' | 'noProject' | 'gitPending' | 'noPushUnsupported' | 'rulesLoading'
@@ -70,7 +71,7 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
 
   // ---- 完整的第一条消息（`todo.dispatch_preview`）：展开时取，这一项变了 / 勾选变了 / 有新结果记进来就重新取 ----
   const [previewOpen, setPreviewOpen] = useState(false)
-  const [preview, setPreview] = useState<{ text: string | null; error: string | null; loading: boolean }>({ text: null, error: null, loading: false })
+  const [preview, setPreview] = useState<{ text: string | null; segments: PromptSegment[]; error: string | null; loading: boolean }>({ text: null, segments: [], error: null, loading: false })
   const historyLen = useTodoHistory((s) => s.byKey[historyKey(nodeId, item.id)]?.events.length ?? 0)
   const previewSeq = useRef(0)
   useEffect(() => {
@@ -78,8 +79,8 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
     const seq = ++previewSeq.current
     setPreview((p) => ({ ...p, loading: true, error: null }))
     previewDispatch(nodeId, item.id, noPush).then(
-      (text) => seq === previewSeq.current && setPreview({ text, error: null, loading: false }),
-      (e) => seq === previewSeq.current && setPreview({ text: null, error: describeDispatchError(e, t, false), loading: false }),
+      (r) => seq === previewSeq.current && setPreview({ text: r.text, segments: r.segments, error: null, loading: false }),
+      (e) => seq === previewSeq.current && setPreview({ text: null, segments: [], error: describeDispatchError(e, t, false), loading: false }),
     )
     // 这一项的内容（标题、正文、派发次数、activity）和已知的「经过」条数任何一个变了，第一条消息可能就变了
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -135,7 +136,7 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
     if (!open) return
     setError(null)
     setPreviewOpen(false)
-    setPreview({ text: null, error: null, loading: false })
+    setPreview({ text: null, segments: [], error: null, loading: false })
     const pending = idRef.current
     if (pending && pending.sessions === sessionCount) {
       setNoPush(pending.attempt.noPush)
@@ -327,7 +328,12 @@ export function DispatchDialog({ item, open, onOpenChange }: { item: ViewTodo; o
                   {preview.error}
                 </p>
               ) : null}
-              {preview.text !== null ? (
+              {/* 节点按段给了就分段显示（你写的 / anycon 加的），旧 daemon 只有整段文字 */}
+              {preview.text !== null && preview.segments.length > 0 ? (
+                <div className="scroll-thin max-h-96 overflow-auto" data-testid="dispatch-preview-segments">
+                  <PromptSegments segments={preview.segments} busy={preview.loading} />
+                </div>
+              ) : preview.text !== null ? (
                 <pre className="scroll-thin max-h-64 overflow-auto rounded-md border border-border bg-bg-subtle p-2 text-xs whitespace-pre-wrap [overflow-wrap:anywhere]" data-testid="dispatch-preview" aria-busy={preview.loading}>
                   {preview.text}
                 </pre>

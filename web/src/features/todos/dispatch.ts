@@ -2,7 +2,7 @@
 // 全部逻辑（开会话、关联、`activity`、「不 push、不开 PR」、第一条消息）在 daemon 里，这里只发请求、把结果并进缓存、把错误翻成人话。
 // 派发直接发请求，不进离线待发队列：节点要在线，会话是一次性的，重放没有意义。
 import type { TFunction } from 'i18next'
-import type { AgentInfo, SessionWorkspace, SessionSettings, TodoDispatchParams, TodoDispatchPreviewResult, TodoDispatchResult } from '@/protocol'
+import type { AgentInfo, PromptSegment, SessionWorkspace, SessionSettings, TodoDispatchParams, TodoDispatchPreviewResult, TodoDispatchResult } from '@/protocol'
 import { describeCreateError } from '@/features/worktree/errors'
 import { rpc } from '@/transport/instance'
 import { RpcCallError } from '@/transport/rpcClient'
@@ -41,10 +41,10 @@ export async function dispatchTodo(nodeId: string, a: DispatchArgs): Promise<Tod
   return res
 }
 
-/** 此刻派发会发出的第一条消息（`todo.dispatch_preview`），一字不差。 */
-export async function previewDispatch(nodeId: string, id: string, noPush: boolean): Promise<string> {
+/** 此刻派发会发出的第一条消息（`todo.dispatch_preview`），一字不差；`segments` 是同一条消息按段拆开（旧 daemon 没有，空数组）。 */
+export async function previewDispatch(nodeId: string, id: string, noPush: boolean): Promise<{ text: string; segments: PromptSegment[] }> {
   const res = await rpc().request<TodoDispatchPreviewResult>(nodeId, 'todo.dispatch_preview', { id, no_push: noPush })
-  return res.first_message
+  return { text: res.first_message, segments: Array.isArray(res.segments) ? res.segments : [] }
 }
 
 /**

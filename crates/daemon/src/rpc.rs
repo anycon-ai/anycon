@@ -588,6 +588,15 @@ impl Rpc {
                 crate::todos::delete(c, caller, p).await?;
                 ok(Empty {})
             }
+            methods::TODO_REPEAT_PREVIEW => ok(crate::todo_state::repeat_preview(c, caller, params(p)?).await?),
+
+            // ---------------- 周期项的跨次状态（daemon.md § 26.11）：键和值是用户内容，不进日志和审计 ----------------
+            methods::TODO_STATE_GET => ok(crate::todo_state::get(c, caller, params(p)?).await?),
+            methods::TODO_STATE_SET => ok(crate::todo_state::set(c, caller, params(p)?).await?),
+            methods::TODO_STATE_DELETE => ok(crate::todo_state::delete(c, caller, params(p)?).await?),
+            methods::TODO_STATE_LIST => ok(crate::todo_state::list(c, caller, params(p)?).await?),
+            methods::TODO_STATE_UNSEEN => ok(crate::todo_state::unseen(c, caller, params(p)?).await?),
+            methods::TODO_STATE_CLEAR => ok(crate::todo_state::clear(c, caller, params(p)?).await?),
 
             // ---------------- 派发（daemon.md § 22）：「经过」里的 text 是会话内容，不进日志和审计 ----------------
             methods::TODO_DISPATCH_PREVIEW => {
@@ -833,6 +842,7 @@ impl Rpc {
                 twin: true,
                 todo_repeat: true,
                 todo_repeat_interval: true,
+                todo_repeat_state: true,
                 twin_stats: true,
             },
             started_at_ms: c.started_at_ms,

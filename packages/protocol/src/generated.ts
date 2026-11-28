@@ -623,6 +623,12 @@ export type PreviewResetCode =
  * 项目从哪来。
  */
 export type ProjectKind = "folder" | "linked";
+/**
+ * 第一条消息里的一段是从哪里来的（`PromptSegment.kind`）。`title` / `body` 是人写的（或照抄模板的），其余是 daemon 加的，
+ * 只有 `earlier_reports` 和 `twin_note` 里是 agent / Twin 写的内容。
+ */
+export type PromptSegmentKind =
+  "title" | "body" | "earlier_reports" | "state_usage" | "closing_report" | "no_push" | "twin_note" | "unknown";
 export type PullRequestState = "open" | "draft" | "merged" | "closed";
 /**
  * 一条内层消息。解码时按字段判别：有 `method` 且有 `id` 是请求，有 `method` 无 `id` 是通知，否则是响应。
@@ -824,6 +830,19 @@ export type TodoEvent1 =
       url?: string | null;
     }
   | {
+      kind: "state_usage";
+      /**
+       * `todo.state_get` / `state_list` / `state_unseen` 的次数。
+       */
+      reads: number;
+      session_id: string;
+      turn: number;
+      /**
+       * `todo.state_set` / `state_delete` 的次数。
+       */
+      writes: number;
+    }
+  | {
       kind: "unknown";
     };
 export type TwinAction = "dispatch" | "ask_user" | "ask_advisor" | "wait" | "hand_back" | "done" | "unknown";
@@ -918,6 +937,19 @@ export type TodoEventData =
       kind: "pr_event";
       session_id: string;
       url?: string | null;
+    }
+  | {
+      kind: "state_usage";
+      /**
+       * `todo.state_get` / `state_list` / `state_unseen` 的次数。
+       */
+      reads: number;
+      session_id: string;
+      turn: number;
+      /**
+       * `todo.state_set` / `state_delete` 的次数。
+       */
+      writes: number;
     }
   | {
       kind: "unknown";
@@ -1042,9 +1074,25 @@ export interface ProtocolSchema {
   preview_response_head: PreviewResponseHead;
   project: Project;
   project_kind: ProjectKind;
+  prompt_segment: PromptSegment;
+  prompt_segment_kind: PromptSegmentKind;
   pull_request_info: PullRequestInfo;
   pull_request_state: PullRequestState;
   quota: Quota;
+  repeat_state_changed: RepeatStateChanged;
+  repeat_state_clear_params: RepeatStateClearParams;
+  repeat_state_clear_result: RepeatStateClearResult;
+  repeat_state_delete_params: RepeatStateDeleteParams;
+  repeat_state_delete_result: RepeatStateDeleteResult;
+  repeat_state_entry: RepeatStateEntry;
+  repeat_state_get_params: RepeatStateGetParams;
+  repeat_state_get_result: RepeatStateGetResult;
+  repeat_state_list_params: RepeatStateListParams;
+  repeat_state_list_result: RepeatStateListResult;
+  repeat_state_set_params: RepeatStateSetParams;
+  repeat_state_set_result: RepeatStateSetResult;
+  repeat_state_unseen_params: RepeatStateUnseenParams;
+  repeat_state_unseen_result: RepeatStateUnseenResult;
   rpc_error: RpcError;
   rpc_message: RpcMessage;
   rule: Rule;
@@ -1123,6 +1171,8 @@ export interface ProtocolSchema {
   todo_list_params: TodoListParams;
   todo_list_result: TodoListResult;
   todo_remote: TodoRemote;
+  todo_repeat_preview_params: TodoRepeatPreviewParams;
+  todo_repeat_preview_result: TodoRepeatPreviewResult;
   todo_source: TodoSource;
   todo_source_kind: TodoSourceKind;
   todo_state: TodoState;
@@ -2108,6 +2158,11 @@ export interface NodeCapabilities {
    */
   todo_repeat_interval?: boolean;
   /**
+   * 周期项支持跨次状态：`repeat.keep_state` / `state_hint_off`、`todo.state_*`、`todo.state_changed`、`todo.repeat_preview`、
+   * 「经过」的 `state_usage` 和预览的 `segments`（docs/spec/daemon.md § 26.11）。旧 daemon 没有这个字段，读作 false。
+   */
+  todo_repeat_state?: boolean;
+  /**
    * 支持 Twin 的调度和 RPC。
    */
   twin?: boolean;
@@ -2656,6 +2711,13 @@ export interface GitMeta {
   worktree_ready?: boolean;
 }
 /**
+ * 第一条消息的一段。整条消息是各段的 `text` 按顺序用一个空行（`"\n\n"`）连起来。
+ */
+export interface PromptSegment {
+  kind: PromptSegmentKind;
+  text: string;
+}
+/**
  * `gh pr view` 的摘要。
  */
 export interface PullRequestInfo {
@@ -2673,6 +2735,168 @@ export interface PullRequestInfo {
   state: PullRequestState;
   title: string;
   url: string;
+}
+/**
+ * `todo.state_changed` 通知：一个模板的状态被写、删或清空了。只有模板 id 和条数，不带键和值；客户端要看内容就 `todo.state_list`。
+ */
+export interface RepeatStateChanged {
+  count: number;
+  /**
+   * 模板的 id。
+   */
+  id: string;
+}
+/**
+ * `todo.state_clear`：清空这个模板的全部状态。只由人调用。
+ */
+export interface RepeatStateClearParams {
+  /**
+   * 带了 `true` → `forbidden`（同自报 `mcp` 的连接）。
+   */
+  agent?: boolean | null;
+  id: string;
+}
+export interface RepeatStateClearResult {
+  removed: number;
+  template_id: string;
+}
+/**
+ * `todo.state_delete`：删一个键；没存着也不是错。
+ */
+export interface RepeatStateDeleteParams {
+  agent?: boolean | null;
+  id: string;
+  key: string;
+  origin_session?: string | null;
+}
+export interface RepeatStateDeleteResult {
+  count: number;
+  /**
+   * 这个键原来存着。
+   */
+  deleted: boolean;
+  template_id: string;
+}
+/**
+ * 状态里的一条。
+ */
+export interface RepeatStateEntry {
+  /**
+   * 非空，≤ 200 字节，不含控制字符和 U+2028 / U+2029。
+   */
+  key: string;
+  /**
+   * ≤ 1 KiB，可以是空串。
+   */
+  value: string;
+  /**
+   * 最近一次写这个键的时间。
+   */
+  written_ms: number;
+}
+/**
+ * `todo.state_get`。
+ */
+export interface RepeatStateGetParams {
+  /**
+   * 调用方自报「这是 agent」（同 `todo.add`）。
+   */
+  agent?: boolean | null;
+  /**
+   * 模板或它复制出来的某一项。
+   */
+  id: string;
+  key: string;
+  /**
+   * 调用来自哪个会话（CLI 读 `ANYCON_SESSION_ID`）。这个会话存在时，daemon 核对它是从这个模板的某次复制派出的，不是 → `forbidden`。
+   */
+  origin_session?: string | null;
+}
+export interface RepeatStateGetResult {
+  /**
+   * 没存着这个键时没有。
+   */
+  entry?: RepeatStateEntry | null;
+  /**
+   * 状态所属的模板。
+   */
+  template_id: string;
+}
+/**
+ * `todo.state_list`：按键（按字节）从小到大翻页。
+ */
+export interface RepeatStateListParams {
+  /**
+   * 只列排在这个键后面的（翻页：上一页最后一条的 `key`）。
+   */
+  after?: string | null;
+  agent?: boolean | null;
+  id: string;
+  /**
+   * 缺省 200，上限 1000（0 按 1）。
+   */
+  limit?: number | null;
+  origin_session?: string | null;
+  /**
+   * 只列以它开头的键。
+   */
+  prefix?: string | null;
+}
+export interface RepeatStateListResult {
+  entries: RepeatStateEntry[];
+  has_more: boolean;
+  /**
+   * 匹配 `prefix` 的条数（没给 `prefix` 时等于 `total`）。
+   */
+  matched: number;
+  template_id: string;
+  /**
+   * 这个模板的总条数（不看 `prefix`）。
+   */
+  total: number;
+}
+/**
+ * `todo.state_set`：写一个键（已有就覆盖）。满 2 000 条时淘汰最久没被写过的。
+ */
+export interface RepeatStateSetParams {
+  agent?: boolean | null;
+  id: string;
+  key: string;
+  origin_session?: string | null;
+  /**
+   * 缺省空串。
+   */
+  value?: string;
+}
+export interface RepeatStateSetResult {
+  /**
+   * 写完之后的条数。
+   */
+  count: number;
+  /**
+   * 为了不超过上限淘汰了几条（最久没被写过的）。
+   */
+  evicted?: number;
+  template_id: string;
+}
+/**
+ * `todo.state_unseen`：给一组键，返回其中没存着的。
+ */
+export interface RepeatStateUnseenParams {
+  agent?: boolean | null;
+  id: string;
+  /**
+   * 最多 2 000 个；每个的校验同 `key`。
+   */
+  keys: string[];
+  origin_session?: string | null;
+}
+export interface RepeatStateUnseenResult {
+  template_id: string;
+  /**
+   * 按请求里的顺序，去重。
+   */
+  unseen: string[];
 }
 export interface RpcError {
   code: number;
@@ -3467,11 +3691,22 @@ export interface TodoRepeat {
    * `kind = interval` 时必填（别的种类不能带）：两次之间隔多少分钟，15–720。
    */
   every_min?: number | null;
+  /**
+   * 给这个模板一张跨次保留的「键 → 值」小表，由它复制出来的各次会话里的 agent 用 `anycon todo state` 读写
+   * （`todo.state_*`，docs/spec/daemon.md § 26.11）。缺省 false，false 时不出现；只由人设置。关掉不删已有的条目。
+   */
+  keep_state?: boolean;
   kind: TodoRepeatKind;
   /**
    * 下一次复制的时间（节点此刻算出来的，不存；请求里带了也忽略）。模板已关闭时没有。算在 daemon 上，是因为规则按节点的时区。
    */
   next_ms?: number | null;
+  /**
+   * `keep_state` 开着时，派发复制出来的项的第一条消息缺省带 daemon 的一段用法说明；这一项为 true 表示不带（用户自己在正文里写）。
+   * 缺省 false，false 时不出现：所以「带说明」是不出现这个字段的那一种，旧客户端没见过它也照常是带说明。只能和 `keep_state` 一起为
+   * true（否则 `invalid`，`data.reason = "state_hint_off"`）；只由人设置。
+   */
+  state_hint_off?: boolean;
   /**
    * `kind = interval` 时必填（别的种类不能带）：当天最后一个时间点不晚于它，`HH:MM`，同一天内严格晚于 `at`。
    */
@@ -3616,6 +3851,10 @@ export interface TodoDispatchPreviewResult {
    * 只有全节点规则；没有生效的规则时为空串。不看所选的 agent：它收不收得到由 `AgentInfo.capabilities.system_prompt` 说了算。
    */
   rules_text?: string;
+  /**
+   * 同一条消息按来源分段（`first_message` = 各段用 `"\n\n"` 连起来）。旧 daemon 没有，读作空。
+   */
+  segments?: PromptSegment[];
 }
 export interface TodoDispatchResult {
   session: SessionSummary;
@@ -3673,6 +3912,51 @@ export interface TodoListResult {
    */
   has_more: boolean;
   todos: Todo[];
+}
+/**
+ * `todo.repeat_preview`：一个周期项（模板）复制出来的下一项交给 Twin 时会发出的第一条消息，分段标明来源。
+ * 给了的字段代替存着的值（表单里还没保存的内容）。`id` 还不在库里时，给了 `title` 就按一个还没保存的模板处理
+ * （条数为 0，用法说明里用这个 id：清单项的 id 由客户端生成）。
+ */
+export interface TodoRepeatPreviewParams {
+  /**
+   * 表单里的正文；校验同 `todo.add`。
+   */
+  body?: string | null;
+  id: string;
+  keep_state?: boolean | null;
+  /**
+   * 缺省 `true`（Twin 派发总是带「不 push、不开 PR」；人手动派发也缺省带）。
+   */
+  no_push?: boolean | null;
+  /**
+   * 表单里的项目，只影响 `rules_text`；空白表示没有项目。
+   */
+  project?: string | null;
+  state_hint_off?: boolean | null;
+  /**
+   * 表单里的标题；校验同 `todo.add`。
+   */
+  title?: string | null;
+}
+export interface TodoRepeatPreviewResult {
+  /**
+   * 和真正派发同一个组装函数得到的全文；新复制出来的项还没有之前的报告，所以没有那一段。
+   */
+  first_message: string;
+  /**
+   * 此刻开一个模板所在项目的会话会注入的规则文字（同 `todo.dispatch_preview`）。
+   */
+  rules_text?: string;
+  segments: PromptSegment[];
+  /**
+   * 这个模板现在存着的条数（开关关着时也照实给）。
+   */
+  state_count: number;
+  /**
+   * 状态用法说明的「抄进正文」版本：命令里用模板的 id（对之后每一次复制都有效），不带条数那一行。
+   */
+  state_usage_text: string;
 }
 export interface TodoUpdateParams {
   /**

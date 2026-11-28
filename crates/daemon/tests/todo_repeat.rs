@@ -33,6 +33,8 @@ fn rule(kind: TodoRepeatKind, at: &str, weekday: Option<u8>) -> TodoRepeat {
         every_min: None,
         until: None,
         auto_close: false,
+        keep_state: false,
+        state_hint_off: false,
         next_ms: None,
     }
 }

@@ -66,6 +66,19 @@ import type {
   PreviewPortsResult,
   Project,
   RenamedProject,
+  RepeatStateChanged,
+  RepeatStateClearParams,
+  RepeatStateClearResult,
+  RepeatStateDeleteParams,
+  RepeatStateDeleteResult,
+  RepeatStateGetParams,
+  RepeatStateGetResult,
+  RepeatStateListParams,
+  RepeatStateListResult,
+  RepeatStateSetParams,
+  RepeatStateSetResult,
+  RepeatStateUnseenParams,
+  RepeatStateUnseenResult,
   Rule,
   RuleAddParams,
   RuleChanged,
@@ -121,6 +134,8 @@ import type {
   TodoIdParams,
   TodoListParams,
   TodoListResult,
+  TodoRepeatPreviewParams,
+  TodoRepeatPreviewResult,
   TodoUpdateParams,
   TrashEntry,
   TwinAnswerParams,
@@ -230,6 +245,13 @@ export interface RequestMethods {
   'todo.dispatch': { params: TodoDispatchParams; result: TodoDispatchResult }
   'todo.repeat_now': { params: TodoIdParams; result: Todo }
   'todo.history': { params: TodoHistoryParams; result: TodoHistoryResult }
+  'todo.repeat_preview': { params: TodoRepeatPreviewParams; result: TodoRepeatPreviewResult }
+  'todo.state_get': { params: RepeatStateGetParams; result: RepeatStateGetResult }
+  'todo.state_set': { params: RepeatStateSetParams; result: RepeatStateSetResult }
+  'todo.state_delete': { params: RepeatStateDeleteParams; result: RepeatStateDeleteResult }
+  'todo.state_list': { params: RepeatStateListParams; result: RepeatStateListResult }
+  'todo.state_unseen': { params: RepeatStateUnseenParams; result: RepeatStateUnseenResult }
+  'todo.state_clear': { params: RepeatStateClearParams; result: RepeatStateClearResult }
   'rule.list': { params: RuleListParams; result: RuleListResult }
   'rule.add': { params: RuleAddParams; result: Rule }
   'rule.update': { params: RuleUpdateParams; result: Rule }
@@ -276,6 +298,7 @@ export interface NotificationMethods {
   'session.changed': { params: SessionChanged }
   'todo.changed': { params: TodoChanged }
   'todo.event': { params: TodoEventNotice }
+  'todo.state_changed': { params: RepeatStateChanged }
   'rule.changed': { params: RuleChanged }
   'rule.extract_done': { params: RuleExtractDone }
   'twin.changed': { params: TwinChanged }

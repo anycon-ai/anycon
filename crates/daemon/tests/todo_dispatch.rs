@@ -169,6 +169,7 @@ fn kind_of(e: &TodoEvent) -> &'static str {
         TodoEventData::PrEvent { .. } => "pr_event",
         TodoEventData::RemoteDispatched { .. } => "remote_dispatched",
         TodoEventData::RemoteResult { .. } => "remote_result",
+        TodoEventData::StateUsage { .. } => "state_usage",
         TodoEventData::Unknown => "unknown",
     }
 }

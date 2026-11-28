@@ -176,6 +176,15 @@ pub struct TodoRepeat {
     /// 任何一种规则都能带。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_close: bool,
+    /// 给这个模板一张跨次保留的「键 → 值」小表，由它复制出来的各次会话里的 agent 用 `anycon todo state` 读写
+    /// （`todo.state_*`，docs/spec/daemon.md § 26.11）。缺省 false，false 时不出现；只由人设置。关掉不删已有的条目。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_state: bool,
+    /// `keep_state` 开着时，派发复制出来的项的第一条消息缺省带 daemon 的一段用法说明；这一项为 true 表示不带（用户自己在正文里写）。
+    /// 缺省 false，false 时不出现：所以「带说明」是不出现这个字段的那一种，旧客户端没见过它也照常是带说明。只能和 `keep_state` 一起为
+    /// true（否则 `invalid`，`data.reason = "state_hint_off"`）；只由人设置。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub state_hint_off: bool,
     /// 下一次复制的时间（节点此刻算出来的，不存；请求里带了也忽略）。模板已关闭时没有。算在 daemon 上，是因为规则按节点的时区。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_ms: Option<TimestampMs>,
@@ -409,10 +418,44 @@ pub struct TodoDispatchPreviewParams {
     pub project: Option<String>,
 }
 
+/// 第一条消息里的一段是从哪里来的（`PromptSegment.kind`）。`title` / `body` 是人写的（或照抄模板的），其余是 daemon 加的，
+/// 只有 `earlier_reports` 和 `twin_note` 里是 agent / Twin 写的内容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptSegmentKind {
+    /// 这一项的标题。
+    Title,
+    /// 这一项的正文（为空时没有这一段）。
+    Body,
+    /// 之前各次派发的报告（「Earlier work」那一段，每行带 `> `；没有时没有这一段）。
+    EarlierReports,
+    /// 周期项跨次状态的用法说明（模板开着 `keep_state`、没有 `state_hint_off` 时，docs/spec/daemon.md § 26.11）。
+    StateUsage,
+    /// 要求以一段收尾报告结束（每次都有）。
+    ClosingReport,
+    /// 「不 push、不开 PR」那一行（`no_push` 时）。
+    NoPush,
+    /// Twin 派发时附的说明（预览里没有：它在派发那一刻才由 Twin 写出来）。
+    TwinNote,
+    /// 这个版本不认识的来源；daemon 自己不产生它，客户端按「daemon 加的」显示，不能因此解析失败。
+    #[serde(other)]
+    Unknown,
+}
+
+/// 第一条消息的一段。整条消息是各段的 `text` 按顺序用一个空行（`"\n\n"`）连起来。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PromptSegment {
+    pub kind: PromptSegmentKind,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoDispatchPreviewResult {
     /// 此刻派发会发出的第一条消息，一字不差（同一个组装函数、同一套「之前的结果」的选法）。
     pub first_message: String,
+    /// 同一条消息按来源分段（`first_message` = 各段用 `"\n\n"` 连起来）。旧 daemon 没有，读作空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<PromptSegment>,
     /// 此刻开一个这一项的项目的会话会注入的规则文字（docs/spec/daemon.md § 23.5，和 `rule.preview` 同一个函数）；这一项没有项目时
     /// 只有全节点规则；没有生效的规则时为空串。不看所选的 agent：它收不收得到由 `AgentInfo.capabilities.system_prompt` 说了算。
     #[serde(default)]
@@ -554,6 +597,16 @@ pub enum TodoEventData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
     },
+    /// 这一项（周期项复制出来的）在这一轮里读写过模板的跨次状态（docs/spec/daemon.md § 26.11）：紧跟在这一轮的 `result` 后面记，
+    /// 只有次数，没有键和值。一轮里没读没写过就没有这一条。计数只在内存里，daemon 重启会丢。
+    StateUsage {
+        session_id: SessionId,
+        turn: u64,
+        /// `todo.state_get` / `state_list` / `state_unseen` 的次数。
+        reads: u32,
+        /// `todo.state_set` / `state_delete` 的次数。
+        writes: u32,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -589,6 +642,203 @@ pub struct TodoEvent {
 pub struct TodoEventNotice {
     pub todo_id: String,
     pub event: TodoEvent,
+}
+
+// ---------------- 周期项的跨次状态（docs/spec/daemon.md § 26.11） ----------------
+//
+// 状态属于模板（`repeat.keep_state`）；参数里的 `id` 可以是模板，也可以是它复制出来的某一项（经 `source.todo_id` 找到模板），
+// 两种写法读写的是同一份。键和值是不透明的字符串，daemon 不解释它们；它们是用户内容（不进日志、不进审计）。
+// 读、写、删单个键、列出、筛未见过的，agent 标记的调用方（自报 `mcp` 的连接、`agent: true`）也能调；清空只由人调。
+
+/// 状态里的一条。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateEntry {
+    /// 非空，≤ 200 字节，不含控制字符和 U+2028 / U+2029。
+    pub key: String,
+    /// ≤ 1 KiB，可以是空串。
+    pub value: String,
+    /// 最近一次写这个键的时间。
+    pub written_ms: TimestampMs,
+}
+
+/// `todo.state_get`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateGetParams {
+    /// 模板或它复制出来的某一项。
+    pub id: String,
+    pub key: String,
+    /// 调用方自报「这是 agent」（同 `todo.add`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
+    /// 调用来自哪个会话（CLI 读 `ANYCON_SESSION_ID`）。这个会话存在时，daemon 核对它是从这个模板的某次复制派出的，不是 → `forbidden`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session: Option<SessionId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateGetResult {
+    /// 状态所属的模板。
+    pub template_id: String,
+    /// 没存着这个键时没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<RepeatStateEntry>,
+}
+
+/// `todo.state_set`：写一个键（已有就覆盖）。满 2 000 条时淘汰最久没被写过的。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateSetParams {
+    pub id: String,
+    pub key: String,
+    /// 缺省空串。
+    #[serde(default)]
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session: Option<SessionId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateSetResult {
+    pub template_id: String,
+    /// 写完之后的条数。
+    pub count: u32,
+    /// 为了不超过上限淘汰了几条（最久没被写过的）。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub evicted: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// `todo.state_delete`：删一个键；没存着也不是错。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateDeleteParams {
+    pub id: String,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session: Option<SessionId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateDeleteResult {
+    pub template_id: String,
+    /// 这个键原来存着。
+    pub deleted: bool,
+    pub count: u32,
+}
+
+/// `todo.state_list`：按键（按字节）从小到大翻页。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateListParams {
+    pub id: String,
+    /// 只列以它开头的键。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// 只列排在这个键后面的（翻页：上一页最后一条的 `key`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// 缺省 200，上限 1000（0 按 1）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session: Option<SessionId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateListResult {
+    pub template_id: String,
+    pub entries: Vec<RepeatStateEntry>,
+    /// 这个模板的总条数（不看 `prefix`）。
+    pub total: u32,
+    /// 匹配 `prefix` 的条数（没给 `prefix` 时等于 `total`）。
+    pub matched: u32,
+    pub has_more: bool,
+}
+
+/// `todo.state_unseen`：给一组键，返回其中没存着的。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateUnseenParams {
+    pub id: String,
+    /// 最多 2 000 个；每个的校验同 `key`。
+    pub keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session: Option<SessionId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateUnseenResult {
+    pub template_id: String,
+    /// 按请求里的顺序，去重。
+    pub unseen: Vec<String>,
+}
+
+/// `todo.state_clear`：清空这个模板的全部状态。只由人调用。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateClearParams {
+    pub id: String,
+    /// 带了 `true` → `forbidden`（同自报 `mcp` 的连接）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateClearResult {
+    pub template_id: String,
+    pub removed: u32,
+}
+
+/// `todo.state_changed` 通知：一个模板的状态被写、删或清空了。只有模板 id 和条数，不带键和值；客户端要看内容就 `todo.state_list`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RepeatStateChanged {
+    /// 模板的 id。
+    pub id: String,
+    pub count: u32,
+}
+
+/// `todo.repeat_preview`：一个周期项（模板）复制出来的下一项交给 Twin 时会发出的第一条消息，分段标明来源。
+/// 给了的字段代替存着的值（表单里还没保存的内容）。`id` 还不在库里时，给了 `title` 就按一个还没保存的模板处理
+/// （条数为 0，用法说明里用这个 id：清单项的 id 由客户端生成）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoRepeatPreviewParams {
+    pub id: String,
+    /// 表单里的标题；校验同 `todo.add`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// 表单里的正文；校验同 `todo.add`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// 表单里的项目，只影响 `rules_text`；空白表示没有项目。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_state: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_hint_off: Option<bool>,
+    /// 缺省 `true`（Twin 派发总是带「不 push、不开 PR」；人手动派发也缺省带）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_push: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TodoRepeatPreviewResult {
+    /// 和真正派发同一个组装函数得到的全文；新复制出来的项还没有之前的报告，所以没有那一段。
+    pub first_message: String,
+    pub segments: Vec<PromptSegment>,
+    /// 此刻开一个模板所在项目的会话会注入的规则文字（同 `todo.dispatch_preview`）。
+    #[serde(default)]
+    pub rules_text: String,
+    /// 状态用法说明的「抄进正文」版本：命令里用模板的 id（对之后每一次复制都有效），不带条数那一行。
+    pub state_usage_text: String,
+    /// 这个模板现在存着的条数（开关关着时也照实给）。
+    pub state_count: u32,
 }
 
 #[cfg(test)]
@@ -836,6 +1086,8 @@ mod repeat_tests {
             every_min: None,
             until: None,
             auto_close: false,
+            keep_state: false,
+            state_hint_off: false,
             next_ms: None,
         };
         let v = serde_json::to_value(&r).unwrap();
@@ -849,6 +1101,8 @@ mod repeat_tests {
             every_min: None,
             until: None,
             auto_close: false,
+            keep_state: false,
+            state_hint_off: false,
             next_ms: None,
         });
         assert!(daily.unwrap().get("weekday").is_none());
@@ -886,5 +1140,36 @@ mod repeat_tests {
         }
         let p: TodoUpdateParams = serde_json::from_value(json!({"id":"x","clear":["repeat"]})).unwrap();
         assert_eq!(p.clear, vec![ClearableTodoField::Repeat]);
+    }
+
+    #[test]
+    fn state_switches_are_left_out_when_off_and_old_rules_read_as_off() {
+        let r: TodoRepeat = serde_json::from_value(json!({"kind":"daily","at":"09:00"})).unwrap();
+        assert!(!r.keep_state && !r.state_hint_off);
+        let on = TodoRepeat { keep_state: true, ..r.clone() };
+        assert_eq!(serde_json::to_value(&on).unwrap(), json!({"kind":"daily","at":"09:00","keep_state":true}));
+        let quiet = TodoRepeat { keep_state: true, state_hint_off: true, ..r };
+        let v = serde_json::to_value(&quiet).unwrap();
+        assert_eq!(v, json!({"kind":"daily","at":"09:00","keep_state":true,"state_hint_off":true}));
+        assert_eq!(serde_json::from_value::<TodoRepeat>(v).unwrap(), quiet);
+    }
+
+    #[test]
+    fn state_usage_events_segments_and_notices_keep_their_wire_shape() {
+        let v = json!({"kind":"state_usage","session_id":"s","turn":2,"reads":3,"writes":1});
+        let e: TodoEventData = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(e, TodoEventData::StateUsage { session_id: "s".into(), turn: 2, reads: 3, writes: 1 });
+        assert_eq!(serde_json::to_value(e).unwrap(), v);
+        let seg: PromptSegment = serde_json::from_value(json!({"kind":"state_usage","text":"x"})).unwrap();
+        assert_eq!(seg.kind, PromptSegmentKind::StateUsage);
+        let future: PromptSegment = serde_json::from_value(json!({"kind":"future","text":"x"})).unwrap();
+        assert_eq!(future.kind, PromptSegmentKind::Unknown);
+        // 旧 daemon 的预览没有 segments
+        let old: TodoDispatchPreviewResult = serde_json::from_value(json!({"first_message":"m"})).unwrap();
+        assert!(old.segments.is_empty());
+        let set = RepeatStateSetResult { template_id: "t".into(), count: 3, evicted: 0 };
+        assert_eq!(serde_json::to_value(set).unwrap(), json!({"template_id":"t","count":3}));
+        let p: RepeatStateSetParams = serde_json::from_value(json!({"id":"t","key":"k"})).unwrap();
+        assert_eq!(p.value, "");
     }
 }

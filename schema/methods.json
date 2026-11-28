@@ -481,6 +481,54 @@
   },
   {
     "direction": "request",
+    "name": "todo.repeat_preview",
+    "params": "TodoRepeatPreviewParams",
+    "result": "TodoRepeatPreviewResult"
+  },
+  {
+    "direction": "request",
+    "name": "todo.state_get",
+    "params": "RepeatStateGetParams",
+    "result": "RepeatStateGetResult"
+  },
+  {
+    "direction": "request",
+    "name": "todo.state_set",
+    "params": "RepeatStateSetParams",
+    "result": "RepeatStateSetResult"
+  },
+  {
+    "direction": "request",
+    "name": "todo.state_delete",
+    "params": "RepeatStateDeleteParams",
+    "result": "RepeatStateDeleteResult"
+  },
+  {
+    "direction": "request",
+    "name": "todo.state_list",
+    "params": "RepeatStateListParams",
+    "result": "RepeatStateListResult"
+  },
+  {
+    "direction": "request",
+    "name": "todo.state_unseen",
+    "params": "RepeatStateUnseenParams",
+    "result": "RepeatStateUnseenResult"
+  },
+  {
+    "direction": "request",
+    "name": "todo.state_clear",
+    "params": "RepeatStateClearParams",
+    "result": "RepeatStateClearResult"
+  },
+  {
+    "direction": "notification",
+    "name": "todo.state_changed",
+    "params": "RepeatStateChanged",
+    "result": null
+  },
+  {
+    "direction": "request",
     "name": "rule.list",
     "params": "RuleListParams",
     "result": "RuleListResult"

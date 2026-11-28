@@ -175,6 +175,27 @@ describe('the preview of the first message', () => {
     await waitFor(() => expect(count()).toBe(n0 + 2))
   })
 
+  it('a node that splits the message into parts: what you wrote and what anycon adds are shown apart, each part labelled', async () => {
+    const user = userEvent.setup()
+    setup([claude()])
+    rpc.handlers['todo.dispatch_preview'] = () => ({
+      first_message: 'x',
+      segments: [
+        { kind: 'title', text: 'Fix the redirect' },
+        { kind: 'earlier_reports', text: '> did half' },
+        { kind: 'closing_report', text: 'When you are done…' },
+      ],
+    })
+    render(<DispatchDialog item={item({ project: 'proj' })} open onOpenChange={vi.fn()} />)
+    await user.click(screen.getByTestId('dispatch-preview-toggle'))
+    const box = await screen.findByTestId('dispatch-preview-segments')
+    expect(screen.queryByTestId('dispatch-preview')).toBeNull()
+    const segs = box.querySelectorAll('[data-testid="prompt-segment"]')
+    expect([...segs].map((s) => (s as HTMLElement).dataset.authored)).toEqual(['true', 'false', 'false'])
+    expect(segs[1]).toHaveTextContent('Earlier reports')
+    expect(segs[2]).toHaveTextContent('Closing report request')
+  })
+
   it('a refusal (the item is closed) is shown in words', async () => {
     const user = userEvent.setup()
     setup([claude()])

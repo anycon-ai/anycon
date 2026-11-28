@@ -133,6 +133,24 @@ pub const TODO_REPEAT_NOW: &str = "todo.repeat_now";
 pub const TODO_HISTORY: &str = "todo.history";
 /// D→C notification，params = TodoEventNotice：「经过」多了一条。
 pub const TODO_EVENT: &str = "todo.event";
+/// 周期项复制出来的下一项交给 Twin 时会发出的第一条消息，分段标明来源（docs/spec/daemon.md § 26.11）。只读。
+pub const TODO_REPEAT_PREVIEW: &str = "todo.repeat_preview";
+
+// 周期项的跨次状态（docs/spec/daemon.md § 26.11）：`id` 是模板或它复制出来的某一项；键和值是用户内容
+/// 按键读。
+pub const TODO_STATE_GET: &str = "todo.state_get";
+/// 写一个键（已有就覆盖；满了淘汰最久没被写过的）。
+pub const TODO_STATE_SET: &str = "todo.state_set";
+/// 删一个键。
+pub const TODO_STATE_DELETE: &str = "todo.state_delete";
+/// 按键翻页列出，可按前缀过滤，带总条数。
+pub const TODO_STATE_LIST: &str = "todo.state_list";
+/// 给一组键，返回其中没存着的。
+pub const TODO_STATE_UNSEEN: &str = "todo.state_unseen";
+/// 清空全部；只由人调用。
+pub const TODO_STATE_CLEAR: &str = "todo.state_clear";
+/// D→C notification，params = RepeatStateChanged：一个模板的状态变了（只有模板 id 和条数）。
+pub const TODO_STATE_CHANGED: &str = "todo.state_changed";
 
 // rule（决策档案，docs/spec/daemon.md § 23）
 /// `{ session_id }` → `{ run?, points }`
@@ -313,6 +331,14 @@ pub const REGISTRY: &[MethodSpec] = &[
     req(TODO_REPEAT_NOW, Some("TodoIdParams"), Some("Todo")),
     req(TODO_HISTORY, Some("TodoHistoryParams"), Some("TodoHistoryResult")),
     notif(TODO_EVENT, "TodoEventNotice"),
+    req(TODO_REPEAT_PREVIEW, Some("TodoRepeatPreviewParams"), Some("TodoRepeatPreviewResult")),
+    req(TODO_STATE_GET, Some("RepeatStateGetParams"), Some("RepeatStateGetResult")),
+    req(TODO_STATE_SET, Some("RepeatStateSetParams"), Some("RepeatStateSetResult")),
+    req(TODO_STATE_DELETE, Some("RepeatStateDeleteParams"), Some("RepeatStateDeleteResult")),
+    req(TODO_STATE_LIST, Some("RepeatStateListParams"), Some("RepeatStateListResult")),
+    req(TODO_STATE_UNSEEN, Some("RepeatStateUnseenParams"), Some("RepeatStateUnseenResult")),
+    req(TODO_STATE_CLEAR, Some("RepeatStateClearParams"), Some("RepeatStateClearResult")),
+    notif(TODO_STATE_CHANGED, "RepeatStateChanged"),
     req(RULE_LIST, Some("RuleListParams"), Some("RuleListResult")),
     req(RULE_ADD, Some("RuleAddParams"), Some("Rule")),
     req(RULE_UPDATE, Some("RuleUpdateParams"), Some("Rule")),

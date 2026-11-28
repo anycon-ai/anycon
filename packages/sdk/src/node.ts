@@ -66,7 +66,17 @@ import {
   type TodoHistoryResult,
   type TodoListParams,
   type TodoListResult,
+  type TodoRepeatPreviewParams,
+  type TodoRepeatPreviewResult,
   type TodoUpdateParams,
+  type RepeatStateChanged,
+  type RepeatStateClearResult,
+  type RepeatStateDeleteResult,
+  type RepeatStateGetResult,
+  type RepeatStateListParams,
+  type RepeatStateListResult,
+  type RepeatStateSetResult,
+  type RepeatStateUnseenResult,
   type WorkspaceBranchesResult,
   type WorkspaceBrowseResult,
   type WorkspaceChanged,
@@ -128,6 +138,11 @@ export interface NodeEvents {
   todo_changed: [TodoChanged]
   /** 清单项的「经过」多了一条（`todo.event`，docs/spec/daemon.md § 22；发给所有在线客户端）。`text` 是 agent 写的，按不可信内容渲染。 */
   todo_event: [TodoEventNotice]
+  /**
+   * 一个周期项（模板）的跨次状态被写、删或清空（`todo.state_changed`，docs/spec/daemon.md § 26.11）：只有模板 id 和条数，
+   * 不带键和值；要看内容用 `node.todos.stateList`。
+   */
+  todo_state_changed: [RepeatStateChanged]
   /** 规则有一条被新建、修改或删除（`rule.changed`，docs/spec/daemon.md § 23；发给所有在线客户端，包括发起的那一个）。`last_injected_ms` 和 `last_referenced_ms` 的变化不通知；daemon 标过期、人恢复时通知。 */
   rule_changed: [RuleChanged]
   /** 一次提炼结束，按 run.id 对应发起的调用；所有在线客户端都会收到。 */
@@ -252,6 +267,9 @@ export class Node extends Emitter<NodeEvents> {
     })
     rpc.onNotification<TodoEventNotice>(METHODS.TODO_EVENT, (e) => {
       this.emit('todo_event', e)
+    })
+    rpc.onNotification<RepeatStateChanged>(METHODS.TODO_STATE_CHANGED, (c) => {
+      this.emit('todo_state_changed', c)
     })
     rpc.onNotification<RuleChanged>(METHODS.RULE_CHANGED, (c) => {
       this.emit('rule_changed', c)
@@ -629,6 +647,37 @@ export class Node extends Emitter<NodeEvents> {
      * 清单满了 → `invalid`（`data.reason = 'too_many'`）；自报了 `mcp` 的本机连接 → `forbidden`。
      */
     repeatNow: (id: string): Promise<Todo> => this.call('todo.repeat_now', { id }),
+    /**
+     * `todo.repeat_preview`（docs/spec/daemon.md § 26.11）：周期项（模板）复制出来的下一项交给 Twin 时会发出的第一条消息，`segments`
+     * 按来源分段（`title` / `body` 是人写的，其余是 daemon 加的）；和真正派发同一个组装函数。`keep_state` / `state_hint_off` 给了就代替
+     * 模板上存着的值（还没保存的开关）；`no_push` 缺省 `true`。`state_usage_text` 是用模板 id 写的「抄进正文」版本。
+     * 节点 `capabilities.todo_repeat_state` 为 true 才有。不是周期项 → `invalid`（`data.reason = 'not_template'`）；自报了 `mcp` 的连接 → `forbidden`。
+     */
+    repeatPreview: (params: TodoRepeatPreviewParams): Promise<TodoRepeatPreviewResult> =>
+      this.call('todo.repeat_preview', params),
+    /**
+     * 周期项的跨次状态（`todo.state_*`，docs/spec/daemon.md § 26.11；节点 `capabilities.todo_repeat_state` 为 true 才有）。`id` 是模板或它复制出来的
+     * 某一项，两者读写模板的同一份。键：非空、≤ 200 字节、不含控制字符；值：≤ 1 KiB。错误：不是周期项也不是它的复制 → `invalid`
+     * （`data.reason = 'not_repeating'`）；模板已删除 → `'template_gone'`；模板没开 `keep_state` → `'state_off'`；`origin_session`
+     * 不是这个模板的某次复制派出的会话 → `forbidden`（`'origin_session'`）。键和值是用户内容，按不可信内容显示。
+     */
+    stateGet: (id: string, key: string): Promise<RepeatStateGetResult> =>
+      this.call('todo.state_get', { id, key }),
+    /** `todo.state_set`：写一个键（已有就覆盖）；满 2 000 条时淘汰最久没被写过的（`evicted`）。`value` 缺省空串。 */
+    stateSet: (id: string, key: string, value = ''): Promise<RepeatStateSetResult> =>
+      this.call('todo.state_set', { id, key, value }),
+    /** `todo.state_delete`：删一个键；没存着时 `deleted = false`，不是错误。 */
+    stateDelete: (id: string, key: string): Promise<RepeatStateDeleteResult> =>
+      this.call('todo.state_delete', { id, key }),
+    /** `todo.state_list`：按键从小到大翻页（`after` 填上一页最后一条的 `key`；`limit` 缺省 200、上限 1000），`prefix` 过滤；`total` 是总条数，`matched` 是匹配前缀的条数。 */
+    stateList: (params: RepeatStateListParams): Promise<RepeatStateListResult> =>
+      this.call('todo.state_list', params),
+    /** `todo.state_unseen`：给一组键（≤ 2 000 个），返回其中没存着的（按给的顺序、去重）。 */
+    stateUnseen: (id: string, keys: string[]): Promise<RepeatStateUnseenResult> =>
+      this.call('todo.state_unseen', { id, keys }),
+    /** `todo.state_clear`：清空这个模板的全部状态（开关关着时也能清）。只由人调用：自报 `mcp` 的连接 → `forbidden`。 */
+    stateClear: (id: string): Promise<RepeatStateClearResult> =>
+      this.call('todo.state_clear', { id }),
     /** `todo.history`：这一项的「经过」，按 `seq` 从新到旧；`has_more` 时用最后一条的 `seq` 作为 `before_seq` 取下一页（`limit` 缺省 50、上限 200）。 */
     history: (params: TodoHistoryParams): Promise<TodoHistoryResult> =>
       this.call('todo.history', params),

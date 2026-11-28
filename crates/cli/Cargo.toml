@@ -21,7 +21,7 @@ thiserror.workspace = true
 tracing.workspace = true
 clap = { version = "4.6.7", features = ["derive", "env"] }
 clap_complete = "4.6.11"
-qrcode = "0.14.1"
+qrcode = "0.15.0"
 hex.workspace = true
 uuid.workspace = true
 rand.workspace = true

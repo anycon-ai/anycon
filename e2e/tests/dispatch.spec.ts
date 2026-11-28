@@ -123,8 +123,13 @@ test.describe.serial('让 agent 处理', () => {
 
     // 预览 = CLI 的 --dry-run（取消勾选对应 --allow-push）
     await page.getByTestId('dispatch-preview-toggle').click()
-    await expect(page.getByTestId('dispatch-preview')).toBeVisible()
-    const shown = await page.getByTestId('dispatch-preview').textContent()
+    // 预览按来源分段显示（标题 / 备注是「你写的」，其余是 anycon 加的）；各段用一个空行连起来就是发出去的第一条消息
+    const segments = page.getByTestId('dispatch-preview-segments').getByTestId('prompt-segment')
+    await expect(segments.first()).toBeVisible()
+    expect(
+      await segments.evaluateAll((els) => els.map((e) => e.getAttribute('data-kind'))),
+    ).toEqual(['title', 'body', 'closing_report'])
+    const shown = (await segments.locator('pre').allTextContents()).join('\n\n')
     const dry = await runCli(state(), [
       'todo',
       'run',

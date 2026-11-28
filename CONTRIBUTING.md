@@ -66,9 +66,10 @@ hub 只嵌入它**编译时**看到的 `web/dist`：先编了 hub、后构建 we
 
 由 [`.github/workflows/release.yml`](.github/workflows/release.yml) 完成，设计见 [ADR-38](docs/decisions.md#adr-38-发布原生-runner-上的矩阵构建不用-cargo-dist)。推一个 `v*` 标签，它构建并自检 hub 镜像、四个平台的 `anycon`、两个 npm 包，全部通过后打镜像标签、建 GitHub Release（压缩包、`install.sh`、`SHA256SUMS`、构建来源证明）、发 npm、更新 Homebrew tap。
 
-1. 版本号三处一致（流水线会检查）：根 `Cargo.toml` 的 `[workspace.package] version`、`packages/protocol/package.json`、`packages/sdk/package.json`；`cargo check` 更新 `Cargo.lock`。`CHANGELOG.md` 写好这一版的段落，把 `Unreleased` 换成日期（Release 的说明取自这一段）
+1. 版本号三处一致（流水线会检查）：根 `Cargo.toml` 的 `[workspace.package] version`、`packages/protocol/package.json`、`packages/sdk/package.json`；`packages/sdk/src/version.ts` 的 `SDK_VERSION` 跟着改（SDK 的测试会对照），`bun.lock` 里这两个包的版本也改掉；`cargo check` 更新 `Cargo.lock`。`CHANGELOG.md` 写好这一版的段落，把 `Unreleased` 换成日期（Release 的说明取自这一段）
 2. 可选：在 Actions 页面手动运行 Release。手动运行只构建和自检、不发布，产物在 run 的 artifacts 里
 3. `git tag v0.1.0 && git push origin v0.1.0`。版本号带 `-`（如 `0.2.0-rc.1`）的是预发布：镜像只打版本号标签、npm 用 `next`、不更新 Homebrew
+4. 正式版本（不带 `-`）：公共 hub 升级到这一版、核对通过之后，`https://anycon.ai/releases.json` 改成这一版（daemon 的更新检查读它，[ADR-57](docs/decisions.md#adr-57-daemon-每天向-anyconai-检查一次新版本只提示不下载)）。这一步由公共 hub 的部署做，不在这个仓库里；预发布不改它。先升级公共 hub，用它的人才不会在 hub 还是旧版本时就被提示去升级节点
 
 第一次发布前要手动准备（之后不用再做）：
 

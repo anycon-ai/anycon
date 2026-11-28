@@ -117,7 +117,9 @@
 
 ## v0.4 — 清单与 Twin
 
-设计见 [ADR-54](decisions.md#adr-54-清单决策档案和-twin都在-daemon-上twin-不能批准权限)；Web UI 随之重排（「待处理」首页、手机底部标签栏、随手记一项、空间切换），见 [ADR-55](decisions.md#adr-55-web-ui-以待处理为首页手机用底部标签栏twin-不是一个聊天窗口) 和 [spec/web.md § 14](spec/web.md#14-加入清单和-twin-之后的界面)，每一步的界面范围在 § 14.12。五步全部已实现（daemon、CLI、TS SDK 和 Web），还没有发布；第 5 步（Twin 使用别的节点）见 [ADR-56](decisions.md#adr-56-twin-可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定)：
+已完成（v0.4.0 发布，见 [CHANGELOG](../CHANGELOG.md#040---2026-11-28)）。
+
+设计见 [ADR-54](decisions.md#adr-54-清单决策档案和-twin都在-daemon-上twin-不能批准权限)；Web UI 随之重排（「待处理」首页、手机导航、随手记一项、空间切换），见 [ADR-55](decisions.md#adr-55-web-ui-以待处理为首页手机用底部标签栏twin-不是一个聊天窗口) 和 [spec/web.md § 14](spec/web.md#14-加入清单和-twin-之后的界面)，每一步的界面范围在 § 14.12。五步全部已实现（daemon、CLI、TS SDK 和 Web）；第 5 步（Twin 使用别的节点）见 [ADR-56](decisions.md#adr-56-twin-可以使用别的节点daemon-作为受限设备配对范围由被使用的节点定)：
 
 1. **清单**：按节点存的个人清单（[spec/daemon.md § 21](spec/daemon.md#21-清单)）。已实现：daemon、`anycon todo`、`anycon mcp` 的两个工具、TS SDK 和 Web
    - `todo.*` 方法、`capabilities.todo`、存储和审计；agent 环境里的 `ANYCON_SESSION_ID`

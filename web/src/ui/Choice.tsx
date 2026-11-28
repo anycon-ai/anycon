@@ -44,7 +44,8 @@ export function RadioChoices<T extends string>({ value, onValueChange, options, 
 }
 
 /** 带说明的复选框（Radix Checkbox）。 */
-export function CheckboxField({ id, checked, onCheckedChange, label, hint, disabled, testId }: { id: string; checked: boolean; onCheckedChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; disabled?: boolean; testId?: string }) {
+/** `describedBy`：控件下面另放的说明（不在 label 里的那种）的 id，读屏念完名字再念它。 */
+export function CheckboxField({ id, checked, onCheckedChange, label, hint, disabled, testId, describedBy }: { id: string; checked: boolean; onCheckedChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; disabled?: boolean; testId?: string; describedBy?: string }) {
   return (
     <div className={cn('flex min-h-9 items-start gap-2.5 rounded-md px-1 py-1.5', disabled && 'opacity-50')}>
       <Checkbox.Root
@@ -52,6 +53,7 @@ export function CheckboxField({ id, checked, onCheckedChange, label, hint, disab
         checked={checked}
         disabled={disabled}
         onCheckedChange={(v) => onCheckedChange(v === true)}
+        aria-describedby={describedBy}
         data-testid={testId}
         className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-[0.25rem] border border-border-strong bg-bg focus-visible:ring-2 focus-visible:ring-accent/40 data-[state=checked]:border-accent data-[state=checked]:bg-accent"
       >

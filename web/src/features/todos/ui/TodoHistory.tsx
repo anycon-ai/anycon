@@ -2,7 +2,7 @@ import { TwinHistoryEvent } from '@/features/twin/TodoParts'
 import { useEffect, useMemo } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
-import { CircleDot, FileText, Repeat, Send, SkipForward } from 'lucide-react'
+import { CircleDot, Database, FileText, Repeat, Send, SkipForward } from 'lucide-react'
 import { Markdown } from '@/components/Markdown'
 import { SessionDot } from '@/components/StatusDot'
 import { formatDateTime } from '@/lib/format'
@@ -15,6 +15,8 @@ import { Spinner } from '@/ui/Misc'
 import type { TodoEvent } from '@/protocol'
 import { useHistoryEntry, loadHistory, loadMoreHistory } from '../history'
 import { wasDispatched } from '../activity'
+import { repeatTemplateOf } from '../repeat'
+import { useTodos } from '../store'
 import type { ViewTodo } from '../types'
 import { HistoryCard, historyListClass, historyQuoteClass } from './HistoryCard'
 
@@ -65,6 +67,15 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
     for (const e of entry.events) if (e.kind === 'dispatched') m.set(e.session_id, e.agent)
     return m
   }, [entry.events])
+  // 开着跨次状态的模板复制出来的项：一轮的 `result` 后面没有写过状态（没有 `state_usage`，或者 `writes = 0`）要一眼看得出来。
+  // 模板的开关只看缓存里有的（「来自周期项」那个 chip 会去取）：取不到（模板已删、还没加载）时不提示，不猜
+  const templateId = repeatTemplateOf(item)
+  const templateKeeps = useTodos((s) => (templateId ? s.nodes[item.node_id]?.items[templateId]?.repeat?.keep_state === true : false))
+  const wrote = useMemo(() => {
+    const m = new Set<string>()
+    for (const e of entry.events) if (e.kind === 'state_usage' && e.writes > 0) m.add(`${e.session_id}\u0000${e.turn}`)
+    return m
+  }, [entry.events])
   if (!dispatched && entry.events.length === 0 && !entry.loading && !entry.failed) return null
 
   const when = (ms: number): string => formatDateTime(ms, i18n.language)
@@ -96,7 +107,18 @@ export function TodoHistory({ item }: { item: ViewTodo }) {
                 <p className="text-xs text-fg-subtle">{t('todos.history.noText')}</p>
               )}
               {e.truncated ? <p className="text-xs text-fg-subtle">{t('todos.history.truncated')}</p> : null}
+              {templateKeeps && !wrote.has(`${e.session_id}\u0000${e.turn}`) ? (
+                <p className="text-xs text-fg-subtle" data-testid="history-no-state-write">
+                  {t('todos.runState.history.noWrite')}
+                </p>
+              ) : null}
             </HistoryCard>
+          </li>
+        )
+      case 'state_usage':
+        return (
+          <li key={e.seq} data-testid="history-row" data-kind="state_usage">
+            <HistoryCard icon={Database} time={when(e.ts_ms)} title={t('todos.runState.history.usage', { reads: e.reads, writes: e.writes })} />
           </li>
         )
       case 'state':

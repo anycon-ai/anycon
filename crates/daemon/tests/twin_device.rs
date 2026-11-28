@@ -93,6 +93,14 @@ const DENIED: &[&str] = &[
     methods::TODO_DISPATCH_PREVIEW,
     // 现在执行周期项只由人做：会产生工作、花 Twin 或 agent 的预算
     methods::TODO_REPEAT_NOW,
+    methods::TODO_REPEAT_PREVIEW,
+    // 周期项的跨次状态在模板所在的节点上；经 Twin 连接派到别的节点的项用不了它（daemon.md § 26.11）
+    methods::TODO_STATE_GET,
+    methods::TODO_STATE_SET,
+    methods::TODO_STATE_DELETE,
+    methods::TODO_STATE_LIST,
+    methods::TODO_STATE_UNSEEN,
+    methods::TODO_STATE_CLEAR,
     methods::RULE_LIST,
     methods::RULE_ADD,
     methods::RULE_UPDATE,
@@ -139,6 +147,7 @@ const NEVER_PUSHED: &[&str] = &[
     methods::JOB_DONE,
     methods::RULE_CHANGED,
     methods::RULE_EXTRACT_DONE,
+    methods::TODO_STATE_CHANGED,
     methods::TWIN_CHANGED,
     methods::TWIN_QUESTION,
     methods::PERMISSION_REQUEST,

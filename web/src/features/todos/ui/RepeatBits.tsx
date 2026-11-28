@@ -47,7 +47,8 @@ export function repeatInputText(t: TFunction, input: string): string {
   const f = formOf(input)
   if (f.choice === 'none') return t('todos.repeat.choice.none')
   const rule = f.every > 0 ? repeatRuleText(t, { kind: 'interval', days: f.choice, at: f.at, weekday: f.weekday, every_min: f.every, until: f.until }) : repeatRuleText(t, { kind: f.choice, at: f.at, weekday: f.weekday })
-  return f.autoClose ? `${rule} · ${t('todos.repeat.autoClose.on')}` : rule
+  const parts = [rule, ...(f.autoClose ? [t('todos.repeat.autoClose.on')] : []), ...(f.keepState ? [t(f.stateHintOff ? 'todos.runState.keep.onNoNote' : 'todos.runState.keep.on')] : [])]
+  return parts.join(' · ')
 }
 
 /** 规则和下一次的时间（节点按它自己的时区算好的）：一行字，列表行和详情共用。 */

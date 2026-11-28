@@ -163,6 +163,23 @@ export const METHODS = {
   TODO_HISTORY: 'todo.history',
   /** D→C notification，params = TodoEventNotice */
   TODO_EVENT: 'todo.event',
+  /** params = TodoRepeatPreviewParams → TodoRepeatPreviewResult；只读：模板复制出来的下一项交给 Twin 时的第一条消息，分段 */
+  TODO_REPEAT_PREVIEW: 'todo.repeat_preview',
+  // 周期项的跨次状态（docs/spec/daemon.md § 26.11）：`id` 是模板或它复制出来的某一项；键和值是用户内容
+  /** params = RepeatStateGetParams → RepeatStateGetResult */
+  TODO_STATE_GET: 'todo.state_get',
+  /** params = RepeatStateSetParams → RepeatStateSetResult */
+  TODO_STATE_SET: 'todo.state_set',
+  /** params = RepeatStateDeleteParams → RepeatStateDeleteResult */
+  TODO_STATE_DELETE: 'todo.state_delete',
+  /** params = RepeatStateListParams → RepeatStateListResult */
+  TODO_STATE_LIST: 'todo.state_list',
+  /** params = RepeatStateUnseenParams → RepeatStateUnseenResult */
+  TODO_STATE_UNSEEN: 'todo.state_unseen',
+  /** params = RepeatStateClearParams → RepeatStateClearResult；只由人调用 */
+  TODO_STATE_CLEAR: 'todo.state_clear',
+  /** D→C notification，params = RepeatStateChanged（只有模板 id 和条数） */
+  TODO_STATE_CHANGED: 'todo.state_changed',
 
   // rule（决策档案，docs/spec/daemon.md § 23）
   /** params = RuleListParams → RuleListResult */

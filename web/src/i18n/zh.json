@@ -496,7 +496,98 @@
     "fieldTitle": "标题",
     "fieldBody": "备注",
     "noBody": "没有备注。",
-    "bodyHint": "让 agent 处理或交给 Twin 时，标题和备注就是给它的任务说明：标题在前，备注接在后面。",
+    "bodyHint": "让 agent 处理或交给 Twin 时，标题和备注就是给它的任务说明：标题在前，备注接在后面。anycon 还会在后面加几段，比如要求最后写一份简短的报告。完整的内容可以在「让 agent 处理」里预览，周期项在「预览发给 agent 的内容」里看。",
+    "runState": {
+      "keep": {
+        "label": "跨次保留状态",
+        "hint": "复制出来的各次会话里的 agent 可以读写这份状态，用来记上次处理过哪些。",
+        "short": "跨次状态",
+        "on": "跨次保留状态",
+        "onNoNote": "跨次保留状态，不附带用法说明"
+      },
+      "note": {
+        "label": "附带用法说明",
+        "addedBy": "这段由 anycon 加在任务说明后面：",
+        "loading": "正在从节点读取这段文字…",
+        "off": "不会附带用法说明，需要你在备注里自己写。",
+        "copy": "复制到备注",
+        "offline": "节点离线，现在取不到这段文字。"
+      },
+      "examples": {
+        "label": "插入示例",
+        "mergeRequest": {
+          "label": "合并请求",
+          "text": "键用 mr:<iid>@<head_sha>。先把打开的 MR 拼成键交给 unseen，只处理它输出的那些；没有输出就结束。每处理完一个再 set 它的键。"
+        },
+        "jira": {
+          "label": "Jira",
+          "text": "键用 jira:<key>@<updated>。先把查到的 jira 拼成键交给 unseen，只判断它输出的那些。每判断完一个就 set 它的键，值写结论。"
+        },
+        "cursor": {
+          "label": "游标",
+          "text": "用一个键 cursor 记上次处理到的时间或 id。开始时 get 它，只处理比它新的；全部处理完再 set 成最新的值。"
+        }
+      },
+      "preview": {
+        "show": "预览发给 agent 的内容",
+        "hide": "收起预览",
+        "note": "这是复制出来的项交给 Twin 时发出的内容。同一项被再次派发时还会带上之前的报告，Twin 也可能再附一段说明，这两段不在这里。",
+        "loading": "正在从节点读取…",
+        "offline": "节点离线，现在看不了预览。",
+        "yours": "你写的",
+        "added": "anycon 加的",
+        "segment": {
+          "title": "标题",
+          "body": "备注",
+          "earlier_reports": "之前的报告",
+          "state_usage": "状态用法说明",
+          "closing_report": "收尾报告要求",
+          "no_push": "不 push 那一行",
+          "twin_note": "Twin 的说明",
+          "unknown": "其他"
+        }
+      },
+      "panel": {
+        "title": "跨次状态",
+        "count": "条目：{{count}} 条",
+        "untrusted": "键和值是 agent 写的，按纯文本显示。",
+        "show": "查看条目",
+        "hide": "收起条目",
+        "filter": "按键的前缀筛选",
+        "key": "键",
+        "value": "值",
+        "written": "写入时间",
+        "empty": "没有条目。",
+        "noMatch": "没有以这个前缀开头的条目。",
+        "matched": "{{total}} 条里有 {{matched}} 条符合",
+        "more": "加载更多",
+        "delete": "删除",
+        "deleteLabel": "删除条目 {{key}}",
+        "clear": "清空全部",
+        "clearTitle": "清空全部跨次状态？",
+        "clearBody": "这会删掉这个周期项的全部 {{count}} 条状态，之后复制出来的项从零开始，不能撤销。",
+        "offline": "节点离线。跨次状态每次都从节点读取，现在用不了。",
+        "off": "跨次保留状态已关闭。条目还留着：重新打开就能查看，也可以清空。",
+        "former": "这一项已经不再重复，但还留着当时的跨次状态，可以清空。",
+        "loading": "正在读取条目…"
+      },
+      "history": {
+        "usage": "状态：读 {{reads}} 次、写 {{writes}} 次",
+        "noWrite": "这一轮没有写状态"
+      },
+      "errors": {
+        "link": "连接失败，请重试。",
+        "off": "这个周期项没有开跨次保留状态。",
+        "notRepeating": "这一项不是周期项，没有跨次状态。",
+        "title": "标题不合格，生成不了预览。",
+        "body": "备注太长，生成不了预览。",
+        "project": "项目名不合格，生成不了预览。",
+        "forbidden": "这个连接不能做这件事。",
+        "notFound": "找不到：这一项已经不在了。",
+        "unsupported": "这个节点不支持跨次状态，请更新它上面的 anycon。",
+        "failed": "出错了，请重试。"
+      }
+    },
     "deleteTitle": "删除这一项？",
     "deleteBody": "「{{title}}」会从节点上删除，不能恢复。",
     "markedDone": "「{{title}}」已完成",

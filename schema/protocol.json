@@ -3829,6 +3829,11 @@
           "description": "周期项支持 `kind = interval`、`auto_close`、`todo.repeat_now` 和 `repeat_created.manual`（docs/spec/daemon.md § 26.9）。\n旧 daemon 没有这个字段，读作 false。",
           "type": "boolean"
         },
+        "todo_repeat_state": {
+          "default": false,
+          "description": "周期项支持跨次状态：`repeat.keep_state` / `state_hint_off`、`todo.state_*`、`todo.state_changed`、`todo.repeat_preview`、\n「经过」的 `state_usage` 和预览的 `segments`（docs/spec/daemon.md § 26.11）。旧 daemon 没有这个字段，读作 false。",
+          "type": "boolean"
+        },
         "twin": {
           "default": false,
           "description": "支持 Twin 的调度和 RPC。",
@@ -5668,6 +5673,67 @@
         }
       ]
     },
+    "PromptSegment": {
+      "description": "第一条消息的一段。整条消息是各段的 `text` 按顺序用一个空行（`\"\\n\\n\"`）连起来。",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/PromptSegmentKind"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "PromptSegmentKind": {
+      "description": "第一条消息里的一段是从哪里来的（`PromptSegment.kind`）。`title` / `body` 是人写的（或照抄模板的），其余是 daemon 加的，\n只有 `earlier_reports` 和 `twin_note` 里是 agent / Twin 写的内容。",
+      "oneOf": [
+        {
+          "const": "title",
+          "description": "这一项的标题。",
+          "type": "string"
+        },
+        {
+          "const": "body",
+          "description": "这一项的正文（为空时没有这一段）。",
+          "type": "string"
+        },
+        {
+          "const": "earlier_reports",
+          "description": "之前各次派发的报告（「Earlier work」那一段，每行带 `> `；没有时没有这一段）。",
+          "type": "string"
+        },
+        {
+          "const": "state_usage",
+          "description": "周期项跨次状态的用法说明（模板开着 `keep_state`、没有 `state_hint_off` 时，docs/spec/daemon.md § 26.11）。",
+          "type": "string"
+        },
+        {
+          "const": "closing_report",
+          "description": "要求以一段收尾报告结束（每次都有）。",
+          "type": "string"
+        },
+        {
+          "const": "no_push",
+          "description": "「不 push、不开 PR」那一行（`no_push` 时）。",
+          "type": "string"
+        },
+        {
+          "const": "twin_note",
+          "description": "Twin 派发时附的说明（预览里没有：它在派发那一刻才由 Twin 写出来）。",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "这个版本不认识的来源；daemon 自己不产生它，客户端按「daemon 加的」显示，不能因此解析失败。",
+          "type": "string"
+        }
+      ]
+    },
     "PullRequestInfo": {
       "description": "`gh pr view` 的摘要。",
       "properties": {
@@ -5836,6 +5902,381 @@
       "required": [
         "from",
         "to"
+      ],
+      "type": "object"
+    },
+    "RepeatStateChanged": {
+      "description": "`todo.state_changed` 通知：一个模板的状态被写、删或清空了。只有模板 id 和条数，不带键和值；客户端要看内容就 `todo.state_list`。",
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "模板的 id。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "count"
+      ],
+      "type": "object"
+    },
+    "RepeatStateClearParams": {
+      "description": "`todo.state_clear`：清空这个模板的全部状态。只由人调用。",
+      "properties": {
+        "agent": {
+          "description": "带了 `true` → `forbidden`（同自报 `mcp` 的连接）。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "RepeatStateClearResult": {
+      "properties": {
+        "removed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "template_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id",
+        "removed"
+      ],
+      "type": "object"
+    },
+    "RepeatStateDeleteParams": {
+      "description": "`todo.state_delete`：删一个键；没存着也不是错。",
+      "properties": {
+        "agent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "origin_session": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "key"
+      ],
+      "type": "object"
+    },
+    "RepeatStateDeleteResult": {
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deleted": {
+          "description": "这个键原来存着。",
+          "type": "boolean"
+        },
+        "template_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id",
+        "deleted",
+        "count"
+      ],
+      "type": "object"
+    },
+    "RepeatStateEntry": {
+      "description": "状态里的一条。",
+      "properties": {
+        "key": {
+          "description": "非空，≤ 200 字节，不含控制字符和 U+2028 / U+2029。",
+          "type": "string"
+        },
+        "value": {
+          "description": "≤ 1 KiB，可以是空串。",
+          "type": "string"
+        },
+        "written_ms": {
+          "description": "最近一次写这个键的时间。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "value",
+        "written_ms"
+      ],
+      "type": "object"
+    },
+    "RepeatStateGetParams": {
+      "description": "`todo.state_get`。",
+      "properties": {
+        "agent": {
+          "description": "调用方自报「这是 agent」（同 `todo.add`）。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "模板或它复制出来的某一项。",
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "origin_session": {
+          "description": "调用来自哪个会话（CLI 读 `ANYCON_SESSION_ID`）。这个会话存在时，daemon 核对它是从这个模板的某次复制派出的，不是 → `forbidden`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "key"
+      ],
+      "type": "object"
+    },
+    "RepeatStateGetResult": {
+      "properties": {
+        "entry": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RepeatStateEntry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "没存着这个键时没有。"
+        },
+        "template_id": {
+          "description": "状态所属的模板。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id"
+      ],
+      "type": "object"
+    },
+    "RepeatStateListParams": {
+      "description": "`todo.state_list`：按键（按字节）从小到大翻页。",
+      "properties": {
+        "after": {
+          "description": "只列排在这个键后面的（翻页：上一页最后一条的 `key`）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "limit": {
+          "description": "缺省 200，上限 1000（0 按 1）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "origin_session": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefix": {
+          "description": "只列以它开头的键。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "RepeatStateListResult": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/RepeatStateEntry"
+          },
+          "type": "array"
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "matched": {
+          "description": "匹配 `prefix` 的条数（没给 `prefix` 时等于 `total`）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "total": {
+          "description": "这个模板的总条数（不看 `prefix`）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "template_id",
+        "entries",
+        "total",
+        "matched",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "RepeatStateSetParams": {
+      "description": "`todo.state_set`：写一个键（已有就覆盖）。满 2 000 条时淘汰最久没被写过的。",
+      "properties": {
+        "agent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "origin_session": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "default": "",
+          "description": "缺省空串。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "key"
+      ],
+      "type": "object"
+    },
+    "RepeatStateSetResult": {
+      "properties": {
+        "count": {
+          "description": "写完之后的条数。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evicted": {
+          "description": "为了不超过上限淘汰了几条（最久没被写过的）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "template_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id",
+        "count"
+      ],
+      "type": "object"
+    },
+    "RepeatStateUnseenParams": {
+      "description": "`todo.state_unseen`：给一组键，返回其中没存着的。",
+      "properties": {
+        "agent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "keys": {
+          "description": "最多 2 000 个；每个的校验同 `key`。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "origin_session": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "keys"
+      ],
+      "type": "object"
+    },
+    "RepeatStateUnseenResult": {
+      "properties": {
+        "template_id": {
+          "type": "string"
+        },
+        "unseen": {
+          "description": "按请求里的顺序，去重。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "template_id",
+        "unseen"
       ],
       "type": "object"
     },
@@ -8508,6 +8949,13 @@
           "default": "",
           "description": "此刻开一个这一项的项目的会话会注入的规则文字（docs/spec/daemon.md § 23.5，和 `rule.preview` 同一个函数）；这一项没有项目时\n只有全节点规则；没有生效的规则时为空串。不看所选的 agent：它收不收得到由 `AgentInfo.capabilities.system_prompt` 说了算。",
           "type": "string"
+        },
+        "segments": {
+          "description": "同一条消息按来源分段（`first_message` = 各段用 `\"\\n\\n\"` 连起来）。旧 daemon 没有，读作空。",
+          "items": {
+            "$ref": "#/definitions/PromptSegment"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -8872,6 +9320,43 @@
             "kind",
             "session_id",
             "event"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "这一项（周期项复制出来的）在这一轮里读写过模板的跨次状态（docs/spec/daemon.md § 26.11）：紧跟在这一轮的 `result` 后面记，\n只有次数，没有键和值。一轮里没读没写过就没有这一条。计数只在内存里，daemon 重启会丢。",
+          "properties": {
+            "kind": {
+              "const": "state_usage",
+              "type": "string"
+            },
+            "reads": {
+              "description": "`todo.state_get` / `state_list` / `state_unseen` 的次数。",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "writes": {
+              "description": "`todo.state_set` / `state_delete` 的次数。",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "turn",
+            "reads",
+            "writes"
           ],
           "type": "object"
         },
@@ -9253,6 +9738,43 @@
           "type": "object"
         },
         {
+          "description": "这一项（周期项复制出来的）在这一轮里读写过模板的跨次状态（docs/spec/daemon.md § 26.11）：紧跟在这一轮的 `result` 后面记，\n只有次数，没有键和值。一轮里没读没写过就没有这一条。计数只在内存里，daemon 重启会丢。",
+          "properties": {
+            "kind": {
+              "const": "state_usage",
+              "type": "string"
+            },
+            "reads": {
+              "description": "`todo.state_get` / `state_list` / `state_unseen` 的次数。",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "writes": {
+              "description": "`todo.state_set` / `state_delete` 的次数。",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "turn",
+            "reads",
+            "writes"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "kind": {
               "const": "unknown",
@@ -9457,6 +9979,10 @@
             "null"
           ]
         },
+        "keep_state": {
+          "description": "给这个模板一张跨次保留的「键 → 值」小表，由它复制出来的各次会话里的 agent 用 `anycon todo state` 读写\n（`todo.state_*`，docs/spec/daemon.md § 26.11）。缺省 false，false 时不出现；只由人设置。关掉不删已有的条目。",
+          "type": "boolean"
+        },
         "kind": {
           "$ref": "#/definitions/TodoRepeatKind"
         },
@@ -9468,6 +9994,10 @@
             "integer",
             "null"
           ]
+        },
+        "state_hint_off": {
+          "description": "`keep_state` 开着时，派发复制出来的项的第一条消息缺省带 daemon 的一段用法说明；这一项为 true 表示不带（用户自己在正文里写）。\n缺省 false，false 时不出现：所以「带说明」是不出现这个字段的那一种，旧客户端没见过它也照常是带说明。只能和 `keep_state` 一起为\ntrue（否则 `invalid`，`data.reason = \"state_hint_off\"`）；只由人设置。",
+          "type": "boolean"
         },
         "until": {
           "description": "`kind = interval` 时必填（别的种类不能带）：当天最后一个时间点不晚于它，`HH:MM`，同一天内严格晚于 `at`。",
@@ -9547,6 +10077,94 @@
           "type": "string"
         }
       ]
+    },
+    "TodoRepeatPreviewParams": {
+      "description": "`todo.repeat_preview`：一个周期项（模板）复制出来的下一项交给 Twin 时会发出的第一条消息，分段标明来源。\n给了的字段代替存着的值（表单里还没保存的内容）。`id` 还不在库里时，给了 `title` 就按一个还没保存的模板处理\n（条数为 0，用法说明里用这个 id：清单项的 id 由客户端生成）。",
+      "properties": {
+        "body": {
+          "description": "表单里的正文；校验同 `todo.add`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "keep_state": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "no_push": {
+          "description": "缺省 `true`（Twin 派发总是带「不 push、不开 PR」；人手动派发也缺省带）。",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "表单里的项目，只影响 `rules_text`；空白表示没有项目。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state_hint_off": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "表单里的标题；校验同 `todo.add`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "TodoRepeatPreviewResult": {
+      "properties": {
+        "first_message": {
+          "description": "和真正派发同一个组装函数得到的全文；新复制出来的项还没有之前的报告，所以没有那一段。",
+          "type": "string"
+        },
+        "rules_text": {
+          "default": "",
+          "description": "此刻开一个模板所在项目的会话会注入的规则文字（同 `todo.dispatch_preview`）。",
+          "type": "string"
+        },
+        "segments": {
+          "items": {
+            "$ref": "#/definitions/PromptSegment"
+          },
+          "type": "array"
+        },
+        "state_count": {
+          "description": "这个模板现在存着的条数（开关关着时也照实给）。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state_usage_text": {
+          "description": "状态用法说明的「抄进正文」版本：命令里用模板的 id（对之后每一次复制都有效），不带条数那一行。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "first_message",
+        "segments",
+        "state_usage_text",
+        "state_count"
+      ],
+      "type": "object"
     },
     "TodoSource": {
       "properties": {
@@ -12066,6 +12684,12 @@
     "project_kind": {
       "$ref": "#/definitions/ProjectKind"
     },
+    "prompt_segment": {
+      "$ref": "#/definitions/PromptSegment"
+    },
+    "prompt_segment_kind": {
+      "$ref": "#/definitions/PromptSegmentKind"
+    },
     "pull_request_info": {
       "$ref": "#/definitions/PullRequestInfo"
     },
@@ -12074,6 +12698,48 @@
     },
     "quota": {
       "$ref": "#/definitions/Quota"
+    },
+    "repeat_state_changed": {
+      "$ref": "#/definitions/RepeatStateChanged"
+    },
+    "repeat_state_clear_params": {
+      "$ref": "#/definitions/RepeatStateClearParams"
+    },
+    "repeat_state_clear_result": {
+      "$ref": "#/definitions/RepeatStateClearResult"
+    },
+    "repeat_state_delete_params": {
+      "$ref": "#/definitions/RepeatStateDeleteParams"
+    },
+    "repeat_state_delete_result": {
+      "$ref": "#/definitions/RepeatStateDeleteResult"
+    },
+    "repeat_state_entry": {
+      "$ref": "#/definitions/RepeatStateEntry"
+    },
+    "repeat_state_get_params": {
+      "$ref": "#/definitions/RepeatStateGetParams"
+    },
+    "repeat_state_get_result": {
+      "$ref": "#/definitions/RepeatStateGetResult"
+    },
+    "repeat_state_list_params": {
+      "$ref": "#/definitions/RepeatStateListParams"
+    },
+    "repeat_state_list_result": {
+      "$ref": "#/definitions/RepeatStateListResult"
+    },
+    "repeat_state_set_params": {
+      "$ref": "#/definitions/RepeatStateSetParams"
+    },
+    "repeat_state_set_result": {
+      "$ref": "#/definitions/RepeatStateSetResult"
+    },
+    "repeat_state_unseen_params": {
+      "$ref": "#/definitions/RepeatStateUnseenParams"
+    },
+    "repeat_state_unseen_result": {
+      "$ref": "#/definitions/RepeatStateUnseenResult"
     },
     "rpc_error": {
       "$ref": "#/definitions/RpcError"
@@ -12308,6 +12974,12 @@
     },
     "todo_remote": {
       "$ref": "#/definitions/TodoRemote"
+    },
+    "todo_repeat_preview_params": {
+      "$ref": "#/definitions/TodoRepeatPreviewParams"
+    },
+    "todo_repeat_preview_result": {
+      "$ref": "#/definitions/TodoRepeatPreviewResult"
     },
     "todo_source": {
       "$ref": "#/definitions/TodoSource"
@@ -12651,6 +13323,24 @@
     "todo_event_data",
     "todo_event",
     "todo_event_notice",
+    "prompt_segment_kind",
+    "prompt_segment",
+    "todo_repeat_preview_params",
+    "todo_repeat_preview_result",
+    "repeat_state_entry",
+    "repeat_state_get_params",
+    "repeat_state_get_result",
+    "repeat_state_set_params",
+    "repeat_state_set_result",
+    "repeat_state_delete_params",
+    "repeat_state_delete_result",
+    "repeat_state_list_params",
+    "repeat_state_list_result",
+    "repeat_state_unseen_params",
+    "repeat_state_unseen_result",
+    "repeat_state_clear_params",
+    "repeat_state_clear_result",
+    "repeat_state_changed",
     "rule_status",
     "rule_source_kind",
     "rule_sync",
@@ -13189,6 +13879,54 @@
       "direction": "notification",
       "name": "todo.event",
       "params": "TodoEventNotice",
+      "result": null
+    },
+    {
+      "direction": "request",
+      "name": "todo.repeat_preview",
+      "params": "TodoRepeatPreviewParams",
+      "result": "TodoRepeatPreviewResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.state_get",
+      "params": "RepeatStateGetParams",
+      "result": "RepeatStateGetResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.state_set",
+      "params": "RepeatStateSetParams",
+      "result": "RepeatStateSetResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.state_delete",
+      "params": "RepeatStateDeleteParams",
+      "result": "RepeatStateDeleteResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.state_list",
+      "params": "RepeatStateListParams",
+      "result": "RepeatStateListResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.state_unseen",
+      "params": "RepeatStateUnseenParams",
+      "result": "RepeatStateUnseenResult"
+    },
+    {
+      "direction": "request",
+      "name": "todo.state_clear",
+      "params": "RepeatStateClearParams",
+      "result": "RepeatStateClearResult"
+    },
+    {
+      "direction": "notification",
+      "name": "todo.state_changed",
+      "params": "RepeatStateChanged",
       "result": null
     },
     {

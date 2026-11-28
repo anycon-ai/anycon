@@ -79,7 +79,7 @@ pub(crate) fn check_id(id: &str) -> RpcResult<()> {
 }
 
 /// 标题：去掉首尾空白之后 1–200 个 Unicode 码点，单行（不含控制字符，也不含 U+2028 / U+2029 这两个行分隔符）。返回去掉空白后的标题。
-fn check_title(title: &str) -> RpcResult<String> {
+pub(crate) fn check_title(title: &str) -> RpcResult<String> {
     let t = title.trim();
     if t.is_empty() {
         return Err(invalid("title", None, "title must not be empty".into()));
@@ -93,7 +93,7 @@ fn check_title(title: &str) -> RpcResult<String> {
     Ok(t.to_string())
 }
 
-fn check_body(body: &str) -> RpcResult<()> {
+pub(crate) fn check_body(body: &str) -> RpcResult<()> {
     if body.len() > MAX_BODY_BYTES {
         return Err(invalid("body", None, format!("body must be at most {} KiB", MAX_BODY_BYTES / 1024)));
     }
@@ -183,15 +183,20 @@ fn check_repeat(r: &TodoRepeat) -> RpcResult<()> {
             Err(invalid("repeat", Some("weekday"), "a weekly repeat needs weekday 1 (Monday) to 7 (Sunday)".into()))
         }
         (false, Some(_)) => Err(invalid("repeat", Some("weekday"), "only a weekly repeat takes a weekday".into())),
+    }?;
+    // 「不带用法说明」只对开着跨次状态的模板有意义（§ 26.11）
+    if r.state_hint_off && !r.keep_state {
+        return Err(invalid("repeat", Some("state_hint_off"), "repeat.state_hint_off needs repeat.keep_state".into()));
     }
+    Ok(())
 }
 
-/// 两条规则的时间安排是否相同（`auto_close` 不算：改它不改变下一次什么时候复制）。
+/// 两条规则的时间安排是否相同（`auto_close`、`keep_state`、`state_hint_off` 不算：改它们不改变下一次什么时候复制）。
 fn same_schedule(a: &Option<TodoRepeat>, b: &Option<TodoRepeat>) -> bool {
+    let schedule =
+        |r: &TodoRepeat| TodoRepeat { auto_close: false, keep_state: false, state_hint_off: false, ..r.clone() };
     match (a, b) {
-        (Some(a), Some(b)) => {
-            TodoRepeat { auto_close: false, ..a.clone() } == TodoRepeat { auto_close: false, ..b.clone() }
-        }
+        (Some(a), Some(b)) => schedule(a) == schedule(b),
         (None, None) => true,
         _ => false,
     }
@@ -284,6 +289,8 @@ fn repeat_of_row(r: &sqlx::sqlite::SqliteRow) -> Option<TodoRepeat> {
         every_min: r.get::<Option<i64>, _>("repeat_every_min").map(|v| v as u32),
         until: r.get("repeat_until"),
         auto_close: r.get::<i64, _>("repeat_auto_close") != 0,
+        keep_state: r.get::<i64, _>("repeat_keep_state") != 0,
+        state_hint_off: r.get::<i64, _>("repeat_state_hint_off") != 0,
         next_ms: None,
     })
 }
@@ -309,7 +316,8 @@ where
     sqlx::query(
         "UPDATE todos SET title = ?, body = ?, project = ?, state = ?, due_ms = ?, unreviewed = ?, \
          updated_ms = ?, closed_ms = ?, handler = ?, repeat_kind = ?, repeat_at = ?, repeat_weekday = ?, \
-         repeat_days = ?, repeat_every_min = ?, repeat_until = ?, repeat_auto_close = ? WHERE id = ?",
+         repeat_days = ?, repeat_every_min = ?, repeat_until = ?, repeat_auto_close = ?, repeat_keep_state = ?, \
+         repeat_state_hint_off = ? WHERE id = ?",
     )
     .bind(&t.title)
     .bind(&t.body)
@@ -327,6 +335,8 @@ where
     .bind(t.repeat.as_ref().and_then(|r| r.every_min).map(i64::from))
     .bind(t.repeat.as_ref().and_then(|r| r.until.clone()))
     .bind(t.repeat.as_ref().is_some_and(|r| r.auto_close) as i64)
+    .bind(t.repeat.as_ref().is_some_and(|r| r.keep_state) as i64)
+    .bind(t.repeat.as_ref().is_some_and(|r| r.state_hint_off) as i64)
     .bind(&t.id)
     .execute(db)
     .await?;
@@ -348,8 +358,8 @@ where
     sqlx::query(
         "INSERT INTO todos (id, title, body, project, state, due_ms, source_kind, source_device, source_session, \
          unreviewed, created_ms, updated_ms, closed_ms, handler, repeat_kind, repeat_at, repeat_weekday, source_todo, \
-         repeat_days, repeat_every_min, repeat_until, repeat_auto_close) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+         repeat_days, repeat_every_min, repeat_until, repeat_auto_close, repeat_keep_state, repeat_state_hint_off) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&t.id)
     .bind(&t.title)
@@ -373,6 +383,8 @@ where
     .bind(t.repeat.as_ref().and_then(|r| r.every_min).map(i64::from))
     .bind(t.repeat.as_ref().and_then(|r| r.until.clone()))
     .bind(t.repeat.as_ref().is_some_and(|r| r.auto_close) as i64)
+    .bind(t.repeat.as_ref().is_some_and(|r| r.keep_state) as i64)
+    .bind(t.repeat.as_ref().is_some_and(|r| r.state_hint_off) as i64)
     .execute(db)
     .await?;
     Ok(())
@@ -437,6 +449,8 @@ impl Store {
             sqlx::query("DELETE FROM todo_sessions WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
             sqlx::query("DELETE FROM todo_remotes WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
             sqlx::query("DELETE FROM todo_events WHERE todo_id = ?").bind(id).execute(&mut *tx).await?;
+            // 周期项的跨次状态属于模板（§ 26.11）：模板删了一起删；不是模板的项这里删不到任何行
+            sqlx::query("DELETE FROM todo_state WHERE template_id = ?").bind(id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(deleted)

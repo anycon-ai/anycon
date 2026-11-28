@@ -14,10 +14,12 @@ import { Input, Select, Textarea } from '@/ui/Field'
 import { useCapture } from '../capture'
 import { addTodo, deleteTodo } from '../service'
 import { useSupportingNodes } from '../store'
-import { parseCapture, type FieldError } from '../validate'
+import { bodyError, newTodoId, parseCapture, type FieldError } from '../validate'
 import { fieldErrorText } from './errors'
 import { AutoCloseField, RepeatField, useNodeSupportsInterval, useNodeSupportsRepeat } from './RepeatBits'
-import { repeatFromInput } from '../repeat'
+import { formOf, repeatFromInput } from '../repeat'
+import { appendToNotes, useNodeSupportsState } from '../state'
+import { KeepStateField, StateExamples } from './StateBits'
 
 /** 本地时间的 `datetime-local` 值 → 毫秒；空 / 不合法 → undefined。 */
 export function dueFromInput(v: string): number | undefined {
@@ -50,6 +52,8 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   const [due, setDue] = useState('')
   // 周期规则（`repeatToInput` 的写法，空串 = 不重复）
   const [repeat, setRepeat] = useState('')
+  // 这一项保存时用的 id：先定下来，周期项的用法说明（`todo.repeat_preview`）里用的就是它；记成功之后换一个新的
+  const [pendingId, setPendingId] = useState(newTodoId)
   const [error, setError] = useState<FieldError | null>(null)
   // 发送进行中：期间不能再发（连按两次回车不会记两项）、输入框只读（等待期间敲的字不会被清掉）
   const [busy, setBusy] = useState(false)
@@ -61,6 +65,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   const nodeId = (pickedNode && supporting.includes(pickedNode) ? pickedNode : null) ?? pickDefaultNode(supporting, space, lastNode, lastBySpace)
   const repeatSupported = useNodeSupportsRepeat(nodeId)
   const intervalSupported = useNodeSupportsInterval(nodeId)
+  const stateSupported = useNodeSupportsState(nodeId)
   const projects = useMemo(() => (nodeId ? (nodes[nodeId]?.projects ?? []).map((p) => p.name) : []), [nodes, nodeId])
 
   useEffect(() => {
@@ -71,7 +76,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
     if (!nodeId || sending.current || text.trim() === '') return
     sending.current = true
     setBusy(true)
-    const draft = { text, project, due, repeat }
+    const draft = { text, project, due, repeat, id: pendingId }
     const { title, body } = parseCapture(text)
     // 先清空再等：写进队列之后用户立刻可以接着记下一项；没写成功就把原样放回去（连同错误提示），什么都不丢
     setText('')
@@ -80,7 +85,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
     setRepeat('')
     let r: Awaited<ReturnType<typeof addTodo>>
     try {
-      r = await addTodo(nodeId, { title, body, ...(nodes[nodeId]?.info?.capabilities.twin ? { handler } : {}), project: draft.project.trim() || null, due_ms: dueFromInput(draft.due) ?? null, ...(repeatSupported ? { repeat: repeatFromInput(draft.repeat) } : {}) })
+      r = await addTodo(nodeId, { id: draft.id, title, body, ...(nodes[nodeId]?.info?.capabilities.twin ? { handler } : {}), project: draft.project.trim() || null, due_ms: dueFromInput(draft.due) ?? null, ...(repeatSupported ? { repeat: repeatFromInput(draft.repeat) } : {}) })
     } catch (e) {
       console.warn('anycon: adding a to-do failed unexpectedly', e)
       r = { ok: false, error: { field: 'storage', reason: 'failed' } }
@@ -97,6 +102,7 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
       return
     }
     setError(null)
+    setPendingId(newTodoId())
     rememberTodoNode(nodeId)
     toast.info(t('todos.added', { title: title.length > 60 ? `${[...title].slice(0, 60).join('')}…` : title }), { label: t('todos.undo'), run: () => void deleteTodo(nodeId, r.id) })
     area.current?.focus()
@@ -121,6 +127,19 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
   }
 
   const canSend = text.trim() !== '' && !busy
+  // 「复制到备注」「插入示例」：追加到正文末尾（第一行是标题）；还没有标题时空出第一行给标题。超过上限不追加，按正文的校验提示
+  const appendToBody = (extra: string): FieldError | null => {
+    const next = text.trim() === '' ? `\n\n${extra}` : appendToNotes(text, extra)
+    const e = bodyError(parseCapture(next).body)
+    if (e) return e
+    setText(next)
+    setError(null)
+    return null
+  }
+  const parsed = parseCapture(text)
+  // 用法说明只看 `state_usage` 那一段，和标题无关；还没写标题时给一个占位，节点要一个合格的标题才肯预览
+  const previewBase = { id: pendingId, title: parsed.title || '-', body: parsed.body, project: project.trim() }
+  const keepState = formOf(repeat).keepState
   return (
     <form
       className="space-y-2"
@@ -218,6 +237,15 @@ export function CaptureForm({ autoFocus = true, onEscape, compact }: { autoFocus
           <>
             <span aria-hidden />
             <AutoCloseField value={repeat} onChange={(v) => { setRepeat(v); setError(null) }} testId="capture-repeat" />
+          </>
+        ) : null}
+        {!compact && nodeId && stateSupported && repeat !== '' ? (
+          <>
+            <span aria-hidden />
+            <div className="space-y-2">
+              <KeepStateField nodeId={nodeId} value={repeat} onChange={(v) => { setRepeat(v); setError(null) }} base={previewBase} onAppend={appendToBody} testId="capture-repeat" />
+              {keepState ? <StateExamples onAppend={appendToBody} testId="capture-state-examples" /> : null}
+            </div>
           </>
         ) : null}
       </div>

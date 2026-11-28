@@ -17,6 +17,7 @@ mod render;
 mod rule_cmds;
 mod service;
 mod todo_cmds;
+mod todo_state_cmds;
 mod transfer_cmds;
 mod twin_cmds;
 mod worktree_cmds;

@@ -96,6 +96,25 @@ pub async fn anycon_in(
     }
 }
 
+/// 运行 `anycon <args>`，把 `stdin` 写完就关掉（命令读到 EOF，比如一行一个键的 `anycon todo state unseen`）；60 秒超时。
+pub async fn anycon_stdin_eof(home: &Path, args: &[&str], stdin: &str, env: &[(&str, &str)]) -> Run {
+    let mut c = base_command(home);
+    c.args(args).envs(env.iter().copied()).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
+    let mut child = c.spawn().expect("spawn anycon");
+    let mut si = child.stdin.take().unwrap();
+    si.write_all(stdin.as_bytes()).await.expect("write anycon stdin");
+    drop(si);
+    let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+        .await
+        .unwrap_or_else(|_| panic!("anycon {args:?} timed out"))
+        .unwrap();
+    Run {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
 pub struct DaemonProc {
     pub child: Child,
     pub home: PathBuf,

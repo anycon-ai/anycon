@@ -168,6 +168,8 @@ await node.discardAttachment(ref)                                         // 传
 
 `todos.add` / `update` 的 `handler` 使用协议的 `me | twin`；界面应先让人看过并收下 agent 项（`todo.update { id, reviewed: true }`），收下后再提供 `handler: twin` 的操作。daemon 也接受明确请求的原子收下并移交，但 SDK 不替调用方自动收下。所有 Twin 写权限和范围校验由 daemon 负责，SDK 不提供任何代答权限请求的 Twin 路径。
 
+**周期项的跨次状态**（[daemon.md § 26.11](daemon.md#2611-周期项的跨次状态)，`capabilities.todo_repeat_state`）：`node.todos` 上的薄封装，参数和结果直接是协议类型。`repeatPreview(TodoRepeatPreviewParams)` → `TodoRepeatPreviewResult`（模板编辑表单的分段预览和可复制的说明）；`stateGet(id, key)`、`stateSet(id, key, value = '')`、`stateDelete(id, key)`、`stateList(RepeatStateListParams)`（一页，翻页由调用方用 `after` 做）、`stateUnseen(id, keys)`、`stateClear(id)`，`id` 是模板或它复制出来的项。SDK 是给人用的客户端：这些封装不带 `agent` / `origin_session`（需要时用 `stateList` 的参数对象或直接发 RPC）。事件 `todo_state_changed` 透传 `todo.state_changed`（`{ id, count }`，不带键和值）。不缓存；旧节点回 `unsupported`。
+
 ## 4. 节点方向（自定义 agent）
 
 SDK 进程本身就是一个 daemon 节点：对 hub 来说是一台 `kind = sdk` 的设备，对客户端来说实现了内层协议的 daemon 侧子集。

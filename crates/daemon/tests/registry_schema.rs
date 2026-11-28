@@ -373,6 +373,20 @@ async fn walk_todo(w: &mut Walk<'_>) {
     assert_eq!(r["repeat"]["every_min"], 120, "{r}");
     let copy = w.call(methods::TODO_REPEAT_NOW, json!({ "id": rid })).await;
     assert_eq!(copy["source"]["todo_id"], rid, "{copy}");
+    // 跨次状态（§ 26.11）：开关、分段预览、读写（经复制项和经模板是同一份）、`todo.state_changed`
+    let mut kept = interval.clone();
+    kept["keep_state"] = json!(true);
+    let r = w.call(methods::TODO_UPDATE, json!({ "id": rid, "repeat": kept })).await;
+    assert_eq!(r["repeat"]["keep_state"], true, "{r}");
+    let p = w.call(methods::TODO_REPEAT_PREVIEW, json!({ "id": rid, "state_hint_off": true })).await;
+    assert!(p["segments"].as_array().unwrap().iter().all(|s| s["kind"] != "state_usage"), "{p}");
+    w.call(methods::TODO_STATE_SET, json!({ "id": copy["id"], "key": "mr/1", "value": "seen", "agent": true })).await;
+    w.call(methods::TODO_STATE_GET, json!({ "id": rid, "key": "mr/1" })).await;
+    w.call(methods::TODO_STATE_LIST, json!({ "id": rid, "prefix": "mr/", "limit": 1 })).await;
+    let u = w.call(methods::TODO_STATE_UNSEEN, json!({ "id": copy["id"], "keys": ["mr/1", "mr/2"] })).await;
+    assert_eq!(u["unseen"], json!(["mr/2"]), "{u}");
+    w.call(methods::TODO_STATE_DELETE, json!({ "id": rid, "key": "mr/1" })).await;
+    w.call(methods::TODO_STATE_CLEAR, json!({ "id": rid })).await;
     w.call(methods::TODO_HISTORY, json!({ "id": rid })).await;
     w.call(methods::TODO_DELETE, json!({ "id": copy["id"] })).await;
     w.call(methods::TODO_UPDATE, json!({ "id": rid, "clear": ["repeat"] })).await;
@@ -560,6 +574,7 @@ async fn every_request_in_the_registry_answers_with_its_declared_result_type() {
         methods::NODE_SECURITY_EVENT,
         methods::TODO_CHANGED,
         methods::TODO_EVENT,
+        methods::TODO_STATE_CHANGED,
         methods::RULE_CHANGED,
         methods::RULE_EXTRACT_DONE,
         methods::TWIN_CHANGED,
